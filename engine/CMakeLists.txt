@@ -5,7 +5,9 @@
 # gg-engine: the framework-free grain engine shared by both plugins, the tools and the tests.
 
 add_library(gg-engine STATIC
+        src/SampleBuffer.cpp
         src/Version.cpp
+        src/Window.cpp
         )
 add_library(gg::engine ALIAS gg-engine)
 
