@@ -8,10 +8,13 @@
 add_executable(gg-tests
         smoke_tests.cpp
         engine/denormal_tests.cpp
+        engine/engine_tests.cpp
         engine/interpolate_tests.cpp
         engine/mathdet_tests.cpp
+        engine/pool_tests.cpp
         engine/rng_tests.cpp
         engine/sample_buffer_tests.cpp
+        engine/stream_tests.cpp
         engine/window_tests.cpp
         )
 target_link_libraries(gg-tests PRIVATE gg::engine gg::compiler-options Catch2::Catch2WithMain)

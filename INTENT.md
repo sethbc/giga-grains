@@ -209,7 +209,8 @@ and reviews. Two consequences:
 - **Grain pool.** Structure-of-arrays storage, preallocated in `activate()`.
   - Defaults to 4,096 grains, configurable up to 16,384.
   - Per-layer and per-voice quotas.
-  - Dense index arrays with swap-remove compaction.
+  - Dense index arrays with **stable** compaction that preserves spawn order, so per-sample
+    summation order (and therefore output) is independent of host block size.
 - **Kernels.** "Grain-major" SIMD kernels, vectorized over time within each grain. Templated on
   channel count × interpolation tier × source kind.
   - Tiers: **Eco** = linear, **Normal** = 4-point Hermite (the default), **HQ** = 12- to 16-tap
@@ -632,6 +633,7 @@ sources.
 | 16 | Stack: CLAP-first with clap-wrapper; JUCE for the GUI only | CLAP-native features without JUCE's AudioProcessor; JUCE 9 has no native CLAP; follows Shortcircuit XT |
 | 17 | License: AGPL-3.0-or-later for everything | Matches what the binaries are anyway (JUCE AGPL plus GPL-3 sst); one simple story |
 | 18 | Research corrections adopted | Gap restated as depth + scale (§1); scale stated per layer and per instance (§5); live-buffer differentiator (§5); AAX moved to "possible later"; the FX registers both `aufx` and `aumf`; clap-wrapper ≥ 0.17 floor; start on JUCE 8.0.16-security; RTSan needs upstream LLVM; SignPath is uncertain |
+| 19 | Grain pool uses stable compaction, not swap-remove | Float summation order must not depend on block boundaries (§8.6). Decided 2026-10-26, during M0; see §14 |
 
 **Key sources** (checked 2026-10-26):
 - clap-wrapper releases (v0.17.0, 2026-10-20): https://github.com/free-audio/clap-wrapper/releases
