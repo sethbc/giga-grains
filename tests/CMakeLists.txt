@@ -67,3 +67,17 @@ foreach (case IN LISTS GG_GOLDEN_CASES)
             --compare-events ${CMAKE_CURRENT_SOURCE_DIR}/golden/expected/${case}.events.jsonl)
     set_tests_properties(golden_${case} PROPERTIES LABELS golden)
 endforeach ()
+
+# Code signatures (macOS), label `plugin`: every product bundle in the build tree must pass
+# codesign's strict verification, as Ableton Live's plugin scanner requires. A bundle whose only
+# signature is the one the linker puts on its executable fails it ("code has no resources but
+# signature indicates they must be present"), and Live then doesn't list the plugin.
+# clients/clap-first signs each bundle after it is built.
+if (APPLE AND GG_BUILD_PLUGINS)
+    foreach (format IN ITEMS clap vst3 auv2 standalone standalone_fx)
+        add_test(NAME codesign_${format}
+                COMMAND ${GG_CODESIGN} --verify --deep --strict --verbose=2
+                $<TARGET_BUNDLE_DIR:gg_clapfirst_${format}>)
+        set_tests_properties(codesign_${format} PROPERTIES LABELS plugin)
+    endforeach ()
+endif ()

@@ -20,6 +20,17 @@ option(GG_SANITIZE "Build with clang/gcc address and undefined-behaviour sanitiz
 option(GG_USE_RTSAN "Build with the LLVM RealtimeSanitizer" OFF)
 option(GG_COPY_PLUGIN_AFTER_BUILD "Copy plugins to the user plugin folders after build" OFF)
 set(GG_JUCE_PATH "${CMAKE_SOURCE_DIR}/libs/JUCE" CACHE PATH "JUCE checkout used for the UI")
+if (APPLE AND GG_BUILD_PLUGINS)
+    # clients/clap-first signs every macOS bundle with this identity after building it, and the
+    # codesign_* tests verify the signatures. "-" signs ad hoc; pass a Developer ID to sign for
+    # distribution.
+    set(GG_MACOS_CODESIGN_IDENTITY "-" CACHE STRING
+            "Identity that signs the macOS plugin bundles and apps: - (ad hoc) or a Developer ID")
+    if ("${GG_MACOS_CODESIGN_IDENTITY}" STREQUAL "")
+        message(FATAL_ERROR "GG_MACOS_CODESIGN_IDENTITY is empty; use - to sign ad hoc")
+    endif ()
+    find_program(GG_CODESIGN codesign REQUIRED)
+endif ()
 
 message(STATUS "Giga Grains ${PROJECT_VERSION}")
 message(STATUS "Compiler is ${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}")

@@ -12,3 +12,11 @@ cmake --preset dev
 cmake --build --preset dev
 ctest --preset dev
 ```
+
+The plugins and standalone apps are built into `build/<preset>/gg_assets/`. To copy the CLAP, VST3
+and AU into your user plugin folders after each build, configure with
+`-DGG_COPY_PLUGIN_AFTER_BUILD=ON`. On macOS each bundle is signed ad hoc once it's built, before
+it's copied: strict hosts such as Ableton Live won't load a bundle whose executable carries only
+the linker's signature. To sign with a real identity instead, configure with
+`-DGG_MACOS_CODESIGN_IDENTITY="Developer ID Application: <name> (<team id>)"`. The `codesign_*`
+tests check every signature.
