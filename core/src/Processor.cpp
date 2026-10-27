@@ -127,14 +127,20 @@ void Processor::setBase(ParamSlot slot, float value) noexcept
     }
 }
 
+// ParamSlot::Count asserts; in release builds it reads the last slot rather than out of bounds,
+// as paramMeta does.
 float Processor::base(ParamSlot slot) const noexcept
 {
-    return base_[std::min(static_cast<size_t>(slot), kParamCount - 1)];
+    const auto s = static_cast<size_t>(slot);
+    assert(s < kParamCount);
+    return base_[std::min(s, kParamCount - 1)];
 }
 
 float Processor::effective(ParamSlot slot) const noexcept
 {
-    return effective_[std::min(static_cast<size_t>(slot), kParamCount - 1)];
+    const auto s = static_cast<size_t>(slot);
+    assert(s < kParamCount);
+    return effective_[std::min(s, kParamCount - 1)];
 }
 
 void Processor::commitPending() noexcept
@@ -203,7 +209,7 @@ void Processor::process(const float *const *in, uint32_t numInChannels, float *c
     // Renders up to the pending boundary and applies the pending changes there.
     int64_t rendered = start;
     const auto applyPending = [&] {
-        assert(pendingAt_ <= end);
+        assert(pendingAt_ < end);
         render(buffers, rendered, pendingAt_);
         rendered = pendingAt_;
         commitPending();
@@ -226,7 +232,7 @@ void Processor::process(const float *const *in, uint32_t numInChannels, float *c
         // either the call's start, which a is at or after, or a boundary.
         const int64_t b = std::max(gridCeil(a), rendered);
         // Sorted events have non-decreasing boundaries, so a later one ends the pending group.
-        // Every boundary but the last is at most end − 32, inside this call.
+        // Every boundary but the last is at most end − 32, before this call's end.
         if (hasPending_ && b > pendingAt_)
         {
             applyPending();
@@ -247,7 +253,9 @@ void Processor::process(const float *const *in, uint32_t numInChannels, float *c
             hasPendingBase_[s] = true;
         }
     }
-    if (hasPending_ && pendingAt_ <= end)
+    // A boundary at end carries over, like one past it: the next call's events at offset 0
+    // belong to the same group, which a single call spanning both would apply once.
+    if (hasPending_ && pendingAt_ < end)
     {
         applyPending();
     }

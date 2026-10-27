@@ -15,6 +15,7 @@
 #include <limits>
 #include <numbers>
 #include <span>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -382,14 +383,20 @@ std::vector<TimedEvent> automation()
     return events;
 }
 
-// Block sizes in 1..4096 drawn from gg::rng (seed 99), enough to cover kAutomationFrames.
-std::vector<uint32_t> randomSplit()
+// Block sizes drawn from gg::rng, enough to cover kAutomationFrames: a tenth of them 0-frame
+// calls, three in ten multiples of 32 (so calls often end on a grid boundary), the rest anything
+// in 1..4096.
+std::vector<uint32_t> randomSplit(uint64_t seed)
 {
     std::vector<uint32_t> sizes;
     int64_t total = 0;
     for (uint64_t i = 0; total < kAutomationFrames; ++i)
     {
-        const uint32_t n = 1 + static_cast<uint32_t>(uniform(99, i) * 4096);
+        const double kind = uniform(seed, 2 * i);
+        const double u = uniform(seed, 2 * i + 1);
+        const uint32_t n = kind < 0.1   ? 0
+                           : kind < 0.4 ? 32 * (1 + static_cast<uint32_t>(u * 128))
+                                        : 1 + static_cast<uint32_t>(u * 4096);
         sizes.push_back(n);
         total += n;
     }
@@ -403,25 +410,28 @@ struct AutomationRender
     int64_t writeHead{0};
 };
 
-// Renders the input through a fresh FX processor in process() calls of blockSizes in turn
-// (cycling), each call given the events that fall inside it.
+// Renders the whole input through a fresh FX processor in process() calls of blockSizes in turn
+// (cycling), each call given the events that fall inside it. A 0-frame call at sample `done`
+// takes the events stamped `done`, at offset 0.
 void renderAutomation(const Stereo &input, const std::vector<TimedEvent> &events, uint32_t maxBlock,
                       const std::vector<uint32_t> &blockSizes, AutomationRender &r)
 {
+    const auto frames = static_cast<int64_t>(input.left.size());
     Processor p({kSampleRate, maxBlock, 42, Mode::Fx});
     p.setEventSink(&GrainLog::record, &r.log);
-    r.audio.left.assign(static_cast<std::size_t>(kAutomationFrames), kNaN);
-    r.audio.right.assign(static_cast<std::size_t>(kAutomationFrames), kNaN);
+    r.audio.left.assign(static_cast<std::size_t>(frames), kNaN);
+    r.audio.right.assign(static_cast<std::size_t>(frames), kNaN);
     std::vector<ParamEvent> blockEvents;
     blockEvents.reserve(events.size());
     std::size_t nextEvent = 0;
     int64_t done = 0;
-    for (std::size_t next = 0; done < kAutomationFrames; ++next)
+    for (std::size_t next = 0; done < frames; ++next)
     {
         const uint32_t want = blockSizes[next % blockSizes.size()];
-        const auto n = static_cast<uint32_t>(std::min<int64_t>(want, kAutomationFrames - done));
+        const auto n = static_cast<uint32_t>(std::min<int64_t>(want, frames - done));
+        const int64_t limit = done + std::max<int64_t>(n, 1);
         blockEvents.clear();
-        for (; nextEvent < events.size() && events[nextEvent].time < done + n; ++nextEvent)
+        for (; nextEvent < events.size() && events[nextEvent].time < limit; ++nextEvent)
         {
             const TimedEvent &e = events[nextEvent];
             blockEvents.push_back(
@@ -467,11 +477,16 @@ TEST_CASE("processor is block-size invariant with automation", "[core][determini
         uint32_t maxBlock;
         std::vector<uint32_t> blockSizes;
     };
-    const auto random = randomSplit();
-    REQUIRE(random.size() > 2);
-    for (const Split &split :
-         {Split{4096, {1}}, Split{4096, {7}}, Split{4096, {64}}, Split{4096, {511}},
-          Split{4096, {4096}}, Split{64, {4096}}, Split{4096, random}})
+    std::vector<Split> splits{{4096, {1}},   {4096, {7}},    {4096, {64}},
+                              {4096, {511}}, {4096, {4096}}, {64, {4096}}};
+    for (const uint64_t seed : {99, 100, 101})
+    {
+        auto random = randomSplit(seed);
+        REQUIRE(random.size() > 2);
+        REQUIRE(std::count(random.begin(), random.end(), 0u) > 0); // 0-frame calls
+        splits.push_back({4096, std::move(random)});
+    }
+    for (const Split &split : splits)
     {
         INFO("maxBlockSize = " << split.maxBlock << ", first block size = "
                                << split.blockSizes.front() << " of " << split.blockSizes.size());
@@ -483,6 +498,119 @@ TEST_CASE("processor is block-size invariant with automation", "[core][determini
         REQUIRE(sameBits(ref.audio.left, r.audio.left));
         REQUIRE(sameBits(ref.audio.right, r.audio.right));
     }
+}
+
+TEST_CASE("events for one boundary apply as one group across a call's end", "[core][determinism]")
+{
+    // Review finding I1. A call ends on the grid boundary B = 20480; events for B arrive both
+    // at its end (sample 20470) and at the next call's offset 0 (sample 20480). Applied as one
+    // group, as a single call applies them, the later events return Mix and Level to the
+    // targets of ramps still in flight, which therefore continue. Applied as two groups, the
+    // second would restart both ramps from B. Default parameters: grains read 0.25 s back, so
+    // the wet signal, and with it Level, sounds from about sample 12000.
+    constexpr int64_t kFrames = 48 * 512;
+    constexpr int64_t kB = 40 * 512;
+    const Stereo input = noise(kFrames, 0.25f, 17);
+    const std::vector<TimedEvent> events{
+        {kB - 440, ParamSlot::Mix, false, 1.0}, // boundary kB - 416: ramps until kB + 64
+        {kB - 440, ParamSlot::Level, false, -12.0},
+        {kB - 10, ParamSlot::Mix, false, 0.2}, // boundary kB
+        {kB - 10, ParamSlot::Level, false, 6.0},
+        {kB, ParamSlot::Mix, false, 1.0}, // boundary kB: back to the ramps' targets
+        {kB, ParamSlot::Level, false, -12.0},
+    };
+
+    AutomationRender ref;
+    renderAutomation(input, events, 4096, {static_cast<uint32_t>(kFrames)}, ref);
+    REQUIRE(allFinite(ref.audio.left));
+    REQUIRE(peak(ref.audio.left) > 0.05f);
+
+    struct Split
+    {
+        const char *name;
+        std::vector<uint32_t> blockSizes;
+    };
+    for (const Split &split :
+         {Split{"32-frame calls", {32}}, Split{"512-frame calls", {512}},
+          Split{"a 0-frame call at B with the offset-0 events",
+                {static_cast<uint32_t>(kB), 0, static_cast<uint32_t>(kFrames - kB)}},
+          Split{"7-frame calls (B inside a call)", {7}}})
+    {
+        INFO(split.name);
+        AutomationRender r;
+        renderAutomation(input, events, 4096, split.blockSizes, r);
+        CHECK(r.log.grains == ref.log.grains);
+        CHECK(sameBits(ref.audio.left, r.audio.left));
+        CHECK(sameBits(ref.audio.right, r.audio.right));
+    }
+}
+
+TEST_CASE("the wet chain is Level, then the soft limiter, then the mix", "[core]")
+{
+    // Spec §6.4: out = dry × (1 − m) + softLimit(wet × Level) × m. Three renders of one input
+    // share the engine's wet signal w, which Level and Mix don't touch:
+    // - Level 0 dB, Mix 1: w itself, kept below the knee so the limiter passes it unchanged;
+    // - Level +12 dB, Mix 1: softLimit(w × g) exactly, with the limiter engaged;
+    // - Level +12 dB, Mix 0.5: dry × 0.5 + softLimit(w × g) × 0.5 exactly, and 0.5 ×
+    //   softLimit(w × g) once the input is silent (the grains still read the earlier input).
+    constexpr uint32_t kFrames = 8192;
+    constexpr uint32_t kSilentFrom = 4096;
+    Stereo input = noise(kFrames, 0.45f, 23);
+    std::fill(input.left.begin() + kSilentFrom, input.left.end(), 0.0f);
+    std::fill(input.right.begin() + kSilentFrom, input.right.end(), 0.0f);
+    const auto render = [&](float levelDb, float mix) {
+        Processor p({kSampleRate, 4096, 1, Mode::Fx});
+        p.setBase(ParamSlot::Position, 0.02f); // about 7 ms behind the head
+        p.setBase(ParamSlot::Density, 7.0f);
+        p.setBase(ParamSlot::Level, levelDb);
+        p.setBase(ParamSlot::Mix, mix);
+        Stereo out{std::vector<float>(kFrames, kNaN), std::vector<float>(kFrames, kNaN)};
+        const float *in[2] = {input.left.data(), input.right.data()};
+        float *o[2] = {out.left.data(), out.right.data()};
+        p.process(in, 2, o, 2, kFrames, {});
+        return out;
+    };
+    const Stereo w = render(0.0f, 1.0f);
+    const Stereo limited = render(12.0f, 1.0f);
+    const Stereo mixed = render(12.0f, 0.5f);
+
+    gg::core::ParamValues plus12{};
+    plus12[at(ParamSlot::Level)] = 12.0f;
+    const float g = gg::core::toWetParams(plus12).levelGain;
+    REQUIRE(peak(w.left) < 0.5f);
+    REQUIRE(peak(w.right) < 0.5f);
+    int engaged = 0;
+    int silentAndSounding = 0;
+    for (const auto &[dry, wet, lim, mix] :
+         {std::tuple{&input.left, &w.left, &limited.left, &mixed.left},
+          std::tuple{&input.right, &w.right, &limited.right, &mixed.right}})
+    {
+        for (std::size_t i = 0; i < kFrames; ++i)
+        {
+            const float expectedLimited = gg::core::softLimit((*wet)[i] * g);
+            const float expectedMixed = (*dry)[i] * (1.0f - 0.5f) + expectedLimited * 0.5f;
+            if ((*lim)[i] != expectedLimited || (*mix)[i] != expectedMixed)
+            {
+                INFO("i = " << i);
+                REQUIRE((*lim)[i] == expectedLimited);
+                REQUIRE((*mix)[i] == expectedMixed);
+            }
+            engaged += std::abs((*wet)[i] * g) > 0.5f ? 1 : 0;
+            if (i >= kSilentFrom && (*lim)[i] != 0.0f)
+            {
+                ++silentAndSounding;
+                if ((*mix)[i] != 0.5f * (*lim)[i])
+                {
+                    INFO("i = " << i);
+                    REQUIRE((*mix)[i] == 0.5f * (*lim)[i]);
+                }
+            }
+        }
+    }
+    // Guards against a vacuous pass: the limiter is engaged often, and the wet signal sounds
+    // over silent input.
+    REQUIRE(engaged > 1000);
+    REQUIRE(silentAndSounding > 1000);
 }
 
 TEST_CASE("processor survives an automation storm", "[core][rt]")

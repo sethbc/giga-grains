@@ -58,9 +58,12 @@ struct ParamEvent
 /// - the engine gets setCloudParams(toCloudParams(...)) and setFreeze(...), which apply from b;
 /// - Mix and Level ramp from their current values to their new ones.
 ///
-/// A boundary at or before a call's end applies in that call; one past it carries over to the
-/// next. Every event's boundary is below end + 32, so at most one boundary is ever pending past
-/// a call's end. base() and effective() don't show a pending change until its boundary.
+/// A boundary before a call's end applies in that call. One at or past the end carries over to
+/// the next call, which renders up to it first: there it merges with that call's events for
+/// the same boundary (at offset 0, when the boundary is the call's first sample), so each
+/// boundary applies once, with all its events, however the host splits blocks. Every event's
+/// boundary is below end + 32, so at most one boundary is pending after a call. base() and
+/// effective() don't show a pending change until its boundary.
 ///
 /// **Mix and Level** ramp linearly to each new target over kRampSeconds, round(0.01 × sr)
 /// samples: R samples after its boundary a ramp is exactly at its target. A ramp is a function
@@ -97,9 +100,10 @@ class Processor
     /// process() call's first sample. Real-time safe; call it between process() calls.
     void setBase(ParamSlot slot, float value) noexcept;
 
-    /// The slot's base value in effect: the last setBase() or applied event.
+    /// The slot's base value in effect: the last setBase() or applied event. `slot` must be a
+    /// parameter: ParamSlot::Count asserts (and in release builds reads the last parameter).
     float base(ParamSlot slot) const noexcept;
-    /// The slot's effective value in effect: clamp(base + modulation).
+    /// The slot's effective value in effect: clamp(base + modulation). `slot` as for base().
     float effective(ParamSlot slot) const noexcept;
 
     /// Renders numFrames frames into out, applying `events` on the control grid as the class
