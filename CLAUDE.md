@@ -76,5 +76,153 @@ resource, so machines must catch everything they can catch.
 
 ## Build and test
 
-There's no code yet. Build, test, render and benchmark commands get established in milestone M0
-(INTENT.md §20) and documented here at that point.
+**Setup.**
+- You need CMake 3.22 or newer, and Ninja (Visual Studio 2022 with ClangCL on Windows).
+- Fetch the dependencies with `git submodule update --init`.
+- The first configure of a build tree downloads the VST3 and AudioUnit SDKs (clap-wrapper fetches
+  them), so it needs the network.
+
+**Presets.** They are defined in `CMakePresets.json`. Each one builds into `build/<preset>/`,
+except `windows-clangcl`, which builds into `build/windows/`.
+
+| Preset | What it builds |
+|---|---|
+| `dev` | Debug, with everything. The everyday build. |
+| `release` | Release. Time benchmarks and run the validators on this one. |
+| `asan` | ASan + UBSan, Debug. No plugins: the engine, UI core, tools and tests. |
+| `rtsan` | RealtimeSanitizer, RelWithDebInfo, no plugins. Needs upstream LLVM 20 or newer in `$GG_LLVM` (Apple clang has no RTSan). |
+| `mac-universal` | Release for arm64 + x86_64. CI's macOS leg. |
+| `windows-clangcl`, `linux-gcc12` | CI's Windows and Linux legs. |
+
+Every preset uses the same three commands:
+
+```sh
+cmake --preset dev
+cmake --build --preset dev
+ctest --preset dev --output-on-failure
+```
+
+- **RTSan:** set `GG_LLVM` when configuring:
+  - `GG_LLVM=/opt/homebrew/opt/llvm cmake --preset rtsan` with Homebrew LLVM on macOS;
+  - CI uses `/usr/lib/llvm-20` on Linux.
+- **Outputs:**
+  - The plugins and standalone apps land in `build/<preset>/gg_assets/`.
+  - `cmake --build --preset <p> --target gg-products` gathers them into
+    `build/<preset>/gg-products/` for validation.
+  - CI builds `--target gg-all gg-products`.
+- **If you delete a bundle or `gg_assets/`, configure again before building.** The `Info.plist`
+  files of the CLAP, VST3 and app bundles are link dependencies, and CMake writes them at
+  configure time.
+
+**Tests.** `gg-tests` is the Catch2 suite, and each Catch2 tag becomes a CTest label. To run one
+area, use `ctest --preset dev -L <label>`. The labels are:
+- engine: `engine`, `stream`, `pool`, `source`, `rng`, `math`, `interp`, `window`, `denormal`;
+- `determinism`: block-size invariance;
+- `rt`: the allocation tripwire. In the `rtsan` build, a test labelled both `rt` and `rtsan` also
+  checks that RTSan is active.
+- tools: `render`, `metrics`, `bench`;
+- `golden`: the golden renders;
+- `ui`: the splat renderer;
+- `smoke`;
+- `plugin`: the plugins, driven through their CLAP factory. On macOS this label also covers the
+  `codesign_*` strict signature checks, which Ableton Live's scanner needs to pass.
+
+**Golden renders (`gg-render`).** `gg-render` renders a render spec offline and deterministically:
+
+```
+gg-render <spec.json> [-o out.wav] [--metrics out.json] [--events out.jsonl]
+          [--spectrogram out.png] [--compare golden.metrics.json]
+          [--compare-events golden.events.jsonl] [--block-size N]
+```
+
+- It's built at `build/<preset>/tools/gg-render/gg-render`.
+- Its exit status is 0 for a pass, 1 when a comparison fails, and 2 for bad input.
+- **The cases:** each case's spec is in `tests/golden/cases/`, and its expected metrics and event
+  log are in `tests/golden/expected/`.
+- **The `golden` tests** render every case into `build/<preset>/golden/<case>.wav` and `.png`.
+  - They compare the metrics within tolerances.
+  - They compare the grain-event log byte for byte. That comparison is the cross-platform
+    determinism gate.
+- **After a DSP change, run `scripts/update-goldens.sh [build-dir]`** (default `build/dev`).
+  - It rebuilds `gg-render` and rewrites the expected files.
+  - It leaves WAVs and spectrograms in `<build-dir>/golden/`.
+  - It then checks the new goldens.
+- Look at every spectrogram before committing new goldens, and say in the commit message why they
+  changed.
+
+**Benchmarks (`gg-bench`).** Time these from `release`, on an otherwise idle machine:
+
+```sh
+cmake --build --preset release --target gg-bench
+build/release/tools/gg-bench/gg-bench [--quick] [--json out.json]            # grain kernels (§16)
+build/release/tools/gg-bench/gg-bench --canvas [--quick] [--json out.json]   # canvas renderer
+```
+
+- **Run lengths:** a full run is a median of 5 runs of 2 s each, about 2.6 minutes on an M5 Max.
+  `--quick` uses runs of 0.2 s.
+- **In CI:** each build leg runs the full length and uploads `gg-bench-<preset>`. In M0 the
+  results are reported, not gated; M1 adds the CPU gate (INTENT §19).
+
+**Validators.** CI runs them on every build leg; auval runs on macOS only.
+
+- **Fetch the validators.** `scripts/fetch-validators.sh tools-bin` fetches clap-validator 0.4.1
+  and pluginval v1.0.4 into `tools-bin/`, which git ignores. Each download is checked against a
+  pinned SHA-256.
+- **Run them against the products** (macOS shown):
+
+  ```sh
+  cmake --build --preset release --target gg-products
+  p=build/release/gg-products
+  tools-bin/clap-validator validate --exclude '^param-conversions$' "$p/Giga Grains.clap"
+  tools-bin/pluginval --strictness-level 10 --validate "$p/Giga Grains.vst3"
+  ```
+
+- **`--exclude '^param-conversions$'`** works around a divide-by-zero panic in clap-validator
+  itself on plugins with no parameters (ruling T8-c, free-audio/clap-validator#40). Remove it from
+  here and from `.github/workflows/ci.yml` once the plugins have real parameters (an M1 exit
+  criterion).
+- **On Linux,** CI runs pluginval under `xvfb-run -a` with `--skip-gui-tests`.
+- **auval (macOS)** needs the AU installed for your user:
+
+  ```sh
+  rm -rf ~/Library/Audio/Plug-Ins/Components/"Giga Grains.component"
+  cp -R "$p/Giga Grains.component" ~/Library/Audio/Plug-Ins/Components/
+  killall -9 AudioComponentRegistrar
+  auval -v aumu GGin Sbcx; auval -v aufx GGfx Sbcx; auval -v aumf GGfx Sbcx
+  ```
+
+  Each of the three runs must end with `AU VALIDATION SUCCEEDED`.
+- **Steinberg's VST3 validator** is built from the VST3 SDK that clap-wrapper downloaded:
+
+  ```sh
+  sdk="$(sed -n 's/^CPM_PACKAGE_vst3sdk_SOURCE_DIR:INTERNAL=//p' build/release/CMakeCache.txt)"
+  cmake -S "$sdk" -B build/release/vst3-validator -G Ninja -DCMAKE_BUILD_TYPE=Release \
+    -DSMTG_ENABLE_VSTGUI_SUPPORT=OFF -DSMTG_ENABLE_VST3_PLUGIN_EXAMPLES=OFF \
+    -DSMTG_ENABLE_VST3_HOSTING_EXAMPLES=OFF -DSMTG_CREATE_PLUGIN_LINK=OFF \
+    -DSMTG_BUILD_UNIVERSAL_BINARY=OFF
+  cmake --build build/release/vst3-validator --target validator
+  build/release/vst3-validator/bin/Release/validator "$p/Giga Grains.vst3"
+  ```
+
+**Formatting.**
+- Run `scripts/format.sh` to format every first-party source in place.
+- `scripts/format.sh --check` changes nothing and fails if any file isn't formatted. CI's Format
+  workflow runs it.
+- It needs clang-format 23. It uses `$CLANG_FORMAT` if that's set, and otherwise Homebrew LLVM's
+  copy, `clang-format-23` or `clang-format`.
+
+**Installing and signing the plugins.**
+- **`-DGG_COPY_PLUGIN_AFTER_BUILD=ON`** (off by default) copies the plugins into your user plugin
+  folders each time a bundle is rebuilt:
+  - macOS: the CLAP, VST3 and AU, into `~/Library/Audio/Plug-Ins/`;
+  - Linux: the CLAP and VST3, into `~/.clap` and `~/.vst3`;
+  - Windows: nothing.
+- **Check a tree's `CMakeCache.txt` before building one you didn't configure:** with this option
+  on, a build installs plugins.
+- **On macOS every bundle is signed** after it's built, before it's copied, with
+  `GG_MACOS_CODESIGN_IDENTITY`.
+  - It defaults to `-`, which signs ad hoc.
+  - Pass a Developer ID to sign with a real identity. A release build needs more than that:
+    hardened runtime, a timestamp and notarization.
+  - Strict hosts such as Ableton Live won't load a bundle that carries only the linker's
+    signature (`docs/spikes/m0-host-matrix.md`).

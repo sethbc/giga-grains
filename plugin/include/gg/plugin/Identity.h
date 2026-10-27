@@ -7,7 +7,9 @@
 
 /// The plugin identities (INTENT §18). Hosts store these in every saved session, so they are
 /// frozen at the first public release: changing any value orphans users' sessions.
-/// clients/clap-first/CMakeLists.txt repeats the CLAP ids as bundle and standalone ids.
+/// clients/clap-first/CMakeLists.txt repeats the CLAP ids as bundle ids, and the standalone apps'
+/// bundle ids are "<CLAP id>.standalone". INTENT §18 also lists the identities derived from
+/// these: the VST3 class UIDs and the standalone bundle ids.
 namespace gg::plugin::identity
 {
 inline constexpr char kVendor[] = "sethbc";

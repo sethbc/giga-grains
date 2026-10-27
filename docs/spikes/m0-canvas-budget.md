@@ -2,8 +2,8 @@
 
 *M0 Task 9, 2026-10-26. Measures whether the CPU additive "splat" renderer (INTENT §17) can
 draw thousands of grains within the INTENT §16 UI budget of **at most 3 ms of UI-thread time
-per frame with 8,000 visible grains**. These are headless numbers on one machine. Task 12
-re-measures the editor's own "frame ms" readout in Ableton and Bitwig.*
+per frame with 8,000 visible grains**. The headless numbers come from one machine. Task 12 read
+the editor's own "frame ms" in Ableton and Bitwig; see "In the hosts (Task 12)".*
 
 ## What was measured
 
@@ -24,7 +24,9 @@ canvas gets its grains from the engine. Each result comes from 240 frames after 
 warm-up.
 
 It does **not** include drawing the image (`Graphics::drawImage`) or the rest of JUCE's paint.
-The editor's "frame ms (avg 60)" readout does include them; see "In the editor" below.
+The editor's "frame ms (avg 60)" readout adds the `drawImage` call, timed on the UI thread. On
+macOS most of the image draw then runs later, off the UI thread, so the readout doesn't include
+it; see "In the editor" below.
 
 **Build:** release preset, AppleClang 21, arm64.
 
@@ -66,7 +68,8 @@ Recorded run, `gg-bench --canvas`:
 
 - **At the budget point (8,192 grains), the CPU renderer fits, but only just,** and before the
   image is drawn. Drawing a 3200 × 1200 image costs extra, so at this canvas size the whole frame
-  probably goes over 3 ms in a host. Task 12 measures that.
+  probably goes over 3 ms in a host. Task 12 read the editor at its own, much smaller canvas size
+  (see the last bullet and "In the hosts (Task 12)"), so this size remains unmeasured in a host.
 - **The resolve dominates and is a fixed cost per pixel:**
   - about 2.0 ms at 3.84 M pixels (0.52 ns/pixel), whatever the grain count;
   - it scales with canvas area, not with grains.
@@ -78,7 +81,8 @@ Recorded run, `gg-bench --canvas`:
   that area, a frame should take about 0.65 ms for the resolve and about 1.4 ms in total at
   8,192 grains.
 
-**If the in-host numbers come in over budget,** the levers, in order of payoff, are:
+**If a frame goes over budget** (a larger canvas, or slower hardware), the levers, in order of
+payoff, are:
 
 1. Resolve only rows or tiles that grains touched this frame. Grains sit in lanes, so much of the
    canvas is empty.
@@ -108,23 +112,74 @@ These set the numbers above. They are in `ui/src/SplatRenderer.cpp`.
 The plugin editor (`gg::ui::Editor`, 900 × 500) has a canvas stress panel:
 
 - a combo box for 0, 4,096, 8,192 (the default) or 16,384 grains;
-- a readout, "frame ms (avg 60)", covering splat, resolve and paint, plus the canvas size in
-  physical pixels.
+- a readout, "frame ms (avg 60)", plus the canvas size in physical pixels.
 
 The canvas repaints on every display refresh (`juce::VBlankAttachment`).
 
-The editor was not captured from a live window: screen recording and accessibility access are
-not granted to the agent session. An offscreen render (`createComponentSnapshot` at 2×, JUCE's
-software renderer, 8,192 grains) read **2.50 and 3.56 ms at 1736 × 720 px** in two runs. Each
-run averaged only 10 frames, the first of them touching a freshly allocated image. The gap
-from the 1.4 ms estimated above is that first frame plus drawing the image, which the
-headless benchmark leaves out. Treat these readings as a sanity check only: in a host the
-paint goes through CoreGraphics, not the software renderer.
+**What the readout measures.** It is the mean, over the last 60 frames, of the UI-thread time the
+canvas's `paint` spends on:
+
+- clearing the accumulator;
+- splatting every grain;
+- resolving into the image;
+- the `Graphics::drawImage` call.
+
+It leaves out generating the synthetic grains and the rest of JUCE's paint.
+
+**On macOS it counts UI-thread time only.** JUCE 9 sets `drawsAsynchronously` on the editor view's
+layer (`juce_NSViewComponentPeer_mac.mm`). So the CoreGraphics drawing that `drawImage` records
+runs later, on Core Animation's thread, mostly outside the timed span. That makes the readout the
+quantity the §16 budget names (UI-thread time per frame), and a lower bound on the frame's whole
+cost.
+
+In Task 9 the editor was not captured from a live window: screen recording and accessibility
+access weren't granted to the agent session. An offscreen render (`createComponentSnapshot` at
+2×, JUCE's software renderer, 8,192 grains) read **2.50 and 3.56 ms at 1736 × 720 px** in two
+runs. Each run averaged only 10 frames, the first of them touching a freshly allocated image. The
+gap from the 1.4 ms estimated above is that first frame plus drawing the image, which the
+headless benchmark leaves out. The software renderer draws synchronously, so these readings do
+include the image draw. Treat them as a sanity check only: in a host the paint goes through
+CoreGraphics, not the software renderer.
+
+The JUCE 9 spike later read the live standalone windows at 1736 × 720 px: 2.15 to 2.52 ms
+(`docs/spikes/m0-juce9.md`).
+
+## In the hosts (Task 12)
+
+**Result: under 3 ms in both hosts.**
+
+- **The reading.** The director read the editor's "frame ms (avg 60)" at 8,192 grains, at the
+  display's native scale, in Ableton Live 12.4.7 and Bitwig Studio 6.1.5. It was "ALWAYS below
+  3ms" in both. No exact numbers were recorded.
+- **Canvas size.** It wasn't recorded either. The editor opens at 900 × 500, which makes the canvas
+  1736 × 720 physical pixels on a 2× display, unless the window was resized.
+- **Build:** the `release` build at `c7e3a1a` (JUCE 9.0.4, arm64), the same build as the host
+  matrix (`docs/spikes/m0-host-matrix.md`).
+- **Machine:** the Apple M5 Max, which INTENT §16 names as the ceiling.
+
+**Caveat.** On macOS the readout is UI-thread time only (see "In the editor"), so it's a lower
+bound on what a frame costs in total. It does meet the §16 budget as worded: at most 3 ms of
+UI-thread time per frame with 8,000 visible grains.
+
+**Not measured:**
+
+- floor hardware: an M1, or a mid-range x86 machine;
+- Windows and Linux hosts;
+- canvases larger than the editor's default.
+
+**Director decision: the GPU backend spike stays in M2** (INTENT §17, §22; §23 #26). The CPU splat
+renderer stays the v1 renderer. If a frame goes over budget before then, the levers listed under
+"Reading the numbers" apply.
 
 ## Reproduce
+
+Headless:
 
 ```sh
 cmake --preset release
 cmake --build --preset release --target gg-bench
 build/release/tools/gg-bench/gg-bench --canvas [--quick] [--json out.json]
 ```
+
+In a host: open either plugin's editor, leave the stress panel at 8192 grains, and read
+"frame ms (avg 60)" once it has run for a few seconds.
