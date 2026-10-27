@@ -404,11 +404,12 @@ clients/  CLAP entry points + clap-wrapper targets
 
 ### 16. Performance targets
 
-*These are provisional. The M0 kernel benchmark will confirm or revise them before they become
-release gates.*
+*These are provisional. The M0 kernel benchmark measured them (below). The headline stays
+provisional until it is judged again at the end of milestone M1, and becomes a release gate
+only once it is met.*
 
-- **Headline target:** **at least 2,000 Normal-quality grains per instance at 48 kHz, using less
-  than 25% of one Apple M1 performance core.**
+- **Headline target (provisional):** **at least 2,000 Normal-quality grains per instance at
+  48 kHz, using less than 25% of one Apple M1 performance core.**
 - **Measured kernel cost** (M0 benchmark on the director's M5 Max; details in
   `docs/spikes/m0-kernel-benchmark.md`). Costs are per stereo grain-sample, for 2,000 grains of
   100 ms at 48 kHz, at block sizes 32 / 64 / 256:
@@ -422,7 +423,26 @@ release gates.*
   - The measurements land inside those estimates, or up to 12% above for Hermite.
   - The 2× to 4× penalty feared from gathers and cache misses did not appear on this machine.
   - The M5 Max is the ceiling: here 2,000 Hermite grains already use 80% to 86% of the 25%
-    budget. The M1-runner and x86 numbers from CI decide whether the headline holds.
+    budget.
+- **Measured on the floor hardware** (M0 CI, full-length `gg-bench`). The SIMD Hermite kernel,
+  2,000 grains, at blocks 32 / 64 / 256:
+  - **Apple M1 VM** (GitHub `macos-latest`): 5.52 / 5.41 / 5.00 ns, which is 52.9% / 51.9% /
+    48.0% of one core.
+  - **AMD EPYC 7763, Windows** (ClangCL): 6.22 / 5.93 / 5.72 ns (59.7% / 56.9% / 54.9%).
+  - **AMD EPYC 7763, Linux** (gcc 12): 7.21 / 6.62 / 6.26 ns (69.2% / 63.5% / 60.1%).
+
+  **That is about 2× over budget:** 1.9× to 2.1× the 25% on the M1 VM, and 2.2× to 2.8× on x86.
+  Small blocks also cost relatively more on some legs. On Linux, block 32 costs 15% more per
+  grain-sample than block 256, against 8% on the M5 Max.
+- **Milestone M1's renderer owns the gap** (director ruling, §23 #23). The headline stays as
+  the provisional target, and closing the gap is an explicit goal of the M1 (Cloud core)
+  renderer. The candidate levers are:
+  - per-grain software prefetch;
+  - a stereo-interleaved source layout;
+  - cache-aware grain scheduling.
+
+  M1's CI CPU gate starts as a regression gate at the measured baseline (§19). The headline is
+  judged again at the end of M1.
 - **Reference hardware:**
   - The floor is GitHub's M1 CI runners plus a mid-range x86 AVX2 machine.
   - The director's M5 Max is the ceiling, not the target.
@@ -557,7 +577,8 @@ registered through clap-wrapper's legacy-identity factory. The values live in
   - Grain-event logs are compared across platforms.
 - **Fuzz and property tests.** Parameter sweeps, extreme values and bursts of automation must
   produce no NaNs, crashes, runaway gain, or clicks above a threshold.
-- **CPU benchmark gate in CI**, using the targets in §16.
+- **CPU benchmark gate in CI.** Milestone M1 starts it as a regression gate at the measured
+  baseline. The §16 headline becomes the gate once M1 meets it.
 - **Real-time safety.**
   - Clang RealtimeSanitizer on upstream LLVM 20 or newer (Apple clang doesn't ship it).
   - ASan and UBSan.
@@ -577,7 +598,7 @@ registered through clap-wrapper's legacy-identity factory. The values live in
 | Milestone | Delivers | Exit criteria |
 |---|---|---|
 | **M0 Foundations** | Repo, CMake, CI matrix (mac/win/linux), `LICENSE` (AGPL-3.0); headless engine skeleton; `gg-render`; test, golden-render, RTSan and benchmark harness; both plugin shells in every format plus standalone; validators in CI. **Spikes:** kernel benchmark (sets §16), JUCE 9 vs 8.0.16, two-descriptor CLAP to AUv2/VST3/standalone, Ableton MIDI routing into an effect, CPU canvas frame budget. | One grain stream renders deterministically. The empty plugins load in the first-class hosts and pass every validator. |
-| **M1 Cloud core** | Grain pool and SIMD renderer (Eco/Normal); Cloud scheduler; parameter model; Sample and Live sources with freeze; 1 layer; diffusion/reverb; state save/load; single-lane canvas plus 8 macros | Both plugins make textures. **Listening gate #1.** CPU baseline recorded. |
+| **M1 Cloud core** | Grain pool and SIMD renderer (Eco/Normal), closing the §16 CPU gap; Cloud scheduler; parameter model; Sample and Live sources with freeze; 1 layer; diffusion/reverb; state save/load; single-lane canvas plus 8 macros | Both plugins make textures. **Listening gate #1.** CPU baseline recorded. |
 | **M2 Giga** | 4 layers plus morph; budget manager; grain target met; mipmaps and the HQ sinc tier; minutes-long buffers with persistence; Smear and Spectral Smear; resample/feedback source; full mod matrix; Mutate; factory presets and CC0 samples | Benchmarks pass. **Listening gate #2.** |
 | **→ v1.0** | M0 to M2 polished | Success criteria (§10) met. |
 | **M3 Playable** | Voice scheduler, polyphony, MPE, note expressions, polyphonic modulation, per-voice envelopes, pitch-sync/formant grains, microtuning | Listening gate. First-class hosts pass. |
@@ -595,7 +616,7 @@ Why this order after v1.0:
 
 | Risk | Mitigation |
 |---|---|
-| CPU estimates aren't measured yet; gathers and cache misses could cost 2× to 4× | M0 benchmark spike before committing to §16; deterministic budget; quality tiers |
+| The CPU headline is missed on floor hardware: the M0 benchmark measured about 2× the §16 budget on CI's M1 VM and x86 runners (1.9× to 2.8×), and small blocks cost relatively more there than on the M5 Max | The milestone-M1 renderer owns the gap: per-grain prefetch, a stereo-interleaved source layout, cache-aware grain scheduling (§16). A CI regression gate from the measured baseline; the headline judged again at the end of M1; deterministic budget; quality tiers |
 | Determinism is fragile: one CPU-adaptive rule, `std::` distribution or thread-order sum silently breaks it | Rules in §14; block-size invariance tests from M0 |
 | Multithreading is uneven across formats; there's no workgroup join via CLAP/clap-wrapper | Single-threaded v1; tasks only when the host offers a thread pool |
 | Memory blow-up: layers × minutes × mipmaps × instances | RAM cap per instance, shown in the UI; shared sample pool; buffer resolution options |
@@ -652,7 +673,8 @@ sources.
 | 19 | Grain pool uses stable compaction, not swap-remove | Float summation order must not depend on block boundaries (§8.6). Decided 2026-10-26, during M0; see §14 |
 | 20 | Plugin identities fixed | Vendor `sethbc`; URL `https://github.com/sethbc/giga-grains`; instrument CLAP ID `org.sethbc.giga-grains` ("Giga Grains"); FX CLAP ID `org.sethbc.giga-grains-fx` ("Giga Grains FX"); AU manufacturer `Sbcx` (display name `sethbc`); instrument AU `aumu`/`GGin`/`Sbcx`; FX AU `aufx`/`GGfx`/`Sbcx`, plus the extra identity `aumf`/`GGfx`/`Sbcx` through clap-wrapper's legacy-identity factory. Frozen at the first public release. Decided 2026-10-26, during M0; see §18 |
 | 21 | M0 tooling dependencies: dr_libs, pffft, stb_image_write, nlohmann/json, CLI11 | Audio-file decoding, the metrics FFT, spectrogram PNGs, metrics and render-spec JSON, and the `gg-render` command line, for the golden-render tooling (§19). All AGPLv3-compatible (§12). Decided 2026-10-26, during M0; see §15 |
-| 22 | §16's first-principles kernel cost estimates replaced by measured M5 Max numbers; headline target unchanged | The M0 kernel benchmark (`gg-bench`, 2,000 grains, median of 5 runs) puts the 4-wide SIMD Hermite kernel at 21.6% / 20.7% / 19.9% of one M5 Max core at blocks 32 / 64 / 256. That is under the 25% target, so the stop rule didn't trip. The M5 Max is the ceiling, so the M1-runner and x86 numbers from CI (M0 Task 10) decide whether the target holds. See `docs/spikes/m0-kernel-benchmark.md`. Decided 2026-10-26, during M0; see §16 |
+| 22 | §16's first-principles kernel cost estimates replaced by measured M5 Max numbers; headline target unchanged | The M0 kernel benchmark (`gg-bench`, 2,000 grains, median of 5 runs) puts the 4-wide SIMD Hermite kernel at 21.6% / 20.7% / 19.9% of one M5 Max core at blocks 32 / 64 / 256. That is under the 25% target, so the stop rule didn't trip. The headline is judged on the SIMD Hermite kernel (ruling T7-a). The M5 Max is the ceiling, so the M1-runner and x86 numbers from CI (M0 Task 10b) decide whether the target holds; see #23 for what they showed. See `docs/spikes/m0-kernel-benchmark.md`. Decided 2026-10-26, during M0; see §16 |
+| 23 | §16 headline kept as a provisional target despite the CI miss; milestone M1 closes the gap | Full-length `gg-bench` in M0 CI (run 40439674760, M0 Task 10b) puts the SIMD Hermite kernel at blocks 32 / 64 / 256 at: 52.9% / 51.9% / 48.0% of one core on GitHub's Apple M1 VM; 59.7% / 56.9% / 54.9% on a Windows AMD EPYC 7763 VM; and 69.2% / 63.5% / 60.1% on a Linux one. That is about 2× the 25% budget (1.9× to 2.8×), and small blocks cost relatively more there than on the M5 Max. The director chose to keep the headline as a provisional target and to make closing the gap an explicit goal of the milestone-M1 renderer. The candidate levers are per-grain software prefetch, a stereo-interleaved source layout and cache-aware grain scheduling. M1's CI CPU gate starts as a regression gate at the measured baseline, and the headline is judged again at the end of M1. See `docs/spikes/m0-kernel-benchmark.md`. Decided 2026-10-26 by the director, during M0; see §16, §19, §20 and §21 |
 
 **Key sources** (checked 2026-10-26):
 - clap-wrapper releases (v0.17.0, 2026-10-20): https://github.com/free-audio/clap-wrapper/releases

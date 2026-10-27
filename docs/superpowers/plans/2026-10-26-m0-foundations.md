@@ -612,7 +612,7 @@ These are the five failure modes most likely to bite users that the spec implies
 
 **Interfaces:**
 - Consumes: the presets, `gg-all`, `gg-products`, `scripts/fetch-validators.sh`, `gg-bench`, and the golden tests.
-- Produces: required CI checks. In `ci.yml`, triggered on `push` to `main` and on `pull_request`:
+- Produces: required CI checks. In `ci.yml`, triggered on `push` to `main`, on `pull_request` and by `workflow_dispatch` (ruling T10-a):
   1. **`build`**, a matrix over `macos-latest`/`mac-universal`, `windows-2022`/`windows-clangcl` and `ubuntu-22.04`/`linux-gcc12`:
      - check out with `submodules: recursive`;
      - `surge-synthesizer/sst-githubactions/prepare-for-juce`, pinned by commit SHA, with `gccversion: 12`;
@@ -620,10 +620,10 @@ These are the five failure modes most likely to bite users that the spec implies
      - Run `scripts/fetch-validators.sh`, then clap-validator on `Giga Grains.clap` and pluginval at strictness 10 on `Giga Grains.vst3` (on Linux add `--skip-gui-tests` and run under `xvfb-run`).
      - On macOS only, the three `auval` runs from Task 8.
      - Steinberg's VST3 validator: build the `validator` target from the VST3 SDK that clap-wrapper downloads (`public.sdk/samples/vst-hosting/validator`), then run it on `Giga Grains.vst3`. If that SDK checkout doesn't contain the validator sources, add an INTENT §22 item "Steinberg VST3 validator in CI — M1" and continue. pluginval still covers VST3.
-     - The benchmark is **reported, not gated**, in M0. The CPU gate from INTENT §19 turns on in M1, once Task 10 Step 5 has confirmed the §16 numbers.
-     - Upload `build/<preset>/golden/` and the `gg-bench --quick --json` output as artifacts.
+     - The benchmark is **reported, not gated**, in M0. It runs at full length, `gg-bench --json` without `--quick` (ruling T10-c). The CPU gate from INTENT §19 turns on in M1 as a regression gate at the measured baseline, and the §16 headline becomes the gate once M1 meets it (director ruling, Task 10b Step 5; INTENT §23 #23).
+     - Upload `build/<preset>/golden/` and the full-length `gg-bench --json` output as artifacts.
   2. **`sanitizers`** on `ubuntu-24.04`: install clang-20 via `apt.llvm.org/llvm.sh 20`, then run the `asan` preset with ctest, and the `rtsan` preset with `GG_LLVM=/usr/lib/llvm-20` and ctest.
-  3. **`format.yml`:** `clang-format-20 --dry-run --Werror` over `engine plugin ui tools tests clients`.
+  3. **`format.yml`:** `scripts/format.sh --check`, which runs clang-format 23 with `--dry-run --Werror` over `engine plugin ui tools tests clients`. Its major version matches developers' Homebrew LLVM (ruling R6; this replaced clang-format-20). Only clang-format is installed, from a hash-pinned PyPI wheel (ruling T10-a).
   - Every third-party action is pinned by commit SHA.
 
 - [ ] **Step 1: Write the workflows and presets.**
