@@ -112,10 +112,12 @@ class LiveSource
     ///
     ///     g = clamp((R − 1 − (pos + 2)) / M, 0, 1) × clamp(((pos − 1) − (R − N)) / M, 0, 1)
     ///
-    /// It is 1 while every tap is at least M frames inside both ends of the ring's data, and
-    /// falls linearly to 0 over M frames as a tap nears either end: the newest frame, or the
-    /// oldest one, which the next write overwrites. Frozen, those two ends are the seam where the
-    /// ring's newest and oldest frames meet, so this is the head-crossing crossfade.
+    /// It is 1 while every tap is at least M frames inside both ends of the window, and falls
+    /// linearly to 0 over M frames as a tap nears either end: the newest frame, or the oldest
+    /// one, R − N, which the next frame written moves out of the window. (The slot it overwrites
+    /// holds frame R − N − B, already outside the window; see Storage.) Frozen, those two ends are
+    /// the seam where the ring's newest and oldest frames meet, so this is the head-crossing
+    /// crossfade.
     double fade(double pos, int64_t head) const noexcept
     {
         const auto r = static_cast<double>(head);

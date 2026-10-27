@@ -25,8 +25,10 @@ struct EngineConfig
     uint32_t maxBlockSize{4096}; ///< process() works in blocks of at most this many frames; > 0.
     uint32_t grainCapacity{4096};
     uint64_t seed{0};
-    /// > 0 allocates a stereo live ring of ceil(liveSeconds × sampleRate) frames, which
-    /// SourceMode::Live reads (spec §6.3); 0 means no ring. Finite and >= 0.
+    /// > 0 allocates a stereo live ring, which SourceMode::Live reads (spec §6.3); 0 means no
+    /// ring. Finite and >= 0. Grains read a window of N = ceil(liveSeconds × sampleRate) frames,
+    /// stored in N + maxBlockSize frames (plus 3 guard frames) so that a block's later frames
+    /// never overwrite the window (ruling M1-o; see the class comment and LiveSource).
     double liveSeconds{0.0};
 };
 
@@ -80,7 +82,8 @@ class Engine
   public:
     /// Allocates everything process() needs, the live ring included. Throws
     /// std::invalid_argument if sampleRate is not finite and positive, maxBlockSize is 0, or
-    /// liveSeconds is not finite and >= 0 (or asks for a ring over 2^40 frames).
+    /// liveSeconds is not finite and >= 0, or if the ring's storage, N + maxBlockSize frames,
+    /// would exceed 2^40.
     explicit Engine(const EngineConfig &config);
 
     /// Not real-time safe: call only while process() is not running. The engine keeps the
