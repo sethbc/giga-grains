@@ -3,8 +3,8 @@
 # Copyright 2026, the Giga Grains authors (see git history)
 #
 # One shared, framework-free grain engine (engine/), the CLAP-first plugin shells for both
-# products (plugin/, clients/clap-first/) and the tests; the UI and tools are added by later
-# milestones. See INTENT.md.
+# products (plugin/, clients/clap-first/), their editor (ui/: a framework-free canvas core plus a
+# JUCE editor attached through clap_juce_shim), the tools and the tests. See INTENT.md.
 
 cmake_minimum_required(VERSION 3.22)
 
@@ -31,6 +31,7 @@ add_subdirectory(libs)
 enable_testing()
 
 add_subdirectory(engine)
+add_subdirectory(ui)
 add_subdirectory(tools/audiometrics)
 add_subdirectory(tools/gg-bench)
 add_subdirectory(tools/gg-render)
@@ -43,7 +44,7 @@ add_subdirectory(tests)
 
 # Everything this tree builds; CI builds this target.
 add_custom_target(gg-all)
-add_dependencies(gg-all gg-engine gg-audiometrics gg-bench gg-render gg-tests)
+add_dependencies(gg-all gg-engine gg-ui-core gg-audiometrics gg-bench gg-render gg-tests)
 if (GG_BUILD_PLUGINS)
     add_dependencies(gg-all gg_clapfirst_all)
 endif ()

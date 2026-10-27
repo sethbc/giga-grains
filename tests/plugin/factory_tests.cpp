@@ -143,3 +143,26 @@ TEST_CASE("fx also answers to aumf", "[plugin]")
     CHECK_FALSE(factory->get(factory, 0, 0, &identity));
     CHECK_FALSE(factory->get(factory, 1, 1, &identity));
 }
+
+TEST_CASE("both plugins expose a resizable embedded GUI", "[plugin]")
+{
+    // Only what needs no window or JUCE runtime: JUCE starts when a host creates the GUI, which
+    // pluginval exercises on the built plugins. (CLAP allows can_resize only after create.)
+    for (const char *id : {"org.sethbc.giga-grains", "org.sethbc.giga-grains-fx"})
+    {
+        INFO(id);
+        gg::test::PluginUnderTest plugin(id);
+        REQUIRE(plugin.valid());
+        const auto *gui = static_cast<const clap_plugin_gui *>(
+            plugin.clap()->get_extension(plugin.clap(), CLAP_EXT_GUI));
+        REQUIRE(gui != nullptr);
+
+        CHECK(gui->is_api_supported(plugin.clap(), CLAP_WINDOW_API_COCOA, false));
+        CHECK(gui->is_api_supported(plugin.clap(), CLAP_WINDOW_API_WIN32, false));
+        CHECK(gui->is_api_supported(plugin.clap(), CLAP_WINDOW_API_X11, false));
+        CHECK_FALSE(gui->is_api_supported(plugin.clap(), CLAP_WINDOW_API_WAYLAND, false));
+        CHECK_FALSE(gui->is_api_supported(plugin.clap(), CLAP_WINDOW_API_COCOA, true)); // floating
+        REQUIRE(plugin.impl().clapJuceShim != nullptr);
+        CHECK(plugin.impl().clapJuceShim->guiCanResize());
+    }
+}

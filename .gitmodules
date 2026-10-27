@@ -38,3 +38,9 @@
 [submodule "libs/CLI11"]
 	path = libs/CLI11
 	url = https://github.com/CLIUtils/CLI11
+[submodule "libs/sst/sst-clap-helpers"]
+	path = libs/sst/sst-clap-helpers
+	url = https://github.com/surge-synthesizer/sst-clap-helpers
+[submodule "libs/JUCE"]
+	path = libs/JUCE
+	url = https://github.com/juce-framework/JUCE

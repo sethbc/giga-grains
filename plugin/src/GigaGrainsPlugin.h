@@ -11,6 +11,7 @@
 #include <vector>
 
 #include <clap/clap.h>
+#include <sst/clap_juce_shim/clap_juce_shim.h>
 #include <sst/cpputils/rtsan_support.h>
 
 #include "HelpersConfig.h"
@@ -36,8 +37,9 @@ const clap_plugin_descriptor *descriptorFor(Product product) noexcept;
 ///
 /// M0 shell: the engine has no source yet, so the instrument outputs silence and the FX passes
 /// its input through unchanged (dry plus the engine's silent output). Note-ons are counted but
-/// not yet played.
-class GigaGrainsPlugin : public plugHelper_t
+/// not yet played. The editor (gg::ui) is a JUCE component, attached through sst-clap-helpers'
+/// clap_juce_shim the way Shortcircuit XT attaches its own.
+class GigaGrainsPlugin : public plugHelper_t, public sst::clap_juce_shim::EditorProvider
 {
   public:
     GigaGrainsPlugin(const clap_host *host, Product product);
@@ -56,6 +58,22 @@ class GigaGrainsPlugin : public plugHelper_t
 
     /// The engine built by the last activate(); nullptr while the plugin is inactive.
     const gg::Engine *engine() const noexcept { return engine_.get(); }
+
+    // ---- The GUI: clap_juce_shim implements CLAP's gui extension around createEditor() ----
+    // Declared after noteOnCount, so the shim, and any editor it still holds, is destroyed
+    // first: the editor reads noteOnCount.
+
+    bool implementsGui() const noexcept override { return clapJuceShim != nullptr; }
+    std::unique_ptr<sst::clap_juce_shim::ClapJuceShim> clapJuceShim;
+    ADD_SHIM_IMPLEMENTATION(clapJuceShim)
+    ADD_SHIM_LINUX_TIMER(clapJuceShim)
+
+    /// The editor, a gg::ui::Editor. The shim calls this on the main thread, with JUCE set up.
+    std::unique_ptr<juce::Component> createEditor() override;
+    /// For the shim on Linux, which runs JUCE's event loop from host timers and file
+    /// descriptors.
+    bool registerOrUnregisterTimer(clap_id &id, int ms, bool reg) override;
+    bool registerOrUnregisterPosixFd(int fd, clap_posix_fd_flags_t flags, bool reg) override;
 
   protected:
     bool activate(double sampleRate, uint32_t minFrameCount,

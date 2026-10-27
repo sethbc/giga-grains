@@ -3,9 +3,11 @@
 // Copyright 2026, the Giga Grains authors (see git history)
 
 // gg-bench times the prototype grain kernels in Kernels.h. It is the M0 kernel benchmark spike,
-// whose numbers set the CPU target in INTENT §16.
+// whose numbers set the CPU target in INTENT §16. With --canvas it times the canvas renderer
+// instead (the M0 canvas stress spike, see below).
 //
 //   gg-bench [--quick] [--json out.json]
+//   gg-bench --canvas [--quick] [--json out.json]
 //
 // The workload is a 60 s stereo noise source at 48 kHz, read by 2,000 grains of 100 ms. Each
 // grain has a random position and a random rate in [0.5, 2]. Every kernel runs at block sizes
@@ -17,6 +19,16 @@
 // grain update, which advances every grain and respawns those whose window has ended. It also
 // sums the output into a checksum, so the compiler can't drop the work; that costs about one
 // add per output sample, against 2,000 grain-samples.
+//
+// --canvas times gg-ui-core's splat renderer, headless, at 3200 x 1200: a 1600 x 600 canvas on
+// a 2x display. Each frame generates the editor's stress workload (4,096, 8,192 or 16,384
+// grains), then clears the canvas, splats the grains and resolves them to ARGB, as the editor
+// does before drawing the image. After a warm-up it times 240 frames (30 with --quick) and
+// prints, as JSON on stdout, the median of each stage plus the median, mean and 95th percentile
+// of a frame's clear + splat + resolve. Generating the synthetic grains is reported but kept out
+// of that total: the real canvas gets its grains from the engine. INTENT §16 budgets 3 ms of
+// UI-thread time per frame with 8,000 grains; drawing the image costs extra, which only the
+// editor's own "frame ms" readout measures.
 
 #include <algorithm>
 #include <array>
@@ -43,6 +55,8 @@
 #include "Kernels.h"
 #include "gg/core/DenormalGuard.h"
 #include "gg/core/Rng.h"
+#include "gg/ui/SplatRenderer.h"
+#include "gg/ui/StressGrains.h"
 
 namespace
 {
@@ -344,15 +358,155 @@ bool writeJson(const std::string &path, const std::vector<Result> &results)
     return std::fclose(f) == 0;
 }
 
+// ---- --canvas: the canvas stress spike ----
+
+constexpr uint32_t kCanvasWidth = 3200;
+constexpr uint32_t kCanvasHeight = 1200;
+constexpr float kCanvasPixelScale = 2.0f; // a 1600 x 600 canvas on a 2x display
+constexpr std::array<uint32_t, 3> kCanvasGrains{4096, 8192, 16384};
+constexpr int kCanvasWarmupFrames = 20;
+constexpr double kCanvasBudgetMs = 3.0; // INTENT §16, at 8,000 grains
+constexpr uint32_t kCanvasTint = 0xFFC46B;
+
+struct CanvasResult
+{
+    uint32_t grains;
+    double generateMs; // median; not part of the total
+    double clearMs;    // median
+    double splatMs;    // median
+    double resolveMs;  // median
+    double totalMs;    // median of clear + splat + resolve
+    double totalMsMean;
+    double totalMsP95;
+};
+
+/// The p-th quantile (0..1) of v, nearest rank. v must not be empty.
+double quantile(std::vector<double> v, double p)
+{
+    std::sort(v.begin(), v.end());
+    const auto rank = static_cast<std::size_t>(p * static_cast<double>(v.size() - 1) + 0.5);
+    return v[std::min(rank, v.size() - 1)];
+}
+
+CanvasResult measureCanvas(uint32_t grains, int frames, gg::ui::SplatRenderer &canvas,
+                           std::vector<uint32_t> &pixels)
+{
+    using Clock = std::chrono::steady_clock;
+    const auto ms = [](Clock::duration d) {
+        return std::chrono::duration<double, std::milli>(d).count();
+    };
+    std::vector<gg::ui::Splat> splats(grains);
+    std::vector<double> generateMs, clearMs, splatMs, resolveMs, totalMs;
+    uint64_t sink = 0;
+    for (int f = 0; f < kCanvasWarmupFrames + frames; ++f)
+    {
+        const auto t0 = Clock::now();
+        gg::ui::stressGrains(static_cast<uint64_t>(f), grains, kCanvasWidth, kCanvasHeight,
+                             kCanvasPixelScale, splats.data());
+        const auto t1 = Clock::now();
+        canvas.clear();
+        const auto t2 = Clock::now();
+        for (const gg::ui::Splat &s : splats)
+        {
+            canvas.add(s.x, s.y, s.radius, s.intensity);
+        }
+        const auto t3 = Clock::now();
+        canvas.resolveToArgb(pixels.data(), kCanvasWidth, kCanvasTint);
+        const auto t4 = Clock::now();
+        sink += pixels[(static_cast<std::size_t>(f) * 7919u) % pixels.size()];
+        if (f >= kCanvasWarmupFrames)
+        {
+            generateMs.push_back(ms(t1 - t0));
+            clearMs.push_back(ms(t2 - t1));
+            splatMs.push_back(ms(t3 - t2));
+            resolveMs.push_back(ms(t4 - t3));
+            totalMs.push_back(ms(t4 - t1));
+        }
+    }
+    gSink = gSink + static_cast<double>(sink);
+
+    double mean = 0.0;
+    for (const double t : totalMs)
+    {
+        mean += t;
+    }
+    mean /= static_cast<double>(totalMs.size());
+    return {grains,
+            quantile(generateMs, 0.5),
+            quantile(clearMs, 0.5),
+            quantile(splatMs, 0.5),
+            quantile(resolveMs, 0.5),
+            quantile(totalMs, 0.5),
+            mean,
+            quantile(totalMs, 0.95)};
+}
+
+void writeCanvasJson(std::FILE *f, int frames, const std::vector<CanvasResult> &results)
+{
+    std::fprintf(f,
+                 "{\n  \"benchmark\": \"canvas\",\n  \"machine\": %s,\n  \"compiler\": %s,\n"
+                 "  \"width\": %u,\n  \"height\": %u,\n  \"pixelScale\": %.1f,\n"
+                 "  \"frames\": %d,\n  \"budgetMs\": %.1f,\n  \"results\": [\n",
+                 jsonString(machine()).c_str(), jsonString(compiler()).c_str(), kCanvasWidth,
+                 kCanvasHeight, static_cast<double>(kCanvasPixelScale), frames, kCanvasBudgetMs);
+    for (std::size_t i = 0; i < results.size(); ++i)
+    {
+        const CanvasResult &r = results[i];
+        std::fprintf(f,
+                     "    {\"grains\": %u, \"generateMs\": %.3f, \"clearMs\": %.3f, "
+                     "\"splatMs\": %.3f, \"resolveMs\": %.3f, \"totalMs\": %.3f, "
+                     "\"totalMsMean\": %.3f, \"totalMsP95\": %.3f}%s\n",
+                     r.grains, r.generateMs, r.clearMs, r.splatMs, r.resolveMs, r.totalMs,
+                     r.totalMsMean, r.totalMsP95, i + 1 < results.size() ? "," : "");
+    }
+    std::fprintf(f, "  ]\n}\n");
+}
+
+int runCanvas(bool quick, const std::string &jsonPath)
+{
+    const int frames = quick ? 30 : 240;
+    gg::ui::SplatRenderer canvas(kCanvasWidth, kCanvasHeight);
+    std::vector<uint32_t> pixels(static_cast<std::size_t>(kCanvasWidth) * kCanvasHeight);
+
+    std::vector<CanvasResult> results;
+    for (const uint32_t grains : kCanvasGrains)
+    {
+        results.push_back(measureCanvas(grains, frames, canvas, pixels));
+    }
+
+    writeCanvasJson(stdout, frames, results);
+    if (!jsonPath.empty())
+    {
+        std::FILE *f = std::fopen(jsonPath.c_str(), "w");
+        if (f == nullptr)
+        {
+            std::fprintf(stderr, "error: couldn't write %s\n", jsonPath.c_str());
+            return 1;
+        }
+        writeCanvasJson(f, frames, results);
+        if (std::fclose(f) != 0)
+        {
+            std::fprintf(stderr, "error: couldn't write %s\n", jsonPath.c_str());
+            return 1;
+        }
+    }
+    return 0;
+}
+
 void usage(std::FILE *f)
 {
-    std::fprintf(f, "usage: gg-bench [--quick] [--json out.json]\n"
+    std::fprintf(f, "usage: gg-bench [--canvas] [--quick] [--json out.json]\n"
                     "\n"
                     "Times the prototype grain kernels: 2,000 grains of 100 ms over a 60 s stereo\n"
                     "noise source at 48 kHz, at block sizes 32, 64 and 256. Each result is the\n"
                     "median of 5 runs of at least 2 s each.\n"
                     "\n"
-                    "  --quick           runs of 0.2 s instead of 2 s\n"
+                    "With --canvas, times the canvas splat renderer instead: clear, splat and\n"
+                    "resolve at 3200 x 1200 with 4,096, 8,192 and 16,384 grains, over 240 frames,\n"
+                    "and prints the results as JSON.\n"
+                    "\n"
+                    "  --canvas          time the canvas renderer, not the grain kernels\n"
+                    "  --quick           runs of 0.2 s instead of 2 s (30 canvas frames, not 240)\n"
                     "  --json out.json   also write the results to out.json\n");
 }
 } // namespace
@@ -360,6 +514,7 @@ void usage(std::FILE *f)
 int main(int argc, char **argv)
 {
     bool quick = false;
+    bool canvas = false;
     std::string jsonPath;
     for (int i = 1; i < argc; ++i)
     {
@@ -367,6 +522,10 @@ int main(int argc, char **argv)
         if (arg == "--quick")
         {
             quick = true;
+        }
+        else if (arg == "--canvas")
+        {
+            canvas = true;
         }
         else if (arg == "--json" && i + 1 < argc)
         {
@@ -389,9 +548,14 @@ int main(int argc, char **argv)
     std::fprintf(stderr, "warning: this is a Debug build; its timings mean little\n");
 #endif
 #if defined(__APPLE__)
-    // Ask for a performance core: the §16 target is a share of one.
+    // Ask for a performance core: the §16 targets are a share of one.
     pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
 #endif
+
+    if (canvas)
+    {
+        return runCanvas(quick, jsonPath);
+    }
 
     std::printf("gg-bench: %zu grains of 100 ms, 60 s stereo noise at 48 kHz, "
                 "median of %d runs of >= %.1f s\n",

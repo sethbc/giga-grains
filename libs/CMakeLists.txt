@@ -77,4 +77,22 @@ if (GG_BUILD_PLUGINS)
         set(RTAUDIO_API_ASIO ON CACHE BOOL "Enable ASIO for the Windows standalone" FORCE)
     endif ()
     add_subdirectory(clap/clap-wrapper EXCLUDE_FROM_ALL)
+
+    # The editor: JUCE (GUI modules only) attached through sst-clap-helpers' clap_juce_shim, as
+    # Shortcircuit XT does. add_clap_juce_shim adds JUCE's modules (JUCE_MODULES_ONLY) and the
+    # clap_juce_shim library. Neither links gg-compiler-options, so our -Werror never applies
+    # to JUCE.
+    add_subdirectory(sst/sst-clap-helpers)
+    add_clap_juce_shim(JUCE_PATH ${GG_JUCE_PATH})
+
+    # JUCE's modules are INTERFACE libraries that compile their sources into every target that
+    # links them. Only clap_juce_shim links them, so JUCE is compiled once, there. Our editor
+    # code gets the same include directories and definitions through gg-juce-headers, which
+    # carries no sources. SYSTEM keeps JUCE's headers out of our -Werror.
+    add_library(gg-juce-headers INTERFACE)
+    target_include_directories(gg-juce-headers SYSTEM INTERFACE
+            $<TARGET_PROPERTY:clap_juce_shim,INCLUDE_DIRECTORIES>)
+    target_compile_definitions(gg-juce-headers INTERFACE
+            $<TARGET_PROPERTY:clap_juce_shim,COMPILE_DEFINITIONS>)
+    add_library(gg::juce-headers ALIAS gg-juce-headers)
 endif ()

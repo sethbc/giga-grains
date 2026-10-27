@@ -22,13 +22,15 @@ add_executable(gg-tests
         tools/bench_kernel_tests.cpp
         tools/render_spec_tests.cpp
         tools/signals_tests.cpp
+        ui/splat_tests.cpp
         support/AllocTripwire.cpp
         )
 target_include_directories(gg-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-# gg::render comes first: it links the engine and the metrics itself, and listing them before it
-# would make CMake repeat them on the link line, which Apple's linker warns about.
-target_link_libraries(gg-tests PRIVATE gg::render gg::bench-kernels gg::engine gg::audiometrics
-        gg::compiler-options Catch2::Catch2WithMain nlohmann_json::nlohmann_json)
+# gg::render and gg::ui-core come first: they link the engine (and gg::render the metrics)
+# themselves, and listing those before them would make CMake repeat them on the link line, which
+# Apple's linker warns about.
+target_link_libraries(gg-tests PRIVATE gg::render gg::ui-core gg::bench-kernels gg::engine
+        gg::audiometrics gg::compiler-options Catch2::Catch2WithMain nlohmann_json::nlohmann_json)
 # Scratch files (WAV/PNG round trips) go under the build tree, never a shared temp dir.
 target_compile_definitions(gg-tests PRIVATE GG_TEST_OUTPUT_DIR="${CMAKE_CURRENT_BINARY_DIR}/test-output"
         GG_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/golden")
