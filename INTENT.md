@@ -409,12 +409,20 @@ release gates.*
 
 - **Headline target:** **at least 2,000 Normal-quality grains per instance at 48 kHz, using less
   than 25% of one Apple M1 performance core.**
-- **First-principles cost estimates:**
-  - about 1 to 1.5 ns per stereo grain-sample for linear interpolation;
-  - about 2 ns for Hermite;
-  - about 7 to 13 ns for sinc.
-  
-  Gather operations and cache misses could cost 2× to 4× more than this.
+- **Measured kernel cost** (M0 benchmark on the director's M5 Max; details in
+  `docs/spikes/m0-kernel-benchmark.md`). Costs are per stereo grain-sample, for 2,000 grains of
+  100 ms at 48 kHz, at block sizes 32 / 64 / 256:
+  - **Hermite, 4-wide SIMD:** 2.25 / 2.15 / 2.07 ns, which is 21.6% / 20.7% / 19.9% of one core.
+    The headline target is judged on this kernel.
+  - **Linear, 4-wide SIMD:** 1.49 / 1.39 / 1.35 ns (14.3% / 13.3% / 13.0%).
+  - **16-tap windowed sinc, scalar:** 8.75 / 8.68 / 8.61 ns (84.0% / 83.4% / 82.6%).
+
+  These replace the first-principles estimates: 1 to 1.5 ns for linear, about 2 ns for Hermite
+  and 7 to 13 ns for sinc.
+  - The measurements land inside those estimates, or up to 12% above for Hermite.
+  - The 2× to 4× penalty feared from gathers and cache misses did not appear on this machine.
+  - The M5 Max is the ceiling: here 2,000 Hermite grains already use 80% to 86% of the 25%
+    budget. The M1-runner and x86 numbers from CI decide whether the headline holds.
 - **Reference hardware:**
   - The floor is GitHub's M1 CI runners plus a mid-range x86 AVX2 machine.
   - The director's M5 Max is the ceiling, not the target.
@@ -644,6 +652,7 @@ sources.
 | 19 | Grain pool uses stable compaction, not swap-remove | Float summation order must not depend on block boundaries (§8.6). Decided 2026-10-26, during M0; see §14 |
 | 20 | Plugin identities fixed | Vendor `sethbc`; URL `https://github.com/sethbc/giga-grains`; instrument CLAP ID `org.sethbc.giga-grains` ("Giga Grains"); FX CLAP ID `org.sethbc.giga-grains-fx` ("Giga Grains FX"); AU manufacturer `Sbcx` (display name `sethbc`); instrument AU `aumu`/`GGin`/`Sbcx`; FX AU `aufx`/`GGfx`/`Sbcx`, plus the extra identity `aumf`/`GGfx`/`Sbcx` through clap-wrapper's legacy-identity factory. Frozen at the first public release. Decided 2026-10-26, during M0; see §18 |
 | 21 | M0 tooling dependencies: dr_libs, pffft, stb_image_write, nlohmann/json, CLI11 | Audio-file decoding, the metrics FFT, spectrogram PNGs, metrics and render-spec JSON, and the `gg-render` command line, for the golden-render tooling (§19). All AGPLv3-compatible (§12). Decided 2026-10-26, during M0; see §15 |
+| 22 | §16's first-principles kernel cost estimates replaced by measured M5 Max numbers; headline target unchanged | The M0 kernel benchmark (`gg-bench`, 2,000 grains, median of 5 runs) puts the 4-wide SIMD Hermite kernel at 21.6% / 20.7% / 19.9% of one M5 Max core at blocks 32 / 64 / 256. That is under the 25% target, so the stop rule didn't trip. The M5 Max is the ceiling, so the M1-runner and x86 numbers from CI (M0 Task 10) decide whether the target holds. See `docs/spikes/m0-kernel-benchmark.md`. Decided 2026-10-26, during M0; see §16 |
 
 **Key sources** (checked 2026-10-26):
 - clap-wrapper releases (v0.17.0, 2026-10-20): https://github.com/free-audio/clap-wrapper/releases
