@@ -82,7 +82,8 @@ CloudParams toCloudParams(const StreamSpec &s)
 /// CloudScheduler::kMinIntervalSamples (1/16) apart, less the rounding of t + Δ, which is at
 /// most 2^-22 samples while t is below 2^32 (every render gg-render accepts is shorter). So a
 /// call of at most kMaxBlockSize frames starts fewer than frames / (1/16 − 2^-22) + 1 grains,
-/// which is at most 16 × frames + 5.
+/// which is at most 16 × frames + 5. The code reserves 16 × frames + 16: the extra slack over
+/// the derived + 5 is deliberate, so the bound doesn't rest on that rounding analysis alone.
 std::size_t maxGrainsPerCall(uint32_t frames)
 {
     const auto perFrame = static_cast<std::size_t>(1.0 / CloudScheduler::kMinIntervalSamples);

@@ -85,6 +85,10 @@ class CloudScheduler
     /// emits at most about 16 grains per frame. At 48 kHz and the maximum density (P = 12) it
     /// raises about 0.5% of Poisson intervals, by less than 1/16 sample, which moves the mean
     /// by about 2e-4 samples; at d = 0 it never applies, since P is at least 1 sample.
+    ///
+    /// The floor bounds the loop only while t < 2^49 samples (about 93 years at 192 kHz).
+    /// From 2^49 on, the spacing of doubles is 1/8 sample, so t + 1/16 is a tie that can round
+    /// back to t, and a run of floored intervals would make no progress.
     static constexpr double kMinIntervalSamples = 1.0 / 16.0;
 
     CloudScheduler() noexcept { prepare(48000.0); }

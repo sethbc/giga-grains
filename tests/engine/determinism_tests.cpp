@@ -225,10 +225,10 @@ struct DensityRender
     GrainLog log;
 };
 
-// Renders kDensitySegments in process() calls of blockSize frames, each segment's last call cut
-// short at its end, with an engine whose maxBlockSize is maxBlock.
+// Renders kDensitySegments in process() calls of blockSizes in turn (cycling across segments),
+// each segment's last call cut short at its end, with an engine whose maxBlockSize is maxBlock.
 void renderDensityChanges(const std::shared_ptr<const gg::SampleBuffer> &source, uint32_t maxBlock,
-                          uint32_t blockSize, DensityRender &r)
+                          const std::vector<uint32_t> &blockSizes, DensityRender &r)
 {
     gg::Engine engine({kSampleRate, maxBlock, 4096, 42});
     engine.setSource(source);
@@ -237,6 +237,7 @@ void renderDensityChanges(const std::shared_ptr<const gg::SampleBuffer> &source,
     r.audio.left.assign(static_cast<std::size_t>(kDensityFrames), kUnwritten);
     r.audio.right.assign(static_cast<std::size_t>(kDensityFrames), kUnwritten);
     int64_t done = 0;
+    std::size_t next = 0;
     for (const Segment &segment : kDensitySegments)
     {
         gg::CloudParams p = kParams;
@@ -245,7 +246,8 @@ void renderDensityChanges(const std::shared_ptr<const gg::SampleBuffer> &source,
         engine.setCloudParams(p);
         while (done < segment.end)
         {
-            const auto n = static_cast<uint32_t>(std::min<int64_t>(blockSize, segment.end - done));
+            const uint32_t want = blockSizes[next++ % blockSizes.size()];
+            const auto n = static_cast<uint32_t>(std::min<int64_t>(want, segment.end - done));
             float *out[2] = {r.audio.left.data() + done, r.audio.right.data() + done};
             engine.process(out, 2, n);
             done += n;
@@ -262,7 +264,7 @@ TEST_CASE("density and distribution changes are block-size invariant", "[determi
     // §8.6).
     const auto source = sineSource();
     DensityRender ref;
-    renderDensityChanges(source, kMaxBlock, kMaxBlock, ref);
+    renderDensityChanges(source, kMaxBlock, {kMaxBlock}, ref);
     REQUIRE(allFinite(ref.audio.left));
     REQUIRE(allFinite(ref.audio.right));
     REQUIRE(peak(ref.audio.left) > 0.05f);
@@ -327,14 +329,18 @@ TEST_CASE("density and distribution changes are block-size invariant", "[determi
     struct Split
     {
         uint32_t maxBlock;
-        uint32_t blockSize;
+        std::vector<uint32_t> blockSizes;
     };
-    for (const Split split : {Split{kMaxBlock, 1}, Split{kMaxBlock, 7}, Split{kMaxBlock, 64},
-                              Split{kMaxBlock, 511}, Split{64, 4096}})
+    const auto random = randomSplit();
+    REQUIRE(random.size() > 2);
+    for (const Split &split :
+         {Split{kMaxBlock, {1}}, Split{kMaxBlock, {7}}, Split{kMaxBlock, {64}},
+          Split{kMaxBlock, {511}}, Split{64, {4096}}, Split{kMaxBlock, random}})
     {
-        INFO("maxBlockSize = " << split.maxBlock << ", block size = " << split.blockSize);
+        INFO("maxBlockSize = " << split.maxBlock << ", first block size = "
+                               << split.blockSizes.front() << " of " << split.blockSizes.size());
         DensityRender r;
-        renderDensityChanges(source, split.maxBlock, split.blockSize, r);
+        renderDensityChanges(source, split.maxBlock, split.blockSizes, r);
         REQUIRE_FALSE(r.log.overflowed);
         REQUIRE(r.log.grains == ref.log.grains);
         REQUIRE(sameBits(ref.audio.left, r.audio.left));
