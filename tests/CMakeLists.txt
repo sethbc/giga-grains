@@ -7,7 +7,9 @@
 
 add_executable(gg-tests
         smoke_tests.cpp
+        core/parammap_tests.cpp
         core/patch_tests.cpp
+        core/processor_tests.cpp
         engine/cloud_tests.cpp
         engine/denormal_tests.cpp
         engine/determinism_tests.cpp
