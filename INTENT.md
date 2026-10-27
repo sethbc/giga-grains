@@ -495,10 +495,15 @@ program lists and AU factory presets.
 
 **Identities**
 
-| Product | CLAP / VST3 | AU |
+| Product | CLAP / VST3 | AU (type/subtype/manufacturer) |
 |---|---|---|
-| Giga Grains | Instrument | `aumu` |
-| Giga Grains FX | Audio effect with optional note input | **Both** `aufx` (normal audio inserts) and `aumf` (MIDI). Logic offers an `aumf` only in instrument slots, with audio arriving via side-chain. |
+| Giga Grains | Instrument; CLAP ID `org.sethbc.giga-grains` | `aumu`/`GGin`/`Sbcx` |
+| Giga Grains FX | Audio effect with optional note input; CLAP ID `org.sethbc.giga-grains-fx` | **Both** `aufx`/`GGfx`/`Sbcx` (normal audio inserts) and `aumf`/`GGfx`/`Sbcx` (MIDI). Logic offers an `aumf` only in instrument slots, with audio arriving via side-chain. |
+
+Both plugins share the vendor `sethbc`, the URL `https://github.com/sethbc/giga-grains` and the
+AU manufacturer code `Sbcx` (display name `sethbc`). The FX's `aumf` entry is an extra identity
+registered through clap-wrapper's legacy-identity factory. The values live in
+`plugin/include/gg/plugin/Identity.h`.
 
 **CLAP features for v1:**
 - `params` with per-note modulation flags
@@ -597,7 +602,7 @@ Why this order after v1.0:
 
 | Question | Resolved in |
 |---|---|
-| Plugin identities: CLAP IDs (proposed `org.sethbc.giga-grains`, `org.sethbc.giga-grains-fx`), AU manufacturer code (at least one uppercase letter) and subtypes. Frozen at first release. | M0 |
+| ~~Plugin identities: CLAP IDs (proposed `org.sethbc.giga-grains`, `org.sethbc.giga-grains-fx`), AU manufacturer code (at least one uppercase letter) and subtypes. Frozen at first release.~~ | **Resolved** in M0 (2026-10-26): see §18 and §23 #20 |
 | JUCE 9.0.4 vs 8.0.16-security for the GUI shim | M0 spike |
 | How Ableton Live routes MIDI into VST3/AU effects (sets how prominent MIDI-driven FX features are) | M0 spike |
 | Whether the CPU canvas holds its frame budget, or a GPU backend is needed | M0 spike / M2 |
@@ -636,6 +641,7 @@ sources.
 | 17 | License: AGPL-3.0-or-later for everything | Matches what the binaries are anyway (JUCE AGPL plus GPL-3 sst); one simple story |
 | 18 | Research corrections adopted | Gap restated as depth + scale (§1); scale stated per layer and per instance (§5); live-buffer differentiator (§5); AAX moved to "possible later"; the FX registers both `aufx` and `aumf`; clap-wrapper ≥ 0.17 floor; start on JUCE 8.0.16-security; RTSan needs upstream LLVM; SignPath is uncertain |
 | 19 | Grain pool uses stable compaction, not swap-remove | Float summation order must not depend on block boundaries (§8.6). Decided 2026-10-26, during M0; see §14 |
+| 20 | Plugin identities fixed | Vendor `sethbc`; URL `https://github.com/sethbc/giga-grains`; instrument CLAP ID `org.sethbc.giga-grains` ("Giga Grains"); FX CLAP ID `org.sethbc.giga-grains-fx` ("Giga Grains FX"); AU manufacturer `Sbcx` (display name `sethbc`); instrument AU `aumu`/`GGin`/`Sbcx`; FX AU `aufx`/`GGfx`/`Sbcx`, plus the extra identity `aumf`/`GGfx`/`Sbcx` through clap-wrapper's legacy-identity factory. Frozen at the first public release. Decided 2026-10-26, during M0; see §18 |
 
 **Key sources** (checked 2026-10-26):
 - clap-wrapper releases (v0.17.0, 2026-10-20): https://github.com/free-audio/clap-wrapper/releases

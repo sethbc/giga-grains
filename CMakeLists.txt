@@ -2,8 +2,9 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright 2026, the Giga Grains authors (see git history)
 #
-# One shared, framework-free grain engine (engine/) plus its tests; the plugin shells,
-# UI and tools are added by later milestones. See INTENT.md.
+# One shared, framework-free grain engine (engine/), the CLAP-first plugin shells for both
+# products (plugin/, clients/clap-first/) and the tests; the UI and tools are added by later
+# milestones. See INTENT.md.
 
 cmake_minimum_required(VERSION 3.22)
 
@@ -32,8 +33,16 @@ enable_testing()
 add_subdirectory(engine)
 add_subdirectory(tools/audiometrics)
 add_subdirectory(tools/gg-bench)
+if (GG_BUILD_PLUGINS)
+    add_subdirectory(plugin)
+    add_subdirectory(clients/clap-first)
+    include(cmake/products.cmake)
+endif ()
 add_subdirectory(tests)
 
 # Everything this tree builds; CI builds this target.
 add_custom_target(gg-all)
 add_dependencies(gg-all gg-engine gg-audiometrics gg-bench gg-tests)
+if (GG_BUILD_PLUGINS)
+    add_dependencies(gg-all gg_clapfirst_all)
+endif ()

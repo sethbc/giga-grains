@@ -54,3 +54,22 @@ add_library(gg::stb ALIAS stb)
 add_library(nlohmann_json INTERFACE)
 target_include_directories(nlohmann_json SYSTEM INTERFACE nlohmann_json/include)
 add_library(nlohmann_json::nlohmann_json ALIAS nlohmann_json)
+
+# The plugin shells: CLAP, the C++ helpers, and clap-wrapper for VST3, AUv2 and standalone.
+# clap-wrapper downloads the VST3 SDK, Apple's AudioUnitSDK and RtAudio/RtMidi at configure
+# time (CPM); engine-only builds (GG_BUILD_PLUGINS=OFF) fetch none of it.
+if (GG_BUILD_PLUGINS)
+    add_subdirectory(clap/clap EXCLUDE_FROM_ALL)
+    add_subdirectory(clap/clap-helpers EXCLUDE_FROM_ALL)
+
+    set(CLAP_WRAPPER_DOWNLOAD_DEPENDENCIES TRUE CACHE BOOL "Download the VST3, AU and RtAudio SDKs")
+    set(CLAP_WRAPPER_DONT_ADD_TARGETS TRUE CACHE BOOL "We make our own targets")
+    set(CLAP_WRAPPER_BUILD_AUV2 TRUE CACHE BOOL "Build the AUv2 wrapper")
+    if (APPLE)
+        set(RTAUDIO_API_JACK FALSE CACHE BOOL "No JACK on Apple")
+    endif ()
+    if (WIN32)
+        set(RTAUDIO_API_ASIO ON CACHE BOOL "Enable ASIO for the Windows standalone" FORCE)
+    endif ()
+    add_subdirectory(clap/clap-wrapper EXCLUDE_FROM_ALL)
+endif ()

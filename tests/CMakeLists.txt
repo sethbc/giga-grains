@@ -30,6 +30,17 @@ target_compile_definitions(gg-tests PRIVATE GG_TEST_OUTPUT_DIR="${CMAKE_CURRENT_
 # 0 or 1, so tests can use #if GG_USE_RTSAN for checks that only hold in the RTSan build.
 target_compile_definitions(gg-tests PRIVATE GG_USE_RTSAN=$<BOOL:${GG_USE_RTSAN}>)
 
+# The plugin tests drive gg-plugin-impl through its factory, not the built .clap. They also
+# reach the library's private headers (plugin/src) to inspect a plugin instance.
+if (GG_BUILD_PLUGINS)
+    target_sources(gg-tests PRIVATE
+            plugin/factory_tests.cpp
+            plugin/process_tests.cpp
+            )
+    target_include_directories(gg-tests PRIVATE ${CMAKE_SOURCE_DIR}/plugin/src)
+    target_link_libraries(gg-tests PRIVATE gg::plugin-impl)
+endif ()
+
 list(APPEND CMAKE_MODULE_PATH ${CMAKE_SOURCE_DIR}/libs/catch2/extras)
 include(Catch)
 catch_discover_tests(gg-tests ADD_TAGS_AS_LABELS)
