@@ -66,3 +66,21 @@ TEST_CASE("bipolar range and mean", "[rng]")
     REQUIRE(allInRange);
     REQUIRE(std::abs(sum / kDraws) < 0.01);
 }
+
+TEST_CASE("Field values are pinned", "[rng]")
+{
+    // Field values are part of the determinism contract: append only, never renumber.
+    using gg::rng::Field;
+    STATIC_REQUIRE(static_cast<uint32_t>(Field::PositionJitter) == 1);
+    STATIC_REQUIRE(static_cast<uint32_t>(Field::Onset) == 2);
+    STATIC_REQUIRE(static_cast<uint32_t>(Field::Pan) == 3);
+    STATIC_REQUIRE(static_cast<uint32_t>(Field::SignalNoise) == 100);
+
+    using gg::rng::hash;
+    const auto jitter = hash({1, 0, 0, Field::PositionJitter, 7});
+    const auto onset = hash({1, 0, 0, Field::Onset, 7});
+    const auto pan = hash({1, 0, 0, Field::Pan, 7});
+    REQUIRE(onset != jitter);
+    REQUIRE(pan != jitter);
+    REQUIRE(pan != onset);
+}
