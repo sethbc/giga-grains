@@ -12,6 +12,7 @@
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 #include "gg/core/MathDet.h"
+#include "gg/core/Rng.h"
 
 using Catch::Matchers::WithinRel;
 
@@ -47,11 +48,14 @@ TEST_CASE("exp2Det saturates on non-finite and huge input", "[math]")
 
 namespace
 {
-/// Tracks the worst |logDet(x) - log(x)| over the bound 1e-14 * max(1, |log x|), and where it
-/// happened. std::log is only the reference here; the engine never calls it. A NaN result counts
-/// as the worst, so it fails the check.
+/// Checks |logDet(x) - log(x)| <= 1e-14 * max(1, |log x|) at each x. std::log is only the
+/// reference here; the engine never calls it. Every x that misses the bound counts as a
+/// violation, and so does a NaN result, since !(NaN <= 1) holds. The worst finite ratio is kept
+/// only to report.
 struct LogDetErrorTracker
 {
+    int violations = 0;
+    double firstViolationX = 0.0;
     double worstRatio = 0.0;
     double worstX = 0.0;
 
@@ -60,7 +64,15 @@ struct LogDetErrorTracker
         const double ref = std::log(x);
         const double bound = 1e-14 * std::max(1.0, std::abs(ref));
         const double ratio = std::abs(gg::logDet(x) - ref) / bound;
-        if (!(ratio <= worstRatio))
+        if (!(ratio <= 1.0))
+        {
+            if (violations == 0)
+            {
+                firstViolationX = x;
+            }
+            ++violations;
+        }
+        if (ratio > worstRatio)
         {
             worstRatio = ratio;
             worstX = x;
@@ -83,8 +95,9 @@ TEST_CASE("logDet matches log", "[math]")
     t.check(0.5);
     t.check(0x1.0p-53);
     t.check(std::nextafter(1.0, 0.0));
-    INFO("worst x = " << t.worstX << ", error / bound = " << t.worstRatio);
-    REQUIRE(t.worstRatio <= 1.0);
+    INFO("first violation at x = " << t.firstViolationX << "; worst finite x = " << t.worstX
+                                   << ", error / bound = " << t.worstRatio);
+    REQUIRE(t.violations == 0);
     REQUIRE(gg::logDet(1.0) == 0.0);
 }
 
@@ -101,8 +114,9 @@ TEST_CASE("logDet matches log across the normal range", "[math]")
     t.check(std::nextafter(1.0, 2.0));
     t.check(2.0);
     t.check(10.0);
-    INFO("worst x = " << t.worstX << ", error / bound = " << t.worstRatio);
-    REQUIRE(t.worstRatio <= 1.0);
+    INFO("first violation at x = " << t.firstViolationX << "; worst finite x = " << t.worstX
+                                   << ", error / bound = " << t.worstRatio);
+    REQUIRE(t.violations == 0);
 }
 
 TEST_CASE("logDet handles zero, negative and non-finite input", "[math]")
@@ -134,4 +148,29 @@ TEST_CASE("logDet is pinned to exact bits", "[math]")
     // the change breaks the determinism contract: update the literal only together with the
     // golden renders.
     REQUIRE(std::bit_cast<uint64_t>(gg::logDet(0.3)) == 0xbff34378fcbda721ull);
+}
+
+TEST_CASE("logDet bits are pinned over the scheduler's inputs", "[math]")
+{
+    // A regression and cross-platform guard: the literal was captured once from logDet's own
+    // output when it was written, not from an independent reference. The inputs are exactly what
+    // the Cloud scheduler feeds logDet, 1 - uniform01(hash(..., Field::Onset, k)), made without
+    // libm. One pinned point can miss a change that moves only a few outputs' last bits (FMA
+    // contraction does that to 45 of these 65536, and not to 0.3), so all 65536 results go into
+    // one FNV-1a 64-bit hash, bytes least significant first. If it fails on some platform or
+    // after a change, the grain-event logs differ too: update the literal only together with
+    // the golden renders.
+    using namespace gg::rng;
+    uint64_t fnv = 0xcbf29ce484222325ull; // FNV-1a 64-bit offset basis
+    for (uint64_t k = 0; k < 65536; ++k)
+    {
+        const double x = 1.0 - uniform01(hash({0x5eed, 0, 0, Field::Onset, k}));
+        const uint64_t bits = std::bit_cast<uint64_t>(gg::logDet(x));
+        for (int byte = 0; byte < 8; ++byte)
+        {
+            fnv ^= (bits >> (8 * byte)) & 0xffu;
+            fnv *= 0x100000001b3ull; // FNV-1a 64-bit prime
+        }
+    }
+    REQUIRE(fnv == 0xceb01b787314c9bcull);
 }
