@@ -258,7 +258,7 @@ These are the five failure modes most likely to bite users that the spec implies
   - `pitchSemitones` is clamped to [-48,48];
   - `gain` is clamped to [0,4];
   - duration is clamped to ≥ 16 samples (the minimum window length).
-- **Onset lattice.** With `P = sampleRate / grainRateHz`, grain `k` has onset `t_k = k·P`, giving `onsetSample = floor(t_k)` and `onsetFrac = t_k - onsetSample`. A grain is emitted when `onsetSample ∈ [blockStart, blockStart+numFrames)`. `k` is counted from `reset()`, so the schedule is independent of block size.
+- **Onset lattice.** Grain `k` has onset `t_k = (k·sampleRate)/grainRateHz`. Multiply first, then divide: that rounds once and matches the test literal `floor(k*48000/7.0)`. This gives `onsetSample = floor(t_k)` and `onsetFrac = t_k - onsetSample`. A grain is emitted when `onsetSample ∈ [blockStart, blockStart+numFrames)`. `k` is counted from `reset()`, so the schedule is independent of block size. *(Ruling T3-f.)* When `grainRateHz` changes, the lattice re-anchors at the last spawned onset *(Ruling T3-a)*. The rate is also capped at `sampleRate`, so there is at most one grain per output sample.
 - **Grain parameters.**
   - `startPos = clamp(position + positionJitter·bipolar(hash({seed,0,0,PositionJitter,k})), 0, 1)·(sourceFrames-1)`.
   - `rate = exp2Det(pitchSemitones/12)·sourceRate/sampleRate`.
