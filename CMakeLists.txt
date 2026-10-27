@@ -31,8 +31,9 @@ enable_testing()
 
 add_subdirectory(engine)
 add_subdirectory(tools/audiometrics)
+add_subdirectory(tools/gg-bench)
 add_subdirectory(tests)
 
 # Everything this tree builds; CI builds this target.
 add_custom_target(gg-all)
-add_dependencies(gg-all gg-engine gg-audiometrics gg-tests)
+add_dependencies(gg-all gg-engine gg-audiometrics gg-bench gg-tests)
