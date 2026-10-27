@@ -7,6 +7,7 @@
 
 add_executable(gg-tests
         smoke_tests.cpp
+        core/patch_tests.cpp
         engine/cloud_tests.cpp
         engine/denormal_tests.cpp
         engine/determinism_tests.cpp
@@ -31,9 +32,10 @@ target_include_directories(gg-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 # duplicate libraries"). So the plugin layers, when they're built, come first: they link the
 # engine and, with the editor, gg::ui-core. The editor layer is an object library, whose own
 # libraries CMake would put after everything listed here, so they're listed too: the plugin
-# core and gg::ui. Then gg::render and gg::ui-core, which link the engine (and gg::render the
-# metrics).
-set(gg_tests_libraries gg::render gg::ui-core gg::bench-kernels gg::engine gg::audiometrics)
+# core and gg::ui. Then gg::render, gg::ui-core and gg::core, which link the engine (and
+# gg::render the metrics).
+set(gg_tests_libraries gg::render gg::ui-core gg::bench-kernels gg::core gg::engine
+        gg::audiometrics)
 if (GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
     list(PREPEND gg_tests_libraries gg::plugin-impl gg-plugin-core gg::ui)
 elseif (GG_BUILD_PLUGINS)

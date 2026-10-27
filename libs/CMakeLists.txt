@@ -60,17 +60,52 @@ add_library(CLI11 INTERFACE)
 target_include_directories(CLI11 SYSTEM INTERFACE CLI11/include)
 add_library(CLI11::CLI11 ALIAS CLI11)
 
+# CLAP itself: header-only. Added in every preset, plugins or not, because gg-core's patch
+# (sst-plugininfra's patchbase, below) needs the clap target (ruling M1-c).
+add_subdirectory(clap/clap EXCLUDE_FROM_ALL)
+
+# sst-plugininfra (MIT): gg-core's patch, its PatchBase and the tinyxml (zlib) it bundles. Only
+# the patchbase interface target and tinyxml (with the filesystem shim tinyxml links) are used.
+# - Never compile anything from its libs/asiosdk: ASIO stays off (ruling F4, INTENT §22 and
+#   §23 #30). This copy is ASIO SDK 2.3.4, whose LICENSE.txt offers Steinberg's ASIO License or
+#   GPLv3; bringing ASIO back is a separate decision. No sst-plugininfra target uses it: asiosdk
+#   has no CMake of its own and nothing adds it.
+# - miniz is off: we don't use it.
+# - strnatcmp (zlib) is on but never built. We don't use it, but at this pin the library's own
+#   sst-plugininfra target links sst-plugininfra::strnatcmp unconditionally, so turning it off
+#   fails the configure.
+# - The library's other targets (sst-plugininfra itself, version_information) are
+#   EXCLUDE_FROM_ALL, and so is the whole directory, so only what gg-core links is built: tinyxml.
+# FORCE, so a cache from another configuration can't turn any of these back.
+set(SST_PLUGININFRA_PROVIDE_PATCHBASE ON CACHE BOOL "gg-core's patch is a PatchBase" FORCE)
+set(SST_PLUGININFRA_PROVIDE_TINYXML ON CACHE BOOL "PatchBase's state is tinyxml" FORCE)
+set(SST_PLUGININFRA_PROVIDE_MINIZ OFF CACHE BOOL "Giga Grains doesn't use miniz" FORCE)
+set(SST_PLUGININFRA_PROVIDE_STRNATCMP ON CACHE BOOL "Declared, never built: sst-plugininfra's own target links it" FORCE)
+set(SST_PLUGININFRA_BUILD_TESTS OFF CACHE BOOL "Don't build sst-plugininfra's tests" FORCE)
+add_subdirectory(sst/sst-plugininfra EXCLUDE_FROM_ALL)
+# sst-plugininfra's filesystem shim, which tinyxml links PUBLIC, puts -fno-char8_t (MSVC:
+# /Zc:char8_t-) on everything that links it, and so, through gg-core, on our code and tests:
+# C++20 without char8_t, which nlohmann_json doesn't compile under. Only tinyxml's own sources
+# need it (TiXmlDocument::LoadFile assigns a path's u8string() to a std::string; its header
+# declares nothing that depends on it), so the flags move from the shim's interface to tinyxml's
+# private options.
+get_target_property(gg_plugininfra_fs sst-plugininfra::filesystem ALIASED_TARGET)
+get_target_property(gg_plugininfra_fs_options ${gg_plugininfra_fs} INTERFACE_COMPILE_OPTIONS)
+if (gg_plugininfra_fs_options)
+    set(gg_plugininfra_char8_options ${gg_plugininfra_fs_options})
+    list(FILTER gg_plugininfra_char8_options INCLUDE REGEX "char8_t")
+    list(FILTER gg_plugininfra_fs_options EXCLUDE REGEX "char8_t")
+    set_property(TARGET ${gg_plugininfra_fs} PROPERTY INTERFACE_COMPILE_OPTIONS
+            ${gg_plugininfra_fs_options})
+    target_compile_options(tinyxml PRIVATE ${gg_plugininfra_char8_options})
+endif ()
+
 # The plugins come in two layers (plugin/CMakeLists.txt):
 # - the plugin core, which needs only header-only CLAP libraries from these submodules, so
 #   building it downloads nothing (GG_BUILD_PLUGINS);
 # - the editor and the formats: JUCE through sst-clap-helpers' clap_juce_shim, and clap-wrapper
 #   for VST3, AUv2 and standalone (GG_BUILD_PLUGINS and GG_BUILD_EDITOR). clap-wrapper downloads
 #   the VST3 SDK, Apple's AudioUnitSDK and RtAudio/RtMidi at configure time (CPM).
-
-# CLAP itself: header-only.
-if (GG_BUILD_PLUGINS)
-    add_subdirectory(clap/clap EXCLUDE_FROM_ALL)
-endif ()
 
 # What the plugin core builds on: clap-helpers (header-only) and clap-wrapper's extension
 # headers (clapwrapper/auv2.h: the AUv2 identity factories). The headers are taken directly, not
