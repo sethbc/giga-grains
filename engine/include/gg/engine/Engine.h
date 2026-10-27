@@ -45,10 +45,13 @@ using GrainEventSink = void (*)(void *ctx, const GrainSpec &);
 /// - grains are summed in spawn order;
 /// - a grain is admitted when fewer than grainCapacity grains are still sounding at its onset,
 ///   and otherwise dropped. That depends only on the schedule, not on block boundaries;
-/// - live mode writes each block's input into the ring before any grain reads it, and a grain
-///   reads only frames written before the output sample being rendered (at least M = 256 frames
-///   before it, unless a freeze has stopped the head and the fade is taking the grain out), so
-///   what it reads doesn't depend on where the block ends.
+/// - live mode writes each block's input into the ring before any grain reads it. At output
+///   sample t a grain reads only the window [R(t) − N, R(t) − 1]: frames written at or before
+///   t, and at least M = 256 frames before it unless a freeze has stopped the head and the fade
+///   is taking the grain out. The ring stores N + maxBlockSize frames (ruling M1-o), so the
+///   frames the block writes after t never overwrite t's window, however far the ring has
+///   wrapped. What a sample reads therefore depends neither on where the block ends nor on
+///   maxBlockSize.
 ///
 /// **Live mode** (spec §6.3). Ring time: R(t) is the number of frames written through output
 /// sample t (LiveSource). Each grain's GrainSpec::startPos is a ring-time position, and its rate

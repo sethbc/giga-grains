@@ -42,7 +42,8 @@ constexpr uint32_t kStream = 0;
 Engine::Engine(const EngineConfig &config) : config_(validated(config)), pool_(config.grainCapacity)
 {
     cloud_.prepare(config_.sampleRate);
-    live_.prepare(config_.sampleRate, config_.liveSeconds);
+    // process() writes into the ring in blocks of at most maxBlockSize frames (ruling M1-o).
+    live_.prepare(config_.sampleRate, config_.liveSeconds, config_.maxBlockSize);
 }
 
 void Engine::setSource(std::shared_ptr<const SampleBuffer> source)
@@ -148,9 +149,10 @@ void Engine::processBlock(const float *const *in, uint32_t numInChannels, float 
 
     const int64_t blockStart = clock_;
     const int64_t blockEnd = blockStart + static_cast<int64_t>(numFrames);
-    // The whole block's input goes into the ring before any grain reads (spec §6.3). Grains
-    // read only frames at least M behind the head at the sample being rendered, so nothing
-    // written here after that sample can reach it.
+    // The whole block's input goes into the ring before any grain reads (spec §6.3). At sample t
+    // grains read only the window [R(t) − N, R(t) − 1], and the ring keeps numFrames <=
+    // maxBlockSize slots beyond the window (ruling M1-o), so nothing written here after t
+    // reaches t, not even by overwriting the window's oldest frames.
     if (live_.enabled())
     {
         live_.write(in, numInChannels, offset, blockStart, numFrames);

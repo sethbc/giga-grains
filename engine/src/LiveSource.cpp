@@ -36,14 +36,15 @@ int64_t LiveSource::freezeRampSamples(double sampleRate) noexcept
     return std::max<int64_t>(1, std::llround(samples));
 }
 
-void LiveSource::prepare(double sampleRate, double seconds)
+void LiveSource::prepare(double sampleRate, double seconds, uint32_t maxBlockSize)
 {
     if (!(std::isfinite(seconds) && seconds >= 0.0))
     {
         throw std::invalid_argument("LiveSource: seconds must be finite and >= 0");
     }
     const double frames = std::ceil(seconds * sampleRate);
-    if (!(frames <= kMaxRingFrames))
+    const auto block = static_cast<double>(std::max<uint32_t>(1, maxBlockSize));
+    if (!(frames + block <= kMaxRingFrames))
     {
         throw std::invalid_argument("LiveSource: the ring would exceed 2^40 frames");
     }
@@ -51,13 +52,17 @@ void LiveSource::prepare(double sampleRate, double seconds)
     rampLength_ = freezeRampSamples(sampleRate);
     if (frames_ > 0)
     {
-        const auto stride = static_cast<std::size_t>(frames_ + kGuardFrames);
+        // Ruling M1-o: a whole block's worth of slots past the window, so the frames a block
+        // writes after sample t never land in t's window (see Storage in LiveSource.h).
+        capacity_ = frames_ + static_cast<int64_t>(block);
+        const auto stride = static_cast<std::size_t>(capacity_ + kGuardFrames);
         storage_.assign(2 * stride, 0.0f);
         channels_[0] = storage_.data();
         channels_[1] = storage_.data() + stride;
     }
     else
     {
+        capacity_ = 0;
         storage_.clear();
         channels_[0] = channels_[1] = nullptr;
     }
@@ -130,10 +135,10 @@ void LiveSource::write(const float *const *in, uint32_t numInChannels, uint32_t 
         right[writeSlot_] = r;
         if (writeSlot_ < kGuardFrames)
         {
-            left[frames_ + writeSlot_] = l;
-            right[frames_ + writeSlot_] = r;
+            left[capacity_ + writeSlot_] = l;
+            right[capacity_ + writeSlot_] = r;
         }
-        if (++writeSlot_ == frames_)
+        if (++writeSlot_ == capacity_)
         {
             writeSlot_ = 0;
         }
@@ -155,7 +160,9 @@ bool LiveSource::read(double pos, int64_t head, Cursor &cursor, float &left,
     const double base = std::floor(pos);
     const auto i = static_cast<int64_t>(base);
     const int64_t first = i - 1;
-    // Exact integer bounds, so no rounding in fade() can let a stale or unwritten tap through.
+    // Exact integer bounds on the window, so no rounding in fade() can let a stale or unwritten
+    // tap through. Inside it every slot holds its own frame, even with the rest of the block
+    // already written (ruling M1-o; see Storage in LiveSource.h).
     if (first < head - frames_ || i + 2 > head - 1)
     {
         return false;
@@ -163,8 +170,9 @@ bool LiveSource::read(double pos, int64_t head, Cursor &cursor, float &left,
     const auto t = static_cast<float>(pos - base);
     if (first < 0)
     {
-        // Taps before frame 0 are silence. Here head − N <= first < 0, so head < N and every
-        // tap from frame 0 up is still in its own slot.
+        // Taps before frame 0 are silence. Here head − N <= first < 0, so head < N. The block has
+        // written at most maxBlockSize − 1 frames past head − 1, so no frame yet written is at or
+        // past C = N + maxBlockSize: none has wrapped, and frame i is in slot i.
         float l[4];
         float r[4];
         for (int64_t k = 0; k < 4; ++k)
@@ -178,17 +186,17 @@ bool LiveSource::read(double pos, int64_t head, Cursor &cursor, float &left,
         cursor.valid = false;
         return true;
     }
-    if (cursor.valid && first >= cursor.index && first - cursor.index < frames_)
+    if (cursor.valid && first >= cursor.index && first - cursor.index < capacity_)
     {
         cursor.slot += first - cursor.index;
-        if (cursor.slot >= frames_)
+        if (cursor.slot >= capacity_)
         {
-            cursor.slot -= frames_;
+            cursor.slot -= capacity_;
         }
     }
     else
     {
-        cursor.slot = first % frames_;
+        cursor.slot = first % capacity_;
     }
     cursor.index = first;
     cursor.valid = true;

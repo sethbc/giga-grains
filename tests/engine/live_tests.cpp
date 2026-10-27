@@ -22,6 +22,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include "gg/core/Interpolate.h"
 #include "gg/core/Rng.h"
 #include "gg/engine/Engine.h"
 
@@ -260,10 +261,11 @@ TEST_CASE("the live constants are the spec's", "[live]")
 
 TEST_CASE("the ring stores each frame with the freeze write gain", "[live]")
 {
-    // LiveSource directly, at 1 kHz: N = 1000 frames, L = 20. A read at a whole-number position
-    // returns that frame exactly (Catmull-Rom passes through its second tap at t = 0).
+    // LiveSource directly, at 1 kHz: N = 1000 frames, L = 20, blocks of at most 64 frames. A read
+    // at a whole-number position returns that frame exactly (Catmull-Rom passes through its
+    // second tap at t = 0).
     gg::LiveSource ring;
-    ring.prepare(1000.0, 1.0);
+    ring.prepare(1000.0, 1.0, 64);
     REQUIRE(ring.frames() == 1000);
     const int64_t ramp = gg::LiveSource::freezeRampSamples(1000.0);
     REQUIRE(ramp == 20);
@@ -343,7 +345,7 @@ TEST_CASE("the ring stores each frame with the freeze write gain", "[live]")
     SECTION("non-finite input is stored as 0 and huge input is clamped")
     {
         gg::LiveSource fresh;
-        fresh.prepare(1000.0, 1.0);
+        fresh.prepare(1000.0, 1.0, 64);
         const float nan = std::numeric_limits<float>::quiet_NaN();
         const float inf = std::numeric_limits<float>::infinity();
         std::vector<float> l{nan,    inf,   -inf, std::numeric_limits<float>::max(),
@@ -363,6 +365,55 @@ TEST_CASE("the ring stores each frame with the freeze write gain", "[live]")
             REQUIRE(left == wantL[frame]);
             REQUIRE(right == wantR[frame]);
         }
+    }
+
+    SECTION("a block's later frames never overwrite the window of its earlier samples")
+    {
+        // Ruling M1-o. 3000 frames in 64-frame blocks wrap the ring three times. After each
+        // block is written, every sample t of it reads its whole window, including the oldest
+        // frame, R(t) − N, which the rest of the block must not have overwritten. Frame f holds
+        // f mod 997 + 1, so a frame from a later wrap (f + 1064, or f + 1000 with N slots only)
+        // holds a different value.
+        constexpr int64_t kBlock = 64;
+        gg::LiveSource wrapped;
+        wrapped.prepare(1000.0, 1.0, static_cast<uint32_t>(kBlock));
+        const auto value = [](int64_t f) { return static_cast<float>(f % 997 + 1); };
+        std::vector<float> input(static_cast<std::size_t>(kBlock));
+        bool intact = true;
+        int64_t checked = 0;
+        for (int64_t blockStart = 0; blockStart < 3000; blockStart += kBlock)
+        {
+            for (int64_t j = 0; j < kBlock; ++j)
+            {
+                input[static_cast<std::size_t>(j)] = value(blockStart + j);
+            }
+            const float *mono[1] = {input.data()};
+            wrapped.write(mono, 1, 0, blockStart, static_cast<uint32_t>(kBlock));
+            for (int64_t t = blockStart; t < blockStart + kBlock; ++t)
+            {
+                const int64_t head = wrapped.headAt(t);
+                const int64_t oldest = head - 1000;
+                if (oldest < 0)
+                {
+                    continue;
+                }
+                gg::LiveSource::Cursor c;
+                float left = 0.0f;
+                float right = 0.0f;
+                // Taps oldest .. oldest + 3, then head − 4 .. head − 1.
+                for (const int64_t first : {oldest, head - 4})
+                {
+                    const float want = gg::interp::catmullRom(
+                        value(first), value(first + 1), value(first + 2), value(first + 3), 0.5f);
+                    intact = intact &&
+                             wrapped.read(static_cast<double>(first) + 1.5, head, c, left, right) &&
+                             left == want && right == want;
+                }
+                ++checked;
+            }
+        }
+        REQUIRE(checked > 1900);
+        REQUIRE(intact);
     }
 }
 
@@ -593,6 +644,155 @@ TEST_CASE("live grains never read overwritten data", "[live]")
             REQUIRE(peak(outA.left, clean) > 0.01f);
             REQUIRE(sameBits(outA.left, outB.left, clean));
             REQUIRE(sameBits(outA.right, outB.right, clean));
+        }
+    }
+}
+
+namespace
+{
+// After the ring wraps (ruling M1-o). A 1 s ring at 48 kHz (N = 48000) wraps every second.
+// Position 1 s, the most the ring allows, with Spray asking for more, keeps grains clamped to
+// lo, M frames inside the oldest frame, and Pitch −12 has them read slower than the head moves.
+// Freeze on at 2 s and off at 2.5 s (both on the 32-sample grid) wraps the ring again after the
+// head resumes. A block writes up to maxBlockSize frames past the sample being rendered, so with
+// only N slots those frames would already have overwritten the oldest ones the grain reads.
+constexpr double kWrapRingSeconds = 1.0;
+constexpr int64_t kWrapFrames = 7 * 24000; // 3.5 s: the ring wraps three times
+const std::vector<FreezeAt> kWrapFreeze{{96000, true}, {120000, false}};
+
+gg::CloudParams wrapParams(double pitch)
+{
+    return {.densityHz = 30.0,
+            .distribution = 0.5,
+            .grainDurationSec = 0.15,
+            .position = kWrapRingSeconds,
+            .spray = 0.05,
+            .pitchSemitones = pitch,
+            .stereo = 0.5,
+            .gain = 0.5f};
+}
+
+// Runs the input in process() calls of blockSizes in turn (cycling), each cut short at the next
+// freeze change, which is made between calls at its sample.
+Stereo runSplit(gg::Engine &engine, const Stereo &input, const std::vector<uint32_t> &blockSizes,
+                const std::vector<FreezeAt> &changes)
+{
+    const auto frames = static_cast<int64_t>(input.left.size());
+    constexpr float kUnwritten = std::numeric_limits<float>::quiet_NaN();
+    Stereo out{std::vector<float>(input.left.size(), kUnwritten),
+               std::vector<float>(input.left.size(), kUnwritten)};
+    std::size_t nextChange = 0;
+    std::size_t nextBlock = 0;
+    for (int64_t done = 0; done < frames;)
+    {
+        while (nextChange < changes.size() && changes[nextChange].at == done)
+        {
+            engine.setFreeze(changes[nextChange++].freeze);
+        }
+        int64_t end = std::min<int64_t>(done + blockSizes[nextBlock++ % blockSizes.size()], frames);
+        if (nextChange < changes.size())
+        {
+            end = std::min(end, changes[nextChange].at);
+        }
+        const auto i = static_cast<std::size_t>(done);
+        const float *in[2] = {input.left.data() + i, input.right.data() + i};
+        float *o[2] = {out.left.data() + i, out.right.data() + i};
+        engine.process(in, 2, o, 2, static_cast<uint32_t>(end - done));
+        done = end;
+    }
+    return out;
+}
+
+// Block sizes in 1..4096 from gg::rng (seed 99), enough to cover kWrapFrames.
+std::vector<uint32_t> randomBlocks()
+{
+    std::vector<uint32_t> sizes;
+    for (int64_t total = 0; total < kWrapFrames;)
+    {
+        const double u = gg::rng::uniform01(gg::rng::hash(
+            {99, 0, 0, gg::rng::Field::SignalNoise, static_cast<uint64_t>(sizes.size())}));
+        sizes.push_back(1 + static_cast<uint32_t>(u * 4096));
+        total += sizes.back();
+    }
+    return sizes;
+}
+} // namespace
+
+TEST_CASE("live mode is block-size invariant after the ring wraps", "[live][determinism]")
+{
+    const auto input = noiseInput(kWrapFrames, 12);
+    struct Split
+    {
+        uint32_t maxBlock;
+        std::vector<uint32_t> blockSizes;
+    };
+    const auto render = [&](const Split &split, SinkLog &log) {
+        gg::Engine engine(liveConfig(kSampleRate, split.maxBlock, kWrapRingSeconds));
+        engine.setSourceMode(gg::SourceMode::Live);
+        engine.setCloudParams(wrapParams(-12.0));
+        engine.setEventSink(&SinkLog::record, &log);
+        return runSplit(engine, input, split.blockSizes, kWrapFreeze);
+    };
+    // One sample per call can't write ahead of the sample being rendered: the reference.
+    SinkLog refLog;
+    const auto ref = render({4096, {1}}, refLog);
+    REQUIRE(allFinite(ref.left));
+    REQUIRE_FALSE(refLog.overflowed);
+    // Not vacuous: grains clamped against the oldest frame sound after every wrap, frozen or
+    // not.
+    for (const int64_t from : {int64_t{48000}, int64_t{96000}, int64_t{120000}, int64_t{144000}})
+    {
+        INFO("from sample " << from);
+        REQUIRE(peak(ref.left, static_cast<std::size_t>(from + 1000),
+                     static_cast<std::size_t>(from + 24000)) > 0.05f);
+    }
+
+    for (const Split &split : {Split{4096, {7}}, Split{4096, {64}}, Split{4096, {511}},
+                               Split{4096, {4096}}, Split{4096, randomBlocks()}, Split{64, {4096}},
+                               Split{512, randomBlocks()}, Split{1, {4096}}})
+    {
+        INFO("maxBlockSize = " << split.maxBlock << ", first block size = "
+                               << split.blockSizes.front() << " of " << split.blockSizes.size());
+        SinkLog log;
+        const auto out = render(split, log);
+        REQUIRE(log.grains == refLog.grains);
+        REQUIRE(sameBits(out.left, ref.left));
+        REQUIRE(sameBits(out.right, ref.right));
+    }
+}
+
+TEST_CASE("live mode never depends on later input after the ring wraps", "[live]")
+{
+    // 4096-frame blocks put up to 4095 frames of later input into the ring before a sample is
+    // rendered. Output before an input cut must equal a render with no cut, at both pitches and
+    // with the cut while frozen (its input is only written once the head resumes) or not. The
+    // grains read about 1 s behind the head, so 5 s leaves time for every cut's input to be
+    // heard after it, which shows the comparison isn't vacuous.
+    constexpr int64_t kFrames = 5 * 48000;
+    const auto a = noiseInput(kFrames, 13);
+    const auto later = noiseInput(kFrames, 14, 1.0f);
+    for (const double pitch : {-12.0, 0.0})
+    {
+        const auto render = [&](const Stereo &input) {
+            gg::Engine engine(liveConfig(kSampleRate, 4096, kWrapRingSeconds));
+            engine.setSourceMode(gg::SourceMode::Live);
+            engine.setCloudParams(wrapParams(pitch));
+            return run(engine, input, 4096, kWrapFreeze);
+        };
+        const auto outA = render(a);
+        REQUIRE(allFinite(outA.left));
+        for (const int64_t cut : {int64_t{60001}, int64_t{100001}, int64_t{150007}})
+        {
+            INFO("pitch " << pitch << ", cut at " << cut);
+            auto b = a;
+            std::copy(later.left.begin() + cut, later.left.end(), b.left.begin() + cut);
+            std::copy(later.right.begin() + cut, later.right.end(), b.right.begin() + cut);
+            const auto outB = render(b);
+            const auto upTo = static_cast<std::size_t>(cut);
+            REQUIRE(peak(outA.left, upTo - 4096, upTo) > 0.05f);
+            REQUIRE(sameBits(outA.left, outB.left, 0, upTo));
+            REQUIRE(sameBits(outA.right, outB.right, 0, upTo));
+            REQUIRE_FALSE(sameBits(outA.left, outB.left, upTo));
         }
     }
 }
