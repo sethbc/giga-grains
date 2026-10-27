@@ -8,21 +8,27 @@
 add_executable(gg-tests
         smoke_tests.cpp
         engine/denormal_tests.cpp
+        engine/determinism_tests.cpp
         engine/engine_tests.cpp
         engine/interpolate_tests.cpp
         engine/mathdet_tests.cpp
         engine/pool_tests.cpp
         engine/rng_tests.cpp
+        engine/rt_tests.cpp
         engine/sample_buffer_tests.cpp
         engine/stream_tests.cpp
         engine/window_tests.cpp
         metrics/metrics_tests.cpp
         tools/bench_kernel_tests.cpp
+        support/AllocTripwire.cpp
         )
+target_include_directories(gg-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(gg-tests PRIVATE gg::bench-kernels gg::engine gg::audiometrics
         gg::compiler-options Catch2::Catch2WithMain)
 # Scratch files (WAV/PNG round trips) go under the build tree, never a shared temp dir.
 target_compile_definitions(gg-tests PRIVATE GG_TEST_OUTPUT_DIR="${CMAKE_CURRENT_BINARY_DIR}/test-output")
+# 0 or 1, so tests can use #if GG_USE_RTSAN for checks that only hold in the RTSan build.
+target_compile_definitions(gg-tests PRIVATE GG_USE_RTSAN=$<BOOL:${GG_USE_RTSAN}>)
 
 list(APPEND CMAKE_MODULE_PATH ${CMAKE_SOURCE_DIR}/libs/catch2/extras)
 include(Catch)

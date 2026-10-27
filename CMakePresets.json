@@ -27,6 +27,28 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release"
       }
+    },
+    {
+      "name": "asan",
+      "inherits": "base",
+      "displayName": "ASan + UBSan (Ninja, Debug)",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "GG_SANITIZE": "ON",
+        "GG_BUILD_PLUGINS": "OFF"
+      }
+    },
+    {
+      "name": "rtsan",
+      "inherits": "base",
+      "displayName": "RealtimeSanitizer (Ninja, RelWithDebInfo, clang from $GG_LLVM)",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "GG_USE_RTSAN": "ON",
+        "GG_BUILD_PLUGINS": "OFF",
+        "CMAKE_C_COMPILER": "$env{GG_LLVM}/bin/clang",
+        "CMAKE_CXX_COMPILER": "$env{GG_LLVM}/bin/clang++"
+      }
     }
   ],
   "buildPresets": [
@@ -37,6 +59,14 @@
     {
       "name": "release",
       "configurePreset": "release"
+    },
+    {
+      "name": "asan",
+      "configurePreset": "asan"
+    },
+    {
+      "name": "rtsan",
+      "configurePreset": "rtsan"
     }
   ],
   "testPresets": [
@@ -56,6 +86,19 @@
       "name": "release",
       "inherits": "base",
       "configurePreset": "release"
+    },
+    {
+      "name": "asan",
+      "inherits": "base",
+      "configurePreset": "asan",
+      "environment": {
+        "UBSAN_OPTIONS": "halt_on_error=1:print_stacktrace=1"
+      }
+    },
+    {
+      "name": "rtsan",
+      "inherits": "base",
+      "configurePreset": "rtsan"
     }
   ]
 }
