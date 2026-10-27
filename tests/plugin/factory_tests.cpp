@@ -166,3 +166,26 @@ TEST_CASE("both plugins expose a resizable embedded GUI", "[plugin]")
         CHECK(plugin.impl().clapJuceShim->guiCanResize());
     }
 }
+
+TEST_CASE("both plugins expose an empty params extension", "[plugin]")
+{
+    // M0 has no parameters, but clap-wrapper's VST3 IMidiMapping needs CLAP's params extension
+    // before it creates its MIDI-controller parameters: without it, Steinberg's validator fails
+    // "MIDI Mapping" with an unknown ParamID.
+    for (const char *id : {"org.sethbc.giga-grains", "org.sethbc.giga-grains-fx"})
+    {
+        INFO(id);
+        gg::test::PluginUnderTest plugin(id);
+        REQUIRE(plugin.valid());
+        const auto *params = static_cast<const clap_plugin_params *>(
+            plugin.clap()->get_extension(plugin.clap(), CLAP_EXT_PARAMS));
+        REQUIRE(params != nullptr);
+        REQUIRE(params->count != nullptr);
+        CHECK(params->count(plugin.clap()) == 0);
+        CHECK(params->get_info != nullptr);
+        CHECK(params->get_value != nullptr);
+        CHECK(params->value_to_text != nullptr);
+        CHECK(params->text_to_value != nullptr);
+        CHECK(params->flush != nullptr);
+    }
+}

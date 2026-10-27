@@ -51,7 +51,8 @@ class GigaGrainsPlugin : public plugHelper_t, public sst::clap_juce_shim::Editor
         return static_cast<GigaGrainsPlugin *>(static_cast<plugHelper_t *>(plugin->plugin_data));
     }
 
-    /// CLAP NOTE_ON events plus MIDI note-ons (0x9n with velocity > 0) seen by process().
+    /// CLAP NOTE_ON events plus MIDI note-ons (0x9n with velocity > 0) seen by process() or by
+    /// a params flush.
     std::atomic<uint32_t> noteOnCount{0};
 
     Product product() const noexcept { return product_; }
@@ -91,6 +92,30 @@ class GigaGrainsPlugin : public plugHelper_t, public sst::clap_juce_shim::Editor
     uint32_t notePortsCount(bool isInput) const noexcept override;
     bool notePortsInfo(uint32_t index, bool isInput,
                        clap_note_port_info *info) const noexcept override;
+
+    // ---- Parameters: none yet, but the extension is there ----
+    // clap-wrapper's VST3 IMidiMapping creates its MIDI-controller parameters only for a plugin
+    // with CLAP's params extension; without one, a wrapped VST3 maps every controller to an
+    // unknown ParamID. Parameter IDs are frozen at the first release, so none are added here.
+
+    bool implementsParams() const noexcept override { return true; }
+    uint32_t paramsCount() const noexcept override { return 0; }
+    bool paramsInfo(uint32_t /*paramIndex*/, clap_param_info * /*info*/) const noexcept override
+    {
+        return false;
+    }
+    bool paramsValue(clap_id /*paramId*/, double * /*value*/) noexcept override { return false; }
+    bool paramsValueToText(clap_id /*paramId*/, double /*value*/, char * /*display*/,
+                           uint32_t /*size*/) noexcept override
+    {
+        return false;
+    }
+    bool paramsTextToValue(clap_id /*paramId*/, const char * /*display*/,
+                           double * /*value*/) noexcept override
+    {
+        return false;
+    }
+    void paramsFlush(const clap_input_events *in, const clap_output_events *out) noexcept override;
 
   private:
     clap_process_status

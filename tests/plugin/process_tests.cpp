@@ -190,6 +190,44 @@ TEST_CASE("note-ons are counted from clap and midi", "[plugin]")
     CHECK(plugin.impl().noteOnCount.load() == 4);
 }
 
+TEST_CASE("params flush is safe and counts note-ons", "[plugin]")
+{
+    const char *id = GENERATE(kInstrumentId, kFxId);
+    CAPTURE(id);
+    gg::test::PluginUnderTest plugin(id);
+    REQUIRE(plugin.valid());
+    const auto *params = static_cast<const clap_plugin_params *>(
+        plugin.clap()->get_extension(plugin.clap(), CLAP_EXT_PARAMS));
+    REQUIRE(params != nullptr);
+
+    // With no parameters, a flush has nothing to report: count anything the plugin pushes.
+    uint32_t pushed = 0;
+    const clap_output_events out{&pushed,
+                                 [](const clap_output_events *list, const clap_event_header *) {
+                                     ++*static_cast<uint32_t *>(list->ctx);
+                                     return true;
+                                 }};
+    gg::test::InputEvents none;
+
+    // Inactive, flush is a main-thread call; active, an audio-thread one.
+    params->flush(plugin.clap(), none.list(), &out);
+    CHECK(plugin.impl().noteOnCount.load() == 0);
+    REQUIRE(plugin.activate(48000.0, 512));
+    params->flush(plugin.clap(), none.list(), &out);
+    CHECK(plugin.impl().noteOnCount.load() == 0);
+    CHECK(pushed == 0);
+
+    // CLAP puts only parameter events in a flush, but a host may deliver notes there too.
+    const auto clapOn = noteOn(60, 0);
+    const auto midiOn = midi(0x90, 67, 100, 0);
+    gg::test::InputEvents notes;
+    notes.add(&clapOn.header);
+    notes.add(&midiOn.header);
+    params->flush(plugin.clap(), notes.list(), &out);
+    CHECK(plugin.impl().noteOnCount.load() == 2);
+    CHECK(pushed == 0);
+}
+
 TEST_CASE("zero-frame process is safe", "[plugin]")
 {
     const char *id = GENERATE(kInstrumentId, kFxId);

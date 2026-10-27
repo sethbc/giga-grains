@@ -231,6 +231,15 @@ void GigaGrainsPlugin::addEngineOutput(float *const *out, uint32_t numChannels,
     }
 }
 
+void GigaGrainsPlugin::paramsFlush(const clap_input_events *in,
+                                   const clap_output_events * /*out*/) noexcept
+{
+    // On the audio thread while active, so it holds to process()'s rules: countNoteOns is
+    // SST_CPPUTILS_NONBLOCKING. There are no parameters to apply and nothing to output, but a
+    // host may deliver notes here, and those still count.
+    countNoteOns(in);
+}
+
 void GigaGrainsPlugin::countNoteOns(const clap_input_events *events) noexcept
 {
     if (events == nullptr)
