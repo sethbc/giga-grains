@@ -1,0 +1,3 @@
+# The golden event logs are compared with fresh renders byte for byte (tests/CMakeLists.txt), so
+# every checkout, including Windows ones with core.autocrlf, keeps the golden files' LF endings.
+tests/golden/** text eol=lf

@@ -55,6 +55,11 @@ add_library(nlohmann_json INTERFACE)
 target_include_directories(nlohmann_json SYSTEM INTERFACE nlohmann_json/include)
 add_library(nlohmann_json::nlohmann_json ALIAS nlohmann_json)
 
+# CLI11: gg-render's command line, used header-only (CLI11_COMPILE stays undefined).
+add_library(CLI11 INTERFACE)
+target_include_directories(CLI11 SYSTEM INTERFACE CLI11/include)
+add_library(CLI11::CLI11 ALIAS CLI11)
+
 # The plugin shells: CLAP, the C++ helpers, and clap-wrapper for VST3, AUv2 and standalone.
 # clap-wrapper downloads the VST3 SDK, Apple's AudioUnitSDK and RtAudio/RtMidi at configure
 # time (CPM); engine-only builds (GG_BUILD_PLUGINS=OFF) fetch none of it.

@@ -35,3 +35,6 @@
 	path = libs/clap/clap-wrapper
 	url = https://github.com/free-audio/clap-wrapper
 	branch = next
+[submodule "libs/CLI11"]
+	path = libs/CLI11
+	url = https://github.com/CLIUtils/CLI11
