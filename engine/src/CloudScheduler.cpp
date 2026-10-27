@@ -29,6 +29,7 @@ void CloudScheduler::prepare(double sampleRate) noexcept
 
 void CloudScheduler::setParams(const CloudParams &in) noexcept
 {
+    requested_ = in;
     const CloudParams d{};
     CloudParams p;
     // Only the upper bound here: 0 and below mean off, and the lower bound and the sample-rate
@@ -36,8 +37,10 @@ void CloudScheduler::setParams(const CloudParams &in) noexcept
     p.densityHz = std::min(finiteOr(in.densityHz, d.densityHz), kMaxDensityHz);
     p.distribution = std::clamp(finiteOr(in.distribution, d.distribution), 0.0, 1.0);
     p.grainDurationSec = finiteOr(in.grainDurationSec, d.grainDurationSec);
-    p.position = std::clamp(finiteOr(in.position, d.position), 0.0, 1.0);
-    p.spray = std::clamp(finiteOr(in.spray, d.spray), 0.0, 1.0);
+    // Ruling M1-k: a fraction of the source in Sample mode, seconds behind the head in Live mode.
+    const double maxPosition = mode_ == SourceMode::Live ? ringSeconds_ : 1.0;
+    p.position = std::clamp(finiteOr(in.position, d.position), 0.0, maxPosition);
+    p.spray = std::clamp(finiteOr(in.spray, d.spray), 0.0, maxPosition);
     p.pitchSemitones = std::clamp(finiteOr(in.pitchSemitones, d.pitchSemitones),
                                   -kMaxPitchSemitones, kMaxPitchSemitones);
     p.stereo = std::clamp(finiteOr(in.stereo, d.stereo), 0.0, 1.0);
@@ -61,6 +64,14 @@ void CloudScheduler::setParams(const CloudParams &in) noexcept
         // effect then, so several changes before it give the result of the last one alone.
         rescalePending_ = true;
     }
+}
+
+void CloudScheduler::setSourceMode(SourceMode mode, double ringSeconds) noexcept
+{
+    mode_ = mode;
+    ringSeconds_ = std::isfinite(ringSeconds) && ringSeconds > 0.0 ? ringSeconds : 0.0;
+    // The period and the distribution don't change, so this never moves the pending onset.
+    setParams(requested_);
 }
 
 void CloudScheduler::reset() noexcept

@@ -195,6 +195,65 @@ TEST_CASE("engine process does not allocate with a full pool or odd block sizes"
     REQUIRE(allocations == 0);
 }
 
+TEST_CASE("engine live process does not allocate", "[rt]")
+{
+    // Live mode: every call writes its input into the ring (allocated by the constructor) before
+    // the grains read it. Grains 10 ms behind the head and Freeze toggled while armed put the
+    // admission clamp, the head fade and the freeze ramp under the tripwire. maxBlockSize 256
+    // makes the 1000-frame calls oversized; mono, stereo and missing inputs all run.
+    gg::EngineConfig config{48000.0, 256, 4096, 3};
+    config.liveSeconds = 16.0;
+    gg::Engine engine(config);
+    engine.setSourceMode(gg::SourceMode::Live);
+    engine.setCloudParams({.densityHz = 200.0,
+                           .distribution = 1.0,
+                           .grainDurationSec = 0.05,
+                           .position = 0.01,
+                           .spray = 0.02,
+                           .pitchSemitones = 7.0,
+                           .stereo = 1.0,
+                           .gain = 0.5f});
+    SpawnCounter counter;
+    engine.setEventSink(&SpawnCounter::record, &counter);
+
+    std::vector<float> inLeft(1000), inRight(1000);
+    for (std::size_t i = 0; i < inLeft.size(); ++i)
+    {
+        inLeft[i] = static_cast<float>(std::sin(2.0 * std::numbers::pi * 220.0 * i / 48000.0));
+        inRight[i] = -inLeft[i];
+    }
+    const float *in[2] = {inLeft.data(), inRight.data()};
+    std::vector<float> left(1000), right(1000);
+    float *out[2] = {left.data(), right.data()};
+    for (int i = 0; i < 24; ++i) // warm up until grains are sounding
+    {
+        engine.process(in, 2, out, 2, 1000);
+    }
+    const uint64_t spawnsBefore = counter.spawns;
+    const int64_t headBefore = engine.liveWriteHead();
+
+    AllocTripwire::resetCount();
+    {
+        AllocTripwire::Scope armed;
+        for (int i = 0; i < 40; ++i)
+        {
+            engine.setFreeze(i % 4 == 1 || i % 4 == 2);
+            engine.setSourceMode(gg::SourceMode::Live);
+            engine.process(in, 2, out, 2, 0);
+            engine.process(in, 2, out, 2, 1);
+            engine.process(in, 2, out, 2, 1000);
+            engine.process(in, 1, out, 2, 100);
+            engine.process(nullptr, 0, out, 2, 100);
+        }
+    }
+    const uint64_t allocations = AllocTripwire::count();
+
+    REQUIRE(counter.spawns > spawnsBefore);
+    REQUIRE(engine.activeGrains() > 0);
+    REQUIRE(engine.liveWriteHead() > headBefore);
+    REQUIRE(allocations == 0);
+}
+
 #if GG_USE_RTSAN
 TEST_CASE("rtsan is active in this build", "[rt][rtsan]") { REQUIRE(SST_CPPUTILS_HAS_RTSAN == 1); }
 #endif

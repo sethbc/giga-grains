@@ -13,6 +13,7 @@ add_executable(gg-tests
         engine/determinism_tests.cpp
         engine/engine_tests.cpp
         engine/interpolate_tests.cpp
+        engine/live_tests.cpp
         engine/mathdet_tests.cpp
         engine/pool_tests.cpp
         engine/rng_tests.cpp

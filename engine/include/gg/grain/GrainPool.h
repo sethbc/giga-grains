@@ -17,11 +17,12 @@ namespace gg
 /// One grain's parameters, latched at its onset (INTENT §14). Times and positions are 64-bit.
 struct GrainSpec
 {
-    uint64_t index;         ///< Grain index k, counted from the scheduler's reset().
-    int64_t onsetSample;    ///< floor(onset time), in output samples.
-    double onsetFrac;       ///< onset time - onsetSample, in [0, 1).
-    double startPos;        ///< Source read position at the onset, in source frames.
-    double rate;            ///< Source frames advanced per output sample.
+    uint64_t index;      ///< Grain index k, counted from the scheduler's reset().
+    int64_t onsetSample; ///< floor(onset time), in output samples.
+    double onsetFrac;    ///< onset time - onsetSample, in [0, 1).
+    /// Read position at the onset: source frames in Sample mode, ring-time frames in Live mode.
+    double startPos;
+    double rate;            ///< Source (or ring) frames advanced per output sample.
     double durationSamples; ///< Window length in output samples, at least 16.
     float gain;
     float pan; ///< -1 (left) .. 1 (right); see panGains().

@@ -347,3 +347,128 @@ TEST_CASE("density and distribution changes are block-size invariant", "[determi
         REQUIRE(sameBits(ref.audio.right, r.audio.right));
     }
 }
+
+namespace
+{
+// Live mode (spec §6.3): 3 s of stereo noise through the 16 s ring, with Freeze on at 1 s and off
+// at 2 s. The freeze changes are made between process() calls at their samples (both on the
+// 32-sample grid, where the Processor applies them), so every block split sees them at the same
+// absolute sample.
+constexpr int64_t kLiveFrames = 3 * 48000;
+constexpr int64_t kFreezeOn = 48000;
+constexpr int64_t kFreezeOff = 96000;
+
+struct LiveInput
+{
+    std::vector<float> left;
+    std::vector<float> right;
+};
+
+LiveInput liveNoise()
+{
+    LiveInput in{std::vector<float>(static_cast<std::size_t>(kLiveFrames)),
+                 std::vector<float>(static_cast<std::size_t>(kLiveFrames))};
+    for (int64_t i = 0; i < kLiveFrames; ++i)
+    {
+        using gg::rng::Field;
+        const auto k = static_cast<uint64_t>(i);
+        const auto at = static_cast<std::size_t>(i);
+        in.left[at] =
+            0.5f *
+            static_cast<float>(gg::rng::bipolar(gg::rng::hash({21, 0, 0, Field::SignalNoise, k})));
+        in.right[at] =
+            0.5f *
+            static_cast<float>(gg::rng::bipolar(gg::rng::hash({21, 0, 1, Field::SignalNoise, k})));
+    }
+    return in;
+}
+
+struct LiveRender
+{
+    Render audio;
+    GrainLog log;
+    int64_t writeHead{0};
+};
+
+void renderLive(const LiveInput &input, uint32_t maxBlock, const std::vector<uint32_t> &blockSizes,
+                LiveRender &r)
+{
+    gg::EngineConfig c{kSampleRate, maxBlock, 4096, 42};
+    c.liveSeconds = 16.0;
+    gg::Engine engine(c);
+    engine.setSourceMode(gg::SourceMode::Live);
+    // kParams with Position and Spray in seconds: 0.3 s behind the head, sprayed over 0.2 s.
+    gg::CloudParams p = kParams;
+    p.position = 0.3;
+    p.spray = 0.2;
+    engine.setCloudParams(p);
+    engine.setEventSink(&GrainLog::record, &r.log);
+    constexpr float kUnwritten = std::numeric_limits<float>::quiet_NaN();
+    r.audio.left.assign(static_cast<std::size_t>(kLiveFrames), kUnwritten);
+    r.audio.right.assign(static_cast<std::size_t>(kLiveFrames), kUnwritten);
+    int64_t done = 0;
+    std::size_t next = 0;
+    for (const int64_t end : {kFreezeOn, kFreezeOff, kLiveFrames})
+    {
+        while (done < end)
+        {
+            const uint32_t want = blockSizes[next++ % blockSizes.size()];
+            const auto n = static_cast<uint32_t>(std::min<int64_t>(want, end - done));
+            const float *in[2] = {input.left.data() + done, input.right.data() + done};
+            float *out[2] = {r.audio.left.data() + done, r.audio.right.data() + done};
+            engine.process(in, 2, out, 2, n);
+            done += n;
+        }
+        engine.setFreeze(end == kFreezeOn);
+    }
+    r.writeHead = engine.liveWriteHead();
+}
+} // namespace
+
+TEST_CASE("live mode is block-size invariant", "[determinism]")
+{
+    const auto input = liveNoise();
+    LiveRender ref;
+    renderLive(input, kMaxBlock, {kMaxBlock}, ref);
+    REQUIRE(allFinite(ref.audio.left));
+    REQUIRE(allFinite(ref.audio.right));
+    REQUIRE(peak(ref.audio.left) > 0.05f);
+    REQUIRE_FALSE(sameBits(ref.audio.left, ref.audio.right));
+    REQUIRE_FALSE(ref.log.overflowed);
+    // Guard against a vacuous pass: the head stopped 20 ms (960 samples) into the freeze and
+    // resumed after it, grains spawned before, during and after it, and the frozen second sounds.
+    REQUIRE(ref.writeHead == kLiveFrames - (kFreezeOff - kFreezeOn) + 960);
+    for (const auto &[from, to] :
+         {std::pair{int64_t{0}, kFreezeOn}, std::pair{kFreezeOn, kFreezeOff},
+          std::pair{kFreezeOff, kLiveFrames}})
+    {
+        INFO("grains in [" << from << ", " << to << ")");
+        REQUIRE(std::count_if(ref.log.grains.begin(), ref.log.grains.end(),
+                              [&](const gg::GrainSpec &g) {
+                                  return g.onsetSample >= from && g.onsetSample < to;
+                              }) > 20);
+    }
+    REQUIRE(peak(std::vector<float>(ref.audio.left.begin() + kFreezeOn + 24000,
+                                    ref.audio.left.begin() + kFreezeOff)) > 0.05f);
+
+    struct Split
+    {
+        uint32_t maxBlock;
+        std::vector<uint32_t> blockSizes;
+    };
+    const auto random = randomSplit();
+    for (const Split &split : {Split{kMaxBlock, {1}}, Split{kMaxBlock, {7}}, Split{kMaxBlock, {64}},
+                               Split{kMaxBlock, {511}}, Split{kMaxBlock, {4096}}, Split{64, {4096}},
+                               Split{kMaxBlock, random}})
+    {
+        INFO("maxBlockSize = " << split.maxBlock << ", first block size = "
+                               << split.blockSizes.front() << " of " << split.blockSizes.size());
+        LiveRender r;
+        renderLive(input, split.maxBlock, split.blockSizes, r);
+        REQUIRE_FALSE(r.log.overflowed);
+        REQUIRE(r.log.grains == ref.log.grains);
+        REQUIRE(r.writeHead == ref.writeHead);
+        REQUIRE(sameBits(ref.audio.left, r.audio.left));
+        REQUIRE(sameBits(ref.audio.right, r.audio.right));
+    }
+}

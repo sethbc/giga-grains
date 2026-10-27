@@ -8,6 +8,7 @@ add_library(gg-engine STATIC
         src/CloudScheduler.cpp
         src/Engine.cpp
         src/GrainPool.cpp
+        src/LiveSource.cpp
         src/SampleBuffer.cpp
         src/Version.cpp
         src/Window.cpp

@@ -27,6 +27,10 @@ const EngineConfig &validated(const EngineConfig &config)
     {
         throw std::invalid_argument("Engine: maxBlockSize must be > 0");
     }
+    if (!(std::isfinite(config.liveSeconds) && config.liveSeconds >= 0.0))
+    {
+        throw std::invalid_argument("Engine: liveSeconds must be finite and >= 0");
+    }
     return config;
 }
 
@@ -38,6 +42,7 @@ constexpr uint32_t kStream = 0;
 Engine::Engine(const EngineConfig &config) : config_(validated(config)), pool_(config.grainCapacity)
 {
     cloud_.prepare(config_.sampleRate);
+    live_.prepare(config_.sampleRate, config_.liveSeconds);
 }
 
 void Engine::setSource(std::shared_ptr<const SampleBuffer> source)
@@ -65,6 +70,17 @@ void Engine::setSource(std::shared_ptr<const SampleBuffer> source)
 
 void Engine::setCloudParams(const CloudParams &params) noexcept { cloud_.setParams(params); }
 
+void Engine::setSourceMode(SourceMode mode) noexcept
+{
+    if (mode == SourceMode::Live && !live_.enabled())
+    {
+        return; // no ring to read
+    }
+    requestedMode_ = mode;
+}
+
+void Engine::setFreeze(bool freeze) noexcept { freeze_ = freeze; }
+
 void Engine::setEventSink(GrainEventSink sink, void *ctx) noexcept
 {
     sink_ = sink;
@@ -75,13 +91,34 @@ void Engine::reset() noexcept
 {
     pool_.clear();
     cloud_.reset();
+    live_.reset();
     clock_ = 0;
     dropped_ = 0;
 }
 
 void Engine::process(float *const *out, uint32_t numChannels, uint32_t numFrames) noexcept
 {
+    process(nullptr, 0, out, numChannels, numFrames);
+}
+
+void Engine::process(const float *const *in, uint32_t numInChannels, float *const *out,
+                     uint32_t numChannels, uint32_t numFrames) noexcept
+{
     ScopedDenormalsOff denormalsOff;
+    // The source mode and the freeze setting apply from this call's first frame.
+    if (requestedMode_ != mode_)
+    {
+        mode_ = requestedMode_;
+        // The pool's grains belong to the old source: their positions mean nothing in the new
+        // one.
+        pool_.clear();
+        cloud_.setSourceMode(mode_, config_.liveSeconds);
+    }
+    live_.setFrozen(freeze_);
+    if (in == nullptr)
+    {
+        numInChannels = 0;
+    }
     if (out == nullptr)
     {
         numChannels = 0;
@@ -89,13 +126,13 @@ void Engine::process(float *const *out, uint32_t numChannels, uint32_t numFrames
     for (uint32_t done = 0; done < numFrames;)
     {
         const uint32_t n = std::min(numFrames - done, config_.maxBlockSize);
-        processBlock(out, numChannels, done, n);
+        processBlock(in, numInChannels, out, numChannels, done, n);
         done += n;
     }
 }
 
-void Engine::processBlock(float *const *out, uint32_t numChannels, uint32_t offset,
-                          uint32_t numFrames) noexcept
+void Engine::processBlock(const float *const *in, uint32_t numInChannels, float *const *out,
+                          uint32_t numChannels, uint32_t offset, uint32_t numFrames) noexcept
 {
     for (uint32_t c = 0; c < numChannels; ++c)
     {
@@ -109,14 +146,37 @@ void Engine::processBlock(float *const *out, uint32_t numChannels, uint32_t offs
         numChannels > 1 && out[1] != nullptr ? out[1] + offset : nullptr,
     };
 
+    const int64_t blockStart = clock_;
+    const int64_t blockEnd = blockStart + static_cast<int64_t>(numFrames);
+    // The whole block's input goes into the ring before any grain reads (spec §6.3). Grains
+    // read only frames at least M behind the head at the sample being rendered, so nothing
+    // written here after that sample can reach it.
+    if (live_.enabled())
+    {
+        live_.write(in, numInChannels, offset, blockStart, numFrames);
+    }
+
     // Spawn this block's grains, then render, then retire. renderedTo is the sample up to
     // which the pool has already been rendered; admit() moves it forward when it has to
     // retire grains early to make room.
-    const int64_t blockStart = clock_;
-    const int64_t blockEnd = blockStart + static_cast<int64_t>(numFrames);
     int64_t renderedTo = blockStart;
     cloud_.schedule(blockStart, numFrames, config_.seed, kLayer, kStream, [&](const GrainDraw &d) {
-        admit(sampleGrain(d), dst, blockStart, renderedTo);
+        if (mode_ == SourceMode::Live)
+        {
+            GrainSpec g;
+            if (liveGrain(d, g))
+            {
+                admit(g, dst, blockStart, renderedTo);
+            }
+            else
+            {
+                ++dropped_;
+            }
+        }
+        else if (source_ != nullptr)
+        {
+            admit(sampleGrain(d), dst, blockStart, renderedTo);
+        }
     });
     renderPool(dst, blockStart, renderedTo, blockEnd);
     clock_ = blockEnd;
@@ -140,13 +200,44 @@ GrainSpec Engine::sampleGrain(const GrainDraw &d) const noexcept
     };
 }
 
+bool Engine::liveGrain(const GrainDraw &d, GrainSpec &g) const noexcept
+{
+    // The admission clamp (spec §6.3; the class comment has the derivation). Between output
+    // samples the head moves linearly while it advances, so at the real onset T = t0 + frac it
+    // is at ρ = R(t0) + min(frac, run), and after T it advances min(e, run − that) more frames
+    // in e samples.
+    constexpr double kM = static_cast<double>(LiveSource::kHeadMargin);
+    const int64_t t0 = d.onsetSample;
+    const double run = live_.headRunAfter(t0); // +inf when not frozen
+    const double step = std::min(d.onsetFrac, run);
+    const double rho = static_cast<double>(live_.headAt(t0)) + step;
+    const double dur = d.durationSamples;
+    const double rate = d.rate;
+    // The frames the head advances during the grain's life.
+    const double span = std::min(dur, run - step);
+    const double hi = rho - 3.0 - kM - std::max(0.0, dur * rate - span);
+    const double lo =
+        rho - static_cast<double>(live_.frames()) + 1.0 + kM + std::max(0.0, span * (1.0 - rate));
+    if (lo > hi)
+    {
+        return false; // the grain's read span doesn't fit the ring
+    }
+    g = {
+        .index = d.index,
+        .onsetSample = d.onsetSample,
+        .onsetFrac = d.onsetFrac,
+        .startPos = std::clamp(rho - d.positionDraw * config_.sampleRate, lo, hi),
+        .rate = rate, // the ring runs at the output rate
+        .durationSamples = dur,
+        .gain = d.gain,
+        .pan = d.pan,
+    };
+    return true;
+}
+
 void Engine::admit(const GrainSpec &g, float *const dst[2], int64_t blockStart,
                    int64_t &renderedTo) noexcept
 {
-    if (source_ == nullptr)
-    {
-        return;
-    }
     if (pool_.size() == pool_.capacity())
     {
         // The pool may still hold grains that finish before g's onset but haven't been
@@ -183,7 +274,18 @@ void Engine::renderPool(float *const dst[2], int64_t blockStart, int64_t from, i
     for (uint32_t i = 0; i < pool_.size(); ++i)
     {
         const GrainSpec &g = pool_.at(i);
-        if (twoOutputs)
+        if (mode_ == SourceMode::Live)
+        {
+            if (twoOutputs)
+            {
+                renderLiveGrain<true>(g, dst, blockStart, from, to);
+            }
+            else
+            {
+                renderLiveGrain<false>(g, dst, blockStart, from, to);
+            }
+        }
+        else if (twoOutputs)
         {
             if (monoSource_)
             {
@@ -237,6 +339,43 @@ void Engine::renderGrain(const GrainSpec &g, float *const dst[2], int64_t blockS
         else
         {
             dst[0][j] += channel0;
+        }
+    }
+}
+
+template <bool TwoOutputs>
+void Engine::renderLiveGrain(const GrainSpec &g, float *const dst[2], int64_t blockStart,
+                             int64_t from, int64_t to) const noexcept
+{
+    const int64_t first = std::max(from, g.onsetSample);
+    const int64_t last = std::min(to, grainEndSample(g)); // exclusive
+    // As in renderGrain: one output carries ring channel 0, unpanned.
+    const PanGains gains = TwoOutputs ? panGains(g.pan) : PanGains{1.0f, 1.0f};
+    LiveSource::Cursor cursor;
+    for (int64_t t = first; t < last; ++t)
+    {
+        // The read position is in ring time; the head is R(t), from this block's write.
+        const double e = static_cast<double>(t - g.onsetSample) - g.onsetFrac;
+        const double pos = g.startPos + g.rate * e;
+        const int64_t head = live_.headAt(t);
+        const auto fade = static_cast<float>(live_.fade(pos, head));
+        float left = 0.0f;
+        float right = 0.0f;
+        // Where the fade is 0 the taps aren't read at all, so stale data can never contribute.
+        if (fade == 0.0f || !live_.read(pos, head, cursor, left, right))
+        {
+            continue;
+        }
+        const float weight = hann_.at(e / g.durationSamples) * g.gain * fade;
+        const auto j = static_cast<std::size_t>(t - blockStart);
+        if constexpr (TwoOutputs)
+        {
+            dst[0][j] += left * weight * gains.left;
+            dst[1][j] += right * weight * gains.right;
+        }
+        else
+        {
+            dst[0][j] += left * weight;
         }
     }
 }

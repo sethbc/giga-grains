@@ -590,3 +590,130 @@ TEST_CASE("onsets are at least 1/16 sample apart, which bounds a schedule call",
     REQUIRE(mostInOneFrame > 1);
     REQUIRE(mostInOneFrame <= 16);
 }
+
+TEST_CASE("live mode draws position and spray in seconds (ruling M1-k)", "[cloud]")
+{
+    // Live mode: position and spray are seconds behind the write head, each clamped to
+    // [0, ring seconds], and positionDraw = position + spray × uniform01(u) with u keyed by
+    // (seed, layer, stream, PositionJitter, k). Sample mode keeps the [0, 1] fraction and the
+    // bipolar spray.
+    gg::CloudParams p;
+    p.densityHz = 200.0;
+    p.distribution = 0.5;
+    p.position = 15.9;
+    p.spray = 0.05;
+    p.stereo = 0.8;
+    const auto jitter = [](uint64_t k) {
+        return gg::rng::uniform01(gg::rng::hash({kSeed, 0, 0, gg::rng::Field::PositionJitter, k}));
+    };
+
+    gg::CloudScheduler live;
+    live.prepare(48000.0);
+    live.setSourceMode(gg::SourceMode::Live, 16.0);
+    live.setParams(p);
+    const auto drawn = collect(live, 0, 48000, 256);
+    REQUIRE(drawn.size() > 100);
+    bool keyed = true;
+    double lowest = std::numeric_limits<double>::infinity();
+    double highest = -lowest;
+    for (const auto &g : drawn)
+    {
+        keyed = keyed && g.positionDraw == 15.9 + 0.05 * jitter(g.index);
+        lowest = std::min(lowest, g.positionDraw);
+        highest = std::max(highest, g.positionDraw);
+    }
+    REQUIRE(keyed);
+    REQUIRE(lowest >= 15.9); // not clamped to 1
+    REQUIRE(highest < 15.95);
+    REQUIRE(highest - lowest > 0.04);
+
+    // Every other field is the sample-mode draw: the mode changes only the position.
+    gg::CloudScheduler sample;
+    sample.prepare(48000.0);
+    sample.setParams(p);
+    const auto sampleDrawn = collect(sample, 0, 48000, 256);
+    REQUIRE(sampleDrawn.size() == drawn.size());
+    bool sameOtherwise = true;
+    bool sampleKeyed = true;
+    for (std::size_t i = 0; i < drawn.size(); ++i)
+    {
+        auto g = drawn[i];
+        g.positionDraw = sampleDrawn[i].positionDraw;
+        sameOtherwise = sameOtherwise && g == sampleDrawn[i];
+        // Sample mode clamps position 15.9 to 1, then adds the bipolar spray and clamps again.
+        const double u = gg::rng::bipolar(
+            gg::rng::hash({kSeed, 0, 0, gg::rng::Field::PositionJitter, sampleDrawn[i].index}));
+        sampleKeyed =
+            sampleKeyed && sampleDrawn[i].positionDraw == std::clamp(1.0 + 0.05 * u, 0.0, 1.0);
+    }
+    REQUIRE(sameOtherwise);
+    REQUIRE(sampleKeyed);
+
+    SECTION("live values are clamped to [0, ring seconds]")
+    {
+        live.reset();
+        p.position = 40.0;
+        p.spray = 99.0;
+        live.setParams(p);
+        const auto high = collect(live, 0, 4800, 256);
+        REQUIRE_FALSE(high.empty());
+        for (const auto &g : high)
+        {
+            REQUIRE(g.positionDraw == 16.0 + 16.0 * jitter(g.index));
+        }
+        live.reset();
+        p.position = -3.0;
+        p.spray = -1.0;
+        live.setParams(p);
+        for (const auto &g : collect(live, 0, 4800, 256))
+        {
+            REQUIRE(g.positionDraw == 0.0);
+        }
+        live.reset();
+        p.position = std::numeric_limits<double>::quiet_NaN();
+        p.spray = std::numeric_limits<double>::infinity();
+        live.setParams(p);
+        for (const auto &g : collect(live, 0, 4800, 256))
+        {
+            REQUIRE(g.positionDraw == 0.5); // the defaults: position 0.5 s, no spray
+        }
+    }
+
+    SECTION("a mode change re-clamps the controls already set")
+    {
+        // Set in Live mode, Position 15.9 s; back in Sample mode the same controls draw
+        // exactly what a scheduler that was never live draws.
+        live.setSourceMode(gg::SourceMode::Sample, 16.0);
+        live.reset();
+        REQUIRE(collect(live, 0, 48000, 256) == sampleDrawn);
+        // And back to Live: seconds again.
+        live.setSourceMode(gg::SourceMode::Live, 16.0);
+        live.reset();
+        REQUIRE(collect(live, 0, 48000, 256) == drawn);
+    }
+
+    SECTION("sample-mode draws are unchanged")
+    {
+        // A scheduler set to Sample explicitly draws what the default one does, for controls in
+        // the sample range.
+        gg::CloudParams q = p;
+        q.position = 0.4;
+        q.spray = 0.3;
+        gg::CloudScheduler explicitSample;
+        explicitSample.prepare(48000.0);
+        explicitSample.setSourceMode(gg::SourceMode::Sample, 16.0);
+        explicitSample.setParams(q);
+        sample.reset();
+        sample.setParams(q);
+        const auto a = collect(explicitSample, 0, 48000, 256);
+        REQUIRE(a == collect(sample, 0, 48000, 256));
+        bool keyedSample = true;
+        for (const auto &g : a)
+        {
+            const double u = gg::rng::bipolar(
+                gg::rng::hash({kSeed, 0, 0, gg::rng::Field::PositionJitter, g.index}));
+            keyedSample = keyedSample && g.positionDraw == std::clamp(0.4 + 0.3 * u, 0.0, 1.0);
+        }
+        REQUIRE(keyedSample);
+    }
+}

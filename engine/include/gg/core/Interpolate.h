@@ -38,6 +38,17 @@ inline float linear(const float *data, int64_t frames, double pos) noexcept
     return a + (b - a) * t;
 }
 
+/// The 4-point Catmull-Rom curve through taps p0 .. p3 at t in [0, 1) between p1 and p2. Every
+/// Hermite reader (hermite4, the live ring) goes through this one expression, so they agree bit
+/// for bit.
+inline float catmullRom(float p0, float p1, float p2, float p3, float t) noexcept
+{
+    const float c1 = 0.5f * (p2 - p0);
+    const float c2 = p0 - 2.5f * p1 + 2.0f * p2 - 0.5f * p3;
+    const float c3 = 0.5f * (p3 - p0) + 1.5f * (p1 - p2);
+    return ((c3 * t + c2) * t + c1) * t + p1;
+}
+
 /// 4-point Catmull-Rom over taps floor(pos) - 1 .. floor(pos) + 2. Reproduces polynomials up to
 /// degree 2 exactly (up to float rounding).
 inline float hermite4(const float *data, int64_t frames, double pos) noexcept
@@ -51,14 +62,8 @@ inline float hermite4(const float *data, int64_t frames, double pos) noexcept
     const double base = std::floor(pos);
     const auto i = static_cast<int64_t>(base);
     const auto t = static_cast<float>(pos - base);
-    const float p0 = detail::tap(data, frames, i - 1);
-    const float p1 = detail::tap(data, frames, i);
-    const float p2 = detail::tap(data, frames, i + 1);
-    const float p3 = detail::tap(data, frames, i + 2);
-    const float c1 = 0.5f * (p2 - p0);
-    const float c2 = p0 - 2.5f * p1 + 2.0f * p2 - 0.5f * p3;
-    const float c3 = 0.5f * (p3 - p0) + 1.5f * (p1 - p2);
-    return ((c3 * t + c2) * t + c1) * t + p1;
+    return catmullRom(detail::tap(data, frames, i - 1), detail::tap(data, frames, i),
+                      detail::tap(data, frames, i + 1), detail::tap(data, frames, i + 2), t);
 }
 } // namespace gg::interp
 

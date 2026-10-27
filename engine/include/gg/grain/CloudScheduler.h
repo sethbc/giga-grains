@@ -12,11 +12,13 @@
 
 #include "gg/core/MathDet.h"
 #include "gg/core/Rng.h"
+#include "gg/source/SourceMode.h"
 
 namespace gg
 {
 /// The controls of one Cloud grain stream. CloudScheduler::setParams sanitizes them: a
 /// non-finite value becomes the default, then every value is clamped to the range given here.
+/// Position and spray depend on the scheduler's source mode (ruling M1-k).
 struct CloudParams
 {
     /// Grains per second. 0 or below turns the stream off (ruling M1-a); any positive value is
@@ -24,8 +26,13 @@ struct CloudParams
     double densityHz{16.0};
     double distribution{0.0};     ///< 0 = periodic onsets, 1 = Poisson; [0, 1].
     double grainDurationSec{0.1}; ///< At least 16 samples (the minimum window length).
-    double position{0.5};         ///< Where grains read, as a fraction of the source; [0, 1].
-    double spray{0.0}; ///< Bipolar random spread of position (M0's positionJitter); [0, 1].
+    /// Where grains read. Sample mode: a fraction of the source, [0, 1]. Live mode: seconds
+    /// behind the write head, [0, ring seconds].
+    double position{0.5};
+    /// Random spread of position. Sample mode: bipolar, as a fraction of the source (M0's
+    /// positionJitter), [0, 1]. Live mode: seconds, further behind the head only,
+    /// [0, ring seconds].
+    double spray{0.0};
     double pitchSemitones{0.0}; ///< [-48, 48].
     double stereo{0.0};         ///< Random pan spread: 0 = every grain centred; [0, 1].
     float gain{0.5f};           ///< [0, 4].
@@ -38,8 +45,12 @@ struct GrainDraw
     uint64_t index;      ///< k, counted from the scheduler's reset().
     int64_t onsetSample; ///< floor(t(k)), in output samples.
     double onsetFrac;    ///< t(k) - onsetSample, in [0, 1).
-    double positionDraw; ///< clamp(position + spray × bipolar(u), 0, 1): a fraction of the source.
-    double rate;         ///< The pitch ratio exp2Det(pitchSemitones / 12).
+    /// Sample mode: clamp(position + spray × bipolar(u), 0, 1), a fraction of the source. Live
+    /// mode: position + spray × uniform01(u), in seconds behind the write head; the live source's
+    /// admission clamp then applies (spec §6.3). u is keyed by (seed, layer, stream,
+    /// PositionJitter, k) in both.
+    double positionDraw;
+    double rate;            ///< The pitch ratio exp2Det(pitchSemitones / 12).
     double durationSamples; ///< Window length in output samples, at least 16.
     float gain;
     float pan; ///< stereo × bipolar(u), in [-1, 1]; +0 at stereo 0 (see schedule()).
@@ -101,6 +112,12 @@ class CloudScheduler
     /// pending onset at the next schedule() call, as the class comment describes (ruling M1-h).
     void setParams(const CloudParams &params) noexcept;
 
+    /// Sets how position and spray are drawn (ruling M1-k; see CloudParams and GrainDraw), and
+    /// re-sanitizes the controls last given to setParams for the new mode. ringSeconds is the live
+    /// ring's length, which bounds both in Live mode; a non-finite or negative value means 0. The
+    /// default is Sample. Neither the schedule nor any other draw changes.
+    void setSourceMode(SourceMode mode, double ringSeconds) noexcept;
+
     /// Restarts the schedule: the next onset is t = 0 with k = 0. Keeps the sample rate and the
     /// controls.
     void reset() noexcept;
@@ -141,7 +158,7 @@ class CloudScheduler
             const auto key = [&](rng::Field field) {
                 return rng::hash({seed, layer, stream, field, k});
             };
-            const double spray = params_.spray * rng::bipolar(key(rng::Field::PositionJitter));
+            const uint64_t jitter = key(rng::Field::PositionJitter);
             const double p = params_.stereo * rng::bipolar(key(rng::Field::Pan));
             // A pan below the smallest normal float is 0, so the value doesn't depend on the
             // flush-to-zero mode. It is +0, never the -0 of stereo 0 times a negative draw.
@@ -151,7 +168,11 @@ class CloudScheduler
                 .index = k,
                 .onsetSample = static_cast<int64_t>(whole),
                 .onsetFrac = t - whole,
-                .positionDraw = std::clamp(params_.position + spray, 0.0, 1.0),
+                .positionDraw =
+                    mode_ == SourceMode::Live
+                        ? params_.position + params_.spray * rng::uniform01(jitter)
+                        : std::clamp(params_.position + params_.spray * rng::bipolar(jitter), 0.0,
+                                     1.0),
                 .rate = pitchRatio_,
                 .durationSamples = durationSamples_,
                 .gain = params_.gain,
@@ -178,7 +199,10 @@ class CloudScheduler
     }
 
     double sampleRate_{48000.0};
-    CloudParams params_{}; // sanitized, independent of the sample rate
+    SourceMode mode_{SourceMode::Sample};
+    double ringSeconds_{0.0};
+    CloudParams requested_{}; // as last given to setParams, for setSourceMode to re-sanitize
+    CloudParams params_{};    // sanitized, independent of the sample rate
 
     // Derived from params_ and sampleRate_ by updateDerived().
     double densityHz_{0.0}; // <= 0 when off
