@@ -250,14 +250,10 @@ build/release/tools/gg-bench/gg-bench --canvas [--quick] [--json out.json]   # c
   ```sh
   cmake --build --preset release --target gg-products
   p=build/release/gg-products
-  tools-bin/clap-validator validate --exclude '^param-conversions$' "$p/Giga Grains.clap"
+  tools-bin/clap-validator validate "$p/Giga Grains.clap"
   tools-bin/pluginval --strictness-level 10 --validate "$p/Giga Grains.vst3"
   ```
 
-- **`--exclude '^param-conversions$'`** works around a divide-by-zero panic in clap-validator
-  itself on plugins with no parameters (ruling T8-c, free-audio/clap-validator#40). Remove it from
-  here and from `.github/workflows/ci.yml` once the plugins have real parameters (an M1 exit
-  criterion).
 - **On Linux,** CI runs pluginval under `xvfb-run -a` with `--skip-gui-tests`.
 - **auval (macOS)** needs the AU installed for your user:
 

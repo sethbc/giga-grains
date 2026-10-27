@@ -17,8 +17,7 @@
 TEST_CASE("parameter ids stay below clap-wrapper's VST3 range", "[plugin]")
 {
     // Ruling T8-d: clap-wrapper's VST3 wrapper adds its MIDI-mapping parameters from 0xB00000
-    // up, and hosts save their IDs, so ours must stay below. With no parameters yet this is a
-    // guard for M1's.
+    // up, and hosts save their IDs, so ours must stay below.
     constexpr clap_id kFirstWrapperId = 0xB00000;
     const char *id = GENERATE("org.sethbc.giga-grains", "org.sethbc.giga-grains-fx");
     CAPTURE(id);
@@ -29,6 +28,7 @@ TEST_CASE("parameter ids stay below clap-wrapper's VST3 range", "[plugin]")
     REQUIRE(params != nullptr);
 
     const uint32_t count = params->count(plugin.clap());
+    REQUIRE(count == 10);
     for (uint32_t i = 0; i < count; ++i)
     {
         clap_param_info info{};

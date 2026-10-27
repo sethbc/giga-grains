@@ -62,6 +62,7 @@ if (GG_BUILD_PLUGINS)
     target_sources(gg-tests PRIVATE
             plugin/factory_tests.cpp
             plugin/identity_tests.cpp
+            plugin/params_tests.cpp
             plugin/process_tests.cpp
             plugin/rt_tests.cpp
             )
