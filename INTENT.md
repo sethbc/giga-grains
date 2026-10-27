@@ -336,8 +336,10 @@ clients/  CLAP entry points + clap-wrapper targets
     support in the GUI shim.
 - **JUCE is used for the GUI only**, attached through sst-clap-helpers' `clap_juce_shim`, with
   sst-jucegui widgets.
-  - Start on **JUCE 8.0.16-security**, which is what Shortcircuit XT ships.
-  - M0 tries 9.0.4. JUCE 9 still has no native CLAP support, which confirms the CLAP-first choice.
+  - Start on **JUCE 9.0.4**. The M0 spike built the shim and both plugins against it with no
+    code changes, and on macOS arm64 every validator passed (`docs/spikes/m0-juce9.md`,
+    §23 #24). Shortcircuit XT still ships 8.0.16-security, which remains the fallback.
+  - JUCE 9 still has no native CLAP support, which confirms the CLAP-first choice.
 - **Planned upstream contributions to clap-wrapper:** AUv2 tail support, AUv2 MPE support, VST3
   process-context requirements, a monotonic steady time, and passing AU offline-render state
   through.
@@ -623,7 +625,7 @@ Why this order after v1.0:
 | Large state chunks slow or crash hosts | 32 MB embed cap; captures folder; async decode |
 | Clicks and level pumping at extremes (head crossing, normalizing thousands of grains) | Engine invariants in §14; click detector in the golden tests |
 | sst API churn (no releases); clap-wrapper bugs (transport, AU tail) | Pinned SHAs; upstream fixes; host smoke tests |
-| JUCE 9 compatibility of the shim | Start on 8.0.16-security; M0 spike |
+| JUCE 9 compatibility of the shim | The M0 spike passed on macOS arm64, so the project is on 9.0.4 (§23 #24); CI covers Windows, Linux and the mac-universal x86_64 slice; 8.0.16-security is the fallback |
 | Crowded market, including free granular built into DAWs (Granulator III, Bitwig Fragments) | Differentiate on scale, the canvas, openness and portability, not on feature-count parity |
 | Open-source granular projects tend to stall | Tight v1 scope around the texture anchor; a published roadmap; verification that lets Claude-led work proceed safely |
 | Windows code-signing eligibility: SignPath's free open-source terms may exclude JUCE's dual license | Budget for Azure Artifact Signing (about $9.99/month) or an OV certificate |
@@ -633,7 +635,7 @@ Why this order after v1.0:
 | Question | Resolved in |
 |---|---|
 | ~~Plugin identities: CLAP IDs (proposed `org.sethbc.giga-grains`, `org.sethbc.giga-grains-fx`), AU manufacturer code (at least one uppercase letter) and subtypes. Frozen at first release.~~ | **Resolved** in M0 (2026-10-26): see §18 and §23 #20 |
-| JUCE 9.0.4 vs 8.0.16-security for the GUI shim | M0 spike |
+| ~~JUCE 9.0.4 vs 8.0.16-security for the GUI shim~~ | **Resolved** in M0 (2026-10-26): JUCE 9.0.4; see §15 and §23 #24 |
 | How Ableton Live routes MIDI into VST3/AU effects (sets how prominent MIDI-driven FX features are) | M0 spike |
 | Whether the CPU canvas holds its frame budget, or a GPU backend is needed | M0 spike / M2 |
 | Which hosts besides Bitwig accept CLAP thread-pool requests under load | M2 |
@@ -675,6 +677,7 @@ sources.
 | 21 | M0 tooling dependencies: dr_libs, pffft, stb_image_write, nlohmann/json, CLI11 | Audio-file decoding, the metrics FFT, spectrogram PNGs, metrics and render-spec JSON, and the `gg-render` command line, for the golden-render tooling (§19). All AGPLv3-compatible (§12). Decided 2026-10-26, during M0; see §15 |
 | 22 | §16's first-principles kernel cost estimates replaced by measured M5 Max numbers; headline target unchanged | The M0 kernel benchmark (`gg-bench`, 2,000 grains, median of 5 runs) puts the 4-wide SIMD Hermite kernel at 21.6% / 20.7% / 19.9% of one M5 Max core at blocks 32 / 64 / 256. That is under the 25% target, so the stop rule didn't trip. The headline is judged on the SIMD Hermite kernel (ruling T7-a). The M5 Max is the ceiling, so the M1-runner and x86 numbers from CI (M0 Task 10b) decide whether the target holds; see #23 for what they showed. See `docs/spikes/m0-kernel-benchmark.md`. Decided 2026-10-26, during M0; see §16 |
 | 23 | §16 headline kept as a provisional target despite the CI miss; milestone M1 closes the gap | Full-length `gg-bench` in M0 CI (run 40439674760, M0 Task 10b) puts the SIMD Hermite kernel at blocks 32 / 64 / 256 at: 52.9% / 51.9% / 48.0% of one core on GitHub's Apple M1 VM; 59.7% / 56.9% / 54.9% on a Windows AMD EPYC 7763 VM; and 69.2% / 63.5% / 60.1% on a Linux one. That is about 2× the 25% budget (1.9× to 2.8×), and small blocks cost relatively more there than on the M5 Max. The director chose to keep the headline as a provisional target and to make closing the gap an explicit goal of the milestone-M1 renderer. The candidate levers are per-grain software prefetch, a stereo-interleaved source layout and cache-aware grain scheduling. M1's CI CPU gate starts as a regression gate at the measured baseline, and the headline is judged again at the end of M1. See `docs/spikes/m0-kernel-benchmark.md`. Decided 2026-10-26 by the director, during M0; see §16, §19, §20 and §21 |
+| 24 | Start on JUCE 9.0.4, not 8.0.16-security | The M0 spike built `clap_juce_shim`, the editor and both plugins against JUCE 9.0.4 (`3fb5cbc`) with no source changes and no new warnings. On macOS arm64, every test and validator passed: clap-validator, pluginval at strictness 10 with GUI tests, auval for all three identities and Steinberg's VST3 validator. The live editor looked right. The license is unchanged: AGPLv3 or commercial, so it is AGPLv3-compatible (§12). Linux CI now installs `libxi-dev`, because JUCE 9 includes XInput2. sst-jucegui (main) also builds and runs on 9.0.4. Windows, Linux and the mac-universal x86_64 slice are left to CI, and 8.0.16-security is the fallback. Supersedes "start on JUCE 8.0.16-security" in #18. See `docs/spikes/m0-juce9.md`. Decided 2026-10-26, during M0; see §15, §21 and §22 |
 
 **Key sources** (checked 2026-10-26):
 - clap-wrapper releases (v0.17.0, 2026-10-20): https://github.com/free-audio/clap-wrapper/releases

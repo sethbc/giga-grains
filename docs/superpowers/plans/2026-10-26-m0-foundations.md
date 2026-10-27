@@ -23,7 +23,7 @@ This follows the Shortcircuit XT template at `~/src/shortcircuit-xt`.
 **Tech Stack:**
 - C++20, CMake ≥ 3.22 with presets, Ninja / VS2022 ClangCL
 - free-audio/clap 1.2.10, clap-helpers, clap-wrapper (`next` @ `4e7afc3`)
-- JUCE 8.0.16-security (GUI only), sst-clap-helpers, sst-cpputils, sst-basic-blocks, simde
+- JUCE 9.0.4 @ `3fb5cbc` (GUI only; was 8.0.16-security until ruling T11), sst-clap-helpers, sst-cpputils, sst-basic-blocks, simde
 - Catch2 v3, fmt, dr_libs, pffft, stb_image_write, CLI11, nlohmann/json
 
 **Spec:** `INTENT.md` (repo root). Read §8 (principles), §14–§20 and §22 before starting any task.
@@ -42,7 +42,7 @@ These apply to every task.
 - Every dependency is a git submodule under `libs/`, pinned to an exact SHA. Record the tag in the commit message.
 - clap: tag `1.2.10`.
 - clap-wrapper: `next` @ `4e7afc3` (v0.17.1 plus the AUv2 loop/beat-0 transport fixes). Never older than v0.17.0.
-- JUCE: tag `8.0.16-security`.
+- JUCE: tag `9.0.4` @ `3fb5cbc` (ruling T11: the Task 11 spike passed, so the pin moved from `8.0.16-security`).
 - Always pass `PLUGIN_FORMATS CLAP VST3 AUV2 STANDALONE` explicitly. Omitting it defaults to including AAX.
 - The argument is spelled `BUNDLE_IDENTIFIER`. SCXT misspells it as `BUNDLE_IDENTIFER`; don't copy that.
 
@@ -560,7 +560,7 @@ These are the five failure modes most likely to bite users that the spec implies
 ### Task 9: GUI shell and canvas stress spike
 
 **Files:**
-- Submodules: `libs/JUCE` (tag `8.0.16-security`), `libs/sst/sst-clap-helpers` (SHA `f17567a`)
+- Submodules: `libs/JUCE` (tag `8.0.16-security` when Task 9 ran; now tag `9.0.4` @ `3fb5cbc` per ruling T11), `libs/sst/sst-clap-helpers` (SHA `f17567a`)
 - Create: `ui/CMakeLists.txt` with two targets: `gg-ui-core` (STATIC, framework-free: `SplatRenderer`) and `gg-ui` (STATIC, JUCE: `Editor`, links `gg-ui-core`, `clap_juce_shim`, `clap_juce_shim_headers`). Plus `ui/include/gg/ui/SplatRenderer.h`, `ui/src/SplatRenderer.cpp`, `ui/include/gg/ui/Editor.h`, `ui/src/Editor.cpp`.
 - Modify:
   - `libs/CMakeLists.txt`: `add_subdirectory(sst/sst-clap-helpers)` and `add_clap_juce_shim(JUCE_PATH ${GG_JUCE_PATH})`

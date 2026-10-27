@@ -73,9 +73,11 @@ jobs:
           os: ${{ runner.os }}
           gccversion: 12
 
-      - name: Install Ninja and Xvfb (Linux)
+      # libxi-dev: JUCE 9's juce_gui_basics includes <X11/extensions/XInput2.h> on Linux
+      # (JUCE_USE_XINPUT defaults to 1), and prepare-for-juce doesn't install it.
+      - name: Install Ninja, Xvfb and libxi-dev (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get install -y ninja-build xvfb
+        run: sudo apt-get install -y ninja-build xvfb libxi-dev
 
       - name: Install Ninja (macOS)
         if: runner.os == 'macOS'
