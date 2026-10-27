@@ -83,22 +83,12 @@ set(SST_PLUGININFRA_PROVIDE_MINIZ OFF CACHE BOOL "Giga Grains doesn't use miniz"
 set(SST_PLUGININFRA_PROVIDE_STRNATCMP ON CACHE BOOL "Declared, never built: sst-plugininfra's own target links it" FORCE)
 set(SST_PLUGININFRA_BUILD_TESTS OFF CACHE BOOL "Don't build sst-plugininfra's tests" FORCE)
 add_subdirectory(sst/sst-plugininfra EXCLUDE_FROM_ALL)
-# sst-plugininfra's filesystem shim, which tinyxml links PUBLIC, puts -fno-char8_t (MSVC:
-# /Zc:char8_t-) on everything that links it, and so, through gg-core, on our code and tests:
-# C++20 without char8_t, which nlohmann_json doesn't compile under. Only tinyxml's own sources
-# need it (TiXmlDocument::LoadFile assigns a path's u8string() to a std::string; its header
-# declares nothing that depends on it), so the flags move from the shim's interface to tinyxml's
-# private options.
-get_target_property(gg_plugininfra_fs sst-plugininfra::filesystem ALIASED_TARGET)
-get_target_property(gg_plugininfra_fs_options ${gg_plugininfra_fs} INTERFACE_COMPILE_OPTIONS)
-if (gg_plugininfra_fs_options)
-    set(gg_plugininfra_char8_options ${gg_plugininfra_fs_options})
-    list(FILTER gg_plugininfra_char8_options INCLUDE REGEX "char8_t")
-    list(FILTER gg_plugininfra_fs_options EXCLUDE REGEX "char8_t")
-    set_property(TARGET ${gg_plugininfra_fs} PROPERTY INTERFACE_COMPILE_OPTIONS
-            ${gg_plugininfra_fs_options})
-    target_compile_options(tinyxml PRIVATE ${gg_plugininfra_char8_options})
-endif ()
+# Every translation unit that includes tinyxml.h compiles with char8_t off: sst-plugininfra's
+# filesystem shim, which tinyxml links PUBLIC, puts -fno-char8_t (MSVC: /Zc:char8_t-) on its
+# consumers, and the import.h that tinyxml.h includes needs it on Windows (path.u8string() into a
+# std::string). The flag stays where upstream puts it. gg-core links patchbase PRIVATE and keeps
+# PatchBase out of its public headers, so only gg-core's own sources get it (ruling M1-l): the
+# rest of our code, nlohmann_json's users included, keeps C++20's char8_t.
 
 # The plugins come in two layers (plugin/CMakeLists.txt):
 # - the plugin core, which needs only header-only CLAP libraries from these submodules, so

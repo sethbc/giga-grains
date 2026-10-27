@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright 2026, the Giga Grains authors (see git history)
 
-#include "gg/core/Patch.h"
+#include "Patch.h"
 
 #include <algorithm>
 #include <bit>

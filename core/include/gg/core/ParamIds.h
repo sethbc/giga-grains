@@ -41,6 +41,10 @@ enum class ParamSlot : uint8_t
 
 inline constexpr size_t kParamCount = static_cast<size_t>(ParamSlot::Count);
 
+/// One value per parameter, indexed by ParamSlot: the patch's values as the processor, the
+/// plugin and the saved state (gg/core/PatchState.h) hold them. Floats end to end.
+using ParamValues = std::array<float, kParamCount>;
+
 namespace detail
 {
 /// `id = (scope << 16) | index`: scope 0 is global, scopes 1 to 4 are layers A to D, and index 0
@@ -85,8 +89,9 @@ constexpr std::optional<ParamSlot> slotForId(clap_id id) noexcept
 /// literal constants (INTENT §14), never computed at run time.
 ///
 /// Static storage: the table is built on the first call, which allocates, and every later call
-/// returns the same objects. Make the first call off the audio thread; constructing a Patch does.
-/// `slot` must be a parameter, not ParamSlot::Count.
+/// returns the same objects. Make the first call off the audio thread; saving or loading a state
+/// does. `slot` must be a parameter: ParamSlot::Count asserts, and in release builds returns the
+/// last parameter's metadata rather than read out of bounds.
 const sst::basic_blocks::params::ParamMetaData &paramMeta(ParamSlot slot);
 } // namespace gg::core
 

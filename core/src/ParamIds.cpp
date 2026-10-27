@@ -4,6 +4,7 @@
 
 #include "gg/core/ParamIds.h"
 
+#include <algorithm>
 #include <cassert>
 
 #include <clap/ext/params.h>
@@ -105,6 +106,6 @@ const sst::basic_blocks::params::ParamMetaData &paramMeta(ParamSlot slot)
     static const std::array<md_t, kParamCount> table = buildTable();
     const auto i = static_cast<size_t>(slot);
     assert(i < kParamCount);
-    return table[i];
+    return table[std::min(i, kParamCount - 1)];
 }
 } // namespace gg::core

@@ -2,10 +2,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright 2026, the Giga Grains authors (see git history)
 
-// The patch: the ten slice parameters (spec §4) and their versioned XML state. The IDs, names,
-// ranges and defaults are spelled out literally, from Global Constraints' parameter table, so a
-// change to gg/core/ParamIds.h or ParamIds.cpp fails these tests. CLAP parameter IDs are frozen
-// at the first public release and append-only (INTENT §18).
+// The patch: the ten slice parameters (spec §4) and their versioned XML state, through gg-core's
+// public API only (gg/core/ParamIds.h, gg/core/PatchState.h). This file never includes
+// sst-plugininfra or tinyxml (ruling M1-l). The IDs, names, ranges and defaults are spelled out
+// literally, from Global Constraints' parameter table, so a change to gg/core/ParamIds.h or
+// ParamIds.cpp fails these tests. CLAP parameter IDs are frozen at the first public release and
+// append-only (INTENT §18).
 
 #include <algorithm>
 #include <array>
@@ -13,10 +15,12 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <limits>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <vector>
 
 #include <catch2/catch_test_macros.hpp>
@@ -24,13 +28,15 @@
 #include <clap/clap.h>
 
 #include "gg/core/ParamIds.h"
-#include "gg/core/Patch.h"
+#include "gg/core/PatchState.h"
 #include "gg/core/Rng.h"
 #include "sst/basic-blocks/params/ParamMetadata.h"
 
+using gg::core::fromStateXml;
 using gg::core::kParamCount;
 using gg::core::ParamSlot;
-using gg::core::Patch;
+using gg::core::ParamValues;
+using gg::core::toStateXml;
 
 namespace
 {
@@ -61,7 +67,15 @@ constexpr std::array<Expected, kParamCount> kTable{{
 
 uint32_t bitsOf(float f) { return std::bit_cast<uint32_t>(f); }
 
-ParamSlot slotAt(size_t i) { return static_cast<ParamSlot>(i); }
+ParamValues defaults()
+{
+    ParamValues v{};
+    for (size_t i = 0; i < kParamCount; ++i)
+    {
+        v[i] = kTable[i].defaultVal;
+    }
+    return v;
+}
 
 // A random value in [lo, hi], from the engine's counter-based RNG (no std:: distributions).
 float randomIn(float lo, float hi, uint64_t index)
@@ -81,34 +95,49 @@ std::string replaceOnce(std::string s, std::string_view from, std::string_view t
     return s;
 }
 
-// Everything a load must leave untouched when it fails.
-struct Snapshot
+// What a load writes: the values, the seed and the migration report. A failed load must leave
+// all three untouched.
+struct Loaded
 {
-    std::array<uint32_t, kParamCount> valueBits{};
+    ParamValues values{};
     uint64_t seed{0};
-    std::string name;
+    uint32_t migratedFromVersion{0};
 
-    explicit Snapshot(const Patch &p) : seed(p.seed), name(p.name)
+    bool load(std::string_view xml)
     {
+        return fromStateXml(xml, values, seed, &migratedFromVersion);
+    }
+
+    std::array<uint32_t, kParamCount> valueBits() const
+    {
+        std::array<uint32_t, kParamCount> b{};
         for (size_t i = 0; i < kParamCount; ++i)
         {
-            valueBits[i] = bitsOf(p.param(slotAt(i)).value);
+            b[i] = bitsOf(values[i]);
         }
+        return b;
     }
-    bool operator==(const Snapshot &) const = default;
+    bool sameAs(const Loaded &o) const
+    {
+        return valueBits() == o.valueBits() && seed == o.seed &&
+               migratedFromVersion == o.migratedFromVersion;
+    }
+    float operator[](ParamSlot s) const { return values[static_cast<size_t>(s)]; }
 };
 
-// A patch whose every value, seed and name differ from a fresh one's.
-void makeDistinct(Patch &p)
+// Values, seed and migration report that differ from every load's result.
+Loaded distinct()
 {
+    Loaded l;
     for (size_t i = 0; i < kParamCount; ++i)
     {
         const auto &e = kTable[i];
-        p.param(e.slot).value = e.minVal + 0.25f * (e.maxVal - e.minVal);
-        REQUIRE(p.param(e.slot).value != e.defaultVal);
+        l.values[i] = e.minVal + 0.25f * (e.maxVal - e.minVal);
+        REQUIRE(l.values[i] != e.defaultVal);
     }
-    p.seed = 42;
-    std::strncpy(p.name, "Before", sizeof(p.name) - 1);
+    l.seed = 42;
+    l.migratedFromVersion = 12345;
+    return l;
 }
 
 // A state written by hand, the way PatchBase writes it: <p id> in decimal.
@@ -129,6 +158,7 @@ std::string handState(std::string_view params, std::string_view version = "1",
 TEST_CASE("param ids, names, ranges and defaults are pinned", "[core]")
 {
     STATIC_REQUIRE(kParamCount == 10);
+    STATIC_REQUIRE(std::is_same_v<ParamValues, std::array<float, 10>>);
 
     for (size_t i = 0; i < kParamCount; ++i)
     {
@@ -152,6 +182,7 @@ TEST_CASE("param ids, names, ranges and defaults are pinned", "[core]")
         // Static storage, built once: the same object every call.
         CHECK(&gg::core::paramMeta(e.slot) == &m);
     }
+    CHECK(gg::core::paramId(ParamSlot::Count) == CLAP_INVALID_ID);
 
     // Freeze is the only stepped parameter; it's an on/off switch.
     CHECK(gg::core::paramMeta(ParamSlot::Freeze).type ==
@@ -167,24 +198,36 @@ TEST_CASE("param ids, names, ranges and defaults are pinned", "[core]")
     }
 }
 
-TEST_CASE("a new patch holds the ten params in slot order at their defaults", "[core]")
+TEST_CASE("the state lists the ten params in slot order", "[core]")
 {
-    Patch p;
-    REQUIRE(p.params.size() == kParamCount);
-    REQUIRE(p.paramMap.size() == kParamCount);
-    for (size_t i = 0; i < kParamCount; ++i)
+    CHECK(gg::core::kPatchVersion == 1u);
+    const auto state = toStateXml(defaults(), 0);
+    CHECK(state.starts_with(R"(<patch id="org.sethbc.giga-grains.patch" version="1" )"));
+
+    // Each param once, in slot order, its id in decimal, with its float bits.
+    size_t from = 0;
+    for (const auto &e : kTable)
     {
-        const auto &e = kTable[i];
         INFO("param " << e.name);
-        CHECK(p.params[i] == &p.param(e.slot));
-        CHECK(p.params[i]->meta.id == e.id);
-        CHECK(p.paramMap.at(e.id) == &p.param(e.slot));
-        CHECK(p.param(e.slot).value == e.defaultVal);
+        const auto tag = R"(<p id=")" + std::to_string(e.id) + R"(" )";
+        const auto at = state.find(tag);
+        REQUIRE(at != std::string::npos);
+        CHECK(at >= from);
+        CHECK(state.find(tag, at + 1) == std::string::npos);
+        from = at;
+
+        char bits[9];
+        std::snprintf(bits, sizeof(bits), "%08x", static_cast<unsigned>(bitsOf(e.defaultVal)));
+        CHECK(state.find(std::string(R"(bits=")") + bits + R"(")", at) < state.find("/>", at));
     }
-    CHECK(p.seed == 0u);
-    CHECK(std::string_view(p.name) == "Init");
-    CHECK(Patch::patchVersion == 1u);
-    CHECK(std::string_view(Patch::id) == "org.sethbc.giga-grains.patch");
+    CHECK(state.find(R"(<engine seed="0" />)") != std::string::npos);
+
+    // The defaults load back as the defaults.
+    Loaded l = distinct();
+    REQUIRE(l.load(state));
+    CHECK(l.valueBits() == Loaded{defaults(), 0, 0}.valueBits());
+    CHECK(l.seed == 0u);
+    CHECK(l.migratedFromVersion == 0u);
 }
 
 TEST_CASE("display text follows the engine mapping", "[core]")
@@ -247,13 +290,13 @@ TEST_CASE("value text round trip", "[core]")
 TEST_CASE("state round trips exactly", "[core]")
 {
     // 1,000 random in-range values per param, then each param's min, default and max. Each
-    // round is one state: every param set, saved, loaded into a new patch, compared bit for bit
-    // (which implies ==).
+    // round is one state: every param set, saved, loaded, compared bit for bit (which implies
+    // ==).
     constexpr size_t kRandomRounds = 1000;
-    std::vector<std::array<float, kParamCount>> rounds;
+    std::vector<ParamValues> rounds;
     for (size_t r = 0; r < kRandomRounds; ++r)
     {
-        std::array<float, kParamCount> v{};
+        ParamValues v{};
         for (size_t i = 0; i < kParamCount; ++i)
         {
             v[i] = randomIn(kTable[i].minVal, kTable[i].maxVal, r * kParamCount + i);
@@ -262,7 +305,7 @@ TEST_CASE("state round trips exactly", "[core]")
     }
     for (int which = 0; which < 3; ++which)
     {
-        std::array<float, kParamCount> v{};
+        ParamValues v{};
         for (size_t i = 0; i < kParamCount; ++i)
         {
             const auto &e = kTable[i];
@@ -274,20 +317,14 @@ TEST_CASE("state round trips exactly", "[core]")
     size_t valuesChecked = 0;
     for (size_t r = 0; r < rounds.size(); ++r)
     {
-        Patch saved;
-        saved.seed = 0x0123456789abcdefull;
-        for (size_t i = 0; i < kParamCount; ++i)
-        {
-            saved.param(slotAt(i)).value = rounds[r][i];
-        }
-        const auto state = saved.toState();
+        const auto state = toStateXml(rounds[r], 0x0123456789abcdefull);
 
-        Patch loaded;
-        REQUIRE(loaded.fromState(state));
+        Loaded loaded = distinct();
+        REQUIRE(loaded.load(state));
         for (size_t i = 0; i < kParamCount; ++i)
         {
             const float want = rounds[r][i];
-            const float got = loaded.param(slotAt(i)).value;
+            const float got = loaded.values[i];
             if (bitsOf(got) != bitsOf(want) || !(got == want))
             {
                 INFO("round " << r << ", param " << kTable[i].name);
@@ -298,7 +335,7 @@ TEST_CASE("state round trips exactly", "[core]")
         CHECK(loaded.seed == 0x0123456789abcdefull);
         CHECK(loaded.migratedFromVersion == 0u);
         // Saving what was loaded writes the same state again.
-        CHECK(loaded.toState() == state);
+        CHECK(toStateXml(loaded.values, loaded.seed) == state);
     }
     CHECK(valuesChecked == (kRandomRounds + 3) * kParamCount);
 }
@@ -306,9 +343,9 @@ TEST_CASE("state round trips exactly", "[core]")
 TEST_CASE("state keeps values its 12-decimal text can't", "[core]")
 {
     // PatchBase writes v with 12 fixed decimals, which can't hold a float below about 1.5e-5
-    // exactly. The patch also writes each value's float bits, so these still come back exactly.
-    // The first four can't survive the text; the last two are a float either side of 2^-16,
-    // where the text's resolution meets the float spacing.
+    // exactly. The state also carries each value's float bits, so these still come back
+    // exactly. The first four can't survive the text; the last two are a float either side of
+    // 2^-16, where the text's resolution meets the float spacing.
     const std::array<float, 6> tiny{1.2345678e-7f,
                                     -1.2345678e-7f,
                                     std::numeric_limits<float>::denorm_min(),
@@ -319,19 +356,18 @@ TEST_CASE("state keeps values its 12-decimal text can't", "[core]")
     size_t lostByText = 0;
     for (float t : tiny)
     {
-        Patch saved;
+        ParamValues saved{};
         for (size_t i = 0; i < kParamCount; ++i)
         {
-            const auto &e = kTable[i];
-            saved.param(e.slot).value = std::clamp(t, e.minVal, e.maxVal);
+            saved[i] = std::clamp(t, kTable[i].minVal, kTable[i].maxVal);
         }
-        const auto state = saved.toState();
-        Patch loaded;
-        REQUIRE(loaded.fromState(state));
+        const auto state = toStateXml(saved, 0);
+        Loaded loaded = distinct();
+        REQUIRE(loaded.load(state));
         for (size_t i = 0; i < kParamCount; ++i)
         {
             INFO("value " << t << ", param " << kTable[i].name);
-            CHECK(bitsOf(loaded.param(slotAt(i)).value) == bitsOf(saved.param(slotAt(i)).value));
+            CHECK(bitsOf(loaded.values[i]) == bitsOf(saved[i]));
         }
 
         // The text alone would have lost it: Pitch's range takes either sign.
@@ -352,27 +388,23 @@ TEST_CASE("state seed round trips at its extremes", "[core]")
                           std::numeric_limits<uint64_t>::max()})
     {
         INFO("seed " << seed);
-        Patch saved;
-        saved.seed = seed;
-        Patch loaded;
+        Loaded loaded = distinct();
         loaded.seed = 7;
-        REQUIRE(loaded.fromState(saved.toState()));
+        REQUIRE(loaded.load(toStateXml(defaults(), seed)));
         CHECK(loaded.seed == seed);
     }
 }
 
 TEST_CASE("patch rejects or sanitizes bad state", "[core]")
 {
-    Patch source;
-    makeDistinct(source);
-    source.seed = 0x0123456789abcdefull;
-    const auto good = source.toState();
+    const Loaded source = distinct();
+    const uint64_t sourceSeed = 0x0123456789abcdefull;
+    const auto good = toStateXml(source.values, sourceSeed);
 
-    Patch p;
-    makeDistinct(p);
-    const Snapshot before(p);
+    Loaded p = distinct();
+    const Loaded before = distinct();
 
-    SECTION("truncated XML fails and leaves the patch untouched")
+    SECTION("truncated XML fails and writes nothing")
     {
         // Every cut short of the root element's end tag.
         const auto end = good.rfind("</patch>");
@@ -380,18 +412,18 @@ TEST_CASE("patch rejects or sanitizes bad state", "[core]")
         for (size_t n = 0; n < end + std::strlen("</patch>"); ++n)
         {
             INFO("cut at " << n << " of " << good.size());
-            REQUIRE_FALSE(p.fromState(good.substr(0, n)));
-            REQUIRE(Snapshot(p) == before);
+            REQUIRE_FALSE(p.load(std::string_view(good).substr(0, n)));
+            REQUIRE(p.sameAs(before));
         }
     }
 
     SECTION("another patch's id fails")
     {
-        CHECK_FALSE(p.fromState(
-            replaceOnce(good, R"(id="org.sethbc.giga-grains.patch")", R"(id="other")")));
-        CHECK(Snapshot(p) == before);
-        CHECK_FALSE(p.fromState(replaceOnce(good, R"(id="org.sethbc.giga-grains.patch")", "")));
-        CHECK(Snapshot(p) == before);
+        CHECK_FALSE(
+            p.load(replaceOnce(good, R"(id="org.sethbc.giga-grains.patch")", R"(id="other")")));
+        CHECK(p.sameAs(before));
+        CHECK_FALSE(p.load(replaceOnce(good, R"(id="org.sethbc.giga-grains.patch")", "")));
+        CHECK(p.sameAs(before));
     }
 
     SECTION("not a patch fails")
@@ -404,8 +436,8 @@ TEST_CASE("patch rejects or sanitizes bad state", "[core]")
               replaceOnce(good, R"(version="1")", R"(version="one")"), noParams})
         {
             INFO("state '" << bad << "'");
-            CHECK_FALSE(p.fromState(bad));
-            CHECK(Snapshot(p) == before);
+            CHECK_FALSE(p.load(bad));
+            CHECK(p.sameAs(before));
         }
     }
 
@@ -415,72 +447,64 @@ TEST_CASE("patch rejects or sanitizes bad state", "[core]")
         // %d reads as id 0, also unknown.
         auto withUnknown = replaceOnce(
             good, "<params>", R"(<params><p id="7829367" v="0.5" /><p id="0x777777" v="0.5" />)");
-        REQUIRE(p.fromState(withUnknown));
-        for (size_t i = 0; i < kParamCount; ++i)
-        {
-            INFO("param " << kTable[i].name);
-            CHECK(bitsOf(p.param(slotAt(i)).value) == bitsOf(source.param(slotAt(i)).value));
-        }
-        CHECK(p.seed == source.seed);
+        REQUIRE(p.load(withUnknown));
+        CHECK(p.valueBits() == source.valueBits());
+        CHECK(p.seed == sourceSeed);
     }
 
     SECTION("out-of-range and non-numeric values are clamped or ignored")
     {
-        REQUIRE(p.fromState(handState(R"(<p id="2" v="1e9" />)"
-                                      R"(<p id="65541" v="-1e9" />)"
-                                      R"(<p id="1" v="nan" />)"
-                                      R"(<p id="65540" v="inf" />)"
-                                      R"(<p id="65544" v="7" />)")));
-        CHECK(p.param(ParamSlot::Level).value == 12.f);
-        CHECK(p.param(ParamSlot::Pitch).value == -24.f);
-        CHECK(p.param(ParamSlot::Freeze).value == 1.f);
+        REQUIRE(p.load(handState(R"(<p id="2" v="1e9" />)"
+                                 R"(<p id="65541" v="-1e9" />)"
+                                 R"(<p id="1" v="nan" />)"
+                                 R"(<p id="65540" v="inf" />)"
+                                 R"(<p id="65544" v="7" />)")));
+        CHECK(p[ParamSlot::Level] == 12.f);
+        CHECK(p[ParamSlot::Pitch] == -24.f);
+        CHECK(p[ParamSlot::Freeze] == 1.f);
         // NaN and infinity: either unreadable (the param keeps its default) or clamped.
-        const float mix = p.param(ParamSlot::Mix).value;
+        const float mix = p[ParamSlot::Mix];
         CHECK(std::isfinite(mix));
         CHECK((mix == 0.5f || mix == 0.f || mix == 1.f));
-        const float distribution = p.param(ParamSlot::Distribution).value;
+        const float distribution = p[ParamSlot::Distribution];
         CHECK((distribution == 0.5f || distribution == 1.f));
         // Params the state doesn't mention take their defaults.
-        CHECK(p.param(ParamSlot::Density).value == 4.0f);
+        CHECK(p[ParamSlot::Density] == 4.0f);
         CHECK(p.seed == 0u);
+        CHECK(p.migratedFromVersion == 0u);
     }
 
     SECTION("float bits that disagree with v are ignored")
     {
         // A hand-edited v wins over stale bits; bits that can't be parsed are ignored too.
-        REQUIRE(p.fromState(handState(R"(<p id="65541" v="3.0" bits="3f800000" />)"
-                                      R"(<p id="2" v="-6.0" bits="7fc00000" />)"
-                                      R"(<p id="1" v="0.25" bits="3e8" />)"
-                                      R"(<p id="65542" v="1e9" bits="7f800000" />)")));
-        CHECK(p.param(ParamSlot::Pitch).value == 3.f);
-        CHECK(p.param(ParamSlot::Level).value == -6.f);
-        CHECK(p.param(ParamSlot::Mix).value == 0.25f);
-        CHECK(p.param(ParamSlot::Spray).value == 1.f);
+        REQUIRE(p.load(handState(R"(<p id="65541" v="3.0" bits="3f800000" />)"
+                                 R"(<p id="2" v="-6.0" bits="7fc00000" />)"
+                                 R"(<p id="1" v="0.25" bits="3e8" />)"
+                                 R"(<p id="65542" v="1e9" bits="7f800000" />)")));
+        CHECK(p[ParamSlot::Pitch] == 3.f);
+        CHECK(p[ParamSlot::Level] == -6.f);
+        CHECK(p[ParamSlot::Mix] == 0.25f);
+        CHECK(p[ParamSlot::Spray] == 1.f);
     }
 
     SECTION("a newer version loads through the migration hooks")
     {
         auto newer = replaceOnce(good, R"(version="1")", R"(version="99")");
-        REQUIRE(p.fromState(newer));
+        REQUIRE(p.load(newer));
         CHECK(p.migratedFromVersion == 99u);
-        for (size_t i = 0; i < kParamCount; ++i)
-        {
-            INFO("param " << kTable[i].name);
-            CHECK(bitsOf(p.param(slotAt(i)).value) == bitsOf(source.param(slotAt(i)).value));
-        }
-        CHECK(p.seed == source.seed);
+        CHECK(p.valueBits() == source.valueBits());
+        CHECK(p.seed == sourceSeed);
 
         // The next load at the current version needs no migration.
-        REQUIRE(p.fromState(good));
+        REQUIRE(p.load(good));
         CHECK(p.migratedFromVersion == 0u);
     }
 
     SECTION("a missing or malformed seed loads as seed 0")
     {
-        REQUIRE(p.fromState(handState(R"(<p id="1" v="0.25" />)")));
+        REQUIRE(p.load(handState(R"(<p id="1" v="0.25" />)")));
         CHECK(p.seed == 0u);
-        CHECK(p.param(ParamSlot::Mix).value == 0.25f);
-        CHECK(std::string_view(p.name) == "Hand");
+        CHECK(p[ParamSlot::Mix] == 0.25f);
 
         for (std::string_view bad :
              {R"(<engine seed="-1" />)", R"(<engine seed="0x10" />)",
@@ -489,8 +513,17 @@ TEST_CASE("patch rejects or sanitizes bad state", "[core]")
         {
             INFO("engine element " << bad);
             p.seed = 9;
-            REQUIRE(p.fromState(handState(R"(<p id="1" v="0.25" />)", "1", bad)));
+            REQUIRE(p.load(handState(R"(<p id="1" v="0.25" />)", "1", bad)));
             CHECK(p.seed == 0u);
         }
+    }
+
+    SECTION("the migration report is optional")
+    {
+        ParamValues values{};
+        uint64_t seed = 5;
+        REQUIRE(fromStateXml(good, values, seed));
+        CHECK(seed == sourceSeed);
+        CHECK(values[0] == source.values[0]);
     }
 }
