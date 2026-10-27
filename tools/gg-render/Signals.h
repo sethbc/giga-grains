@@ -17,8 +17,9 @@ namespace gg::render
 /// source length, is the same on every platform.
 int64_t framesFor(double seconds, double sampleRate) noexcept;
 
-/// The source a render reads. Synthesized sources are mono, at sampleRate, and
-/// framesFor(seconds, sampleRate) frames long; sample n is at time t = n / sampleRate:
+/// The source a render reads. Synthesized sources are mono, at rate r = source.sampleRate if it
+/// is set and `sampleRate` (the render's rate) otherwise, and framesFor(seconds, r) frames long;
+/// sample n is at time t = n / r:
 /// - sine: amplitude · sin(2π · frequencyHz · t);
 /// - sweep: exponential from startHz to endHz over `seconds`, i.e. instantaneous frequency
 ///   startHz · (endHz / startHz)^(t / seconds), starting at phase 0;

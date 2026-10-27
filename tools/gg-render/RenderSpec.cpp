@@ -50,6 +50,8 @@ class Object
         }
     }
 
+    bool has(std::string_view key) const { return j_.find(key) != j_.end(); }
+
     const json &member(std::string_view key) const
     {
         const auto it = j_.find(key);
@@ -114,8 +116,9 @@ class Object
 
 SourceSpec readSource(const json &j)
 {
-    const Object o(j, "source", "source.",
-                   {"kind", "frequencyHz", "startHz", "endHz", "seconds", "amplitude", "path"});
+    const Object o(
+        j, "source", "source.",
+        {"kind", "frequencyHz", "startHz", "endHz", "seconds", "amplitude", "sampleRate", "path"});
     SourceSpec s;
     const std::string kind = o.string("kind");
     if (kind == "sine")
@@ -154,6 +157,10 @@ SourceSpec readSource(const json &j)
     {
         throw SpecError("source.amplitude must be >= 0");
     }
+    if (o.has("sampleRate"))
+    {
+        s.sampleRate = o.positive("sampleRate", kMaxSampleRate);
+    }
     return s;
 }
 
@@ -165,6 +172,12 @@ StreamSpec readStream(const json &j)
     StreamSpec s;
     s.grainRateHz = o.number("grainRateHz");
     s.grainDurationMs = o.number("grainDurationMs");
+    if (s.grainDurationMs > kMaxSeconds * 1000.0)
+    {
+        // The release tail lasts up to one grain, so this also bounds the render's length.
+        throw SpecError(
+            fmt::format("stream.grainDurationMs must be at most {}", kMaxSeconds * 1000.0));
+    }
     s.position = o.number("position");
     s.positionJitter = o.number("positionJitter");
     s.pitchSemitones = o.number("pitchSemitones");

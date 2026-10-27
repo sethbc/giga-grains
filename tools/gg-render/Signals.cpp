@@ -34,7 +34,8 @@ gg::metrics::AudioData makeSignal(const SourceSpec &source, double sampleRate, u
         return std::move(*audio);
     }
 
-    const auto frames = static_cast<std::size_t>(framesFor(source.seconds, sampleRate));
+    const double rate = source.sampleRate.value_or(sampleRate);
+    const auto frames = static_cast<std::size_t>(framesFor(source.seconds, rate));
     std::vector<float> x(frames);
     const double amp = source.amplitude;
     constexpr double twoPi = 2.0 * std::numbers::pi;
@@ -44,7 +45,7 @@ gg::metrics::AudioData makeSignal(const SourceSpec &source, double sampleRate, u
     case SourceKind::Sine:
         for (std::size_t n = 0; n < frames; ++n)
         {
-            const double t = static_cast<double>(n) / sampleRate;
+            const double t = static_cast<double>(n) / rate;
             x[n] = static_cast<float>(amp * std::sin(twoPi * source.frequencyHz * t));
         }
         break;
@@ -57,7 +58,7 @@ gg::metrics::AudioData makeSignal(const SourceSpec &source, double sampleRate, u
         const double k = std::log(source.endHz / f0);
         for (std::size_t n = 0; n < frames; ++n)
         {
-            const double t = static_cast<double>(n) / sampleRate;
+            const double t = static_cast<double>(n) / rate;
             const double phase =
                 k == 0.0 ? twoPi * f0 * t : twoPi * f0 * bigT / k * std::expm1(k * t / bigT);
             x[n] = static_cast<float>(amp * std::sin(phase));
@@ -74,6 +75,6 @@ gg::metrics::AudioData makeSignal(const SourceSpec &source, double sampleRate, u
     case SourceKind::File:
         break; // handled above
     }
-    return {sampleRate, {std::move(x)}};
+    return {rate, {std::move(x)}};
 }
 } // namespace gg::render

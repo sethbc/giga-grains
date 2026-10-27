@@ -133,6 +133,33 @@ TEST_CASE("sine and sweep have the requested level and frequency", "[render]")
                WithinRel(50.0 * std::pow(160.0, 0.75), 0.03));
 }
 
+TEST_CASE("synthesized sources use source.sampleRate, defaulting to the render rate", "[render]")
+{
+    SourceSpec sine{
+        .kind = SourceKind::Sine, .frequencyHz = 220.0, .seconds = 2.0, .amplitude = 0.5};
+
+    const AudioData atRenderRate = makeSignal(sine, 44100.0, 1);
+    CHECK(atRenderRate.sampleRate == 44100.0);
+    REQUIRE(atRenderRate.channels.size() == 1);
+    CHECK(atRenderRate.channels[0].size() == 88200);
+    CHECK_THAT(zeroCrossingHz(atRenderRate.channels[0], 44100.0, 0.5, 1.5), WithinAbs(220.0, 1.0));
+
+    sine.sampleRate = 48000.0;
+    const AudioData atOwnRate = makeSignal(sine, 44100.0, 1);
+    CHECK(atOwnRate.sampleRate == 48000.0);
+    REQUIRE(atOwnRate.channels.size() == 1);
+    CHECK(atOwnRate.channels[0].size() == 96000);
+    CHECK_THAT(zeroCrossingHz(atOwnRate.channels[0], 48000.0, 0.5, 1.5), WithinAbs(220.0, 1.0));
+
+    // Noise too: the same draws, at the source's own rate.
+    const SourceSpec noise{
+        .kind = SourceKind::Noise, .seconds = 1.0, .amplitude = 0.5, .sampleRate = 96000.0};
+    const AudioData n = makeSignal(noise, 48000.0, 1);
+    CHECK(n.sampleRate == 96000.0);
+    REQUIRE(n.channels.size() == 1);
+    CHECK(n.channels[0].size() == 96000);
+}
+
 TEST_CASE("file sources keep their channels and sample rate", "[render]")
 {
     const AudioData written{44100.0, {{0.0f, 0.25f, -0.5f, 1.0f}, {0.125f, 0.0f, 0.0f, -1.0f}}};

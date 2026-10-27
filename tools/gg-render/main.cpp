@@ -4,7 +4,8 @@
 
 // gg-render: renders a render spec (RenderSpec.h) offline and deterministically, writes the
 // audio, its metrics, its grain-event log and a spectrogram, and compares the metrics and the
-// event log with goldens.
+// event log with goldens. A render is durationSeconds of stream activity plus a release tail
+// until all grains finish (render() in Render.h).
 //
 //   gg-render <spec.json> [-o out.wav] [--metrics out.json] [--events out.jsonl]
 //             [--spectrogram out.png] [--compare golden.metrics.json]
@@ -32,6 +33,7 @@
 
 #include "Render.h"
 #include "RenderSpec.h"
+#include "Signals.h"
 #include "gg/metrics/AudioData.h"
 #include "gg/metrics/Metrics.h"
 #include "gg/metrics/Spectrogram.h"
@@ -147,8 +149,9 @@ bool compareEvents(const std::vector<std::string> &golden, const std::vector<std
 int main(int argc, char **argv)
 {
     CLI::App app{"Renders a Giga Grains render spec offline and deterministically, and compares "
-                 "the result with goldens.\nExit status: 0 = pass, 1 = a comparison failed, "
-                 "2 = bad input or an output that couldn't be written.",
+                 "the result with goldens. It renders durationSeconds of stream activity plus a "
+                 "release tail until all grains finish.\nExit status: 0 = pass, 1 = a comparison "
+                 "failed, 2 = bad input or an output that couldn't be written.",
                  "gg-render"};
     std::string specPath;
     std::string wavPath;
@@ -265,10 +268,12 @@ int main(int argc, char **argv)
         }
     }
 
-    fmt::print("{}: {} frames at {} Hz, {} grains, peak {:.2f} dB, clickScore {:.2f}, "
-               "nonFinite {}, denormals {}\n",
-               specPath, audio.channels[0].size(), spec->sampleRate, events.size(), metrics.peakDb,
-               metrics.clickScore, metrics.nonFinite, metrics.denormals);
+    const auto frames = static_cast<int64_t>(audio.channels[0].size());
+    const int64_t duration = gg::render::framesFor(spec->durationSeconds, spec->sampleRate);
+    fmt::print("{}: {} frames at {} Hz ({} + {} release tail), {} grains, peak {:.2f} dB, "
+               "clickScore {:.2f}, nonFinite {}, denormals {}\n",
+               specPath, frames, spec->sampleRate, duration, frames - duration, events.size(),
+               metrics.peakDb, metrics.clickScore, metrics.nonFinite, metrics.denormals);
 
     bool pass = true;
     if (goldenMetrics)

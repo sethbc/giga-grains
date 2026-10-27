@@ -3,7 +3,8 @@
   "durationSeconds": 3.0,
   "blockSize": 128,
   "seed": 1,
-  "source": {"kind": "sine", "frequencyHz": 220, "seconds": 4.0, "amplitude": 0.5},
+  "source": {"kind": "sine", "frequencyHz": 220, "seconds": 4.0, "amplitude": 0.5,
+             "sampleRate": 48000},
   "stream": {"grainRateHz": 8, "grainDurationMs": 60, "position": 0.5, "positionJitter": 0.2,
              "pitchSemitones": 0, "gain": 0.8}
 }
