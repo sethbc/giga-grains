@@ -549,7 +549,7 @@ These are the five failure modes most likely to bite users that the spec implies
 - [ ] **Step 5: Validate locally.**
   - Run `scripts/fetch-validators.sh tools-bin`, then `cmake --build --preset release --target gg-products`.
   - Run:
-    - `tools-bin/clap-validator validate "build/release/gg-products/Giga Grains.clap"`
+    - `tools-bin/clap-validator validate --exclude '^param-conversions$' "build/release/gg-products/Giga Grains.clap"`. The exclusion works around a divide-by-zero in clap-validator itself on zero-parameter plugins (free-audio/clap-validator#40). Drop it once the plugins have real parameters (M1). *(Ruling T8-c.)*
     - `tools-bin/pluginval --strictness-level 10 --validate "build/release/gg-products/Giga Grains.vst3"`
   - Copy `Giga Grains.component` to `~/Library/Audio/Plug-Ins/Components/`, run `killall -9 AudioComponentRegistrar`, then run `auval -v aumu GGin Sbcx`, `auval -v aufx GGfx Sbcx` and `auval -v aumf GGfx Sbcx`.
   - Expected: every validator reports pass, and all three auval runs end with `AU VALIDATION SUCCEEDED`.
