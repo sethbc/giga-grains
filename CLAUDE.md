@@ -125,8 +125,13 @@ area, use `ctest --preset dev -L <label>`. The labels are:
 - `golden`: the golden renders;
 - `ui`: the splat renderer;
 - `smoke`;
-- `plugin`: the plugins, driven through their CLAP factory. On macOS this label also covers the
-  `codesign_*` strict signature checks, which Ableton Live's scanner needs to pass.
+- `plugin`: the plugins, driven through their CLAP factory. Tests labelled both `plugin` and
+  `rt` put the allocation tripwire on `process` and `params.flush`. On macOS this label also
+  covers checks of the built bundles:
+  - `codesign_*`: strict signature checks, which Ableton Live's scanner needs to pass;
+  - `identity_*`: the frozen identities (INTENT §18), read back from the bundles: both
+    standalone bundle IDs, the AU's three components and the VST3 class IDs. Run them before
+    accepting any clap-wrapper update.
 
 **Golden renders (`gg-render`).** `gg-render` renders a render spec offline and deterministically:
 

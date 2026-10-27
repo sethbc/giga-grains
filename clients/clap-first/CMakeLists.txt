@@ -89,12 +89,21 @@ if (APPLE)
         endif ()
     endforeach ()
 
+    # clap-wrapper's copy (cmake -E copy_directory) writes over the installed bundle in place.
+    # Overwriting a signed binary in place can get the host that loads it killed, because the
+    # kernel has cached the old signature. So each installed bundle is removed first, at exactly
+    # the path clap-wrapper copies to (target_copy_after_build in
+    # libs/clap/clap-wrapper/cmake/shared_prologue.cmake), as cmake/products.cmake does for
+    # gg-products. The path isn't VERBATIM, like clap-wrapper's, so the shell expands the ~.
     if (GG_COPY_PLUGIN_AFTER_BUILD)
-        target_copy_after_build(TARGET gg_clapfirst_clap FLAVOR clap)
-        target_copy_after_build(TARGET gg_clapfirst_vst3 FLAVOR vst3)
-        target_copy_after_build(TARGET gg_clapfirst_auv2 FLAVOR auv2)
+        foreach (install IN ITEMS "clap;CLAP;clap" "vst3;VST3;vst3" "auv2;Components;component")
+            list(GET install 0 flavor)
+            list(GET install 1 folder)
+            list(GET install 2 suffix)
+            add_custom_command(TARGET gg_clapfirst_${flavor} POST_BUILD
+                    COMMAND ${CMAKE_COMMAND} -E rm -rf "~/Library/Audio/Plug-Ins/${folder}/$<TARGET_PROPERTY:gg_clapfirst_${flavor},LIBRARY_OUTPUT_NAME>.${suffix}"
+                    )
+            target_copy_after_build(TARGET gg_clapfirst_${flavor} FLAVOR ${flavor})
+        endforeach ()
     endif ()
 endif ()
-
-# cmake/products.cmake reads this to find the built artifacts.
-set_target_properties(gg_clapfirst_all PROPERTIES ARTEFACT_DIRECTORY ${CMAKE_BINARY_DIR}/gg_assets)

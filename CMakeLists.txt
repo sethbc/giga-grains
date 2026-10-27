@@ -22,8 +22,9 @@ option(GG_COPY_PLUGIN_AFTER_BUILD "Copy plugins to the user plugin folders after
 set(GG_JUCE_PATH "${CMAKE_SOURCE_DIR}/libs/JUCE" CACHE PATH "JUCE checkout used for the UI")
 if (APPLE AND GG_BUILD_PLUGINS)
     # clients/clap-first signs every macOS bundle with this identity after building it, and the
-    # codesign_* tests verify the signatures. "-" signs ad hoc; pass a Developer ID to sign for
-    # distribution.
+    # codesign_* tests verify the signatures. "-" signs ad hoc; a Developer ID signs with a real
+    # identity. That alone doesn't make a distributable bundle: distribution also needs the
+    # hardened runtime, a secure timestamp and notarization, which this build doesn't do yet.
     set(GG_MACOS_CODESIGN_IDENTITY "-" CACHE STRING
             "Identity that signs the macOS plugin bundles and apps: - (ad hoc) or a Developer ID")
     if ("${GG_MACOS_CODESIGN_IDENTITY}" STREQUAL "")

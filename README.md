@@ -21,8 +21,9 @@ the CLAP and VST3 into `~/.clap` and `~/.vst3`; on Windows it does nothing. On m
 is signed ad hoc once it's built, before it's copied: strict hosts such as Ableton Live won't
 load a bundle whose executable carries only the linker's signature. To sign with a real identity
 instead, configure with
-`-DGG_MACOS_CODESIGN_IDENTITY="Developer ID Application: <name> (<team id>)"`. The `codesign_*`
-tests check every signature.
+`-DGG_MACOS_CODESIGN_IDENTITY="Developer ID Application: <name> (<team id>)"`. That alone doesn't
+make the bundles distributable: distribution also needs the hardened runtime, a secure timestamp
+and notarization, which the build doesn't do yet. The `codesign_*` tests check every signature.
 
 The other presets (`release`, the `asan` and `rtsan` sanitizer builds, `mac-universal`), the
 golden renders (`gg-render`), the benchmarks (`gg-bench`), the plugin validators and the

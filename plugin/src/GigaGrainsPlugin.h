@@ -82,7 +82,8 @@ class GigaGrainsPlugin : public plugHelper_t, public sst::clap_juce_shim::Editor
     bool activate(double sampleRate, uint32_t minFrameCount,
                   uint32_t maxFrameCount) noexcept override;
     void deactivate() noexcept override;
-    void reset() noexcept override;
+    /// On the audio thread, never concurrent with process(): real-time safe.
+    void reset() noexcept SST_CPPUTILS_NONBLOCKING override;
     clap_process_status process(const clap_process *process) noexcept override;
 
     bool implementsAudioPorts() const noexcept override { return true; }
@@ -117,7 +118,9 @@ class GigaGrainsPlugin : public plugHelper_t, public sst::clap_juce_shim::Editor
     {
         return false;
     }
-    void paramsFlush(const clap_input_events *in, const clap_output_events *out) noexcept override;
+    /// On the audio thread while active (and on the main thread while not): real-time safe.
+    void paramsFlush(const clap_input_events *in,
+                     const clap_output_events *out) noexcept SST_CPPUTILS_NONBLOCKING override;
 
   private:
     clap_process_status

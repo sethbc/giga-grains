@@ -42,7 +42,9 @@ target_compile_definitions(gg-tests PRIVATE GG_USE_RTSAN=$<BOOL:${GG_USE_RTSAN}>
 if (GG_BUILD_PLUGINS)
     target_sources(gg-tests PRIVATE
             plugin/factory_tests.cpp
+            plugin/identity_tests.cpp
             plugin/process_tests.cpp
+            plugin/rt_tests.cpp
             )
     target_include_directories(gg-tests PRIVATE ${CMAKE_SOURCE_DIR}/plugin/src)
     target_link_libraries(gg-tests PRIVATE gg::plugin-impl)
@@ -158,4 +160,37 @@ if (APPLE AND GG_BUILD_PLUGINS)
                 $<TARGET_BUNDLE_DIR:gg_clapfirst_${format}>)
         set_tests_properties(codesign_${format} PROPERTIES LABELS plugin)
     endforeach ()
+
+    # Identities (INTENT §18), label `plugin`: what the built bundles declare, read back from them.
+    # - Each standalone app's bundle ID. clap-wrapper would give both the instrument's; the FX's
+    #   is set in clients/clap-first (ruling T8-a). macOS keys app preferences and privacy
+    #   permissions by it.
+    # - The AU's AudioComponents: exactly the instrument, the FX and the FX's extra aumf identity.
+    # - The VST3 class IDs, which clap-wrapper derives from the CLAP IDs. They must not change with
+    #   a clap-wrapper update: run this before accepting any bump.
+    find_program(GG_PLUTIL plutil REQUIRED)
+    set(check_identity ${CMAKE_CURRENT_SOURCE_DIR}/plugin/check-bundle-identity.cmake)
+    add_test(NAME identity_standalone
+            COMMAND ${CMAKE_COMMAND} -DPLUTIL=${GG_PLUTIL} -DCHECK=bundle-id
+            -DBUNDLE=$<TARGET_BUNDLE_DIR:gg_clapfirst_standalone>
+            -DEXPECTED=org.sethbc.giga-grains.standalone -P ${check_identity})
+    add_test(NAME identity_standalone_fx
+            COMMAND ${CMAKE_COMMAND} -DPLUTIL=${GG_PLUTIL} -DCHECK=bundle-id
+            -DBUNDLE=$<TARGET_BUNDLE_DIR:gg_clapfirst_standalone_fx>
+            -DEXPECTED=org.sethbc.giga-grains-fx.standalone -P ${check_identity})
+    add_test(NAME identity_auv2
+            COMMAND ${CMAKE_COMMAND} -DPLUTIL=${GG_PLUTIL} -DCHECK=au-components
+            -DBUNDLE=$<TARGET_BUNDLE_DIR:gg_clapfirst_auv2>
+            -DEXPECTED=aumu/GGin/Sbcx,aufx/GGfx/Sbcx,aumf/GGfx/Sbcx -P ${check_identity})
+
+    add_executable(gg-vst3-class-ids plugin/vst3_class_ids.cpp)
+    target_link_libraries(gg-vst3-class-ids PRIVATE gg::compiler-options "-framework CoreFoundation")
+    add_dependencies(gg-tests gg-vst3-class-ids)
+    add_test(NAME identity_vst3
+            COMMAND gg-vst3-class-ids $<TARGET_BUNDLE_DIR:gg_clapfirst_vst3>
+            $<TARGET_FILE:gg_clapfirst_vst3>
+            "Giga Grains=56E869BFEDD75019BD0C3105FA80B835"
+            "Giga Grains FX=DBAF5C12EA095FEFB3A5CBBBB254442A")
+    set_tests_properties(identity_standalone identity_standalone_fx identity_auv2 identity_vst3
+            PROPERTIES LABELS plugin)
 endif ()
