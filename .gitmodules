@@ -13,3 +13,15 @@
 [submodule "libs/sst/sst-basic-blocks"]
 	path = libs/sst/sst-basic-blocks
 	url = https://github.com/surge-synthesizer/sst-basic-blocks
+[submodule "libs/dr_libs"]
+	path = libs/dr_libs
+	url = https://github.com/mackron/dr_libs
+[submodule "libs/pffft"]
+	path = libs/pffft
+	url = https://github.com/marton78/pffft
+[submodule "libs/stb"]
+	path = libs/stb
+	url = https://github.com/nothings/stb
+[submodule "libs/nlohmann_json"]
+	path = libs/nlohmann_json
+	url = https://github.com/nlohmann/json

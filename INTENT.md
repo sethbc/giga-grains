@@ -362,6 +362,8 @@ clients/  CLAP entry points + clap-wrapper targets
 | readerwriterqueue or choc | BSD / ISC | Lossless SPSC queues |
 | MTS-ESP client, tuning-library | 0BSD-style / MIT | Microtuning |
 | fmt, Catch2 | MIT / BSL-1.0 | Formatting, tests |
+| stb_image_write | public domain / MIT | Spectrogram PNGs |
+| nlohmann/json | MIT | Metrics and render-spec JSON |
 
 - **Study, don't depend on:**
   - Beads (MIT; Mutable Instruments published the source on 2026-10-12) and Clouds;

@@ -1,0 +1,67 @@
+// Giga Grains — granular instrument and effect
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright 2026, the Giga Grains authors (see git history)
+
+#include "gg/metrics/Spectrogram.h"
+
+#include <algorithm>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <limits>
+#include <vector>
+
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include <stb_image_write.h>
+
+#include "Analysis.h"
+
+namespace gg::metrics
+{
+namespace
+{
+constexpr size_t kHop = 512;
+constexpr size_t kHeight = 1024;
+constexpr double kRangeDb = 120.0;
+} // namespace
+
+bool writeSpectrogramPng(const std::string &path, const AudioData &audio)
+{
+    using detail::Stft;
+    static_assert(kHeight == Stft::kBins - 1, "one row per bin, DC left out");
+
+    const std::vector<double> mono = detail::monoMix(audio);
+    const size_t frames = Stft::frameCount(mono.size(), kHop);
+    const size_t width = std::max<size_t>(frames, 1);
+    if (width > static_cast<size_t>(std::numeric_limits<int>::max()) / kHeight)
+    {
+        return false;
+    }
+
+    std::vector<uint8_t> pixels(width * kHeight, 0);
+    Stft stft;
+    // A sine of amplitude A on a bin below Nyquist has |X| = A · Σw / 2.
+    const double amplitudeScale = 2.0 / stft.windowSum();
+    std::vector<double> power;
+    for (size_t f = 0; f < frames; ++f)
+    {
+        stft.powerSpectrum(mono, f * kHop, power);
+        for (size_t row = 0; row < kHeight; ++row)
+        {
+            const size_t k = Stft::kBins - 1 - row; // row 0 is Nyquist, the last row is bin 1
+            const double scale = k == Stft::kBins - 1 ? amplitudeScale / 2.0 : amplitudeScale;
+            const double amplitudeSquared = power[k] * scale * scale;
+            double level = 0.0;
+            if (amplitudeSquared > 0.0)
+            {
+                const double db = 10.0 * std::log10(amplitudeSquared);
+                level = std::clamp((db + kRangeDb) / kRangeDb, 0.0, 1.0);
+            }
+            pixels[row * width + f] = static_cast<uint8_t>(std::lround(level * 255.0));
+        }
+    }
+
+    const int w = static_cast<int>(width);
+    return stbi_write_png(path.c_str(), w, static_cast<int>(kHeight), 1, pixels.data(), w) != 0;
+}
+} // namespace gg::metrics

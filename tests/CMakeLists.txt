@@ -16,8 +16,11 @@ add_executable(gg-tests
         engine/sample_buffer_tests.cpp
         engine/stream_tests.cpp
         engine/window_tests.cpp
+        metrics/metrics_tests.cpp
         )
-target_link_libraries(gg-tests PRIVATE gg::engine gg::compiler-options Catch2::Catch2WithMain)
+target_link_libraries(gg-tests PRIVATE gg::engine gg::audiometrics gg::compiler-options Catch2::Catch2WithMain)
+# Scratch files (WAV/PNG round trips) go under the build tree, never a shared temp dir.
+target_compile_definitions(gg-tests PRIVATE GG_TEST_OUTPUT_DIR="${CMAKE_CURRENT_BINARY_DIR}/test-output")
 
 list(APPEND CMAKE_MODULE_PATH ${CMAKE_SOURCE_DIR}/libs/catch2/extras)
 include(Catch)
