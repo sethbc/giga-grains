@@ -50,7 +50,7 @@ inline constexpr double kLogAtanh[13] = {
     0x1.47ae147ae147bp-5, // k = 12, 1/25
 };
 
-/// ln 2 split in two (fdlibm's split). kLn2Hi has 33 significant bits, so e·kLn2Hi is exact for
+/// ln 2 split in two (fdlibm's split). kLn2Hi has 32 significant bits, so e·kLn2Hi is exact for
 /// every binary exponent e of a double; kLn2Hi + kLn2Lo is within 1.2e-26 of ln 2.
 inline constexpr double kLn2Hi = 0x1.62e42fee00000p-1;
 inline constexpr double kLn2Lo = 0x1.a39ef35793c76p-33;
@@ -108,8 +108,9 @@ inline double exp2Det(double x) noexcept
 /// used, so with the project's -ffp-contract=off the result is plain IEEE arithmetic.
 /// logDet(1) is exactly 0.
 ///
-/// Subnormal x (below 2^-1022) is not guaranteed to match across platforms: the FPU's
-/// denormals-are-zero mode (ScopedDenormalsOff) can turn it into 0 inside frexp.
+/// Subnormal x (below 2^-1022) is not guaranteed to match across platforms: under the FPU's
+/// denormals-are-zero mode (ScopedDenormalsOff), the x == 0.0 comparison treats it as 0, so
+/// logDet returns -inf; without that mode frexp splits it exactly.
 /// NaN and x < 0 give NaN; ±0 gives -inf; +inf gives +inf.
 inline double logDet(double x) noexcept
 {

@@ -12,6 +12,11 @@ ledger; A-, B-, C- and D- IDs are the area reviews' findings.
 Items closed since are kept in place, marked **Closed** in the "When" column with the commits that
 closed them on `m1-fx-slice`. M1 sub-project 1 (the FX vertical slice) closed the first batch.
 
+At its end, sub-project 1's final whole-branch review added what the slice itself leaves open: the
+section "From M1 sub-project 1" below. Its IDs name the slice's ledger: T*n* (line) is a task's
+deferred finding at that ledger line, M*n* a final-review finding, and M1-*x* a slice ruling. Its
+"When" column names the M1 sub-project (INTENT §20, §23 #35) that owns the item.
+
 ## First, before parameters land
 
 | What | Source | When |
@@ -55,7 +60,7 @@ closed them on `m1-fx-slice`. M1 sub-project 1 (the FX vertical slice) closed th
 | What | Source | When |
 |---|---|---|
 | Put `ScopedDenormalsOff` at the top of `processNonblocking`, so the FX's dry + wet sum runs flushed too. Add a test that feeds subnormal input and checks for no subnormal output and a restored FP mode. Document that the FX's pass-through is bit-exact only for normal floats. clap-validator's `process-audio-denormals` warning is a timing ratio, noise on arm64, not a gate. | [281]/[298]/C-m2; `plugin/src/GigaGrainsPlugin.cpp:168`, `:227` | **Closed** by M1 sub-project 1: `b54a77d` (the guard covers `Processor::process`, dry/wet sum included; test `processor flushes denormals`; `Processor.h` documents the normal-float pass-through), `a8202e2` (the plugin's `process` runs through the `Processor`) |
-| Port-value tests (main port IDs 0 and 1 and the in-place pairs), the FX's no-input branch, and `reset()` tests (the rest of C-m4). | [160], C-m4; `plugin/src/GigaGrainsPlugin.cpp` | When M1 adds the sidechain and state |
+| Port-value tests (main port IDs 0 and 1 and the in-place pairs), the FX's no-input branch, and `reset()` tests (the rest of C-m4). | [160], C-m4; `plugin/src/GigaGrainsPlugin.cpp` | **Now due:** M1 has added state. **Closed in part** by M1 sub-project 1: `5ac840b` (`reset()` runs under the allocation tripwire, test `plugin reset does not allocate and a restored Freeze plays live`). The port-value tests and the FX's no-input branch are still open |
 | The `ld` "ignoring duplicate libraries" warning (`libgg-engine.a`, `libgg-ui-core.a`). | [161]/[292]; `tests/CMakeLists.txt` | **Closed** by M1 sub-project 1: `ec2a054` |
 | Move `createEditor()` into its own translation unit, so the plugin's audio TU stops including JUCE GUI headers. | [210]; `plugin/src/GigaGrainsPlugin.cpp:85` | **Closed** by M1 sub-project 1: `ec2a054` (`plugin/src/editor/EditorPlugin.cpp`) |
 | The GUI test should assert only each platform's native window API, not the shim's cocoa/win32/x11 over-claim on every platform. | [211]; `tests/plugin/factory_tests.cpp:160`–`:162` | **Closed** by M1 sub-project 1: `ec2a054` |
@@ -63,7 +68,8 @@ closed them on `m1-fx-slice`. M1 sub-project 1 (the FX vertical slice) closed th
 | Consolidate the `JUCE_*` definitions (`ui/CMakeLists.txt:38`–`:51`, including `JUCE_USE_WEBP=0`) next to `add_clap_juce_shim` in `libs/CMakeLists.txt`. | [213]/[344] | **Closed** by M1 sub-project 1: `ec2a054` (every `JUCE_*` definition is in `libs/CMakeLists.txt`) |
 | Clamp `px1`/`py1` to width − 1 / height − 1 instead of relying on width ≤ 2^24. | [214]; `ui/src/SplatRenderer.cpp:80`–`:82` | When the real canvas reuses `SplatRenderer` |
 | Upstream the missing `<string>` include to sst-clap-helpers' `clap_juce_shim.h`, then drop our workaround. | [297]; `plugin/src/GigaGrainsPlugin.h:11`–`:12` | At the next sst-clap-helpers bump |
-| Pin the AU state format with a test. | C (declined, noted) | When M1 adds state |
+| Pin the AU state format with a test. | C (declined, noted) | **Now due:** M1 sub-project 1 added state |
+| auval reports "Preset name is not retained" three times. It is upstream clap-wrapper: `wrapasauv2.cpp:2283`–`:2289` writes `_current_program_name`, which only `RestoreState` sets. Also, its `SaveState` ignores the plugin's `save()` result, and `RestoreState` returns `noErr` when `load()` fails. Pin these together with the AU state format, and report them upstream. | T7 (223); clap-wrapper `src/detail/auv2/wrapasauv2.cpp` | With the AU state-format test above (now due) |
 | clap-wrapper's VST3 `process` takes a spin lock. Third-party; keep in mind when profiling. | C (declined, noted) | — |
 
 ## Build and CI
@@ -81,6 +87,34 @@ closed them on `m1-fx-slice`. M1 sub-project 1 (the FX vertical slice) closed th
 |---|---|---|
 | Either add the same-platform output digest (B-m7 above) or amend INTENT §19's "bit-exact comparison applies on the same platform". | B-m7; INTENT §19 | M1 |
 | Remove clap-validator's `--exclude '^param-conversions$'` from `ci.yml` and CLAUDE.md once the plugins have parameters. Already an M1 exit criterion. | Ruling T8-c; INTENT §20 | **Closed** by M1 sub-project 1: `a8202e2` (removed from `ci.yml` and CLAUDE.md; clap-validator runs in full) |
+
+## From M1 sub-project 1 (the FX vertical slice)
+
+Written at the slice's end (2026-10-27) from its final whole-branch review and the triage of its
+ledger. Items the review fixed before the merge aren't listed.
+
+| What | Source | When |
+|---|---|---|
+| **Ruling M1-aa.** Spec §7's WAV-file input for FX-mode `gg-render` is deferred: FX mode accepts only the built-in `sine`, `sweep` and `noise` inputs, and rejects `"file"`. Add the file input with the file loader. | M1-aa; final review M4; `tools/gg-render/RenderSpec.cpp` (`input`), slice spec §7 | Sub-project 3 |
+| A seed loaded while active takes effect only if the host honours `request_restart`; if it doesn't, the engine keeps the old seed while `stateSave` writes the new one, so a reload sounds different from what was heard. Latent while every instance uses seed 0. Hand the seed to the audio thread with the snapshot and reseed in `Processor::reset`, or ask for a restart and keep `seed_` unchanged until `activate`. | Final review M2; `plugin/src/GigaGrainsPlugin.cpp:486`–`:498` | Sub-project 5, which decides per-instance seeds |
+| Nothing automated keeps `libs/asiosdk` out of the build (spec §5 allows a review check, and the final review made one). Add a configure-time guard over every target's `SOURCES`, or a CI grep of `build.ninja` for `asiosdk`. | Final review M5; slice spec §5 | Sub-project 6, or sooner if `libs/CMakeLists.txt` changes how sst-plugininfra is added |
+| The `[rt]` live test's `setSourceMode(Live)` is a no-op (the engine is already in Live mode), so the source-mode switch never runs under the tripwire. It is non-allocating on inspection. Cover the switch, both ways, once a product switches modes. | T4 (127), final review M6; `tests/engine/rt_tests.cpp:198` | Sub-project 3 |
+| A source-mode change hard-cuts the sounding grains (the pool is cleared). The FX can't reach it; any live-input instrument must fade them instead. | T4 (128); `engine/src/Engine.cpp:110`–`:117` | Sub-project 3 |
+| `toCloudParams` maps Position and Spray to seconds in every mode. The instrument's Sample mode needs its own mapping, or its Position will be wrong. | T6 (152); `core/src/ParamMap.cpp:29` | Sub-project 3, before the instrument's Sample source |
+| `renderLiveGrain` computes the fade and reads taps where the Hann window is 0 (the onset sample when `onsetFrac` > 0, and up to 2 samples past the duration). Wasted work, harmless. | T4 (126); `engine/src/Engine.cpp:349` | Sub-project 2, which rewrites the renderer |
+| The bad-state test's snapshot doesn't cover `migratedFromVersion` or `dirty`. The values-untouched guarantee is tested. | T5 (105); `tests/core/patch_tests.cpp:398` | With the next state-format change (sub-project 3's media manifest) |
+| `stateLoad`'s read loop is unbounded. Real host streams are finite; cap it (1 MiB, say) and fail cleanly. | T7 (218); `plugin/src/GigaGrainsPlugin.cpp:461` | Sub-project 3, with the media-manifest state |
+| The value-mirror race (ruling M1-x): after the audio thread applies a loaded state, set a flag and `requestCallback`, then `paramsRescan(CLAP_PARAM_RESCAN_VALUES)` on the main thread. Benign and self-healing today. | T7 (217), M1-x; `plugin/src/GigaGrainsPlugin.cpp:285` | Sub-project 5, when the UI starts reading values |
+| "Missing input" is tested at plugin level only as an absent port. Add `data32 == nullptr` and null-channel-pointer cases; the Processor-level tests cover null pointers. | T7 (219); `tests/plugin/params_tests.cpp:666` | With C-m4's port-value tests (now due) |
+| The huge-frame test fails without the cap only through the accessor on macOS, after a ~44 s, 34 GB allocation. Say so in its comment. | T7 (220); `tests/plugin/process_tests.cpp:365` | When the test is next touched |
+| The mono FX path has no independent check against a direct `Processor` run (only `channels` 2 has one). The `fx-sine` golden pins it. | T8 (207); `tests/tools/render_spec_tests.cpp` (`fx render matches the processor`) | Sub-project 3, or the next `gg-render` FX change |
+| `readAutomation`'s error text reads "…before the render's end, durationSeconds", and a point in the last 31 samples is accepted but never applies (its grid boundary is past the end). Document both in `RenderSpec.h`. | T8 (208); `tools/gg-render/RenderSpec.cpp:268` | The next `RenderSpec` change |
+| `tools/gg-render/CMakeLists.txt:21`'s "for the same reason" is unclear, and `Signals.h`'s doc comment for `inputFadeFrames` sits on `kInputFadeSeconds`. Cosmetic. | T8 (209); `tools/gg-render/Signals.h:36`–`:39` | The next `gg-render` change |
+| `randomSplit`'s comment overstates how often calls end on the grid (1–3 of about 70 do, and no random split reaches the carry at a call's end). Reword it, or snap the multiples of 32 onto the grid. The dedicated test `events for one boundary apply as one group across a call's end` covers the case. | T6 (179); `tests/core/processor_tests.cpp:390` | When the test is next touched |
+| `check.sh` keeps a stale `build/check/format.log` under `--no-format`; `worktree-setup.sh` doesn't validate preset names; CTest 3.x's real output and Windows Git Bash are unverified (CI exercises the real paths); the fetch path for an unadvertised pin is untested. | X1 (175); `scripts/check.sh`, `scripts/worktree-setup.sh` | When the scripts are next touched |
+| `check.sh`'s install guard accepts lower- and mixed-case `notfound` and `x-notfound`, which CMake counts as true (its NOTFOUND match is case-sensitive). Match `NOTFOUND` and `*-NOTFOUND` on the raw value. | X1 (191); `scripts/check.sh:162`–`:163` | When the scripts are next touched |
+| `check.sh` aborts without a summary if a preset's `binaryDir` isn't `build/<preset>`; `worktree-setup.sh`'s status comment omits `U`; `-L` is a regular expression, so `-L rt` also matches `rtsan` (CLAUDE.md documents it). | X1 (193); `scripts/check.sh:160`, `scripts/worktree-setup.sh:18` | When the scripts are next touched |
+| sst-plugininfra's `libs/asiosdk` is the ASIO SDK 2.3.4, dual-licensed (the Steinberg ASIO License or GPLv3). Nothing builds it. Re-enabling Windows ASIO is the director's later decision. | T5 (87, 107); INTENT §15, §22 | When the director decides on Windows ASIO |
 
 ## Resolved in M0's final fix wave (not carried)
 

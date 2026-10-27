@@ -70,9 +70,12 @@ resource, so machines must catch everything they can catch.
   statistics or spectrograms.
 - Each milestone ends with a listening gate: render A/B files plus a short checklist for the
   director.
-- Reference templates for the CLAP-first build, CI and installers:
-  - `~/src/shortcircuit-xt`
-  - also `~/src/surge` and `~/src/OB-Xf`.
+- Reference templates for the CLAP-first build, CI and installers, all three GitHub-hosted under
+  surge-synthesizer. A session may read their local clones, when they're present:
+  - shortcircuit-xt, https://github.com/surge-synthesizer/shortcircuit-xt (local clone
+    `~/src/shortcircuit-xt`)
+  - also surge, https://github.com/surge-synthesizer/surge (local clone `~/src/surge`), and
+    OB-Xf, https://github.com/surge-synthesizer/OB-Xf (local clone `~/src/OB-Xf`).
 
 ## Build and test
 
@@ -85,8 +88,10 @@ resource, so machines must catch everything they can catch.
     the main checkout's submodule repositories, so it works offline. A commit the main checkout
     lacks is fetched from upstream, and the script says which.
   - It changes no URL in the shared `.git/config`, in the main checkout's submodule configs or in
-    any other worktree's. The only URLs it writes are the nested submodules' canonical
-    `.gitmodules` URLs, into the configs of the new worktree's own clones of their parents.
+    any other worktree's. The only `submodule.*.url` entries it writes are the nested
+    submodules' canonical `.gitmodules` URLs, into the configs of the new worktree's own clones
+    of their parents. Each new clone's own config also gets a `remote.origin.url`: its
+    `.gitmodules` URL, as a clone from upstream would record.
   - Don't rewrite `submodule.*.url` to local paths to get a worktree going: every worktree shares
     that config.
   - It fails unless `git submodule status --recursive` then shows every submodule at its pinned
@@ -222,11 +227,12 @@ gg-render <spec.json> [-o out.wav] [--metrics out.json] [--events out.jsonl]
     `grainDurationMs`, `position`, `positionJitter`, `pitchSemitones`, `gain`, and optional
     `distribution`), plus a release tail. The four M0 cases use it.
   - **FX mode** (`"mode": "fx"`) runs Giga Grains FX's `gg-core` `Processor`, the one the plugin
-    runs, over an `input`: a built-in `sine`, `sweep` or `noise` (no files). The top-level
-    `channels` key (1 or 2) sets the input's channel count. Optional `params` sets base values by parameter name (`"Size"`, `"Density"`, …), and
-    optional `automation` is a time-ordered list of `{"time", "param", "value"}` points in
-    seconds. Values are in each parameter's CLAP value domain (Density 6.0 is 64 Hz). The render
-    is exactly `durationSeconds` long.
+    runs, over an `input`: a built-in `sine`, `sweep` or `noise` (no files; a WAV-file input
+    waits for sub-project 3's file loader, ruling M1-aa). The top-level `channels` key (1 or 2)
+    sets the input's channel count. Optional `params` sets base values by parameter name
+    (`"Size"`, `"Density"`, …), and optional `automation` is a time-ordered list of
+    `{"time", "param", "value"}` points in seconds. Values are in each parameter's CLAP value
+    domain (Density 6.0 is 64 Hz). The render is exactly `durationSeconds` long.
   - **FX inputs are faded** in at their start and out at their end over 10 ms, with a raised
     cosine (sin²), so the input's own edges don't click (ruling M1-v). Sample-mode sources and
     the M0 goldens are untouched.

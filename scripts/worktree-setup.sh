@@ -6,8 +6,10 @@
 # Checks out every submodule of a fresh linked worktree (git worktree add ...), recursively, at the
 # commits its HEAD pins, taking the objects from the main checkout's submodule repositories, so it
 # works offline. It changes no URL in the shared .git/config, in the main checkout's submodule
-# configs or in any other worktree's. The only URLs it writes are the canonical .gitmodules URLs of
-# nested submodules, into the configs of this worktree's own new clones of their parents.
+# configs or in any other worktree's. The only submodule.*.url entries it writes are the canonical
+# .gitmodules URLs of nested submodules, into the configs of this worktree's own new clones of
+# their parents. Each new clone's own config also gets a remote.origin.url: its .gitmodules URL,
+# as a clone from upstream would record.
 #
 #   scripts/worktree-setup.sh [--configure <preset>[,<preset>...]]
 #

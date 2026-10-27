@@ -343,6 +343,13 @@ optional scale or grid quantize. This is how "shaped randomness" (§8.1) is impl
   - **Freeze** ramps the write gain to 0 over 20 ms, then stops the head. Unfreeze resumes the
     head and ramps the gain back over 20 ms. The ramp is an exact integer count, so it doesn't
     depend on where blocks fall.
+  - **Freeze is live until toggled** (§23 #40). The ring isn't saved until M2, so a fresh ring
+    starts empty. A Freeze that is on when the ring starts, restored with a project, kept
+    through a reactivation or kept through a reset, therefore leaves the effect playing live
+    grains: Freeze engages only on an off→on transition after the activation or reset, seen at a
+    grid boundary or at a block's first sample. The parameter and its saved state still read On
+    while it isn't holding. A boundary's events apply as one group, so off and on again at one
+    boundary is no transition, and the result doesn't depend on block size.
 
 **Extreme stretch.** Grains alone start to comb and sound static at 100× and beyond. Two tools
 address this:
@@ -387,8 +394,9 @@ address this:
 - Linux builds against an ubuntu-22.04 baseline so the binaries run on older glibc.
 
 **Plugin architecture: CLAP-first.** This follows the Shortcircuit XT pattern. The working
-templates are in `shortcircuit-xt/src/clients/clap-first/CMakeLists.txt`, `libs/CMakeLists.txt`
-and `src/scxt-plugin/CMakeLists.txt`.
+templates are in its repository, https://github.com/surge-synthesizer/shortcircuit-xt, at
+`src/clients/clap-first/CMakeLists.txt`, `libs/CMakeLists.txt` and
+`src/scxt-plugin/CMakeLists.txt`.
 
 ```
 engine/   framework-free, real-time-safe, headless C++ — also powers gg-render
@@ -792,7 +800,7 @@ they are frozen along with them.
 |---|---|---|
 | **M0 Foundations** (done 2026-10-26) | Repo, CMake, CI matrix (mac/win/linux), `LICENSE` (AGPL-3.0); headless engine skeleton; `gg-render`; test, golden-render, RTSan and benchmark harness; both plugin shells in every format plus standalone; validators in CI. **Spikes:** kernel benchmark (sets §16), JUCE 9 vs 8.0.16, two-descriptor CLAP to AUv2/VST3/standalone, Ableton MIDI routing into an effect, CPU canvas frame budget. | One grain stream renders deterministically. The empty plugins load in the first-class hosts and pass every validator. **Met** (§23 #29). |
 | **M1 Cloud core** (starts from `docs/m1-carry-over.md`) | Six sub-projects, each spec → plan → build → review (§23 #35): 1 FX vertical slice (`docs/superpowers/specs/2026-10-27-m1-fx-slice-design.md`); 2 Cloud engine; 3 Sources; 4 Space; 5 Perform UI; 6 Close. Together they deliver: grain pool and SIMD renderer (Eco/Normal), the §16 lever list (§23 #39); Cloud scheduler; parameter model; Sample and Live sources with freeze; note-triggered freeze/capture in the FX (§23 #32); 1 layer; diffusion/reverb; state save/load; single-lane canvas plus 8 macros | Both plugins make textures. **Listening gate #1.** CPU baseline recorded. The §16 headline measured on the reference core and published (§23 #39). clap-validator runs in full: M0 skipped its `param-conversions` test, which panics on a plugin with no parameters (ruling T8-c, free-audio/clap-validator#40); sub-project 1 removed the exclusion (§23 #35). |
-| **M2 Giga** | 4 layers plus morph; budget manager; grain target met; mipmaps and the HQ sinc tier; minutes-long buffers with persistence; Smear and Spectral Smear; resample/feedback source; full mod matrix; Mutate; factory presets and CC0 samples, including MIDI-driven FX presets (§23 #32) | Benchmarks pass. **Listening gate #2.** |
+| **M2 Giga** | 4 layers plus morph; budget manager; no CPU regression vs the M1 measured headline (§23 #41); mipmaps and the HQ sinc tier; minutes-long buffers with persistence; Smear and Spectral Smear; resample/feedback source; full mod matrix; Mutate; factory presets and CC0 samples, including MIDI-driven FX presets (§23 #32) | Benchmarks pass. **Listening gate #2.** |
 | **→ v1.0** | M0 to M2 polished | Success criteria (§10) met. |
 | **M3 Playable** | Voice scheduler, polyphony, MPE, note expressions, polyphonic modulation, per-voice envelopes, pitch-sync/formant grains, microtuning | Listening gate. First-class hosts pass. |
 | **M4 Rhythmic** | Sync scheduler: grid, swing, probability, patterns, transport-stop/loop policies | Listening gate. Sync tests pass under loops and jumps. |
@@ -886,6 +894,9 @@ director made the call.
 | 37 | Parameter IDs: `(scope << 16) \| index`, and the first ten | Scope 0 is global and scopes 1 to 4 are layers A to D, so M2 adds layers without renumbering; index 0 is reserved; every ID is below `0xB00000` (ruling T8-d) and append-only. The ten: Mix `0x000001`, Level `0x000002`, and layer A's Position, Size, Density, Distribution, Pitch, Spray, Stereo and Freeze, `0x010001` to `0x010008`. Both products expose the same list and share one state format; the instrument hides Mix and leaves its remote-controls slot empty (ruling M1-w). The state is `gg-core`'s versioned XML (version 1) with each value's float bits and the engine seed. The IDs are pinned by a test and frozen at the first public release, with the identities in #20. Decided 2026-10-27, during M1 sub-project 1; see §18 |
 | 38 | `gg-core`, `GG_BUILD_EDITOR` and sst-plugininfra | `gg-core` (`core/`) is the JUCE-free layer between the engine and the plugin: the patch and its state, the parameter mapping and the `Processor`, shared by the plugin and `gg-render`. The plugin splits into a JUCE-free core and an editor layer; `GG_BUILD_EDITOR` (default ON) builds the editor and the clap-wrapper formats, and the `asan` and `rtsan` presets build with it OFF, so the plugin audio path runs under ASan/UBSan and RealtimeSanitizer, which closes the carry-over's first item (`ec2a054`). sst-plugininfra (MIT) is pinned at `main` @ `8e4271c`; only its `patchbase` target and bundled tinyxml (zlib) are built, private to `gg-core` (ruling M1-l). Its bundled `libs/asiosdk` is ASIO SDK 2.3.4, licensed "Steinberg ASIO License or GPLv3"; it is unused and never built. §22 records that a GPLv3 ASIO SDK release now exists; re-enabling ASIO stays open, and #30 stands. Decided 2026-10-27, during M1 sub-project 1; see §15 and §22 |
 | 39 | §16 headline measured on the M5 Max and published as measured, with no ceiling; floor figures informative; sub-project 2 tries four levers and keeps the winners | M0 measured the SIMD Hermite kernel at 20–22% of one M5 Max core, 48–53% on CI's M1 VM and 55–69% on the EPYC VMs. #23's levers attack cache misses and per-grain overhead, which the M5 Max barely shows, so nothing guaranteed they would close 2×, and sub-project 2 would have opened with a bar it might not meet. The decision: the reference is one performance core of the director's M5 Max, on bare metal; the headline is "2,000 Normal grains per instance at 48 kHz in X% of one Apple M5 Max performance core", X measured on the real engine's render path at the end of M1 (sub-project 6) and published with its commit SHA and block sizes, with no ceiling; CI's floor legs keep running the full benchmark, as informative figures; CI's CPU gate stays a regression gate on in-process ratios (carry-over B-I2); sub-project 2 tries four levers (prefetch, an interleaved source, cache-aware scheduling, contiguous loads with shuffles), keeps each that wins on the M5 Max or any CI leg without regressing another, then stops. The director signed off the Part I wordings: §5 "with published figures (§16)", and §10 criterion 3 "The grain-count and CPU figures published in §16 are measured on the reference hardware and reproducible." Supersedes #23. See `docs/superpowers/specs/2026-10-27-cpu-headline-design.md`. Decided 2026-10-27 by the director, during M1; see §5, §10, §16, §19, §20 and §21 |
+| 40 | Freeze is live until toggled | Final-review finding I1 of M1 sub-project 1: Freeze is saved in the state but the live ring isn't (persistence is an M2 non-goal), so a Freeze that was on when a fresh ring started froze that ring's first 20 ms, usually silence, and the effect stayed silent until the user toggled Freeze. That happened on every project reopened with Freeze on, every reactivation and every CLAP `reset()`, which clap-wrapper's VST3 calls on each `setProcessing(false)`. The director chose "live until toggled" over documenting the silence: the `Processor` engages Freeze only on an off→on transition after an activation or reset, evaluated on the control grid; until then the effect plays live grains while Freeze reads On. Once engaged, the 20 ms ramp and the admission clamp (M1-p) are unchanged. With it the effect is always audible after a reload; the cost is that a reopened frozen pad is not held until M2 persists the ring and revisits this. No golden starts frozen, so none changed. Decided 2026-10-27 by the director, during M1 sub-project 1 (final review); see §14 |
+| 41 | §20's M2 exit wording after #39 | §20's M2 row still said "grain target met", but #39 removed the CPU target: the §16 headline is measured at the end of M1 and published, with no ceiling, and CI's CPU gate is a regression gate on in-process ratios. The director's wording replaces it: "no CPU regression vs the M1 measured headline". Decided 2026-10-27 by the director, during M1 sub-project 1; see §20 and #39 |
+| 42 | Reference templates named by their upstream repositories | Part II and CLAUDE.md named the three reference templates (shortcircuit-xt, surge, OB-Xf) only by local paths, which a reader without those clones can't follow. Each mention of a template now names its GitHub repository under the surge-synthesizer organization, checked against each local clone's `origin`: the "Key sources" list gives one bullet per template, with its local clone next to its URL; §15's CLAP-first paragraph links shortcircuit-xt once, with its template files' paths relative to the repository; CLAUDE.md's "Reference templates" bullet gives the URLs and says a session may read the local clones when they're present. A correction; no decision changes. Decided 2026-10-27 by the director, during M1 sub-project 1; see §15 and "Key sources" below |
 
 **Key sources** (checked 2026-10-26):
 - clap-wrapper releases (v0.17.0, 2026-10-20): https://github.com/free-audio/clap-wrapper/releases
@@ -900,5 +911,10 @@ director made the call.
 - EmissionControl2: https://github.com/EmissionControl2/EmissionControl2
 - dm-TimeWarp: https://github.com/davemollen/dm-TimeWarp
 - SignPath open-source terms: https://signpath.org/terms
-- Local templates: `~/src/shortcircuit-xt` (the CLAP-first layout, CI and installers),
-  `~/src/surge`, `~/src/OB-Xf`
+- shortcircuit-xt (reference template for the CLAP-first layout, CI and installers; GitHub,
+  surge-synthesizer organization; local clone `~/src/shortcircuit-xt`):
+  https://github.com/surge-synthesizer/shortcircuit-xt
+- surge (reference template; GitHub, surge-synthesizer organization; local clone `~/src/surge`):
+  https://github.com/surge-synthesizer/surge
+- OB-Xf (reference template; GitHub, surge-synthesizer organization; local clone `~/src/OB-Xf`):
+  https://github.com/surge-synthesizer/OB-Xf
