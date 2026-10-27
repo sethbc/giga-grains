@@ -7,8 +7,8 @@
 #   build       macOS (universal), Windows (ClangCL) and Linux (gcc-12): gg-all and gg-products,
 #               then ctest. ctest includes the golden event-log comparison, so this job is the
 #               cross-platform determinism gate. Then clap-validator, pluginval (strictness 10),
-#               auval (macOS) and Steinberg's VST3 validator. gg-bench is reported, not gated,
-#               in M0; the §16 CPU gate turns on in M1.
+#               auval (macOS) and Steinberg's VST3 validator. gg-bench runs at full length
+#               (ruling T10-c) and is reported, not gated, in M0; the §16 CPU gate turns on in M1.
 #   sanitizers  ASan + UBSan, and RealtimeSanitizer, with upstream clang 20 on ubuntu-24.04.
 #
 # Once the build succeeds, every later check runs even if an earlier one failed, so one run
@@ -91,15 +91,19 @@ jobs:
       - name: Test (unit, plugin and golden)
         run: ctest --preset ${{ matrix.preset }} -C Release --output-on-failure
 
-      # Reported, not gated: gg-bench has no CPU threshold. The §16 gate turns on in M1.
-      - name: Benchmark (reported, not gated)
+      # Reported, not gated: gg-bench has no CPU threshold. The §16 gate turns on in M1. It runs
+      # at full length (runs of 2 s, median of 5; ruling T10-c), not --quick, so the CI numbers
+      # are stable enough to set against the §16 targets. That takes about 2.6 minutes on an
+      # M5 Max, and longer on a CI VM.
+      - name: Benchmark (full length; reported, not gated)
         id: bench
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        timeout-minutes: 20
         run: |
           out="${{ matrix.build_dir }}/gg-bench"
-          "${{ matrix.bench }}" --quick --json "$out.json" | tee "$out.txt"
+          "${{ matrix.bench }}" --json "$out.json" | tee "$out.txt"
           {
-            echo "### gg-bench --quick (${{ matrix.preset }})"
+            echo "### gg-bench (${{ matrix.preset }})"
             echo '```'
             cat "$out.txt"
             echo '```'
