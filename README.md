@@ -25,6 +25,7 @@ instead, configure with
 make the bundles distributable: distribution also needs the hardened runtime, a secure timestamp
 and notarization, which the build doesn't do yet. The `codesign_*` tests check every signature.
 
-The other presets (`release`, the `asan` and `rtsan` sanitizer builds, `mac-universal`), the
-golden renders (`gg-render`), the benchmarks (`gg-bench`), the plugin validators and the
-formatting script are described in [`CLAUDE.md`](CLAUDE.md), under "Build and test".
+The other presets (`release`; the `asan` and `rtsan` sanitizer builds, which build the plugin
+core without its editor or formats; `mac-universal`), the golden renders (`gg-render`), the
+benchmarks (`gg-bench`), the plugin validators and the formatting script are described in
+[`CLAUDE.md`](CLAUDE.md), under "Build and test".

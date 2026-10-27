@@ -91,8 +91,9 @@ resource, so machines must catch everything they can catch.
     that config.
   - It fails unless `git submodule status --recursive` then shows every submodule at its pinned
     commit. `--configure` runs `cmake --preset` for each preset named, and doesn't build.
-- The first configure of a build tree downloads the VST3 and AudioUnit SDKs (clap-wrapper fetches
-  them), so it needs the network.
+- The first configure of a build tree that builds the plugin formats downloads the VST3 and
+  AudioUnit SDKs (clap-wrapper fetches them), so it needs the network. `asan` and `rtsan` build
+  no formats and download nothing.
 
 **Presets.** They are defined in `CMakePresets.json`. Each one builds into `build/<preset>/`,
 except `windows-clangcl`, which builds into `build/windows/`.
@@ -101,8 +102,8 @@ except `windows-clangcl`, which builds into `build/windows/`.
 |---|---|
 | `dev` | Debug, with everything. The everyday build. |
 | `release` | Release. Time benchmarks and run the validators on this one. |
-| `asan` | ASan + UBSan, Debug. No plugins: the engine, UI core, tools and tests. |
-| `rtsan` | RealtimeSanitizer, RelWithDebInfo, no plugins. Needs upstream LLVM 20 or newer in `$GG_LLVM` (Apple clang has no RTSan). |
+| `asan` | ASan + UBSan, Debug, with `GG_BUILD_EDITOR=OFF`: the engine, `gg-core`, the UI core, the tools, the plugin core and the tests. No editor, JUCE or plugin formats. |
+| `rtsan` | RealtimeSanitizer, RelWithDebInfo, built like `asan` (`GG_BUILD_EDITOR=OFF`). Needs upstream LLVM 20 or newer in `$GG_LLVM` (Apple clang has no RTSan). |
 | `mac-universal` | Release for arm64 + x86_64. CI's macOS leg, which also runs the x86_64 slice's tests and golden checks under Rosetta. |
 | `windows-clangcl`, `linux-gcc12` | CI's Windows and Linux legs. |
 
@@ -114,6 +115,13 @@ cmake --build --preset dev
 ctest --preset dev --output-on-failure
 ```
 
+- **`GG_BUILD_EDITOR`** (default ON) builds the JUCE editor and clap-wrapper's CLAP, VST3, AUv2
+  and standalone targets. With it OFF (and `GG_BUILD_PLUGINS` ON), the plugins build headless:
+  - only `gg-plugin-core`, the JUCE-free audio side and CLAP factory, with no gui extension;
+  - the `plugin` tests drive it through the factory, so `process` and `params.flush` run under
+    the sanitizers;
+  - the GUI test, the bundles and the `codesign_*`/`identity_*` tests need the editor, so they
+    aren't built.
 - **RTSan:** set `GG_LLVM` when configuring:
   - `GG_LLVM=/opt/homebrew/opt/llvm cmake --preset rtsan` with Homebrew LLVM on macOS;
   - CI uses LLVM's 20.1.8 release for Linux, checked against its SHA-256, in `/opt/llvm-20.1.8`.
@@ -161,7 +169,9 @@ scripts/check.sh [--presets dev,asan,rtsan] [-L label]... [--no-format] [--allow
 area, use `ctest --preset dev -L <label>`. `-L` takes a regular expression, and repeated `-L`
 options must all match: `-L core -L rt` runs only the tests labelled both, and `-L 'core|rt'`
 runs the tests labelled either. The labels are:
-- engine: `engine`, `stream`, `pool`, `source`, `rng`, `math`, `interp`, `window`, `denormal`;
+- engine: `engine`, `cloud` (the Cloud scheduler), `live` (the live ring), `pool`, `source`,
+  `rng`, `math`, `interp`, `window`, `denormal`;
+- `core`: `gg-core`: the patch and its state, the parameter mapping and the `Processor`;
 - `determinism`: block-size invariance;
 - `rt`: the allocation tripwire. In the `rtsan` build, two tests labelled both `rt` and `rtsan`
   check that RTSan is active: one checks the build flag, and `rtsan_negative_control` passes
@@ -172,7 +182,7 @@ runs the tests labelled either. The labels are:
 - `smoke`;
 - `plugin`: the plugins, driven through their CLAP factory. Tests labelled both `plugin` and
   `rt` put the allocation tripwire on `process` and `params.flush`. On macOS this label also
-  covers checks of the built bundles:
+  covers checks of the built bundles (with the editor only):
   - `codesign_*`: strict signature checks, which Ableton Live's scanner needs to pass;
   - `identity_*`: the frozen identities (INTENT §18), read back from the bundles: both
     standalone bundle IDs, the AU's three components and the VST3 class IDs. Run them before
@@ -205,6 +215,21 @@ gg-render <spec.json> [-o out.wav] [--metrics out.json] [--events out.jsonl]
 ```
 
 - It's built at `build/<preset>/tools/gg-render/gg-render`.
+- **Two modes** (the spec format is documented in `tools/gg-render/RenderSpec.h`). Every spec has
+  `sampleRate`, `durationSeconds`, `blockSize` and `seed`; any unknown key is an error.
+  - **Sample mode** (`"mode": "sample"`, the default) drives the engine's Cloud stream over a
+    `source` (`sine`, `sweep`, `noise` or `file`) with a `stream` (`grainRateHz`,
+    `grainDurationMs`, `position`, `positionJitter`, `pitchSemitones`, `gain`, and optional
+    `distribution`), plus a release tail. The four M0 cases use it.
+  - **FX mode** (`"mode": "fx"`) runs Giga Grains FX's `gg-core` `Processor`, the one the plugin
+    runs, over an `input`: a built-in `sine`, `sweep` or `noise` (no files), with `channels` 1 or
+    2. Optional `params` sets base values by parameter name (`"Size"`, `"Density"`, …), and
+    optional `automation` is a time-ordered list of `{"time", "param", "value"}` points in
+    seconds. Values are in each parameter's CLAP value domain (Density 6.0 is 64 Hz). The render
+    is exactly `durationSeconds` long.
+  - **FX inputs are faded** in at their start and out at their end over 10 ms, with a raised
+    cosine (sin²), so the input's own edges don't click (ruling M1-v). Sample-mode sources and
+    the M0 goldens are untouched.
 - Its exit status is 0 for a pass, 1 when a comparison fails, and 2 for bad input.
 - **The cases:** each case's spec is in `tests/golden/cases/`, and its expected metrics and event
   log are in `tests/golden/expected/`. Every `*.json` there is a case; a new one gets a test the

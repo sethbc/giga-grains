@@ -4,7 +4,7 @@
 
 | | |
 |---|---|
-| **Status** | Intent v1 · 2026-10-26 · M0 (Foundations) done 2026-10-26; M1 (Cloud core) next |
+| **Status** | Intent v1 · 2026-10-26 · M0 (Foundations) done 2026-10-26; M1 (Cloud core) in progress: sub-project 1 of 6 (the FX slice) built 2026-10-27 |
 | **Products** | *Giga Grains* (instrument) and *Giga Grains FX* (effect), sharing one engine |
 | **License** | AGPL-3.0-or-later |
 | **Director** | Seth Chandler. Claude writes most of the code; the director steers, listens and reviews. |
@@ -71,7 +71,7 @@ Every source presents the same read interface to the grain engine:
 ### 5. What "giga" commits us to
 
 - **Thousands of concurrent grains in a DAW plugin, at bounded CPU.** Stated per layer and per
-  instance, with a published target (§16).
+  instance, with published figures (§16).
   - Competitors manage roughly 32 to 600 grains per voice, or about 1,000 per instance when
     polyphonic.
   - EmissionControl2, a standalone app rather than a plugin, reaches 2,048.
@@ -143,7 +143,8 @@ AAX is listed as *possible later* (§2), not as a non-goal.
 
 1. The director reaches for it in their own music.
 2. Texture mode holds up against the reference instruments in blind listening.
-3. The published grain-count and CPU target (§16) is met on reference hardware.
+3. The grain-count and CPU figures published in §16 are measured on the reference hardware and
+   reproducible.
 4. It passes clap-validator, pluginval and auval, and is stable in the first-class hosts (§11).
 5. Renders are reproducible: bit-exact on the same platform.
 
@@ -205,7 +206,8 @@ and reviews. Two consequences:
   - Clocks: free-running Hz (0.01 Hz to about 4 kHz), tempo divisions, MIDI pitch-sync, external
     or transient trigger.
   - A distribution control runs continuously from 0 (synchronous) to 1 (random, Poisson).
-  - Onsets come from a hashed lattice and have sub-sample fractional timing.
+  - Onsets follow a recurrence driven by the counter RNG, with sub-sample fractional timing
+    (Cloud core rules, below).
 - **Grain pool.** Structure-of-arrays storage, preallocated in `activate()`.
   - Defaults to 4,096 grains, configurable up to 16,384.
   - Per-layer and per-voice quotas.
@@ -237,7 +239,8 @@ Every field is **base + modulation + per-grain spread**. Spread has a selectable
 optional scale or grid quantize. This is how "shaped randomness" (§8.1) is implemented.
 
 **Two-rate modulation.**
-- Continuous controls (layer filters, mix) update at block rate.
+- Continuous controls (layer filters, mix) update on the 32-sample control grid (Cloud core
+  rules, below). Mix and Level are also smoothed per sample.
 - Grain parameters are **snapshotted when each grain starts**, so each grain gets its own value.
 
 **Hard engineering rules**
@@ -275,6 +278,71 @@ optional scale or grid quantize. This is how "shaped randomness" (§8.1) is impl
   - The head-crossing policy is selectable. Default: clamp, with about a 256-sample crossfade.
   - Freeze and overdub use smoothed gains and crossfaded seams.
 
+**Cloud core rules** (M1 sub-project 1, the FX slice; §23 #36)
+
+- **The control grid** is 32 samples, aligned to absolute sample positions.
+  - A parameter or modulation event takes effect at the first multiple of 32 at or after its
+    absolute timestamp. The last event per parameter wins.
+  - A boundary that falls exactly at a call's end applies in the next call (ruling M1-u).
+  - Mix and Level ramp linearly to each new target over 10 ms, per sample, as a function of the
+    absolute sample. A ramp restarts from its current value only when that parameter's target
+    changes (ruling M1-s).
+- **The Cloud scheduler.**
+  - Onsets: `t(k+1) = t(k) + Δ(k)`, with `Δ(k) = max(P × ((1 − d) + d × E(k)), 1/16 sample)`
+    (ruling M1-g).
+    - `P = sampleRate / Density`, and `d` is Distribution in [0, 1].
+    - `E(k) = −logDet(1 − u(k))`, with `u(k)` keyed by (seed, layer, stream, `Field::Onset`, k).
+    - The mean interval is `P`: periodic at `d` = 0, Poisson at `d` = 1.
+    - The 1/16-sample floor bounds each call's loop, and it never applies at `d` = 0.
+  - `logDet` is a deterministic natural log: argument reduction and a polynomial, no libm. It is
+    within `1e-14 × max(1, |log x|)` of `log x` across (0, 1].
+  - Density ≤ 0 means off. Positive values clamp to [0.01, min(4000, sampleRate)] Hz (ruling
+    M1-a). The plugin's floor is 0.25 Hz, so it is never off.
+  - **A Density or Distribution change at grid sample g rescales the pending onset:**
+    `t(k) = max(t(k−1) + Δ_new(k−1), g)`, from the same draw `E(k−1)`, with no new RNG draw
+    (ruling M1-h).
+    - Without it, a Density raise from 0.25 Hz would wait for an onset drawn at the old density.
+    - Caveat: after off → on, the rescale waits until a grain is emitted. The plugin can't reach
+      that case (Density ≥ 0.25 Hz).
+  - Every grain field is drawn at spawn, from the parameters in effect at its onset's grid cell.
+    Each draw has its own `rng::Field`, keyed with the real layer and stream IDs.
+  - **In Live mode, Position and Spray are seconds** behind the write head: the start delay is
+    `Position + Spray × u`, with u in [0, 1) (ruling M1-k). Sample mode keeps a normalized
+    position with bipolar jitter.
+  - **Per-grain equal-power pan:** `pan = Stereo × bipolar(u)`, with channel gains `√(1 − pan)`
+    and `√(1 + pan)`. `sqrt` is correctly rounded, so no libm value reaches the event log.
+- **Latched gain normalization.** Each grain's gain is `1 / √max(1, Density × Size)`, with
+  Density in grains/s and Size in seconds.
+  - That is the expected overlap; uncorrelated grains add in power.
+  - It is latched at spawn, so a moving Density can't pump the level.
+- **The wet chain:** Σ grains × Level → soft limiter → mix with dry, `dry × (1 − m) + wet × m`.
+  - **Soft limiter:** the identity up to |x| = 0.5 (−6 dBFS). Above, `sign(x) × (1 − 0.25/|x|)`,
+    capped below 1, with slope 1 at the knee and no libm; NaN gives 0 (ruling M1-t). It is a
+    first, minimal form of the global limiter.
+  - **Dry path:** non-finite samples count as 0, and finite samples aren't clamped, so at Mix 0
+    a normal float passes bit for bit (ruling M1-q).
+  - One `ScopedDenormalsOff` covers the whole processor call, the dry/wet sum included.
+- **The live ring.**
+  - Its window is N = 16 s of stereo frames, `[R − N, R − 1]` for write head R. It is stored in
+    N + maxBlockSize frames, so a block written whole before it renders never overwrites a frame
+    still in a sample's window. Output is independent of the host block size and of
+    maxBlockSize (ruling M1-o).
+  - Non-finite input is stored as 0, and finite input is clamped to ±2^20; in-range audio is
+    unchanged (ruling M1-p).
+  - **The admission clamp** sets the grain's start delay so that every Hermite tap
+    (p − 1 … p + 2), over the grain's whole life, stays at least M = 256 frames inside the
+    window: behind the head even at rate > 1, and ahead of the oldest frame.
+    - It is exact through the 20 ms freeze ramp, with the head measured at the sub-sample onset
+      (ruling M1-p).
+    - When both limits can't hold, the grain is dropped and counted.
+  - **The head-proximity fade:**
+    `g = clamp((R − 1 − (p + 2)) / M, 0, 1) × clamp(((p − 1) − (R − N)) / M, 0, 1)`.
+    Frozen, the window's two ends are the seam where the newest and oldest frames meet, so this is
+    the head-crossing crossfade.
+  - **Freeze** ramps the write gain to 0 over 20 ms, then stops the head. Unfreeze resumes the
+    head and ramps the gain back over 20 ms. The ramp is an exact integer count, so it doesn't
+    depend on where blocks fall.
+
 **Extreme stretch.** Grains alone start to comb and sound static at 100× and beyond. Two tools
 address this:
 - a **Smear** control that couples position jitter, overlap (8 to 32), micro-detune and
@@ -295,7 +363,7 @@ address this:
   index).
 - Random distributions are written in-house. Never use `std::` distributions, because they differ
   between standard libraries.
-- The control-rate sub-grid is aligned to absolute sample positions.
+- The control grid is 32 samples, aligned to absolute sample positions (Cloud core rules).
 - No fast-math reductions in the audio path.
 - No floating-point contraction: every first-party target compiles with `-ffp-contract=off`
   (gcc and clang) or `/clang:-ffp-contract=off` (ClangCL), so `a * b + c` is never fused into
@@ -323,11 +391,24 @@ and `src/scxt-plugin/CMakeLists.txt`.
 
 ```
 engine/   framework-free, real-time-safe, headless C++ — also powers gg-render
+core/     JUCE-free gg-core: patch, parameter mapping, Processor — shared with gg-render
 plugin/   CLAP implementation: params, notes/MPE, state, UI↔audio queues
 ui/       JUCE editor (GrainCanvas behind a renderer interface)
 clients/  CLAP entry points + clap-wrapper targets
 ```
 
+- **The `core/` layer (`gg-core`, since M1; §23 #38)** sits between the engine and the plugin. It
+  holds the patch and its versioned state XML (public API `gg/core/PatchState.h`), the only
+  parameter → engine mapping (`ParamMap`), and the `Processor`: the control grid, the Mix and
+  Level ramps, the FX's live input, the wet chain and the dry/wet mix. The plugin and `gg-render`
+  drive the same `Processor`, so the goldens test what a DAW plays. It has no JUCE.
+- **The plugin builds in two layers.** `gg-plugin-core` is the CLAP audio side and the factory,
+  with no JUCE. `gg-plugin-editor` adds the JUCE editor through `clap_juce_shim`.
+  - The `GG_BUILD_EDITOR` option (default ON) builds the editor and the clap-wrapper formats.
+  - With it OFF, the plugin core builds headless, with no gui extension, and the `[plugin]` tests
+    drive it through the CLAP factory. Nothing is downloaded.
+  - The `asan` and `rtsan` presets build that way, so `process`, `params.flush` and the dry/wet
+    sum run under ASan/UBSan and RealtimeSanitizer.
 - **One CLAP factory exposes both plugin descriptors.** Built on free-audio/clap 1.2.10 and
   clap-helpers.
 - **clap-wrapper generates VST3, AUv2 and the standalone app.**
@@ -364,6 +445,7 @@ clients/  CLAP entry points + clap-wrapper targets
 | sst-filters, sst-waveshapers, sst-effects | GPL-3.0-or-later | Filters, drive, reverb and delay |
 | sst-voicemanager | MIT | MIDI1, MPE and CLAP note-ID voice management |
 | sst-cpputils, sst-plugininfra, sst-clap-helpers, sst-jucegui | MIT | Real-time utilities, versioned patch state, JUCE shim, widgets |
+| tinyxml (bundled in sst-plugininfra) | zlib | The patch state's XML, private to `gg-core` |
 | simde | MIT | SSE intrinsics on ARM/NEON |
 | dr_libs (dr_wav / dr_flac / dr_mp3) | Unlicense / MIT-0 | Audio file decoding |
 | libFLAC | BSD-3-Clause | Encoding embedded captures |
@@ -377,6 +459,11 @@ clients/  CLAP entry points + clap-wrapper targets
 | nlohmann/json | MIT | Metrics and render-spec JSON |
 | CLI11 | BSD-3-Clause | Render CLI (`gg-render`) |
 
+- **sst-plugininfra is in use since M1** (`main` @ `8e4271c`; it has no release tags). Only its
+  `patchbase` interface target and its bundled tinyxml are built, linked privately into `gg-core`
+  (ruling M1-l), so no other target sees tinyxml or its `-fno-char8_t` flag.
+  - Its bundled `libs/asiosdk` is never built (unused). At this pin it is ASIO SDK 2.3.4, whose
+    `LICENSE.txt` grants the "Steinberg ASIO License or GPLv3" (§22).
 - **Study, don't depend on:**
   - Beads (MIT; Mutable Instruments published the source on 2026-10-12) and Clouds;
   - Shortcircuit XT's MIT sample-reading kernels and missing-sample model;
@@ -415,17 +502,28 @@ clients/  CLAP entry points + clap-wrapper targets
 
 ### 16. Performance targets
 
-*These are provisional. The M0 kernel benchmark measured them (below). The headline stays
-provisional until it is judged again at the end of milestone M1, and becomes a release gate
-only once it is met.*
+*The headline is measured on the reference core at the end of M1 and published as measured
+(§23 #39). The M0 kernel benchmark (below) is its starting point.*
 
-- **Headline target (provisional):** **at least 2,000 Normal-quality grains per instance at
-  48 kHz, using less than 25% of one Apple M1 performance core.**
+- **Headline (measured on the reference core, published as measured):** **2,000 Normal grains
+  per instance at 48 kHz in X% of one Apple M5 Max performance core.**
+  - X is measured at the end of M1, in sub-project 6, and published as measured. **There is no
+    ceiling on X.**
+  - The text always names the chip, so nobody reads it as an M1 or x86 figure.
+  - The M2 budget manager keeps any grain count safe by degrading deterministically (§14). The
+    promise is an honest, reproducible figure, not a threshold.
+- **X is measured on the real engine's render path,** not on M0's prototype kernels in
+  `tools/gg-bench/Kernels.h`.
+  - The case: 2,000 Normal-quality grains of 100 ms, at 48 kHz, through `Engine::process`,
+    scheduler and pan included.
+  - The method is gg-bench's: the median of interleaved runs, performance-core QoS, the `release`
+    preset, an idle machine.
+  - The published number records the commit SHA and the block sizes (32, 64, 256).
+- **Reference hardware:** one performance core of the director's Apple M5 Max, on bare metal.
 - **Measured kernel cost** (M0 benchmark on the director's M5 Max; details in
   `docs/spikes/m0-kernel-benchmark.md`). Costs are per stereo grain-sample, for 2,000 grains of
   100 ms at 48 kHz, at block sizes 32 / 64 / 256:
   - **Hermite, 4-wide SIMD:** 2.25 / 2.15 / 2.07 ns, which is 21.6% / 20.7% / 19.9% of one core.
-    The headline target is judged on this kernel.
   - **Linear, 4-wide SIMD:** 1.49 / 1.39 / 1.35 ns (14.3% / 13.3% / 13.0%).
   - **16-tap windowed sinc, scalar:** 8.75 / 8.68 / 8.61 ns (84.0% / 83.4% / 82.6%).
 
@@ -433,30 +531,38 @@ only once it is met.*
   and 7 to 13 ns for sinc.
   - The measurements land inside those estimates, or up to 12% above for Hermite.
   - The 2× to 4× penalty feared from gathers and cache misses did not appear on this machine.
-  - The M5 Max is the ceiling: here 2,000 Hermite grains already use 80% to 86% of the 25%
-    budget.
-- **Measured on the floor hardware** (M0 CI, full-length `gg-bench`). The SIMD Hermite kernel,
-  2,000 grains, at blocks 32 / 64 / 256:
+- **Informative floor figures** (M0 CI, full-length `gg-bench`). CI's legs keep running the
+  full-length benchmark, and their figures go in the benchmark doc as informative, not promised.
+  The SIMD Hermite kernel, 2,000 grains, at blocks 32 / 64 / 256:
   - **Apple M1 VM** (GitHub `macos-latest`): 5.52 / 5.41 / 5.00 ns, which is 52.9% / 51.9% /
     48.0% of one core.
   - **AMD EPYC 7763, Windows** (ClangCL): 6.22 / 5.93 / 5.72 ns (59.7% / 56.9% / 54.9%).
   - **AMD EPYC 7763, Linux** (gcc 12): 7.21 / 6.62 / 6.26 ns (69.2% / 63.5% / 60.1%).
 
-  **That is about 2× over budget:** 1.9× to 2.1× the 25% on the M1 VM, and 2.2× to 2.8× on x86.
-  Small blocks also cost relatively more on some legs. On Linux, block 32 costs 15% more per
-  grain-sample than block 256, against 8% on the M5 Max.
-- **Milestone M1's renderer owns the gap** (director ruling, §23 #23). The headline stays as
-  the provisional target, and closing the gap is an explicit goal of the M1 (Cloud core)
-  renderer. The candidate levers are:
-  - per-grain software prefetch;
-  - a stereo-interleaved source layout;
-  - cache-aware grain scheduling.
+  That is about 2.4× to 3.2× the M5 Max's share for the same grains. Small blocks also cost
+  relatively more on some legs. On Linux, block 32 costs 15% more per grain-sample than block
+  256, against 8% on the M5 Max.
+- **CI's CPU gate is a regression gate,** measured as ratios within one process (carry-over
+  B-I2). It never gates on an absolute headline.
+- **Sub-project 2's optimization work is a fixed list of four levers,** each tried, kept if it
+  wins, then stop:
 
-  M1's CI CPU gate starts as a regression gate at the measured baseline (§19). The headline is
-  judged again at the end of M1.
-- **Reference hardware:**
-  - The floor is GitHub's M1 CI runners plus a mid-range x86 AVX2 machine.
-  - The director's M5 Max is the ceiling, not the target.
+  | Lever | What it attacks |
+  |---|---|
+  | Per-grain software prefetch | the first, likely cache-missing taps of each grain in each block |
+  | A stereo-interleaved source layout | two address streams per tap; it halves the per-tap address work |
+  | Cache-aware grain scheduling | source locality across grains. It reorders memory fetches only, never the summation |
+  | Contiguous vector loads with shuffles in place of the per-lane gather | 8 one-at-a-time tap loads per output sample (NEON `tbl`, SSE shuffles) |
+
+  - **A lever is kept** when its in-process ratio against the current kernel improves beyond the
+    run-to-run spread, on the M5 Max or on any CI floor leg, and no leg regresses beyond its
+    spread. Judging on the M5 alone would undersell the cache levers, which mainly help older
+    machines.
+  - **Every lever obeys the determinism rules unchanged** (§14): grains are summed in spawn
+    order, so a reordering lever may change only fetch order; the output stays bit-identical at
+    any block size; a lever that changes output bits justifies it in a golden-regeneration
+    commit.
+  - **When all four are tried, optimization stops.** Sub-project 6 measures X and publishes it.
 - **UI budget:** at most 3 ms of UI-thread time per frame with 8,000 visible grains.
   - **Measured in M0** (`docs/spikes/m0-canvas-budget.md`): with 8,192 grains, the editor's
     "frame ms" stayed under 3 ms in Ableton Live and Bitwig Studio on the M5 Max (§23 #26).
@@ -583,6 +689,42 @@ they are frozen along with them.
   parameter:** a preset selector for the VST3 program list, at `0xC00000` or the first free ID
   above it. Hosts can save that ID too. Keeping our IDs below `0xB00000` keeps them clear of it.
 
+**Parameter IDs** (M1 sub-project 1; §23 #37):
+- **The scheme is `id = (scope << 16) | index`.**
+  - Scope 0 is global; scopes 1 to 4 are layers A to D. Only layer A exists in M1, so M2 adds
+    layers without renumbering.
+  - Index 0 is reserved.
+  - Every ID stays below `0xB00000` (ruling T8-d). IDs are append-only: never renumbered, never
+    reused.
+- **The first ten,** pinned by a test (`gg/core/ParamIds.h`) and frozen at the first public
+  release:
+
+  | ID | Name | Range | Default |
+  |---|---|---|---|
+  | `0x000001` | Mix | 0–100% | 50% |
+  | `0x000002` | Level | −60 … +12 dB | 0 dB |
+  | `0x010001` | Position | 0–16 s behind the write head | 0.25 s |
+  | `0x010002` | Size | 5 ms – 2 s | 150 ms |
+  | `0x010003` | Density | 0.25–400 grains/s | 16 |
+  | `0x010004` | Distribution | 0–100% (regular ↔ random) | 50% |
+  | `0x010005` | Pitch | −24 … +24 semitones | 0 |
+  | `0x010006` | Spray | 0–2 s | 50 ms |
+  | `0x010007` | Stereo | 0–100% per-grain pan spread | 50% |
+  | `0x010008` | Freeze | off/on | off |
+
+  - Every one is `AUTOMATABLE` and `MODULATABLE`; Freeze is also `STEPPED`. Modulation adds a
+    clamped offset to the base value and is never written back.
+  - Both products expose the same list, so they share one state format. In the instrument, Mix
+    is `HIDDEN` and has no effect, and its remote-controls slot is empty (ruling M1-w).
+  - The CLAP value is the parameter's sst-basic-blocks `ParamMetaData` value, a log-domain value
+    for the log ranges. Values are floats end to end.
+- **The patch state** (`PTCH`) is `gg-core`'s versioned XML: patch id
+  `org.sethbc.giga-grains.patch`, version 1. Each value also carries its float bits, so a saved
+  and reloaded state renders identically, and the engine seed is saved with it. New instances
+  start at seed 0.
+- **Remote controls:** one 8-slot page, "Cloud": Position, Size, Density, Pitch, Spray, Stereo,
+  Freeze, Mix. Sub-project 5 replaces it with the 8 macros.
+
 **CLAP features for v1:**
 - `params` with per-note modulation flags
 - `note-ports` (CLAP, MIDI and MIDI-MPE dialects)
@@ -626,8 +768,8 @@ they are frozen along with them.
   - Grain-event logs are compared across platforms.
 - **Fuzz and property tests.** Parameter sweeps, extreme values and bursts of automation must
   produce no NaNs, crashes, runaway gain, or clicks above a threshold.
-- **CPU benchmark gate in CI.** Milestone M1 starts it as a regression gate at the measured
-  baseline. The §16 headline becomes the gate once M1 meets it.
+- **CPU benchmark gate in CI:** a regression gate on in-process ratios, from M1's baseline. The
+  §16 headline is a published measurement, not a CI gate.
 - **Real-time safety.**
   - Clang RealtimeSanitizer on upstream LLVM 20 or newer (Apple clang doesn't ship it).
   - ASan and UBSan.
@@ -647,7 +789,7 @@ they are frozen along with them.
 | Milestone | Delivers | Exit criteria |
 |---|---|---|
 | **M0 Foundations** (done 2026-10-26) | Repo, CMake, CI matrix (mac/win/linux), `LICENSE` (AGPL-3.0); headless engine skeleton; `gg-render`; test, golden-render, RTSan and benchmark harness; both plugin shells in every format plus standalone; validators in CI. **Spikes:** kernel benchmark (sets §16), JUCE 9 vs 8.0.16, two-descriptor CLAP to AUv2/VST3/standalone, Ableton MIDI routing into an effect, CPU canvas frame budget. | One grain stream renders deterministically. The empty plugins load in the first-class hosts and pass every validator. **Met** (§23 #29). |
-| **M1 Cloud core** (starts from `docs/m1-carry-over.md`) | Grain pool and SIMD renderer (Eco/Normal), closing the §16 CPU gap; Cloud scheduler; parameter model; Sample and Live sources with freeze; note-triggered freeze/capture in the FX (§23 #32); 1 layer; diffusion/reverb; state save/load; single-lane canvas plus 8 macros | Both plugins make textures. **Listening gate #1.** CPU baseline recorded. The §16 headline judged again (§23 #23). clap-validator runs in full: M0 skips its `param-conversions` test, which panics on a plugin with no parameters (ruling T8-c, free-audio/clap-validator#40). |
+| **M1 Cloud core** (starts from `docs/m1-carry-over.md`) | Six sub-projects, each spec → plan → build → review (§23 #35): 1 FX vertical slice (`docs/superpowers/specs/2026-10-27-m1-fx-slice-design.md`); 2 Cloud engine; 3 Sources; 4 Space; 5 Perform UI; 6 Close. Together they deliver: grain pool and SIMD renderer (Eco/Normal), the §16 lever list (§23 #39); Cloud scheduler; parameter model; Sample and Live sources with freeze; note-triggered freeze/capture in the FX (§23 #32); 1 layer; diffusion/reverb; state save/load; single-lane canvas plus 8 macros | Both plugins make textures. **Listening gate #1.** CPU baseline recorded. The §16 headline measured on the reference core and published (§23 #39). clap-validator runs in full: M0 skipped its `param-conversions` test, which panics on a plugin with no parameters (ruling T8-c, free-audio/clap-validator#40); sub-project 1 removed the exclusion (§23 #35). |
 | **M2 Giga** | 4 layers plus morph; budget manager; grain target met; mipmaps and the HQ sinc tier; minutes-long buffers with persistence; Smear and Spectral Smear; resample/feedback source; full mod matrix; Mutate; factory presets and CC0 samples, including MIDI-driven FX presets (§23 #32) | Benchmarks pass. **Listening gate #2.** |
 | **→ v1.0** | M0 to M2 polished | Success criteria (§10) met. |
 | **M3 Playable** | Voice scheduler, polyphony, MPE, note expressions, polyphonic modulation, per-voice envelopes, pitch-sync/formant grains, microtuning | Listening gate. First-class hosts pass. |
@@ -665,7 +807,7 @@ Why this order after v1.0:
 
 | Risk | Mitigation |
 |---|---|
-| The CPU headline is missed on floor hardware: the M0 benchmark measured about 2× the §16 budget on CI's M1 VM and x86 runners (1.9× to 2.8×), and on the Linux runner small blocks cost relatively more than on the M5 Max | The milestone-M1 renderer owns the gap: per-grain prefetch, a stereo-interleaved source layout, cache-aware grain scheduling (§16). A CI regression gate from the measured baseline; the headline judged again at the end of M1; deterministic budget; quality tiers |
+| Older and x86 machines pay 2× to 3× the M5 Max's CPU share for the same grain count | The four §16 levers, judged on every CI leg; the informative floor figures (§16); the budget manager; the quality tiers |
 | Determinism is fragile: one CPU-adaptive rule, `std::` distribution or thread-order sum silently breaks it | Rules in §14; block-size invariance tests from M0 |
 | Multithreading is uneven across formats; there's no workgroup join via CLAP/clap-wrapper | Single-threaded v1; tasks only when the host offers a thread pool |
 | Memory blow-up: layers × minutes × mipmaps × instances | RAM cap per instance, shown in the UI; shared sample pool; buffer resolution options |
@@ -691,7 +833,7 @@ Why this order after v1.0:
 | Default behavior of rhythmic streams when the transport stops: keep running or hold | M4 |
 | An optional "Classic" Clouds-faithful mode using sst-effects' Nimbus | Post-v1 |
 | Windows signing route and budget | Before first public release |
-| Windows standalone ASIO: it's off, because RtAudio's bundled Steinberg ASIO files have no license grant (§23 #30). Re-enable it only from a Steinberg ASIO SDK release whose license is AGPLv3-compatible (Steinberg's GPLv3 release) | Before the first distributed Windows build |
+| Windows standalone ASIO: it's off, because RtAudio's bundled Steinberg ASIO files have no license grant (§23 #30). Re-enable it only from a Steinberg ASIO SDK release whose license is AGPLv3-compatible (Steinberg's GPLv3 release). Such a release now exists: ASIO SDK 2.3.4, licensed "Steinberg ASIO License or GPLv3", which sst-plugininfra bundles (unused, never built; §15, §23 #38). Whether to re-enable ASIO stays open | Before the first distributed Windows build |
 
 ### 23. Decision log
 
@@ -725,7 +867,7 @@ director made the call.
 | 20 | Plugin identities fixed | Vendor `sethbc`; URL `https://github.com/sethbc/giga-grains`; instrument CLAP ID `org.sethbc.giga-grains` ("Giga Grains"); FX CLAP ID `org.sethbc.giga-grains-fx` ("Giga Grains FX"); AU manufacturer `Sbcx` (display name `sethbc`); instrument AU `aumu`/`GGin`/`Sbcx`; FX AU `aufx`/`GGfx`/`Sbcx`, plus the extra identity `aumf`/`GGfx`/`Sbcx` through clap-wrapper's legacy-identity factory. Frozen at the first public release. Decided 2026-10-26, during M0; see §18 |
 | 21 | M0 tooling dependencies: dr_libs, pffft, stb_image_write, nlohmann/json, CLI11 | Audio-file decoding, the metrics FFT, spectrogram PNGs, metrics and render-spec JSON, and the `gg-render` command line, for the golden-render tooling (§19). All AGPLv3-compatible (§12). Decided 2026-10-26, during M0; see §15 |
 | 22 | §16's first-principles kernel cost estimates replaced by measured M5 Max numbers; headline target unchanged | The M0 kernel benchmark (`gg-bench`, 2,000 grains, median of 5 runs) puts the 4-wide SIMD Hermite kernel at 21.6% / 20.7% / 19.9% of one M5 Max core at blocks 32 / 64 / 256. That is under the 25% target, so the stop rule didn't trip. The headline is judged on the SIMD Hermite kernel (ruling T7-a). The M5 Max is the ceiling, so the M1-runner and x86 numbers from CI (M0 Task 10b) decide whether the target holds; see #23 for what they showed. See `docs/spikes/m0-kernel-benchmark.md`. Decided 2026-10-26, during M0; see §16 |
-| 23 | §16 headline kept as a provisional target despite the CI miss; milestone M1 closes the gap | Full-length `gg-bench` in M0 CI (run 40439674760, M0 Task 10b) puts the SIMD Hermite kernel at blocks 32 / 64 / 256 at: 52.9% / 51.9% / 48.0% of one core on GitHub's Apple M1 VM; 59.7% / 56.9% / 54.9% on a Windows AMD EPYC 7763 VM; and 69.2% / 63.5% / 60.1% on a Linux one. That is about 2× the 25% budget (1.9× to 2.8×), and on the Linux VM small blocks cost relatively more than on the M5 Max. The director chose to keep the headline as a provisional target and to make closing the gap an explicit goal of the milestone-M1 renderer, with full-length CI runs (Task 10b, the run above) quantifying the gap. The candidate levers are per-grain software prefetch, a stereo-interleaved source layout and cache-aware grain scheduling. M1's CI CPU gate starts as a regression gate at the measured baseline, and the headline is judged again at the end of M1. See `docs/spikes/m0-kernel-benchmark.md`. Decided 2026-10-26 by the director, during M0; see §16, §19, §20 and §21 |
+| 23 | §16 headline kept as a provisional target despite the CI miss; milestone M1 closes the gap | Full-length `gg-bench` in M0 CI (run 40439674760, M0 Task 10b) puts the SIMD Hermite kernel at blocks 32 / 64 / 256 at: 52.9% / 51.9% / 48.0% of one core on GitHub's Apple M1 VM; 59.7% / 56.9% / 54.9% on a Windows AMD EPYC 7763 VM; and 69.2% / 63.5% / 60.1% on a Linux one. That is about 2× the 25% budget (1.9× to 2.8×), and on the Linux VM small blocks cost relatively more than on the M5 Max. The director chose to keep the headline as a provisional target and to make closing the gap an explicit goal of the milestone-M1 renderer, with full-length CI runs (Task 10b, the run above) quantifying the gap. The candidate levers are per-grain software prefetch, a stereo-interleaved source layout and cache-aware grain scheduling. M1's CI CPU gate starts as a regression gate at the measured baseline, and the headline is judged again at the end of M1. See `docs/spikes/m0-kernel-benchmark.md`. Decided 2026-10-26 by the director, during M0; see §16, §19, §20 and §21. Superseded by #39 |
 | 24 | Start on JUCE 9.0.4, not 8.0.16-security | The M0 spike built `clap_juce_shim`, the editor and both plugins against JUCE 9.0.4 (`3fb5cbc`) with no source changes and no new warnings. On macOS arm64, every test and validator passed: clap-validator, pluginval at strictness 10 with GUI tests, auval for all three identities and Steinberg's VST3 validator. The live editor looked right. The license is unchanged: AGPLv3 or commercial, so it is AGPLv3-compatible (§12). Linux CI now installs `libxi-dev`, because JUCE 9 includes XInput2. JUCE's WebP support is off (`JUCE_USE_WEBP=0`, in `ui/CMakeLists.txt`): 9.0.4's libwebp SSE4.1 unit doesn't compile under ClangCL (the AVX2 units use the same pattern but weren't seen failing), and we never load WebP. That bug is worth reporting upstream to JUCE; the director decides. sst-jucegui (main) also builds and runs on 9.0.4. Windows, Linux and the mac-universal x86_64 slice are left to CI, and 8.0.16-security is the fallback. (Since then CI run 40445561691 passed on every leg, #29, and CI runs the x86_64 slice, #33.) Supersedes "start on JUCE 8.0.16-security" in #18. See `docs/spikes/m0-juce9.md`. Decided 2026-10-26, during M0; see §15, §21 and §22 |
 | 25 | MIDI-driven FX features are first-class | The M0 spike routed a MIDI track into Giga Grains FX in Ableton Live 12.4.7: the MIDI track's "MIDI To" set to the FX's audio track, then to Giga Grains FX. The editor's note-on counter rose with the VST3 and with the AU. For the AU, that is at least one of the FX's two identities; which one Live used wasn't recorded. The director: MIDI-driven FX features are first-class; Voice mode, MIDI pitch-sync and note-triggered freeze/capture are headline FX features, in the main UI and the factory presets; the FX's presets and docs explain MIDI routing for each host. #32 places them on the §20 roadmap. See `docs/spikes/m0-ableton-midi-fx.md`. Decided 2026-10-26 by the director, during M0; see §22 |
 | 26 | The GPU canvas backend spike stays in M2 | With 8,192 grains at the display's native scale, the editor's "frame ms (avg 60)" stayed under 3 ms in Ableton Live 12.4.7 and in Bitwig Studio 6.1.5 on the M5 Max. No exact numbers were recorded. On macOS the readout is UI-thread time only, because JUCE draws the view's layer asynchronously, so it is a lower bound on the whole frame. It does meet the §16 budget as worded. Floor hardware, Windows, Linux and canvases larger than the editor's default weren't measured. The CPU splat renderer stays the v1 renderer. See `docs/spikes/m0-canvas-budget.md`. Decided 2026-10-26 by the director, during M0; see §16, §17 and §22 |
@@ -737,6 +879,11 @@ director made the call.
 | 32 | First-class MIDI-driven FX features placed on the roadmap | #25 made Voice mode, MIDI pitch-sync and note-triggered freeze/capture headline FX features but placed none of them in §20, so as written v1 shipped no MIDI-driven FX feature. The director's decision: note-triggered freeze/capture is added to M1, which already builds freeze; MIDI-driven FX factory presets are added to M2; Voice mode and pitch-sync stay in M3. Decided 2026-10-26 by the director, during M0; see §20 and #25 |
 | 33 | M0 final-review corrections to Part II | The M0 final review's fix wave corrected Part II without changing a decision: §15 and §21 now give CI run 40445561691's JUCE 9 result (every leg green, Windows ClangCL included), and the macOS CI leg now runs the mac-universal x86_64 slice's unit tests and golden checks under Rosetta; #24 says only the SSE4.1 libwebp unit was seen failing; #23, §21 and `docs/spikes/m0-kernel-benchmark.md` scope the small-block cost to the Linux VM and record that full-length CI runs quantify the gap; §20's M1 exit criteria name the §16 headline re-judgement that #23 already decided; #25 keeps only the director's words; #29 says the event logs match exactly per line, not byte for byte; §18 notes clap-wrapper's VST3 preset selector at `0xC00000`; and the preamble above no longer dates every row to the founding brainstorm. Decided 2026-10-26, during M0 (final review); see §15, §18, §20, §21 and #23 to #29 |
 | 34 | M0 hands M1 a carry-over list | Everything the M0 reviews deferred to M1 is in `docs/m1-carry-over.md`, by area, each with its source and, where a reviewer gave one, its deadline; §20's M1 row links it. It replaces the review workspace, which is deleted when M0 closes (final-review ruling F3). Its first item, before parameters land: a JUCE-free plugin core, so the asan and rtsan presets cover the plugin audio path. Decided 2026-10-26, during M0 (final review); see §20 |
+| 35 | M1 is built as six sub-projects, an FX vertical slice first | M1 is too large for one spec, so it is split into six sub-projects, each going through spec → plan → build → review: 1 the FX vertical slice; 2 the Cloud engine (SoA pool, SIMD Eco/Normal kernels, a gate-grade `gg-bench`); 3 Sources (the Sample source, note-triggered freeze/capture, the media manifest); 4 Space (diffusion and reverb); 5 the Perform UI (canvas, 8 macros, Texture, Feedback); 6 Close (listening gate #1, the CPU figure, the host matrix). The director's three decisions: **a thin vertical slice first**, not risk-first or two parallel tracks, to put sound in front of ears early with final interfaces; **the first sound is the FX on live input**, with no file I/O and no new UI, the shortest path to a texture in Ableton Live and Bitwig (the instrument gets its sound in sub-project 3); **a shared, JUCE-free core** that holds the patch, the parameter mapping and the FX processing, used by the plugin and `gg-render`, so the goldens test exactly what a DAW plays. Sub-project 1 also removed clap-validator's `param-conversions` exclusion, now that the plugins have parameters (`a8202e2`; ruling T8-c). See `docs/superpowers/specs/2026-10-27-m1-fx-slice-design.md` §1. Decided 2026-10-27 by the director, during M1; see §20 |
+| 36 | The Cloud core's DSP rules, recorded in §14 | What M1 sub-project 1 built, and the rulings its reviews made: the 32-sample control grid on absolute samples, with a boundary at a call's end applied in the next call (M1-u) and a Mix/Level ramp restarted only when its target changes (M1-s); the Cloud scheduler's recurrence `Δ(k) = max(P × ((1 − d) + d × E(k)), 1/16 sample)` (M1-g) with the deterministic `logDet`; Density ≤ 0 is off, positive values clamp to [0.01, min(4000, sr)] (M1-a); a Density or Distribution change rescales the pending onset from the same draw (M1-h), which supersedes the slice spec's "next onset computed after its grid point"; Position and Spray in seconds in Live mode (M1-k); per-grain equal-power pan; the latched gain `1 / √max(1, Density × Size)`; the soft limiter `1 − 0.25/|x|` above 0.5 (M1-t); a dry path that zeroes non-finite samples and passes finite ones unclamped (M1-q); a live ring stored in N + maxBlockSize frames (M1-o), with an admission clamp exact through the 20 ms freeze ramp and input clamped to ±2^20 (M1-p), and a 256-frame head-proximity fade. Each keeps output bit-identical at any host block size. Decided 2026-10-27, during M1 sub-project 1; see §14 |
+| 37 | Parameter IDs: `(scope << 16) \| index`, and the first ten | Scope 0 is global and scopes 1 to 4 are layers A to D, so M2 adds layers without renumbering; index 0 is reserved; every ID is below `0xB00000` (ruling T8-d) and append-only. The ten: Mix `0x000001`, Level `0x000002`, and layer A's Position, Size, Density, Distribution, Pitch, Spray, Stereo and Freeze, `0x010001` to `0x010008`. Both products expose the same list and share one state format; the instrument hides Mix and leaves its remote-controls slot empty (ruling M1-w). The state is `gg-core`'s versioned XML (version 1) with each value's float bits and the engine seed. The IDs are pinned by a test and frozen at the first public release, with the identities in #20. Decided 2026-10-27, during M1 sub-project 1; see §18 |
+| 38 | `gg-core`, `GG_BUILD_EDITOR` and sst-plugininfra | `gg-core` (`core/`) is the JUCE-free layer between the engine and the plugin: the patch and its state, the parameter mapping and the `Processor`, shared by the plugin and `gg-render`. The plugin splits into a JUCE-free core and an editor layer; `GG_BUILD_EDITOR` (default ON) builds the editor and the clap-wrapper formats, and the `asan` and `rtsan` presets build with it OFF, so the plugin audio path runs under ASan/UBSan and RealtimeSanitizer, which closes the carry-over's first item (`ec2a054`). sst-plugininfra (MIT) is pinned at `main` @ `8e4271c`; only its `patchbase` target and bundled tinyxml (zlib) are built, private to `gg-core` (ruling M1-l). Its bundled `libs/asiosdk` is ASIO SDK 2.3.4, licensed "Steinberg ASIO License or GPLv3"; it is unused and never built. §22 records that a GPLv3 ASIO SDK release now exists; re-enabling ASIO stays open, and #30 stands. Decided 2026-10-27, during M1 sub-project 1; see §15 and §22 |
+| 39 | §16 headline measured on the M5 Max and published as measured, with no ceiling; floor figures informative; sub-project 2 tries four levers and keeps the winners | M0 measured the SIMD Hermite kernel at 20–22% of one M5 Max core, 48–53% on CI's M1 VM and 55–69% on the EPYC VMs. #23's levers attack cache misses and per-grain overhead, which the M5 Max barely shows, so nothing guaranteed they would close 2×, and sub-project 2 would have opened with a bar it might not meet. The decision: the reference is one performance core of the director's M5 Max, on bare metal; the headline is "2,000 Normal grains per instance at 48 kHz in X% of one Apple M5 Max performance core", X measured on the real engine's render path at the end of M1 (sub-project 6) and published with its commit SHA and block sizes, with no ceiling; CI's floor legs keep running the full benchmark, as informative figures; CI's CPU gate stays a regression gate on in-process ratios (carry-over B-I2); sub-project 2 tries four levers (prefetch, an interleaved source, cache-aware scheduling, contiguous loads with shuffles), keeps each that wins on the M5 Max or any CI leg without regressing another, then stops. The director signed off the Part I wordings: §5 "with published figures (§16)", and §10 criterion 3 "The grain-count and CPU figures published in §16 are measured on the reference hardware and reproducible." Supersedes #23. See `docs/superpowers/specs/2026-10-27-cpu-headline-design.md`. Decided 2026-10-27 by the director, during M1; see §5, §10, §16, §19, §20 and §21 |
 
 **Key sources** (checked 2026-10-26):
 - clap-wrapper releases (v0.17.0, 2026-10-20): https://github.com/free-audio/clap-wrapper/releases
