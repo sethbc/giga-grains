@@ -17,15 +17,26 @@ All of the following is on macOS arm64:
 - **Editor:** the live window looks right.
 - **License:** the dual-license terms are unchanged. AGPLv3 is still an option.
 
-The one change JUCE 9 needs is outside the code. On Linux, JUCE 9 includes the XInput2
-headers, so CI installs `libxi-dev` (see "Linux" below).
+JUCE 9 needs two changes, neither of them in `libs/`:
+
+- **Linux CI installs `libxi-dev`.** On Linux, JUCE 9 includes the XInput2 headers (see "Linux"
+  below).
+- **`JUCE_USE_WEBP=0`, set in `ui/CMakeLists.txt`.** JUCE 9.0.4's libwebp SSE4.1 translation
+  unit doesn't compile under Windows ClangCL (see "Windows" below; ruling T11-g).
 
 **CI-pending** (ruling T11-f: CI on all three legs is the real gate):
 
 - Windows;
 - Linux;
-- the x86_64 slice of the `mac-universal` build. JUCE 9 compiles new x86-only C translation
-  units into the shim: libwebp's `*_avx2.c` and `*_sse41.c`.
+- the x86_64 slice of the `mac-universal` build. JUCE 9 adds x86-only C translation units to the
+  shim: libwebp's `*_avx2.c` and `*_sse41.c`. With `JUCE_USE_WEBP=0` they compile to nothing.
+
+Integration CI run 40442418294, on `c7e3a1a` before the WebP fix:
+
+- passed: `mac-universal`, `linux-gcc12` and the sanitizers;
+- failed: `windows-clangcl`, on the WebP issue.
+
+The fix applies to every platform, so the next CI run is the gate for all three legs.
 
 If any of these fails in a way that needs a patch to `libs/`, fall back to 8.0.16-security.
 
@@ -33,7 +44,7 @@ The x86_64 slice was also tried locally during integration:
 
 - `cmake --preset mac-universal` built `gg-all` and `gg-products` with only the known VST3 SDK
   and `ld` warnings. Every product is `x86_64 arm64`, and the libwebp avx2 and sse41 units
-  compiled.
+  compiled. That was before the WebP fix; after it, see "Windows".
 - Run under Rosetta (`arch -x86_64`), on the x86_64 slice:
   - `gg-tests` reported "All tests passed (15039 assertions in 75 test cases)";
   - pluginval at strictness 10 with GUI tests gave `SUCCESS`;
@@ -78,7 +89,9 @@ of these warnings predate JUCE 9 and none comes from JUCE or our code:
 Our own targets still build with `-Werror`. JUCE's headers reach them as `SYSTEM` includes
 (`gg::juce-headers`), as before.
 
-**Code changes needed:** none in `plugin/`, `ui/`, `clients/` or `libs/`.
+**Code changes needed:** none in `plugin/`, `clients/` or `libs/`. In `ui/CMakeLists.txt`, one
+definition, `JUCE_USE_WEBP=0`, works around the ClangCL build failure (see "Windows"). The macOS
+build didn't need it.
 
 ## Tests and validators
 
@@ -167,8 +180,67 @@ JUCE 9 also lists `libegl-dev` for `juce_opengl`. We don't use that module: the 
 
 ## Windows
 
-This is unverified locally. JUCE 9's documented minimums are the same as 8's: VS2019 and
+Windows can't be built locally. JUCE 9's documented minimums are the same as 8's: VS2019 and
 Windows 10 1607. CI's `windows-clangcl` leg checks it.
+
+### The ClangCL failure (fix round 1, ruling T11-g)
+
+Integration CI run 40442418294 failed on `windows-clangcl` in `clap_juce_shim`:
+
+```
+libs\JUCE\modules\juce_graphics\juce_graphics_libwebp_dsp_dec_sse41.c:71
+  → libwebp/src/dsp/dec_sse41.c:23 → libwebp/src/utils/utils.h:133
+  → clang\19\include\intrin.h:22 → x86intrin.h → immintrin.h:549
+clang\19\include\rtmintrin.h(36,1): error : attribute 'target' multiversioning cannot be
+  combined with attribute 'always_inline'
+clang\19\include\intrin.h(166,6): message : function multiversioning caused by this declaration
+```
+
+**Cause** (a JUCE 9.0.4 bug that only affects ClangCL):
+
+1. Under clang-cl, `JUCE_CLANG` is true, so JUCE wraps the libwebp SSE4.1 translation unit in
+   `#pragma clang attribute push(__attribute__((target("sse4.1"))), apply_to=function)`.
+2. Under `_MSC_VER`, libwebp's `utils.h` includes MSVC-mode `<intrin.h>`. The pragma tags those
+   intrinsic declarations with `target("sse4.1")`.
+3. The tagged declarations clash with the `always_inline` redeclarations in `rtmintrin.h`.
+
+macOS and Linux never include `<intrin.h>`, so they pass. All four x86 units (decode and encode,
+SSE4.1 and AVX2) use the same pragma pattern.
+
+**Fix:** `ui/CMakeLists.txt` sets `JUCE_USE_WEBP=0` on `juce_graphics`' interface. That reaches
+every translation unit that compiles or includes JUCE, with the same value everywhere. In the
+dev build, all 36 such units get exactly one `JUCE_USE_WEBP=0`, and none gets `=1`. They include:
+
+- the module sources compiled into `clap_juce_shim`;
+- the shim's own sources;
+- `gg-ui`;
+- the plugin translation units, through `gg::juce-headers`.
+
+Every libwebp unit is guarded by `#if JUCE_USE_WEBP && JUCE_INCLUDE_WEBPLIB_CODE`, so all of them
+now compile to nothing. We never load WebP images, so nothing is lost.
+
+**Verified on macOS:**
+
+- **Shim library:** `nm` on the `mac-universal` `libclap_juce_shim.a` shows 0 `WebP`, `VP8` or
+  `SharpYuv` symbols on x86_64 and on arm64. Before the fix it showed 831 and 767, and the
+  `*_sse41.c.o` and `*_avx2.c.o` objects are now empty. The final `.clap` has none either.
+- **dev:** builds, and `ctest` gives `100% tests passed out of 79`.
+- **mac-universal:** builds with only the known warnings, and `ctest` gives `100% tests passed
+  out of 79`.
+- **Validators** on the `mac-universal` products:
+  - clap-validator (with the exclusion): 79 run, 51 passed, 0 failed;
+  - pluginval at strictness 10 with GUI tests: `SUCCESS`;
+  - Steinberg VST3 validator: 94 passed, 0 failed.
+- **Under Rosetta (x86_64):** `gg-tests` passes all 75 test cases, and pluginval gives `SUCCESS`.
+
+**Upstream:** this is worth reporting to JUCE. A fix would either:
+
+- skip the `#pragma clang attribute` wrapper under `_MSC_VER`/clang-cl, so that clang-cl relies
+  on `/arch` or per-function target attributes; or
+- include `<intrin.h>` before the push.
+
+The director decides whether to file it. Once a fixed JUCE is pinned, `JUCE_USE_WEBP=0` can be
+dropped, but only if WebP is ever wanted.
 
 ## Extra: sst-jucegui
 

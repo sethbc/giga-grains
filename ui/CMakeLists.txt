@@ -39,4 +39,14 @@ if (GG_BUILD_PLUGINS)
             JUCE_USE_CURL=0
             JUCE_WEB_BROWSER=0
             )
+
+    # No WebP: we never load WebP images. JUCE 9.0.4's libwebp SSE4.1/AVX2 translation units
+    # (juce_graphics_libwebp_dsp_*_{sse41,avx2}.c) don't compile under ClangCL: JUCE wraps
+    # them in `#pragma clang attribute push(target("sse4.1"))`, and libwebp's MSVC-mode
+    # <intrin.h> include then clashes with clang's always_inline intrinsics. With
+    # JUCE_USE_WEBP=0 those TUs compile to nothing. It goes on juce_graphics' interface so it
+    # reaches every TU that compiles or includes that module, with one value: the module
+    # sources compiled into clap_juce_shim (or its requirements library in unity builds), and
+    # gg-ui and the plugin through gg::juce-headers. Ruling T11-g.
+    target_compile_definitions(juce_graphics INTERFACE JUCE_USE_WEBP=0)
 endif ()
