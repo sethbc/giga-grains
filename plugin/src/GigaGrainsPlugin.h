@@ -123,6 +123,7 @@ class GigaGrainsPlugin : public plugHelper_t
 /// build (headless/MakePlugin.cpp), an EditorPlugin when the editor is built
 /// (editor/MakePlugin.cpp). Exactly one of the two is linked. clap-helpers owns the instance:
 /// clap_plugin.destroy deletes it. Throws whatever the plugin's constructor throws.
+/// Editor builds: gg-plugin-core leaves this unresolved; link the editor objects (IMPL_TARGET).
 const clap_plugin *makePlugin(const clap_host *host, Product product);
 } // namespace gg::plugin
 

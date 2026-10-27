@@ -20,13 +20,15 @@ add_library(gg-plugin-core STATIC
         )
 target_include_directories(gg-plugin-core PUBLIC include PRIVATE src)
 
-# Only header-only interfaces are PUBLIC: what GigaGrainsPlugin.h, which the editor layer and
-# the tests include, needs (sst-cpputils for SST_CPPUTILS_NONBLOCKING). The engine and our
-# compiler options stay PRIVATE so they do not reach clap-wrapper's own sources, which
-# make_clapfirst_plugins compiles into the same format targets that link these libraries.
+# Only header-only interfaces are PUBLIC. The engine, sst-cpputils and our compiler options stay
+# PRIVATE so they do not reach clap-wrapper's own sources, which make_clapfirst_plugins compiles
+# into the same format targets that link these libraries (sst-cpputils carries MSVC flags:
+# /utf-8 /bigobj /permissive-). GigaGrainsPlugin.h needs sst-cpputils for
+# SST_CPPUTILS_NONBLOCKING, so whatever includes it links sst-cpputils itself: the editor layer
+# below, and the tests through gg::engine.
 target_link_libraries(gg-plugin-core
-        PUBLIC clap clap-helpers gg::clap-wrapper-extensions sst-cpputils
-        PRIVATE gg::engine gg::compiler-options
+        PUBLIC clap clap-helpers gg::clap-wrapper-extensions
+        PRIVATE gg::engine sst-cpputils gg::compiler-options
         )
 
 if (NOT GG_BUILD_EDITOR)
@@ -51,6 +53,6 @@ else ()
     # complete type; see createEditor().
     target_link_libraries(gg-plugin-editor
             PUBLIC gg-plugin-core clap_juce_shim_headers
-            PRIVATE gg::ui clap_juce_shim gg::juce-headers gg::compiler-options
+            PRIVATE gg::ui clap_juce_shim gg::juce-headers sst-cpputils gg::compiler-options
             )
 endif ()
