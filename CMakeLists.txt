@@ -13,11 +13,27 @@ set(CMAKE_OSX_DEPLOYMENT_TARGET 11.0 CACHE STRING "Minimum macOS version")
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# The rtsan preset takes its compilers from $GG_LLVM. Unset, they resolve to /bin/clang, which is
+# missing or has no RTSan; name the cause here rather than let project() fail on the compiler.
+if (GG_USE_RTSAN AND IS_ABSOLUTE "${CMAKE_CXX_COMPILER}" AND NOT EXISTS "${CMAKE_CXX_COMPILER}")
+    message(FATAL_ERROR "GG_USE_RTSAN: the C++ compiler ${CMAKE_CXX_COMPILER} doesn't exist. "
+            "Set GG_LLVM to an upstream LLVM 20 or newer when configuring, for example "
+            "GG_LLVM=/opt/homebrew/opt/llvm cmake --preset rtsan")
+endif ()
+
 project(GigaGrains VERSION 0.0.1 LANGUAGES C CXX)
 
 option(GG_BUILD_PLUGINS "Build the CLAP/VST3/AUv2/standalone plugins" ON)
 option(GG_SANITIZE "Build with clang/gcc address and undefined-behaviour sanitizers" OFF)
 option(GG_USE_RTSAN "Build with the LLVM RealtimeSanitizer" OFF)
+# RealtimeSanitizer is in upstream Clang 20 and newer; Apple clang and gcc have none.
+if (GG_USE_RTSAN AND NOT (CMAKE_CXX_COMPILER_ID STREQUAL "Clang"
+        AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 20))
+    message(FATAL_ERROR "GG_USE_RTSAN needs upstream Clang 20 or newer, but the C++ compiler is "
+            "${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION} (${CMAKE_CXX_COMPILER}). "
+            "Set GG_LLVM to an upstream LLVM 20 or newer when configuring, for example "
+            "GG_LLVM=/opt/homebrew/opt/llvm cmake --preset rtsan")
+endif ()
 option(GG_COPY_PLUGIN_AFTER_BUILD "Copy plugins to the user plugin folders after build" OFF)
 set(GG_JUCE_PATH "${CMAKE_SOURCE_DIR}/libs/JUCE" CACHE PATH "JUCE checkout used for the UI")
 if (APPLE AND GG_BUILD_PLUGINS)

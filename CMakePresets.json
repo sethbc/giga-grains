@@ -112,6 +112,9 @@
     {
       "name": "base",
       "hidden": true,
+      "output": {
+        "outputOnFailure": true
+      },
       "execution": {
         "noTestsAction": "error"
       }

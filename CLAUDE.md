@@ -91,7 +91,7 @@ except `windows-clangcl`, which builds into `build/windows/`.
 | `release` | Release. Time benchmarks and run the validators on this one. |
 | `asan` | ASan + UBSan, Debug. No plugins: the engine, UI core, tools and tests. |
 | `rtsan` | RealtimeSanitizer, RelWithDebInfo, no plugins. Needs upstream LLVM 20 or newer in `$GG_LLVM` (Apple clang has no RTSan). |
-| `mac-universal` | Release for arm64 + x86_64. CI's macOS leg. |
+| `mac-universal` | Release for arm64 + x86_64. CI's macOS leg, which also runs the x86_64 slice's tests and golden checks under Rosetta. |
 | `windows-clangcl`, `linux-gcc12` | CI's Windows and Linux legs. |
 
 Every preset uses the same three commands:
@@ -104,7 +104,8 @@ ctest --preset dev --output-on-failure
 
 - **RTSan:** set `GG_LLVM` when configuring:
   - `GG_LLVM=/opt/homebrew/opt/llvm cmake --preset rtsan` with Homebrew LLVM on macOS;
-  - CI uses `/usr/lib/llvm-20` on Linux.
+  - CI uses LLVM's 20.1.8 release for Linux, checked against its SHA-256, in `/opt/llvm-20.1.8`.
+  - Configuring fails, naming `GG_LLVM`, if the compiler isn't upstream Clang 20 or newer.
 - **Outputs:**
   - The plugins and standalone apps land in `build/<preset>/gg_assets/`.
   - `cmake --build --preset <p> --target gg-products` gathers them into
