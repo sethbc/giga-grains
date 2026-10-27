@@ -10,7 +10,9 @@
 // these tests also run under ASan/UBSan and under RealtimeSanitizer, which checks every
 // SST_CPPUTILS_NONBLOCKING function they reach for allocation, locks and I/O.
 
+#include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <string_view>
@@ -27,6 +29,7 @@
 #include "gg/core/Processor.h"
 #include "gg/core/Rng.h"
 #include "gg/engine/Engine.h"
+#include "sst/basic-blocks/params/ParamMetadata.h"
 #include "support/AllocTripwire.h"
 
 using gg::core::paramId;
@@ -247,6 +250,113 @@ TEST_CASE("plugin applies a state loaded while active without allocating", "[plu
     }
     allocations = AllocTripwire::count();
     CHECK(plugin.impl().processor()->base(ParamSlot::Density) == 7.0f);
+    REQUIRE(allocations == 0);
+}
+
+TEST_CASE("plugin reset does not allocate and a restored Freeze plays live", "[plugin][rt]")
+{
+    // CLAP reset(), which clap-wrapper's VST3 calls on every setProcessing(false), restarts the
+    // Processor and its engine. It and the process() calls after it run armed (carry-over
+    // C-m4). For the FX this also proves review finding I1's fix at the plugin boundary: a state
+    // restored with Freeze on, as a project reopens, and a reset with Freeze on, play live
+    // grains until Freeze is turned off and on again (INTENT §14, "live until toggled").
+    const char *id = GENERATE(kInstrumentId, kFxId);
+    CAPTURE(id);
+    gg::test::PluginUnderTest plugin(id);
+    REQUIRE(plugin.valid());
+    const bool isFx = std::string_view(id) == kFxId;
+
+    // Mix 1, so the FX's output is its wet signal alone, and Freeze on, restored before the
+    // activation.
+    gg::core::ParamValues restored{};
+    for (std::size_t s = 0; s < gg::core::kParamCount; ++s)
+    {
+        restored[s] = gg::core::paramMeta(static_cast<ParamSlot>(s)).defaultVal;
+    }
+    restored[static_cast<std::size_t>(ParamSlot::Mix)] = 1.0f;
+    restored[static_cast<std::size_t>(ParamSlot::Freeze)] = 1.0f;
+    REQUIRE(plugin.load(gg::core::toStateXml(restored, 0)));
+    REQUIRE(plugin.activate(48000.0, 512));
+    CHECK(plugin.value(paramId(ParamSlot::Freeze)) == 1.0); // Freeze still reads On
+
+    constexpr uint32_t kBlock = 512;
+    constexpr int kCalls = 94; // about 1 s
+    std::vector<float> inLeft(kBlock), inRight(kBlock), outLeft(kBlock), outRight(kBlock);
+    for (std::size_t i = 0; i < kBlock; ++i)
+    {
+        inLeft[i] = static_cast<float>(gg::rng::bipolar(gg::rng::splitmix64(2 * i)));
+        inRight[i] = static_cast<float>(gg::rng::bipolar(gg::rng::splitmix64(2 * i + 1)));
+    }
+    float *inputs[2] = {inLeft.data(), inRight.data()};
+    float *outputs[2] = {outLeft.data(), outRight.data()};
+    gg::test::InputEvents none;
+    const auto freezeOff = gg::test::paramValue(paramId(ParamSlot::Freeze), 0.0);
+    const auto freezeOn = gg::test::paramValue(paramId(ParamSlot::Freeze), 1.0);
+    gg::test::InputEvents off;
+    off.add(&freezeOff.header);
+    gg::test::InputEvents on;
+    on.add(&freezeOn.header);
+    const gg::Engine *engine = plugin.impl().engine();
+    REQUIRE(engine != nullptr);
+
+    // kCalls calls; returns the output's peak over the second half, without allocating.
+    bool allContinue = true;
+    const auto run = [&](const clap_input_events *first) {
+        float p = 0.0f;
+        for (int k = 0; k < kCalls; ++k)
+        {
+            allContinue = allContinue &&
+                          plugin.process(kBlock, isFx ? inputs : nullptr, outputs,
+                                         k == 0 ? first : none.list()) == CLAP_PROCESS_CONTINUE;
+            for (uint32_t i = 0; k >= kCalls / 2 && i < kBlock; ++i)
+            {
+                p = std::max({p, std::abs(outLeft[i]), std::abs(outRight[i])});
+            }
+        }
+        return p;
+    };
+
+    const float activated = run(none.list());
+    const int64_t headAfterActivation = engine->liveWriteHead();
+
+    float afterReset = 0.0f;
+    float afterToggle = 0.0f;
+    int64_t headAfterReset = 0;
+    AllocTripwire::resetCount();
+    {
+        AllocTripwire::Scope armed;
+        plugin.clap()->reset(plugin.clap());
+        afterReset = run(none.list());
+        headAfterReset = engine->liveWriteHead();
+        run(off.list());
+        afterToggle = run(on.list());
+    }
+    const uint64_t allocations = AllocTripwire::count();
+
+    CHECK(allContinue);
+    CHECK(engine->sampleClock() == 3 * kCalls * kBlock); // reset() restarted the clock
+    CHECK(plugin.value(paramId(ParamSlot::Freeze)) == 1.0);
+    if (isFx)
+    {
+        // Live after the activation and after the reset: the head never stopped, and the wet
+        // signal sounds.
+        CHECK(headAfterActivation == kCalls * kBlock);
+        CHECK(headAfterReset == kCalls * kBlock);
+        CHECK(activated > 0.05f);
+        CHECK(afterReset > 0.05f);
+        // Off, then on again: Freeze engages at the first boundary of the last run, and the
+        // head stops 20 ms (960 samples) later. The held ring still sounds.
+        CHECK(engine->liveWriteHead() == 2 * kCalls * kBlock + 960);
+        CHECK(afterToggle > 0.05f);
+    }
+    else
+    {
+        // The instrument has no ring and, in this slice, no source: silence throughout.
+        CHECK(engine->liveFrames() == 0);
+        CHECK(activated == 0.0f);
+        CHECK(afterReset == 0.0f);
+        CHECK(afterToggle == 0.0f);
+    }
     REQUIRE(allocations == 0);
 }
 
