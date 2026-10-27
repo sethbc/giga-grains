@@ -1,0 +1,14 @@
+{
+  "mode": "fx",
+  "sampleRate": 48000,
+  "durationSeconds": 4.0,
+  "blockSize": 128,
+  "seed": 1,
+  "input": {"kind": "sweep", "startHz": 50, "endHz": 8000, "seconds": 3.0, "amplitude": 0.5},
+  "channels": 1,
+  "automation": [
+    {"time": 1.0, "param": "Density", "value": 6.0},
+    {"time": 1.5, "param": "Freeze", "value": 1},
+    {"time": 2.5, "param": "Freeze", "value": 0}
+  ]
+}

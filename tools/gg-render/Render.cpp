@@ -13,6 +13,7 @@
 #include <fmt/format.h>
 
 #include "Signals.h"
+#include "gg/core/Processor.h"
 #include "gg/engine/Engine.h"
 #include "gg/source/SampleBuffer.h"
 
@@ -83,22 +84,29 @@ CloudParams toCloudParams(const StreamSpec &s)
 /// most 2^-22 samples while t is below 2^32 (every render gg-render accepts is shorter). So a
 /// call of at most kMaxBlockSize frames starts fewer than frames / (1/16 − 2^-22) + 1 grains,
 /// which is at most 16 × frames + 5. The code reserves 16 × frames + 16: the extra slack over
-/// the derived + 5 is deliberate, so the bound doesn't rest on that rounding analysis alone.
+/// the derived + 5 is deliberate, so the bound doesn't rest on that rounding analysis alone. The
+/// bound holds for a Processor call too, which renders in pieces split at grid boundaries: the
+/// minimum interval is between consecutive onsets, whichever piece they fall in.
 std::size_t maxGrainsPerCall(uint32_t frames)
 {
     const auto perFrame = static_cast<std::size_t>(1.0 / CloudScheduler::kMinIntervalSamples);
     return perFrame * frames + 16;
 }
-} // namespace
 
-std::string formatEventLine(const GrainSpec &g)
+/// Moves the grains collected during one process() call into eventLines, if it isn't null.
+void takeEventLines(GrainCollector &grains, std::vector<std::string> *eventLines)
 {
-    return fmt::format(
-        R"({{"i":{},"onset":{},"frac":{},"pos":{},"rate":{},"dur":{},"gain":{},"pan":{}}})",
-        g.index, g.onsetSample, g.onsetFrac, g.startPos, g.rate, g.durationSamples, g.gain, g.pan);
+    if (eventLines != nullptr)
+    {
+        for (const GrainSpec &g : grains.pending)
+        {
+            eventLines->push_back(formatEventLine(g));
+        }
+    }
+    grains.pending.clear();
 }
 
-gg::metrics::AudioData render(const RenderSpec &spec, std::vector<std::string> *eventLines)
+gg::metrics::AudioData renderSample(const RenderSpec &spec, std::vector<std::string> *eventLines)
 {
     const auto source = toSampleBuffer(makeSignal(spec.source, spec.sampleRate, spec.seed));
 
@@ -126,15 +134,7 @@ gg::metrics::AudioData render(const RenderSpec &spec, std::vector<std::string> *
             float *const block[2] = {out.channels[0].data() + done, out.channels[1].data() + done};
             engine.process(block, 2, n);
             done += n;
-
-            if (eventLines != nullptr)
-            {
-                for (const GrainSpec &g : grains.pending)
-                {
-                    eventLines->push_back(formatEventLine(g));
-                }
-            }
-            grains.pending.clear();
+            takeEventLines(grains, eventLines);
         }
     };
 
@@ -181,5 +181,99 @@ gg::metrics::AudioData render(const RenderSpec &spec, std::vector<std::string> *
         throw std::logic_error("more grains spawned in one block than the scheduler allows");
     }
     return out;
+}
+
+gg::core::ParamSlot slotNamed(const std::string &name)
+{
+    const auto slot = paramSlotNamed(name);
+    if (!slot)
+    {
+        throw std::invalid_argument("no parameter is named " + name);
+    }
+    return *slot;
+}
+
+gg::metrics::AudioData renderFx(const RenderSpec &spec, std::vector<std::string> *eventLines)
+{
+    const auto frames = static_cast<std::size_t>(framesFor(spec.durationSeconds, spec.sampleRate));
+    // The input, silent after its own length (and cut at the render's end).
+    gg::metrics::AudioData input =
+        makeInput(spec.fx.input, spec.fx.channels, spec.sampleRate, spec.seed);
+    for (auto &channel : input.channels)
+    {
+        channel.resize(frames, 0.0f);
+    }
+
+    gg::core::Processor processor({spec.sampleRate, spec.blockSize, spec.seed, gg::core::Mode::Fx});
+    for (const auto &[name, value] : spec.fx.params)
+    {
+        processor.setBase(slotNamed(name), static_cast<float>(value));
+    }
+
+    // The automation as events at absolute frames, in time order.
+    struct TimedEvent
+    {
+        std::size_t frame;
+        gg::core::ParamSlot slot;
+        double value;
+    };
+    std::vector<TimedEvent> automation;
+    automation.reserve(spec.fx.automation.size());
+    for (const AutomationPoint &p : spec.fx.automation)
+    {
+        automation.push_back({static_cast<std::size_t>(framesFor(p.timeSeconds, spec.sampleRate)),
+                              slotNamed(p.param), p.value});
+    }
+
+    GrainCollector grains(maxGrainsPerCall(spec.blockSize));
+    processor.setEventSink(&GrainCollector::sink, &grains);
+    if (eventLines != nullptr)
+    {
+        eventLines->clear();
+    }
+
+    gg::metrics::AudioData out{spec.sampleRate,
+                               {std::vector<float>(frames), std::vector<float>(frames)}};
+    std::vector<gg::core::ParamEvent> events;
+    events.reserve(automation.size());
+    std::size_t next = 0; // the first automation event not yet handed to the processor
+    for (std::size_t done = 0; done < frames;)
+    {
+        const auto n = static_cast<uint32_t>(std::min<std::size_t>(spec.blockSize, frames - done));
+        // This call's events, at their offsets from its first frame.
+        events.clear();
+        for (; next < automation.size() && automation[next].frame < done + n; ++next)
+        {
+            const TimedEvent &e = automation[next];
+            events.push_back({static_cast<uint32_t>(e.frame - done), e.slot, false, e.value});
+        }
+        const float *const in[2] = {input.channels[0].data() + done,
+                                    spec.fx.channels == 2 ? input.channels[1].data() + done
+                                                          : nullptr};
+        float *const block[2] = {out.channels[0].data() + done, out.channels[1].data() + done};
+        processor.process(in, spec.fx.channels, block, 2, n, events);
+        done += n;
+        takeEventLines(grains, eventLines);
+    }
+
+    if (grains.overflowed)
+    {
+        throw std::logic_error("more grains spawned in one block than the scheduler allows");
+    }
+    return out;
+}
+} // namespace
+
+std::string formatEventLine(const GrainSpec &g)
+{
+    return fmt::format(
+        R"({{"i":{},"onset":{},"frac":{},"pos":{},"rate":{},"dur":{},"gain":{},"pan":{}}})",
+        g.index, g.onsetSample, g.onsetFrac, g.startPos, g.rate, g.durationSamples, g.gain, g.pan);
+}
+
+gg::metrics::AudioData render(const RenderSpec &spec, std::vector<std::string> *eventLines)
+{
+    return spec.mode == RenderMode::Fx ? renderFx(spec, eventLines)
+                                       : renderSample(spec, eventLines);
 }
 } // namespace gg::render
