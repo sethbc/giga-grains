@@ -1,0 +1,9 @@
+{
+  "sampleRate": 48000,
+  "durationSeconds": 3.0,
+  "blockSize": 128,
+  "seed": 1,
+  "source": {"kind": "noise", "seconds": 4.0, "amplitude": 0.5},
+  "stream": {"grainRateHz": 400, "grainDurationMs": 50, "position": 0.3, "positionJitter": 0.5,
+             "pitchSemitones": 7, "gain": 0.1}
+}

@@ -1,0 +1,162 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 22,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}"
+    },
+    {
+      "name": "dev",
+      "inherits": "base",
+      "displayName": "Dev (Ninja, Debug)",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    },
+    {
+      "name": "release",
+      "inherits": "base",
+      "displayName": "Release (Ninja, Release)",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    },
+    {
+      "name": "asan",
+      "inherits": "base",
+      "displayName": "ASan + UBSan (Ninja, Debug)",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "GG_SANITIZE": "ON",
+        "GG_BUILD_PLUGINS": "OFF"
+      }
+    },
+    {
+      "name": "rtsan",
+      "inherits": "base",
+      "displayName": "RealtimeSanitizer (Ninja, RelWithDebInfo, clang from $GG_LLVM)",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "GG_USE_RTSAN": "ON",
+        "GG_BUILD_PLUGINS": "OFF",
+        "CMAKE_C_COMPILER": "$env{GG_LLVM}/bin/clang",
+        "CMAKE_CXX_COMPILER": "$env{GG_LLVM}/bin/clang++"
+      }
+    },
+    {
+      "name": "mac-universal",
+      "inherits": "release",
+      "displayName": "macOS universal (Ninja, Release, arm64 + x86_64)",
+      "cacheVariables": {
+        "CMAKE_OSX_ARCHITECTURES": "arm64;x86_64"
+      }
+    },
+    {
+      "name": "windows-clangcl",
+      "inherits": "base",
+      "displayName": "Windows (Visual Studio 2022, ClangCL, x64, Release)",
+      "generator": "Visual Studio 17 2022",
+      "architecture": "x64",
+      "toolset": "ClangCL",
+      "binaryDir": "${sourceDir}/build/windows"
+    },
+    {
+      "name": "linux-gcc12",
+      "inherits": "release",
+      "displayName": "Linux (Ninja, Release, gcc-12)",
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "gcc-12",
+        "CMAKE_CXX_COMPILER": "g++-12"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "dev",
+      "configurePreset": "dev"
+    },
+    {
+      "name": "release",
+      "configurePreset": "release"
+    },
+    {
+      "name": "asan",
+      "configurePreset": "asan"
+    },
+    {
+      "name": "rtsan",
+      "configurePreset": "rtsan"
+    },
+    {
+      "name": "mac-universal",
+      "configurePreset": "mac-universal"
+    },
+    {
+      "name": "windows-clangcl",
+      "configurePreset": "windows-clangcl",
+      "configuration": "Release"
+    },
+    {
+      "name": "linux-gcc12",
+      "configurePreset": "linux-gcc12"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "noTestsAction": "error"
+      }
+    },
+    {
+      "name": "dev",
+      "inherits": "base",
+      "configurePreset": "dev"
+    },
+    {
+      "name": "release",
+      "inherits": "base",
+      "configurePreset": "release"
+    },
+    {
+      "name": "asan",
+      "inherits": "base",
+      "configurePreset": "asan",
+      "environment": {
+        "UBSAN_OPTIONS": "halt_on_error=1:print_stacktrace=1"
+      }
+    },
+    {
+      "name": "rtsan",
+      "inherits": "base",
+      "configurePreset": "rtsan"
+    },
+    {
+      "name": "mac-universal",
+      "inherits": "base",
+      "configurePreset": "mac-universal"
+    },
+    {
+      "name": "windows-clangcl",
+      "inherits": "base",
+      "configurePreset": "windows-clangcl",
+      "configuration": "Release"
+    },
+    {
+      "name": "linux-gcc12",
+      "inherits": "base",
+      "configurePreset": "linux-gcc12"
+    }
+  ]
+}

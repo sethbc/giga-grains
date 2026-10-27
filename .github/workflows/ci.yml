@@ -1,0 +1,346 @@
+# Giga Grains — granular instrument and effect
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright 2026, the Giga Grains authors (see git history)
+#
+# The required checks (INTENT §19):
+#
+#   build       macOS (universal), Windows (ClangCL) and Linux (gcc-12): gg-all and gg-products,
+#               then ctest. ctest includes the golden event-log comparison, so this job is the
+#               cross-platform determinism gate. On macOS the universal build's x86_64 slice runs
+#               too, under Rosetta: the unit tests and the golden checks. Then clap-validator,
+#               pluginval (strictness 10), auval (macOS) and Steinberg's VST3 validator. gg-bench
+#               runs at full length (ruling T10-c) and is reported, not gated, in M0. M1 starts a
+#               CPU regression gate at the measured baseline; the §16 headline becomes the gate
+#               once M1 meets it (INTENT §16, §19).
+#   sanitizers  ASan + UBSan, and RealtimeSanitizer, with upstream clang 20 (the pinned LLVM
+#               20.1.8 release) on ubuntu-24.04.
+#
+# Once the build succeeds, every later check runs even if an earlier one failed, so one run
+# reports them all; any failure still fails the job. The clang-format check is in format.yml.
+#
+# Every third-party action is pinned by commit SHA, with its tag or branch in the comment
+# beside it.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    name: build (${{ matrix.preset }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Pinned, not macos-latest, so the M1 CPU baseline's runner doesn't float. macos-latest
+          # was this image (macos-26-arm64, an Apple M1 VM) for M0's recorded runs.
+          - os: macos-26
+            preset: mac-universal
+            build_dir: build/mac-universal
+            bench: build/mac-universal/tools/gg-bench/gg-bench
+          - os: windows-2022
+            preset: windows-clangcl
+            build_dir: build/windows
+            bench: build/windows/tools/gg-bench/Release/gg-bench.exe
+            exe: .exe
+          - os: ubuntu-22.04
+            preset: linux-gcc12
+            build_dir: build/linux-gcc12
+            bench: build/linux-gcc12/tools/gg-bench/gg-bench
+    env:
+      HOMEBREW_NO_AUTO_UPDATE: 1
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Prepare for JUCE
+        uses: surge-synthesizer/sst-githubactions/prepare-for-juce@5bb92ec9d3401eba6a85f8edea98395b3b866e84 # main
+        with:
+          os: ${{ runner.os }}
+          gccversion: 12
+
+      # libxi-dev: JUCE 9's juce_gui_basics includes <X11/extensions/XInput2.h> on Linux
+      # (JUCE_USE_XINPUT defaults to 1), and prepare-for-juce doesn't install it.
+      - name: Install Ninja, Xvfb and libxi-dev (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get install -y ninja-build xvfb libxi-dev
+
+      - name: Install Ninja (macOS)
+        if: runner.os == 'macOS'
+        run: command -v ninja || brew install ninja
+
+      - name: Configure
+        run: cmake --preset ${{ matrix.preset }}
+
+      - name: Build gg-all and gg-products
+        id: build
+        run: cmake --build --preset ${{ matrix.preset }} --config Release --parallel --target gg-all gg-products
+
+      - name: Test (unit, plugin and golden)
+        run: ctest --preset ${{ matrix.preset }} -C Release --output-on-failure
+
+      # The arm64 runner otherwise never runs the universal build's x86_64 slice. Under Rosetta 2
+      # it runs the whole Catch2 suite, then every golden case with the same commands as the
+      # golden CTests, so the slice's grain-event logs are checked against the same goldens.
+      # arch -x86_64 fails on a binary without an x86_64 slice.
+      - name: Test the x86_64 slice under Rosetta (macOS)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' && runner.os == 'macOS' }}
+        timeout-minutes: 20
+        run: |
+          if ! arch -x86_64 /usr/bin/true 2>/dev/null; then
+            sudo softwareupdate --install-rosetta --agree-to-license
+          fi
+          build_dir="${{ matrix.build_dir }}"
+          tests="$build_dir/tests/gg-tests"
+          render="$build_dir/tools/gg-render/gg-render"
+          echo "gg-tests: $(lipo -archs "$tests"); gg-render: $(lipo -archs "$render")"
+          arch -x86_64 "$tests"
+          out="$build_dir/golden-x86_64"
+          for spec in tests/golden/cases/*.json; do
+            name="$(basename "$spec" .json)"
+            arch -x86_64 "$render" "$spec" \
+              -o "$out/$name.wav" \
+              --spectrogram "$out/$name.png" \
+              --compare "tests/golden/expected/$name.metrics.json" \
+              --compare-events "tests/golden/expected/$name.events.jsonl"
+          done
+
+      # Reported, not gated: gg-bench has no CPU threshold yet. M1 starts a regression gate at
+      # the measured baseline (INTENT §16, §19). It runs at full length (runs of 2 s, median of 5;
+      # ruling T10-c), not --quick, so the CI numbers are stable enough to set against the §16
+      # targets. The runs are time-boxed, so it takes about 2.6 minutes on every leg.
+      - name: Benchmark (full length; reported, not gated)
+        id: bench
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        timeout-minutes: 20
+        run: |
+          out="${{ matrix.build_dir }}/gg-bench"
+          "${{ matrix.bench }}" --json "$out.json" | tee "$out.txt"
+          {
+            echo "### gg-bench (${{ matrix.preset }})"
+            echo '```'
+            cat "$out.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Locate the products
+        id: products
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
+          products="$PWD/${{ matrix.build_dir }}/gg-products"
+          ls -la "$products"
+          native() {
+            if [[ "$RUNNER_OS" == Windows ]]; then cygpath -w "$1"; else echo "$1"; fi
+          }
+          for name in "Giga Grains.clap" "Giga Grains.vst3"; do
+            test -e "$products/$name"
+          done
+          echo "GG_CLAP=$(native "$products/Giga Grains.clap")" >> "$GITHUB_ENV"
+          echo "GG_VST3=$(native "$products/Giga Grains.vst3")" >> "$GITHUB_ENV"
+
+      - name: Fetch clap-validator and pluginval
+        id: validators
+        if: ${{ !cancelled() && steps.products.outcome == 'success' }}
+        timeout-minutes: 10
+        run: scripts/fetch-validators.sh tools-bin
+
+      # param-conversions is excluded: for a plugin with zero parameters it panics with a divide
+      # by zero inside clap-validator itself (free-audio/clap-validator#40,
+      # https://github.com/free-audio/clap-validator/issues/40, unmerged as of 2026-10-26).
+      # The M0 plugins intentionally expose an empty params extension, so that clap-wrapper's
+      # VST3 MIDI mapping validates. Remove this exclusion when the plugins gain real
+      # parameters (M1) or a fixed clap-validator release is pinned in
+      # scripts/fetch-validators.sh.
+      - name: clap-validator
+        if: ${{ !cancelled() && steps.validators.outcome == 'success' }}
+        timeout-minutes: 10
+        run: tools-bin/clap-validator${{ matrix.exe }} validate --exclude '^param-conversions$' "$GG_CLAP"
+
+      - name: pluginval (VST3, strictness 10)
+        if: ${{ !cancelled() && steps.validators.outcome == 'success' && runner.os != 'Linux' }}
+        timeout-minutes: 20
+        run: tools-bin/pluginval${{ matrix.exe }} --strictness-level 10 --validate "$GG_VST3"
+
+      - name: pluginval (VST3, strictness 10, Xvfb)
+        if: ${{ !cancelled() && steps.validators.outcome == 'success' && runner.os == 'Linux' }}
+        timeout-minutes: 20
+        run: xvfb-run -a tools-bin/pluginval --strictness-level 10 --skip-gui-tests --validate "$GG_VST3"
+
+      # All three identities are validated even if one fails, so one run reports them all. Each
+      # run streams into a collapsed log group and into a file; a failure prints an error and the
+      # tail of that run's output outside the group, so it reads without expanding anything.
+      - name: auval
+        if: ${{ !cancelled() && steps.products.outcome == 'success' && runner.os == 'macOS' }}
+        timeout-minutes: 15
+        run: |
+          components="$HOME/Library/Audio/Plug-Ins/Components"
+          mkdir -p "$components"
+          rm -rf "$components/Giga Grains.component"
+          cp -R "${{ matrix.build_dir }}/gg-products/Giga Grains.component" "$components/"
+          killall -9 AudioComponentRegistrar || true
+          # Wait for the component registrar to pick up the new component. auval -a writes to a
+          # file, so no pipe can close on it early.
+          list="$RUNNER_TEMP/auval-list.log"
+          registered=false
+          for _ in $(seq 1 15); do
+            auval -a > "$list" 2>&1 || true
+            if grep -q Sbcx "$list"; then
+              registered=true
+              break
+            fi
+            sleep 2
+          done
+          if [[ "$registered" != true ]]; then
+            echo "::error::auval -a lists no Sbcx component after 30 s"
+            echo "---- last 40 lines of auval -a ----"
+            tail -n 40 "$list"
+            exit 1
+          fi
+          grep Sbcx "$list"
+          failed=0
+          for id in "aumu GGin Sbcx" "aufx GGfx Sbcx" "aumf GGfx Sbcx"; do
+            log="$RUNNER_TEMP/auval-${id// /-}.log"
+            status=0
+            echo "::group::auval -v $id"
+            # $id is split on purpose: auval takes type, subtype and manufacturer separately.
+            # shellcheck disable=SC2086
+            auval -v $id 2>&1 | tee "$log" || status=$?
+            echo "::endgroup::"
+            if [[ $status -ne 0 ]] || ! grep -q "AU VALIDATION SUCCEEDED" "$log"; then
+              echo "::error::auval -v $id failed: exit status $status, or no AU VALIDATION SUCCEEDED"
+              echo "---- last 60 lines of auval -v $id ----"
+              tail -n 60 "$log"
+              failed=1
+            else
+              echo "auval -v $id: AU VALIDATION SUCCEEDED"
+            fi
+          done
+          exit "$failed"
+
+      # The VST3 SDK that clap-wrapper downloads at configure time (CPM) includes public.sdk,
+      # so the validator (public.sdk/samples/vst-hosting/validator) is built from that same
+      # checkout. CPM records where it put the SDK in the cache.
+      - name: Build Steinberg's VST3 validator
+        id: vst3_validator
+        if: ${{ !cancelled() && steps.products.outcome == 'success' }}
+        timeout-minutes: 20
+        run: |
+          build_dir="${{ matrix.build_dir }}"
+          cache="$build_dir/CMakeCache.txt"
+          sdk="$(sed -n 's/^CPM_PACKAGE_vst3sdk_SOURCE_DIR:INTERNAL=//p' "$cache" | tr -d '\r')"
+          echo "VST3 SDK: $sdk"
+          test -f "$sdk/public.sdk/samples/vst-hosting/validator/CMakeLists.txt"
+          if [[ "$RUNNER_OS" == Windows ]]; then
+            generator=(-G "Visual Studio 17 2022" -A x64)
+          else
+            generator=(-G Ninja)
+          fi
+          cmake -S "$sdk" -B "$build_dir/vst3-validator" "${generator[@]}" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DSMTG_ENABLE_VSTGUI_SUPPORT=OFF \
+            -DSMTG_ENABLE_VST3_PLUGIN_EXAMPLES=OFF \
+            -DSMTG_ENABLE_VST3_HOSTING_EXAMPLES=OFF \
+            -DSMTG_CREATE_PLUGIN_LINK=OFF \
+            -DSMTG_BUILD_UNIVERSAL_BINARY=OFF
+          cmake --build "$build_dir/vst3-validator" --config Release --parallel --target validator
+
+      - name: Steinberg VST3 validator
+        if: ${{ !cancelled() && steps.vst3_validator.outcome == 'success' }}
+        timeout-minutes: 10
+        run: |
+          "${{ matrix.build_dir }}/vst3-validator/bin/Release/validator${{ matrix.exe }}" "$GG_VST3"
+
+      - name: Upload golden renders
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: golden-${{ matrix.preset }}
+          path: ${{ matrix.build_dir }}/golden/
+          if-no-files-found: ignore
+
+      - name: Upload benchmark
+        if: ${{ !cancelled() && steps.bench.outcome == 'success' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: gg-bench-${{ matrix.preset }}
+          path: |
+            ${{ matrix.build_dir }}/gg-bench.json
+            ${{ matrix.build_dir }}/gg-bench.txt
+          if-no-files-found: error
+
+  sanitizers:
+    name: sanitizers (asan, rtsan)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      # LLVM's official 20.1.8 release for Linux x64, checked against its SHA-256 (the digest
+      # GitHub publishes for the release asset). RTSan needs upstream clang 20 or newer.
+      LLVM_VERSION: 20.1.8
+      LLVM_SHA256: 1ead36b3dfcb774b57be530df42bec70ab2d239fbce9889447c7a29a4ddc1ae6
+      # The rtsan preset takes its compilers from $GG_LLVM; the asan step uses the same clang.
+      GG_LLVM: /opt/llvm-20.1.8
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      # The whole release unpacks to 11.6 GB, mostly tools we don't use, so only clang, its
+      # resource directory (headers and the sanitizer runtimes, RTSan's included) and
+      # llvm-symbolizer (readable sanitizer stack traces) are extracted.
+      - name: Install LLVM 20.1.8 (pinned release) and Ninja
+        id: toolchain
+        timeout-minutes: 20
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build
+          name="LLVM-$LLVM_VERSION-Linux-X64"
+          archive="$RUNNER_TEMP/$name.tar.xz"
+          curl -fsSL --retry 3 -o "$archive" \
+            "https://github.com/llvm/llvm-project/releases/download/llvmorg-$LLVM_VERSION/$name.tar.xz"
+          echo "$LLVM_SHA256  $archive" | sha256sum --check --strict
+          sudo mkdir -p "$GG_LLVM"
+          sudo tar -xJf "$archive" -C "$GG_LLVM" --strip-components=1 \
+            "$name/bin/clang" "$name/bin/clang++" "$name/bin/clang-20" \
+            "$name/bin/llvm-symbolizer" "$name/lib/clang/20"
+          rm -f "$archive"
+          echo "$GG_LLVM/bin" >> "$GITHUB_PATH"
+          "$GG_LLVM/bin/clang++" --version
+          ls "$GG_LLVM/lib/clang/20/lib/x86_64-unknown-linux-gnu/libclang_rt.rtsan.a"
+
+      - name: ASan + UBSan
+        env:
+          CC: ${{ env.GG_LLVM }}/bin/clang
+          CXX: ${{ env.GG_LLVM }}/bin/clang++
+        run: |
+          cmake --preset asan
+          cmake --build --preset asan --parallel --target gg-all
+          ctest --preset asan --output-on-failure
+
+      - name: RealtimeSanitizer
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
+        run: |
+          cmake --preset rtsan
+          cmake --build --preset rtsan --parallel --target gg-all
+          ctest --preset rtsan --output-on-failure

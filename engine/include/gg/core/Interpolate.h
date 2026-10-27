@@ -1,0 +1,65 @@
+// Giga Grains — granular instrument and effect
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright 2026, the Giga Grains authors (see git history)
+
+#ifndef GG_CORE_INTERPOLATE_H
+#define GG_CORE_INTERPOLATE_H
+
+#include <cmath>
+#include <cstdint>
+
+/// Fractional-position readers for one channel of `frames` samples. Taps outside [0, frames)
+/// read as zero, so no position (including NaN and ±inf) reads outside the buffer, and `data`
+/// may be null when `frames` is 0.
+namespace gg::interp
+{
+namespace detail
+{
+inline float tap(const float *data, int64_t frames, int64_t i) noexcept
+{
+    return (i >= 0 && i < frames) ? data[i] : 0.0f;
+}
+} // namespace detail
+
+/// Linear interpolation between taps floor(pos) and floor(pos) + 1.
+inline float linear(const float *data, int64_t frames, double pos) noexcept
+{
+    // Outside (-1, frames) both taps are zero. This check also rejects NaN and ±inf before the
+    // integer conversion.
+    if (!(pos > -1.0 && pos < static_cast<double>(frames)))
+    {
+        return 0.0f;
+    }
+    const double base = std::floor(pos);
+    const auto i = static_cast<int64_t>(base);
+    const auto t = static_cast<float>(pos - base);
+    const float a = detail::tap(data, frames, i);
+    const float b = detail::tap(data, frames, i + 1);
+    return a + (b - a) * t;
+}
+
+/// 4-point Catmull-Rom over taps floor(pos) - 1 .. floor(pos) + 2. Reproduces polynomials up to
+/// degree 2 exactly (up to float rounding).
+inline float hermite4(const float *data, int64_t frames, double pos) noexcept
+{
+    // Outside (-2, frames + 1) all four taps are zero (at exactly -2 the curve passes through
+    // tap -2, which is zero). This check also rejects NaN and ±inf before the integer conversion.
+    if (!(pos > -2.0 && pos < static_cast<double>(frames) + 1.0))
+    {
+        return 0.0f;
+    }
+    const double base = std::floor(pos);
+    const auto i = static_cast<int64_t>(base);
+    const auto t = static_cast<float>(pos - base);
+    const float p0 = detail::tap(data, frames, i - 1);
+    const float p1 = detail::tap(data, frames, i);
+    const float p2 = detail::tap(data, frames, i + 1);
+    const float p3 = detail::tap(data, frames, i + 2);
+    const float c1 = 0.5f * (p2 - p0);
+    const float c2 = p0 - 2.5f * p1 + 2.0f * p2 - 0.5f * p3;
+    const float c3 = 0.5f * (p3 - p0) + 1.5f * (p1 - p2);
+    return ((c3 * t + c2) * t + c1) * t + p1;
+}
+} // namespace gg::interp
+
+#endif // GG_CORE_INTERPOLATE_H

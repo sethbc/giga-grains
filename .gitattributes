@@ -1,0 +1,7 @@
+# The golden render specs, metrics and event logs are text. The event logs are compared with fresh
+# renders exactly per line (CR and final newline ignored; tests/CMakeLists.txt), and
+# scripts/update-goldens.sh rewrites them all with LF endings, so every checkout, including Windows
+# ones with core.autocrlf, keeps them LF. Audio fixtures are binary and must never be converted.
+tests/golden/**/*.json text eol=lf
+tests/golden/**/*.jsonl text eol=lf
+*.wav binary

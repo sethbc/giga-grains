@@ -4,7 +4,7 @@
 
 | | |
 |---|---|
-| **Status** | Intent v1 · 2026-10-26 · pre-M0 (no code yet) |
+| **Status** | Intent v1 · 2026-10-26 · M0 (Foundations) done 2026-10-26; M1 (Cloud core) next |
 | **Products** | *Giga Grains* (instrument) and *Giga Grains FX* (effect), sharing one engine |
 | **License** | AGPL-3.0-or-later |
 | **Director** | Seth Chandler. Claude writes most of the code; the director steers, listens and reviews. |
@@ -209,7 +209,8 @@ and reviews. Two consequences:
 - **Grain pool.** Structure-of-arrays storage, preallocated in `activate()`.
   - Defaults to 4,096 grains, configurable up to 16,384.
   - Per-layer and per-voice quotas.
-  - Dense index arrays with swap-remove compaction.
+  - Dense index arrays with **stable** compaction that preserves spawn order, so per-sample
+    summation order (and therefore output) is independent of host block size.
 - **Kernels.** "Grain-major" SIMD kernels, vectorized over time within each grain. Templated on
   channel count × interpolation tier × source kind.
   - Tiers: **Eco** = linear, **Normal** = 4-point Hermite (the default), **HQ** = 12- to 16-tap
@@ -296,6 +297,10 @@ address this:
   between standard libraries.
 - The control-rate sub-grid is aligned to absolute sample positions.
 - No fast-math reductions in the audio path.
+- No floating-point contraction: every first-party target compiles with `-ffp-contract=off`
+  (gcc and clang) or `/clang:-ffp-contract=off` (ClangCL), so `a * b + c` is never fused into
+  an FMA on one platform and rounded twice on another. Never enable fast-math. The flags are in
+  `cmake/compiler-options.cmake`.
 - Layers are summed in a fixed order.
 - Any reused sst modulator or effect that seeds its RNG from the clock is patched to use the
   engine RNG.
@@ -335,8 +340,12 @@ clients/  CLAP entry points + clap-wrapper targets
     support in the GUI shim.
 - **JUCE is used for the GUI only**, attached through sst-clap-helpers' `clap_juce_shim`, with
   sst-jucegui widgets.
-  - Start on **JUCE 8.0.16-security**, which is what Shortcircuit XT ships.
-  - M0 tries 9.0.4. JUCE 9 still has no native CLAP support, which confirms the CLAP-first choice.
+  - Start on **JUCE 9.0.4**. The M0 spike built the shim and both plugins against it with no
+    source changes, and on macOS arm64 every validator passed (`docs/spikes/m0-juce9.md`,
+    §23 #24). CI run 40445561691 then passed on every leg, Windows ClangCL included, with
+    JUCE's WebP support off (`JUCE_USE_WEBP=0`; §23 #29). Shortcircuit XT still ships
+    8.0.16-security, which remains the fallback.
+  - JUCE 9 still has no native CLAP support, which confirms the CLAP-first choice.
 - **Planned upstream contributions to clap-wrapper:** AUv2 tail support, AUv2 MPE support, VST3
   process-context requirements, a monotonic steady time, and passing AU offline-render state
   through.
@@ -347,6 +356,9 @@ clients/  CLAP entry points + clap-wrapper targets
 |---|---|---|
 | free-audio/clap, clap-helpers, clap-wrapper | MIT | Plugin API and format wrappers |
 | VST3 SDK / AudioUnitSDK | MIT / Apache-2.0 | Fetched by clap-wrapper |
+| RtAudio 6.0.1 | MIT-style (adds a non-binding request to send changes upstream) | Fetched by clap-wrapper (CPM tag `6.0.1`, so pinned through clap-wrapper's SHA) for a Linux standalone built without the PipeWire and JACK headers. Its bundled Steinberg ASIO files have no license grant, so ASIO is off and Windows doesn't build RtAudio (§22, §23 #30) |
+| RtMidi 6.0.0 | MIT-style (the same terms) | Fetched by clap-wrapper (CPM tag `6.0.0`) only with `CLAP_WRAPPER_STANDALONE_RTAUDIO`, which we leave off |
+| wil (Windows Implementation Libraries) | MIT | Fetched by clap-wrapper (CPM tag `v1.0.240803.1`) for the Windows standalone |
 | JUCE (GUI modules only) | AGPLv3 / commercial | Editor, widgets, accessibility |
 | sst-basic-blocks | GPL-3.0-or-later | SIMD wrappers, sinc tables, LFOs, envelopes, mod matrix |
 | sst-filters, sst-waveshapers, sst-effects | GPL-3.0-or-later | Filters, drive, reverb and delay |
@@ -361,6 +373,9 @@ clients/  CLAP entry points + clap-wrapper targets
 | readerwriterqueue or choc | BSD / ISC | Lossless SPSC queues |
 | MTS-ESP client, tuning-library | 0BSD-style / MIT | Microtuning |
 | fmt, Catch2 | MIT / BSL-1.0 | Formatting, tests |
+| stb_image_write | public domain / MIT | Spectrogram PNGs |
+| nlohmann/json | MIT | Metrics and render-spec JSON |
+| CLI11 | BSD-3-Clause | Render CLI (`gg-render`) |
 
 - **Study, don't depend on:**
   - Beads (MIT; Mutable Instruments published the source on 2026-10-12) and Clouds;
@@ -400,21 +415,52 @@ clients/  CLAP entry points + clap-wrapper targets
 
 ### 16. Performance targets
 
-*These are provisional. The M0 kernel benchmark will confirm or revise them before they become
-release gates.*
+*These are provisional. The M0 kernel benchmark measured them (below). The headline stays
+provisional until it is judged again at the end of milestone M1, and becomes a release gate
+only once it is met.*
 
-- **Headline target:** **at least 2,000 Normal-quality grains per instance at 48 kHz, using less
-  than 25% of one Apple M1 performance core.**
-- **First-principles cost estimates:**
-  - about 1 to 1.5 ns per stereo grain-sample for linear interpolation;
-  - about 2 ns for Hermite;
-  - about 7 to 13 ns for sinc.
-  
-  Gather operations and cache misses could cost 2× to 4× more than this.
+- **Headline target (provisional):** **at least 2,000 Normal-quality grains per instance at
+  48 kHz, using less than 25% of one Apple M1 performance core.**
+- **Measured kernel cost** (M0 benchmark on the director's M5 Max; details in
+  `docs/spikes/m0-kernel-benchmark.md`). Costs are per stereo grain-sample, for 2,000 grains of
+  100 ms at 48 kHz, at block sizes 32 / 64 / 256:
+  - **Hermite, 4-wide SIMD:** 2.25 / 2.15 / 2.07 ns, which is 21.6% / 20.7% / 19.9% of one core.
+    The headline target is judged on this kernel.
+  - **Linear, 4-wide SIMD:** 1.49 / 1.39 / 1.35 ns (14.3% / 13.3% / 13.0%).
+  - **16-tap windowed sinc, scalar:** 8.75 / 8.68 / 8.61 ns (84.0% / 83.4% / 82.6%).
+
+  These replace the first-principles estimates: 1 to 1.5 ns for linear, about 2 ns for Hermite
+  and 7 to 13 ns for sinc.
+  - The measurements land inside those estimates, or up to 12% above for Hermite.
+  - The 2× to 4× penalty feared from gathers and cache misses did not appear on this machine.
+  - The M5 Max is the ceiling: here 2,000 Hermite grains already use 80% to 86% of the 25%
+    budget.
+- **Measured on the floor hardware** (M0 CI, full-length `gg-bench`). The SIMD Hermite kernel,
+  2,000 grains, at blocks 32 / 64 / 256:
+  - **Apple M1 VM** (GitHub `macos-latest`): 5.52 / 5.41 / 5.00 ns, which is 52.9% / 51.9% /
+    48.0% of one core.
+  - **AMD EPYC 7763, Windows** (ClangCL): 6.22 / 5.93 / 5.72 ns (59.7% / 56.9% / 54.9%).
+  - **AMD EPYC 7763, Linux** (gcc 12): 7.21 / 6.62 / 6.26 ns (69.2% / 63.5% / 60.1%).
+
+  **That is about 2× over budget:** 1.9× to 2.1× the 25% on the M1 VM, and 2.2× to 2.8× on x86.
+  Small blocks also cost relatively more on some legs. On Linux, block 32 costs 15% more per
+  grain-sample than block 256, against 8% on the M5 Max.
+- **Milestone M1's renderer owns the gap** (director ruling, §23 #23). The headline stays as
+  the provisional target, and closing the gap is an explicit goal of the M1 (Cloud core)
+  renderer. The candidate levers are:
+  - per-grain software prefetch;
+  - a stereo-interleaved source layout;
+  - cache-aware grain scheduling.
+
+  M1's CI CPU gate starts as a regression gate at the measured baseline (§19). The headline is
+  judged again at the end of M1.
 - **Reference hardware:**
   - The floor is GitHub's M1 CI runners plus a mid-range x86 AVX2 machine.
   - The director's M5 Max is the ceiling, not the target.
 - **UI budget:** at most 3 ms of UI-thread time per frame with 8,000 visible grains.
+  - **Measured in M0** (`docs/spikes/m0-canvas-budget.md`): with 8,192 grains, the editor's
+    "frame ms" stayed under 3 ms in Ableton Live and Bitwig Studio on the M5 Max (§23 #26).
+  - On macOS that readout is UI-thread time only, and so a lower bound on the whole frame.
 - **SIMD:** 4-wide via sst and simde, behind an internal batch API. Add xsimd or Highway runtime
   dispatch only if profiling demands it.
 
@@ -455,8 +501,9 @@ release gates.*
 **Canvas rendering**
 - **Renderer.** A single `GrainCanvas` component behind a renderer interface.
   - v1 uses a CPU additive "splat" renderer drawing into an image. It works on every platform.
-  - A GPU backend gets a timeboxed spike. Candidates are Visage (which ships a CLAP example but
-    is desktop-only) and native Metal/GL.
+  - A GPU backend gets a timeboxed spike in M2. Candidates are Visage (which ships a CLAP example
+    but is desktop-only) and native Metal/GL. The CPU renderer held the §16 UI budget in the M0
+    host check, so the spike didn't move earlier (§23 #26).
 - **Audio → UI data.**
   - One compact event per grain *spawn*, sent through a queue that drops entries when full. The UI
     extrapolates each grain's progress from an atomic engine clock.
@@ -492,10 +539,49 @@ program lists and AU factory presets.
 
 **Identities**
 
-| Product | CLAP / VST3 | AU |
+| Product | CLAP / VST3 | AU (type/subtype/manufacturer) |
 |---|---|---|
-| Giga Grains | Instrument | `aumu` |
-| Giga Grains FX | Audio effect with optional note input | **Both** `aufx` (normal audio inserts) and `aumf` (MIDI). Logic offers an `aumf` only in instrument slots, with audio arriving via side-chain. |
+| Giga Grains | Instrument; CLAP ID `org.sethbc.giga-grains` | `aumu`/`GGin`/`Sbcx` |
+| Giga Grains FX | Audio effect with optional note input; CLAP ID `org.sethbc.giga-grains-fx` | **Both** `aufx`/`GGfx`/`Sbcx` (normal audio inserts) and `aumf`/`GGfx`/`Sbcx` (MIDI). Logic offers an `aumf` only in instrument slots, with audio arriving via side-chain. |
+
+Both plugins share the vendor `sethbc`, the URL `https://github.com/sethbc/giga-grains` and the
+AU manufacturer code `Sbcx` (display name `sethbc`). The FX's `aumf` entry is an extra identity
+registered through clap-wrapper's legacy-identity factory. The values live in
+`plugin/include/gg/plugin/Identity.h`.
+
+**Derived identities.** These follow from the values above. Hosts and macOS store them too, so
+they are frozen along with them.
+- **VST3 class UIDs.** clap-wrapper derives each one from the plugin's CLAP ID as a name-based
+  UUID: version 5, SHA-1 in the DNS namespace. Changing a CLAP ID therefore also changes its VST3
+  UID.
+
+  | Product | VST3 class UID (FUID string) |
+  |---|---|
+  | Giga Grains | `56E869BFEDD75019BD0C3105FA80B835` |
+  | Giga Grains FX | `DBAF5C12EA095FEFB3A5CBBBB254442A` |
+
+  These were read from the built VST3's factory and match Ableton Live's scanner log. pluginval
+  prints only JUCE's hashes of them (`…-44681f8a` and `…-fc6462ac`).
+- **Standalone app bundle IDs (macOS):** `org.sethbc.giga-grains.standalone` and
+  `org.sethbc.giga-grains-fx.standalone`.
+  - macOS keys each app's preferences and privacy permissions, such as microphone access, by its
+    bundle ID.
+  - clap-wrapper would give both apps the first ID, so `clients/clap-first/CMakeLists.txt` sets
+    the FX's (ruling T8-a).
+
+**Parameter ID range** (ruling T8-d):
+- **Our own CLAP parameter IDs stay below `0xB00000`.**
+- **clap-wrapper's VST3 wrapper adds parameters from `0xB00000` up**, for VST3's
+  MIDI-controller mapping.
+  - There are 2,096 of them (`0xB00000` to `0xB0082F`), plus 16 "MIDI Channel" units, each with
+    a program list.
+  - One of our parameter IDs in that range would shift every mapping parameter after it.
+- **Hosts can save those IDs**, in automation or MIDI mappings for example, so treat them as
+  frozen too. They depend on clap-wrapper's layout. A clap-wrapper update that changes the
+  layout breaks saved sessions, just as changing one of our own IDs would.
+- **Once a plugin has a preset-discovery factory (M2), the VST3 wrapper adds one more
+  parameter:** a preset selector for the VST3 program list, at `0xC00000` or the first free ID
+  above it. Hosts can save that ID too. Keeping our IDs below `0xB00000` keeps them clear of it.
 
 **CLAP features for v1:**
 - `params` with per-note modulation flags
@@ -540,7 +626,8 @@ program lists and AU factory presets.
   - Grain-event logs are compared across platforms.
 - **Fuzz and property tests.** Parameter sweeps, extreme values and bursts of automation must
   produce no NaNs, crashes, runaway gain, or clicks above a threshold.
-- **CPU benchmark gate in CI**, using the targets in §16.
+- **CPU benchmark gate in CI.** Milestone M1 starts it as a regression gate at the measured
+  baseline. The §16 headline becomes the gate once M1 meets it.
 - **Real-time safety.**
   - Clang RealtimeSanitizer on upstream LLVM 20 or newer (Apple clang doesn't ship it).
   - ASan and UBSan.
@@ -559,9 +646,9 @@ program lists and AU factory presets.
 
 | Milestone | Delivers | Exit criteria |
 |---|---|---|
-| **M0 Foundations** | Repo, CMake, CI matrix (mac/win/linux), `LICENSE` (AGPL-3.0); headless engine skeleton; `gg-render`; test, golden-render, RTSan and benchmark harness; both plugin shells in every format plus standalone; validators in CI. **Spikes:** kernel benchmark (sets §16), JUCE 9 vs 8.0.16, two-descriptor CLAP to AUv2/VST3/standalone, Ableton MIDI routing into an effect, CPU canvas frame budget. | One grain stream renders deterministically. The empty plugins load in the first-class hosts and pass every validator. |
-| **M1 Cloud core** | Grain pool and SIMD renderer (Eco/Normal); Cloud scheduler; parameter model; Sample and Live sources with freeze; 1 layer; diffusion/reverb; state save/load; single-lane canvas plus 8 macros | Both plugins make textures. **Listening gate #1.** CPU baseline recorded. |
-| **M2 Giga** | 4 layers plus morph; budget manager; grain target met; mipmaps and the HQ sinc tier; minutes-long buffers with persistence; Smear and Spectral Smear; resample/feedback source; full mod matrix; Mutate; factory presets and CC0 samples | Benchmarks pass. **Listening gate #2.** |
+| **M0 Foundations** (done 2026-10-26) | Repo, CMake, CI matrix (mac/win/linux), `LICENSE` (AGPL-3.0); headless engine skeleton; `gg-render`; test, golden-render, RTSan and benchmark harness; both plugin shells in every format plus standalone; validators in CI. **Spikes:** kernel benchmark (sets §16), JUCE 9 vs 8.0.16, two-descriptor CLAP to AUv2/VST3/standalone, Ableton MIDI routing into an effect, CPU canvas frame budget. | One grain stream renders deterministically. The empty plugins load in the first-class hosts and pass every validator. **Met** (§23 #29). |
+| **M1 Cloud core** (starts from `docs/m1-carry-over.md`) | Grain pool and SIMD renderer (Eco/Normal), closing the §16 CPU gap; Cloud scheduler; parameter model; Sample and Live sources with freeze; note-triggered freeze/capture in the FX (§23 #32); 1 layer; diffusion/reverb; state save/load; single-lane canvas plus 8 macros | Both plugins make textures. **Listening gate #1.** CPU baseline recorded. The §16 headline judged again (§23 #23). clap-validator runs in full: M0 skips its `param-conversions` test, which panics on a plugin with no parameters (ruling T8-c, free-audio/clap-validator#40). |
+| **M2 Giga** | 4 layers plus morph; budget manager; grain target met; mipmaps and the HQ sinc tier; minutes-long buffers with persistence; Smear and Spectral Smear; resample/feedback source; full mod matrix; Mutate; factory presets and CC0 samples, including MIDI-driven FX presets (§23 #32) | Benchmarks pass. **Listening gate #2.** |
 | **→ v1.0** | M0 to M2 polished | Success criteria (§10) met. |
 | **M3 Playable** | Voice scheduler, polyphony, MPE, note expressions, polyphonic modulation, per-voice envelopes, pitch-sync/formant grains, microtuning | Listening gate. First-class hosts pass. |
 | **M4 Rhythmic** | Sync scheduler: grid, swing, probability, patterns, transport-stop/loop policies | Listening gate. Sync tests pass under loops and jumps. |
@@ -578,14 +665,14 @@ Why this order after v1.0:
 
 | Risk | Mitigation |
 |---|---|
-| CPU estimates aren't measured yet; gathers and cache misses could cost 2× to 4× | M0 benchmark spike before committing to §16; deterministic budget; quality tiers |
+| The CPU headline is missed on floor hardware: the M0 benchmark measured about 2× the §16 budget on CI's M1 VM and x86 runners (1.9× to 2.8×), and on the Linux runner small blocks cost relatively more than on the M5 Max | The milestone-M1 renderer owns the gap: per-grain prefetch, a stereo-interleaved source layout, cache-aware grain scheduling (§16). A CI regression gate from the measured baseline; the headline judged again at the end of M1; deterministic budget; quality tiers |
 | Determinism is fragile: one CPU-adaptive rule, `std::` distribution or thread-order sum silently breaks it | Rules in §14; block-size invariance tests from M0 |
 | Multithreading is uneven across formats; there's no workgroup join via CLAP/clap-wrapper | Single-threaded v1; tasks only when the host offers a thread pool |
 | Memory blow-up: layers × minutes × mipmaps × instances | RAM cap per instance, shown in the UI; shared sample pool; buffer resolution options |
 | Large state chunks slow or crash hosts | 32 MB embed cap; captures folder; async decode |
 | Clicks and level pumping at extremes (head crossing, normalizing thousands of grains) | Engine invariants in §14; click detector in the golden tests |
 | sst API churn (no releases); clap-wrapper bugs (transport, AU tail) | Pinned SHAs; upstream fixes; host smoke tests |
-| JUCE 9 compatibility of the shim | Start on 8.0.16-security; M0 spike |
+| JUCE 9 compatibility of the shim | The M0 spike passed on macOS arm64, so the project is on 9.0.4 (§23 #24). CI run 40445561691 passed on Windows, Linux and macOS (§23 #29), and the macOS leg now also runs the mac-universal x86_64 slice's tests under Rosetta (§23 #33); 8.0.16-security is the fallback |
 | Crowded market, including free granular built into DAWs (Granulator III, Bitwig Fragments) | Differentiate on scale, the canvas, openness and portability, not on feature-count parity |
 | Open-source granular projects tend to stall | Tight v1 scope around the texture anchor; a published roadmap; verification that lets Claude-led work proceed safely |
 | Windows code-signing eligibility: SignPath's free open-source terms may exclude JUCE's dual license | Budget for Azure Artifact Signing (about $9.99/month) or an OV certificate |
@@ -594,23 +681,25 @@ Why this order after v1.0:
 
 | Question | Resolved in |
 |---|---|
-| Plugin identities: CLAP IDs (proposed `org.sethbc.giga-grains`, `org.sethbc.giga-grains-fx`), AU manufacturer code (at least one uppercase letter) and subtypes. Frozen at first release. | M0 |
-| JUCE 9.0.4 vs 8.0.16-security for the GUI shim | M0 spike |
-| How Ableton Live routes MIDI into VST3/AU effects (sets how prominent MIDI-driven FX features are) | M0 spike |
-| Whether the CPU canvas holds its frame budget, or a GPU backend is needed | M0 spike / M2 |
+| ~~Plugin identities: CLAP IDs (proposed `org.sethbc.giga-grains`, `org.sethbc.giga-grains-fx`), AU manufacturer code (at least one uppercase letter) and subtypes. Frozen at first release.~~ | **Resolved** in M0 (2026-10-26): see §18 and §23 #20 |
+| ~~JUCE 9.0.4 vs 8.0.16-security for the GUI shim~~ | **Resolved** in M0 (2026-10-26): JUCE 9.0.4; see §15 and §23 #24 |
+| ~~How Ableton Live routes MIDI into VST3/AU effects (sets how prominent MIDI-driven FX features are)~~ | **Resolved** in M0 (2026-10-26): a MIDI track's "MIDI To" reaches Giga Grains FX as VST3 and as AU, and MIDI-driven FX features are first-class; see §23 #25 and `docs/spikes/m0-ableton-midi-fx.md` |
+| ~~Whether the CPU canvas holds its frame budget, or a GPU backend is needed~~ | **Resolved** in M0 (2026-10-26): it holds (under 3 ms of UI-thread time at 8,192 grains in both first-class hosts), and the GPU backend spike stays in M2; see §16, §17 and §23 #26 |
 | Which hosts besides Bitwig accept CLAP thread-pool requests under load | M2 |
 | Whether grain buses with channel masks are enough for v1 sound design, or per-grain filters are needed sooner | M2 |
 | Logic Pro's MPE and tail behavior with the wrapped AUv2 | M3 |
 | Default behavior of rhythmic streams when the transport stops: keep running or hold | M4 |
 | An optional "Classic" Clouds-faithful mode using sst-effects' Nimbus | Post-v1 |
 | Windows signing route and budget | Before first public release |
+| Windows standalone ASIO: it's off, because RtAudio's bundled Steinberg ASIO files have no license grant (§23 #30). Re-enable it only from a Steinberg ASIO SDK release whose license is AGPLv3-compatible (Steinberg's GPLv3 release) | Before the first distributed Windows build |
 
 ### 23. Decision log
 
-All of the following were decided on 2026-10-26, in the founding brainstorm between the director
-and Claude. The research behind them covered frameworks, libraries, granular DSP, the competitive
+Rows 1 to 18 were decided on 2026-10-26, in the founding brainstorm between the director and
+Claude. The research behind them covered frameworks, libraries, granular DSP, the competitive
 landscape, and host and UI integration. Each area was adversarially fact-checked against primary
-sources.
+sources. Rows 19 onward were decided during the milestones; each says when, and by whom when the
+director made the call.
 
 | # | Decision | Why / notes |
 |---|---|---|
@@ -632,6 +721,22 @@ sources.
 | 16 | Stack: CLAP-first with clap-wrapper; JUCE for the GUI only | CLAP-native features without JUCE's AudioProcessor; JUCE 9 has no native CLAP; follows Shortcircuit XT |
 | 17 | License: AGPL-3.0-or-later for everything | Matches what the binaries are anyway (JUCE AGPL plus GPL-3 sst); one simple story |
 | 18 | Research corrections adopted | Gap restated as depth + scale (§1); scale stated per layer and per instance (§5); live-buffer differentiator (§5); AAX moved to "possible later"; the FX registers both `aufx` and `aumf`; clap-wrapper ≥ 0.17 floor; start on JUCE 8.0.16-security; RTSan needs upstream LLVM; SignPath is uncertain |
+| 19 | Grain pool uses stable compaction, not swap-remove | Float summation order must not depend on block boundaries (§8.6). Decided 2026-10-26, during M0; see §14 |
+| 20 | Plugin identities fixed | Vendor `sethbc`; URL `https://github.com/sethbc/giga-grains`; instrument CLAP ID `org.sethbc.giga-grains` ("Giga Grains"); FX CLAP ID `org.sethbc.giga-grains-fx` ("Giga Grains FX"); AU manufacturer `Sbcx` (display name `sethbc`); instrument AU `aumu`/`GGin`/`Sbcx`; FX AU `aufx`/`GGfx`/`Sbcx`, plus the extra identity `aumf`/`GGfx`/`Sbcx` through clap-wrapper's legacy-identity factory. Frozen at the first public release. Decided 2026-10-26, during M0; see §18 |
+| 21 | M0 tooling dependencies: dr_libs, pffft, stb_image_write, nlohmann/json, CLI11 | Audio-file decoding, the metrics FFT, spectrogram PNGs, metrics and render-spec JSON, and the `gg-render` command line, for the golden-render tooling (§19). All AGPLv3-compatible (§12). Decided 2026-10-26, during M0; see §15 |
+| 22 | §16's first-principles kernel cost estimates replaced by measured M5 Max numbers; headline target unchanged | The M0 kernel benchmark (`gg-bench`, 2,000 grains, median of 5 runs) puts the 4-wide SIMD Hermite kernel at 21.6% / 20.7% / 19.9% of one M5 Max core at blocks 32 / 64 / 256. That is under the 25% target, so the stop rule didn't trip. The headline is judged on the SIMD Hermite kernel (ruling T7-a). The M5 Max is the ceiling, so the M1-runner and x86 numbers from CI (M0 Task 10b) decide whether the target holds; see #23 for what they showed. See `docs/spikes/m0-kernel-benchmark.md`. Decided 2026-10-26, during M0; see §16 |
+| 23 | §16 headline kept as a provisional target despite the CI miss; milestone M1 closes the gap | Full-length `gg-bench` in M0 CI (run 40439674760, M0 Task 10b) puts the SIMD Hermite kernel at blocks 32 / 64 / 256 at: 52.9% / 51.9% / 48.0% of one core on GitHub's Apple M1 VM; 59.7% / 56.9% / 54.9% on a Windows AMD EPYC 7763 VM; and 69.2% / 63.5% / 60.1% on a Linux one. That is about 2× the 25% budget (1.9× to 2.8×), and on the Linux VM small blocks cost relatively more than on the M5 Max. The director chose to keep the headline as a provisional target and to make closing the gap an explicit goal of the milestone-M1 renderer, with full-length CI runs (Task 10b, the run above) quantifying the gap. The candidate levers are per-grain software prefetch, a stereo-interleaved source layout and cache-aware grain scheduling. M1's CI CPU gate starts as a regression gate at the measured baseline, and the headline is judged again at the end of M1. See `docs/spikes/m0-kernel-benchmark.md`. Decided 2026-10-26 by the director, during M0; see §16, §19, §20 and §21 |
+| 24 | Start on JUCE 9.0.4, not 8.0.16-security | The M0 spike built `clap_juce_shim`, the editor and both plugins against JUCE 9.0.4 (`3fb5cbc`) with no source changes and no new warnings. On macOS arm64, every test and validator passed: clap-validator, pluginval at strictness 10 with GUI tests, auval for all three identities and Steinberg's VST3 validator. The live editor looked right. The license is unchanged: AGPLv3 or commercial, so it is AGPLv3-compatible (§12). Linux CI now installs `libxi-dev`, because JUCE 9 includes XInput2. JUCE's WebP support is off (`JUCE_USE_WEBP=0`, in `ui/CMakeLists.txt`): 9.0.4's libwebp SSE4.1 unit doesn't compile under ClangCL (the AVX2 units use the same pattern but weren't seen failing), and we never load WebP. That bug is worth reporting upstream to JUCE; the director decides. sst-jucegui (main) also builds and runs on 9.0.4. Windows, Linux and the mac-universal x86_64 slice are left to CI, and 8.0.16-security is the fallback. (Since then CI run 40445561691 passed on every leg, #29, and CI runs the x86_64 slice, #33.) Supersedes "start on JUCE 8.0.16-security" in #18. See `docs/spikes/m0-juce9.md`. Decided 2026-10-26, during M0; see §15, §21 and §22 |
+| 25 | MIDI-driven FX features are first-class | The M0 spike routed a MIDI track into Giga Grains FX in Ableton Live 12.4.7: the MIDI track's "MIDI To" set to the FX's audio track, then to Giga Grains FX. The editor's note-on counter rose with the VST3 and with the AU. For the AU, that is at least one of the FX's two identities; which one Live used wasn't recorded. The director: MIDI-driven FX features are first-class; Voice mode, MIDI pitch-sync and note-triggered freeze/capture are headline FX features, in the main UI and the factory presets; the FX's presets and docs explain MIDI routing for each host. #32 places them on the §20 roadmap. See `docs/spikes/m0-ableton-midi-fx.md`. Decided 2026-10-26 by the director, during M0; see §22 |
+| 26 | The GPU canvas backend spike stays in M2 | With 8,192 grains at the display's native scale, the editor's "frame ms (avg 60)" stayed under 3 ms in Ableton Live 12.4.7 and in Bitwig Studio 6.1.5 on the M5 Max. No exact numbers were recorded. On macOS the readout is UI-thread time only, because JUCE draws the view's layer asynchronously, so it is a lower bound on the whole frame. It does meet the §16 budget as worded. Floor hardware, Windows, Linux and canvases larger than the editor's default weren't measured. The CPU splat renderer stays the v1 renderer. See `docs/spikes/m0-canvas-budget.md`. Decided 2026-10-26 by the director, during M0; see §16, §17 and §22 |
+| 27 | Listening gate #0 passed | The four golden renders (`sparse-sine`, `sparse-sine-44k1`, `dense-noise`, `sweep-stretch`) were regenerated at `c7e3a1a`, with the dev suite at 79/79. The director: "sparse-sine pulses clearly, no clicks, 44k1 matches, sweep is steady". The objective checks: `sparse-sine` and `sparse-sine-44k1` have 24 grains, with onsets every 125.0 ms and 52% / 53% silence. `dense-noise` has about 20 overlapping grains and is continuous by design, so its +7 semitones can't be judged by ear on noise; every grain's rate in the event log is 1.4983070768766813 = 2^(7/12). `sweep-stretch` has about 6 overlapping 200 ms grains at rate 0.5; its output's zero-crossing frequency is about 1210 Hz, against about 2.25–2.55 kHz in the source at position 0.75 of the exponential 50 Hz → 8 kHz sweep, which confirms −12. Decided 2026-10-26 by the director, during M0; see §13 and §19 |
+| 28 | §18 records the derived identities and the parameter ID range | The VST3 class UIDs are `56E869BFEDD75019BD0C3105FA80B835` (Giga Grains) and `DBAF5C12EA095FEFB3A5CBBBB254442A` (Giga Grains FX). clap-wrapper derives them from the CLAP IDs as version-5 UUIDs, and they match Ableton Live's scanner log. The standalone app bundle IDs are `org.sethbc.giga-grains.standalone` and `org.sethbc.giga-grains-fx.standalone` (ruling T8-a). Ruling T8-d: our own CLAP parameter IDs stay below `0xB00000`, because clap-wrapper's 2,096 VST3 MIDI-mapping parameters start there; hosts may save those IDs, so they are effectively frozen and depend on clap-wrapper's layout. All of these are frozen at the first public release, with the identities in #20. Decided 2026-10-26, during M0; see §18 |
+| 29 | M0 Foundations complete | Both exit criteria are met. **One grain stream renders deterministically:** the determinism tests pass (bit-identical output at block sizes 1, 32, 64, 511 and 4096, under random splits, and across repeated renders), and the golden event logs match exactly, line by line (CR and final newline ignored), on macOS, Windows and Linux in CI. **The empty plugins load in the first-class hosts:** both plugins pass in Ableton Live 12.4.7 (VST3 and AU) and Bitwig Studio 6.1.5 (CLAP and VST3). Live listed the VST3 only once the bundle was signed as a whole; `05731d1` now signs every macOS bundle at build time (`docs/spikes/m0-host-matrix.md`). **They pass every validator in CI:** clap-validator (without `param-conversions`, ruling T8-c), pluginval at strictness 10, auval for all three AU identities, and Steinberg's VST3 validator. CI run 40445561691 on `933bfda` (JUCE 9.0.4) passed on all three build legs and the sanitizers. Listening gate #0 passed (#27). Running clap-validator in full becomes an M1 exit criterion. Decided 2026-10-26, during M0; see §20 |
+| 30 | The Windows standalone builds without ASIO | RtAudio 6.0.1, which clap-wrapper fetched for the Windows standalone's ASIO support, bundles Steinberg's ASIO SDK files (`include/asio*`, `iasiodrv.h`). They carry Steinberg's copyright and no license grant, and CLAUDE.md allows no unlicensed code, so `libs/CMakeLists.txt` now sets `RTAUDIO_API_ASIO` off (final-review ruling F4). With ASIO off, clap-wrapper doesn't build RtAudio on Windows at all: the standalone keeps its own WASAPI audio and WinMM MIDI backends. RtAudio, RtMidi and wil, which clap-wrapper's standalone can fetch, are now listed in §15 with their licenses and pins. ASIO comes back only from a Steinberg ASIO SDK release under an AGPLv3-compatible license, before the first distributed Windows build (§22). Decided 2026-10-26, during M0 (final review); see §15 and §22 |
+| 31 | No floating-point contraction, recorded in §14 | Every first-party target has compiled with `-ffp-contract=off` (ClangCL: `/clang:-ffp-contract=off`) since M0 Task 1, so `a * b + c` is never fused into an FMA on one platform and rounded twice on another; that is part of what keeps the grain-event logs identical across platforms. Until now the rule lived only in the M0 plan's global constraints. Decided 2026-10-26, during M0 (final review); see §14 |
+| 32 | First-class MIDI-driven FX features placed on the roadmap | #25 made Voice mode, MIDI pitch-sync and note-triggered freeze/capture headline FX features but placed none of them in §20, so as written v1 shipped no MIDI-driven FX feature. The director's decision: note-triggered freeze/capture is added to M1, which already builds freeze; MIDI-driven FX factory presets are added to M2; Voice mode and pitch-sync stay in M3. Decided 2026-10-26 by the director, during M0; see §20 and #25 |
+| 33 | M0 final-review corrections to Part II | The M0 final review's fix wave corrected Part II without changing a decision: §15 and §21 now give CI run 40445561691's JUCE 9 result (every leg green, Windows ClangCL included), and the macOS CI leg now runs the mac-universal x86_64 slice's unit tests and golden checks under Rosetta; #24 says only the SSE4.1 libwebp unit was seen failing; #23, §21 and `docs/spikes/m0-kernel-benchmark.md` scope the small-block cost to the Linux VM and record that full-length CI runs quantify the gap; §20's M1 exit criteria name the §16 headline re-judgement that #23 already decided; #25 keeps only the director's words; #29 says the event logs match exactly per line, not byte for byte; §18 notes clap-wrapper's VST3 preset selector at `0xC00000`; and the preamble above no longer dates every row to the founding brainstorm. Decided 2026-10-26, during M0 (final review); see §15, §18, §20, §21 and #23 to #29 |
+| 34 | M0 hands M1 a carry-over list | Everything the M0 reviews deferred to M1 is in `docs/m1-carry-over.md`, by area, each with its source and, where a reviewer gave one, its deadline; §20's M1 row links it. It replaces the review workspace, which is deleted when M0 closes (final-review ruling F3). Its first item, before parameters land: a JUCE-free plugin core, so the asan and rtsan presets cover the plugin audio path. Decided 2026-10-26, during M0 (final review); see §20 |
 
 **Key sources** (checked 2026-10-26):
 - clap-wrapper releases (v0.17.0, 2026-10-20): https://github.com/free-audio/clap-wrapper/releases
