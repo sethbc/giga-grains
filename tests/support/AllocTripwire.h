@@ -9,12 +9,15 @@
 
 namespace gg::test
 {
-/// Counts heap allocations, to prove that code (gg::Engine::process) never allocates.
+/// Counts operator new allocations, to prove that code (gg::Engine::process) never allocates.
 ///
 /// AllocTripwire.cpp replaces every global operator new (plain, array, aligned, nothrow). Each
 /// call made while a Scope is alive on the calling thread increments count(); calls on other
 /// threads, or outside any Scope, are not counted. Either way the operators still allocate
 /// normally, so armed code keeps working.
+///
+/// It doesn't see direct malloc-family calls (malloc, calloc, realloc, posix_memalign, and
+/// anything a C library allocates internally). The RTSan build covers those, on Linux in CI.
 ///
 /// Don't use Catch2 assertions inside a Scope: they can allocate. Read count() after it ends.
 struct AllocTripwire

@@ -41,6 +41,10 @@ constexpr int64_t grainEndSample(const GrainSpec &g) noexcept
 /// Retirement compacts the dense array stably (never swap-remove), so the grains are always
 /// visited in spawn order and every output sample sums its grains in the same order however
 /// the host splits blocks (INTENT §8.6, §14).
+///
+/// In M0 the pool is an array of GrainSpec structs (AoS, ruling T3-c), which is what at()
+/// returns a reference into. INTENT §14's structure-of-arrays layout is still the target; it
+/// arrives with the M1 SIMD kernels, which are what need it.
 class GrainPool
 {
   public:

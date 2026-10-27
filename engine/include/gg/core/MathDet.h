@@ -33,14 +33,20 @@ inline constexpr double kExp2Taylor[17] = {
 };
 } // namespace detail
 
-/// 2^x, bit-identical on every platform. Use it for every value that reaches the grain-event
-/// log, such as pitch ratios (INTENT §14): std::exp2 comes from the platform's libm, whose last
-/// bits differ between platforms.
+/// 2^x, bit-identical on every platform whenever the result is in the normal range
+/// (x >= -1022). Use it for every value that reaches the grain-event log, such as pitch ratios
+/// (INTENT §14): std::exp2 comes from the platform's libm, whose last bits differ between
+/// platforms.
 ///
 /// x = n + f with n = floor(x) and f = x - n in [0, 1] (f is 1 only when x - n rounds up, for
 /// tiny negative x). 2^f is the degree-16 Taylor polynomial of exp(f·ln2) in Horner form, using
-/// IEEE * and + only (truncation error below 6e-18), and 2^x = ldexp(2^f, n). floor and ldexp
-/// are exact, so with the project's -ffp-contract=off the result is plain IEEE arithmetic.
+/// IEEE * and + only (truncation error below 6e-18), and 2^x = ldexp(2^f, n). floor is exact,
+/// and so is ldexp while its result is normal, so with the project's -ffp-contract=off the
+/// result is plain IEEE arithmetic.
+///
+/// Subnormal results (x < -1022) are not guaranteed to match across platforms: ldexp has to
+/// round them, which is up to the platform's libm, and the FPU's flush-to-zero and
+/// denormals-are-zero modes (ScopedDenormalsOff) can turn them into 0.
 /// NaN gives NaN; +inf and x >= 1024 give +inf; -inf and x <= -1075 give 0.
 inline double exp2Det(double x) noexcept
 {

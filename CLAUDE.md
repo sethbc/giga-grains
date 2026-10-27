@@ -118,8 +118,9 @@ ctest --preset dev --output-on-failure
 area, use `ctest --preset dev -L <label>`. The labels are:
 - engine: `engine`, `stream`, `pool`, `source`, `rng`, `math`, `interp`, `window`, `denormal`;
 - `determinism`: block-size invariance;
-- `rt`: the allocation tripwire. In the `rtsan` build, a test labelled both `rt` and `rtsan` also
-  checks that RTSan is active.
+- `rt`: the allocation tripwire. In the `rtsan` build, two tests labelled both `rt` and `rtsan`
+  check that RTSan is active: one checks the build flag, and `rtsan_negative_control` passes
+  only if RTSan reports an allocation made inside a nonblocking function.
 - tools: `render`, `metrics`, `bench`;
 - `golden`: the golden renders;
 - `ui`: the splat renderer;

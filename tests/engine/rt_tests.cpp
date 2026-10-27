@@ -126,7 +126,59 @@ TEST_CASE("engine process does not allocate", "[rt]")
 
     REQUIRE(activeBefore > 0);
     REQUIRE(engine.activeGrains() > 0);
-    REQUIRE(counter.spawns > spawnsBefore); // grains spawned while armed
+    const uint64_t spawnedArmed = counter.spawns - spawnsBefore;
+    REQUIRE(spawnedArmed > 0); // grains spawned while armed
+    // Grains retired while armed too: without retirement the pool would have grown by every
+    // grain spawned.
+    REQUIRE(static_cast<int64_t>(spawnedArmed) >
+            static_cast<int64_t>(engine.activeGrains()) - static_cast<int64_t>(activeBefore));
+    REQUIRE(allocations == 0);
+}
+
+TEST_CASE("engine process does not allocate with a full pool or odd block sizes", "[rt]")
+{
+    // Capacity 4 against about 20 overlapping grains keeps the pool full, so new grains go
+    // through admit()'s full-pool path: dropped, or, when a grain has ended earlier in the same
+    // block (it ends 118 frames before the next onset), rendered up to the onset, retired and
+    // replaced. maxBlockSize 256 makes the 1000-frame calls oversized, so process() splits them,
+    // and is long enough for a grain's end and the next onset to share a block.
+    gg::Engine engine(gg::EngineConfig{48000.0, 256, 4, 5});
+    auto source = std::make_shared<gg::SampleBuffer>(2, 48000, 48000.0);
+    for (uint32_t c = 0; c < 2; ++c)
+    {
+        for (int64_t i = 0; i < source->frames(); ++i)
+        {
+            const double phase = 2.0 * std::numbers::pi * (220.0 * i / 48000.0 + 0.25 * c);
+            source->channel(c)[i] = static_cast<float>(std::sin(phase));
+        }
+    }
+    engine.setSource(source);
+    engine.setStreamParams({400.0, 0.05, 0.5, 0.5, -5.0, 0.7f});
+    SpawnCounter counter;
+    engine.setEventSink(&SpawnCounter::record, &counter);
+
+    std::vector<float> left(1000), right(1000);
+    float *out[2] = {left.data(), right.data()};
+    engine.process(out, 2, 1000); // warm up until the pool is full
+    const uint64_t spawnsBefore = counter.spawns;
+    const uint64_t droppedBefore = engine.droppedGrains();
+    const int64_t clockBefore = engine.sampleClock();
+
+    AllocTripwire::resetCount();
+    {
+        AllocTripwire::Scope armed;
+        for (int i = 0; i < 20; ++i)
+        {
+            engine.process(out, 2, 0);
+            engine.process(out, 2, 1);
+            engine.process(out, 2, 1000);
+        }
+    }
+    const uint64_t allocations = AllocTripwire::count();
+
+    REQUIRE(engine.sampleClock() == clockBefore + 20 * 1001);
+    REQUIRE(counter.spawns > spawnsBefore);          // admitted into a full pool while armed
+    REQUIRE(engine.droppedGrains() > droppedBefore); // and dropped while armed
     REQUIRE(allocations == 0);
 }
 

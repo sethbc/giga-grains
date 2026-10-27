@@ -52,18 +52,32 @@ class Engine
     /// nullptr means no source: the schedule keeps running but no grains spawn.
     void setSource(std::shared_ptr<const SampleBuffer> source);
 
+    /// Real-time safe, but not synchronized with process(): call it on the audio thread
+    /// between process() calls, or while process() is not running. The new parameters apply
+    /// from the next process() call.
     void setStreamParams(const StreamParams &params) noexcept;
 
-    /// The sink is called from process(); pass nullptr to remove it.
+    /// The sink is called from process(); pass nullptr to remove it. Real-time safe, but not
+    /// synchronized with process(): call it on the audio thread between process() calls, or
+    /// while process() is not running.
     void setEventSink(GrainEventSink sink, void *ctx) noexcept;
 
     /// Silences every grain and restarts the clock and the schedule at 0. Keeps the source,
-    /// the stream parameters and the sink. Real-time safe.
+    /// the stream parameters and the sink. Real-time safe, but not synchronized with
+    /// process(): call it on the audio thread between process() calls, or while process() is
+    /// not running.
     void reset() noexcept;
 
     /// Renders numFrames frames, overwriting out[0 .. numChannels). Channels 0 and 1 carry
     /// the grains; any further channels are zeroed. Accepts any numFrames, including 0
     /// (which does nothing) and more than maxBlockSize (which is split internally).
+    ///
+    /// The schedule and the clock advance whatever the outputs are, so the next call
+    /// continues the same render:
+    /// - with one channel, it carries source channel 0;
+    /// - out == nullptr renders nothing;
+    /// - a null channel pointer is skipped, and when out[0] is null nothing is rendered, so
+    ///   channel 1 (if not null) is only zeroed.
     void process(float *const *out, uint32_t numChannels,
                  uint32_t numFrames) noexcept SST_CPPUTILS_NONBLOCKING;
 

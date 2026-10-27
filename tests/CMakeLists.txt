@@ -52,6 +52,21 @@ list(APPEND CMAKE_MODULE_PATH ${CMAKE_SOURCE_DIR}/libs/catch2/extras)
 include(Catch)
 catch_discover_tests(gg-tests ADD_TAGS_AS_LABELS)
 
+# RTSan's negative control (rtsan build only), labels `rt` and `rtsan`: a program that allocates
+# inside a nonblocking function must make RealtimeSanitizer report it. The test passes on the
+# report itself, not on a failing exit status, which a crash or a missing binary would also give.
+# abort_on_error=0 makes RTSan exit after its report instead of aborting (its default on macOS),
+# because CTest fails a test that dies on a signal whatever its output.
+if (GG_USE_RTSAN)
+    add_executable(gg-rtsan-negative-control rtsan_negative_control.cpp)
+    target_link_libraries(gg-rtsan-negative-control PRIVATE gg::compiler-options sst-cpputils)
+    add_test(NAME rtsan_negative_control COMMAND gg-rtsan-negative-control)
+    set_tests_properties(rtsan_negative_control PROPERTIES
+            PASS_REGULAR_EXPRESSION "ERROR: RealtimeSanitizer"
+            ENVIRONMENT "RTSAN_OPTIONS=abort_on_error=0"
+            LABELS "rt;rtsan")
+endif ()
+
 # Golden renders (INTENT §19), label `golden`: gg-render renders each case and compares its
 # metrics, within tolerances, and its grain-event log, byte for byte, with the committed files in
 # golden/expected/. The event-log comparison is the cross-platform determinism gate. The WAV and

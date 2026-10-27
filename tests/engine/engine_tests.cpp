@@ -42,10 +42,14 @@ struct Render
     std::vector<float> right;
 };
 
+constexpr float kUnwritten = std::numeric_limits<float>::quiet_NaN();
+
+// The buffers start as NaN, so a sample process() didn't write fails allFinite(), and two renders
+// that both wrote nothing can't pass sameBits() unnoticed.
 Render render(gg::Engine &engine, int64_t frames, const std::vector<uint32_t> &blockSizes)
 {
-    Render r{std::vector<float>(static_cast<std::size_t>(frames), 1.0f),
-             std::vector<float>(static_cast<std::size_t>(frames), 1.0f)};
+    Render r{std::vector<float>(static_cast<std::size_t>(frames), kUnwritten),
+             std::vector<float>(static_cast<std::size_t>(frames), kUnwritten)};
     int64_t done = 0;
     std::size_t next = 0;
     while (done < frames)
@@ -185,9 +189,17 @@ TEST_CASE("extreme and non-finite params stay finite", "[engine]")
             gg::Engine engine(gg::EngineConfig{});
             engine.setSource(source);
             engine.setStreamParams(cases[i]);
+            SinkLog log;
+            engine.setEventSink(&SinkLog::record, &log);
             const auto r = render(engine, 12000, 480);
             REQUIRE(allFinite(r.left));
             REQUIRE(allFinite(r.right));
+            // Bounded (ruling R3): a unit-amplitude source, gain clamped to at most 4 and
+            // Catmull-Rom overshoot of at most 1.25, so no sample exceeds 5 per grain spawned.
+            REQUIRE_FALSE(log.overflowed);
+            const float bound = 4.0f * 1.25f * static_cast<float>(log.grains.size());
+            REQUIRE(peak(r.left) <= bound);
+            REQUIRE(peak(r.right) <= bound);
         }
     }
 }
@@ -221,9 +233,98 @@ TEST_CASE("oversized and empty blocks", "[engine]")
     const auto small = render(split, 1000, 64); // 15 x 64 + 40
     REQUIRE(split.sampleClock() == 1000);
 
+    REQUIRE(allFinite(big.left));
+    REQUIRE(allFinite(big.right));
     REQUIRE(peak(big.left) > 0.0f);
     REQUIRE(sameBits(big.left, small.left));
     REQUIRE(sameBits(big.right, small.right));
+}
+
+TEST_CASE("output channel layouts", "[engine]")
+{
+    // The plugins pass the host's channel count and pointers straight through, so every layout
+    // must render the same schedule as the stereo reference, and write exactly what it promises.
+    constexpr int64_t kFrames = 6000;
+    constexpr uint32_t kBlock = 500;
+    const auto source = makeSine(2, 48000, 48000.0); // stereo: the two outputs differ
+    const auto p = params(80.0, 0.03, 0.4, 0.2, 2.0, 0.9f);
+    auto makeEngine = [&]() {
+        auto engine = std::make_unique<gg::Engine>(gg::EngineConfig{});
+        engine->setSource(source);
+        engine->setStreamParams(p);
+        return engine;
+    };
+
+    const auto refEngine = makeEngine();
+    const auto ref = render(*refEngine, kFrames, kBlock);
+    REQUIRE(allFinite(ref.left));
+    REQUIRE(allFinite(ref.right));
+    REQUIRE(peak(ref.left) > 0.05f);
+    REQUIRE_FALSE(sameBits(ref.left, ref.right));
+
+    // Renders kFrames in kBlock calls into `channels` NaN-filled channels, of which those listed
+    // in `absent` are passed as null pointers.
+    auto renderLayout = [&](gg::Engine &engine, uint32_t channels,
+                            const std::vector<uint32_t> &absent) {
+        std::vector<std::vector<float>> buffers(
+            channels, std::vector<float>(static_cast<std::size_t>(kFrames), kUnwritten));
+        std::vector<float *> out(channels);
+        for (int64_t done = 0; done < kFrames; done += kBlock)
+        {
+            for (uint32_t c = 0; c < channels; ++c)
+            {
+                const bool isAbsent = std::find(absent.begin(), absent.end(), c) != absent.end();
+                out[c] = isAbsent ? nullptr : buffers[c].data() + done;
+            }
+            engine.process(out.data(), channels, kBlock);
+        }
+        return buffers;
+    };
+    auto allZero = [](const std::vector<float> &v) {
+        return std::all_of(v.begin(), v.end(), [](float x) { return x == 0.0f; });
+    };
+
+    SECTION("one channel carries source channel 0")
+    {
+        const auto engine = makeEngine();
+        const auto out = renderLayout(*engine, 1, {});
+        REQUIRE(sameBits(out[0], ref.left));
+    }
+
+    SECTION("channels beyond the second are zeroed")
+    {
+        const auto engine = makeEngine();
+        const auto out = renderLayout(*engine, 4, {});
+        REQUIRE(sameBits(out[0], ref.left));
+        REQUIRE(sameBits(out[1], ref.right));
+        REQUIRE(allZero(out[2]));
+        REQUIRE(allZero(out[3]));
+    }
+
+    SECTION("a null first channel renders nothing, and the second is zeroed")
+    {
+        const auto engine = makeEngine();
+        const auto out = renderLayout(*engine, 2, {0});
+        REQUIRE(allZero(out[1]));
+        REQUIRE(engine->sampleClock() == kFrames);
+    }
+
+    SECTION("null outputs keep the schedule running")
+    {
+        const auto engine = makeEngine();
+        for (int64_t done = 0; done < kFrames / 2; done += kBlock)
+        {
+            engine->process(nullptr, 2, kBlock);
+        }
+        REQUIRE(engine->sampleClock() == kFrames / 2);
+        // The second half matches the reference's second half: the null calls advanced the
+        // schedule and spawned the same grains.
+        const auto rest = render(*engine, kFrames / 2, kBlock);
+        const auto half = static_cast<std::ptrdiff_t>(kFrames / 2);
+        REQUIRE(sameBits(rest.left, std::vector<float>(ref.left.begin() + half, ref.left.end())));
+        REQUIRE(
+            sameBits(rest.right, std::vector<float>(ref.right.begin() + half, ref.right.end())));
+    }
 }
 
 TEST_CASE("degenerate sources", "[engine]")
@@ -338,6 +439,8 @@ TEST_CASE("pool saturation is block-size independent", "[engine]")
     const auto ref = run({4096}, refLog, refDropped);
     REQUIRE_FALSE(refLog.overflowed);
     REQUIRE(refDropped > 0);
+    REQUIRE(allFinite(ref.left));
+    REQUIRE(allFinite(ref.right));
     REQUIRE(peak(ref.left) > 0.0f);
 
     for (const auto &blocks : {std::vector<uint32_t>{1}, std::vector<uint32_t>{7},
@@ -366,6 +469,8 @@ TEST_CASE("reset restarts the render", "[engine]")
     REQUIRE(engine.activeGrains() == 0);
     REQUIRE(engine.droppedGrains() == 0);
     const auto second = render(engine, 9000, 128);
+    REQUIRE(allFinite(first.left));
+    REQUIRE(peak(first.left) > 0.0f);
     REQUIRE(sameBits(first.left, second.left));
 }
 
