@@ -94,6 +94,46 @@ clap_event_midi midi(uint8_t status, uint8_t data1, uint8_t data2, uint32_t time
     e.data[2] = data2;
     return e;
 }
+
+// A stub host that offers only clap.log, and counts the host-misbehaviour reports it receives.
+class LoggingHost
+{
+  public:
+    LoggingHost() { host_.host_data = this; }
+    LoggingHost(const LoggingHost &) = delete;
+    LoggingHost &operator=(const LoggingHost &) = delete;
+
+    const clap_host *clap() const noexcept { return &host_; }
+    uint32_t hostMisbehaving() const noexcept { return hostMisbehaving_; }
+
+  private:
+    static void log(const clap_host *host, clap_log_severity severity, const char *) noexcept
+    {
+        if (severity == CLAP_LOG_HOST_MISBEHAVING)
+        {
+            ++static_cast<LoggingHost *>(host->host_data)->hostMisbehaving_;
+        }
+    }
+    static const void *getExtension(const clap_host *, const char *id) noexcept
+    {
+        static const clap_host_log kLog{&LoggingHost::log};
+        return std::strcmp(id, CLAP_EXT_LOG) == 0 ? &kLog : nullptr;
+    }
+
+    uint32_t hostMisbehaving_{0};
+    clap_host host_{
+        CLAP_VERSION_INIT,
+        nullptr,
+        "gg-tests logging host",
+        "Giga Grains",
+        "",
+        "0.0.0",
+        &LoggingHost::getExtension,
+        [](const clap_host *) {}, // request_restart
+        [](const clap_host *) {}, // request_process
+        [](const clap_host *) {}, // request_callback
+    };
+};
 } // namespace
 
 TEST_CASE("fx passes audio through bit-exactly", "[plugin]")
@@ -226,6 +266,38 @@ TEST_CASE("params flush is safe and counts note-ons", "[plugin]")
     params->flush(plugin.clap(), notes.list(), &out);
     CHECK(plugin.impl().noteOnCount.load() == 2);
     CHECK(pushed == 0);
+}
+
+TEST_CASE("params flush reports misbehaving hosts only in Debug builds", "[plugin]")
+{
+    // clap-helpers' Maximal checking reports each non-parameter event in a flush by building a
+    // string and calling the host's log, on the audio thread. clap-wrapper's VST3 delivers notes
+    // and MIDI there, so only Debug builds check at Maximal (ruling T8-e).
+    const char *id = GENERATE(kInstrumentId, kFxId);
+    CAPTURE(id);
+    LoggingHost host;
+    gg::test::PluginUnderTest plugin(id, host.clap());
+    REQUIRE(plugin.valid());
+    REQUIRE(plugin.activate(48000.0, 512));
+    const auto *params = static_cast<const clap_plugin_params *>(
+        plugin.clap()->get_extension(plugin.clap(), CLAP_EXT_PARAMS));
+    REQUIRE(params != nullptr);
+
+    const auto clapOn = noteOn(60, 0);
+    const auto midiOn = midi(0x90, 67, 100, 0);
+    gg::test::InputEvents notes;
+    notes.add(&clapOn.header);
+    notes.add(&midiOn.header);
+    const uint32_t before = host.hostMisbehaving();
+    params->flush(plugin.clap(), notes.list(), gg::test::discardingOutputEvents());
+    CHECK(plugin.impl().noteOnCount.load() == 2);
+#if defined(BUILD_IS_DEBUG)
+    CHECK(gg::plugin::checkLevel == clap::helpers::CheckingLevel::Maximal);
+    CHECK(host.hostMisbehaving() > before);
+#else
+    CHECK(gg::plugin::checkLevel == clap::helpers::CheckingLevel::Minimal);
+    CHECK(host.hostMisbehaving() == before);
+#endif
 }
 
 TEST_CASE("zero-frame process is safe", "[plugin]")

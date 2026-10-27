@@ -125,10 +125,11 @@ jobs:
         run: scripts/fetch-validators.sh tools-bin
 
       # param-conversions is excluded: for a plugin with zero parameters it panics with a divide
-      # by zero inside clap-validator itself (clap-validator issue #40, unmerged as of
-      # 2026-10-26). The M0 plugins intentionally expose an empty params extension, so that
-      # clap-wrapper's VST3 MIDI mapping validates. Remove this exclusion when the plugins gain
-      # real parameters (M1) or a fixed clap-validator release is pinned in
+      # by zero inside clap-validator itself (free-audio/clap-validator#40,
+      # https://github.com/free-audio/clap-validator/issues/40, unmerged as of 2026-10-26).
+      # The M0 plugins intentionally expose an empty params extension, so that clap-wrapper's
+      # VST3 MIDI mapping validates. Remove this exclusion when the plugins gain real
+      # parameters (M1) or a fixed clap-validator release is pinned in
       # scripts/fetch-validators.sh.
       - name: clap-validator
         if: ${{ !cancelled() && steps.validators.outcome == 'success' }}

@@ -81,16 +81,16 @@ inline const clap_output_events *discardingOutputEvents() noexcept
 }
 
 /// One plugin instance, created through the factory and initialized. The destructor stops
-/// processing, deactivates and destroys it, in that order.
+/// processing, deactivates and destroys it, in that order. `host` must outlive the instance.
 class PluginUnderTest
 {
   public:
-    explicit PluginUnderTest(const char *pluginId)
+    explicit PluginUnderTest(const char *pluginId, const clap_host *host = stubHost())
     {
         const auto *factory = pluginFactory();
         if (factory != nullptr)
         {
-            plugin_ = factory->create_plugin(factory, stubHost(), pluginId);
+            plugin_ = factory->create_plugin(factory, host, pluginId);
         }
         if (plugin_ != nullptr && !plugin_->init(plugin_))
         {

@@ -9,11 +9,25 @@
 
 namespace gg::plugin
 {
-// Check everything the host does, but log misbehaviour instead of terminating: a plugin must
-// not take the host down with it. The template is instantiated once, in HelpersConfig.cpp.
+// Log host misbehaviour instead of terminating: a plugin must not take the host down with it.
 inline constexpr clap::helpers::MisbehaviourHandler misLevel =
     clap::helpers::MisbehaviourHandler::Ignore;
+
+// Debug builds check everything the host does (Maximal). Release-type builds, meaning the
+// shipped products and the rtsan preset, check at Minimal (review finding I1, ruling T8-e).
+// Maximal reports each non-parameter event in a params flush by building a std::ostringstream
+// and handing it to the host's log. clap-wrapper's VST3 puts notes and MIDI in flushes, and
+// its host log allocates a std::string and writes stdio (fprintf, OutputDebugStringA), all on
+// the audio thread. BUILD_IS_DEBUG / BUILD_IS_RELEASE come from gg::compiler-options. Every
+// file that includes this header must see one of them, so plugHelper_t is the same type
+// everywhere. The template is instantiated once, in HelpersConfig.cpp.
+#if defined(BUILD_IS_DEBUG)
 inline constexpr clap::helpers::CheckingLevel checkLevel = clap::helpers::CheckingLevel::Maximal;
+#elif defined(BUILD_IS_RELEASE)
+inline constexpr clap::helpers::CheckingLevel checkLevel = clap::helpers::CheckingLevel::Minimal;
+#else
+#error "HelpersConfig.h needs BUILD_IS_DEBUG or BUILD_IS_RELEASE: link gg::compiler-options"
+#endif
 
 using plugHelper_t = clap::helpers::Plugin<misLevel, checkLevel>;
 } // namespace gg::plugin
