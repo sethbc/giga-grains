@@ -12,25 +12,28 @@
 #   1. configure, only when the build tree has no CMakeCache.txt. rtsan takes its compilers from
 #      $GG_LLVM; when that's unset on macOS and /opt/homebrew/opt/llvm exists, it uses that, and
 #      the summary says so.
-#   2. build, with the target CI builds: gg-all for asan and rtsan (the sanitizer job), the
-#      default target (everything) for the others.
-#   3. test: ctest --preset <preset>, with every -L passed through.
+#   2. build: gg-all for asan and rtsan, as CI's sanitizer job builds, and the default target
+#      (everything) for the others.
+#   3. test: ctest --preset <preset>, with every -L passed through. ctest ANDs repeated -L
+#      options: -L core -L rt runs only the tests labelled both. For either, use -L 'core|rt'.
 # A failed step skips the rest of that preset, and the next preset still runs, so one run reports
 # everything. Last comes scripts/format.sh --check, unless --no-format.
 #
 # Each step's full output goes to build/<preset>/check/<step>.log (configure, build, test) and the
 # format check's to build/check/format.log. The terminal gets only the summary: a line per preset
-# as it finishes, with the failing tests or the first build errors under it, then the format
-# result and PASS or FAIL. The exit status is 0 only if every step passed, 1 if any failed, and 2
-# for bad usage.
+# as it finishes, ending with the failed step's log, with the failing tests or the first errors
+# under it; then the format result, and PASS or FAIL. The exit status is 0 only if every step
+# passed, 1 if any failed, and 2 for bad usage.
 #
-# A tree configured with GG_COPY_PLUGIN_AFTER_BUILD=ON installs the plugins into your plugin
-# folders whenever a bundle is rebuilt, so check.sh won't build it unless given --allow-install.
+# A tree whose cache sets GG_COPY_PLUGIN_AFTER_BUILD to anything CMake counts as true installs the
+# plugins into your plugin folders whenever a bundle is rebuilt, so check.sh won't build it unless
+# given --allow-install.
 
 set -euo pipefail
 
 usage() {
     echo "usage: $0 [--presets dev,asan,rtsan] [-L label]... [--no-format] [--allow-install]" >&2
+    echo "Repeated -L options must all match (ctest ANDs them); -L 'a|b' matches either." >&2
     exit 2
 }
 
@@ -87,12 +90,14 @@ binary_dir() {
 # The log's last 10 lines if nothing matches.
 first_errors() {
     local errors
+    # awk's early exit can stop tr with SIGPIPE, which pipefail would make fatal.
     errors="$(tr -d '\r' <"$1" | awk '
         n >= 10 { exit }
         cmake && /^[ \t]*$/ { cmake = 0; next }
         cmake { print; n++; next }
         /CMake Error/ { print; n++; cmake = 1; next }
-        /error( [A-Z]+[0-9]+)?:|^FAILED:|Undefined symbols|undefined reference/ { print; n++ }')"
+        /error( [A-Z]+[0-9]+)?:|^FAILED:|Undefined symbols|undefined reference/ { print; n++ }' ||
+        true)"
     if [[ -z "$errors" ]]; then
         errors="$(tr -d '\r' <"$1" | tail -n 10)"
     fi
@@ -126,6 +131,7 @@ for preset in "${preset_list[@]}"; do
     llvm_note=""
     build="not run"
     tests="not run"
+    log=""
     details=""
 
     if [[ ! -f "$dir/CMakeCache.txt" ]]; then
@@ -140,7 +146,8 @@ for preset in "${preset_list[@]}"; do
         else
             ok=false
             configure=FAILED
-            details="$(first_errors "$logs/configure.log")"$'\n'"    log: $logs/configure.log"
+            log="$logs/configure.log"
+            details="$(first_errors "$log")"
             # A failed configure still writes a cache. The tree had none, so this run wrote it;
             # without it, the next run configures again instead of building a broken tree.
             rm -f "$dir/CMakeCache.txt"
@@ -148,14 +155,17 @@ for preset in "${preset_list[@]}"; do
     fi
 
     if [[ "$ok" == true ]]; then
-        copy="$(sed -n 's/^GG_COPY_PLUGIN_AFTER_BUILD:[A-Z]*=//p' "$dir/CMakeCache.txt" |
-            tr -d '\r' | tr '[:lower:]' '[:upper:]')"
-        case "$copy" in
-            ON | YES | TRUE | Y | [1-9]*)
+        # clients/clap-first installs the plugins if (GG_COPY_PLUGIN_AFTER_BUILD), which CMake
+        # counts as true for any value but its false constants, so anything else is refused.
+        copy="$(sed -n 's/^GG_COPY_PLUGIN_AFTER_BUILD:[^=]*=//p' "$dir/CMakeCache.txt" |
+            tr -d '\r')"
+        case "$(tr '[:lower:]' '[:upper:]' <<<"$copy")" in
+            "" | OFF | 0 | NO | FALSE | N | IGNORE | NOTFOUND | *-NOTFOUND) ;;
+            *)
                 if [[ "$allow_install" != true ]]; then
                     ok=false
                     build=REFUSED
-                    details="    GG_COPY_PLUGIN_AFTER_BUILD is ON in $dir/CMakeCache.txt, so a"
+                    details="    GG_COPY_PLUGIN_AFTER_BUILD is $copy in $dir/CMakeCache.txt, so a"
                     details+=" build installs the plugins; pass --allow-install to build it anyway"
                 fi
                 ;;
@@ -172,7 +182,8 @@ for preset in "${preset_list[@]}"; do
         else
             ok=false
             build=FAILED
-            details="$(first_errors "$logs/build.log")"$'\n'"    log: $logs/build.log"
+            log="$logs/build.log"
+            details="$(first_errors "$log")"
         fi
     fi
 
@@ -180,49 +191,55 @@ for preset in "${preset_list[@]}"; do
         status=0
         ctest --preset "$preset" ${labels[@]+"${labels[@]}"} >"$logs/test.log" 2>&1 || status=$?
         result="$(result_line "$logs/test.log")"
-        failures=0
-        if [[ -n "$result" ]]; then
-            total="$(sed -E 's/.* out of ([0-9]+).*/\1/' <<<"$result")"
+        if [[ "$result" =~ out\ of\ ([0-9]+) ]]; then
+            total="${BASH_REMATCH[1]}"
+            failures=0
             if [[ "$result" =~ ([0-9]+)\ tests?\ failed ]]; then
                 failures="${BASH_REMATCH[1]}"
             fi
             skipped="$(tr -d '\r' <"$logs/test.log" |
                 grep -cE '^[[:space:]]*[0-9]+ - .* \(Skipped\)' || true)"
             tests="$((total - failures - skipped))/$total passed, $skipped skipped"
-        fi
-        if ((failures > 0)); then
-            tests+=", $failures FAILED"
-            names=()
-            while IFS= read -r name; do
-                names+=("$name")
-            done < <(failed_tests "$logs/test.log")
-            for name in ${names[@]+"${names[@]}"}; do
-                details+="    FAILED $name  $logs/test.log"$'\n'
-            done
-            # At most 10 names, so a mass failure can't flood the summary.
-            if ((${#names[@]} > 10)); then
-                details="$(head -n 10 <<<"$details")"$'\n'"    ... and $((${#names[@]} - 10)) more"
-            fi
-            details="${details%$'\n'}"
-        fi
-        if ((status != 0)); then
-            ok=false
-            if [[ -z "$result" ]]; then
-                tests=FAILED
-            elif ((failures == 0)); then
+            if ((failures > 0)); then
+                tests+=", $failures FAILED"
+                names=()
+                while IFS= read -r name; do
+                    names+=("$name")
+                done < <(failed_tests "$logs/test.log")
+                for name in ${names[@]+"${names[@]}"}; do
+                    details+="    FAILED $name"$'\n'
+                done
+                # At most 10 names, so a mass failure can't flood the summary.
+                if ((${#names[@]} > 10)); then
+                    details="$(head -n 10 <<<"$details")"$'\n'
+                    details+="    ... and $((${#names[@]} - 10)) more"
+                fi
+                details="${details%$'\n'}"
+            elif ((status != 0)); then
                 tests+=", but ctest exited with status $status"
             fi
-            if [[ -z "$details" ]]; then
-                # No test failed, so ctest itself did: no test matched the labels, say.
+            if ((failures > 0 || status != 0)); then
+                ok=false
+            fi
+        else
+            # No result line: ctest itself failed (no test matched the labels, say), or its output
+            # changed. Neither may pass.
+            ok=false
+            tests=FAILED
+            if ((status == 0)); then
+                details="    could not parse the ctest result"
+            else
                 details="$(tr -d '\r' <"$logs/test.log" | grep -m 3 -iE 'error|no tests' |
                     cut -c 1-200 | sed 's/^/    /' || true)"
-                details+=$'\n'"    log: $logs/test.log"
             fi
+        fi
+        if [[ "$ok" != true ]]; then
+            log="$logs/test.log"
         fi
     fi
 
     echo "$preset: configure $configure$llvm_note, build $build, tests $tests," \
-        "$((SECONDS - start))s"
+        "$((SECONDS - start))s${log:+, log: $log}"
     if [[ -n "$details" ]]; then
         printf '%s\n' "$details"
     fi
@@ -239,7 +256,7 @@ if [[ "$format" == true ]]; then
     else
         failed=1
         files="$(tr -d '\r' <"$format_log" |
-            sed -n -E 's/^(.*):[0-9]+:[0-9]+: (error|warning): code should be clang-formatted.*/\1/p' |
+            sed -n -E 's/^(.*):[0-9]+:[0-9]+: (error|warning): code should be clang-format.*/\1/p' |
             sort -u)"
         if [[ -n "$files" ]]; then
             count="$(wc -l <<<"$files" | tr -d ' ')"
@@ -247,11 +264,10 @@ if [[ "$format" == true ]]; then
             if ((count > 3)); then
                 listed+=" and $((count - 3)) more"
             fi
-            echo "format: FAILED in $listed (scripts/format.sh fixes it)"
-            echo "    log: $format_log"
+            echo "format: FAILED in $listed (scripts/format.sh fixes it), log: $format_log"
         else
-            echo "format: FAILED: $(head -n 1 "$format_log" | tr -d '\r' | cut -c 1-160)"
-            echo "    log: $format_log"
+            echo "format: FAILED, log: $format_log"
+            head -n 1 "$format_log" | tr -d '\r' | cut -c 1-200 | sed 's/^/    /'
         fi
     fi
 fi

@@ -84,8 +84,11 @@ resource, so machines must catch everything they can catch.
   - It checks out every submodule recursively at the commits HEAD pins, taking the objects from
     the main checkout's submodule repositories, so it works offline. A commit the main checkout
     lacks is fetched from upstream, and the script says which.
-  - It changes no URL in the shared `.git/config` or in any submodule's config. Don't rewrite
-    `submodule.*.url` to local paths to get a worktree going: every worktree shares that config.
+  - It changes no URL in the shared `.git/config`, in the main checkout's submodule configs or in
+    any other worktree's. The only URLs it writes are the nested submodules' canonical
+    `.gitmodules` URLs, into the configs of the new worktree's own clones of their parents.
+  - Don't rewrite `submodule.*.url` to local paths to get a worktree going: every worktree shares
+    that config.
   - It fails unless `git submodule status --recursive` then shows every submodule at its pinned
     commit. `--configure` runs `cmake --preset` for each preset named, and doesn't build.
 - The first configure of a build tree downloads the VST3 and AudioUnit SDKs (clap-wrapper fetches
@@ -133,24 +136,31 @@ scripts/check.sh [--presets dev,asan,rtsan] [-L label]... [--no-format] [--allow
 
 - **Per preset, in order** (`dev,asan,rtsan` by default):
   1. It configures only when the tree has no `CMakeCache.txt`. For `rtsan` on macOS with
-     `GG_LLVM` unset, it uses `/opt/homebrew/opt/llvm` and says so.
-  2. It builds what CI builds: `gg-all` for `asan` and `rtsan`, the default target otherwise.
-  3. It runs `ctest --preset <p>`, passing every `-L` through.
+     `GG_LLVM` unset, it uses `/opt/homebrew/opt/llvm` if that exists, and says so.
+  2. It builds `gg-all` for `asan` and `rtsan`, as CI's sanitizer job does, and the default
+     target otherwise.
+  3. It runs `ctest --preset <p>`, passing every `-L` through. Repeated `-L` options must all
+     match (see Tests below), so `-L core -L rt` narrows; `-L 'core|rt'` runs both areas.
 - **A failed step** skips the rest of its preset; the other presets still run. `format.sh --check`
   runs last.
 - **The output** is only a short summary:
-  - one line per preset: the configure and build status, tests passed/total, skipped, wall time;
-  - under it, each failing test with its log, or the first build errors;
+  - one line per preset: the configure and build status, tests passed/total, skipped, wall time,
+    and the failed step's log;
+  - under it, each failing test (at most 10), or the first configure or build errors;
   - the format result, then `PASS` or `FAIL`.
 - **The logs** are complete: `build/<preset>/check/{configure,build,test}.log` and
   `build/check/format.log`.
 - **Exit status:** 0 only if every step passed; 1 if any failed; 2 for bad usage.
-- **It refuses to build a tree configured with `GG_COPY_PLUGIN_AFTER_BUILD=ON`**, which would
-  install plugins, unless you pass `--allow-install`.
+- **It refuses to build a tree whose cache sets `GG_COPY_PLUGIN_AFTER_BUILD` to anything CMake
+  counts as true** (anything but empty, `OFF`, `0`, `NO`, `FALSE`, `N`, `IGNORE`, `NOTFOUND` or
+  `*-NOTFOUND`, in any case), because that build installs plugins, unless you pass
+  `--allow-install`.
 - Paste its summary as the evidence in a report.
 
 **Tests.** `gg-tests` is the Catch2 suite, and each Catch2 tag becomes a CTest label. To run one
-area, use `ctest --preset dev -L <label>`. The labels are:
+area, use `ctest --preset dev -L <label>`. `-L` takes a regular expression, and repeated `-L`
+options must all match: `-L core -L rt` runs only the tests labelled both, and `-L 'core|rt'`
+runs the tests labelled either. The labels are:
 - engine: `engine`, `stream`, `pool`, `source`, `rng`, `math`, `interp`, `window`, `denormal`;
 - `determinism`: block-size invariance;
 - `rt`: the allocation tripwire. In the `rtsan` build, two tests labelled both `rt` and `rtsan`
@@ -174,8 +184,17 @@ area, use `ctest --preset dev -L <label>`. The labels are:
 - **Keep new tests parallel-safe:**
   - never write a path that another test writes: unit tests' scratch files go in
     `GG_TEST_OUTPUT_DIR` under a name of their own, and each golden case writes its own files;
-  - a test that has to share a file, or that measures time, needs the `RESOURCE_LOCK` or
-    `RUN_SERIAL` test property in `tests/CMakeLists.txt`.
+  - a test that has to share a file, or that measures time, must not run beside the others. For
+    an `add_test` in `tests/CMakeLists.txt`, set its `RESOURCE_LOCK` or `RUN_SERIAL` property.
+    Catch2 cases are discovered after the build, so `set_tests_properties` can't reach them.
+    Tag the case (`[serial]`, say), discover it separately, and leave it out of the main
+    discovery:
+
+    ```cmake
+    catch_discover_tests(gg-tests TEST_SPEC "~[serial]" ADD_TAGS_AS_LABELS)
+    catch_discover_tests(gg-tests TEST_SPEC "[serial]" ADD_TAGS_AS_LABELS
+            PROPERTIES RUN_SERIAL TRUE)
+    ```
 
 **Golden renders (`gg-render`).** `gg-render` renders a render spec offline and deterministically:
 
