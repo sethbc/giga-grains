@@ -8,6 +8,8 @@
 #include <atomic>
 #include <cstdint>
 #include <memory>
+// Before clap_juce_shim.h: sst-clap-helpers' clap_juce_shim.h uses std::string without <string>.
+#include <string>
 #include <vector>
 
 #include <clap/clap.h>
