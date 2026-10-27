@@ -1,0 +1,255 @@
+# Giga Grains — granular instrument and effect
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright 2026, the Giga Grains authors (see git history)
+#
+# The required checks (INTENT §19):
+#
+#   build       macOS (universal), Windows (ClangCL) and Linux (gcc-12): gg-all and gg-products,
+#               then ctest. ctest includes the golden event-log comparison, so this job is the
+#               cross-platform determinism gate. Then clap-validator, pluginval (strictness 10),
+#               auval (macOS) and Steinberg's VST3 validator. gg-bench is reported, not gated,
+#               in M0; the §16 CPU gate turns on in M1.
+#   sanitizers  ASan + UBSan, and RealtimeSanitizer, with upstream clang 20 on ubuntu-24.04.
+#
+# Once the build succeeds, every later check runs even if an earlier one failed, so one run
+# reports them all; any failure still fails the job. The clang-format check is in format.yml.
+#
+# Every third-party action is pinned by commit SHA, with its tag or branch in the comment
+# beside it.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    name: build (${{ matrix.preset }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            preset: mac-universal
+            build_dir: build/mac-universal
+            bench: build/mac-universal/tools/gg-bench/gg-bench
+          - os: windows-2022
+            preset: windows-clangcl
+            build_dir: build/windows
+            bench: build/windows/tools/gg-bench/Release/gg-bench.exe
+            exe: .exe
+          - os: ubuntu-22.04
+            preset: linux-gcc12
+            build_dir: build/linux-gcc12
+            bench: build/linux-gcc12/tools/gg-bench/gg-bench
+    env:
+      HOMEBREW_NO_AUTO_UPDATE: 1
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Prepare for JUCE
+        uses: surge-synthesizer/sst-githubactions/prepare-for-juce@5bb92ec9d3401eba6a85f8edea98395b3b866e84 # main
+        with:
+          os: ${{ runner.os }}
+          gccversion: 12
+
+      - name: Install Ninja and Xvfb (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get install -y ninja-build xvfb
+
+      - name: Install Ninja (macOS)
+        if: runner.os == 'macOS'
+        run: command -v ninja || brew install ninja
+
+      - name: Configure
+        run: cmake --preset ${{ matrix.preset }}
+
+      - name: Build gg-all and gg-products
+        id: build
+        run: cmake --build --preset ${{ matrix.preset }} --config Release --parallel --target gg-all gg-products
+
+      - name: Test (unit, plugin and golden)
+        run: ctest --preset ${{ matrix.preset }} -C Release --output-on-failure
+
+      # Reported, not gated: gg-bench has no CPU threshold. The §16 gate turns on in M1.
+      - name: Benchmark (reported, not gated)
+        id: bench
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
+          out="${{ matrix.build_dir }}/gg-bench"
+          "${{ matrix.bench }}" --quick --json "$out.json" | tee "$out.txt"
+          {
+            echo "### gg-bench --quick (${{ matrix.preset }})"
+            echo '```'
+            cat "$out.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Locate the products
+        id: products
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
+          products="$PWD/${{ matrix.build_dir }}/gg-products"
+          ls -la "$products"
+          native() {
+            if [[ "$RUNNER_OS" == Windows ]]; then cygpath -w "$1"; else echo "$1"; fi
+          }
+          for name in "Giga Grains.clap" "Giga Grains.vst3"; do
+            test -e "$products/$name"
+          done
+          echo "GG_CLAP=$(native "$products/Giga Grains.clap")" >> "$GITHUB_ENV"
+          echo "GG_VST3=$(native "$products/Giga Grains.vst3")" >> "$GITHUB_ENV"
+
+      - name: Fetch clap-validator and pluginval
+        id: validators
+        if: ${{ !cancelled() && steps.products.outcome == 'success' }}
+        run: scripts/fetch-validators.sh tools-bin
+
+      - name: clap-validator
+        if: ${{ !cancelled() && steps.validators.outcome == 'success' }}
+        run: tools-bin/clap-validator${{ matrix.exe }} validate "$GG_CLAP"
+
+      - name: pluginval (VST3, strictness 10)
+        if: ${{ !cancelled() && steps.validators.outcome == 'success' && runner.os != 'Linux' }}
+        run: tools-bin/pluginval${{ matrix.exe }} --strictness-level 10 --validate "$GG_VST3"
+
+      - name: pluginval (VST3, strictness 10, Xvfb)
+        if: ${{ !cancelled() && steps.validators.outcome == 'success' && runner.os == 'Linux' }}
+        run: xvfb-run -a tools-bin/pluginval --strictness-level 10 --skip-gui-tests --validate "$GG_VST3"
+
+      - name: auval
+        if: ${{ !cancelled() && steps.products.outcome == 'success' && runner.os == 'macOS' }}
+        run: |
+          components="$HOME/Library/Audio/Plug-Ins/Components"
+          mkdir -p "$components"
+          rm -rf "$components/Giga Grains.component"
+          cp -R "${{ matrix.build_dir }}/gg-products/Giga Grains.component" "$components/"
+          killall -9 AudioComponentRegistrar || true
+          # Wait for the component registrar to pick up the new component. (grep without -q
+          # reads all of auval's output, so pipefail never sees auval die of SIGPIPE.)
+          for _ in $(seq 1 15); do
+            if auval -a 2>&1 | grep Sbcx > /dev/null; then break; fi
+            sleep 2
+          done
+          auval -a 2>&1 | grep Sbcx
+          log="$RUNNER_TEMP/auval.log"
+          for id in "aumu GGin Sbcx" "aufx GGfx Sbcx" "aumf GGfx Sbcx"; do
+            echo "::group::auval -v $id"
+            # $id is split on purpose: auval takes type, subtype and manufacturer separately.
+            # shellcheck disable=SC2086
+            auval -v $id | tee "$log"
+            echo "::endgroup::"
+            if ! grep -q "AU VALIDATION SUCCEEDED" "$log"; then
+              echo "::error::auval -v $id did not print AU VALIDATION SUCCEEDED"
+              exit 1
+            fi
+          done
+
+      # The VST3 SDK that clap-wrapper downloads at configure time (CPM) includes public.sdk,
+      # so the validator (public.sdk/samples/vst-hosting/validator) is built from that same
+      # checkout. CPM records where it put the SDK in the cache.
+      - name: Build Steinberg's VST3 validator
+        id: vst3_validator
+        if: ${{ !cancelled() && steps.products.outcome == 'success' }}
+        run: |
+          build_dir="${{ matrix.build_dir }}"
+          cache="$build_dir/CMakeCache.txt"
+          sdk="$(sed -n 's/^CPM_PACKAGE_vst3sdk_SOURCE_DIR:INTERNAL=//p' "$cache" | tr -d '\r')"
+          echo "VST3 SDK: $sdk"
+          test -f "$sdk/public.sdk/samples/vst-hosting/validator/CMakeLists.txt"
+          if [[ "$RUNNER_OS" == Windows ]]; then
+            generator=(-G "Visual Studio 17 2022" -A x64)
+          else
+            generator=(-G Ninja)
+          fi
+          cmake -S "$sdk" -B "$build_dir/vst3-validator" "${generator[@]}" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DSMTG_ENABLE_VSTGUI_SUPPORT=OFF \
+            -DSMTG_ENABLE_VST3_PLUGIN_EXAMPLES=OFF \
+            -DSMTG_ENABLE_VST3_HOSTING_EXAMPLES=OFF \
+            -DSMTG_CREATE_PLUGIN_LINK=OFF \
+            -DSMTG_BUILD_UNIVERSAL_BINARY=OFF
+          cmake --build "$build_dir/vst3-validator" --config Release --parallel --target validator
+
+      - name: Steinberg VST3 validator
+        if: ${{ !cancelled() && steps.vst3_validator.outcome == 'success' }}
+        run: |
+          "${{ matrix.build_dir }}/vst3-validator/bin/Release/validator${{ matrix.exe }}" "$GG_VST3"
+
+      - name: Upload golden renders
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: golden-${{ matrix.preset }}
+          path: ${{ matrix.build_dir }}/golden/
+          if-no-files-found: ignore
+
+      - name: Upload benchmark
+        if: ${{ !cancelled() && steps.bench.outcome == 'success' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: gg-bench-${{ matrix.preset }}
+          path: |
+            ${{ matrix.build_dir }}/gg-bench.json
+            ${{ matrix.build_dir }}/gg-bench.txt
+          if-no-files-found: error
+
+  sanitizers:
+    name: sanitizers (asan, rtsan)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      # The rtsan preset takes its compilers from $GG_LLVM; the asan step uses the same clang.
+      GG_LLVM: /usr/lib/llvm-20
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Install clang 20 and Ninja
+        id: toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build
+          curl -fsSL -o "$RUNNER_TEMP/llvm.sh" https://apt.llvm.org/llvm.sh
+          sudo bash "$RUNNER_TEMP/llvm.sh" 20
+          # The sanitizer runtimes are only a Recommends of clang-20.
+          sudo apt-get install -y libclang-rt-20-dev
+          "$GG_LLVM/bin/clang++" --version
+
+      - name: ASan + UBSan
+        env:
+          CC: /usr/lib/llvm-20/bin/clang
+          CXX: /usr/lib/llvm-20/bin/clang++
+        run: |
+          cmake --preset asan
+          cmake --build --preset asan --parallel --target gg-all
+          ctest --preset asan --output-on-failure
+
+      - name: RealtimeSanitizer
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
+        run: |
+          cmake --preset rtsan
+          cmake --build --preset rtsan --parallel --target gg-all
+          ctest --preset rtsan --output-on-failure

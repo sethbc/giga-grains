@@ -1,0 +1,51 @@
+# Giga Grains — granular instrument and effect
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright 2026, the Giga Grains authors (see git history)
+#
+# The clang-format check: scripts/format.sh --check, which runs clang-format 23 with
+# --dry-run --Werror over engine plugin ui tools tests clients. Its major version must match
+# the one developers format with locally. clang-format 23 comes from apt.llvm.org.
+#
+# Every third-party action is pinned by commit SHA, with its tag or branch in the comment
+# beside it.
+
+name: Format
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  clang-format:
+    name: clang-format
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install clang-format 23
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/llvm.sh" https://apt.llvm.org/llvm.sh
+          sudo bash "$RUNNER_TEMP/llvm.sh" 23
+          sudo apt-get install -y clang-format-23
+          clang-format-23 --version
+
+      - name: Check formatting
+        env:
+          CLANG_FORMAT: clang-format-23
+        run: scripts/format.sh --check

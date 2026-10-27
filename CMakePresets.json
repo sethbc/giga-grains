@@ -49,6 +49,32 @@
         "CMAKE_C_COMPILER": "$env{GG_LLVM}/bin/clang",
         "CMAKE_CXX_COMPILER": "$env{GG_LLVM}/bin/clang++"
       }
+    },
+    {
+      "name": "mac-universal",
+      "inherits": "release",
+      "displayName": "macOS universal (Ninja, Release, arm64 + x86_64)",
+      "cacheVariables": {
+        "CMAKE_OSX_ARCHITECTURES": "arm64;x86_64"
+      }
+    },
+    {
+      "name": "windows-clangcl",
+      "inherits": "base",
+      "displayName": "Windows (Visual Studio 2022, ClangCL, x64, Release)",
+      "generator": "Visual Studio 17 2022",
+      "architecture": "x64",
+      "toolset": "ClangCL",
+      "binaryDir": "${sourceDir}/build/windows"
+    },
+    {
+      "name": "linux-gcc12",
+      "inherits": "release",
+      "displayName": "Linux (Ninja, Release, gcc-12)",
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "gcc-12",
+        "CMAKE_CXX_COMPILER": "g++-12"
+      }
     }
   ],
   "buildPresets": [
@@ -67,6 +93,19 @@
     {
       "name": "rtsan",
       "configurePreset": "rtsan"
+    },
+    {
+      "name": "mac-universal",
+      "configurePreset": "mac-universal"
+    },
+    {
+      "name": "windows-clangcl",
+      "configurePreset": "windows-clangcl",
+      "configuration": "Release"
+    },
+    {
+      "name": "linux-gcc12",
+      "configurePreset": "linux-gcc12"
     }
   ],
   "testPresets": [
@@ -99,6 +138,22 @@
       "name": "rtsan",
       "inherits": "base",
       "configurePreset": "rtsan"
+    },
+    {
+      "name": "mac-universal",
+      "inherits": "base",
+      "configurePreset": "mac-universal"
+    },
+    {
+      "name": "windows-clangcl",
+      "inherits": "base",
+      "configurePreset": "windows-clangcl",
+      "configuration": "Release"
+    },
+    {
+      "name": "linux-gcc12",
+      "inherits": "base",
+      "configurePreset": "linux-gcc12"
     }
   ]
 }
