@@ -171,7 +171,7 @@ options must all match: `-L core -L rt` runs only the tests labelled both, and `
 runs the tests labelled either. The labels are:
 - engine: `engine`, `cloud` (the Cloud scheduler), `live` (the live ring), `pool`, `source`,
   `rng`, `math`, `interp`, `window`, `denormal`;
-- `core`: `gg-core`: the patch and its state, the parameter mapping and the `Processor`;
+- `core`: `gg-core`'s patch and its state, the parameter mapping and the `Processor`;
 - `determinism`: block-size invariance;
 - `rt`: the allocation tripwire. In the `rtsan` build, two tests labelled both `rt` and `rtsan`
   check that RTSan is active: one checks the build flag, and `rtsan_negative_control` passes
@@ -222,8 +222,8 @@ gg-render <spec.json> [-o out.wav] [--metrics out.json] [--events out.jsonl]
     `grainDurationMs`, `position`, `positionJitter`, `pitchSemitones`, `gain`, and optional
     `distribution`), plus a release tail. The four M0 cases use it.
   - **FX mode** (`"mode": "fx"`) runs Giga Grains FX's `gg-core` `Processor`, the one the plugin
-    runs, over an `input`: a built-in `sine`, `sweep` or `noise` (no files), with `channels` 1 or
-    2. Optional `params` sets base values by parameter name (`"Size"`, `"Density"`, …), and
+    runs, over an `input`: a built-in `sine`, `sweep` or `noise` (no files). The top-level
+    `channels` key (1 or 2) sets the input's channel count. Optional `params` sets base values by parameter name (`"Size"`, `"Density"`, …), and
     optional `automation` is a time-ordered list of `{"time", "param", "value"}` points in
     seconds. Values are in each parameter's CLAP value domain (Density 6.0 is 64 Hz). The render
     is exactly `durationSeconds` long.

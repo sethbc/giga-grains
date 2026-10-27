@@ -292,10 +292,10 @@ optional scale or grid quantize. This is how "shaped randomness" (§8.1) is impl
     (ruling M1-g).
     - `P = sampleRate / Density`, and `d` is Distribution in [0, 1].
     - `E(k) = −logDet(1 − u(k))`, with `u(k)` keyed by (seed, layer, stream, `Field::Onset`, k).
-    - The mean interval is `P`: periodic at `d` = 0, Poisson at `d` = 1.
+    - The mean interval is `P`, up to the floor: periodic at `d` = 0, Poisson at `d` = 1.
     - The 1/16-sample floor bounds each call's loop, and it never applies at `d` = 0.
-  - `logDet` is a deterministic natural log: argument reduction and a polynomial, no libm. It is
-    within `1e-14 × max(1, |log x|)` of `log x` across (0, 1].
+  - `logDet` is a deterministic natural log: argument reduction and a polynomial, with no libm
+    apart from the exact `frexp`. It is within `1e-14 × max(1, |log x|)` of `log x` across (0, 1].
   - Density ≤ 0 means off. Positive values clamp to [0.01, min(4000, sampleRate)] Hz (ruling
     M1-a). The plugin's floor is 0.25 Hz, so it is never off.
   - **A Density or Distribution change at grid sample g rescales the pending onset:**
@@ -310,7 +310,8 @@ optional scale or grid quantize. This is how "shaped randomness" (§8.1) is impl
     `Position + Spray × u`, with u in [0, 1) (ruling M1-k). Sample mode keeps a normalized
     position with bipolar jitter.
   - **Per-grain equal-power pan:** `pan = Stereo × bipolar(u)`, with channel gains `√(1 − pan)`
-    and `√(1 + pan)`. `sqrt` is correctly rounded, so no libm value reaches the event log.
+    and `√(1 + pan)`. IEEE `sqrt` is correctly rounded, so the gains are deterministic without
+    a polynomial sin/cos.
 - **Latched gain normalization.** Each grain's gain is `1 / √max(1, Density × Size)`, with
   Density in grains/s and Size in seconds.
   - That is the expected overlap; uncorrelated grains add in power.
@@ -539,7 +540,7 @@ clients/  CLAP entry points + clap-wrapper targets
   - **AMD EPYC 7763, Windows** (ClangCL): 6.22 / 5.93 / 5.72 ns (59.7% / 56.9% / 54.9%).
   - **AMD EPYC 7763, Linux** (gcc 12): 7.21 / 6.62 / 6.26 ns (69.2% / 63.5% / 60.1%).
 
-  That is about 2.4× to 3.2× the M5 Max's share for the same grains. Small blocks also cost
+  That is 2.4× to 3.2× the M5 Max's share for the same grains, which §21 rounds to 2× to 3×. Small blocks also cost
   relatively more on some legs. On Linux, block 32 costs 15% more per grain-sample than block
   256, against 8% on the M5 Max.
 - **CI's CPU gate is a regression gate,** measured as ratios within one process (carry-over
@@ -696,8 +697,8 @@ they are frozen along with them.
   - Index 0 is reserved.
   - Every ID stays below `0xB00000` (ruling T8-d). IDs are append-only: never renumbered, never
     reused.
-- **The first ten,** pinned by a test (`gg/core/ParamIds.h`) and frozen at the first public
-  release:
+- **The first ten,** defined in `gg/core/ParamIds.h`, pinned by a test
+  (`tests/core/patch_tests.cpp`) and frozen at the first public release:
 
   | ID | Name | Range | Default |
   |---|---|---|---|
@@ -718,7 +719,8 @@ they are frozen along with them.
     is `HIDDEN` and has no effect, and its remote-controls slot is empty (ruling M1-w).
   - The CLAP value is the parameter's sst-basic-blocks `ParamMetaData` value, a log-domain value
     for the log ranges. Values are floats end to end.
-- **The patch state** (`PTCH`) is `gg-core`'s versioned XML: patch id
+- **The patch** (the future `PTCH` chunk; today the plugin's whole state) is `gg-core`'s
+  versioned XML: patch id
   `org.sethbc.giga-grains.patch`, version 1. Each value also carries its float bits, so a saved
   and reloaded state renders identically, and the engine seed is saved with it. New instances
   start at seed 0.
@@ -880,7 +882,7 @@ director made the call.
 | 33 | M0 final-review corrections to Part II | The M0 final review's fix wave corrected Part II without changing a decision: §15 and §21 now give CI run 40445561691's JUCE 9 result (every leg green, Windows ClangCL included), and the macOS CI leg now runs the mac-universal x86_64 slice's unit tests and golden checks under Rosetta; #24 says only the SSE4.1 libwebp unit was seen failing; #23, §21 and `docs/spikes/m0-kernel-benchmark.md` scope the small-block cost to the Linux VM and record that full-length CI runs quantify the gap; §20's M1 exit criteria name the §16 headline re-judgement that #23 already decided; #25 keeps only the director's words; #29 says the event logs match exactly per line, not byte for byte; §18 notes clap-wrapper's VST3 preset selector at `0xC00000`; and the preamble above no longer dates every row to the founding brainstorm. Decided 2026-10-26, during M0 (final review); see §15, §18, §20, §21 and #23 to #29 |
 | 34 | M0 hands M1 a carry-over list | Everything the M0 reviews deferred to M1 is in `docs/m1-carry-over.md`, by area, each with its source and, where a reviewer gave one, its deadline; §20's M1 row links it. It replaces the review workspace, which is deleted when M0 closes (final-review ruling F3). Its first item, before parameters land: a JUCE-free plugin core, so the asan and rtsan presets cover the plugin audio path. Decided 2026-10-26, during M0 (final review); see §20 |
 | 35 | M1 is built as six sub-projects, an FX vertical slice first | M1 is too large for one spec, so it is split into six sub-projects, each going through spec → plan → build → review: 1 the FX vertical slice; 2 the Cloud engine (SoA pool, SIMD Eco/Normal kernels, a gate-grade `gg-bench`); 3 Sources (the Sample source, note-triggered freeze/capture, the media manifest); 4 Space (diffusion and reverb); 5 the Perform UI (canvas, 8 macros, Texture, Feedback); 6 Close (listening gate #1, the CPU figure, the host matrix). The director's three decisions: **a thin vertical slice first**, not risk-first or two parallel tracks, to put sound in front of ears early with final interfaces; **the first sound is the FX on live input**, with no file I/O and no new UI, the shortest path to a texture in Ableton Live and Bitwig (the instrument gets its sound in sub-project 3); **a shared, JUCE-free core** that holds the patch, the parameter mapping and the FX processing, used by the plugin and `gg-render`, so the goldens test exactly what a DAW plays. Sub-project 1 also removed clap-validator's `param-conversions` exclusion, now that the plugins have parameters (`a8202e2`; ruling T8-c). See `docs/superpowers/specs/2026-10-27-m1-fx-slice-design.md` §1. Decided 2026-10-27 by the director, during M1; see §20 |
-| 36 | The Cloud core's DSP rules, recorded in §14 | What M1 sub-project 1 built, and the rulings its reviews made: the 32-sample control grid on absolute samples, with a boundary at a call's end applied in the next call (M1-u) and a Mix/Level ramp restarted only when its target changes (M1-s); the Cloud scheduler's recurrence `Δ(k) = max(P × ((1 − d) + d × E(k)), 1/16 sample)` (M1-g) with the deterministic `logDet`; Density ≤ 0 is off, positive values clamp to [0.01, min(4000, sr)] (M1-a); a Density or Distribution change rescales the pending onset from the same draw (M1-h), which supersedes the slice spec's "next onset computed after its grid point"; Position and Spray in seconds in Live mode (M1-k); per-grain equal-power pan; the latched gain `1 / √max(1, Density × Size)`; the soft limiter `1 − 0.25/|x|` above 0.5 (M1-t); a dry path that zeroes non-finite samples and passes finite ones unclamped (M1-q); a live ring stored in N + maxBlockSize frames (M1-o), with an admission clamp exact through the 20 ms freeze ramp and input clamped to ±2^20 (M1-p), and a 256-frame head-proximity fade. Each keeps output bit-identical at any host block size. Decided 2026-10-27, during M1 sub-project 1; see §14 |
+| 36 | The Cloud core's DSP rules, recorded in §14 | What M1 sub-project 1 built, and the rulings its reviews made: the 32-sample control grid on absolute samples, with a boundary at a call's end applied in the next call (M1-u) and a Mix/Level ramp restarted only when its target changes (M1-s); the Cloud scheduler's recurrence `Δ(k) = max(P × ((1 − d) + d × E(k)), 1/16 sample)` (M1-g) with the deterministic `logDet`; Density ≤ 0 is off, positive values clamp to [0.01, min(4000, sr)] (M1-a); a Density or Distribution change rescales the pending onset from the same draw (M1-h), which supersedes the slice spec's "next onset computed after its grid point"; Position and Spray in seconds in Live mode (M1-k); per-grain equal-power pan with `√(1 ± pan)` gains, which supersedes the slice spec's "polynomial sin/cos"; the latched gain `1 / √max(1, Density × Size)`; the soft limiter `1 − 0.25/|x|` above 0.5 (M1-t); a dry path that zeroes non-finite samples and passes finite ones unclamped (M1-q); a live ring stored in N + maxBlockSize frames (M1-o), with an admission clamp exact through the 20 ms freeze ramp and input clamped to ±2^20 (M1-p), and a 256-frame head-proximity fade. Each keeps output bit-identical at any host block size. Decided 2026-10-27, during M1 sub-project 1; see §14 |
 | 37 | Parameter IDs: `(scope << 16) \| index`, and the first ten | Scope 0 is global and scopes 1 to 4 are layers A to D, so M2 adds layers without renumbering; index 0 is reserved; every ID is below `0xB00000` (ruling T8-d) and append-only. The ten: Mix `0x000001`, Level `0x000002`, and layer A's Position, Size, Density, Distribution, Pitch, Spray, Stereo and Freeze, `0x010001` to `0x010008`. Both products expose the same list and share one state format; the instrument hides Mix and leaves its remote-controls slot empty (ruling M1-w). The state is `gg-core`'s versioned XML (version 1) with each value's float bits and the engine seed. The IDs are pinned by a test and frozen at the first public release, with the identities in #20. Decided 2026-10-27, during M1 sub-project 1; see §18 |
 | 38 | `gg-core`, `GG_BUILD_EDITOR` and sst-plugininfra | `gg-core` (`core/`) is the JUCE-free layer between the engine and the plugin: the patch and its state, the parameter mapping and the `Processor`, shared by the plugin and `gg-render`. The plugin splits into a JUCE-free core and an editor layer; `GG_BUILD_EDITOR` (default ON) builds the editor and the clap-wrapper formats, and the `asan` and `rtsan` presets build with it OFF, so the plugin audio path runs under ASan/UBSan and RealtimeSanitizer, which closes the carry-over's first item (`ec2a054`). sst-plugininfra (MIT) is pinned at `main` @ `8e4271c`; only its `patchbase` target and bundled tinyxml (zlib) are built, private to `gg-core` (ruling M1-l). Its bundled `libs/asiosdk` is ASIO SDK 2.3.4, licensed "Steinberg ASIO License or GPLv3"; it is unused and never built. §22 records that a GPLv3 ASIO SDK release now exists; re-enabling ASIO stays open, and #30 stands. Decided 2026-10-27, during M1 sub-project 1; see §15 and §22 |
 | 39 | §16 headline measured on the M5 Max and published as measured, with no ceiling; floor figures informative; sub-project 2 tries four levers and keeps the winners | M0 measured the SIMD Hermite kernel at 20–22% of one M5 Max core, 48–53% on CI's M1 VM and 55–69% on the EPYC VMs. #23's levers attack cache misses and per-grain overhead, which the M5 Max barely shows, so nothing guaranteed they would close 2×, and sub-project 2 would have opened with a bar it might not meet. The decision: the reference is one performance core of the director's M5 Max, on bare metal; the headline is "2,000 Normal grains per instance at 48 kHz in X% of one Apple M5 Max performance core", X measured on the real engine's render path at the end of M1 (sub-project 6) and published with its commit SHA and block sizes, with no ceiling; CI's floor legs keep running the full benchmark, as informative figures; CI's CPU gate stays a regression gate on in-process ratios (carry-over B-I2); sub-project 2 tries four levers (prefetch, an interleaved source, cache-aware scheduling, contiguous loads with shuffles), keeps each that wins on the M5 Max or any CI leg without regressing another, then stops. The director signed off the Part I wordings: §5 "with published figures (§16)", and §10 criterion 3 "The grain-count and CPU figures published in §16 are measured on the reference hardware and reproducible." Supersedes #23. See `docs/superpowers/specs/2026-10-27-cpu-headline-design.md`. Decided 2026-10-27 by the director, during M1; see §5, §10, §16, §19, §20 and §21 |
