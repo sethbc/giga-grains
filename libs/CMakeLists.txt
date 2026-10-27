@@ -73,8 +73,13 @@ if (GG_BUILD_PLUGINS)
     if (APPLE)
         set(RTAUDIO_API_JACK FALSE CACHE BOOL "No JACK on Apple")
     endif ()
+    # No ASIO in the Windows standalone (ruling F4, INTENT §22). RtAudio 6.0.1 bundles Steinberg's
+    # ASIO SDK files (include/asio*, iasiodrv.h), which carry Steinberg's copyright and no license
+    # grant, and we ship no unlicensed code. With ASIO off, clap-wrapper doesn't build RtAudio on
+    # Windows at all: the standalone uses its own WASAPI audio and WinMM MIDI backends. FORCE, so
+    # a build tree configured before this change drops ASIO too.
     if (WIN32)
-        set(RTAUDIO_API_ASIO ON CACHE BOOL "Enable ASIO for the Windows standalone" FORCE)
+        set(RTAUDIO_API_ASIO OFF CACHE BOOL "No ASIO: RtAudio's bundled ASIO SDK files have no license grant" FORCE)
     endif ()
     add_subdirectory(clap/clap-wrapper EXCLUDE_FROM_ALL)
 

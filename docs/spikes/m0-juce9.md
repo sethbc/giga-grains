@@ -163,8 +163,13 @@ before.
 Comparing that inventory with 8.0.16's list in `LICENSE.md`, JUCE 9 adds third-party code:
 LunaSVG and PlutoVG (MIT), libwebp (BSD-3-Clause), Opus (BSD-3-Clause) and a Chromium
 `cubic_bezier` (BSD-3-Clause). All of these are AGPLv3-compatible.
-The ASIO and AAX SDKs are `… OR GPL-3.0-only`, as before, and we don't build either. The license
-is compatible with INTENT §12.
+The ASIO and AAX SDKs are `… OR GPL-3.0-only`, as before, and we don't build JUCE's ASIO or
+AAX support. The license is compatible with INTENT §12.
+
+**Correction (final review, ruling F4):** that didn't mean no ASIO code was built. Until the M0
+final fix wave, `libs/CMakeLists.txt` turned on RtAudio's ASIO for the Windows standalone, and
+RtAudio 6.0.1 compiles its own bundled copy of Steinberg's ASIO SDK files, which have no license
+grant. ASIO is now off, and Windows no longer builds RtAudio (INTENT §15, §22, §23 #30).
 
 ## Linux
 
