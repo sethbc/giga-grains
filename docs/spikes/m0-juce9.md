@@ -6,7 +6,7 @@
 
 ## Outcome
 
-**Pass on macOS arm64. The project moves to JUCE 9.0.4** (`libs/JUCE` at
+**Pass, on macOS arm64 and then on every CI leg. The project moves to JUCE 9.0.4** (`libs/JUCE` at
 `3fb5cbc0340758596dac39f7c8de47d562b4896e`, tag `9.0.4`). Before this it was pinned to
 `ea77444750de45e036e0279bb0291144bf8e3688`, tag `8.0.16-security`.
 
@@ -24,21 +24,17 @@ JUCE 9 needs two changes, neither of them in `libs/`:
 - **`JUCE_USE_WEBP=0`, set in `ui/CMakeLists.txt`.** JUCE 9.0.4's libwebp SSE4.1 translation
   unit doesn't compile under Windows ClangCL (see "Windows" below; ruling T11-g).
 
-**CI-pending** (ruling T11-f: CI on all three legs is the real gate):
+**CI** (ruling T11-f: CI on all three legs was the real gate):
 
-- Windows;
-- Linux;
-- the x86_64 slice of the `mac-universal` build. JUCE 9 adds x86-only C translation units to the
-  shim: libwebp's `*_avx2.c` and `*_sse41.c`. With `JUCE_USE_WEBP=0` they compile to nothing.
-
-Integration CI run 40442418294, on `c7e3a1a` before the WebP fix:
-
-- passed: `mac-universal`, `linux-gcc12` and the sanitizers;
-- failed: `windows-clangcl`, on the WebP issue.
-
-The fix applies to every platform, so the next CI run is the gate for all three legs.
-
-If any of these fails in a way that needs a patch to `libs/`, fall back to 8.0.16-security.
+- Integration CI run 40442418294, on `c7e3a1a` before the WebP fix, passed `mac-universal`,
+  `linux-gcc12` and the sanitizers, and failed `windows-clangcl` on the WebP issue.
+- **CI run 40445561691, on `933bfda` with `JUCE_USE_WEBP=0`, passed on every leg.** That
+  includes the first full `windows-clangcl` run on JUCE 9: the build, ctest, clap-validator,
+  pluginval and Steinberg's validator. So the fallback to 8.0.16-security wasn't needed.
+- The x86_64 slice of the `mac-universal` build was built in those runs but not run. JUCE 9 adds
+  x86-only C translation units to the shim, libwebp's `*_avx2.c` and `*_sse41.c`; with
+  `JUCE_USE_WEBP=0` they compile to nothing. Since the M0 final fix wave, the macOS leg also
+  runs the x86_64 slice's tests and golden checks under Rosetta (INTENT §23 #33).
 
 The x86_64 slice was also tried locally during integration:
 
@@ -49,8 +45,7 @@ The x86_64 slice was also tried locally during integration:
   - `gg-tests` reported "All tests passed (15039 assertions in 75 test cases)";
   - pluginval at strictness 10 with GUI tests gave `SUCCESS`;
   - clap-validator reported 79 run, 51 passed and 0 failed.
-- That is supporting evidence only. The x86_64 slice hasn't run on real Intel hardware, and CI
-  still decides.
+- That is supporting evidence only. The x86_64 slice hasn't run on real Intel hardware.
 
 ## Method
 

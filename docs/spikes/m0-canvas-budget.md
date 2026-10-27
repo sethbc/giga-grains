@@ -68,8 +68,8 @@ Recorded run, `gg-bench --canvas`:
 
 - **At the budget point (8,192 grains), the CPU renderer fits, but only just,** and before the
   image is drawn. Drawing a 3200 × 1200 image costs extra, so at this canvas size the whole frame
-  probably goes over 3 ms in a host. Task 12 read the editor at its own, much smaller canvas size
-  (see the last bullet and "In the hosts (Task 12)"), so this size remains unmeasured in a host.
+  probably goes over 3 ms in a host. Task 12 didn't record the canvas size it read in the hosts
+  (see "In the hosts (Task 12)"), so this size remains unmeasured in a host.
 - **The resolve dominates and is a fixed cost per pixel:**
   - about 2.0 ms at 3.84 M pixels (0.52 ns/pixel), whatever the grain count;
   - it scales with canvas area, not with grains.

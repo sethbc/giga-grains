@@ -289,7 +289,9 @@ involved.
 | **`hermite-simd`** | **64** | **5.4062** | **51.900** | **5.9278** | **56.907** | **6.6150** | **63.504** |
 | **`hermite-simd`** | **256** | **4.9994** | **47.994** | **5.7151** | **54.865** | **6.2640** | **60.134** |
 
-**Noise.** The M1 VM is noisy, and the x86 VMs much less so.
+**Noise.** The M1 VM is noisy. The Linux VM is much less so: its two runs agree closely (see
+below). Windows has only this one run, so its noise isn't measured; its scalar numbers move by
+about 7% across block sizes (`linear-scalar` 7.55 to 8.09 ns), which hints at it.
 
 - The earlier CI run 40437303454 (2026-10-26, about 21:20 CDT) used `gg-bench --quick`, with
   runs of 0.2 s. On the M1 VM it put `hermite-simd` at **95.0% / 83.4% / 66.0%** at blocks
@@ -307,17 +309,17 @@ involved.
 The budget is 25% of one core for 2,000 grains, which is 2.604 ns per stereo grain-sample.
 Figures are for `hermite-simd` at blocks 32 / 64 / 256.
 
-| Machine | % of one core | Multiple of the 25% budget | Grains that fit in 25% | ns relative to the M5 Max |
+| Machine | % of one core | Multiple of the 25% budget | Grains that fit in 25% (rounded down) | ns relative to the M5 Max |
 |---|---|---|---|---|
-| M5 Max (ceiling, local) | 21.6 / 20.7 / 19.9 | 0.86 / 0.83 / 0.80 | 2,317 / 2,420 / 2,510 | 1× |
-| M1 VM | 52.9 / 51.9 / 48.0 | **2.12 / 2.08 / 1.92** | 944 / 963 / 1,042 | 2.45 / 2.51 / 2.41× |
-| Windows (EPYC 7763) | 59.7 / 56.9 / 54.9 | **2.39 / 2.28 / 2.19** | 837 / 879 / 911 | 2.77 / 2.75 / 2.75× |
+| M5 Max (ceiling, local) | 21.6 / 20.7 / 19.9 | 0.86 / 0.83 / 0.80 | 2,316 / 2,420 / 2,510 | 1× |
+| M1 VM | 52.9 / 51.9 / 48.0 | **2.12 / 2.08 / 1.92** | 944 / 963 / 1,041 | 2.45 / 2.51 / 2.41× |
+| Windows (EPYC 7763) | 59.7 / 56.9 / 54.9 | **2.39 / 2.28 / 2.19** | 837 / 878 / 911 | 2.77 / 2.75 / 2.75× |
 | Linux (EPYC 7763) | 69.2 / 63.5 / 60.1 | **2.77 / 2.54 / 2.41** | 722 / 787 / 831 | 3.21 / 3.07 / 3.02× |
 
 - **About 2× over budget on the floor hardware.** The M1 VM needs 1.9× to 2.1× the budget and
   the x86 VMs 2.2× to 2.8×. Even `linear-simd` misses on every CI leg: 1.2× to 1.65× on the
   M1 VM, and 1.6× to 2.0× on x86.
-- **Block size matters more on CI than on the M5 Max.** Block 32 costs this much more than
+- **On Linux, block size matters more than on the M5 Max.** Block 32 costs this much more than
   block 256 per grain-sample:
 
   | Machine | `hermite-simd` | `linear-simd` |
@@ -327,8 +329,9 @@ Figures are for `hermite-simd` at blocks 32 / 64 / 256.
   | Windows | +8.9% | +7.9% |
   | Linux | +15.2% (quick run: +13.1%) | +17.1% (quick run: +14.6%) |
 
-  - The M5 Max curve is nearly flat, and Windows matches it.
-  - Linux has nearly twice the slope (1.8×), and it reproduces across both runs.
+  - The M5 Max curve is flatter, and Windows matches it.
+  - Linux has nearly twice the slope (1.8×), and it reproduces across both runs, though run
+    order confounds that (see "Before M1 gates on this").
   - On the M1 VM the slope is buried in noise.
   - A steeper slope means the per-grain, per-block costs weigh more on those cores. Those
     costs include the grain update, each grain's setup, and the first, likely cache-missing,
@@ -355,8 +358,30 @@ it"**:
 - **M1's CI CPU gate starts as a regression gate** at the measured baseline. The headline
   becomes the gate once M1 meets it.
 - **The headline is judged again at the end of M1.**
+- **Full-length CI runs quantify the gap:** Task 10b's CI run 40439674760, above.
 
 This is recorded in INTENT §16, §19, §20, §21 and §23 (#23).
+
+## Before M1 gates on this
+
+These numbers are where M1's CPU regression gate starts, but they aren't gate-grade yet (final
+review B-I2):
+
+- **Absolute nanoseconds on a shared VM aren't gate-grade.** Each configuration's 5 runs are
+  back to back and wall-clock, and only their median is kept. The M1 VM swings by up to 1.63×
+  between adjacent configurations, so a threshold on absolute ns would flap.
+- **The Linux slope finding is confounded by run order.** The kernels and block sizes always run
+  in the same order, so anything that drifts during a run (thermal state, a noisy neighbour on
+  the VM) lands on the same configurations every time. "It reproduces across both runs" doesn't
+  rule that out.
+- **This document is the durable record.** CI artifacts expire, and the JSON keeps no per-run
+  values, spread, `--quick` flag or commit SHA.
+
+So M1's gate needs repetitions interleaved round-robin; every run, the min and IQR, the run
+length and the commit SHA in the JSON; a gate on ratios measured in the same process, or on
+thread CPU time; and thresholds set from the spread across several CI runs
+(`docs/m1-carry-over.md`). CI's macOS leg is now pinned to `macos-26`, the image `macos-latest`
+gave every run above (`macos-26-arm64`), so the baseline's runner doesn't float.
 
 ## Reproduce
 

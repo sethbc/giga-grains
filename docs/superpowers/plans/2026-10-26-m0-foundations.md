@@ -41,7 +41,7 @@ These apply to every task.
 **Pinned dependencies**
 - Every dependency is a git submodule under `libs/`, pinned to an exact SHA. Record the tag in the commit message.
 - clap: tag `1.2.10`.
-- clap-wrapper: `next` @ `4e7afc3` (v0.17.1 plus the AUv2 loop/beat-0 transport fixes). Never older than v0.17.0.
+- clap-wrapper: `next` @ `4e7afc3` (`v0.17.0-15-g4e7afc3`: v0.17.0 plus 15 commits on `next`, including the AUv2 loop/beat-0 transport fixes; there is no v0.17.1 tag). Never older than v0.17.0.
 - JUCE: tag `9.0.4` @ `3fb5cbc` (ruling T11: the Task 11 spike passed, so the pin moved from `8.0.16-security`).
 - Always pass `PLUGIN_FORMATS CLAP VST3 AUV2 STANDALONE` explicitly. Omitting it defaults to including AAX.
 - The argument is spelled `BUNDLE_IDENTIFIER`. SCXT misspells it as `BUNDLE_IDENTIFER`; don't copy that.

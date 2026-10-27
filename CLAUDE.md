@@ -170,10 +170,13 @@ build/release/tools/gg-bench/gg-bench [--quick] [--json out.json]            # g
 build/release/tools/gg-bench/gg-bench --canvas [--quick] [--json out.json]   # canvas renderer
 ```
 
-- **Run lengths:** a full run is a median of 5 runs of 2 s each, about 2.6 minutes on an M5 Max.
-  `--quick` uses runs of 0.2 s.
+- **Run lengths:**
+  - kernels: a full run is a median of 5 runs of 2 s each, about 2.6 minutes on an M5 Max;
+    `--quick` uses runs of 0.2 s;
+  - `--canvas`: 240 timed frames after a 20-frame warm-up, or 30 with `--quick`.
 - **In CI:** each build leg runs the full length and uploads `gg-bench-<preset>`. In M0 the
-  results are reported, not gated; M1 adds the CPU gate (INTENT §19).
+  results are reported, not gated. M1 starts a regression gate at the measured baseline, and the
+  §16 headline becomes the gate once M1 meets it (INTENT §16, §19).
 
 **Validators.** CI runs them on every build leg; auval runs on macOS only.
 
@@ -200,6 +203,12 @@ build/release/tools/gg-bench/gg-bench --canvas [--quick] [--json out.json]   # c
   rm -rf ~/Library/Audio/Plug-Ins/Components/"Giga Grains.component"
   cp -R "$p/Giga Grains.component" ~/Library/Audio/Plug-Ins/Components/
   killall -9 AudioComponentRegistrar
+  # Wait up to 30 s for the registrar to list the new component, as CI does.
+  for _ in $(seq 1 15); do
+    auval -a > "$TMPDIR/auval-list.txt" 2>&1
+    grep -q Sbcx "$TMPDIR/auval-list.txt" && break
+    sleep 2
+  done
   auval -v aumu GGin Sbcx; auval -v aufx GGfx Sbcx; auval -v aumf GGfx Sbcx
   ```
 
