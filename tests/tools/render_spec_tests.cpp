@@ -82,6 +82,8 @@ TEST_CASE("render spec parses all fields", "[render]")
     CHECK(sparse.stream.positionJitter == 0.2);
     CHECK(sparse.stream.pitchSemitones == 0.0);
     CHECK(sparse.stream.gain == 0.8);
+    // stream.distribution is optional; the M0 cases leave it out, so their onsets are periodic.
+    CHECK(sparse.stream.distribution == 0.0);
 
     // sparse-sine-44k1 is the same case on a 44.1 kHz host, reading a 48 kHz source.
     const RenderSpec sparse44 = parseCase("sparse-sine-44k1");
@@ -171,6 +173,12 @@ TEST_CASE("render spec rejects bad input", "[render]")
             CHECK_THAT(rejection(j), ContainsSubstring("source.sampleRate"));
         }
     }
+    SECTION("non-numeric distribution")
+    {
+        auto j = good;
+        j["stream"]["distribution"] = "poisson";
+        CHECK_THAT(rejection(j), ContainsSubstring("stream.distribution"));
+    }
     SECTION("grain longer than the render cap")
     {
         auto j = good;
@@ -183,6 +191,52 @@ TEST_CASE("render spec rejects bad input", "[render]")
         CHECK_FALSE(gg::render::parseRenderSpec("{\"sampleRate\": 48000,", error).has_value());
         CHECK_FALSE(error.empty());
     }
+}
+
+TEST_CASE("render spec reads the optional distribution", "[render]")
+{
+    auto j = nlohmann::json::parse(readCase("sparse-sine"));
+    j["stream"]["distribution"] = 0.5;
+    std::string error;
+    const auto spec = gg::render::parseRenderSpec(j.dump(), error);
+    INFO(error);
+    REQUIRE(spec.has_value());
+    CHECK(spec->stream.distribution == 0.5);
+    RenderSpec expected = parseCase("sparse-sine");
+    expected.stream.distribution = 0.5;
+    CHECK(*spec == expected);
+}
+
+TEST_CASE("render with Poisson onsets does not depend on block size", "[render]")
+{
+    // At distribution 1 several grains can start in one sample, so a 1-frame block can spawn
+    // more grains than it has frames; gg-render must still log them all.
+    RenderSpec spec = parseCase("sparse-sine");
+    spec.durationSeconds = 0.5;
+    spec.stream.grainRateHz = 4000.0;
+    spec.stream.grainDurationMs = 2.0;
+    spec.stream.distribution = 1.0;
+    spec.blockSize = 4096;
+    std::vector<std::string> refEvents;
+    const auto ref = gg::render::render(spec, &refEvents);
+    REQUIRE(refEvents.size() > 1500);
+
+    spec.blockSize = 1;
+    std::vector<std::string> events;
+    const auto out = gg::render::render(spec, &events);
+    REQUIRE(out.channels.size() == 2);
+    CHECK(bitIdentical(out.channels[0], ref.channels[0]));
+    CHECK(bitIdentical(out.channels[1], ref.channels[1]));
+    CHECK(events == refEvents);
+
+    // Some sample did start more than one grain.
+    bool shared = false;
+    for (std::size_t i = 1; i < events.size(); ++i)
+    {
+        shared = shared || nlohmann::json::parse(events[i])["onset"] ==
+                               nlohmann::json::parse(events[i - 1])["onset"];
+    }
+    CHECK(shared);
 }
 
 TEST_CASE("render block size does not change output", "[render]")
@@ -302,9 +356,11 @@ TEST_CASE("event lines use the documented format", "[render]")
         .rate = 0.5,
         .durationSamples = 2880.0,
         .gain = 0.8f,
+        .pan = 0.0f,
     };
     CHECK(gg::render::formatEventLine(g) ==
-          R"({"i":3,"onset":18000,"frac":0.5,"pos":95999.5,"rate":0.5,"dur":2880})");
+          R"({"i":3,"onset":18000,"frac":0.5,"pos":95999.5,"rate":0.5,"dur":2880,)"
+          R"("gain":0.8,"pan":0})");
 
     // Doubles are written shortest-round-trip, so they read back exactly.
     const gg::GrainSpec h{
@@ -314,13 +370,18 @@ TEST_CASE("event lines use the documented format", "[render]")
         .startPos = 0.1 + 0.2,
         .rate = 1e-7,
         .durationSamples = 16.0,
-        .gain = 1.0f,
+        .gain = 1.0f / 3.0f,
+        .pan = -0.1f,
     };
     const std::string line = gg::render::formatEventLine(h);
     CHECK(line == R"({"i":1099511627776,"onset":1099511627776,"frac":0.1,)"
-                  R"("pos":0.30000000000000004,"rate":1e-07,"dur":16})");
+                  R"("pos":0.30000000000000004,"rate":1e-07,"dur":16,)"
+                  R"("gain":0.33333334,"pan":-0.1})");
     const auto parsed = nlohmann::json::parse(line);
     CHECK(parsed["frac"].get<double>() == h.onsetFrac);
     CHECK(parsed["pos"].get<double>() == h.startPos);
     CHECK(parsed["rate"].get<double>() == h.rate);
+    // gain and pan are floats, written shortest-round-trip as floats.
+    CHECK(parsed["gain"].get<float>() == h.gain);
+    CHECK(parsed["pan"].get<float>() == h.pan);
 }

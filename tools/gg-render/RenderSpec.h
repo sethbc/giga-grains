@@ -16,12 +16,13 @@
 ///  "source":{"kind":"sine|sweep|noise|file","frequencyHz":220,"startHz":50,"endHz":8000,
 ///            "seconds":4.0,"amplitude":0.5,"sampleRate":48000,"path":"relative/to/spec.wav"},
 ///  "stream":{"grainRateHz":8,"grainDurationMs":60,"position":0.5,"positionJitter":0.2,
-///            "pitchSemitones":0,"gain":0.8}}
+///            "pitchSemitones":0,"gain":0.8,"distribution":0}}
 /// ```
 ///
-/// - Every top-level key and every "stream" key is required. "source" needs "kind" plus the
-///   keys its kind uses (see SourceSpec); "source.sampleRate" is optional. Keys a kind doesn't
-///   use may be present and are ignored.
+/// - Every top-level key is required, and so is every "stream" key but "distribution", which
+///   defaults to 0 (periodic onsets, as in M0). "source" needs "kind" plus the keys its kind
+///   uses (see SourceSpec); "source.sampleRate" is optional. Keys a kind doesn't use may be
+///   present and are ignored.
 /// - Any other key is an error, so a misspelt key never silently falls back to a default.
 /// - A render covers durationSeconds of stream activity plus a release tail, so it never stops
 ///   in the middle of a grain (see render() in Render.h).
@@ -59,9 +60,11 @@ struct SourceSpec
     friend bool operator==(const SourceSpec &, const SourceSpec &) = default;
 };
 
-/// gg::StreamParams as the spec spells it: the duration is in milliseconds. Every value is a
-/// finite number; the engine clamps them to the ranges documented on gg::StreamParams.
-/// grainDurationMs is at most kMaxSeconds · 1000, which also bounds the release tail.
+/// The engine's gg::CloudParams as the spec spells them, with M0's names: grainRateHz is the
+/// density, positionJitter the spray, and the duration is in milliseconds. Stereo isn't in the
+/// spec, so every grain is centred. Every value is a finite number; the engine clamps them to
+/// the ranges documented on gg::CloudParams. grainDurationMs is at most kMaxSeconds · 1000,
+/// which also bounds the release tail.
 struct StreamSpec
 {
     double grainRateHz{20.0};
@@ -70,6 +73,7 @@ struct StreamSpec
     double positionJitter{0.0};
     double pitchSemitones{0.0};
     double gain{0.5};
+    double distribution{0.0}; ///< Optional in the spec.
 
     friend bool operator==(const StreamSpec &, const StreamSpec &) = default;
 };

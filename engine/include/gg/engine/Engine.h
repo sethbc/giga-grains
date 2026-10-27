@@ -11,8 +11,8 @@
 #include <sst/cpputils/rtsan_support.h>
 
 #include "gg/core/Window.h"
+#include "gg/grain/CloudScheduler.h"
 #include "gg/grain/GrainPool.h"
-#include "gg/grain/PeriodicStream.h"
 #include "gg/source/SampleBuffer.h"
 
 namespace gg
@@ -29,7 +29,7 @@ struct EngineConfig
 /// spawn order. It must be real-time safe.
 using GrainEventSink = void (*)(void *ctx, const GrainSpec &);
 
-/// The grain engine: one periodic grain stream reading one source (M0).
+/// The grain engine: one Cloud grain stream (layer 0, stream 0) reading one source.
 ///
 /// With the same configuration, source and parameter changes (at the same sample positions),
 /// the output and the grain events are bit-identical however the host splits blocks
@@ -54,8 +54,9 @@ class Engine
 
     /// Real-time safe, but not synchronized with process(): call it on the audio thread
     /// between process() calls, or while process() is not running. The new parameters apply
-    /// from the next process() call.
-    void setStreamParams(const StreamParams &params) noexcept;
+    /// from the next process() call: to every grain that spawns from then on, and to the
+    /// interval after each of them (CloudScheduler).
+    void setCloudParams(const CloudParams &params) noexcept;
 
     /// The sink is called from process(); pass nullptr to remove it. Real-time safe, but not
     /// synchronized with process(): call it on the audio thread between process() calls, or
@@ -63,18 +64,19 @@ class Engine
     void setEventSink(GrainEventSink sink, void *ctx) noexcept;
 
     /// Silences every grain and restarts the clock and the schedule at 0. Keeps the source,
-    /// the stream parameters and the sink. Real-time safe, but not synchronized with
+    /// the Cloud parameters and the sink. Real-time safe, but not synchronized with
     /// process(): call it on the audio thread between process() calls, or while process() is
     /// not running.
     void reset() noexcept;
 
     /// Renders numFrames frames, overwriting out[0 .. numChannels). Channels 0 and 1 carry
-    /// the grains; any further channels are zeroed. Accepts any numFrames, including 0
-    /// (which does nothing) and more than maxBlockSize (which is split internally).
+    /// the grains, each grain panned by panGains(); any further channels are zeroed. Accepts
+    /// any numFrames, including 0 (which does nothing) and more than maxBlockSize (which is
+    /// split internally).
     ///
     /// The schedule and the clock advance whatever the outputs are, so the next call
     /// continues the same render:
-    /// - with one channel, it carries source channel 0;
+    /// - with one channel, it carries source channel 0, unpanned;
     /// - out == nullptr renders nothing;
     /// - a null channel pointer is skipped, and when out[0] is null nothing is rendered, so
     ///   channel 1 (if not null) is only zeroed.
@@ -91,6 +93,8 @@ class Engine
   private:
     void processBlock(float *const *out, uint32_t numChannels, uint32_t offset,
                       uint32_t numFrames) noexcept SST_CPPUTILS_NONBLOCKING;
+    /// The grain a draw makes from the sample source.
+    GrainSpec sampleGrain(const GrainDraw &d) const noexcept;
     void admit(const GrainSpec &g, float *const dst[2], int64_t blockStart,
                int64_t &renderedTo) noexcept SST_CPPUTILS_NONBLOCKING;
     void renderPool(float *const dst[2], int64_t blockStart, int64_t from,
@@ -102,7 +106,7 @@ class Engine
     EngineConfig config_;
     HannTable hann_;
     GrainPool pool_;
-    PeriodicStream stream_;
+    CloudScheduler cloud_;
 
     // sourceOwner_ keeps the source alive; process() reads only the raw pointer and the
     // cached channel data, so it never touches the reference count.

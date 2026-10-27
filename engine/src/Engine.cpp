@@ -29,11 +29,15 @@ const EngineConfig &validated(const EngineConfig &config)
     }
     return config;
 }
+
+// M1 has one layer with one stream (spec §6.2): layer A is layer 0, and its stream is stream 0.
+constexpr uint32_t kLayer = 0;
+constexpr uint32_t kStream = 0;
 } // namespace
 
 Engine::Engine(const EngineConfig &config) : config_(validated(config)), pool_(config.grainCapacity)
 {
-    stream_.prepare(config_.sampleRate);
+    cloud_.prepare(config_.sampleRate);
 }
 
 void Engine::setSource(std::shared_ptr<const SampleBuffer> source)
@@ -59,7 +63,7 @@ void Engine::setSource(std::shared_ptr<const SampleBuffer> source)
     }
 }
 
-void Engine::setStreamParams(const StreamParams &params) noexcept { stream_.setParams(params); }
+void Engine::setCloudParams(const CloudParams &params) noexcept { cloud_.setParams(params); }
 
 void Engine::setEventSink(GrainEventSink sink, void *ctx) noexcept
 {
@@ -70,7 +74,7 @@ void Engine::setEventSink(GrainEventSink sink, void *ctx) noexcept
 void Engine::reset() noexcept
 {
     pool_.clear();
-    stream_.reset();
+    cloud_.reset();
     clock_ = 0;
     dropped_ = 0;
 }
@@ -111,11 +115,29 @@ void Engine::processBlock(float *const *out, uint32_t numChannels, uint32_t offs
     const int64_t blockStart = clock_;
     const int64_t blockEnd = blockStart + static_cast<int64_t>(numFrames);
     int64_t renderedTo = blockStart;
-    stream_.schedule(blockStart, numFrames, sourceFrames_, sourceRate_, config_.seed,
-                     [&](const GrainSpec &g) { admit(g, dst, blockStart, renderedTo); });
+    cloud_.schedule(blockStart, numFrames, config_.seed, kLayer, kStream, [&](const GrainDraw &d) {
+        admit(sampleGrain(d), dst, blockStart, renderedTo);
+    });
     renderPool(dst, blockStart, renderedTo, blockEnd);
     clock_ = blockEnd;
     pool_.retireFinished(blockEnd);
+}
+
+GrainSpec Engine::sampleGrain(const GrainDraw &d) const noexcept
+{
+    // The draw's position is a fraction of the source; its rate is the pitch ratio, converted
+    // here from the source's rate to the output rate. Both as in M0.
+    const double span = sourceFrames_ > 1 ? static_cast<double>(sourceFrames_ - 1) : 0.0;
+    return {
+        .index = d.index,
+        .onsetSample = d.onsetSample,
+        .onsetFrac = d.onsetFrac,
+        .startPos = d.positionDraw * span,
+        .rate = d.rate * sourceRate_ / config_.sampleRate,
+        .durationSamples = d.durationSamples,
+        .gain = d.gain,
+        .pan = d.pan,
+    };
 }
 
 void Engine::admit(const GrainSpec &g, float *const dst[2], int64_t blockStart,
@@ -186,6 +208,10 @@ void Engine::renderGrain(const GrainSpec &g, float *const dst[2], int64_t blockS
 {
     const int64_t first = std::max(from, g.onsetSample);
     const int64_t last = std::min(to, grainEndSample(g)); // exclusive
+    // One output has no stereo placement, so the grain plays unpanned. With two, each
+    // channel's M0 value is multiplied by its pan gain last, so at pan 0 (both gains exactly
+    // 1) the output is M0's bit for bit.
+    const PanGains gains = TwoOutputs ? panGains(g.pan) : PanGains{1.0f, 1.0f};
     for (int64_t t = first; t < last; ++t)
     {
         // Everything comes from the elapsed time since the onset, so the result for sample t
@@ -194,18 +220,23 @@ void Engine::renderGrain(const GrainSpec &g, float *const dst[2], int64_t blockS
         const float env = hann_.at(e / g.durationSamples);
         const double pos = g.startPos + g.rate * e;
         const auto j = static_cast<std::size_t>(t - blockStart);
-        const float left = interp::hermite4(sourceData_[0], sourceFrames_, pos) * env * g.gain;
-        dst[0][j] += left;
+        const float channel0 = interp::hermite4(sourceData_[0], sourceFrames_, pos) * env * g.gain;
         if constexpr (TwoOutputs)
         {
+            dst[0][j] += channel0 * gains.left;
             if constexpr (MonoSource)
             {
-                dst[1][j] += left;
+                dst[1][j] += channel0 * gains.right;
             }
             else
             {
-                dst[1][j] += interp::hermite4(sourceData_[1], sourceFrames_, pos) * env * g.gain;
+                dst[1][j] += interp::hermite4(sourceData_[1], sourceFrames_, pos) * env * g.gain *
+                             gains.right;
             }
+        }
+        else
+        {
+            dst[0][j] += channel0;
         }
     }
 }

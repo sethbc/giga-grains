@@ -64,23 +64,37 @@ std::shared_ptr<const SampleBuffer> toSampleBuffer(const gg::metrics::AudioData 
     return buffer;
 }
 
-StreamParams toStreamParams(const StreamSpec &s)
+CloudParams toCloudParams(const StreamSpec &s)
 {
     return {
-        .grainRateHz = s.grainRateHz,
+        .densityHz = s.grainRateHz,
+        .distribution = s.distribution,
         .grainDurationSec = s.grainDurationMs / 1000.0,
         .position = s.position,
-        .positionJitter = s.positionJitter,
+        .spray = s.positionJitter,
         .pitchSemitones = s.pitchSemitones,
+        .stereo = 0.0,
         .gain = static_cast<float>(s.gain),
     };
+}
+
+/// The most grains one process() call of `frames` frames can spawn. Onsets are at least
+/// CloudScheduler::kMinIntervalSamples (1/16) apart, less the rounding of t + Δ, which is at
+/// most 2^-22 samples while t is below 2^32 (every render gg-render accepts is shorter). So a
+/// call of at most kMaxBlockSize frames starts fewer than frames / (1/16 − 2^-22) + 1 grains,
+/// which is at most 16 × frames + 5.
+std::size_t maxGrainsPerCall(uint32_t frames)
+{
+    const auto perFrame = static_cast<std::size_t>(1.0 / CloudScheduler::kMinIntervalSamples);
+    return perFrame * frames + 16;
 }
 } // namespace
 
 std::string formatEventLine(const GrainSpec &g)
 {
-    return fmt::format(R"({{"i":{},"onset":{},"frac":{},"pos":{},"rate":{},"dur":{}}})", g.index,
-                       g.onsetSample, g.onsetFrac, g.startPos, g.rate, g.durationSamples);
+    return fmt::format(
+        R"({{"i":{},"onset":{},"frac":{},"pos":{},"rate":{},"dur":{},"gain":{},"pan":{}}})",
+        g.index, g.onsetSample, g.onsetFrac, g.startPos, g.rate, g.durationSamples, g.gain, g.pan);
 }
 
 gg::metrics::AudioData render(const RenderSpec &spec, std::vector<std::string> *eventLines)
@@ -93,11 +107,9 @@ gg::metrics::AudioData render(const RenderSpec &spec, std::vector<std::string> *
     config.seed = spec.seed;
     Engine engine(config);
     engine.setSource(source);
-    engine.setStreamParams(toStreamParams(spec.stream));
+    engine.setCloudParams(toCloudParams(spec.stream));
 
-    // The stream spawns at most one grain per output sample (PeriodicStream::setParams), so one
-    // block's grains always fit in blockSize slots.
-    GrainCollector grains(spec.blockSize);
+    GrainCollector grains(maxGrainsPerCall(spec.blockSize));
     engine.setEventSink(&GrainCollector::sink, &grains);
     if (eventLines != nullptr)
     {
@@ -136,9 +148,9 @@ gg::metrics::AudioData render(const RenderSpec &spec, std::vector<std::string> *
     // The release tail: with the stream off, render until every grain has finished, plus one
     // silent frame. The end comes from the grains, not from polling activeGrains() once per
     // block, so the length doesn't depend on blockSize.
-    StreamParams off = toStreamParams(spec.stream);
-    off.grainRateHz = 0.0;
-    engine.setStreamParams(off);
+    CloudParams off = toCloudParams(spec.stream);
+    off.densityHz = 0.0; // off (ruling M1-a)
+    engine.setCloudParams(off);
     const int64_t end = std::max(duration, grains.latestEnd + 1);
     // Defensive bound. No grain is longer than the stream's grain duration (at least 16 frames,
     // as the engine clamps it), and one that started on the last frame of the duration ends
@@ -165,7 +177,7 @@ gg::metrics::AudioData render(const RenderSpec &spec, std::vector<std::string> *
     }
     if (grains.overflowed)
     {
-        throw std::logic_error("more grains spawned in one block than the block has frames");
+        throw std::logic_error("more grains spawned in one block than the scheduler allows");
     }
     return out;
 }

@@ -99,9 +99,17 @@ TEST_CASE("engine process does not allocate", "[rt]")
         }
     }
     engine.setSource(source);
-    // 200 Hz of 50 ms grains: one spawns every 240 frames and about 10 overlap, so the armed
-    // calls below spawn, render and retire grains.
-    engine.setStreamParams({200.0, 0.05, 0.5, 0.5, 7.0, 0.5f});
+    // 200 Hz of 50 ms grains: one spawns every 240 frames on average and about 10 overlap, so
+    // the armed calls below spawn, render and retire grains. Poisson onsets and full-width pan
+    // put the scheduler's logDet draws and the pan gains under the tripwire.
+    engine.setCloudParams({.densityHz = 200.0,
+                           .distribution = 1.0,
+                           .grainDurationSec = 0.05,
+                           .position = 0.5,
+                           .spray = 0.5,
+                           .pitchSemitones = 7.0,
+                           .stereo = 1.0,
+                           .gain = 0.5f});
     SpawnCounter counter;
     engine.setEventSink(&SpawnCounter::record, &counter);
 
@@ -153,7 +161,12 @@ TEST_CASE("engine process does not allocate with a full pool or odd block sizes"
         }
     }
     engine.setSource(source);
-    engine.setStreamParams({400.0, 0.05, 0.5, 0.5, -5.0, 0.7f});
+    engine.setCloudParams({.densityHz = 400.0,
+                           .grainDurationSec = 0.05,
+                           .position = 0.5,
+                           .spray = 0.5,
+                           .pitchSemitones = -5.0,
+                           .gain = 0.7f});
     SpawnCounter counter;
     engine.setEventSink(&SpawnCounter::record, &counter);
 

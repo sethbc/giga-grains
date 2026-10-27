@@ -7,6 +7,7 @@
 
 add_executable(gg-tests
         smoke_tests.cpp
+        engine/cloud_tests.cpp
         engine/denormal_tests.cpp
         engine/determinism_tests.cpp
         engine/engine_tests.cpp
@@ -16,7 +17,6 @@ add_executable(gg-tests
         engine/rng_tests.cpp
         engine/rt_tests.cpp
         engine/sample_buffer_tests.cpp
-        engine/stream_tests.cpp
         engine/window_tests.cpp
         metrics/metrics_tests.cpp
         tools/bench_kernel_tests.cpp

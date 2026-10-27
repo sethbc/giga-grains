@@ -166,9 +166,9 @@ SourceSpec readSource(const json &j)
 
 StreamSpec readStream(const json &j)
 {
-    const Object o(
-        j, "stream", "stream.",
-        {"grainRateHz", "grainDurationMs", "position", "positionJitter", "pitchSemitones", "gain"});
+    const Object o(j, "stream", "stream.",
+                   {"grainRateHz", "grainDurationMs", "position", "positionJitter",
+                    "pitchSemitones", "gain", "distribution"});
     StreamSpec s;
     s.grainRateHz = o.number("grainRateHz");
     s.grainDurationMs = o.number("grainDurationMs");
@@ -182,6 +182,10 @@ StreamSpec readStream(const json &j)
     s.positionJitter = o.number("positionJitter");
     s.pitchSemitones = o.number("pitchSemitones");
     s.gain = o.number("gain");
+    if (o.has("distribution"))
+    {
+        s.distribution = o.number("distribution");
+    }
     return s;
 }
 
