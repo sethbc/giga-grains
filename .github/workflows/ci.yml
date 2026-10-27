@@ -23,6 +23,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -133,43 +134,69 @@ jobs:
       # scripts/fetch-validators.sh.
       - name: clap-validator
         if: ${{ !cancelled() && steps.validators.outcome == 'success' }}
+        timeout-minutes: 10
         run: tools-bin/clap-validator${{ matrix.exe }} validate --exclude '^param-conversions$' "$GG_CLAP"
 
       - name: pluginval (VST3, strictness 10)
         if: ${{ !cancelled() && steps.validators.outcome == 'success' && runner.os != 'Linux' }}
+        timeout-minutes: 20
         run: tools-bin/pluginval${{ matrix.exe }} --strictness-level 10 --validate "$GG_VST3"
 
       - name: pluginval (VST3, strictness 10, Xvfb)
         if: ${{ !cancelled() && steps.validators.outcome == 'success' && runner.os == 'Linux' }}
+        timeout-minutes: 20
         run: xvfb-run -a tools-bin/pluginval --strictness-level 10 --skip-gui-tests --validate "$GG_VST3"
 
+      # All three identities are validated even if one fails, so one run reports them all. Each
+      # run streams into a collapsed log group and into a file; a failure prints an error and the
+      # tail of that run's output outside the group, so it reads without expanding anything.
       - name: auval
         if: ${{ !cancelled() && steps.products.outcome == 'success' && runner.os == 'macOS' }}
+        timeout-minutes: 15
         run: |
           components="$HOME/Library/Audio/Plug-Ins/Components"
           mkdir -p "$components"
           rm -rf "$components/Giga Grains.component"
           cp -R "${{ matrix.build_dir }}/gg-products/Giga Grains.component" "$components/"
           killall -9 AudioComponentRegistrar || true
-          # Wait for the component registrar to pick up the new component. (grep without -q
-          # reads all of auval's output, so pipefail never sees auval die of SIGPIPE.)
+          # Wait for the component registrar to pick up the new component. auval -a writes to a
+          # file, so no pipe can close on it early.
+          list="$RUNNER_TEMP/auval-list.log"
+          registered=false
           for _ in $(seq 1 15); do
-            if auval -a 2>&1 | grep Sbcx > /dev/null; then break; fi
+            auval -a > "$list" 2>&1 || true
+            if grep -q Sbcx "$list"; then
+              registered=true
+              break
+            fi
             sleep 2
           done
-          auval -a 2>&1 | grep Sbcx
-          log="$RUNNER_TEMP/auval.log"
+          if [[ "$registered" != true ]]; then
+            echo "::error::auval -a lists no Sbcx component after 30 s"
+            echo "---- last 40 lines of auval -a ----"
+            tail -n 40 "$list"
+            exit 1
+          fi
+          grep Sbcx "$list"
+          failed=0
           for id in "aumu GGin Sbcx" "aufx GGfx Sbcx" "aumf GGfx Sbcx"; do
+            log="$RUNNER_TEMP/auval-${id// /-}.log"
+            status=0
             echo "::group::auval -v $id"
             # $id is split on purpose: auval takes type, subtype and manufacturer separately.
             # shellcheck disable=SC2086
-            auval -v $id | tee "$log"
+            auval -v $id 2>&1 | tee "$log" || status=$?
             echo "::endgroup::"
-            if ! grep -q "AU VALIDATION SUCCEEDED" "$log"; then
-              echo "::error::auval -v $id did not print AU VALIDATION SUCCEEDED"
-              exit 1
+            if [[ $status -ne 0 ]] || ! grep -q "AU VALIDATION SUCCEEDED" "$log"; then
+              echo "::error::auval -v $id failed: exit status $status, or no AU VALIDATION SUCCEEDED"
+              echo "---- last 60 lines of auval -v $id ----"
+              tail -n 60 "$log"
+              failed=1
+            else
+              echo "auval -v $id: AU VALIDATION SUCCEEDED"
             fi
           done
+          exit "$failed"
 
       # The VST3 SDK that clap-wrapper downloads at configure time (CPM) includes public.sdk,
       # so the validator (public.sdk/samples/vst-hosting/validator) is built from that same
@@ -199,6 +226,7 @@ jobs:
 
       - name: Steinberg VST3 validator
         if: ${{ !cancelled() && steps.vst3_validator.outcome == 'success' }}
+        timeout-minutes: 10
         run: |
           "${{ matrix.build_dir }}/vst3-validator/bin/Release/validator${{ matrix.exe }}" "$GG_VST3"
 
