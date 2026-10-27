@@ -2,26 +2,55 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright 2026, the Giga Grains authors (see git history)
 #
-# gg-plugin-impl: both CLAP plugins (Giga Grains and Giga Grains FX) and their factory, as a
-# static library. clients/clap-first links it into every format (CLAP, VST3, AUv2,
-# standalone); the tests link it directly.
+# Both CLAP plugins (Giga Grains and Giga Grains FX) and their factory, in two layers:
+# - gg-plugin-core: the plugins' audio side (GigaGrainsPlugin) and the CLAP factory. No JUCE, so
+#   the sanitizer presets build and test it (GG_BUILD_EDITOR=OFF).
+# - gg-plugin-editor (GG_BUILD_EDITOR): EditorPlugin, a GigaGrainsPlugin with the JUCE editor
+#   attached through clap_juce_shim.
+# The factory creates each instance through makePlugin(), defined by headless/MakePlugin.cpp in
+# the core when there's no editor, and by editor/MakePlugin.cpp when there is.
+#
+# gg::plugin-impl names the top layer built: clients/clap-first links it into every format
+# (CLAP, VST3, AUv2, standalone), and the tests link it directly.
 
-add_library(gg-plugin-impl STATIC
+add_library(gg-plugin-core STATIC
         src/Factory.cpp
         src/GigaGrainsPlugin.cpp
         src/HelpersConfig.cpp
         )
-add_library(gg::plugin-impl ALIAS gg-plugin-impl)
+target_include_directories(gg-plugin-core PUBLIC include PRIVATE src)
 
-target_include_directories(gg-plugin-impl PUBLIC include PRIVATE src)
-
-# Only header-only interfaces are PUBLIC. The engine, the editor and our compiler options stay
-# PRIVATE so they do not reach clap-wrapper's own sources, which make_clapfirst_plugins compiles
-# into the same format targets that link this library. clap_juce_shim_headers is PUBLIC because
-# GigaGrainsPlugin.h includes the shim header, whose layout depends on the SHIM_<platform>
-# definition it carries; the tests include GigaGrainsPlugin.h too. GigaGrainsPlugin.cpp needs
-# JUCE's headers (never its sources) for one complete type; see createEditor().
-target_link_libraries(gg-plugin-impl
-        PUBLIC clap clap-helpers clap-wrapper-extensions clap_juce_shim_headers
-        PRIVATE gg::engine gg::ui clap_juce_shim gg::juce-headers gg::compiler-options
+# Only header-only interfaces are PUBLIC: what GigaGrainsPlugin.h, which the editor layer and
+# the tests include, needs (sst-cpputils for SST_CPPUTILS_NONBLOCKING). The engine and our
+# compiler options stay PRIVATE so they do not reach clap-wrapper's own sources, which
+# make_clapfirst_plugins compiles into the same format targets that link these libraries.
+target_link_libraries(gg-plugin-core
+        PUBLIC clap clap-helpers gg::clap-wrapper-extensions sst-cpputils
+        PRIVATE gg::engine gg::compiler-options
         )
+
+if (NOT GG_BUILD_EDITOR)
+    target_sources(gg-plugin-core PRIVATE src/headless/MakePlugin.cpp)
+    add_library(gg::plugin-impl ALIAS gg-plugin-core)
+else ()
+    # An OBJECT library, not a static one. The core's factory calls this layer's makePlugin(),
+    # but this layer links the core, so its archive would come before the core's on the link
+    # line, and GNU ld takes from an archive only the symbols already undefined when it reaches
+    # it: makePlugin() would go unresolved. As objects, the editor layer is linked whole into
+    # each format and into the tests.
+    add_library(gg-plugin-editor OBJECT
+            src/editor/EditorPlugin.cpp
+            src/editor/MakePlugin.cpp
+            )
+    add_library(gg::plugin-impl ALIAS gg-plugin-editor)
+    target_include_directories(gg-plugin-editor PRIVATE src)
+
+    # clap_juce_shim_headers is PUBLIC because editor/EditorPlugin.h includes the shim header,
+    # whose layout depends on the SHIM_<platform> definition it carries; the tests include
+    # EditorPlugin.h too. EditorPlugin.cpp needs JUCE's headers (never its sources) for one
+    # complete type; see createEditor().
+    target_link_libraries(gg-plugin-editor
+            PUBLIC gg-plugin-core clap_juce_shim_headers
+            PRIVATE gg::ui clap_juce_shim gg::juce-headers gg::compiler-options
+            )
+endif ()

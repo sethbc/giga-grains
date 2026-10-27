@@ -4,8 +4,10 @@
 
 // Real-time safety of the plugin audio path (INTENT §14): process() and an active params flush
 // never allocate, for both products, through the same clap_plugin vtables a host calls. The
-// asan and rtsan presets don't build the plugins (they need JUCE), so the allocation tripwire is
-// the machine check here.
+// allocation tripwire checks the whole call, clap-helpers' dispatch included, in every preset.
+// The asan and rtsan presets build the plugin core without its editor (GG_BUILD_EDITOR=OFF), so
+// these tests also run under ASan/UBSan and under RealtimeSanitizer, which checks every
+// SST_CPPUTILS_NONBLOCKING function they reach for allocation, locks and I/O.
 
 #include <array>
 #include <cstddef>

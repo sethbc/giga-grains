@@ -8,12 +8,9 @@
 #include <atomic>
 #include <cstdint>
 #include <memory>
-// Before clap_juce_shim.h: sst-clap-helpers' clap_juce_shim.h uses std::string without <string>.
-#include <string>
 #include <vector>
 
 #include <clap/clap.h>
-#include <sst/clap_juce_shim/clap_juce_shim.h>
 #include <sst/cpputils/rtsan_support.h>
 
 #include "HelpersConfig.h"
@@ -35,13 +32,13 @@ enum class Product
 /// The CLAP descriptor of each product; static storage, never null.
 const clap_plugin_descriptor *descriptorFor(Product product) noexcept;
 
-/// The CLAP plugin shell around gg::Engine, for both products.
+/// The CLAP plugin shell around gg::Engine, for both products: the JUCE-free plugin core.
 ///
 /// M0 shell: the engine has no source yet, so the instrument outputs silence and the FX passes
 /// its input through unchanged (dry plus the engine's silent output). Note-ons are counted but
-/// not yet played. The editor (gg::ui) is a JUCE component, attached through sst-clap-helpers'
-/// clap_juce_shim the way Shortcircuit XT attaches its own.
-class GigaGrainsPlugin : public plugHelper_t, public sst::clap_juce_shim::EditorProvider
+/// not yet played. This class has no GUI. The editor is added by a subclass, EditorPlugin
+/// (editor/EditorPlugin.h), built only with GG_BUILD_EDITOR; makePlugin() picks the class.
+class GigaGrainsPlugin : public plugHelper_t
 {
   public:
     GigaGrainsPlugin(const clap_host *host, Product product);
@@ -61,22 +58,6 @@ class GigaGrainsPlugin : public plugHelper_t, public sst::clap_juce_shim::Editor
 
     /// The engine built by the last activate(); nullptr while the plugin is inactive.
     const gg::Engine *engine() const noexcept { return engine_.get(); }
-
-    // ---- The GUI: clap_juce_shim implements CLAP's gui extension around createEditor() ----
-    // Declared after noteOnCount, so the shim, and any editor it still holds, is destroyed
-    // first: the editor reads noteOnCount.
-
-    bool implementsGui() const noexcept override { return clapJuceShim != nullptr; }
-    std::unique_ptr<sst::clap_juce_shim::ClapJuceShim> clapJuceShim;
-    ADD_SHIM_IMPLEMENTATION(clapJuceShim)
-    ADD_SHIM_LINUX_TIMER(clapJuceShim)
-
-    /// The editor, a gg::ui::Editor. The shim calls this on the main thread, with JUCE set up.
-    std::unique_ptr<juce::Component> createEditor() override;
-    /// For the shim on Linux, which runs JUCE's event loop from host timers and file
-    /// descriptors.
-    bool registerOrUnregisterTimer(clap_id &id, int ms, bool reg) override;
-    bool registerOrUnregisterPosixFd(int fd, clap_posix_fd_flags_t flags, bool reg) override;
 
   protected:
     bool activate(double sampleRate, uint32_t minFrameCount,
@@ -137,6 +118,12 @@ class GigaGrainsPlugin : public plugHelper_t, public sst::clap_juce_shim::Editor
     std::vector<float> scratch_;
     uint32_t scratchFrames_{0};
 };
+
+/// Creates a plugin instance of `product` for the factory: a GigaGrainsPlugin in a headless
+/// build (headless/MakePlugin.cpp), an EditorPlugin when the editor is built
+/// (editor/MakePlugin.cpp). Exactly one of the two is linked. clap-helpers owns the instance:
+/// clap_plugin.destroy deletes it. Throws whatever the plugin's constructor throws.
+const clap_plugin *makePlugin(const clap_host *host, Product product);
 } // namespace gg::plugin
 
 #endif // GG_PLUGIN_GIGAGRAINSPLUGIN_H

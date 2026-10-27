@@ -26,19 +26,33 @@ add_executable(gg-tests
         support/AllocTripwire.cpp
         )
 target_include_directories(gg-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-# gg::render and gg::ui-core come first: they link the engine (and gg::render the metrics)
-# themselves, and listing those before them would make CMake repeat them on the link line, which
-# Apple's linker warns about.
-target_link_libraries(gg-tests PRIVATE gg::render gg::ui-core gg::bench-kernels gg::engine
-        gg::audiometrics gg::compiler-options Catch2::Catch2WithMain nlohmann_json::nlohmann_json)
+# Each library is listed before the libraries it links itself. Listing one after a library it
+# links would make CMake repeat it on the link line, which Apple's linker warns about ("ignoring
+# duplicate libraries"). So the plugin layers, when they're built, come first: they link the
+# engine and, with the editor, gg::ui-core. The editor layer is an object library, whose own
+# libraries CMake would put after everything listed here, so they're listed too: the plugin
+# core and gg::ui. Then gg::render and gg::ui-core, which link the engine (and gg::render the
+# metrics).
+set(gg_tests_libraries gg::render gg::ui-core gg::bench-kernels gg::engine gg::audiometrics)
+if (GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
+    list(PREPEND gg_tests_libraries gg::plugin-impl gg-plugin-core gg::ui)
+elseif (GG_BUILD_PLUGINS)
+    list(PREPEND gg_tests_libraries gg::plugin-impl)
+endif ()
+target_link_libraries(gg-tests PRIVATE ${gg_tests_libraries} gg::compiler-options
+        Catch2::Catch2WithMain nlohmann_json::nlohmann_json)
 # Scratch files (WAV/PNG round trips) go under the build tree, never a shared temp dir.
 target_compile_definitions(gg-tests PRIVATE GG_TEST_OUTPUT_DIR="${CMAKE_CURRENT_BINARY_DIR}/test-output"
         GG_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/golden")
 # 0 or 1, so tests can use #if GG_USE_RTSAN for checks that only hold in the RTSan build.
 target_compile_definitions(gg-tests PRIVATE GG_USE_RTSAN=$<BOOL:${GG_USE_RTSAN}>)
+# 0 or 1: the plugin tests that need the JUCE editor, and the one that checks there is none.
+target_compile_definitions(gg-tests PRIVATE GG_BUILD_EDITOR=$<BOOL:${GG_BUILD_EDITOR}>)
 
-# The plugin tests drive gg-plugin-impl through its factory, not the built .clap. They also
-# reach the library's private headers (plugin/src) to inspect a plugin instance.
+# The plugin tests drive gg::plugin-impl (the plugin core, or the core plus the editor layer)
+# through its factory, not the built .clap. They run in every preset that builds the plugins,
+# the sanitizer presets included. They also reach the libraries' private headers (plugin/src) to
+# inspect a plugin instance. gg::plugin-impl is linked above, first.
 if (GG_BUILD_PLUGINS)
     target_sources(gg-tests PRIVATE
             plugin/factory_tests.cpp
@@ -47,7 +61,6 @@ if (GG_BUILD_PLUGINS)
             plugin/rt_tests.cpp
             )
     target_include_directories(gg-tests PRIVATE ${CMAKE_SOURCE_DIR}/plugin/src)
-    target_link_libraries(gg-tests PRIVATE gg::plugin-impl)
 endif ()
 
 list(APPEND CMAKE_MODULE_PATH ${CMAKE_SOURCE_DIR}/libs/catch2/extras)
@@ -152,8 +165,9 @@ set_tests_properties(golden_tamper_metrics PROPERTIES LABELS golden
 # codesign's strict verification, as Ableton Live's plugin scanner requires. A bundle whose only
 # signature is the one the linker puts on its executable fails it ("code has no resources but
 # signature indicates they must be present"), and Live then doesn't list the plugin.
-# clients/clap-first signs each bundle after it is built.
-if (APPLE AND GG_BUILD_PLUGINS)
+# clients/clap-first signs each bundle after it is built. The bundles exist only with the editor
+# and the formats (GG_BUILD_EDITOR), and so do these tests and the identity tests below.
+if (APPLE AND GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
     foreach (format IN ITEMS clap vst3 auv2 standalone standalone_fx)
         add_test(NAME codesign_${format}
                 COMMAND ${GG_CODESIGN} --verify --deep --strict --verbose=2

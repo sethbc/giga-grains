@@ -2,10 +2,11 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright 2026, the Giga Grains authors (see git history)
 #
-# Assembles every format from gg-plugin-impl with clap-wrapper's clap-first support: one
-# bundle per format ("Giga Grains.clap", ".vst3", ".component"), each holding both plugins,
-# plus one standalone app per plugin. The AUv2 identities come from the plugin's own AUv2
-# factories (plugin/src/Factory.cpp), which clap-wrapper reads at build time.
+# Assembles every format from gg-plugin-editor (the plugin core plus its editor) with
+# clap-wrapper's clap-first support: one bundle per format ("Giga Grains.clap", ".vst3",
+# ".component"), each holding both plugins, plus one standalone app per plugin. The AUv2
+# identities come from the plugin core's own AUv2 factories (plugin/src/Factory.cpp), which
+# clap-wrapper reads at build time.
 #
 # The identities here are frozen at the first public release (INTENT §18).
 
@@ -20,7 +21,7 @@ endif ()
 
 make_clapfirst_plugins(
         TARGET_NAME gg_clapfirst
-        IMPL_TARGET gg-plugin-impl
+        IMPL_TARGET gg-plugin-editor
 
         OUTPUT_NAME "Giga Grains"
 

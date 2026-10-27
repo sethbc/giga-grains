@@ -6,7 +6,7 @@
 #define GG_TESTS_PLUGIN_PLUGINHARNESS_H
 
 // A stub CLAP host and a small driver for the plugin tests. The plugins are exercised through
-// gg-plugin-impl's factory and their clap_plugin vtables, exactly as a host would call them,
+// gg::plugin-impl's factory and their clap_plugin vtables, exactly as a host would call them,
 // without loading the built .clap.
 
 #include <cstdint>

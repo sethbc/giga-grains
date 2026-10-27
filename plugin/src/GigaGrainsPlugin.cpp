@@ -9,13 +9,8 @@
 #include <cstdio>
 #include <cstring>
 
-// createEditor() returns a std::unique_ptr<juce::Component>, whose destructor the return
-// statement may invoke, so juce::Component must be complete here.
-#include <juce_gui_basics/juce_gui_basics.h>
-
 #include "gg/engine/Engine.h"
 #include "gg/plugin/Identity.h"
-#include "gg/ui/Editor.h"
 
 namespace gg::plugin
 {
@@ -73,45 +68,9 @@ const clap_plugin_descriptor *descriptorFor(Product product) noexcept
 GigaGrainsPlugin::GigaGrainsPlugin(const clap_host *host, Product product)
     : plugHelper_t(descriptorFor(product), host), product_(product)
 {
-    // As Shortcircuit XT does. Creating the shim needs no window and no message loop: the shim
-    // starts JUCE's GUI in guiCreate, so a plugin that never shows its editor (or a headless
-    // test) never does.
-    clapJuceShim = std::make_unique<sst::clap_juce_shim::ClapJuceShim>(this);
-    clapJuceShim->setResizable(true);
 }
 
 GigaGrainsPlugin::~GigaGrainsPlugin() = default;
-
-std::unique_ptr<juce::Component> GigaGrainsPlugin::createEditor()
-{
-    return gg::ui::makeEditor({descriptorFor(product_)->name, &noteOnCount});
-}
-
-bool GigaGrainsPlugin::registerOrUnregisterTimer(clap_id &id, int ms, bool reg)
-{
-    if (!_host.canUseTimerSupport())
-    {
-        return false;
-    }
-    if (reg)
-    {
-        return _host.timerSupportRegister(static_cast<uint32_t>(ms), &id);
-    }
-    return _host.timerSupportUnregister(id);
-}
-
-bool GigaGrainsPlugin::registerOrUnregisterPosixFd(int fd, clap_posix_fd_flags_t flags, bool reg)
-{
-    if (!_host.canUsePosixFdSupport())
-    {
-        return false;
-    }
-    if (reg)
-    {
-        return _host.posixFdSupportRegister(fd, flags);
-    }
-    return _host.posixFdSupportUnregister(fd);
-}
 
 bool GigaGrainsPlugin::activate(double sampleRate, uint32_t /*minFrameCount*/,
                                 uint32_t maxFrameCount) noexcept

@@ -3,7 +3,7 @@
 // Copyright 2026, the Giga Grains authors (see git history)
 
 // The CPU additive splat renderer behind the grain canvas (INTENT §17). These tests link
-// gg-ui-core only, so they also run in the sanitizer builds, which have no plugins or JUCE.
+// gg-ui-core only, so they also run in the sanitizer builds, which have no editor or JUCE.
 
 #include <cmath>
 #include <cstdint>
