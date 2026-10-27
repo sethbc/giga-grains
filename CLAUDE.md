@@ -79,6 +79,15 @@ resource, so machines must catch everything they can catch.
 **Setup.**
 - You need CMake 3.22 or newer, and Ninja (Visual Studio 2022 with ClangCL on Windows).
 - Fetch the dependencies with `git submodule update --init`.
+- **In a linked worktree** (`git worktree add …`), run its `scripts/worktree-setup.sh
+  [--configure dev,asan,rtsan]` instead.
+  - It checks out every submodule recursively at the commits HEAD pins, taking the objects from
+    the main checkout's submodule repositories, so it works offline. A commit the main checkout
+    lacks is fetched from upstream, and the script says which.
+  - It changes no URL in the shared `.git/config` or in any submodule's config. Don't rewrite
+    `submodule.*.url` to local paths to get a worktree going: every worktree shares that config.
+  - It fails unless `git submodule status --recursive` then shows every submodule at its pinned
+    commit. `--configure` runs `cmake --preset` for each preset named, and doesn't build.
 - The first configure of a build tree downloads the VST3 and AudioUnit SDKs (clap-wrapper fetches
   them), so it needs the network.
 
@@ -115,6 +124,31 @@ ctest --preset dev --output-on-failure
   files of the CLAP, VST3 and app bundles are link dependencies, and CMake writes them at
   configure time.
 
+**The pre-commit gate (`scripts/check.sh`).** One command configures, builds and tests each
+preset, then checks the formatting:
+
+```sh
+scripts/check.sh [--presets dev,asan,rtsan] [-L label]... [--no-format] [--allow-install]
+```
+
+- **Per preset, in order** (`dev,asan,rtsan` by default):
+  1. It configures only when the tree has no `CMakeCache.txt`. For `rtsan` on macOS with
+     `GG_LLVM` unset, it uses `/opt/homebrew/opt/llvm` and says so.
+  2. It builds what CI builds: `gg-all` for `asan` and `rtsan`, the default target otherwise.
+  3. It runs `ctest --preset <p>`, passing every `-L` through.
+- **A failed step** skips the rest of its preset; the other presets still run. `format.sh --check`
+  runs last.
+- **The output** is only a short summary:
+  - one line per preset: the configure and build status, tests passed/total, skipped, wall time;
+  - under it, each failing test with its log, or the first build errors;
+  - the format result, then `PASS` or `FAIL`.
+- **The logs** are complete: `build/<preset>/check/{configure,build,test}.log` and
+  `build/check/format.log`.
+- **Exit status:** 0 only if every step passed; 1 if any failed; 2 for bad usage.
+- **It refuses to build a tree configured with `GG_COPY_PLUGIN_AFTER_BUILD=ON`**, which would
+  install plugins, unless you pass `--allow-install`.
+- Paste its summary as the evidence in a report.
+
 **Tests.** `gg-tests` is the Catch2 suite, and each Catch2 tag becomes a CTest label. To run one
 area, use `ctest --preset dev -L <label>`. The labels are:
 - engine: `engine`, `stream`, `pool`, `source`, `rng`, `math`, `interp`, `window`, `denormal`;
@@ -133,6 +167,15 @@ area, use `ctest --preset dev -L <label>`. The labels are:
   - `identity_*`: the frozen identities (INTENT §18), read back from the bundles: both
     standalone bundle IDs, the AU's three components and the VST3 class IDs. Run them before
     accepting any clap-wrapper update.
+
+**Tests run in parallel.** Every test preset runs 8 tests at a time (`"jobs"` in the hidden
+`base` test preset); `-j N` on the command line overrides it, and `-j 1` runs them serially.
+- Each Catch2 test case runs in its own process.
+- **Keep new tests parallel-safe:**
+  - never write a path that another test writes: unit tests' scratch files go in
+    `GG_TEST_OUTPUT_DIR` under a name of their own, and each golden case writes its own files;
+  - a test that has to share a file, or that measures time, needs the `RESOURCE_LOCK` or
+    `RUN_SERIAL` test property in `tests/CMakeLists.txt`.
 
 **Golden renders (`gg-render`).** `gg-render` renders a render spec offline and deterministically:
 
