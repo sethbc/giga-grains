@@ -55,7 +55,8 @@ struct ParamEvent
 /// blocks. Until b the event is pending: per slot, base and modulation apart, the latest event
 /// wins. process() renders up to each boundary that has a pending change, then:
 /// - the effective values become clamp(base + modulation);
-/// - the engine gets setCloudParams(toCloudParams(...)) and setFreeze(...), which apply from b;
+/// - the engine gets setCloudParams(toCloudParams(...)) and its freeze setting (below), which
+///   apply from b;
 /// - Mix and Level ramp from their current values to their new ones.
 ///
 /// A boundary before a call's end applies in that call. One at or past the end carries over to
@@ -64,6 +65,18 @@ struct ParamEvent
 /// boundary applies once, with all its events, however the host splits blocks. Every event's
 /// boundary is below end + 32, so at most one boundary is pending after a call. base() and
 /// effective() don't show a pending change until its boundary.
+///
+/// **Freeze is live until toggled** (INTENT §14). The ring isn't saved (an M2 non-goal), so a
+/// Freeze that is on when a fresh ring starts would hold that ring's first 20 ms, usually
+/// silence. So the engine's freeze engages only on an off→on transition after the construction
+/// (an activation) or a reset(): until Freeze has been seen off, an effective Freeze that is on
+/// leaves the engine live, though base() and effective() still read it on. Freeze is seen at the
+/// points where it reaches the engine: each call's first sample, each applied boundary, and a
+/// setBase() of Freeze itself. A boundary's events apply as one group, so off and on again at
+/// one boundary is no transition. Inside process() Freeze changes only at boundaries, and a
+/// call's first sample sees what the last boundary (or setBase() or reset()) left, so the
+/// transitions fall on the same absolute samples however the host splits blocks. Once engaged,
+/// Freeze behaves as before: the 20 ms ramp, then the head stops.
 ///
 /// **Mix and Level** ramp linearly to each new target over kRampSeconds, round(0.01 × sr)
 /// samples: R samples after its boundary a ramp is exactly at its target. A ramp is a function
@@ -90,7 +103,7 @@ class Processor
     /// for the configurations Engine rejects (sampleRate not finite and > 0, maxBlockSize 0).
     ///
     /// It reads every slot's metadata (paramMeta), whose first call allocates, so process()
-    /// never makes that first call (ruling M1-q).
+    /// never makes that first call. Freeze starts disengaged, as the class comment describes.
     explicit Processor(const ProcessorConfig &config);
 
     /// Sets a base value at once, outside the control grid: for params.flush outside process()
@@ -130,8 +143,9 @@ class Processor
                  std::span<const ParamEvent> events) noexcept SST_CPPUTILS_NONBLOCKING;
 
     /// Restarts the engine (Engine::reset: the clock, the schedule and the ring time at 0). A
-    /// pending change applies at once, and Mix and Level jump to their targets. Real-time safe;
-    /// call it between process() calls.
+    /// pending change applies at once, and Mix and Level jump to their targets. Freeze
+    /// disengages and waits for an off→on transition (the class comment). Real-time safe; call
+    /// it between process() calls.
     void reset() noexcept;
 
     /// The engine's grain-event sink (Engine::setEventSink).
@@ -167,8 +181,11 @@ class Processor
     void render(const Buffers &b, int64_t from, int64_t to) noexcept SST_CPPUTILS_NONBLOCKING;
     /// Moves the pending changes into the base and modulation values.
     void commitPending() noexcept;
-    /// Recomputes the effective values and gives the engine its parameters.
+    /// Recomputes the effective values and gives the engine its cloud parameters.
     void updateEffective() noexcept;
+    /// Gives the engine its freeze setting: the effective Freeze, once armed. An effective Freeze
+    /// that is off arms it.
+    void syncFreeze() noexcept;
     float clampToRange(size_t slot, float value) const noexcept;
 
     ProcessorConfig config_;
@@ -189,6 +206,9 @@ class Processor
     std::array<bool, kParamCount> hasPendingMod_{};
     int64_t pendingAt_{0};
     bool hasPending_{false};
+
+    // Freeze has been seen off since the construction or the last reset(), so on engages it.
+    bool freezeArmed_{false};
 
     Ramp mix_;
     Ramp level_; // the linear gain

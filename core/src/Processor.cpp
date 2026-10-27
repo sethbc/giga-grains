@@ -83,7 +83,7 @@ Processor::Processor(const ProcessorConfig &config)
         channel.assign(config_.maxBlockSize, 0.0f);
     }
     // The first paramMeta() call builds its table, which allocates; make every call here, off
-    // the audio thread, and keep the ranges (ruling M1-q).
+    // the audio thread, so that process() never makes it, and keep the ranges.
     for (size_t s = 0; s < kParamCount; ++s)
     {
         const auto &meta = paramMeta(static_cast<ParamSlot>(s));
@@ -116,6 +116,10 @@ void Processor::setBase(ParamSlot slot, float value) noexcept
     base_[s] = clampToRange(s, value);
     hasPendingBase_[s] = false;
     updateEffective();
+    if (slot == ParamSlot::Freeze)
+    {
+        syncFreeze(); // Freeze set off is a transition's first half, even between calls
+    }
     const WetParams w = toWetParams(effective_);
     if (slot == ParamSlot::Mix)
     {
@@ -170,7 +174,16 @@ void Processor::updateEffective() noexcept
         effective_[s] = clampToRange(s, base_[s] + mod_[s]);
     }
     engine_.setCloudParams(toCloudParams(effective_));
-    engine_.setFreeze(toWetParams(effective_).freeze);
+}
+
+void Processor::syncFreeze() noexcept
+{
+    const bool on = toWetParams(effective_).freeze;
+    if (!on)
+    {
+        freezeArmed_ = true; // off seen: the next on engages
+    }
+    engine_.setFreeze(on && freezeArmed_);
 }
 
 void Processor::reset() noexcept
@@ -178,6 +191,9 @@ void Processor::reset() noexcept
     engine_.reset();
     commitPending();
     updateEffective();
+    // A fresh ring: Freeze waits for an off→on transition, as after construction.
+    freezeArmed_ = false;
+    engine_.setFreeze(false);
     const WetParams w = toWetParams(effective_);
     mix_.jump(w.mix);
     level_.jump(w.levelGain);
@@ -206,6 +222,10 @@ void Processor::process(const float *const *in, uint32_t numInChannels, float *c
     const int64_t end = start + static_cast<int64_t>(numFrames);
     const Buffers buffers{in, numInChannels, out, numOutChannels, start};
 
+    // The Freeze in effect from the call's first sample: as at the last boundary, or as
+    // setBase() or reset() left it.
+    syncFreeze();
+
     // Renders up to the pending boundary and applies the pending changes there.
     int64_t rendered = start;
     const auto applyPending = [&] {
@@ -214,6 +234,7 @@ void Processor::process(const float *const *in, uint32_t numInChannels, float *c
         rendered = pendingAt_;
         commitPending();
         updateEffective();
+        syncFreeze();
         const WetParams w = toWetParams(effective_);
         mix_.retarget(w.mix, rendered, rampSamples_);
         level_.retarget(w.levelGain, rendered, rampSamples_);

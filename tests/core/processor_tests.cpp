@@ -12,6 +12,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <functional>
 #include <limits>
 #include <numbers>
 #include <span>
@@ -412,13 +413,19 @@ struct AutomationRender
 
 // Renders the whole input through a fresh FX processor in process() calls of blockSizes in turn
 // (cycling), each call given the events that fall inside it. A 0-frame call at sample `done`
-// takes the events stamped `done`, at offset 0.
+// takes the events stamped `done`, at offset 0. `setup`, if given, runs on the processor before
+// the first call, after the event sink is set.
 void renderAutomation(const Stereo &input, const std::vector<TimedEvent> &events, uint32_t maxBlock,
-                      const std::vector<uint32_t> &blockSizes, AutomationRender &r)
+                      const std::vector<uint32_t> &blockSizes, AutomationRender &r,
+                      const std::function<void(Processor &)> &setup = {})
 {
     const auto frames = static_cast<int64_t>(input.left.size());
     Processor p({kSampleRate, maxBlock, 42, Mode::Fx});
     p.setEventSink(&GrainLog::record, &r.log);
+    if (setup)
+    {
+        setup(p);
+    }
     r.audio.left.assign(static_cast<std::size_t>(frames), kNaN);
     r.audio.right.assign(static_cast<std::size_t>(frames), kNaN);
     std::vector<ParamEvent> blockEvents;
@@ -539,6 +546,183 @@ TEST_CASE("events for one boundary apply as one group across a call's end", "[co
         INFO(split.name);
         AutomationRender r;
         renderAutomation(input, events, 4096, split.blockSizes, r);
+        CHECK(r.log.grains == ref.log.grains);
+        CHECK(sameBits(ref.audio.left, r.audio.left));
+        CHECK(sameBits(ref.audio.right, r.audio.right));
+    }
+}
+
+namespace
+{
+// The peak of the samples [from, to) of v.
+float peakIn(const std::vector<float> &v, int64_t from, int64_t to)
+{
+    return peak(std::vector<float>(v.begin() + from, v.begin() + to));
+}
+} // namespace
+
+TEST_CASE("a Freeze that is on at activation or reset plays live", "[core]")
+{
+    // Review finding I1, the director's option (b), "live until toggled": the ring isn't saved
+    // (an M2 non-goal), so a Freeze restored on would freeze a fresh ring's first 20 ms, usually
+    // silence, and hold it. Freeze engages only on an off→on transition after an activation (the
+    // constructor) or a reset(); until then the wet signal is live. Mix 1: the output is the wet
+    // signal alone, which grains read 0.25 s behind the head.
+    constexpr int64_t kFrames = 94 * 512; // about 1 s
+    const Stereo input = noise(kFrames, 0.5f, 31);
+    Processor p({kSampleRate, 512, 5, Mode::Fx});
+    p.setBase(ParamSlot::Mix, 1.0f);
+    p.setBase(ParamSlot::Freeze, 1.0f);
+    REQUIRE(p.base(ParamSlot::Freeze) == 1.0f); // the value still reads On
+
+    const auto render = [&] {
+        Stereo out{std::vector<float>(kFrames, kNaN), std::vector<float>(kFrames, kNaN)};
+        for (int64_t done = 0; done < kFrames; done += 512)
+        {
+            const auto j = static_cast<std::size_t>(done);
+            const float *in[2] = {input.left.data() + j, input.right.data() + j};
+            float *o[2] = {out.left.data() + j, out.right.data() + j};
+            p.process(in, 2, o, 2, 512, {});
+        }
+        return out;
+    };
+
+    const Stereo activated = render();
+    REQUIRE(allFinite(activated.left));
+    CHECK(p.engine().liveWriteHead() == kFrames); // the head never stopped
+    CHECK(peakIn(activated.left, kFrames / 2, kFrames) > 0.05f);
+    CHECK(peakIn(activated.right, kFrames / 2, kFrames) > 0.05f);
+
+    p.reset();
+    REQUIRE(p.base(ParamSlot::Freeze) == 1.0f);
+    const Stereo afterReset = render();
+    REQUIRE(allFinite(afterReset.left));
+    CHECK(p.engine().liveWriteHead() == kFrames);
+    CHECK(peakIn(afterReset.left, kFrames / 2, kFrames) > 0.05f);
+    // A reset restarts the same render: a fresh ring, the same seed and the same parameters.
+    CHECK(sameBits(activated.left, afterReset.left));
+    CHECK(sameBits(activated.right, afterReset.right));
+}
+
+TEST_CASE("Freeze toggled off and on after a reset freezes as before", "[core]")
+{
+    // An off→on transition engages Freeze exactly as it did before option (b): the 20 ms ramp,
+    // then the head stops (ruling M1-p's admission clamp included). A processor that starts with
+    // Freeze on, sees it off at t1 and on again at t2 renders bit for bit what one that starts
+    // with Freeze off and sees it on at t2 renders: until t1 the first is live, as the second is.
+    // Both the activation path (a fresh processor) and the reset path (a processor that has
+    // already run, then reset() with Freeze on) are checked.
+    constexpr int64_t kFrames = 2 * 48000;
+    constexpr int64_t kT1 = 30000 + 5;
+    constexpr int64_t kT2 = 60000 + 11;
+    const Stereo input = noise(kFrames, 0.5f, 37);
+    const auto mixAll = [](Processor &p) { p.setBase(ParamSlot::Mix, 1.0f); };
+
+    AutomationRender fromOff;
+    renderAutomation(input, {{kT2, ParamSlot::Freeze, false, 1.0}}, 4096, {512}, fromOff, mixAll);
+    REQUIRE(allFinite(fromOff.audio.left));
+    REQUIRE(peakIn(fromOff.audio.left, 24000, kT1) > 0.05f);
+    // Engaged at the boundary after t2: the head stops 20 ms (960 samples) later.
+    const int64_t engaged = (kT2 + 31) / 32 * 32;
+    REQUIRE(fromOff.writeHead == engaged + 960);
+    REQUIRE(peakIn(fromOff.audio.left, engaged + 4800, kFrames) > 0.05f); // the held ring sounds
+
+    const std::vector<TimedEvent> toggled{{kT1, ParamSlot::Freeze, false, 0.0},
+                                          {kT2, ParamSlot::Freeze, false, 1.0}};
+    SECTION("activated with Freeze on")
+    {
+        AutomationRender r;
+        renderAutomation(input, toggled, 4096, {512}, r, [&](Processor &p) {
+            mixAll(p);
+            p.setBase(ParamSlot::Freeze, 1.0f);
+        });
+        CHECK(r.writeHead == fromOff.writeHead);
+        CHECK(r.log.grains == fromOff.log.grains);
+        CHECK(sameBits(r.audio.left, fromOff.audio.left));
+        CHECK(sameBits(r.audio.right, fromOff.audio.right));
+    }
+    SECTION("reset with Freeze on")
+    {
+        AutomationRender r;
+        renderAutomation(input, toggled, 4096, {512}, r, [&](Processor &p) {
+            // Run a while with Freeze off, then turn it on and reset, as a host does on a
+            // transport stop.
+            mixAll(p);
+            std::vector<float> scratch(4096);
+            float *o[2] = {scratch.data(), scratch.data()};
+            const float *in[2] = {input.left.data(), input.right.data()};
+            p.process(in, 2, o, 1, 4096, {});
+            p.setBase(ParamSlot::Freeze, 1.0f);
+            p.reset();
+            r.log.grains.clear(); // the grains before the reset
+        });
+        CHECK(r.writeHead == fromOff.writeHead);
+        CHECK(r.log.grains == fromOff.log.grains);
+        CHECK(sameBits(r.audio.left, fromOff.audio.left));
+        CHECK(sameBits(r.audio.right, fromOff.audio.right));
+    }
+}
+
+TEST_CASE("a Freeze that starts on is block-size invariant", "[core][determinism]")
+{
+    // Freeze on from the start, so not engaged. At the boundary kB, one group whose events
+    // straddle a call's end turns Freeze off and back on: it applies once, with Freeze on, so
+    // nothing engages (ruling M1-u). Freeze turns off at t1 and on at t2, which engages it. The
+    // splits put a 0-frame call first, end a call on kB with the offset-0 events in the next,
+    // and cut everywhere else.
+    constexpr int64_t kFrames = 2 * 48000;
+    constexpr int64_t kB = 40 * 512;
+    constexpr int64_t kT1 = 48000 + 7;
+    constexpr int64_t kT2 = 60000 + 13;
+    const Stereo input = noise(kFrames, 0.5f, 41);
+    const std::vector<TimedEvent> events{
+        {kB - 10, ParamSlot::Freeze, false, 0.0}, // boundary kB
+        {kB, ParamSlot::Freeze, false, 1.0},      // boundary kB: on again, in the same group
+        {kT1, ParamSlot::Freeze, false, 0.0},
+        {kT2, ParamSlot::Freeze, false, 1.0},
+    };
+    const auto setup = [](Processor &p) {
+        p.setBase(ParamSlot::Mix, 1.0f);
+        p.setBase(ParamSlot::Freeze, 1.0f);
+    };
+
+    AutomationRender ref;
+    renderAutomation(input, events, 4096, {static_cast<uint32_t>(kFrames)}, ref, setup);
+    REQUIRE(allFinite(ref.audio.left));
+    REQUIRE(allFinite(ref.audio.right));
+    // Live up to t1, kB included; frozen 20 ms after the boundary after t2.
+    REQUIRE(peakIn(ref.audio.left, 12000, kB) > 0.05f);
+    REQUIRE(peakIn(ref.audio.left, kB, kT1) > 0.05f);
+    REQUIRE(ref.writeHead == (kT2 + 31) / 32 * 32 + 960);
+
+    struct Split
+    {
+        const char *name;
+        uint32_t maxBlock;
+        std::vector<uint32_t> blockSizes;
+    };
+    std::vector<Split> splits{
+        {"1-frame calls", 4096, {1}},
+        {"7-frame calls", 4096, {7}},
+        {"32-frame calls", 4096, {32}},
+        {"512-frame calls", 4096, {512}},
+        {"a 0-frame call first", 4096, {0, 4096}},
+        {"a call ending on kB, then a 0-frame call with the offset-0 events",
+         4096,
+         {static_cast<uint32_t>(kB), 0, static_cast<uint32_t>(kFrames - kB)}},
+        {"a call ending on kB", 4096, {static_cast<uint32_t>(kB), 4096}},
+        {"maxBlockSize 64", 64, {4096}},
+    };
+    for (const uint64_t seed : {102, 103})
+    {
+        splits.push_back({"random", 4096, randomSplit(seed)});
+    }
+    for (const Split &split : splits)
+    {
+        INFO(split.name << ", maxBlockSize " << split.maxBlock);
+        AutomationRender r;
+        renderAutomation(input, events, split.maxBlock, split.blockSizes, r, setup);
+        CHECK(r.writeHead == ref.writeHead);
         CHECK(r.log.grains == ref.log.grains);
         CHECK(sameBits(ref.audio.left, r.audio.left));
         CHECK(sameBits(ref.audio.right, r.audio.right));
@@ -716,7 +900,7 @@ struct SpawnCounter
 TEST_CASE("processor does not allocate", "[core][rt]")
 {
     // A fresh processor's first process() call is armed: paramMeta builds its table on its first
-    // call, which allocates, so the constructor must have made that call (ruling M1-q). Nothing
+    // call, which allocates, so the constructor must have made that call. Nothing
     // here calls paramMeta before the constructor does. maxBlockSize 256 makes the 1000-frame
     // calls oversized; mono, stereo, missing and four-channel buffers, 0- and 1-frame calls, and
     // events on every slot (Freeze and modulation included) all run armed.
