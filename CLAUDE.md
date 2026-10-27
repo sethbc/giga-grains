@@ -139,12 +139,17 @@ gg-render <spec.json> [-o out.wav] [--metrics out.json] [--events out.jsonl]
 - It's built at `build/<preset>/tools/gg-render/gg-render`.
 - Its exit status is 0 for a pass, 1 when a comparison fails, and 2 for bad input.
 - **The cases:** each case's spec is in `tests/golden/cases/`, and its expected metrics and event
-  log are in `tests/golden/expected/`.
+  log are in `tests/golden/expected/`. Every `*.json` there is a case; a new one gets a test the
+  next time CMake runs.
 - **The `golden` tests** render every case into `build/<preset>/golden/<case>.wav` and `.png`.
   - They compare the metrics within tolerances.
-  - They compare the grain-event log byte for byte. That comparison is the cross-platform
-    determinism gate.
-- **After a DSP change, run `scripts/update-goldens.sh [build-dir]`** (default `build/dev`).
+  - They compare the grain-event log exactly per line (CR and final newline ignored). That
+    comparison is the cross-platform determinism gate.
+  - `golden_tamper_events` and `golden_tamper_metrics` check that the gate can fail: each
+    compares a render with a golden copy that has one value changed, and passes only on
+    gg-render's failure message.
+- **After a DSP change, run `scripts/update-goldens.sh [build-dir]`** (default `build/dev`; a
+  relative path is taken from the repository root).
   - It rebuilds `gg-render` and rewrites the expected files.
   - It leaves WAVs and spectrograms in `<build-dir>/golden/`.
   - It then checks the new goldens.

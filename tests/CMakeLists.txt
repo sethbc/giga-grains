@@ -68,20 +68,83 @@ if (GG_USE_RTSAN)
 endif ()
 
 # Golden renders (INTENT §19), label `golden`: gg-render renders each case and compares its
-# metrics, within tolerances, and its grain-event log, byte for byte, with the committed files in
-# golden/expected/. The event-log comparison is the cross-platform determinism gate. The WAV and
-# PNG of each run go to <build>/golden/ for listening and inspection. Regenerate the expected files
-# with scripts/update-goldens.sh.
-set(GG_GOLDEN_CASES sparse-sine sparse-sine-44k1 dense-noise sweep-stretch)
-foreach (case IN LISTS GG_GOLDEN_CASES)
+# metrics, within tolerances, and its grain-event log, exactly per line (CR and final newline
+# ignored), with the committed files in golden/expected/. The event-log comparison is the
+# cross-platform determinism gate. The WAV and PNG of each run go to <build>/golden/ for listening
+# and inspection. Regenerate the expected files with scripts/update-goldens.sh.
+#
+# Every golden/cases/*.json is a case, the same glob scripts/update-goldens.sh renders, so a new
+# case can't go ungated. CONFIGURE_DEPENDS re-runs CMake when the set of files changes.
+file(GLOB GG_GOLDEN_CASE_SPECS CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/golden/cases/*.json)
+if (NOT GG_GOLDEN_CASE_SPECS)
+    message(FATAL_ERROR "No golden cases in ${CMAKE_CURRENT_SOURCE_DIR}/golden/cases")
+endif ()
+foreach (spec IN LISTS GG_GOLDEN_CASE_SPECS)
+    get_filename_component(case ${spec} NAME_WLE)
     add_test(NAME golden_${case}
-            COMMAND gg-render ${CMAKE_CURRENT_SOURCE_DIR}/golden/cases/${case}.json
+            COMMAND gg-render ${spec}
             -o ${CMAKE_BINARY_DIR}/golden/${case}.wav
             --spectrogram ${CMAKE_BINARY_DIR}/golden/${case}.png
             --compare ${CMAKE_CURRENT_SOURCE_DIR}/golden/expected/${case}.metrics.json
             --compare-events ${CMAKE_CURRENT_SOURCE_DIR}/golden/expected/${case}.events.jsonl)
     set_tests_properties(golden_${case} PROPERTIES LABELS golden)
 endforeach ()
+
+# The golden gate must be able to fail, label `golden`. Each tamper test compares a fresh render of
+# sparse-sine with a copy of its golden file that has one value changed, and passes only on the
+# specific failure gg-render then prints:
+# - golden_tamper_events: the last digit of grain 4's onset (line 5 of the event log) changed;
+# - golden_tamper_metrics: the first RMS-envelope frame louder than -40 dB set to 0 dB.
+# The copies are written here, at configure time, and CMake re-runs when the goldens change.
+set(tamper_case sparse-sine)
+set(tamper_dir ${CMAKE_CURRENT_BINARY_DIR}/golden-tamper)
+set(golden_events ${CMAKE_CURRENT_SOURCE_DIR}/golden/expected/${tamper_case}.events.jsonl)
+set(golden_metrics ${CMAKE_CURRENT_SOURCE_DIR}/golden/expected/${tamper_case}.metrics.json)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${golden_events} ${golden_metrics})
+
+file(STRINGS ${golden_events} event_lines)
+list(GET event_lines 4 event_line)
+if (NOT event_line MATCHES "\"onset\":([0-9]*)([0-9]),")
+    message(FATAL_ERROR "No onset in line 5 of ${golden_events}")
+endif ()
+set(onset_head "${CMAKE_MATCH_1}")
+set(onset_last "${CMAKE_MATCH_2}")
+math(EXPR tampered_last "${onset_last} ^ 1") # 0 <-> 1, 2 <-> 3, ...: exactly one digit changes
+string(REPLACE "\"onset\":${onset_head}${onset_last},"
+        "\"onset\":${onset_head}${tampered_last}," event_line "${event_line}")
+list(REMOVE_AT event_lines 4)
+list(INSERT event_lines 4 "${event_line}")
+list(JOIN event_lines "\n" tampered_events)
+file(WRITE ${tamper_dir}/${tamper_case}.events.jsonl "${tampered_events}\n")
+
+file(READ ${golden_metrics} tampered_metrics)
+string(JSON envelope_frames LENGTH "${tampered_metrics}" rmsEnvelopeDb)
+math(EXPR last_frame "${envelope_frames} - 1")
+set(tamper_frame -1)
+foreach (frame RANGE ${last_frame})
+    string(JSON level GET "${tampered_metrics}" rmsEnvelopeDb ${frame})
+    if (level GREATER -40)
+        set(tamper_frame ${frame})
+        break()
+    endif ()
+endforeach ()
+if (tamper_frame LESS 0)
+    message(FATAL_ERROR "No RMS-envelope frame louder than -40 dB in ${golden_metrics}")
+endif ()
+string(JSON tampered_metrics SET "${tampered_metrics}" rmsEnvelopeDb ${tamper_frame} 0.0)
+file(WRITE ${tamper_dir}/${tamper_case}.metrics.json "${tampered_metrics}\n")
+
+add_test(NAME golden_tamper_events
+        COMMAND gg-render ${CMAKE_CURRENT_SOURCE_DIR}/golden/cases/${tamper_case}.json
+        --compare-events ${tamper_dir}/${tamper_case}.events.jsonl)
+add_test(NAME golden_tamper_metrics
+        COMMAND gg-render ${CMAKE_CURRENT_SOURCE_DIR}/golden/cases/${tamper_case}.json
+        --compare ${tamper_dir}/${tamper_case}.metrics.json)
+set_tests_properties(golden_tamper_events PROPERTIES LABELS golden
+        PASS_REGULAR_EXPRESSION "FAIL: event log differs from .* at line 5 ")
+set_tests_properties(golden_tamper_metrics PROPERTIES LABELS golden
+        PASS_REGULAR_EXPRESSION
+        "rmsEnvelope: 1 of [0-9]+ compared frames differ by more than 0.5 dB; worst is frame ${tamper_frame} ")
 
 # Code signatures (macOS), label `plugin`: every product bundle in the build tree must pass
 # codesign's strict verification, as Ableton Live's plugin scanner requires. A bundle whose only

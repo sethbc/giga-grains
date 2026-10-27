@@ -70,6 +70,16 @@ struct Tolerances
     double dc{1e-4};
     double correlation{0.02};
     /// An absolute limit on actual.clickScore, not relative to the golden.
+    ///
+    /// Blind spot on dense material (ruling T5-b): R is the RMS of d over the whole render, so
+    /// a busy render raises the bar for every click in it. Measured on the goldens:
+    /// - dense-noise has R = 0.180. A single-sample 0 dBFS spike there scores only 10.9, and
+    ///   even the largest possible d (4.0) scores 22, so no click in it can reach 30.
+    /// - On sweep-stretch only steps larger than about 0.155 reach 30; on sparse-sine, steps
+    ///   larger than about 0.003.
+    /// So this limit catches clicks in sparse renders, not in dense ones. It needs a local
+    /// normalization (and a metricsVersion bump) before M1 gates overload and grain stealing
+    /// on it (docs/m1-carry-over.md).
     double maxClickScore{30.0};
 };
 

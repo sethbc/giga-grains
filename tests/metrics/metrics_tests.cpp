@@ -17,6 +17,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
+#include <nlohmann/json.hpp>
 
 #include "gg/core/Rng.h"
 #include "gg/metrics/AudioData.h"
@@ -246,6 +247,15 @@ TEST_CASE("compare ignores quiet frames and bands", "[metrics]")
     bandActual.bandProfileDb.front() = -180.0;
     REQUIRE(gg::metrics::compare(bandGolden, bandActual).pass);
 
+    // Only a band that is quiet in both is ignored: one the golden has at -91 dB that comes back
+    // at -50 dB is a difference.
+    auto loudActual = golden;
+    loudActual.bandProfileDb.front() = -50.0;
+    const auto oneSided = gg::metrics::compare(bandGolden, loudActual);
+    REQUIRE_FALSE(oneSided.pass);
+    REQUIRE(oneSided.failures.size() == 1);
+    REQUIRE(oneSided.failures.front().rfind("bandProfile:", 0) == 0);
+
     // The click limit is absolute, not relative to the golden.
     auto clicky = golden;
     clicky.clickScore = 31.0;
@@ -299,7 +309,12 @@ TEST_CASE("metrics json round trip is exact", "[metrics]")
     REQUIRE(parsed->denormals == m.denormals);
 
     REQUIRE_FALSE(gg::metrics::metricsFromJson("not json").has_value());
-    REQUIRE_FALSE(gg::metrics::metricsFromJson("{\"peakDb\": \"loud\"}").has_value());
+    // One mistyped field in otherwise valid metrics (the current metricsVersion included), so the
+    // type check is what rejects it, not the version check.
+    auto mistyped = nlohmann::json::parse(gg::metrics::toJson(m));
+    REQUIRE(gg::metrics::metricsFromJson(mistyped.dump()).has_value());
+    mistyped["peakDb"] = "loud";
+    REQUIRE_FALSE(gg::metrics::metricsFromJson(mistyped.dump()).has_value());
 }
 
 TEST_CASE("spectrogram png is 1024 tall with one column per frame", "[metrics]")

@@ -169,7 +169,8 @@ int main(int argc, char **argv)
     app.add_option("--compare", goldenMetricsPath,
                    "Compare the metrics with a golden .metrics.json, within tolerances");
     app.add_option("--compare-events", goldenEventsPath,
-                   "Compare the grain-event log with a golden .events.jsonl, byte for byte");
+                   "Compare the grain-event log with a golden .events.jsonl, exactly per line "
+                   "(CR and final newline ignored)");
     const auto *blockSizeOption =
         app.add_option("--block-size", blockSize, "Override the spec's blockSize")
             ->check(CLI::Range(uint32_t{1}, gg::render::kMaxBlockSize));

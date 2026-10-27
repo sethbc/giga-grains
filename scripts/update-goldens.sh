@@ -8,8 +8,9 @@
 #   scripts/update-goldens.sh [build-dir]
 #
 # build-dir is a configured single-config (Ninja) build tree, build/dev by default (create it with
-# `cmake --preset dev`). The script builds gg-render there first, then renders every case in
-# tests/golden/cases/ into
+# `cmake --preset dev`). The script runs from the repository root, so a relative build-dir is taken
+# from there, not from the current directory. It builds gg-render there first, then renders every
+# case in tests/golden/cases/ (the same glob the golden CTests use) into
 #   - tests/golden/expected/<case>.metrics.json and <case>.events.jsonl, which are committed;
 #   - <build-dir>/golden/<case>.wav and <case>.png, which are not.
 # Finally it renders each case again and compares it with the new files, exactly as the golden

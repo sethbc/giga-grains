@@ -17,8 +17,9 @@ namespace gg::render
 /// One line of the grain-event log, without the newline:
 /// `{"i":<index>,"onset":<onsetSample>,"frac":<d>,"pos":<d>,"rate":<d>,"dur":<d>}`.
 /// Each <d> is fmt's shortest round-trip form of the double, so the line reads back exactly
-/// and is byte-identical on every platform. The golden event logs are compared byte for byte,
-/// which makes them the cross-platform determinism gate (INTENT §14, §19).
+/// and is byte-identical on every platform. The golden event logs are compared exactly per line
+/// (a CR before a newline, and the final newline, are ignored), which makes them the
+/// cross-platform determinism gate (INTENT §14, §19).
 std::string formatEventLine(const GrainSpec &g);
 
 /// Renders durationSeconds of stream activity plus a release tail, until every grain has
