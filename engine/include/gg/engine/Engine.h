@@ -54,8 +54,9 @@ class Engine
 
     /// Real-time safe, but not synchronized with process(): call it on the audio thread
     /// between process() calls, or while process() is not running. The new parameters apply
-    /// from the next process() call: to every grain that spawns from then on, and to the
-    /// interval after each of them (CloudScheduler).
+    /// from the next process() call, at its first sample g: to every grain that spawns from then
+    /// on. A density or distribution change also moves the pending onset (ruling M1-h; see
+    /// CloudScheduler), so for a block-size-invariant render, make changes at fixed samples.
     void setCloudParams(const CloudParams &params) noexcept;
 
     /// The sink is called from process(); pass nullptr to remove it. Real-time safe, but not

@@ -18,6 +18,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include "gg/core/MathDet.h"
 #include "gg/core/Rng.h"
 #include "gg/engine/Engine.h"
 
@@ -202,12 +203,20 @@ struct GrainLog
     }
 };
 
-// Density changes during a render, as (end frame, density) segments: 37 Hz, then slower, then
-// faster, then off, then back on. Each change is made between process() calls at the segment's
-// first frame, so every block split below sees it at the same sample.
+// Density and distribution changes during a render, as segments: 37 Hz, then slower, then
+// faster, then Poisson at the same density, then off, then back on, periodic. Each change is
+// made between process() calls at the segment's first frame, so every block split below sees it
+// at the same absolute sample.
+struct Segment
+{
+    int64_t end; // the first frame after the segment
+    double densityHz;
+    double distribution;
+};
 constexpr int64_t kDensityFrames = 48000;
-constexpr std::pair<int64_t, double> kDensitySegments[] = {
-    {9000, 37.0}, {20000, 11.0}, {30000, 160.0}, {36000, 0.0}, {kDensityFrames, 160.0},
+constexpr Segment kDensitySegments[] = {
+    {9000, 37.0, 0.5},   {20000, 11.0, 0.5}, {30000, 160.0, 0.5},
+    {33000, 160.0, 1.0}, {36000, 0.0, 1.0},  {kDensityFrames, 160.0, 0.0},
 };
 
 struct DensityRender
@@ -228,14 +237,15 @@ void renderDensityChanges(const std::shared_ptr<const gg::SampleBuffer> &source,
     r.audio.left.assign(static_cast<std::size_t>(kDensityFrames), kUnwritten);
     r.audio.right.assign(static_cast<std::size_t>(kDensityFrames), kUnwritten);
     int64_t done = 0;
-    for (const auto &[end, densityHz] : kDensitySegments)
+    for (const Segment &segment : kDensitySegments)
     {
         gg::CloudParams p = kParams;
-        p.densityHz = densityHz;
+        p.densityHz = segment.densityHz;
+        p.distribution = segment.distribution;
         engine.setCloudParams(p);
-        while (done < end)
+        while (done < segment.end)
         {
-            const auto n = static_cast<uint32_t>(std::min<int64_t>(blockSize, end - done));
+            const auto n = static_cast<uint32_t>(std::min<int64_t>(blockSize, segment.end - done));
             float *out[2] = {r.audio.left.data() + done, r.audio.right.data() + done};
             engine.process(out, 2, n);
             done += n;
@@ -244,11 +254,12 @@ void renderDensityChanges(const std::shared_ptr<const gg::SampleBuffer> &source,
 }
 } // namespace
 
-TEST_CASE("density changes are block-size invariant", "[determinism]")
+TEST_CASE("density and distribution changes are block-size invariant", "[determinism]")
 {
-    // Spec §6.2: a density change applies from the next onset computed after it, and a stream
-    // turned back on starts at the first block after the change. With the change at a fixed
-    // sample, neither may depend on how the host splits blocks (Engine.h, INTENT §8.6).
+    // Ruling M1-h: a density or distribution change at g rescales the pending onset. Ruling
+    // M1-j: a stream turned back on starts at the first block after the change. With the changes
+    // at fixed samples, neither may depend on how the host splits blocks (Engine.h, INTENT
+    // §8.6).
     const auto source = sineSource();
     DensityRender ref;
     renderDensityChanges(source, kMaxBlock, kMaxBlock, ref);
@@ -260,14 +271,15 @@ TEST_CASE("density changes are block-size invariant", "[determinism]")
     // Guard against a vacuous pass: every segment that is on spawns grains, and none spawn
     // while the stream is off.
     int64_t segmentStart = 0;
-    for (const auto &[end, densityHz] : kDensitySegments)
+    for (const Segment &segment : kDensitySegments)
     {
         const auto inSegment = std::count_if(
             ref.log.grains.begin(), ref.log.grains.end(), [&](const gg::GrainSpec &g) {
-                return g.onsetSample >= segmentStart && g.onsetSample < end;
+                return g.onsetSample >= segmentStart && g.onsetSample < segment.end;
             });
-        INFO("segment [" << segmentStart << ", " << end << ") at " << densityHz << " Hz");
-        if (densityHz > 0.0)
+        INFO("segment [" << segmentStart << ", " << segment.end << ") at " << segment.densityHz
+                         << " Hz");
+        if (segment.densityHz > 0.0)
         {
             REQUIRE(inSegment > 0);
         }
@@ -275,8 +287,42 @@ TEST_CASE("density changes are block-size invariant", "[determinism]")
         {
             REQUIRE(inSegment == 0);
         }
-        segmentStart = end;
+        segmentStart = segment.end;
     }
+
+    // Ruling M1-h through the engine: at every change that keeps the stream on, the first grain
+    // at or after the change is at max(t(k−1) + Δ_new(k−1), g), from the last grain before it
+    // and its own onset draw (seed 42, layer 0, stream 0); and the change did move it.
+    int moved = 0;
+    for (std::size_t s = 1; s < std::size(kDensitySegments); ++s)
+    {
+        const Segment &before = kDensitySegments[s - 1];
+        const Segment &after = kDensitySegments[s];
+        if (!(before.densityHz > 0.0 && after.densityHz > 0.0))
+        {
+            continue;
+        }
+        const int64_t g = before.end;
+        INFO("change at " << g);
+        const auto next = std::find_if(ref.log.grains.begin(), ref.log.grains.end(),
+                                       [&](const gg::GrainSpec &x) { return x.onsetSample >= g; });
+        REQUIRE(next != ref.log.grains.begin());
+        REQUIRE(next != ref.log.grains.end());
+        const gg::GrainSpec &last = *(next - 1);
+        REQUIRE(next->index == last.index + 1);
+        const double e = -gg::logDet(
+            1.0 - gg::rng::uniform01(gg::rng::hash({42, 0, 0, gg::rng::Field::Onset, last.index})));
+        const auto onsetAfter = [&](const Segment &params) {
+            const double period = kSampleRate / params.densityHz;
+            const double d = params.distribution;
+            return static_cast<double>(last.onsetSample) + last.onsetFrac +
+                   std::max(period * ((1.0 - d) + d * e), 1.0 / 16.0);
+        };
+        const double expected = std::max(onsetAfter(after), static_cast<double>(g));
+        REQUIRE(static_cast<double>(next->onsetSample) + next->onsetFrac == expected);
+        moved += onsetAfter(before) != expected ? 1 : 0;
+    }
+    REQUIRE(moved == 3);
 
     struct Split
     {

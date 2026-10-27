@@ -61,9 +61,15 @@ struct GrainDraw
 /// When the sums k × P are exact too, as for a whole number of samples or a period like 5512.5,
 /// the onsets are exactly M0's lattice; otherwise they differ from it in the last bits.
 ///
-/// t(k+1) is computed when grain k is emitted, from the parameters in effect then. So a change
-/// to the density or the distribution applies from the next onset computed after it: the
-/// interval already pending keeps the old values.
+/// t(k+1) is computed when grain k is emitted, from the parameters in effect then. A change to
+/// the density or the distribution also moves the onset already pending, so a change is heard
+/// at once rather than after an interval drawn with the old values (ruling M1-h; it supersedes
+/// spec §6.2 for the pending onset). The change takes effect at g, the blockStart of the next
+/// schedule() call. If grain k−1 was emitted since reset() or since the stream was turned on,
+/// and the pending onset t(k) is after g, then t(k) becomes max(t(k−1) + Δ_new(k−1), g):
+/// Δ(k−1) recomputed with the new values from the same draw E(k−1), so no new draw is made.
+/// Otherwise the pending onset stays. Changes land on grid-aligned absolute samples (the
+/// Processor applies them there), so this is block-size invariant too.
 ///
 /// Every random field of a grain has its own rng::Field, keyed by (seed, layer, stream, field,
 /// k), so the draws don't depend on block size, call order or each other.
@@ -73,11 +79,12 @@ struct GrainDraw
 class CloudScheduler
 {
   public:
-    /// The floor on Δ(k). At d = 1 an interval P × E(k) can be arbitrarily small (it is 0 when
-    /// u(k) = 0), so without a floor nothing would bound the number of onsets in one sample.
-    /// With it, one schedule() call emits at most about 16 grains per frame. At 48 kHz and the
-    /// maximum density (P = 12) it raises about 0.5% of Poisson intervals, by less than 1/16
-    /// sample, which moves the mean by about 2e-4 samples; at d = 0 it never applies.
+    /// The floor on Δ(k) (ruling M1-g). At d = 1 an interval P × E(k) can be arbitrarily small
+    /// (it is 0 when u(k) = 0), so without a floor nothing would bound the number of onsets in
+    /// one sample, and schedule() would have no bounded loop. With it, one schedule() call
+    /// emits at most about 16 grains per frame. At 48 kHz and the maximum density (P = 12) it
+    /// raises about 0.5% of Poisson intervals, by less than 1/16 sample, which moves the mean
+    /// by about 2e-4 samples; at d = 0 it never applies, since P is at least 1 sample.
     static constexpr double kMinIntervalSamples = 1.0 / 16.0;
 
     CloudScheduler() noexcept { prepare(48000.0); }
@@ -85,8 +92,9 @@ class CloudScheduler
     /// Sets the output sample rate (a non-finite or non-positive rate means 48000) and resets.
     void prepare(double sampleRate) noexcept;
 
-    /// Takes new controls, sanitized as CloudParams documents. They apply from the next
-    /// interval computed after this call; the onset already pending doesn't move.
+    /// Takes new controls, sanitized as CloudParams documents. They apply to every grain emitted
+    /// after this call. A change to the effective period or the distribution also moves the
+    /// pending onset at the next schedule() call, as the class comment describes (ruling M1-h).
     void setParams(const CloudParams &params) noexcept;
 
     /// Restarts the schedule: the next onset is t = 0 with k = 0. Keeps the sample rate and the
@@ -110,7 +118,17 @@ class CloudScheduler
         }
         const auto start = static_cast<double>(blockStart);
         const auto end = static_cast<double>(blockStart + static_cast<int64_t>(numFrames));
-        nextOnset_ = std::max(nextOnset_, start);
+        nextOnset_ = std::max(nextOnset_, start); // resumed after being off (ruling M1-j)
+        if (rescalePending_)
+        {
+            // Ruling M1-h, with g = start: rescale the pending onset from the last one, with
+            // the last one's draw.
+            rescalePending_ = false;
+            if (nextOnset_ > start)
+            {
+                nextOnset_ = std::max(lastOnset_ + interval(lastE_), start);
+            }
+        }
         while (nextOnset_ < end)
         {
             const double t = nextOnset_;
@@ -136,8 +154,10 @@ class CloudScheduler
                 .pan = pan,
             };
             const double e = -logDet(1.0 - rng::uniform01(key(rng::Field::Onset)));
-            const double d = params_.distribution;
-            nextOnset_ = t + std::max(period_ * ((1.0 - d) + d * e), kMinIntervalSamples);
+            lastOnset_ = t;
+            lastE_ = e;
+            hasLast_ = true;
+            nextOnset_ = t + interval(e);
             ++nextK_;
             emit(g);
         }
@@ -145,6 +165,13 @@ class CloudScheduler
 
   private:
     void updateDerived() noexcept;
+
+    /// Δ for the unit-exponential draw e, with the current period and distribution.
+    double interval(double e) const noexcept
+    {
+        const double d = params_.distribution;
+        return std::max(period_ * ((1.0 - d) + d * e), kMinIntervalSamples);
+    }
 
     double sampleRate_{48000.0};
     CloudParams params_{}; // sanitized, independent of the sample rate
@@ -157,6 +184,12 @@ class CloudScheduler
 
     double nextOnset_{0.0}; // t(nextK_), in output samples since reset()
     uint64_t nextK_{0};
+
+    // The last emitted grain, k − 1 = nextK_ − 1, for ruling M1-h.
+    double lastOnset_{0.0}; // t(k − 1)
+    double lastE_{0.0};     // E(k − 1)
+    bool hasLast_{false};   // grain k − 1 was emitted since reset() or since the stream turned on
+    bool rescalePending_{false}; // the period or distribution changed since the last schedule()
 };
 } // namespace gg
 

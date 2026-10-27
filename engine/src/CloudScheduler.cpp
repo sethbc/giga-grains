@@ -42,14 +42,33 @@ void CloudScheduler::setParams(const CloudParams &in) noexcept
                                   -kMaxPitchSemitones, kMaxPitchSemitones);
     p.stereo = std::clamp(finiteOr(in.stereo, d.stereo), 0.0, 1.0);
     p.gain = std::clamp(finiteOr(in.gain, d.gain), 0.0f, kMaxGain);
+
+    const double oldPeriod = period_;
+    const double oldDistribution = params_.distribution;
     params_ = p;
     updateDerived();
+
+    if (!(densityHz_ > 0.0))
+    {
+        // Off: once it is turned back on there is no previous grain to rescale from (rulings
+        // M1-h, M1-j).
+        hasLast_ = false;
+        rescalePending_ = false;
+    }
+    else if (hasLast_ && (period_ != oldPeriod || params_.distribution != oldDistribution))
+    {
+        // Ruling M1-h. The next schedule() call rescales from the last grain with the values in
+        // effect then, so several changes before it give the result of the last one alone.
+        rescalePending_ = true;
+    }
 }
 
 void CloudScheduler::reset() noexcept
 {
     nextOnset_ = 0.0;
     nextK_ = 0;
+    hasLast_ = false;
+    rescalePending_ = false;
 }
 
 void CloudScheduler::updateDerived() noexcept

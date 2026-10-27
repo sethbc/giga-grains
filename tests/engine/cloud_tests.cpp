@@ -200,24 +200,150 @@ TEST_CASE("distribution 0.5 keeps the mean", "[cloud]")
     REQUIRE(spaced);
 }
 
-TEST_CASE("a density change applies at the next onset computed after it", "[cloud]")
+TEST_CASE("a density change rescales the pending onset", "[cloud]")
 {
+    // Ruling M1-h: a density or distribution change at g (the next schedule() call's
+    // blockStart) moves a pending onset t(k) > g to max(t(k−1) + Δ_new(k−1), g), with the same
+    // draw E(k−1).
     gg::CloudScheduler cloud;
     cloud.prepare(48000.0);
-    cloud.setParams(cloudAt(10.0));
-    const auto before = collect(cloud, 0, 10000, 10000); // onsets 0, 4800, 9600
-    REQUIRE(before.size() == 3);
-    REQUIRE(onsetTime(before.back()) == 9600.0);
 
-    // Grain 3's onset was computed when grain 2 was emitted, at 10 Hz. Grain 4's is computed
-    // when grain 3 is emitted, after the change.
-    cloud.setParams(cloudAt(100.0));
-    const auto after = collect(cloud, 10000, 10000, 10000);
-    REQUIRE(after.size() >= 3);
-    REQUIRE(after[0].index == 3);
-    REQUIRE(onsetTime(after[0]) - onsetTime(before.back()) == 48000.0 / 10.0);
-    REQUIRE(onsetTime(after[1]) - onsetTime(after[0]) == 48000.0 / 100.0);
-    REQUIRE(onsetTime(after[2]) - onsetTime(after[1]) == 48000.0 / 100.0);
+    SECTION("periodic, 10 Hz to 100 Hz: one new period after the last onset")
+    {
+        cloud.setParams(cloudAt(10.0));
+        const auto before = collect(cloud, 0, 10000, 10000); // 0, 4800, 9600; 14400 pending
+        REQUIRE(before.size() == 3);
+        cloud.setParams(cloudAt(100.0));
+        const auto after = collect(cloud, 10000, 1000, 1000);
+        REQUIRE(after.size() == 2);
+        REQUIRE(after[0].index == 3);
+        REQUIRE(onsetTime(after[0]) == 9600.0 + 480.0); // max(10080, g = 10000)
+        REQUIRE(onsetTime(after[1]) == 9600.0 + 2 * 480.0);
+    }
+
+    SECTION("periodic, 10 Hz to 100 Hz: never before the change")
+    {
+        cloud.setParams(cloudAt(10.0));
+        REQUIRE(collect(cloud, 0, 10200, 10200).size() == 3); // the last onset is at 9600
+        cloud.setParams(cloudAt(100.0));
+        const auto after = collect(cloud, 10200, 1000, 1000);
+        REQUIRE(after.size() == 3);
+        REQUIRE(after[0].index == 3);
+        REQUIRE(onsetTime(after[0]) == 10200.0); // max(10080, g = 10200)
+        REQUIRE(onsetTime(after[1]) == 10680.0);
+    }
+
+    SECTION("periodic, 100 Hz to 10 Hz: one new period after the last onset")
+    {
+        cloud.setParams(cloudAt(100.0));
+        REQUIRE(collect(cloud, 0, 1000, 1000).size() == 3); // 0, 480, 960; 1440 pending
+        cloud.setParams(cloudAt(10.0));
+        const auto after = collect(cloud, 1000, 10000, 1000);
+        REQUIRE(after.size() == 2);
+        REQUIRE(after[0].index == 3);
+        REQUIRE(onsetTime(after[0]) == 960.0 + 4800.0);
+        REQUIRE(onsetTime(after[1]) == 960.0 + 2 * 4800.0);
+    }
+
+    SECTION("poisson: the same draw, rescaled to the new density")
+    {
+        struct Change
+        {
+            double fromHz;
+            double toHz;
+        };
+        for (const Change c : {Change{10.0, 100.0}, Change{100.0, 10.0}})
+        {
+            INFO(c.fromHz << " Hz to " << c.toHz << " Hz");
+            constexpr int64_t kChange = 20000;
+            cloud.reset();
+            cloud.setParams(cloudAt(c.fromHz, 1.0));
+            const auto before = collect(cloud, 0, kChange, 4096);
+            REQUIRE_FALSE(before.empty());
+            const gg::GrainDraw last = before.back();
+            const double oldPending =
+                onsetTime(last) + interval(48000.0 / c.fromHz, 1.0, last.index);
+            REQUIRE(oldPending > static_cast<double>(kChange));
+
+            cloud.setParams(cloudAt(c.toHz, 1.0));
+            const auto after = collect(cloud, kChange, 500000, 4096);
+            REQUIRE(after.size() >= 2);
+            REQUIRE(after[0].index == last.index + 1);
+            const double rescaled = onsetTime(last) + interval(48000.0 / c.toHz, 1.0, last.index);
+            REQUIRE(onsetTime(after[0]) == std::max(rescaled, static_cast<double>(kChange)));
+            REQUIRE(onsetTime(after[0]) != oldPending);
+            // Then the recurrence at the new density, from the rescaled onset.
+            REQUIRE(onsetTime(after[1]) ==
+                    onsetTime(after[0]) + interval(48000.0 / c.toHz, 1.0, after[0].index));
+        }
+    }
+
+    SECTION("a distribution change rescales it too")
+    {
+        struct Change
+        {
+            double from;
+            double to;
+        };
+        for (const Change c : {Change{0.0, 1.0}, Change{1.0, 0.0}})
+        {
+            INFO("distribution " << c.from << " to " << c.to);
+            constexpr int64_t kChange = 20000;
+            cloud.reset();
+            cloud.setParams(cloudAt(20.0, c.from));
+            const auto before = collect(cloud, 0, kChange, 4096);
+            REQUIRE_FALSE(before.empty());
+            const gg::GrainDraw last = before.back();
+
+            cloud.setParams(cloudAt(20.0, c.to));
+            const auto after = collect(cloud, kChange, 200000, 4096);
+            REQUIRE_FALSE(after.empty());
+            REQUIRE(after[0].index == last.index + 1);
+            const double rescaled = onsetTime(last) + interval(2400.0, c.to, last.index);
+            REQUIRE(onsetTime(after[0]) == std::max(rescaled, static_cast<double>(kChange)));
+        }
+    }
+
+    SECTION("other parameters, and a change undone before the next block, keep it")
+    {
+        // The reference: 100 Hz throughout, so grain 3 is at 1440.
+        cloud.setParams(cloudAt(100.0));
+        REQUIRE(collect(cloud, 0, 1000, 1000).size() == 3);
+
+        gg::CloudParams other = cloudAt(100.0);
+        other.pitchSemitones = 12.0;
+        other.position = 0.1;
+        other.spray = 0.5;
+        other.stereo = 1.0;
+        other.gain = 2.0f;
+        other.grainDurationSec = 0.01;
+        cloud.setParams(other);
+        auto after = collect(cloud, 1000, 500, 500);
+        REQUIRE(after.size() == 1);
+        REQUIRE(onsetTime(after[0]) == 1440.0);
+
+        // 10 Hz and back to 100 Hz before the next block: the last values set win.
+        cloud.setParams(cloudAt(10.0));
+        cloud.setParams(cloudAt(100.0));
+        after = collect(cloud, 1500, 500, 500);
+        REQUIRE(after.size() == 1);
+        REQUIRE(onsetTime(after[0]) == 1920.0);
+    }
+
+    SECTION("with no grain since the stream was turned on, the pending onset stays")
+    {
+        cloud.setParams(cloudAt(100.0));
+        REQUIRE(collect(cloud, 0, 1000, 1000).size() == 3); // 1440 pending
+        cloud.setParams(cloudAt(0.0));
+        REQUIRE(collect(cloud, 1000, 100, 100).empty());
+        // Back on at another density, before the pending onset: no previous grain since then,
+        // so it isn't rescaled to 960 + 4800 (ruling M1-j keeps it).
+        cloud.setParams(cloudAt(10.0));
+        const auto after = collect(cloud, 1100, 9000, 1000);
+        REQUIRE(after.size() == 2);
+        REQUIRE(onsetTime(after[0]) == 1440.0);
+        REQUIRE(onsetTime(after[1]) == 1440.0 + 4800.0);
+    }
 
     SECTION("setting the same parameters again changes nothing")
     {
