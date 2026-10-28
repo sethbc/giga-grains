@@ -11,9 +11,11 @@
 
 #include "gg/core/ParamIds.h"
 
-/// The saved state of both products: the ten parameter values and the engine seed, as versioned
-/// XML. gg-core writes and reads it with sst-plugininfra's PatchBase and tinyxml, which stay
-/// private to gg-core's sources (ruling M1-l): nothing that includes this header sees them.
+/// The patch both products save: the ten parameter values and the engine seed, as versioned XML.
+/// It is the payload of the session state's `PTCH` chunk, byte for byte
+/// (gg/core/SessionState.h); a state saved before the container (sub-projects 1 and 2) is this
+/// XML alone. gg-core writes and reads it with sst-plugininfra's PatchBase and tinyxml, which
+/// stay private to gg-core's sources (ruling M1-l): nothing that includes this header sees them.
 /// Main thread only: both functions allocate.
 ///
 /// The format is PatchBase's, on one line (broken here for reading), the params in slot order

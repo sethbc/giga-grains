@@ -101,7 +101,11 @@ std::string replaceOnce(std::string s, std::string_view from, std::string_view t
 }
 
 // What a load writes: the values, the seed and the migration report. A failed load must leave
-// all three untouched.
+// all three untouched: this is the bad-state snapshot, `migratedFromVersion` included (carry-over
+// T5 105). The patch's `dirty` flag never reaches the public API: each fromStateXml loads into a
+// patch of its own, so none outlives the call. session_state_tests.cpp snapshots the container
+// the same way, and the plugin tests check that a rejected load never marks the host's state
+// dirty.
 struct Loaded
 {
     ParamValues values{};

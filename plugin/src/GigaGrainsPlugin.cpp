@@ -8,10 +8,11 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
+#include <optional>
 #include <span>
 #include <string>
 
-#include "gg/core/PatchState.h"
+#include "gg/core/SessionState.h"
 #include "gg/plugin/Identity.h"
 #include "sst/basic-blocks/params/ParamMetadata.h"
 
@@ -425,11 +426,13 @@ bool GigaGrainsPlugin::stateSave(const clap_ostream *stream) noexcept
         {
             values[s] = values_[s].load(std::memory_order_relaxed);
         }
-        const std::string xml = gg::core::toStateXml(values, seed_);
+        // The session container (gg/core/SessionState.h). The FX has no sample, and the
+        // instrument none yet: both write an empty media manifest.
+        const std::string bytes = gg::core::encodeState({values, seed_, std::nullopt});
 
         // A stream may take fewer bytes than offered: write until all are in.
-        const char *data = xml.data();
-        uint64_t left = xml.size();
+        const char *data = bytes.data();
+        uint64_t left = bytes.size();
         while (left > 0)
         {
             const int64_t n = stream->write(stream, data, left);
@@ -456,13 +459,16 @@ bool GigaGrainsPlugin::stateLoad(const clap_istream *stream) noexcept
     }
     try
     {
-        // A stream may return fewer bytes than asked for: read until it ends (0).
-        std::string xml;
+        // A stream may return fewer bytes than asked for: read until it ends (0). A state is at
+        // most kMaxStateBytes long, so read one byte past that at most, and fail there.
+        std::string bytes;
         char buffer[4096];
         for (;;)
         {
-            const int64_t n = stream->read(stream, buffer, sizeof(buffer));
-            if (n < 0 || static_cast<uint64_t>(n) > sizeof(buffer))
+            const uint64_t want =
+                std::min<uint64_t>(sizeof(buffer), gg::core::kMaxStateBytes + 1 - bytes.size());
+            const int64_t n = stream->read(stream, buffer, want);
+            if (n < 0 || static_cast<uint64_t>(n) > want)
             {
                 return false;
             }
@@ -470,16 +476,22 @@ bool GigaGrainsPlugin::stateLoad(const clap_istream *stream) noexcept
             {
                 break;
             }
-            xml.append(buffer, static_cast<std::size_t>(n));
+            bytes.append(buffer, static_cast<std::size_t>(n));
+            if (bytes.size() > gg::core::kMaxStateBytes)
+            {
+                return false;
+            }
         }
 
-        // All or nothing: a state fromStateXml rejects changes nothing here either.
-        gg::core::ParamValues values{};
-        uint64_t seed = 0;
-        if (!gg::core::fromStateXml(xml, values, seed, mode()))
+        // All or nothing: a state decodeState rejects changes nothing here either. The sample
+        // entry waits for the loader (sub-project 3, Task 11).
+        gg::core::SessionState loaded;
+        if (!gg::core::decodeState(bytes, mode(), loaded))
         {
             return false;
         }
+        const auto &values = loaded.values;
+        const uint64_t seed = loaded.seed;
         for (std::size_t s = 0; s < kParamCount; ++s)
         {
             storeValue(static_cast<ParamSlot>(s), values[s]);
