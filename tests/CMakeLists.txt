@@ -189,6 +189,12 @@ endif ()
 set(GG_GOLDEN_MEDIA_DIR ${CMAKE_BINARY_DIR}/golden-media)
 add_test(NAME golden_media COMMAND gg-render --write-media ${GG_GOLDEN_MEDIA_DIR})
 set_tests_properties(golden_media PROPERTIES LABELS golden FIXTURES_SETUP golden_media)
+# --write-media takes no other option: one given with it is refused (exit 2), never ignored.
+add_test(NAME render_write_media_alone
+        COMMAND gg-render --write-media ${CMAKE_CURRENT_BINARY_DIR}/write-media-alone
+        --block-size 64 -o ${CMAKE_CURRENT_BINARY_DIR}/write-media-alone/x.wav)
+set_tests_properties(render_write_media_alone PROPERTIES LABELS render
+        PASS_REGULAR_EXPRESSION "excludes --write-media|--write-media excludes")
 file(GLOB GG_GOLDEN_CASE_SPECS CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/golden/cases/*.json)
 if (NOT GG_GOLDEN_CASE_SPECS)
     message(FATAL_ERROR "No golden cases in ${CMAKE_CURRENT_SOURCE_DIR}/golden/cases")

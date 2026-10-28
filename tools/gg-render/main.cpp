@@ -179,25 +179,40 @@ int run(int argc, char **argv)
     uint32_t blockSize = 0;
     std::string mediaDir;
     std::string writeMediaDir;
-    auto *const specOption = app.add_option("spec", specPath, "The render spec (JSON)");
-    app.add_option("-o,--output", wavPath, "Write the render as a 32-bit float WAV");
-    app.add_option("--metrics", metricsPath, "Write the render's metrics (JSON)");
-    app.add_option("--events", eventsPath, "Write the grain-event log (JSON lines)");
-    app.add_option("--spectrogram", spectrogramPath, "Write a spectrogram (PNG)");
-    app.add_option("--compare", goldenMetricsPath,
-                   "Compare the metrics with a golden .metrics.json, within tolerances");
-    app.add_option("--compare-events", goldenEventsPath,
-                   "Compare the grain-event log with a golden .events.jsonl, exactly per line "
-                   "(CR and final newline ignored)");
-    const auto *blockSizeOption =
+    // Every option but --write-media, which takes none of them.
+    std::vector<CLI::Option *> renderOptions;
+    renderOptions.push_back(app.add_option("spec", specPath, "The render spec (JSON)"));
+    renderOptions.push_back(
+        app.add_option("-o,--output", wavPath, "Write the render as a 32-bit float WAV"));
+    renderOptions.push_back(
+        app.add_option("--metrics", metricsPath, "Write the render's metrics (JSON)"));
+    renderOptions.push_back(
+        app.add_option("--events", eventsPath, "Write the grain-event log (JSON lines)"));
+    renderOptions.push_back(
+        app.add_option("--spectrogram", spectrogramPath, "Write a spectrogram (PNG)"));
+    renderOptions.push_back(
+        app.add_option("--compare", goldenMetricsPath,
+                       "Compare the metrics with a golden .metrics.json, within tolerances"));
+    renderOptions.push_back(
+        app.add_option("--compare-events", goldenEventsPath,
+                       "Compare the grain-event log with a golden .events.jsonl, exactly per "
+                       "line (CR and final newline ignored)"));
+    auto *const blockSizeOption =
         app.add_option("--block-size", blockSize, "Override the spec's blockSize")
             ->check(CLI::Range(uint32_t{1}, gg::render::kMaxBlockSize));
-    app.add_option("--media-dir", mediaDir,
-                   "Resolve the spec's relative file paths against this directory instead of "
-                   "the spec's");
-    app.add_option("--write-media", writeMediaDir,
-                   "Write the test media the golden cases read into this directory, and exit")
-        ->excludes(specOption);
+    renderOptions.push_back(blockSizeOption);
+    renderOptions.push_back(
+        app.add_option("--media-dir", mediaDir,
+                       "Resolve the spec's relative file paths against this directory instead "
+                       "of the spec's"));
+    auto *const writeMediaOption = app.add_option(
+        "--write-media", writeMediaDir,
+        "Write the test media the golden cases read into this directory, and exit; it takes no "
+        "other option");
+    for (CLI::Option *option : renderOptions)
+    {
+        writeMediaOption->excludes(option);
+    }
     try
     {
         app.parse(argc, argv);

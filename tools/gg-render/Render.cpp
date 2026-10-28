@@ -80,18 +80,21 @@ CloudParams toCloudParams(const StreamSpec &s)
     };
 }
 
-/// The most grains one process() call of `frames` frames can spawn. Onsets are at least
-/// CloudScheduler::kMinIntervalSamples (1/16) apart, less the rounding of t + Δ, which is at
-/// most 2^-22 samples while t is below 2^32 (every render gg-render accepts is shorter). So a
-/// call of at most kMaxBlockSize frames starts fewer than frames / (1/16 − 2^-22) + 1 grains,
-/// which is at most 16 × frames + 5. The code reserves 16 × frames + 16: the extra slack over
-/// the derived + 5 is deliberate, so the bound doesn't rest on that rounding analysis alone. The
-/// bound holds for a Processor call too, which renders in pieces split at grid boundaries: the
-/// minimum interval is between consecutive onsets, whichever piece they fall in.
+/// The most grains one process() call of `frames` frames can spawn. The scheduler's own onsets
+/// are at least CloudScheduler::kMinIntervalSamples (1/16) apart, less the rounding of t + Δ,
+/// which is at most 2^-22 samples while t is below 2^32 (every render gg-render accepts is
+/// shorter): fewer than frames / (1/16 − 2^-22) + 1 grains, at most 16 × frames + 5. A note-on
+/// into an empty held set forces an onset at its grid boundary, however close to the one before
+/// (spec §6.2), so the minimum interval doesn't hold there: such forced onsets add at most one
+/// per boundary, frames / kControlGrid + 2 in a call. The code reserves
+/// 16 × frames + frames / kControlGrid + 16: the extra slack over the derived + 7 is deliberate,
+/// so the bound doesn't rest on that rounding analysis alone. The bound holds for a Processor
+/// call too, which renders in pieces split at grid boundaries: the intervals are between
+/// consecutive onsets, whichever piece they fall in.
 std::size_t maxGrainsPerCall(uint32_t frames)
 {
     const auto perFrame = static_cast<std::size_t>(1.0 / CloudScheduler::kMinIntervalSamples);
-    return perFrame * frames + 16;
+    return perFrame * frames + frames / gg::core::Processor::kControlGrid + 16;
 }
 
 /// Moves the grains collected during one process() call into eventLines, if it isn't null.

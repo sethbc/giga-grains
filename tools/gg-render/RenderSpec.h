@@ -166,8 +166,8 @@ struct AutomationPoint
 ///   where it starts again stays held.
 /// - The Processor's held set is one bit per (channel, key), so overlapping notes on the same
 ///   channel and key release together, at the first one's Off.
-/// - A note's Off must fall on a later frame than its On: a duration that rounds to no frames
-///   is rejected (ruling R17).
+/// - A note's Off must fall on a later frame than its On: a note whose Off would round to its
+///   On's frame is rejected (ruling R17).
 /// - An Off at or after the render's end is never sent: the note is still held when it ends.
 /// - Like an automation point, a note in the render's last samples, after its last grid
 ///   boundary, never applies.
@@ -176,7 +176,7 @@ struct NoteSpec
 {
     double timeSeconds{0.0};     ///< >= 0, rounding to a frame before the render's end.
     uint8_t key{60};             ///< 0..127; 60 plays at the sample's own pitch.
-    double durationSeconds{1.0}; ///< > 0, at most kMaxSeconds, and at least one frame (R17).
+    double durationSeconds{1.0}; ///< > 0, at most kMaxSeconds; the Off rounds past the On (R17).
     uint8_t channel{0};          ///< 0..15; optional in the spec, 0 by default.
 
     friend bool operator==(const NoteSpec &, const NoteSpec &) = default;

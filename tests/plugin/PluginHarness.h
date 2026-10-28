@@ -45,8 +45,9 @@ inline void useSettingsFile(const std::filesystem::path &file)
 #endif
 }
 
-/// Every test process starts with a scratch settings file of its own name, so no test reads or
-/// writes the user's (ruling R16). Tests that look at the settings point at their own file.
+/// Every test process starts with the scratch settings file below, so no test reads or writes
+/// the user's (ruling R16). It is one path, shared by every process: a test that reads or writes
+/// the settings points at a file of its own (useSettingsFile) first.
 inline const bool kScratchSettings = [] {
     useSettingsFile(std::filesystem::path(GG_TEST_OUTPUT_DIR) / "plugin-settings" / "settings.xml");
     return true;
