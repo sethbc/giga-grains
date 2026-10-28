@@ -1,0 +1,8 @@
+{
+  "mode": "fx",
+  "sampleRate": 48000,
+  "durationSeconds": 4.0,
+  "blockSize": 128,
+  "seed": 1,
+  "input": {"kind": "file", "path": "loop-48k.wav"}
+}

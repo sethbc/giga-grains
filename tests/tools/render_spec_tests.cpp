@@ -1224,3 +1224,104 @@ TEST_CASE("an unreadable sample or input is bad input", "[render]")
     gg::render::resolvePaths(fx, utf8(std::filesystem::path{GG_TEST_OUTPUT_DIR} / "none"));
     CHECK_THROWS_AS(gg::render::render(fx, nullptr), gg::render::BadInput);
 }
+
+// The golden note and file cases (tests/golden/cases/).
+
+TEST_CASE("the golden note and file cases parse", "[render]")
+{
+    // inst-note: a 4 s sweep sample, one note.
+    const RenderSpec note = parseCase("inst-note");
+    CHECK(note.mode == RenderMode::Instrument);
+    CHECK(note.sampleRate == 48000.0);
+    CHECK(note.durationSeconds == 3.0);
+    CHECK(note.blockSize == 128);
+    CHECK(note.seed == 1);
+    CHECK(note.instrument.sample.kind == SourceKind::Sweep);
+    const std::map<std::string, double> params(note.instrument.params.begin(),
+                                               note.instrument.params.end());
+    CHECK(params ==
+          std::map<std::string, double>{{"Position", 0.5}, {"Density", 5.0}, {"Level", -6.0}});
+    CHECK(note.instrument.notes == std::vector<NoteSpec>{{0.25, 60, 2.0, 0}});
+
+    // inst-chord: three notes together.
+    CHECK(parseCase("inst-chord").instrument.notes ==
+          std::vector<NoteSpec>{{0.25, 48, 3.0, 0}, {0.25, 55, 3.0, 0}, {0.25, 64, 3.0, 0}});
+
+    // inst-file-44k1: a file sample; the parser leaves its path as written.
+    const RenderSpec file = parseCase("inst-file-44k1");
+    CHECK(file.instrument.sample.kind == SourceKind::File);
+    CHECK(file.instrument.sample.path == "tone-44k1.wav");
+    CHECK(file.instrument.notes == std::vector<NoteSpec>{{0.25, 60, 1.0, 0}, {1.5, 72, 1.0, 0}});
+
+    // fx-note-freeze: notes in FX mode, over a file input without "channels".
+    const RenderSpec freeze = parseCase("fx-note-freeze");
+    CHECK(freeze.mode == RenderMode::Fx);
+    CHECK(freeze.fx.input.kind == SourceKind::File);
+    CHECK(freeze.fx.input.path == "loop-48k.wav");
+    CHECK(freeze.fx.notes == std::vector<NoteSpec>{{1.0, 60, 1.0, 0}, {2.5, 67, 0.5, 0}});
+    CHECK(parseCase("fx-file").fx.notes.empty());
+}
+
+TEST_CASE("note and file renders do not depend on block size", "[render]")
+{
+    const std::string name = GENERATE(as<std::string>{}, "inst-note", "inst-chord", "inst-release",
+                                      "inst-file-44k1", "fx-note-freeze", "fx-file");
+    const uint32_t blockSize = GENERATE(1u, 1000u);
+    CAPTURE(name, blockSize);
+
+    RenderSpec spec = parseCase(name);
+    gg::render::resolvePaths(spec, writeMedia("render-block-size-media"));
+    std::vector<std::string> refEvents;
+    const auto ref = gg::render::render(spec, &refEvents);
+    REQUIRE(ref.channels.size() == 2);
+    REQUIRE(ref.channels[0].size() ==
+            static_cast<std::size_t>(gg::render::framesFor(spec.durationSeconds, spec.sampleRate)));
+    REQUIRE_FALSE(refEvents.empty());
+
+    spec.blockSize = blockSize;
+    std::vector<std::string> events;
+    const auto out = gg::render::render(spec, &events);
+    REQUIRE(out.channels.size() == 2);
+    CHECK(bitIdentical(out.channels[0], ref.channels[0]));
+    CHECK(bitIdentical(out.channels[1], ref.channels[1]));
+    CHECK(events == refEvents);
+}
+
+TEST_CASE("a chord's grains take its three keys, and its release decays to silence", "[render]")
+{
+    // inst-chord: keys 48, 55 and 64 over a sample at the render's rate, so each grain's read
+    // rate is 2^((key - 60) / 12).
+    std::vector<std::string> events;
+    gg::render::render(parseCase("inst-chord"), &events);
+    std::set<double> rates;
+    for (const auto &line : events)
+    {
+        rates.insert(nlohmann::json::parse(line)["rate"].get<double>());
+    }
+    REQUIRE(rates.size() == 3);
+    auto rate = rates.begin();
+    CHECK_THAT(*rate++, WithinRel(0.5, 1e-12));
+    CHECK_THAT(*rate++, WithinRel(std::exp2(-5.0 / 12.0), 1e-12));
+    CHECK_THAT(*rate, WithinRel(std::exp2(4.0 / 12.0), 1e-12));
+
+    // inst-release: key 60 from 0.25 s to 1.25 s with 400 ms grains. Grains sound after the
+    // note-off, and the render ends in silence.
+    const RenderSpec release = parseCase("inst-release");
+    const auto out = gg::render::render(release, &events);
+    const auto at = [](double seconds) { return static_cast<std::size_t>(seconds * 48000.0); };
+    const auto loudest = [&](double from, double to) {
+        float p = 0.0f;
+        for (std::size_t n = at(from); n < at(to); ++n)
+        {
+            p = std::max(p, std::abs(out.channels[0][n]));
+        }
+        return p;
+    };
+    CHECK(loudest(0.0, 0.25) == 0.0f);
+    CHECK(loudest(1.3, 1.4) > 0.01f);
+    CHECK(loudest(1.7, 2.0) == 0.0f);
+    for (const auto &line : events)
+    {
+        CHECK(nlohmann::json::parse(line)["onset"].get<int64_t>() < 60000); // none after 1.25 s
+    }
+}
