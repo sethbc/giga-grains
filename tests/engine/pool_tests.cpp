@@ -4,11 +4,11 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <limits>
 #include <vector>
 
 #include <catch2/catch_test_macros.hpp>
 
+#include "gg/core/Rng.h"
 #include "gg/grain/GrainPool.h"
 
 namespace
@@ -23,7 +23,7 @@ std::vector<uint64_t> indices(const gg::GrainPool &pool)
     std::vector<uint64_t> v;
     for (uint32_t i = 0; i < pool.size(); ++i)
     {
-        v.push_back(pool.at(i).index);
+        v.push_back(pool.spec(i).index);
     }
     return v;
 }
@@ -36,7 +36,9 @@ TEST_CASE("pool keeps spawn order through retirement", "[pool]")
     gg::GrainPool pool(16);
     for (uint64_t i = 0; i < 10; ++i)
     {
-        REQUIRE(pool.spawn(grain(i, static_cast<int64_t>(i) * 5, kDurations[i])));
+        const auto onset = static_cast<int64_t>(i) * 5;
+        REQUIRE(pool.canAdmit(onset));
+        REQUIRE(pool.spawn(grain(i, onset, kDurations[i])));
     }
     REQUIRE(pool.size() == 10);
 
@@ -46,7 +48,6 @@ TEST_CASE("pool keeps spawn order through retirement", "[pool]")
         pool.retireFinished(now);
 
         std::vector<uint64_t> expected;
-        int64_t earliest = std::numeric_limits<int64_t>::max();
         for (uint64_t i = 0; i < 10; ++i)
         {
             const int64_t end =
@@ -54,19 +55,20 @@ TEST_CASE("pool keeps spawn order through retirement", "[pool]")
             if (end > now)
             {
                 expected.push_back(i);
-                earliest = end < earliest ? end : earliest;
             }
         }
-        const auto remaining = indices(pool);
         INFO("now = " << now);
-        REQUIRE(remaining == expected);
-        bool increasing = true;
-        for (std::size_t i = 1; i < remaining.size(); ++i)
+        REQUIRE(indices(pool) == expected);
+        // Every array moved together: each row still holds its grain's fields and end.
+        const gg::GrainRows &rows = pool.rows();
+        for (uint32_t i = 0; i < pool.size(); ++i)
         {
-            increasing = increasing && remaining[i - 1] < remaining[i];
+            const uint64_t k = expected[i];
+            const gg::GrainSpec g = grain(k, static_cast<int64_t>(k) * 5, kDurations[k]);
+            REQUIRE(pool.spec(i) == g);
+            REQUIRE(rows.index[i] == k);
+            REQUIRE(rows.endSample[i] == gg::grainEndSample(g));
         }
-        REQUIRE(increasing);
-        REQUIRE(pool.earliestEnd() == earliest);
     }
     REQUIRE(pool.size() == 0);
 }
@@ -96,8 +98,9 @@ TEST_CASE("pool full drops deterministically", "[pool]")
     int rejected = 0;
     for (uint64_t i = 0; i < 6; ++i)
     {
-        if (pool.spawn(grain(i, 0, 100)))
+        if (pool.canAdmit(0))
         {
+            REQUIRE(pool.spawn(grain(i, 0, 100)));
             ++accepted;
         }
         else
@@ -112,10 +115,114 @@ TEST_CASE("pool full drops deterministically", "[pool]")
 
     pool.clear();
     REQUIRE(pool.size() == 0);
-    REQUIRE(pool.earliestEnd() == std::numeric_limits<int64_t>::max());
+    REQUIRE_FALSE(pool.storageFull());
+    REQUIRE(pool.canAdmit(0)); // time may restart after a clear
     REQUIRE(pool.spawn(grain(9, 0, 100)));
+    REQUIRE(indices(pool) == std::vector<uint64_t>{9});
 
     gg::GrainPool none(0);
+    REQUIRE_FALSE(none.canAdmit(0));
+    REQUIRE(none.storageFull());
     REQUIRE_FALSE(none.spawn(grain(0, 0, 100)));
     REQUIRE(none.size() == 0);
+}
+
+TEST_CASE("pool admits by sounding grains, not stored ones", "[pool]")
+{
+    // Four grains that end at 100 fill the admission limit until then; at 100 they no longer
+    // sound, so more are admitted although none has been retired. Storage holds 2 × capacity.
+    gg::GrainPool pool(4);
+    std::vector<gg::GrainSpec> spawned;
+    for (uint64_t i = 0; i < 4; ++i)
+    {
+        const gg::GrainSpec g = grain(i, 0, 98);
+        REQUIRE(gg::grainEndSample(g) == 100);
+        REQUIRE(pool.canAdmit(0));
+        REQUIRE(pool.spawn(g));
+        spawned.push_back(g);
+    }
+    REQUIRE_FALSE(pool.canAdmit(99));
+    REQUIRE(pool.canAdmit(100));
+    for (uint64_t i = 4; i < 8; ++i)
+    {
+        const gg::GrainSpec g = grain(i, 100, 98);
+        REQUIRE(pool.spawn(g));
+        spawned.push_back(g);
+    }
+    REQUIRE(pool.size() == 8);
+    REQUIRE(pool.storageFull());
+    REQUIRE_FALSE(pool.spawn(grain(8, 100, 98)));
+    REQUIRE(pool.size() == 8);
+    for (uint32_t i = 0; i < 8; ++i)
+    {
+        REQUIRE(pool.spec(i) == spawned[i]);
+    }
+
+    pool.retireFinished(100);
+    REQUIRE(pool.size() == 4);
+    REQUIRE_FALSE(pool.storageFull());
+    REQUIRE(indices(pool) == std::vector<uint64_t>{4, 5, 6, 7});
+    for (uint32_t i = 0; i < 4; ++i)
+    {
+        REQUIRE(pool.spec(i) == spawned[4 + i]);
+    }
+    REQUIRE_FALSE(pool.canAdmit(100));
+}
+
+TEST_CASE("pool admission matches a brute-force count", "[pool]")
+{
+    // 20,000 grains with random durations in [1, 500] and onsets advancing by 0, 1, 2 or 3
+    // samples, against capacity 64. The reference admits a grain when fewer than 64 of the grains
+    // it has admitted still sound at the onset (end > onset), by a linear scan. The pool runs as
+    // the engine drives it: canAdmit, an early retirement when storage is full, and a periodic
+    // retirement standing in for the block end. That period, 1009 grains (about 1,500 samples),
+    // admits several hundred grains, so storage fills between retirements.
+    constexpr uint32_t kCapacity = 64;
+    constexpr uint64_t kGrains = 20000;
+    gg::GrainPool pool(kCapacity);
+    std::vector<int64_t> referenceEnds;
+    std::vector<uint64_t> expected;
+    std::vector<uint64_t> admitted;
+    int64_t onset = 0;
+    uint64_t earlyRetirements = 0;
+    for (uint64_t k = 0; k < kGrains; ++k)
+    {
+        using gg::rng::Field;
+        const uint64_t hd = gg::rng::hash({7, 0, 0, Field::SignalNoise, k});
+        const uint64_t hs = gg::rng::hash({7, 0, 1, Field::SignalNoise, k});
+        const double dur = 1.0 + static_cast<double>(hd % 500);
+        onset += static_cast<int64_t>(hs % 4);
+        const gg::GrainSpec g = grain(k, onset, dur);
+
+        uint32_t sounding = 0;
+        for (const int64_t end : referenceEnds)
+        {
+            sounding += end > onset ? 1 : 0;
+        }
+        if (sounding < kCapacity)
+        {
+            referenceEnds.push_back(gg::grainEndSample(g));
+            expected.push_back(k);
+        }
+
+        if (pool.canAdmit(onset))
+        {
+            if (pool.storageFull())
+            {
+                pool.retireFinished(onset);
+                ++earlyRetirements;
+            }
+            REQUIRE(pool.spawn(g));
+            admitted.push_back(k);
+        }
+        if (k % 1009 == 1008)
+        {
+            pool.retireFinished(onset);
+        }
+        REQUIRE(pool.size() <= 2 * kCapacity);
+    }
+    REQUIRE(admitted == expected);
+    // Guard against a vacuous pass: the limit bit, and storage filled between retirements.
+    REQUIRE(admitted.size() < kGrains);
+    REQUIRE(earlyRetirements > 0);
 }

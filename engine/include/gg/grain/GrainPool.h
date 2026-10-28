@@ -55,43 +55,109 @@ constexpr int64_t grainEndSample(const GrainSpec &g) noexcept
     return g.onsetSample + static_cast<int64_t>(g.durationSamples) + 2;
 }
 
-/// A fixed-capacity set of live grains, kept in spawn order. Only the constructor allocates.
+/// Pointers to the pool's arrays, one per field (INTENT §14). Entries [0, GrainPool::size()) are
+/// the stored grains in spawn order; row i of every array belongs to the same grain. The pointers
+/// are fixed for the pool's life, but the entries move whenever the pool spawns, retires or
+/// clears.
+struct GrainRows
+{
+    const uint64_t *index;
+    const int64_t *onsetSample;
+    const double *onsetFrac;
+    const double *startPos;
+    const double *rate;
+    const double *durationSamples;
+    const float *gain;
+    const float *pan;
+    const int64_t *endSample; ///< grainEndSample of each
+};
+
+/// The grain pool: a structure of arrays (INTENT §14), one array per GrainSpec field plus each
+/// grain's grainEndSample, kept in spawn order. Only the constructor allocates.
 ///
-/// Retirement compacts the dense array stably (never swap-remove), so the grains are always
-/// visited in spawn order and every output sample sums its grains in the same order however
-/// the host splits blocks (INTENT §8.6, §14).
+/// **Admission** (ruling T3-b) allows capacity() grains to sound at once: canAdmit(onset) is true
+/// when fewer than capacity() of the grains spawned since the last clear() still sound at the
+/// onset (grainEndSample > onset). A min-heap of their end samples answers that in O(log
+/// capacity) without touching the arrays, so a grain that has finished but is still stored
+/// doesn't count.
 ///
-/// In M0 the pool is an array of GrainSpec structs (AoS, ruling T3-c), which is what at()
-/// returns a reference into. INTENT §14's structure-of-arrays layout is still the target; it
-/// arrives with the M1 SIMD kernels, which are what need it.
+/// **Storage** holds 2 × capacity() grains, finished or not, so the engine retires them once per
+/// block, after rendering, rather than at each admission (carry-over [103]). At a block's end
+/// at most capacity() grains still sound, so storage fills within a block only when more than
+/// capacity() grains finish in it; the engine then retires early, which is amortized O(1) per
+/// admission.
+///
+/// Retirement compacts every array stably (never swap-remove), so the grains are always visited
+/// in spawn order and every output sample sums its grains in the same order however the host
+/// splits blocks (INTENT §8.6, §14).
 class GrainPool
 {
   public:
+    /// Allocates 2 × capacity slots per array, and the heap.
     explicit GrainPool(uint32_t capacity);
 
-    uint32_t capacity() const noexcept { return static_cast<uint32_t>(grains_.size()); }
+    // rows() points into this pool's own arrays.
+    GrainPool(const GrainPool &) = delete;
+    GrainPool &operator=(const GrainPool &) = delete;
+
+    /// The admission limit: the most grains that may sound at once.
+    uint32_t capacity() const noexcept { return capacity_; }
+    /// The stored grains, finished or not; at most 2 × capacity().
     uint32_t size() const noexcept { return size_; }
 
-    /// Appends g after every live grain. Returns false, and changes nothing, when full.
+    /// Whether a grain with this onset may spawn: true when fewer than capacity() of the grains
+    /// spawned since the last clear() have grainEndSample > onset. First forgets every end
+    /// <= onset.
+    ///
+    /// Requires the onsets passed here, and the nowSample of every retireFinished() call before
+    /// them, not to decrease between clear()s: an end forgotten at one onset is never counted
+    /// again. Whatever restarts time (Engine::reset, a source-mode switch) must clear() the pool.
+    bool canAdmit(int64_t onset) noexcept SST_CPPUTILS_NONBLOCKING;
+
+    /// Whether all 2 × capacity() slots are in use, so spawn() would fail.
+    bool storageFull() const noexcept { return size_ == slots_; }
+
+    /// Appends g after every stored grain. Returns false, and changes nothing, when storageFull().
+    /// Doesn't check canAdmit(): the caller does.
     bool spawn(const GrainSpec &g) noexcept SST_CPPUTILS_NONBLOCKING;
 
-    /// Removes every grain whose grainEndSample is <= nowSample, keeping the rest in order.
+    /// Removes every grain whose grainEndSample is <= nowSample, keeping the rest in spawn order,
+    /// and forgets their ends. nowSample must not exceed any onset later passed to canAdmit()
+    /// before the next clear().
     void retireFinished(int64_t nowSample) noexcept SST_CPPUTILS_NONBLOCKING;
 
-    /// Removes every grain.
+    /// Removes every grain and forgets every end, so time may restart.
     void clear() noexcept SST_CPPUTILS_NONBLOCKING;
 
-    /// The smallest grainEndSample among the live grains, or INT64_MAX when empty: no grain
-    /// retires before this sample.
-    int64_t earliestEnd() const noexcept { return earliestEnd_; }
+    /// The stored grains' fields, in spawn order.
+    const GrainRows &rows() const noexcept { return rows_; }
 
-    /// The i-th live grain in spawn order; i < size().
-    const GrainSpec &at(uint32_t i) const noexcept { return grains_[i]; }
+    /// The i-th stored grain in spawn order, reassembled from the arrays; i < size().
+    GrainSpec spec(uint32_t i) const noexcept;
 
   private:
-    std::vector<GrainSpec> grains_; // capacity() slots; [0, size_) are live
+    uint32_t capacity_;
+    uint32_t slots_; // 2 × capacity_
+
+    std::vector<uint64_t> index_;
+    std::vector<int64_t> onsetSample_;
+    std::vector<double> onsetFrac_;
+    std::vector<double> startPos_;
+    std::vector<double> rate_;
+    std::vector<double> durationSamples_;
+    std::vector<float> gain_;
+    std::vector<float> pan_;
+    std::vector<int64_t> endSample_;
+    GrainRows rows_;
     uint32_t size_{0};
+    // The smallest endSample_ among the stored grains, or INT64_MAX when empty: retireFinished
+    // has nothing to do before it.
     int64_t earliestEnd_{std::numeric_limits<int64_t>::max()};
+
+    // A min-heap (std::greater) in heap_[0, heapSize_) of the ends canAdmit() still counts. Its
+    // entries are a sub-multiset of the stored grains' ends, so it never holds more than slots_.
+    std::vector<int64_t> heap_;
+    uint32_t heapSize_{0};
 };
 } // namespace gg
 

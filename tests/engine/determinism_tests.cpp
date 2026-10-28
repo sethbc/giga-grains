@@ -472,3 +472,97 @@ TEST_CASE("live mode is block-size invariant", "[determinism]")
         REQUIRE(sameBits(ref.audio.right, r.audio.right));
     }
 }
+
+namespace
+{
+// A saturated pool (carry-over [103]): capacity 64 against 4 kHz of 50 ms grains, about 200
+// overlapping wanted, for 1 s. At saturation a grain is admitted only when one ends, about one
+// every 38 samples, so a 4096-frame block admits more than the 64 that storage holds beyond the
+// sounding grains: storage fills mid-block and admit() renders and retires early.
+constexpr uint32_t kSaturatedCapacity = 64;
+constexpr int64_t kSaturatedFrames = 48000;
+
+struct SaturatedRender
+{
+    Render audio;
+    GrainLog log;
+    uint64_t dropped{0};
+};
+
+void renderSaturated(const std::shared_ptr<const gg::SampleBuffer> &source,
+                     const std::vector<uint32_t> &blockSizes, SaturatedRender &r)
+{
+    gg::Engine engine({kSampleRate, kMaxBlock, kSaturatedCapacity, 42});
+    engine.setSource(source);
+    gg::CloudParams p = kParams;
+    p.densityHz = 4000.0;
+    p.grainDurationSec = 0.05;
+    engine.setCloudParams(p);
+    engine.setEventSink(&GrainLog::record, &r.log);
+    constexpr float kUnwritten = std::numeric_limits<float>::quiet_NaN();
+    r.audio.left.assign(static_cast<std::size_t>(kSaturatedFrames), kUnwritten);
+    r.audio.right.assign(static_cast<std::size_t>(kSaturatedFrames), kUnwritten);
+    int64_t done = 0;
+    for (std::size_t next = 0; done < kSaturatedFrames; ++next)
+    {
+        const uint32_t want = blockSizes[next % blockSizes.size()];
+        const auto n = static_cast<uint32_t>(std::min<int64_t>(want, kSaturatedFrames - done));
+        float *out[2] = {r.audio.left.data() + done, r.audio.right.data() + done};
+        engine.process(out, 2, n);
+        done += n;
+    }
+    r.dropped = engine.droppedGrains();
+}
+
+// The most grains the pool stores at once when every block is blockSize frames and retirement
+// waits for the block end: those carried in from earlier blocks (still sounding at the block's
+// start) plus those spawned in it. Above 2 × capacity, storage filled and admit() compacted early.
+std::size_t peakStoredWithoutEarlyRetirement(const std::vector<gg::GrainSpec> &grains,
+                                             int64_t blockSize)
+{
+    std::size_t peak = 0;
+    for (int64_t start = 0; start < kSaturatedFrames; start += blockSize)
+    {
+        std::size_t stored = 0;
+        for (const gg::GrainSpec &g : grains)
+        {
+            const bool carried = g.onsetSample < start && gg::grainEndSample(g) > start;
+            const bool spawned = g.onsetSample >= start && g.onsetSample < start + blockSize;
+            stored += carried || spawned ? 1 : 0;
+        }
+        peak = std::max(peak, stored);
+    }
+    return peak;
+}
+} // namespace
+
+TEST_CASE("saturated pool is block-size invariant", "[determinism]")
+{
+    const auto source = sineSource();
+    SaturatedRender ref;
+    renderSaturated(source, {kMaxBlock}, ref);
+    REQUIRE(allFinite(ref.audio.left));
+    REQUIRE(allFinite(ref.audio.right));
+    REQUIRE(peak(ref.audio.left) > 0.05f);
+    REQUIRE_FALSE(ref.log.overflowed);
+    // Guard against a vacuous pass: the pool saturated, and in the reference's 4096-frame blocks
+    // storage filled, so admit() took its early render-and-retire path.
+    REQUIRE(ref.dropped > 0);
+    REQUIRE(ref.log.grains.size() > 2 * kSaturatedCapacity);
+    REQUIRE(peakStoredWithoutEarlyRetirement(ref.log.grains, kMaxBlock) > 2 * kSaturatedCapacity);
+
+    const auto random = randomSplit();
+    for (const auto &blockSizes :
+         {std::vector<uint32_t>{1}, std::vector<uint32_t>{7}, std::vector<uint32_t>{64},
+          std::vector<uint32_t>{511}, std::vector<uint32_t>{4096}, random})
+    {
+        INFO("first block size = " << blockSizes.front() << " of " << blockSizes.size());
+        SaturatedRender r;
+        renderSaturated(source, blockSizes, r);
+        REQUIRE_FALSE(r.log.overflowed);
+        REQUIRE(r.log.grains == ref.log.grains);
+        REQUIRE(r.dropped == ref.dropped);
+        REQUIRE(sameBits(ref.audio.left, r.audio.left));
+        REQUIRE(sameBits(ref.audio.right, r.audio.right));
+    }
+}

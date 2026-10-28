@@ -154,6 +154,8 @@ class Engine
     double sampleRate() const noexcept { return config_.sampleRate; }
     /// Frames rendered since construction or the last reset().
     int64_t sampleClock() const noexcept { return clock_; }
+    /// The grains still sounding after the last process() call: the pool retires the finished
+    /// ones at the end of every block.
     uint32_t activeGrains() const noexcept { return pool_.size(); }
     /// Grains the schedule asked for that found the pool full or, in Live mode, whose read span
     /// doesn't fit the ring, since construction or reset().
@@ -179,11 +181,11 @@ class Engine
     void renderPool(float *const dst[2], int64_t blockStart, int64_t from,
                     int64_t to) noexcept SST_CPPUTILS_NONBLOCKING;
     template <bool TwoOutputs, bool MonoSource>
-    void renderGrain(const GrainSpec &g, float *const dst[2], int64_t blockStart, int64_t from,
-                     int64_t to) const noexcept SST_CPPUTILS_NONBLOCKING;
+    void renderGrain(const GrainRows &rows, uint32_t i, float *const dst[2], int64_t blockStart,
+                     int64_t from, int64_t to) const noexcept SST_CPPUTILS_NONBLOCKING;
     template <bool TwoOutputs>
-    void renderLiveGrain(const GrainSpec &g, float *const dst[2], int64_t blockStart, int64_t from,
-                         int64_t to) const noexcept SST_CPPUTILS_NONBLOCKING;
+    void renderLiveGrain(const GrainRows &rows, uint32_t i, float *const dst[2], int64_t blockStart,
+                         int64_t from, int64_t to) const noexcept SST_CPPUTILS_NONBLOCKING;
 
     EngineConfig config_;
     HannTable hann_;

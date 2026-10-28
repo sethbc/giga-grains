@@ -195,6 +195,64 @@ TEST_CASE("engine process does not allocate with a full pool or odd block sizes"
     REQUIRE(allocations == 0);
 }
 
+TEST_CASE("engine process does not allocate when the pool's storage fills", "[rt]")
+{
+    // Storage holds 2 × capacity grains and is compacted once per block, so it fills only when
+    // more than capacity grains finish within one block. Capacity 16 against 4 kHz of 5 ms
+    // grains admits a grain each time one ends, about one every 15 samples, so a 1000-frame call
+    // (one block: maxBlockSize is 4096) admits about 66, more than the 32 slots: storage fills
+    // mid-block, and admit() renders the pool to the onset and compacts it early. Grains as long
+    // as a second could never fill it, since only 16 of them end per second.
+    constexpr uint32_t kCapacity = 16;
+    gg::Engine engine(gg::EngineConfig{48000.0, 4096, kCapacity, 7});
+    auto source = std::make_shared<gg::SampleBuffer>(2, 48000, 48000.0);
+    for (uint32_t c = 0; c < 2; ++c)
+    {
+        for (int64_t i = 0; i < source->frames(); ++i)
+        {
+            const double phase = 2.0 * std::numbers::pi * (220.0 * i / 48000.0 + 0.25 * c);
+            source->channel(c)[i] = static_cast<float>(std::sin(phase));
+        }
+    }
+    engine.setSource(source);
+    engine.setCloudParams({.densityHz = 4000.0,
+                           .distribution = 1.0,
+                           .grainDurationSec = 0.005,
+                           .position = 0.5,
+                           .spray = 0.5,
+                           .pitchSemitones = 3.0,
+                           .stereo = 1.0,
+                           .gain = 0.5f});
+    SpawnCounter counter;
+    engine.setEventSink(&SpawnCounter::record, &counter);
+
+    std::vector<float> left(1000), right(1000);
+    float *out[2] = {left.data(), right.data()};
+    engine.process(out, 2, 1000); // warm up until the pool is saturated
+    const uint64_t droppedBefore = engine.droppedGrains();
+
+    uint64_t mostSpawnedInOneCall = 0;
+    AllocTripwire::resetCount();
+    {
+        AllocTripwire::Scope armed;
+        for (int i = 0; i < 20; ++i)
+        {
+            engine.process(out, 2, 0);
+            engine.process(out, 2, 1);
+            const uint64_t before = counter.spawns;
+            engine.process(out, 2, 1000);
+            const uint64_t spawned = counter.spawns - before;
+            mostSpawnedInOneCall = spawned > mostSpawnedInOneCall ? spawned : mostSpawnedInOneCall;
+        }
+    }
+    const uint64_t allocations = AllocTripwire::count();
+
+    // More than 2 × capacity spawns in one block can't all be stored without an early compaction.
+    REQUIRE(mostSpawnedInOneCall > 2 * kCapacity);
+    REQUIRE(engine.droppedGrains() > droppedBefore); // saturated while armed
+    REQUIRE(allocations == 0);
+}
+
 TEST_CASE("engine live process does not allocate", "[rt]")
 {
     // Live mode: every call writes its input into the ring (allocated by the constructor) before

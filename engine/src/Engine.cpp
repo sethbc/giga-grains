@@ -240,19 +240,19 @@ bool Engine::liveGrain(const GrainDraw &d, GrainSpec &g) const noexcept
 void Engine::admit(const GrainSpec &g, float *const dst[2], int64_t blockStart,
                    int64_t &renderedTo) noexcept
 {
-    if (pool_.size() == pool_.capacity())
+    // Count only the grains still sounding at the onset, so admission doesn't depend on where
+    // the block boundaries fall (the pool may still store grains that finished earlier in the
+    // block, because retirement normally waits for the block's end).
+    if (!pool_.canAdmit(g.onsetSample))
     {
-        // The pool may still hold grains that finish before g's onset but haven't been
-        // retired, because retirement normally waits for the end of the block. Count only
-        // the grains still sounding at the onset, so admission doesn't depend on where the
-        // block boundaries fall.
-        if (pool_.earliestEnd() > g.onsetSample)
-        {
-            ++dropped_;
-            return;
-        }
-        // Finish the pool up to the onset, so the grains retired here have played all their
-        // samples, then retire them.
+        ++dropped_;
+        return;
+    }
+    if (pool_.storageFull())
+    {
+        // More than capacity grains finished in this block. Finish the pool up to the onset, so
+        // the grains retired here have played all their samples, then retire them: fewer than
+        // capacity still sound, so g fits.
         renderPool(dst, blockStart, renderedTo, g.onsetSample);
         renderedTo = g.onsetSample;
         pool_.retireFinished(g.onsetSample);
@@ -273,58 +273,64 @@ void Engine::renderPool(float *const dst[2], int64_t blockStart, int64_t from, i
     // Grain-major, in spawn order: every grain adds to every sample of [from, to) before the
     // next grain starts, so each sample sums its grains in spawn order.
     const bool twoOutputs = dst[1] != nullptr;
+    const GrainRows &rows = pool_.rows();
     for (uint32_t i = 0; i < pool_.size(); ++i)
     {
-        const GrainSpec &g = pool_.at(i);
         if (mode_ == SourceMode::Live)
         {
             if (twoOutputs)
             {
-                renderLiveGrain<true>(g, dst, blockStart, from, to);
+                renderLiveGrain<true>(rows, i, dst, blockStart, from, to);
             }
             else
             {
-                renderLiveGrain<false>(g, dst, blockStart, from, to);
+                renderLiveGrain<false>(rows, i, dst, blockStart, from, to);
             }
         }
         else if (twoOutputs)
         {
             if (monoSource_)
             {
-                renderGrain<true, true>(g, dst, blockStart, from, to);
+                renderGrain<true, true>(rows, i, dst, blockStart, from, to);
             }
             else
             {
-                renderGrain<true, false>(g, dst, blockStart, from, to);
+                renderGrain<true, false>(rows, i, dst, blockStart, from, to);
             }
         }
         else
         {
             // One output reads only source channel 0, whatever the source's width.
-            renderGrain<false, true>(g, dst, blockStart, from, to);
+            renderGrain<false, true>(rows, i, dst, blockStart, from, to);
         }
     }
 }
 
 template <bool TwoOutputs, bool MonoSource>
-void Engine::renderGrain(const GrainSpec &g, float *const dst[2], int64_t blockStart, int64_t from,
-                         int64_t to) const noexcept
+void Engine::renderGrain(const GrainRows &rows, uint32_t i, float *const dst[2], int64_t blockStart,
+                         int64_t from, int64_t to) const noexcept
 {
-    const int64_t first = std::max(from, g.onsetSample);
-    const int64_t last = std::min(to, grainEndSample(g)); // exclusive
+    const int64_t onsetSample = rows.onsetSample[i];
+    const double onsetFrac = rows.onsetFrac[i];
+    const double startPos = rows.startPos[i];
+    const double rate = rows.rate[i];
+    const double durationSamples = rows.durationSamples[i];
+    const float gain = rows.gain[i];
+    const int64_t first = std::max(from, onsetSample);
+    const int64_t last = std::min(to, rows.endSample[i]); // exclusive
     // One output has no stereo placement, so the grain plays unpanned. With two, each
     // channel's M0 value is multiplied by its pan gain last, so at pan 0 (both gains exactly
     // 1) the output is M0's bit for bit.
-    const PanGains gains = TwoOutputs ? panGains(g.pan) : PanGains{1.0f, 1.0f};
+    const PanGains gains = TwoOutputs ? panGains(rows.pan[i]) : PanGains{1.0f, 1.0f};
     for (int64_t t = first; t < last; ++t)
     {
         // Everything comes from the elapsed time since the onset, so the result for sample t
         // doesn't depend on which block t falls in.
-        const double e = static_cast<double>(t - g.onsetSample) - g.onsetFrac;
-        const float env = hann_.at(e / g.durationSamples);
-        const double pos = g.startPos + g.rate * e;
+        const double e = static_cast<double>(t - onsetSample) - onsetFrac;
+        const float env = hann_.at(e / durationSamples);
+        const double pos = startPos + rate * e;
         const auto j = static_cast<std::size_t>(t - blockStart);
-        const float channel0 = interp::hermite4(sourceData_[0], sourceFrames_, pos) * env * g.gain;
+        const float channel0 = interp::hermite4(sourceData_[0], sourceFrames_, pos) * env * gain;
         if constexpr (TwoOutputs)
         {
             dst[0][j] += channel0 * gains.left;
@@ -334,8 +340,8 @@ void Engine::renderGrain(const GrainSpec &g, float *const dst[2], int64_t blockS
             }
             else
             {
-                dst[1][j] += interp::hermite4(sourceData_[1], sourceFrames_, pos) * env * g.gain *
-                             gains.right;
+                dst[1][j] +=
+                    interp::hermite4(sourceData_[1], sourceFrames_, pos) * env * gain * gains.right;
             }
         }
         else
@@ -346,19 +352,25 @@ void Engine::renderGrain(const GrainSpec &g, float *const dst[2], int64_t blockS
 }
 
 template <bool TwoOutputs>
-void Engine::renderLiveGrain(const GrainSpec &g, float *const dst[2], int64_t blockStart,
-                             int64_t from, int64_t to) const noexcept
+void Engine::renderLiveGrain(const GrainRows &rows, uint32_t i, float *const dst[2],
+                             int64_t blockStart, int64_t from, int64_t to) const noexcept
 {
-    const int64_t first = std::max(from, g.onsetSample);
-    const int64_t last = std::min(to, grainEndSample(g)); // exclusive
+    const int64_t onsetSample = rows.onsetSample[i];
+    const double onsetFrac = rows.onsetFrac[i];
+    const double startPos = rows.startPos[i];
+    const double rate = rows.rate[i];
+    const double durationSamples = rows.durationSamples[i];
+    const float gain = rows.gain[i];
+    const int64_t first = std::max(from, onsetSample);
+    const int64_t last = std::min(to, rows.endSample[i]); // exclusive
     // As in renderGrain: one output carries ring channel 0, unpanned.
-    const PanGains gains = TwoOutputs ? panGains(g.pan) : PanGains{1.0f, 1.0f};
+    const PanGains gains = TwoOutputs ? panGains(rows.pan[i]) : PanGains{1.0f, 1.0f};
     LiveSource::Cursor cursor;
     for (int64_t t = first; t < last; ++t)
     {
         // The read position is in ring time; the head is R(t), from this block's write.
-        const double e = static_cast<double>(t - g.onsetSample) - g.onsetFrac;
-        const double pos = g.startPos + g.rate * e;
+        const double e = static_cast<double>(t - onsetSample) - onsetFrac;
+        const double pos = startPos + rate * e;
         const int64_t head = live_.headAt(t);
         const auto fade = static_cast<float>(live_.fade(pos, head));
         float left = 0.0f;
@@ -368,7 +380,7 @@ void Engine::renderLiveGrain(const GrainSpec &g, float *const dst[2], int64_t bl
         {
             continue;
         }
-        const float weight = hann_.at(e / g.durationSamples) * g.gain * fade;
+        const float weight = hann_.at(e / durationSamples) * gain * fade;
         const auto j = static_cast<std::size_t>(t - blockStart);
         if constexpr (TwoOutputs)
         {
