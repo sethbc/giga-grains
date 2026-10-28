@@ -1,4 +1,27 @@
+# Build trees and fetched validators
 build*/
-.DS_Store
 /tools-bin/
+
+# Per-user CMake presets; clangd's index and a root compile_commands.json symlink
+CMakeUserPresets.json
+/compile_commands.json
+.cache/
+
+# IDEs and editors
+.vscode/
+.idea/
+cmake-build-*/
+.vs/
+*.swp
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Claude Code: worktrees and personal settings (.claude/settings.json is shared)
 .claude/worktrees/
+.claude/settings.local.json
+
+# Superpowers session scratch (brainstorm server state, SDD pointers); specs and plans live in docs/superpowers/
+.superpowers/
