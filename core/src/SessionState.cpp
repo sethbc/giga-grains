@@ -6,6 +6,7 @@
 
 #include <array>
 #include <bit>
+#include <cassert>
 #include <charconv>
 #include <cstring>
 #include <optional>
@@ -26,6 +27,22 @@ constexpr std::string_view kMediaChunk = "MEDI";
 constexpr std::size_t kHeaderBytes = 8;       // the magic and the version
 constexpr std::size_t kChunkHeaderBytes = 12; // the ID and the length
 constexpr int kMediaVersion = 1;
+
+bool isSha256Hex(std::string_view s)
+{
+    if (s.size() != 64)
+    {
+        return false;
+    }
+    for (const char c : s)
+    {
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')))
+        {
+            return false;
+        }
+    }
+    return true;
+}
 
 void appendLittleEndian(std::string &out, uint64_t v, std::size_t bytes)
 {
@@ -112,7 +129,7 @@ std::string mediaXml(const std::optional<MediaEntry> &sample)
         e.SetAttribute("channels", decimal(sample->channels));
         e.SetAttribute("rate", bitsToHex(sample->sampleRate));
         e.SetAttribute("frames", decimal(sample->frames));
-        e.SetAttribute("embed", sample->embed ? "1" : "0");
+        e.SetAttribute("embed", "0"); // an entry that isValidMediaEntry, so never embedded
         media.InsertEndChild(e);
     }
     doc.InsertEndChild(media);
@@ -154,23 +171,6 @@ std::optional<double> parseRate(const char *s)
     return std::bit_cast<double>(u);
 }
 
-bool isSha256Hex(const char *s)
-{
-    if (s == nullptr || std::strlen(s) != 64)
-    {
-        return false;
-    }
-    for (std::size_t i = 0; i < 64; ++i)
-    {
-        const char c = s[i];
-        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')))
-        {
-            return false;
-        }
-    }
-    return true;
-}
-
 std::optional<MediaEntry> parseSample(const TiXmlElement &e)
 {
     const char *sha = e.Attribute("sha256");
@@ -182,9 +182,10 @@ std::optional<MediaEntry> parseSample(const TiXmlElement &e)
     const auto rate = parseRate(e.Attribute("rate"));
     const auto frames = parseDecimal<int64_t>(e.Attribute("frames"));
     const char *embed = e.Attribute("embed");
-    if (!isSha256Hex(sha) || !size || path == nullptr || relative == nullptr || format == nullptr ||
-        !channels || !rate || !frames || embed == nullptr ||
-        !(std::strcmp(embed, "0") == 0 || std::strcmp(embed, "1") == 0))
+    // embed="1" needs the AUDI chunk, which this version doesn't have.
+    if (sha == nullptr || !isSha256Hex(sha) || !size || path == nullptr || relative == nullptr ||
+        format == nullptr || !channels || !rate || !frames || embed == nullptr ||
+        std::strcmp(embed, "0") != 0)
     {
         return std::nullopt;
     }
@@ -197,7 +198,7 @@ std::optional<MediaEntry> parseSample(const TiXmlElement &e)
     entry.channels = *channels;
     entry.sampleRate = *rate;
     entry.frames = *frames;
-    entry.embed = embed[0] == '1';
+    entry.embed = false;
     return entry;
 }
 
@@ -209,16 +210,26 @@ bool parseMedia(std::string_view payload, std::optional<MediaEntry> &sample)
     {
         return false;
     }
+    // Byte by byte, as PatchBase reads PTCH: tinyxml's UTF-8 mode would misread a path that
+    // isn't valid UTF-8 (a lone lead byte swallows what follows it), and every byte but NUL comes
+    // back unchanged this way.
+    //
+    // tinyxml stops quietly at top-level text it can't read (after the root, say), and returns
+    // where it stopped; having read everything, it returns null.
+    const std::string text(payload);
     TiXmlDocument doc;
-    doc.Parse(std::string(payload).c_str(), nullptr, TIXML_ENCODING_UTF8);
-    if (doc.Error())
+    const char *stopped = doc.Parse(text.c_str(), nullptr, TIXML_ENCODING_UNKNOWN);
+    if (doc.Error() || (stopped != nullptr && *stopped != '\0'))
     {
         return false;
     }
-    const TiXmlElement *media = doc.FirstChildElement("media");
+    // The <media> root, alone at the top level, at a version this build reads.
+    const TiXmlElement *media = doc.RootElement();
     int version{0};
-    if (media == nullptr || doc.RootElement() != media ||
-        media->QueryIntAttribute("version", &version) != TIXML_SUCCESS)
+    if (media == nullptr || std::strcmp(media->Value(), "media") != 0 ||
+        doc.FirstChild() != media || media->NextSibling() != nullptr ||
+        media->QueryIntAttribute("version", &version) != TIXML_SUCCESS || version < 1 ||
+        version > kMediaVersion)
     {
         return false;
     }
@@ -242,10 +253,21 @@ bool parseMedia(std::string_view payload, std::optional<MediaEntry> &sample)
 }
 } // namespace
 
+bool isValidMediaEntry(const MediaEntry &entry) noexcept
+{
+    const auto noNul = [](const std::string &s) { return s.find('\0') == std::string::npos; };
+    return isSha256Hex(entry.sha256Hex) && noNul(entry.absolutePath) && noNul(entry.relativePath) &&
+           noNul(entry.format) && !entry.embed;
+}
+
 std::string encodeState(const SessionState &state)
 {
+    // An entry that wouldn't decode isn't written: losing the sample reference is better than
+    // a state that fails to load and loses the whole session (ruling R9).
+    assert(!state.sample || isValidMediaEntry(*state.sample));
+    const bool writeSample = state.sample && isValidMediaEntry(*state.sample);
     const std::string patch = toStateXml(state.values, state.seed);
-    const std::string media = mediaXml(state.sample);
+    const std::string media = mediaXml(writeSample ? state.sample : std::nullopt);
 
     std::string out;
     out.reserve(kHeaderBytes + 2 * kChunkHeaderBytes + patch.size() + media.size());
@@ -265,9 +287,9 @@ bool decodeState(std::string_view bytes, Mode mode, SessionState &out,
 
     if (bytes.starts_with('<'))
     {
-        // A pre-container state: PTCH alone.
-        if (bytes.find('\0') != std::string_view::npos ||
-            !fromStateXml(bytes, loaded.values, loaded.seed, mode, &migrated))
+        // A pre-container state: PTCH alone, read exactly as before the container, so every
+        // state that loaded then loads now (XML followed by a NUL included).
+        if (!fromStateXml(bytes, loaded.values, loaded.seed, mode, &migrated))
         {
             return false;
         }

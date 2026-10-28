@@ -19,17 +19,20 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #include <catch2/catch_test_macros.hpp>
 
 #include "gg/core/ParamIds.h"
 #include "gg/core/PatchState.h"
+#include "gg/core/Rng.h"
 #include "gg/core/SessionState.h"
 #include "sst/basic-blocks/params/ParamMetadata.h"
 #include "support/StateContainer.h"
 
 using gg::core::decodeState;
 using gg::core::encodeState;
+using gg::core::isValidMediaEntry;
 using gg::core::kParamCount;
 using gg::core::MediaEntry;
 using gg::core::Mode;
@@ -215,7 +218,6 @@ TEST_CASE("the container round trips with and without a sample", "[core]")
     s.sample->channels = std::numeric_limits<uint32_t>::max();
     s.sample->sampleRate = std::numeric_limits<double>::denorm_min();
     s.sample->frames = std::numeric_limits<int64_t>::min();
-    s.sample->embed = true;
     s.sample->absolutePath = "C:\\Samples\\a\xc3\xa4\xe2\x9c\x93\xf0\x9f\x8e\xb5.aiff";
     s.sample->relativePath = "tab\there\nnewline";
     s.sample->format = "aiff";
@@ -224,7 +226,7 @@ TEST_CASE("the container round trips with and without a sample", "[core]")
     CHECK(d.state.sample == s.sample);
     CHECK(d.state.seed == s.seed);
 
-    // A sample with every string empty, as a default MediaEntry has them.
+    // A sample with every string empty, as a default MediaEntry has them, but for its hash.
     s.sample = MediaEntry{};
     s.sample->sha256Hex = std::string(64, '0');
     REQUIRE(d.decode(encodeState(s)));
@@ -242,6 +244,13 @@ TEST_CASE("a pre-container state loads with no sample", "[core]")
     CHECK(d.state.seed == 77u);
     CHECK(d.state.sample == std::nullopt);
     CHECK(d.migratedFromVersion == 0u);
+
+    // As before the container, bytes after the XML's NUL are ignored: an old state never fails
+    // to load now that loaded then.
+    Decoded nul = distinct();
+    REQUIRE(nul.decode(std::string(kSubProject1State) + std::string("\0junk", 5)));
+    CHECK(bitsOf(nul.state.values) == bitsOf(kSubProject1Values));
+    CHECK(nul.state.sample == std::nullopt);
 
     // Saving it again writes a container.
     const auto bytes = encodeState(d.state);
@@ -386,6 +395,14 @@ TEST_CASE("session state rejects bad state and writes nothing", "[core]")
                  std::string{"<media version=\"1\"><sample "},
                  std::string{"not xml"},
                  std::string{"<manifest version=\"1\" />"},
+                 std::string{"<media version=\"2\" />"}, // newer than this build reads
+                 std::string{"<media version=\"0\" />"},
+                 std::string{"<media version=\"-1\" />"},
+                 std::string(kEmptyMedia) + "<media version=\"1\" />", // trailing content
+                 std::string(kEmptyMedia) + "junk",
+                 std::string(kEmptyMedia) + "<!-- note -->",
+                 "<!-- note -->" + std::string(kEmptyMedia),
+                 R"(<?xml version="1.0" ?>)" + std::string(kEmptyMedia),
                  std::string{"<media />"},
                  std::string{"<media version=\"one\" />"},
                  std::string(kEmptyMedia) + std::string("\0", 1),
@@ -408,6 +425,7 @@ TEST_CASE("session state rejects bad state and writes nothing", "[core]")
                  replaced(R"(rate="40e7700000000000")", R"(rate="40e77000000000000")"),
                  replaced(R"(frames="48000")", R"(frames="9223372036854775808")"),
                  replaced(R"(frames="48000")", R"(frames="")"),
+                 replaced(R"(embed="0")", R"(embed="1")"), // no AUDI in this version
                  replaced(R"(embed="0")", R"(embed="2")"),
                  replaced(R"(embed="0")", R"(embed="false")"),
                  replaced(R"( embed="0")", ""),
@@ -443,4 +461,160 @@ TEST_CASE("session state rejects bad state and writes nothing", "[core]")
         CHECK(out.seed == s.seed);
         CHECK(out.sample == s.sample);
     }
+}
+
+namespace
+{
+// An entry from the engine's counter-based RNG: every field random, the strings any bytes but
+// NUL (so often not valid UTF-8), of 0 to 47 bytes.
+MediaEntry randomEntry(uint64_t index)
+{
+    uint64_t draw = 0;
+    const auto next = [&] {
+        return gg::rng::hash(
+            {0x5eed'7e57'0000'0009ull, 0, 0, gg::rng::Field::SignalNoise, index * 1024 + draw++});
+    };
+    const auto bytes = [&] {
+        std::string s(static_cast<std::size_t>(next() % 48), ' ');
+        for (auto &c : s)
+        {
+            c = static_cast<char>(1 + next() % 255);
+        }
+        return s;
+    };
+    MediaEntry e;
+    for (int i = 0; i < 64; ++i)
+    {
+        e.sha256Hex += "0123456789abcdef"[next() % 16];
+    }
+    e.fileSize = next();
+    e.absolutePath = bytes();
+    e.relativePath = bytes();
+    e.format = bytes();
+    e.channels = static_cast<uint32_t>(next());
+    e.sampleRate = std::bit_cast<double>(next());
+    e.frames = static_cast<int64_t>(next());
+    return e;
+}
+
+bool sameEntry(const MediaEntry &a, const MediaEntry &b)
+{
+    // The rate by its bits, so a NaN counts as itself.
+    return a.sha256Hex == b.sha256Hex && a.fileSize == b.fileSize &&
+           a.absolutePath == b.absolutePath && a.relativePath == b.relativePath &&
+           a.format == b.format && a.channels == b.channels &&
+           std::bit_cast<uint64_t>(a.sampleRate) == std::bit_cast<uint64_t>(b.sampleRate) &&
+           a.frames == b.frames && a.embed == b.embed;
+}
+} // namespace
+
+TEST_CASE("every valid entry round trips, whatever bytes its strings hold", "[core]")
+{
+    // Ruling R9: decodeState loads whatever encodeState writes. 2,000 random valid entries, then
+    // each byte but NUL alone, and each pair of bytes from 0x80 up (lone lead and continuation
+    // bytes, overlong forms, surrogates: tinyxml's UTF-8 mode would misread many of these).
+    std::vector<MediaEntry> entries;
+    for (uint64_t i = 0; i < 2000; ++i)
+    {
+        entries.push_back(randomEntry(i));
+    }
+    for (int b = 1; b < 256; ++b)
+    {
+        MediaEntry e = randomEntry(0);
+        e.absolutePath = std::string(1, static_cast<char>(b));
+        e.relativePath = "a" + e.absolutePath + "z";
+        entries.push_back(e);
+    }
+    std::string pairs;
+    for (int a = 0x80; a < 0x100; ++a)
+    {
+        for (int b = 0x80; b < 0x100; ++b)
+        {
+            pairs += static_cast<char>(a);
+            pairs += static_cast<char>(b);
+            pairs += '/';
+        }
+    }
+    MediaEntry allPairs = randomEntry(1);
+    allPairs.absolutePath = pairs;
+    entries.push_back(allPairs);
+
+    std::size_t failures = 0;
+    for (std::size_t i = 0; i < entries.size(); ++i)
+    {
+        REQUIRE(isValidMediaEntry(entries[i]));
+        SessionState s = someState(true);
+        s.sample = entries[i];
+        Decoded d = distinct();
+        if (!d.decode(encodeState(s)) || !d.state.sample ||
+            !sameEntry(*d.state.sample, entries[i]) || bitsOf(d.state.values) != bitsOf(s.values))
+        {
+            INFO("entry " << i);
+            FAIL_CHECK("didn't round trip");
+            ++failures;
+        }
+    }
+    CHECK(failures == 0);
+}
+
+TEST_CASE("only valid entries are valid", "[core]")
+{
+    const MediaEntry good = sampleEntry();
+    CHECK(isValidMediaEntry(good));
+    CHECK_FALSE(isValidMediaEntry(MediaEntry{})); // an empty hash
+
+    const auto broken = [&](auto change) {
+        MediaEntry e = good;
+        change(e);
+        return isValidMediaEntry(e);
+    };
+    CHECK_FALSE(broken([](MediaEntry &e) { e.sha256Hex[0] = 'E'; }));
+    CHECK_FALSE(broken([](MediaEntry &e) { e.sha256Hex.pop_back(); }));
+    CHECK_FALSE(broken([](MediaEntry &e) { e.sha256Hex += '0'; }));
+    CHECK_FALSE(broken([](MediaEntry &e) { e.sha256Hex[10] = 'g'; }));
+    CHECK_FALSE(broken([](MediaEntry &e) { e.absolutePath += '\0'; }));
+    CHECK_FALSE(broken([](MediaEntry &e) { e.relativePath = std::string("a\0b", 3); }));
+    CHECK_FALSE(broken([](MediaEntry &e) { e.format = std::string(1, '\0'); }));
+    CHECK_FALSE(broken([](MediaEntry &e) { e.embed = true; }));
+    // Not valid UTF-8, but it round trips, so it's valid.
+    CHECK(broken([](MediaEntry &e) { e.absolutePath = "/\xc3(\xff\xed\xa0\x80.wav"; }));
+}
+
+TEST_CASE("an invalid entry is left out and the state still loads", "[core]")
+{
+    // Ruling R9, the release-build half: encodeState writes an empty MEDI in place of an entry
+    // that wouldn't decode, so the parameters survive. Debug builds assert the precondition
+    // instead, so this runs only where NDEBUG is set (the rtsan and release presets).
+#if defined(NDEBUG)
+    std::vector<MediaEntry> invalid;
+    invalid.push_back(MediaEntry{});
+    for (const auto &change : std::initializer_list<void (*)(MediaEntry &)>{
+             [](MediaEntry &e) { e.sha256Hex = std::string(64, 'A'); },
+             [](MediaEntry &e) { e.sha256Hex.pop_back(); },
+             [](MediaEntry &e) { e.absolutePath = std::string("/a\0b.wav", 8); },
+             [](MediaEntry &e) { e.relativePath = std::string(1, '\0'); },
+             [](MediaEntry &e) { e.format = std::string("wav\0", 4); },
+             [](MediaEntry &e) { e.embed = true; }})
+    {
+        MediaEntry e = sampleEntry();
+        change(e);
+        invalid.push_back(e);
+    }
+    for (std::size_t i = 0; i < invalid.size(); ++i)
+    {
+        INFO("entry " << i);
+        REQUIRE_FALSE(isValidMediaEntry(invalid[i]));
+        SessionState s = someState(false);
+        s.sample = invalid[i];
+        const auto bytes = encodeState(s);
+        CHECK(bytes == encodeState(someState(false)));
+        Decoded d = distinct();
+        REQUIRE(d.decode(bytes));
+        CHECK(bitsOf(d.state.values) == bitsOf(s.values));
+        CHECK(d.state.seed == s.seed);
+        CHECK(d.state.sample == std::nullopt);
+    }
+#else
+    SKIP("debug builds assert isValidMediaEntry in encodeState");
+#endif
 }

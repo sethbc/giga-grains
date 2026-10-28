@@ -38,9 +38,10 @@
 ///
 ///   and `<media version="1" />` with none. The attributes are MediaEntry's fields, in its order:
 ///   `size`, `channels` and `frames` in decimal; `rate` the double's bits as 16 hex digits, so it
-///   comes back bit for bit (as `bits` does for PTCH's floats); `embed` 0 or 1; `path`,
-///   `relative` and `format` as UTF-8 text, every `&` in them written `&#x26;` (tinyxml would
-///   otherwise read a literal `&#x41;` back as `A`).
+///   comes back bit for bit (as `bits` does for PTCH's floats); `embed` always 0 (M2 adds 1, with
+///   `AUDI`); `path`, `relative` and `format` as their bytes, every `&` written `&#x26;` (tinyxml
+///   would otherwise read a literal `&#x41;` back as `A`). They are meant to be UTF-8, but any
+///   bytes but NUL come back unchanged, so a path that isn't valid UTF-8 is still kept.
 ///
 /// `AUDI` (embedded audio) is reserved for M2 and not written.
 namespace gg::core
@@ -76,12 +77,22 @@ struct SessionState
     std::optional<MediaEntry> sample;
 };
 
-/// The container of `state`: PTCH, then MEDI.
+/// Whether encodeState writes `entry` (its precondition): `sha256Hex` is 64 lowercase hex
+/// digits, no string holds a NUL byte, and `embed` is false (until M2). Every such entry decodes
+/// back equal to itself (but for a NaN sample rate, which comes back with the same bits).
+bool isValidMediaEntry(const MediaEntry &entry) noexcept;
+
+/// The container of `state`: PTCH, then MEDI. decodeState loads whatever it writes.
+/// - `state.sample`, if any, must be isValidMediaEntry: debug builds assert it.
+/// - In release builds, an entry that isn't is left out, and MEDI is written empty: a state
+///   that fails to load would lose the whole session, where this loses one sample reference
+///   (ruling R9).
 std::string encodeState(const SessionState &state);
 
 /// Loads a session state into `mode`'s product. All or nothing; on false `out` is untouched.
 /// - Bytes that start with `<` are a pre-container state, saved by sub-projects 1 and 2: their
-///   whole content is PTCH, and there is no sample.
+///   whole content is PTCH, there is no sample, and they load exactly as fromStateXml loads
+///   them.
 /// - Otherwise they must be a container: the magic, version 1, and exactly one PTCH and one MEDI
 ///   among its chunks, in any order. Chunks with other IDs are skipped, so a newer build's
 ///   chunks don't break this one.
@@ -90,10 +101,11 @@ std::string encodeState(const SessionState &state);
 ///   parse:
 ///   - PTCH loads as fromStateXml loads it (gg/core/PatchState.h): its version migrates, a
 ///     param it doesn't mention takes `mode`'s default, and values are clamped;
-///   - MEDI must be well-formed XML with a <media> root carrying an integer `version`, and at
-///     most one <sample>, with every attribute above present and well-formed (`sha256` 64
-///     lowercase hex digits, `rate` 16 hex digits, `embed` 0 or 1). Other elements and
-///     attributes are ignored. A payload holding a NUL byte fails, PTCH's too.
+///   - MEDI must be well-formed XML whose only top-level node is a <media> root, with an
+///     integer `version` from 1 to this build's (1), and at most one <sample>, with every
+///     attribute above present and well-formed (`sha256` 64 lowercase hex digits, `rate` 16 hex
+///     digits, `embed` 0). Other elements and attributes inside <media> are ignored. A payload
+///     holding a NUL byte fails, PTCH's too.
 /// - `migratedFromVersion`, if given, is written on success only, as fromStateXml writes it.
 bool decodeState(std::string_view bytes, Mode mode, SessionState &out,
                  uint32_t *migratedFromVersion = nullptr);
