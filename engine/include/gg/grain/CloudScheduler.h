@@ -22,7 +22,7 @@ namespace gg
 struct CloudParams
 {
     /// Grains per second. 0 or below turns the stream off (ruling M1-a); any positive value is
-    /// clamped to [0.01, min(4000, sampleRate)].
+    /// clamped to [0.01, sampleRate].
     double densityHz{16.0};
     double distribution{0.0};     ///< 0 = periodic onsets, 1 = Poisson; [0, 1].
     double grainDurationSec{0.1}; ///< At least 16 samples (the minimum window length).
@@ -93,9 +93,10 @@ class CloudScheduler
     /// The floor on Δ(k) (ruling M1-g). At d = 1 an interval P × E(k) can be arbitrarily small
     /// (it is 0 when u(k) = 0), so without a floor nothing would bound the number of onsets in
     /// one sample, and schedule() would have no bounded loop. With it, one schedule() call
-    /// emits at most about 16 grains per frame. At 48 kHz and the maximum density (P = 12) it
-    /// raises about 0.5% of Poisson intervals, by less than 1/16 sample, which moves the mean
-    /// by about 2e-4 samples; at d = 0 it never applies, since P is at least 1 sample.
+    /// emits at most about 16 grains per frame. At the maximum density, the sample rate (P = 1),
+    /// it raises about 6.1% of Poisson intervals, by less than 1/16 sample, which moves the mean
+    /// by about 2e-3 samples; at 20 kHz with a 48 kHz sample rate (P = 2.4), about 2.6%, by about
+    /// 8e-4 samples. At d = 0 it never applies, since P is at least 1 sample.
     ///
     /// The floor bounds the loop only while t < 2^49 samples (about 93 years at 192 kHz).
     /// From 2^49 on, the spacing of doubles is 1/8 sample, so t + 1/16 is a tie that can round

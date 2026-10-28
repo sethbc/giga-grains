@@ -91,10 +91,11 @@ bool sameBits(const std::vector<float> &a, const std::vector<float> &b)
 }
 
 // An event sink is called on the audio thread, so this one records into preallocated storage
-// and never allocates (the RTSan build checks that).
+// and never allocates (the RTSan build checks that). The capacity holds a grain per sample, the
+// density ceiling, for the 12,000 frames of "extreme and non-finite params stay finite".
 struct SinkLog
 {
-    static constexpr std::size_t kCapacity = 8192;
+    static constexpr std::size_t kCapacity = 16384;
     std::vector<gg::GrainSpec> grains;
     bool overflowed{false};
 

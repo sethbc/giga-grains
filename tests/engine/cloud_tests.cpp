@@ -444,8 +444,8 @@ TEST_CASE("params are sanitized", "[cloud]")
     {
         cloud.setParams({1e9, -3.0, 0.0, 5.0, -3.0, 100.0, 7.0, 1e9f});
         const auto grains = collect(cloud, 0, 120, 120);
-        REQUIRE(grains.size() == 10); // 4000 Hz, distribution 0: every 12 samples
-        REQUIRE(onsetTime(grains[1]) == 12.0);
+        REQUIRE(grains.size() == 120); // the sample rate, distribution 0: every sample
+        REQUIRE(onsetTime(grains[1]) == 1.0);
         REQUIRE(grains[1].durationSamples == 16.0);
         REQUIRE(grains[1].positionDraw == 1.0);
         REQUIRE(grains[1].rate == 16.0); // +48 semitones
@@ -475,6 +475,15 @@ TEST_CASE("params are sanitized", "[cloud]")
             REQUIRE(grains.size() == 2);
             REQUIRE(onsetTime(grains[1]) == 4800000.0); // 100 s at 48 kHz
         }
+    }
+
+    SECTION("the density reaches 20 kHz at 48 kHz")
+    {
+        // The §16 case: 2,000 overlapping grains of 100 ms (INTENT §23 #45).
+        cloud.setParams(cloudAt(20000.0));
+        const auto grains = collect(cloud, 0, 4800, 512);
+        REQUIRE(grains.size() == 2000);
+        REQUIRE(onsetTime(grains[1]) == 2.4);
     }
 
     SECTION("the density is capped at one grain per output sample")
