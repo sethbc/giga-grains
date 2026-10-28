@@ -62,6 +62,18 @@ add_library(stb_impl STATIC thirdparty-impl/StbImpl.cpp)
 target_link_libraries(stb_impl PRIVATE stb gg::fp-contract-off)
 add_library(gg::stb_impl ALIAS stb_impl)
 
+# r8brain-free-src (MIT): sample-rate conversion on load (gg::media's convertRate). Since 7.0 it
+# is header-only (its r8bbase.cpp is gone), so there are no sources to compile apart: the
+# includes are SYSTEM, which keeps its warnings out of our -Werror, and gg::fp-contract-off comes
+# with them, so whatever includes it computes with the project's rounding. Its default FFT, the
+# bundled Ooura fft4g.h, is used: none of R8B_IPP, R8B_PFFFT or R8B_PFFFT_DOUBLE is defined.
+# Its filter caches are guarded by a std::mutex, hence Threads.
+find_package(Threads REQUIRED)
+add_library(r8brain INTERFACE)
+target_include_directories(r8brain SYSTEM INTERFACE r8brain)
+target_link_libraries(r8brain INTERFACE gg::fp-contract-off Threads::Threads)
+add_library(gg::r8brain ALIAS r8brain)
+
 # nlohmann/json: header-only.
 add_library(nlohmann_json INTERFACE)
 target_include_directories(nlohmann_json SYSTEM INTERFACE nlohmann_json/include)

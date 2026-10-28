@@ -28,6 +28,7 @@ add_executable(gg-tests
         engine/rt_tests.cpp
         engine/sample_buffer_tests.cpp
         engine/window_tests.cpp
+        media/convert_tests.cpp
         media/decode_tests.cpp
         media/sha256_tests.cpp
         metrics/metrics_tests.cpp
