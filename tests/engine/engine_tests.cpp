@@ -947,6 +947,58 @@ TEST_CASE("adopted sources are handed back by reset and setSource", "[engine]")
     }
 }
 
+TEST_CASE("replaceSource replaces as setSource does, and its source is handed back", "[engine]")
+{
+    // Processor::setSourceNow's engine call: the caller owns the source, so, unlike setSource's,
+    // it comes back through takeRetiredSource once a later adoption replaces it and it drains.
+    const auto a = gg::PreparedSource::make(makeConstant(48000, 0.5f));
+    const auto b = gg::PreparedSource::make(makeConstant(48000, -0.5f));
+    const auto c = gg::PreparedSource::make(makeConstant(48000, 0.25f));
+    const gg::CloudParams p = params(100.0, 0.2, 0.5, 0.0, 0.0, 0.5f);
+
+    gg::Engine engine(gg::EngineConfig{});
+    engine.setCloudParams(p);
+    engine.setSource(makeConstant(48000, 0.75f)); // owned by the engine: let go, not handed back
+    REQUIRE(engine.adoptSource(a.get()));
+    render(engine, 24000, 256);
+    REQUIRE(engine.adoptSource(b.get()));
+    render(engine, 2400, 256); // A's and B's grains both sound
+    const uint32_t sounding = engine.activeGrains();
+    REQUIRE(sounding > 10);
+
+    engine.replaceSource(c.get());
+    REQUIRE(engine.activeGrains() == sounding);
+    REQUIRE(engine.takeRetiredSource() == a.get());
+    REQUIRE(engine.takeRetiredSource() == b.get());
+    REQUIRE(engine.takeRetiredSource() == nullptr);
+    // Every grain, old or new, now reads +0.25.
+    const Render r = render(engine, 4800, 256);
+    REQUIRE(*std::min_element(r.left.begin(), r.left.end()) >= 0.0f);
+    REQUIRE(*std::max_element(r.left.begin(), r.left.end()) > 0.1f);
+
+    // C is adopted-like: a later adoption drains it, and then it is handed back.
+    REQUIRE(engine.adoptSource(a.get()));
+    REQUIRE(engine.takeRetiredSource() == nullptr); // C's grains still sound
+    render(engine, 12000, 256);
+    REQUIRE(engine.takeRetiredSource() == c.get());
+    REQUIRE(engine.takeRetiredSource() == nullptr);
+
+    // The same output bits as setPreparedSource, which owns its source.
+    gg::Engine replaced(gg::EngineConfig{});
+    gg::Engine set(gg::EngineConfig{});
+    for (gg::Engine *e : {&replaced, &set})
+    {
+        e->setCloudParams(p);
+    }
+    replaced.replaceSource(c.get());
+    set.setPreparedSource(c);
+    const Render r1 = render(replaced, 12000, 256);
+    const Render r2 = render(set, 12000, 256);
+    REQUIRE(peak(r1.left) > 0.1f);
+    REQUIRE(sameBits(r1.left, r2.left));
+    REQUIRE(sameBits(r1.right, r2.right));
+}
+
 TEST_CASE("setSource renders as adopting its prepared source", "[engine]")
 {
     // setSource is PreparedSource::make plus the adoption; a stereo source reads its interleaved

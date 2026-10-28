@@ -113,6 +113,15 @@ class Engine
     /// contract, and the engine owns `source` in the same way. Never throws.
     void setPreparedSource(std::shared_ptr<const PreparedSource> source) noexcept;
 
+    /// setPreparedSource's replacement (every grain still sounding goes on in `source` too), for
+    /// a source the caller owns, as adoptSource's are: not real-time safe, call it only while
+    /// process() is not running. The sources it replaces are handed back as setPreparedSource
+    /// hands them back (a setSource source is let go), and `source` is then an adopted source
+    /// like any other: a later adoption replaces it, and takeRetiredSource hands it back once no
+    /// grain reads it. nullptr means no source. `source` must not be in play already or waiting
+    /// to be handed back; take every retired source first, so the hand-backs fit. Never throws.
+    void replaceSource(const PreparedSource *source) noexcept;
+
     /// Real-time safe, but not synchronized with process(): call it on the audio thread between
     /// process() calls, or while process() is not running (spec §6.4). Grains from the next
     /// onset on read `source` (nullptr: no source, so none spawn in Sample mode); the grains
@@ -267,6 +276,10 @@ class Engine
     /// Hands the previous slot's source back, and frees the slot, once its last grain has ended
     /// and nothing else is waiting to be handed back. setSource's own source is just let go.
     void retirePrevious() noexcept SST_CPPUTILS_NONBLOCKING;
+    /// The replacement setPreparedSource and replaceSource share: hands back the adopted sources
+    /// in play and makes `source` current, read by every grain still sounding. owned_ is left
+    /// to the caller.
+    void replaceCurrent(const PreparedSource *source) noexcept;
     /// pool_.clear(), and no slot has grains any more.
     void clearGrains() noexcept SST_CPPUTILS_NONBLOCKING;
     SourceSlot &currentSlot() noexcept { return slots_[current_]; }

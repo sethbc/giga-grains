@@ -81,7 +81,7 @@ void Engine::setSource(std::shared_ptr<const SampleBuffer> source)
     setPreparedSource(PreparedSource::make(std::move(source)));
 }
 
-void Engine::setPreparedSource(std::shared_ptr<const PreparedSource> prepared) noexcept
+void Engine::replaceCurrent(const PreparedSource *source) noexcept
 {
     // The sources this replaces: adopted ones go back to their owner, oldest first. At most two,
     // and adoptSource made sure at most one was already waiting.
@@ -95,11 +95,23 @@ void Engine::setPreparedSource(std::shared_ptr<const PreparedSource> prepared) n
     }
     // Every grain still sounding now reads the new source, in the current slot.
     const int64_t lastEnd = std::max(slots_[0].lastEnd, slots_[1].lastEnd);
-    currentSlot() = slotFor(prepared.get());
+    currentSlot() = slotFor(source);
     currentSlot().lastEnd = lastEnd;
     previousSlot() = SourceSlot{};
     pool_.assignSourceSlot(current_);
+}
+
+void Engine::setPreparedSource(std::shared_ptr<const PreparedSource> prepared) noexcept
+{
+    replaceCurrent(prepared.get());
     owned_ = std::move(prepared); // frees the source the last setSource made, if no slot reads it
+}
+
+void Engine::replaceSource(const PreparedSource *source) noexcept
+{
+    assert(source == nullptr || source != owned_.get());
+    replaceCurrent(source);
+    owned_.reset(); // the source the last setSource made: no slot reads it any more
 }
 
 bool Engine::adoptSource(const PreparedSource *source) noexcept

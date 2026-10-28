@@ -171,8 +171,7 @@ bool GigaGrainsPlugin::activate(double sampleRate, uint32_t /*minFrameCount*/,
         processor_ = std::move(processor);
         engineBlockSize_ = config.maxBlockSize;
         noteIds_.fill(NoteIdSlot{}); // a new session holds no notes
-        collectedAtCall_ = processCalls_.load(std::memory_order_relaxed);
-        idleCollects_ = 0;
+        collectRequested_.store(false, std::memory_order_relaxed);
         return true;
     }
     catch (...)
@@ -199,6 +198,12 @@ void GigaGrainsPlugin::deactivate() noexcept
             storeValue(static_cast<ParamSlot>(s), loaded[s]);
         }
     }
+    // The same for an offer the audio thread never took (the instrument's restores hand their
+    // values over with their source, D8): its values apply now, and go into values_.
+    if (processor_ != nullptr && processor_->takeOffers())
+    {
+        storeBases();
+    }
     // The loader's worker stops (a job under way finishes), and what it finished applies with
     // nothing offered: the next activate() gives it to the new processor.
     if (loader_ != nullptr)
@@ -216,28 +221,18 @@ void GigaGrainsPlugin::onMainThread() noexcept
     {
         loader_->onMainThread();
     }
-    collectSources();
-}
-
-void GigaGrainsPlugin::collectSources() noexcept
-{
-    if (processor_ == nullptr)
+    if (processor_ != nullptr)
     {
-        return;
-    }
-    auto &sources = processor_->sources();
-    sources.collect();
-    if (sources.held() <= 1)
-    {
-        idleCollects_ = 0;
-        return; // only the source in play, or none
-    }
-    const uint64_t calls = processCalls_.load(std::memory_order_relaxed);
-    idleCollects_ = calls == collectedAtCall_ ? idleCollects_ + 1 : 0;
-    collectedAtCall_ = calls;
-    if (idleCollects_ < kMaxIdleCollects)
-    {
-        _host.requestCallback();
+        // Cleared first: a source handed back after the collect asks for another call.
+        collectRequested_.store(false, std::memory_order_release);
+        try
+        {
+            processor_->sources().collect();
+        }
+        catch (...)
+        {
+            // collect() only frees; nothing it calls throws.
+        }
     }
 }
 
@@ -262,12 +257,10 @@ clap_process_status GigaGrainsPlugin::processNonblocking(const clap_process *pro
     {
         return CLAP_PROCESS_CONTINUE; // clap-helpers lets process() through only while active
     }
-    // One writer: no read-modify-write needed.
-    processCalls_.store(processCalls_.load(std::memory_order_relaxed) + 1,
-                        std::memory_order_relaxed);
-    // The values of a state loaded while active, then (in the Processor) its sample: both apply
-    // from this call's first frame (D8).
+    // The values of a state loaded while active, and the instrument's offers (a restored
+    // session's values and sample together, D8): both apply from this call's first frame.
     applyLoadedState();
+    takeOffers();
 
     // The call's parameter and note events, in the host's order (by time), up to the first that
     // finds its array (events_ or notes_) full.
@@ -331,7 +324,35 @@ clap_process_status GigaGrainsPlugin::processNonblocking(const clap_process *pro
     {
         applyBetweenBlocks(in, next);
     }
+    requestCollect();
     return CLAP_PROCESS_CONTINUE;
+}
+
+void GigaGrainsPlugin::takeOffers() noexcept
+{
+    if (processor_->takeOffers())
+    {
+        storeBases();
+    }
+}
+
+void GigaGrainsPlugin::storeBases() noexcept
+{
+    for (std::size_t s = 0; s < kParamCount; ++s)
+    {
+        const auto slot = static_cast<ParamSlot>(s);
+        storeValue(slot, processor_->base(slot));
+    }
+}
+
+void GigaGrainsPlugin::requestCollect() noexcept
+{
+    // At most one request outstanding: on_main_thread clears the flag before it collects.
+    if (processor_->sources().awaitingCollect() &&
+        !collectRequested_.exchange(true, std::memory_order_acq_rel))
+    {
+        _host.requestCallback();
+    }
 }
 
 bool GigaGrainsPlugin::toParamEvent(const clap_event_header *header, ParamEvent &event) noexcept
@@ -565,10 +586,12 @@ void GigaGrainsPlugin::paramsFlush(const clap_input_events *in,
     // Active, so on the audio thread, between process() calls: notes, like modulation, join the
     // next grid boundary.
     applyLoadedState();
+    takeOffers();
     if (in != nullptr)
     {
         applyBetweenBlocks(in, 0);
     }
+    requestCollect();
 }
 
 bool GigaGrainsPlugin::paramsInfo(uint32_t paramIndex, clap_param_info *info) const noexcept
@@ -731,11 +754,12 @@ bool GigaGrainsPlugin::stateLoad(const clap_istream *stream) noexcept
             return false;
         }
         // The instrument's sample, found and decoded before this returns (D8); while active,
-        // offered to the audio thread just before the values below, so the first process()
-        // after this call applies both. The FX ignores a sample (a state from the instrument).
+        // offered to the audio thread below in one hand-off with the values, so the process()
+        // that takes them applies both. The FX ignores a sample (a state from the instrument).
+        std::shared_ptr<const gg::PreparedSource> source;
         if (loader_ != nullptr)
         {
-            loader_->restore(loaded.sample);
+            source = loader_->restore(loaded.sample);
         }
         const auto &values = loaded.values;
         const uint64_t seed = loaded.seed;
@@ -751,7 +775,14 @@ bool GigaGrainsPlugin::stateLoad(const clap_istream *stream) noexcept
         // a restart request.
         if (processor_ != nullptr)
         {
-            loadedState_.push(values);
+            if (loader_ != nullptr)
+            {
+                processor_->sources().offer(std::move(source), &values);
+            }
+            else
+            {
+                loadedState_.push(values);
+            }
             if (newSeed)
             {
                 _host.requestRestart();
@@ -761,7 +792,6 @@ bool GigaGrainsPlugin::stateLoad(const clap_istream *stream) noexcept
         {
             _host.paramsRescan(CLAP_PARAM_RESCAN_VALUES);
         }
-        collectSources();
         return true;
     }
     catch (...)

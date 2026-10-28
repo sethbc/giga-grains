@@ -79,6 +79,8 @@ std::string describe(const std::exception_ptr &error, const std::string &fileNam
 constexpr const char *kDifferentAudio = "different audio than the saved sample";
 constexpr const char *kMissing = "not found";
 constexpr const char *kChanged = "the file at the saved path has changed";
+// Short enough to fit any std::string's own buffer, so assigning it never allocates.
+constexpr const char *kCantLoad = "can't load";
 } // namespace
 
 SampleLoader::SampleLoader(std::filesystem::path settingsFile, Callbacks callbacks)
@@ -93,7 +95,7 @@ void SampleLoader::requestLoad(std::filesystem::path file)
     const std::string fileName = utf8(file.filename());
     try
     {
-        submit({0, JobKind::Load, std::move(file), readSettings(), nullptr, {}});
+        submit({0, JobKind::Load, std::move(file), readSettings(), {}});
         status_ = {SampleState::Loading, fileName, {}, 0.0, 0, 0.0};
     }
     catch (...)
@@ -108,7 +110,7 @@ void SampleLoader::requestRelink(std::filesystem::path file)
     try
     {
         std::string expected = entry_.has_value() ? entry_->sha256Hex : std::string();
-        submit({0, JobKind::Relink, std::move(file), readSettings(), nullptr, std::move(expected)});
+        submit({0, JobKind::Relink, std::move(file), readSettings(), std::move(expected)});
         status_ = {SampleState::Loading, fileName, {}, 0.0, 0, 0.0};
     }
     catch (...)
@@ -117,20 +119,38 @@ void SampleLoader::requestRelink(std::filesystem::path file)
     }
 }
 
-void SampleLoader::restore(const std::optional<core::MediaEntry> &entry) noexcept
+bool SampleLoader::setSampleFolder(const std::filesystem::path &folder)
 {
-    // Every request so far is superseded: the session decides the sample now.
+    // Main thread (ruling R16), as apply() saves the last load folder.
+    if (settingsFile_.empty())
     {
-        std::lock_guard lock(mutex_);
-        job_.reset();
-        latestRequest_ = ++lastRequest_;
+        return false;
     }
-    pending_.reset();
-    restorePending_ = false;
+    core::MachineSettings settings = readSettings();
+    settings.sampleFolder = utf8(folder);
+    return media::saveSettings(settingsFile_, settings);
+}
+
+std::shared_ptr<const PreparedSource>
+SampleLoader::restore(const std::optional<core::MediaEntry> &entry) noexcept
+{
     std::shared_ptr<const PreparedSource> source;
-    const std::string fileName = entry.has_value() ? nameOf(entry->absolutePath) : std::string();
+    std::optional<Result> stale;
+    std::string fileName;
     try
     {
+        // Every request so far is superseded: the session decides the sample now. A result the
+        // worker finished is dropped after the lock is released.
+        {
+            std::lock_guard lock(mutex_);
+            job_.reset();
+            stale.swap(result_);
+            latestRequest_ = ++lastRequest_;
+        }
+        pending_.reset();
+        restorePending_ = false;
+        source_.reset();
+        fileName = entry.has_value() ? nameOf(entry->absolutePath) : std::string();
         entry_ = entry;
         status_ = {};
         if (entry.has_value())
@@ -157,7 +177,7 @@ void SampleLoader::restore(const std::optional<core::MediaEntry> &entry) noexcep
                     }
                     if (activeRate_ > 0.0)
                     {
-                        source = media::prepare(std::move(loaded.decoded), activeRate_);
+                        source = prepare(std::move(loaded.decoded), activeRate_);
                     }
                     else
                     {
@@ -181,56 +201,53 @@ void SampleLoader::restore(const std::optional<core::MediaEntry> &entry) noexcep
     }
     catch (...)
     {
-        setError(fileName, describe(std::current_exception(), fileName));
+        setErrorNoThrow(std::current_exception(), fileName);
         source.reset();
         pending_.reset();
         restorePending_ = false;
     }
-    // Active: offered now, in the same stateLoad call that hands over the values (D8). nullptr
-    // when there is nothing to play, so a missing sample is silent. Inactive: activate() does it.
-    source_ = std::move(source);
-    if (activeRate_ > 0.0)
-    {
-        try
-        {
-            callbacks_.offer(source_);
-        }
-        catch (...)
-        {
-            // Only allocation can fail here, and the source in play stays in play.
-        }
-    }
+    // Active: the plugin offers it with the session's values (D8); nullptr when there is
+    // nothing to play, so a missing sample is silent. Inactive: activate() converts the pending
+    // buffer.
+    source_ = source;
+    return source;
 }
 
 std::shared_ptr<const PreparedSource> SampleLoader::activate(double sampleRate) noexcept
 {
-    // A load the worker finished while inactive, not yet applied: applied first, as inactive,
-    // so its decoded buffer is converted below rather than later in the background.
+    // A job under way finishes, and what the worker finished applies, as inactive: a decoded
+    // buffer is converted below, and a source prepared at another rate converted again.
+    stopWorker();
     applyResults();
     activeRate_ = sampleRate;
-    {
-        std::lock_guard lock(mutex_);
-        workerRate_ = sampleRate;
-    }
-    if (restorePending_)
-    {
-        // D8: converted here, so the first block after activate() has it.
-        try
-        {
-            source_ = media::prepare(std::move(pending_), sampleRate);
-        }
-        catch (...)
-        {
-            const std::string fileName = entry_.has_value() ? nameOf(entry_->absolutePath) : "";
-            setError(fileName, describe(std::current_exception(), fileName));
-            source_.reset();
-        }
-        pending_.reset();
-        restorePending_ = false;
-    }
+    std::string fileName;
     try
     {
-        reconvertIfNeeded();
+        fileName = entry_.has_value() ? nameOf(entry_->absolutePath) : std::string();
+        {
+            std::lock_guard lock(mutex_);
+            workerRate_ = sampleRate;
+        }
+        if (restorePending_)
+        {
+            // D8: converted here, so the first block after activate() has it.
+            restorePending_ = false;
+            source_ = prepare(std::move(pending_), sampleRate);
+        }
+        else if (source_ != nullptr && source_->buffer().sampleRate() != sampleRate)
+        {
+            convertNow(sampleRate); // ruling R18
+        }
+    }
+    catch (...)
+    {
+        setErrorNoThrow(std::current_exception(), fileName);
+        source_.reset();
+    }
+    pending_.reset();
+    restorePending_ = false;
+    try
+    {
         bool waiting = false;
         {
             std::lock_guard lock(mutex_);
@@ -243,17 +260,49 @@ std::shared_ptr<const PreparedSource> SampleLoader::activate(double sampleRate) 
     }
     catch (...)
     {
-        // The worker couldn't start: the source plays at its own rate, at the right pitch.
+        // The worker couldn't start: the request waits for the next one.
     }
     return source_;
+}
+
+void SampleLoader::convertNow(double rate) noexcept
+{
+    // The file again, as long as it is still the manifest's sample. Otherwise the old source
+    // stays: it plays at the right pitch, and the status says what it said.
+    std::string fileName;
+    try
+    {
+        fileName = nameOf(entry_->absolutePath);
+        media::LoadedSample loaded =
+            media::loadSample(pathOf(entry_->absolutePath), readSettings());
+        if (!loaded.error.empty() || loaded.entry.sha256Hex != entry_->sha256Hex)
+        {
+            return;
+        }
+        source_ = prepare(std::move(loaded.decoded), rate);
+    }
+    catch (const std::bad_alloc &)
+    {
+        // No memory for the new one: the old source stays, and the status says why.
+        setErrorNoThrow(std::current_exception(), fileName);
+    }
+    catch (...)
+    {
+        // Anything else (the file system): keep the old source.
+    }
 }
 
 void SampleLoader::deactivate() noexcept
 {
     activeRate_ = 0.0;
+    try
     {
         std::lock_guard lock(mutex_);
         workerRate_ = 0.0;
+    }
+    catch (...)
+    {
+        // A mutex that can't lock: the worker is stopped below anyway.
     }
     stopWorker();
     applyResults();
@@ -287,21 +336,21 @@ void SampleLoader::stopWorker() noexcept
     {
         return;
     }
-    {
-        std::lock_guard lock(mutex_);
-        stop_ = true;
-    }
-    wake_.notify_all();
     try
     {
+        {
+            std::lock_guard lock(mutex_);
+            stop_ = true;
+        }
+        wake_.notify_all();
         worker_.join();
+        std::lock_guard lock(mutex_);
+        stop_ = false;
     }
     catch (...)
     {
-        // join fails only for a thread that can't be joined, which joinable() ruled out.
+        // Only a mutex or a join that fails at the system level gets here.
     }
-    std::lock_guard lock(mutex_);
-    stop_ = false;
 }
 
 void SampleLoader::workerLoop()
@@ -323,7 +372,6 @@ void SampleLoader::workerLoop()
         // Loading.
         Result result;
         result.id = job.id;
-        result.kind = job.kind;
         try
         {
             result.fileName = utf8(job.file.filename());
@@ -339,22 +387,23 @@ void SampleLoader::workerLoop()
             }
             catch (...)
             {
-                result.error = "can't load"; // short enough not to allocate
+                result.error = kCantLoad;
             }
         }
 
-        lock.lock();
         // Only the latest request's result is kept: a newer request supersedes any older one,
-        // finished or not, so one slot is enough.
-        const bool current = result.id == latestRequest_;
+        // finished or not, so one slot is enough. Whichever result loses, this one if it was
+        // superseded or the one it replaces, is freed after the lock is released: freeing a
+        // large buffer takes time, and the main thread may be waiting for the mutex.
+        std::optional<Result> slot(std::move(result));
+        lock.lock();
+        const bool current = slot->id == latestRequest_;
         if (current)
         {
-            std::swap(result, result_.emplace());
+            result_.swap(slot);
         }
         lock.unlock();
-        // A superseded result is dropped here, outside the lock: freeing a large buffer takes
-        // time, and the main thread may be waiting for the mutex.
-        result = Result{};
+        slot.reset();
         if (current && callbacks_.requestCallback)
         {
             callbacks_.requestCallback();
@@ -367,28 +416,16 @@ SampleLoader::Result SampleLoader::run(Job job, double rate)
 {
     Result result;
     result.id = job.id;
-    result.kind = job.kind;
     result.fileName = utf8(job.file.filename());
-    std::shared_ptr<SampleBuffer> decoded = std::move(job.decoded);
-    if (decoded == nullptr)
+    media::LoadedSample loaded = media::loadSample(job.file, job.settings);
+    if (!loaded.error.empty())
     {
-        media::LoadedSample loaded = media::loadSample(job.file, job.settings);
-        if (!loaded.error.empty())
-        {
-            result.error = std::move(loaded.error);
-            return result;
-        }
-        if (job.kind == JobKind::Reconvert && loaded.entry.sha256Hex != job.expectedSha256)
-        {
-            // Changed on disk since it was loaded: the source in play stays.
-            result.error = kChanged;
-            return result;
-        }
-        result.differentAudio = job.kind == JobKind::Relink && !job.expectedSha256.empty() &&
-                                loaded.entry.sha256Hex != job.expectedSha256;
-        result.entry = std::move(loaded.entry);
-        decoded = std::move(loaded.decoded);
+        result.error = std::move(loaded.error);
+        return result;
     }
+    result.differentAudio = job.kind == JobKind::Relink && !job.expectedSha256.empty() &&
+                            loaded.entry.sha256Hex != job.expectedSha256;
+    result.entry = std::move(loaded.entry);
     {
         // Superseded while decoding: abandoned before the conversion (spec §6.4).
         std::lock_guard lock(mutex_);
@@ -399,11 +436,11 @@ SampleLoader::Result SampleLoader::run(Job job, double rate)
     }
     if (rate > 0.0)
     {
-        result.prepared = media::prepare(std::move(decoded), rate);
+        result.prepared = prepare(std::move(loaded.decoded), rate);
     }
     else
     {
-        result.decoded = std::move(decoded); // inactive: activate() converts it
+        result.decoded = std::move(loaded.decoded); // inactive: activate() converts it
     }
     return result;
 }
@@ -411,21 +448,23 @@ SampleLoader::Result SampleLoader::run(Job job, double rate)
 void SampleLoader::applyResults() noexcept
 {
     std::optional<Result> result;
-    {
-        std::lock_guard lock(mutex_);
-        result.swap(result_);
-    }
-    if (!result.has_value() || result->id != lastRequest_)
-    {
-        return; // none, or superseded after it finished
-    }
+    std::string fileName;
     try
     {
+        {
+            std::lock_guard lock(mutex_);
+            result.swap(result_);
+        }
+        if (!result.has_value() || result->id != lastRequest_)
+        {
+            return; // none, or superseded after it finished
+        }
+        fileName = result->fileName;
         apply(*result);
     }
     catch (...)
     {
-        setError(result->fileName, describe(std::current_exception(), result->fileName));
+        setErrorNoThrow(std::current_exception(), fileName);
     }
 }
 
@@ -433,45 +472,41 @@ void SampleLoader::apply(Result &result)
 {
     if (!result.error.empty())
     {
-        // The entry and the source stay as they were. A failed reconversion changes nothing the
-        // user sees: the source in play keeps playing at its own rate.
-        if (result.kind != JobKind::Reconvert)
-        {
-            setError(result.fileName, std::move(result.error));
-        }
+        // The entry and the source stay as they were.
+        setError(result.fileName, std::move(result.error));
         return;
     }
-    if (result.kind != JobKind::Reconvert)
+    entry_ = std::move(result.entry);
+    setLoadedStatus(result.differentAudio ? kDifferentAudio : "");
+    // The settings remember the folder loaded from (spec §6.7), on the main thread (R16).
+    if (!settingsFile_.empty())
     {
-        entry_ = std::move(result.entry);
-        setLoadedStatus(result.differentAudio ? kDifferentAudio : "");
-        // The settings remember the folder loaded from (spec §6.7), on the main thread (R16).
-        if (!settingsFile_.empty())
-        {
-            core::MachineSettings settings = readSettings();
-            settings.lastLoadFolder = utf8(pathOf(entry_->absolutePath).parent_path());
-            media::saveSettings(settingsFile_, settings);
-        }
-        if (callbacks_.markDirty)
-        {
-            callbacks_.markDirty();
-        }
+        core::MachineSettings settings = readSettings();
+        settings.lastLoadFolder = utf8(pathOf(entry_->absolutePath).parent_path());
+        media::saveSettings(settingsFile_, settings);
+    }
+    if (callbacks_.markDirty)
+    {
+        callbacks_.markDirty();
     }
     ++resultsApplied_;
     if (result.prepared != nullptr)
     {
+        // At the active rate: a job runs at the rate in effect when it starts, and activate()
+        // and deactivate() wait for one under way, so the rate can't change under it. Applied
+        // while inactive, activate() converts it if it must.
         pending_.reset();
         restorePending_ = false;
         setSource(std::move(result.prepared));
-        reconvertIfNeeded(); // prepared at a rate the plugin has since left
     }
     else if (result.decoded != nullptr)
     {
+        // Decoded while inactive. Still inactive: activate() converts it. A decoded result is
+        // applied while active only if an activation came between the worker's posting and this
+        // call without applying it, which activate() rules out; converted here all the same.
         if (activeRate_ > 0.0)
         {
-            // Decoded while inactive, finished after an activation: converted on the worker,
-            // while the source in play keeps playing.
-            submit({0, JobKind::Reconvert, {}, {}, std::move(result.decoded), {}});
+            setSource(prepare(std::move(result.decoded), activeRate_));
         }
         else
         {
@@ -485,27 +520,21 @@ void SampleLoader::apply(Result &result)
 void SampleLoader::setSource(std::shared_ptr<const PreparedSource> source)
 {
     source_ = std::move(source);
-    if (activeRate_ > 0.0)
+    if (activeRate_ > 0.0 && callbacks_.offer)
     {
         callbacks_.offer(source_);
     }
 }
 
-void SampleLoader::reconvertIfNeeded()
+std::shared_ptr<const PreparedSource> SampleLoader::prepare(std::shared_ptr<SampleBuffer> decoded,
+                                                            double rate) const
 {
-    // Not while the user's request is under way: its result comes next, and supersedes this.
-    if (activeRate_ <= 0.0 || source_ == nullptr || !entry_.has_value() ||
-        status_.state == SampleState::Loading || source_->buffer().sampleRate() == activeRate_)
+    auto source = media::prepare(std::move(decoded), rate);
+    if (preparedObserver_)
     {
-        return;
+        preparedObserver_(source);
     }
-    submit({0, JobKind::Reconvert, pathOf(entry_->absolutePath), readSettings(), nullptr,
-            entry_->sha256Hex});
-}
-
-void SampleLoader::setError(std::string fileName, std::string message)
-{
-    status_ = {SampleState::Error, std::move(fileName), std::move(message), 0.0, 0, 0.0};
+    return source;
 }
 
 void SampleLoader::setLoadedStatus(std::string message)
@@ -517,6 +546,26 @@ void SampleLoader::setLoadedStatus(std::string message)
                e.sampleRate > 0.0 ? static_cast<double>(e.frames) / e.sampleRate : 0.0,
                e.channels,
                e.sampleRate};
+}
+
+void SampleLoader::setError(std::string fileName, std::string message)
+{
+    status_ = {SampleState::Error, std::move(fileName), std::move(message), 0.0, 0, 0.0};
+}
+
+void SampleLoader::setErrorNoThrow(const std::exception_ptr &error,
+                                   const std::string &fileName) noexcept
+{
+    try
+    {
+        setError(fileName, describe(error, fileName));
+    }
+    catch (...)
+    {
+        status_.state = SampleState::Error;
+        status_.fileName.clear();
+        status_.message = kCantLoad; // fits the string's own buffer: no allocation
+    }
 }
 
 core::MachineSettings SampleLoader::readSettings() const

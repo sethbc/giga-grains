@@ -19,23 +19,34 @@ SourceExchange::SourceExchange()
 
 SourceExchange::~SourceExchange() = default;
 
-void SourceExchange::offer(std::shared_ptr<const PreparedSource> s)
+void SourceExchange::offer(std::shared_ptr<const PreparedSource> s, const ParamValues *values)
+{
+    const PreparedSource *raw = hold(std::move(s)); // before the audio side can see it
+    SourceOffer &mine = slots_[back_];
+    mine.source = raw;
+    mine.hasValues = values != nullptr;
+    mine.values = values != nullptr ? *values : ParamValues{};
+    // Release: the audio side that takes this slot sees the offer and the source fully built.
+    // Acquire: the slot we get back is one the audio side has finished reading.
+    const uint8_t old =
+        middle_.exchange(static_cast<uint8_t>(back_ | kFresh), std::memory_order_acq_rel);
+    back_ = old & kIndex;
+    if ((old & kFresh) != 0)
+    {
+        // Never taken, and now ours again: the audio side never had its source.
+        release(slots_[back_].source);
+    }
+    collect();
+}
+
+const PreparedSource *SourceExchange::hold(std::shared_ptr<const PreparedSource> s)
 {
     const PreparedSource *raw = s.get();
     if (s != nullptr)
     {
-        owned_.push_back(std::move(s)); // before the audio side can see it
+        owned_.push_back(std::move(s));
     }
-    // Release: the audio side that polls this offer sees the source fully built. Acquire: an
-    // offer we get back untaken is one the audio side never read.
-    const uintptr_t old =
-        mailbox_.exchange(reinterpret_cast<uintptr_t>(raw) | kFresh, std::memory_order_acq_rel);
-    if (old != 0)
-    {
-        // Never polled, and now out of the mailbox: the audio side can't have it.
-        release(reinterpret_cast<const PreparedSource *>(old & ~kFresh));
-    }
-    collect();
+    return raw;
 }
 
 void SourceExchange::collect()
@@ -49,19 +60,20 @@ void SourceExchange::collect()
     head_.store(head, std::memory_order_release);
 }
 
-bool SourceExchange::poll(const PreparedSource *&source) noexcept
+bool SourceExchange::awaitingCollect() const noexcept
 {
-    // A relaxed look first, so an empty mailbox costs no read-modify-write.
-    if (mailbox_.load(std::memory_order_relaxed) == 0)
+    return tail_.load(std::memory_order_acquire) != head_.load(std::memory_order_acquire);
+}
+
+bool SourceExchange::poll(SourceOffer &offer) noexcept
+{
+    // Only poll() clears kFresh, so once seen it stays until the exchange below.
+    if ((middle_.load(std::memory_order_relaxed) & kFresh) == 0)
     {
         return false;
     }
-    const uintptr_t v = mailbox_.exchange(0, std::memory_order_acq_rel);
-    if (v == 0)
-    {
-        return false;
-    }
-    source = reinterpret_cast<const PreparedSource *>(v & ~kFresh);
+    front_ = middle_.exchange(front_, std::memory_order_acq_rel) & kIndex;
+    offer = slots_[front_];
     return true;
 }
 

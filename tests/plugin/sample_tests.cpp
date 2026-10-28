@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -208,6 +209,52 @@ struct RateLog
         }
     }
 };
+
+// Every source a loader prepares, as weak pointers, to show which are still alive. The observer
+// runs on the worker or the main thread. Declare it before the plugin, so it outlives it.
+struct SourceLog
+{
+    std::mutex mutex;
+    std::vector<std::weak_ptr<const gg::PreparedSource>> sources;
+
+    void attach(gg::plugin::SampleLoader &loader)
+    {
+        loader.setPreparedObserver([this](const std::shared_ptr<const gg::PreparedSource> &s) {
+            std::lock_guard lock(mutex);
+            sources.push_back(s);
+        });
+    }
+    std::size_t count()
+    {
+        std::lock_guard lock(mutex);
+        return sources.size();
+    }
+    std::size_t alive()
+    {
+        std::lock_guard lock(mutex);
+        std::size_t n = 0;
+        for (const auto &s : sources)
+        {
+            n += s.expired() ? 0 : 1;
+        }
+        return n;
+    }
+    bool aliveAt(std::size_t i)
+    {
+        std::lock_guard lock(mutex);
+        return !sources.at(i).expired();
+    }
+};
+
+// Renders `blocks` blocks of 512 frames with no events, discarding the output.
+void renderBlocks(PluginUnderTest &plugin, int blocks)
+{
+    Stereo block(512);
+    for (int i = 0; i < blocks; ++i)
+    {
+        REQUIRE(plugin.process(512, nullptr, block.data()) == CLAP_PROCESS_CONTINUE);
+    }
+}
 } // namespace
 
 TEST_CASE("a session restored while active plays in the first block after it (D8)", "[plugin]")
@@ -251,8 +298,9 @@ TEST_CASE("two instances restoring one session render the same bits (D8)", "[plu
 {
     // An export: one host restores the session and then activates; another activates first,
     // then restores it. Both must render the same bits from the first block on, note included.
-    setUp("d8-identical");
-    const fs::path file = gg::test::sineSampleFile("d8-identical");
+    // The file is at 44.1 kHz, so both convert it (gg::media::prepare) to 48 kHz.
+    const fs::path dir = setUp("d8-identical");
+    const fs::path file = gg::test::writeSineWav(dir / "d8-identical.wav", 44100);
     std::string state;
     {
         PluginUnderTest source(kInstrumentId);
@@ -369,45 +417,121 @@ TEST_CASE("a sample moved into the sample folder is found, and the state marked 
 TEST_CASE("a load superseded at once never becomes current", "[plugin]")
 {
     // Review Focus 2 (spec §6.4): a request supersedes the one before it, waiting or under way;
-    // only the last one's result applies. Nothing leaks (ASan's leak check covers this test).
+    // only the last one's result applies, and every source prepared for a superseded one is
+    // freed (the weak pointers below, on every platform, beside ASan's leak check on Linux).
     const fs::path dir = setUp("supersede");
     const fs::path a = gg::test::writeSineWav(dir / "a.wav", 44100, 20.0, 220.0);
     const fs::path b = gg::test::writeSineWav(dir / "b" / "b.wav", 44100, 1.0, 330.0);
+    SourceLog sources;
     LoaderHost host;
-    PluginUnderTest instrument(kInstrumentId, host.clap());
-    REQUIRE(instrument.valid());
-    REQUIRE(instrument.activate(48000.0, 512));
-    auto &loader = loaderOf(instrument);
-
-    loader.requestLoad(a);
-    CHECK(loader.status().state == SampleState::Loading);
-    CHECK(loader.status().fileName == "a.wav");
-    loader.requestLoad(b);
-    CHECK(loader.status().fileName == "b.wav");
-
-    const SampleStatus status = settle(instrument);
-    CHECK(status.state == SampleState::Loaded);
-    CHECK(status.fileName == "b.wav");
-    CHECK(status.seconds == 1.0);
-    CHECK(loader.resultsApplied() == 1);
-    // A's result, if it was under way, is dropped too: nothing more applies.
-    for (int i = 0; i < 50; ++i)
     {
-        instrument.onMainThread();
-        std::this_thread::sleep_for(std::chrono::milliseconds(2));
-    }
-    CHECK(loader.resultsApplied() == 1);
-    const auto entry = savedEntry(instrument);
-    REQUIRE(entry.has_value());
-    CHECK(fs::path(entry->absolutePath).filename() == "b.wav");
-    CHECK(host.dirtyMarks() == 1);
-    // The settings remember the folder loaded from (spec §6.7), written on the main thread.
-    CHECK(fs::path(gg::media::loadSettings(dir / "settings.xml").lastLoadFolder) ==
-          fs::absolute(b).lexically_normal().parent_path());
+        PluginUnderTest instrument(kInstrumentId, host.clap());
+        REQUIRE(instrument.valid());
+        REQUIRE(instrument.activate(48000.0, 512));
+        auto &loader = loaderOf(instrument);
+        sources.attach(loader);
 
-    Stereo out(4800);
-    renderNote(instrument, out, 512);
-    CHECK(peak(out.left) > 0.01f);
+        loader.requestLoad(a);
+        CHECK(loader.status().state == SampleState::Loading);
+        CHECK(loader.status().fileName == "a.wav");
+        loader.requestLoad(b);
+        CHECK(loader.status().fileName == "b.wav");
+
+        const SampleStatus status = settle(instrument);
+        CHECK(status.state == SampleState::Loaded);
+        CHECK(status.fileName == "b.wav");
+        CHECK(status.seconds == 1.0);
+        CHECK(loader.resultsApplied() == 1);
+        // A's result, if it was under way, is dropped too: nothing more applies.
+        for (int i = 0; i < 50; ++i)
+        {
+            instrument.onMainThread();
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+        CHECK(loader.resultsApplied() == 1);
+        // B's source is the only one alive: A's, if it was ever built, is gone.
+        CHECK(sources.count() >= 1);
+        CHECK(sources.alive() == 1);
+        const auto entry = savedEntry(instrument);
+        REQUIRE(entry.has_value());
+        CHECK(fs::path(entry->absolutePath).filename() == "b.wav");
+        CHECK(host.dirtyMarks() == 1);
+        // The settings remember the folder loaded from (spec §6.7), written on the main thread.
+        CHECK(fs::path(gg::media::loadSettings(dir / "settings.xml").lastLoadFolder) ==
+              fs::absolute(b).lexically_normal().parent_path());
+
+        Stereo out(4800);
+        renderNote(instrument, out, 512);
+        CHECK(peak(out.left) > 0.01f);
+    }
+    CHECK(sources.alive() == 0);
+}
+
+TEST_CASE("a restore supersedes a load under way", "[plugin]")
+{
+    // The session decides the sample (D8): a load the user asked for before the state load
+    // never applies, even if it finishes after it.
+    const fs::path dir = setUp("restore-supersedes");
+    const fs::path a = gg::test::writeSineWav(dir / "a.wav", 44100, 20.0, 220.0);
+    const fs::path b = gg::test::writeSineWav(dir / "b.wav", 48000, 1.0, 330.0);
+    SourceLog sources;
+    LoaderHost host;
+    {
+        PluginUnderTest instrument(kInstrumentId, host.clap());
+        REQUIRE(instrument.valid());
+        REQUIRE(instrument.activate(48000.0, 512));
+        auto &loader = loaderOf(instrument);
+        sources.attach(loader);
+        loader.requestLoad(a);
+        REQUIRE(instrument.loadSampleState(b));
+        CHECK(loader.status().state == SampleState::Loaded);
+        CHECK(loader.status().fileName == "b.wav");
+        for (int i = 0; i < 100; ++i)
+        {
+            instrument.onMainThread();
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+        CHECK(loader.resultsApplied() == 0);
+        CHECK(loader.status().fileName == "b.wav");
+        const auto entry = savedEntry(instrument);
+        REQUIRE(entry.has_value());
+        CHECK(fs::path(entry->absolutePath).filename() == "b.wav");
+        instrument.deactivate(); // waits for A's job if it still runs; its result is dropped
+        CHECK(loader.status().fileName == "b.wav");
+        CHECK(loader.resultsApplied() == 0);
+    }
+    CHECK(sources.alive() == 0);
+}
+
+TEST_CASE("deactivate and destruction wait for a load under way", "[plugin]")
+{
+    const fs::path dir = setUp("stop-worker");
+    const fs::path a = gg::test::writeSineWav(dir / "a.wav", 44100, 20.0, 220.0);
+    SourceLog sources;
+    LoaderHost host;
+    {
+        PluginUnderTest instrument(kInstrumentId, host.clap());
+        REQUIRE(instrument.valid());
+        REQUIRE(instrument.activate(48000.0, 512));
+        auto &loader = loaderOf(instrument);
+        sources.attach(loader);
+
+        // deactivate() waits for the job if it started (and applies it), or leaves it queued.
+        loader.requestLoad(a);
+        instrument.deactivate();
+        const SampleState afterDeactivate = loader.status().state;
+        CHECK((afterDeactivate == SampleState::Loaded || afterDeactivate == SampleState::Loading));
+        REQUIRE(instrument.activate(48000.0, 512));
+        CHECK(settle(instrument).state == SampleState::Loaded);
+        CHECK(loader.status().fileName == "a.wav");
+        Stereo out(512);
+        renderNote(instrument, out, 512);
+        CHECK(peak(out.left) > 0.01f);
+
+        // The destructor (after the harness's deactivate) with a job under way.
+        loader.requestLoad(a);
+    }
+    CHECK(sources.alive() == 0);
 }
 
 TEST_CASE("a load while inactive plays in the first block after activate", "[plugin]")
@@ -429,103 +553,117 @@ TEST_CASE("a load while inactive plays in the first block after activate", "[plu
     CHECK(peak(out.left) > 0.01f);
 }
 
-TEST_CASE("a source converts again after a rate change, without a click", "[plugin]")
+TEST_CASE("a reactivation at a new rate converts before the first block (R18)", "[plugin]")
 {
-    // Review Focus 5 (spec §6.4). A 44.1 kHz file, loaded at 44.1 kHz, then the plugin
-    // reactivated at 48 kHz while a note plays: the 44.1 kHz source plays at once, its grains'
-    // rates scaled by 44100 / 48000, until the background conversion swaps in the 48 kHz one,
-    // whose grains run at exactly 1. The swap adds no step beyond what the sound already has.
-    const fs::path dir = setUp("reconvert");
-    const fs::path file = gg::test::writeSineWav(dir / "reconvert.wav", 44100, 4.0, 220.0);
-    constexpr uint32_t kBlock = 256;
-    constexpr std::size_t kWindow = 2400; // 50 ms at 48 kHz
+    // Ruling R18: activate() decodes and converts the sample at the new rate before it returns,
+    // so what the first block renders doesn't depend on the machine's speed. Two instances
+    // reactivated from 44.1 kHz to 48 kHz (at different block sizes) and one that had the file
+    // at 48 kHz from the start render the same bits, and every grain runs at exactly 1.
+    const fs::path dir = setUp("reactivate");
+    const fs::path file = gg::test::writeSineWav(dir / "reactivate.wav", 44100, 4.0, 220.0);
+    constexpr std::size_t kFrames = 24000;
 
-    // The reference: the file at 48 kHz from the start.
-    float steadyStep = 0.0f;
+    const auto reactivated = [&](uint32_t block, Stereo &out, RateLog &log) {
+        PluginUnderTest instrument(kInstrumentId);
+        REQUIRE(instrument.valid());
+        REQUIRE(instrument.activate(44100.0, block));
+        REQUIRE(instrument.loadSampleState(file));
+        instrument.deactivate();
+        REQUIRE(instrument.activate(48000.0, block));
+        instrument.impl().processor()->setEventSink(&RateLog::record, &log);
+        renderNote(instrument, out, block);
+        CHECK(loaderOf(instrument).status().state == SampleState::Loaded);
+    };
+    Stereo a(kFrames);
+    Stereo b(kFrames);
+    RateLog logA;
+    RateLog logB;
+    reactivated(256, a, logA);
+    reactivated(1024, b, logB);
+
+    Stereo fresh(kFrames);
     {
-        PluginUnderTest reference(kInstrumentId);
-        REQUIRE(reference.valid());
-        REQUIRE(reference.activate(48000.0, kBlock));
-        REQUIRE(reference.loadSampleState(file));
-        Stereo out(48000);
-        renderNote(reference, out, kBlock);
-        steadyStep = maxStep(out, 14400, 48000); // after the first grains' attack
-        REQUIRE(steadyStep > 0.0f);
+        PluginUnderTest instrument(kInstrumentId);
+        REQUIRE(instrument.valid());
+        REQUIRE(instrument.activate(48000.0, 512));
+        REQUIRE(instrument.loadSampleState(file));
+        renderNote(instrument, fresh, 512);
     }
 
+    CHECK(peak(a.left) > 0.05f);
+    CHECK(gg::test::sameBits(a.left, b.left));
+    CHECK(gg::test::sameBits(a.right, b.right));
+    CHECK(gg::test::sameBits(a.left, fresh.left));
+    CHECK(gg::test::sameBits(a.right, fresh.right));
+    REQUIRE(logA.count > 0);
+    for (std::size_t g = 0; g < logA.count; ++g)
+    {
+        CHECK(logA.grains[g].rate == 1.0);
+    }
+}
+
+TEST_CASE("a reactivation keeps the old source when its file has gone", "[plugin]")
+{
+    // R18: nothing to convert again, so the 44.1 kHz source plays on at 48 kHz, its grains'
+    // rates scaled by 44100 / 48000, at the right pitch.
+    const fs::path dir = setUp("reactivate-gone");
+    const fs::path file = gg::test::writeSineWav(dir / "gone.wav", 44100, 4.0, 220.0);
+    PluginUnderTest instrument(kInstrumentId);
+    REQUIRE(instrument.valid());
+    REQUIRE(instrument.activate(44100.0, 512));
+    REQUIRE(instrument.loadSampleState(file));
+    const std::string manifest = savedManifest(instrument);
+    instrument.deactivate();
+    fs::remove(file);
+    REQUIRE(instrument.activate(48000.0, 512));
+    RateLog log;
+    instrument.impl().processor()->setEventSink(&RateLog::record, &log);
+    Stereo out(12000);
+    renderNote(instrument, out, 512);
+    CHECK(peak(out.left) > 0.05f);
+    CHECK(loaderOf(instrument).status().state == SampleState::Loaded);
+    CHECK(savedManifest(instrument) == manifest);
+    const double scaled = gg::exp2Det(0.0) * 44100.0 / 48000.0;
+    REQUIRE(log.count > 0);
+    for (std::size_t g = 0; g < log.count; ++g)
+    {
+        CHECK(log.grains[g].rate == scaled);
+    }
+}
+
+TEST_CASE("the activation's source is freed once a load replaces it", "[plugin]")
+{
+    // A session restored while inactive: activate() prepares its source and gives it to the
+    // Processor (setSourceNow). Once a load replaces it and its grains end, it goes back through
+    // the SourceExchange like any other and is freed on the main thread, which the audio thread
+    // asks for (request_callback).
+    const fs::path dir = setUp("activation-source");
+    const fs::path first = gg::test::sineSampleFile("activation-source");
+    const fs::path second = gg::test::writeSineWav(dir / "second.wav", 48000, 1.0, 330.0);
+    SourceLog sources;
     LoaderHost host;
     PluginUnderTest instrument(kInstrumentId, host.clap());
     REQUIRE(instrument.valid());
-    REQUIRE(instrument.activate(44100.0, kBlock));
-    REQUIRE(instrument.loadSampleState(file));
-    instrument.deactivate();
-    REQUIRE(instrument.activate(48000.0, kBlock));
-    RateLog log;
-    instrument.impl().processor()->setEventSink(&RateLog::record, &log);
+    auto &loader = loaderOf(instrument);
+    sources.attach(loader);
+    REQUIRE(instrument.loadSampleState(first));
+    REQUIRE(instrument.activate(48000.0, 512));
+    REQUIRE(sources.count() == 1); // prepared by activate()
+    Stereo out(512);
+    renderNote(instrument, out, 512); // its grains sound
+    CHECK(peak(out.left) > 0.01f);
 
-    // Render until the 48 kHz source has played 0.3 s, pumping on_main_thread between blocks.
-    // The render runs faster than real time, so the swap's sample depends on the machine; at
-    // most 60 s of audio.
-    const double before = gg::exp2Det(0.0) * 44100.0 / 48000.0;
-    std::vector<float> left;
-    std::vector<float> right;
-    const auto on = gg::test::noteEvent(CLAP_EVENT_NOTE_ON, 0, 60, 0);
-    std::optional<int64_t> swap;
-    Stereo block(kBlock);
-    for (std::size_t done = 0; done < 60 * 48000; done += kBlock)
-    {
-        gg::test::InputEvents events;
-        if (done == 0)
-        {
-            events.add(&on.header);
-        }
-        REQUIRE(instrument.process(kBlock, nullptr, block.data(), events.list()) ==
-                CLAP_PROCESS_CONTINUE);
-        left.insert(left.end(), block.left.begin(), block.left.end());
-        right.insert(right.end(), block.right.begin(), block.right.end());
-        instrument.onMainThread();
-        for (std::size_t g = 0; !swap.has_value() && g < log.count; ++g)
-        {
-            if (log.grains[g].rate == 1.0)
-            {
-                swap = log.grains[g].onset;
-            }
-        }
-        if (swap.has_value() && static_cast<int64_t>(left.size()) > *swap + 14400)
-        {
-            break;
-        }
-        if (!swap.has_value())
-        {
-            std::this_thread::sleep_for(std::chrono::microseconds(200));
-        }
-    }
-    REQUIRE(swap.has_value());
-    REQUIRE(*swap > 0); // the old source played first
-    std::size_t oldGrains = 0;
-    for (std::size_t g = 0; g < log.count; ++g)
-    {
-        const auto &grain = log.grains[g];
-        if (grain.onset < *swap)
-        {
-            CHECK(grain.rate == before);
-            ++oldGrains;
-        }
-        else
-        {
-            CHECK(grain.rate == 1.0);
-        }
-    }
-    CHECK(oldGrains > 0);
-    CHECK(loaderOf(instrument).status().state == SampleState::Loaded);
-
-    Stereo rendered(static_cast<uint32_t>(left.size()));
-    rendered.left = left;
-    rendered.right = right;
-    const auto s = static_cast<std::size_t>(*swap);
-    const float swapStep = maxStep(rendered, s > kWindow ? s - kWindow : 0, s + kWindow);
-    CAPTURE(steadyStep, swapStep, *swap);
-    CHECK(swapStep <= steadyStep * 1.5f);
+    loader.requestLoad(second);
+    REQUIRE(settle(instrument).state == SampleState::Loaded);
+    REQUIRE(sources.count() == 2);
+    const uint32_t callbacksBefore = host.callbacks();
+    renderBlocks(instrument, 40); // about 0.43 s: the second adopted, the first drains, retires
+    CHECK(host.callbacks() > callbacksBefore); // the audio thread asked for the collect
+    CHECK(sources.aliveAt(0));                 // handed back, not yet freed
+    instrument.onMainThread();
+    CHECK_FALSE(sources.aliveAt(0));
+    CHECK(sources.aliveAt(1));
+    CHECK(instrument.impl().processor()->sources().held() == 1);
 }
 
 TEST_CASE("a sample loaded while a note plays swaps in without a click", "[plugin]")
@@ -703,4 +841,20 @@ TEST_CASE("the FX has no loader and saves an empty manifest", "[plugin]")
     s.sample = gg::test::entryOf(file);
     REQUIRE(fx.load(gg::core::encodeState(s)));
     CHECK(savedManifest(fx) == "<media version=\"1\" />");
+}
+
+TEST_CASE("the sample folder is saved in the settings file", "[plugin]")
+{
+    // Spec §6.5, §6.7: the editor's "Sample folder…" sets it, on the main thread (R16), in the
+    // file GG_SETTINGS_FILE names here.
+    const fs::path dir = setUp("sample-folder", {"", "/somewhere/else"});
+    PluginUnderTest instrument(kInstrumentId);
+    REQUIRE(instrument.valid());
+    auto &loader = loaderOf(instrument);
+    CHECK(loader.settingsFile() == dir / "settings.xml");
+    const fs::path library = dir / "library";
+    REQUIRE(loader.setSampleFolder(library));
+    const gg::core::MachineSettings saved = gg::media::loadSettings(dir / "settings.xml");
+    CHECK(fs::path(saved.sampleFolder) == library);
+    CHECK(saved.lastLoadFolder == "/somewhere/else"); // kept
 }

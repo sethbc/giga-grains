@@ -272,6 +272,35 @@ TEST_CASE("setSourceNow keeps the source alive until it is replaced", "[core]")
     CHECK(peak(left) > 0.01f);
 }
 
+TEST_CASE("a source given by setSourceNow is freed once an offer replaces it", "[core]")
+{
+    // Spec §6.4: the activation's source retires through sources() like an offered one, so it
+    // doesn't stay in memory for the rest of the session once another has replaced it.
+    Processor p({kSampleRate, 512, 1, Mode::Instrument});
+    auto a = sweepSource();
+    const std::weak_ptr<const gg::PreparedSource> weakA = a;
+    p.setSourceNow(std::move(a));
+    CHECK(p.sources().held() == 1);
+
+    std::vector<float> left(512), right(512);
+    float *out[2] = {left.data(), right.data()};
+    const NoteEvent n = on(0, 60);
+    p.process(nullptr, 0, out, 2, 512, {}, std::span(&n, 1)); // A's grains sound
+
+    auto b = sweepSource();
+    const std::weak_ptr<const gg::PreparedSource> weakB = b;
+    p.sources().offer(std::move(b));
+    for (int i = 0; i < 40; ++i) // about 0.43 s: B adopted, A's grains end, A retires
+    {
+        p.process(nullptr, 0, out, 2, 512, {});
+    }
+    CHECK_FALSE(weakA.expired()); // handed back, but only the main thread frees it
+    p.sources().collect();
+    CHECK(weakA.expired());
+    CHECK_FALSE(weakB.expired());
+    CHECK(p.sources().held() == 1);
+}
+
 TEST_CASE("a note-on starts the cloud at its boundary", "[core]")
 {
     // Spec §6.2: the first grain spawns at the note's own boundary, 128 for offset 100.

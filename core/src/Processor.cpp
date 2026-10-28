@@ -283,20 +283,19 @@ void Processor::reset() noexcept
 void Processor::setSourceNow(std::shared_ptr<const PreparedSource> s)
 {
     // process() isn't running, so this thread may take the audio side's role in sources_. An
-    // offer not yet polled and one polled but not adopted are both superseded.
-    const PreparedSource *offered = nullptr;
-    if (sources_.poll(offered))
-    {
-        sources_.retire(offered);
-    }
+    // offer not yet taken and a source taken but not adopted are both superseded.
+    takeOffers();
     if (hasPendingSource_)
     {
         sources_.retire(pendingSource_);
         hasPendingSource_ = false;
     }
-    engine_.setPreparedSource(std::move(s));
-    // The engine hands back, through takeRetiredSource, the adopted sources this replaced (one
-    // left waiting would hold up the next adoption). They go back to sources_, which frees them.
+    // A retired source waiting would leave no room for the ones the replacement hands back.
+    while (const PreparedSource *retired = engine_.takeRetiredSource())
+    {
+        sources_.retire(retired);
+    }
+    engine_.replaceSource(sources_.hold(std::move(s)));
     while (const PreparedSource *retired = engine_.takeRetiredSource())
     {
         sources_.retire(retired);
@@ -304,27 +303,36 @@ void Processor::setSourceNow(std::shared_ptr<const PreparedSource> s)
     sources_.collect();
 }
 
-void Processor::exchangeSources() noexcept
+bool Processor::takeOffers() noexcept
 {
     // A retired source first: one waiting to be taken would keep the engine from adopting.
     while (const PreparedSource *retired = engine_.takeRetiredSource())
     {
         sources_.retire(retired);
     }
-    const PreparedSource *offered = nullptr;
-    if (sources_.poll(offered))
+    SourceOffer offer;
+    const bool offered = sources_.poll(offer);
+    if (offered)
     {
+        if (offer.hasValues)
+        {
+            for (size_t s = 0; s < kParamCount; ++s)
+            {
+                setBase(static_cast<ParamSlot>(s), offer.values[s]);
+            }
+        }
         if (hasPendingSource_)
         {
             sources_.retire(pendingSource_); // superseded before the engine ever read it
         }
-        pendingSource_ = offered;
+        pendingSource_ = offer.source;
         hasPendingSource_ = true;
     }
     if (hasPendingSource_ && engine_.adoptSource(pendingSource_))
     {
         hasPendingSource_ = false;
     }
+    return offered && offer.hasValues;
 }
 
 void Processor::setEventSink(GrainEventSink sink, void *ctx) noexcept
@@ -339,7 +347,7 @@ void Processor::process(const float *const *in, uint32_t numInChannels, float *c
 {
     // One guard for the whole call, the dry/wet sum included (spec §6.4).
     ScopedDenormalsOff denormalsOff;
-    exchangeSources();
+    takeOffers();
     if (in == nullptr || config_.mode != Mode::Fx)
     {
         numInChannels = 0;

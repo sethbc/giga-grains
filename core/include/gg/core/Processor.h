@@ -115,14 +115,18 @@ struct NoteEvent
 /// engaged; the freeze changes at the same boundaries as the held set.
 ///
 /// **The sample source** (spec §6.4). The plugin's main thread offers prepared sources through
-/// sources(); each process() call starts by handing the engine's retired sources back there
-/// (Engine::takeRetiredSource → SourceExchange::retire), then polls it for a new offer, which it
-/// holds until Engine::adoptSource accepts it: at once, unless two sources are still in play, and
-/// then at the start of a later call, within Size. A newer offer replaces one still held, which
-/// goes straight back. So at most three sources exist at once: the one draining, the one
-/// playing and one waiting. The swap applies at a call's start, not on the control grid: where
-/// it falls depends on when the main thread offered it, so only a source given before the first
-/// call (setSourceNow, or an offer before it) is part of a block-size-invariant render.
+/// sources(), each with the parameter values of a session restored while active (D8), if any.
+/// Each process() call starts with takeOffers(): it hands the engine's retired sources back to
+/// sources() (Engine::takeRetiredSource → SourceExchange::retire), polls for a new offer, applies
+/// its values at once (as setBase does), and holds its source until Engine::adoptSource accepts
+/// it: at once, unless two sources are still in play, and then at the start of a later call,
+/// within Size. So an offer's values apply from the first call that takes it, and its source from
+/// that call too, or, when two sources are already in play, up to Size later. A newer offer
+/// replaces a source still held, which goes straight back. So the exchange and the engine hold
+/// at most three sources at once: the one draining, the one playing and one waiting. The swap
+/// applies at a call's start, not on the control grid: where it falls depends on when the main
+/// thread offered it, so only a source given before the first call (setSourceNow, or an offer
+/// before it) is part of a block-size-invariant render.
 ///
 /// **Mix and Level** ramp linearly to each new target over kRampSeconds, round(0.01 × sr)
 /// samples: R samples after its boundary a ramp is exactly at its target. A ramp is a function
@@ -193,13 +197,22 @@ class Processor
     /// last applied boundary, so a pending note doesn't show until its boundary.
     std::span<const uint8_t> heldKeys() const noexcept { return {keys_.data(), keyCount_}; }
 
-    /// Not real-time safe: while process() isn't running, for an inactive plugin, a session
-    /// restore, gg-render and tests. The Processor keeps `s` alive; grains from the next onset
-    /// read it. It replaces the source as Engine::setPreparedSource does, so grains still
-    /// sounding go on in `s` too; nullptr means no source. It supersedes every source offered
-    /// through sources() so far, taken or not: each one, and each the engine hands back, goes
-    /// back to sources() and is freed there (SourceExchange::collect), on the calling thread.
+    /// Not real-time safe: while process() isn't running, for an inactive plugin, gg-render and
+    /// tests. sources() holds `s` (SourceExchange::hold), and the engine reads it from the next
+    /// onset: it replaces the source as Engine::setPreparedSource does, so grains still sounding
+    /// go on in `s` too; nullptr means no source. Once a later offer replaces it and its grains
+    /// end, it goes back to sources() and is freed there, as an offered source is. It supersedes
+    /// every source offered so far, taken or not (an untaken offer's values still apply): each
+    /// one, and each the engine hands back, goes back to sources() and is freed there
+    /// (SourceExchange::collect), on the calling thread.
     void setSourceNow(std::shared_ptr<const PreparedSource> s);
+
+    /// Real-time safe; the start of every process() call, and for the plugin's params.flush: hands
+    /// the engine's retired sources back to sources(), takes a new offer from it, applies the
+    /// offer's values (as setBase does), and has the engine adopt the source waiting, if it can.
+    /// Returns whether an offer's values were applied. Call it on the audio thread between
+    /// process() calls, or on another while process() isn't running.
+    bool takeOffers() noexcept SST_CPPUTILS_NONBLOCKING;
 
     /// The hand-off through which the plugin's main thread offers sources to process() (the
     /// class comment). Its main-thread calls (offer, collect, held) may run while process() does.
@@ -242,9 +255,6 @@ class Processor
         int64_t callStart; ///< The absolute sample of the call's first frame.
     };
 
-    /// The start of every process() call: hands the engine's retired sources back to sources_,
-    /// takes a new offer from it, and has the engine adopt the source waiting, if it can.
-    void exchangeSources() noexcept SST_CPPUTILS_NONBLOCKING;
     /// Renders the absolute samples [from, to) of the current call.
     void render(const Buffers &b, int64_t from, int64_t to) noexcept SST_CPPUTILS_NONBLOCKING;
     /// Moves the pending changes into the base and modulation values, and the pending notes'

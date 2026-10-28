@@ -18,6 +18,7 @@
 
 using gg::PreparedSource;
 using gg::core::SourceExchange;
+using gg::core::SourceOffer;
 using gg::test::AllocTripwire;
 
 namespace
@@ -31,7 +32,7 @@ std::shared_ptr<const PreparedSource> makeSource(uint32_t channels = 2)
 TEST_CASE("exchange hands an offer to the audio side once", "[core]")
 {
     SourceExchange exchange;
-    const PreparedSource *polled = nullptr;
+    SourceOffer polled;
     CHECK_FALSE(exchange.poll(polled)); // nothing offered yet
 
     auto a = makeSource();
@@ -39,7 +40,8 @@ TEST_CASE("exchange hands an offer to the audio side once", "[core]")
     exchange.offer(std::move(a));
     CHECK(exchange.held() == 1);
     REQUIRE(exchange.poll(polled));
-    CHECK(polled == raw);
+    CHECK(polled.source == raw);
+    CHECK_FALSE(polled.hasValues);
     CHECK_FALSE(exchange.poll(polled)); // once
 }
 
@@ -56,9 +58,9 @@ TEST_CASE("exchange keeps the newest offer and frees the one never taken", "[cor
     CHECK(weakA.expired());
     CHECK(exchange.held() == 1);
 
-    const PreparedSource *polled = nullptr;
+    SourceOffer polled;
     REQUIRE(exchange.poll(polled));
-    CHECK(polled == rawB);
+    CHECK(polled.source == rawB);
     CHECK_FALSE(exchange.poll(polled));
 }
 
@@ -69,9 +71,10 @@ TEST_CASE("exchange offers no source as nullptr", "[core]")
     SourceExchange exchange;
     exchange.offer(nullptr);
     CHECK(exchange.held() == 0);
-    const PreparedSource *polled = makeSource().get();
+    SourceOffer polled;
+    polled.source = makeSource().get();
     REQUIRE(exchange.poll(polled));
-    CHECK(polled == nullptr);
+    CHECK(polled.source == nullptr);
     CHECK_FALSE(exchange.poll(polled));
     exchange.retire(nullptr); // ignored
     exchange.collect();
@@ -88,7 +91,7 @@ TEST_CASE("exchange frees a retired source on collect, in order, never on the au
     exchange.offer(std::move(a));
 
     // The audio side's calls neither allocate nor free.
-    const PreparedSource *first = nullptr;
+    SourceOffer first;
     bool polledFirst = false;
     AllocTripwire::resetCount();
     {
@@ -99,26 +102,28 @@ TEST_CASE("exchange frees a retired source on collect, in order, never on the au
     REQUIRE(polledFirst);
 
     exchange.offer(std::move(b));
-    const PreparedSource *second = nullptr;
+    SourceOffer second;
     bool polledSecond = false;
     AllocTripwire::resetCount();
     {
         AllocTripwire::Scope armed;
         polledSecond = exchange.poll(second);
-        exchange.retire(first);
+        exchange.retire(first.source);
     }
     REQUIRE_NO_ALLOCATIONS(AllocTripwire::count());
     REQUIRE(polledSecond);
     // Retired, but still alive: only collect() frees it, on the main thread.
     CHECK_FALSE(weakA.expired());
     CHECK(exchange.held() == 2);
+    CHECK(exchange.awaitingCollect());
 
     exchange.collect();
+    CHECK_FALSE(exchange.awaitingCollect());
     CHECK(weakA.expired());
     CHECK_FALSE(weakB.expired());
     CHECK(exchange.held() == 1);
 
-    exchange.retire(second);
+    exchange.retire(second.source);
     CHECK_FALSE(weakB.expired());
     exchange.collect();
     CHECK(weakB.expired());
@@ -134,7 +139,7 @@ TEST_CASE("exchange frees what it still holds when destroyed", "[core]")
         auto a = makeSource();
         polledWeak = a;
         exchange.offer(std::move(a));
-        const PreparedSource *polled = nullptr;
+        SourceOffer polled;
         REQUIRE(exchange.poll(polled)); // taken, never retired: the engine still read it
         auto b = makeSource();
         offeredWeak = b;
@@ -143,4 +148,50 @@ TEST_CASE("exchange frees what it still holds when destroyed", "[core]")
     }
     CHECK(polledWeak.expired());
     CHECK(offeredWeak.expired());
+}
+
+TEST_CASE("exchange hands values over with their source, as one offer", "[core]")
+{
+    // D8: a session restored while active offers its sample and its parameter values together.
+    SourceExchange exchange;
+    gg::core::ParamValues values{};
+    values[0] = 0.25f;
+    values[3] = 7.0f;
+    auto a = makeSource();
+    const PreparedSource *rawA = a.get();
+    exchange.offer(std::move(a), &values);
+    SourceOffer polled;
+    REQUIRE(exchange.poll(polled));
+    CHECK(polled.source == rawA);
+    REQUIRE(polled.hasValues);
+    CHECK(polled.values == values);
+
+    // A newer offer without values replaces an untaken one with values: latest wins, whole.
+    auto b = makeSource();
+    const std::weak_ptr<const PreparedSource> weakB = b;
+    exchange.offer(std::move(b), &values);
+    exchange.offer(nullptr);
+    CHECK(weakB.expired());
+    REQUIRE(exchange.poll(polled));
+    CHECK(polled.source == nullptr);
+    CHECK_FALSE(polled.hasValues);
+}
+
+TEST_CASE("exchange holds a source given to the engine directly until it is retired", "[core]")
+{
+    SourceExchange exchange;
+    auto a = makeSource();
+    const std::weak_ptr<const PreparedSource> weakA = a;
+    const PreparedSource *raw = exchange.hold(std::move(a));
+    CHECK(exchange.held() == 1);
+    SourceOffer polled;
+    CHECK_FALSE(exchange.poll(polled)); // held, not offered
+    CHECK(exchange.hold(nullptr) == nullptr);
+    CHECK(exchange.held() == 1);
+    exchange.collect();
+    CHECK_FALSE(weakA.expired());
+    exchange.retire(raw);
+    exchange.collect();
+    CHECK(weakA.expired());
+    CHECK(exchange.held() == 0);
 }

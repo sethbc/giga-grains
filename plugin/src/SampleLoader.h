@@ -7,6 +7,7 @@
 
 #include <condition_variable>
 #include <cstdint>
+#include <exception>
 #include <filesystem>
 #include <functional>
 #include <memory>
@@ -50,31 +51,37 @@ struct SampleStatus
 /// **Threads.** Every public function is main thread only. One worker std::thread per instance
 /// decodes, hashes, converts and prepares a load (gg::media::loadSample, then prepare); it waits
 /// on a condition variable between jobs and never reads or writes the settings file (ruling R16).
-/// The worker starts with the first job and stops in deactivate() and the destructor, each of
-/// which waits for a job in progress to finish; a job still waiting stays queued, and runs when
-/// the worker next starts (a request, or activate()). The worker's finished result goes back
-/// under the loader's mutex, and Callbacks::requestCallback asks the host for on_main_thread,
-/// where onMainThread() applies it. The audio thread never touches the loader: sources reach it
-/// through Callbacks::offer, the active Processor's SourceExchange.
+/// The worker starts with the first job and stops in activate(), deactivate() and the
+/// destructor, each of which waits for a job in progress to finish; a job still waiting stays
+/// queued, and runs when the worker next starts (a request, or the end of activate()). The
+/// worker's finished result goes back under the loader's mutex, and Callbacks::requestCallback
+/// asks the host for on_main_thread, where onMainThread() applies it. The audio thread never
+/// touches the loader: sources reach it through the active Processor's SourceExchange.
 ///
-/// **Requests and supersession.** Each request (load, relink, the reconversion after a rate
-/// change, a restore) supersedes the ones before it: a waiting job is replaced, and the result of
-/// one under way is dropped, by the worker when it notices or by onMainThread(). So a result only
-/// ever applies if nothing was asked for after it. At most three sources exist at once
-/// (spec §6.4): the engine's draining and playing ones, and one in flight.
+/// **Requests and supersession.** Each request (a load, a relink, a restore) supersedes the ones
+/// before it: a waiting job is replaced, and the result of one under way is dropped, by the
+/// worker when it notices or by onMainThread(). So a result only ever applies if nothing was
+/// asked for after it.
+///
+/// **How many sources exist.** The Processor's SourceExchange and the engine hold at most three
+/// at once: the one draining, the one playing and one waiting for adoption (Processor). Besides
+/// those, the worker may briefly hold one it is building, and a superseded one until it notices,
+/// both freed off the audio thread.
 ///
 /// **The manifest entry** (spec §6.6) is the requested sample, not the one playing: only a
 /// successful load or relink replaces it (and a restore, which sets it to the session's). It
 /// stays as it is while the sample is loading, missing, changed or failed to load, so a session
 /// saved then still names it.
 ///
-/// **The rate.** A source is prepared at the active sample rate. A job the worker starts while
-/// the plugin is inactive keeps the decoded buffer instead, as a restore made while inactive does
-/// (restorePending): activate() then converts it at the new rate, on the main thread, before it
-/// returns (D8). A reactivation at another rate with nothing pending gives the new Processor the
-/// source it has at once (the engine scales each grain's rate by source rate / output rate, so it
-/// plays at the right pitch) and converts the file again in the background; the decoded original
-/// isn't kept (spec §6.4), so that decodes the file again.
+/// **The rate** (D8; ruling R18). A source is prepared at the active sample rate. A job the
+/// worker starts while the plugin is inactive keeps the decoded buffer instead, as a restore made
+/// while inactive does (restorePending). activate() waits for a job under way and applies it,
+/// then, on the main thread, before it returns: converts a pending decoded buffer at the new
+/// rate, or, when the source it has is at another rate, decodes the file again (the decoded
+/// original isn't kept, spec §6.4) and converts it. So the first block after any activation
+/// renders the same whatever the machine's speed. If the file has gone or changed by then, the
+/// old source stays: the engine scales each grain's rate by source rate / output rate, so it
+/// plays at the right pitch.
 class SampleLoader
 {
   public:
@@ -86,8 +93,8 @@ class SampleLoader
         std::function<void()> requestCallback;
         /// Marks the session state dirty (clap_host_state.mark_dirty). Main thread.
         std::function<void()> markDirty;
-        /// Offers a source (nullptr: none) to the active Processor (SourceExchange::offer). Main
-        /// thread, only while active.
+        /// Offers a loaded or relinked source to the active Processor (SourceExchange::offer).
+        /// Main thread, only while active.
         std::function<void(std::shared_ptr<const PreparedSource>)> offer;
     };
 
@@ -108,6 +115,9 @@ class SampleLoader
     /// as a replacement, and the status message says it is different audio than the saved
     /// sample (spec §6.7).
     void requestRelink(std::filesystem::path file);
+    /// Sets the per-machine sample folder (spec §6.5, §6.7) and saves the settings file. False if
+    /// it can't be written.
+    bool setSampleFolder(const std::filesystem::path &folder);
 
     /// The status (see SampleState).
     SampleStatus status() const { return status_; }
@@ -116,18 +126,20 @@ class SampleLoader
 
     /// The session restore (D8), inside stateLoad: supersedes every request, sets the manifest
     /// entry to `entry` and, with one, looks for its file (gg::media::findSample) and decodes it
-    /// on this thread. Active, it converts it to the active rate and offers it (nullptr when
-    /// there is no sample, or it can't be found or loaded, so the instrument goes silent);
-    /// inactive, it keeps the decoded buffer for activate(). A file found away from the saved
-    /// path updates the entry and marks the state dirty. Status: Loaded, Missing, Changed, Error,
-    /// or None without an entry. Never throws.
-    void restore(const std::optional<core::MediaEntry> &entry) noexcept;
+    /// on this thread. Active, it converts it to the active rate and returns it, for the plugin
+    /// to offer together with the session's values; nullptr when there is no sample, or it can't
+    /// be found or loaded, so the instrument goes silent. Inactive, it keeps the decoded buffer
+    /// for activate() and returns nullptr. A file found away from the saved path updates the
+    /// entry and marks the state dirty. Status: Loaded, Missing, Changed, Error, or None without
+    /// an entry. Never throws.
+    std::shared_ptr<const PreparedSource>
+    restore(const std::optional<core::MediaEntry> &entry) noexcept;
 
-    /// The plugin's activate(), before it returns. Converts a pending decoded buffer at
-    /// `sampleRate`, here, and returns the source the new Processor starts with
-    /// (Processor::setSourceNow); nullptr for none. Starts a background conversion when the
-    /// source it returns is at another rate, and starts the worker when a job waits. Never
-    /// throws: a failed conversion leaves no source and the status Error.
+    /// The plugin's activate(), before it returns: waits for a job under way, applies what the
+    /// worker finished, converts the sample at `sampleRate` here (see the class comment), and
+    /// returns the source the new Processor starts with (Processor::setSourceNow); nullptr for
+    /// none. Then restarts the worker if a job waits. Never throws: a failed conversion of a
+    /// pending buffer leaves no source and the status Error.
     std::shared_ptr<const PreparedSource> activate(double sampleRate) noexcept;
     /// The plugin's deactivate(): stops the worker, waiting for a job in progress, and applies
     /// what it finished, as onMainThread() would but with nothing offered.
@@ -136,18 +148,23 @@ class SampleLoader
     /// clap_plugin.on_main_thread: applies a finished result, unless superseded.
     void onMainThread() noexcept;
 
-    /// The results applied so far: loads, relinks and reconversions that reached the manifest or
-    /// the source. For tests and diagnostics.
+    /// The results applied so far: loads and relinks that reached the manifest. For tests and
+    /// diagnostics.
     uint32_t resultsApplied() const noexcept { return resultsApplied_; }
     /// The settings file given to the constructor.
     const std::filesystem::path &settingsFile() const noexcept { return settingsFile_; }
+    /// For tests: called with every source the loader prepares, on the thread that prepares it
+    /// (the worker or the main thread). Set it before any request or restore.
+    void setPreparedObserver(std::function<void(const std::shared_ptr<const PreparedSource> &)> f)
+    {
+        preparedObserver_ = std::move(f);
+    }
 
   private:
     enum class JobKind
     {
         Load,
         Relink,
-        Reconvert, ///< The current sample's file again, at the active rate; the entry stays.
     };
 
     struct Job
@@ -155,17 +172,15 @@ class SampleLoader
         uint64_t id{0};
         JobKind kind{JobKind::Load};
         std::filesystem::path file;
-        core::MachineSettings settings;        ///< read on the main thread (ruling R16)
-        std::shared_ptr<SampleBuffer> decoded; ///< when set, only converted, not loaded
-        std::string expectedSha256;            ///< Relink, Reconvert: the entry's fingerprint
+        core::MachineSettings settings; ///< read on the main thread (ruling R16)
+        std::string expectedSha256;     ///< Relink: the entry's fingerprint
     };
 
     struct Result
     {
         uint64_t id{0};
-        JobKind kind{JobKind::Load};
         std::string fileName;                  ///< the job's file, for messages
-        core::MediaEntry entry;                ///< Load, Relink: the file's
+        core::MediaEntry entry;                ///< the file's
         std::shared_ptr<SampleBuffer> decoded; ///< when not prepared (rate 0)
         std::shared_ptr<const PreparedSource> prepared;
         bool differentAudio{false}; ///< Relink: not the entry's fingerprint
@@ -184,15 +199,22 @@ class SampleLoader
     void apply(Result &result);
     /// Makes `source` the one in effect, offering it while active.
     void setSource(std::shared_ptr<const PreparedSource> source);
-    /// Queues the reconversion of the current sample at the active rate, if its source is at
-    /// another one.
-    void reconvertIfNeeded();
+    /// gg::media::prepare, then the observer.
+    std::shared_ptr<const PreparedSource> prepare(std::shared_ptr<SampleBuffer> decoded,
+                                                  double rate) const;
+    /// activate()'s conversion of the current sample at `rate`, when its source is at another:
+    /// the file decoded again and converted, or, if it has gone or changed, the old source kept.
+    void convertNow(double rate) noexcept;
     void setLoadedStatus(std::string message);
     void setError(std::string fileName, std::string message);
+    /// setError with `error` described, for a noexcept function's handler: if even that fails
+    /// (memory), the status is Error with a short message that doesn't allocate.
+    void setErrorNoThrow(const std::exception_ptr &error, const std::string &fileName) noexcept;
     core::MachineSettings readSettings() const;
 
     const std::filesystem::path settingsFile_;
     const Callbacks callbacks_;
+    std::function<void(const std::shared_ptr<const PreparedSource> &)> preparedObserver_;
 
     // Main thread.
     std::optional<core::MediaEntry> entry_;

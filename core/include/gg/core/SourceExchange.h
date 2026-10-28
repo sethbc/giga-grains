@@ -14,36 +14,47 @@
 
 #include <sst/cpputils/rtsan_support.h>
 
+#include "gg/core/ParamIds.h"
 #include "gg/source/PreparedSource.h"
 
 namespace gg::core
 {
+/// One hand-off from the main thread to the audio thread: a source (nullptr: no source) and,
+/// for a session restored while active (D8), the parameter values that go with it, so that both
+/// reach the audio thread as one unit.
+struct SourceOffer
+{
+    const PreparedSource *source{nullptr};
+    bool hasValues{false};
+    ParamValues values{};
+};
+
 /// The main thread ⇄ audio thread hand-off of PreparedSources (spec §6.4; INTENT §14 "Buffers and
 /// memory"): the main thread offers a source, the audio thread takes it and later hands it back,
 /// and the main thread frees it. Lock-free on the audio side, which never allocates or frees.
 ///
-/// **Ownership.** The exchange owns every source offered to it, as a shared_ptr held on the main
-/// thread, until the audio side has handed it back (retire) and the main thread has collected it,
-/// or until an untaken offer is replaced. The audio side only ever sees raw pointers. So every
-/// release of a source happens on the main thread: in offer() (an untaken offer, which the audio
-/// side never had), in collect(), or in the destructor.
+/// **Ownership.** The exchange owns every source offered or held through it, as a shared_ptr
+/// kept on the main thread, until the audio side has handed it back (retire) and the main thread
+/// has collected it, or until an untaken offer is replaced. The audio side only ever sees raw
+/// pointers. So every release of a source happens on the main thread: in offer() (an untaken
+/// offer, which the audio side never had), in collect(), or in the destructor.
 ///
 /// **The two directions.**
-/// - The mailbox, main → audio: a single slot, latest wins. An offer the audio side hasn't
-///   polled when the next one comes is dropped, never handed over. nullptr is an offer too: of no
-///   source, so that a restored session whose sample is missing goes silent (spec §6.4).
-/// - The hand-back, audio → main: a bounded single-producer, single-consumer ring of raw
-///   pointers, kRetireCapacity long. A source enters it once, after it was polled. Between two
-///   collect() calls at most every source polled since the one before can enter it: with the
-///   Processor's use (one source pending adoption, the engine's current and draining ones, and
-///   one more offered) that is a handful, far below the capacity. Should the ring ever be full,
-///   retire() drops the pointer: the exchange still holds the source and frees it when it is
-///   destroyed, so nothing leaks past the exchange's life.
+/// - The mailbox, main → audio: a triple buffer of SourceOffer, latest wins. An offer the audio
+///   side hasn't polled when the next one comes is dropped, never handed over, values and all.
+///   An offer of no source is an offer too, so a restored session whose sample is missing goes
+///   silent (spec §6.4).
+/// - The hand-back, audio → main: a single-producer, single-consumer ring of raw pointers,
+///   kRetireCapacity long. A source enters it once. Between two collect() calls only sources the
+///   exchange holds can enter it, and with the Processor's use it holds a handful (the engine's
+///   draining and playing sources, one waiting for adoption, one offered), far below the
+///   capacity. Should the ring ever be full, retire() asserts and keeps the pointer out: the
+///   exchange still holds the source and frees it when it is destroyed.
 ///
-/// **Threads.** offer(), collect() and held() on the main thread; poll() and retire() on the audio
-/// thread. Each role may move to another thread only when the host orders the calls, for example
-/// the main thread may retire() while it knows the audio thread is stopped (as
-/// Processor::setSourceNow does).
+/// **Threads.** offer(), hold(), collect() and held() on the main thread; poll() and retire() on
+/// the audio thread; awaitingCollect() on either. Each role may move to another thread only when
+/// the host orders the calls, for example the main thread may poll() and retire() while it knows
+/// the audio thread is stopped (as Processor::setSourceNow does).
 class SourceExchange
 {
   public:
@@ -57,34 +68,48 @@ class SourceExchange
     SourceExchange(const SourceExchange &) = delete;
     SourceExchange &operator=(const SourceExchange &) = delete;
 
-    /// Main thread. Offers `s` (nullptr: no source) to the audio side, replacing an offer not yet
-    /// polled, which is dropped and freed here. Then collects (collect()). Allocates.
-    void offer(std::shared_ptr<const PreparedSource> s);
+    /// Main thread. Offers `s` (nullptr: no source) to the audio side, with `values` if given,
+    /// replacing an offer not yet polled, which is dropped and its source freed here. Then
+    /// collects (collect()). Allocates.
+    void offer(std::shared_ptr<const PreparedSource> s, const ParamValues *values = nullptr);
+
+    /// Main thread. Holds `s` without offering it, for a caller that gives it to the engine
+    /// itself while the audio side is stopped (Processor::setSourceNow), and returns its raw
+    /// pointer (nullptr for nullptr). Like an offered source, it must come back through retire().
+    /// Allocates.
+    const PreparedSource *hold(std::shared_ptr<const PreparedSource> s);
 
     /// Main thread. Frees the sources the audio side has retired since the last call.
     void collect();
 
-    /// Main thread. The sources the exchange holds: offered and not yet freed, whether the audio
-    /// side has them or not. For tests and diagnostics.
+    /// Main thread. The sources the exchange holds: offered or held, and not yet freed, whether
+    /// the audio side has them or not. For tests and diagnostics.
     std::size_t held() const noexcept { return owned_.size(); }
 
-    /// Audio thread. If an offer came since the last poll, sets `source` to the newest one
-    /// (nullptr for an offer of no source) and returns true; each offer is returned once.
-    /// Otherwise returns false and leaves `source` alone. Never allocates, frees or waits.
-    bool poll(const PreparedSource *&source) noexcept SST_CPPUTILS_NONBLOCKING;
+    /// Either thread. Whether a retired source awaits collect(). Never allocates or waits.
+    bool awaitingCollect() const noexcept SST_CPPUTILS_NONBLOCKING;
 
-    /// Audio thread. Hands back `s`, a source poll() returned that no grain reads any more (or
-    /// that was never adopted), for collect() to free. nullptr is ignored. Never allocates, frees
-    /// or waits.
+    /// Audio thread. If an offer came since the last poll, copies the newest into `offer` and
+    /// returns true; each offer is returned once. Otherwise returns false and leaves `offer`
+    /// alone. Never allocates, frees or waits.
+    bool poll(SourceOffer &offer) noexcept SST_CPPUTILS_NONBLOCKING;
+
+    /// Audio thread. Hands back `s`, a source poll() returned (or hold() held) that no grain reads
+    /// any more, or that was never adopted, for collect() to free. nullptr is ignored. Never
+    /// allocates, frees or waits.
     void retire(const PreparedSource *s) noexcept SST_CPPUTILS_NONBLOCKING;
 
   private:
-    // The mailbox: 0 when empty, else the offered pointer's bits | kFresh (a PreparedSource is
-    // aligned to more than 1 byte, so its low bit is free; nullptr | kFresh is "no source").
-    static constexpr uintptr_t kFresh = 1;
-    static_assert(alignof(PreparedSource) > 1);
-    static_assert(std::atomic<uintptr_t>::is_always_lock_free);
-    std::atomic<uintptr_t> mailbox_{0};
+    // The mailbox, a triple buffer (as plugin::LatestValue): the main thread writes its own slot
+    // and swaps it with the middle one; the audio thread swaps its own with the middle one when
+    // that holds an offer it hasn't taken.
+    static constexpr uint8_t kIndex = 0x3;
+    static constexpr uint8_t kFresh = 0x4;
+    static_assert(std::atomic<uint8_t>::is_always_lock_free);
+    std::array<SourceOffer, 3> slots_{};
+    std::atomic<uint8_t> middle_{1}; // a slot index, plus kFresh when it holds an untaken offer
+    uint8_t back_{0};                // the main thread's slot
+    uint8_t front_{2};               // the audio thread's slot
 
     // The hand-back ring: the audio thread writes ring_[tail_ % capacity] then advances tail_;
     // the main thread reads up to tail_ and advances head_.

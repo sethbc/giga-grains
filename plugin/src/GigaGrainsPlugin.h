@@ -47,17 +47,21 @@ const clap_plugin_descriptor *descriptorFor(Product product) noexcept;
 /// - values_, an atomic per-parameter store of the base values, which the main thread reads
 ///   (params.get_value, state save). The audio thread writes it as it hands values to the
 ///   Processor; the main thread writes it while inactive, and on a state load.
-/// - loadedState_, which takes a state loaded while active to the audio thread, where it applies
-///   at the start of the next process() or params.flush.
+/// - loadedState_ (the FX) or the Processor's SourceExchange (the instrument, with its sample),
+///   which take a state loaded while active to the audio thread, where it applies at the start
+///   of the next process() or params.flush.
 ///
 /// **The sample** (the instrument; spec §6.4–§6.7). The SampleLoader keeps the manifest entry
 /// and the source on the main thread, and loads on its own worker thread. Sources reach the
 /// audio thread through the Processor's SourceExchange (Processor::sources()): the main thread
-/// offers, process() adopts at the start of a call and hands back what no grain reads, and the
-/// main thread frees it in on_main_thread (collectSources). A session restore is synchronous
-/// (D8): stateLoad finds and decodes the sample before it returns; while active, it offers the
-/// source in the same call that pushes the values, so the first process() after it applies both;
-/// while inactive, activate() converts it at the new rate before it returns. The per-machine
+/// offers, process() adopts at the start of a call and hands back what no grain reads, asking
+/// for on_main_thread (requestCollect), where the main thread frees it. A session restore is
+/// synchronous (D8): stateLoad finds and decodes the sample before it returns; while active, it
+/// offers the source and the loaded values as one hand-off (SourceOffer), so the process() that
+/// takes them applies both (the source may wait up to Size more if two are already in play);
+/// while inactive, activate() converts it at the new rate before it returns, as it does the
+/// sample it has at any new rate (ruling R18). The FX takes a state's values through
+/// loadedState_. The per-machine
 /// settings file is $GG_SETTINGS_FILE when that is set and not empty (read once, at
 /// construction: the tests' way to keep away from the user's file), and
 /// gg::media::defaultSettingsPath() otherwise.
@@ -122,7 +126,7 @@ class GigaGrainsPlugin : public plugHelper_t
                   uint32_t maxFrameCount) noexcept override;
     void deactivate() noexcept override;
     /// Applies the sample loader's finished work and frees the sources the audio thread handed
-    /// back (collectSources).
+    /// back (SourceExchange::collect).
     void onMainThread() noexcept override;
     /// On the audio thread, never concurrent with process(): real-time safe.
     void reset() noexcept SST_CPPUTILS_NONBLOCKING override;
@@ -203,14 +207,15 @@ class GigaGrainsPlugin : public plugHelper_t
     /// Stores a base value in values_, clamped to the parameter's range, as the Processor
     /// clamps it.
     void storeValue(gg::core::ParamSlot slot, float value) noexcept SST_CPPUTILS_NONBLOCKING;
-    /// Main thread, while active: frees the sources the audio thread has handed back
-    /// (SourceExchange::collect). While a replaced source has yet to come back (it retires once
-    /// its last grain ends, within Size of audio), asks for another on_main_thread, so that it
-    /// is freed soon after; it stops asking after kMaxIdleCollects calls in a row with no
-    /// process() in between, as when the host has stopped processing, and the next main-thread
-    /// call that collects frees it then.
-    void collectSources() noexcept;
-    static constexpr uint32_t kMaxIdleCollects = 64;
+    /// Takes the Processor's offers (Processor::takeOffers) and, when one brought values, puts
+    /// them in values_. Audio thread, or the main thread with the audio thread stopped.
+    void takeOffers() noexcept SST_CPPUTILS_NONBLOCKING;
+    /// Stores the Processor's base values in values_.
+    void storeBases() noexcept SST_CPPUTILS_NONBLOCKING;
+    /// Audio thread. When a source the audio thread handed back awaits the main thread's
+    /// collect, asks the host for on_main_thread (clap_host.request_callback, thread-safe), once
+    /// until that call comes, so every retired source is freed soon after it retires.
+    void requestCollect() noexcept SST_CPPUTILS_NONBLOCKING;
 
     const Product product_;
 
@@ -233,10 +238,9 @@ class GigaGrainsPlugin : public plugHelper_t
     // The instrument's sample loader; null in the FX. Main thread. After processor_, so it is
     // destroyed first: its callbacks use processor_.
     std::unique_ptr<SampleLoader> loader_;
-    // process() calls so far: written by the audio thread, read by collectSources.
-    std::atomic<uint64_t> processCalls_{0};
-    uint64_t collectedAtCall_{0}; // main thread
-    uint32_t idleCollects_{0};    // main thread
+    // Set by the audio thread when it asks for on_main_thread to collect retired sources,
+    // cleared by on_main_thread (requestCollect).
+    std::atomic<bool> collectRequested_{false};
     // The parameter and note events of one process() call. Audio thread.
     std::array<gg::core::ParamEvent, kMaxParamEvents> events_{};
     std::array<gg::core::NoteEvent, kMaxNoteEvents> notes_{};
