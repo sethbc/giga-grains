@@ -120,11 +120,32 @@ ledger. Items the review fixed before the merge aren't listed.
 
 ## From M1 sub-project 2 (the Cloud engine)
 
-Written at the sub-project's end (2026-10-27). Its final whole-branch review adds the rest.
+Written at the sub-project's end (2026-10-27); its final whole-branch review (2026-10-28) added
+the rest. T*n* is a deferred finding of the sub-project's Task *n*, FR a final-review finding.
+Lines are at the branch's close. "Touched" means: when that file is next changed.
 
 | What | Source | When |
 |---|---|---|
 | **Make the CPU gate blocking, with the published X, and add baselines for CPU models not yet seen.** Through M1, CI's `gg-bench` step reports each ratio's verdict against the leg's baseline and turns a regression (exit 3) into a warning (ruling 3, INTENT §23 #44). Measure X on the M5 Max, publish it, and make a regression fail the job. Baselines are per CPU model (§23 #47; `docs/spikes/m1-cpu-levers.md`, "CI variance"): a run on a `machine` with no entry gets no verdict, so before the gate blocks, add an entry, from separate CI runs, for each model the hosted pools serve that the first baselines lack. The M1 VM leg can't block as configured: its drift between runs exceeds even a tolerance from three runs (the verification run, 40649977361, showed `engine-sample-eco` at block 32 at 1.1546 against a limit of 1.0377, a false regression), so it needs a wider tolerance, more runs, or informative-only status. | Ruling 3; INTENT §16, §19, §23 #44, #47; `.github/workflows/ci.yml` (Benchmark step) | Sub-project 6 |
+| **Before the gate blocks, `compare()` must account for every baseline entry.** It skips an entry the run lacks without a word, and a run with no engine ratios passes as "0 of 0". Count the missing entries and fail on them, and on a verdict over nothing. | T9; `tools/gg-bench/Bench.cpp:836` | Sub-project 6 |
+| **Adding a model to a baseline needs the old runs.** `--make-baseline` writes a file from scratch and can't merge into one, and CI artifacts expire, so a model added later needs the earlier runs' JSON kept somewhere or a merge mode. | FR; `tools/gg-bench/Bench.cpp:878`, `tools/gg-bench/main.cpp:534` | Sub-project 6 |
+| `makeBaseline` doesn't validate what it writes: a NaN tolerance becomes `null`, which `--baseline` then rejects. Check every ratio and tolerance is finite before writing. | T9; `tools/gg-bench/Bench.cpp:878` | Sub-project 6 |
+| CI's warning branch trusts exit 3 alone; it could also require a `verdict: N of` line in the output. | T9; `.github/workflows/ci.yml:171` | Sub-project 6 |
+| **The reference kernel isn't self-contained.** `renderHermiteSimd` (`Kernels.h`), frozen as every baseline's denominator, includes the engine's `Interpolate.h` and `Window.h`, so an engine change there silently moves every ratio. Copy what it uses into `Kernels.h`, or pin it with a test (e.g. a hash of its output). | FR; `tools/gg-bench/Kernels.h:36`–`:37`, `:459` | Before sub-project 6 blocks |
+| **The mac-universal leg's native slice must keep running `gg-tests`.** The fp-contract test (`fp_contract_fast.cpp`'s canary and the kernel cases) bites only on arm64 Clang; Linux, Windows and the x86_64 slice can't fail it. | T2; `.github/workflows/ci.yml:101`, `tests/engine/fp_contract_tests.cpp:300` | Whenever CI's macOS leg changes |
+| No test proves `engine-sample-eco` runs at the Eco tier (only its timing shows it: about 26 against 39 ns in Debug). | T9; `tools/gg-bench/Bench.cpp:285`, `tests/tools/bench_tests.cpp:162` | Sub-project 6 |
+| Options beside `--make-baseline` or `--canvas` are silently ignored (`--canvas` drops the kernel options); reject them. | T8, T9; `tools/gg-bench/main.cpp:466`–`:547` | Touched |
+| No test of `gg-bench`'s JSON escaping (quotes, backslashes, control characters in the commit or machine string); the UTF-8 test only round-trips invalid bytes. | T8; `tests/tools/bench_tests.cpp:239` | Touched |
+| `Tier{}` value-initializes to Eco, and an out-of-range `Tier` renders as Normal; document both in `Tier.h` (or make Normal the zero value, which changes the enum's order). | T5; `engine/include/gg/grain/Tier.h:15`, `engine/src/Engine.cpp:300`, `:315` | Touched |
+| `LiveSource::readLinear` repeats `read()`'s structure (2 taps against 4); share it. | T5; `engine/src/LiveSource.cpp:192` | Touched |
+| `rng::bipolar` has no `GG_FP_CONTRACT_OFF`; it is exact today (2u − 1 can't round), so give it the guard or a comment saying why it needs none. | T2; `engine/include/gg/core/Rng.h:61` | Touched |
+| `sampleSimdRun`'s run-end stepping walks every sample when a row's rate is ≤ 0 or not finite. The engine never makes such a row; say so in the comment, or bail out. | T6; `engine/include/gg/grain/GrainKernels.h:320` | Touched |
+| The kernels load `gainR` (`gain1`) with one output, where it's unused. | T4, T6; `engine/include/gg/grain/GrainKernels.h:468`, `:586` | Touched |
+| Kernel-test gaps: no source of 1–4 frames, and `requireExactRuns` checks only the 4,096-frame block, not the 200 random calls. | T6; `tests/engine/kernel_tests.cpp:838`, `:908` | Touched |
+| The live-interior property test should pin the one-frame margin slack: margins ≥ M + 1 − 2^−10 at every interior sample. | T7; `tests/engine/kernel_tests.cpp:1432` | Touched |
+| Live-kernel comments: `RingTaps` should state the < C bound (every tap in one N + 3 window), and `liveRun`'s "ring times up to 2^40" can say the slack holds to about 2^50. | T7; `engine/include/gg/grain/GrainKernels.h:740`, `:642` | Touched |
+| `pool_tests`' comment "a sample past the last onset" is ambiguous. | T3; `tests/engine/pool_tests.cpp:207` | Touched |
+| A few spike-doc paragraphs aren't re-wrapped to 100 columns. | T14; `docs/spikes/m1-cpu-levers.md` | Touched |
 
 ## Resolved in M0's final fix wave (not carried)
 
