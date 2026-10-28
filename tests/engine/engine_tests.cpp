@@ -999,6 +999,30 @@ TEST_CASE("replaceSource replaces as setSource does, and its source is handed ba
     REQUIRE(sameBits(r1.right, r2.right));
 }
 
+TEST_CASE("replacing the source with none ends the grains still sounding", "[engine]")
+{
+    // With no source the grains still sounding would read nothing. Kept, they would hold the
+    // current slot until their ends, and two adoptions within Size would flip back into that
+    // slot and hand them the second source mid-window.
+    const auto a = gg::PreparedSource::make(makeConstant(48000, 0.5f));
+    const auto b = gg::PreparedSource::make(makeConstant(48000, -0.5f));
+    const auto c = gg::PreparedSource::make(makeConstant(48000, 0.25f));
+    gg::Engine engine(gg::EngineConfig{});
+    engine.setCloudParams(params(100.0, 0.2, 0.5, 0.0, 0.0, 0.5f));
+    REQUIRE(engine.adoptSource(a.get()));
+    render(engine, 2400, 256);
+    REQUIRE(engine.activeGrains() > 0);
+
+    engine.replaceSource(nullptr);
+    CHECK(engine.activeGrains() == 0);
+    CHECK(engine.takeRetiredSource() == a.get());
+    CHECK(engine.takeRetiredSource() == nullptr);
+    REQUIRE(engine.adoptSource(b.get()));
+    REQUIRE(engine.adoptSource(c.get()));
+    CHECK(engine.takeRetiredSource() == b.get()); // no grain read it
+    CHECK(engine.activeGrains() == 0);
+}
+
 TEST_CASE("setSource renders as adopting its prepared source", "[engine]")
 {
     // setSource is PreparedSource::make plus the adoption; a stereo source reads its interleaved

@@ -93,6 +93,16 @@ void Engine::replaceCurrent(const PreparedSource *source) noexcept
             retired_[retiredCount_++] = slot->source;
         }
     }
+    if (source == nullptr)
+    {
+        // No source: the grains still sounding would read nothing, so they end here. Kept, they
+        // would hold the current slot until their ends, and a later adoption that flipped back
+        // into it would hand them its source mid-window.
+        clearGrains();
+        currentSlot() = SourceSlot{};
+        previousSlot() = SourceSlot{};
+        return;
+    }
     // Every grain still sounding now reads the new source, in the current slot.
     const int64_t lastEnd = std::max(slots_[0].lastEnd, slots_[1].lastEnd);
     currentSlot() = slotFor(source);

@@ -95,7 +95,8 @@ class Engine
     /// Not real-time safe: call only while process() is not running. PreparedSource::make, then
     /// an adoption that replaces the source every grain reads: the grains still sounding go on
     /// at their positions in the new source, and the grains from the next onset on read it too.
-    /// nullptr means no source: the schedule keeps running but no grains spawn in Sample mode.
+    /// nullptr means no source: the schedule keeps running but no grains spawn in Sample mode,
+    /// and the grains still sounding, which would read nothing, end at once.
     ///
     /// The engine owns this source, keeping it alive until the next setSource or its
     /// destruction; takeRetiredSource never hands it back. Sources adopted with adoptSource that

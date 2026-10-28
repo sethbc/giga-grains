@@ -164,7 +164,7 @@ std::optional<MediaEntry> parseSample(const TiXmlElement &e)
     const char *embed = e.Attribute("embed");
     // embed="1" needs the AUDI chunk, which this version doesn't have.
     if (sha == nullptr || !isSha256Hex(sha) || !size || path == nullptr || relative == nullptr ||
-        format == nullptr || !channels || !rate || !frames || embed == nullptr ||
+        format == nullptr || !channels || !rate || !frames || *frames < 0 || embed == nullptr ||
         std::strcmp(embed, "0") != 0)
     {
         return std::nullopt;
@@ -241,7 +241,7 @@ bool isValidMediaEntry(const MediaEntry &entry) noexcept
 {
     const auto noNul = [](const std::string &s) { return s.find('\0') == std::string::npos; };
     return isSha256Hex(entry.sha256Hex) && noNul(entry.absolutePath) && noNul(entry.relativePath) &&
-           noNul(entry.format) && !entry.embed;
+           noNul(entry.format) && entry.frames >= 0 && !entry.embed;
 }
 
 std::string encodeState(const SessionState &state)

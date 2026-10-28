@@ -217,7 +217,7 @@ TEST_CASE("the container round trips with and without a sample", "[core]")
     s.sample->fileSize = std::numeric_limits<uint64_t>::max();
     s.sample->channels = std::numeric_limits<uint32_t>::max();
     s.sample->sampleRate = std::numeric_limits<double>::denorm_min();
-    s.sample->frames = std::numeric_limits<int64_t>::min();
+    s.sample->frames = std::numeric_limits<int64_t>::max();
     s.sample->absolutePath = "C:\\Samples\\a\xc3\xa4\xe2\x9c\x93\xf0\x9f\x8e\xb5.aiff";
     s.sample->relativePath = "tab\there\nnewline";
     s.sample->format = "aiff";
@@ -425,6 +425,7 @@ TEST_CASE("session state rejects bad state and writes nothing", "[core]")
                  replaced(R"(rate="40e7700000000000")", R"(rate="40e77000000000000")"),
                  replaced(R"(frames="48000")", R"(frames="9223372036854775808")"),
                  replaced(R"(frames="48000")", R"(frames="")"),
+                 replaced(R"(frames="48000")", R"(frames="-1")"),
                  replaced(R"(embed="0")", R"(embed="1")"), // no AUDI in this version
                  replaced(R"(embed="0")", R"(embed="2")"),
                  replaced(R"(embed="0")", R"(embed="false")"),
@@ -493,7 +494,7 @@ MediaEntry randomEntry(uint64_t index)
     e.format = bytes();
     e.channels = static_cast<uint32_t>(next());
     e.sampleRate = std::bit_cast<double>(next());
-    e.frames = static_cast<int64_t>(next());
+    e.frames = static_cast<int64_t>(next() >> 1); // never negative
     return e;
 }
 
@@ -627,6 +628,7 @@ TEST_CASE("only valid entries are valid", "[core]")
     CHECK_FALSE(broken([](MediaEntry &e) { e.relativePath = std::string("a\0b", 3); }));
     CHECK_FALSE(broken([](MediaEntry &e) { e.format = std::string(1, '\0'); }));
     CHECK_FALSE(broken([](MediaEntry &e) { e.embed = true; }));
+    CHECK_FALSE(broken([](MediaEntry &e) { e.frames = -1; }));
     // Not valid UTF-8, but it round trips, so it's valid.
     CHECK(broken([](MediaEntry &e) { e.absolutePath = "/\xc3(\xff\xed\xa0\x80.wav"; }));
 }

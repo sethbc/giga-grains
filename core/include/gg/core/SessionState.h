@@ -78,8 +78,9 @@ struct SessionState
 };
 
 /// Whether encodeState writes `entry` (its precondition): `sha256Hex` is 64 lowercase hex
-/// digits, no string holds a NUL byte, and `embed` is false (until M2). Every such entry decodes
-/// back equal to itself (but for a NaN sample rate, which comes back with the same bits).
+/// digits, no string holds a NUL byte, `frames` isn't negative, and `embed` is false (until M2).
+/// Every such entry decodes back equal to itself (but for a NaN sample rate, which comes back with
+/// the same bits).
 bool isValidMediaEntry(const MediaEntry &entry) noexcept;
 
 /// The container of `state`: PTCH, then MEDI. decodeState loads whatever it writes.
@@ -104,8 +105,14 @@ std::string encodeState(const SessionState &state);
 ///   - MEDI must be well-formed XML whose only top-level node is a <media> root, with an
 ///     integer `version` from 1 to this build's (1), and at most one <sample>, with every
 ///     attribute above present and well-formed (`sha256` 64 lowercase hex digits, `rate` 16 hex
-///     digits, `embed` 0). Other elements and attributes inside <media> are ignored. A payload
-///     holding a NUL byte fails, PTCH's too.
+///     digits, `frames` not negative, `embed` 0). Other elements and attributes inside <media>
+///     are ignored. A payload holding a NUL byte fails, PTCH's too.
+///   - Either fails when its XML nests elements more than 64 deep, before tinyxml parses it.
+///   - A MEDI of a newer version fails the whole state, where a newer PTCH migrates: a
+///     deliberate choice for now, to revisit before the state format freezes (INTENT §18), so
+///     that an older build never drops a sample reference it can't read and saves over it.
+/// - `bytes` is whatever the host handed over: the caller caps its length (the plugin reads at
+///   most kMaxStateBytes), and decodeState works on all of it.
 /// - `migratedFromVersion`, if given, is written on success only, as fromStateXml writes it.
 bool decodeState(std::string_view bytes, Mode mode, SessionState &out,
                  uint32_t *migratedFromVersion = nullptr);
