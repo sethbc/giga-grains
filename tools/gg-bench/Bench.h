@@ -12,8 +12,9 @@
 // A run of the benchmark:
 //   1. builds every configuration once, and warms each up once;
 //   2. then, for round r in [0, rounds), times every configuration once for runSeconds, in
-//      roundOrder(configurations, r): a fixed order rotated by r, so drift over a round (thermal
-//      state, a noisy neighbour on a VM) doesn't land on the same configurations every round.
+//      roundOrder(configurations, r): a fixed order rotated by r, and reversed in odd rounds, so
+//      drift over a round (thermal state, a noisy neighbour on a VM) doesn't land on the same
+//      configurations every round, and each configuration follows different ones.
 // Each configuration keeps its own state from one round to the next.
 //
 // Time is wall-clock (std::chrono::steady_clock). gg-bench's main() asks for a performance core
@@ -108,8 +109,11 @@ Report run(const Options &options, const Progress &progress = {});
 /// the engine cases arrive).
 std::string toJson(const Report &report);
 
-/// The order round `round` runs `configurations` configurations in: 0, 1, ..., rotated left by
-/// `round`.
+/// The order round `round` (r) runs `configurations` (n) configurations in. Even rounds run
+/// 0, 1, ..., n - 1 rotated left by r: order[i] = (i + r) mod n. Odd rounds run that order's
+/// reverse, rotated: order[i] = (r + n - 1 - i) mod n. Each configuration's predecessor thus
+/// alternates between its two neighbours, and the last of one round is never the first of the
+/// next, so no configuration runs twice back to back across a round seam.
 std::vector<uint32_t> roundOrder(uint32_t configurations, int round);
 
 /// The q-th quantile (0..1) of v, interpolating linearly between order statistics. v must not

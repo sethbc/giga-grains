@@ -14,8 +14,9 @@
 // The timing itself is in Bench.h and Bench.cpp: by default 2,000 grains of 100 ms over a 60 s
 // stereo noise source at 48 kHz, every kernel at block sizes 32, 64 and 256. Each configuration
 // warms up once, then every round times each configuration once, for at least 2 s (0.2 s with
-// --quick), in an order rotated by the round. The default is 5 rounds. gg-bench prints each
-// configuration's median, min and IQR over the rounds; the JSON (schema 2) keeps every run.
+// --quick), in an order rotated by the round and reversed in odd rounds. The default is 5
+// rounds. gg-bench prints each configuration's median, min and IQR over the rounds; the JSON
+// (schema 2) keeps every run.
 //
 // --canvas times gg-ui-core's splat renderer, headless, at 3200 x 1200: a 1600 x 600 canvas on
 // a 2x display. Each frame generates the editor's stress workload (4,096, 8,192 or 16,384
@@ -231,8 +232,8 @@ void usage(std::FILE *f)
                  "\n"
                  "Times the prototype grain kernels: 2,000 grains of 100 ms over a 60 s stereo\n"
                  "noise source at 48 kHz, at block sizes 32, 64 and 256. Every configuration runs\n"
-                 "once per round, for at least 2 s, in an order rotated by the round; each result\n"
-                 "is the median, min and IQR of its 5 runs.\n"
+                 "once per round, for at least 2 s, in an order that changes from round to round;\n"
+                 "each result is the median, min and IQR of its 5 runs.\n"
                  "\n"
                  "With --canvas, times the canvas splat renderer instead: clear, splat and\n"
                  "resolve at 3200 x 1200 with 4,096, 8,192 and 16,384 grains, over 240 frames,\n"

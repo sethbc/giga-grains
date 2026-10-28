@@ -5,7 +5,11 @@
 // gg-bench's library: its statistics, its round order and its JSON (schema 2, carry-over
 // [132]). The bench_cli test in tests/CMakeLists.txt runs the gg-bench executable itself.
 
+#include <algorithm>
+#include <cstddef>
 #include <cstdint>
+#include <numeric>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -86,15 +90,50 @@ TEST_CASE("bench statistics", "[bench]")
     CHECK(gg::bench::quantile({7.0}, 0.25) == 7.0);
 }
 
-TEST_CASE("bench rounds rotate the order", "[bench]")
+TEST_CASE("bench rounds vary each configuration's neighbours", "[bench]")
 {
-    using Order = std::vector<uint32_t>;
-    CHECK(gg::bench::roundOrder(4, 0) == Order{0, 1, 2, 3});
-    CHECK(gg::bench::roundOrder(4, 1) == Order{1, 2, 3, 0});
-    CHECK(gg::bench::roundOrder(4, 2) == Order{2, 3, 0, 1});
-    CHECK(gg::bench::roundOrder(4, 3) == Order{3, 0, 1, 2});
-    CHECK(gg::bench::roundOrder(4, 4) == Order{0, 1, 2, 3});
-    CHECK(gg::bench::roundOrder(1, 3) == Order{0});
+    // A full run's shape: 5 kernels x 3 block sizes, over 5 rounds.
+    constexpr uint32_t n = 15;
+    constexpr int rounds = 5;
+    std::vector<std::vector<uint32_t>> orders;
+    for (int r = 0; r < rounds; ++r)
+    {
+        orders.push_back(gg::bench::roundOrder(n, r));
+    }
+
+    for (const std::vector<uint32_t> &order : orders)
+    {
+        std::vector<uint32_t> sorted = order;
+        std::sort(sorted.begin(), sorted.end());
+        std::vector<uint32_t> identity(n);
+        std::iota(identity.begin(), identity.end(), 0u);
+        CHECK(sorted == identity); // a permutation of 0..n-1
+    }
+
+    // Every configuration follows at least 2 different configurations within rounds.
+    std::vector<std::set<uint32_t>> predecessors(n);
+    for (const std::vector<uint32_t> &order : orders)
+    {
+        for (std::size_t i = 1; i < order.size(); ++i)
+        {
+            predecessors[order[i]].insert(order[i - 1]);
+        }
+    }
+    for (uint32_t k = 0; k < n; ++k)
+    {
+        INFO("configuration " << k);
+        CHECK(predecessors[k].size() >= 2);
+    }
+
+    // No configuration runs twice back to back across a round seam.
+    for (int r = 0; r + 1 < rounds; ++r)
+    {
+        INFO("rounds " << r << " and " << r + 1);
+        CHECK(orders[r].back() != orders[r + 1].front());
+    }
+
+    CHECK(gg::bench::roundOrder(1, 3) == std::vector<uint32_t>{0});
+    CHECK(gg::bench::roundOrder(0, 2).empty());
 }
 
 TEST_CASE("bench rejects bad options", "[bench]")

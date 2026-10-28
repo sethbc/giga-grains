@@ -358,7 +358,7 @@ Report run(const Options &options, const Progress &progress)
         c->warmUp();
     }
 
-    // 3. The rounds: every configuration once per round, in a rotated order.
+    // 3. The rounds: every configuration once per round, in roundOrder()'s varying order.
     const auto count = static_cast<uint32_t>(configurations.size());
     std::vector<std::vector<double>> runs(count);
     for (int r = 0; r < options.rounds; ++r)
@@ -417,10 +417,12 @@ std::vector<uint32_t> roundOrder(uint32_t configurations, int round)
     {
         return order;
     }
-    const uint32_t shift = static_cast<uint32_t>(round) % configurations;
-    for (uint32_t i = 0; i < configurations; ++i)
+    const uint32_t n = configurations;
+    const uint32_t shift = static_cast<uint32_t>(round) % n;
+    const bool reversed = round % 2 != 0;
+    for (uint32_t i = 0; i < n; ++i)
     {
-        order[i] = (i + shift) % configurations;
+        order[i] = reversed ? (shift + n - 1 - i) % n : (i + shift) % n;
     }
     return order;
 }
