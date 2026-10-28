@@ -21,10 +21,13 @@ namespace gg::core
 {
 /// One hand-off from the main thread to the audio thread: a source (nullptr: no source) and,
 /// for a session restored while active (D8), the parameter values that go with it, so that both
-/// reach the audio thread as one unit.
+/// reach the audio thread as one unit. An offer may instead keep the source the audio side has
+/// (`keepSource`, ruling R19): a session restored whose sample is the one already in memory
+/// brings only its values, and `source` is then nullptr and ignored.
 struct SourceOffer
 {
     const PreparedSource *source{nullptr};
+    bool keepSource{false};
     bool hasValues{false};
     ParamValues values{};
 };
@@ -45,7 +48,9 @@ struct SourceOffer
 ///   over; but its values, if the newer offer has none, are carried forward into it, so a
 ///   restored session's values are never lost to a load offered before the audio side took
 ///   them. An offer of no source is an offer too, so a restored session whose sample is missing
-///   goes silent (spec §6.4).
+///   goes silent (spec §6.4). A keep-source offer (offerValues) that replaces an untaken offer
+///   takes over that offer's source, or its keep, so a source offered but not yet taken still
+///   reaches the audio side.
 /// - The hand-back, audio → main: a single-producer, single-consumer ring of raw pointers,
 ///   kRetireCapacity long. A source enters it once. Between two collect() calls only sources the
 ///   exchange holds can enter it, and with the Processor's use it holds a handful (the engine's
@@ -75,6 +80,12 @@ class SourceExchange
     /// replaced offer's values, if any, go with `s` (the class comment). Then collects
     /// (collect()). Allocates, unless reserve() was called since the last offer or hold.
     void offer(std::shared_ptr<const PreparedSource> s, const ParamValues *values = nullptr);
+
+    /// Main thread. Offers `values` with no change of source (SourceOffer::keepSource, ruling
+    /// R19): the audio side applies them and keeps the source it has, or the one an untaken
+    /// offer this replaces would have given it (the class comment). Then collects (collect()).
+    /// Never allocates.
+    void offerValues(const ParamValues &values);
 
     /// Main thread. Makes room for one more source, so that the next offer() or hold() doesn't
     /// allocate: an all-or-nothing caller allocates here, before it changes anything. Throws
@@ -118,10 +129,13 @@ class SourceExchange
     std::atomic<uint8_t> middle_{1}; // a slot index, plus kFresh when it holds an untaken offer
     uint8_t back_{0};                // the main thread's slot
     uint8_t front_{2};               // the audio thread's slot
-    // The values of the newest offer published, if it had any: carried forward while it stays
-    // untaken. Main thread.
+    // The newest offer published: its values, if it had any, carried forward while it stays
+    // untaken, and its source or keep, which a keep-source offer replacing it takes over. Main
+    // thread.
     bool lastHadValues_{false};
     ParamValues lastValues_{};
+    const PreparedSource *lastSource_{nullptr};
+    bool lastKeep_{false};
 
     // The hand-back ring: the audio thread writes ring_[tail_ % capacity] then advances tail_;
     // the main thread reads up to tail_ and advances head_.
@@ -134,6 +148,8 @@ class SourceExchange
 
     /// Frees the source `s` points to, if the exchange holds it. Main thread.
     void release(const PreparedSource *s);
+    /// offer() and offerValues(): publishes `raw` (already held), or a keep, with `values`.
+    void publish(const PreparedSource *raw, bool keep, const ParamValues *values);
 };
 } // namespace gg::core
 

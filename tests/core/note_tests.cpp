@@ -301,6 +301,31 @@ TEST_CASE("a source given by setSourceNow is freed once an offer replaces it", "
     CHECK(p.sources().held() == 1);
 }
 
+TEST_CASE("an offer that keeps the source applies its values and leaves the source (R19)", "[core]")
+{
+    Processor p({kSampleRate, 512, 1, Mode::Instrument});
+    auto a = sweepSource();
+    const std::weak_ptr<const gg::PreparedSource> weakA = a;
+    p.setSourceNow(std::move(a));
+    gg::core::ParamValues values{};
+    for (std::size_t s = 0; s < gg::core::kParamCount; ++s)
+    {
+        values[s] = p.base(static_cast<ParamSlot>(s));
+    }
+    values[static_cast<std::size_t>(ParamSlot::Density)] = 3.0f;
+    p.sources().offerValues(values);
+
+    std::vector<float> left(4096), right(4096);
+    float *out[2] = {left.data(), right.data()};
+    const NoteEvent n = on(0, 60);
+    p.process(nullptr, 0, out, 2, 4096, {}, std::span(&n, 1));
+    CHECK(p.base(ParamSlot::Density) == 3.0f);
+    CHECK(peak(left) > 0.01f); // still A: an offer of no source would have silenced the note
+    p.sources().collect();
+    CHECK_FALSE(weakA.expired());
+    CHECK(p.sources().held() == 1);
+}
+
 TEST_CASE("an instrument plays a one-frame or an empty source safely", "[core]")
 {
     // The shortest sources a load can give (convertRate keeps at least one frame of a file that

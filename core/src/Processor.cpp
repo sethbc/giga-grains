@@ -320,12 +320,17 @@ bool Processor::takeOffers() noexcept
                 setBase(static_cast<ParamSlot>(s), offer.values[s]);
             }
         }
-        if (hasPendingSource_)
+        // A keep-source offer (ruling R19) leaves the source alone: the engine's, and one taken
+        // but not yet adopted.
+        if (!offer.keepSource)
         {
-            sources_.retire(pendingSource_); // superseded before the engine ever read it
+            if (hasPendingSource_)
+            {
+                sources_.retire(pendingSource_); // superseded before the engine ever read it
+            }
+            pendingSource_ = offer.source;
+            hasPendingSource_ = true;
         }
-        pendingSource_ = offer.source;
-        hasPendingSource_ = true;
     }
     if (hasPendingSource_ && engine_.adoptSource(pendingSource_))
     {

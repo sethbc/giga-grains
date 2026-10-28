@@ -94,6 +94,23 @@ TEST_CASE("loadSample fills the entry from the file", "[media]")
     REQUIRE_FALSE(e.embed);
 }
 
+TEST_CASE("loadSample takes a fingerprint it is given instead of hashing the file", "[media]")
+{
+    // A restore passes the fingerprint findSample just checked, so the file isn't read a third
+    // time. A given one that isn't the file's shows it was taken as it is.
+    const auto dir = freshDir("sample-known-hash");
+    const auto file = dir / "known.wav";
+    writeWav(file, 1, 48000, 100);
+    const gg::media::FileHash given{std::string(64, 'a'), 12345};
+    const auto loaded = loadSample(file, MachineSettings{}, given);
+    INFO(loaded.error);
+    REQUIRE(loaded.error.empty());
+    REQUIRE(loaded.decoded != nullptr);
+    CHECK(loaded.entry.sha256Hex == given.sha256Hex);
+    CHECK(loaded.entry.fileSize == given.size);
+    CHECK(loaded.decoded->frames() == 100);
+}
+
 TEST_CASE("loadSample records the channels the file stores, not the two it keeps", "[media]")
 {
     const auto dir = freshDir("search-sample-channels");

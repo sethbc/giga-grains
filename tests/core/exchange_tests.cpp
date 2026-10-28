@@ -212,6 +212,73 @@ TEST_CASE("exchange carries untaken values forward into a newer offer", "[core]"
     CHECK_FALSE(polled.hasValues);
 }
 
+TEST_CASE("exchange offers values that keep the current source (R19)", "[core]")
+{
+    // A session restored while active whose sample is the one already playing: only its values
+    // go over, and the audio side keeps its source.
+    SourceExchange exchange;
+    gg::core::ParamValues values{};
+    values[1] = 2.0f;
+    exchange.offerValues(values);
+    CHECK(exchange.held() == 0);
+    SourceOffer polled;
+    REQUIRE(exchange.poll(polled));
+    CHECK(polled.keepSource);
+    CHECK(polled.source == nullptr);
+    REQUIRE(polled.hasValues);
+    CHECK(polled.values == values);
+
+    // A plain offer after it is no keep.
+    exchange.offer(nullptr);
+    REQUIRE(exchange.poll(polled));
+    CHECK_FALSE(polled.keepSource);
+    CHECK_FALSE(polled.hasValues);
+}
+
+TEST_CASE("exchange passes an untaken source on into a keep-source offer (R19)", "[core]")
+{
+    // A load offered A and the audio side hasn't taken it when a restore of A's own sample
+    // offers its values: A must still reach the audio side, now with the values, or the loader
+    // would believe A plays while the engine never got it.
+    SourceExchange exchange;
+    auto a = makeSource();
+    const std::weak_ptr<const PreparedSource> weakA = a;
+    const PreparedSource *rawA = a.get();
+    exchange.offer(std::move(a));
+    gg::core::ParamValues values{};
+    values[4] = 1.5f;
+    exchange.offerValues(values);
+    CHECK_FALSE(weakA.expired()); // not freed: passed on
+    CHECK(exchange.held() == 1);
+    SourceOffer polled;
+    REQUIRE(exchange.poll(polled));
+    CHECK(polled.source == rawA);
+    CHECK_FALSE(polled.keepSource);
+    REQUIRE(polled.hasValues);
+    CHECK(polled.values == values);
+
+    // An untaken keep-source offer replaced by another keeps as well, with the newer values.
+    gg::core::ParamValues newer = values;
+    newer[4] = 2.5f;
+    exchange.offerValues(values);
+    exchange.offerValues(newer);
+    REQUIRE(exchange.poll(polled));
+    CHECK(polled.keepSource);
+    CHECK(polled.values == newer);
+
+    // An untaken keep-source offer replaced by a source offer: the source, with its values
+    // carried forward.
+    auto b = makeSource();
+    const PreparedSource *rawB = b.get();
+    exchange.offerValues(values);
+    exchange.offer(std::move(b));
+    REQUIRE(exchange.poll(polled));
+    CHECK(polled.source == rawB);
+    CHECK_FALSE(polled.keepSource);
+    REQUIRE(polled.hasValues);
+    CHECK(polled.values == values);
+}
+
 TEST_CASE("exchange holds a source given to the engine directly until it is retired", "[core]")
 {
     SourceExchange exchange;

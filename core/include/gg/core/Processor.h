@@ -122,9 +122,13 @@ struct NoteEvent
 /// its values at once (as setBase does), and holds its source until Engine::adoptSource accepts
 /// it: at once, unless two sources are still in play, and then at the start of a later call,
 /// within Size. So an offer's values apply from the first call that takes it, and its source from
-/// that call too, or, when two sources are already in play, up to Size later. A newer offer
-/// replaces a source still held, which goes straight back. So the exchange and the engine hold
-/// at most three sources at once: the one draining, the one playing and one waiting. The swap
+/// that call too, or, when two sources are already in play, up to Size later. An offer that
+/// keeps the source (SourceExchange::offerValues, ruling R19) applies its values and changes no
+/// source. A newer offer replaces a source still held, which goes straight back. So, as each call
+/// has taken its offers, the exchange and the engine hold at most three sources: the one
+/// draining, the one playing and one waiting. Between calls a fourth can exist for up to one
+/// block: an offer made while one waits for adoption, until the next call takes it and hands the
+/// waiting one back. The swap
 /// applies at a call's start, not on the control grid: where it falls depends on when the main
 /// thread offered it, so only a source given before the first call (setSourceNow, or an offer
 /// before it) is part of a block-size-invariant render.

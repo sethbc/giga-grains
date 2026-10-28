@@ -132,8 +132,7 @@ bool SampleLoader::setSampleFolder(const std::filesystem::path &folder)
     return media::saveSettings(settingsFile_, settings);
 }
 
-std::shared_ptr<const PreparedSource>
-SampleLoader::restore(const std::optional<core::MediaEntry> &entry) noexcept
+SampleLoader::Restored SampleLoader::restore(const std::optional<core::MediaEntry> &entry) noexcept
 {
     std::shared_ptr<const PreparedSource> source;
     std::optional<Result> stale;
@@ -148,6 +147,15 @@ SampleLoader::restore(const std::optional<core::MediaEntry> &entry) noexcept
             stale.swap(result_);
             latestRequest_ = ++lastRequest_;
         }
+        // Ruling R19: the session's sample is the one in memory. Kept as it is, entry and all;
+        // only the session's values change.
+        if (entry.has_value() && entry_.has_value() && entry->sha256Hex == entry_->sha256Hex &&
+            entry->fileSize == entry_->fileSize &&
+            (source_ != nullptr || (restorePending_ && pending_ != nullptr)))
+        {
+            setLoadedStatus({});
+            return {nullptr, true};
+        }
         pending_.reset();
         restorePending_ = false;
         source_.reset();
@@ -160,7 +168,10 @@ SampleLoader::restore(const std::optional<core::MediaEntry> &entry) noexcept
             const media::SearchResult found = media::findSample(*entry, settings);
             if (found.outcome == media::SearchOutcome::Found)
             {
-                media::LoadedSample loaded = media::loadSample(found.path, settings);
+                // findSample hashed the file: its fingerprint is the entry's, so loadSample needn't
+                // read it a third time.
+                media::LoadedSample loaded = media::loadSample(
+                    found.path, settings, media::FileHash{entry->sha256Hex, entry->fileSize});
                 if (!loaded.error.empty())
                 {
                     setError(fileName, std::move(loaded.error));
@@ -211,7 +222,7 @@ SampleLoader::restore(const std::optional<core::MediaEntry> &entry) noexcept
     // nothing to play, so a missing sample is silent. Inactive: activate() converts the pending
     // buffer.
     source_ = source;
-    return source;
+    return {std::move(source), false};
 }
 
 std::shared_ptr<const PreparedSource> SampleLoader::activate(double sampleRate) noexcept

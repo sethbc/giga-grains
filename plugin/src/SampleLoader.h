@@ -64,7 +64,8 @@ struct SampleStatus
 /// asked for after it.
 ///
 /// **How many sources exist.** The Processor's SourceExchange and the engine hold at most three
-/// at once: the one draining, the one playing and one waiting for adoption (Processor). Besides
+/// at once, and for up to one block four (Processor): the one draining, the one playing and one
+/// waiting for adoption, and an offer the audio thread hasn't taken yet. Besides
 /// those, the worker may briefly hold one it is building, and a superseded one until it notices,
 /// both freed off the audio thread.
 ///
@@ -124,16 +125,29 @@ class SampleLoader
     /// The manifest entry: what the session saves (spec §6.6).
     const std::optional<core::MediaEntry> &entry() const noexcept { return entry_; }
 
-    /// The session restore (D8), inside stateLoad: supersedes every request, sets the manifest
-    /// entry to `entry` and, with one, looks for its file (gg::media::findSample) and decodes it
-    /// on this thread. Active, it converts it to the active rate and returns it, for the plugin
-    /// to offer together with the session's values; nullptr when there is no sample, or it can't
-    /// be found or loaded, so the instrument goes silent. Inactive, it keeps the decoded buffer
-    /// for activate() and returns nullptr. A file found away from the saved path updates the
-    /// entry and marks the state dirty. Status: Loaded, Missing, Changed, Error, or None without
-    /// an entry. Never throws.
-    std::shared_ptr<const PreparedSource>
-    restore(const std::optional<core::MediaEntry> &entry) noexcept;
+    /// What restore() leaves the plugin to offer with the session's values (D8).
+    struct Restored
+    {
+        /// Active: the source to offer; nullptr when there is no sample, or it can't be found or
+        /// loaded, so the instrument goes silent. Inactive: always nullptr.
+        std::shared_ptr<const PreparedSource> source;
+        /// The sample in memory is the session's own (ruling R19): offer the values alone and
+        /// keep the source (SourceExchange::offerValues). `source` is then nullptr.
+        bool keep{false};
+    };
+
+    /// The session restore (D8), inside stateLoad: supersedes every request, then:
+    /// - When `entry` has the current manifest entry's fingerprint (SHA-256 and size) and its
+    ///   sample is in memory, as a source or a decoded buffer waiting for activate() (ruling
+    ///   R19: undo, A/B compare and preset recall restore the sample they already have): keeps
+    ///   the entry and the sample, reads no file, and returns `keep`. Status: Loaded.
+    /// - Otherwise sets the manifest entry to `entry` and, with one, looks for its file
+    ///   (gg::media::findSample) and decodes it on this thread. Active, it converts it to the
+    ///   active rate and returns it as `source`. Inactive, it keeps the decoded buffer for
+    ///   activate(). A file found away from the saved path updates the entry and marks the state
+    ///   dirty. Status: Loaded, Missing, Changed, Error, or None without an entry.
+    /// Never throws.
+    Restored restore(const std::optional<core::MediaEntry> &entry) noexcept;
 
     /// The plugin's activate(), before it returns: waits for a job under way, applies what the
     /// worker finished, converts the sample at `sampleRate` here (see the class comment), and

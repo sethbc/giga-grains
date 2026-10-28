@@ -848,6 +848,75 @@ TEST_CASE("a failed load keeps the sample and the entry it had", "[plugin]")
     CHECK(peak(out.left) > 0.01f); // the sample it had still plays
 }
 
+TEST_CASE("a restore of the sample already loaded keeps it, reading no file (R19)", "[plugin]")
+{
+    // Undo, A/B compare and preset recall restore the state of the sample in memory: no search,
+    // no decode, no hash. With the file deleted in between, the sample stays loaded and keeps
+    // playing, and the second state's values apply from the next block.
+    setUp("r19-active");
+    const fs::path file = gg::test::sineSampleFile("r19-active");
+    SourceLog sources;
+    LoaderHost host;
+    PluginUnderTest instrument(kInstrumentId, host.clap());
+    REQUIRE(instrument.valid());
+    auto &loader = loaderOf(instrument);
+    sources.attach(loader);
+    REQUIRE(instrument.activate(48000.0, 512));
+    gg::core::SessionState s;
+    REQUIRE(gg::core::decodeState(instrument.save(), gg::core::Mode::Instrument, s));
+    s.sample = gg::test::entryOf(file);
+    REQUIRE(instrument.load(gg::core::encodeState(s)));
+    REQUIRE(loader.status().state == SampleState::Loaded);
+    REQUIRE(sources.count() == 1);
+    const std::string manifest = savedManifest(instrument);
+    Stereo out(512);
+    renderNote(instrument, out, 512);
+    REQUIRE(peak(out.left) > 0.01f);
+
+    fs::remove(file);
+    const auto density = static_cast<std::size_t>(gg::core::ParamSlot::Density);
+    s.values[density] = 3.0f;
+    REQUIRE(instrument.load(gg::core::encodeState(s)));
+    const SampleStatus status = loader.status();
+    CHECK(status.state == SampleState::Loaded);
+    CHECK(status.fileName == file.filename().string());
+    CHECK(sources.count() == 1); // nothing prepared again
+    CHECK(sources.aliveAt(0));
+    CHECK(savedManifest(instrument) == manifest);
+    CHECK(host.dirtyMarks() == 0);
+
+    renderBlocks(instrument, 1);
+    CHECK(instrument.impl().processor()->base(gg::core::ParamSlot::Density) == 3.0f);
+    CHECK(instrument.value(gg::core::paramId(gg::core::ParamSlot::Density)) == 3.0);
+    renderBlocks(instrument, 40); // about 0.43 s: any grains of before have ended
+    renderNote(instrument, out, 512);
+    CHECK(peak(out.left) > 0.01f); // the sample in memory still plays
+    instrument.onMainThread();
+    CHECK(sources.aliveAt(0));
+    CHECK(instrument.impl().processor()->sources().held() == 1);
+}
+
+TEST_CASE("a restore of the sample pending activation keeps it, reading no file (R19)", "[plugin]")
+{
+    // The same while inactive: the decoded buffer waiting for activate() stays.
+    setUp("r19-inactive");
+    const fs::path file = gg::test::sineSampleFile("r19-inactive");
+    LoaderHost host;
+    PluginUnderTest instrument(kInstrumentId, host.clap());
+    REQUIRE(instrument.valid());
+    const std::string state = gg::test::withSample(instrument.save(), gg::test::entryOf(file));
+    REQUIRE(instrument.load(state));
+    REQUIRE(loaderOf(instrument).status().state == SampleState::Loaded);
+    fs::remove(file);
+    REQUIRE(instrument.load(state));
+    CHECK(loaderOf(instrument).status().state == SampleState::Loaded);
+
+    REQUIRE(instrument.activate(48000.0, 512));
+    Stereo out(512);
+    renderNote(instrument, out, 512);
+    CHECK(peak(out.left) > 0.01f);
+}
+
 TEST_CASE("a session without a sample clears the one loaded", "[plugin]")
 {
     setUp("clear");

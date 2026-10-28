@@ -775,12 +775,14 @@ bool GigaGrainsPlugin::stateLoad(const clap_istream *stream) noexcept
         }
         // The instrument's sample, found and decoded before this returns (D8); while active,
         // offered to the audio thread below in one hand-off with the values, so the process()
-        // that takes them applies both. The FX ignores a sample (a state from the instrument).
+        // that takes them applies both. The sample already in memory, when it is the session's,
+        // is kept and only the values are offered (ruling R19). The FX ignores a sample (a state
+        // from the instrument).
         // restore() never throws: a sample it can't load leaves its status saying why.
-        std::shared_ptr<const gg::PreparedSource> source;
+        SampleLoader::Restored restored;
         if (loader_ != nullptr)
         {
-            source = loader_->restore(loaded.sample);
+            restored = loader_->restore(loaded.sample);
         }
         const auto &values = loaded.values;
         const uint64_t seed = loaded.seed;
@@ -796,9 +798,14 @@ bool GigaGrainsPlugin::stateLoad(const clap_istream *stream) noexcept
         // a restart request.
         if (processor_ != nullptr)
         {
-            if (loader_ != nullptr)
+            if (loader_ != nullptr && restored.keep)
             {
-                processor_->sources().offer(std::move(source), &values); // reserved: no throw
+                // The sample in memory is the session's (ruling R19): its values alone.
+                processor_->sources().offerValues(values); // never allocates
+            }
+            else if (loader_ != nullptr)
+            {
+                processor_->sources().offer(std::move(restored.source), &values); // reserved
             }
             else
             {

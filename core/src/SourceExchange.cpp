@@ -22,19 +22,29 @@ SourceExchange::~SourceExchange() = default;
 void SourceExchange::offer(std::shared_ptr<const PreparedSource> s, const ParamValues *values)
 {
     const PreparedSource *raw = hold(std::move(s)); // before the audio side can see it
-    // Values the audio side may not have taken yet: those of the newest offer published, when
-    // it is still untaken. An offer without values replacing it carries them forward, so a
-    // restored session's values are never lost to a load that comes before the audio thread
-    // takes them; newer values replace them.
+    publish(raw, false, values);
+}
+
+void SourceExchange::offerValues(const ParamValues &values) { publish(nullptr, true, &values); }
+
+void SourceExchange::publish(const PreparedSource *raw, bool keep, const ParamValues *values)
+{
+    // What the audio side may not have taken yet: the newest offer published, when it is still
+    // untaken. An offer without values replacing it carries its values forward, so a restored
+    // session's values are never lost to a load that comes before the audio thread takes them;
+    // newer values replace them. A keep-source offer replacing it takes over its source (or its
+    // keep), so that source still reaches the audio side.
     const uint8_t observed = middle_.load(std::memory_order_acquire);
-    const bool carry = values == nullptr && lastHadValues_ && (observed & kFresh) != 0;
-    const auto fill = [&](bool withCarried) {
+    const auto fill = [&](bool replacing) {
         SourceOffer &mine = slots_[back_];
-        mine.source = raw;
-        mine.hasValues = values != nullptr || withCarried;
-        mine.values = values != nullptr ? *values : (withCarried ? lastValues_ : ParamValues{});
+        const bool inherit = keep && replacing;
+        mine.source = inherit ? lastSource_ : raw;
+        mine.keepSource = inherit ? lastKeep_ : keep;
+        const bool carry = values == nullptr && replacing && lastHadValues_;
+        mine.hasValues = values != nullptr || carry;
+        mine.values = values != nullptr ? *values : (carry ? lastValues_ : ParamValues{});
     };
-    fill(carry);
+    fill((observed & kFresh) != 0);
     const auto published = static_cast<uint8_t>(back_ | kFresh);
     // Release: the audio side that takes this slot sees the offer and the source fully built.
     // Acquire: the slot we get back is one the audio side has finished reading.
@@ -42,19 +52,23 @@ void SourceExchange::offer(std::shared_ptr<const PreparedSource> s, const ParamV
     if (!middle_.compare_exchange_strong(old, published, std::memory_order_acq_rel,
                                          std::memory_order_acquire))
     {
-        // The audio side took the untaken offer in between, values and all: none to carry. Only
-        // poll() changes the middle slot besides us, and only to an untaken-free one, so it
-        // can't change again before this exchange.
+        // The audio side took the untaken offer in between, values, source and all: nothing to
+        // carry or take over. Only poll() changes the middle slot besides us, and only to an
+        // untaken-free one, so it can't change again before this exchange.
         fill(false);
         old = middle_.exchange(published, std::memory_order_acq_rel);
     }
-    // What the audio side may not have taken yet now: this offer's values, if it has any.
-    lastHadValues_ = slots_[back_].hasValues;
-    lastValues_ = slots_[back_].values; // only the main thread writes slots: no race with poll()
+    // What the audio side may not have taken yet now: this offer.
+    const SourceOffer &mine = slots_[back_]; // only the main thread writes slots: no race
+    lastHadValues_ = mine.hasValues;
+    lastValues_ = mine.values;
+    lastSource_ = mine.source;
+    lastKeep_ = mine.keepSource;
     back_ = old & kIndex;
-    if ((old & kFresh) != 0)
+    // Never taken, and now ours again: the audio side never had its source. Unless this offer
+    // took it over (a keep-source offer replacing it), it is freed.
+    if ((old & kFresh) != 0 && !keep)
     {
-        // Never taken, and now ours again: the audio side never had its source.
         release(slots_[back_].source);
     }
     collect();

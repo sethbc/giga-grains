@@ -62,7 +62,8 @@ std::string relativeTo(const fs::path &file, const std::string &sampleFolder)
 }
 } // namespace
 
-LoadedSample loadSample(const fs::path &file, const core::MachineSettings &settings)
+LoadedSample loadSample(const fs::path &file, const core::MachineSettings &settings,
+                        std::optional<FileHash> knownHash)
 {
     DecodeResult decoded = decodeAudioFile(file);
     if (!decoded.audio)
@@ -71,7 +72,7 @@ LoadedSample loadSample(const fs::path &file, const core::MachineSettings &setti
         out.error = std::move(decoded.error);
         return out;
     }
-    const auto hash = hashFile(file);
+    const auto hash = knownHash ? std::move(knownHash) : hashFile(file);
     if (!hash)
     {
         return failure(file, "the file can't be read");

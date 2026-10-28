@@ -7,10 +7,12 @@
 
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <string>
 
 #include "gg/core/MachineSettings.h"
 #include "gg/core/SessionState.h"
+#include "gg/media/Sha256.h"
 #include "gg/source/PreparedSource.h"
 #include "gg/source/SampleBuffer.h"
 
@@ -39,9 +41,13 @@ struct LoadedSample
 ///   reached through a symlink (macOS's /var for /private/var, say) still counts.
 /// - On failure `decoded` is null, `entry` is default and `error` names the file and the reason:
 ///   decodeAudioFile's message, or a failure to read the file for its hash.
-/// - A known limitation: the file is read twice, to decode it and then to hash it. A file replaced
-///   between the two reads gives an entry whose fingerprint isn't the decoded audio's.
-LoadedSample loadSample(const std::filesystem::path &file, const core::MachineSettings &settings);
+/// - `knownHash`, when given, is taken as the file's fingerprint instead of hashing it again: a
+///   restore passes the one findSample just checked, so the file is read twice, not three times.
+/// - A known limitation: the file is read twice, to decode it and then to hash it (or, with
+///   `knownHash`, to hash it and then to decode it). A file replaced between the two reads gives
+///   an entry whose fingerprint isn't the decoded audio's.
+LoadedSample loadSample(const std::filesystem::path &file, const core::MachineSettings &settings,
+                        std::optional<FileHash> knownHash = std::nullopt);
 
 /// `decoded` converted to `rate` (convertRate: the same buffer when the rates match), then made a
 /// PreparedSource, with the interleaved copy for a stereo buffer. Main or loader thread; the
