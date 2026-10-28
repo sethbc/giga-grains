@@ -13,7 +13,8 @@ namespace gg
 GrainPool::GrainPool(uint32_t capacity)
     : capacity_(capacity), slots_(2 * capacity), index_(slots_), onsetSample_(slots_),
       onsetFrac_(slots_), startPos_(slots_), rate_(slots_), durationSamples_(slots_), gain_(slots_),
-      pan_(slots_), endSample_(slots_), invDuration_(slots_), gainL_(slots_), gainR_(slots_),
+      pan_(slots_), tier_(slots_), endSample_(slots_), invDuration_(slots_), gainL_(slots_),
+      gainR_(slots_),
       rows_{
           .index = index_.data(),
           .onsetSample = onsetSample_.data(),
@@ -23,6 +24,7 @@ GrainPool::GrainPool(uint32_t capacity)
           .durationSamples = durationSamples_.data(),
           .gain = gain_.data(),
           .pan = pan_.data(),
+          .tier = tier_.data(),
           .endSample = endSample_.data(),
           .invDuration = invDuration_.data(),
           .gainL = gainL_.data(),
@@ -60,6 +62,7 @@ bool GrainPool::spawn(const GrainSpec &g) noexcept
     durationSamples_[i] = g.durationSamples;
     gain_[i] = g.gain;
     pan_[i] = g.pan;
+    tier_[i] = g.tier;
     endSample_[i] = end;
     // The renderers' latched values (spec §3): one division and one channel gain per grain.
     const PanGains pan = panGains(g.pan);
@@ -103,6 +106,7 @@ void GrainPool::retireFinished(int64_t nowSample) noexcept
                 durationSamples_[kept] = durationSamples_[i];
                 gain_[kept] = gain_[i];
                 pan_[kept] = pan_[i];
+                tier_[kept] = tier_[i];
                 endSample_[kept] = end;
                 invDuration_[kept] = invDuration_[i];
                 gainL_[kept] = gainL_[i];
@@ -134,6 +138,7 @@ GrainSpec GrainPool::spec(uint32_t i) const noexcept
         .durationSamples = durationSamples_[i],
         .gain = gain_[i],
         .pan = pan_[i],
+        .tier = tier_[i],
     };
 }
 } // namespace gg

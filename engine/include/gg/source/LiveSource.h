@@ -126,8 +126,8 @@ class LiveSource
         return unit(toHead) * unit(fromTail);
     }
 
-    /// Where the last read() was, so that reads moving forward find their slot without a
-    /// division. A fresh Cursor works for any read.
+    /// Where the last read() or readLinear() was, so that reads moving forward find their slot
+    /// without a division. A fresh Cursor works for any read.
     struct Cursor
     {
         int64_t index{0}; ///< the ring-time index of the last read's first tap
@@ -143,11 +143,25 @@ class LiveSource
     bool read(double pos, int64_t head, Cursor &cursor, float &left,
               float &right) const noexcept SST_CPPUTILS_NONBLOCKING;
 
+    /// The Eco tier's read: both channels at pos with interp::lerp, the line of interp::linear,
+    /// over taps floor(pos) and floor(pos) + 1. Returns false and reads nothing unless both taps
+    /// are in the window [head − N, head − 1], as read() requires of its four. Taps before frame
+    /// 0 read as 0. The check is for this read's own reach; the renderer's fade() stays the
+    /// one for the Hermite's reach, floor(pos) − 1 .. floor(pos) + 2, which is a frame wider at
+    /// each end, so for a linear read it is conservative: wherever fade() is above 0, both taps
+    /// are in the window.
+    bool readLinear(double pos, int64_t head, Cursor &cursor, float &left,
+                    float &right) const noexcept SST_CPPUTILS_NONBLOCKING;
+
   private:
     static constexpr double kMargin = static_cast<double>(kHeadMargin);
-    // Taps i − 1 .. i + 2 read slots s .. s + 3 of a channel. Slots C .. C + 2 mirror slots 0 .. 2,
-    // so the four are contiguous wherever s falls.
+    // Taps i − 1 .. i + 2 read slots s .. s + 3 of a channel (readLinear's taps i, i + 1 read
+    // s, s + 1). Slots C .. C + 2 mirror slots 0 .. 2, so the taps are contiguous wherever s falls.
     static constexpr int64_t kGuardFrames = 3;
+
+    // The slot of ring-time frame first >= 0, found from the cursor when reads move forward, and
+    // recorded in it.
+    int64_t slotOf(int64_t first, Cursor &cursor) const noexcept SST_CPPUTILS_NONBLOCKING;
 
     // clamp(x, 0, 1), with NaN read as 0.
     static double unit(double x) noexcept { return x > 0.0 ? (x < 1.0 ? x : 1.0) : 0.0; }

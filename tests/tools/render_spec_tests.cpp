@@ -24,6 +24,7 @@
 #include "Signals.h"
 #include "gg/core/ParamIds.h"
 #include "gg/core/Processor.h"
+#include "gg/grain/Tier.h"
 
 using Catch::Matchers::ContainsSubstring;
 using Catch::Matchers::WithinRel;
@@ -216,6 +217,60 @@ TEST_CASE("render spec reads the optional distribution", "[render]")
     CHECK(*spec == expected);
 }
 
+TEST_CASE("stream.quality parses and rejects", "[render]")
+{
+    // Ruling 2: sample mode's optional stream.quality picks the engine's tier.
+    using gg::Tier;
+    const auto withQuality = [](const nlohmann::json &quality) {
+        auto j = nlohmann::json::parse(readCase("sparse-sine"));
+        j["stream"]["quality"] = quality;
+        return j;
+    };
+    std::string error;
+
+    const auto eco = gg::render::parseRenderSpec(withQuality("eco").dump(), error);
+    INFO(error);
+    REQUIRE(eco.has_value());
+    CHECK(eco->stream.quality == Tier::Eco);
+    RenderSpec expected = parseCase("sparse-sine");
+    CHECK(expected.stream.quality == Tier::Normal); // missing: Normal
+    expected.stream.quality = Tier::Eco;
+    CHECK(*eco == expected);
+
+    const auto normal = gg::render::parseRenderSpec(withQuality("normal").dump(), error);
+    REQUIRE(normal.has_value());
+    CHECK(normal->stream.quality == Tier::Normal);
+
+    for (const nlohmann::json &bad :
+         {nlohmann::json("hq"), nlohmann::json(3), nlohmann::json("Eco"), nlohmann::json(nullptr)})
+    {
+        INFO(bad.dump());
+        CHECK(rejection(withQuality(bad)) == R"(stream.quality must be "eco" or "normal")");
+    }
+
+    // The golden case is dense-noise at Eco, and nothing else.
+    RenderSpec denseEco = parseCase("dense-noise-eco");
+    CHECK(denseEco.stream.quality == Tier::Eco);
+    denseEco.stream.quality = Tier::Normal;
+    CHECK(denseEco == parseCase("dense-noise"));
+}
+
+TEST_CASE("eco golden has the normal golden's events", "[golden]")
+{
+    // The tier changes how a grain reads, never which grains spawn or what they draw, and the
+    // event line doesn't print it: the two expected event logs are the same bytes.
+    const auto read = [](const std::string &name) {
+        const auto path = std::filesystem::path{GG_GOLDEN_DIR} / "expected" / name;
+        std::ifstream in(path, std::ios::binary);
+        REQUIRE(in.good());
+        return std::string{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+    };
+    const std::string normal = read("dense-noise.events.jsonl");
+    const std::string eco = read("dense-noise-eco.events.jsonl");
+    REQUIRE_FALSE(normal.empty());
+    CHECK(eco == normal);
+}
+
 TEST_CASE("render with Poisson onsets does not depend on block size", "[render]")
 {
     // At distribution 1 several grains can start in one sample, so a 1-frame block can spawn
@@ -252,7 +307,7 @@ TEST_CASE("render block size does not change output", "[render]")
 {
     const std::string name =
         GENERATE(as<std::string>{}, "sparse-sine", "sparse-sine-44k1", "dense-noise",
-                 "sweep-stretch", "fx-sine", "fx-noise-stereo", "fx-automate");
+                 "dense-noise-eco", "sweep-stretch", "fx-sine", "fx-noise-stereo", "fx-automate");
     const uint32_t blockSize = GENERATE(1u, 1000u);
     CAPTURE(name, blockSize);
 

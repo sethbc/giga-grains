@@ -12,6 +12,8 @@
 
 #include <sst/cpputils/rtsan_support.h>
 
+#include "gg/grain/Tier.h"
+
 namespace gg
 {
 /// One grain's parameters, latched at its onset (INTENT §14). Times and positions are 64-bit.
@@ -25,7 +27,8 @@ struct GrainSpec
     double rate;            ///< Source (or ring) frames advanced per output sample.
     double durationSamples; ///< Window length in output samples, at least 16.
     float gain;
-    float pan; ///< -1 (left) .. 1 (right); see panGains().
+    float pan;               ///< -1 (left) .. 1 (right); see panGains().
+    Tier tier{Tier::Normal}; ///< How the grain reads its source (ruling 2).
 
     friend bool operator==(const GrainSpec &, const GrainSpec &) = default;
 };
@@ -73,6 +76,7 @@ struct GrainRows
     const double *durationSamples;
     const float *gain;
     const float *pan;
+    const Tier *tier;
     const int64_t *endSample;  ///< grainEndSample of each
     const double *invDuration; ///< 1.0 / durationSamples
     const float *gainL;        ///< gain × panGains(pan).left
@@ -156,6 +160,7 @@ class GrainPool
     std::vector<double> durationSamples_;
     std::vector<float> gain_;
     std::vector<float> pan_;
+    std::vector<Tier> tier_;
     std::vector<int64_t> endSample_;
     std::vector<double> invDuration_;
     std::vector<float> gainL_;

@@ -10,10 +10,12 @@
 
 #include "gg/core/Rng.h"
 #include "gg/grain/GrainPool.h"
+#include "gg/grain/Tier.h"
 
 namespace
 {
-// Gain and pan vary with the index, so the latched channel gains differ from row to row.
+// Gain and pan vary with the index, so the latched channel gains differ from row to row, and so
+// does the tier.
 gg::GrainSpec grain(uint64_t index, int64_t onsetSample, double durationSamples)
 {
     const auto k = static_cast<float>(index % 8);
@@ -24,7 +26,8 @@ gg::GrainSpec grain(uint64_t index, int64_t onsetSample, double durationSamples)
             1.0,
             durationSamples,
             0.5f + 0.0625f * k,
-            0.25f * k - 0.875f};
+            0.25f * k - 0.875f,
+            index % 3 == 0 ? gg::Tier::Eco : gg::Tier::Normal};
 }
 
 std::vector<uint64_t> indices(const gg::GrainPool &pool)
@@ -77,6 +80,7 @@ TEST_CASE("pool keeps spawn order through retirement", "[pool]")
             REQUIRE(pool.spec(i) == g);
             REQUIRE(rows.index[i] == k);
             REQUIRE(rows.endSample[i] == gg::grainEndSample(g));
+            REQUIRE(rows.tier[i] == g.tier);
             // The values spawn latches for the renderers (spec §3).
             REQUIRE(rows.invDuration[i] == 1.0 / g.durationSamples);
             REQUIRE(rows.gainL[i] == g.gain * gg::panGains(g.pan).left);

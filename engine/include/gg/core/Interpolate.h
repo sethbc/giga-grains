@@ -24,6 +24,14 @@ inline float tap(const float *data, int64_t frames, int64_t i) noexcept
 }
 } // namespace detail
 
+/// The straight line from tap a to tap b at t in [0, 1). Every linear reader (linear, the live
+/// ring's readLinear) goes through this one expression, so they agree bit for bit.
+inline float lerp(float a, float b, float t) noexcept
+{
+    GG_FP_CONTRACT_OFF
+    return a + (b - a) * t;
+}
+
 /// Linear interpolation between taps floor(pos) and floor(pos) + 1.
 inline float linear(const float *data, int64_t frames, double pos) noexcept
 {
@@ -37,9 +45,7 @@ inline float linear(const float *data, int64_t frames, double pos) noexcept
     const double base = std::floor(pos);
     const auto i = static_cast<int64_t>(base);
     const auto t = static_cast<float>(pos - base);
-    const float a = detail::tap(data, frames, i);
-    const float b = detail::tap(data, frames, i + 1);
-    return a + (b - a) * t;
+    return lerp(detail::tap(data, frames, i), detail::tap(data, frames, i + 1), t);
 }
 
 /// The 4-point Catmull-Rom curve through taps p0 .. p3 at t in [0, 1) between p1 and p2. Every

@@ -27,6 +27,10 @@
 namespace
 {
 using gg::kernels::Hermite;
+using gg::kernels::Linear;
+
+// A sample-buffer interpolator: interp::hermite4 (Normal) or interp::linear (Eco).
+using SampleRead = float (*)(const float *, int64_t, double);
 
 constexpr float kNaN = std::numeric_limits<float>::quiet_NaN();
 
@@ -116,10 +120,10 @@ bool anyNonZero(const std::vector<float> &v)
 
 // The spec's §3 table for a sample source, written out per sample: for t in [onsetSample,
 // grainEndSample), e = double(t − onsetSample) − onsetFrac, w = hann(e × invDuration), skip unless
-// w > 0, pos = startPos + rate × e, dst[c][t] += read_c(pos) × (w × gain_c). One output reads
-// channel 0 with gain alone.
-void specSample(const gg::GrainSpec &g, const float *const src[2], int64_t frames, int outputs,
-                std::vector<float> (&out)[2], const gg::HannTable &hann)
+// w > 0, pos = startPos + rate × e, dst[c][t] += read_c(pos) × (w × gain_c), with read the tier's
+// interpolator. One output reads channel 0 with gain alone.
+void specSample(const gg::GrainSpec &g, SampleRead read, const float *const src[2], int64_t frames,
+                int outputs, std::vector<float> (&out)[2], const gg::HannTable &hann)
 {
     const double invDuration = 1.0 / g.durationSamples;
     const ChannelGains gains = channelGains(g, outputs);
@@ -135,15 +139,15 @@ void specSample(const gg::GrainSpec &g, const float *const src[2], int64_t frame
         const double pos = g.startPos + g.rate * e;
         for (int c = 0; c < outputs; ++c)
         {
-            out[c][static_cast<std::size_t>(t)] +=
-                gg::interp::hermite4(src[c], frames, pos) * (w * gains.c[c]);
+            out[c][static_cast<std::size_t>(t)] += read(src[c], frames, pos) * (w * gains.c[c]);
         }
     }
 }
 
-// Renders grain 0 of `rows` with renderSampleRef over [0, length), split at `cuts`, each piece
-// through an Output whose dst starts at the piece (blockStart = the piece's start), as the
+// Renders grain 0 of `rows` with renderSampleRef<Reader> over [0, length), split at `cuts`, each
+// piece through an Output whose dst starts at the piece (blockStart = the piece's start), as the
 // engine's blocks do.
+template <class Reader = Hermite>
 void refSample(const gg::GrainRows &rows, const gg::kernels::SampleSource &src, int outputs,
                std::vector<float> (&out)[2], const std::vector<int64_t> &cuts,
                const gg::HannTable &hann)
@@ -154,7 +158,7 @@ void refSample(const gg::GrainRows &rows, const gg::kernels::SampleSource &src, 
         const int64_t to = cuts[k + 1];
         const gg::kernels::Output o{
             {out[0].data() + from, outputs == 2 ? out[1].data() + from : nullptr}, from};
-        gg::kernels::renderSampleRef<Hermite>(rows, 0, src, o, from, to, hann);
+        gg::kernels::renderSampleRef<Reader>(rows, 0, src, o, from, to, hann);
     }
 }
 
@@ -184,9 +188,11 @@ struct NaNOutside
         return ok;
     }
 };
-} // namespace
 
-TEST_CASE("sample reference follows the spec's arithmetic", "[kernel]")
+// Requires renderSampleRef<Reader> to match the spec's table, with read as the tier's interpolator,
+// for the brief's grain over stereo noise: two outputs from a stereo and from a mono source, and
+// one output from a stereo source.
+template <class Reader> void requireSampleArithmetic(SampleRead read)
 {
     constexpr int64_t kFrames = 2000;
     constexpr int64_t kLength = 1000;
@@ -217,9 +223,9 @@ TEST_CASE("sample reference follows the spec's arithmetic", "[kernel]")
                                           std::vector<float>(kLength, 0.0f)};
         std::vector<float> actual[2] = {std::vector<float>(kLength, 0.0f),
                                         std::vector<float>(kLength, 0.0f)};
-        specSample(g, channels, kFrames, shape.outputs, expected, hann);
-        refSample(rows, {{channels[0], channels[1]}, kFrames, shape.mono}, shape.outputs, actual,
-                  cuts, hann);
+        specSample(g, read, channels, kFrames, shape.outputs, expected, hann);
+        refSample<Reader>(rows, {{channels[0], channels[1]}, kFrames, shape.mono}, shape.outputs,
+                          actual, cuts, hann);
 
         REQUIRE(anyNonZero(expected[0]));
         REQUIRE(sameBits(actual[0], expected[0]));
@@ -233,6 +239,12 @@ TEST_CASE("sample reference follows the spec's arithmetic", "[kernel]")
             REQUIRE(!anyNonZero(actual[1])); // one output never touches a second channel
         }
     }
+}
+} // namespace
+
+TEST_CASE("sample reference follows the spec's arithmetic", "[kernel]")
+{
+    requireSampleArithmetic<Hermite>(&gg::interp::hermite4);
 }
 
 TEST_CASE("reference reads nothing where the window is zero", "[kernel]")
@@ -425,5 +437,228 @@ TEST_CASE("live reference follows the spec's arithmetic", "[kernel]")
         REQUIRE(anyNonZero(expected[0]));
         REQUIRE(sameBits(actual[0], expected[0]));
         REQUIRE(sameBits(actual[1], expected[1]));
+    }
+}
+
+TEST_CASE("eco reference reads linearly", "[kernel]")
+{
+    // The Eco tier (ruling 2) is the same arithmetic with interp::linear, or the ring's linear
+    // read, in place of the Hermite.
+    const gg::HannTable hann;
+
+    SECTION("sample source")
+    {
+        requireSampleArithmetic<Linear>(&gg::interp::linear);
+
+        // Not vacuous: the two tiers' renders of the same grain differ.
+        constexpr int64_t kFrames = 2000;
+        constexpr int64_t kLength = 1000;
+        const std::vector<float> left = noise(kFrames, 7, 0);
+        const std::vector<float> right = noise(kFrames, 7, 1);
+        const OneGrain one(testGrain(10, 200.25));
+        const gg::kernels::SampleSource src{{left.data(), right.data()}, kFrames, false};
+        std::vector<float> eco[2] = {std::vector<float>(kLength, 0.0f),
+                                     std::vector<float>(kLength, 0.0f)};
+        std::vector<float> normal[2] = {std::vector<float>(kLength, 0.0f),
+                                        std::vector<float>(kLength, 0.0f)};
+        refSample<Linear>(one.pool.rows(), src, 2, eco, {0, kLength}, hann);
+        refSample<Hermite>(one.pool.rows(), src, 2, normal, {0, kLength}, hann);
+        REQUIRE(anyNonZero(eco[0]));
+        REQUIRE_FALSE(sameBits(eco[0], normal[0]));
+        REQUIRE_FALSE(sameBits(eco[1], normal[1]));
+    }
+
+    SECTION("live ring")
+    {
+        // Task 4's live test, frozen so that the fade runs from 1 through (0, 1) to 0, with the
+        // read written out against a copy of what the ring stores: the input up to the freeze,
+        // then the input times the documented write gain ramp / L, ramp = L − 1 down to 0, after
+        // which the head stops.
+        constexpr double kRate = 48000.0;
+        constexpr int64_t kBlock = 100;
+        constexpr int64_t kFreezeAt = 3000;
+        constexpr int64_t kLength = 4400;
+        const int64_t ramp = gg::LiveSource::freezeRampSamples(kRate);
+        const std::vector<float> input[2] = {noise(kLength, 5, 0), noise(kLength, 5, 1)};
+        std::vector<float> stored[2] = {input[0], input[1]};
+        for (auto &channel : stored)
+        {
+            for (int64_t j = kFreezeAt; j < kLength; ++j)
+            {
+                const int64_t r = std::max<int64_t>(0, ramp - 1 - (j - kFreezeAt));
+                channel[static_cast<std::size_t>(j)] *=
+                    static_cast<float>(r) / static_cast<float>(ramp);
+            }
+        }
+        const gg::GrainSpec g = testGrain(3700, 3300.25);
+        REQUIRE(gg::grainEndSample(g) <= kLength);
+        const OneGrain one(g);
+        const gg::GrainRows &rows = one.pool.rows();
+        const double invDuration = 1.0 / g.durationSamples;
+
+        for (const int outputs : {2, 1})
+        {
+            INFO("outputs " << outputs);
+            const ChannelGains gains = channelGains(g, outputs);
+            gg::LiveSource ring;
+            ring.prepare(kRate, 1.0, static_cast<uint32_t>(kBlock));
+            const int64_t frames = ring.frames();
+            std::vector<float> expected[2] = {std::vector<float>(kLength, 0.0f),
+                                              std::vector<float>(kLength, 0.0f)};
+            std::vector<float> actual[2] = {std::vector<float>(kLength, 0.0f),
+                                            std::vector<float>(kLength, 0.0f)};
+            std::vector<float> normal[2] = {std::vector<float>(kLength, 0.0f),
+                                            std::vector<float>(kLength, 0.0f)};
+            int64_t fadeOne = 0;
+            int64_t fadePartial = 0;
+            int64_t fadeZero = 0;
+            gg::LiveSource::Cursor cursor;
+            for (int64_t b = 0; b < kLength; b += kBlock)
+            {
+                ring.setFrozen(b >= kFreezeAt);
+                const float *in[2] = {input[0].data() + b, input[1].data() + b};
+                ring.write(in, 2, 0, b, static_cast<uint32_t>(kBlock));
+
+                for (int64_t t = std::max(b, g.onsetSample);
+                     t < std::min(b + kBlock, gg::grainEndSample(g)); ++t)
+                {
+                    const double e = static_cast<double>(t - g.onsetSample) - g.onsetFrac;
+                    const float w = hann.at(e * invDuration);
+                    if (!(w > 0.0f))
+                    {
+                        continue;
+                    }
+                    const double pos = g.startPos + g.rate * e;
+                    const int64_t head = ring.headAt(t);
+                    const auto f = static_cast<float>(ring.fade(pos, head));
+                    fadeOne += f == 1.0f;
+                    fadePartial += f > 0.0f && f < 1.0f;
+                    fadeZero += f == 0.0f;
+                    // The linear taps floor(pos) and floor(pos) + 1 must be in the window.
+                    const auto i = static_cast<int64_t>(std::floor(pos));
+                    if (!(f > 0.0f) || i < head - frames || i + 1 > head - 1)
+                    {
+                        continue;
+                    }
+                    // The copy is the ring: its Hermite reads agree with the ring's.
+                    float hermite[2] = {0.0f, 0.0f};
+                    if (ring.read(pos, head, cursor, hermite[0], hermite[1]))
+                    {
+                        for (int c = 0; c < 2; ++c)
+                        {
+                            REQUIRE(hermite[c] ==
+                                    gg::interp::hermite4(stored[c].data(), kLength, pos));
+                        }
+                    }
+                    for (int c = 0; c < outputs; ++c)
+                    {
+                        const float read = gg::interp::linear(stored[c].data(), kLength, pos);
+                        expected[c][static_cast<std::size_t>(t)] += read * ((w * f) * gains.c[c]);
+                    }
+                }
+
+                const gg::kernels::Output o{
+                    {actual[0].data() + b, outputs == 2 ? actual[1].data() + b : nullptr}, b};
+                gg::kernels::renderLiveRef<Linear>(rows, 0, ring, o, b, b + kBlock, hann);
+                const gg::kernels::Output n{
+                    {normal[0].data() + b, outputs == 2 ? normal[1].data() + b : nullptr}, b};
+                gg::kernels::renderLiveRef<Hermite>(rows, 0, ring, n, b, b + kBlock, hann);
+            }
+            REQUIRE(ring.head() == kFreezeAt + ramp);
+            REQUIRE(fadeOne > 0);
+            REQUIRE(fadePartial > 0);
+            REQUIRE(fadeZero > 0);
+            REQUIRE(anyNonZero(expected[0]));
+            REQUIRE(sameBits(actual[0], expected[0]));
+            REQUIRE(sameBits(actual[1], expected[1]));
+            REQUIRE_FALSE(sameBits(actual[0], normal[0]));
+        }
+    }
+
+    SECTION("the ring's linear read stays in its own window")
+    {
+        // A 10 ms ring at 48 kHz: N = 480. Its linear read needs only taps floor(pos) and
+        // floor(pos) + 1 in [head − N, head − 1], so it reaches a frame further than the Hermite
+        // at both ends.
+        constexpr int64_t kBlock = 100;
+        gg::LiveSource ring;
+        ring.prepare(48000.0, 0.01, static_cast<uint32_t>(kBlock));
+        const int64_t frames = ring.frames();
+        REQUIRE(frames == 480);
+        const std::vector<float> left = noise(1000, 9, 0);
+        const std::vector<float> right = noise(1000, 9, 1);
+        const auto expectRead = [&](double pos, int64_t head) {
+            INFO("pos " << pos << ", head " << head);
+            gg::LiveSource::Cursor cursor;
+            float l = kNaN;
+            float r = kNaN;
+            REQUIRE(Linear::readLive(ring, pos, head, cursor, l, r));
+            REQUIRE(l == gg::interp::linear(left.data(), head, pos));
+            REQUIRE(r == gg::interp::linear(right.data(), head, pos));
+        };
+        const auto expectNoRead = [&](double pos, int64_t head) {
+            INFO("pos " << pos << ", head " << head);
+            gg::LiveSource::Cursor cursor;
+            float l = 0.25f;
+            float r = 0.25f;
+            REQUIRE_FALSE(Linear::readLive(ring, pos, head, cursor, l, r));
+            REQUIRE(l == 0.25f); // nothing read
+            REQUIRE(r == 0.25f);
+        };
+
+        // Three blocks: the head is 300, the window [−180, 299], and frames below 0 are silence.
+        for (int64_t b = 0; b < 300; b += kBlock)
+        {
+            const float *in[2] = {left.data() + b, right.data() + b};
+            ring.write(in, 2, 0, b, static_cast<uint32_t>(kBlock));
+        }
+        int64_t head = ring.head();
+        REQUIRE(head == 300);
+        expectRead(298.5, head); // taps 298 and 299: the newest frame
+        expectRead(-0.5, head);  // taps −1 (silence) and 0
+        expectRead(-180.0, head);
+        expectNoRead(299.0, head); // tap 300 isn't written yet
+        expectNoRead(-180.5, head);
+        {
+            // The Hermite's reach ends a frame earlier, at tap floor(pos) + 2.
+            gg::LiveSource::Cursor cursor;
+            float l = 0.0f;
+            float r = 0.0f;
+            REQUIRE_FALSE(ring.read(298.5, head, cursor, l, r));
+        }
+
+        // Seven more: the head is 1,000 and the window [520, 999]; the oldest frames have wrapped.
+        for (int64_t b = 300; b < 1000; b += kBlock)
+        {
+            const float *in[2] = {left.data() + b, right.data() + b};
+            ring.write(in, 2, 0, b, static_cast<uint32_t>(kBlock));
+        }
+        head = ring.head();
+        REQUIRE(head == 1000);
+        expectRead(520.5, head); // taps 520 and 521: the oldest frame
+        expectRead(998.25, head);
+        expectRead(760.75, head);
+        expectNoRead(519.5, head); // tap 519 has left the window
+        expectNoRead(999.0, head);
+        expectNoRead(std::numeric_limits<double>::quiet_NaN(), head);
+        expectNoRead(std::numeric_limits<double>::infinity(), head);
+        {
+            gg::LiveSource::Cursor cursor;
+            float l = 0.0f;
+            float r = 0.0f;
+            REQUIRE_FALSE(ring.read(520.5, head, cursor, l, r)); // the Hermite needs tap 519
+        }
+
+        // Reads moving forward through one cursor, across the slot wrap, match fresh ones.
+        gg::LiveSource::Cursor cursor;
+        for (double pos = 520.0; pos < 999.0; pos += 0.75)
+        {
+            INFO("pos " << pos);
+            float l = kNaN;
+            float r = kNaN;
+            REQUIRE(Linear::readLive(ring, pos, head, cursor, l, r));
+            REQUIRE(l == gg::interp::linear(left.data(), head, pos));
+            REQUIRE(r == gg::interp::linear(right.data(), head, pos));
+        }
     }
 }

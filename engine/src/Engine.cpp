@@ -199,6 +199,7 @@ GrainSpec Engine::sampleGrain(const GrainDraw &d) const noexcept
         .durationSamples = d.durationSamples,
         .gain = d.gain,
         .pan = d.pan,
+        .tier = d.tier,
     };
 }
 
@@ -233,6 +234,7 @@ bool Engine::liveGrain(const GrainDraw &d, GrainSpec &g) const noexcept
         .durationSamples = dur,
         .gain = d.gain,
         .pan = d.pan,
+        .tier = d.tier,
     };
     return true;
 }
@@ -275,7 +277,8 @@ void Engine::renderPool(float *const dst[2], int64_t blockStart, int64_t from, i
     }
     // Grain-major, in spawn order: every grain adds to every sample of [from, to) before the
     // next grain starts, so each sample sums its grains in spawn order. With one output (dst[1]
-    // null) the kernels carry source channel 0, unpanned.
+    // null) the kernels carry source channel 0, unpanned. Each grain reads with its own latched
+    // tier (ruling 2).
     const kernels::Output output{{dst[0], dst[1]}, blockStart};
     const GrainRows &rows = pool_.rows();
     const uint32_t n = pool_.size();
@@ -283,7 +286,14 @@ void Engine::renderPool(float *const dst[2], int64_t blockStart, int64_t from, i
     {
         for (uint32_t i = 0; i < n; ++i)
         {
-            kernels::renderLiveRef<kernels::Hermite>(rows, i, live_, output, from, to, hann_);
+            if (rows.tier[i] == Tier::Eco)
+            {
+                kernels::renderLiveRef<kernels::Linear>(rows, i, live_, output, from, to, hann_);
+            }
+            else
+            {
+                kernels::renderLiveRef<kernels::Hermite>(rows, i, live_, output, from, to, hann_);
+            }
         }
         return;
     }
@@ -291,7 +301,14 @@ void Engine::renderPool(float *const dst[2], int64_t blockStart, int64_t from, i
         {sourceData_[0], sourceData_[1]}, sourceFrames_, monoSource_};
     for (uint32_t i = 0; i < n; ++i)
     {
-        kernels::renderSampleRef<kernels::Hermite>(rows, i, source, output, from, to, hann_);
+        if (rows.tier[i] == Tier::Eco)
+        {
+            kernels::renderSampleRef<kernels::Linear>(rows, i, source, output, from, to, hann_);
+        }
+        else
+        {
+            kernels::renderSampleRef<kernels::Hermite>(rows, i, source, output, from, to, hann_);
+        }
     }
 }
 } // namespace gg

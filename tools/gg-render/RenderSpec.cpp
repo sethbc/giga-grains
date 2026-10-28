@@ -194,7 +194,7 @@ StreamSpec readStream(const json &j)
 {
     const Object o(j, "stream", "stream.",
                    {"grainRateHz", "grainDurationMs", "position", "positionJitter",
-                    "pitchSemitones", "gain", "distribution"});
+                    "pitchSemitones", "gain", "distribution", "quality"});
     StreamSpec s;
     s.grainRateHz = o.number("grainRateHz");
     s.grainDurationMs = o.number("grainDurationMs");
@@ -211,6 +211,18 @@ StreamSpec readStream(const json &j)
     if (o.has("distribution"))
     {
         s.distribution = o.number("distribution");
+    }
+    if (o.has("quality"))
+    {
+        const json &q = o.member("quality");
+        if (q == "eco")
+        {
+            s.quality = Tier::Eco;
+        }
+        else if (q != "normal")
+        {
+            throw SpecError(R"(stream.quality must be "eco" or "normal")");
+        }
     }
     return s;
 }

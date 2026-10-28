@@ -21,6 +21,7 @@
 #include "gg/core/MathDet.h"
 #include "gg/core/Rng.h"
 #include "gg/engine/Engine.h"
+#include "gg/grain/Tier.h"
 
 namespace
 {
@@ -63,15 +64,18 @@ struct Render
     std::vector<float> right;
 };
 
-// Renders kFrames with a fresh engine, calling process() with blockSizes in turn (cycling), the
-// last call cut short to end at kFrames. The buffers start as NaN, so a sample process() didn't
-// write fails allFinite(), and two renders that both wrote nothing can't pass sameBits().
+// Renders kFrames with a fresh engine at kParams and the given quality, calling process() with
+// blockSizes in turn (cycling), the last call cut short to end at kFrames. The buffers start as
+// NaN, so a sample process() didn't write fails allFinite(), and two renders that both wrote
+// nothing can't pass sameBits().
 Render render(const std::shared_ptr<const gg::SampleBuffer> &source, uint64_t seed,
-              const std::vector<uint32_t> &blockSizes)
+              const std::vector<uint32_t> &blockSizes, gg::Tier quality = gg::Tier::Normal)
 {
     gg::Engine engine(config(seed));
     engine.setSource(source);
-    engine.setCloudParams(kParams);
+    gg::CloudParams p = kParams;
+    p.quality = quality;
+    engine.setCloudParams(p);
     constexpr float kUnwritten = std::numeric_limits<float>::quiet_NaN();
     Render r{std::vector<float>(static_cast<std::size_t>(kFrames), kUnwritten),
              std::vector<float>(static_cast<std::size_t>(kFrames), kUnwritten)};
@@ -391,7 +395,7 @@ struct LiveRender
 };
 
 void renderLive(const LiveInput &input, uint32_t maxBlock, const std::vector<uint32_t> &blockSizes,
-                LiveRender &r)
+                LiveRender &r, gg::Tier quality = gg::Tier::Normal)
 {
     gg::EngineConfig c{kSampleRate, maxBlock, 4096, 42};
     c.liveSeconds = 16.0;
@@ -401,6 +405,7 @@ void renderLive(const LiveInput &input, uint32_t maxBlock, const std::vector<uin
     gg::CloudParams p = kParams;
     p.position = 0.3;
     p.spray = 0.2;
+    p.quality = quality;
     engine.setCloudParams(p);
     engine.setEventSink(&GrainLog::record, &r.log);
     constexpr float kUnwritten = std::numeric_limits<float>::quiet_NaN();
@@ -470,6 +475,117 @@ TEST_CASE("live mode is block-size invariant", "[determinism]")
         REQUIRE(r.writeHead == ref.writeHead);
         REQUIRE(sameBits(ref.audio.left, r.audio.left));
         REQUIRE(sameBits(ref.audio.right, r.audio.right));
+    }
+}
+
+TEST_CASE("eco render is identical across block sizes", "[determinism]")
+{
+    // The Eco tier (ruling 2), over the sample source and over the live ring with its freeze.
+    using gg::Tier;
+    const auto random = randomSplit();
+
+    SECTION("sample source")
+    {
+        const auto source = sineSource();
+        const auto ref = render(source, 42, {kMaxBlock}, Tier::Eco);
+        REQUIRE(allFinite(ref.left));
+        REQUIRE(allFinite(ref.right));
+        REQUIRE(peak(ref.left) > 0.05f);
+        REQUIRE_FALSE(sameBits(ref.left, ref.right));
+        // Not the Normal render: the tier reaches the output.
+        const auto normal = render(source, 42, {kMaxBlock});
+        REQUIRE_FALSE(sameBits(ref.left, normal.left));
+        REQUIRE_FALSE(sameBits(ref.right, normal.right));
+
+        for (const uint32_t blockSize : {1u, 7u, 32u, 64u, 511u, 4096u})
+        {
+            INFO("block size = " << blockSize);
+            const auto r = render(source, 42, {blockSize}, Tier::Eco);
+            REQUIRE(sameBits(ref.left, r.left));
+            REQUIRE(sameBits(ref.right, r.right));
+        }
+        INFO("random split into " << random.size() << " blocks");
+        const auto r = render(source, 42, random, Tier::Eco);
+        REQUIRE(sameBits(ref.left, r.left));
+        REQUIRE(sameBits(ref.right, r.right));
+    }
+
+    SECTION("live ring")
+    {
+        const auto input = liveNoise();
+        LiveRender ref;
+        renderLive(input, kMaxBlock, {kMaxBlock}, ref, Tier::Eco);
+        REQUIRE(allFinite(ref.audio.left));
+        REQUIRE(allFinite(ref.audio.right));
+        REQUIRE(peak(ref.audio.left) > 0.05f);
+        REQUIRE_FALSE(ref.log.overflowed);
+        REQUIRE(std::all_of(ref.log.grains.begin(), ref.log.grains.end(),
+                            [](const gg::GrainSpec &g) { return g.tier == Tier::Eco; }));
+        LiveRender normal;
+        renderLive(input, kMaxBlock, {kMaxBlock}, normal);
+        REQUIRE_FALSE(sameBits(ref.audio.left, normal.audio.left));
+
+        for (const std::vector<uint32_t> &blockSizes :
+             {std::vector<uint32_t>{1}, {7}, {32}, {64}, {511}, {4096}, random})
+        {
+            INFO("first block size = " << blockSizes.front() << " of " << blockSizes.size());
+            LiveRender r;
+            renderLive(input, kMaxBlock, blockSizes, r, Tier::Eco);
+            REQUIRE_FALSE(r.log.overflowed);
+            REQUIRE(r.log.grains == ref.log.grains);
+            REQUIRE(sameBits(ref.audio.left, r.audio.left));
+            REQUIRE(sameBits(ref.audio.right, r.audio.right));
+        }
+    }
+
+    SECTION("a quality change reaches only the grains that start after it")
+    {
+        // Eco, then Normal from 1 s: the grains started before 1 s keep reading linearly until
+        // they end, at most 0.083 s later (3,986 samples). So the render is the Eco one before
+        // 1 s, neither just after, and the Normal one once the last Eco grain has ended; the
+        // change moves no onset, since the density and the distribution stay.
+        constexpr int64_t kChange = 48000;
+        constexpr int64_t kEcoGone = kChange + 4000;
+        const auto source = sineSource();
+        const auto eco = render(source, 42, {kMaxBlock}, Tier::Eco);
+        const auto normal = render(source, 42, {kMaxBlock});
+        const auto same = [](const std::vector<float> &a, const std::vector<float> &b, int64_t from,
+                             int64_t to) {
+            return std::memcmp(a.data() + from, b.data() + from,
+                               static_cast<std::size_t>(to - from) * sizeof(float)) == 0;
+        };
+        for (const uint32_t blockSize : {1u, 64u, 511u, 4096u})
+        {
+            INFO("block size = " << blockSize);
+            gg::Engine engine(config(42));
+            engine.setSource(source);
+            gg::CloudParams p = kParams;
+            p.quality = Tier::Eco;
+            engine.setCloudParams(p);
+            constexpr float kUnwritten = std::numeric_limits<float>::quiet_NaN();
+            Render r{std::vector<float>(static_cast<std::size_t>(kFrames), kUnwritten),
+                     std::vector<float>(static_cast<std::size_t>(kFrames), kUnwritten)};
+            for (int64_t done = 0; done < kFrames;)
+            {
+                if (done == kChange)
+                {
+                    p.quality = Tier::Normal;
+                    engine.setCloudParams(p);
+                }
+                const int64_t end = done < kChange ? kChange : kFrames;
+                const auto n = static_cast<uint32_t>(std::min<int64_t>(blockSize, end - done));
+                float *out[2] = {r.left.data() + done, r.right.data() + done};
+                engine.process(out, 2, n);
+                done += n;
+            }
+            REQUIRE(allFinite(r.left));
+            REQUIRE(same(r.left, eco.left, 0, kChange));
+            REQUIRE(same(r.right, eco.right, 0, kChange));
+            REQUIRE_FALSE(same(r.left, eco.left, kChange, kEcoGone));
+            REQUIRE_FALSE(same(r.left, normal.left, kChange, kEcoGone));
+            REQUIRE(same(r.left, normal.left, kEcoGone, kFrames));
+            REQUIRE(same(r.right, normal.right, kEcoGone, kFrames));
+        }
     }
 }
 

@@ -72,6 +72,25 @@ struct Hermite
     }
 };
 
+/// The Eco tier's reader: linear interpolation over taps floor(pos) and floor(pos) + 1, from a
+/// sample buffer (interp::linear) or the live ring (LiveSource::readLinear).
+struct Linear
+{
+    static float read(const float *data, int64_t frames,
+                      double pos) noexcept SST_CPPUTILS_NONBLOCKING
+    {
+        return interp::linear(data, frames, pos);
+    }
+
+    /// False, reading nothing, unless both taps are inside the ring's window at head.
+    static bool readLive(const LiveSource &live, double pos, int64_t head,
+                         LiveSource::Cursor &cursor, float &l,
+                         float &r) noexcept SST_CPPUTILS_NONBLOCKING
+    {
+        return live.readLinear(pos, head, cursor, l, r);
+    }
+};
+
 /// The scalar reference over a sample source: grain i of rows, over [from, to), read with
 /// Reader::read.
 template <class Reader>

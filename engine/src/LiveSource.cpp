@@ -186,6 +186,56 @@ bool LiveSource::read(double pos, int64_t head, Cursor &cursor, float &left,
         cursor.valid = false;
         return true;
     }
+    const int64_t slot = slotOf(first, cursor);
+    const float *l = channels_[0] + slot;
+    const float *r = channels_[1] + slot;
+    left = interp::catmullRom(l[0], l[1], l[2], l[3], t);
+    right = interp::catmullRom(r[0], r[1], r[2], r[3], t);
+    return true;
+}
+
+bool LiveSource::readLinear(double pos, int64_t head, Cursor &cursor, float &left,
+                            float &right) const noexcept
+{
+    // As read(), for taps i and i + 1.
+    if (!(pos > -0x1.0p62 && pos < 0x1.0p62))
+    {
+        return false;
+    }
+    const double base = std::floor(pos);
+    const auto i = static_cast<int64_t>(base);
+    if (i < head - frames_ || i + 1 > head - 1)
+    {
+        return false;
+    }
+    const auto t = static_cast<float>(pos - base);
+    if (i < 0)
+    {
+        // Taps before frame 0 are silence. As in read(), head < N here, so no frame has wrapped
+        // and frame 0, the only tap that can be written, is in slot 0.
+        float l[2];
+        float r[2];
+        for (int64_t k = 0; k < 2; ++k)
+        {
+            const int64_t index = i + k;
+            l[k] = index >= 0 ? channels_[0][index] : 0.0f;
+            r[k] = index >= 0 ? channels_[1][index] : 0.0f;
+        }
+        left = interp::lerp(l[0], l[1], t);
+        right = interp::lerp(r[0], r[1], t);
+        cursor.valid = false;
+        return true;
+    }
+    const int64_t slot = slotOf(i, cursor);
+    const float *l = channels_[0] + slot;
+    const float *r = channels_[1] + slot;
+    left = interp::lerp(l[0], l[1], t);
+    right = interp::lerp(r[0], r[1], t);
+    return true;
+}
+
+int64_t LiveSource::slotOf(int64_t first, Cursor &cursor) const noexcept
+{
     if (cursor.valid && first >= cursor.index && first - cursor.index < capacity_)
     {
         cursor.slot += first - cursor.index;
@@ -200,10 +250,6 @@ bool LiveSource::read(double pos, int64_t head, Cursor &cursor, float &left,
     }
     cursor.index = first;
     cursor.valid = true;
-    const float *l = channels_[0] + cursor.slot;
-    const float *r = channels_[1] + cursor.slot;
-    left = interp::catmullRom(l[0], l[1], l[2], l[3], t);
-    right = interp::catmullRom(r[0], r[1], r[2], r[3], t);
-    return true;
+    return cursor.slot;
 }
 } // namespace gg

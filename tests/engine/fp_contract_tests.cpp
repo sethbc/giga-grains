@@ -108,7 +108,7 @@ bool sameBits(const gg::GrainDraw &a, const gg::GrainDraw &b)
     return a.index == b.index && a.onsetSample == b.onsetSample &&
            bits(a.onsetFrac) == bits(b.onsetFrac) && bits(a.positionDraw) == bits(b.positionDraw) &&
            bits(a.rate) == bits(b.rate) && bits(a.durationSamples) == bits(b.durationSamples) &&
-           bits(a.gain) == bits(b.gain) && bits(a.pan) == bits(b.pan);
+           bits(a.gain) == bits(b.gain) && bits(a.pan) == bits(b.pan) && a.tier == b.tier;
 }
 } // namespace
 

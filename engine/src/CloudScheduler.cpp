@@ -44,6 +44,7 @@ void CloudScheduler::setParams(const CloudParams &in) noexcept
                                   -kMaxPitchSemitones, kMaxPitchSemitones);
     p.stereo = std::clamp(finiteOr(in.stereo, d.stereo), 0.0, 1.0);
     p.gain = std::clamp(finiteOr(in.gain, d.gain), 0.0f, kMaxGain);
+    p.quality = in.quality;
 
     const double oldPeriod = period_;
     const double oldDistribution = params_.distribution;

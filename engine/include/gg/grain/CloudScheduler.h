@@ -13,6 +13,7 @@
 #include "gg/core/FpContract.h"
 #include "gg/core/MathDet.h"
 #include "gg/core/Rng.h"
+#include "gg/grain/Tier.h"
 #include "gg/source/SourceMode.h"
 
 namespace gg
@@ -37,6 +38,9 @@ struct CloudParams
     double pitchSemitones{0.0}; ///< [-48, 48].
     double stereo{0.0};         ///< Random pan spread: 0 = every grain centred; [0, 1].
     float gain{0.5f};           ///< [0, 4].
+    /// The interpolation tier of each grain that starts from now on (ruling 2). An enum, so
+    /// setParams copies it as given.
+    Tier quality{Tier::Normal};
 };
 
 /// One grain as the scheduler draws it, before the source turns it into a GrainSpec. Every
@@ -54,7 +58,8 @@ struct GrainDraw
     double rate;            ///< The pitch ratio exp2Det(pitchSemitones / 12).
     double durationSamples; ///< Window length in output samples, at least 16.
     float gain;
-    float pan; ///< stereo × bipolar(u), in [-1, 1]; +0 at stereo 0 (see schedule()).
+    float pan;               ///< stereo × bipolar(u), in [-1, 1]; +0 at stereo 0 (see schedule()).
+    Tier tier{Tier::Normal}; ///< CloudParams::quality at the onset.
 
     friend bool operator==(const GrainDraw &, const GrainDraw &) = default;
 };
@@ -182,6 +187,7 @@ class CloudScheduler
                 .durationSamples = durationSamples_,
                 .gain = params_.gain,
                 .pan = pan,
+                .tier = params_.quality,
             };
             const double e = -logDet(1.0 - rng::uniform01(key(rng::Field::Onset)));
             lastOnset_ = t;
