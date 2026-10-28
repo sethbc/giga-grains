@@ -46,9 +46,23 @@ struct DecodeResult
 ///   `fileChannels` says how many it had.
 /// - A file longer than kMaxFileSeconds, by the frame count in its header (for an MP3, the count
 ///   dr_mp3 reports), is refused before its buffer is allocated. So is a sample rate above
-///   768 kHz, which bounds the buffer at 600 s × 768 kHz × 2 channels.
-/// - A file that ends before the frame count its header gives (a truncated recording) keeps the
-///   frames it has. One with no frames at all is an error.
+///   768 kHz, and an encoding dr_wav can't decode.
+/// - Memory follows what the file holds, never only what its header claims:
+///   - uncompressed WAV and AIFF: a header claiming more frames than the file's bytes after the
+///     start of its audio can hold is refused as truncated, before anything is allocated; the
+///     buffer is then allocated once, at the header's count;
+///   - FLAC, MP3 and ADPCM WAV, which a few bytes can make long: the audio is decoded into
+///     planes that grow as it arrives (never past the header's count while the decode is within
+///     it), so the peak is at most about twice the decoded audio, plus the final copy into the
+///     buffer; a decode past kMaxFileSeconds is refused whatever the header says.
+/// - A file whose audio ends before its header's frame count is refused as truncated, with these
+///   tolerances, for what an intact file can legitimately fall short by:
+///   - uncompressed WAV and AIFF, and FLAC (STREAMINFO's count is exact): none;
+///   - MP3: two MP3 frames (2304), as its tag and the decoder may count encoder delay and padding
+///     differently;
+///   - ADPCM WAV: one block.
+///   A FLAC whose STREAMINFO gives no count (0, a streamed encode) isn't truncation: it decodes
+///   to the end, up to kMaxFileSeconds. A file that decodes no frames at all is an error.
 /// On Windows the file is opened through dr_libs' wide-character (`_w`) functions.
 DecodeResult decodeAudioFile(const std::filesystem::path &path);
 } // namespace gg::media

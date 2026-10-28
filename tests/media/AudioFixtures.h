@@ -11,6 +11,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <numbers>
 #include <span>
 #include <stdexcept>
@@ -150,29 +151,39 @@ inline void putSample(Bytes &out, double x, SampleFormat format, bool bigEndian)
     }
 }
 
-/// A canonical RIFF/WAVE file: a 16-byte `fmt ` chunk (format tag 1, PCM, or 3, IEEE float) and
-/// a `data` chunk. The `data` size is the samples' unless `claimedDataBytes` overrides it.
+/// The 44-byte header of a RIFF/WAVE file: a 16-byte `fmt ` chunk with these fields and the
+/// header of a `data` chunk declaring `dataBytes`. The RIFF size covers that data, padded.
+inline Bytes wavHeader(uint32_t formatTag, uint32_t channels, uint32_t sampleRate, uint32_t bits,
+                       uint64_t dataBytes)
+{
+    const uint32_t blockAlign = channels * bits / 8;
+    Bytes b;
+    b.raw("RIFF");
+    b.le(4 + 24 + 8 + dataBytes + (dataBytes % 2), 4);
+    b.raw("WAVE");
+    b.raw("fmt ");
+    b.le(16, 4);
+    b.le(formatTag, 2);
+    b.le(channels, 2);
+    b.le(sampleRate, 4);
+    b.le(uint64_t{sampleRate} * blockAlign, 4);
+    b.le(blockAlign, 2);
+    b.le(bits, 2);
+    b.raw("data");
+    b.le(dataBytes, 4);
+    return b;
+}
+
+/// A canonical RIFF/WAVE file: wavHeader (format tag 1, PCM, or 3, IEEE float) and the samples.
+/// The `data` size is the samples' unless `claimedDataBytes` overrides it.
 inline std::vector<uint8_t> wavBytes(const TestAudio &audio, SampleFormat format,
                                      int64_t claimedDataBytes = -1)
 {
     const uint32_t bits = bitsOf(format);
-    const uint32_t blockAlign = audio.channels * bits / 8;
-    Bytes b;
-    b.raw("RIFF");
-    b.le(0, 4); // patched below
-    b.raw("WAVE");
-    b.raw("fmt ");
-    b.le(16, 4);
-    b.le(format == SampleFormat::Float32 ? 3 : 1, 2);
-    b.le(audio.channels, 2);
-    b.le(audio.sampleRate, 4);
-    b.le(uint64_t{audio.sampleRate} * blockAlign, 4);
-    b.le(blockAlign, 2);
-    b.le(bits, 2);
-    b.raw("data");
-    const uint64_t dataBytes = static_cast<uint64_t>(audio.frames()) * blockAlign;
+    const uint64_t dataBytes = static_cast<uint64_t>(audio.frames()) * audio.channels * bits / 8;
     const uint64_t claimed = claimedDataBytes >= 0 ? uint64_t(claimedDataBytes) : dataBytes;
-    b.le(claimed, 4);
+    Bytes b = wavHeader(format == SampleFormat::Float32 ? 3 : 1, audio.channels, audio.sampleRate,
+                        bits, claimed);
     for (double x : audio.samples)
     {
         putSample(b, x, format, false);
@@ -181,7 +192,6 @@ inline std::vector<uint8_t> wavBytes(const TestAudio &audio, SampleFormat format
     {
         b.u8(0);
     }
-    b.patch(4, 4 + 24 + 8 + claimed + (claimed % 2), 4, false);
     return std::move(b.data);
 }
 
@@ -260,6 +270,16 @@ inline void writeFile(const std::filesystem::path &path, std::span<const uint8_t
     {
         throw std::runtime_error("writeFile: can't write " + path.string());
     }
+}
+
+inline std::vector<uint8_t> readFile(const std::filesystem::path &path)
+{
+    std::ifstream in(path, std::ios::binary);
+    if (!in)
+    {
+        throw std::runtime_error("readFile: can't open " + path.string());
+    }
+    return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
 }
 
 /// The directory a test's scratch files go in, created if needed.
