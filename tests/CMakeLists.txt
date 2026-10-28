@@ -74,7 +74,7 @@ target_compile_definitions(gg-tests PRIVATE GG_TEST_OUTPUT_DIR="${CMAKE_CURRENT_
 # 0 or 1, so tests can use #if GG_USE_RTSAN for checks that only hold in the RTSan build.
 target_compile_definitions(gg-tests PRIVATE GG_USE_RTSAN=$<BOOL:${GG_USE_RTSAN}>)
 # 0 or 1: under ASan (1) the allocation tripwire's replacement operator new/delete are compiled
-# out (support/AllocTripwire.cpp), and the tests that assert on its count SKIP.
+# out (support/AllocTripwire.cpp), and the tests skip their assertions on its count.
 target_compile_definitions(gg-tests PRIVATE GG_SANITIZE=$<BOOL:${GG_SANITIZE}>)
 # 0 or 1: the plugin tests that need the JUCE editor, and the one that checks there is none.
 target_compile_definitions(gg-tests PRIVATE GG_BUILD_EDITOR=$<BOOL:${GG_BUILD_EDITOR}>)

@@ -799,10 +799,6 @@ TEST_CASE("the wet chain is Level, then the soft limiter, then the mix", "[core]
 
 TEST_CASE("processor survives an automation storm", "[core][rt]")
 {
-    if (!gg::test::AllocTripwire::available())
-    {
-        SKIP("allocation tripwire is off under ASan; RTSan covers this");
-    }
     // Review Focus 1: a thousand parameter and modulation events in one 512-frame block, a
     // hundred of them at offset 0, many out of range (some infinite once converted to float).
     constexpr uint32_t kBlock = 512;
@@ -870,7 +866,10 @@ TEST_CASE("processor survives an automation storm", "[core][rt]")
         p.process(after.in, 2, after.out, 2, kBlock, {});
     }
     const uint64_t allocations = AllocTripwire::count();
-    REQUIRE(allocations == 0);
+    if (gg::test::AllocTripwire::available()) // off under ASan; RTSan covers this
+    {
+        REQUIRE(allocations == 0);
+    }
 
     REQUIRE(allFinite(left));
     REQUIRE(allFinite(right));
@@ -903,10 +902,6 @@ struct SpawnCounter
 
 TEST_CASE("processor does not allocate", "[core][rt]")
 {
-    if (!gg::test::AllocTripwire::available())
-    {
-        SKIP("allocation tripwire is off under ASan; RTSan covers this");
-    }
     // A fresh processor's first process() call is armed: paramMeta builds its table on its first
     // call, which allocates, so the constructor must have made that call. Nothing
     // here calls paramMeta before the constructor does. maxBlockSize 256 makes the 1000-frame
@@ -965,7 +960,10 @@ TEST_CASE("processor does not allocate", "[core][rt]")
 
     REQUIRE(counter.spawns > 0);
     REQUIRE(p.engine().activeGrains() > 0);
-    REQUIRE(allocations == 0);
+    if (gg::test::AllocTripwire::available()) // off under ASan; RTSan covers this
+    {
+        REQUIRE(allocations == 0);
+    }
 }
 
 TEST_CASE("processor flushes denormals", "[core][denormal]")

@@ -18,8 +18,9 @@ namespace gg::test
 ///
 /// Under ASan (GG_SANITIZE) the replacements are compiled out, so ASan keeps its own operators
 /// and with them its alloc-dealloc-mismatch and new-delete-type-mismatch checks (ruling R7's
-/// fallback, carry-over [144]). available() is then false and count() stays 0: a test that
-/// asserts on count() SKIPs when !available(). The RTSan build keeps the tripwire.
+/// fallback, carry-over [144]). available() is then false and count() stays 0: a test asserts
+/// on count() only when available(), and SKIPs only if the count is all it checks. The RTSan
+/// build keeps the tripwire.
 ///
 /// It doesn't see direct malloc-family calls (malloc, calloc, realloc, posix_memalign, and
 /// anything a C library allocates internally). The RTSan build covers those, on Linux in CI.

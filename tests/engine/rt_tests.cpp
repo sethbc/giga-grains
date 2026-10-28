@@ -3,9 +3,9 @@
 // Copyright 2026, the Giga Grains authors (see git history)
 
 // Real-time safety (INTENT §14): gg::Engine::process never allocates. The allocation tripwire
-// checks that in every build but ASan's, where it is compiled out and these tests SKIP; the
-// RTSan build also aborts on any allocation, lock or blocking call made inside the
-// SST_CPPUTILS_NONBLOCKING process().
+// checks that in every build but ASan's, where it is compiled out: there these tests still run
+// their other checks, and the tripwire's own test SKIPs. The RTSan build also aborts on any
+// allocation, lock or blocking call made inside the SST_CPPUTILS_NONBLOCKING process().
 
 #include <cmath>
 #include <cstdint>
@@ -111,10 +111,6 @@ TEST_CASE("tripwire detects allocation", "[rt]")
 
 TEST_CASE("engine process does not allocate", "[rt]")
 {
-    if (!gg::test::AllocTripwire::available())
-    {
-        SKIP("allocation tripwire is off under ASan; RTSan covers this");
-    }
     gg::Engine engine(gg::EngineConfig{48000.0, 4096, 4096, 3});
     engine.setSource(stereoSine(330.0));
     // 200 Hz of 50 ms grains: one spawns every 240 frames on average and about 10 overlap, so
@@ -158,15 +154,14 @@ TEST_CASE("engine process does not allocate", "[rt]")
     // grain spawned.
     REQUIRE(static_cast<int64_t>(spawnedArmed) >
             static_cast<int64_t>(engine.activeGrains()) - static_cast<int64_t>(activeBefore));
-    REQUIRE(allocations == 0);
+    if (gg::test::AllocTripwire::available()) // off under ASan; RTSan covers this
+    {
+        REQUIRE(allocations == 0);
+    }
 }
 
 TEST_CASE("engine process does not allocate with a full pool or odd block sizes", "[rt]")
 {
-    if (!gg::test::AllocTripwire::available())
-    {
-        SKIP("allocation tripwire is off under ASan; RTSan covers this");
-    }
     // Capacity 4 against about 20 overlapping grains keeps the pool full, so new grains go
     // through admit()'s full-pool path: dropped, or, when a grain has ended earlier in the same
     // block (it ends 118 frames before the next onset), rendered up to the onset, retired and
@@ -205,15 +200,14 @@ TEST_CASE("engine process does not allocate with a full pool or odd block sizes"
     REQUIRE(engine.sampleClock() == clockBefore + 20 * 1001);
     REQUIRE(counter.spawns > spawnsBefore);          // admitted into a full pool while armed
     REQUIRE(engine.droppedGrains() > droppedBefore); // and dropped while armed
-    REQUIRE(allocations == 0);
+    if (gg::test::AllocTripwire::available())        // off under ASan; RTSan covers this
+    {
+        REQUIRE(allocations == 0);
+    }
 }
 
 TEST_CASE("engine process does not allocate when the pool's storage fills", "[rt]")
 {
-    if (!gg::test::AllocTripwire::available())
-    {
-        SKIP("allocation tripwire is off under ASan; RTSan covers this");
-    }
     // Storage holds 2 × capacity grains and is compacted once per block, so it fills only when
     // more than capacity grains finish within one block. Capacity 16 against 4 kHz of 5 ms
     // grains admits a grain each time one ends, about one every 15 samples, so a 1000-frame call
@@ -258,15 +252,14 @@ TEST_CASE("engine process does not allocate when the pool's storage fills", "[rt
     // More than 2 × capacity spawns in one block can't all be stored without an early compaction.
     REQUIRE(mostSpawnedInOneCall > 2 * kCapacity);
     REQUIRE(engine.droppedGrains() > droppedBefore); // saturated while armed
-    REQUIRE(allocations == 0);
+    if (gg::test::AllocTripwire::available())        // off under ASan; RTSan covers this
+    {
+        REQUIRE(allocations == 0);
+    }
 }
 
 TEST_CASE("engine live process does not allocate", "[rt]")
 {
-    if (!gg::test::AllocTripwire::available())
-    {
-        SKIP("allocation tripwire is off under ASan; RTSan covers this");
-    }
     // Live mode: every call writes its input into the ring (allocated by the constructor) before
     // the grains read it. Grains 10 ms behind the head and Freeze toggled while armed put the
     // admission clamp, the head fade and the freeze ramp under the tripwire. maxBlockSize 256
@@ -321,15 +314,14 @@ TEST_CASE("engine live process does not allocate", "[rt]")
     REQUIRE(counter.spawns > spawnsBefore);
     REQUIRE(engine.activeGrains() > 0);
     REQUIRE(engine.liveWriteHead() > headBefore);
-    REQUIRE(allocations == 0);
+    if (gg::test::AllocTripwire::available()) // off under ASan; RTSan covers this
+    {
+        REQUIRE(allocations == 0);
+    }
 }
 
 TEST_CASE("engine process does not allocate at the Eco tier", "[rt]")
 {
-    if (!gg::test::AllocTripwire::available())
-    {
-        SKIP("allocation tripwire is off under ASan; RTSan covers this");
-    }
     // Ruling 2: each grain latches its tier, so the Eco grains spawned while armed read through
     // the linear kernels alongside Normal grains still sounding. Both outputs and one, sample and
     // live sources, and a quality change back to Normal and to Eco again inside the armed span.
@@ -393,7 +385,10 @@ TEST_CASE("engine process does not allocate at the Eco tier", "[rt]")
     REQUIRE(counter.eco > ecoBefore);                     // Eco grains spawned while armed
     REQUIRE(counter.spawns - counter.eco > normalBefore); // and Normal ones
     REQUIRE(engine.activeGrains() > 0);
-    REQUIRE(allocations == 0);
+    if (gg::test::AllocTripwire::available()) // off under ASan; RTSan covers this
+    {
+        REQUIRE(allocations == 0);
+    }
 }
 
 #if GG_USE_RTSAN

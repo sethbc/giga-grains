@@ -6,10 +6,10 @@
 // never allocate, for both products, with notes, parameter values and modulation, through the
 // same clap_plugin vtables a host calls. The
 // allocation tripwire checks the whole call, clap-helpers' dispatch included, in every preset
-// but asan, where it is compiled out and these tests SKIP. The rtsan preset builds the plugin
-// core without its editor (GG_BUILD_EDITOR=OFF), so these tests also run under
-// RealtimeSanitizer, which checks every SST_CPPUTILS_NONBLOCKING function they reach for
-// allocation, locks and I/O.
+// but asan, where it is compiled out and only its count goes unchecked. The asan and rtsan
+// presets build the plugin core without its editor (GG_BUILD_EDITOR=OFF), so these tests also
+// run under ASan/UBSan and under RealtimeSanitizer, which checks every SST_CPPUTILS_NONBLOCKING
+// function they reach for allocation, locks and I/O.
 
 #include <algorithm>
 #include <array>
@@ -77,10 +77,6 @@ const clap_plugin_params *paramsOf(const gg::test::PluginUnderTest &plugin)
 
 TEST_CASE("plugin process does not allocate", "[plugin][rt]")
 {
-    if (!gg::test::AllocTripwire::available())
-    {
-        SKIP("allocation tripwire is off under ASan; RTSan covers this");
-    }
     const char *id = GENERATE(kInstrumentId, kFxId);
     CAPTURE(id);
     gg::test::PluginUnderTest plugin(id);
@@ -143,15 +139,14 @@ TEST_CASE("plugin process does not allocate", "[plugin][rt]")
     CHECK(processor->effective(ParamSlot::Pitch) == 7.0f);
     CHECK(processor->effective(ParamSlot::Level) == -6.0f);
     REQUIRE(plugin.impl().engine()->sampleClock() == 1 + 512 + 2048);
-    REQUIRE(allocations == 0);
+    if (gg::test::AllocTripwire::available()) // off under ASan; RTSan covers this
+    {
+        REQUIRE(allocations == 0);
+    }
 }
 
 TEST_CASE("plugin process takes more events than its event array holds", "[plugin][rt]")
 {
-    if (!gg::test::AllocTripwire::available())
-    {
-        SKIP("allocation tripwire is off under ASan; RTSan covers this");
-    }
     // An automation storm past the fixed event array (4,096): the events beyond it apply at the
     // block end, values with setBase and modulation at the next grid boundary, without
     // allocating; the last value per parameter wins.
@@ -209,15 +204,14 @@ TEST_CASE("plugin process takes more events than its event array holds", "[plugi
     CHECK(plugin.value(paramId(ParamSlot::Density)) == static_cast<double>(lastValue));
     CHECK(processor->base(ParamSlot::Pitch) == 0.0f);
     CHECK(processor->effective(ParamSlot::Pitch) == lastMod);
-    REQUIRE(allocations == 0);
+    if (gg::test::AllocTripwire::available()) // off under ASan; RTSan covers this
+    {
+        REQUIRE(allocations == 0);
+    }
 }
 
 TEST_CASE("plugin applies a state loaded while active without allocating", "[plugin][rt]")
 {
-    if (!gg::test::AllocTripwire::available())
-    {
-        SKIP("allocation tripwire is off under ASan; RTSan covers this");
-    }
     // state.load (main thread) hands the values over; the audio thread applies them at the
     // start of its next process() or params.flush, which must not allocate.
     const char *id = GENERATE(kInstrumentId, kFxId);
@@ -252,7 +246,10 @@ TEST_CASE("plugin applies a state loaded while active without allocating", "[plu
     uint64_t allocations = AllocTripwire::count();
     CHECK(status == CLAP_PROCESS_CONTINUE);
     CHECK(plugin.impl().processor()->base(ParamSlot::Density) == 3.0f);
-    REQUIRE(allocations == 0);
+    if (gg::test::AllocTripwire::available()) // off under ASan; RTSan covers this
+    {
+        REQUIRE(allocations == 0);
+    }
 
     REQUIRE(plugin.load(gg::core::toStateXml(second, 0)));
     const auto *params = paramsOf(plugin);
@@ -263,15 +260,14 @@ TEST_CASE("plugin applies a state loaded while active without allocating", "[plu
     }
     allocations = AllocTripwire::count();
     CHECK(plugin.impl().processor()->base(ParamSlot::Density) == 7.0f);
-    REQUIRE(allocations == 0);
+    if (gg::test::AllocTripwire::available()) // off under ASan; RTSan covers this
+    {
+        REQUIRE(allocations == 0);
+    }
 }
 
 TEST_CASE("plugin reset does not allocate and a restored Freeze plays live", "[plugin][rt]")
 {
-    if (!gg::test::AllocTripwire::available())
-    {
-        SKIP("allocation tripwire is off under ASan; RTSan covers this");
-    }
     // CLAP reset(), which clap-wrapper's VST3 calls on every setProcessing(false), restarts the
     // Processor and its engine. It and the process() calls after it run armed (carry-over
     // C-m4). For the FX this also proves review finding I1's fix at the plugin boundary: a state
@@ -374,15 +370,14 @@ TEST_CASE("plugin reset does not allocate and a restored Freeze plays live", "[p
         CHECK(afterReset == 0.0f);
         CHECK(afterToggle == 0.0f);
     }
-    REQUIRE(allocations == 0);
+    if (gg::test::AllocTripwire::available()) // off under ASan; RTSan covers this
+    {
+        REQUIRE(allocations == 0);
+    }
 }
 
 TEST_CASE("plugin params flush does not allocate", "[plugin][rt]")
 {
-    if (!gg::test::AllocTripwire::available())
-    {
-        SKIP("allocation tripwire is off under ASan; RTSan covers this");
-    }
     const char *id = GENERATE(kInstrumentId, kFxId);
     CAPTURE(id);
     gg::test::PluginUnderTest plugin(id);
@@ -416,15 +411,14 @@ TEST_CASE("plugin params flush does not allocate", "[plugin][rt]")
     CHECK(processor->base(ParamSlot::Density) == 6.0f);
     CHECK(processor->base(ParamSlot::Mix) == 0.25f);
     CHECK(processor->base(ParamSlot::Pitch) == 0.0f);
-    REQUIRE(allocations == 0);
+    if (gg::test::AllocTripwire::available()) // off under ASan; RTSan covers this
+    {
+        REQUIRE(allocations == 0);
+    }
 }
 
 TEST_CASE("plugin params flush with notes does not allocate", "[plugin][rt]")
 {
-    if (!gg::test::AllocTripwire::available())
-    {
-        SKIP("allocation tripwire is off under ASan; RTSan covers this");
-    }
     // A host may deliver notes in an active flush (clap-wrapper's VST3 does). Release-type
     // builds check at Minimal and must not allocate then. Debug builds check at Maximal, which
     // builds a log string for each such event by design (ruling T8-e), so this runs only in
@@ -456,5 +450,8 @@ TEST_CASE("plugin params flush with notes does not allocate", "[plugin][rt]")
     const uint64_t allocations = AllocTripwire::count();
 
     CHECK(plugin.impl().noteOnCount.load() - notesBefore == 2);
-    REQUIRE(allocations == 0);
+    if (gg::test::AllocTripwire::available()) // off under ASan; RTSan covers this
+    {
+        REQUIRE(allocations == 0);
+    }
 }
