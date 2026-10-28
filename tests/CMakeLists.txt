@@ -17,6 +17,7 @@ add_executable(gg-tests
         engine/fp_contract_fast.cpp
         engine/fp_contract_tests.cpp
         engine/interpolate_tests.cpp
+        engine/kernel_tests.cpp
         engine/live_tests.cpp
         engine/mathdet_tests.cpp
         engine/pool_tests.cpp

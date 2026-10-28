@@ -38,9 +38,10 @@ struct PanGains
 };
 
 /// The equal-power pan law with unity at the centre: left = sqrt(1 - pan) and
-/// right = sqrt(1 + pan), so left² + right² = 2 (spec §6.4). The renderer applies it once per
-/// grain. sqrt is correctly rounded (IEEE 754), so it is deterministic without a polynomial,
-/// and pan 0 gives exactly 1 and 1, which leaves an unpanned grain bit-identical to M0's.
+/// right = sqrt(1 + pan), so left² + right² = 2 (spec §6.4). GrainPool::spawn applies it once
+/// per grain, latching gain × each. sqrt is correctly rounded (IEEE 754), so it is deterministic
+/// without a polynomial, and pan 0 gives exactly 1 and 1, so a centred grain's two outputs are
+/// the one-output render's bit for bit.
 inline PanGains panGains(float pan) noexcept
 {
     return {std::sqrt(1.0f - pan), std::sqrt(1.0f + pan)};
@@ -59,6 +60,9 @@ constexpr int64_t grainEndSample(const GrainSpec &g) noexcept
 /// the stored grains in spawn order; row i of every array belongs to the same grain. The pointers
 /// are fixed for the pool's life, but the entries move whenever the pool spawns, retires or
 /// clears.
+///
+/// Besides each GrainSpec field, spawn() latches the values the renderers use (spec §3), each
+/// computed once per grain so every renderer reads the same bits.
 struct GrainRows
 {
     const uint64_t *index;
@@ -69,11 +73,15 @@ struct GrainRows
     const double *durationSamples;
     const float *gain;
     const float *pan;
-    const int64_t *endSample; ///< grainEndSample of each
+    const int64_t *endSample;  ///< grainEndSample of each
+    const double *invDuration; ///< 1.0 / durationSamples
+    const float *gainL;        ///< gain × panGains(pan).left
+    const float *gainR;        ///< gain × panGains(pan).right
 };
 
 /// The grain pool: a structure of arrays (INTENT §14), one array per GrainSpec field plus each
-/// grain's grainEndSample, kept in spawn order. Only the constructor allocates.
+/// grain's grainEndSample and the renderers' latched values (GrainRows), kept in spawn order.
+/// Only the constructor allocates.
 ///
 /// **Admission** (ruling T3-b) allows capacity() grains to sound at once: canAdmit(onset) is true
 /// when fewer than capacity() of the grains spawned since the last clear() still sound at the
@@ -149,6 +157,9 @@ class GrainPool
     std::vector<float> gain_;
     std::vector<float> pan_;
     std::vector<int64_t> endSample_;
+    std::vector<double> invDuration_;
+    std::vector<float> gainL_;
+    std::vector<float> gainR_;
     GrainRows rows_;
     uint32_t size_{0};
     // The smallest endSample_ among the stored grains, or INT64_MAX when empty: retireFinished

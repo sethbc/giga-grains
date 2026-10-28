@@ -13,9 +13,18 @@
 
 namespace
 {
+// Gain and pan vary with the index, so the latched channel gains differ from row to row.
 gg::GrainSpec grain(uint64_t index, int64_t onsetSample, double durationSamples)
 {
-    return {index, onsetSample, 0.25, 0.0, 1.0, durationSamples, 1.0f};
+    const auto k = static_cast<float>(index % 8);
+    return {index,
+            onsetSample,
+            0.25,
+            0.0,
+            1.0,
+            durationSamples,
+            0.5f + 0.0625f * k,
+            0.25f * k - 0.875f};
 }
 
 std::vector<uint64_t> indices(const gg::GrainPool &pool)
@@ -68,6 +77,10 @@ TEST_CASE("pool keeps spawn order through retirement", "[pool]")
             REQUIRE(pool.spec(i) == g);
             REQUIRE(rows.index[i] == k);
             REQUIRE(rows.endSample[i] == gg::grainEndSample(g));
+            // The values spawn latches for the renderers (spec §3).
+            REQUIRE(rows.invDuration[i] == 1.0 / g.durationSamples);
+            REQUIRE(rows.gainL[i] == g.gain * gg::panGains(g.pan).left);
+            REQUIRE(rows.gainR[i] == g.gain * gg::panGains(g.pan).right);
         }
     }
     REQUIRE(pool.size() == 0);

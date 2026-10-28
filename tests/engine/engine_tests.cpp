@@ -3,6 +3,7 @@
 // Copyright 2026, the Giga Grains authors (see git history)
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -539,7 +540,8 @@ TEST_CASE("random param sweep stays finite and bounded", "[engine]")
 TEST_CASE("pan follows equal power with unity center", "[engine]")
 {
     // The law: gL = sqrt(1 - pan) and gR = sqrt(1 + pan), so gL^2 + gR^2 = 2. Both are exactly 1
-    // at the centre, which leaves M0's output bit-identical at stereo 0 (ruling M1-d).
+    // at the centre, so a centred grain's latched channel gains are its gain, and its two
+    // outputs are the one-output render's bit for bit (ruling M1-d; spec §3).
     const gg::PanGains centre = gg::panGains(0.0f);
     REQUIRE(centre.left == 1.0f);
     REQUIRE(centre.right == 1.0f);
@@ -581,29 +583,40 @@ TEST_CASE("pan follows equal power with unity center", "[engine]")
         REQUIRE(g.pan == 0.0f);
         REQUIRE_FALSE(std::signbit(g.pan)); // +0, never -0, so the event log reads "pan":0
 
-        // Stereo 0 is M0's no-pan output, bit for bit: each channel is the Hermite read times
-        // the window times the gain, added to silence.
+        // The spec's §3 arithmetic for this grain, added to silence: where the window w is
+        // positive, each channel is the Hermite read times (w times the channel's gain).
         const gg::HannTable hann;
-        std::vector<float> m0[2];
-        for (uint32_t c = 0; c < 2; ++c)
-        {
-            const float *data = source->channel(channels == 1 ? 0 : c);
-            m0[c].assign(static_cast<std::size_t>(kFrames), 0.0f);
-            const int64_t end = std::min(kFrames, gg::grainEndSample(g));
-            for (int64_t t = g.onsetSample; t < end; ++t)
+        const auto expected = [&](const gg::GrainSpec &grain, const float (&channelGain)[2]) {
+            std::array<std::vector<float>, 2> out;
+            const double invDuration = 1.0 / grain.durationSamples;
+            for (uint32_t c = 0; c < 2; ++c)
             {
-                const double e = static_cast<double>(t - g.onsetSample) - g.onsetFrac;
-                m0[c][static_cast<std::size_t>(t)] +=
-                    gg::interp::hermite4(data, source->frames(), g.startPos + g.rate * e) *
-                    hann.at(e / g.durationSamples) * g.gain;
+                const float *data = source->channel(channels == 1 ? 0 : c);
+                out[c].assign(static_cast<std::size_t>(kFrames), 0.0f);
+                const int64_t end = std::min(kFrames, gg::grainEndSample(grain));
+                for (int64_t t = grain.onsetSample; t < end; ++t)
+                {
+                    const double e = static_cast<double>(t - grain.onsetSample) - grain.onsetFrac;
+                    const float w = hann.at(e * invDuration);
+                    if (w > 0.0f)
+                    {
+                        out[c][static_cast<std::size_t>(t)] +=
+                            gg::interp::hermite4(data, source->frames(),
+                                                 grain.startPos + grain.rate * e) *
+                            (w * channelGain[c]);
+                    }
+                }
             }
-        }
-        REQUIRE(peak(m0[0]) > 0.1f);
-        REQUIRE(sameBits(centred.left, m0[0]));
-        REQUIRE(sameBits(centred.right, m0[1]));
+            return out;
+        };
+        // Stereo 0: both channel gains are the grain's gain.
+        const std::array<std::vector<float>, 2> unpannedOut = expected(g, {g.gain, g.gain});
+        REQUIRE(peak(unpannedOut[0]) > 0.1f);
+        REQUIRE(sameBits(centred.left, unpannedOut[0]));
+        REQUIRE(sameBits(centred.right, unpannedOut[1]));
 
-        // Stereo 1: the same grain, only its pan differs, and each channel is the stereo-0
-        // channel scaled by its pan gain.
+        // Stereo 1: the same grain, only its pan differs, and each channel's gain is the grain's
+        // gain times its pan gain, latched once.
         gg::GrainSpec unpanned = wideLog.grains[0];
         const float pan = unpanned.pan;
         unpanned.pan = 0.0f;
@@ -613,15 +626,10 @@ TEST_CASE("pan follows equal power with unity center", "[engine]")
         const gg::PanGains gains = gg::panGains(pan);
         REQUIRE(std::abs(gains.left - std::sqrt(1.0 - pan)) <= 1e-7);
         REQUIRE(std::abs(gains.right - std::sqrt(1.0 + pan)) <= 1e-7);
-        std::vector<float> expectedLeft = m0[0];
-        std::vector<float> expectedRight = m0[1];
-        for (std::size_t i = 0; i < expectedLeft.size(); ++i)
-        {
-            expectedLeft[i] *= gains.left;
-            expectedRight[i] *= gains.right;
-        }
-        REQUIRE(sameBits(wide.left, expectedLeft));
-        REQUIRE(sameBits(wide.right, expectedRight));
+        const std::array<std::vector<float>, 2> pannedOut =
+            expected(wideLog.grains[0], {g.gain * gains.left, g.gain * gains.right});
+        REQUIRE(sameBits(wide.left, pannedOut[0]));
+        REQUIRE(sameBits(wide.right, pannedOut[1]));
 
         // A single output channel has no stereo placement: it carries source channel 0 unpanned.
         SinkLog monoLog;
@@ -633,6 +641,6 @@ TEST_CASE("pan follows equal power with unity center", "[engine]")
             monoEngine->process(out, 1, 500);
         }
         REQUIRE(monoLog.grains == wideLog.grains);
-        REQUIRE(sameBits(mono, m0[0]));
+        REQUIRE(sameBits(mono, unpannedOut[0]));
     }
 }

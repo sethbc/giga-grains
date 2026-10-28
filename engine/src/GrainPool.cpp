@@ -13,10 +13,21 @@ namespace gg
 GrainPool::GrainPool(uint32_t capacity)
     : capacity_(capacity), slots_(2 * capacity), index_(slots_), onsetSample_(slots_),
       onsetFrac_(slots_), startPos_(slots_), rate_(slots_), durationSamples_(slots_), gain_(slots_),
-      pan_(slots_), endSample_(slots_),
-      rows_{index_.data(),    onsetSample_.data(), onsetFrac_.data(),
-            startPos_.data(), rate_.data(),        durationSamples_.data(),
-            gain_.data(),     pan_.data(),         endSample_.data()},
+      pan_(slots_), endSample_(slots_), invDuration_(slots_), gainL_(slots_), gainR_(slots_),
+      rows_{
+          .index = index_.data(),
+          .onsetSample = onsetSample_.data(),
+          .onsetFrac = onsetFrac_.data(),
+          .startPos = startPos_.data(),
+          .rate = rate_.data(),
+          .durationSamples = durationSamples_.data(),
+          .gain = gain_.data(),
+          .pan = pan_.data(),
+          .endSample = endSample_.data(),
+          .invDuration = invDuration_.data(),
+          .gainL = gainL_.data(),
+          .gainR = gainR_.data(),
+      },
       heap_(slots_)
 {
 }
@@ -50,6 +61,11 @@ bool GrainPool::spawn(const GrainSpec &g) noexcept
     gain_[i] = g.gain;
     pan_[i] = g.pan;
     endSample_[i] = end;
+    // The renderers' latched values (spec §3): one division and one channel gain per grain.
+    const PanGains pan = panGains(g.pan);
+    invDuration_[i] = 1.0 / g.durationSamples;
+    gainL_[i] = g.gain * pan.left;
+    gainR_[i] = g.gain * pan.right;
     earliestEnd_ = end < earliestEnd_ ? end : earliestEnd_;
     // The heap holds at most the stored grains' ends (one per slot), and storage isn't full.
     heap_[heapSize_++] = end;
@@ -88,6 +104,9 @@ void GrainPool::retireFinished(int64_t nowSample) noexcept
                 gain_[kept] = gain_[i];
                 pan_[kept] = pan_[i];
                 endSample_[kept] = end;
+                invDuration_[kept] = invDuration_[i];
+                gainL_[kept] = gainL_[i];
+                gainR_[kept] = gainR_[i];
             }
             ++kept;
             earliest = end < earliest ? end : earliest;

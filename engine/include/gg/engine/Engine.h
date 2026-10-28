@@ -178,14 +178,10 @@ class Engine
     bool liveGrain(const GrainDraw &d, GrainSpec &g) const noexcept;
     void admit(const GrainSpec &g, float *const dst[2], int64_t blockStart,
                int64_t &renderedTo) noexcept SST_CPPUTILS_NONBLOCKING;
+    /// Adds every pool grain into dst over [from, to), through the reference renderers
+    /// (gg/grain/GrainKernels.h).
     void renderPool(float *const dst[2], int64_t blockStart, int64_t from,
                     int64_t to) noexcept SST_CPPUTILS_NONBLOCKING;
-    template <bool TwoOutputs, bool MonoSource>
-    void renderGrain(const GrainRows &rows, uint32_t i, float *const dst[2], int64_t blockStart,
-                     int64_t from, int64_t to) const noexcept SST_CPPUTILS_NONBLOCKING;
-    template <bool TwoOutputs>
-    void renderLiveGrain(const GrainRows &rows, uint32_t i, float *const dst[2], int64_t blockStart,
-                         int64_t from, int64_t to) const noexcept SST_CPPUTILS_NONBLOCKING;
 
     EngineConfig config_;
     HannTable hann_;
