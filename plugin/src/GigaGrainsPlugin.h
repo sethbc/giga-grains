@@ -10,6 +10,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <utility>
 
 #include <clap/clap.h>
 #include <sst/cpputils/rtsan_support.h>
@@ -34,13 +35,15 @@ const clap_plugin_descriptor *descriptorFor(Product product) noexcept;
 /// The CLAP adapter around gg::core::Processor, for both products: the JUCE-free plugin core
 /// (spec §5). It maps CLAP's parameters, state and remote controls onto the Processor; the
 /// sound is the Processor's. The FX's input feeds the live ring and the dry side of the Mix; the
-/// instrument has no sample source in this slice, so it outputs silence. Note-ons are counted
-/// but not yet played. This class has no GUI. The editor is added by a subclass, EditorPlugin
-/// (editor/EditorPlugin.h), built only with GG_BUILD_EDITOR; makePlugin() picks the class.
+/// instrument plays a sample source from notes, and has none until the loader (sub-project 3,
+/// Task 11) gives it one, so it outputs silence. Both products pass their CLAP and MIDI notes to
+/// the Processor (toNoteEvent), on the control grid. This class has no GUI. The editor is added by
+/// a subclass, EditorPlugin (editor/EditorPlugin.h), built only with GG_BUILD_EDITOR; makePlugin()
+/// picks the class.
 ///
 /// **Threads** (INTENT §15). The main thread owns the Processor's lifetime (activate,
 /// deactivate), the seed and the state; the audio thread owns the Processor in between, and
-/// with it events_. Parameter values cross over in two ways:
+/// with it events_ and notes_. Parameter values cross over in two ways:
 /// - values_, an atomic per-parameter store of the base values, which the main thread reads
 ///   (params.get_value, state save). The audio thread writes it as it hands values to the
 ///   Processor; the main thread writes it while inactive, and on a state load.
@@ -83,11 +86,22 @@ class GigaGrainsPlugin : public plugHelper_t
     /// M1-o); the output doesn't.
     uint32_t engineBlockSize() const noexcept { return engineBlockSize_; }
 
+    /// TEST ONLY, until the loader (sub-project 3, Task 11) replaces it: the sample source the
+    /// next activate() gives the Processor (Processor::setSourceNow); nullptr means none. Main
+    /// thread, while the plugin is inactive.
+    void setSourceForTest(std::shared_ptr<const gg::PreparedSource> source)
+    {
+        testSource_ = std::move(source);
+    }
+
     /// The cap on engineBlockSize(). CLAP allows a maxFrameCount up to INT32_MAX.
     static constexpr uint32_t kMaxEngineBlock = 4096;
     /// The most parameter events one process() call hands to the Processor in one go (its
     /// event span). Events beyond it apply at the block's end (applyBetweenBlocks).
     static constexpr std::size_t kMaxParamEvents = 4096;
+    /// The most note events one process() call hands to the Processor in one go (its note span).
+    /// Notes beyond it apply at the block's end, at the next grid boundary (applyBetweenBlocks).
+    static constexpr std::size_t kMaxNoteEvents = 1024;
 
   protected:
     bool activate(double sampleRate, uint32_t minFrameCount,
@@ -146,9 +160,15 @@ class GigaGrainsPlugin : public plugHelper_t
     /// parameter or a NaN value.
     static bool toParamEvent(const clap_event_header *header,
                              gg::core::ParamEvent &event) noexcept SST_CPPUTILS_NONBLOCKING;
-    /// Applies the parameter events of `in` from index `first` between two process() calls:
-    /// values at once with setBase, modulation at the next control-grid boundary. Needs the
-    /// processor; audio thread.
+    /// The note event `header` as a NoteEvent (spec §6.1): CLAP's note-on, note-off and note
+    /// choke, MIDI's note-on, note-off and CC 123 (all notes off). False for any other event.
+    /// Velocity and the port are ignored; out-of-range channels and keys pass through, for the
+    /// Processor to drop.
+    static bool toNoteEvent(const clap_event_header *header,
+                            gg::core::NoteEvent &event) noexcept SST_CPPUTILS_NONBLOCKING;
+    /// Applies the parameter and note events of `in` from index `first` between two process()
+    /// calls: values at once with setBase, modulation and notes at the next control-grid
+    /// boundary. Needs the processor; audio thread.
     void applyBetweenBlocks(const clap_input_events *in,
                             uint32_t first) noexcept SST_CPPUTILS_NONBLOCKING;
     /// Applies a state loaded since the last call, if there is one. Audio thread.
@@ -175,8 +195,11 @@ class GigaGrainsPlugin : public plugHelper_t
     // the audio thread's.
     std::unique_ptr<gg::core::Processor> processor_;
     uint32_t engineBlockSize_{0}; // main thread
-    // The parameter events of one process() call. Audio thread.
+    // TEST ONLY (setSourceForTest): the source activate() gives the processor. Main thread.
+    std::shared_ptr<const gg::PreparedSource> testSource_;
+    // The parameter and note events of one process() call. Audio thread.
     std::array<gg::core::ParamEvent, kMaxParamEvents> events_{};
+    std::array<gg::core::NoteEvent, kMaxNoteEvents> notes_{};
 };
 
 /// Creates a plugin instance of `product` for the factory: a GigaGrainsPlugin in a headless

@@ -10,10 +10,13 @@
 // their clap_plugin vtables, exactly as a host would call them, without loading the built .clap.
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <memory>
+#include <numbers>
 #include <string>
 #include <utility>
 #include <vector>
@@ -119,6 +122,56 @@ inline clap_event_param_mod paramMod(clap_id id, double amount, uint32_t time = 
     e.key = -1;
     e.amount = amount;
     return e;
+}
+
+/// A CLAP note event of `type` (CLAP_EVENT_NOTE_ON, _OFF or _CHOKE) on port 0, with no note ID.
+inline clap_event_note noteEvent(uint16_t type, int16_t channel, int16_t key,
+                                 uint32_t time = 0) noexcept
+{
+    clap_event_note e{};
+    e.header.size = sizeof(e);
+    e.header.time = time;
+    e.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
+    e.header.type = type;
+    e.note_id = -1;
+    e.port_index = 0;
+    e.channel = channel;
+    e.key = key;
+    e.velocity = 0.8;
+    return e;
+}
+
+/// A CLAP_EVENT_MIDI with the three bytes given, on port 0.
+inline clap_event_midi midiEvent(uint8_t status, uint8_t data1, uint8_t data2,
+                                 uint32_t time = 0) noexcept
+{
+    clap_event_midi e{};
+    e.header.size = sizeof(e);
+    e.header.time = time;
+    e.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
+    e.header.type = CLAP_EVENT_MIDI;
+    e.port_index = 0;
+    e.data[0] = status;
+    e.data[1] = data1;
+    e.data[2] = data2;
+    return e;
+}
+
+/// A 4 s stereo sine at 220 Hz and amplitude 0.5, at 48 kHz: a source for the instrument
+/// (GigaGrainsPlugin::setSourceForTest).
+inline std::shared_ptr<const gg::PreparedSource> sineSource()
+{
+    constexpr int64_t kFrames = 4 * 48000;
+    auto buffer = std::make_shared<gg::SampleBuffer>(2, kFrames, 48000.0);
+    for (uint32_t c = 0; c < 2; ++c)
+    {
+        for (int64_t i = 0; i < kFrames; ++i)
+        {
+            buffer->channel(c)[i] = static_cast<float>(
+                0.5 * std::sin(2.0 * std::numbers::pi * 220.0 * static_cast<double>(i) / 48000.0));
+        }
+    }
+    return gg::PreparedSource::make(std::move(buffer));
 }
 
 /// A clap_ostream into memory that accepts at most `chunk` bytes per write, as a host's stream

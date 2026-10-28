@@ -3,10 +3,13 @@
 // Copyright 2026, the Giga Grains authors (see git history)
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <initializer_list>
+#include <numbers>
 #include <string_view>
 #include <vector>
 
@@ -24,6 +27,8 @@ namespace
 constexpr const char *kInstrumentId = "org.sethbc.giga-grains";
 constexpr const char *kFxId = "org.sethbc.giga-grains-fx";
 
+using gg::core::paramId;
+using gg::core::ParamSlot;
 using gg::test::fillNoise;
 using gg::test::sameBits;
 using gg::test::Stereo;
@@ -63,31 +68,38 @@ bool allFinite(const std::vector<float> &v)
 
 clap_event_note noteOn(int16_t key, uint32_t time)
 {
-    clap_event_note e{};
-    e.header.size = sizeof(e);
-    e.header.time = time;
-    e.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
-    e.header.type = CLAP_EVENT_NOTE_ON;
-    e.note_id = -1;
-    e.port_index = 0;
-    e.channel = 0;
-    e.key = key;
-    e.velocity = 0.8;
-    return e;
+    return gg::test::noteEvent(CLAP_EVENT_NOTE_ON, 0, key, time);
 }
 
-clap_event_midi midi(uint8_t status, uint8_t data1, uint8_t data2, uint32_t time)
+// The keys held now, as ints so that failures print numbers.
+std::vector<int> heldKeys(const gg::test::PluginUnderTest &plugin)
 {
-    clap_event_midi e{};
-    e.header.size = sizeof(e);
-    e.header.time = time;
-    e.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
-    e.header.type = CLAP_EVENT_MIDI;
-    e.port_index = 0;
-    e.data[0] = status;
-    e.data[1] = data1;
-    e.data[2] = data2;
-    return e;
+    const auto keys = plugin.impl().processor()->heldKeys();
+    return {keys.begin(), keys.end()};
+}
+
+// The peak of channels left and right over the samples [from, to).
+float peakIn(const Stereo &s, std::size_t from, std::size_t to)
+{
+    float p = 0.0f;
+    for (std::size_t i = from; i < to; ++i)
+    {
+        p = std::max({p, std::abs(s.left[i]), std::abs(s.right[i])});
+    }
+    return p;
+}
+
+// Applies `events` (paramValue events) by params.flush.
+template <std::size_t N>
+void flushParams(const gg::test::PluginUnderTest &plugin,
+                 const std::array<clap_event_param_value, N> &events)
+{
+    gg::test::InputEvents list;
+    for (const auto &e : events)
+    {
+        list.add(&e.header);
+    }
+    plugin.flush(list.list());
 }
 
 // A stub host that offers only clap.log, and counts the host-misbehaviour reports it receives.
@@ -200,10 +212,10 @@ TEST_CASE("note-ons are counted from clap and midi", "[plugin]")
 
     const auto clap1 = noteOn(60, 0);
     const auto clap2 = noteOn(64, 10);
-    const auto midiOn = midi(0x90, 67, 100, 20);
-    const auto midiOnVelocity0 = midi(0x90, 67, 0, 30); // a note-off in disguise
-    const auto midiOnChannel5 = midi(0x95, 70, 1, 40);
-    const auto midiOff = midi(0x80, 67, 64, 50);
+    const auto midiOn = gg::test::midiEvent(0x90, 67, 100, 20);
+    const auto midiOnVelocity0 = gg::test::midiEvent(0x90, 67, 0, 30); // a note-off in disguise
+    const auto midiOnChannel5 = gg::test::midiEvent(0x95, 70, 1, 40);
+    const auto midiOff = gg::test::midiEvent(0x80, 67, 64, 50);
     clap_event_note clapOff = noteOn(60, 60);
     clapOff.header.type = CLAP_EVENT_NOTE_OFF;
 
@@ -257,13 +269,17 @@ TEST_CASE("params flush is safe and counts note-ons", "[plugin]")
 
     // CLAP puts only parameter events in a flush, but a host may deliver notes there too.
     const auto clapOn = noteOn(60, 0);
-    const auto midiOn = midi(0x90, 67, 100, 0);
+    const auto midiOn = gg::test::midiEvent(0x90, 67, 100, 0);
     gg::test::InputEvents notes;
     notes.add(&clapOn.header);
     notes.add(&midiOn.header);
     params->flush(plugin.clap(), notes.list(), &out);
     CHECK(plugin.impl().noteOnCount.load() == 2);
     CHECK(pushed == 0);
+    // They reach the Processor too, at the next grid boundary: here the next call's first sample.
+    CHECK(plugin.impl().processor()->heldKeys().empty());
+    REQUIRE(plugin.process(32, nullptr, nullptr) == CLAP_PROCESS_CONTINUE);
+    CHECK(heldKeys(plugin) == std::vector<int>{60, 67});
 }
 
 TEST_CASE("params flush reports misbehaving hosts only in Debug builds", "[plugin]")
@@ -282,7 +298,7 @@ TEST_CASE("params flush reports misbehaving hosts only in Debug builds", "[plugi
     REQUIRE(params != nullptr);
 
     const auto clapOn = noteOn(60, 0);
-    const auto midiOn = midi(0x90, 67, 100, 0);
+    const auto midiOn = gg::test::midiEvent(0x90, 67, 100, 0);
     gg::test::InputEvents notes;
     notes.add(&clapOn.header);
     notes.add(&midiOn.header);
@@ -408,4 +424,215 @@ TEST_CASE("fx activates with a huge max frame count", "[plugin]")
     render(64, small);
     CHECK(sameBits(huge.left, small.left));
     CHECK(sameBits(huge.right, small.right));
+}
+
+TEST_CASE("a note freezes the fx and releasing it lets the input through again", "[plugin]")
+{
+    // Spec §6.3, D4: a note-on freezes the live ring, so the grains keep playing what the input
+    // played before it, even once the input is silent; releasing the note lets the ring follow
+    // the (now silent) input again. Mix 1, so the output is the wet path alone; Spray 0 and
+    // Position 0.05 (about 20 ms behind the head), so the grains read just behind it; Density 64
+    // Hz; Size stays at its 150 ms default. The same render without the note is the control.
+    constexpr uint32_t kBlock = 512;
+    constexpr std::size_t kOnBlock = 48;   // 0.512 s; the input is silent from here on
+    constexpr std::size_t kOffBlock = 144; // 1.536 s
+    constexpr std::size_t kBlocks = 240;   // 2.56 s
+    constexpr std::size_t kOn = kOnBlock * kBlock;
+    constexpr std::size_t kOff = kOffBlock * kBlock;
+    constexpr std::size_t kEnd = kBlocks * kBlock;
+    // Size + 20 ms at 48 kHz: 150 ms + 20 ms.
+    constexpr std::size_t kRelease = 8160;
+
+    const auto render = [&](bool withNote, Stereo &out, int64_t &frozenHead,
+                            std::vector<int> &frozenKeys) {
+        gg::test::PluginUnderTest fx(kFxId);
+        REQUIRE(fx.valid());
+        flushParams<4>(fx, {
+                               gg::test::paramValue(paramId(ParamSlot::Mix), 1.0),
+                               gg::test::paramValue(paramId(ParamSlot::Spray), 0.0),
+                               gg::test::paramValue(paramId(ParamSlot::Position), 0.05),
+                               gg::test::paramValue(paramId(ParamSlot::Density), 6.0),
+                           });
+        REQUIRE(fx.activate(48000.0, kBlock));
+        const auto on = noteOn(60, 0);
+        const auto off = gg::test::noteEvent(CLAP_EVENT_NOTE_OFF, 0, 60, 0);
+        Stereo in(kBlock);
+        Stereo block(kBlock);
+        for (std::size_t k = 0; k < kBlocks; ++k)
+        {
+            for (uint32_t i = 0; i < kBlock; ++i)
+            {
+                const auto t = static_cast<double>(k * kBlock + i) / 48000.0;
+                const auto x =
+                    k < kOnBlock
+                        ? static_cast<float>(0.5 * std::sin(2.0 * std::numbers::pi * 330.0 * t))
+                        : 0.0f;
+                in.left[i] = x;
+                in.right[i] = x;
+            }
+            gg::test::InputEvents events;
+            if (withNote && k == kOnBlock)
+            {
+                events.add(&on.header);
+            }
+            if (withNote && k == kOffBlock)
+            {
+                events.add(&off.header);
+            }
+            REQUIRE(fx.process(kBlock, in.data(), block.data(), events.list()) ==
+                    CLAP_PROCESS_CONTINUE);
+            std::copy(block.left.begin(), block.left.end(),
+                      out.left.begin() + static_cast<std::ptrdiff_t>(k * kBlock));
+            std::copy(block.right.begin(), block.right.end(),
+                      out.right.begin() + static_cast<std::ptrdiff_t>(k * kBlock));
+            if (k == kOffBlock - 1)
+            {
+                frozenHead = fx.impl().engine()->liveWriteHead();
+                frozenKeys = heldKeys(fx);
+            }
+        }
+        CHECK(heldKeys(fx).empty());
+    };
+
+    Stereo noted(static_cast<uint32_t>(kEnd));
+    Stereo control(static_cast<uint32_t>(kEnd));
+    int64_t notedHead = 0;
+    int64_t controlHead = 0;
+    std::vector<int> notedKeys;
+    std::vector<int> controlKeys;
+    render(true, noted, notedHead, notedKeys);
+    render(false, control, controlHead, controlKeys);
+
+    // Before the note the two are the same live texture, and it sounds.
+    CHECK(std::equal(noted.left.begin(), noted.left.begin() + kOn, control.left.begin()));
+    CHECK(std::equal(noted.right.begin(), noted.right.begin() + kOn, control.right.begin()));
+    CHECK(peakIn(noted, kOn / 2, kOn) > 0.05f);
+
+    // The note held the ring: its head stopped 20 ms (960 samples) after the note's boundary,
+    // and the grains still play the sine, long after the input went silent. Without the note
+    // the ring follows the input, and the wet path is silent once the last sine grain is over.
+    CHECK(notedKeys == std::vector<int>{60});
+    CHECK(notedHead == static_cast<int64_t>(kOn) + 960);
+    CHECK(controlKeys.empty());
+    CHECK(controlHead == static_cast<int64_t>(kOff));
+    CHECK(peakIn(noted, kOn + 24000, kOff) > 0.05f);
+    CHECK(peakIn(control, kOn + 24000, kOff) == 0.0f);
+
+    // The note-off unfreezes it: silence returns to the wet path within Size + 20 ms.
+    CHECK(peakIn(noted, kOff + kRelease, kEnd) == 0.0f);
+}
+
+TEST_CASE("midi notes play the instrument's sample and release it", "[plugin]")
+{
+    // Spec §6.2, D1: the instrument is silent until a note, plays its source while one is held,
+    // and releases within Size (150 ms by default) + 20 ms once none is. MIDI dialect: a
+    // note-on with velocity 0 is a note-off, and CC 123 (all notes off) releases every channel.
+    constexpr uint32_t kBlock = 512;
+    constexpr std::size_t kRelease = 8160; // Size + 20 ms at 48 kHz
+    gg::test::PluginUnderTest instrument(kInstrumentId);
+    REQUIRE(instrument.valid());
+    instrument.impl().setSourceForTest(gg::test::sineSource());
+    REQUIRE(instrument.activate(48000.0, kBlock));
+
+    const auto on60 = gg::test::midiEvent(0x90, 60, 100, 0);
+    const auto off60 = gg::test::midiEvent(0x90, 60, 0, 0);
+    const auto on64 = gg::test::midiEvent(0x90, 64, 100, 0);
+    const auto on67Channel3 = gg::test::midiEvent(0x93, 67, 100, 0);
+    const auto allOff = gg::test::midiEvent(0xB0, 123, 0, 0);
+
+    // Renders kBlocks blocks into out, `first` the first block's events.
+    constexpr std::size_t kBlocks = 40; // about 0.43 s
+    constexpr std::size_t kLength = kBlocks * kBlock;
+    Stereo out(static_cast<uint32_t>(kLength));
+    const auto run = [&](std::initializer_list<const clap_event_header *> first) {
+        Stereo block(kBlock);
+        for (std::size_t k = 0; k < kBlocks; ++k)
+        {
+            gg::test::InputEvents events;
+            for (const auto *e :
+                 k == 0 ? first : std::initializer_list<const clap_event_header *>{})
+            {
+                events.add(e);
+            }
+            REQUIRE(instrument.process(kBlock, nullptr, block.data(), events.list()) ==
+                    CLAP_PROCESS_CONTINUE);
+            std::copy(block.left.begin(), block.left.end(),
+                      out.left.begin() + static_cast<std::ptrdiff_t>(k * kBlock));
+            std::copy(block.right.begin(), block.right.end(),
+                      out.right.begin() + static_cast<std::ptrdiff_t>(k * kBlock));
+        }
+    };
+
+    run({});
+    CHECK(peakIn(out, 0, kLength) == 0.0f);
+
+    run({&on60.header});
+    CHECK(heldKeys(instrument) == std::vector<int>{60});
+    CHECK(peakIn(out, 0, kLength / 2) > 0.05f);
+    CHECK(peakIn(out, kLength / 2, kLength) > 0.05f);
+
+    run({&off60.header});
+    CHECK(heldKeys(instrument).empty());
+    CHECK(peakIn(out, 0, kRelease) > 0.0f); // the tail of the grains still sounding
+    CHECK(peakIn(out, kRelease, kLength) == 0.0f);
+
+    run({&on64.header, &on67Channel3.header});
+    CHECK(heldKeys(instrument) == std::vector<int>{64, 67});
+    CHECK(peakIn(out, kLength / 2, kLength) > 0.05f);
+
+    run({&allOff.header});
+    CHECK(heldKeys(instrument).empty());
+    CHECK(peakIn(out, kRelease, kLength) == 0.0f);
+}
+
+TEST_CASE("notes render the same at any host block size", "[plugin][determinism]")
+{
+    // Note timing is on the control grid (spec §6.1), so the plugin's output with notes doesn't
+    // depend on how the host splits blocks (INTENT §8.6), a 0-frame call included.
+    struct Timed
+    {
+        std::size_t time; // absolute sample
+        clap_event_midi event;
+    };
+    const std::vector<Timed> notes{
+        {1000, gg::test::midiEvent(0x90, 60, 100)}, {5003, gg::test::midiEvent(0x91, 67, 100)},
+        {12000, gg::test::midiEvent(0x80, 60, 0)},  {16001, gg::test::midiEvent(0x92, 55, 90)},
+        {20000, gg::test::midiEvent(0xB0, 123, 0)},
+    };
+    constexpr std::size_t kFrames = 30000;
+
+    const auto render = [&](const std::vector<uint32_t> &blockSizes, Stereo &out) {
+        gg::test::PluginUnderTest instrument(kInstrumentId);
+        REQUIRE(instrument.valid());
+        instrument.impl().setSourceForTest(gg::test::sineSource());
+        REQUIRE(instrument.activate(48000.0, 2048));
+        std::vector<clap_event_midi> events;
+        events.reserve(notes.size());
+        std::size_t next = 0;
+        std::size_t done = 0;
+        for (std::size_t call = 0; done < kFrames; ++call)
+        {
+            const auto n = static_cast<uint32_t>(
+                std::min<std::size_t>(blockSizes[call % blockSizes.size()], kFrames - done));
+            gg::test::InputEvents list;
+            for (; next < notes.size() && notes[next].time < done + std::max<uint32_t>(n, 1);
+                 ++next)
+            {
+                events.push_back(notes[next].event);
+                events.back().header.time = static_cast<uint32_t>(notes[next].time - done);
+                list.add(&events.back().header);
+            }
+            float *outputs[2] = {out.left.data() + done, out.right.data() + done};
+            REQUIRE(instrument.process(n, nullptr, outputs, list.list()) == CLAP_PROCESS_CONTINUE);
+            done += n;
+        }
+    };
+
+    Stereo regular(static_cast<uint32_t>(kFrames));
+    Stereo irregular(static_cast<uint32_t>(kFrames));
+    render({512}, regular);
+    render({1, 37, 300, 0, 2048, 64}, irregular);
+    CHECK(peakIn(regular, 0, kFrames) > 0.05f);
+    CHECK(sameBits(regular.left, irregular.left));
+    CHECK(sameBits(regular.right, irregular.right));
 }

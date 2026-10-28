@@ -44,28 +44,19 @@ constexpr const char *kFxId = "org.sethbc.giga-grains-fx";
 
 clap_event_note noteOn(int16_t key, uint32_t time)
 {
-    clap_event_note e{};
-    e.header.size = sizeof(e);
-    e.header.time = time;
-    e.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
-    e.header.type = CLAP_EVENT_NOTE_ON;
-    e.note_id = -1;
-    e.key = key;
-    e.velocity = 0.8;
-    return e;
+    return gg::test::noteEvent(CLAP_EVENT_NOTE_ON, 0, key, time);
 }
 
 clap_event_midi midiNoteOn(uint8_t key, uint32_t time)
 {
-    clap_event_midi e{};
-    e.header.size = sizeof(e);
-    e.header.time = time;
-    e.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
-    e.header.type = CLAP_EVENT_MIDI;
-    e.data[0] = 0x90;
-    e.data[1] = key;
-    e.data[2] = 100;
-    return e;
+    return gg::test::midiEvent(0x90, key, 100, time);
+}
+
+// The keys held now, as ints so that failures print numbers.
+std::vector<int> heldKeys(const gg::test::PluginUnderTest &plugin)
+{
+    const auto keys = plugin.impl().processor()->heldKeys();
+    return {keys.begin(), keys.end()};
 }
 
 const clap_plugin_params *paramsOf(const gg::test::PluginUnderTest &plugin)
@@ -81,8 +72,13 @@ TEST_CASE("plugin process does not allocate", "[plugin][rt]")
     CAPTURE(id);
     gg::test::PluginUnderTest plugin(id);
     REQUIRE(plugin.valid());
-    REQUIRE(plugin.activate(48000.0, 512));
     const bool isFx = std::string_view(id) == kFxId;
+    if (!isFx)
+    {
+        // A source, so the notes spawn grains in the instrument too.
+        plugin.impl().setSourceForTest(gg::test::sineSource());
+    }
+    REQUIRE(plugin.activate(48000.0, 512));
 
     // Everything the calls touch exists before the tripwire is armed. 2048 frames is more than
     // the 512 the plugin was activated with.
@@ -128,8 +124,10 @@ TEST_CASE("plugin process does not allocate", "[plugin][rt]")
     {
         CHECK(s == CLAP_PROCESS_CONTINUE);
     }
-    // The events were read: one CLAP and one MIDI note-on per call, the 0-frame call included.
+    // The events were read: one CLAP and one MIDI note-on per call, the 0-frame call included,
+    // and both notes reached the Processor.
     CHECK(plugin.impl().noteOnCount.load() - notesBefore == 2 * kFrames.size());
+    CHECK(heldKeys(plugin) == std::vector<int>{60, 64});
     // The parameter events were applied: values to the base, modulation on top of it.
     const auto *processor = plugin.impl().processor();
     REQUIRE(processor != nullptr);
@@ -456,4 +454,163 @@ TEST_CASE("plugin params flush with notes does not allocate", "[plugin][rt]")
     {
         REQUIRE(allocations == 0);
     }
+}
+
+TEST_CASE("plugin notes of every kind reach the processor without allocating", "[plugin][rt]")
+{
+    // Spec §6.1's inputs, through process(): CLAP note-on, note-off (with wildcards) and note
+    // choke; MIDI note-on, note-on with velocity 0, note-off and CC 123. Each call's notes are
+    // at offset 0, so they apply at a boundary inside the call; one call is a single frame.
+    const char *id = GENERATE(kInstrumentId, kFxId);
+    CAPTURE(id);
+    gg::test::PluginUnderTest plugin(id);
+    REQUIRE(plugin.valid());
+    const bool isFx = std::string_view(id) == kFxId;
+    if (!isFx)
+    {
+        plugin.impl().setSourceForTest(gg::test::sineSource());
+    }
+    REQUIRE(plugin.activate(48000.0, 512));
+
+    using gg::test::midiEvent;
+    using gg::test::noteEvent;
+    const auto clapOn60 = noteEvent(CLAP_EVENT_NOTE_ON, 0, 60);
+    const auto midiOn64Channel1 = midiEvent(0x91, 64, 100);
+    const auto choke60 = noteEvent(CLAP_EVENT_NOTE_CHOKE, 0, 60);
+    const auto midiOff64Channel1 = midiEvent(0x81, 64, 0);
+    const auto midiOn62 = midiEvent(0x90, 62, 100);
+    const auto clapOn65Channel2 = noteEvent(CLAP_EVENT_NOTE_ON, 2, 65);
+    const auto clapOffAll = noteEvent(CLAP_EVENT_NOTE_OFF, -1, -1);
+    const auto clapOn70 = noteEvent(CLAP_EVENT_NOTE_ON, 0, 70);
+    const auto midiOn71Channel15 = midiEvent(0x9F, 71, 100);
+    const auto midiOff71Velocity0 = midiEvent(0x9F, 71, 0);
+    const auto midiOn72 = midiEvent(0x90, 72, 100);
+    const auto allNotesOff = midiEvent(0xB0, 123, 0);
+    constexpr std::size_t kCalls = 7;
+    std::array<gg::test::InputEvents, kCalls> events;
+    events[0].add(&clapOn60.header);
+    events[0].add(&midiOn64Channel1.header);
+    events[1].add(&choke60.header);
+    events[2].add(&midiOff64Channel1.header);
+    events[3].add(&midiOn62.header);
+    events[3].add(&clapOn65Channel2.header);
+    events[4].add(&clapOffAll.header);
+    events[5].add(&clapOn70.header);
+    events[5].add(&midiOn71Channel15.header);
+    events[5].add(&midiOff71Velocity0.header);
+    events[5].add(&midiOn72.header);
+    events[6].add(&allNotesOff.header);
+    // The second call is one frame long, at sample 64: a boundary, so its notes apply in it.
+    constexpr std::array<uint32_t, kCalls> kFrames{64, 1, 64, 64, 64, 64, 64};
+    const std::array<std::vector<int>, kCalls> expected{{
+        {60, 64},
+        {64},
+        {},
+        {62, 65},
+        {},
+        {70, 72},
+        {},
+    }};
+
+    std::vector<float> inLeft(64, 0.25f), inRight(64, -0.25f), outLeft(64), outRight(64);
+    float *inputs[2] = {inLeft.data(), inRight.data()};
+    float *outputs[2] = {outLeft.data(), outRight.data()};
+    std::array<clap_process_status, kCalls> status{};
+    // The held keys after each call, recorded without allocating: at most two.
+    std::array<std::size_t, kCalls> counts{};
+    std::array<std::array<uint8_t, 2>, kCalls> keys{};
+
+    AllocTripwire::resetCount();
+    {
+        AllocTripwire::Scope armed;
+        for (std::size_t i = 0; i < kCalls; ++i)
+        {
+            status[i] =
+                plugin.process(kFrames[i], isFx ? inputs : nullptr, outputs, events[i].list());
+            const auto held = plugin.impl().processor()->heldKeys();
+            counts[i] = held.size();
+            for (std::size_t j = 0; j < std::min<std::size_t>(held.size(), 2); ++j)
+            {
+                keys[i][j] = held[j];
+            }
+        }
+    }
+    const uint64_t allocations = AllocTripwire::count();
+
+    for (std::size_t i = 0; i < kCalls; ++i)
+    {
+        CAPTURE(i);
+        CHECK(status[i] == CLAP_PROCESS_CONTINUE);
+        REQUIRE(counts[i] == expected[i].size());
+        CHECK(std::vector<int>(keys[i].begin(), keys[i].begin() + counts[i]) == expected[i]);
+    }
+    CHECK(plugin.impl().noteOnCount.load() == 7);
+    REQUIRE_NO_ALLOCATIONS(allocations);
+}
+
+TEST_CASE("plugin process takes more notes than its note array holds", "[plugin][rt]")
+{
+    // 1,500 notes in one call, past the fixed note array (1,024): the notes beyond it apply at
+    // the block end, at the next grid boundary, without allocating, and none is lost. Notes
+    // 0..1498 hold (channel i % 16, key i / 16), CLAP and MIDI in turn, so keys 0..93 are held,
+    // and the keys from 64 up only by notes past the array. The last note, a CLAP note-off
+    // (channel −1, key 93), releases key 93 on every channel.
+    const char *id = GENERATE(kInstrumentId, kFxId);
+    CAPTURE(id);
+    gg::test::PluginUnderTest plugin(id);
+    REQUIRE(plugin.valid());
+    const bool isFx = std::string_view(id) == kFxId;
+    REQUIRE(plugin.activate(48000.0, 512));
+
+    constexpr std::size_t kNotes = 1500;
+    std::vector<clap_event_note> clapNotes;
+    std::vector<clap_event_midi> midiNotes;
+    clapNotes.reserve(kNotes);
+    midiNotes.reserve(kNotes);
+    gg::test::InputEvents events;
+    for (std::size_t i = 0; i + 1 < kNotes; ++i)
+    {
+        const auto time = static_cast<uint32_t>(i / 3); // 0..499, in order
+        const auto channel = static_cast<uint8_t>(i % 16);
+        const auto key = static_cast<uint8_t>(i / 16);
+        if (i % 2 == 0)
+        {
+            clapNotes.push_back(gg::test::noteEvent(CLAP_EVENT_NOTE_ON, channel, key, time));
+            events.add(&clapNotes.back().header);
+        }
+        else
+        {
+            midiNotes.push_back(
+                gg::test::midiEvent(static_cast<uint8_t>(0x90 | channel), key, 100, time));
+            events.add(&midiNotes.back().header);
+        }
+    }
+    clapNotes.push_back(gg::test::noteEvent(CLAP_EVENT_NOTE_OFF, -1, 93, 499));
+    events.add(&clapNotes.back().header);
+    std::vector<int> expected(93);
+    for (std::size_t k = 0; k < expected.size(); ++k)
+    {
+        expected[k] = static_cast<int>(k);
+    }
+
+    std::vector<float> inLeft(512, 0.25f), inRight(512, -0.25f), outLeft(512), outRight(512);
+    float *inputs[2] = {inLeft.data(), inRight.data()};
+    float *outputs[2] = {outLeft.data(), outRight.data()};
+    gg::test::InputEvents none;
+    std::array<clap_process_status, 2> status{};
+
+    AllocTripwire::resetCount();
+    {
+        AllocTripwire::Scope armed;
+        status[0] = plugin.process(512, isFx ? inputs : nullptr, outputs, events.list());
+        // The notes beyond the array wait for the next boundary: sample 512.
+        status[1] = plugin.process(32, isFx ? inputs : nullptr, outputs, none.list());
+    }
+    const uint64_t allocations = AllocTripwire::count();
+
+    CHECK(status[0] == CLAP_PROCESS_CONTINUE);
+    CHECK(status[1] == CLAP_PROCESS_CONTINUE);
+    CHECK(heldKeys(plugin) == expected);
+    CHECK(plugin.impl().noteOnCount.load() == kNotes - 1);
+    REQUIRE_NO_ALLOCATIONS(allocations);
 }

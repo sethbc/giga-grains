@@ -21,6 +21,8 @@ namespace gg::plugin
 namespace
 {
 using gg::core::kParamCount;
+using gg::core::NoteEvent;
+using gg::core::NoteEventType;
 using gg::core::ParamEvent;
 using gg::core::ParamSlot;
 
@@ -114,6 +116,11 @@ bool GigaGrainsPlugin::activate(double sampleRate, uint32_t /*minFrameCount*/,
             processor->setBase(static_cast<ParamSlot>(s),
                                values_[s].load(std::memory_order_relaxed));
         }
+        // TEST ONLY until the loader (Task 11): the source setSourceForTest left.
+        if (testSource_ != nullptr)
+        {
+            processor->setSourceNow(testSource_);
+        }
         processor_ = std::move(processor);
         engineBlockSize_ = config.maxBlockSize;
         return true;
@@ -164,16 +171,33 @@ clap_process_status GigaGrainsPlugin::processNonblocking(const clap_process *pro
     }
     applyLoadedState();
 
-    // The call's parameter events, in the host's order (by time), as many as events_ holds.
+    // The call's parameter and note events, in the host's order (by time), up to the first that
+    // finds its array (events_ or notes_) full.
     const clap_input_events *in = process->in_events;
     const uint32_t numEvents = in != nullptr ? in->size(in) : 0;
     std::size_t count = 0;
+    std::size_t noteCount = 0;
     uint32_t next = 0;
-    for (; next < numEvents && count < kMaxParamEvents; ++next)
+    for (; next < numEvents; ++next)
     {
-        if (toParamEvent(in->get(in, next), events_[count]))
+        const clap_event_header *header = in->get(in, next);
+        ParamEvent event{};
+        NoteEvent note{};
+        if (toParamEvent(header, event))
         {
-            ++count;
+            if (count == kMaxParamEvents)
+            {
+                break;
+            }
+            events_[count++] = event;
+        }
+        else if (toNoteEvent(header, note))
+        {
+            if (noteCount == kMaxNoteEvents)
+            {
+                break;
+            }
+            notes_[noteCount++] = note;
         }
     }
 
@@ -186,7 +210,8 @@ clap_process_status GigaGrainsPlugin::processNonblocking(const clap_process *pro
     processor_->process(
         input != nullptr ? input->data32 : nullptr, input != nullptr ? input->channel_count : 0,
         output != nullptr ? output->data32 : nullptr, output != nullptr ? output->channel_count : 0,
-        process->frames_count, std::span<const ParamEvent>(events_.data(), count));
+        process->frames_count, std::span<const ParamEvent>(events_.data(), count),
+        std::span<const NoteEvent>(notes_.data(), noteCount));
 
     // The values just handed over, for the host to read. Not the Processor's base(): an event
     // waits there for its grid boundary, which may come in the next call (ruling M1-u).
@@ -198,7 +223,8 @@ clap_process_status GigaGrainsPlugin::processNonblocking(const clap_process *pro
         }
     }
 
-    // An automation storm larger than events_: the rest applies at the block's end.
+    // An automation or note storm larger than events_ or notes_: the rest applies at the block's
+    // end.
     if (next < numEvents)
     {
         applyBetweenBlocks(in, next);
@@ -246,20 +272,36 @@ bool GigaGrainsPlugin::toParamEvent(const clap_event_header *header, ParamEvent 
 
 void GigaGrainsPlugin::applyBetweenBlocks(const clap_input_events *in, uint32_t first) noexcept
 {
-    // Values apply at once, outside the control grid (Processor::setBase). Modulation has no
-    // such setter: it goes through a 0-frame process() call, which queues it for the next grid
-    // boundary like modulation inside a block. events_ is free between process() calls.
+    // Values apply at once, outside the control grid (Processor::setBase). Modulation and notes
+    // have no such setter: they go through a 0-frame process() call, which queues them for the
+    // next grid boundary like those inside a block. events_ and notes_ are free between
+    // process() calls.
     std::size_t mods = 0;
-    const auto queueMods = [this, &mods] {
+    std::size_t notes = 0;
+    const auto queue = [this, &mods, &notes] {
         processor_->process(nullptr, 0, nullptr, 0, 0,
-                            std::span<const ParamEvent>(events_.data(), mods));
+                            std::span<const ParamEvent>(events_.data(), mods),
+                            std::span<const NoteEvent>(notes_.data(), notes));
         mods = 0;
+        notes = 0;
     };
     const uint32_t numEvents = in->size(in);
     for (uint32_t i = first; i < numEvents; ++i)
     {
+        const clap_event_header *header = in->get(in, i);
         ParamEvent event{};
-        if (!toParamEvent(in->get(in, i), event))
+        NoteEvent note{};
+        if (toNoteEvent(header, note))
+        {
+            if (notes == kMaxNoteEvents)
+            {
+                queue();
+            }
+            note.offset = 0;
+            notes_[notes++] = note;
+            continue;
+        }
+        if (!toParamEvent(header, event))
         {
             continue;
         }
@@ -272,15 +314,61 @@ void GigaGrainsPlugin::applyBetweenBlocks(const clap_input_events *in, uint32_t 
         }
         if (mods == kMaxParamEvents)
         {
-            queueMods();
+            queue();
         }
         event.offset = 0;
         events_[mods++] = event;
     }
-    if (mods > 0)
+    if (mods > 0 || notes > 0)
     {
-        queueMods();
+        queue();
     }
+}
+
+bool GigaGrainsPlugin::toNoteEvent(const clap_event_header *header, NoteEvent &event) noexcept
+{
+    if (header == nullptr || header->space_id != CLAP_CORE_EVENT_SPACE_ID)
+    {
+        return false;
+    }
+    if (header->type == CLAP_EVENT_NOTE_ON || header->type == CLAP_EVENT_NOTE_OFF ||
+        header->type == CLAP_EVENT_NOTE_CHOKE)
+    {
+        // Velocity does nothing (D6), and the CLAP dialect has no velocity-0 rule: every note-on
+        // is an On. A note-off's wildcards (−1) stay, to release every held note they match; a
+        // choke is a note-off.
+        const auto *e = reinterpret_cast<const clap_event_note *>(header);
+        const auto type =
+            header->type == CLAP_EVENT_NOTE_ON ? NoteEventType::On : NoteEventType::Off;
+        event = NoteEvent{header->time, type, e->channel, e->key};
+        return true;
+    }
+    if (header->type == CLAP_EVENT_MIDI)
+    {
+        const auto *e = reinterpret_cast<const clap_event_midi *>(header);
+        const auto status = static_cast<uint8_t>(e->data[0] & 0xF0);
+        const auto channel = static_cast<int16_t>(e->data[0] & 0x0F);
+        const auto key = static_cast<int16_t>(e->data[1]);
+        if (status == 0x90)
+        {
+            // A note-on with velocity 0 is a note-off (MIDI 1.0).
+            const auto type = e->data[2] > 0 ? NoteEventType::On : NoteEventType::Off;
+            event = NoteEvent{header->time, type, channel, key};
+            return true;
+        }
+        if (status == 0x80)
+        {
+            event = NoteEvent{header->time, NoteEventType::Off, channel, key};
+            return true;
+        }
+        if (status == 0xB0 && e->data[1] == 123)
+        {
+            // CC 123, all notes off: it releases every held note, whatever its channel.
+            event = NoteEvent{header->time, NoteEventType::AllOff, channel, -1};
+            return true;
+        }
+    }
+    return false;
 }
 
 void GigaGrainsPlugin::applyLoadedState() noexcept
@@ -307,12 +395,12 @@ void GigaGrainsPlugin::paramsFlush(const clap_input_events *in,
                                    const clap_output_events * /*out*/) noexcept
 {
     // CLAP puts only parameter events in a flush, but a host may deliver notes there too
-    // (clap-wrapper's VST3 does), and those still count.
+    // (clap-wrapper's VST3 does), and those still count, and play.
     countNoteOns(in);
     if (processor_ == nullptr)
     {
-        // Inactive, so on the main thread: the values wait for activate(). Modulation belongs
-        // to a processing session, and the next one starts without any.
+        // Inactive, so on the main thread: the values wait for activate(). Modulation and notes
+        // belong to a processing session, and the next one starts without any.
         const uint32_t numEvents = in != nullptr ? in->size(in) : 0;
         for (uint32_t i = 0; i < numEvents; ++i)
         {
@@ -324,7 +412,8 @@ void GigaGrainsPlugin::paramsFlush(const clap_input_events *in,
         }
         return;
     }
-    // Active, so on the audio thread, between process() calls.
+    // Active, so on the audio thread, between process() calls: notes, like modulation, join the
+    // next grid boundary.
     applyLoadedState();
     if (in != nullptr)
     {
