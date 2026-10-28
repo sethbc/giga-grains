@@ -5,15 +5,24 @@
 // gg-render: renders a render spec (RenderSpec.h) offline and deterministically, writes the
 // audio, its metrics, its grain-event log and a spectrogram, and compares the metrics and the
 // event log with goldens. A sample-mode render is durationSeconds of stream activity plus a
-// release tail until all grains finish; an FX render runs Giga Grains FX's Processor over an
-// input for exactly durationSeconds (render() in Render.h).
+// release tail until all grains finish; an instrument or FX render runs Giga Grains' or Giga
+// Grains FX's Processor, over a sample or an input, for exactly durationSeconds (render() in
+// Render.h).
 //
 //   gg-render <spec.json> [-o out.wav] [--metrics out.json] [--events out.jsonl]
 //             [--spectrogram out.png] [--compare golden.metrics.json]
-//             [--compare-events golden.events.jsonl] [--block-size N]
+//             [--compare-events golden.events.jsonl] [--block-size N] [--media-dir DIR]
+//   gg-render --write-media DIR
 //
-// Exit status: 0 = pass (every requested comparison matched), 1 = a comparison failed,
-// 2 = bad input (arguments, spec, source or golden files) or an output that couldn't be written.
+// --media-dir resolves the spec's relative file paths against DIR instead of the spec's
+// directory. --write-media writes the test media the golden cases read (writeTestMedia in
+// Signals.h) into DIR, and does nothing else.
+//
+// Exit status: 0 = pass (every requested comparison matched, or the media were written),
+// 1 = a comparison failed, 2 = bad input (arguments, spec, source, sample, input or golden files)
+// or an output that couldn't be written, 3 = an internal error (anything else thrown, such as
+// std::logic_error or std::bad_alloc). Every path is UTF-8 (on Windows the arguments are
+// converted to it, and files are opened with wide paths).
 
 #include <cstddef>
 #include <cstdint>
@@ -43,10 +52,12 @@
 namespace
 {
 namespace fs = std::filesystem;
+using gg::render::pathFromUtf8;
 
 constexpr int kExitPass = 0;
 constexpr int kExitCompareFailed = 1;
 constexpr int kExitBadInput = 2;
+constexpr int kExitInternalError = 3;
 
 int fail(const std::string &message)
 {
@@ -56,7 +67,7 @@ int fail(const std::string &message)
 
 std::optional<std::string> readFile(const std::string &path)
 {
-    std::ifstream in(path, std::ios::binary);
+    std::ifstream in(pathFromUtf8(path), std::ios::binary);
     if (!in)
     {
         return std::nullopt;
@@ -72,7 +83,7 @@ std::optional<std::string> readFile(const std::string &path)
 /// Creates the directories path's file goes in, so outputs can go to a fresh build tree.
 void makeParentDirectories(const std::string &path)
 {
-    const fs::path parent = fs::path(path).parent_path();
+    const fs::path parent = pathFromUtf8(path).parent_path();
     if (!parent.empty())
     {
         std::error_code ignored; // a failure shows up when the file is written
@@ -84,7 +95,7 @@ void makeParentDirectories(const std::string &path)
 bool writeFile(const std::string &path, const std::string &text)
 {
     makeParentDirectories(path);
-    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    std::ofstream out(pathFromUtf8(path), std::ios::binary | std::ios::trunc);
     out.write(text.data(), static_cast<std::streamsize>(text.size()));
     out.close();
     return !out.fail();
@@ -145,17 +156,19 @@ bool compareEvents(const std::vector<std::string> &golden, const std::vector<std
     fmt::print("  rendered: {}\n", i < actual.size() ? actual[i] : "(end of log)");
     return false;
 }
-} // namespace
 
-int main(int argc, char **argv)
+/// gg-render's command line; main() turns what it throws into an exit status.
+int run(int argc, char **argv)
 {
     CLI::App app{"Renders a Giga Grains render spec offline and deterministically, and compares "
                  "the result with goldens. A sample-mode spec renders durationSeconds of stream "
-                 "activity plus a release tail until all grains finish; an FX spec (\"mode\": "
-                 "\"fx\") runs Giga Grains FX's processing over an input for exactly "
+                 "activity plus a release tail until all grains finish; an instrument spec "
+                 "(\"mode\": \"instrument\") or FX spec (\"mode\": \"fx\") runs Giga Grains' "
+                 "or Giga Grains FX's processing, over a sample or an input, for exactly "
                  "durationSeconds.\nExit status: 0 = pass, 1 = a comparison failed, 2 = bad input "
-                 "or an output that couldn't be written.",
+                 "or an output that couldn't be written, 3 = an internal error.",
                  "gg-render"};
+    argv = app.ensure_utf8(argv);
     std::string specPath;
     std::string wavPath;
     std::string metricsPath;
@@ -164,7 +177,9 @@ int main(int argc, char **argv)
     std::string goldenMetricsPath;
     std::string goldenEventsPath;
     uint32_t blockSize = 0;
-    app.add_option("spec", specPath, "The render spec (JSON)")->required();
+    std::string mediaDir;
+    std::string writeMediaDir;
+    auto *const specOption = app.add_option("spec", specPath, "The render spec (JSON)");
     app.add_option("-o,--output", wavPath, "Write the render as a 32-bit float WAV");
     app.add_option("--metrics", metricsPath, "Write the render's metrics (JSON)");
     app.add_option("--events", eventsPath, "Write the grain-event log (JSON lines)");
@@ -177,6 +192,12 @@ int main(int argc, char **argv)
     const auto *blockSizeOption =
         app.add_option("--block-size", blockSize, "Override the spec's blockSize")
             ->check(CLI::Range(uint32_t{1}, gg::render::kMaxBlockSize));
+    app.add_option("--media-dir", mediaDir,
+                   "Resolve the spec's relative file paths against this directory instead of "
+                   "the spec's");
+    app.add_option("--write-media", writeMediaDir,
+                   "Write the test media the golden cases read into this directory, and exit")
+        ->excludes(specOption);
     try
     {
         app.parse(argc, argv);
@@ -185,6 +206,22 @@ int main(int argc, char **argv)
     {
         // --help is a ParseError too, with exit code 0.
         return app.exit(e) == 0 ? kExitPass : kExitBadInput;
+    }
+
+    if (!writeMediaDir.empty())
+    {
+        std::string error;
+        if (!gg::render::writeTestMedia(writeMediaDir, error))
+        {
+            return fail(error);
+        }
+        fmt::print("wrote {} and {} in {}\n", gg::render::kToneMedium, gg::render::kLoopMedium,
+                   writeMediaDir);
+        return kExitPass;
+    }
+    if (specPath.empty())
+    {
+        return fail("no render spec given (see --help)");
     }
 
     const auto specText = readFile(specPath);
@@ -198,11 +235,9 @@ int main(int argc, char **argv)
     {
         return fail(fmt::format("{}: {}", specPath, error));
     }
-    if (spec->source.kind == gg::render::SourceKind::File &&
-        fs::path(spec->source.path).is_relative())
-    {
-        spec->source.path = (fs::path(specPath).parent_path() / spec->source.path).string();
-    }
+    gg::render::resolvePaths(
+        *spec, mediaDir.empty() ? gg::render::utf8FromPath(pathFromUtf8(specPath).parent_path())
+                                : mediaDir);
     if (blockSizeOption->count() > 0)
     {
         spec->blockSize = blockSize;
@@ -241,7 +276,7 @@ int main(int argc, char **argv)
     {
         audio = gg::render::render(*spec, &events);
     }
-    catch (const std::exception &e)
+    catch (const gg::render::BadInput &e)
     {
         return fail(fmt::format("{}: {}", specPath, e.what()));
     }
@@ -302,4 +337,28 @@ int main(int argc, char **argv)
         pass = false;
     }
     return pass ? kExitPass : kExitCompareFailed;
+}
+} // namespace
+
+int main(int argc, char **argv)
+{
+    // [182], [184]: anything thrown but bad input, from the render, the metrics or the writers
+    // (std::bad_alloc on an extreme spec, say), is an internal error.
+    try
+    {
+        return run(argc, argv);
+    }
+    catch (const gg::render::BadInput &e)
+    {
+        return fail(e.what());
+    }
+    catch (const std::exception &e)
+    {
+        fmt::print(stderr, "gg-render: internal error: {}\n", e.what());
+    }
+    catch (...)
+    {
+        fmt::print(stderr, "gg-render: internal error\n");
+    }
+    return kExitInternalError;
 }

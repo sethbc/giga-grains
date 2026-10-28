@@ -218,11 +218,12 @@ runs the tests labelled either. The labels are:
 ```
 gg-render <spec.json> [-o out.wav] [--metrics out.json] [--events out.jsonl]
           [--spectrogram out.png] [--compare golden.metrics.json]
-          [--compare-events golden.events.jsonl] [--block-size N]
+          [--compare-events golden.events.jsonl] [--block-size N] [--media-dir DIR]
+gg-render --write-media DIR
 ```
 
 - It's built at `build/<preset>/tools/gg-render/gg-render`.
-- **Two modes** (the spec format is documented in `tools/gg-render/RenderSpec.h`). Every spec has
+- **Three modes** (the spec format is documented in `tools/gg-render/RenderSpec.h`). Every spec has
   `sampleRate`, `durationSeconds`, `blockSize` and `seed`; any unknown key is an error.
   - **Sample mode** (`"mode": "sample"`, the default) drives the engine's Cloud stream over a
     `source` (`sine`, `sweep`, `noise` or `file`) with a `stream` (`grainRateHz`,
@@ -231,16 +232,25 @@ gg-render <spec.json> [-o out.wav] [--metrics out.json] [--events out.jsonl]
     tier, `"normal"` (Hermite, the default) or `"eco"` (linear). The four M0 cases and
     `dense-noise-eco` use sample mode.
   - **FX mode** (`"mode": "fx"`) runs Giga Grains FX's `gg-core` `Processor`, the one the plugin
-    runs, over an `input`: a built-in `sine`, `sweep` or `noise` (no files; a WAV-file input
-    waits for sub-project 3's file loader, ruling M1-aa). The top-level `channels` key (1 or 2)
-    sets the input's channel count. Optional `params` sets base values by parameter name
-    (`"Size"`, `"Density"`, …), and optional `automation` is a time-ordered list of
-    `{"time", "param", "value"}` points in seconds. Values are in each parameter's CLAP value
-    domain (Density 6.0 is 64 Hz). The render is exactly `durationSeconds` long.
+    runs, over an `input`: a built-in `sine`, `sweep` or `noise`, or a `file` loaded and
+    converted to the render's rate with `gg-media` (ruling M1-aa). The top-level `channels` key
+    (1 or 2) sets a built-in input's channel count; a file keeps its own, and takes no
+    `channels`. Optional `params` sets base values by parameter name (`"Size"`, `"Density"`, …),
+    optional `automation` is a time-ordered list of `{"time", "param", "value"}` points in
+    seconds, and optional `notes` a time-ordered list of `{"time", "key", "duration",
+    "channel"}` (channel optional). Values are in each parameter's CLAP value domain (Density 6.0
+    is 64 Hz). The render is exactly `durationSeconds` long.
+  - **Instrument mode** (`"mode": "instrument"`) runs Giga Grains' `Processor` the same way over
+    a `sample` (a built-in signal or a `file`, loaded with `gg-media`), with no `channels`.
   - **FX inputs are faded** in at their start and out at their end over 10 ms, with a raised
     cosine (sin²), so the input's own edges don't click (ruling M1-v). Sample-mode sources and
     the M0 goldens are untouched.
-- Its exit status is 0 for a pass, 1 when a comparison fails, and 2 for bad input.
+- A relative file path is taken from the spec's directory, or from `--media-dir`. The golden
+  cases' media are generated, never committed: `--write-media DIR` writes them, and the
+  `golden_media` test does so into `build/<preset>/golden-media` as a fixture every golden test
+  requires.
+- Its exit status is 0 for a pass, 1 when a comparison fails, 2 for bad input and 3 for an
+  internal error.
 - **The cases:** each case's spec is in `tests/golden/cases/`, and its expected metrics and event
   log are in `tests/golden/expected/`. Every `*.json` there is a case; a new one gets a test the
   next time CMake runs.
@@ -253,7 +263,8 @@ gg-render <spec.json> [-o out.wav] [--metrics out.json] [--events out.jsonl]
     gg-render's failure message.
 - **After a DSP change, run `scripts/update-goldens.sh [build-dir]`** (default `build/dev`; a
   relative path is taken from the repository root).
-  - It rebuilds `gg-render` and rewrites the expected files.
+  - It rebuilds `gg-render`, writes the media into `<build-dir>/golden-media` and rewrites the
+    expected files.
   - It leaves WAVs and spectrograms in `<build-dir>/golden/`.
   - It then checks the new goldens.
 - Look at every spectrogram before committing new goldens, and say in the commit message why they

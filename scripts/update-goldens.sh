@@ -9,8 +9,10 @@
 #
 # build-dir is a configured single-config (Ninja) build tree, build/dev by default (create it with
 # `cmake --preset dev`). The script runs from the repository root, so a relative build-dir is taken
-# from there, not from the current directory. It builds gg-render there first, then renders every
-# case in tests/golden/cases/ (the same glob the golden CTests use) into
+# from there, not from the current directory. It builds gg-render there first and writes the test
+# media the cases read into <build-dir>/golden-media (gg-render --write-media; they're generated,
+# never committed), as the golden_media CTest does. Then it renders every case in
+# tests/golden/cases/ (the same glob the golden CTests use), with --media-dir pointing there, into
 #   - tests/golden/expected/<case>.metrics.json and <case>.events.jsonl, which are committed;
 #   - <build-dir>/golden/<case>.wav and <case>.png, which are not.
 # Finally it renders each case again and compares it with the new files, exactly as the golden
@@ -40,11 +42,15 @@ fi
 cases_dir=tests/golden/cases
 expected_dir=tests/golden/expected
 renders_dir="$build_dir/golden"
+media_dir="$build_dir/golden-media"
 mkdir -p "$expected_dir" "$renders_dir"
+
+"$gg_render" --write-media "$media_dir"
 
 for spec in "$cases_dir"/*.json; do
     name="$(basename "$spec" .json)"
     "$gg_render" "$spec" \
+        --media-dir "$media_dir" \
         -o "$renders_dir/$name.wav" \
         --spectrogram "$renders_dir/$name.png" \
         --metrics "$expected_dir/$name.metrics.json" \
@@ -56,6 +62,7 @@ echo "Checking the new goldens:"
 for spec in "$cases_dir"/*.json; do
     name="$(basename "$spec" .json)"
     "$gg_render" "$spec" \
+        --media-dir "$media_dir" \
         --compare "$expected_dir/$name.metrics.json" \
         --compare-events "$expected_dir/$name.events.jsonl"
 done

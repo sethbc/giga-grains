@@ -14,7 +14,8 @@ namespace gg::metrics
 {
 /// Decodes a WAV (or anything else dr_wav reads: RF64, W64, AIFF), FLAC or MP3 file to float
 /// samples, chosen by content rather than extension. Returns nullopt if the file can't be opened
-/// or decoded, or reports no channels or a zero sample rate.
+/// or decoded, or reports no channels or a zero sample rate. Both functions take a UTF-8 path;
+/// on Windows they open it with dr_libs' wide-character functions.
 std::optional<AudioData> readAudioFile(const std::string &path);
 
 /// Writes `audio` as a 32-bit IEEE-float RIFF WAV, so readAudioFile gives back the same bits.

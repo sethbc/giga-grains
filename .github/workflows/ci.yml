@@ -103,6 +103,8 @@ jobs:
       # The arm64 runner otherwise never runs the universal build's x86_64 slice. Under Rosetta 2
       # it runs the whole Catch2 suite, then every golden case with the same commands as the
       # golden CTests, so the slice's grain-event logs are checked against the same goldens.
+      # The x86_64 slice writes the cases' media itself first (the media go through libm), as
+      # the golden_media fixture does, and every render resolves their paths there.
       # arch -x86_64 fails on a binary without an x86_64 slice.
       - name: Test the x86_64 slice under Rosetta (macOS)
         if: ${{ !cancelled() && steps.build.outcome == 'success' && runner.os == 'macOS' }}
@@ -117,9 +119,11 @@ jobs:
           echo "gg-tests: $(lipo -archs "$tests"); gg-render: $(lipo -archs "$render")"
           arch -x86_64 "$tests"
           out="$build_dir/golden-x86_64"
+          arch -x86_64 "$render" --write-media "$out-media"
           for spec in tests/golden/cases/*.json; do
             name="$(basename "$spec" .json)"
             arch -x86_64 "$render" "$spec" \
+              --media-dir "$out-media" \
               -o "$out/$name.wav" \
               --spectrogram "$out/$name.png" \
               --compare "tests/golden/expected/$name.metrics.json" \

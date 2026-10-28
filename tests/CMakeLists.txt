@@ -170,6 +170,14 @@ endif ()
 #
 # Every golden/cases/*.json is a case, the same glob scripts/update-goldens.sh renders, so a new
 # case can't go ungated. CONFIGURE_DEPENDS re-runs CMake when the set of files changes.
+#
+# The cases' media files are generated, never committed (spec §6.9): golden_media writes them
+# into <build>/golden-media, a fixture every golden test requires, and the cases' relative paths
+# resolve there (--media-dir). That applies to every relative path in every case, so a future
+# case that reads a committed file must give its path some other way than relative to the spec.
+set(GG_GOLDEN_MEDIA_DIR ${CMAKE_BINARY_DIR}/golden-media)
+add_test(NAME golden_media COMMAND gg-render --write-media ${GG_GOLDEN_MEDIA_DIR})
+set_tests_properties(golden_media PROPERTIES LABELS golden FIXTURES_SETUP golden_media)
 file(GLOB GG_GOLDEN_CASE_SPECS CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/golden/cases/*.json)
 if (NOT GG_GOLDEN_CASE_SPECS)
     message(FATAL_ERROR "No golden cases in ${CMAKE_CURRENT_SOURCE_DIR}/golden/cases")
@@ -178,11 +186,12 @@ foreach (spec IN LISTS GG_GOLDEN_CASE_SPECS)
     get_filename_component(case ${spec} NAME_WLE)
     add_test(NAME golden_${case}
             COMMAND gg-render ${spec}
+            --media-dir ${GG_GOLDEN_MEDIA_DIR}
             -o ${CMAKE_BINARY_DIR}/golden/${case}.wav
             --spectrogram ${CMAKE_BINARY_DIR}/golden/${case}.png
             --compare ${CMAKE_CURRENT_SOURCE_DIR}/golden/expected/${case}.metrics.json
             --compare-events ${CMAKE_CURRENT_SOURCE_DIR}/golden/expected/${case}.events.jsonl)
-    set_tests_properties(golden_${case} PROPERTIES LABELS golden)
+    set_tests_properties(golden_${case} PROPERTIES LABELS golden FIXTURES_REQUIRED golden_media)
 endforeach ()
 
 # The golden gate must be able to fail, label `golden`. Each tamper test compares a fresh render of
@@ -231,13 +240,17 @@ file(WRITE ${tamper_dir}/${tamper_case}.metrics.json "${tampered_metrics}\n")
 
 add_test(NAME golden_tamper_events
         COMMAND gg-render ${CMAKE_CURRENT_SOURCE_DIR}/golden/cases/${tamper_case}.json
+        --media-dir ${GG_GOLDEN_MEDIA_DIR}
         --compare-events ${tamper_dir}/${tamper_case}.events.jsonl)
 add_test(NAME golden_tamper_metrics
         COMMAND gg-render ${CMAKE_CURRENT_SOURCE_DIR}/golden/cases/${tamper_case}.json
+        --media-dir ${GG_GOLDEN_MEDIA_DIR}
         --compare ${tamper_dir}/${tamper_case}.metrics.json)
 set_tests_properties(golden_tamper_events PROPERTIES LABELS golden
+        FIXTURES_REQUIRED golden_media
         PASS_REGULAR_EXPRESSION "FAIL: event log differs from .* at line 5 ")
 set_tests_properties(golden_tamper_metrics PROPERTIES LABELS golden
+        FIXTURES_REQUIRED golden_media
         PASS_REGULAR_EXPRESSION
         "rmsEnvelope: 1 of [0-9]+ compared frames differ by more than 0.5 dB; worst is frame ${tamper_frame} ")
 

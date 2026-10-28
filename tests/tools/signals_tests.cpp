@@ -7,6 +7,8 @@
 #include <cstddef>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
+#include <memory>
 #include <numbers>
 #include <stdexcept>
 #include <string>
@@ -17,8 +19,12 @@
 
 #include "RenderSpec.h"
 #include "Signals.h"
+#include "gg/media/Convert.h"
+#include "gg/media/Decode.h"
 #include "gg/metrics/AudioData.h"
 #include "gg/metrics/WavIO.h"
+#include "gg/source/PreparedSource.h"
+#include "gg/source/SampleBuffer.h"
 
 using Catch::Matchers::WithinAbs;
 using Catch::Matchers::WithinRel;
@@ -114,6 +120,43 @@ std::string outputPath(const std::string &name)
     std::filesystem::create_directories(dir);
     return (dir / name).string();
 }
+
+/// `path` as the UTF-8 the spec's paths are in.
+std::string utf8(const std::filesystem::path &path)
+{
+    const auto text = path.u8string();
+    return {text.begin(), text.end()};
+}
+
+/// The path UTF-8 `text` names.
+std::filesystem::path fromUtf8(const std::string &text)
+{
+    return std::u8string(text.begin(), text.end());
+}
+
+/// A fresh directory of this name (UTF-8) under GG_TEST_OUTPUT_DIR, as UTF-8.
+std::string freshDirectory(const std::string &name)
+{
+    const std::filesystem::path dir = std::filesystem::path{GG_TEST_OUTPUT_DIR} / fromUtf8(name);
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+    return utf8(dir);
+}
+
+/// What gg-media decodes `path` to, converted to `rate`.
+std::shared_ptr<gg::SampleBuffer> decodeAt(const std::string &path, double rate)
+{
+    auto decoded = gg::media::decodeAudioFile(fromUtf8(path));
+    INFO(decoded.error);
+    REQUIRE(decoded.audio.has_value());
+    return gg::media::convertRate(decoded.audio->buffer, rate);
+}
+
+std::vector<float> channelOf(const gg::SampleBuffer &b, uint32_t c)
+{
+    const float *x = b.channel(c);
+    return {x, x + b.frames()};
+}
 } // namespace
 
 TEST_CASE("signals are deterministic", "[render]")
@@ -206,7 +249,14 @@ TEST_CASE("file sources keep their channels and sample rate", "[render]")
     CHECK(bitIdentical(makeSignal(file, 48000.0, 1), written));
 
     const SourceSpec missing{.kind = SourceKind::File, .path = outputPath("no-such-file.wav")};
-    CHECK_THROWS_AS(makeSignal(missing, 48000.0, 1), std::runtime_error);
+    CHECK_THROWS_AS(makeSignal(missing, 48000.0, 1), gg::render::BadInput);
+
+    // Paths are UTF-8 (on Windows WavIO opens them with dr_libs' wide functions, B-m9).
+    const std::string dir = freshDirectory("signals-file-source-\xc3\xa9t\xc3\xa9");
+    const std::string unicode = dir + "/gr\xc3\xa4in-\xe9\x9f\xb3.wav";
+    REQUIRE(gg::metrics::writeWavFloat32(unicode, written));
+    CHECK(
+        bitIdentical(makeSignal({.kind = SourceKind::File, .path = unicode}, 48000.0, 1), written));
 }
 
 TEST_CASE("stereo input differs per channel", "[render]")
@@ -255,11 +305,9 @@ TEST_CASE("stereo input differs per channel", "[render]")
     CHECK(w.channels[0] == w.channels[1]);
     checkFaded(w.channels[1], makeSignal(sweep, sr, 7).channels[0], sr);
 
-    // What parseRenderSpec never produces: other channel counts, a file, a rate of its own.
+    // What parseRenderSpec never produces: other channel counts, a rate of its own.
     CHECK_THROWS_AS(makeInput(noise, 0, sr, 7), std::invalid_argument);
     CHECK_THROWS_AS(makeInput(noise, 3, sr, 7), std::invalid_argument);
-    CHECK_THROWS_AS(makeInput({.kind = SourceKind::File, .path = "in.wav"}, 1, sr, 7),
-                    std::invalid_argument);
     SourceSpec ownRate = sine;
     ownRate.sampleRate = 44100.0;
     CHECK_THROWS_AS(makeInput(ownRate, 1, sr, 7), std::invalid_argument);
@@ -316,4 +364,142 @@ TEST_CASE("fx input fades in and out over 10 ms", "[render]")
     const AudioData source = makeSignal(sine, 48000.0, 3);
     CHECK(source.channels[0][1] ==
           static_cast<float>(0.5 * std::sin(2.0 * std::numbers::pi * 220.0 / 48000.0)));
+}
+
+TEST_CASE("file inputs are converted to the render's rate and faded", "[render]")
+{
+    // Ruling M1-aa: a file input goes through gg-media, mono or stereo as the file is, whatever
+    // `channels` says, then gets the built-in inputs' fades (ruling M1-v).
+    const std::string dir = freshDirectory("signals-file-input");
+    const SourceSpec sine{
+        .kind = SourceKind::Sine, .frequencyHz = 220.0, .seconds = 0.5, .amplitude = 0.5};
+    AudioData stereo = makeSignal(sine, 44100.0, 1);
+    SourceSpec fifth = sine;
+    fifth.frequencyHz = 330.0;
+    stereo.channels.push_back(makeSignal(fifth, 44100.0, 1).channels[0]);
+    const std::string stereoPath = dir + "/stereo-44k1.wav";
+    REQUIRE(gg::metrics::writeWavFloat32(stereoPath, stereo));
+    const std::string monoPath = dir + "/mono-48k.wav";
+    REQUIRE(gg::metrics::writeWavFloat32(monoPath, makeSignal(sine, 48000.0, 1)));
+
+    const SourceSpec stereoFile{.kind = SourceKind::File, .path = stereoPath};
+    for (const uint32_t channels : {1u, 2u})
+    {
+        CAPTURE(channels);
+        const AudioData in = makeInput(stereoFile, channels, 48000.0, 7);
+        CHECK(in.sampleRate == 48000.0);
+        REQUIRE(in.channels.size() == 2);
+        const auto raw = decodeAt(stereoPath, 48000.0);
+        REQUIRE(raw->frames() == 24000); // llround(22050 × 48000 / 44100)
+        checkFaded(in.channels[0], channelOf(*raw, 0), 48000.0);
+        checkFaded(in.channels[1], channelOf(*raw, 1), 48000.0);
+    }
+
+    const AudioData mono = makeInput({.kind = SourceKind::File, .path = monoPath}, 2, 48000.0, 7);
+    REQUIRE(mono.channels.size() == 1);
+    checkFaded(mono.channels[0], makeSignal(sine, 48000.0, 1).channels[0], 48000.0);
+
+    const SourceSpec missing{.kind = SourceKind::File, .path = dir + "/no-such-file.wav"};
+    CHECK_THROWS_AS(makeInput(missing, 1, 48000.0, 7), gg::render::BadInput);
+}
+
+TEST_CASE("instrument samples are prepared at the render's rate", "[render]")
+{
+    // A built-in sample is synthesized at the render's rate, mono.
+    const SourceSpec sweep{.kind = SourceKind::Sweep,
+                           .startHz = 50.0,
+                           .endHz = 8000.0,
+                           .seconds = 0.5,
+                           .amplitude = 0.5};
+    const auto built = gg::render::makeSample(sweep, 48000.0, 3);
+    REQUIRE(built != nullptr);
+    CHECK(built->buffer().sampleRate() == 48000.0);
+    REQUIRE(built->buffer().channels() == 1);
+    CHECK(channelOf(built->buffer(), 0) == makeSignal(sweep, 48000.0, 3).channels[0]);
+    CHECK(built->pairs().data() == nullptr);
+
+    // A file goes through gg-media's loader: converted, its channels kept, no fades.
+    const std::string dir = freshDirectory("signals-instrument-sample");
+    AudioData stereo = makeSignal(sweep, 44100.0, 3);
+    stereo.channels.push_back(stereo.channels[0]);
+    const std::string path = dir + "/sample-44k1.wav";
+    REQUIRE(gg::metrics::writeWavFloat32(path, stereo));
+    const auto file = gg::render::makeSample({.kind = SourceKind::File, .path = path}, 48000.0, 3);
+    REQUIRE(file != nullptr);
+    CHECK(file->buffer().sampleRate() == 48000.0);
+    REQUIRE(file->buffer().channels() == 2);
+    const auto raw = decodeAt(path, 48000.0);
+    CHECK(channelOf(file->buffer(), 0) == channelOf(*raw, 0));
+    CHECK(channelOf(file->buffer(), 1) == channelOf(*raw, 1));
+    CHECK(file->pairs().data() != nullptr);
+
+    CHECK_THROWS_AS(
+        gg::render::makeSample({.kind = SourceKind::File, .path = dir + "/none.wav"}, 48000.0, 3),
+        gg::render::BadInput);
+}
+
+TEST_CASE("write-media writes the test media", "[render]")
+{
+    const std::string dir = freshDirectory("signals-write-media");
+    std::string error;
+    REQUIRE(gg::render::writeTestMedia(dir, error));
+    CHECK(error.empty());
+
+    // tone-44k1.wav: stereo, 44.1 kHz, 4 s; a 50 Hz to 8 kHz exponential sweep on the left, a
+    // 220 Hz sine on the right, each at -6 dBFS.
+    const double minus6 = std::pow(10.0, -6.0 / 20.0);
+    const auto tone = gg::metrics::readAudioFile(dir + "/tone-44k1.wav");
+    REQUIRE(tone.has_value());
+    CHECK(tone->sampleRate == 44100.0);
+    REQUIRE(tone->channels.size() == 2);
+    CHECK(tone->channels[0].size() == 176400);
+    CHECK(tone->channels[1].size() == 176400);
+    const SourceSpec sweep{.kind = SourceKind::Sweep,
+                           .startHz = 50.0,
+                           .endHz = 8000.0,
+                           .seconds = 4.0,
+                           .amplitude = minus6};
+    const SourceSpec sine{
+        .kind = SourceKind::Sine, .frequencyHz = 220.0, .seconds = 4.0, .amplitude = minus6};
+    CHECK(tone->channels[0] == makeSignal(sweep, 44100.0, 0).channels[0]);
+    CHECK(tone->channels[1] == makeSignal(sine, 44100.0, 0).channels[0]);
+    CHECK_THAT(20.0 * std::log10(peak(tone->channels[0])), WithinAbs(-6.0, 0.01));
+    CHECK_THAT(20.0 * std::log10(peak(tone->channels[1])), WithinAbs(-6.0, 0.01));
+
+    // loop-48k.wav: mono, 48 kHz, 4 s; a 30 ms noise burst every 250 ms, decaying, -3 dBFS peak.
+    const auto loop = gg::metrics::readAudioFile(dir + "/loop-48k.wav");
+    REQUIRE(loop.has_value());
+    CHECK(loop->sampleRate == 48000.0);
+    REQUIRE(loop->channels.size() == 1);
+    const auto &x = loop->channels[0];
+    REQUIRE(x.size() == 192000);
+    CHECK_THAT(20.0 * std::log10(peak(x)), WithinAbs(-3.0, 1e-4));
+    constexpr std::size_t period = 12000; // 250 ms
+    constexpr std::size_t burst = 1440;   // 30 ms
+    for (std::size_t start = 0; start < x.size(); start += period)
+    {
+        CAPTURE(start);
+        const std::vector<float> head(x.begin() + start, x.begin() + start + 240);
+        const std::vector<float> tail(x.begin() + start + burst - 240, x.begin() + start + burst);
+        const std::vector<float> gap(x.begin() + start + burst, x.begin() + start + period);
+        CHECK(peak(head) > 0.3f);
+        CHECK(peak(tail) < 0.01f * peak(head)); // decays
+        CHECK(peak(gap) == 0.0f);               // silent between bursts
+    }
+    // Seed 7's noise, so every burst differs.
+    CHECK_FALSE(std::equal(x.begin(), x.begin() + burst, x.begin() + period));
+
+    // Writing again gives the same files.
+    const std::string again = freshDirectory("signals-write-media-again");
+    REQUIRE(gg::render::writeTestMedia(again, error));
+    CHECK(gg::metrics::readAudioFile(again + "/loop-48k.wav")->channels == loop->channels);
+    CHECK(gg::metrics::readAudioFile(again + "/tone-44k1.wav")->channels == tone->channels);
+
+    // A directory that can't be made is an error naming it.
+    const std::string blocked = outputPath("signals-write-media-blocked");
+    {
+        std::ofstream file(blocked); // a file where the directory would go
+    }
+    CHECK_FALSE(gg::render::writeTestMedia(blocked + "/media", error));
+    CHECK_FALSE(error.empty());
 }
