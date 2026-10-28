@@ -1,0 +1,164 @@
+{
+  "leg": "windows-clangcl",
+  "machines": [
+    {
+      "commit": "a911b93c49f5698026f8d725f4b7647932d6d824,8eb0613adb2eb679fb4a7dc1dbd250bc1027389f",
+      "machine": "AMD EPYC 7763 64-Core Processor (x86_64)",
+      "ratios": [
+        {
+          "blockSize": 32,
+          "case": "engine-sample",
+          "ratio": 1.2763470057713058,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 64,
+          "case": "engine-sample",
+          "ratio": 1.1725576652476033,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 256,
+          "case": "engine-sample",
+          "ratio": 1.0624081963215253,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 32,
+          "case": "engine-sample-eco",
+          "ratio": 0.9832722857368126,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 64,
+          "case": "engine-sample-eco",
+          "ratio": 0.8620669597255382,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 256,
+          "case": "engine-sample-eco",
+          "ratio": 0.7505799453647101,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 32,
+          "case": "engine-live",
+          "ratio": 1.440946351453257,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 64,
+          "case": "engine-live",
+          "ratio": 1.2321906571717935,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 256,
+          "case": "engine-live",
+          "ratio": 1.012633294855553,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 32,
+          "case": "engine-full-pool",
+          "ratio": 1.2437309430658443,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 64,
+          "case": "engine-full-pool",
+          "ratio": 1.1596573283536529,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 256,
+          "case": "engine-full-pool",
+          "ratio": 1.0543596653903178,
+          "tolerance": 0.1
+        }
+      ],
+      "runs": 2
+    },
+    {
+      "commit": "8eb0613adb2eb679fb4a7dc1dbd250bc1027389f",
+      "machine": "AMD EPYC 9V74 80-Core Processor (x86_64)",
+      "ratios": [
+        {
+          "blockSize": 32,
+          "case": "engine-sample",
+          "ratio": 1.1934333611753518,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 64,
+          "case": "engine-sample",
+          "ratio": 1.139904557929733,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 256,
+          "case": "engine-sample",
+          "ratio": 1.0484121595088225,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 32,
+          "case": "engine-sample-eco",
+          "ratio": 0.8580378139137298,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 64,
+          "case": "engine-sample-eco",
+          "ratio": 0.7929903920894056,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 256,
+          "case": "engine-sample-eco",
+          "ratio": 0.698159093062955,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 32,
+          "case": "engine-live",
+          "ratio": 1.381118127318231,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 64,
+          "case": "engine-live",
+          "ratio": 1.2175936147886683,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 256,
+          "case": "engine-live",
+          "ratio": 1.0145510913769096,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 32,
+          "case": "engine-full-pool",
+          "ratio": 1.183544627958264,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 64,
+          "case": "engine-full-pool",
+          "ratio": 1.1097155318489524,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 256,
+          "case": "engine-full-pool",
+          "ratio": 1.0077811888299169,
+          "tolerance": 0.1
+        }
+      ],
+      "runs": 1
+    }
+  ],
+  "schemaVersion": 2
+}

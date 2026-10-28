@@ -1,0 +1,85 @@
+{
+  "leg": "mac-universal",
+  "machines": [
+    {
+      "commit": "a911b93c49f5698026f8d725f4b7647932d6d824,8eb0613adb2eb679fb4a7dc1dbd250bc1027389f",
+      "machine": "Apple M1 (Virtual) (arm64)",
+      "ratios": [
+        {
+          "blockSize": 32,
+          "case": "engine-sample",
+          "ratio": 1.2356551739957837,
+          "tolerance": 0.354415105709599
+        },
+        {
+          "blockSize": 64,
+          "case": "engine-sample",
+          "ratio": 1.053451428761251,
+          "tolerance": 0.23462673217225335
+        },
+        {
+          "blockSize": 256,
+          "case": "engine-sample",
+          "ratio": 1.0189535207161848,
+          "tolerance": 0.1413432894212276
+        },
+        {
+          "blockSize": 32,
+          "case": "engine-sample-eco",
+          "ratio": 0.9177964268341066,
+          "tolerance": 0.13059614319614124
+        },
+        {
+          "blockSize": 64,
+          "case": "engine-sample-eco",
+          "ratio": 0.7649271234149615,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 256,
+          "case": "engine-sample-eco",
+          "ratio": 0.6823844481173944,
+          "tolerance": 0.21237868646237565
+        },
+        {
+          "blockSize": 32,
+          "case": "engine-live",
+          "ratio": 1.0787406398040518,
+          "tolerance": 0.482432247923934
+        },
+        {
+          "blockSize": 64,
+          "case": "engine-live",
+          "ratio": 0.9663270405046218,
+          "tolerance": 0.406933147535832
+        },
+        {
+          "blockSize": 256,
+          "case": "engine-live",
+          "ratio": 0.9519453918497217,
+          "tolerance": 0.1986228985406929
+        },
+        {
+          "blockSize": 32,
+          "case": "engine-full-pool",
+          "ratio": 1.1618886044985777,
+          "tolerance": 0.17888411901738036
+        },
+        {
+          "blockSize": 64,
+          "case": "engine-full-pool",
+          "ratio": 1.0680881852064823,
+          "tolerance": 0.5393304893305896
+        },
+        {
+          "blockSize": 256,
+          "case": "engine-full-pool",
+          "ratio": 0.9409041277899167,
+          "tolerance": 0.6134801158936496
+        }
+      ],
+      "runs": 3
+    }
+  ],
+  "schemaVersion": 2
+}
