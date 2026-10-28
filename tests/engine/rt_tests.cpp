@@ -23,14 +23,17 @@ using gg::test::AllocTripwire;
 
 namespace
 {
-// Counts spawns without allocating: the sink runs inside process().
+// Counts spawns, and the Eco ones, without allocating: the sink runs inside process().
 struct SpawnCounter
 {
     uint64_t spawns{0};
+    uint64_t eco{0};
 
-    static void record(void *ctx, const gg::GrainSpec &)
+    static void record(void *ctx, const gg::GrainSpec &g)
     {
-        ++static_cast<SpawnCounter *>(ctx)->spawns;
+        auto *counter = static_cast<SpawnCounter *>(ctx);
+        ++counter->spawns;
+        counter->eco += g.tier == gg::Tier::Eco ? 1 : 0;
     }
 };
 
@@ -297,6 +300,74 @@ TEST_CASE("engine live process does not allocate", "[rt]")
     REQUIRE(counter.spawns > spawnsBefore);
     REQUIRE(engine.activeGrains() > 0);
     REQUIRE(engine.liveWriteHead() > headBefore);
+    REQUIRE(allocations == 0);
+}
+
+TEST_CASE("engine process does not allocate at the Eco tier", "[rt]")
+{
+    // Ruling 2: each grain latches its tier, so the Eco grains spawned while armed read through
+    // the linear kernels alongside Normal grains still sounding. Both outputs and one, sample and
+    // live sources, and a quality change back to Normal and to Eco again inside the armed span.
+    gg::CloudParams params{.densityHz = 200.0,
+                           .distribution = 1.0,
+                           .grainDurationSec = 0.05,
+                           .position = 0.5,
+                           .spray = 0.5,
+                           .pitchSemitones = 7.0,
+                           .stereo = 1.0,
+                           .gain = 0.5f};
+    std::vector<float> inLeft(1000), inRight(1000);
+    for (std::size_t i = 0; i < inLeft.size(); ++i)
+    {
+        inLeft[i] = static_cast<float>(std::sin(2.0 * std::numbers::pi * 220.0 * i / 48000.0));
+        inRight[i] = -inLeft[i];
+    }
+    const float *in[2] = {inLeft.data(), inRight.data()};
+    std::vector<float> left(1000), right(1000);
+    float *out[2] = {left.data(), right.data()};
+
+    gg::EngineConfig config{48000.0, 256, 4096, 9};
+    config.liveSeconds = 1.0;
+    gg::Engine engine(config);
+    engine.setSource(stereoSine(330.0));
+    SECTION("sample source") {}
+    SECTION("live ring")
+    {
+        engine.setSourceMode(gg::SourceMode::Live);
+        params.position = 0.01;
+        params.spray = 0.02;
+    }
+    engine.setCloudParams(params); // Normal: these grains are still sounding when Eco starts
+    SpawnCounter counter;
+    engine.setEventSink(&SpawnCounter::record, &counter);
+    for (int i = 0; i < 4; ++i) // warm up until grains are sounding
+    {
+        engine.process(in, 2, out, 2, 1000);
+    }
+    gg::CloudParams eco = params;
+    eco.quality = gg::Tier::Eco;
+    engine.setCloudParams(eco);
+    engine.process(in, 2, out, 2, 1); // the next armed call renders both tiers' grains
+    const uint64_t ecoBefore = counter.eco;
+    const uint64_t normalBefore = counter.spawns - counter.eco;
+
+    AllocTripwire::resetCount();
+    {
+        AllocTripwire::Scope armed;
+        for (int i = 0; i < 20; ++i)
+        {
+            engine.setCloudParams(i == 10 || i == 11 ? params : eco);
+            engine.process(in, 2, out, 2, 0);
+            engine.process(in, 2, out, 2, 1);
+            engine.process(in, 2, out, 2, 1000);
+            engine.process(in, 2, out, 1, 300);
+        }
+    }
+    const uint64_t allocations = AllocTripwire::count();
+
+    REQUIRE(counter.eco > ecoBefore);                     // Eco grains spawned while armed
+    REQUIRE(counter.spawns - counter.eco > normalBefore); // and Normal ones
+    REQUIRE(engine.activeGrains() > 0);
     REQUIRE(allocations == 0);
 }
 

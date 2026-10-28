@@ -118,6 +118,25 @@ TEST_CASE("interleaved stereo holds L, R per frame between zero guards", "[sourc
     }
     REQUIRE(guardsZero);
 
+    // A copy (or a copy assignment) reads its own floats, which outlive the original's.
+    {
+        gg::InterleavedStereo copy = pairs;
+        gg::InterleavedStereo assigned;
+        assigned = pairs;
+        REQUIRE(copy.data() != pairs.data());
+        REQUIRE(assigned.data() != pairs.data());
+        gg::InterleavedStereo original = pairs;
+        original.clear();
+        REQUIRE(original.data() == nullptr);
+        REQUIRE(copy.frames() == kFrames);
+        REQUIRE(std::memcmp(copy.data() - 2 * kGuard, pairs.data() - 2 * kGuard,
+                            static_cast<std::size_t>(2 * (kFrames + 2 * kGuard)) * sizeof(float)) ==
+                0);
+        REQUIRE(std::memcmp(assigned.data() - 2 * kGuard, pairs.data() - 2 * kGuard,
+                            static_cast<std::size_t>(2 * (kFrames + 2 * kGuard)) * sizeof(float)) ==
+                0);
+    }
+
     // A shorter source replaces the copy; an empty one clears it.
     pairs.assign(right.data(), left.data(), 2);
     REQUIRE(pairs.frames() == 2);

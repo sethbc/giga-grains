@@ -45,7 +45,6 @@ class InterleavedStereo
             pairs[2 * f + 1] = right[f];
         }
         storage_ = std::move(storage);
-        data_ = storage_.data() + 2 * guard;
         frames_ = frames;
     }
 
@@ -53,18 +52,20 @@ class InterleavedStereo
     void clear()
     {
         std::vector<float>().swap(storage_);
-        data_ = nullptr;
         frames_ = 0;
     }
 
     /// Frame f's left sample is data()[2f] and its right data()[2f + 1], for f in
-    /// [−kGuardFrames, frames() + kGuardFrames); the guard frames are 0. Null when empty.
-    const float *data() const noexcept { return data_; }
+    /// [−kGuardFrames, frames() + kGuardFrames); the guard frames are 0. Null when empty. Derived
+    /// from this object's own storage, so a copy reads its own floats, never the original's.
+    const float *data() const noexcept
+    {
+        return storage_.empty() ? nullptr : storage_.data() + 2 * kGuardFrames;
+    }
     int64_t frames() const noexcept { return frames_; }
 
   private:
-    std::vector<float> storage_;
-    const float *data_{nullptr};
+    std::vector<float> storage_; // empty, or kGuardFrames zero frames, the pairs, kGuardFrames more
     int64_t frames_{0};
 };
 } // namespace gg

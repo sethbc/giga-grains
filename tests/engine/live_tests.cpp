@@ -257,6 +257,15 @@ TEST_CASE("the live constants are the spec's", "[live]")
         INFO("liveSeconds " << bad);
         REQUIRE_THROWS_AS(gg::Engine(liveConfig(kSampleRate, 4096, bad)), std::invalid_argument);
     }
+    // The pool stores 2 × grainCapacity grains in uint32 slots, so the capacity must be below
+    // 2^31 (thrown before anything is allocated).
+    for (const uint32_t bad : {uint32_t{1} << 31, std::numeric_limits<uint32_t>::max()})
+    {
+        INFO("grainCapacity " << bad);
+        gg::EngineConfig config;
+        config.grainCapacity = bad;
+        REQUIRE_THROWS_AS(gg::Engine(config), std::invalid_argument);
+    }
 }
 
 TEST_CASE("the ring stores each frame with the freeze write gain", "[live]")

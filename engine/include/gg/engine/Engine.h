@@ -24,6 +24,7 @@ struct EngineConfig
 {
     double sampleRate{48000.0};  ///< Output sample rate; finite and > 0.
     uint32_t maxBlockSize{4096}; ///< process() works in blocks of at most this many frames; > 0.
+    /// The most grains that may sound at once; below 2^31, since the pool stores twice as many.
     uint32_t grainCapacity{4096};
     uint64_t seed{0};
     /// > 0 allocates a stereo live ring, which SourceMode::Live reads (spec §6.3); 0 means no
@@ -82,9 +83,10 @@ class Engine
 {
   public:
     /// Allocates everything process() needs, the live ring included. Throws
-    /// std::invalid_argument if sampleRate is not finite and positive, maxBlockSize is 0, or
-    /// liveSeconds is not finite and >= 0, or if the ring's storage, N + maxBlockSize frames,
-    /// would exceed 2^40.
+    /// std::invalid_argument if sampleRate is not finite and positive, maxBlockSize is 0,
+    /// liveSeconds is not finite and >= 0, or grainCapacity is 2^31 or more (all checked before
+    /// anything is allocated), or if the ring's storage, N + maxBlockSize frames, would exceed
+    /// 2^40.
     explicit Engine(const EngineConfig &config);
 
     /// Not real-time safe: call only while process() is not running. The engine keeps the

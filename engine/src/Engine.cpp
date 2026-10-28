@@ -31,6 +31,11 @@ const EngineConfig &validated(const EngineConfig &config)
     {
         throw std::invalid_argument("Engine: liveSeconds must be finite and >= 0");
     }
+    // The pool stores 2 × grainCapacity grains, a count held in a uint32_t (GrainPool).
+    if (config.grainCapacity >= (uint32_t{1} << 31))
+    {
+        throw std::invalid_argument("Engine: grainCapacity must be below 2^31");
+    }
     return config;
 }
 
