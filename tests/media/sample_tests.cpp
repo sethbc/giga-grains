@@ -131,7 +131,9 @@ TEST_CASE("loadSample records the absolute path lexically normal", "[media]")
     // An absolute path with `.` and `..` in it comes back normal.
     const auto loaded = loadSample(dir / "a" / "." / ".." / "a" / "kick.wav", MachineSettings{});
     REQUIRE(loaded.decoded != nullptr);
-    REQUIRE(loaded.entry.absolutePath == utf8(dir / "a" / "kick.wav"));
+    // Normal form on each platform: on Windows that is backslashes throughout, though
+    // GG_TEST_OUTPUT_DIR comes with forward slashes.
+    REQUIRE(loaded.entry.absolutePath == utf8((dir / "a" / "kick.wav").lexically_normal()));
 }
 
 TEST_CASE("loadSample sets relativePath only inside the sample folder", "[media]")
