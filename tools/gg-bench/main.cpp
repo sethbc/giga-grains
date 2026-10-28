@@ -2,10 +2,14 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright 2026, the Giga Grains authors (see git history)
 
-// gg-bench times the prototype grain kernels in Kernels.h, the frozen reference kernel and the
-// real engine. It began as the M0 kernel benchmark spike, whose numbers set the CPU target in
-// INTENT §16, and is gate-grade for M1 (carry-over B-I2, [133], [132]; spec §5). With --canvas
-// it times the canvas renderer instead (the M0 canvas stress spike, see below).
+// gg-bench is the CPU benchmark and CI's CPU gate (INTENT §16, §19). It times the real engine's
+// render path, the engine cases, through Engine::process: engine-sample is X, the §16
+// headline's case, beside engine-sample-eco, engine-live (the FX's figure) and
+// engine-full-pool. It times them against the reference kernel, M0's hermite-simd frozen in
+// Kernels.h, and reports each engine case's ratio to it, which the CI gate checks. It also still
+// times M0's prototype kernels in Kernels.h. It began as the M0 kernel benchmark spike and was
+// made gate-grade in M1 (carry-over B-I2, [133], [132]; spec §5). With --canvas it times the
+// canvas renderer instead (the M0 canvas stress spike, see below).
 //
 //   gg-bench [--quick | --seconds S] [--rounds N] [--grains N] [--cases a,b] [--commit SHA]
 //            [--json out.json] [--baseline baseline.json]
@@ -244,7 +248,7 @@ void usage(std::FILE *f)
         "       gg-bench --make-baseline <leg> <out.json> <in.json>...\n"
         "       gg-bench --canvas [--quick] [--json out.json]\n"
         "\n"
-        "Times the prototype grain kernels, the reference kernel and the engine: 2,000\n"
+        "Times the engine, the reference kernel and M0's prototype grain kernels: 2,000\n"
         "grains of 100 ms over 60 s of stereo noise at 48 kHz, at block sizes 32, 64 and\n"
         "256. Every configuration runs once per round, for at least 2 s, in an order\n"
         "that changes from round to round; each result is the median, min and IQR of its\n"

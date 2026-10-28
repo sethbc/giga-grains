@@ -85,7 +85,8 @@ struct GrainRows
 
 /// The grain pool: a structure of arrays (INTENT §14), one array per GrainSpec field plus each
 /// grain's grainEndSample and the renderers' latched values (GrainRows), kept in spawn order.
-/// Only the constructor allocates.
+/// The renderers, the scalar reference and the 4-wide SIMD kernels in GrainKernels.h, read
+/// these arrays directly through rows(). Only the constructor allocates.
 ///
 /// **Admission** (ruling T3-b) allows capacity() grains to sound at once: canAdmit(onset) is true
 /// when fewer than capacity() of the grains spawned since the last clear() still sound at the
