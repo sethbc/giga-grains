@@ -100,8 +100,10 @@ catch_discover_tests(gg-tests ADD_TAGS_AS_LABELS)
 #   JSON, ratios included;
 # - bench_make_baseline: a baseline made from that JSON must be written, exit 0;
 # - bench_baseline_pass and bench_baseline_regressed: a tiny run checked against a baseline whose
-#   limits no ratio can miss (1e9) or meet (1e-9), written here at configure time. The first must
-#   exit 0; the second passes only on the verdict gg-bench prints (it then exits 3).
+#   limits no ratio can miss (1e9) or meet (1e-9), written here at configure time.
+#   check-bench-baseline.cmake requires exactly exit 0 with "verdict: 0 of 3 ratios regressed",
+#   and exactly exit 3 with "verdict: 3 of 3 ...". CI's bench step relies on exit 3 meaning a
+#   regression, which it reports without failing (ruling 3).
 set(bench_cases hermite-simd,reference,engine-sample)
 add_test(NAME bench_cli
         COMMAND gg-bench --seconds 0.002 --rounds 2 --grains 50 --cases ${bench_cases}
@@ -113,8 +115,12 @@ set_tests_properties(bench_cli PROPERTIES LABELS bench FIXTURES_SETUP bench_json
 set_tests_properties(bench_make_baseline PROPERTIES LABELS bench FIXTURES_REQUIRED bench_json)
 foreach (verdict IN ITEMS pass regressed)
     set(ratio 1e9)
-    if (verdict STREQUAL regressed)
+    set(expected_code 0)
+    set(expected_count 0)
+    if (verdict STREQUAL "regressed")
         set(ratio 1e-9)
+        set(expected_code 3)
+        set(expected_count 3)
     endif ()
     set(entries "")
     foreach (block IN ITEMS 32 64 256)
@@ -125,12 +131,12 @@ foreach (verdict IN ITEMS pass regressed)
     set(baseline ${CMAKE_CURRENT_BINARY_DIR}/bench-baseline-${verdict}.json)
     file(WRITE ${baseline} "{\"schemaVersion\": 1, \"leg\": \"test\", \"commit\": \"test\", \"ratios\": [${entries}]}\n")
     add_test(NAME bench_baseline_${verdict}
-            COMMAND gg-bench --seconds 0.002 --rounds 1 --grains 50 --cases reference,engine-sample
-            --baseline ${baseline})
+            COMMAND ${CMAKE_COMMAND} -DBENCH=$<TARGET_FILE:gg-bench> -DBASELINE=${baseline}
+            -DEXPECTED_CODE=${expected_code}
+            "-DEXPECTED_VERDICT=verdict: ${expected_count} of 3 ratios regressed (limit: the baseline's ratio x (1 + its tolerance))"
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tools/check-bench-baseline.cmake)
     set_tests_properties(bench_baseline_${verdict} PROPERTIES LABELS bench)
 endforeach ()
-set_tests_properties(bench_baseline_regressed PROPERTIES
-        PASS_REGULAR_EXPRESSION "verdict: 3 of 3 ratios regressed")
 
 # RTSan's negative control (rtsan build only), labels `rt` and `rtsan`: a program that allocates
 # inside a nonblocking function must make RealtimeSanitizer report it. The test passes on the

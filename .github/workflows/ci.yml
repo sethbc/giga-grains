@@ -130,14 +130,15 @@ jobs:
       # the frozen reference kernel and the real engine at full length (runs of 2 s, 5 interleaved
       # rounds; ruling T10-c), not --quick, and reports each engine case's ratio to the reference,
       # which cancels the runner's speed. When this leg has a baseline
-      # (tools/gg-bench/baselines/<preset>.json), it also prints a verdict per ratio. A
-      # regression (exit 3) is a warning, not a failure, and the step is continue-on-error, so
-      # nothing here fails the job; sub-project 6 makes it blocking. The runs are time-boxed: about
-      # 5 minutes on every leg.
+      # (tools/gg-bench/baselines/<preset>.json), it also prints a verdict per ratio. A ratio
+      # never fails the job: a regression (exit 3) becomes a warning and the step exits 0, so the
+      # artifact still uploads; sub-project 6 makes it blocking. Anything else still fails the
+      # job, as before: a crash, an engine fault, a malformed baseline (exit 1), bad usage (2) or
+      # the timeout. The bench_baseline_regressed test pins exit 3. The runs are time-boxed:
+      # about 5 minutes on every leg.
       - name: Benchmark (full length; ratios reported, not gated through M1)
         id: bench
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
-        continue-on-error: true
         timeout-minutes: 30
         run: |
           out="${{ matrix.build_dir }}/gg-bench"
