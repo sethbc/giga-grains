@@ -7,6 +7,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <span>
 
 #include <sst/cpputils/rtsan_support.h>
 
@@ -113,6 +114,18 @@ class Engine
     /// Position and spray are read in the source mode in effect (ruling M1-k; CloudParams).
     void setCloudParams(const CloudParams &params) noexcept;
 
+    /// The held keys (spec §6.1): distinct MIDI keys 0..127, ascending, at most 128. Copied; no
+    /// allocation. Each grain that spawns from the next process() call's first frame on picks
+    /// one of them for its pitch, and the first key held after none forces an onset at that
+    /// frame (CloudScheduler). For a block-size-invariant render, change them at fixed samples.
+    /// Real-time safe, with the same threading rule as setCloudParams.
+    void setHeldKeys(std::span<const uint8_t> keys) noexcept;
+
+    /// true (the instrument): no grain spawns while no key is held. Takes effect from the next
+    /// process() call's first frame. Real-time safe, with the same threading rule as
+    /// setCloudParams.
+    void setNoteGate(bool gate) noexcept;
+
     /// Which source grains read. Live needs a ring (liveSeconds > 0); without one the call is
     /// ignored. Takes effect from the next process() call's first frame: the grains still
     /// sounding from the old source are silenced, and the scheduler draws position and spray
@@ -132,11 +145,11 @@ class Engine
     void setEventSink(GrainEventSink sink, void *ctx) noexcept;
 
     /// Silences every grain and restarts the clock, the schedule and ring time at 0. Keeps the
-    /// source, the source mode, the Cloud parameters, the freeze setting and the sink: the next
-    /// process() continues as a new engine with those settings would, a freeze ramping down from
-    /// its first frame. The ring's old frames can't be read again. Real-time safe, but not
-    /// synchronized with process(): call it on the audio thread between process() calls, or
-    /// while process() is not running.
+    /// source, the source mode, the Cloud parameters, the held keys, the note gate, the freeze
+    /// setting and the sink: the next process() continues as a new engine with those settings
+    /// would, a freeze ramping down from its first frame. The ring's old frames can't be read
+    /// again. Real-time safe, but not synchronized with process(): call it on the audio thread
+    /// between process() calls, or while process() is not running.
     void reset() noexcept;
 
     /// Renders numFrames frames, overwriting out[0 .. numChannels). Before rendering, if there is

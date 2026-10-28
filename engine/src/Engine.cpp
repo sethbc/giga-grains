@@ -82,6 +82,10 @@ void Engine::setSource(std::shared_ptr<const SampleBuffer> source)
 
 void Engine::setCloudParams(const CloudParams &params) noexcept { cloud_.setParams(params); }
 
+void Engine::setHeldKeys(std::span<const uint8_t> keys) noexcept { cloud_.setHeldKeys(keys); }
+
+void Engine::setNoteGate(bool gate) noexcept { cloud_.setNoteGate(gate); }
+
 void Engine::setSourceMode(SourceMode mode) noexcept
 {
     if (mode == SourceMode::Live && !live_.enabled())

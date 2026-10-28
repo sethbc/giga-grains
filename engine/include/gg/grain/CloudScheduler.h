@@ -6,9 +6,11 @@
 #define GG_GRAIN_CLOUDSCHEDULER_H
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <span>
 
 #include "gg/core/FpContract.h"
 #include "gg/core/MathDet.h"
@@ -55,11 +57,15 @@ struct GrainDraw
     /// admission clamp then applies (spec §6.3). u is keyed by (seed, layer, stream,
     /// PositionJitter, k) in both.
     double positionDraw;
-    double rate;            ///< The pitch ratio exp2Det(pitchSemitones / 12).
+    /// The pitch ratio: exp2Det(clamp(pitchSemitones + (key − 60), −48, 48) / 12) with a key,
+    /// exp2Det(pitchSemitones / 12) without.
+    double rate;
     double durationSamples; ///< Window length in output samples, at least 16.
     float gain;
     float pan;               ///< stereo × bipolar(u), in [-1, 1]; +0 at stereo 0 (see schedule()).
     Tier tier{Tier::Normal}; ///< CloudParams::quality at the onset.
+    /// The held key the grain plays (spec §6.1), or −1 when none is held.
+    int16_t key{-1};
 
     friend bool operator==(const GrainDraw &, const GrainDraw &) = default;
 };
@@ -88,11 +94,24 @@ struct GrainDraw
 /// Otherwise the pending onset stays. Changes land on grid-aligned absolute samples (the
 /// Processor applies them there), so this is block-size invariant too.
 ///
+/// **Notes** (spec §6.1–§6.3). setHeldKeys gives the held keys, n of them. While n > 0, grain k
+/// plays keys[min(floor(u × n), n − 1)], u = uniform01(hash(seed, layer, stream, Note, k)), at
+/// the rate exp2Det(clamp(pitchSemitones + (key − 60), −48, 48) / 12); key 60 plays at the
+/// Pitch parameter alone. Every grain draws, so the draw doesn't depend on n, and with no key
+/// held nothing is drawn: every other draw, and the rate, are what they were before notes.
+/// When the held set goes from empty to non-empty, the next schedule() call that runs the
+/// stream moves the pending onset to its blockStart g, so the first grain sounds at the note's
+/// boundary rather than after an interval drawn before it. That forced onset replaces ruling
+/// M1-h's rescale at g, and there is then no previous grain to rescale from until the next one
+/// is emitted. Keys added to a non-empty set don't move the onset, and k keeps counting across
+/// notes. With the note gate on (the instrument), no grain is emitted while no key is held: the
+/// stream is held as if off.
+///
 /// Every random field of a grain has its own rng::Field, keyed by (seed, layer, stream, field,
 /// k), so the draws don't depend on block size, call order or each other.
 ///
 /// All members are real-time safe. Nothing in schedule() calls libm except the exact floor:
-/// E(k) comes from logDet and the pitch ratio from exp2Det, so no libm value reaches a grain.
+/// E(k) comes from logDet and the pitch ratios from exp2Det, so no libm value reaches a grain.
 class CloudScheduler
 {
   public:
@@ -110,6 +129,9 @@ class CloudScheduler
     /// back to t, and a run of floored intervals would make no progress.
     static constexpr double kMinIntervalSamples = 1.0 / 16.0;
 
+    /// The bound on CloudParams::pitchSemitones, and on a grain's pitch with a key held.
+    static constexpr double kMaxPitchSemitones = 48.0;
+
     CloudScheduler() noexcept { prepare(48000.0); }
 
     /// Sets the output sample rate (a non-finite or non-positive rate means 48000) and resets.
@@ -126,29 +148,50 @@ class CloudScheduler
     /// default is Sample. Neither the schedule nor any other draw changes.
     void setSourceMode(SourceMode mode, double ringSeconds) noexcept;
 
-    /// Restarts the schedule: the next onset is t = 0 with k = 0. Keeps the sample rate and the
-    /// controls.
+    /// The held keys (spec §6.1): distinct MIDI keys 0..127, ascending, at most 128. Copied;
+    /// no allocation. They apply to every grain emitted after this call. When the set goes from
+    /// empty to non-empty, the next schedule() call that runs the stream forces an onset at its
+    /// blockStart, as the class comment describes; emptied again before then, it forces
+    /// nothing. The default is none.
+    void setHeldKeys(std::span<const uint8_t> keys) noexcept;
+
+    /// true (the instrument): no grain is emitted while no key is held. The default is false
+    /// (the FX).
+    void setNoteGate(bool gate) noexcept { noteGate_ = gate; }
+
+    /// Restarts the schedule: the next onset is t = 0 with k = 0. Keeps the sample rate, the
+    /// controls, the held keys and the note gate.
     void reset() noexcept;
 
     /// Calls emit(const GrainDraw &) for every grain with onsetSample in
     /// [blockStart, blockStart + numFrames), in onset order. Blocks must be contiguous from the
     /// last reset(), starting at 0. seed, layer and stream key the random draws.
     ///
-    /// While the stream is off nothing is emitted, and the pending onset keeps its time. If
-    /// that time has passed when the stream is turned back on, the onset moves to blockStart,
-    /// the first sample after the change.
+    /// While the stream is off, or gated with no key held, nothing is emitted, and the pending
+    /// onset keeps its time. If that time has passed when the stream is turned back on, the
+    /// onset moves to blockStart, the first sample after the change. A forced onset (see the
+    /// class comment) moves it to blockStart whatever its time.
     template <class Emit>
     void schedule(int64_t blockStart, uint32_t numFrames, uint64_t seed, uint32_t layer,
                   uint32_t stream, Emit &&emit) noexcept
     {
         // Covers the lambda below too: a lambda body takes the pragma of its enclosing scope.
         GG_FP_CONTRACT_OFF
-        if (!(densityHz_ > 0.0))
+        if (!(densityHz_ > 0.0) || (noteGate_ && keyCount_ == 0))
         {
-            return; // off
+            return; // off, or gated with no key held
         }
         const auto start = static_cast<double>(blockStart);
         const auto end = static_cast<double>(blockStart + static_cast<int64_t>(numFrames));
+        if (onsetForced_)
+        {
+            // Spec §6.2–§6.3: the held set went from empty to non-empty, so the cloud starts at
+            // g = start. No grain before it is rescaled from (ruling M1-h).
+            onsetForced_ = false;
+            nextOnset_ = start;
+            hasLast_ = false;
+            rescalePending_ = false;
+        }
         nextOnset_ = std::max(nextOnset_, start); // resumed after being off (ruling M1-j)
         if (rescalePending_)
         {
@@ -169,6 +212,20 @@ class CloudScheduler
                 return rng::hash({seed, layer, stream, field, k});
             };
             const uint64_t jitter = key(rng::Field::PositionJitter);
+            int16_t note = -1;
+            double rate = pitchRatio_;
+            if (keyCount_ > 0)
+            {
+                // floor(u × n) by truncation, as u × n >= 0; u × n < n, and the min() keeps the
+                // index in range whatever the rounding.
+                const double u = rng::uniform01(key(rng::Field::Note));
+                const auto i = std::min(static_cast<uint32_t>(u * static_cast<double>(keyCount_)),
+                                        keyCount_ - 1);
+                note = keys_[i];
+                rate = exp2Det(std::clamp(params_.pitchSemitones + static_cast<double>(note - 60),
+                                          -kMaxPitchSemitones, kMaxPitchSemitones) /
+                               12.0);
+            }
             const double p = params_.stereo * rng::bipolar(key(rng::Field::Pan));
             // A pan below the smallest normal float is 0, so the value doesn't depend on the
             // flush-to-zero mode. It is +0, never the -0 of stereo 0 times a negative draw.
@@ -183,11 +240,12 @@ class CloudScheduler
                         ? params_.position + params_.spray * rng::uniform01(jitter)
                         : std::clamp(params_.position + params_.spray * rng::bipolar(jitter), 0.0,
                                      1.0),
-                .rate = pitchRatio_,
+                .rate = rate,
                 .durationSamples = durationSamples_,
                 .gain = params_.gain,
                 .pan = pan,
                 .tier = params_.quality,
+                .key = note,
             };
             const double e = -logDet(1.0 - rng::uniform01(key(rng::Field::Onset)));
             lastOnset_ = t;
@@ -230,6 +288,12 @@ class CloudScheduler
     double lastE_{0.0};     // E(k − 1)
     bool hasLast_{false};   // grain k − 1 was emitted since reset() or since the stream turned on
     bool rescalePending_{false}; // the period or distribution changed since the last schedule()
+
+    // The held keys, ascending: the first keyCount_ entries (spec §6.1).
+    std::array<uint8_t, 128> keys_{};
+    uint32_t keyCount_{0};
+    bool noteGate_{false};    // no grain while no key is held (the instrument)
+    bool onsetForced_{false}; // the held set went from empty to non-empty since the last run
 };
 } // namespace gg
 

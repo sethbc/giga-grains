@@ -16,6 +16,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include "gg/core/Interpolate.h"
+#include "gg/core/MathDet.h"
 #include "gg/core/Rng.h"
 #include "gg/core/Window.h"
 #include "gg/engine/Engine.h"
@@ -644,4 +645,34 @@ TEST_CASE("pan follows equal power with unity center", "[engine]")
         REQUIRE(monoLog.grains == wideLog.grains);
         REQUIRE(sameBits(mono, unpannedOut[0]));
     }
+}
+
+TEST_CASE("held keys and the note gate reach the scheduler", "[engine]")
+{
+    // setHeldKeys and setNoteGate apply from the next process() call's first frame.
+    gg::Engine engine(gg::EngineConfig{});
+    engine.setSource(makeSine(1, 96000, 48000.0));
+    engine.setCloudParams(params(100.0, 0.05, 0.5, 0.0, 3.0, 0.5f));
+    engine.setNoteGate(true);
+    SinkLog log;
+    engine.setEventSink(&SinkLog::record, &log);
+    render(engine, 9600, 64);
+    REQUIRE(log.grains.empty());
+    REQUIRE(engine.activeGrains() == 0);
+
+    const std::array<uint8_t, 1> held{72};
+    engine.setHeldKeys(held);
+    render(engine, 960, 64);
+    REQUIRE(log.grains.size() == 2);
+    CHECK(log.grains[0].onsetSample == 9600);
+    CHECK(log.grains[1].onsetSample == 10080);
+    for (const gg::GrainSpec &g : log.grains)
+    {
+        CHECK(g.rate == gg::exp2Det(15.0 / 12.0));
+    }
+
+    engine.setHeldKeys({});
+    render(engine, 4800, 64);
+    CHECK(log.grains.size() == 2);
+    REQUIRE_FALSE(log.overflowed);
 }
