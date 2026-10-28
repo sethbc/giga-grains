@@ -264,29 +264,42 @@ nlohmann::json baselineEntry(const std::string &name, uint32_t blockSize, double
 
 TEST_CASE("baseline verdicts", "[bench]")
 {
+    // Two CPU models, each with its own ratios: only this run's model is checked.
     const nlohmann::json baseline{
-        {"schemaVersion", 1},
+        {"schemaVersion", 2},
         {"leg", "dev"},
-        {"commit", "abc"},
-        {"ratios",
-         {baselineEntry("engine-sample", 32, 1.8, 0.05),
-          baselineEntry("engine-sample", 64, 1.8, 0.05)}},
+        {"machines",
+         {{{"machine", "CPU A (x86_64)"},
+           {"commit", "abc"},
+           {"runs", 3},
+           {"ratios",
+            {baselineEntry("engine-sample", 32, 1.8, 0.05),
+             baselineEntry("engine-sample", 64, 1.8, 0.05)}}},
+          {{"machine", "CPU B (x86_64)"},
+           {"commit", "def"},
+           {"runs", 1},
+           {"ratios", {baselineEntry("engine-sample", 32, 9.0, 0.10)}}}}},
     };
     gg::bench::Report report;
+    report.machine = "CPU A (x86_64)";
     report.ratios = {ratio("engine-sample", 32, 2.0), ratio("engine-sample", 64, 1.85),
                      ratio("engine-sample", 256, 1.0), ratio("engine-live", 32, 9.0)};
 
-    const std::vector<gg::bench::Verdict> verdicts = gg::bench::compare(report, baseline);
+    const gg::bench::Comparison c = gg::bench::compare(report, baseline);
+    REQUIRE(c.found);
+    CHECK(c.commit == "abc");
+    CHECK(c.runs == 3);
+    const std::vector<gg::bench::Verdict> &verdicts = c.verdicts;
     REQUIRE(verdicts.size() == 4);
     CHECK(verdicts[0].name == "engine-sample");
     CHECK(verdicts[0].blockSize == 32);
     CHECK(verdicts[0].ratio == 2.0);
-    CHECK(verdicts[0].limit == Approx(1.89));
+    CHECK(verdicts[0].limit == Approx(1.89)); // CPU A's 1.8, not CPU B's 9.0
     CHECK(verdicts[0].regressed);
     CHECK(verdicts[1].blockSize == 64);
     CHECK(verdicts[1].ratio == 1.85);
     CHECK_FALSE(verdicts[1].regressed);
-    // Missing from the baseline: reported, with no limit, and not regressed.
+    // Missing from the machine's entry: reported, with no limit, and not regressed.
     CHECK(verdicts[2].blockSize == 256);
     CHECK(std::isnan(verdicts[2].limit));
     CHECK_FALSE(verdicts[2].regressed);
@@ -294,52 +307,112 @@ TEST_CASE("baseline verdicts", "[bench]")
     CHECK(std::isnan(verdicts[3].limit));
     CHECK_FALSE(verdicts[3].regressed);
 
+    // The other model gets its own limit.
+    report.machine = "CPU B (x86_64)";
+    const gg::bench::Comparison b = gg::bench::compare(report, baseline);
+    REQUIRE(b.found);
+    CHECK(b.commit == "def");
+    REQUIRE(b.verdicts.size() == 4);
+    CHECK(b.verdicts[0].limit == Approx(9.9));
+    CHECK_FALSE(b.verdicts[0].regressed);
+    CHECK(std::isnan(b.verdicts[1].limit));
+
+    // A model the baseline doesn't have: no verdict at all.
+    report.machine = "CPU C (arm64)";
+    const gg::bench::Comparison none = gg::bench::compare(report, baseline);
+    CHECK_FALSE(none.found);
+    CHECK(none.verdicts.empty());
+
     // A malformed baseline is an error, even against a report with no ratios.
-    nlohmann::json wrongVersion = baseline;
-    wrongVersion["schemaVersion"] = 2;
-    CHECK_THROWS_AS(gg::bench::compare({}, wrongVersion), std::invalid_argument);
-    nlohmann::json noRatio = baseline;
-    noRatio["ratios"][0].erase("ratio");
-    CHECK_THROWS_AS(gg::bench::compare({}, noRatio), std::invalid_argument);
-    nlohmann::json negativeTolerance = baseline;
-    negativeTolerance["ratios"][0]["tolerance"] = -0.1;
-    CHECK_THROWS_AS(gg::bench::compare({}, negativeTolerance), std::invalid_argument);
+    const auto rejects = [](const nlohmann::json &bad) {
+        CHECK_THROWS_AS(gg::bench::compare({}, bad), std::invalid_argument);
+    };
+    nlohmann::json bad = baseline;
+    bad["schemaVersion"] = 1; // the per-leg format: accepted nowhere
+    rejects(bad);
+    bad = baseline;
+    bad.erase("machines");
+    rejects(bad);
+    bad = baseline;
+    bad["machines"][1]["machine"] = "CPU A (x86_64)"; // two entries for one model
+    rejects(bad);
+    bad = baseline;
+    bad["machines"][0]["runs"] = 0;
+    rejects(bad);
+    bad = baseline;
+    bad["machines"][0]["ratios"][0].erase("ratio");
+    rejects(bad);
+    bad = baseline;
+    bad["machines"][1]["ratios"][0]["tolerance"] = -0.1;
+    rejects(bad);
 }
+
+namespace
+{
+nlohmann::json benchRun(const std::string &machine, const std::string &commit,
+                        std::vector<gg::bench::Ratio> ratios)
+{
+    gg::bench::Report report;
+    report.machine = machine;
+    report.options.commit = commit;
+    report.ratios = std::move(ratios);
+    return nlohmann::json::parse(gg::bench::toJson(report));
+}
+} // namespace
 
 TEST_CASE("make baseline", "[bench]")
 {
-    std::vector<nlohmann::json> runs;
-    for (const double r : {1.2, 1.0, 1.1})
-    {
-        gg::bench::Report report;
-        report.options.commit = "abc";
-        report.ratios = {ratio("engine-sample", 32, r), ratio("engine-live", 64, 2.0)};
-        runs.push_back(nlohmann::json::parse(gg::bench::toJson(report)));
-    }
+    // Two runs on CPU A, then one on CPU B, interleaved as CI artifacts might arrive.
+    const std::vector<nlohmann::json> runs{
+        benchRun("CPU A", "abc", {ratio("engine-sample", 32, 1.2), ratio("engine-live", 64, 2.0)}),
+        benchRun("CPU B", "abc", {ratio("engine-sample", 32, 3.0)}),
+        benchRun("CPU A", "def", {ratio("engine-sample", 32, 1.0), ratio("engine-live", 64, 2.0)}),
+    };
 
     const nlohmann::json baseline = gg::bench::makeBaseline("linux-gcc12", runs);
-    CHECK(baseline.at("schemaVersion").get<int>() == 1);
+    CHECK(baseline.at("schemaVersion").get<int>() == 2);
     CHECK(baseline.at("leg").get<std::string>() == "linux-gcc12");
-    CHECK(baseline.at("commit").get<std::string>() == "abc");
-    const nlohmann::json &ratios = baseline.at("ratios");
-    REQUIRE(ratios.size() == 2);
-    CHECK(ratios[0].at("case").get<std::string>() == "engine-sample");
-    CHECK(ratios[0].at("blockSize").get<uint32_t>() == 32);
-    CHECK(ratios[0].at("ratio").get<double>() == Approx(1.1));
-    CHECK(ratios[0].at("tolerance").get<double>() == Approx(std::max(0.05, 0.4 / 1.1)));
-    CHECK(ratios[1].at("case").get<std::string>() == "engine-live");
-    CHECK(ratios[1].at("ratio").get<double>() == 2.0);
-    CHECK(ratios[1].at("tolerance").get<double>() == 0.05); // no spread: the floor
+    const nlohmann::json &machines = baseline.at("machines");
+    REQUIRE(machines.size() == 2);
 
-    // The baseline it makes is one compare() accepts.
+    const nlohmann::json &a = machines[0];
+    CHECK(a.at("machine").get<std::string>() == "CPU A");
+    CHECK(a.at("commit").get<std::string>() == "abc,def");
+    CHECK(a.at("runs").get<int>() == 2);
+    REQUIRE(a.at("ratios").size() == 2);
+    CHECK(a["ratios"][0].at("case").get<std::string>() == "engine-sample");
+    CHECK(a["ratios"][0].at("blockSize").get<uint32_t>() == 32);
+    CHECK(a["ratios"][0].at("ratio").get<double>() == Approx(1.1));
+    CHECK(a["ratios"][0].at("tolerance").get<double>() == Approx(0.4 / 1.1)); // above the floor
+    CHECK(a["ratios"][1].at("case").get<std::string>() == "engine-live");
+    CHECK(a["ratios"][1].at("ratio").get<double>() == 2.0);
+    CHECK(a["ratios"][1].at("tolerance").get<double>() == 0.10); // no spread: the floor
+
+    const nlohmann::json &b = machines[1];
+    CHECK(b.at("machine").get<std::string>() == "CPU B");
+    CHECK(b.at("commit").get<std::string>() == "abc");
+    CHECK(b.at("runs").get<int>() == 1);
+    REQUIRE(b.at("ratios").size() == 1);
+    CHECK(b["ratios"][0].at("ratio").get<double>() == 3.0);
+    CHECK(b["ratios"][0].at("tolerance").get<double>() == 0.10); // one run: the floor
+
+    // The baseline it makes is one compare() accepts, per machine.
     gg::bench::Report report;
-    report.ratios = {ratio("engine-sample", 32, 1.0)};
-    const std::vector<gg::bench::Verdict> verdicts = gg::bench::compare(report, baseline);
-    REQUIRE(verdicts.size() == 1);
-    CHECK_FALSE(verdicts[0].regressed);
+    report.machine = "CPU B";
+    report.ratios = {ratio("engine-sample", 32, 3.2)};
+    const gg::bench::Comparison c = gg::bench::compare(report, baseline);
+    REQUIRE(c.found);
+    REQUIRE(c.verdicts.size() == 1);
+    CHECK(c.verdicts[0].limit == Approx(3.3));
+    CHECK_FALSE(c.verdicts[0].regressed);
 
-    // A ratio missing from one of the runs is an error, as is no run at all.
-    runs[1]["ratios"].erase(1);
-    CHECK_THROWS_AS(gg::bench::makeBaseline("linux-gcc12", runs), std::invalid_argument);
+    // A ratio missing from one of a machine's runs is an error, as is a run with no machine, or
+    // no run at all.
+    std::vector<nlohmann::json> missing = runs;
+    missing[2]["ratios"].erase(1);
+    CHECK_THROWS_AS(gg::bench::makeBaseline("linux-gcc12", missing), std::invalid_argument);
+    std::vector<nlohmann::json> anonymous = runs;
+    anonymous[1].erase("machine");
+    CHECK_THROWS_AS(gg::bench::makeBaseline("linux-gcc12", anonymous), std::invalid_argument);
     CHECK_THROWS_AS(gg::bench::makeBaseline("linux-gcc12", {}), std::invalid_argument);
 }

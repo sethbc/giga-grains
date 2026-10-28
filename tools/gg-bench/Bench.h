@@ -28,8 +28,10 @@
 //   Engine::process: engine-sample (X, the headline), engine-sample-eco (X at the Eco tier),
 //   engine-live and engine-full-pool.
 // Every engine case's ratio, ns per grain-sample over reference's in the same round, cancels the
-// machine's speed (ruling 3). A baseline file records each ratio per CI leg; compare() checks a
-// report against it, report-only through M1.
+// machine's speed (ruling 3), though not its microarchitecture: on CI the same code's ratios
+// differ by up to ~20% between the CPU models GitHub assigns a leg. A baseline file therefore
+// records each ratio per CI leg and per CPU model (the `machine` string), and compare() checks a
+// report only against its own model's entry, report-only through M1.
 
 #include <cstdint>
 #include <functional>
@@ -87,6 +89,17 @@ struct Verdict
     uint32_t blockSize{0};
     double ratio{0.0}, limit{0.0};
     bool regressed{false};
+};
+
+/// A report checked against a baseline file.
+struct Comparison
+{
+    /// The baseline has an entry for the report's machine. When it doesn't, there is no verdict:
+    /// the other fields are empty.
+    bool found{false};
+    std::string commit; // the entry's
+    uint32_t runs{0};   // how many runs the entry was made from
+    std::vector<Verdict> verdicts;
 };
 
 /// One timed configuration: a case at one block size, with the state it keeps between rounds.
@@ -148,19 +161,23 @@ std::vector<Ratio> computeRatios(const Report &report);
 /// fields). Invalid UTF-8 in a string (the commit, say) is replaced, never an error.
 std::string toJson(const Report &report);
 
-/// A report's ratios checked against a baseline, in the report's order. The baseline is
-///     {"schemaVersion": 1, "leg": "<preset>", "commit": "<sha>",
-///      "ratios": [{"case", "blockSize", "ratio", "tolerance"}, ...]}
-/// and each limit is ratio × (1 + tolerance). Throws std::invalid_argument if the baseline isn't
-/// that shape, with a positive finite ratio and a finite tolerance >= 0 in every entry, even when
-/// the report has no ratios.
-std::vector<Verdict> compare(const Report &report, const nlohmann::json &baseline);
+/// A report's ratios checked against the baseline's entry for report.machine, in the report's
+/// order. The baseline is
+///     {"schemaVersion": 2, "leg": "<preset>",
+///      "machines": [{"machine": "<machine()>", "commit": "<sha>", "runs": N,
+///                    "ratios": [{"case", "blockSize", "ratio", "tolerance"}, ...]}, ...]}
+/// and each limit is ratio × (1 + tolerance). With no entry for report.machine, found is false
+/// and there are no verdicts. Throws std::invalid_argument if the baseline isn't that shape: at
+/// most one entry per machine, runs >= 1, and a positive finite ratio and a finite tolerance >= 0
+/// in every ratio. It checks the whole file, even when the report has no ratios.
+Comparison compare(const Report &report, const nlohmann::json &baseline);
 
-/// A baseline for `leg` from parsed gg-bench JSON reports (schema 2), which must all have the
-/// same (case, block size) ratios. Each entry's ratio is the median over the runs of each run's
-/// median ratio, and its tolerance max(0.05, 2 × (max − min) / median). The commit is the runs'
-/// commit, or their distinct commits joined by commas. Throws std::invalid_argument for no runs,
-/// a run that isn't schema 2 or runs whose ratios differ.
+/// A baseline for `leg` from parsed gg-bench JSON reports (schema 2): one entry per machine, in
+/// the order the machines first appear. A machine's runs must all have the same (case, block
+/// size) ratios. Each ratio is the median over that machine's runs of each run's median ratio,
+/// and its tolerance max(0.10, 2 × (max − min) / median), so 0.10 for a single run. The commit is
+/// the runs' commit, or their distinct commits joined by commas. Throws std::invalid_argument for
+/// no runs, a run that isn't schema 2 or a machine whose runs' ratios differ.
 nlohmann::json makeBaseline(const std::string &leg, const std::vector<nlohmann::json> &runs);
 
 /// The order round `round` (r) runs `configurations` (n) configurations in. Even rounds run

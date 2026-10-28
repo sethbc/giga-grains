@@ -23,11 +23,13 @@
 // rounds. gg-bench prints each configuration's median, min and IQR over the rounds, then each
 // engine case's ratio to the reference kernel; the JSON (schema 2) keeps every run.
 //
-// --baseline checks the ratios against a baseline file (tools/gg-bench/baselines/README.md) and
-// prints a verdict for each. The exit status is 0 if none regressed, 3 if any did, 1 for an
+// --baseline checks the ratios against a baseline file (tools/gg-bench/baselines/README.md): its
+// entry for this machine's CPU model, since ratios differ between models. It prints a verdict
+// for each ratio, or "no baseline for <machine>; no verdict" when the file has no entry for this
+// model. The exit status is 0 if none regressed (or there was no verdict), 3 if any did, 1 for an
 // error (an unreadable or malformed file, say) and 2 for bad usage. CI reports it without failing
 // through M1 (ruling 3). --make-baseline writes a baseline for a CI leg from the JSON of runs
-// already made, and exits.
+// already made, one entry per CPU model they ran on, and exits.
 //
 // --canvas times gg-ui-core's splat renderer, headless, at 3200 x 1200: a 1600 x 600 canvas on
 // a 2x display. Each frame generates the editor's stress workload (4,096, 8,192 or 16,384
@@ -267,9 +269,11 @@ void usage(std::FILE *f)
         "                    %s\n"
         "  --commit SHA      the commit to record in the JSON (default \"unknown\")\n"
         "  --json out.json   also write the results to out.json\n"
-        "  --baseline file   check the ratios against a baseline; exit 3 if any regressed\n"
+        "  --baseline file   check the ratios against this CPU model's entry in a\n"
+        "                    baseline; exit 3 if any regressed\n"
         "  --make-baseline <leg> <out.json> <in.json>...\n"
-        "                    write a baseline for <leg> from gg-bench JSON runs, and exit\n"
+        "                    write a baseline for <leg> from gg-bench JSON runs, one entry\n"
+        "                    per CPU model, and exit\n"
         "  --canvas          time the canvas renderer, not the grain kernels\n"
         "\n"
         "Exit status: 0 done (no ratio regressed), 1 error, 2 bad usage, 3 a ratio\n"
@@ -349,13 +353,21 @@ void printReport(const gg::bench::Report &report)
                 "median and IQR over the rounds\n");
 }
 
-/// Prints the verdicts; returns the number that regressed.
-std::size_t printVerdicts(const std::vector<gg::bench::Verdict> &verdicts, const std::string &path,
-                          const nlohmann::json &baseline)
+/// Prints the verdicts, or that there are none for this machine; returns the number that
+/// regressed.
+std::size_t printVerdicts(const gg::bench::Comparison &comparison, const std::string &machine,
+                          const std::string &path, const nlohmann::json &baseline)
 {
-    std::printf("\nbaseline: %s (leg %s, commit %s)\n", path.c_str(),
-                baseline["leg"].get<std::string>().c_str(),
-                baseline["commit"].get<std::string>().c_str());
+    if (!comparison.found)
+    {
+        std::printf("\nbaseline: %s (leg %s)\nno baseline for %s; no verdict\n", path.c_str(),
+                    baseline["leg"].get<std::string>().c_str(), machine.c_str());
+        return 0;
+    }
+    const std::vector<gg::bench::Verdict> &verdicts = comparison.verdicts;
+    std::printf("\nbaseline: %s (leg %s, machine %s, commit %s, %u run%s)\n", path.c_str(),
+                baseline["leg"].get<std::string>().c_str(), machine.c_str(),
+                comparison.commit.c_str(), comparison.runs, comparison.runs == 1 ? "" : "s");
     std::printf("\n%-18s %6s %12s %12s  %s\n", "case", "block", "ratio", "limit", "verdict");
     std::size_t regressed = 0;
     for (const gg::bench::Verdict &v : verdicts)
@@ -424,8 +436,14 @@ int makeBaseline(const std::vector<std::string> &args)
             std::fprintf(stderr, "error: couldn't write %s\n", args[1].c_str());
             return 1;
         }
-        std::printf("wrote %s: %zu ratios for leg %s from %zu runs\n", args[1].c_str(),
-                    baseline["ratios"].size(), args[0].c_str(), runs.size());
+        std::printf("wrote %s: leg %s, %zu runs\n", args[1].c_str(), args[0].c_str(), runs.size());
+        for (const nlohmann::json &m : baseline["machines"])
+        {
+            const auto runs = m["runs"].get<std::size_t>();
+            std::printf("  %s: %zu ratios from %zu run%s\n",
+                        m["machine"].get<std::string>().c_str(), m["ratios"].size(), runs,
+                        runs == 1 ? "" : "s");
+        }
         return 0;
     }
     catch (const std::exception &e)
@@ -589,8 +607,8 @@ int main(int argc, char **argv)
 
     if (!baselinePath.empty())
     {
-        const std::size_t regressed =
-            printVerdicts(gg::bench::compare(report, baseline), baselinePath, baseline);
+        const std::size_t regressed = printVerdicts(gg::bench::compare(report, baseline),
+                                                    report.machine, baselinePath, baseline);
         return regressed > 0 ? 3 : 0;
     }
     return 0;

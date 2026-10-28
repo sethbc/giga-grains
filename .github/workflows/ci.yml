@@ -129,8 +129,12 @@ jobs:
       # Reported, not gated through M1 (ruling 3; INTENT §16, §19). gg-bench times the kernels,
       # the frozen reference kernel and the real engine at full length (runs of 2 s, 5 interleaved
       # rounds; ruling T10-c), not --quick, and reports each engine case's ratio to the reference,
-      # which cancels the runner's speed. When this leg has a baseline
-      # (tools/gg-bench/baselines/<preset>.json), it also prints a verdict per ratio. A ratio
+      # which cancels the runner's speed but not its microarchitecture. When this leg has a
+      # baseline (tools/gg-bench/baselines/<preset>.json), gg-bench checks the ratios against its
+      # entry for the runner's CPU model and prints a verdict per ratio. GitHub assigns a leg
+      # different models from run to run, and their ratios differ by up to ~20%. For a model the
+      # baseline doesn't have yet, gg-bench prints "no baseline for <machine>; no verdict" and
+      # exits 0; the summary repeats that line above the output. A ratio
       # never fails the job: a regression (exit 3) becomes a warning and the step exits 0, so the
       # artifact still uploads; sub-project 6 makes it blocking. Anything else still fails the
       # job, as before: a crash, an engine fault, a malformed baseline (exit 1), bad usage (2) or
@@ -155,6 +159,8 @@ jobs:
             echo "### gg-bench (${{ matrix.preset }})"
             if [[ ! -f "$baseline" ]]; then
               echo "No baseline for this leg yet ($baseline): ratios reported, no verdict."
+            elif no_verdict=$(grep -m 1 '^no baseline for .*; no verdict$' "$out.txt"); then
+              echo "$no_verdict (ratios reported)."
             fi
             echo '```'
             cat "$out.txt"

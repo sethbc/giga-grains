@@ -297,24 +297,36 @@ $b --canvas [--quick] [--json out.json]                           # canvas rende
   timing; a CI leg's benchmark step takes about 6 minutes. `--canvas` times 240 frames after a
   20-frame warm-up, or 30 with `--quick`.
 - **Exit status:** 0 when done and no ratio regressed, 1 for an error (an unreadable or malformed
-  baseline, say), 2 for bad usage, 3 when `--baseline` finds a regressed ratio.
+  baseline, say), 2 for bad usage, 3 when `--baseline` finds a regressed ratio. A run on a CPU
+  model the baseline has no entry for prints `no baseline for <machine>; no verdict` and exits 0.
 - **In CI:** each build leg runs the full length with `--commit` and, when
   `tools/gg-bench/baselines/<preset>.json` exists, `--baseline`. It prints the output, and a
   verdict per ratio, in the step summary and uploads `gg-bench-<preset>` (`gg-bench.json` and
   `gg-bench.txt`).
+  - **Baselines are per CPU model.** GitHub assigns a leg different CPU models from run to run
+    (Linux: EPYC 7763, EPYC 9V45, Xeon 8370C; Windows: EPYC 7763, 9V45). For unchanged code,
+    ratios differ by up to ~20% between models and ~6% on one model. So a leg's baseline has one
+    entry per model, keyed by gg-bench's `machine` string, and a run is checked only against its
+    own model's entry. A model with no entry gets no verdict (the summary says so) until later
+    runs on it are added to the baseline.
   - **The gate is report-only through M1** (INTENT §19, §23 #44): exit 3 becomes a
     `::warning` and the step exits 0. A crash, exit 1 or 2, or the timeout still fails the job.
-    The `bench_baseline_regressed` test pins exit 3.
+    The `bench_baseline_*` tests pin exit 3, exit 0 and the no-verdict line.
   - Sub-project 6 makes the gate blocking, with the published X.
 - **Refreshing a baseline** (`tools/gg-bench/baselines/README.md` has the format):
-  1. Run the CI workflow three separate times on the same commit
+  1. Make three separate CI runs of the same engine code
      (`gh workflow run ci.yml --ref <branch>`). One run's IQR says nothing about the next run's
      drift, which reached ~20% on Windows (INTENT §23 #47).
   2. Download each run's artifact: `gh run download <id> --pattern 'gg-bench-<preset>'`.
   3. Run `gg-bench --make-baseline <preset> tools/gg-bench/baselines/<preset>.json a.json b.json
-     c.json`. It must be the last option, since it takes the rest of the command line. Each
-     ratio is the runs' median, with a tolerance of `max(0.05, 2 × (max − min) / median)`.
-  4. Commit the file. The next CI run should show every verdict `pass`.
+     c.json`. It must be the last option, since it takes the rest of the command line.
+     - It groups the runs by CPU model: runs on different models make separate entries.
+     - Each ratio is the median of that model's runs, with a tolerance of
+       `max(0.10, 2 × (max − min) / median)`.
+     - A model seen in only one run gets the 0.10 floor.
+  4. Commit the file. The next CI run on a model in the file should show every verdict `pass`.
+  5. A model with no entry gets one when you make the baseline again with later runs on it
+     included, still all of the same engine code.
 
   A baseline is valid only against the frozen `reference` kernel: if that kernel, or anything it
   calls, changes, make every baseline again.

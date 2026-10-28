@@ -668,43 +668,27 @@ std::string toJson(const Report &report)
 
 namespace
 {
-constexpr int kBaselineSchemaVersion = 1;
-constexpr double kMinTolerance = 0.05;
+constexpr int kBaselineSchemaVersion = 2;
+constexpr double kMinTolerance = 0.10;
 
 [[noreturn]] void badBaseline(const std::string &why)
 {
     throw std::invalid_argument("bad baseline: " + why);
 }
 
-/// Checks a baseline's shape: see compare().
-void checkBaseline(const nlohmann::json &b)
+bool isString(const nlohmann::json &j, const char *key)
 {
-    if (!b.is_object())
+    return j.contains(key) && j[key].is_string();
+}
+
+/// Checks one machine's ratios: see compare().
+void checkRatios(const nlohmann::json &ratios)
+{
+    for (const nlohmann::json &e : ratios)
     {
-        badBaseline("not a JSON object");
-    }
-    if (!b.contains("schemaVersion") || !b["schemaVersion"].is_number_integer() ||
-        b["schemaVersion"].get<int64_t>() != kBaselineSchemaVersion)
-    {
-        badBaseline("schemaVersion must be 1");
-    }
-    for (const char *key : {"leg", "commit"})
-    {
-        if (!b.contains(key) || !b[key].is_string())
-        {
-            badBaseline(std::string(key) + " must be a string");
-        }
-    }
-    if (!b.contains("ratios") || !b["ratios"].is_array())
-    {
-        badBaseline("ratios must be an array");
-    }
-    for (const nlohmann::json &e : b["ratios"])
-    {
-        if (!e.is_object() || !e.contains("case") || !e["case"].is_string() ||
-            !e.contains("blockSize") || !e["blockSize"].is_number_unsigned() ||
-            !e.contains("ratio") || !e["ratio"].is_number() || !e.contains("tolerance") ||
-            !e["tolerance"].is_number())
+        if (!e.is_object() || !isString(e, "case") || !e.contains("blockSize") ||
+            !e["blockSize"].is_number_unsigned() || !e.contains("ratio") ||
+            !e["ratio"].is_number() || !e.contains("tolerance") || !e["tolerance"].is_number())
         {
             badBaseline("every ratio needs a case, a blockSize, a ratio and a tolerance");
         }
@@ -717,78 +701,92 @@ void checkBaseline(const nlohmann::json &b)
         }
     }
 }
-} // namespace
 
-std::vector<Verdict> compare(const Report &report, const nlohmann::json &baseline)
+/// Checks a baseline's shape: see compare().
+void checkBaseline(const nlohmann::json &b)
 {
-    checkBaseline(baseline);
-    std::vector<Verdict> verdicts;
-    for (const Ratio &r : report.ratios)
+    if (!b.is_object())
     {
-        Verdict v{.name = r.name,
-                  .blockSize = r.blockSize,
-                  .ratio = r.median,
-                  .limit = std::nan(""),
-                  .regressed = false};
-        for (const nlohmann::json &e : baseline["ratios"])
-        {
-            if (e["case"].get<std::string>() == r.name &&
-                e["blockSize"].get<uint64_t>() == r.blockSize)
-            {
-                v.limit = e["ratio"].get<double>() * (1.0 + e["tolerance"].get<double>());
-                v.regressed = v.ratio > v.limit;
-                break;
-            }
-        }
-        verdicts.push_back(std::move(v));
+        badBaseline("not a JSON object");
     }
-    return verdicts;
+    if (!b.contains("schemaVersion") || !b["schemaVersion"].is_number_integer() ||
+        b["schemaVersion"].get<int64_t>() != kBaselineSchemaVersion)
+    {
+        badBaseline("schemaVersion must be 2");
+    }
+    if (!isString(b, "leg"))
+    {
+        badBaseline("leg must be a string");
+    }
+    if (!b.contains("machines") || !b["machines"].is_array())
+    {
+        badBaseline("machines must be an array");
+    }
+    std::vector<std::string> seen;
+    for (const nlohmann::json &m : b["machines"])
+    {
+        if (!m.is_object() || !isString(m, "machine") || !isString(m, "commit") ||
+            !m.contains("runs") || !m["runs"].is_number_integer() || m["runs"].get<int64_t>() < 1 ||
+            !m.contains("ratios") || !m["ratios"].is_array())
+        {
+            badBaseline("every machine needs a machine, a commit, runs >= 1 and ratios");
+        }
+        const auto name = m["machine"].get<std::string>();
+        if (std::find(seen.begin(), seen.end(), name) != seen.end())
+        {
+            badBaseline("two entries for " + name);
+        }
+        seen.push_back(name);
+        checkRatios(m["ratios"]);
+    }
 }
 
-nlohmann::json makeBaseline(const std::string &leg, const std::vector<nlohmann::json> &runs)
+/// Checks that j is a gg-bench report with ratios; `which` names it in the error.
+void checkRun(const nlohmann::json &j, const std::string &which)
 {
-    if (runs.empty())
+    if (!j.is_object() || !j.contains("schemaVersion") || !j["schemaVersion"].is_number_integer() ||
+        j["schemaVersion"].get<int64_t>() != kSchemaVersion || !j.contains("ratios") ||
+        !j["ratios"].is_array() || !isString(j, "commit") || !isString(j, "machine"))
     {
-        throw std::invalid_argument("a baseline needs at least one run");
+        throw std::invalid_argument(which + " isn't a gg-bench report (schema 2)");
     }
-    // Each run's (case, block size) -> its median ratio, in the first run's order.
+}
+
+/// One machine's baseline entry from its runs (indexes into `runs`).
+nlohmann::json machineEntry(const std::string &machine, const std::vector<nlohmann::json> &runs,
+                            const std::vector<std::size_t> &mine)
+{
+    // Each run's (case, block size) -> its median ratio, in the machine's first run's order.
     using Key = std::pair<std::string, uint32_t>;
     std::vector<Key> keys;
     std::vector<std::vector<double>> medians; // [key][run]
     std::vector<std::string> commits;
-    for (std::size_t run = 0; run < runs.size(); ++run)
+    for (std::size_t n = 0; n < mine.size(); ++n)
     {
-        const nlohmann::json &j = runs[run];
-        const std::string which = "run " + std::to_string(run + 1);
-        if (!j.is_object() || !j.contains("schemaVersion") ||
-            !j["schemaVersion"].is_number_integer() ||
-            j["schemaVersion"].get<int64_t>() != kSchemaVersion || !j.contains("ratios") ||
-            !j["ratios"].is_array() || !j.contains("commit") || !j["commit"].is_string())
-        {
-            throw std::invalid_argument(which + " isn't a gg-bench report (schema 2)");
-        }
+        const nlohmann::json &j = runs[mine[n]];
+        const std::string which = "run " + std::to_string(mine[n] + 1);
         const auto commit = j["commit"].get<std::string>();
         if (std::find(commits.begin(), commits.end(), commit) == commits.end())
         {
             commits.push_back(commit);
         }
         const nlohmann::json &ratios = j["ratios"];
-        if (run > 0 && ratios.size() != keys.size())
+        if (n > 0 && ratios.size() != keys.size())
         {
-            throw std::invalid_argument(which + " has different ratios from run 1");
+            throw std::invalid_argument(which + " has different ratios from run " +
+                                        std::to_string(mine[0] + 1) + " on " + machine);
         }
-        for (std::size_t i = 0; i < ratios.size(); ++i)
+        for (const nlohmann::json &r : ratios)
         {
-            const nlohmann::json &r = ratios[i];
-            if (!r.is_object() || !r.contains("name") || !r["name"].is_string() ||
-                !r.contains("blockSize") || !r["blockSize"].is_number_unsigned() ||
-                !r.contains("median") || !r["median"].is_number())
+            if (!r.is_object() || !isString(r, "name") || !r.contains("blockSize") ||
+                !r["blockSize"].is_number_unsigned() || !r.contains("median") ||
+                !r["median"].is_number())
             {
                 throw std::invalid_argument(which + " has a ratio without a name, a blockSize "
                                                     "and a median");
             }
             const Key key{r["name"].get<std::string>(), r["blockSize"].get<uint32_t>()};
-            if (run == 0)
+            if (n == 0)
             {
                 keys.push_back(key);
                 medians.emplace_back();
@@ -796,7 +794,8 @@ nlohmann::json makeBaseline(const std::string &leg, const std::vector<nlohmann::
             const auto at = std::find(keys.begin(), keys.end(), key);
             if (at == keys.end())
             {
-                throw std::invalid_argument(which + " has a ratio run 1 doesn't: " + key.first +
+                throw std::invalid_argument(which + " has a ratio run " +
+                                            std::to_string(mine[0] + 1) + " doesn't: " + key.first +
                                             " at block " + std::to_string(key.second));
             }
             medians[static_cast<std::size_t>(at - keys.begin())].push_back(
@@ -808,10 +807,11 @@ nlohmann::json makeBaseline(const std::string &leg, const std::vector<nlohmann::
     for (std::size_t k = 0; k < keys.size(); ++k)
     {
         const std::vector<double> &m = medians[k];
-        if (m.size() != runs.size())
+        if (m.size() != mine.size())
         {
-            throw std::invalid_argument("the runs have different ratios for " + keys[k].first +
-                                        " at block " + std::to_string(keys[k].second));
+            throw std::invalid_argument("the runs on " + machine + " have different ratios for " +
+                                        keys[k].first + " at block " +
+                                        std::to_string(keys[k].second));
         }
         const double ratio = quantile(m, 0.5);
         const auto [lo, hi] = std::minmax_element(m.begin(), m.end());
@@ -826,10 +826,87 @@ nlohmann::json makeBaseline(const std::string &leg, const std::vector<nlohmann::
     {
         commit += (commit.empty() ? "" : ",") + c;
     }
-    return {{"schemaVersion", kBaselineSchemaVersion},
-            {"leg", leg},
+    return {{"machine", machine},
             {"commit", commit},
+            {"runs", mine.size()},
             {"ratios", std::move(entries)}};
+}
+} // namespace
+
+Comparison compare(const Report &report, const nlohmann::json &baseline)
+{
+    checkBaseline(baseline);
+    Comparison c;
+    const nlohmann::json *entry = nullptr;
+    for (const nlohmann::json &m : baseline["machines"])
+    {
+        if (m["machine"].get<std::string>() == report.machine)
+        {
+            entry = &m;
+            break;
+        }
+    }
+    if (entry == nullptr)
+    {
+        return c;
+    }
+    c.found = true;
+    c.commit = (*entry)["commit"].get<std::string>();
+    c.runs = (*entry)["runs"].get<uint32_t>();
+    for (const Ratio &r : report.ratios)
+    {
+        Verdict v{.name = r.name,
+                  .blockSize = r.blockSize,
+                  .ratio = r.median,
+                  .limit = std::nan(""),
+                  .regressed = false};
+        for (const nlohmann::json &e : (*entry)["ratios"])
+        {
+            if (e["case"].get<std::string>() == r.name &&
+                e["blockSize"].get<uint64_t>() == r.blockSize)
+            {
+                v.limit = e["ratio"].get<double>() * (1.0 + e["tolerance"].get<double>());
+                v.regressed = v.ratio > v.limit;
+                break;
+            }
+        }
+        c.verdicts.push_back(std::move(v));
+    }
+    return c;
+}
+
+nlohmann::json makeBaseline(const std::string &leg, const std::vector<nlohmann::json> &runs)
+{
+    if (runs.empty())
+    {
+        throw std::invalid_argument("a baseline needs at least one run");
+    }
+    // Group the runs by machine, in the order the machines first appear.
+    std::vector<std::string> machines;
+    std::vector<std::vector<std::size_t>> groups;
+    for (std::size_t run = 0; run < runs.size(); ++run)
+    {
+        checkRun(runs[run], "run " + std::to_string(run + 1));
+        const auto machine = runs[run]["machine"].get<std::string>();
+        const auto at = std::find(machines.begin(), machines.end(), machine);
+        if (at == machines.end())
+        {
+            machines.push_back(machine);
+            groups.push_back({run});
+        }
+        else
+        {
+            groups[static_cast<std::size_t>(at - machines.begin())].push_back(run);
+        }
+    }
+
+    nlohmann::json entries = nlohmann::json::array();
+    for (std::size_t m = 0; m < machines.size(); ++m)
+    {
+        entries.push_back(machineEntry(machines[m], runs, groups[m]));
+    }
+    return {
+        {"schemaVersion", kBaselineSchemaVersion}, {"leg", leg}, {"machines", std::move(entries)}};
 }
 
 std::vector<uint32_t> roundOrder(uint32_t configurations, int round)

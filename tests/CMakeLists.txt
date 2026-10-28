@@ -99,11 +99,16 @@ catch_discover_tests(gg-tests ADD_TAGS_AS_LABELS)
 # - bench_cli: a tiny run of a kernel, the reference and an engine case must exit 0 and write its
 #   JSON, ratios included;
 # - bench_make_baseline: a baseline made from that JSON must be written, exit 0;
-# - bench_baseline_pass and bench_baseline_regressed: a tiny run checked against a baseline whose
-#   limits no ratio can miss (1e9) or meet (1e-9), written here at configure time.
-#   check-bench-baseline.cmake requires exactly exit 0 with "verdict: 0 of 3 ratios regressed",
-#   and exactly exit 3 with "verdict: 3 of 3 ...". CI's bench step relies on exit 3 meaning a
-#   regression, which it reports without failing (ruling 3).
+# - bench_baseline_pass, bench_baseline_regressed and bench_baseline_other_machine: a tiny run
+#   checked against a baseline that check-bench-baseline.cmake writes when the test runs.
+#   Baselines are per CPU model, so the script takes this host's machine string from bench_cli's
+#   JSON. The pass and regressed baselines give this machine limits no ratio can miss (1e9) or
+#   meet (1e-9); the third has an entry only for a CPU model that doesn't exist. The script
+#   requires an exact exit code and verdict line:
+#   - pass: exit 0, "verdict: 0 of 3 ratios regressed (...)";
+#   - regressed: exit 3, "verdict: 3 of 3 ...";
+#   - other machine: exit 0, "no baseline for <this machine>; no verdict".
+#   CI's bench step relies on these codes: it reports exit 3 without failing (ruling 3).
 set(bench_cases hermite-simd,reference,engine-sample)
 add_test(NAME bench_cli
         COMMAND gg-bench --seconds 0.002 --rounds 2 --grains 50 --cases ${bench_cases}
@@ -113,29 +118,20 @@ add_test(NAME bench_make_baseline
         ${CMAKE_BINARY_DIR}/bench_cli.json ${CMAKE_BINARY_DIR}/bench_cli.json)
 set_tests_properties(bench_cli PROPERTIES LABELS bench FIXTURES_SETUP bench_json)
 set_tests_properties(bench_make_baseline PROPERTIES LABELS bench FIXTURES_REQUIRED bench_json)
-foreach (verdict IN ITEMS pass regressed)
-    set(ratio 1e9)
-    set(expected_code 0)
-    set(expected_count 0)
-    if (verdict STREQUAL "regressed")
-        set(ratio 1e-9)
-        set(expected_code 3)
-        set(expected_count 3)
-    endif ()
-    set(entries "")
-    foreach (block IN ITEMS 32 64 256)
-        list(APPEND entries
-                "{\"case\": \"engine-sample\", \"blockSize\": ${block}, \"ratio\": ${ratio}, \"tolerance\": 0.05}")
-    endforeach ()
-    list(JOIN entries ", " entries)
-    set(baseline ${CMAKE_CURRENT_BINARY_DIR}/bench-baseline-${verdict}.json)
-    file(WRITE ${baseline} "{\"schemaVersion\": 1, \"leg\": \"test\", \"commit\": \"test\", \"ratios\": [${entries}]}\n")
-    add_test(NAME bench_baseline_${verdict}
-            COMMAND ${CMAKE_COMMAND} -DBENCH=$<TARGET_FILE:gg-bench> -DBASELINE=${baseline}
-            -DEXPECTED_CODE=${expected_code}
-            "-DEXPECTED_VERDICT=verdict: ${expected_count} of 3 ratios regressed (limit: the baseline's ratio x (1 + its tolerance))"
+set(verdict_line "ratios regressed (limit: the baseline's ratio x (1 + its tolerance))")
+set(bench_baseline_pass_args -DRATIO=1e9 -DEXPECTED_CODE=0
+        "-DEXPECTED_VERDICT=verdict: 0 of 3 ${verdict_line}")
+set(bench_baseline_regressed_args -DRATIO=1e-9 -DEXPECTED_CODE=3
+        "-DEXPECTED_VERDICT=verdict: 3 of 3 ${verdict_line}")
+set(bench_baseline_other_machine_args -DRATIO=1e-9 "-DMACHINE=no such CPU (test)"
+        -DEXPECTED_CODE=0 "-DEXPECTED_VERDICT=no baseline for @MACHINE@$<SEMICOLON> no verdict")
+foreach (test IN ITEMS bench_baseline_pass bench_baseline_regressed bench_baseline_other_machine)
+    add_test(NAME ${test}
+            COMMAND ${CMAKE_COMMAND} -DBENCH=$<TARGET_FILE:gg-bench>
+            -DRUN_JSON=${CMAKE_BINARY_DIR}/bench_cli.json
+            -DBASELINE=${CMAKE_CURRENT_BINARY_DIR}/${test}.json ${${test}_args}
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tools/check-bench-baseline.cmake)
-    set_tests_properties(bench_baseline_${verdict} PROPERTIES LABELS bench)
+    set_tests_properties(${test} PROPERTIES LABELS bench FIXTURES_REQUIRED bench_json)
 endforeach ()
 
 # RTSan's negative control (rtsan build only), labels `rt` and `rtsan`: a program that allocates
