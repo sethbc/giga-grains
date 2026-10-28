@@ -36,14 +36,22 @@ void CloudScheduler::setParams(const CloudParams &in) noexcept
     p.distribution = std::clamp(finiteOr(in.distribution, d.distribution), 0.0, 1.0);
     p.grainDurationSec = finiteOr(in.grainDurationSec, d.grainDurationSec);
     // Ruling M1-k: a fraction of the source in Sample mode, seconds behind the head in Live mode.
+    // With sprayInSeconds, Sample mode's spray is seconds, which the source bounds when it
+    // clamps the read position to its frames: here it is only kept non-negative.
     const double maxPosition = mode_ == SourceMode::Live ? ringSeconds_ : 1.0;
+    const bool sprayInSeconds = mode_ == SourceMode::Sample && in.sprayInSeconds;
     p.position = std::clamp(finiteOr(in.position, d.position), 0.0, maxPosition);
-    p.spray = std::clamp(finiteOr(in.spray, d.spray), 0.0, maxPosition);
+    p.spray = std::max(finiteOr(in.spray, d.spray), 0.0);
+    if (!sprayInSeconds)
+    {
+        p.spray = std::min(p.spray, maxPosition);
+    }
     p.pitchSemitones = std::clamp(finiteOr(in.pitchSemitones, d.pitchSemitones),
                                   -kMaxPitchSemitones, kMaxPitchSemitones);
     p.stereo = std::clamp(finiteOr(in.stereo, d.stereo), 0.0, 1.0);
     p.gain = std::clamp(finiteOr(in.gain, d.gain), 0.0f, kMaxGain);
     p.quality = in.quality;
+    p.sprayInSeconds = in.sprayInSeconds;
 
     const double oldPeriod = period_;
     const double oldDistribution = params_.distribution;

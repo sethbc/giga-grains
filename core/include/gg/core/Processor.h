@@ -17,19 +17,12 @@
 
 namespace gg::core
 {
-/// Which product a Processor runs.
-enum class Mode
-{
-    Instrument, ///< The wet signal alone, from a sample source (none in this slice); no input.
-    Fx,         ///< The input feeds the live ring and the dry side of the Mix.
-};
-
 struct ProcessorConfig
 {
     double sampleRate;     ///< Finite and > 0.
     uint32_t maxBlockSize; ///< > 0. process() renders longer calls in pieces of this size.
     uint64_t seed;         ///< The engine seed (saved in the state).
-    Mode mode;
+    Mode mode;             ///< Which product (gg/core/ParamIds.h).
 };
 
 /// A parameter change inside one process() call: a value (CLAP's param value event) or a

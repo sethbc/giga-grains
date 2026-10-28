@@ -233,8 +233,8 @@ std::string parameterNames()
     std::string names;
     for (std::size_t s = 0; s < gg::core::kParamCount; ++s)
     {
-        names +=
-            (s == 0 ? "" : ", ") + gg::core::paramMeta(static_cast<gg::core::ParamSlot>(s)).name;
+        names += (s == 0 ? "" : ", ") +
+                 gg::core::paramMeta(static_cast<gg::core::ParamSlot>(s), gg::core::Mode::Fx).name;
     }
     return names;
 }
@@ -244,7 +244,8 @@ std::string parameterNames()
 double parameterValue(const json &v, gg::core::ParamSlot slot, std::string_view key)
 {
     const double d = finiteNumber(v, key);
-    const auto &meta = gg::core::paramMeta(slot);
+    // FX mode's parameters: the FX's metadata.
+    const auto &meta = gg::core::paramMeta(slot, gg::core::Mode::Fx);
     // The float conversion is defined only within float's range.
     const bool fits = std::abs(d) <= std::numeric_limits<float>::max();
     const float f = fits ? static_cast<float>(d) : 0.0f;
@@ -404,10 +405,11 @@ RenderSpec readSpec(const json &j)
 
 std::optional<gg::core::ParamSlot> paramSlotNamed(std::string_view name)
 {
+    // The names are the same in both products.
     for (std::size_t s = 0; s < gg::core::kParamCount; ++s)
     {
         const auto slot = static_cast<gg::core::ParamSlot>(s);
-        if (gg::core::paramMeta(slot).name == name)
+        if (gg::core::paramMeta(slot, gg::core::Mode::Fx).name == name)
         {
             return slot;
         }

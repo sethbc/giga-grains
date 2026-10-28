@@ -82,11 +82,11 @@ Processor::Processor(const ProcessorConfig &config)
     {
         channel.assign(config_.maxBlockSize, 0.0f);
     }
-    // The first paramMeta() call builds its table, which allocates; make every call here, off
+    // The first paramMeta() call builds its tables, which allocates; make every call here, off
     // the audio thread, so that process() never makes it, and keep the ranges.
     for (size_t s = 0; s < kParamCount; ++s)
     {
-        const auto &meta = paramMeta(static_cast<ParamSlot>(s));
+        const auto &meta = paramMeta(static_cast<ParamSlot>(s), config_.mode);
         minVal_[s] = meta.minVal;
         maxVal_[s] = meta.maxVal;
         base_[s] = clampToRange(s, meta.defaultVal);
@@ -173,7 +173,7 @@ void Processor::updateEffective() noexcept
     {
         effective_[s] = clampToRange(s, base_[s] + mod_[s]);
     }
-    engine_.setCloudParams(toCloudParams(effective_));
+    engine_.setCloudParams(toCloudParams(effective_, config_.mode));
 }
 
 void Processor::syncFreeze() noexcept

@@ -203,13 +203,17 @@ void Engine::processBlock(const float *const *in, uint32_t numInChannels, float 
 GrainSpec Engine::sampleGrain(const GrainDraw &d) const noexcept
 {
     // The draw's position is a fraction of the source; its rate is the pitch ratio, converted
-    // here from the source's rate to the output rate. Both as in M0.
+    // here from the source's rate to the output rate. Both as in M0. A spray drawn in seconds
+    // (CloudParams::sprayInSeconds) is converted at the source's rate and the sum clamped to the
+    // source; otherwise sprayOffsetSec is +0 and positionDraw × span is already in [0, span],
+    // so the start is M0's value. The one difference is the sign of a zero: a −0 start (from a
+    // −0 position, which setParams passes through its clamp) becomes +0, the same frame.
     const double span = sourceFrames_ > 1 ? static_cast<double>(sourceFrames_ - 1) : 0.0;
     return {
         .index = d.index,
         .onsetSample = d.onsetSample,
         .onsetFrac = d.onsetFrac,
-        .startPos = d.positionDraw * span,
+        .startPos = std::clamp(d.positionDraw * span + d.sprayOffsetSec * sourceRate_, 0.0, span),
         .rate = d.rate * sourceRate_ / config_.sampleRate,
         .durationSamples = d.durationSamples,
         .gain = d.gain,

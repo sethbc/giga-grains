@@ -50,7 +50,7 @@ size_t at(ParamSlot s) { return static_cast<size_t>(s); }
 
 float clampTo(ParamSlot s, float v)
 {
-    const auto &meta = gg::core::paramMeta(s);
+    const auto &meta = gg::core::paramMeta(s, Mode::Fx);
     return std::clamp(v, meta.minVal, meta.maxVal);
 }
 
@@ -147,7 +147,7 @@ std::array<double, 3> firstOnsets(uint32_t clockBefore, uint32_t offset)
         p.process(nullptr, 0, out, 2, clockBefore, {});
     }
     const ParamEvent e{offset, ParamSlot::Density, false,
-                       gg::core::paramMeta(ParamSlot::Density).maxVal};
+                       gg::core::paramMeta(ParamSlot::Density, Mode::Fx).maxVal};
     p.process(nullptr, 0, out, 2, 512, std::span(&e, 1));
     REQUIRE(log.grains.size() >= 3);
     REQUIRE(log.grains[0].index == 0);
@@ -160,8 +160,8 @@ TEST_CASE("events apply at the next grid boundary", "[core]")
 {
     STATIC_REQUIRE(Processor::kControlGrid == 32);
     gg::core::ParamValues maxDensity{};
-    maxDensity[at(ParamSlot::Density)] = gg::core::paramMeta(ParamSlot::Density).maxVal;
-    const double newP = 8000.0 / gg::core::toCloudParams(maxDensity).densityHz;
+    maxDensity[at(ParamSlot::Density)] = gg::core::paramMeta(ParamSlot::Density, Mode::Fx).maxVal;
+    const double newP = 8000.0 / gg::core::toCloudParams(maxDensity, Mode::Fx).densityHz;
     REQUIRE(newP > 19.9);
     REQUIRE(newP < 20.1);
 
@@ -829,7 +829,7 @@ TEST_CASE("processor survives an automation storm", "[core][rt]")
         const auto slot = static_cast<ParamSlot>(
             static_cast<size_t>(uniform(31, 4 * k + 1) * kParamCount) % kParamCount);
         const bool isModulation = uniform(31, 4 * k + 2) < 0.3;
-        const auto &meta = gg::core::paramMeta(slot);
+        const auto &meta = gg::core::paramMeta(slot, Mode::Fx);
         const double span = static_cast<double>(meta.maxVal) - static_cast<double>(meta.minVal);
         const double u = uniform(31, 4 * k + 3);
         double value = isModulation ? (2.0 * u - 1.0) * span
@@ -1144,6 +1144,14 @@ TEST_CASE("processor configures the engine for its mode", "[core]")
         // the input.
         Processor p({kSampleRate, 512, 1, Mode::Instrument});
         REQUIRE(p.engine().liveFrames() == 0);
+        // The instrument's defaults: Position at the start of the file (spec §6.8).
+        for (size_t s = 0; s < kParamCount; ++s)
+        {
+            const auto slot = static_cast<ParamSlot>(s);
+            INFO("slot " << s);
+            REQUIRE(p.base(slot) == gg::core::paramMeta(slot, Mode::Instrument).defaultVal);
+        }
+        REQUIRE(p.base(ParamSlot::Position) == 0.0f);
         p.process(in, 2, out, 4, 512, {});
         REQUIRE(p.engine().sourceMode() == gg::SourceMode::Sample);
         REQUIRE(p.engine().sampleClock() == 512);
@@ -1162,7 +1170,7 @@ TEST_CASE("processor base values, pending changes and reset", "[core]")
     {
         const auto slot = static_cast<ParamSlot>(s);
         INFO("slot " << s);
-        REQUIRE(p.base(slot) == gg::core::paramMeta(slot).defaultVal);
+        REQUIRE(p.base(slot) == gg::core::paramMeta(slot, Mode::Fx).defaultVal);
         REQUIRE(p.effective(slot) == p.base(slot));
     }
 

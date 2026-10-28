@@ -16,6 +16,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <optional>
+#include <string>
+#include <vector>
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
@@ -28,6 +31,7 @@
 using Catch::Matchers::WithinAbs;
 using Catch::Matchers::WithinRel;
 using gg::core::kParamCount;
+using gg::core::Mode;
 using gg::core::ParamSlot;
 using gg::core::ParamValues;
 using gg::core::softLimit;
@@ -36,20 +40,20 @@ using gg::core::toWetParams;
 
 namespace
 {
-ParamValues defaults()
+ParamValues defaults(Mode mode = Mode::Fx)
 {
     ParamValues v{};
     for (size_t i = 0; i < kParamCount; ++i)
     {
-        v[i] = gg::core::paramMeta(static_cast<ParamSlot>(i)).defaultVal;
+        v[i] = gg::core::paramMeta(static_cast<ParamSlot>(i), mode).defaultVal;
     }
     return v;
 }
 
-// The defaults with one slot changed.
-ParamValues with(ParamSlot slot, float value)
+// mode's defaults with one slot changed.
+ParamValues with(ParamSlot slot, float value, Mode mode = Mode::Fx)
 {
-    ParamValues v = defaults();
+    ParamValues v = defaults(mode);
     v[static_cast<size_t>(slot)] = value;
     return v;
 }
@@ -71,6 +75,72 @@ double referenceLimit(double x)
 
 uint32_t bitsOf(float f) { return std::bit_cast<uint32_t>(f); }
 float fromBits(uint32_t b) { return std::bit_cast<float>(b); }
+
+uint64_t bitsOf(double x) { return std::bit_cast<uint64_t>(x); }
+
+double at(const ParamValues &v, ParamSlot slot) { return d(v[static_cast<size_t>(slot)]); }
+
+// toCloudParams as it was before the instrument's Position (carry-over T6), copied: the FX's
+// mapping must not move by a bit.
+gg::CloudParams fxReference(const ParamValues &v)
+{
+    gg::CloudParams p;
+    p.densityHz = gg::exp2Det(at(v, ParamSlot::Density));
+    p.distribution = at(v, ParamSlot::Distribution);
+    p.grainDurationSec = gg::exp2Det(at(v, ParamSlot::Size));
+    p.position = 16.0 / 255.0 * (gg::exp2Det(8.0 * at(v, ParamSlot::Position)) - 1.0);
+    p.spray = 2.0 / 255.0 * (gg::exp2Det(8.0 * at(v, ParamSlot::Spray)) - 1.0);
+    p.pitchSemitones = at(v, ParamSlot::Pitch);
+    p.stereo = at(v, ParamSlot::Stereo);
+    p.gain = static_cast<float>(1.0 / std::sqrt(std::max(1.0, p.densityHz * p.grainDurationSec)));
+    return p;
+}
+
+// Every field but position and sprayInSeconds, bit for bit.
+bool sameApartFromPosition(const gg::CloudParams &a, const gg::CloudParams &b)
+{
+    return bitsOf(a.densityHz) == bitsOf(b.densityHz) &&
+           bitsOf(a.distribution) == bitsOf(b.distribution) &&
+           bitsOf(a.grainDurationSec) == bitsOf(b.grainDurationSec) &&
+           bitsOf(a.spray) == bitsOf(b.spray) &&
+           bitsOf(a.pitchSemitones) == bitsOf(b.pitchSemitones) &&
+           bitsOf(a.stereo) == bitsOf(b.stereo) && bitsOf(a.gain) == bitsOf(b.gain) &&
+           a.quality == b.quality;
+}
+
+bool sameBits(const gg::CloudParams &a, const gg::CloudParams &b)
+{
+    return sameApartFromPosition(a, b) && bitsOf(a.position) == bitsOf(b.position) &&
+           a.sprayInSeconds == b.sprayInSeconds;
+}
+
+// Points spread over every slot's range at once: the ends, mode's defaults and 200 mixtures.
+std::vector<ParamValues> samplePoints(Mode mode)
+{
+    std::vector<ParamValues> points;
+    ParamValues lo{};
+    ParamValues hi{};
+    for (size_t s = 0; s < kParamCount; ++s)
+    {
+        const auto &meta = gg::core::paramMeta(static_cast<ParamSlot>(s), mode);
+        lo[s] = meta.minVal;
+        hi[s] = meta.maxVal;
+    }
+    points.push_back(lo);
+    points.push_back(hi);
+    points.push_back(defaults(mode));
+    for (size_t i = 0; i < 200; ++i)
+    {
+        ParamValues v{};
+        for (size_t s = 0; s < kParamCount; ++s)
+        {
+            const auto frac = static_cast<float>((i * 37 + s * 11) % 101) / 100.0f;
+            v[s] = lo[s] + (hi[s] - lo[s]) * frac;
+        }
+        points.push_back(v);
+    }
+    return points;
+}
 } // namespace
 
 TEST_CASE("param map follows the taper table", "[core]")
@@ -78,23 +148,24 @@ TEST_CASE("param map follows the taper table", "[core]")
     // The brief's pins.
     SECTION("Size -2.736965594166206f is 0.15 s")
     {
-        const auto p = toCloudParams(with(ParamSlot::Size, -2.736965594166206f));
+        const auto p = toCloudParams(with(ParamSlot::Size, -2.736965594166206f), Mode::Fx);
         REQUIRE_THAT(p.grainDurationSec, WithinRel(0.15, 1e-6));
     }
     SECTION("Density 4 is exactly 16 Hz")
     {
-        REQUIRE(toCloudParams(with(ParamSlot::Density, 4.0f)).densityHz == 16.0);
+        REQUIRE(toCloudParams(with(ParamSlot::Density, 4.0f), Mode::Fx).densityHz == 16.0);
     }
     SECTION("Position 0 is 0 s and 1 is 16 s")
     {
-        REQUIRE_THAT(toCloudParams(with(ParamSlot::Position, 0.0f)).position, WithinAbs(0.0, 1e-9));
-        REQUIRE_THAT(toCloudParams(with(ParamSlot::Position, 1.0f)).position,
+        REQUIRE_THAT(toCloudParams(with(ParamSlot::Position, 0.0f), Mode::Fx).position,
+                     WithinAbs(0.0, 1e-9));
+        REQUIRE_THAT(toCloudParams(with(ParamSlot::Position, 1.0f), Mode::Fx).position,
                      WithinAbs(16.0, 1e-9));
     }
     SECTION("the gain at 16 Hz and 0.15 s is 1/sqrt(2.4)")
     {
         // The defaults are Density 16 Hz and Size 0.15 s.
-        const auto p = toCloudParams(defaults());
+        const auto p = toCloudParams(defaults(), Mode::Fx);
         REQUIRE(p.densityHz == 16.0);
         REQUIRE_THAT(p.grainDurationSec, WithinRel(0.15, 1e-6));
         REQUIRE_THAT(static_cast<double>(p.gain), WithinRel(1.0 / std::sqrt(2.4), 1e-6));
@@ -105,12 +176,12 @@ TEST_CASE("param map follows the taper table", "[core]")
     for (size_t i = 0; i < kParamCount; ++i)
     {
         const auto slot = static_cast<ParamSlot>(i);
-        const auto &meta = gg::core::paramMeta(slot);
+        const auto &meta = gg::core::paramMeta(slot, Mode::Fx);
         for (const float v : {meta.minVal, meta.defaultVal, meta.maxVal})
         {
             INFO("slot " << i << " at " << v);
             const ParamValues values = with(slot, v);
-            const auto cloud = toCloudParams(values);
+            const auto cloud = toCloudParams(values, Mode::Fx);
             const auto wet = toWetParams(values);
             switch (slot)
             {
@@ -176,13 +247,13 @@ TEST_CASE("param map follows the taper table", "[core]")
     for (const ParamSlot slot :
          {ParamSlot::Density, ParamSlot::Size, ParamSlot::Position, ParamSlot::Spray})
     {
-        const auto &meta = gg::core::paramMeta(slot);
+        const auto &meta = gg::core::paramMeta(slot, Mode::Fx);
         int mismatches = 0;
         for (int i = 0; i <= 1000; ++i)
         {
             const float v =
                 meta.minVal + (meta.maxVal - meta.minVal) * static_cast<float>(i) / 1000.0f;
-            const auto p = toCloudParams(with(slot, v));
+            const auto p = toCloudParams(with(slot, v), Mode::Fx);
             const double e8 = gg::exp2Det(8.0 * d(v));
             const bool same = slot == ParamSlot::Density ? p.densityHz == gg::exp2Det(d(v))
                               : slot == ParamSlot::Size  ? p.grainDurationSec == gg::exp2Det(d(v))
@@ -198,27 +269,30 @@ TEST_CASE("param map follows the taper table", "[core]")
     // The ends of the tapers in real units.
     using Ends = std::array<double, 3>; // at min, default, max
     const auto ends = [](ParamSlot slot, auto field) {
-        const auto &meta = gg::core::paramMeta(slot);
+        const auto &meta = gg::core::paramMeta(slot, Mode::Fx);
         return Ends{field(with(slot, meta.minVal)), field(with(slot, meta.defaultVal)),
                     field(with(slot, meta.maxVal))};
     };
-    const auto position =
-        ends(ParamSlot::Position, [](const ParamValues &v) { return toCloudParams(v).position; });
+    const auto position = ends(ParamSlot::Position, [](const ParamValues &v) {
+        return toCloudParams(v, Mode::Fx).position;
+    });
     REQUIRE_THAT(position[0], WithinAbs(0.0, 1e-12));
     REQUIRE_THAT(position[1], WithinRel(0.25, 1e-6));
     REQUIRE_THAT(position[2], WithinRel(16.0, 1e-12));
-    const auto size = ends(ParamSlot::Size,
-                           [](const ParamValues &v) { return toCloudParams(v).grainDurationSec; });
+    const auto size = ends(ParamSlot::Size, [](const ParamValues &v) {
+        return toCloudParams(v, Mode::Fx).grainDurationSec;
+    });
     REQUIRE_THAT(size[0], WithinRel(0.005, 1e-6));
     REQUIRE_THAT(size[1], WithinRel(0.15, 1e-6));
     REQUIRE(size[2] == 2.0);
-    const auto density =
-        ends(ParamSlot::Density, [](const ParamValues &v) { return toCloudParams(v).densityHz; });
+    const auto density = ends(ParamSlot::Density, [](const ParamValues &v) {
+        return toCloudParams(v, Mode::Fx).densityHz;
+    });
     REQUIRE(density[0] == 0.25);
     REQUIRE(density[1] == 16.0);
     REQUIRE_THAT(density[2], WithinRel(400.0, 1e-6));
-    const auto spray =
-        ends(ParamSlot::Spray, [](const ParamValues &v) { return toCloudParams(v).spray; });
+    const auto spray = ends(ParamSlot::Spray,
+                            [](const ParamValues &v) { return toCloudParams(v, Mode::Fx).spray; });
     REQUIRE_THAT(spray[0], WithinAbs(0.0, 1e-12));
     REQUIRE_THAT(spray[1], WithinRel(0.05, 1e-6));
     REQUIRE_THAT(spray[2], WithinRel(2.0, 1e-12));
@@ -232,6 +306,66 @@ TEST_CASE("param map follows the taper table", "[core]")
     // Freeze is on above 0.5 only.
     REQUIRE_FALSE(toWetParams(with(ParamSlot::Freeze, 0.5f)).freeze);
     REQUIRE(toWetParams(with(ParamSlot::Freeze, std::nextafter(0.5f, 1.0f))).freeze);
+}
+
+TEST_CASE("the instrument's Position is a fraction and its Spray is seconds", "[core]")
+{
+    SECTION("Position is the fraction of the source itself")
+    {
+        REQUIRE(toCloudParams(with(ParamSlot::Position, 0.25f, Mode::Instrument), Mode::Instrument)
+                    .position == 0.25);
+        REQUIRE(toCloudParams(with(ParamSlot::Position, 0.0f, Mode::Instrument), Mode::Instrument)
+                    .position == 0.0);
+        REQUIRE(toCloudParams(with(ParamSlot::Position, 1.0f, Mode::Instrument), Mode::Instrument)
+                    .position == 1.0);
+        // Its default is the start of the file.
+        REQUIRE(toCloudParams(defaults(Mode::Instrument), Mode::Instrument).position == 0.0);
+    }
+
+    SECTION("Spray is the FX's seconds, drawn in seconds")
+    {
+        const auto instrument = toCloudParams(defaults(Mode::Instrument), Mode::Instrument);
+        const auto fx = toCloudParams(defaults(Mode::Fx), Mode::Fx);
+        REQUIRE(instrument.sprayInSeconds);
+        REQUIRE_FALSE(fx.sprayInSeconds);
+        REQUIRE(bitsOf(instrument.spray) == bitsOf(fx.spray));
+        REQUIRE_THAT(instrument.spray, WithinRel(0.05, 1e-6));
+        for (int i = 0; i <= 100; ++i)
+        {
+            const float v = static_cast<float>(i) / 100.0f;
+            INFO("Spray " << v);
+            REQUIRE(toCloudParams(with(ParamSlot::Spray, v, Mode::Instrument), Mode::Instrument)
+                        .spray == 2.0 / 255.0 * (gg::exp2Det(8.0 * d(v)) - 1.0));
+        }
+    }
+
+    SECTION("everything else maps as in the FX")
+    {
+        for (const auto &v : samplePoints(Mode::Instrument))
+        {
+            REQUIRE(sameApartFromPosition(toCloudParams(v, Mode::Instrument),
+                                          toCloudParams(v, Mode::Fx)));
+        }
+    }
+
+    SECTION("the FX's mapping is unchanged, bit for bit")
+    {
+        for (const auto &v : samplePoints(Mode::Fx))
+        {
+            REQUIRE(sameBits(toCloudParams(v, Mode::Fx), fxReference(v)));
+        }
+    }
+
+    SECTION("the instrument's Position displays as a percentage")
+    {
+        const auto &meta = gg::core::paramMeta(ParamSlot::Position, Mode::Instrument);
+        REQUIRE(meta.valueToString(0.25f) == std::optional<std::string>("25.00 %"));
+        REQUIRE(meta.valueToString(0.0f) == std::optional<std::string>("0.00 %"));
+        REQUIRE(meta.valueToString(1.0f) == std::optional<std::string>("100.00 %"));
+        // The FX's still shows seconds behind the write head.
+        REQUIRE(gg::core::paramMeta(ParamSlot::Position, Mode::Fx).valueToString(0.28967658f) ==
+                std::optional<std::string>("0.25 s"));
+    }
 }
 
 TEST_CASE("soft limiter is continuous and bounded", "[core]")

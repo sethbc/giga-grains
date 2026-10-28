@@ -76,11 +76,11 @@ const clap_plugin_descriptor *descriptorFor(Product product) noexcept
 GigaGrainsPlugin::GigaGrainsPlugin(const clap_host *host, Product product)
     : plugHelper_t(descriptorFor(product), host), product_(product)
 {
-    // Main thread. The first paramMeta() call builds its table, which allocates: it's made here,
+    // Main thread. The first paramMeta() call builds its tables, which allocates: it's made here,
     // never on the audio thread.
     for (std::size_t s = 0; s < kParamCount; ++s)
     {
-        const auto &meta = gg::core::paramMeta(static_cast<ParamSlot>(s));
+        const auto &meta = gg::core::paramMeta(static_cast<ParamSlot>(s), mode());
         minValues_[s] = meta.minVal;
         maxValues_[s] = meta.maxVal;
         storeValue(static_cast<ParamSlot>(s), meta.defaultVal);
@@ -104,7 +104,7 @@ bool GigaGrainsPlugin::activate(double sampleRate, uint32_t /*minFrameCount*/,
             sampleRate,
             std::clamp<uint32_t>(maxFrameCount, 1, kMaxEngineBlock),
             seed_,
-            product_ == Product::Fx ? gg::core::Mode::Fx : gg::core::Mode::Instrument,
+            mode(),
         };
         auto processor = std::make_unique<gg::core::Processor>(config);
         // The values set while inactive, or left by the last activation.
@@ -339,7 +339,7 @@ bool GigaGrainsPlugin::paramsInfo(uint32_t paramIndex, clap_param_info *info) co
     }
     const auto slot = static_cast<ParamSlot>(paramIndex);
     *info = clap_param_info{};
-    gg::core::paramMeta(slot).toClapParamInfo<CLAP_NAME_SIZE>(info);
+    gg::core::paramMeta(slot, mode()).toClapParamInfo<CLAP_NAME_SIZE>(info);
     info->cookie = nullptr;
     // The instrument has no dry signal, so Mix does nothing there. It keeps the parameter,
     // hidden, so both products share one parameter list and one state format (spec §4).
@@ -371,7 +371,8 @@ bool GigaGrainsPlugin::paramsValueToText(clap_id paramId, double value, char *di
     }
     try
     {
-        const auto text = gg::core::paramMeta(*slot).valueToString(static_cast<float>(value));
+        const auto text =
+            gg::core::paramMeta(*slot, mode()).valueToString(static_cast<float>(value));
         if (!text.has_value())
         {
             return false;
@@ -396,7 +397,7 @@ bool GigaGrainsPlugin::paramsTextToValue(clap_id paramId, const char *display,
     try
     {
         std::string error;
-        const auto parsed = gg::core::paramMeta(*slot).valueFromString(display, error);
+        const auto parsed = gg::core::paramMeta(*slot, mode()).valueFromString(display, error);
         if (!parsed.has_value() || std::isnan(*parsed))
         {
             return false;
@@ -475,7 +476,7 @@ bool GigaGrainsPlugin::stateLoad(const clap_istream *stream) noexcept
         // All or nothing: a state fromStateXml rejects changes nothing here either.
         gg::core::ParamValues values{};
         uint64_t seed = 0;
-        if (!gg::core::fromStateXml(xml, values, seed))
+        if (!gg::core::fromStateXml(xml, values, seed, mode()))
         {
             return false;
         }

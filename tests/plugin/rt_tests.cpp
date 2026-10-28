@@ -284,7 +284,9 @@ TEST_CASE("plugin reset does not allocate and a restored Freeze plays live", "[p
     gg::core::ParamValues restored{};
     for (std::size_t s = 0; s < gg::core::kParamCount; ++s)
     {
-        restored[s] = gg::core::paramMeta(static_cast<ParamSlot>(s)).defaultVal;
+        restored[s] = gg::core::paramMeta(static_cast<ParamSlot>(s),
+                                          isFx ? gg::core::Mode::Fx : gg::core::Mode::Instrument)
+                          .defaultVal;
     }
     restored[static_cast<std::size_t>(ParamSlot::Mix)] = 1.0f;
     restored[static_cast<std::size_t>(ParamSlot::Freeze)] = 1.0f;

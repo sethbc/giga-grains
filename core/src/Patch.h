@@ -22,7 +22,7 @@
 
 namespace gg::core
 {
-/// One parameter's value, with a copy of its metadata (paramMeta).
+/// One parameter's value, with a copy of its metadata (paramMeta, in the patch's product).
 struct Param : sst::plugininfra::patch_support::ParamBase
 {
     using ParamBase::ParamBase;
@@ -48,8 +48,9 @@ struct Patch : sst::plugininfra::patch_support::PatchBase<Patch, Param>
     /// patchVersion.
     uint32_t migratedFromVersion{0};
 
-    /// The params are pushed in ParamSlot order, at their defaults; the name is "Init".
-    Patch();
+    /// The params are pushed in ParamSlot order, with `mode`'s metadata (paramMeta) and at its
+    /// defaults; the name is "Init".
+    explicit Patch(Mode mode);
     Patch(const Patch &) = delete;
     Patch &operator=(const Patch &) = delete;
 
@@ -71,8 +72,9 @@ struct Patch : sst::plugininfra::patch_support::PatchBase<Patch, Param>
     {
         return std::min(static_cast<size_t>(slot), kParamCount - 1);
     }
-    static std::array<Param, kParamCount> defaultValues();
+    static std::array<Param, kParamCount> defaultValues(Mode mode);
 
+    Mode mode_;
     std::array<Param, kParamCount> values;
 };
 } // namespace gg::core

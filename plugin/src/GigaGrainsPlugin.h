@@ -63,6 +63,11 @@ class GigaGrainsPlugin : public plugHelper_t
     std::atomic<uint32_t> noteOnCount{0};
 
     Product product() const noexcept { return product_; }
+    /// The product's gg-core mode: its parameter metadata (paramMeta) and its Processor's.
+    gg::core::Mode mode() const noexcept
+    {
+        return product_ == Product::Fx ? gg::core::Mode::Fx : gg::core::Mode::Instrument;
+    }
 
     /// The processor built by the last activate(); nullptr while the plugin is inactive. For
     /// tests: its state belongs to the audio thread while the plugin is active.

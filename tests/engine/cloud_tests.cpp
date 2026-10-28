@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <span>
 #include <vector>
 
@@ -18,6 +19,7 @@
 
 #include "gg/core/MathDet.h"
 #include "gg/core/Rng.h"
+#include "gg/engine/Engine.h"
 #include "gg/grain/CloudScheduler.h"
 #include "gg/grain/Tier.h"
 #include "gg/source/SourceMode.h"
@@ -1113,5 +1115,211 @@ TEST_CASE("the note gate holds the stream until a key is held", "[cloud]")
         REQUIRE(resumed.size() == 1);
         CHECK(onsetTime(resumed[0]) == 534080.0);
         CHECK(resumed[0].key == -1);
+    }
+}
+
+TEST_CASE("sample mode can draw spray in seconds (the instrument's Spray)", "[cloud]")
+{
+    // With sprayInSeconds, Sample mode's spray is seconds, bipolar around the position: the draw
+    // keeps the position as given and carries spray × bipolar(u) as sprayOffsetSec, for the
+    // source to convert at its own rate. u is the PositionJitter draw, as without it.
+    const auto bipolar = [](uint64_t k) {
+        return gg::rng::bipolar(gg::rng::hash({kSeed, 0, 0, gg::rng::Field::PositionJitter, k}));
+    };
+    gg::CloudParams p = cloudAt(1000.0, 0.5);
+    p.position = 0.5;
+    p.spray = 0.1;
+    p.stereo = 0.8;
+    REQUIRE_FALSE(p.sprayInSeconds); // the default
+
+    gg::CloudScheduler fraction;
+    fraction.setParams(p);
+    const auto asFraction = collect(fraction, 0, 48000, 64);
+    REQUIRE(asFraction.size() > 900);
+    bool fractionKeyed = true;
+    for (const gg::GrainDraw &g : asFraction)
+    {
+        fractionKeyed = fractionKeyed &&
+                        g.positionDraw == std::clamp(0.5 + 0.1 * bipolar(g.index), 0.0, 1.0) &&
+                        g.sprayOffsetSec == 0.0;
+    }
+    REQUIRE(fractionKeyed);
+
+    p.sprayInSeconds = true;
+    gg::CloudScheduler seconds;
+    seconds.setParams(p);
+    const auto inSeconds = collect(seconds, 0, 48000, 64);
+    REQUIRE(inSeconds.size() == asFraction.size());
+    bool secondsKeyed = true;
+    for (std::size_t i = 0; i < inSeconds.size(); ++i)
+    {
+        const gg::GrainDraw &g = inSeconds[i];
+        secondsKeyed =
+            secondsKeyed && g.positionDraw == 0.5 && g.sprayOffsetSec == 0.1 * bipolar(g.index);
+        // Nothing else changes: the onsets and every other draw.
+        gg::GrainDraw same = g;
+        same.positionDraw = asFraction[i].positionDraw;
+        same.sprayOffsetSec = 0.0;
+        secondsKeyed = secondsKeyed && same == asFraction[i];
+    }
+    REQUIRE(secondsKeyed);
+
+    SECTION("spray in seconds isn't clamped to a fraction")
+    {
+        p.spray = 2.0;
+        seconds.setParams(p);
+        seconds.reset();
+        bool keyed = true;
+        for (const gg::GrainDraw &g : collect(seconds, 0, 4800, 64))
+        {
+            keyed = keyed && g.positionDraw == 0.5 && g.sprayOffsetSec == 2.0 * bipolar(g.index);
+        }
+        REQUIRE(keyed);
+        p.spray = -1.0;
+        seconds.setParams(p);
+        for (const gg::GrainDraw &g : collect(seconds, 4800, 4800, 64))
+        {
+            REQUIRE(g.sprayOffsetSec == 0.0);
+        }
+    }
+
+    SECTION("live mode ignores it: its spray is already seconds")
+    {
+        p.position = 1.0;
+        gg::CloudScheduler live;
+        live.setSourceMode(gg::SourceMode::Live, 16.0);
+        live.setParams(p);
+        gg::CloudScheduler liveUnset;
+        liveUnset.setSourceMode(gg::SourceMode::Live, 16.0);
+        p.sprayInSeconds = false;
+        liveUnset.setParams(p);
+        const auto a = collect(live, 0, 48000, 64);
+        const auto b = collect(liveUnset, 0, 48000, 64);
+        REQUIRE(a.size() == b.size());
+        for (std::size_t i = 0; i < a.size(); ++i)
+        {
+            REQUIRE(a[i] == b[i]);
+            REQUIRE(a[i].sprayOffsetSec == 0.0);
+        }
+    }
+}
+
+namespace
+{
+struct StartLog
+{
+    std::vector<gg::GrainSpec> grains;
+    static void record(void *ctx, const gg::GrainSpec &g)
+    {
+        static_cast<StartLog *>(ctx)->grains.push_back(g);
+    }
+};
+
+// The grains an engine at 48 kHz spawns in `seconds` over a silent mono source of `frames`
+// frames at `sourceRate`, with params p.
+std::vector<gg::GrainSpec> sampleStarts(const gg::CloudParams &p, int64_t frames, double sourceRate,
+                                        double seconds)
+{
+    gg::EngineConfig config;
+    config.sampleRate = 48000.0;
+    config.maxBlockSize = 4096;
+    config.seed = kSeed;
+    gg::Engine engine(config);
+    engine.setSource(std::make_shared<gg::SampleBuffer>(1, frames, sourceRate));
+    engine.setCloudParams(p);
+    StartLog log;
+    log.grains.reserve(static_cast<std::size_t>(p.densityHz * seconds) + 16);
+    engine.setEventSink(&StartLog::record, &log);
+    std::vector<float> l(4096), r(4096);
+    float *out[2] = {l.data(), r.data()};
+    const auto total = static_cast<int64_t>(seconds * 48000.0);
+    for (int64_t done = 0; done < total; done += 4096)
+    {
+        engine.process(out, 2, static_cast<uint32_t>(std::min<int64_t>(4096, total - done)));
+    }
+    return log.grains;
+}
+} // namespace
+
+TEST_CASE("spray in seconds spreads start frames around the position", "[cloud]")
+{
+    // The start frame is clamp(position × (frames − 1) + spray × bipolar(u) × sourceRate, 0,
+    // frames − 1), u the PositionJitter draw: Spray's spread in frames doesn't depend on the
+    // file's length.
+    const auto bipolar = [](uint64_t k) {
+        return gg::rng::bipolar(gg::rng::hash({kSeed, 0, 0, gg::rng::Field::PositionJitter, k}));
+    };
+    gg::CloudParams p = cloudAt(400.0);
+    p.grainDurationSec = 0.01;
+    p.position = 0.5;
+    p.spray = 0.1;
+    p.sprayInSeconds = true;
+
+    SECTION("a 10 s source at 48 kHz, position 0.5, spray 0.1 s")
+    {
+        constexpr int64_t kFrames = 480'000;
+        const auto grains = sampleStarts(p, kFrames, 48000.0, 30.0);
+        REQUIRE(grains.size() == 12'000);
+        const double centre = 0.5 * static_cast<double>(kFrames - 1); // 239_999.5
+        REQUIRE(centre == 239'999.5);
+        double lowest = centre;
+        double highest = centre;
+        double sum = 0.0;
+        bool exact = true;
+        for (const gg::GrainSpec &g : grains)
+        {
+            exact = exact && g.startPos == std::clamp(centre + 0.1 * bipolar(g.index) * 48000.0,
+                                                      0.0, static_cast<double>(kFrames - 1));
+            lowest = std::min(lowest, g.startPos);
+            highest = std::max(highest, g.startPos);
+            sum += g.startPos;
+        }
+        REQUIRE(exact);
+        // Every start lies within ±0.1 s = ±4800 frames of the centre, and the draws reach
+        // both ends of that span (as a fraction of the file, spray 0.1 would be ±48_000).
+        REQUIRE(lowest >= centre - 4800.0);
+        REQUIRE(highest <= centre + 4800.0);
+        REQUIRE(lowest < centre - 4700.0);
+        REQUIRE(highest > centre + 4700.0);
+        // Centred: the mean is within 1% of the span's 9600 frames.
+        const double mean = sum / static_cast<double>(grains.size());
+        REQUIRE(std::abs(mean - centre) <= 0.01 * 9600.0);
+    }
+
+    SECTION("the spread is in the source's own frames")
+    {
+        // 10 s at 44.1 kHz: ±0.1 s is ±4410 source frames, whatever the output rate.
+        constexpr int64_t kFrames = 441'000;
+        const auto grains = sampleStarts(p, kFrames, 44100.0, 5.0);
+        REQUIRE(grains.size() == 2000);
+        const double centre = 0.5 * static_cast<double>(kFrames - 1);
+        for (const gg::GrainSpec &g : grains)
+        {
+            REQUIRE(g.startPos == centre + 0.1 * bipolar(g.index) * 44100.0);
+            REQUIRE(std::abs(g.startPos - centre) <= 4410.0);
+        }
+    }
+
+    SECTION("the start is clamped to the source")
+    {
+        constexpr int64_t kFrames = 48'000; // 1 s
+        constexpr double kLast = static_cast<double>(kFrames - 1);
+        p.spray = 1.0;
+        for (const double position : {0.0, 1.0})
+        {
+            INFO("position " << position);
+            p.position = position;
+            const auto grains = sampleStarts(p, kFrames, 48000.0, 2.0);
+            REQUIRE(grains.size() == 800);
+            int atEnd = 0;
+            for (const gg::GrainSpec &g : grains)
+            {
+                REQUIRE(g.startPos ==
+                        std::clamp(position * kLast + bipolar(g.index) * 48000.0, 0.0, kLast));
+                atEnd += g.startPos == position * kLast ? 1 : 0;
+            }
+            // About half the draws point outside the file and are clamped to its end.
+            REQUIRE(atEnd > 300);
+        }
     }
 }

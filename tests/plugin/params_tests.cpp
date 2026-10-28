@@ -73,6 +73,9 @@ constexpr std::array<ExpectedParam, kParamCount> kExpected{{
     {0x010007, "Stereo", 0.0f, 1.0f, 0.5f},
     {0x010008, "Freeze", 0.0f, 1.0f, 0.0f},
 }};
+// The instrument's Position is 0–100% of the loaded file, 0% by default; the rest of its table
+// is the FX's above (spec §6.8).
+constexpr float kInstrumentPositionDefault = 0.0f;
 
 ParamValues defaults()
 {
@@ -220,7 +223,9 @@ TEST_CASE("plugin exposes the ten params", "[plugin]")
         CHECK(info.cookie == nullptr);
         CHECK(info.min_value == static_cast<double>(expected.min));
         CHECK(info.max_value == static_cast<double>(expected.max));
-        CHECK(info.default_value == static_cast<double>(expected.def));
+        const float def =
+            i == at(ParamSlot::Position) && !isFx ? kInstrumentPositionDefault : expected.def;
+        CHECK(info.default_value == static_cast<double>(def));
 
         // Global Constraints' CLAP flags: every parameter is automatable and modulatable,
         // Freeze is stepped, and the instrument hides Mix, which has no dry signal to mix.
@@ -236,7 +241,7 @@ TEST_CASE("plugin exposes the ten params", "[plugin]")
         CHECK(info.flags == flags);
 
         // A new instance holds the defaults.
-        CHECK(plugin.value(expected.id) == static_cast<double>(expected.def));
+        CHECK(plugin.value(expected.id) == static_cast<double>(def));
     }
 }
 
@@ -287,9 +292,13 @@ TEST_CASE("value and text round trip through clap", "[plugin]")
     SECTION("the display follows the metadata")
     {
         CHECK(valueToText(plugin, paramId(ParamSlot::Mix), 0.5) ==
-              gg::core::paramMeta(ParamSlot::Mix).valueToString(0.5f).value_or("?"));
+              gg::core::paramMeta(ParamSlot::Mix, gg::core::Mode::Fx)
+                  .valueToString(0.5f)
+                  .value_or("?"));
         CHECK(valueToText(plugin, paramId(ParamSlot::Freeze), 1.0) ==
-              gg::core::paramMeta(ParamSlot::Freeze).valueToString(1.0f).value_or("?"));
+              gg::core::paramMeta(ParamSlot::Freeze, gg::core::Mode::Fx)
+                  .valueToString(1.0f)
+                  .value_or("?"));
         CHECK(valueToText(plugin, paramId(ParamSlot::Density), 4.0).find("Hz") !=
               std::string::npos);
         CHECK(valueToText(plugin, paramId(ParamSlot::Size), -2.736965594166206).find("ms") !=
@@ -301,6 +310,64 @@ TEST_CASE("value and text round trip through clap", "[plugin]")
         double value = 0.0;
         CHECK_FALSE(params->text_to_value(plugin.clap(), paramId(ParamSlot::Density),
                                           "not a number", &value));
+    }
+}
+
+TEST_CASE("position is per product", "[plugin]")
+{
+    const clap_id position = paramId(ParamSlot::Position);
+    constexpr auto kPositionIndex = static_cast<uint32_t>(ParamSlot::Position);
+    clap_param_info info{};
+
+    SECTION("the instrument's is a percentage of the file, 0 by default")
+    {
+        ParamsHost host;
+        PluginUnderTest plugin(kInstrumentId, host.clap());
+        REQUIRE(plugin.valid());
+        REQUIRE(plugin.params()->get_info(plugin.clap(), kPositionIndex, &info));
+        CHECK(info.default_value == 0.0);
+        CHECK(info.min_value == 0.0);
+        CHECK(info.max_value == 1.0);
+        CHECK(plugin.value(position) == 0.0);
+
+        const std::string text = valueToText(plugin, position, 0.25);
+        CHECK(text == gg::core::paramMeta(ParamSlot::Position, gg::core::Mode::Instrument)
+                          .valueToString(0.25f)
+                          .value_or("?"));
+        CHECK(text.find('%') != std::string::npos);
+        double back = -1.0;
+        REQUIRE(plugin.params()->text_to_value(plugin.clap(), position, text.c_str(), &back));
+        CHECK(std::abs(back - 0.25) < 1e-6);
+
+        // A state that doesn't mention Position loads the instrument's default.
+        flushValues(plugin, {{ParamSlot::Position, 0.6}});
+        REQUIRE(plugin.value(position) == static_cast<double>(0.6f));
+        std::string state = plugin.save();
+        const auto from = state.find(R"(<p id="65537" )");
+        REQUIRE(from != std::string::npos);
+        state.erase(from, state.find("/>", from) + 2 - from);
+        REQUIRE(plugin.load(state));
+        CHECK(plugin.value(position) == 0.0);
+    }
+
+    SECTION("the FX's is unchanged: seconds behind the write head, 0.25 s by default")
+    {
+        ParamsHost host;
+        PluginUnderTest plugin(kFxId, host.clap());
+        REQUIRE(plugin.valid());
+        REQUIRE(plugin.params()->get_info(plugin.clap(), kPositionIndex, &info));
+        CHECK(info.default_value == static_cast<double>(0.28967658f));
+        CHECK(plugin.value(position) == static_cast<double>(0.28967658f));
+        CHECK(valueToText(plugin, position, static_cast<double>(0.28967658f)) == "0.25 s");
+        CHECK(valueToText(plugin, position, 0.25).find('%') == std::string::npos);
+
+        flushValues(plugin, {{ParamSlot::Position, 0.6}});
+        std::string state = plugin.save();
+        const auto from = state.find(R"(<p id="65537" )");
+        REQUIRE(from != std::string::npos);
+        state.erase(from, state.find("/>", from) + 2 - from);
+        REQUIRE(plugin.load(state));
+        CHECK(plugin.value(position) == static_cast<double>(0.28967658f));
     }
 }
 
@@ -604,7 +671,7 @@ TEST_CASE("state carries the engine seed", "[plugin]")
     ParamsHost host;
     PluginUnderTest plugin(kFxId, host.clap());
     REQUIRE(plugin.valid());
-    REQUIRE(gg::core::fromStateXml(plugin.save(), values, seed));
+    REQUIRE(gg::core::fromStateXml(plugin.save(), values, seed, gg::core::Mode::Fx));
     CHECK(seed == 0); // new instances start at seed 0 (spec §4)
 
     REQUIRE(plugin.load(gg::core::toStateXml(values, 9)));
@@ -614,7 +681,7 @@ TEST_CASE("state carries the engine seed", "[plugin]")
     CHECK(host.restarts() == 0); // the same seed
     REQUIRE(plugin.load(gg::core::toStateXml(values, 10)));
     CHECK(host.restarts() == 1);
-    REQUIRE(gg::core::fromStateXml(plugin.save(), values, seed));
+    REQUIRE(gg::core::fromStateXml(plugin.save(), values, seed, gg::core::Mode::Fx));
     CHECK(seed == 10);
 }
 

@@ -34,8 +34,8 @@ struct CloudParams
     /// behind the write head, [0, ring seconds].
     double position{0.5};
     /// Random spread of position. Sample mode: bipolar, as a fraction of the source (M0's
-    /// positionJitter), [0, 1]. Live mode: seconds, further behind the head only,
-    /// [0, ring seconds].
+    /// positionJitter), [0, 1], or with sprayInSeconds, bipolar in seconds, [0, +inf). Live
+    /// mode: seconds, further behind the head only, [0, ring seconds].
     double spray{0.0};
     double pitchSemitones{0.0}; ///< [-48, 48].
     double stereo{0.0};         ///< Random pan spread: 0 = every grain centred; [0, 1].
@@ -43,6 +43,12 @@ struct CloudParams
     /// The interpolation tier of each grain that starts from now on (ruling 2). An enum, so
     /// setParams copies it as given.
     Tier quality{Tier::Normal};
+    /// Sample mode only: spray is seconds, so its spread doesn't depend on the source's length
+    /// (the instrument's Spray; sub-project 3's spec §6.8). Each grain then reads from
+    /// clamp(position × (frames − 1) + spray × bipolar(u) × sourceRate, 0, frames − 1), with
+    /// GrainDraw carrying the spray's offset in seconds for the source to convert. Live mode
+    /// ignores it: its spray is already seconds. Copied as given.
+    bool sprayInSeconds{false};
 };
 
 /// One grain as the scheduler draws it, before the source turns it into a GrainSpec. Every
@@ -52,11 +58,14 @@ struct GrainDraw
     uint64_t index;      ///< k, counted from the scheduler's reset().
     int64_t onsetSample; ///< floor(t(k)), in output samples.
     double onsetFrac;    ///< t(k) - onsetSample, in [0, 1).
-    /// Sample mode: clamp(position + spray × bipolar(u), 0, 1), a fraction of the source. Live
-    /// mode: position + spray × uniform01(u), in seconds behind the write head; the live source's
-    /// admission clamp then applies (spec §6.3). u is keyed by (seed, layer, stream,
-    /// PositionJitter, k) in both.
+    /// Sample mode: clamp(position + spray × bipolar(u), 0, 1), a fraction of the source, or
+    /// with CloudParams::sprayInSeconds, the position alone. Live mode: position + spray ×
+    /// uniform01(u), in seconds behind the write head; the live source's admission clamp then
+    /// applies (spec §6.3). u is keyed by (seed, layer, stream, PositionJitter, k) in all three.
     double positionDraw;
+    /// Sample mode with CloudParams::sprayInSeconds: spray × bipolar(u), in seconds, which the
+    /// source adds to positionDraw at its own rate (Engine::sampleGrain). Otherwise +0.
+    double sprayOffsetSec;
     /// The pitch ratio: exp2Det(clamp(pitchSemitones + (key − 60), −48, 48) / 12) with a key,
     /// exp2Det(pitchSemitones / 12) without.
     double rate;
@@ -226,6 +235,21 @@ class CloudScheduler
                                           -kMaxPitchSemitones, kMaxPitchSemitones) /
                                12.0);
             }
+            // Live mode: seconds behind the head, further back only. Sample mode: a fraction of
+            // the source, with the spray folded in, or with sprayInSeconds the position alone and
+            // the spray carried in seconds for the source to convert.
+            const bool inSeconds = mode_ == SourceMode::Sample && params_.sprayInSeconds;
+            double positionDraw = params_.position;
+            if (mode_ == SourceMode::Live)
+            {
+                positionDraw += params_.spray * rng::uniform01(jitter);
+            }
+            else if (!inSeconds)
+            {
+                positionDraw =
+                    std::clamp(params_.position + params_.spray * rng::bipolar(jitter), 0.0, 1.0);
+            }
+            const double sprayOffsetSec = inSeconds ? params_.spray * rng::bipolar(jitter) : 0.0;
             const double p = params_.stereo * rng::bipolar(key(rng::Field::Pan));
             // A pan below the smallest normal float is 0, so the value doesn't depend on the
             // flush-to-zero mode. It is +0, never the -0 of stereo 0 times a negative draw.
@@ -235,11 +259,8 @@ class CloudScheduler
                 .index = k,
                 .onsetSample = static_cast<int64_t>(whole),
                 .onsetFrac = t - whole,
-                .positionDraw =
-                    mode_ == SourceMode::Live
-                        ? params_.position + params_.spray * rng::uniform01(jitter)
-                        : std::clamp(params_.position + params_.spray * rng::bipolar(jitter), 0.0,
-                                     1.0),
+                .positionDraw = positionDraw,
+                .sprayOffsetSec = sprayOffsetSec,
                 .rate = rate,
                 .durationSamples = durationSamples_,
                 .gain = params_.gain,
