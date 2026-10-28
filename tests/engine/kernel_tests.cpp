@@ -1160,3 +1160,460 @@ TEMPLATE_TEST_CASE("simd sample kernel matches the reference with non-finite tap
         REQUIRE(sameOrBothNaN(s.ch[1], r.ch[1]));
     }
 }
+
+// ---------------------------------------------------------------------------------------------
+// The SIMD live kernel, held to the reference bit for bit (std::memcmp).
+
+namespace
+{
+constexpr double kLiveRate = 48000.0;
+constexpr double kLiveSeconds = 0.5; // N = 24,000 frames
+constexpr uint32_t kLiveMaxBlock = 511;
+constexpr double kM = static_cast<double>(gg::LiveSource::kHeadMargin);
+
+void prepareRing(gg::LiveSource &ring) { ring.prepare(kLiveRate, kLiveSeconds, kLiveMaxBlock); }
+
+// A live ring's input over output samples [0, length), and its freeze schedule: frozen from
+// toggles[0] to toggles[1], from toggles[2] to toggles[3], and so on.
+struct LiveInput
+{
+    LiveInput(int64_t length, uint64_t seed, std::vector<int64_t> toggles)
+        : length(length), left(noise(length, seed, 0)), right(noise(length, seed, 1)),
+          toggles(std::move(toggles))
+    {
+    }
+    int64_t length;
+    std::vector<float> left;
+    std::vector<float> right;
+    std::vector<int64_t> toggles;
+};
+
+// count freeze toggles from sample 2,000 on, with gaps of 4,000 + [0, 2 × spread) samples,
+// except every fifth gap, of 1–900 samples: inside the freeze ramp (960 samples at 48 kHz), so a
+// freeze turns off while the gain ramps down, or on while it ramps up.
+std::vector<int64_t> freezeToggles(uint64_t seed, int count, double spread)
+{
+    std::vector<int64_t> toggles;
+    int64_t t = 2000;
+    for (int k = 0; k < count; ++k)
+    {
+        const double u = u01(seed, 0, static_cast<uint64_t>(k));
+        t += k % 5 == 4 ? 1 + static_cast<int64_t>(u * 900.0)
+                        : 4000 + static_cast<int64_t>(u * 2.0 * spread);
+        toggles.push_back(t);
+    }
+    return toggles;
+}
+
+// Writes the ring over [0, input.length) as the engine does: host blocks of `lengths` frames in
+// turn, each split at the freeze toggles inside it, and each piece written whole, with its
+// freeze setting, before render(from, to) renders it.
+template <class Render>
+void driveRing(gg::LiveSource &ring, const LiveInput &input, const std::vector<int64_t> &lengths,
+               Render &&render)
+{
+    ring.reset();
+    std::size_t toggle = 0;
+    std::size_t block = 0;
+    bool frozen = false;
+    int64_t hostEnd = 0;
+    for (int64_t from = 0; from < input.length;)
+    {
+        if (from == hostEnd)
+        {
+            hostEnd += lengths[block++ % lengths.size()];
+        }
+        while (toggle < input.toggles.size() && input.toggles[toggle] <= from)
+        {
+            frozen = !frozen;
+            ++toggle;
+        }
+        int64_t to = std::min(hostEnd, input.length);
+        if (toggle < input.toggles.size())
+        {
+            to = std::min(to, input.toggles[toggle]);
+        }
+        ring.setFrozen(frozen);
+        const float *in[2] = {input.left.data() + from, input.right.data() + from};
+        ring.write(in, 2, 0, from, static_cast<uint32_t>(to - from));
+        render(from, to);
+        from = to;
+    }
+}
+
+// R(t) for every output sample: it depends only on the freeze schedule, not on the blocks.
+std::vector<int64_t> headTrajectory(const LiveInput &input)
+{
+    gg::LiveSource ring;
+    prepareRing(ring);
+    std::vector<int64_t> heads(static_cast<std::size_t>(input.length));
+    driveRing(ring, input, {kLiveMaxBlock}, [&](int64_t from, int64_t to) {
+        for (int64_t t = from; t < to; ++t)
+        {
+            heads[static_cast<std::size_t>(t)] = ring.headAt(t);
+        }
+    });
+    return heads;
+}
+
+// Live grains at the given onsets (in order), each starting `behind` frames behind the head at
+// its onset sample, in kinds by index that reach every part of the interior's logic:
+// - 0: short, 16–48 samples, so its interior is a few samples or none;
+// - 1: rate 1, 4–255 frames behind the head: in the head's fade all its life while the head
+//   advances, and closer still once it stops, so its interior is empty;
+// - 2: rate 1, within 255 frames of the window's oldest frame: in the tail's fade while the head
+//   advances, so its interior is empty unless a freeze stops the head;
+// - 3: rate exactly 1, which makes R − pos constant while the head advances;
+// - 4–7: rates 2^[−2, 2], anywhere from 300 frames past the head to 300 before the window.
+// Durations are 16–9,600 samples, except kind 0's.
+std::vector<gg::GrainSpec> liveGrains(uint64_t seed, const std::vector<int64_t> &onsets,
+                                      const std::vector<int64_t> &heads, int64_t ringFrames)
+{
+    std::vector<gg::GrainSpec> specs;
+    const auto n = static_cast<double>(ringFrames);
+    for (std::size_t k = 0; k < onsets.size(); ++k)
+    {
+        const auto uk = static_cast<uint64_t>(k);
+        const int kind = static_cast<int>(k % 8);
+        const double u = u01(seed, 2, uk);
+        double rate = std::exp2(-2.0 + 4.0 * u01(seed, 0, uk));
+        double behind = -300.0 + u * (n + 600.0);
+        double duration = 16.0 + u01(seed, 3, uk) * (9600.0 - 16.0);
+        switch (kind)
+        {
+        case 0:
+            duration = 16.0 + u01(seed, 3, uk) * 32.0;
+            break;
+        case 1:
+            rate = 1.0;
+            behind = 4.0 + u * (kM - 5.0);
+            break;
+        case 2:
+            rate = 1.0;
+            behind = n - 2.0 - u * (kM - 1.0);
+            break;
+        case 3:
+            rate = 1.0;
+            break;
+        default:
+            break;
+        }
+        const int64_t onset = onsets[k];
+        specs.push_back({
+            .index = uk,
+            .onsetSample = onset,
+            .onsetFrac = u01(seed, 1, uk),
+            .startPos = static_cast<double>(heads[static_cast<std::size_t>(onset)]) - behind,
+            .rate = rate,
+            .durationSamples = duration,
+            .gain = 0.25f + 0.75f * static_cast<float>(u01(seed, 4, uk)),
+            .pan = static_cast<float>(2.0 * u01(seed, 5, uk) - 1.0),
+        });
+    }
+    return specs;
+}
+
+// count onsets spread evenly over [0, length), in order.
+std::vector<int64_t> spreadOnsets(int64_t length, uint32_t count)
+{
+    std::vector<int64_t> onsets;
+    for (uint32_t k = 0; k < count; ++k)
+    {
+        onsets.push_back(static_cast<int64_t>(k) * length / count);
+    }
+    return onsets;
+}
+
+// How the SIMD live kernel split its calls: samples it rendered 4-wide, calls whose head-still
+// part (from blockKink() on) had a 4-wide step, calls with an interior on both sides of the
+// kink, and calls over a sounding part of a grain with no interior at all.
+struct LiveStats
+{
+    int64_t simdSamples = 0;
+    int64_t stillSimdCalls = 0;
+    int64_t bothPartsCalls = 0;
+    int64_t emptyCalls = 0;
+};
+
+// The grains of a pool (in onset order) that may sound in each piece of a pass over increasing
+// [from, to): each(from, to, f) calls f(i) for them in spawn order, skipping the grains that
+// finished long before from.
+struct ActiveGrains
+{
+    explicit ActiveGrains(const Pool &pool) : rows(pool.rows()), n(pool.size())
+    {
+        for (uint32_t i = 0; i < n; ++i)
+        {
+            maxLife = std::max(maxLife, rows.endSample[i] - rows.onsetSample[i]);
+        }
+    }
+    template <class F> void each(int64_t from, int64_t to, F &&f)
+    {
+        while (lo < n && rows.onsetSample[lo] + maxLife <= from)
+        {
+            ++lo;
+        }
+        while (hi < n && rows.onsetSample[hi] < to)
+        {
+            ++hi;
+        }
+        for (uint32_t i = lo; i < hi; ++i)
+        {
+            f(i);
+        }
+    }
+    const gg::GrainRows &rows;
+    uint32_t n;
+    int64_t maxLife = 0;
+    uint32_t lo = 0;
+    uint32_t hi = 0;
+};
+
+struct LiveRenders
+{
+    Buffers ref;
+    Buffers simd;
+    LiveStats stats;
+    int64_t finalHead;
+};
+
+// Drives a fresh ring over the input in `lengths`, and renders every grain of the pool over each
+// piece, in spawn order, with renderLiveRef<R> and renderLiveSimd<R>, into separate outputs.
+template <class R>
+LiveRenders renderLiveBoth(const Pool &pool, const LiveInput &input,
+                           const std::vector<int64_t> &lengths, int outputs,
+                           const gg::HannTable &hann)
+{
+    LiveRenders r{Buffers(0, input.length, outputs), Buffers(0, input.length, outputs), {}, 0};
+    const gg::kernels::Output refOut = r.ref.output();
+    const gg::kernels::Output simdOut = r.simd.output();
+    const gg::GrainRows &rows = pool.rows();
+    ActiveGrains active(pool);
+    gg::LiveSource ring;
+    prepareRing(ring);
+    driveRing(ring, input, lengths, [&](int64_t from, int64_t to) {
+        active.each(from, to, [&](uint32_t i) {
+            gg::kernels::renderLiveRef<R>(rows, i, ring, refOut, from, to, hann);
+            gg::kernels::renderLiveSimd<R>(rows, i, ring, simdOut, from, to, hann);
+            if (std::max(from, rows.onsetSample[i]) >= std::min(to, rows.endSample[i]))
+            {
+                return;
+            }
+            const gg::kernels::LiveInterior in = gg::kernels::liveInterior(rows, i, ring, from, to);
+            const int64_t moving = (in.end[0] - in.begin[0]) / 4 * 4;
+            const int64_t still = (in.end[1] - in.begin[1]) / 4 * 4;
+            r.stats.simdSamples += moving + still;
+            r.stats.stillSimdCalls += still > 0;
+            r.stats.bothPartsCalls += in.end[0] > in.begin[0] && in.end[1] > in.begin[1];
+            r.stats.emptyCalls += in.end[0] == in.begin[0] && in.end[1] == in.begin[1];
+        });
+    });
+    r.finalHead = ring.head();
+    return r;
+}
+} // namespace
+
+TEMPLATE_TEST_CASE("live interior is exactly where the fade is one", "[kernel]", Hermite, Linear)
+{
+    // 1,000 grains over a ring frozen and released 12 times. For every sample of every interior,
+    // in blocks of 7 and 511: the window's phase is in [0, 1], every tap is a frame at or after
+    // frame 0, the reference's fade is exactly 1.0, and the reader's read succeeds. The interior
+    // is conservative (one frame inside the fade's margins), but it must still hold nearly all of
+    // the samples where those hold, and some interiors must be empty: short grains, and grains in
+    // a fade all their life.
+    const gg::HannTable hann;
+    const LiveInput input(300000, 51, freezeToggles(53, 12, 12000.0));
+    const std::vector<int64_t> heads = headTrajectory(input);
+    gg::LiveSource ring;
+    prepareRing(ring);
+    const int64_t frames = ring.frames();
+    REQUIRE(frames == 24000);
+    const Pool pool(liveGrains(55, spreadOnsets(input.length, 1000), heads, frames));
+    const gg::GrainRows &rows = pool.rows();
+
+    for (const int64_t block : {7, 511})
+    {
+        INFO("blocks of " << block);
+        int64_t interiorSamples = 0;
+        int64_t fadeOneSamples = 0; // every sample where the interior's conditions hold
+        int64_t emptyCalls = 0;
+        int64_t badSamples = 0;
+        int64_t badStructure = 0;
+        int64_t firstBad = -1;
+        uint32_t firstBadGrain = 0;
+        ActiveGrains active(pool);
+        driveRing(ring, input, {block}, [&](int64_t from, int64_t to) {
+            const int64_t kink = ring.blockKink();
+            REQUIRE(kink >= from);
+            REQUIRE(kink <= to);
+            active.each(from, to, [&](uint32_t i) {
+                const int64_t first = std::max(from, rows.onsetSample[i]);
+                const int64_t last = std::min(to, rows.endSample[i]);
+                const gg::kernels::LiveInterior in =
+                    gg::kernels::liveInterior(rows, i, ring, from, to);
+                if (first >= last)
+                {
+                    badStructure += in.begin[0] != in.end[0] || in.begin[1] != in.end[1];
+                    return;
+                }
+                // The moving part lies before the kink, the still part from it on.
+                badStructure += !(first <= in.begin[0] && in.begin[0] <= in.end[0] &&
+                                  in.end[0] <= std::max(first, std::min(kink, last)) &&
+                                  std::max(first, std::min(kink, last)) <= in.begin[1] &&
+                                  in.begin[1] <= in.end[1] && in.end[1] <= last);
+                emptyCalls += in.begin[0] == in.end[0] && in.begin[1] == in.end[1];
+                gg::LiveSource::Cursor cursor;
+                for (int64_t t = first; t < last; ++t)
+                {
+                    const double e =
+                        static_cast<double>(t - rows.onsetSample[i]) - rows.onsetFrac[i];
+                    const double phase = e * rows.invDuration[i];
+                    const double pos = rows.startPos[i] + rows.rate[i] * e;
+                    const int64_t head = ring.headAt(t);
+                    float l = 0.0f;
+                    float r = 0.0f;
+                    const bool holds = phase >= 0.0 && phase <= 1.0 &&
+                                       std::floor(pos) - Reach<TestType>::before >= 0.0 &&
+                                       ring.fade(pos, head) == 1.0 &&
+                                       TestType::readLive(ring, pos, head, cursor, l, r);
+                    const bool inside =
+                        (t >= in.begin[0] && t < in.end[0]) || (t >= in.begin[1] && t < in.end[1]);
+                    fadeOneSamples += holds;
+                    interiorSamples += inside;
+                    if (inside && !holds)
+                    {
+                        if (badSamples == 0)
+                        {
+                            firstBad = t;
+                            firstBadGrain = i;
+                        }
+                        ++badSamples;
+                    }
+                }
+            });
+        });
+        INFO("first bad sample " << firstBad << " of grain " << firstBadGrain);
+        REQUIRE(badStructure == 0);
+        REQUIRE(badSamples == 0);
+        REQUIRE(emptyCalls > 0);
+        REQUIRE(interiorSamples > 1000000);
+        REQUIRE(static_cast<double>(interiorSamples) > 0.97 * static_cast<double>(fadeOneSamples));
+    }
+}
+
+TEMPLATE_TEST_CASE("simd live kernel matches the reference", "[kernel]", Hermite, Linear)
+{
+    // 300 grains at rates 0.25–4 over a ring that is never frozen, in ragged blocks and in
+    // blocks of 511, into two outputs and into one.
+    const gg::HannTable hann;
+    const LiveInput input(100000, 61, {});
+    const std::vector<int64_t> heads = headTrajectory(input);
+    const Pool pool(liveGrains(63, spreadOnsets(input.length, 300), heads, 24000));
+    const std::vector<int64_t> ragged = {61, 64, 1, 128, 3, 250, 2, 37, 511};
+    for (const std::vector<int64_t> &lengths : {ragged, std::vector<int64_t>{511}})
+    {
+        for (const int outputs : {2, 1})
+        {
+            INFO(outputs << " outputs, first block " << lengths[0]);
+            const LiveRenders r = renderLiveBoth<TestType>(pool, input, lengths, outputs, hann);
+            REQUIRE(anyNonZero(r.ref.ch[0]));
+            REQUIRE(anyNonZero(r.ref.ch[1]) == (outputs == 2));
+            REQUIRE(r.stats.simdSamples > 200000);
+            REQUIRE(r.stats.emptyCalls > 0);
+            REQUIRE(sameBits(r.simd.ch[0], r.ref.ch[0]));
+            REQUIRE(sameBits(r.simd.ch[1], r.ref.ch[1]));
+        }
+    }
+}
+
+TEMPLATE_TEST_CASE("simd live kernel matches the reference through freeze and wrap", "[kernel]",
+                   Hermite, Linear)
+{
+    // Review focus 2. A 0.5 s ring, written until it has wrapped 20 times, frozen and released
+    // at 30 random samples, some inside the freeze ramp and nearly all inside a block. 300
+    // grains, half of them starting near a toggle, plus at every freeze one reading through the
+    // moment the head stops. In blocks of 1, 7, 64 and 511: the head stops inside a block, so
+    // an interior has a part before the kink and a part after it, with the edges and the fade
+    // through the reference. Every block size must also give the same output.
+    const gg::HannTable hann;
+    const std::vector<int64_t> toggles = freezeToggles(71, 30, 28000.0);
+    int64_t frozenTotal = 0;
+    for (std::size_t k = 0; k + 1 < toggles.size(); k += 2)
+    {
+        frozenTotal += toggles[k + 1] - toggles[k];
+    }
+    gg::LiveSource probe;
+    prepareRing(probe);
+    const int64_t capacity = probe.view().capacity;
+    REQUIRE(capacity == 24000 + kLiveMaxBlock);
+    // The head advances on every sample that isn't frozen.
+    const int64_t length = std::max(toggles.back() + 20000, 20 * capacity + frozenTotal + 2000);
+    const LiveInput input(length, 73, toggles);
+    const std::vector<int64_t> heads = headTrajectory(input);
+
+    std::vector<int64_t> onsets = spreadOnsets(length - 10000, 150);
+    for (uint32_t k = 0; k < 150; ++k)
+    {
+        const int64_t toggle = toggles[k % toggles.size()];
+        onsets.push_back(
+            std::max<int64_t>(0, toggle - 12000 + static_cast<int64_t>(u01(75, 0, k) * 16000.0)));
+    }
+    std::sort(onsets.begin(), onsets.end());
+    std::vector<gg::GrainSpec> specs = liveGrains(77, onsets, heads, 24000);
+    // At each freeze, a grain from 200 samples on, through the head's stop 960 samples later.
+    for (std::size_t k = 0; k < toggles.size(); k += 2)
+    {
+        const int64_t onset = toggles[k] + 200;
+        specs.push_back({
+            .index = 0,
+            .onsetSample = onset,
+            .onsetFrac = 0.375,
+            .startPos = static_cast<double>(heads[static_cast<std::size_t>(onset)]) - 12000.0,
+            .rate = 0.5 + 0.1 * static_cast<double>(k),
+            .durationSamples = 3000.0,
+            .gain = 0.75f,
+            .pan = 0.25f,
+        });
+    }
+    std::stable_sort(specs.begin(), specs.end(),
+                     [](const gg::GrainSpec &a, const gg::GrainSpec &b) {
+                         return a.onsetSample < b.onsetSample;
+                     });
+    for (std::size_t k = 0; k < specs.size(); ++k)
+    {
+        specs[k].index = k;
+    }
+    const Pool pool(specs);
+
+    std::vector<float> first[2];
+    for (const int64_t block : {511, 64, 7, 1})
+    {
+        INFO("blocks of " << block);
+        const LiveRenders r = renderLiveBoth<TestType>(pool, input, {block}, 2, hann);
+        REQUIRE(r.finalHead >= 20 * capacity);
+        REQUIRE(anyNonZero(r.ref.ch[0]));
+        REQUIRE(anyNonZero(r.ref.ch[1]));
+        REQUIRE(r.stats.emptyCalls > 0);
+        if (block >= 64)
+        {
+            REQUIRE(r.stats.simdSamples > 500000);
+            REQUIRE(r.stats.stillSimdCalls > 0);
+            REQUIRE(r.stats.bothPartsCalls > 0);
+        }
+        REQUIRE(sameBits(r.simd.ch[0], r.ref.ch[0]));
+        REQUIRE(sameBits(r.simd.ch[1], r.ref.ch[1]));
+        if (block == 511)
+        {
+            first[0] = r.simd.ch[0];
+            first[1] = r.simd.ch[1];
+        }
+        REQUIRE(sameBits(r.simd.ch[0], first[0]));
+        REQUIRE(sameBits(r.simd.ch[1], first[1]));
+    }
+    {
+        INFO("one output, blocks of 64");
+        const LiveRenders r = renderLiveBoth<TestType>(pool, input, {64}, 1, hann);
+        REQUIRE(sameBits(r.simd.ch[0], r.ref.ch[0]));
+        REQUIRE(!anyNonZero(r.simd.ch[1]));
+    }
+}

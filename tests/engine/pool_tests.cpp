@@ -9,6 +9,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include "gg/core/Rng.h"
+#include "gg/core/Window.h"
 #include "gg/grain/GrainPool.h"
 #include "gg/grain/Tier.h"
 
@@ -93,7 +94,10 @@ TEST_CASE("pool keeps spawn order through retirement", "[pool]")
 TEST_CASE("grain end bounds the window", "[pool]")
 {
     // Every sample at or after grainEndSample has elapsed time >= durationSamples, where the
-    // window is zero, for any onset fraction in [0, 1).
+    // window is zero, for any onset fraction in [0, 1). The window is evaluated as the renderers
+    // do, at e × (1 / duration): it is zero there, and at e == duration exactly, so no sample a
+    // renderer skips for the grain's end could have sounded (the SIMD kernels' runs rely on it).
+    const gg::HannTable hann;
     for (const double frac : {0.0, 0.25, 0.999999})
     {
         for (const double dur : {16.0, 16.5, 4800.0, 4800.999})
@@ -103,6 +107,14 @@ TEST_CASE("grain end bounds the window", "[pool]")
             const double elapsed = static_cast<double>(end - g.onsetSample) - g.onsetFrac;
             REQUIRE(elapsed >= dur);
             REQUIRE(end - g.onsetSample <= static_cast<int64_t>(dur) + 2);
+            const double invDuration = 1.0 / dur;
+            for (int64_t t = end; t < end + 4; ++t)
+            {
+                const double e = static_cast<double>(t - g.onsetSample) - g.onsetFrac;
+                REQUIRE(e >= dur);
+                REQUIRE(hann.at(e * invDuration) == 0.0f);
+            }
+            REQUIRE(hann.at(dur * invDuration) == 0.0f);
         }
     }
 }

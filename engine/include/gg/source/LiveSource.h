@@ -96,6 +96,26 @@ class LiveSource
         return blockHead_ + std::min(t - blockStart_ + 1, blockAdvance_);
     }
 
+    /// The sample of the last write() block from which on the head stands still for the rest of
+    /// the block: blockStart + the frames written in the block, which is the block's end unless
+    /// a freeze stopped the head. Before it R(t) = R(blockStart − 1) + (t − blockStart + 1),
+    /// rising by one per sample; from it on R(t) is the head(), so on each side R is linear in t.
+    int64_t blockKink() const noexcept { return blockStart_ + blockAdvance_; }
+
+    /// The ring's storage, for kernels that gather taps themselves: frame f >= 0 of channel c is
+    /// channel[c][f mod capacity], and slots 0 .. capacity + 2 are readable, with capacity ..
+    /// capacity + 2 mirroring slots 0 .. 2, so taps starting at any slot s < capacity are
+    /// contiguous for 4 frames. capacity is C = N + maxBlockSize and frames is N (both 0, with
+    /// null channels, when there is no ring). Only a frame inside a sample's window [R(t) − N,
+    /// R(t) − 1] is the one written for it (see Storage).
+    struct RingView
+    {
+        const float *channel[2];
+        int64_t capacity;
+        int64_t frames;
+    };
+    RingView view() const noexcept { return {{channels_[0], channels_[1]}, capacity_, frames_}; }
+
     /// How many more frames the head will advance after output sample t of the last write()
     /// block, if the freeze setting doesn't change: +infinity when not frozen; when frozen, the
     /// frames left in the ramp, 0 once the head has stopped.

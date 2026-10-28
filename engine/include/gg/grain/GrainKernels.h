@@ -318,18 +318,29 @@ inline void addMasked(float *dst, SIMD_M128 y, SIMD_M128 mask) noexcept SST_CPPU
                        SIMD_MM(or_ps)(SIMD_MM(and_ps)(mask, sum), SIMD_MM(andnot_ps)(mask, d)));
 }
 
-/// The SIMD sample kernel's interior: grain i over [begin, end), a multiple of 4 samples inside
-/// sampleSimdRun, 4 consecutive samples per step. Per lane, in double as the reference: e, the
-/// window's x = (e × invDuration) × kSize with HannTable::at's index and fraction, and pos with
-/// its floor and fraction. Then 4-wide float, in the reference's order: the window lerp, the
-/// w > 0 mask, Reader::read4, read × (w × gain_c), and the masked add.
+/// Where the SIMD interior finds a sample buffer's taps: frame f of channel c is data[c][f], so a
+/// lane's read4 base is floor(pos) itself.
+struct BufferTaps
+{
+    const float *data[2];
+
+    void locate(int64_t *) const noexcept SST_CPPUTILS_NONBLOCKING {}
+};
+
+/// The SIMD interior: grain i over [begin, end), a multiple of 4 samples, all with the window's
+/// phase in [0, 1] and every tap readable through Taps, 4 consecutive samples per step. Per
+/// lane, in double as the reference: e, the window's x = (e × invDuration) × kSize with
+/// HannTable::at's index and fraction, and pos with its floor and fraction. taps.locate turns the
+/// 4 floors into the buffer indices Reader::read4 reads around (BufferTaps: the floors; the live
+/// ring: their slots). Then 4-wide float, in the reference's order: the window lerp, the w > 0
+/// mask, Reader::read4, read × (w × gain_c), and the masked add.
 ///
 /// kTwoOutputs: dst[1] is written, with gainL and gainR; otherwise dst[0] alone, with gain.
-/// kStereo: with two outputs, data[1] feeds dst[1]; otherwise dst[1] reuses data[0]'s read.
-template <class Reader, bool kTwoOutputs, bool kStereo>
-void renderSampleInterior(const GrainRows &rows, uint32_t i, const SampleSource &src,
-                          const Output &out, int64_t begin, int64_t end,
-                          const HannTable &hann) noexcept SST_CPPUTILS_NONBLOCKING
+/// kStereo: with two outputs, taps.data[1] feeds dst[1]; otherwise dst[1] reuses data[0]'s read.
+template <class Reader, bool kTwoOutputs, bool kStereo, class Taps>
+void renderInterior(const GrainRows &rows, uint32_t i, const Taps &taps, const Output &out,
+                    int64_t begin, int64_t end,
+                    const HannTable &hann) noexcept SST_CPPUTILS_NONBLOCKING
 {
     GG_FP_CONTRACT_OFF
     const int64_t onsetSample = rows.onsetSample[i];
@@ -341,8 +352,8 @@ void renderSampleInterior(const GrainRows &rows, uint32_t i, const SampleSource 
     const SIMD_M128 gain1 = SIMD_MM(set1_ps)(rows.gainR[i]);
     const SIMD_M128 zero = SIMD_MM(setzero_ps)();
     const float *const points = hann.points();
-    const float *const data0 = src.data[0];
-    const float *const data1 = src.data[1];
+    const float *const data0 = taps.data[0];
+    const float *const data1 = taps.data[1];
     float *const dst0 = out.dst[0];
     float *const dst1 = out.dst[1];
     for (int64_t t = begin; t < end; t += 4)
@@ -369,6 +380,7 @@ void renderSampleInterior(const GrainRows &rows, uint32_t i, const SampleSource 
             base[lane] = static_cast<int64_t>(floorPos);
             posFrac[lane] = static_cast<float>(pos - floorPos);
         }
+        taps.locate(base);
         const SIMD_M128 lo = SIMD_MM(load_ps)(wLo);
         const SIMD_M128 w =
             SIMD_MM(add_ps)(lo, SIMD_MM(mul_ps)(SIMD_MM(sub_ps)(SIMD_MM(load_ps)(wHi), lo),
@@ -409,21 +421,19 @@ void renderSampleSimd(const GrainRows &rows, uint32_t i, const SampleSource &src
     }
     const detail::Run run = detail::sampleSimdRun<Reader>(rows, i, src.frames, first, last);
     const int64_t simdEnd = run.begin + (run.end - run.begin) / 4 * 4;
+    const detail::BufferTaps taps{{src.data[0], src.data[1]}};
     renderSampleRef<Reader>(rows, i, src, out, first, run.begin, hann);
     if (out.dst[1] == nullptr)
     {
-        detail::renderSampleInterior<Reader, false, false>(rows, i, src, out, run.begin, simdEnd,
-                                                           hann);
+        detail::renderInterior<Reader, false, false>(rows, i, taps, out, run.begin, simdEnd, hann);
     }
     else if (src.mono)
     {
-        detail::renderSampleInterior<Reader, true, false>(rows, i, src, out, run.begin, simdEnd,
-                                                          hann);
+        detail::renderInterior<Reader, true, false>(rows, i, taps, out, run.begin, simdEnd, hann);
     }
     else
     {
-        detail::renderSampleInterior<Reader, true, true>(rows, i, src, out, run.begin, simdEnd,
-                                                         hann);
+        detail::renderInterior<Reader, true, true>(rows, i, taps, out, run.begin, simdEnd, hann);
     }
     renderSampleRef<Reader>(rows, i, src, out, simdEnd, last, hann);
 }
@@ -484,6 +494,221 @@ void renderLiveRef(const GrainRows &rows, uint32_t i, const LiveSource &live, co
             dst1[j] += r * (wf * gain1);
         }
     }
+}
+
+/// The samples of grain i where the SIMD live kernel may stand in for renderLiveRef: up to two
+/// runs, part 0 before the last write() block's blockKink() (the head advancing) and part 1 from
+/// it on (the head still). begin[p] <= end[p]; an empty part has begin[p] == end[p].
+struct LiveInterior
+{
+    int64_t begin[2];
+    int64_t end[2];
+};
+
+namespace detail
+{
+/// One part of liveInterior: the samples of [lo, hi) where R(t) = r0 + slope × (t − lo), with
+/// slope 1 or 0, satisfies the interior's conditions. Requires lo < hi, live.enabled(), and a
+/// finite rate > 0 and invDuration > 0.
+///
+/// The conditions, with e, pos and the phase as the reference computes them:
+/// - the window's phase e × invDuration is in [0, 1];
+/// - pos >= 1, so the Hermite's first tap, floor(pos) − 1, is a frame >= 0 (not the silence
+///   before frame 0, which read() supplies itself);
+/// - R − 1 − (pos + 2) >= M + 1 and (pos − 1) − (R − N) >= M + 1: every Hermite tap one frame
+///   beyond the fade's margin M at both ends of the window;
+/// - and, at the run's two ends, fade(pos, R) == 1.0 exactly and read()'s window bounds hold.
+///
+/// The phase and pos are monotone in t (as in sampleSimdRun), so they hold between two samples
+/// where they hold. On [lo, hi) R and pos are linear in t, so each margin is too, up to rounding
+/// of order 2^−12 frames at ring times up to 2^40: where a margin is >= M + 1 at both ends of a
+/// run it is above M + 1 − 2^−11 everywhere between, so the fade's two factors are both clamped
+/// to 1 there and every tap is inside the window. Hence f == 1 and the read succeeds on the
+/// whole run, for either reader (Linear's taps are a subset of the Hermite's).
+///
+/// The bounds come from solving the linear conditions in n = t − onsetSample, widened by 2
+/// samples; each end then steps inward while the exact test fails, which costs a few tests per
+/// end (at most hi − lo). A part where the solution isn't finite is empty.
+inline Run liveRun(const GrainRows &rows, uint32_t i, const LiveSource &live, int64_t lo,
+                   int64_t hi, int64_t r0, int64_t slope) noexcept SST_CPPUTILS_NONBLOCKING
+{
+    GG_FP_CONTRACT_OFF
+    constexpr double kM = static_cast<double>(LiveSource::kHeadMargin);
+    const int64_t onsetSample = rows.onsetSample[i];
+    const double onsetFrac = rows.onsetFrac[i];
+    const double startPos = rows.startPos[i];
+    const double rate = rows.rate[i];
+    const double invDuration = rows.invDuration[i];
+    const int64_t frames = live.frames();
+    const auto window = static_cast<double>(frames); // N
+    // The exact test at t, in the reference's expressions.
+    const auto inside = [&](int64_t t) noexcept {
+        GG_FP_CONTRACT_OFF
+        const double e = static_cast<double>(t - onsetSample) - onsetFrac;
+        const double phase = e * invDuration;
+        const double pos = startPos + rate * e;
+        if (!(phase >= 0.0 && phase <= 1.0 && pos >= 1.0 && pos < 0x1.0p62))
+        {
+            return false;
+        }
+        const int64_t head = live.headAt(t);
+        const auto r = static_cast<double>(head);
+        if (!(r - 1.0 - (pos + 2.0) >= kM + 1.0 && (pos - 1.0) - (r - window) >= kM + 1.0))
+        {
+            return false;
+        }
+        const auto base = static_cast<int64_t>(std::floor(pos));
+        return live.fade(pos, head) == 1.0 && base - 1 >= head - frames && base + 2 <= head - 1;
+    };
+
+    // With R = rho0 + s × n (n = t − onsetSample, rho0 = r0 − s × (lo − onsetSample)) and pos =
+    // startPos + rate × (n − onsetFrac), in exact arithmetic:
+    // - toward the head:  (s − rate) × n >= M + 4 + startPos − rate × onsetFrac − rho0 =: kHead
+    // - from the tail:    (rate − s) × n >= M + 2 − N + rho0 − startPos + rate × onsetFrac =: kTail
+    // - pos >= 1:         n >= onsetFrac + (1 − startPos) / rate
+    // - the phase:        onsetFrac <= n <= onsetFrac + duration
+    const auto s = static_cast<double>(slope);
+    const double nLo = static_cast<double>(lo - onsetSample);
+    const double nHi = static_cast<double>(hi - onsetSample); // exclusive
+    const double rho0 = static_cast<double>(r0) - s * nLo;
+    const double c = s - rate;
+    const double kHead = kM + 4.0 + startPos - rate * onsetFrac - rho0;
+    const double kTail = kM + 2.0 - window + rho0 - startPos + rate * onsetFrac;
+    double nFirst = std::max(onsetFrac, onsetFrac + (1.0 - startPos) / rate);
+    double nLast = onsetFrac + rows.durationSamples[i];
+    if (c > 0.0)
+    {
+        nFirst = std::max(nFirst, kHead / c);
+        nLast = std::min(nLast, -kTail / c);
+    }
+    else if (c < 0.0)
+    {
+        nFirst = std::max(nFirst, kTail / -c);
+        nLast = std::min(nLast, kHead / c);
+    }
+    else if (!(kHead <= 0.0 && kTail <= 0.0))
+    {
+        return {lo, lo}; // a margin that doesn't move and doesn't hold
+    }
+    if (!(std::isfinite(nFirst) && std::isfinite(nLast)))
+    {
+        return {lo, lo};
+    }
+    // Widen, then clamp into [nLo, nHi] before converting.
+    double nBegin = std::ceil(nFirst) - 2.0;
+    double nEnd = std::floor(nLast) + 3.0;
+    nBegin = std::clamp(nBegin, nLo, nHi);
+    nEnd = std::clamp(nEnd, nBegin, nHi);
+    int64_t begin = onsetSample + static_cast<int64_t>(nBegin);
+    int64_t end = onsetSample + static_cast<int64_t>(nEnd);
+    while (begin < end && !inside(begin))
+    {
+        ++begin;
+    }
+    while (end > begin && !inside(end - 1))
+    {
+        --end;
+    }
+    return {begin, end};
+}
+
+/// The live ring's taps for the SIMD interior: frame f of channel c is in slot f mod capacity,
+/// and the ring's guard slots make each read's taps contiguous from its first tap's slot. locate
+/// finds lane 0's first-tap slot with one division, and each other lane's by adding its frame
+/// offset from lane 0 (0 to a few frames, far below capacity) and subtracting capacity once if
+/// that passes it; read4's base is that slot + Reader::kBefore. Requires every lane's first tap
+/// to be a frame >= 0, in increasing lane order.
+template <class Reader> struct RingTaps
+{
+    const float *data[2];
+    int64_t capacity;
+
+    void locate(int64_t *base) const noexcept SST_CPPUTILS_NONBLOCKING
+    {
+        const int64_t floor0 = base[0];
+        const int64_t slot0 = (floor0 - Reader::kBefore) % capacity;
+        for (int lane = 0; lane < 4; ++lane)
+        {
+            int64_t slot = slot0 + (base[lane] - floor0);
+            slot -= slot >= capacity ? capacity : 0;
+            base[lane] = slot + Reader::kBefore;
+        }
+    }
+};
+} // namespace detail
+
+/// The live interior of grain i over [from, to), which must lie in the ring's last write()
+/// block: [max(from, onset), min(to, endSample)) split at blockKink(), and on each side the
+/// samples detail::liveRun admits. On every sample there the window's phase is in [0, 1], every
+/// tap is a frame >= 0 inside the window at R(t), and the reference's fade is exactly 1, so
+/// renderLiveRef's amplitude is (w × 1) × gain_c = w × gain_c, the sample kernel's. Empty when
+/// there is no ring, or the grain's rate isn't finite and > 0.
+inline LiveInterior liveInterior(const GrainRows &rows, uint32_t i, const LiveSource &live,
+                                 int64_t from, int64_t to) noexcept SST_CPPUTILS_NONBLOCKING
+{
+    const int64_t first = std::max(from, rows.onsetSample[i]);
+    const int64_t last = std::max(first, std::min(to, rows.endSample[i]));
+    const int64_t kink = std::clamp(live.blockKink(), first, last);
+    LiveInterior in{{first, kink}, {first, kink}};
+    const double rate = rows.rate[i];
+    const double invDuration = rows.invDuration[i];
+    if (!live.enabled() || !(rate > 0.0 && rate < 0x1.0p62) ||
+        !(invDuration > 0.0 && invDuration < 0x1.0p62))
+    {
+        return in;
+    }
+    if (first < kink)
+    {
+        // The head advances by one per sample: R(t) = R(first) + (t − first).
+        const detail::Run run = detail::liveRun(rows, i, live, first, kink, live.headAt(first), 1);
+        in.begin[0] = run.begin;
+        in.end[0] = run.end;
+    }
+    if (kink < last)
+    {
+        // The head stands still.
+        const detail::Run run = detail::liveRun(rows, i, live, kink, last, live.headAt(kink), 0);
+        in.begin[1] = run.begin;
+        in.end[1] = run.end;
+    }
+    return in;
+}
+
+/// The 4-wide grain-major SIMD kernel over the live ring: renderLiveRef<Reader>'s output, bit for
+/// bit, with the same requirements. Each part of liveInterior, 4 samples at a time, goes through
+/// the SIMD interior, reading the ring's slots from view(); every other sample (the fades near
+/// either end of the window, reads outside it or before frame 0, the window's edges, and each
+/// part's remainder) goes through renderLiveRef itself. Every sample depends only on t, so the
+/// pieces give the reference's bits.
+template <class Reader>
+void renderLiveSimd(const GrainRows &rows, uint32_t i, const LiveSource &live, const Output &out,
+                    int64_t from, int64_t to,
+                    const HannTable &hann) noexcept SST_CPPUTILS_NONBLOCKING
+{
+    if (std::max(from, rows.onsetSample[i]) >= std::min(to, rows.endSample[i]))
+    {
+        return;
+    }
+    const LiveInterior in = liveInterior(rows, i, live, from, to);
+    const LiveSource::RingView ring = live.view();
+    const detail::RingTaps<Reader> taps{{ring.channel[0], ring.channel[1]}, ring.capacity};
+    int64_t done = from;
+    for (int part = 0; part < 2; ++part)
+    {
+        const int64_t begin = in.begin[part];
+        const int64_t simdEnd = begin + (in.end[part] - begin) / 4 * 4;
+        renderLiveRef<Reader>(rows, i, live, out, done, begin, hann);
+        if (out.dst[1] == nullptr)
+        {
+            detail::renderInterior<Reader, false, false>(rows, i, taps, out, begin, simdEnd, hann);
+        }
+        else
+        {
+            detail::renderInterior<Reader, true, true>(rows, i, taps, out, begin, simdEnd, hann);
+        }
+        done = simdEnd;
+    }
+    renderLiveRef<Reader>(rows, i, live, out, done, to, hann);
 }
 } // namespace gg::kernels
 

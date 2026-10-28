@@ -288,11 +288,11 @@ void Engine::renderPool(float *const dst[2], int64_t blockStart, int64_t from, i
         {
             if (rows.tier[i] == Tier::Eco)
             {
-                kernels::renderLiveRef<kernels::Linear>(rows, i, live_, output, from, to, hann_);
+                kernels::renderLiveSimd<kernels::Linear>(rows, i, live_, output, from, to, hann_);
             }
             else
             {
-                kernels::renderLiveRef<kernels::Hermite>(rows, i, live_, output, from, to, hann_);
+                kernels::renderLiveSimd<kernels::Hermite>(rows, i, live_, output, from, to, hann_);
             }
         }
         return;
