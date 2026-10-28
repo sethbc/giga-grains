@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <numbers>
@@ -20,6 +21,9 @@
 #include "gg/core/Rng.h"
 #include "gg/core/Window.h"
 #include "gg/engine/Engine.h"
+#include "gg/grain/GrainKernels.h"
+#include "gg/grain/GrainPool.h"
+#include "gg/source/PreparedSource.h"
 
 namespace
 {
@@ -675,4 +679,308 @@ TEST_CASE("held keys and the note gate reach the scheduler", "[engine]")
     render(engine, 4800, 64);
     CHECK(log.grains.size() == 2);
     REQUIRE_FALSE(log.overflowed);
+}
+
+namespace
+{
+// A mono source of `frames` frames at 48 kHz, every sample `value`.
+std::shared_ptr<gg::SampleBuffer> makeConstant(int64_t frames, float value)
+{
+    auto buf = std::make_shared<gg::SampleBuffer>(1, frames, 48000.0);
+    std::fill_n(buf->channel(0), frames, value);
+    return buf;
+}
+
+// The scalar reference's render of `grains`, every grain Normal-tier, over [0, frames) of both
+// outputs, each grain read from the mono buffer sourceOf(grain) returns. Each grain adds to every
+// sample before the next starts, so each sample sums its grains in spawn order, as the engine
+// does.
+template <class SourceOf>
+Render referenceRender(const std::vector<gg::GrainSpec> &grains, int64_t frames, SourceOf sourceOf)
+{
+    Render r{std::vector<float>(static_cast<std::size_t>(frames), 0.0f),
+             std::vector<float>(static_cast<std::size_t>(frames), 0.0f)};
+    gg::GrainPool pool(static_cast<uint32_t>(std::max<std::size_t>(1, grains.size())));
+    for (const gg::GrainSpec &g : grains)
+    {
+        REQUIRE(g.tier == gg::Tier::Normal);
+        REQUIRE(pool.spawn(g));
+    }
+    const gg::HannTable hann;
+    const gg::kernels::Output out{{r.left.data(), r.right.data()}, 0};
+    for (uint32_t i = 0; i < pool.size(); ++i)
+    {
+        const gg::SampleBuffer &buf = sourceOf(grains[i]);
+        REQUIRE(buf.channels() == 1);
+        const gg::kernels::SampleSource src{
+            {buf.channel(0), buf.channel(0)}, buf.frames(), true, nullptr};
+        gg::kernels::renderSampleRef<gg::kernels::Hermite>(pool.rows(), i, src, out, 0, frames,
+                                                           hann);
+    }
+    return r;
+}
+
+void append(Render &to, const Render &more)
+{
+    to.left.insert(to.left.end(), more.left.begin(), more.left.end());
+    to.right.insert(to.right.end(), more.right.begin(), more.right.end());
+}
+
+bool sameBitsIn(const std::vector<float> &a, const std::vector<float> &b, int64_t from, int64_t to)
+{
+    return from <= to && to <= static_cast<int64_t>(std::min(a.size(), b.size())) &&
+           std::memcmp(a.data() + from, b.data() + from,
+                       static_cast<std::size_t>(to - from) * sizeof(float)) == 0;
+}
+
+// The spec with its source slot cleared, for comparing the grains of renders that read their
+// sources from different slots.
+gg::GrainSpec withoutSlot(gg::GrainSpec g)
+{
+    g.sourceSlot = 0;
+    return g;
+}
+} // namespace
+
+TEST_CASE("a new source applies from the next onset and old grains finish on the old one",
+          "[engine]")
+{
+    // Source A is all +0.5 and B all -0.5, so a grain's sign says which it read. 100 Hz of
+    // 200 ms grains, periodic and centred: about 20 overlap, and the grains started before the
+    // swap at 0.5 s sound on for up to 200 ms after it. One onset falls on the swap sample
+    // itself (24,000 = 50 x 480), and it belongs to the new source.
+    constexpr int64_t kSwap = 24000;
+    constexpr int64_t kFrames = 48000;
+    const auto bufA = makeConstant(48000, 0.5f);
+    const auto bufB = makeConstant(48000, -0.5f);
+    const auto a = gg::PreparedSource::make(bufA);
+    const auto b = gg::PreparedSource::make(bufB);
+    REQUIRE(&a->buffer() == bufA.get());
+    REQUIRE(a->pairs().data() == nullptr); // mono stays planar
+    const gg::CloudParams p = params(100.0, 0.2, 0.5, 0.0, 0.0, 0.5f);
+
+    // Adopts `first`, renders up to kSwap, adopts `second` and renders the rest.
+    auto run = [&](const gg::PreparedSource *first, const gg::PreparedSource *second,
+                   SinkLog &log) {
+        gg::Engine engine(gg::EngineConfig{});
+        engine.setEventSink(&SinkLog::record, &log);
+        engine.setCloudParams(p);
+        REQUIRE(engine.adoptSource(first));
+        Render r = render(engine, kSwap, 256);
+        REQUIRE(engine.adoptSource(second)); // the second adoption of `first` changes nothing
+        append(r, render(engine, kFrames - kSwap, 256));
+        return r;
+    };
+    SinkLog swapLog;
+    const Render swapped = run(a.get(), b.get(), swapLog);
+    SinkLog aLog;
+    const Render aOnly = run(a.get(), a.get(), aLog);
+    SinkLog bLog;
+    const Render bOnly = run(b.get(), b.get(), bLog);
+    REQUIRE_FALSE(swapLog.overflowed);
+    REQUIRE(allFinite(swapped.left));
+    REQUIRE(allFinite(swapped.right));
+
+    // The same grains in all three renders: the schedule doesn't depend on what the source
+    // holds. Only the swap moves grains to another source slot.
+    REQUIRE(swapLog.grains.size() == 100);
+    REQUIRE(aLog.grains.size() == swapLog.grains.size());
+    REQUIRE(bLog.grains.size() == swapLog.grains.size());
+    bool sameGrains = true;
+    for (std::size_t k = 0; k < swapLog.grains.size(); ++k)
+    {
+        sameGrains = sameGrains && withoutSlot(swapLog.grains[k]) == withoutSlot(aLog.grains[k]) &&
+                     aLog.grains[k] == bLog.grains[k] &&
+                     aLog.grains[k].sourceSlot == aLog.grains[0].sourceSlot;
+    }
+    REQUIRE(sameGrains);
+
+    // Old grains (onset before the swap) are in one slot, new ones in the other.
+    int64_t firstNewOnset = kFrames;
+    int64_t lastOldEnd = 0;
+    const uint8_t oldSlot = swapLog.grains.front().sourceSlot;
+    const uint8_t newSlot = swapLog.grains.back().sourceSlot;
+    REQUIRE(oldSlot != newSlot);
+    bool slotsByOnset = true;
+    for (const gg::GrainSpec &g : swapLog.grains)
+    {
+        const bool old = g.onsetSample < kSwap;
+        slotsByOnset = slotsByOnset && g.sourceSlot == (old ? oldSlot : newSlot);
+        if (old)
+        {
+            lastOldEnd = std::max(lastOldEnd, gg::grainEndSample(g));
+        }
+        else
+        {
+            firstNewOnset = std::min(firstNewOnset, g.onsetSample);
+        }
+    }
+    REQUIRE(slotsByOnset);
+    REQUIRE(firstNewOnset == kSwap);
+    REQUIRE(lastOldEnd > kSwap + 9000); // the last old grain sounds ~200 ms past the swap
+
+    // Every old grain reads A to its end and every new grain reads B: the render is the
+    // reference's, grain by grain, bit for bit.
+    const Render expected = referenceRender(swapLog.grains, kFrames, [&](const gg::GrainSpec &g) {
+        return g.onsetSample < kSwap ? std::cref(*bufA) : std::cref(*bufB);
+    });
+    REQUIRE(sameBits(swapped.left, expected.left));
+    REQUIRE(sameBits(swapped.right, expected.right));
+
+    // So before the first new grain the render is A's, and once the last old grain has ended it
+    // is B's; between them both signs sound.
+    REQUIRE(sameBitsIn(swapped.left, aOnly.left, 0, firstNewOnset));
+    REQUIRE(sameBitsIn(swapped.right, aOnly.right, 0, firstNewOnset));
+    REQUIRE(sameBitsIn(swapped.left, bOnly.left, lastOldEnd, kFrames));
+    REQUIRE(sameBitsIn(swapped.right, bOnly.right, lastOldEnd, kFrames));
+    REQUIRE(*std::max_element(swapped.left.begin(), swapped.left.begin() + kSwap) > 0.1f);
+    REQUIRE(*std::min_element(swapped.left.begin(), swapped.left.begin() + kSwap) >= 0.0f);
+    REQUIRE(*std::min_element(swapped.left.begin() + lastOldEnd, swapped.left.end()) < -0.1f);
+    REQUIRE(*std::max_element(swapped.left.begin() + lastOldEnd, swapped.left.end()) <= 0.0f);
+    REQUIRE_FALSE(sameBitsIn(swapped.left, aOnly.left, kSwap, lastOldEnd));
+    REQUIRE_FALSE(sameBitsIn(swapped.left, bOnly.left, kSwap, lastOldEnd));
+}
+
+TEST_CASE("a third source waits", "[engine]")
+{
+    // A, then B at 0.5 s: A's grains sound until lastAEnd, up to ~200 ms later. Until then a
+    // third source, C, is refused, changing nothing; at the first block end at or past lastAEnd
+    // the engine retires A, and C is accepted. A is handed back exactly once.
+    constexpr int64_t kSwap = 24000;
+    const auto a = gg::PreparedSource::make(makeConstant(48000, 0.5f));
+    const auto b = gg::PreparedSource::make(makeConstant(48000, -0.5f));
+    const auto c = gg::PreparedSource::make(makeConstant(48000, 0.25f));
+    const gg::CloudParams p = params(100.0, 0.2, 0.5, 0.0, 0.0, 0.5f);
+
+    gg::Engine engine(gg::EngineConfig{});
+    SinkLog log;
+    engine.setEventSink(&SinkLog::record, &log);
+    engine.setCloudParams(p);
+    REQUIRE(engine.takeRetiredSource() == nullptr);
+    REQUIRE(engine.adoptSource(a.get()));
+    // A replaced no source, so nothing is handed back.
+    REQUIRE(engine.takeRetiredSource() == nullptr);
+    Render waited = render(engine, kSwap, 256);
+    REQUIRE(engine.adoptSource(b.get()));
+    int64_t lastAEnd = 0;
+    for (const gg::GrainSpec &g : log.grains)
+    {
+        lastAEnd = std::max(lastAEnd, gg::grainEndSample(g));
+    }
+    REQUIRE(lastAEnd > kSwap + 9000);
+
+    while (engine.sampleClock() < lastAEnd)
+    {
+        REQUIRE_FALSE(engine.adoptSource(c.get()));
+        REQUIRE(engine.takeRetiredSource() == nullptr);
+        append(waited, render(engine, 64, 64));
+    }
+    const int64_t cAt = engine.sampleClock();
+    REQUIRE(cAt < lastAEnd + 64);
+    REQUIRE(engine.adoptSource(c.get()));
+    REQUIRE(engine.takeRetiredSource() == a.get());
+    REQUIRE(engine.takeRetiredSource() == nullptr);
+
+    // The refusals changed nothing: an engine that never asked renders the same bits.
+    gg::Engine plain(gg::EngineConfig{});
+    plain.setCloudParams(p);
+    REQUIRE(plain.adoptSource(a.get()));
+    Render direct = render(plain, kSwap, 256);
+    REQUIRE(plain.adoptSource(b.get()));
+    append(direct, render(plain, cAt - kSwap, 64));
+    REQUIRE(sameBits(waited.left, direct.left));
+    REQUIRE(sameBits(waited.right, direct.right));
+
+    // B's grains, the ones started in [kSwap, cAt), drain within 200 ms; then B is handed back.
+    const std::size_t grainsBeforeC = log.grains.size();
+    render(engine, 12000, 256);
+    REQUIRE(log.grains.size() > grainsBeforeC);
+    REQUIRE(log.grains.back().sourceSlot != log.grains[grainsBeforeC - 1].sourceSlot);
+    REQUIRE(engine.takeRetiredSource() == b.get());
+    REQUIRE(engine.takeRetiredSource() == nullptr);
+}
+
+TEST_CASE("adopted sources are handed back by reset and setSource", "[engine]")
+{
+    const auto a = gg::PreparedSource::make(makeConstant(48000, 0.5f));
+    const auto b = gg::PreparedSource::make(makeConstant(48000, -0.5f));
+    const gg::CloudParams p = params(100.0, 0.2, 0.5, 0.0, 0.0, 0.5f);
+
+    SECTION("reset silences A's grains, so A retires at once")
+    {
+        gg::Engine engine(gg::EngineConfig{});
+        engine.setCloudParams(p);
+        REQUIRE(engine.adoptSource(a.get()));
+        render(engine, 24000, 256);
+        REQUIRE(engine.adoptSource(b.get()));
+        REQUIRE(engine.takeRetiredSource() == nullptr);
+        engine.reset();
+        REQUIRE(engine.takeRetiredSource() == a.get());
+        REQUIRE(engine.takeRetiredSource() == nullptr);
+        REQUIRE(engine.adoptSource(a.get())); // B, which had no grains since reset, retires
+        REQUIRE(engine.takeRetiredSource() == b.get());
+    }
+
+    SECTION("setSource replaces both, oldest first, and every grain reads its source")
+    {
+        gg::Engine engine(gg::EngineConfig{});
+        engine.setCloudParams(p);
+        REQUIRE(engine.adoptSource(a.get()));
+        render(engine, 24000, 256);
+        REQUIRE(engine.adoptSource(b.get()));
+        render(engine, 2400, 256); // A's and B's grains both sound
+        const uint32_t sounding = engine.activeGrains();
+        REQUIRE(sounding > 10);
+        engine.setSource(makeConstant(48000, 0.25f));
+        REQUIRE(engine.activeGrains() == sounding);
+        REQUIRE(engine.takeRetiredSource() == a.get());
+        REQUIRE(engine.takeRetiredSource() == b.get());
+        REQUIRE(engine.takeRetiredSource() == nullptr);
+        // Every grain, old or new, now reads +0.25.
+        const Render r = render(engine, 4800, 256);
+        REQUIRE(*std::min_element(r.left.begin(), r.left.end()) >= 0.0f);
+        REQUIRE(*std::max_element(r.left.begin(), r.left.end()) > 0.1f);
+        // The engine owns setSource's source: it is never handed back.
+        REQUIRE(engine.adoptSource(a.get()));
+        render(engine, 12000, 256);
+        REQUIRE(engine.takeRetiredSource() == nullptr);
+    }
+}
+
+TEST_CASE("setSource renders as adopting its prepared source", "[engine]")
+{
+    // setSource is PreparedSource::make plus the adoption; a stereo source reads its interleaved
+    // copy.
+    for (const uint32_t channels : {1u, 2u})
+    {
+        INFO("channels = " << channels);
+        const auto buffer = makeSine(channels, 48000, 48000.0, 330.0, 0.9);
+        const auto prepared = gg::PreparedSource::make(buffer);
+        REQUIRE((prepared->pairs().data() != nullptr) == (channels == 2));
+        REQUIRE(prepared->pairs().frames() == (channels == 2 ? 48000 : 0));
+        const gg::CloudParams p = params(80.0, 0.05, 0.4, 0.5, 3.0, 0.6f);
+        gg::Engine set(gg::EngineConfig{});
+        set.setSource(buffer);
+        set.setCloudParams(p);
+        SinkLog setLog;
+        set.setEventSink(&SinkLog::record, &setLog);
+        gg::Engine adopted(gg::EngineConfig{});
+        REQUIRE(adopted.adoptSource(prepared.get()));
+        adopted.setCloudParams(p);
+        SinkLog adoptedLog;
+        adopted.setEventSink(&SinkLog::record, &adoptedLog);
+        const Render r1 = render(set, 24000, 100);
+        const Render r2 = render(adopted, 24000, 100);
+        REQUIRE(peak(r1.left) > 0.1f);
+        REQUIRE(sameBits(r1.left, r2.left));
+        REQUIRE(sameBits(r1.right, r2.right));
+        REQUIRE(setLog.grains.size() == adoptedLog.grains.size());
+        bool same = true;
+        for (std::size_t k = 0; k < setLog.grains.size(); ++k)
+        {
+            same = same && withoutSlot(setLog.grains[k]) == withoutSlot(adoptedLog.grains[k]);
+        }
+        REQUIRE(same);
+    }
+    REQUIRE(gg::PreparedSource::make(nullptr) == nullptr);
 }
