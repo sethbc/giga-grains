@@ -40,7 +40,8 @@ enum class NoteEventType : uint8_t
 {
     On,     ///< Holds (channel, key).
     Off,    ///< Releases the held pairs that channel and key match; −1 matches any.
-    AllOff, ///< Releases everything (MIDI CC 123); channel and key are ignored.
+    AllOff, ///< Releases every key held on its channel, as MIDI CC 123 does (ruling R14); −1
+            ///< releases everything. The key is ignored.
 };
 
 /// A note event inside one process() call (spec §6.1). Velocity is ignored (D6), so it has none.
@@ -48,8 +49,9 @@ struct NoteEvent
 {
     uint32_t offset; ///< Frames from the start of the call. A call's notes are sorted by it.
     NoteEventType type;
-    int16_t channel; ///< 0..15; −1 = any (Off only). Other values make the event ignored.
-    int16_t key;     ///< 0..127; −1 = any (Off only). Other values make the event ignored.
+    int16_t channel; ///< 0..15; −1 = any (Off and AllOff only). Other values make it ignored.
+    int16_t key;     ///< 0..127; −1 = any (Off only; AllOff ignores it). Other values make the
+                     ///< event ignored.
 };
 
 /// What both plugins and gg-render run: the grain Engine, its parameters, the held notes and the
@@ -81,12 +83,13 @@ struct NoteEvent
 ///
 /// **Notes** (spec §6.1–§6.3). The held set is the held (channel, key) pairs: an On holds its
 /// pair, an Off releases the pairs it matches (−1 matches any channel or key), an AllOff releases
-/// everything. Only the held set after a group counts, so a note that starts and ends within one
-/// group does nothing. A key held on two channels counts once, and stays held until both are off.
-/// The engine picks each grain's key from the distinct held keys; when the set goes from empty to
-/// non-empty the cloud starts at that boundary (Engine::setHeldKeys). The instrument's engine has
-/// the note gate on (Engine::setNoteGate): no grain spawns while nothing is held. Construction and
-/// reset() clear the held set.
+/// every key on its channel, or everything for channel −1 (ruling R14). Only the held set after a
+/// group counts, so a note that starts and ends within one group does nothing. A key held on two
+/// channels counts once, and stays held until both are off. The engine picks each grain's key from
+/// the distinct held keys; when the set goes from empty to non-empty the cloud starts at that
+/// boundary (Engine::setHeldKeys). The instrument's engine has the note gate on
+/// (Engine::setNoteGate): no grain spawns while nothing is held. Construction and reset() clear the
+/// held set.
 ///
 /// **Freeze is live until toggled** (INTENT §14; ruling M1-ac). The ring isn't saved (an M2
 /// non-goal), so a Freeze that is on when a fresh ring starts would hold that ring's first 20 ms,

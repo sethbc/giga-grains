@@ -45,7 +45,7 @@ int64_t gridCeil(int64_t a) noexcept
 float finiteOrZero(float x) noexcept { return std::isfinite(x) ? x : 0.0f; }
 
 /// Whether a note event's fields are in range (NoteEvent): On needs a channel 0..15 and a key
-/// 0..127, Off also takes −1 for either, AllOff ignores both.
+/// 0..127, Off also takes −1 for either, AllOff takes a channel 0..15 or −1 and ignores the key.
 bool validNote(const NoteEvent &n) noexcept
 {
     const auto inRange = [](int16_t v, int16_t lo, int16_t hi) { return v >= lo && v <= hi; };
@@ -56,7 +56,7 @@ bool validNote(const NoteEvent &n) noexcept
     case NoteEventType::Off:
         return inRange(n.channel, -1, 15) && inRange(n.key, -1, 127);
     case NoteEventType::AllOff:
-        return true;
+        return inRange(n.channel, -1, 15);
     }
     return false;
 }
@@ -216,8 +216,15 @@ void Processor::applyNote(const NoteEvent &n) noexcept
         break;
     }
     case NoteEventType::AllOff:
-        held_.fill(0);
+    {
+        // Ruling R14: MIDI's CC 123 releases its own channel's notes; −1 releases every channel.
+        const auto keep = static_cast<uint16_t>(n.channel < 0 ? 0u : ~(1u << n.channel));
+        for (uint16_t &channels : held_)
+        {
+            channels &= keep;
+        }
         break;
+    }
     }
 }
 

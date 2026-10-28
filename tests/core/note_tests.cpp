@@ -377,7 +377,7 @@ TEST_CASE("the held set: channels, wildcards and all notes off", "[core]")
 {
     // Spec §6.1: the held set is (channel, key) pairs; a key counts once however many channels
     // hold it, and is released when all are off. A wildcard (−1) Off matches every channel or
-    // key; AllOff clears everything.
+    // key; AllOff clears its channel, or everything for channel −1 (ruling R14).
     Processor p({kSampleRate, 512, 1, Mode::Instrument});
     std::vector<float> left(64), right(64);
     float *out[2] = {left.data(), right.data()};
@@ -405,6 +405,16 @@ TEST_CASE("the held set: channels, wildcards and all notes off", "[core]")
     // An event past the call's end counts as at its end: it lands at the next boundary.
     CHECK(run({on(500, 70)}) == Keys{61});
     CHECK(run({}) == Keys{61, 70});
+
+    // AllOff on a channel (MIDI CC 123 there) releases only that channel's keys (ruling R14);
+    // channel −1 releases everything, and an out-of-range channel makes it ignored.
+    CHECK(run({{0, NoteEventType::AllOff, -1, 0}}) == Keys{});
+    CHECK(run({on(0, 60, 0), on(0, 60, 1), on(0, 61, 0), on(0, 62, 2)}) == Keys{60, 61, 62});
+    CHECK(run({{0, NoteEventType::AllOff, 0, 0}}) == Keys{60, 62}); // 60 still on channel 1
+    CHECK(run({{0, NoteEventType::AllOff, 2, -1}}) == Keys{60});
+    CHECK(run({{0, NoteEventType::AllOff, 5, 0}}) == Keys{60}); // nothing on channel 5
+    CHECK(run({{0, NoteEventType::AllOff, 16, 0}, {0, NoteEventType::AllOff, -2, 0}}) == Keys{60});
+    CHECK(run({{0, NoteEventType::AllOff, 1, 0}}) == Keys{});
 }
 
 TEST_CASE("reset() releases every note", "[core]")
@@ -598,12 +608,19 @@ TEST_CASE("instrument notes are block-size invariant", "[core][determinism]")
     // second onset after the set empties, and Density and Pitch automation.
     constexpr int64_t kB = 32 * 700;
     using T = NoteEventType;
-    const std::vector<TimedNote> notes{
-        {1000 + 5, T::On, 0, 60},   {8000, T::On, 0, 64},          {8000 + 31, T::On, 1, 67},
-        {kB - 3, T::On, 2, 72},     {kB, T::Off, 2, 72},           {25000, T::Off, 0, 64},
-        {40000 + 1, T::Off, 0, 60}, {41000, T::Off, 1, 67},        {50000 + 9, T::On, 3, 55},
-        {50000 + 9, T::On, 3, 79},  {60000 + 20, T::AllOff, 0, 0}, {65000, T::On, 0, 48},
-        {70000 + 3, T::Off, -1, -1}};
+    const std::vector<TimedNote> notes{{1000 + 5, T::On, 0, 60},
+                                       {8000, T::On, 0, 64},
+                                       {8000 + 31, T::On, 1, 67},
+                                       {kB - 3, T::On, 2, 72},
+                                       {kB, T::Off, 2, 72},
+                                       {25000, T::Off, 0, 64},
+                                       {40000 + 1, T::Off, 0, 60},
+                                       {41000, T::Off, 1, 67},
+                                       {50000 + 9, T::On, 3, 55},
+                                       {50000 + 9, T::On, 3, 79},
+                                       {60000 + 20, T::AllOff, -1, 0},
+                                       {65000, T::On, 0, 48},
+                                       {70000 + 3, T::Off, -1, -1}};
     const std::vector<TimedParam> params{{20000 + 3, ParamSlot::Density, false, 6.0},
                                          {kB, ParamSlot::Pitch, false, -5.0},
                                          {30000 + 17, ParamSlot::Pitch, false, 3.0},
@@ -648,7 +665,7 @@ TEST_CASE("FX note freeze is block-size invariant", "[core][determinism]")
                                        {kB, T::Off, 0, 67},       {kB, T::On, 1, 67},
                                        {40000, T::Off, 0, 60},    {50000 + 11, T::Off, 1, 67},
                                        {52000, T::On, 0, 48},     {56000 + 1, T::Off, 0, 48},
-                                       {60000, T::On, 0, 72},     {66000, T::AllOff, 0, 0}};
+                                       {60000, T::On, 0, 72},     {66000, T::AllOff, -1, 0}};
     const std::vector<TimedParam> params{{10000 + 3, ParamSlot::Density, false, 5.0},
                                          {45000, ParamSlot::Freeze, false, 1.0},
                                          {54000 + 2, ParamSlot::Freeze, false, 0.0},
@@ -709,7 +726,7 @@ TEST_CASE("process with notes does not allocate", "[core][rt]")
             const auto channel = static_cast<int16_t>(i % 16);
             if (i == 40)
             {
-                notes.push_back({offset, NoteEventType::AllOff, 0, 0});
+                notes.push_back({offset, NoteEventType::AllOff, -1, 0});
             }
             else if (i % 5 == 4)
             {

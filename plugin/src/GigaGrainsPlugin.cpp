@@ -123,6 +123,7 @@ bool GigaGrainsPlugin::activate(double sampleRate, uint32_t /*minFrameCount*/,
         }
         processor_ = std::move(processor);
         engineBlockSize_ = config.maxBlockSize;
+        noteIds_.fill(NoteIdSlot{}); // a new session holds no notes
         return true;
     }
     catch (...)
@@ -155,6 +156,7 @@ void GigaGrainsPlugin::reset() noexcept
     {
         processor_->reset();
     }
+    noteIds_.fill(NoteIdSlot{}); // the reset released every note
 }
 
 clap_process_status GigaGrainsPlugin::process(const clap_process *process) noexcept
@@ -182,7 +184,6 @@ clap_process_status GigaGrainsPlugin::processNonblocking(const clap_process *pro
     {
         const clap_event_header *header = in->get(in, next);
         ParamEvent event{};
-        NoteEvent note{};
         if (toParamEvent(header, event))
         {
             if (count == kMaxParamEvents)
@@ -191,13 +192,18 @@ clap_process_status GigaGrainsPlugin::processNonblocking(const clap_process *pro
             }
             events_[count++] = event;
         }
-        else if (toNoteEvent(header, note))
+        else if (isNoteEvent(header))
         {
+            // Full before converting: toNoteEvent updates the note IDs, so the event it converts
+            // must not be converted again by applyBetweenBlocks.
             if (noteCount == kMaxNoteEvents)
             {
                 break;
             }
-            notes_[noteCount++] = note;
+            if (toNoteEvent(header, notes_[noteCount]))
+            {
+                ++noteCount;
+            }
         }
     }
 
@@ -325,22 +331,70 @@ void GigaGrainsPlugin::applyBetweenBlocks(const clap_input_events *in, uint32_t 
     }
 }
 
+bool GigaGrainsPlugin::isNoteEvent(const clap_event_header *header) noexcept
+{
+    return header != nullptr && header->space_id == CLAP_CORE_EVENT_SPACE_ID &&
+           (header->type == CLAP_EVENT_NOTE_ON || header->type == CLAP_EVENT_NOTE_OFF ||
+            header->type == CLAP_EVENT_NOTE_CHOKE || header->type == CLAP_EVENT_MIDI);
+}
+
 bool GigaGrainsPlugin::toNoteEvent(const clap_event_header *header, NoteEvent &event) noexcept
 {
-    if (header == nullptr || header->space_id != CLAP_CORE_EVENT_SPACE_ID)
+    if (!isNoteEvent(header))
     {
         return false;
     }
-    if (header->type == CLAP_EVENT_NOTE_ON || header->type == CLAP_EVENT_NOTE_OFF ||
-        header->type == CLAP_EVENT_NOTE_CHOKE)
+    if (header->type == CLAP_EVENT_NOTE_ON)
     {
         // Velocity does nothing (D6), and the CLAP dialect has no velocity-0 rule: every note-on
-        // is an On. A note-off's wildcards (−1) stay, to release every held note they match; a
-        // choke is a note-off.
+        // is an On. Its ID, if any, is remembered for a note-off by ID (ruling R15): in the
+        // slot it already has, or a free one, or else the oldest one.
         const auto *e = reinterpret_cast<const clap_event_note *>(header);
-        const auto type =
-            header->type == CLAP_EVENT_NOTE_ON ? NoteEventType::On : NoteEventType::Off;
-        event = NoteEvent{header->time, type, e->channel, e->key};
+        if (e->note_id >= 0 && e->channel >= 0 && e->channel <= 15 && e->key >= 0 && e->key <= 127)
+        {
+            NoteIdSlot *slot = &noteIds_[0];
+            for (NoteIdSlot &s : noteIds_)
+            {
+                if (s.id == e->note_id)
+                {
+                    slot = &s;
+                    break;
+                }
+                if (slot->id >= 0 && (s.id < 0 || s.age < slot->age))
+                {
+                    slot = &s;
+                }
+            }
+            *slot = NoteIdSlot{e->note_id, e->channel, e->key, ++noteIdAge_};
+        }
+        event = NoteEvent{header->time, NoteEventType::On, e->channel, e->key};
+        return true;
+    }
+    if (header->type == CLAP_EVENT_NOTE_OFF || header->type == CLAP_EVENT_NOTE_CHOKE)
+    {
+        // A choke is a note-off. Wildcards (−1) release every held note they match, except that
+        // an off with both wildcards and a known ID releases that ID's note alone (ruling R15).
+        // An unknown ID keeps the release of everything: safer than a stuck note.
+        const auto *e = reinterpret_cast<const clap_event_note *>(header);
+        int16_t channel = e->channel;
+        int16_t key = e->key;
+        if (e->note_id >= 0)
+        {
+            for (NoteIdSlot &s : noteIds_)
+            {
+                if (s.id == e->note_id)
+                {
+                    if (channel == -1 && key == -1)
+                    {
+                        channel = s.channel;
+                        key = s.key;
+                    }
+                    s = NoteIdSlot{}; // the note has ended
+                    break;
+                }
+            }
+        }
+        event = NoteEvent{header->time, NoteEventType::Off, channel, key};
         return true;
     }
     if (header->type == CLAP_EVENT_MIDI)
@@ -363,7 +417,7 @@ bool GigaGrainsPlugin::toNoteEvent(const clap_event_header *header, NoteEvent &e
         }
         if (status == 0xB0 && e->data[1] == 123)
         {
-            // CC 123, all notes off: it releases every held note, whatever its channel.
+            // CC 123, all notes off: it releases the notes held on its channel (ruling R14).
             event = NoteEvent{header->time, NoteEventType::AllOff, channel, -1};
             return true;
         }

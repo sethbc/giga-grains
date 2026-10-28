@@ -597,7 +597,32 @@ TEST_CASE("plugin process takes more notes than its note array holds", "[plugin]
     float *inputs[2] = {inLeft.data(), inRight.data()};
     float *outputs[2] = {outLeft.data(), outRight.data()};
     gg::test::InputEvents none;
-    std::array<clap_process_status, 2> status{};
+    // Then key 80, held only by notes past the array (1280..1295), released channel by channel:
+    // CLAP and MIDI note-offs in turn.
+    std::vector<clap_event_note> clapOffs;
+    std::vector<clap_event_midi> midiOffs;
+    gg::test::InputEvents offs80;
+    for (int16_t channel = 0; channel < 16; ++channel)
+    {
+        if (channel % 2 == 0)
+        {
+            clapOffs.push_back(gg::test::noteEvent(CLAP_EVENT_NOTE_OFF, channel, 80));
+        }
+        else
+        {
+            midiOffs.push_back(gg::test::midiEvent(static_cast<uint8_t>(0x80 | channel), 80, 0));
+        }
+    }
+    for (const auto &e : clapOffs)
+    {
+        offs80.add(&e.header);
+    }
+    for (const auto &e : midiOffs)
+    {
+        offs80.add(&e.header);
+    }
+    std::array<clap_process_status, 3> status{};
+    std::size_t heldAfterStorm = 0;
 
     AllocTripwire::resetCount();
     {
@@ -605,12 +630,85 @@ TEST_CASE("plugin process takes more notes than its note array holds", "[plugin]
         status[0] = plugin.process(512, isFx ? inputs : nullptr, outputs, events.list());
         // The notes beyond the array wait for the next boundary: sample 512.
         status[1] = plugin.process(32, isFx ? inputs : nullptr, outputs, none.list());
+        heldAfterStorm = plugin.impl().processor()->heldKeys().size();
+        status[2] = plugin.process(32, isFx ? inputs : nullptr, outputs, offs80.list());
     }
     const uint64_t allocations = AllocTripwire::count();
 
-    CHECK(status[0] == CLAP_PROCESS_CONTINUE);
-    CHECK(status[1] == CLAP_PROCESS_CONTINUE);
+    for (const auto s : status)
+    {
+        CHECK(s == CLAP_PROCESS_CONTINUE);
+    }
+    CHECK(heldAfterStorm == expected.size());
+    expected.erase(expected.begin() + 80);
     CHECK(heldKeys(plugin) == expected);
     CHECK(plugin.impl().noteOnCount.load() == kNotes - 1);
+    REQUIRE_NO_ALLOCATIONS(allocations);
+}
+
+TEST_CASE("plugin note ids stay bounded and do not allocate", "[plugin][rt]")
+{
+    // Ruling R15: the plugin remembers at most kMaxNoteIds (256) CLAP note IDs, replacing the
+    // oldest. 258 note-ons with IDs 0..257: ID 0 holds (channel 0, key 0), ID i > 0 holds
+    // (channel 1, key 1 + i % 127), so keys 0..127 are held. ID 256 replaces ID 0 and ID 257
+    // replaces ID 1, the oldest left. A note-off by ID 256 releases its key (3) alone; one by
+    // ID 1, replaced, is unknown, so it releases everything.
+    const char *id = GENERATE(kInstrumentId, kFxId);
+    CAPTURE(id);
+    gg::test::PluginUnderTest plugin(id);
+    REQUIRE(plugin.valid());
+    REQUIRE(plugin.activate(48000.0, 512));
+    REQUIRE(gg::plugin::GigaGrainsPlugin::kMaxNoteIds == 256);
+
+    std::vector<clap_event_note> ons;
+    for (int32_t i = 0; i <= 257; ++i)
+    {
+        const auto channel = static_cast<int16_t>(i == 0 ? 0 : 1);
+        const auto key = static_cast<int16_t>(i == 0 ? 0 : 1 + i % 127);
+        ons.push_back(gg::test::noteEvent(CLAP_EVENT_NOTE_ON, channel, key));
+        ons.back().note_id = i;
+    }
+    gg::test::InputEvents first256;
+    for (std::size_t i = 0; i <= 256; ++i)
+    {
+        first256.add(&ons[i].header);
+    }
+    gg::test::InputEvents on257;
+    on257.add(&ons[257].header);
+    auto offById256 = gg::test::noteEvent(CLAP_EVENT_NOTE_OFF, -1, -1);
+    offById256.note_id = 256;
+    auto offById1 = gg::test::noteEvent(CLAP_EVENT_NOTE_OFF, -1, -1);
+    offById1.note_id = 1;
+    gg::test::InputEvents off256;
+    off256.add(&offById256.header);
+    gg::test::InputEvents off1;
+    off1.add(&offById1.header);
+
+    std::array<std::size_t, 4> held{};
+    bool key3Held = true;
+    bool allContinue = true;
+    AllocTripwire::resetCount();
+    {
+        AllocTripwire::Scope armed;
+        const auto call = [&](const gg::test::InputEvents &events) {
+            allContinue = allContinue && plugin.process(64, nullptr, nullptr, events.list()) ==
+                                             CLAP_PROCESS_CONTINUE;
+            return plugin.impl().processor()->heldKeys().size();
+        };
+        held[0] = call(first256);
+        held[1] = call(on257);
+        held[2] = call(off256);
+        const auto keys = plugin.impl().processor()->heldKeys();
+        key3Held = std::find(keys.begin(), keys.end(), uint8_t{3}) != keys.end();
+        held[3] = call(off1);
+    }
+    const uint64_t allocations = AllocTripwire::count();
+
+    CHECK(allContinue);
+    CHECK(held[0] == 128);
+    CHECK(held[1] == 128);
+    CHECK(held[2] == 127); // ID 256 still remembered: 0 if ID 257 had replaced it
+    CHECK_FALSE(key3Held);
+    CHECK(held[3] == 0); // a remembered ID 1 would have left 126
     REQUIRE_NO_ALLOCATIONS(allocations);
 }

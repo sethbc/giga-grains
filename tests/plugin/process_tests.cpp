@@ -526,7 +526,8 @@ TEST_CASE("midi notes play the instrument's sample and release it", "[plugin]")
 {
     // Spec §6.2, D1: the instrument is silent until a note, plays its source while one is held,
     // and releases within Size (150 ms by default) + 20 ms once none is. MIDI dialect: a
-    // note-on with velocity 0 is a note-off, and CC 123 (all notes off) releases every channel.
+    // note-on with velocity 0 is a note-off, and CC 123 (all notes off) releases its own channel's
+    // notes alone (ruling R14).
     constexpr uint32_t kBlock = 512;
     constexpr std::size_t kRelease = 8160; // Size + 20 ms at 48 kHz
     gg::test::PluginUnderTest instrument(kInstrumentId);
@@ -538,7 +539,8 @@ TEST_CASE("midi notes play the instrument's sample and release it", "[plugin]")
     const auto off60 = gg::test::midiEvent(0x90, 60, 0, 0);
     const auto on64 = gg::test::midiEvent(0x90, 64, 100, 0);
     const auto on67Channel3 = gg::test::midiEvent(0x93, 67, 100, 0);
-    const auto allOff = gg::test::midiEvent(0xB0, 123, 0, 0);
+    const auto allOffChannel0 = gg::test::midiEvent(0xB0, 123, 0, 0);
+    const auto allOffChannel3 = gg::test::midiEvent(0xB3, 123, 0, 0);
 
     // Renders kBlocks blocks into out, `first` the first block's events.
     constexpr std::size_t kBlocks = 40; // about 0.43 s
@@ -580,9 +582,74 @@ TEST_CASE("midi notes play the instrument's sample and release it", "[plugin]")
     CHECK(heldKeys(instrument) == std::vector<int>{64, 67});
     CHECK(peakIn(out, kLength / 2, kLength) > 0.05f);
 
-    run({&allOff.header});
+    // CC 123 on channel 0 releases 64 alone: 67, on channel 3, still sounds.
+    run({&allOffChannel0.header});
+    CHECK(heldKeys(instrument) == std::vector<int>{67});
+    CHECK(peakIn(out, kLength / 2, kLength) > 0.05f);
+
+    run({&allOffChannel3.header});
     CHECK(heldKeys(instrument).empty());
     CHECK(peakIn(out, kRelease, kLength) == 0.0f);
+}
+
+TEST_CASE("a clap note-off by note id releases that note alone", "[plugin]")
+{
+    // Ruling R15: CLAP lets a note-off or choke with channel and key −1 address one voice by its
+    // note_id. A known ID releases that note alone; an unknown one releases everything, which is
+    // safer than a stuck note. Both products.
+    const char *id = GENERATE(kInstrumentId, kFxId);
+    CAPTURE(id);
+    gg::test::PluginUnderTest plugin(id);
+    REQUIRE(plugin.valid());
+    REQUIRE(plugin.activate(48000.0, 512));
+
+    // A note event with an ID: on (channel, key), or off and choke with wildcards.
+    const auto withId = [](uint16_t type, int16_t channel, int16_t key, int32_t noteId) {
+        auto e = gg::test::noteEvent(type, channel, key);
+        e.note_id = noteId;
+        return e;
+    };
+    const auto call = [&](std::initializer_list<const clap_event_header *> notes) {
+        gg::test::InputEvents events;
+        for (const auto *e : notes)
+        {
+            events.add(e);
+        }
+        REQUIRE(plugin.process(64, nullptr, nullptr, events.list()) == CLAP_PROCESS_CONTINUE);
+        return heldKeys(plugin);
+    };
+    const auto on60 = withId(CLAP_EVENT_NOTE_ON, 0, 60, 100);
+    const auto on64 = withId(CLAP_EVENT_NOTE_ON, 1, 64, 101);
+    const auto on67 = withId(CLAP_EVENT_NOTE_ON, 0, 67, 102);
+    const auto offById64 = withId(CLAP_EVENT_NOTE_OFF, -1, -1, 101);
+    const auto chokeById60 = withId(CLAP_EVENT_NOTE_CHOKE, -1, -1, 100);
+    const auto offById64Again = withId(CLAP_EVENT_NOTE_OFF, -1, -1, 101); // forgotten by now
+    const auto offWithKey = withId(CLAP_EVENT_NOTE_OFF, 0, 67, 102);
+    const auto offUnknownId = withId(CLAP_EVENT_NOTE_OFF, -1, -1, 999);
+    const auto offAnyKeyChannel0 = withId(CLAP_EVENT_NOTE_OFF, 0, -1, 100);
+
+    CHECK(call({&on60.header, &on64.header, &on67.header}) == std::vector<int>{60, 64, 67});
+    CHECK(call({&offById64.header}) == std::vector<int>{60, 67});
+    CHECK(call({&chokeById60.header}) == std::vector<int>{67});
+    // Fields given explicitly keep their meaning; the ID is forgotten.
+    CHECK(call({&offWithKey.header}) == std::vector<int>{});
+
+    // An unknown ID, or one already released, releases the whole chord.
+    CHECK(call({&on60.header, &on64.header, &on67.header}) == std::vector<int>{60, 64, 67});
+    CHECK(call({&offUnknownId.header}) == std::vector<int>{});
+    CHECK(call({&on60.header, &on64.header, &on67.header}) == std::vector<int>{60, 64, 67});
+    CHECK(call({&offById64.header}) == std::vector<int>{60, 67});
+    CHECK(call({&offById64Again.header}) == std::vector<int>{});
+
+    // Any other wildcard keeps its meaning, ID or not: channel 0, any key.
+    CHECK(call({&on60.header, &on64.header, &on67.header}) == std::vector<int>{60, 64, 67});
+    CHECK(call({&offAnyKeyChannel0.header}) == std::vector<int>{64});
+
+    // reset() releases every note and forgets every ID: ID 101 (key 64 on channel 1) is unknown
+    // after it, so its note-off releases everything, key 60 included.
+    plugin.clap()->reset(plugin.clap());
+    CHECK(call({&on60.header}) == std::vector<int>{60});
+    CHECK(call({&offById64.header}) == std::vector<int>{});
 }
 
 TEST_CASE("notes render the same at any host block size", "[plugin][determinism]")

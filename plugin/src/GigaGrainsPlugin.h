@@ -7,6 +7,7 @@
 
 #include <array>
 #include <atomic>
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -91,6 +92,7 @@ class GigaGrainsPlugin : public plugHelper_t
     /// thread, while the plugin is inactive.
     void setSourceForTest(std::shared_ptr<const gg::PreparedSource> source)
     {
+        assert(processor_ == nullptr);
         testSource_ = std::move(source);
     }
 
@@ -100,8 +102,13 @@ class GigaGrainsPlugin : public plugHelper_t
     /// event span). Events beyond it apply at the block's end (applyBetweenBlocks).
     static constexpr std::size_t kMaxParamEvents = 4096;
     /// The most note events one process() call hands to the Processor in one go (its note span).
-    /// Notes beyond it apply at the block's end, at the next grid boundary (applyBetweenBlocks).
+    /// Notes beyond it apply at the block's end, at the next grid boundary (applyBetweenBlocks):
+    /// they move to that boundary from their own, so past this cap the output is no longer block-
+    /// size invariant.
     static constexpr std::size_t kMaxNoteEvents = 1024;
+    /// The CLAP note IDs remembered for note-offs addressed by ID alone (ruling R15). When the
+    /// table is full, a new ID replaces the oldest.
+    static constexpr std::size_t kMaxNoteIds = 256;
 
   protected:
     bool activate(double sampleRate, uint32_t minFrameCount,
@@ -160,12 +167,21 @@ class GigaGrainsPlugin : public plugHelper_t
     /// parameter or a NaN value.
     static bool toParamEvent(const clap_event_header *header,
                              gg::core::ParamEvent &event) noexcept SST_CPPUTILS_NONBLOCKING;
+    /// Whether `header` is an event toNoteEvent may convert: a CLAP note-on, note-off or note
+    /// choke, or a MIDI event. Stateless.
+    static bool isNoteEvent(const clap_event_header *header) noexcept SST_CPPUTILS_NONBLOCKING;
     /// The note event `header` as a NoteEvent (spec §6.1): CLAP's note-on, note-off and note
-    /// choke, MIDI's note-on, note-off and CC 123 (all notes off). False for any other event.
-    /// Velocity and the port are ignored; out-of-range channels and keys pass through, for the
-    /// Processor to drop.
-    static bool toNoteEvent(const clap_event_header *header,
-                            gg::core::NoteEvent &event) noexcept SST_CPPUTILS_NONBLOCKING;
+    /// choke, MIDI's note-on, note-off and CC 123 (all notes off on its channel, ruling R14).
+    /// False for any other event. Velocity and the port are ignored; out-of-range channels and
+    /// keys pass through, for the Processor to drop.
+    ///
+    /// CLAP note IDs (ruling R15): a note-on with an ID ≥ 0 and an in-range channel and key is
+    /// remembered in noteIds_. A note-off or choke with an ID ≥ 0 forgets it, and if its channel
+    /// and key are both −1 releases the ID's (channel, key) alone; an unknown ID keeps the
+    /// wildcards, which release everything. So call it once per event, in the host's order.
+    /// Audio thread.
+    bool toNoteEvent(const clap_event_header *header,
+                     gg::core::NoteEvent &event) noexcept SST_CPPUTILS_NONBLOCKING;
     /// Applies the parameter and note events of `in` from index `first` between two process()
     /// calls: values at once with setBase, modulation and notes at the next control-grid
     /// boundary. Needs the processor; audio thread.
@@ -200,6 +216,17 @@ class GigaGrainsPlugin : public plugHelper_t
     // The parameter and note events of one process() call. Audio thread.
     std::array<gg::core::ParamEvent, kMaxParamEvents> events_{};
     std::array<gg::core::NoteEvent, kMaxNoteEvents> notes_{};
+    // The CLAP note IDs of the notes held (toNoteEvent). A free slot has id −1; age orders the
+    // slots, the oldest replaced first. Audio thread; activate() and reset() clear it.
+    struct NoteIdSlot
+    {
+        int32_t id{-1};
+        int16_t channel{0};
+        int16_t key{0};
+        uint64_t age{0};
+    };
+    std::array<NoteIdSlot, kMaxNoteIds> noteIds_{};
+    uint64_t noteIdAge_{0};
 };
 
 /// Creates a plugin instance of `product` for the factory: a GigaGrainsPlugin in a headless
