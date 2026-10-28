@@ -788,7 +788,9 @@ TEST_CASE("audio ports declare the main ports and their in-place pairs", "[plugi
             CHECK(std::string_view(info.port_type) == CLAP_PORT_STEREO);
         }
         CHECK(std::string_view(info.name) == expectedName);
-        // Only index 0 exists.
+        // Only index 0 exists. In Debug, clap-helpers' Maximal checking reports this deliberate
+        // out-of-range query on stderr ("Host called clap_plugin_audio_ports.info() with an
+        // index out of bounds"): that line is expected.
         CHECK_FALSE(ports->get(plugin.clap(), 1, isInput, &info));
     };
     if (isFx)
@@ -799,6 +801,8 @@ TEST_CASE("audio ports declare the main ports and their in-place pairs", "[plugi
     else
     {
         check(false, 0, CLAP_INVALID_ID, "Main Out");
+        // The instrument has no input: another deliberate out-of-range query, and the same
+        // expected stderr line in Debug.
         clap_audio_port_info info{};
         CHECK_FALSE(ports->get(plugin.clap(), 0, true, &info));
     }

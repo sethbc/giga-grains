@@ -203,6 +203,11 @@ runs the tests labelled either. The labels are:
   - `identity_*`: the frozen identities (INTENT §18), read back from the bundles: both
     standalone bundle IDs, the AU's three components and the VST3 class IDs. Run them before
     accepting any clap-wrapper update.
+  - `gg-au-state-tests` (labels `plugin` and `au`): loads the built `.component` into its own
+    process (registered with `AudioComponentRegister`; nothing is installed) and checks that
+    ClassInfo carries the CLAP state (GGST) and round-trips it for all three AU identities. It
+    also pins clap-wrapper's known AU state faults (T7 223). Run it (`ctest --preset dev -L au`)
+    before accepting any clap-wrapper update too.
 
 **Tests run in parallel.** Every test preset runs 8 tests at a time (`"jobs"` in the hidden
 `base` test preset); `-j N` on the command line overrides it, and `-j 1` runs them serially.
