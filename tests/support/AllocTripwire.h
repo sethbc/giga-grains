@@ -47,4 +47,16 @@ struct AllocTripwire
 };
 } // namespace gg::test
 
+/// Requires that `count`, an AllocTripwire::count() read after the Scope ended, is 0, in a build
+/// that counts allocations (AllocTripwire::available()); elsewhere it checks nothing. A macro, so
+/// Catch2 reports the caller's line. Needs <catch2/catch_test_macros.hpp>.
+#define REQUIRE_NO_ALLOCATIONS(count)                                                              \
+    do                                                                                             \
+    {                                                                                              \
+        if (::gg::test::AllocTripwire::available())                                                \
+        {                                                                                          \
+            REQUIRE((count) == 0);                                                                 \
+        }                                                                                          \
+    } while (false)
+
 #endif // GG_TESTS_SUPPORT_ALLOCTRIPWIRE_H

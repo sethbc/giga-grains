@@ -43,6 +43,23 @@ int64_t gridCeil(int64_t a) noexcept
 }
 
 float finiteOrZero(float x) noexcept { return std::isfinite(x) ? x : 0.0f; }
+
+/// Whether a note event's fields are in range (NoteEvent): On needs a channel 0..15 and a key
+/// 0..127, Off also takes −1 for either, AllOff ignores both.
+bool validNote(const NoteEvent &n) noexcept
+{
+    const auto inRange = [](int16_t v, int16_t lo, int16_t hi) { return v >= lo && v <= hi; };
+    switch (n.type)
+    {
+    case NoteEventType::On:
+        return inRange(n.channel, 0, 15) && inRange(n.key, 0, 127);
+    case NoteEventType::Off:
+        return inRange(n.channel, -1, 15) && inRange(n.key, -1, 127);
+    case NoteEventType::AllOff:
+        return true;
+    }
+    return false;
+}
 } // namespace
 
 float Processor::Ramp::at(int64_t t, int64_t length) const noexcept
@@ -94,6 +111,10 @@ Processor::Processor(const ProcessorConfig &config)
     if (config_.mode == Mode::Fx)
     {
         engine_.setSourceMode(SourceMode::Live);
+    }
+    else
+    {
+        engine_.setNoteGate(true); // silent until a note (spec §6.2)
     }
     updateEffective();
     const WetParams w = toWetParams(effective_);
@@ -162,7 +183,55 @@ void Processor::commitPending() noexcept
     }
     hasPendingBase_.fill(false);
     hasPendingMod_.fill(false);
+    if (hasPendingNotes_)
+    {
+        hasPendingNotes_ = false;
+        updateKeys();
+    }
     hasPending_ = false;
+}
+
+void Processor::applyNote(const NoteEvent &n) noexcept
+{
+    switch (n.type)
+    {
+    case NoteEventType::On:
+        held_[static_cast<size_t>(n.key)] |= static_cast<uint16_t>(1u << n.channel);
+        break;
+    case NoteEventType::Off:
+    {
+        // The channel bits to keep: none for any channel, all but its own otherwise.
+        const auto keep = static_cast<uint16_t>(n.channel < 0 ? 0u : ~(1u << n.channel));
+        if (n.key < 0)
+        {
+            for (uint16_t &channels : held_)
+            {
+                channels &= keep;
+            }
+        }
+        else
+        {
+            held_[static_cast<size_t>(n.key)] &= keep;
+        }
+        break;
+    }
+    case NoteEventType::AllOff:
+        held_.fill(0);
+        break;
+    }
+}
+
+void Processor::updateKeys() noexcept
+{
+    keyCount_ = 0;
+    for (size_t k = 0; k < held_.size(); ++k)
+    {
+        if (held_[k] != 0)
+        {
+            keys_[keyCount_++] = static_cast<uint8_t>(k);
+        }
+    }
+    engine_.setHeldKeys(heldKeys());
 }
 
 void Processor::updateEffective() noexcept
@@ -183,13 +252,18 @@ void Processor::syncFreeze() noexcept
     {
         freezeArmed_ = true; // off seen: the next on engages
     }
-    engine_.setFreeze(on && freezeArmed_);
+    // Spec §6.3: in the FX a held key freezes too, with no arming, and never arms the parameter.
+    const bool noteHeld = config_.mode == Mode::Fx && keyCount_ > 0;
+    engine_.setFreeze((on && freezeArmed_) || noteHeld);
 }
 
 void Processor::reset() noexcept
 {
     engine_.reset();
     commitPending();
+    // Every note released (spec §6.1), and the engine told: Engine::reset keeps its keys.
+    held_.fill(0);
+    updateKeys();
     updateEffective();
     // A fresh ring: Freeze waits for an off→on transition, as after construction.
     freezeArmed_ = false;
@@ -199,6 +273,17 @@ void Processor::reset() noexcept
     level_.jump(w.levelGain);
 }
 
+void Processor::setSourceNow(std::shared_ptr<const PreparedSource> s)
+{
+    engine_.setPreparedSource(std::move(s));
+    // The engine hands back, through takeRetiredSource, the adopted sources this replaced, and
+    // one left waiting would hold up the next adoption. The Processor adopts none yet, so there
+    // are none to return; once it does, they go back to their owner here rather than being dropped.
+    while (engine_.takeRetiredSource() != nullptr)
+    {
+    }
+}
+
 void Processor::setEventSink(GrainEventSink sink, void *ctx) noexcept
 {
     engine_.setEventSink(sink, ctx);
@@ -206,7 +291,8 @@ void Processor::setEventSink(GrainEventSink sink, void *ctx) noexcept
 
 void Processor::process(const float *const *in, uint32_t numInChannels, float *const *out,
                         uint32_t numOutChannels, uint32_t numFrames,
-                        std::span<const ParamEvent> events) noexcept
+                        std::span<const ParamEvent> events,
+                        std::span<const NoteEvent> notes) noexcept
 {
     // One guard for the whole call, the dry/wet sum included (spec §6.4).
     ScopedDenormalsOff denormalsOff;
@@ -240,15 +326,10 @@ void Processor::process(const float *const *in, uint32_t numInChannels, float *c
         level_.retarget(w.levelGain, rendered, rampSamples_);
     };
 
-    for (const ParamEvent &e : events)
-    {
-        const auto s = static_cast<size_t>(e.slot);
-        const auto value = static_cast<float>(e.value);
-        if (s >= kParamCount || std::isnan(value))
-        {
-            continue;
-        }
-        const int64_t a = start + std::min<int64_t>(e.offset, numFrames);
+    // Puts an event at `offset` into its boundary's group, applying the pending group first if
+    // the boundary is a later one.
+    const auto join = [&](uint32_t offset) {
+        const int64_t a = start + std::min<int64_t>(offset, numFrames);
         // max: an out-of-order event can't land before what is already rendered. rendered is
         // either the call's start, which a is at or after, or a boundary.
         const int64_t b = std::max(gridCeil(a), rendered);
@@ -263,15 +344,47 @@ void Processor::process(const float *const *in, uint32_t numInChannels, float *c
             pendingAt_ = b;
             hasPending_ = true;
         }
-        if (e.isModulation)
+    };
+
+    // The two spans merged by offset into one sequence, a parameter event first at a tie. The
+    // order between the kinds doesn't matter: a group's parameter changes and notes are
+    // independent, and each kind keeps its own order.
+    size_t nextEvent = 0;
+    size_t nextNote = 0;
+    while (nextEvent < events.size() || nextNote < notes.size())
+    {
+        if (nextNote == notes.size() ||
+            (nextEvent < events.size() && events[nextEvent].offset <= notes[nextNote].offset))
         {
-            pendingMod_[s] = value;
-            hasPendingMod_[s] = true;
+            const ParamEvent &e = events[nextEvent++];
+            const auto s = static_cast<size_t>(e.slot);
+            const auto value = static_cast<float>(e.value);
+            if (s >= kParamCount || std::isnan(value))
+            {
+                continue;
+            }
+            join(e.offset);
+            if (e.isModulation)
+            {
+                pendingMod_[s] = value;
+                hasPendingMod_[s] = true;
+            }
+            else
+            {
+                pendingBase_[s] = clampToRange(s, value);
+                hasPendingBase_[s] = true;
+            }
         }
         else
         {
-            pendingBase_[s] = clampToRange(s, value);
-            hasPendingBase_[s] = true;
+            const NoteEvent &n = notes[nextNote++];
+            if (!validNote(n))
+            {
+                continue;
+            }
+            join(n.offset);
+            applyNote(n);
+            hasPendingNotes_ = true;
         }
     }
     // A boundary at end carries over, like one past it: the next call's events at offset 0

@@ -7,6 +7,7 @@
 
 add_executable(gg-tests
         smoke_tests.cpp
+        core/note_tests.cpp
         core/parammap_tests.cpp
         core/patch_tests.cpp
         core/processor_tests.cpp

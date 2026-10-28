@@ -109,6 +109,10 @@ class Engine
     /// planar channels alone: the same output bits, only slower.
     void setSource(std::shared_ptr<const SampleBuffer> source);
 
+    /// setSource's adoption, for a source already prepared: not real-time safe, the same
+    /// contract, and the engine owns `source` in the same way. Never throws.
+    void setPreparedSource(std::shared_ptr<const PreparedSource> source) noexcept;
+
     /// Real-time safe, but not synchronized with process(): call it on the audio thread between
     /// process() calls, or while process() is not running (spec §6.4). Grains from the next
     /// onset on read `source` (nullptr: no source, so none spawn in Sample mode); the grains

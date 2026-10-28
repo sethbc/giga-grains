@@ -77,8 +77,12 @@ Engine::SourceSlot Engine::slotFor(const PreparedSource *source) noexcept
 
 void Engine::setSource(std::shared_ptr<const SampleBuffer> source)
 {
-    // Everything that can throw comes first, so a throw changes nothing.
-    std::shared_ptr<const PreparedSource> prepared = PreparedSource::make(std::move(source));
+    // make() is all that can throw, so a throw changes nothing.
+    setPreparedSource(PreparedSource::make(std::move(source)));
+}
+
+void Engine::setPreparedSource(std::shared_ptr<const PreparedSource> prepared) noexcept
+{
     // The sources this replaces: adopted ones go back to their owner, oldest first. At most two,
     // and adoptSource made sure at most one was already waiting.
     for (const SourceSlot *slot : {&previousSlot(), &currentSlot()})
