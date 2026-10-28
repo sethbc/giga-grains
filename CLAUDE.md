@@ -177,6 +177,8 @@ runs the tests labelled either. The labels are:
 - engine: `engine`, `cloud` (the Cloud scheduler), `live` (the live ring), `pool`, `source`,
   `rng`, `math`, `interp`, `window`, `denormal`;
 - `core`: `gg-core`'s patch and its state, the parameter mapping and the `Processor`;
+- `kernel`: the renderers' scalar references and the 4-wide SIMD sample and live kernels, which
+  must match them bit for bit (`std::memcmp`);
 - `determinism`: block-size invariance;
 - `rt`: the allocation tripwire. In the `rtsan` build, two tests labelled both `rt` and `rtsan`
   check that RTSan is active: one checks the build flag, and `rtsan_negative_control` passes
@@ -225,7 +227,9 @@ gg-render <spec.json> [-o out.wav] [--metrics out.json] [--events out.jsonl]
   - **Sample mode** (`"mode": "sample"`, the default) drives the engine's Cloud stream over a
     `source` (`sine`, `sweep`, `noise` or `file`) with a `stream` (`grainRateHz`,
     `grainDurationMs`, `position`, `positionJitter`, `pitchSemitones`, `gain`, and optional
-    `distribution`), plus a release tail. The four M0 cases use it.
+    `distribution` and `quality`), plus a release tail. `quality` is the grains' interpolation
+    tier, `"normal"` (Hermite, the default) or `"eco"` (linear). The four M0 cases and
+    `dense-noise-eco` use sample mode.
   - **FX mode** (`"mode": "fx"`) runs Giga Grains FX's `gg-core` `Processor`, the one the plugin
     runs, over an `input`: a built-in `sine`, `sweep` or `noise` (no files; a WAV-file input
     waits for sub-project 3's file loader, ruling M1-aa). The top-level `channels` key (1 or 2)
@@ -259,17 +263,61 @@ gg-render <spec.json> [-o out.wav] [--metrics out.json] [--events out.jsonl]
 
 ```sh
 cmake --build --preset release --target gg-bench
-build/release/tools/gg-bench/gg-bench [--quick] [--json out.json]            # grain kernels (§16)
-build/release/tools/gg-bench/gg-bench --canvas [--quick] [--json out.json]   # canvas renderer
+b=build/release/tools/gg-bench/gg-bench
+$b [--quick | --seconds S] [--rounds N] [--grains N] [--cases a,b] [--commit SHA] \
+   [--json out.json] [--baseline baseline.json]                  # grain kernels and engine (§16)
+$b --make-baseline <preset> out.json a.json b.json c.json        # write a CI leg's baseline
+$b --canvas [--quick] [--json out.json]                           # canvas renderer
 ```
 
-- **Run lengths:**
-  - kernels: a full run is a median of 5 runs of 2 s each, about 2.6 minutes on an M5 Max;
-    `--quick` uses runs of 0.2 s;
-  - `--canvas`: 240 timed frames after a 20-frame warm-up, or 30 with `--quick`.
-- **In CI:** each build leg runs the full length and uploads `gg-bench-<preset>`. In M0 the
-  results are reported, not gated. M1 starts a regression gate at the measured baseline, and the
-  §16 headline becomes the gate once M1 meets it (INTENT §16, §19).
+- **The cases** (each at blocks 32, 64 and 256; by default 2,000 grains of 100 ms over a 60 s
+  stereo noise source at 48 kHz):
+  - **the engine cases,** through `Engine::process`, scheduler and pan included:
+    - `engine-sample` is **X**, the §16 headline's case: Normal grains reading a stereo sample
+      buffer in RAM (INTENT §23 #44);
+    - `engine-sample-eco`: the same at the Eco tier (linear interpolation);
+    - `engine-live`: the same stream over a 16 s live ring, the FX's figure, published beside X;
+    - `engine-full-pool`: admission when the pool is saturated (1 s grains ask for 10× its
+      capacity);
+  - `reference`: M0's 4-wide Hermite kernel, frozen (`renderHermiteSimd` in
+    `tools/gg-bench/Kernels.h`). It is the CPU gate's yardstick;
+  - M0's prototype kernels: `linear-scalar`, `hermite-scalar`, `sinc-scalar`, `linear-simd`
+    and `hermite-simd`.
+- **Timing.** Every configuration warms up once. Then each of 5 rounds (`--rounds`) times every
+  configuration once, for at least 2 s (`--seconds`; `--quick` is 0.2 s), in an order rotated by
+  the round and reversed in odd rounds. Each result is the median, min and IQR over the rounds.
+  The JSON (`--json`) keeps every run, the run length, the round count and `--commit`.
+- **The ratio.** Each engine case's ns per grain-sample over `reference`'s in the same round,
+  then the median and IQR over the rounds. Because the two run side by side in one process, the
+  ratio cancels the machine's speed (though not its microarchitecture). `--cases` must include
+  `reference` for any ratio to be printed.
+- **Other options:** `--grains N` changes the grain count; `--cases a,b` runs only those cases
+  (the default is all; `--help` lists them).
+- **Run length:** the full default run is 30 configurations × 5 rounds × 2 s, about 5 minutes of
+  timing; a CI leg's benchmark step takes about 6 minutes. `--canvas` times 240 frames after a
+  20-frame warm-up, or 30 with `--quick`.
+- **Exit status:** 0 when done and no ratio regressed, 1 for an error (an unreadable or malformed
+  baseline, say), 2 for bad usage, 3 when `--baseline` finds a regressed ratio.
+- **In CI:** each build leg runs the full length with `--commit` and, when
+  `tools/gg-bench/baselines/<preset>.json` exists, `--baseline`. It prints the output, and a
+  verdict per ratio, in the step summary and uploads `gg-bench-<preset>` (`gg-bench.json` and
+  `gg-bench.txt`).
+  - **The gate is report-only through M1** (INTENT §19, §23 #44): exit 3 becomes a
+    `::warning` and the step exits 0. A crash, exit 1 or 2, or the timeout still fails the job.
+    The `bench_baseline_regressed` test pins exit 3.
+  - Sub-project 6 makes the gate blocking, with the published X.
+- **Refreshing a baseline** (`tools/gg-bench/baselines/README.md` has the format):
+  1. Run the CI workflow three separate times on the same commit
+     (`gh workflow run ci.yml --ref <branch>`). One run's IQR says nothing about the next run's
+     drift, which reached ~20% on Windows (INTENT §23 #47).
+  2. Download each run's artifact: `gh run download <id> --pattern 'gg-bench-<preset>'`.
+  3. Run `gg-bench --make-baseline <preset> tools/gg-bench/baselines/<preset>.json a.json b.json
+     c.json`. It must be the last option, since it takes the rest of the command line. Each
+     ratio is the runs' median, with a tolerance of `max(0.05, 2 × (max − min) / median)`.
+  4. Commit the file. The next CI run should show every verdict `pass`.
+
+  A baseline is valid only against the frozen `reference` kernel: if that kernel, or anything it
+  calls, changes, make every baseline again.
 
 **Validators.** CI runs them on every build leg; auval runs on macOS only.
 
