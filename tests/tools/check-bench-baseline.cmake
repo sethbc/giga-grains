@@ -11,11 +11,15 @@
 # RUN_JSON, a run of the same gg-bench on this host. The entry gives engine-sample a ratio of
 # RATIO, with tolerance 0.10, at blocks 32, 64 and 256. The script then runs a tiny gg-bench of
 # reference and engine-sample against that baseline. It fails unless the exit code is exactly
-# EXPECTED_CODE and stdout has the line EXPECTED_VERDICT, in which @MACHINE@ stands for the run's
+# EXPECTED_CODE and stdout has the line EXPECTED_VERDICT, in which <machine> stands for the run's
 # machine.
 #
 # CI's bench step relies on the exit code. 3 (a ratio regressed) becomes a warning; 0 is a pass,
 # or no verdict for a CPU model the baseline doesn't have; anything else fails the job.
+
+# First, so that `cmake -P` runs under the project's policies. Without it CMake 3.x leaves
+# CMP0053 unset, and its old rules expand an @VAR@-shaped string as a variable.
+cmake_minimum_required(VERSION 3.22)
 
 foreach (var IN ITEMS BENCH RUN_JSON BASELINE RATIO EXPECTED_CODE EXPECTED_VERDICT)
     if (NOT DEFINED ${var})
@@ -51,7 +55,7 @@ if (NOT code STREQUAL "${EXPECTED_CODE}")
     message(FATAL_ERROR "gg-bench exited with ${code}, not ${EXPECTED_CODE}\n"
             "stdout:\n${out}\nstderr:\n${err}")
 endif ()
-string(REPLACE "@MACHINE@" "${run_machine}" verdict "${EXPECTED_VERDICT}")
+string(REPLACE "<machine>" "${run_machine}" verdict "${EXPECTED_VERDICT}")
 string(FIND "${out}" "\n${verdict}\n" at)
 if (at EQUAL -1)
     message(FATAL_ERROR "gg-bench printed no line \"${verdict}\"\nstdout:\n${out}")

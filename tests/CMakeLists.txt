@@ -124,7 +124,7 @@ set(bench_baseline_pass_args -DRATIO=1e9 -DEXPECTED_CODE=0
 set(bench_baseline_regressed_args -DRATIO=1e-9 -DEXPECTED_CODE=3
         "-DEXPECTED_VERDICT=verdict: 3 of 3 ${verdict_line}")
 set(bench_baseline_other_machine_args -DRATIO=1e-9 "-DMACHINE=no such CPU (test)"
-        -DEXPECTED_CODE=0 "-DEXPECTED_VERDICT=no baseline for @MACHINE@$<SEMICOLON> no verdict")
+        -DEXPECTED_CODE=0 "-DEXPECTED_VERDICT=no baseline for <machine>$<SEMICOLON> no verdict")
 foreach (test IN ITEMS bench_baseline_pass bench_baseline_regressed bench_baseline_other_machine)
     add_test(NAME ${test}
             COMMAND ${CMAKE_COMMAND} -DBENCH=$<TARGET_FILE:gg-bench>
