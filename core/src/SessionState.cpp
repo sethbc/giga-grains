@@ -14,6 +14,7 @@
 #include <system_error>
 #include <utility>
 
+#include "XmlText.h"
 #include "gg/core/PatchState.h"
 #include "tinyxml/tinyxml.h"
 
@@ -88,27 +89,6 @@ std::string bitsToHex(double v)
     {
         out[static_cast<std::size_t>(i)] = kDigits[u & 0xfu];
         u >>= 4;
-    }
-    return out;
-}
-
-// tinyxml writes `&#x` through unescaped, as a character reference it was given, and so reads
-// it back as the character: a path holding the text "&#x41;" would come back as "A". Writing
-// every `&` as a reference of its own brings any text back unchanged.
-std::string escapeAmpersands(const std::string &s)
-{
-    std::string out;
-    out.reserve(s.size());
-    for (const char c : s)
-    {
-        if (c == '&')
-        {
-            out += "&#x26;";
-        }
-        else
-        {
-            out += c;
-        }
     }
     return out;
 }

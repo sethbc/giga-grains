@@ -12,6 +12,7 @@ add_executable(gg-tests
         core/patch_tests.cpp
         core/processor_tests.cpp
         core/session_state_tests.cpp
+        core/settings_tests.cpp
         engine/cloud_tests.cpp
         engine/denormal_tests.cpp
         engine/determinism_tests.cpp
@@ -30,6 +31,8 @@ add_executable(gg-tests
         engine/window_tests.cpp
         media/convert_tests.cpp
         media/decode_tests.cpp
+        media/sample_tests.cpp
+        media/search_tests.cpp
         media/sha256_tests.cpp
         metrics/metrics_tests.cpp
         tools/bench_kernel_tests.cpp
@@ -61,10 +64,10 @@ endif ()
 # duplicate libraries"). So the plugin layers, when they're built, come first: they link the
 # engine and, with the editor, gg::ui-core. The editor layer is an object library, whose own
 # libraries CMake would put after everything listed here, so they're listed too: the plugin
-# core and gg::ui. Then gg::render, gg::ui-core, gg::bench, gg::core and gg::media, which link
+# core and gg::ui. Then gg::render, gg::ui-core, gg::bench, gg::media and gg::core, which link
 # the engine (and gg::render the metrics). gg::bench-kernels follows gg::bench, which links it:
-# left out, CMake would repeat the engine after it.
-set(gg_tests_libraries gg::render gg::ui-core gg::bench gg::bench-kernels gg::core gg::media
+# left out, CMake would repeat the engine after it. gg::media links gg::core, so comes first.
+set(gg_tests_libraries gg::render gg::ui-core gg::bench gg::bench-kernels gg::media gg::core
         gg::engine gg::audiometrics)
 if (GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
     list(PREPEND gg_tests_libraries gg::plugin-impl gg-plugin-core gg::ui)
