@@ -88,6 +88,11 @@ target_compile_definitions(gg-tests PRIVATE GG_USE_RTSAN=$<BOOL:${GG_USE_RTSAN}>
 target_compile_definitions(gg-tests PRIVATE GG_SANITIZE=$<BOOL:${GG_SANITIZE}>)
 # 0 or 1: the plugin tests that need the JUCE editor, and the one that checks there is none.
 target_compile_definitions(gg-tests PRIVATE GG_BUILD_EDITOR=$<BOOL:${GG_BUILD_EDITOR}>)
+# The editor's tests create it, and drive its loader strip through JUCE (factory_tests.cpp): JUCE's
+# headers and definitions, without its sources, which the editor layer links already.
+if (GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
+    target_link_libraries(gg-tests PRIVATE gg::juce-headers)
+endif ()
 
 # The plugin tests drive gg::plugin-impl (the plugin core, or the core plus the editor layer)
 # through its factory, not the built .clap. They run in every preset that builds the plugins,

@@ -8,6 +8,10 @@
 #include <array>
 #include <chrono>
 #include <cstddef>
+#include <functional>
+#include <memory>
+#include <string>
+#include <utility>
 #include <vector>
 
 #include <juce_gui_basics/juce_gui_basics.h>
@@ -30,6 +34,47 @@ constexpr uint32_t kGrainTint = 0xFFC46B; // amber, 0xRRGGBB
 const juce::Colour kBackground{0xff15171c};
 const juce::Colour kText{0xffe8e8ec};
 const juce::Colour kDimText{0xff9aa0ab};
+
+/// The formats the loader decodes (spec §6.4), for "Load…" and "Relink…".
+constexpr const char *kSampleFilePatterns = "*.wav;*.aif;*.aiff;*.aifc;*.flac;*.mp3";
+
+/// `text` with an ellipsis (U+2026) after it, for a button that opens a dialog.
+juce::String withEllipsis(const char *text)
+{
+    return juce::String(text) + juce::String::charToString(0x2026);
+}
+
+/// The loader strip's status text (spec §6.5).
+juce::String statusText(const SampleStatusView &status)
+{
+    using State = SampleStatusView::State;
+    const juce::String message =
+        juce::String::fromUTF8(status.message.data(), static_cast<int>(status.message.size()));
+    switch (status.state)
+    {
+    case State::None:
+        return "no sample";
+    case State::Loading:
+        return withEllipsis("loading");
+    case State::Loaded:
+    {
+        juce::String text = "loaded: " + juce::String(status.seconds, 2) + " s, " +
+                            juce::String(status.channels) + " ch, " +
+                            juce::String(juce::roundToInt(status.fileRate)) + " Hz";
+        if (message.isNotEmpty())
+        {
+            text << " (" << message << ")";
+        }
+        return text;
+    }
+    case State::Missing:
+    case State::Changed:
+        return message.isEmpty() ? juce::String("missing") : "missing: " + message;
+    case State::Error:
+        return message;
+    }
+    return {};
+}
 } // namespace
 
 /// The canvas stress panel's drawing surface: every display frame it splats the stress
@@ -129,12 +174,21 @@ class StressCanvas final : public juce::Component
     juce::VBlankAttachment vblank_{this, [this] { repaint(); }};
 };
 
-/// The M0 editor: the product name and version, a MIDI note-on counter, and the canvas stress
-/// panel. It is 900 x 500 to start with and lays out at any size.
-class Editor final : public juce::Component, private juce::Timer
+/// The M0 editor: the product name and version, a MIDI note-on counter, the instrument's sample
+/// loader strip, and the canvas stress panel. It is 900 x 500 to start with and lays out at any
+/// size.
+///
+/// The strip (spec §6.5; sub-project 5 replaces it): "Load…", the file name and status,
+/// "Relink…" while the sample is missing or changed, and "Sample folder…". Files dropped
+/// anywhere on the editor load too (the first one only). The editor is a drop target in the FX
+/// as well, but takes no files there.
+class Editor final : public juce::Component, public juce::FileDragAndDropTarget, private juce::Timer
 {
   public:
-    explicit Editor(const EditorContext &context) : noteOnCount_(context.noteOnCount)
+    explicit Editor(const EditorContext &context)
+        : noteOnCount_(context.noteOnCount), showSampleLoader_(context.showSampleLoader),
+          loadSample_(context.loadSample), relinkSample_(context.relinkSample),
+          setSampleFolder_(context.setSampleFolder), sampleStatus_(context.sampleStatus)
     {
         setOpaque(true);
         setTitle(context.productName);
@@ -146,6 +200,10 @@ class Editor final : public juce::Component, private juce::Timer
         setUpLabel(noteOns_, {}, juce::FontOptions(16.0f), kText);
         setUpLabel(stressLabel_, "Canvas stress, grains:", juce::FontOptions(15.0f), kText);
         setUpLabel(frameMs_, {}, juce::FontOptions(15.0f), kText);
+        if (showSampleLoader_)
+        {
+            setUpSampleStrip();
+        }
 
         for (std::size_t i = 0; i < kGrainCounts.size(); ++i)
         {
@@ -183,6 +241,20 @@ class Editor final : public juce::Component, private juce::Timer
         noteOns_.setBounds(area.removeFromTop(26));
         area.removeFromTop(10);
 
+        if (showSampleLoader_)
+        {
+            auto strip = area.removeFromTop(28);
+            loadButton_.setBounds(strip.removeFromLeft(80));
+            strip.removeFromLeft(8);
+            folderButton_.setBounds(strip.removeFromRight(130));
+            strip.removeFromRight(8);
+            relinkButton_.setBounds(strip.removeFromRight(80));
+            strip.removeFromRight(8);
+            sampleName_.setBounds(strip.removeFromLeft(240));
+            sampleStatusLabel_.setBounds(strip);
+            area.removeFromTop(10);
+        }
+
         auto controls = area.removeFromTop(28);
         stressLabel_.setBounds(controls.removeFromLeft(170));
         grainCount_.setBounds(controls.removeFromLeft(110));
@@ -193,7 +265,88 @@ class Editor final : public juce::Component, private juce::Timer
         canvas_.setBounds(area);
     }
 
+    // ---- juce::FileDragAndDropTarget: the strip's drop target, the whole editor ----
+
+    bool isInterestedInFileDrag(const juce::StringArray &files) override
+    {
+        return showSampleLoader_ && !files.isEmpty();
+    }
+
+    void filesDropped(const juce::StringArray &files, int /*x*/, int /*y*/) override
+    {
+        if (isInterestedInFileDrag(files))
+        {
+            request(loadSample_, files[0]);
+        }
+    }
+
   private:
+    void setUpSampleStrip()
+    {
+        setUpButton(loadButton_, "sampleLoad", withEllipsis("Load"),
+                    [this] { chooseFile("Load a sample", loadSample_); });
+        setUpButton(relinkButton_, "sampleRelink", withEllipsis("Relink"),
+                    [this] { chooseFile("Find the missing sample", relinkSample_); });
+        setUpButton(folderButton_, "sampleFolder", withEllipsis("Sample folder"),
+                    [this] { chooseSampleFolder(); });
+        relinkButton_.setVisible(false); // shown while the sample is missing or changed
+        setUpLabel(sampleName_, {}, juce::FontOptions(15.0f), kText);
+        sampleName_.setComponentID("sampleName");
+        setUpLabel(sampleStatusLabel_, {}, juce::FontOptions(15.0f), kDimText);
+        sampleStatusLabel_.setComponentID("sampleStatus");
+    }
+
+    void setUpButton(juce::TextButton &button, const char *id, const juce::String &text,
+                     std::function<void()> onClick)
+    {
+        button.setButtonText(text);
+        button.setComponentID(id);
+        button.onClick = std::move(onClick);
+        addAndMakeVisible(button);
+    }
+
+    /// Calls `action` with `file`'s path as UTF-8, then shows the new status at once.
+    void request(const std::function<void(const std::string &)> &action, const juce::String &file)
+    {
+        if (action)
+        {
+            action(file.toStdString());
+        }
+        timerCallback();
+    }
+
+    /// Opens an audio file chooser, asynchronously; a file chosen goes to `action`. The chooser
+    /// is a member, so a dialog still open when the editor closes is dismissed with it, and its
+    /// callback never runs.
+    void chooseFile(const juce::String &title,
+                    const std::function<void(const std::string &)> &action)
+    {
+        chooser_ = std::make_unique<juce::FileChooser>(title, juce::File(), kSampleFilePatterns);
+        chooser_->launchAsync(juce::FileBrowserComponent::openMode |
+                                  juce::FileBrowserComponent::canSelectFiles,
+                              [this, &action](const juce::FileChooser &chooser) {
+                                  const juce::File file = chooser.getResult();
+                                  if (file != juce::File())
+                                  {
+                                      request(action, file.getFullPathName());
+                                  }
+                              });
+    }
+
+    void chooseSampleFolder()
+    {
+        chooser_ = std::make_unique<juce::FileChooser>("Choose the sample folder");
+        chooser_->launchAsync(juce::FileBrowserComponent::openMode |
+                                  juce::FileBrowserComponent::canSelectDirectories,
+                              [this](const juce::FileChooser &chooser) {
+                                  const juce::File folder = chooser.getResult();
+                                  if (folder != juce::File())
+                                  {
+                                      request(setSampleFolder_, folder.getFullPathName());
+                                  }
+                              });
+    }
+
     void setUpLabel(juce::Label &label, const juce::String &text, const juce::FontOptions &font,
                     juce::Colour colour)
     {
@@ -203,13 +356,24 @@ class Editor final : public juce::Component, private juce::Timer
         addAndMakeVisible(label);
     }
 
-    // 30 Hz: the note-on counter and the frame-time readout.
+    // 30 Hz: the note-on counter, the sample's status and the frame-time readout.
     // Label::setText does nothing when the text is unchanged.
     void timerCallback() override
     {
         const uint32_t noteOns =
             noteOnCount_ != nullptr ? noteOnCount_->load(std::memory_order_relaxed) : 0;
         noteOns_.setText("MIDI note-ons: " + juce::String(noteOns), juce::dontSendNotification);
+
+        if (showSampleLoader_)
+        {
+            const SampleStatusView status = sampleStatus_ ? sampleStatus_() : SampleStatusView{};
+            sampleName_.setText(juce::String::fromUTF8(status.fileName.data(),
+                                                       static_cast<int>(status.fileName.size())),
+                                juce::dontSendNotification);
+            sampleStatusLabel_.setText(statusText(status), juce::dontSendNotification);
+            relinkButton_.setVisible(status.state == SampleStatusView::State::Missing ||
+                                     status.state == SampleStatusView::State::Changed);
+        }
 
         juce::String readout = "frame ms (avg 60): " + juce::String(canvas_.averageFrameMs(), 2);
         if (canvas_.physicalWidth() > 0)
@@ -221,10 +385,17 @@ class Editor final : public juce::Component, private juce::Timer
     }
 
     const std::atomic<uint32_t> *noteOnCount_;
+    const bool showSampleLoader_;
+    const std::function<void(const std::string &)> loadSample_, relinkSample_, setSampleFolder_;
+    const std::function<SampleStatusView()> sampleStatus_;
 
     juce::Label title_, version_, noteOns_, stressLabel_, frameMs_;
     juce::ComboBox grainCount_;
     StressCanvas canvas_;
+    // The sample loader strip: built and shown only with showSampleLoader.
+    juce::TextButton loadButton_, relinkButton_, folderButton_;
+    juce::Label sampleName_, sampleStatusLabel_;
+    std::unique_ptr<juce::FileChooser> chooser_; // the open dialog, if any
 };
 
 std::unique_ptr<juce::Component> makeEditor(const EditorContext &context)

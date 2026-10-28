@@ -16,7 +16,16 @@
 #include "gg/plugin/Identity.h"
 #include "PluginHarness.h"
 #if GG_BUILD_EDITOR
+#include <chrono>
+#include <filesystem>
+#include <memory>
+#include <string>
+#include <thread>
+
+#include <juce_gui_basics/juce_gui_basics.h>
+
 #include "editor/EditorPlugin.h"
+#include "gg/ui/Editor.h"
 #endif
 
 namespace
@@ -179,6 +188,159 @@ TEST_CASE("both plugins expose a resizable embedded GUI", "[plugin]")
         REQUIRE(editor != nullptr);
         REQUIRE(editor->clapJuceShim != nullptr);
         CHECK(editor->clapJuceShim->guiCanResize());
+    }
+}
+
+// The editor's sample loader strip (spec §6.5). These create the editor itself, so they start
+// JUCE's GUI as the shim's guiCreate does, but open no window: the strip's widgets are found by
+// their component IDs, and a drop is simulated by calling the editor's filesDropped.
+namespace
+{
+const juce::Component *stripChild(const juce::Component &editor, const char *id)
+{
+    return editor.findChildWithID(id);
+}
+
+juce::String labelText(const juce::Component &editor, const char *id)
+{
+    const auto *label = dynamic_cast<const juce::Label *>(stripChild(editor, id));
+    return label != nullptr ? label->getText() : juce::String("<no label>");
+}
+
+/// Whether the strip shows "Relink…"; fails the test if the strip has no such button.
+bool relinkShown(const juce::Component &editor)
+{
+    const auto *relink = stripChild(editor, "sampleRelink");
+    REQUIRE(relink != nullptr);
+    return relink->isVisible();
+}
+
+juce::String utf8String(const std::filesystem::path &path)
+{
+    const auto text = path.u8string();
+    return juce::String::fromUTF8(reinterpret_cast<const char *>(text.data()),
+                                  static_cast<int>(text.size()));
+}
+} // namespace
+
+TEST_CASE("the instrument's gui has a sample loader strip that loads a dropped file", "[plugin]")
+{
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    const auto dir = gg::test::sampleDir("gui-strip");
+    gg::test::useSettingsFile(dir / "settings.xml");
+    // A non-ASCII name: the path crosses the editor boundary as UTF-8.
+    const auto file = gg::test::writeSineWav(dir / std::filesystem::path(u8"gräin.wav"));
+    const auto other = gg::test::writeSineWav(dir / "other.wav");
+
+    gg::test::PluginUnderTest instrument("org.sethbc.giga-grains");
+    REQUIRE(instrument.valid());
+    auto *plugin = dynamic_cast<gg::plugin::EditorPlugin *>(&instrument.impl());
+    REQUIRE(plugin != nullptr);
+    auto *loader = plugin->sampleLoader();
+    REQUIRE(loader != nullptr);
+    {
+        const std::unique_ptr<juce::Component> editor = plugin->createEditor();
+        REQUIRE(editor != nullptr);
+        CHECK(stripChild(*editor, "sampleLoad") != nullptr);
+        CHECK(stripChild(*editor, "sampleFolder") != nullptr);
+        CHECK(stripChild(*editor, "sampleRelink") != nullptr);
+        CHECK_FALSE(relinkShown(*editor)); // not missing
+        CHECK(labelText(*editor, "sampleStatus") == "no sample");
+
+        // Only the first file dropped loads.
+        auto *target = dynamic_cast<juce::FileDragAndDropTarget *>(editor.get());
+        REQUIRE(target != nullptr);
+        const juce::StringArray files{utf8String(file), utf8String(other)};
+        CHECK(target->isInterestedInFileDrag(files));
+        target->filesDropped(files, 10, 10);
+        CHECK(loader->status().state == gg::plugin::SampleState::Loading);
+        CHECK(loader->status().fileName == "gr\xc3\xa4in.wav");
+        CHECK(labelText(*editor, "sampleName") == utf8String(file.filename()));
+        CHECK(labelText(*editor, "sampleStatus").startsWith("loading"));
+
+        // As a host does after request_callback, until the load lands.
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+        while (loader->status().state == gg::plugin::SampleState::Loading &&
+               std::chrono::steady_clock::now() < deadline)
+        {
+            instrument.onMainThread();
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        CHECK(loader->status().state == gg::plugin::SampleState::Loaded);
+        REQUIRE(loader->entry().has_value());
+        CHECK(std::filesystem::path(std::u8string(loader->entry()->absolutePath.begin(),
+                                                  loader->entry()->absolutePath.end())) ==
+              std::filesystem::absolute(file).lexically_normal());
+    }
+}
+
+TEST_CASE("the fx's gui has no sample loader strip", "[plugin]")
+{
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    gg::test::PluginUnderTest fx("org.sethbc.giga-grains-fx");
+    REQUIRE(fx.valid());
+    auto *plugin = dynamic_cast<gg::plugin::EditorPlugin *>(&fx.impl());
+    REQUIRE(plugin != nullptr);
+    const std::unique_ptr<juce::Component> editor = plugin->createEditor();
+    REQUIRE(editor != nullptr);
+    for (const char *id :
+         {"sampleLoad", "sampleFolder", "sampleRelink", "sampleName", "sampleStatus"})
+    {
+        INFO(id);
+        CHECK(stripChild(*editor, id) == nullptr);
+    }
+    auto *target = dynamic_cast<juce::FileDragAndDropTarget *>(editor.get());
+    CHECK((target == nullptr || !target->isInterestedInFileDrag({"/some/file.wav"})));
+}
+
+TEST_CASE("the gui's loader strip shows the sample's status and offers relink", "[plugin]")
+{
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    gg::ui::SampleStatusView view;
+    std::string loaded;
+    gg::ui::EditorContext context;
+    context.productName = "Giga Grains";
+    context.showSampleLoader = true;
+    context.loadSample = [&loaded](const std::string &path) { loaded = path; };
+    context.sampleStatus = [&view] { return view; };
+    using State = gg::ui::SampleStatusView::State;
+
+    SECTION("loaded, with the file's length, channels and rate")
+    {
+        view = {State::Loaded, "kick.wav", {}, 1.5, 2, 44100.0};
+        const auto editor = gg::ui::makeEditor(context);
+        CHECK(labelText(*editor, "sampleName") == "kick.wav");
+        CHECK(labelText(*editor, "sampleStatus") == "loaded: 1.50 s, 2 ch, 44100 Hz");
+        CHECK_FALSE(relinkShown(*editor));
+
+        // A drop passes the first file's path, as UTF-8, to loadSample.
+        auto *target = dynamic_cast<juce::FileDragAndDropTarget *>(editor.get());
+        REQUIRE(target != nullptr);
+        const juce::String path = juce::String::fromUTF8("/samples/gr\xc3\xa4in.aiff");
+        target->filesDropped({path, "/samples/b.wav"}, 0, 0);
+        CHECK(loaded == "/samples/gr\xc3\xa4in.aiff");
+    }
+    SECTION("missing, with relink")
+    {
+        view = {State::Missing, "kick.wav", "not found", 0.0, 0, 0.0};
+        const auto editor = gg::ui::makeEditor(context);
+        CHECK(labelText(*editor, "sampleStatus") == "missing: not found");
+        CHECK(relinkShown(*editor));
+    }
+    SECTION("changed, with relink")
+    {
+        view = {State::Changed, "kick.wav", "the file at the saved path has changed", 0.0, 0, 0.0};
+        const auto editor = gg::ui::makeEditor(context);
+        CHECK(labelText(*editor, "sampleStatus") ==
+              "missing: the file at the saved path has changed");
+        CHECK(relinkShown(*editor));
+    }
+    SECTION("an error shows its message")
+    {
+        view = {State::Error, "bad.wav", "can't load bad.wav: not audio", 0.0, 0, 0.0};
+        const auto editor = gg::ui::makeEditor(context);
+        CHECK(labelText(*editor, "sampleStatus") == "can't load bad.wav: not audio");
+        CHECK_FALSE(relinkShown(*editor));
     }
 }
 #else
