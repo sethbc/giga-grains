@@ -8,23 +8,75 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <limits>
 #include <memory>
+#include <optional>
+#include <string>
+#include <system_error>
 #include <vector>
 
-// The dr_libs implementations live in this file and nowhere else.
-#define DR_WAV_IMPLEMENTATION
-#include <dr_wav.h>
-#define DR_FLAC_IMPLEMENTATION
+// The headers only: the implementations are compiled in gg::dr_libs_impl.
 #include <dr_flac.h>
-#define DR_MP3_IMPLEMENTATION
 #include <dr_mp3.h>
+#include <dr_wav.h>
 
 namespace gg::metrics
 {
 namespace
 {
 constexpr uint64_t kChunkFrames = 4096;
+
+// The open functions take a UTF-8 path. On Windows they convert it to a wide path and call
+// dr_libs' wide-character (`_w`) entry points, since a narrow path would go through the ANSI code
+// page (B-m9); a path that isn't valid UTF-8 doesn't open. Elsewhere the bytes are the path.
+#if defined(_WIN32)
+std::optional<std::wstring> widePath(const std::string &path)
+{
+    try
+    {
+        return std::filesystem::path(std::u8string(path.begin(), path.end())).wstring();
+    }
+    catch (const std::system_error &)
+    {
+        return std::nullopt;
+    }
+}
+bool openWav(drwav &wav, const std::string &path)
+{
+    const auto wide = widePath(path);
+    return wide && drwav_init_file_w(&wav, wide->c_str(), nullptr);
+}
+drflac *openFlac(const std::string &path)
+{
+    const auto wide = widePath(path);
+    return wide ? drflac_open_file_w(wide->c_str(), nullptr) : nullptr;
+}
+bool openMp3(drmp3 &mp3, const std::string &path)
+{
+    const auto wide = widePath(path);
+    return wide && drmp3_init_file_w(&mp3, wide->c_str(), nullptr);
+}
+bool openWavForWriting(drwav &wav, const std::string &path, const drwav_data_format &format)
+{
+    const auto wide = widePath(path);
+    return wide && drwav_init_file_write_w(&wav, wide->c_str(), &format, nullptr);
+}
+#else
+bool openWav(drwav &wav, const std::string &path)
+{
+    return drwav_init_file(&wav, path.c_str(), nullptr);
+}
+drflac *openFlac(const std::string &path) { return drflac_open_file(path.c_str(), nullptr); }
+bool openMp3(drmp3 &mp3, const std::string &path)
+{
+    return drmp3_init_file(&mp3, path.c_str(), nullptr);
+}
+bool openWavForWriting(drwav &wav, const std::string &path, const drwav_data_format &format)
+{
+    return drwav_init_file_write(&wav, path.c_str(), &format, nullptr);
+}
+#endif
 
 /// Reads interleaved float frames with `read(frames, buffer) -> framesRead` until it returns 0,
 /// and deinterleaves them.
@@ -55,7 +107,7 @@ template <typename Read> AudioData readAll(uint32_t channels, uint32_t sampleRat
 std::optional<AudioData> readWav(const std::string &path)
 {
     drwav wav;
-    if (!drwav_init_file(&wav, path.c_str(), nullptr))
+    if (!openWav(wav, path))
     {
         return std::nullopt;
     }
@@ -72,7 +124,7 @@ std::optional<AudioData> readWav(const std::string &path)
 
 std::optional<AudioData> readFlac(const std::string &path)
 {
-    drflac *flac = drflac_open_file(path.c_str(), nullptr);
+    drflac *flac = openFlac(path);
     if (!flac)
     {
         return std::nullopt;
@@ -91,7 +143,7 @@ std::optional<AudioData> readFlac(const std::string &path)
 std::optional<AudioData> readMp3(const std::string &path)
 {
     auto mp3 = std::make_unique<drmp3>(); // large decoder state: keep it off the stack
-    if (!drmp3_init_file(mp3.get(), path.c_str(), nullptr))
+    if (!openMp3(*mp3, path))
     {
         return std::nullopt;
     }
@@ -156,7 +208,7 @@ bool writeWavFloat32(const std::string &path, const AudioData &audio)
     format.bitsPerSample = 32;
 
     drwav wav;
-    if (!drwav_init_file_write(&wav, path.c_str(), &format, nullptr))
+    if (!openWavForWriting(wav, path, format))
     {
         return false;
     }

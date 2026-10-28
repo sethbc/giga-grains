@@ -1,0 +1,18 @@
+{
+  "mode": "fx",
+  "sampleRate": 48000,
+  "durationSeconds": 8.0,
+  "blockSize": 128,
+  "seed": 1,
+  "channels": 2,
+  "input": {"kind": "sweep", "startHz": 110, "endHz": 1760, "seconds": 8.0, "amplitude": 0.5},
+  "params": {"Mix": 1.0, "Density": 6.0, "Level": -6.0},
+  "notes": [
+    {"time": 0.5, "key": 60, "duration": 0.7},
+    {"time": 1.5, "key": 62, "duration": 0.7},
+    {"time": 2.5, "key": 64, "duration": 0.7},
+    {"time": 4.5, "key": 60, "duration": 1.1},
+    {"time": 5.5, "key": 62, "duration": 1.1},
+    {"time": 6.5, "key": 64, "duration": 1.0}
+  ]
+}

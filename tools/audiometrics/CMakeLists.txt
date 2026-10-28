@@ -15,5 +15,6 @@ add_library(gg::audiometrics ALIAS gg-audiometrics)
 target_include_directories(gg-audiometrics PUBLIC include)
 target_link_libraries(gg-audiometrics
         PUBLIC gg::compiler-options
-        PRIVATE gg::pffft gg::dr_libs gg::stb nlohmann_json::nlohmann_json fmt::fmt
+        PRIVATE gg::pffft gg::dr_libs gg::dr_libs_impl gg::stb gg::stb_impl
+        nlohmann_json::nlohmann_json fmt::fmt
         )

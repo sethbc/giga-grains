@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright 2026, the Giga Grains authors (see git history)
 
+#include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -10,6 +12,8 @@
 #include <iterator>
 #include <limits>
 #include <map>
+#include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -25,14 +29,19 @@
 #include "gg/core/ParamIds.h"
 #include "gg/core/Processor.h"
 #include "gg/grain/Tier.h"
+#include "gg/source/PreparedSource.h"
+#include "gg/source/SampleBuffer.h"
 
 using Catch::Matchers::ContainsSubstring;
 using Catch::Matchers::WithinRel;
 using gg::core::Mode;
+using gg::core::NoteEvent;
+using gg::core::NoteEventType;
 using gg::core::ParamEvent;
 using gg::core::ParamSlot;
 using gg::core::Processor;
 using gg::render::AutomationPoint;
+using gg::render::NoteSpec;
 using gg::render::RenderMode;
 using gg::render::RenderSpec;
 using gg::render::SourceKind;
@@ -70,6 +79,89 @@ bool bitIdentical(const std::vector<float> &a, const std::vector<float> &b)
 {
     return a.size() == b.size() && std::memcmp(a.data(), b.data(), a.size() * sizeof(float)) == 0;
 }
+
+/// An instrument spec of its own (not a golden case's, which may be retuned): a sweep sample and a
+/// three-note chord.
+nlohmann::json instrumentJson()
+{
+    return nlohmann::json::parse(R"({
+        "mode": "instrument", "sampleRate": 48000, "durationSeconds": 3.5, "blockSize": 128,
+        "seed": 1,
+        "sample": {"kind": "sweep", "startHz": 50, "endHz": 8000, "seconds": 4.0,
+                   "amplitude": 0.5},
+        "params": {"Position": 0.5, "Density": 5.0},
+        "notes": [{"time": 0.25, "key": 48, "duration": 3.0},
+                  {"time": 0.25, "key": 55, "duration": 3.0},
+                  {"time": 0.25, "key": 64, "duration": 3.0}]})");
+}
+
+/// An FX spec of its own over a file input, with notes.
+nlohmann::json fxFileJson()
+{
+    return nlohmann::json::parse(R"({
+        "mode": "fx", "sampleRate": 48000, "durationSeconds": 4.0, "blockSize": 128, "seed": 1,
+        "input": {"kind": "file", "path": "loop-48k.wav"},
+        "notes": [{"time": 1.0, "key": 60, "duration": 1.0},
+                  {"time": 2.5, "key": 67, "duration": 0.5}]})");
+}
+
+RenderSpec parseJson(const nlohmann::json &j)
+{
+    std::string error;
+    const auto spec = gg::render::parseRenderSpec(j.dump(), error);
+    INFO(error);
+    REQUIRE(spec.has_value());
+    return *spec;
+}
+
+/// `path` as the UTF-8 the spec's paths are in.
+std::string utf8(const std::filesystem::path &path)
+{
+    const auto text = path.u8string();
+    return {text.begin(), text.end()};
+}
+
+/// The test media (gg-render --write-media), written into a directory of this test's own under
+/// GG_TEST_OUTPUT_DIR; returns the directory, as UTF-8.
+std::string writeMedia(const std::string &name)
+{
+    const auto dir = std::filesystem::path{GG_TEST_OUTPUT_DIR} / name;
+    std::filesystem::create_directories(dir);
+    std::string error;
+    const bool written = gg::render::writeTestMedia(utf8(dir), error);
+    INFO(error);
+    REQUIRE(written);
+    return utf8(dir);
+}
+
+/// The grains a direct Processor run spawns, collected in storage reserved up front, since the
+/// sink runs inside process().
+struct Grains
+{
+    std::vector<gg::GrainSpec> spawned;
+    bool overflowed{false};
+    static void record(void *ctx, const gg::GrainSpec &g)
+    {
+        auto &self = *static_cast<Grains *>(ctx);
+        if (self.spawned.size() < self.spawned.capacity())
+        {
+            self.spawned.push_back(g);
+        }
+        else
+        {
+            self.overflowed = true;
+        }
+    }
+    std::vector<std::string> lines() const
+    {
+        std::vector<std::string> out;
+        for (const auto &g : spawned)
+        {
+            out.push_back(gg::render::formatEventLine(g));
+        }
+        return out;
+    }
+};
 } // namespace
 
 TEST_CASE("render spec parses all fields", "[render]")
@@ -595,13 +687,26 @@ TEST_CASE("fx spec rejects bad input", "[render]")
         j.erase("input");
         CHECK_THAT(rejection(j), ContainsSubstring("input"));
     }
-    SECTION("file input")
+    SECTION("file input without a path")
     {
         auto j = good;
         j["input"] = {{"kind", "file"}};
-        CHECK_THAT(rejection(j), ContainsSubstring("input.kind"));
-        j["input"]["path"] = "in.wav"; // an input has no path
         CHECK_THAT(rejection(j), ContainsSubstring("input.path"));
+        j["input"]["path"] = "";
+        CHECK_THAT(rejection(j), ContainsSubstring("input.path"));
+    }
+    SECTION("channels with a file input")
+    {
+        auto j = fxFileJson();
+        j["channels"] = 1;
+        CHECK(rejection(j) ==
+              "channels must be left out with a file input: the input has the file's own channels");
+    }
+    SECTION("unknown input kind")
+    {
+        auto j = good;
+        j["input"]["kind"] = "granite";
+        CHECK_THAT(rejection(j), ContainsSubstring("input.kind"));
     }
     SECTION("input with its own sample rate")
     {
@@ -722,4 +827,501 @@ TEST_CASE("fx render matches the processor", "[render]")
     const auto stillRendered = gg::render::render(still, &stillEvents);
     CHECK_FALSE(stillEvents == events);
     CHECK_FALSE(bitIdentical(stillRendered.channels[0], rendered.channels[0]));
+}
+
+TEST_CASE("instrument and note specs parse", "[render]")
+{
+    const RenderSpec chord = parseJson(instrumentJson());
+    CHECK(chord.mode == RenderMode::Instrument);
+    CHECK(chord.sampleRate == 48000.0);
+    CHECK(chord.durationSeconds == 3.5);
+    CHECK(chord.blockSize == 128);
+    CHECK(chord.seed == 1);
+    CHECK(chord.instrument.sample.kind == SourceKind::Sweep);
+    CHECK(chord.instrument.sample.startHz == 50.0);
+    CHECK(chord.instrument.sample.endHz == 8000.0);
+    CHECK(chord.instrument.sample.seconds == 4.0);
+    CHECK(chord.instrument.sample.amplitude == 0.5);
+    CHECK_FALSE(chord.instrument.sample.sampleRate.has_value());
+    const std::map<std::string, double> params(chord.instrument.params.begin(),
+                                               chord.instrument.params.end());
+    CHECK(params == std::map<std::string, double>{{"Position", 0.5}, {"Density", 5.0}});
+    CHECK(chord.instrument.automation.empty());
+    CHECK(chord.instrument.notes ==
+          std::vector<NoteSpec>{{0.25, 48, 3.0, 0}, {0.25, 55, 3.0, 0}, {0.25, 64, 3.0, 0}});
+    // The other modes' parts keep their defaults.
+    CHECK(chord.fx == gg::render::FxSpec{});
+    CHECK(chord.source == gg::render::SourceSpec{});
+    CHECK(parseCase("fx-sine").instrument == gg::render::InstrumentSpec{});
+
+    // A file sample; the parser leaves its path as written.
+    auto j = instrumentJson();
+    j["sample"] = {{"kind", "file"}, {"path", "tone-44k1.wav"}};
+    const RenderSpec file = parseJson(j);
+    CHECK(file.instrument.sample.kind == SourceKind::File);
+    CHECK(file.instrument.sample.path == "tone-44k1.wav");
+
+    // Notes in FX mode, over a file input without "channels".
+    const RenderSpec fx = parseJson(fxFileJson());
+    CHECK(fx.mode == RenderMode::Fx);
+    CHECK(fx.fx.input.kind == SourceKind::File);
+    CHECK(fx.fx.input.path == "loop-48k.wav");
+    CHECK(fx.fx.notes == std::vector<NoteSpec>{{1.0, 60, 1.0, 0}, {2.5, 67, 0.5, 0}});
+    CHECK(fx.instrument == gg::render::InstrumentSpec{});
+
+    // "channel" is optional, 0 by default; automation as in FX mode.
+    j = instrumentJson();
+    j["notes"][0]["channel"] = 15;
+    j["automation"] = {{{"time", 1.0}, {"param", "Pitch"}, {"value", -12.0}}};
+    const RenderSpec channel = parseJson(j);
+    CHECK(channel.instrument.notes ==
+          std::vector<NoteSpec>{{0.25, 48, 3.0, 15}, {0.25, 55, 3.0, 0}, {0.25, 64, 3.0, 0}});
+    CHECK(channel.instrument.automation == std::vector<AutomationPoint>{{1.0, "Pitch", -12.0}});
+}
+
+TEST_CASE("note specs reject bad input", "[render]")
+{
+    const auto good = instrumentJson();
+
+    SECTION("key 128")
+    {
+        auto j = good;
+        j["notes"][1]["key"] = 128;
+        CHECK(rejection(j) == "notes[1].key must be an integer from 0 to 127");
+        j["notes"][1]["key"] = -1;
+        CHECK(rejection(j) == "notes[1].key must be an integer from 0 to 127");
+        j["notes"][1]["key"] = 60.5;
+        CHECK(rejection(j) == "notes[1].key must be an integer from 0 to 127");
+    }
+    SECTION("negative or zero duration")
+    {
+        auto j = good;
+        j["notes"][0]["duration"] = -0.5;
+        CHECK_THAT(rejection(j), ContainsSubstring("notes[0].duration must be > 0"));
+        j["notes"][0]["duration"] = 0.0;
+        CHECK_THAT(rejection(j), ContainsSubstring("notes[0].duration must be > 0"));
+    }
+    SECTION("a duration that rounds to no frames")
+    {
+        // Ruling R17: its Off would fall on its On's frame, so the key would stay held.
+        auto j = good;
+        j["notes"][1]["duration"] = 0.4 / 48000.0;
+        CHECK(rejection(j) == "notes[1].duration is shorter than one frame at the render's rate: "
+                              "the note would end on the frame it starts");
+        j["notes"][1]["duration"] = 1.0 / 48000.0; // one frame is enough
+        std::string error;
+        const bool parses = gg::render::parseRenderSpec(j.dump(), error).has_value();
+        INFO(error);
+        CHECK(parses);
+    }
+    SECTION("channel 16")
+    {
+        auto j = good;
+        j["notes"][2]["channel"] = 16;
+        CHECK(rejection(j) == "notes[2].channel must be an integer from 0 to 15");
+    }
+    SECTION("unsorted notes")
+    {
+        auto j = good;
+        j["notes"][2]["time"] = 0.1;
+        CHECK(rejection(j) ==
+              "notes[2].time is before notes[1].time: list the notes in time order");
+    }
+    SECTION("a note at or after the end")
+    {
+        auto j = good;
+        j["notes"][2]["time"] = 3.5;
+        CHECK_THAT(rejection(j), ContainsSubstring("notes[2].time must be >= 0"));
+        j["notes"][2]["time"] = -0.25;
+        CHECK_THAT(rejection(j), ContainsSubstring("notes[2].time must be >= 0"));
+    }
+    SECTION("missing or misspelt keys")
+    {
+        auto j = good;
+        j["notes"][0].erase("key");
+        CHECK(rejection(j) == "notes[0].key is missing");
+        j = good;
+        j["notes"][0]["velocity"] = 100;
+        CHECK(rejection(j) == "unknown key notes[0].velocity");
+        j = good;
+        j["notes"] = {{"time", 0.0}};
+        CHECK(rejection(j) == "notes must be a JSON array");
+    }
+    SECTION("notes in sample mode")
+    {
+        auto j = nlohmann::json::parse(readCase("sparse-sine"));
+        j["notes"] = good["notes"];
+        CHECK(rejection(j) == "unknown key notes");
+    }
+}
+
+TEST_CASE("instrument spec rejects bad input", "[render]")
+{
+    const auto good = instrumentJson();
+
+    SECTION("channels in instrument mode")
+    {
+        auto j = good;
+        j["channels"] = 1;
+        CHECK(rejection(j) == "unknown key channels");
+    }
+    SECTION("missing sample")
+    {
+        auto j = good;
+        j.erase("sample");
+        CHECK(rejection(j) == "sample is missing");
+    }
+    SECTION("an input or a source")
+    {
+        auto j = good;
+        j["input"] = good["sample"];
+        CHECK(rejection(j) == "unknown key input");
+        j = good;
+        j["source"] = good["sample"];
+        CHECK(rejection(j) == "unknown key source");
+    }
+    SECTION("a sample with a rate of its own")
+    {
+        auto j = good;
+        j["sample"]["sampleRate"] = 44100;
+        CHECK(rejection(j) == "unknown key sample.sampleRate");
+    }
+    SECTION("a file sample without a path")
+    {
+        auto j = good;
+        j["sample"] = {{"kind", "file"}, {"path", ""}};
+        CHECK(rejection(j) == "sample.path must not be empty");
+    }
+    SECTION("unknown sample kind")
+    {
+        auto j = good;
+        j["sample"]["kind"] = "granite";
+        CHECK(rejection(j) ==
+              R"(sample.kind must be "sine", "sweep", "noise" or "file", not "granite")");
+    }
+    SECTION("a value outside the instrument's range")
+    {
+        auto j = good;
+        j["params"]["Position"] = 1.5;
+        CHECK_THAT(rejection(j), ContainsSubstring("params.Position"));
+    }
+    SECTION("unknown mode")
+    {
+        auto j = good;
+        j["mode"] = "synth";
+        CHECK(rejection(j) == R"(mode must be "sample", "instrument" or "fx", not "synth")");
+    }
+}
+
+TEST_CASE("a render shorter than one frame is bad input", "[render]")
+{
+    // [181]: 0.4 ms at 1 kHz rounds to 0 frames.
+    for (const auto &spec : {nlohmann::json::parse(readCase("sparse-sine")),
+                             nlohmann::json::parse(readCase("fx-sine")), instrumentJson()})
+    {
+        const std::string mode = spec.value("mode", "sample");
+        CAPTURE(mode);
+        auto j = spec;
+        j["sampleRate"] = 1000;
+        j["durationSeconds"] = 0.0004;
+        j.erase("automation");
+        j.erase("notes");
+        CHECK(rejection(j) == "durationSeconds must round to at least one frame at sampleRate");
+        j["durationSeconds"] = 0.0005; // rounds half up, to 1 frame
+        std::string error;
+        const bool parses = gg::render::parseRenderSpec(j.dump(), error).has_value();
+        INFO(error);
+        CHECK(parses);
+    }
+}
+
+TEST_CASE("automation and notes past the render's end are rejected with a clear message",
+          "[render]")
+{
+    // T8 (208).
+    auto j = nlohmann::json::parse(readCase("fx-automate"));
+    j["automation"][2]["time"] = 4.0;
+    CHECK(rejection(j) ==
+          "automation[2].time must be >= 0 and round to a frame before the render's end "
+          "(durationSeconds)");
+    j = instrumentJson();
+    j["notes"][0]["time"] = 3.5;
+    CHECK(rejection(j) == "notes[0].time must be >= 0 and round to a frame before the render's "
+                          "end (durationSeconds)");
+}
+
+TEST_CASE("relative paths resolve against the media directory", "[render]")
+{
+    // gg-render's --media-dir: a relative path is taken from that directory instead of the
+    // spec's; an absolute one is kept. Paths are UTF-8.
+    const std::filesystem::path base = std::filesystem::path{GG_TEST_OUTPUT_DIR} / "media dir";
+    const std::filesystem::path absolute =
+        std::filesystem::absolute(std::filesystem::path{GG_TEST_OUTPUT_DIR} / "elsewhere.wav");
+
+    auto withFile = instrumentJson();
+    withFile["sample"] = {{"kind", "file"}, {"path", "tone-44k1.wav"}};
+    RenderSpec instrument = parseJson(withFile);
+    gg::render::resolvePaths(instrument, utf8(base));
+    CHECK(instrument.instrument.sample.path == utf8(base / "tone-44k1.wav"));
+
+    RenderSpec fx = parseJson(fxFileJson());
+    gg::render::resolvePaths(fx, utf8(base));
+    CHECK(fx.fx.input.path == utf8(base / "loop-48k.wav"));
+
+    RenderSpec sample = parseCase("sparse-sine");
+    sample.source = {.kind = SourceKind::File, .path = "sub/\xc3\xa9.wav"};
+    gg::render::resolvePaths(sample, utf8(base));
+    CHECK(sample.source.path == utf8(base / std::filesystem::path(u8"sub/é.wav")));
+
+    fx.fx.input.path = utf8(absolute);
+    gg::render::resolvePaths(fx, utf8(base));
+    CHECK(fx.fx.input.path == utf8(absolute));
+
+    // A built-in signal has no path to resolve.
+    RenderSpec builtIn = parseJson(instrumentJson());
+    const RenderSpec before = builtIn;
+    gg::render::resolvePaths(builtIn, utf8(base));
+    CHECK(builtIn == before);
+}
+
+TEST_CASE("mono fx render with notes matches the processor", "[render]")
+{
+    // T8 (207): the mono path, one input channel, checked against a direct Processor run, with
+    // automation and a note that freezes the ring and repitches it.
+    RenderSpec spec;
+    spec.mode = RenderMode::Fx;
+    spec.sampleRate = 48000.0;
+    spec.durationSeconds = 0.5;
+    spec.blockSize = 100;
+    spec.seed = 3;
+    spec.fx.input = {.kind = SourceKind::Noise, .seconds = 0.4, .amplitude = 0.5};
+    spec.fx.channels = 1;
+    spec.fx.params = {{"Density", 7.0}, {"Size", -4.0}, {"Mix", 1.0}, {"Position", 0.1}};
+    spec.fx.automation = {{5000.0 / 48000.0, "Pitch", 5.0}};
+    spec.fx.notes = {{9000.0 / 48000.0, 64, 6000.0 / 48000.0, 0}};
+    std::vector<std::string> events;
+    const auto rendered = gg::render::render(spec, &events);
+
+    constexpr std::size_t frames = 24000;
+    auto input = gg::render::makeInput(spec.fx.input, 1, spec.sampleRate, spec.seed);
+    REQUIRE(input.channels.size() == 1);
+    input.channels[0].resize(frames);
+    Processor processor({spec.sampleRate, 4096, spec.seed, Mode::Fx});
+    processor.setBase(ParamSlot::Density, 7.0f);
+    processor.setBase(ParamSlot::Size, -4.0f);
+    processor.setBase(ParamSlot::Mix, 1.0f);
+    processor.setBase(ParamSlot::Position, 0.1f);
+    const std::vector<ParamEvent> automation{{5000, ParamSlot::Pitch, false, 5.0}};
+    const std::vector<NoteEvent> notes{{9000, NoteEventType::On, 0, 64},
+                                       {15000, NoteEventType::Off, 0, 64}};
+    Grains grains;
+    grains.spawned.reserve(4096);
+    processor.setEventSink(&Grains::record, &grains);
+    std::vector<float> left(frames);
+    std::vector<float> right(frames);
+    const float *const in[1] = {input.channels[0].data()};
+    float *const out[2] = {left.data(), right.data()};
+    processor.process(in, 1, out, 2, frames, automation, notes);
+
+    REQUIRE_FALSE(grains.overflowed);
+    REQUIRE(grains.spawned.size() > 30);
+    REQUIRE(rendered.channels.size() == 2);
+    CHECK(bitIdentical(rendered.channels[0], left));
+    CHECK(bitIdentical(rendered.channels[1], right));
+    CHECK(events == grains.lines());
+
+    // Not vacuous: the note repitched the grains it spawned (key 64 is +4 semitones).
+    RenderSpec noNotes = spec;
+    noNotes.fx.notes.clear();
+    std::vector<std::string> noNoteEvents;
+    gg::render::render(noNotes, &noNoteEvents);
+    CHECK_FALSE(noNoteEvents == events);
+}
+
+TEST_CASE("instrument render matches the processor", "[render]")
+{
+    // Blocks of 100 frames, so grid boundaries fall inside blocks. The notes: a key retriggered
+    // on the frame its first note ends (the Off goes first, so it stays held), two channels, an
+    // Off and an On on one frame for different keys, and a note that outlasts the render (its
+    // Off is never sent).
+    RenderSpec spec;
+    spec.mode = RenderMode::Instrument;
+    spec.sampleRate = 48000.0;
+    spec.durationSeconds = 0.5;
+    spec.blockSize = 100;
+    spec.seed = 5;
+    spec.instrument.sample = {.kind = SourceKind::Sweep,
+                              .startHz = 100.0,
+                              .endHz = 4000.0,
+                              .seconds = 1.0,
+                              .amplitude = 0.5};
+    spec.instrument.params = {{"Density", 7.0}, {"Size", -4.0}, {"Position", 0.3}};
+    spec.instrument.automation = {{6000.0 / 48000.0, "Pitch", 3.0}};
+    const auto at = [](double frame) { return frame / 48000.0; };
+    spec.instrument.notes = {
+        {at(1000), 60, at(4000), 0},
+        {at(2000), 67, at(10000), 1},
+        {at(5000), 60, at(3000), 0},
+        {at(12000), 72, 1.0, 0},
+    };
+    std::vector<std::string> events;
+    const auto rendered = gg::render::render(spec, &events);
+
+    // The same render straight through a Processor in one call, with the sample built here.
+    constexpr std::size_t frames = 24000;
+    const auto signal = gg::render::makeSignal(spec.instrument.sample, spec.sampleRate, spec.seed);
+    auto buffer = std::make_shared<gg::SampleBuffer>(
+        1, static_cast<int64_t>(signal.channels[0].size()), spec.sampleRate);
+    std::copy(signal.channels[0].begin(), signal.channels[0].end(), buffer->channel(0));
+    Processor processor({spec.sampleRate, 4096, spec.seed, Mode::Instrument});
+    processor.setSourceNow(gg::PreparedSource::make(buffer));
+    processor.setBase(ParamSlot::Density, 7.0f);
+    processor.setBase(ParamSlot::Size, -4.0f);
+    processor.setBase(ParamSlot::Position, 0.3f);
+    const std::vector<ParamEvent> automation{{6000, ParamSlot::Pitch, false, 3.0}};
+    const std::vector<NoteEvent> notes{
+        {1000, NoteEventType::On, 0, 60},  {2000, NoteEventType::On, 1, 67},
+        {5000, NoteEventType::Off, 0, 60}, {5000, NoteEventType::On, 0, 60},
+        {8000, NoteEventType::Off, 0, 60}, {12000, NoteEventType::Off, 1, 67},
+        {12000, NoteEventType::On, 0, 72},
+    };
+    Grains grains;
+    grains.spawned.reserve(4096);
+    processor.setEventSink(&Grains::record, &grains);
+    std::vector<float> left(frames);
+    std::vector<float> right(frames);
+    float *const out[2] = {left.data(), right.data()};
+    processor.process(nullptr, 0, out, 2, frames, automation, notes);
+
+    REQUIRE_FALSE(grains.overflowed);
+    REQUIRE(grains.spawned.size() > 30);
+    REQUIRE(rendered.sampleRate == spec.sampleRate);
+    REQUIRE(rendered.channels.size() == 2);
+    CHECK(bitIdentical(rendered.channels[0], left));
+    CHECK(bitIdentical(rendered.channels[1], right));
+    CHECK(events == grains.lines());
+    // Key 72 is still held at the end: grains are sounding.
+    CHECK(left.back() != 0.0f);
+
+    // Not vacuous: without notes the instrument is silent and spawns nothing.
+    RenderSpec silent = spec;
+    silent.instrument.notes.clear();
+    std::vector<std::string> silentEvents;
+    const auto quiet = gg::render::render(silent, &silentEvents);
+    CHECK(silentEvents.empty());
+    CHECK(std::all_of(quiet.channels[0].begin(), quiet.channels[0].end(),
+                      [](float x) { return x == 0.0f; }));
+}
+
+TEST_CASE("an unreadable sample or input is bad input", "[render]")
+{
+    auto withFile = instrumentJson();
+    withFile["sample"] = {{"kind", "file"}, {"path", "tone-44k1.wav"}};
+    RenderSpec instrument = parseJson(withFile);
+    gg::render::resolvePaths(instrument, utf8(std::filesystem::path{GG_TEST_OUTPUT_DIR} / "none"));
+    CHECK_THROWS_AS(gg::render::render(instrument, nullptr), gg::render::BadInput);
+    RenderSpec fx = parseJson(fxFileJson());
+    gg::render::resolvePaths(fx, utf8(std::filesystem::path{GG_TEST_OUTPUT_DIR} / "none"));
+    CHECK_THROWS_AS(gg::render::render(fx, nullptr), gg::render::BadInput);
+}
+
+// The golden note and file cases (tests/golden/cases/).
+
+TEST_CASE("the golden note and file cases parse", "[render]")
+{
+    // inst-note: a 4 s sweep sample, one note.
+    const RenderSpec note = parseCase("inst-note");
+    CHECK(note.mode == RenderMode::Instrument);
+    CHECK(note.sampleRate == 48000.0);
+    CHECK(note.durationSeconds == 3.0);
+    CHECK(note.blockSize == 128);
+    CHECK(note.seed == 1);
+    CHECK(note.instrument.sample.kind == SourceKind::Sweep);
+    const std::map<std::string, double> params(note.instrument.params.begin(),
+                                               note.instrument.params.end());
+    CHECK(params ==
+          std::map<std::string, double>{{"Position", 0.5}, {"Density", 5.0}, {"Level", -6.0}});
+    CHECK(note.instrument.notes == std::vector<NoteSpec>{{0.25, 60, 2.0, 0}});
+
+    // inst-chord: three notes together.
+    CHECK(parseCase("inst-chord").instrument.notes ==
+          std::vector<NoteSpec>{{0.25, 48, 3.0, 0}, {0.25, 55, 3.0, 0}, {0.25, 64, 3.0, 0}});
+
+    // inst-file-44k1: a file sample; the parser leaves its path as written.
+    const RenderSpec file = parseCase("inst-file-44k1");
+    CHECK(file.instrument.sample.kind == SourceKind::File);
+    CHECK(file.instrument.sample.path == "tone-44k1.wav");
+    CHECK(file.instrument.notes == std::vector<NoteSpec>{{0.25, 60, 1.0, 0}, {1.5, 72, 1.0, 0}});
+
+    // fx-note-freeze: notes in FX mode, over a file input without "channels".
+    const RenderSpec freeze = parseCase("fx-note-freeze");
+    CHECK(freeze.mode == RenderMode::Fx);
+    CHECK(freeze.fx.input.kind == SourceKind::File);
+    CHECK(freeze.fx.input.path == "loop-48k.wav");
+    CHECK(freeze.fx.notes == std::vector<NoteSpec>{{1.0, 60, 1.0, 0}, {2.5, 67, 0.5, 0}});
+    CHECK(parseCase("fx-file").fx.notes.empty());
+}
+
+TEST_CASE("note and file renders do not depend on block size", "[render]")
+{
+    const std::string name = GENERATE(as<std::string>{}, "inst-note", "inst-chord", "inst-release",
+                                      "inst-file-44k1", "fx-note-freeze", "fx-file");
+    const uint32_t blockSize = GENERATE(1u, 1000u);
+    CAPTURE(name, blockSize);
+
+    RenderSpec spec = parseCase(name);
+    gg::render::resolvePaths(spec, writeMedia("render-block-size-media"));
+    std::vector<std::string> refEvents;
+    const auto ref = gg::render::render(spec, &refEvents);
+    REQUIRE(ref.channels.size() == 2);
+    REQUIRE(ref.channels[0].size() ==
+            static_cast<std::size_t>(gg::render::framesFor(spec.durationSeconds, spec.sampleRate)));
+    REQUIRE_FALSE(refEvents.empty());
+
+    spec.blockSize = blockSize;
+    std::vector<std::string> events;
+    const auto out = gg::render::render(spec, &events);
+    REQUIRE(out.channels.size() == 2);
+    CHECK(bitIdentical(out.channels[0], ref.channels[0]));
+    CHECK(bitIdentical(out.channels[1], ref.channels[1]));
+    CHECK(events == refEvents);
+}
+
+TEST_CASE("a chord's grains take its three keys, and its release decays to silence", "[render]")
+{
+    // inst-chord: keys 48, 55 and 64 over a sample at the render's rate, so each grain's read
+    // rate is 2^((key - 60) / 12).
+    std::vector<std::string> events;
+    gg::render::render(parseCase("inst-chord"), &events);
+    std::set<double> rates;
+    for (const auto &line : events)
+    {
+        rates.insert(nlohmann::json::parse(line)["rate"].get<double>());
+    }
+    REQUIRE(rates.size() == 3);
+    auto rate = rates.begin();
+    CHECK_THAT(*rate++, WithinRel(0.5, 1e-12));
+    CHECK_THAT(*rate++, WithinRel(std::exp2(-5.0 / 12.0), 1e-12));
+    CHECK_THAT(*rate, WithinRel(std::exp2(4.0 / 12.0), 1e-12));
+
+    // inst-release: key 60 from 0.25 s to 1.25 s with 400 ms grains. Grains sound after the
+    // note-off, and the render ends in silence.
+    const RenderSpec release = parseCase("inst-release");
+    const auto out = gg::render::render(release, &events);
+    const auto at = [](double seconds) { return static_cast<std::size_t>(seconds * 48000.0); };
+    const auto loudest = [&](double from, double to) {
+        float p = 0.0f;
+        for (std::size_t n = at(from); n < at(to); ++n)
+        {
+            p = std::max(p, std::abs(out.channels[0][n]));
+        }
+        return p;
+    };
+    CHECK(loudest(0.0, 0.25) == 0.0f);
+    CHECK(loudest(1.3, 1.4) > 0.01f);
+    CHECK(loudest(1.7, 2.0) == 0.0f);
+    for (const auto &line : events)
+    {
+        CHECK(nlohmann::json::parse(line)["onset"].get<int64_t>() < 60000); // none after 1.25 s
+    }
 }

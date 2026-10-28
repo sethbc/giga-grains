@@ -135,13 +135,21 @@ endif ()
 
 # Determinism (INTENT §14): never contract a*b+c into an FMA, so every platform rounds the
 # same way. ClangCL takes the clang spelling through /clang:. Never enable fast-math.
+set(GG_FP_CONTRACT_OFF_OPTIONS)
 if (CMAKE_CXX_COMPILER_FRONTEND_VARIANT MATCHES "MSVC")
     if (CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-        list(APPEND OS_COMPILE_OPTIONS /clang:-ffp-contract=off)
+        set(GG_FP_CONTRACT_OFF_OPTIONS /clang:-ffp-contract=off)
     endif ()
 elseif (CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
-    list(APPEND OS_COMPILE_OPTIONS -ffp-contract=off)
+    set(GG_FP_CONTRACT_OFF_OPTIONS -ffp-contract=off)
 endif ()
+list(APPEND OS_COMPILE_OPTIONS ${GG_FP_CONTRACT_OFF_OPTIONS})
+
+# That flag alone, for third-party code compiled from source (libs/CMakeLists.txt): it computes
+# with the project's rounding but keeps its own warnings, out of our -Werror.
+add_library(gg-fp-contract-off INTERFACE)
+target_compile_options(gg-fp-contract-off INTERFACE ${GG_FP_CONTRACT_OFF_OPTIONS})
+add_library(gg::fp-contract-off ALIAS gg-fp-contract-off)
 
 target_compile_options(gg-compiler-options INTERFACE ${OS_COMPILE_OPTIONS})
 target_compile_definitions(gg-compiler-options INTERFACE ${OS_COMPILE_DEFINITIONS})

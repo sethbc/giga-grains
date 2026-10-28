@@ -13,6 +13,7 @@
 #include <system_error>
 #include <utility>
 
+#include "XmlText.h"
 #include "tinyxml/tinyxml.h"
 
 namespace gg::core
@@ -89,6 +90,12 @@ float sanitize(float v, const md_t &m)
 // so a truncated state would load as far as it got.
 bool isLoadable(const std::string &xml)
 {
+    // Before any parse, here or in PatchBase::fromState: tinyxml's recursion would overflow the
+    // stack on a deeply nested document.
+    if (!xmlNestingWithin(xml))
+    {
+        return false;
+    }
     TiXmlDocument doc;
     doc.Parse(xml.c_str());
     if (doc.Error())
@@ -113,18 +120,19 @@ bool isLoadable(const std::string &xml)
     return root->FirstChildElement("params") != nullptr;
 }
 
-template <size_t... I> std::array<Param, kParamCount> makeValues(std::index_sequence<I...>)
+template <size_t... I>
+std::array<Param, kParamCount> makeValues(Mode mode, std::index_sequence<I...>)
 {
-    return {Param{paramMeta(static_cast<ParamSlot>(I))}...};
+    return {Param{paramMeta(static_cast<ParamSlot>(I), mode)}...};
 }
 } // namespace
 
-std::array<Param, kParamCount> Patch::defaultValues()
+std::array<Param, kParamCount> Patch::defaultValues(Mode mode)
 {
-    return makeValues(std::make_index_sequence<kParamCount>{});
+    return makeValues(mode, std::make_index_sequence<kParamCount>{});
 }
 
-Patch::Patch() : values(defaultValues())
+Patch::Patch(Mode mode) : mode_(mode), values(defaultValues(mode))
 {
     for (auto &p : values)
     {
@@ -179,7 +187,7 @@ bool Patch::fromState(const std::string &xml)
 
     // PatchBase::fromState resets the patch it loads into before it parses, so load into a new
     // one and take its values only when the load succeeds.
-    Patch loaded;
+    Patch loaded(mode_);
     loaded.dawExtraStateFrom = dawExtraStateFrom;
     if (!loaded.PatchBase::fromState(xml))
     {

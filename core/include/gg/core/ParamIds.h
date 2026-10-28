@@ -18,9 +18,17 @@ struct ParamMetaData;
 }
 
 /// The slice's ten parameters (spec §4): their slots, CLAP IDs and metadata. Both products expose
-/// the same list, so they share one state format (INTENT §2).
+/// the same list, so they share one state format (INTENT §2); only Position's metadata differs
+/// between them (sub-project 3's spec §6.8).
 namespace gg::core
 {
+/// Which product: a Processor's configuration, and the parameter metadata it shows.
+enum class Mode
+{
+    Instrument, ///< The wet signal alone, from a sample source; no input.
+    Fx,         ///< The input feeds the live ring and the dry side of the Mix.
+};
+
 /// A parameter's index in the patch, the processor and the plugin's value store. Slots are the
 /// code's names for the parameters; they're never saved. What's saved, and frozen at the first
 /// public release, is the CLAP ID (INTENT §18).
@@ -84,15 +92,19 @@ constexpr std::optional<ParamSlot> slotForId(clap_id id) noexcept
     return std::nullopt;
 }
 
-/// The slot's metadata: ID, name, range, default, CLAP flags (AUTOMATABLE and MODULATABLE on
-/// all, STEPPED on Freeze), and the display text and text parsing. The ranges and defaults are
-/// literal constants (INTENT §14), never computed at run time.
+/// The slot's metadata in `mode`'s product: ID, name, range, default, CLAP flags (AUTOMATABLE and
+/// MODULATABLE on all, STEPPED on Freeze), and the display text and text parsing. The ranges and
+/// defaults are literal constants (INTENT §14), never computed at run time.
 ///
-/// Static storage: the table is built on the first call, which allocates, and every later call
-/// returns the same objects. Make the first call off the audio thread; saving or loading a state
-/// does. `slot` must be a parameter: ParamSlot::Count asserts, and in release builds returns the
-/// last parameter's metadata rather than read out of bounds.
-const sst::basic_blocks::params::ParamMetaData &paramMeta(ParamSlot slot);
+/// Only Position differs between the products, and only in its default and display: the FX's is
+/// 0–16 s behind the write head, 0.25 s by default; the instrument's is 0–100% of the loaded
+/// file, 0% by default. Both are CLAP values 0–1 with the same ID, so the state format is shared.
+///
+/// Static storage: both products' tables are built on the first call, which allocates, and every
+/// later call returns the same objects. Make the first call off the audio thread; saving or
+/// loading a state does. `slot` must be a parameter: ParamSlot::Count asserts, and in release
+/// builds returns the last parameter's metadata rather than read out of bounds.
+const sst::basic_blocks::params::ParamMetaData &paramMeta(ParamSlot slot, Mode mode);
 } // namespace gg::core
 
 #endif // GG_CORE_PARAMIDS_H

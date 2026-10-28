@@ -29,9 +29,9 @@ md_t base(ParamSlot slot)
     return m.withID(paramId(slot)).withFlags(kAutomatableModulatable);
 }
 
-// Global Constraints' parameter table. The bounds and defaults are literals: none is computed
-// with libm (INTENT §14).
-std::array<md_t, kParamCount> buildTable()
+// Global Constraints' parameter table, for `mode`'s product. The bounds and defaults are
+// literals: none is computed with libm (INTENT §14).
+std::array<md_t, kParamCount> buildTable(Mode mode)
 {
     std::array<md_t, kParamCount> t{};
     auto at = [&t](ParamSlot s) -> md_t & { return t[static_cast<size_t>(s)]; };
@@ -43,17 +43,21 @@ std::array<md_t, kParamCount> buildTable()
     at(ParamSlot::Level) =
         base(ParamSlot::Level).withName("Level").asDecibelWithRange(-60.f, 12.f, 0.f);
 
-    // 0..1; seconds behind the write head = (16/255)(2^(8v) - 1), 0 to 16 s; 0.25 s by default.
-    // Global Constraints names withATwoToTheBPlusCFormatting(16/255, 8, -16/255), but at our
-    // sst-basic-blocks pin that puts C in the exponent (A 2^(Bv + C)); the A 2^(Bv + C) + D form
-    // with C = 0 and D = -A displays the mapping above.
+    // The instrument's (sub-project 3's spec §6.8): 0..1, the fraction of the loaded file, shown
+    // as 0–100%; 0% by default.
+    // The FX's: 0..1; seconds behind the write head = (16/255)(2^(8v) - 1), 0 to 16 s; 0.25 s by
+    // default. Global Constraints names withATwoToTheBPlusCFormatting(16/255, 8, -16/255), but at
+    // our sst-basic-blocks pin that puts C in the exponent (A 2^(Bv + C)); the A 2^(Bv + C) + D
+    // form with C = 0 and D = -A displays the mapping above.
     at(ParamSlot::Position) =
-        base(ParamSlot::Position)
-            .withName("Position")
-            .asFloat()
-            .withRange(0.f, 1.f)
-            .withDefault(0.28967658f)
-            .withATwoToTheBPlusCPlusDFormatting(16.f / 255.f, 8.f, 0.f, -16.f / 255.f, "s");
+        mode == Mode::Instrument
+            ? base(ParamSlot::Position).withName("Position").asPercent().withDefault(0.0f)
+            : base(ParamSlot::Position)
+                  .withName("Position")
+                  .asFloat()
+                  .withRange(0.f, 1.f)
+                  .withDefault(0.28967658f)
+                  .withATwoToTheBPlusCPlusDFormatting(16.f / 255.f, 8.f, 0.f, -16.f / 255.f, "s");
 
     // log2 seconds: 5 ms (-7.643856...) to 2 s (1), 150 ms by default.
     at(ParamSlot::Size) = base(ParamSlot::Size)
@@ -101,11 +105,12 @@ std::array<md_t, kParamCount> buildTable()
 }
 } // namespace
 
-const sst::basic_blocks::params::ParamMetaData &paramMeta(ParamSlot slot)
+const sst::basic_blocks::params::ParamMetaData &paramMeta(ParamSlot slot, Mode mode)
 {
-    static const std::array<md_t, kParamCount> table = buildTable();
+    static const std::array<md_t, kParamCount> instrument = buildTable(Mode::Instrument);
+    static const std::array<md_t, kParamCount> fx = buildTable(Mode::Fx);
     const auto i = static_cast<size_t>(slot);
     assert(i < kParamCount);
-    return table[std::min(i, kParamCount - 1)];
+    return (mode == Mode::Instrument ? instrument : fx)[std::min(i, kParamCount - 1)];
 }
 } // namespace gg::core

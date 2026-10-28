@@ -26,13 +26,21 @@ constexpr double kLog2Of10 = 3.321928094887362;
 constexpr float kBelowOne = 0x1.fffffep-1f;
 } // namespace
 
-CloudParams toCloudParams(const ParamValues &effective) noexcept
+CloudParams toCloudParams(const ParamValues &effective, Mode mode) noexcept
 {
     CloudParams p;
     p.densityHz = exp2Det(value(effective, ParamSlot::Density));
     p.distribution = value(effective, ParamSlot::Distribution);
     p.grainDurationSec = exp2Det(value(effective, ParamSlot::Size));
-    p.position = 16.0 / 255.0 * (exp2Det(8.0 * value(effective, ParamSlot::Position)) - 1.0);
+    if (mode == Mode::Instrument)
+    {
+        p.position = value(effective, ParamSlot::Position);
+        p.sprayInSeconds = true;
+    }
+    else
+    {
+        p.position = 16.0 / 255.0 * (exp2Det(8.0 * value(effective, ParamSlot::Position)) - 1.0);
+    }
     p.spray = 2.0 / 255.0 * (exp2Det(8.0 * value(effective, ParamSlot::Spray)) - 1.0);
     p.pitchSemitones = value(effective, ParamSlot::Pitch);
     p.stereo = value(effective, ParamSlot::Stereo);

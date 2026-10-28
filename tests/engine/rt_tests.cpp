@@ -3,8 +3,9 @@
 // Copyright 2026, the Giga Grains authors (see git history)
 
 // Real-time safety (INTENT §14): gg::Engine::process never allocates. The allocation tripwire
-// checks that in every build; the RTSan build also aborts on any allocation, lock or blocking
-// call made inside the SST_CPPUTILS_NONBLOCKING process().
+// checks that in every build but ASan's, where it is compiled out: there these tests still run
+// their other checks, and the tripwire's own test SKIPs. The RTSan build also aborts on any
+// allocation, lock or blocking call made inside the SST_CPPUTILS_NONBLOCKING process().
 
 #include <cmath>
 #include <cstdint>
@@ -17,6 +18,7 @@
 #include <sst/cpputils/rtsan_support.h>
 
 #include "gg/engine/Engine.h"
+#include "gg/source/PreparedSource.h"
 #include "support/AllocTripwire.h"
 
 using gg::test::AllocTripwire;
@@ -61,6 +63,10 @@ struct alignas(64) Wide
 
 TEST_CASE("tripwire detects allocation", "[rt]")
 {
+    if (!gg::test::AllocTripwire::available())
+    {
+        SKIP("allocation tripwire is off under ASan; RTSan covers this");
+    }
     // The pointers are volatile so the optimizer can't elide the new/delete pairs (C++14
     // allows it), which it does in the RelWithDebInfo RTSan build.
     AllocTripwire::resetCount();
@@ -149,7 +155,10 @@ TEST_CASE("engine process does not allocate", "[rt]")
     // grain spawned.
     REQUIRE(static_cast<int64_t>(spawnedArmed) >
             static_cast<int64_t>(engine.activeGrains()) - static_cast<int64_t>(activeBefore));
-    REQUIRE(allocations == 0);
+    if (gg::test::AllocTripwire::available()) // off under ASan; RTSan covers this
+    {
+        REQUIRE(allocations == 0);
+    }
 }
 
 TEST_CASE("engine process does not allocate with a full pool or odd block sizes", "[rt]")
@@ -192,7 +201,10 @@ TEST_CASE("engine process does not allocate with a full pool or odd block sizes"
     REQUIRE(engine.sampleClock() == clockBefore + 20 * 1001);
     REQUIRE(counter.spawns > spawnsBefore);          // admitted into a full pool while armed
     REQUIRE(engine.droppedGrains() > droppedBefore); // and dropped while armed
-    REQUIRE(allocations == 0);
+    if (gg::test::AllocTripwire::available())        // off under ASan; RTSan covers this
+    {
+        REQUIRE(allocations == 0);
+    }
 }
 
 TEST_CASE("engine process does not allocate when the pool's storage fills", "[rt]")
@@ -241,7 +253,10 @@ TEST_CASE("engine process does not allocate when the pool's storage fills", "[rt
     // More than 2 × capacity spawns in one block can't all be stored without an early compaction.
     REQUIRE(mostSpawnedInOneCall > 2 * kCapacity);
     REQUIRE(engine.droppedGrains() > droppedBefore); // saturated while armed
-    REQUIRE(allocations == 0);
+    if (gg::test::AllocTripwire::available())        // off under ASan; RTSan covers this
+    {
+        REQUIRE(allocations == 0);
+    }
 }
 
 TEST_CASE("engine live process does not allocate", "[rt]")
@@ -300,7 +315,10 @@ TEST_CASE("engine live process does not allocate", "[rt]")
     REQUIRE(counter.spawns > spawnsBefore);
     REQUIRE(engine.activeGrains() > 0);
     REQUIRE(engine.liveWriteHead() > headBefore);
-    REQUIRE(allocations == 0);
+    if (gg::test::AllocTripwire::available()) // off under ASan; RTSan covers this
+    {
+        REQUIRE(allocations == 0);
+    }
 }
 
 TEST_CASE("engine process does not allocate at the Eco tier", "[rt]")
@@ -368,7 +386,73 @@ TEST_CASE("engine process does not allocate at the Eco tier", "[rt]")
     REQUIRE(counter.eco > ecoBefore);                     // Eco grains spawned while armed
     REQUIRE(counter.spawns - counter.eco > normalBefore); // and Normal ones
     REQUIRE(engine.activeGrains() > 0);
-    REQUIRE(allocations == 0);
+    if (gg::test::AllocTripwire::available()) // off under ASan; RTSan covers this
+    {
+        REQUIRE(allocations == 0);
+    }
+}
+
+TEST_CASE("engine adopts and hands back sources without allocating", "[engine][rt]")
+{
+    // Prepared off the audio thread; adopted, rendered and handed back with the tripwire armed.
+    const auto a = gg::PreparedSource::make(stereoSine(330.0));
+    const auto b = gg::PreparedSource::make(stereoSine(220.0));
+    gg::Engine engine(gg::EngineConfig{48000.0, 4096, 4096, 3});
+    engine.setCloudParams({.densityHz = 200.0,
+                           .distribution = 1.0,
+                           .grainDurationSec = 0.05,
+                           .position = 0.5,
+                           .spray = 0.5,
+                           .pitchSemitones = 7.0,
+                           .stereo = 1.0,
+                           .gain = 0.5f});
+    SpawnCounter counter;
+    engine.setEventSink(&SpawnCounter::record, &counter);
+    REQUIRE(engine.adoptSource(a.get()));
+
+    std::vector<float> left(64), right(64);
+    float *out[2] = {left.data(), right.data()};
+    for (int i = 0; i < 50; ++i) // warm up until A's grains are sounding
+    {
+        engine.process(out, 2, 64);
+    }
+    REQUIRE(engine.activeGrains() > 0);
+    const uint64_t spawnsBefore = counter.spawns;
+
+    bool adoptedB = false;
+    bool refusedA = false;
+    const gg::PreparedSource *retiredA = nullptr;
+    bool adoptedAAgain = false;
+    const gg::PreparedSource *retiredB = nullptr;
+    AllocTripwire::resetCount();
+    {
+        AllocTripwire::Scope armed;
+        adoptedB = engine.adoptSource(b.get());
+        refusedA = !engine.adoptSource(a.get()); // A still has grains: two sources are in play
+        for (int i = 0; i < 100 && retiredA == nullptr; ++i)
+        {
+            engine.process(out, 2, 64);
+            retiredA = engine.takeRetiredSource();
+        }
+        adoptedAAgain = engine.adoptSource(a.get());
+        for (int i = 0; i < 100 && retiredB == nullptr; ++i)
+        {
+            engine.process(out, 2, 64);
+            retiredB = engine.takeRetiredSource();
+        }
+    }
+    const uint64_t allocations = AllocTripwire::count();
+
+    REQUIRE(adoptedB);
+    REQUIRE(refusedA);
+    REQUIRE(retiredA == a.get());
+    REQUIRE(adoptedAAgain);
+    REQUIRE(retiredB == b.get());
+    REQUIRE(counter.spawns > spawnsBefore);   // grains spawned and rendered while armed
+    if (gg::test::AllocTripwire::available()) // off under ASan; RTSan covers this
+    {
+        REQUIRE(allocations == 0);
+    }
 }
 
 #if GG_USE_RTSAN

@@ -1,0 +1,12 @@
+{
+  "mode": "instrument",
+  "sampleRate": 48000,
+  "durationSeconds": 3.0,
+  "blockSize": 128,
+  "seed": 1,
+  "sample": {"kind": "sweep", "startHz": 50, "endHz": 8000, "seconds": 4.0, "amplitude": 0.5},
+  "params": {"Position": 0.5, "Density": 5.0, "Level": -6.0},
+  "notes": [
+    {"time": 0.25, "key": 60, "duration": 2.0}
+  ]
+}

@@ -12,7 +12,6 @@ constexpr double kMinDensityHz = 0.01;
 constexpr double kMinDurationSamples = 16.0; // the minimum window length
 // Keeps grainEndSample and the int64 sample arithmetic exact; about 3000 years at 48 kHz.
 constexpr double kMaxDurationSamples = 0x1.0p52;
-constexpr double kMaxPitchSemitones = 48.0;
 constexpr float kMaxGain = 4.0f;
 
 double finiteOr(double v, double fallback) noexcept { return std::isfinite(v) ? v : fallback; }
@@ -37,14 +36,22 @@ void CloudScheduler::setParams(const CloudParams &in) noexcept
     p.distribution = std::clamp(finiteOr(in.distribution, d.distribution), 0.0, 1.0);
     p.grainDurationSec = finiteOr(in.grainDurationSec, d.grainDurationSec);
     // Ruling M1-k: a fraction of the source in Sample mode, seconds behind the head in Live mode.
+    // With sprayInSeconds, Sample mode's spray is seconds, which the source bounds when it
+    // clamps the read position to its frames: here it is only kept non-negative.
     const double maxPosition = mode_ == SourceMode::Live ? ringSeconds_ : 1.0;
+    const bool sprayInSeconds = mode_ == SourceMode::Sample && in.sprayInSeconds;
     p.position = std::clamp(finiteOr(in.position, d.position), 0.0, maxPosition);
-    p.spray = std::clamp(finiteOr(in.spray, d.spray), 0.0, maxPosition);
+    p.spray = std::max(finiteOr(in.spray, d.spray), 0.0);
+    if (!sprayInSeconds)
+    {
+        p.spray = std::min(p.spray, maxPosition);
+    }
     p.pitchSemitones = std::clamp(finiteOr(in.pitchSemitones, d.pitchSemitones),
                                   -kMaxPitchSemitones, kMaxPitchSemitones);
     p.stereo = std::clamp(finiteOr(in.stereo, d.stereo), 0.0, 1.0);
     p.gain = std::clamp(finiteOr(in.gain, d.gain), 0.0f, kMaxGain);
     p.quality = in.quality;
+    p.sprayInSeconds = in.sprayInSeconds;
 
     const double oldPeriod = period_;
     const double oldDistribution = params_.distribution;
@@ -72,6 +79,21 @@ void CloudScheduler::setSourceMode(SourceMode mode, double ringSeconds) noexcept
     ringSeconds_ = std::isfinite(ringSeconds) && ringSeconds > 0.0 ? ringSeconds : 0.0;
     // The period and the distribution don't change, so this never moves the pending onset.
     setParams(requested_);
+}
+
+void CloudScheduler::setHeldKeys(std::span<const uint8_t> keys) noexcept
+{
+    const auto n = static_cast<uint32_t>(std::min(keys.size(), keys_.size()));
+    std::copy_n(keys.begin(), n, keys_.begin());
+    if (n == 0)
+    {
+        onsetForced_ = false; // emptied again before the next schedule() call: nothing to force
+    }
+    else if (keyCount_ == 0)
+    {
+        onsetForced_ = true; // empty to non-empty (spec §6.2–§6.3)
+    }
+    keyCount_ = n;
 }
 
 void CloudScheduler::reset() noexcept

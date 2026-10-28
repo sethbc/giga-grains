@@ -6,6 +6,8 @@
 #include <cstring>
 #include <limits>
 #include <stdexcept>
+#include <type_traits>
+#include <utility>
 #include <vector>
 
 #include <catch2/catch_test_macros.hpp>
@@ -67,6 +69,39 @@ TEST_CASE("sample buffer accepts empty shapes and rejects invalid ones", "[sourc
     REQUIRE_THROWS_AS(gg::SampleBuffer(std::numeric_limits<uint32_t>::max(),
                                        std::numeric_limits<int64_t>::max(), 48000.0),
                       std::length_error);
+}
+
+TEST_CASE("sample buffer is move-only and a moved-from buffer is empty", "[source]")
+{
+    STATIC_REQUIRE(!std::is_copy_constructible_v<gg::SampleBuffer>);
+    STATIC_REQUIRE(!std::is_copy_assignable_v<gg::SampleBuffer>);
+    STATIC_REQUIRE(std::is_nothrow_move_constructible_v<gg::SampleBuffer>);
+    STATIC_REQUIRE(std::is_nothrow_move_assignable_v<gg::SampleBuffer>);
+
+    gg::SampleBuffer a(2, 100, 44100.0);
+    a.channel(1)[99] = 0.5f;
+    const float *samples = a.channel(0);
+
+    gg::SampleBuffer b = std::move(a);
+    REQUIRE(a.channels() == 0);
+    REQUIRE(a.frames() == 0);
+    REQUIRE(a.channel(0) == nullptr);
+    REQUIRE(a.sampleRate() == 44100.0);
+    REQUIRE(b.channels() == 2);
+    REQUIRE(b.frames() == 100);
+    REQUIRE(b.channel(0) == samples); // the samples moved, not copied
+    REQUIRE(b.channel(1)[99] == 0.5f);
+
+    // Move assignment empties its source the same way.
+    gg::SampleBuffer c(1, 10, 48000.0);
+    c = std::move(b);
+    REQUIRE(b.channels() == 0);
+    REQUIRE(b.frames() == 0);
+    REQUIRE(b.channel(0) == nullptr);
+    REQUIRE(c.channels() == 2);
+    REQUIRE(c.frames() == 100);
+    REQUIRE(c.sampleRate() == 44100.0);
+    REQUIRE(c.channel(0) == samples);
 }
 
 namespace

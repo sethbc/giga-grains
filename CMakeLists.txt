@@ -3,9 +3,9 @@
 # Copyright 2026, the Giga Grains authors (see git history)
 #
 # One shared, framework-free grain engine (engine/), the JUCE-free layer both plugins share above
-# it (core/: the patch), the CLAP-first plugin shells for both products (plugin/,
-# clients/clap-first/), their editor (ui/: a framework-free canvas core plus a JUCE editor
-# attached through clap_juce_shim), the tools and the tests. See INTENT.md.
+# it (core/: the patch), sample-file I/O (media/), the CLAP-first plugin shells for both products
+# (plugin/, clients/clap-first/), their editor (ui/: a framework-free canvas core plus a JUCE
+# editor attached through clap_juce_shim), the tools and the tests. See INTENT.md.
 
 cmake_minimum_required(VERSION 3.22)
 
@@ -65,6 +65,7 @@ enable_testing()
 
 add_subdirectory(engine)
 add_subdirectory(core)
+add_subdirectory(media)
 add_subdirectory(ui)
 add_subdirectory(tools/audiometrics)
 add_subdirectory(tools/gg-bench)
@@ -80,7 +81,8 @@ add_subdirectory(tests)
 
 # Everything this tree builds; CI builds this target.
 add_custom_target(gg-all)
-add_dependencies(gg-all gg-engine gg-core gg-ui-core gg-audiometrics gg-bench gg-render gg-tests)
+add_dependencies(gg-all gg-engine gg-core gg-media gg-ui-core gg-audiometrics gg-bench gg-render
+        gg-tests)
 if (TARGET gg-rtsan-negative-control)
     add_dependencies(gg-all gg-rtsan-negative-control)
 endif ()

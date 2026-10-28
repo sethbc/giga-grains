@@ -11,6 +11,7 @@
 #include <limits>
 #include <stdexcept>
 #include <string_view>
+#include <system_error>
 #include <utility>
 
 #include <fmt/format.h>
@@ -109,6 +110,17 @@ class Object
         return v.get<uint64_t>();
     }
 
+    /// A JSON integer from 0 to max (not a float, even an integral one).
+    uint64_t integerUpTo(std::string_view key, uint64_t max) const
+    {
+        const json &v = member(key);
+        if (!v.is_number_unsigned() || v.get<uint64_t>() > max)
+        {
+            throw SpecError(fmt::format("{}{} must be an integer from 0 to {}", prefix_, key, max));
+        }
+        return v.get<uint64_t>();
+    }
+
     std::string string(std::string_view key) const
     {
         const json &v = member(key);
@@ -124,24 +136,27 @@ class Object
     std::string prefix_;
 };
 
-/// Which signal readSource reads: a sample-mode "source", or an FX "input", which is
-/// synthesized at the render's rate and so has no "sampleRate" and can't be a file.
+/// Which signal readSource reads: a sample-mode "source", an instrument's "sample" or an FX
+/// "input". The last two are made at the render's rate, so have no "sampleRate".
 enum class SignalRole
 {
     Source,
+    Sample,
     Input,
 };
 
 SourceSpec readSource(const json &j, SignalRole role)
 {
-    const bool input = role == SignalRole::Input;
-    const std::string name = input ? "input" : "source";
+    const std::string name = role == SignalRole::Source   ? "source"
+                             : role == SignalRole::Sample ? "sample"
+                                                          : "input";
     const Object o =
-        input ? Object(j, name, name + ".",
-                       {"kind", "frequencyHz", "startHz", "endHz", "seconds", "amplitude"})
-              : Object(j, name, name + ".",
-                       {"kind", "frequencyHz", "startHz", "endHz", "seconds", "amplitude",
-                        "sampleRate", "path"});
+        role == SignalRole::Source
+            ? Object(j, name, name + ".",
+                     {"kind", "frequencyHz", "startHz", "endHz", "seconds", "amplitude",
+                      "sampleRate", "path"})
+            : Object(j, name, name + ".",
+                     {"kind", "frequencyHz", "startHz", "endHz", "seconds", "amplitude", "path"});
     SourceSpec s;
     const std::string kind = o.string("kind");
     if (kind == "sine")
@@ -159,23 +174,20 @@ SourceSpec readSource(const json &j, SignalRole role)
     {
         s.kind = SourceKind::Noise;
     }
-    else if (kind == "file" && !input)
+    else if (kind == "file")
     {
         s.kind = SourceKind::File;
         s.path = o.string("path");
         if (s.path.empty())
         {
-            throw SpecError("source.path must not be empty");
+            throw SpecError(fmt::format("{}.path must not be empty", name));
         }
         return s;
     }
     else
     {
-        throw SpecError(
-            input
-                ? fmt::format(R"(input.kind must be "sine", "sweep" or "noise", not "{}")", kind)
-                : fmt::format(R"(source.kind must be "sine", "sweep", "noise" or "file", not "{}")",
-                              kind));
+        throw SpecError(fmt::format(
+            R"({}.kind must be "sine", "sweep", "noise" or "file", not "{}")", name, kind));
     }
     s.seconds = o.positive("seconds", kMaxSeconds);
     s.amplitude = o.number("amplitude");
@@ -233,18 +245,20 @@ std::string parameterNames()
     std::string names;
     for (std::size_t s = 0; s < gg::core::kParamCount; ++s)
     {
-        names +=
-            (s == 0 ? "" : ", ") + gg::core::paramMeta(static_cast<gg::core::ParamSlot>(s)).name;
+        names += (s == 0 ? "" : ", ") +
+                 gg::core::paramMeta(static_cast<gg::core::ParamSlot>(s), gg::core::Mode::Fx).name;
     }
     return names;
 }
 
-/// v as a value for the parameter in `slot`: a finite number that, converted to float as the
-/// Processor converts it, is in the parameter's range. `key` names it in the error.
-double parameterValue(const json &v, gg::core::ParamSlot slot, std::string_view key)
+/// v as a value for the parameter in `slot` of `mode`'s product: a finite number that, converted
+/// to float as the Processor converts it, is in the parameter's range. `key` names it in the
+/// error.
+double parameterValue(const json &v, gg::core::ParamSlot slot, gg::core::Mode mode,
+                      std::string_view key)
 {
     const double d = finiteNumber(v, key);
-    const auto &meta = gg::core::paramMeta(slot);
+    const auto &meta = gg::core::paramMeta(slot, mode);
     // The float conversion is defined only within float's range.
     const bool fits = std::abs(d) <= std::numeric_limits<float>::max();
     const float f = fits ? static_cast<float>(d) : 0.0f;
@@ -256,7 +270,7 @@ double parameterValue(const json &v, gg::core::ParamSlot slot, std::string_view 
     return d;
 }
 
-std::vector<std::pair<std::string, double>> readParams(const json &j)
+std::vector<std::pair<std::string, double>> readParams(const json &j, gg::core::Mode mode)
 {
     if (!j.is_object())
     {
@@ -272,12 +286,27 @@ std::vector<std::pair<std::string, double>> readParams(const json &j)
             throw SpecError(
                 fmt::format("unknown key {}: the parameters are {}", key, parameterNames()));
         }
-        params.emplace_back(item.key(), parameterValue(item.value(), *slot, key));
+        params.emplace_back(item.key(), parameterValue(item.value(), *slot, mode, key));
     }
     return params;
 }
 
-std::vector<AutomationPoint> readAutomation(const json &j, double sampleRate,
+/// The message for a time that isn't >= 0 or doesn't round to a frame before the render's end.
+std::string timeError(std::string_view name)
+{
+    return fmt::format(
+        "{}.time must be >= 0 and round to a frame before the render's end (durationSeconds)",
+        name);
+}
+
+/// Whether `seconds` is >= 0 and rounds to a frame before frame `end`, durationSeconds' frame.
+bool beforeEnd(double seconds, double durationSeconds, double sampleRate, int64_t end)
+{
+    // The first test keeps framesFor's argument in range.
+    return seconds >= 0.0 && seconds <= durationSeconds && framesFor(seconds, sampleRate) < end;
+}
+
+std::vector<AutomationPoint> readAutomation(const json &j, gg::core::Mode mode, double sampleRate,
                                             double durationSeconds)
 {
     if (!j.is_array())
@@ -292,14 +321,9 @@ std::vector<AutomationPoint> readAutomation(const json &j, double sampleRate,
         const Object o(j[i], name, name + ".", {"time", "param", "value"});
         AutomationPoint p;
         p.timeSeconds = o.number("time");
-        // The first test keeps framesFor's argument in range.
-        if (!(p.timeSeconds >= 0.0 && p.timeSeconds <= durationSeconds &&
-              framesFor(p.timeSeconds, sampleRate) < end))
+        if (!beforeEnd(p.timeSeconds, durationSeconds, sampleRate, end))
         {
-            throw SpecError(
-                fmt::format("{}.time must be >= 0 and round to a frame before the render's end, "
-                            "durationSeconds",
-                            name));
+            throw SpecError(timeError(name));
         }
         if (!points.empty() && p.timeSeconds < points.back().timeSeconds)
         {
@@ -314,10 +338,82 @@ std::vector<AutomationPoint> readAutomation(const json &j, double sampleRate,
             throw SpecError(fmt::format(R"({}.param must be one of {}, not "{}")", name,
                                         parameterNames(), p.param));
         }
-        p.value = parameterValue(o.member("value"), *slot, name + ".value");
+        p.value = parameterValue(o.member("value"), *slot, mode, name + ".value");
         points.push_back(std::move(p));
     }
     return points;
+}
+
+std::vector<NoteSpec> readNotes(const json &j, double sampleRate, double durationSeconds)
+{
+    if (!j.is_array())
+    {
+        throw SpecError("notes must be a JSON array");
+    }
+    const int64_t end = framesFor(durationSeconds, sampleRate);
+    std::vector<NoteSpec> notes;
+    for (std::size_t i = 0; i < j.size(); ++i)
+    {
+        const std::string name = fmt::format("notes[{}]", i);
+        const Object o(j[i], name, name + ".", {"time", "key", "duration", "channel"});
+        NoteSpec n;
+        n.timeSeconds = o.number("time");
+        if (!beforeEnd(n.timeSeconds, durationSeconds, sampleRate, end))
+        {
+            throw SpecError(timeError(name));
+        }
+        if (!notes.empty() && n.timeSeconds < notes.back().timeSeconds)
+        {
+            throw SpecError(fmt::format(
+                "{}.time is before notes[{}].time: list the notes in time order", name, i - 1));
+        }
+        n.key = static_cast<uint8_t>(o.integerUpTo("key", 127));
+        n.durationSeconds = o.positive("duration", kMaxSeconds);
+        // Ruling R17: an Off on its On's frame would sort before it and leave the key held.
+        if (framesFor(n.timeSeconds + n.durationSeconds, sampleRate) ==
+            framesFor(n.timeSeconds, sampleRate))
+        {
+            throw SpecError(fmt::format("{}.duration is shorter than one frame at the render's "
+                                        "rate: the note would end on the frame it starts",
+                                        name));
+        }
+        if (o.has("channel"))
+        {
+            n.channel = static_cast<uint8_t>(o.integerUpTo("channel", 15));
+        }
+        notes.push_back(n);
+    }
+    return notes;
+}
+
+/// The keys instrument and FX mode share: "params", "automation" and "notes", all optional.
+void readProcessorKeys(const Object &o, const RenderSpec &spec, gg::core::Mode mode,
+                       std::vector<std::pair<std::string, double>> &params,
+                       std::vector<AutomationPoint> &automation, std::vector<NoteSpec> &notes)
+{
+    if (o.has("params"))
+    {
+        params = readParams(o.member("params"), mode);
+    }
+    if (o.has("automation"))
+    {
+        automation =
+            readAutomation(o.member("automation"), mode, spec.sampleRate, spec.durationSeconds);
+    }
+    if (o.has("notes"))
+    {
+        notes = readNotes(o.member("notes"), spec.sampleRate, spec.durationSeconds);
+    }
+}
+
+/// The instrument keys of a spec whose sampleRate and durationSeconds are already read.
+InstrumentSpec readInstrument(const Object &o, const RenderSpec &spec)
+{
+    InstrumentSpec instrument;
+    instrument.sample = readSource(o.member("sample"), SignalRole::Sample);
+    readProcessorKeys(o, spec, gg::core::Mode::Instrument, instrument.params, instrument.automation,
+                      instrument.notes);
+    return instrument;
 }
 
 /// The FX keys of a spec whose sampleRate and durationSeconds are already read.
@@ -325,21 +421,26 @@ FxSpec readFx(const Object &o, const RenderSpec &spec)
 {
     FxSpec fx;
     fx.input = readSource(o.member("input"), SignalRole::Input);
-    const uint64_t channels = o.unsignedInteger("channels");
-    if (channels < 1 || channels > 2)
+    // A file input has the file's own channels, so "channels" has no meaning there.
+    if (fx.input.kind == SourceKind::File)
     {
-        throw SpecError("channels must be 1 or 2");
+        if (o.has("channels"))
+        {
+            throw SpecError(
+                "channels must be left out with a file input: the input has the file's own "
+                "channels");
+        }
     }
-    fx.channels = static_cast<uint32_t>(channels);
-    if (o.has("params"))
+    else
     {
-        fx.params = readParams(o.member("params"));
+        const uint64_t channels = o.unsignedInteger("channels");
+        if (channels < 1 || channels > 2)
+        {
+            throw SpecError("channels must be 1 or 2");
+        }
+        fx.channels = static_cast<uint32_t>(channels);
     }
-    if (o.has("automation"))
-    {
-        fx.automation =
-            readAutomation(o.member("automation"), spec.sampleRate, spec.durationSeconds);
-    }
+    readProcessorKeys(o, spec, gg::core::Mode::Fx, fx.params, fx.automation, fx.notes);
     return fx;
 }
 
@@ -356,24 +457,49 @@ RenderMode readMode(const json &j)
     {
         return RenderMode::Sample;
     }
+    if (it->is_string() && it->get<std::string>() == "instrument")
+    {
+        return RenderMode::Instrument;
+    }
     if (it->is_string() && it->get<std::string>() == "fx")
     {
         return RenderMode::Fx;
     }
-    throw SpecError(fmt::format(R"(mode must be "sample" or "fx", not {})", it->dump()));
+    throw SpecError(
+        fmt::format(R"(mode must be "sample", "instrument" or "fx", not {})", it->dump()));
+}
+
+/// The spec as an Object whose keys are all `mode`'s.
+Object topLevel(const json &j, RenderMode mode)
+{
+    switch (mode)
+    {
+    case RenderMode::Instrument:
+        return {j,
+                "the spec",
+                "",
+                {"mode", "sampleRate", "durationSeconds", "blockSize", "seed", "sample", "params",
+                 "automation", "notes"}};
+    case RenderMode::Fx:
+        return {j,
+                "the spec",
+                "",
+                {"mode", "sampleRate", "durationSeconds", "blockSize", "seed", "input", "channels",
+                 "params", "automation", "notes"}};
+    case RenderMode::Sample:
+        break;
+    }
+    return {j,
+            "the spec",
+            "",
+            {"mode", "sampleRate", "durationSeconds", "blockSize", "seed", "source", "stream"}};
 }
 
 RenderSpec readSpec(const json &j)
 {
     RenderSpec spec;
     spec.mode = readMode(j);
-    const bool fx = spec.mode == RenderMode::Fx;
-    const Object o = fx ? Object(j, "the spec", "",
-                                 {"mode", "sampleRate", "durationSeconds", "blockSize", "seed",
-                                  "input", "channels", "params", "automation"})
-                        : Object(j, "the spec", "",
-                                 {"mode", "sampleRate", "durationSeconds", "blockSize", "seed",
-                                  "source", "stream"});
+    const Object o = topLevel(j, spec.mode);
     spec.sampleRate = o.number("sampleRate");
     if (!(spec.sampleRate >= 1.0 && spec.sampleRate <= kMaxSampleRate &&
           spec.sampleRate == std::floor(spec.sampleRate)))
@@ -382,6 +508,10 @@ RenderSpec readSpec(const json &j)
             fmt::format("sampleRate must be a whole number of Hz from 1 to {}", kMaxSampleRate));
     }
     spec.durationSeconds = o.positive("durationSeconds", kMaxSeconds);
+    if (framesFor(spec.durationSeconds, spec.sampleRate) < 1)
+    {
+        throw SpecError("durationSeconds must round to at least one frame at sampleRate");
+    }
     const uint64_t blockSize = o.unsignedInteger("blockSize");
     if (blockSize < 1 || blockSize > kMaxBlockSize)
     {
@@ -389,14 +519,18 @@ RenderSpec readSpec(const json &j)
     }
     spec.blockSize = static_cast<uint32_t>(blockSize);
     spec.seed = o.unsignedInteger("seed");
-    if (fx)
+    switch (spec.mode)
     {
-        spec.fx = readFx(o, spec);
-    }
-    else
-    {
+    case RenderMode::Sample:
         spec.source = readSource(o.member("source"), SignalRole::Source);
         spec.stream = readStream(o.member("stream"));
+        break;
+    case RenderMode::Instrument:
+        spec.instrument = readInstrument(o, spec);
+        break;
+    case RenderMode::Fx:
+        spec.fx = readFx(o, spec);
+        break;
     }
     return spec;
 }
@@ -404,15 +538,57 @@ RenderSpec readSpec(const json &j)
 
 std::optional<gg::core::ParamSlot> paramSlotNamed(std::string_view name)
 {
+    // The names are the same in both products.
     for (std::size_t s = 0; s < gg::core::kParamCount; ++s)
     {
         const auto slot = static_cast<gg::core::ParamSlot>(s);
-        if (gg::core::paramMeta(slot).name == name)
+        if (gg::core::paramMeta(slot, gg::core::Mode::Fx).name == name)
         {
             return slot;
         }
     }
     return std::nullopt;
+}
+
+std::filesystem::path pathFromUtf8(const std::string &text)
+{
+    try
+    {
+        return std::filesystem::path(std::u8string(text.begin(), text.end()));
+    }
+    catch (const std::system_error &)
+    {
+        throw BadInput(fmt::format("the path {} isn't valid UTF-8", text));
+    }
+}
+
+std::string utf8FromPath(const std::filesystem::path &path)
+{
+    try
+    {
+        const auto text = path.u8string();
+        return {text.begin(), text.end()};
+    }
+    catch (const std::system_error &)
+    {
+        throw BadInput("a path can't be written as UTF-8");
+    }
+}
+
+void resolvePaths(RenderSpec &spec, const std::string &baseDir)
+{
+    for (SourceSpec *s : {&spec.source, &spec.instrument.sample, &spec.fx.input})
+    {
+        if (s->kind != SourceKind::File || s->path.empty())
+        {
+            continue;
+        }
+        const std::filesystem::path path = pathFromUtf8(s->path);
+        if (path.is_relative())
+        {
+            s->path = utf8FromPath(pathFromUtf8(baseDir) / path);
+        }
+    }
 }
 
 std::optional<RenderSpec> parseRenderSpec(const std::string &text, std::string &error)

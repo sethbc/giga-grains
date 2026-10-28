@@ -22,6 +22,7 @@
 #include "gg/core/Rng.h"
 #include "gg/engine/Engine.h"
 #include "gg/grain/Tier.h"
+#include "gg/source/PreparedSource.h"
 
 namespace
 {
@@ -678,6 +679,107 @@ TEST_CASE("saturated pool is block-size invariant", "[determinism]")
         REQUIRE_FALSE(r.log.overflowed);
         REQUIRE(r.log.grains == ref.log.grains);
         REQUIRE(r.dropped == ref.dropped);
+        REQUIRE(sameBits(ref.audio.left, r.audio.left));
+        REQUIRE(sameBits(ref.audio.right, r.audio.right));
+    }
+}
+
+namespace
+{
+// A stereo 330 Hz sine at half the amplitude of sineSource, for the swap below.
+std::shared_ptr<const gg::SampleBuffer> otherSource()
+{
+    auto buf = std::make_shared<gg::SampleBuffer>(2, kSourceFrames, kSampleRate);
+    for (uint32_t c = 0; c < 2; ++c)
+    {
+        for (int64_t i = 0; i < kSourceFrames; ++i)
+        {
+            const double phase = 2.0 * std::numbers::pi * (330.0 * i / kSampleRate + 0.25 * c);
+            buf->channel(c)[i] = static_cast<float>(0.5 * std::sin(phase));
+        }
+    }
+    return buf;
+}
+
+// Swaps 1.5 s in, at no multiple of any block size below.
+constexpr int64_t kSwapAt = 72077;
+
+struct SwapRender
+{
+    Render audio;
+    GrainLog log;
+};
+
+// Renders kFrames at kParams from `first`, adopting `second` between the process() calls at
+// kSwapAt, with blockSizes in turn (cycling), the call before the swap cut short to end there.
+void renderSwap(const gg::PreparedSource &first, const gg::PreparedSource &second,
+                const std::vector<uint32_t> &blockSizes, SwapRender &r)
+{
+    gg::Engine engine(config(42));
+    REQUIRE(engine.adoptSource(&first));
+    engine.setCloudParams(kParams);
+    engine.setEventSink(&GrainLog::record, &r.log);
+    constexpr float kUnwritten = std::numeric_limits<float>::quiet_NaN();
+    r.audio.left.assign(static_cast<std::size_t>(kFrames), kUnwritten);
+    r.audio.right.assign(static_cast<std::size_t>(kFrames), kUnwritten);
+    int64_t done = 0;
+    std::size_t next = 0;
+    for (const int64_t end : {kSwapAt, kFrames})
+    {
+        while (done < end)
+        {
+            const uint32_t want = blockSizes[next++ % blockSizes.size()];
+            const auto n = static_cast<uint32_t>(std::min<int64_t>(want, end - done));
+            float *out[2] = {r.audio.left.data() + done, r.audio.right.data() + done};
+            engine.process(out, 2, n);
+            done += n;
+        }
+        if (end == kSwapAt)
+        {
+            REQUIRE(engine.adoptSource(&second));
+        }
+    }
+}
+} // namespace
+
+TEST_CASE("a source swap is block-size invariant", "[determinism]")
+{
+    const auto bufferA = sineSource();
+    const auto a = gg::PreparedSource::make(bufferA);
+    const auto b = gg::PreparedSource::make(otherSource());
+    SwapRender ref;
+    renderSwap(*a, *b, {kMaxBlock}, ref);
+    REQUIRE_FALSE(ref.log.overflowed);
+    REQUIRE(allFinite(ref.audio.left));
+    REQUIRE(allFinite(ref.audio.right));
+    REQUIRE(peak(ref.audio.left) > 0.05f);
+    // Grains of both sources, and old ones sounding past the swap.
+    REQUIRE(std::any_of(ref.log.grains.begin(), ref.log.grains.end(), [](const gg::GrainSpec &g) {
+        return g.onsetSample < kSwapAt && gg::grainEndSample(g) > kSwapAt + 100;
+    }));
+    REQUIRE(std::any_of(ref.log.grains.begin(), ref.log.grains.end(),
+                        [](const gg::GrainSpec &g) { return g.onsetSample >= kSwapAt; }));
+
+    // Not vacuous: up to the swap it is setSource's render of A, and after it it isn't.
+    const auto unswapped = render(bufferA, 42, {kMaxBlock});
+    const auto same = [](const std::vector<float> &x, const std::vector<float> &y, int64_t from,
+                         int64_t to) {
+        return std::memcmp(x.data() + from, y.data() + from,
+                           static_cast<std::size_t>(to - from) * sizeof(float)) == 0;
+    };
+    REQUIRE(same(ref.audio.left, unswapped.left, 0, kSwapAt));
+    REQUIRE(same(ref.audio.right, unswapped.right, 0, kSwapAt));
+    REQUIRE_FALSE(same(ref.audio.left, unswapped.left, kSwapAt, kFrames));
+
+    const auto random = randomSplit();
+    for (const std::vector<uint32_t> &blockSizes :
+         {std::vector<uint32_t>{1}, {32}, {64}, {511}, {4096}, random})
+    {
+        INFO("first block size = " << blockSizes.front() << " of " << blockSizes.size());
+        SwapRender r;
+        renderSwap(*a, *b, blockSizes, r);
+        REQUIRE_FALSE(r.log.overflowed);
+        REQUIRE(r.log.grains == ref.log.grains);
         REQUIRE(sameBits(ref.audio.left, r.audio.left));
         REQUIRE(sameBits(ref.audio.right, r.audio.right));
     }

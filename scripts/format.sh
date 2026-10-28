@@ -14,7 +14,7 @@
 set -euo pipefail
 
 required_major=23
-source_dirs=(engine core plugin ui tools tests clients)
+source_dirs=(engine core media plugin ui tools tests clients libs/thirdparty-impl)
 
 case "${1:-}" in
     "")

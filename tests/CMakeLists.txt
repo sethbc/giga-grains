@@ -7,9 +7,13 @@
 
 add_executable(gg-tests
         smoke_tests.cpp
+        core/exchange_tests.cpp
+        core/note_tests.cpp
         core/parammap_tests.cpp
         core/patch_tests.cpp
         core/processor_tests.cpp
+        core/session_state_tests.cpp
+        core/settings_tests.cpp
         engine/cloud_tests.cpp
         engine/denormal_tests.cpp
         engine/determinism_tests.cpp
@@ -26,6 +30,11 @@ add_executable(gg-tests
         engine/rt_tests.cpp
         engine/sample_buffer_tests.cpp
         engine/window_tests.cpp
+        media/convert_tests.cpp
+        media/decode_tests.cpp
+        media/sample_tests.cpp
+        media/search_tests.cpp
+        media/sha256_tests.cpp
         metrics/metrics_tests.cpp
         tools/bench_kernel_tests.cpp
         tools/bench_tests.cpp
@@ -56,11 +65,11 @@ endif ()
 # duplicate libraries"). So the plugin layers, when they're built, come first: they link the
 # engine and, with the editor, gg::ui-core. The editor layer is an object library, whose own
 # libraries CMake would put after everything listed here, so they're listed too: the plugin
-# core and gg::ui. Then gg::render, gg::ui-core, gg::bench and gg::core, which link the engine
-# (and gg::render the metrics). gg::bench-kernels follows gg::bench, which links it: left out,
-# CMake would repeat the engine after it.
-set(gg_tests_libraries gg::render gg::ui-core gg::bench gg::bench-kernels gg::core gg::engine
-        gg::audiometrics)
+# core and gg::ui. Then gg::render, gg::ui-core, gg::bench, gg::media and gg::core, which link
+# the engine (and gg::render the metrics). gg::bench-kernels follows gg::bench, which links it:
+# left out, CMake would repeat the engine after it. gg::media links gg::core, so comes first.
+set(gg_tests_libraries gg::render gg::ui-core gg::bench gg::bench-kernels gg::media gg::core
+        gg::engine gg::audiometrics)
 if (GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
     list(PREPEND gg_tests_libraries gg::plugin-impl gg-plugin-core gg::ui)
 elseif (GG_BUILD_PLUGINS)
@@ -70,11 +79,20 @@ target_link_libraries(gg-tests PRIVATE ${gg_tests_libraries} gg::compiler-option
         Catch2::Catch2WithMain nlohmann_json::nlohmann_json)
 # Scratch files (WAV/PNG round trips) go under the build tree, never a shared temp dir.
 target_compile_definitions(gg-tests PRIVATE GG_TEST_OUTPUT_DIR="${CMAKE_CURRENT_BINARY_DIR}/test-output"
-        GG_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/golden")
+        GG_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/golden"
+        GG_AUDIO_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/audio")
 # 0 or 1, so tests can use #if GG_USE_RTSAN for checks that only hold in the RTSan build.
 target_compile_definitions(gg-tests PRIVATE GG_USE_RTSAN=$<BOOL:${GG_USE_RTSAN}>)
+# 0 or 1: under ASan (1) the allocation tripwire's replacement operator new/delete are compiled
+# out (support/AllocTripwire.cpp), and the tests skip their assertions on its count.
+target_compile_definitions(gg-tests PRIVATE GG_SANITIZE=$<BOOL:${GG_SANITIZE}>)
 # 0 or 1: the plugin tests that need the JUCE editor, and the one that checks there is none.
 target_compile_definitions(gg-tests PRIVATE GG_BUILD_EDITOR=$<BOOL:${GG_BUILD_EDITOR}>)
+# The editor's tests create it, and drive its loader strip through JUCE (factory_tests.cpp): JUCE's
+# headers and definitions, without its sources, which the editor layer links already.
+if (GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
+    target_link_libraries(gg-tests PRIVATE gg::juce-headers)
+endif ()
 
 # The plugin tests drive gg::plugin-impl (the plugin core, or the core plus the editor layer)
 # through its factory, not the built .clap. They run in every preset that builds the plugins,
@@ -87,13 +105,18 @@ if (GG_BUILD_PLUGINS)
             plugin/params_tests.cpp
             plugin/process_tests.cpp
             plugin/rt_tests.cpp
+            plugin/sample_tests.cpp
             )
     target_include_directories(gg-tests PRIVATE ${CMAKE_SOURCE_DIR}/plugin/src)
 endif ()
 
 list(APPEND CMAKE_MODULE_PATH ${CMAKE_SOURCE_DIR}/libs/catch2/extras)
 include(Catch)
-catch_discover_tests(gg-tests ADD_TAGS_AS_LABELS)
+# A case tagged [serial] measures time (or memory) and must not run beside the others: it is
+# discovered on its own, with RUN_SERIAL (CLAUDE.md, "Tests run in parallel").
+catch_discover_tests(gg-tests TEST_SPEC "~[serial]" ADD_TAGS_AS_LABELS)
+catch_discover_tests(gg-tests TEST_SPEC "[serial]" ADD_TAGS_AS_LABELS
+        PROPERTIES RUN_SERIAL TRUE)
 
 # gg-bench's command line, label `bench`. The bench tests check the timings' shape, never their
 # values, so they run beside the others.
@@ -158,6 +181,20 @@ endif ()
 #
 # Every golden/cases/*.json is a case, the same glob scripts/update-goldens.sh renders, so a new
 # case can't go ungated. CONFIGURE_DEPENDS re-runs CMake when the set of files changes.
+#
+# The cases' media files are generated, never committed (spec §6.9): golden_media writes them
+# into <build>/golden-media, a fixture every golden test requires, and the cases' relative paths
+# resolve there (--media-dir). That applies to every relative path in every case, so a future
+# case that reads a committed file must give its path some other way than relative to the spec.
+set(GG_GOLDEN_MEDIA_DIR ${CMAKE_BINARY_DIR}/golden-media)
+add_test(NAME golden_media COMMAND gg-render --write-media ${GG_GOLDEN_MEDIA_DIR})
+set_tests_properties(golden_media PROPERTIES LABELS golden FIXTURES_SETUP golden_media)
+# --write-media takes no other option: one given with it is refused (exit 2), never ignored.
+add_test(NAME render_write_media_alone
+        COMMAND gg-render --write-media ${CMAKE_CURRENT_BINARY_DIR}/write-media-alone
+        --block-size 64 -o ${CMAKE_CURRENT_BINARY_DIR}/write-media-alone/x.wav)
+set_tests_properties(render_write_media_alone PROPERTIES LABELS render
+        PASS_REGULAR_EXPRESSION "excludes --write-media|--write-media excludes")
 file(GLOB GG_GOLDEN_CASE_SPECS CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/golden/cases/*.json)
 if (NOT GG_GOLDEN_CASE_SPECS)
     message(FATAL_ERROR "No golden cases in ${CMAKE_CURRENT_SOURCE_DIR}/golden/cases")
@@ -166,11 +203,12 @@ foreach (spec IN LISTS GG_GOLDEN_CASE_SPECS)
     get_filename_component(case ${spec} NAME_WLE)
     add_test(NAME golden_${case}
             COMMAND gg-render ${spec}
+            --media-dir ${GG_GOLDEN_MEDIA_DIR}
             -o ${CMAKE_BINARY_DIR}/golden/${case}.wav
             --spectrogram ${CMAKE_BINARY_DIR}/golden/${case}.png
             --compare ${CMAKE_CURRENT_SOURCE_DIR}/golden/expected/${case}.metrics.json
             --compare-events ${CMAKE_CURRENT_SOURCE_DIR}/golden/expected/${case}.events.jsonl)
-    set_tests_properties(golden_${case} PROPERTIES LABELS golden)
+    set_tests_properties(golden_${case} PROPERTIES LABELS golden FIXTURES_REQUIRED golden_media)
 endforeach ()
 
 # The golden gate must be able to fail, label `golden`. Each tamper test compares a fresh render of
@@ -219,13 +257,17 @@ file(WRITE ${tamper_dir}/${tamper_case}.metrics.json "${tampered_metrics}\n")
 
 add_test(NAME golden_tamper_events
         COMMAND gg-render ${CMAKE_CURRENT_SOURCE_DIR}/golden/cases/${tamper_case}.json
+        --media-dir ${GG_GOLDEN_MEDIA_DIR}
         --compare-events ${tamper_dir}/${tamper_case}.events.jsonl)
 add_test(NAME golden_tamper_metrics
         COMMAND gg-render ${CMAKE_CURRENT_SOURCE_DIR}/golden/cases/${tamper_case}.json
+        --media-dir ${GG_GOLDEN_MEDIA_DIR}
         --compare ${tamper_dir}/${tamper_case}.metrics.json)
 set_tests_properties(golden_tamper_events PROPERTIES LABELS golden
+        FIXTURES_REQUIRED golden_media
         PASS_REGULAR_EXPRESSION "FAIL: event log differs from .* at line 5 ")
 set_tests_properties(golden_tamper_metrics PROPERTIES LABELS golden
+        FIXTURES_REQUIRED golden_media
         PASS_REGULAR_EXPRESSION
         "rmsEnvelope: 1 of [0-9]+ compared frames differ by more than 0.5 dB; worst is frame ${tamper_frame} ")
 
@@ -275,4 +317,22 @@ if (APPLE AND GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
             "Giga Grains FX=DBAF5C12EA095FEFB3A5CBBBB254442A")
     set_tests_properties(identity_standalone identity_standalone_fx identity_auv2 identity_vst3
             PROPERTIES LABELS plugin)
+
+    # The AU state format (labels `plugin` and `au`): gg-au-state-tests loads the built
+    # .component into its own process, registers its factories there (AudioComponentRegister;
+    # nothing is installed) and checks that ClassInfo carries the CLAP state bytes, GGST
+    # included, and round-trips them. It also pins clap-wrapper's three known AU state faults
+    # (T7 223), so a clap-wrapper update that changes one fails here. Its own executable: gg-tests
+    # links the plugin's code itself, and the bundle brings a second copy.
+    add_executable(gg-au-state-tests plugin/au_state_tests.cpp)
+    target_include_directories(gg-au-state-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(gg-au-state-tests PRIVATE gg::media gg::core gg::compiler-options
+            Catch2::Catch2WithMain "-framework AudioToolbox" "-framework CoreFoundation")
+    target_compile_definitions(gg-au-state-tests PRIVATE
+            GG_TEST_OUTPUT_DIR="${CMAKE_CURRENT_BINARY_DIR}/test-output"
+            GG_AU_BUNDLE="$<TARGET_BUNDLE_DIR:gg_clapfirst_auv2>"
+            GG_CLAP_WRAPPER_SOURCE_DIR="${CMAKE_SOURCE_DIR}/libs/clap/clap-wrapper")
+    add_dependencies(gg-au-state-tests gg_clapfirst_auv2)
+    add_dependencies(gg-tests gg-au-state-tests)
+    catch_discover_tests(gg-au-state-tests ADD_TAGS_AS_LABELS)
 endif ()

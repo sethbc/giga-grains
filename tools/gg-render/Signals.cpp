@@ -7,14 +7,19 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <filesystem>
 #include <initializer_list>
 #include <numbers>
 #include <stdexcept>
+#include <system_error>
 #include <utility>
 #include <vector>
 
+#include "gg/core/MachineSettings.h"
 #include "gg/core/Rng.h"
+#include "gg/media/Sample.h"
 #include "gg/metrics/WavIO.h"
+#include "gg/source/SampleBuffer.h"
 
 namespace gg::render
 {
@@ -31,7 +36,7 @@ gg::metrics::AudioData makeSignal(const SourceSpec &source, double sampleRate, u
         auto audio = gg::metrics::readAudioFile(source.path);
         if (!audio)
         {
-            throw std::runtime_error("can't read the source file " + source.path);
+            throw BadInput("can't read the source file " + source.path);
         }
         return std::move(*audio);
     }
@@ -80,6 +85,53 @@ gg::metrics::AudioData makeSignal(const SourceSpec &source, double sampleRate, u
     return {rate, {std::move(x)}};
 }
 
+namespace
+{
+/// The file at UTF-8 `path` loaded with gg-media and prepared at `sampleRate`, as the plugin's
+/// loader does it.
+std::shared_ptr<const PreparedSource> loadFile(const std::string &path, double sampleRate)
+{
+    auto loaded = gg::media::loadSample(pathFromUtf8(path), gg::core::MachineSettings{});
+    if (!loaded.decoded)
+    {
+        throw BadInput(loaded.error);
+    }
+    return gg::media::prepare(std::move(loaded.decoded), sampleRate);
+}
+
+/// The audio of a source's planar buffer.
+gg::metrics::AudioData toAudioData(const SampleBuffer &buffer)
+{
+    gg::metrics::AudioData audio{buffer.sampleRate(), {}};
+    for (uint32_t c = 0; c < buffer.channels(); ++c)
+    {
+        const float *x = buffer.channel(c);
+        audio.channels.emplace_back(x, x + buffer.frames());
+    }
+    return audio;
+}
+} // namespace
+
+std::shared_ptr<const PreparedSource> makeSample(const SourceSpec &sample, double sampleRate,
+                                                 uint64_t seed)
+{
+    if (sample.sampleRate.has_value())
+    {
+        throw std::invalid_argument(
+            "an instrument's sample is made at the render's rate: no sampleRate");
+    }
+    if (sample.kind == SourceKind::File)
+    {
+        return loadFile(sample.path, sampleRate);
+    }
+    const gg::metrics::AudioData signal = makeSignal(sample, sampleRate, seed);
+    const auto &x = signal.channels[0];
+    auto buffer =
+        std::make_shared<SampleBuffer>(1, static_cast<int64_t>(x.size()), signal.sampleRate);
+    std::copy(x.begin(), x.end(), buffer->channel(0));
+    return gg::media::prepare(std::move(buffer), sampleRate);
+}
+
 int64_t inputFadeFrames(double sampleRate) noexcept
 {
     return std::max<int64_t>(1, framesFor(kInputFadeSeconds, sampleRate));
@@ -107,13 +159,14 @@ gg::metrics::AudioData makeInput(const SourceSpec &input, uint32_t channels, dou
     {
         throw std::invalid_argument("an FX input has 1 or 2 channels");
     }
-    if (input.kind == SourceKind::File || input.sampleRate.has_value())
+    if (input.sampleRate.has_value())
     {
-        throw std::invalid_argument(
-            "an FX input is synthesized at the render's rate: no file, no sampleRate");
+        throw std::invalid_argument("an FX input is made at the render's rate: no sampleRate");
     }
-    gg::metrics::AudioData audio = makeSignal(input, sampleRate, seed);
-    if (channels == 2)
+    gg::metrics::AudioData audio = input.kind == SourceKind::File
+                                       ? toAudioData(loadFile(input.path, sampleRate)->buffer())
+                                       : makeSignal(input, sampleRate, seed);
+    if (channels == 2 && input.kind != SourceKind::File)
     {
         switch (input.kind)
         {
@@ -129,7 +182,7 @@ gg::metrics::AudioData makeInput(const SourceSpec &input, uint32_t channels, dou
             break;
         }
         case SourceKind::Sweep:
-        case SourceKind::File: // rejected above
+        case SourceKind::File: // has its own channels
             audio.channels.push_back(audio.channels[0]);
             break;
         }
@@ -161,5 +214,82 @@ gg::metrics::AudioData makeInput(const SourceSpec &input, uint32_t channels, dou
         }
     }
     return audio;
+}
+
+bool writeTestMedia(const std::string &dir, std::string &error)
+{
+    error.clear();
+    std::filesystem::path folder;
+    try
+    {
+        folder = pathFromUtf8(dir);
+    }
+    catch (const BadInput &e)
+    {
+        error = e.what();
+        return false;
+    }
+    std::error_code ec;
+    std::filesystem::create_directories(folder, ec);
+    if (ec || !std::filesystem::is_directory(folder, ec))
+    {
+        error = "can't create the directory " + dir;
+        return false;
+    }
+
+    // tone-44k1.wav: stereo, 44.1 kHz, 4 s, both channels at -6 dBFS.
+    const double minus6 = std::pow(10.0, -6.0 / 20.0);
+    constexpr double toneRate = 44100.0;
+    gg::metrics::AudioData tone = makeSignal({.kind = SourceKind::Sweep,
+                                              .startHz = 50.0,
+                                              .endHz = 8000.0,
+                                              .seconds = 4.0,
+                                              .amplitude = minus6},
+                                             toneRate, 0);
+    tone.channels.push_back(std::move(
+        makeSignal(
+            {.kind = SourceKind::Sine, .frequencyHz = 220.0, .seconds = 4.0, .amplitude = minus6},
+            toneRate, 0)
+            .channels[0]));
+
+    // loop-48k.wav: mono, 48 kHz, 4 s. Each burst's envelope is e^(-k / tau), k frames into it,
+    // which reaches -60 dB (10^-3) at its 30 ms end.
+    constexpr double loopRate = 48000.0;
+    const auto period = static_cast<std::size_t>(framesFor(0.25, loopRate));
+    const auto burst = static_cast<std::size_t>(framesFor(0.03, loopRate));
+    const double tau = static_cast<double>(burst) / std::log(1000.0);
+    std::vector<float> noise =
+        makeSignal({.kind = SourceKind::Noise, .seconds = 4.0, .amplitude = 1.0}, loopRate, 7)
+            .channels[0];
+    std::vector<double> shaped(noise.size(), 0.0);
+    double peak = 0.0;
+    for (std::size_t n = 0; n < noise.size(); ++n)
+    {
+        const std::size_t k = n % period;
+        if (k < burst)
+        {
+            shaped[n] = static_cast<double>(noise[n]) * std::exp(-static_cast<double>(k) / tau);
+            peak = std::max(peak, std::abs(shaped[n]));
+        }
+    }
+    const double scale = std::pow(10.0, -3.0 / 20.0) / peak;
+    for (std::size_t n = 0; n < noise.size(); ++n)
+    {
+        noise[n] = static_cast<float>(shaped[n] * scale);
+    }
+    const gg::metrics::AudioData loop{loopRate, {std::move(noise)}};
+
+    const std::pair<const char *, const gg::metrics::AudioData *> media[] = {{kToneMedium, &tone},
+                                                                             {kLoopMedium, &loop}};
+    for (const auto &[name, audio] : media)
+    {
+        const std::string path = utf8FromPath(folder / name);
+        if (!gg::metrics::writeWavFloat32(path, *audio))
+        {
+            error = "can't write " + path;
+            return false;
+        }
+    }
+    return true;
 }
 } // namespace gg::render

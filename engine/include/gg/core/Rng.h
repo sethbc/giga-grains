@@ -29,6 +29,7 @@ enum class Field : uint32_t
     PositionJitter = 1,
     Onset = 2, ///< the Cloud scheduler's interval to the next grain onset
     Pan = 3,   ///< a grain's stereo pan
+    Note = 4,  ///< which held key a grain plays (spec §6.1)
     SignalNoise = 100,
 };
 

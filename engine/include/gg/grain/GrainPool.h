@@ -29,6 +29,10 @@ struct GrainSpec
     float gain;
     float pan;               ///< -1 (left) .. 1 (right); see panGains().
     Tier tier{Tier::Normal}; ///< How the grain reads its source (ruling 2).
+    /// Which of the engine's two sample-source slots the grain reads, 0 or 1: the source current
+    /// at its onset, so it finishes on that source even if another is adopted while it sounds
+    /// (Engine::adoptSource). 0 in Live mode, where it isn't read.
+    uint8_t sourceSlot{0};
 
     friend bool operator==(const GrainSpec &, const GrainSpec &) = default;
 };
@@ -78,6 +82,7 @@ struct GrainRows
     const float *gain;
     const float *pan;
     const Tier *tier;
+    const uint8_t *sourceSlot;
     const int64_t *endSample;  ///< grainEndSample of each
     const double *invDuration; ///< 1.0 / durationSamples
     const float *gainL;        ///< gain × panGains(pan).left
@@ -144,6 +149,10 @@ class GrainPool
     /// Removes every grain and forgets every end, so time may restart.
     void clear() noexcept SST_CPPUTILS_NONBLOCKING;
 
+    /// Moves every stored grain to source slot `slot`, so it reads that slot's source from now
+    /// on (Engine::setSource, which replaces the source every grain reads).
+    void assignSourceSlot(uint8_t slot) noexcept SST_CPPUTILS_NONBLOCKING;
+
     /// The stored grains' fields, in spawn order.
     const GrainRows &rows() const noexcept { return rows_; }
 
@@ -163,6 +172,7 @@ class GrainPool
     std::vector<float> gain_;
     std::vector<float> pan_;
     std::vector<Tier> tier_;
+    std::vector<uint8_t> sourceSlot_;
     std::vector<int64_t> endSample_;
     std::vector<double> invDuration_;
     std::vector<float> gainL_;

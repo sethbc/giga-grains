@@ -34,6 +34,7 @@
 
 using gg::core::fromStateXml;
 using gg::core::kParamCount;
+using gg::core::Mode;
 using gg::core::ParamSlot;
 using gg::core::ParamValues;
 using gg::core::toStateXml;
@@ -51,7 +52,8 @@ struct Expected
     uint32_t flags;
 };
 
-// Global Constraints' parameter table, copied literally.
+// Global Constraints' parameter table, copied literally: the FX's. The instrument's differs only
+// in Position's default (kInstrumentPositionDefault) and display.
 constexpr std::array<Expected, kParamCount> kTable{{
     {ParamSlot::Mix, 0x000001, "Mix", 0.f, 1.f, 0.5f, kAutoMod},
     {ParamSlot::Level, 0x000002, "Level", -60.f, 12.f, 0.0f, kAutoMod},
@@ -64,6 +66,9 @@ constexpr std::array<Expected, kParamCount> kTable{{
     {ParamSlot::Stereo, 0x010007, "Stereo", 0.f, 1.f, 0.5f, kAutoMod},
     {ParamSlot::Freeze, 0x010008, "Freeze", 0.f, 1.f, 0.0f, kAutoMod | CLAP_PARAM_IS_STEPPED},
 }};
+
+/// The instrument's Position: 0–100% of the loaded file, 0% by default (spec §6.8).
+constexpr float kInstrumentPositionDefault = 0.0f;
 
 uint32_t bitsOf(float f) { return std::bit_cast<uint32_t>(f); }
 
@@ -96,16 +101,20 @@ std::string replaceOnce(std::string s, std::string_view from, std::string_view t
 }
 
 // What a load writes: the values, the seed and the migration report. A failed load must leave
-// all three untouched.
+// all three untouched: this is the bad-state snapshot, `migratedFromVersion` included (carry-over
+// T5 105). The patch's `dirty` flag never reaches the public API: each fromStateXml loads into a
+// patch of its own, so none outlives the call. session_state_tests.cpp snapshots the container
+// the same way, and the plugin tests check that a rejected load never marks the host's state
+// dirty.
 struct Loaded
 {
     ParamValues values{};
     uint64_t seed{0};
     uint32_t migratedFromVersion{0};
 
-    bool load(std::string_view xml)
+    bool load(std::string_view xml, Mode mode = Mode::Fx)
     {
-        return fromStateXml(xml, values, seed, &migratedFromVersion);
+        return fromStateXml(xml, values, seed, mode, &migratedFromVersion);
     }
 
     std::array<uint32_t, kParamCount> valueBits() const
@@ -172,7 +181,7 @@ TEST_CASE("param ids, names, ranges and defaults are pinned", "[core]")
         REQUIRE(gg::core::slotForId(e.id).has_value());
         CHECK(*gg::core::slotForId(e.id) == e.slot);
 
-        const auto &m = gg::core::paramMeta(e.slot);
+        const auto &m = gg::core::paramMeta(e.slot, Mode::Fx);
         CHECK(m.id == e.id);
         CHECK(m.name == e.name);
         CHECK(m.minVal == e.minVal);
@@ -180,12 +189,30 @@ TEST_CASE("param ids, names, ranges and defaults are pinned", "[core]")
         CHECK(m.defaultVal == e.defaultVal);
         CHECK(m.flags == e.flags);
         // Static storage, built once: the same object every call.
-        CHECK(&gg::core::paramMeta(e.slot) == &m);
+        CHECK(&gg::core::paramMeta(e.slot, Mode::Fx) == &m);
     }
     CHECK(gg::core::paramId(ParamSlot::Count) == CLAP_INVALID_ID);
 
+    // The instrument's table is the FX's but for Position's default (spec §6.8): the same IDs,
+    // names, ranges and flags, so both products share one state format.
+    for (size_t i = 0; i < kParamCount; ++i)
+    {
+        const auto &e = kTable[i];
+        INFO("instrument param " << e.name);
+        const auto &m = gg::core::paramMeta(e.slot, Mode::Instrument);
+        CHECK(m.id == e.id);
+        CHECK(m.name == e.name);
+        CHECK(m.minVal == e.minVal);
+        CHECK(m.maxVal == e.maxVal);
+        CHECK(m.defaultVal ==
+              (e.slot == ParamSlot::Position ? kInstrumentPositionDefault : e.defaultVal));
+        CHECK(m.flags == e.flags);
+        CHECK(m.type == gg::core::paramMeta(e.slot, Mode::Fx).type);
+        CHECK(&gg::core::paramMeta(e.slot, Mode::Instrument) == &m);
+    }
+
     // Freeze is the only stepped parameter; it's an on/off switch.
-    CHECK(gg::core::paramMeta(ParamSlot::Freeze).type ==
+    CHECK(gg::core::paramMeta(ParamSlot::Freeze, Mode::Fx).type ==
           sst::basic_blocks::params::ParamMetaData::INT);
 
     // IDs that aren't ours: the reserved index 0, scopes and indices one past the table, and
@@ -230,12 +257,47 @@ TEST_CASE("the state lists the ten params in slot order", "[core]")
     CHECK(l.migratedFromVersion == 0u);
 }
 
+TEST_CASE("a param missing from a state takes the product's default", "[core]")
+{
+    // A state whose Position isn't the default, with Position's element cut out.
+    ParamValues saved = defaults();
+    saved[static_cast<size_t>(ParamSlot::Position)] = 0.7f;
+    saved[static_cast<size_t>(ParamSlot::Size)] = -1.0f;
+    const auto full = toStateXml(saved, 4);
+    const auto from = full.find(R"(<p id="65537" )");
+    REQUIRE(from != std::string::npos);
+    const auto to = full.find("/>", from);
+    REQUIRE(to != std::string::npos);
+    const auto missing = full.substr(0, from) + full.substr(to + 2);
+    REQUIRE(missing.find(R"(id="65537")") == std::string::npos);
+
+    Loaded instrument = distinct();
+    REQUIRE(instrument.load(missing, Mode::Instrument));
+    CHECK(bitsOf(instrument[ParamSlot::Position]) == bitsOf(kInstrumentPositionDefault));
+    CHECK(instrument[ParamSlot::Size] == -1.0f);
+    CHECK(instrument.seed == 4u);
+
+    Loaded fx = distinct();
+    REQUIRE(fx.load(missing, Mode::Fx));
+    CHECK(bitsOf(fx[ParamSlot::Position]) == bitsOf(0.28967658f));
+    CHECK(fx[ParamSlot::Size] == -1.0f);
+    CHECK(fx.seed == 4u);
+
+    // A state that has it loads its value in either product.
+    for (const Mode mode : {Mode::Instrument, Mode::Fx})
+    {
+        Loaded l = distinct();
+        REQUIRE(l.load(full, mode));
+        CHECK(l.valueBits() == Loaded{saved, 4, 0}.valueBits());
+    }
+}
+
 TEST_CASE("display text follows the engine mapping", "[core]")
 {
     // Position and Spray display seconds = A (2^(8v) - 1); Size seconds = 2^v; Density
     // Hz = 2^v. The ends and the defaults have exact decimal texts.
     const auto text = [](ParamSlot s, float v) {
-        auto t = gg::core::paramMeta(s).valueToString(v);
+        auto t = gg::core::paramMeta(s, Mode::Fx).valueToString(v);
         REQUIRE(t.has_value());
         return *t;
     };
@@ -265,7 +327,7 @@ TEST_CASE("value text round trip", "[core]")
 {
     for (const auto &e : kTable)
     {
-        const auto &m = gg::core::paramMeta(e.slot);
+        const auto &m = gg::core::paramMeta(e.slot, Mode::Fx);
         for (float v : {e.minVal, e.defaultVal, e.maxVal})
         {
             INFO("param " << e.name << " at " << v);
@@ -417,6 +479,24 @@ TEST_CASE("patch rejects or sanitizes bad state", "[core]")
         }
     }
 
+    SECTION("nesting deeper than 64 elements fails, without overflowing tinyxml's stack")
+    {
+        std::string deep;
+        for (int i = 0; i < 1'000'000; ++i)
+        {
+            deep += "<a>";
+        }
+        CHECK_FALSE(p.load(replaceOnce(good, "<params>", "<params>" + deep)));
+        CHECK(p.sameAs(before));
+        std::string sixtyFive; // <patch><params> and 63 more
+        for (int i = 0; i < 63; ++i)
+        {
+            sixtyFive += "<a>";
+        }
+        CHECK_FALSE(p.load(replaceOnce(good, "<params>", "<params>" + sixtyFive)));
+        CHECK(p.sameAs(before));
+    }
+
     SECTION("another patch's id fails")
     {
         CHECK_FALSE(
@@ -522,7 +602,7 @@ TEST_CASE("patch rejects or sanitizes bad state", "[core]")
     {
         ParamValues values{};
         uint64_t seed = 5;
-        REQUIRE(fromStateXml(good, values, seed));
+        REQUIRE(fromStateXml(good, values, seed, Mode::Fx));
         CHECK(seed == sourceSeed);
         CHECK(values[0] == source.values[0]);
     }

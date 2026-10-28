@@ -5,6 +5,9 @@
 #include "EditorPlugin.h"
 
 #include <cstdint>
+#include <filesystem>
+#include <string>
+#include <system_error>
 
 // createEditor() returns a std::unique_ptr<juce::Component>, whose destructor the return
 // statement may invoke, so juce::Component must be complete here. This is the only plugin
@@ -15,6 +18,52 @@
 
 namespace gg::plugin
 {
+namespace
+{
+/// The path UTF-8 `text` names; empty if it can't be converted (text that isn't valid UTF-8, on
+/// Windows), which the loader reports as a failed load.
+std::filesystem::path pathOf(const std::string &text)
+{
+    try
+    {
+        return std::filesystem::path(std::u8string(text.begin(), text.end()));
+    }
+    catch (const std::system_error &)
+    {
+        return {};
+    }
+}
+
+gg::ui::SampleStatusView viewOf(const SampleStatus &status)
+{
+    using State = gg::ui::SampleStatusView::State;
+    State state = State::None;
+    switch (status.state)
+    {
+    case SampleState::None:
+        state = State::None;
+        break;
+    case SampleState::Loading:
+        state = State::Loading;
+        break;
+    case SampleState::Loaded:
+        state = State::Loaded;
+        break;
+    case SampleState::Missing:
+        state = State::Missing;
+        break;
+    case SampleState::Changed:
+        state = State::Changed;
+        break;
+    case SampleState::Error:
+        state = State::Error;
+        break;
+    }
+    return {state,          status.fileName, status.message,
+            status.seconds, status.channels, status.fileRate};
+}
+} // namespace
+
 EditorPlugin::EditorPlugin(const clap_host *host, Product product) : GigaGrainsPlugin(host, product)
 {
     // As Shortcircuit XT does. Creating the shim needs no window and no message loop: the shim
@@ -28,7 +77,53 @@ EditorPlugin::~EditorPlugin() = default;
 
 std::unique_ptr<juce::Component> EditorPlugin::createEditor()
 {
-    return gg::ui::makeEditor({descriptorFor(product())->name, &noteOnCount});
+    gg::ui::EditorContext context{descriptorFor(product())->name, &noteOnCount};
+    // The instrument's loader strip (spec §6.5), on the main thread, as the loader requires. The
+    // loader is GigaGrainsPlugin's, so it outlives the editor, which the shim holds.
+    if (SampleLoader *loader = sampleLoader(); loader != nullptr)
+    {
+        // Nothing may throw into JUCE's callbacks. A request that can't be made (no memory)
+        // leaves the status as the loader set it.
+        context.showSampleLoader = true;
+        context.loadSample = [loader](const std::string &path) {
+            try
+            {
+                loader->requestLoad(pathOf(path));
+            }
+            catch (...)
+            {
+            }
+        };
+        context.relinkSample = [loader](const std::string &path) {
+            try
+            {
+                loader->requestRelink(pathOf(path));
+            }
+            catch (...)
+            {
+            }
+        };
+        // The settings file couldn't be written (false), or an allocation failed: the folder
+        // stays as it was.
+        context.setSampleFolder = [loader](const std::string &path) {
+            try
+            {
+                loader->setSampleFolder(pathOf(path));
+            }
+            catch (...)
+            {
+            }
+        };
+        // Polled by the editor's 30 Hz timer, on the main thread: it first applies what the
+        // loader's worker finished, as on_main_thread does, so a load shows (and plays) even
+        // where the host doesn't deliver on_main_thread, as a VST3 host may not while the plugin
+        // is inactive.
+        context.sampleStatus = [this, loader] {
+            onMainThread();
+            return viewOf(loader->status());
+        };
+    }
+    return gg::ui::makeEditor(context);
 }
 
 bool EditorPlugin::registerOrUnregisterTimer(clap_id &id, int ms, bool reg)

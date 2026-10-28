@@ -74,13 +74,18 @@ TEST_CASE("Field values are pinned", "[rng]")
     STATIC_REQUIRE(static_cast<uint32_t>(Field::PositionJitter) == 1);
     STATIC_REQUIRE(static_cast<uint32_t>(Field::Onset) == 2);
     STATIC_REQUIRE(static_cast<uint32_t>(Field::Pan) == 3);
+    STATIC_REQUIRE(static_cast<uint32_t>(Field::Note) == 4);
     STATIC_REQUIRE(static_cast<uint32_t>(Field::SignalNoise) == 100);
 
     using gg::rng::hash;
     const auto jitter = hash({1, 0, 0, Field::PositionJitter, 7});
     const auto onset = hash({1, 0, 0, Field::Onset, 7});
     const auto pan = hash({1, 0, 0, Field::Pan, 7});
+    const auto note = hash({1, 0, 0, Field::Note, 7});
     REQUIRE(onset != jitter);
     REQUIRE(pan != jitter);
     REQUIRE(pan != onset);
+    REQUIRE(note != jitter);
+    REQUIRE(note != onset);
+    REQUIRE(note != pan);
 }

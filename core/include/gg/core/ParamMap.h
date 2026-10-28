@@ -25,16 +25,21 @@ struct WetParams
     bool freeze;     ///< Freeze is on above 0.5.
 };
 
-/// The Cloud stream's controls:
+/// The Cloud stream's controls in `mode`'s product:
 /// - densityHz = exp2Det(Density);
 /// - distribution = Distribution;
 /// - grainDurationSec = exp2Det(Size);
-/// - position = (16/255)(exp2Det(8 × Position) − 1) seconds behind the write head, and
-///   spray = (2/255)(exp2Det(8 × Spray) − 1) seconds: the live ring's units (ruling M1-k);
+/// - spray = (2/255)(exp2Det(8 × Spray) − 1) seconds, in both products;
+/// - position:
+///   - FX: (16/255)(exp2Det(8 × Position) − 1) seconds behind the write head, the live ring's
+///     units (ruling M1-k);
+///   - instrument: Position itself, the fraction of the loaded file (sub-project 3's spec
+///     §6.8), with sprayInSeconds set, so the engine spreads the spray's seconds around it at
+///     the source's rate;
 /// - pitchSemitones = Pitch; stereo = Stereo;
 /// - gain = 1/sqrt(max(1, densityHz × grainDurationSec)), the expected overlap's power
 ///   normalization (spec §6.4), which each grain latches at its onset.
-CloudParams toCloudParams(const ParamValues &effective) noexcept;
+CloudParams toCloudParams(const ParamValues &effective, Mode mode) noexcept;
 
 /// Level, Mix and Freeze, as WetParams documents.
 WetParams toWetParams(const ParamValues &effective) noexcept;

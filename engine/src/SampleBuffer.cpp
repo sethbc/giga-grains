@@ -6,6 +6,7 @@
 
 #include <cmath>
 #include <stdexcept>
+#include <utility>
 
 namespace gg
 {
@@ -34,5 +35,22 @@ SampleBuffer::SampleBuffer(uint32_t channels, int64_t frames, double sampleRate)
     : channels_(channels), frames_(frames), sampleRate_(sampleRate),
       samples_(checkedSampleCount(channels, frames, sampleRate))
 {
+}
+
+// std::exchange, not a plain move, for the samples: the source's vector must end up empty, which
+// a moved-from vector isn't guaranteed to be. It is also safe for a self-move.
+SampleBuffer::SampleBuffer(SampleBuffer &&other) noexcept
+    : channels_(std::exchange(other.channels_, 0)), frames_(std::exchange(other.frames_, 0)),
+      sampleRate_(other.sampleRate_), samples_(std::exchange(other.samples_, {}))
+{
+}
+
+SampleBuffer &SampleBuffer::operator=(SampleBuffer &&other) noexcept
+{
+    channels_ = std::exchange(other.channels_, 0);
+    frames_ = std::exchange(other.frames_, 0);
+    sampleRate_ = other.sampleRate_;
+    samples_ = std::exchange(other.samples_, {});
+    return *this;
 }
 } // namespace gg

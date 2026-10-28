@@ -1,0 +1,13 @@
+{
+  "mode": "fx",
+  "sampleRate": 48000,
+  "durationSeconds": 4.0,
+  "blockSize": 128,
+  "seed": 1,
+  "input": {"kind": "file", "path": "loop-48k.wav"},
+  "params": {"Mix": 1.0, "Density": 6.0, "Size": -2.0},
+  "notes": [
+    {"time": 1.0, "key": 60, "duration": 1.0},
+    {"time": 2.5, "key": 67, "duration": 0.5}
+  ]
+}

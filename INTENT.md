@@ -4,7 +4,7 @@
 
 | | |
 |---|---|
-| **Status** | Intent v1 · 2026-10-26 · M0 (Foundations) done 2026-10-26; M1 (Cloud core) in progress: sub-project 1 of 6 (the FX slice) built 2026-10-27 |
+| **Status** | Intent v1 · 2026-10-26 · M0 (Foundations) done 2026-10-26; M1 (Cloud core) in progress: sub-projects 1 to 3 of 6 built (the FX slice, the Cloud engine and Sources), the third on 2026-10-28 |
 | **Products** | *Giga Grains* (instrument) and *Giga Grains FX* (effect), sharing one engine |
 | **License** | AGPL-3.0-or-later |
 | **Director** | Seth Chandler. Claude writes most of the code; the director steers, listens and reviews. |
@@ -265,13 +265,51 @@ optional scale or grid quantize. This is how "shaped randomness" (§8.1) is impl
 
 **Buffers and memory**
 
-- **Loading.**
+- **Loading** (M1 sub-project 3; §23 #48).
   - Sources live in RAM. Disk streaming doesn't suit random-access grain reads.
-  - Cost is about 23 MB per minute for float32 stereo at 48 kHz.
-  - Files are decoded on a background thread, and the memory is touched before use so page faults
-    can't stall the audio thread.
-  - The buffer is published as an immutable, reference-counted object via a pointer swap, and
-    freed later off the audio thread.
+  - Cost is about 23 MB per minute for float32 stereo at 48 kHz, and twice that with the
+    interleaved copy the engine reads (§23 #46).
+  - **Formats:** WAV (RIFF, RF64 or W64; PCM 8–32-bit or float), AIFF/AIFC, FLAC and MP3, decoded
+    with dr_libs. The format comes from the content, never the extension. A mono file stays mono;
+    a wider one keeps its first two channels.
+  - **The M1 cap is 600 s** of the file's own audio, whatever the host's rate, checked against
+    the header before anything is allocated, and against what a FLAC, MP3 or ADPCM decode
+    yields, whatever its header says. M2's memory cap replaces it.
+  - **Decoding memory follows what the file holds,** never only what its header claims (ruling
+    R7). Uncompressed audio is allocated once; FLAC, MP3 and ADPCM grow as they decode.
+  - **A truncated file is refused** (ruling R8), with a tolerance for what an intact file can
+    fall short by:
+    - uncompressed WAV and AIFF: a declared audio size up to 1 KiB beyond the end of the file,
+      1024 bytes included, as some writers leave it a little large (rulings R10, R12). The frames
+      the file holds are decoded;
+    - FLAC: none, except that a FLAC with no frame count decodes to its end;
+    - MP3: two MP3 frames (2304), for encoder delay and padding;
+    - ADPCM WAV: one block.
+  - **Conversion to the host rate** on load, with r8brain-free-src (`CDSPResampler24`, linear
+    phase, its latency compensated). The output has exactly
+    `llround(frames × hostRate / fileRate)` frames, and the same input gives the same bits.
+  - **A reactivation at a new rate converts synchronously,** in `activate()`, before it returns:
+    the file is decoded again (the decoded original isn't kept) and converted on the main thread
+    (ruling R18). There is no background reconversion, which would make output depend on the
+    worker's speed. If the file has gone or changed, the old source keeps playing at the right
+    pitch, since each grain's rate is scaled by source rate / output rate, and the status reads
+    Missing or Changed.
+  - **Interactive loads run in the background.** One worker thread per instance decodes, hashes,
+    converts and builds the source for a load, a drop or a relink; a newer request supersedes
+    one still waiting or under way. A session restore is synchronous instead (§18, D8).
+  - **The source is immutable once built:** the planar buffer and the interleaved copy
+    (`PreparedSource`), every page written off the audio thread. The main thread offers it
+    through a lock-free mailbox; the audio thread adopts it at the start of a `process()` call
+    by a pointer swap and hands back the one it retires, which the main thread frees.
+  - **The swap doesn't click.** Grains that started on the old source finish on it; grains from
+    the next onset read the new one.
+  - **The exchange and the engine hold at most three sources at once:** the one draining, the
+    one playing and one waiting for adoption. A further one waits until the oldest drains, at
+    most Size later, and a newer offer replaces one still waiting. Between two `process()` calls
+    a fourth can exist for up to one block: an offer made while one waits for adoption, until
+    the next call takes it and hands the waiting one back (§23 #49). Besides those, the loader's
+    worker may briefly hold the one it is building, and a superseded one until it notices; both
+    are freed off the audio thread.
 - **Memory management.** A process-wide sample pool removes duplicate copies of the same file.
   Each instance has a memory cap, shown in the UI.
 - **Live ring buffer.**
@@ -346,13 +384,59 @@ optional scale or grid quantize. This is how "shaped randomness" (§8.1) is impl
   - **Freeze** ramps the write gain to 0 over 20 ms, then stops the head. Unfreeze resumes the
     head and ramps the gain back over 20 ms. The ramp is an exact integer count, so it doesn't
     depend on where blocks fall.
-  - **Freeze is live until toggled** (§23 #40). The ring isn't saved until M2, so a fresh ring
-    starts empty. A Freeze that is on when the ring starts, restored with a project, kept
-    through a reactivation or kept through a reset, therefore leaves the effect playing live
-    grains: Freeze engages only on an off→on transition after the activation or reset, seen at a
-    grid boundary or at a block's first sample. The parameter and its saved state still read On
-    while it isn't holding. A boundary's events apply as one group, so off and on again at one
-    boundary is no transition, and the result doesn't depend on block size.
+  - **Freeze is live until toggled** (§23 #40; ruling M1-ac). The ring isn't saved until M2, so
+    a fresh ring starts empty. The parameter therefore engages the engine's freeze only once
+    armed, and it arms by being seen off after the activation or the last reset:
+    - Freeze is seen where it reaches the engine: each call's first sample, each applied grid
+      boundary, and a `setBase` of Freeze itself (params.flush or a state load).
+    - An activation and a reset disarm it, and the reset itself doesn't arm. So a Freeze that is
+      on when the ring starts, restored with a project, kept through a reactivation, or turned on
+      after a reset (a VST3 suspend, say) before audio flows, leaves the effect playing live
+      grains until it is toggled. One that is off at the next call's first sample arms.
+    - Modulation that takes the effective Freeze off and back on counts as a toggle.
+    - The parameter and its saved state still read On while it isn't holding.
+    - A boundary's events apply as one group, so off and on again at one boundary is no
+      transition, and the result doesn't depend on block size.
+    - A note-on needs no arming (Notes, below).
+- **Notes** (M1 sub-project 3; §23 #48). Both products take notes; velocity does nothing (D6).
+  - **Input:** CLAP note-on, note-off and note choke (a note-off), and MIDI note-on, note-off
+    (and note-on at velocity 0) and CC 123. MPE's per-note channels are just channels.
+    - A CLAP note-off with wildcard (−1) fields releases every held note it matches.
+    - **One addressed by `note_id` alone** (channel and key −1) releases that ID's note: the ID of
+      each CLAP note-on that has one is remembered in a fixed 256-entry table on the audio
+      thread, the oldest replaced when it is full. An unknown ID releases every note (ruling R15).
+    - **CC 123 releases only its own channel,** as MIDI 1.0 says; an all-off on channel −1
+      releases everything (ruling R14).
+  - **On the control grid:** a note event at absolute sample a takes effect at the boundary
+    ceil(a / 32) × 32 and joins that boundary's group, with its parameter events. A group's
+    notes apply in order, and only the held set after the group counts, so a note that starts
+    and ends within one group does nothing.
+  - **The held set** is the held (channel, key) pairs. A key held on two channels counts once,
+    and stays held until both are off. Two notes on one (channel, key) share it, so the first
+    note-off releases both; M3's Voice scheduler revisits this. An activation or reset clears
+    it.
+  - **Each grain's note:** while n > 0 keys are held, grain k plays the key at index
+    `min(floor(u × n), n − 1)` of the held keys, distinct and ascending, with `u` keyed by (seed,
+    layer, stream, `Field::Note`, k). Every grain draws, however many keys are held; with none
+    held, nothing is drawn, so no existing draw changes.
+  - **Pitch:** the Pitch parameter plus (key − 60), clamped to [−48, 48] semitones. Note 60
+    plays at the Pitch parameter alone, as with no note held; at Pitch 0 that is the source's
+    own pitch.
+  - **A note-on starts a grain at once:** when the held set goes from empty to non-empty at
+    boundary g, the pending onset becomes g. A note added to a held chord doesn't move it. The
+    grain index k keeps counting across notes.
+  - **The instrument is silent until a note** (the note gate): no grain spawns while nothing is
+    held. From the boundary where the last note is released no grain spawns, and the sounding
+    ones play out their window, a release tail as long as Size.
+  - **Notes freeze the FX** (D4): the engine's freeze is on while Freeze is engaged (armed, as
+    above) or any key is held. A note-on engages even right after a reset or a reopened
+    project. Releasing every note unfreezes the ring unless Freeze is engaged. Notes never
+    change Freeze's value, automation or saved state. Position and Spray keep reading seconds
+    behind the stopped head.
+- **The instrument's Position and Spray.** Position is the fraction of the loaded file, and
+  Spray is seconds, bipolar around it, so its spread doesn't change with the file's length: a
+  grain reads from `clamp(position × (frames − 1) + spray × bipolar(u) × sourceRate, 0,
+  frames − 1)`. The FX keeps seconds behind the head for both (ruling M1-k).
 
 **Extreme stretch.** Grains alone start to comb and sound static at 100× and beyond. Two tools
 address this:
@@ -404,7 +488,8 @@ templates are in its repository, https://github.com/surge-synthesizer/shortcircu
 ```
 engine/   framework-free, real-time-safe, headless C++ — also powers gg-render
 core/     JUCE-free gg-core: patch, parameter mapping, Processor — shared with gg-render
-plugin/   CLAP implementation: params, notes/MPE, state, UI↔audio queues
+media/    JUCE-free gg-media: decoding, rate conversion, SHA-256, sample search, settings file
+plugin/   CLAP implementation: params, notes/MPE, state, sample loader, UI↔audio queues
 ui/       JUCE editor (GrainCanvas behind a renderer interface)
 clients/  CLAP entry points + clap-wrapper targets
 ```
@@ -412,8 +497,16 @@ clients/  CLAP entry points + clap-wrapper targets
 - **The `core/` layer (`gg-core`, since M1; §23 #38)** sits between the engine and the plugin. It
   holds the patch and its versioned state XML (public API `gg/core/PatchState.h`), the only
   parameter → engine mapping (`ParamMap`), and the `Processor`: the control grid, the Mix and
-  Level ramps, the FX's live input, the wet chain and the dry/wet mix. The plugin and `gg-render`
-  drive the same `Processor`, so the goldens test what a DAW plays. It has no JUCE.
+  Level ramps, the FX's live input, the notes, the source hand-off, the wet chain and the dry/wet
+  mix. The plugin and `gg-render` drive the same `Processor`, so the goldens test what a DAW
+  plays. Since sub-project 3 it also holds the session state container (`gg/core/SessionState.h`,
+  §18) and the per-machine settings' XML (`gg/core/MachineSettings.h`). It has no JUCE.
+- **The `media/` layer (`gg-media`, since M1 sub-project 3; §23 #48)** is sample-file I/O, never
+  on the audio thread: decoding (`gg/media/Decode.h`), rate conversion (`Convert.h`), the
+  SHA-256 fingerprint (`Sha256.h`), loading a sample with its manifest entry (`Sample.h`), the
+  search for a missing one (`Search.h`) and the per-machine settings file (`SettingsFile.h`).
+  The plugin's loader and `gg-render` share it. It links `gg-core` for the manifest entry and
+  the settings' XML; `gg-core` never links it. It has no JUCE.
 - **The plugin builds in two layers.** `gg-plugin-core` is the CLAP audio side and the factory,
   with no JUCE. `gg-plugin-editor` adds the JUCE editor through `clap_juce_shim`.
   - The `GG_BUILD_EDITOR` option (default ON) builds the editor and the clap-wrapper formats.
@@ -459,9 +552,9 @@ clients/  CLAP entry points + clap-wrapper targets
 | sst-cpputils, sst-plugininfra, sst-clap-helpers, sst-jucegui | MIT | Real-time utilities, versioned patch state, JUCE shim, widgets |
 | tinyxml (bundled in sst-plugininfra) | zlib | The patch state's XML, private to `gg-core` |
 | simde | MIT | SSE intrinsics on ARM/NEON |
-| dr_libs (dr_wav / dr_flac / dr_mp3) | Unlicense / MIT-0 | Audio file decoding |
+| dr_libs (dr_wav / dr_flac / dr_mp3) | Unlicense / MIT-0 | Audio file decoding: `gg-render`'s WAVs, and `gg-media`'s WAV, AIFF, FLAC and MP3 samples |
 | libFLAC | BSD-3-Clause | Encoding embedded captures |
-| r8brain-free-src (upstream 7.x) | MIT | Sample-rate conversion on load |
+| r8brain-free-src 7.6 (tag `7.6`, `cb2abb9`) | MIT | Sample-rate conversion on load, in `gg-media` (`CDSPResampler24`; header-only, with its bundled Ooura FFT), since M1 sub-project 3 |
 | pffft | BSD-like | FFT for Spectral Smear |
 | signalsmith-stretch | MIT | Transparent pitch/formant shift in the FX only (not extreme stretch) |
 | readerwriterqueue or choc | BSD / ISC | Lossless SPSC queues |
@@ -488,6 +581,8 @@ clients/  CLAP entry points + clap-wrapper targets
   - NessStretch code (no license). Implement from its paper instead.
 - **Written in-house:** the scheduler, grain pool, kernels and buffers. This is the core of the
   project.
+  - SHA-256: in-house (FIPS 180-4, `gg/media/Sha256.h`), tested against the standard's vectors. It
+    fingerprints sample files (§18), so it needs no dependency.
 - **Queues:**
   - Parameters and commands going from the UI to the audio thread use a lossless,
     non-overwriting SPSC queue.
@@ -641,19 +736,82 @@ clients/  CLAP entry points + clap-wrapper targets
 
 ### 18. State, presets and identities
 
-**Session state** is a versioned, chunked container:
-- `PTCH`: the patch, using sst-plugininfra PatchBase with migrations;
-- `MEDI`: a media manifest listing each sample's content hash, absolute and library-relative
-  paths, format details and an embed flag;
-- `AUDI` (optional): embedded audio as FLAC.
+**Session state** is a versioned, chunked container (since M1 sub-project 3; §23 #48), in
+`gg/core/SessionState.h`:
+- **The layout,** every integer little-endian: the magic `GGST`, a u32 container version (1),
+  then chunks, each a four-character ID, a u64 payload length and the payload.
+- `PTCH`: the patch, using sst-plugininfra PatchBase with migrations. Its bytes are the patch
+  XML's, unchanged.
+- `MEDI`: the media manifest, as XML: a `<media version="1">` root with zero or one `<sample>`
+  (M1 loads at most one sample). A sample's attributes:
+  - `sha256`, 64 lowercase hex digits, and `size`, in bytes: the file's fingerprint;
+  - `path`, absolute, and `relative`, to the sample folder with `/` separators (empty when the
+    file is outside it), both UTF-8;
+  - `format` (`wav`, `aiff`, `flac` or `mp3`), `channels` (as stored in the file), `rate` (the
+    double's bits, as 16 hex digits, so it comes back bit for bit) and `frames`: the file's;
+  - `embed`, always 0 until M2.
+- `AUDI` (optional): embedded audio as FLAC. Reserved for M2, and not written yet.
+- **Reading is all or nothing.** A bad magic, another container version, a chunk running past
+  the end, a missing or repeated `PTCH` or `MEDI`, or one that fails to parse rejects the whole
+  state and changes nothing.
+  - XML nested more than 64 elements deep, in `PTCH`, `MEDI` or the settings file, is rejected
+    before it is parsed: tinyxml parses recursively, and a crafted project would overflow the
+    stack (§23 #49).
+  - A `MEDI` of a newer version than the build reads fails the whole state, where a newer
+    `PTCH` migrates, so an older build never drops a sample reference it can't read and saves
+    over it. A deliberate choice for now, to revisit before the state format freezes (§23 #49).
+  - Unknown chunk IDs are skipped, so a newer build's chunks don't break an older one.
+  - A state that starts with `<` is a pre-container state, saved by sub-projects 1 and 2: all
+    `PTCH`, with no sample.
+  - The plugins refuse a state longer than 64 MiB, and read no further (`kMaxStateBytes`).
+- **Writing.** Both products write the container, the FX with an empty `MEDI`. `encodeState`
+  never writes a `MEDI` entry that wouldn't decode: debug builds assert, and release builds leave
+  it out, losing one sample reference rather than the whole session (ruling R9).
+- **`MEDI` records the requested sample, not the one playing.** Only a load or a relink replaces
+  it (and a restore sets it), so a session saved while its sample is missing, loading or failed
+  to load still names it.
 
 **Sample handling**
 - **What gets embedded:**
   - User samples are referenced, not embedded.
   - Captures and freezes are embedded up to **32 MB per instance**. Beyond that, they are written
     to a captures folder as FLAC files named by hash, and referenced from the state.
-- **Loading:** sessions load quickly and decode audio asynchronously.
+- **Loading** (D8). A session restore loads its sample before it returns, so every render after
+  opening is complete, and two exports of one project are identical.
+  - `stateLoad` finds, verifies and decodes the sample on the main thread, where hosts expect a
+    state load to take time. Active, it converts it and hands it to the audio thread together
+    with the loaded values, so one `process()` call applies both. The exception: while two
+    sources are still in play (a swap still draining), the engine can't adopt a third, so that
+    call applies the values and the source follows within Size. Inactive, `activate()` converts
+    it before it returns.
+  - **A restore of the sample already in memory keeps it** (ruling R19, §23 #49): when the
+    session's entry has the current entry's fingerprint (SHA-256 and size) and its sample is in
+    memory, `stateLoad` reads no file. The sample and the current entry stay, and only the
+    session's values go to the audio thread, which keeps its source. Undo, A/B compare and
+    preset recall then take no time, and a file deleted since keeps playing.
+  - A large sample makes opening a project a few seconds slower.
+  - Loads by button, drop or relink decode in the background (§14).
+- **Finding a missing sample** (D5). Inside `stateLoad`, each candidate must match the
+  manifest's size, then its SHA-256; the first that does loads. The candidates, in order:
+  1. the absolute path;
+  2. the sample folder plus the relative path (a moved drive, or another machine with the same
+     library);
+  3. a file of the same name: in the saved path's folder, then in the last folder loaded from,
+     then anywhere under the sample folder. That scan visits at most 50,000 entries, never
+     follows a symlinked folder, and skips a folder it can't list.
+
+  A match away from the saved path updates the manifest and marks the state dirty. With no
+  match, the instrument stays silent and the status reads *missing*, or *changed* when the file
+  at the saved path has other content. `gg-render` never searches: a render spec names its file.
+- **Per-machine settings:** `settings.xml`, in `~/Library/Application Support/Giga Grains/` on
+  macOS, `%APPDATA%\Giga Grains\` on Windows, and `$XDG_CONFIG_HOME/giga-grains/` (or
+  `~/.config/giga-grains/`) on Linux. It holds the sample folder, which the user sets once, and
+  the last folder loaded from, updated on each load. It is read and written on the main thread
+  only, through a temporary file unique to each save, renamed over it (ruling R16).
 - **Missing media:** shows placeholders, with relink and a "collect and save" command.
+  - In M1 the instrument's loader strip shows *missing* or *changed* with Relink. A file whose
+    fingerprint matches restores the sample; another loads as a replacement, and the status
+    says so. "Collect and save" comes in M2.
 
 **Presets.** There is one preset system: CLAP preset discovery. clap-wrapper bridges it to VST3
 program lists and AU factory presets.
@@ -724,12 +882,12 @@ they are frozen along with them.
   |---|---|---|---|
   | `0x000001` | Mix | 0–100% | 50% |
   | `0x000002` | Level | −60 … +12 dB | 0 dB |
-  | `0x010001` | Position | 0–16 s behind the write head | 0.25 s |
+  | `0x010001` | Position | FX: 0–16 s behind the write head; instrument: 0–100% of the loaded file | FX: 0.25 s; instrument: 0% |
   | `0x010002` | Size | 5 ms – 2 s | 150 ms |
   | `0x010003` | Density | 0.25–400 grains/s | 16 |
   | `0x010004` | Distribution | 0–100% (regular ↔ random) | 50% |
   | `0x010005` | Pitch | −24 … +24 semitones | 0 |
-  | `0x010006` | Spray | 0–2 s | 50 ms |
+  | `0x010006` | Spray | 0–2 s (in the instrument, bipolar around Position) | 50 ms |
   | `0x010007` | Stereo | 0–100% per-grain pan spread | 50% |
   | `0x010008` | Freeze | off/on | off |
 
@@ -737,10 +895,14 @@ they are frozen along with them.
     clamped offset to the base value and is never written back.
   - Both products expose the same list, so they share one state format. In the instrument, Mix
     is `HIDDEN` and has no effect, and its remote-controls slot is empty (ruling M1-w).
+  - **Only Position's `ParamMetaData` differs between the products** (since sub-project 3; §23
+    #48): its default and display. The instrument also hides Mix, as above. In the instrument it is the fraction of the loaded file (§14).
+    Both are CLAP values 0–1 under one ID, so the state format stays shared, and a state moved
+    between products keeps its stored value. Freeze does nothing in the instrument, which has no
+    live ring.
   - The CLAP value is the parameter's sst-basic-blocks `ParamMetaData` value, a log-domain value
     for the log ranges. Values are floats end to end.
-- **The patch** (the future `PTCH` chunk; today the plugin's whole state) is `gg-core`'s
-  versioned XML: patch id
+- **The patch** (the state's `PTCH` chunk) is `gg-core`'s versioned XML: patch id
   `org.sethbc.giga-grains.patch`, version 1. Each value also carries its float bits, so a saved
   and reloaded state renders identically, and the engine seed is saved with it. New instances
   start at seed 0.
@@ -812,7 +974,7 @@ they are frozen along with them.
 | Milestone | Delivers | Exit criteria |
 |---|---|---|
 | **M0 Foundations** (done 2026-10-26) | Repo, CMake, CI matrix (mac/win/linux), `LICENSE` (AGPL-3.0); headless engine skeleton; `gg-render`; test, golden-render, RTSan and benchmark harness; both plugin shells in every format plus standalone; validators in CI. **Spikes:** kernel benchmark (sets §16), JUCE 9 vs 8.0.16, two-descriptor CLAP to AUv2/VST3/standalone, Ableton MIDI routing into an effect, CPU canvas frame budget. | One grain stream renders deterministically. The empty plugins load in the first-class hosts and pass every validator. **Met** (§23 #29). |
-| **M1 Cloud core** (starts from `docs/m1-carry-over.md`) | Six sub-projects, each spec → plan → build → review (§23 #35): 1 FX vertical slice (`docs/superpowers/specs/2026-10-27-m1-fx-slice-design.md`); 2 Cloud engine; 3 Sources; 4 Space; 5 Perform UI; 6 Close. Together they deliver: grain pool and SIMD renderer (Eco/Normal; Eco is engine-only until M2, §23 #43), the §16 lever list (§23 #39); Cloud scheduler; parameter model; Sample and Live sources with freeze; note-triggered freeze/capture in the FX (§23 #32); 1 layer; diffusion/reverb; state save/load; single-lane canvas plus 8 macros | Both plugins make textures. **Listening gate #1.** CPU baseline recorded; the CPU gate reports without failing until sub-project 6 makes it blocking (§23 #44). The §16 headline measured on the reference core and published (§23 #39). clap-validator runs in full: M0 skipped its `param-conversions` test, which panics on a plugin with no parameters (ruling T8-c, free-audio/clap-validator#40); sub-project 1 removed the exclusion (§23 #35). |
+| **M1 Cloud core** (starts from `docs/m1-carry-over.md`) | Six sub-projects, each spec → plan → build → review (§23 #35): 1 FX vertical slice (`docs/superpowers/specs/2026-10-27-m1-fx-slice-design.md`); 2 Cloud engine; 3 Sources; 4 Space; 5 Perform UI; 6 Close. Together they deliver: grain pool and SIMD renderer (Eco/Normal; Eco is engine-only until M2, §23 #43), the §16 lever list (§23 #39); Cloud scheduler; parameter model; Sample and Live sources with freeze; note-triggered freeze/capture in the FX (§23 #32; built in sub-project 3 as hold and play, a note freezing the ring and repitching the grains, §23 #48); 1 layer; diffusion/reverb; state save/load; single-lane canvas plus 8 macros | Both plugins make textures. **Listening gate #1.** CPU baseline recorded; the CPU gate reports without failing until sub-project 6 makes it blocking (§23 #44). The §16 headline measured on the reference core and published (§23 #39). clap-validator runs in full: M0 skipped its `param-conversions` test, which panics on a plugin with no parameters (ruling T8-c, free-audio/clap-validator#40); sub-project 1 removed the exclusion (§23 #35). |
 | **M2 Giga** | 4 layers plus morph; budget manager; no CPU regression vs the M1 measured headline (§23 #41); mipmaps and the HQ sinc tier; minutes-long buffers with persistence; Smear and Spectral Smear; resample/feedback source; full mod matrix; Mutate; factory presets and CC0 samples, including MIDI-driven FX presets (§23 #32) | Benchmarks pass. **Listening gate #2.** |
 | **→ v1.0** | M0 to M2 polished | Success criteria (§10) met. |
 | **M3 Playable** | Voice scheduler, polyphony, MPE, note expressions, polyphonic modulation, per-voice envelopes, pitch-sync/formant grains, microtuning | Listening gate. First-class hosts pass. |
@@ -834,7 +996,7 @@ Why this order after v1.0:
 | Determinism is fragile: one CPU-adaptive rule, `std::` distribution or thread-order sum silently breaks it | Rules in §14; block-size invariance tests from M0 |
 | Multithreading is uneven across formats; there's no workgroup join via CLAP/clap-wrapper | Single-threaded v1; tasks only when the host offers a thread pool |
 | Memory blow-up: layers × minutes × mipmaps × instances | RAM cap per instance, shown in the UI; shared sample pool; buffer resolution options |
-| Large state chunks slow or crash hosts | 32 MB embed cap; captures folder; async decode |
+| Large state chunks slow or crash hosts | 32 MB embed cap; a 64 MiB state read cap; captures folder; background decoding for interactive loads (a session restore loads its sample synchronously, D8, §18) |
 | Clicks and level pumping at extremes (head crossing, normalizing thousands of grains) | Engine invariants in §14; click detector in the golden tests |
 | sst API churn (no releases); clap-wrapper bugs (transport, AU tail) | Pinned SHAs; upstream fixes; host smoke tests |
 | JUCE 9 compatibility of the shim | The M0 spike passed on macOS arm64, so the project is on 9.0.4 (§23 #24). CI run 40445561691 passed on Windows, Linux and macOS (§23 #29), and the macOS leg now also runs the mac-universal x86_64 slice's tests under Rosetta (§23 #33); 8.0.16-security is the fallback |
@@ -907,7 +1069,7 @@ director made the call.
 | 37 | Parameter IDs: `(scope << 16) \| index`, and the first ten | Scope 0 is global and scopes 1 to 4 are layers A to D, so M2 adds layers without renumbering; index 0 is reserved; every ID is below `0xB00000` (ruling T8-d) and append-only. The ten: Mix `0x000001`, Level `0x000002`, and layer A's Position, Size, Density, Distribution, Pitch, Spray, Stereo and Freeze, `0x010001` to `0x010008`. Both products expose the same list and share one state format; the instrument hides Mix and leaves its remote-controls slot empty (ruling M1-w). The state is `gg-core`'s versioned XML (version 1) with each value's float bits and the engine seed. The IDs are pinned by a test and frozen at the first public release, with the identities in #20. Decided 2026-10-27, during M1 sub-project 1; see §18 |
 | 38 | `gg-core`, `GG_BUILD_EDITOR` and sst-plugininfra | `gg-core` (`core/`) is the JUCE-free layer between the engine and the plugin: the patch and its state, the parameter mapping and the `Processor`, shared by the plugin and `gg-render`. The plugin splits into a JUCE-free core and an editor layer; `GG_BUILD_EDITOR` (default ON) builds the editor and the clap-wrapper formats, and the `asan` and `rtsan` presets build with it OFF, so the plugin audio path runs under ASan/UBSan and RealtimeSanitizer, which closes the carry-over's first item (`ec2a054`). sst-plugininfra (MIT) is pinned at `main` @ `8e4271c`; only its `patchbase` target and bundled tinyxml (zlib) are built, private to `gg-core` (ruling M1-l). Its bundled `libs/asiosdk` is ASIO SDK 2.3.4, licensed "Steinberg ASIO License or GPLv3"; it is unused and never built. §22 records that a GPLv3 ASIO SDK release now exists; re-enabling ASIO stays open, and #30 stands. Decided 2026-10-27, during M1 sub-project 1; see §15 and §22 |
 | 39 | §16 headline measured on the M5 Max and published as measured, with no ceiling; floor figures informative; sub-project 2 tries four levers and keeps the winners | M0 measured the SIMD Hermite kernel at 20–22% of one M5 Max core, 48–53% on CI's M1 VM and 55–69% on the EPYC VMs. #23's levers attack cache misses and per-grain overhead, which the M5 Max barely shows, so nothing guaranteed they would close 2×, and sub-project 2 would have opened with a bar it might not meet. The decision: the reference is one performance core of the director's M5 Max, on bare metal; the headline is "2,000 Normal grains per instance at 48 kHz in X% of one Apple M5 Max performance core", X measured on the real engine's render path at the end of M1 (sub-project 6) and published with its commit SHA and block sizes, with no ceiling; CI's floor legs keep running the full benchmark, as informative figures; CI's CPU gate stays a regression gate on in-process ratios (carry-over B-I2); sub-project 2 tries four levers (prefetch, an interleaved source, cache-aware scheduling, contiguous loads with shuffles), keeps each that wins on the M5 Max or any CI leg without regressing another, then stops. The director signed off the Part I wordings: §5 "with published figures (§16)", and §10 criterion 3 "The grain-count and CPU figures published in §16 are measured on the reference hardware and reproducible." Supersedes #23. See `docs/superpowers/specs/2026-10-27-cpu-headline-design.md`. Decided 2026-10-27 by the director, during M1; see §5, §10, §16, §19, §20 and §21 |
-| 40 | Freeze is live until toggled | Final-review finding I1 of M1 sub-project 1: Freeze is saved in the state but the live ring isn't (persistence is an M2 non-goal), so a Freeze that was on when a fresh ring started froze that ring's first 20 ms, usually silence, and the effect stayed silent until the user toggled Freeze. That happened on every project reopened with Freeze on, every reactivation and every CLAP `reset()`, which clap-wrapper's VST3 calls on each `setProcessing(false)`. The director chose "live until toggled" over documenting the silence: the `Processor` engages Freeze only on an off→on transition after an activation or reset, evaluated on the control grid; until then the effect plays live grains while Freeze reads On. Once engaged, the 20 ms ramp and the admission clamp (M1-p) are unchanged. With it the effect is always audible after a reload; the cost is that a reopened frozen pad is not held until M2 persists the ring and revisits this. No golden starts frozen, so none changed. Decided 2026-10-27 by the director, during M1 sub-project 1 (final review); see §14 |
+| 40 | Freeze is live until toggled | Final-review finding I1 of M1 sub-project 1: Freeze is saved in the state but the live ring isn't (persistence is an M2 non-goal), so a Freeze that was on when a fresh ring started froze that ring's first 20 ms, usually silence, and the effect stayed silent until the user toggled Freeze. That happened on every project reopened with Freeze on, every reactivation and every CLAP `reset()`, which clap-wrapper's VST3 calls on each `setProcessing(false)`. The director chose "live until toggled" over documenting the silence: the `Processor` engages Freeze only on an off→on transition after an activation or reset, evaluated on the control grid; until then the effect plays live grains while Freeze reads On. The full arming rule (ruling M1-ac, kept by the director in sub-project 1's final fix re-review, 2026-10-27): Freeze arms when it is seen off at a call's first sample, at an applied grid boundary or in a `setBase` of Freeze (params.flush or a state load); an activation and a reset disarm it, and the reset itself doesn't arm, so a Freeze turned on after a VST3 suspend, before audio flows, stays live until toggled; modulation that takes the effective Freeze off and back on counts as a toggle. In the FX a note-on freezes without arming (§23 #48). Once engaged, the 20 ms ramp and the admission clamp (M1-p) are unchanged. With it the effect is always audible after a reload; the cost is that a reopened frozen pad is not held until M2 persists the ring and revisits this. No golden starts frozen, so none changed. Decided 2026-10-27 by the director, during M1 sub-project 1 (final review); see §14 |
 | 41 | §20's M2 exit wording after #39 | §20's M2 row still said "grain target met", but #39 removed the CPU target: the §16 headline is measured at the end of M1 and published, with no ceiling, and CI's CPU gate is a regression gate on in-process ratios. The director's wording replaces it: "no CPU regression vs the M1 measured headline". Decided 2026-10-27 by the director, during M1 sub-project 1; see §20 and #39 |
 | 42 | Reference templates named by their upstream repositories | Part II and CLAUDE.md named the three reference templates (shortcircuit-xt, surge, OB-Xf) only by local paths, which a reader without those clones can't follow. Each mention of a template now names its GitHub repository under the surge-synthesizer organization, checked against each local clone's `origin`: the "Key sources" list gives one bullet per template, with its local clone next to its URL; §15's CLAP-first paragraph links shortcircuit-xt once, with its template files' paths relative to the repository; CLAUDE.md's "Reference templates" bullet gives the URLs and says a session may read the local clones when they're present. A correction; no decision changes. Decided 2026-10-27 by the director, during M1 sub-project 1; see §15 and "Key sources" below |
 | 43 | Sub-project 2's kernel bits and the Eco tier | Rulings 1 and 2 of M1 sub-project 2. **Kernel bits:** the renderer gets new per-sample math, defined once by a scalar reference: the window phase is `e × invDuration`, with `invDuration` latched once, and each channel's gain is one latched product, so a sample adds `read × (w × gain_c)` (on the live ring, `read × ((w × f) × gain_c)`). The 4-wide SIMD kernels match that reference bit for bit on every platform's own build, with no horizontal operations and no FMA. The audio-metric goldens are regenerated once, in one commit that says why; the grain-event logs don't change. **Eco is engine-only until M2:** the tier is latched per grain, at its onset, from `CloudParams::quality`, and stored in the pool; `gg-render`'s sample mode takes an optional `stream.quality`, and a golden case covers Eco. Both plugins stay Normal; a Quality parameter arrives in M2 with HQ and the budget manager. Decided 2026-10-27 by the director, during M1 sub-project 2; see §14 and `docs/superpowers/specs/2026-10-27-m1-cloud-engine-design.md` §2–§3 |
@@ -915,6 +1077,8 @@ director made the call.
 | 45 | The Cloud density ceiling is the sample rate | Ruling 5 of M1 sub-project 2, which amends ruling M1-a as recorded in #36. The §16 case needs 2,000 overlapping grains of 100 ms, which is 20 kHz at 48 kHz, but the scheduler clamped a positive density to [0.01, min(4000, sampleRate)]. The 4 kHz cap goes: a positive density clamps to [0.01, sampleRate], so onsets average at most one per output sample, as in M0. The plugins' Density parameter still stops at 400 Hz, so nothing a user can reach changes, and no golden changes. §14's clock range, "0.01 Hz to about 4 kHz", becomes "0.01 Hz up to the sample rate". Decided 2026-10-27 by the director, during M1 sub-project 2; see §14 and `docs/superpowers/specs/2026-10-27-m1-cloud-engine-design.md` §2 |
 | 46 | §16 levers tried: the interleaved source kept, three rejected | Sub-project 2 tried §16's four levers, each judged by in-process ratios against the kernel before it, on the M5 Max and on CI's three legs. **Kept: the stereo-interleaved source,** both halves. A stereo sample source gets an interleaved copy (L, R per frame), so each SIMD tap is one address; the live ring stores L, R per slot. On the M5 Max the Sample case is 7–9% faster and the live case 9–13%; the live half also wins 8–14% on Windows and loses nowhere. **The director's exception:** on the Windows leg the interleaved *sample* half regressed the sample ratio by 1–2%, and Eco by up to 7% at block 32, which §16's keep rule ("no leg regresses beyond its spread") would reject. Shown the M5's 7–9% sample win against Windows' 1–2% sample regression, the director decided to keep it ("I'd rather keep it"), at 2× memory for a stereo source. **Rejected:** per-grain prefetch (its sample half regressed Eco on the x86 legs; its live half, ported onto the interleaved ring, showed no win on the M5, and its 5–6% live win on Linux, with both runs on the same CPU model, was within that leg's 6% drift between runs for unchanged code, and the M1 VM's lone live wins at block 32 (0.867, then 0.667 ported) were inside that leg's larger drift: in the port's run its unchanged sample path moved to 0.821 at block 32); cache-aware scheduling (11% to 77% slower on every leg); contiguous loads with shuffles (5% to 49% slower on x86; ported to arm64 only, it no longer paid on any path the engine runs, since the interleaved reads are already contiguous). None of the rejected levers is merged; their branches stay for the record. Optimization stops here; sub-project 6 measures X. Decided 2026-10-27 by the director, during M1 sub-project 2; see §16 and `docs/spikes/m1-cpu-levers.md` |
 | 47 | CI CPU baselines are per CPU model, from separate runs | Found while judging #46's levers: on CI, ratios for unchanged code drifted between runs far beyond the in-run IQR, up to ~20% on Windows, where the two runs landed on different CPU models (GitHub's hosted x86 pools mix AMD EPYC 7763, 9V45 and 9V74 and Intel Xeon 8370C: Linux has run on all four, Windows on the three EPYCs), and up to 6% on Linux on the same model. One run's IQR therefore says nothing about the next run. The controller's ruling: **baselines are per CPU model.** A leg's baseline file holds one entry per `machine`; `gg-bench --make-baseline` groups its input runs by `machine`, and each entry's tolerance is `max(0.10, 2 × (max − min) / median)` over separate CI runs. `--baseline` gives a verdict only against the entry for the run's own machine; on a model with no entry it prints `no baseline for <machine>; no verdict` and exits 0. A model not yet seen gets its entry from later runs on it. The first baselines have entries for the mac leg's Apple M1 VM, Windows' EPYC 7763 and 9V74, and Linux's EPYC 7763 and 9V45. This supports §19's report-only gate through M1; sub-project 6 makes the gate blocking with the published X and adds the models the first baselines lack. Recorded 2026-10-27, during M1 sub-project 2; see §16, §19 and `docs/spikes/m1-cpu-levers.md` ("CI variance") |
+| 48 | Sub-project 3 (Sources): notes in both products, the instrument's sample, the loader, the chunked state and the search for a missing sample | The director's eight decisions, by forced choice: **D1** loading is silent and notes start the instrument's sound, the Cloud stream reading the sample repitched to the held notes; **D2** a chord is one cloud, each grain picking one held note at random from the counter RNG, neither mono nor M3's polyphony pulled forward; **D3** a minimal loader in today's editor (Load…, a drop target, the file name and status, Relink…, Sample folder…) until sub-project 5's canvas; **D4** in the FX a note holds and plays: note-on freezes the live ring and repitches the grains to the held notes, and releasing every note unfreezes it, with no capture buffer; **D5** a sample missing on reopen is searched for, then shown missing with relink, never embedded; **D6** the details as proposed: note 60 plays the sample at its own pitch, velocity does nothing, the Freeze parameter or any held note freezes the FX, a note-on engages even right after a reset, WAV, AIFF, FLAC and MP3, conversion to the host rate with r8brain, a 10-minute cap, the instrument's Position as 0–100% of the file with Spray in seconds, a new sample swapping in while old grains finish on the old one, and `gg-render`'s instrument mode, notes and file input; **D7** the state becomes §18's chunked container now (`GGST`, with `PTCH` and `MEDI`), so the format changes once before release; **D8** a session restore loads its sample before it returns, so every render after opening includes it, at the cost of a few seconds' longer open; one `process()` call applies the restored values and sample together, except while two sources are still in play (a swap draining), when that call applies the values and the sample follows within Size (§18). **Rulings made during the build:** decoding memory follows the file's content, never its header alone (R7); truncated files are refused (R8), but an uncompressed WAV or AIFF may declare up to 1 KiB of audio beyond its end, 1024 bytes included (R10, R12), an MP3 may fall two MP3 frames short and a FLAC none; `encodeState` never writes a `MEDI` entry that wouldn't decode, leaving it out in release builds and asserting in debug (R9); MIDI CC 123 releases only its own channel, as MIDI 1.0 says, and an all-off on channel −1 releases everything (R14); a CLAP note-off or choke addressed by `note_id` alone (channel and key −1) resolves through a fixed 256-entry ID table on the audio thread, and an unknown ID releases every note (R15); the settings file is read and written on the main thread only, through a temporary file unique to each save (R16); a note whose Off would round to its On's frame is bad input to `gg-render` (R17). **Ruling R18 is Claude's, made during the build; the director confirmed it on 2026-10-28.** It amends the spec's §6.4, which had the loader convert again in the background when the instrument is activated at a new rate: a reactivation at a new sample rate now decodes and converts synchronously in `activate()`, because the background swap made output depend on the worker's speed, against "no behavior that adapts to measured CPU" (CLAUDE.md) and D8's identical exports. If the file has gone or changed, the old source keeps playing at the right pitch and the status reads Missing or Changed. The cost: a reactivation at a new rate with a long sample blocks the main thread for seconds, as a restore does. **Also recorded here:** the 10-minute cap is 600 s of the file's own audio, and a state is read up to 64 MiB (carry-over T7 218); ruling M1-ac's full Freeze arming rule, and that a note-on engages without arming, now stated in §14 and #40 (carry-over M1-ac); §18's Position, now per product; `gg-media`, the new JUCE-free library, in §15; §21's "async decode" becomes background decoding for interactive loads; §20's M1 row notes that note-triggered freeze is built as hold and play. See `docs/superpowers/specs/2026-10-28-m1-sources-design.md` §4 and §6. Decided 2026-10-28 by the director, during M1 sub-project 3; the rulings made during its build, R18 pending the director's confirmation; see §14, §15, §18, §20 and §21 |
+| 49 | Sub-project 3's final review: hardening, and ruling R19 | Claude's, in the final whole-branch review of M1 sub-project 3; the fixes are code and tests, and change no golden. **Ruling R19, confirmed by the director with R18 on 2026-10-28:** a session restore whose sample entry has the current entry's fingerprint (SHA-256 and size), while that sample is in memory, keeps it: no search, no decode, no hash, and the current entry stays. Active, only the values go to the audio thread, through D8's hand-off, in an offer that keeps the source (`SourceExchange::offerValues`); a keep offer that replaces an untaken one takes over its source, so a load not yet taken still arrives. Hosts restore state for undo, A/B compare and preset recall, which had re-decoded for seconds and silenced a sample still in memory whose file had gone; the cost is that an instance that kept its audio differs from a fresh open only if the file vanished mid-session. **Hardening:** gg-media opens WAV, AIFF, RF64 and W64 itself and gives dr_wav a seek that refuses any position outside the file, since a wrapped or huge chunk size (an RF64 `ds64` under 24 bytes, a W64 junk chunk of 2^63) had dr_wav seek forward in 2^31-byte steps for about 47 minutes, freezing the loader, `deactivate()` and `gg-render`; r8brain's MaxInLen is `clamp(65536 × from / to, 1, 4096)` per conversion, since a 1 Hz file converted to 192 kHz had peaked at 7 GB, and to 768 kHz overflowed r8brain's int lengths; a converted buffer keeps at least one frame of a file that has any; XML nested more than 64 deep is rejected before tinyxml parses it (§18), since a crafted project overflowed the stack and crashed the host as it opened; `MEDI` rejects a negative frame count; a WAV whose header declares more than it holds is "truncated" before it is "too long", so an unfinalized recording says so. **Also recorded:** a newer `MEDI` version fails the whole state, deliberately, until the format freezes (§18); for up to one block a fourth source can exist (§14). Decided 2026-10-28 by Claude, during M1 sub-project 3 (final review), R19 pending the director's confirmation; see §14 and §18 |
 
 **Key sources** (checked 2026-10-26):
 - clap-wrapper releases (v0.17.0, 2026-10-20): https://github.com/free-audio/clap-wrapper/releases

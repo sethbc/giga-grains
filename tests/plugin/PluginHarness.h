@@ -10,10 +10,15 @@
 // their clap_plugin vtables, exactly as a host would call them, without loading the built .clap.
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <limits>
+#include <memory>
+#include <numbers>
 #include <string>
 #include <utility>
 #include <vector>
@@ -23,9 +28,31 @@
 #include "Factory.h"
 #include "GigaGrainsPlugin.h"
 #include "gg/core/Rng.h"
+#include "gg/core/SessionState.h"
+#include "gg/media/Sample.h"
+#include "media/AudioFixtures.h"
 
 namespace gg::test
 {
+/// Points the plugins' per-machine settings file at `file`: GG_SETTINGS_FILE, which an instance
+/// reads when it is created (GigaGrainsPlugin). Call it before creating the instance.
+inline void useSettingsFile(const std::filesystem::path &file)
+{
+#if defined(_WIN32)
+    _putenv_s("GG_SETTINGS_FILE", file.string().c_str());
+#else
+    setenv("GG_SETTINGS_FILE", file.string().c_str(), 1);
+#endif
+}
+
+/// Every test process starts with the scratch settings file below, so no test reads or writes
+/// the user's (ruling R16). It is one path, shared by every process: a test that reads or writes
+/// the settings points at a file of its own (useSettingsFile) first.
+inline const bool kScratchSettings = [] {
+    useSettingsFile(std::filesystem::path(GG_TEST_OUTPUT_DIR) / "plugin-settings" / "settings.xml");
+    return true;
+}();
+
 /// A minimal clap_host: it offers no extensions, and every request is a no-op.
 inline const clap_host *stubHost() noexcept
 {
@@ -119,6 +146,96 @@ inline clap_event_param_mod paramMod(clap_id id, double amount, uint32_t time = 
     e.key = -1;
     e.amount = amount;
     return e;
+}
+
+/// A CLAP note event of `type` (CLAP_EVENT_NOTE_ON, _OFF or _CHOKE) on port 0, with no note ID.
+inline clap_event_note noteEvent(uint16_t type, int16_t channel, int16_t key,
+                                 uint32_t time = 0) noexcept
+{
+    clap_event_note e{};
+    e.header.size = sizeof(e);
+    e.header.time = time;
+    e.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
+    e.header.type = type;
+    e.note_id = -1;
+    e.port_index = 0;
+    e.channel = channel;
+    e.key = key;
+    e.velocity = 0.8;
+    return e;
+}
+
+/// A CLAP_EVENT_MIDI with the three bytes given, on port 0.
+inline clap_event_midi midiEvent(uint8_t status, uint8_t data1, uint8_t data2,
+                                 uint32_t time = 0) noexcept
+{
+    clap_event_midi e{};
+    e.header.size = sizeof(e);
+    e.header.time = time;
+    e.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
+    e.header.type = CLAP_EVENT_MIDI;
+    e.port_index = 0;
+    e.data[0] = status;
+    e.data[1] = data1;
+    e.data[2] = data2;
+    return e;
+}
+
+/// The scratch folder of the plugin test `name`: GG_TEST_OUTPUT_DIR/plugin-sample-<name>/,
+/// created if needed.
+inline std::filesystem::path sampleDir(const std::string &name)
+{
+    const auto dir = std::filesystem::path(GG_TEST_OUTPUT_DIR) / ("plugin-sample-" + name);
+    std::filesystem::create_directories(dir);
+    return dir;
+}
+
+/// Writes `path`: a stereo sine of `hz` at amplitude `amplitude`, `seconds` long at `rate`, as a
+/// 32-bit float WAV, the same in both channels. Returns `path`.
+inline std::filesystem::path writeSineWav(const std::filesystem::path &path, uint32_t rate = 48000,
+                                          double seconds = 4.0, double hz = 220.0,
+                                          double amplitude = 0.5)
+{
+    TestAudio audio{2, rate, {}};
+    const auto frames = static_cast<int64_t>(std::llround(seconds * rate));
+    audio.samples.resize(static_cast<std::size_t>(frames) * 2);
+    for (int64_t i = 0; i < frames; ++i)
+    {
+        const double x = amplitude * std::sin(2.0 * std::numbers::pi * hz * static_cast<double>(i) /
+                                              static_cast<double>(rate));
+        audio.samples[static_cast<std::size_t>(i) * 2] = x;
+        audio.samples[static_cast<std::size_t>(i) * 2 + 1] = x;
+    }
+    std::filesystem::create_directories(path.parent_path());
+    writeFile(path, wavBytes(audio, SampleFormat::Float32));
+    return path;
+}
+
+/// A 4 s stereo sine at 220 Hz and amplitude 0.5, at 48 kHz, in the scratch folder of the test
+/// `name`: the instrument's usual test sample.
+inline std::filesystem::path sineSampleFile(const std::string &name)
+{
+    return writeSineWav(sampleDir(name) / (name + ".wav"));
+}
+
+/// The manifest entry of `file`, as a load of it records (gg::media::loadSample), with no sample
+/// folder. Empty if the file doesn't load.
+inline gg::core::MediaEntry entryOf(const std::filesystem::path &file)
+{
+    return gg::media::loadSample(file, {}).entry;
+}
+
+/// `state`, a state the instrument saved, with `entry` (or none) as its sample.
+inline std::string withSample(const std::string &state,
+                              const std::optional<gg::core::MediaEntry> &entry)
+{
+    gg::core::SessionState s;
+    if (!gg::core::decodeState(state, gg::core::Mode::Instrument, s))
+    {
+        return {};
+    }
+    s.sample = entry;
+    return gg::core::encodeState(s);
 }
 
 /// A clap_ostream into memory that accepts at most `chunk` bytes per write, as a host's stream
@@ -292,6 +409,15 @@ class PluginUnderTest
     gg::plugin::GigaGrainsPlugin &impl() const noexcept
     {
         return *gg::plugin::GigaGrainsPlugin::fromClap(plugin_);
+    }
+    /// clap_plugin.on_main_thread, as a host calls it after request_callback.
+    void onMainThread() const { plugin_->on_main_thread(plugin_); }
+    /// Gives the instrument `file` as its sample the way a host restoring a session does: its own
+    /// state, with the file in the manifest, through state.load. Synchronous (D8). False if the
+    /// state doesn't load.
+    bool loadSampleState(const std::filesystem::path &file) const
+    {
+        return load(withSample(save(), entryOf(file)));
     }
 
     /// Activates (main thread) and starts processing (audio thread).

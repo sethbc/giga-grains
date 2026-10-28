@@ -32,7 +32,9 @@
 #include "gg/core/ParamIds.h"
 #include "gg/core/PatchState.h"
 #include "gg/core/Processor.h"
+#include "gg/core/SessionState.h"
 #include "sst/basic-blocks/params/ParamMetadata.h"
+#include "support/StateContainer.h"
 
 using gg::core::kParamCount;
 using gg::core::paramId;
@@ -73,6 +75,9 @@ constexpr std::array<ExpectedParam, kParamCount> kExpected{{
     {0x010007, "Stereo", 0.0f, 1.0f, 0.5f},
     {0x010008, "Freeze", 0.0f, 1.0f, 0.0f},
 }};
+// The instrument's Position is 0–100% of the loaded file, 0% by default; the rest of its table
+// is the FX's above (spec §6.8).
+constexpr float kInstrumentPositionDefault = 0.0f;
 
 ParamValues defaults()
 {
@@ -84,7 +89,8 @@ ParamValues defaults()
     return v;
 }
 
-// A host that offers clap.params, and counts value rescans and restart requests.
+// A host that offers clap.params and clap.state, and counts value rescans, restart requests and
+// state.mark_dirty calls.
 class ParamsHost
 {
   public:
@@ -96,6 +102,7 @@ class ParamsHost
     uint32_t valueRescans() const noexcept { return valueRescans_; }
     uint32_t otherRescans() const noexcept { return otherRescans_; }
     uint32_t restarts() const noexcept { return restarts_; }
+    uint32_t dirtyMarks() const noexcept { return dirtyMarks_; }
 
   private:
     static ParamsHost &self(const clap_host *host)
@@ -113,12 +120,20 @@ class ParamsHost
             [](const clap_host *, clap_id, clap_param_clear_flags) {},
             [](const clap_host *) {}, // request_flush
         };
-        return std::strcmp(id, CLAP_EXT_PARAMS) == 0 ? &kParams : nullptr;
+        static const clap_host_state kState{
+            [](const clap_host *host) { ++self(host).dirtyMarks_; }, // mark_dirty
+        };
+        if (std::strcmp(id, CLAP_EXT_PARAMS) == 0)
+        {
+            return &kParams;
+        }
+        return std::strcmp(id, CLAP_EXT_STATE) == 0 ? &kState : nullptr;
     }
 
     uint32_t valueRescans_{0};
     uint32_t otherRescans_{0};
     uint32_t restarts_{0};
+    uint32_t dirtyMarks_{0};
     clap_host host_{
         CLAP_VERSION_INIT,
         nullptr,
@@ -185,6 +200,61 @@ bool allZero(const std::vector<float> &v)
     return true;
 }
 
+// A saved state with Position's <p> cut out of its PTCH; its MEDI as it was.
+std::string withoutPosition(const std::string &saved)
+{
+    auto ptch = gg::test::stateChunkPayload(saved, "PTCH");
+    const auto medi = gg::test::stateChunkPayload(saved, "MEDI");
+    REQUIRE(ptch.has_value());
+    REQUIRE(medi.has_value());
+    const auto from = ptch->find(R"(<p id="65537" )");
+    REQUIRE(from != std::string::npos);
+    ptch->erase(from, ptch->find("/>", from) + 2 - from);
+    return gg::test::stateContainer(
+        {gg::test::stateChunk("PTCH", *ptch), gg::test::stateChunk("MEDI", *medi)});
+}
+
+// The values and seed of a saved state, through the container.
+gg::core::SessionState decoded(const std::string &saved, gg::core::Mode mode)
+{
+    gg::core::SessionState state;
+    REQUIRE(gg::core::decodeState(saved, mode, state));
+    return state;
+}
+
+// A clap_istream of `size` bytes, endless at UINT64_MAX: `prefix`, then zeros. It returns as
+// much as asked, and counts what it served.
+class PaddedIStream
+{
+  public:
+    PaddedIStream(std::string prefix, uint64_t size) : prefix_(std::move(prefix)), size_(size) {}
+    PaddedIStream(const PaddedIStream &) = delete;
+    PaddedIStream &operator=(const PaddedIStream &) = delete;
+
+    const clap_istream *stream() const noexcept { return &stream_; }
+    uint64_t served() const noexcept { return served_; }
+
+  private:
+    static int64_t read(const clap_istream *stream, void *buffer, uint64_t size) noexcept
+    {
+        auto &self = *static_cast<PaddedIStream *>(stream->ctx);
+        const uint64_t n = std::min<uint64_t>({size, self.size_ - self.served_, uint64_t{1} << 20});
+        auto *out = static_cast<char *>(buffer);
+        for (uint64_t i = 0; i < n; ++i)
+        {
+            const uint64_t at = self.served_ + i;
+            out[i] = at < self.prefix_.size() ? self.prefix_[static_cast<std::size_t>(at)] : '\0';
+        }
+        self.served_ += n;
+        return static_cast<int64_t>(n);
+    }
+
+    std::string prefix_;
+    uint64_t size_;
+    uint64_t served_{0};
+    clap_istream stream_{this, &PaddedIStream::read};
+};
+
 std::string valueToText(const PluginUnderTest &plugin, clap_id id, double value)
 {
     char buffer[CLAP_NAME_SIZE] = {};
@@ -220,7 +290,9 @@ TEST_CASE("plugin exposes the ten params", "[plugin]")
         CHECK(info.cookie == nullptr);
         CHECK(info.min_value == static_cast<double>(expected.min));
         CHECK(info.max_value == static_cast<double>(expected.max));
-        CHECK(info.default_value == static_cast<double>(expected.def));
+        const float def =
+            i == at(ParamSlot::Position) && !isFx ? kInstrumentPositionDefault : expected.def;
+        CHECK(info.default_value == static_cast<double>(def));
 
         // Global Constraints' CLAP flags: every parameter is automatable and modulatable,
         // Freeze is stepped, and the instrument hides Mix, which has no dry signal to mix.
@@ -236,7 +308,7 @@ TEST_CASE("plugin exposes the ten params", "[plugin]")
         CHECK(info.flags == flags);
 
         // A new instance holds the defaults.
-        CHECK(plugin.value(expected.id) == static_cast<double>(expected.def));
+        CHECK(plugin.value(expected.id) == static_cast<double>(def));
     }
 }
 
@@ -287,9 +359,13 @@ TEST_CASE("value and text round trip through clap", "[plugin]")
     SECTION("the display follows the metadata")
     {
         CHECK(valueToText(plugin, paramId(ParamSlot::Mix), 0.5) ==
-              gg::core::paramMeta(ParamSlot::Mix).valueToString(0.5f).value_or("?"));
+              gg::core::paramMeta(ParamSlot::Mix, gg::core::Mode::Fx)
+                  .valueToString(0.5f)
+                  .value_or("?"));
         CHECK(valueToText(plugin, paramId(ParamSlot::Freeze), 1.0) ==
-              gg::core::paramMeta(ParamSlot::Freeze).valueToString(1.0f).value_or("?"));
+              gg::core::paramMeta(ParamSlot::Freeze, gg::core::Mode::Fx)
+                  .valueToString(1.0f)
+                  .value_or("?"));
         CHECK(valueToText(plugin, paramId(ParamSlot::Density), 4.0).find("Hz") !=
               std::string::npos);
         CHECK(valueToText(plugin, paramId(ParamSlot::Size), -2.736965594166206).find("ms") !=
@@ -301,6 +377,56 @@ TEST_CASE("value and text round trip through clap", "[plugin]")
         double value = 0.0;
         CHECK_FALSE(params->text_to_value(plugin.clap(), paramId(ParamSlot::Density),
                                           "not a number", &value));
+    }
+}
+
+TEST_CASE("position is per product", "[plugin]")
+{
+    const clap_id position = paramId(ParamSlot::Position);
+    constexpr auto kPositionIndex = static_cast<uint32_t>(ParamSlot::Position);
+    clap_param_info info{};
+
+    SECTION("the instrument's is a percentage of the file, 0 by default")
+    {
+        ParamsHost host;
+        PluginUnderTest plugin(kInstrumentId, host.clap());
+        REQUIRE(plugin.valid());
+        REQUIRE(plugin.params()->get_info(plugin.clap(), kPositionIndex, &info));
+        CHECK(info.default_value == 0.0);
+        CHECK(info.min_value == 0.0);
+        CHECK(info.max_value == 1.0);
+        CHECK(plugin.value(position) == 0.0);
+
+        const std::string text = valueToText(plugin, position, 0.25);
+        CHECK(text == gg::core::paramMeta(ParamSlot::Position, gg::core::Mode::Instrument)
+                          .valueToString(0.25f)
+                          .value_or("?"));
+        CHECK(text.find('%') != std::string::npos);
+        double back = -1.0;
+        REQUIRE(plugin.params()->text_to_value(plugin.clap(), position, text.c_str(), &back));
+        CHECK(std::abs(back - 0.25) < 1e-6);
+
+        // A state that doesn't mention Position loads the instrument's default.
+        flushValues(plugin, {{ParamSlot::Position, 0.6}});
+        REQUIRE(plugin.value(position) == static_cast<double>(0.6f));
+        REQUIRE(plugin.load(withoutPosition(plugin.save())));
+        CHECK(plugin.value(position) == 0.0);
+    }
+
+    SECTION("the FX's is unchanged: seconds behind the write head, 0.25 s by default")
+    {
+        ParamsHost host;
+        PluginUnderTest plugin(kFxId, host.clap());
+        REQUIRE(plugin.valid());
+        REQUIRE(plugin.params()->get_info(plugin.clap(), kPositionIndex, &info));
+        CHECK(info.default_value == static_cast<double>(0.28967658f));
+        CHECK(plugin.value(position) == static_cast<double>(0.28967658f));
+        CHECK(valueToText(plugin, position, static_cast<double>(0.28967658f)) == "0.25 s");
+        CHECK(valueToText(plugin, position, 0.25).find('%') == std::string::npos);
+
+        flushValues(plugin, {{ParamSlot::Position, 0.6}});
+        REQUIRE(plugin.load(withoutPosition(plugin.save())));
+        CHECK(plugin.value(position) == static_cast<double>(0.28967658f));
     }
 }
 
@@ -598,14 +724,12 @@ TEST_CASE("state carries the engine seed", "[plugin]")
 {
     // The seed is saved and loaded with the values. The engine takes it when it is built, at
     // activate(), so a load that changes it while active asks the host for a restart.
-    ParamValues values = defaults();
-    uint64_t seed = 0;
+    const ParamValues values = defaults();
 
     ParamsHost host;
     PluginUnderTest plugin(kFxId, host.clap());
     REQUIRE(plugin.valid());
-    REQUIRE(gg::core::fromStateXml(plugin.save(), values, seed));
-    CHECK(seed == 0); // new instances start at seed 0 (spec §4)
+    CHECK(decoded(plugin.save(), gg::core::Mode::Fx).seed == 0); // new instances start at 0 (§4)
 
     REQUIRE(plugin.load(gg::core::toStateXml(values, 9)));
     CHECK(host.restarts() == 0); // inactive: activate() takes it
@@ -614,8 +738,7 @@ TEST_CASE("state carries the engine seed", "[plugin]")
     CHECK(host.restarts() == 0); // the same seed
     REQUIRE(plugin.load(gg::core::toStateXml(values, 10)));
     CHECK(host.restarts() == 1);
-    REQUIRE(gg::core::fromStateXml(plugin.save(), values, seed));
-    CHECK(seed == 10);
+    CHECK(decoded(plugin.save(), gg::core::Mode::Fx).seed == 10);
 }
 
 TEST_CASE("state load rejects bad state and keeps the values", "[plugin]")
@@ -631,18 +754,28 @@ TEST_CASE("state load rejects bad state and keeps the values", "[plugin]")
 
     ParamValues other = defaults();
     other[at(ParamSlot::Density)] = 1.0f;
-    const std::string otherState = gg::core::toStateXml(other, 3);
+    const std::string otherXml = gg::core::toStateXml(other, 3);
+    const std::string otherState = gg::core::encodeState({other, 3, std::nullopt});
 
     SECTION("not a state")
     {
         CHECK_FALSE(plugin.load("not xml at all"));
         CHECK_FALSE(plugin.load(""));
-        CHECK_FALSE(plugin.load(otherState.substr(0, otherState.size() / 2)));
+        CHECK_FALSE(plugin.load(otherXml.substr(0, otherXml.size() / 2)));
+        CHECK_FALSE(plugin.load(otherState.substr(0, otherState.size() - 1)));
+        CHECK_FALSE(plugin.load("GGST"));
     }
     SECTION("a stream that fails part way")
     {
         gg::test::MemoryIStream failing(otherState, 16, 32);
         CHECK_FALSE(plugin.state()->load(plugin.clap(), failing.stream()));
+    }
+    SECTION("a stream longer than the cap")
+    {
+        // Endless: the load stops one byte past the cap, without reading further.
+        PaddedIStream endless(otherState, UINT64_MAX);
+        CHECK_FALSE(plugin.state()->load(plugin.clap(), endless.stream()));
+        CHECK(endless.served() == gg::core::kMaxStateBytes + 1);
     }
     SECTION("while active")
     {
@@ -657,10 +790,65 @@ TEST_CASE("state load rejects bad state and keeps the values", "[plugin]")
     CHECK(plugin.save() == good);
     CHECK(host.valueRescans() == 0);
     CHECK(host.restarts() == 0);
+    CHECK(host.dirtyMarks() == 0);
 
     // A save into a stream that fails fails.
     gg::test::MemoryOStream failing(8, 16);
     CHECK_FALSE(plugin.state()->save(plugin.clap(), failing.stream()));
+}
+
+TEST_CASE("state is a container, and save, load, save gives the same bytes", "[plugin]")
+{
+    // Both products save the GGST container (spec §6.6): PTCH, then a MEDI with no sample. A new
+    // instance that loads it saves the same bytes again.
+    const char *id = GENERATE(kInstrumentId, kFxId);
+    CAPTURE(id);
+    const auto mode = std::strcmp(id, kFxId) == 0 ? gg::core::Mode::Fx : gg::core::Mode::Instrument;
+
+    PluginUnderTest a(id);
+    REQUIRE(a.valid());
+    flushValues(a, {{ParamSlot::Mix, 0.8},
+                    {ParamSlot::Position, 0.1},
+                    {ParamSlot::Pitch, 7.0},
+                    {ParamSlot::Spray, 1.23e-5}});
+    ParamValues values{};
+    for (std::size_t s = 0; s < kParamCount; ++s)
+    {
+        values[s] = static_cast<float>(a.value(kExpected[s].id));
+    }
+    REQUIRE(a.load(gg::core::encodeState({values, 11, std::nullopt})));
+    const std::string saved = a.save();
+    CHECK(saved == gg::core::encodeState({values, 11, std::nullopt}));
+    CHECK(gg::test::stateChunkPayload(saved, "PTCH") == gg::core::toStateXml(values, 11));
+    CHECK(gg::test::stateChunkPayload(saved, "MEDI") == std::string(R"(<media version="1" />)"));
+    CHECK(decoded(saved, mode).sample == std::nullopt);
+
+    PluginUnderTest b(id);
+    REQUIRE(b.valid());
+    REQUIRE(b.load(saved));
+    CHECK(b.save() == saved);
+
+    // A state at the cap loads: a valid container padded with an unknown chunk to exactly
+    // kMaxStateBytes. One byte more fails.
+    const auto padded = [&](uint64_t size) {
+        std::string prefix = saved + "XTRA";
+        prefix += gg::test::littleEndian(size - saved.size() - 12, 8);
+        return PaddedIStream(prefix, size);
+    };
+    PluginUnderTest c(id);
+    REQUIRE(c.valid());
+    {
+        PaddedIStream atCap = padded(gg::core::kMaxStateBytes);
+        REQUIRE(c.state()->load(c.clap(), atCap.stream()));
+        CHECK(atCap.served() == gg::core::kMaxStateBytes);
+        CHECK(c.save() == saved);
+    }
+    {
+        flushValues(c, {{ParamSlot::Pitch, -3.0}});
+        PaddedIStream overCap = padded(gg::core::kMaxStateBytes + 1);
+        CHECK_FALSE(c.state()->load(c.clap(), overCap.stream()));
+        CHECK(c.value(paramId(ParamSlot::Pitch)) == -3.0);
+    }
 }
 
 TEST_CASE("fx handles mono, missing input and new sample rates", "[plugin]")

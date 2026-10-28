@@ -11,7 +11,7 @@
 #include <limits>
 #include <vector>
 
-#define STB_IMAGE_WRITE_IMPLEMENTATION
+// The header only: the implementation is compiled in gg::stb_impl.
 #include <stb_image_write.h>
 
 #include "Analysis.h"

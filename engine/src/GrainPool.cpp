@@ -13,8 +13,8 @@ namespace gg
 GrainPool::GrainPool(uint32_t capacity)
     : capacity_(capacity), slots_(2 * capacity), index_(slots_), onsetSample_(slots_),
       onsetFrac_(slots_), startPos_(slots_), rate_(slots_), durationSamples_(slots_), gain_(slots_),
-      pan_(slots_), tier_(slots_), endSample_(slots_), invDuration_(slots_), gainL_(slots_),
-      gainR_(slots_),
+      pan_(slots_), tier_(slots_), sourceSlot_(slots_), endSample_(slots_), invDuration_(slots_),
+      gainL_(slots_), gainR_(slots_),
       rows_{
           .index = index_.data(),
           .onsetSample = onsetSample_.data(),
@@ -25,6 +25,7 @@ GrainPool::GrainPool(uint32_t capacity)
           .gain = gain_.data(),
           .pan = pan_.data(),
           .tier = tier_.data(),
+          .sourceSlot = sourceSlot_.data(),
           .endSample = endSample_.data(),
           .invDuration = invDuration_.data(),
           .gainL = gainL_.data(),
@@ -63,6 +64,7 @@ bool GrainPool::spawn(const GrainSpec &g) noexcept
     gain_[i] = g.gain;
     pan_[i] = g.pan;
     tier_[i] = g.tier;
+    sourceSlot_[i] = g.sourceSlot;
     endSample_[i] = end;
     // The renderers' latched values (spec §3): one division and one channel gain per grain.
     const PanGains pan = panGains(g.pan);
@@ -107,6 +109,7 @@ void GrainPool::retireFinished(int64_t nowSample) noexcept
                 gain_[kept] = gain_[i];
                 pan_[kept] = pan_[i];
                 tier_[kept] = tier_[i];
+                sourceSlot_[kept] = sourceSlot_[i];
                 endSample_[kept] = end;
                 invDuration_[kept] = invDuration_[i];
                 gainL_[kept] = gainL_[i];
@@ -127,6 +130,11 @@ void GrainPool::clear() noexcept
     heapSize_ = 0;
 }
 
+void GrainPool::assignSourceSlot(uint8_t slot) noexcept
+{
+    std::fill_n(sourceSlot_.begin(), size_, slot);
+}
+
 GrainSpec GrainPool::spec(uint32_t i) const noexcept
 {
     return {
@@ -139,6 +147,7 @@ GrainSpec GrainPool::spec(uint32_t i) const noexcept
         .gain = gain_[i],
         .pan = pan_[i],
         .tier = tier_[i],
+        .sourceSlot = sourceSlot_[i],
     };
 }
 } // namespace gg
