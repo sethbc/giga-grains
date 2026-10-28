@@ -209,6 +209,11 @@ runs the tests labelled either. The labels are:
     also pins clap-wrapper's known AU state faults (T7 223). Run it (`ctest --preset dev -L au`)
     before accepting any clap-wrapper update too.
 
+**Test case names are ASCII only** (tags too). CTest passes a name to `gg-tests` on its command
+line, and on Windows a non-ASCII character there reaches Catch2's narrow `main` through the ANSI
+code page, so the name matches nothing and the test fails with "No tests ran". Spell `×` as `x`,
+`−` as `-`, and so on; comments and strings inside a test may use any UTF-8.
+
 **Tests run in parallel.** Every test preset runs 8 tests at a time (`"jobs"` in the hidden
 `base` test preset); `-j N` on the command line overrides it, and `-j 1` runs them serially.
 - Each Catch2 test case runs in its own process.

@@ -10,9 +10,10 @@ The spec is `docs/superpowers/specs/2026-10-28-m1-sources-design.md`.
 ## Rendering the files
 
 The renders aren't committed. The specs are in [`specs/`](specs/). To make the files, from the
-repository root, after `cmake --build --preset release`:
+repository root:
 
 ```sh
+cmake --preset release && cmake --build --preset release --target gg-render
 r=build/release/tools/gg-render/gg-render
 L=build/release/listening
 $r --write-media "$L/media"             # tone-44k1.wav and loop-48k.wav
@@ -71,6 +72,16 @@ AU in Live. Note the host and format of anything that fails.
   the sample is found, with no prompt.
 - [ ] **Missing, then relinked.** Close, delete the file (or move it somewhere unsearched), and
   reopen. The strip shows *missing*. Relink the file through the strip; it plays.
+- [ ] **Relinked to a different file.** With the strip showing *missing*, relink a different
+  file. It loads as a replacement, and the strip says it is different audio than the saved
+  sample (spec §6.7).
+- [ ] **Undo and preset recall keep the sample.** Load a long sample, change a parameter, then
+  undo it (or switch presets, or A/B compare, where the host has it). The parameter returns at
+  once, with no pause and no gap in the sound (ruling R19).
+- [ ] **A new sample rate pauses, then sounds the same (ruling R18).** With a long sample
+  loaded, change the host's sample rate (the audio device's, or the project's). Expect a pause
+  while the sample is converted at the new rate; then the sample plays at the same pitch and
+  sounds as it did.
 - [ ] **Loudness at the default Level.** Play a chord on a loud sample at Level 0 dB (the
   default), then at −6 dB. The golden cases needed −6 dB because 0 dB drove the soft limiter
   into saturation (compare files `01` and `02`). Does 0 dB sound squashed in a real session?
