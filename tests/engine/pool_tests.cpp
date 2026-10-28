@@ -173,33 +173,45 @@ TEST_CASE("pool admission matches a brute-force count", "[pool]")
 {
     // 20,000 grains with random durations in [1, 500] and onsets advancing by 0, 1, 2 or 3
     // samples, against capacity 64. The reference admits a grain when fewer than 64 of the grains
-    // it has admitted still sound at the onset (end > onset), by a linear scan. The pool runs as
-    // the engine drives it: canAdmit, an early retirement when storage is full, and a periodic
-    // retirement standing in for the block end. That period, 1009 grains (about 1,500 samples),
-    // admits several hundred grains, so storage fills between retirements.
+    // it has admitted still sound at the onset (end > onset), by a linear scan over the ends it
+    // hasn't yet seen pass. The pool runs as the engine drives it: canAdmit, an early retirement
+    // when storage is full, and a retirement at each block's end, a sample past the last onset
+    // checked (the next onset is at or after it). Blocks are 1 to 3,000 samples long; the longer
+    // ones admit more than 64 grains, so storage fills within them.
     constexpr uint32_t kCapacity = 64;
     constexpr uint64_t kGrains = 20000;
+    using gg::rng::Field;
+    const auto blockLength = [](uint64_t b) {
+        return 1 + static_cast<int64_t>(gg::rng::hash({7, 0, 2, Field::SignalNoise, b}) % 3000);
+    };
     gg::GrainPool pool(kCapacity);
-    std::vector<int64_t> referenceEnds;
+    std::vector<int64_t> referenceEnds; // admitted grains' ends > the last onset checked
     std::vector<uint64_t> expected;
     std::vector<uint64_t> admitted;
     int64_t onset = 0;
+    uint64_t block = 0;
+    int64_t blockEnd = blockLength(block);
     uint64_t earlyRetirements = 0;
+    uint64_t endsRetiredAtBlockEnd = 0; // ends in (last onset, block end], which canAdmit never saw
     for (uint64_t k = 0; k < kGrains; ++k)
     {
-        using gg::rng::Field;
         const uint64_t hd = gg::rng::hash({7, 0, 0, Field::SignalNoise, k});
         const uint64_t hs = gg::rng::hash({7, 0, 1, Field::SignalNoise, k});
         const double dur = 1.0 + static_cast<double>(hd % 500);
         onset += static_cast<int64_t>(hs % 4);
         const gg::GrainSpec g = grain(k, onset, dur);
 
-        uint32_t sounding = 0;
-        for (const int64_t end : referenceEnds)
+        while (onset >= blockEnd)
         {
-            sounding += end > onset ? 1 : 0;
+            pool.retireFinished(blockEnd);
+            // The next onset is >= blockEnd, so these ends would be pruned there anyway.
+            endsRetiredAtBlockEnd +=
+                std::erase_if(referenceEnds, [&](int64_t end) { return end <= blockEnd; });
+            blockEnd += blockLength(++block);
         }
-        if (sounding < kCapacity)
+
+        std::erase_if(referenceEnds, [&](int64_t end) { return end <= onset; });
+        if (referenceEnds.size() < kCapacity)
         {
             referenceEnds.push_back(gg::grainEndSample(g));
             expected.push_back(k);
@@ -215,14 +227,12 @@ TEST_CASE("pool admission matches a brute-force count", "[pool]")
             REQUIRE(pool.spawn(g));
             admitted.push_back(k);
         }
-        if (k % 1009 == 1008)
-        {
-            pool.retireFinished(onset);
-        }
         REQUIRE(pool.size() <= 2 * kCapacity);
     }
     REQUIRE(admitted == expected);
-    // Guard against a vacuous pass: the limit bit, and storage filled between retirements.
+    // Guard against a vacuous pass: the limit bit, storage filled within a block, and block-end
+    // retirements removed grains whose ends canAdmit hadn't yet forgotten.
     REQUIRE(admitted.size() < kGrains);
     REQUIRE(earlyRetirements > 0);
+    REQUIRE(endsRetiredAtBlockEnd > 0);
 }

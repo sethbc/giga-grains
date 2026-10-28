@@ -34,6 +34,21 @@ struct SpawnCounter
     }
 };
 
+// One second of a stereo sine at 48 kHz, the right channel a quarter turn ahead.
+std::shared_ptr<const gg::SampleBuffer> stereoSine(double hz)
+{
+    auto source = std::make_shared<gg::SampleBuffer>(2, 48000, 48000.0);
+    for (uint32_t c = 0; c < 2; ++c)
+    {
+        for (int64_t i = 0; i < source->frames(); ++i)
+        {
+            const double phase = 2.0 * std::numbers::pi * (hz * i / 48000.0 + 0.25 * c);
+            source->channel(c)[i] = static_cast<float>(std::sin(phase));
+        }
+    }
+    return source;
+}
+
 // Over-aligned, so new Wide uses the align_val_t operators.
 struct alignas(64) Wide
 {
@@ -89,16 +104,7 @@ TEST_CASE("tripwire detects allocation", "[rt]")
 TEST_CASE("engine process does not allocate", "[rt]")
 {
     gg::Engine engine(gg::EngineConfig{48000.0, 4096, 4096, 3});
-    auto source = std::make_shared<gg::SampleBuffer>(2, 48000, 48000.0);
-    for (uint32_t c = 0; c < 2; ++c)
-    {
-        for (int64_t i = 0; i < source->frames(); ++i)
-        {
-            const double phase = 2.0 * std::numbers::pi * (330.0 * i / 48000.0 + 0.25 * c);
-            source->channel(c)[i] = static_cast<float>(std::sin(phase));
-        }
-    }
-    engine.setSource(source);
+    engine.setSource(stereoSine(330.0));
     // 200 Hz of 50 ms grains: one spawns every 240 frames on average and about 10 overlap, so
     // the armed calls below spawn, render and retire grains. Poisson onsets and full-width pan
     // put the scheduler's logDet draws and the pan gains under the tripwire.
@@ -151,16 +157,7 @@ TEST_CASE("engine process does not allocate with a full pool or odd block sizes"
     // replaced. maxBlockSize 256 makes the 1000-frame calls oversized, so process() splits them,
     // and is long enough for a grain's end and the next onset to share a block.
     gg::Engine engine(gg::EngineConfig{48000.0, 256, 4, 5});
-    auto source = std::make_shared<gg::SampleBuffer>(2, 48000, 48000.0);
-    for (uint32_t c = 0; c < 2; ++c)
-    {
-        for (int64_t i = 0; i < source->frames(); ++i)
-        {
-            const double phase = 2.0 * std::numbers::pi * (220.0 * i / 48000.0 + 0.25 * c);
-            source->channel(c)[i] = static_cast<float>(std::sin(phase));
-        }
-    }
-    engine.setSource(source);
+    engine.setSource(stereoSine(220.0));
     engine.setCloudParams({.densityHz = 400.0,
                            .grainDurationSec = 0.05,
                            .position = 0.5,
@@ -205,16 +202,7 @@ TEST_CASE("engine process does not allocate when the pool's storage fills", "[rt
     // as a second could never fill it, since only 16 of them end per second.
     constexpr uint32_t kCapacity = 16;
     gg::Engine engine(gg::EngineConfig{48000.0, 4096, kCapacity, 7});
-    auto source = std::make_shared<gg::SampleBuffer>(2, 48000, 48000.0);
-    for (uint32_t c = 0; c < 2; ++c)
-    {
-        for (int64_t i = 0; i < source->frames(); ++i)
-        {
-            const double phase = 2.0 * std::numbers::pi * (220.0 * i / 48000.0 + 0.25 * c);
-            source->channel(c)[i] = static_cast<float>(std::sin(phase));
-        }
-    }
-    engine.setSource(source);
+    engine.setSource(stereoSine(220.0));
     engine.setCloudParams({.densityHz = 4000.0,
                            .distribution = 1.0,
                            .grainDurationSec = 0.005,

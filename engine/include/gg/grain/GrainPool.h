@@ -93,7 +93,8 @@ struct GrainRows
 class GrainPool
 {
   public:
-    /// Allocates 2 × capacity slots per array, and the heap.
+    /// Allocates 2 × capacity slots per array, and the heap. capacity must be below 2^31, since
+    /// the slot count is a uint32_t (the engine's default capacity is 4096).
     explicit GrainPool(uint32_t capacity);
 
     // rows() points into this pool's own arrays.

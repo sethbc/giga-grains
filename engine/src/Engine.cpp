@@ -5,6 +5,7 @@
 #include "gg/engine/Engine.h"
 
 #include <algorithm>
+#include <cassert>
 #include <cmath>
 #include <cstddef>
 #include <stdexcept>
@@ -257,7 +258,10 @@ void Engine::admit(const GrainSpec &g, float *const dst[2], int64_t blockStart,
         renderedTo = g.onsetSample;
         pool_.retireFinished(g.onsetSample);
     }
-    pool_.spawn(g);
+    // Can't fail: storage was full only if the retirement above just ran, and it left only the
+    // grains still sounding at the onset, fewer than capacity by canAdmit.
+    [[maybe_unused]] const bool spawned = pool_.spawn(g);
+    assert(spawned);
     if (sink_ != nullptr)
     {
         sink_(sinkCtx_, g);

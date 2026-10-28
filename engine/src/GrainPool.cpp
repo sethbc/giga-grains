@@ -9,6 +9,7 @@
 
 namespace gg
 {
+// 2 × capacity is computed in uint32, so capacity must be below 2^31; GrainPool.h says so.
 GrainPool::GrainPool(uint32_t capacity)
     : capacity_(capacity), slots_(2 * capacity), index_(slots_), onsetSample_(slots_),
       onsetFrac_(slots_), startPos_(slots_), rate_(slots_), durationSamples_(slots_), gain_(slots_),
