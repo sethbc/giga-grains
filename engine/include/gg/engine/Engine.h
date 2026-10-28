@@ -92,6 +92,14 @@ class Engine
     /// output channels; a stereo (or wider) source feeds its first two channels to them. For a
     /// stereo source it also keeps an interleaved copy of those two channels, which the SIMD
     /// kernel reads (InterleavedStereo): that doubles the source's memory.
+    ///
+    /// The copy is a snapshot of the samples at this call, so they must not change afterwards:
+    /// the SIMD interior would read the old samples and the reference the new ones, mixing both
+    /// within a grain and silently breaking the kernels' bit identity. To pick up a change to
+    /// the buffer, call setSource again. Building the copy allocates 2 × frames floats for a
+    /// stereo source, so this may throw std::bad_alloc. The engine then keeps the new source
+    /// without the copy and reads its planar channels alone: the same output bits, only slower.
+    ///
     /// nullptr means no source: the schedule keeps running but no grains spawn in Sample mode.
     void setSource(std::shared_ptr<const SampleBuffer> source);
 
