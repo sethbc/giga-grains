@@ -44,11 +44,17 @@ namespace gg::kernels
 /// A sample buffer's channels. data[1] is read only when !mono and there are two outputs; a mono
 /// source feeds both outputs from data[0]. frames may be 0 (with null data): every read is then
 /// silence.
+///
+/// interleaved is null, or, for a stereo source, the same frames interleaved
+/// (InterleavedStereo::data()): frame f of channel c is interleaved[2f + c] as well as
+/// data[c][f]. With two outputs, the SIMD interior then reads both channels' taps from it; the
+/// reference always reads data.
 struct SampleSource
 {
     const float *data[2];
     int64_t frames;
     bool mono;
+    const float *interleaved;
 };
 
 /// Where a renderer adds: output sample t is dst[c][t − blockStart]. dst[0] is non-null; dst[1]
@@ -58,6 +64,23 @@ struct Output
     float *dst[2];
     int64_t blockStart;
 };
+
+namespace detail
+{
+/// Transposes the 4×4 matrix whose rows are r[0..3], in place: afterwards r[k] holds lane k of
+/// each old row. It only moves floats, so every bit is kept.
+inline void transpose4(SIMD_M128 *r) noexcept SST_CPPUTILS_NONBLOCKING
+{
+    const SIMD_M128 t0 = SIMD_MM(unpacklo_ps)(r[0], r[1]); // r0[0] r1[0] r0[1] r1[1]
+    const SIMD_M128 t1 = SIMD_MM(unpacklo_ps)(r[2], r[3]); // r2[0] r3[0] r2[1] r3[1]
+    const SIMD_M128 t2 = SIMD_MM(unpackhi_ps)(r[0], r[1]); // r0[2] r1[2] r0[3] r1[3]
+    const SIMD_M128 t3 = SIMD_MM(unpackhi_ps)(r[2], r[3]); // r2[2] r3[2] r2[3] r3[3]
+    r[0] = SIMD_MM(movelh_ps)(t0, t1);
+    r[1] = SIMD_MM(movehl_ps)(t1, t0);
+    r[2] = SIMD_MM(movelh_ps)(t2, t3);
+    r[3] = SIMD_MM(movehl_ps)(t3, t2);
+}
+} // namespace detail
 
 /// The Normal tier's reader: the 4-point Hermite (Catmull-Rom) over taps floor(pos) − 1 ..
 /// floor(pos) + 2, from a sample buffer (interp::hermite4) or the live ring (LiveSource::read).
@@ -74,7 +97,9 @@ struct Hermite
 
     /// interp::hermite4 for 4 lanes whose taps are all inside data: lane k reads at
     /// base[k] + frac[k], with base[k] = floor(pos) and frac[k] = float(pos − floor(pos)), through
-    /// interp::catmullRom's expressions in its order.
+    /// interp::catmullRom's expressions in its order. Frame f is data[kStride × f]: 1 for a planar
+    /// channel, 2 for one channel of interleaved pairs.
+    template <int64_t kStride = 1>
     static SIMD_M128 read4(const float *data, const int64_t *base,
                            SIMD_M128 frac) noexcept SST_CPPUTILS_NONBLOCKING
     {
@@ -85,16 +110,42 @@ struct Hermite
         alignas(16) float q3[4];
         for (int lane = 0; lane < 4; ++lane)
         {
-            const float *p = data + base[lane];
-            q0[lane] = p[-1];
+            const float *p = data + kStride * base[lane];
+            q0[lane] = p[-kStride];
             q1[lane] = p[0];
-            q2[lane] = p[1];
-            q3[lane] = p[2];
+            q2[lane] = p[kStride];
+            q3[lane] = p[2 * kStride];
         }
-        const SIMD_M128 p0 = SIMD_MM(load_ps)(q0);
-        const SIMD_M128 p1 = SIMD_MM(load_ps)(q1);
-        const SIMD_M128 p2 = SIMD_MM(load_ps)(q2);
-        const SIMD_M128 p3 = SIMD_MM(load_ps)(q3);
+        return curve4(SIMD_MM(load_ps)(q0), SIMD_MM(load_ps)(q1), SIMD_MM(load_ps)(q2),
+                      SIMD_MM(load_ps)(q3), frac);
+    }
+
+    /// read4 for both channels of interleaved pairs (frame f's channel c at pairs[2f + c]), whose
+    /// taps are all inside: a lane's 4 taps of both channels are the 8 floats from
+    /// pairs + 2 × (base − 1), two 4-float loads, transposed into each channel's taps.
+    static void read4Pair(const float *pairs, const int64_t *base, SIMD_M128 frac, SIMD_M128 &left,
+                          SIMD_M128 &right) noexcept SST_CPPUTILS_NONBLOCKING
+    {
+        GG_FP_CONTRACT_OFF
+        SIMD_M128 a[4]; // lane k: taps −1 and 0, L R L R
+        SIMD_M128 b[4]; // lane k: taps 1 and 2, L R L R
+        for (int lane = 0; lane < 4; ++lane)
+        {
+            const float *p = pairs + 2 * (base[lane] - 1);
+            a[lane] = SIMD_MM(loadu_ps)(p);
+            b[lane] = SIMD_MM(loadu_ps)(p + 4);
+        }
+        detail::transpose4(a); // tap −1 left, tap −1 right, tap 0 left, tap 0 right
+        detail::transpose4(b); // tap 1 left, tap 1 right, tap 2 left, tap 2 right
+        left = curve4(a[0], a[2], b[0], b[2], frac);
+        right = curve4(a[1], a[3], b[1], b[3], frac);
+    }
+
+    /// interp::catmullRom(p0, p1, p2, p3, t) in 4 lanes, through its expressions in its order.
+    static SIMD_M128 curve4(SIMD_M128 p0, SIMD_M128 p1, SIMD_M128 p2, SIMD_M128 p3,
+                            SIMD_M128 frac) noexcept SST_CPPUTILS_NONBLOCKING
+    {
+        GG_FP_CONTRACT_OFF
         const SIMD_M128 half = SIMD_MM(set1_ps)(0.5f);
         // c1 = 0.5 × (p2 − p0)
         const SIMD_M128 c1 = SIMD_MM(mul_ps)(half, SIMD_MM(sub_ps)(p2, p0));
@@ -136,7 +187,8 @@ struct Linear
     }
 
     /// interp::linear for 4 lanes whose taps are all inside data: lane k reads at
-    /// base[k] + frac[k], as Hermite::read4, through interp::lerp's a + (b − a) × t.
+    /// base[k] + frac[k], as Hermite::read4 (kStride too), through interp::lerp's a + (b − a) × t.
+    template <int64_t kStride = 1>
     static SIMD_M128 read4(const float *data, const int64_t *base,
                            SIMD_M128 frac) noexcept SST_CPPUTILS_NONBLOCKING
     {
@@ -145,12 +197,35 @@ struct Linear
         alignas(16) float q1[4];
         for (int lane = 0; lane < 4; ++lane)
         {
-            const float *p = data + base[lane];
+            const float *p = data + kStride * base[lane];
             q0[lane] = p[0];
-            q1[lane] = p[1];
+            q1[lane] = p[kStride];
         }
-        const SIMD_M128 a = SIMD_MM(load_ps)(q0);
-        return SIMD_MM(add_ps)(a, SIMD_MM(mul_ps)(SIMD_MM(sub_ps)(SIMD_MM(load_ps)(q1), a), frac));
+        return line4(SIMD_MM(load_ps)(q0), SIMD_MM(load_ps)(q1), frac);
+    }
+
+    /// read4 for both channels of interleaved pairs, as Hermite::read4Pair: a lane's 2 taps of
+    /// both channels are the 4 floats from pairs + 2 × base, one load, transposed.
+    static void read4Pair(const float *pairs, const int64_t *base, SIMD_M128 frac, SIMD_M128 &left,
+                          SIMD_M128 &right) noexcept SST_CPPUTILS_NONBLOCKING
+    {
+        GG_FP_CONTRACT_OFF
+        SIMD_M128 a[4]; // lane k: taps 0 and 1, L R L R
+        for (int lane = 0; lane < 4; ++lane)
+        {
+            a[lane] = SIMD_MM(loadu_ps)(pairs + 2 * base[lane]);
+        }
+        detail::transpose4(a); // tap 0 left, tap 0 right, tap 1 left, tap 1 right
+        left = line4(a[0], a[2], frac);
+        right = line4(a[1], a[3], frac);
+    }
+
+    /// interp::lerp(a, b, t) in 4 lanes: a + (b − a) × t.
+    static SIMD_M128 line4(SIMD_M128 a, SIMD_M128 b,
+                           SIMD_M128 frac) noexcept SST_CPPUTILS_NONBLOCKING
+    {
+        GG_FP_CONTRACT_OFF
+        return SIMD_MM(add_ps)(a, SIMD_MM(mul_ps)(SIMD_MM(sub_ps)(b, a), frac));
     }
 
     /// False, reading nothing, unless both taps are inside the ring's window at head.
@@ -318,25 +393,66 @@ inline void addMasked(float *dst, SIMD_M128 y, SIMD_M128 mask) noexcept SST_CPPU
                        SIMD_MM(or_ps)(SIMD_MM(and_ps)(mask, sum), SIMD_MM(andnot_ps)(mask, d)));
 }
 
-/// Where the SIMD interior finds a sample buffer's taps: frame f of channel c is data[c][f], so a
-/// lane's read4 base is floor(pos) itself.
+/// Where the SIMD interior finds a sample buffer's planar taps: frame f of channel c is
+/// data[c][f], so a lane's read4 base is floor(pos) itself. read gives channel 0's read in s0
+/// and, when kBoth, channel 1's in s1; otherwise s1 is s0.
 struct BufferTaps
 {
     const float *data[2];
 
     void locate(int64_t *) const noexcept SST_CPPUTILS_NONBLOCKING {}
+
+    template <class Reader, bool kBoth>
+    void read(const int64_t *base, SIMD_M128 frac, SIMD_M128 &s0,
+              SIMD_M128 &s1) const noexcept SST_CPPUTILS_NONBLOCKING
+    {
+        s0 = Reader::read4(data[0], base, frac);
+        s1 = s0;
+        if constexpr (kBoth)
+        {
+            s1 = Reader::read4(data[1], base, frac);
+        }
+    }
+};
+
+/// Where the SIMD interior finds interleaved taps (InterleavedStereo, or the live ring's slots):
+/// frame f's channel c is pairs[2f + c], and a lane's read4 base is floor(pos). read is
+/// BufferTaps::read's: with kBoth, both channels from the lane's one run of pairs
+/// (Reader::read4Pair); without, channel 0 alone, at a stride of 2.
+struct InterleavedTaps
+{
+    const float *pairs;
+
+    void locate(int64_t *) const noexcept SST_CPPUTILS_NONBLOCKING {}
+
+    template <class Reader, bool kBoth>
+    void read(const int64_t *base, SIMD_M128 frac, SIMD_M128 &s0,
+              SIMD_M128 &s1) const noexcept SST_CPPUTILS_NONBLOCKING
+    {
+        if constexpr (kBoth)
+        {
+            Reader::read4Pair(pairs, base, frac, s0, s1);
+        }
+        else
+        {
+            s0 = Reader::template read4<2>(pairs, base, frac);
+            s1 = s0;
+        }
+    }
 };
 
 /// The SIMD interior: grain i over [begin, end), a multiple of 4 samples, all with the window's
 /// phase in [0, 1] and every tap readable through Taps, 4 consecutive samples per step. Per
 /// lane, in double as the reference: e, the window's x = (e × invDuration) × kSize with
 /// HannTable::at's index and fraction, and pos with its floor and fraction. taps.locate turns the
-/// 4 floors into the buffer indices Reader::read4 reads around (BufferTaps: the floors; the live
-/// ring: their slots). Then 4-wide float, in the reference's order: the window lerp, the w > 0
-/// mask, Reader::read4, read × (w × gain_c), and the masked add.
+/// 4 floors into the buffer indices the reads take taps around (BufferTaps, InterleavedTaps: the
+/// floors; the live ring: their slots). Then 4-wide float, in the reference's order: the window
+/// lerp, the w > 0 mask, the read (taps.read, through Reader's 4-lane read), read × (w × gain_c),
+/// and the masked add. How the taps are laid out changes only where the same floats are loaded
+/// from.
 ///
 /// kTwoOutputs: dst[1] is written, with gainL and gainR; otherwise dst[0] alone, with gain.
-/// kStereo: with two outputs, taps.data[1] feeds dst[1]; otherwise dst[1] reuses data[0]'s read.
+/// kStereo: with two outputs, channel 1's read feeds dst[1]; otherwise dst[1] reuses channel 0's.
 template <class Reader, bool kTwoOutputs, bool kStereo, class Taps>
 void renderInterior(const GrainRows &rows, uint32_t i, const Taps &taps, const Output &out,
                     int64_t begin, int64_t end,
@@ -352,8 +468,6 @@ void renderInterior(const GrainRows &rows, uint32_t i, const Taps &taps, const O
     const SIMD_M128 gain1 = SIMD_MM(set1_ps)(rows.gainR[i]);
     const SIMD_M128 zero = SIMD_MM(setzero_ps)();
     const float *const points = hann.points();
-    const float *const data0 = taps.data[0];
-    const float *const data1 = taps.data[1];
     float *const dst0 = out.dst[0];
     float *const dst1 = out.dst[1];
     for (int64_t t = begin; t < end; t += 4)
@@ -388,15 +502,12 @@ void renderInterior(const GrainRows &rows, uint32_t i, const Taps &taps, const O
         // The reference skips a sample unless w > 0: nothing is added there.
         const SIMD_M128 sounds = SIMD_MM(cmpgt_ps)(w, zero);
         const SIMD_M128 frac = SIMD_MM(load_ps)(posFrac);
-        const SIMD_M128 s0 = Reader::read4(data0, base, frac);
+        SIMD_M128 s0;
+        SIMD_M128 s1;
+        taps.template read<Reader, kTwoOutputs && kStereo>(base, frac, s0, s1);
         addMasked(dst0 + j, SIMD_MM(mul_ps)(s0, SIMD_MM(mul_ps)(w, gain0)), sounds);
         if constexpr (kTwoOutputs)
         {
-            SIMD_M128 s1 = s0;
-            if constexpr (kStereo)
-            {
-                s1 = Reader::read4(data1, base, frac);
-            }
             addMasked(dst1 + j, SIMD_MM(mul_ps)(s1, SIMD_MM(mul_ps)(w, gain1)), sounds);
         }
     }
@@ -407,7 +518,9 @@ void renderInterior(const GrainRows &rows, uint32_t i, const Taps &taps, const O
 /// for bit. The samples in detail::sampleSimdRun, 4 at a time, go through the SIMD interior;
 /// those before the run, and those after its last whole step of 4 (reads near or past the
 /// source's ends, the window's edges, and the remainder), go through renderSampleRef itself.
-/// Every sample depends only on t, so the pieces give the reference's bits.
+/// Every sample depends only on t, so the pieces give the reference's bits. A stereo source into
+/// two outputs reads src.interleaved when it is set, and the planar channels otherwise; the
+/// interior's taps are all inside the source, where both hold the same floats.
 template <class Reader>
 void renderSampleSimd(const GrainRows &rows, uint32_t i, const SampleSource &src, const Output &out,
                       int64_t from, int64_t to,
@@ -430,6 +543,11 @@ void renderSampleSimd(const GrainRows &rows, uint32_t i, const SampleSource &src
     else if (src.mono)
     {
         detail::renderInterior<Reader, true, false>(rows, i, taps, out, run.begin, simdEnd, hann);
+    }
+    else if (src.interleaved != nullptr)
+    {
+        const detail::InterleavedTaps pairs{src.interleaved};
+        detail::renderInterior<Reader, true, true>(rows, i, pairs, out, run.begin, simdEnd, hann);
     }
     else
     {
@@ -612,15 +730,15 @@ inline Run liveRun(const GrainRows &rows, uint32_t i, const LiveSource &live, in
     return {begin, end};
 }
 
-/// The live ring's taps for the SIMD interior: frame f of channel c is in slot f mod capacity,
-/// and the ring's guard slots make each read's taps contiguous from its first tap's slot. locate
-/// finds lane 0's first-tap slot with one division, and each other lane's by adding its frame
-/// offset from lane 0 (0 to a few frames, far below capacity) and subtracting capacity once if
-/// that passes it; read4's base is that slot + Reader::kBefore. Requires every lane's first tap
-/// to be a frame >= 0, in increasing lane order.
-template <class Reader> struct RingTaps
+/// The live ring's taps for the SIMD interior: frame f is in slot f mod capacity, whose two
+/// channels are interleaved (LiveSource::RingView::slots, read through InterleavedTaps), and the
+/// ring's guard slots make each read's taps contiguous from its first tap's slot. locate finds
+/// lane 0's first-tap slot with one division, and each other lane's by adding its frame offset
+/// from lane 0 (0 to a few frames, far below capacity) and subtracting capacity once if that
+/// passes it; the read's base is that slot + Reader::kBefore. Requires every lane's first tap to
+/// be a frame >= 0, in increasing lane order.
+template <class Reader> struct RingTaps : InterleavedTaps
 {
-    const float *data[2];
     int64_t capacity;
 
     void locate(int64_t *base) const noexcept SST_CPPUTILS_NONBLOCKING
@@ -676,9 +794,9 @@ inline LiveInterior liveInterior(const GrainRows &rows, uint32_t i, const LiveSo
 
 /// The 4-wide grain-major SIMD kernel over the live ring: renderLiveRef<Reader>'s output, bit for
 /// bit, with the same requirements. Each part of liveInterior, 4 samples at a time, goes through
-/// the SIMD interior, reading the ring's slots from view(); every other sample (the fades near
-/// either end of the window, reads outside it or before frame 0, the window's edges, and each
-/// part's remainder) goes through renderLiveRef itself. Every sample depends only on t, so the
+/// the SIMD interior, reading the ring's interleaved slots from view(); every other sample (the
+/// fades near either end of the window, reads outside it or before frame 0, the window's edges, and
+/// each part's remainder) goes through renderLiveRef itself. Every sample depends only on t, so the
 /// pieces give the reference's bits.
 template <class Reader>
 void renderLiveSimd(const GrainRows &rows, uint32_t i, const LiveSource &live, const Output &out,
@@ -691,7 +809,7 @@ void renderLiveSimd(const GrainRows &rows, uint32_t i, const LiveSource &live, c
     }
     const LiveInterior in = liveInterior(rows, i, live, from, to);
     const LiveSource::RingView ring = live.view();
-    const detail::RingTaps<Reader> taps{{ring.channel[0], ring.channel[1]}, ring.capacity};
+    const detail::RingTaps<Reader> taps{{ring.slots}, ring.capacity};
     int64_t done = from;
     for (int part = 0; part < 2; ++part)
     {

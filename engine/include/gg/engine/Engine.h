@@ -13,6 +13,7 @@
 #include "gg/core/Window.h"
 #include "gg/grain/CloudScheduler.h"
 #include "gg/grain/GrainPool.h"
+#include "gg/source/InterleavedStereo.h"
 #include "gg/source/LiveSource.h"
 #include "gg/source/SampleBuffer.h"
 #include "gg/source/SourceMode.h"
@@ -88,7 +89,9 @@ class Engine
 
     /// Not real-time safe: call only while process() is not running. The engine keeps the
     /// buffer alive until the next setSource or its destruction. A mono source feeds both
-    /// output channels; a stereo (or wider) source feeds its first two channels to them.
+    /// output channels; a stereo (or wider) source feeds its first two channels to them. For a
+    /// stereo source it also keeps an interleaved copy of those two channels, which the SIMD
+    /// kernel reads (InterleavedStereo): that doubles the source's memory.
     /// nullptr means no source: the schedule keeps running but no grains spawn in Sample mode.
     void setSource(std::shared_ptr<const SampleBuffer> source);
 
@@ -198,6 +201,8 @@ class Engine
     int64_t sourceFrames_{0};
     double sourceRate_{48000.0};
     bool monoSource_{true};
+    // A stereo source's first two channels, interleaved; empty for a mono source or none.
+    InterleavedStereo sourcePairs_;
 
     // In effect, and as last requested; process() applies the requests at its first frame.
     SourceMode mode_{SourceMode::Sample};

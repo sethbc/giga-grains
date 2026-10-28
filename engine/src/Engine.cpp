@@ -54,6 +54,7 @@ void Engine::setSource(std::shared_ptr<const SampleBuffer> source)
     sourceFrames_ = 0;
     sourceRate_ = config_.sampleRate;
     monoSource_ = true;
+    sourcePairs_.clear();
     if (source_ != nullptr)
     {
         sourceRate_ = source_->sampleRate();
@@ -65,6 +66,11 @@ void Engine::setSource(std::shared_ptr<const SampleBuffer> source)
             sourceData_[0] = source_->channel(0);
             sourceData_[1] = monoSource_ ? sourceData_[0] : source_->channel(1);
             sourceFrames_ = source_->frames();
+            if (!monoSource_)
+            {
+                // The SIMD sample kernel's stereo reads (§16 lever 2); a mono source stays planar.
+                sourcePairs_.assign(sourceData_[0], sourceData_[1], sourceFrames_);
+            }
         }
     }
 }
@@ -298,7 +304,7 @@ void Engine::renderPool(float *const dst[2], int64_t blockStart, int64_t from, i
         return;
     }
     const kernels::SampleSource source{
-        {sourceData_[0], sourceData_[1]}, sourceFrames_, monoSource_};
+        {sourceData_[0], sourceData_[1]}, sourceFrames_, monoSource_, sourcePairs_.data()};
     for (uint32_t i = 0; i < n; ++i)
     {
         if (rows.tier[i] == Tier::Eco)

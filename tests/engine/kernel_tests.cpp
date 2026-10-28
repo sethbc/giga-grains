@@ -24,6 +24,7 @@
 #include "gg/core/Window.h"
 #include "gg/grain/GrainKernels.h"
 #include "gg/grain/GrainPool.h"
+#include "gg/source/InterleavedStereo.h"
 #include "gg/source/LiveSource.h"
 
 namespace
@@ -309,7 +310,7 @@ TEST_CASE("reference reads nothing where the window is zero", "[kernel]")
                 std::vector<float> out[2] = {std::vector<float>(kLength, 0.0f),
                                              std::vector<float>(kLength, 0.0f)};
                 const gg::kernels::SampleSource src{
-                    {left.data(), mono ? left.data() : right.data()}, kFrames, mono};
+                    {left.data(), mono ? left.data() : right.data()}, kFrames, mono, nullptr};
                 refSample(rows, src, outputs, out, {0, 999, 1000, 1001, 1300, 1499, kLength}, hann);
                 REQUIRE(allFinite(out[0]));
                 REQUIRE(allFinite(out[1]));
@@ -458,7 +459,7 @@ TEST_CASE("eco reference reads linearly", "[kernel]")
         const std::vector<float> left = noise(kFrames, 7, 0);
         const std::vector<float> right = noise(kFrames, 7, 1);
         const OneGrain one(testGrain(10, 200.25));
-        const gg::kernels::SampleSource src{{left.data(), right.data()}, kFrames, false};
+        const gg::kernels::SampleSource src{{left.data(), right.data()}, kFrames, false, nullptr};
         std::vector<float> eco[2] = {std::vector<float>(kLength, 0.0f),
                                      std::vector<float>(kLength, 0.0f)};
         std::vector<float> normal[2] = {std::vector<float>(kLength, 0.0f),
@@ -864,17 +865,30 @@ template <class R> void requireExactRuns(const Pool &pool, int64_t frames, int64
     }
 }
 
+// A stereo noise source. stereo() carries the interleaved copy the engine builds (§16 lever 2),
+// which the SIMD kernel reads; stereoPlanar() leaves it out, so the kernel reads the planar
+// channels. interleave() rebuilds the copy after left or right changes.
 struct Noise
 {
     explicit Noise(int64_t frames, uint64_t seed)
         : frames(frames), left(noise(frames, seed, 0)), right(noise(frames, seed, 1))
     {
+        interleave();
     }
-    SampleSource stereo() const { return {{left.data(), right.data()}, frames, false}; }
-    SampleSource mono() const { return {{left.data(), left.data()}, frames, true}; }
+    void interleave() { pairs.assign(left.data(), right.data(), frames); }
+    SampleSource stereo() const
+    {
+        return {{left.data(), right.data()}, frames, false, pairs.data()};
+    }
+    SampleSource stereoPlanar() const
+    {
+        return {{left.data(), right.data()}, frames, false, nullptr};
+    }
+    SampleSource mono() const { return {{left.data(), left.data()}, frames, true, nullptr}; }
     int64_t frames;
     std::vector<float> left;
     std::vector<float> right;
+    gg::InterleavedStereo pairs;
 };
 } // namespace
 
@@ -1082,8 +1096,9 @@ TEMPLATE_TEST_CASE("simd sample kernel matches the reference for every output sh
         int outputs;
         SampleSource source;
     };
-    const SampleSource empty{{nullptr, nullptr}, 0, true};
+    const SampleSource empty{{nullptr, nullptr}, 0, true, nullptr};
     for (const Shape shape : {Shape{"two outputs, stereo source", 2, src.stereo()},
+                              Shape{"two outputs, planar stereo source", 2, src.stereoPlanar()},
                               Shape{"two outputs, mono source", 2, src.mono()},
                               Shape{"one output, stereo source", 1, src.stereo()},
                               Shape{"one output, mono source", 1, src.mono()},
@@ -1141,6 +1156,7 @@ TEMPLATE_TEST_CASE("simd sample kernel matches the reference with non-finite tap
             src.right[j] = -kInf;
         }
     }
+    src.interleave();
     const Pool pool(randomGrains(27, 500, kNoiseFrames));
     auto [ref, simd] = renderBoth<TestType>(pool, src.stereo(), 2, 0, 4096, hann);
     REQUIRE(anyNaN(ref.ch[0]));

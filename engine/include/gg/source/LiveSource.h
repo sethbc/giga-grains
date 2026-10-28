@@ -24,11 +24,13 @@ namespace gg
 /// frame) read as silence, so the ring never needs clearing.
 ///
 /// **Storage** (ruling M1-o). Frame i is kept in slot i mod C, with C = N + B physical slots,
-/// where B is the largest block write() takes. A block's input is written whole before its
-/// samples render, so when sample t of a block renders, the frames R(t) .. R(t) + B − 2 may
-/// already be in the ring. With C = N + B they overwrite frames R(t) − N − B .. R(t) − N − 2,
-/// all below the oldest frame t may read, R(t) − N. So every frame in t's window is the one
-/// written for it, and what a sample reads depends neither on the host's block size nor on B.
+/// where B is the largest block write() takes. A slot holds the frame's two channels side by
+/// side, L then R (§16 lever 2), so a read's taps of both channels are one run of memory. A block's
+/// input is written whole before its samples render, so when sample t of a block renders, the
+/// frames R(t) .. R(t) + B − 2 may already be in the ring. With C = N + B they overwrite frames
+/// R(t) − N − B .. R(t) − N − 2, all below the oldest frame t may read, R(t) − N. So every frame in
+/// t's window is the one written for it, and what a sample reads depends neither on the host's
+/// block size nor on B.
 ///
 /// **Freeze.**
 /// - On: the write gain ramps from 1 to 0 over L = freezeRampSamples() samples while the head
@@ -102,19 +104,19 @@ class LiveSource
     /// rising by one per sample; from it on R(t) is the head(), so on each side R is linear in t.
     int64_t blockKink() const noexcept { return blockStart_ + blockAdvance_; }
 
-    /// The ring's storage, for kernels that gather taps themselves: frame f >= 0 of channel c is
-    /// channel[c][f mod capacity], and slots 0 .. capacity + 2 are readable, with capacity ..
-    /// capacity + 2 mirroring slots 0 .. 2, so taps starting at any slot s < capacity are
-    /// contiguous for 4 frames. capacity is C = N + maxBlockSize and frames is N (both 0, with
-    /// null channels, when there is no ring). Only a frame inside a sample's window [R(t) − N,
-    /// R(t) − 1] is the one written for it (see Storage).
+    /// The ring's storage, for kernels that gather taps themselves: frame f >= 0 is in slot
+    /// s = f mod capacity, whose channel c is slots[2s + c]. Slots 0 .. capacity + 2 are
+    /// readable, with capacity .. capacity + 2 mirroring slots 0 .. 2, so taps starting at any
+    /// slot s < capacity are contiguous for 4 frames. capacity is C = N + maxBlockSize and frames
+    /// is N (both 0, with null slots, when there is no ring). Only a frame inside a sample's
+    /// window [R(t) − N, R(t) − 1] is the one written for it (see Storage).
     struct RingView
     {
-        const float *channel[2];
+        const float *slots;
         int64_t capacity;
         int64_t frames;
     };
-    RingView view() const noexcept { return {{channels_[0], channels_[1]}, capacity_, frames_}; }
+    RingView view() const noexcept { return {slots_, capacity_, frames_}; }
 
     /// How many more frames the head will advance after output sample t of the last write()
     /// block, if the freeze setting doesn't change: +infinity when not frozen; when frozen, the
@@ -175,8 +177,8 @@ class LiveSource
 
   private:
     static constexpr double kMargin = static_cast<double>(kHeadMargin);
-    // Taps i − 1 .. i + 2 read slots s .. s + 3 of a channel (readLinear's taps i, i + 1 read
-    // s, s + 1). Slots C .. C + 2 mirror slots 0 .. 2, so the taps are contiguous wherever s falls.
+    // Taps i − 1 .. i + 2 read slots s .. s + 3 (readLinear's taps i, i + 1 read s, s + 1).
+    // Slots C .. C + 2 mirror slots 0 .. 2, so the taps are contiguous wherever s falls.
     static constexpr int64_t kGuardFrames = 3;
 
     // The slot of ring-time frame first >= 0, found from the cursor when reads move forward, and
@@ -186,8 +188,8 @@ class LiveSource
     // clamp(x, 0, 1), with NaN read as 0.
     static double unit(double x) noexcept { return x > 0.0 ? (x < 1.0 ? x : 1.0) : 0.0; }
 
-    std::vector<float> storage_; // channel c starts at c × (C + kGuardFrames)
-    float *channels_[2]{nullptr, nullptr};
+    std::vector<float> storage_; // C + kGuardFrames slots of 2 floats: slot s's channel c at 2s + c
+    float *slots_{nullptr};
     int64_t frames_{0};     // N, the window
     int64_t capacity_{0};   // C = N + maxBlockSize slots (ruling M1-o)
     int64_t rampLength_{1}; // L

@@ -21,6 +21,7 @@
 #include "gg/grain/CloudScheduler.h"
 #include "gg/grain/GrainKernels.h"
 #include "gg/grain/GrainPool.h"
+#include "gg/source/InterleavedStereo.h"
 
 // Defined in fp_contract_fast.cpp, which is compiled with flags that allow FP contraction and
 // inlines every header function it calls, so it leaves no out-of-line copy behind. The calls
@@ -240,11 +241,17 @@ TEST_CASE("the simd sample kernel is not contracted by an includer's flags", "[m
         REQUIRE(pool.canAdmit(g.onsetSample));
         REQUIRE(pool.spawn(g));
     }
-    const gg::kernels::SampleSource src{{left.data(), right.data()}, kFrames, false};
+    gg::InterleavedStereo pairs;
+    pairs.assign(left.data(), right.data(), kFrames);
     const gg::HannTable hann;
-    for (const bool eco : {false, true})
+    // Both stereo layouts: the planar channels, and the interleaved copy the engine reads.
+    for (const int pass : {0, 1, 2, 3})
     {
-        INFO((eco ? "Linear" : "Hermite"));
+        const bool eco = (pass & 1) != 0;
+        const bool interleaved = (pass & 2) != 0;
+        INFO((eco ? "Linear" : "Hermite") << (interleaved ? ", interleaved" : ", planar"));
+        const gg::kernels::SampleSource src{
+            {left.data(), right.data()}, kFrames, false, interleaved ? pairs.data() : nullptr};
         std::vector<float> fast[2] = {std::vector<float>(kLength), std::vector<float>(kLength)};
         std::vector<float> ref[2] = {std::vector<float>(kLength), std::vector<float>(kLength)};
         ggFastSampleSimd(eco, pool.rows(), kGrains, src, {{fast[0].data(), fast[1].data()}, 0}, 0,

@@ -3,11 +3,14 @@
 // Copyright 2026, the Giga Grains authors (see git history)
 
 #include <cstdint>
+#include <cstring>
 #include <limits>
 #include <stdexcept>
+#include <vector>
 
 #include <catch2/catch_test_macros.hpp>
 
+#include "gg/source/InterleavedStereo.h"
 #include "gg/source/SampleBuffer.h"
 
 TEST_CASE("sample buffer holds separate zeroed channels", "[source]")
@@ -64,4 +67,64 @@ TEST_CASE("sample buffer accepts empty shapes and rejects invalid ones", "[sourc
     REQUIRE_THROWS_AS(gg::SampleBuffer(std::numeric_limits<uint32_t>::max(),
                                        std::numeric_limits<int64_t>::max(), 48000.0),
                       std::length_error);
+}
+
+namespace
+{
+constexpr float kZero = 0.0f; // +0, bit for bit
+} // namespace
+
+TEST_CASE("interleaved stereo holds L, R per frame between zero guards", "[source]")
+{
+    // §16 lever 2: the SIMD sample kernel reads these floats in place of the planar channels, so
+    // each must be the planar one's exact bits, a NaN's payload and a −0 included.
+    constexpr int64_t kFrames = 37;
+    constexpr int64_t kGuard = gg::InterleavedStereo::kGuardFrames;
+    REQUIRE(kGuard == 3);
+    std::vector<float> left(kFrames);
+    std::vector<float> right(kFrames);
+    for (int64_t f = 0; f < kFrames; ++f)
+    {
+        left[static_cast<std::size_t>(f)] = 1.0f + static_cast<float>(f);
+        right[static_cast<std::size_t>(f)] = -0.5f - static_cast<float>(f);
+    }
+    left[5] = std::numeric_limits<float>::quiet_NaN();
+    right[6] = -0.0f;
+
+    gg::InterleavedStereo pairs;
+    REQUIRE(pairs.data() == nullptr);
+    REQUIRE(pairs.frames() == 0);
+    pairs.assign(left.data(), right.data(), kFrames);
+    REQUIRE(pairs.data() != nullptr);
+    REQUIRE(pairs.frames() == kFrames);
+    bool same = true;
+    for (int64_t f = 0; f < kFrames; ++f)
+    {
+        const auto j = static_cast<std::size_t>(f);
+        same = same && std::memcmp(&pairs.data()[2 * f], &left[j], sizeof(float)) == 0 &&
+               std::memcmp(&pairs.data()[2 * f + 1], &right[j], sizeof(float)) == 0;
+    }
+    REQUIRE(same);
+    bool guardsZero = true;
+    for (int64_t k = 1; k <= kGuard; ++k)
+    {
+        for (int64_t c = 0; c < 2; ++c)
+        {
+            const float before = pairs.data()[-2 * k + c];
+            const float after = pairs.data()[2 * (kFrames - 1 + k) + c];
+            guardsZero = guardsZero && std::memcmp(&before, &kZero, sizeof(float)) == 0 &&
+                         std::memcmp(&after, &kZero, sizeof(float)) == 0;
+        }
+    }
+    REQUIRE(guardsZero);
+
+    // A shorter source replaces the copy; an empty one clears it.
+    pairs.assign(right.data(), left.data(), 2);
+    REQUIRE(pairs.frames() == 2);
+    REQUIRE(pairs.data()[0] == right[0]);
+    REQUIRE(pairs.data()[3] == left[1]);
+    REQUIRE(pairs.data()[4] == 0.0f);
+    pairs.assign(left.data(), right.data(), 0);
+    REQUIRE(pairs.data() == nullptr);
+    REQUIRE(pairs.frames() == 0);
 }
