@@ -8,6 +8,8 @@
 #include <array>
 #include <cstdint>
 
+#include "gg/core/FpContract.h"
+
 namespace gg
 {
 /// The Hann window w(p) = 0.5 - 0.5·cos(2πp), p in [0, 1], tabulated at kSize + 1 points and
@@ -23,6 +25,7 @@ class HannTable
     /// The window at phase01, or 0 if phase01 is outside [0, 1] or NaN.
     float at(double phase01) const noexcept
     {
+        GG_FP_CONTRACT_OFF
         if (!(phase01 >= 0.0 && phase01 <= 1.0))
         {
             return 0.0f;
@@ -33,6 +36,10 @@ class HannTable
         const auto t = static_cast<float>(x - i);
         return table_[i] + (table_[i + 1] - table_[i]) * t;
     }
+
+    /// The kSize + 1 tabulated points, which at() interpolates between: at(phase01) reads points
+    /// i and i + 1 with i and t computed as above. The SIMD kernels gather from them.
+    const float *points() const noexcept { return table_.data(); }
 
   private:
     std::array<float, kSize + 1> table_{};

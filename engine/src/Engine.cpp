@@ -5,13 +5,13 @@
 #include "gg/engine/Engine.h"
 
 #include <algorithm>
+#include <cassert>
 #include <cmath>
-#include <cstddef>
 #include <stdexcept>
 #include <utility>
 
 #include "gg/core/DenormalGuard.h"
-#include "gg/core/Interpolate.h"
+#include "gg/grain/GrainKernels.h"
 
 namespace gg
 {
@@ -30,6 +30,11 @@ const EngineConfig &validated(const EngineConfig &config)
     if (!(std::isfinite(config.liveSeconds) && config.liveSeconds >= 0.0))
     {
         throw std::invalid_argument("Engine: liveSeconds must be finite and >= 0");
+    }
+    // The pool stores 2 × grainCapacity grains, a count held in a uint32_t (GrainPool).
+    if (config.grainCapacity >= (uint32_t{1} << 31))
+    {
+        throw std::invalid_argument("Engine: grainCapacity must be below 2^31");
     }
     return config;
 }
@@ -54,6 +59,7 @@ void Engine::setSource(std::shared_ptr<const SampleBuffer> source)
     sourceFrames_ = 0;
     sourceRate_ = config_.sampleRate;
     monoSource_ = true;
+    sourcePairs_.clear();
     if (source_ != nullptr)
     {
         sourceRate_ = source_->sampleRate();
@@ -65,6 +71,11 @@ void Engine::setSource(std::shared_ptr<const SampleBuffer> source)
             sourceData_[0] = source_->channel(0);
             sourceData_[1] = monoSource_ ? sourceData_[0] : source_->channel(1);
             sourceFrames_ = source_->frames();
+            if (!monoSource_)
+            {
+                // The SIMD sample kernel's stereo reads (§16 lever 2); a mono source stays planar.
+                sourcePairs_.assign(sourceData_[0], sourceData_[1], sourceFrames_);
+            }
         }
     }
 }
@@ -199,6 +210,7 @@ GrainSpec Engine::sampleGrain(const GrainDraw &d) const noexcept
         .durationSamples = d.durationSamples,
         .gain = d.gain,
         .pan = d.pan,
+        .tier = d.tier,
     };
 }
 
@@ -233,6 +245,7 @@ bool Engine::liveGrain(const GrainDraw &d, GrainSpec &g) const noexcept
         .durationSamples = dur,
         .gain = d.gain,
         .pan = d.pan,
+        .tier = d.tier,
     };
     return true;
 }
@@ -240,24 +253,27 @@ bool Engine::liveGrain(const GrainDraw &d, GrainSpec &g) const noexcept
 void Engine::admit(const GrainSpec &g, float *const dst[2], int64_t blockStart,
                    int64_t &renderedTo) noexcept
 {
-    if (pool_.size() == pool_.capacity())
+    // Count only the grains still sounding at the onset, so admission doesn't depend on where
+    // the block boundaries fall (the pool may still store grains that finished earlier in the
+    // block, because retirement normally waits for the block's end).
+    if (!pool_.canAdmit(g.onsetSample))
     {
-        // The pool may still hold grains that finish before g's onset but haven't been
-        // retired, because retirement normally waits for the end of the block. Count only
-        // the grains still sounding at the onset, so admission doesn't depend on where the
-        // block boundaries fall.
-        if (pool_.earliestEnd() > g.onsetSample)
-        {
-            ++dropped_;
-            return;
-        }
-        // Finish the pool up to the onset, so the grains retired here have played all their
-        // samples, then retire them.
+        ++dropped_;
+        return;
+    }
+    if (pool_.storageFull())
+    {
+        // More than capacity grains finished in this block. Finish the pool up to the onset, so
+        // the grains retired here have played all their samples, then retire them: fewer than
+        // capacity still sound, so g fits.
         renderPool(dst, blockStart, renderedTo, g.onsetSample);
         renderedTo = g.onsetSample;
         pool_.retireFinished(g.onsetSample);
     }
-    pool_.spawn(g);
+    // Can't fail: storage was full only if the retirement above just ran, and it left only the
+    // grains still sounding at the onset, fewer than capacity by canAdmit.
+    [[maybe_unused]] const bool spawned = pool_.spawn(g);
+    assert(spawned);
     if (sink_ != nullptr)
     {
         sink_(sinkCtx_, g);
@@ -271,113 +287,38 @@ void Engine::renderPool(float *const dst[2], int64_t blockStart, int64_t from, i
         return;
     }
     // Grain-major, in spawn order: every grain adds to every sample of [from, to) before the
-    // next grain starts, so each sample sums its grains in spawn order.
-    const bool twoOutputs = dst[1] != nullptr;
-    for (uint32_t i = 0; i < pool_.size(); ++i)
+    // next grain starts, so each sample sums its grains in spawn order. With one output (dst[1]
+    // null) the kernels carry source channel 0, unpanned. Each grain reads with its own latched
+    // tier (ruling 2).
+    const kernels::Output output{{dst[0], dst[1]}, blockStart};
+    const GrainRows &rows = pool_.rows();
+    const uint32_t n = pool_.size();
+    if (mode_ == SourceMode::Live)
     {
-        const GrainSpec &g = pool_.at(i);
-        if (mode_ == SourceMode::Live)
+        for (uint32_t i = 0; i < n; ++i)
         {
-            if (twoOutputs)
+            if (rows.tier[i] == Tier::Eco)
             {
-                renderLiveGrain<true>(g, dst, blockStart, from, to);
+                kernels::renderLiveSimd<kernels::Linear>(rows, i, live_, output, from, to, hann_);
             }
             else
             {
-                renderLiveGrain<false>(g, dst, blockStart, from, to);
+                kernels::renderLiveSimd<kernels::Hermite>(rows, i, live_, output, from, to, hann_);
             }
         }
-        else if (twoOutputs)
-        {
-            if (monoSource_)
-            {
-                renderGrain<true, true>(g, dst, blockStart, from, to);
-            }
-            else
-            {
-                renderGrain<true, false>(g, dst, blockStart, from, to);
-            }
-        }
-        else
-        {
-            // One output reads only source channel 0, whatever the source's width.
-            renderGrain<false, true>(g, dst, blockStart, from, to);
-        }
+        return;
     }
-}
-
-template <bool TwoOutputs, bool MonoSource>
-void Engine::renderGrain(const GrainSpec &g, float *const dst[2], int64_t blockStart, int64_t from,
-                         int64_t to) const noexcept
-{
-    const int64_t first = std::max(from, g.onsetSample);
-    const int64_t last = std::min(to, grainEndSample(g)); // exclusive
-    // One output has no stereo placement, so the grain plays unpanned. With two, each
-    // channel's M0 value is multiplied by its pan gain last, so at pan 0 (both gains exactly
-    // 1) the output is M0's bit for bit.
-    const PanGains gains = TwoOutputs ? panGains(g.pan) : PanGains{1.0f, 1.0f};
-    for (int64_t t = first; t < last; ++t)
+    const kernels::SampleSource source{
+        {sourceData_[0], sourceData_[1]}, sourceFrames_, monoSource_, sourcePairs_.data()};
+    for (uint32_t i = 0; i < n; ++i)
     {
-        // Everything comes from the elapsed time since the onset, so the result for sample t
-        // doesn't depend on which block t falls in.
-        const double e = static_cast<double>(t - g.onsetSample) - g.onsetFrac;
-        const float env = hann_.at(e / g.durationSamples);
-        const double pos = g.startPos + g.rate * e;
-        const auto j = static_cast<std::size_t>(t - blockStart);
-        const float channel0 = interp::hermite4(sourceData_[0], sourceFrames_, pos) * env * g.gain;
-        if constexpr (TwoOutputs)
+        if (rows.tier[i] == Tier::Eco)
         {
-            dst[0][j] += channel0 * gains.left;
-            if constexpr (MonoSource)
-            {
-                dst[1][j] += channel0 * gains.right;
-            }
-            else
-            {
-                dst[1][j] += interp::hermite4(sourceData_[1], sourceFrames_, pos) * env * g.gain *
-                             gains.right;
-            }
+            kernels::renderSampleSimd<kernels::Linear>(rows, i, source, output, from, to, hann_);
         }
         else
         {
-            dst[0][j] += channel0;
-        }
-    }
-}
-
-template <bool TwoOutputs>
-void Engine::renderLiveGrain(const GrainSpec &g, float *const dst[2], int64_t blockStart,
-                             int64_t from, int64_t to) const noexcept
-{
-    const int64_t first = std::max(from, g.onsetSample);
-    const int64_t last = std::min(to, grainEndSample(g)); // exclusive
-    // As in renderGrain: one output carries ring channel 0, unpanned.
-    const PanGains gains = TwoOutputs ? panGains(g.pan) : PanGains{1.0f, 1.0f};
-    LiveSource::Cursor cursor;
-    for (int64_t t = first; t < last; ++t)
-    {
-        // The read position is in ring time; the head is R(t), from this block's write.
-        const double e = static_cast<double>(t - g.onsetSample) - g.onsetFrac;
-        const double pos = g.startPos + g.rate * e;
-        const int64_t head = live_.headAt(t);
-        const auto fade = static_cast<float>(live_.fade(pos, head));
-        float left = 0.0f;
-        float right = 0.0f;
-        // Where the fade is 0 the taps aren't read at all, so stale data can never contribute.
-        if (fade == 0.0f || !live_.read(pos, head, cursor, left, right))
-        {
-            continue;
-        }
-        const float weight = hann_.at(e / g.durationSamples) * g.gain * fade;
-        const auto j = static_cast<std::size_t>(t - blockStart);
-        if constexpr (TwoOutputs)
-        {
-            dst[0][j] += left * weight * gains.left;
-            dst[1][j] += right * weight * gains.right;
-        }
-        else
-        {
-            dst[0][j] += left * weight;
+            kernels::renderSampleSimd<kernels::Hermite>(rows, i, source, output, from, to, hann_);
         }
     }
 }

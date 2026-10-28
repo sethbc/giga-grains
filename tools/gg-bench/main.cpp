@@ -2,23 +2,34 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright 2026, the Giga Grains authors (see git history)
 
-// gg-bench times the prototype grain kernels in Kernels.h. It is the M0 kernel benchmark spike,
-// whose numbers set the CPU target in INTENT §16. With --canvas it times the canvas renderer
-// instead (the M0 canvas stress spike, see below).
+// gg-bench is the CPU benchmark and CI's CPU gate (INTENT §16, §19). It times the real engine's
+// render path, the engine cases, through Engine::process: engine-sample is X, the §16
+// headline's case, beside engine-sample-eco, engine-live (the FX's figure) and
+// engine-full-pool. It times them against the reference kernel, M0's hermite-simd frozen in
+// Kernels.h, and reports each engine case's ratio to it, which the CI gate checks. It also still
+// times M0's prototype kernels in Kernels.h. It began as the M0 kernel benchmark spike and was
+// made gate-grade in M1 (carry-over B-I2, [133], [132]; spec §5). With --canvas it times the
+// canvas renderer instead (the M0 canvas stress spike, see below).
 //
-//   gg-bench [--quick] [--json out.json]
+//   gg-bench [--quick | --seconds S] [--rounds N] [--grains N] [--cases a,b] [--commit SHA]
+//            [--json out.json] [--baseline baseline.json]
+//   gg-bench --make-baseline <leg> <out.json> <in.json>...
 //   gg-bench --canvas [--quick] [--json out.json]
 //
-// The workload is a 60 s stereo noise source at 48 kHz, read by 2,000 grains of 100 ms. Each
-// grain has a random position and a random rate in [0.5, 2]. Every kernel runs at block sizes
-// 32, 64 and 256.
+// The timing itself is in Bench.h and Bench.cpp: by default 2,000 grains of 100 ms over a 60 s
+// stereo noise source at 48 kHz, every case at block sizes 32, 64 and 256. Each configuration
+// warms up once, then every round times each configuration once, for at least 2 s (0.2 s with
+// --quick), in an order rotated by the round and reversed in odd rounds. The default is 5
+// rounds. gg-bench prints each configuration's median, min and IQR over the rounds, then each
+// engine case's ratio to the reference kernel; the JSON (schema 2) keeps every run.
 //
-// Each configuration starts from the same grains, warms up, then makes 5 timed runs and reports
-// the median. A run renders blocks until at least 2 s have passed (0.2 s with --quick). A timed
-// block includes what an engine does around the kernel: clearing the output and the per-block
-// grain update, which advances every grain and respawns those whose window has ended. It also
-// sums the output into a checksum, so the compiler can't drop the work; that costs about one
-// add per output sample, against 2,000 grain-samples.
+// --baseline checks the ratios against a baseline file (tools/gg-bench/baselines/README.md): its
+// entry for this machine's CPU model, since ratios differ between models. It prints a verdict
+// for each ratio, or "no baseline for <machine>; no verdict" when the file has no entry for this
+// model. The exit status is 0 if none regressed (or there was no verdict), 3 if any did, 1 for an
+// error (an unreadable or malformed file, say) and 2 for bad usage. CI reports it without failing
+// through M1 (ruling 3). --make-baseline writes a baseline for a CI leg from the JSON of runs
+// already made, one entry per CPU model they ran on, and exits.
 //
 // --canvas times gg-ui-core's splat renderer, headless, at 3200 x 1200: a 1600 x 600 canvas on
 // a 2x display. Each frame generates the editor's stress workload (4,096, 8,192 or 16,384
@@ -32,285 +43,39 @@
 
 #include <algorithm>
 #include <array>
+#include <cerrno>
+#include <charconv>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
-#include <cstring>
+#include <exception>
+#include <fstream>
+#include <limits>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <vector>
 
+#include <nlohmann/json.hpp>
+
 #if defined(__APPLE__)
 #include <pthread.h>
 #include <sys/qos.h>
-#include <sys/sysctl.h>
-#elif defined(__linux__)
-#include <fstream>
-#elif defined(_MSC_VER) && (defined(_M_X64) || defined(__x86_64__))
-#include <intrin.h>
 #endif
 
-#include "Kernels.h"
-#include "gg/core/DenormalGuard.h"
-#include "gg/core/Rng.h"
+#include "Bench.h"
 #include "gg/ui/SplatRenderer.h"
 #include "gg/ui/StressGrains.h"
 
 namespace
 {
-using gg::bench::GrainBatch;
-using gg::bench::Kernel;
-
-constexpr double kSampleRate = 48000.0;
-constexpr int64_t kSourceFrames = 60 * 48000;
-constexpr std::size_t kGrains = 2000;
-constexpr double kGrainSamples = 0.1 * kSampleRate;
-constexpr double kMinRate = 0.5;
-constexpr double kMaxRate = 2.0;
-constexpr uint32_t kMaxBlockSize = 256;
-constexpr std::array<uint32_t, 3> kBlockSizes{32, 64, kMaxBlockSize};
-constexpr int kRuns = 5;
-constexpr uint64_t kSeed = 0x67672d62656e6368ull; // "gg-bench"
-
-struct KernelInfo
-{
-    const char *name;
-    Kernel fn;
-};
-
-constexpr std::array<KernelInfo, 5> kKernels{{
-    {"linear-scalar", gg::bench::renderLinearScalar},
-    {"hermite-scalar", gg::bench::renderHermiteScalar},
-    {"sinc-scalar", gg::bench::renderSincScalar},
-    {"linear-simd", gg::bench::renderLinearSimd},
-    {"hermite-simd", gg::bench::renderHermiteSimd},
-}};
-
-/// Which quantity a draw is for; each gets its own RNG stream.
-enum Stream : uint32_t
-{
-    kNoiseL,
-    kNoiseR,
-    kPosition,
-    kRate,
-    kGain,
-    kStartPhase,
-};
-
-double draw(Stream stream, uint64_t index)
-{
-    return gg::rng::uniform01(
-        gg::rng::hash({kSeed, 0, stream, gg::rng::Field::SignalNoise, index}));
-}
-
-/// The source, and grains that keep reading it: whenever a grain's window ends, the grain
-/// respawns at a new random position and rate.
-struct Workload
-{
-    std::vector<float> srcL, srcR;
-    GrainBatch grains;
-    uint64_t spawns{0}; // grains spawned so far; indexes each spawn's draws
-
-    Workload()
-        : srcL(static_cast<std::size_t>(kSourceFrames)),
-          srcR(static_cast<std::size_t>(kSourceFrames))
-    {
-        for (std::size_t i = 0; i < srcL.size(); ++i)
-        {
-            const auto i64 = static_cast<uint64_t>(i);
-            srcL[i] = static_cast<float>(
-                0.5 * gg::rng::bipolar(
-                          gg::rng::hash({kSeed, 0, kNoiseL, gg::rng::Field::SignalNoise, i64})));
-            srcR[i] = static_cast<float>(
-                0.5 * gg::rng::bipolar(
-                          gg::rng::hash({kSeed, 0, kNoiseR, gg::rng::Field::SignalNoise, i64})));
-        }
-    }
-
-    /// Back to the same starting grains, with their windows at staggered random phases.
-    void reset()
-    {
-        spawns = 0;
-        grains.resize(kGrains);
-        for (std::size_t g = 0; g < kGrains; ++g)
-        {
-            spawn(g, static_cast<float>(draw(kStartPhase, g)));
-        }
-    }
-
-    void spawn(std::size_t g, float envPhase)
-    {
-        // Keep every read inside the source, so the kernels run their usual in-bounds path:
-        // a grain lives one window plus at most one block past its end, at up to kMaxRate.
-        constexpr double margin = 16.0;
-        constexpr double reach = kMaxRate * (kGrainSamples + kMaxBlockSize);
-        const double span = static_cast<double>(kSourceFrames) - 2.0 * margin - reach;
-        const uint64_t s = spawns++;
-        grains.pos[g] = margin + span * draw(kPosition, s);
-        grains.rate[g] = kMinRate + (kMaxRate - kMinRate) * draw(kRate, s);
-        grains.envPhase[g] = envPhase;
-        grains.envInc[g] = static_cast<float>(1.0 / kGrainSamples);
-        grains.gain[g] = static_cast<float>(0.5 + 0.5 * draw(kGain, s));
-    }
-
-    /// Moves every grain on by n samples, respawning those whose window has ended.
-    void advance(uint32_t n)
-    {
-        for (std::size_t g = 0; g < grains.size(); ++g)
-        {
-            grains.pos[g] += static_cast<double>(n) * grains.rate[g];
-            const float phase = grains.envPhase[g] + static_cast<float>(n) * grains.envInc[g];
-            if (phase >= 1.0f)
-            {
-                spawn(g, phase - 1.0f);
-            }
-            else
-            {
-                grains.envPhase[g] = phase;
-            }
-        }
-    }
-};
+using gg::bench::compiler;
+using gg::bench::machine;
 
 volatile double gSink = 0.0; // the rendered output feeds this, so it can't be optimised away
-
-/// Renders blocks for at least `seconds`; returns nanoseconds per stereo grain-sample.
-double timeRun(Workload &w, Kernel fn, uint32_t n, double seconds, std::vector<float> &outL,
-               std::vector<float> &outR)
-{
-    using Clock = std::chrono::steady_clock;
-    const auto start = Clock::now();
-    const auto deadline =
-        start + std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(seconds));
-    double sink = 0.0;
-    uint64_t blocks = 0;
-    auto now = start;
-    do
-    {
-        std::fill_n(outL.begin(), n, 0.0f);
-        std::fill_n(outR.begin(), n, 0.0f);
-        fn(w.grains, w.srcL.data(), w.srcR.data(), kSourceFrames, outL.data(), outR.data(), n);
-        w.advance(n);
-        for (uint32_t i = 0; i < n; ++i)
-        {
-            sink += outL[i] + outR[i];
-        }
-        ++blocks;
-        now = Clock::now();
-    } while (now < deadline);
-    gSink = gSink + sink;
-
-    const double ns = std::chrono::duration<double, std::nano>(now - start).count();
-    const double grainSamples =
-        static_cast<double>(blocks) * n * static_cast<double>(w.grains.size());
-    return ns / grainSamples;
-}
-
-struct Result
-{
-    const char *kernel;
-    std::size_t grains;
-    uint32_t blockSize;
-    double nsPerStereoGrainSample;
-    double cpuPctOneCoreAt48k;
-};
-
-Result measure(Workload &w, const KernelInfo &k, uint32_t n, double seconds)
-{
-    std::vector<float> outL(n), outR(n);
-    w.reset();
-    timeRun(w, k.fn, n, seconds / 4.0, outL, outR); // warm-up, discarded
-    std::array<double, kRuns> runs{};
-    for (double &r : runs)
-    {
-        r = timeRun(w, k.fn, n, seconds, outL, outR);
-    }
-    std::sort(runs.begin(), runs.end());
-    const double ns = runs[kRuns / 2];
-    const double grains = static_cast<double>(w.grains.size());
-    return {k.name, w.grains.size(), n, ns, ns * grains * kSampleRate / 1e9 * 100.0};
-}
-
-std::string trim(std::string s)
-{
-    const auto notSpace = [](char c) { return c != ' ' && c != '\t' && c != '\n' && c != '\r'; };
-    s.erase(s.begin(), std::find_if(s.begin(), s.end(), notSpace));
-    s.erase(std::find_if(s.rbegin(), s.rend(), notSpace).base(), s.end());
-    return s;
-}
-
-std::string cpuName()
-{
-    std::string name;
-#if defined(__APPLE__)
-    char buf[256] = {};
-    std::size_t len = sizeof(buf) - 1;
-    if (sysctlbyname("machdep.cpu.brand_string", buf, &len, nullptr, 0) == 0)
-    {
-        name = buf;
-    }
-#elif defined(__linux__)
-    std::ifstream in("/proc/cpuinfo");
-    for (std::string line; std::getline(in, line);)
-    {
-        if (line.rfind("model name", 0) == 0)
-        {
-            const auto colon = line.find(':');
-            if (colon != std::string::npos)
-            {
-                name = line.substr(colon + 1);
-            }
-            break;
-        }
-    }
-#elif defined(_MSC_VER) && (defined(_M_X64) || defined(__x86_64__))
-    int regs[4] = {};
-    __cpuid(regs, static_cast<int>(0x80000000));
-    if (static_cast<unsigned>(regs[0]) >= 0x80000004u)
-    {
-        char brand[49] = {};
-        for (int leaf = 0; leaf < 3; ++leaf)
-        {
-            __cpuid(regs, static_cast<int>(0x80000002u + leaf));
-            std::memcpy(brand + 16 * leaf, regs, 16);
-        }
-        name = brand;
-    }
-#elif defined(_WIN32)
-    if (const char *id = std::getenv("PROCESSOR_IDENTIFIER"))
-    {
-        name = id;
-    }
-#endif
-    name = trim(name);
-    return name.empty() ? "unknown CPU" : name;
-}
-
-/// The CPU, plus the architecture this binary was built for (a universal macOS build has two).
-std::string machine()
-{
-#if defined(__aarch64__) || defined(_M_ARM64)
-    constexpr const char *arch = "arm64";
-#elif defined(__x86_64__) || defined(_M_X64)
-    constexpr const char *arch = "x86_64";
-#else
-    constexpr const char *arch = "unknown architecture";
-#endif
-    return cpuName() + " (" + arch + ")";
-}
-
-std::string compiler()
-{
-#if defined(GG_BENCH_COMPILER)
-    return GG_BENCH_COMPILER;
-#elif defined(__VERSION__)
-    return __VERSION__;
-#else
-    return "unknown compiler";
-#endif
-}
 
 std::string jsonString(std::string_view s)
 {
@@ -336,28 +101,6 @@ std::string jsonString(std::string_view s)
     return out + "\"";
 }
 
-bool writeJson(const std::string &path, const std::vector<Result> &results)
-{
-    std::FILE *f = std::fopen(path.c_str(), "w");
-    if (!f)
-    {
-        return false;
-    }
-    std::fprintf(f, "{\n  \"machine\": %s,\n  \"compiler\": %s,\n  \"results\": [\n",
-                 jsonString(machine()).c_str(), jsonString(compiler()).c_str());
-    for (std::size_t i = 0; i < results.size(); ++i)
-    {
-        const Result &r = results[i];
-        std::fprintf(f,
-                     "    {\"kernel\": %s, \"grains\": %zu, \"blockSize\": %u, "
-                     "\"nsPerStereoGrainSample\": %.4f, \"cpuPctOneCoreAt48k\": %.3f}%s\n",
-                     jsonString(r.kernel).c_str(), r.grains, r.blockSize, r.nsPerStereoGrainSample,
-                     r.cpuPctOneCoreAt48k, i + 1 < results.size() ? "," : "");
-    }
-    std::fprintf(f, "  ]\n}\n");
-    return std::fclose(f) == 0;
-}
-
 // ---- --canvas: the canvas stress spike ----
 
 constexpr uint32_t kCanvasWidth = 3200;
@@ -380,7 +123,8 @@ struct CanvasResult
     double totalMsP95;
 };
 
-/// The p-th quantile (0..1) of v, nearest rank. v must not be empty.
+/// The p-th quantile (0..1) of v, nearest rank: the canvas reports a measured frame time, where
+/// gg::bench::quantile interpolates between two. v must not be empty.
 double quantile(std::vector<double> v, double p)
 {
     std::sort(v.begin(), v.end());
@@ -495,19 +239,219 @@ int runCanvas(bool quick, const std::string &jsonPath)
 
 void usage(std::FILE *f)
 {
-    std::fprintf(f, "usage: gg-bench [--canvas] [--quick] [--json out.json]\n"
-                    "\n"
-                    "Times the prototype grain kernels: 2,000 grains of 100 ms over a 60 s stereo\n"
-                    "noise source at 48 kHz, at block sizes 32, 64 and 256. Each result is the\n"
-                    "median of 5 runs of at least 2 s each.\n"
-                    "\n"
-                    "With --canvas, times the canvas splat renderer instead: clear, splat and\n"
-                    "resolve at 3200 x 1200 with 4,096, 8,192 and 16,384 grains, over 240 frames,\n"
-                    "and prints the results as JSON.\n"
-                    "\n"
-                    "  --canvas          time the canvas renderer, not the grain kernels\n"
-                    "  --quick           runs of 0.2 s instead of 2 s (30 canvas frames, not 240)\n"
-                    "  --json out.json   also write the results to out.json\n");
+    std::string cases;
+    for (const std::string &c : gg::bench::caseNames())
+    {
+        cases += (cases.empty() ? "" : ", ") + c;
+    }
+    std::fprintf(
+        f,
+        "usage: gg-bench [--quick | --seconds S] [--rounds N] [--grains N] [--cases a,b]\n"
+        "                [--commit SHA] [--json out.json] [--baseline baseline.json]\n"
+        "       gg-bench --make-baseline <leg> <out.json> <in.json>...\n"
+        "       gg-bench --canvas [--quick] [--json out.json]\n"
+        "\n"
+        "Times the engine, the reference kernel and M0's prototype grain kernels: 2,000\n"
+        "grains of 100 ms over 60 s of stereo noise at 48 kHz, at block sizes 32, 64 and\n"
+        "256. Every configuration runs once per round, for at least 2 s, in an order\n"
+        "that changes from round to round; each result is the median, min and IQR of its\n"
+        "5 runs. Each engine case's ratio is its time over the reference's, round by\n"
+        "round.\n"
+        "\n"
+        "With --canvas, times the canvas splat renderer instead: clear, splat and\n"
+        "resolve at 3200 x 1200 with 4,096, 8,192 and 16,384 grains, over 240 frames,\n"
+        "and prints the results as JSON.\n"
+        "\n"
+        "  --quick           runs of 0.2 s instead of 2 s (30 canvas frames, not 240)\n"
+        "  --seconds S       runs of S seconds (the last of --quick and --seconds wins)\n"
+        "  --rounds N        N rounds (default 5)\n"
+        "  --grains N        N grains (default 2000)\n"
+        "  --cases a,b       only these cases (default all):\n"
+        "                    %s\n"
+        "  --commit SHA      the commit to record in the JSON (default \"unknown\")\n"
+        "  --json out.json   also write the results to out.json\n"
+        "  --baseline file   check the ratios against this CPU model's entry in a\n"
+        "                    baseline; exit 3 if any regressed\n"
+        "  --make-baseline <leg> <out.json> <in.json>...\n"
+        "                    write a baseline for <leg> from gg-bench JSON runs, one entry\n"
+        "                    per CPU model, and exit\n"
+        "  --canvas          time the canvas renderer, not the grain kernels\n"
+        "\n"
+        "Exit status: 0 done (no ratio regressed), 1 error, 2 bad usage, 3 a ratio\n"
+        "regressed.\n",
+        cases.c_str());
+}
+
+/// The whole of s as a double.
+bool parseDouble(const char *s, double &out)
+{
+    errno = 0;
+    char *end = nullptr;
+    out = std::strtod(s, &end);
+    return end != s && *end == '\0' && errno == 0;
+}
+
+/// The whole of s as an integer in [lo, hi].
+template <typename T> bool parseInt(std::string_view s, T lo, T hi, T &out)
+{
+    long long v = 0;
+    const auto [end, ec] = std::from_chars(s.data(), s.data() + s.size(), v);
+    if (ec != std::errc{} || end != s.data() + s.size() || v < static_cast<long long>(lo) ||
+        v > static_cast<long long>(hi))
+    {
+        return false;
+    }
+    out = static_cast<T>(v);
+    return true;
+}
+
+/// "a,b,c" as {"a", "b", "c"}; false if any name is empty.
+bool parseCases(std::string_view s, std::vector<std::string> &out)
+{
+    out.clear();
+    for (;;)
+    {
+        const auto comma = s.find(',');
+        const std::string_view name = s.substr(0, comma);
+        if (name.empty())
+        {
+            return false;
+        }
+        out.emplace_back(name);
+        if (comma == std::string_view::npos)
+        {
+            return true;
+        }
+        s.remove_prefix(comma + 1);
+    }
+}
+
+void printReport(const gg::bench::Report &report)
+{
+    const gg::bench::Options &o = report.options;
+    std::printf("\n%-18s %6s %9s %12s %12s %12s %12s\n", "case", "block", "grains", "median", "min",
+                "IQR", "% core @48k");
+    for (const gg::bench::CaseResult &r : report.results)
+    {
+        std::printf("%-18s %6u %9.1f %12.4f %12.4f %12.4f %12.3f\n", r.name.c_str(), r.blockSize,
+                    r.grains, r.median, r.min, r.iqr, r.cpuPctOneCoreAt48k);
+    }
+    std::printf("\nmedian, min and IQR: ns per stereo grain-sample over %d rounds of >= %g s; "
+                "%% core from the median\n"
+                "grains: an engine case's mean active grains\n",
+                o.rounds, o.runSeconds);
+
+    if (report.ratios.empty())
+    {
+        return;
+    }
+    std::printf("\n%-18s %6s %12s %12s\n", "ratio", "block", "median", "IQR");
+    for (const gg::bench::Ratio &r : report.ratios)
+    {
+        std::printf("%-18s %6u %12.4f %12.4f\n", r.name.c_str(), r.blockSize, r.median, r.iqr);
+    }
+    std::printf("\nratio: the case's ns per grain-sample over reference's, in the same round; "
+                "median and IQR over the rounds\n");
+}
+
+/// Prints the verdicts, or that there are none for this machine; returns the number that
+/// regressed.
+std::size_t printVerdicts(const gg::bench::Comparison &comparison, const std::string &machine,
+                          const std::string &path, const nlohmann::json &baseline)
+{
+    if (!comparison.found)
+    {
+        std::printf("\nbaseline: %s (leg %s)\nno baseline for %s; no verdict\n", path.c_str(),
+                    baseline["leg"].get<std::string>().c_str(), machine.c_str());
+        return 0;
+    }
+    const std::vector<gg::bench::Verdict> &verdicts = comparison.verdicts;
+    std::printf("\nbaseline: %s (leg %s, machine %s, commit %s, %u run%s)\n", path.c_str(),
+                baseline["leg"].get<std::string>().c_str(), machine.c_str(),
+                comparison.commit.c_str(), comparison.runs, comparison.runs == 1 ? "" : "s");
+    std::printf("\n%-18s %6s %12s %12s  %s\n", "case", "block", "ratio", "limit", "verdict");
+    std::size_t regressed = 0;
+    for (const gg::bench::Verdict &v : verdicts)
+    {
+        const bool known = !std::isnan(v.limit);
+        if (known)
+        {
+            std::printf("%-18s %6u %12.4f %12.4f  %s\n", v.name.c_str(), v.blockSize, v.ratio,
+                        v.limit, v.regressed ? "regressed" : "pass");
+        }
+        else
+        {
+            std::printf("%-18s %6u %12.4f %12s  %s\n", v.name.c_str(), v.blockSize, v.ratio, "-",
+                        "not in the baseline");
+        }
+        regressed += v.regressed ? 1 : 0;
+    }
+    std::printf("\nverdict: %zu of %zu ratios regressed (limit: the baseline's ratio x (1 + its "
+                "tolerance))\n",
+                regressed, verdicts.size());
+    return regressed;
+}
+
+/// The JSON in the file at path; throws on a file it can't read or JSON it can't parse.
+nlohmann::json readJson(const std::string &path)
+{
+    std::ifstream in(path, std::ios::binary);
+    if (!in)
+    {
+        throw std::runtime_error("couldn't read " + path);
+    }
+    try
+    {
+        return nlohmann::json::parse(in);
+    }
+    catch (const nlohmann::json::exception &e)
+    {
+        throw std::runtime_error(path + ": " + e.what());
+    }
+}
+
+/// Writes text to path; false if it couldn't.
+bool writeFile(const std::string &path, const std::string &text)
+{
+    std::FILE *f = std::fopen(path.c_str(), "w");
+    const bool written = f != nullptr && std::fputs(text.c_str(), f) >= 0;
+    const bool closed = f != nullptr && std::fclose(f) == 0;
+    return written && closed;
+}
+
+/// --make-baseline <leg> <out.json> <in.json>...: args are the values after the option.
+int makeBaseline(const std::vector<std::string> &args)
+{
+    try
+    {
+        std::vector<nlohmann::json> runs;
+        for (std::size_t i = 2; i < args.size(); ++i)
+        {
+            runs.push_back(readJson(args[i]));
+        }
+        const nlohmann::json baseline = gg::bench::makeBaseline(args[0], runs);
+        if (!writeFile(args[1],
+                       baseline.dump(2, ' ', false, nlohmann::json::error_handler_t::replace) +
+                           "\n"))
+        {
+            std::fprintf(stderr, "error: couldn't write %s\n", args[1].c_str());
+            return 1;
+        }
+        std::printf("wrote %s: leg %s, %zu runs\n", args[1].c_str(), args[0].c_str(), runs.size());
+        for (const nlohmann::json &m : baseline["machines"])
+        {
+            const auto machineRuns = m["runs"].get<std::size_t>();
+            std::printf("  %s: %zu ratios from %zu run%s\n",
+                        m["machine"].get<std::string>().c_str(), m["ratios"].size(), machineRuns,
+                        machineRuns == 1 ? "" : "s");
+        }
+        return 0;
+    }
+    catch (const std::exception &e)
+    {
+        std::fprintf(stderr, "error: %s\n", e.what());
+        return 1;
+    }
 }
 } // namespace
 
@@ -516,20 +460,58 @@ int main(int argc, char **argv)
     bool quick = false;
     bool canvas = false;
     std::string jsonPath;
+    std::string baselinePath;
+    std::vector<std::string> makeBaselineArgs; // non-empty: --make-baseline's values
+    gg::bench::Options options;
     for (int i = 1; i < argc; ++i)
     {
+        const int at = i; // the option; i moves on past its value, if it takes one
         const std::string_view arg = argv[i];
+        const bool hasValue = i + 1 < argc;
+        bool ok = true;
         if (arg == "--quick")
         {
             quick = true;
+            options.runSeconds = 0.2;
         }
         else if (arg == "--canvas")
         {
             canvas = true;
         }
-        else if (arg == "--json" && i + 1 < argc)
+        else if (arg == "--seconds" && hasValue)
+        {
+            ok = parseDouble(argv[++i], options.runSeconds);
+        }
+        else if (arg == "--rounds" && hasValue)
+        {
+            ok = parseInt(argv[++i], 1, std::numeric_limits<int>::max(), options.rounds);
+        }
+        else if (arg == "--grains" && hasValue)
+        {
+            ok = parseInt<uint32_t>(argv[++i], 1, std::numeric_limits<uint32_t>::max(),
+                                    options.grains);
+        }
+        else if (arg == "--cases" && hasValue)
+        {
+            ok = parseCases(argv[++i], options.cases);
+        }
+        else if (arg == "--commit" && hasValue)
+        {
+            options.commit = argv[++i];
+        }
+        else if (arg == "--json" && hasValue)
         {
             jsonPath = argv[++i];
+        }
+        else if (arg == "--baseline" && hasValue)
+        {
+            baselinePath = argv[++i];
+        }
+        else if (arg == "--make-baseline" && argc - i > 3)
+        {
+            // <leg> <out.json> <in.json>...: it takes the rest of the command line.
+            makeBaselineArgs.assign(argv + i + 1, argv + argc);
+            i = argc - 1;
         }
         else if (arg == "--help" || arg == "-h")
         {
@@ -538,11 +520,21 @@ int main(int argc, char **argv)
         }
         else
         {
+            ok = false;
+        }
+        if (!ok)
+        {
+            std::fprintf(stderr, "error: bad argument: %s%s%s\n\n", argv[at], i > at ? " " : "",
+                         i > at ? argv[i] : "");
             usage(stderr);
             return 2;
         }
     }
-    const double seconds = quick ? 0.2 : 2.0;
+
+    if (!makeBaselineArgs.empty())
+    {
+        return makeBaseline(makeBaselineArgs);
+    }
 
 #if defined(BUILD_IS_DEBUG)
     std::fprintf(stderr, "warning: this is a Debug build; its timings mean little\n");
@@ -557,37 +549,68 @@ int main(int argc, char **argv)
         return runCanvas(quick, jsonPath);
     }
 
-    std::printf("gg-bench: %zu grains of 100 ms, 60 s stereo noise at 48 kHz, "
-                "median of %d runs of >= %.1f s\n",
-                kGrains, kRuns, seconds);
-    std::printf("machine:  %s\ncompiler: %s\n\n", machine().c_str(), compiler().c_str());
-    std::printf("%-16s %6s %18s %16s\n", "kernel", "block", "ns/grain-sample", "% core @48k");
-
-    Workload workload;
-    std::vector<Result> results;
+    try
     {
-        const gg::ScopedDenormalsOff noDenormals;
-        for (const KernelInfo &k : kKernels)
+        gg::bench::validate(options);
+    }
+    catch (const std::invalid_argument &e)
+    {
+        std::fprintf(stderr, "error: %s\n\n", e.what());
+        usage(stderr);
+        return 2;
+    }
+
+    // Read and check the baseline before timing anything, so a bad one fails at once.
+    nlohmann::json baseline;
+    if (!baselinePath.empty())
+    {
+        try
         {
-            for (const uint32_t n : kBlockSizes)
-            {
-                const Result r = measure(workload, k, n, seconds);
-                std::printf("%-16s %6u %18.4f %16.3f\n", r.kernel, r.blockSize,
-                            r.nsPerStereoGrainSample, r.cpuPctOneCoreAt48k);
-                std::fflush(stdout);
-                results.push_back(r);
-            }
+            baseline = readJson(baselinePath);
+        }
+        catch (const std::exception &e)
+        {
+            std::fprintf(stderr, "error: %s\n", e.what());
+            return 1;
+        }
+        try
+        {
+            (void)gg::bench::compare({}, baseline);
+        }
+        catch (const std::exception &e)
+        {
+            std::fprintf(stderr, "error: %s: %s\n", baselinePath.c_str(), e.what());
+            return 1;
         }
     }
 
+    std::printf("gg-bench: %u grains of 100 ms, 60 s stereo noise at 48 kHz, %d interleaved "
+                "rounds of >= %g s\n",
+                options.grains, options.rounds, options.runSeconds);
+    std::printf("commit:   %s\nmachine:  %s\ncompiler: %s\n", options.commit.c_str(),
+                machine().c_str(), compiler().c_str());
+    std::fflush(stdout);
+
+    const gg::bench::Report report = gg::bench::run(options, [](int round, int rounds) {
+        std::fprintf(stderr, "gg-bench: round %d of %d done\n", round, rounds);
+    });
+    printReport(report);
+
     if (!jsonPath.empty())
     {
-        if (!writeJson(jsonPath, results))
+        if (!writeFile(jsonPath, gg::bench::toJson(report)))
         {
             std::fprintf(stderr, "error: couldn't write %s\n", jsonPath.c_str());
             return 1;
         }
         std::printf("\nwrote %s\n", jsonPath.c_str());
+    }
+
+    if (!baselinePath.empty())
+    {
+        const std::size_t regressed = printVerdicts(gg::bench::compare(report, baseline),
+                                                    report.machine, baselinePath, baseline);
+        return regressed > 0 ? 3 : 0;
     }
     return 0;
 }

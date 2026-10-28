@@ -76,6 +76,7 @@ CloudParams toCloudParams(const StreamSpec &s)
         .pitchSemitones = s.pitchSemitones,
         .stereo = 0.0,
         .gain = static_cast<float>(s.gain),
+        .quality = s.quality,
     };
 }
 

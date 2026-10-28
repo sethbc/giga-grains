@@ -10,7 +10,8 @@ where a reviewer gave one, when. IDs in brackets, like [144], are lines of the M
 ledger; A-, B-, C- and D- IDs are the area reviews' findings.
 
 Items closed since are kept in place, marked **Closed** in the "When" column with the commits that
-closed them on `m1-fx-slice`. M1 sub-project 1 (the FX vertical slice) closed the first batch.
+closed them: on `m1-fx-slice` for M1 sub-project 1 (the FX vertical slice), which closed the first
+batch, and on `m1-cloud-engine` for sub-project 2 (the Cloud engine).
 
 At its end, sub-project 1's final whole-branch review added what the slice itself leaves open: the
 section "From M1 sub-project 1" below. Its IDs name the slice's ledger: T*n* (line) is a task's
@@ -27,9 +28,9 @@ deferred finding at that ledger line, M*n* a final-review finding, and M1-*x* a 
 
 | What | Source | When |
 |---|---|---|
-| `exp2Det`, `logDet`, `hermite4` and `linear` are header-inline, so whether they contract into FMAs depends on each includer's flags. Add `#pragma clang fp contract(off)` (and the gcc equivalent), or move them out of line. | [70]; `engine/include/gg/core/MathDet.h:51` (`logDet`: `:114`, added in M1), `engine/include/gg/core/Interpolate.h:25`, `:43` | When the M1 kernels add targets |
+| `exp2Det`, `logDet`, `hermite4` and `linear` are header-inline, so whether they contract into FMAs depends on each includer's flags. Add `#pragma clang fp contract(off)` (and the gcc equivalent), or move them out of line. | [70]; `engine/include/gg/core/MathDet.h:51` (`logDet`: `:114`, added in M1), `engine/include/gg/core/Interpolate.h:25`, `:43` | **Closed** by M1 sub-project 2, Task 2: `9fe9b61`, `1e6e637` (`GG_FP_CONTRACT_OFF` in the inline math and the Cloud scheduler's inline arithmetic; a test proves it holds under an includer's contracting flags) |
 | `SampleBuffer` move semantics: make it non-copyable, and leave a moved-from buffer at 0 × 0 (today it keeps its channel and frame counts). | [73]; `engine/include/gg/source/SampleBuffer.h:16` | With M1's file loader |
-| A saturated pool costs O(capacity) per admitted grain (a stable compaction per mid-block admission). Compact once per block, keep ruling T3-b's semantics, and add a full-pool `gg-bench` case. | [103]; `engine/src/Engine.cpp:128`, `engine/src/GrainPool.cpp:23` | M1 renderer |
+| A saturated pool costs O(capacity) per admitted grain (a stable compaction per mid-block admission). Compact once per block, keep ruling T3-b's semantics, and add a full-pool `gg-bench` case. | [103]; `engine/src/Engine.cpp:128`, `engine/src/GrainPool.cpp:23` | **Closed** by M1 sub-project 2, Task 3: `8864401`, `e7931a0` (the SoA pool with 2 × capacity slots, a min-heap of end samples for admission, compaction once per block); the full-pool case is `gg-bench`'s `engine-full-pool` (`07b4838`) |
 | `restartLattice_` stays set after a rate change A → B → A; it should compare against the anchored rate. | [104]; `engine/src/PeriodicStream.cpp:48` | **Closed** by M1 sub-project 1: `e8d1c1c` (`CloudScheduler` replaces `PeriodicStream`; `restartLattice_` is gone) |
 | Ruling T3-a re-anchors the lattice at the start of the block where a rate change lands. M1 must apply parameters on the absolute control-rate grid (INTENT §14) instead. | A-m1; `engine/include/gg/grain/PeriodicStream.h:74` | **Closed** by M1 sub-project 1: `e8d1c1c`, `89e244f`, `b54a77d`, `d2a1ded` (the onset recurrence, the pending-onset rescale (ruling M1-h), the Processor's 32-sample grid on absolute samples) |
 | The position-jitter RNG key hard-codes layer 0 and stream 0. Pass the real layer and stream IDs. | A-m2; `engine/include/gg/grain/PeriodicStream.h:88` | **Closed** by M1 sub-project 1: `e8d1c1c` (every draw has its own `rng::Field`, keyed with the real layer and stream) |
@@ -42,8 +43,8 @@ deferred finding at that ledger line, M*n* a final-review finding, and M1-*x* a 
 | What | Source | When |
 |---|---|---|
 | clickScore can't see a click in dense material (dense-noise R = 0.180: a 0 dBFS spike scores 10.9 against the limit of 30). Normalize d by a local level, for example the RMS of d over ±5–10 ms excluding n; bump `metricsVersion`; add a CTest that injects a −20 dBFS step into each golden render and checks it is detected. | B-I1; `tools/audiometrics/src/Metrics.cpp:171`–`:194`, `Metrics.h` (`maxClickScore`) | **Before overload and grain stealing are gated on it** |
-| Make `gg-bench` gate-grade: interleave repetitions round-robin across kernels and block sizes ([133]); emit every run plus min and IQR, the run length and the commit SHA; gate on ratios measured in the same process, or on thread CPU time; set thresholds from the spread across several CI runs. | B-I2, [133]; `tools/gg-bench/main.cpp:74`, `:225`; `docs/spikes/m0-kernel-benchmark.md` ("Before M1 gates on this") | **Before M1's CPU regression gate** |
-| A JSON-schema test of `gg-bench`'s output. | [132] | With the CPU gate |
+| Make `gg-bench` gate-grade: interleave repetitions round-robin across kernels and block sizes ([133]); emit every run plus min and IQR, the run length and the commit SHA; gate on ratios measured in the same process, or on thread CPU time; set thresholds from the spread across several CI runs. | B-I2, [133]; `tools/gg-bench/main.cpp:74`, `:225`; `docs/spikes/m0-kernel-benchmark.md` ("Before M1 gates on this") | **Closed** by M1 sub-project 2, Task 8: `e044ad6`, `5fd3545` (interleaved rounds, rotated and reversed on odd rounds; every run, with median, min and IQR, the run length and the commit). The in-process ratios against a frozen reference are Task 9's (`07b4838`); the thresholds come from three separate CI runs, per CPU model (§23 #47), in the baselines under `tools/gg-bench/baselines/`: the mac M1 VM's entry from three runs, the EPYC 7763 entries (Linux, Windows) from two, and two entries from a single run at the 0.10 floor (Linux EPYC 9V45, Windows EPYC 9V74) |
+| A JSON-schema test of `gg-bench`'s output. | [132] | **Closed** by M1 sub-project 2, Task 8: `e044ad6` (the `[bench]` test that the JSON matches schema 2) |
 | Move the dr_libs and stb `*_IMPLEMENTATION` translation units into a target without `gg::compiler-options`, so gcc-12 middle-end warnings in third-party code can't break `-Werror`. | [119]; `tools/audiometrics/src/WavIO.cpp:16`, `Spectrogram.cpp:14` | M1 |
 | Detect non-finite band power explicitly (a huge finite input overflows pffft to inf). | [120]; `tools/audiometrics/src/Metrics.cpp` | At the next `metricsVersion` bump |
 | A spectrogram test of orientation and grayscale, not just dimensions. | [122]; `tests/metrics/metrics_tests.cpp` | M1 |
@@ -102,7 +103,7 @@ ledger. Items the review fixed before the merge aren't listed.
 | The `[rt]` live test's `setSourceMode(Live)` is a no-op (the engine is already in Live mode), so the source-mode switch never runs under the tripwire. It is non-allocating on inspection. Cover the switch, both ways, once a product switches modes. | T4 (127), final review M6; `tests/engine/rt_tests.cpp:198` | Sub-project 3 |
 | A source-mode change hard-cuts the sounding grains (the pool is cleared). The FX can't reach it; any live-input instrument must fade them instead. | T4 (128); `engine/src/Engine.cpp:110`–`:117` | Sub-project 3 |
 | `toCloudParams` maps Position and Spray to seconds in every mode. The instrument's Sample mode needs its own mapping, or its Position will be wrong. | T6 (152); `core/src/ParamMap.cpp:29` | Sub-project 3, before the instrument's Sample source |
-| `renderLiveGrain` computes the fade and reads taps where the Hann window is 0 (the onset sample when `onsetFrac` > 0, and up to 2 samples past the duration). Wasted work, harmless. | T4 (126); `engine/src/Engine.cpp:349` | Sub-project 2, which rewrites the renderer |
+| `renderLiveGrain` computes the fade and reads taps where the Hann window is 0 (the onset sample when `onsetFrac` > 0, and up to 2 samples past the duration). Wasted work, harmless. | T4 (126); `engine/src/Engine.cpp:349` | **Closed** by M1 sub-project 2, Tasks 4 and 7: `d226c6d` (the scalar reference reads nothing where the window is 0), `1bd948a` (the SIMD live kernel runs only over the fade's interior) |
 | The bad-state test's snapshot doesn't cover `migratedFromVersion` or `dirty`. The values-untouched guarantee is tested. | T5 (105); `tests/core/patch_tests.cpp:398` | With the next state-format change (sub-project 3's media manifest) |
 | `stateLoad`'s read loop is unbounded. Real host streams are finite; cap it (1 MiB, say) and fail cleanly. | T7 (218); `plugin/src/GigaGrainsPlugin.cpp:461` | Sub-project 3, with the media-manifest state |
 | The value-mirror race (ruling M1-x): after the audio thread applies a loaded state, set a flag and `requestCallback`, then `paramsRescan(CLAP_PARAM_RESCAN_VALUES)` on the main thread. Benign and self-healing today. | T7 (217), M1-x; `plugin/src/GigaGrainsPlugin.cpp:285` | Sub-project 5, when the UI starts reading values |
@@ -116,6 +117,35 @@ ledger. Items the review fixed before the merge aren't listed.
 | `check.sh`'s install guard accepts lower- and mixed-case `notfound` and `x-notfound`, which CMake counts as true (its NOTFOUND match is case-sensitive). Match `NOTFOUND` and `*-NOTFOUND` on the raw value. | X1 (191); `scripts/check.sh:162`–`:163` | When the scripts are next touched |
 | `check.sh` aborts without a summary if a preset's `binaryDir` isn't `build/<preset>`; `worktree-setup.sh`'s status comment omits `U`; `-L` is a regular expression, so `-L rt` also matches `rtsan` (CLAUDE.md documents it). | X1 (193); `scripts/check.sh:160`, `scripts/worktree-setup.sh:18` | When the scripts are next touched |
 | sst-plugininfra's `libs/asiosdk` is the ASIO SDK 2.3.4, dual-licensed (the Steinberg ASIO License or GPLv3). Nothing builds it. Re-enabling Windows ASIO is the director's later decision. | T5 (87, 107); INTENT §15, §22 | When the director decides on Windows ASIO |
+
+## From M1 sub-project 2 (the Cloud engine)
+
+Written at the sub-project's end (2026-10-27); its final whole-branch review (2026-10-28) added
+the rest. T*n* is a deferred finding of the sub-project's Task *n*, FR a final-review finding.
+Lines are at the branch's close. "Touched" means: when that file is next changed.
+
+| What | Source | When |
+|---|---|---|
+| **Make the CPU gate blocking, with the published X, and add baselines for CPU models not yet seen.** Through M1, CI's `gg-bench` step reports each ratio's verdict against the leg's baseline and turns a regression (exit 3) into a warning (ruling 3, INTENT §23 #44). Measure X on the M5 Max, publish it, and make a regression fail the job. Baselines are per CPU model (§23 #47; `docs/spikes/m1-cpu-levers.md`, "CI variance"): a run on a `machine` with no entry gets no verdict, so before the gate blocks, add an entry, from separate CI runs, for each model the hosted pools serve that the first baselines lack. The M1 VM leg can't block as configured: its drift between runs exceeds even a tolerance from three runs (the verification run, 40649977361, showed `engine-sample-eco` at block 32 at 1.1546 against a limit of 1.0377, a false regression), so it needs a wider tolerance, more runs, or informative-only status. | Ruling 3; INTENT §16, §19, §23 #44, #47; `.github/workflows/ci.yml` (Benchmark step) | Sub-project 6 |
+| **Before the gate blocks, `compare()` must account for every baseline entry.** It skips an entry the run lacks without a word, and a run with no engine ratios passes as "0 of 0". Count the missing entries and fail on them, and on a verdict over nothing. | T9; `tools/gg-bench/Bench.cpp:836` | Sub-project 6 |
+| **Adding a model to a baseline needs the old runs.** `--make-baseline` writes a file from scratch and can't merge into one, and CI artifacts expire, so a model added later needs the earlier runs' JSON kept somewhere or a merge mode. | FR; `tools/gg-bench/Bench.cpp:878`, `tools/gg-bench/main.cpp:534` | Sub-project 6 |
+| `makeBaseline` doesn't validate what it writes: a NaN tolerance becomes `null`, which `--baseline` then rejects. Check every ratio and tolerance is finite before writing. | T9; `tools/gg-bench/Bench.cpp:878` | Sub-project 6 |
+| CI's warning branch trusts exit 3 alone; it could also require a `verdict: N of` line in the output. | T9; `.github/workflows/ci.yml:171` | Sub-project 6 |
+| **The reference kernel isn't self-contained.** `renderHermiteSimd` (`Kernels.h`), frozen as every baseline's denominator, includes the engine's `Interpolate.h` and `Window.h`, so an engine change there silently moves every ratio. Copy what it uses into `Kernels.h`, or pin it with a test (e.g. a hash of its output). | FR; `tools/gg-bench/Kernels.h:36`–`:37`, `:459` | Before sub-project 6 blocks |
+| **The mac-universal leg's native slice must keep running `gg-tests`.** The fp-contract test (`fp_contract_fast.cpp`'s canary and the kernel cases) bites only on arm64 Clang; Linux, Windows and the x86_64 slice can't fail it. | T2; `.github/workflows/ci.yml:101`, `tests/engine/fp_contract_tests.cpp:300` | Whenever CI's macOS leg changes |
+| No test proves `engine-sample-eco` runs at the Eco tier (only its timing shows it: about 26 against 39 ns in Debug). | T9; `tools/gg-bench/Bench.cpp:285`, `tests/tools/bench_tests.cpp:162` | Sub-project 6 |
+| Options beside `--make-baseline` or `--canvas` are silently ignored (`--canvas` drops the kernel options); reject them. | T8, T9; `tools/gg-bench/main.cpp:466`–`:547` | Touched |
+| No test of `gg-bench`'s JSON escaping (quotes, backslashes, control characters in the commit or machine string); the UTF-8 test only round-trips invalid bytes. | T8; `tests/tools/bench_tests.cpp:239` | Touched |
+| `Tier{}` value-initializes to Eco, and an out-of-range `Tier` renders as Normal; document both in `Tier.h` (or make Normal the zero value, which changes the enum's order). | T5; `engine/include/gg/grain/Tier.h:15`, `engine/src/Engine.cpp:300`, `:315` | Touched |
+| `LiveSource::readLinear` repeats `read()`'s structure (2 taps against 4); share it. | T5; `engine/src/LiveSource.cpp:192` | Touched |
+| `rng::bipolar` has no `GG_FP_CONTRACT_OFF`; it is exact today (2u − 1 can't round), so give it the guard or a comment saying why it needs none. | T2; `engine/include/gg/core/Rng.h:61` | Touched |
+| `sampleSimdRun`'s run-end stepping walks every sample when a row's rate is ≤ 0 or not finite. The engine never makes such a row; say so in the comment, or bail out. | T6; `engine/include/gg/grain/GrainKernels.h:320` | Touched |
+| The kernels load `gainR` (`gain1`) with one output, where it's unused. | T4, T6; `engine/include/gg/grain/GrainKernels.h:468`, `:586` | Touched |
+| Kernel-test gaps: no source of 1–4 frames, and `requireExactRuns` checks only the 4,096-frame block, not the 200 random calls. | T6; `tests/engine/kernel_tests.cpp:838`, `:908` | Touched |
+| The live-interior property test should pin the one-frame margin slack: margins ≥ M + 1 − 2^−10 at every interior sample. | T7; `tests/engine/kernel_tests.cpp:1432` | Touched |
+| Live-kernel comments: `RingTaps` should state the < C bound (every tap in one N + 3 window), and `liveRun`'s "ring times up to 2^40" can say the slack holds to about 2^50. | T7; `engine/include/gg/grain/GrainKernels.h:740`, `:642` | Touched |
+| `pool_tests`' comment "a sample past the last onset" is ambiguous. | T3; `tests/engine/pool_tests.cpp:207` | Touched |
+| A few spike-doc paragraphs aren't re-wrapped to 100 columns. | T14; `docs/spikes/m1-cpu-levers.md` | Touched |
 
 ## Resolved in M0's final fix wave (not carried)
 

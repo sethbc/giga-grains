@@ -1,0 +1,164 @@
+{
+  "leg": "linux-gcc12",
+  "machines": [
+    {
+      "commit": "a911b93c49f5698026f8d725f4b7647932d6d824",
+      "machine": "AMD EPYC 9V45 96-Core Processor (x86_64)",
+      "ratios": [
+        {
+          "blockSize": 32,
+          "case": "engine-sample",
+          "ratio": 1.155527552619973,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 64,
+          "case": "engine-sample",
+          "ratio": 1.101465024214148,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 256,
+          "case": "engine-sample",
+          "ratio": 1.0268918864111103,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 32,
+          "case": "engine-sample-eco",
+          "ratio": 0.8434355942531494,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 64,
+          "case": "engine-sample-eco",
+          "ratio": 0.8122066738220962,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 256,
+          "case": "engine-sample-eco",
+          "ratio": 0.755121562532545,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 32,
+          "case": "engine-live",
+          "ratio": 1.2952611078190899,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 64,
+          "case": "engine-live",
+          "ratio": 1.1987617671515531,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 256,
+          "case": "engine-live",
+          "ratio": 1.1026182774759499,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 32,
+          "case": "engine-full-pool",
+          "ratio": 1.114230546298382,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 64,
+          "case": "engine-full-pool",
+          "ratio": 1.0785422331038044,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 256,
+          "case": "engine-full-pool",
+          "ratio": 1.0495956575261782,
+          "tolerance": 0.1
+        }
+      ],
+      "runs": 1
+    },
+    {
+      "commit": "8eb0613adb2eb679fb4a7dc1dbd250bc1027389f",
+      "machine": "AMD EPYC 7763 64-Core Processor (x86_64)",
+      "ratios": [
+        {
+          "blockSize": 32,
+          "case": "engine-sample",
+          "ratio": 1.1077481837501635,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 64,
+          "case": "engine-sample",
+          "ratio": 1.0323958419998815,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 256,
+          "case": "engine-sample",
+          "ratio": 0.9760011412209277,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 32,
+          "case": "engine-sample-eco",
+          "ratio": 0.8563772800793943,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 64,
+          "case": "engine-sample-eco",
+          "ratio": 0.7944199566086916,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 256,
+          "case": "engine-sample-eco",
+          "ratio": 0.731778440809664,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 32,
+          "case": "engine-live",
+          "ratio": 1.2194804494691258,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 64,
+          "case": "engine-live",
+          "ratio": 1.0827618708724924,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 256,
+          "case": "engine-live",
+          "ratio": 0.9554313205564193,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 32,
+          "case": "engine-full-pool",
+          "ratio": 1.0641352875848669,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 64,
+          "case": "engine-full-pool",
+          "ratio": 1.0120717318755434,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 256,
+          "case": "engine-full-pool",
+          "ratio": 0.9574657185820269,
+          "tolerance": 0.1
+        }
+      ],
+      "runs": 2
+    }
+  ],
+  "schemaVersion": 2
+}

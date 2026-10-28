@@ -203,8 +203,8 @@ and reviews. Two consequences:
 - **Scheduler.** One per grain stream. It decides *when* grains start and *with what* parameters.
   - Modes: **Cloud** (asynchronous; v1), **Sync** (tempo grid), **Voice** (MIDI/MPE notes spawn
     streams), **Pitch-sync** (grain rate tied to pitch, for pulsar and formant sounds).
-  - Clocks: free-running Hz (0.01 Hz to about 4 kHz), tempo divisions, MIDI pitch-sync, external
-    or transient trigger.
+  - Clocks: free-running Hz (0.01 Hz up to the sample rate; the plugins' Density stops at
+    400 Hz), tempo divisions, MIDI pitch-sync, external or transient trigger.
   - A distribution control runs continuously from 0 (synchronous) to 1 (random, Poisson).
   - Onsets follow a recurrence driven by the counter RNG, with sub-sample fractional timing
     (Cloud core rules, below).
@@ -217,6 +217,8 @@ and reviews. Two consequences:
   channel count × interpolation tier × source kind.
   - Tiers: **Eco** = linear, **Normal** = 4-point Hermite (the default), **HQ** = 12- to 16-tap
     windowed sinc.
+  - The tier is latched per grain, at its onset. Until M2 only the engine and `gg-render` reach
+    Eco; both plugins stay Normal (§23 #43).
   - Run counts are computed per block, so there are no per-sample branches.
 - **Grain buses / layer FX.** Partikkel-style channel masks route grains to a few buses per
   layer, each with its own FX. True per-grain filters come later, behind a budget weight.
@@ -296,8 +298,9 @@ optional scale or grid quantize. This is how "shaped randomness" (§8.1) is impl
     - The 1/16-sample floor bounds each call's loop, and it never applies at `d` = 0.
   - `logDet` is a deterministic natural log: argument reduction and a polynomial, with no libm
     apart from the exact `frexp`. It is within `1e-14 × max(1, |log x|)` of `log x` across (0, 1].
-  - Density ≤ 0 means off. Positive values clamp to [0.01, min(4000, sampleRate)] Hz (ruling
-    M1-a). The plugin's floor is 0.25 Hz, so it is never off.
+  - Density ≤ 0 means off. Positive values clamp to [0.01, sampleRate] Hz (ruling M1-a, as
+    amended by §23 #45). The plugin's floor is 0.25 Hz, so it is never off, and its ceiling is
+    400 Hz.
   - **A Density or Distribution change at grid sample g rescales the pending onset:**
     `t(k) = max(t(k−1) + Δ_new(k−1), g)`, from the same draw `E(k−1)`, with no new RNG draw
     (ruling M1-h).
@@ -521,10 +524,12 @@ clients/  CLAP entry points + clap-wrapper targets
   - The text always names the chip, so nobody reads it as an M1 or x86 figure.
   - The M2 budget manager keeps any grain count safe by degrading deterministically (§14). The
     promise is an honest, reproducible figure, not a threshold.
+  - `gg-bench` also times the same case over the live ring; that is published beside X as the
+    FX's figure (§23 #44).
 - **X is measured on the real engine's render path,** not on M0's prototype kernels in
   `tools/gg-bench/Kernels.h`.
   - The case: 2,000 Normal-quality grains of 100 ms, at 48 kHz, through `Engine::process`,
-    scheduler and pan included.
+    scheduler and pan included, reading a stereo sample buffer in RAM (Sample mode; §23 #44).
   - The method is gg-bench's: the median of interleaved runs, performance-core QoS, the `release`
     preset, an idle machine.
   - The published number records the commit SHA and the block sizes (32, 64, 256).
@@ -572,6 +577,13 @@ clients/  CLAP entry points + clap-wrapper targets
     any block size; a lever that changes output bits justifies it in a golden-regeneration
     commit.
   - **When all four are tried, optimization stops.** Sub-project 6 measures X and publishes it.
+  - **Outcome (sub-project 2, 2026-10-27): one lever kept, three rejected, optimization
+    stopped.** The stereo-interleaved source is kept, both the sample source and the live ring:
+    on the M5 Max it makes the Sample case 7–9% faster and the live case 9–13% faster. Its
+    sample half is kept by the director's exception to the keep rule (§23 #46). Prefetch,
+    cache-aware scheduling and shuffles are rejected, prefetch and shuffles after a second trial
+    ported onto the interleaved kernel. CI ratios drift between runs by more than their in-run
+    spread (§23 #47). The tables and reasons are in `docs/spikes/m1-cpu-levers.md`.
 - **UI budget:** at most 3 ms of UI-thread time per frame with 8,000 visible grains.
   - **Measured in M0** (`docs/spikes/m0-canvas-budget.md`): with 8,192 grains, the editor's
     "frame ms" stayed under 3 ms in Ableton Live and Bitwig Studio on the M5 Max (§23 #26).
@@ -779,7 +791,8 @@ they are frozen along with them.
 - **Fuzz and property tests.** Parameter sweeps, extreme values and bursts of automation must
   produce no NaNs, crashes, runaway gain, or clicks above a threshold.
 - **CPU benchmark gate in CI:** a regression gate on in-process ratios, from M1's baseline. The
-  §16 headline is a published measurement, not a CI gate.
+  §16 headline is a published measurement, not a CI gate. Through M1 the gate reports and never
+  fails; sub-project 6 makes it blocking, with the published X.
 - **Real-time safety.**
   - Clang RealtimeSanitizer on upstream LLVM 20 or newer (Apple clang doesn't ship it).
   - ASan and UBSan.
@@ -799,7 +812,7 @@ they are frozen along with them.
 | Milestone | Delivers | Exit criteria |
 |---|---|---|
 | **M0 Foundations** (done 2026-10-26) | Repo, CMake, CI matrix (mac/win/linux), `LICENSE` (AGPL-3.0); headless engine skeleton; `gg-render`; test, golden-render, RTSan and benchmark harness; both plugin shells in every format plus standalone; validators in CI. **Spikes:** kernel benchmark (sets §16), JUCE 9 vs 8.0.16, two-descriptor CLAP to AUv2/VST3/standalone, Ableton MIDI routing into an effect, CPU canvas frame budget. | One grain stream renders deterministically. The empty plugins load in the first-class hosts and pass every validator. **Met** (§23 #29). |
-| **M1 Cloud core** (starts from `docs/m1-carry-over.md`) | Six sub-projects, each spec → plan → build → review (§23 #35): 1 FX vertical slice (`docs/superpowers/specs/2026-10-27-m1-fx-slice-design.md`); 2 Cloud engine; 3 Sources; 4 Space; 5 Perform UI; 6 Close. Together they deliver: grain pool and SIMD renderer (Eco/Normal), the §16 lever list (§23 #39); Cloud scheduler; parameter model; Sample and Live sources with freeze; note-triggered freeze/capture in the FX (§23 #32); 1 layer; diffusion/reverb; state save/load; single-lane canvas plus 8 macros | Both plugins make textures. **Listening gate #1.** CPU baseline recorded. The §16 headline measured on the reference core and published (§23 #39). clap-validator runs in full: M0 skipped its `param-conversions` test, which panics on a plugin with no parameters (ruling T8-c, free-audio/clap-validator#40); sub-project 1 removed the exclusion (§23 #35). |
+| **M1 Cloud core** (starts from `docs/m1-carry-over.md`) | Six sub-projects, each spec → plan → build → review (§23 #35): 1 FX vertical slice (`docs/superpowers/specs/2026-10-27-m1-fx-slice-design.md`); 2 Cloud engine; 3 Sources; 4 Space; 5 Perform UI; 6 Close. Together they deliver: grain pool and SIMD renderer (Eco/Normal; Eco is engine-only until M2, §23 #43), the §16 lever list (§23 #39); Cloud scheduler; parameter model; Sample and Live sources with freeze; note-triggered freeze/capture in the FX (§23 #32); 1 layer; diffusion/reverb; state save/load; single-lane canvas plus 8 macros | Both plugins make textures. **Listening gate #1.** CPU baseline recorded; the CPU gate reports without failing until sub-project 6 makes it blocking (§23 #44). The §16 headline measured on the reference core and published (§23 #39). clap-validator runs in full: M0 skipped its `param-conversions` test, which panics on a plugin with no parameters (ruling T8-c, free-audio/clap-validator#40); sub-project 1 removed the exclusion (§23 #35). |
 | **M2 Giga** | 4 layers plus morph; budget manager; no CPU regression vs the M1 measured headline (§23 #41); mipmaps and the HQ sinc tier; minutes-long buffers with persistence; Smear and Spectral Smear; resample/feedback source; full mod matrix; Mutate; factory presets and CC0 samples, including MIDI-driven FX presets (§23 #32) | Benchmarks pass. **Listening gate #2.** |
 | **→ v1.0** | M0 to M2 polished | Success criteria (§10) met. |
 | **M3 Playable** | Voice scheduler, polyphony, MPE, note expressions, polyphonic modulation, per-voice envelopes, pitch-sync/formant grains, microtuning | Listening gate. First-class hosts pass. |
@@ -897,6 +910,11 @@ director made the call.
 | 40 | Freeze is live until toggled | Final-review finding I1 of M1 sub-project 1: Freeze is saved in the state but the live ring isn't (persistence is an M2 non-goal), so a Freeze that was on when a fresh ring started froze that ring's first 20 ms, usually silence, and the effect stayed silent until the user toggled Freeze. That happened on every project reopened with Freeze on, every reactivation and every CLAP `reset()`, which clap-wrapper's VST3 calls on each `setProcessing(false)`. The director chose "live until toggled" over documenting the silence: the `Processor` engages Freeze only on an off→on transition after an activation or reset, evaluated on the control grid; until then the effect plays live grains while Freeze reads On. Once engaged, the 20 ms ramp and the admission clamp (M1-p) are unchanged. With it the effect is always audible after a reload; the cost is that a reopened frozen pad is not held until M2 persists the ring and revisits this. No golden starts frozen, so none changed. Decided 2026-10-27 by the director, during M1 sub-project 1 (final review); see §14 |
 | 41 | §20's M2 exit wording after #39 | §20's M2 row still said "grain target met", but #39 removed the CPU target: the §16 headline is measured at the end of M1 and published, with no ceiling, and CI's CPU gate is a regression gate on in-process ratios. The director's wording replaces it: "no CPU regression vs the M1 measured headline". Decided 2026-10-27 by the director, during M1 sub-project 1; see §20 and #39 |
 | 42 | Reference templates named by their upstream repositories | Part II and CLAUDE.md named the three reference templates (shortcircuit-xt, surge, OB-Xf) only by local paths, which a reader without those clones can't follow. Each mention of a template now names its GitHub repository under the surge-synthesizer organization, checked against each local clone's `origin`: the "Key sources" list gives one bullet per template, with its local clone next to its URL; §15's CLAP-first paragraph links shortcircuit-xt once, with its template files' paths relative to the repository; CLAUDE.md's "Reference templates" bullet gives the URLs and says a session may read the local clones when they're present. A correction; no decision changes. Decided 2026-10-27 by the director, during M1 sub-project 1; see §15 and "Key sources" below |
+| 43 | Sub-project 2's kernel bits and the Eco tier | Rulings 1 and 2 of M1 sub-project 2. **Kernel bits:** the renderer gets new per-sample math, defined once by a scalar reference: the window phase is `e × invDuration`, with `invDuration` latched once, and each channel's gain is one latched product, so a sample adds `read × (w × gain_c)` (on the live ring, `read × ((w × f) × gain_c)`). The 4-wide SIMD kernels match that reference bit for bit on every platform's own build, with no horizontal operations and no FMA. The audio-metric goldens are regenerated once, in one commit that says why; the grain-event logs don't change. **Eco is engine-only until M2:** the tier is latched per grain, at its onset, from `CloudParams::quality`, and stored in the pool; `gg-render`'s sample mode takes an optional `stream.quality`, and a golden case covers Eco. Both plugins stay Normal; a Quality parameter arrives in M2 with HQ and the budget manager. Decided 2026-10-27 by the director, during M1 sub-project 2; see §14 and `docs/superpowers/specs/2026-10-27-m1-cloud-engine-design.md` §2–§3 |
+| 44 | The CPU gate is report-only through M1; X is the Sample-mode case, the live figure beside it | Rulings 3 and 4 of M1 sub-project 2. **The gate:** sub-project 2 builds CI's CPU gate (in-process ratios against a frozen reference kernel, per-leg baselines and a verdict), and CI reports the verdict without failing; sub-project 6 makes it blocking, with the published X. **The headline's source:** X is the Sample-mode case, 2,000 Normal grains of 100 ms reading a stereo buffer in RAM; `gg-bench` also times the same case over the live ring, and that figure is published beside X as the FX's. Decided 2026-10-27 by the director, during M1 sub-project 2; see §16, §19, §20 and `docs/superpowers/specs/2026-10-27-m1-cloud-engine-design.md` §2 and §5 |
+| 45 | The Cloud density ceiling is the sample rate | Ruling 5 of M1 sub-project 2, which amends ruling M1-a as recorded in #36. The §16 case needs 2,000 overlapping grains of 100 ms, which is 20 kHz at 48 kHz, but the scheduler clamped a positive density to [0.01, min(4000, sampleRate)]. The 4 kHz cap goes: a positive density clamps to [0.01, sampleRate], so onsets average at most one per output sample, as in M0. The plugins' Density parameter still stops at 400 Hz, so nothing a user can reach changes, and no golden changes. §14's clock range, "0.01 Hz to about 4 kHz", becomes "0.01 Hz up to the sample rate". Decided 2026-10-27 by the director, during M1 sub-project 2; see §14 and `docs/superpowers/specs/2026-10-27-m1-cloud-engine-design.md` §2 |
+| 46 | §16 levers tried: the interleaved source kept, three rejected | Sub-project 2 tried §16's four levers, each judged by in-process ratios against the kernel before it, on the M5 Max and on CI's three legs. **Kept: the stereo-interleaved source,** both halves. A stereo sample source gets an interleaved copy (L, R per frame), so each SIMD tap is one address; the live ring stores L, R per slot. On the M5 Max the Sample case is 7–9% faster and the live case 9–13%; the live half also wins 8–14% on Windows and loses nowhere. **The director's exception:** on the Windows leg the interleaved *sample* half regressed the sample ratio by 1–2%, and Eco by up to 7% at block 32, which §16's keep rule ("no leg regresses beyond its spread") would reject. Shown the M5's 7–9% sample win against Windows' 1–2% sample regression, the director decided to keep it ("I'd rather keep it"), at 2× memory for a stereo source. **Rejected:** per-grain prefetch (its sample half regressed Eco on the x86 legs; its live half, ported onto the interleaved ring, showed no win on the M5, and its 5–6% live win on Linux, with both runs on the same CPU model, was within that leg's 6% drift between runs for unchanged code, and the M1 VM's lone live wins at block 32 (0.867, then 0.667 ported) were inside that leg's larger drift: in the port's run its unchanged sample path moved to 0.821 at block 32); cache-aware scheduling (11% to 77% slower on every leg); contiguous loads with shuffles (5% to 49% slower on x86; ported to arm64 only, it no longer paid on any path the engine runs, since the interleaved reads are already contiguous). None of the rejected levers is merged; their branches stay for the record. Optimization stops here; sub-project 6 measures X. Decided 2026-10-27 by the director, during M1 sub-project 2; see §16 and `docs/spikes/m1-cpu-levers.md` |
+| 47 | CI CPU baselines are per CPU model, from separate runs | Found while judging #46's levers: on CI, ratios for unchanged code drifted between runs far beyond the in-run IQR, up to ~20% on Windows, where the two runs landed on different CPU models (GitHub's hosted x86 pools mix AMD EPYC 7763, 9V45 and 9V74 and Intel Xeon 8370C: Linux has run on all four, Windows on the three EPYCs), and up to 6% on Linux on the same model. One run's IQR therefore says nothing about the next run. The controller's ruling: **baselines are per CPU model.** A leg's baseline file holds one entry per `machine`; `gg-bench --make-baseline` groups its input runs by `machine`, and each entry's tolerance is `max(0.10, 2 × (max − min) / median)` over separate CI runs. `--baseline` gives a verdict only against the entry for the run's own machine; on a model with no entry it prints `no baseline for <machine>; no verdict` and exits 0. A model not yet seen gets its entry from later runs on it. The first baselines have entries for the mac leg's Apple M1 VM, Windows' EPYC 7763 and 9V74, and Linux's EPYC 7763 and 9V45. This supports §19's report-only gate through M1; sub-project 6 makes the gate blocking with the published X and adds the models the first baselines lack. Recorded 2026-10-27, during M1 sub-project 2; see §16, §19 and `docs/spikes/m1-cpu-levers.md` ("CI variance") |
 
 **Key sources** (checked 2026-10-26):
 - clap-wrapper releases (v0.17.0, 2026-10-20): https://github.com/free-audio/clap-wrapper/releases

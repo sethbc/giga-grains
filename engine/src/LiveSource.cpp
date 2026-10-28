@@ -55,16 +55,14 @@ void LiveSource::prepare(double sampleRate, double seconds, uint32_t maxBlockSiz
         // Ruling M1-o: a whole block's worth of slots past the window, so the frames a block
         // writes after sample t never land in t's window (see Storage in LiveSource.h).
         capacity_ = frames_ + static_cast<int64_t>(block);
-        const auto stride = static_cast<std::size_t>(capacity_ + kGuardFrames);
-        storage_.assign(2 * stride, 0.0f);
-        channels_[0] = storage_.data();
-        channels_[1] = storage_.data() + stride;
+        storage_.assign(2 * static_cast<std::size_t>(capacity_ + kGuardFrames), 0.0f);
+        slots_ = storage_.data();
     }
     else
     {
         capacity_ = 0;
         storage_.clear();
-        channels_[0] = channels_[1] = nullptr;
+        slots_ = nullptr;
     }
     reset();
 }
@@ -105,8 +103,7 @@ void LiveSource::write(const float *const *in, uint32_t numInChannels, uint32_t 
         s = s != nullptr ? s + offset : nullptr;
     }
 
-    float *const left = channels_[0];
-    float *const right = channels_[1];
+    float *const slots = slots_;
     int64_t written = 0;
     for (uint32_t j = 0; j < numFrames; ++j)
     {
@@ -131,12 +128,12 @@ void LiveSource::write(const float *const *in, uint32_t numInChannels, uint32_t 
             l *= gain;
             r *= gain;
         }
-        left[writeSlot_] = l;
-        right[writeSlot_] = r;
+        slots[2 * writeSlot_] = l;
+        slots[2 * writeSlot_ + 1] = r;
         if (writeSlot_ < kGuardFrames)
         {
-            left[capacity_ + writeSlot_] = l;
-            right[capacity_ + writeSlot_] = r;
+            slots[2 * (capacity_ + writeSlot_)] = l;
+            slots[2 * (capacity_ + writeSlot_) + 1] = r;
         }
         if (++writeSlot_ == capacity_)
         {
@@ -178,14 +175,61 @@ bool LiveSource::read(double pos, int64_t head, Cursor &cursor, float &left,
         for (int64_t k = 0; k < 4; ++k)
         {
             const int64_t index = first + k;
-            l[k] = index >= 0 ? channels_[0][index] : 0.0f;
-            r[k] = index >= 0 ? channels_[1][index] : 0.0f;
+            l[k] = index >= 0 ? slots_[2 * index] : 0.0f;
+            r[k] = index >= 0 ? slots_[2 * index + 1] : 0.0f;
         }
         left = interp::catmullRom(l[0], l[1], l[2], l[3], t);
         right = interp::catmullRom(r[0], r[1], r[2], r[3], t);
         cursor.valid = false;
         return true;
     }
+    // Slot s's channel c is at 2s + c.
+    const float *p = slots_ + 2 * slotOf(first, cursor);
+    left = interp::catmullRom(p[0], p[2], p[4], p[6], t);
+    right = interp::catmullRom(p[1], p[3], p[5], p[7], t);
+    return true;
+}
+
+bool LiveSource::readLinear(double pos, int64_t head, Cursor &cursor, float &left,
+                            float &right) const noexcept
+{
+    // As read(), for taps i and i + 1.
+    if (!(pos > -0x1.0p62 && pos < 0x1.0p62))
+    {
+        return false;
+    }
+    const double base = std::floor(pos);
+    const auto i = static_cast<int64_t>(base);
+    if (i < head - frames_ || i + 1 > head - 1)
+    {
+        return false;
+    }
+    const auto t = static_cast<float>(pos - base);
+    if (i < 0)
+    {
+        // Taps before frame 0 are silence. As in read(), head < N here, so no frame has wrapped
+        // and frame 0, the only tap that can be written, is in slot 0.
+        float l[2];
+        float r[2];
+        for (int64_t k = 0; k < 2; ++k)
+        {
+            const int64_t index = i + k;
+            l[k] = index >= 0 ? slots_[2 * index] : 0.0f;
+            r[k] = index >= 0 ? slots_[2 * index + 1] : 0.0f;
+        }
+        left = interp::lerp(l[0], l[1], t);
+        right = interp::lerp(r[0], r[1], t);
+        cursor.valid = false;
+        return true;
+    }
+    const float *p = slots_ + 2 * slotOf(i, cursor);
+    left = interp::lerp(p[0], p[2], t);
+    right = interp::lerp(p[1], p[3], t);
+    return true;
+}
+
+int64_t LiveSource::slotOf(int64_t first, Cursor &cursor) const noexcept
+{
     if (cursor.valid && first >= cursor.index && first - cursor.index < capacity_)
     {
         cursor.slot += first - cursor.index;
@@ -200,10 +244,6 @@ bool LiveSource::read(double pos, int64_t head, Cursor &cursor, float &left,
     }
     cursor.index = first;
     cursor.valid = true;
-    const float *l = channels_[0] + cursor.slot;
-    const float *r = channels_[1] + cursor.slot;
-    left = interp::catmullRom(l[0], l[1], l[2], l[3], t);
-    right = interp::catmullRom(r[0], r[1], r[2], r[3], t);
-    return true;
+    return cursor.slot;
 }
 } // namespace gg

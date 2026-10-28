@@ -10,8 +10,10 @@
 #include <cstdint>
 #include <limits>
 
+#include "gg/core/FpContract.h"
 #include "gg/core/MathDet.h"
 #include "gg/core/Rng.h"
+#include "gg/grain/Tier.h"
 #include "gg/source/SourceMode.h"
 
 namespace gg
@@ -22,7 +24,7 @@ namespace gg
 struct CloudParams
 {
     /// Grains per second. 0 or below turns the stream off (ruling M1-a); any positive value is
-    /// clamped to [0.01, min(4000, sampleRate)].
+    /// clamped to [0.01, sampleRate].
     double densityHz{16.0};
     double distribution{0.0};     ///< 0 = periodic onsets, 1 = Poisson; [0, 1].
     double grainDurationSec{0.1}; ///< At least 16 samples (the minimum window length).
@@ -36,6 +38,9 @@ struct CloudParams
     double pitchSemitones{0.0}; ///< [-48, 48].
     double stereo{0.0};         ///< Random pan spread: 0 = every grain centred; [0, 1].
     float gain{0.5f};           ///< [0, 4].
+    /// The interpolation tier of each grain that starts from now on (ruling 2). An enum, so
+    /// setParams copies it as given.
+    Tier quality{Tier::Normal};
 };
 
 /// One grain as the scheduler draws it, before the source turns it into a GrainSpec. Every
@@ -53,7 +58,8 @@ struct GrainDraw
     double rate;            ///< The pitch ratio exp2Det(pitchSemitones / 12).
     double durationSamples; ///< Window length in output samples, at least 16.
     float gain;
-    float pan; ///< stereo × bipolar(u), in [-1, 1]; +0 at stereo 0 (see schedule()).
+    float pan;               ///< stereo × bipolar(u), in [-1, 1]; +0 at stereo 0 (see schedule()).
+    Tier tier{Tier::Normal}; ///< CloudParams::quality at the onset.
 
     friend bool operator==(const GrainDraw &, const GrainDraw &) = default;
 };
@@ -93,9 +99,11 @@ class CloudScheduler
     /// The floor on Δ(k) (ruling M1-g). At d = 1 an interval P × E(k) can be arbitrarily small
     /// (it is 0 when u(k) = 0), so without a floor nothing would bound the number of onsets in
     /// one sample, and schedule() would have no bounded loop. With it, one schedule() call
-    /// emits at most about 16 grains per frame. At 48 kHz and the maximum density (P = 12) it
-    /// raises about 0.5% of Poisson intervals, by less than 1/16 sample, which moves the mean
-    /// by about 2e-4 samples; at d = 0 it never applies, since P is at least 1 sample.
+    /// emits at most about 16 grains per frame. At the maximum density, the sample rate (P = 1),
+    /// it raises about 6.1% of Poisson intervals, each by less than 1/16 sample, moving the mean
+    /// by about 2e-3 samples; at 20 kHz with a 48 kHz sample rate (P = 2.4), it raises about
+    /// 2.6%, moving the mean by about 8e-4 samples. At d = 0 it never applies, since P is at
+    /// least 1 sample.
     ///
     /// The floor bounds the loop only while t < 2^49 samples (about 93 years at 192 kHz).
     /// From 2^49 on, the spacing of doubles is 1/8 sample, so t + 1/16 is a tie that can round
@@ -133,6 +141,8 @@ class CloudScheduler
     void schedule(int64_t blockStart, uint32_t numFrames, uint64_t seed, uint32_t layer,
                   uint32_t stream, Emit &&emit) noexcept
     {
+        // Covers the lambda below too: a lambda body takes the pragma of its enclosing scope.
+        GG_FP_CONTRACT_OFF
         if (!(densityHz_ > 0.0))
         {
             return; // off
@@ -177,6 +187,7 @@ class CloudScheduler
                 .durationSamples = durationSamples_,
                 .gain = params_.gain,
                 .pan = pan,
+                .tier = params_.quality,
             };
             const double e = -logDet(1.0 - rng::uniform01(key(rng::Field::Onset)));
             lastOnset_ = t;
@@ -194,6 +205,7 @@ class CloudScheduler
     /// Δ for the unit-exponential draw e, with the current period and distribution.
     double interval(double e) const noexcept
     {
+        GG_FP_CONTRACT_OFF
         const double d = params_.distribution;
         return std::max(period_ * ((1.0 - d) + d * e), kMinIntervalSamples);
     }

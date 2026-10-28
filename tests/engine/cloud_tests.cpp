@@ -17,6 +17,7 @@
 #include "gg/core/MathDet.h"
 #include "gg/core/Rng.h"
 #include "gg/grain/CloudScheduler.h"
+#include "gg/grain/Tier.h"
 
 namespace
 {
@@ -444,8 +445,8 @@ TEST_CASE("params are sanitized", "[cloud]")
     {
         cloud.setParams({1e9, -3.0, 0.0, 5.0, -3.0, 100.0, 7.0, 1e9f});
         const auto grains = collect(cloud, 0, 120, 120);
-        REQUIRE(grains.size() == 10); // 4000 Hz, distribution 0: every 12 samples
-        REQUIRE(onsetTime(grains[1]) == 12.0);
+        REQUIRE(grains.size() == 120); // the sample rate, distribution 0: every sample
+        REQUIRE(onsetTime(grains[1]) == 1.0);
         REQUIRE(grains[1].durationSamples == 16.0);
         REQUIRE(grains[1].positionDraw == 1.0);
         REQUIRE(grains[1].rate == 16.0); // +48 semitones
@@ -475,6 +476,15 @@ TEST_CASE("params are sanitized", "[cloud]")
             REQUIRE(grains.size() == 2);
             REQUIRE(onsetTime(grains[1]) == 4800000.0); // 100 s at 48 kHz
         }
+    }
+
+    SECTION("the density reaches 20 kHz at 48 kHz")
+    {
+        // The §16 case: 2,000 overlapping grains of 100 ms (INTENT §23 #45).
+        cloud.setParams(cloudAt(20000.0));
+        const auto grains = collect(cloud, 0, 4800, 512);
+        REQUIRE(grains.size() == 2000);
+        REQUIRE(onsetTime(grains[1]) == 2.4);
     }
 
     SECTION("the density is capped at one grain per output sample")
@@ -715,5 +725,56 @@ TEST_CASE("live mode draws position and spray in seconds (ruling M1-k)", "[cloud
             keyedSample = keyedSample && g.positionDraw == std::clamp(0.4 + 0.3 * u, 0.0, 1.0);
         }
         REQUIRE(keyedSample);
+    }
+}
+
+TEST_CASE("quality is latched per grain", "[cloud]")
+{
+    // Ruling 2: each grain takes CloudParams::quality as it is at the grain's onset, and the
+    // quality changes nothing else. 480 Hz periodic is an onset every 100 samples: grains 0–4
+    // start in [0, 500) at Eco, and the rest in [500, 1000) at Normal.
+    using gg::Tier;
+    gg::CloudParams p = cloudAt(480.0);
+    REQUIRE(p.quality == Tier::Normal); // the default
+    p.quality = Tier::Eco;
+    gg::CloudScheduler cloud;
+    cloud.setParams(p);
+    std::vector<gg::GrainDraw> grains = collect(cloud, 0, 500, 64);
+    REQUIRE(grains.size() == 5);
+    p.quality = Tier::Normal;
+    cloud.setParams(p);
+    const std::vector<gg::GrainDraw> later = collect(cloud, 500, 500, 64);
+    grains.insert(grains.end(), later.begin(), later.end());
+    REQUIRE(grains.size() == 10);
+    CHECK(grains[3].tier == Tier::Eco);
+    CHECK(grains[7].tier == Tier::Normal);
+    for (const gg::GrainDraw &g : grains)
+    {
+        INFO("grain " << g.index);
+        CHECK(g.tier == (g.index < 5 ? Tier::Eco : Tier::Normal));
+    }
+
+    // Against a stream that was Normal throughout, only the tier differs.
+    gg::CloudScheduler normal;
+    normal.setParams(cloudAt(480.0));
+    const std::vector<gg::GrainDraw> reference = collect(normal, 0, 1000, 64);
+    REQUIRE(reference.size() == grains.size());
+    for (std::size_t i = 0; i < grains.size(); ++i)
+    {
+        gg::GrainDraw g = grains[i];
+        g.tier = Tier::Normal;
+        CHECK(g == reference[i]);
+    }
+
+    SECTION("a source-mode change keeps the quality")
+    {
+        p.quality = Tier::Eco;
+        cloud.setParams(p);
+        cloud.setSourceMode(gg::SourceMode::Live, 16.0);
+        cloud.reset();
+        for (const gg::GrainDraw &g : collect(cloud, 0, 500, 64))
+        {
+            CHECK(g.tier == Tier::Eco);
+        }
     }
 }

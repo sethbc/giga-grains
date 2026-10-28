@@ -13,6 +13,7 @@
 #include "gg/core/Window.h"
 #include "gg/grain/CloudScheduler.h"
 #include "gg/grain/GrainPool.h"
+#include "gg/source/InterleavedStereo.h"
 #include "gg/source/LiveSource.h"
 #include "gg/source/SampleBuffer.h"
 #include "gg/source/SourceMode.h"
@@ -23,6 +24,7 @@ struct EngineConfig
 {
     double sampleRate{48000.0};  ///< Output sample rate; finite and > 0.
     uint32_t maxBlockSize{4096}; ///< process() works in blocks of at most this many frames; > 0.
+    /// The most grains that may sound at once; below 2^31, since the pool stores twice as many.
     uint32_t grainCapacity{4096};
     uint64_t seed{0};
     /// > 0 allocates a stereo live ring, which SourceMode::Live reads (spec §6.3); 0 means no
@@ -81,14 +83,25 @@ class Engine
 {
   public:
     /// Allocates everything process() needs, the live ring included. Throws
-    /// std::invalid_argument if sampleRate is not finite and positive, maxBlockSize is 0, or
-    /// liveSeconds is not finite and >= 0, or if the ring's storage, N + maxBlockSize frames,
-    /// would exceed 2^40.
+    /// std::invalid_argument if sampleRate is not finite and positive, maxBlockSize is 0,
+    /// liveSeconds is not finite and >= 0, or grainCapacity is 2^31 or more (all checked before
+    /// anything is allocated), or if the ring's storage, N + maxBlockSize frames, would exceed
+    /// 2^40.
     explicit Engine(const EngineConfig &config);
 
     /// Not real-time safe: call only while process() is not running. The engine keeps the
     /// buffer alive until the next setSource or its destruction. A mono source feeds both
-    /// output channels; a stereo (or wider) source feeds its first two channels to them.
+    /// output channels; a stereo (or wider) source feeds its first two channels to them. For a
+    /// stereo source it also keeps an interleaved copy of those two channels, which the SIMD
+    /// kernel reads (InterleavedStereo): that doubles the source's memory.
+    ///
+    /// The copy is a snapshot of the samples at this call, so they must not change afterwards:
+    /// the SIMD interior would read the old samples and the reference the new ones, mixing both
+    /// within a grain and silently breaking the kernels' bit identity. To pick up a change to
+    /// the buffer, call setSource again. Building the copy allocates 2 × frames floats for a
+    /// stereo source, so this may throw std::bad_alloc. The engine then keeps the new source
+    /// without the copy and reads its planar channels alone: the same output bits, only slower.
+    ///
     /// nullptr means no source: the schedule keeps running but no grains spawn in Sample mode.
     void setSource(std::shared_ptr<const SampleBuffer> source);
 
@@ -154,6 +167,8 @@ class Engine
     double sampleRate() const noexcept { return config_.sampleRate; }
     /// Frames rendered since construction or the last reset().
     int64_t sampleClock() const noexcept { return clock_; }
+    /// The grains still sounding after the last process() call: the pool retires the finished
+    /// ones at the end of every block.
     uint32_t activeGrains() const noexcept { return pool_.size(); }
     /// Grains the schedule asked for that found the pool full or, in Live mode, whose read span
     /// doesn't fit the ring, since construction or reset().
@@ -176,14 +191,11 @@ class Engine
     bool liveGrain(const GrainDraw &d, GrainSpec &g) const noexcept;
     void admit(const GrainSpec &g, float *const dst[2], int64_t blockStart,
                int64_t &renderedTo) noexcept SST_CPPUTILS_NONBLOCKING;
+    /// Adds every pool grain into dst over [from, to), through gg/grain/GrainKernels.h with each
+    /// grain's latched tier: the SIMD sample kernel in Sample mode, the SIMD live kernel in Live
+    /// mode.
     void renderPool(float *const dst[2], int64_t blockStart, int64_t from,
                     int64_t to) noexcept SST_CPPUTILS_NONBLOCKING;
-    template <bool TwoOutputs, bool MonoSource>
-    void renderGrain(const GrainSpec &g, float *const dst[2], int64_t blockStart, int64_t from,
-                     int64_t to) const noexcept SST_CPPUTILS_NONBLOCKING;
-    template <bool TwoOutputs>
-    void renderLiveGrain(const GrainSpec &g, float *const dst[2], int64_t blockStart, int64_t from,
-                         int64_t to) const noexcept SST_CPPUTILS_NONBLOCKING;
 
     EngineConfig config_;
     HannTable hann_;
@@ -199,6 +211,8 @@ class Engine
     int64_t sourceFrames_{0};
     double sourceRate_{48000.0};
     bool monoSource_{true};
+    // A stereo source's first two channels, interleaved; empty for a mono source or none.
+    InterleavedStereo sourcePairs_;
 
     // In effect, and as last requested; process() applies the requests at its first frame.
     SourceMode mode_{SourceMode::Sample};

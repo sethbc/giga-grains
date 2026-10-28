@@ -13,8 +13,12 @@ add_executable(gg-tests
         engine/cloud_tests.cpp
         engine/denormal_tests.cpp
         engine/determinism_tests.cpp
+        engine/engine_reference_tests.cpp
         engine/engine_tests.cpp
+        engine/fp_contract_fast.cpp
+        engine/fp_contract_tests.cpp
         engine/interpolate_tests.cpp
+        engine/kernel_tests.cpp
         engine/live_tests.cpp
         engine/mathdet_tests.cpp
         engine/pool_tests.cpp
@@ -24,20 +28,38 @@ add_executable(gg-tests
         engine/window_tests.cpp
         metrics/metrics_tests.cpp
         tools/bench_kernel_tests.cpp
+        tools/bench_tests.cpp
         tools/render_spec_tests.cpp
         tools/signals_tests.cpp
         ui/splat_tests.cpp
         support/AllocTripwire.cpp
         )
 target_include_directories(gg-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+# fp_contract_fast.cpp includes the engine's inline math with the flags of an includer that lets
+# Clang contract a*b + c into an FMA: Clang's default -ffp-contract=on, placed after the project's
+# -ffp-contract=off so it wins. (Under -ffp-contract=fast Clang disregards the fp contract pragma,
+# so no header can guard against that.) -O2 inlines the header functions all the way down, so the
+# file runs its own code and leaves no out-of-line copy for the linker to pick in place of the
+# project-flag one. GCC's guard is empty and relies on the project-wide flag, so under GCC the
+# file keeps the project flags.
+if (CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    if (CMAKE_CXX_COMPILER_FRONTEND_VARIANT MATCHES "MSVC")
+        set(gg_fp_contract_includer /clang:-O2 /clang:-ffp-contract=on)
+    else ()
+        set(gg_fp_contract_includer -O2 -ffp-contract=on)
+    endif ()
+    set_source_files_properties(engine/fp_contract_fast.cpp PROPERTIES
+            COMPILE_OPTIONS "${gg_fp_contract_includer}")
+endif ()
 # Each library is listed before the libraries it links itself. Listing one after a library it
 # links would make CMake repeat it on the link line, which Apple's linker warns about ("ignoring
 # duplicate libraries"). So the plugin layers, when they're built, come first: they link the
 # engine and, with the editor, gg::ui-core. The editor layer is an object library, whose own
 # libraries CMake would put after everything listed here, so they're listed too: the plugin
-# core and gg::ui. Then gg::render, gg::ui-core and gg::core, which link the engine (and
-# gg::render the metrics).
-set(gg_tests_libraries gg::render gg::ui-core gg::bench-kernels gg::core gg::engine
+# core and gg::ui. Then gg::render, gg::ui-core, gg::bench and gg::core, which link the engine
+# (and gg::render the metrics). gg::bench-kernels follows gg::bench, which links it: left out,
+# CMake would repeat the engine after it.
+set(gg_tests_libraries gg::render gg::ui-core gg::bench gg::bench-kernels gg::core gg::engine
         gg::audiometrics)
 if (GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
     list(PREPEND gg_tests_libraries gg::plugin-impl gg-plugin-core gg::ui)
@@ -72,6 +94,46 @@ endif ()
 list(APPEND CMAKE_MODULE_PATH ${CMAKE_SOURCE_DIR}/libs/catch2/extras)
 include(Catch)
 catch_discover_tests(gg-tests ADD_TAGS_AS_LABELS)
+
+# gg-bench's command line, label `bench`. The bench tests check the timings' shape, never their
+# values, so they run beside the others.
+# - bench_cli: a tiny run of a kernel, the reference and an engine case must exit 0 and write its
+#   JSON, ratios included;
+# - bench_make_baseline: a baseline made from that JSON must be written, exit 0;
+# - bench_baseline_pass, bench_baseline_regressed and bench_baseline_other_machine: a tiny run
+#   checked against a baseline that check-bench-baseline.cmake writes when the test runs.
+#   Baselines are per CPU model, so the script takes this host's machine string from bench_cli's
+#   JSON. The pass and regressed baselines give this machine limits no ratio can miss (1e9) or
+#   meet (1e-9); the third has an entry only for a CPU model that doesn't exist. The script
+#   requires an exact exit code and verdict line:
+#   - pass: exit 0, "verdict: 0 of 3 ratios regressed (...)";
+#   - regressed: exit 3, "verdict: 3 of 3 ...";
+#   - other machine: exit 0, "no baseline for <this machine>; no verdict".
+#   CI's bench step relies on these codes: it reports exit 3 without failing (ruling 3).
+set(bench_cases hermite-simd,reference,engine-sample)
+add_test(NAME bench_cli
+        COMMAND gg-bench --seconds 0.002 --rounds 2 --grains 50 --cases ${bench_cases}
+        --json ${CMAKE_BINARY_DIR}/bench_cli.json)
+add_test(NAME bench_make_baseline
+        COMMAND gg-bench --make-baseline test ${CMAKE_BINARY_DIR}/bench_made_baseline.json
+        ${CMAKE_BINARY_DIR}/bench_cli.json ${CMAKE_BINARY_DIR}/bench_cli.json)
+set_tests_properties(bench_cli PROPERTIES LABELS bench FIXTURES_SETUP bench_json)
+set_tests_properties(bench_make_baseline PROPERTIES LABELS bench FIXTURES_REQUIRED bench_json)
+set(verdict_line "ratios regressed (limit: the baseline's ratio x (1 + its tolerance))")
+set(bench_baseline_pass_args -DRATIO=1e9 -DEXPECTED_CODE=0
+        "-DEXPECTED_VERDICT=verdict: 0 of 3 ${verdict_line}")
+set(bench_baseline_regressed_args -DRATIO=1e-9 -DEXPECTED_CODE=3
+        "-DEXPECTED_VERDICT=verdict: 3 of 3 ${verdict_line}")
+set(bench_baseline_other_machine_args -DRATIO=1e-9 "-DMACHINE=no such CPU (test)"
+        -DEXPECTED_CODE=0 "-DEXPECTED_VERDICT=no baseline for <machine>$<SEMICOLON> no verdict")
+foreach (test IN ITEMS bench_baseline_pass bench_baseline_regressed bench_baseline_other_machine)
+    add_test(NAME ${test}
+            COMMAND ${CMAKE_COMMAND} -DBENCH=$<TARGET_FILE:gg-bench>
+            -DRUN_JSON=${CMAKE_BINARY_DIR}/bench_cli.json
+            -DBASELINE=${CMAKE_CURRENT_BINARY_DIR}/${test}.json ${${test}_args}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tools/check-bench-baseline.cmake)
+    set_tests_properties(${test} PROPERTIES LABELS bench FIXTURES_REQUIRED bench_json)
+endforeach ()
 
 # RTSan's negative control (rtsan build only), labels `rt` and `rtsan`: a program that allocates
 # inside a nonblocking function must make RealtimeSanitizer report it. The test passes on the

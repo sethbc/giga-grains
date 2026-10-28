@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "gg/core/ParamIds.h"
+#include "gg/grain/Tier.h"
 
 /// The render spec: a JSON description of one offline render, read by gg-render. It has two
 /// modes. A sample-mode render ("mode": "sample", the default) drives the engine's Cloud
@@ -23,7 +24,7 @@
 ///  "source":{"kind":"sine|sweep|noise|file","frequencyHz":220,"startHz":50,"endHz":8000,
 ///            "seconds":4.0,"amplitude":0.5,"sampleRate":48000,"path":"relative/to/spec.wav"},
 ///  "stream":{"grainRateHz":8,"grainDurationMs":60,"position":0.5,"positionJitter":0.2,
-///            "pitchSemitones":0,"gain":0.8,"distribution":0}}
+///            "pitchSemitones":0,"gain":0.8,"distribution":0,"quality":"eco|normal"}}
 /// ```
 ///
 /// An FX render ("mode": "fx") runs Giga Grains FX's gg::core::Processor over an input, with
@@ -40,9 +41,10 @@
 /// - "mode" is optional. In both modes sampleRate, durationSeconds, blockSize and seed are
 ///   required.
 /// - Sample mode requires "source" and "stream", and every "stream" key but "distribution",
-///   which defaults to 0 (periodic onsets, as in M0). "source" needs "kind" plus the keys its
-///   kind uses (see SourceSpec); "source.sampleRate" is optional. Keys a kind doesn't use may be
-///   present and are ignored.
+///   which defaults to 0 (periodic onsets, as in M0), and "quality", which defaults to "normal"
+///   (see StreamSpec::quality). "source" needs "kind" plus the keys its kind uses (see
+///   SourceSpec); "source.sampleRate" is optional. Keys a kind doesn't use may be present and
+///   are ignored.
 /// - FX mode requires "input", read as a source but without "sampleRate" or the "file" kind,
 ///   and "channels"; "params" and "automation" are optional.
 /// - Any other key, including the other mode's, is an error, so a misspelt key never silently
@@ -99,6 +101,9 @@ struct StreamSpec
     double pitchSemitones{0.0};
     double gain{0.5};
     double distribution{0.0}; ///< Optional in the spec.
+    /// The engine's CloudParams::quality (ruling 2): "eco" or "normal". Optional in the spec. The
+    /// grain-event lines don't print it, so an Eco render's event log is the Normal one's.
+    Tier quality{Tier::Normal};
 
     friend bool operator==(const StreamSpec &, const StreamSpec &) = default;
 };

@@ -455,6 +455,10 @@ inline void renderLinearSimd(const GrainBatch &b, const float *srcL, const float
 }
 
 /// 4-point Catmull-Rom (Hermite) interpolation, 4-wide grain-major SIMD.
+///
+/// FROZEN: this is the CPU gate's reference kernel. gg-bench's ratios divide each case's time by
+/// this kernel's, measured in the same round, and every recorded baseline is a ratio against it.
+/// Changing it, or anything it calls, invalidates every baseline.
 inline void renderHermiteSimd(const GrainBatch &b, const float *srcL, const float *srcR,
                               int64_t frames, float *outL, float *outR, uint32_t n) noexcept
 {
