@@ -11,7 +11,9 @@
 /// The per-machine settings (spec §6.7): the folders a missing sample is searched in. They live
 /// in a small XML file in the user's configuration folder, which gg-media reads and writes
 /// (gg/media/SettingsFile.h); gg-core only encodes them, with tinyxml, private to gg-core's
-/// sources (ruling M1-l). Main thread only: both functions allocate.
+/// sources (ruling M1-l). The codec is pure, with no state, and may be called from any thread; it
+/// allocates, so never from the audio thread. The settings file itself is main thread only
+/// (ruling R16).
 ///
 /// The XML, on one line:
 ///
@@ -37,10 +39,11 @@ struct MachineSettings
 std::string toSettingsXml(const MachineSettings &settings);
 
 /// Reads XML that toSettingsXml wrote into `out`; false, with `out` untouched, if it isn't
-/// settings: XML that isn't well-formed, holds a NUL byte, or whose only top-level node isn't a
-/// <settings> element with an integer `version` of 1 or more. A missing attribute reads as
-/// empty, and other attributes and elements are ignored, so a newer build's file still gives
-/// this one its folders.
+/// settings: XML that isn't well-formed, holds a NUL byte, or whose top level holds anything but
+/// one <settings> element, with an integer `version` of 1 or more, and any XML declarations and
+/// comments (so a file edited by hand still loads; a UTF-8 byte order mark is skipped). A missing
+/// attribute reads as empty, and other attributes and elements are ignored, so a newer build's
+/// file still gives this one its folders.
 bool fromSettingsXml(std::string_view xml, MachineSettings &out);
 } // namespace gg::core
 

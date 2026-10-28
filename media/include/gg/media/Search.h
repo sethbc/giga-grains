@@ -42,15 +42,15 @@ inline constexpr std::size_t kMaxScanEntries = 50'000;
 ///    b. in `settings.lastLoadFolder`;
 ///    c. anywhere under `settings.sampleFolder`, recursively. The scan stops after visiting
 ///       kMaxScanEntries directory entries (files and folders alike, the match included), never
-///       follows a symlinked folder, and skips folders it may not read.
+///       follows a symlinked folder, and skips any folder it can't open or finish listing
+///       (permissions, a folder removed mid-scan, a failing volume), going on with the rest.
 /// A candidate that isn't an absolute path (a Windows path read on macOS, say) is skipped, since
 /// it would depend on the working directory, and one already checked isn't checked again. So 3a,
-/// whose candidate is 1's path or a relative one, adds nothing: it is kept for the spec's order.
-/// `moved` is whether
-/// the match's path differs from the saved one. When nothing matches, the outcome is Changed if
-/// the saved path holds a regular file whose fingerprint (read in full) differs, and Missing
-/// otherwise. Paths are UTF-8; filesystem errors count as non-matches, and nothing throws but
-/// std::bad_alloc.
+/// whose candidate is 1's path or a relative one, adds nothing: it is kept for the spec's order
+/// (ruling R13). `moved` is whether the match's path differs from the saved one. When nothing
+/// matches, the outcome is Changed if the saved path holds a regular file whose fingerprint (read
+/// in full) differs, and Missing otherwise. Paths are UTF-8; filesystem errors count as
+/// non-matches, and nothing throws but std::bad_alloc.
 SearchResult findSample(const core::MediaEntry &entry, const core::MachineSettings &settings);
 } // namespace gg::media
 

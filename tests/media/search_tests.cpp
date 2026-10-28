@@ -14,6 +14,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <vector>
 
 #include <catch2/catch_test_macros.hpp>
@@ -238,6 +239,55 @@ TEST_CASE("findSample's scan follows symlinked files but not symlinked folders",
 }
 #endif
 
+#if !defined(_WIN32)
+TEST_CASE("findSample's scan skips a folder it can't open and goes on", "[media]")
+{
+    // Eight folders; the one listed first is locked (mode 000) and the sample is in the one
+    // listed last, so the scan meets the locked folder before the sample, whatever the order.
+    const auto dir = fs::path(GG_TEST_OUTPUT_DIR) / "search-locked-folder";
+    const auto lib = dir / "lib";
+    std::error_code ignored;
+    for (int i = 0; i < 8; ++i) // unlock what a failed earlier run left, so it can be removed
+    {
+        fs::permissions(lib / ("d" + std::to_string(i)), fs::perms::owner_all, ignored);
+    }
+    freshDir("search-locked-folder");
+    for (int i = 0; i < 8; ++i)
+    {
+        put(lib / ("d" + std::to_string(i)) / "inside" / "x.wav", kOther);
+    }
+    std::vector<fs::path> order;
+    for (const auto &e : fs::directory_iterator(lib))
+    {
+        order.push_back(e.path());
+    }
+    REQUIRE(order.size() == 8);
+    const auto locked = order.front();
+    const auto target = order.back() / "kick.wav";
+    put(target, kContent);
+
+    fs::permissions(locked, fs::perms::none);
+    struct Unlock
+    {
+        fs::path folder;
+        ~Unlock()
+        {
+            std::error_code e;
+            fs::permissions(folder, fs::perms::owner_all, e);
+        }
+    } unlock{locked};
+    std::error_code openError;
+    fs::directory_iterator probe(locked, openError);
+    if (!openError)
+    {
+        SKIP("the locked folder still opens (running as root?)");
+    }
+
+    requireFound(findSample(entryFor(dir / "old" / "kick.wav"), MachineSettings{utf8(lib), ""}),
+                 target, true);
+}
+#endif
+
 TEST_CASE("findSample's scan stops after kMaxScanEntries entries", "[media][slow]")
 {
     // Directory order is the filesystem's, so the test learns it: it fills the sample folder with
@@ -253,7 +303,7 @@ TEST_CASE("findSample's scan stops after kMaxScanEntries entries", "[media][slow
         std::ofstream(lib / ("f" + std::to_string(i)), std::ios::binary);
     }
     std::vector<fs::path> order;
-    for (const auto &e : fs::recursive_directory_iterator(lib))
+    for (const auto &e : fs::directory_iterator(lib))
     {
         order.push_back(e.path());
     }

@@ -78,6 +78,61 @@ class Candidates
 
 /// The index of the saved path's last separator, `/` or `\` (a path saved on Windows), or npos.
 std::size_t lastSeparator(const std::string &path) { return path.find_last_of("/\\"); }
+
+/// Step 3c: the first file named `name` under `root` that matches, or nothing. Walked by hand,
+/// depth first (each folder's contents right after its entry), with a listing per open folder:
+/// a folder that can't be opened, or fails partway through its listing, is skipped and the scan
+/// goes on, where std::filesystem::recursive_directory_iterator would end altogether on any error
+/// but EACCES. Visits at most kMaxScanEntries entries and never follows a symlinked folder.
+std::optional<fs::path> scan(const fs::path &root, const fs::path &name, Candidates &candidates)
+{
+    std::vector<fs::directory_iterator> open;
+    std::error_code error;
+    fs::directory_iterator first(root, error);
+    if (error)
+    {
+        return std::nullopt;
+    }
+    open.push_back(std::move(first));
+    std::size_t visited = 0;
+    while (!open.empty())
+    {
+        fs::directory_iterator &listing = open.back();
+        if (listing == fs::directory_iterator())
+        {
+            open.pop_back();
+            continue;
+        }
+        const fs::directory_entry entry = *listing;
+        listing.increment(error);
+        if (error)
+        {
+            // The rest of this folder can't be listed: skip it, but still visit `entry`.
+            open.pop_back();
+            error.clear();
+        }
+        if (++visited > kMaxScanEntries)
+        {
+            return std::nullopt;
+        }
+        const fs::path &path = entry.path();
+        if (path.filename() == name && candidates.check(path) == Check::Matches)
+        {
+            return path;
+        }
+        // Into a folder, but not through a symlink: symlink_status doesn't follow it.
+        if (fs::is_directory(entry.symlink_status(error)) && !error)
+        {
+            fs::directory_iterator inside(path, error);
+            if (!error)
+            {
+                open.push_back(std::move(inside));
+            }
+        }
+        error.clear();
+    }
+    return std::nullopt;
+}
 } // namespace
 
 SearchResult findSample(const core::MediaEntry &entry, const core::MachineSettings &settings)
@@ -142,22 +197,9 @@ SearchResult findSample(const core::MediaEntry &entry, const core::MachineSettin
         }
         if (sampleFolder && sampleFolder->is_absolute())
         {
-            // The default options don't follow symlinked folders.
-            std::error_code error;
-            fs::recursive_directory_iterator it(
-                *sampleFolder, fs::directory_options::skip_permission_denied, error);
-            std::size_t visited = 0;
-            for (; !error && it != fs::recursive_directory_iterator(); it.increment(error))
+            if (const auto match = scan(*sampleFolder, *name, candidates))
             {
-                if (++visited > kMaxScanEntries)
-                {
-                    break;
-                }
-                const fs::path &candidate = it->path();
-                if (candidate.filename() == *name && candidates.check(candidate) == Check::Matches)
-                {
-                    return found(candidate);
-                }
+                return found(*match);
             }
         }
     }

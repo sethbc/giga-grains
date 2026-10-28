@@ -101,6 +101,22 @@ TEST_CASE("settings XML reads missing attributes as empty and ignores unknown on
     REQUIRE(out == MachineSettings{"/S", ""});
 }
 
+TEST_CASE("settings XML edited by hand loads, with a declaration and comments", "[core]")
+{
+    const std::string body = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                             "<!-- Giga Grains: my folders -->\n"
+                             "<settings version=\"1\" sampleFolder=\"/Samples/\xc3\xa9\"\n"
+                             "          lastLoadFolder=\"/Kicks\" />\n"
+                             "<!-- the end -->\n";
+    for (const std::string &xml : {body, "\xef\xbb\xbf" + body}) // without and with a BOM
+    {
+        INFO(xml);
+        MachineSettings out;
+        REQUIRE(fromSettingsXml(xml, out));
+        REQUIRE(out == MachineSettings{"/Samples/\xc3\xa9", "/Kicks"});
+    }
+}
+
 TEST_CASE("settings XML that isn't settings is rejected and changes nothing", "[core]")
 {
     const std::vector<std::string> bad{
@@ -113,6 +129,8 @@ TEST_CASE("settings XML that isn't settings is rejected and changes nothing", "[
         R"(<options version="1" sampleFolder="/S" />)",        // another root
         R"(<settings version="1" /><settings version="1" />)", // two roots
         R"(<settings version="1" /> trailing)",                // text after the root
+        R"(<!DOCTYPE settings><settings version="1" />)",      // not a declaration or comment
+        R"(<!-- only a comment -->)",                          // no root
         std::string(R"(<settings version="1" sampleFolder="/S)") + '\0' + R"(" />)", // a NUL
     };
     for (const auto &xml : bad)

@@ -29,6 +29,21 @@ inline std::optional<std::string> toUtf8(const std::filesystem::path &path)
     }
 }
 
+/// `path` as UTF-8 with `/` separators on every platform (its generic form), or nullopt as for
+/// toUtf8.
+inline std::optional<std::string> toGenericUtf8(const std::filesystem::path &path)
+{
+    try
+    {
+        const auto text = path.generic_u8string();
+        return std::string(text.begin(), text.end());
+    }
+    catch (const std::system_error &)
+    {
+        return std::nullopt;
+    }
+}
+
 /// The path that UTF-8 `text` names. On Windows, nullopt for text that isn't valid UTF-8, which
 /// the conversion to a wide path refuses; elsewhere the bytes are copied.
 inline std::optional<std::filesystem::path> fromUtf8(const std::string &text)

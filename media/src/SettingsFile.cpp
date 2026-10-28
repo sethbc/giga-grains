@@ -4,7 +4,9 @@
 
 #include "gg/media/SettingsFile.h"
 
+#include <atomic>
 #include <cstddef>
+#include <cstdint>
 #include <cstdlib>
 #include <fstream>
 #include <string>
@@ -135,10 +137,14 @@ bool saveSettings(const fs::path &file, const core::MachineSettings &settings)
             return false;
         }
     }
-    // A temporary file of this process's own beside `file`, renamed over it once written whole:
-    // another instance saving at the same time writes its own, and the last rename wins.
+    // A temporary file of this save's own beside `file`, renamed over it once written whole. The
+    // process ID and a process-wide count make its name unique, though every plugin instance in
+    // a host shares the process: a save in another process or instance writes its own, and the
+    // last rename wins.
+    static std::atomic<uint64_t> saves{0};
     fs::path temporary = file;
-    temporary += "." + std::to_string(processId()) + ".tmp";
+    temporary +=
+        "." + std::to_string(processId()) + "." + std::to_string(saves.fetch_add(1)) + ".tmp";
     const std::string xml = core::toSettingsXml(settings);
     {
         std::ofstream out(temporary, std::ios::binary | std::ios::trunc);

@@ -58,8 +58,7 @@ std::string relativeTo(const fs::path &file, const std::string &sampleFolder)
     {
         return {};
     }
-    const auto text = relative.generic_u8string();
-    return {text.begin(), text.end()};
+    return detail::toGenericUtf8(relative).value_or(std::string());
 }
 } // namespace
 

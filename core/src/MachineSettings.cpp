@@ -59,12 +59,19 @@ bool fromSettingsXml(std::string_view xml, MachineSettings &out)
     {
         return false;
     }
-    // The <settings> root, alone at the top level, at any version: a newer one still holds the
-    // folders this build knows.
+    // The <settings> root, the only element at the top level, at any version: a newer one still
+    // holds the folders this build knows. An XML declaration and comments may sit beside it, as
+    // in a file edited by hand.
     const TiXmlElement *root = doc.RootElement();
+    for (const TiXmlNode *node = doc.FirstChild(); node != nullptr; node = node->NextSibling())
+    {
+        if (node != root && node->ToDeclaration() == nullptr && node->ToComment() == nullptr)
+        {
+            return false;
+        }
+    }
     int version{0};
     if (root == nullptr || std::strcmp(root->Value(), "settings") != 0 ||
-        doc.FirstChild() != root || root->NextSibling() != nullptr ||
         root->QueryIntAttribute("version", &version) != TIXML_SUCCESS || version < 1)
     {
         return false;

@@ -10,8 +10,10 @@
 #include "gg/core/MachineSettings.h"
 
 /// The per-machine settings file (spec §6.7): gg-core's settings XML
-/// (gg/core/MachineSettings.h), read and written here. Main thread only. Every function but
-/// defaultSettingsPath takes the file explicitly, so tests never touch the user's.
+/// (gg/core/MachineSettings.h), read and written here. loadSettings and saveSettings are main
+/// thread only (ruling R16): the plugin reads and saves the user's file from its main thread,
+/// never from the loader. Every function but defaultSettingsPath takes the file explicitly, so
+/// tests never touch the user's.
 namespace gg::media
 {
 /// The settings file in the user's configuration folder:
