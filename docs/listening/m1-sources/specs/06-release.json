@@ -1,0 +1,13 @@
+{
+  "mode": "instrument",
+  "sampleRate": 48000,
+  "durationSeconds": 3.0,
+  "blockSize": 128,
+  "seed": 1,
+  "sample": {"kind": "noise", "seconds": 4.0, "amplitude": 0.5},
+  "params": {"Position": 0.25, "Level": -6.0},
+  "notes": [
+    {"time": 0.25, "key": 60, "duration": 0.25},
+    {"time": 1.0, "key": 60, "duration": 1.0}
+  ]
+}

@@ -10,6 +10,7 @@
 #include <cstring>
 #include <initializer_list>
 #include <numbers>
+#include <span>
 #include <string_view>
 #include <vector>
 
@@ -702,4 +703,382 @@ TEST_CASE("notes render the same at any host block size", "[plugin][determinism]
     CHECK(peakIn(regular, 0, kFrames) > 0.05f);
     CHECK(sameBits(regular.left, irregular.left));
     CHECK(sameBits(regular.right, irregular.right));
+}
+
+namespace
+{
+// One process() call over the audio buffers given, as a host builds it: `inputs` and `outputs`
+// may be empty (no port in the call), and each buffer's data32 and channel pointers are the
+// caller's, null ones included.
+clap_process_status processWith(const gg::test::PluginUnderTest &plugin, uint32_t frames,
+                                std::span<const clap_audio_buffer> inputs,
+                                std::span<clap_audio_buffer> outputs,
+                                const clap_input_events *events)
+{
+    clap_process process{};
+    process.steady_time = -1;
+    process.frames_count = frames;
+    process.transport = nullptr;
+    process.audio_inputs = inputs.empty() ? nullptr : inputs.data();
+    process.audio_inputs_count = static_cast<uint32_t>(inputs.size());
+    process.audio_outputs = outputs.empty() ? nullptr : outputs.data();
+    process.audio_outputs_count = static_cast<uint32_t>(outputs.size());
+    process.in_events = events;
+    process.out_events = gg::test::discardingOutputEvents();
+    return plugin.clap()->process(plugin.clap(), &process);
+}
+
+clap_audio_buffer audioBuffer(float **data32, uint32_t channels)
+{
+    return clap_audio_buffer{data32, nullptr, channels, 0, 0};
+}
+
+// The FX set up for the port tests: Mix 0.5, so the output carries both the dry input and the
+// wet path; Spray 0 and Position 0.05 (about 20 ms behind the head), so the grains read what the
+// render just wrote; Density 64 Hz.
+void setUpFxForPorts(const gg::test::PluginUnderTest &fx)
+{
+    flushParams<4>(fx, {
+                           gg::test::paramValue(paramId(ParamSlot::Mix), 0.5),
+                           gg::test::paramValue(paramId(ParamSlot::Spray), 0.0),
+                           gg::test::paramValue(paramId(ParamSlot::Position), 0.05),
+                           gg::test::paramValue(paramId(ParamSlot::Density), 6.0),
+                       });
+}
+
+// Copies `block` into `out` at block k.
+void storeBlock(const Stereo &block, std::size_t k, Stereo &out)
+{
+    const auto at = static_cast<std::ptrdiff_t>(k * block.left.size());
+    std::copy(block.left.begin(), block.left.end(), out.left.begin() + at);
+    std::copy(block.right.begin(), block.right.end(), out.right.begin() + at);
+}
+} // namespace
+
+TEST_CASE("audio ports declare the main ports and their in-place pairs", "[plugin]")
+{
+    // C-m4. The instrument has one output, port ID 0, with no in-place pair. The FX's input is
+    // port ID 0 and its output port ID 1, each the other's in-place pair, so a host may hand the
+    // FX the same buffers for both. Both are main, stereo, and two channels wide.
+    const char *id = GENERATE(kInstrumentId, kFxId);
+    CAPTURE(id);
+    const bool isFx = std::string_view(id) == kFxId;
+    gg::test::PluginUnderTest plugin(id);
+    REQUIRE(plugin.valid());
+    const auto *ports = static_cast<const clap_plugin_audio_ports *>(
+        plugin.clap()->get_extension(plugin.clap(), CLAP_EXT_AUDIO_PORTS));
+    REQUIRE(ports != nullptr);
+
+    REQUIRE(ports->count(plugin.clap(), true) == (isFx ? 1u : 0u));
+    REQUIRE(ports->count(plugin.clap(), false) == 1u);
+
+    const auto check = [&](bool isInput, clap_id expectedId, clap_id expectedPair,
+                           std::string_view expectedName) {
+        CAPTURE(isInput);
+        clap_audio_port_info info;
+        std::memset(&info, 0xA5, sizeof(info)); // every field must be written
+        REQUIRE(ports->get(plugin.clap(), 0, isInput, &info));
+        CHECK(info.id == expectedId);
+        CHECK(info.in_place_pair == expectedPair);
+        CHECK(info.flags == CLAP_AUDIO_PORT_IS_MAIN);
+        CHECK(info.channel_count == 2u);
+        CHECK(info.port_type != nullptr);
+        if (info.port_type != nullptr)
+        {
+            CHECK(std::string_view(info.port_type) == CLAP_PORT_STEREO);
+        }
+        CHECK(std::string_view(info.name) == expectedName);
+        // Only index 0 exists.
+        CHECK_FALSE(ports->get(plugin.clap(), 1, isInput, &info));
+    };
+    if (isFx)
+    {
+        check(true, 0, 1, "Main In");
+        check(false, 1, 0, "Main Out");
+    }
+    else
+    {
+        check(false, 0, CLAP_INVALID_ID, "Main Out");
+        clap_audio_port_info info{};
+        CHECK_FALSE(ports->get(plugin.clap(), 0, true, &info));
+    }
+}
+
+TEST_CASE("the fx renders the same in place as with separate buffers", "[plugin]")
+{
+    // C-m4: the in-place pair lets a host pass one set of buffers as both the input and the
+    // output. The output must then be what separate buffers give, bit for bit, through a note's
+    // freeze and release. Mix 0.5, so both the dry and the wet paths are in it.
+    constexpr uint32_t kBlock = 512;
+    constexpr std::size_t kBlocks = 60;
+    const auto on = noteOn(60, 100);
+    const auto off = gg::test::noteEvent(CLAP_EVENT_NOTE_OFF, 0, 60, 300);
+
+    const auto render = [&](bool inPlace, Stereo &out) {
+        gg::test::PluginUnderTest fx(kFxId);
+        REQUIRE(fx.valid());
+        setUpFxForPorts(fx);
+        REQUIRE(fx.activate(48000.0, kBlock));
+        Stereo in(kBlock);
+        Stereo block(kBlock, 7.0f);
+        for (std::size_t k = 0; k < kBlocks; ++k)
+        {
+            fillNoise(in, 100 + k);
+            gg::test::InputEvents events;
+            if (k == 20)
+            {
+                events.add(&on.header);
+            }
+            if (k == 40)
+            {
+                events.add(&off.header);
+            }
+            if (inPlace)
+            {
+                block.left = in.left;
+                block.right = in.right;
+                REQUIRE(fx.process(kBlock, block.data(), block.data(), events.list()) ==
+                        CLAP_PROCESS_CONTINUE);
+            }
+            else
+            {
+                REQUIRE(fx.process(kBlock, in.data(), block.data(), events.list()) ==
+                        CLAP_PROCESS_CONTINUE);
+            }
+            storeBlock(block, k, out);
+        }
+    };
+
+    Stereo separate(kBlock * kBlocks);
+    Stereo inPlace(kBlock * kBlocks);
+    render(false, separate);
+    render(true, inPlace);
+    CHECK(peakIn(separate, 0, separate.left.size()) > 0.05f);
+    CHECK(sameBits(separate.left, inPlace.left));
+    CHECK(sameBits(separate.right, inPlace.right));
+}
+
+TEST_CASE("a missing fx input is silence, however the host leaves it out", "[plugin]")
+{
+    // C-m4 and T7 (219): the FX's no-input branch, at plugin level. After 20 blocks of noise the
+    // host stops giving input, in one of the ways CLAP allows. The output must be bit for bit
+    // what explicit silence in the missing channels gives: the wet path keeps playing what the
+    // ring holds, the ring keeps advancing (with silence), and nothing reads a null pointer.
+    constexpr uint32_t kBlock = 512;
+    constexpr std::size_t kBlocks = 60;
+    constexpr std::size_t kInputBlocks = 20;
+
+    enum class Missing
+    {
+        NoPort,           // audio_inputs_count == 0
+        NullData,         // data32 == nullptr, channel_count 2
+        NullChannels,     // data32 holds two null channel pointers
+        NoChannels,       // channel_count 0
+        NullRightChannel, // the left channel is there, the right is null
+        MonoNullChannel,  // channel_count 1, its pointer null
+    };
+    const Missing missing =
+        GENERATE(Missing::NoPort, Missing::NullData, Missing::NullChannels, Missing::NoChannels,
+                 Missing::NullRightChannel, Missing::MonoNullChannel);
+    CAPTURE(static_cast<int>(missing));
+
+    const auto render = [&](bool reference, Stereo &out) {
+        gg::test::PluginUnderTest fx(kFxId);
+        REQUIRE(fx.valid());
+        setUpFxForPorts(fx);
+        REQUIRE(fx.activate(48000.0, kBlock));
+        Stereo in(kBlock);
+        Stereo block(kBlock, 7.0f);
+        gg::test::InputEvents none;
+        for (std::size_t k = 0; k < kBlocks; ++k)
+        {
+            fillNoise(in, 200 + k);
+            std::array<clap_audio_buffer, 1> outputs{audioBuffer(block.data(), 2)};
+            if (k < kInputBlocks)
+            {
+                const std::array<clap_audio_buffer, 1> inputs{audioBuffer(in.data(), 2)};
+                REQUIRE(processWith(fx, kBlock, inputs, outputs, none.list()) ==
+                        CLAP_PROCESS_CONTINUE);
+            }
+            else if (reference)
+            {
+                // Explicit silence where the input is missing.
+                if (missing != Missing::NullRightChannel)
+                {
+                    std::fill(in.left.begin(), in.left.end(), 0.0f);
+                }
+                std::fill(in.right.begin(), in.right.end(), 0.0f);
+                const std::array<clap_audio_buffer, 1> inputs{audioBuffer(in.data(), 2)};
+                REQUIRE(processWith(fx, kBlock, inputs, outputs, none.list()) ==
+                        CLAP_PROCESS_CONTINUE);
+            }
+            else
+            {
+                float *nullChannels[2] = {nullptr, nullptr};
+                float *leftOnly[2] = {in.left.data(), nullptr};
+                std::array<clap_audio_buffer, 1> inputs{};
+                std::span<const clap_audio_buffer> given(inputs);
+                switch (missing)
+                {
+                case Missing::NoPort:
+                    given = {};
+                    break;
+                case Missing::NullData:
+                    inputs[0] = audioBuffer(nullptr, 2);
+                    break;
+                case Missing::NullChannels:
+                    inputs[0] = audioBuffer(nullChannels, 2);
+                    break;
+                case Missing::NoChannels:
+                    inputs[0] = audioBuffer(in.data(), 0);
+                    break;
+                case Missing::NullRightChannel:
+                    inputs[0] = audioBuffer(leftOnly, 2);
+                    break;
+                case Missing::MonoNullChannel:
+                    inputs[0] = audioBuffer(nullChannels, 1);
+                    break;
+                }
+                REQUIRE(processWith(fx, kBlock, given, outputs, none.list()) ==
+                        CLAP_PROCESS_CONTINUE);
+            }
+            storeBlock(block, k, out);
+        }
+        CHECK(fx.impl().engine()->sampleClock() == static_cast<int64_t>(kBlock * kBlocks));
+        CHECK(fx.impl().engine()->liveWriteHead() == static_cast<int64_t>(kBlock * kBlocks));
+    };
+
+    Stereo actual(kBlock * kBlocks);
+    Stereo expected(kBlock * kBlocks);
+    render(false, actual);
+    render(true, expected);
+    // The wet path still sounds once the input is gone: the grains read the ring's noise.
+    constexpr std::size_t kGone = kInputBlocks * kBlock;
+    CHECK(peakIn(actual, kGone, kGone + 4800) > 0.01f);
+    CHECK(allFinite(actual.left));
+    CHECK(allFinite(actual.right));
+    CHECK(sameBits(actual.left, expected.left));
+    CHECK(sameBits(actual.right, expected.right));
+}
+
+TEST_CASE("a missing output or output channel leaves the rest of the render unchanged", "[plugin]")
+{
+    // C-m4 and T7 (219), on the output side, both products: with data32 == nullptr, null
+    // channel pointers, or no output port at all, the plugin writes nothing it wasn't given and
+    // still runs the engine, so the blocks after it, and any channel it was given, are what a
+    // complete render gives, bit for bit. The instrument plays its sample from a note; the FX
+    // processes noise at Mix 0.5.
+    const char *id = GENERATE(kInstrumentId, kFxId);
+    CAPTURE(id);
+    const bool isFx = std::string_view(id) == kFxId;
+
+    enum class Gap
+    {
+        NoPort,
+        NullData,
+        NullChannels,
+        NullRightChannel,
+    };
+    const Gap gap = GENERATE(Gap::NoPort, Gap::NullData, Gap::NullChannels, Gap::NullRightChannel);
+    CAPTURE(static_cast<int>(gap));
+
+    constexpr uint32_t kBlock = 512;
+    constexpr std::size_t kBlocks = 30;
+    constexpr std::size_t kGapFrom = 10;
+    constexpr std::size_t kGapTo = 15;
+    const auto on = noteOn(60, 0);
+
+    const auto render = [&](bool complete, Stereo &out) {
+        gg::test::PluginUnderTest plugin(id);
+        REQUIRE(plugin.valid());
+        if (isFx)
+        {
+            setUpFxForPorts(plugin);
+        }
+        else
+        {
+            REQUIRE(plugin.loadSampleState(gg::test::sineSampleFile("missing-output")));
+        }
+        REQUIRE(plugin.activate(48000.0, kBlock));
+        Stereo in(kBlock);
+        Stereo block(kBlock);
+        for (std::size_t k = 0; k < kBlocks; ++k)
+        {
+            fillNoise(in, 300 + k);
+            std::fill(block.left.begin(), block.left.end(), 7.0f);
+            std::fill(block.right.begin(), block.right.end(), 7.0f);
+            gg::test::InputEvents events;
+            if (k == 0)
+            {
+                events.add(&on.header);
+            }
+            std::array<clap_audio_buffer, 1> inputs{audioBuffer(in.data(), 2)};
+            const std::span<const clap_audio_buffer> givenIn =
+                isFx ? std::span<const clap_audio_buffer>(inputs)
+                     : std::span<const clap_audio_buffer>();
+            float *nullChannels[2] = {nullptr, nullptr};
+            float *leftOnly[2] = {block.left.data(), nullptr};
+            std::array<clap_audio_buffer, 1> outputs{audioBuffer(block.data(), 2)};
+            std::span<clap_audio_buffer> givenOut(outputs);
+            const bool inGap = !complete && k >= kGapFrom && k < kGapTo;
+            if (inGap)
+            {
+                switch (gap)
+                {
+                case Gap::NoPort:
+                    givenOut = {};
+                    break;
+                case Gap::NullData:
+                    outputs[0] = audioBuffer(nullptr, 2);
+                    break;
+                case Gap::NullChannels:
+                    outputs[0] = audioBuffer(nullChannels, 2);
+                    break;
+                case Gap::NullRightChannel:
+                    outputs[0] = audioBuffer(leftOnly, 2);
+                    break;
+                }
+            }
+            REQUIRE(processWith(plugin, kBlock, givenIn, givenOut, events.list()) ==
+                    CLAP_PROCESS_CONTINUE);
+            if (inGap)
+            {
+                // Nothing is written where no pointer was given.
+                CHECK(std::all_of(block.right.begin(), block.right.end(),
+                                  [](float x) { return x == 7.0f; }));
+                if (gap != Gap::NullRightChannel)
+                {
+                    CHECK(std::all_of(block.left.begin(), block.left.end(),
+                                      [](float x) { return x == 7.0f; }));
+                }
+            }
+            storeBlock(block, k, out);
+        }
+        CHECK(plugin.impl().engine()->sampleClock() == static_cast<int64_t>(kBlock * kBlocks));
+    };
+
+    Stereo actual(kBlock * kBlocks);
+    Stereo expected(kBlock * kBlocks);
+    render(false, actual);
+    render(true, expected);
+    CHECK(peakIn(expected, 0, expected.left.size()) > 0.05f);
+
+    // Before and after the gap the two renders are the same; in it, the left channel is too when
+    // it was given.
+    const auto from = static_cast<std::ptrdiff_t>(kGapFrom * kBlock);
+    const auto to = static_cast<std::ptrdiff_t>(kGapTo * kBlock);
+    const auto same = [](const std::vector<float> &a, const std::vector<float> &b,
+                         std::ptrdiff_t first, std::ptrdiff_t last) {
+        return std::memcmp(a.data() + first, b.data() + first,
+                           static_cast<std::size_t>(last - first) * sizeof(float)) == 0;
+    };
+    const auto end = static_cast<std::ptrdiff_t>(actual.left.size());
+    CHECK(same(actual.left, expected.left, 0, from));
+    CHECK(same(actual.right, expected.right, 0, from));
+    CHECK(same(actual.left, expected.left, to, end));
+    CHECK(same(actual.right, expected.right, to, end));
+    if (gap == Gap::NullRightChannel)
+    {
+        CHECK(same(actual.left, expected.left, from, to));
+    }
 }

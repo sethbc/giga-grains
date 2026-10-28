@@ -1,0 +1,18 @@
+{
+  "mode": "instrument",
+  "sampleRate": 48000,
+  "durationSeconds": 7.5,
+  "blockSize": 128,
+  "seed": 1,
+  "sample": {"kind": "sweep", "startHz": 50, "endHz": 8000, "seconds": 4.0, "amplitude": 0.5},
+  "params": {"Position": 0.5, "Density": 5.0, "Level": -6.0},
+  "notes": [
+    {"time": 0.25, "key": 60, "duration": 0.8},
+    {"time": 1.25, "key": 67, "duration": 0.8},
+    {"time": 2.25, "key": 72, "duration": 0.8},
+    {"time": 3.25, "key": 79, "duration": 0.8},
+    {"time": 4.25, "key": 84, "duration": 0.8},
+    {"time": 5.25, "key": 91, "duration": 0.8},
+    {"time": 6.25, "key": 96, "duration": 0.8}
+  ]
+}

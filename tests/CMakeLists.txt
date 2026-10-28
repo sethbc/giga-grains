@@ -307,4 +307,22 @@ if (APPLE AND GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
             "Giga Grains FX=DBAF5C12EA095FEFB3A5CBBBB254442A")
     set_tests_properties(identity_standalone identity_standalone_fx identity_auv2 identity_vst3
             PROPERTIES LABELS plugin)
+
+    # The AU state format (labels `plugin` and `au`): gg-au-state-tests loads the built
+    # .component into its own process, registers its factories there (AudioComponentRegister;
+    # nothing is installed) and checks that ClassInfo carries the CLAP state bytes, GGST
+    # included, and round-trips them. It also pins clap-wrapper's three known AU state faults
+    # (T7 223), so a clap-wrapper update that changes one fails here. Its own executable: gg-tests
+    # links the plugin's code itself, and the bundle brings a second copy.
+    add_executable(gg-au-state-tests plugin/au_state_tests.cpp)
+    target_include_directories(gg-au-state-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(gg-au-state-tests PRIVATE gg::media gg::core gg::compiler-options
+            Catch2::Catch2WithMain "-framework AudioToolbox" "-framework CoreFoundation")
+    target_compile_definitions(gg-au-state-tests PRIVATE
+            GG_TEST_OUTPUT_DIR="${CMAKE_CURRENT_BINARY_DIR}/test-output"
+            GG_AU_BUNDLE="$<TARGET_BUNDLE_DIR:gg_clapfirst_auv2>"
+            GG_CLAP_WRAPPER_SOURCE_DIR="${CMAKE_SOURCE_DIR}/libs/clap/clap-wrapper")
+    add_dependencies(gg-au-state-tests gg_clapfirst_auv2)
+    add_dependencies(gg-tests gg-au-state-tests)
+    catch_discover_tests(gg-au-state-tests ADD_TAGS_AS_LABELS)
 endif ()
