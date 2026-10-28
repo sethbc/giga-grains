@@ -4,11 +4,14 @@
 
 #include "gg/media/Sample.h"
 
+#include <cmath>
 #include <optional>
+#include <stdexcept>
 #include <system_error>
 #include <utility>
 
 #include "Utf8Path.h"
+#include "gg/media/Convert.h"
 #include "gg/media/Decode.h"
 #include "gg/media/Sha256.h"
 
@@ -95,5 +98,18 @@ LoadedSample loadSample(const fs::path &file, const core::MachineSettings &setti
     out.entry.embed = false;
     out.decoded = std::move(decoded.audio->buffer);
     return out;
+}
+
+std::shared_ptr<const PreparedSource> prepare(std::shared_ptr<SampleBuffer> decoded, double rate)
+{
+    if (decoded == nullptr)
+    {
+        throw std::invalid_argument("prepare: no decoded buffer");
+    }
+    if (!std::isfinite(rate) || rate <= 0.0)
+    {
+        throw std::invalid_argument("prepare: the rate must be finite and positive");
+    }
+    return PreparedSource::make(convertRate(std::move(decoded), rate));
 }
 } // namespace gg::media

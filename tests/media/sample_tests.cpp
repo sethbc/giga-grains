@@ -2,11 +2,15 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright 2026, the Giga Grains authors (see git history)
 
-// loadSample (gg/media/Sample.h): the decoded audio and the manifest entry of a file. Every test
-// works in a folder of its own under GG_TEST_OUTPUT_DIR.
+// loadSample (gg/media/Sample.h): the decoded audio and the manifest entry of a file; then prepare,
+// the source the engine plays. Every test works in a folder of its own under GG_TEST_OUTPUT_DIR.
 
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
+#include <limits>
+#include <memory>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -171,5 +175,63 @@ TEST_CASE("loadSample of a file it can't decode gives an error and no audio", "[
         REQUIRE(loaded.decoded == nullptr);
         REQUIRE_FALSE(loaded.error.empty());
         REQUIRE(loaded.entry == gg::core::MediaEntry{});
+    }
+}
+
+TEST_CASE("prepare at the file's rate keeps the decoded buffer, bit for bit", "[media]")
+{
+    const auto dir = freshDir("search-prepare-same-rate");
+    writeWav(dir / "kick.wav", 2, 48000, 480);
+    const auto loaded = loadSample(dir / "kick.wav", MachineSettings{});
+    REQUIRE(loaded.decoded != nullptr);
+    const std::vector<float> left(loaded.decoded->channel(0),
+                                  loaded.decoded->channel(0) + loaded.decoded->frames());
+
+    const auto source = gg::media::prepare(loaded.decoded, 48000.0);
+    REQUIRE(source != nullptr);
+    REQUIRE(&source->buffer() == loaded.decoded.get()); // the same buffer, not a copy
+    REQUIRE(std::memcmp(source->buffer().channel(0), left.data(), left.size() * sizeof(float)) ==
+            0);
+}
+
+TEST_CASE("prepare converts 44.1 kHz to 48 kHz into a stereo source with its pairs", "[media]")
+{
+    const auto dir = freshDir("search-prepare-convert");
+    writeWav(dir / "kick.wav", 2, 44100, 4410);
+    const auto loaded = loadSample(dir / "kick.wav", MachineSettings{});
+    REQUIRE(loaded.decoded != nullptr);
+
+    const auto source = gg::media::prepare(loaded.decoded, 48000.0);
+    REQUIRE(source != nullptr);
+    const gg::SampleBuffer &buffer = source->buffer();
+    REQUIRE(buffer.sampleRate() == 48000.0);
+    REQUIRE(buffer.channels() == 2);
+    REQUIRE(buffer.frames() == 4800); // llround(4410 × 48000 / 44100)
+    // The decoded buffer is left as it was, at the file's rate.
+    REQUIRE(loaded.decoded->sampleRate() == 44100.0);
+    REQUIRE(loaded.decoded->frames() == 4410);
+
+    // The interleaved copy the SIMD kernel reads: channels 0 and 1, frame by frame.
+    const auto &pairs = source->pairs();
+    REQUIRE(pairs.data() != nullptr);
+    REQUIRE(pairs.frames() == buffer.frames());
+    for (int64_t n = 0; n < buffer.frames(); ++n)
+    {
+        INFO("frame " << n);
+        REQUIRE(std::memcmp(&pairs.data()[2 * n], &buffer.channel(0)[n], sizeof(float)) == 0);
+        REQUIRE(std::memcmp(&pairs.data()[2 * n + 1], &buffer.channel(1)[n], sizeof(float)) == 0);
+    }
+}
+
+TEST_CASE("prepare refuses no buffer and a rate that isn't finite and positive", "[media]")
+{
+    const auto buffer = std::make_shared<gg::SampleBuffer>(2, 16, 48000.0);
+    REQUIRE_THROWS_AS(gg::media::prepare(nullptr, 48000.0), std::invalid_argument);
+    for (const double rate :
+         {0.0, -48000.0, std::numeric_limits<double>::quiet_NaN(),
+          std::numeric_limits<double>::infinity(), -std::numeric_limits<double>::infinity()})
+    {
+        INFO("rate " << rate);
+        REQUIRE_THROWS_AS(gg::media::prepare(buffer, rate), std::invalid_argument);
     }
 }

@@ -5,6 +5,7 @@
 #include "gg/media/Convert.h"
 
 #include <algorithm>
+#include <cassert>
 #include <cmath>
 #include <cstdint>
 #include <vector>
@@ -21,6 +22,9 @@ constexpr int kBlockFrames = 4096;
 
 std::shared_ptr<SampleBuffer> convertRate(std::shared_ptr<SampleBuffer> in, double targetRate)
 {
+    // The header's preconditions; prepare (gg/media/Sample.h) checks them in every build.
+    assert(in != nullptr);
+    assert(std::isfinite(targetRate) && targetRate > 0.0);
     const double sourceRate = in->sampleRate();
     if (sourceRate == targetRate)
     {

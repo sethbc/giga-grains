@@ -11,10 +11,12 @@
 
 #include "gg/core/MachineSettings.h"
 #include "gg/core/SessionState.h"
+#include "gg/source/PreparedSource.h"
 #include "gg/source/SampleBuffer.h"
 
-/// Loading a sample the user chose (spec §6.4, §6.6): the decoded audio and its manifest entry.
-/// Not real-time safe: it reads the file twice, to decode and to hash it, and allocates.
+/// Loading a sample the user chose (spec §6.4, §6.6): the decoded audio and its manifest entry,
+/// then the source the engine plays. Not real-time safe: these allocate, and loadSample reads the
+/// file.
 namespace gg::media
 {
 /// A loaded sample, or the reason it couldn't be.
@@ -37,7 +39,15 @@ struct LoadedSample
 ///   reached through a symlink (macOS's /var for /private/var, say) still counts.
 /// - On failure `decoded` is null, `entry` is default and `error` names the file and the reason:
 ///   decodeAudioFile's message, or a failure to read the file for its hash.
+/// - A known limitation: the file is read twice, to decode it and then to hash it. A file replaced
+///   between the two reads gives an entry whose fingerprint isn't the decoded audio's.
 LoadedSample loadSample(const std::filesystem::path &file, const core::MachineSettings &settings);
+
+/// `decoded` converted to `rate` (convertRate: the same buffer when the rates match), then made a
+/// PreparedSource, with the interleaved copy for a stereo buffer. Main or loader thread; the
+/// plugin passes the host's rate. Throws std::invalid_argument if `decoded` is null or `rate`
+/// isn't finite and positive, and std::bad_alloc if memory runs out.
+std::shared_ptr<const PreparedSource> prepare(std::shared_ptr<SampleBuffer> decoded, double rate);
 } // namespace gg::media
 
 #endif // GG_MEDIA_SAMPLE_H
