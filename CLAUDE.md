@@ -210,8 +210,8 @@ runs the tests labelled either. The labels are:
 - **Keep new tests parallel-safe:**
   - never write a path that another test writes: unit tests' scratch files go in
     `GG_TEST_OUTPUT_DIR` under a name of their own, and each golden case writes its own files;
-  - never touch the user's per-machine settings file. An instance of either plugin reads the
-    file `GG_SETTINGS_FILE` names, when it is set and not empty, instead of the user's;
+  - never touch the user's per-machine settings file. The instrument (the FX reads none) reads
+    the file `GG_SETTINGS_FILE` names, when it is set and not empty, instead of the user's;
     `tests/plugin/PluginHarness.h` points it at a scratch file, and a test that reads the
     settings points it at its own (`useSettingsFile`) before it creates the instance;
   - a test that has to share a file, or that measures time, must not run beside the others. For
@@ -251,9 +251,9 @@ gg-render --write-media DIR
     `channels`. Optional `params` sets base values by parameter name (`"Size"`, `"Density"`, …),
     optional `automation` is a time-ordered list of `{"time", "param", "value"}` points in
     seconds, and optional `notes` a time-ordered list of `{"time", "key", "duration",
-    "channel"}` (channel optional; a duration must round to at least one frame, ruling R17).
-    Values are in each parameter's CLAP value domain (Density 6.0 is 64 Hz). The render is
-    exactly `durationSeconds` long.
+    "channel"}` (channel optional). A note whose Off would fall on its On's frame is bad input
+    (ruling R17). Values are in each parameter's CLAP value domain (Density 6.0 is 64 Hz). The
+    render is exactly `durationSeconds` long.
   - **Instrument mode** (`"mode": "instrument"`) runs Giga Grains' `Processor` the same way over
     a `sample` (a built-in signal or a `file`, loaded and converted with `gg-media`), with no
     `channels`. Its Position is the fraction of the sample, 0–1, and it is silent until a note.
