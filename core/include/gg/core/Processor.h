@@ -116,8 +116,9 @@ struct NoteEvent
 ///
 /// **The sample source** (spec §6.4). The plugin's main thread offers prepared sources through
 /// sources(), each with the parameter values of a session restored while active (D8), if any.
-/// Each process() call starts with takeOffers(): it hands the engine's retired sources back to
-/// sources() (Engine::takeRetiredSource → SourceExchange::retire), polls for a new offer, applies
+/// Each process() call starts with takeOffers(), and ends by handing back what retired during
+/// it. takeOffers() hands the engine's retired sources back to sources()
+/// (Engine::takeRetiredSource → SourceExchange::retire), polls for a new offer, applies
 /// its values at once (as setBase does), and holds its source until Engine::adoptSource accepts
 /// it: at once, unless two sources are still in play, and then at the start of a later call,
 /// within Size. So an offer's values apply from the first call that takes it, and its source from
@@ -255,6 +256,8 @@ class Processor
         int64_t callStart; ///< The absolute sample of the call's first frame.
     };
 
+    /// Hands every source the engine has retired back to sources_ (SourceExchange::retire).
+    void handBackRetired() noexcept SST_CPPUTILS_NONBLOCKING;
     /// Renders the absolute samples [from, to) of the current call.
     void render(const Buffers &b, int64_t from, int64_t to) noexcept SST_CPPUTILS_NONBLOCKING;
     /// Moves the pending changes into the base and modulation values, and the pending notes'

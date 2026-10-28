@@ -80,8 +80,8 @@ struct SampleStatus
 /// rate, or, when the source it has is at another rate, decodes the file again (the decoded
 /// original isn't kept, spec §6.4) and converts it. So the first block after any activation
 /// renders the same whatever the machine's speed. If the file has gone or changed by then, the
-/// old source stays: the engine scales each grain's rate by source rate / output rate, so it
-/// plays at the right pitch.
+/// old source stays (the engine scales each grain's rate by source rate / output rate, so it
+/// plays at the right pitch), the manifest entry stays, and the status is Missing or Changed.
 class SampleLoader
 {
   public:
@@ -203,7 +203,8 @@ class SampleLoader
     std::shared_ptr<const PreparedSource> prepare(std::shared_ptr<SampleBuffer> decoded,
                                                   double rate) const;
     /// activate()'s conversion of the current sample at `rate`, when its source is at another:
-    /// the file decoded again and converted, or, if it has gone or changed, the old source kept.
+    /// the file decoded again and converted, or, if it has gone or changed, the old source kept
+    /// and the status Missing or Changed.
     void convertNow(double rate) noexcept;
     void setLoadedStatus(std::string message);
     void setError(std::string fileName, std::string message);

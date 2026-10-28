@@ -166,14 +166,49 @@ TEST_CASE("exchange hands values over with their source, as one offer", "[core]"
     REQUIRE(polled.hasValues);
     CHECK(polled.values == values);
 
-    // A newer offer without values replaces an untaken one with values: latest wins, whole.
-    auto b = makeSource();
-    const std::weak_ptr<const PreparedSource> weakB = b;
-    exchange.offer(std::move(b), &values);
-    exchange.offer(nullptr);
-    CHECK(weakB.expired());
+    // Taken: a later offer without values brings none.
+    exchange.offer(makeSource());
     REQUIRE(exchange.poll(polled));
-    CHECK(polled.source == nullptr);
+    CHECK_FALSE(polled.hasValues);
+}
+
+TEST_CASE("exchange carries untaken values forward into a newer offer", "[core]")
+{
+    // A session restored while the audio thread isn't processing, then a load: the load's offer
+    // replaces the restore's, whose source is freed, but the restore's values still arrive,
+    // with the newest source. Twice over, too.
+    SourceExchange exchange;
+    gg::core::ParamValues values{};
+    values[2] = 3.0f;
+    auto a = makeSource();
+    const std::weak_ptr<const PreparedSource> weakA = a;
+    exchange.offer(std::move(a), &values);
+    auto b = makeSource();
+    exchange.offer(std::move(b));
+    auto c = makeSource();
+    const PreparedSource *rawC = c.get();
+    exchange.offer(std::move(c));
+    CHECK(weakA.expired());
+    CHECK(exchange.held() == 1);
+    SourceOffer polled;
+    REQUIRE(exchange.poll(polled));
+    CHECK(polled.source == rawC);
+    REQUIRE(polled.hasValues);
+    CHECK(polled.values == values);
+
+    // Newer values replace carried ones.
+    gg::core::ParamValues newer = values;
+    newer[2] = 5.0f;
+    exchange.offer(nullptr, &values);
+    exchange.offer(nullptr, &newer);
+    exchange.offer(nullptr);
+    REQUIRE(exchange.poll(polled));
+    REQUIRE(polled.hasValues);
+    CHECK(polled.values == newer);
+
+    // Once taken, they aren't carried again.
+    exchange.offer(nullptr);
+    REQUIRE(exchange.poll(polled));
     CHECK_FALSE(polled.hasValues);
 }
 

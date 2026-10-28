@@ -4,6 +4,7 @@
 
 #include "SampleLoader.h"
 
+#include <cassert>
 #include <exception>
 #include <new>
 #include <system_error>
@@ -268,27 +269,35 @@ std::shared_ptr<const PreparedSource> SampleLoader::activate(double sampleRate) 
 void SampleLoader::convertNow(double rate) noexcept
 {
     // The file again, as long as it is still the manifest's sample. Otherwise the old source
-    // stays: it plays at the right pitch, and the status says what it said.
+    // stays (it plays at the right pitch), the entry stays, and the status says the file is
+    // missing or has changed (ruling R18).
+    assert(entry_.has_value());
     std::string fileName;
     try
     {
         fileName = nameOf(entry_->absolutePath);
-        media::LoadedSample loaded =
-            media::loadSample(pathOf(entry_->absolutePath), readSettings());
-        if (!loaded.error.empty() || loaded.entry.sha256Hex != entry_->sha256Hex)
+        const fs::path file = pathOf(entry_->absolutePath);
+        media::LoadedSample loaded = media::loadSample(file, readSettings());
+        if (loaded.error.empty() && loaded.entry.sha256Hex == entry_->sha256Hex)
         {
+            source_ = prepare(std::move(loaded.decoded), rate);
             return;
         }
-        source_ = prepare(std::move(loaded.decoded), rate);
-    }
-    catch (const std::bad_alloc &)
-    {
-        // No memory for the new one: the old source stays, and the status says why.
-        setErrorNoThrow(std::current_exception(), fileName);
+        // Something at the saved path that isn't the saved audio (other content, or no longer
+        // audio at all) has changed; nothing there is missing.
+        std::error_code error;
+        const bool present = fs::is_regular_file(file, error);
+        status_ = {present ? SampleState::Changed : SampleState::Missing,
+                   fileName,
+                   present ? kChanged : kMissing,
+                   0.0,
+                   0,
+                   0.0};
     }
     catch (...)
     {
-        // Anything else (the file system): keep the old source.
+        // No memory, or the file system: the old source stays, and the status says why.
+        setErrorNoThrow(std::current_exception(), fileName);
     }
 }
 

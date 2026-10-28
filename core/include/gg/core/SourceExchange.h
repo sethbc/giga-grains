@@ -41,9 +41,11 @@ struct SourceOffer
 ///
 /// **The two directions.**
 /// - The mailbox, main → audio: a triple buffer of SourceOffer, latest wins. An offer the audio
-///   side hasn't polled when the next one comes is dropped, never handed over, values and all.
-///   An offer of no source is an offer too, so a restored session whose sample is missing goes
-///   silent (spec §6.4).
+///   side hasn't polled when the next one comes is replaced, and its source freed, never handed
+///   over; but its values, if the newer offer has none, are carried forward into it, so a
+///   restored session's values are never lost to a load offered before the audio side took
+///   them. An offer of no source is an offer too, so a restored session whose sample is missing
+///   goes silent (spec §6.4).
 /// - The hand-back, audio → main: a single-producer, single-consumer ring of raw pointers,
 ///   kRetireCapacity long. A source enters it once. Between two collect() calls only sources the
 ///   exchange holds can enter it, and with the Processor's use it holds a handful (the engine's
@@ -69,9 +71,15 @@ class SourceExchange
     SourceExchange &operator=(const SourceExchange &) = delete;
 
     /// Main thread. Offers `s` (nullptr: no source) to the audio side, with `values` if given,
-    /// replacing an offer not yet polled, which is dropped and its source freed here. Then
-    /// collects (collect()). Allocates.
+    /// replacing an offer not yet polled, whose source is freed here. Without `values`, the
+    /// replaced offer's values, if any, go with `s` (the class comment). Then collects
+    /// (collect()). Allocates, unless reserve() was called since the last offer or hold.
     void offer(std::shared_ptr<const PreparedSource> s, const ParamValues *values = nullptr);
+
+    /// Main thread. Makes room for one more source, so that the next offer() or hold() doesn't
+    /// allocate: an all-or-nothing caller allocates here, before it changes anything. Throws
+    /// std::bad_alloc.
+    void reserve();
 
     /// Main thread. Holds `s` without offering it, for a caller that gives it to the engine
     /// itself while the audio side is stopped (Processor::setSourceNow), and returns its raw
@@ -110,6 +118,10 @@ class SourceExchange
     std::atomic<uint8_t> middle_{1}; // a slot index, plus kFresh when it holds an untaken offer
     uint8_t back_{0};                // the main thread's slot
     uint8_t front_{2};               // the audio thread's slot
+    // The values of the newest offer published, if it had any: carried forward while it stays
+    // untaken. Main thread.
+    bool lastHadValues_{false};
+    ParamValues lastValues_{};
 
     // The hand-back ring: the audio thread writes ring_[tail_ % capacity] then advances tail_;
     // the main thread reads up to tail_ and advances head_.

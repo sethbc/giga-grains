@@ -214,7 +214,8 @@ class GigaGrainsPlugin : public plugHelper_t
     void storeBases() noexcept SST_CPPUTILS_NONBLOCKING;
     /// Audio thread. When a source the audio thread handed back awaits the main thread's
     /// collect, asks the host for on_main_thread (clap_host.request_callback, thread-safe), once
-    /// until that call comes, so every retired source is freed soon after it retires.
+    /// until that call comes, so every retired source is freed soon after it retires. Its
+    /// real-time safety is the host's: see the call.
     void requestCollect() noexcept SST_CPPUTILS_NONBLOCKING;
 
     const Product product_;

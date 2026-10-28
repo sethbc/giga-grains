@@ -223,8 +223,14 @@ void GigaGrainsPlugin::onMainThread() noexcept
     }
     if (processor_ != nullptr)
     {
-        // Cleared first: a source handed back after the collect asks for another call.
-        collectRequested_.store(false, std::memory_order_release);
+        // Cleared first: a source handed back after the collect asks for another call. The
+        // fence pairs with requestCollect's: the flag's store and the ring's load here, the
+        // ring's store and the flag's exchange there, are a store-buffering pattern, and without
+        // both fences each side could miss the other's store, leaving a retired source
+        // uncollected with no call requested. With them, either this collect sees the source or
+        // that exchange sees the flag cleared and asks again.
+        collectRequested_.store(false, std::memory_order_relaxed);
+        std::atomic_thread_fence(std::memory_order_seq_cst);
         try
         {
             processor_->sources().collect();
@@ -347,10 +353,17 @@ void GigaGrainsPlugin::storeBases() noexcept
 
 void GigaGrainsPlugin::requestCollect() noexcept
 {
+    // Pairs with onMainThread's fence (see there): the retire's store to the ring comes before
+    // it, the flag's exchange after.
+    std::atomic_thread_fence(std::memory_order_seq_cst);
     // At most one request outstanding: on_main_thread clears the flag before it collects.
     if (processor_->sources().awaitingCollect() &&
         !collectRequested_.exchange(true, std::memory_order_acq_rel))
     {
+        // clap_host.request_callback from the audio thread. CLAP marks it thread-safe, not
+        // real-time safe, so this depends on the host: every clap-wrapper format (VST3, AU,
+        // standalone) only sets an atomic flag there, and only a native CLAP host's own
+        // implementation could lock or allocate. It runs at most once per retired source.
         _host.requestCallback();
     }
 }
@@ -753,9 +766,17 @@ bool GigaGrainsPlugin::stateLoad(const clap_istream *stream) noexcept
         {
             return false;
         }
+        // The one allocation left before the state takes effect, made before anything changes:
+        // room in the exchange for the offer below, which then can't throw, so a bad_alloc here
+        // still changes nothing (all or nothing).
+        if (loader_ != nullptr && processor_ != nullptr)
+        {
+            processor_->sources().reserve();
+        }
         // The instrument's sample, found and decoded before this returns (D8); while active,
         // offered to the audio thread below in one hand-off with the values, so the process()
         // that takes them applies both. The FX ignores a sample (a state from the instrument).
+        // restore() never throws: a sample it can't load leaves its status saying why.
         std::shared_ptr<const gg::PreparedSource> source;
         if (loader_ != nullptr)
         {
@@ -777,7 +798,7 @@ bool GigaGrainsPlugin::stateLoad(const clap_istream *stream) noexcept
         {
             if (loader_ != nullptr)
             {
-                processor_->sources().offer(std::move(source), &values);
+                processor_->sources().offer(std::move(source), &values); // reserved: no throw
             }
             else
             {

@@ -291,25 +291,24 @@ void Processor::setSourceNow(std::shared_ptr<const PreparedSource> s)
         hasPendingSource_ = false;
     }
     // A retired source waiting would leave no room for the ones the replacement hands back.
-    while (const PreparedSource *retired = engine_.takeRetiredSource())
-    {
-        sources_.retire(retired);
-    }
+    handBackRetired();
     engine_.replaceSource(sources_.hold(std::move(s)));
+    handBackRetired();
+    sources_.collect();
+}
+
+void Processor::handBackRetired() noexcept
+{
     while (const PreparedSource *retired = engine_.takeRetiredSource())
     {
         sources_.retire(retired);
     }
-    sources_.collect();
 }
 
 bool Processor::takeOffers() noexcept
 {
     // A retired source first: one waiting to be taken would keep the engine from adopting.
-    while (const PreparedSource *retired = engine_.takeRetiredSource())
-    {
-        sources_.retire(retired);
-    }
+    handBackRetired();
     SourceOffer offer;
     const bool offered = sources_.poll(offer);
     if (offered)
@@ -446,6 +445,10 @@ void Processor::process(const float *const *in, uint32_t numInChannels, float *c
         applyPending();
     }
     render(buffers, rendered, end);
+    // A source that retired in this call goes back now, not at the next call's start: the host
+    // may not call again for a while (it stopped processing), and the main thread can only free
+    // what was handed back.
+    handBackRetired();
 
     for (uint32_t c = 2; c < numOutChannels; ++c)
     {

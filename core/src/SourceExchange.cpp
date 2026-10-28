@@ -22,14 +22,35 @@ SourceExchange::~SourceExchange() = default;
 void SourceExchange::offer(std::shared_ptr<const PreparedSource> s, const ParamValues *values)
 {
     const PreparedSource *raw = hold(std::move(s)); // before the audio side can see it
-    SourceOffer &mine = slots_[back_];
-    mine.source = raw;
-    mine.hasValues = values != nullptr;
-    mine.values = values != nullptr ? *values : ParamValues{};
+    // Values the audio side may not have taken yet: those of the newest offer published, when
+    // it is still untaken. An offer without values replacing it carries them forward, so a
+    // restored session's values are never lost to a load that comes before the audio thread
+    // takes them; newer values replace them.
+    const uint8_t observed = middle_.load(std::memory_order_acquire);
+    const bool carry = values == nullptr && lastHadValues_ && (observed & kFresh) != 0;
+    const auto fill = [&](bool withCarried) {
+        SourceOffer &mine = slots_[back_];
+        mine.source = raw;
+        mine.hasValues = values != nullptr || withCarried;
+        mine.values = values != nullptr ? *values : (withCarried ? lastValues_ : ParamValues{});
+    };
+    fill(carry);
+    const auto published = static_cast<uint8_t>(back_ | kFresh);
     // Release: the audio side that takes this slot sees the offer and the source fully built.
     // Acquire: the slot we get back is one the audio side has finished reading.
-    const uint8_t old =
-        middle_.exchange(static_cast<uint8_t>(back_ | kFresh), std::memory_order_acq_rel);
+    uint8_t old = observed;
+    if (!middle_.compare_exchange_strong(old, published, std::memory_order_acq_rel,
+                                         std::memory_order_acquire))
+    {
+        // The audio side took the untaken offer in between, values and all: none to carry. Only
+        // poll() changes the middle slot besides us, and only to an untaken-free one, so it
+        // can't change again before this exchange.
+        fill(false);
+        old = middle_.exchange(published, std::memory_order_acq_rel);
+    }
+    // What the audio side may not have taken yet now: this offer's values, if it has any.
+    lastHadValues_ = slots_[back_].hasValues;
+    lastValues_ = slots_[back_].values; // only the main thread writes slots: no race with poll()
     back_ = old & kIndex;
     if ((old & kFresh) != 0)
     {
@@ -38,6 +59,8 @@ void SourceExchange::offer(std::shared_ptr<const PreparedSource> s, const ParamV
     }
     collect();
 }
+
+void SourceExchange::reserve() { owned_.reserve(owned_.size() + 1); }
 
 const PreparedSource *SourceExchange::hold(std::shared_ptr<const PreparedSource> s)
 {

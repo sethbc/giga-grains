@@ -602,10 +602,11 @@ TEST_CASE("a reactivation at a new rate converts before the first block (R18)", 
     }
 }
 
-TEST_CASE("a reactivation keeps the old source when its file has gone", "[plugin]")
+TEST_CASE("a reactivation keeps the old source when its file has gone or changed", "[plugin]")
 {
     // R18: nothing to convert again, so the 44.1 kHz source plays on at 48 kHz, its grains'
-    // rates scaled by 44100 / 48000, at the right pitch.
+    // rates scaled by 44100 / 48000, at the right pitch; the entry stays, and the status says
+    // what happened to the file.
     const fs::path dir = setUp("reactivate-gone");
     const fs::path file = gg::test::writeSineWav(dir / "gone.wav", 44100, 4.0, 220.0);
     PluginUnderTest instrument(kInstrumentId);
@@ -614,14 +615,23 @@ TEST_CASE("a reactivation keeps the old source when its file has gone", "[plugin
     REQUIRE(instrument.loadSampleState(file));
     const std::string manifest = savedManifest(instrument);
     instrument.deactivate();
-    fs::remove(file);
+    SampleState expected = SampleState::Missing;
+    SECTION("gone") { fs::remove(file); }
+    SECTION("changed")
+    {
+        gg::test::writeSineWav(file, 44100, 4.0, 330.0);
+        expected = SampleState::Changed;
+    }
     REQUIRE(instrument.activate(48000.0, 512));
+    const SampleStatus status = loaderOf(instrument).status();
+    CHECK(status.state == expected);
+    CHECK(status.fileName == "gone.wav");
+    CHECK_FALSE(status.message.empty());
     RateLog log;
     instrument.impl().processor()->setEventSink(&RateLog::record, &log);
     Stereo out(12000);
     renderNote(instrument, out, 512);
     CHECK(peak(out.left) > 0.05f);
-    CHECK(loaderOf(instrument).status().state == SampleState::Loaded);
     CHECK(savedManifest(instrument) == manifest);
     const double scaled = gg::exp2Det(0.0) * 44100.0 / 48000.0;
     REQUIRE(log.count > 0);
@@ -629,6 +639,34 @@ TEST_CASE("a reactivation keeps the old source when its file has gone", "[plugin
     {
         CHECK(log.grains[g].rate == scaled);
     }
+}
+
+TEST_CASE("a load before the audio thread takes a restore keeps the restore's values", "[plugin]")
+{
+    // Active but not processing (between stop_processing and start_processing): a session is
+    // restored, then a file loaded. The load's offer replaces the restore's, but the restored
+    // values still reach the Processor, matching what the host reads.
+    const fs::path dir = setUp("values-carried");
+    const fs::path first = gg::test::sineSampleFile("values-carried");
+    const fs::path second = gg::test::writeSineWav(dir / "second.wav", 48000, 1.0, 330.0);
+    LoaderHost host;
+    PluginUnderTest instrument(kInstrumentId, host.clap());
+    REQUIRE(instrument.valid());
+    REQUIRE(instrument.activate(48000.0, 512));
+    gg::core::SessionState s;
+    REQUIRE(gg::core::decodeState(instrument.save(), gg::core::Mode::Instrument, s));
+    const auto density = static_cast<std::size_t>(gg::core::ParamSlot::Density);
+    s.values[density] = 3.0f;
+    s.sample = gg::test::entryOf(first);
+    REQUIRE(instrument.load(gg::core::encodeState(s)));
+    loaderOf(instrument).requestLoad(second);
+    REQUIRE(settle(instrument).state == SampleState::Loaded);
+    CHECK(instrument.value(gg::core::paramId(gg::core::ParamSlot::Density)) == 3.0);
+
+    renderBlocks(instrument, 1);
+    CHECK(instrument.impl().processor()->base(gg::core::ParamSlot::Density) == 3.0f);
+    CHECK(instrument.value(gg::core::paramId(gg::core::ParamSlot::Density)) == 3.0);
+    CHECK(loaderOf(instrument).status().fileName == "second.wav");
 }
 
 TEST_CASE("the activation's source is freed once a load replaces it", "[plugin]")
