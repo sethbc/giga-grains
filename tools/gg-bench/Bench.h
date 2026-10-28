@@ -19,12 +19,24 @@
 //
 // Time is wall-clock (std::chrono::steady_clock). gg-bench's main() asks for a performance core
 // before calling run(); the library itself doesn't touch the thread's scheduling.
+//
+// The cases (spec §5):
+// - the M0 prototype kernels (Kernels.h), each over the M0 workload: Options::grains grains of
+//   100 ms over 60 s of stereo noise;
+// - `reference`: renderHermiteSimd on that workload, frozen as the CPU gate's yardstick;
+// - the engine cases, each a gg::Engine at 48 kHz rendering one Cloud stream through
+//   Engine::process: engine-sample (X, the headline), engine-live and engine-full-pool.
+// Every engine case's ratio, ns per grain-sample over reference's in the same round, cancels the
+// machine's speed (ruling 3). A baseline file records each ratio per CI leg; compare() checks a
+// report against it, report-only through M1.
 
 #include <cstdint>
 #include <functional>
 #include <string>
 #include <utility>
 #include <vector>
+
+#include <nlohmann/json_fwd.hpp>
 
 namespace gg::bench
 {
@@ -48,11 +60,32 @@ struct CaseResult
     double cpuPctOneCoreAt48k{0.0};         // from the median
 };
 
+/// An engine case's cost relative to the reference kernel, at one block size: runs[r] is the
+/// case's ns per grain-sample in round r over reference's in the same round.
+struct Ratio
+{
+    std::string name;
+    uint32_t blockSize{0};
+    std::vector<double> runs; // one per round, in round order
+    double median{0.0}, iqr{0.0};
+};
+
 struct Report
 {
     Options options;
     std::string machine, compiler;
     std::vector<CaseResult> results;
+    std::vector<Ratio> ratios; // computeRatios(results)
+};
+
+/// One ratio checked against a baseline: regressed when ratio > limit = the baseline's ratio
+/// × (1 + its tolerance). A ratio the baseline doesn't have has a NaN limit and isn't regressed.
+struct Verdict
+{
+    std::string name;
+    uint32_t blockSize{0};
+    double ratio{0.0}, limit{0.0};
+    bool regressed{false};
 };
 
 /// One timed configuration: a case at one block size, with the state it keeps between rounds.
@@ -95,19 +128,39 @@ std::vector<std::string> caseNames();
 /// Called after each round with the round just finished (1-based) and the round count.
 using Progress = std::function<void(int round, int rounds)>;
 
-/// Throws std::invalid_argument for an unknown case, a run length that isn't positive and
-/// finite, fewer than 1 round or 0 grains.
+/// Throws std::invalid_argument for an unknown case, a run length that isn't in (0, 3600]
+/// seconds, fewer than 1 round or 0 grains.
 void validate(const Options &options);
 
 /// Times the cases options.cases names (all of them when it's empty), each at block sizes 32, 64
-/// and 256. The results are in caseNames() order, then block size order. Calls validate() first,
-/// so it throws before timing anything.
+/// and 256. The results are in caseNames() order, then block size order; the ratios are
+/// computeRatios()'s. Calls validate() first, so it throws before timing anything.
 Report run(const Options &options, const Progress &progress = {});
 
+/// A ratio for every engine result whose block size has a `reference` result, in the results'
+/// order: runs[r] = engine.nsPerGrainSample[r] / reference.nsPerGrainSample[r], with their
+/// median and IQR. Throws std::invalid_argument if the two have different run counts.
+std::vector<Ratio> computeRatios(const Report &report);
+
 /// The report as JSON schema 2: schemaVersion, machine, compiler, commit, runSeconds, rounds,
-/// results (each CaseResult's fields, with nsPerGrainSample as "runs") and ratios (empty until
-/// the engine cases arrive).
+/// results (each CaseResult's fields, with nsPerGrainSample as "runs") and ratios (each Ratio's
+/// fields). Invalid UTF-8 in a string (the commit, say) is replaced, never an error.
 std::string toJson(const Report &report);
+
+/// A report's ratios checked against a baseline, in the report's order. The baseline is
+///     {"schemaVersion": 1, "leg": "<preset>", "commit": "<sha>",
+///      "ratios": [{"case", "blockSize", "ratio", "tolerance"}, ...]}
+/// and each limit is ratio × (1 + tolerance). Throws std::invalid_argument if the baseline isn't
+/// that shape, with a positive finite ratio and a finite tolerance >= 0 in every entry, even when
+/// the report has no ratios.
+std::vector<Verdict> compare(const Report &report, const nlohmann::json &baseline);
+
+/// A baseline for `leg` from parsed gg-bench JSON reports (schema 2), which must all have the
+/// same (case, block size) ratios. Each entry's ratio is the median over the runs of each run's
+/// median ratio, and its tolerance max(0.05, 2 × (max − min) / median). The commit is the runs'
+/// commit, or their distinct commits joined by commas. Throws std::invalid_argument for no runs,
+/// a run that isn't schema 2 or runs whose ratios differ.
+nlohmann::json makeBaseline(const std::string &leg, const std::vector<nlohmann::json> &runs);
 
 /// The order round `round` (r) runs `configurations` (n) configurations in. Even rounds run
 /// 0, 1, ..., n - 1 rotated left by r: order[i] = (i + r) mod n. Odd rounds run that order's

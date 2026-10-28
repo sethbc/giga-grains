@@ -3,8 +3,9 @@
 # Copyright 2026, the Giga Grains authors (see git history)
 #
 # gg-bench, the CPU benchmark (INTENT §16). gg-bench-kernels is the header-only set of prototype
-# grain kernels in Kernels.h. gg-bench-lib (gg::bench) times them in interleaved rounds and
-# writes the JSON (Bench.h); gg-bench and gg-tests both link it.
+# grain kernels in Kernels.h. gg-bench-lib (gg::bench) times them, the reference kernel and the
+# real-engine cases in interleaved rounds, computes the ratios, writes the JSON and checks a
+# baseline (Bench.h); gg-bench and gg-tests both link it.
 
 add_library(gg-bench-kernels INTERFACE)
 target_include_directories(gg-bench-kernels INTERFACE ${CMAKE_CURRENT_SOURCE_DIR})
@@ -14,9 +15,9 @@ add_library(gg::bench-kernels ALIAS gg-bench-kernels)
 add_library(gg-bench-lib STATIC Bench.cpp)
 add_library(gg::bench ALIAS gg-bench-lib)
 target_include_directories(gg-bench-lib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+# nlohmann is PUBLIC: compare() and makeBaseline() take nlohmann::json.
 target_link_libraries(gg-bench-lib
-        PUBLIC gg::bench-kernels gg::compiler-options
-        PRIVATE nlohmann_json::nlohmann_json
+        PUBLIC gg::bench-kernels gg::compiler-options nlohmann_json::nlohmann_json
         )
 target_compile_definitions(gg-bench-lib PRIVATE
         GG_BENCH_COMPILER="${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}")

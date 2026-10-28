@@ -3,7 +3,8 @@
 // Copyright 2026, the Giga Grains authors (see git history)
 
 // The kernel cases time the prototype grain kernels in Kernels.h. They are the M0 kernel
-// benchmark spike, whose numbers set the CPU target in INTENT §16.
+// benchmark spike, whose numbers set the CPU target in INTENT §16. The reference case is one of
+// them, renderHermiteSimd, under its own name.
 //
 // The workload is a 60 s stereo noise source at 48 kHz, read by Options::grains grains (2,000 by
 // default) of 100 ms. Each grain has a random position and a random rate in [0.5, 2]. A timed
@@ -12,9 +13,18 @@
 // sums the output into a checksum, so the compiler can't drop the work; that costs about one add
 // per output sample, against 2,000 grain-samples.
 //
-// Every configuration (kernel x block size) shares the one read-only source, and starts from the
-// same grains; each then keeps its own grains from round to round. Its warm-up renders for a
-// quarter of a run.
+// Every kernel configuration (kernel x block size) shares the one read-only source, and starts
+// from the same grains; each then keeps its own grains from round to round. Its warm-up renders
+// for a quarter of a run.
+//
+// The engine cases (spec §5) each own a gg::Engine (48 kHz, maxBlockSize 256, seeded with the
+// bench seed) rendering one Cloud stream of Options::grains overlapping grains of 100 ms
+// (density grains / 0.1 Hz, periodic) at +7 semitones, stereo 1, over the same noise: in Sample
+// mode the noise is the source; in Live mode it is the input, fed block by block. The timed block
+// is one Engine::process call. A configuration's grain count is the mean of activeGrains() after
+// each timed block, and a run's ns per grain-sample is its time over the frames it rendered times
+// that run's mean. Each warms up for 2 grain durations of audio, engine-live for 16 s, so its
+// ring is full.
 
 #include "Bench.h"
 
@@ -47,6 +57,9 @@
 #include "Kernels.h"
 #include "gg/core/DenormalGuard.h"
 #include "gg/core/Rng.h"
+#include "gg/engine/Engine.h"
+#include "gg/source/SampleBuffer.h"
+#include "gg/source/SourceMode.h"
 
 namespace gg::bench
 {
@@ -61,6 +74,11 @@ constexpr double kMaxRate = 2.0;
 constexpr uint32_t kMaxBlockSize = 256;
 constexpr std::array<uint32_t, 3> kBlockSizes{32, 64, kMaxBlockSize};
 constexpr uint64_t kSeed = 0x67672d62656e6368ull; // "gg-bench"
+constexpr double kMaxRunSeconds = 3600.0; // beyond it, duration_cast to the clock could overflow
+constexpr const char *kReference = "reference";
+// The live case's input wraps around the noise without splitting a block.
+static_assert(kSourceFrames % kMaxBlockSize == 0 && kMaxBlockSize % 32 == 0 &&
+              kMaxBlockSize % 64 == 0);
 
 struct KernelInfo
 {
@@ -75,6 +93,9 @@ constexpr std::array<KernelInfo, 5> kKernels{{
     {"linear-simd", renderLinearSimd},
     {"hermite-simd", renderHermiteSimd},
 }};
+
+/// The CPU gate's yardstick: M0's hermite-simd, frozen (see Kernels.h).
+constexpr KernelInfo kReferenceKernel{kReference, renderHermiteSimd};
 
 /// Which quantity a draw is for; each gets its own RNG stream.
 enum Stream : uint32_t
@@ -93,26 +114,30 @@ double draw(Stream stream, uint64_t index)
         gg::rng::hash({kSeed, 0, stream, gg::rng::Field::SignalNoise, index}));
 }
 
-/// The 60 s stereo noise source every kernel configuration reads.
-struct KernelSource
+/// The 60 s stereo noise every configuration reads: the kernels' source, engine-sample's
+/// SampleBuffer and engine-live's input.
+struct Noise
 {
-    std::vector<float> srcL, srcR;
+    std::shared_ptr<gg::SampleBuffer> buffer;
 
-    KernelSource()
-        : srcL(static_cast<std::size_t>(kSourceFrames)),
-          srcR(static_cast<std::size_t>(kSourceFrames))
+    Noise() : buffer(std::make_shared<gg::SampleBuffer>(2, kSourceFrames, kSampleRate))
     {
-        for (std::size_t i = 0; i < srcL.size(); ++i)
+        float *l = buffer->channel(0);
+        float *r = buffer->channel(1);
+        for (int64_t i = 0; i < kSourceFrames; ++i)
         {
             const auto i64 = static_cast<uint64_t>(i);
-            srcL[i] = static_cast<float>(
+            l[i] = static_cast<float>(
                 0.5 * gg::rng::bipolar(
                           gg::rng::hash({kSeed, 0, kNoiseL, gg::rng::Field::SignalNoise, i64})));
-            srcR[i] = static_cast<float>(
+            r[i] = static_cast<float>(
                 0.5 * gg::rng::bipolar(
                           gg::rng::hash({kSeed, 0, kNoiseR, gg::rng::Field::SignalNoise, i64})));
         }
     }
+
+    const float *left() const { return buffer->channel(0); }
+    const float *right() const { return buffer->channel(1); }
 };
 
 volatile double gSink = 0.0; // the rendered output feeds this, so it can't be optimised away
@@ -122,7 +147,7 @@ volatile double gSink = 0.0; // the rendered output feeds this, so it can't be o
 class KernelConfiguration final : public Configuration
 {
   public:
-    KernelConfiguration(const KernelInfo &kernel, uint32_t blockSize, const KernelSource &source,
+    KernelConfiguration(const KernelInfo &kernel, uint32_t blockSize, const Noise &source,
                         uint32_t grains, double warmUpSeconds)
         : Configuration(kernel.name, "kernel", blockSize), fn_(kernel.fn), source_(source),
           warmUpSeconds_(warmUpSeconds), outL_(blockSize), outR_(blockSize)
@@ -152,8 +177,8 @@ class KernelConfiguration final : public Configuration
         {
             std::fill_n(outL_.begin(), n, 0.0f);
             std::fill_n(outR_.begin(), n, 0.0f);
-            fn_(grains_, source_.srcL.data(), source_.srcR.data(), kSourceFrames, outL_.data(),
-                outR_.data(), n);
+            fn_(grains_, source_.left(), source_.right(), kSourceFrames, outL_.data(), outR_.data(),
+                n);
             advance(n);
             for (uint32_t i = 0; i < n; ++i)
             {
@@ -207,10 +232,160 @@ class KernelConfiguration final : public Configuration
     }
 
     Kernel fn_;
-    const KernelSource &source_;
+    const Noise &source_;
     double warmUpSeconds_;
     GrainBatch grains_;
     uint64_t spawns_{0}; // grains spawned so far; indexes each spawn's draws
+    std::vector<float> outL_, outR_;
+};
+
+/// What an engine case sets up: the engine, its Cloud stream, the source it reads and its
+/// warm-up in seconds of audio.
+struct EngineSetup
+{
+    gg::EngineConfig config;
+    gg::CloudParams params;
+    gg::SourceMode mode{gg::SourceMode::Sample};
+    double warmUpSeconds{0.0};
+};
+
+/// engine-sample, X (ruling 4): the headline's Sample-mode case. Spray 0.45 keeps every read
+/// inside [0.05, 0.95] of the source, so no grain piles up at a clamped end.
+EngineSetup engineSample(uint32_t grains)
+{
+    EngineSetup s;
+    s.config = {.sampleRate = kSampleRate,
+                .maxBlockSize = kMaxBlockSize,
+                .grainCapacity = 4096,
+                .seed = kSeed};
+    s.params = {.densityHz = static_cast<double>(grains) / 0.1,
+                .distribution = 0.0,
+                .grainDurationSec = 0.1,
+                .position = 0.5,
+                .spray = 0.45,
+                .pitchSemitones = 7.0,
+                .stereo = 1.0,
+                .gain = 0.5f};
+    s.warmUpSeconds = 2.0 * s.params.grainDurationSec;
+    return s;
+}
+
+struct EngineCase
+{
+    const char *name;
+    EngineSetup (*setup)(uint32_t grains);
+};
+
+/// The engine cases, in report order. Each is engine-sample with its own changes.
+constexpr std::array<EngineCase, 3> kEngineCases{{
+    {"engine-sample", engineSample},
+    // The FX's figure: the same stream over a 16 s live ring, reading 4 to 12 s behind the head.
+    {"engine-live",
+     [](uint32_t grains) {
+         EngineSetup s = engineSample(grains);
+         s.config.liveSeconds = 16.0;
+         s.mode = gg::SourceMode::Live;
+         s.params.position = 4.0;
+         s.params.spray = 8.0;
+         s.warmUpSeconds = 16.0; // fills the ring
+         return s;
+     }},
+    // Admission under saturation: grains of 1 s at the same density ask for 10x the pool.
+    {"engine-full-pool",
+     [](uint32_t grains) {
+         EngineSetup s = engineSample(grains);
+         s.config.grainCapacity = grains + 48;
+         s.params.grainDurationSec = 1.0;
+         s.warmUpSeconds = 2.0 * s.params.grainDurationSec;
+         return s;
+     }},
+}};
+
+/// One engine case at one block size: an Engine that keeps rendering from round to round.
+class EngineConfiguration final : public Configuration
+{
+  public:
+    EngineConfiguration(const EngineCase &engineCase, uint32_t blockSize, const Noise &noise,
+                        uint32_t grains)
+        : Configuration(engineCase.name, "engine", blockSize), setup_(engineCase.setup(grains)),
+          engine_(setup_.config), noise_(noise), outL_(blockSize), outR_(blockSize)
+    {
+        if (setup_.mode == gg::SourceMode::Sample)
+        {
+            engine_.setSource(noise.buffer);
+        }
+        engine_.setCloudParams(setup_.params);
+        engine_.setSourceMode(setup_.mode);
+    }
+
+    void warmUp() override
+    {
+        const auto frames = static_cast<int64_t>(std::ceil(setup_.warmUpSeconds * kSampleRate));
+        for (int64_t done = 0; done < frames; done += blockSize())
+        {
+            processBlock();
+        }
+    }
+
+    double timeRun(double seconds) override
+    {
+        using Clock = std::chrono::steady_clock;
+        const auto start = Clock::now();
+        const auto deadline = start + std::chrono::duration_cast<Clock::duration>(
+                                          std::chrono::duration<double>(seconds));
+        uint64_t blocks = 0;
+        uint64_t active = 0; // activeGrains() summed over the blocks
+        auto now = start;
+        do
+        {
+            processBlock();
+            active += engine_.activeGrains();
+            ++blocks;
+            now = Clock::now();
+        } while (now < deadline);
+        gSink = gSink + outL_[0] + outR_[blockSize() - 1];
+        timedBlocks_ += blocks;
+        timedActive_ += active;
+
+        const double ns = std::chrono::duration<double, std::nano>(now - start).count();
+        // Frames x the run's mean grains: the grain-samples rendered.
+        const double grainSamples =
+            static_cast<double>(std::max<uint64_t>(active, 1)) * static_cast<double>(blockSize());
+        return ns / grainSamples;
+    }
+
+    double grains() const override
+    {
+        return timedBlocks_ == 0
+                   ? 0.0
+                   : static_cast<double>(timedActive_) / static_cast<double>(timedBlocks_);
+    }
+
+  private:
+    /// One Engine::process call of one block; in Live mode, with the next block of the noise as
+    /// its input.
+    void processBlock()
+    {
+        const uint32_t n = blockSize();
+        float *const out[2] = {outL_.data(), outR_.data()};
+        if (setup_.mode == gg::SourceMode::Live)
+        {
+            const float *const in[2] = {noise_.left() + inputAt_, noise_.right() + inputAt_};
+            engine_.process(in, 2, out, 2, n);
+            inputAt_ = (inputAt_ + n) % kSourceFrames;
+        }
+        else
+        {
+            engine_.process(out, 2, n);
+        }
+    }
+
+    EngineSetup setup_;
+    gg::Engine engine_;
+    const Noise &noise_;
+    int64_t inputAt_{0}; // the live input's next frame in the noise
+    uint64_t timedBlocks_{0};
+    uint64_t timedActive_{0};
     std::vector<float> outL_, outR_;
 };
 
@@ -230,6 +405,9 @@ CaseResult summarise(const Configuration &c, std::vector<double> runs)
     r.median = quantile(runs, 0.5);
     r.min = *std::min_element(runs.begin(), runs.end());
     r.iqr = quantile(runs, 0.75) - quantile(runs, 0.25);
+    // ns per frame x 48,000 frames / 1e9 ns, as a percentage. For an engine case the grains are
+    // the mean over every timed block, so this is the median run's ns per frame to within the
+    // runs' small differences in mean grains.
     r.cpuPctOneCoreAt48k = r.median * r.grains * kSampleRate / 1e9 * 100.0;
     r.nsPerGrainSample = std::move(runs);
     return r;
@@ -298,14 +476,19 @@ std::vector<std::string> caseNames()
     {
         names.emplace_back(k.name);
     }
+    names.emplace_back(kReferenceKernel.name);
+    for (const EngineCase &e : kEngineCases)
+    {
+        names.emplace_back(e.name);
+    }
     return names;
 }
 
 void validate(const Options &options)
 {
-    if (!(options.runSeconds > 0.0) || !std::isfinite(options.runSeconds))
+    if (!(options.runSeconds > 0.0 && options.runSeconds <= kMaxRunSeconds))
     {
-        throw std::invalid_argument("the run length must be a positive number of seconds");
+        throw std::invalid_argument("the run length must be more than 0 and at most 3600 seconds");
     }
     if (options.rounds < 1)
     {
@@ -333,22 +516,39 @@ Report run(const Options &options, const Progress &progress)
     const gg::ScopedDenormalsOff noDenormals;
 
     // 1. Build every configuration, in report order.
-    std::optional<KernelSource> kernelSource;
+    std::optional<Noise> noise; // built once, only if a case is selected
+    const auto source = [&noise]() -> const Noise & {
+        if (!noise)
+        {
+            noise.emplace();
+        }
+        return *noise;
+    };
     std::vector<std::unique_ptr<Configuration>> configurations;
-    for (const KernelInfo &k : kKernels)
+    std::vector<KernelInfo> kernels(kKernels.begin(), kKernels.end());
+    kernels.push_back(kReferenceKernel);
+    for (const KernelInfo &k : kernels)
     {
         if (!selected(options, k.name))
         {
             continue;
         }
-        if (!kernelSource)
-        {
-            kernelSource.emplace();
-        }
         for (const uint32_t n : kBlockSizes)
         {
             configurations.push_back(std::make_unique<KernelConfiguration>(
-                k, n, *kernelSource, options.grains, options.runSeconds / 4.0));
+                k, n, source(), options.grains, options.runSeconds / 4.0));
+        }
+    }
+    for (const EngineCase &e : kEngineCases)
+    {
+        if (!selected(options, e.name))
+        {
+            continue;
+        }
+        for (const uint32_t n : kBlockSizes)
+        {
+            configurations.push_back(
+                std::make_unique<EngineConfiguration>(e, n, source(), options.grains));
         }
     }
 
@@ -377,7 +577,43 @@ Report run(const Options &options, const Progress &progress)
     {
         report.results.push_back(summarise(*configurations[i], std::move(runs[i])));
     }
+    report.ratios = computeRatios(report);
     return report;
+}
+
+std::vector<Ratio> computeRatios(const Report &report)
+{
+    std::vector<Ratio> ratios;
+    for (const CaseResult &c : report.results)
+    {
+        if (c.kind != "engine")
+        {
+            continue;
+        }
+        const auto reference =
+            std::find_if(report.results.begin(), report.results.end(), [&c](const CaseResult &r) {
+                return r.name == kReference && r.blockSize == c.blockSize;
+            });
+        if (reference == report.results.end())
+        {
+            continue;
+        }
+        if (reference->nsPerGrainSample.size() != c.nsPerGrainSample.size() ||
+            c.nsPerGrainSample.empty())
+        {
+            throw std::invalid_argument(c.name + " and " + kReference +
+                                        " have different numbers of runs");
+        }
+        Ratio ratio{.name = c.name, .blockSize = c.blockSize};
+        for (std::size_t r = 0; r < c.nsPerGrainSample.size(); ++r)
+        {
+            ratio.runs.push_back(c.nsPerGrainSample[r] / reference->nsPerGrainSample[r]);
+        }
+        ratio.median = quantile(ratio.runs, 0.5);
+        ratio.iqr = quantile(ratio.runs, 0.75) - quantile(ratio.runs, 0.25);
+        ratios.push_back(std::move(ratio));
+    }
+    return ratios;
 }
 
 std::string toJson(const Report &report)
@@ -397,6 +633,17 @@ std::string toJson(const Report &report)
             {"cpuPctOneCoreAt48k", r.cpuPctOneCoreAt48k},
         });
     }
+    nlohmann::ordered_json ratios = nlohmann::ordered_json::array();
+    for (const Ratio &r : report.ratios)
+    {
+        ratios.push_back({
+            {"name", r.name},
+            {"blockSize", r.blockSize},
+            {"runs", r.runs},
+            {"median", r.median},
+            {"iqr", r.iqr},
+        });
+    }
     const nlohmann::ordered_json j{
         {"schemaVersion", kSchemaVersion},
         {"machine", report.machine},
@@ -405,9 +652,175 @@ std::string toJson(const Report &report)
         {"runSeconds", report.options.runSeconds},
         {"rounds", report.options.rounds},
         {"results", std::move(results)},
-        {"ratios", nlohmann::ordered_json::array()},
+        {"ratios", std::move(ratios)},
     };
-    return j.dump(2) + "\n";
+    return j.dump(2, ' ', false, nlohmann::ordered_json::error_handler_t::replace) + "\n";
+}
+
+namespace
+{
+constexpr int kBaselineSchemaVersion = 1;
+constexpr double kMinTolerance = 0.05;
+
+[[noreturn]] void badBaseline(const std::string &why)
+{
+    throw std::invalid_argument("bad baseline: " + why);
+}
+
+/// Checks a baseline's shape: see compare().
+void checkBaseline(const nlohmann::json &b)
+{
+    if (!b.is_object())
+    {
+        badBaseline("not a JSON object");
+    }
+    if (!b.contains("schemaVersion") || !b["schemaVersion"].is_number_integer() ||
+        b["schemaVersion"].get<int64_t>() != kBaselineSchemaVersion)
+    {
+        badBaseline("schemaVersion must be 1");
+    }
+    for (const char *key : {"leg", "commit"})
+    {
+        if (!b.contains(key) || !b[key].is_string())
+        {
+            badBaseline(std::string(key) + " must be a string");
+        }
+    }
+    if (!b.contains("ratios") || !b["ratios"].is_array())
+    {
+        badBaseline("ratios must be an array");
+    }
+    for (const nlohmann::json &e : b["ratios"])
+    {
+        if (!e.is_object() || !e.contains("case") || !e["case"].is_string() ||
+            !e.contains("blockSize") || !e["blockSize"].is_number_unsigned() ||
+            !e.contains("ratio") || !e["ratio"].is_number() || !e.contains("tolerance") ||
+            !e["tolerance"].is_number())
+        {
+            badBaseline("every ratio needs a case, a blockSize, a ratio and a tolerance");
+        }
+        const auto ratio = e["ratio"].get<double>();
+        const auto tolerance = e["tolerance"].get<double>();
+        if (!(ratio > 0.0) || !std::isfinite(ratio) || !(tolerance >= 0.0) ||
+            !std::isfinite(tolerance))
+        {
+            badBaseline("every ratio must be positive and every tolerance >= 0, both finite");
+        }
+    }
+}
+} // namespace
+
+std::vector<Verdict> compare(const Report &report, const nlohmann::json &baseline)
+{
+    checkBaseline(baseline);
+    std::vector<Verdict> verdicts;
+    for (const Ratio &r : report.ratios)
+    {
+        Verdict v{.name = r.name,
+                  .blockSize = r.blockSize,
+                  .ratio = r.median,
+                  .limit = std::nan(""),
+                  .regressed = false};
+        for (const nlohmann::json &e : baseline["ratios"])
+        {
+            if (e["case"].get<std::string>() == r.name &&
+                e["blockSize"].get<uint64_t>() == r.blockSize)
+            {
+                v.limit = e["ratio"].get<double>() * (1.0 + e["tolerance"].get<double>());
+                v.regressed = v.ratio > v.limit;
+                break;
+            }
+        }
+        verdicts.push_back(std::move(v));
+    }
+    return verdicts;
+}
+
+nlohmann::json makeBaseline(const std::string &leg, const std::vector<nlohmann::json> &runs)
+{
+    if (runs.empty())
+    {
+        throw std::invalid_argument("a baseline needs at least one run");
+    }
+    // Each run's (case, block size) -> its median ratio, in the first run's order.
+    using Key = std::pair<std::string, uint32_t>;
+    std::vector<Key> keys;
+    std::vector<std::vector<double>> medians; // [key][run]
+    std::vector<std::string> commits;
+    for (std::size_t run = 0; run < runs.size(); ++run)
+    {
+        const nlohmann::json &j = runs[run];
+        const std::string which = "run " + std::to_string(run + 1);
+        if (!j.is_object() || !j.contains("schemaVersion") ||
+            !j["schemaVersion"].is_number_integer() ||
+            j["schemaVersion"].get<int64_t>() != kSchemaVersion || !j.contains("ratios") ||
+            !j["ratios"].is_array() || !j.contains("commit") || !j["commit"].is_string())
+        {
+            throw std::invalid_argument(which + " isn't a gg-bench report (schema 2)");
+        }
+        const auto commit = j["commit"].get<std::string>();
+        if (std::find(commits.begin(), commits.end(), commit) == commits.end())
+        {
+            commits.push_back(commit);
+        }
+        const nlohmann::json &ratios = j["ratios"];
+        if (run > 0 && ratios.size() != keys.size())
+        {
+            throw std::invalid_argument(which + " has different ratios from run 1");
+        }
+        for (std::size_t i = 0; i < ratios.size(); ++i)
+        {
+            const nlohmann::json &r = ratios[i];
+            if (!r.is_object() || !r.contains("name") || !r["name"].is_string() ||
+                !r.contains("blockSize") || !r["blockSize"].is_number_unsigned() ||
+                !r.contains("median") || !r["median"].is_number())
+            {
+                throw std::invalid_argument(which + " has a ratio without a name, a blockSize "
+                                                    "and a median");
+            }
+            const Key key{r["name"].get<std::string>(), r["blockSize"].get<uint32_t>()};
+            if (run == 0)
+            {
+                keys.push_back(key);
+                medians.emplace_back();
+            }
+            const auto at = std::find(keys.begin(), keys.end(), key);
+            if (at == keys.end())
+            {
+                throw std::invalid_argument(which + " has a ratio run 1 doesn't: " + key.first +
+                                            " at block " + std::to_string(key.second));
+            }
+            medians[static_cast<std::size_t>(at - keys.begin())].push_back(
+                r["median"].get<double>());
+        }
+    }
+
+    nlohmann::json entries = nlohmann::json::array();
+    for (std::size_t k = 0; k < keys.size(); ++k)
+    {
+        const std::vector<double> &m = medians[k];
+        if (m.size() != runs.size())
+        {
+            throw std::invalid_argument("the runs have different ratios for " + keys[k].first +
+                                        " at block " + std::to_string(keys[k].second));
+        }
+        const double ratio = quantile(m, 0.5);
+        const auto [lo, hi] = std::minmax_element(m.begin(), m.end());
+        const double tolerance = std::max(kMinTolerance, 2.0 * (*hi - *lo) / ratio);
+        entries.push_back({{"case", keys[k].first},
+                           {"blockSize", keys[k].second},
+                           {"ratio", ratio},
+                           {"tolerance", tolerance}});
+    }
+    std::string commit;
+    for (const std::string &c : commits)
+    {
+        commit += (commit.empty() ? "" : ",") + c;
+    }
+    return {{"schemaVersion", kBaselineSchemaVersion},
+            {"leg", leg},
+            {"commit", commit},
+            {"ratios", std::move(entries)}};
 }
 
 std::vector<uint32_t> roundOrder(uint32_t configurations, int round)

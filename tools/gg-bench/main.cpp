@@ -2,21 +2,28 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright 2026, the Giga Grains authors (see git history)
 
-// gg-bench times the prototype grain kernels in Kernels.h. It is the M0 kernel benchmark spike,
-// whose numbers set the CPU target in INTENT §16, made gate-grade for M1 (carry-over B-I2,
-// [133], [132]). With --canvas it times the canvas renderer instead (the M0 canvas stress spike,
-// see below).
+// gg-bench times the prototype grain kernels in Kernels.h, the frozen reference kernel and the
+// real engine. It began as the M0 kernel benchmark spike, whose numbers set the CPU target in
+// INTENT §16, and is gate-grade for M1 (carry-over B-I2, [133], [132]; spec §5). With --canvas
+// it times the canvas renderer instead (the M0 canvas stress spike, see below).
 //
 //   gg-bench [--quick | --seconds S] [--rounds N] [--grains N] [--cases a,b] [--commit SHA]
-//            [--json out.json]
+//            [--json out.json] [--baseline baseline.json]
+//   gg-bench --make-baseline <leg> <out.json> <in.json>...
 //   gg-bench --canvas [--quick] [--json out.json]
 //
 // The timing itself is in Bench.h and Bench.cpp: by default 2,000 grains of 100 ms over a 60 s
-// stereo noise source at 48 kHz, every kernel at block sizes 32, 64 and 256. Each configuration
+// stereo noise source at 48 kHz, every case at block sizes 32, 64 and 256. Each configuration
 // warms up once, then every round times each configuration once, for at least 2 s (0.2 s with
 // --quick), in an order rotated by the round and reversed in odd rounds. The default is 5
-// rounds. gg-bench prints each configuration's median, min and IQR over the rounds; the JSON
-// (schema 2) keeps every run.
+// rounds. gg-bench prints each configuration's median, min and IQR over the rounds, then each
+// engine case's ratio to the reference kernel; the JSON (schema 2) keeps every run.
+//
+// --baseline checks the ratios against a baseline file (tools/gg-bench/baselines/README.md) and
+// prints a verdict for each. The exit status is 0 if none regressed, 3 if any did, 1 for an
+// error (an unreadable or malformed file, say) and 2 for bad usage. CI reports it without failing
+// through M1 (ruling 3). --make-baseline writes a baseline for a CI leg from the JSON of runs
+// already made, and exits.
 //
 // --canvas times gg-ui-core's splat renderer, headless, at 3200 x 1200: a 1600 x 600 canvas on
 // a 2x display. Each frame generates the editor's stress workload (4,096, 8,192 or 16,384
@@ -33,15 +40,20 @@
 #include <cerrno>
 #include <charconv>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <exception>
+#include <fstream>
 #include <limits>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <vector>
+
+#include <nlohmann/json.hpp>
 
 #if defined(__APPLE__)
 #include <pthread.h>
@@ -225,30 +237,40 @@ void usage(std::FILE *f)
     {
         cases += (cases.empty() ? "" : ", ") + c;
     }
-    std::fprintf(f,
-                 "usage: gg-bench [--quick | --seconds S] [--rounds N] [--grains N] [--cases a,b]\n"
-                 "                [--commit SHA] [--json out.json]\n"
-                 "       gg-bench --canvas [--quick] [--json out.json]\n"
-                 "\n"
-                 "Times the prototype grain kernels: 2,000 grains of 100 ms over a 60 s stereo\n"
-                 "noise source at 48 kHz, at block sizes 32, 64 and 256. Every configuration runs\n"
-                 "once per round, for at least 2 s, in an order that changes from round to round;\n"
-                 "each result is the median, min and IQR of its 5 runs.\n"
-                 "\n"
-                 "With --canvas, times the canvas splat renderer instead: clear, splat and\n"
-                 "resolve at 3200 x 1200 with 4,096, 8,192 and 16,384 grains, over 240 frames,\n"
-                 "and prints the results as JSON.\n"
-                 "\n"
-                 "  --quick           runs of 0.2 s instead of 2 s (30 canvas frames, not 240)\n"
-                 "  --seconds S       runs of S seconds (the last of --quick and --seconds wins)\n"
-                 "  --rounds N        N rounds (default 5)\n"
-                 "  --grains N        N grains (default 2000)\n"
-                 "  --cases a,b       only these cases (default all):\n"
-                 "                    %s\n"
-                 "  --commit SHA      the commit to record in the JSON (default \"unknown\")\n"
-                 "  --json out.json   also write the results to out.json\n"
-                 "  --canvas          time the canvas renderer, not the grain kernels\n",
-                 cases.c_str());
+    std::fprintf(
+        f,
+        "usage: gg-bench [--quick | --seconds S] [--rounds N] [--grains N] [--cases a,b]\n"
+        "                [--commit SHA] [--json out.json] [--baseline baseline.json]\n"
+        "       gg-bench --make-baseline <leg> <out.json> <in.json>...\n"
+        "       gg-bench --canvas [--quick] [--json out.json]\n"
+        "\n"
+        "Times the prototype grain kernels, the reference kernel and the engine: 2,000\n"
+        "grains of 100 ms over 60 s of stereo noise at 48 kHz, at block sizes 32, 64 and\n"
+        "256. Every configuration runs once per round, for at least 2 s, in an order\n"
+        "that changes from round to round; each result is the median, min and IQR of its\n"
+        "5 runs. Each engine case's ratio is its time over the reference's, round by\n"
+        "round.\n"
+        "\n"
+        "With --canvas, times the canvas splat renderer instead: clear, splat and\n"
+        "resolve at 3200 x 1200 with 4,096, 8,192 and 16,384 grains, over 240 frames,\n"
+        "and prints the results as JSON.\n"
+        "\n"
+        "  --quick           runs of 0.2 s instead of 2 s (30 canvas frames, not 240)\n"
+        "  --seconds S       runs of S seconds (the last of --quick and --seconds wins)\n"
+        "  --rounds N        N rounds (default 5)\n"
+        "  --grains N        N grains (default 2000)\n"
+        "  --cases a,b       only these cases (default all):\n"
+        "                    %s\n"
+        "  --commit SHA      the commit to record in the JSON (default \"unknown\")\n"
+        "  --json out.json   also write the results to out.json\n"
+        "  --baseline file   check the ratios against a baseline; exit 3 if any regressed\n"
+        "  --make-baseline <leg> <out.json> <in.json>...\n"
+        "                    write a baseline for <leg> from gg-bench JSON runs, and exit\n"
+        "  --canvas          time the canvas renderer, not the grain kernels\n"
+        "\n"
+        "Exit status: 0 done (no ratio regressed), 1 error, 2 bad usage, 3 a ratio\n"
+        "regressed.\n",
+        cases.c_str());
 }
 
 /// The whole of s as a double.
@@ -298,16 +320,115 @@ bool parseCases(std::string_view s, std::vector<std::string> &out)
 void printReport(const gg::bench::Report &report)
 {
     const gg::bench::Options &o = report.options;
-    std::printf("\n%-16s %6s %12s %12s %12s %12s\n", "case", "block", "median", "min", "IQR",
-                "% core @48k");
+    std::printf("\n%-16s %6s %9s %12s %12s %12s %12s\n", "case", "block", "grains", "median", "min",
+                "IQR", "% core @48k");
     for (const gg::bench::CaseResult &r : report.results)
     {
-        std::printf("%-16s %6u %12.4f %12.4f %12.4f %12.3f\n", r.name.c_str(), r.blockSize,
-                    r.median, r.min, r.iqr, r.cpuPctOneCoreAt48k);
+        std::printf("%-16s %6u %9.1f %12.4f %12.4f %12.4f %12.3f\n", r.name.c_str(), r.blockSize,
+                    r.grains, r.median, r.min, r.iqr, r.cpuPctOneCoreAt48k);
     }
     std::printf("\nmedian, min and IQR: ns per stereo grain-sample over %d rounds of >= %g s; "
-                "%% core from the median\n",
+                "%% core from the median\n"
+                "grains: an engine case's mean active grains\n",
                 o.rounds, o.runSeconds);
+
+    if (report.ratios.empty())
+    {
+        return;
+    }
+    std::printf("\n%-16s %6s %12s %12s\n", "ratio", "block", "median", "IQR");
+    for (const gg::bench::Ratio &r : report.ratios)
+    {
+        std::printf("%-16s %6u %12.4f %12.4f\n", r.name.c_str(), r.blockSize, r.median, r.iqr);
+    }
+    std::printf("\nratio: the case's ns per grain-sample over reference's, in the same round; "
+                "median and IQR over the rounds\n");
+}
+
+/// Prints the verdicts; returns the number that regressed.
+std::size_t printVerdicts(const std::vector<gg::bench::Verdict> &verdicts, const std::string &path,
+                          const nlohmann::json &baseline)
+{
+    std::printf("\nbaseline: %s (leg %s, commit %s)\n", path.c_str(),
+                baseline["leg"].get<std::string>().c_str(),
+                baseline["commit"].get<std::string>().c_str());
+    std::printf("\n%-16s %6s %12s %12s  %s\n", "case", "block", "ratio", "limit", "verdict");
+    std::size_t regressed = 0;
+    for (const gg::bench::Verdict &v : verdicts)
+    {
+        const bool known = !std::isnan(v.limit);
+        if (known)
+        {
+            std::printf("%-16s %6u %12.4f %12.4f  %s\n", v.name.c_str(), v.blockSize, v.ratio,
+                        v.limit, v.regressed ? "regressed" : "pass");
+        }
+        else
+        {
+            std::printf("%-16s %6u %12.4f %12s  %s\n", v.name.c_str(), v.blockSize, v.ratio, "-",
+                        "not in the baseline");
+        }
+        regressed += v.regressed ? 1 : 0;
+    }
+    std::printf("\nverdict: %zu of %zu ratios regressed (limit: the baseline's ratio x (1 + its "
+                "tolerance))\n",
+                regressed, verdicts.size());
+    return regressed;
+}
+
+/// The JSON in the file at path; throws on a file it can't read or JSON it can't parse.
+nlohmann::json readJson(const std::string &path)
+{
+    std::ifstream in(path, std::ios::binary);
+    if (!in)
+    {
+        throw std::runtime_error("couldn't read " + path);
+    }
+    try
+    {
+        return nlohmann::json::parse(in);
+    }
+    catch (const nlohmann::json::exception &e)
+    {
+        throw std::runtime_error(path + ": " + e.what());
+    }
+}
+
+/// Writes text to path; false if it couldn't.
+bool writeFile(const std::string &path, const std::string &text)
+{
+    std::FILE *f = std::fopen(path.c_str(), "w");
+    const bool written = f != nullptr && std::fputs(text.c_str(), f) >= 0;
+    const bool closed = f != nullptr && std::fclose(f) == 0;
+    return written && closed;
+}
+
+/// --make-baseline <leg> <out.json> <in.json>...: args are the values after the option.
+int makeBaseline(const std::vector<std::string> &args)
+{
+    try
+    {
+        std::vector<nlohmann::json> runs;
+        for (std::size_t i = 2; i < args.size(); ++i)
+        {
+            runs.push_back(readJson(args[i]));
+        }
+        const nlohmann::json baseline = gg::bench::makeBaseline(args[0], runs);
+        if (!writeFile(args[1],
+                       baseline.dump(2, ' ', false, nlohmann::json::error_handler_t::replace) +
+                           "\n"))
+        {
+            std::fprintf(stderr, "error: couldn't write %s\n", args[1].c_str());
+            return 1;
+        }
+        std::printf("wrote %s: %zu ratios for leg %s from %zu runs\n", args[1].c_str(),
+                    baseline["ratios"].size(), args[0].c_str(), runs.size());
+        return 0;
+    }
+    catch (const std::exception &e)
+    {
+        std::fprintf(stderr, "error: %s\n", e.what());
+        return 1;
+    }
 }
 } // namespace
 
@@ -316,6 +437,8 @@ int main(int argc, char **argv)
     bool quick = false;
     bool canvas = false;
     std::string jsonPath;
+    std::string baselinePath;
+    std::vector<std::string> makeBaselineArgs; // non-empty: --make-baseline's values
     gg::bench::Options options;
     for (int i = 1; i < argc; ++i)
     {
@@ -357,6 +480,16 @@ int main(int argc, char **argv)
         {
             jsonPath = argv[++i];
         }
+        else if (arg == "--baseline" && hasValue)
+        {
+            baselinePath = argv[++i];
+        }
+        else if (arg == "--make-baseline" && argc - i > 3)
+        {
+            // <leg> <out.json> <in.json>...: it takes the rest of the command line.
+            makeBaselineArgs.assign(argv + i + 1, argv + argc);
+            i = argc - 1;
+        }
         else if (arg == "--help" || arg == "-h")
         {
             usage(stdout);
@@ -373,6 +506,11 @@ int main(int argc, char **argv)
             usage(stderr);
             return 2;
         }
+    }
+
+    if (!makeBaselineArgs.empty())
+    {
+        return makeBaseline(makeBaselineArgs);
     }
 
 #if defined(BUILD_IS_DEBUG)
@@ -399,6 +537,30 @@ int main(int argc, char **argv)
         return 2;
     }
 
+    // Read and check the baseline before timing anything, so a bad one fails at once.
+    nlohmann::json baseline;
+    if (!baselinePath.empty())
+    {
+        try
+        {
+            baseline = readJson(baselinePath);
+        }
+        catch (const std::exception &e)
+        {
+            std::fprintf(stderr, "error: %s\n", e.what());
+            return 1;
+        }
+        try
+        {
+            (void)gg::bench::compare({}, baseline);
+        }
+        catch (const std::exception &e)
+        {
+            std::fprintf(stderr, "error: %s: %s\n", baselinePath.c_str(), e.what());
+            return 1;
+        }
+    }
+
     std::printf("gg-bench: %u grains of 100 ms, 60 s stereo noise at 48 kHz, %d interleaved "
                 "rounds of >= %g s\n",
                 options.grains, options.rounds, options.runSeconds);
@@ -413,15 +575,19 @@ int main(int argc, char **argv)
 
     if (!jsonPath.empty())
     {
-        const std::string json = gg::bench::toJson(report);
-        std::FILE *f = std::fopen(jsonPath.c_str(), "w");
-        const bool written = f != nullptr && std::fputs(json.c_str(), f) >= 0;
-        if (f == nullptr || std::fclose(f) != 0 || !written)
+        if (!writeFile(jsonPath, gg::bench::toJson(report)))
         {
             std::fprintf(stderr, "error: couldn't write %s\n", jsonPath.c_str());
             return 1;
         }
         std::printf("\nwrote %s\n", jsonPath.c_str());
+    }
+
+    if (!baselinePath.empty())
+    {
+        const std::size_t regressed =
+            printVerdicts(gg::bench::compare(report, baseline), baselinePath, baseline);
+        return regressed > 0 ? 3 : 0;
     }
     return 0;
 }

@@ -2,16 +2,19 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright 2026, the Giga Grains authors (see git history)
 
-// gg-bench's library: its statistics, its round order and its JSON (schema 2, carry-over
-// [132]). The bench_cli test in tests/CMakeLists.txt runs the gg-bench executable itself.
+// gg-bench's library: its statistics, its round order, its JSON (schema 2, carry-over [132]),
+// the engine cases' grain counts, the ratios and the baseline verdict (spec §5, ruling 3). The
+// bench_* tests in tests/CMakeLists.txt run the gg-bench executable itself.
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <numeric>
 #include <set>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <catch2/catch_approx.hpp>
@@ -142,4 +145,201 @@ TEST_CASE("bench rejects bad options", "[bench]")
     CHECK_THROWS_AS(gg::bench::run({.rounds = 0}), std::invalid_argument);
     CHECK_THROWS_AS(gg::bench::run({.runSeconds = 0.0}), std::invalid_argument);
     CHECK_THROWS_AS(gg::bench::run({.grains = 0}), std::invalid_argument);
+}
+
+TEST_CASE("bench rejects a run longer than an hour", "[bench]")
+{
+    CHECK_THROWS_AS(gg::bench::run({.runSeconds = 3600.5}), std::invalid_argument);
+    CHECK_THROWS_AS(gg::bench::run({.runSeconds = 1e300}), std::invalid_argument);
+}
+
+TEST_CASE("engine cases report their grain counts", "[bench]")
+{
+    const gg::bench::Report report =
+        gg::bench::run({.runSeconds = 0.002,
+                        .rounds = 1,
+                        .grains = 50,
+                        .cases = {"engine-sample", "engine-live", "engine-full-pool"}});
+    REQUIRE(report.results.size() == 9);
+    for (const gg::bench::CaseResult &r : report.results)
+    {
+        INFO(r.name << " at block " << r.blockSize << ": " << r.grains << " grains");
+        CHECK(r.kind == "engine");
+        REQUIRE(r.nsPerGrainSample.size() == 1);
+        CHECK(r.nsPerGrainSample[0] > 0.0);
+        CHECK(r.cpuPctOneCoreAt48k > 0.0);
+        if (r.name == "engine-sample")
+        {
+            CHECK(r.grains >= 49.0);
+            CHECK(r.grains <= 51.0);
+        }
+        else if (r.name == "engine-full-pool")
+        {
+            CHECK(r.grains >= 97.0); // capacity 50 + 48 = 98, against 500 grains of demand
+            CHECK(r.grains <= 98.0);
+        }
+        else
+        {
+            CHECK(r.name == "engine-live");
+            CHECK(r.grains > 45.0);
+        }
+    }
+    CHECK(report.ratios.empty()); // no reference case, so no ratios
+}
+
+namespace
+{
+gg::bench::CaseResult result(std::string name, std::string kind, uint32_t blockSize,
+                             std::vector<double> runs)
+{
+    gg::bench::CaseResult r;
+    r.name = std::move(name);
+    r.kind = std::move(kind);
+    r.blockSize = blockSize;
+    r.nsPerGrainSample = std::move(runs);
+    return r;
+}
+} // namespace
+
+TEST_CASE("ratios pair runs from the same round", "[bench]")
+{
+    gg::bench::Report report;
+    report.results.push_back(result("reference", "kernel", 32, {1.0, 2.0, 2.0}));
+    report.results.push_back(result("reference", "kernel", 64, {1.0, 1.0, 1.0}));
+    report.results.push_back(result("hermite-simd", "kernel", 32, {9.0, 9.0, 9.0}));
+    report.results.push_back(result("engine-sample", "engine", 32, {2.0, 4.0, 6.0}));
+    report.results.push_back(result("engine-live", "engine", 64, {3.0, 5.0, 4.0}));
+    report.results.push_back(result("engine-live", "engine", 256, {3.0, 5.0, 4.0}));
+
+    const std::vector<gg::bench::Ratio> ratios = gg::bench::computeRatios(report);
+    REQUIRE(ratios.size() == 2); // kernels get none; nor does an engine case with no reference
+    CHECK(ratios[0].name == "engine-sample");
+    CHECK(ratios[0].blockSize == 32);
+    CHECK(ratios[0].runs == std::vector<double>{2.0, 2.0, 3.0});
+    CHECK(ratios[0].median == 2.0);
+    CHECK(ratios[0].iqr == Approx(0.5));
+    CHECK(ratios[1].name == "engine-live");
+    CHECK(ratios[1].blockSize == 64);
+    CHECK(ratios[1].runs == std::vector<double>{3.0, 5.0, 4.0});
+    CHECK(ratios[1].median == 4.0);
+
+    // They go into the JSON.
+    report.ratios = ratios;
+    const nlohmann::json j = nlohmann::json::parse(gg::bench::toJson(report));
+    REQUIRE(j.at("ratios").is_array());
+    REQUIRE(j.at("ratios").size() == 2);
+    const nlohmann::json &r0 = j.at("ratios").at(0);
+    CHECK(r0.at("name").get<std::string>() == "engine-sample");
+    CHECK(r0.at("blockSize").get<uint32_t>() == 32);
+    CHECK(r0.at("runs").get<std::vector<double>>() == std::vector<double>{2.0, 2.0, 3.0});
+    CHECK(r0.at("median").get<double>() == 2.0);
+    CHECK(r0.at("iqr").get<double>() == Approx(0.5));
+}
+
+TEST_CASE("bench json survives invalid UTF-8", "[bench]")
+{
+    gg::bench::Report report;
+    report.options.commit = "bad \xff\xfe utf-8";
+    const nlohmann::json j = nlohmann::json::parse(gg::bench::toJson(report));
+    CHECK(j.at("commit").is_string());
+}
+
+namespace
+{
+gg::bench::Ratio ratio(std::string name, uint32_t blockSize, double median)
+{
+    return {.name = std::move(name),
+            .blockSize = blockSize,
+            .runs = {median},
+            .median = median,
+            .iqr = 0.0};
+}
+
+nlohmann::json baselineEntry(const std::string &name, uint32_t blockSize, double ratio,
+                             double tolerance)
+{
+    return {{"case", name}, {"blockSize", blockSize}, {"ratio", ratio}, {"tolerance", tolerance}};
+}
+} // namespace
+
+TEST_CASE("baseline verdicts", "[bench]")
+{
+    const nlohmann::json baseline{
+        {"schemaVersion", 1},
+        {"leg", "dev"},
+        {"commit", "abc"},
+        {"ratios",
+         {baselineEntry("engine-sample", 32, 1.8, 0.05),
+          baselineEntry("engine-sample", 64, 1.8, 0.05)}},
+    };
+    gg::bench::Report report;
+    report.ratios = {ratio("engine-sample", 32, 2.0), ratio("engine-sample", 64, 1.85),
+                     ratio("engine-sample", 256, 1.0), ratio("engine-live", 32, 9.0)};
+
+    const std::vector<gg::bench::Verdict> verdicts = gg::bench::compare(report, baseline);
+    REQUIRE(verdicts.size() == 4);
+    CHECK(verdicts[0].name == "engine-sample");
+    CHECK(verdicts[0].blockSize == 32);
+    CHECK(verdicts[0].ratio == 2.0);
+    CHECK(verdicts[0].limit == Approx(1.89));
+    CHECK(verdicts[0].regressed);
+    CHECK(verdicts[1].blockSize == 64);
+    CHECK(verdicts[1].ratio == 1.85);
+    CHECK_FALSE(verdicts[1].regressed);
+    // Missing from the baseline: reported, with no limit, and not regressed.
+    CHECK(verdicts[2].blockSize == 256);
+    CHECK(std::isnan(verdicts[2].limit));
+    CHECK_FALSE(verdicts[2].regressed);
+    CHECK(verdicts[3].name == "engine-live");
+    CHECK(std::isnan(verdicts[3].limit));
+    CHECK_FALSE(verdicts[3].regressed);
+
+    // A malformed baseline is an error, even against a report with no ratios.
+    nlohmann::json wrongVersion = baseline;
+    wrongVersion["schemaVersion"] = 2;
+    CHECK_THROWS_AS(gg::bench::compare({}, wrongVersion), std::invalid_argument);
+    nlohmann::json noRatio = baseline;
+    noRatio["ratios"][0].erase("ratio");
+    CHECK_THROWS_AS(gg::bench::compare({}, noRatio), std::invalid_argument);
+    nlohmann::json negativeTolerance = baseline;
+    negativeTolerance["ratios"][0]["tolerance"] = -0.1;
+    CHECK_THROWS_AS(gg::bench::compare({}, negativeTolerance), std::invalid_argument);
+}
+
+TEST_CASE("make baseline", "[bench]")
+{
+    std::vector<nlohmann::json> runs;
+    for (const double r : {1.2, 1.0, 1.1})
+    {
+        gg::bench::Report report;
+        report.options.commit = "abc";
+        report.ratios = {ratio("engine-sample", 32, r), ratio("engine-live", 64, 2.0)};
+        runs.push_back(nlohmann::json::parse(gg::bench::toJson(report)));
+    }
+
+    const nlohmann::json baseline = gg::bench::makeBaseline("linux-gcc12", runs);
+    CHECK(baseline.at("schemaVersion").get<int>() == 1);
+    CHECK(baseline.at("leg").get<std::string>() == "linux-gcc12");
+    CHECK(baseline.at("commit").get<std::string>() == "abc");
+    const nlohmann::json &ratios = baseline.at("ratios");
+    REQUIRE(ratios.size() == 2);
+    CHECK(ratios[0].at("case").get<std::string>() == "engine-sample");
+    CHECK(ratios[0].at("blockSize").get<uint32_t>() == 32);
+    CHECK(ratios[0].at("ratio").get<double>() == Approx(1.1));
+    CHECK(ratios[0].at("tolerance").get<double>() == Approx(std::max(0.05, 0.4 / 1.1)));
+    CHECK(ratios[1].at("case").get<std::string>() == "engine-live");
+    CHECK(ratios[1].at("ratio").get<double>() == 2.0);
+    CHECK(ratios[1].at("tolerance").get<double>() == 0.05); // no spread: the floor
+
+    // The baseline it makes is one compare() accepts.
+    gg::bench::Report report;
+    report.ratios = {ratio("engine-sample", 32, 1.0)};
+    const std::vector<gg::bench::Verdict> verdicts = gg::bench::compare(report, baseline);
+    REQUIRE(verdicts.size() == 1);
+    CHECK_FALSE(verdicts[0].regressed);
+
+    // A ratio missing from one of the runs is an error, as is no run at all.
+    runs[1]["ratios"].erase(1);
+    CHECK_THROWS_AS(gg::bench::makeBaseline("linux-gcc12", runs), std::invalid_argument);
+    CHECK_THROWS_AS(gg::bench::makeBaseline("linux-gcc12", {}), std::invalid_argument);
 }

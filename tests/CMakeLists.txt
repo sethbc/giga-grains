@@ -94,12 +94,43 @@ list(APPEND CMAKE_MODULE_PATH ${CMAKE_SOURCE_DIR}/libs/catch2/extras)
 include(Catch)
 catch_discover_tests(gg-tests ADD_TAGS_AS_LABELS)
 
-# gg-bench's command line, label `bench`: a tiny run of one case must exit 0 and write its JSON.
-# The bench tests check the timings' shape, never their values, so they run beside the others.
+# gg-bench's command line, label `bench`. The bench tests check the timings' shape, never their
+# values, so they run beside the others.
+# - bench_cli: a tiny run of a kernel, the reference and an engine case must exit 0 and write its
+#   JSON, ratios included;
+# - bench_make_baseline: a baseline made from that JSON must be written, exit 0;
+# - bench_baseline_pass and bench_baseline_regressed: a tiny run checked against a baseline whose
+#   limits no ratio can miss (1e9) or meet (1e-9), written here at configure time. The first must
+#   exit 0; the second passes only on the verdict gg-bench prints (it then exits 3).
+set(bench_cases hermite-simd,reference,engine-sample)
 add_test(NAME bench_cli
-        COMMAND gg-bench --seconds 0.002 --rounds 2 --grains 50 --cases hermite-simd
+        COMMAND gg-bench --seconds 0.002 --rounds 2 --grains 50 --cases ${bench_cases}
         --json ${CMAKE_BINARY_DIR}/bench_cli.json)
-set_tests_properties(bench_cli PROPERTIES LABELS bench)
+add_test(NAME bench_make_baseline
+        COMMAND gg-bench --make-baseline test ${CMAKE_BINARY_DIR}/bench_made_baseline.json
+        ${CMAKE_BINARY_DIR}/bench_cli.json ${CMAKE_BINARY_DIR}/bench_cli.json)
+set_tests_properties(bench_cli PROPERTIES LABELS bench FIXTURES_SETUP bench_json)
+set_tests_properties(bench_make_baseline PROPERTIES LABELS bench FIXTURES_REQUIRED bench_json)
+foreach (verdict IN ITEMS pass regressed)
+    set(ratio 1e9)
+    if (verdict STREQUAL regressed)
+        set(ratio 1e-9)
+    endif ()
+    set(entries "")
+    foreach (block IN ITEMS 32 64 256)
+        list(APPEND entries
+                "{\"case\": \"engine-sample\", \"blockSize\": ${block}, \"ratio\": ${ratio}, \"tolerance\": 0.05}")
+    endforeach ()
+    list(JOIN entries ", " entries)
+    set(baseline ${CMAKE_CURRENT_BINARY_DIR}/bench-baseline-${verdict}.json)
+    file(WRITE ${baseline} "{\"schemaVersion\": 1, \"leg\": \"test\", \"commit\": \"test\", \"ratios\": [${entries}]}\n")
+    add_test(NAME bench_baseline_${verdict}
+            COMMAND gg-bench --seconds 0.002 --rounds 1 --grains 50 --cases reference,engine-sample
+            --baseline ${baseline})
+    set_tests_properties(bench_baseline_${verdict} PROPERTIES LABELS bench)
+endforeach ()
+set_tests_properties(bench_baseline_regressed PROPERTIES
+        PASS_REGULAR_EXPRESSION "verdict: 3 of 3 ratios regressed")
 
 # RTSan's negative control (rtsan build only), labels `rt` and `rtsan`: a program that allocates
 # inside a nonblocking function must make RealtimeSanitizer report it. The test passes on the

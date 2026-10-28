@@ -9,9 +9,10 @@
 #               cross-platform determinism gate. On macOS the universal build's x86_64 slice runs
 #               too, under Rosetta: the unit tests and the golden checks. Then clap-validator,
 #               pluginval (strictness 10), auval (macOS) and Steinberg's VST3 validator. gg-bench
-#               runs at full length (ruling T10-c) and is reported, not gated, in M0. M1 starts a
-#               CPU regression gate at the measured baseline; the §16 headline becomes the gate
-#               once M1 meets it (INTENT §16, §19).
+#               runs at full length (ruling T10-c) and reports its in-process ratios, with a
+#               verdict against the leg's baseline when there is one; through M1 it is
+#               report-only (ruling 3). Sub-project 6 makes the gate blocking, with the published
+#               §16 headline (INTENT §16, §19).
 #   sanitizers  ASan + UBSan, and RealtimeSanitizer, with upstream clang 20 (the pinned LLVM
 #               20.1.8 release) on ubuntu-24.04.
 #
@@ -125,23 +126,44 @@ jobs:
               --compare-events "tests/golden/expected/$name.events.jsonl"
           done
 
-      # Reported, not gated: gg-bench has no CPU threshold yet. M1 starts a regression gate at
-      # the measured baseline (INTENT §16, §19). It runs at full length (runs of 2 s, median of 5;
-      # ruling T10-c), not --quick, so the CI numbers are stable enough to set against the §16
-      # targets. The runs are time-boxed, so it takes about 2.6 minutes on every leg.
-      - name: Benchmark (full length; reported, not gated)
+      # Reported, not gated through M1 (ruling 3; INTENT §16, §19). gg-bench times the kernels,
+      # the frozen reference kernel and the real engine at full length (runs of 2 s, 5 interleaved
+      # rounds; ruling T10-c), not --quick, and reports each engine case's ratio to the reference,
+      # which cancels the runner's speed. When this leg has a baseline
+      # (tools/gg-bench/baselines/<preset>.json), it also prints a verdict per ratio. A
+      # regression (exit 3) is a warning, not a failure, and the step is continue-on-error, so
+      # nothing here fails the job; sub-project 6 makes it blocking. The runs are time-boxed: about
+      # 5 minutes on every leg.
+      - name: Benchmark (full length; ratios reported, not gated through M1)
         id: bench
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
-        timeout-minutes: 20
+        continue-on-error: true
+        timeout-minutes: 30
         run: |
           out="${{ matrix.build_dir }}/gg-bench"
-          "${{ matrix.bench }}" --json "$out.json" | tee "$out.txt"
+          baseline="tools/gg-bench/baselines/${{ matrix.preset }}.json"
+          args=(--commit "${{ github.sha }}" --json "$out.json")
+          if [[ -f "$baseline" ]]; then
+            args+=(--baseline "$baseline")
+          fi
+          set +e
+          "${{ matrix.bench }}" "${args[@]}" | tee "$out.txt"
+          status=${PIPESTATUS[0]}
+          set -e
           {
             echo "### gg-bench (${{ matrix.preset }})"
+            if [[ ! -f "$baseline" ]]; then
+              echo "No baseline for this leg yet ($baseline): ratios reported, no verdict."
+            fi
             echo '```'
             cat "$out.txt"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+          if [[ $status == 3 ]]; then
+            echo "::warning title=gg-bench::a ratio regressed against $baseline (report-only through M1)"
+            status=0
+          fi
+          exit "$status"
 
       - name: Locate the products
         id: products
