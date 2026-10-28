@@ -94,9 +94,10 @@ class CloudScheduler
     /// (it is 0 when u(k) = 0), so without a floor nothing would bound the number of onsets in
     /// one sample, and schedule() would have no bounded loop. With it, one schedule() call
     /// emits at most about 16 grains per frame. At the maximum density, the sample rate (P = 1),
-    /// it raises about 6.1% of Poisson intervals, by less than 1/16 sample, which moves the mean
-    /// by about 2e-3 samples; at 20 kHz with a 48 kHz sample rate (P = 2.4), about 2.6%, by about
-    /// 8e-4 samples. At d = 0 it never applies, since P is at least 1 sample.
+    /// it raises about 6.1% of Poisson intervals, each by less than 1/16 sample, moving the mean
+    /// by about 2e-3 samples; at 20 kHz with a 48 kHz sample rate (P = 2.4), it raises about
+    /// 2.6%, moving the mean by about 8e-4 samples. At d = 0 it never applies, since P is at
+    /// least 1 sample.
     ///
     /// The floor bounds the loop only while t < 2^49 samples (about 93 years at 192 kHz).
     /// From 2^49 on, the spacing of doubles is 1/8 sample, so t + 1/16 is a tie that can round

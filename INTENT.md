@@ -784,8 +784,8 @@ they are frozen along with them.
 - **Fuzz and property tests.** Parameter sweeps, extreme values and bursts of automation must
   produce no NaNs, crashes, runaway gain, or clicks above a threshold.
 - **CPU benchmark gate in CI:** a regression gate on in-process ratios, from M1's baseline. The
-  §16 headline is a published measurement, not a CI gate. Through M1 it reports and never fails;
-  sub-project 6 makes it blocking, with the published X.
+  §16 headline is a published measurement, not a CI gate. Through M1 the gate reports and never
+  fails; sub-project 6 makes it blocking, with the published X.
 - **Real-time safety.**
   - Clang RealtimeSanitizer on upstream LLVM 20 or newer (Apple clang doesn't ship it).
   - ASan and UBSan.
