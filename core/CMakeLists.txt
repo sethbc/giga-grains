@@ -6,8 +6,9 @@
 # parameters (gg/core/ParamIds.h), the saved state (gg/core/SessionState.h, holding the patch of
 # gg/core/PatchState.h), the per-machine settings' XML (gg/core/MachineSettings.h), the parameter
 # mapping (gg/core/ParamMap.h) and the Processor that runs the engine and the wet chain
-# (gg/core/Processor.h). Built in every preset, the sanitizer presets included. The engine stays
-# framework-free: sst-plugininfra, tinyxml and CLAP's headers come in here, never in gg-engine.
+# (gg/core/Processor.h), with its source hand-off (gg/core/SourceExchange.h). Built in every
+# preset, the sanitizer presets included. The engine stays framework-free: sst-plugininfra,
+# tinyxml and CLAP's headers come in here, never in gg-engine.
 
 add_library(gg-core STATIC
         src/MachineSettings.cpp
@@ -17,6 +18,7 @@ add_library(gg-core STATIC
         src/PatchState.cpp
         src/Processor.cpp
         src/SessionState.cpp
+        src/SourceExchange.cpp
         )
 add_library(gg::core ALIAS gg-core)
 

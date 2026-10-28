@@ -7,6 +7,7 @@
 
 add_executable(gg-tests
         smoke_tests.cpp
+        core/exchange_tests.cpp
         core/note_tests.cpp
         core/parammap_tests.cpp
         core/patch_tests.cpp
@@ -99,6 +100,7 @@ if (GG_BUILD_PLUGINS)
             plugin/params_tests.cpp
             plugin/process_tests.cpp
             plugin/rt_tests.cpp
+            plugin/sample_tests.cpp
             )
     target_include_directories(gg-tests PRIVATE ${CMAKE_SOURCE_DIR}/plugin/src)
 endif ()

@@ -14,6 +14,7 @@
 #include <sst/cpputils/rtsan_support.h>
 
 #include "gg/core/ParamIds.h"
+#include "gg/core/SourceExchange.h"
 #include "gg/engine/Engine.h"
 
 namespace gg::core
@@ -113,6 +114,16 @@ struct NoteEvent
 /// effective() or arming. Releasing every note unfreezes the ring unless the parameter is
 /// engaged; the freeze changes at the same boundaries as the held set.
 ///
+/// **The sample source** (spec §6.4). The plugin's main thread offers prepared sources through
+/// sources(); each process() call starts by handing the engine's retired sources back there
+/// (Engine::takeRetiredSource → SourceExchange::retire), then polls it for a new offer, which it
+/// holds until Engine::adoptSource accepts it: at once, unless two sources are still in play, and
+/// then at the start of a later call, within Size. A newer offer replaces one still held, which
+/// goes straight back. So at most three sources exist at once: the one draining, the one
+/// playing and one waiting. The swap applies at a call's start, not on the control grid: where
+/// it falls depends on when the main thread offered it, so only a source given before the first
+/// call (setSourceNow, or an offer before it) is part of a block-size-invariant render.
+///
 /// **Mix and Level** ramp linearly to each new target over kRampSeconds, round(0.01 × sr)
 /// samples: R samples after its boundary a ramp is exactly at its target. A ramp is a function
 /// of the absolute sample, so it is block-size invariant too. Level ramps its linear gain.
@@ -182,11 +193,18 @@ class Processor
     /// last applied boundary, so a pending note doesn't show until its boundary.
     std::span<const uint8_t> heldKeys() const noexcept { return {keys_.data(), keyCount_}; }
 
-    /// Not real-time safe: between process() calls, for an inactive plugin, gg-render and tests.
-    /// The Processor keeps `s` alive; grains from the next onset read it. It replaces the source
-    /// as Engine::setPreparedSource does, so grains still sounding go on in `s` too; nullptr
-    /// means no source.
+    /// Not real-time safe: while process() isn't running, for an inactive plugin, a session
+    /// restore, gg-render and tests. The Processor keeps `s` alive; grains from the next onset
+    /// read it. It replaces the source as Engine::setPreparedSource does, so grains still
+    /// sounding go on in `s` too; nullptr means no source. It supersedes every source offered
+    /// through sources() so far, taken or not: each one, and each the engine hands back, goes
+    /// back to sources() and is freed there (SourceExchange::collect), on the calling thread.
     void setSourceNow(std::shared_ptr<const PreparedSource> s);
+
+    /// The hand-off through which the plugin's main thread offers sources to process() (the
+    /// class comment). Its main-thread calls (offer, collect, held) may run while process() does.
+    SourceExchange &sources() noexcept { return sources_; }
+    const SourceExchange &sources() const noexcept { return sources_; }
 
     /// Restarts the engine (Engine::reset: the clock, the schedule and the ring time at 0). A
     /// pending change applies at once, and Mix and Level jump to their targets. Every note is
@@ -224,6 +242,9 @@ class Processor
         int64_t callStart; ///< The absolute sample of the call's first frame.
     };
 
+    /// The start of every process() call: hands the engine's retired sources back to sources_,
+    /// takes a new offer from it, and has the engine adopt the source waiting, if it can.
+    void exchangeSources() noexcept SST_CPPUTILS_NONBLOCKING;
     /// Renders the absolute samples [from, to) of the current call.
     void render(const Buffers &b, int64_t from, int64_t to) noexcept SST_CPPUTILS_NONBLOCKING;
     /// Moves the pending changes into the base and modulation values, and the pending notes'
@@ -241,6 +262,12 @@ class Processor
     float clampToRange(size_t slot, float value) const noexcept;
 
     ProcessorConfig config_;
+    // Before engine_, so destroyed after it: it frees the sources the engine may still point to.
+    SourceExchange sources_;
+    // A source polled from sources_ that the engine hasn't adopted yet (nullptr: no source), if
+    // hasPendingSource_.
+    const PreparedSource *pendingSource_{nullptr};
+    bool hasPendingSource_{false};
     Engine engine_;
     int64_t rampSamples_;
     std::array<std::vector<float>, 2> wet_; // maxBlockSize frames each

@@ -532,7 +532,7 @@ TEST_CASE("midi notes play the instrument's sample and release it", "[plugin]")
     constexpr std::size_t kRelease = 8160; // Size + 20 ms at 48 kHz
     gg::test::PluginUnderTest instrument(kInstrumentId);
     REQUIRE(instrument.valid());
-    instrument.impl().setSourceForTest(gg::test::sineSource());
+    REQUIRE(instrument.loadSampleState(gg::test::sineSampleFile("midi-notes")));
     REQUIRE(instrument.activate(48000.0, kBlock));
 
     const auto on60 = gg::test::midiEvent(0x90, 60, 100, 0);
@@ -671,7 +671,7 @@ TEST_CASE("notes render the same at any host block size", "[plugin][determinism]
     const auto render = [&](const std::vector<uint32_t> &blockSizes, Stereo &out) {
         gg::test::PluginUnderTest instrument(kInstrumentId);
         REQUIRE(instrument.valid());
-        instrument.impl().setSourceForTest(gg::test::sineSource());
+        REQUIRE(instrument.loadSampleState(gg::test::sineSampleFile("notes-block-size")));
         REQUIRE(instrument.activate(48000.0, 2048));
         std::vector<clap_event_midi> events;
         events.reserve(notes.size());

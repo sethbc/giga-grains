@@ -7,7 +7,6 @@
 
 #include <array>
 #include <atomic>
-#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -18,6 +17,7 @@
 
 #include "HelpersConfig.h"
 #include "LatestValue.h"
+#include "SampleLoader.h"
 #include "gg/core/ParamIds.h"
 #include "gg/core/Processor.h"
 
@@ -36,20 +36,31 @@ const clap_plugin_descriptor *descriptorFor(Product product) noexcept;
 /// The CLAP adapter around gg::core::Processor, for both products: the JUCE-free plugin core
 /// (spec §5). It maps CLAP's parameters, state and remote controls onto the Processor; the
 /// sound is the Processor's. The FX's input feeds the live ring and the dry side of the Mix; the
-/// instrument plays a sample source from notes, and has none until the loader (sub-project 3,
-/// Task 11) gives it one, so it outputs silence. Both products pass their CLAP and MIDI notes to
-/// the Processor (toNoteEvent), on the control grid. This class has no GUI. The editor is added by
-/// a subclass, EditorPlugin (editor/EditorPlugin.h), built only with GG_BUILD_EDITOR; makePlugin()
-/// picks the class.
+/// instrument plays the sample its SampleLoader gives it from notes, and is silent without one.
+/// Both products pass their CLAP and MIDI notes to the Processor (toNoteEvent), on the control
+/// grid. This class has no GUI. The editor is added by a subclass, EditorPlugin
+/// (editor/EditorPlugin.h), built only with GG_BUILD_EDITOR; makePlugin() picks the class.
 ///
 /// **Threads** (INTENT §15). The main thread owns the Processor's lifetime (activate,
-/// deactivate), the seed and the state; the audio thread owns the Processor in between, and
-/// with it events_ and notes_. Parameter values cross over in two ways:
+/// deactivate), the seed, the state and the sample loader; the audio thread owns the Processor
+/// in between, and with it events_ and notes_. Parameter values cross over in two ways:
 /// - values_, an atomic per-parameter store of the base values, which the main thread reads
 ///   (params.get_value, state save). The audio thread writes it as it hands values to the
 ///   Processor; the main thread writes it while inactive, and on a state load.
 /// - loadedState_, which takes a state loaded while active to the audio thread, where it applies
 ///   at the start of the next process() or params.flush.
+///
+/// **The sample** (the instrument; spec §6.4–§6.7). The SampleLoader keeps the manifest entry
+/// and the source on the main thread, and loads on its own worker thread. Sources reach the
+/// audio thread through the Processor's SourceExchange (Processor::sources()): the main thread
+/// offers, process() adopts at the start of a call and hands back what no grain reads, and the
+/// main thread frees it in on_main_thread (collectSources). A session restore is synchronous
+/// (D8): stateLoad finds and decodes the sample before it returns; while active, it offers the
+/// source in the same call that pushes the values, so the first process() after it applies both;
+/// while inactive, activate() converts it at the new rate before it returns. The per-machine
+/// settings file is $GG_SETTINGS_FILE when that is set and not empty (read once, at
+/// construction: the tests' way to keep away from the user's file), and
+/// gg::media::defaultSettingsPath() otherwise.
 class GigaGrainsPlugin : public plugHelper_t
 {
   public:
@@ -76,6 +87,11 @@ class GigaGrainsPlugin : public plugHelper_t
     /// The processor built by the last activate(); nullptr while the plugin is inactive. For
     /// tests: its state belongs to the audio thread while the plugin is active.
     const gg::core::Processor *processor() const noexcept { return processor_.get(); }
+    gg::core::Processor *processor() noexcept { return processor_.get(); }
+
+    /// The instrument's sample loader, for the editor and tests; nullptr in the FX, which loads
+    /// no samples. Main thread.
+    SampleLoader *sampleLoader() noexcept { return loader_.get(); }
     /// The processor's engine; nullptr while the plugin is inactive. As processor().
     const gg::Engine *engine() const noexcept
     {
@@ -86,15 +102,6 @@ class GigaGrainsPlugin : public plugHelper_t
     /// kMaxEngineBlock, as of the last activate(). The live ring's memory grows with it (ruling
     /// M1-o); the output doesn't.
     uint32_t engineBlockSize() const noexcept { return engineBlockSize_; }
-
-    /// TEST ONLY, until the loader (sub-project 3, Task 11) replaces it: the sample source the
-    /// next activate() gives the Processor (Processor::setSourceNow); nullptr means none. Main
-    /// thread, while the plugin is inactive.
-    void setSourceForTest(std::shared_ptr<const gg::PreparedSource> source)
-    {
-        assert(processor_ == nullptr);
-        testSource_ = std::move(source);
-    }
 
     /// The cap on engineBlockSize(). CLAP allows a maxFrameCount up to INT32_MAX.
     static constexpr uint32_t kMaxEngineBlock = 4096;
@@ -114,6 +121,9 @@ class GigaGrainsPlugin : public plugHelper_t
     bool activate(double sampleRate, uint32_t minFrameCount,
                   uint32_t maxFrameCount) noexcept override;
     void deactivate() noexcept override;
+    /// Applies the sample loader's finished work and frees the sources the audio thread handed
+    /// back (collectSources).
+    void onMainThread() noexcept override;
     /// On the audio thread, never concurrent with process(): real-time safe.
     void reset() noexcept SST_CPPUTILS_NONBLOCKING override;
     clap_process_status process(const clap_process *process) noexcept override;
@@ -146,7 +156,8 @@ class GigaGrainsPlugin : public plugHelper_t
     void paramsFlush(const clap_input_events *in,
                      const clap_output_events *out) noexcept SST_CPPUTILS_NONBLOCKING override;
 
-    // ---- State: the values and the seed, as gg::core's XML (gg/core/PatchState.h) ----
+    // ---- State: the session container (gg/core/SessionState.h): the values and the seed, and
+    // the instrument's sample entry ----
 
     bool implementsState() const noexcept override { return true; }
     bool stateSave(const clap_ostream *stream) noexcept override;
@@ -192,6 +203,14 @@ class GigaGrainsPlugin : public plugHelper_t
     /// Stores a base value in values_, clamped to the parameter's range, as the Processor
     /// clamps it.
     void storeValue(gg::core::ParamSlot slot, float value) noexcept SST_CPPUTILS_NONBLOCKING;
+    /// Main thread, while active: frees the sources the audio thread has handed back
+    /// (SourceExchange::collect). While a replaced source has yet to come back (it retires once
+    /// its last grain ends, within Size of audio), asks for another on_main_thread, so that it
+    /// is freed soon after; it stops asking after kMaxIdleCollects calls in a row with no
+    /// process() in between, as when the host has stopped processing, and the next main-thread
+    /// call that collects frees it then.
+    void collectSources() noexcept;
+    static constexpr uint32_t kMaxIdleCollects = 64;
 
     const Product product_;
 
@@ -211,8 +230,13 @@ class GigaGrainsPlugin : public plugHelper_t
     // the audio thread's.
     std::unique_ptr<gg::core::Processor> processor_;
     uint32_t engineBlockSize_{0}; // main thread
-    // TEST ONLY (setSourceForTest): the source activate() gives the processor. Main thread.
-    std::shared_ptr<const gg::PreparedSource> testSource_;
+    // The instrument's sample loader; null in the FX. Main thread. After processor_, so it is
+    // destroyed first: its callbacks use processor_.
+    std::unique_ptr<SampleLoader> loader_;
+    // process() calls so far: written by the audio thread, read by collectSources.
+    std::atomic<uint64_t> processCalls_{0};
+    uint64_t collectedAtCall_{0}; // main thread
+    uint32_t idleCollects_{0};    // main thread
     // The parameter and note events of one process() call. Audio thread.
     std::array<gg::core::ParamEvent, kMaxParamEvents> events_{};
     std::array<gg::core::NoteEvent, kMaxNoteEvents> notes_{};

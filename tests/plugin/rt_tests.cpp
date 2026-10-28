@@ -76,7 +76,7 @@ TEST_CASE("plugin process does not allocate", "[plugin][rt]")
     if (!isFx)
     {
         // A source, so the notes spawn grains in the instrument too.
-        plugin.impl().setSourceForTest(gg::test::sineSource());
+        REQUIRE(plugin.loadSampleState(gg::test::sineSampleFile("rt-process")));
     }
     REQUIRE(plugin.activate(48000.0, 512));
 
@@ -262,6 +262,60 @@ TEST_CASE("plugin applies a state loaded while active without allocating", "[plu
     {
         REQUIRE(allocations == 0);
     }
+}
+
+TEST_CASE("plugin process adopts and retires sample sources without allocating", "[plugin][rt]")
+{
+    // Spec §6.4, §7: a sample restored while active reaches the audio thread through the
+    // Processor's SourceExchange. process() adopts it, and once a newer one has replaced it and
+    // its last grain has ended, hands it back, neither allocating nor freeing; the main thread
+    // frees it (on_main_thread).
+    const auto dir = gg::test::sampleDir("rt-exchange");
+    const auto a = gg::test::writeSineWav(dir / "a.wav", 48000, 1.0, 220.0);
+    const auto b = gg::test::writeSineWav(dir / "b.wav", 48000, 1.0, 330.0);
+    gg::test::PluginUnderTest plugin(kInstrumentId);
+    REQUIRE(plugin.valid());
+    REQUIRE(plugin.activate(48000.0, 512));
+    const auto &sources = plugin.impl().processor()->sources();
+
+    std::vector<float> outLeft(512), outRight(512);
+    float *outputs[2] = {outLeft.data(), outRight.data()};
+    const auto on = noteOn(60, 0);
+    gg::test::InputEvents withNote;
+    withNote.add(&on.header);
+    gg::test::InputEvents none;
+    clap_process_status status = CLAP_PROCESS_CONTINUE;
+
+    REQUIRE(plugin.loadSampleState(a)); // offers A
+    CHECK(sources.held() == 1);
+    AllocTripwire::resetCount();
+    {
+        AllocTripwire::Scope armed;
+        status = plugin.process(512, nullptr, outputs, withNote.list()); // adopts A
+    }
+    REQUIRE_NO_ALLOCATIONS(AllocTripwire::count());
+    CHECK(status == CLAP_PROCESS_CONTINUE);
+    CHECK(*std::max_element(outLeft.begin(), outLeft.end()) > 0.0f); // the note plays A
+
+    REQUIRE(plugin.loadSampleState(b)); // offers B while A's grains sound
+    CHECK(sources.held() == 2);
+    // 40 blocks, about 0.43 s: B is adopted at once, and A drains (Size, 150 ms) and retires.
+    bool continued = true;
+    AllocTripwire::resetCount();
+    {
+        AllocTripwire::Scope armed;
+        for (int i = 0; i < 40; ++i)
+        {
+            continued =
+                plugin.process(512, nullptr, outputs, none.list()) == CLAP_PROCESS_CONTINUE &&
+                continued;
+        }
+    }
+    REQUIRE_NO_ALLOCATIONS(AllocTripwire::count());
+    CHECK(continued);
+    CHECK(sources.held() == 2); // A handed back, but the audio side never frees
+    plugin.onMainThread();
+    CHECK(sources.held() == 1); // freed on the main thread
 }
 
 TEST_CASE("plugin reset does not allocate and a restored Freeze plays live", "[plugin][rt]")
@@ -468,7 +522,7 @@ TEST_CASE("plugin notes of every kind reach the processor without allocating", "
     const bool isFx = std::string_view(id) == kFxId;
     if (!isFx)
     {
-        plugin.impl().setSourceForTest(gg::test::sineSource());
+        REQUIRE(plugin.loadSampleState(gg::test::sineSampleFile("rt-notes")));
     }
     REQUIRE(plugin.activate(48000.0, 512));
 

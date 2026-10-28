@@ -8,11 +8,14 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
+#include <cstdlib>
+#include <filesystem>
 #include <optional>
 #include <span>
 #include <string>
 
 #include "gg/core/SessionState.h"
+#include "gg/media/SettingsFile.h"
 #include "gg/plugin/Identity.h"
 #include "sst/basic-blocks/params/ParamMetadata.h"
 
@@ -69,6 +72,24 @@ void copyName(char (&dst)[CLAP_NAME_SIZE], const char *src) noexcept
 {
     std::snprintf(dst, sizeof(dst), "%s", src);
 }
+
+/// The per-machine settings file: $GG_SETTINGS_FILE when set and not empty, else the user's
+/// (gg::media::defaultSettingsPath). See the class comment.
+std::filesystem::path settingsFile()
+{
+#if defined(_WIN32)
+    if (const wchar_t *file = ::_wgetenv(L"GG_SETTINGS_FILE"); file != nullptr && *file != 0)
+    {
+        return std::filesystem::path(file);
+    }
+#else
+    if (const char *file = std::getenv("GG_SETTINGS_FILE"); file != nullptr && *file != 0)
+    {
+        return std::filesystem::path(file);
+    }
+#endif
+    return gg::media::defaultSettingsPath();
+}
 } // namespace
 
 const clap_plugin_descriptor *descriptorFor(Product product) noexcept
@@ -88,15 +109,39 @@ GigaGrainsPlugin::GigaGrainsPlugin(const clap_host *host, Product product)
         maxValues_[s] = meta.maxVal;
         storeValue(static_cast<ParamSlot>(s), meta.defaultVal);
     }
+    if (product_ == Product::Instrument)
+    {
+        SampleLoader::Callbacks callbacks;
+        // From the loader's worker: clap_host.request_callback is thread-safe.
+        callbacks.requestCallback = [this] { _host.requestCallback(); };
+        callbacks.markDirty = [this] {
+            if (_host.canUseState())
+            {
+                _host.stateMarkDirty();
+            }
+        };
+        callbacks.offer = [this](std::shared_ptr<const gg::PreparedSource> source) {
+            if (processor_ != nullptr)
+            {
+                processor_->sources().offer(std::move(source));
+            }
+        };
+        loader_ = std::make_unique<SampleLoader>(settingsFile(), std::move(callbacks));
+    }
 }
 
-GigaGrainsPlugin::~GigaGrainsPlugin() = default;
+GigaGrainsPlugin::~GigaGrainsPlugin()
+{
+    // The worker first: it calls back into this object.
+    loader_.reset();
+}
 
 bool GigaGrainsPlugin::activate(double sampleRate, uint32_t /*minFrameCount*/,
                                 uint32_t maxFrameCount) noexcept
 {
     // Main thread, never concurrent with process(): everything process() needs is allocated
     // here. The Processor throws on an invalid configuration; that fails the activation.
+    bool loaderActive = false;
     try
     {
         // The engine renders in blocks of at most kMaxEngineBlock frames, so its buffers stay
@@ -116,18 +161,26 @@ bool GigaGrainsPlugin::activate(double sampleRate, uint32_t /*minFrameCount*/,
             processor->setBase(static_cast<ParamSlot>(s),
                                values_[s].load(std::memory_order_relaxed));
         }
-        // TEST ONLY until the loader (Task 11): the source setSourceForTest left.
-        if (testSource_ != nullptr)
+        // The sample, at this rate before the first block (D8): a restored one converted here,
+        // or the one loaded before, given at once while the loader converts it again.
+        if (loader_ != nullptr)
         {
-            processor->setSourceNow(testSource_);
+            loaderActive = true;
+            processor->setSourceNow(loader_->activate(sampleRate));
         }
         processor_ = std::move(processor);
         engineBlockSize_ = config.maxBlockSize;
         noteIds_.fill(NoteIdSlot{}); // a new session holds no notes
+        collectedAtCall_ = processCalls_.load(std::memory_order_relaxed);
+        idleCollects_ = 0;
         return true;
     }
     catch (...)
     {
+        if (loaderActive)
+        {
+            loader_->deactivate();
+        }
         return false;
     }
 }
@@ -146,8 +199,46 @@ void GigaGrainsPlugin::deactivate() noexcept
             storeValue(static_cast<ParamSlot>(s), loaded[s]);
         }
     }
+    // The loader's worker stops (a job under way finishes), and what it finished applies with
+    // nothing offered: the next activate() gives it to the new processor.
+    if (loader_ != nullptr)
+    {
+        loader_->deactivate();
+    }
     // The next activate() may bring a new sample rate: the processor doesn't survive into it.
+    // Its SourceExchange frees the sources it still holds, here on the main thread.
     processor_.reset();
+}
+
+void GigaGrainsPlugin::onMainThread() noexcept
+{
+    if (loader_ != nullptr)
+    {
+        loader_->onMainThread();
+    }
+    collectSources();
+}
+
+void GigaGrainsPlugin::collectSources() noexcept
+{
+    if (processor_ == nullptr)
+    {
+        return;
+    }
+    auto &sources = processor_->sources();
+    sources.collect();
+    if (sources.held() <= 1)
+    {
+        idleCollects_ = 0;
+        return; // only the source in play, or none
+    }
+    const uint64_t calls = processCalls_.load(std::memory_order_relaxed);
+    idleCollects_ = calls == collectedAtCall_ ? idleCollects_ + 1 : 0;
+    collectedAtCall_ = calls;
+    if (idleCollects_ < kMaxIdleCollects)
+    {
+        _host.requestCallback();
+    }
 }
 
 void GigaGrainsPlugin::reset() noexcept
@@ -171,6 +262,11 @@ clap_process_status GigaGrainsPlugin::processNonblocking(const clap_process *pro
     {
         return CLAP_PROCESS_CONTINUE; // clap-helpers lets process() through only while active
     }
+    // One writer: no read-modify-write needed.
+    processCalls_.store(processCalls_.load(std::memory_order_relaxed) + 1,
+                        std::memory_order_relaxed);
+    // The values of a state loaded while active, then (in the Processor) its sample: both apply
+    // from this call's first frame (D8).
     applyLoadedState();
 
     // The call's parameter and note events, in the host's order (by time), up to the first that
@@ -569,9 +665,11 @@ bool GigaGrainsPlugin::stateSave(const clap_ostream *stream) noexcept
         {
             values[s] = values_[s].load(std::memory_order_relaxed);
         }
-        // The session container (gg/core/SessionState.h). The FX has no sample, and the
-        // instrument none yet: both write an empty media manifest.
-        const std::string bytes = gg::core::encodeState({values, seed_, std::nullopt});
+        // The session container (gg/core/SessionState.h), with the instrument's manifest entry
+        // as it stands, whether the sample is loaded, loading, missing or failed (spec §6.6).
+        // The FX has no sample: an empty manifest.
+        const std::string bytes = gg::core::encodeState(
+            {values, seed_, loader_ != nullptr ? loader_->entry() : std::nullopt});
 
         // A stream may take fewer bytes than offered: write until all are in.
         const char *data = bytes.data();
@@ -626,12 +724,18 @@ bool GigaGrainsPlugin::stateLoad(const clap_istream *stream) noexcept
             }
         }
 
-        // All or nothing: a state decodeState rejects changes nothing here either. The sample
-        // entry waits for the loader (sub-project 3, Task 11).
+        // All or nothing: a state decodeState rejects changes nothing here either.
         gg::core::SessionState loaded;
         if (!gg::core::decodeState(bytes, mode(), loaded))
         {
             return false;
+        }
+        // The instrument's sample, found and decoded before this returns (D8); while active,
+        // offered to the audio thread just before the values below, so the first process()
+        // after this call applies both. The FX ignores a sample (a state from the instrument).
+        if (loader_ != nullptr)
+        {
+            loader_->restore(loaded.sample);
         }
         const auto &values = loaded.values;
         const uint64_t seed = loaded.seed;
@@ -657,6 +761,7 @@ bool GigaGrainsPlugin::stateLoad(const clap_istream *stream) noexcept
         {
             _host.paramsRescan(CLAP_PARAM_RESCAN_VALUES);
         }
+        collectSources();
         return true;
     }
     catch (...)

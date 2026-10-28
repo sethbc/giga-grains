@@ -17,6 +17,7 @@ add_library(gg-plugin-core STATIC
         src/Factory.cpp
         src/GigaGrainsPlugin.cpp
         src/HelpersConfig.cpp
+        src/SampleLoader.cpp
         )
 target_include_directories(gg-plugin-core PUBLIC include PRIVATE src)
 
@@ -26,10 +27,12 @@ target_include_directories(gg-plugin-core PUBLIC include PRIVATE src)
 # (sst-cpputils carries MSVC flags: /utf-8 /bigobj /permissive-). GigaGrainsPlugin.h includes
 # gg-core's headers (the Processor, the parameter IDs) and needs sst-cpputils for
 # SST_CPPUTILS_NONBLOCKING, so whatever includes it links gg::core and sst-cpputils itself: the
-# editor layer below, and the tests.
+# editor layer below, and the tests. gg::media (the sample loader's decoding, conversion, search
+# and settings file) is PRIVATE too: its headers appear only in SampleLoader.cpp and
+# GigaGrainsPlugin.cpp.
 target_link_libraries(gg-plugin-core
         PUBLIC clap clap-helpers gg::clap-wrapper-extensions
-        PRIVATE gg::core sst-cpputils gg::compiler-options
+        PRIVATE gg::media gg::core sst-cpputils gg::compiler-options
         )
 
 if (NOT GG_BUILD_EDITOR)

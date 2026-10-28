@@ -13,7 +13,9 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <limits>
 #include <memory>
 #include <numbers>
@@ -26,9 +28,30 @@
 #include "Factory.h"
 #include "GigaGrainsPlugin.h"
 #include "gg/core/Rng.h"
+#include "gg/core/SessionState.h"
+#include "gg/media/Sample.h"
+#include "media/AudioFixtures.h"
 
 namespace gg::test
 {
+/// Points the plugins' per-machine settings file at `file`: GG_SETTINGS_FILE, which an instance
+/// reads when it is created (GigaGrainsPlugin). Call it before creating the instance.
+inline void useSettingsFile(const std::filesystem::path &file)
+{
+#if defined(_WIN32)
+    _putenv_s("GG_SETTINGS_FILE", file.string().c_str());
+#else
+    setenv("GG_SETTINGS_FILE", file.string().c_str(), 1);
+#endif
+}
+
+/// Every test process starts with a scratch settings file of its own name, so no test reads or
+/// writes the user's (ruling R16). Tests that look at the settings point at their own file.
+inline const bool kScratchSettings = [] {
+    useSettingsFile(std::filesystem::path(GG_TEST_OUTPUT_DIR) / "plugin-settings" / "settings.xml");
+    return true;
+}();
+
 /// A minimal clap_host: it offers no extensions, and every request is a no-op.
 inline const clap_host *stubHost() noexcept
 {
@@ -157,21 +180,61 @@ inline clap_event_midi midiEvent(uint8_t status, uint8_t data1, uint8_t data2,
     return e;
 }
 
-/// A 4 s stereo sine at 220 Hz and amplitude 0.5, at 48 kHz: a source for the instrument
-/// (GigaGrainsPlugin::setSourceForTest).
-inline std::shared_ptr<const gg::PreparedSource> sineSource()
+/// The scratch folder of the plugin test `name`: GG_TEST_OUTPUT_DIR/plugin-sample-<name>/,
+/// created if needed.
+inline std::filesystem::path sampleDir(const std::string &name)
 {
-    constexpr int64_t kFrames = 4 * 48000;
-    auto buffer = std::make_shared<gg::SampleBuffer>(2, kFrames, 48000.0);
-    for (uint32_t c = 0; c < 2; ++c)
+    const auto dir = std::filesystem::path(GG_TEST_OUTPUT_DIR) / ("plugin-sample-" + name);
+    std::filesystem::create_directories(dir);
+    return dir;
+}
+
+/// Writes `path`: a stereo sine of `hz` at amplitude `amplitude`, `seconds` long at `rate`, as a
+/// 32-bit float WAV, the same in both channels. Returns `path`.
+inline std::filesystem::path writeSineWav(const std::filesystem::path &path, uint32_t rate = 48000,
+                                          double seconds = 4.0, double hz = 220.0,
+                                          double amplitude = 0.5)
+{
+    TestAudio audio{2, rate, {}};
+    const auto frames = static_cast<int64_t>(std::llround(seconds * rate));
+    audio.samples.resize(static_cast<std::size_t>(frames) * 2);
+    for (int64_t i = 0; i < frames; ++i)
     {
-        for (int64_t i = 0; i < kFrames; ++i)
-        {
-            buffer->channel(c)[i] = static_cast<float>(
-                0.5 * std::sin(2.0 * std::numbers::pi * 220.0 * static_cast<double>(i) / 48000.0));
-        }
+        const double x = amplitude * std::sin(2.0 * std::numbers::pi * hz * static_cast<double>(i) /
+                                              static_cast<double>(rate));
+        audio.samples[static_cast<std::size_t>(i) * 2] = x;
+        audio.samples[static_cast<std::size_t>(i) * 2 + 1] = x;
     }
-    return gg::PreparedSource::make(std::move(buffer));
+    std::filesystem::create_directories(path.parent_path());
+    writeFile(path, wavBytes(audio, SampleFormat::Float32));
+    return path;
+}
+
+/// A 4 s stereo sine at 220 Hz and amplitude 0.5, at 48 kHz, in the scratch folder of the test
+/// `name`: the instrument's usual test sample.
+inline std::filesystem::path sineSampleFile(const std::string &name)
+{
+    return writeSineWav(sampleDir(name) / (name + ".wav"));
+}
+
+/// The manifest entry of `file`, as a load of it records (gg::media::loadSample), with no sample
+/// folder. Empty if the file doesn't load.
+inline gg::core::MediaEntry entryOf(const std::filesystem::path &file)
+{
+    return gg::media::loadSample(file, {}).entry;
+}
+
+/// `state`, a state the instrument saved, with `entry` (or none) as its sample.
+inline std::string withSample(const std::string &state,
+                              const std::optional<gg::core::MediaEntry> &entry)
+{
+    gg::core::SessionState s;
+    if (!gg::core::decodeState(state, gg::core::Mode::Instrument, s))
+    {
+        return {};
+    }
+    s.sample = entry;
+    return gg::core::encodeState(s);
 }
 
 /// A clap_ostream into memory that accepts at most `chunk` bytes per write, as a host's stream
@@ -345,6 +408,15 @@ class PluginUnderTest
     gg::plugin::GigaGrainsPlugin &impl() const noexcept
     {
         return *gg::plugin::GigaGrainsPlugin::fromClap(plugin_);
+    }
+    /// clap_plugin.on_main_thread, as a host calls it after request_callback.
+    void onMainThread() const { plugin_->on_main_thread(plugin_); }
+    /// Gives the instrument `file` as its sample the way a host restoring a session does: its own
+    /// state, with the file in the manifest, through state.load. Synchronous (D8). False if the
+    /// state doesn't load.
+    bool loadSampleState(const std::filesystem::path &file) const
+    {
+        return load(withSample(save(), entryOf(file)));
     }
 
     /// Activates (main thread) and starts processing (audio thread).
