@@ -6,8 +6,10 @@ to `gg-bench` when that file exists, and reports a verdict for every engine rati
 verdict is report-only (spec ruling 3): a regression is a warning, never a failed job.
 Sub-project 6 makes it blocking, with the published §16 headline.
 
-**Baselines are per CPU model.** GitHub runs a leg on whichever CPU model it assigns. Linux has
-landed on EPYC 7763, EPYC 9V45 and Xeon 8370C, and Windows on EPYC 7763 and 9V45. The ratio
+**Baselines are per CPU model.** GitHub runs a leg on whichever CPU model it assigns. So far
+Linux has landed on AMD EPYC 7763, 9V45 and 9V74 and Intel Xeon 8370C, and Windows on EPYC 7763,
+9V45 and 9V74. The files have entries for the mac leg's Apple M1 VM, Windows' EPYC 7763 and 9V74,
+and Linux's EPYC 7763 and 9V45; the other models get no verdict yet. The ratio
 cancels a machine's speed but not its microarchitecture: for unchanged code, ratios differ by up
 to ~20% between models and by up to ~6% on one model. So each leg's file has one entry per CPU
 model, keyed by gg-bench's `machine` string (for example `AMD EPYC 7763 64-Core Processor

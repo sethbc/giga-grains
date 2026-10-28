@@ -118,7 +118,9 @@ the kernels.
   The Linux run landed on a different CPU model from the base's (see "CI variance"), so its
   losses are confounded. The Windows run didn't, and its Eco loss alone fails the keep rule.
 - **Live half: kept by the rule, pending a port.** Windows wins at blocks 32 and 64, Linux at
-  64, and no leg loses, though the M5 shows nothing. The ring's layout was about to change under the
+  64, and no leg loses, though the M5 shows nothing. The M1 VM's live WIN at block 32 (0.867)
+  counts for nothing either way: that leg's drift between runs for unchanged code is larger (see
+  the port's verdict). The ring's layout was about to change under the
   interleaved lever, so the live half was ported onto it and judged again (see "The two ports").
 
 ## Lever 2: a stereo-interleaved source (Task 11) — kept
@@ -322,6 +324,10 @@ two runs:
 - **Windows** landed on a different CPU model (see "CI variance"): its unchanged sample cells
   moved by 6–20% and its Eco cells by 4–15% the other way, so its CI signal shows nothing either
   way.
+- **The M1 VM**'s live WIN at block 32 (0.667) is inside that leg's drift between runs: in this
+  run its unchanged sample path moved to 0.821 at block 32, and the baselines' verification run
+  (40649977361) showed a false 1.15 "regression" (`engine-sample-eco` at block 32), so a lone WIN
+  cell there shows nothing.
 
 No demonstrable win, so the live half of the prefetch lever is rejected too. Not merged.
 

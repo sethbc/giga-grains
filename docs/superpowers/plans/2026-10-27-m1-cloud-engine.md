@@ -1,5 +1,23 @@
 # M1 Cloud Engine Implementation Plan
 
+> **Erratum (2026-10-28; INTENT §23 #46, #47):** where the branch differs from this plan, the
+> branch holds; the body is left as written.
+> - **Baselines are per CPU model,** schema 2: one entry per `machine`, each tolerance
+>   `max(0.10, 2 × (max − min) / median)`, not schema 1 with one set of ratios per leg and a
+>   0.05 floor. A run on a model with no entry gets no verdict (#47).
+> - **No `continue-on-error`** on CI's bench step: exit 3 becomes a warning and the step exits 0;
+>   anything else still fails the job.
+> - **`roundOrder` reverses the rotated order on odd rounds,** so each configuration's
+>   predecessor alternates; it isn't a plain rotation.
+> - **The levers were built in parallel branches,** each judged against one base (`1bd948a`).
+>   The rejected ones were never merged, so nothing was `git revert`ed. From the interleave
+>   lever's merge on, the stack was sequential: the prefetch live half and the arm64 shuffles
+>   were ported onto it and judged against it, and both were rejected (#46).
+> - **`engine-full-pool`'s capacity is `grains + 48`,** which is 2,048 at the default 2,000
+>   grains.
+> - **"Each lever is one commit"** doesn't hold for the interleave lever: it is two (`a911b93`
+>   and the doc fix `8eb0613`).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Replace the slice's scalar renderer with a structure-of-arrays pool and 4-wide SIMD

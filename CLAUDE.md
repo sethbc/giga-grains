@@ -304,11 +304,13 @@ $b --canvas [--quick] [--json out.json]                           # canvas rende
   verdict per ratio, in the step summary and uploads `gg-bench-<preset>` (`gg-bench.json` and
   `gg-bench.txt`).
   - **Baselines are per CPU model.** GitHub assigns a leg different CPU models from run to run
-    (Linux: EPYC 7763, EPYC 9V45, Xeon 8370C; Windows: EPYC 7763, 9V45). For unchanged code,
-    ratios differ by up to ~20% between models and ~6% on one model. So a leg's baseline has one
-    entry per model, keyed by gg-bench's `machine` string, and a run is checked only against its
-    own model's entry. A model with no entry gets no verdict (the summary says so) until later
-    runs on it are added to the baseline.
+    (seen so far: Linux on AMD EPYC 7763, 9V45 and 9V74 and Intel Xeon 8370C; Windows on EPYC
+    7763, 9V45 and 9V74). For unchanged code, ratios differ by up to ~20% between models and ~6%
+    on one model. So a leg's baseline has one entry per model, keyed by gg-bench's `machine`
+    string, and a run is checked only against its own model's entry. The committed baselines
+    have entries for the mac leg's Apple M1 VM, Windows' EPYC 7763 and 9V74, and Linux's EPYC
+    7763 and 9V45. A model with no entry gets no verdict (the summary says so) until later runs
+    on it are added to the baseline.
   - **The gate is report-only through M1** (INTENT §19, §23 #44): exit 3 becomes a
     `::warning` and the step exits 0. A crash, exit 1 or 2, or the timeout still fails the job.
     The `bench_baseline_*` tests pin exit 3, exit 0 and the no-verdict line.
@@ -324,7 +326,10 @@ $b --canvas [--quick] [--json out.json]                           # canvas rende
      - Each ratio is the median of that model's runs, with a tolerance of
        `max(0.10, 2 × (max − min) / median)`.
      - A model seen in only one run gets the 0.10 floor.
-  4. Commit the file. The next CI run on a model in the file should show every verdict `pass`.
+  4. Commit the file. A later CI run on a model in the file should show `pass`, but not always:
+     the M1 VM's drift between runs can exceed even a tolerance from three runs (the
+     verification run showed `engine-sample-eco` at block 32 at 1.1546 against a limit of
+     1.0377, a false "regressed"). A run on a model the file lacks shows "no verdict".
   5. A model with no entry gets one when you make the baseline again with later runs on it
      included, still all of the same engine code.
 
