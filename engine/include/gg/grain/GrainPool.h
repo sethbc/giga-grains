@@ -43,8 +43,9 @@ struct PanGains
 /// The equal-power pan law with unity at the centre: left = sqrt(1 - pan) and
 /// right = sqrt(1 + pan), so left² + right² = 2 (spec §6.4). GrainPool::spawn applies it once
 /// per grain, latching gain × each. sqrt is correctly rounded (IEEE 754), so it is deterministic
-/// without a polynomial, and pan 0 gives exactly 1 and 1, so a centred grain's two outputs are
-/// the one-output render's bit for bit.
+/// without a polynomial, and pan 0 gives exactly 1 and 1, so a centred grain's output 0 is the
+/// one-output render's bit for bit (as is its output 1 with a mono source; from a stereo source
+/// output 1 carries channel 1).
 inline PanGains panGains(float pan) noexcept
 {
     return {std::sqrt(1.0f - pan), std::sqrt(1.0f + pan)};

@@ -123,7 +123,8 @@ struct CanvasResult
     double totalMsP95;
 };
 
-/// The p-th quantile (0..1) of v, nearest rank. v must not be empty.
+/// The p-th quantile (0..1) of v, nearest rank: the canvas reports a measured frame time, where
+/// gg::bench::quantile interpolates between two. v must not be empty.
 double quantile(std::vector<double> v, double p)
 {
     std::sort(v.begin(), v.end());
@@ -439,10 +440,10 @@ int makeBaseline(const std::vector<std::string> &args)
         std::printf("wrote %s: leg %s, %zu runs\n", args[1].c_str(), args[0].c_str(), runs.size());
         for (const nlohmann::json &m : baseline["machines"])
         {
-            const auto runs = m["runs"].get<std::size_t>();
+            const auto machineRuns = m["runs"].get<std::size_t>();
             std::printf("  %s: %zu ratios from %zu run%s\n",
-                        m["machine"].get<std::string>().c_str(), m["ratios"].size(), runs,
-                        runs == 1 ? "" : "s");
+                        m["machine"].get<std::string>().c_str(), m["ratios"].size(), machineRuns,
+                        machineRuns == 1 ? "" : "s");
         }
         return 0;
     }

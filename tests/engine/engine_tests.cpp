@@ -540,8 +540,9 @@ TEST_CASE("random param sweep stays finite and bounded", "[engine]")
 TEST_CASE("pan follows equal power with unity center", "[engine]")
 {
     // The law: gL = sqrt(1 - pan) and gR = sqrt(1 + pan), so gL^2 + gR^2 = 2. Both are exactly 1
-    // at the centre, so a centred grain's latched channel gains are its gain, and its two
-    // outputs are the one-output render's bit for bit (ruling M1-d; spec §3).
+    // at the centre, so a centred grain's latched channel gains are its gain, and its output 0
+    // is the one-output render's bit for bit, as is its output 1 from a mono source (ruling
+    // M1-d; spec §3).
     const gg::PanGains centre = gg::panGains(0.0f);
     REQUIRE(centre.left == 1.0f);
     REQUIRE(centre.right == 1.0f);

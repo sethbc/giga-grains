@@ -134,12 +134,13 @@ jobs:
       # entry for the runner's CPU model and prints a verdict per ratio. GitHub assigns a leg
       # different models from run to run, and their ratios differ by up to ~20%. For a model the
       # baseline doesn't have yet, gg-bench prints "no baseline for <machine>; no verdict" and
-      # exits 0; the summary repeats that line above the output. A ratio
-      # never fails the job: a regression (exit 3) becomes a warning and the step exits 0, so the
-      # artifact still uploads; sub-project 6 makes it blocking. Anything else still fails the
-      # job, as before: a crash, an engine fault, a malformed baseline (exit 1), bad usage (2) or
-      # the timeout. The bench_baseline_regressed test pins exit 3. The runs are time-boxed:
-      # about 5 minutes on every leg.
+      # exits 0; the summary repeats that line above the output. A ratio never fails the job: a
+      # regression (exit 3) becomes a warning and the step exits 0, so the artifact still
+      # uploads; sub-project 6 makes it blocking. Anything else still fails the job, as before: a
+      # crash, an engine fault, a malformed baseline (exit 1), bad usage (2) or the timeout. The
+      # bench_baseline_* tests pin exit 3 for a regression, exit 0 for a pass, and exit 0 with
+      # the no-verdict line for a model the baseline lacks. The runs are time-boxed: about 6
+      # minutes on every leg.
       - name: Benchmark (full length; ratios reported, not gated through M1)
         id: bench
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
@@ -157,9 +158,10 @@ jobs:
           set -e
           {
             echo "### gg-bench (${{ matrix.preset }})"
+            # The grep strips CRs first: on windows-clangcl the output's lines end in CRLF.
             if [[ ! -f "$baseline" ]]; then
               echo "No baseline for this leg yet ($baseline): ratios reported, no verdict."
-            elif no_verdict=$(grep -m 1 '^no baseline for .*; no verdict$' "$out.txt"); then
+            elif no_verdict=$(tr -d '\r' < "$out.txt" | grep -m 1 '^no baseline for .*; no verdict$'); then
               echo "$no_verdict (ratios reported)."
             fi
             echo '```'

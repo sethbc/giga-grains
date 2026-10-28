@@ -206,7 +206,7 @@ TEST_CASE("the simd sample kernel is not contracted by an includer's flags", "[m
     // contract, pos = startPos + rate × e, changes the output only when it moves the read's float
     // fraction. That is likeliest where e and pos are large, so the grains started up to a
     // million samples before the render, and each one's read at sample 0 is anywhere from just
-    // before the source to just past it, some crossing its ends. With renderSampleInterior's
+    // before the source to just past it, some crossing its ends. With detail::renderInterior's
     // guard removed, 102 (Hermite) and 92 (Linear) of the 16,384 output samples differ on arm64
     // (Apple clang 21).
     constexpr int64_t kFrames = int64_t{1} << 20;
@@ -302,8 +302,8 @@ TEST_CASE("the contraction test's fast TU really contracts", "[math]")
     // must fuse there.
     CHECK(ggFastCanary(a, a, c) == 0x1.0p-24f);
 #else
-    // x86 at -march=nehalem has no FMA, and under GCC the file keeps the project flags: nothing
-    // can contract.
+    // x86 targets without FMA (nehalem, Apple's x86_64 default) can't fuse, and under GCC the
+    // file keeps the project flags: nothing can contract.
     CHECK(ggFastCanary(a, a, c) == unfused);
 #endif
 }

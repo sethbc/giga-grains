@@ -103,7 +103,7 @@ struct Comparison
 };
 
 /// One timed configuration: a case at one block size, with the state it keeps between rounds.
-/// Each kind of case ("kernel", and later "engine") derives from it.
+/// Each kind of case ("kernel", "engine") derives from it.
 class Configuration
 {
   public:
@@ -183,12 +183,12 @@ nlohmann::json makeBaseline(const std::string &leg, const std::vector<nlohmann::
 /// The order round `round` (r) runs `configurations` (n) configurations in. Even rounds run
 /// 0, 1, ..., n - 1 rotated left by r: order[i] = (i + r) mod n. Odd rounds run that order's
 /// reverse, rotated: order[i] = (r + n - 1 - i) mod n. Each configuration's predecessor thus
-/// alternates between its two neighbours, and the last of one round is never the first of the
-/// next, so no configuration runs twice back to back across a round seam.
+/// alternates between its two neighbours, and for n >= 2 the last of one round is never the first
+/// of the next, so no configuration runs twice back to back across a round seam.
 std::vector<uint32_t> roundOrder(uint32_t configurations, int round);
 
-/// The q-th quantile (0..1) of v, interpolating linearly between order statistics. v must not
-/// be empty.
+/// The q-th quantile (0..1, clamped) of v, interpolating linearly between order statistics; NaN
+/// when v is empty.
 double quantile(std::vector<double> v, double q);
 
 /// The CPU, plus the architecture this binary was built for (a universal macOS build has two).
