@@ -5,3 +5,5 @@
 tests/golden/**/*.json text eol=lf
 tests/golden/**/*.jsonl text eol=lf
 *.wav binary
+*.flac binary
+*.mp3 binary

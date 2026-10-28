@@ -26,6 +26,8 @@ add_executable(gg-tests
         engine/rt_tests.cpp
         engine/sample_buffer_tests.cpp
         engine/window_tests.cpp
+        media/decode_tests.cpp
+        media/sha256_tests.cpp
         metrics/metrics_tests.cpp
         tools/bench_kernel_tests.cpp
         tools/bench_tests.cpp
@@ -56,11 +58,11 @@ endif ()
 # duplicate libraries"). So the plugin layers, when they're built, come first: they link the
 # engine and, with the editor, gg::ui-core. The editor layer is an object library, whose own
 # libraries CMake would put after everything listed here, so they're listed too: the plugin
-# core and gg::ui. Then gg::render, gg::ui-core, gg::bench and gg::core, which link the engine
-# (and gg::render the metrics). gg::bench-kernels follows gg::bench, which links it: left out,
-# CMake would repeat the engine after it.
-set(gg_tests_libraries gg::render gg::ui-core gg::bench gg::bench-kernels gg::core gg::engine
-        gg::audiometrics)
+# core and gg::ui. Then gg::render, gg::ui-core, gg::bench, gg::core and gg::media, which link
+# the engine (and gg::render the metrics). gg::bench-kernels follows gg::bench, which links it:
+# left out, CMake would repeat the engine after it.
+set(gg_tests_libraries gg::render gg::ui-core gg::bench gg::bench-kernels gg::core gg::media
+        gg::engine gg::audiometrics)
 if (GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
     list(PREPEND gg_tests_libraries gg::plugin-impl gg-plugin-core gg::ui)
 elseif (GG_BUILD_PLUGINS)
@@ -70,7 +72,8 @@ target_link_libraries(gg-tests PRIVATE ${gg_tests_libraries} gg::compiler-option
         Catch2::Catch2WithMain nlohmann_json::nlohmann_json)
 # Scratch files (WAV/PNG round trips) go under the build tree, never a shared temp dir.
 target_compile_definitions(gg-tests PRIVATE GG_TEST_OUTPUT_DIR="${CMAKE_CURRENT_BINARY_DIR}/test-output"
-        GG_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/golden")
+        GG_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/golden"
+        GG_AUDIO_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/audio")
 # 0 or 1, so tests can use #if GG_USE_RTSAN for checks that only hold in the RTSan build.
 target_compile_definitions(gg-tests PRIVATE GG_USE_RTSAN=$<BOOL:${GG_USE_RTSAN}>)
 # 0 or 1: under ASan (1) the allocation tripwire's replacement operator new/delete are compiled
