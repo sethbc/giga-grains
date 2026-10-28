@@ -479,6 +479,24 @@ TEST_CASE("patch rejects or sanitizes bad state", "[core]")
         }
     }
 
+    SECTION("nesting deeper than 64 elements fails, without overflowing tinyxml's stack")
+    {
+        std::string deep;
+        for (int i = 0; i < 1'000'000; ++i)
+        {
+            deep += "<a>";
+        }
+        CHECK_FALSE(p.load(replaceOnce(good, "<params>", "<params>" + deep)));
+        CHECK(p.sameAs(before));
+        std::string sixtyFive; // <patch><params> and 63 more
+        for (int i = 0; i < 63; ++i)
+        {
+            sixtyFive += "<a>";
+        }
+        CHECK_FALSE(p.load(replaceOnce(good, "<params>", "<params>" + sixtyFive)));
+        CHECK(p.sameAs(before));
+    }
+
     SECTION("another patch's id fails")
     {
         CHECK_FALSE(

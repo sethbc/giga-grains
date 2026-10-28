@@ -196,6 +196,10 @@ bool parseMedia(std::string_view payload, std::optional<MediaEntry> &sample)
     //
     // tinyxml stops quietly at top-level text it can't read (after the root, say), and returns
     // where it stopped; having read everything, it returns null.
+    if (!xmlNestingWithin(payload))
+    {
+        return false; // tinyxml's recursion would overflow the stack
+    }
     const std::string text(payload);
     TiXmlDocument doc;
     const char *stopped = doc.Parse(text.c_str(), nullptr, TIXML_ENCODING_UNKNOWN);

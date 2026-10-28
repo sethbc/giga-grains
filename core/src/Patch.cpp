@@ -13,6 +13,7 @@
 #include <system_error>
 #include <utility>
 
+#include "XmlText.h"
 #include "tinyxml/tinyxml.h"
 
 namespace gg::core
@@ -89,6 +90,12 @@ float sanitize(float v, const md_t &m)
 // so a truncated state would load as far as it got.
 bool isLoadable(const std::string &xml)
 {
+    // Before any parse, here or in PatchBase::fromState: tinyxml's recursion would overflow the
+    // stack on a deeply nested document.
+    if (!xmlNestingWithin(xml))
+    {
+        return false;
+    }
     TiXmlDocument doc;
     doc.Parse(xml.c_str());
     if (doc.Error())

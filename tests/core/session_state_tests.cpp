@@ -508,6 +508,57 @@ bool sameEntry(const MediaEntry &a, const MediaEntry &b)
 }
 } // namespace
 
+TEST_CASE("a state nested deeper than 64 elements fails, in PTCH or MEDI", "[core]")
+{
+    // tinyxml parses nested elements recursively: a project of a million nested elements would
+    // overflow the stack and crash the host as it opens. decodeState refuses nesting deeper than
+    // 64 before tinyxml sees it.
+    const auto good = encodeState(someState(true));
+    const auto ptch = *stateChunkPayload(good, "PTCH");
+    const auto medi = *stateChunkPayload(good, "MEDI");
+    const auto open = [](std::size_t n) {
+        std::string s;
+        for (std::size_t i = 0; i < n; ++i)
+        {
+            s += "<a>";
+        }
+        return s;
+    };
+    const auto close = [](std::size_t n) {
+        std::string s;
+        for (std::size_t i = 0; i < n; ++i)
+        {
+            s += "</a>";
+        }
+        return s;
+    };
+    Decoded d = distinct();
+    const Decoded before = distinct();
+    SECTION("in MEDI")
+    {
+        // 64 levels, <media> included, decode; 65 and a million don't.
+        const std::string at64 = R"(<media version="1">)" + open(63) + close(63) + "</media>";
+        REQUIRE(d.decode(stateContainer({stateChunk("PTCH", ptch), stateChunk("MEDI", at64)})));
+        d = distinct();
+        for (const std::size_t n : {std::size_t{64}, std::size_t{1'000'000}})
+        {
+            INFO(n + 1 << " levels");
+            const std::string deep = R"(<media version="1">)" + open(n) + close(n) + "</media>";
+            REQUIRE_FALSE(
+                d.decode(stateContainer({stateChunk("PTCH", ptch), stateChunk("MEDI", deep)})));
+            REQUIRE(d.sameAs(before));
+        }
+    }
+    SECTION("in PTCH")
+    {
+        std::string deep = ptch;
+        deep.insert(deep.find("<params>") + 8, open(1'000'000));
+        REQUIRE_FALSE(
+            d.decode(stateContainer({stateChunk("PTCH", deep), stateChunk("MEDI", medi)})));
+        REQUIRE(d.sameAs(before));
+    }
+}
+
 TEST_CASE("every valid entry round trips, whatever bytes its strings hold", "[core]")
 {
     // Ruling R9: decodeState loads whatever encodeState writes. 2,000 random valid entries, then

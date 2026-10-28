@@ -52,6 +52,10 @@ bool fromSettingsXml(std::string_view xml, MachineSettings &out)
     // Byte by byte, as parseMedia reads MEDI (SessionState.cpp): every byte but NUL comes back
     // unchanged, valid UTF-8 or not. tinyxml stops quietly at top-level text it can't read, and
     // returns where it stopped; having read everything, it returns null.
+    if (!xmlNestingWithin(xml))
+    {
+        return false; // tinyxml's recursion would overflow the stack
+    }
     const std::string text(xml);
     TiXmlDocument doc;
     const char *stopped = doc.Parse(text.c_str(), nullptr, TIXML_ENCODING_UNKNOWN);

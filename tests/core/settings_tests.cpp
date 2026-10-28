@@ -142,6 +142,56 @@ TEST_CASE("settings XML that isn't settings is rejected and changes nothing", "[
     }
 }
 
+TEST_CASE("settings XML nested deeper than 64 elements is rejected without parsing", "[core]")
+{
+    // tinyxml parses nested elements recursively: a file of a million nested elements would
+    // overflow the stack. gg-core refuses nesting deeper than 64 before tinyxml sees it.
+    const auto nested = [](std::size_t depth, std::string_view open, std::string_view close) {
+        std::string xml = R"(<settings version="1" sampleFolder="/S">)";
+        for (std::size_t i = 1; i < depth; ++i)
+        {
+            xml += open;
+        }
+        for (std::size_t i = 1; i < depth; ++i)
+        {
+            xml += close;
+        }
+        return xml + "</settings>";
+    };
+    MachineSettings out = kSome;
+    SECTION("64 levels, the root's included, load")
+    {
+        REQUIRE(fromSettingsXml(nested(64, "<a>", "</a>"), out));
+        REQUIRE(out.sampleFolder == "/S");
+    }
+    SECTION("65 levels are rejected")
+    {
+        REQUIRE_FALSE(fromSettingsXml(nested(65, "<a>", "</a>"), out));
+        REQUIRE(out == kSome);
+    }
+    SECTION("a million levels are rejected, and nothing overflows")
+    {
+        REQUIRE_FALSE(fromSettingsXml(nested(1'000'000, "<a>", "</a>"), out));
+        REQUIRE(out == kSome);
+    }
+    SECTION("a million levels whose attributes hold \"/>\" are rejected")
+    {
+        // Only a "/>" outside quotes closes an element at once.
+        REQUIRE_FALSE(fromSettingsXml(nested(1'000'000, R"(<a x="/>">)", "</a>"), out));
+        REQUIRE_FALSE(fromSettingsXml(nested(1'000'000, "<a x = '/>'>", "</a>"), out));
+        REQUIRE(out == kSome);
+    }
+    SECTION("siblings, self-closed elements, comments and declarations don't nest")
+    {
+        std::string xml = R"(<?xml version="1.0"?><!-- <a><a> --><settings version="1">)";
+        for (int i = 0; i < 1000; ++i)
+        {
+            xml += R"(<a x="<b>" /><![CDATA[<c><c>]]><b></b>)";
+        }
+        REQUIRE(fromSettingsXml(xml + "</settings>", out));
+    }
+}
+
 TEST_CASE("loadSettings gives the defaults for a missing, corrupt or huge file", "[media]")
 {
     const auto dir = freshDir("search-settings-defaults");
