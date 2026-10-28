@@ -240,6 +240,42 @@ TEST_CASE("decode refuses a file that ends before its header says, as truncated"
     }
 }
 
+TEST_CASE("decode tolerates a data size up to 1 KiB beyond the file (ruling R10)", "[media]")
+{
+    // 600 stereo 16-bit frames: 2400 bytes of audio.
+    const auto audio = gg::test::makeTestAudio(2, 48000, 600);
+    SECTION("100 bytes beyond: the frames present decode")
+    {
+        const auto file = dir() / "overstated-100.wav";
+        gg::test::writeFile(file, gg::test::wavBytes(audio, SampleFormat::Int16, 2400 + 100));
+        const auto result = decodeAudioFile(file);
+        INFO("error: " << result.error);
+        REQUIRE(result.audio.has_value());
+        REQUIRE(result.audio->buffer->channels() == 2);
+        REQUIRE(result.audio->buffer->frames() == 600);
+        REQUIRE(maxError(*result.audio->buffer, audio, 2) <= gg::test::lsbOf(SampleFormat::Int16));
+    }
+    SECTION("exactly 1024 bytes beyond decodes; 1028 is truncated")
+    {
+        const auto atLimit = dir() / "overstated-1024.wav";
+        gg::test::writeFile(atLimit, gg::test::wavBytes(audio, SampleFormat::Int16, 2400 + 1024));
+        const auto result = decodeAudioFile(atLimit);
+        INFO("error: " << result.error);
+        REQUIRE(result.audio.has_value());
+        REQUIRE(result.audio->buffer->frames() == 600);
+
+        const auto over = dir() / "overstated-1028.wav";
+        gg::test::writeFile(over, gg::test::wavBytes(audio, SampleFormat::Int16, 2400 + 1028));
+        requireError(decodeAudioFile(over), over, "truncated");
+    }
+    SECTION("4096 bytes beyond: truncated")
+    {
+        const auto file = dir() / "overstated-4096.wav";
+        gg::test::writeFile(file, gg::test::wavBytes(audio, SampleFormat::Int16, 2400 + 4096));
+        requireError(decodeAudioFile(file), file, "truncated");
+    }
+}
+
 TEST_CASE("decode never allocates for audio a header claims but the file lacks", "[media]")
 {
     // Each file is tiny but claims up to 600 s, within every limit; allocating and zeroing that

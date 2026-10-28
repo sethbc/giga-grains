@@ -32,6 +32,10 @@ constexpr uint32_t kMaxSampleRate = 768000;
 constexpr uint64_t kChunkSamples = 8192;
 /// A growing buffer's first capacity, in frames, unless the header gives fewer.
 constexpr uint64_t kInitialFrames = 65536;
+/// How many bytes an uncompressed WAV's or AIFF's declared audio may run past the end of the file
+/// without counting as truncated (ruling R10): some writers leave the data size a little larger
+/// than what they wrote.
+constexpr uint64_t kDataSizeSlack = 1024;
 
 /// The file's name, for messages: UTF-8, without its directory.
 std::string displayName(const fs::path &path)
@@ -353,12 +357,18 @@ std::optional<DecodeResult> tryWav(const fs::path &path, uint64_t fileBytes)
         {
             return guarded(path, [&] { return decodeGrowing(path, stream, read); });
         }
-        const uint64_t held = fileBytes > wav.dataChunkDataPos
-                                  ? (fileBytes - wav.dataChunkDataPos) / bytesPerFrame
-                                  : 0;
+        const uint64_t heldBytes =
+            fileBytes > wav.dataChunkDataPos ? fileBytes - wav.dataChunkDataPos : 0;
+        const uint64_t held = heldBytes / bytesPerFrame;
         if (stream.frames > held)
         {
-            return failure(path, truncated(stream.frames, held));
+            // Within kDataSizeSlack the file is read as it is (ruling R10). The product can't
+            // overflow: checkHeader bounded the frames, and bytesPerFrame is under 2^20.
+            if (stream.frames * bytesPerFrame - heldBytes > kDataSizeSlack)
+            {
+                return failure(path, truncated(stream.frames, held));
+            }
+            stream.frames = held;
         }
         if (stream.frames == 0)
         {

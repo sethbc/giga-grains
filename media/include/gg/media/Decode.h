@@ -48,16 +48,20 @@ struct DecodeResult
 ///   dr_mp3 reports), is refused before its buffer is allocated. So is a sample rate above
 ///   768 kHz, and an encoding dr_wav can't decode.
 /// - Memory follows what the file holds, never only what its header claims:
-///   - uncompressed WAV and AIFF: a header claiming more frames than the file's bytes after the
-///     start of its audio can hold is refused as truncated, before anything is allocated; the
-///     buffer is then allocated once, at the header's count;
+///   - uncompressed WAV and AIFF: a header claiming more than the file's bytes after the start
+///     of its audio can hold, by over 1 KiB, is refused as truncated before anything is
+///     allocated; the buffer is then allocated once, at the header's count, or at the frames
+///     the file holds if they're fewer;
 ///   - FLAC, MP3 and ADPCM WAV, which a few bytes can make long: the audio is decoded into
 ///     planes that grow as it arrives (never past the header's count while the decode is within
 ///     it), so the peak is at most about twice the decoded audio, plus the final copy into the
 ///     buffer; a decode past kMaxFileSeconds is refused whatever the header says.
 /// - A file whose audio ends before its header's frame count is refused as truncated, with these
 ///   tolerances, for what an intact file can legitimately fall short by:
-///   - uncompressed WAV and AIFF, and FLAC (STREAMINFO's count is exact): none;
+///   - uncompressed WAV and AIFF: up to 1 KiB (1024 bytes) of declared audio beyond the end of
+///     the file, as some writers leave the data size a little large (ruling R10); the frames the
+///     file holds are decoded. More than that is truncation (ruling R8);
+///   - FLAC (STREAMINFO's count is exact): none;
 ///   - MP3: two MP3 frames (2304), as its tag and the decoder may count encoder delay and padding
 ///     differently;
 ///   - ADPCM WAV: one block.
