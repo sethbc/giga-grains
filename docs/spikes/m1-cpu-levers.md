@@ -1,19 +1,20 @@
 # M1 spike: the four CPU levers
 
-*M1 sub-project 2, Tasks 10 to 13, 2026-10-27. INTENT §16 gave sub-project 2 a fixed list of
-four optimization levers: try each, keep it if it wins, then stop. This is the record of the
-four trials, the two ports that followed, and what the CI numbers turned out to be able to
-show. The kernels they start from are Task 6's and Task 7's 4-wide SIMD kernels, which match
-the scalar reference bit for bit.*
+*M1 sub-project 2, Tasks 10 to 13, 2026-10-27 (dates and times are local, CDT). INTENT §16
+gave sub-project 2 a fixed list of four optimization levers: try each, keep it if it wins, then
+stop. This is the record of the four trials, the two ports that followed, and what the CI
+numbers turned out to be able to show. The kernels they start from are Task 6's and Task 7's
+4-wide SIMD kernels, which match the scalar reference bit for bit.*
 
 ## Verdict
 
 - **One lever kept: the stereo-interleaved source, both halves** (the sample source and the live
   ring). On the M5 Max it makes `engine-sample` 7–9% faster and `engine-live` 9–13% faster.
 - **The sample half is kept by a director's exception.** On the Windows leg the sample ratio
-  regressed 1–2% (Eco up to 7% at block 32), which §16's keep rule ("no leg regresses beyond its
-  spread") would reject. The director kept it for the M5's 7–9% sample win, at the cost of 2×
-  memory for a stereo source (INTENT §23 #46).
+  regressed 1–2%, and Eco up to 7% at block 32, which §16's keep rule ("no leg regresses beyond
+  its spread") would reject. Told of the M5's 7–9% sample win against Windows' 1–2% sample
+  regression, the director decided to keep it, at 2× memory for a stereo source (INTENT §23
+  #46).
 - **Three levers rejected:**
   - per-grain software prefetch, first as built and again as a live-only port;
   - contiguous loads with shuffles, first as built and again as an arm64-only port;
@@ -67,9 +68,10 @@ specification):
 leg, and no leg regresses beyond its spread. Each source path is judged on its own case, so a
 lever may be kept for the sample path or the live path alone.
 
-The tables were generated from the downloaded artifacts and the local JSON by two short Python
-scripts that apply exactly the comparisons above. The scripts and the data aren't committed; the
-tables are their output.
+The lever tables were generated from the downloaded artifacts and the local JSON by two short
+Python scripts that apply exactly the comparisons above. The scripts and the data aren't
+committed; the tables are their output. The one exception is the arm64 shuffle port's first
+try, whose table comes from Task 12's own `--quick` runs (see "The two ports").
 
 ## Lever 1: per-grain software prefetch (Task 10)
 
@@ -115,8 +117,8 @@ the kernels.
   block 64 regresses beyond its spread, and so do Linux's Eco and block-256 cells, by up to 14%.
   The Linux run landed on a different CPU model from the base's (see "CI variance"), so its
   losses are confounded. The Windows run didn't, and its Eco loss alone fails the keep rule.
-- **Live half: kept by the rule, pending a port.** Windows and Linux win at blocks 32 and 64 and
-  no leg loses, though the M5 shows nothing. The ring's layout was about to change under the
+- **Live half: kept by the rule, pending a port.** Windows wins at blocks 32 and 64, Linux at
+  64, and no leg loses, though the M5 shows nothing. The ring's layout was about to change under the
   interleaved lever, so the live half was ported onto it and judged again (see "The two ports").
 
 ## Lever 2: a stereo-interleaved source (Task 11) — kept
@@ -171,9 +173,11 @@ throw), branch `m1ce-lever-interleave`. CI run 40624459703. Merged into `m1-clou
   loses.
 - **Sample half: kept by the director's exception.** It wins on the M5 by 7–9% (Eco 4–8%), but
   Windows regresses 1.2–2.2% at Normal and 7.2% at Eco block 32, beyond Windows' small in-run
-  IQR. Both Windows runs ran on the same CPU model (EPYC 7763), so the loss is a real signal, not
-  the runner mix. The keep rule would reject the sample half. The director preferred to keep it,
-  for the M5's sample win, at 2× memory for a stereo source (INTENT §23 #46).
+  IQR. Both Windows runs ran on the same CPU model (EPYC 7763), so the loss can't be blamed on
+  the runner mix. The keep rule would reject the sample half. The director, told that it wins
+  7–9% on the M5 and regresses 1–2% on Windows, decided to keep it, at 2× memory for a stereo
+  source (INTENT §23 #46). The Eco loss at block 32 wasn't part of what the director was
+  shown.
 - The Linux run landed on a different CPU model from the base's (EPYC 9V45 against 7763), so its
   wins are confounded. The M1 VM's IQRs are too wide to call anything.
 
@@ -216,10 +220,11 @@ capacity of 4,096.
 | `engine-live` | 64 | 1.421 **LOSS** | 1.377 **LOSS** | 1.308 **LOSS** |
 | `engine-live` | 256 | 1.479 **LOSS** | 1.616 **LOSS** | 1.503 **LOSS** |
 
-**Verdict: rejected.** It loses on every leg, case and block size, by 11% to 77%, and the loss
-grows with the block size. Each grain-sample is written to a scratch row and then read back and
-added: a second pass over the output, plus the sort, the tile bookkeeping and a kernel call per
-grain per tile instead of per block. Whatever locality the ordering buys doesn't pay for that on
+**Verdict: rejected.** It is slower on every leg, case and block size, by 11% to 77%, and loses
+beyond the spread everywhere but the M1 VM at block 32. The loss grows with the block size.
+Each grain-sample is written to a scratch row and then read back and added: a second pass over
+the output, plus the sort, the tile bookkeeping and a kernel call per grain per tile instead of
+per block. Whatever locality the ordering buys doesn't pay for that on
 any machine here. The plan expected this. The task review was skipped, by ruling, because no leg
 won.
 
@@ -307,11 +312,18 @@ prefetches the first 8 grains before the loop. CI run 40629306377.
 | `engine-live` | 256 | 0.898 ~ | 1.144 **LOSS** | 0.948 **WIN** |
 
 **Verdict: rejected.** The M5 shows no win, every cell within the spread and slightly worse.
-On CI, Linux live wins by 5–6% and Windows live "loses" by up to 14%. But the port doesn't touch
-the sample path at all, and Windows' sample cells still moved by 6–20% and its Eco cells by 4–15%
-the other way. The Windows run landed on a different CPU model (see "CI variance"), so its CI
-signal is below the run-to-run variance and shows nothing either way. No demonstrable win, so
-the live half of the prefetch lever is rejected too. Not merged.
+On CI, Linux live wins by 5–6% at blocks 32 and 256 and Windows live "loses" by up to 14%. But
+the port doesn't touch the sample path at all, so its sample cells measure the drift between the
+two runs:
+
+- **Linux** ran both on an EPYC 9V45, and its unchanged sample path still moved by up to 6%
+  (`engine-sample-eco` at block 256, 1.063, itself a "LOSS"). The 5–6% live win is therefore not
+  beyond the between-run spread on the same model.
+- **Windows** landed on a different CPU model (see "CI variance"): its unchanged sample cells
+  moved by 6–20% and its Eco cells by 4–15% the other way, so its CI signal shows nothing either
+  way.
+
+No demonstrable win, so the live half of the prefetch lever is rejected too. Not merged.
 
 ### Shuffles, arm64 only (`824b413`, local branch `m1ce-lever-shuffle2`) — rejected
 
@@ -319,8 +331,9 @@ the live half of the prefetch lever is rejected too. Not merged.
 build is the base's gather code, instruction for instruction. On arm64, the window was first
 tried on the interleaved layout itself, by deinterleaving three `vld2q_f32` loads into a 12-frame
 L window and a 12-frame R window, then `vqtbl3q_u8` per tap. That was 9–20% slower than the
-interleaved kernel on every case and block size, well beyond the spread (rough M5 runs, 3 each,
-other builds running):
+interleaved kernel on every case and block size, well beyond the spread. This table is Task 12's
+own measurement, not the judging scripts': `gg-bench --quick` on the M5, base and try
+alternated, 3 runs each with their 15 per-round ratios pooled, while other builds ran:
 
 | Case | Block | base median (IQR) | window median (IQR) | window / base |
 |---|---:|---:|---:|---:|
@@ -374,19 +387,22 @@ ratio), so they say nothing about the next run.
 
 The engine and the reference kernel have different instruction mixes, so their ratio depends on
 the microarchitecture, and the ratio can't cancel that. The M1 VM is always `Apple M1 (Virtual)`,
-but its in-run IQRs reach 0.35, so it calls almost nothing.
+but its in-run IQRs reach 0.39 on the judged cases (0.49 counting `engine-full-pool`), so it
+calls almost nothing.
 
 **What it means:**
 
 - A single CI run can't judge a few-percent change. The verdicts above lean on the M5 and on CI
   pairs that ran on the same CPU model: the interleaved lever's Windows cells, and the shuffles'
   and the scheduling's x86 cells.
-- **Baselines need at least three separate CI runs,** and the tolerance must come from the spread
-  between runs, not the in-run IQR. `gg-bench --make-baseline` takes
-  `max(0.05, 2 × (max − min) / median)` over the runs it is given (INTENT §23 #47).
-- This supports §19's report-only gate through M1. Before sub-project 6 makes the gate blocking,
-  it has to deal with the CPU mix: a tolerance wide enough for every model the pool serves, or a
-  baseline per model keyed by `machine`.
+- **Baselines are per CPU model** (INTENT §23 #47). A leg's baseline file holds one entry per
+  `machine`, and `gg-bench --make-baseline` groups its input runs by `machine`. Each entry's
+  tolerance comes from the spread between separate CI runs, not the in-run IQR:
+  `max(0.10, 2 × (max − min) / median)`. A run gets a verdict only against its own machine's
+  entry. On a model with no entry, `gg-bench` prints `no baseline for <machine>; no verdict` and
+  exits 0, and a later set of runs on that model adds its entry.
+- This supports §19's report-only gate through M1. Sub-project 6 makes the gate blocking, with
+  the published X, and adds entries for the CPU models the first baselines haven't seen.
 
 ## Before and after on the M5 Max (indicative)
 

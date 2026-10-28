@@ -120,11 +120,11 @@ ledger. Items the review fixed before the merge aren't listed.
 
 ## From M1 sub-project 2 (the Cloud engine)
 
-Written at the sub-project's end (2026-10-28). Its final whole-branch review adds the rest.
+Written at the sub-project's end (2026-10-27). Its final whole-branch review adds the rest.
 
 | What | Source | When |
 |---|---|---|
-| **Make the CPU gate blocking, with the published X.** Through M1, CI's `gg-bench` step reports each ratio's verdict against the leg's baseline and turns a regression (exit 3) into a warning (ruling 3, INTENT §23 #44). Measure X on the M5 Max, publish it, and make a regression fail the job. First deal with the CI runners' CPU mix: ratios for unchanged code drifted up to ~20% between runs on Windows that landed on different CPU models (§23 #47; `docs/spikes/m1-cpu-levers.md`, "CI variance"), so the tolerance must cover every model the pool serves, or each model needs its own baseline. | Ruling 3; INTENT §16, §19, §23 #44, #47; `.github/workflows/ci.yml` (Benchmark step) | Sub-project 6 |
+| **Make the CPU gate blocking, with the published X, and add baselines for CPU models not yet seen.** Through M1, CI's `gg-bench` step reports each ratio's verdict against the leg's baseline and turns a regression (exit 3) into a warning (ruling 3, INTENT §23 #44). Measure X on the M5 Max, publish it, and make a regression fail the job. Baselines are per CPU model (§23 #47; `docs/spikes/m1-cpu-levers.md`, "CI variance"): a run on a `machine` with no entry gets no verdict, so before the gate blocks, add an entry, from separate CI runs, for each model the hosted pools serve that the first baselines lack. | Ruling 3; INTENT §16, §19, §23 #44, #47; `.github/workflows/ci.yml` (Benchmark step) | Sub-project 6 |
 
 ## Resolved in M0's final fix wave (not carried)
 
