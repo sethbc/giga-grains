@@ -14,6 +14,8 @@ add_executable(gg-tests
         engine/denormal_tests.cpp
         engine/determinism_tests.cpp
         engine/engine_tests.cpp
+        engine/fp_contract_fast.cpp
+        engine/fp_contract_tests.cpp
         engine/interpolate_tests.cpp
         engine/live_tests.cpp
         engine/mathdet_tests.cpp
@@ -30,6 +32,22 @@ add_executable(gg-tests
         support/AllocTripwire.cpp
         )
 target_include_directories(gg-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+# fp_contract_fast.cpp includes the engine's inline math with the flags of an includer that lets
+# Clang contract a*b + c into an FMA: Clang's default -ffp-contract=on, placed after the project's
+# -ffp-contract=off so it wins. (Under -ffp-contract=fast Clang disregards the fp contract pragma,
+# so no header can guard against that.) -O2 inlines the header functions all the way down, so the
+# file runs its own code and leaves no out-of-line copy for the linker to pick in place of the
+# project-flag one. GCC's guard is empty and relies on the project-wide flag, so under GCC the
+# file keeps the project flags.
+if (CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    if (CMAKE_CXX_COMPILER_FRONTEND_VARIANT MATCHES "MSVC")
+        set(gg_fp_contract_includer /clang:-O2 /clang:-ffp-contract=on)
+    else ()
+        set(gg_fp_contract_includer -O2 -ffp-contract=on)
+    endif ()
+    set_source_files_properties(engine/fp_contract_fast.cpp PROPERTIES
+            COMPILE_OPTIONS "${gg_fp_contract_includer}")
+endif ()
 # Each library is listed before the libraries it links itself. Listing one after a library it
 # links would make CMake repeat it on the link line, which Apple's linker warns about ("ignoring
 # duplicate libraries"). So the plugin layers, when they're built, come first: they link the

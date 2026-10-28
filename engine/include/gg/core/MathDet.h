@@ -8,6 +8,8 @@
 #include <cmath>
 #include <limits>
 
+#include "gg/core/FpContract.h"
+
 namespace gg
 {
 namespace detail
@@ -76,6 +78,7 @@ inline constexpr double kSqrtHalf = 0x1.6a09e667f3bcdp-1;
 /// NaN gives NaN; +inf and x >= 1024 give +inf; -inf and x <= -1075 give 0.
 inline double exp2Det(double x) noexcept
 {
+    GG_FP_CONTRACT_OFF
     if (std::isnan(x))
     {
         return x;
@@ -114,6 +117,7 @@ inline double exp2Det(double x) noexcept
 /// NaN and x < 0 give NaN; ±0 gives -inf; +inf gives +inf.
 inline double logDet(double x) noexcept
 {
+    GG_FP_CONTRACT_OFF
     if (std::isnan(x))
     {
         return x;
