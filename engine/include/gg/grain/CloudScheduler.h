@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <limits>
 
+#include "gg/core/FpContract.h"
 #include "gg/core/MathDet.h"
 #include "gg/core/Rng.h"
 #include "gg/source/SourceMode.h"
@@ -135,6 +136,8 @@ class CloudScheduler
     void schedule(int64_t blockStart, uint32_t numFrames, uint64_t seed, uint32_t layer,
                   uint32_t stream, Emit &&emit) noexcept
     {
+        // Covers the lambda below too: a lambda body takes the pragma of its enclosing scope.
+        GG_FP_CONTRACT_OFF
         if (!(densityHz_ > 0.0))
         {
             return; // off
@@ -196,6 +199,7 @@ class CloudScheduler
     /// Δ for the unit-exponential draw e, with the current period and distribution.
     double interval(double e) const noexcept
     {
+        GG_FP_CONTRACT_OFF
         const double d = params_.distribution;
         return std::max(period_ * ((1.0 - d) + d * e), kMinIntervalSamples);
     }

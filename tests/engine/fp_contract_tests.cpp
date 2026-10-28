@@ -6,6 +6,11 @@
 #include <bit>
 #include <cmath>
 #include <cstdint>
+#include <iomanip>
+#include <limits>
+#include <sstream>
+#include <string>
+#include <vector>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -13,6 +18,7 @@
 #include "gg/core/MathDet.h"
 #include "gg/core/Rng.h"
 #include "gg/core/Window.h"
+#include "gg/grain/CloudScheduler.h"
 
 // Defined in fp_contract_fast.cpp, which is compiled with flags that allow FP contraction and
 // inlines every header function it calls, so it leaves no out-of-line copy behind. The calls
@@ -23,6 +29,8 @@ float ggFastHermite(const float *data, int64_t frames, double pos);
 double ggFastExp2(double x);
 double ggFastLog(double x);
 float ggFastHann(double phase01);
+int ggFastCloud(const gg::CloudParams &params, int64_t frames, gg::GrainDraw *out, int capacity);
+float ggFastCanary(float a, float b, float c);
 
 namespace
 {
@@ -48,14 +56,60 @@ struct MismatchCount
     {
         if (bits(fast) != bits(ref))
         {
-            if (count == 0)
-            {
-                firstInput = input;
-            }
-            ++count;
+            record(input);
         }
     }
+
+    void record(double input)
+    {
+        if (count == 0)
+        {
+            firstInput = input;
+        }
+        ++count;
+    }
+
+    /// The first differing input at full precision, or "-" if there was none.
+    std::string first() const
+    {
+        if (count == 0)
+        {
+            return "-";
+        }
+        std::ostringstream os;
+        os << std::setprecision(std::numeric_limits<double>::max_digits10) << firstInput;
+        return os.str();
+    }
 };
+
+/// The Cloud scheduler run the fast TU's way, compiled here with the project's flags. The lambda
+/// gives this TU its own instantiation of schedule().
+int refCloud(const gg::CloudParams &params, int64_t frames, gg::GrainDraw *out, int capacity)
+{
+    gg::CloudScheduler cloud;
+    cloud.prepare(48000.0);
+    cloud.setParams(params);
+    int count = 0;
+    for (int64_t start = 0; start < frames; start += 64)
+    {
+        cloud.schedule(start, 64, 1234, 0, 0, [&](const gg::GrainDraw &g) {
+            if (count < capacity)
+            {
+                out[count] = g;
+            }
+            ++count;
+        });
+    }
+    return count;
+}
+
+bool sameBits(const gg::GrainDraw &a, const gg::GrainDraw &b)
+{
+    return a.index == b.index && a.onsetSample == b.onsetSample &&
+           bits(a.onsetFrac) == bits(b.onsetFrac) && bits(a.positionDraw) == bits(b.positionDraw) &&
+           bits(a.rate) == bits(b.rate) && bits(a.durationSamples) == bits(b.durationSamples) &&
+           bits(a.gain) == bits(b.gain) && bits(a.pan) == bits(b.pan);
+}
 } // namespace
 
 TEST_CASE("inline math is not contracted by an includer's flags", "[math]")
@@ -94,13 +148,66 @@ TEST_CASE("inline math is not contracted by an includer's flags", "[math]")
         window.check(phase, ggFastHann(phase), hann.at(phase));
     }
 
-    INFO("first differing inputs: linear " << linear.firstInput << ", hermite4 "
-                                           << hermite.firstInput << ", exp2Det " << exp2.firstInput
-                                           << ", logDet " << log.firstInput << ", HannTable::at "
-                                           << window.firstInput);
+    INFO("first differing inputs: linear " << linear.first() << ", hermite4 " << hermite.first()
+                                           << ", exp2Det " << exp2.first() << ", logDet "
+                                           << log.first() << ", HannTable::at " << window.first());
     CHECK(linear.count == 0);
     CHECK(hermite.count == 0);
     CHECK(exp2.count == 0);
     CHECK(log.count == 0);
     CHECK(window.count == 0);
+}
+
+TEST_CASE("the Cloud scheduler is not contracted by an includer's flags", "[math][cloud]")
+{
+    // About 10,000 grains, part Poisson, with spray and stereo, so interval() and the position
+    // and pan draws all do arithmetic that could contract.
+    gg::CloudParams params;
+    params.densityHz = 2000.0;
+    params.distribution = 0.37;
+    params.position = 0.4;
+    params.spray = 0.6;
+    params.stereo = 0.8;
+    constexpr int64_t kFrames = 5 * 48000;
+    constexpr int kCapacity = 20000;
+    std::vector<gg::GrainDraw> fast(kCapacity), ref(kCapacity);
+    const int fastCount = ggFastCloud(params, kFrames, fast.data(), kCapacity);
+    const int refCount = refCloud(params, kFrames, ref.data(), kCapacity);
+    REQUIRE(refCount > 9000);
+    REQUIRE(refCount <= kCapacity);
+    CHECK(fastCount == refCount);
+
+    MismatchCount grains;
+    const int n = fastCount < refCount ? fastCount : refCount;
+    for (int i = 0; i < n; ++i)
+    {
+        const auto &a = fast[static_cast<size_t>(i)];
+        const auto &b = ref[static_cast<size_t>(i)];
+        if (!sameBits(a, b))
+        {
+            grains.record(static_cast<double>(i));
+        }
+    }
+    INFO("first differing grain: " << grains.first());
+    CHECK(grains.count == 0);
+}
+
+TEST_CASE("the contraction test's fast TU really contracts", "[math]")
+{
+    // Positive control, as rtsan_negative_control is for RTSan: with a, b = 1 + 2^-12 and
+    // c = -(1 + 2^-11), a·b = 1 + 2^-11 + 2^-24 exactly, which rounds (a tie, to even) to
+    // 1 + 2^-11, so the unfused a * b + c is 0, while the fused one is exactly 2^-24.
+    const float a = 1.0f + 0x1.0p-12f;
+    const float c = -(1.0f + 0x1.0p-11f);
+    const float unfused = a * a + c; // this TU: -ffp-contract=off
+    REQUIRE(unfused == 0.0f);
+#if defined(__clang__) && (defined(__aarch64__) || defined(_M_ARM64))
+    // arm64 has an FMA and fp_contract_fast.cpp is built with -ffp-contract=on, so the canary
+    // must fuse there.
+    CHECK(ggFastCanary(a, a, c) == 0x1.0p-24f);
+#else
+    // x86 at -march=nehalem has no FMA, and under GCC the file keeps the project flags: nothing
+    // can contract.
+    CHECK(ggFastCanary(a, a, c) == unfused);
+#endif
 }
