@@ -12,13 +12,10 @@
 #include <memory>
 #include <vector>
 
-// The dr_libs implementations live in this file and nowhere else.
-#define DR_WAV_IMPLEMENTATION
-#include <dr_wav.h>
-#define DR_FLAC_IMPLEMENTATION
+// The headers only: the implementations are compiled in gg::dr_libs_impl.
 #include <dr_flac.h>
-#define DR_MP3_IMPLEMENTATION
 #include <dr_mp3.h>
+#include <dr_wav.h>
 
 namespace gg::metrics
 {

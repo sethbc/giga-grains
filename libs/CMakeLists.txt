@@ -22,11 +22,19 @@ add_subdirectory(sst/sst-basic-blocks)
 # includes are SYSTEM and none of them links gg-compiler-options, so our -Werror never applies
 # to third-party code.
 
-# dr_libs: header-only WAV/FLAC/MP3 decoding. The implementation is compiled in exactly one of
-# our sources (tools/audiometrics/src/WavIO.cpp).
+# dr_libs: header-only WAV/FLAC/MP3 decoding. gg::dr_libs gives the headers; the implementation
+# is compiled exactly once, in gg::dr_libs_impl below, which every user of the functions links.
 add_library(dr_libs INTERFACE)
 target_include_directories(dr_libs SYSTEM INTERFACE dr_libs)
 add_library(gg::dr_libs ALIAS dr_libs)
+
+# The dr_libs and stb implementation units (carry-over [119]). Each is a static library of one
+# translation unit in thirdparty-impl/, compiled with the project's -ffp-contract=off
+# (gg::fp-contract-off) but without gg::compiler-options, so our -Werror can't fail on a warning
+# in third-party code, gcc 12's middle-end warnings among them.
+add_library(dr_libs_impl STATIC thirdparty-impl/DrLibsImpl.cpp)
+target_link_libraries(dr_libs_impl PRIVATE dr_libs gg::fp-contract-off)
+add_library(gg::dr_libs_impl ALIAS dr_libs_impl)
 
 # pffft: only the single-precision FFT, built from its sources rather than its own CMake.
 # pffft_common.c is needed alongside pffft.c: it defines pffft_aligned_malloc/free.
@@ -44,11 +52,15 @@ if (UNIX AND NOT APPLE)
 endif ()
 add_library(gg::pffft ALIAS pffft)
 
-# stb: header-only; only stb_image_write.h is used. The implementation is compiled in exactly
-# one of our sources (tools/audiometrics/src/Spectrogram.cpp).
+# stb: header-only; only stb_image_write.h is used. gg::stb gives the header; the implementation
+# is compiled exactly once, in gg::stb_impl, built as gg::dr_libs_impl is.
 add_library(stb INTERFACE)
 target_include_directories(stb SYSTEM INTERFACE stb)
 add_library(gg::stb ALIAS stb)
+
+add_library(stb_impl STATIC thirdparty-impl/StbImpl.cpp)
+target_link_libraries(stb_impl PRIVATE stb gg::fp-contract-off)
+add_library(gg::stb_impl ALIAS stb_impl)
 
 # nlohmann/json: header-only.
 add_library(nlohmann_json INTERFACE)

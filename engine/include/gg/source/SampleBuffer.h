@@ -13,12 +13,22 @@ namespace gg
 {
 /// Planar float audio: `channels` separate arrays of `frames` samples recorded at `sampleRate`,
 /// zero-initialized. Only the constructor allocates; the accessors are real-time safe.
+///
+/// Move-only: a copy would allocate a whole source's samples, so it can't happen by accident.
+/// A move takes the samples without allocating and leaves the source empty, 0 channels × 0
+/// frames (its sample rate kept), so a moved-from buffer never claims frames it doesn't hold.
 class SampleBuffer
 {
   public:
     /// Throws std::invalid_argument if frames < 0 or sampleRate is not finite and positive, and
     /// std::length_error if channels × frames samples can't be represented.
     SampleBuffer(uint32_t channels, int64_t frames, double sampleRate);
+
+    SampleBuffer(const SampleBuffer &) = delete;
+    SampleBuffer &operator=(const SampleBuffer &) = delete;
+    SampleBuffer(SampleBuffer &&other) noexcept;
+    SampleBuffer &operator=(SampleBuffer &&other) noexcept;
+    ~SampleBuffer() = default;
 
     /// Channel c's `frames` samples, or nullptr if c >= channels().
     float *channel(uint32_t c) noexcept

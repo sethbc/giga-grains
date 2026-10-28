@@ -16,6 +16,11 @@ namespace gg::test
 /// threads, or outside any Scope, are not counted. Either way the operators still allocate
 /// normally, so armed code keeps working.
 ///
+/// Under ASan (GG_SANITIZE) the replacements are compiled out, so ASan keeps its own operators
+/// and with them its alloc-dealloc-mismatch and new-delete-type-mismatch checks (ruling R7's
+/// fallback, carry-over [144]). available() is then false and count() stays 0: a test that
+/// asserts on count() SKIPs when !available(). The RTSan build keeps the tripwire.
+///
 /// It doesn't see direct malloc-family calls (malloc, calloc, realloc, posix_memalign, and
 /// anything a C library allocates internally). The RTSan build covers those, on Linux in CI.
 ///
@@ -31,7 +36,11 @@ struct AllocTripwire
         Scope &operator=(const Scope &) = delete;
     };
 
+    /// Whether this build counts allocations: false under GG_SANITIZE, true otherwise.
+    static bool available() noexcept;
+
     /// Armed allocations, on any thread, since the start of the program or the last resetCount().
+    /// Always 0 when !available().
     static uint64_t count() noexcept;
     static void resetCount() noexcept;
 };

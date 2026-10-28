@@ -5,8 +5,15 @@
 // Replaces every global operator new and delete for the whole test executable. The operators
 // allocate with malloc (posix_memalign or _aligned_malloc when over-aligned) and free with
 // the matching call, as the standard library's do, and count an armed operator new.
+//
+// Under GG_SANITIZE none of them is replaced: ASan's own operators stay, with its
+// alloc-dealloc-mismatch and new-delete-type-mismatch checks, and nothing is counted.
 
 #include "support/AllocTripwire.h"
+
+#if !defined(GG_SANITIZE)
+#error "GG_SANITIZE must be defined, 0 or 1 (tests/CMakeLists.txt)"
+#endif
 
 #include <algorithm>
 #include <atomic>
@@ -25,6 +32,7 @@ std::atomic<uint64_t> allocations{0};
 // run an initializer.
 constinit thread_local int armedDepth = 0;
 
+#if !GG_SANITIZE
 void *tryAllocate(std::size_t size, std::size_t alignment, bool aligned) noexcept
 {
     size = std::max<std::size_t>(size, 1); // new must return a unique pointer even for 0 bytes
@@ -88,6 +96,7 @@ std::size_t value(std::align_val_t alignment) noexcept
 {
     return static_cast<std::size_t>(alignment);
 }
+#endif // !GG_SANITIZE
 } // namespace
 
 namespace gg::test
@@ -95,10 +104,12 @@ namespace gg::test
 AllocTripwire::Scope::Scope() { ++armedDepth; }
 AllocTripwire::Scope::~Scope() { --armedDepth; }
 
+bool AllocTripwire::available() noexcept { return !GG_SANITIZE; }
 uint64_t AllocTripwire::count() noexcept { return allocations.load(std::memory_order_relaxed); }
 void AllocTripwire::resetCount() noexcept { allocations.store(0, std::memory_order_relaxed); }
 } // namespace gg::test
 
+#if !GG_SANITIZE
 void *operator new(std::size_t size) { return allocate(size, 0, false); }
 void *operator new[](std::size_t size) { return allocate(size, 0, false); }
 void *operator new(std::size_t size, std::align_val_t a) { return allocate(size, value(a), true); }
@@ -141,3 +152,4 @@ void operator delete[](void *p, std::align_val_t, const std::nothrow_t &) noexce
 {
     releaseAligned(p);
 }
+#endif // !GG_SANITIZE

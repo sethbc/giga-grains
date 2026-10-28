@@ -799,6 +799,10 @@ TEST_CASE("the wet chain is Level, then the soft limiter, then the mix", "[core]
 
 TEST_CASE("processor survives an automation storm", "[core][rt]")
 {
+    if (!gg::test::AllocTripwire::available())
+    {
+        SKIP("allocation tripwire is off under ASan; RTSan covers this");
+    }
     // Review Focus 1: a thousand parameter and modulation events in one 512-frame block, a
     // hundred of them at offset 0, many out of range (some infinite once converted to float).
     constexpr uint32_t kBlock = 512;
@@ -899,6 +903,10 @@ struct SpawnCounter
 
 TEST_CASE("processor does not allocate", "[core][rt]")
 {
+    if (!gg::test::AllocTripwire::available())
+    {
+        SKIP("allocation tripwire is off under ASan; RTSan covers this");
+    }
     // A fresh processor's first process() call is armed: paramMeta builds its table on its first
     // call, which allocates, so the constructor must have made that call. Nothing
     // here calls paramMeta before the constructor does. maxBlockSize 256 makes the 1000-frame
