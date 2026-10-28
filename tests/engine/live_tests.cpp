@@ -1,0 +1,1268 @@
+// Giga Grains — granular instrument and effect
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright 2026, the Giga Grains authors (see git history)
+
+// The live ring source (spec §6.3): the FX writes its input into a 16 s ring before any grain
+// reads it. The admission clamp keeps every grain's reads, over its whole life, at least M = 256
+// frames behind the write head and M frames inside the oldest data; the head-proximity fade
+// covers what admission can't foresee (a freeze that stops the head); freeze ramps the write gain
+// over 20 ms and then stops the head.
+
+#include <algorithm>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <limits>
+#include <memory>
+#include <numbers>
+#include <stdexcept>
+#include <utility>
+#include <vector>
+
+#include <catch2/catch_test_macros.hpp>
+
+#include "gg/core/Interpolate.h"
+#include "gg/core/Rng.h"
+#include "gg/engine/Engine.h"
+
+namespace
+{
+constexpr double kSampleRate = 48000.0;
+constexpr double kRingSeconds = 16.0;
+// Spec §6.3 and the Global Constraints: the head-proximity margin and fade length.
+constexpr double kM = 256.0;
+
+gg::EngineConfig liveConfig(double sampleRate = kSampleRate, uint32_t maxBlockSize = 4096,
+                            double liveSeconds = kRingSeconds)
+{
+    gg::EngineConfig c;
+    c.sampleRate = sampleRate;
+    c.maxBlockSize = maxBlockSize;
+    c.grainCapacity = 4096;
+    c.seed = 11;
+    c.liveSeconds = liveSeconds;
+    return c;
+}
+
+// N: ceil(liveSeconds × sampleRate) frames.
+int64_t ringFrames(double sampleRate, double liveSeconds = kRingSeconds)
+{
+    return static_cast<int64_t>(std::ceil(liveSeconds * sampleRate));
+}
+
+// The freeze write-gain ramp: round(0.02 × sampleRate) samples.
+int64_t rampFrames(double sampleRate) { return std::llround(0.02 * sampleRate); }
+
+struct Stereo
+{
+    std::vector<float> left;
+    std::vector<float> right;
+};
+
+// Uniform noise in [-amp, amp) from gg::rng, a different stream per channel.
+Stereo noiseInput(int64_t frames, uint64_t seed, float amp = 0.5f)
+{
+    Stereo s{std::vector<float>(static_cast<std::size_t>(frames)),
+             std::vector<float>(static_cast<std::size_t>(frames))};
+    for (int64_t i = 0; i < frames; ++i)
+    {
+        using gg::rng::Field;
+        const auto at = static_cast<std::size_t>(i);
+        s.left[at] = amp * static_cast<float>(gg::rng::bipolar(gg::rng::hash(
+                               {seed, 0, 0, Field::SignalNoise, static_cast<uint64_t>(i)})));
+        s.right[at] = amp * static_cast<float>(gg::rng::bipolar(gg::rng::hash(
+                                {seed, 0, 1, Field::SignalNoise, static_cast<uint64_t>(i)})));
+    }
+    return s;
+}
+
+// A sine at hz, the same in both channels.
+Stereo sineInput(int64_t frames, double sampleRate, double hz, float amp)
+{
+    Stereo s{std::vector<float>(static_cast<std::size_t>(frames)),
+             std::vector<float>(static_cast<std::size_t>(frames))};
+    for (int64_t i = 0; i < frames; ++i)
+    {
+        const auto v =
+            static_cast<float>(amp * std::sin(2.0 * std::numbers::pi * hz * i / sampleRate));
+        s.left[static_cast<std::size_t>(i)] = v;
+        s.right[static_cast<std::size_t>(i)] = v;
+    }
+    return s;
+}
+
+// Records spawned grains into preallocated storage: the sink runs inside process().
+struct SinkLog
+{
+    static constexpr std::size_t kCapacity = 1 << 16;
+    std::vector<gg::GrainSpec> grains;
+    bool overflowed{false};
+
+    SinkLog() { grains.reserve(kCapacity); }
+
+    static void record(void *ctx, const gg::GrainSpec &g)
+    {
+        auto *log = static_cast<SinkLog *>(ctx);
+        if (log->grains.size() < kCapacity)
+        {
+            log->grains.push_back(g);
+        }
+        else
+        {
+            log->overflowed = true;
+        }
+    }
+};
+
+// A freeze setting that takes effect at output sample `at`.
+struct FreezeAt
+{
+    int64_t at;
+    bool freeze;
+};
+
+// Runs the input through the engine in process() calls of `block` frames, each cut short at the
+// next freeze change, which is made between calls at its sample. The output buffers start as NaN,
+// so a sample process() didn't write fails allFinite().
+Stereo run(gg::Engine &engine, const Stereo &input, uint32_t block,
+           const std::vector<FreezeAt> &changes = {})
+{
+    const auto frames = static_cast<int64_t>(input.left.size());
+    constexpr float kUnwritten = std::numeric_limits<float>::quiet_NaN();
+    Stereo out{std::vector<float>(input.left.size(), kUnwritten),
+               std::vector<float>(input.left.size(), kUnwritten)};
+    std::size_t next = 0;
+    for (int64_t done = 0; done < frames;)
+    {
+        while (next < changes.size() && changes[next].at == done)
+        {
+            engine.setFreeze(changes[next++].freeze);
+        }
+        int64_t end = std::min<int64_t>(done + block, frames);
+        if (next < changes.size())
+        {
+            end = std::min(end, changes[next].at);
+        }
+        const auto n = static_cast<uint32_t>(end - done);
+        const float *in[2] = {input.left.data() + done, input.right.data() + done};
+        float *o[2] = {out.left.data() + done, out.right.data() + done};
+        engine.process(in, 2, o, 2, n);
+        done = end;
+    }
+    return out;
+}
+
+bool allFinite(const std::vector<float> &v)
+{
+    return std::all_of(v.begin(), v.end(), [](float x) { return std::isfinite(x); });
+}
+
+float peak(const std::vector<float> &v, std::size_t from = 0, std::size_t to = SIZE_MAX)
+{
+    float p = 0.0f;
+    for (std::size_t i = from; i < std::min(to, v.size()); ++i)
+    {
+        p = std::max(p, std::abs(v[i]));
+    }
+    return p;
+}
+
+double rms(const std::vector<float> &v, std::size_t from, std::size_t to)
+{
+    double sum = 0.0;
+    for (std::size_t i = from; i < to; ++i)
+    {
+        sum += static_cast<double>(v[i]) * v[i];
+    }
+    return std::sqrt(sum / static_cast<double>(to - from));
+}
+
+bool sameBits(const std::vector<float> &a, const std::vector<float> &b, std::size_t from = 0,
+              std::size_t to = SIZE_MAX)
+{
+    if (a.size() != b.size())
+    {
+        return false;
+    }
+    to = std::min(to, a.size());
+    return from >= to ||
+           std::memcmp(a.data() + from, b.data() + from, (to - from) * sizeof(float)) == 0;
+}
+
+// The largest |x[t] − x[t−1]|.
+float largestStep(const std::vector<float> &v)
+{
+    float step = 0.0f;
+    for (std::size_t i = 1; i < v.size(); ++i)
+    {
+        step = std::max(step, std::abs(v[i] - v[i - 1]));
+    }
+    return step;
+}
+
+// The most grains whose windows [onset, onset + duration) overlap at any instant.
+std::size_t largestOverlap(const std::vector<gg::GrainSpec> &grains)
+{
+    std::vector<std::pair<double, int>> edges;
+    for (const auto &g : grains)
+    {
+        const double onset = static_cast<double>(g.onsetSample) + g.onsetFrac;
+        edges.emplace_back(onset, +1);
+        edges.emplace_back(onset + g.durationSamples, -1);
+    }
+    std::sort(edges.begin(), edges.end()); // an end sorts before a start at the same instant
+    std::size_t now = 0;
+    std::size_t most = 0;
+    for (const auto &[at, delta] : edges)
+    {
+        now = delta > 0 ? now + 1 : now - 1;
+        most = std::max(most, now);
+    }
+    return most;
+}
+
+// The slack, in frames, of each bound for a read at pos while the head is at R (both in ring
+// time): how far the furthest tap ahead (pos + 2) is behind R − 1 − M, and how far the furthest
+// tap back (pos − 1) is inside R − N + M. Negative means the read breaks the bound.
+struct Slack
+{
+    double head;
+    double tail;
+};
+Slack slackAt(double pos, double head, double ringFrames)
+{
+    return {(head - 1.0 - kM) - (pos + 2.0), (pos - 1.0) - (head - ringFrames + kM)};
+}
+} // namespace
+
+TEST_CASE("the live constants are the spec's", "[live]")
+{
+    REQUIRE(gg::LiveSource::kHeadMargin == 256);
+    REQUIRE(gg::LiveSource::kFreezeRampSeconds == 0.02);
+    REQUIRE(gg::LiveSource::freezeRampSamples(48000.0) == 960);
+    REQUIRE(gg::LiveSource::freezeRampSamples(44100.0) == 882);
+    REQUIRE(gg::LiveSource::freezeRampSamples(96000.0) == 1920);
+
+    gg::Engine engine(liveConfig());
+    REQUIRE(engine.liveFrames() == 768000); // 16 s at 48 kHz
+    gg::Engine noRing(gg::EngineConfig{});
+    REQUIRE(noRing.liveFrames() == 0);
+    gg::Engine odd(liveConfig(44100.0, 4096, 0.1));
+    REQUIRE(odd.liveFrames() == 4410);
+
+    for (const double bad : {-1.0, std::numeric_limits<double>::quiet_NaN(),
+                             std::numeric_limits<double>::infinity(), 1e9})
+    {
+        INFO("liveSeconds " << bad);
+        REQUIRE_THROWS_AS(gg::Engine(liveConfig(kSampleRate, 4096, bad)), std::invalid_argument);
+    }
+}
+
+TEST_CASE("the ring stores each frame with the freeze write gain", "[live]")
+{
+    // LiveSource directly, at 1 kHz: N = 1000 frames, L = 20, blocks of at most 64 frames. A read
+    // at a whole-number position returns that frame exactly (Catmull-Rom passes through its
+    // second tap at t = 0).
+    gg::LiveSource ring;
+    ring.prepare(1000.0, 1.0, 64);
+    REQUIRE(ring.frames() == 1000);
+    const int64_t ramp = gg::LiveSource::freezeRampSamples(1000.0);
+    REQUIRE(ramp == 20);
+    std::vector<float> ones(100, 1.0f);
+    const float *in[1] = {ones.data()};
+
+    ring.write(in, 1, 0, 0, 50); // gain 1
+    REQUIRE(ring.head() == 50);
+    REQUIRE(std::isinf(ring.headRunAfter(10)));
+    ring.setFrozen(true);
+    ring.write(in, 1, 0, 50, 30); // 20 frames ramping down, then the head stops
+    REQUIRE(ring.head() == 70);
+    REQUIRE(ring.headAt(50) == 51);
+    REQUIRE(ring.headAt(69) == 70);
+    REQUIRE(ring.headAt(79) == 70);
+    REQUIRE(ring.headRunAfter(50) == 19.0);
+    REQUIRE(ring.headRunAfter(68) == 1.0);
+    REQUIRE(ring.headRunAfter(69) == 0.0);
+    REQUIRE(ring.headRunAfter(79) == 0.0);
+    ring.write(in, 1, 0, 80, 10); // stays stopped
+    REQUIRE(ring.head() == 70);
+    REQUIRE(ring.headAt(85) == 70);
+    ring.setFrozen(false);
+    ring.write(in, 1, 0, 90, 10); // resumes at once, ramping up
+    REQUIRE(ring.head() == 80);
+    REQUIRE(ring.headAt(90) == 71);
+
+    const auto gainOf = [&](int64_t frame) {
+        if (frame < 50)
+        {
+            return 1.0f;
+        }
+        const int64_t r = frame < 70 ? 69 - frame : frame - 69; // 19/20 .. 0, then 1/20 ..
+        return static_cast<float>(r) / static_cast<float>(ramp);
+    };
+    gg::LiveSource::Cursor cursor;
+    bool exact = true;
+    for (int64_t frame = 1; frame <= 77; ++frame) // taps frame − 1 .. frame + 2 <= head − 1
+    {
+        float left = -1.0f;
+        float right = -1.0f;
+        exact = exact && ring.read(static_cast<double>(frame), 80, cursor, left, right) &&
+                left == gainOf(frame) && right == gainOf(frame); // mono fills both channels
+    }
+    REQUIRE(exact);
+    REQUIRE(gainOf(69) == 0.0f);
+
+    SECTION("reads stay inside [head − N, head − 1]")
+    {
+        float left = 0.0f;
+        float right = 0.0f;
+        gg::LiveSource::Cursor c;
+        REQUIRE(ring.read(77.5, 80, c, left, right));       // taps 76 .. 79
+        REQUIRE_FALSE(ring.read(78.0, 80, c, left, right)); // tap 80 is unwritten
+        REQUIRE(ring.read(-1.0, 80, c, left, right));       // before frame 0 is silence
+        REQUIRE(left == 0.0f);
+        REQUIRE_FALSE(ring.read(-1.0, 1500, c, left, right)); // tap −2 < 1500 − 1000
+        REQUIRE(ring.read(501.0, 1500, c, left, right));      // taps 500 .. 503
+        REQUIRE_FALSE(ring.read(std::numeric_limits<double>::quiet_NaN(), 80, c, left, right));
+    }
+
+    SECTION("the head fade is the spec's formula")
+    {
+        // With the head at R = 5000 and N = 1000: 1 while p + 2 <= R − 1 − M and
+        // p − 1 >= R − N + M, falling linearly to 0 at p + 2 = R − 1 and at p − 1 = R − N.
+        REQUIRE(ring.fade(4741.0, 5000) == 1.0);
+        REQUIRE(ring.fade(4869.0, 5000) == 0.5);
+        REQUIRE(ring.fade(4997.0, 5000) == 0.0);
+        REQUIRE(ring.fade(5100.0, 5000) == 0.0);
+        REQUIRE(ring.fade(4257.0, 5000) == 1.0);
+        REQUIRE(ring.fade(4129.0, 5000) == 0.5);
+        REQUIRE(ring.fade(4001.0, 5000) == 0.0);
+        REQUIRE(ring.fade(3000.0, 5000) == 0.0);
+        REQUIRE(ring.fade(std::numeric_limits<double>::quiet_NaN(), 5000) == 0.0);
+    }
+
+    SECTION("non-finite input is stored as 0 and huge input is clamped")
+    {
+        gg::LiveSource fresh;
+        fresh.prepare(1000.0, 1.0, 64);
+        const float nan = std::numeric_limits<float>::quiet_NaN();
+        const float inf = std::numeric_limits<float>::infinity();
+        std::vector<float> l{nan,    inf,   -inf, std::numeric_limits<float>::max(),
+                             -3e30f, 0.25f, 1.0f, 1.0f};
+        std::vector<float> r{0.5f, -nan, 2e7f, -inf, nan, -0.25f, 1.0f, 1.0f};
+        const float *stereo[2] = {l.data(), r.data()};
+        fresh.write(stereo, 2, 0, 0, 8);
+        const float big = gg::LiveSource::kMaxInputMagnitude;
+        const float wantL[] = {0.0f, 0.0f, 0.0f, big, -big, 0.25f};
+        const float wantR[] = {0.5f, 0.0f, big, 0.0f, 0.0f, -0.25f};
+        gg::LiveSource::Cursor c;
+        for (int64_t frame = 1; frame <= 5; ++frame)
+        {
+            float left = -1.0f;
+            float right = -1.0f;
+            REQUIRE(fresh.read(static_cast<double>(frame), 8, c, left, right));
+            REQUIRE(left == wantL[frame]);
+            REQUIRE(right == wantR[frame]);
+        }
+    }
+
+    SECTION("a block's later frames never overwrite the window of its earlier samples")
+    {
+        // Ruling M1-o. 3000 frames in 64-frame blocks wrap the ring three times. After each
+        // block is written, every sample t of it reads its whole window, including the oldest
+        // frame, R(t) − N, which the rest of the block must not have overwritten. Frame f holds
+        // f mod 997 + 1, so a frame from a later wrap (f + 1064, or f + 1000 with N slots only)
+        // holds a different value.
+        constexpr int64_t kBlock = 64;
+        gg::LiveSource wrapped;
+        wrapped.prepare(1000.0, 1.0, static_cast<uint32_t>(kBlock));
+        const auto value = [](int64_t f) { return static_cast<float>(f % 997 + 1); };
+        std::vector<float> input(static_cast<std::size_t>(kBlock));
+        bool intact = true;
+        int64_t checked = 0;
+        for (int64_t blockStart = 0; blockStart < 3000; blockStart += kBlock)
+        {
+            for (int64_t j = 0; j < kBlock; ++j)
+            {
+                input[static_cast<std::size_t>(j)] = value(blockStart + j);
+            }
+            const float *mono[1] = {input.data()};
+            wrapped.write(mono, 1, 0, blockStart, static_cast<uint32_t>(kBlock));
+            for (int64_t t = blockStart; t < blockStart + kBlock; ++t)
+            {
+                const int64_t head = wrapped.headAt(t);
+                const int64_t oldest = head - 1000;
+                if (oldest < 0)
+                {
+                    continue;
+                }
+                gg::LiveSource::Cursor c;
+                float left = 0.0f;
+                float right = 0.0f;
+                // Taps oldest .. oldest + 3, then head − 4 .. head − 1.
+                for (const int64_t first : {oldest, head - 4})
+                {
+                    const float want = gg::interp::catmullRom(
+                        value(first), value(first + 1), value(first + 2), value(first + 3), 0.5f);
+                    intact = intact &&
+                             wrapped.read(static_cast<double>(first) + 1.5, head, c, left, right) &&
+                             left == want && right == want;
+                }
+                ++checked;
+            }
+        }
+        REQUIRE(checked > 1900);
+        REQUIRE(intact);
+    }
+}
+
+TEST_CASE("live grains never read the future", "[live]")
+{
+    // Checked analytically from the event sink, with no hook in the engine. A grain at elapsed
+    // time e (output samples since its real onset T) reads around p(e) = startPos + e × rate,
+    // with Hermite taps from p − 1 to p + 2. With the head at R(τ) at output time τ, every tap
+    // must stay at least M frames older than the newest frame, R − 1, and M frames inside the
+    // oldest one still in the ring, R − N:
+    //
+    //     p(e) + 2 <= R(T + e) − 1 − M    and    p(e) − 1 >= R(T + e) − N + M.
+    //
+    // Not frozen, R(τ) = τ + 1 (frames written through output sample τ). Both bounds are linear
+    // in e, so checking e = 0 and e = durationSamples covers the grain's whole life.
+    //
+    // Frozen from tf, the head advances round(0.02 × sr) more frames and stops:
+    // R(τ) = min(τ + 1, tf + ramp). R is then concave in e, so the head bound still holds
+    // everywhere when it holds at the ends, but the tail bound must also hold at the kink.
+    const double n = static_cast<double>(ringFrames(kSampleRate));
+    const int64_t fill = 17 * 48000; // the ring is full (16 s) well before the end
+    const int64_t frozenFor = 3 * 48000;
+    const auto stop = static_cast<double>(fill + rampFrames(kSampleRate));
+
+    Slack worstFree{std::numeric_limits<double>::infinity(),
+                    std::numeric_limits<double>::infinity()};
+    Slack worstFrozen = worstFree;
+    std::size_t grainsChecked = 0;
+    std::size_t frozenChecked = 0;
+    for (const double pitch : {-24.0, 0.0, 12.0, 24.0})
+    {
+        for (const double size : {0.005, 0.15, 2.0})
+        {
+            for (const double position : {0.0, 0.25, 15.9, 16.0})
+            {
+                INFO("pitch " << pitch << ", size " << size << " s, position " << position << " s");
+                gg::Engine engine(liveConfig());
+                engine.setSourceMode(gg::SourceMode::Live);
+                engine.setCloudParams({.densityHz = 30.0,
+                                       .distribution = 0.5,
+                                       .grainDurationSec = size,
+                                       .position = position,
+                                       .spray = 0.05,
+                                       .pitchSemitones = pitch,
+                                       .stereo = 0.5,
+                                       .gain = 0.5f});
+                SinkLog log;
+                engine.setEventSink(&SinkLog::record, &log);
+                // Admission doesn't depend on the input or the outputs, so nothing is rendered.
+                for (int64_t done = 0; done < fill; done += 4096)
+                {
+                    engine.process(nullptr, 0, nullptr, 0,
+                                   static_cast<uint32_t>(std::min<int64_t>(4096, fill - done)));
+                }
+                REQUIRE(engine.liveWriteHead() == fill); // R(t) = t + 1
+                const std::size_t freeGrains = log.grains.size();
+                engine.setFreeze(true);
+                for (int64_t done = 0; done < frozenFor; done += 4096)
+                {
+                    engine.process(
+                        nullptr, 0, nullptr, 0,
+                        static_cast<uint32_t>(std::min<int64_t>(4096, frozenFor - done)));
+                }
+                REQUIRE(engine.liveWriteHead() == static_cast<int64_t>(stop));
+                REQUIRE_FALSE(log.overflowed);
+                REQUIRE(engine.droppedGrains() == 0);
+                REQUIRE(freeGrains > 400);
+                REQUIRE(log.grains.size() - freeGrains > 50);
+
+                for (std::size_t k = 0; k < log.grains.size(); ++k)
+                {
+                    const gg::GrainSpec &g = log.grains[k];
+                    const double onset = static_cast<double>(g.onsetSample) + g.onsetFrac;
+                    const double life = g.durationSamples;
+                    if (k < freeGrains)
+                    {
+                        for (const double e : {0.0, life})
+                        {
+                            const Slack s = slackAt(g.startPos + e * g.rate, onset + e + 1.0, n);
+                            worstFree.head = std::min(worstFree.head, s.head);
+                            worstFree.tail = std::min(worstFree.tail, s.tail);
+                        }
+                        ++grainsChecked;
+                    }
+                    else
+                    {
+                        const double kink = std::clamp(stop - 1.0 - onset, 0.0, life);
+                        for (const double e : {0.0, life, kink})
+                        {
+                            const double head = std::min(onset + e + 1.0, stop);
+                            const Slack s = slackAt(g.startPos + e * g.rate, head, n);
+                            worstFrozen.head = std::min(worstFrozen.head, s.head);
+                            worstFrozen.tail = std::min(worstFrozen.tail, s.tail);
+                        }
+                        ++frozenChecked;
+                    }
+                }
+            }
+        }
+    }
+    INFO(grainsChecked << " free-running and " << frozenChecked << " frozen grains");
+    // Positions reach about 1e6 frames, where a double's spacing is about 1e-10: the tolerance
+    // is rounding only.
+    CHECK(worstFree.head >= -1e-6);
+    CHECK(worstFree.tail >= -1e-6);
+    CHECK(worstFrozen.head >= -1e-6);
+    CHECK(worstFrozen.tail >= -1e-6);
+    // Not vacuous: Position 0 puts grains against the head bound, and Position 16 s (the
+    // plugin's largest), or 15.9 s with Pitch −24 (reading slower than the head moves), against
+    // the tail bound.
+    CHECK(worstFree.head < 1.0);
+    CHECK(worstFree.tail < 1.0);
+    CHECK(worstFrozen.head < 1.0);
+    CHECK(worstFrozen.tail < 1.0);
+}
+
+TEST_CASE("live output never depends on later input", "[live]")
+{
+    // The black-box form of the test above, through the renderer and the head fade: two inputs
+    // that agree up to a cut give bit-identical output before it. Large blocks write input past
+    // the cut into the ring before the samples before the cut are rendered, so any read of a
+    // frame from the rendered sample's future would show. A freeze on and off before the cut
+    // puts grains against the stopped head.
+    struct Case
+    {
+        double pitch;
+        double size;
+        double position;
+    };
+    const int64_t frames = 2 * 48000;
+    const auto a = noiseInput(frames, 1);
+    for (const Case c : {Case{24.0, 0.15, 0.0}, Case{0.0, 0.005, 0.0}, Case{12.0, 0.5, 0.25},
+                         Case{-24.0, 0.15, 0.0}})
+    {
+        for (const int64_t cut : {int64_t{30001}, int64_t{70007}})
+        {
+            INFO("pitch " << c.pitch << ", size " << c.size << " s, position " << c.position
+                          << " s, cut at " << cut);
+            auto b = a;
+            const auto later = noiseInput(frames, 2, 1.0f);
+            std::copy(later.left.begin() + cut, later.left.end(), b.left.begin() + cut);
+            std::copy(later.right.begin() + cut, later.right.end(), b.right.begin() + cut);
+
+            const auto render = [&](const Stereo &input) {
+                gg::Engine engine(liveConfig());
+                engine.setSourceMode(gg::SourceMode::Live);
+                engine.setCloudParams({.densityHz = 60.0,
+                                       .distribution = 0.5,
+                                       .grainDurationSec = c.size,
+                                       .position = c.position,
+                                       .spray = 0.01,
+                                       .pitchSemitones = c.pitch,
+                                       .stereo = 0.5,
+                                       .gain = 0.5f});
+                return run(engine, input, 4096,
+                           {{20000, true}, {26000, false}, {50016, true}, {56000, false}});
+            };
+            const auto outA = render(a);
+            const auto outB = render(b);
+            REQUIRE(allFinite(outA.left));
+            REQUIRE(peak(outA.left, 0, static_cast<std::size_t>(cut)) > 0.01f);
+            const auto upTo = static_cast<std::size_t>(cut);
+            REQUIRE(sameBits(outA.left, outB.left, 0, upTo));
+            REQUIRE(sameBits(outA.right, outB.right, 0, upTo));
+            // And the later input is heard after the cut, so the comparison isn't vacuous.
+            REQUIRE_FALSE(sameBits(outA.left, outB.left, upTo));
+        }
+    }
+}
+
+TEST_CASE("live grains never read overwritten data", "[live]")
+{
+    // Output at t may depend only on frames R(t) − N .. R(t) − 1. Two inputs that differ only in
+    // their first 2 s give bit-identical output once those frames have left the ring. At 4 kHz
+    // the 16 s ring is 64000 frames, so 25 s is short; M stays 256 frames. Position 15.9 s
+    // reads at the oldest edge, Pitch −24 drifts towards it, and a 5 s freeze lets the head
+    // resume over grains admitted against the stopped head. R(t) is read back from the engine.
+    constexpr double kRate = 4000.0;
+    const int64_t n = ringFrames(kRate);
+    const int64_t frames = 25 * 4000;
+    const int64_t differ = 2 * 4000;
+    const auto a = noiseInput(frames, 3);
+    auto b = a;
+    const auto early = noiseInput(differ, 4, 1.0f);
+    std::copy(early.left.begin(), early.left.end(), b.left.begin());
+    std::copy(early.right.begin(), early.right.end(), b.right.begin());
+
+    for (const double pitch : {-24.0, 0.0})
+    {
+        for (const bool freeze : {false, true})
+        {
+            INFO("pitch " << pitch << (freeze ? ", frozen from 2.5 s to 7.5 s" : ""));
+            std::vector<int64_t> head(static_cast<std::size_t>(frames));
+            const auto render = [&](const Stereo &input) {
+                gg::Engine engine(liveConfig(kRate));
+                engine.setSourceMode(gg::SourceMode::Live);
+                engine.setCloudParams({.densityHz = 20.0,
+                                       .distribution = 0.5,
+                                       .grainDurationSec = 2.0,
+                                       .position = 15.9,
+                                       .spray = 0.05,
+                                       .pitchSemitones = pitch,
+                                       .stereo = 0.5,
+                                       .gain = 0.5f});
+                Stereo out{std::vector<float>(input.left.size()),
+                           std::vector<float>(input.left.size())};
+                for (int64_t t = 0; t < frames; ++t)
+                {
+                    if (freeze && (t == 10000 || t == 30000))
+                    {
+                        engine.setFreeze(t == 10000);
+                    }
+                    const auto i = static_cast<std::size_t>(t);
+                    const float *in[2] = {input.left.data() + i, input.right.data() + i};
+                    float *o[2] = {out.left.data() + i, out.right.data() + i};
+                    engine.process(in, 2, o, 2, 1);
+                    head[i] = engine.liveWriteHead();
+                }
+                return out;
+            };
+            const auto outA = render(a);
+            const auto outB = render(b);
+            // The first sample whose oldest readable frame, R(t) − N, is past the difference.
+            const auto clean = static_cast<std::size_t>(
+                std::find_if(head.begin(), head.end(), [&](int64_t r) { return r - n >= differ; }) -
+                head.begin());
+            REQUIRE(clean + 4000 <= static_cast<std::size_t>(frames));
+            REQUIRE(peak(outA.left, clean) > 0.01f);
+            REQUIRE(sameBits(outA.left, outB.left, clean));
+            REQUIRE(sameBits(outA.right, outB.right, clean));
+        }
+    }
+}
+
+namespace
+{
+// After the ring wraps (ruling M1-o). A 1 s ring at 48 kHz (N = 48000) wraps every second.
+// Position 1 s, the most the ring allows, with Spray asking for more, keeps grains clamped to
+// lo, M frames inside the oldest frame, and Pitch −12 has them read slower than the head moves.
+// Freeze on at 2 s and off at 2.5 s (both on the 32-sample grid) wraps the ring again after the
+// head resumes. A block writes up to maxBlockSize frames past the sample being rendered, so with
+// only N slots those frames would already have overwritten the oldest ones the grain reads.
+constexpr double kWrapRingSeconds = 1.0;
+constexpr int64_t kWrapFrames = 7 * 24000; // 3.5 s: the ring wraps three times
+const std::vector<FreezeAt> kWrapFreeze{{96000, true}, {120000, false}};
+
+gg::CloudParams wrapParams(double pitch)
+{
+    return {.densityHz = 30.0,
+            .distribution = 0.5,
+            .grainDurationSec = 0.15,
+            .position = kWrapRingSeconds,
+            .spray = 0.05,
+            .pitchSemitones = pitch,
+            .stereo = 0.5,
+            .gain = 0.5f};
+}
+
+// Runs the input in process() calls of blockSizes in turn (cycling), each cut short at the next
+// freeze change, which is made between calls at its sample.
+Stereo runSplit(gg::Engine &engine, const Stereo &input, const std::vector<uint32_t> &blockSizes,
+                const std::vector<FreezeAt> &changes)
+{
+    const auto frames = static_cast<int64_t>(input.left.size());
+    constexpr float kUnwritten = std::numeric_limits<float>::quiet_NaN();
+    Stereo out{std::vector<float>(input.left.size(), kUnwritten),
+               std::vector<float>(input.left.size(), kUnwritten)};
+    std::size_t nextChange = 0;
+    std::size_t nextBlock = 0;
+    for (int64_t done = 0; done < frames;)
+    {
+        while (nextChange < changes.size() && changes[nextChange].at == done)
+        {
+            engine.setFreeze(changes[nextChange++].freeze);
+        }
+        int64_t end = std::min<int64_t>(done + blockSizes[nextBlock++ % blockSizes.size()], frames);
+        if (nextChange < changes.size())
+        {
+            end = std::min(end, changes[nextChange].at);
+        }
+        const auto i = static_cast<std::size_t>(done);
+        const float *in[2] = {input.left.data() + i, input.right.data() + i};
+        float *o[2] = {out.left.data() + i, out.right.data() + i};
+        engine.process(in, 2, o, 2, static_cast<uint32_t>(end - done));
+        done = end;
+    }
+    return out;
+}
+
+// Block sizes in 1..4096 from gg::rng (seed 99), enough to cover kWrapFrames.
+std::vector<uint32_t> randomBlocks()
+{
+    std::vector<uint32_t> sizes;
+    for (int64_t total = 0; total < kWrapFrames;)
+    {
+        const double u = gg::rng::uniform01(gg::rng::hash(
+            {99, 0, 0, gg::rng::Field::SignalNoise, static_cast<uint64_t>(sizes.size())}));
+        sizes.push_back(1 + static_cast<uint32_t>(u * 4096));
+        total += sizes.back();
+    }
+    return sizes;
+}
+} // namespace
+
+TEST_CASE("live mode is block-size invariant after the ring wraps", "[live][determinism]")
+{
+    const auto input = noiseInput(kWrapFrames, 12);
+    struct Split
+    {
+        uint32_t maxBlock;
+        std::vector<uint32_t> blockSizes;
+    };
+    const auto render = [&](const Split &split, SinkLog &log) {
+        gg::Engine engine(liveConfig(kSampleRate, split.maxBlock, kWrapRingSeconds));
+        engine.setSourceMode(gg::SourceMode::Live);
+        engine.setCloudParams(wrapParams(-12.0));
+        engine.setEventSink(&SinkLog::record, &log);
+        return runSplit(engine, input, split.blockSizes, kWrapFreeze);
+    };
+    // One sample per call can't write ahead of the sample being rendered: the reference.
+    SinkLog refLog;
+    const auto ref = render({4096, {1}}, refLog);
+    REQUIRE(allFinite(ref.left));
+    REQUIRE_FALSE(refLog.overflowed);
+    // Not vacuous: grains clamped against the oldest frame sound after every wrap, frozen or
+    // not.
+    for (const int64_t from : {int64_t{48000}, int64_t{96000}, int64_t{120000}, int64_t{144000}})
+    {
+        INFO("from sample " << from);
+        REQUIRE(peak(ref.left, static_cast<std::size_t>(from + 1000),
+                     static_cast<std::size_t>(from + 24000)) > 0.05f);
+    }
+
+    for (const Split &split : {Split{4096, {7}}, Split{4096, {64}}, Split{4096, {511}},
+                               Split{4096, {4096}}, Split{4096, randomBlocks()}, Split{64, {4096}},
+                               Split{512, randomBlocks()}, Split{1, {4096}}})
+    {
+        INFO("maxBlockSize = " << split.maxBlock << ", first block size = "
+                               << split.blockSizes.front() << " of " << split.blockSizes.size());
+        SinkLog log;
+        const auto out = render(split, log);
+        REQUIRE(log.grains == refLog.grains);
+        REQUIRE(sameBits(out.left, ref.left));
+        REQUIRE(sameBits(out.right, ref.right));
+    }
+}
+
+TEST_CASE("live mode never depends on later input after the ring wraps", "[live]")
+{
+    // 4096-frame blocks put up to 4095 frames of later input into the ring before a sample is
+    // rendered. Output before an input cut must equal a render with no cut, at both pitches and
+    // with the cut while frozen (its input is only written once the head resumes) or not. The
+    // grains read about 1 s behind the head, so 5 s leaves time for every cut's input to be
+    // heard after it, which shows the comparison isn't vacuous.
+    constexpr int64_t kFrames = 5 * 48000;
+    const auto a = noiseInput(kFrames, 13);
+    const auto later = noiseInput(kFrames, 14, 1.0f);
+    for (const double pitch : {-12.0, 0.0})
+    {
+        const auto render = [&](const Stereo &input) {
+            gg::Engine engine(liveConfig(kSampleRate, 4096, kWrapRingSeconds));
+            engine.setSourceMode(gg::SourceMode::Live);
+            engine.setCloudParams(wrapParams(pitch));
+            return run(engine, input, 4096, kWrapFreeze);
+        };
+        const auto outA = render(a);
+        REQUIRE(allFinite(outA.left));
+        for (const int64_t cut : {int64_t{60001}, int64_t{100001}, int64_t{150007}})
+        {
+            INFO("pitch " << pitch << ", cut at " << cut);
+            auto b = a;
+            std::copy(later.left.begin() + cut, later.left.end(), b.left.begin() + cut);
+            std::copy(later.right.begin() + cut, later.right.end(), b.right.begin() + cut);
+            const auto outB = render(b);
+            const auto upTo = static_cast<std::size_t>(cut);
+            REQUIRE(peak(outA.left, upTo - 4096, upTo) > 0.05f);
+            REQUIRE(sameBits(outA.left, outB.left, 0, upTo));
+            REQUIRE(sameBits(outA.right, outB.right, 0, upTo));
+            REQUIRE_FALSE(sameBits(outA.left, outB.left, upTo));
+        }
+    }
+}
+
+TEST_CASE("live ring sanitizes non-finite input", "[live]")
+{
+    // Review Focus 2: a broken upstream plugin sends NaN or ±inf. The ring stores 0 instead, so
+    // the render equals one of the same input with those samples zeroed, and the output stays
+    // finite. Huge finite values are clamped, so they can't overflow a sum of grains either.
+    const int64_t frames = 2 * 48000;
+    auto bad = sineInput(frames, kSampleRate, 330.0, 0.5f);
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const float inf = std::numeric_limits<float>::infinity();
+    const auto fill = [](std::vector<float> &v, int64_t from, int64_t to, float x) {
+        std::fill(v.begin() + from, v.begin() + to, x);
+    };
+    fill(bad.left, 10000, 10100, nan);
+    fill(bad.right, 10000, 10100, nan);
+    fill(bad.left, 20000, 20050, inf);
+    fill(bad.right, 30000, 30200, -inf);
+    for (int64_t i = 40000; i < 50000; i += 997)
+    {
+        bad.left[static_cast<std::size_t>(i)] = nan;
+        bad.right[static_cast<std::size_t>(i + 1)] = -nan;
+    }
+    fill(bad.left, 60000, 60010, std::numeric_limits<float>::max());
+    fill(bad.right, 60000, 60010, -std::numeric_limits<float>::max());
+    auto zeroed = bad;
+    for (auto *channel : {&zeroed.left, &zeroed.right})
+    {
+        for (float &x : *channel)
+        {
+            x = std::isnan(x) || std::isinf(x) ? 0.0f : x;
+        }
+    }
+
+    const auto render = [&](const Stereo &input, uint32_t inChannels) {
+        gg::Engine engine(liveConfig());
+        engine.setSourceMode(gg::SourceMode::Live);
+        engine.setCloudParams({.densityHz = 40.0,
+                               .distribution = 0.5,
+                               .grainDurationSec = 0.1,
+                               .position = 0.05,
+                               .spray = 0.1,
+                               .pitchSemitones = 7.0,
+                               .stereo = 1.0,
+                               .gain = 0.5f});
+        Stereo out{std::vector<float>(input.left.size()), std::vector<float>(input.left.size())};
+        for (int64_t done = 0; done < frames; done += 512)
+        {
+            const auto i = static_cast<std::size_t>(done);
+            const float *in[2] = {input.left.data() + i, input.right.data() + i};
+            float *o[2] = {out.left.data() + i, out.right.data() + i};
+            engine.process(in, inChannels, o, 2,
+                           static_cast<uint32_t>(std::min<int64_t>(512, frames - done)));
+        }
+        return out;
+    };
+    for (const uint32_t inChannels : {2u, 1u})
+    {
+        INFO(inChannels << " input channel(s)");
+        const auto out = render(bad, inChannels);
+        REQUIRE(allFinite(out.left));
+        REQUIRE(allFinite(out.right));
+        REQUIRE(peak(out.left) > 0.05f);
+        const auto ref = render(zeroed, inChannels);
+        // Up to the clamp of the huge values, the non-finite samples were stored as 0.
+        REQUIRE(sameBits(out.left, ref.left, 0, 60000));
+        REQUIRE(sameBits(out.right, ref.right, 0, 60000));
+    }
+}
+
+TEST_CASE("freeze stops the head after the ramp", "[live]")
+{
+    for (const double rate : {44100.0, 48000.0, 96000.0})
+    {
+        INFO("sample rate " << rate);
+        const int64_t ramp = rampFrames(rate);
+        const auto frames = static_cast<int64_t>(4.0 * rate);
+        const auto input = sineInput(frames, rate, 220.0, 0.5f);
+        gg::Engine engine(liveConfig(rate));
+        engine.setSourceMode(gg::SourceMode::Live);
+        engine.setCloudParams({.densityHz = 16.0,
+                               .distribution = 0.5,
+                               .grainDurationSec = 0.15,
+                               .position = 0.25,
+                               .spray = 0.05,
+                               .stereo = 0.5,
+                               .gain = 0.65f});
+        SinkLog log;
+        engine.setEventSink(&SinkLog::record, &log);
+        Stereo out{std::vector<float>(static_cast<std::size_t>(frames)),
+                   std::vector<float>(static_cast<std::size_t>(frames))};
+        int64_t clock = 0;
+        const auto step = [&](int64_t n) {
+            const auto i = static_cast<std::size_t>(clock);
+            const float *in[2] = {input.left.data() + i, input.right.data() + i};
+            float *o[2] = {out.left.data() + i, out.right.data() + i};
+            engine.process(in, 2, o, 2, static_cast<uint32_t>(n));
+            clock += n;
+        };
+
+        const int64_t freezeAt = 32 * static_cast<int64_t>(0.5 * rate / 32); // on the grid
+        step(freezeAt);
+        REQUIRE(engine.liveWriteHead() == freezeAt);
+        engine.setFreeze(true);
+        // One sample at a time: the head keeps advancing for exactly `ramp` samples.
+        bool advancing = true;
+        for (int64_t k = 0; k < ramp; ++k)
+        {
+            step(1);
+            advancing = advancing && engine.liveWriteHead() == freezeAt + k + 1;
+        }
+        REQUIRE(advancing);
+        bool stopped = true;
+        for (int64_t k = 0; k < 64; ++k)
+        {
+            step(1);
+            stopped = stopped && engine.liveWriteHead() == freezeAt + ramp;
+        }
+        REQUIRE(stopped);
+
+        // Frozen for 2 s: the head stays, and new grains keep sounding from the frozen ring.
+        const std::size_t grainsBefore = log.grains.size();
+        const int64_t holdFrom = clock;
+        step(static_cast<int64_t>(2.0 * rate));
+        REQUIRE(engine.liveWriteHead() == freezeAt + ramp);
+        REQUIRE(log.grains.size() > grainsBefore + 20);
+        const auto lastSecond = static_cast<std::size_t>(clock - static_cast<int64_t>(rate));
+        REQUIRE(rms(out.left, lastSecond, static_cast<std::size_t>(clock)) > 0.05);
+        REQUIRE(rms(out.right, lastSecond, static_cast<std::size_t>(clock)) > 0.05);
+        REQUIRE(allFinite(out.left));
+        REQUIRE(holdFrom == freezeAt + ramp + 64);
+
+        // Freeze off: the head resumes at once.
+        engine.setFreeze(false);
+        step(1);
+        REQUIRE(engine.liveWriteHead() == freezeAt + ramp + 1);
+        step(1);
+        REQUIRE(engine.liveWriteHead() == freezeAt + ramp + 2);
+    }
+}
+
+TEST_CASE("the tail fade is smooth where the resumed head overwrites frozen grains", "[live]")
+{
+    // Frozen, the head stops and admission puts grains at Position 16 s right against the
+    // oldest frame (span 0: lo = R − N + 1 + M). When Freeze turns off, the head and the oldest
+    // frame move on at one frame per sample, faster than these grains read (Pitch −12, rate
+    // 0.5), and the old, full-level frames under them get overwritten. The fade must take them
+    // out over M frames instead of cutting them: the largest output step in the second after the
+    // release stays within 1.5× the largest in the frozen second before it, where the same
+    // grains play undisturbed. (Next to a stopped head the frames are already ramped to silence
+    // by the write gain, so this is where the fade counts.)
+    //
+    // The periodic grains, 500 samples apart at rate 0.5, read 250 frames apart: one period of
+    // the 32 Hz input at 8 kHz, so they add in phase rather than cancel.
+    constexpr double kRate = 8000.0; // a 128000-frame ring fills in 16 s
+    const int64_t frames = 22 * 8000;
+    const int64_t freezeOn = 17 * 8000;
+    const int64_t freezeOff = 18 * 8000;
+    const auto input = sineInput(frames, kRate, 32.0, 0.5f);
+    gg::Engine engine(liveConfig(kRate, 32));
+    engine.setSourceMode(gg::SourceMode::Live);
+    engine.setCloudParams({.densityHz = 16.0,
+                           .grainDurationSec = 0.5,
+                           .position = 16.0,
+                           .pitchSemitones = -12.0,
+                           .gain = static_cast<float>(1.0 / std::sqrt(8.0))});
+    SinkLog log;
+    engine.setEventSink(&SinkLog::record, &log);
+    const auto out = run(engine, input, 32, {{freezeOn, true}, {freezeOff, false}});
+    REQUIRE(allFinite(out.left));
+
+    // Grains spawned while frozen sound across the release.
+    const auto acrossRelease =
+        std::count_if(log.grains.begin(), log.grains.end(), [&](const gg::GrainSpec &g) {
+            return g.onsetSample >= freezeOn && g.onsetSample < freezeOff &&
+                   grainEndSample(g) > freezeOff + 600;
+        });
+    REQUIRE(acrossRelease >= 3);
+
+    const auto stepIn = [&](int64_t from, int64_t to) {
+        return largestStep(std::vector<float>(out.left.begin() + from, out.left.begin() + to));
+    };
+    const float frozen = stepIn(freezeOn + 4000, freezeOff);
+    const float released = stepIn(freezeOff, freezeOff + 8000);
+    INFO("frozen step " << frozen << ", after the release " << released);
+    REQUIRE(peak(out.left, static_cast<std::size_t>(freezeOn + 4000),
+                 static_cast<std::size_t>(freezeOff)) > 0.1f);
+    REQUIRE(peak(out.left, static_cast<std::size_t>(freezeOff),
+                 static_cast<std::size_t>(freezeOff + 8000)) > 0.05f);
+    CHECK(released <= 1.5f * frozen);
+}
+
+TEST_CASE("rapid freeze toggling stays smooth", "[live]")
+{
+    // Review Focus 4: Freeze flipped every control cell (32 samples) for a second, held for a
+    // second, or held just past its ramp (the head stops) and released for one cell. The output
+    // stays finite, and no sample-to-sample step exceeds twice the input's largest step times
+    // the most grains sounding at once.
+    const int64_t frames = 3 * 48000;
+    const auto input = sineInput(frames, kSampleRate, 220.0, 0.5f);
+    const float inputStep = largestStep(input.left);
+    REQUIRE(inputStep > 0.0f);
+
+    struct Pattern
+    {
+        const char *name;
+        int64_t on;  // samples frozen in each cycle
+        int64_t off; // samples not frozen
+    };
+    const int64_t from = 24000;
+    const int64_t until = from + 48000;
+    for (const Pattern pattern :
+         {Pattern{"every 32 samples", 32, 32}, Pattern{"on 1024, off 32", 1024, 32},
+          Pattern{"held for 1 s", 48000, 0}})
+    {
+        for (const double position : {0.25, 0.0})
+        {
+            INFO(pattern.name << ", position " << position << " s");
+            std::vector<FreezeAt> changes;
+            for (int64_t t = from; t < until; t += pattern.on + pattern.off)
+            {
+                changes.push_back({t, true});
+                if (pattern.off > 0 && t + pattern.on < until)
+                {
+                    changes.push_back({t + pattern.on, false});
+                }
+            }
+            changes.push_back({until, false});
+
+            gg::Engine engine(liveConfig(kSampleRate, 32));
+            engine.setSourceMode(gg::SourceMode::Live);
+            // The plugin's defaults (spec §4), with its overlap gain 1 / sqrt(16 Hz × 0.15 s).
+            engine.setCloudParams({.densityHz = 16.0,
+                                   .distribution = 0.5,
+                                   .grainDurationSec = 0.15,
+                                   .position = position,
+                                   .spray = 0.05,
+                                   .stereo = 0.5,
+                                   .gain = static_cast<float>(1.0 / std::sqrt(2.4))});
+            SinkLog log;
+            engine.setEventSink(&SinkLog::record, &log);
+            const auto out = run(engine, input, 32, changes);
+
+            REQUIRE(allFinite(out.left));
+            REQUIRE(allFinite(out.right));
+            REQUIRE(peak(out.left, static_cast<std::size_t>(from)) > 0.05f);
+            REQUIRE_FALSE(log.overflowed);
+            const std::size_t overlap = largestOverlap(log.grains);
+            const float bound = 2.0f * inputStep * static_cast<float>(overlap);
+            INFO("input step " << inputStep << ", overlap " << overlap << ", bound " << bound);
+            CHECK(largestStep(out.left) <= bound);
+            CHECK(largestStep(out.right) <= bound);
+        }
+    }
+}
+
+TEST_CASE("live input wiring and source mode", "[live]")
+{
+    const int64_t frames = 48000;
+    const auto stereo = noiseInput(frames, 5);
+    const gg::CloudParams p{.densityHz = 40.0,
+                            .distribution = 0.5,
+                            .grainDurationSec = 0.08,
+                            .position = 0.1,
+                            .spray = 0.05,
+                            .pitchSemitones = 3.0,
+                            .gain = 0.5f}; // stereo 0: every grain centred, both gains exactly 1
+
+    const auto render = [&](const float *const *in, uint32_t inChannels) {
+        gg::Engine engine(liveConfig());
+        engine.setSourceMode(gg::SourceMode::Live);
+        engine.setCloudParams(p);
+        Stereo out{std::vector<float>(static_cast<std::size_t>(frames)),
+                   std::vector<float>(static_cast<std::size_t>(frames))};
+        for (int64_t done = 0; done < frames; done += 1000)
+        {
+            const auto i = static_cast<std::size_t>(done);
+            const float *offsetIn[2] = {in && in[0] ? in[0] + i : nullptr,
+                                        in && in[1] ? in[1] + i : nullptr};
+            float *o[2] = {out.left.data() + i, out.right.data() + i};
+            engine.process(in ? offsetIn : nullptr, inChannels, o, 2, 1000);
+        }
+        return out;
+    };
+
+    SECTION("a mono input fills both channels")
+    {
+        const float *mono[2] = {stereo.left.data(), nullptr};
+        const auto out = render(mono, 1);
+        REQUIRE(peak(out.left) > 0.05f);
+        REQUIRE(sameBits(out.left, out.right));
+        const float *doubled[2] = {stereo.left.data(), stereo.left.data()};
+        const auto same = render(doubled, 2);
+        REQUIRE(sameBits(out.left, same.left));
+        REQUIRE(sameBits(out.right, same.right));
+    }
+
+    SECTION("stereo input keeps its channels")
+    {
+        const float *in[2] = {stereo.left.data(), stereo.right.data()};
+        const auto out = render(in, 2);
+        REQUIRE(peak(out.left) > 0.05f);
+        REQUIRE(peak(out.right) > 0.05f);
+        REQUIRE_FALSE(sameBits(out.left, out.right));
+    }
+
+    SECTION("a missing input is silence")
+    {
+        const float *none[2] = {nullptr, nullptr};
+        for (const auto &out : {render(nullptr, 2), render(none, 2), render(none, 0)})
+        {
+            REQUIRE(peak(out.left) == 0.0f);
+            REQUIRE(peak(out.right) == 0.0f);
+        }
+        // A null second channel is a silent channel.
+        const float *leftOnly[2] = {stereo.left.data(), nullptr};
+        const auto out = render(leftOnly, 2);
+        REQUIRE(peak(out.left) > 0.05f);
+        REQUIRE(peak(out.right) == 0.0f);
+    }
+
+    SECTION("the M0 overload renders a missing input")
+    {
+        gg::Engine engine(liveConfig());
+        engine.setSourceMode(gg::SourceMode::Live);
+        engine.setCloudParams(p);
+        std::vector<float> left(4800, 1.0f), right(4800, 1.0f);
+        float *o[2] = {left.data(), right.data()};
+        for (int i = 0; i < 10; ++i)
+        {
+            engine.process(o, 2, 4800);
+        }
+        REQUIRE(engine.liveWriteHead() == 48000);
+        REQUIRE(peak(left) == 0.0f);
+        REQUIRE(engine.activeGrains() > 0);
+    }
+
+    SECTION("live mode needs a ring")
+    {
+        // Without liveSeconds there is no ring, so Live is ignored and the engine keeps
+        // rendering its sample source, bit for bit.
+        auto source = std::make_shared<gg::SampleBuffer>(2, 48000, kSampleRate);
+        std::copy(stereo.left.begin(), stereo.left.end(), source->channel(0));
+        std::copy(stereo.right.begin(), stereo.right.end(), source->channel(1));
+        gg::CloudParams sampleParams = p;
+        sampleParams.position = 0.5;
+        const auto renderSample = [&](bool askLive) {
+            gg::Engine engine(gg::EngineConfig{});
+            engine.setSource(source);
+            engine.setCloudParams(sampleParams);
+            if (askLive)
+            {
+                engine.setSourceMode(gg::SourceMode::Live);
+            }
+            Stereo out{std::vector<float>(24000), std::vector<float>(24000)};
+            float *o[2] = {out.left.data(), out.right.data()};
+            const float *in[2] = {stereo.left.data(), stereo.right.data()};
+            engine.process(in, 2, o, 2, 24000);
+            REQUIRE(engine.sourceMode() == gg::SourceMode::Sample);
+            return out;
+        };
+        const auto asked = renderSample(true);
+        const auto plain = renderSample(false);
+        REQUIRE(peak(plain.left) > 0.05f);
+        REQUIRE(sameBits(asked.left, plain.left));
+        REQUIRE(sameBits(asked.right, plain.right));
+    }
+
+    SECTION("a mode change applies from the next process call and silences old grains")
+    {
+        gg::Engine engine(liveConfig());
+        auto source = std::make_shared<gg::SampleBuffer>(1, 48000, kSampleRate);
+        std::fill_n(source->channel(0), 48000, 0.25f);
+        engine.setSource(source);
+        engine.setCloudParams(p);
+        std::vector<float> left(4800), right(4800);
+        float *o[2] = {left.data(), right.data()};
+        engine.process(o, 2, 4800);
+        REQUIRE(engine.sourceMode() == gg::SourceMode::Sample);
+        REQUIRE(engine.activeGrains() > 0);
+        engine.setSourceMode(gg::SourceMode::Live);
+        REQUIRE(engine.sourceMode() == gg::SourceMode::Sample); // not until process()
+        engine.process(o, 2, 0);
+        REQUIRE(engine.sourceMode() == gg::SourceMode::Live);
+        REQUIRE(engine.activeGrains() == 0);
+        // The ring holds only silence (the M0 overload), so the live grains are silent.
+        engine.process(o, 2, 4800);
+        REQUIRE(peak(left) == 0.0f);
+        REQUIRE(engine.activeGrains() > 0);
+    }
+}
+
+TEST_CASE("reset restarts the live ring", "[live]")
+{
+    // After reset() the ring's old frames are never read: the render equals a fresh engine's.
+    const int64_t frames = 48000;
+    const auto first = noiseInput(frames, 6);
+    const auto second = noiseInput(frames, 7);
+    const gg::CloudParams p{.densityHz = 50.0,
+                            .distribution = 0.5,
+                            .grainDurationSec = 0.1,
+                            .position = 0.5,
+                            .spray = 0.4,
+                            .pitchSemitones = -5.0,
+                            .stereo = 0.5,
+                            .gain = 0.5f};
+    // Reset while frozen (the head stopped, the write gain 0) or not; after it, both renders
+    // freeze at 0.5 s. A reset that kept the old gain would ramp the new frames in from 0.
+    for (const bool frozen : {false, true})
+    {
+        INFO((frozen ? "reset while frozen" : "reset while not frozen"));
+        gg::Engine used(liveConfig());
+        used.setSourceMode(gg::SourceMode::Live);
+        used.setCloudParams(p);
+        run(used, first, 512, {{24000, frozen}});
+        used.reset();
+        REQUIRE(used.liveWriteHead() == 0);
+        REQUIRE(used.sampleClock() == 0);
+        const auto again = run(used, second, 512, {{0, false}, {24000, true}});
+
+        gg::Engine fresh(liveConfig());
+        fresh.setSourceMode(gg::SourceMode::Live);
+        fresh.setCloudParams(p);
+        const auto ref = run(fresh, second, 512, {{24000, true}});
+        REQUIRE(peak(ref.left) > 0.05f);
+        REQUIRE(fresh.liveWriteHead() == 24000 + 960);
+        REQUIRE(used.liveWriteHead() == fresh.liveWriteHead());
+        REQUIRE(sameBits(again.left, ref.left));
+        REQUIRE(sameBits(again.right, ref.right));
+    }
+
+    // The freeze setting survives reset(): frozen before it, the ring freezes again from the
+    // first frame after it, its head stopping 20 ms (960 samples) in, as a new engine's would.
+    gg::Engine used(liveConfig());
+    used.setSourceMode(gg::SourceMode::Live);
+    run(used, first, 512, {{24000, true}});
+    used.reset();
+    run(used, second, 512);
+    REQUIRE(used.liveWriteHead() == 960);
+}
+
+TEST_CASE("a grain whose read span exceeds the ring is dropped", "[live]")
+{
+    // A 1 s ring (48000 frames) and 0.5 s grains at +24 semitones read 4 × 24000 frames while
+    // the head moves 24000: the span, 72000 frames, can't fit. At pitch 0 it can.
+    for (const double pitch : {24.0, 0.0})
+    {
+        INFO("pitch " << pitch);
+        gg::Engine engine(liveConfig(kSampleRate, 4096, 1.0));
+        engine.setSourceMode(gg::SourceMode::Live);
+        engine.setCloudParams({.densityHz = 20.0,
+                               .grainDurationSec = 0.5,
+                               .position = 0.5,
+                               .pitchSemitones = pitch,
+                               .gain = 0.5f});
+        SinkLog log;
+        engine.setEventSink(&SinkLog::record, &log);
+        const auto out = run(engine, noiseInput(48000, 8), 1024);
+        if (pitch > 0.0)
+        {
+            REQUIRE(engine.droppedGrains() == 20); // every scheduled grain
+            REQUIRE(log.grains.empty());
+            REQUIRE(peak(out.left) == 0.0f);
+        }
+        else
+        {
+            REQUIRE(engine.droppedGrains() == 0);
+            REQUIRE(log.grains.size() == 20);
+        }
+    }
+}

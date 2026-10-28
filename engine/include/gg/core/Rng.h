@@ -27,6 +27,8 @@ constexpr uint64_t splitmix64(uint64_t x) noexcept
 enum class Field : uint32_t
 {
     PositionJitter = 1,
+    Onset = 2, ///< the Cloud scheduler's interval to the next grain onset
+    Pan = 3,   ///< a grain's stereo pan
     SignalNoise = 100,
 };
 

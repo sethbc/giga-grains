@@ -3,7 +3,7 @@
 # Copyright 2026, the Giga Grains authors (see git history)
 #
 # The clang-format check: scripts/format.sh --check, which runs clang-format 23 with
-# --dry-run --Werror over engine plugin ui tools tests clients. Its major version must match
+# --dry-run --Werror over engine core plugin ui tools tests clients. Its major version must match
 # the one developers format with locally (Homebrew LLVM 23; ruling R6). Only clang-format is
 # installed, not a whole LLVM toolchain: the PyPI clang-format wheel, in a venv, pinned to an
 # exact version and SHA-256.

@@ -15,6 +15,9 @@
 
 #include "gg/plugin/Identity.h"
 #include "PluginHarness.h"
+#if GG_BUILD_EDITOR
+#include "editor/EditorPlugin.h"
+#endif
 
 namespace
 {
@@ -144,10 +147,20 @@ TEST_CASE("fx also answers to aumf", "[plugin]")
     CHECK_FALSE(factory->get(factory, 1, 1, &identity));
 }
 
+#if GG_BUILD_EDITOR
 TEST_CASE("both plugins expose a resizable embedded GUI", "[plugin]")
 {
     // Only what needs no window or JUCE runtime: JUCE starts when a host creates the GUI, which
     // pluginval exercises on the built plugins. (CLAP allows can_resize only after create.)
+    // clap_juce_shim says yes to cocoa, win32 and x11 on every platform, so only the window API
+    // native to the platform under test is asserted.
+#if defined(__APPLE__)
+    const char *const nativeApi = CLAP_WINDOW_API_COCOA;
+#elif defined(_WIN32)
+    const char *const nativeApi = CLAP_WINDOW_API_WIN32;
+#else
+    const char *const nativeApi = CLAP_WINDOW_API_X11;
+#endif
     for (const char *id : {"org.sethbc.giga-grains", "org.sethbc.giga-grains-fx"})
     {
         INFO(id);
@@ -157,35 +170,28 @@ TEST_CASE("both plugins expose a resizable embedded GUI", "[plugin]")
             plugin.clap()->get_extension(plugin.clap(), CLAP_EXT_GUI));
         REQUIRE(gui != nullptr);
 
-        CHECK(gui->is_api_supported(plugin.clap(), CLAP_WINDOW_API_COCOA, false));
-        CHECK(gui->is_api_supported(plugin.clap(), CLAP_WINDOW_API_WIN32, false));
-        CHECK(gui->is_api_supported(plugin.clap(), CLAP_WINDOW_API_X11, false));
+        CHECK(gui->is_api_supported(plugin.clap(), nativeApi, false));
         CHECK_FALSE(gui->is_api_supported(plugin.clap(), CLAP_WINDOW_API_WAYLAND, false));
-        CHECK_FALSE(gui->is_api_supported(plugin.clap(), CLAP_WINDOW_API_COCOA, true)); // floating
-        REQUIRE(plugin.impl().clapJuceShim != nullptr);
-        CHECK(plugin.impl().clapJuceShim->guiCanResize());
+        CHECK_FALSE(gui->is_api_supported(plugin.clap(), nativeApi, true)); // floating
+
+        // With the editor built, every instance is an EditorPlugin, which holds the shim.
+        auto *editor = dynamic_cast<gg::plugin::EditorPlugin *>(&plugin.impl());
+        REQUIRE(editor != nullptr);
+        REQUIRE(editor->clapJuceShim != nullptr);
+        CHECK(editor->clapJuceShim->guiCanResize());
     }
 }
-
-TEST_CASE("both plugins expose an empty params extension", "[plugin]")
+#else
+TEST_CASE("headless build exposes no gui extension", "[plugin]")
 {
-    // M0 has no parameters, but clap-wrapper's VST3 IMidiMapping needs CLAP's params extension
-    // before it creates its MIDI-controller parameters: without it, Steinberg's validator fails
-    // "MIDI Mapping" with an unknown ParamID.
+    // Without the editor (GG_BUILD_EDITOR=OFF, as in the asan and rtsan presets) the plugins
+    // are the JUCE-free core: a host must find no GUI, rather than one that can't open.
     for (const char *id : {"org.sethbc.giga-grains", "org.sethbc.giga-grains-fx"})
     {
         INFO(id);
         gg::test::PluginUnderTest plugin(id);
         REQUIRE(plugin.valid());
-        const auto *params = static_cast<const clap_plugin_params *>(
-            plugin.clap()->get_extension(plugin.clap(), CLAP_EXT_PARAMS));
-        REQUIRE(params != nullptr);
-        REQUIRE(params->count != nullptr);
-        CHECK(params->count(plugin.clap()) == 0);
-        CHECK(params->get_info != nullptr);
-        CHECK(params->get_value != nullptr);
-        CHECK(params->value_to_text != nullptr);
-        CHECK(params->text_to_value != nullptr);
-        CHECK(params->flush != nullptr);
+        CHECK(plugin.clap()->get_extension(plugin.clap(), CLAP_EXT_GUI) == nullptr);
     }
 }
+#endif

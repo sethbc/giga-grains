@@ -1,0 +1,10 @@
+{
+  "mode": "fx",
+  "sampleRate": 48000,
+  "durationSeconds": 4.0,
+  "blockSize": 128,
+  "seed": 1,
+  "input": {"kind": "noise", "seconds": 3.0, "amplitude": 0.5},
+  "channels": 2,
+  "params": {"Stereo": 1.0, "Pitch": 7}
+}

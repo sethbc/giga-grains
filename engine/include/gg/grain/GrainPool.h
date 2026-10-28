@@ -5,6 +5,7 @@
 #ifndef GG_GRAIN_GRAINPOOL_H
 #define GG_GRAIN_GRAINPOOL_H
 
+#include <cmath>
 #include <cstdint>
 #include <limits>
 #include <vector>
@@ -16,16 +17,34 @@ namespace gg
 /// One grain's parameters, latched at its onset (INTENT §14). Times and positions are 64-bit.
 struct GrainSpec
 {
-    uint64_t index;         ///< Lattice index k, counted from the stream's reset().
-    int64_t onsetSample;    ///< floor(onset time), in output samples.
-    double onsetFrac;       ///< onset time - onsetSample, in [0, 1).
-    double startPos;        ///< Source read position at the onset, in source frames.
-    double rate;            ///< Source frames advanced per output sample.
+    uint64_t index;      ///< Grain index k, counted from the scheduler's reset().
+    int64_t onsetSample; ///< floor(onset time), in output samples.
+    double onsetFrac;    ///< onset time - onsetSample, in [0, 1).
+    /// Read position at the onset: source frames in Sample mode, ring-time frames in Live mode.
+    double startPos;
+    double rate;            ///< Source (or ring) frames advanced per output sample.
     double durationSamples; ///< Window length in output samples, at least 16.
     float gain;
+    float pan; ///< -1 (left) .. 1 (right); see panGains().
 
     friend bool operator==(const GrainSpec &, const GrainSpec &) = default;
 };
+
+/// A grain's channel gains.
+struct PanGains
+{
+    float left;
+    float right;
+};
+
+/// The equal-power pan law with unity at the centre: left = sqrt(1 - pan) and
+/// right = sqrt(1 + pan), so left² + right² = 2 (spec §6.4). The renderer applies it once per
+/// grain. sqrt is correctly rounded (IEEE 754), so it is deterministic without a polynomial,
+/// and pan 0 gives exactly 1 and 1, which leaves an unpanned grain bit-identical to M0's.
+inline PanGains panGains(float pan) noexcept
+{
+    return {std::sqrt(1.0f - pan), std::sqrt(1.0f + pan)};
+}
 
 /// One past the last output sample at which g can sound. At output sample t the grain's
 /// elapsed time is e = (t - onsetSample) - onsetFrac, and its window is zero once

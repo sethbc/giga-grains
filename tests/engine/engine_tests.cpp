@@ -14,7 +14,9 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include "gg/core/Interpolate.h"
 #include "gg/core/Rng.h"
+#include "gg/core/Window.h"
 #include "gg/engine/Engine.h"
 
 namespace
@@ -112,11 +114,20 @@ struct SinkLog
     }
 };
 
-gg::StreamParams params(double rateHz, double durationSec, double position, double jitter,
-                        double pitch, float gain)
+// Periodic (distribution 0) and centred (stereo 0), as M0's stream was.
+gg::CloudParams params(double densityHz, double durationSec, double position, double spray,
+                       double pitch, float gain)
 {
-    return {rateHz, durationSec, position, jitter, pitch, gain};
+    return {.densityHz = densityHz,
+            .grainDurationSec = durationSec,
+            .position = position,
+            .spray = spray,
+            .pitchSemitones = pitch,
+            .gain = gain};
 }
+
+// The largest pan gain, sqrt(2), rounded up.
+constexpr float kMaxPanGain = 1.4143f;
 } // namespace
 
 TEST_CASE("no source renders silence", "[engine]")
@@ -150,32 +161,38 @@ TEST_CASE("extreme and non-finite params stay finite", "[engine]")
     const double nan = std::numeric_limits<double>::quiet_NaN();
     const double inf = std::numeric_limits<double>::infinity();
     const auto source = makeSine(2, 48000, 44100.0);
-    const gg::StreamParams defaults{};
+    const gg::CloudParams defaults{};
 
     // 1/48000 s asks for a 1-sample grain, which the minimum window length overrides.
     for (const double v : {nan, inf, -inf, -1.0, 0.0, 1e9, 1.0 / 48000.0})
     {
         const auto f = static_cast<float>(v);
-        std::vector<gg::StreamParams> cases{params(v, v, v, v, v, f)};
-        for (int field = 0; field < 6; ++field)
+        std::vector<gg::CloudParams> cases{{v, v, v, v, v, v, v, f}};
+        for (int field = 0; field < 8; ++field)
         {
-            gg::StreamParams p = defaults;
+            gg::CloudParams p = defaults;
             switch (field)
             {
             case 0:
-                p.grainRateHz = v;
+                p.densityHz = v;
                 break;
             case 1:
-                p.grainDurationSec = v;
+                p.distribution = v;
                 break;
             case 2:
-                p.position = v;
+                p.grainDurationSec = v;
                 break;
             case 3:
-                p.positionJitter = v;
+                p.position = v;
                 break;
             case 4:
+                p.spray = v;
+                break;
+            case 5:
                 p.pitchSemitones = v;
+                break;
+            case 6:
+                p.stereo = v;
                 break;
             default:
                 p.gain = f;
@@ -188,16 +205,17 @@ TEST_CASE("extreme and non-finite params stay finite", "[engine]")
             INFO("value = " << v << ", case = " << i);
             gg::Engine engine(gg::EngineConfig{});
             engine.setSource(source);
-            engine.setStreamParams(cases[i]);
+            engine.setCloudParams(cases[i]);
             SinkLog log;
             engine.setEventSink(&SinkLog::record, &log);
             const auto r = render(engine, 12000, 480);
             REQUIRE(allFinite(r.left));
             REQUIRE(allFinite(r.right));
-            // Bounded (ruling R3): a unit-amplitude source, gain clamped to at most 4 and
-            // Catmull-Rom overshoot of at most 1.25, so no sample exceeds 5 per grain spawned.
+            // Bounded (ruling R3): a unit-amplitude source, gain clamped to at most 4,
+            // Catmull-Rom overshoot of at most 1.25 and a pan gain of at most sqrt(2), so no
+            // sample exceeds about 7.1 per grain spawned.
             REQUIRE_FALSE(log.overflowed);
-            const float bound = 4.0f * 1.25f * static_cast<float>(log.grains.size());
+            const float bound = 4.0f * 1.25f * kMaxPanGain * static_cast<float>(log.grains.size());
             REQUIRE(peak(r.left) <= bound);
             REQUIRE(peak(r.right) <= bound);
         }
@@ -213,7 +231,7 @@ TEST_CASE("oversized and empty blocks", "[engine]")
 
     gg::Engine whole(config);
     whole.setSource(source);
-    whole.setStreamParams(p);
+    whole.setCloudParams(p);
 
     float sentinel = 7.0f;
     float *empty[2] = {&sentinel, &sentinel};
@@ -229,7 +247,7 @@ TEST_CASE("oversized and empty blocks", "[engine]")
 
     gg::Engine split(config);
     split.setSource(source);
-    split.setStreamParams(p);
+    split.setCloudParams(p);
     const auto small = render(split, 1000, 64); // 15 x 64 + 40
     REQUIRE(split.sampleClock() == 1000);
 
@@ -251,7 +269,7 @@ TEST_CASE("output channel layouts", "[engine]")
     auto makeEngine = [&]() {
         auto engine = std::make_unique<gg::Engine>(gg::EngineConfig{});
         engine->setSource(source);
-        engine->setStreamParams(p);
+        engine->setCloudParams(p);
         return engine;
     };
 
@@ -344,7 +362,7 @@ TEST_CASE("degenerate sources", "[engine]")
             gg::Engine engine(gg::EngineConfig{});
             engine.setSource(source);
             // 0.1 s at 48 kHz: each grain is 4800 samples, far longer than the source.
-            engine.setStreamParams(params(50.0, 0.1, 0.5, 1.0, pitch, 1.0f));
+            engine.setCloudParams(params(50.0, 0.1, 0.5, 1.0, pitch, 1.0f));
             const auto r = render(engine, 24000, 333);
             REQUIRE(allFinite(r.left));
             REQUIRE(allFinite(r.right));
@@ -372,15 +390,15 @@ TEST_CASE("event sink sees every spawn", "[engine]")
         engine.setSource(makeSine(1, 96000, 48000.0));
         SinkLog log;
         engine.setEventSink(&SinkLog::record, &log);
-        render(engine, 48000, 100); // default 20 Hz: onsets 0, 2400, ..., 45600
+        render(engine, 48000, 100); // default 16 Hz, periodic: onsets 0, 3000, ..., 45000
         REQUIRE_FALSE(log.overflowed);
-        REQUIRE(log.grains.size() == 20);
+        REQUIRE(log.grains.size() == 16);
         REQUIRE(engine.droppedGrains() == 0);
         bool consecutive = true;
         for (uint64_t k = 0; k < log.grains.size(); ++k)
         {
             consecutive = consecutive && log.grains[k].index == k &&
-                          log.grains[k].onsetSample == static_cast<int64_t>(k * 2400);
+                          log.grains[k].onsetSample == static_cast<int64_t>(k * 3000);
         }
         REQUIRE(consecutive);
     }
@@ -391,7 +409,7 @@ TEST_CASE("event sink sees every spawn", "[engine]")
         config.grainCapacity = 2;
         gg::Engine engine(config);
         engine.setSource(makeSine(1, 96000, 48000.0));
-        engine.setStreamParams(params(100.0, 0.1, 0.5, 0.0, 0.0, 0.5f)); // 10 grains overlap
+        engine.setCloudParams(params(100.0, 0.1, 0.5, 0.0, 0.0, 0.5f)); // 10 grains overlap
         SinkLog log;
         engine.setEventSink(&SinkLog::record, &log);
         render(engine, 48000, 100);
@@ -427,7 +445,7 @@ TEST_CASE("pool saturation is block-size independent", "[engine]")
     auto run = [&](const std::vector<uint32_t> &blocks, SinkLog &log, uint64_t &dropped) {
         gg::Engine engine(config);
         engine.setSource(source);
-        engine.setStreamParams(p);
+        engine.setCloudParams(p);
         engine.setEventSink(&SinkLog::record, &log);
         auto r = render(engine, 24000, blocks);
         dropped = engine.droppedGrains();
@@ -461,7 +479,7 @@ TEST_CASE("reset restarts the render", "[engine]")
 {
     gg::Engine engine(gg::EngineConfig{});
     engine.setSource(makeSine(1, 48000, 48000.0));
-    engine.setStreamParams(params(60.0, 0.05, 0.3, 0.4, 2.0, 0.6f));
+    engine.setCloudParams(params(60.0, 0.05, 0.3, 0.4, 2.0, 0.6f));
     const auto first = render(engine, 9000, 128);
     REQUIRE(engine.activeGrains() > 0);
     engine.reset();
@@ -477,7 +495,7 @@ TEST_CASE("reset restarts the render", "[engine]")
 TEST_CASE("random param sweep stays finite and bounded", "[engine]")
 {
     // Ruling R3: 64 grains, so the bound is max gain 4 x 64 grains x Catmull-Rom overshoot 1.25
-    // on a unit-amplitude source.
+    // x the largest pan gain sqrt(2) on a unit-amplitude source.
     gg::EngineConfig config;
     config.grainCapacity = 64;
     config.maxBlockSize = 512;
@@ -501,8 +519,9 @@ TEST_CASE("random param sweep stays finite and bounded", "[engine]")
     float worst = 0.0f;
     for (int iteration = 0; iteration < 200; ++iteration)
     {
-        engine.setStreamParams({wide(0.0, 4000.0), wide(0.0, 1.0), wide(0.0, 1.0), wide(0.0, 1.0),
-                                wide(-48.0, 48.0), static_cast<float>(wide(0.0, 4.0))});
+        engine.setCloudParams({wide(0.0, 4000.0), wide(0.0, 1.0), wide(0.0, 1.0), wide(0.0, 1.0),
+                               wide(0.0, 1.0), wide(-48.0, 48.0), wide(0.0, 1.0),
+                               static_cast<float>(wide(0.0, 4.0))});
         std::vector<uint32_t> blocks;
         for (int i = 0; i < 64; ++i)
         {
@@ -513,5 +532,106 @@ TEST_CASE("random param sweep stays finite and bounded", "[engine]")
         worst = std::max({worst, peak(r.left), peak(r.right)});
     }
     REQUIRE(finite);
-    REQUIRE(worst <= 320.0f);
+    REQUIRE(worst <= 4.0f * 64.0f * 1.25f * kMaxPanGain);
+}
+
+TEST_CASE("pan follows equal power with unity center", "[engine]")
+{
+    // The law: gL = sqrt(1 - pan) and gR = sqrt(1 + pan), so gL^2 + gR^2 = 2. Both are exactly 1
+    // at the centre, which leaves M0's output bit-identical at stereo 0 (ruling M1-d).
+    const gg::PanGains centre = gg::panGains(0.0f);
+    REQUIRE(centre.left == 1.0f);
+    REQUIRE(centre.right == 1.0f);
+    bool onLaw = true;
+    for (int i = -1000; i <= 1000; ++i)
+    {
+        const float pan = static_cast<float>(i) / 1000.0f;
+        const gg::PanGains g = gg::panGains(pan);
+        onLaw = onLaw && std::abs(g.left - std::sqrt(1.0 - pan)) <= 1e-7 &&
+                std::abs(g.right - std::sqrt(1.0 + pan)) <= 1e-7;
+    }
+    REQUIRE(onLaw);
+
+    // One grain: onset 0, 0.1 s long, and the next one not due for 1 s. It is rendered at
+    // stereo 0 and at stereo 1 with the same seed, from a mono and from a stereo source.
+    constexpr int64_t kFrames = 6000;
+    for (const uint32_t channels : {1u, 2u})
+    {
+        INFO("source channels = " << channels);
+        const auto source = makeSine(channels, 48000, 48000.0, 330.0, 0.9);
+        auto makeEngine = [&](double stereo, SinkLog &log) {
+            gg::EngineConfig config;
+            config.seed = 17;
+            auto engine = std::make_unique<gg::Engine>(config);
+            engine->setSource(source);
+            gg::CloudParams p = params(1.0, 0.1, 0.5, 0.3, 3.0, 0.8f);
+            p.stereo = stereo;
+            engine->setCloudParams(p);
+            engine->setEventSink(&SinkLog::record, &log);
+            return engine;
+        };
+        SinkLog centreLog;
+        const auto centred = render(*makeEngine(0.0, centreLog), kFrames, 256);
+        SinkLog wideLog;
+        const auto wide = render(*makeEngine(1.0, wideLog), kFrames, 256);
+        REQUIRE(centreLog.grains.size() == 1);
+        REQUIRE(wideLog.grains.size() == 1);
+        const gg::GrainSpec &g = centreLog.grains[0];
+        REQUIRE(g.pan == 0.0f);
+        REQUIRE_FALSE(std::signbit(g.pan)); // +0, never -0, so the event log reads "pan":0
+
+        // Stereo 0 is M0's no-pan output, bit for bit: each channel is the Hermite read times
+        // the window times the gain, added to silence.
+        const gg::HannTable hann;
+        std::vector<float> m0[2];
+        for (uint32_t c = 0; c < 2; ++c)
+        {
+            const float *data = source->channel(channels == 1 ? 0 : c);
+            m0[c].assign(static_cast<std::size_t>(kFrames), 0.0f);
+            const int64_t end = std::min(kFrames, gg::grainEndSample(g));
+            for (int64_t t = g.onsetSample; t < end; ++t)
+            {
+                const double e = static_cast<double>(t - g.onsetSample) - g.onsetFrac;
+                m0[c][static_cast<std::size_t>(t)] +=
+                    gg::interp::hermite4(data, source->frames(), g.startPos + g.rate * e) *
+                    hann.at(e / g.durationSamples) * g.gain;
+            }
+        }
+        REQUIRE(peak(m0[0]) > 0.1f);
+        REQUIRE(sameBits(centred.left, m0[0]));
+        REQUIRE(sameBits(centred.right, m0[1]));
+
+        // Stereo 1: the same grain, only its pan differs, and each channel is the stereo-0
+        // channel scaled by its pan gain.
+        gg::GrainSpec unpanned = wideLog.grains[0];
+        const float pan = unpanned.pan;
+        unpanned.pan = 0.0f;
+        REQUIRE(unpanned == g);
+        INFO("pan = " << pan);
+        REQUIRE(std::abs(pan) > 0.1f); // seed 17 puts the grain clearly off centre
+        const gg::PanGains gains = gg::panGains(pan);
+        REQUIRE(std::abs(gains.left - std::sqrt(1.0 - pan)) <= 1e-7);
+        REQUIRE(std::abs(gains.right - std::sqrt(1.0 + pan)) <= 1e-7);
+        std::vector<float> expectedLeft = m0[0];
+        std::vector<float> expectedRight = m0[1];
+        for (std::size_t i = 0; i < expectedLeft.size(); ++i)
+        {
+            expectedLeft[i] *= gains.left;
+            expectedRight[i] *= gains.right;
+        }
+        REQUIRE(sameBits(wide.left, expectedLeft));
+        REQUIRE(sameBits(wide.right, expectedRight));
+
+        // A single output channel has no stereo placement: it carries source channel 0 unpanned.
+        SinkLog monoLog;
+        const auto monoEngine = makeEngine(1.0, monoLog);
+        std::vector<float> mono(static_cast<std::size_t>(kFrames), kUnwritten);
+        for (int64_t done = 0; done < kFrames; done += 500)
+        {
+            float *out[1] = {mono.data() + done};
+            monoEngine->process(out, 1, 500);
+        }
+        REQUIRE(monoLog.grains == wideLog.grains);
+        REQUIRE(sameBits(mono, m0[0]));
+    }
 }

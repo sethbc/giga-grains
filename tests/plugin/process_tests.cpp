@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright 2026, the Giga Grains authors (see git history)
 
+#include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -13,7 +15,7 @@
 
 #include <clap/clap.h>
 
-#include "gg/core/Rng.h"
+#include "gg/core/ParamIds.h"
 #include "gg/engine/Engine.h"
 #include "PluginHarness.h"
 
@@ -22,43 +24,36 @@ namespace
 constexpr const char *kInstrumentId = "org.sethbc.giga-grains";
 constexpr const char *kFxId = "org.sethbc.giga-grains-fx";
 
-// A stereo buffer: two channels of `frames` samples each.
-struct Stereo
-{
-    explicit Stereo(uint32_t frames, float fill = 0.0f)
-        : left(frames, fill), right(frames, fill), ptrs{left.data(), right.data()}
-    {
-    }
-    Stereo(const Stereo &) = delete;
-    Stereo &operator=(const Stereo &) = delete;
-
-    float **data() noexcept { return ptrs; }
-
-    std::vector<float> left;
-    std::vector<float> right;
-    float *ptrs[2];
-};
-
-// Deterministic noise in [-1, 1): never -0.0, so "bit-exact" is meaningful for x + 0.0f.
-void fillNoise(Stereo &s, uint64_t seed)
-{
-    for (std::size_t i = 0; i < s.left.size(); ++i)
-    {
-        s.left[i] = static_cast<float>(gg::rng::bipolar(gg::rng::splitmix64(seed + 2 * i)));
-        s.right[i] = static_cast<float>(gg::rng::bipolar(gg::rng::splitmix64(seed + 2 * i + 1)));
-    }
-}
-
-bool sameBits(const std::vector<float> &a, const std::vector<float> &b)
-{
-    return a.size() == b.size() && std::memcmp(a.data(), b.data(), a.size() * sizeof(float)) == 0;
-}
+using gg::test::fillNoise;
+using gg::test::sameBits;
+using gg::test::Stereo;
 
 bool allZero(const std::vector<float> &v)
 {
     for (float x : v)
     {
         if (x != 0.0f)
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+// Sets Mix by params.flush: before activation it applies at activate(), after it at once.
+void setMix(const gg::test::PluginUnderTest &plugin, double mix)
+{
+    const auto event = gg::test::paramValue(gg::core::paramId(gg::core::ParamSlot::Mix), mix);
+    gg::test::InputEvents events;
+    events.add(&event.header);
+    plugin.flush(events.list());
+}
+
+bool allFinite(const std::vector<float> &v)
+{
+    for (float x : v)
+    {
+        if (!std::isfinite(x))
         {
             return false;
         }
@@ -136,10 +131,13 @@ class LoggingHost
 };
 } // namespace
 
-TEST_CASE("fx passes audio through bit-exactly", "[plugin]")
+TEST_CASE("fx passes audio through bit-exactly at mix 0", "[plugin]")
 {
+    // At Mix 0 the output is the dry input, bit for bit for normal floats (ruling M1-q); the
+    // noise has no -0.0 and no subnormals.
     gg::test::PluginUnderTest fx(kFxId);
     REQUIRE(fx.valid());
+    setMix(fx, 0.0);
     REQUIRE(fx.activate(48000.0, 512));
 
     SECTION("separate input and output buffers")
@@ -324,6 +322,8 @@ TEST_CASE("reactivate at new sample rate", "[plugin]")
     gg::test::PluginUnderTest plugin(id);
     REQUIRE(plugin.valid());
     const bool isFx = std::string_view(id) == kFxId;
+    // Mix 0, set once while inactive, holds through the reactivation: the FX passes its input.
+    setMix(plugin, 0.0);
 
     REQUIRE(plugin.activate(48000.0, 512));
     REQUIRE(plugin.impl().engine() != nullptr);
@@ -360,4 +360,52 @@ TEST_CASE("reactivate at new sample rate", "[plugin]")
         }
     }
     CHECK(plugin.impl().engine()->sampleClock() == 1024);
+}
+
+TEST_CASE("fx activates with a huge max frame count", "[plugin]")
+{
+    // CLAP allows a max frame count up to INT32_MAX. The live ring holds N + maxBlockSize frames
+    // (ruling M1-o), so the plugin caps the engine's block size; the output doesn't depend on it.
+    // Position 0.05 (about 20 ms) and no Spray: the grains read what this render wrote.
+    Stereo in(8193);
+    fillNoise(in, 5);
+    const auto position =
+        gg::test::paramValue(gg::core::paramId(gg::core::ParamSlot::Position), 0.05);
+    const auto spray = gg::test::paramValue(gg::core::paramId(gg::core::ParamSlot::Spray), 0.0);
+    gg::test::InputEvents params;
+    params.add(&position.header);
+    params.add(&spray.header);
+    const auto render = [&](uint32_t maxFrames, Stereo &out) {
+        gg::test::PluginUnderTest fx(kFxId);
+        REQUIRE(fx.valid());
+        fx.flush(params.list());
+        REQUIRE(fx.activate(48000.0, maxFrames));
+        CHECK(fx.impl().engineBlockSize() == std::min<uint32_t>(maxFrames, 4096));
+        float *inPtrs[2] = {in.left.data(), in.right.data()};
+        float *outPtrs[2] = {out.left.data(), out.right.data()};
+        CHECK(fx.process(8192, inPtrs, outPtrs) == CLAP_PROCESS_CONTINUE);
+        inPtrs[0] += 8192;
+        inPtrs[1] += 8192;
+        outPtrs[0] += 8192;
+        outPtrs[1] += 8192;
+        CHECK(fx.process(1, inPtrs, outPtrs) == CLAP_PROCESS_CONTINUE);
+        CHECK(fx.impl().engine()->sampleClock() == 8193);
+    };
+
+    Stereo huge(8193, 7.0f);
+    render(static_cast<uint32_t>(INT32_MAX), huge);
+    CHECK(allFinite(huge.left));
+    CHECK(allFinite(huge.right));
+    // The wet signal is there: the output isn't the dry half alone.
+    float wet = 0.0f;
+    for (std::size_t i = 0; i < huge.left.size(); ++i)
+    {
+        wet = std::max(wet, std::abs(huge.left[i] - 0.5f * in.left[i]));
+    }
+    CHECK(wet > 0.01f);
+
+    Stereo small(8193, 7.0f);
+    render(64, small);
+    CHECK(sameBits(huge.left, small.left));
+    CHECK(sameBits(huge.right, small.right));
 }

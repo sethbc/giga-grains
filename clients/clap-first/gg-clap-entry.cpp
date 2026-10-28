@@ -4,7 +4,7 @@
 
 // The CLAP entry point. make_clapfirst_plugins compiles this file into every format (the
 // .clap exports it; the VST3, AUv2 and standalone wrappers link it statically), and the
-// functions it names live in gg-plugin-impl (plugin/src/Factory.h).
+// functions it names live in gg-plugin-core (plugin/src/Factory.h).
 
 #include <cstdio>
 

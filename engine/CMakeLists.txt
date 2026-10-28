@@ -5,9 +5,10 @@
 # gg-engine: the framework-free grain engine shared by both plugins, the tools and the tests.
 
 add_library(gg-engine STATIC
+        src/CloudScheduler.cpp
         src/Engine.cpp
         src/GrainPool.cpp
-        src/PeriodicStream.cpp
+        src/LiveSource.cpp
         src/SampleBuffer.cpp
         src/Version.cpp
         src/Window.cpp

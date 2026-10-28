@@ -5,17 +5,24 @@
 #ifndef GG_TESTS_PLUGIN_PLUGINHARNESS_H
 #define GG_TESTS_PLUGIN_PLUGINHARNESS_H
 
-// A stub CLAP host and a small driver for the plugin tests. The plugins are exercised through
-// gg-plugin-impl's factory and their clap_plugin vtables, exactly as a host would call them,
-// without loading the built .clap.
+// A stub CLAP host and a small driver for the plugin tests, with the events, state streams and
+// audio buffers they share. The plugins are exercised through gg::plugin-impl's factory and
+// their clap_plugin vtables, exactly as a host would call them, without loading the built .clap.
 
+#include <algorithm>
+#include <cstddef>
 #include <cstdint>
+#include <cstring>
+#include <limits>
+#include <string>
+#include <utility>
 #include <vector>
 
 #include <clap/clap.h>
 
 #include "Factory.h"
 #include "GigaGrainsPlugin.h"
+#include "gg/core/Rng.h"
 
 namespace gg::test
 {
@@ -80,6 +87,143 @@ inline const clap_output_events *discardingOutputEvents() noexcept
     return &out;
 }
 
+/// A CLAP_EVENT_PARAM_VALUE for parameter `id`, global (no note, port, channel or key).
+inline clap_event_param_value paramValue(clap_id id, double value, uint32_t time = 0) noexcept
+{
+    clap_event_param_value e{};
+    e.header.size = sizeof(e);
+    e.header.time = time;
+    e.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
+    e.header.type = CLAP_EVENT_PARAM_VALUE;
+    e.param_id = id;
+    e.note_id = -1;
+    e.port_index = -1;
+    e.channel = -1;
+    e.key = -1;
+    e.value = value;
+    return e;
+}
+
+/// A CLAP_EVENT_PARAM_MOD for parameter `id`, global, as paramValue().
+inline clap_event_param_mod paramMod(clap_id id, double amount, uint32_t time = 0) noexcept
+{
+    clap_event_param_mod e{};
+    e.header.size = sizeof(e);
+    e.header.time = time;
+    e.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
+    e.header.type = CLAP_EVENT_PARAM_MOD;
+    e.param_id = id;
+    e.note_id = -1;
+    e.port_index = -1;
+    e.channel = -1;
+    e.key = -1;
+    e.amount = amount;
+    return e;
+}
+
+/// A clap_ostream into memory that accepts at most `chunk` bytes per write, as a host's stream
+/// may; with failAfter set, every write once that many bytes are in fails (-1).
+class MemoryOStream
+{
+  public:
+    explicit MemoryOStream(std::size_t chunk = SIZE_MAX, std::size_t failAfter = SIZE_MAX)
+        : chunk_(chunk), failAfter_(failAfter)
+    {
+    }
+    MemoryOStream(const MemoryOStream &) = delete;
+    MemoryOStream &operator=(const MemoryOStream &) = delete;
+
+    const clap_ostream *stream() const noexcept { return &stream_; }
+    const std::string &data() const noexcept { return data_; }
+
+  private:
+    static int64_t write(const clap_ostream *stream, const void *buffer, uint64_t size) noexcept
+    {
+        auto &self = *static_cast<MemoryOStream *>(stream->ctx);
+        if (self.data_.size() >= self.failAfter_)
+        {
+            return -1;
+        }
+        const auto n = static_cast<std::size_t>(std::min<uint64_t>(size, self.chunk_));
+        self.data_.append(static_cast<const char *>(buffer), n);
+        return static_cast<int64_t>(n);
+    }
+
+    std::size_t chunk_;
+    std::size_t failAfter_;
+    std::string data_;
+    clap_ostream stream_{this, &MemoryOStream::write};
+};
+
+/// A clap_istream over `data` that returns at most `chunk` bytes per read, as a host's stream
+/// may; with failAfter set, every read once that many bytes are out fails (-1).
+class MemoryIStream
+{
+  public:
+    explicit MemoryIStream(std::string data, std::size_t chunk = SIZE_MAX,
+                           std::size_t failAfter = SIZE_MAX)
+        : data_(std::move(data)), chunk_(chunk), failAfter_(failAfter)
+    {
+    }
+    MemoryIStream(const MemoryIStream &) = delete;
+    MemoryIStream &operator=(const MemoryIStream &) = delete;
+
+    const clap_istream *stream() const noexcept { return &stream_; }
+
+  private:
+    static int64_t read(const clap_istream *stream, void *buffer, uint64_t size) noexcept
+    {
+        auto &self = *static_cast<MemoryIStream *>(stream->ctx);
+        if (self.pos_ >= self.failAfter_)
+        {
+            return -1;
+        }
+        const auto n = static_cast<std::size_t>(
+            std::min<uint64_t>({size, self.chunk_, self.data_.size() - self.pos_}));
+        std::memcpy(buffer, self.data_.data() + self.pos_, n);
+        self.pos_ += n;
+        return static_cast<int64_t>(n);
+    }
+
+    std::string data_;
+    std::size_t chunk_;
+    std::size_t failAfter_;
+    std::size_t pos_{0};
+    clap_istream stream_{this, &MemoryIStream::read};
+};
+
+/// A stereo buffer: two channels of `frames` samples each.
+struct Stereo
+{
+    explicit Stereo(uint32_t frames, float fill = 0.0f)
+        : left(frames, fill), right(frames, fill), ptrs{left.data(), right.data()}
+    {
+    }
+    Stereo(const Stereo &) = delete;
+    Stereo &operator=(const Stereo &) = delete;
+
+    float **data() noexcept { return ptrs; }
+
+    std::vector<float> left;
+    std::vector<float> right;
+    float *ptrs[2];
+};
+
+/// Deterministic noise in [-1, 1): never -0.0, so "bit-exact" is meaningful for x + 0.0f.
+inline void fillNoise(Stereo &s, uint64_t seed)
+{
+    for (std::size_t i = 0; i < s.left.size(); ++i)
+    {
+        s.left[i] = static_cast<float>(gg::rng::bipolar(gg::rng::splitmix64(seed + 2 * i)));
+        s.right[i] = static_cast<float>(gg::rng::bipolar(gg::rng::splitmix64(seed + 2 * i + 1)));
+    }
+}
+
+inline bool sameBits(const std::vector<float> &a, const std::vector<float> &b)
+{
+    return a.size() == b.size() && std::memcmp(a.data(), b.data(), a.size() * sizeof(float)) == 0;
+}
+
 /// One plugin instance, created through the factory and initialized. The destructor stops
 /// processing, deactivates and destroys it, in that order. `host` must outlive the instance.
 class PluginUnderTest
@@ -112,6 +256,39 @@ class PluginUnderTest
 
     bool valid() const noexcept { return plugin_ != nullptr; }
     const clap_plugin *clap() const noexcept { return plugin_; }
+    const clap_plugin_params *params() const noexcept
+    {
+        return static_cast<const clap_plugin_params *>(
+            plugin_->get_extension(plugin_, CLAP_EXT_PARAMS));
+    }
+    const clap_plugin_state *state() const noexcept
+    {
+        return static_cast<const clap_plugin_state *>(
+            plugin_->get_extension(plugin_, CLAP_EXT_STATE));
+    }
+
+    /// params.flush of `events`, through the vtable.
+    void flush(const clap_input_events *events) const
+    {
+        params()->flush(plugin_, events, discardingOutputEvents());
+    }
+    /// params.get_value; NaN if the call fails.
+    double value(clap_id id) const
+    {
+        double v = 0.0;
+        return params()->get_value(plugin_, id, &v) ? v : std::numeric_limits<double>::quiet_NaN();
+    }
+    /// state.save into a string; empty if the call fails.
+    std::string save() const
+    {
+        MemoryOStream out;
+        return state()->save(plugin_, out.stream()) ? out.data() : std::string();
+    }
+    bool load(const std::string &data) const
+    {
+        MemoryIStream in(data);
+        return state()->load(plugin_, in.stream());
+    }
     gg::plugin::GigaGrainsPlugin &impl() const noexcept
     {
         return *gg::plugin::GigaGrainsPlugin::fromClap(plugin_);
@@ -143,13 +320,14 @@ class PluginUnderTest
         }
     }
 
-    /// Runs one process() call. `inputs` and `outputs` hold one stereo port's channel
-    /// pointers each; a null pointer means the port is absent from the call.
+    /// Runs one process() call. `inputs` and `outputs` hold one port's channel pointers each
+    /// (`inputChannels` and 2 of them); a null pointer means the port is absent from the call.
     clap_process_status process(uint32_t frames, float **inputs, float **outputs,
-                                const clap_input_events *events = nullptr)
+                                const clap_input_events *events = nullptr,
+                                uint32_t inputChannels = 2)
     {
         InputEvents none;
-        clap_audio_buffer in{inputs, nullptr, 2, 0, 0};
+        clap_audio_buffer in{inputs, nullptr, inputChannels, 0, 0};
         clap_audio_buffer out{outputs, nullptr, 2, 0, 0};
         clap_process process{};
         process.steady_time = -1;

@@ -35,7 +35,8 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
         "GG_SANITIZE": "ON",
-        "GG_BUILD_PLUGINS": "OFF"
+        "GG_BUILD_PLUGINS": "ON",
+        "GG_BUILD_EDITOR": "OFF"
       }
     },
     {
@@ -45,7 +46,8 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "RelWithDebInfo",
         "GG_USE_RTSAN": "ON",
-        "GG_BUILD_PLUGINS": "OFF",
+        "GG_BUILD_PLUGINS": "ON",
+        "GG_BUILD_EDITOR": "OFF",
         "CMAKE_C_COMPILER": "$env{GG_LLVM}/bin/clang",
         "CMAKE_CXX_COMPILER": "$env{GG_LLVM}/bin/clang++"
       }
@@ -116,7 +118,8 @@
         "outputOnFailure": true
       },
       "execution": {
-        "noTestsAction": "error"
+        "noTestsAction": "error",
+        "jobs": 8
       }
     },
     {

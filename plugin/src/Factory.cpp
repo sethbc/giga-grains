@@ -63,7 +63,7 @@ const clap_plugin *CLAP_ABI createPlugin(const clap_plugin_factory *, const clap
             // clap-helpers owns the instance from here: clap_plugin.destroy deletes it.
             try
             {
-                return (new GigaGrainsPlugin(host, product))->clapPlugin();
+                return makePlugin(host, product);
             }
             catch (...)
             {

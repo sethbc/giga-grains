@@ -18,6 +18,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include "gg/core/MathDet.h"
 #include "gg/core/Rng.h"
 #include "gg/engine/Engine.h"
 
@@ -30,8 +31,16 @@ constexpr uint32_t kMaxBlock = 4096;
 
 gg::EngineConfig config(uint64_t seed) { return {kSampleRate, kMaxBlock, 4096, seed}; }
 
-// 37 Hz, 0.083 s grains at position 0.4 with jitter 0.3, up 5 semitones, gain 0.7.
-constexpr gg::StreamParams kParams{37.0, 0.083, 0.4, 0.3, 5.0, 0.7f};
+// 37 Hz halfway between periodic and Poisson onsets, 0.083 s grains at position 0.4 with spray
+// 0.3, up 5 semitones, panned across 0.7 of the stereo field, gain 0.7.
+constexpr gg::CloudParams kParams{.densityHz = 37.0,
+                                  .distribution = 0.5,
+                                  .grainDurationSec = 0.083,
+                                  .position = 0.4,
+                                  .spray = 0.3,
+                                  .pitchSemitones = 5.0,
+                                  .stereo = 0.7,
+                                  .gain = 0.7f};
 
 // A stereo 440 Hz sine; the right channel is a quarter turn ahead, so the outputs differ.
 std::shared_ptr<const gg::SampleBuffer> sineSource()
@@ -62,7 +71,7 @@ Render render(const std::shared_ptr<const gg::SampleBuffer> &source, uint64_t se
 {
     gg::Engine engine(config(seed));
     engine.setSource(source);
-    engine.setStreamParams(kParams);
+    engine.setCloudParams(kParams);
     constexpr float kUnwritten = std::numeric_limits<float>::quiet_NaN();
     Render r{std::vector<float>(static_cast<std::size_t>(kFrames), kUnwritten),
              std::vector<float>(static_cast<std::size_t>(kFrames), kUnwritten)};
@@ -157,7 +166,7 @@ TEST_CASE("render twice is identical", "[determinism]")
 
 TEST_CASE("different seeds differ", "[determinism]")
 {
-    // The seed only reaches the output through the position jitter (0.3 in kParams).
+    // The seed reaches the output through the onsets, the spray and the pan.
     const auto source = sineSource();
     const auto one = render(source, 1, {kMaxBlock});
     const auto two = render(source, 2, {kMaxBlock});
@@ -194,40 +203,51 @@ struct GrainLog
     }
 };
 
-// Rate changes during a render, as (end frame, grain rate) segments: 37 Hz, then slower, then
-// faster, then off, then back on. Each change is made between process() calls at the segment's
-// first frame, so every block split below sees it at the same sample.
-constexpr int64_t kRateFrames = 48000;
-constexpr std::pair<int64_t, double> kRateSegments[] = {
-    {9000, 37.0}, {20000, 11.0}, {30000, 160.0}, {36000, 0.0}, {kRateFrames, 160.0},
+// Density and distribution changes during a render, as segments: 37 Hz, then slower, then
+// faster, then Poisson at the same density, then off, then back on, periodic. Each change is
+// made between process() calls at the segment's first frame, so every block split below sees it
+// at the same absolute sample.
+struct Segment
+{
+    int64_t end; // the first frame after the segment
+    double densityHz;
+    double distribution;
+};
+constexpr int64_t kDensityFrames = 48000;
+constexpr Segment kDensitySegments[] = {
+    {9000, 37.0, 0.5},   {20000, 11.0, 0.5}, {30000, 160.0, 0.5},
+    {33000, 160.0, 1.0}, {36000, 0.0, 1.0},  {kDensityFrames, 160.0, 0.0},
 };
 
-struct RateRender
+struct DensityRender
 {
     Render audio;
     GrainLog log;
 };
 
-// Renders kRateSegments in process() calls of blockSize frames, each segment's last call cut
-// short at its end, with an engine whose maxBlockSize is maxBlock.
-void renderRateChanges(const std::shared_ptr<const gg::SampleBuffer> &source, uint32_t maxBlock,
-                       uint32_t blockSize, RateRender &r)
+// Renders kDensitySegments in process() calls of blockSizes in turn (cycling across segments),
+// each segment's last call cut short at its end, with an engine whose maxBlockSize is maxBlock.
+void renderDensityChanges(const std::shared_ptr<const gg::SampleBuffer> &source, uint32_t maxBlock,
+                          const std::vector<uint32_t> &blockSizes, DensityRender &r)
 {
     gg::Engine engine({kSampleRate, maxBlock, 4096, 42});
     engine.setSource(source);
     engine.setEventSink(&GrainLog::record, &r.log);
     constexpr float kUnwritten = std::numeric_limits<float>::quiet_NaN();
-    r.audio.left.assign(static_cast<std::size_t>(kRateFrames), kUnwritten);
-    r.audio.right.assign(static_cast<std::size_t>(kRateFrames), kUnwritten);
+    r.audio.left.assign(static_cast<std::size_t>(kDensityFrames), kUnwritten);
+    r.audio.right.assign(static_cast<std::size_t>(kDensityFrames), kUnwritten);
     int64_t done = 0;
-    for (const auto &[end, rateHz] : kRateSegments)
+    std::size_t next = 0;
+    for (const Segment &segment : kDensitySegments)
     {
-        gg::StreamParams p = kParams;
-        p.grainRateHz = rateHz;
-        engine.setStreamParams(p);
-        while (done < end)
+        gg::CloudParams p = kParams;
+        p.densityHz = segment.densityHz;
+        p.distribution = segment.distribution;
+        engine.setCloudParams(p);
+        while (done < segment.end)
         {
-            const auto n = static_cast<uint32_t>(std::min<int64_t>(blockSize, end - done));
+            const uint32_t want = blockSizes[next++ % blockSizes.size()];
+            const auto n = static_cast<uint32_t>(std::min<int64_t>(want, segment.end - done));
             float *out[2] = {r.audio.left.data() + done, r.audio.right.data() + done};
             engine.process(out, 2, n);
             done += n;
@@ -236,14 +256,15 @@ void renderRateChanges(const std::shared_ptr<const gg::SampleBuffer> &source, ui
 }
 } // namespace
 
-TEST_CASE("rate changes are block-size invariant", "[determinism]")
+TEST_CASE("density and distribution changes are block-size invariant", "[determinism]")
 {
-    // Ruling T3-a: a rate change restarts the onset lattice at max(start of the first block
-    // after the change, last onset + new period). With the change at a fixed sample, that
-    // anchor must not depend on how the host splits blocks (Engine.h, INTENT §8.6).
+    // Ruling M1-h: a density or distribution change at g rescales the pending onset. Ruling
+    // M1-j: a stream turned back on starts at the first block after the change. With the changes
+    // at fixed samples, neither may depend on how the host splits blocks (Engine.h, INTENT
+    // §8.6).
     const auto source = sineSource();
-    RateRender ref;
-    renderRateChanges(source, kMaxBlock, kMaxBlock, ref);
+    DensityRender ref;
+    renderDensityChanges(source, kMaxBlock, {kMaxBlock}, ref);
     REQUIRE(allFinite(ref.audio.left));
     REQUIRE(allFinite(ref.audio.right));
     REQUIRE(peak(ref.audio.left) > 0.05f);
@@ -252,14 +273,15 @@ TEST_CASE("rate changes are block-size invariant", "[determinism]")
     // Guard against a vacuous pass: every segment that is on spawns grains, and none spawn
     // while the stream is off.
     int64_t segmentStart = 0;
-    for (const auto &[end, rateHz] : kRateSegments)
+    for (const Segment &segment : kDensitySegments)
     {
         const auto inSegment = std::count_if(
             ref.log.grains.begin(), ref.log.grains.end(), [&](const gg::GrainSpec &g) {
-                return g.onsetSample >= segmentStart && g.onsetSample < end;
+                return g.onsetSample >= segmentStart && g.onsetSample < segment.end;
             });
-        INFO("segment [" << segmentStart << ", " << end << ") at " << rateHz << " Hz");
-        if (rateHz > 0.0)
+        INFO("segment [" << segmentStart << ", " << segment.end << ") at " << segment.densityHz
+                         << " Hz");
+        if (segment.densityHz > 0.0)
         {
             REQUIRE(inSegment > 0);
         }
@@ -267,22 +289,185 @@ TEST_CASE("rate changes are block-size invariant", "[determinism]")
         {
             REQUIRE(inSegment == 0);
         }
-        segmentStart = end;
+        segmentStart = segment.end;
     }
+
+    // Ruling M1-h through the engine: at every change that keeps the stream on, the first grain
+    // at or after the change is at max(t(k−1) + Δ_new(k−1), g), from the last grain before it
+    // and its own onset draw (seed 42, layer 0, stream 0); and the change did move it.
+    int moved = 0;
+    for (std::size_t s = 1; s < std::size(kDensitySegments); ++s)
+    {
+        const Segment &before = kDensitySegments[s - 1];
+        const Segment &after = kDensitySegments[s];
+        if (!(before.densityHz > 0.0 && after.densityHz > 0.0))
+        {
+            continue;
+        }
+        const int64_t g = before.end;
+        INFO("change at " << g);
+        const auto next = std::find_if(ref.log.grains.begin(), ref.log.grains.end(),
+                                       [&](const gg::GrainSpec &x) { return x.onsetSample >= g; });
+        REQUIRE(next != ref.log.grains.begin());
+        REQUIRE(next != ref.log.grains.end());
+        const gg::GrainSpec &last = *(next - 1);
+        REQUIRE(next->index == last.index + 1);
+        const double e = -gg::logDet(
+            1.0 - gg::rng::uniform01(gg::rng::hash({42, 0, 0, gg::rng::Field::Onset, last.index})));
+        const auto onsetAfter = [&](const Segment &params) {
+            const double period = kSampleRate / params.densityHz;
+            const double d = params.distribution;
+            return static_cast<double>(last.onsetSample) + last.onsetFrac +
+                   std::max(period * ((1.0 - d) + d * e), 1.0 / 16.0);
+        };
+        const double expected = std::max(onsetAfter(after), static_cast<double>(g));
+        REQUIRE(static_cast<double>(next->onsetSample) + next->onsetFrac == expected);
+        moved += onsetAfter(before) != expected ? 1 : 0;
+    }
+    REQUIRE(moved == 3);
 
     struct Split
     {
         uint32_t maxBlock;
-        uint32_t blockSize;
+        std::vector<uint32_t> blockSizes;
     };
-    for (const Split split : {Split{kMaxBlock, 1}, Split{kMaxBlock, 7}, Split{kMaxBlock, 64},
-                              Split{kMaxBlock, 511}, Split{64, 4096}})
+    const auto random = randomSplit();
+    REQUIRE(random.size() > 2);
+    for (const Split &split :
+         {Split{kMaxBlock, {1}}, Split{kMaxBlock, {7}}, Split{kMaxBlock, {64}},
+          Split{kMaxBlock, {511}}, Split{64, {4096}}, Split{kMaxBlock, random}})
     {
-        INFO("maxBlockSize = " << split.maxBlock << ", block size = " << split.blockSize);
-        RateRender r;
-        renderRateChanges(source, split.maxBlock, split.blockSize, r);
+        INFO("maxBlockSize = " << split.maxBlock << ", first block size = "
+                               << split.blockSizes.front() << " of " << split.blockSizes.size());
+        DensityRender r;
+        renderDensityChanges(source, split.maxBlock, split.blockSizes, r);
         REQUIRE_FALSE(r.log.overflowed);
         REQUIRE(r.log.grains == ref.log.grains);
+        REQUIRE(sameBits(ref.audio.left, r.audio.left));
+        REQUIRE(sameBits(ref.audio.right, r.audio.right));
+    }
+}
+
+namespace
+{
+// Live mode (spec §6.3): 3 s of stereo noise through the 16 s ring, with Freeze on at 1 s and off
+// at 2 s. The freeze changes are made between process() calls at their samples (both on the
+// 32-sample grid, where the Processor applies them), so every block split sees them at the same
+// absolute sample.
+constexpr int64_t kLiveFrames = 3 * 48000;
+constexpr int64_t kFreezeOn = 48000;
+constexpr int64_t kFreezeOff = 96000;
+
+struct LiveInput
+{
+    std::vector<float> left;
+    std::vector<float> right;
+};
+
+LiveInput liveNoise()
+{
+    LiveInput in{std::vector<float>(static_cast<std::size_t>(kLiveFrames)),
+                 std::vector<float>(static_cast<std::size_t>(kLiveFrames))};
+    for (int64_t i = 0; i < kLiveFrames; ++i)
+    {
+        using gg::rng::Field;
+        const auto k = static_cast<uint64_t>(i);
+        const auto at = static_cast<std::size_t>(i);
+        in.left[at] =
+            0.5f *
+            static_cast<float>(gg::rng::bipolar(gg::rng::hash({21, 0, 0, Field::SignalNoise, k})));
+        in.right[at] =
+            0.5f *
+            static_cast<float>(gg::rng::bipolar(gg::rng::hash({21, 0, 1, Field::SignalNoise, k})));
+    }
+    return in;
+}
+
+struct LiveRender
+{
+    Render audio;
+    GrainLog log;
+    int64_t writeHead{0};
+};
+
+void renderLive(const LiveInput &input, uint32_t maxBlock, const std::vector<uint32_t> &blockSizes,
+                LiveRender &r)
+{
+    gg::EngineConfig c{kSampleRate, maxBlock, 4096, 42};
+    c.liveSeconds = 16.0;
+    gg::Engine engine(c);
+    engine.setSourceMode(gg::SourceMode::Live);
+    // kParams with Position and Spray in seconds: 0.3 s behind the head, sprayed over 0.2 s.
+    gg::CloudParams p = kParams;
+    p.position = 0.3;
+    p.spray = 0.2;
+    engine.setCloudParams(p);
+    engine.setEventSink(&GrainLog::record, &r.log);
+    constexpr float kUnwritten = std::numeric_limits<float>::quiet_NaN();
+    r.audio.left.assign(static_cast<std::size_t>(kLiveFrames), kUnwritten);
+    r.audio.right.assign(static_cast<std::size_t>(kLiveFrames), kUnwritten);
+    int64_t done = 0;
+    std::size_t next = 0;
+    for (const int64_t end : {kFreezeOn, kFreezeOff, kLiveFrames})
+    {
+        while (done < end)
+        {
+            const uint32_t want = blockSizes[next++ % blockSizes.size()];
+            const auto n = static_cast<uint32_t>(std::min<int64_t>(want, end - done));
+            const float *in[2] = {input.left.data() + done, input.right.data() + done};
+            float *out[2] = {r.audio.left.data() + done, r.audio.right.data() + done};
+            engine.process(in, 2, out, 2, n);
+            done += n;
+        }
+        engine.setFreeze(end == kFreezeOn);
+    }
+    r.writeHead = engine.liveWriteHead();
+}
+} // namespace
+
+TEST_CASE("live mode is block-size invariant", "[determinism]")
+{
+    const auto input = liveNoise();
+    LiveRender ref;
+    renderLive(input, kMaxBlock, {kMaxBlock}, ref);
+    REQUIRE(allFinite(ref.audio.left));
+    REQUIRE(allFinite(ref.audio.right));
+    REQUIRE(peak(ref.audio.left) > 0.05f);
+    REQUIRE_FALSE(sameBits(ref.audio.left, ref.audio.right));
+    REQUIRE_FALSE(ref.log.overflowed);
+    // Guard against a vacuous pass: the head stopped 20 ms (960 samples) into the freeze and
+    // resumed after it, grains spawned before, during and after it, and the frozen second sounds.
+    REQUIRE(ref.writeHead == kLiveFrames - (kFreezeOff - kFreezeOn) + 960);
+    for (const auto &[from, to] :
+         {std::pair{int64_t{0}, kFreezeOn}, std::pair{kFreezeOn, kFreezeOff},
+          std::pair{kFreezeOff, kLiveFrames}})
+    {
+        INFO("grains in [" << from << ", " << to << ")");
+        REQUIRE(std::count_if(ref.log.grains.begin(), ref.log.grains.end(),
+                              [&](const gg::GrainSpec &g) {
+                                  return g.onsetSample >= from && g.onsetSample < to;
+                              }) > 20);
+    }
+    REQUIRE(peak(std::vector<float>(ref.audio.left.begin() + kFreezeOn + 24000,
+                                    ref.audio.left.begin() + kFreezeOff)) > 0.05f);
+
+    struct Split
+    {
+        uint32_t maxBlock;
+        std::vector<uint32_t> blockSizes;
+    };
+    const auto random = randomSplit();
+    for (const Split &split : {Split{kMaxBlock, {1}}, Split{kMaxBlock, {7}}, Split{kMaxBlock, {64}},
+                               Split{kMaxBlock, {511}}, Split{kMaxBlock, {4096}}, Split{64, {4096}},
+                               Split{kMaxBlock, random}})
+    {
+        INFO("maxBlockSize = " << split.maxBlock << ", first block size = "
+                               << split.blockSizes.front() << " of " << split.blockSizes.size());
+        LiveRender r;
+        renderLive(input, split.maxBlock, split.blockSizes, r);
+        REQUIRE_FALSE(r.log.overflowed);
+        REQUIRE(r.log.grains == ref.log.grains);
+        REQUIRE(r.writeHead == ref.writeHead);
         REQUIRE(sameBits(ref.audio.left, r.audio.left));
         REQUIRE(sameBits(ref.audio.right, r.audio.right));
     }

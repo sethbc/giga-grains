@@ -21,6 +21,16 @@ inline constexpr clap::helpers::MisbehaviourHandler misLevel =
 // the audio thread. BUILD_IS_DEBUG / BUILD_IS_RELEASE come from gg::compiler-options. Every
 // file that includes this header must see one of them, so plugHelper_t is the same type
 // everywhere. The template is instantiated once, in HelpersConfig.cpp.
+//
+// Minimal, not None, in release-type builds (decided in M1, carry-over [236]). At Minimal,
+// clap-helpers still reports real host misbehaviour on the audio thread (process() while
+// inactive or not processing, a call on the wrong thread) through the host's log, or stderr
+// when the host has none; the wrong-thread report also builds a std::ostringstream. So it can
+// allocate and do I/O there, but only once the host has already broken the CLAP contract, and
+// the report is how that gets diagnosed, so it stays. What a well-behaved host drives is
+// covered: the rtsan preset is RelWithDebInfo, so it checks at Minimal, and it builds the plugin
+// core and runs the [plugin][rt] tests (process and params.flush, with notes) under
+// RealtimeSanitizer and the allocation tripwire, through the clap_plugin vtables.
 #if defined(BUILD_IS_DEBUG)
 inline constexpr clap::helpers::CheckingLevel checkLevel = clap::helpers::CheckingLevel::Maximal;
 #elif defined(BUILD_IS_RELEASE)

@@ -4,8 +4,9 @@
 
 // gg-render: renders a render spec (RenderSpec.h) offline and deterministically, writes the
 // audio, its metrics, its grain-event log and a spectrogram, and compares the metrics and the
-// event log with goldens. A render is durationSeconds of stream activity plus a release tail
-// until all grains finish (render() in Render.h).
+// event log with goldens. A sample-mode render is durationSeconds of stream activity plus a
+// release tail until all grains finish; an FX render runs Giga Grains FX's Processor over an
+// input for exactly durationSeconds (render() in Render.h).
 //
 //   gg-render <spec.json> [-o out.wav] [--metrics out.json] [--events out.jsonl]
 //             [--spectrogram out.png] [--compare golden.metrics.json]
@@ -149,9 +150,11 @@ bool compareEvents(const std::vector<std::string> &golden, const std::vector<std
 int main(int argc, char **argv)
 {
     CLI::App app{"Renders a Giga Grains render spec offline and deterministically, and compares "
-                 "the result with goldens. It renders durationSeconds of stream activity plus a "
-                 "release tail until all grains finish.\nExit status: 0 = pass, 1 = a comparison "
-                 "failed, 2 = bad input or an output that couldn't be written.",
+                 "the result with goldens. A sample-mode spec renders durationSeconds of stream "
+                 "activity plus a release tail until all grains finish; an FX spec (\"mode\": "
+                 "\"fx\") runs Giga Grains FX's processing over an input for exactly "
+                 "durationSeconds.\nExit status: 0 = pass, 1 = a comparison failed, 2 = bad input "
+                 "or an output that couldn't be written.",
                  "gg-render"};
     std::string specPath;
     std::string wavPath;

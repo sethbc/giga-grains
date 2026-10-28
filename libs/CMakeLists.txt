@@ -60,13 +60,59 @@ add_library(CLI11 INTERFACE)
 target_include_directories(CLI11 SYSTEM INTERFACE CLI11/include)
 add_library(CLI11::CLI11 ALIAS CLI11)
 
-# The plugin shells: CLAP, the C++ helpers, and clap-wrapper for VST3, AUv2 and standalone.
-# clap-wrapper downloads the VST3 SDK, Apple's AudioUnitSDK and RtAudio/RtMidi at configure
-# time (CPM); engine-only builds (GG_BUILD_PLUGINS=OFF) fetch none of it.
+# CLAP itself: header-only. Added in every preset, plugins or not, because gg-core's patch
+# (sst-plugininfra's patchbase, below) needs the clap target (ruling M1-c).
+add_subdirectory(clap/clap EXCLUDE_FROM_ALL)
+
+# sst-plugininfra (MIT): gg-core's patch, its PatchBase and the tinyxml (zlib) it bundles. Only
+# the patchbase interface target and tinyxml (with the filesystem shim tinyxml links) are used.
+# - Never compile anything from its libs/asiosdk: ASIO stays off (ruling F4, INTENT §22 and
+#   §23 #30). This copy is ASIO SDK 2.3.4, whose LICENSE.txt offers Steinberg's ASIO License or
+#   GPLv3; bringing ASIO back is a separate decision. No sst-plugininfra target uses it: asiosdk
+#   has no CMake of its own and nothing adds it.
+# - miniz is off: we don't use it.
+# - strnatcmp (zlib) is on but never built. We don't use it, but at this pin the library's own
+#   sst-plugininfra target links sst-plugininfra::strnatcmp unconditionally, so turning it off
+#   fails the configure.
+# - The library's other targets (sst-plugininfra itself, version_information) are
+#   EXCLUDE_FROM_ALL, and so is the whole directory, so only what gg-core links is built: tinyxml.
+# FORCE, so a cache from another configuration can't turn any of these back.
+set(SST_PLUGININFRA_PROVIDE_PATCHBASE ON CACHE BOOL "gg-core's patch is a PatchBase" FORCE)
+set(SST_PLUGININFRA_PROVIDE_TINYXML ON CACHE BOOL "PatchBase's state is tinyxml" FORCE)
+set(SST_PLUGININFRA_PROVIDE_MINIZ OFF CACHE BOOL "Giga Grains doesn't use miniz" FORCE)
+set(SST_PLUGININFRA_PROVIDE_STRNATCMP ON CACHE BOOL "Declared, never built: sst-plugininfra's own target links it" FORCE)
+set(SST_PLUGININFRA_BUILD_TESTS OFF CACHE BOOL "Don't build sst-plugininfra's tests" FORCE)
+add_subdirectory(sst/sst-plugininfra EXCLUDE_FROM_ALL)
+# Every translation unit that includes tinyxml.h compiles with char8_t off: sst-plugininfra's
+# filesystem shim, which tinyxml links PUBLIC, puts -fno-char8_t (MSVC: /Zc:char8_t-) on its
+# consumers, and the import.h that tinyxml.h includes needs it on Windows (path.u8string() into a
+# std::string). The flag stays where upstream puts it. gg-core links patchbase PRIVATE and keeps
+# PatchBase out of its public headers, so only gg-core's own sources get it (ruling M1-l): the
+# rest of our code, nlohmann_json's users included, keeps C++20's char8_t.
+
+# The plugins come in two layers (plugin/CMakeLists.txt):
+# - the plugin core, which needs only header-only CLAP libraries from these submodules, so
+#   building it downloads nothing (GG_BUILD_PLUGINS);
+# - the editor and the formats: JUCE through sst-clap-helpers' clap_juce_shim, and clap-wrapper
+#   for VST3, AUv2 and standalone (GG_BUILD_PLUGINS and GG_BUILD_EDITOR). clap-wrapper downloads
+#   the VST3 SDK, Apple's AudioUnitSDK and RtAudio/RtMidi at configure time (CPM).
+
+# What the plugin core builds on: clap-helpers (header-only) and clap-wrapper's extension
+# headers (clapwrapper/auv2.h: the AUv2 identity factories). The headers are taken directly, not
+# from clap-wrapper's own clap-wrapper-extensions target, because adding clap-wrapper's CMake
+# project starts its downloads.
 if (GG_BUILD_PLUGINS)
-    add_subdirectory(clap/clap EXCLUDE_FROM_ALL)
     add_subdirectory(clap/clap-helpers EXCLUDE_FROM_ALL)
 
+    add_library(gg-clap-wrapper-extensions INTERFACE)
+    target_include_directories(gg-clap-wrapper-extensions INTERFACE
+            ${CMAKE_CURRENT_SOURCE_DIR}/clap/clap-wrapper/include)
+    target_link_libraries(gg-clap-wrapper-extensions INTERFACE clap)
+    add_library(gg::clap-wrapper-extensions ALIAS gg-clap-wrapper-extensions)
+endif ()
+
+# The editor and the formats.
+if (GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
     set(CLAP_WRAPPER_DOWNLOAD_DEPENDENCIES TRUE CACHE BOOL "Download the VST3, AU and RtAudio SDKs")
     set(CLAP_WRAPPER_DONT_ADD_TARGETS TRUE CACHE BOOL "We make our own targets")
     set(CLAP_WRAPPER_BUILD_AUV2 TRUE CACHE BOOL "Build the AUv2 wrapper")
@@ -90,14 +136,38 @@ if (GG_BUILD_PLUGINS)
     add_subdirectory(sst/sst-clap-helpers)
     add_clap_juce_shim(JUCE_PATH ${GG_JUCE_PATH})
 
+    # Every JUCE_* configuration definition is set here.
+    #
+    # Those that change how JUCE itself compiles go on the interface of the JUCE module they
+    # configure. That way they reach every TU that compiles or includes the module, with one
+    # value: the module sources compiled into clap_juce_shim (or its requirements library in
+    # unity builds), and gg-ui and the plugin editor through gg-juce-headers below.
+    # - JUCE_USE_WEBP=0: we never load WebP images. JUCE 9.0.4's libwebp SSE4.1/AVX2 translation
+    #   units (juce_graphics_libwebp_dsp_*_{sse41,avx2}.c) don't compile under ClangCL: JUCE
+    #   wraps them in `#pragma clang attribute push(target("sse4.1"))`, and libwebp's MSVC-mode
+    #   <intrin.h> include then clashes with clang's always_inline intrinsics. With
+    #   JUCE_USE_WEBP=0 those TUs compile to nothing. Ruling T11-g.
+    # - JUCE_DISABLE_JUCE_VERSION_PRINTING=1: in Debug builds juce_core otherwise prints
+    #   "JUCE v9.0.4" from a static initializer when any program that links it starts, which
+    #   puts it at the top of every test's output.
+    target_compile_definitions(juce_graphics INTERFACE JUCE_USE_WEBP=0)
+    target_compile_definitions(juce_core INTERFACE JUCE_DISABLE_JUCE_VERSION_PRINTING=1)
+
     # JUCE's modules are INTERFACE libraries that compile their sources into every target that
     # links them. Only clap_juce_shim links them, so JUCE is compiled once, there. Our editor
     # code gets the same include directories and definitions through gg-juce-headers, which
-    # carries no sources. SYSTEM keeps JUCE's headers out of our -Werror.
+    # carries no sources. SYSTEM keeps JUCE's headers out of our -Werror. On top of those, our
+    # editor code is compiled as Shortcircuit XT compiles its own: as a plugin, not an app,
+    # without curl or the web browser component. (clap_juce_shim sets the last two for itself
+    # too.)
     add_library(gg-juce-headers INTERFACE)
     target_include_directories(gg-juce-headers SYSTEM INTERFACE
             $<TARGET_PROPERTY:clap_juce_shim,INCLUDE_DIRECTORIES>)
     target_compile_definitions(gg-juce-headers INTERFACE
-            $<TARGET_PROPERTY:clap_juce_shim,COMPILE_DEFINITIONS>)
+            $<TARGET_PROPERTY:clap_juce_shim,COMPILE_DEFINITIONS>
+            JUCE_STANDALONE_APPLICATION=0
+            JUCE_USE_CURL=0
+            JUCE_WEB_BROWSER=0
+            )
     add_library(gg::juce-headers ALIAS gg-juce-headers)
 endif ()

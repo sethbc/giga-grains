@@ -2,9 +2,10 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright 2026, the Giga Grains authors (see git history)
 #
-# One shared, framework-free grain engine (engine/), the CLAP-first plugin shells for both
-# products (plugin/, clients/clap-first/), their editor (ui/: a framework-free canvas core plus a
-# JUCE editor attached through clap_juce_shim), the tools and the tests. See INTENT.md.
+# One shared, framework-free grain engine (engine/), the JUCE-free layer both plugins share above
+# it (core/: the patch), the CLAP-first plugin shells for both products (plugin/,
+# clients/clap-first/), their editor (ui/: a framework-free canvas core plus a JUCE editor
+# attached through clap_juce_shim), the tools and the tests. See INTENT.md.
 
 cmake_minimum_required(VERSION 3.22)
 
@@ -23,7 +24,11 @@ endif ()
 
 project(GigaGrains VERSION 0.0.1 LANGUAGES C CXX)
 
-option(GG_BUILD_PLUGINS "Build the CLAP/VST3/AUv2/standalone plugins" ON)
+option(GG_BUILD_PLUGINS "Build the plugins: their core, and the formats with GG_BUILD_EDITOR" ON)
+# GG_BUILD_EDITOR=OFF with GG_BUILD_PLUGINS=ON builds the plugins headless: the JUCE-free plugin
+# core and its [plugin] tests, without the editor, JUCE or clap-wrapper's CLAP/VST3/AUv2/standalone
+# targets. Nothing is downloaded then. The sanitizer presets build the plugin audio path this way.
+option(GG_BUILD_EDITOR "Build the JUCE editor and the clap-wrapper formats" ON)
 option(GG_SANITIZE "Build with clang/gcc address and undefined-behaviour sanitizers" OFF)
 option(GG_USE_RTSAN "Build with the LLVM RealtimeSanitizer" OFF)
 # RealtimeSanitizer is in upstream Clang 20 and newer; Apple clang and gcc have none.
@@ -36,7 +41,7 @@ if (GG_USE_RTSAN AND NOT (CMAKE_CXX_COMPILER_ID STREQUAL "Clang"
 endif ()
 option(GG_COPY_PLUGIN_AFTER_BUILD "Copy plugins to the user plugin folders after build" OFF)
 set(GG_JUCE_PATH "${CMAKE_SOURCE_DIR}/libs/JUCE" CACHE PATH "JUCE checkout used for the UI")
-if (APPLE AND GG_BUILD_PLUGINS)
+if (APPLE AND GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
     # clients/clap-first signs every macOS bundle with this identity after building it, and the
     # codesign_* tests verify the signatures. "-" signs ad hoc; a Developer ID signs with a real
     # identity. That alone doesn't make a distributable bundle: distribution also needs the
@@ -59,12 +64,15 @@ add_subdirectory(libs)
 enable_testing()
 
 add_subdirectory(engine)
+add_subdirectory(core)
 add_subdirectory(ui)
 add_subdirectory(tools/audiometrics)
 add_subdirectory(tools/gg-bench)
 add_subdirectory(tools/gg-render)
 if (GG_BUILD_PLUGINS)
     add_subdirectory(plugin)
+endif ()
+if (GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
     add_subdirectory(clients/clap-first)
     include(cmake/products.cmake)
 endif ()
@@ -72,10 +80,13 @@ add_subdirectory(tests)
 
 # Everything this tree builds; CI builds this target.
 add_custom_target(gg-all)
-add_dependencies(gg-all gg-engine gg-ui-core gg-audiometrics gg-bench gg-render gg-tests)
+add_dependencies(gg-all gg-engine gg-core gg-ui-core gg-audiometrics gg-bench gg-render gg-tests)
 if (TARGET gg-rtsan-negative-control)
     add_dependencies(gg-all gg-rtsan-negative-control)
 endif ()
 if (GG_BUILD_PLUGINS)
-    add_dependencies(gg-all gg_clapfirst_all)
+    add_dependencies(gg-all gg-plugin-core)
+endif ()
+if (GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
+    add_dependencies(gg-all gg-plugin-editor gg_clapfirst_all)
 endif ()

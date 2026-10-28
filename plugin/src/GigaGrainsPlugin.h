@@ -5,23 +5,19 @@
 #ifndef GG_PLUGIN_GIGAGRAINSPLUGIN_H
 #define GG_PLUGIN_GIGAGRAINSPLUGIN_H
 
+#include <array>
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
-// Before clap_juce_shim.h: sst-clap-helpers' clap_juce_shim.h uses std::string without <string>.
-#include <string>
-#include <vector>
 
 #include <clap/clap.h>
-#include <sst/clap_juce_shim/clap_juce_shim.h>
 #include <sst/cpputils/rtsan_support.h>
 
 #include "HelpersConfig.h"
-
-namespace gg
-{
-class Engine;
-}
+#include "LatestValue.h"
+#include "gg/core/ParamIds.h"
+#include "gg/core/Processor.h"
 
 namespace gg::plugin
 {
@@ -35,13 +31,22 @@ enum class Product
 /// The CLAP descriptor of each product; static storage, never null.
 const clap_plugin_descriptor *descriptorFor(Product product) noexcept;
 
-/// The CLAP plugin shell around gg::Engine, for both products.
+/// The CLAP adapter around gg::core::Processor, for both products: the JUCE-free plugin core
+/// (spec §5). It maps CLAP's parameters, state and remote controls onto the Processor; the
+/// sound is the Processor's. The FX's input feeds the live ring and the dry side of the Mix; the
+/// instrument has no sample source in this slice, so it outputs silence. Note-ons are counted
+/// but not yet played. This class has no GUI. The editor is added by a subclass, EditorPlugin
+/// (editor/EditorPlugin.h), built only with GG_BUILD_EDITOR; makePlugin() picks the class.
 ///
-/// M0 shell: the engine has no source yet, so the instrument outputs silence and the FX passes
-/// its input through unchanged (dry plus the engine's silent output). Note-ons are counted but
-/// not yet played. The editor (gg::ui) is a JUCE component, attached through sst-clap-helpers'
-/// clap_juce_shim the way Shortcircuit XT attaches its own.
-class GigaGrainsPlugin : public plugHelper_t, public sst::clap_juce_shim::EditorProvider
+/// **Threads** (INTENT §15). The main thread owns the Processor's lifetime (activate,
+/// deactivate), the seed and the state; the audio thread owns the Processor in between, and
+/// with it events_. Parameter values cross over in two ways:
+/// - values_, an atomic per-parameter store of the base values, which the main thread reads
+///   (params.get_value, state save). The audio thread writes it as it hands values to the
+///   Processor; the main thread writes it while inactive, and on a state load.
+/// - loadedState_, which takes a state loaded while active to the audio thread, where it applies
+///   at the start of the next process() or params.flush.
+class GigaGrainsPlugin : public plugHelper_t
 {
   public:
     GigaGrainsPlugin(const clap_host *host, Product product);
@@ -59,24 +64,25 @@ class GigaGrainsPlugin : public plugHelper_t, public sst::clap_juce_shim::Editor
 
     Product product() const noexcept { return product_; }
 
-    /// The engine built by the last activate(); nullptr while the plugin is inactive.
-    const gg::Engine *engine() const noexcept { return engine_.get(); }
+    /// The processor built by the last activate(); nullptr while the plugin is inactive. For
+    /// tests: its state belongs to the audio thread while the plugin is active.
+    const gg::core::Processor *processor() const noexcept { return processor_.get(); }
+    /// The processor's engine; nullptr while the plugin is inactive. As processor().
+    const gg::Engine *engine() const noexcept
+    {
+        return processor_ != nullptr ? &processor_->engine() : nullptr;
+    }
 
-    // ---- The GUI: clap_juce_shim implements CLAP's gui extension around createEditor() ----
-    // Declared after noteOnCount, so the shim, and any editor it still holds, is destroyed
-    // first: the editor reads noteOnCount.
+    /// The most frames the engine renders at once: the host's maxFrameCount, capped at
+    /// kMaxEngineBlock, as of the last activate(). The live ring's memory grows with it (ruling
+    /// M1-o); the output doesn't.
+    uint32_t engineBlockSize() const noexcept { return engineBlockSize_; }
 
-    bool implementsGui() const noexcept override { return clapJuceShim != nullptr; }
-    std::unique_ptr<sst::clap_juce_shim::ClapJuceShim> clapJuceShim;
-    ADD_SHIM_IMPLEMENTATION(clapJuceShim)
-    ADD_SHIM_LINUX_TIMER(clapJuceShim)
-
-    /// The editor, a gg::ui::Editor. The shim calls this on the main thread, with JUCE set up.
-    std::unique_ptr<juce::Component> createEditor() override;
-    /// For the shim on Linux, which runs JUCE's event loop from host timers and file
-    /// descriptors.
-    bool registerOrUnregisterTimer(clap_id &id, int ms, bool reg) override;
-    bool registerOrUnregisterPosixFd(int fd, clap_posix_fd_flags_t flags, bool reg) override;
+    /// The cap on engineBlockSize(). CLAP allows a maxFrameCount up to INT32_MAX.
+    static constexpr uint32_t kMaxEngineBlock = 4096;
+    /// The most parameter events one process() call hands to the Processor in one go (its
+    /// event span). Events beyond it apply at the block's end (applyBetweenBlocks).
+    static constexpr std::size_t kMaxParamEvents = 4096;
 
   protected:
     bool activate(double sampleRate, uint32_t minFrameCount,
@@ -96,47 +102,84 @@ class GigaGrainsPlugin : public plugHelper_t, public sst::clap_juce_shim::Editor
     bool notePortsInfo(uint32_t index, bool isInput,
                        clap_note_port_info *info) const noexcept override;
 
-    // ---- Parameters: none yet, but the extension is there ----
-    // clap-wrapper's VST3 IMidiMapping creates its MIDI-controller parameters only for a plugin
-    // with CLAP's params extension; without one, a wrapped VST3 maps every controller to an
-    // unknown ParamID. Parameter IDs are frozen at the first release, so none are added here.
+    // ---- Parameters (spec §4): gg::core's ten, identical in both products ----
+    // The extension also lets clap-wrapper's VST3 IMidiMapping create its MIDI-controller
+    // parameters, from 0xB00000 up (ruling T8-d).
 
     bool implementsParams() const noexcept override { return true; }
-    uint32_t paramsCount() const noexcept override { return 0; }
-    bool paramsInfo(uint32_t /*paramIndex*/, clap_param_info * /*info*/) const noexcept override
+    uint32_t paramsCount() const noexcept override
     {
-        return false;
+        return static_cast<uint32_t>(gg::core::kParamCount);
     }
-    bool paramsValue(clap_id /*paramId*/, double * /*value*/) noexcept override { return false; }
-    bool paramsValueToText(clap_id /*paramId*/, double /*value*/, char * /*display*/,
-                           uint32_t /*size*/) noexcept override
-    {
-        return false;
-    }
-    bool paramsTextToValue(clap_id /*paramId*/, const char * /*display*/,
-                           double * /*value*/) noexcept override
-    {
-        return false;
-    }
+    bool paramsInfo(uint32_t paramIndex, clap_param_info *info) const noexcept override;
+    bool paramsValue(clap_id paramId, double *value) noexcept override;
+    bool paramsValueToText(clap_id paramId, double value, char *display,
+                           uint32_t size) noexcept override;
+    bool paramsTextToValue(clap_id paramId, const char *display, double *value) noexcept override;
     /// On the audio thread while active (and on the main thread while not): real-time safe.
     void paramsFlush(const clap_input_events *in,
                      const clap_output_events *out) noexcept SST_CPPUTILS_NONBLOCKING override;
+
+    // ---- State: the values and the seed, as gg::core's XML (gg/core/PatchState.h) ----
+
+    bool implementsState() const noexcept override { return true; }
+    bool stateSave(const clap_ostream *stream) noexcept override;
+    bool stateLoad(const clap_istream *stream) noexcept override;
+
+    // ---- Remote controls: one page, "Cloud" (spec §4) ----
+
+    bool implementRemoteControls() const noexcept override { return true; }
+    uint32_t remoteControlsPageCount() noexcept override { return 1; }
+    bool remoteControlsPageGet(uint32_t pageIndex,
+                               clap_remote_controls_page *page) noexcept override;
 
   private:
     clap_process_status
     processNonblocking(const clap_process *process) noexcept SST_CPPUTILS_NONBLOCKING;
     void countNoteOns(const clap_input_events *events) noexcept SST_CPPUTILS_NONBLOCKING;
-    void addEngineOutput(float *const *out, uint32_t numChannels,
-                         uint32_t numFrames) noexcept SST_CPPUTILS_NONBLOCKING;
+    /// The parameter event `header` as a ParamEvent: false for any other event, an unknown
+    /// parameter or a NaN value.
+    static bool toParamEvent(const clap_event_header *header,
+                             gg::core::ParamEvent &event) noexcept SST_CPPUTILS_NONBLOCKING;
+    /// Applies the parameter events of `in` from index `first` between two process() calls:
+    /// values at once with setBase, modulation at the next control-grid boundary. Needs the
+    /// processor; audio thread.
+    void applyBetweenBlocks(const clap_input_events *in,
+                            uint32_t first) noexcept SST_CPPUTILS_NONBLOCKING;
+    /// Applies a state loaded since the last call, if there is one. Audio thread.
+    void applyLoadedState() noexcept SST_CPPUTILS_NONBLOCKING;
+    /// Stores a base value in values_, clamped to the parameter's range, as the Processor
+    /// clamps it.
+    void storeValue(gg::core::ParamSlot slot, float value) noexcept SST_CPPUTILS_NONBLOCKING;
 
     const Product product_;
-    std::unique_ptr<gg::Engine> engine_;
 
-    // The FX renders the engine here, then adds it to the dry signal: Engine::process
-    // overwrites its output. Two channels of scratchFrames_ each, allocated by activate().
-    std::vector<float> scratch_;
-    uint32_t scratchFrames_{0};
+    // The parameters' ranges, from their metadata. Constant after construction.
+    gg::core::ParamValues minValues_{};
+    gg::core::ParamValues maxValues_{};
+
+    // The base values the main thread reads (see the class comment).
+    std::array<std::atomic<float>, gg::core::kParamCount> values_{};
+    // A state loaded while active, on its way to the audio thread. Main thread → audio thread.
+    LatestValue<gg::core::ParamValues> loadedState_;
+    // The engine seed: saved and loaded with the state, and given to the processor at
+    // activate(). Main thread.
+    uint64_t seed_{0};
+
+    // Built by activate() and destroyed by deactivate(), on the main thread; between the two,
+    // the audio thread's.
+    std::unique_ptr<gg::core::Processor> processor_;
+    uint32_t engineBlockSize_{0}; // main thread
+    // The parameter events of one process() call. Audio thread.
+    std::array<gg::core::ParamEvent, kMaxParamEvents> events_{};
 };
+
+/// Creates a plugin instance of `product` for the factory: a GigaGrainsPlugin in a headless
+/// build (headless/MakePlugin.cpp), an EditorPlugin when the editor is built
+/// (editor/MakePlugin.cpp). Exactly one of the two is linked. clap-helpers owns the instance:
+/// clap_plugin.destroy deletes it. Throws whatever the plugin's constructor throws.
+/// Editor builds: gg-plugin-core leaves this unresolved; link the editor objects (IMPL_TARGET).
+const clap_plugin *makePlugin(const clap_host *host, Product product);
 } // namespace gg::plugin
 
 #endif // GG_PLUGIN_GIGAGRAINSPLUGIN_H
