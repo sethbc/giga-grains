@@ -82,15 +82,29 @@ std::unique_ptr<juce::Component> EditorPlugin::createEditor()
     // loader is GigaGrainsPlugin's, so it outlives the editor, which the shim holds.
     if (SampleLoader *loader = sampleLoader(); loader != nullptr)
     {
+        // Nothing may throw into JUCE's callbacks. A request that can't be made (no memory)
+        // leaves the status as the loader set it.
         context.showSampleLoader = true;
         context.loadSample = [loader](const std::string &path) {
-            loader->requestLoad(pathOf(path));
+            try
+            {
+                loader->requestLoad(pathOf(path));
+            }
+            catch (...)
+            {
+            }
         };
         context.relinkSample = [loader](const std::string &path) {
-            loader->requestRelink(pathOf(path));
+            try
+            {
+                loader->requestRelink(pathOf(path));
+            }
+            catch (...)
+            {
+            }
         };
         // The settings file couldn't be written (false), or an allocation failed: the folder
-        // stays as it was. Nothing may throw into JUCE's callback.
+        // stays as it was.
         context.setSampleFolder = [loader](const std::string &path) {
             try
             {
@@ -100,7 +114,14 @@ std::unique_ptr<juce::Component> EditorPlugin::createEditor()
             {
             }
         };
-        context.sampleStatus = [loader] { return viewOf(loader->status()); };
+        // Polled by the editor's 30 Hz timer, on the main thread: it first applies what the
+        // loader's worker finished, as on_main_thread does, so a load shows (and plays) even
+        // where the host doesn't deliver on_main_thread, as a VST3 host may not while the plugin
+        // is inactive.
+        context.sampleStatus = [this, loader] {
+            onMainThread();
+            return viewOf(loader->status());
+        };
     }
     return gg::ui::makeEditor(context);
 }

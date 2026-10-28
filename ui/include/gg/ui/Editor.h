@@ -55,7 +55,9 @@ struct EditorContext
     /// editor.
     bool showSampleLoader{false};
     std::function<void(const std::string &utf8Path)> loadSample, relinkSample, setSampleFolder;
-    std::function<SampleStatusView()> sampleStatus; ///< polled at 30 Hz with the note counter
+    /// Polled at 30 Hz with the note counter, on the main thread; the plugin may do its
+    /// main-thread work in it (applying a finished load).
+    std::function<SampleStatusView()> sampleStatus;
 };
 
 /// The editor's initial size, in logical pixels. It lays out at any size the host gives it.

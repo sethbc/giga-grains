@@ -274,6 +274,38 @@ TEST_CASE("the instrument's gui has a sample loader strip that loads a dropped f
     }
 }
 
+TEST_CASE("the editor's timer applies a finished load without on_main_thread", "[plugin]")
+{
+    // A VST3 host may not deliver on_main_thread while the plugin is inactive: the editor's
+    // 30 Hz timer applies the loader's finished result itself, on the main thread.
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    const auto dir = gg::test::sampleDir("gui-timer-apply");
+    gg::test::useSettingsFile(dir / "settings.xml");
+    const auto file = gg::test::writeSineWav(dir / "timer.wav");
+    gg::test::PluginUnderTest instrument("org.sethbc.giga-grains");
+    REQUIRE(instrument.valid());
+    auto *plugin = dynamic_cast<gg::plugin::EditorPlugin *>(&instrument.impl());
+    REQUIRE(plugin != nullptr);
+    auto *loader = plugin->sampleLoader();
+    REQUIRE(loader != nullptr);
+    const std::unique_ptr<juce::Component> editor = plugin->createEditor();
+    REQUIRE(editor != nullptr);
+    auto *timer = dynamic_cast<juce::Timer *>(editor.get());
+    REQUIRE(timer != nullptr);
+    auto *target = dynamic_cast<juce::FileDragAndDropTarget *>(editor.get());
+    REQUIRE(target != nullptr);
+    target->filesDropped({utf8String(file)}, 10, 10);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+    while (loader->status().state == gg::plugin::SampleState::Loading &&
+           std::chrono::steady_clock::now() < deadline)
+    {
+        timer->timerCallback(); // never instrument.onMainThread()
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    CHECK(loader->status().state == gg::plugin::SampleState::Loaded);
+    CHECK(labelText(*editor, "sampleStatus").startsWith("loaded"));
+}
+
 TEST_CASE("the fx's gui has no sample loader strip", "[plugin]")
 {
     const juce::ScopedJuceInitialiser_GUI juceGui;

@@ -181,8 +181,9 @@ class StressCanvas final : public juce::Component
 /// The strip (spec §6.5; sub-project 5 replaces it): "Load…", the file name and status,
 /// "Relink…" while the sample is missing or changed, and "Sample folder…". Files dropped
 /// anywhere on the editor load too (the first one only). The editor is a drop target in the FX
-/// as well, but takes no files there.
-class Editor final : public juce::Component, public juce::FileDragAndDropTarget, private juce::Timer
+/// as well, but takes no files there. Its timer is a public base so tests can drive it, as they
+/// drive drops.
+class Editor final : public juce::Component, public juce::FileDragAndDropTarget, public juce::Timer
 {
   public:
     explicit Editor(const EditorContext &context)

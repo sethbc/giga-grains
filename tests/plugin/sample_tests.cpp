@@ -47,7 +47,8 @@ constexpr const char *kFxId = "org.sethbc.giga-grains-fx";
 namespace fs = std::filesystem;
 
 // A host that offers clap.state and counts state.mark_dirty, request_callback and request_restart
-// calls. request_callback may come from the loader's worker thread.
+// calls. request_callback may come from the loader's worker thread, or from the thread that
+// built the host, which the tests use as the audio thread too: those are counted apart.
 class LoaderHost
 {
   public:
@@ -58,6 +59,9 @@ class LoaderHost
     const clap_host *clap() const noexcept { return &host_; }
     uint32_t dirtyMarks() const noexcept { return dirtyMarks_; }
     uint32_t callbacks() const noexcept { return callbacks_.load(); }
+    /// The request_callback calls made on the thread that built the host (process() in these
+    /// tests), not by the loader's worker.
+    uint32_t callbacksFromTestThread() const noexcept { return testThreadCallbacks_.load(); }
 
   private:
     static LoaderHost &self(const clap_host *host)
@@ -74,6 +78,8 @@ class LoaderHost
 
     uint32_t dirtyMarks_{0};
     std::atomic<uint32_t> callbacks_{0};
+    std::atomic<uint32_t> testThreadCallbacks_{0};
+    const std::thread::id testThread_{std::this_thread::get_id()};
     clap_host host_{
         CLAP_VERSION_INIT,
         nullptr,
@@ -84,7 +90,14 @@ class LoaderHost
         &LoaderHost::getExtension,
         [](const clap_host *) {}, // request_restart
         [](const clap_host *) {}, // request_process
-        [](const clap_host *host) { ++self(host).callbacks_; },
+        [](const clap_host *host) {
+            auto &me = self(host);
+            ++me.callbacks_;
+            if (std::this_thread::get_id() == me.testThread_)
+            {
+                ++me.testThreadCallbacks_;
+            }
+        },
     };
 };
 
@@ -694,10 +707,11 @@ TEST_CASE("the activation's source is freed once a load replaces it", "[plugin]"
     loader.requestLoad(second);
     REQUIRE(settle(instrument).state == SampleState::Loaded);
     REQUIRE(sources.count() == 2);
-    const uint32_t callbacksBefore = host.callbacks();
+    const uint32_t callbacksBefore = host.callbacksFromTestThread();
     renderBlocks(instrument, 40); // about 0.43 s: the second adopted, the first drains, retires
-    CHECK(host.callbacks() > callbacksBefore); // the audio thread asked for the collect
-    CHECK(sources.aliveAt(0));                 // handed back, not yet freed
+    // The audio thread (process(), on this thread) asked for the collect, not the worker.
+    CHECK(host.callbacksFromTestThread() > callbacksBefore);
+    CHECK(sources.aliveAt(0)); // handed back, not yet freed
     instrument.onMainThread();
     CHECK_FALSE(sources.aliveAt(0));
     CHECK(sources.aliveAt(1));
@@ -839,7 +853,9 @@ TEST_CASE("a failed load keeps the sample and the entry it had", "[plugin]")
     loader.requestLoad(bad);
     const SampleStatus status = settle(instrument);
     CHECK(status.state == SampleState::Error);
-    CHECK_FALSE(status.message.empty());
+    // The name is the sample that still plays; the message names the file that failed.
+    CHECK(status.fileName == good.filename().string());
+    CHECK(status.message.find("not-audio.wav") != std::string::npos);
     CHECK(savedManifest(instrument) == manifest);
     CHECK(host.dirtyMarks() == 0);
 

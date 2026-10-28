@@ -653,6 +653,44 @@ TEST_CASE("a clap note-off by note id releases that note alone", "[plugin]")
     CHECK(call({&offById64.header}) == std::vector<int>{});
 }
 
+TEST_CASE("a note-off by channel and key forgets that note's id", "[plugin]")
+{
+    // Ruling R15's table holds 256 IDs. Notes released by channel and key (a CLAP off without
+    // its ID, or MIDI) must not leave their IDs behind: 256 such notes would otherwise fill the
+    // table, evict a held drone's ID, and turn the drone's own off-by-ID into a release of
+    // everything.
+    gg::test::PluginUnderTest plugin(kInstrumentId);
+    REQUIRE(plugin.valid());
+    REQUIRE(plugin.activate(48000.0, 512));
+    const auto withId = [](uint16_t type, int16_t channel, int16_t key, int32_t noteId) {
+        auto e = gg::test::noteEvent(type, channel, key);
+        e.note_id = noteId;
+        return e;
+    };
+    const auto call = [&](std::initializer_list<const clap_event_header *> notes) {
+        gg::test::InputEvents events;
+        for (const auto *e : notes)
+        {
+            events.add(e);
+        }
+        REQUIRE(plugin.process(64, nullptr, nullptr, events.list()) == CLAP_PROCESS_CONTINUE);
+        return heldKeys(plugin);
+    };
+    const auto drone = withId(CLAP_EVENT_NOTE_ON, 0, 40, 1);
+    const auto other = withId(CLAP_EVENT_NOTE_ON, 0, 50, -1);
+    REQUIRE(call({&drone.header, &other.header}) == std::vector<int>{40, 50});
+    for (int i = 0; i < 300; ++i)
+    {
+        const auto on = withId(CLAP_EVENT_NOTE_ON, 0, 60, 1000 + i);
+        const auto off = withId(CLAP_EVENT_NOTE_OFF, 0, 60, -1); // by channel and key
+        const auto midiOff = gg::test::midiEvent(0x80, 60, 0);
+        REQUIRE(call({&on.header, i % 2 == 0 ? &off.header : &midiOff.header}) ==
+                std::vector<int>{40, 50});
+    }
+    const auto droneOff = withId(CLAP_EVENT_NOTE_OFF, -1, -1, 1);
+    CHECK(call({&droneOff.header}) == std::vector<int>{50});
+}
+
 TEST_CASE("notes render the same at any host block size", "[plugin][determinism]")
 {
     // Note timing is on the control grid (spec §6.1), so the plugin's output with notes doesn't

@@ -162,7 +162,7 @@ bool GigaGrainsPlugin::activate(double sampleRate, uint32_t /*minFrameCount*/,
                                values_[s].load(std::memory_order_relaxed));
         }
         // The sample, at this rate before the first block (D8): a restored one converted here,
-        // or the one loaded before, given at once while the loader converts it again.
+        // and one loaded at another rate converted again here (ruling R18).
         if (loader_ != nullptr)
         {
             loaderActive = true;
@@ -524,6 +524,7 @@ bool GigaGrainsPlugin::toNoteEvent(const clap_event_header *header, NoteEvent &e
                 }
             }
         }
+        forgetNoteIds(channel, key);
         event = NoteEvent{header->time, NoteEventType::Off, channel, key};
         return true;
     }
@@ -537,22 +538,41 @@ bool GigaGrainsPlugin::toNoteEvent(const clap_event_header *header, NoteEvent &e
         {
             // A note-on with velocity 0 is a note-off (MIDI 1.0).
             const auto type = e->data[2] > 0 ? NoteEventType::On : NoteEventType::Off;
+            if (type == NoteEventType::Off)
+            {
+                forgetNoteIds(channel, key);
+            }
             event = NoteEvent{header->time, type, channel, key};
             return true;
         }
         if (status == 0x80)
         {
+            forgetNoteIds(channel, key);
             event = NoteEvent{header->time, NoteEventType::Off, channel, key};
             return true;
         }
         if (status == 0xB0 && e->data[1] == 123)
         {
             // CC 123, all notes off: it releases the notes held on its channel (ruling R14).
+            forgetNoteIds(channel, -1);
             event = NoteEvent{header->time, NoteEventType::AllOff, channel, -1};
             return true;
         }
     }
     return false;
+}
+
+void GigaGrainsPlugin::forgetNoteIds(int16_t channel, int16_t key) noexcept
+{
+    // The notes an off releases have ended, IDs and all: an ID left behind would take a slot,
+    // and once the table filled, evict a held note's ID. −1 matches any channel or key.
+    for (NoteIdSlot &s : noteIds_)
+    {
+        if (s.id >= 0 && (channel == -1 || s.channel == channel) && (key == -1 || s.key == key))
+        {
+            s = NoteIdSlot{};
+        }
+    }
 }
 
 void GigaGrainsPlugin::applyLoadedState() noexcept

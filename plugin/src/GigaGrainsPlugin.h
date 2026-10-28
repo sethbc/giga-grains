@@ -193,10 +193,13 @@ class GigaGrainsPlugin : public plugHelper_t
     /// CLAP note IDs (ruling R15): a note-on with an ID ≥ 0 and an in-range channel and key is
     /// remembered in noteIds_. A note-off or choke with an ID ≥ 0 forgets it, and if its channel
     /// and key are both −1 releases the ID's (channel, key) alone; an unknown ID keeps the
-    /// wildcards, which release everything. So call it once per event, in the host's order.
+    /// wildcards, which release everything. Every off (CLAP or MIDI, CC 123 included) also
+    /// forgets the IDs of the notes it releases. So call it once per event, in the host's order.
     /// Audio thread.
     bool toNoteEvent(const clap_event_header *header,
                      gg::core::NoteEvent &event) noexcept SST_CPPUTILS_NONBLOCKING;
+    /// Forgets the note IDs remembered for (`channel`, `key`), −1 matching any. Audio thread.
+    void forgetNoteIds(int16_t channel, int16_t key) noexcept SST_CPPUTILS_NONBLOCKING;
     /// Applies the parameter and note events of `in` from index `first` between two process()
     /// calls: values at once with setBase, modulation and notes at the next control-grid
     /// boundary. Needs the processor; audio thread.

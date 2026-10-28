@@ -37,7 +37,10 @@ enum class SampleState
 struct SampleStatus
 {
     SampleState state{SampleState::None};
-    std::string fileName; ///< The file's name (UTF-8): the manifest's, or the one loading.
+    /// The file's name (UTF-8): the manifest's, or the one loading. After a load or relink that
+    /// failed, still the manifest's when there is one (the sample that plays on), and `message`
+    /// names the file that failed.
+    std::string fileName;
     std::string message;  ///< For the user: why it failed, or a note on a loaded sample.
     double seconds{0.0};  ///< Loaded: the file's length.
     uint32_t channels{0}; ///< Loaded: the file's channels, as stored.
@@ -111,11 +114,11 @@ class SampleLoader
     /// is Loading until onMainThread() applies the result: Loaded, with the manifest entry
     /// replaced, the settings' last load folder updated and the state marked dirty; or Error,
     /// with the entry and the source as they were.
-    void requestLoad(std::filesystem::path file);
+    void requestLoad(std::filesystem::path file) noexcept;
     /// As requestLoad. When the file's fingerprint isn't the manifest entry's, it still loads,
     /// as a replacement, and the status message says it is different audio than the saved
     /// sample (spec §6.7).
-    void requestRelink(std::filesystem::path file);
+    void requestRelink(std::filesystem::path file) noexcept;
     /// Sets the per-machine sample folder (spec §6.5, §6.7) and saves the settings file. False if
     /// it can't be written.
     bool setSampleFolder(const std::filesystem::path &folder);
@@ -225,6 +228,12 @@ class SampleLoader
     /// setError with `error` described, for a noexcept function's handler: if even that fails
     /// (memory), the status is Error with a short message that doesn't allocate.
     void setErrorNoThrow(const std::exception_ptr &error, const std::string &fileName) noexcept;
+    /// A load or relink of `failedName` failed: Error, under the manifest entry's name when there
+    /// is one (its sample plays on), else `failedName`.
+    void setRequestError(const std::string &failedName, std::string message);
+    /// setRequestError with `error` described, as setErrorNoThrow.
+    void setRequestErrorNoThrow(const std::exception_ptr &error,
+                                const std::string &failedName) noexcept;
     core::MachineSettings readSettings() const;
 
     const std::filesystem::path settingsFile_;

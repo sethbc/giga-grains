@@ -91,32 +91,34 @@ SampleLoader::SampleLoader(std::filesystem::path settingsFile, Callbacks callbac
 
 SampleLoader::~SampleLoader() { stopWorker(); }
 
-void SampleLoader::requestLoad(std::filesystem::path file)
+void SampleLoader::requestLoad(std::filesystem::path file) noexcept
 {
-    const std::string fileName = utf8(file.filename());
+    std::string fileName;
     try
     {
+        fileName = utf8(file.filename());
         submit({0, JobKind::Load, std::move(file), readSettings(), {}});
         status_ = {SampleState::Loading, fileName, {}, 0.0, 0, 0.0};
     }
     catch (...)
     {
-        setError(fileName, describe(std::current_exception(), fileName));
+        setRequestErrorNoThrow(std::current_exception(), fileName);
     }
 }
 
-void SampleLoader::requestRelink(std::filesystem::path file)
+void SampleLoader::requestRelink(std::filesystem::path file) noexcept
 {
-    const std::string fileName = utf8(file.filename());
+    std::string fileName;
     try
     {
+        fileName = utf8(file.filename());
         std::string expected = entry_.has_value() ? entry_->sha256Hex : std::string();
         submit({0, JobKind::Relink, std::move(file), readSettings(), std::move(expected)});
         status_ = {SampleState::Loading, fileName, {}, 0.0, 0, 0.0};
     }
     catch (...)
     {
-        setError(fileName, describe(std::current_exception(), fileName));
+        setRequestErrorNoThrow(std::current_exception(), fileName);
     }
 }
 
@@ -492,8 +494,9 @@ void SampleLoader::apply(Result &result)
 {
     if (!result.error.empty())
     {
-        // The entry and the source stay as they were.
-        setError(result.fileName, std::move(result.error));
+        // The entry and the source stay as they were, and so does the name shown: the message
+        // names the file that failed.
+        setRequestError(result.fileName, std::move(result.error));
         return;
     }
     entry_ = std::move(result.entry);
@@ -571,6 +574,26 @@ void SampleLoader::setLoadedStatus(std::string message)
 void SampleLoader::setError(std::string fileName, std::string message)
 {
     status_ = {SampleState::Error, std::move(fileName), std::move(message), 0.0, 0, 0.0};
+}
+
+void SampleLoader::setRequestError(const std::string &failedName, std::string message)
+{
+    setError(entry_.has_value() ? nameOf(entry_->absolutePath) : failedName, std::move(message));
+}
+
+void SampleLoader::setRequestErrorNoThrow(const std::exception_ptr &error,
+                                          const std::string &failedName) noexcept
+{
+    try
+    {
+        setRequestError(failedName, describe(error, failedName));
+    }
+    catch (...)
+    {
+        status_.state = SampleState::Error;
+        status_.fileName.clear();
+        status_.message = kCantLoad; // fits the string's own buffer: no allocation
+    }
 }
 
 void SampleLoader::setErrorNoThrow(const std::exception_ptr &error,
