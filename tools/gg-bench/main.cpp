@@ -320,11 +320,11 @@ bool parseCases(std::string_view s, std::vector<std::string> &out)
 void printReport(const gg::bench::Report &report)
 {
     const gg::bench::Options &o = report.options;
-    std::printf("\n%-16s %6s %9s %12s %12s %12s %12s\n", "case", "block", "grains", "median", "min",
+    std::printf("\n%-18s %6s %9s %12s %12s %12s %12s\n", "case", "block", "grains", "median", "min",
                 "IQR", "% core @48k");
     for (const gg::bench::CaseResult &r : report.results)
     {
-        std::printf("%-16s %6u %9.1f %12.4f %12.4f %12.4f %12.3f\n", r.name.c_str(), r.blockSize,
+        std::printf("%-18s %6u %9.1f %12.4f %12.4f %12.4f %12.3f\n", r.name.c_str(), r.blockSize,
                     r.grains, r.median, r.min, r.iqr, r.cpuPctOneCoreAt48k);
     }
     std::printf("\nmedian, min and IQR: ns per stereo grain-sample over %d rounds of >= %g s; "
@@ -336,10 +336,10 @@ void printReport(const gg::bench::Report &report)
     {
         return;
     }
-    std::printf("\n%-16s %6s %12s %12s\n", "ratio", "block", "median", "IQR");
+    std::printf("\n%-18s %6s %12s %12s\n", "ratio", "block", "median", "IQR");
     for (const gg::bench::Ratio &r : report.ratios)
     {
-        std::printf("%-16s %6u %12.4f %12.4f\n", r.name.c_str(), r.blockSize, r.median, r.iqr);
+        std::printf("%-18s %6u %12.4f %12.4f\n", r.name.c_str(), r.blockSize, r.median, r.iqr);
     }
     std::printf("\nratio: the case's ns per grain-sample over reference's, in the same round; "
                 "median and IQR over the rounds\n");
@@ -352,19 +352,19 @@ std::size_t printVerdicts(const std::vector<gg::bench::Verdict> &verdicts, const
     std::printf("\nbaseline: %s (leg %s, commit %s)\n", path.c_str(),
                 baseline["leg"].get<std::string>().c_str(),
                 baseline["commit"].get<std::string>().c_str());
-    std::printf("\n%-16s %6s %12s %12s  %s\n", "case", "block", "ratio", "limit", "verdict");
+    std::printf("\n%-18s %6s %12s %12s  %s\n", "case", "block", "ratio", "limit", "verdict");
     std::size_t regressed = 0;
     for (const gg::bench::Verdict &v : verdicts)
     {
         const bool known = !std::isnan(v.limit);
         if (known)
         {
-            std::printf("%-16s %6u %12.4f %12.4f  %s\n", v.name.c_str(), v.blockSize, v.ratio,
+            std::printf("%-18s %6u %12.4f %12.4f  %s\n", v.name.c_str(), v.blockSize, v.ratio,
                         v.limit, v.regressed ? "regressed" : "pass");
         }
         else
         {
-            std::printf("%-16s %6u %12.4f %12s  %s\n", v.name.c_str(), v.blockSize, v.ratio, "-",
+            std::printf("%-18s %6u %12.4f %12s  %s\n", v.name.c_str(), v.blockSize, v.ratio, "-",
                         "not in the baseline");
         }
         regressed += v.regressed ? 1 : 0;

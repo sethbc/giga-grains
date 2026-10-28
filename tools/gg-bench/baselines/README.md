@@ -6,6 +6,11 @@ to `gg-bench` when that file exists, and reports a verdict for every engine rati
 verdict is report-only (spec ruling 3): a regression is a warning, never a failed job.
 Sub-project 6 makes it blocking, with the published §16 headline.
 
+Each leg's baseline has one ratio per engine case per block size (32, 64 and 256). The engine
+cases are `engine-sample` (X, the headline), `engine-sample-eco` (X at the Eco tier),
+`engine-live` (X read from the live ring, the FX's figure) and `engine-full-pool` (admission when
+the pool is saturated).
+
 The baselines themselves land at the end of sub-project 2 (Task 14), from three CI runs of the
 finished engine. Until then this directory holds only this file, and CI prints the ratios with no
 verdict.

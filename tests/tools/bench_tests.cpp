@@ -155,12 +155,12 @@ TEST_CASE("bench rejects a run longer than an hour", "[bench]")
 
 TEST_CASE("engine cases report their grain counts", "[bench]")
 {
-    const gg::bench::Report report =
-        gg::bench::run({.runSeconds = 0.002,
-                        .rounds = 1,
-                        .grains = 50,
-                        .cases = {"engine-sample", "engine-live", "engine-full-pool"}});
-    REQUIRE(report.results.size() == 9);
+    const gg::bench::Report report = gg::bench::run(
+        {.runSeconds = 0.002,
+         .rounds = 1,
+         .grains = 50,
+         .cases = {"engine-sample", "engine-sample-eco", "engine-live", "engine-full-pool"}});
+    REQUIRE(report.results.size() == 12);
     for (const gg::bench::CaseResult &r : report.results)
     {
         INFO(r.name << " at block " << r.blockSize << ": " << r.grains << " grains");
@@ -168,7 +168,7 @@ TEST_CASE("engine cases report their grain counts", "[bench]")
         REQUIRE(r.nsPerGrainSample.size() == 1);
         CHECK(r.nsPerGrainSample[0] > 0.0);
         CHECK(r.cpuPctOneCoreAt48k > 0.0);
-        if (r.name == "engine-sample")
+        if (r.name == "engine-sample" || r.name == "engine-sample-eco")
         {
             CHECK(r.grains >= 49.0);
             CHECK(r.grains <= 51.0);

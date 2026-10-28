@@ -17,8 +17,9 @@
 // from the same grains; each then keeps its own grains from round to round. Its warm-up renders
 // for a quarter of a run.
 //
-// The engine cases (spec §5) each own a gg::Engine (48 kHz, maxBlockSize 256, seeded with the
-// bench seed) rendering one Cloud stream of Options::grains overlapping grains of 100 ms
+// The engine cases (spec §5): engine-sample (X), engine-sample-eco (X at the Eco tier),
+// engine-live and engine-full-pool. Each owns a gg::Engine (48 kHz, maxBlockSize 256, seeded with
+// the bench seed) rendering one Cloud stream of Options::grains overlapping grains of 100 ms
 // (density grains / 0.1 Hz, periodic) at +7 semitones, stereo 1, over the same noise: in Sample
 // mode the noise is the source; in Live mode it is the input, fed block by block. The timed block
 // is one Engine::process call. A configuration's grain count is the mean of activeGrains() after
@@ -58,6 +59,7 @@
 #include "gg/core/DenormalGuard.h"
 #include "gg/core/Rng.h"
 #include "gg/engine/Engine.h"
+#include "gg/grain/Tier.h"
 #include "gg/source/SampleBuffer.h"
 #include "gg/source/SourceMode.h"
 
@@ -277,8 +279,15 @@ struct EngineCase
 };
 
 /// The engine cases, in report order. Each is engine-sample with its own changes.
-constexpr std::array<EngineCase, 3> kEngineCases{{
+constexpr std::array<EngineCase, 4> kEngineCases{{
     {"engine-sample", engineSample},
+    // X at the Eco tier: every grain reads with linear interpolation (ruling 2).
+    {"engine-sample-eco",
+     [](uint32_t grains) {
+         EngineSetup s = engineSample(grains);
+         s.params.quality = gg::Tier::Eco;
+         return s;
+     }},
     // The FX's figure: the same stream over a 16 s live ring, reading 4 to 12 s behind the head.
     {"engine-live",
      [](uint32_t grains) {

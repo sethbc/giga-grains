@@ -25,7 +25,8 @@
 //   100 ms over 60 s of stereo noise;
 // - `reference`: renderHermiteSimd on that workload, frozen as the CPU gate's yardstick;
 // - the engine cases, each a gg::Engine at 48 kHz rendering one Cloud stream through
-//   Engine::process: engine-sample (X, the headline), engine-live and engine-full-pool.
+//   Engine::process: engine-sample (X, the headline), engine-sample-eco (X at the Eco tier),
+//   engine-live and engine-full-pool.
 // Every engine case's ratio, ns per grain-sample over reference's in the same round, cancels the
 // machine's speed (ruling 3). A baseline file records each ratio per CI leg; compare() checks a
 // report against it, report-only through M1.
