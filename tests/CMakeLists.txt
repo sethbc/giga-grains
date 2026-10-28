@@ -13,6 +13,7 @@ add_executable(gg-tests
         engine/cloud_tests.cpp
         engine/denormal_tests.cpp
         engine/determinism_tests.cpp
+        engine/engine_reference_tests.cpp
         engine/engine_tests.cpp
         engine/fp_contract_fast.cpp
         engine/fp_contract_tests.cpp

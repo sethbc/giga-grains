@@ -417,6 +417,93 @@ TEST_CASE("the ring stores each frame with the freeze write gain", "[live]")
     }
 }
 
+TEST_CASE("the guard slots mirror both channels across the wrap", "[live]")
+{
+    // Slots C .. C + 2 mirror slots 0 .. 2, so a read's taps are contiguous wherever its first tap
+    // falls. The scalar read and the SIMD live kernel take the same taps from those slots, so the
+    // kernels' bit-identity tests can't see a wrong mirror; only the written frames can. A small
+    // ring, N = 64 frames stored in C = 72 slots (blocks of at most 8), is written with frames
+    // whose channels differ until it has wrapped 8 times. After each block, every read whose
+    // first tap is in slot C − 3, C − 2 or C − 1, so whose later taps run into the guard slots,
+    // must give the written frames bit for bit: at whole-number positions the frame itself, and
+    // at fractions the Catmull-Rom (or line) through the frames.
+    constexpr int64_t kN = 64;
+    constexpr int64_t kBlock = 8;
+    constexpr int64_t kC = kN + kBlock;
+    gg::LiveSource ring;
+    ring.prepare(64.0, 1.0, static_cast<uint32_t>(kBlock)); // 64 Hz × 1 s: N = 64
+    REQUIRE(ring.frames() == kN);
+    REQUIRE(ring.view().capacity == kC);
+    REQUIRE(gg::LiveSource::freezeRampSamples(64.0) == 1); // not frozen, so every gain is 1
+
+    // Left is positive and right negative, so no frame's channel equals any channel of another.
+    const auto left = [](int64_t f) { return 1.0f + static_cast<float>(f); };
+    const auto right = [](int64_t f) { return -0.5f - 0.75f * static_cast<float>(f); };
+    const auto same = [](float a, float b) { return std::memcmp(&a, &b, sizeof(float)) == 0; };
+    std::vector<float> inL(static_cast<std::size_t>(kBlock));
+    std::vector<float> inR(static_cast<std::size_t>(kBlock));
+    const float *in[2] = {inL.data(), inR.data()};
+    bool exact = true;
+    int64_t hermiteReads = 0;
+    int64_t linearReads = 0;
+    int64_t intoGuard = 0; // reads whose first tap is in slot C − 1
+    for (int64_t blockStart = 0; blockStart < 8 * kC + kBlock; blockStart += kBlock)
+    {
+        for (int64_t j = 0; j < kBlock; ++j)
+        {
+            inL[static_cast<std::size_t>(j)] = left(blockStart + j);
+            inR[static_cast<std::size_t>(j)] = right(blockStart + j);
+        }
+        ring.write(in, 2, 0, blockStart, static_cast<uint32_t>(kBlock));
+        const int64_t head = ring.head();
+        gg::LiveSource::Cursor hermiteCursor;
+        gg::LiveSource::Cursor linearCursor;
+        for (int64_t f = std::max<int64_t>(0, head - kN); f < head; ++f)
+        {
+            if (f % kC < kC - 3)
+            {
+                continue;
+            }
+            for (const float t : {0.0f, 0.25f, 0.5f, 0.75f})
+            {
+                float l = 0.0f;
+                float r = 0.0f;
+                // Hermite: taps f .. f + 3, at pos = f + 1 + t.
+                if (f + 3 <= head - 1)
+                {
+                    const float wantL =
+                        gg::interp::catmullRom(left(f), left(f + 1), left(f + 2), left(f + 3), t);
+                    const float wantR = gg::interp::catmullRom(right(f), right(f + 1), right(f + 2),
+                                                               right(f + 3), t);
+                    exact = exact &&
+                            (t != 0.0f || (same(wantL, left(f + 1)) && same(wantR, right(f + 1))));
+                    exact = exact &&
+                            ring.read(static_cast<double>(f + 1) + t, head, hermiteCursor, l, r) &&
+                            same(l, wantL) && same(r, wantR);
+                    ++hermiteReads;
+                    intoGuard += f % kC == kC - 1 ? 1 : 0;
+                }
+                // Linear: taps f and f + 1, at pos = f + t.
+                const float wantL = gg::interp::lerp(left(f), left(f + 1), t);
+                const float wantR = gg::interp::lerp(right(f), right(f + 1), t);
+                exact = exact && (t != 0.0f || (same(wantL, left(f)) && same(wantR, right(f))));
+                if (f + 1 <= head - 1)
+                {
+                    exact = exact &&
+                            ring.readLinear(static_cast<double>(f) + t, head, linearCursor, l, r) &&
+                            same(l, wantL) && same(r, wantR);
+                    ++linearReads;
+                }
+            }
+        }
+    }
+    REQUIRE(ring.head() >= 8 * kC);
+    REQUIRE(hermiteReads > 200);
+    REQUIRE(linearReads > 200);
+    REQUIRE(intoGuard > 60);
+    REQUIRE(exact);
+}
+
 TEST_CASE("live grains never read the future", "[live]")
 {
     // Checked analytically from the event sink, with no hook in the engine. A grain at elapsed
