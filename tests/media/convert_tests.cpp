@@ -8,6 +8,11 @@
 #include <cstring>
 #include <memory>
 #include <numbers>
+#include <optional>
+
+#if !defined(_WIN32)
+#include <sys/resource.h>
+#endif
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
@@ -60,6 +65,27 @@ double sineRmsError(const SampleBuffer &out, double hz, double from, double to)
     return std::sqrt(sum / double(end - begin));
 }
 
+/// The process's peak resident memory so far, in bytes; nullopt where it isn't measured
+/// (Windows). Each Catch2 test case runs in a process of its own (CLAUDE.md), so this is the
+/// test's.
+std::optional<uint64_t> peakResidentBytes()
+{
+#if defined(_WIN32)
+    return std::nullopt;
+#else
+    rusage usage{};
+    if (getrusage(RUSAGE_SELF, &usage) != 0)
+    {
+        return std::nullopt;
+    }
+#if defined(__APPLE__)
+    return uint64_t(usage.ru_maxrss); // bytes
+#else
+    return uint64_t(usage.ru_maxrss) * 1024; // kilobytes
+#endif
+#endif
+}
+
 bool identical(const SampleBuffer &a, const SampleBuffer &b, uint32_t ca, uint32_t cb)
 {
     return a.frames() == b.frames() &&
@@ -86,7 +112,7 @@ TEST_CASE("convertRate 44.1 kHz to 48 kHz keeps a 1 kHz sine, aligned at frame 0
     REQUIRE(error < 1e-4);
 }
 
-TEST_CASE("convertRate gives llround(frames × to / from) frames", "[media]")
+TEST_CASE("convertRate gives llround(frames x to / from) frames", "[media]")
 {
     struct Case
     {
@@ -146,10 +172,49 @@ TEST_CASE("convertRate converts each stereo channel as it would alone", "[media]
     }
 }
 
+TEST_CASE("convertRate keeps at least one frame of a buffer that has any", "[media]")
+{
+    // 4 frames at 384 kHz are 0.46 frames at 44.1 kHz: rounded to 0, a file that decoded would
+    // give an empty source. One frame is kept instead.
+    const auto out = convertRate(sine(2, 384000.0, 4, 1000.0, 0.5), 44100.0);
+    REQUIRE(out->channels() == 2);
+    REQUIRE(out->frames() == 1);
+    REQUIRE(out->sampleRate() == 44100.0);
+    REQUIRE(std::isfinite(out->channel(0)[0]));
+    REQUIRE(std::isfinite(out->channel(1)[0]));
+}
+
 TEST_CASE("convertRate of an empty buffer is empty at the new rate", "[media]")
 {
     const auto out = convertRate(std::make_shared<SampleBuffer>(2, 0, 44100.0), 48000.0);
     REQUIRE(out->channels() == 2);
     REQUIRE(out->frames() == 0);
     REQUIRE(out->sampleRate() == 48000.0);
+}
+
+TEST_CASE("convertRate of a 1 Hz file to 192 kHz and 768 kHz keeps its memory bounded",
+          "[media][serial]")
+{
+    // r8brain's buffers grow with its MaxInLen × the rate ratio. At a fixed MaxInLen of 4096 a
+    // 1 Hz file (600 frames: 600 s, the longest allowed) needed 6.7 GB to reach 192 kHz, and at
+    // 768 kHz the lengths overflowed int. The output alone is what it must cost, and a margin.
+    const double to = GENERATE(192000.0, 768000.0);
+    const int64_t frames = 600;
+    auto in = std::make_shared<SampleBuffer>(1, frames, 1.0);
+    std::fill_n(in->channel(0), frames, 0.25f);
+    const auto peakBefore = peakResidentBytes();
+    const auto out = convertRate(in, to);
+    const auto peakAfter = peakResidentBytes();
+    INFO("to " << to << " Hz");
+    REQUIRE(out->frames() == expectedFrames(frames, 1.0, to));
+    REQUIRE(out->sampleRate() == to);
+    // The middle of a constant input converts to the constant.
+    REQUIRE(std::abs(out->channel(0)[out->frames() / 2] - 0.25f) < 1e-3f);
+    if (peakBefore && peakAfter)
+    {
+        const uint64_t outputBytes = uint64_t(out->frames()) * sizeof(float);
+        const uint64_t grew = *peakAfter > *peakBefore ? *peakAfter - *peakBefore : 0;
+        INFO("peak grew by " << grew / 1e6 << " MB for " << outputBytes / 1e6 << " MB of output");
+        REQUIRE(grew < outputBytes + (512ull << 20));
+    }
 }

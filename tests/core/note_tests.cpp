@@ -301,6 +301,30 @@ TEST_CASE("a source given by setSourceNow is freed once an offer replaces it", "
     CHECK(p.sources().held() == 1);
 }
 
+TEST_CASE("an instrument plays a one-frame or an empty source safely", "[core]")
+{
+    // The shortest sources a load can give (convertRate keeps at least one frame of a file that
+    // has any) and an empty buffer: a held note renders finite audio, whatever the grains read.
+    for (const int64_t frames : {int64_t{1}, int64_t{0}})
+    {
+        INFO(frames << " frames");
+        auto buf = std::make_shared<gg::SampleBuffer>(2, frames, kSampleRate);
+        if (frames > 0)
+        {
+            buf->channel(0)[0] = 0.5f;
+            buf->channel(1)[0] = -0.5f;
+        }
+        Processor p({kSampleRate, 512, 1, Mode::Instrument});
+        p.setSourceNow(gg::PreparedSource::make(std::move(buf)));
+        std::vector<float> left(48000), right(48000);
+        float *out[2] = {left.data(), right.data()};
+        const NoteEvent n = on(0, 60);
+        p.process(nullptr, 0, out, 2, 48000, {}, std::span(&n, 1));
+        CHECK(allFinite(left));
+        CHECK(allFinite(right));
+    }
+}
+
 TEST_CASE("a note-on starts the cloud at its boundary", "[core]")
 {
     // Spec §6.2: the first grain spawns at the note's own boundary, 128 for offset 100.

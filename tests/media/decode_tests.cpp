@@ -212,6 +212,16 @@ TEST_CASE("decode refuses a file that ends before its header says, as truncated"
         gg::test::writeFile(file, gg::test::wavBytes(audio, SampleFormat::Int16, 1000 * 4));
         requireError(decodeAudioFile(file), file, "truncated");
     }
+    SECTION("a WAV never finalized, whose data size is a placeholder longer than 600 s")
+    {
+        // A recorder that stopped before rewriting its header: 0x7FFFFFF0 bytes of 44.1 kHz
+        // 16-bit stereo would be 12,173 s, but the file holds 600 frames. It is truncated, not
+        // too long.
+        const auto audio = gg::test::makeTestAudio(2, 44100, 600);
+        const auto file = dir() / "unfinalized.wav";
+        gg::test::writeFile(file, gg::test::wavBytes(audio, SampleFormat::Int16, 0x7FFFFFF0));
+        requireError(decodeAudioFile(file), file, "truncated");
+    }
     SECTION("an AIFF whose COMM chunk claims more frames than the file holds")
     {
         gg::test::Bytes b{gg::test::aiffBytes(gg::test::makeTestAudio(2, 48000, 600),
@@ -276,7 +286,7 @@ TEST_CASE("decode tolerates a data size up to 1 KiB beyond the file (ruling R10)
     }
 }
 
-TEST_CASE("decode never allocates for audio a header claims but the file lacks", "[media]")
+TEST_CASE("decode never allocates for audio a header claims but the file lacks", "[media][serial]")
 {
     // Each file is tiny but claims up to 600 s, within every limit; allocating and zeroing that
     // much (1.8 GB for the 384 kHz stereo ones) would take far longer than the bound below.
@@ -319,6 +329,76 @@ TEST_CASE("decode never allocates for audio a header claims but the file lacks",
         const auto file = dir() / "huge-claim.flac";
         gg::test::writeFile(file, bytes);
         requireQuickError(file, "truncated");
+    }
+}
+
+TEST_CASE("decode fails at once on a chunk size that would seek past the file", "[media][serial]")
+{
+    // dr_wav skips a chunk by seeking forward in steps of at most 2^31 − 1 bytes. A chunk size
+    // that wraps below its header's (an RF64 ds64 chunk under 24 bytes, a W64 chunk under 24) or
+    // is simply huge would take billions of steps if every seek past the file succeeded, as
+    // fseek's do: decoding must refuse such a seek and fail within the bound.
+    const auto requireQuickError = [](const fs::path &file) {
+        const auto start = std::chrono::steady_clock::now();
+        const auto result = decodeAudioFile(file);
+        const std::chrono::duration<double> took = std::chrono::steady_clock::now() - start;
+        requireError(result, file);
+        REQUIRE(took.count() < 0.5);
+    };
+    // The bytes given, then zeros up to `size`.
+    const auto craft = [](const char *name, std::vector<uint8_t> bytes, std::size_t size) {
+        bytes.resize(size, 0);
+        const auto file = dir() / name;
+        gg::test::writeFile(file, bytes);
+        return file;
+    };
+    // A W64 file whose junk chunk declares `junkSize` bytes (its 24-byte header included).
+    const auto w64 = [](uint64_t junkSize) {
+        std::vector<uint8_t> bytes{
+            // riff GUID, size 1000, wave GUID
+            0x72, 0x69, 0x66, 0x66, 0x2E, 0x91, 0xCF, 0x11, 0xA5, 0xD6, 0x28, 0xDB, 0x04, 0xC1,
+            0x00, 0x00, 0xE8, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x77, 0x61, 0x76, 0x65,
+            0xF3, 0xAC, 0xD3, 0x11, 0x8C, 0xD1, 0x00, 0xC0, 0x4F, 0x8E, 0xDB, 0x8A,
+            // fmt GUID, size 40: PCM, mono, 48 kHz, 16-bit
+            0x66, 0x6D, 0x74, 0x20, 0xF3, 0xAC, 0xD3, 0x11, 0x8C, 0xD1, 0x00, 0xC0, 0x4F, 0x8E,
+            0xDB, 0x8A, 0x28, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00,
+            0x80, 0xBB, 0x00, 0x00, 0x00, 0x77, 0x01, 0x00, 0x02, 0x00, 0x10, 0x00,
+            // junk GUID, then its size (below)
+            0x6A, 0x75, 0x6E, 0x6B, 0xF3, 0xAC, 0xD3, 0x11, 0x8C, 0xD1, 0x00, 0xC0, 0x4F, 0x8E,
+            0xDB, 0x8A};
+        for (int i = 0; i < 8; ++i)
+        {
+            bytes.push_back(static_cast<uint8_t>(junkSize >> (8 * i)));
+        }
+        // data GUID, size 124
+        const uint8_t data[] = {0x64, 0x61, 0x74, 0x61, 0xF3, 0xAC, 0xD3, 0x11,
+                                0x8C, 0xD1, 0x00, 0xC0, 0x4F, 0x8E, 0xDB, 0x8A,
+                                0x7C, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+        bytes.insert(bytes.end(), std::begin(data), std::end(data));
+        return bytes;
+    };
+    SECTION("an RF64 file whose ds64 chunk declares 0 bytes")
+    {
+        requireQuickError(
+            craft("rf64-ds64-0.wav",
+                  {// RF64, size −1, WAVE; ds64 of size 0, then what its body would hold
+                   0x52, 0x46, 0x36, 0x34, 0xFF, 0xFF, 0xFF, 0xFF, 0x57, 0x41, 0x56, 0x45, 0x64,
+                   0x73, 0x36, 0x34, 0x00, 0x00, 0x00, 0x00, 0x64, 0x00, 0x00, 0x00, 0x00, 0x00,
+                   0x00, 0x00, 0x64, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x32, 0x00, 0x00,
+                   0x00, 0x00, 0x00, 0x00, 0x00,
+                   // fmt: PCM, mono, 48 kHz, 16-bit; data of size −1
+                   0x66, 0x6D, 0x74, 0x20, 0x10, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x80,
+                   0xBB, 0x00, 0x00, 0x00, 0x77, 0x01, 0x00, 0x02, 0x00, 0x10, 0x00, 0x64, 0x61,
+                   0x74, 0x61, 0xFF, 0xFF, 0xFF, 0xFF},
+                  176));
+    }
+    SECTION("a W64 file whose junk chunk declares 2^63 - 256 bytes")
+    {
+        requireQuickError(craft("w64-hugejunk.wav", w64(0x7FFFFFFFFFFFFF00ull), 228));
+    }
+    SECTION("a W64 file whose junk chunk declares 8 bytes, fewer than its header")
+    {
+        requireQuickError(craft("w64-junk-8.wav", w64(8), 228));
     }
 }
 

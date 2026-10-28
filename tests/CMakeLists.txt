@@ -112,7 +112,11 @@ endif ()
 
 list(APPEND CMAKE_MODULE_PATH ${CMAKE_SOURCE_DIR}/libs/catch2/extras)
 include(Catch)
-catch_discover_tests(gg-tests ADD_TAGS_AS_LABELS)
+# A case tagged [serial] measures time (or memory) and must not run beside the others: it is
+# discovered on its own, with RUN_SERIAL (CLAUDE.md, "Tests run in parallel").
+catch_discover_tests(gg-tests TEST_SPEC "~[serial]" ADD_TAGS_AS_LABELS)
+catch_discover_tests(gg-tests TEST_SPEC "[serial]" ADD_TAGS_AS_LABELS
+        PROPERTIES RUN_SERIAL TRUE)
 
 # gg-bench's command line, label `bench`. The bench tests check the timings' shape, never their
 # values, so they run beside the others.
