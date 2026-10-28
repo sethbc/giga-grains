@@ -303,11 +303,11 @@ void Engine::renderPool(float *const dst[2], int64_t blockStart, int64_t from, i
     {
         if (rows.tier[i] == Tier::Eco)
         {
-            kernels::renderSampleRef<kernels::Linear>(rows, i, source, output, from, to, hann_);
+            kernels::renderSampleSimd<kernels::Linear>(rows, i, source, output, from, to, hann_);
         }
         else
         {
-            kernels::renderSampleRef<kernels::Hermite>(rows, i, source, output, from, to, hann_);
+            kernels::renderSampleSimd<kernels::Hermite>(rows, i, source, output, from, to, hann_);
         }
     }
 }

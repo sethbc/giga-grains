@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright 2026, the Giga Grains authors (see git history)
 
-// The engine's header-inline math and the Cloud scheduler's inline schedule(), compiled with an
-// includer's flags that allow contraction:
+// The engine's header-inline math, the Cloud scheduler's inline schedule() and the SIMD sample
+// kernel, compiled with an includer's flags that allow contraction:
 // tests/CMakeLists.txt builds this file with Clang's default -ffp-contract=on instead of the
 // project's -ffp-contract=off (under GCC, whose guard is empty, it keeps the project flags).
 // fp_contract_tests.cpp checks that each function here matches the same call compiled with the
@@ -19,6 +19,7 @@
 #include "gg/core/MathDet.h"
 #include "gg/core/Window.h"
 #include "gg/grain/CloudScheduler.h"
+#include "gg/grain/GrainKernels.h"
 
 float ggFastLinear(const float *data, int64_t frames, double pos);
 float ggFastHermite(const float *data, int64_t frames, double pos);
@@ -26,6 +27,9 @@ double ggFastExp2(double x);
 double ggFastLog(double x);
 float ggFastHann(double phase01);
 int ggFastCloud(const gg::CloudParams &params, int64_t frames, gg::GrainDraw *out, int capacity);
+void ggFastSampleSimd(bool eco, const gg::GrainRows &rows, uint32_t count,
+                      const gg::kernels::SampleSource &src, const gg::kernels::Output &out,
+                      int64_t from, int64_t to, const gg::HannTable &hann);
 float ggFastCanary(float a, float b, float c);
 
 [[gnu::flatten]] float ggFastLinear(const float *data, int64_t frames, double pos)
@@ -68,6 +72,40 @@ float ggFastCanary(float a, float b, float c);
         });
     }
     return count;
+}
+
+namespace
+{
+/// The readers under names only this file uses. flatten inlines renderSampleSimd itself but not
+/// the templates it calls, so with Hermite or Linear their out-of-line instantiations would be
+/// shared with the rest of the program, and the linker could keep another file's copy for both
+/// calls. These types' instantiations exist only here, built with this file's flags.
+struct FastTuHermite : gg::kernels::Hermite
+{
+};
+struct FastTuLinear : gg::kernels::Linear
+{
+};
+} // namespace
+
+/// Grains [0, count) of rows through the SIMD sample kernel, Linear if eco and Hermite otherwise,
+/// over [from, to).
+[[gnu::flatten]] void ggFastSampleSimd(bool eco, const gg::GrainRows &rows, uint32_t count,
+                                       const gg::kernels::SampleSource &src,
+                                       const gg::kernels::Output &out, int64_t from, int64_t to,
+                                       const gg::HannTable &hann)
+{
+    for (uint32_t i = 0; i < count; ++i)
+    {
+        if (eco)
+        {
+            gg::kernels::renderSampleSimd<FastTuLinear>(rows, i, src, out, from, to, hann);
+        }
+        else
+        {
+            gg::kernels::renderSampleSimd<FastTuHermite>(rows, i, src, out, from, to, hann);
+        }
+    }
 }
 
 /// The positive control: plain a * b + c, unguarded, so this file's flags contract it where the

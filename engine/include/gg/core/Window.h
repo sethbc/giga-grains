@@ -37,6 +37,10 @@ class HannTable
         return table_[i] + (table_[i + 1] - table_[i]) * t;
     }
 
+    /// The kSize + 1 tabulated points, which at() interpolates between: at(phase01) reads points
+    /// i and i + 1 with i and t computed as above. The SIMD kernels gather from them.
+    const float *points() const noexcept { return table_.data(); }
+
   private:
     std::array<float, kSize + 1> table_{};
 };

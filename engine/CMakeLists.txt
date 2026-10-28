@@ -18,5 +18,6 @@ add_library(gg::engine ALIAS gg-engine)
 target_include_directories(gg-engine PUBLIC include)
 # PUBLIC so plugin and UI targets can use GG_VERSION_STRING directly.
 target_compile_definitions(gg-engine PUBLIC GG_VERSION_STRING="${PROJECT_VERSION}")
-# sst-cpputils is PUBLIC: Engine.h uses its SST_CPPUTILS_NONBLOCKING annotation.
-target_link_libraries(gg-engine PUBLIC gg::compiler-options sst-cpputils)
+# sst-cpputils is PUBLIC: Engine.h uses its SST_CPPUTILS_NONBLOCKING annotation. sst-basic-blocks
+# and simde are PUBLIC: GrainKernels.h's SIMD kernels include <sst/basic-blocks/simd/setup.h>.
+target_link_libraries(gg-engine PUBLIC gg::compiler-options sst-cpputils sst-basic-blocks simde)

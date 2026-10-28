@@ -3,8 +3,8 @@
 // Copyright 2026, the Giga Grains authors (see git history)
 
 // The scalar reference renderers (spec §3, ruling 1). Each test writes the spec's table out
-// as its own per-sample loop and requires the reference to produce the same bits; the SIMD
-// kernels of later tasks are held to the reference the same way.
+// as its own per-sample loop and requires the reference to produce the same bits. The SIMD
+// kernels are then held to the reference the same way, with std::memcmp.
 
 #include <algorithm>
 #include <cmath>
@@ -12,8 +12,10 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <utility>
 #include <vector>
 
+#include <catch2/catch_template_test_macros.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <sst/cpputils/rtsan_support.h>
 
@@ -660,5 +662,501 @@ TEST_CASE("eco reference reads linearly", "[kernel]")
             REQUIRE(l == gg::interp::linear(left.data(), head, pos));
             REQUIRE(r == gg::interp::linear(right.data(), head, pos));
         }
+    }
+}
+// ---------------------------------------------------------------------------------------------
+// The SIMD sample kernel, held to the reference bit for bit (std::memcmp).
+
+namespace
+{
+using gg::kernels::SampleSource;
+
+constexpr int64_t kNoiseFrames = 96000; // 2 s at 48 kHz
+
+// A uniform draw in [0, 1) from gg::rng, one stream per quantity.
+double u01(uint64_t seed, uint32_t stream, uint64_t index)
+{
+    return gg::rng::uniform01(gg::rng::hash({seed, 1, stream, gg::rng::Field::SignalNoise, index}));
+}
+
+// Grains spawned in order into a pool large enough to admit all of them, so its rows are
+// latched as the engine's are. The specs must be in non-decreasing onset order.
+struct Pool
+{
+    explicit Pool(const std::vector<gg::GrainSpec> &specs)
+        : pool(static_cast<uint32_t>(specs.size()) + 1)
+    {
+        for (const gg::GrainSpec &g : specs)
+        {
+            REQUIRE(pool.canAdmit(g.onsetSample));
+            REQUIRE(pool.spawn(g));
+        }
+    }
+    const gg::GrainRows &rows() const { return pool.rows(); }
+    uint32_t size() const { return pool.size(); }
+    gg::GrainPool pool;
+};
+
+// The brief's random grains: rates 2^[−2, 2] (or one of `rates`, when given), onsetFrac in
+// [0, 1), durations 16–9,600, pans ±1, onsets spread over [−4,000, 8,000) in order, and start
+// positions over the source and up to 2,000 frames past either end, so many reads cross an end.
+std::vector<gg::GrainSpec> randomGrains(uint64_t seed, uint32_t count, int64_t frames,
+                                        const std::vector<double> &rates = {})
+{
+    std::vector<gg::GrainSpec> specs;
+    for (uint32_t k = 0; k < count; ++k)
+    {
+        const double rate =
+            rates.empty() ? std::exp2(-2.0 + 4.0 * u01(seed, 0, k)) : rates[k % rates.size()];
+        specs.push_back({
+            .index = k,
+            .onsetSample = -4000 + static_cast<int64_t>(k) * 12000 / count,
+            .onsetFrac = u01(seed, 1, k),
+            .startPos = -2000.0 + u01(seed, 2, k) * static_cast<double>(frames + 4000),
+            .rate = rate,
+            .durationSamples = 16.0 + u01(seed, 3, k) * (9600.0 - 16.0),
+            .gain = 0.25f + 0.75f * static_cast<float>(u01(seed, 4, k)),
+            .pan = static_cast<float>(2.0 * u01(seed, 5, k) - 1.0),
+        });
+    }
+    return specs;
+}
+
+// Output buffers for one render call over [from, to), filled with `fill`.
+struct Buffers
+{
+    Buffers(int64_t from, int64_t to, int outputs, float fill = 0.0f)
+        : from(from), outputs(outputs),
+          ch{std::vector<float>(static_cast<std::size_t>(std::max<int64_t>(to - from, 1)), fill),
+             std::vector<float>(static_cast<std::size_t>(std::max<int64_t>(to - from, 1)), fill)}
+    {
+    }
+    gg::kernels::Output output()
+    {
+        return {{ch[0].data(), outputs == 2 ? ch[1].data() : nullptr}, from};
+    }
+    int64_t from;
+    int outputs;
+    std::vector<float> ch[2];
+};
+
+enum class Kernel
+{
+    Ref,
+    Simd
+};
+
+// Every grain of the pool, in spawn order, over [from, to) in one call each.
+template <class R>
+void renderAll(Kernel kernel, const Pool &pool, const SampleSource &src, Buffers &b, int64_t from,
+               int64_t to, const gg::HannTable &hann)
+{
+    const gg::kernels::Output o = b.output();
+    for (uint32_t i = 0; i < pool.size(); ++i)
+    {
+        if (kernel == Kernel::Ref)
+        {
+            gg::kernels::renderSampleRef<R>(pool.rows(), i, src, o, from, to, hann);
+        }
+        else
+        {
+            gg::kernels::renderSampleSimd<R>(pool.rows(), i, src, o, from, to, hann);
+        }
+    }
+}
+
+// Renders the pool over [from, to) with the reference and with the SIMD kernel, each into fresh
+// buffers filled with `fill`, and returns both.
+template <class R>
+std::pair<Buffers, Buffers> renderBoth(const Pool &pool, const SampleSource &src, int outputs,
+                                       int64_t from, int64_t to, const gg::HannTable &hann,
+                                       float fill = 0.0f)
+{
+    Buffers ref(from, to, outputs, fill);
+    Buffers simd(from, to, outputs, fill);
+    renderAll<R>(Kernel::Ref, pool, src, ref, from, to, hann);
+    renderAll<R>(Kernel::Simd, pool, src, simd, from, to, hann);
+    return {std::move(ref), std::move(simd)};
+}
+
+// Equal bits, or both NaN: a NaN's payload may depend on the operand order the compiler picks.
+bool sameOrBothNaN(const std::vector<float> &a, const std::vector<float> &b)
+{
+    if (a.size() != b.size())
+    {
+        return false;
+    }
+    for (std::size_t k = 0; k < a.size(); ++k)
+    {
+        if (std::memcmp(&a[k], &b[k], sizeof(float)) != 0 &&
+            !(std::isnan(a[k]) && std::isnan(b[k])))
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool anyNaN(const std::vector<float> &v)
+{
+    return std::any_of(v.begin(), v.end(), [](float x) { return std::isnan(x); });
+}
+
+// Each reader's taps, floor(pos) − before .. floor(pos) + after, stated here independently of the
+// readers' own kBefore and kAfter, so a wrong reach in the kernel can't hide behind the same
+// constant in the test.
+template <class R> struct Reach;
+template <> struct Reach<Hermite>
+{
+    static constexpr double before = 1.0;
+    static constexpr double after = 2.0;
+};
+template <> struct Reach<Linear>
+{
+    static constexpr double before = 0.0;
+    static constexpr double after = 1.0;
+};
+
+// The exact condition under which the SIMD kernel may render output sample t of grain i: the
+// window's phase is in [0, 1] and every tap of the read is inside [0, frames).
+template <class R> bool simdable(const gg::GrainRows &rows, uint32_t i, int64_t frames, int64_t t)
+{
+    const double e = static_cast<double>(t - rows.onsetSample[i]) - rows.onsetFrac[i];
+    const double phase = e * rows.invDuration[i];
+    const double pos = rows.startPos[i] + rows.rate[i] * e;
+    const double base = std::floor(pos);
+    return phase >= 0.0 && phase <= 1.0 && base - Reach<R>::before >= 0.0 &&
+           base + Reach<R>::after < static_cast<double>(frames);
+}
+
+// Requires the SIMD run of every grain over [from, to) to be exactly the samples simdable()
+// accepts, so the kernel falls back to the bounds-checked reads for exactly the others. It reaches
+// into gg::kernels::detail on purpose (accepted ruling, Task 6): std::memcmp alone can miss an
+// out-of-bounds read, since the memory just past a large buffer is often zero-filled, which reads
+// the same as the reference's zero taps.
+template <class R> void requireExactRuns(const Pool &pool, int64_t frames, int64_t from, int64_t to)
+{
+    const gg::GrainRows &rows = pool.rows();
+    for (uint32_t i = 0; i < pool.size(); ++i)
+    {
+        const int64_t first = std::max(from, rows.onsetSample[i]);
+        const int64_t last = std::min(to, rows.endSample[i]);
+        if (first >= last)
+        {
+            continue;
+        }
+        const gg::kernels::detail::Run run =
+            gg::kernels::detail::sampleSimdRun<R>(rows, i, frames, first, last);
+        INFO("grain " << i << ", [" << first << ", " << last << "), run [" << run.begin << ", "
+                      << run.end << ")");
+        REQUIRE(first <= run.begin);
+        REQUIRE(run.begin <= run.end);
+        REQUIRE(run.end <= last);
+        for (int64_t t = first; t < last; ++t)
+        {
+            const bool inRun = t >= run.begin && t < run.end;
+            if (inRun != simdable<R>(rows, i, frames, t))
+            {
+                INFO("t " << t);
+                REQUIRE(inRun == simdable<R>(rows, i, frames, t));
+            }
+        }
+    }
+}
+
+struct Noise
+{
+    explicit Noise(int64_t frames, uint64_t seed)
+        : frames(frames), left(noise(frames, seed, 0)), right(noise(frames, seed, 1))
+    {
+    }
+    SampleSource stereo() const { return {{left.data(), right.data()}, frames, false}; }
+    SampleSource mono() const { return {{left.data(), left.data()}, frames, true}; }
+    int64_t frames;
+    std::vector<float> left;
+    std::vector<float> right;
+};
+} // namespace
+
+TEMPLATE_TEST_CASE("simd sample kernel matches the reference", "[kernel]", Hermite, Linear)
+{
+    const gg::HannTable hann;
+    const Noise src(kNoiseFrames, 11);
+    const Pool pool(randomGrains(21, 500, kNoiseFrames));
+
+    {
+        INFO("block [0, 4096)");
+        auto [ref, simd] = renderBoth<TestType>(pool, src.stereo(), 2, 0, 4096, hann);
+        REQUIRE(anyNonZero(ref.ch[0]));
+        REQUIRE(anyNonZero(ref.ch[1]));
+        REQUIRE(sameBits(simd.ch[0], ref.ch[0]));
+        REQUIRE(sameBits(simd.ch[1], ref.ch[1]));
+        requireExactRuns<TestType>(pool, kNoiseFrames, 0, 4096);
+    }
+    for (uint64_t k = 0; k < 200; ++k)
+    {
+        const int64_t from = -4000 + static_cast<int64_t>(u01(31, 0, k) * 22000.0);
+        const int64_t to = from + static_cast<int64_t>(u01(31, 1, k) * 512.0);
+        INFO("call " << k << ", [" << from << ", " << to << ")");
+        auto [ref, simd] = renderBoth<TestType>(pool, src.stereo(), 2, from, to, hann);
+        REQUIRE(sameBits(simd.ch[0], ref.ch[0]));
+        REQUIRE(sameBits(simd.ch[1], ref.ch[1]));
+    }
+}
+
+TEMPLATE_TEST_CASE("simd sample kernel matches the reference at the source ends", "[kernel]",
+                   Hermite, Linear)
+{
+    // Review focus 1. Grains whose reads come within 3 frames of frame 0 or of the last frame,
+    // in steps of a quarter frame: some start there and move away, some arrive there from
+    // outside the source (at 0) or from inside it (at the end) at mid-life, and some end there.
+    // Each is rendered in ragged calls, offset by 0–3 samples so the SIMD steps fall at every
+    // alignment, and compared with one reference call over the whole span.
+    const gg::HannTable hann;
+    const Noise src(kNoiseFrames, 13);
+    const std::vector<double> rates = {0.25, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0};
+    std::vector<gg::GrainSpec> specs;
+    uint64_t k = 0;
+    for (const double boundary : {0.0, static_cast<double>(kNoiseFrames - 1)})
+    {
+        for (int quarter = -12; quarter <= 12; ++quarter)
+        {
+            for (const double rate : rates)
+            {
+                for (const double anchor : {0.0, 0.5, 1.0}) // the share of the life at the target
+                {
+                    const double duration = 64.0 + u01(41, 0, k) * 400.0;
+                    const double target = boundary + 0.25 * quarter;
+                    const double e = anchor * duration;
+                    specs.push_back({
+                        .index = k,
+                        .onsetSample = 0,
+                        .onsetFrac = u01(41, 1, k),
+                        .startPos = target - rate * e,
+                        .rate = rate,
+                        .durationSamples = duration,
+                        .gain = 0.5f,
+                        .pan = static_cast<float>(2.0 * u01(41, 2, k) - 1.0),
+                    });
+                    ++k;
+                }
+            }
+        }
+    }
+    const Pool pool(specs);
+    int64_t end = 0;
+    for (const gg::GrainSpec &g : specs)
+    {
+        end = std::max(end, gg::grainEndSample(g));
+    }
+
+    Buffers ref(0, end, 2);
+    renderAll<TestType>(Kernel::Ref, pool, src.stereo(), ref, 0, end, hann);
+    REQUIRE(anyNonZero(ref.ch[0]));
+    REQUIRE(anyNonZero(ref.ch[1]));
+    const std::vector<int64_t> lengths = {61, 64, 1, 128, 3, 250, 2, 37};
+    for (int64_t offset = 0; offset < 4; ++offset)
+    {
+        INFO("offset " << offset);
+        Buffers simd(0, end, 2);
+        int64_t from = 0;
+        for (std::size_t c = 0; from < end; ++c)
+        {
+            const int64_t to = std::min(end, c == 0 ? offset : from + lengths[c % lengths.size()]);
+            const gg::kernels::Output o{{simd.ch[0].data() + from, simd.ch[1].data() + from}, from};
+            for (uint32_t i = 0; i < pool.size(); ++i)
+            {
+                gg::kernels::renderSampleSimd<TestType>(pool.rows(), i, src.stereo(), o, from, to,
+                                                        hann);
+            }
+            requireExactRuns<TestType>(pool, kNoiseFrames, from, to);
+            from = to;
+        }
+        REQUIRE(sameBits(simd.ch[0], ref.ch[0]));
+        REQUIRE(sameBits(simd.ch[1], ref.ch[1]));
+    }
+}
+
+TEMPLATE_TEST_CASE("simd sample kernel matches the reference at extreme rates and lengths",
+                   "[kernel]", Hermite, Linear)
+{
+    // Review focus 4: pitch ±48 semitones, and a 3,600 s grain at 768 kHz, whose elapsed time
+    // and window phase pass 2^31 samples.
+    const gg::HannTable hann;
+    const Noise src(kNoiseFrames, 17);
+
+    SECTION("rates 1/16 and 16")
+    {
+        const Pool pool(randomGrains(23, 500, kNoiseFrames, {1.0 / 16.0, 16.0}));
+        auto [ref, simd] = renderBoth<TestType>(pool, src.stereo(), 2, 0, 4096, hann);
+        REQUIRE(anyNonZero(ref.ch[0]));
+        REQUIRE(sameBits(simd.ch[0], ref.ch[0]));
+        REQUIRE(sameBits(simd.ch[1], ref.ch[1]));
+        requireExactRuns<TestType>(pool, kNoiseFrames, 0, 4096);
+        for (uint64_t k = 0; k < 100; ++k)
+        {
+            const int64_t from = -4000 + static_cast<int64_t>(u01(33, 0, k) * 22000.0);
+            const int64_t to = from + static_cast<int64_t>(u01(33, 1, k) * 512.0);
+            INFO("call " << k << ", [" << from << ", " << to << ")");
+            auto [r, s] = renderBoth<TestType>(pool, src.stereo(), 2, from, to, hann);
+            REQUIRE(sameBits(s.ch[0], r.ch[0]));
+            REQUIRE(sameBits(s.ch[1], r.ch[1]));
+        }
+    }
+
+    SECTION("a 3,600 s grain at 768 kHz")
+    {
+        constexpr double kDuration = 3600.0 * 768000.0;
+        REQUIRE(kDuration == 2764800000.0);
+        constexpr int64_t kOnset = 1000;
+        const int64_t end = kOnset + static_cast<int64_t>(kDuration) + 2;
+        // Around the middle and up to the grain's last sample. Each grain's start position puts
+        // its read in the middle of the source at the probe, so the probe reads real samples.
+        for (const int64_t probe : {kOnset + static_cast<int64_t>(kDuration / 2), end - 4000})
+        {
+            for (const double rate : {1.0 / 16.0, 1.0, 16.0})
+            {
+                INFO("probe " << probe << ", rate " << rate);
+                const double e = static_cast<double>(probe - kOnset);
+                const Pool pool(std::vector<gg::GrainSpec>{{
+                    .index = 0,
+                    .onsetSample = kOnset,
+                    .onsetFrac = 0.6180339887,
+                    .startPos = static_cast<double>(kNoiseFrames / 2) - rate * e,
+                    .rate = rate,
+                    .durationSamples = kDuration,
+                    .gain = 0.9f,
+                    .pan = -0.3f,
+                }});
+                REQUIRE(pool.rows().endSample[0] == end);
+                const int64_t from = probe - 2000;
+                const int64_t to = std::min(probe + 4096, end + 5);
+                Buffers ref(from, to, 2);
+                renderAll<TestType>(Kernel::Ref, pool, src.stereo(), ref, from, to, hann);
+                REQUIRE(anyNonZero(ref.ch[0]));
+                REQUIRE(anyNonZero(ref.ch[1]));
+                Buffers simd(from, to, 2);
+                for (int64_t a = from; a < to;)
+                {
+                    const int64_t b = std::min(to, a + 509);
+                    const gg::kernels::Output o{
+                        {simd.ch[0].data() + (a - from), simd.ch[1].data() + (a - from)}, a};
+                    gg::kernels::renderSampleSimd<TestType>(pool.rows(), 0, src.stereo(), o, a, b,
+                                                            hann);
+                    a = b;
+                }
+                REQUIRE(sameBits(simd.ch[0], ref.ch[0]));
+                REQUIRE(sameBits(simd.ch[1], ref.ch[1]));
+                requireExactRuns<TestType>(pool, kNoiseFrames, from, to);
+                const gg::kernels::detail::Run run = gg::kernels::detail::sampleSimdRun<TestType>(
+                    pool.rows(), 0, kNoiseFrames, from, std::min(to, end));
+                REQUIRE(run.end - run.begin > 1000); // the SIMD path did render it
+            }
+        }
+    }
+}
+
+TEMPLATE_TEST_CASE("simd sample kernel matches the reference for every output shape", "[kernel]",
+                   Hermite, Linear)
+{
+    // Review focus 5: one output (a null dst[1]), a mono source into one or two outputs, an
+    // empty source, and calls of 0, 1, 2, 3 and 5 samples at every alignment against the grains'
+    // onsets. The pool's short grains all start within [0, 64), the first with onsetFrac 0, so
+    // its first window value is exactly 0 inside a SIMD step; the outputs start at −0 in one
+    // pass, which a lane the window masks must leave alone, as the reference does.
+    const gg::HannTable hann;
+    const Noise src(kNoiseFrames, 19);
+    std::vector<gg::GrainSpec> specs = randomGrains(25, 64, kNoiseFrames);
+    for (uint32_t k = 0; k < specs.size(); ++k)
+    {
+        specs[k].onsetSample = k;
+        specs[k].startPos = 1000.0 + 1000.0 * k;
+        specs[k].durationSamples = 16.0 + u01(43, 0, k) * 200.0;
+    }
+    specs[0].onsetFrac = 0.0;
+    const Pool pool(specs);
+
+    struct Shape
+    {
+        const char *name;
+        int outputs;
+        SampleSource source;
+    };
+    const SampleSource empty{{nullptr, nullptr}, 0, true};
+    for (const Shape shape : {Shape{"two outputs, stereo source", 2, src.stereo()},
+                              Shape{"two outputs, mono source", 2, src.mono()},
+                              Shape{"one output, stereo source", 1, src.stereo()},
+                              Shape{"one output, mono source", 1, src.mono()},
+                              Shape{"two outputs, empty source", 2, empty},
+                              Shape{"one output, empty source", 1, empty}})
+    {
+        for (const float fill : {0.0f, -0.0f})
+        {
+            INFO(shape.name << ", outputs start at " << (std::signbit(fill) ? "-0" : "+0"));
+            {
+                auto [ref, simd] =
+                    renderBoth<TestType>(pool, shape.source, shape.outputs, 0, 300, hann, fill);
+                REQUIRE(sameBits(simd.ch[0], ref.ch[0]));
+                REQUIRE(sameBits(simd.ch[1], ref.ch[1]));
+                REQUIRE(anyNonZero(ref.ch[0]) == (shape.source.frames > 0));
+                REQUIRE(!anyNonZero(ref.ch[1]) == (shape.outputs == 1 || shape.source.frames == 0));
+            }
+            for (const int64_t length : {0, 1, 2, 3, 5})
+            {
+                for (int64_t from = -3; from < 300; ++from)
+                {
+                    INFO("[" << from << ", " << from + length << ")");
+                    auto [ref, simd] = renderBoth<TestType>(pool, shape.source, shape.outputs, from,
+                                                            from + length, hann, fill);
+                    REQUIRE(sameBits(simd.ch[0], ref.ch[0]));
+                    REQUIRE(sameBits(simd.ch[1], ref.ch[1]));
+                }
+            }
+        }
+    }
+}
+
+TEMPLATE_TEST_CASE("simd sample kernel matches the reference with non-finite taps", "[kernel]",
+                   Hermite, Linear)
+{
+    // NaN, +inf and −inf frames scattered through both channels. The outputs compare equal with
+    // NaN == NaN, since a NaN's payload may depend on the operand order the compiler picks.
+    const gg::HannTable hann;
+    Noise src(kNoiseFrames, 29);
+    constexpr float kInf = std::numeric_limits<float>::infinity();
+    for (int64_t f = 0; f < kNoiseFrames; ++f)
+    {
+        const auto j = static_cast<std::size_t>(f);
+        if (f % 997 == 3)
+        {
+            src.left[j] = kNaN;
+        }
+        if (f % 1009 == 5)
+        {
+            src.left[j] = kInf;
+            src.right[j] = kNaN;
+        }
+        if (f % 1013 == 7)
+        {
+            src.right[j] = -kInf;
+        }
+    }
+    const Pool pool(randomGrains(27, 500, kNoiseFrames));
+    auto [ref, simd] = renderBoth<TestType>(pool, src.stereo(), 2, 0, 4096, hann);
+    REQUIRE(anyNaN(ref.ch[0]));
+    REQUIRE(anyNaN(ref.ch[1]));
+    REQUIRE(!allFinite(ref.ch[0]));
+    REQUIRE(std::any_of(ref.ch[0].begin(), ref.ch[0].end(),
+                        [](float x) { return std::isfinite(x) && x != 0.0f; }));
+    REQUIRE(sameOrBothNaN(simd.ch[0], ref.ch[0]));
+    REQUIRE(sameOrBothNaN(simd.ch[1], ref.ch[1]));
+    for (uint64_t k = 0; k < 50; ++k)
+    {
+        const int64_t from = -4000 + static_cast<int64_t>(u01(35, 0, k) * 22000.0);
+        const int64_t to = from + static_cast<int64_t>(u01(35, 1, k) * 512.0);
+        INFO("call " << k << ", [" << from << ", " << to << ")");
+        auto [r, s] = renderBoth<TestType>(pool, src.stereo(), 2, from, to, hann);
+        REQUIRE(sameOrBothNaN(s.ch[0], r.ch[0]));
+        REQUIRE(sameOrBothNaN(s.ch[1], r.ch[1]));
     }
 }

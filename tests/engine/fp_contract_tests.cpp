@@ -19,6 +19,8 @@
 #include "gg/core/Rng.h"
 #include "gg/core/Window.h"
 #include "gg/grain/CloudScheduler.h"
+#include "gg/grain/GrainKernels.h"
+#include "gg/grain/GrainPool.h"
 
 // Defined in fp_contract_fast.cpp, which is compiled with flags that allow FP contraction and
 // inlines every header function it calls, so it leaves no out-of-line copy behind. The calls
@@ -30,6 +32,9 @@ double ggFastExp2(double x);
 double ggFastLog(double x);
 float ggFastHann(double phase01);
 int ggFastCloud(const gg::CloudParams &params, int64_t frames, gg::GrainDraw *out, int capacity);
+void ggFastSampleSimd(bool eco, const gg::GrainRows &rows, uint32_t count,
+                      const gg::kernels::SampleSource &src, const gg::kernels::Output &out,
+                      int64_t from, int64_t to, const gg::HannTable &hann);
 float ggFastCanary(float a, float b, float c);
 
 namespace
@@ -190,6 +195,90 @@ TEST_CASE("the Cloud scheduler is not contracted by an includer's flags", "[math
     }
     INFO("first differing grain: " << grains.first());
     CHECK(grains.count == 0);
+}
+
+TEST_CASE("the simd sample kernel is not contracted by an includer's flags", "[math][kernel]")
+{
+    // 200 stereo grains over a 2^20-frame noise source, rendered over [0, 8192) through
+    // renderSampleSimd at both tiers, so its scalar e, phase and pos and its 4-wide window lerp and
+    // reads are all compiled with the fast TU's flags. The one expression there that can
+    // contract, pos = startPos + rate × e, changes the output only when it moves the read's float
+    // fraction. That is likeliest where e and pos are large, so the grains started up to a
+    // million samples before the render, and each one's read at sample 0 is anywhere from just
+    // before the source to just past it, some crossing its ends. With renderSampleInterior's
+    // guard removed, 102 (Hermite) and 92 (Linear) of the 16,384 output samples differ on arm64
+    // (Apple clang 21).
+    constexpr int64_t kFrames = int64_t{1} << 20;
+    constexpr int64_t kLength = 8192;
+    constexpr uint32_t kGrains = 200;
+    std::vector<float> left(kFrames), right(kFrames);
+    for (int64_t i = 0; i < kFrames; ++i)
+    {
+        left[static_cast<size_t>(i)] =
+            static_cast<float>(draw01(6, static_cast<uint64_t>(i)) - 0.5);
+        right[static_cast<size_t>(i)] =
+            static_cast<float>(draw01(7, static_cast<uint64_t>(i)) - 0.5);
+    }
+    gg::GrainPool pool(kGrains);
+    for (uint32_t k = 0; k < kGrains; ++k)
+    {
+        const int64_t onset = -1000000 + static_cast<int64_t>(k) * 4000;
+        const double onsetFrac = draw01(8, k);
+        const double rate = std::exp2(-2.0 + 4.0 * draw01(10, k));
+        // The read position at output sample 0.
+        const double at0 = -200.0 + (kFrames + 400.0) * draw01(9, k);
+        const gg::GrainSpec g{
+            .index = k,
+            .onsetSample = onset,
+            .onsetFrac = onsetFrac,
+            .startPos = at0 - rate * (static_cast<double>(-onset) - onsetFrac),
+            .rate = rate,
+            .durationSamples = 1200000.0,
+            .gain = 0.5f,
+            .pan = static_cast<float>(2.0 * draw01(12, k) - 1.0),
+        };
+        REQUIRE(pool.canAdmit(g.onsetSample));
+        REQUIRE(pool.spawn(g));
+    }
+    const gg::kernels::SampleSource src{{left.data(), right.data()}, kFrames, false};
+    const gg::HannTable hann;
+    for (const bool eco : {false, true})
+    {
+        INFO((eco ? "Linear" : "Hermite"));
+        std::vector<float> fast[2] = {std::vector<float>(kLength), std::vector<float>(kLength)};
+        std::vector<float> ref[2] = {std::vector<float>(kLength), std::vector<float>(kLength)};
+        ggFastSampleSimd(eco, pool.rows(), kGrains, src, {{fast[0].data(), fast[1].data()}, 0}, 0,
+                         kLength, hann);
+        const gg::kernels::Output refOut{{ref[0].data(), ref[1].data()}, 0};
+        for (uint32_t i = 0; i < kGrains; ++i)
+        {
+            if (eco)
+            {
+                gg::kernels::renderSampleSimd<gg::kernels::Linear>(pool.rows(), i, src, refOut, 0,
+                                                                   kLength, hann);
+            }
+            else
+            {
+                gg::kernels::renderSampleSimd<gg::kernels::Hermite>(pool.rows(), i, src, refOut, 0,
+                                                                    kLength, hann);
+            }
+        }
+
+        MismatchCount samples;
+        bool sounds = false;
+        for (int c = 0; c < 2; ++c)
+        {
+            for (int64_t t = 0; t < kLength; ++t)
+            {
+                const auto j = static_cast<size_t>(t);
+                sounds = sounds || ref[c][j] != 0.0f;
+                samples.check(static_cast<double>(t), fast[c][j], ref[c][j]);
+            }
+        }
+        REQUIRE(sounds);
+        INFO("first differing output sample: " << samples.first());
+        CHECK(samples.count == 0);
+    }
 }
 
 TEST_CASE("the contraction test's fast TU really contracts", "[math]")

@@ -178,8 +178,9 @@ class Engine
     bool liveGrain(const GrainDraw &d, GrainSpec &g) const noexcept;
     void admit(const GrainSpec &g, float *const dst[2], int64_t blockStart,
                int64_t &renderedTo) noexcept SST_CPPUTILS_NONBLOCKING;
-    /// Adds every pool grain into dst over [from, to), through the reference renderers
-    /// (gg/grain/GrainKernels.h).
+    /// Adds every pool grain into dst over [from, to), through gg/grain/GrainKernels.h with each
+    /// grain's latched tier: the SIMD sample kernel in Sample mode, the live reference in Live
+    /// mode.
     void renderPool(float *const dst[2], int64_t blockStart, int64_t from,
                     int64_t to) noexcept SST_CPPUTILS_NONBLOCKING;
 
