@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Milestone** | M1 Cloud core (INTENT §20), sub-project 4 of 6 |
-| **Status** | Approved by the director, 2026-10-28. Decisions S1–S8 made by the director, 2026-10-28, by forced choice |
+| **Status** | Approved by the director, 2026-10-28. Decisions S1–S8 made by the director, 2026-10-28, by forced choice. Amended during the build, in place and marked with each ruling's ID: §6.3 (P1, R-T2b, R-T5a, R-T5b), §6.4 (`loopClip`, R-T8a, P2), §6.7 (R-T7a); INTENT §23 #50 records them |
 | **Spec authority** | `INTENT.md`; this document records how this sub-project implements it |
 | **Builds on** | The FX-slice spec (the `Processor` and its wet chain), the Sources spec (notes, freeze, the instrument's sound) |
 | **Feeds** | Sub-project 5 (Perform UI): its Texture macro drives Diffusion in the top quarter of its travel (`2026-10-27-m1-perform-ui-design.md` §3, §4) |
@@ -158,6 +158,13 @@ return is added after.
   instead of jumping: a slewed, interpolated read, so a moving Pre-delay bends pitch like tape and
   never clicks. The slew rate is fixed in the plan. The fork's change is per sample inside Reverb
   2's chunk, from values that change only at chunk boundaries, so it stays block-size invariant.
+
+  > **Amended by ruling P1 (2026-10-28):** the glide is rate-limited, not a fixed time: the read's
+  > delay moves toward each new value at no more than `kPredelayMaxRate` = 0.5 samples per sample,
+  > interpolated linearly, so a glide bends the pitch at most an octave down or a fifth up. The
+  > plan's first draft, a fixed 0.1 s glide, bent it fivefold over a 500 ms jump, which isn't
+  > tape-like and failed the plan's own click test. Ruling R-T2a adds: while nothing has run since
+  > construction or a clear, a new value applies at once (the buffer is silent, so nothing jumps).
 - **Size is not smoothed (S8):** a Size change takes effect at the next chunk, as in Surge.
 - **Grid alignment:** Reverb 2 processes whole 32-sample chunks. The `Processor` feeds it chunks
   aligned to absolute sample positions (multiples of 32 of the stream's sample count), buffering a
@@ -172,6 +179,19 @@ return is added after.
   instance, to be measured). It is allocated once, off the audio thread, in `activate()` (or the
   `Processor`'s construction), never in `process()`. `reset()` clears it; clearing a 13 MB tail on
   the audio thread is acceptable only where the host already expects a reset to cost.
+
+  > **Amended by rulings R-T2b, R-T5a and R-T5b (2026-10-28):** measured, the reverb is
+  > 14,533,632 bytes, allocated with the `Processor`. A clear (the patch's `clear()`) zeroes only
+  > what a later read can reach (R-T2b): each allpass up to its longest length since the last
+  > clear, and of each delay line and the pre-delay only the oldest positions a fresh run reads
+  > before writing them, within the reach of the largest Size, Modulation and Pre-delay at the
+  > current rate; the smoothed pre-delay's range is clamped to 0.5 s (Space's) for it. That is
+  > about 0.5 MB at 48 kHz, not the whole 14.5 MB. `clearStep(maxFloats)` does the same in steps.
+  > The idle rule's clear is spread (R-T5a): the first idle chunk after an active one begins a
+  > clear, each idle chunk zeroes at most 16,384 floats (64 KiB), and the first active chunk
+  > finishes what is left before it runs, so raising Amount still starts from an empty room,
+  > deterministically. `reset()` clears it all at once (R-T5b); construction is already clean, and
+  > a new sample rate builds a new `Processor` and reverb.
 - **Dependencies:** sst-effects and sst-filters (both GPL-3.0-or-later, AGPL-compatible) join
   `libs/sst/` as submodules pinned to exact SHAs, as INTENT §15 already lists.
 - **The fork (S7, S8):** Reverb 2 is modified in two places only: the LF damping at ∞ (§6.4) and
@@ -199,12 +219,26 @@ return is added after.
   1 (a T60 of hours rather than truly infinite), an input gain that eases off near ∞, or a soft
   saturation inside the loop (a fork). The plan picks one, and a test renders an hour of a
   full-scale steady tone and a full-scale noise at ∞ to prove the bound.
+
+  > **Amended (the plan's choice, 2026-10-28):** the bound is a soft saturation inside the loop,
+  > `loopClip(x)` = `x` for |x| ≤ 1, else `sign(x) × (2 − 1/|x|)`: below 2 in magnitude, slope 1
+  > at the knee, no libm. At ∞ it runs on each block's loop signal after the dampers. The hour
+  > tests (a full-scale 110 Hz sine and full-scale noise, Damping 0, Size and Modulation 100%)
+  > peaked at 1.687 and 1.718, every sample finite.
 - **What ∞ holds (S7):** Reverb 2 damps inside its loop: four LF high-pass and four HF low-pass
   one-poles per trip, and the LF coefficient is clamped to at least 0.01, a high-pass near 77 Hz
   at 48 kHz. A loop gain of 1 alone would still drain the lows in seconds. **At ∞ the LF damping
   is switched off** (the fork, §6.3), so lows and mids hold. The HF damping stays and follows
   Damping, so highs still fade, as in Clouds' and Beads' frozen reverbs; at Damping 0 the loop is
   lossless and nothing fades. Every finite Decay keeps Surge's damping unchanged.
+
+  > **Amended by rulings R-T8a and P2 (2026-10-28):** at ∞ the LF damping is replaced by a 0.5 Hz
+  > DC blocker in the loop, a one-pole high-pass (`kInfiniteDcHz`), because a lossless loop
+  > integrates the grains' DC (the `inst-infinite` golden saw it grow to −0.02). So ∞ is: the
+  > decay multiplier exactly 1, the DC blocker, the HF damping per Damping with its lower clamp at
+  > 0 (lossless at Damping 0 apart from DC), and `loopClip`. With Damping up, the HF one-pole
+  > attenuates the mids on every pass too, so only the lows hold, and the mids fade more slowly
+  > than the highs (P2); the listening check judges it.
 - Reverb 2's damping coefficients don't scale with the sample rate, so how fast the highs fade at
   a given Damping depends on the host's rate. That is Surge's behaviour, and it is kept.
 
@@ -263,6 +297,25 @@ Space takes the next free IDs in each scope.
   will lengthen the FX's tail and adds its own term.
 - The plugin keeps processing through the tail; nothing returns `CLAP_PROCESS_SLEEP` while the
   reverb rings.
+
+> **Amended by ruling R-T7a (2026-10-28):** the tail is a constant per product, and nothing calls
+> `tail.changed`. This replaces the tail above that followed the values, and the "My call" on
+> announcing it.
+> - **The FX's is `CLAP_TAIL_INFINITE`:** a live-buffer effect can sound with no input at any time
+>   (Freeze, a held note, a 16 s read, an infinite reverb).
+> - **The instrument's is its longest finite one,** (2 s, Size's maximum + 0.5 s, Pre-delay's
+>   maximum + 2 × 60 s, Decay's longest finite) × the active rate: 122.5 s.
+> - **Why:** clap-wrapper turns `tail.changed` into VST3's `restartComponent(kLatencyChanged)`, on
+>   which the host deactivates and reactivates the plugin, and into AU's
+>   `PropertyChanged(TailTime)`. Following the values would have restarted the FX at every note,
+>   Freeze toggle or Amount change, emptying its live ring and dropping its notes and Freeze; and
+>   CLAP makes `tail.changed` an audio-thread call while both wrappers' targets are main-thread
+>   ones. A finite instrument tail also spares hosts that render the reported tail an endless
+>   bounce.
+> - **The cost:** the FX never sleeps on silence in hosts that suspend silent plugins (idle CPU),
+>   and an instrument at ∞ is suspended 122.5 s after its last note there.
+> - clap-wrapper's AUv2 hard-codes `SupportsTail()` false, so AU hosts see neither tail; that waits
+>   on upstream (`docs/m1-carry-over.md`).
 
 ### 6.8 `gg-render`
 
