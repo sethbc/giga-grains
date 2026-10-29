@@ -11,6 +11,7 @@
 # tinyxml and CLAP's headers come in here, never in gg-engine.
 
 add_library(gg-core STATIC
+        src/Diffuser.cpp
         src/MachineSettings.cpp
         src/ParamIds.cpp
         src/ParamMap.cpp
