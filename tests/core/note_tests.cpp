@@ -434,6 +434,9 @@ TEST_CASE("a chord picks its keys evenly", "[core]")
         bool matched = false;
         for (std::size_t i = 0; i < 3; ++i)
         {
+            // The engine's own arithmetic (Engine::sampleGrain): the key's ratio times the
+            // source's rate over the output's, both 48 kHz here. Written out the same way, the
+            // comparison below can be exact.
             const double rate = gg::exp2Det(semitones[i] / 12.0) * kSampleRate / kSampleRate;
             if (g.rate == rate)
             {
@@ -565,6 +568,52 @@ TEST_CASE("FX: a held note freezes the ring", "[core]")
     CHECK(p->base(ParamSlot::Freeze) == 0.0f);
     CHECK(p->effective(ParamSlot::Freeze) == 0.0f);
     CHECK(p->heldKeys().empty());
+}
+
+TEST_CASE("FX: no note event changes Freeze's value", "[core]")
+{
+    // Spec §6.3: a note freezes the ring without touching the Freeze parameter. Checked once
+    // each note event has applied (at its grid boundary), over notes overlapping, legato,
+    // detached and released by an AllOff, with Freeze off and on.
+    using T = NoteEventType;
+    const std::vector<TimedNote> notes{{20000 + 5, T::On, 0, 60}, {28800 - 7, T::On, 0, 67},
+                                       {28800, T::Off, 0, 67},    {28800, T::On, 1, 67},
+                                       {40000, T::Off, 0, 60},    {50000 + 11, T::Off, 1, 67},
+                                       {52000, T::On, 0, 48},     {56000 + 1, T::Off, 0, 48},
+                                       {60000, T::On, 0, 72},     {66000, T::AllOff, -1, 0}};
+    constexpr int64_t kFrames = 70000;
+    const Stereo input = noise(kFrames, 0.5f, 29);
+    std::vector<float> left(kFrames), right(kFrames);
+    for (const float freeze : {0.0f, 1.0f})
+    {
+        INFO("Freeze " << freeze);
+        auto p = effect();
+        p->setBase(ParamSlot::Freeze, freeze);
+        int64_t done = 0;
+        bool froze = false;
+        for (std::size_t next = 0; next < notes.size();)
+        {
+            // The events that apply at one boundary, in one call that runs a grid step past it.
+            const int64_t boundary = boundaryOf(notes[next].time);
+            std::vector<NoteEvent> group;
+            for (; next < notes.size() && boundaryOf(notes[next].time) == boundary; ++next)
+            {
+                const TimedNote &e = notes[next];
+                group.push_back({static_cast<uint32_t>(e.time - done), e.type, e.channel, e.key});
+            }
+            const auto j = static_cast<std::size_t>(done);
+            const float *in[2] = {input.left.data() + j, input.right.data() + j};
+            float *out[2] = {left.data() + j, right.data() + j};
+            p->process(in, 2, out, 2, static_cast<uint32_t>(boundary + 32 - done), {}, group);
+            done = boundary + 32;
+            INFO("after the events at boundary " << boundary);
+            CHECK(p->base(ParamSlot::Freeze) == freeze);
+            CHECK(p->effective(ParamSlot::Freeze) == freeze);
+            froze = froze || p->engine().liveWriteHead() < done; // the notes did freeze the ring
+        }
+        CHECK(froze);
+        CHECK(p->heldKeys().empty());
+    }
 }
 
 TEST_CASE("FX: a note-on freezes without arming; Freeze restored on stays live", "[core]")
