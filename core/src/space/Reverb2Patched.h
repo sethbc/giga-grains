@@ -30,8 +30,10 @@
 #define GG_CORE_SPACE_REVERB2PATCHED_H
 
 #include <cstring>
-// GG PATCH: <cstdint>, <limits> and <cmath> for the additions, and EffectCore.h by its path
-// from sst-effects' include dir.
+// GG PATCH: <algorithm>, <cassert>, <cmath>, <cstdint> and <limits> for the additions, and
+// EffectCore.h by its path from sst-effects' include dir.
+#include <algorithm>
+#include <cassert>
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -210,7 +212,11 @@ template <typename FXConfig> struct Reverb2 : core::EffectTemplateBase<FXConfig>
     void initialize()
     {
         setvars(true);
-        _infiniteDcCoef = infiniteDcCoefficient(this->sampleRate()); // GG PATCH
+        // GG PATCH
+        _infiniteDcCoef = infiniteDcCoefficient(this->sampleRate());
+        _infiniteGlideBlocks = std::max(
+            1, int(std::lround(kInfiniteGlideSeconds * this->sampleRate() / FXConfig::blockSize)));
+        _infiniteStep = std::min(_infiniteStep, _infiniteGlideBlocks);
     }
     void processBlock(float *__restrict L, float *__restrict R);
 
@@ -221,34 +227,34 @@ template <typename FXConfig> struct Reverb2 : core::EffectTemplateBase<FXConfig>
     /// (ruling P1).
     static constexpr double kPredelayMaxRate{0.5};
 
-    /// The DC blocker's cutoff at infinity, in Hz (ruling R-T8a).
+    /// The LF dampers' cutoff at infinity, in Hz: a DC blocker (ruling R-T8a).
     static constexpr double kInfiniteDcHz{0.5};
 
-    /// Infinite decay (S7). From the next block: the loop's decay multiplier ramps, over that
-    /// block, to exactly 1.0f; the HF damping coefficient's lower clamp is 0 rather than 0.01,
-    /// so HF damping 0 is lossless; and the LF dampers are bypassed, held at rest so that
-    /// leaving infinity starts them from rest.
+    /// How long the loop takes to glide into or out of infinity, in seconds (ruling R-T8b).
+    static constexpr double kInfiniteGlideSeconds{0.03};
+
+    /// Infinite decay (S7). At infinity, in each block of the loop:
+    /// - the decay multiplier is exactly 1.0f;
+    /// - the HF damping coefficient's lower clamp is 0 rather than 0.01, so HF damping 0 is
+    ///   lossless;
+    /// - **the LF damper becomes a DC blocker** (ruling R-T8a): the same one-pole high-pass,
+    ///   with its own state, at kInfiniteDcHz. A lossless loop integrates DC (the grains' small
+    ///   offsets would climb toward loopClip's knee over a minute's hold). Over 30 s at
+    ///   infinity it costs under 0.1 dB at 50 Hz and up, and 1-2 dB at 10-20 Hz;
+    /// - then loopClip bounds the block's signal.
     ///
-    /// **In the LF dampers' place, a DC blocker** (ruling R-T8a): in each block, where the LF
-    /// damper sits, a one-pole high-pass at kInfiniteDcHz. A lossless loop integrates DC (the
-    /// grains' small offsets would climb toward loopClip's knee over a minute's hold). Over
-    /// 30 s at infinity it costs under 0.1 dB at 50 Hz and up, and about 1 dB at 10-20 Hz. It
-    /// starts from rest on entering infinity and is put back to rest on leaving it (and by
-    /// clear()).
+    /// **The switch glides** (ruling R-T8b): from the next block, the loop moves between its
+    /// finite and infinite settings in equal steps over kInfiniteGlideSeconds (whole blocks, at
+    /// least one). Each block, with g the share of infinity (0 to 1): the decay multiplier is
+    /// decay + g·(1 − decay), the LF coefficient goes geometrically from the LF damping's to
+    /// the DC blocker's, ldc·(dc/ldc)^g, the HF clamp's floor is 0.01·(1 − g), and loopClip
+    /// runs while g > 0. Each filter keeps its state throughout, so neither entering nor
+    /// leaving steps the loop. While no block has run since construction or the last clear(),
+    /// g jumps to its target at once, as the pre-delay does (ruling R-T2a).
     ///
-    /// Then loopClip bounds each block's signal. Off, the loop is Reverb 2's own.
+    /// At g = 0, the loop is Reverb 2's own.
     void setInfinite(bool on) noexcept
     {
-        if (on && !_infinite)
-        {
-            for (auto &d : _lf_damper)
-                d = onepole_filter();
-        }
-        if (!on && _infinite)
-        {
-            for (auto &d : _dc_blocker)
-                d = onepole_filter();
-        }
         _infinite = on;
     }
 
@@ -497,8 +503,6 @@ template <typename FXConfig> struct Reverb2 : core::EffectTemplateBase<FXConfig>
             d = onepole_filter();
         for (auto &d : _lf_damper)
             d = onepole_filter();
-        for (auto &d : _dc_blocker)
-            d = onepole_filter();
         _state = 0.f;
         _decay_multiply.reset();
         _diffusion.reset();
@@ -515,6 +519,7 @@ template <typename FXConfig> struct Reverb2 : core::EffectTemplateBase<FXConfig>
             l->first_run = true;
         }
         _infinite = false;
+        _infiniteStep = 0;
         _pdSmoothed = false;
         _pdDelay = 0.0;
         _pdTarget = 0.0;
@@ -534,8 +539,9 @@ template <typename FXConfig> struct Reverb2 : core::EffectTemplateBase<FXConfig>
     bool _clearing{false};
 
     bool _infinite{false};
-    onepole_filter _dc_blocker[NUM_BLOCKS]; // at rest whenever _infinite is false
-    float _infiniteDcCoef{0.f};             // process_highpass's c0 for kInfiniteDcHz
+    int _infiniteStep{0};          // of _infiniteGlideBlocks: g = _infiniteStep / that
+    int _infiniteGlideBlocks{1};   // the glide's length in blocks, at least 1
+    float _infiniteDcCoef{0.f};    // process_highpass's c0 for kInfiniteDcHz
     bool _pdSmoothed{false};       // setPredelaySamples has been called since the last clear()
     double _pdDelay{0.0};          // the smoothed pre-delay now, in samples (64-bit: a position)
     double _pdTarget{0.0};         // and where it is going
@@ -724,7 +730,24 @@ template <typename FXConfig> void Reverb2<FXConfig>::processBlock(float *dataL, 
     float loop_time_s = 0.5508 * scale;
     float decay = powf(db60, loop_time_s / (4.f * (powf(2.f, this->floatValue(rev2_decay_time)))));
 
-    _decay_multiply.newValue(_infinite ? 1.f : decay); // GG PATCH
+    // GG PATCH: the glide into and out of infinity (ruling R-T8b): g, its share, steps one
+    // block's worth toward _infinite, or jumps there before the first block.
+    const int stepTarget = _infinite ? _infiniteGlideBlocks : 0;
+    if (_samplesSinceClear == 0)
+        _infiniteStep = stepTarget;
+    else if (_infiniteStep < stepTarget)
+        ++_infiniteStep;
+    else if (_infiniteStep > stepTarget)
+        --_infiniteStep;
+    const float g = _infiniteStep == _infiniteGlideBlocks
+                        ? 1.f
+                        : float(_infiniteStep) / float(_infiniteGlideBlocks);
+    if (g == 1.f)
+        decay = 1.f;
+    else if (g > 0.f)
+        decay = decay + g * (1.f - decay);
+
+    _decay_multiply.newValue(decay);
     _diffusion.newValue(0.7f * this->floatValue(rev2_diffusion));
     _buildup.newValue(0.7f * this->floatValue(rev2_buildup));
     _hf_damp_coefficent.newValue(0.8 * this->floatValue(rev2_hf_damping));
@@ -741,6 +764,15 @@ template <typename FXConfig> void Reverb2<FXConfig>::processBlock(float *dataL, 
                                this->temposyncRatioInv(rev2_predelay)),
                          1, PREDELAY_BUFFER_SIZE_LIMIT - 1);
     _pdLastTap = pdt; // GG PATCH
+
+    // GG PATCH: the LF coefficient toward and at infinity, once a block (_lf_damp_coefficent
+    // doesn't move within one): geometric in g from the LF damping's to the DC blocker's.
+    float ldcInfinite = _infiniteDcCoef;
+    if (g > 0.f && g < 1.f)
+    {
+        const float l = std::clamp(_lf_damp_coefficent.v, 0.01f, 0.99f);
+        ldcInfinite = l * powf(_infiniteDcCoef / l, g);
+    }
 
     for (int k = 0; k < FXConfig::blockSize; k++)
     {
@@ -770,8 +802,9 @@ template <typename FXConfig> void Reverb2<FXConfig>::processBlock(float *dataL, 
         lfos[2] = -_lfo.r;
         lfos[3] = -_lfo.i;
 
-        auto hdc = std::clamp(_hf_damp_coefficent.v, _infinite ? 0.f : 0.01f, 0.99f); // GG PATCH
-        auto ldc = std::clamp(_lf_damp_coefficent.v, 0.01f, 0.99f);
+        // GG PATCH: the HF clamp's floor and the LF coefficient glide with g (see setInfinite).
+        auto hdc = std::clamp(_hf_damp_coefficent.v, 0.01f * (1.f - g), 0.99f);
+        auto ldc = g > 0.f ? ldcInfinite : std::clamp(_lf_damp_coefficent.v, 0.01f, 0.99f);
         for (int b = 0; b < NUM_BLOCKS; b++)
         {
             x = x + in;
@@ -781,12 +814,10 @@ template <typename FXConfig> void Reverb2<FXConfig>::processBlock(float *dataL, 
             }
 
             x = _hf_damper[b].process_lowpass(x, hdc);
-            // GG PATCH: at infinity, the DC blocker in the LF damper's place, then the soft
-            // clip.
-            if (_infinite)
-                x = loopClip(_dc_blocker[b].process_highpass(x, _infiniteDcCoef));
-            else
-                x = _lf_damper[b].process_highpass(x, ldc);
+            x = _lf_damper[b].process_highpass(x, ldc);
+            // GG PATCH: toward and at infinity, the soft clip.
+            if (g > 0.f)
+                x = loopClip(x);
 
             int modulation = (int)(_modulation.v * lfos[b] * (float)DELAY_SUBSAMPLE_RANGE);
             float tap_outL = 0.f;

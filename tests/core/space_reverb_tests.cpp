@@ -1273,30 +1273,105 @@ TEST_CASE("patched Reverb2 clear while infinite matches a fresh instance", "[spa
     }
 }
 
-TEST_CASE("patched Reverb2 reentering infinite starts the DC blocker from rest", "[space]")
+namespace
 {
-    // A constant 0.05 at infinity for 1 s fills the DC blocker's state. Then 2 s at the
-    // shortest Decay (1/16 s), silent, empties the loop, and infinity again from 3 s must hold
-    // only that near-silence. A blocker left with its state would subtract it from the loop on
-    // re-entering, a step that infinity would then hold.
-    GgFxConfig::Storage storage;
-    storage.sampleRate = kRate;
-    setRingingValues(storage);
-    storage.values[Rev2::rev2_hf_damping] = 0.f;
-    auto reverb = std::make_unique<Rev2Patched>(&storage, &storage, &storage);
-    reverb->initialize();
+/// The left channel above 3 kHz: six one-pole high-passes, steep enough (about -115 dB at
+/// 331 Hz) that a low pad's own level doesn't mask a click.
+std::vector<double> highBand(const std::vector<float> &x)
+{
+    std::array<OnePole, 6> h{OnePole(3000), OnePole(3000), OnePole(3000),
+                             OnePole(3000), OnePole(3000), OnePole(3000)};
+    std::vector<double> high;
+    high.reserve(x.size());
+    for (float v : x)
+    {
+        double y = v;
+        for (auto &f : h)
+        {
+            y = f.hp(y);
+        }
+        high.push_back(y);
+    }
+    return high;
+}
 
-    Stereo in(chunkAt(5.0) * kChunk);
-    std::fill_n(in.left.begin(), frames(1.0), 0.05f);
-    std::fill_n(in.right.begin(), frames(1.0), 0.05f);
-    const auto out = render(*reverb, in, [&](size_t c) {
-        const bool infinite = c < chunkAt(1.0) || c >= chunkAt(3.0);
-        reverb->setInfinite(infinite);
-        storage.values[Rev2::rev2_decay_time] = infinite ? 1.f : -4.f;
-    });
-    const double filled = rms(out.left, 0.5, 1.0);
-    const double reentered = rms(out.left, 3.0, 5.0);
-    WARN("RMS 0.5-1 s " << filled << ", after re-entering infinity (3-5 s) " << reentered);
-    REQUIRE(filled > 0.01);
-    CHECK(reentered < 1e-6);
+/// How far `x` rises above `reference` above 3 kHz in the 150 ms from `fromSeconds`: the
+/// largest ratio of their RMS over a 10 ms window, in dB, with the reference's taken as at
+/// least -120 dBFS (below that, both are rounding noise).
+double riseOver(const std::vector<float> &x, const std::vector<float> &reference,
+                double fromSeconds)
+{
+    const auto a = highBand(x), b = highBand(reference);
+    double rise = -1000.0;
+    for (int w = 0; w < 15; ++w)
+    {
+        const double t = fromSeconds + 0.01 * w;
+        rise = std::max(rise, dB(rms(a, t, t + 0.01) / std::max(rms(b, t, t + 0.01), 1e-6)));
+    }
+    return rise;
+}
+} // namespace
+
+TEST_CASE("patched Reverb2 entering and leaving infinite make no step", "[space]")
+{
+    // A pad (110, 220 and 331 Hz: all of it in the loop's lows, where the LF damper holds
+    // state), held throughout at -32 dBFS, or at -12 dBFS stopped at 0.5 s to leave a tail;
+    // infinity from 1.5 s to 4 s, at HF damping 0 and 0.3. A step in the loop is broadband, so it
+    // shows above 3 kHz within the taps' delays (at most 123 ms at Size 0): in the 150 ms after
+    // each switch, no 10 ms there may be more than 6 dB louder than in a render that doesn't switch
+    // (never infinite for entering, infinite to the end for leaving), or than -120 dBFS.
+    //
+    // Entering and leaving are continuous: the LF damper keeps its state (at infinity it runs
+    // at the DC blocker's coefficient, ruling R-T8a), and the loop glides between its finite
+    // and infinite settings over about 30 ms (ruling R-T8b). Before that, entering swapped the
+    // LF damper for a blocker at rest, a step in the loop's lows at all four blocks, and
+    // leaving dropped the decay multiplier from 1 within one block.
+    constexpr double kEnter = 1.5;
+    constexpr double kLeave = 4.0;
+    struct Case
+    {
+        const char *name;
+        double padSeconds;
+        double padPeak;
+        float hfDamping;
+    };
+    for (const auto &k :
+         {Case{"tail, damping 0", 0.5, 0.25, 0.f}, Case{"tail, damping 0.3", 0.5, 0.25, 0.3f},
+          Case{"held, damping 0", 5.0, 0.025, 0.f}, Case{"held, damping 0.3", 5.0, 0.025, 0.3f}})
+    {
+        Stereo in(chunkAt(5.0) * kChunk);
+        const double a = k.padPeak / 3.0; // the peak, all three in phase
+        for (size_t i = 0; i < std::min(frames(k.padSeconds), in.left.size()); ++i)
+        {
+            const double t = double(i) / kRate;
+            double v = 0.0;
+            for (const double hz : {110.0, 220.0, 331.0})
+            {
+                v += a * std::sin(2.0 * std::numbers::pi * hz * t);
+            }
+            in.left[i] = in.right[i] = float(v);
+        }
+        // Infinite from `from` until `to`.
+        auto run = [&](double from, double to) {
+            GgFxConfig::Storage storage;
+            storage.sampleRate = kRate;
+            setRingingValues(storage);
+            storage.values[Rev2::rev2_hf_damping] = k.hfDamping;
+            auto reverb = std::make_unique<Rev2Patched>(&storage, &storage, &storage);
+            reverb->initialize();
+            auto out = render(*reverb, in, [&](size_t c) {
+                reverb->setInfinite(c >= chunkAt(from) && c < chunkAt(to));
+            });
+            REQUIRE(allFinite(out));
+            return out;
+        };
+        const auto switched = run(kEnter, kLeave);
+        const double entering = riseOver(switched.left, run(10.0, 10.0).left, kEnter);
+        const double leaving = riseOver(switched.left, run(kEnter, 10.0).left, kLeave);
+        WARN(k.name << ": above 3 kHz after the switch, entering " << entering
+                    << " dB over never infinite, leaving " << leaving
+                    << " dB over staying infinite");
+        CHECK(entering < 6.0);
+        CHECK(leaving < 6.0);
+    }
 }
