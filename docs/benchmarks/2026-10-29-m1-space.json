@@ -1,0 +1,31 @@
+{
+  "benchmark": "space",
+  "machine": "Apple M5 Max (arm64)",
+  "compiler": "AppleClang 21.0.0.21000334",
+  "commit": "be2291e",
+  "sampleRate": 48000.0,
+  "runSeconds": 2.0,
+  "rounds": 5,
+  "settings": {
+    "diffusion": 1.0,
+    "amount": 1.0,
+    "size": 0.5,
+    "decayLog2": 1.0,
+    "infinite": false,
+    "hfDamping": 0.30000001192092896,
+    "modulation": 0.25,
+    "predelaySeconds": 0.0,
+    "active": true
+  },
+  "runs": [
+    29.45382812087647,
+    29.435060218196032,
+    29.447453410757095,
+    29.378918691970767,
+    29.387732418076645
+  ],
+  "nsPerSample": 29.435060218196032,
+  "min": 29.378918691970767,
+  "iqr": 0.05972099268045028,
+  "cpuPctOneCoreAt48k": 0.14128828904734095
+}

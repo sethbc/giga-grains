@@ -1,0 +1,15 @@
+{
+  "benchmark": "canvas",
+  "machine": "Apple M5 Max (arm64)",
+  "compiler": "AppleClang 21.0.0.21000334",
+  "width": 3200,
+  "height": 1200,
+  "pixelScale": 2.0,
+  "frames": 240,
+  "budgetMs": 3.0,
+  "results": [
+    {"grains": 4096, "generateMs": 0.027, "clearMs": 0.060, "splatMs": 0.370, "resolveMs": 2.064, "totalMs": 2.497, "totalMsMean": 2.510, "totalMsP95": 2.574},
+    {"grains": 8192, "generateMs": 0.053, "clearMs": 0.060, "splatMs": 0.742, "resolveMs": 2.061, "totalMs": 2.866, "totalMsMean": 2.874, "totalMsP95": 2.923},
+    {"grains": 16384, "generateMs": 0.107, "clearMs": 0.060, "splatMs": 1.505, "resolveMs": 2.082, "totalMs": 3.659, "totalMsMean": 3.656, "totalMsP95": 3.714}
+  ]
+}

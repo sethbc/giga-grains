@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Short design, written 2026-10-29 for the director's approval |
+| **Status** | Built 2026-10-29 on `m1-close` (INTENT §23 #60). Corrections from the build: the carry-over had 15 open rows before and 13 after (185 and 233 closed; §5.3's "14 after" miscounted); the idle run's one-minute load average was 2.58, not under §3's 1.5, with nothing building and only the desktop open (`docs/benchmarks/README.md`) |
 | **Milestone** | M1 (Cloud core), sub-project 6 of 6 |
 | **Depends on** | Sub-projects 1–5 merged (PRs #2, #4, #6, #7, #8, #9) and the Perform close PR (#10) |
 | **Authority** | INTENT.md. Part II changes below each add a dated §23 row |
