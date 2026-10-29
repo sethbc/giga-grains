@@ -1,0 +1,18 @@
+{
+  "mode": "instrument",
+  "sampleRate": 48000,
+  "durationSeconds": 8.0,
+  "blockSize": 128,
+  "seed": 1,
+  "sample": {"kind": "sine", "frequencyHz": 220, "seconds": 4.0, "amplitude": 0.5},
+  "params": {"Position": 0.25, "Density": 2.0, "Size": -2.5, "Distribution": 0.0, "Level": -6.0, "Texture": 0.0},
+  "automation": [
+    {"time": 1.5, "param": "Texture", "value": 0.25},
+    {"time": 3.0, "param": "Texture", "value": 0.5},
+    {"time": 4.5, "param": "Texture", "value": 0.75},
+    {"time": 6.0, "param": "Texture", "value": 1.0}
+  ],
+  "notes": [
+    {"time": 0.0, "key": 60, "duration": 7.5}
+  ]
+}

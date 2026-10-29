@@ -5,6 +5,7 @@
 #include "MacroRow.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <string>
 #include <string_view>
@@ -65,7 +66,11 @@ class MacroValue
 
     void set(float v)
     {
-        v = std::clamp(v, meta_.minVal, meta_.maxVal); // NaN stays NaN, and the plugin drops it
+        if (std::isnan(v))
+        {
+            return; // as uiSetValue ignores one: nothing is stored, held or sent
+        }
+        v = std::clamp(v, meta_.minVal, meta_.maxVal);
         const bool own = !editing_;
         if (own)
         {

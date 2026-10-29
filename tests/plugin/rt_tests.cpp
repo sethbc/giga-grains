@@ -373,7 +373,7 @@ TEST_CASE("plugin process with the perform parameters automated does not allocat
     for (const ParamSlot slot : gg::core::kMacroSlots)
     {
         const auto s = static_cast<std::size_t>(slot);
-        CHECK(processor->base(slot) == static_cast<float>(stepped(s) ? 1.0 : onValues[s].value));
+        CHECK(processor->base(slot) == static_cast<float>(onValues[s].value));
     }
     CHECK(processor->base(ParamSlot::Texture) ==
           static_cast<float>(onValues[static_cast<std::size_t>(ParamSlot::Texture)].value));

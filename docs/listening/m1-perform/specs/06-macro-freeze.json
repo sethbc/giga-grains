@@ -1,0 +1,16 @@
+{
+  "mode": "fx",
+  "sampleRate": 48000,
+  "durationSeconds": 7.5,
+  "blockSize": 128,
+  "seed": 1,
+  "input": {"kind": "sweep", "startHz": 110, "endHz": 1760, "seconds": 7.5, "amplitude": 0.5},
+  "channels": 2,
+  "params": {"Mix": 1.0, "Level": -6.0},
+  "automation": [
+    {"time": 1.5, "param": "Macro Freeze", "value": 1},
+    {"time": 3.5, "param": "Macro Freeze", "value": 0},
+    {"time": 5.0, "param": "Macro Freeze", "value": 1},
+    {"time": 6.5, "param": "Macro Freeze", "value": 0}
+  ]
+}

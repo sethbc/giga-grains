@@ -224,11 +224,13 @@ of its build (INTENT §23 #50).
 
 Written at the build's end (2026-10-29), under the policy at the top: only the rows the
 sub-project can't close itself. Rows 115, 123, 198 and 199 closed in it, and row 96 closed with
-its CI. PU-*x* is a ruling of its build (INTENT §23 #58).
+its CI. PU-*x* is a ruling of its build (INTENT §23 #58). The final review's fix wave added the
+AU parameter-order row, a decision the director took (D2) whose work belongs to sub-project 6.
 
 | What | Source | When |
 |---|---|---|
 | **The shim keeps an editor a host never showed.** sst-clap-helpers' `clap_juce_shim` destroys its editor in `guiDestroy` only when a parent was attached (`set_parent`), so a host that creates the GUI and destroys it without showing it leaves the editor in place, and the next `guiCreate` trips its debug-only `jassert(!editor)` (`setContents`). Publishing is correct either way: `EditorPlugin::guiDestroy` turns it off whether or not the shim destroyed the editor (`d179a98`). Noted; waiting on upstream (no filing: the policy above). | Ruling PU-T11a; `libs/sst/sst-clap-helpers/src/sst/clap_juce_shim/clap_juce_shim_impl.cpp:121`, `:133`–`:143`; `plugin/src/editor/EditorPlugin.cpp` (`guiDestroy`) | At the first sst-clap-helpers bump that destroys the editor without a parent |
+| **auval lists the AU parameters in ascending CLAP-ID order;** INTENT §18 says the slot order is the AUv2 order. Decided 2026-10-29 by the director (decision D2): verify clap-wrapper's AU `ParameterList` order and amend §18 to ID order via a §23 row in sub-project 6; no code change. | Final review C3, decision D2; INTENT §18, §23 #58 | Sub-project 6, before the first public release freezes the AUv2 order |
 
 ## Resolved in M0's final fix wave (not carried)
 

@@ -250,7 +250,7 @@ TEST_CASE("a grain the lane cannot place is not drawn", "[ui]")
 
 TEST_CASE("the scan window follows the position and spray tapers", "[ui]")
 {
-    // FX (ruling R-T8a): Position 0.28967658 is 0.25 s behind the head and Spray 0.36033038 is
+    // FX (ruling PU-T8a): Position 0.28967658 is 0.25 s behind the head and Spray 0.36033038 is
     // 50 ms, so the window runs from 0.25 s to 0.3 s behind the head, one-sided as the engine
     // draws a live grain: on 1600 px for 16 s, its right edge (Position) at 1575 px, 5 px wide.
     const LaneGeometry g = fxLane();
@@ -421,7 +421,7 @@ TEST_CASE("hit testing", "[ui]")
     REQUIRE(gg::ui::hitTest(150.0f, wide, 0.0f, inst) == DragTarget::Body);
     REQUIRE(gg::ui::hitTest(99.0f, wide, 0.0f, inst) == DragTarget::None);
 
-    // FX (ruling R-T8a): the right edge is Position, so it and its tolerance are the body; the
+    // FX (ruling PU-T8a): the right edge is Position, so it and its tolerance are the body; the
     // left (older) edge alone sets Spray.
     REQUIRE(gg::ui::hitTest(96.0f, wide, 5.0f, fx) == DragTarget::LeftEdge);
     REQUIRE(gg::ui::hitTest(104.0f, wide, 5.0f, fx) == DragTarget::LeftEdge);
@@ -444,6 +444,85 @@ TEST_CASE("hit testing", "[ui]")
 
 // LaneState: the canvas's UI-time bookkeeping (JUCE-free, so it runs under the sanitizers too):
 // the engine clock extrapolated between the snapshots, and the grains still playing.
+
+TEST_CASE("the ghost window shows where the effective values differ", "[ui]")
+{
+    // Spec §6.2: the scan window at the effective values, shown when Position's or Spray's
+    // effective value is more than kGhostThreshold from its base value, on either lane.
+    STATIC_REQUIRE(gg::ui::kGhostThreshold == 1.0e-4f);
+    for (const LaneGeometry &lane : {fxLane(), instrumentLane(48000)})
+    {
+        const gg::ui::ScanValues base{0.4f, 0.3f};
+        const auto window = [&lane](float position, float spray) {
+            return gg::ui::scanWindow(position, spray, lane);
+        };
+        // Equal: none.
+        CHECK_FALSE(gg::ui::ghostWindow(base, base, lane).has_value());
+        // Spray half its domain up (Macro Spray at its top): the effective window, wider.
+        const auto sprayed = gg::ui::ghostWindow(base, {0.4f, 0.8f}, lane);
+        REQUIRE(sprayed.has_value());
+        CHECK(sprayed->x0 == window(0.4f, 0.8f).x0);
+        CHECK(sprayed->x1 == window(0.4f, 0.8f).x1);
+        CHECK(sprayed->x0 < window(0.4f, 0.3f).x0);
+        // Position moved alone: the window at the effective Position.
+        const auto moved = gg::ui::ghostWindow(base, {0.5f, 0.3f}, lane);
+        REQUIRE(moved.has_value());
+        CHECK(moved->x0 == window(0.5f, 0.3f).x0);
+        CHECK(moved->x1 == window(0.5f, 0.3f).x1);
+        // Differences under the threshold, in both values: none; just over it, in one: shown.
+        CHECK_FALSE(gg::ui::ghostWindow(base, {0.4f + 5.0e-5f, 0.3f - 5.0e-5f}, lane).has_value());
+        CHECK(gg::ui::ghostWindow(base, {0.4f, 0.3f + 2.0e-4f}, lane).has_value());
+        CHECK(gg::ui::ghostWindow(base, {0.4f - 2.0e-4f, 0.3f}, lane).has_value());
+    }
+}
+
+TEST_CASE("a peak column reads only the frames the ring has written", "[ui]")
+{
+    // The FX lane's peak strip: 100 columns of 480 frames each. The strip wraps, so a frame at
+    // or past the written head would read a bucket a ring's length old.
+    constexpr int kColumns = 100;
+    constexpr double kPerColumn = 480.0;
+    constexpr int64_t kWritten = 1'000'000;
+    constexpr int64_t kOldest = kWritten - 768'000 + 64; // a 16 s strip at 48 kHz
+    // No default argument for the column count: a local may not appear in one (GCC 12 rejects
+    // it, constexpr or not).
+    const auto spanOf = [](int columns, int x, int64_t head) {
+        return gg::ui::peakColumnFrames(x, columns, kPerColumn, head, kOldest, kWritten);
+    };
+    const auto span = [&spanOf](int x, int64_t head) { return spanOf(kColumns, x, head); };
+
+    // The head at the written frames: column x reads its own 480 frames, up to the head.
+    for (const int x : {0, 50, 99})
+    {
+        const gg::ui::FrameSpan s = span(x, kWritten);
+        CHECK(s.first == kWritten - (kColumns - x) * 480);
+        CHECK(s.end == kWritten - (kColumns - x - 1) * 480);
+    }
+
+    // The head extrapolated 1,000 frames past the last published block: no column reads past
+    // the written frames. Columns 98 and 99 lie wholly past them, so read nothing, and column
+    // 97, which straddles them, stops there.
+    constexpr int64_t kHead = kWritten + 1000;
+    for (int x = 0; x < kColumns; ++x)
+    {
+        const gg::ui::FrameSpan s = span(x, kHead);
+        CHECK(s.end <= kWritten);
+        CHECK(s.first <= s.end);
+    }
+    CHECK(span(99, kHead).first == span(99, kHead).end);
+    CHECK(span(98, kHead).first == span(98, kHead).end);
+    CHECK(span(97, kHead).first == kWritten - 440);
+    CHECK(span(97, kHead).end == kWritten);
+    CHECK(span(96, kHead).end == kWritten - 440);
+
+    // A lane longer than the strip (2,000 columns, 20 s): the oldest columns start at the
+    // strip's oldest whole bucket, or read nothing.
+    CHECK(spanOf(2000, 0, kWritten).first == kOldest);
+    CHECK(spanOf(2000, 0, kWritten).end == kOldest);
+    const gg::ui::FrameSpan inside = spanOf(2000, 1999, kWritten);
+    CHECK(inside.first == kWritten - 480);
+    CHECK(inside.end == kWritten);
+}
 
 TEST_CASE("the lane clock extrapolates the published clock", "[ui]")
 {
@@ -556,6 +635,7 @@ TEST_CASE("live grains are kept until they end", "[ui]")
 
 TEST_CASE("live grains drop the oldest when full", "[ui]")
 {
+    STATIC_REQUIRE(gg::ui::LiveGrains::kCapacity == 8192); // INTENT §17 states the number
     gg::ui::LiveGrains grains;
     const auto n = gg::ui::LiveGrains::kCapacity;
     for (std::size_t i = 0; i < n + 3; ++i)

@@ -556,6 +556,8 @@ void renderInterior(const GrainRows &rows, uint32_t i, const Taps &taps, const O
                     int64_t begin, int64_t end,
                     const HannTable &hann) noexcept SST_CPPUTILS_NONBLOCKING
 {
+    // No arithmetic here: the guard is for uniformity with every other kernel function.
+    GG_FP_CONTRACT_OFF
     if (begin >= end)
     {
         return;

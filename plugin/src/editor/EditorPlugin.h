@@ -36,15 +36,6 @@ namespace gg::plugin
 /// destroys its editor only once a parent was attached), so publishing follows guiDestroy.
 class EditorPlugin : public GigaGrainsPlugin, public sst::clap_juce_shim::EditorProvider
 {
-    // Before clapJuceShim, so destroyed after it: an editor the shim still holds reads the
-    // context, and its destructor calls editorOpened(false).
-    std::unique_ptr<gg::ui::EditorContext> editorContext_;
-    uint32_t openEditors_{0}; // main thread
-    // Each editor's "still counted open" flag, which its publishing callback and guiDestroy
-    // share, so an editor is counted closed once: the last createEditor()'s, and the one the
-    // shim holds (from guiCreate to guiDestroy). Main thread.
-    std::shared_ptr<bool> lastEditor_, shimEditor_;
-
   public:
     EditorPlugin(const clap_host *host, Product product);
     ~EditorPlugin() override;
@@ -54,8 +45,8 @@ class EditorPlugin : public GigaGrainsPlugin, public sst::clap_juce_shim::Editor
     // the shim, and any editor it still holds, goes before the loader and the parameters, which
     // the editor's context reaches.
 
+    // clapJuceShim itself is declared last, after the private members (below).
     bool implementsGui() const noexcept override { return clapJuceShim != nullptr; }
-    std::unique_ptr<sst::clap_juce_shim::ClapJuceShim> clapJuceShim;
     // ADD_SHIM_IMPLEMENTATION(clapJuceShim), by hand: guiCreate, guiDestroy and guiAdjustSize
     // are this class's (below); the rest forward to the shim as the macro's do.
     bool guiCanResize() const noexcept override { return clapJuceShim->guiCanResize(); }
@@ -103,6 +94,19 @@ class EditorPlugin : public GigaGrainsPlugin, public sst::clap_juce_shim::Editor
     void updatePublished() noexcept;
     /// An editor was created (true) or destroyed (false): publishing is on while any is alive.
     void editorOpened(bool open) noexcept;
+
+    // Before clapJuceShim, so destroyed after it: an editor the shim still holds reads the
+    // context, and its destructor calls editorOpened(false), which reads the rest.
+    std::unique_ptr<gg::ui::EditorContext> editorContext_;
+    uint32_t openEditors_{0}; // main thread
+    // Each editor's "still counted open" flag, which its publishing callback and guiDestroy
+    // share, so an editor is counted closed once: the last createEditor()'s, and the one the
+    // shim holds (from guiCreate to guiDestroy). Main thread.
+    std::shared_ptr<bool> lastEditor_, shimEditor_;
+
+  public:
+    // Last, so destroyed first (above). Public as ADD_SHIM_IMPLEMENTATION's is; the tests reach it.
+    std::unique_ptr<sst::clap_juce_shim::ClapJuceShim> clapJuceShim;
 };
 } // namespace gg::plugin
 
