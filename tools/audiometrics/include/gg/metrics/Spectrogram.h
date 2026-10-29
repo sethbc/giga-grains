@@ -20,7 +20,8 @@ namespace gg::metrics
 /// - Each pixel is clamp((dB + 120) / 120, 0, 1), with dB scaled so a sine of amplitude A reads
 ///   20·log10(A): 0 dB (white) is a full-scale sine, -120 dB and below is black.
 ///
-/// Non-finite samples count as silence. Returns false if the file can't be written.
+/// Non-finite samples count as silence. `path` is UTF-8, as WavIO's are: on Windows a non-ASCII
+/// name opens through the wide API. Returns false if the file can't be written.
 bool writeSpectrogramPng(const std::string &path, const AudioData &audio);
 } // namespace gg::metrics
 

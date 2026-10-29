@@ -39,6 +39,7 @@ add_executable(gg-tests
         media/search_tests.cpp
         media/sha256_tests.cpp
         metrics/metrics_tests.cpp
+        metrics/spectrogram_tests.cpp
         tools/bench_kernel_tests.cpp
         tools/bench_tests.cpp
         tools/render_spec_tests.cpp
@@ -84,6 +85,8 @@ target_link_libraries(gg-tests PRIVATE ${gg_tests_libraries} gg::compiler-option
 # as "space/..."), and through them sst-effects and sst-filters, which gg-core links PRIVATE.
 target_include_directories(gg-tests PRIVATE ${CMAKE_SOURCE_DIR}/core/src)
 target_link_libraries(gg-tests PRIVATE sst-effects sst-filters)
+# metrics/spectrogram_tests.cpp reads the spectrogram PNG back with stb_image, compiled there.
+target_link_libraries(gg-tests PRIVATE gg::stb)
 # Scratch files (WAV/PNG round trips) go under the build tree, never a shared temp dir.
 target_compile_definitions(gg-tests PRIVATE GG_TEST_OUTPUT_DIR="${CMAKE_CURRENT_BINARY_DIR}/test-output"
         GG_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/golden"
@@ -269,6 +272,14 @@ add_test(NAME render_write_media_alone
         --block-size 64 -o ${CMAKE_CURRENT_BINARY_DIR}/write-media-alone/x.wav)
 set_tests_properties(render_write_media_alone PROPERTIES LABELS render
         PASS_REGULAR_EXPRESSION "excludes --write-media|--write-media excludes")
+# A non-ASCII --spectrogram path (carry-over [181]): gg-render exits 0 only if the PNG was
+# written, which on Windows needs the wide-path open, not stbi_write_png's narrow one.
+add_test(NAME render_spectrogram_utf8_path
+        COMMAND gg-render ${CMAKE_CURRENT_SOURCE_DIR}/golden/cases/sparse-sine.json
+        --media-dir ${GG_GOLDEN_MEDIA_DIR}
+        --spectrogram "${CMAKE_CURRENT_BINARY_DIR}/render-utf8/spëctrogram ✓ 音.png")
+set_tests_properties(render_spectrogram_utf8_path PROPERTIES LABELS render
+        FIXTURES_REQUIRED golden_media)
 file(GLOB GG_GOLDEN_CASE_SPECS CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/golden/cases/*.json)
 if (NOT GG_GOLDEN_CASE_SPECS)
     message(FATAL_ERROR "No golden cases in ${CMAKE_CURRENT_SOURCE_DIR}/golden/cases")

@@ -8,7 +8,11 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <limits>
+#include <string>
+#include <system_error>
 #include <vector>
 
 // The header only: the implementation is compiled in gg::stb_impl.
@@ -23,6 +27,36 @@ namespace
 constexpr size_t kHop = 512;
 constexpr size_t kHeight = 1024;
 constexpr double kRangeDb = 120.0;
+
+/// stbi_write_func: appends the encoder's bytes to the std::vector<uint8_t> at `context`.
+void appendBytes(void *context, void *data, int size)
+{
+    auto &bytes = *static_cast<std::vector<uint8_t> *>(context);
+    const auto *begin = static_cast<const uint8_t *>(data);
+    bytes.insert(bytes.end(), begin, begin + size);
+}
+
+/// Writes `bytes` to the file at the UTF-8 `path`. The stream is opened from a
+/// std::filesystem::path made from the UTF-8 text, so on Windows a non-ASCII name opens through
+/// the wide API, not the ANSI code page (carry-over [181]); text that isn't valid UTF-8 there
+/// fails. Elsewhere the bytes are the path.
+bool writeFile(const std::string &path, const std::vector<uint8_t> &bytes)
+{
+    std::filesystem::path file;
+    try
+    {
+        file = std::filesystem::path(std::u8string(path.begin(), path.end()));
+    }
+    catch (const std::system_error &)
+    {
+        return false;
+    }
+    std::ofstream out(file, std::ios::binary | std::ios::trunc);
+    out.write(reinterpret_cast<const char *>(bytes.data()),
+              static_cast<std::streamsize>(bytes.size()));
+    out.close();
+    return !out.fail();
+}
 } // namespace
 
 bool writeSpectrogramPng(const std::string &path, const AudioData &audio)
@@ -61,7 +95,14 @@ bool writeSpectrogramPng(const std::string &path, const AudioData &audio)
         }
     }
 
+    // Encoded in memory, then written by writeFile: stbi_write_png would open the path narrow.
     const int w = static_cast<int>(width);
-    return stbi_write_png(path.c_str(), w, static_cast<int>(kHeight), 1, pixels.data(), w) != 0;
+    std::vector<uint8_t> png;
+    if (stbi_write_png_to_func(appendBytes, &png, w, static_cast<int>(kHeight), 1, pixels.data(),
+                               w) == 0)
+    {
+        return false;
+    }
+    return writeFile(path, png);
 }
 } // namespace gg::metrics
