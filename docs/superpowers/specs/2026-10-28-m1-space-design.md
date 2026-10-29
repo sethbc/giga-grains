@@ -203,10 +203,11 @@ return is added after.
   left for later.
 
   > **Amended (2026-10-28; INTENT §23 #50):** the patch grew beyond two changes: ∞ is now the
-  > decay multiplier at exactly 1, a 0.5 Hz DC blocker in place of the LF damping (ruling R-T8a),
-  > the HF clamp at 0 and `loopClip` (§6.4); plus the smoothed pre-delay, and `clear()` and
-  > `clearStep()` (rulings R-T2b, R-T5a). They are selected by calls (`setInfinite`,
-  > `setPredelaySamples`, `clear`), not by the `FXConfig`; with none used, the copy renders
+  > decay multiplier at exactly 1, the LF dampers at a 0.5 Hz DC blocker's coefficient (ruling
+  > R-T8a), the HF clamp at 0 and `loopClip`, reached by a 30 ms glide (ruling R-T8b; §6.4);
+  > plus the smoothed pre-delay, and `clear()` and `clearStep()` (rulings R-T2b, R-T5a). They are
+  > selected by calls (`setInfinite`, `setPredelaySamples`, `clear`, `clearStep`), not by the
+  > `FXConfig`; with none used, the copy renders
   > bit-identically to Surge's. It sits in `core/src/space/Reverb2Patched.h`. **It isn't offered
   > upstream:** the director's policy (2026-10-28) is no external reports or upstream filings.
 - **CPU when off:** while Amount and Dry to Reverb are both 0 and Amount has been 0 long enough,
@@ -232,7 +233,7 @@ return is added after.
   > `loopClip(x)` = `x` for |x| ≤ 1, else `sign(x) × (2 − 1/|x|)`: below 2 in magnitude, slope 1
   > at the knee, no libm. At ∞ it runs on each block's loop signal after the dampers. The hour
   > tests (a full-scale 110 Hz sine and full-scale noise, Damping 0, Size and Modulation 100%)
-  > peaked at 1.687 and 1.718, every sample finite.
+  > peak at 1.685 and 1.718 with the final code (R-T8a, R-T8b), every sample finite.
 - **What ∞ holds (S7):** Reverb 2 damps inside its loop: four LF high-pass and four HF low-pass
   one-poles per trip, and the LF coefficient is clamped to at least 0.01, a high-pass near 77 Hz
   at 48 kHz. A loop gain of 1 alone would still drain the lows in seconds. **At ∞ the LF damping
@@ -247,6 +248,18 @@ return is added after.
   > 0 (lossless at Damping 0 apart from DC), and `loopClip`. With Damping up, the HF one-pole
   > attenuates the mids on every pass too, so only the lows hold, and the mids fade more slowly
   > than the highs (P2); the listening check judges it.
+  >
+  > **Amended by ruling R-T8b (2026-10-28, the fix wave after the final review):** the switch
+  > into and out of ∞ is continuous. The DC blocker is the LF dampers themselves at the 0.5 Hz
+  > coefficient, keeping their state, not a separate filter that started at rest (which stepped
+  > the loop's lows on entering ∞, about +26 dB above 3 kHz with a held pad). And the loop glides
+  > between its finite and infinite settings over 30 ms, in whole 32-sample blocks: with g the
+  > share of ∞, the decay multiplier is decay + g·(1 − decay), the LF coefficient ldc·(dc/ldc)^g,
+  > the HF clamp's floor 0.01·(1 − g), and `loopClip` runs while g > 0 (leaving ∞ had dropped the
+  > multiplier from 1 within one block). Before a reverb's first block, g takes its target at
+  > once, so a reverb that starts at ∞ (the `inst-infinite` golden) is unchanged, and at g = 0
+  > the loop is Surge's exactly. The DC blocker costs about 0.6 dB in the lowest band over 30 s
+  > at ∞.
 - Reverb 2's damping coefficients don't scale with the sample rate, so how fast the highs fade at
   a given Damping depends on the host's rate. That is Surge's behaviour, and it is kept.
 
@@ -332,7 +345,7 @@ Space takes the next free IDs in each scope.
 - **New golden cases** (each with its spectrogram looked at before committing):
   - `fx-space` — a grain cloud over noise into the reverb at a medium Decay and Size;
   - `fx-dry-send` — Mix 0, Dry to Reverb up: the input alone in the room;
-  - `inst-diffusion` — a sparse cloud with Diffusion swept from 0 to 100%;
+  - `inst-diffusion` — a sparse cloud with Diffusion stepped from 0 to 100% in 16 steps;
   - `inst-infinite` — a held note at Decay ∞, released, then the tail sustaining;
   - an automation case moving Size, Decay and Pre-delay mid-render (block-size invariance under
     automation).
@@ -367,8 +380,9 @@ Space takes the next free IDs in each scope.
   - the reverb: an impulse produces a tail delayed by exactly Pre-delay (minimum 32 samples);
     Decay maps to a measured T60 within a tolerance across the range; at ∞ with Damping 0 a
     stopped tail holds its level in every band, and with Damping up its lows and mids hold while
-    its highs fade; coming down from ∞ decays; with the fork's two changes off, the patched
-    Reverb 2 renders bit-identically to Surge's;
+    its highs fade (amended, §6.4: the DC blocker costs about 0.6 dB in the lowest band, and with
+    Damping up only the lows hold, ruling P2); coming down from ∞ decays; with the fork's two
+    changes off, the patched Reverb 2 renders bit-identically to Surge's;
   - Pre-delay automation: a swept Pre-delay produces no step larger than the signal's own (no
     click), at block sizes 1 and 4096 alike;
   - the hour-long boundedness renders at ∞ (§6.4), labelled `slow`;
@@ -376,7 +390,8 @@ Space takes the next free IDs in each scope.
     instrument ignores the send;
   - the parameter IDs and metadata pinned; an old state loads at the defaults and renders
     bit-identically;
-  - the tail extension's values, including `CLAP_TAIL_INFINITE` at ∞.
+  - the tail extension's values: a constant per product (ruling R-T7a, §6.7), the FX's
+    `CLAP_TAIL_INFINITE` and the instrument's 122.5 s.
 - **Plugin tests:** the new parameters through the CLAP factory, the "Space" remote-controls page
   in both products, the `[rt]` tripwire with Space automated, the AU state round-trip.
 - **Goldens:** the new cases (§6.8); the existing ones' WAV SHA-256s unchanged.

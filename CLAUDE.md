@@ -200,8 +200,9 @@ runs the tests labelled either. The labels are:
     commit any other audio: generate it.
 - `space`: Space (M1 sub-project 4): the diffuser, the patched Reverb 2 and `SpaceReverb`, the
   `Processor`'s Space chain, and the plugins' tail and "Space" remote-controls page. `slow` also
-  marks two of them, the hour-long renders at infinite Decay (about 50 s each in `dev`, 2.5
-  minutes under ASan); `-LE slow` leaves all three slow tests out.
+  marks four of them: the hour-long renders at infinite Decay (about 50 s each in `dev`, 2.5
+  minutes under ASan), the block-size invariance render and the 60 s render at extreme settings
+  (about 8 s and 13 s in `dev`); `-LE slow` leaves all five slow tests out.
 - `kernel`: the renderers' scalar references and the 4-wide SIMD sample and live kernels, which
   must match them bit for bit (`std::memcmp`);
 - `determinism`: block-size invariance;
@@ -319,6 +320,9 @@ gg-render --write-media DIR
     limit of 30. Don't add mid-sound Size moves to a golden.
   - Every case that predates Space renders bit-identically with it, so its WAV's SHA-256 is
     unchanged. A Space change that moves one is a regression.
+  - **The event-log comparison never sees the reverb or the diffuser:** the log records grains,
+    and Space runs after them. Across platforms, Space's five cases are checked by their metrics
+    alone, within tolerances.
 - **The `golden` tests** render every case into `build/<preset>/golden/<case>.wav` and `.png`.
   - They compare the metrics within tolerances.
   - They compare the grain-event log exactly per line (CR and final newline ignored). That
@@ -378,9 +382,14 @@ $b --space [--quick | --seconds S] [--rounds N] [--commit SHA] [--json out.json]
   setting). After a warm-up of 2 s of audio, each of 5 rounds times one run of at least 2 s
   (0.2 s with `--quick`). It prints the median, min and IQR of ns per stereo sample and the
   median's % of one core at 48 kHz, and writes its own JSON document (not schema 2).
-  - It is report-only: no ratio, no baseline, no verdict, and CI doesn't run it. Its exit status
-    is 0, 1 if it can't write the JSON, or 2 for bad usage.
-  - Sub-project 4 measured 29.05 ns per stereo sample, 0.139% of one M5 Max core (INTENT §16).
+  - It is report-only: no ratio, no baseline, no verdict. CI's benchmark step doesn't time it;
+    ctest's `bench_space_cli` only checks that it runs. Its exit status is 0, 1 if it can't
+    write the JSON, or 2 for bad usage.
+- **An option a mode doesn't take is bad usage** (exit 2, with the usage): `--space` takes only
+  the options shown above, `--canvas` only `--quick` and `--json`, and `--make-baseline`
+  nothing else.
+  - Sub-project 4's fix wave measured 28.49 ns per stereo sample, 0.137% of one M5 Max core,
+    at its final code (`ac81dfb`; INTENT §16).
     Sub-project 6 publishes it beside X.
 - **When profiling the plugins in a VST3 host,** remember that clap-wrapper's VST3 `process`
   takes a spin lock. Time spent there is the wrapper's, not ours.

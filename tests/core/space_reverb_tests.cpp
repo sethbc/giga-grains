@@ -1198,7 +1198,7 @@ TEST_CASE("SpaceReverb maps Size, Damping and Modulation", "[space]")
 
 // ---------------------------------------------------------------------------------------------
 // The patched Reverb 2's DC blocker at infinity (ruling R-T8a): a lossless loop integrates DC,
-// so at infinity a sub-audio high-pass stands where the LF damper stood.
+// so at infinity the LF dampers run as a sub-audio high-pass, at kInfiniteDcHz.
 
 namespace
 {
@@ -1264,9 +1264,9 @@ TEST_CASE("patched Reverb2 infinite blocks a DC input", "[space]")
 
 TEST_CASE("patched Reverb2 clear while infinite matches a fresh instance", "[space]")
 {
-    // A reverb used at infinity right up to the clear, so the DC blocker holds state when
-    // clear() turns infinity off; then infinity again after the clear, from 1 s. Cleared at
-    // once and in steps.
+    // A reverb used at infinity right up to the clear, so the LF dampers hold state at the DC
+    // blocker's coefficient, and the glide (ruling R-T8b) is at its top, when clear() turns
+    // infinity off; then infinity again after the clear, from 1 s. Cleared at once and in steps.
     for (const bool inSteps : {false, true})
     {
         GgFxConfig::Storage storage;
