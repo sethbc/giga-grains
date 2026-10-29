@@ -54,7 +54,8 @@ Density, Pitch, Spray, Stereo, Level; Mix's `08` is the exception, below) does t
 So in `03`, `04`, `07b` and `08b` the bottom is held over 1.5–3.5 s and the top over 5.5–7.5 s;
 in `01` the top is held over 5.5–8.0 s; in `02` the bottom over 1.5–5.5 s and the top over
 7.5–9.5 s. The "bottom" and "top" levels in the table are measured over the last 1.5 s of each
-hold (the last 1.3 s of `01`'s top, the last 3 s of `02`'s bottom), once the cloud is steady.
+hold, once the cloud is steady, except the last 1.3 s of `01`'s top and the whole of `02`'s
+bottom hold (its pulses and the silence between them).
 `08` (Mix) runs over a 4 s loop, too short for the pattern: it climbs once, from 0 to 100%.
 
 A **unipolar** macro (Texture, Feedback) climbs from 0 at 0.5 s to 100% at 4.5 s, in 1/32
@@ -91,7 +92,8 @@ for example). They are Distribution's behaviour, not a macro's.
   from one end to the other, with no dead zone and no cliff. The depths are starting values
   (spec §3.2). **Tune them by ear.** The values live in `core/src/ParamMap.cpp`'s
   `macroOffsets`. When you settle them, the tuned values are committed there and recorded in a
-  new "Decision notes" section at the end of the spec (in the style of Task 13's amendments) and
+  new "Decision notes" section at the end of the spec (in the style of the spec's in-place
+  amendments) and
   in INTENT §23's #58. These come up in the renders:
   - **Size:** Density compensates only half of Size's octaves, so the overlap still follows
     Size (`01`).
@@ -100,7 +102,7 @@ for example). They are Distribution's behaviour, not a macro's.
     barely spreads (`13`); Macro Spray's top reaches Spray 86%, 0.92 s (`04`).
   - **Texture:** the macro gets about 9 dB louder toward its top (`05`).
   - **Feedback:** is 0.9·u² regenerative enough at Level −6 dB (`07`, `11`, `11b`)?
-  - **Stereo:** the top reaches a correlation of only 0.78 (`07b`).
+  - **Stereo:** the top reaches a correlation of only 0.71 (`07b`).
   - **Mix:** the wet is about 9 dB below the dry at Level −6 dB (`08`).
   - **Level:** the top drives the soft limiter (`08b`).
 - [ ] **2. Texture from smooth to gated** (`09`, `05`). The five anchors sound like Hann, a
@@ -138,7 +140,7 @@ for example). They are Distribution's behaviour, not a macro's.
 - **(f) A move down from Macro Size's top swells** (`01`, 8.0–9.0 s). With the top held, the
   level is steady (−21.4 dBFS RMS). Bringing the macro back to rest over 1 s lets the last long
   grains (up to 1.2 s) overlap the denser, shorter ones that follow: RMS rises about 4 dB, to
-  −16.6 dBFS, and peaks at −6.0 dBFS, at the soft limiter's knee. A faster move swells more.
+  −16.6 dBFS, and peaks at −6.0 dBFS, at the soft limiter's knee.
 - **(g) Holes at the defaults.** Distribution 50% leaves brief silences, up to about 90 ms (see
   "Holes in the cloud" above). Is that the right default character?
 
@@ -181,19 +183,19 @@ build of the commit you are judging (CLAUDE.md, "Validators", shows the AU's ins
   - The FX's window should be one-sided (observation (d)).
   - Drag the window body (Position) and an edge (Spray). Each drag should record as automation
     in the host.
-- [ ] **The frame-ms readout,** in Live 12 and in Bitwig: at most 3 ms (INTENT §16). **Spec §9
-  asks for it at 8,192 grains, which a host can't reach.** The M0 stress panel is gone, so the
-  real view draws only the grains that are playing. The engine's pool holds 4,096 at most, and
-  its densest setting (Density 400 Hz, Size 2 s) sounds about 800 at a time. Read the frame ms
-  at that densest setting, in a full-screen editor too.
-- [ ] **Decide how the frame budget is judged.** Offline, `gg-bench --canvas` measured this build
-  at 3.66 ms per frame at 8,192 grains on a loaded machine, **over the 3 ms budget**, and at
-  2.80 ms on a second, less loaded run (see Verification). Choose one:
-  - **amend spec §9** to "the densest reachable host setting at most 3 ms in Live and Bitwig,
-    plus `gg-bench --canvas` at 8,192 grains on an idle machine at most 3 ms" (the idle run is
-    best taken with sub-project 6's measurement of X); or
-  - **treat the budget as a blocker** until an idle `gg-bench --canvas` run at 8,192 grains is
-    under 3 ms.
+- [ ] **The frame-ms readout,** in Live 12 and in Bitwig: at most 3 ms (INTENT §16) at the
+  densest setting a host can reach (decision D3, below). The 8,192 grains spec §9 first asked
+  for can't be reached in a host: the M0 stress panel is gone, so the real view draws only the
+  grains that are playing. The engine's pool holds 4,096 at most, and its densest setting
+  (Density 400 Hz, Size 2 s) sounds about 800 at a time. Read the frame ms at that densest
+  setting, in a full-screen editor too.
+
+**How the frame budget is judged: decided** (decision D3, the director, 2026-10-29; spec §9 as
+amended, INTENT §16, §23 #58). The densest setting a host can reach stays at or under 3 ms in
+Live and Bitwig, and an idle `gg-bench --canvas` run at 8,192 grains stays at or under 3 ms,
+taken with sub-project 6's measurement of X. Offline, `gg-bench --canvas` measured this build at
+3.66 ms per frame at 8,192 grains during a build on the same machine, over the budget, and at
+2.80 ms on a second run with nothing building (M0's, 2.77 ms; see Verification).
 
 ## Verification at fe4de01
 
@@ -239,15 +241,15 @@ the reference kernel's, median over 5 rounds. Task 3 measured its ratios under h
 **The canvas** (`gg-bench --canvas`: the splat renderer, headless, at 3200×1200 physical pixels,
 a 1600×600-point canvas at 2×, larger than the editor's default 900×500 window; the median of
 240 frames). **The first run exceeds INTENT §16's 3 ms budget**, at both 8,192 and 4,096 grains.
-It ran while `scripts/check.sh` was building on the same machine. A second run, with the load
-average at about 4 and nothing building, came in under the budget, matching M0's 2.77 ms (idle,
+It ran while `scripts/check.sh` was building on the same machine. A second run with nothing
+building (load average about 4) came in under the budget, matching M0's 2.77 ms (idle,
 same canvas; `docs/spikes/m0-canvas-budget.md`).
 
 | grains | run 1, during a build (mean, p95) | run 2, load ~4 (mean, p95) | M0, idle |
 |---|---|---|---|
-| 4,096 | **3.05 ms** (3.26, 4.23) | 2.51 ms (2.54, 2.77) | |
+| 4,096 | **3.05 ms** (3.26, 4.23) | 2.51 ms (2.54, 2.77) | 2.41 ms |
 | 8,192 | **3.66 ms** (3.94, 5.01) | 2.80 ms (2.82, 3.02) | 2.77 ms |
-| 16,384 | 4.79 ms (5.15, 6.67) | 3.52 ms (3.52, 3.60) | |
+| 16,384 | 4.79 ms (5.15, 6.67) | 3.52 ms (3.52, 3.60) | 3.52 ms |
 
-Neither run was on an idle machine. An idle re-run belongs with sub-project 6's measurement of X,
-and the checklist above asks for the decision this needs.
+Neither run was on an idle machine. The idle run that decision D3 (above) judges the budget by
+is taken with sub-project 6's measurement of X.
