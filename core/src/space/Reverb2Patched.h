@@ -30,8 +30,11 @@
 #define GG_CORE_SPACE_REVERB2PATCHED_H
 
 #include <cstring>
-// GG PATCH: <cstdint> for int64_t, and EffectCore.h by its path from sst-effects' include dir.
+// GG PATCH: <cstdint>, <limits> and <cmath> for the additions, and EffectCore.h by its path
+// from sst-effects' include dir.
+#include <cmath>
 #include <cstdint>
+#include <limits>
 #include "sst/effects/EffectCore.h"
 #include "sst/basic-blocks/params/ParamMetadata.h"
 #include "sst/basic-blocks/dsp/Lag.h"
@@ -88,20 +91,30 @@ template <typename FXConfig> struct Reverb2 : core::EffectTemplateBase<FXConfig>
     static constexpr int PREDELAY_BUFFER_SIZE_LIMIT =
         48000 * 8 * 3; // allow for one second of diffusion
 
+    // GG PATCH: a run of floats that clear() still has to zero.
+    struct ClearSpan
+    {
+        float *data;
+        size_t count;
+    };
+
     class allpass
     {
       public:
         allpass();
         float process(float x, float coeff);
         void setLen(int len);
-        // GG PATCH: back to the constructed state. process() writes only below the length, so
-        // this zeroes the data up to the longest length set since the last clear.
-        void clear() noexcept
+        // GG PATCH: starts a clear. Back to the constructed state, but for the data, which it
+        // hands to the caller to zero: everything up to the longest length set since the last
+        // clear. process() writes only there, and a fresh lap reads every index it visits
+        // before writing it, so all of it can be read again.
+        int prepareClear(ClearSpan *out) noexcept
         {
-            memset(_data, 0, size_t(_highWater) * sizeof(float));
+            out[0] = {_data, size_t(_highWater)};
             _k = 0;
             _len = 1;
             _highWater = 1;
+            return 1;
         }
 
       private:
@@ -118,19 +131,19 @@ template <typename FXConfig> struct Reverb2 : core::EffectTemplateBase<FXConfig>
         float process(float x, int tap1, float &tap_out1, int tap2, float &tap_out2,
                       int modulation);
         void setLen(int len);
-        // GG PATCH: back to the constructed state, after `used` calls of process() since the
-        // last one. Its write index sweeps the whole line whatever the length, from 1 on, so
-        // the data written is [1, used], or all of it once used reaches the line's size.
-        void clear(int64_t used) noexcept
+        // GG PATCH: starts a clear, after `used` calls of process() since the last one; see
+        // prepareLineClear.
+        int prepareClear(ClearSpan *out, int64_t used, int reach) noexcept
         {
-            memset(_data, 0, size_t(std::min<int64_t>(used + 1, MAX_DELAY_LEN)) * sizeof(float));
             _k = 0;
             _len = 1;
+            return prepareLineClear(out, _data, MAX_DELAY_LEN, used, reach, _dirtyEnd);
         }
 
       private:
         int _len;
         int _k;
+        int _dirtyEnd{0}; // GG PATCH: see prepareLineClear
         float _data[MAX_DELAY_LEN];
     };
 
@@ -166,17 +179,17 @@ template <typename FXConfig> struct Reverb2 : core::EffectTemplateBase<FXConfig>
             const auto q = p == 0 ? PREDELAY_BUFFER_SIZE - 1 : p - 1;
             return _data[p] + (_data[q] - _data[p]) * frac;
         }
-        // GG PATCH: back to the constructed state, after `used` calls of either process since
-        // the last one. Like the delay's, its write index sweeps the whole buffer from 1 on.
-        void clear(int64_t used) noexcept
+        // GG PATCH: starts a clear, after `used` calls of either process since the last one;
+        // see prepareLineClear.
+        int prepareClear(ClearSpan *out, int64_t used, int reach) noexcept
         {
-            memset(_data, 0,
-                   size_t(std::min<int64_t>(used + 1, PREDELAY_BUFFER_SIZE)) * sizeof(float));
             k = 0;
+            return prepareLineClear(out, _data, PREDELAY_BUFFER_SIZE, used, reach, _dirtyEnd);
         }
 
       private:
         int k = 0;
+        int _dirtyEnd{0}; // GG PATCH: see prepareLineClear
         float _data[PREDELAY_BUFFER_SIZE];
     };
 
@@ -219,16 +232,23 @@ template <typename FXConfig> struct Reverb2 : core::EffectTemplateBase<FXConfig>
         _infinite = on;
     }
 
+    /// The longest smoothed pre-delay: Space's Pre-delay range (spec §6.5).
+    static constexpr double kMaxPredelaySeconds{0.5};
+
     /// The smoothed pre-delay (S8): the delay, in samples, toward which the pre-delay moves at
-    /// kPredelayMaxRate, read with linear interpolation. Clamped to [0, the buffer's size - 2];
-    /// NaN counts as 0. The first call switches Reverb 2's own pre-delay (rev2_predelay) off for
-    /// good (until clear()), and the glide starts from the delay that one was giving. While no
-    /// block has run since construction or clear(), the delay is set at once, so a reverb that
-    /// starts empty starts at its pre-delay.
+    /// kPredelayMaxRate, read with linear interpolation. Clamped to [0, kMaxPredelaySeconds ×
+    /// the sample rate] (and to the buffer); NaN counts as 0. The first call switches Reverb 2's
+    /// own pre-delay (rev2_predelay) off until clear(), and the glide starts from the delay that
+    /// one was giving.
+    ///
+    /// **While no block has run since construction or the last clear(), the delay is set at
+    /// once, without a glide**, so a reverb that starts empty starts at its pre-delay (ruling
+    /// R-T2a). Call it before the first processBlock after a clear for that.
     void setPredelaySamples(float target) noexcept
     {
         double t = target > 0.f ? double(target) : 0.0;
-        t = std::min(t, double(PREDELAY_BUFFER_SIZE - 2));
+        t = std::min(
+            {t, kMaxPredelaySeconds * this->sampleRate(), double(PREDELAY_BUFFER_SIZE - 2)});
         _pdTarget = t;
         if (_samplesSinceClear == 0)
             _pdDelay = t;
@@ -238,46 +258,47 @@ template <typename FXConfig> struct Reverb2 : core::EffectTemplateBase<FXConfig>
     }
 
     /// Back to a freshly constructed and initialize()d instance: the next blocks render exactly
-    /// what such an instance would. Zeroes the lines only as far as they have been written
-    /// since construction or the last clear(): each allpass up to its longest length, and the
-    /// delays and the pre-delay (whose write positions sweep their whole buffers) as many
-    /// samples as have run, up to their sizes.
-    void clear() noexcept
+    /// what such an instance would. That includes turning infinite decay and the smoothed
+    /// pre-delay off, so call setInfinite and setPredelaySamples again before the next block
+    /// (SpaceReverb calls both at every chunk start, setPredelaySamples before the first block
+    /// so the pre-delay starts where it should).
+    ///
+    /// It zeroes only what a later read can reach and was written: each allpass up to its
+    /// longest length since the last clear, and of each delay line and the pre-delay, the
+    /// oldest positions that a fresh run reads before writing them (clearReaches). That is
+    /// exact while, until the next clear, the sample rate is the one in effect now and the
+    /// values stay in their ranges: rev2_room_size at most 1, rev2_modulation at most 1, and
+    /// any pre-delay, rev2_predelay's included, at most kMaxPredelaySeconds.
+    ///
+    /// The same as clearStep with no budget; it also finishes a clear clearStep has begun.
+    void clear() noexcept { clearStep(std::numeric_limits<size_t>::max()); }
+
+    /// clear(), spread over calls: zeroes at most `maxFloats` floats of what clear() zeroes,
+    /// and returns true once all of it is done and the instance is back to fresh. The first
+    /// call begins the clear; until one returns true, call neither processBlock nor the
+    /// setters (the clear's end undoes them).
+    bool clearStep(size_t maxFloats) noexcept
     {
-        for (auto &a : _input_allpass)
-            a.clear();
-        for (auto &block : _allpass)
-            for (auto &a : block)
-                a.clear();
-        for (auto &d : _delay)
-            d.clear(_samplesSinceClear);
-        _predelay.clear(_samplesSinceClear);
-        for (auto &d : _hf_damper)
-            d = onepole_filter();
-        for (auto &d : _lf_damper)
-            d = onepole_filter();
-        _state = 0.f;
-        _decay_multiply.reset();
-        _diffusion.reset();
-        _buildup.reset();
-        _hf_damp_coefficent.reset();
-        _lf_damp_coefficent.reset();
-        _modulation.reset();
-        _lfo.r = 0.f; // SurgeQuadrOsc's constructed phase; set_rate sets the rest each block
-        _lfo.i = -1.f;
-        last_decay_time = -1.0;
-        for (auto *l : {&widthS, &widthM, &mix})
+        if (!_clearing)
+            beginClear();
+        while (_clearSpan < _clearSpanCount)
         {
-            l->set_target_instant(0.f);
-            l->first_run = true;
+            auto &span = _clearSpans[_clearSpan];
+            if (span.count == 0)
+            {
+                ++_clearSpan;
+                continue;
+            }
+            if (maxFloats == 0)
+                return false;
+            const size_t n = std::min(span.count, maxFloats);
+            memset(span.data, 0, n * sizeof(float));
+            span.data += n;
+            span.count -= n;
+            maxFloats -= n;
         }
-        _infinite = false;
-        _pdSmoothed = false;
-        _pdDelay = 0.0;
-        _pdTarget = 0.0;
-        _pdLastTap = 0;
-        _samplesSinceClear = 0;
-        initialize();
+        finishClear();
+        return true;
     }
 
     /// The loop's soft clip at infinity: x within [-1, 1], else sign(x)·(2 − 1/|x|). Bounded
@@ -382,7 +403,104 @@ template <typename FXConfig> struct Reverb2 : core::EffectTemplateBase<FXConfig>
 
     sdsp::lipol_sse<FXConfig::blockSize, false> widthS, widthM, mix;
 
-    // GG PATCH: the additions' state.
+    // GG PATCH: the additions' state and helpers.
+
+    /// The farthest back, in samples, that a read of a delay line and of the pre-delay can
+    /// reach at the current sample rate with values in range (see clear()), plus a margin.
+    /// A delay line reads at most its longest length (178.8 ms at Size 2x) plus the
+    /// modulation's depth (5 ms at 100%) plus one, behind its write position; the pre-delay
+    /// reads at most kMaxPredelaySeconds plus one.
+    void clearReaches(int &delayReach, int &predelayReach)
+    {
+        const auto sr = this->sampleRate();
+        delayReach = msToSamples(178.8, 2.f, sr) + int(std::ceil(sr * 0.005)) + 4;
+        predelayReach = int(std::ceil(kMaxPredelaySeconds * sr)) + 4;
+    }
+
+    /// Lists, in out, what a clear of a delay line or the pre-delay must zero, and keeps the
+    /// line's bookkeeping. Such a line writes position 1, 2, ... after construction or a clear,
+    /// sweeping its whole buffer whatever its length, and a read `d` back from write position
+    /// n lands on n - d. After a clear (which restarts the positions at 0) a read can see what
+    /// was there before only at position 0 (read at n = d, written again only after a whole
+    /// sweep) and at the positions past size - reach (where n - d wraps). So it zeroes those,
+    /// where they may hold anything: position 0 when the line has swept it since the last
+    /// clear, and the window up to dirtyEnd, the highest position written since a clear left
+    /// it, which spans several clears if the reach grows.
+    static int prepareLineClear(ClearSpan *out, float *data, int size, int64_t used, int reach,
+                                int &dirtyEnd) noexcept
+    {
+        int n = 0;
+        const bool swept = used >= size;
+        const int end = swept ? size - 1 : int(std::max<int64_t>(dirtyEnd, used));
+        if (swept)
+            out[n++] = {data, 1};
+        const int windowStart = std::max(1, size - reach);
+        if (end >= windowStart)
+            out[n++] = {data + windowStart, size_t(end - windowStart + 1)};
+        dirtyEnd = std::min(end, windowStart - 1);
+        return n;
+    }
+
+    /// Starts a clear: lists what to zero and resets the lines' positions.
+    void beginClear() noexcept
+    {
+        int delayReach, predelayReach;
+        clearReaches(delayReach, predelayReach);
+        int n = 0;
+        for (auto &a : _input_allpass)
+            n += a.prepareClear(_clearSpans + n);
+        for (auto &block : _allpass)
+            for (auto &a : block)
+                n += a.prepareClear(_clearSpans + n);
+        for (auto &d : _delay)
+            n += d.prepareClear(_clearSpans + n, _samplesSinceClear, delayReach);
+        n += _predelay.prepareClear(_clearSpans + n, _samplesSinceClear, predelayReach);
+        _clearSpanCount = n;
+        _clearSpan = 0;
+        _clearing = true;
+    }
+
+    /// Ends a clear, the lines zeroed: every other piece of state back to fresh.
+    void finishClear() noexcept
+    {
+        for (auto &d : _hf_damper)
+            d = onepole_filter();
+        for (auto &d : _lf_damper)
+            d = onepole_filter();
+        _state = 0.f;
+        _decay_multiply.reset();
+        _diffusion.reset();
+        _buildup.reset();
+        _hf_damp_coefficent.reset();
+        _lf_damp_coefficent.reset();
+        _modulation.reset();
+        _lfo.r = 0.f; // SurgeQuadrOsc's constructed phase; set_rate sets the rest each block
+        _lfo.i = -1.f;
+        last_decay_time = -1.0;
+        for (auto *l : {&widthS, &widthM, &mix})
+        {
+            l->set_target_instant(0.f);
+            l->first_run = true;
+        }
+        _infinite = false;
+        _pdSmoothed = false;
+        _pdDelay = 0.0;
+        _pdTarget = 0.0;
+        _pdLastTap = 0;
+        _samplesSinceClear = 0;
+        _clearing = false;
+        _clearSpanCount = 0;
+        _clearSpan = 0;
+        initialize();
+    }
+
+    static constexpr int kMaxClearSpans{NUM_INPUT_ALLPASSES + NUM_BLOCKS * NUM_ALLPASSES_PER_BLOCK +
+                                        2 * NUM_BLOCKS + 2};
+    ClearSpan _clearSpans[kMaxClearSpans]{};
+    int _clearSpanCount{0};
+    int _clearSpan{0};
+    bool _clearing{false};
+
     bool _infinite{false};
     bool _pdSmoothed{false};       // setPredelaySamples has been called since the last clear()
     double _pdDelay{0.0};          // the smoothed pre-delay now, in samples (64-bit: a position)

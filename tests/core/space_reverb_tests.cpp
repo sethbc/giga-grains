@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <memory>
 #include <numbers>
 #include <vector>
@@ -381,27 +382,38 @@ TEST_CASE("patched Reverb2 predelay glide has no click", "[space]")
         in.left[i] = in.right[i] =
             float(0.5 * std::cos(2.0 * std::numbers::pi * 220.0 * double(i) / kRate));
     }
-    // The pre-delay moves from 0 to 24,109 samples at 1 s (a glide of 48,218 samples, done by
-    // 2.0 s) and back to 0 at 2.5 s (done by 3.5 s). That is 110.5 periods of the tone, so a
-    // jump instead of a glide would flip its phase, from one peak to the other. (At 24,000
-    // samples, 110 periods exactly, a jump wouldn't show.)
-    constexpr float kAway = 24109.f;
-    auto away = [](size_t chunk) { return chunk >= chunkAt(1.0) && chunk < chunkAt(2.5); };
+    // The pre-delay's target: 0, then 23,891 samples at 1 s, then, mid-glide at 1.5 s (where
+    // the delay has reached 12,000), 6,000, so the glide turns round; then 0 again at 2.5 s
+    // (done by 2.75 s). 23,891 samples is 109.5 periods of the tone, so a jump there instead
+    // of a glide would flip its phase, from one peak to the other. (At 24,000 samples, 110
+    // periods exactly, a jump wouldn't show.)
+    constexpr float kAway = 23891.f;
+    constexpr float kBack = 6000.f;
+    auto targetAt = [](size_t chunk) {
+        if (chunk < chunkAt(1.0) || chunk >= chunkAt(2.5))
+            return 0.f;
+        return chunk < chunkAt(1.5) ? kAway : kBack;
+    };
     auto run = [&](bool moving) {
         GgFxConfig::Storage storage;
         storage.sampleRate = kRate;
         setOneCopyValues(storage);
         auto reverb = std::make_unique<OneTap<Rev2Patched>>(&storage, &storage, &storage);
         reverb->initializeOneTap();
-        return render(*reverb, in, [&](size_t c) {
-            reverb->setPredelaySamples(moving && away(c) ? kAway : 0.f);
-        });
+        return render(*reverb, in,
+                      [&](size_t c) { reverb->setPredelaySamples(moving ? targetAt(c) : 0.f); });
     };
     const float heldStep = maxStep(run(false));
     const float glideStep = maxStep(run(true));
     UNSCOPED_INFO("largest step: held " << heldStep << ", glide " << glideStep << " ("
                                         << glideStep / heldStep << "x)");
     REQUIRE(heldStep > 0.f);
+    // Why 1.6: at kPredelayMaxRate (0.5 samples per sample) the read advances at between 0.5
+    // and 1.5 samples per sample, so a glide multiplies the tone's frequency, and with it its
+    // largest step, by at most 1.5. The LF damper's ~77 Hz high-pass passes 330 Hz about 3%
+    // louder than 220 Hz (1.5 x 1.03 = 1.55), and turning a glide round or stopping it only
+    // changes the rate. 1.6 leaves room for that (measured here: about 1.58, the largest in
+    // the stretch gliding at 1.5); a jump is many times larger (below).
     CHECK(glideStep <= 1.6f * heldStep);
 
     // The test can fail: the same moves through Reverb 2's own pre-delay, which jumps, click.
@@ -411,74 +423,208 @@ TEST_CASE("patched Reverb2 predelay glide has no click", "[space]")
     auto jumping = std::make_unique<OneTap<Rev2>>(&storage, &storage, &storage);
     jumping->initializeOneTap();
     const float jumpStep = maxStep(render(*jumping, in, [&](size_t c) {
+        const float target = targetAt(c);
+        // -8: its shortest, 187 samples
         storage.values[Rev2::rev2_predelay] =
-            away(c) ? float(std::log2(kAway / kRate)) : -8.f; // -8: its shortest, 187 samples
+            target > 0.f ? float(std::log2(target / kRate)) : -8.f;
     }));
     UNSCOPED_INFO("largest step with jumps: " << jumpStep << " (" << jumpStep / heldStep << "x)");
     CHECK(jumpStep > 1.6f * heldStep);
 }
 
+namespace
+{
+/// A patched Reverb 2, used for `seconds` before a clear: noise, with Size moving, a stretch at
+/// infinite decay, and the smoothed pre-delay gliding.
+std::unique_ptr<Rev2Patched> usedReverb(GgFxConfig::Storage &storage, double seconds)
+{
+    auto r = std::make_unique<Rev2Patched>(&storage, &storage, &storage);
+    r->initialize();
+    render(*r, noiseThenSilence(seconds, seconds, 0.5f), [&](size_t c) {
+        const double t = double(c * kChunk) / kRate;
+        storage.values[Rev2::rev2_room_size] = t < 0.4 ? 1.f : (t < 0.7 ? -1.f : 0.3f);
+        r->setInfinite(t >= 0.2 && t < 0.6);
+        r->setPredelaySamples(t < 0.5 ? 3000.f : 500.f);
+    });
+    return r;
+}
+
+/// What a cleared and a fresh instance render after the clear: `seconds` of other noise, with
+/// Size moving and, with `patch`, infinite decay and the smoothed pre-delay at `predelay`.
+Stereo renderAfter(Rev2Patched &r, GgFxConfig::Storage &storage, double seconds, bool patch,
+                   float predelay)
+{
+    Stereo after(chunkAt(seconds) * kChunk);
+    after.left = noise(after.left.size(), 3, 0.5f);
+    after.right = noise(after.right.size(), 4, 0.5f);
+    return render(r, after, [&](size_t c) {
+        storage.values[Rev2::rev2_room_size] = c < chunkAt(1.0) ? 0.2f : 0.8f;
+        if (patch)
+        {
+            r.setInfinite(c >= chunkAt(1.0));
+            r.setPredelaySamples(c < chunkAt(0.5) ? predelay : 100.f);
+        }
+    });
+}
+
+Stereo renderFresh(GgFxConfig::Storage &storage, double seconds, bool patch, float predelay)
+{
+    auto fresh = std::make_unique<Rev2Patched>(&storage, &storage, &storage);
+    fresh->initialize();
+    return renderAfter(*fresh, storage, seconds, patch, predelay);
+}
+} // namespace
+
 TEST_CASE("patched Reverb2 clear matches a fresh instance", "[space]")
 {
-    // Before the clear: 1 s (shorter than every line's sweep) or 3 s (longer than the delay
-    // lines' 131,072-sample sweep) of noise with Size moving, a stretch at infinite decay, and
-    // the smoothed pre-delay gliding. After it: 2 s of other noise, rendered by the cleared
-    // instance and by a fresh one, both either left unpatched or both driven the same way.
-    for (const double before : {1.0, 3.0})
+    // Used for 1 s (no line swept yet), 2.6 s (the delay lines' writes have reached the
+    // window a fresh run reads first, 131,072 - ~17,400, but not swept round: the partial
+    // clear) or 3 s (swept round). Then cleared, and rendered the same as a fresh instance,
+    // both left unpatched or both patched.
+    for (const double before : {1.0, 2.6, 3.0})
     {
         for (const bool patchAfter : {false, true})
         {
             GgFxConfig::Storage storage;
             storage.sampleRate = kRate;
             setRingingValues(storage);
-            auto used = std::make_unique<Rev2Patched>(&storage, &storage, &storage);
-            used->initialize();
-            render(*used, noiseThenSilence(before, before, 0.5f), [&](size_t c) {
-                const double t = double(c * kChunk) / kRate;
-                storage.values[Rev2::rev2_room_size] = t < 0.4 ? 1.f : (t < 0.7 ? -1.f : 0.3f);
-                used->setInfinite(t >= 0.2 && t < 0.6);
-                used->setPredelaySamples(t < 0.5 ? 3000.f : 500.f);
-            });
-
+            auto used = usedReverb(storage, before);
             used->clear();
-            auto fresh = std::make_unique<Rev2Patched>(&storage, &storage, &storage);
-            fresh->initialize();
-
-            Stereo after(chunkAt(2.0) * kChunk);
-            after.left = noise(after.left.size(), 3, 0.5f);
-            after.right = noise(after.right.size(), 4, 0.5f);
-            auto drive = [&](Rev2Patched &r) {
-                return [&r, &storage, patchAfter](size_t c) {
-                    storage.values[Rev2::rev2_room_size] = c < chunkAt(1.0) ? 0.2f : 0.8f;
-                    if (patchAfter)
-                    {
-                        r.setInfinite(c >= chunkAt(1.0));
-                        r.setPredelaySamples(c < chunkAt(0.5) ? 2000.f : 100.f);
-                    }
-                };
-            };
-            const auto a = render(*used, after, drive(*used));
-            const auto b = render(*fresh, after, drive(*fresh));
+            const auto a = renderAfter(*used, storage, 2.0, patchAfter, 2000.f);
+            const auto b = renderFresh(storage, 2.0, patchAfter, 2000.f);
             INFO("before " << before << " s, patched after: " << patchAfter);
             REQUIRE(rms(b.left, 0.0, 2.0) > 0.01);
             REQUIRE(sameBits(a, b));
         }
     }
 
-    // One block before the clear, then the longest pre-delay, whose reads start at the oldest
-    // samples in its buffer, just ahead of the write position: where that block's writes were.
+    // Used for 31.9 s: the pre-delay's writes have reached the window that its longest delay
+    // (0.5 s) reads first, without sweeping round. Then the longest pre-delay.
     GgFxConfig::Storage storage;
     storage.sampleRate = kRate;
     setRingingValues(storage);
-    auto used = std::make_unique<Rev2Patched>(&storage, &storage, &storage);
-    used->initialize();
-    render(*used, noiseThenSilence(0.001, 0.001, 0.5f), [](size_t) {}); // one chunk
+    auto used = usedReverb(storage, 31.9);
     used->clear();
-    auto fresh = std::make_unique<Rev2Patched>(&storage, &storage, &storage);
-    fresh->initialize();
-    const auto after = noiseThenSilence(0.1, 0.1, 0.5f);
-    auto longest = [](Rev2Patched &r) {
-        return [&r](size_t) { r.setPredelaySamples(1.e9f); }; // clamped to the buffer
-    };
-    REQUIRE(sameBits(render(*used, after, longest(*used)), render(*fresh, after, longest(*fresh))));
+    const float longest = 1.e9f; // clamped to kMaxPredelaySeconds
+    REQUIRE(sameBits(renderAfter(*used, storage, 1.0, true, longest),
+                     renderFresh(storage, 1.0, true, longest)));
+}
+
+TEST_CASE("patched Reverb2 clear in steps matches clear at once", "[space]")
+{
+    // Two instances used alike for 3 s; one cleared at once, one 4,096 floats at a time.
+    GgFxConfig::Storage storage;
+    storage.sampleRate = kRate;
+    setRingingValues(storage);
+    auto atOnce = usedReverb(storage, 3.0);
+    auto inSteps = usedReverb(storage, 3.0);
+    atOnce->clear();
+    int steps = 1;
+    while (!inSteps->clearStep(4096))
+    {
+        ++steps;
+        REQUIRE(steps < 100000);
+    }
+    UNSCOPED_INFO("clearStep(4096) took " << steps << " calls");
+    CHECK(steps > 10);
+
+    const auto a = renderAfter(*atOnce, storage, 2.0, true, 2000.f);
+    const auto b = renderAfter(*inSteps, storage, 2.0, true, 2000.f);
+    const auto fresh = renderFresh(storage, 2.0, true, 2000.f);
+    REQUIRE(rms(fresh.left, 0.0, 2.0) > 0.01);
+    REQUIRE(sameBits(a, fresh));
+    REQUIRE(sameBits(b, fresh));
+}
+
+TEST_CASE("patched Reverb2 loopClip values", "[space]")
+{
+    const auto clip = [](float x) { return Rev2Patched::loopClip(x); };
+    CHECK(clip(0.f) == 0.f);
+    CHECK(clip(0.5f) == 0.5f);
+    CHECK(clip(-0.5f) == -0.5f);
+    CHECK(clip(1.f) == 1.f);
+    CHECK(clip(-1.f) == -1.f);
+    CHECK(clip(2.f) == 1.5f);
+    CHECK(clip(-2.f) == -1.5f);
+    CHECK(clip(4.f) == 1.75f);
+    CHECK(clip(1.e6f) < 2.f);
+    CHECK(clip(1.e30f) <= 2.f);
+    CHECK(clip(-1.e30f) >= -2.f);
+    CHECK(clip(std::numeric_limits<float>::infinity()) == 2.f);
+    // Continuous with slope 1 at the knee: just past 1, 2 - 1/x ~ x - (x - 1)^2.
+    for (const float x : {1.f, std::nextafter(1.f, 2.f), 1.001f, 1.01f})
+    {
+        CHECK(std::fabs(clip(x) - x) <= (x - 1.f) * (x - 1.f) * 1.01f + 1e-7f);
+        CHECK(std::fabs(clip(-x) + x) <= (x - 1.f) * (x - 1.f) * 1.01f + 1e-7f);
+    }
+    // Increasing.
+    float last = clip(-100.f);
+    for (float x = -99.f; x <= 100.f; x += 0.25f)
+    {
+        CHECK(clip(x) > last);
+        last = clip(x);
+    }
+}
+
+namespace
+{
+/// A probe that reads the loop's state between blocks: the signal that went round the loop.
+struct LoopProbe : Rev2Patched
+{
+    using Rev2Patched::Rev2Patched;
+    float loopState() const { return this->_state; }
+};
+} // namespace
+
+TEST_CASE("patched Reverb2 infinite stays bounded under full-scale input", "[space]")
+{
+    // At infinity with no damping, the largest room and full modulation, 10 s of full-scale
+    // noise or a 0 dBFS 110 Hz sine keep pushing the lossless loop. loopClip bounds what
+    // enters each delay below 2, so what leaves it (the loop state) is within 2 and each output
+    // channel, four taps whose gains sum to 1.125, within 2.25.
+    for (const bool sine : {false, true})
+    {
+        Stereo in(chunkAt(10.0) * kChunk);
+        if (sine)
+        {
+            for (size_t i = 0; i < in.left.size(); ++i)
+            {
+                in.left[i] = in.right[i] =
+                    float(std::sin(2.0 * std::numbers::pi * 110.0 * double(i) / kRate));
+            }
+        }
+        else
+        {
+            in.left = noise(in.left.size(), 5, 1.f);
+            in.right = noise(in.right.size(), 6, 1.f);
+        }
+        GgFxConfig::Storage storage;
+        storage.sampleRate = kRate;
+        setRingingValues(storage);
+        storage.values[Rev2::rev2_room_size] = 1.f;
+        storage.values[Rev2::rev2_modulation] = 1.f;
+        storage.values[Rev2::rev2_hf_damping] = 0.f;
+        auto reverb = std::make_unique<LoopProbe>(&storage, &storage, &storage);
+        reverb->initialize();
+        reverb->setInfinite(true);
+        float peakState = 0.f;
+        const auto out = render(*reverb, in, [&](size_t) {
+            peakState = std::max(peakState, std::fabs(reverb->loopState()));
+        });
+        float peakOut = 0.f;
+        bool finite = true;
+        // From 0.25 s on: Reverb 2's mix starts at 0 and smooths toward 1, so the dry input
+        // shows at first.
+        for (size_t i = frames(0.25); i < out.left.size(); ++i)
+        {
+            finite = finite && std::isfinite(out.left[i]) && std::isfinite(out.right[i]);
+            peakOut = std::max({peakOut, std::fabs(out.left[i]), std::fabs(out.right[i])});
+        }
+        UNSCOPED_INFO((sine ? "sine" : "noise")
+                      << ": loop state peak " << peakState << ", output peak " << peakOut);
+        REQUIRE(finite);
+        CHECK(peakState <= 2.f);
+        CHECK(peakOut <= 2.25f);
+        CHECK(peakState > 1.f); // the input did drive the loop past loopClip's knee
+    }
 }
