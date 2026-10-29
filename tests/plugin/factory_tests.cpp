@@ -282,10 +282,18 @@ TEST_CASE("the instrument's gui has a sample loader strip that loads a dropped f
         const juce::StringArray files{utf8String(file), utf8String(other)};
         CHECK(target->isInterestedInFileDrag(files));
         target->filesDropped(files, 10, 10);
-        CHECK(loader->status().state == gg::plugin::SampleState::Loading);
+        // The strip refreshes at once after the request, and that refresh applies the worker's
+        // result if it has already finished (EditorPlugin's sampleStatus), so the status here
+        // is Loading or, when the worker wins the race (seen once on CI's mac leg), Loaded.
+        {
+            const auto state = loader->status().state;
+            CHECK((state == gg::plugin::SampleState::Loading ||
+                   state == gg::plugin::SampleState::Loaded));
+            const auto text = labelText(*editor, "sampleStatus");
+            CHECK((text.startsWith("loading") || text.startsWith("loaded")));
+        }
         CHECK(loader->status().fileName == "gr\xc3\xa4in.wav");
         CHECK(labelText(*editor, "sampleName") == utf8String(file.filename()));
-        CHECK(labelText(*editor, "sampleStatus").startsWith("loading"));
 
         // As a host does after request_callback, until the load lands.
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
