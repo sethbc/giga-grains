@@ -83,6 +83,14 @@ struct Stream
     uint64_t frames;
     /// How many frames short of `frames` a decode may end without counting as truncated.
     uint64_t shortfall;
+    /// decodeAudioFile's cancel flag, or nullptr: readAll reads it before each chunk.
+    const std::atomic<bool> *cancel;
+};
+
+/// What readAll throws when the cancel flag is set; guarded() makes it the decode's error.
+struct Cancelled : std::exception
+{
+    const char *what() const noexcept override { return "cancelled"; }
 };
 
 /// The format checks every format shares, before anything is allocated: channels and rate.
@@ -130,6 +138,10 @@ uint64_t readAll(const Stream &stream, uint64_t limit, Read read, Take take)
     uint64_t done = 0;
     while (done < limit)
     {
+        if (stream.cancel != nullptr && stream.cancel->load(std::memory_order_relaxed))
+        {
+            throw Cancelled{};
+        }
         const uint64_t want = std::min(chunkFrames, limit - done);
         const uint64_t got = std::min<uint64_t>(read(want, interleaved.data()), want);
         if (got == 0)
@@ -524,7 +536,8 @@ std::optional<DecodeResult> unfinished(InputFile &file, const fs::path &path,
                              std::to_string(held) + " bytes follow");
 }
 
-std::optional<DecodeResult> tryWav(InputFile &file, const fs::path &path)
+std::optional<DecodeResult> tryWav(InputFile &file, const fs::path &path,
+                                   const std::atomic<bool> *cancel)
 {
     drwav wav;
     DeclaredData declared;
@@ -543,8 +556,12 @@ std::optional<DecodeResult> tryWav(InputFile &file, const fs::path &path)
                        wav.translatedFormatTag == DR_WAVE_FORMAT_DVI_ADPCM;
     // ADPCM's last block may hold fewer frames than its count: allow one block, whose frames
     // blockAlign × 2 bounds (at most two per byte).
-    Stream stream{aiff ? "aiff" : "wav", wav.channels, wav.sampleRate, wav.totalPCMFrameCount,
-                  adpcm ? uint64_t(wav.fmt.blockAlign) * 2 : 0};
+    Stream stream{aiff ? "aiff" : "wav",
+                  wav.channels,
+                  wav.sampleRate,
+                  wav.totalPCMFrameCount,
+                  adpcm ? uint64_t(wav.fmt.blockAlign) * 2 : 0,
+                  cancel};
     const auto read = [&](uint64_t frames, float *out) {
         return drwav_read_pcm_frames_f32(&wav, frames, out);
     };
@@ -613,7 +630,8 @@ std::optional<DecodeResult> tryWav(InputFile &file, const fs::path &path)
     return result;
 }
 
-std::optional<DecodeResult> tryFlac(InputFile &file, const fs::path &path)
+std::optional<DecodeResult> tryFlac(InputFile &file, const fs::path &path,
+                                    const std::atomic<bool> *cancel)
 {
     drflac *flac = drflac_open(InputFile::onRead, InputFile::onSeek<drflac_seek_origin>,
                                InputFile::onTell, &file, nullptr);
@@ -622,7 +640,8 @@ std::optional<DecodeResult> tryFlac(InputFile &file, const fs::path &path)
         return std::nullopt;
     }
     // STREAMINFO's count is exact, or 0 when the encoder didn't know it.
-    const Stream stream{"flac", flac->channels, flac->sampleRate, flac->totalPCMFrameCount, 0};
+    const uint64_t headerFrames = flac->totalPCMFrameCount;
+    const Stream stream{"flac", flac->channels, flac->sampleRate, headerFrames, 0, cancel};
     auto result = checkHeader(path, stream);
     if (!result)
     {
@@ -640,7 +659,8 @@ std::optional<DecodeResult> tryFlac(InputFile &file, const fs::path &path)
 /// header's count (an encoder's delay and padding that its tag accounts for differently).
 constexpr uint64_t kMp3Shortfall = 2 * 1152;
 
-std::optional<DecodeResult> tryMp3(InputFile &file, const fs::path &path)
+std::optional<DecodeResult> tryMp3(InputFile &file, const fs::path &path,
+                                   const std::atomic<bool> *cancel)
 {
     auto mp3 = std::make_unique<drmp3>(); // large decoder state: keep it off the stack
     if (!drmp3_init(mp3.get(), InputFile::onRead, InputFile::onSeek<drmp3_seek_origin>,
@@ -650,8 +670,8 @@ std::optional<DecodeResult> tryMp3(InputFile &file, const fs::path &path)
     }
     // drmp3_get_pcm_frame_count reads the Xing/Info tag or, without one, scans the frame headers,
     // and returns to the start; it never decodes the audio.
-    const Stream stream{"mp3", mp3->channels, mp3->sampleRate, drmp3_get_pcm_frame_count(mp3.get()),
-                        kMp3Shortfall};
+    const uint64_t headerFrames = drmp3_get_pcm_frame_count(mp3.get());
+    const Stream stream{"mp3", mp3->channels, mp3->sampleRate, headerFrames, kMp3Shortfall, cancel};
     auto result = checkHeader(path, stream);
     if (!result)
     {
@@ -666,7 +686,7 @@ std::optional<DecodeResult> tryMp3(InputFile &file, const fs::path &path)
 }
 } // namespace
 
-DecodeResult decodeAudioFile(const fs::path &path)
+DecodeResult decodeAudioFile(const fs::path &path, const std::atomic<bool> *cancel)
 {
     std::error_code error;
     const auto status = fs::status(path, error);
@@ -699,14 +719,15 @@ DecodeResult decodeAudioFile(const fs::path &path)
 
     // By content, not extension. dr_wav and dr_flac check their headers; MP3 decoding is the most
     // permissive, so it goes last. Each starts from the beginning of the file.
-    using Try = std::optional<DecodeResult> (*)(InputFile &, const fs::path &);
+    using Try =
+        std::optional<DecodeResult> (*)(InputFile &, const fs::path &, const std::atomic<bool> *);
     for (const Try attempt : {Try(tryWav), Try(tryFlac), Try(tryMp3)})
     {
         if (!file.rewind())
         {
             return failure(path, "the file can't be read");
         }
-        if (auto result = attempt(file, path))
+        if (auto result = attempt(file, path, cancel))
         {
             return std::move(*result);
         }

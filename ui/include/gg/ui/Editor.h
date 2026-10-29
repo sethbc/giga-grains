@@ -41,6 +41,9 @@ struct SampleStatusView
     double seconds{0.0};  ///< Loaded: the file's length.
     uint32_t channels{0}; ///< Loaded: the file's channels, as stored.
     double fileRate{0.0}; ///< Loaded: the file's sample rate.
+    /// The saved sample's file wasn't at hand (Missing, Changed, or an Error for a file that
+    /// can't be read): the strip offers Relink.
+    bool relinkable{false};
 };
 
 /// What the editor shows of the plugin that owns it.

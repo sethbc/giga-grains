@@ -23,12 +23,14 @@ namespace gg::plugin
 /// instance as it opens.
 ///
 /// A search that finds nothing (Missing or Changed) is remembered by its entry and both folders
-/// of the settings, with what the saved path held then (whether a file was there, its size,
-/// modification time and permissions). A search of the same entry with the same folders gets its
-/// result again, without searching, for kLifetime after it, as long as the saved path holds what it
-/// held: a file put back where it was saved, or changed there, is searched for again at once. A
-/// search that finds the file is never remembered. clear() forgets every one: SampleLoader calls
-/// it after a load or relink applies and after the sample folder is set.
+/// of the settings, with what the search's two direct candidates held then: the saved path, and
+/// the sample folder joined with the entry's relative path (whether a file was there, its size,
+/// modification time and permissions; each path as saved, not in its other Unicode spellings).
+/// A search of the same entry with the same folders gets its result again, without searching,
+/// for kLifetime after it, as long as both hold what they held: a file put back at either, or
+/// changed there, is searched for again at once. A search that finds the file is never
+/// remembered. clear() forgets every one: SampleLoader calls it after a load or relink applies
+/// and after the sample folder is set.
 ///
 /// The lifetime bounds how long a file that comes back elsewhere (into the sample folder, say)
 /// goes unseen: a project reopened in the same host process, or an instance reactivated, finds
@@ -48,11 +50,10 @@ class SearchCache
     static SearchCache &process();
 
     /// gg::media::findSample(entry, settings), or, when a search of `entry` with the same
-    /// folders found nothing less than kLifetime before `now`, and `savedPath` (entry's
-    /// absolutePath as a path) holds what it held then, its result. Throws only what findSample
-    /// throws (std::bad_alloc).
-    media::SearchResult find(const core::MediaEntry &entry, const std::filesystem::path &savedPath,
-                             const core::MachineSettings &settings, Clock::time_point now);
+    /// folders found nothing less than kLifetime before `now`, and its direct candidates hold
+    /// what they held then, its result. Throws only what findSample throws (std::bad_alloc).
+    media::SearchResult find(const core::MediaEntry &entry, const core::MachineSettings &settings,
+                             Clock::time_point now);
     /// Forgets every search remembered.
     void clear();
     /// The searches made (findSample calls), for tests and diagnostics.
@@ -68,13 +69,21 @@ class SearchCache
         std::filesystem::perms perms{std::filesystem::perms::unknown};
         friend bool operator==(const Stamp &, const Stamp &) = default;
     };
+    /// The search's direct candidates: the saved path, then the sample folder and relative path.
+    struct Stamps
+    {
+        Stamp saved;
+        Stamp inFolder;
+        friend bool operator==(const Stamps &, const Stamps &) = default;
+    };
     static Stamp stampOf(const std::filesystem::path &path) noexcept;
+    static Stamps stampsOf(const core::MediaEntry &entry, const core::MachineSettings &settings);
 
     struct Miss
     {
         core::MediaEntry entry;
         core::MachineSettings settings;
-        Stamp saved; // the saved path, when the search was made
+        Stamps stamps; // when the search was made
         media::SearchResult result;
         Clock::time_point when;
     };

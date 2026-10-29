@@ -372,8 +372,7 @@ class Editor final : public juce::Component, public juce::FileDragAndDropTarget,
                                                        static_cast<int>(status.fileName.size())),
                                 juce::dontSendNotification);
             sampleStatusLabel_.setText(statusText(status), juce::dontSendNotification);
-            relinkButton_.setVisible(status.state == SampleStatusView::State::Missing ||
-                                     status.state == SampleStatusView::State::Changed);
+            relinkButton_.setVisible(status.relinkable);
         }
 
         juce::String readout = "frame ms (avg 60): " + juce::String(canvas_.averageFrameMs(), 2);

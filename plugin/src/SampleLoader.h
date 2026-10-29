@@ -47,6 +47,10 @@ struct SampleStatus
     double seconds{0.0};  ///< Loaded: the file's length.
     uint32_t channels{0}; ///< Loaded: the file's channels, as stored.
     double fileRate{0.0}; ///< Loaded: the file's sample rate.
+    /// The manifest's file wasn't at hand at its last check: Missing, Changed, or an Error for a
+    /// file at the saved path that can't be read. The editor offers Relink, and activate() looks
+    /// for the file again (carry-over [194]).
+    bool relinkable{false};
 };
 
 /// The instrument's sample loader (spec §6.4–§6.7): the manifest entry, the source the engine
@@ -58,14 +62,13 @@ struct SampleStatus
 /// on a condition variable between jobs and never reads or writes the settings file (ruling R16).
 /// The worker starts with the first job and stops in activate(), deactivate() and the
 /// destructor. activate() waits for a job in progress to finish. deactivate() and the destructor
-/// cancel it instead (carry-over [194]): the hash and the conversion stop between chunks, so
-/// they return within a chunk's time, plus whatever is left of the file's decode, which runs to
-/// its end (a WAV's takes milliseconds). deactivate() queues the job again, as if it hadn't
-/// started; the destructor drops it. A job still waiting stays queued, and runs when the worker
-/// next starts (a request, or the end of activate()). The
-/// worker's finished result goes back under the loader's mutex, and Callbacks::requestCallback
-/// asks the host for on_main_thread, where onMainThread() applies it. The audio thread never
-/// touches the loader: sources reach it through the active Processor's SourceExchange.
+/// cancel it instead (carry-over [194]): the decode, the hash and the conversion stop between
+/// chunks, so they return within a chunk's time. deactivate() queues the job again, as if it
+/// hadn't started; the destructor drops it. A job still waiting stays queued, and runs when the
+/// worker next starts (a request, or the end of activate()). The worker's finished result goes back
+/// under the loader's mutex, and Callbacks::requestCallback asks the host for on_main_thread, where
+/// onMainThread() applies it. The audio thread never touches the loader: sources reach it through
+/// the active Processor's SourceExchange.
 ///
 /// **Requests and supersession.** Each request (a load, a relink, a restore) supersedes the ones
 /// before it: a waiting job is replaced, and the result of one under way is dropped, by the
@@ -261,13 +264,12 @@ class SampleLoader
     /// for activate() (restorePending_) and the result is nullptr; otherwise, the source at
     /// `rate`. A file found away from the saved path updates the entry and marks the state dirty.
     std::shared_ptr<const PreparedSource> findAndLoad(double rate);
-    /// The status for the manifest's file not at hand: Changed when `read` (the file at `file`,
-    /// the saved path, was read and isn't the sample's); otherwise Error when a file is there
-    /// (it couldn't be read), and Missing when none is.
+    /// The status for the manifest's file not at hand, relinkable: Changed when `read` (the file
+    /// at `file`, the saved path, was read and isn't the sample's); otherwise Error when a file
+    /// is there (it couldn't be read), and Missing when none is.
     void setUnavailable(const std::string &fileName, const std::filesystem::path &file, bool read);
-    /// Whether the status says the manifest's file wasn't at hand: Missing, Changed, or the Error
-    /// for a file that can't be read.
-    bool fileUnavailable() const noexcept;
+    /// Whether the status says the manifest's file wasn't at hand (SampleStatus::relinkable).
+    bool fileUnavailable() const noexcept { return status_.relinkable; }
     void setLoadedStatus(std::string message);
     void setError(std::string fileName, std::string message);
     /// setError with `error` described, for a noexcept function's handler: if even that fails

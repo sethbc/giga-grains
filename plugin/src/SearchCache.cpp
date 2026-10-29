@@ -6,6 +6,8 @@
 
 #include <algorithm>
 
+#include "gg/media/Utf8Path.h"
+
 namespace gg::plugin
 {
 SearchCache &SearchCache::process()
@@ -33,11 +35,32 @@ SearchCache::Stamp SearchCache::stampOf(const std::filesystem::path &path) noexc
     return {true, size, error ? std::filesystem::file_time_type{} : written, status.permissions()};
 }
 
+SearchCache::Stamps SearchCache::stampsOf(const core::MediaEntry &entry,
+                                          const core::MachineSettings &settings)
+{
+    // As findSample makes them (gg/media/Search.h): a candidate it can't make, or one that isn't
+    // absolute, stamps as no file.
+    Stamps stamps;
+    if (const auto saved = media::fromUtf8(entry.absolutePath))
+    {
+        stamps.saved = stampOf(*saved);
+    }
+    if (!settings.sampleFolder.empty() && !entry.relativePath.empty())
+    {
+        const auto folder = media::fromUtf8(settings.sampleFolder);
+        const auto relative = media::fromUtf8(entry.relativePath);
+        if (folder && relative)
+        {
+            stamps.inFolder = stampOf(*folder / *relative);
+        }
+    }
+    return stamps;
+}
+
 media::SearchResult SearchCache::find(const core::MediaEntry &entry,
-                                      const std::filesystem::path &savedPath,
                                       const core::MachineSettings &settings, Clock::time_point now)
 {
-    const Stamp saved = stampOf(savedPath);
+    const Stamps stamps = stampsOf(entry, settings);
     std::lock_guard lock(mutex_);
     // Expired searches go first, so the list holds only the samples missing just now.
     std::erase_if(misses_, [now](const Miss &m) { return now - m.when >= kLifetime; });
@@ -46,17 +69,17 @@ media::SearchResult SearchCache::find(const core::MediaEntry &entry,
     });
     if (known != misses_.end())
     {
-        if (known->saved == saved)
+        if (known->stamps == stamps)
         {
             return known->result;
         }
-        misses_.erase(known); // the saved path holds something else now: searched again
+        misses_.erase(known); // a candidate holds something else now: searched again
     }
     ++searches_;
     media::SearchResult result = media::findSample(entry, settings);
     if (result.outcome != media::SearchOutcome::Found)
     {
-        misses_.push_back({entry, settings, saved, result, now});
+        misses_.push_back({entry, settings, stamps, result, now});
     }
     return result;
 }

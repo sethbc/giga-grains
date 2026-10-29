@@ -259,6 +259,15 @@ void SampleLoader::convertNow(double rate) noexcept
     {
         fileName = nameOf(entry_->absolutePath);
         const fs::path file = pathOf(entry_->absolutePath);
+        // Another size is other content, without reading it all to hash (a size the file system
+        // can't give goes on to the hash, which says why).
+        std::error_code sizeError;
+        const auto size = fs::file_size(file, sizeError);
+        if (!sizeError && size != entry_->fileSize)
+        {
+            setUnavailable(fileName, file, true);
+            return;
+        }
         const std::optional<media::FileHash> hash = media::hashFile(file);
         if (!hash.has_value() || hash->sha256Hex != entry_->sha256Hex ||
             hash->size != entry_->fileSize)
@@ -294,7 +303,7 @@ std::shared_ptr<const PreparedSource> SampleLoader::findAndLoad(double rate)
     const fs::path saved = pathOf(entry_->absolutePath);
     const core::MachineSettings settings = readSettings();
     const media::SearchResult found =
-        SearchCache::process().find(*entry_, saved, settings, SearchCache::Clock::now());
+        SearchCache::process().find(*entry_, settings, SearchCache::Clock::now());
     if (found.outcome != media::SearchOutcome::Found)
     {
         // Changed: findSample read the file at the saved path. Missing with a file there: it
@@ -625,23 +634,17 @@ void SampleLoader::setUnavailable(const std::string &fileName, const fs::path &f
     if (read)
     {
         // Something at the saved path that isn't the saved audio has changed.
-        status_ = {SampleState::Changed, fileName, kChanged, 0.0, 0, 0.0};
+        status_ = {SampleState::Changed, fileName, kChanged, 0.0, 0, 0.0, true};
     }
     else if (file.is_absolute() && fs::is_regular_file(file, error))
     {
         // Present, so neither missing nor known to have changed.
-        setError(fileName, kUnreadable);
+        status_ = {SampleState::Error, fileName, kUnreadable, 0.0, 0, 0.0, true};
     }
     else
     {
-        status_ = {SampleState::Missing, fileName, kMissing, 0.0, 0, 0.0};
+        status_ = {SampleState::Missing, fileName, kMissing, 0.0, 0, 0.0, true};
     }
-}
-
-bool SampleLoader::fileUnavailable() const noexcept
-{
-    return status_.state == SampleState::Missing || status_.state == SampleState::Changed ||
-           (status_.state == SampleState::Error && status_.message == kUnreadable);
 }
 
 void SampleLoader::setRequestError(const std::string &failedName, std::string message)
@@ -659,6 +662,7 @@ void SampleLoader::setRequestErrorNoThrow(const std::exception_ptr &error,
     catch (...)
     {
         status_.state = SampleState::Error;
+        status_.relinkable = false;
         status_.fileName.clear();
         status_.message = kCantLoad; // fits the string's own buffer: no allocation
     }
@@ -674,6 +678,7 @@ void SampleLoader::setErrorNoThrow(const std::exception_ptr &error,
     catch (...)
     {
         status_.state = SampleState::Error;
+        status_.relinkable = false;
         status_.fileName.clear();
         status_.message = kCantLoad; // fits the string's own buffer: no allocation
     }

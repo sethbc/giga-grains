@@ -5,6 +5,7 @@
 #ifndef GG_MEDIA_DECODE_H
 #define GG_MEDIA_DECODE_H
 
+#include <atomic>
 #include <cstdint>
 #include <filesystem>
 #include <memory>
@@ -82,7 +83,11 @@ struct DecodeResult
 ///   no frames at all is an error.
 /// The file is opened once, by its native path (wide, with `_wfopen`, on Windows), and each
 /// decoder reads it in turn.
-DecodeResult decodeAudioFile(const std::filesystem::path &path);
+/// `cancel`, when given, is read before each chunk the decoder reads: once it is set, the decode
+/// stops and fails with an error saying it was cancelled (the sample loader's prompt stop,
+/// carry-over [194]). Never set, it changes nothing.
+DecodeResult decodeAudioFile(const std::filesystem::path &path,
+                             const std::atomic<bool> *cancel = nullptr);
 } // namespace gg::media
 
 #endif // GG_MEDIA_DECODE_H

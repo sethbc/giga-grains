@@ -2,9 +2,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright 2026, the Giga Grains authors (see git history)
 
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <numbers>
 #include <string>
@@ -631,4 +633,34 @@ TEST_CASE("decode opens a UTF-8 path with non-ASCII characters", "[media]")
     REQUIRE(result.audio.has_value());
     REQUIRE(result.audio->buffer->frames() == 64);
     REQUIRE(maxError(*result.audio->buffer, audio, 1) <= gg::test::lsbOf(SampleFormat::Int16));
+}
+
+TEST_CASE("decode stops once its cancel flag is set", "[media]")
+{
+    // The sample loader's prompt stop (carry-over [194]): the flag is read once per chunk, so a
+    // set flag stops a decode under way and gives no audio. A flag never set changes nothing.
+    const auto wav = dir() / "cancel.wav";
+    gg::test::writeFile(
+        wav, gg::test::wavBytes(gg::test::makeTestAudio(2, 48000, 48000), SampleFormat::Int16));
+    const fs::path file =
+        GENERATE_COPY(wav, fixture("sine-1k-48k-mono.flac"), fixture("sine-1k-48k-mono.mp3"));
+    INFO(file.filename().string());
+    std::atomic<bool> cancel{false};
+    const auto plain = decodeAudioFile(file);
+    const auto unset = decodeAudioFile(file, &cancel);
+    REQUIRE(plain.audio.has_value());
+    REQUIRE(unset.audio.has_value());
+    const auto &a = *plain.audio->buffer;
+    const auto &b = *unset.audio->buffer;
+    REQUIRE(a.channels() == b.channels());
+    REQUIRE(a.frames() == b.frames());
+    for (uint32_t c = 0; c < a.channels(); ++c)
+    {
+        CHECK(std::memcmp(a.channel(c), b.channel(c), size_t(a.frames()) * sizeof(float)) == 0);
+    }
+
+    cancel = true;
+    const auto cancelled = decodeAudioFile(file, &cancel);
+    CHECK_FALSE(cancelled.audio.has_value());
+    CHECK(cancelled.error.find("cancelled") != std::string::npos);
 }

@@ -53,8 +53,8 @@ gg::ui::SampleStatusView viewOf(const SampleStatus &status)
         state = State::Error;
         break;
     }
-    return {state,          status.fileName, status.message,
-            status.seconds, status.channels, status.fileRate};
+    return {state,           status.fileName, status.message,   status.seconds,
+            status.channels, status.fileRate, status.relinkable};
 }
 } // namespace
 

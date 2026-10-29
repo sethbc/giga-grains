@@ -372,14 +372,20 @@ TEST_CASE("the gui's loader strip shows the sample's status and offers relink", 
     }
     SECTION("missing, with relink")
     {
-        view = {State::Missing, "kick.wav", "not found", 0.0, 0, 0.0};
+        view = {State::Missing, "kick.wav", "not found", 0.0, 0, 0.0, true};
         const auto editor = gg::ui::makeEditor(context);
         CHECK(labelText(*editor, "sampleStatus") == "missing: not found");
         CHECK(relinkShown(*editor));
     }
     SECTION("changed, with relink")
     {
-        view = {State::Changed, "kick.wav", "the file at the saved path has changed", 0.0, 0, 0.0};
+        view = {State::Changed,
+                "kick.wav",
+                "the file at the saved path has changed",
+                0.0,
+                0,
+                0.0,
+                true};
         const auto editor = gg::ui::makeEditor(context);
         CHECK(labelText(*editor, "sampleStatus") ==
               "missing: the file at the saved path has changed");
@@ -391,6 +397,16 @@ TEST_CASE("the gui's loader strip shows the sample's status and offers relink", 
         const auto editor = gg::ui::makeEditor(context);
         CHECK(labelText(*editor, "sampleStatus") == "can't load bad.wav: not audio");
         CHECK_FALSE(relinkShown(*editor));
+    }
+    SECTION("an error for the saved file, with relink")
+    {
+        // Carry-over [194]: a file at the saved path that can't be read is an Error, and may be
+        // relinked as a missing one may.
+        view = {State::Error, "locked.wav", "the file at the saved path can't be read", 0.0, 0,
+                0.0,          true};
+        const auto editor = gg::ui::makeEditor(context);
+        CHECK(labelText(*editor, "sampleStatus") == "the file at the saved path can't be read");
+        CHECK(relinkShown(*editor));
     }
 }
 #else

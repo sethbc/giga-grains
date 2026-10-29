@@ -379,6 +379,7 @@ TEST_CASE("a missing sample stays silent and is saved unchanged", "[plugin]")
     }
     CHECK(loaderOf(instrument).status().fileName == "missing.wav");
     CHECK_FALSE(loaderOf(instrument).status().message.empty());
+    CHECK(loaderOf(instrument).status().relinkable);
     CHECK(host.dirtyMarks() == 0);
 
     const std::string loadedManifest = gg::test::stateChunkPayload(state, "MEDI").value();
@@ -778,6 +779,11 @@ TEST_CASE("a reactivation keeps the old source when its file has gone or changed
         gg::test::writeSineWav(file, 44100, 4.0, 330.0);
         expected = SampleState::Changed;
     }
+    SECTION("changed, to another size")
+    {
+        gg::test::writeSineWav(file, 44100, 3.0, 220.0);
+        expected = SampleState::Changed;
+    }
     REQUIRE(instrument.activate(48000.0, 512));
     const SampleStatus status = loaderOf(instrument).status();
     CHECK(status.state == expected);
@@ -996,6 +1002,7 @@ TEST_CASE("a failed load keeps the sample and the entry it had", "[plugin]")
     loader.requestLoad(bad);
     const SampleStatus status = settle(instrument);
     CHECK(status.state == SampleState::Error);
+    CHECK_FALSE(status.relinkable); // a failed request: the sample plays on
     // The name is the sample that still plays; the message names the file that failed.
     CHECK(status.fileName == good.filename().string());
     CHECK(status.message.find("not-audio.wav") != std::string::npos);
@@ -1196,7 +1203,7 @@ TEST_CASE("the search cache remembers a search that found nothing for its lifeti
     const gg::core::MachineSettings settings{library.string(), ""};
     const auto find = [&](const gg::core::MachineSettings &folders,
                           SearchCache::Clock::time_point t) {
-        return cache.find(entry, file, folders, t).outcome;
+        return cache.find(entry, folders, t).outcome;
     };
     using gg::media::SearchOutcome;
 
@@ -1237,6 +1244,17 @@ TEST_CASE("the search cache remembers a search that found nothing for its lifeti
     gg::test::sineSampleFile("search-cache");
     CHECK(find(settings, t0) == SearchOutcome::Found);
     CHECK(cache.searches() == 10);
+
+    // So is one put back at the sample folder's relative path, the search's second candidate.
+    gg::core::MediaEntry inFolder = entry;
+    inFolder.relativePath = "rel/search-cache.wav";
+    fs::remove(file);
+    CHECK(cache.find(inFolder, settings, t0).outcome == SearchOutcome::Missing);
+    CHECK(cache.find(inFolder, settings, t0).outcome == SearchOutcome::Missing);
+    CHECK(cache.searches() == 11);
+    gg::test::writeSineWav(library / "rel" / "search-cache.wav");
+    CHECK(cache.find(inFolder, settings, t0).outcome == SearchOutcome::Found);
+    CHECK(cache.searches() == 12);
 }
 
 TEST_CASE("a missing sample that comes back is loaded at the next activation", "[plugin]")
@@ -1312,19 +1330,38 @@ TEST_CASE("a kept source's file that comes back is Loaded again at the next acti
 #ifndef _WIN32
 namespace
 {
-// Makes `file` unreadable; false if it can still be read (as root, say).
-bool makeUnreadable(const fs::path &file)
+// Makes `file` unreadable until it goes out of scope, however the test ends, so a failed run
+// leaves nothing locked for the next.
+class Unreadable
 {
-    fs::permissions(file, fs::perms::none);
-    std::FILE *f = std::fopen(file.c_str(), "rb");
-    if (f != nullptr)
+  public:
+    explicit Unreadable(fs::path file) : file_(std::move(file))
     {
+        fs::permissions(file_, fs::perms::none);
+    }
+    ~Unreadable()
+    {
+        std::error_code error;
+        fs::permissions(file_, fs::perms::owner_read | fs::perms::owner_write, error);
+    }
+    Unreadable(const Unreadable &) = delete;
+    Unreadable &operator=(const Unreadable &) = delete;
+
+    // False if it can still be read (as root, say).
+    bool holds() const
+    {
+        std::FILE *f = std::fopen(file_.c_str(), "rb");
+        if (f == nullptr)
+        {
+            return true;
+        }
         std::fclose(f);
-        fs::permissions(file, fs::perms::owner_read | fs::perms::owner_write);
         return false;
     }
-    return true;
-}
+
+  private:
+    fs::path file_;
+};
 } // namespace
 
 TEST_CASE("a sample present but unreadable is an Error, not Missing or Changed", "[plugin]")
@@ -1332,6 +1369,7 @@ TEST_CASE("a sample present but unreadable is an Error, not Missing or Changed",
     // Carry-over [194]: a file at the saved path that can't be read hasn't gone and hasn't
     // changed; the status says it can't be read.
     const fs::path dir = setUp("unreadable");
+    fs::remove(dir / "locked.wav"); // a run killed while it was locked can't be written over
     const fs::path file = gg::test::writeSineWav(dir / "locked.wav", 44100, 4.0, 220.0);
     const gg::core::MediaEntry entry = gg::test::entryOf(file);
     PluginUnderTest instrument(kInstrumentId);
@@ -1339,7 +1377,8 @@ TEST_CASE("a sample present but unreadable is an Error, not Missing or Changed",
 
     SECTION("restore")
     {
-        if (!makeUnreadable(file))
+        const Unreadable locked(file);
+        if (!locked.holds())
         {
             SKIP("the file stays readable: running as root?");
         }
@@ -1348,6 +1387,7 @@ TEST_CASE("a sample present but unreadable is an Error, not Missing or Changed",
         CHECK(status.state == SampleState::Error);
         CHECK(status.fileName == "locked.wav");
         CHECK_FALSE(status.message.empty());
+        CHECK(status.relinkable);
     }
     SECTION("reactivation")
     {
@@ -1355,7 +1395,8 @@ TEST_CASE("a sample present but unreadable is an Error, not Missing or Changed",
         REQUIRE(instrument.activate(44100.0, 512));
         REQUIRE(instrument.loadSampleState(file));
         instrument.deactivate();
-        if (!makeUnreadable(file))
+        const Unreadable locked(file);
+        if (!locked.holds())
         {
             SKIP("the file stays readable: running as root?");
         }
@@ -1364,11 +1405,11 @@ TEST_CASE("a sample present but unreadable is an Error, not Missing or Changed",
         CHECK(status.state == SampleState::Error);
         CHECK(status.fileName == "locked.wav");
         CHECK_FALSE(status.message.empty());
+        CHECK(status.relinkable);
         Stereo out(4800);
         renderNote(instrument, out, 512);
         CHECK(peak(out.left) > 0.05f);
         CHECK(savedEntry(instrument) == std::optional<gg::core::MediaEntry>(entry));
     }
-    fs::permissions(file, fs::perms::owner_read | fs::perms::owner_write);
 }
 #endif

@@ -47,8 +47,9 @@ struct LoadedSample
 /// - A known limitation: the file is read twice, to decode it and then to hash it (or, with
 ///   `knownHash`, to hash it and then to decode it). A file replaced between the two reads gives
 ///   an entry whose fingerprint isn't the decoded audio's.
-/// - `cancel`, when given, is read after the decode and while hashing (hashFile): once it is set,
-///   the load fails, with an error saying so (the sample loader's prompt stop, carry-over [194]).
+/// - `cancel`, when given, is read while decoding (decodeAudioFile) and hashing (hashFile), and
+///   between the two: once it is set, the load fails, with an error saying so (the sample
+///   loader's prompt stop, carry-over [194]).
 LoadedSample loadSample(const std::filesystem::path &file, const core::MachineSettings &settings,
                         std::optional<FileHash> knownHash = std::nullopt,
                         const std::atomic<bool> *cancel = nullptr);

@@ -65,7 +65,7 @@ std::string relativeTo(const fs::path &file, const std::string &sampleFolder)
 LoadedSample loadSample(const fs::path &file, const core::MachineSettings &settings,
                         std::optional<FileHash> knownHash, const std::atomic<bool> *cancel)
 {
-    DecodeResult decoded = decodeAudioFile(file);
+    DecodeResult decoded = decodeAudioFile(file, cancel);
     if (!decoded.audio)
     {
         LoadedSample out;
