@@ -645,10 +645,10 @@ namespace detail
 ///
 /// The phase and pos are monotone in t (as in sampleSimdRun), so they hold between two samples
 /// where they hold. On [lo, hi) R and pos are linear in t, so each margin is too, up to rounding
-/// of order 2^−12 frames at ring times up to 2^40 (the ring's limit): where a margin is >= M + 1
-/// at both ends of a run it is above M + 1 − 2^−11 everywhere between, so the fade's two factors
-/// are both clamped to 1 there and every tap is inside the window. Hence f == 1 and the read
-/// succeeds on the whole run, for either reader (Linear's taps are a subset of the Hermite's).
+/// of order 2^−12 frames at ring times up to 2^40 frames (over 260 days at 48 kHz): where a margin
+/// is >= M + 1 at both ends of a run it is above M + 1 − 2^−11 everywhere between, so the fade's
+/// two factors are both clamped to 1 there and every tap is inside the window. Hence f == 1 and the
+/// read succeeds on the whole run, for either reader (Linear's taps are a subset of the Hermite's).
 /// The rounding grows with ring time, but the one frame of slack between M + 1 and the fade's M
 /// would hold to ring times of about 2^50, where it reaches a frame.
 ///

@@ -923,11 +923,11 @@ TEMPLATE_TEST_CASE("simd sample kernel matches the reference on sources of 1 to 
                    "[kernel]", Hermite, Linear)
 {
     // Sources too short for the Hermite's 4 taps (1–3 frames) or just long enough (4), and for
-    // the line's 2 taps (1 frame) or more. Each source is its own allocation of exactly its
-    // frames, so a tap read past either end is a heap overflow under ASan, which std::memcmp
-    // alone could miss. Grains start a quarter frame at a time from 3 frames before the source
-    // to 3 past it, slow enough to stay inside it for many samples, and each is rendered in calls
-    // of 1–7 samples at every alignment.
+    // the line's 2 taps (1 frame) or more. Each planar channel is its own allocation of exactly
+    // its frames (an interleaved copy has 3 guard frames), so a tap read past either end of a
+    // planar one is a heap overflow under ASan, which std::memcmp alone could miss. Grains start a
+    // quarter frame at a time from 3 frames before the source to 3 past it, slow enough to stay
+    // inside it for many samples, and each is rendered in calls of 1–7 samples at every alignment.
     const gg::HannTable hann;
     for (int64_t frames = 1; frames <= 4; ++frames)
     {

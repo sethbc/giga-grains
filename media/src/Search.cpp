@@ -6,10 +6,12 @@
 
 #include <algorithm>
 #include <atomic>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <utility>
 #include <vector>
 
 #include <utf8proc.h>
@@ -52,9 +54,13 @@ std::optional<std::string> normalized(std::string_view text, Form form)
     {
         return std::nullopt;
     }
-    std::string result(reinterpret_cast<const char *>(out), static_cast<std::size_t>(length));
-    utf8proc_free(out);
-    return result;
+    // Freed even if the string's allocation throws.
+    struct Free
+    {
+        void operator()(utf8proc_uint8_t *p) const noexcept { utf8proc_free(p); }
+    };
+    const std::unique_ptr<utf8proc_uint8_t, Free> owned(out);
+    return std::string(reinterpret_cast<const char *>(out), static_cast<std::size_t>(length));
 }
 
 /// The spellings of UTF-8 `text` a search tries, in order and each once: as saved, in NFC, in
@@ -162,19 +168,29 @@ class Candidates
         {
             return Check::Differs;
         }
-        const auto hash = hashFile(candidate);
-        if (!hash)
+        // On a file system that ignores normalization the saved, NFC and NFD spellings name one
+        // file: reuse the result of a spelling already hashed rather than hash it again.
+        for (const auto &prior : hashed_)
         {
-            return Check::NoFile;
+            std::error_code same;
+            if (fs::equivalent(prior.first, candidate, same) && !same)
+            {
+                return prior.second;
+            }
         }
-        return hash->size == entry_.fileSize && hash->sha256Hex == entry_.sha256Hex
-                   ? Check::Matches
-                   : Check::Differs;
+        const auto hash = hashFile(candidate);
+        const Check result = !hash ? Check::NoFile
+                             : hash->size == entry_.fileSize && hash->sha256Hex == entry_.sha256Hex
+                                 ? Check::Matches
+                                 : Check::Differs;
+        hashed_.emplace_back(candidate, result);
+        return result;
     }
 
   private:
     const core::MediaEntry &entry_;
     std::vector<fs::path> checked_;
+    std::vector<std::pair<fs::path, Check>> hashed_; // size matched: the file was hashed
 };
 
 /// The index of the saved path's last separator, `/` or `\` (a path saved on Windows), or npos.

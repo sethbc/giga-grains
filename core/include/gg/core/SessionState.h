@@ -120,7 +120,9 @@ std::string encodeState(const SessionState &state);
 ///     an integer `version` above this build's, loads with no sample: `out.newerMedia` keeps
 ///     its bytes, so a save writes them back unchanged, and nothing inside <media> is read (the
 ///     director's decision of 2026-10-28, INTENT §18). Where a newer PTCH migrates, a newer
-///     MEDI can't: this build doesn't know what its sample needs.
+///     MEDI can't: this build doesn't know what its sample needs. A future MEDI must still
+///     pass the pre-scan above (at most 64 deep, no <? after the first node, quoted
+///     attributes, well-formed &#...; references), or this build fails the whole state.
 /// - `bytes` is whatever the host handed over: the caller caps its length (the plugin reads at
 ///   most kMaxStateBytes), and decodeState works on all of it.
 /// - `migratedFromVersion`, if given, is written on success only, as fromStateXml writes it.

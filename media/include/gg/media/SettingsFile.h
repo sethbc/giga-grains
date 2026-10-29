@@ -33,8 +33,10 @@ core::MachineSettings loadSettings(const std::filesystem::path &file);
 /// Writes `settings` to `file`, creating its folder if needed. The XML goes to a temporary file
 /// beside it, unique to the save (ruling R16), which is flushed to the disk (fsync; F_FULLFSYNC
 /// on macOS; FlushFileBuffers on Windows) and then renamed over `file`, and the folder is flushed
-/// after it (on Windows the rename writes through): a failed write, a crash or a power loss
-/// leaves the old settings or the new ones whole, never a partial file. A rename that fails
+/// after it (on Windows NTFS journals the rename, so a crash leaves the old file or the new one
+/// whole, though the rename is not necessarily durable when MoveFileExW returns): a failed
+/// write, a crash or a power loss leaves the old settings or the new ones whole, never a partial
+/// file. A rename that fails
 /// because another program has `file` open (on Windows, which refuses to replace an open file)
 /// is tried again, 20 times in all, 25 ms apart. Once saved, it removes the temporary files of
 /// saves of `file` that crashed before their rename: those more than 10 minutes older than the

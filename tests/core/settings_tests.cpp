@@ -279,6 +279,25 @@ TEST_CASE("the XML nesting scan never passes what tinyxml nests deeper", "[core]
     }
 }
 
+TEST_CASE("the XML nesting scan refuses the shapes whose reading depends on the locale", "[core]")
+{
+    // Direct checks of what the differential test above (which runs in the C locale only) can't
+    // see: a byte from 0x80 up where tinyxml may or may not skip white space, and a declaration
+    // whose names tinyxml may or may not fold to the case it expects.
+    using gg::core::xmlNestingWithin;
+    const std::string nbsp = "<a x=\xa0\"v\"><b></b></a>"; // 0xA0: white space in some locales
+    const std::string nel = "<a x=\x85\"v\"><b></b></a>";  // 0x85: likewise
+    const std::string quotedGt = "<?XML version=\">\"?><a><b></b></a>"; // a quoted > hides the end
+    const std::string foldedName = "<?xml VERS\xddON=\"1\"?><a><b></b></a>";
+    REQUIRE_FALSE(xmlNestingWithin(nbsp));
+    REQUIRE_FALSE(xmlNestingWithin(nel));
+    REQUIRE_FALSE(xmlNestingWithin(quotedGt));
+    REQUIRE_FALSE(xmlNestingWithin(foldedName));
+    // The declaration alone, in upper case and with plain values, is read the same way by every
+    // locale: it passes.
+    REQUIRE(xmlNestingWithin("<?XML version=\"1.0\"?><a><b></b></a>"));
+}
+
 TEST_CASE("settings XML with a declaration after the first node is rejected", "[core]")
 {
     // Only the first node may be a declaration (carry-over: "Search and settings minors").
@@ -555,7 +574,8 @@ TEST_CASE("saveSettings flushes its temporary file to the disk before renaming i
     REQUIRE(filesIn(dir) == 1);
 }
 
-TEST_CASE("saveSettings whose write or flush fails leaves the old settings whole", "[media]")
+TEST_CASE("saveSettings whose write, flush or rename fails leaves the old settings whole",
+          "[media]")
 {
     const auto dir = freshDir("settings-save-fails");
     const auto file = dir / "settings.xml";

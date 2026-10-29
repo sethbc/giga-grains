@@ -287,7 +287,7 @@ TEST_CASE("findSample's match by name is canonical equivalence, nothing looser",
     const auto dir = freshDir("search-unicode-other");
     const auto lib = dir / "lib";
     put(lib / "cafe.wav", kContent);
-    put(lib / "CAF\xc3\x89.wav", kContent);
+    put(lib / pathOf("CAF\xc3\x89.wav"), kContent);
     requireMissing(
         findSample(entryFor(dir / "old" / pathOf(kNfcName)), MachineSettings{utf8(lib), ""}));
 }
@@ -304,6 +304,18 @@ TEST_CASE("findSample's scan matches a name that isn't UTF-8 byte for byte", "[m
     entry.absolutePath = utf8(dir / "old") + "/caf\xe9.wav";
     requireFound(findSample(entry, MachineSettings{utf8(lib), ""}), lib / "deep" / "caf\xe9.wav",
                  true);
+}
+
+TEST_CASE("findSample's scan doesn't match a Latin-1 name to another Latin-1 name", "[media]")
+{
+    // Only caf\xe8.wav holds the content, and the saved name is caf\xe9.wav: another name, so
+    // the entry is missing.
+    const auto dir = freshDir("search-not-utf8-other");
+    const auto lib = dir / "lib";
+    put(lib / "deep" / "caf\xe8.wav", kContent);
+    MediaEntry entry = entryFor(dir);
+    entry.absolutePath = utf8(dir / "old") + "/caf\xe9.wav";
+    requireMissing(findSample(entry, MachineSettings{utf8(lib), ""}));
 }
 #endif
 

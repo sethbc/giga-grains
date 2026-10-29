@@ -350,7 +350,9 @@ class InputFile
     /// Where the next read starts, in bytes from the start of the file.
     uint64_t position() const noexcept { return position_; }
 
-    /// Reads exactly `bytes` bytes at `at` into `out`; false if they aren't all there.
+    /// Reads exactly `bytes` bytes at `at` into `out`; false if they aren't all there. It moves
+    /// the file position: harmless under a live dr_wav only because the callers use it where
+    /// dr_wav reads nothing more (a data size of 0 leaves it no audio to read).
     bool readAt(uint64_t at, void *out, size_t bytes)
     {
         if (at > size_ || !seekTo(int64_t(at), SEEK_SET))
@@ -447,6 +449,8 @@ struct DeclaredData
     uint64_t bytes{0};
     /// Whether a RIFF or RIFX data chunk declared `bytes` (0 included).
     bool riff{false};
+    /// Whether that container is RIFX, whose chunk sizes are big-endian.
+    bool rifx{false};
     /// Where the data chunk's audio starts, in bytes from the start of the file.
     uint64_t start{0};
     /// The fmt chunk's block align when the data chunk was seen; 0 if none came before it.
@@ -471,6 +475,7 @@ drwav_uint64 onWavChunk(void *user, drwav_read_proc, drwav_seek_proc, void *file
         auto &declared = *static_cast<DeclaredData *>(user);
         declared.bytes = header->sizeInBytes;
         declared.riff = riffData;
+        declared.rifx = riffData && container == drwav_container_rifx;
         // dr_wav has just read the chunk's header: the file sits at its audio.
         declared.start = static_cast<InputFile *>(file)->position();
         declared.blockAlign = fmt != nullptr ? fmt->blockAlign : 0;
@@ -520,12 +525,16 @@ std::optional<DecodeResult> unfinished(InputFile &file, const fs::path &path,
         return std::nullopt;
     }
     uint8_t chunk[8];
+    // readAt moves the file position; dr_wav reads nothing after this (its data size is 0).
     if (held >= 8 && file.readAt(declared.start, chunk, sizeof chunk))
     {
         const bool printableId =
             std::all_of(chunk, chunk + 4, [](uint8_t c) { return c >= 0x20 && c <= 0x7E; });
-        const uint64_t size = uint64_t(chunk[4]) | uint64_t(chunk[5]) << 8 |
-                              uint64_t(chunk[6]) << 16 | uint64_t(chunk[7]) << 24;
+        const uint64_t size = declared.rifx
+                                  ? uint64_t(chunk[7]) | uint64_t(chunk[6]) << 8 |
+                                        uint64_t(chunk[5]) << 16 | uint64_t(chunk[4]) << 24
+                                  : uint64_t(chunk[4]) | uint64_t(chunk[5]) << 8 |
+                                        uint64_t(chunk[6]) << 16 | uint64_t(chunk[7]) << 24;
         if (printableId && size <= held - 8)
         {
             return std::nullopt;

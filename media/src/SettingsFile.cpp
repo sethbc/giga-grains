@@ -213,7 +213,9 @@ std::error_code writeDurably(const fs::path &path, std::string_view bytes)
 }
 
 /// Renames `from` over `to`, retrying a transient failure up to kRenameAttempts times in all.
-/// On Windows the rename writes through, so it is on the disk when it returns.
+/// On Windows NTFS journals the rename: after a crash the old file or the new one is whole,
+/// though the rename is not necessarily durable when MoveFileExW returns (MOVEFILE_WRITE_THROUGH
+/// matters only for a cross-volume copy and delete).
 std::error_code renameOver(const fs::path &from, const fs::path &to)
 {
     std::error_code error;
@@ -248,7 +250,7 @@ std::error_code renameOver(const fs::path &from, const fs::path &to)
 }
 
 /// Flushes `folder`'s entries to the disk, so the rename into it survives a power loss. Best
-/// effort: the save has already succeeded. Nothing on Windows, whose rename wrote through.
+/// effort: the save has already succeeded. Nothing on Windows, whose NTFS journals the rename.
 void syncFolder(const fs::path &folder)
 {
 #if !defined(_WIN32)

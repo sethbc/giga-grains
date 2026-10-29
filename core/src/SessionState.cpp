@@ -208,7 +208,8 @@ bool parseMedia(std::string_view payload, std::optional<MediaEntry> &sample, boo
     {
         return false;
     }
-    // The <media> root, alone at the top level, at a version this build reads.
+    // The <media> root, alone at the top level, at version 1 or later; a newer version is kept
+    // unread.
     // The version is the whole attribute, in decimal ("1x" isn't 1, as tinyxml's
     // QueryIntAttribute would read it).
     const TiXmlElement *media = doc.RootElement();
