@@ -297,3 +297,28 @@ TEST_CASE("exchange holds a source given to the engine directly until it is reti
     CHECK(weakA.expired());
     CHECK(exchange.held() == 0);
 }
+
+TEST_CASE("exchange reserve grows its storage geometrically", "[core]")
+{
+    // Carry-over [194]: reserve() made room for exactly one more source, so each reserve once the
+    // storage was full reallocated it. Grown geometrically, 256 held sources take a handful.
+    if (!AllocTripwire::available())
+    {
+        SKIP("allocation counting is compiled out under ASan");
+    }
+    SourceExchange exchange;
+    const auto source = makeSource();
+    uint64_t allocations = 0;
+    for (int i = 0; i < 256; ++i)
+    {
+        AllocTripwire::resetCount();
+        {
+            AllocTripwire::Scope armed;
+            exchange.reserve();
+        }
+        allocations += AllocTripwire::count();
+        exchange.hold(source); // the exchange frees what it holds when destroyed
+    }
+    CHECK(exchange.held() == 256);
+    CHECK(allocations <= 16);
+}

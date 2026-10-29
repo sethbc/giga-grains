@@ -5,6 +5,7 @@
 #ifndef GG_MEDIA_CONVERT_H
 #define GG_MEDIA_CONVERT_H
 
+#include <atomic>
 #include <memory>
 
 #include "gg/source/SampleBuffer.h"
@@ -26,10 +27,14 @@ namespace gg::media
 /// - Bounded memory: besides the output, r8brain's buffers are sized for about 65,536 output
 ///   frames per call (or one input frame's worth, when the rate rises more than 65,536-fold),
 ///   however far the rate rises.
+/// - `cancel`, when given, is read before each block of at most 4,096 input frames: once it is
+///   set, the conversion stops and returns nullptr (the sample loader's prompt stop, carry-over
+///   [194]). Never set, it changes nothing.
 /// `in` must not be null, and `targetRate` must be finite and positive. Throws std::bad_alloc on
 /// allocation failure, and std::system_error if r8brain's filter-cache std::mutex fails to lock
 /// (which the standard allows and no supported platform does in practice); nothing else.
-std::shared_ptr<SampleBuffer> convertRate(std::shared_ptr<SampleBuffer> in, double targetRate);
+std::shared_ptr<SampleBuffer> convertRate(std::shared_ptr<SampleBuffer> in, double targetRate,
+                                          const std::atomic<bool> *cancel = nullptr);
 } // namespace gg::media
 
 #endif // GG_MEDIA_CONVERT_H

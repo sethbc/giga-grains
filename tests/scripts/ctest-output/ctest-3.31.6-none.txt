@@ -1,0 +1,3 @@
+Test project /tmp/mbd-t5-ctestproj/build/dev3
+No tests were found!!!
+Errors while running CTest

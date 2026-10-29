@@ -37,6 +37,17 @@ SampleBuffer::SampleBuffer(uint32_t channels, int64_t frames, double sampleRate)
 {
 }
 
+SampleBuffer::SampleBuffer(uint32_t channels, int64_t frames, double sampleRate,
+                           std::vector<float> samples)
+    : channels_(channels), frames_(frames), sampleRate_(sampleRate)
+{
+    if (samples.size() != checkedSampleCount(channels, frames, sampleRate))
+    {
+        throw std::invalid_argument("SampleBuffer: samples must hold channels * frames");
+    }
+    samples_ = std::move(samples);
+}
+
 // std::exchange, not a plain move, for the samples: the source's vector must end up empty, which
 // a moved-from vector isn't guaranteed to be. It is also safe for a self-move.
 SampleBuffer::SampleBuffer(SampleBuffer &&other) noexcept

@@ -56,3 +56,6 @@
 [submodule "libs/sst/sst-filters"]
 	path = libs/sst/sst-filters
 	url = https://github.com/surge-synthesizer/sst-filters
+[submodule "libs/utf8proc"]
+	path = libs/utf8proc
+	url = https://github.com/JuliaStrings/utf8proc

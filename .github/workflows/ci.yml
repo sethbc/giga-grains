@@ -9,10 +9,12 @@
 #               cross-platform determinism gate. On macOS the universal build's x86_64 slice runs
 #               too, under Rosetta: the unit tests and the golden checks. Then clap-validator,
 #               pluginval (strictness 10), auval (macOS) and Steinberg's VST3 validator. gg-bench
-#               runs at full length (ruling T10-c) and reports its in-process ratios, with a
-#               verdict against the leg's baseline when there is one; through M1 it is
-#               report-only (ruling 3). Sub-project 6 makes the gate blocking, with the published
-#               §16 headline (INTENT §16, §19).
+#               runs at full length (ruling T10-c) on pushes to main, on the nightly schedule and
+#               on workflow_dispatch, and reports its in-process ratios, with a verdict against
+#               the leg's baseline when there is one; through M1 it is report-only (ruling 3).
+#               On a pull request it runs --quick, as a smoke check only (no verdict, no
+#               artifact). Sub-project 6 makes the gate blocking, with the published §16
+#               headline (INTENT §16, §19).
 #   sanitizers  ASan + UBSan, and RealtimeSanitizer, with upstream clang 20 (the pinned LLVM
 #               20.1.8 release) on ubuntu-24.04.
 #
@@ -29,12 +31,18 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+  # The nightly full-length benchmark (and a fresh run of everything else) on main.
+  schedule:
+    - cron: "17 3 * * *"
 
 permissions:
   contents: read
 
+# A newer push to a pull request cancels that pull request's run in progress. Every other run
+# (a push to main, the nightly, a dispatch) has a group of its own, so none is cancelled and a
+# queued full benchmark is never replaced by a later run.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 defaults:
@@ -67,12 +75,65 @@ jobs:
             bench: build/linux-gcc12/tools/gg-bench/gg-bench
     env:
       HOMEBREW_NO_AUTO_UPDATE: 1
+      # The SDKs that clap-wrapper would download at configure time (the VST3 SDK, Apple's
+      # AudioUnitSDK, RtAudio, RtMidi and the Windows helper library, wil) are fetched by
+      # scripts/fetch-sdks.sh into this directory at exactly the tags clap-wrapper pins, and
+      # Configure points clap-wrapper at them (-DVST3_SDK_ROOT and the like). CPM's own cache
+      # (CPM_SOURCE_CACHE) can't do this: clap-wrapper gives every package a SOURCE_DIR, which
+      # makes CPM skip it. The cache never changes what is built, only whether it is downloaded
+      # (carry-over [96]).
+      SDK_CACHE_DIR: ${{ github.workspace }}/.sdk-cache
+      # ccache for the macOS and Linux legs, CI only (the local presets are unchanged): the
+      # launcher is passed at configure, and the cache never changes what is built, because
+      # ccache hashes the whole compile command (every flag, -ffp-contract=off among them, the
+      # definitions and the compiler's identity) and the preprocessed source. The workspace has
+      # the same path on every run, so base_dir only makes that explicit; hash_dir off keeps the
+      # working directory out of the hash (the legs compile with the same one every time). No
+      # __DATE__ or __TIME__ is used in first-party code.
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_BASEDIR: ${{ github.workspace }}
+      CCACHE_NOHASHDIR: "1"
+      CCACHE_MAXSIZE: 500M
+      CCACHE_COMPRESS: "1"
     steps:
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # Already shallow, now explicit: with fetch-depth 1 (the default) the action runs
+          # `git submodule update --init --force --depth=1 --recursive`, so every submodule is
+          # fetched at its exact pinned commit only. Spelling it out changes nothing and brings
+          # no speed-up.
+          fetch-depth: 1
           submodules: recursive
           persist-credentials: false
+
+      # The SDK checkouts, keyed by leg and by the files that hold the pins (clap-wrapper's
+      # base_sdks.cmake, which names every tag, and the script that fetches them), so a changed
+      # pin starts a fresh cache. Every cache here is restored by every run and saved only on
+      # main (a push, the nightly or a dispatch on main): GitHub scopes a cache to the ref that
+      # saved it, and a pull request can read main's but nobody reads a pull request's.
+      - name: Restore the SDK checkouts
+        id: sdk_cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ env.SDK_CACHE_DIR }}
+          key: sdks-${{ matrix.preset }}-${{ hashFiles('libs/clap/clap-wrapper/cmake/base_sdks.cmake', 'scripts/fetch-sdks.sh') }}
+
+      # On a hit every checkout is kept (its recorded pin matches) and nothing is downloaded; on
+      # a miss, each SDK is cloned at its pinned tag. Either way the script writes the -D options
+      # that Configure passes. Saved right here on a miss, so a later failure doesn't lose it.
+      - name: Fetch the SDKs
+        run: |
+          scripts/fetch-sdks.sh "$SDK_CACHE_DIR" | tee "$RUNNER_TEMP/fetch-sdks.log"
+          tr -d '\r' < "$RUNNER_TEMP/fetch-sdks.log" | grep '^-D' > "$SDK_CACHE_DIR/options.txt"
+          echo "### SDK cache (${{ matrix.preset }}): hit=${{ steps.sdk_cache.outputs.cache-hit || 'false' }}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Save the SDK checkouts
+        if: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && steps.sdk_cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ env.SDK_CACHE_DIR }}
+          key: ${{ steps.sdk_cache.outputs.cache-primary-key }}
 
       - name: Prepare for JUCE
         uses: surge-synthesizer/sst-githubactions/prepare-for-juce@5bb92ec9d3401eba6a85f8edea98395b3b866e84 # main
@@ -90,12 +151,67 @@ jobs:
         if: runner.os == 'macOS'
         run: command -v ninja || brew install ninja
 
+      # ccache on macOS and Linux. Windows builds with the Visual Studio generator
+      # (ClangCL toolset), which has no compiler-launcher support, so that leg is uncached.
+      # (The universal macOS build compiles each file for two architectures, which ccache
+      # passes through uncached; the leg still gets the cache for its single-arch compiles.)
+      - name: Install ccache (macOS)
+        if: runner.os == 'macOS'
+        run: command -v ccache || brew install ccache
+
+      - name: Install ccache (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get install -y ccache
+
+      # Saved (below) only on main, so pull requests don't fill the repository's cache quota
+      # with a 500 MB cache per leg per run.
+      - name: Restore the compiler cache
+        if: runner.os != 'Windows'
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-${{ runner.os }}-${{ matrix.preset }}-${{ matrix.os }}-${{ github.sha }}
+          restore-keys: |
+            ccache-${{ runner.os }}-${{ matrix.preset }}-${{ matrix.os }}-
+
       - name: Configure
-        run: cmake --preset ${{ matrix.preset }}
+        id: configure
+        run: |
+          # A loop, not mapfile: the macOS runner's bash is 3.2.
+          sdk_roots=()
+          while IFS= read -r line || [ -n "$line" ]; do
+            if [ -n "$line" ]; then sdk_roots+=("$line"); fi
+          done < "$SDK_CACHE_DIR/options.txt"
+          launcher=()
+          if [[ "$RUNNER_OS" != Windows ]]; then
+            ccache --zero-stats
+            launcher=(-DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+              -DCMAKE_OBJC_COMPILER_LAUNCHER=ccache -DCMAKE_OBJCXX_COMPILER_LAUNCHER=ccache)
+          fi
+          cmake --preset ${{ matrix.preset }} "${sdk_roots[@]}" "${launcher[@]}"
 
       - name: Build gg-all and gg-products
         id: build
         run: cmake --build --preset ${{ matrix.preset }} --config Release --parallel --target gg-all gg-products
+
+      - name: Compiler cache statistics
+        if: ${{ !cancelled() && runner.os != 'Windows' }}
+        run: |
+          {
+            echo "### ccache (${{ matrix.preset }})"
+            echo '```'
+            ccache --show-stats
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Saved even when the build failed (what it compiled is still good), but not by a pull
+      # request.
+      - name: Save the compiler cache
+        if: ${{ !cancelled() && github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && runner.os != 'Windows' }}
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-${{ runner.os }}-${{ matrix.preset }}-${{ matrix.os }}-${{ github.sha }}
 
       - name: Test (unit, plugin and golden)
         run: ctest --preset ${{ matrix.preset }} -C Release --output-on-failure
@@ -130,9 +246,12 @@ jobs:
               --compare-events "tests/golden/expected/$name.events.jsonl"
           done
 
+      # Full length on pushes to main, the nightly schedule and workflow_dispatch; --quick on a
+      # pull request. A quick run is a smoke check: it must not crash, but its ratios are too
+      # noisy for the baseline, so it checks none, prints no verdict and uploads nothing.
       # Reported, not gated through M1 (ruling 3; INTENT §16, §19). gg-bench times the kernels,
       # the frozen reference kernel and the real engine at full length (runs of 2 s, 5 interleaved
-      # rounds; ruling T10-c), not --quick, and reports each engine case's ratio to the reference,
+      # rounds; ruling T10-c) and reports each engine case's ratio to the reference,
       # which cancels the runner's speed but not its microarchitecture. When this leg has a
       # baseline (tools/gg-bench/baselines/<preset>.json), gg-bench checks the ratios against its
       # entry for the runner's CPU model and prints a verdict per ratio. GitHub assigns a leg
@@ -143,9 +262,9 @@ jobs:
       # uploads; sub-project 6 makes it blocking. Anything else still fails the job, as before: a
       # crash, an engine fault, a malformed baseline (exit 1), bad usage (2) or the timeout. The
       # bench_baseline_* tests pin exit 3 for a regression, exit 0 for a pass, and exit 0 with
-      # the no-verdict line for a model the baseline lacks. The runs are time-boxed: about 6
-      # minutes on every leg.
-      - name: Benchmark (full length; ratios reported, not gated through M1)
+      # the no-verdict line for a model the baseline lacks. A full run is time-boxed: about 6
+      # minutes on every leg; a quick one takes under a minute.
+      - name: Benchmark (full length on main, nightly and dispatch, else --quick; not gated through M1)
         id: bench
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         timeout-minutes: 30
@@ -153,7 +272,11 @@ jobs:
           out="${{ matrix.build_dir }}/gg-bench"
           baseline="tools/gg-bench/baselines/${{ matrix.preset }}.json"
           args=(--commit "${{ github.sha }}" --json "$out.json")
-          if [[ -f "$baseline" ]]; then
+          quick=false
+          if [[ "${{ github.event_name }}" == pull_request ]]; then
+            quick=true
+            args+=(--quick)
+          elif [[ -f "$baseline" ]]; then
             args+=(--baseline "$baseline")
           fi
           set +e
@@ -163,7 +286,9 @@ jobs:
           {
             echo "### gg-bench (${{ matrix.preset }})"
             # The grep strips CRs first: on windows-clangcl the output's lines end in CRLF.
-            if [[ ! -f "$baseline" ]]; then
+            if [[ $quick == true ]]; then
+              echo "Quick smoke run (pull request): no baseline check, no verdict."
+            elif [[ ! -f "$baseline" ]]; then
               echo "No baseline for this leg yet ($baseline): ratios reported, no verdict."
             elif no_verdict=$(tr -d '\r' < "$out.txt" | grep -m 1 '^no baseline for .*; no verdict$'); then
               echo "$no_verdict (ratios reported)."
@@ -173,7 +298,7 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
           if [[ $status == 3 ]]; then
-            echo "::warning title=gg-bench::a ratio regressed against $baseline (report-only through M1)"
+            echo "::warning title=gg-bench::a ratio regressed, or a baseline entry is missing from the run, against $baseline (report-only through M1)"
             status=0
           fi
           exit "$status"
@@ -265,9 +390,9 @@ jobs:
           done
           exit "$failed"
 
-      # The VST3 SDK that clap-wrapper downloads at configure time (CPM) includes public.sdk,
+      # The VST3 SDK that Configure used (VST3_SDK_ROOT, from the SDK cache) includes public.sdk,
       # so the validator (public.sdk/samples/vst-hosting/validator) is built from that same
-      # checkout. CPM records where it put the SDK in the cache.
+      # checkout.
       - name: Build Steinberg's VST3 validator
         id: vst3_validator
         if: ${{ !cancelled() && steps.products.outcome == 'success' }}
@@ -275,7 +400,7 @@ jobs:
         run: |
           build_dir="${{ matrix.build_dir }}"
           cache="$build_dir/CMakeCache.txt"
-          sdk="$(sed -n 's/^CPM_PACKAGE_vst3sdk_SOURCE_DIR:INTERNAL=//p' "$cache" | tr -d '\r')"
+          sdk="$(sed -n 's/^VST3_SDK_ROOT:[A-Z]*=//p' "$cache" | tr -d '\r')"
           echo "VST3 SDK: $sdk"
           test -f "$sdk/public.sdk/samples/vst-hosting/validator/CMakeLists.txt"
           if [[ "$RUNNER_OS" == Windows ]]; then
@@ -307,7 +432,7 @@ jobs:
           if-no-files-found: ignore
 
       - name: Upload benchmark
-        if: ${{ !cancelled() && steps.bench.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.bench.outcome == 'success' && github.event_name != 'pull_request' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: gg-bench-${{ matrix.preset }}
@@ -327,48 +452,102 @@ jobs:
       LLVM_SHA256: 1ead36b3dfcb774b57be530df42bec70ab2d239fbce9889447c7a29a4ddc1ae6
       # The rtsan preset takes its compilers from $GG_LLVM; the asan step uses the same clang.
       GG_LLVM: /opt/llvm-20.1.8
+      # ccache, as in the build job (CI only; the same notes apply).
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_BASEDIR: ${{ github.workspace }}
+      CCACHE_NOHASHDIR: "1"
+      CCACHE_MAXSIZE: 500M
+      CCACHE_COMPRESS: "1"
     steps:
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 1 # already the default; see the build job
           submodules: recursive
           persist-credentials: false
 
       # The whole release unpacks to 11.6 GB, mostly tools we don't use, so only clang, its
       # resource directory (headers and the sanitizer runtimes, RTSan's included) and
       # llvm-symbolizer (readable sanitizer stack traces) are extracted.
+      # The release archive is cached by version and SHA-256, so a changed pin misses. The
+      # SHA-256 check below runs on a hit too: a cached archive is trusted no more than a
+      # downloaded one.
+      - name: Restore the LLVM archive
+        id: llvm_cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ runner.temp }}/llvm-archive
+          key: llvm-${{ env.LLVM_VERSION }}-${{ env.LLVM_SHA256 }}
+
       - name: Install LLVM 20.1.8 (pinned release) and Ninja
         id: toolchain
         timeout-minutes: 20
         run: |
           sudo apt-get update
-          sudo apt-get install -y ninja-build
+          sudo apt-get install -y ninja-build ccache
           name="LLVM-$LLVM_VERSION-Linux-X64"
-          archive="$RUNNER_TEMP/$name.tar.xz"
-          curl -fsSL --retry 3 -o "$archive" \
-            "https://github.com/llvm/llvm-project/releases/download/llvmorg-$LLVM_VERSION/$name.tar.xz"
+          mkdir -p "$RUNNER_TEMP/llvm-archive"
+          archive="$RUNNER_TEMP/llvm-archive/$name.tar.xz"
+          if [[ ! -f "$archive" ]]; then
+            curl -fsSL --retry 3 -o "$archive" \
+              "https://github.com/llvm/llvm-project/releases/download/llvmorg-$LLVM_VERSION/$name.tar.xz"
+          fi
           echo "$LLVM_SHA256  $archive" | sha256sum --check --strict
           sudo mkdir -p "$GG_LLVM"
           sudo tar -xJf "$archive" -C "$GG_LLVM" --strip-components=1 \
             "$name/bin/clang" "$name/bin/clang++" "$name/bin/clang-20" \
             "$name/bin/llvm-symbolizer" "$name/lib/clang/20"
-          rm -f "$archive"
           echo "$GG_LLVM/bin" >> "$GITHUB_PATH"
           "$GG_LLVM/bin/clang++" --version
           ls "$GG_LLVM/lib/clang/20/lib/x86_64-unknown-linux-gnu/libclang_rt.rtsan.a"
+
+      - name: Save the LLVM archive
+        if: ${{ !cancelled() && github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && steps.llvm_cache.outputs.cache-hit != 'true' && steps.toolchain.outcome == 'success' }}
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ runner.temp }}/llvm-archive
+          key: llvm-${{ env.LLVM_VERSION }}-${{ env.LLVM_SHA256 }}
+
+      - name: Restore the compiler cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-sanitizers-llvm-${{ env.LLVM_VERSION }}-${{ github.sha }}
+          restore-keys: |
+            ccache-sanitizers-llvm-${{ env.LLVM_VERSION }}-
 
       - name: ASan + UBSan
         env:
           CC: ${{ env.GG_LLVM }}/bin/clang
           CXX: ${{ env.GG_LLVM }}/bin/clang++
         run: |
-          cmake --preset asan
+          launcher=(-DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache)
+          ccache --zero-stats
+          cmake --preset asan "${launcher[@]}"
           cmake --build --preset asan --parallel --target gg-all
           ctest --preset asan --output-on-failure
 
       - name: RealtimeSanitizer
         if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
         run: |
-          cmake --preset rtsan
+          launcher=(-DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache)
+          cmake --preset rtsan "${launcher[@]}"
           cmake --build --preset rtsan --parallel --target gg-all
           ctest --preset rtsan --output-on-failure
+
+      - name: Compiler cache statistics
+        if: ${{ !cancelled() }}
+        run: |
+          {
+            echo "### ccache (sanitizers)"
+            echo '```'
+            ccache --show-stats
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Save the compiler cache
+        if: ${{ !cancelled() && github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-sanitizers-llvm-${{ env.LLVM_VERSION }}-${{ github.sha }}

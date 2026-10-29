@@ -23,6 +23,13 @@
 // accumulation run 4-wide. The SIMD kernels evaluate the same expressions in the same order as
 // the scalar ones, so under -ffp-contract=off they should agree to the bit; the test allows
 // 1e-5 of the peak.
+//
+// Self-contained: the window and the readers are copies, in detail::, of the engine's
+// gg::HannTable (gg/core/Window.h, Window.cpp) and gg::interp's linear and hermite4
+// (gg/core/Interpolate.h) as they were when the CPU gate's baselines were made, so no engine
+// change can move the reference kernel (renderHermiteSimd) and with it every baseline's ratio.
+// Kernels.h includes no engine header. The [bench] case "the reference kernel's output is pinned"
+// hashes the kernels' output; never change these copies, even to follow the engine.
 
 #include <array>
 #include <cmath>
@@ -33,8 +40,13 @@
 
 #include <sst/basic-blocks/simd/setup.h>
 
-#include "gg/core/Interpolate.h"
-#include "gg/core/Window.h"
+// A copy of the engine's GG_FP_CONTRACT_OFF (gg/core/FpContract.h says why it exists). Each copied
+// function below starts with it where the engine's original starts with GG_FP_CONTRACT_OFF.
+#if defined(__clang__)
+#define GG_BENCH_FP_CONTRACT_OFF _Pragma("clang fp contract(off)")
+#else
+#define GG_BENCH_FP_CONTRACT_OFF
+#endif
 
 namespace gg::bench
 {
@@ -66,6 +78,107 @@ using Kernel = void (*)(const GrainBatch &, const float *srcL, const float *srcR
 
 namespace detail
 {
+/// gg::HannTable, copied (FROZEN, see the top of this file). The Hann window
+/// w(p) = 0.5 - 0.5·cos(2πp), p in [0, 1], tabulated at kSize + 1 points and read with linear
+/// interpolation.
+class HannTable
+{
+  public:
+    static constexpr uint32_t kSize = 4096;
+
+    // Never inlined, like the engine's out-of-line constructor, so the kernels that construct
+    // the table on first use compile as they did when it was gg::HannTable.
+    [[gnu::noinline]] HannTable()
+    {
+        for (uint32_t i = 0; i <= kSize; ++i)
+        {
+            // At i = 0, kSize/2 and kSize the phase is exactly 0, pi and 2·pi as doubles, whose
+            // cosines round to 1, -1 and 1, so the table is exactly 0, 1 and 0 there.
+            const double phase = 2.0 * std::numbers::pi * i / kSize;
+            table_[i] = static_cast<float>(0.5 - 0.5 * std::cos(phase));
+        }
+    }
+
+    /// The window at phase01, or 0 if phase01 is outside [0, 1] or NaN.
+    float at(double phase01) const noexcept
+    {
+        GG_BENCH_FP_CONTRACT_OFF
+        if (!(phase01 >= 0.0 && phase01 <= 1.0))
+        {
+            return 0.0f;
+        }
+        const double x = phase01 * kSize; // exact: kSize is a power of two
+        // phase01 == 1 is the end of the last segment.
+        const uint32_t i = x < kSize ? static_cast<uint32_t>(x) : kSize - 1;
+        const auto t = static_cast<float>(x - i);
+        return table_[i] + (table_[i + 1] - table_[i]) * t;
+    }
+
+  private:
+    std::array<float, kSize + 1> table_{};
+};
+
+inline float tap(const float *src, int64_t frames, int64_t i) noexcept
+{
+    return (i >= 0 && i < frames) ? src[i] : 0.0f;
+}
+
+/// gg::interp's linear and Hermite readers, copied (FROZEN, see the top of this file). Taps
+/// outside [0, frames) read as zero, so no position (including NaN and ±inf) reads outside the
+/// buffer.
+namespace interp
+{
+/// The straight line from tap a to tap b at t in [0, 1).
+inline float lerp(float a, float b, float t) noexcept
+{
+    GG_BENCH_FP_CONTRACT_OFF
+    return a + (b - a) * t;
+}
+
+/// Linear interpolation between taps floor(pos) and floor(pos) + 1.
+inline float linear(const float *data, int64_t frames, double pos) noexcept
+{
+    GG_BENCH_FP_CONTRACT_OFF
+    // Outside (-1, frames) both taps are zero. This check also rejects NaN and ±inf before the
+    // integer conversion.
+    if (!(pos > -1.0 && pos < static_cast<double>(frames)))
+    {
+        return 0.0f;
+    }
+    const double base = std::floor(pos);
+    const auto i = static_cast<int64_t>(base);
+    const auto t = static_cast<float>(pos - base);
+    return lerp(tap(data, frames, i), tap(data, frames, i + 1), t);
+}
+
+/// The 4-point Catmull-Rom curve through taps p0 .. p3 at t in [0, 1) between p1 and p2.
+inline float catmullRom(float p0, float p1, float p2, float p3, float t) noexcept
+{
+    GG_BENCH_FP_CONTRACT_OFF
+    const float c1 = 0.5f * (p2 - p0);
+    const float c2 = p0 - 2.5f * p1 + 2.0f * p2 - 0.5f * p3;
+    const float c3 = 0.5f * (p3 - p0) + 1.5f * (p1 - p2);
+    return ((c3 * t + c2) * t + c1) * t + p1;
+}
+
+/// 4-point Catmull-Rom over taps floor(pos) - 1 .. floor(pos) + 2.
+inline float hermite4(const float *data, int64_t frames, double pos) noexcept
+{
+    GG_BENCH_FP_CONTRACT_OFF
+    // Outside (-2, frames + 1) all four taps are zero (at exactly -2 the curve passes through
+    // tap -2, which is zero). This check also rejects NaN and ±inf before the integer conversion.
+    if (!(pos > -2.0 && pos < static_cast<double>(frames) + 1.0))
+    {
+        return 0.0f;
+    }
+    const double base = std::floor(pos);
+    const auto i = static_cast<int64_t>(base);
+    const auto t = static_cast<float>(pos - base);
+    return catmullRom(tap(data, frames, i - 1), tap(data, frames, i), tap(data, frames, i + 1),
+                      tap(data, frames, i + 2), t);
+}
+} // namespace interp
+
 /// One grain's state, copied out of the batch so the inner loops keep it in registers.
 struct Grain
 {
@@ -103,7 +216,7 @@ inline const std::array<float, HannTable::kSize + 1> &hannPoints()
     return points;
 }
 
-/// Sample i of grain gr through a gg::interp reader, added into the outputs. Shared by the
+/// Sample i of grain gr through an interp reader, added into the outputs. Shared by the
 /// scalar kernels and the SIMD kernels' last n % 4 samples.
 template <auto Interp>
 inline void addSample(const HannTable &win, const Grain &gr, uint32_t i, const float *srcL,
@@ -128,11 +241,6 @@ inline void renderScalar(const GrainBatch &b, const float *srcL, const float *sr
             addSample<Interp>(win, gr, i, srcL, srcR, frames, outL, outR);
         }
     }
-}
-
-inline float tap(const float *src, int64_t frames, int64_t i) noexcept
-{
-    return (i >= 0 && i < frames) ? src[i] : 0.0f;
 }
 
 /// Coefficients for the 16-tap windowed-sinc reader: kPhases + 1 rows of kTaps, row r for the
@@ -284,12 +392,12 @@ inline SIMD_M128 amp4(const float *points, const Grain &gr, uint32_t i) noexcept
     return SIMD_MM(mul_ps)(SIMD_MM(and_ps)(w, valid), SIMD_MM(set1_ps)(gr.gain));
 }
 
-/// Linear interpolation, as gg::interp::linear, on its 2 taps floor(p) .. floor(p) + 1.
+/// Linear interpolation, as interp::linear, on its 2 taps floor(p) .. floor(p) + 1.
 struct LinearReader
 {
     static constexpr int kBefore = 0;
     static constexpr int kAfter = 1;
-    static constexpr auto scalar = gg::interp::linear;
+    static constexpr auto scalar = interp::linear;
 
     /// 4 reads whose taps are all inside the source: lane k reads at at[k] + t[k].
     static SIMD_M128 read4(const float *src, const int64_t *at, SIMD_M128 t) noexcept
@@ -306,12 +414,12 @@ struct LinearReader
     }
 };
 
-/// 4-point Catmull-Rom, as gg::interp::hermite4, on its 4 taps floor(p) - 1 .. floor(p) + 2.
+/// 4-point Catmull-Rom, as interp::hermite4, on its 4 taps floor(p) - 1 .. floor(p) + 2.
 struct HermiteReader
 {
     static constexpr int kBefore = 1;
     static constexpr int kAfter = 2;
-    static constexpr auto scalar = gg::interp::hermite4;
+    static constexpr auto scalar = interp::hermite4;
 
     static SIMD_M128 read4(const float *src, const int64_t *at, SIMD_M128 t) noexcept
     {
@@ -416,21 +524,21 @@ inline void renderSimd(const GrainBatch &b, const float *srcL, const float *srcR
 inline void renderLinearScalar(const GrainBatch &b, const float *srcL, const float *srcR,
                                int64_t frames, float *outL, float *outR, uint32_t n) noexcept
 {
-    detail::renderScalar<gg::interp::linear>(b, srcL, srcR, frames, outL, outR, n);
+    detail::renderScalar<detail::interp::linear>(b, srcL, srcR, frames, outL, outR, n);
 }
 
 /// 4-point Catmull-Rom (Hermite) interpolation, scalar reference.
 inline void renderHermiteScalar(const GrainBatch &b, const float *srcL, const float *srcR,
                                 int64_t frames, float *outL, float *outR, uint32_t n) noexcept
 {
-    detail::renderScalar<gg::interp::hermite4>(b, srcL, srcR, frames, outL, outR, n);
+    detail::renderScalar<detail::interp::hermite4>(b, srcL, srcR, frames, outL, outR, n);
 }
 
 /// 16-tap Blackman-windowed sinc with a 512-phase coefficient table, scalar.
 inline void renderSincScalar(const GrainBatch &b, const float *srcL, const float *srcR,
                              int64_t frames, float *outL, float *outR, uint32_t n) noexcept
 {
-    const HannTable &win = detail::hann();
+    const detail::HannTable &win = detail::hann();
     const detail::SincTable &table = detail::sincTable();
     for (std::size_t g = 0; g < b.size(); ++g)
     {
@@ -465,5 +573,7 @@ inline void renderHermiteSimd(const GrainBatch &b, const float *srcL, const floa
     detail::renderSimd<detail::HermiteReader>(b, srcL, srcR, frames, outL, outR, n);
 }
 } // namespace gg::bench
+
+#undef GG_BENCH_FP_CONTRACT_OFF
 
 #endif // GG_BENCH_KERNELS_H

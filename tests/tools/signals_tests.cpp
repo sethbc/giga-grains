@@ -25,6 +25,7 @@
 #include "gg/metrics/WavIO.h"
 #include "gg/source/PreparedSource.h"
 #include "gg/source/SampleBuffer.h"
+#include "support/Utf8.h"
 
 using Catch::Matchers::WithinAbs;
 using Catch::Matchers::WithinRel;
@@ -35,6 +36,8 @@ using gg::render::makeSignal;
 using gg::render::raisedCosine;
 using gg::render::SourceKind;
 using gg::render::SourceSpec;
+using gg::test::pathOf;
+using gg::test::utf8;
 
 namespace
 {
@@ -118,26 +121,13 @@ std::string outputPath(const std::string &name)
 {
     const std::filesystem::path dir{GG_TEST_OUTPUT_DIR};
     std::filesystem::create_directories(dir);
-    return (dir / name).string();
-}
-
-/// `path` as the UTF-8 the spec's paths are in.
-std::string utf8(const std::filesystem::path &path)
-{
-    const auto text = path.u8string();
-    return {text.begin(), text.end()};
-}
-
-/// The path UTF-8 `text` names.
-std::filesystem::path fromUtf8(const std::string &text)
-{
-    return std::u8string(text.begin(), text.end());
+    return gg::test::utf8(dir / name);
 }
 
 /// A fresh directory of this name (UTF-8) under GG_TEST_OUTPUT_DIR, as UTF-8.
 std::string freshDirectory(const std::string &name)
 {
-    const std::filesystem::path dir = std::filesystem::path{GG_TEST_OUTPUT_DIR} / fromUtf8(name);
+    const std::filesystem::path dir = std::filesystem::path{GG_TEST_OUTPUT_DIR} / pathOf(name);
     std::filesystem::remove_all(dir);
     std::filesystem::create_directories(dir);
     return utf8(dir);
@@ -146,7 +136,7 @@ std::string freshDirectory(const std::string &name)
 /// What gg-media decodes `path` to, converted to `rate`.
 std::shared_ptr<gg::SampleBuffer> decodeAt(const std::string &path, double rate)
 {
-    auto decoded = gg::media::decodeAudioFile(fromUtf8(path));
+    auto decoded = gg::media::decodeAudioFile(pathOf(path));
     INFO(decoded.error);
     REQUIRE(decoded.audio.has_value());
     return gg::media::convertRate(decoded.audio->buffer, rate);

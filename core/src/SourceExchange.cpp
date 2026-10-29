@@ -74,7 +74,14 @@ void SourceExchange::publish(const PreparedSource *raw, bool keep, const ParamVa
     collect();
 }
 
-void SourceExchange::reserve() { owned_.reserve(owned_.size() + 1); }
+void SourceExchange::reserve()
+{
+    // Doubled when full, so a run of offers reallocates a handful of times, not at each one.
+    if (owned_.size() == owned_.capacity())
+    {
+        owned_.reserve(std::max<std::size_t>(4, 2 * owned_.capacity()));
+    }
+}
 
 const PreparedSource *SourceExchange::hold(std::shared_ptr<const PreparedSource> s)
 {

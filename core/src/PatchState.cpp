@@ -5,20 +5,26 @@
 #include "gg/core/PatchState.h"
 
 #include "Patch.h"
+#include "PatchXml.h"
 
 namespace gg::core
 {
-std::string toStateXml(const ParamValues &values, uint64_t seed)
+std::string patchXml(const ParamValues &values, uint64_t seed, Mode mode)
 {
-    // The metadata never reaches the XML (only each param's ID and value do), so either
-    // product's patch writes the same state.
-    Patch patch(Mode::Fx);
+    Patch patch(mode);
     for (size_t i = 0; i < kParamCount; ++i)
     {
         patch.param(static_cast<ParamSlot>(i)).value = values[i];
     }
     patch.seed = seed;
     return patch.toState();
+}
+
+std::string toStateXml(const ParamValues &values, uint64_t seed)
+{
+    // The metadata never reaches the XML (only each param's ID and value do), so either
+    // product's patch writes the same state (patchXml's test holds them to it).
+    return patchXml(values, seed, Mode::Fx);
 }
 
 bool fromStateXml(std::string_view xml, ParamValues &values, uint64_t &seed, Mode mode,

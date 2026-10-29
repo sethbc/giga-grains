@@ -6,20 +6,33 @@
 // gg-media's settings file (gg/media/SettingsFile.h), tagged [media]. Every file test works in a
 // folder of its own under GG_TEST_OUTPUT_DIR and never touches the user's settings file.
 
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
 #include <string_view>
+#include <system_error>
+#include <thread>
 #include <vector>
 
 #include <catch2/catch_test_macros.hpp>
 
+#include "TestHooks.h"
+#include "XmlText.h"
 #include "gg/core/MachineSettings.h"
+#include "gg/core/Rng.h"
 #include "gg/media/SettingsFile.h"
 #include "media/AudioFixtures.h"
+#include "support/DeepXml.h"
+#include "support/Utf8.h"
 
 using gg::core::fromSettingsXml;
 using gg::core::MachineSettings;
@@ -192,9 +205,125 @@ TEST_CASE("settings XML nested deeper than 64 elements is rejected without parsi
     }
 }
 
+TEST_CASE("settings XML that tinyxml would nest deeper than it looks is rejected", "[core]")
+{
+    // The shapes a scan of the bytes can miscount (tests/support/DeepXml.h): each would overflow
+    // tinyxml's stack. A process killed here is the failure.
+    for (const gg::test::DeepXml &shape : gg::test::deepXmlShapes())
+        DYNAMIC_SECTION(shape.name)
+        {
+            MachineSettings out = kSome;
+            REQUIRE_FALSE(fromSettingsXml(shape.head +
+                                              R"(<settings version="1" sampleFolder="/S">)" +
+                                              shape.body + "</settings>",
+                                          out));
+            REQUIRE(out == kSome);
+        }
+}
+
+TEST_CASE("the XML nesting scan never passes what tinyxml nests deeper", "[core]")
+{
+    // gg-core's scan (core/src/XmlText.h), shared by the settings, PTCH and MEDI, against tinyxml
+    // itself: 200,000 short documents strung from the tokens where the two readings could part
+    // (quotes, declarations, unknown nodes, character references, UTF-8 lead bytes). Whatever
+    // the scan passes at a depth, tinyxml must nest no deeper.
+    static constexpr std::array<std::string_view, 44> kTokens{
+        "<a>",         "</a>",        "<a/>",        "<a x=\"", "<a x='", "<a x=", "\"",
+        "'",           ">",           "/>",          "/",       "=",      " ",     "\t",
+        "a",           "<",           "</",          "<1",      "< a",    "<!--",  "-->",
+        "<![CDATA[",   "]]>",         "<!X",         "<?xml ",  "<?xml",  "<?x",   "?>",
+        " version=\"", " encoding='", " VERSION=\"", "&#x",     "&#",     "x;",    "1;",
+        ";",           "&amp;",       "&#x41;",      "\xe0",    "\xc3",   "\xf0",  "\x80",
+        "<\x80",       "\xef\xbb\xbf"};
+    static constexpr std::array<std::string_view, 4> kHeads{"", "<?xml version=\"1.0\"?>",
+                                                            "\xef\xbb\xbf", "<a>"};
+    std::array<std::size_t, 4> passed{}; // per depth limit, of documents tinyxml nests at all
+    for (uint64_t d = 0; d < 200'000; ++d)
+    {
+        const auto draw = [&](uint64_t field) {
+            return gg::rng::hash(
+                {0x7e57'0000'0000'0185ull + d, 0, 0, gg::rng::Field::SignalNoise, field});
+        };
+        std::string xml(kHeads[draw(0) % kHeads.size()]);
+        const uint64_t count = 1 + draw(1) % 40;
+        for (uint64_t t = 0; t < count; ++t)
+        {
+            xml += kTokens[draw(2 + t) % kTokens.size()];
+        }
+        // Parsed only when the scan passes it at some limit, as gg-core does: a debug build's
+        // tinyxml asserts on some documents the scan refuses (a declaration cut short).
+        if (!gg::core::xmlNestingWithin(xml, passed.size() - 1))
+        {
+            continue;
+        }
+        const std::size_t depth = gg::core::tinyxmlDepth(xml);
+        for (std::size_t limit = 0; limit < passed.size(); ++limit)
+        {
+            if (gg::core::xmlNestingWithin(xml, limit))
+            {
+                if (depth > limit)
+                {
+                    INFO("document " << d << ": '" << xml << "'");
+                    FAIL("the scan passes it at depth " << limit << "; tinyxml nests " << depth);
+                }
+                passed[limit] += depth > 0 ? 1 : 0;
+            }
+        }
+    }
+    // The check isn't empty: many documents that nest pass at each limit but 0.
+    CHECK(passed[0] == 0);
+    for (std::size_t limit = 1; limit < passed.size(); ++limit)
+    {
+        INFO("depth limit " << limit);
+        CHECK(passed[limit] > 1000);
+    }
+}
+
+TEST_CASE("the XML nesting scan refuses the shapes whose reading depends on the locale", "[core]")
+{
+    // Direct checks of what the differential test above (which runs in the C locale only) can't
+    // see: a byte from 0x80 up where tinyxml may or may not skip white space, and a declaration
+    // whose names tinyxml may or may not fold to the case it expects.
+    using gg::core::xmlNestingWithin;
+    const std::string nbsp = "<a x=\xa0\"v\"><b></b></a>"; // 0xA0: white space in some locales
+    const std::string nel = "<a x=\x85\"v\"><b></b></a>";  // 0x85: likewise
+    const std::string quotedGt = "<?XML version=\">\"?><a><b></b></a>"; // a quoted > hides the end
+    const std::string foldedName = "<?xml VERS\xddON=\"1\"?><a><b></b></a>";
+    REQUIRE_FALSE(xmlNestingWithin(nbsp));
+    REQUIRE_FALSE(xmlNestingWithin(nel));
+    REQUIRE_FALSE(xmlNestingWithin(quotedGt));
+    REQUIRE_FALSE(xmlNestingWithin(foldedName));
+    // The declaration alone, in upper case and with plain values, is read the same way by every
+    // locale: it passes.
+    REQUIRE(xmlNestingWithin("<?XML version=\"1.0\"?><a><b></b></a>"));
+}
+
+TEST_CASE("settings XML with a declaration after the first node is rejected", "[core]")
+{
+    // Only the first node may be a declaration (carry-over: "Search and settings minors").
+    const std::vector<std::string> bad{
+        R"(<settings version="1" sampleFolder="/S" /><?xml version="1.0"?>)",
+        R"(<!-- c --><?xml version="1.0"?><settings version="1" sampleFolder="/S" />)",
+        R"(<?xml version="1.0"?><?xml version="1.0"?><settings version="1" sampleFolder="/S" />)",
+        R"(<settings version="1" sampleFolder="/S"><?xml version="1.0"?></settings>)",
+        R"(<settings version="1" sampleFolder="/S"><?pi?></settings>)",
+    };
+    for (const auto &xml : bad)
+    {
+        INFO(xml);
+        MachineSettings out = kSome;
+        REQUIRE_FALSE(fromSettingsXml(xml, out));
+        REQUIRE(out == kSome);
+    }
+    MachineSettings out;
+    REQUIRE(
+        fromSettingsXml(R"(<?xml version="1.0"?><settings version="1" sampleFolder="/S" />)", out));
+    REQUIRE(out.sampleFolder == "/S");
+}
+
 TEST_CASE("loadSettings gives the defaults for a missing, corrupt or huge file", "[media]")
 {
-    const auto dir = freshDir("search-settings-defaults");
+    const auto dir = freshDir("settings-defaults");
     REQUIRE(gg::media::loadSettings(dir / "none.xml") == MachineSettings{});
     REQUIRE(gg::media::loadSettings(dir) == MachineSettings{}); // a folder
 
@@ -210,7 +339,7 @@ TEST_CASE("loadSettings gives the defaults for a missing, corrupt or huge file",
 
 TEST_CASE("saveSettings creates the folder, and loadSettings reads it back", "[media]")
 {
-    const auto dir = freshDir("search-settings-save");
+    const auto dir = freshDir("settings-save");
     const auto file = dir / "deep" / "er" / "settings.xml";
     REQUIRE(gg::media::saveSettings(file, kSome));
     REQUIRE(fs::is_regular_file(file));
@@ -235,10 +364,283 @@ TEST_CASE("saveSettings creates the folder, and loadSettings reads it back", "[m
     REQUIRE_FALSE(gg::media::saveSettings(file / "settings.xml", kSome));
 }
 
+TEST_CASE("saveSettings removes the temporary files of saves that crashed, and nothing else",
+          "[media]")
+{
+    // A crash between writing a save's temporary file and renaming it leaves the file behind.
+    // The next save removes those of its own settings file more than 10 minutes older than the
+    // file it has just written: a save takes milliseconds, so one that old has failed, while a
+    // younger one may be another instance's, mid-save.
+    const auto dir = freshDir("settings-stale-temporary");
+    const auto file = dir / "settings.xml";
+    const auto hourAgo = fs::file_time_type::clock::now() - std::chrono::hours(1);
+    const auto make = [&](const char *name, bool old) {
+        writeText(dir / name, "<settings version=\"1\"");
+        if (old)
+        {
+            fs::last_write_time(dir / name, hourAgo);
+        }
+    };
+    make("settings.xml.4242.0.tmp", true);     // a crashed save's: removed
+    make("settings.xml.77.123456.tmp", true);  // another: removed
+    make("settings.xml.4243.0.tmp", false);    // another instance's, mid-save: kept
+    make("settings.xml.notes.tmp", true);      // not a save's
+    make("settings.xml.4242.0.tmp.bak", true); // nor this
+    make("settings.xml.4242..tmp", true);      // nor this
+    make("other.xml.4242.0.tmp", true);        // another file's
+    REQUIRE(gg::media::saveSettings(file, kSome));
+    REQUIRE(gg::media::loadSettings(file) == kSome);
+
+    std::vector<std::string> left;
+    for (const auto &e : fs::directory_iterator(dir))
+    {
+        left.push_back(gg::test::utf8(e.path().filename()));
+    }
+    std::sort(left.begin(), left.end());
+    REQUIRE(left == std::vector<std::string>{"other.xml.4242.0.tmp", "settings.xml",
+                                             "settings.xml.4242..tmp",
+                                             "settings.xml.4242.0.tmp.bak",
+                                             "settings.xml.4243.0.tmp", "settings.xml.notes.tmp"});
+}
+
+TEST_CASE("saveSettings succeeds while other instances load and save the same file", "[media]")
+{
+    // Threads stand in for plugin instances in other processes: one loads the file over and over
+    // while two save it. Every save succeeds, and every load reads one instance's settings whole.
+    // On Windows a reader's open handle can block a rename for a moment; saveSettings retries.
+    const auto dir = freshDir("settings-concurrent");
+    const auto file = dir / "settings.xml";
+    const MachineSettings a{"/A", "/a"};
+    const MachineSettings b{"/B", "/b"};
+    REQUIRE(gg::media::saveSettings(file, a));
+
+    std::atomic<bool> stop{false};
+    std::atomic<int> torn{0};
+    std::thread reader([&] {
+        while (!stop.load())
+        {
+            const auto got = gg::media::loadSettings(file);
+            if (got != a && got != b)
+            {
+                torn.fetch_add(1);
+            }
+            std::this_thread::sleep_for(std::chrono::microseconds(500));
+        }
+    });
+    std::atomic<int> failed{0};
+    const auto saver = [&](const MachineSettings &settings) {
+        for (int i = 0; i < 100; ++i)
+        {
+            if (!gg::media::saveSettings(file, settings))
+            {
+                failed.fetch_add(1);
+            }
+        }
+    };
+    std::thread other(saver, b);
+    saver(a);
+    other.join();
+    stop.store(true);
+    reader.join();
+    REQUIRE(failed.load() == 0);
+    REQUIRE(torn.load() == 0);
+    std::size_t files = 0;
+    for ([[maybe_unused]] const auto &e : fs::directory_iterator(dir))
+    {
+        ++files;
+    }
+    REQUIRE(files == 1);
+}
+
+TEST_CASE("saveSettings waits out another program holding the file for a moment", "[media]")
+{
+    // An ifstream opens a file without delete sharing on Windows, which blocks renaming over it,
+    // as a virus scanner or an editor would. Released after 100 ms, the save goes through.
+    // Elsewhere an open file never blocks a rename.
+    const auto dir = freshDir("settings-held");
+    const auto file = dir / "settings.xml";
+    REQUIRE(gg::media::saveSettings(file, kSome));
+    auto held = std::make_unique<std::ifstream>(file, std::ios::binary);
+    REQUIRE(held->is_open());
+    std::thread release([&] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        held.reset();
+    });
+    const MachineSettings other{"/Other", "/Last"};
+    const bool saved = gg::media::saveSettings(file, other);
+    release.join();
+    REQUIRE(saved);
+    REQUIRE(gg::media::loadSettings(file) == other);
+}
+
+#if defined(_WIN32)
+TEST_CASE("saveSettings gives up on a file held open too long, leaving the old settings", "[media]")
+{
+    const auto dir = freshDir("settings-held-long");
+    const auto file = dir / "settings.xml";
+    REQUIRE(gg::media::saveSettings(file, kSome));
+    {
+        std::ifstream held(file, std::ios::binary);
+        REQUIRE(held.is_open());
+        REQUIRE_FALSE(gg::media::saveSettings(file, {"/Other", "/Last"}));
+    }
+    REQUIRE(gg::media::loadSettings(file) == kSome);
+    std::size_t files = 0;
+    for ([[maybe_unused]] const auto &e : fs::directory_iterator(dir))
+    {
+        ++files;
+    }
+    REQUIRE(files == 1);
+}
+#endif
+
+namespace
+{
+using gg::media::detail::SaveStep;
+
+/// What the save hook saw, and the faults it gives.
+struct SaveRecord
+{
+    fs::path file;                      // the settings file being saved
+    std::vector<SaveStep> steps;        // each step, in order
+    std::vector<std::string> temporary; // the temporary file's content at each step
+    std::vector<std::string> settings;  // the settings file's content at each step
+    std::optional<SaveStep> failAt;     // the step to fail, with `error`
+    std::error_code error;
+    int renameFailures{0}; // fail this many Rename attempts, with `error`
+};
+SaveRecord gSave;
+
+std::string contentOf(const fs::path &file)
+{
+    const auto bytes = gg::test::readFile(file);
+    return {bytes.begin(), bytes.end()};
+}
+
+std::error_code saveHook(SaveStep step, const fs::path &temporary)
+{
+    gSave.steps.push_back(step);
+    gSave.temporary.push_back(contentOf(temporary));
+    gSave.settings.push_back(contentOf(gSave.file));
+    if (step == SaveStep::Rename && gSave.renameFailures > 0)
+    {
+        --gSave.renameFailures;
+        return gSave.error;
+    }
+    return gSave.failAt == step ? gSave.error : std::error_code();
+}
+
+/// Sets the save hook, recording `file`'s saves, for its lifetime.
+struct SaveHookSet
+{
+    explicit SaveHookSet(const fs::path &file)
+    {
+        gSave = SaveRecord{};
+        gSave.file = file;
+        gg::media::detail::setSaveHook(saveHook);
+    }
+    ~SaveHookSet() { gg::media::detail::setSaveHook(nullptr); }
+    SaveHookSet(const SaveHookSet &) = delete;
+    SaveHookSet &operator=(const SaveHookSet &) = delete;
+};
+
+std::size_t filesIn(const fs::path &dir)
+{
+    std::size_t files = 0;
+    for ([[maybe_unused]] const auto &e : fs::directory_iterator(dir))
+    {
+        ++files;
+    }
+    return files;
+}
+} // namespace
+
+TEST_CASE("saveSettings flushes its temporary file to the disk before renaming it", "[media]")
+{
+    const auto dir = freshDir("settings-save-steps");
+    const auto file = dir / "settings.xml";
+    REQUIRE(gg::media::saveSettings(file, kSome));
+    const std::string before = toSettingsXml(kSome);
+    const MachineSettings other{"/Other", "/Last"};
+    const std::string after = toSettingsXml(other);
+
+    const SaveHookSet hook(file);
+    REQUIRE(gg::media::saveSettings(file, other));
+    // Written whole, flushed, then renamed, once; the settings file untouched until the rename.
+    REQUIRE(gSave.steps == std::vector{SaveStep::Write, SaveStep::Sync, SaveStep::Rename});
+    REQUIRE(gSave.temporary == std::vector{after, after, after});
+    REQUIRE(gSave.settings == std::vector{before, before, before});
+    REQUIRE(contentOf(file) == after);
+    REQUIRE(filesIn(dir) == 1);
+}
+
+TEST_CASE("saveSettings whose write, flush or rename fails leaves the old settings whole",
+          "[media]")
+{
+    const auto dir = freshDir("settings-save-fails");
+    const auto file = dir / "settings.xml";
+    REQUIRE(gg::media::saveSettings(file, kSome));
+    const SaveHookSet hook(file);
+    gSave.error = std::make_error_code(std::errc::io_error);
+    SECTION("the write") { gSave.failAt = SaveStep::Write; }
+    SECTION("the flush") { gSave.failAt = SaveStep::Sync; }
+    SECTION("the rename") { gSave.failAt = SaveStep::Rename; }
+    REQUIRE_FALSE(gg::media::saveSettings(file, {"/Other", "/Last"}));
+    REQUIRE(gSave.steps.back() == *gSave.failAt);
+    REQUIRE(gg::media::loadSettings(file) == kSome);
+    REQUIRE(filesIn(dir) == 1); // no temporary file left
+}
+
+TEST_CASE("saveSettings retries a rename that fails while another program holds the file",
+          "[media]")
+{
+    // On Windows a rename over a file another program has open fails with a sharing violation
+    // until it closes the file. saveSettings tries 20 times, 25 ms apart.
+    const auto dir = freshDir("settings-save-retries");
+    const auto file = dir / "settings.xml";
+    REQUIRE(gg::media::saveSettings(file, kSome));
+    const MachineSettings other{"/Other", "/Last"};
+    const SaveHookSet hook(file);
+    gSave.error = gg::media::detail::transientRenameError();
+    const auto renames = [] {
+        return std::count(gSave.steps.begin(), gSave.steps.end(), SaveStep::Rename);
+    };
+    SECTION("3 failures, then success")
+    {
+        gSave.renameFailures = 3;
+        REQUIRE(gg::media::saveSettings(file, other));
+        REQUIRE(renames() == 4);
+        REQUIRE(gg::media::loadSettings(file) == other);
+    }
+    SECTION("19 failures, then success on the last try")
+    {
+        gSave.renameFailures = 19;
+        REQUIRE(gg::media::saveSettings(file, other));
+        REQUIRE(renames() == 20);
+        REQUIRE(gg::media::loadSettings(file) == other);
+    }
+    SECTION("20 failures: the save fails, and the old settings stay")
+    {
+        gSave.renameFailures = 20;
+        REQUIRE_FALSE(gg::media::saveSettings(file, other));
+        REQUIRE(renames() == 20);
+        REQUIRE(gg::media::loadSettings(file) == kSome);
+    }
+    SECTION("an error that isn't transient isn't retried")
+    {
+        gSave.error = std::make_error_code(std::errc::permission_denied);
+        gSave.renameFailures = 1;
+        REQUIRE_FALSE(gg::media::saveSettings(file, other));
+        REQUIRE(renames() == 1);
+        REQUIRE(gg::media::loadSettings(file) == kSome);
+    }
+    REQUIRE(filesIn(dir) == 1);
+}
+
 TEST_CASE("defaultSettingsPath is in the user's configuration folder", "[media]")
 {
     const fs::path path = gg::media::defaultSettingsPath();
-    INFO(path.string());
+    INFO(gg::test::utf8(path));
     REQUIRE(path.is_absolute());
     REQUIRE(path.filename() == "settings.xml");
 #if defined(_WIN32)

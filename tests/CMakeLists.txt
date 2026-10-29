@@ -34,11 +34,15 @@ add_executable(gg-tests
         engine/sample_buffer_tests.cpp
         engine/window_tests.cpp
         media/convert_tests.cpp
+        media/decode_memory_tests.cpp
         media/decode_tests.cpp
         media/sample_tests.cpp
         media/search_tests.cpp
         media/sha256_tests.cpp
+        media/utf8_path_tests.cpp
+        metrics/click_injection_tests.cpp
         metrics/metrics_tests.cpp
+        metrics/spectrogram_tests.cpp
         tools/bench_kernel_tests.cpp
         tools/bench_tests.cpp
         tools/render_spec_tests.cpp
@@ -69,8 +73,9 @@ endif ()
 # engine and, with the editor, gg::ui-core. The editor layer is an object library, whose own
 # libraries CMake would put after everything listed here, so they're listed too: the plugin
 # core and gg::ui. Then gg::render, gg::ui-core, gg::bench, gg::media and gg::core, which link
-# the engine (and gg::render the metrics). gg::bench-kernels follows gg::bench, which links it:
-# left out, CMake would repeat the engine after it. gg::media links gg::core, so comes first.
+# the engine (and gg::render the metrics). gg::bench-kernels (header-only, no
+# engine dependency; the tests include its Kernels.h) follows gg::bench, which links it.
+# gg::media links gg::core, so comes first.
 set(gg_tests_libraries gg::render gg::ui-core gg::bench gg::bench-kernels gg::media gg::core
         gg::engine gg::audiometrics)
 if (GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
@@ -84,10 +89,16 @@ target_link_libraries(gg-tests PRIVATE ${gg_tests_libraries} gg::compiler-option
 # as "space/..."), and through them sst-effects and sst-filters, which gg-core links PRIVATE.
 target_include_directories(gg-tests PRIVATE ${CMAKE_SOURCE_DIR}/core/src)
 target_link_libraries(gg-tests PRIVATE sst-effects sst-filters)
+# metrics/spectrogram_tests.cpp reads the spectrogram PNG back with stb_image, implemented in
+# gg::stb_impl.
+target_link_libraries(gg-tests PRIVATE gg::stb gg::stb_impl)
+# The search and settings-file tests set gg-media's test hooks (media/src/TestHooks.h).
+target_include_directories(gg-tests PRIVATE ${CMAKE_SOURCE_DIR}/media/src)
 # Scratch files (WAV/PNG round trips) go under the build tree, never a shared temp dir.
 target_compile_definitions(gg-tests PRIVATE GG_TEST_OUTPUT_DIR="${CMAKE_CURRENT_BINARY_DIR}/test-output"
         GG_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/golden"
-        GG_AUDIO_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/audio")
+        GG_AUDIO_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/audio"
+        GG_BENCH_BASELINE_DIR="${CMAKE_SOURCE_DIR}/tools/gg-bench/baselines")
 # 0 or 1, so tests can use #if GG_USE_RTSAN for checks that only hold in the RTSan build.
 target_compile_definitions(gg-tests PRIVATE GG_USE_RTSAN=$<BOOL:${GG_USE_RTSAN}>)
 # 0 or 1: under ASan (1) the allocation tripwire's replacement operator new/delete are compiled
@@ -138,7 +149,11 @@ catch_discover_tests(gg-tests TEST_SPEC "[serial]" ADD_TAGS_AS_LABELS
 #   requires an exact exit code and verdict line:
 #   - pass: exit 0, "verdict: 0 of 3 ratios regressed (...)";
 #   - regressed: exit 3, "verdict: 3 of 3 ...";
-#   - other machine: exit 0, "no baseline for <this machine>; no verdict".
+#   - other machine: exit 0, "no baseline for <this machine>; no verdict";
+#   - missing (bench_baseline_missing): the entry also has engine-live, which the run lacks:
+#     exit 3, "verdict: 0 of 3 ratios regressed, 3 baseline entries missing from this run (...)";
+#   - no ratios (bench_baseline_no_ratios): a run of reference alone has no ratio to check
+#     against the entry: exit 1 and the error on stderr, never "0 of 0".
 #   CI's bench step relies on these codes: it reports exit 3 without failing (ruling 3).
 # - bench_space_cli: gg-bench --space --quick, Space's report-only cost, must exit 0 and write
 #   its JSON (the [bench] case "gg-bench --space --quick prints a per-sample cost" checks what
@@ -176,6 +191,36 @@ foreach (test IN ITEMS bench_rejects_space_cases bench_rejects_canvas_seconds
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tools/check-exit-code.cmake)
     set_tests_properties(${test} PROPERTIES LABELS bench)
 endforeach ()
+# - bench_make_baseline_invalid: --make-baseline from a run whose ratio has a median of 0 (which
+#   would make a tolerance of 0/0, NaN) must exit 1 with the error and write no file.
+# - bench_make_baseline_merge: --make-baseline --merge, written over the file it merges into,
+#   keeps another model's entry and replaces this machine's (check-bench-merge.cmake).
+# - bench_make_baseline_bad_merge: --merge without its file and an input is bad usage (exit 2).
+add_test(NAME bench_make_baseline_merge
+        COMMAND ${CMAKE_COMMAND} -DBENCH=$<TARGET_FILE:gg-bench>
+        -DRUN_JSON=${CMAKE_BINARY_DIR}/bench_cli.json
+        -DBASELINE=${CMAKE_CURRENT_BINARY_DIR}/bench_merged_baseline.json
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/tools/check-bench-merge.cmake)
+set_tests_properties(bench_make_baseline_merge PROPERTIES LABELS bench FIXTURES_REQUIRED bench_json)
+set(bench_make_baseline_bad_merge_args --make-baseline test out.json --merge old.json)
+add_test(NAME bench_make_baseline_bad_merge
+        COMMAND ${CMAKE_COMMAND} -DPROGRAM=$<TARGET_FILE:gg-bench>
+        "-DARGS=${bench_make_baseline_bad_merge_args}" -DEXPECTED_CODE=2
+        "-DEXPECTED_STDERR=error: bad argument: --make-baseline"
+        "-DEXPECTED_STDERR2=usage: gg-bench"
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/tools/check-exit-code.cmake)
+set_tests_properties(bench_make_baseline_bad_merge PROPERTIES LABELS bench)
+set(bench_bad_run ${CMAKE_CURRENT_BINARY_DIR}/bench_bad_run.json)
+file(WRITE ${bench_bad_run} "{\"schemaVersion\": 2, \"machine\": \"CPU (test)\", \"commit\": \"test\", \"ratios\": [{\"name\": \"engine-sample\", \"blockSize\": 32, \"median\": 0}]}\n")
+set(bench_invalid_baseline ${CMAKE_CURRENT_BINARY_DIR}/bench_invalid_baseline.json)
+set(bench_make_baseline_invalid_args --make-baseline test ${bench_invalid_baseline} ${bench_bad_run})
+add_test(NAME bench_make_baseline_invalid
+        COMMAND ${CMAKE_COMMAND} -DPROGRAM=$<TARGET_FILE:gg-bench>
+        "-DARGS=${bench_make_baseline_invalid_args}" -DEXPECTED_CODE=1
+        "-DEXPECTED_STDERR=error: run 1 has a ratio whose median isn't positive and finite: engine-sample at block 32"
+        -DABSENT=${bench_invalid_baseline}
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/tools/check-exit-code.cmake)
+set_tests_properties(bench_make_baseline_invalid PROPERTIES LABELS bench)
 set(verdict_line "ratios regressed (limit: the baseline's ratio x (1 + its tolerance))")
 set(bench_baseline_pass_args -DRATIO=1e9 -DEXPECTED_CODE=0
         "-DEXPECTED_VERDICT=verdict: 0 of 3 ${verdict_line}")
@@ -183,7 +228,12 @@ set(bench_baseline_regressed_args -DRATIO=1e-9 -DEXPECTED_CODE=3
         "-DEXPECTED_VERDICT=verdict: 3 of 3 ${verdict_line}")
 set(bench_baseline_other_machine_args -DRATIO=1e-9 "-DMACHINE=no such CPU (test)"
         -DEXPECTED_CODE=0 "-DEXPECTED_VERDICT=no baseline for <machine>$<SEMICOLON> no verdict")
-foreach (test IN ITEMS bench_baseline_pass bench_baseline_regressed bench_baseline_other_machine)
+set(bench_baseline_missing_args -DRATIO=1e9 -DEXTRA_CASE=engine-live -DEXPECTED_CODE=3
+        "-DEXPECTED_VERDICT=verdict: 0 of 3 ratios regressed, 3 baseline entries missing from this run (limit: the baseline's ratio x (1 + its tolerance))")
+set(bench_baseline_no_ratios_args -DRATIO=1e9 -DCASES=reference -DEXPECTED_CODE=1
+        "-DEXPECTED_STDERR=the run has no ratios to check against the baseline's entry")
+foreach (test IN ITEMS bench_baseline_pass bench_baseline_regressed bench_baseline_other_machine
+        bench_baseline_missing bench_baseline_no_ratios)
     add_test(NAME ${test}
             COMMAND ${CMAKE_COMMAND} -DBENCH=$<TARGET_FILE:gg-bench>
             -DRUN_JSON=${CMAKE_BINARY_DIR}/bench_cli.json
@@ -191,6 +241,18 @@ foreach (test IN ITEMS bench_baseline_pass bench_baseline_regressed bench_baseli
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tools/check-bench-baseline.cmake)
     set_tests_properties(${test} PROPERTIES LABELS bench FIXTURES_REQUIRED bench_json)
 endforeach ()
+
+# The scripts (carry-over [130]-[132]), label `scripts`: scripts/check.sh against stub cmake and
+# ctest (replaying CTest 3.31's and 4.4's recorded output) in a fake source tree, and
+# scripts/worktree-setup.sh in scratch git repositories, all under the build tree. Not on
+# Windows, where the scripts' bash (Git Bash) is unverified (CLAUDE.md).
+if (NOT WIN32)
+    find_program(GG_BASH bash REQUIRED)
+    add_test(NAME scripts_check_and_worktree_setup
+            COMMAND ${GG_BASH} ${CMAKE_CURRENT_SOURCE_DIR}/scripts/scripts_tests.sh
+            ${CMAKE_CURRENT_BINARY_DIR}/scripts-tests ${CMAKE_COMMAND})
+    set_tests_properties(scripts_check_and_worktree_setup PROPERTIES LABELS scripts)
+endif ()
 
 # RTSan's negative control (rtsan build only), labels `rt` and `rtsan`: a program that allocates
 # inside a nonblocking function must make RealtimeSanitizer report it. The test passes on the
@@ -229,6 +291,14 @@ add_test(NAME render_write_media_alone
         --block-size 64 -o ${CMAKE_CURRENT_BINARY_DIR}/write-media-alone/x.wav)
 set_tests_properties(render_write_media_alone PROPERTIES LABELS render
         PASS_REGULAR_EXPRESSION "excludes --write-media|--write-media excludes")
+# A non-ASCII --spectrogram path (carry-over [181]): gg-render exits 0 only if the PNG was
+# written, which on Windows needs the wide-path open, not stbi_write_png's narrow one.
+add_test(NAME render_spectrogram_utf8_path
+        COMMAND gg-render ${CMAKE_CURRENT_SOURCE_DIR}/golden/cases/sparse-sine.json
+        --media-dir ${GG_GOLDEN_MEDIA_DIR}
+        --spectrogram "${CMAKE_CURRENT_BINARY_DIR}/render-utf8/spëctrogram ✓ 音.png")
+set_tests_properties(render_spectrogram_utf8_path PROPERTIES LABELS render
+        FIXTURES_REQUIRED golden_media)
 file(GLOB GG_GOLDEN_CASE_SPECS CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/golden/cases/*.json)
 if (NOT GG_GOLDEN_CASE_SPECS)
     message(FATAL_ERROR "No golden cases in ${CMAKE_CURRENT_SOURCE_DIR}/golden/cases")
@@ -370,3 +440,16 @@ if (APPLE AND GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
     add_dependencies(gg-tests gg-au-state-tests)
     catch_discover_tests(gg-au-state-tests ADD_TAGS_AS_LABELS)
 endif ()
+
+# The ASIO SDK guard (cmake/AsioGuard.cmake, carry-over [116]), proven on a scratch project: the
+# one allowed use configures, and every misuse fails the configure naming it. Each case builds
+# in its own folder under the test output.
+foreach (case IN ITEMS allowed other-target-source other-target-include other-target-link
+        other-file-in-allowed-target other-dir-in-allowed-target
+        allowed-source-in-other-target-of-a-subdirectory directory-include)
+    add_test(NAME asio_guard_${case}
+            COMMAND ${CMAKE_COMMAND} -DGG_GUARD_CASE=${case} -DGG_REPO=${PROJECT_SOURCE_DIR}
+            -DGG_OUT=${CMAKE_CURRENT_BINARY_DIR}/asio-guard/${case}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/asio-guard/run.cmake)
+    set_tests_properties(asio_guard_${case} PROPERTIES LABELS "build")
+endforeach ()

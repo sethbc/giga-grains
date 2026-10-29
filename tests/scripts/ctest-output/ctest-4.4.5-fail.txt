@@ -1,0 +1,27 @@
+Test project /tmp/mbd-t5-ctestproj/build/dev
+    Start 1: passes
+    Start 2: fails one
+    Start 3: fails_two
+    Start 4: skipped
+1/4 Test #3: fails_two ........................***Failed    0.00 sec
+
+2/4 Test #1: passes ...........................   Passed    0.01 sec
+3/4 Test #2: fails one ........................***Failed    0.00 sec
+
+4/4 Test #4: skipped ..........................***Skipped   0.00 sec
+
+50% tests passed, 2 tests failed out of 4
+
+Label Time Summary:
+core    =   0.01 sec*proc (2 tests)
+rt      =   0.01 sec*proc (2 tests)
+
+Total Test time (real) =   0.01 sec
+
+The following tests did not run:
+	  4 - skipped (Skipped)
+
+The following tests FAILED:
+	  2 - fails one (Failed)                                core rt
+	  3 - fails_two (Failed)
+Errors while running CTest

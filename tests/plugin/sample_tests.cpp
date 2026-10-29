@@ -13,6 +13,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <filesystem>
 #include <memory>
 #include <mutex>
@@ -23,20 +24,24 @@
 #include <vector>
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
 #include <clap/clap.h>
 
 #include "PluginHarness.h"
 #include "SampleLoader.h"
+#include "SearchCache.h"
 #include "gg/core/MachineSettings.h"
 #include "gg/core/MathDet.h"
 #include "gg/core/Processor.h"
 #include "gg/core/SessionState.h"
 #include "gg/media/SettingsFile.h"
 #include "support/StateContainer.h"
+#include "support/Utf8.h"
 
 using gg::plugin::SampleState;
 using gg::plugin::SampleStatus;
+using gg::plugin::SearchCache;
 using gg::test::PluginUnderTest;
 using gg::test::Stereo;
 
@@ -375,6 +380,7 @@ TEST_CASE("a missing sample stays silent and is saved unchanged", "[plugin]")
     }
     CHECK(loaderOf(instrument).status().fileName == "missing.wav");
     CHECK_FALSE(loaderOf(instrument).status().message.empty());
+    CHECK(loaderOf(instrument).status().relinkable);
     CHECK(host.dirtyMarks() == 0);
 
     const std::string loadedManifest = gg::test::stateChunkPayload(state, "MEDI").value();
@@ -391,12 +397,90 @@ TEST_CASE("a missing sample stays silent and is saved unchanged", "[plugin]")
     CHECK(savedManifest(instrument) == loadedManifest);
 }
 
+TEST_CASE("a newer version's manifest loads the values, silent, and saves back unchanged",
+          "[plugin]")
+{
+    // The director's decision of 2026-10-28 (INTENT §18): a session saved by a newer build,
+    // whose MEDI this build can't read, loads its values with no sample and the status "sample
+    // from a newer version", and a save writes the manifest back byte for byte until a load
+    // replaces it.
+    setUp("newer");
+    const fs::path file = gg::test::sineSampleFile("newer");
+    LoaderHost host;
+    PluginUnderTest instrument(kInstrumentId, host.clap());
+    REQUIRE(instrument.valid());
+
+    // A loaded sample first: the newer session must drop it.
+    REQUIRE(instrument.loadSampleState(file));
+    REQUIRE(loaderOf(instrument).status().state == SampleState::Loaded);
+
+    gg::core::SessionState values;
+    REQUIRE(gg::core::decodeState(instrument.save(), gg::core::Mode::Instrument, values));
+    values.values[static_cast<std::size_t>(gg::core::ParamSlot::Mix)] = 0.25f;
+    values.seed = 777;
+    const std::string state = gg::test::withNewerMedia(gg::core::encodeState(values));
+    REQUIRE(gg::test::stateChunkPayload(state, "MEDI") == gg::test::kNewerMedia);
+    REQUIRE(instrument.load(state));
+
+    // The values apply; there is no sample, and the status says why.
+    CHECK(instrument.value(gg::core::paramId(gg::core::ParamSlot::Mix)) == 0.25);
+    const SampleStatus status = loaderOf(instrument).status();
+    CHECK(status.state == SampleState::Newer);
+    CHECK(status.message == "sample from a newer version");
+    CHECK(status.fileName.empty());
+    CHECK_FALSE(loaderOf(instrument).entry().has_value());
+    CHECK(host.dirtyMarks() == 0);
+
+    // Saved back unchanged, inactive, active and after a deactivation; and silent.
+    CHECK(savedManifest(instrument) == gg::test::kNewerMedia);
+    REQUIRE(instrument.activate(48000.0, 512));
+    Stereo out(4800);
+    renderNote(instrument, out, 512);
+    CHECK(peak(out.left) == 0.0f);
+    CHECK(peak(out.right) == 0.0f);
+    CHECK(savedManifest(instrument) == gg::test::kNewerMedia);
+    instrument.deactivate();
+    CHECK(savedManifest(instrument) == gg::test::kNewerMedia);
+    gg::core::SessionState saved;
+    REQUIRE(gg::core::decodeState(instrument.save(), gg::core::Mode::Instrument, saved));
+    CHECK(saved.values[static_cast<std::size_t>(gg::core::ParamSlot::Mix)] == 0.25f);
+    CHECK(saved.seed == 777u);
+
+    SECTION("a load replaces the newer manifest")
+    {
+        loaderOf(instrument).requestLoad(file);
+        REQUIRE(settle(instrument).state == SampleState::Loaded);
+        CHECK_FALSE(loaderOf(instrument).newerMedia().has_value());
+        const auto entry = savedEntry(instrument);
+        REQUIRE(entry.has_value());
+        CHECK(entry->sha256Hex == gg::test::entryOf(file).sha256Hex);
+        CHECK(host.dirtyMarks() == 1);
+    }
+    SECTION("a restore of this build's state replaces it")
+    {
+        REQUIRE(instrument.load(gg::test::withSample(state, std::nullopt)));
+        CHECK(loaderOf(instrument).status().state == SampleState::None);
+        CHECK_FALSE(loaderOf(instrument).newerMedia().has_value());
+        CHECK(savedManifest(instrument) == R"(<media version="1" />)");
+    }
+}
+
+TEST_CASE("the fx ignores a newer version's manifest, as it does a sample", "[plugin]")
+{
+    // The FX has no sample, and writes an empty manifest whatever it loaded.
+    setUp("newer-fx");
+    PluginUnderTest fx(kFxId);
+    REQUIRE(fx.valid());
+    REQUIRE(fx.load(gg::test::withNewerMedia(fx.save())));
+    CHECK(savedManifest(fx) == R"(<media version="1" />)");
+}
+
 TEST_CASE("a sample moved into the sample folder is found, and the state marked dirty", "[plugin]")
 {
     const fs::path dir = gg::test::sampleDir("moved");
     const fs::path library = dir / "library";
     fs::remove_all(library);
-    setUp("moved", {library.string(), ""});
+    setUp("moved", {gg::test::utf8(library), ""});
     const fs::path saved = gg::test::sineSampleFile("moved");
     const gg::core::MediaEntry entry = gg::test::entryOf(saved);
     const fs::path moved = library / "drums" / "moved.wav";
@@ -509,14 +593,14 @@ TEST_CASE("a restore supersedes a load under way", "[plugin]")
         const auto entry = savedEntry(instrument);
         REQUIRE(entry.has_value());
         CHECK(fs::path(entry->absolutePath).filename() == "b.wav");
-        instrument.deactivate(); // waits for A's job if it still runs; its result is dropped
+        instrument.deactivate(); // cancels A's job if it still runs: superseded, it's dropped
         CHECK(loader.status().fileName == "b.wav");
         CHECK(loader.resultsApplied() == 0);
     }
     CHECK(sources.alive() == 0);
 }
 
-TEST_CASE("deactivate and destruction wait for a load under way", "[plugin]")
+TEST_CASE("a load under way at deactivate runs at the next activation", "[plugin]")
 {
     const fs::path dir = setUp("stop-worker");
     const fs::path a = gg::test::writeSineWav(dir / "a.wav", 44100, 20.0, 220.0);
@@ -529,7 +613,8 @@ TEST_CASE("deactivate and destruction wait for a load under way", "[plugin]")
         auto &loader = loaderOf(instrument);
         sources.attach(loader);
 
-        // deactivate() waits for the job if it started (and applies it), or leaves it queued.
+        // deactivate() cancels the job if it started and queues it again, or leaves it queued;
+        // either way the next activation runs it. A job that finished first applies.
         loader.requestLoad(a);
         instrument.deactivate();
         const SampleState afterDeactivate = loader.status().state;
@@ -544,6 +629,66 @@ TEST_CASE("deactivate and destruction wait for a load under way", "[plugin]")
         // The destructor (after the harness's deactivate) with a job under way.
         loader.requestLoad(a);
     }
+    CHECK(sources.alive() == 0);
+}
+
+TEST_CASE("deactivate and destruction cancel a load under way at once", "[plugin][serial]")
+{
+    // Carry-over [194]: deactivate() and the destructor waited for the whole decode, hash and
+    // conversion of a job under way (seconds, for a long file). They cancel it between chunks
+    // now: deactivate() keeps the job queued for the next activation, and the destructor drops
+    // it. Timed against the same job left to finish, on this machine ([serial]: nothing beside).
+    using Clock = std::chrono::steady_clock;
+    const auto ms = [](Clock::duration d) {
+        return std::chrono::duration<double, std::milli>(d).count();
+    };
+    const fs::path dir = setUp("cancel");
+    const fs::path file = gg::test::writeSineWav(dir / "long.wav", 44100, 60.0, 220.0);
+    SourceLog sources;
+    LoaderHost host;
+    Clock::time_point start;
+    double whole = 0.0;
+    {
+        PluginUnderTest instrument(kInstrumentId, host.clap());
+        REQUIRE(instrument.valid());
+        REQUIRE(instrument.activate(48000.0, 512));
+        auto &loader = loaderOf(instrument);
+        sources.attach(loader);
+
+        // The whole job: decoded, hashed, converted to 48 kHz.
+        start = Clock::now();
+        loader.requestLoad(file);
+        REQUIRE(settle(instrument).state == SampleState::Loaded);
+        whole = ms(Clock::now() - start);
+        UNSCOPED_INFO("the whole job: " << whole << " ms");
+
+        // A fifth of the way in, deactivate().
+        loader.requestLoad(file);
+        std::this_thread::sleep_for(std::chrono::duration<double, std::milli>(whole / 5.0));
+        start = Clock::now();
+        instrument.deactivate();
+        const double deactivating = ms(Clock::now() - start);
+        UNSCOPED_INFO("deactivate: " << deactivating << " ms");
+        CHECK(deactivating < whole / 4.0);
+        CHECK(loader.status().state == SampleState::Loading); // queued again
+        CHECK(loader.resultsApplied() == 1);
+
+        // The next activation runs it.
+        REQUIRE(instrument.activate(48000.0, 512));
+        CHECK(settle(instrument).state == SampleState::Loaded);
+        CHECK(loader.resultsApplied() == 2);
+        Stereo out(512);
+        renderNote(instrument, out, 512);
+        CHECK(peak(out.left) > 0.01f);
+
+        // A fifth of the way into another, the destructor (after the harness's deactivate).
+        loader.requestLoad(file);
+        std::this_thread::sleep_for(std::chrono::duration<double, std::milli>(whole / 5.0));
+        start = Clock::now();
+    }
+    const double destroying = ms(Clock::now() - start);
+    UNSCOPED_INFO("destruction: " << destroying << " ms");
+    CHECK(destroying < whole / 4.0);
     CHECK(sources.alive() == 0);
 }
 
@@ -633,6 +778,11 @@ TEST_CASE("a reactivation keeps the old source when its file has gone or changed
     SECTION("changed")
     {
         gg::test::writeSineWav(file, 44100, 4.0, 330.0);
+        expected = SampleState::Changed;
+    }
+    SECTION("changed, to another size")
+    {
+        gg::test::writeSineWav(file, 44100, 3.0, 220.0);
         expected = SampleState::Changed;
     }
     REQUIRE(instrument.activate(48000.0, 512));
@@ -836,6 +986,38 @@ TEST_CASE("relink restores the saved sample, or loads a replacement and says so"
     CHECK(peak(out.left) > 0.01f);
 }
 
+TEST_CASE("a failed relink leaves a missing sample relinkable and a restored file loads",
+          "[plugin]")
+{
+    const fs::path dir = setUp("relink-fails");
+    const fs::path file = gg::test::sineSampleFile("relink-fails");
+    const gg::core::MediaEntry entry = gg::test::entryOf(file);
+    const fs::path backup = dir / "backup.wav";
+    fs::copy_file(file, backup, fs::copy_options::overwrite_existing);
+    const fs::path bad = dir / "not-audio.wav";
+    gg::test::writeFile(bad, std::vector<uint8_t>(100, 0x42));
+    fs::remove(file);
+
+    LoaderHost host;
+    PluginUnderTest instrument(kInstrumentId, host.clap());
+    REQUIRE(instrument.valid());
+    REQUIRE(instrument.activate(48000.0, 512));
+    REQUIRE(instrument.load(gg::test::withSample(instrument.save(), entry)));
+    auto &loader = loaderOf(instrument);
+    REQUIRE(loader.status().state == SampleState::Missing);
+    REQUIRE(loader.status().relinkable);
+
+    loader.requestRelink(bad);
+    const SampleStatus status = settle(instrument);
+    CHECK(status.state == SampleState::Error);
+    CHECK(status.relinkable); // the saved sample is still unavailable: Relink stays on offer
+
+    fs::copy_file(backup, file, fs::copy_options::overwrite_existing);
+    instrument.deactivate();
+    REQUIRE(instrument.activate(48000.0, 512));
+    CHECK(settle(instrument).state == SampleState::Loaded);
+}
+
 TEST_CASE("a failed load keeps the sample and the entry it had", "[plugin]")
 {
     const fs::path dir = setUp("failed");
@@ -853,6 +1035,7 @@ TEST_CASE("a failed load keeps the sample and the entry it had", "[plugin]")
     loader.requestLoad(bad);
     const SampleStatus status = settle(instrument);
     CHECK(status.state == SampleState::Error);
+    CHECK_FALSE(status.relinkable); // a failed request: the sample plays on
     // The name is the sample that still plays; the message names the file that failed.
     CHECK(status.fileName == good.filename().string());
     CHECK(status.message.find("not-audio.wav") != std::string::npos);
@@ -981,3 +1164,285 @@ TEST_CASE("the sample folder is saved in the settings file", "[plugin]")
     CHECK(fs::path(saved.sampleFolder) == library);
     CHECK(saved.lastLoadFolder == "/somewhere/else"); // kept
 }
+
+TEST_CASE("a missing sample is searched for once however many instances restore it", "[plugin]")
+{
+    // Carry-over [192]: every instance restoring a missing sample scanned the sample folder
+    // again. The process's search cache remembers a search that found nothing, until a load or a
+    // settings change (or its lifetime) ends it.
+    const fs::path dir = gg::test::sampleDir("scan-once");
+    const fs::path library = dir / "library";
+    fs::remove_all(library);
+    for (int i = 0; i < 20; ++i)
+    {
+        gg::test::writeSineWav(library / ("other-" + std::to_string(i) + ".wav"), 8000, 0.01);
+    }
+    setUp("scan-once", {gg::test::utf8(library), ""});
+    const fs::path file = gg::test::sineSampleFile("scan-once");
+    const gg::core::MediaEntry entry = gg::test::entryOf(file);
+    fs::remove(file);
+
+    auto &cache = SearchCache::process();
+    cache.clear();
+    const uint64_t before = cache.searches();
+    constexpr int kInstances = 8;
+    std::vector<std::unique_ptr<PluginUnderTest>> instances;
+    std::string state;
+    for (int i = 0; i < kInstances; ++i)
+    {
+        instances.push_back(std::make_unique<PluginUnderTest>(kInstrumentId));
+        REQUIRE(instances.back()->valid());
+        if (state.empty())
+        {
+            state = gg::test::withSample(instances.back()->save(), entry);
+        }
+        REQUIRE(instances.back()->load(state));
+        CHECK(loaderOf(*instances.back()).status().state == SampleState::Missing);
+    }
+    CHECK(cache.searches() - before == 1);
+    // Activating them, which looks for the file again, takes no more.
+    for (auto &instance : instances)
+    {
+        REQUIRE(instance->activate(48000.0, 512));
+        CHECK(loaderOf(*instance).status().state == SampleState::Missing);
+    }
+    CHECK(cache.searches() - before == 1);
+
+    // A load in any instance forgets it: the next restore searches again, once.
+    const fs::path other = gg::test::writeSineWav(dir / "loaded.wav", 48000, 0.5);
+    loaderOf(*instances[0]).requestLoad(other);
+    REQUIRE(settle(*instances[0]).state == SampleState::Loaded);
+    REQUIRE(instances[1]->load(state));
+    REQUIRE(instances[2]->load(state));
+    CHECK(cache.searches() - before == 2);
+
+    // So does a settings change.
+    REQUIRE(loaderOf(*instances[3]).setSampleFolder(library));
+    REQUIRE(instances[4]->load(state));
+    REQUIRE(instances[5]->load(state));
+    CHECK(cache.searches() - before == 3);
+    CHECK(loaderOf(*instances[5]).status().state == SampleState::Missing);
+}
+
+TEST_CASE("the search cache remembers a search that found nothing for its lifetime", "[plugin]")
+{
+    const fs::path dir = setUp("search-cache");
+    const fs::path library = dir / "library";
+    fs::remove_all(library);
+    const fs::path file = gg::test::sineSampleFile("search-cache");
+    const gg::core::MediaEntry entry = gg::test::entryOf(file);
+    SearchCache cache;
+    const auto t0 = SearchCache::Clock::time_point{} + std::chrono::hours(1);
+    const gg::core::MachineSettings settings{gg::test::utf8(library), ""};
+    const auto find = [&](const gg::core::MachineSettings &folders,
+                          SearchCache::Clock::time_point t) {
+        return cache.find(entry, folders, t).outcome;
+    };
+    using gg::media::SearchOutcome;
+
+    // Found: never remembered.
+    CHECK(find(settings, t0) == SearchOutcome::Found);
+    CHECK(find(settings, t0) == SearchOutcome::Found);
+    CHECK(cache.searches() == 2);
+
+    fs::remove(file);
+    CHECK(find(settings, t0) == SearchOutcome::Missing);
+    CHECK(cache.searches() == 3);
+    // A copy in the sample folder goes unseen while the search is remembered...
+    gg::test::writeSineWav(library / "sub" / "search-cache.wav");
+    const auto almost = t0 + SearchCache::kLifetime - std::chrono::milliseconds(1);
+    CHECK(find(settings, almost) == SearchOutcome::Missing);
+    CHECK(cache.searches() == 3);
+    // ...but other folders are another search,
+    CHECK(find({gg::test::utf8(dir / "elsewhere"), ""}, almost) == SearchOutcome::Missing);
+    CHECK(cache.searches() == 4);
+    // and the lifetime's end forgets it.
+    CHECK(find(settings, t0 + SearchCache::kLifetime) == SearchOutcome::Found);
+    CHECK(cache.searches() == 5);
+
+    // So does clear().
+    fs::remove_all(library);
+    CHECK(find(settings, t0) == SearchOutcome::Missing);
+    gg::test::writeSineWav(library / "search-cache.wav");
+    cache.clear();
+    CHECK(find(settings, t0) == SearchOutcome::Found);
+    CHECK(cache.searches() == 7);
+
+    // And a file put back at the saved path, or changed there, is seen at once.
+    fs::remove_all(library);
+    CHECK(find(settings, t0) == SearchOutcome::Missing);
+    gg::test::writeSineWav(file, 48000, 3.0, 330.0);
+    CHECK(find(settings, t0) == SearchOutcome::Changed);
+    CHECK(find(settings, t0) == SearchOutcome::Changed);
+    gg::test::sineSampleFile("search-cache");
+    CHECK(find(settings, t0) == SearchOutcome::Found);
+    CHECK(cache.searches() == 10);
+
+    // So is one put back at the sample folder's relative path, the search's second candidate.
+    gg::core::MediaEntry inFolder = entry;
+    inFolder.relativePath = "rel/search-cache.wav";
+    fs::remove(file);
+    CHECK(cache.find(inFolder, settings, t0).outcome == SearchOutcome::Missing);
+    CHECK(cache.find(inFolder, settings, t0).outcome == SearchOutcome::Missing);
+    CHECK(cache.searches() == 11);
+    gg::test::writeSineWav(library / "rel" / "search-cache.wav");
+    CHECK(cache.find(inFolder, settings, t0).outcome == SearchOutcome::Found);
+    CHECK(cache.searches() == 12);
+}
+
+TEST_CASE("a missing sample that comes back is loaded at the next activation", "[plugin]")
+{
+    // Carry-over [194]: a Missing status stayed until the next restore or load. activate() looks
+    // again, and loads the file at the new rate before the first block (D8).
+    setUp("recheck-restore");
+    const fs::path file = gg::test::sineSampleFile("recheck-restore");
+    const gg::core::MediaEntry entry = gg::test::entryOf(file);
+    const fs::path aside = file.parent_path() / "aside.bin";
+    fs::rename(file, aside);
+    LoaderHost host;
+    PluginUnderTest instrument(kInstrumentId, host.clap());
+    REQUIRE(instrument.valid());
+    const bool active = GENERATE(false, true);
+    if (active)
+    {
+        REQUIRE(instrument.activate(44100.0, 512));
+    }
+    REQUIRE(instrument.load(gg::test::withSample(instrument.save(), entry)));
+    REQUIRE(loaderOf(instrument).status().state == SampleState::Missing);
+    if (active)
+    {
+        instrument.deactivate();
+    }
+    fs::rename(aside, file); // seen at once, though the search that missed it is remembered
+
+    REQUIRE(instrument.activate(48000.0, 512));
+    const SampleStatus status = loaderOf(instrument).status();
+    CHECK(status.state == SampleState::Loaded);
+    CHECK(status.fileName == "recheck-restore.wav");
+    Stereo out(512);
+    renderNote(instrument, out, 512);
+    CHECK(peak(out.left) > 0.01f);
+    CHECK(host.dirtyMarks() == 0); // found where it was saved
+    const auto saved = savedEntry(instrument);
+    REQUIRE(saved.has_value());
+    CHECK(*saved == entry);
+}
+
+TEST_CASE("a kept source's file that comes back is Loaded again at the next activation", "[plugin]")
+{
+    // Carry-over [194]: after a reactivation found the file gone (R18), the old source plays on
+    // and the status says Missing. The next activation looks again: at another rate it converts
+    // the file, and at the source's own rate it only checks that the file is the sample's.
+    const fs::path dir = setUp("recheck-kept");
+    const fs::path file = gg::test::writeSineWav(dir / "kept.wav", 44100, 4.0, 220.0);
+    const fs::path aside = dir / "aside.bin";
+    PluginUnderTest instrument(kInstrumentId);
+    REQUIRE(instrument.valid());
+    REQUIRE(instrument.activate(44100.0, 512));
+    REQUIRE(instrument.loadSampleState(file));
+    instrument.deactivate();
+    fs::rename(file, aside);
+    REQUIRE(instrument.activate(48000.0, 512));
+    REQUIRE(loaderOf(instrument).status().state == SampleState::Missing);
+    instrument.deactivate();
+    fs::rename(aside, file);
+
+    const double rate = GENERATE(44100.0, 48000.0);
+    REQUIRE(instrument.activate(rate, 512));
+    CHECK(loaderOf(instrument).status().state == SampleState::Loaded);
+    CHECK(loaderOf(instrument).status().fileName == "kept.wav");
+    RateLog log;
+    instrument.impl().processor()->setEventSink(&RateLog::record, &log);
+    Stereo out(4800);
+    renderNote(instrument, out, 512);
+    CHECK(peak(out.left) > 0.05f);
+    REQUIRE(log.count > 0);
+    CHECK(log.grains[0].rate == 1.0); // at the active rate either way
+}
+
+#ifndef _WIN32
+namespace
+{
+// Makes `file` unreadable until it goes out of scope, however the test ends, so a failed run
+// leaves nothing locked for the next.
+class Unreadable
+{
+  public:
+    explicit Unreadable(fs::path file) : file_(std::move(file))
+    {
+        fs::permissions(file_, fs::perms::none);
+    }
+    ~Unreadable()
+    {
+        std::error_code error;
+        fs::permissions(file_, fs::perms::owner_read | fs::perms::owner_write, error);
+    }
+    Unreadable(const Unreadable &) = delete;
+    Unreadable &operator=(const Unreadable &) = delete;
+
+    // False if it can still be read (as root, say).
+    bool holds() const
+    {
+        std::FILE *f = std::fopen(file_.c_str(), "rb");
+        if (f == nullptr)
+        {
+            return true;
+        }
+        std::fclose(f);
+        return false;
+    }
+
+  private:
+    fs::path file_;
+};
+} // namespace
+
+TEST_CASE("a sample present but unreadable is an Error, not Missing or Changed", "[plugin]")
+{
+    // Carry-over [194]: a file at the saved path that can't be read hasn't gone and hasn't
+    // changed; the status says it can't be read.
+    const fs::path dir = setUp("unreadable");
+    fs::remove(dir / "locked.wav"); // a run killed while it was locked can't be written over
+    const fs::path file = gg::test::writeSineWav(dir / "locked.wav", 44100, 4.0, 220.0);
+    const gg::core::MediaEntry entry = gg::test::entryOf(file);
+    PluginUnderTest instrument(kInstrumentId);
+    REQUIRE(instrument.valid());
+
+    SECTION("restore")
+    {
+        const Unreadable locked(file);
+        if (!locked.holds())
+        {
+            SKIP("the file stays readable: running as root?");
+        }
+        REQUIRE(instrument.load(gg::test::withSample(instrument.save(), entry)));
+        const SampleStatus status = loaderOf(instrument).status();
+        CHECK(status.state == SampleState::Error);
+        CHECK(status.fileName == "locked.wav");
+        CHECK_FALSE(status.message.empty());
+        CHECK(status.relinkable);
+    }
+    SECTION("reactivation")
+    {
+        // R18's conversion at a new rate: the old source plays on, and the status says why.
+        REQUIRE(instrument.activate(44100.0, 512));
+        REQUIRE(instrument.loadSampleState(file));
+        instrument.deactivate();
+        const Unreadable locked(file);
+        if (!locked.holds())
+        {
+            SKIP("the file stays readable: running as root?");
+        }
+        REQUIRE(instrument.activate(48000.0, 512));
+        const SampleStatus status = loaderOf(instrument).status();
+        CHECK(status.state == SampleState::Error);
+        CHECK(status.fileName == "locked.wav");
+        CHECK_FALSE(status.message.empty());
+        CHECK(status.relinkable);
+        Stereo out(4800);
+        renderNote(instrument, out, 512);
+        CHECK(peak(out.left) > 0.05f);
+        CHECK(savedEntry(instrument) == std::optional<gg::core::MediaEntry>(entry));
+    }
+}
+#endif

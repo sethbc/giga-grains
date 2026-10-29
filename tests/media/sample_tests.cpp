@@ -21,6 +21,7 @@
 #include "gg/media/Sample.h"
 #include "gg/media/Sha256.h"
 #include "media/AudioFixtures.h"
+#include "support/Utf8.h"
 
 namespace
 {
@@ -28,6 +29,7 @@ namespace fs = std::filesystem;
 using gg::core::MachineSettings;
 using gg::media::loadSample;
 using gg::test::SampleFormat;
+using gg::test::utf8;
 
 /// An empty folder of the test's own.
 fs::path freshDir(const char *name)
@@ -36,12 +38,6 @@ fs::path freshDir(const char *name)
     fs::remove_all(dir);
     fs::create_directories(dir);
     return dir;
-}
-
-std::string utf8(const fs::path &path)
-{
-    const auto text = path.u8string();
-    return {text.begin(), text.end()};
 }
 
 /// Writes a 16-bit WAV of `channels` channels and `frames` frames at `rate` to `file`, creating
@@ -65,7 +61,7 @@ std::string relativeOf(const fs::path &file, const fs::path &sampleFolder)
 
 TEST_CASE("loadSample fills the entry from the file", "[media]")
 {
-    const auto dir = freshDir("search-sample-entry");
+    const auto dir = freshDir("sample-entry");
     // A non-ASCII name: the entry's paths are UTF-8.
     const auto file = dir / fs::path(u8"kick-é音.wav");
     writeWav(file, 2, 44100, 1234);
@@ -113,7 +109,7 @@ TEST_CASE("loadSample takes a fingerprint it is given instead of hashing the fil
 
 TEST_CASE("loadSample records the channels the file stores, not the two it keeps", "[media]")
 {
-    const auto dir = freshDir("search-sample-channels");
+    const auto dir = freshDir("sample-channels");
     const auto file = dir / "quad.wav";
     writeWav(file, 4, 48000, 100);
     const auto loaded = loadSample(file, MachineSettings{});
@@ -126,7 +122,7 @@ TEST_CASE("loadSample records the channels the file stores, not the two it keeps
 
 TEST_CASE("loadSample records the absolute path lexically normal", "[media]")
 {
-    const auto dir = freshDir("search-sample-absolute");
+    const auto dir = freshDir("sample-absolute");
     writeWav(dir / "a" / "kick.wav", 1, 48000, 10);
     // An absolute path with `.` and `..` in it comes back normal.
     const auto loaded = loadSample(dir / "a" / "." / ".." / "a" / "kick.wav", MachineSettings{});
@@ -138,7 +134,7 @@ TEST_CASE("loadSample records the absolute path lexically normal", "[media]")
 
 TEST_CASE("loadSample sets relativePath only inside the sample folder", "[media]")
 {
-    const auto dir = freshDir("search-sample-relative");
+    const auto dir = freshDir("sample-relative");
     const auto lib = dir / "lib";
     writeWav(lib / "kick.wav", 1, 48000, 10);
     writeWav(lib / "drums" / "deep" / "snare.wav", 1, 48000, 10);
@@ -165,7 +161,7 @@ TEST_CASE("loadSample sees through symlinks to the sample folder, as macOS's /va
 {
     // On macOS, /var is a symlink to /private/var, so a temporary folder has two spellings. A
     // symlink of our own makes the same case in the test's folder, on every POSIX system.
-    const auto dir = freshDir("search-sample-symlink");
+    const auto dir = freshDir("sample-symlink");
     const auto real = dir / "private" / "var" / "lib";
     writeWav(real / "sub" / "kick.wav", 1, 48000, 10);
     fs::create_directory_symlink(dir / "private" / "var", dir / "var");
@@ -182,14 +178,14 @@ TEST_CASE("loadSample sees through symlinks to the sample folder, as macOS's /va
 
 TEST_CASE("loadSample of a file it can't decode gives an error and no audio", "[media]")
 {
-    const auto dir = freshDir("search-sample-error");
+    const auto dir = freshDir("sample-error");
     const auto garbage = dir / "garbage.wav";
     const std::vector<uint8_t> bytes(4096, uint8_t{0x5a});
     gg::test::writeFile(garbage, bytes);
 
     for (const auto &file : {garbage, dir / "missing.wav", dir})
     {
-        INFO(file.string());
+        INFO(gg::test::utf8(file));
         const auto loaded = loadSample(file, MachineSettings{utf8(dir), ""});
         REQUIRE(loaded.decoded == nullptr);
         REQUIRE_FALSE(loaded.error.empty());
@@ -199,7 +195,7 @@ TEST_CASE("loadSample of a file it can't decode gives an error and no audio", "[
 
 TEST_CASE("prepare at the file's rate keeps the decoded buffer, bit for bit", "[media]")
 {
-    const auto dir = freshDir("search-prepare-same-rate");
+    const auto dir = freshDir("sample-prepare-same-rate");
     writeWav(dir / "kick.wav", 2, 48000, 480);
     const auto loaded = loadSample(dir / "kick.wav", MachineSettings{});
     REQUIRE(loaded.decoded != nullptr);
@@ -215,7 +211,7 @@ TEST_CASE("prepare at the file's rate keeps the decoded buffer, bit for bit", "[
 
 TEST_CASE("prepare converts 44.1 kHz to 48 kHz into a stereo source with its pairs", "[media]")
 {
-    const auto dir = freshDir("search-prepare-convert");
+    const auto dir = freshDir("sample-prepare-convert");
     writeWav(dir / "kick.wav", 2, 44100, 4410);
     const auto loaded = loadSample(dir / "kick.wav", MachineSettings{});
     REQUIRE(loaded.decoded != nullptr);

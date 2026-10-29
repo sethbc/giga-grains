@@ -227,8 +227,8 @@ void GigaGrainsPlugin::deactivate() noexcept
     {
         storeBases();
     }
-    // The loader's worker stops (a job under way finishes), and what it finished applies with
-    // nothing offered: the next activate() gives it to the new processor.
+    // The loader's worker stops (a job under way is cancelled and queued again), and what it
+    // finished applies with nothing offered: the next activate() gives it to the new processor.
     if (loader_ != nullptr)
     {
         loader_->deactivate();
@@ -782,10 +782,11 @@ bool GigaGrainsPlugin::stateSave(const clap_ostream *stream) noexcept
             values[s] = values_[s].load(std::memory_order_relaxed);
         }
         // The session container (gg/core/SessionState.h), with the instrument's manifest entry
-        // as it stands, whether the sample is loaded, loading, missing or failed (spec §6.6).
-        // The FX has no sample: an empty manifest.
+        // as it stands, whether the sample is loaded, loading, missing or failed (spec §6.6), or
+        // a newer build's manifest as it came. The FX has no sample: an empty manifest.
         const std::string bytes = gg::core::encodeState(
-            {values, seed_, loader_ != nullptr ? loader_->entry() : std::nullopt});
+            {values, seed_, loader_ != nullptr ? loader_->entry() : std::nullopt,
+             loader_ != nullptr ? loader_->newerMedia() : std::nullopt});
 
         // A stream may take fewer bytes than offered: write until all are in.
         const char *data = bytes.data();
@@ -862,7 +863,7 @@ bool GigaGrainsPlugin::stateLoad(const clap_istream *stream) noexcept
         SampleLoader::Restored restored;
         if (loader_ != nullptr)
         {
-            restored = loader_->restore(loaded.sample);
+            restored = loader_->restore(loaded.sample, std::move(loaded.newerMedia));
         }
         const auto &values = loaded.values;
         const uint64_t seed = loaded.seed;

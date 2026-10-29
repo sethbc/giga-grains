@@ -4,7 +4,8 @@
 
 // The patch: the slice's ten parameters (spec §4) and Space's eight (sub-project 4's spec §6.5),
 // and their versioned XML state, through gg-core's
-// public API only (gg/core/ParamIds.h, gg/core/PatchState.h). This file never includes
+// public API (gg/core/ParamIds.h, gg/core/PatchState.h) and its tinyxml-free internal
+// core/src/PatchXml.h, for each product's patch XML. This file never includes
 // sst-plugininfra or tinyxml (ruling M1-l). The IDs, names, ranges and defaults are spelled out
 // literally, from Global Constraints' parameter table, so a change to gg/core/ParamIds.h or
 // ParamIds.cpp fails these tests. CLAP parameter IDs are frozen at the first public release and
@@ -28,10 +29,12 @@
 
 #include <clap/clap.h>
 
+#include "PatchXml.h"
 #include "gg/core/ParamIds.h"
 #include "gg/core/PatchState.h"
 #include "gg/core/Rng.h"
 #include "sst/basic-blocks/params/ParamMetadata.h"
+#include "support/DeepXml.h"
 
 using gg::core::fromStateXml;
 using gg::core::kParamCount;
@@ -532,6 +535,32 @@ TEST_CASE("state round trips exactly", "[core]")
     CHECK(valuesChecked == (kRandomRounds + 3) * kParamCount);
 }
 
+TEST_CASE("both products' patches write the same state", "[core]")
+{
+    // toStateXml writes the FX's Patch whatever the product (core/src/PatchXml.h): right only
+    // while the instrument's Patch writes the same bytes. 1,000 rounds of random values and
+    // seeds: in range, then any bits at all (NaNs and infinities included).
+    for (uint64_t r = 0; r < 1000; ++r)
+    {
+        ParamValues v{};
+        for (size_t i = 0; i < kParamCount; ++i)
+        {
+            const uint64_t index = 0x205'0000ull + r * kParamCount + i;
+            v[i] =
+                r < 500
+                    ? randomIn(kTable[i].minVal, kTable[i].maxVal, index)
+                    : std::bit_cast<float>(static_cast<uint32_t>(gg::rng::hash(
+                          {0x5eed'7e57'0000'0205ull, 0, 0, gg::rng::Field::SignalNoise, index})));
+        }
+        const uint64_t seed =
+            gg::rng::hash({0x5eed'7e57'0000'0205ull, 0, 1, gg::rng::Field::SignalNoise, r});
+        INFO("round " << r);
+        const std::string fx = gg::core::patchXml(v, seed, Mode::Fx);
+        REQUIRE(gg::core::patchXml(v, seed, Mode::Instrument) == fx);
+        REQUIRE(toStateXml(v, seed) == fx);
+    }
+}
+
 TEST_CASE("state keeps values its 12-decimal text can't", "[core]")
 {
     // PatchBase writes v with 12 fixed decimals, which can't hold a float below about 1.5e-5
@@ -625,6 +654,19 @@ TEST_CASE("patch rejects or sanitizes bad state", "[core]")
         }
         CHECK_FALSE(p.load(replaceOnce(good, "<params>", "<params>" + sixtyFive)));
         CHECK(p.sameAs(before));
+    }
+
+    SECTION("XML that tinyxml would nest deeper than it looks fails")
+    {
+        // The shapes a scan of the bytes can miscount (tests/support/DeepXml.h): each would
+        // overflow tinyxml's stack. A process killed here is the failure.
+        for (const gg::test::DeepXml &shape : gg::test::deepXmlShapes())
+            DYNAMIC_SECTION(shape.name)
+            {
+                CHECK_FALSE(
+                    p.load(shape.head + replaceOnce(good, "<params>", "<params>" + shape.body)));
+                CHECK(p.sameAs(before));
+            }
     }
 
     SECTION("another patch's id fails")

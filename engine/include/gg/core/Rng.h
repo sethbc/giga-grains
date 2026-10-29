@@ -7,6 +7,8 @@
 
 #include <cstdint>
 
+#include "gg/core/FpContract.h"
+
 /// The engine's only source of randomness (INTENT §14): a stateless, counter-based generator.
 /// Every random value is a pure function of a Key, so it doesn't depend on block size, call
 /// order or thread. The constants and the mixing order below are part of the determinism
@@ -58,8 +60,15 @@ constexpr uint64_t hash(const Key &k) noexcept
 /// The top 53 bits of h as a double in [0, 1). Exact: every result is a multiple of 2^-53.
 constexpr double uniform01(uint64_t h) noexcept { return static_cast<double>(h >> 11) * 0x1.0p-53; }
 
-/// uniform01 mapped to [-1, 1). Exact, like uniform01.
-constexpr double bipolar(uint64_t h) noexcept { return 2.0 * uniform01(h) - 1.0; }
+/// uniform01 mapped to [-1, 1). Exact, like uniform01: 2u is exact (a power-of-two scaling), and
+/// 2u − 1, a multiple of 2^-52 in [-1, 1), is representable, so the subtraction can't round
+/// either. A fused multiply-add would give the same bits, but the guard keeps it from being
+/// formed at all, as in every header whose arithmetic must match across platforms.
+constexpr double bipolar(uint64_t h) noexcept
+{
+    GG_FP_CONTRACT_OFF
+    return 2.0 * uniform01(h) - 1.0;
+}
 } // namespace gg::rng
 
 #endif // GG_CORE_RNG_H

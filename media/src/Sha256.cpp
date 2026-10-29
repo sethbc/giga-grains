@@ -135,7 +135,7 @@ class Sha256
 constexpr size_t kReadBytes = 64 * 1024;
 } // namespace
 
-std::optional<FileHash> hashFile(const std::filesystem::path &path)
+std::optional<FileHash> hashFile(const std::filesystem::path &path, const std::atomic<bool> *cancel)
 {
     std::error_code error;
     if (!std::filesystem::is_regular_file(path, error))
@@ -152,6 +152,10 @@ std::optional<FileHash> hashFile(const std::filesystem::path &path)
     const auto buffer = std::make_unique<char[]>(kReadBytes);
     while (in)
     {
+        if (cancel != nullptr && cancel->load(std::memory_order_relaxed))
+        {
+            return std::nullopt;
+        }
         in.read(buffer.get(), static_cast<std::streamsize>(kReadBytes));
         const auto got = static_cast<size_t>(in.gcount());
         sha.update(reinterpret_cast<const uint8_t *>(buffer.get()), got);

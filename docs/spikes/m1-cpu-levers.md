@@ -117,11 +117,11 @@ the kernels.
   block 64 regresses beyond its spread, and so do Linux's Eco and block-256 cells, by up to 14%.
   The Linux run landed on a different CPU model from the base's (see "CI variance"), so its
   losses are confounded. The Windows run didn't, and its Eco loss alone fails the keep rule.
-- **Live half: kept by the rule, pending a port.** Windows wins at blocks 32 and 64, Linux at
-  64, and no leg loses, though the M5 shows nothing. The M1 VM's live WIN at block 32 (0.867)
-  counts for nothing either way: that leg's drift between runs for unchanged code is larger (see
-  the port's verdict). The ring's layout was about to change under the
-  interleaved lever, so the live half was ported onto it and judged again (see "The two ports").
+- **Live half: kept by the rule, pending a port.** Windows wins at blocks 32 and 64, Linux at 64,
+  and no leg loses, though the M5 shows nothing. The M1 VM's live WIN at block 32 (0.867) counts for
+  nothing either way: that leg's drift between runs for unchanged code is larger (see the port's
+  verdict). The ring's layout was about to change under the interleaved lever, so the live half was
+  ported onto it and judged again (see "The two ports").
 
 ## Lever 2: a stereo-interleaved source (Task 11) — kept
 
@@ -174,12 +174,11 @@ throw), branch `m1ce-lever-interleave`. CI run 40624459703. Merged into `m1-clou
 - **Live half: kept by the rule.** It wins on the M5 by 9–13%, and on Windows by 8–14%; no leg
   loses.
 - **Sample half: kept by the director's exception.** It wins on the M5 by 7–9% (Eco 4–8%), but
-  Windows regresses 1.2–2.2% at Normal and 7.2% at Eco block 32, beyond Windows' small in-run
-  IQR. Both Windows runs ran on the same CPU model (EPYC 7763), so the loss can't be blamed on
-  the runner mix. The keep rule would reject the sample half. The director, told that it wins
-  7–9% on the M5 and regresses 1–2% on Windows, decided to keep it, at 2× memory for a stereo
-  source (INTENT §23 #46). The Eco loss at block 32 wasn't part of what the director was
-  shown.
+  Windows regresses 1.2–2.2% at Normal and 7.2% at Eco block 32, beyond Windows' small in-run IQR.
+  Both Windows runs ran on the same CPU model (EPYC 7763), so the loss can't be blamed on the runner
+  mix. The keep rule would reject the sample half. The director, told that it wins 7–9% on the M5
+  and regresses 1–2% on Windows, decided to keep it, at 2× memory for a stereo source (INTENT §23
+  #46). The Eco loss at block 32 wasn't part of what the director was shown.
 - The Linux run landed on a different CPU model from the base's (EPYC 9V45 against 7763), so its
   wins are confounded. The M1 VM's IQRs are too wide to call anything.
 
@@ -223,12 +222,11 @@ capacity of 4,096.
 | `engine-live` | 256 | 1.479 **LOSS** | 1.616 **LOSS** | 1.503 **LOSS** |
 
 **Verdict: rejected.** It is slower on every leg, case and block size, by 11% to 77%, and loses
-beyond the spread everywhere but the M1 VM at block 32. The loss grows with the block size.
-Each grain-sample is written to a scratch row and then read back and added: a second pass over
-the output, plus the sort, the tile bookkeeping and a kernel call per grain per tile instead of
-per block. Whatever locality the ordering buys doesn't pay for that on
-any machine here. The plan expected this. The task review was skipped, by ruling, because no leg
-won.
+beyond the spread everywhere but the M1 VM at block 32. The loss grows with the block size. Each
+grain-sample is written to a scratch row and then read back and added: a second pass over the
+output, plus the sort, the tile bookkeeping and a kernel call per grain per tile instead of per
+block. Whatever locality the ordering buys doesn't pay for that on any machine here. The plan
+expected this. The task review was skipped, by ruling, because no leg won.
 
 ## Lever 4: contiguous loads with shuffles (Task 12) — rejected
 
@@ -270,11 +268,11 @@ the taps and the output are the same.
 | `engine-live` | 256 | 0.898 ~ | 1.075 **LOSS** | 1.486 **LOSS** |
 
 **Verdict: rejected as built.** Every x86 cell loses, by 5% to 49%; both runs landed on the base's
-CPU model (EPYC 7763), so this is a clean signal. The x86 route costs three `pshufb`, plus
-their controls and two ORs, per vector of taps, where the gather makes four scalar loads; it was
-not profiled. On the M5 it wins 5–9% on the
-planar layout it was built on. That layout was about to change under the interleaved lever, so an
-arm64-only variant was ported onto the interleaved kernel and judged again (see "The two ports").
+CPU model (EPYC 7763), so this is a clean signal. The x86 route costs three `pshufb`, plus their
+controls and two ORs, per vector of taps, where the gather makes four scalar loads; it was not
+profiled. On the M5 it wins 5–9% on the planar layout it was built on. That layout was about to
+change under the interleaved lever, so an arm64-only variant was ported onto the interleaved kernel
+and judged again (see "The two ports").
 
 ## The two ports
 

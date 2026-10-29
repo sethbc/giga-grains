@@ -26,6 +26,7 @@
 
 #include "editor/EditorPlugin.h"
 #include "gg/ui/Editor.h"
+#include "support/Utf8.h"
 #endif
 
 namespace
@@ -217,9 +218,7 @@ bool relinkShown(const juce::Component &editor)
 
 juce::String utf8String(const std::filesystem::path &path)
 {
-    const auto text = path.u8string();
-    return juce::String::fromUTF8(reinterpret_cast<const char *>(text.data()),
-                                  static_cast<int>(text.size()));
+    return juce::String::fromUTF8(gg::test::utf8(path).c_str());
 }
 } // namespace
 
@@ -268,8 +267,7 @@ TEST_CASE("the instrument's gui has a sample loader strip that loads a dropped f
         }
         CHECK(loader->status().state == gg::plugin::SampleState::Loaded);
         REQUIRE(loader->entry().has_value());
-        CHECK(std::filesystem::path(std::u8string(loader->entry()->absolutePath.begin(),
-                                                  loader->entry()->absolutePath.end())) ==
+        CHECK(gg::test::pathOf(loader->entry()->absolutePath) ==
               std::filesystem::absolute(file).lexically_normal());
     }
 }
@@ -304,6 +302,26 @@ TEST_CASE("the editor's timer applies a finished load without on_main_thread", "
     }
     CHECK(loader->status().state == gg::plugin::SampleState::Loaded);
     CHECK(labelText(*editor, "sampleStatus").startsWith("loaded"));
+}
+
+TEST_CASE("the instrument's gui says when a session's sample is from a newer version", "[plugin]")
+{
+    // INTENT §18: a newer build's manifest loads with no sample, and the strip says why.
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    gg::test::useSettingsFile(gg::test::sampleDir("gui-newer") / "settings.xml");
+    gg::test::PluginUnderTest instrument("org.sethbc.giga-grains");
+    REQUIRE(instrument.valid());
+    auto *plugin = dynamic_cast<gg::plugin::EditorPlugin *>(&instrument.impl());
+    REQUIRE(plugin != nullptr);
+    REQUIRE(instrument.load(gg::test::withNewerMedia(instrument.save())));
+    const std::unique_ptr<juce::Component> editor = plugin->createEditor();
+    REQUIRE(editor != nullptr);
+    auto *timer = dynamic_cast<juce::Timer *>(editor.get());
+    REQUIRE(timer != nullptr);
+    timer->timerCallback();
+    CHECK(labelText(*editor, "sampleName").isEmpty());
+    CHECK(labelText(*editor, "sampleStatus") == "sample from a newer version");
+    CHECK_FALSE(relinkShown(*editor)); // nothing to relink: this build can't read the entry
 }
 
 TEST_CASE("the fx's gui has no sample loader strip", "[plugin]")
@@ -354,14 +372,20 @@ TEST_CASE("the gui's loader strip shows the sample's status and offers relink", 
     }
     SECTION("missing, with relink")
     {
-        view = {State::Missing, "kick.wav", "not found", 0.0, 0, 0.0};
+        view = {State::Missing, "kick.wav", "not found", 0.0, 0, 0.0, true};
         const auto editor = gg::ui::makeEditor(context);
         CHECK(labelText(*editor, "sampleStatus") == "missing: not found");
         CHECK(relinkShown(*editor));
     }
     SECTION("changed, with relink")
     {
-        view = {State::Changed, "kick.wav", "the file at the saved path has changed", 0.0, 0, 0.0};
+        view = {State::Changed,
+                "kick.wav",
+                "the file at the saved path has changed",
+                0.0,
+                0,
+                0.0,
+                true};
         const auto editor = gg::ui::makeEditor(context);
         CHECK(labelText(*editor, "sampleStatus") ==
               "missing: the file at the saved path has changed");
@@ -373,6 +397,16 @@ TEST_CASE("the gui's loader strip shows the sample's status and offers relink", 
         const auto editor = gg::ui::makeEditor(context);
         CHECK(labelText(*editor, "sampleStatus") == "can't load bad.wav: not audio");
         CHECK_FALSE(relinkShown(*editor));
+    }
+    SECTION("an error for the saved file, with relink")
+    {
+        // Carry-over [194]: a file at the saved path that can't be read is an Error, and may be
+        // relinked as a missing one may.
+        view = {State::Error, "locked.wav", "the file at the saved path can't be read", 0.0, 0,
+                0.0,          true};
+        const auto editor = gg::ui::makeEditor(context);
+        CHECK(labelText(*editor, "sampleStatus") == "the file at the saved path can't be read");
+        CHECK(relinkShown(*editor));
     }
 }
 #else

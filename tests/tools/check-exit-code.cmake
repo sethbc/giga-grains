@@ -3,11 +3,13 @@
 # Copyright 2026, the Giga Grains authors (see git history)
 #
 # cmake -DPROGRAM=<program> -DARGS=<its arguments, a list> -DEXPECTED_CODE=<n>
-#       -DEXPECTED_STDERR=<text> [-DEXPECTED_STDERR2=<text>] -P check-exit-code.cmake
+#       -DEXPECTED_STDERR=<text> [-DEXPECTED_STDERR2=<text>] [-DABSENT=<path>]
+#       -P check-exit-code.cmake
 #
 # Runs PROGRAM with ARGS and fails unless it exits with exactly EXPECTED_CODE and its stderr
 # contains EXPECTED_STDERR (and EXPECTED_STDERR2, when given, after it), as plain text. A crash
-# or a missing binary gives neither, so it can't pass by accident, as WILL_FAIL would.
+# or a missing binary gives neither, so it can't pass by accident, as WILL_FAIL would. With
+# ABSENT, it removes that path first and fails if PROGRAM created it.
 
 # First, so that `cmake -P` runs under the project's policies.
 cmake_minimum_required(VERSION 3.22)
@@ -17,6 +19,10 @@ foreach (var IN ITEMS PROGRAM EXPECTED_CODE EXPECTED_STDERR)
         message(FATAL_ERROR "check-exit-code.cmake: ${var} is not set")
     endif ()
 endforeach ()
+
+if (DEFINED ABSENT)
+    file(REMOVE "${ABSENT}")
+endif ()
 
 execute_process(
         COMMAND ${PROGRAM} ${ARGS}
@@ -37,5 +43,8 @@ if (DEFINED EXPECTED_STDERR2)
     if (at2 EQUAL -1)
         message(FATAL_ERROR "stderr lacks \"${EXPECTED_STDERR2}\" after \"${EXPECTED_STDERR}\":\n${err}")
     endif ()
+endif ()
+if (DEFINED ABSENT AND EXISTS "${ABSENT}")
+    message(FATAL_ERROR "${PROGRAM} wrote ${ABSENT}")
 endif ()
 message(STATUS "exit ${code}, stderr as expected")

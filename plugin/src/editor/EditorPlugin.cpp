@@ -7,13 +7,13 @@
 #include <cstdint>
 #include <filesystem>
 #include <string>
-#include <system_error>
 
 // createEditor() returns a std::unique_ptr<juce::Component>, whose destructor the return
 // statement may invoke, so juce::Component must be complete here. This is the only plugin
 // translation unit that includes JUCE.
 #include <juce_gui_basics/juce_gui_basics.h>
 
+#include "gg/media/Utf8Path.h"
 #include "gg/ui/Editor.h"
 
 namespace gg::plugin
@@ -24,14 +24,7 @@ namespace
 /// Windows), which the loader reports as a failed load.
 std::filesystem::path pathOf(const std::string &text)
 {
-    try
-    {
-        return std::filesystem::path(std::u8string(text.begin(), text.end()));
-    }
-    catch (const std::system_error &)
-    {
-        return {};
-    }
+    return gg::media::fromUtf8(text).value_or(std::filesystem::path());
 }
 
 gg::ui::SampleStatusView viewOf(const SampleStatus &status)
@@ -56,11 +49,12 @@ gg::ui::SampleStatusView viewOf(const SampleStatus &status)
         state = State::Changed;
         break;
     case SampleState::Error:
+    case SampleState::Newer: // the strip shows the message, "sample from a newer version"
         state = State::Error;
         break;
     }
-    return {state,          status.fileName, status.message,
-            status.seconds, status.channels, status.fileRate};
+    return {state,           status.fileName, status.message,   status.seconds,
+            status.channels, status.fileRate, status.relinkable};
 }
 } // namespace
 
@@ -77,7 +71,9 @@ EditorPlugin::~EditorPlugin() = default;
 
 std::unique_ptr<juce::Component> EditorPlugin::createEditor()
 {
-    gg::ui::EditorContext context{descriptorFor(product())->name, &noteOnCount};
+    gg::ui::EditorContext context;
+    context.productName = descriptorFor(product())->name;
+    context.noteOnCount = &noteOnCount;
     // The instrument's loader strip (spec §6.5), on the main thread, as the loader requires. The
     // loader is GigaGrainsPlugin's, so it outlives the editor, which the shim holds.
     if (SampleLoader *loader = sampleLoader(); loader != nullptr)

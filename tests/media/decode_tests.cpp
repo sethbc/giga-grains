@@ -2,9 +2,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright 2026, the Giga Grains authors (see git history)
 
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <numbers>
 #include <string>
@@ -15,6 +17,7 @@
 
 #include "gg/media/Decode.h"
 #include "media/AudioFixtures.h"
+#include "support/Utf8.h"
 
 #if !defined(_WIN32)
 #include <unistd.h>
@@ -70,8 +73,7 @@ void requireError(const gg::media::DecodeResult &result, const fs::path &file,
     REQUIRE_FALSE(result.error.empty());
     // "<file name>: <reason>", the reason searched apart, since names like truncated.flac
     // contain the words a reason does.
-    const auto u8name = file.filename().u8string();
-    const std::string prefix = std::string(u8name.begin(), u8name.end()) + ": ";
+    const std::string prefix = gg::test::utf8(file.filename()) + ": ";
     REQUIRE(result.error.starts_with(prefix));
     REQUIRE(result.error.find(reason, prefix.size()) != std::string::npos);
 }
@@ -114,7 +116,7 @@ TEST_CASE("decode reads 16-bit, 24-bit and float WAV, mono and stereo", "[media]
     gg::test::writeFile(file, gg::test::wavBytes(audio, format));
 
     const auto result = decodeAudioFile(file);
-    INFO(file.filename().string() << ": " << result.error);
+    INFO(gg::test::utf8(file.filename()) << ": " << result.error);
     REQUIRE(result.audio.has_value());
     REQUIRE(result.error.empty());
     const auto &decoded = *result.audio;
@@ -139,7 +141,7 @@ TEST_CASE("decode reads AIFF and AIFC", "[media]")
     gg::test::writeFile(file, gg::test::aiffBytes(audio, format, aifc));
 
     const auto result = decodeAudioFile(file);
-    INFO(file.filename().string() << ": " << result.error);
+    INFO(gg::test::utf8(file.filename()) << ": " << result.error);
     REQUIRE(result.audio.has_value());
     const auto &decoded = *result.audio;
     REQUIRE(decoded.format == "aiff");
@@ -286,10 +288,74 @@ TEST_CASE("decode tolerates a data size up to 1 KiB beyond the file (ruling R10)
     }
 }
 
-TEST_CASE("decode never allocates for audio a header claims but the file lacks", "[media][serial]")
+TEST_CASE("decode tolerates an AIFF frame count up to 1 KiB beyond the file (ruling R10)",
+          "[media]")
+{
+    // AIFF declares its length in COMM's frame count, not a data size: the same 1 KiB of slack
+    // applies to the bytes those frames would take. AIFF, big-endian 16-bit stereo, 4 bytes a
+    // frame (COMM's count at byte 22); AIFC `sowt`, 24-bit mono, 3 bytes a frame (byte 34, after
+    // FVER).
+    struct Case
+    {
+        bool aifc;
+        SampleFormat format;
+        uint32_t channels;
+        uint32_t bytesPerFrame;
+        size_t countOffset;
+    };
+    for (const Case c :
+         {Case{false, SampleFormat::Int16, 2, 4, 22}, Case{true, SampleFormat::Int24, 1, 3, 34}})
+    {
+        INFO((c.aifc ? "AIFC" : "AIFF"));
+        const auto audio = gg::test::makeTestAudio(c.channels, 48000, 600);
+        const auto claiming = [&](uint64_t frames, const char *name) {
+            gg::test::Bytes b{gg::test::aiffBytes(audio, c.format, c.aifc)};
+            const auto file = dir() / (std::string(name) + (c.aifc ? ".aifc" : ".aiff"));
+            b.patch(c.countOffset, frames, 4, true);
+            gg::test::writeFile(file, b.data);
+            return file;
+        };
+        // The fixture's own count, read back where the test patches it.
+        {
+            const auto bytes = gg::test::aiffBytes(audio, c.format, c.aifc);
+            REQUIRE(std::string(bytes.begin() + int(c.countOffset) - 10,
+                                bytes.begin() + int(c.countOffset) - 6) == "COMM");
+            uint32_t count = 0;
+            for (int i = 0; i < 4; ++i)
+            {
+                count = count << 8 | bytes[c.countOffset + size_t(i)];
+            }
+            REQUIRE(count == 600);
+        }
+
+        const uint64_t slackFrames = 1024 / c.bytesPerFrame; // 256 or 341
+        for (const uint64_t extra : {uint64_t{25}, slackFrames})
+        {
+            INFO("frames beyond: " << extra);
+            const auto file = claiming(600 + extra, "overstated-within");
+            const auto result = decodeAudioFile(file);
+            INFO("error: " << result.error);
+            REQUIRE(result.audio.has_value());
+            REQUIRE(result.audio->format == "aiff");
+            REQUIRE(result.audio->buffer->channels() == c.channels);
+            REQUIRE(result.audio->buffer->frames() == 600);
+            REQUIRE(maxError(*result.audio->buffer, audio, c.channels) <=
+                    gg::test::lsbOf(c.format));
+        }
+        // One frame more is past the slack (1028 or 1026 bytes): truncated.
+        const auto over = claiming(600 + slackFrames + 1, "overstated-past");
+        requireError(decodeAudioFile(over), over, "truncated");
+    }
+}
+
+TEST_CASE("decode allocates no more than the file vouches for when a header claims audio it lacks",
+          "[media][serial]")
 {
     // Each file is tiny but claims up to 600 s, within every limit; allocating and zeroing that
     // much (1.8 GB for the 384 kHz stereo ones) would take far longer than the bound below.
+    // Ruling R7 as amended (INTENT §23 #54): an uncompressed file's buffer never exceeds what its
+    // bytes hold, and a compressed header is trusted only up to 64 bytes of decoded audio per byte
+    // of the file, which these tiny files are far beyond. decode_memory_tests.cpp pins that bound.
     const auto requireQuickError = [](const fs::path &file, const std::string &reason) {
         const auto start = std::chrono::steady_clock::now();
         const auto result = decodeAudioFile(file);
@@ -567,4 +633,34 @@ TEST_CASE("decode opens a UTF-8 path with non-ASCII characters", "[media]")
     REQUIRE(result.audio.has_value());
     REQUIRE(result.audio->buffer->frames() == 64);
     REQUIRE(maxError(*result.audio->buffer, audio, 1) <= gg::test::lsbOf(SampleFormat::Int16));
+}
+
+TEST_CASE("decode stops once its cancel flag is set", "[media]")
+{
+    // The sample loader's prompt stop (carry-over [194]): the flag is read once per chunk, so a
+    // set flag stops a decode under way and gives no audio. A flag never set changes nothing.
+    const auto wav = dir() / "cancel.wav";
+    gg::test::writeFile(
+        wav, gg::test::wavBytes(gg::test::makeTestAudio(2, 48000, 48000), SampleFormat::Int16));
+    const fs::path file =
+        GENERATE_COPY(wav, fixture("sine-1k-48k-mono.flac"), fixture("sine-1k-48k-mono.mp3"));
+    INFO(gg::test::utf8(file.filename()));
+    std::atomic<bool> cancel{false};
+    const auto plain = decodeAudioFile(file);
+    const auto unset = decodeAudioFile(file, &cancel);
+    REQUIRE(plain.audio.has_value());
+    REQUIRE(unset.audio.has_value());
+    const auto &a = *plain.audio->buffer;
+    const auto &b = *unset.audio->buffer;
+    REQUIRE(a.channels() == b.channels());
+    REQUIRE(a.frames() == b.frames());
+    for (uint32_t c = 0; c < a.channels(); ++c)
+    {
+        CHECK(std::memcmp(a.channel(c), b.channel(c), size_t(a.frames()) * sizeof(float)) == 0);
+    }
+
+    cancel = true;
+    const auto cancelled = decodeAudioFile(file, &cancel);
+    CHECK_FALSE(cancelled.audio.has_value());
+    CHECK(cancelled.error.find("cancelled") != std::string::npos);
 }

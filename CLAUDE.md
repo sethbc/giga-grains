@@ -57,6 +57,14 @@ resource, so machines must catch everything they can catch.
   - No GPLv2-only code and no unlicensed code.
   - Never use the names "Mutable Instruments", "Clouds" or "Beads" in the product.
   - Pin every dependency to an exact SHA or tag.
+  - ASIO® (the Windows standalone only; a registered trademark of Steinberg Media Technologies
+    GmbH) comes from sst-plugininfra's ASIO SDK 2.3.4: exactly `common/asio.cpp` (used under the
+    SDK's GPLv3 option), `host/asiodrivers.cpp` and `host/pc/asiolist.cpp` (BSD-3-Clause-style,
+    under the license each carries; INTENT §15), unmodified, compiled into RtAudio by
+    `libs/CMakeLists.txt`. Never compile RtAudio's bundled ASIO files, which have
+    no license grant, or put its `include/` on a path. The Windows configure fails if either
+    happens, or if any of those SDK files' content changes (INTENT §23 #30, #56). Use no ASIO
+    logo. `THIRD_PARTY_NOTICES.md` holds the notices a distributed Windows build carries.
 
 ## Working style
 
@@ -107,10 +115,48 @@ resource, so machines must catch everything they can catch.
   - Don't rewrite `submodule.*.url` to local paths to get a worktree going: every worktree shares
     that config.
   - It fails unless `git submodule status --recursive` then shows every submodule at its pinned
-    commit. `--configure` runs `cmake --preset` for each preset named, and doesn't build.
+    commit. `--configure` runs `cmake --preset` for each preset named, and doesn't build. A name
+    that isn't a configure preset fails before anything is cloned.
 - The first configure of a build tree that builds the plugin formats downloads the VST3 and
-  AudioUnit SDKs (clap-wrapper fetches them), so it needs the network. `asan` and `rtsan` build
-  no formats and download nothing.
+  AudioUnit SDKs (clap-wrapper fetches them), and RtAudio for the standalone on Windows (its
+  ASIO) and on Linux without the PipeWire and JACK headers, so it needs the network. (CI
+  fetches them itself, with `scripts/fetch-sdks.sh <dir>`, which prints the `-DVST3_SDK_ROOT=...`
+  style options that make clap-wrapper use those checkouts; a local configure needs none.)
+  `asan` and `rtsan` build no formats and download nothing.
+
+**Warnings.** Every first-party target builds with `-Wall -Wextra` and `-Werror` (on ClangCL
+`/clang:-Wall /clang:-Wextra /WX`), through `gg::compiler-options`. Third-party code never links
+it, and its headers are SYSTEM includes (`gg_mark_system_includes` in `libs/CMakeLists.txt`), so
+fix a warning in first-party code and never edit a submodule. A new target links
+`gg::compiler-options`, with one exception: `clients/clap-first/gg-clap-entry.cpp`, which
+clap-wrapper's own targets compile without it. Never define a `*_IMPLEMENTATION` macro
+(`STB_IMAGE_IMPLEMENTATION`, `DR_WAV_IMPLEMENTATION`, …) in a first-party file: the
+implementation belongs in `libs/thirdparty-impl/`, built without `gg::compiler-options`, or the
+library's own warnings fail the build. Only the Linux leg (GCC 12, -O2) shows
+`-Wmaybe-uninitialized`, so a green macOS build proves nothing about it. Clang versions differ in what `-Wextra` flags (the rtsan build's LLVM is
+newer than Apple's), so build `asan` and `rtsan` too. `cmake/AsioGuard.cmake` fails the configure
+if anything but RtAudio's ASIO backend uses `libs/.../asiosdk` (tests `asio_guard_*`).
+
+**CI caches** (`.github/workflows/ci.yml`; none changes what is built):
+- **The SDK checkouts** (VST3 SDK, AudioUnitSDK, RtAudio, RtMidi, wil): `scripts/fetch-sdks.sh`
+  clones each at the tag clap-wrapper's `cmake/base_sdks.cmake` pins into `.sdk-cache`, and
+  Configure passes `-DVST3_SDK_ROOT=...` and the rest, so clap-wrapper downloads nothing. The
+  cache is keyed by leg and by the hash of `base_sdks.cmake` and the script. (CPM's own
+  `CPM_SOURCE_CACHE` cached nothing: clap-wrapper gives every package a `SOURCE_DIR`, which makes
+  CPM skip it.) The VST3-validator step builds from `VST3_SDK_ROOT`.
+- **ccache**, macOS and Linux legs and the sanitizer job only, passed as
+  `CMAKE_<LANG>_COMPILER_LAUNCHER` at CI configure (local presets are unchanged). Windows is
+  uncached (the Visual Studio generator has no launcher support), and `mac-universal`'s
+  two-architecture compiles are largely uncached. Keyed by OS, preset and commit, restored by
+  prefix.
+- **The pinned LLVM archive** (sanitizer job), keyed by version and SHA-256. The SHA-256 is checked
+  on a hit too.
+- **Scoping.** Every run restores all of them; only runs on `main` (a push, the nightly, a
+  dispatch on `main`) save them, also after a failed build. GitHub scopes a cache to the ref that
+  saved it: a pull request reads `main`'s caches, but nobody reads a pull request's, so PRs never
+  save. GitHub evicts a cache unused for 7 days and the least recently used ones past the
+  repository's 10 GB; the nightly keeps them alive. After a change that alters a cache key (a pin,
+  the LLVM version), merge it and run `gh workflow run ci.yml --ref main` once to seed the caches.
 
 **Presets.** They are defined in `CMakePresets.json`. Each one builds into `build/<preset>/`,
 except `windows-clangcl`, which builds into `build/windows/`.
@@ -173,13 +219,19 @@ scripts/check.sh [--presets dev,asan,rtsan] [-L label]... [--no-format] [--allow
     and the failed step's log;
   - under it, each failing test (at most 10), or the first configure or build errors;
   - the format result, then `PASS` or `FAIL`.
-- **The logs** are complete: `build/<preset>/check/{configure,build,test}.log` and
-  `build/check/format.log`.
+- **The logs** are complete: `<build tree>/check/{configure,build,test}.log` and
+  `build/check/format.log`, which `--no-format` deletes. The build tree is the preset's
+  `binaryDir`, read from `CMakePresets.json` and `CMakeUserPresets.json` by
+  `scripts/preset-dir.cmake`; a name that isn't a configure preset gets a `FAILED` line.
 - **Exit status:** 0 only if every step passed; 1 if any failed; 2 for bad usage.
 - **It refuses to build a tree whose cache sets `GG_COPY_PLUGIN_AFTER_BUILD` to anything CMake
-  counts as true** (anything but empty, `OFF`, `0`, `NO`, `FALSE`, `N`, `IGNORE`, `NOTFOUND` or
-  `*-NOTFOUND`, in any case), because that build installs plugins, unless you pass
+  counts as true** (anything but empty, `0`, `OFF`, `NO`, `FALSE`, `N` or `IGNORE` in any case,
+  or `NOTFOUND` or `*-NOTFOUND` in upper case: CMake's NOTFOUND match is case-sensitive, so
+  `notfound` counts as true), because that build installs plugins, unless you pass
   `--allow-install`.
+- **Where it runs:** `check.sh` and `worktree-setup.sh` run in bash 3.2 or newer on macOS and
+  Linux, with CTest 3.22 or newer (the `scripts` test replays CTest 3.31's and 4.4's real
+  output). Windows Git Bash is unsupported: nothing has run them there.
 - Paste its summary as the evidence in a report.
 
 **Tests.** `gg-tests` is the Catch2 suite, and each Catch2 tag becomes a CTest label. To run one
@@ -213,6 +265,10 @@ runs the tests labelled either. The labels are:
 - `golden`: the golden renders;
 - `ui`: the splat renderer;
 - `smoke`;
+- `build`: checks of the build system itself, run on scratch CMake projects: the `asio_guard_*`
+  tests (`cmake/AsioGuard.cmake`);
+- `scripts`: `check.sh` and `worktree-setup.sh`, in scratch trees with stub `cmake` and `ctest`
+  and in scratch git repositories (not on Windows);
 - `plugin`: the plugins, driven through their CLAP factory. Tests labelled both `plugin` and
   `rt` put the allocation tripwire on `process` and `params.flush`. On macOS this label also
   covers checks of the built bundles (with the editor only):
@@ -316,8 +372,9 @@ gg-render --write-media DIR
     note at infinite Decay, released, the tail holding) and `fx-space-automate` (Size, Decay and
     Pre-delay automated).
   - `fx-space-automate` moves Size only at 0.5 s and in the tail at 5.0 s. Moving Size clicks
-    (accepted, S8): over a sine, any other mid-sound move scored 31 to 228 against the click
-    limit of 30. Don't add mid-sound Size moves to a golden.
+    (accepted, S8): over a sine, any other mid-sound move scored 31 to 228 against metricsVersion
+    1's click limit of 30, and the 0.5 s move scores 11.9 against version 2's limit of 15, the
+    highest clean score in the goldens. Don't add mid-sound Size moves to a golden.
   - Every case that predates Space renders bit-identically with it, so its WAV's SHA-256 is
     unchanged. A Space change that moves one is a regression.
   - **The event-log comparison never sees the reverb or the diffuser:** the log records grains,
@@ -327,6 +384,15 @@ gg-render --write-media DIR
   - They compare the metrics within tolerances.
   - They compare the grain-event log exactly per line (CR and final newline ignored). That
     comparison is the cross-platform determinism gate.
+  - The click score (metricsVersion 2) is normalized by the level within ±5 ms. The
+    `[golden][metrics]` tests in `tests/metrics/click_injection_tests.cpp` render every case in
+    process, add a -20 dBFS step at sixteen positions in turn and require each to score above
+    the limit, except at the positions a case's own noise or high frequencies hide it, which a
+    table there pins per case as an exact count. A new case must catch all sixteen or be added
+    to the table; a change that moves a count updates its entry, with the reason, in the same
+    commit. The two dense-noise cases catch none of the steps, and none of the same positions'
+    0 dBFS spikes (9.3 to 14.6 against 15): an accepted blind spot (row 58, director option A,
+    2026-10-29).
   - `golden_tamper_events` and `golden_tamper_metrics` check that the gate can fail: each
     compares a render with a golden copy that has one value changed, and passes only on
     gg-render's failure message.
@@ -336,6 +402,12 @@ gg-render --write-media DIR
     expected files.
   - It leaves WAVs and spectrograms in `<build-dir>/golden/`.
   - It then checks the new goldens.
+  - Last, it prints each case's WAV SHA-256 and lists the cases whose WAV changed, or are new or
+    gone, since its previous run in that build tree (`<build-dir>/golden/wav-sha256.txt`). For a
+    change meant to leave the output alone (a refactor, a feature at its defaults), run it before
+    and after, and say in the commit that every hash matches: the goldens' metrics allow 0.5 dB,
+    and the event log holds only the grains, so a small gain error after them passes the goldens
+    (INTENT §19).
 - Look at every spectrogram before committing new goldens, and say in the commit message why they
   changed.
 
@@ -347,6 +419,7 @@ b=build/release/tools/gg-bench/gg-bench
 $b [--quick | --seconds S] [--rounds N] [--grains N] [--cases a,b] [--commit SHA] \
    [--json out.json] [--baseline baseline.json]                  # grain kernels and engine (§16)
 $b --make-baseline <preset> out.json a.json b.json c.json        # write a CI leg's baseline
+$b --make-baseline <preset> out.json --merge old.json a.json ... # add or remake models in one
 $b --canvas [--quick] [--json out.json]                           # canvas renderer
 $b --space [--quick | --seconds S] [--rounds N] [--commit SHA] [--json out.json]  # Space
 ```
@@ -356,12 +429,17 @@ $b --space [--quick | --seconds S] [--rounds N] [--commit SHA] [--json out.json]
   - **the engine cases,** through `Engine::process`, scheduler and pan included:
     - `engine-sample` is **X**, the §16 headline's case: Normal grains reading a stereo sample
       buffer in RAM (INTENT §23 #44);
-    - `engine-sample-eco`: the same at the Eco tier (linear interpolation);
+    - `engine-sample-eco`: the same at the Eco tier (linear interpolation); the `[bench]` case
+      "engine-sample-eco runs at the Eco tier" checks every grain it admits is Eco
+      (`gg::bench::admittedTiers`);
     - `engine-live`: the same stream over a 16 s live ring, the FX's figure, published beside X;
     - `engine-full-pool`: admission when the pool is saturated (1 s grains ask for 10× its
       capacity);
   - `reference`: M0's 4-wide Hermite kernel, frozen (`renderHermiteSimd` in
-    `tools/gg-bench/Kernels.h`). It is the CPU gate's yardstick;
+    `tools/gg-bench/Kernels.h`). It is the CPU gate's yardstick. `Kernels.h` includes no engine
+    header: it holds its own frozen copies of the Hann table and the readers, so no engine
+    change can move it, and the `[bench]` case "the reference kernel's output is pinned" hashes
+    its output. Never edit those copies to follow the engine;
   - M0's prototype kernels: `linear-scalar`, `hermite-scalar`, `sinc-scalar`, `linear-simd`
     and `hermite-simd`.
 - **Timing.** Every configuration warms up once. Then each of 5 rounds (`--rounds`) times every
@@ -387,19 +465,29 @@ $b --space [--quick | --seconds S] [--rounds N] [--commit SHA] [--json out.json]
     write the JSON, or 2 for bad usage.
 - **An option a mode doesn't take is bad usage** (exit 2, with the usage): `--space` takes only
   the options shown above, `--canvas` only `--quick` and `--json`, and `--make-baseline`
-  nothing else.
+  nothing else (its `--merge` is one of its own values).
   - Sub-project 4's fix wave measured 28.49 ns per stereo sample, 0.137% of one M5 Max core,
     at its final code (`ac81dfb`; INTENT §16).
     Sub-project 6 publishes it beside X.
 - **When profiling the plugins in a VST3 host,** remember that clap-wrapper's VST3 `process`
   takes a spin lock. Time spent there is the wrapper's, not ours.
 - **Exit status:** 0 when done and no ratio regressed, 1 for an error (an unreadable or malformed
-  baseline, say), 2 for bad usage, 3 when `--baseline` finds a regressed ratio. A run on a CPU
-  model the baseline has no entry for prints `no baseline for <machine>; no verdict` and exits 0.
-- **In CI:** each build leg runs the full length with `--commit` and, when
-  `tools/gg-bench/baselines/<preset>.json` exists, `--baseline`. It prints the output, and a
-  verdict per ratio, in the step summary and uploads `gg-bench-<preset>` (`gg-bench.json` and
-  `gg-bench.txt`).
+  baseline, say), 2 for bad usage, 3 when `--baseline` finds a regressed ratio or a missing one.
+  A run on a CPU model the baseline has no entry for prints `no baseline for <machine>; no
+  verdict` and exits 0.
+  - **Every entry of the model's baseline is accounted for:** one the run lacks is printed as
+    `missing from this run` and counts as a failure (exit 3); the verdict line then ends `, N
+    baseline entries missing from this run`. So `--baseline` with a `--cases` subset fails. A
+    ratio the baseline lacks is only `not in the baseline`.
+  - **A verdict over no ratios is an error** (exit 1): a run without `reference` or any engine
+    case, on a model the baseline has, never passes as "0 of 0".
+- **In CI:** the build legs run the full length (with `--commit` and, when
+  `tools/gg-bench/baselines/<preset>.json` exists, `--baseline`) on pushes to `main`, on the
+  nightly schedule (03:17 UTC) and on `workflow_dispatch`. They print the output, and a verdict
+  per ratio, in the step summary and upload `gg-bench-<preset>` (`gg-bench.json` and
+  `gg-bench.txt`). On a pull request each leg runs `--quick` as a smoke check only: it checks no
+  baseline, prints no verdict and uploads nothing, but a crash or exit 1 or 2 still fails the
+  job.
   - **Baselines are per CPU model.** GitHub assigns a leg different CPU models from run to run
     (seen so far: Linux on AMD EPYC 7763, 9V45 and 9V74 and Intel Xeon 8370C; Windows on EPYC
     7763, 9V45 and 9V74). For unchanged code, ratios differ by up to ~20% between models and ~6%
@@ -410,11 +498,13 @@ $b --space [--quick | --seconds S] [--rounds N] [--commit SHA] [--json out.json]
     on it are added to the baseline.
   - **The gate is report-only through M1** (INTENT §19, §23 #44): exit 3 becomes a
     `::warning` and the step exits 0. A crash, exit 1 or 2, or the timeout still fails the job.
-    The `bench_baseline_*` tests pin exit 3, exit 0 and the no-verdict line.
+    The `bench_baseline_*` tests pin exit 3 (a regression or a missing entry), exit 0, the
+    no-verdict line and exit 1 for a run with no ratios.
   - Sub-project 6 makes the gate blocking, with the published X.
 - **Refreshing a baseline** (`tools/gg-bench/baselines/README.md` has the format):
-  1. Make three separate CI runs of the same engine code
-     (`gh workflow run ci.yml --ref <branch>`). One run's IQR says nothing about the next run's
+  1. Make three separate full-length CI runs of the same engine code: runs on `main`, the
+     nightly or `gh workflow run ci.yml --ref <branch>` (a pull request's runs are `--quick` and
+     upload no artifact). One run's IQR says nothing about the next run's
      drift, which reached ~20% on Windows (INTENT §23 #47).
   2. Download each run's artifact: `gh run download <id> --pattern 'gg-bench-<preset>'`.
   3. Run `gg-bench --make-baseline <preset> tools/gg-bench/baselines/<preset>.json a.json b.json
@@ -423,15 +513,26 @@ $b --space [--quick | --seconds S] [--rounds N] [--commit SHA] [--json out.json]
      - Each ratio is the median of that model's runs, with a tolerance of
        `max(0.10, 2 × (max − min) / median)`.
      - A model seen in only one run gets the 0.10 floor.
+     - It checks what it makes as `--baseline` would: a median that isn't positive and finite,
+       or a tolerance that isn't finite, is an error (exit 1), and no file is written.
   4. Commit the file. A later CI run on a model in the file should show `pass`, but not always:
      the M1 VM's drift between runs can exceed even a tolerance from three runs (the
      verification run showed `engine-sample-eco` at block 32 at 1.1546 against a limit of
      1.0377, a false "regressed"). A run on a model the file lacks shows "no verdict".
-  5. A model with no entry gets one when you make the baseline again with later runs on it
-     included, still all of the same engine code.
+  5. **To add a model, or remake one,** without the runs the other entries came from (CI's
+     artifacts expire), merge: `gg-bench --make-baseline <preset>
+     tools/gg-bench/baselines/<preset>.json --merge tools/gg-bench/baselines/<preset>.json
+     d.json e.json f.json`. `--merge <old.json>` goes right after the output, and may be the same
+     file. Every entry of the old file stays, in place, except the runs' models', which are made
+     from the new runs alone; models the old file lacks are added at the end. It prints each
+     entry as `(kept)`, `(replaced)` or `(new)`. The legs must match. The new runs must still be
+     of engine code whose ratios match the kept entries' (no engine change since).
+     **A replaced entry is rebaselined to its new runs, a regression included:** compare each
+     `(replaced)` entry with the old one (`git diff`) before committing, and explain any ratio
+     that moved.
 
   A baseline is valid only against the frozen `reference` kernel: if that kernel, or anything it
-  calls, changes, make every baseline again.
+  calls, changes, make every baseline again. Its pinned hashes fail first.
 
 **Validators.** CI runs them on every build leg; auval runs on macOS only.
 
@@ -467,6 +568,7 @@ $b --space [--quick | --seconds S] [--rounds N] [--commit SHA] [--json out.json]
 - **Steinberg's VST3 validator** is built from the VST3 SDK that clap-wrapper downloaded:
 
   ```sh
+  # A local build: CPM records the checkout. CI configures with VST3_SDK_ROOT instead.
   sdk="$(sed -n 's/^CPM_PACKAGE_vst3sdk_SOURCE_DIR:INTERNAL=//p' build/release/CMakeCache.txt)"
   cmake -S "$sdk" -B build/release/vst3-validator -G Ninja -DCMAKE_BUILD_TYPE=Release \
     -DSMTG_ENABLE_VSTGUI_SUPPORT=OFF -DSMTG_ENABLE_VST3_PLUGIN_EXAMPLES=OFF \

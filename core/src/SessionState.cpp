@@ -182,9 +182,10 @@ std::optional<MediaEntry> parseSample(const TiXmlElement &e)
     return entry;
 }
 
-// Parses a MEDI payload into `sample`: false if it isn't a manifest (decodeState lists the
-// rules), and then `sample` is untouched.
-bool parseMedia(std::string_view payload, std::optional<MediaEntry> &sample)
+// Parses a MEDI payload into `sample` and `newer`: false if it isn't a manifest (decodeState lists
+// the rules), and then both are untouched. A manifest of a newer version than this build reads
+// leaves `sample` empty and sets `newer`; its content isn't read past the root's version.
+bool parseMedia(std::string_view payload, std::optional<MediaEntry> &sample, bool &newer)
 {
     if (payload.find('\0') != std::string_view::npos)
     {
@@ -207,7 +208,8 @@ bool parseMedia(std::string_view payload, std::optional<MediaEntry> &sample)
     {
         return false;
     }
-    // The <media> root, alone at the top level, at a version this build reads.
+    // The <media> root, alone at the top level, at version 1 or later; a newer version is kept
+    // unread.
     // The version is the whole attribute, in decimal ("1x" isn't 1, as tinyxml's
     // QueryIntAttribute would read it).
     const TiXmlElement *media = doc.RootElement();
@@ -217,14 +219,21 @@ bool parseMedia(std::string_view payload, std::optional<MediaEntry> &sample)
         return false;
     }
     const auto version = parseDecimal<int>(media->Attribute("version"));
-    if (!version || *version < 1 || *version > kMediaVersion)
+    if (!version || *version < 1)
     {
         return false;
+    }
+    if (*version > kMediaVersion)
+    {
+        sample.reset();
+        newer = true;
+        return true;
     }
     const TiXmlElement *e = media->FirstChildElement("sample");
     if (e == nullptr)
     {
         sample.reset();
+        newer = false;
         return true;
     }
     if (e->NextSiblingElement("sample") != nullptr)
@@ -237,7 +246,17 @@ bool parseMedia(std::string_view payload, std::optional<MediaEntry> &sample)
         return false;
     }
     sample = std::move(entry);
+    newer = false;
     return true;
+}
+
+// Whether `payload` is a manifest of a newer version than this build reads, as decodeState
+// would keep it.
+bool isNewerMedia(std::string_view payload)
+{
+    std::optional<MediaEntry> sample;
+    bool newer{false};
+    return parseMedia(payload, sample, newer) && newer;
 }
 } // namespace
 
@@ -255,7 +274,10 @@ std::string encodeState(const SessionState &state)
     assert(!state.sample || isValidMediaEntry(*state.sample));
     const bool writeSample = state.sample && isValidMediaEntry(*state.sample);
     const std::string patch = toStateXml(state.values, state.seed);
-    const std::string media = mediaXml(writeSample ? state.sample : std::nullopt);
+    // With no sample, a newer build's manifest goes back as it came (INTENT §18).
+    const bool writeNewer = !state.sample && state.newerMedia && isNewerMedia(*state.newerMedia);
+    const std::string media =
+        writeNewer ? *state.newerMedia : mediaXml(writeSample ? state.sample : std::nullopt);
 
     std::string out;
     out.reserve(kHeaderBytes + 2 * kChunkHeaderBytes + patch.size() + media.size());
@@ -319,11 +341,16 @@ bool decodeState(std::string_view bytes, Mode mode, SessionState &out,
                 *slot = payload;
             }
         }
+        bool newer{false};
         if (!patch || !media || patch->find('\0') != std::string_view::npos ||
-            !parseMedia(*media, loaded.sample) ||
+            !parseMedia(*media, loaded.sample, newer) ||
             !fromStateXml(*patch, loaded.values, loaded.seed, mode, &migrated))
         {
             return false;
+        }
+        if (newer)
+        {
+            loaded.newerMedia.emplace(*media);
         }
     }
 

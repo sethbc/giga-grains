@@ -19,15 +19,21 @@
 # A failed step skips the rest of that preset, and the next preset still runs, so one run reports
 # everything. Last comes scripts/format.sh --check, unless --no-format.
 #
-# Each step's full output goes to build/<preset>/check/<step>.log (configure, build, test) and the
-# format check's to build/check/format.log. The terminal gets only the summary: a line per preset
-# as it finishes, ending with the failed step's log, with the failing tests or the first errors
-# under it; then the format result, and PASS or FAIL. The exit status is 0 only if every step
-# passed, 1 if any failed, and 2 for bad usage.
+# Each step's full output goes to <build tree>/check/<step>.log (configure, build, test) and the
+# format check's to build/check/format.log, which --no-format deletes so a stale one can't
+# mislead. The build tree is the preset's binaryDir, read from CMakePresets.json and
+# CMakeUserPresets.json by scripts/preset-dir.cmake (build/<preset>, but build/windows for
+# windows-clangcl); a name that isn't a configure preset there gets a summary line and fails.
+# The terminal gets only the summary: a line per preset as it finishes, ending with the failed
+# step's log, with the failing tests or the first errors under it; then the format result, and
+# PASS or FAIL. The exit status is 0 only if every step passed, 1 if any failed, and 2 for bad
+# usage.
 #
 # A tree whose cache sets GG_COPY_PLUGIN_AFTER_BUILD to anything CMake counts as true installs the
 # plugins into your plugin folders whenever a bundle is rebuilt, so check.sh won't build it unless
-# given --allow-install.
+# given --allow-install. CMake's false values are the empty string, 0, OFF, NO, FALSE, N and
+# IGNORE in any case, and NOTFOUND and *-NOTFOUND in upper case only: its NOTFOUND match is
+# case-sensitive, so notfound and x-notfound count as true.
 
 set -euo pipefail
 
@@ -77,12 +83,10 @@ done
 cd "$(dirname "$0")/.."
 root="$(pwd)"
 
-# The preset's build tree (its binaryDir in CMakePresets.json).
-binary_dir() {
-    case "$1" in
-        windows-clangcl) echo build/windows ;;
-        *) echo "build/$1" ;;
-    esac
+# The preset's build tree, its binaryDir, as scripts/preset-dir.cmake prints it: "dir <path>" or
+# "error <message>".
+preset_dir() {
+    cmake -D "PRESET=$1" -P scripts/preset-dir.cmake 2>&1 | tr -d '\r' || true
 }
 
 # Up to 10 error lines from a configure or build log, indented and cut to 200 columns: CMake
@@ -122,8 +126,20 @@ failed_tests() {
 failed=0
 for preset in "${preset_list[@]}"; do
     start=$SECONDS
-    dir="$(binary_dir "$preset")"
-    logs="$root/$dir/check"
+    resolved="$(preset_dir "$preset")"
+    if [[ "$resolved" != "dir "* ]]; then
+        # Not a configure preset, say: a summary line, and the next preset still runs.
+        if [[ "$resolved" == "error "* ]]; then
+            echo "$preset: FAILED, ${resolved#error }"
+        else
+            echo "$preset: FAILED, scripts/preset-dir.cmake can't find its build tree"
+            head -n 3 <<<"$resolved" | cut -c 1-200 | sed 's/^/    /'
+        fi
+        failed=1
+        continue
+    fi
+    dir="${resolved#dir }"
+    logs="$dir/check"
     mkdir -p "$logs"
     rm -f "$logs/configure.log" "$logs/build.log" "$logs/test.log"
     ok=true
@@ -154,22 +170,31 @@ for preset in "${preset_list[@]}"; do
         fi
     fi
 
+    if [[ "$ok" == true && ! -f "$dir/CMakeCache.txt" ]]; then
+        # The configure step passed but wrote its cache somewhere else.
+        ok=false
+        details="    no CMakeCache.txt in $dir after configuring"
+    fi
+
     if [[ "$ok" == true ]]; then
         # clients/clap-first installs the plugins if (GG_COPY_PLUGIN_AFTER_BUILD), which CMake
         # counts as true for any value but its false constants, so anything else is refused.
         copy="$(sed -n 's/^GG_COPY_PLUGIN_AFTER_BUILD:[^=]*=//p' "$dir/CMakeCache.txt" |
             tr -d '\r')"
-        case "$(tr '[:lower:]' '[:upper:]' <<<"$copy")" in
-            "" | OFF | 0 | NO | FALSE | N | IGNORE | NOTFOUND | *-NOTFOUND) ;;
-            *)
-                if [[ "$allow_install" != true ]]; then
-                    ok=false
-                    build=REFUSED
-                    details="    GG_COPY_PLUGIN_AFTER_BUILD is $copy in $dir/CMakeCache.txt, so a"
-                    details+=" build installs the plugins; pass --allow-install to build it anyway"
-                fi
-                ;;
+        copy_is_false=false
+        case "$copy" in
+            # Matched as written: CMake's NOTFOUND test is case-sensitive.
+            NOTFOUND | *-NOTFOUND) copy_is_false=true ;;
         esac
+        case "$(tr '[:lower:]' '[:upper:]' <<<"$copy")" in
+            "" | OFF | 0 | NO | FALSE | N | IGNORE) copy_is_false=true ;;
+        esac
+        if [[ "$copy_is_false" != true && "$allow_install" != true ]]; then
+            ok=false
+            build=REFUSED
+            details="    GG_COPY_PLUGIN_AFTER_BUILD is $copy in $dir/CMakeCache.txt, so a"
+            details+=" build installs the plugins; pass --allow-install to build it anyway"
+        fi
     fi
 
     if [[ "$ok" == true ]]; then
@@ -248,8 +273,10 @@ for preset in "${preset_list[@]}"; do
     fi
 done
 
-if [[ "$format" == true ]]; then
-    format_log="$root/build/check/format.log"
+format_log="$root/build/check/format.log"
+if [[ "$format" != true ]]; then
+    rm -f "$format_log"
+else
     mkdir -p "$root/build/check"
     if scripts/format.sh --check >"$format_log" 2>&1; then
         echo "format: ok ($(tail -n 1 "$format_log" | tr -d '\r'))"

@@ -65,6 +65,7 @@
 #include "gg/core/Rng.h"
 #include "gg/core/SpaceReverb.h"
 #include "gg/engine/Engine.h"
+#include "gg/grain/GrainPool.h"
 #include "gg/grain/Tier.h"
 #include "gg/source/SampleBuffer.h"
 #include "gg/source/SourceMode.h"
@@ -378,6 +379,21 @@ class EngineConfiguration final : public Configuration
                    : static_cast<double>(timedActive_) / static_cast<double>(timedBlocks_);
     }
 
+    /// Warms up, as run() does, with an event sink counting each admitted grain's tier.
+    TierCounts warmUpCountingTiers()
+    {
+        TierCounts counts;
+        engine_.setEventSink(
+            [](void *ctx, const gg::GrainSpec &g) {
+                TierCounts &c = *static_cast<TierCounts *>(ctx);
+                ++(g.tier == gg::Tier::Eco ? c.eco : c.normal);
+            },
+            &counts);
+        warmUp();
+        engine_.setEventSink(nullptr, nullptr);
+        return counts;
+    }
+
   private:
     /// One Engine::process call of one block; in Live mode, with the next block of the noise as
     /// its input.
@@ -528,7 +544,7 @@ void validate(const Options &options)
 Report run(const Options &options, const Progress &progress)
 {
     validate(options);
-    Report report{options, machine(), compiler(), {}};
+    Report report{options, machine(), compiler(), {}, {}};
 
     const gg::ScopedDenormalsOff noDenormals;
 
@@ -689,9 +705,14 @@ bool isString(const nlohmann::json &j, const char *key)
     return j.contains(key) && j[key].is_string();
 }
 
-/// Checks one machine's ratios: see compare().
-void checkRatios(const nlohmann::json &ratios)
+/// Checks one machine's ratios: see checkBaseline().
+void checkRatios(const nlohmann::json &ratios, const std::string &machine)
 {
+    if (ratios.empty())
+    {
+        badBaseline("the entry for " + machine + " has no ratios");
+    }
+    std::vector<std::pair<std::string, uint64_t>> seen;
     for (const nlohmann::json &e : ratios)
     {
         if (!e.is_object() || !isString(e, "case") || !e.contains("blockSize") ||
@@ -707,10 +728,18 @@ void checkRatios(const nlohmann::json &ratios)
         {
             badBaseline("every ratio must be positive and every tolerance >= 0, both finite");
         }
+        std::pair<std::string, uint64_t> key{e["case"].get<std::string>(),
+                                             e["blockSize"].get<uint64_t>()};
+        if (std::find(seen.begin(), seen.end(), key) != seen.end())
+        {
+            badBaseline("the entry for " + machine + " has " + key.first + " at block " +
+                        std::to_string(key.second) + " twice");
+        }
+        seen.push_back(std::move(key));
     }
 }
+} // namespace
 
-/// Checks a baseline's shape: see compare().
 void checkBaseline(const nlohmann::json &b)
 {
     if (!b.is_object())
@@ -745,10 +774,12 @@ void checkBaseline(const nlohmann::json &b)
             badBaseline("two entries for " + name);
         }
         seen.push_back(name);
-        checkRatios(m["ratios"]);
+        checkRatios(m["ratios"], name);
     }
 }
 
+namespace
+{
 /// Checks that j is a gg-bench report with ratios; `which` names it in the error.
 void checkRun(const nlohmann::json &j, const std::string &which)
 {
@@ -806,8 +837,15 @@ nlohmann::json machineEntry(const std::string &machine, const std::vector<nlohma
                                             std::to_string(mine[0] + 1) + " doesn't: " + key.first +
                                             " at block " + std::to_string(key.second));
             }
-            medians[static_cast<std::size_t>(at - keys.begin())].push_back(
-                r["median"].get<double>());
+            const auto median = r["median"].get<double>();
+            if (!(median > 0.0) || !std::isfinite(median))
+            {
+                throw std::invalid_argument(which +
+                                            " has a ratio whose median isn't positive and "
+                                            "finite: " +
+                                            key.first + " at block " + std::to_string(key.second));
+            }
+            medians[static_cast<std::size_t>(at - keys.begin())].push_back(median);
         }
     }
 
@@ -858,6 +896,12 @@ Comparison compare(const Report &report, const nlohmann::json &baseline)
     {
         return c;
     }
+    if (report.ratios.empty())
+    {
+        throw std::invalid_argument("the run has no ratios to check against the baseline's entry "
+                                    "for " +
+                                    report.machine + " (it needs reference and the engine cases)");
+    }
     c.found = true;
     c.commit = (*entry)["commit"].get<std::string>();
     c.runs = (*entry)["runs"].get<uint32_t>();
@@ -879,6 +923,23 @@ Comparison compare(const Report &report, const nlohmann::json &baseline)
             }
         }
         c.verdicts.push_back(std::move(v));
+    }
+    for (const nlohmann::json &e : (*entry)["ratios"])
+    {
+        const auto name = e["case"].get<std::string>();
+        const auto blockSize = e["blockSize"].get<uint64_t>();
+        const bool measured =
+            std::any_of(report.ratios.begin(), report.ratios.end(),
+                        [&](const Ratio &r) { return r.name == name && r.blockSize == blockSize; });
+        if (!measured)
+        {
+            c.missing.push_back(
+                {.name = name,
+                 .blockSize = static_cast<uint32_t>(blockSize),
+                 .ratio = std::nan(""),
+                 .limit = e["ratio"].get<double>() * (1.0 + e["tolerance"].get<double>()),
+                 .regressed = false});
+        }
     }
     return c;
 }
@@ -913,8 +974,94 @@ nlohmann::json makeBaseline(const std::string &leg, const std::vector<nlohmann::
     {
         entries.push_back(machineEntry(machines[m], runs, groups[m]));
     }
-    return {
+    nlohmann::json baseline{
         {"schemaVersion", kBaselineSchemaVersion}, {"leg", leg}, {"machines", std::move(entries)}};
+    // What compare() would reject is never returned, so never written: a tolerance can still
+    // overflow to infinity from finite medians.
+    try
+    {
+        checkBaseline(baseline);
+    }
+    catch (const std::invalid_argument &e)
+    {
+        throw std::invalid_argument(std::string("the runs make an invalid baseline: ") + e.what());
+    }
+    return baseline;
+}
+
+TierCounts admittedTiers(const std::string &engineCase, uint32_t grains, uint32_t blockSize)
+{
+    const auto e =
+        std::find_if(kEngineCases.begin(), kEngineCases.end(),
+                     [&engineCase](const EngineCase &c) { return engineCase == c.name; });
+    if (e == kEngineCases.end())
+    {
+        throw std::invalid_argument("not an engine case: " + engineCase);
+    }
+    if (std::find(kBlockSizes.begin(), kBlockSizes.end(), blockSize) == kBlockSizes.end())
+    {
+        throw std::invalid_argument("not a block size the cases run at: " +
+                                    std::to_string(blockSize));
+    }
+    if (grains < 1)
+    {
+        throw std::invalid_argument("there must be at least 1 grain");
+    }
+    const gg::ScopedDenormalsOff noDenormals;
+    const Noise noise;
+    EngineConfiguration configuration(*e, blockSize, noise, grains);
+    return configuration.warmUpCountingTiers();
+}
+
+nlohmann::json mergeBaseline(const nlohmann::json &old, const nlohmann::json &made)
+{
+    try
+    {
+        checkBaseline(old);
+    }
+    catch (const std::invalid_argument &e)
+    {
+        throw std::invalid_argument(std::string("the baseline to merge into: ") + e.what());
+    }
+    checkBaseline(made);
+    if (old["leg"] != made["leg"])
+    {
+        throw std::invalid_argument("the baseline to merge into is for leg " +
+                                    old["leg"].get<std::string>() + ", not " +
+                                    made["leg"].get<std::string>());
+    }
+    const auto entryFor = [&made](const std::string &machine) -> const nlohmann::json * {
+        for (const nlohmann::json &m : made["machines"])
+        {
+            if (m["machine"].get<std::string>() == machine)
+            {
+                return &m;
+            }
+        }
+        return nullptr;
+    };
+    nlohmann::json merged = old;
+    nlohmann::json &machines = merged["machines"];
+    for (nlohmann::json &m : machines)
+    {
+        if (const nlohmann::json *fresh = entryFor(m["machine"].get<std::string>()))
+        {
+            m = *fresh;
+        }
+    }
+    for (const nlohmann::json &m : made["machines"])
+    {
+        const auto machine = m["machine"].get<std::string>();
+        if (std::none_of(old["machines"].begin(), old["machines"].end(),
+                         [&machine](const nlohmann::json &o) {
+                             return o["machine"].get<std::string>() == machine;
+                         }))
+        {
+            machines.push_back(m);
+        }
+    }
+    checkBaseline(merged);
+    return merged;
 }
 
 std::vector<uint32_t> roundOrder(uint32_t configurations, int round)

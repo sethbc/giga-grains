@@ -45,6 +45,39 @@ struct AllocTripwire
     static uint64_t count() noexcept;
     static void resetCount() noexcept;
 };
+
+/// Measures the heap a piece of code holds at its peak: the bytes that the calling thread's
+/// operator new allocates while an AllocPeak is alive, less what its operator delete frees of
+/// them again, at the most. A decoder's buffers, say (the decoder tests' peak checks).
+///
+/// The replaced operators (AllocTripwire.cpp) record each such block in a fixed table, so
+/// recording allocates nothing. Only one AllocPeak may be alive in the program at a time.
+/// - It counts the bytes asked for, not the allocator's rounding or bookkeeping.
+/// - A block freed on another thread stays counted, which can only overstate the peak.
+/// - Like AllocTripwire, it doesn't see direct malloc-family calls (dr_libs' decoder state, say),
+///   and under GG_SANITIZE it counts nothing: available() is then false.
+/// - complete() is false if more blocks were held at once than the table has room for; the
+///   bytes are then understated, so a test must REQUIRE complete().
+///
+/// Don't use Catch2 assertions while it is alive: they allocate. Read it after the code ran.
+class AllocPeak
+{
+  public:
+    AllocPeak();
+    ~AllocPeak();
+    AllocPeak(const AllocPeak &) = delete;
+    AllocPeak &operator=(const AllocPeak &) = delete;
+
+    /// Whether this build measures: false under GG_SANITIZE, true otherwise.
+    static bool available() noexcept;
+
+    /// The most bytes held at once since construction.
+    uint64_t peakBytes() const noexcept;
+    /// The bytes still held now.
+    uint64_t liveBytes() const noexcept;
+    /// Whether every block fitted in the table, so the figures are exact.
+    bool complete() const noexcept;
+};
 } // namespace gg::test
 
 /// Requires that `count`, an AllocTripwire::count() read after the Scope ended, is 0, in a build

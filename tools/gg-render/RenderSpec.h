@@ -55,8 +55,8 @@
 /// - Sample mode requires "source" and "stream", and every "stream" key but "distribution",
 ///   which defaults to 0 (periodic onsets, as in M0), and "quality", which defaults to "normal"
 ///   (see StreamSpec::quality). "source" needs "kind" plus the keys its kind uses (see
-///   SourceSpec); "source.sampleRate" is optional. Keys a kind doesn't use may be present and
-///   are ignored.
+///   SourceSpec), and no key only another kind uses; "source.sampleRate" is optional for a
+///   built-in kind and an error for a file.
 /// - Instrument mode requires "sample", read as a source but without "sampleRate"; "params",
 ///   "automation" and "notes" are optional. It has no input, so no "channels".
 /// - FX mode requires "input", read as a source but without "sampleRate", and "channels",
@@ -105,12 +105,12 @@ struct SourceSpec
     /// (0, kMaxSampleRate]. Optional; without it the source is synthesized at the render's
     /// sampleRate. A rate other than the render's exercises the engine's source-rate conversion.
     /// An instrument's sample and an FX input never have one.
-    std::optional<double> sampleRate;
+    std::optional<double> sampleRate{};
     /// file: a WAV, FLAC or MP3 file (an AIFF too, for a sample or an input), non-empty, UTF-8.
     /// In a spec file a relative path is relative to the spec's directory, or to --media-dir;
     /// gg-render resolves it before rendering (resolvePaths), and makeSignal, makeSample and
     /// makeInput open it as given.
-    std::string path;
+    std::string path{};
 
     friend bool operator==(const SourceSpec &, const SourceSpec &) = default;
 };
@@ -264,11 +264,12 @@ std::optional<RenderSpec> parseRenderSpec(const std::string &json, std::string &
 /// Throws BadInput for a path that isn't valid UTF-8 (on Windows).
 void resolvePaths(RenderSpec &spec, const std::string &baseDir);
 
-/// The path that UTF-8 `text` names: on Windows a wide path, so dr_libs' and the standard
-/// library's wide-character functions open it. Throws BadInput for text the conversion refuses.
+/// The path that UTF-8 `text` names (gg::media::fromUtf8): on Windows a wide path, so the
+/// standard library's wide-character functions open it. Throws BadInput for text the conversion
+/// refuses.
 std::filesystem::path pathFromUtf8(const std::string &text);
 
-/// `path` as UTF-8. Throws BadInput for a path the conversion refuses.
+/// `path` as UTF-8 (gg::media::toUtf8). Throws BadInput for a path the conversion refuses.
 std::string utf8FromPath(const std::filesystem::path &path);
 } // namespace gg::render
 

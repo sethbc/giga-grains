@@ -79,6 +79,10 @@ if (GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
 endif ()
 add_subdirectory(tests)
 
+# Nothing but RtAudio's ASIO backend may use libs/asiosdk (INTENT §15, §23 #56).
+include(cmake/AsioGuard.cmake)
+gg_check_asiosdk()
+
 # Everything this tree builds; CI builds this target.
 add_custom_target(gg-all)
 add_dependencies(gg-all gg-engine gg-core gg-media gg-ui-core gg-audiometrics gg-bench gg-render

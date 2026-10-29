@@ -24,6 +24,7 @@
 #include "gg/metrics/Metrics.h"
 #include "gg/metrics/Spectrogram.h"
 #include "gg/metrics/WavIO.h"
+#include "support/Utf8.h"
 
 using Catch::Matchers::WithinAbs;
 using gg::metrics::AudioData;
@@ -59,7 +60,7 @@ std::string outputPath(const std::string &name)
 {
     const std::filesystem::path dir{GG_TEST_OUTPUT_DIR};
     std::filesystem::create_directories(dir);
-    return (dir / name).string();
+    return gg::test::utf8(dir / name);
 }
 
 /// Lower edge of log-spaced band b (b = 32 is the top edge, Nyquist).
@@ -143,13 +144,14 @@ TEST_CASE("correlation of identical, inverted, silent", "[metrics]")
 
 TEST_CASE("click score separates clicks from clean audio", "[metrics]")
 {
+    const double limit = gg::metrics::Tolerances{}.maxClickScore;
     const auto clean = gg::metrics::computeMetrics({kSampleRate, {sine(220.0, 0.5, 48000)}});
     INFO("clean sine score " << clean.clickScore);
-    REQUIRE(clean.clickScore < 30.0);
+    REQUIRE(clean.clickScore < limit);
 
     const auto hiss = gg::metrics::computeMetrics({kSampleRate, {noise(0.5, 48000, 0)}});
     INFO("noise score " << hiss.clickScore);
-    REQUIRE(hiss.clickScore < 30.0);
+    REQUIRE(hiss.clickScore < limit);
 
     auto stepped = sine(220.0, 0.5, 48000);
     for (size_t n = 24000; n < stepped.size(); ++n)
@@ -158,7 +160,98 @@ TEST_CASE("click score separates clicks from clean audio", "[metrics]")
     }
     const auto click = gg::metrics::computeMetrics({kSampleRate, {stepped}});
     INFO("stepped sine score " << click.clickScore);
-    REQUIRE(click.clickScore > 30.0);
+    REQUIRE(click.clickScore > limit);
+}
+
+TEST_CASE("click score is local, so a loud passage does not hide a quiet click", "[metrics]")
+{
+    // One second of loud noise, then one of a quiet sine with a -40 dBFS step in it. Normalized
+    // by d's RMS over the whole render (metricsVersion 1, 0.5 here, set by the noise), the step
+    // would score 0.02. Against the sine's own level around it, it stands out.
+    const double limit = gg::metrics::Tolerances{}.maxClickScore;
+    auto audio = noise(0.5, 48000, 5);
+    const auto quiet = sine(220.0, 0.1, 48000);
+    audio.insert(audio.end(), quiet.begin(), quiet.end());
+    const auto clean = gg::metrics::computeMetrics({kSampleRate, {audio}});
+    INFO("clean score " << clean.clickScore);
+    REQUIRE(clean.clickScore < limit);
+
+    for (size_t n = 72000; n < audio.size(); ++n)
+    {
+        audio[n] += 0.01f;
+    }
+    const auto click = gg::metrics::computeMetrics({kSampleRate, {audio}});
+    INFO("stepped score " << click.clickScore);
+    REQUIRE(click.clickScore > limit);
+}
+
+TEST_CASE("click score leaves out the click's own neighbours and floors the level", "[metrics]")
+{
+    const double limit = gg::metrics::Tolerances{}.maxClickScore;
+
+    // A single-sample spike in a quiet sine moves d at three samples (a, 2a, a); the level at the
+    // middle one leaves out the other two, so the spike reads against the sine alone.
+    auto spiked = sine(220.0, 0.1, 48000);
+    const auto smooth = gg::metrics::computeMetrics({kSampleRate, {spiked}});
+    spiked[24000] += 0.1f;
+    const auto spike = gg::metrics::computeMetrics({kSampleRate, {spiked}});
+    INFO("smooth " << smooth.clickScore << ", spiked " << spike.clickScore);
+    REQUIRE(spike.clickScore > 10.0 * limit);
+
+    // A step out of digital silence: its window holds only zeros, so the level is floored at 1e-6
+    // and the score is d / 1e-6, finite.
+    std::vector<float> silentStep(4800, 0.0f);
+    for (size_t n = 2400; n < silentStep.size(); ++n)
+    {
+        silentStep[n] = 0.01f;
+    }
+    const auto step = gg::metrics::computeMetrics({kSampleRate, {silentStep}});
+    REQUIRE(std::isfinite(step.clickScore));
+    REQUIRE_THAT(step.clickScore, WithinAbs(0.01 / 1e-6, 1e-3));
+
+    // Only d above 1e-3 counts.
+    for (size_t n = 2400; n < silentStep.size(); ++n)
+    {
+        silentStep[n] = 0.0009f;
+    }
+    REQUIRE(gg::metrics::computeMetrics({kSampleRate, {silentStep}}).clickScore == 0.0);
+
+    // The window needs a sample rate: without one there is no score.
+    REQUIRE(gg::metrics::computeMetrics({0.0, {spiked}}).clickScore == 0.0);
+}
+
+TEST_CASE("huge finite input reports non-finite band power", "[metrics]")
+{
+    // Samples near float's limit overflow the float FFT to inf. The band reads -200, the count
+    // says why, and compare fails on it, so a golden can't record inf (which JSON can't hold).
+    auto loud = sine(1000.0, 1.0, 4800);
+    for (auto &x : loud)
+    {
+        x *= 3.0e38f;
+    }
+    const auto m = gg::metrics::computeMetrics({kSampleRate, {loud}});
+    INFO("nonFiniteBands " << m.nonFiniteBands);
+    REQUIRE(m.nonFiniteBands > 0);
+    REQUIRE(m.nonFinite == 0);
+    for (double v : m.bandProfileDb)
+    {
+        REQUIRE(std::isfinite(v));
+    }
+
+    const auto result = gg::metrics::compare(m, m);
+    REQUIRE_FALSE(result.pass);
+    const bool named =
+        std::any_of(result.failures.begin(), result.failures.end(),
+                    [](const std::string &f) { return f.rfind("nonFiniteBands:", 0) == 0; });
+    REQUIRE(named);
+
+    const auto parsed = gg::metrics::metricsFromJson(gg::metrics::toJson(m));
+    REQUIRE(parsed.has_value());
+    REQUIRE(parsed->nonFiniteBands == m.nonFiniteBands);
+    REQUIRE(parsed->bandProfileDb == m.bandProfileDb);
+
+    const auto ordinary = gg::metrics::computeMetrics({kSampleRate, {sine(1000.0, 0.5, 4800)}});
+    REQUIRE(ordinary.nonFiniteBands == 0);
 }
 
 TEST_CASE("non-finite and denormal counting", "[metrics]")
@@ -306,6 +399,7 @@ TEST_CASE("metrics json round trip is exact", "[metrics]")
     REQUIRE(parsed->stereoCorrelation == m.stereoCorrelation);
     REQUIRE(parsed->clickScore == m.clickScore);
     REQUIRE(parsed->nonFinite == m.nonFinite);
+    REQUIRE(parsed->nonFiniteBands == m.nonFiniteBands);
     REQUIRE(parsed->denormals == m.denormals);
 
     REQUIRE_FALSE(gg::metrics::metricsFromJson("not json").has_value());
@@ -315,6 +409,17 @@ TEST_CASE("metrics json round trip is exact", "[metrics]")
     REQUIRE(gg::metrics::metricsFromJson(mistyped.dump()).has_value());
     mistyped["peakDb"] = "loud";
     REQUIRE_FALSE(gg::metrics::metricsFromJson(mistyped.dump()).has_value());
+
+    // metricsVersion 2 (the local clickScore) reads neither version 1's files nor a file without
+    // nonFiniteBands.
+    auto json = nlohmann::json::parse(gg::metrics::toJson(m));
+    REQUIRE(json["metricsVersion"] == 2);
+    auto older = json;
+    older["metricsVersion"] = 1;
+    REQUIRE_FALSE(gg::metrics::metricsFromJson(older.dump()).has_value());
+    auto missing = json;
+    missing.erase("nonFiniteBands");
+    REQUIRE_FALSE(gg::metrics::metricsFromJson(missing.dump()).has_value());
 }
 
 TEST_CASE("spectrogram png is 1024 tall with one column per frame", "[metrics]")

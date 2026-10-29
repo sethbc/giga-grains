@@ -52,6 +52,11 @@ Each entry has one ratio per engine case per block size (32, 64 and 256). The en
   `ratio × (1 + tolerance)`.
 - A case or block size missing from the model's entry is reported as "not in the baseline". It
   doesn't count as a regression.
+- Every ratio of the model's entry must be in the run: one the run lacks is reported as "missing
+  from this run" and fails like a regression (exit 3). A run with no ratios at all, against a
+  model the file has, is an error (exit 1), never "0 of 0".
+- Each entry has at least one ratio, and each (case, block size) at most once. The `[bench]` case
+  "the committed baselines are well formed" checks the three files.
 - Schema 1, the earlier format with one set of ratios per leg, is no longer accepted.
 
 ## Making one
@@ -69,10 +74,29 @@ Each entry has one ratio per engine case per block size (32, 64 and 256). The en
    - The entry's `ratio` is the median of those values.
    - Its `tolerance` is `max(0.10, 2 × (max − min) / median)`. A model seen in only one run gets
      the 0.10 floor.
-4. **To add a new model** after GitHub starts assigning it, make the baseline again from the old
-   runs' artifacts together with runs on the new model. The model's entry comes from its own runs
-   only.
+   - It checks the result as `--baseline` would. A median that isn't positive and finite, or a
+     tolerance that isn't finite, is an error (exit 1), and no file is written.
+4. **To add a new model** after GitHub starts assigning it, or to remake one, merge the new runs
+   into the committed file. The old runs aren't needed:
+
+   ```sh
+   gg-bench --make-baseline <preset> tools/gg-bench/baselines/<preset>.json \
+       --merge tools/gg-bench/baselines/<preset>.json run4.json run5.json run6.json
+   ```
+
+   `--merge <old.json>` goes right after the output file, and may be the same file. Every entry
+   of the old file stays where it is, except those for the new runs' models, which are made from
+   the new runs only. Models the old file lacks are added at the end. gg-bench prints each entry
+   as `(kept)`, `(replaced)` or `(new)`. The old file's leg must be `<preset>`. The kept entries
+   are still ratios of the engine code they were made from, so merge only runs of engine code
+   whose ratios haven't moved since.
+
+   A `(replaced)` entry is rebaselined to its new runs whatever they show, a regression
+   included: before committing, compare each replaced entry with the old one (`git diff`) and
+   explain any ratio that moved.
 
 **A baseline is valid only against the `reference` kernel** (`renderHermiteSimd` in
 `tools/gg-bench/Kernels.h`, frozen). If that kernel changes, or anything it calls, every baseline
-has to be made again.
+has to be made again. `Kernels.h` includes no engine header, so no engine change can move it: it
+has its own frozen copies of the Hann table and the readers. The `[bench]` case "the reference
+kernel's output is pinned" hashes its output, so a change to it fails there first.

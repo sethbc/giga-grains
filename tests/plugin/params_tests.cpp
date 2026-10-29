@@ -787,7 +787,7 @@ TEST_CASE("state load rejects bad state and keeps the values", "[plugin]")
     ParamValues other = defaults();
     other[at(ParamSlot::Density)] = 1.0f;
     const std::string otherXml = gg::core::toStateXml(other, 3);
-    const std::string otherState = gg::core::encodeState({other, 3, std::nullopt});
+    const std::string otherState = gg::core::encodeState({other, 3, std::nullopt, std::nullopt});
 
     SECTION("not a state")
     {
@@ -849,9 +849,9 @@ TEST_CASE("state is a container, and save, load, save gives the same bytes", "[p
     {
         values[s] = static_cast<float>(a.value(kExpected[s].id));
     }
-    REQUIRE(a.load(gg::core::encodeState({values, 11, std::nullopt})));
+    REQUIRE(a.load(gg::core::encodeState({values, 11, std::nullopt, std::nullopt})));
     const std::string saved = a.save();
-    CHECK(saved == gg::core::encodeState({values, 11, std::nullopt}));
+    CHECK(saved == gg::core::encodeState({values, 11, std::nullopt, std::nullopt}));
     CHECK(gg::test::stateChunkPayload(saved, "PTCH") == gg::core::toStateXml(values, 11));
     CHECK(gg::test::stateChunkPayload(saved, "MEDI") == std::string(R"(<media version="1" />)"));
     CHECK(decoded(saved, mode).sample == std::nullopt);

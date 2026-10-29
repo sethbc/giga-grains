@@ -19,6 +19,8 @@
 #include <utility>
 #include <vector>
 
+#include "support/Utf8.h"
+
 /// Test helpers that write WAV, AIFF and AIFC files byte by byte, independently of dr_wav (which
 /// can't write AIFF), so the decoder is checked against files it didn't write itself.
 namespace gg::test
@@ -268,7 +270,7 @@ inline void writeFile(const std::filesystem::path &path, std::span<const uint8_t
               static_cast<std::streamsize>(bytes.size()));
     if (!out)
     {
-        throw std::runtime_error("writeFile: can't write " + path.string());
+        throw std::runtime_error("writeFile: can't write " + utf8(path));
     }
 }
 
@@ -277,7 +279,7 @@ inline std::vector<uint8_t> readFile(const std::filesystem::path &path)
     std::ifstream in(path, std::ios::binary);
     if (!in)
     {
-        throw std::runtime_error("readFile: can't open " + path.string());
+        throw std::runtime_error("readFile: can't open " + utf8(path));
     }
     return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
 }

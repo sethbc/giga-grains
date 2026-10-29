@@ -149,6 +149,7 @@ std::vector<gg::GrainDraw> drawsWithoutNotes(const gg::CloudParams &p, double sa
                 mode == gg::SourceMode::Live
                     ? p.position + p.spray * gg::rng::uniform01(jitter)
                     : std::clamp(p.position + p.spray * gg::rng::bipolar(jitter), 0.0, 1.0),
+            .sprayOffsetSec = 0.0,
             .rate = gg::exp2Det(p.pitchSemitones / 12.0),
             .durationSamples = duration,
             .gain = p.gain,

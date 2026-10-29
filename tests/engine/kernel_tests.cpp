@@ -12,6 +12,8 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <sstream>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -227,8 +229,8 @@ template <class Reader> void requireSampleArithmetic(SampleRead read)
         std::vector<float> actual[2] = {std::vector<float>(kLength, 0.0f),
                                         std::vector<float>(kLength, 0.0f)};
         specSample(g, read, channels, kFrames, shape.outputs, expected, hann);
-        refSample<Reader>(rows, {{channels[0], channels[1]}, kFrames, shape.mono}, shape.outputs,
-                          actual, cuts, hann);
+        refSample<Reader>(rows, {{channels[0], channels[1]}, kFrames, shape.mono, nullptr},
+                          shape.outputs, actual, cuts, hann);
 
         REQUIRE(anyNonZero(expected[0]));
         REQUIRE(sameBits(actual[0], expected[0]));
@@ -915,6 +917,102 @@ TEMPLATE_TEST_CASE("simd sample kernel matches the reference", "[kernel]", Hermi
         auto [ref, simd] = renderBoth<TestType>(pool, src.stereo(), 2, from, to, hann);
         REQUIRE(sameBits(simd.ch[0], ref.ch[0]));
         REQUIRE(sameBits(simd.ch[1], ref.ch[1]));
+        requireExactRuns<TestType>(pool, kNoiseFrames, from, to);
+    }
+}
+
+TEMPLATE_TEST_CASE("simd sample kernel matches the reference on sources of 1 to 4 frames",
+                   "[kernel]", Hermite, Linear)
+{
+    // Sources too short for the Hermite's 4 taps (1–3 frames) or just long enough (4), and for
+    // the line's 2 taps (1 frame) or more. Each planar channel is its own allocation of exactly
+    // its frames (an interleaved copy has 3 guard frames), so a tap read past either end of a
+    // planar one is a heap overflow under ASan, which std::memcmp alone could miss. Grains start a
+    // quarter frame at a time from 3 frames before the source to 3 past it, slow enough to stay
+    // inside it for many samples, and each is rendered in calls of 1–7 samples at every alignment.
+    const gg::HannTable hann;
+    for (int64_t frames = 1; frames <= 4; ++frames)
+    {
+        INFO(frames << " frames");
+        const Noise src(frames, 71);
+        std::vector<gg::GrainSpec> specs;
+        uint64_t k = 0;
+        for (int quarter = -12; quarter <= 4 * static_cast<int>(frames) + 12; ++quarter)
+        {
+            for (const double rate : {1.0 / 16.0, 0.25, 1.0, -0.25})
+            {
+                specs.push_back({
+                    .index = k,
+                    .onsetSample = static_cast<int64_t>(k % 8),
+                    .onsetFrac = u01(73, 0, k),
+                    .startPos = 0.25 * quarter,
+                    .rate = rate,
+                    .durationSamples = 16.0 + u01(73, 1, k) * 48.0,
+                    .gain = 0.5f,
+                    .pan = static_cast<float>(2.0 * u01(73, 2, k) - 1.0),
+                });
+                ++k;
+            }
+        }
+        std::stable_sort(specs.begin(), specs.end(),
+                         [](const gg::GrainSpec &a, const gg::GrainSpec &b) {
+                             return a.onsetSample < b.onsetSample;
+                         });
+        const Pool pool(specs);
+        int64_t end = 0;
+        for (const gg::GrainSpec &g : specs)
+        {
+            end = std::max(end, gg::grainEndSample(g));
+        }
+        // The SIMD interior runs wherever the reader's reach fits in the source.
+        const bool fits = Reach<TestType>::before + Reach<TestType>::after < frames;
+        int64_t longestRun = 0;
+        for (uint32_t i = 0; i < pool.size(); ++i)
+        {
+            const gg::kernels::detail::Run run = gg::kernels::detail::sampleSimdRun<TestType>(
+                pool.rows(), i, frames, pool.rows().onsetSample[i], pool.rows().endSample[i]);
+            longestRun = std::max(longestRun, run.end - run.begin);
+        }
+        REQUIRE((longestRun >= 4) == fits);
+
+        struct Shape
+        {
+            const char *name;
+            int outputs;
+            SampleSource source;
+        };
+        for (const Shape &shape :
+             {Shape{"two outputs, stereo source", 2, src.stereo()},
+              Shape{"two outputs, planar stereo source", 2, src.stereoPlanar()},
+              Shape{"two outputs, mono source", 2, src.mono()},
+              Shape{"one output, stereo source", 1, src.stereo()}})
+        {
+            INFO(shape.name);
+            Buffers ref(0, end, shape.outputs);
+            renderAll<TestType>(Kernel::Ref, pool, shape.source, ref, 0, end, hann);
+            REQUIRE(anyNonZero(ref.ch[0]));
+            for (int64_t length = 1; length <= 7; ++length)
+            {
+                INFO("calls of " << length);
+                Buffers simd(0, end, shape.outputs);
+                for (int64_t from = 0; from < end; from += length)
+                {
+                    const int64_t to = std::min(end, from + length);
+                    const gg::kernels::Output o{
+                        {simd.ch[0].data() + from,
+                         shape.outputs == 2 ? simd.ch[1].data() + from : nullptr},
+                        from};
+                    for (uint32_t i = 0; i < pool.size(); ++i)
+                    {
+                        gg::kernels::renderSampleSimd<TestType>(pool.rows(), i, shape.source, o,
+                                                                from, to, hann);
+                    }
+                    requireExactRuns<TestType>(pool, frames, from, to);
+                }
+                REQUIRE(sameBits(simd.ch[0], ref.ch[0]));
+                REQUIRE(sameBits(simd.ch[1], ref.ch[1]));
+            }
+        }
     }
 }
 
@@ -1429,6 +1527,43 @@ LiveRenders renderLiveBoth(const Pool &pool, const LiveInput &input,
 }
 } // namespace
 
+// The interior's conditions at sample t of grain i, each on its own, computed afresh from the
+// rows and the ring, twice over. For a sample inside the interior where the test's own evaluation
+// found them not all holding: a condition that fails here with its value far from its bound, or
+// that holds here, is a transient fault of the machine, not of the interior. CI runs 40818957844
+// (attempt 1) and 40835080133 each failed one such sample, in blocks of 7 under Rosetta on the
+// macOS runner, far inside every margin (3,849 and 20,147 frames at the second's), and the same
+// binary passed when run again.
+template <class R>
+std::string describeBadSample(const gg::GrainRows &rows, uint32_t i, const gg::LiveSource &ring,
+                              int64_t t, int64_t frames)
+{
+    std::ostringstream out;
+    out.precision(17);
+    for (int pass = 1; pass <= 2; ++pass)
+    {
+        const double e = static_cast<double>(t - rows.onsetSample[i]) - rows.onsetFrac[i];
+        const double phase = e * rows.invDuration[i];
+        const double pos = rows.startPos[i] + rows.rate[i] * e;
+        const int64_t head = ring.headAt(t);
+        const auto r = static_cast<double>(head);
+        gg::LiveSource::Cursor cursor;
+        float left = 0.0f;
+        float right = 0.0f;
+        const bool phaseOk = phase >= 0.0 && phase <= 1.0;
+        const bool posOk = std::floor(pos) - Reach<R>::before >= 0.0;
+        const bool fadeOk = ring.fade(pos, head) == 1.0;
+        const bool readOk = R::readLive(ring, pos, head, cursor, left, right);
+        out << "; evaluation " << pass << ": phase " << phase << (phaseOk ? " ok" : " BAD")
+            << ", pos " << pos << (posOk ? " ok" : " BAD") << ", head " << head << ", fade "
+            << ring.fade(pos, head) << (fadeOk ? " ok" : " BAD") << ", read "
+            << (readOk ? "ok" : "BAD") << ", margins " << r - 1.0 - (pos + 2.0) - kM << " and "
+            << (pos - 1.0) - (r - static_cast<double>(frames)) - kM << " past M"
+            << (phaseOk && posOk && fadeOk && readOk ? " (holds)" : " (fails)");
+    }
+    return out.str();
+}
+
 TEMPLATE_TEST_CASE("live interior is exactly where the fade is one", "[kernel]", Hermite, Linear)
 {
     // 1,000 grains over a ring frozen and released 12 times. For every sample of every interior,
@@ -1436,7 +1571,9 @@ TEMPLATE_TEST_CASE("live interior is exactly where the fade is one", "[kernel]",
     // frame 0, the reference's fade is exactly 1.0, and the reader's read succeeds. The interior
     // is conservative (one frame inside the fade's margins), but it must still hold nearly all of
     // the samples where those hold, and some interiors must be empty: short grains, and grains in
-    // a fade all their life.
+    // a fade all their life. Every interior sample also keeps both of the Hermite's margins at
+    // least M + 1 − 2^−10 frames: liveRun admits a run only where they are >= M + 1 at its ends,
+    // and between them they can fall short of that only by rounding (of order 2^−12 frames).
     const gg::HannTable hann;
     const LiveInput input(300000, 51, freezeToggles(53, 12, 12000.0));
     const std::vector<int64_t> heads = headTrajectory(input);
@@ -1454,9 +1591,12 @@ TEMPLATE_TEST_CASE("live interior is exactly where the fade is one", "[kernel]",
         int64_t fadeOneSamples = 0; // every sample where the interior's conditions hold
         int64_t emptyCalls = 0;
         int64_t badSamples = 0;
+        int64_t badMargins = 0;
+        double minMargin = std::numeric_limits<double>::infinity();
         int64_t badStructure = 0;
         int64_t firstBad = -1;
         uint32_t firstBadGrain = 0;
+        std::string firstBadDetail;
         ActiveGrains active(pool);
         driveRing(ring, input, {block}, [&](int64_t from, int64_t to) {
             const int64_t kink = ring.blockKink();
@@ -1496,21 +1636,35 @@ TEMPLATE_TEST_CASE("live interior is exactly where the fade is one", "[kernel]",
                         (t >= in.begin[0] && t < in.end[0]) || (t >= in.begin[1] && t < in.end[1]);
                     fadeOneSamples += holds;
                     interiorSamples += inside;
+                    if (inside)
+                    {
+                        // The margins as liveRun states them: toward the head and from the tail.
+                        const auto rt = static_cast<double>(head);
+                        const double toHead = rt - 1.0 - (pos + 2.0);
+                        const double fromTail = (pos - 1.0) - (rt - static_cast<double>(frames));
+                        const double margin = std::min(toHead, fromTail);
+                        minMargin = std::min(minMargin, margin);
+                        badMargins += !(margin >= kM + 1.0 - 0x1.0p-10);
+                    }
                     if (inside && !holds)
                     {
                         if (badSamples == 0)
                         {
                             firstBad = t;
                             firstBadGrain = i;
+                            firstBadDetail = describeBadSample<TestType>(rows, i, ring, t, frames);
                         }
                         ++badSamples;
                     }
                 }
             });
         });
-        INFO("first bad sample " << firstBad << " of grain " << firstBadGrain);
+        INFO("first bad sample " << firstBad << " of grain " << firstBadGrain << firstBadDetail);
+        INFO("smallest margin " << minMargin - kM << " frames past M");
         REQUIRE(badStructure == 0);
         REQUIRE(badSamples == 0);
+        REQUIRE(badMargins == 0);
+        REQUIRE(minMargin < kM + 1.0 + 0x1.0p-6); // some interior reaches the bound, so it bites
         REQUIRE(emptyCalls > 0);
         REQUIRE(interiorSamples > 1000000);
         REQUIRE(static_cast<double>(interiorSamples) > 0.97 * static_cast<double>(fadeOneSamples));

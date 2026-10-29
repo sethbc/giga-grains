@@ -34,6 +34,8 @@ struct GrainSpec
     /// (Engine::adoptSource). 0 in Live mode, where it isn't read.
     uint8_t sourceSlot{0};
 
+    /// Every member, sourceSlot included (as the plan asked): two grains that differ only in
+    /// the slot they read compare unequal. Only tests compare GrainSpecs.
     friend bool operator==(const GrainSpec &, const GrainSpec &) = default;
 };
 

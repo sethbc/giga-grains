@@ -3,14 +3,15 @@
 # Copyright 2026, the Giga Grains authors (see git history)
 #
 # gg-bench, the CPU benchmark (INTENT §16). gg-bench-kernels is the header-only set of prototype
-# grain kernels in Kernels.h. gg-bench-lib (gg::bench) times them, the reference kernel and the
-# real-engine cases in interleaved rounds, computes the ratios, writes the JSON and checks a
-# baseline (Bench.h); gg-bench and gg-tests both link it. It also times Space (--space), so it
-# links gg-core for the diffuser and the reverb.
+# grain kernels in Kernels.h. It is self-contained, with no engine dependency, so no engine
+# change can move the frozen reference kernel. gg-bench-lib (gg::bench) times them, the reference
+# kernel and the real-engine cases in interleaved rounds, computes the ratios, writes the JSON
+# and checks a baseline (Bench.h); gg-bench and gg-tests both link it. It also times Space
+# (--space), so it links gg-core for the diffuser and the reverb.
 
 add_library(gg-bench-kernels INTERFACE)
 target_include_directories(gg-bench-kernels INTERFACE ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(gg-bench-kernels INTERFACE gg::engine sst-basic-blocks simde)
+target_link_libraries(gg-bench-kernels INTERFACE sst-basic-blocks simde)
 add_library(gg::bench-kernels ALIAS gg-bench-kernels)
 
 add_library(gg-bench-lib STATIC Bench.cpp)

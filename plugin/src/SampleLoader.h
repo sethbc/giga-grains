@@ -5,6 +5,7 @@
 #ifndef GG_PLUGIN_SAMPLELOADER_H
 #define GG_PLUGIN_SAMPLELOADER_H
 
+#include <atomic>
 #include <condition_variable>
 #include <cstdint>
 #include <exception>
@@ -32,6 +33,7 @@ enum class SampleState
     Missing, ///< A restored session's sample wasn't found (spec §6.7); silent.
     Changed, ///< Not found, and the file at the saved path has other content; silent.
     Error,   ///< The last load failed; `message` says why. A sample loaded before keeps playing.
+    Newer,   ///< A restored session's manifest is a newer version's (INTENT §18); silent.
 };
 
 struct SampleStatus
@@ -45,6 +47,10 @@ struct SampleStatus
     double seconds{0.0};  ///< Loaded: the file's length.
     uint32_t channels{0}; ///< Loaded: the file's channels, as stored.
     double fileRate{0.0}; ///< Loaded: the file's sample rate.
+    /// The manifest's file wasn't at hand at its last check: Missing, Changed, or an Error for a
+    /// file at the saved path that can't be read. The editor offers Relink, and activate() looks
+    /// for the file again (carry-over [194]).
+    bool relinkable{false};
 };
 
 /// The instrument's sample loader (spec §6.4–§6.7): the manifest entry, the source the engine
@@ -55,11 +61,14 @@ struct SampleStatus
 /// decodes, hashes, converts and prepares a load (gg::media::loadSample, then prepare); it waits
 /// on a condition variable between jobs and never reads or writes the settings file (ruling R16).
 /// The worker starts with the first job and stops in activate(), deactivate() and the
-/// destructor, each of which waits for a job in progress to finish; a job still waiting stays
-/// queued, and runs when the worker next starts (a request, or the end of activate()). The
-/// worker's finished result goes back under the loader's mutex, and Callbacks::requestCallback
-/// asks the host for on_main_thread, where onMainThread() applies it. The audio thread never
-/// touches the loader: sources reach it through the active Processor's SourceExchange.
+/// destructor. activate() waits for a job in progress to finish. deactivate() and the destructor
+/// cancel it instead (carry-over [194]): the decode, the hash and the conversion stop between
+/// chunks, so they return within a chunk's time. deactivate() queues the job again, as if it
+/// hadn't started; the destructor drops it. A job still waiting stays queued, and runs when the
+/// worker next starts (a request, or the end of activate()). The worker's finished result goes back
+/// under the loader's mutex, and Callbacks::requestCallback asks the host for on_main_thread, where
+/// onMainThread() applies it. The audio thread never touches the loader: sources reach it through
+/// the active Processor's SourceExchange.
 ///
 /// **Requests and supersession.** Each request (a load, a relink, a restore) supersedes the ones
 /// before it: a waiting job is replaced, and the result of one under way is dropped, by the
@@ -75,7 +84,8 @@ struct SampleStatus
 /// **The manifest entry** (spec §6.6) is the requested sample, not the one playing: only a
 /// successful load or relink replaces it (and a restore, which sets it to the session's). It
 /// stays as it is while the sample is loading, missing, changed or failed to load, so a session
-/// saved then still names it.
+/// saved then still names it. A session from a newer build's manifest has no entry but keeps the
+/// manifest (newerMedia()), which a load or relink replaces in the same way.
 ///
 /// **The rate** (D8; ruling R18). A source is prepared at the active sample rate. A job the
 /// worker starts while the plugin is inactive keeps the decoded buffer instead, as a restore made
@@ -85,7 +95,18 @@ struct SampleStatus
 /// original isn't kept, spec §6.4) and converts it. So the first block after any activation
 /// renders the same whatever the machine's speed. If the file has gone or changed by then, the
 /// old source stays (the engine scales each grain's rate by source rate / output rate, so it
-/// plays at the right pitch), the manifest entry stays, and the status is Missing or Changed.
+/// plays at the right pitch), the manifest entry stays, and the status is Missing or Changed (or
+/// Error, if it is there but can't be read).
+///
+/// **A file that comes back** (carry-over [194]). While the status says the manifest's file is
+/// missing, has changed or can't be read, activate() looks for it again: with no source, it
+/// searches as the restore did, and with a source kept from before, it checks the saved path
+/// (converting the file if the rate changed, as above). Found, the sample is loaded, and the
+/// status is Loaded.
+///
+/// **Searches** go through the process's SearchCache (carry-over [192]): a search that found
+/// nothing is remembered for a while, so the instances of a project restoring one missing sample
+/// scan the sample folder once. A load or relink applied, or the sample folder set, forgets them.
 class SampleLoader
 {
   public:
@@ -105,7 +126,7 @@ class SampleLoader
     /// `settingsFile` is the per-machine settings file (spec §6.7) this instance reads, and
     /// updates after a load. Nothing is read until a request or a restore needs it.
     SampleLoader(std::filesystem::path settingsFile, Callbacks callbacks);
-    /// Stops the worker, waiting for a job in progress to finish.
+    /// Stops the worker, cancelling a job in progress (see Threads).
     ~SampleLoader();
     SampleLoader(const SampleLoader &) = delete;
     SampleLoader &operator=(const SampleLoader &) = delete;
@@ -127,6 +148,10 @@ class SampleLoader
     SampleStatus status() const { return status_; }
     /// The manifest entry: what the session saves (spec §6.6).
     const std::optional<core::MediaEntry> &entry() const noexcept { return entry_; }
+    /// A newer build's manifest, as the restored session held it (core::SessionState's
+    /// newerMedia): the session saves it back unchanged until a load or relink replaces it, or
+    /// another restore. There is no entry meanwhile.
+    const std::optional<std::string> &newerMedia() const noexcept { return newerMedia_; }
 
     /// What restore() leaves the plugin to offer with the session's values (D8).
     struct Restored
@@ -149,17 +174,22 @@ class SampleLoader
     ///   active rate and returns it as `source`. Inactive, it keeps the decoded buffer for
     ///   activate(). A file found away from the saved path updates the entry and marks the state
     ///   dirty. Status: Loaded, Missing, Changed, Error, or None without an entry.
+    /// - With `newerMedia` (a newer build's manifest, which has no `entry`): no sample, nothing
+    ///   read, and nothing to offer; the manifest is kept for newerMedia(). Status: Newer, with
+    ///   the message "sample from a newer version".
     /// Never throws.
-    Restored restore(const std::optional<core::MediaEntry> &entry) noexcept;
+    Restored restore(const std::optional<core::MediaEntry> &entry,
+                     std::optional<std::string> newerMedia = std::nullopt) noexcept;
 
     /// The plugin's activate(), before it returns: waits for a job under way, applies what the
-    /// worker finished, converts the sample at `sampleRate` here (see the class comment), and
-    /// returns the source the new Processor starts with (Processor::setSourceNow); nullptr for
-    /// none. Then restarts the worker if a job waits. Never throws: a failed conversion of a
-    /// pending buffer leaves no source and the status Error.
+    /// worker finished, converts the sample at `sampleRate` here, or looks again for a file that
+    /// wasn't at hand (see the class comment), and returns the source the new Processor starts
+    /// with (Processor::setSourceNow); nullptr for none. Then restarts the worker if a job waits.
+    /// Never throws: a failed conversion of a pending buffer leaves no source and the status Error.
     std::shared_ptr<const PreparedSource> activate(double sampleRate) noexcept;
-    /// The plugin's deactivate(): stops the worker, waiting for a job in progress, and applies
-    /// what it finished, as onMainThread() would but with nothing offered.
+    /// The plugin's deactivate(): stops the worker, cancelling a job in progress and queuing it
+    /// again (see Threads), and applies what it finished, as onMainThread() would but with
+    /// nothing offered.
     void deactivate() noexcept;
 
     /// clap_plugin.on_main_thread: applies a finished result, unless superseded.
@@ -202,27 +232,44 @@ class SampleLoader
         std::shared_ptr<const PreparedSource> prepared;
         bool differentAudio{false}; ///< Relink: not the entry's fingerprint
         std::string error;          ///< non-empty on failure
+        bool cancelled{false};      ///< stopped part way by cancel_: nothing else is set
     };
 
     /// Queues `job` as the only waiting one, starting the worker if needed.
     void submit(Job job);
     void startWorker();
-    void stopWorker() noexcept;
+    /// Stops the worker. A job in progress finishes, or, with `cancel`, stops part way and is
+    /// queued again, unless a newer request has replaced it.
+    void stopWorker(bool cancel) noexcept;
     void workerLoop();
     /// Runs `job` at `rate` (0: inactive, keep the decoded buffer). Worker thread.
-    Result run(Job job, double rate);
+    Result run(const Job &job, double rate);
     /// Applies the finished result, unless superseded; offers its source only while active.
     void applyResults() noexcept;
     void apply(Result &result);
     /// Makes `source` the one in effect, offering it while active.
     void setSource(std::shared_ptr<const PreparedSource> source);
-    /// gg::media::prepare, then the observer.
+    /// gg::media::prepare, then the observer. nullptr only if `cancel` was set part way.
     std::shared_ptr<const PreparedSource> prepare(std::shared_ptr<SampleBuffer> decoded,
-                                                  double rate) const;
+                                                  double rate,
+                                                  const std::atomic<bool> *cancel = nullptr) const;
     /// activate()'s conversion of the current sample at `rate`, when its source is at another:
-    /// the file decoded again and converted, or, if it has gone or changed, the old source kept
-    /// and the status Missing or Changed.
+    /// the file at the saved path decoded again and converted, or, if it has gone, changed or
+    /// can't be read, the old source kept and the status Missing, Changed or Error. When the
+    /// source is at `rate` already, only checks the file, for a status that said it wasn't at
+    /// hand. Either way, a file that is the sample's makes such a status Loaded.
     void convertNow(double rate) noexcept;
+    /// The manifest entry's file searched for (through SearchCache) and decoded, and the status
+    /// set: Loaded, Missing, Changed or Error. At `rate` 0 (inactive) the decoded buffer waits
+    /// for activate() (restorePending_) and the result is nullptr; otherwise, the source at
+    /// `rate`. A file found away from the saved path updates the entry and marks the state dirty.
+    std::shared_ptr<const PreparedSource> findAndLoad(double rate);
+    /// The status for the manifest's file not at hand, relinkable: Changed when `read` (the file
+    /// at `file`, the saved path, was read and isn't the sample's); otherwise Error when a file
+    /// is there (it couldn't be read), and Missing when none is.
+    void setUnavailable(const std::string &fileName, const std::filesystem::path &file, bool read);
+    /// Whether the status says the manifest's file wasn't at hand (SampleStatus::relinkable).
+    bool fileUnavailable() const noexcept { return status_.relinkable; }
     void setLoadedStatus(std::string message);
     void setError(std::string fileName, std::string message);
     /// setError with `error` described, for a noexcept function's handler: if even that fails
@@ -242,7 +289,9 @@ class SampleLoader
 
     // Main thread.
     std::optional<core::MediaEntry> entry_;
+    std::optional<std::string> newerMedia_; // a newer build's manifest, when there's no entry_
     SampleStatus status_;
+    bool entryUnavailable_{false}; // entry_'s file wasn't at hand at the last restore or relink
     std::shared_ptr<const PreparedSource> source_; // the source in effect, at its own rate
     std::shared_ptr<SampleBuffer> pending_;        // decoded, for activate() (restorePending)
     bool restorePending_{false};
@@ -258,7 +307,8 @@ class SampleLoader
     uint64_t latestRequest_{0};    // lastRequest_, for the worker to drop superseded work
     double workerRate_{0.0};       // activeRate_, for the job the worker starts
     bool stop_{false};
-    std::thread worker_; // main thread only starts and joins it
+    std::atomic<bool> cancel_{false}; // set while stopWorker(true) waits: the job stops part way
+    std::thread worker_;              // main thread only starts and joins it
 };
 } // namespace gg::plugin
 

@@ -5,14 +5,17 @@
 #ifndef GG_MEDIA_UTF8PATH_H
 #define GG_MEDIA_UTF8PATH_H
 
-// Internal to gg-media: paths to and from the UTF-8 the manifest and the settings hold.
-
 #include <filesystem>
 #include <optional>
 #include <string>
 #include <system_error>
 
-namespace gg::media::detail
+/// Paths to and from UTF-8: the one conversion everything shares (gg-media, the plugins' loader
+/// and editor, gg-render, the tests), for the UTF-8 that the manifest, the settings, a render spec
+/// and the editor's dropped files hold. On Windows a path is wide (UTF-16), so the standard
+/// library's and dr_libs' wide-character functions open it, and the conversion can refuse input
+/// that isn't valid; elsewhere a path is its bytes, copied either way.
+namespace gg::media
 {
 /// `path` as UTF-8. On Windows, nullopt for a wide path that isn't valid UTF-16 (an unpaired
 /// surrogate), which the conversion refuses; elsewhere the bytes are copied.
@@ -63,6 +66,6 @@ inline std::string displayName(const std::filesystem::path &path)
 {
     return toUtf8(path.filename()).value_or(std::string());
 }
-} // namespace gg::media::detail
+} // namespace gg::media
 
 #endif // GG_MEDIA_UTF8PATH_H

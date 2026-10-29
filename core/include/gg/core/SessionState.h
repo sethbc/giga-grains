@@ -75,6 +75,10 @@ struct SessionState
     ParamValues values{};
     uint64_t seed{0};
     std::optional<MediaEntry> sample;
+    /// A manifest of a newer version than this build reads (its `version` above 1): the MEDI
+    /// payload byte for byte, kept so that saving the session writes it back unchanged. The
+    /// build can't read its sample, so `sample` is then empty (INTENT §18).
+    std::optional<std::string> newerMedia;
 };
 
 /// Whether encodeState writes `entry` (its precondition): `sha256Hex` is 64 lowercase hex
@@ -88,6 +92,9 @@ bool isValidMediaEntry(const MediaEntry &entry) noexcept;
 /// - In release builds, an entry that isn't is left out, and MEDI is written empty: a state
 ///   that fails to load would lose the whole session, where this loses one sample reference
 ///   (ruling R9).
+/// - With no sample, `state.newerMedia`, if any, is MEDI, byte for byte: the newer manifest
+///   decodeState kept. Only one decodeState would keep again is written; any other is left out,
+///   and MEDI is written empty. A sample takes its place: loading one replaces the manifest.
 std::string encodeState(const SessionState &state);
 
 /// Loads a session state into `mode`'s product. All or nothing; on false `out` is untouched.
@@ -103,14 +110,19 @@ std::string encodeState(const SessionState &state);
 ///   - PTCH loads as fromStateXml loads it (gg/core/PatchState.h): its version migrates, a
 ///     param it doesn't mention takes `mode`'s default, and values are clamped;
 ///   - MEDI must be well-formed XML whose only top-level node is a <media> root, with an
-///     integer `version` from 1 to this build's (1), and at most one <sample>, with every
-///     attribute above present and well-formed (`sha256` 64 lowercase hex digits, `rate` 16 hex
-///     digits, `frames` not negative, `embed` 0). Other elements and attributes inside <media>
+///     integer `version` from 1. At this build's version (1) it has at most one <sample>, with
+///     every attribute above present and well-formed (`sha256` 64 lowercase hex digits, `rate` 16
+///     hex digits, `frames` not negative, `embed` 0). Other elements and attributes inside <media>
 ///     are ignored. A payload holding a NUL byte fails, PTCH's too.
-///   - Either fails when its XML nests elements more than 64 deep, before tinyxml parses it.
-///   - A MEDI of a newer version fails the whole state, where a newer PTCH migrates: a
-///     deliberate choice for now, to revisit before the state format freezes (INTENT §18), so
-///     that an older build never drops a sample reference it can't read and saves over it.
+///   - Either fails when its XML nests elements more than 64 deep (as tinyxml reads it), or
+///     can't be read safely, before tinyxml parses it.
+///   - A MEDI of a newer version, well-formed with its <media> root alone at the top level and
+///     an integer `version` above this build's, loads with no sample: `out.newerMedia` keeps
+///     its bytes, so a save writes them back unchanged, and nothing inside <media> is read (the
+///     director's decision of 2026-10-28, INTENT §18). Where a newer PTCH migrates, a newer
+///     MEDI can't: this build doesn't know what its sample needs. A future MEDI must still
+///     pass the pre-scan above (at most 64 deep, no <? after the first node, quoted
+///     attributes, well-formed &#...; references), or this build fails the whole state.
 /// - `bytes` is whatever the host handed over: the caller caps its length (the plugin reads at
 ///   most kMaxStateBytes), and decodeState works on all of it.
 /// - `migratedFromVersion`, if given, is written on success only, as fromStateXml writes it.
