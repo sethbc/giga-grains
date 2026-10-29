@@ -705,9 +705,14 @@ bool isString(const nlohmann::json &j, const char *key)
     return j.contains(key) && j[key].is_string();
 }
 
-/// Checks one machine's ratios: see compare().
-void checkRatios(const nlohmann::json &ratios)
+/// Checks one machine's ratios: see checkBaseline().
+void checkRatios(const nlohmann::json &ratios, const std::string &machine)
 {
+    if (ratios.empty())
+    {
+        badBaseline("the entry for " + machine + " has no ratios");
+    }
+    std::vector<std::pair<std::string, uint64_t>> seen;
     for (const nlohmann::json &e : ratios)
     {
         if (!e.is_object() || !isString(e, "case") || !e.contains("blockSize") ||
@@ -723,10 +728,18 @@ void checkRatios(const nlohmann::json &ratios)
         {
             badBaseline("every ratio must be positive and every tolerance >= 0, both finite");
         }
+        std::pair<std::string, uint64_t> key{e["case"].get<std::string>(),
+                                             e["blockSize"].get<uint64_t>()};
+        if (std::find(seen.begin(), seen.end(), key) != seen.end())
+        {
+            badBaseline("the entry for " + machine + " has " + key.first + " at block " +
+                        std::to_string(key.second) + " twice");
+        }
+        seen.push_back(std::move(key));
     }
 }
+} // namespace
 
-/// Checks a baseline's shape: see compare().
 void checkBaseline(const nlohmann::json &b)
 {
     if (!b.is_object())
@@ -761,10 +774,12 @@ void checkBaseline(const nlohmann::json &b)
             badBaseline("two entries for " + name);
         }
         seen.push_back(name);
-        checkRatios(m["ratios"]);
+        checkRatios(m["ratios"], name);
     }
 }
 
+namespace
+{
 /// Checks that j is a gg-bench report with ratios; `which` names it in the error.
 void checkRun(const nlohmann::json &j, const std::string &which)
 {
@@ -874,6 +889,12 @@ Comparison compare(const Report &report, const nlohmann::json &baseline)
     {
         return c;
     }
+    if (report.ratios.empty())
+    {
+        throw std::invalid_argument("the run has no ratios to check against the baseline's entry "
+                                    "for " +
+                                    report.machine + " (it needs reference and the engine cases)");
+    }
     c.found = true;
     c.commit = (*entry)["commit"].get<std::string>();
     c.runs = (*entry)["runs"].get<uint32_t>();
@@ -895,6 +916,23 @@ Comparison compare(const Report &report, const nlohmann::json &baseline)
             }
         }
         c.verdicts.push_back(std::move(v));
+    }
+    for (const nlohmann::json &e : (*entry)["ratios"])
+    {
+        const auto name = e["case"].get<std::string>();
+        const auto blockSize = e["blockSize"].get<uint64_t>();
+        const bool measured =
+            std::any_of(report.ratios.begin(), report.ratios.end(),
+                        [&](const Ratio &r) { return r.name == name && r.blockSize == blockSize; });
+        if (!measured)
+        {
+            c.missing.push_back(
+                {.name = name,
+                 .blockSize = static_cast<uint32_t>(blockSize),
+                 .ratio = std::nan(""),
+                 .limit = e["ratio"].get<double>() * (1.0 + e["tolerance"].get<double>()),
+                 .regressed = false});
+        }
     }
     return c;
 }

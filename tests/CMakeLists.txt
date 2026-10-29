@@ -87,7 +87,8 @@ target_link_libraries(gg-tests PRIVATE sst-effects sst-filters)
 # Scratch files (WAV/PNG round trips) go under the build tree, never a shared temp dir.
 target_compile_definitions(gg-tests PRIVATE GG_TEST_OUTPUT_DIR="${CMAKE_CURRENT_BINARY_DIR}/test-output"
         GG_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/golden"
-        GG_AUDIO_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/audio")
+        GG_AUDIO_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/audio"
+        GG_BENCH_BASELINE_DIR="${CMAKE_SOURCE_DIR}/tools/gg-bench/baselines")
 # 0 or 1, so tests can use #if GG_USE_RTSAN for checks that only hold in the RTSan build.
 target_compile_definitions(gg-tests PRIVATE GG_USE_RTSAN=$<BOOL:${GG_USE_RTSAN}>)
 # 0 or 1: under ASan (1) the allocation tripwire's replacement operator new/delete are compiled
@@ -138,7 +139,11 @@ catch_discover_tests(gg-tests TEST_SPEC "[serial]" ADD_TAGS_AS_LABELS
 #   requires an exact exit code and verdict line:
 #   - pass: exit 0, "verdict: 0 of 3 ratios regressed (...)";
 #   - regressed: exit 3, "verdict: 3 of 3 ...";
-#   - other machine: exit 0, "no baseline for <this machine>; no verdict".
+#   - other machine: exit 0, "no baseline for <this machine>; no verdict";
+#   - missing (bench_baseline_missing): the entry also has engine-live, which the run lacks:
+#     exit 3, "verdict: 0 of 3 ratios regressed, 3 baseline entries missing from this run (...)";
+#   - no ratios (bench_baseline_no_ratios): a run of reference alone has no ratio to check
+#     against the entry: exit 1 and the error on stderr, never "0 of 0".
 #   CI's bench step relies on these codes: it reports exit 3 without failing (ruling 3).
 # - bench_space_cli: gg-bench --space --quick, Space's report-only cost, must exit 0 and write
 #   its JSON (the [bench] case "gg-bench --space --quick prints a per-sample cost" checks what
@@ -183,7 +188,12 @@ set(bench_baseline_regressed_args -DRATIO=1e-9 -DEXPECTED_CODE=3
         "-DEXPECTED_VERDICT=verdict: 3 of 3 ${verdict_line}")
 set(bench_baseline_other_machine_args -DRATIO=1e-9 "-DMACHINE=no such CPU (test)"
         -DEXPECTED_CODE=0 "-DEXPECTED_VERDICT=no baseline for <machine>$<SEMICOLON> no verdict")
-foreach (test IN ITEMS bench_baseline_pass bench_baseline_regressed bench_baseline_other_machine)
+set(bench_baseline_missing_args -DRATIO=1e9 -DEXTRA_CASE=engine-live -DEXPECTED_CODE=3
+        "-DEXPECTED_VERDICT=verdict: 0 of 3 ratios regressed, 3 baseline entries missing from this run (limit: the baseline's ratio x (1 + its tolerance))")
+set(bench_baseline_no_ratios_args -DRATIO=1e9 -DCASES=reference -DEXPECTED_CODE=1
+        "-DEXPECTED_STDERR=the run has no ratios to check against the baseline's entry")
+foreach (test IN ITEMS bench_baseline_pass bench_baseline_regressed bench_baseline_other_machine
+        bench_baseline_missing bench_baseline_no_ratios)
     add_test(NAME ${test}
             COMMAND ${CMAKE_COMMAND} -DBENCH=$<TARGET_FILE:gg-bench>
             -DRUN_JSON=${CMAKE_BINARY_DIR}/bench_cli.json

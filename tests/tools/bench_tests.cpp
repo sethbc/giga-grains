@@ -368,6 +368,91 @@ TEST_CASE("baseline verdicts", "[bench]")
     rejects(bad);
 }
 
+TEST_CASE("baseline entries the run lacks fail the verdict", "[bench]")
+{
+    // compare() accounts for every entry of the machine's baseline: one the run lacks is a
+    // failure, named, never skipped (carry-over: "compare() must account for every baseline
+    // entry"). A ratio the baseline lacks is still only "not in the baseline".
+    const nlohmann::json baseline{
+        {"schemaVersion", 2},
+        {"leg", "dev"},
+        {"machines",
+         {{{"machine", "CPU A (x86_64)"},
+           {"commit", "abc"},
+           {"runs", 3},
+           {"ratios",
+            {baselineEntry("engine-sample", 32, 1.8, 0.05),
+             baselineEntry("engine-sample", 64, 1.8, 0.05),
+             baselineEntry("engine-live", 256, 2.0, 0.10)}}}}},
+    };
+    gg::bench::Report report;
+    report.machine = "CPU A (x86_64)";
+    report.ratios = {ratio("engine-sample", 32, 1.0), ratio("engine-full-pool", 32, 1.0)};
+
+    const gg::bench::Comparison c = gg::bench::compare(report, baseline);
+    REQUIRE(c.found);
+    REQUIRE(c.verdicts.size() == 2);
+    CHECK_FALSE(c.verdicts[0].regressed);
+    CHECK(std::isnan(c.verdicts[1].limit)); // engine-full-pool: not in the baseline
+    REQUIRE(c.missing.size() == 2);         // in the baseline's order
+    CHECK(c.missing[0].name == "engine-sample");
+    CHECK(c.missing[0].blockSize == 64);
+    CHECK(std::isnan(c.missing[0].ratio));
+    CHECK(c.missing[0].limit == Approx(1.89));
+    CHECK(c.missing[1].name == "engine-live");
+    CHECK(c.missing[1].blockSize == 256);
+    CHECK(c.failures() == 2);
+
+    // With every entry present and none regressed, nothing fails.
+    report.ratios = {ratio("engine-sample", 32, 1.0), ratio("engine-sample", 64, 1.0),
+                     ratio("engine-live", 256, 1.0)};
+    const gg::bench::Comparison all = gg::bench::compare(report, baseline);
+    CHECK(all.missing.empty());
+    CHECK(all.failures() == 0);
+    // A regression counts too.
+    report.ratios[2].median = 3.0;
+    CHECK(gg::bench::compare(report, baseline).failures() == 1);
+
+    // A verdict over no ratios at all is an error, not "0 of 0".
+    report.ratios.clear();
+    CHECK_THROWS_AS(gg::bench::compare(report, baseline), std::invalid_argument);
+    // Without an entry for the machine there is no verdict, so no error.
+    report.machine = "CPU B (arm64)";
+    CHECK_FALSE(gg::bench::compare(report, baseline).found);
+
+    // An entry with no ratios, or with one (case, block size) twice, is a malformed baseline:
+    // either would leave an entry unaccounted for.
+    nlohmann::json bad = baseline;
+    bad["machines"][0]["ratios"] = nlohmann::json::array();
+    CHECK_THROWS_AS(gg::bench::checkBaseline(bad), std::invalid_argument);
+    bad = baseline;
+    bad["machines"][0]["ratios"].push_back(baselineEntry("engine-live", 256, 2.5, 0.10));
+    CHECK_THROWS_AS(gg::bench::checkBaseline(bad), std::invalid_argument);
+    CHECK_NOTHROW(gg::bench::checkBaseline(baseline));
+}
+
+TEST_CASE("the committed baselines are well formed", "[bench]")
+{
+    // CI checks each leg's run against its file, so each must pass checkBaseline(): an entry per
+    // CPU model with every engine case at every block size, each once.
+    const std::vector<std::string> legs{"linux-gcc12", "mac-universal", "windows-clangcl"};
+    for (const std::string &leg : legs)
+    {
+        INFO(leg);
+        std::ifstream in(std::filesystem::path{GG_BENCH_BASELINE_DIR} / (leg + ".json"),
+                         std::ios::binary);
+        REQUIRE(in);
+        const nlohmann::json baseline = nlohmann::json::parse(in);
+        CHECK_NOTHROW(gg::bench::checkBaseline(baseline));
+        CHECK(baseline.at("leg").get<std::string>() == leg);
+        for (const nlohmann::json &m : baseline.at("machines"))
+        {
+            INFO(m.at("machine").get<std::string>());
+            CHECK(m.at("ratios").size() == 12); // 4 engine cases x 3 block sizes
+        }
+    }
+}
+
 namespace
 {
 nlohmann::json benchRun(const std::string &machine, const std::string &commit,

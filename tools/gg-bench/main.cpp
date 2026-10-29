@@ -29,9 +29,11 @@
 //
 // --baseline checks the ratios against a baseline file (tools/gg-bench/baselines/README.md): its
 // entry for this machine's CPU model, since ratios differ between models. It prints a verdict
-// for each ratio, or "no baseline for <machine>; no verdict" when the file has no entry for this
-// model. The exit status is 0 if none regressed (or there was no verdict), 3 if any did, 1 for an
-// error (an unreadable or malformed file, say) and 2 for bad usage. CI reports it without failing
+// for each ratio, and names each of the entry's ratios the run lacks, or prints "no baseline for
+// <machine>; no verdict" when the file has no entry for this model. The exit status is 0 if none
+// regressed and none was missing (or there was no verdict), 3 if any regressed or was missing, 1
+// for an error (an unreadable or malformed file, say, or a run with no ratios to check against
+// an entry) and 2 for bad usage. CI reports it without failing
 // through M1 (ruling 3). --make-baseline writes a baseline for a CI leg from the JSON of runs
 // already made, one entry per CPU model they ran on, and exits.
 //
@@ -315,7 +317,7 @@ void usage(std::FILE *f)
         "  --commit SHA      the commit to record in the JSON (default \"unknown\")\n"
         "  --json out.json   also write the results to out.json\n"
         "  --baseline file   check the ratios against this CPU model's entry in a\n"
-        "                    baseline; exit 3 if any regressed\n"
+        "                    baseline; exit 3 if any regressed or is missing\n"
         "  --make-baseline <leg> <out.json> <in.json>...\n"
         "                    write a baseline for <leg> from gg-bench JSON runs, one entry\n"
         "                    per CPU model, and exit\n"
@@ -326,7 +328,7 @@ void usage(std::FILE *f)
         "An option the mode doesn't take is bad usage.\n"
         "\n"
         "Exit status: 0 done (no ratio regressed), 1 error, 2 bad usage, 3 a ratio\n"
-        "regressed.\n",
+        "regressed or a baseline ratio is missing from the run.\n",
         cases.c_str());
 }
 
@@ -423,8 +425,8 @@ void printReport(const gg::bench::Report &report)
                 "median and IQR over the rounds\n");
 }
 
-/// Prints the verdicts, or that there are none for this machine; returns the number that
-/// regressed.
+/// Prints the verdicts and the baseline entries the run lacks, or that there are none for this
+/// machine; returns comparison.failures(): the ratios that regressed plus the missing entries.
 std::size_t printVerdicts(const gg::bench::Comparison &comparison, const std::string &machine,
                           const std::string &path, const nlohmann::json &baseline)
 {
@@ -455,10 +457,21 @@ std::size_t printVerdicts(const gg::bench::Comparison &comparison, const std::st
         }
         regressed += v.regressed ? 1 : 0;
     }
-    std::printf("\nverdict: %zu of %zu ratios regressed (limit: the baseline's ratio x (1 + its "
+    for (const gg::bench::Verdict &v : comparison.missing)
+    {
+        std::printf("%-18s %6u %12s %12.4f  %s\n", v.name.c_str(), v.blockSize, "-", v.limit,
+                    "missing from this run");
+    }
+    std::string missing;
+    if (!comparison.missing.empty())
+    {
+        missing = ", " + std::to_string(comparison.missing.size()) + " baseline " +
+                  (comparison.missing.size() == 1 ? "entry" : "entries") + " missing from this run";
+    }
+    std::printf("\nverdict: %zu of %zu ratios regressed%s (limit: the baseline's ratio x (1 + its "
                 "tolerance))\n",
-                regressed, verdicts.size());
-    return regressed;
+                regressed, verdicts.size(), missing.c_str());
+    return comparison.failures();
 }
 
 /// The JSON in the file at path; throws on a file it can't read or JSON it can't parse.
@@ -670,7 +683,7 @@ int main(int argc, char **argv)
         }
         try
         {
-            (void)gg::bench::compare({}, baseline);
+            gg::bench::checkBaseline(baseline);
         }
         catch (const std::exception &e)
         {
@@ -703,9 +716,19 @@ int main(int argc, char **argv)
 
     if (!baselinePath.empty())
     {
-        const std::size_t regressed = printVerdicts(gg::bench::compare(report, baseline),
-                                                    report.machine, baselinePath, baseline);
-        return regressed > 0 ? 3 : 0;
+        gg::bench::Comparison comparison;
+        try
+        {
+            comparison = gg::bench::compare(report, baseline);
+        }
+        catch (const std::exception &e)
+        {
+            std::fprintf(stderr, "error: %s: %s\n", baselinePath.c_str(), e.what());
+            return 1;
+        }
+        const std::size_t failures =
+            printVerdicts(comparison, report.machine, baselinePath, baseline);
+        return failures > 0 ? 3 : 0;
     }
     return 0;
 }

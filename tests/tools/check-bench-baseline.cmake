@@ -3,16 +3,18 @@
 # Copyright 2026, the Giga Grains authors (see git history)
 #
 # cmake -DBENCH=<gg-bench> -DRUN_JSON=<a gg-bench --json report> -DBASELINE=<baseline to write>
-#       -DRATIO=<r> [-DMACHINE=<CPU model>] -DEXPECTED_CODE=<n> -DEXPECTED_VERDICT=<line>
+#       -DRATIO=<r> [-DMACHINE=<CPU model>] [-DEXTRA_CASE=<case>] [-DCASES=<a,b>]
+#       -DEXPECTED_CODE=<n> (-DEXPECTED_VERDICT=<line> | -DEXPECTED_STDERR=<text>)
 #       -P check-bench-baseline.cmake
 #
 # Baselines are per CPU model, keyed by gg-bench's machine string, so this script writes a
 # baseline (schema 2) with one machine entry for MACHINE. MACHINE defaults to the machine of
-# RUN_JSON, a run of the same gg-bench on this host. The entry gives engine-sample a ratio of
-# RATIO, with tolerance 0.10, at blocks 32, 64 and 256. The script then runs a tiny gg-bench of
-# reference and engine-sample against that baseline. It fails unless the exit code is exactly
-# EXPECTED_CODE and stdout has the line EXPECTED_VERDICT, in which <machine> stands for the run's
-# machine.
+# RUN_JSON, a run of the same gg-bench on this host. The entry gives engine-sample (and
+# EXTRA_CASE, when given) a ratio of RATIO, with tolerance 0.10, at blocks 32, 64 and 256. The
+# script then runs a tiny gg-bench of CASES (default reference,engine-sample) against that
+# baseline. It fails unless the exit code is exactly EXPECTED_CODE and stdout has the line
+# EXPECTED_VERDICT, in which <machine> stands for the run's machine, or stderr contains
+# EXPECTED_STDERR.
 #
 # CI's bench step relies on the exit code. 3 (a ratio regressed) becomes a warning; 0 is a pass,
 # or no verdict for a CPU model the baseline doesn't have; anything else fails the job.
@@ -21,11 +23,17 @@
 # CMP0053 unset, and its old rules expand an @VAR@-shaped string as a variable.
 cmake_minimum_required(VERSION 3.22)
 
-foreach (var IN ITEMS BENCH RUN_JSON BASELINE RATIO EXPECTED_CODE EXPECTED_VERDICT)
+foreach (var IN ITEMS BENCH RUN_JSON BASELINE RATIO EXPECTED_CODE)
     if (NOT DEFINED ${var})
         message(FATAL_ERROR "check-bench-baseline.cmake: ${var} is not set")
     endif ()
 endforeach ()
+if (NOT DEFINED EXPECTED_VERDICT AND NOT DEFINED EXPECTED_STDERR)
+    message(FATAL_ERROR "check-bench-baseline.cmake: set EXPECTED_VERDICT or EXPECTED_STDERR")
+endif ()
+if (NOT DEFINED CASES)
+    set(CASES reference,engine-sample)
+endif ()
 
 file(READ ${RUN_JSON} run)
 string(JSON run_machine GET "${run}" machine)
@@ -37,15 +45,17 @@ endif ()
 string(REPLACE "\\" "\\\\" machine_json "${MACHINE}")
 string(REPLACE "\"" "\\\"" machine_json "${machine_json}")
 set(entries "")
-foreach (block IN ITEMS 32 64 256)
-    list(APPEND entries
-            "{\"case\": \"engine-sample\", \"blockSize\": ${block}, \"ratio\": ${RATIO}, \"tolerance\": 0.10}")
+foreach (case IN ITEMS engine-sample ${EXTRA_CASE})
+    foreach (block IN ITEMS 32 64 256)
+        list(APPEND entries
+                "{\"case\": \"${case}\", \"blockSize\": ${block}, \"ratio\": ${RATIO}, \"tolerance\": 0.10}")
+    endforeach ()
 endforeach ()
 list(JOIN entries ", " entries)
 file(WRITE ${BASELINE} "{\"schemaVersion\": 2, \"leg\": \"test\", \"machines\": [{\"machine\": \"${machine_json}\", \"commit\": \"test\", \"runs\": 1, \"ratios\": [${entries}]}]}\n")
 
 execute_process(
-        COMMAND ${BENCH} --seconds 0.002 --rounds 1 --grains 50 --cases reference,engine-sample
+        COMMAND ${BENCH} --seconds 0.002 --rounds 1 --grains 50 --cases ${CASES}
         --baseline ${BASELINE}
         RESULT_VARIABLE code
         OUTPUT_VARIABLE out
@@ -55,9 +65,18 @@ if (NOT code STREQUAL "${EXPECTED_CODE}")
     message(FATAL_ERROR "gg-bench exited with ${code}, not ${EXPECTED_CODE}\n"
             "stdout:\n${out}\nstderr:\n${err}")
 endif ()
-string(REPLACE "<machine>" "${run_machine}" verdict "${EXPECTED_VERDICT}")
-string(FIND "${out}" "\n${verdict}\n" at)
-if (at EQUAL -1)
-    message(FATAL_ERROR "gg-bench printed no line \"${verdict}\"\nstdout:\n${out}")
+if (DEFINED EXPECTED_STDERR)
+    string(FIND "${err}" "${EXPECTED_STDERR}" at)
+    if (at EQUAL -1)
+        message(FATAL_ERROR "gg-bench's stderr lacks \"${EXPECTED_STDERR}\"\nstderr:\n${err}")
+    endif ()
+    message(STATUS "gg-bench exited with ${code} and printed \"${EXPECTED_STDERR}\" on stderr")
 endif ()
-message(STATUS "gg-bench exited with ${code} and printed \"${verdict}\"")
+if (DEFINED EXPECTED_VERDICT)
+    string(REPLACE "<machine>" "${run_machine}" verdict "${EXPECTED_VERDICT}")
+    string(FIND "${out}" "\n${verdict}\n" at)
+    if (at EQUAL -1)
+        message(FATAL_ERROR "gg-bench printed no line \"${verdict}\"\nstdout:\n${out}")
+    endif ()
+    message(STATUS "gg-bench exited with ${code} and printed \"${verdict}\"")
+endif ()

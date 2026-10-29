@@ -33,6 +33,7 @@
 // records each ratio per CI leg and per CPU model (the `machine` string), and compare() checks a
 // report only against its own model's entry, report-only through M1.
 
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <string>
@@ -83,6 +84,7 @@ struct Report
 
 /// One ratio checked against a baseline: regressed when ratio > limit = the baseline's ratio
 /// × (1 + its tolerance). A ratio the baseline doesn't have has a NaN limit and isn't regressed.
+/// A baseline entry the report doesn't have has a NaN ratio (see Comparison::missing).
 struct Verdict
 {
     std::string name;
@@ -97,9 +99,23 @@ struct Comparison
     /// The baseline has an entry for the report's machine. When it doesn't, there is no verdict:
     /// the other fields are empty.
     bool found{false};
-    std::string commit; // the entry's
-    uint32_t runs{0};   // how many runs the entry was made from
-    std::vector<Verdict> verdicts;
+    std::string commit;            // the entry's
+    uint32_t runs{0};              // how many runs the entry was made from
+    std::vector<Verdict> verdicts; // one per report ratio, in the report's order
+    /// The entry's ratios the report doesn't have, in the entry's order, each with its limit and
+    /// a NaN ratio. Each is a failure: the gate can't pass a ratio it didn't measure.
+    std::vector<Verdict> missing;
+
+    /// The verdicts that regressed plus the missing entries: the gate passes only at 0.
+    std::size_t failures() const
+    {
+        std::size_t n = missing.size();
+        for (const Verdict &v : verdicts)
+        {
+            n += v.regressed ? 1 : 0;
+        }
+        return n;
+    }
 };
 
 /// One timed configuration: a case at one block size, with the state it keeps between rounds.
@@ -161,15 +177,21 @@ std::vector<Ratio> computeRatios(const Report &report);
 /// fields). Invalid UTF-8 in a string (the commit, say) is replaced, never an error.
 std::string toJson(const Report &report);
 
-/// A report's ratios checked against the baseline's entry for report.machine, in the report's
-/// order. The baseline is
+/// Throws std::invalid_argument unless `baseline` is a baseline file of this shape:
 ///     {"schemaVersion": 2, "leg": "<preset>",
 ///      "machines": [{"machine": "<machine()>", "commit": "<sha>", "runs": N,
 ///                    "ratios": [{"case", "blockSize", "ratio", "tolerance"}, ...]}, ...]}
-/// and each limit is ratio × (1 + tolerance). With no entry for report.machine, found is false
-/// and there are no verdicts. Throws std::invalid_argument if the baseline isn't that shape: at
-/// most one entry per machine, runs >= 1, and a positive finite ratio and a finite tolerance >= 0
-/// in every ratio. It checks the whole file, even when the report has no ratios.
+/// with at most one entry per machine, runs >= 1, at least one ratio per entry, each (case,
+/// blockSize) at most once in an entry, and a positive finite ratio and a finite tolerance >= 0
+/// in every ratio.
+void checkBaseline(const nlohmann::json &baseline);
+
+/// A report's ratios checked against the baseline's entry for report.machine, in the report's
+/// order, and the entry's ratios the report lacks (missing). Each limit is the entry's ratio
+/// × (1 + its tolerance). With no entry for report.machine, found is false and there are no
+/// verdicts. Throws std::invalid_argument for a baseline checkBaseline() rejects (it checks the
+/// whole file first), and when there is an entry but the report has no ratios: a verdict over
+/// nothing is an error, never "0 of 0".
 Comparison compare(const Report &report, const nlohmann::json &baseline);
 
 /// A baseline for `leg` from parsed gg-bench JSON reports (schema 2): one entry per machine, in
