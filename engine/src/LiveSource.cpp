@@ -145,9 +145,13 @@ void LiveSource::write(const float *const *in, uint32_t numInChannels, uint32_t 
     blockAdvance_ = written;
 }
 
-bool LiveSource::read(double pos, int64_t head, Cursor &cursor, float &left,
-                      float &right) const noexcept
+template <int kTaps>
+bool LiveSource::readTaps(double pos, int64_t head, Cursor &cursor, float &left,
+                          float &right) const noexcept
 {
+    static_assert(kTaps == 2 || kTaps == 4);
+    // The Hermite's taps start one frame before floor(pos); the line's at floor(pos).
+    constexpr int64_t kBefore = kTaps == 4 ? 1 : 0;
     // Ring time stays far below 2^62; the check also rejects NaN and ±inf before the integer
     // conversion.
     if (!(pos > -0x1.0p62 && pos < 0x1.0p62))
@@ -156,76 +160,63 @@ bool LiveSource::read(double pos, int64_t head, Cursor &cursor, float &left,
     }
     const double base = std::floor(pos);
     const auto i = static_cast<int64_t>(base);
-    const int64_t first = i - 1;
+    const int64_t first = i - kBefore;
     // Exact integer bounds on the window, so no rounding in fade() can let a stale or unwritten
     // tap through. Inside it every slot holds its own frame, even with the rest of the block
     // already written (ruling M1-o; see Storage in LiveSource.h).
-    if (first < head - frames_ || i + 2 > head - 1)
+    if (first < head - frames_ || first + (kTaps - 1) > head - 1)
     {
         return false;
     }
     const auto t = static_cast<float>(pos - base);
+    float l[kTaps];
+    float r[kTaps];
     if (first < 0)
     {
         // Taps before frame 0 are silence. Here head − N <= first < 0, so head < N. The block has
         // written at most maxBlockSize − 1 frames past head − 1, so no frame yet written is at or
         // past C = N + maxBlockSize: none has wrapped, and frame i is in slot i.
-        float l[4];
-        float r[4];
-        for (int64_t k = 0; k < 4; ++k)
+        for (int64_t k = 0; k < kTaps; ++k)
         {
             const int64_t index = first + k;
             l[k] = index >= 0 ? slots_[2 * index] : 0.0f;
             r[k] = index >= 0 ? slots_[2 * index + 1] : 0.0f;
         }
+        cursor.valid = false;
+    }
+    else
+    {
+        // Slot s's channel c is at 2s + c; the guard slots keep the taps contiguous.
+        const float *p = slots_ + 2 * slotOf(first, cursor);
+        for (int64_t k = 0; k < kTaps; ++k)
+        {
+            l[k] = p[2 * k];
+            r[k] = p[2 * k + 1];
+        }
+    }
+    if constexpr (kTaps == 4)
+    {
         left = interp::catmullRom(l[0], l[1], l[2], l[3], t);
         right = interp::catmullRom(r[0], r[1], r[2], r[3], t);
-        cursor.valid = false;
-        return true;
     }
-    // Slot s's channel c is at 2s + c.
-    const float *p = slots_ + 2 * slotOf(first, cursor);
-    left = interp::catmullRom(p[0], p[2], p[4], p[6], t);
-    right = interp::catmullRom(p[1], p[3], p[5], p[7], t);
+    else
+    {
+        left = interp::lerp(l[0], l[1], t);
+        right = interp::lerp(r[0], r[1], t);
+    }
     return true;
+}
+
+bool LiveSource::read(double pos, int64_t head, Cursor &cursor, float &left,
+                      float &right) const noexcept
+{
+    return readTaps<4>(pos, head, cursor, left, right);
 }
 
 bool LiveSource::readLinear(double pos, int64_t head, Cursor &cursor, float &left,
                             float &right) const noexcept
 {
-    // As read(), for taps i and i + 1.
-    if (!(pos > -0x1.0p62 && pos < 0x1.0p62))
-    {
-        return false;
-    }
-    const double base = std::floor(pos);
-    const auto i = static_cast<int64_t>(base);
-    if (i < head - frames_ || i + 1 > head - 1)
-    {
-        return false;
-    }
-    const auto t = static_cast<float>(pos - base);
-    if (i < 0)
-    {
-        // Taps before frame 0 are silence. As in read(), head < N here, so no frame has wrapped
-        // and frame 0, the only tap that can be written, is in slot 0.
-        float l[2];
-        float r[2];
-        for (int64_t k = 0; k < 2; ++k)
-        {
-            const int64_t index = i + k;
-            l[k] = index >= 0 ? slots_[2 * index] : 0.0f;
-            r[k] = index >= 0 ? slots_[2 * index + 1] : 0.0f;
-        }
-        left = interp::lerp(l[0], l[1], t);
-        right = interp::lerp(r[0], r[1], t);
-        cursor.valid = false;
-        return true;
-    }
-    const float *p = slots_ + 2 * slotOf(i, cursor);
-    left = interp::lerp(p[0], p[2], t);
-    right = interp::lerp(p[1], p[3], t);
-    return true;
+    return readTaps<2>(pos, head, cursor, left, right);
 }
 
 int64_t LiveSource::slotOf(int64_t first, Cursor &cursor) const noexcept

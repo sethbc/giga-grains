@@ -185,6 +185,13 @@ class LiveSource
     // recorded in it.
     int64_t slotOf(int64_t first, Cursor &cursor) const noexcept SST_CPPUTILS_NONBLOCKING;
 
+    // read() (kTaps 4: catmullRom over taps floor(pos) − 1 .. floor(pos) + 2) and readLinear()
+    // (kTaps 2: lerp over floor(pos) and floor(pos) + 1), which differ only in their reach and
+    // their curve. Defined in LiveSource.cpp, beside them.
+    template <int kTaps>
+    bool readTaps(double pos, int64_t head, Cursor &cursor, float &left,
+                  float &right) const noexcept SST_CPPUTILS_NONBLOCKING;
+
     // clamp(x, 0, 1), with NaN read as 0.
     static double unit(double x) noexcept { return x > 0.0 ? (x < 1.0 ? x : 1.0) : 0.0; }
 
