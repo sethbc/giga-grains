@@ -140,6 +140,14 @@ if (APPLE)
             --resources ${CMAKE_SOURCE_DIR}/installer/macos --licenses ${GG_LICENSE_DIR}
             VERBATIM
             )
-    # elseif (UNIX): the Linux tarball (Task 7). elseif (WIN32): the Windows installer and zip
-    # (Task 6).
+elseif (CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    # giga-grains-<v>-linux-x86_64.tar.gz (spec §6.5).
+    add_custom_command(TARGET gg-installer POST_BUILD
+            COMMAND ${CMAKE_SOURCE_DIR}/installer/linux/make-tarball.sh
+            --products ${GG_PRODUCT_DIR} --out ${GG_INSTALLER_DIR}
+            --full-version ${GG_VERSION_STRING}
+            --readme ${CMAKE_SOURCE_DIR}/installer/linux/README.md
+            VERBATIM
+            )
 endif ()
+# Windows (the installer and the zip, spec §6.5) has no branch yet.

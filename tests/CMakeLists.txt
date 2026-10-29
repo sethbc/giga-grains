@@ -527,6 +527,32 @@ if (GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
                     FIXTURES_REQUIRED gg_products)
         endforeach ()
     endif ()
+
+    # The Linux tarball (spec §6.5): installer_linux_tarball checks the entries, the executable
+    # bits, the README and the license set of what installer/linux/make-tarball.sh makes from the
+    # products (through tests/installer/check-archive.cmake, which the Windows zip shares);
+    # _missing_product checks that it refuses an empty products directory with exit 2 and nothing
+    # written. Each writes its own folder.
+    if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        foreach (case IN ITEMS tarball tarball_missing_product)
+            set(switch "")
+            if (case STREQUAL "tarball_missing_product")
+                set(switch -DMISSING=1)
+            endif ()
+            add_test(NAME installer_linux_${case}
+                    COMMAND ${CMAKE_COMMAND}
+                    -DSCRIPT=${PROJECT_SOURCE_DIR}/installer/linux/make-tarball.sh
+                    -DPRODUCTS=${GG_PRODUCT_DIR}
+                    -DREADME=${PROJECT_SOURCE_DIR}/installer/linux/README.md
+                    -DOUT=${CMAKE_CURRENT_BINARY_DIR}/installer-linux/${case}
+                    -DFULL=${GG_VERSION_STRING}
+                    -DCHECK_ARCHIVE=${CMAKE_CURRENT_SOURCE_DIR}/installer/check-archive.cmake
+                    ${switch}
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/installer/check-linux-tarball.cmake)
+            set_tests_properties(installer_linux_${case} PROPERTIES LABELS installer
+                    FIXTURES_REQUIRED gg_products)
+        endforeach ()
+    endif ()
 endif ()
 
 # The ASIO SDK guard (cmake/AsioGuard.cmake, carry-over [116]), proven on a scratch project: the
