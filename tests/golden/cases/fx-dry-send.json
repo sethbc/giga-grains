@@ -1,0 +1,10 @@
+{
+  "mode": "fx",
+  "sampleRate": 48000,
+  "durationSeconds": 4.0,
+  "blockSize": 128,
+  "seed": 1,
+  "input": {"kind": "sine", "frequencyHz": 220, "seconds": 3.0, "amplitude": 0.5},
+  "channels": 2,
+  "params": {"Mix": 0.0, "Dry to Reverb": 1.0, "Reverb Amount": 0.6}
+}

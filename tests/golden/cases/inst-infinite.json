@@ -1,0 +1,13 @@
+{
+  "mode": "instrument",
+  "sampleRate": 48000,
+  "durationSeconds": 8.0,
+  "blockSize": 128,
+  "seed": 1,
+  "sample": {"kind": "noise", "seconds": 4.0, "amplitude": 0.5},
+  "params": {"Position": 0.25, "Level": -6.0, "Reverb Amount": 0.7,
+             "Reverb Decay": 6.068255709804611},
+  "notes": [
+    {"time": 0.5, "key": 60, "duration": 1.5}
+  ]
+}
