@@ -235,6 +235,18 @@ foreach (test IN ITEMS bench_baseline_pass bench_baseline_regressed bench_baseli
     set_tests_properties(${test} PROPERTIES LABELS bench FIXTURES_REQUIRED bench_json)
 endforeach ()
 
+# The scripts (carry-over [130]-[132]), label `scripts`: scripts/check.sh against stub cmake and
+# ctest (replaying CTest 3.31's and 4.4's recorded output) in a fake source tree, and
+# scripts/worktree-setup.sh in scratch git repositories, all under the build tree. Not on
+# Windows, where the scripts' bash (Git Bash) is unverified (CLAUDE.md).
+if (NOT WIN32)
+    find_program(GG_BASH bash REQUIRED)
+    add_test(NAME scripts_check_and_worktree_setup
+            COMMAND ${GG_BASH} ${CMAKE_CURRENT_SOURCE_DIR}/scripts/scripts_tests.sh
+            ${CMAKE_CURRENT_BINARY_DIR}/scripts-tests ${CMAKE_COMMAND})
+    set_tests_properties(scripts_check_and_worktree_setup PROPERTIES LABELS scripts)
+endif ()
+
 # RTSan's negative control (rtsan build only), labels `rt` and `rtsan`: a program that allocates
 # inside a nonblocking function must make RealtimeSanitizer report it. The test passes on the
 # report itself, not on a failing exit status, which a crash or a missing binary would also give.

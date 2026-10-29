@@ -13,10 +13,12 @@
 #
 #   scripts/worktree-setup.sh [--configure <preset>[,<preset>...]]
 #
-# Run the worktree's own copy of this script. --configure then runs cmake --preset for each preset
-# (rtsan with GG_LLVM=/opt/homebrew/opt/llvm on macOS if GG_LLVM is unset and that exists); it
-# doesn't build. Finally, git submodule status --recursive must show every submodule checked out
-# at its pinned commit (no line starting with - or +), or the script fails.
+# Run the worktree's own copy of this script. Each name given to --configure must be a configure
+# preset (scripts/preset-dir.cmake checks it), or the script fails before it clones anything.
+# git submodule status --recursive must then show every submodule checked out at its pinned
+# commit (no line starting with -, + or U), or the script fails. Last, --configure runs cmake
+# --preset for each preset (rtsan with GG_LLVM=/opt/homebrew/opt/llvm on macOS if GG_LLVM is unset
+# and that exists); it doesn't build.
 #
 # How. git keeps a linked worktree's submodule repositories in .git/worktrees/<id>/modules/, but
 # the config they're registered in, .git/config, is shared with the main checkout and every other
@@ -61,6 +63,20 @@ fi
 
 cd "$(dirname "$0")/.."
 root="$(pwd)"
+
+# Every preset name is checked before anything is cloned, so a typo fails at once.
+presets=()
+if [[ -n "$configure" ]]; then
+    IFS=, read -r -a presets <<<"$configure"
+    for preset in ${presets[@]+"${presets[@]}"}; do
+        resolved="$(cmake -D "PRESET=$preset" -P scripts/preset-dir.cmake 2>&1 |
+            tr -d '\r' || true)"
+        if [[ "$resolved" != "dir "* ]]; then
+            echo "error: --configure $preset: ${resolved#error }" >&2
+            exit 2
+        fi
+    done
+fi
 
 git_dir="$(cd "$(git rev-parse --git-dir)" && pwd -P)"
 common_dir="$(cd "$(git rev-parse --git-common-dir)" && pwd -P)"
@@ -149,7 +165,6 @@ fi
 echo "$(grep -c . <<<"$status") submodules checked out at their pinned commits"
 
 if [[ -n "$configure" ]]; then
-    IFS=, read -r -a presets <<<"$configure"
     for preset in ${presets[@]+"${presets[@]}"}; do
         if [[ "$preset" == rtsan && -z "${GG_LLVM:-}" && "$(uname -s)" == Darwin &&
             -d /opt/homebrew/opt/llvm ]]; then

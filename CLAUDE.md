@@ -107,7 +107,8 @@ resource, so machines must catch everything they can catch.
   - Don't rewrite `submodule.*.url` to local paths to get a worktree going: every worktree shares
     that config.
   - It fails unless `git submodule status --recursive` then shows every submodule at its pinned
-    commit. `--configure` runs `cmake --preset` for each preset named, and doesn't build.
+    commit. `--configure` runs `cmake --preset` for each preset named, and doesn't build. A name
+    that isn't a configure preset fails before anything is cloned.
 - The first configure of a build tree that builds the plugin formats downloads the VST3 and
   AudioUnit SDKs (clap-wrapper fetches them), so it needs the network. `asan` and `rtsan` build
   no formats and download nothing.
@@ -173,13 +174,19 @@ scripts/check.sh [--presets dev,asan,rtsan] [-L label]... [--no-format] [--allow
     and the failed step's log;
   - under it, each failing test (at most 10), or the first configure or build errors;
   - the format result, then `PASS` or `FAIL`.
-- **The logs** are complete: `build/<preset>/check/{configure,build,test}.log` and
-  `build/check/format.log`.
+- **The logs** are complete: `<build tree>/check/{configure,build,test}.log` and
+  `build/check/format.log`, which `--no-format` deletes. The build tree is the preset's
+  `binaryDir`, read from `CMakePresets.json` and `CMakeUserPresets.json` by
+  `scripts/preset-dir.cmake`; a name that isn't a configure preset gets a `FAILED` line.
 - **Exit status:** 0 only if every step passed; 1 if any failed; 2 for bad usage.
 - **It refuses to build a tree whose cache sets `GG_COPY_PLUGIN_AFTER_BUILD` to anything CMake
-  counts as true** (anything but empty, `OFF`, `0`, `NO`, `FALSE`, `N`, `IGNORE`, `NOTFOUND` or
-  `*-NOTFOUND`, in any case), because that build installs plugins, unless you pass
+  counts as true** (anything but empty, `0`, `OFF`, `NO`, `FALSE`, `N` or `IGNORE` in any case,
+  or `NOTFOUND` or `*-NOTFOUND` in upper case: CMake's NOTFOUND match is case-sensitive, so
+  `notfound` counts as true), because that build installs plugins, unless you pass
   `--allow-install`.
+- **Where it runs:** `check.sh` and `worktree-setup.sh` run in bash 3.2 or newer on macOS and
+  Linux, with CTest 3.22 or newer (the `scripts` test replays CTest 3.31's and 4.4's real
+  output). Windows Git Bash is unsupported: nothing has run them there.
 - Paste its summary as the evidence in a report.
 
 **Tests.** `gg-tests` is the Catch2 suite, and each Catch2 tag becomes a CTest label. To run one
@@ -213,6 +220,8 @@ runs the tests labelled either. The labels are:
 - `golden`: the golden renders;
 - `ui`: the splat renderer;
 - `smoke`;
+- `scripts`: `check.sh` and `worktree-setup.sh`, in scratch trees with stub `cmake` and `ctest`
+  and in scratch git repositories (not on Windows);
 - `plugin`: the plugins, driven through their CLAP factory. Tests labelled both `plugin` and
   `rt` put the allocation tripwire on `process` and `params.flush`. On macOS this label also
   covers checks of the built bundles (with the editor only):
