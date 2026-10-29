@@ -49,12 +49,27 @@ struct Metrics
     /// Pearson correlation of channels 0 and 1. 1.0 when there are fewer than two channels, or
     /// when either channel has zero variance (silent or constant).
     double stereoCorrelation{};
-    /// Discontinuity detector on the mono mix m:
-    /// - d[n] = |m[n] - 2m[n-1] + m[n-2]| for n >= 2, and R = rms(d) over all of them;
-    /// - clickScore = max(d[n] / R) over the n with d[n] > 1e-3, or 0 if there are none.
+    /// Discontinuity detector on the mono mix m, normalized by the level around each sample, so
+    /// a busy passage elsewhere in the render doesn't hide a click in a quiet one:
+    /// - d[n] = |m[n] - 2m[n-1] + m[n-2]| for n >= 2;
+    /// - the local level L[n] is the RMS of d[j] over the j in [n - W, n + W] with |j - n| > 2
+    ///   (j >= 2 and inside the audio), where W = round(0.005 · sampleRate), at least 1: ±5 ms
+    ///   (240 samples at 48 kHz), leaving out n and the two samples on each side, which a step
+    ///   or a single-sample spike also moves. L[n] is 0 if there is no such j;
+    /// - clickScore = max(d[n] / max(L[n], 1e-6)) over the n with d[n] > 1e-3, or 0 if there
+    ///   are none or the sample rate isn't positive and finite.
+    ///
+    /// What it can't see: a click no larger than the material's own sample-to-sample movement.
+    /// In white noise at about -23 dBFS RMS (dense-noise: d's RMS is 0.18), a -20 dBFS step moves
+    /// d by 0.1 and scores about 1, and a 0 dBFS spike scores about 11; a -20 dBFS step inside
+    /// one of loop-48k.wav's noise bursts is hidden the same way (docs/m1-carry-over.md).
     double clickScore{};
     /// Samples (all channels) that are NaN or ±inf.
     uint64_t nonFinite{};
+    /// Bands of bandProfileDb whose power isn't finite, which a huge but finite input can cause
+    /// (the FFT runs in float and overflows to inf). Such a band reads -200, like a band with no
+    /// bins, so the JSON stays finite; this count is what tells them apart.
+    uint64_t nonFiniteBands{};
     /// Samples (all channels) that are float subnormals. Classified from the bits, so the
     /// count doesn't depend on the CPU's flush-to-zero or denormals-are-zero modes.
     uint64_t denormals{};
@@ -71,16 +86,13 @@ struct Tolerances
     double correlation{0.02};
     /// An absolute limit on actual.clickScore, not relative to the golden.
     ///
-    /// Blind spot on dense material (ruling T5-b): R is the RMS of d over the whole render, so
-    /// a busy render raises the bar for every click in it. Measured on the goldens:
-    /// - dense-noise has R = 0.180. A single-sample 0 dBFS spike there scores only 10.9, and
-    ///   even the largest possible d (4.0) scores 22, so no click in it can reach 30.
-    /// - On sweep-stretch only steps larger than about 0.155 reach 30; on sparse-sine, steps
-    ///   larger than about 0.003.
-    /// So this limit catches clicks in sparse renders, not in dense ones. It needs a local
-    /// normalization (and a metricsVersion bump) before M1 gates overload and grain stealing
-    /// on it (docs/m1-carry-over.md).
-    double maxClickScore{30.0};
+    /// Set from the goldens at metricsVersion 2: clean renders score at most 11.9
+    /// (fx-space-automate, the Reverb Size move that INTENT §14 accepts as a click), then 8.5
+    /// (fx-note-freeze); white noise scores about 5.5. A -20 dBFS step scores over 15 where the
+    /// material's local level L is below about 0.0067. Of sixteen positions per golden, that holds
+    /// at all of them in ten goldens, at some in seven, and at none in dense-noise and
+    /// dense-noise-eco (tests/metrics/click_injection_tests.cpp pins the counts per case).
+    double maxClickScore{15.0};
 };
 
 struct CompareResult
@@ -97,7 +109,7 @@ struct CompareResult
 /// - envelope frames where both values are below -60 dB, and bands where both are below -90 dB,
 ///   are ignored;
 /// - actual.clickScore must be at most maxClickScore;
-/// - actual.nonFinite and actual.denormals must both be 0.
+/// - actual.nonFinite, actual.nonFiniteBands and actual.denormals must all be 0.
 CompareResult compare(const Metrics &golden, const Metrics &actual, const Tolerances &tol = {});
 
 /// The metrics as a JSON object, ending with a newline. Doubles are written so they read back

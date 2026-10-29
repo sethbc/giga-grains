@@ -21,7 +21,7 @@ namespace
 {
 // The constants of the metric definitions in Metrics.h. Changing any of them invalidates every
 // golden; bump kMetricsVersion when that happens.
-constexpr int kMetricsVersion = 1;
+constexpr int kMetricsVersion = 2;
 constexpr double kFloorDb = -200.0;
 constexpr double kEnvelopeFrameSeconds = 0.01;
 constexpr double kEnvelopeIgnoreDb = -60.0;
@@ -30,6 +30,9 @@ constexpr int kBandCount = 32;
 constexpr double kBandLowHz = 20.0;
 constexpr double kBandIgnoreDb = -90.0;
 constexpr double kClickMinDelta = 1e-3;
+constexpr double kClickWindowSeconds = 0.005;
+constexpr size_t kClickGuard = 2;
+constexpr double kClickMinLevel = 1e-6;
 
 double amplitudeDb(double amplitude)
 {
@@ -64,7 +67,9 @@ std::vector<double> rmsEnvelopeDb(const std::vector<double> &mono, double sample
     return envelope;
 }
 
-std::vector<double> bandProfileDb(const std::vector<double> &mono, double sampleRate)
+/// Also counts, in nonFiniteBands, the bands whose mean power isn't finite; they read kFloorDb.
+std::vector<double> bandProfileDb(const std::vector<double> &mono, double sampleRate,
+                                  uint64_t &nonFiniteBands)
 {
     using detail::Stft;
 
@@ -120,7 +125,13 @@ std::vector<double> bandProfileDb(const std::vector<double> &mono, double sample
     }
     for (int b = 0; b < kBandCount; ++b)
     {
-        profile[b] = powerDb(bandPower[b] / static_cast<double>(frames));
+        const double mean = bandPower[b] / static_cast<double>(frames);
+        if (!std::isfinite(mean))
+        {
+            ++nonFiniteBands; // an input huge enough to overflow the float FFT
+            continue;         // reads kFloorDb
+        }
+        profile[b] = powerDb(mean);
     }
     return profile;
 }
@@ -168,30 +179,51 @@ double stereoCorrelation(const AudioData &audio)
     return std::clamp(covariance / denominator, -1.0, 1.0);
 }
 
-double clickScore(const std::vector<double> &mono)
+double clickScore(const std::vector<double> &mono, double sampleRate)
 {
-    if (mono.size() < 3)
+    const size_t size = mono.size();
+    if (size < 3 || !(std::isfinite(sampleRate) && sampleRate > 0.0))
     {
         return 0.0;
     }
-    const auto delta = [&](size_t n) {
-        return std::abs(mono[n] - 2.0 * mono[n - 1] + mono[n - 2]);
-    };
+    // W, clamped to the audio's length first so the conversion can't overflow.
+    const double windowFrames =
+        std::min(std::round(kClickWindowSeconds * sampleRate), static_cast<double>(size));
+    const size_t window = std::max<size_t>(1, static_cast<size_t>(windowFrames));
 
-    double sumSquares = 0.0;
-    double maxDelta = 0.0;
-    for (size_t n = 2; n < mono.size(); ++n)
+    std::vector<double> delta(size, 0.0);
+    // prefix[n] is the sum of delta[j]² for j < n; delta[0] and delta[1] are 0 and never counted.
+    std::vector<double> prefix(size + 1, 0.0);
+    for (size_t n = 2; n < size; ++n)
     {
-        const double d = delta(n);
-        sumSquares += d * d;
-        if (d > kClickMinDelta)
-        {
-            maxDelta = std::max(maxDelta, d);
-        }
+        delta[n] = std::abs(mono[n] - 2.0 * mono[n - 1] + mono[n - 2]);
+        prefix[n + 1] = prefix[n] + delta[n] * delta[n];
     }
-    const double rms = std::sqrt(sumSquares / static_cast<double>(mono.size() - 2));
-    // maxDelta > 0 implies rms > 0.
-    return maxDelta > 0.0 ? maxDelta / rms : 0.0;
+
+    double score = 0.0;
+    for (size_t n = 2; n < size; ++n)
+    {
+        if (!(delta[n] > kClickMinDelta))
+        {
+            continue;
+        }
+        // [lo, hi] is the window, [guardLo, guardHi] the part of it left out; both inclusive.
+        const size_t lo = n - std::min(n - 2, window);
+        const size_t hi = n + std::min(size - 1 - n, window);
+        const size_t guardLo = n - std::min(n - lo, kClickGuard);
+        const size_t guardHi = n + std::min(hi - n, kClickGuard);
+        const size_t count = (hi - lo + 1) - (guardHi - guardLo + 1);
+        double level = 0.0;
+        if (count > 0)
+        {
+            // Rounding in the prefix sums can leave a silent window's sum slightly negative.
+            const double sum =
+                (prefix[hi + 1] - prefix[lo]) - (prefix[guardHi + 1] - prefix[guardLo]);
+            level = std::sqrt(std::max(sum, 0.0) / static_cast<double>(count));
+        }
+        score = std::max(score, delta[n] / std::max(level, kClickMinLevel));
+    }
+    return score;
 }
 
 /// Checks a dB series element by element, skipping entries where both values are below `ignoreDb`.
@@ -311,9 +343,9 @@ Metrics computeMetrics(const AudioData &audio)
 
     const std::vector<double> mono = detail::monoMix(audio);
     m.rmsEnvelopeDb = rmsEnvelopeDb(mono, audio.sampleRate);
-    m.bandProfileDb = bandProfileDb(mono, audio.sampleRate);
+    m.bandProfileDb = bandProfileDb(mono, audio.sampleRate, m.nonFiniteBands);
     m.stereoCorrelation = stereoCorrelation(audio);
-    m.clickScore = clickScore(mono);
+    m.clickScore = clickScore(mono, audio.sampleRate);
     return m;
 }
 
@@ -369,6 +401,11 @@ CompareResult compare(const Metrics &golden, const Metrics &actual, const Tolera
         failures.push_back(
             fmt::format("nonFinite: actual has {} NaN or infinite samples", actual.nonFinite));
     }
+    if (actual.nonFiniteBands != 0)
+    {
+        failures.push_back(fmt::format(
+            "nonFiniteBands: actual has {} bands whose power isn't finite", actual.nonFiniteBands));
+    }
     if (actual.denormals != 0)
     {
         failures.push_back(
@@ -388,6 +425,7 @@ std::string toJson(const Metrics &m)
     j["stereoCorrelation"] = m.stereoCorrelation;
     j["clickScore"] = m.clickScore;
     j["nonFinite"] = m.nonFinite;
+    j["nonFiniteBands"] = m.nonFiniteBands;
     j["denormals"] = m.denormals;
     j["dc"] = m.dc;
     j["rmsEnvelopeDb"] = m.rmsEnvelopeDb;
@@ -413,6 +451,7 @@ std::optional<Metrics> metricsFromJson(const std::string &json)
                     readNumber(j, "stereoCorrelation", m.stereoCorrelation) &&
                     readNumber(j, "clickScore", m.clickScore) &&
                     readCount(j, "nonFinite", m.nonFinite) &&
+                    readCount(j, "nonFiniteBands", m.nonFiniteBands) &&
                     readCount(j, "denormals", m.denormals) && readNumbers(j, "dc", m.dc) &&
                     readNumbers(j, "rmsEnvelopeDb", m.rmsEnvelopeDb) &&
                     readNumbers(j, "bandProfileDb", m.bandProfileDb);

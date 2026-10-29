@@ -1,9 +1,10 @@
 {
-  "metricsVersion": 1,
+  "metricsVersion": 2,
   "peakDb": -4.063780897084901,
   "stereoCorrelation": 0.0132120403482798,
   "clickScore": 0.0,
   "nonFinite": 0,
+  "nonFiniteBands": 0,
   "denormals": 0,
   "dc": [
     -6.682416631767496e-07,

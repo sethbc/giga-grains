@@ -325,8 +325,9 @@ gg-render --write-media DIR
     note at infinite Decay, released, the tail holding) and `fx-space-automate` (Size, Decay and
     Pre-delay automated).
   - `fx-space-automate` moves Size only at 0.5 s and in the tail at 5.0 s. Moving Size clicks
-    (accepted, S8): over a sine, any other mid-sound move scored 31 to 228 against the click
-    limit of 30. Don't add mid-sound Size moves to a golden.
+    (accepted, S8): over a sine, any other mid-sound move scored 31 to 228 against metricsVersion
+    1's click limit of 30, and the 0.5 s move scores 11.9 against version 2's limit of 15, the
+    highest clean score in the goldens. Don't add mid-sound Size moves to a golden.
   - Every case that predates Space renders bit-identically with it, so its WAV's SHA-256 is
     unchanged. A Space change that moves one is a regression.
   - **The event-log comparison never sees the reverb or the diffuser:** the log records grains,
@@ -336,6 +337,11 @@ gg-render --write-media DIR
   - They compare the metrics within tolerances.
   - They compare the grain-event log exactly per line (CR and final newline ignored). That
     comparison is the cross-platform determinism gate.
+  - The click score (metricsVersion 2) is normalized by the level within ±5 ms. The
+    `[golden][metrics]` tests in `tests/metrics/click_injection_tests.cpp` render every case in
+    process, add a -20 dBFS step at sixteen positions in turn and require each to score above
+    the limit, except at the positions a case's own noise or high frequencies hide it, which a
+    table there pins per case. A new case must catch all sixteen or be added to the table.
   - `golden_tamper_events` and `golden_tamper_metrics` check that the gate can fail: each
     compares a render with a golden copy that has one value changed, and passes only on
     gg-render's failure message.

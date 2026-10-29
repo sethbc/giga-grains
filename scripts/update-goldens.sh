@@ -16,8 +16,8 @@
 #   - tests/golden/expected/<case>.metrics.json and <case>.events.jsonl, which are committed;
 #   - <build-dir>/golden/<case>.wav and <case>.png, which are not.
 # Then it renders each case again and compares it with the new files, exactly as the golden
-# CTest entries do. That fails if a render isn't reproducible, has a clickScore above 30, or has
-# non-finite or denormal samples.
+# CTest entries do. That fails if a render isn't reproducible, has a clickScore above the limit
+# (15; Tolerances::maxClickScore in tools/audiometrics), or has non-finite or denormal samples.
 #
 # Last, it prints each case's WAV SHA-256 and compares them with the previous run's in this build
 # tree (<build-dir>/golden/wav-sha256.txt, rewritten each time): it lists the cases whose WAV
