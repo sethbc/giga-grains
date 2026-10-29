@@ -1432,7 +1432,7 @@ TEST_CASE("every committed render spec parses", "[render]")
         const std::string text{std::istreambuf_iterator<char>(in), {}};
         std::string error;
         const bool parsed = gg::render::parseRenderSpec(text, error).has_value();
-        INFO(path.string() << ": " << error);
+        INFO(gg::test::utf8(path) << ": " << error);
         CHECK(parsed);
     }
 }

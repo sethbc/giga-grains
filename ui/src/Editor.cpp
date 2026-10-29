@@ -179,9 +179,9 @@ class StressCanvas final : public juce::Component
 /// size.
 ///
 /// The strip (spec §6.5; sub-project 5 replaces it): "Load…", the file name and status,
-/// "Relink…" while the sample is missing or changed, and "Sample folder…". Files dropped
-/// anywhere on the editor load too (the first one only). The editor is a drop target in the FX
-/// as well, but takes no files there. Its timer is a public base so tests can drive it, as they
+/// "Relink…" while the sample is missing, changed or can't be read, and "Sample folder…". Files
+/// dropped anywhere on the editor load too (the first one only). The editor is a drop target in the
+/// FX as well, but takes no files there. Its timer is a public base so tests can drive it, as they
 /// drive drops.
 class Editor final : public juce::Component, public juce::FileDragAndDropTarget, public juce::Timer
 {
@@ -290,7 +290,8 @@ class Editor final : public juce::Component, public juce::FileDragAndDropTarget,
                     [this] { chooseFile("Find the missing sample", relinkSample_); });
         setUpButton(folderButton_, "sampleFolder", withEllipsis("Sample folder"),
                     [this] { chooseSampleFolder(); });
-        relinkButton_.setVisible(false); // shown while the sample is missing or changed
+        relinkButton_.setVisible(
+            false); // shown while the sample is missing, changed or can't be read
         setUpLabel(sampleName_, {}, juce::FontOptions(15.0f), kText);
         sampleName_.setComponentID("sampleName");
         setUpLabel(sampleStatusLabel_, {}, juce::FontOptions(15.0f), kDimText);

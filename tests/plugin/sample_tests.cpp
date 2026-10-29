@@ -37,6 +37,7 @@
 #include "gg/core/SessionState.h"
 #include "gg/media/SettingsFile.h"
 #include "support/StateContainer.h"
+#include "support/Utf8.h"
 
 using gg::plugin::SampleState;
 using gg::plugin::SampleStatus;
@@ -479,7 +480,7 @@ TEST_CASE("a sample moved into the sample folder is found, and the state marked 
     const fs::path dir = gg::test::sampleDir("moved");
     const fs::path library = dir / "library";
     fs::remove_all(library);
-    setUp("moved", {library.string(), ""});
+    setUp("moved", {gg::test::utf8(library), ""});
     const fs::path saved = gg::test::sineSampleFile("moved");
     const gg::core::MediaEntry entry = gg::test::entryOf(saved);
     const fs::path moved = library / "drums" / "moved.wav";
@@ -985,6 +986,38 @@ TEST_CASE("relink restores the saved sample, or loads a replacement and says so"
     CHECK(peak(out.left) > 0.01f);
 }
 
+TEST_CASE("a failed relink leaves a missing sample relinkable and a restored file loads",
+          "[plugin]")
+{
+    const fs::path dir = setUp("relink-fails");
+    const fs::path file = gg::test::sineSampleFile("relink-fails");
+    const gg::core::MediaEntry entry = gg::test::entryOf(file);
+    const fs::path backup = dir / "backup.wav";
+    fs::copy_file(file, backup, fs::copy_options::overwrite_existing);
+    const fs::path bad = dir / "not-audio.wav";
+    gg::test::writeFile(bad, std::vector<uint8_t>(100, 0x42));
+    fs::remove(file);
+
+    LoaderHost host;
+    PluginUnderTest instrument(kInstrumentId, host.clap());
+    REQUIRE(instrument.valid());
+    REQUIRE(instrument.activate(48000.0, 512));
+    REQUIRE(instrument.load(gg::test::withSample(instrument.save(), entry)));
+    auto &loader = loaderOf(instrument);
+    REQUIRE(loader.status().state == SampleState::Missing);
+    REQUIRE(loader.status().relinkable);
+
+    loader.requestRelink(bad);
+    const SampleStatus status = settle(instrument);
+    CHECK(status.state == SampleState::Error);
+    CHECK(status.relinkable); // the saved sample is still unavailable: Relink stays on offer
+
+    fs::copy_file(backup, file, fs::copy_options::overwrite_existing);
+    instrument.deactivate();
+    REQUIRE(instrument.activate(48000.0, 512));
+    CHECK(settle(instrument).state == SampleState::Loaded);
+}
+
 TEST_CASE("a failed load keeps the sample and the entry it had", "[plugin]")
 {
     const fs::path dir = setUp("failed");
@@ -1144,7 +1177,7 @@ TEST_CASE("a missing sample is searched for once however many instances restore 
     {
         gg::test::writeSineWav(library / ("other-" + std::to_string(i) + ".wav"), 8000, 0.01);
     }
-    setUp("scan-once", {library.string(), ""});
+    setUp("scan-once", {gg::test::utf8(library), ""});
     const fs::path file = gg::test::sineSampleFile("scan-once");
     const gg::core::MediaEntry entry = gg::test::entryOf(file);
     fs::remove(file);
@@ -1200,7 +1233,7 @@ TEST_CASE("the search cache remembers a search that found nothing for its lifeti
     const gg::core::MediaEntry entry = gg::test::entryOf(file);
     SearchCache cache;
     const auto t0 = SearchCache::Clock::time_point{} + std::chrono::hours(1);
-    const gg::core::MachineSettings settings{library.string(), ""};
+    const gg::core::MachineSettings settings{gg::test::utf8(library), ""};
     const auto find = [&](const gg::core::MachineSettings &folders,
                           SearchCache::Clock::time_point t) {
         return cache.find(entry, folders, t).outcome;
@@ -1221,7 +1254,7 @@ TEST_CASE("the search cache remembers a search that found nothing for its lifeti
     CHECK(find(settings, almost) == SearchOutcome::Missing);
     CHECK(cache.searches() == 3);
     // ...but other folders are another search,
-    CHECK(find({(dir / "elsewhere").string(), ""}, almost) == SearchOutcome::Missing);
+    CHECK(find({gg::test::utf8(dir / "elsewhere"), ""}, almost) == SearchOutcome::Missing);
     CHECK(cache.searches() == 4);
     // and the lifetime's end forgets it.
     CHECK(find(settings, t0 + SearchCache::kLifetime) == SearchOutcome::Found);

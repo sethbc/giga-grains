@@ -145,6 +145,7 @@ SampleLoader::Restored SampleLoader::restore(const std::optional<core::MediaEntr
             restorePending_ = false;
             source_.reset();
             entry_.reset();
+            entryUnavailable_ = false;
             status_ = {SampleState::Newer, {}, kNewerVersion, 0.0, 0, 0.0};
             return {};
         }
@@ -162,6 +163,7 @@ SampleLoader::Restored SampleLoader::restore(const std::optional<core::MediaEntr
         source_.reset();
         fileName = entry.has_value() ? nameOf(entry->absolutePath) : std::string();
         entry_ = entry;
+        entryUnavailable_ = false;
         status_ = {};
         if (entry.has_value())
         {
@@ -615,6 +617,7 @@ std::shared_ptr<const PreparedSource> SampleLoader::prepare(std::shared_ptr<Samp
 void SampleLoader::setLoadedStatus(std::string message)
 {
     const core::MediaEntry &e = *entry_;
+    entryUnavailable_ = false;
     status_ = {SampleState::Loaded,
                nameOf(e.absolutePath),
                std::move(message),
@@ -631,6 +634,7 @@ void SampleLoader::setError(std::string fileName, std::string message)
 void SampleLoader::setUnavailable(const std::string &fileName, const fs::path &file, bool read)
 {
     std::error_code error;
+    entryUnavailable_ = true;
     if (read)
     {
         // Something at the saved path that isn't the saved audio has changed.
@@ -649,7 +653,10 @@ void SampleLoader::setUnavailable(const std::string &fileName, const fs::path &f
 
 void SampleLoader::setRequestError(const std::string &failedName, std::string message)
 {
+    // A failed request doesn't make the saved sample available: if its file was unavailable
+    // before (so Relink was on offer), it still is.
     setError(entry_.has_value() ? nameOf(entry_->absolutePath) : failedName, std::move(message));
+    status_.relinkable = entryUnavailable_ && entry_.has_value();
 }
 
 void SampleLoader::setRequestErrorNoThrow(const std::exception_ptr &error,
@@ -662,7 +669,6 @@ void SampleLoader::setRequestErrorNoThrow(const std::exception_ptr &error,
     catch (...)
     {
         status_.state = SampleState::Error;
-        status_.relinkable = false;
         status_.fileName.clear();
         status_.message = kCantLoad; // fits the string's own buffer: no allocation
     }

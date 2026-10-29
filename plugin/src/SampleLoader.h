@@ -291,6 +291,7 @@ class SampleLoader
     std::optional<core::MediaEntry> entry_;
     std::optional<std::string> newerMedia_; // a newer build's manifest, when there's no entry_
     SampleStatus status_;
+    bool entryUnavailable_{false}; // entry_'s file wasn't at hand at the last restore or relink
     std::shared_ptr<const PreparedSource> source_; // the source in effect, at its own rate
     std::shared_ptr<SampleBuffer> pending_;        // decoded, for activate() (restorePending)
     bool restorePending_{false};

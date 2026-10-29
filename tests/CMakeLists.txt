@@ -73,8 +73,8 @@ endif ()
 # engine and, with the editor, gg::ui-core. The editor layer is an object library, whose own
 # libraries CMake would put after everything listed here, so they're listed too: the plugin
 # core and gg::ui. Then gg::render, gg::ui-core, gg::bench, gg::media and gg::core, which link
-# the engine (and gg::render the metrics). gg::bench-kernels follows gg::bench, which links it:
-# left out, CMake would repeat the engine after it. gg::media links gg::core, so comes first.
+# the engine (and gg::render the metrics). gg::bench-kernels (header-only, no
+# engine dependency; the tests include its Kernels.h) follows gg::bench, which links it. gg::media links gg::core, so comes first.
 set(gg_tests_libraries gg::render gg::ui-core gg::bench gg::bench-kernels gg::media gg::core
         gg::engine gg::audiometrics)
 if (GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)

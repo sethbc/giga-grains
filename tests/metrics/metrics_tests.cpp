@@ -24,6 +24,7 @@
 #include "gg/metrics/Metrics.h"
 #include "gg/metrics/Spectrogram.h"
 #include "gg/metrics/WavIO.h"
+#include "support/Utf8.h"
 
 using Catch::Matchers::WithinAbs;
 using gg::metrics::AudioData;
@@ -59,7 +60,7 @@ std::string outputPath(const std::string &name)
 {
     const std::filesystem::path dir{GG_TEST_OUTPUT_DIR};
     std::filesystem::create_directories(dir);
-    return (dir / name).string();
+    return gg::test::utf8(dir / name);
 }
 
 /// Lower edge of log-spaced band b (b = 32 is the top edge, Nyquist).

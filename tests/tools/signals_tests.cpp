@@ -121,7 +121,7 @@ std::string outputPath(const std::string &name)
 {
     const std::filesystem::path dir{GG_TEST_OUTPUT_DIR};
     std::filesystem::create_directories(dir);
-    return (dir / name).string();
+    return gg::test::utf8(dir / name);
 }
 
 /// A fresh directory of this name (UTF-8) under GG_TEST_OUTPUT_DIR, as UTF-8.

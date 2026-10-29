@@ -93,6 +93,7 @@ if [[ -f "$hashes" ]]; then
     changed=()
     added=()
     while read -r hash name; do
+        [[ -n "$name" ]] || continue # an empty previous-hashes file reads one blank line
         old="$(awk -v n="$name" '$2 == n { print $1 }' <<<"$previous")"
         if [[ -z "$old" ]]; then
             added+=("$name")
@@ -102,6 +103,7 @@ if [[ -f "$hashes" ]]; then
     done <<<"$current"
     removed=()
     while read -r hash name; do
+        [[ -n "$name" ]] || continue
         if ! awk -v n="$name" '$2 == n { found = 1 } END { exit !found }' <<<"$current"; then
             removed+=("$name")
         fi

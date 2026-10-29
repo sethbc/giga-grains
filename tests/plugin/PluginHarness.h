@@ -39,9 +39,9 @@ namespace gg::test
 inline void useSettingsFile(const std::filesystem::path &file)
 {
 #if defined(_WIN32)
-    _putenv_s("GG_SETTINGS_FILE", file.string().c_str());
+    _wputenv_s(L"GG_SETTINGS_FILE", file.c_str());
 #else
-    setenv("GG_SETTINGS_FILE", file.string().c_str(), 1);
+    setenv("GG_SETTINGS_FILE", file.c_str(), 1);
 #endif
 }
 

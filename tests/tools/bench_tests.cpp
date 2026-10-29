@@ -29,6 +29,7 @@
 
 #include "Bench.h"
 #include "Kernels.h"
+#include "support/Utf8.h"
 
 using Catch::Approx;
 
@@ -450,7 +451,24 @@ TEST_CASE("the committed baselines are well formed", "[bench]")
         for (const nlohmann::json &m : baseline.at("machines"))
         {
             INFO(m.at("machine").get<std::string>());
-            CHECK(m.at("ratios").size() == 12); // 4 engine cases x 3 block sizes
+            // Exactly the 4 engine cases x 3 block sizes (a duplicate or a stray case would
+            // pass a count of 12).
+            std::set<std::pair<std::string, uint32_t>> found;
+            for (const nlohmann::json &r : m.at("ratios"))
+            {
+                found.emplace(r.at("case").get<std::string>(), r.at("blockSize").get<uint32_t>());
+            }
+            std::set<std::pair<std::string, uint32_t>> expected;
+            for (const char *name :
+                 {"engine-sample", "engine-sample-eco", "engine-live", "engine-full-pool"})
+            {
+                for (const uint32_t block : {32u, 64u, 256u})
+                {
+                    expected.emplace(name, block);
+                }
+            }
+            CHECK(m.at("ratios").size() == 12);
+            CHECK(found == expected);
         }
     }
 }
@@ -627,7 +645,7 @@ TEST_CASE("gg-bench --space prints a per-sample cost", "[bench]")
     std::filesystem::remove(jsonPath);
 
     std::string output;
-    const int status = gg::bench::spaceMain(options, jsonPath.string(), output);
+    const int status = gg::bench::spaceMain(options, gg::test::utf8(jsonPath), output);
     INFO(output);
     CHECK(status == 0);
     CHECK(output.find("\nspace ") != std::string::npos); // the result's row
@@ -739,6 +757,19 @@ TEST_CASE("the reference kernel's output is pinned", "[bench]")
         }
         return h;
     };
+    // The window first: the kernels' output depends on libm's cos through it, so a changed
+    // table names the library, and a changed kernel the code. detail::hann()'s 4,097 points.
+    {
+        const gg::bench::detail::HannTable &table = gg::bench::detail::hann();
+        std::vector<float> points;
+        for (uint32_t i = 0; i <= gg::bench::detail::HannTable::kSize; ++i)
+        {
+            points.push_back(
+                table.at(static_cast<double>(i) / gg::bench::detail::HannTable::kSize));
+        }
+        REQUIRE(points.size() == 4097);
+        CHECK(fnv1a(0xcbf29ce484222325ull, points) == 0x3688f1852a5b11f0ull);
+    }
     CHECK(hash(gg::bench::renderHermiteSimd) == 0xcc738eaf2c70df7eull);
     CHECK(hash(gg::bench::renderHermiteScalar) == 0xcc738eaf2c70df7eull);
     CHECK(hash(gg::bench::renderLinearSimd) == 0x300874d5efa10a70ull);
