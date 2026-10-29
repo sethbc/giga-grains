@@ -27,17 +27,21 @@
 #               release job, runs only when it isn't none:
 #                 release   a pushed v* tag. plan fails fast unless the tag matches CMake's
 #                           version (scripts/release/check-version.sh), docs/releases/<tag>.md
-#                           exists, the signing secrets do, and the tagged commit is on main or a
-#                           release/* branch. The release job makes a draft GitHub Release, which
-#                           the director publishes by hand (docs/releasing.md).
+#                           exists, all seven signing secrets do, and the tagged commit is on main
+#                           or a release/* branch. The release job makes a draft GitHub Release,
+#                           which the director publishes by hand (docs/releasing.md).
 #                 nightly   the schedule on main: the version gets the suffix
-#                           dev.<yyyymmdd>.<sha7>; the installers are kept as run artifacts and
+#                           dev.<yyyymmdd>.g<sha7>; the installers are kept as run artifacts and
 #                           published as the nightly pre-release only when GG_PUBLISH_NIGHTLY is
-#                           "true" (below), from M5.
+#                           "true" (below), from M5, and only signed: plan fails a nightly that
+#                           would publish without the signing secrets.
 #                 dry-run   a workflow_dispatch with installers: true: the installers, signed when
 #                           the secrets exist, as run artifacts; nothing is published.
 #                 none      everything else: every pull request and push to main, a dispatch
 #                           without installers, and any run in a fork. Today's run, unchanged.
+#               A kind other than none fails in plan when only some of the seven signing secrets
+#               are set (it names the missing ones, never a value); with none of them it builds
+#               unsigned, except a release or a published nightly, which fails.
 #   build       Its legs also sign (macOS, when the secrets exist) and pack the installers, after
 #               every validator passed (gg-installer), and upload them as installer-<preset>.
 #   release     After plan, build and sanitizers all passed: the source tarball, SHA256SUMS.txt
@@ -92,12 +96,14 @@ jobs:
   # What this run releases (spec §6.6), decided once, before anything builds; see the header.
   # Its outputs: release_kind (release, nightly, dry-run or none); version, the full version the
   # installers carry (release: check-version.sh's; nightly: CMake's numeric part plus
-  # -dev.<yyyymmdd>.<sha7>; dry-run: CMake's own, as the configure composes it; none: empty);
-  # prerelease_suffix, the part of version after its first '-' (empty for a bare release, dev
-  # when version is empty); tag, the release's tag; sign, true when the installers are signed
-  # (not none, and the MAC_CERTS_P12 secret exists). A run in a fork always gets none, so a
-  # fork's schedule never tries to sign. Full history (fetch-depth 0), in this job alone, for the
-  # tag's branch check (the hotfix rule of spec §1: main or a release/* branch).
+  # -dev.<yyyymmdd>.g<sha7>, the g before the hash as git describe has it, so a hash of digits
+  # alone with a leading zero is still a valid semver identifier; dry-run: CMake's own, as the
+  # configure composes it; none: empty); prerelease_suffix, the part of version after its first
+  # '-' (empty for a bare release, dev when version is empty); tag, the release's tag; sign, true
+  # when the installers are signed (not none, and all seven signing secrets are set). A run in a
+  # fork always gets none, so a fork's schedule never tries to sign. Full history (fetch-depth
+  # 0), in this job alone, for the tag's branch check (the hotfix rule of spec §1: main or a
+  # release/* branch).
   plan:
     name: plan
     runs-on: ubuntu-24.04
@@ -119,8 +125,14 @@ jobs:
         id: plan
         env:
           GG_INSTALLERS: ${{ inputs.installers }}
-          # Only whether the secret is set, never its value.
-          GG_HAVE_MAC_CERTS: ${{ secrets.MAC_CERTS_P12 != '' }}
+          # Only whether each signing secret is set (true or false), never its value.
+          GG_HAVE_MAC_CERTS_P12: ${{ secrets.MAC_CERTS_P12 != '' }}
+          GG_HAVE_MAC_CERTS_P12_PASSWORD: ${{ secrets.MAC_CERTS_P12_PASSWORD != '' }}
+          GG_HAVE_MAC_SIGNING_IDENTITY: ${{ secrets.MAC_SIGNING_IDENTITY != '' }}
+          GG_HAVE_MAC_INSTALLER_IDENTITY: ${{ secrets.MAC_INSTALLER_IDENTITY != '' }}
+          GG_HAVE_NOTARY_KEY_P8: ${{ secrets.NOTARY_KEY_P8 != '' }}
+          GG_HAVE_NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID != '' }}
+          GG_HAVE_NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID != '' }}
         run: |
           fail() {
             echo "::error title=plan::$1"
@@ -148,8 +160,6 @@ jobs:
               version="$(sed -n 's/^version=//p' <<<"$lines")"
               [[ -f "docs/releases/$tag.md" ]] ||
                 fail "docs/releases/$tag.md, the release notes, is missing (docs/releases/README.md)"
-              [[ "$GG_HAVE_MAC_CERTS" == true ]] ||
-                fail "the MAC_CERTS_P12 secret is not set, and a release is always signed"
               commit="$(git rev-parse 'HEAD^{commit}')"
               branch=""
               for ref in origin/main $(git for-each-ref --format='%(refname:short)' 'refs/remotes/origin/release/*'); do
@@ -165,7 +175,7 @@ jobs:
             nightly)
               numeric="$(scripts/release/check-version.sh --print | sed -n 's/^numeric=//p')"
               [[ -n "$numeric" ]] || fail "check-version.sh --print gave no numeric version"
-              version="$numeric-dev.$(date -u +%Y%m%d).${GITHUB_SHA:0:7}"
+              version="$numeric-dev.$(date -u +%Y%m%d).g${GITHUB_SHA:0:7}"
               ;;
             dry-run)
               version="$(scripts/release/check-version.sh --print | sed -n 's/^version=//p')"
@@ -179,8 +189,31 @@ jobs:
           else
             suffix=""
           fi
+          # The signing secrets, by name only: all seven sign, none builds unsigned, and some is
+          # a mistake that would fail only later, in the macOS leg. A release is always signed,
+          # and so is a published nightly (its notes say the macOS installer is).
+          have=0
+          missing=""
+          for name in MAC_CERTS_P12 MAC_CERTS_P12_PASSWORD MAC_SIGNING_IDENTITY \
+              MAC_INSTALLER_IDENTITY NOTARY_KEY_P8 NOTARY_KEY_ID NOTARY_ISSUER_ID; do
+            flag="GG_HAVE_$name"
+            if [[ "${!flag}" == true ]]; then
+              have=$((have + 1))
+            else
+              missing="$missing $name"
+            fi
+          done
+          if [[ "$kind" != none && "$have" -ne 7 ]]; then
+            if [[ "$kind" == release ]]; then
+              fail "a release is always signed, and these signing secrets are not set:$missing"
+            elif [[ "$have" -ne 0 ]]; then
+              fail "only some of the seven signing secrets are set (set all or none); not set:$missing"
+            elif [[ "$kind" == nightly && "$GG_PUBLISH_NIGHTLY" == true ]]; then
+              fail "GG_PUBLISH_NIGHTLY is true, and a published nightly is always signed; not set:$missing"
+            fi
+          fi
           sign=false
-          if [[ "$kind" != none && "$GG_HAVE_MAC_CERTS" == true ]]; then
+          if [[ "$kind" != none && "$have" -eq 7 ]]; then
             sign=true
           fi
           {
@@ -327,9 +360,12 @@ jobs:
       # macOS, when the run signs (plan's sign: a kind other than none, and the secrets exist):
       # the Developer ID certificates go into a throwaway keychain (scripts/release/mac-keychain.sh)
       # before Configure names the identity, so the build signs every bundle with it, and the
-      # notary key is decoded for the installer step. GG_SIGN=1 tells the later steps. Each secret
-      # reaches the step through env and is decoded into $RUNNER_TEMP, never echoed; the keychain
-      # and both files are deleted in an always() step at the end of the job.
+      # notary key is decoded for the installer step. Each identity secret must name one of the
+      # keychain's valid identities, by its name (inside find-identity's quotes) or its SHA-1 hash
+      # (before them), or the step fails here, naming the secret, rather than at the first
+      # codesign or pkgbuild. GG_SIGN=1 tells the later steps. Each secret reaches the step through
+      # env and is decoded into $RUNNER_TEMP, never echoed; the keychain and both files are deleted
+      # in an always() step at the end of the job.
       - name: Import the signing certificates (macOS)
         id: keychain
         if: ${{ needs.plan.outputs.release_kind != 'none' && needs.plan.outputs.sign == 'true' && runner.os == 'macOS' }}
@@ -337,15 +373,41 @@ jobs:
           MAC_CERTS_P12: ${{ secrets.MAC_CERTS_P12 }}
           P12_PASSWORD: ${{ secrets.MAC_CERTS_P12_PASSWORD }}
           NOTARY_KEY_P8: ${{ secrets.NOTARY_KEY_P8 }}
+          MAC_SIGNING_IDENTITY: ${{ secrets.MAC_SIGNING_IDENTITY }}
+          MAC_INSTALLER_IDENTITY: ${{ secrets.MAC_INSTALLER_IDENTITY }}
         run: |
+          keychain="$RUNNER_TEMP/signing.keychain-db"
           printf '%s' "$MAC_CERTS_P12" | base64 --decode > "$RUNNER_TEMP/certs.p12"
-          scripts/release/mac-keychain.sh import "$RUNNER_TEMP/certs.p12" \
-            "$RUNNER_TEMP/signing.keychain-db"
+          scripts/release/mac-keychain.sh import "$RUNNER_TEMP/certs.p12" "$keychain"
           rm -f "$RUNNER_TEMP/certs.p12"
+          # has_identity <variable> <find-identity option>...: true when the variable's value is
+          # the name or the SHA-1 hash of a valid identity in the keychain. It prints neither the
+          # value nor find-identity's listing; bash 3.2, so the regex is in a variable.
+          has_identity() {
+            local value="${!1}" line hash re='^[[:space:]]*[0-9]+\)[[:space:]]+([0-9A-Fa-f]{40})[[:space:]]+"(.*)"'
+            shift
+            hash="$(printf '%s' "$value" | tr '[:lower:]' '[:upper:]')"
+            while IFS= read -r line; do
+              if [[ "$line" =~ $re ]]; then
+                if [[ "${BASH_REMATCH[2]}" == "$value" || "${BASH_REMATCH[1]}" == "$hash" ]]; then
+                  return 0
+                fi
+              fi
+            done <<<"$(security find-identity -v "$@" "$keychain")"
+            return 1
+          }
+          has_identity MAC_SIGNING_IDENTITY -p codesigning || {
+            echo "::error title=signing::MAC_SIGNING_IDENTITY names no valid code-signing identity in the .p12 (MAC_CERTS_P12)"
+            exit 1
+          }
+          has_identity MAC_INSTALLER_IDENTITY || {
+            echo "::error title=signing::MAC_INSTALLER_IDENTITY names no valid identity in the .p12 (MAC_CERTS_P12)"
+            exit 1
+          }
           printf '%s' "$NOTARY_KEY_P8" | base64 --decode > "$RUNNER_TEMP/AuthKey.p8"
           echo "GG_SIGN=1" >> "$GITHUB_ENV"
 
-      # A nightly passes its pre-release suffix (dev.<yyyymmdd>.<sha7>, from plan); a release's
+      # A nightly passes its pre-release suffix (dev.<yyyymmdd>.g<sha7>, from plan); a release's
       # suffix is already CMake's (plan checked it). A signing run names the Developer ID, which
       # turns on the hardened runtime, the timestamp and the apps' entitlement (spec §6.2).
       - name: Configure
@@ -893,15 +955,18 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      # From M5 (GG_PUBLISH_NIGHTLY): the nightly tag moves to this commit (through the API, as
-      # the checkout keeps no credentials), the nightly pre-release is made or its notes updated
-      # (installer/nightly-notes.md plus this build's version and commit), every asset not in
-      # this run's set is deleted, and this run's are uploaded. Published directly, not a draft.
+      # From M5 (GG_PUBLISH_NIGHTLY), and only signed (plan fails a nightly that would publish
+      # unsigned; the sign check here is a second guard): the nightly tag moves to this commit
+      # (through the API, as the checkout keeps no credentials), the nightly pre-release is made
+      # or its notes updated (installer/nightly-notes.md plus this build's version and commit),
+      # every asset not in this run's set is deleted, and this run's are uploaded. Published
+      # directly, not a draft. git/ref/ (singular) matches the tag exactly; git/refs/ would also
+      # answer for a prefix, such as a tag nightly-old.
       - name: Publish the nightly (nightly, from M5)
-        if: ${{ needs.plan.outputs.release_kind == 'nightly' && env.GG_PUBLISH_NIGHTLY == 'true' }}
+        if: ${{ needs.plan.outputs.release_kind == 'nightly' && env.GG_PUBLISH_NIGHTLY == 'true' && needs.plan.outputs.sign == 'true' }}
         run: |
           repo="$GITHUB_REPOSITORY"
-          if gh api "repos/$repo/git/refs/tags/nightly" > /dev/null 2>&1; then
+          if gh api "repos/$repo/git/ref/tags/nightly" > /dev/null 2>&1; then
             gh api -X PATCH "repos/$repo/git/refs/tags/nightly" -f sha="$GITHUB_SHA" -F force=true > /dev/null
           else
             gh api -X POST "repos/$repo/git/refs" -f ref=refs/tags/nightly -f sha="$GITHUB_SHA" > /dev/null
@@ -928,11 +993,17 @@ jobs:
           gh release upload nightly "$GG_DIST"/* --repo "$repo" --clobber
           echo "### nightly: published Giga Grains $GG_VERSION as the nightly pre-release" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Nightly publishing is off (nightly, until M5)
-        if: ${{ needs.plan.outputs.release_kind == 'nightly' && env.GG_PUBLISH_NIGHTLY != 'true' }}
+      - name: Nightly publishing is off (nightly, until M5, or unsigned)
+        if: ${{ needs.plan.outputs.release_kind == 'nightly' && (env.GG_PUBLISH_NIGHTLY != 'true' || needs.plan.outputs.sign != 'true') }}
+        env:
+          GG_SIGN_OUTPUT: ${{ needs.plan.outputs.sign }}
         run: |
           {
-            echo "### nightly: nightly publishing is off until M5 (GG_PUBLISH_NIGHTLY)"
+            if [[ "$GG_PUBLISH_NIGHTLY" != true ]]; then
+              echo "### nightly: nightly publishing is off until M5 (GG_PUBLISH_NIGHTLY)"
+            else
+              echo "### nightly: not published, as the installers are unsigned (plan's sign=$GG_SIGN_OUTPUT)"
+            fi
             echo "The installers are this run's installer-* artifacts. Nothing was published."
             echo '```'
             (cd "$GG_DIST" && ls -l)
