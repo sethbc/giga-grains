@@ -57,11 +57,13 @@ resource, so machines must catch everything they can catch.
   - No GPLv2-only code and no unlicensed code.
   - Never use the names "Mutable Instruments", "Clouds" or "Beads" in the product.
   - Pin every dependency to an exact SHA or tag.
-  - ASIO (the Windows standalone only) comes from sst-plugininfra's ASIO SDK 2.3.4 under its
-    GPLv3 option: exactly `common/asio.cpp`, `host/asiodrivers.cpp` and `host/pc/asiolist.cpp`,
-    unmodified, compiled into RtAudio by `libs/CMakeLists.txt`. Never compile RtAudio's bundled
-    ASIO files, which have no license grant, or put its `include/` on a path; the Windows
-    configure fails if either happens (INTENT §23 #30, #56).
+  - ASIO® (the Windows standalone only; a registered trademark of Steinberg Media Technologies
+    GmbH) comes from sst-plugininfra's ASIO SDK 2.3.4 under its GPLv3 option: exactly
+    `common/asio.cpp`, `host/asiodrivers.cpp` and `host/pc/asiolist.cpp`, unmodified, compiled
+    into RtAudio by `libs/CMakeLists.txt`. Never compile RtAudio's bundled ASIO files, which have
+    no license grant, or put its `include/` on a path. The Windows configure fails if either
+    happens, or if any of those SDK files' content changes (INTENT §23 #30, #56). Use no ASIO
+    logo. `THIRD_PARTY_NOTICES.md` holds the notices a distributed Windows build carries.
 
 ## Working style
 

@@ -179,13 +179,20 @@ if (GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
     # (include/asio*, iasiodrv.h), which carry Steinberg's copyright and no license grant, and we
     # ship no unlicensed code (ruling F4, INTENT §23 #30). RTAUDIO_API_ASIO OFF keeps RtAudio's
     # CMake from compiling them, and with WASAPI and DirectSound off too it never puts its
-    # include/ directory on a path. The standalone's WASAPI audio and WinMM MIDI are
-    # clap-wrapper's own backends, which don't use RtAudio. FORCE, so an older build tree's cache
-    # can't turn any of these back.
+    # include/ directory on a path; JACK and PulseAudio, which RtAudio would turn on if it found
+    # them, are off as well. The standalone's WASAPI audio and WinMM MIDI are clap-wrapper's own
+    # backends, which don't use RtAudio, so CLAP_WRAPPER_STANDALONE_RTAUDIO (RtAudio in their
+    # place) is refused: it would leave the standalone with ASIO only. FORCE, so an older build
+    # tree's cache can't turn any of these back.
     if (WIN32)
+        if (CLAP_WRAPPER_STANDALONE_RTAUDIO)
+            message(FATAL_ERROR "CLAP_WRAPPER_STANDALONE_RTAUDIO must stay off on Windows: RtAudio is built for ASIO only, without WASAPI")
+        endif ()
         set(RTAUDIO_API_ASIO OFF CACHE BOOL "RtAudio's CMake never compiles its bundled ASIO files: they have no license grant" FORCE)
         set(RTAUDIO_API_WASAPI OFF CACHE BOOL "The standalone's WASAPI is clap-wrapper's own" FORCE)
         set(RTAUDIO_API_DS OFF CACHE BOOL "No DirectSound" FORCE)
+        set(RTAUDIO_API_JACK OFF CACHE BOOL "No JACK on Windows" FORCE)
+        set(RTAUDIO_API_PULSE OFF CACHE BOOL "No PulseAudio on Windows" FORCE)
     endif ()
     add_subdirectory(clap/clap-wrapper EXCLUDE_FROM_ALL)
 
@@ -206,10 +213,10 @@ if (GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
     # the parent scope, where clients/clap-first calls it; the cache entry stays OFF for RtAudio's
     # own CMake.
     if (WIN32)
-        if (NOT CMAKE_CXX_COMPILER_FRONTEND_VARIANT MATCHES "MSVC" OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
-            message(FATAL_ERROR "The standalone's ASIO builds only for Windows x64 with MSVC or ClangCL")
+        if (NOT CMAKE_CXX_COMPILER_FRONTEND_VARIANT MATCHES "MSVC" OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8
+                OR CMAKE_CXX_COMPILER_ARCHITECTURE_ID MATCHES "ARM")
+            message(FATAL_ERROR "The standalone's ASIO builds only for Windows x64 with MSVC or ClangCL (not ARM64)")
         endif ()
-        guarantee_rtaudio()
         set(gg_asiosdk ${CMAKE_CURRENT_SOURCE_DIR}/sst/sst-plugininfra/libs/asiosdk)
         set(gg_asio_sources
                 ${gg_asiosdk}/common/asio.cpp
@@ -222,6 +229,32 @@ if (GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
         if (NOT gg_asio_license MATCHES "General Public License \\(GPL\\) Version 3")
             message(FATAL_ERROR "${gg_asiosdk}/LICENSE.txt no longer offers GPLv3")
         endif ()
+        # The licensing review (INTENT §23 #56) covered these files' exact content: the license,
+        # every file compiled and every SDK header they include. A pin bump that changes any of
+        # them fails here, and gets a fresh review before its hash is updated. Line endings are
+        # normalized first: the SDK mixes CRLF and LF, and a checkout may convert them.
+        foreach (pinned IN ITEMS
+                "LICENSE.txt=61e56814f24b32216884b2db0b4dcc317111a5ab354d54d19dd9fc13d71b1c7a"
+                "common/asio.cpp=08438d3df3fa85839f7d6606c0c9cc843f2d79f4d3f00f9e2ed343db76ea8e5f"
+                "common/asio.h=6d83d9b6815d21c002b055c628860e8b0a1ca94c5ae1d9d18f137e308ba98096"
+                "common/asiosys.h=387fc21d036c3f39d7f74704bebb1e9cfe0bd8564ccd48088827162b06afe583"
+                "common/iasiodrv.h=0b7d9786fc77ad47dc16324629eb2ae9bff716a0edb023727df3c7ab1b59bf6d"
+                "host/asiodrivers.cpp=734ddc4db97bf977d099b4702c8a78930395a5646db315076284c3ae50096afc"
+                "host/asiodrivers.h=893c287ccf848ca1dde66051a87d6f4c9f62442e1eb79723fbf746d4c1c421a9"
+                "host/ginclude.h=303b54d99c05fb401632cdea28d558e9f3d6fbcaad0bde4080d1b7a59751ad52"
+                "host/pc/asiolist.cpp=9c908c1f97740156103b7f9fbdc0f93f2cc02ba9266e7b769afdd20e3d41b3d7"
+                "host/pc/asiolist.h=5b62bc60463e72fdce708b131f1c5b681377f8fc4ea24ab2918465b1f6e07de4")
+            string(REPLACE "=" ";" pinned "${pinned}")
+            list(GET pinned 0 file)
+            list(GET pinned 1 expected)
+            file(READ ${gg_asiosdk}/${file} content)
+            string(REPLACE "\r\n" "\n" content "${content}")
+            string(SHA256 actual "${content}")
+            if (NOT actual STREQUAL expected)
+                message(FATAL_ERROR "ASIO SDK ${file} changed (SHA-256 ${actual}): review its license again (INTENT §23 #56) before updating the hash in libs/CMakeLists.txt")
+            endif ()
+        endforeach ()
+        guarantee_rtaudio()
         target_sources(rtaudio PRIVATE ${gg_asio_sources})
         target_include_directories(rtaudio PRIVATE
                 ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty-impl/rtaudio-asio

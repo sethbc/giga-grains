@@ -45,6 +45,24 @@ make_clapfirst_plugins(
         standalone_fx "Giga Grains FX" "org.sethbc.giga-grains-fx"
 )
 
+# Windows: both standalones must have ASIO (INTENT §23 #56). libs/CMakeLists.txt hands
+# RTAUDIO_API_ASIO to clap-wrapper's standalone through this scope; if that ever stops reaching
+# it, nothing links RtAudio and the build still succeeds, without ASIO. So the configure fails
+# unless each standalone's clap-wrapper library offers ASIO and links RtAudio.
+if (WIN32)
+    foreach (standalone IN ITEMS gg_clapfirst_standalone gg_clapfirst_standalone_fx)
+        set(salib ${standalone}-clap-wrapper-standalone-lib)
+        if (NOT TARGET ${salib})
+            message(FATAL_ERROR "No ${salib}: clap-wrapper's standalone library has a new name")
+        endif ()
+        get_target_property(definitions ${salib} INTERFACE_COMPILE_DEFINITIONS)
+        get_target_property(links ${salib} LINK_LIBRARIES)
+        if (NOT "CLAP_WRAPPER_STANDALONE_ASIO=1" IN_LIST definitions OR NOT "base-sdk-rtaudio" IN_LIST links)
+            message(FATAL_ERROR "${standalone} was configured without ASIO (CLAP_WRAPPER_STANDALONE_ASIO, base-sdk-rtaudio)")
+        endif ()
+    endforeach ()
+endif ()
+
 # make_clapfirst_plugins gives every standalone the same bundle identifier
 # ("<BUNDLE_IDENTIFIER>.standalone"). Two apps sharing one would share their preferences and
 # confuse LaunchServices, so the FX app gets its own.

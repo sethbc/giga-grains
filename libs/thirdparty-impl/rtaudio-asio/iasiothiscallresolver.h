@@ -40,11 +40,16 @@ extern AsioDrivers *asioDrivers;
 
 // An AsioDrivers with no driver loaded, for the SDK's ASIOExit() (see above). Constructed
 // during static initialization on the main thread, as RtAudio's own AsioDrivers is.
+// (C++11, as RtAudio compiles: an object whose constructor installs it, which no compiler
+// warns is unused.)
 static AsioDrivers ggIdleAsioDrivers;
-[[maybe_unused]] static const bool ggIdleAsioDriversInstalled = [] {
-    if (!asioDrivers)
-        asioDrivers = &ggIdleAsioDrivers;
-    return true;
-}();
+static struct GgIdleAsioDriversInstaller
+{
+    GgIdleAsioDriversInstaller()
+    {
+        if (!asioDrivers)
+            asioDrivers = &ggIdleAsioDrivers;
+    }
+} ggIdleAsioDriversInstaller;
 
 #endif
