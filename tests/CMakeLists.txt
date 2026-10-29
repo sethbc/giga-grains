@@ -88,8 +88,9 @@ target_link_libraries(gg-tests PRIVATE ${gg_tests_libraries} gg::compiler-option
 # as "space/..."), and through them sst-effects and sst-filters, which gg-core links PRIVATE.
 target_include_directories(gg-tests PRIVATE ${CMAKE_SOURCE_DIR}/core/src)
 target_link_libraries(gg-tests PRIVATE sst-effects sst-filters)
-# metrics/spectrogram_tests.cpp reads the spectrogram PNG back with stb_image, compiled there.
-target_link_libraries(gg-tests PRIVATE gg::stb)
+# metrics/spectrogram_tests.cpp reads the spectrogram PNG back with stb_image, implemented in
+# gg::stb_impl.
+target_link_libraries(gg-tests PRIVATE gg::stb gg::stb_impl)
 # The search and settings-file tests set gg-media's test hooks (media/src/TestHooks.h).
 target_include_directories(gg-tests PRIVATE ${CMAKE_SOURCE_DIR}/media/src)
 # Scratch files (WAV/PNG round trips) go under the build tree, never a shared temp dir.

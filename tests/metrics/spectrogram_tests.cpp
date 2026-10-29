@@ -22,9 +22,8 @@
 #include "gg/metrics/Spectrogram.h"
 #include "support/Utf8.h"
 
-// stb_image's PNG reader, for this file only: nothing else in the project reads images, so
-// gg::stb_impl compiles just the writer.
-#define STB_IMAGE_IMPLEMENTATION
+// stb_image's PNG reader, declarations only (SYSTEM, through gg::stb): its implementation is
+// compiled in gg::stb_impl, outside our warning flags, with the same STBI_* defines.
 #define STBI_ONLY_PNG
 #define STBI_NO_STDIO
 #include <stb_image.h>
