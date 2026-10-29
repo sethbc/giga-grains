@@ -1,7 +1,7 @@
 {
   "mode": "fx",
   "sampleRate": 48000,
-  "durationSeconds": 11.0,
+  "durationSeconds": 11.5,
   "blockSize": 128,
   "seed": 1,
   "channels": 2,
@@ -13,9 +13,9 @@
     {"time": 3.0, "param": "Reverb Pre-delay", "value": 0.05},
     {"time": 4.0, "param": "Reverb Pre-delay", "value": 0.5},
     {"time": 5.0, "param": "Reverb Pre-delay", "value": 0.0},
-    {"time": 6.0, "param": "Reverb Size", "value": 0.8},
-    {"time": 7.0, "param": "Reverb Size", "value": 0.2},
-    {"time": 8.0, "param": "Reverb Size", "value": 0.6},
-    {"time": 9.0, "param": "Reverb Size", "value": 0.4}
+    {"time": 6.5, "param": "Reverb Size", "value": 0.8},
+    {"time": 7.5, "param": "Reverb Size", "value": 0.2},
+    {"time": 8.5, "param": "Reverb Size", "value": 0.6},
+    {"time": 9.5, "param": "Reverb Size", "value": 0.4}
   ]
 }

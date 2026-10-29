@@ -28,11 +28,13 @@ is deterministic, so on one platform the same commit gives the same bytes.
 
 ## The files
 
-Every file runs at **Level −6 dB**, except `08`, which uses the default **Level 0 dB**. No file
-peaks above −1 dBFS; the peaks below are measured on the renders.
+Every file runs at **Level −6 dB** except four. `08` and `08b` use the default **Level 0 dB**.
+`05` and `06` are at Mix 0, where Level only scales grains they keep out of the output, and
+leave it at its default, 0 dB. No file but `08b` peaks above −1 dBFS (see its row); the peaks
+below are measured on the renders.
 
-The instrument files (`01`, `02`, `07`, `08`) share one sample: a 4 s sine sweep, 50 Hz to
-8 kHz, at amplitude 0.5 (0.45 in `08`), read at Position 0.5. Any Space parameter a file doesn't
+The instrument files (`01`, `02`, `07`, `08`, `08b`) share one sample: a 4 s sine sweep, 50 Hz
+to 8 kHz, at amplitude 0.5 (0.45 in `08`), read at Position 0.5. Any Space parameter a file doesn't
 name is at its default: Diffusion 0, Amount 0, Decay 2 s, Size 50%, Damping 30%, Pre-delay 0,
 Modulation 25%, Dry to Reverb 0.
 
@@ -40,8 +42,8 @@ Two things hold in every file with reverb:
 
 - **The reverb is first heard about 60 ms after its input**, even at Pre-delay 0: those are
   Reverb 2's own early taps at Size 50%, not a delay we add.
-- **Decay's label reads short of the decay you hear** (ruling R-T5c). Measured T60s: label 1 s
-  → 1.72 s, 2 s → 2.89 s, 4 s → 5.09 s. The renders agree: `02b` (label 2 s) loses about 19 dB
+- **Decay's label reads short of the decay you hear** (ruling R-T5c). Measured T60s at Damping
+  0: label 1 s → 1.72 s, 2 s → 2.89 s, 4 s → 5.09 s. The renders, at Damping 30%, agree: `02b` (label 2 s) loses about 19 dB
   a second, a T60 of about 3 s; `02c` (label 8 s, Size 90%) about 6 dB a second, about 10 s.
 
 | File | Length | What it is | Listen for |
@@ -50,17 +52,18 @@ Two things hold in every file with reverb:
 | `02a-room.wav` | 6.0 s | Item 2, **small room**: Amount 50%, Decay 0.5 s, Size 20%. Three short stabs (keys 60, 67, 72, 0.15 s each, from 0.25 s), then key 60 held 1.5–2.5 s. Grains 62.5 ms. Peak −8.3 dBFS. | A short, close room. The tail is down 60 dB within about a second of the last note. |
 | `02b-medium.wav` | 8.0 s | Item 2, **medium**: the same at Decay 2 s, Size 50% (the defaults). Peak −9.4 dBFS. | A mid-size room; the tail lasts about 3 s. |
 | `02c-hall.wav` | 14.0 s | Item 2, **long hall**: the same at Decay 8 s, Size 90%. Peak −9.1 dBFS. | A long hall; the tail rings to the end of the file. In all three, the tail is smooth: no metallic ringing, no flutter, no grain. The stabs show it most. |
-| `03a-modulation-0.wav` | 10.0 s | Item 3, **Modulation 0**. A chord (keys 48, 55 and 64 over a 220 Hz sine, Density 6.0, 64 Hz) held 0.25–1.75 s into Amount 60%, Decay **∞**, Size 70%. After the chord the frozen tail holds for 8 s. Peak −6.8 dBFS. | The tail holds level (about −22 dBFS RMS from 2.5 s to the end). Does it ring, with fixed resonances that buzz or whistle? |
+| `03a-modulation-0.wav` | 10.0 s | Item 3, **Modulation 0**. A chord (keys 48, 55 and 64 over a 220 Hz sine, Density 6.0, 64 Hz) held 0.25–1.75 s into Amount 60%, Decay **∞**, Size 70%. After the chord the frozen tail holds for 8 s. Peak −6.8 dBFS. | The tail holds level (−22.1 dBFS RMS from 2.5 s to the end; `03b` −22.0, `03c` −21.3). Does it ring, with fixed resonances that buzz or whistle? |
 | `03b-modulation-25.wav` | 10.0 s | Item 3, **Modulation 25%** (the default). Peak −6.8 dBFS. | Less ringing than `03a`, with no audible pitch wobble. |
 | `03c-modulation-100.wav` | 10.0 s | Item 3, **Modulation 100%**. Peak −8.8 dBFS. | The ringing gone. Is the pitch now seasick, the chord's tones wavering? |
-| `04-fx-infinite-freeze.wav` | 12.0 s | Item 4. The FX over a stereo 110 Hz–1760 Hz sweep, 3 s long, Mix 1, Density 6.0, Amount 50%. Key 60 held 0.5–4.0 s freezes the input at 0.5 s. Decay 2 s, then **∞ from 1.5 s**, then **2 s again at 8.0 s**. Peak −7.2 dBFS. | The pad builds while the note is held, then hangs on its own from 4 s to 8 s (about −17.5 dBFS RMS) and stays clean. From 8 s it fades out within about 2 s. **Listen at 1.5 s and 8.0 s** for the switch into and out of ∞ (see the checklist). |
+| `04-fx-infinite-freeze.wav` | 12.0 s | Item 4. The FX over a stereo 110 Hz–1760 Hz sweep, 3 s long, Mix 1, Density 6.0, Amount 50%. Key 60 held 0.5–4.0 s freezes the input at 0.5 s. Decay 2 s, then **∞ from 1.5 s**, then **2 s again at 8.0 s**. Peak −7.1 dBFS. | The pad builds while the note is held, then hangs on its own from 4 s to 8 s (−17.5 dBFS RMS) and stays clean. From 8 s it fades out within about 2 s. **Listen at 1.5 s and 8.0 s:** the switch into and out of ∞ glides over 30 ms and should be inaudible (see the checklist). |
 | `05-fx-dry-send.wav` | 8.0 s | Item 5. The FX over `loop-48k.wav` (noise bursts every 250 ms, 4 s), **Mix 0**, Amount 80%. Dry to Reverb 0 until 1.0 s, then 100%. Peak −2.9 dBFS (a dry burst). | Before 1.0 s, the dry input alone, silent between bursts. After it, the same bursts in a room: the gaps fill at about −36 dBFS RMS, and the room rings on after the input stops at 4 s. No grains anywhere. |
-| `06-fx-automate-predelay-size.wav` | 11.0 s | Item 6. The FX over a 330 Hz sine (amplitude 0.4, 10 s), Mix 0, Dry to Reverb 100%, Amount 70%: the sine plus its reverb, the worst case for both artefacts. **Pre-delay** moves each second from 1 s: 100, 300, 50, 500, 0 ms. **Size** moves each second from 6 s: 80, 20, 60, 40%. Peak −3.2 dBFS. | 1–6 s: each Pre-delay move glides like tape, with no click. A glide bends the reverb's pitch: down an octave while the delay grows, up a fifth while it shrinks, for as long as it moves (up to 1 s, for 0 to 500 ms). 6–10 s: each Size move glitches. **How bad is it?** (see the checklist). |
+| `06-fx-automate-predelay-size.wav` | 11.5 s | Item 6. The FX over a 330 Hz sine (amplitude 0.4, 10 s), Mix 0, Dry to Reverb 100%, Amount 70%: the sine plus its reverb, the worst case for both artefacts. **Pre-delay** moves each second from 1 s: 100, 300, 50, 500, 0 ms. **Size** moves each second from 6.5 s, after the last glide has ended: 80, 20, 60, 40%. Peak −3.3 dBFS. | 1–6 s: each Pre-delay move glides like tape, with no click. A glide bends the reverb's pitch: down an octave while the delay grows, up a fifth while it shrinks, for as long as it moves (up to 1 s, for 0 to 500 ms). 6.5–10 s: each Size move glitches. **How bad is it?** (see the checklist). |
 | `07-defaults.wav` | 10.0 s | Item 7. Key 60 held 0.25–2.25 s dry, then the same note held 4.0–6.0 s with Amount at 50% (set at 3.5 s). Every other Space parameter at its default. Peak −8.9 dBFS. | The second note in the room a user gets on first turning Amount up: Decay 2 s, Size 50%, Damping 30%, Pre-delay 0, Modulation 25%. |
-| `08-loudness.wav` | 10.0 s | Item 8. **Level 0 dB** (the default) and a dense cloud, Density 7.0 (128 Hz), on the sweep at amplitude 0.45. Key 60 held 0.25–2.25 s dry, then held 4.0–6.0 s with **Amount 100%** (set at 3.5 s). Peak −1.7 dBFS. | The first note is the default loudness without reverb (peak −3.7 dBFS, RMS −14.6 dBFS over 0.5–2.25 s), already past the wet soft limiter's knee as in sub-project 3. The second adds the full return (peak −1.7 dBFS, RMS −13.3 dBFS over 4.5–6 s). Does the sum sound squashed, or the jump too loud? |
+| `08-loudness.wav` | 10.0 s | Item 8. **Level 0 dB** (the default) and a dense cloud, Density 7.0 (128 Hz), on the sweep at amplitude 0.45. Key 60 held 0.25–2.25 s dry, then held 4.0–6.0 s with **Amount 100%** (set at 3.5 s). Peak −1.7 dBFS. | The first note is the default loudness without reverb (peak −3.7 dBFS, RMS −14.6 dBFS over 0.5–2.25 s), already past the wet soft limiter's knee. The second adds the full return (peak −1.7 dBFS, RMS −13.3 dBFS over 4.5–6 s). Does the sum sound squashed, or the jump too loud? |
+| `08b-loudness-sources.wav` | 10.0 s | Item 8 at **sub-project 3's exact default-loudness settings** (its `01-note-60-level-0db`): the sweep at amplitude 0.5, Density 5.0 (32 Hz), Level 0 dB, key 60 held 0.25–2.25 s dry, then held 4.0–6.0 s with **Amount 100%** (set at 3.5 s). **Peak −0.75 dBFS**, the one file above −1 dBFS: kept, so the first note is exactly what sub-project 3's listening check heard. | The first note is sub-project 3's file again (peak −3.1 dBFS, RMS −12.9 dBFS over 0.5–2.25 s). The second adds the full return (peak −0.75 dBFS, RMS −12.4 dBFS over 4.5–6 s). Turn your monitors down a little. |
 
-`08`'s sample is at 0.45, not sub-project 3's 0.5, so the file stays under −1 dBFS: at 0.5 its
-peak was −0.95 dBFS.
+`08`'s sample is at 0.45, not sub-project 3's 0.5, and it is denser (Density 7.0, not 5.0), so
+it stays under −1 dBFS. `08b` is sub-project 3's settings exactly, and peaks at −0.75 dBFS.
 
 ## Checklist (spec §9)
 
@@ -73,12 +76,12 @@ peak was −0.95 dBFS.
 - [ ] **4. ∞ (`04`).** With a frozen FX note, the pad hangs and stays clean; bringing Decay down
   fades it. At ∞ the highs still fade, by Damping (30% here); the lows hold, and the mids fade
   far more slowly than the highs (ruling P2). Is ∞ too dark?
-  - **Entering ∞ may make a small step.** The render shows a faint broadband transient about
-    30 ms after Decay reaches ∞ (1.5 s), and another about 70 ms after it leaves (8.0 s): its
-    energy above 2 kHz peaks near −71 dBFS (−65 dBFS on leaving), about 45 dB below the pad and
-    30 dB above the hiss floor before it. At ∞ that energy keeps circulating, a hiss near
-    −90 dBFS above 2 kHz whose highs fade over a few seconds (the spectrogram's grey wedge from
-    1.5 s). Can you hear either switch?
+  - **The switches into and out of ∞ glide** (ruling R-T8b): over 30 ms the loop moves between
+    its finite and infinite settings, and the LF dampers keep their state, so neither switch
+    steps the loop. Before the fix the render had a broadband step at each: above 3 kHz (where
+    this file has almost nothing else) it peaked at −85 dBFS entering and −89 dBFS leaving, and
+    at ∞ it went on circulating as a faint hiss; the golden click detector scored the file 121.
+    Now those peaks are −119 and −109 dBFS, and the score is 0. Can you hear either switch?
 - [ ] **5. Dry to Reverb (`05`).** With Mix 0 the input sits in the room, and the grains stay out
   of it.
 - [ ] **6. Automating Pre-delay and Size (`06`).** Pre-delay glides like tape, with no click. It
@@ -91,13 +94,14 @@ peak was −0.95 dBFS.
 - [ ] **7. Defaults (`07`).** The five defaults behind Amount (Decay 2 s, Size 50%, Damping
   30%, Pre-delay 0, Modulation 25%) sound right when Amount is first turned up. They affect
   nothing while Amount is 0, so this is what a user hears first. Change any? **Your call.**
-- [ ] **8. Loudness (`08`).** Amount at 100% with a dense cloud at the default Level: the
+- [ ] **8. Loudness (`08`, `08b`).** Amount at 100% with a dense cloud at the default Level: the
   grains go through the wet soft limiter, and the return through a soft limiter of its own,
   added after. Loud but not squashed? And the instrument's default-loudness row in
   `docs/m1-carry-over.md` (closed: the default Level stays), heard again with reverb added:
   still right? It reopens only if you hear a problem.
 - [ ] **Decay's scale.** Throughout, does the label match what you hear well enough? It reads
-  short of the measured decay: labels 1, 2 and 4 s ring for T60s of 1.72, 2.89 and 5.09 s.
+  short of the measured decay: labels 1, 2 and 4 s ring for T60s of 1.72, 2.89 and 5.09 s at
+  Damping 0.
   The label is Surge's own; recalibrating would be a constant offset in the mapping. **Your
   call:** keep Surge's scale, or recalibrate.
 
@@ -117,7 +121,7 @@ build of the commit you are judging (CLAUDE.md, "Validators", shows the AU's ins
   "∞".
 - [ ] **Automating Amount and Decay in Live.** Draw automation for Reverb Amount and Reverb
   Decay, Decay running into ∞ and back. Amount moves smoothly, with no zipper. Decay changes the
-  tail's length without clicks; listen for the small step when it enters ∞.
+  tail's length without clicks, entering and leaving ∞ included.
 - [ ] **The tail after the clip stops.** With a long Decay (or ∞), stop a clip, or play a short
   one, and let the reverb ring. In both hosts the tail goes on after the clip ends, and nothing
   cuts it off (ruling R-T7a):
