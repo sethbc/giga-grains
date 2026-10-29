@@ -207,7 +207,11 @@ template <typename FXConfig> struct Reverb2 : core::EffectTemplateBase<FXConfig>
     Reverb2(typename FXConfig::GlobalStorage *s, typename FXConfig::EffectStorage *e,
             typename FXConfig::ValueStorage *p);
 
-    void initialize() { setvars(true); }
+    void initialize()
+    {
+        setvars(true);
+        _infiniteDcCoef = infiniteDcCoefficient(this->sampleRate()); // GG PATCH
+    }
     void processBlock(float *__restrict L, float *__restrict R);
 
     // GG PATCH: Giga Grains' additions (Space spec §6.3-§6.4). Call them between blocks.
@@ -217,16 +221,32 @@ template <typename FXConfig> struct Reverb2 : core::EffectTemplateBase<FXConfig>
     /// (ruling P1).
     static constexpr double kPredelayMaxRate{0.5};
 
+    /// The DC blocker's cutoff at infinity, in Hz (ruling R-T8a).
+    static constexpr double kInfiniteDcHz{0.5};
+
     /// Infinite decay (S7). From the next block: the loop's decay multiplier ramps, over that
-    /// block, to exactly 1.0f; the LF dampers are bypassed, held at rest so that leaving
-    /// infinity starts them from rest; the HF damping coefficient's lower clamp is 0 rather
-    /// than 0.01, so HF damping 0 is lossless; and loopClip bounds each block's signal after the
-    /// dampers. Off, the loop is Reverb 2's own.
+    /// block, to exactly 1.0f; the HF damping coefficient's lower clamp is 0 rather than 0.01,
+    /// so HF damping 0 is lossless; and the LF dampers are bypassed, held at rest so that
+    /// leaving infinity starts them from rest.
+    ///
+    /// **In the LF dampers' place, a DC blocker** (ruling R-T8a): in each block, where the LF
+    /// damper sits, a one-pole high-pass at kInfiniteDcHz. A lossless loop integrates DC (the
+    /// grains' small offsets would climb toward loopClip's knee over a minute's hold). Over
+    /// 30 s at infinity it costs under 0.1 dB at 50 Hz and up, and about 1 dB at 10-20 Hz. It
+    /// starts from rest on entering infinity and is put back to rest on leaving it (and by
+    /// clear()).
+    ///
+    /// Then loopClip bounds each block's signal. Off, the loop is Reverb 2's own.
     void setInfinite(bool on) noexcept
     {
         if (on && !_infinite)
         {
             for (auto &d : _lf_damper)
+                d = onepole_filter();
+        }
+        if (!on && _infinite)
+        {
+            for (auto &d : _dc_blocker)
                 d = onepole_filter();
         }
         _infinite = on;
@@ -417,6 +437,16 @@ template <typename FXConfig> struct Reverb2 : core::EffectTemplateBase<FXConfig>
         predelayReach = int(std::ceil(kMaxPredelaySeconds * sr)) + 4;
     }
 
+    /// process_highpass's c0 for a cutoff of kInfiniteDcHz at `sampleRate`: 1 - exp(-w), with
+    /// w = 2 pi fc / sampleRate, from its series to w^3. w is below 4e-4 at 8 kHz and up, so
+    /// the next term is far below a float's precision, and no libm means every platform gets
+    /// the same bits.
+    static float infiniteDcCoefficient(double sampleRate) noexcept
+    {
+        const double w = 2.0 * M_PI * kInfiniteDcHz / sampleRate;
+        return float(w - w * w / 2.0 + w * w * w / 6.0);
+    }
+
     /// Lists, in out, what a clear of a delay line or the pre-delay must zero, and keeps the
     /// line's bookkeeping. Such a line writes position 1, 2, ... after construction or a clear,
     /// sweeping its whole buffer whatever its length, and a read `d` back from write position
@@ -467,6 +497,8 @@ template <typename FXConfig> struct Reverb2 : core::EffectTemplateBase<FXConfig>
             d = onepole_filter();
         for (auto &d : _lf_damper)
             d = onepole_filter();
+        for (auto &d : _dc_blocker)
+            d = onepole_filter();
         _state = 0.f;
         _decay_multiply.reset();
         _diffusion.reset();
@@ -502,6 +534,8 @@ template <typename FXConfig> struct Reverb2 : core::EffectTemplateBase<FXConfig>
     bool _clearing{false};
 
     bool _infinite{false};
+    onepole_filter _dc_blocker[NUM_BLOCKS]; // at rest whenever _infinite is false
+    float _infiniteDcCoef{0.f};             // process_highpass's c0 for kInfiniteDcHz
     bool _pdSmoothed{false};       // setPredelaySamples has been called since the last clear()
     double _pdDelay{0.0};          // the smoothed pre-delay now, in samples (64-bit: a position)
     double _pdTarget{0.0};         // and where it is going
@@ -747,9 +781,10 @@ template <typename FXConfig> void Reverb2<FXConfig>::processBlock(float *dataL, 
             }
 
             x = _hf_damper[b].process_lowpass(x, hdc);
-            // GG PATCH: at infinity, no LF damping, and the soft clip.
+            // GG PATCH: at infinity, the DC blocker in the LF damper's place, then the soft
+            // clip.
             if (_infinite)
-                x = loopClip(x);
+                x = loopClip(_dc_blocker[b].process_highpass(x, _infiniteDcCoef));
             else
                 x = _lf_damper[b].process_highpass(x, ldc);
 

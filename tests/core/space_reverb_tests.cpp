@@ -1172,3 +1172,131 @@ TEST_CASE("SpaceReverb maps Size, Damping and Modulation", "[space]")
     CHECK(allFinite(fromNan));
     CHECK(sameBits(fromNan, run(bottom, 0.5)));
 }
+
+// ---------------------------------------------------------------------------------------------
+// The patched Reverb 2's DC blocker at infinity (ruling R-T8a): a lossless loop integrates DC,
+// so at infinity a sub-audio high-pass stands where the LF damper stood.
+
+namespace
+{
+double mean(const std::vector<float> &x, double fromSeconds, double toSeconds)
+{
+    double sum = 0.0;
+    const size_t a = frames(fromSeconds), b = frames(toSeconds);
+    for (size_t i = a; i < b; ++i)
+    {
+        sum += x[i];
+    }
+    return sum / double(b - a);
+}
+} // namespace
+
+TEST_CASE("patched Reverb2 infinite blocks a DC input", "[space]")
+{
+    // A constant 0.05 for 10 s, then silence to 20 s, at infinity with no damping. Each trip
+    // round the loop adds the input once per block, four times, so a lossless loop's DC would
+    // climb by about 0.36 a second here (0.2 per 0.55 s trip at Size 0) and reach loopClip's
+    // knee within seconds. The blocker holds the loop's DC well below the knee, takes it back
+    // toward 0 while the input is still held, and to 0 once it stops. Smallest, middle and
+    // largest room.
+    constexpr float kDc = 0.05f;
+    for (const float roomSize : {-1.f, 0.f, 1.f})
+    {
+        GgFxConfig::Storage storage;
+        storage.sampleRate = kRate;
+        setRingingValues(storage);
+        storage.values[Rev2::rev2_room_size] = roomSize;
+        storage.values[Rev2::rev2_hf_damping] = 0.f;
+        auto reverb = std::make_unique<LoopProbe>(&storage, &storage, &storage);
+        reverb->initialize();
+        reverb->setInfinite(true);
+
+        Stereo in(chunkAt(20.0) * kChunk);
+        std::fill_n(in.left.begin(), frames(10.0), kDc);
+        std::fill_n(in.right.begin(), frames(10.0), kDc);
+        float peakState = 0.f;
+        const auto out = render(*reverb, in, [&](size_t) {
+            peakState = std::max(peakState, std::fabs(reverb->loopState()));
+        });
+        REQUIRE(allFinite(out));
+
+        // The largest output mean over any half second while the input is held (from 0.5 s,
+        // once Reverb 2's mix has faded the dry input out).
+        double peakMean = 0.0;
+        for (double t = 0.5; t < 10.0; t += 0.5)
+        {
+            peakMean = std::max(peakMean, std::fabs(mean(out.left, t, t + 0.5)));
+        }
+        const double held = mean(out.left, 9.0, 10.0);
+        const double after = mean(out.left, 19.0, 20.0);
+        WARN("Size " << roomSize << ": loop state peak " << peakState
+                     << ", largest half-second output mean " << peakMean << ", mean 9-10 s " << held
+                     << ", mean 19-20 s " << after);
+        CHECK(peakState < 0.5f);                    // half of loopClip's knee
+        CHECK(peakMean < 0.25);                     // a quarter of it
+        CHECK(std::fabs(held) < 0.1 * double(kDc)); // decaying while the input is held
+        CHECK(std::fabs(after) < 0.01 * double(kDc));
+    }
+}
+
+TEST_CASE("patched Reverb2 clear while infinite matches a fresh instance", "[space]")
+{
+    // A reverb used at infinity right up to the clear, so the DC blocker holds state when
+    // clear() turns infinity off; then infinity again after the clear, from 1 s. Cleared at
+    // once and in steps.
+    for (const bool inSteps : {false, true})
+    {
+        GgFxConfig::Storage storage;
+        storage.sampleRate = kRate;
+        setRingingValues(storage);
+        auto used = std::make_unique<Rev2Patched>(&storage, &storage, &storage);
+        used->initialize();
+        render(*used, noiseThenSilence(1.5, 1.5, 0.5f), [&](size_t c) {
+            used->setInfinite(c >= chunkAt(0.2));
+            used->setPredelaySamples(1000.f);
+        });
+        if (inSteps)
+        {
+            while (!used->clearStep(4096))
+            {
+            }
+        }
+        else
+        {
+            used->clear();
+        }
+        const auto a = renderAfter(*used, storage, 2.0, true, 2000.f);
+        const auto b = renderFresh(storage, 2.0, true, 2000.f);
+        INFO("in steps: " << inSteps);
+        REQUIRE(rms(b.left, 1.0, 2.0) > 0.01);
+        REQUIRE(sameBits(a, b));
+    }
+}
+
+TEST_CASE("patched Reverb2 reentering infinite starts the DC blocker from rest", "[space]")
+{
+    // A constant 0.05 at infinity for 1 s fills the DC blocker's state. Then 2 s at the
+    // shortest Decay (1/16 s), silent, empties the loop, and infinity again from 3 s must hold
+    // only that near-silence. A blocker left with its state would subtract it from the loop on
+    // re-entering, a step that infinity would then hold.
+    GgFxConfig::Storage storage;
+    storage.sampleRate = kRate;
+    setRingingValues(storage);
+    storage.values[Rev2::rev2_hf_damping] = 0.f;
+    auto reverb = std::make_unique<Rev2Patched>(&storage, &storage, &storage);
+    reverb->initialize();
+
+    Stereo in(chunkAt(5.0) * kChunk);
+    std::fill_n(in.left.begin(), frames(1.0), 0.05f);
+    std::fill_n(in.right.begin(), frames(1.0), 0.05f);
+    const auto out = render(*reverb, in, [&](size_t c) {
+        const bool infinite = c < chunkAt(1.0) || c >= chunkAt(3.0);
+        reverb->setInfinite(infinite);
+        storage.values[Rev2::rev2_decay_time] = infinite ? 1.f : -4.f;
+    });
+    const double filled = rms(out.left, 0.5, 1.0);
+    const double reentered = rms(out.left, 3.0, 5.0);
+    WARN("RMS 0.5-1 s " << filled << ", after re-entering infinity (3-5 s) " << reentered);
+    REQUIRE(filled > 0.01);
+    CHECK(reentered < 1e-6);
+}
