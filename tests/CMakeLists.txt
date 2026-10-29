@@ -251,14 +251,19 @@ endforeach ()
 
 # The scripts (carry-over [130]-[132]), label `scripts`: scripts/check.sh against stub cmake and
 # ctest (replaying CTest 3.31's and 4.4's recorded output) in a fake source tree, and
-# scripts/worktree-setup.sh in scratch git repositories, all under the build tree. Not on
-# Windows, where the scripts' bash (Git Bash) is unverified (CLAUDE.md).
+# scripts/worktree-setup.sh in scratch git repositories, all under the build tree; and the
+# release pipeline's scripts (scripts/release/) against scratch files. Not on Windows, where the
+# scripts' bash (Git Bash) is unverified (CLAUDE.md).
 if (NOT WIN32)
     find_program(GG_BASH bash REQUIRED)
     add_test(NAME scripts_check_and_worktree_setup
             COMMAND ${GG_BASH} ${CMAKE_CURRENT_SOURCE_DIR}/scripts/scripts_tests.sh
             ${CMAKE_CURRENT_BINARY_DIR}/scripts-tests ${CMAKE_COMMAND})
     set_tests_properties(scripts_check_and_worktree_setup PROPERTIES LABELS scripts)
+    add_test(NAME scripts_release
+            COMMAND ${GG_BASH} ${CMAKE_CURRENT_SOURCE_DIR}/scripts/release_scripts_tests.sh
+            ${CMAKE_CURRENT_BINARY_DIR}/release-scripts-tests)
+    set_tests_properties(scripts_release PROPERTIES LABELS scripts)
 endif ()
 
 # RTSan's negative control (rtsan build only), labels `rt` and `rtsan`: a program that allocates
