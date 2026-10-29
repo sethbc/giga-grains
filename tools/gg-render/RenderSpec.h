@@ -247,7 +247,9 @@ struct RenderSpec
 };
 
 /// The parameter whose name (paramMeta's: "Mix", "Level", "Position", "Size", "Density",
-/// "Distribution", "Pitch", "Spray", "Stereo" or "Freeze") is `name`, matched exactly.
+/// "Distribution", "Pitch", "Spray", "Stereo", "Freeze", and Space's "Diffusion", "Reverb Amount",
+/// "Reverb Decay", "Reverb Size", "Reverb Damping", "Reverb Pre-delay", "Reverb Modulation" or
+/// "Dry to Reverb") is `name`, matched exactly.
 std::optional<gg::core::ParamSlot> paramSlotNamed(std::string_view name);
 
 /// Parses and validates a render spec. On failure returns nullopt and sets error to a message

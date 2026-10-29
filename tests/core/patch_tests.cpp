@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright 2026, the Giga Grains authors (see git history)
 
-// The patch: the ten slice parameters (spec §4) and their versioned XML state, through gg-core's
+// The patch: the slice's ten parameters (spec §4) and Space's eight (sub-project 4's spec §6.5),
+// and their versioned XML state, through gg-core's
 // public API only (gg/core/ParamIds.h, gg/core/PatchState.h). This file never includes
 // sst-plugininfra or tinyxml (ruling M1-l). The IDs, names, ranges and defaults are spelled out
 // literally, from Global Constraints' parameter table, so a change to gg/core/ParamIds.h or
@@ -65,7 +66,20 @@ constexpr std::array<Expected, kParamCount> kTable{{
     {ParamSlot::Spray, 0x010006, "Spray", 0.f, 1.f, 0.36033038f, kAutoMod},
     {ParamSlot::Stereo, 0x010007, "Stereo", 0.f, 1.f, 0.5f, kAutoMod},
     {ParamSlot::Freeze, 0x010008, "Freeze", 0.f, 1.f, 0.0f, kAutoMod | CLAP_PARAM_IS_STEPPED},
+    {ParamSlot::Diffusion, 0x01000B, "Diffusion", 0.f, 1.f, 0.0f, kAutoMod},
+    {ParamSlot::ReverbAmount, 0x000003, "Reverb Amount", 0.f, 1.f, 0.0f, kAutoMod},
+    {ParamSlot::ReverbDecay, 0x000004, "Reverb Decay", -2.f, 6.068255709804611f, 1.0f, kAutoMod},
+    {ParamSlot::ReverbSize, 0x000005, "Reverb Size", 0.f, 1.f, 0.5f, kAutoMod},
+    {ParamSlot::ReverbDamping, 0x000006, "Reverb Damping", 0.f, 1.f, 0.3f, kAutoMod},
+    {ParamSlot::ReverbPredelay, 0x000007, "Reverb Pre-delay", 0.f, 0.5f, 0.0f, kAutoMod},
+    {ParamSlot::ReverbModulation, 0x000008, "Reverb Modulation", 0.f, 1.f, 0.25f, kAutoMod},
+    {ParamSlot::DryToReverb, 0x000009, "Dry to Reverb", 0.f, 1.f, 0.0f, kAutoMod},
 }};
+
+/// Decay's ∞ region starts at log2 60 and its top is 2% of its travel above that (Global
+/// Constraints).
+constexpr float kDecayInfinite = 5.906890595608519f;
+constexpr float kDecayMax = 6.068255709804611f;
 
 /// The instrument's Position: 0–100% of the loaded file, 0% by default (spec §6.8).
 constexpr float kInstrumentPositionDefault = 0.0f;
@@ -141,7 +155,13 @@ Loaded distinct()
     for (size_t i = 0; i < kParamCount; ++i)
     {
         const auto &e = kTable[i];
+        // A quarter of the way up, or three quarters where the default sits a quarter up
+        // (Reverb Modulation's).
         l.values[i] = e.minVal + 0.25f * (e.maxVal - e.minVal);
+        if (l.values[i] == e.defaultVal)
+        {
+            l.values[i] = e.minVal + 0.75f * (e.maxVal - e.minVal);
+        }
         REQUIRE(l.values[i] != e.defaultVal);
     }
     l.seed = 42;
@@ -166,8 +186,12 @@ std::string handState(std::string_view params, std::string_view version = "1",
 
 TEST_CASE("param ids, names, ranges and defaults are pinned", "[core]")
 {
-    STATIC_REQUIRE(kParamCount == 10);
-    STATIC_REQUIRE(std::is_same_v<ParamValues, std::array<float, 10>>);
+    STATIC_REQUIRE(kParamCount == 18);
+    STATIC_REQUIRE(std::is_same_v<ParamValues, std::array<float, 18>>);
+    STATIC_REQUIRE(std::is_same_v<decltype(gg::core::kDecayInfinite), const float>);
+    STATIC_REQUIRE(std::is_same_v<decltype(gg::core::kDecayMax), const float>);
+    STATIC_REQUIRE(gg::core::kDecayInfinite == kDecayInfinite);
+    STATIC_REQUIRE(gg::core::kDecayMax == kDecayMax);
 
     for (size_t i = 0; i < kParamCount; ++i)
     {
@@ -215,17 +239,18 @@ TEST_CASE("param ids, names, ranges and defaults are pinned", "[core]")
     CHECK(gg::core::paramMeta(ParamSlot::Freeze, Mode::Fx).type ==
           sst::basic_blocks::params::ParamMetaData::INT);
 
-    // IDs that aren't ours: the reserved index 0, scopes and indices one past the table, and
-    // the "unknown id" of the bad-state test.
-    for (clap_id unknown :
-         {0x000000u, 0x000003u, 0x010000u, 0x010009u, 0x020001u, 0x777777u, CLAP_INVALID_ID})
+    // IDs that aren't ours: the reserved index 0, scopes and indices one past the table,
+    // sub-project 5's reserved Texture, Feedback and first macro (0x010009, 0x01000A, 0x000011),
+    // and the "unknown id" of the bad-state test.
+    for (clap_id unknown : {0x000000u, 0x00000Au, 0x000011u, 0x010000u, 0x010009u, 0x01000Au,
+                            0x01000Cu, 0x020001u, 0x777777u, CLAP_INVALID_ID})
     {
         INFO("id " << unknown);
         CHECK_FALSE(gg::core::slotForId(unknown).has_value());
     }
 }
 
-TEST_CASE("the state lists the ten params in slot order", "[core]")
+TEST_CASE("the state lists every param in slot order", "[core]")
 {
     CHECK(gg::core::kPatchVersion == 1u);
     const auto state = toStateXml(defaults(), 0);
@@ -292,6 +317,49 @@ TEST_CASE("a param missing from a state takes the product's default", "[core]")
     }
 }
 
+TEST_CASE("a state saved before Space loads at the defaults", "[core][space]")
+{
+    // A default FX state as main wrote it before Space (5eefffc): toStateXml's output for the
+    // FX's defaults and seed 0, copied literally. It names the ten params of sub-projects 1 to 3
+    // only.
+    constexpr std::string_view kPreSpaceState =
+        R"(<patch id="org.sethbc.giga-grains.patch" version="1" name="Init"><params>)"
+        R"(<p id="1" v="0.500000000000" bits="3f000000" />)"
+        R"(<p id="2" v="0.000000000000" bits="00000000" />)"
+        R"(<p id="65537" v="0.289676576853" bits="3e94507d" />)"
+        R"(<p id="65538" v="-2.736965656281" bits="c02f2a72" />)"
+        R"(<p id="65539" v="4.000000000000" bits="40800000" />)"
+        R"(<p id="65540" v="0.500000000000" bits="3f000000" />)"
+        R"(<p id="65541" v="0.000000000000" bits="00000000" />)"
+        R"(<p id="65542" v="0.360330373049" bits="3eb87d39" />)"
+        R"(<p id="65543" v="0.500000000000" bits="3f000000" />)"
+        R"(<p id="65544" v="0.000000000000" bits="00000000" />)"
+        R"(</params><engine seed="0" /></patch>)";
+
+    // Into values that differ from every default, so each one is seen to be written. The ten it
+    // names come back as written (the FX's defaults, Position included in either product); the
+    // eight it doesn't take their defaults. No migration: the version is still 1.
+    for (const Mode mode : {Mode::Fx, Mode::Instrument})
+    {
+        Loaded l = distinct();
+        REQUIRE(l.load(kPreSpaceState, mode));
+        CHECK(l.valueBits() == Loaded{defaults(), 0, 0}.valueBits());
+        CHECK(l.seed == 0u);
+        CHECK(l.migratedFromVersion == 0u);
+        for (size_t i = static_cast<size_t>(ParamSlot::Diffusion); i < kParamCount; ++i)
+        {
+            INFO("param " << kTable[i].name);
+            CHECK(bitsOf(l.values[i]) == bitsOf(kTable[i].defaultVal));
+        }
+
+        // Saving it writes today's state: the ten as they were, then the eight defaults.
+        const auto resaved = toStateXml(l.values, l.seed);
+        const auto oldParams = kPreSpaceState.substr(0, kPreSpaceState.find("</params>"));
+        CHECK(resaved.starts_with(oldParams));
+        CHECK(resaved == toStateXml(defaults(), 0));
+    }
+}
+
 TEST_CASE("display text follows the engine mapping", "[core]")
 {
     // Position and Spray display seconds = A (2^(8v) - 1); Size seconds = 2^v; Density
@@ -321,6 +389,68 @@ TEST_CASE("display text follows the engine mapping", "[core]")
     CHECK(text(ParamSlot::Stereo, 0.5f) == "50.00 %");
     CHECK(text(ParamSlot::Freeze, 0.f) == "Off");
     CHECK(text(ParamSlot::Freeze, 1.f) == "On");
+    // Space's (sub-project 4's spec §6.5). Decay is log2 seconds, in ms below 1 s and ∞ over the
+    // top 2% of its travel; Pre-delay is seconds, shown in ms.
+    CHECK(text(ParamSlot::Diffusion, 0.f) == "0.00 %");
+    CHECK(text(ParamSlot::Diffusion, 1.f) == "100.00 %");
+    CHECK(text(ParamSlot::ReverbAmount, 0.5f) == "50.00 %");
+    CHECK(text(ParamSlot::ReverbDecay, -2.f) == "250.0 ms");
+    CHECK(text(ParamSlot::ReverbDecay, 1.f) == "2.00 s");
+    CHECK(text(ParamSlot::ReverbDecay, 5.9f) == "59.71 s");
+    CHECK(text(ParamSlot::ReverbDecay, 5.95f) == "∞");
+    CHECK(text(ParamSlot::ReverbDecay, kDecayMax) == "∞");
+    CHECK(text(ParamSlot::ReverbSize, 0.5f) == "50.00 %");
+    CHECK(text(ParamSlot::ReverbDamping, 0.3f) == "30.00 %");
+    CHECK(text(ParamSlot::ReverbPredelay, 0.f) == "0.0 ms");
+    CHECK(text(ParamSlot::ReverbPredelay, 0.025f) == "25.0 ms");
+    CHECK(text(ParamSlot::ReverbPredelay, 0.5f) == "500.0 ms");
+    CHECK(text(ParamSlot::ReverbModulation, 0.25f) == "25.00 %");
+    CHECK(text(ParamSlot::DryToReverb, 0.f) == "0.00 %");
+}
+
+TEST_CASE("Decay shows infinity over exactly the infinite region", "[core][space]")
+{
+    // "∞" from kDecayInfinite (log2 60) up, to the float: the region toSpaceParams treats as
+    // infinite. "∞" parses back to the top of the range. Both products alike.
+    for (const Mode mode : {Mode::Fx, Mode::Instrument})
+    {
+        const auto &m = gg::core::paramMeta(ParamSlot::ReverbDecay, mode);
+        const auto text = [&m](float v) { return m.valueToString(v).value_or("<none>"); };
+        CHECK(text(kDecayInfinite) == "∞");
+        const float below = std::nextafter(kDecayInfinite, 0.f);
+        CHECK(text(below) == "60.00 s");
+        // Every float within 64 of the boundary on either side, then a sweep of the range.
+        float v = below;
+        for (int i = 0; i < 64; ++i)
+        {
+            v = std::nextafter(v, 0.f);
+        }
+        for (int i = 0; i < 128; ++i, v = std::nextafter(v, 10.f))
+        {
+            if ((text(v) == "∞") != (v >= kDecayInfinite))
+            {
+                INFO("Decay " << v << " shows '" << text(v) << "'");
+                FAIL_CHECK("∞ shown off the infinite region");
+            }
+        }
+        for (int i = 0; i <= 1000; ++i)
+        {
+            const float s = -2.f + (kDecayMax + 2.f) * static_cast<float>(i) / 1000.f;
+            if ((text(s) == "∞") != (s >= kDecayInfinite))
+            {
+                INFO("Decay " << s << " shows '" << text(s) << "'");
+                FAIL_CHECK("∞ shown off the infinite region");
+            }
+        }
+
+        std::string err;
+        const auto back = m.valueFromString("∞", err);
+        REQUIRE(back.has_value());
+        CHECK(bitsOf(*back) == bitsOf(kDecayMax));
+        const auto two = m.valueFromString("2.00 s", err);
+        REQUIRE(two.has_value());
+        CHECK(std::fabs(*two - 1.f) < 1e-6f);
+    }
 }
 
 TEST_CASE("value text round trip", "[core]")

@@ -58,6 +58,23 @@ WetParams toWetParams(const ParamValues &effective) noexcept
     };
 }
 
+SpaceParams toSpaceParams(const ParamValues &effective, Mode mode) noexcept
+{
+    const auto at = [&effective](ParamSlot slot) { return effective[static_cast<size_t>(slot)]; };
+    const float decay = at(ParamSlot::ReverbDecay);
+    return {
+        .diffusion = at(ParamSlot::Diffusion),
+        .amount = at(ParamSlot::ReverbAmount),
+        .drySend = mode == Mode::Instrument ? 0.0f : at(ParamSlot::DryToReverb),
+        .decayLog2 = decay,
+        .infinite = decay >= kDecayInfinite,
+        .roomSize = 2.0f * at(ParamSlot::ReverbSize) - 1.0f,
+        .hfDamping = at(ParamSlot::ReverbDamping),
+        .modulation = at(ParamSlot::ReverbModulation),
+        .predelaySeconds = at(ParamSlot::ReverbPredelay),
+    };
+}
+
 float softLimit(float x) noexcept
 {
     const float a = std::abs(x);

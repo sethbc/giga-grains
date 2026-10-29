@@ -28,7 +28,7 @@ struct Param : sst::plugininfra::patch_support::ParamBase
     using ParamBase::ParamBase;
 };
 
-/// The patch: the ten parameter values, the engine seed and a name, and their versioned XML
+/// The patch: every parameter's value, the engine seed and a name, and their versioned XML
 /// state (sst-plugininfra's PatchBase, plus the `bits` attribute and the <engine seed> element
 /// described in gg/core/PatchState.h). Main thread only: constructing, saving and loading
 /// allocate.

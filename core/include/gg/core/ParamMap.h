@@ -8,9 +8,9 @@
 #include "gg/core/ParamIds.h"
 #include "gg/grain/CloudScheduler.h"
 
-/// The patch's values to the engine's and the wet chain's parameters: the only place the tapers
-/// of Global Constraints' parameter table are applied (spec §5). Each function takes the
-/// effective values, clamp(base + modulation), as the Processor holds them.
+/// The patch's values to the engine's, the wet chain's and Space's parameters: the only place the
+/// tapers of Global Constraints' parameter table are applied (spec §5; sub-project 4's spec §6.5).
+/// Each function takes the effective values, clamp(base + modulation), as the Processor holds them.
 ///
 /// Every value that reaches the grain-event log is plain IEEE arithmetic, exp2Det and std::sqrt
 /// (correctly rounded), never another libm call, so it is bit-identical on every platform
@@ -23,6 +23,22 @@ struct WetParams
     float levelGain; ///< Level as a linear gain: exp2Det(dB × log2(10) / 20).
     float mix;       ///< Mix, the dry/wet crossfade m in [0, 1].
     bool freeze;     ///< Freeze is on above 0.5.
+};
+
+/// What Space, the diffuser and the reverb after the wet chain, takes from the parameters
+/// (sub-project 4's spec §6.5). The reverb's fields are Reverb 2's parameter values.
+struct SpaceParams
+{
+    float diffusion; ///< Diffusion, the diffuser's crossfade δ in [0, 1].
+    float amount;    ///< Reverb Amount, the return's gain a in [0, 1].
+    float drySend;   ///< Dry to Reverb, s in [0, 1]: the FX's; always 0 in the instrument.
+    /// Reverb Decay in log2 seconds, Reverb 2's rev2_decay_time. Meaningful only when finite.
+    float decayLog2;
+    bool infinite;         ///< Decay is ∞: decayLog2 >= kDecayInfinite.
+    float roomSize;        ///< 2 × Reverb Size − 1, in [−1, 1]: Reverb 2's rev2_room_size.
+    float hfDamping;       ///< Reverb Damping, in [0, 1]: Reverb 2's rev2_hf_damping.
+    float modulation;      ///< Reverb Modulation, in [0, 1]: Reverb 2's rev2_modulation.
+    float predelaySeconds; ///< Reverb Pre-delay, in seconds, 0 to 0.5.
 };
 
 /// The Cloud stream's controls in `mode`'s product:
@@ -43,6 +59,10 @@ CloudParams toCloudParams(const ParamValues &effective, Mode mode) noexcept;
 
 /// Level, Mix and Freeze, as WetParams documents.
 WetParams toWetParams(const ParamValues &effective) noexcept;
+
+/// Space's eight parameters, as SpaceParams documents. Dry to Reverb is 0 in the instrument,
+/// whatever its value: it has no dry input.
+SpaceParams toSpaceParams(const ParamValues &effective, Mode mode) noexcept;
 
 /// The wet chain's soft limiter (spec §6.4): the identity up to the knee, |x| <= 0.5 (-6 dBFS),
 /// and above it sign(x) × (0.5 + 0.5 × z/(1 + z)) with z = (|x| − 0.5)/0.5, which saturates

@@ -637,9 +637,11 @@ bool GigaGrainsPlugin::paramsInfo(uint32_t paramIndex, clap_param_info *info) co
     *info = clap_param_info{};
     gg::core::paramMeta(slot, mode()).toClapParamInfo<CLAP_NAME_SIZE>(info);
     info->cookie = nullptr;
-    // The instrument has no dry signal, so Mix does nothing there. It keeps the parameter,
-    // hidden, so both products share one parameter list and one state format (spec §4).
-    if (product_ == Product::Instrument && slot == ParamSlot::Mix)
+    // The instrument has no dry signal, so Mix and Dry to Reverb do nothing there. It keeps the
+    // parameters, hidden, so both products share one parameter list and one state format (spec
+    // §4; sub-project 4's spec §6.5).
+    if (product_ == Product::Instrument &&
+        (slot == ParamSlot::Mix || slot == ParamSlot::DryToReverb))
     {
         info->flags |= CLAP_PARAM_IS_HIDDEN;
     }

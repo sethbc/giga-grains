@@ -74,6 +74,14 @@ constexpr std::array<ExpectedParam, kParamCount> kExpected{{
     {0x010006, "Spray", 0.0f, 1.0f, 0.36033038f},
     {0x010007, "Stereo", 0.0f, 1.0f, 0.5f},
     {0x010008, "Freeze", 0.0f, 1.0f, 0.0f},
+    {0x01000B, "Diffusion", 0.0f, 1.0f, 0.0f},
+    {0x000003, "Reverb Amount", 0.0f, 1.0f, 0.0f},
+    {0x000004, "Reverb Decay", -2.0f, 6.068255709804611f, 1.0f},
+    {0x000005, "Reverb Size", 0.0f, 1.0f, 0.5f},
+    {0x000006, "Reverb Damping", 0.0f, 1.0f, 0.3f},
+    {0x000007, "Reverb Pre-delay", 0.0f, 0.5f, 0.0f},
+    {0x000008, "Reverb Modulation", 0.0f, 1.0f, 0.25f},
+    {0x000009, "Dry to Reverb", 0.0f, 1.0f, 0.0f},
 }};
 // The instrument's Position is 0–100% of the loaded file, 0% by default; the rest of its table
 // is the FX's above (spec §6.8).
@@ -266,7 +274,7 @@ std::string valueToText(const PluginUnderTest &plugin, clap_id id, double value)
 }
 } // namespace
 
-TEST_CASE("plugin exposes the ten params", "[plugin]")
+TEST_CASE("plugin exposes every param", "[plugin]")
 {
     const char *id = GENERATE(kInstrumentId, kFxId);
     CAPTURE(id);
@@ -295,13 +303,14 @@ TEST_CASE("plugin exposes the ten params", "[plugin]")
         CHECK(info.default_value == static_cast<double>(def));
 
         // Global Constraints' CLAP flags: every parameter is automatable and modulatable,
-        // Freeze is stepped, and the instrument hides Mix, which has no dry signal to mix.
+        // Freeze is stepped, and the instrument hides Mix and Dry to Reverb, which have no dry
+        // signal to act on.
         clap_param_info_flags flags = CLAP_PARAM_IS_AUTOMATABLE | CLAP_PARAM_IS_MODULATABLE;
         if (i == at(ParamSlot::Freeze))
         {
             flags |= CLAP_PARAM_IS_STEPPED;
         }
-        if (i == at(ParamSlot::Mix) && !isFx)
+        if ((i == at(ParamSlot::Mix) || i == at(ParamSlot::DryToReverb)) && !isFx)
         {
             flags |= CLAP_PARAM_IS_HIDDEN;
         }
@@ -370,6 +379,22 @@ TEST_CASE("value and text round trip through clap", "[plugin]")
               std::string::npos);
         CHECK(valueToText(plugin, paramId(ParamSlot::Size), -2.736965594166206).find("ms") !=
               std::string::npos);
+    }
+
+    SECTION("Decay shows infinity at the top, and infinity parses to the top")
+    {
+        const clap_id decay = paramId(ParamSlot::ReverbDecay);
+        CHECK(valueToText(plugin, decay, 1.0) == "2.00 s");
+        CHECK(valueToText(plugin, decay, 5.95) == "∞");
+        CHECK(valueToText(plugin, decay, static_cast<double>(gg::core::kDecayMax)) == "∞");
+        double back = 0.0;
+        REQUIRE(params->text_to_value(plugin.clap(), decay, "∞", &back));
+        CHECK(back == static_cast<double>(gg::core::kDecayMax));
+        // Pre-delay is seconds, shown in ms.
+        const clap_id predelay = paramId(ParamSlot::ReverbPredelay);
+        CHECK(valueToText(plugin, predelay, 0.25) == "250.0 ms");
+        REQUIRE(params->text_to_value(plugin.clap(), predelay, "250.0 ms", &back));
+        CHECK(std::abs(back - 0.25) < 1e-6);
     }
 
     SECTION("unparseable text fails")
