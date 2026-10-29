@@ -6,9 +6,14 @@ engine as CLAP, VST3, AU v2 and standalone for macOS, Windows and Linux. Read
 [`INTENT.md`](INTENT.md) first: it says what the project is for and how it is built.
 
 **Status (2026-10-29):** M0 (foundations) and M1 (the Cloud core: both plugins make textures)
-are done; next come the installers and release pipeline, then M2. Nothing has been released yet,
-and nothing will be public before M5: its `0.5.0-beta.N` are the first public releases, and
-v1.0.0 follows M5 (INTENT §20).
+are done, and so are the installers and the release pipeline; next comes M2. Nothing has been
+released yet, and nothing will be public before M5: its `0.5.0-beta.N` are the first public
+releases, and v1.0.0 follows M5 (INTENT §20).
+
+**Downloads:** the installers will be on
+[GitHub Releases](https://github.com/sethbc/giga-grains/releases) from M5's `v0.5.0-beta.1` on:
+a signed and notarized macOS installer, a Windows installer and zip, a Linux archive, and each
+release's complete source. Nothing is published there before then.
 
 To build,
 fetch the dependencies with `git submodule update --init`, then configure, build and test with
@@ -28,11 +33,12 @@ the CLAP and VST3 into `~/.clap` and `~/.vst3`; on Windows it does nothing. On m
 is signed ad hoc once it's built, before it's copied: strict hosts such as Ableton Live won't
 load a bundle whose executable carries only the linker's signature. To sign with a real identity
 instead, configure with
-`-DGG_MACOS_CODESIGN_IDENTITY="Developer ID Application: <name> (<team id>)"`. That alone doesn't
-make the bundles distributable: distribution also needs the hardened runtime, a secure timestamp
-and notarization, which the release pipeline will add
-(`docs/superpowers/specs/2026-10-29-release-pipeline-design.md`). The `codesign_*` tests check
-every signature.
+`-DGG_MACOS_CODESIGN_IDENTITY="Developer ID Application: <name> (<team id>)"`, which also adds
+the hardened runtime and a secure timestamp. Distribution also needs notarization, which the
+release pipeline adds: `cmake --build --preset release --target gg-installer` builds the
+installer, and signs and notarizes it when the signing identities and an App Store Connect API
+key are in its environment ([`docs/releasing.md`](docs/releasing.md)). The `codesign_*` tests
+check every signature.
 
 The other presets (`release`; the `asan` and `rtsan` sanitizer builds, which build the plugin
 core without its editor or formats; `mac-universal`), the golden renders (`gg-render`), the

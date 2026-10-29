@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Design, awaiting the director's approval (2026-10-29) |
+| **Status** | Approved by the director 2026-10-29 (INTENT §23 #61). **Built 2026-10-29 on `release-pipeline` (PR #13)**; the runbook is `docs/releasing.md`. Corrections the build made to the text below: the signing environment is `MAC_SIGNING_IDENTITY`, `MAC_INSTALLER_IDENTITY`, `NOTARY_KEY_FILE` (the `.p8`'s path), `NOTARY_KEY_ID` and `NOTARY_ISSUER_ID`, the secrets' names (§6.4's `GG_MAC_INSTALLER_IDENTITY` was a slip); the macOS readme is `installer/macos/Readme.txt`, not `Readme.rtf` (§6.3, §6.4); the license pane's file is `LICENSE.txt`, the AGPL copied from the license set (Installer picks a pane's format by its extension); `scripts/release/check-version.sh` also takes `--print`, CMake's version with no tag check, for the nightly's numeric part and the dry run's version; `plan` also outputs `tag` and `sign` (true when the kind isn't `none` and `MAC_CERTS_P12` is set, as a step's `if:` can't read `secrets`), and fails a release without `MAC_CERTS_P12`; the `release` job has `actions: read` beside `contents: write`, to download the run's artifacts; the nightly tag is moved through the GitHub API, as the checkout keeps no credentials; the dry run's version is CMake's own (`0.2.0-dev`), not empty |
 | **Milestone** | Between M1 and M2: its own spec, as the director deferred it on 2026-10-29 (INTENT §23 #60). It serves every release from M2's (0.2.0) to 1.0.0, which now follows M5 (decision 8) |
 | **Depends on** | M1 closed (PR #11, `95bee95`); the director's Apple Developer Program membership |
 | **Authority** | INTENT.md. Part II changes below each add a dated §23 row |

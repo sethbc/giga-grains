@@ -20,14 +20,15 @@ AGPL-3.0-or-later.
 - **When a task conflicts with INTENT.md, stop.** Propose an INTENT.md amendment; don't diverge
   silently.
 - **The principles in §8 are the tie-breakers** when goals conflict.
-- **Where we are** (INTENT §20, §23 #61): M0 and M1 are done; next is the installers and
-  release pipeline (`docs/superpowers/specs/2026-10-29-release-pipeline-design.md`), then M2.
-  M2, M3 and M4 are tagged 0.2.0, 0.3.0 and 0.4.0 as unpublished draft releases; nothing is
-  public and there are no betas before M5, whose `0.5.0-beta.N` are the first public releases
-  (§23 #62); v1.0.0 follows M5.
+- **Where we are** (INTENT §20, §23 #61): M0 and M1 are done, and so are the installers and
+  release pipeline (`docs/superpowers/specs/2026-10-29-release-pipeline-design.md`; the runbook
+  is `docs/releasing.md`); next is M2. M2, M3 and M4 are tagged 0.2.0, 0.3.0 and 0.4.0 as
+  unpublished draft releases; nothing is public and there are no betas before M5, whose
+  `0.5.0-beta.N` are the first public releases (§23 #62); v1.0.0 follows M5.
 - **The records:** each sub-project's spec in `docs/superpowers/specs/`, the published benchmark
   JSON in `docs/benchmarks/`, the listening packs in `docs/listening/`, the M0 and M1 spikes in
-  `docs/spikes/`, and the carry-over in `docs/m1-carry-over.md`.
+  `docs/spikes/`, the release notes in `docs/releases/`, and the carry-over in
+  `docs/m2-carry-over.md` (M1's, frozen as its record, is `docs/m1-carry-over.md`).
 
 Development is Claude-led. The director steers, listens and reviews. Ears are the scarce
 resource, so machines must catch everything they can catch.
@@ -88,7 +89,7 @@ resource, so machines must catch everything they can catch.
   statistics or spectrograms.
 - Each milestone ends with a listening gate: render A/B files plus a short checklist for the
   director.
-- **The carry-over** (`docs/m1-carry-over.md`) must not grow. The director's policy
+- **The carry-over** (`docs/m2-carry-over.md`) must not grow. The director's policy
   (2026-10-28):
   - **Fix, don't carry.** A sub-project's final fix wave fixes every minor a reviewer raised,
     unless it is blocked on something outside our control (upstream, the director's ears, a
@@ -98,8 +99,10 @@ resource, so machines must catch everything they can catch.
   - **No net growth.** A sub-project ends with no more open rows than it started with. Count
     them at its start and at its end.
   - **Sub-project 6 burned the carry-over down** to 13 open rows, each naming what it waits on
-    (upstream bumps, M2/M3 features, the installers or 1.0.0; INTENT §23 #60). Work after M1
-    ends with no more open rows than it started with.
+    (upstream bumps, M2/M3 features, the About box or 1.0.0; INTENT §23 #60). On 2026-10-29
+    those 13 moved, with their numbers, to `docs/m2-carry-over.md`, and `docs/m1-carry-over.md`
+    became M1's frozen record, no longer edited. The count no work may raise is the M2 file's
+    open rows: 13 at the split.
   - **No external reports or upstream filings.** A row blocked on upstream stays open, noted
     with its reason, until upstream changes.
 - Reference templates for the CLAP-first build, CI and installers, all three GitHub-hosted under
@@ -215,6 +218,10 @@ ctest --preset dev --output-on-failure
   - `cmake --build --preset <p> --target gg-products` gathers them into
     `build/<preset>/gg-products/` for validation.
   - CI builds `--target gg-all gg-products`.
+  - `cmake --build --preset <p> --target gg-installer` builds `gg-products`, then packs it into
+    `build/<preset>/gg-installer/`: the macOS PKG and DMG, the Windows zip and, when Inno Setup
+    6's `ISCC.exe` is found at configure, its installer, or the Linux tarball. Unsigned unless
+    the signing environment is set ("Releasing" below; `docs/releasing.md`).
 - **If you delete a bundle or `gg_assets/`, configure again before building.** The `Info.plist`
   files of the CLAP, VST3 and app bundles are link dependencies, and CMake writes them at
   configure time.
@@ -296,7 +303,18 @@ runs the tests labelled either. The labels are:
 - `build`: checks of the build system itself, run on scratch CMake projects: the `asio_guard_*`
   tests (`cmake/AsioGuard.cmake`);
 - `scripts`: `check.sh` and `worktree-setup.sh`, in scratch trees with stub `cmake` and `ctest`
-  and in scratch git repositories (not on Windows);
+  and in scratch git repositories, and the release scripts in `scripts/release/`
+  (`tests/scripts/release_scripts_tests.sh`: the tag check, the source tarball and the signing
+  keychain, whose checks put a scratch keychain in your search list for a moment and restore
+  it) (not on Windows);
+- `installer` (with the editor): `installer_build_products` builds `gg-products` as the
+  `gg_products` fixture the others require, so `ctest -L installer` needs no build step of its
+  own (that test runs serially). Then the license set (`installer_license_set`); on macOS the unsigned
+  PKG and DMG (`installer_macos_pkg`, and its refusals `_missing_product` and `_partial_env`),
+  each bundle's numeric version (`version_bundle_*`) and, when a real identity is configured,
+  the hardened runtime and the apps' entitlement (`codesign_hardened_*`); the Linux tarball
+  (`installer_linux_*`); the Windows zip and, where `ISCC.exe` was found, the Inno Setup
+  compile (`installer_windows_*`);
 - `serial`: the Catch2 cases tagged `[serial]`, which measure time or memory and run with
   `RUN_SERIAL` (see "Tests run in parallel");
 - `plugin`: the plugins, driven through their CLAP factory. Tests labelled both `plugin` and
@@ -658,9 +676,35 @@ $b --space [--quick | --seconds S] [--rounds N] [--commit SHA] [--json out.json]
   on, a build installs plugins.
 - **On macOS every bundle is signed** after it's built, before it's copied, with
   `GG_MACOS_CODESIGN_IDENTITY`.
-  - It defaults to `-`, which signs ad hoc.
-  - Pass a Developer ID to sign with a real identity. A release build needs more than that:
-    hardened runtime, a timestamp and notarization, which the release pipeline adds
-    (`docs/superpowers/specs/2026-10-29-release-pipeline-design.md`; not built yet).
+  - It defaults to `-`, which signs ad hoc, exactly as before the release pipeline.
+  - A real identity (`Developer ID Application: …`) also signs with the hardened runtime and a
+    secure timestamp (which needs the network), and the two apps with the audio-input
+    entitlement (`installer/macos/standalone.entitlements`). The bundles re-sign only when they
+    relink, so change the identity in a tree without `gg_assets/` (delete it, then configure).
+  - Notarization is `gg-installer`'s: `installer/macos/make-installer.sh` signs the packages,
+    notarizes and staples the PKG, then signs, notarizes and staples the DMG, when its five
+    signing variables are set, and prints `signed: yes` or `signed: no` last.
   - Strict hosts such as Ableton Live won't load a bundle that carries only the linker's
     signature (`docs/spikes/m0-host-matrix.md`).
+
+**Releasing** (`docs/releasing.md`, the runbook; INTENT §19).
+- **The version** lives in `CMakeLists.txt` alone: the numeric part in `project(GigaGrains
+  VERSION X.Y.Z …)` and the pre-release suffix in `GG_VERSION_PRERELEASE`, `dev` on `main`, so a
+  build from `main` reports `0.2.0-dev` and never claims a release. A release commit sets the
+  suffix (empty, or `beta.N`) and adds `docs/releases/v<version>.md`;
+  `scripts/release/check-version.sh v<version>` checks a tag against it.
+- **Three run kinds** (`ci.yml`'s `plan` job): a pushed `v*` tag builds, signs and notarizes the
+  installers and makes a draft GitHub Release, which the director publishes by hand; the nightly
+  keeps them as run artifacts, and publishes the `nightly` pre-release only once
+  `GG_PUBLISH_NIGHTLY` is `"true"`, from M5; a dispatch with `installers: true` is the dry run,
+  which publishes nothing. Pull requests and pushes to `main` build no installer and see no
+  secret.
+- **The secrets** (Actions secrets, set by the director; never in the tree): `MAC_CERTS_P12`,
+  `MAC_CERTS_P12_PASSWORD`, `MAC_SIGNING_IDENTITY`, `MAC_INSTALLER_IDENTITY`, `NOTARY_KEY_P8`,
+  `NOTARY_KEY_ID`, `NOTARY_ISSUER_ID`. Locally, make-installer.sh reads the same names, with
+  `NOTARY_KEY_FILE` (the `.p8`'s path) for `NOTARY_KEY_P8`.
+- **A local installer:** `cmake --build --preset release --target gg-installer`, unsigned
+  unless all five of make-installer.sh's variables are set in the build's environment (and the
+  tree configured with a real identity); nothing is written into the source tree.
+- **Nothing is public before M5:** the 0.2.0, 0.3.0 and 0.4.0 drafts stay drafts, and
+  `v0.5.0-beta.1` is the first release the director publishes.
