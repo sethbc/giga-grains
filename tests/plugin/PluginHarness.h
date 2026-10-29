@@ -116,6 +116,76 @@ inline const clap_output_events *discardingOutputEvents() noexcept
     return &out;
 }
 
+/// A clap_output_events that records what the plugin pushes: the parameter value and gesture
+/// events in full, any other event by its header alone. With `capacity`, it accepts that many
+/// pushes and refuses (try_push returns false) every one after, as a host's full queue may. The
+/// storage is reserved up front, so a push into it doesn't allocate (the [rt] tests).
+class OutputEvents
+{
+  public:
+    struct Event
+    {
+        clap_event_header header{};
+        clap_id paramId{CLAP_INVALID_ID}; ///< the value's and the gesture's
+        double value{0.0};                ///< CLAP_EVENT_PARAM_VALUE's
+        void *cookie{nullptr};            ///< CLAP_EVENT_PARAM_VALUE's
+        int32_t noteId{0};                ///< CLAP_EVENT_PARAM_VALUE's
+        int16_t portIndex{0};
+        int16_t channel{0};
+        int16_t key{0};
+    };
+
+    explicit OutputEvents(std::size_t capacity = 4096) : capacity_(capacity)
+    {
+        events_.reserve(capacity);
+    }
+    OutputEvents(const OutputEvents &) = delete;
+    OutputEvents &operator=(const OutputEvents &) = delete;
+
+    const clap_output_events *list() const noexcept { return &list_; }
+    const std::vector<Event> &events() const noexcept { return events_; }
+    /// The pushes refused because the capacity was reached.
+    std::size_t refused() const noexcept { return refused_; }
+    void clear() noexcept { events_.clear(); }
+
+  private:
+    static bool tryPush(const clap_output_events *list, const clap_event_header *header) noexcept
+    {
+        auto &self = *static_cast<OutputEvents *>(list->ctx);
+        if (header == nullptr || self.events_.size() >= self.capacity_)
+        {
+            ++self.refused_;
+            return false;
+        }
+        Event e;
+        e.header = *header;
+        if (header->space_id == CLAP_CORE_EVENT_SPACE_ID && header->type == CLAP_EVENT_PARAM_VALUE)
+        {
+            const auto *v = reinterpret_cast<const clap_event_param_value *>(header);
+            e.paramId = v->param_id;
+            e.value = v->value;
+            e.cookie = v->cookie;
+            e.noteId = v->note_id;
+            e.portIndex = v->port_index;
+            e.channel = v->channel;
+            e.key = v->key;
+        }
+        else if (header->space_id == CLAP_CORE_EVENT_SPACE_ID &&
+                 (header->type == CLAP_EVENT_PARAM_GESTURE_BEGIN ||
+                  header->type == CLAP_EVENT_PARAM_GESTURE_END))
+        {
+            e.paramId = reinterpret_cast<const clap_event_param_gesture *>(header)->param_id;
+        }
+        self.events_.push_back(e); // within the reserved capacity: no allocation
+        return true;
+    }
+
+    std::size_t capacity_;
+    std::size_t refused_{0};
+    std::vector<Event> events_;
+    clap_output_events list_{this, &OutputEvents::tryPush};
+};
+
 /// A CLAP_EVENT_PARAM_VALUE for parameter `id`, global (no note, port, channel or key).
 inline clap_event_param_value paramValue(clap_id id, double value, uint32_t time = 0) noexcept
 {
@@ -407,10 +477,10 @@ class PluginUnderTest
             plugin_->get_extension(plugin_, CLAP_EXT_STATE));
     }
 
-    /// params.flush of `events`, through the vtable.
-    void flush(const clap_input_events *events) const
+    /// params.flush of `events`, through the vtable, into `out` (or a list that discards them).
+    void flush(const clap_input_events *events, const clap_output_events *out = nullptr) const
     {
-        params()->flush(plugin_, events, discardingOutputEvents());
+        params()->flush(plugin_, events, out != nullptr ? out : discardingOutputEvents());
     }
     /// params.get_value; NaN if the call fails.
     double value(clap_id id) const
@@ -488,9 +558,11 @@ class PluginUnderTest
 
     /// Runs one process() call. `inputs` and `outputs` hold one port's channel pointers each
     /// (`inputChannels` and 2 of them); a null pointer means the port is absent from the call.
+    /// The plugin's output events go to `outEvents`, or to a list that discards them.
     clap_process_status process(uint32_t frames, float **inputs, float **outputs,
                                 const clap_input_events *events = nullptr,
-                                uint32_t inputChannels = 2)
+                                uint32_t inputChannels = 2,
+                                const clap_output_events *outEvents = nullptr)
     {
         InputEvents none;
         clap_audio_buffer in{inputs, nullptr, inputChannels, 0, 0};
@@ -504,7 +576,7 @@ class PluginUnderTest
         process.audio_outputs = outputs != nullptr ? &out : nullptr;
         process.audio_outputs_count = outputs != nullptr ? 1 : 0;
         process.in_events = events != nullptr ? events : none.list();
-        process.out_events = discardingOutputEvents();
+        process.out_events = outEvents != nullptr ? outEvents : discardingOutputEvents();
         return plugin_->process(plugin_, &process);
     }
 

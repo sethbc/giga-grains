@@ -218,6 +218,7 @@ bool GigaGrainsPlugin::activate(double sampleRate, uint32_t /*minFrameCount*/,
             loaderActive = true;
             processor->setSourceNow(loader_->activate(sampleRate));
         }
+        processor->setPublishing(publishing_); // an editor opened before this activation
         processor_ = std::move(processor);
         engineBlockSize_ = config.maxBlockSize;
         noteIds_.fill(NoteIdSlot{}); // a new session holds no notes
@@ -327,11 +328,13 @@ clap_process_status GigaGrainsPlugin::processNonblocking(const clap_process *pro
     applyLoadedState();
     takeOffers();
 
-    // The call's parameter and note events, in the host's order (by time), up to the first that
-    // finds its array (events_ or notes_) full.
+    // The editor's values first, at the call's first frame, so the host's events (automation
+    // of the same parameter, say) come after them; then the call's parameter and note events,
+    // in the host's order (by time), up to the first that finds its array (events_ or notes_)
+    // full. The editor's take at most kUiQueueCapacity of events_.
+    std::size_t count = takeUiChanges(process->out_events, events_.data(), 0);
     const clap_input_events *in = process->in_events;
     const uint32_t numEvents = in != nullptr ? in->size(in) : 0;
-    std::size_t count = 0;
     std::size_t noteCount = 0;
     uint32_t next = 0;
     for (; next < numEvents; ++next)
@@ -712,8 +715,133 @@ void GigaGrainsPlugin::storeValue(ParamSlot slot, float value) noexcept
     values_[s].store(std::clamp(value, minValues_[s], maxValues_[s]), std::memory_order_relaxed);
 }
 
+void GigaGrainsPlugin::uiBeginGesture(ParamSlot slot) noexcept
+{
+    queueUiChange({gg::core::paramId(slot), 0.0, UiParamChange::kBegin});
+}
+
+void GigaGrainsPlugin::uiSetValue(ParamSlot slot, double value) noexcept
+{
+    const auto s = static_cast<std::size_t>(slot);
+    if (s >= kParamCount || std::isnan(value))
+    {
+        return;
+    }
+    // Clamped as storeValue clamps, in double first (a double beyond float's range doesn't
+    // convert), then made a float, as toParamEvent makes the host's: the host is told the value
+    // the plugin applies, and a reloaded automation lane renders the same.
+    const auto v = static_cast<float>(
+        std::clamp(value, static_cast<double>(minValues_[s]), static_cast<double>(maxValues_[s])));
+    queueUiChange({gg::core::paramId(slot), static_cast<double>(v), UiParamChange::kValue});
+}
+
+void GigaGrainsPlugin::uiEndGesture(ParamSlot slot) noexcept
+{
+    queueUiChange({gg::core::paramId(slot), 0.0, UiParamChange::kEnd});
+}
+
+float GigaGrainsPlugin::uiBaseValue(ParamSlot slot) const noexcept
+{
+    const auto s = static_cast<std::size_t>(slot);
+    return s < kParamCount ? values_[s].load(std::memory_order_relaxed) : 0.0f;
+}
+
+void GigaGrainsPlugin::queueUiChange(const UiParamChange &change) noexcept
+{
+    if (change.id == CLAP_INVALID_ID || !uiQueue_.push(change))
+    {
+        return; // not a parameter, or the queue is full (SpscQueue::dropped counts it)
+    }
+    // Pairs with takeUiChanges' fence, as requestCollect's does with onMainThread's: the push
+    // and the flag's exchange here, the flag's store and the queue's load there, are a
+    // store-buffering pattern. With both fences, either that drain sees this change or this
+    // exchange sees the flag cleared and asks again, so no change waits with no flush asked for.
+    std::atomic_thread_fence(std::memory_order_seq_cst);
+    // clap_host_params.request_flush is [thread-safe, !audio-thread]; this is the main thread.
+    // One request outstanding: the host will call process() or flush, which drains every change
+    // queued by then.
+    if (_host.canUseParams() && !uiFlushRequested_.exchange(true, std::memory_order_acq_rel))
+    {
+        _host.paramsRequestFlush();
+    }
+}
+
+std::size_t GigaGrainsPlugin::takeUiChanges(const clap_output_events *out, ParamEvent *values,
+                                            std::size_t count) noexcept
+{
+    // Cleared first: a change queued after the drain asks for another flush (queueUiChange).
+    uiFlushRequested_.store(false, std::memory_order_relaxed);
+    std::atomic_thread_fence(std::memory_order_seq_cst);
+    // At most a queue's worth: the main thread may keep pushing while this runs, and the caller's
+    // array holds kUiQueueCapacity values beyond the host's (kMaxParamEvents).
+    UiParamChange change{};
+    for (uint32_t n = 0; n < kUiQueueCapacity && uiQueue_.pop(change); ++n)
+    {
+        const auto slot = gg::core::slotForId(change.id);
+        if (!slot.has_value())
+        {
+            continue; // uiBeginGesture and its siblings queue only parameters' IDs
+        }
+        bool sent = false;
+        if (change.kind == UiParamChange::kValue)
+        {
+            const auto v = static_cast<float>(change.value); // a float's value already
+            if (values != nullptr)
+            {
+                values[count++] = ParamEvent{0, *slot, false, v};
+            }
+            else
+            {
+                if (processor_ != nullptr)
+                {
+                    processor_->setBase(*slot, v);
+                }
+                storeValue(*slot, v);
+            }
+            clap_event_param_value e{};
+            e.header = {sizeof(e), 0, CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_PARAM_VALUE, 0};
+            e.param_id = change.id;
+            e.cookie = nullptr;
+            e.note_id = -1;
+            e.port_index = -1;
+            e.channel = -1;
+            e.key = -1;
+            e.value = change.value;
+            sent = out != nullptr && out->try_push(out, &e.header);
+        }
+        else
+        {
+            clap_event_param_gesture e{};
+            e.header = {sizeof(e), 0, CLAP_CORE_EVENT_SPACE_ID,
+                        change.kind == UiParamChange::kBegin
+                            ? static_cast<uint16_t>(CLAP_EVENT_PARAM_GESTURE_BEGIN)
+                            : static_cast<uint16_t>(CLAP_EVENT_PARAM_GESTURE_END),
+                        0};
+            e.param_id = change.id;
+            sent = out != nullptr && out->try_push(out, &e.header);
+        }
+        if (!sent)
+        {
+            // The host's list is full: the value applied all the same, but the host doesn't hear
+            // of it. Counted, never retried: a retry here could spin for as long as the host's
+            // list stays full.
+            uiEventsDropped_.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+    return count;
+}
+
+void GigaGrainsPlugin::setPublishing(bool on) noexcept
+{
+    publishing_ = on;
+    if (processor_ != nullptr)
+    {
+        processor_->setPublishing(on);
+    }
+}
+
 void GigaGrainsPlugin::paramsFlush(const clap_input_events *in,
-                                   const clap_output_events * /*out*/) noexcept
+                                   const clap_output_events *out) noexcept
 {
     // CLAP puts only parameter events in a flush, but a host may deliver notes there too
     // (clap-wrapper's VST3 does), and those still count, and play.
@@ -721,7 +849,9 @@ void GigaGrainsPlugin::paramsFlush(const clap_input_events *in,
     if (processor_ == nullptr)
     {
         // Inactive, so on the main thread: the values wait for activate(). Modulation and notes
-        // belong to a processing session, and the next one starts without any.
+        // belong to a processing session, and the next one starts without any. The editor's
+        // changes come first, as the host's would in process().
+        takeUiChanges(out, nullptr, 0);
         const uint32_t numEvents = in != nullptr ? in->size(in) : 0;
         for (uint32_t i = 0; i < numEvents; ++i)
         {
@@ -737,6 +867,7 @@ void GigaGrainsPlugin::paramsFlush(const clap_input_events *in,
     // next grid boundary.
     applyLoadedState();
     takeOffers();
+    takeUiChanges(out, nullptr, 0);
     if (in != nullptr)
     {
         applyBetweenBlocks(in, 0);

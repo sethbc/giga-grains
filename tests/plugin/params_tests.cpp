@@ -41,6 +41,7 @@ using gg::core::ParamSlot;
 using gg::core::ParamValues;
 using gg::test::fillNoise;
 using gg::test::InputEvents;
+using gg::test::OutputEvents;
 using gg::test::PluginUnderTest;
 using gg::test::sameBits;
 using gg::test::Stereo;
@@ -109,8 +110,8 @@ ParamValues defaults()
     return v;
 }
 
-// A host that offers clap.params and clap.state, and counts value rescans, restart requests and
-// state.mark_dirty calls.
+// A host that offers clap.params and clap.state, and counts value rescans, restart requests,
+// params.request_flush and state.mark_dirty calls.
 class ParamsHost
 {
   public:
@@ -123,6 +124,7 @@ class ParamsHost
     uint32_t otherRescans() const noexcept { return otherRescans_; }
     uint32_t restarts() const noexcept { return restarts_; }
     uint32_t dirtyMarks() const noexcept { return dirtyMarks_; }
+    uint32_t flushRequests() const noexcept { return flushRequests_; }
 
   private:
     static ParamsHost &self(const clap_host *host)
@@ -138,7 +140,7 @@ class ParamsHost
         static const clap_host_params kParams{
             &ParamsHost::rescan,
             [](const clap_host *, clap_id, clap_param_clear_flags) {},
-            [](const clap_host *) {}, // request_flush
+            [](const clap_host *host) { ++self(host).flushRequests_; }, // request_flush
         };
         static const clap_host_state kState{
             [](const clap_host *host) { ++self(host).dirtyMarks_; }, // mark_dirty
@@ -154,6 +156,7 @@ class ParamsHost
     uint32_t otherRescans_{0};
     uint32_t restarts_{0};
     uint32_t dirtyMarks_{0};
+    uint32_t flushRequests_{0};
     clap_host host_{
         CLAP_VERSION_INIT,
         nullptr,
@@ -1248,4 +1251,225 @@ TEST_CASE("remote controls pages are perform, cloud and space", "[plugin][space]
     }
     clap_remote_controls_page page;
     CHECK_FALSE(remote->get(plugin.clap(), 3, &page));
+}
+
+namespace
+{
+using OutEvent = gg::test::OutputEvents::Event;
+
+bool isGesture(const OutEvent &e, uint16_t type, clap_id id)
+{
+    return e.header.type == type && e.header.space_id == CLAP_CORE_EVENT_SPACE_ID &&
+           e.header.time == 0 && e.header.flags == 0 &&
+           e.header.size == sizeof(clap_event_param_gesture) && e.paramId == id;
+}
+
+// A CLAP_EVENT_PARAM_VALUE as the plugin sends the host its editor's changes: global (no cookie,
+// note, port, channel or key), at time 0.
+bool isValue(const OutEvent &e, clap_id id, double value)
+{
+    return e.header.type == CLAP_EVENT_PARAM_VALUE &&
+           e.header.space_id == CLAP_CORE_EVENT_SPACE_ID && e.header.time == 0 &&
+           e.header.flags == 0 && e.header.size == sizeof(clap_event_param_value) &&
+           e.paramId == id && e.value == value && e.cookie == nullptr && e.noteId == -1 &&
+           e.portIndex == -1 && e.channel == -1 && e.key == -1;
+}
+
+std::size_t countOf(const std::vector<OutEvent> &events, uint16_t type)
+{
+    return static_cast<std::size_t>(std::count_if(
+        events.begin(), events.end(), [type](const OutEvent &e) { return e.header.type == type; }));
+}
+} // namespace
+
+TEST_CASE("ui changes reach the host as a gesture with values", "[plugin]")
+{
+    // The editor's change (spec §6.3) goes to the audio thread, which applies it and tells the
+    // host, from the next process() call: a gesture around the value, so the host records it.
+    const char *id = GENERATE(kInstrumentId, kFxId);
+    CAPTURE(id);
+    ParamsHost host;
+    PluginUnderTest plugin(id, host.clap());
+    REQUIRE(plugin.valid());
+    REQUIRE(plugin.activate(48000.0, 512));
+    auto &impl = plugin.impl();
+    const clap_id size = paramId(ParamSlot::Size);
+    REQUIRE(size == 0x010002);
+
+    impl.uiBeginGesture(ParamSlot::Size);
+    impl.uiSetValue(ParamSlot::Size, -1.0);
+    impl.uiEndGesture(ParamSlot::Size);
+    // One flush asked for: the three changes wait in one queue for the audio thread.
+    CHECK(host.flushRequests() == 1);
+    // Not applied until the audio thread takes them.
+    CHECK(impl.uiBaseValue(ParamSlot::Size) == kExpected[at(ParamSlot::Size)].def);
+
+    OutputEvents out;
+    Stereo in(64);
+    Stereo audio(64);
+    REQUIRE(plugin.process(64, in.data(), audio.data(), nullptr, 2, out.list()) ==
+            CLAP_PROCESS_CONTINUE);
+    const auto &events = out.events();
+    REQUIRE(events.size() == 3);
+    CHECK(isGesture(events[0], CLAP_EVENT_PARAM_GESTURE_BEGIN, size));
+    CHECK(isValue(events[1], size, -1.0));
+    CHECK(isGesture(events[2], CLAP_EVENT_PARAM_GESTURE_END, size));
+    CHECK(plugin.value(size) == -1.0);
+    CHECK(impl.uiBaseValue(ParamSlot::Size) == -1.0f);
+    CHECK(impl.processor()->base(ParamSlot::Size) == -1.0f);
+    CHECK(impl.uiEventsDropped() == 0);
+
+    // Drained: the next call sends nothing, and a new change asks for a flush again.
+    out.clear();
+    REQUIRE(plugin.process(64, in.data(), audio.data(), nullptr, 2, out.list()) ==
+            CLAP_PROCESS_CONTINUE);
+    CHECK(out.events().empty());
+    impl.uiSetValue(ParamSlot::Size, -2.0);
+    CHECK(host.flushRequests() == 2);
+}
+
+TEST_CASE("ui changes apply through flush when inactive", "[plugin]")
+{
+    // Before activate(), the host flushes on the main thread: the value goes into the mirror,
+    // which activate() hands to the Processor, and the events go to flush's output list.
+    const char *id = GENERATE(kInstrumentId, kFxId);
+    CAPTURE(id);
+    ParamsHost host;
+    PluginUnderTest plugin(id, host.clap());
+    REQUIRE(plugin.valid());
+    auto &impl = plugin.impl();
+    const clap_id size = paramId(ParamSlot::Size);
+
+    impl.uiBeginGesture(ParamSlot::Size);
+    impl.uiSetValue(ParamSlot::Size, -1.0);
+    impl.uiEndGesture(ParamSlot::Size);
+    CHECK(host.flushRequests() == 1);
+
+    OutputEvents out;
+    InputEvents none;
+    plugin.flush(none.list(), out.list());
+    const auto &events = out.events();
+    REQUIRE(events.size() == 3);
+    CHECK(isGesture(events[0], CLAP_EVENT_PARAM_GESTURE_BEGIN, size));
+    CHECK(isValue(events[1], size, -1.0));
+    CHECK(isGesture(events[2], CLAP_EVENT_PARAM_GESTURE_END, size));
+    CHECK(plugin.value(size) == -1.0);
+    CHECK(impl.uiBaseValue(ParamSlot::Size) == -1.0f);
+
+    REQUIRE(plugin.activate(48000.0, 512));
+    CHECK(impl.processor()->base(ParamSlot::Size) == -1.0f);
+
+    // Active, the same path through flush: the value applies at once (setBase), before the
+    // host's own events in the same flush, which win.
+    out.clear();
+    impl.uiSetValue(ParamSlot::Size, -3.0);
+    impl.uiSetValue(ParamSlot::Pitch, 5.0);
+    const auto hostPitch = gg::test::paramValue(paramId(ParamSlot::Pitch), -7.0);
+    InputEvents hostEvents;
+    hostEvents.add(&hostPitch.header);
+    plugin.flush(hostEvents.list(), out.list());
+    REQUIRE(out.events().size() == 2);
+    CHECK(isValue(out.events()[0], size, -3.0));
+    CHECK(isValue(out.events()[1], paramId(ParamSlot::Pitch), 5.0));
+    CHECK(impl.processor()->base(ParamSlot::Size) == -3.0f);
+    CHECK(impl.processor()->base(ParamSlot::Pitch) == -7.0f);
+    CHECK(plugin.value(paramId(ParamSlot::Pitch)) == -7.0);
+}
+
+TEST_CASE("a drag emits begin, values, end once", "[plugin]")
+{
+    // Review Focus 5, the plugin half: a drag of 100 moves, taken by two process() calls, the
+    // host changing the same parameter meanwhile, reaches the host as exactly one begin and one
+    // end, with every value between them in order, the last the drag's last.
+    ParamsHost host;
+    PluginUnderTest plugin(kFxId, host.clap());
+    REQUIRE(plugin.valid());
+    REQUIRE(plugin.activate(48000.0, 512));
+    auto &impl = plugin.impl();
+    const clap_id position = paramId(ParamSlot::Position);
+    const auto dragValue = [](int i) { return static_cast<double>(0.01f * static_cast<float>(i)); };
+
+    OutputEvents out;
+    Stereo in(64);
+    Stereo audio(64);
+    impl.uiBeginGesture(ParamSlot::Position);
+    for (int i = 1; i <= 50; ++i)
+    {
+        impl.uiSetValue(ParamSlot::Position, dragValue(i));
+    }
+    REQUIRE(plugin.process(64, in.data(), audio.data(), nullptr, 2, out.list()) ==
+            CLAP_PROCESS_CONTINUE);
+    for (int i = 51; i <= 100; ++i)
+    {
+        impl.uiSetValue(ParamSlot::Position, dragValue(i));
+    }
+    impl.uiEndGesture(ParamSlot::Position);
+    const auto hostMove = gg::test::paramValue(position, 0.25, 10);
+    InputEvents hostEvents;
+    hostEvents.add(&hostMove.header);
+    REQUIRE(plugin.process(64, in.data(), audio.data(), hostEvents.list(), 2, out.list()) ==
+            CLAP_PROCESS_CONTINUE);
+
+    const auto &events = out.events();
+    REQUIRE(events.size() == 102);
+    CHECK(countOf(events, CLAP_EVENT_PARAM_GESTURE_BEGIN) == 1);
+    CHECK(countOf(events, CLAP_EVENT_PARAM_GESTURE_END) == 1);
+    CHECK(isGesture(events.front(), CLAP_EVENT_PARAM_GESTURE_BEGIN, position));
+    CHECK(isGesture(events.back(), CLAP_EVENT_PARAM_GESTURE_END, position));
+    for (int i = 1; i <= 100; ++i)
+    {
+        CAPTURE(i);
+        CHECK(isValue(events[static_cast<std::size_t>(i)], position, dragValue(i)));
+    }
+    // The host's own move came after the drag's in the block, so it is the value now.
+    CHECK(plugin.value(position) == 0.25);
+    // Two flush requests at most: one per call that found the queue drained before it.
+    CHECK(host.flushRequests() == 2);
+}
+
+TEST_CASE("ui changes the host's queue refuses are counted, not retried", "[plugin]")
+{
+    ParamsHost host;
+    PluginUnderTest plugin(kFxId, host.clap());
+    REQUIRE(plugin.valid());
+    REQUIRE(plugin.activate(48000.0, 512));
+    auto &impl = plugin.impl();
+
+    impl.uiBeginGesture(ParamSlot::Density);
+    impl.uiSetValue(ParamSlot::Density, 6.0);
+    impl.uiEndGesture(ParamSlot::Density);
+    OutputEvents out(1); // one push accepted, then full
+    Stereo in(64);
+    Stereo audio(64);
+    REQUIRE(plugin.process(64, in.data(), audio.data(), nullptr, 2, out.list()) ==
+            CLAP_PROCESS_CONTINUE);
+    REQUIRE(out.events().size() == 1);
+    CHECK(isGesture(out.events()[0], CLAP_EVENT_PARAM_GESTURE_BEGIN, paramId(ParamSlot::Density)));
+    CHECK(out.refused() == 2); // each refused once
+    CHECK(impl.uiEventsDropped() == 2);
+    // The value still applied: the host's queue only carries the news.
+    CHECK(impl.processor()->base(ParamSlot::Density) == 6.0f);
+    CHECK(plugin.value(paramId(ParamSlot::Density)) == 6.0);
+}
+
+TEST_CASE("ui values are clamped and a nan is ignored", "[plugin]")
+{
+    ParamsHost host;
+    PluginUnderTest plugin(kFxId, host.clap());
+    REQUIRE(plugin.valid());
+    auto &impl = plugin.impl();
+    impl.uiSetValue(ParamSlot::Pitch, 100.0);
+    impl.uiSetValue(ParamSlot::Mix, std::numeric_limits<double>::quiet_NaN());
+    impl.uiSetValue(ParamSlot::Density, 0.1);
+    OutputEvents out;
+    InputEvents none;
+    plugin.flush(none.list(), out.list());
+    // The host gets the value the plugin applies: in range, and a float, as values are end to
+    // end (toParamEvent).
+    REQUIRE(out.events().size() == 2);
+    CHECK(isValue(out.events()[0], paramId(ParamSlot::Pitch), 24.0));
+    CHECK(isValue(out.events()[1], paramId(ParamSlot::Density), static_cast<double>(0.1f)));
+    CHECK(plugin.value(paramId(ParamSlot::Pitch)) == 24.0);
+    CHECK(plugin.value(paramId(ParamSlot::Mix)) ==
+          static_cast<double>(kExpected[at(ParamSlot::Mix)].def));
 }

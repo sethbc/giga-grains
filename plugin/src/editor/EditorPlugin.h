@@ -14,13 +14,29 @@
 
 #include "GigaGrainsPlugin.h"
 
+namespace gg::ui
+{
+struct EditorContext; // gg/ui/Editor.h, kept out of this header's includers
+}
+
 namespace gg::plugin
 {
 /// A GigaGrainsPlugin with its editor. The editor (gg::ui) is a JUCE component, attached
 /// through sst-clap-helpers' clap_juce_shim the way Shortcircuit XT attaches its own. Built only
 /// with GG_BUILD_EDITOR. The audio side is GigaGrainsPlugin's, unchanged.
+///
+/// **The editor's context** (gg::ui::EditorContext) is this object's, for its whole life: the
+/// editor reads the active Processor's publish structures through it, and activate() and
+/// deactivate() update them there, on the main thread (see EditorContext). Publishing is on
+/// while any editor createEditor() made is alive: each turns it on when created and off, through
+/// the context's `publishing`, when destroyed (the shim has no destroy hook of its own).
 class EditorPlugin : public GigaGrainsPlugin, public sst::clap_juce_shim::EditorProvider
 {
+    // Before clapJuceShim, so destroyed after it: an editor the shim still holds reads the
+    // context, and its destructor calls editorOpened(false).
+    std::unique_ptr<gg::ui::EditorContext> editorContext_;
+    uint32_t openEditors_{0}; // main thread
+
   public:
     EditorPlugin(const clap_host *host, Product product);
     ~EditorPlugin() override;
@@ -36,10 +52,25 @@ class EditorPlugin : public GigaGrainsPlugin, public sst::clap_juce_shim::Editor
 
     /// The editor, a gg::ui::Editor. The shim calls this on the main thread, with JUCE set up.
     std::unique_ptr<juce::Component> createEditor() override;
+    /// The context the editors are given (see the class comment). Main thread.
+    const gg::ui::EditorContext &editorContext() const noexcept { return *editorContext_; }
     /// For the shim on Linux, which runs JUCE's event loop from host timers and file
     /// descriptors.
     bool registerOrUnregisterTimer(clap_id &id, int ms, bool reg) override;
     bool registerOrUnregisterPosixFd(int fd, clap_posix_fd_flags_t flags, bool reg) override;
+
+  protected:
+    /// GigaGrainsPlugin's, then the context's publish structures are the new Processor's.
+    bool activate(double sampleRate, uint32_t minFrameCount,
+                  uint32_t maxFrameCount) noexcept override;
+    /// GigaGrainsPlugin's, then the context's publish structures are null.
+    void deactivate() noexcept override;
+
+  private:
+    /// Points the context's publish structures at the active Processor's, or null. Main thread.
+    void updatePublished() noexcept;
+    /// An editor was created (true) or destroyed (false): publishing is on while any is alive.
+    void editorOpened(bool open) noexcept;
 };
 } // namespace gg::plugin
 

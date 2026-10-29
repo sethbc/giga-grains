@@ -189,7 +189,8 @@ class Editor final : public juce::Component, public juce::FileDragAndDropTarget,
     explicit Editor(const EditorContext &context)
         : noteOnCount_(context.noteOnCount), showSampleLoader_(context.showSampleLoader),
           loadSample_(context.loadSample), relinkSample_(context.relinkSample),
-          setSampleFolder_(context.setSampleFolder), sampleStatus_(context.sampleStatus)
+          setSampleFolder_(context.setSampleFolder), sampleStatus_(context.sampleStatus),
+          publishing_(context.publishing)
     {
         setOpaque(true);
         setTitle(context.productName);
@@ -227,7 +228,16 @@ class Editor final : public juce::Component, public juce::FileDragAndDropTarget,
         startTimerHz(30);
     }
 
-    ~Editor() override { stopTimer(); }
+    ~Editor() override
+    {
+        stopTimer();
+        // The plugin publishes its grains and snapshots only while an editor is open (spec
+        // §6.4); the shim destroys the editor in guiDestroy, with no hook of its own.
+        if (publishing_)
+        {
+            publishing_(false);
+        }
+    }
 
     void paint(juce::Graphics &g) override { g.fillAll(kBackground); }
 
@@ -389,6 +399,7 @@ class Editor final : public juce::Component, public juce::FileDragAndDropTarget,
     const bool showSampleLoader_;
     const std::function<void(const std::string &)> loadSample_, relinkSample_, setSampleFolder_;
     const std::function<SampleStatusView()> sampleStatus_;
+    const std::function<void(bool)> publishing_;
 
     juce::Label title_, version_, noteOns_, stressLabel_, frameMs_;
     juce::ComboBox grainCount_;

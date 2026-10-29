@@ -17,6 +17,7 @@
 
 #include "HelpersConfig.h"
 #include "SampleLoader.h"
+#include "gg/core/GrainQueue.h"
 #include "gg/core/LatestValue.h"
 #include "gg/core/ParamIds.h"
 #include "gg/core/Processor.h"
@@ -28,6 +29,23 @@ enum class Product
 {
     Instrument, ///< Giga Grains: an instrument with a note input and a stereo output.
     Fx,         ///< Giga Grains FX: a stereo effect that also accepts notes.
+};
+
+/// One change the editor makes to a parameter, on its way from the main thread to the audio
+/// thread (GigaGrainsPlugin's uiQueue_): a gesture's begin or end, or a base value. Trivially
+/// copyable, for the SpscQueue.
+struct UiParamChange
+{
+    enum Kind : uint8_t
+    {
+        kBegin, ///< CLAP_EVENT_PARAM_GESTURE_BEGIN
+        kValue, ///< a base value, then CLAP_EVENT_PARAM_VALUE
+        kEnd,   ///< CLAP_EVENT_PARAM_GESTURE_END
+    };
+
+    clap_id id;
+    double value; ///< kValue's: in range, and a float's value (uiSetValue)
+    uint8_t kind; ///< a Kind
 };
 
 /// The CLAP descriptor of each product; static storage, never null.
@@ -55,6 +73,11 @@ const clap_plugin_descriptor *descriptorFor(Product product) noexcept;
 ///   it sets valuesApplied_ and asks for on_main_thread, which asks the host to rescan the
 ///   values (carry-over row 123, ruling M1-x): the host's first rescan, at the load, may read
 ///   a value a block in flight then overwrote.
+/// - uiQueue_, the editor's changes (uiBeginGesture, uiSetValue, uiEndGesture: spec §6.3), main
+///   thread → audio thread. process() and an active params.flush take them before the host's
+///   events and apply the values as the host's are applied, then send each change on to the
+///   host as an output event; an inactive flush, on the main thread, stores the values in
+///   values_ for activate().
 ///
 /// **The seed** (sub-project 5's spec §7). A new instance draws its own engine seed, on the main
 /// thread at construction, from std::random_device; a state brings its own.
@@ -121,9 +144,14 @@ class GigaGrainsPlugin : public plugHelper_t
 
     /// The cap on engineBlockSize(). CLAP allows a maxFrameCount up to INT32_MAX.
     static constexpr uint32_t kMaxEngineBlock = 4096;
+    /// The editor's changes that can wait for the audio thread at once (uiQueue_). A change
+    /// made while it is full is dropped.
+    static constexpr uint32_t kUiQueueCapacity = 1024;
     /// The most parameter events one process() call hands to the Processor in one go (its
-    /// event span). Events beyond it apply at the block's end (applyBetweenBlocks).
-    static constexpr std::size_t kMaxParamEvents = 4096;
+    /// event span): the host's, after every value the editor queued (at most kUiQueueCapacity),
+    /// so the editor's never overflow. The host's events beyond it apply at the block's end
+    /// (applyBetweenBlocks).
+    static constexpr std::size_t kMaxParamEvents = 4096 + kUiQueueCapacity;
     /// The most note events one process() call hands to the Processor in one go (its note span).
     /// Notes beyond it apply at the block's end, at the next grid boundary (applyBetweenBlocks):
     /// they move to that boundary from their own, so past this cap the output is no longer block-
@@ -140,6 +168,39 @@ class GigaGrainsPlugin : public plugHelper_t
     static constexpr double kInstrumentTailSeconds = 2.0 + 0.5 + 2.0 * 60.0;
     /// The rate tailGet() assumes before the first activate().
     static constexpr double kDefaultTailRate = 48000.0;
+
+    // ---- The editor's parameter changes (spec §6.3): main thread ----
+    // Each queues a change for the audio thread, which applies it at the start of the next
+    // process() call or params.flush, before the host's events there, and sends it on to the
+    // host as an output event, so the host records the editor's gesture as automation. Each
+    // asks the host for a flush (clap_host_params.request_flush), when it offers clap.params and
+    // none is outstanding. A change made while kUiQueueCapacity wait is dropped.
+
+    /// The editor's gesture on `slot` begins: CLAP_EVENT_PARAM_GESTURE_BEGIN.
+    void uiBeginGesture(gg::core::ParamSlot slot) noexcept;
+    /// Sets `slot`'s base value to `value`, clamped to its range and made a float: applied as a
+    /// host's CLAP_EVENT_PARAM_VALUE would be, and sent to the host as one. A NaN is ignored.
+    void uiSetValue(gg::core::ParamSlot slot, double value) noexcept;
+    /// The editor's gesture on `slot` ends: CLAP_EVENT_PARAM_GESTURE_END.
+    void uiEndGesture(gg::core::ParamSlot slot) noexcept;
+    /// `slot`'s base value, as params.get_value reads it (values_): a change of the editor's
+    /// shows here once the audio thread has taken it.
+    float uiBaseValue(gg::core::ParamSlot slot) const noexcept;
+    /// The output events of the editor's changes that the host's list refused (try_push false):
+    /// each counted, never retried. Any thread.
+    uint64_t uiEventsDropped() const noexcept
+    {
+        return uiEventsDropped_.load(std::memory_order_relaxed);
+    }
+
+    /// Whether the editor is open: the Processor publishes its grains and snapshots for it
+    /// (Processor::setPublishing), from now while active, and from the next activate()
+    /// otherwise. Main thread.
+    void setPublishing(bool on) noexcept;
+    bool publishing() const noexcept { return publishing_; }
+
+    /// The rate of the last activate(), kDefaultTailRate before the first. Main thread.
+    double activeSampleRate() const noexcept { return sampleRate_.load(std::memory_order_relaxed); }
 
     /// The instrument's tail at `sampleRate`: kInstrumentTailSeconds in frames, rounded up,
     /// and kTailInfinite − 1 where that would reach kTailInfinite (or for a NaN or negative
@@ -254,6 +315,17 @@ class GigaGrainsPlugin : public plugHelper_t
     /// Takes the Processor's offers (Processor::takeOffers) and, when one brought values, puts
     /// them in values_. Audio thread, or the main thread with the audio thread stopped.
     void takeOffers() noexcept SST_CPPUTILS_NONBLOCKING;
+    /// Takes the editor's changes queued so far (at most kUiQueueCapacity, so a main thread
+    /// still pushing can't keep it here) and sends each on to `out` (try_push; a refusal is
+    /// counted in uiEventsDropped_). Values: with `values`, appended to it from `count` on as
+    /// ParamEvents at offset 0, for the caller to hand to the Processor; without, applied with
+    /// setBase while active and stored in values_ either way. Returns the new count. The audio
+    /// thread, or the main thread while inactive (the queue's consumer).
+    std::size_t takeUiChanges(const clap_output_events *out, gg::core::ParamEvent *values,
+                              std::size_t count) noexcept SST_CPPUTILS_NONBLOCKING;
+    /// Pushes `change` to uiQueue_ and asks the host for a flush (see uiBeginGesture). Main
+    /// thread.
+    void queueUiChange(const UiParamChange &change) noexcept;
     /// Stores the Processor's base values in values_.
     void storeBases() noexcept SST_CPPUTILS_NONBLOCKING;
     /// Audio thread. When a source the audio thread handed back awaits the main thread's
@@ -301,6 +373,14 @@ class GigaGrainsPlugin : public plugHelper_t
     // on either thread.
     std::atomic<double> sampleRate_{kDefaultTailRate};
     static_assert(std::atomic<double>::is_always_lock_free, "tailGet reads it on the audio thread");
+    // The editor's changes, main thread → audio thread (or the main thread's own flush while
+    // inactive): see uiBeginGesture.
+    gg::core::SpscQueue<UiParamChange, kUiQueueCapacity> uiQueue_;
+    // Set by the main thread when it asks the host for a flush, cleared by the queue's consumer
+    // before it drains: one request outstanding at a time (queueUiChange).
+    std::atomic<bool> uiFlushRequested_{false};
+    std::atomic<uint64_t> uiEventsDropped_{0}; // the consumer's
+    bool publishing_{false};                   // main thread: the editor is open
     // The parameter and note events of one process() call. Audio thread.
     std::array<gg::core::ParamEvent, kMaxParamEvents> events_{};
     std::array<gg::core::NoteEvent, kMaxNoteEvents> notes_{};

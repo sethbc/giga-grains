@@ -4,7 +4,9 @@
 
 #include "SampleLoader.h"
 
+#include <algorithm>
 #include <cassert>
+#include <cmath>
 #include <exception>
 #include <new>
 #include <utility>
@@ -362,6 +364,56 @@ void SampleLoader::deactivate() noexcept
 }
 
 void SampleLoader::onMainThread() noexcept { applyResults(); }
+
+SampleWaveform SampleLoader::waveform() noexcept
+{
+    std::shared_ptr<const void> owner;
+    const SampleBuffer *buffer = nullptr;
+    if (source_ != nullptr)
+    {
+        owner = source_;
+        buffer = &source_->buffer();
+    }
+    else if (pending_ != nullptr)
+    {
+        owner = pending_;
+        buffer = pending_.get();
+    }
+    if (buffer == nullptr)
+    {
+        waveformOf_.reset();
+        waveform_ = {};
+        return {};
+    }
+    if (waveform_.peaks != nullptr && !waveformOf_.owner_before(owner) &&
+        !owner.owner_before(waveformOf_))
+    {
+        return waveform_;
+    }
+    try
+    {
+        const int64_t frames = buffer->frames();
+        auto peaks = std::make_shared<std::vector<float>>(
+            static_cast<std::size_t>((frames + kWaveformBucket - 1) / kWaveformBucket), 0.0f);
+        for (uint32_t c = 0; c < buffer->channels(); ++c)
+        {
+            const float *samples = buffer->channel(c);
+            for (int64_t f = 0; f < frames; ++f)
+            {
+                const float a = std::abs(samples[f]);
+                float &peak = (*peaks)[static_cast<std::size_t>(f / kWaveformBucket)];
+                peak = std::isfinite(a) ? std::max(peak, a) : peak; // as LivePeaks, no NaN
+            }
+        }
+        waveform_ = {std::move(peaks), frames, static_cast<double>(frames) / buffer->sampleRate()};
+        waveformOf_ = owner;
+        return waveform_;
+    }
+    catch (...)
+    {
+        return {}; // std::bad_alloc: nothing cached, so the next call tries again
+    }
+}
 
 void SampleLoader::submit(Job job)
 {

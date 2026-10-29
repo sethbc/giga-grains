@@ -16,6 +16,7 @@
 #include <optional>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "gg/core/MachineSettings.h"
 #include "gg/core/SessionState.h"
@@ -51,6 +52,16 @@ struct SampleStatus
     /// file at the saved path that can't be read. The editor offers Relink, and activate() looks
     /// for the file again (carry-over [194]).
     bool relinkable{false};
+};
+
+/// The outline of the instrument's sample, which the editor draws under its grains (sub-project
+/// 5's spec §6.2): the peak, max |x| over every channel, of each SampleLoader::kWaveformBucket
+/// frames, in frame order (the last bucket may be short). Empty (peaks null) with no sample.
+struct SampleWaveform
+{
+    std::shared_ptr<const std::vector<float>> peaks;
+    int64_t frames{0};   ///< the sample's frames, at its own rate: GrainVis::startPos's unit
+    double seconds{0.0}; ///< frames at the sample's rate
 };
 
 /// The instrument's sample loader (spec §6.4–§6.7): the manifest entry, the source the engine
@@ -195,6 +206,15 @@ class SampleLoader
     /// clap_plugin.on_main_thread: applies a finished result, unless superseded.
     void onMainThread() noexcept;
 
+    /// The frames each of waveform()'s peaks covers.
+    static constexpr int64_t kWaveformBucket = 512;
+    /// The outline of the sample in effect: the source the engine plays or, while inactive after
+    /// a restore, the decoded buffer that waits for activate() (whose frames are at the file's
+    /// rate). Computed here once per sample, which reads its every frame, and then cached until
+    /// the sample changes; empty with none, or if it can't be allocated (tried again at the next
+    /// call). Never throws.
+    SampleWaveform waveform() noexcept;
+
     /// The results applied so far: loads and relinks that reached the manifest. For tests and
     /// diagnostics.
     uint32_t resultsApplied() const noexcept { return resultsApplied_; }
@@ -298,6 +318,11 @@ class SampleLoader
     double activeRate_{0.0}; // 0 while inactive
     uint64_t lastRequest_{0};
     uint32_t resultsApplied_{0};
+    // waveform()'s cache, and the sample it was computed from (source_ or pending_): a weak
+    // reference, so the cache keeps no sample alive, compared by owner, so a new sample at a
+    // freed one's address is never taken for it.
+    std::weak_ptr<const void> waveformOf_;
+    SampleWaveform waveform_;
 
     // Shared with the worker, under mutex_.
     std::mutex mutex_;

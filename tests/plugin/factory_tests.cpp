@@ -461,6 +461,107 @@ TEST_CASE("an sst-jucegui knob constructs and reads its source", "[plugin]")
     }
     CHECK(painted);
 }
+
+TEST_CASE("the editor context carries the publish structures and the gestures", "[plugin]")
+{
+    // Task 10's bridge, as the editor sees it: the Processor's publish structures, updated in
+    // the plugin's context at every activation and deactivation; publishing on from the
+    // editor's creation to its destruction; the base values and gestures through the plugin.
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    gg::test::PluginUnderTest fx("org.sethbc.giga-grains-fx");
+    REQUIRE(fx.valid());
+    auto *plugin = dynamic_cast<gg::plugin::EditorPlugin *>(&fx.impl());
+    REQUIRE(plugin != nullptr);
+    using gg::core::ParamSlot;
+    gg::test::Stereo in(64);
+    gg::test::Stereo out(64);
+    const auto clockAfterBlock = [&] {
+        REQUIRE(fx.process(64, in.data(), out.data()) == CLAP_PROCESS_CONTINUE);
+        return plugin->processor()->publishedClock().load();
+    };
+
+    {
+        std::unique_ptr<juce::Component> editor = plugin->createEditor();
+        REQUIRE(editor != nullptr);
+        CHECK(plugin->publishing());
+        const gg::ui::EditorContext &context = plugin->editorContext();
+        CHECK(context.mode == gg::core::Mode::Fx);
+        // Inactive: no Processor, so nothing to read.
+        CHECK(context.grains == nullptr);
+        CHECK(context.snapshot == nullptr);
+        CHECK(context.livePeaks == nullptr);
+        CHECK(context.clock == nullptr);
+        REQUIRE(context.baseValue);
+        CHECK(context.baseValue(ParamSlot::Mix) == 0.5f);
+        REQUIRE(context.sampleWaveform);
+        CHECK(context.sampleWaveform().peaks == nullptr); // the FX has no sample
+
+        REQUIRE(fx.activate(44100.0, 512));
+        auto *processor = plugin->processor();
+        REQUIRE(processor != nullptr);
+        CHECK(context.grains == &processor->grainQueue());
+        CHECK(context.snapshot == &processor->snapshot());
+        CHECK(context.livePeaks == &processor->livePeaks());
+        CHECK(context.clock == &processor->publishedClock());
+        CHECK(context.sampleRate == 44100.0);
+        // The editor opened before activate(): the new Processor publishes all the same.
+        CHECK(clockAfterBlock() == 64);
+
+        // A gesture through the context reaches the host.
+        gg::test::OutputEvents events;
+        context.beginGesture(ParamSlot::Mix);
+        context.setValue(ParamSlot::Mix, 0.75);
+        context.endGesture(ParamSlot::Mix);
+        REQUIRE(fx.process(64, in.data(), out.data(), nullptr, 2, events.list()) ==
+                CLAP_PROCESS_CONTINUE);
+        CHECK(events.events().size() == 3);
+        CHECK(context.baseValue(ParamSlot::Mix) == 0.75f);
+
+        // Deactivated, the pointers go before the Processor does; a new activation brings new
+        // ones, and its clock starts again.
+        fx.deactivate();
+        CHECK(context.grains == nullptr);
+        CHECK(context.clock == nullptr);
+        REQUIRE(fx.activate(48000.0, 512));
+        CHECK(context.clock == &plugin->processor()->publishedClock());
+        CHECK(context.sampleRate == 48000.0);
+        CHECK(clockAfterBlock() == 64);
+
+        editor.reset();
+        CHECK_FALSE(plugin->publishing());
+        // Closed: the Processor no longer publishes.
+        CHECK(clockAfterBlock() == 64);
+    }
+
+    // Two editors at once (a host that creates a second before destroying the first): publishing
+    // stays on until the last one goes.
+    auto first = plugin->createEditor();
+    auto second = plugin->createEditor();
+    first.reset();
+    CHECK(plugin->publishing());
+    second.reset();
+    CHECK_FALSE(plugin->publishing());
+}
+
+TEST_CASE("the instrument's editor context outlines its sample", "[plugin]")
+{
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    gg::test::PluginUnderTest instrument("org.sethbc.giga-grains");
+    REQUIRE(instrument.valid());
+    auto *plugin = dynamic_cast<gg::plugin::EditorPlugin *>(&instrument.impl());
+    REQUIRE(plugin != nullptr);
+    REQUIRE(instrument.loadSampleState(gg::test::sineSampleFile("gui-waveform")));
+    const auto editor = plugin->createEditor();
+    REQUIRE(editor != nullptr);
+    const gg::ui::EditorContext &context = plugin->editorContext();
+    CHECK(context.mode == gg::core::Mode::Instrument);
+    REQUIRE(context.sampleWaveform);
+    const auto waveform = context.sampleWaveform();
+    REQUIRE(waveform.peaks != nullptr);
+    CHECK(waveform.peaks == plugin->sampleLoader()->waveform().peaks);
+    CHECK(waveform.frames == 192000);
+    CHECK(waveform.seconds == 4.0);
+}
 #else
 TEST_CASE("headless build exposes no gui extension", "[plugin]")
 {

@@ -1471,3 +1471,42 @@ TEST_CASE("a sample present but unreadable is an Error, not Missing or Changed",
     }
 }
 #endif
+
+TEST_CASE("the sample waveform is computed once per sample", "[plugin]")
+{
+    // The editor's outline of the instrument's sample (sub-project 5's spec §6.2): one peak per
+    // 512 frames, computed on the main thread when the sample changes and cached until then.
+    PluginUnderTest plugin(kInstrumentId);
+    REQUIRE(plugin.valid());
+    gg::plugin::SampleLoader *loader = plugin.impl().sampleLoader();
+    REQUIRE(loader != nullptr);
+    CHECK(loader->waveform().peaks == nullptr);
+    CHECK(loader->waveform().frames == 0);
+
+    // Restored while inactive: the decoded file, at its own rate (a 4 s sine of amplitude 0.5).
+    REQUIRE(plugin.loadSampleState(gg::test::sineSampleFile("waveform")));
+    const auto decoded = loader->waveform();
+    REQUIRE(decoded.peaks != nullptr);
+    CHECK(decoded.frames == 192000);
+    CHECK(decoded.seconds == 4.0);
+    REQUIRE(decoded.peaks->size() == 375);
+    for (std::size_t i = 0; i < decoded.peaks->size(); ++i)
+    {
+        CAPTURE(i);
+        // 512 frames hold more than a period of 220 Hz, so each bucket reaches the crest.
+        CHECK((*decoded.peaks)[i] > 0.49f);
+        CHECK((*decoded.peaks)[i] <= 0.5f);
+    }
+    CHECK(loader->waveform().peaks == decoded.peaks); // cached
+
+    // Activated at another rate: the source the engine plays, converted, so a new outline in its
+    // frames, then cached.
+    REQUIRE(plugin.activate(44100.0, 512));
+    const auto converted = loader->waveform();
+    REQUIRE(converted.peaks != nullptr);
+    CHECK(converted.peaks != decoded.peaks);
+    CHECK(std::abs(converted.frames - 176400) <= 1);
+    CHECK(converted.peaks->size() == static_cast<std::size_t>((converted.frames + 511) / 512));
+    CHECK(std::abs(converted.seconds - 4.0) < 1e-4);
+    CHECK(loader->waveform().peaks == converted.peaks);
+}
