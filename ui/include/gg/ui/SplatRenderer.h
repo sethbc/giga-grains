@@ -36,6 +36,12 @@ class SplatRenderer
     /// a non-finite argument or a radius that isn't positive adds nothing.
     void add(float x, float y, float radius, float intensity) noexcept;
 
+    /// Adds one capsule: the splat's falloff, intensity * max(0, 1 - d^2/r^2), with d measured
+    /// from the segment (x0, y) - (x1, y), so it is flat at full intensity along that segment.
+    /// The ends may come in either order, and x0 == x1 adds exactly what add(x0, y, ...) does.
+    /// Clipping and the non-finite and radius rules are add's.
+    void addCapsule(float x0, float x1, float y, float radius, float intensity) noexcept;
+
     /// Writes every pixel to dst as 0xAARRGGBB: alpha 255 and each channel of rgbTint (0xRRGGBB)
     /// scaled by v = 1 - exp(-a), to within one 8-bit step. Row y starts at dst + y * strideU32;
     /// the strideU32 - width words that pad each row are left alone. Writes nothing if dst is

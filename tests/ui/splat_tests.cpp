@@ -5,7 +5,9 @@
 // The CPU additive splat renderer behind the grain canvas (INTENT §17). These tests link
 // gg-ui-core only, so they also run in the sanitizer builds, which have no editor or JUCE.
 
+#include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <vector>
@@ -272,4 +274,176 @@ TEST_CASE("resolve saturates monotonically", "[ui]")
             REQUIRE(channel(sweep[x], 16) >= channel(sweep[x - 1], 16));
         }
     }
+}
+
+namespace
+{
+/// The capsule kernel: the splat's falloff, measured from the nearest point of the segment
+/// (x0, cy) - (x1, cy).
+float expectedCapsule(float x0, float x1, float cy, float r, float intensity, uint32_t x,
+                      uint32_t y)
+{
+    const float px = static_cast<float>(x);
+    const float lo = std::min(x0, x1);
+    const float hi = std::max(x0, x1);
+    const float nearest = px < lo ? lo : (px > hi ? hi : px);
+    const float dx = px - nearest;
+    const float dy = static_cast<float>(y) - cy;
+    const float d2 = dx * dx + dy * dy;
+    return d2 < r * r ? intensity * (1.0f - d2 / (r * r)) : 0.0f;
+}
+} // namespace
+
+TEST_CASE("a capsule equals a splat when its ends coincide", "[ui]")
+{
+    constexpr uint32_t w = 32, h = 24;
+    struct Case
+    {
+        float x, y, r, intensity;
+    };
+    for (const Case c :
+         {Case{10, 10, 3, 0.7f}, Case{20.5f, 5.25f, 2.5f, 1.0f}, Case{0.3f, 23.6f, 4.0f, 0.4f}})
+    {
+        INFO("splat at " << c.x << ", " << c.y << ", radius " << c.r);
+        gg::ui::SplatRenderer splat(w, h), capsule(w, h);
+        splat.add(c.x, c.y, c.r, c.intensity);
+        capsule.addCapsule(c.x, c.x, c.y, c.r, c.intensity);
+        for (uint32_t y = 0; y < h; ++y)
+        {
+            for (uint32_t x = 0; x < w; ++x)
+            {
+                INFO("pixel " << x << ", " << y);
+                REQUIRE(capsule.accumAt(x, y) == splat.accumAt(x, y)); // bit for bit
+            }
+        }
+    }
+}
+
+TEST_CASE("a capsule is flat along its axis", "[ui]")
+{
+    constexpr uint32_t w = 40, h = 24;
+    gg::ui::SplatRenderer capsule(w, h);
+    capsule.addCapsule(5, 20, 10, 3, 0.7f);
+
+    // On the axis, between the ends, every pixel gets the splat's centre value exactly.
+    for (uint32_t x = 5; x <= 20; ++x)
+    {
+        INFO("pixel " << x);
+        REQUIRE(capsule.accumAt(x, 10) == 0.7f);
+    }
+    // Off the axis between the ends, only the vertical distance counts.
+    REQUIRE_THAT(capsule.accumAt(12, 11), WithinAbs(0.7f * (1.0f - 1.0f / 9.0f), 1e-6));
+    // Past an end, it falls off from that end as a splat does.
+    REQUIRE_THAT(capsule.accumAt(22, 10), WithinAbs(expectedSplat(20, 10, 3, 0.7f, 22, 10), 1e-6));
+    REQUIRE_THAT(capsule.accumAt(3, 11), WithinAbs(expectedSplat(5, 10, 3, 0.7f, 3, 11), 1e-6));
+    REQUIRE(capsule.accumAt(23, 10) == 0.0f); // exactly on the radius past the right end
+    REQUIRE(capsule.accumAt(2, 10) == 0.0f);
+
+    // Every pixel follows the kernel, and the ends may come in either order.
+    gg::ui::SplatRenderer reversed(w, h), between(w, h);
+    reversed.addCapsule(20, 5, 10, 3, 0.7f);
+    between.addCapsule(7.25f, 30.5f, 12.75f, 2.5f, 0.3f);
+    for (uint32_t y = 0; y < h; ++y)
+    {
+        for (uint32_t x = 0; x < w; ++x)
+        {
+            INFO("pixel " << x << ", " << y);
+            const float expected = expectedCapsule(5, 20, 10, 3, 0.7f, x, y);
+            if (expected == 0.0f)
+            {
+                REQUIRE(capsule.accumAt(x, y) == 0.0f);
+            }
+            else
+            {
+                REQUIRE_THAT(capsule.accumAt(x, y), WithinAbs(expected, 1e-6));
+            }
+            REQUIRE(reversed.accumAt(x, y) == capsule.accumAt(x, y));
+            REQUIRE_THAT(between.accumAt(x, y),
+                         WithinAbs(expectedCapsule(7.25f, 30.5f, 12.75f, 2.5f, 0.3f, x, y), 1e-6));
+        }
+    }
+
+    // Capsules are additive, with each other and with splats.
+    capsule.addCapsule(5, 20, 10, 3, 0.7f);
+    capsule.add(12, 10, 3, 0.1f);
+    REQUIRE(capsule.accumAt(12, 10) == 2 * 0.7f + 0.1f);
+}
+
+TEST_CASE("offscreen capsules are clipped safely", "[ui]")
+{
+    constexpr uint32_t w = 16, h = 12;
+    constexpr float kNaN = std::numeric_limits<float>::quiet_NaN();
+    constexpr float kInf = std::numeric_limits<float>::infinity();
+    gg::ui::SplatRenderer capsule(w, h);
+
+    // Partly offscreen past each side: only the in-bounds part lands.
+    capsule.addCapsule(-20, -5, -5, 8, 1);
+    capsule.addCapsule(w + 3, w + 30, h + 3, 8, 1);
+    REQUIRE_THAT(capsule.accumAt(0, 0), WithinAbs(1.0f - 50.0f / 64.0f, 1e-6));
+    REQUIRE_THAT(capsule.accumAt(w - 1, h - 1), WithinAbs(1.0f - 32.0f / 64.0f, 1e-6));
+    REQUIRE(capsule.accumAt(w / 2, h / 2) == 0.0f);
+
+    // Entirely offscreen, or degenerate: nothing lands, nothing is touched out of bounds.
+    std::vector<float> before;
+    for (uint32_t y = 0; y < h; ++y)
+    {
+        for (uint32_t x = 0; x < w; ++x)
+        {
+            before.push_back(capsule.accumAt(x, y));
+        }
+    }
+    capsule.addCapsule(-100, -50, 5, 8, 1);
+    capsule.addCapsule(w + 50, w + 100, 5, 8, 1);
+    capsule.addCapsule(2, 10, h + 100, 8, 1);
+    capsule.addCapsule(1e30f, 2e30f, -1e30f, 4, 1);
+    capsule.addCapsule(2, 10, 5, 0, 1);
+    capsule.addCapsule(2, 10, 5, -2, 1);
+    capsule.addCapsule(kNaN, 10, 5, 3, 1);
+    capsule.addCapsule(2, kNaN, 5, 3, 1);
+    capsule.addCapsule(-kInf, 10, 5, 3, 1);
+    capsule.addCapsule(2, kInf, 5, 3, 1);
+    capsule.addCapsule(2, 10, kNaN, 3, 1);
+    capsule.addCapsule(2, 10, kInf, 3, 1);
+    capsule.addCapsule(2, 10, 5, kNaN, 1);
+    capsule.addCapsule(2, 10, 5, kInf, 1);
+    capsule.addCapsule(2, 10, 5, 3, kNaN);
+    capsule.addCapsule(2, 10, 5, 3, kInf);
+    std::size_t i = 0;
+    for (uint32_t y = 0; y < h; ++y)
+    {
+        for (uint32_t x = 0; x < w; ++x)
+        {
+            INFO("pixel " << x << ", " << y);
+            REQUIRE(capsule.accumAt(x, y) == before[i++]);
+        }
+    }
+
+    // A capsule far longer than the canvas lights its whole row at full intensity.
+    capsule.clear();
+    capsule.addCapsule(-1e30f, 1e30f, 6, 2, 1);
+    for (uint32_t x = 0; x < w; ++x)
+    {
+        INFO("pixel " << x);
+        REQUIRE(capsule.accumAt(x, 6) == 1.0f);
+        REQUIRE(capsule.accumAt(x, 3) == 0.0f);
+    }
+
+    // A zero-sized canvas accepts everything and draws nothing.
+    gg::ui::SplatRenderer empty(0, 0);
+    empty.addCapsule(0, 4, 0, 4, 1);
+    REQUIRE(empty.accumAt(0, 0) == 0.0f);
+}
+
+TEST_CASE("a capsule at the right edge of a canvas over 16M pixels wide stays on it", "[ui]")
+{
+    // As for add: the clip is done in double, so float(width - 1) rounding up to width can't
+    // carry a capsule's right end past its row.
+    constexpr uint32_t w = (1u << 24) + 4, h = 2;
+    gg::ui::SplatRenderer capsule(w, h);
+    const auto x = static_cast<float>(w - 1); // rounds to w, just past the last pixel
+    capsule.addCapsule(x - 16, x, 1, 4, 1);
+    REQUIRE(capsule.accumAt(w - 1, 1) > 0.0f);
+    REQUIRE(capsule.accumAt(0, 1) == 0.0f);
+    capsule.addCapsule(x - 16, x, 0, 4, 1);
+    REQUIRE(capsule.accumAt(0, 1) == 0.0f);
 }

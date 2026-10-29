@@ -104,6 +104,54 @@ void SplatRenderer::add(float x, float y, float radius, float intensity) noexcep
     }
 }
 
+void SplatRenderer::addCapsule(float x0, float x1, float y, float radius, float intensity) noexcept
+{
+    if (!std::isfinite(x0) || !std::isfinite(x1) || !std::isfinite(y) || !std::isfinite(radius) ||
+        !std::isfinite(intensity) || !(radius > 0.0f) || width_ == 0 || height_ == 0)
+    {
+        return;
+    }
+    const float lo = std::min(x0, x1);
+    const float hi = std::max(x0, x1);
+
+    // The bounding box of the segment grown by the radius, computed and clipped as add's is (so
+    // x0 == x1 covers add's pixels), in floating point: ends far off the canvas never reach an
+    // integer conversion.
+    const auto maxX = static_cast<double>(width_ - 1);
+    const auto maxY = static_cast<double>(height_ - 1);
+    const double left = std::ceil(lo - radius);
+    const double right = std::floor(hi + radius);
+    const double top = std::ceil(y - radius);
+    const double bottom = std::floor(y + radius);
+    if (right < 0.0 || left > maxX || bottom < 0.0 || top > maxY)
+    {
+        return;
+    }
+    const auto px0 = static_cast<uint32_t>(std::max(left, 0.0));
+    const auto px1 = static_cast<uint32_t>(std::min(right, maxX));
+    const auto py0 = static_cast<uint32_t>(std::max(top, 0.0));
+    const auto py1 = static_cast<uint32_t>(std::min(bottom, maxY));
+
+    // add's loop, with dx measured from the pixel's nearest point on the segment: 0 between the
+    // ends, so the axis gets the full intensity. With lo == hi the nearest point is x0 itself and
+    // dx = px - x0 bit for bit, so the result is add's exactly.
+    const float invR2 = 1.0f / (radius * radius);
+    for (uint32_t py = py0; py <= py1; ++py)
+    {
+        const float dy = static_cast<float>(py) - y;
+        const float rowBase = 1.0f - dy * dy * invR2;
+        float *row = accum_.data() + static_cast<std::size_t>(py) * width_;
+        for (uint32_t px = px0; px <= px1; ++px)
+        {
+            const auto fx = static_cast<float>(px);
+            const float nearest = fx < lo ? lo : (fx > hi ? hi : fx);
+            const float dx = fx - nearest;
+            const float weight = rowBase - dx * dx * invR2;
+            row[px] += intensity * (weight > 0.0f ? weight : 0.0f);
+        }
+    }
+}
+
 void SplatRenderer::resolveToArgb(uint32_t *dst, uint32_t strideU32,
                                   uint32_t rgbTint) const noexcept
 {
