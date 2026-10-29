@@ -65,6 +65,7 @@
 #include "gg/core/Rng.h"
 #include "gg/core/SpaceReverb.h"
 #include "gg/engine/Engine.h"
+#include "gg/grain/GrainPool.h"
 #include "gg/grain/Tier.h"
 #include "gg/source/SampleBuffer.h"
 #include "gg/source/SourceMode.h"
@@ -376,6 +377,21 @@ class EngineConfiguration final : public Configuration
         return timedBlocks_ == 0
                    ? 0.0
                    : static_cast<double>(timedActive_) / static_cast<double>(timedBlocks_);
+    }
+
+    /// Warms up, as run() does, with an event sink counting each admitted grain's tier.
+    TierCounts warmUpCountingTiers()
+    {
+        TierCounts counts;
+        engine_.setEventSink(
+            [](void *ctx, const gg::GrainSpec &g) {
+                TierCounts &c = *static_cast<TierCounts *>(ctx);
+                ++(g.tier == gg::Tier::Eco ? c.eco : c.normal);
+            },
+            &counts);
+        warmUp();
+        engine_.setEventSink(nullptr, nullptr);
+        return counts;
     }
 
   private:
@@ -915,6 +931,30 @@ nlohmann::json makeBaseline(const std::string &leg, const std::vector<nlohmann::
     }
     return {
         {"schemaVersion", kBaselineSchemaVersion}, {"leg", leg}, {"machines", std::move(entries)}};
+}
+
+TierCounts admittedTiers(const std::string &engineCase, uint32_t grains, uint32_t blockSize)
+{
+    const auto e =
+        std::find_if(kEngineCases.begin(), kEngineCases.end(),
+                     [&engineCase](const EngineCase &c) { return engineCase == c.name; });
+    if (e == kEngineCases.end())
+    {
+        throw std::invalid_argument("not an engine case: " + engineCase);
+    }
+    if (std::find(kBlockSizes.begin(), kBlockSizes.end(), blockSize) == kBlockSizes.end())
+    {
+        throw std::invalid_argument("not a block size the cases run at: " +
+                                    std::to_string(blockSize));
+    }
+    if (grains < 1)
+    {
+        throw std::invalid_argument("there must be at least 1 grain");
+    }
+    const gg::ScopedDenormalsOff noDenormals;
+    const Noise noise;
+    EngineConfiguration configuration(*e, blockSize, noise, grains);
+    return configuration.warmUpCountingTiers();
 }
 
 std::vector<uint32_t> roundOrder(uint32_t configurations, int round)

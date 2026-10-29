@@ -568,3 +568,28 @@ TEST_CASE("the reference kernel's output is pinned", "[bench]")
     CHECK(hash(gg::bench::renderLinearSimd) == 0x300874d5efa10a70ull);
     CHECK(hash(gg::bench::renderLinearScalar) == 0x300874d5efa10a70ull);
 }
+
+TEST_CASE("engine-sample-eco runs at the Eco tier", "[bench]")
+{
+    // Its timing alone (about 26 against 39 ns in Debug) doesn't prove it: every grain the case
+    // admits, as its engine's event sink sees it with the tier the pool latches, must be Eco, and
+    // the other cases' Normal (carry-over: "No test proves engine-sample-eco runs at Eco").
+    // engine-sample is the control. engine-live is left out: it warms up for 16 s of audio, about
+    // 5 s of a Debug build's time per block size, and is Normal by the same default.
+    const std::vector<std::pair<std::string, uint32_t>> configurations{
+        {"engine-sample-eco", 32}, {"engine-sample-eco", 64}, {"engine-sample-eco", 256},
+        {"engine-sample", 32},     {"engine-sample", 64},     {"engine-sample", 256},
+        {"engine-full-pool", 64},
+    };
+    for (const auto &[name, blockSize] : configurations)
+    {
+        INFO(name << " at block " << blockSize);
+        const gg::bench::TierCounts tiers = gg::bench::admittedTiers(name, 50, blockSize);
+        const bool eco = name == "engine-sample-eco";
+        CHECK((eco ? tiers.eco : tiers.normal) >= 50); // at least one grain duration's worth
+        CHECK((eco ? tiers.normal : tiers.eco) == 0);
+    }
+    CHECK_THROWS_AS(gg::bench::admittedTiers("reference", 50, 32), std::invalid_argument);
+    CHECK_THROWS_AS(gg::bench::admittedTiers("no-such-case", 50, 32), std::invalid_argument);
+    CHECK_THROWS_AS(gg::bench::admittedTiers("engine-sample", 50, 48), std::invalid_argument);
+}

@@ -180,6 +180,21 @@ Comparison compare(const Report &report, const nlohmann::json &baseline);
 /// no runs, a run that isn't schema 2 or a machine whose runs' ratios differ.
 nlohmann::json makeBaseline(const std::string &leg, const std::vector<nlohmann::json> &runs);
 
+/// How many grains an engine case admitted at each interpolation tier (ruling 2).
+struct TierCounts
+{
+    uint64_t eco{0};
+    uint64_t normal{0};
+};
+
+/// Builds engine case `engineCase` at `blockSize` with `grains` grains exactly as run() does,
+/// warms it up as run() does, and counts the tier of every grain it admitted meanwhile, through
+/// its engine's event sink: each admitted grain's spec carries the tier the pool latches for it.
+/// It proves which tier a case runs at (engine-sample-eco: Eco; the others: Normal) without
+/// timing anything. Throws std::invalid_argument for a name that isn't an engine case, a block
+/// size run() doesn't use (32, 64 and 256) or 0 grains.
+TierCounts admittedTiers(const std::string &engineCase, uint32_t grains, uint32_t blockSize);
+
 /// The order round `round` (r) runs `configurations` (n) configurations in. Even rounds run
 /// 0, 1, ..., n - 1 rotated left by r: order[i] = (i + r) mod n. Odd rounds run that order's
 /// reverse, rotated: order[i] = (r + n - 1 - i) mod n. Each configuration's predecessor thus
