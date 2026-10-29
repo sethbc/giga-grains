@@ -492,8 +492,8 @@ $b --space [--quick | --seconds S] [--rounds N] [--commit SHA] [--json out.json]
   the options shown above, `--canvas` only `--quick` and `--json`, and `--make-baseline`
   nothing else (its `--merge` is one of its own values).
   - Sub-project 4's fix wave measured 28.49 ns per stereo sample, 0.137% of one M5 Max core,
-    at its final code (`ac81dfb`; INTENT §16).
-    Sub-project 6 publishes it beside X.
+    at its final code (`ac81dfb`; INTENT §16), and sub-project 6's idle run 29.44 ns, 0.141%,
+    published beside X (19.5% at block 256; `docs/benchmarks/`, INTENT §23 #60).
 - **When profiling the plugins in a VST3 host,** remember that clap-wrapper's VST3 `process`
   takes a spin lock. Time spent there is the wrapper's, not ours.
 - **Exit status:** 0 when done and no ratio regressed, 1 for an error (an unreadable or malformed
@@ -525,7 +525,8 @@ $b --space [--quick | --seconds S] [--rounds N] [--commit SHA] [--json out.json]
     `::warning` and the step exits 0. A crash, exit 1 or 2, or the timeout still fails the job.
     The `bench_baseline_*` tests pin exit 3 (a regression or a missing entry), exit 0, the
     no-verdict line and exit 1 for a run with no ratios.
-  - Sub-project 6 makes the gate blocking, with the published X.
+  - The gate turns blocking at 1.0, the first public release (INTENT §23 #60), with the
+    published X.
 - **Refreshing a baseline** (`tools/gg-bench/baselines/README.md` has the format):
   1. Make three separate full-length CI runs of the same engine code: runs on `main`, the
      nightly or `gh workflow run ci.yml --ref <branch>` (a pull request's runs are `--quick` and

@@ -412,7 +412,8 @@ calls almost nothing.
 
 Percent of one M5 Max core for 2,000 grains at 48 kHz, from the judging runs above: the median
 over 3 cycles, at blocks 32 / 64 / 256. **Indicative only:** these ran with desktop apps open,
-and X is measured in sub-project 6, on an idle machine, and published as measured.
+and X was measured in sub-project 6, on an idle machine, and published as measured: 19.5% at
+block 256 (23.4% / 21.2% at 32 / 64), 2026-10-29, `docs/benchmarks/` (INTENT §16, §23 #60).
 
 | Case | Before levers (`1bd948a`) | After (`a911b93`, the engine's kernel since) |
 |---|---|---|

@@ -195,7 +195,9 @@ amended, INTENT §16, §23 #58). The densest setting a host can reach stays at o
 Live and Bitwig, and an idle `gg-bench --canvas` run at 8,192 grains stays at or under 3 ms,
 taken with sub-project 6's measurement of X. Offline, `gg-bench --canvas` measured this build at
 3.66 ms per frame at 8,192 grains during a build on the same machine, over the budget, and at
-2.80 ms on a second run with nothing building (M0's, 2.77 ms; see Verification).
+2.80 ms on a second run with nothing building (M0's, 2.77 ms; see Verification). Sub-project 6's
+idle run (2026-10-29) measured 2.87 ms (p95 2.92 ms; `docs/benchmarks/2026-10-29-m1-canvas.json`),
+inside the budget.
 
 ## Verification at fe4de01
 
@@ -252,4 +254,6 @@ same canvas; `docs/spikes/m0-canvas-budget.md`).
 | 16,384 | 4.79 ms (5.15, 6.67) | 3.52 ms (3.52, 3.60) | 3.52 ms |
 
 Neither run was on an idle machine. The idle run that decision D3 (above) judges the budget by
-is taken with sub-project 6's measurement of X.
+was taken with sub-project 6's measurement of X, on 2026-10-29
+(`docs/benchmarks/2026-10-29-m1-canvas.json`): 2.50 / **2.87** / 3.66 ms at 4,096 / 8,192 /
+16,384 grains (p95 2.57 / 2.92 / 3.71). The 8,192 figure is inside the 3 ms budget.

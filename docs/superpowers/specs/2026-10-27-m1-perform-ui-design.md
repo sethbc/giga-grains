@@ -321,7 +321,8 @@ Diffusion's ID belongs to sub-project 4 (Space).
   > **Amended by decision D3 (2026-10-29, by the director):** the budget is judged by two measurements. The densest setting
   > a host can reach stays at or under 3 ms in Live and Bitwig, and an idle `gg-bench --canvas` run at 8,192 grains stays at
   > or under 3 ms, taken with sub-project 6's X measurement. A run with nothing building (load average about 4) measured
-  > 2.80 ms (M0's, 2.77 ms); the idle run is sub-project 6's. See `docs/listening/m1-perform/README.md` and INTENT §16,
+  > 2.80 ms (M0's, 2.77 ms); sub-project 6's idle run measured 2.87 ms (p95 2.92 ms;
+  > `docs/benchmarks/2026-10-29-m1-canvas.json`, INTENT §23 #60), inside the budget. See `docs/listening/m1-perform/README.md` and INTENT §16,
   > §23 #58.
 - **The validators:** clap-validator, pluginval at strictness 10, auval ×3 and Steinberg's validator, all with the new
   parameters.
