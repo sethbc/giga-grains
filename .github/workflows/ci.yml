@@ -404,6 +404,13 @@ jobs:
             echo "::error title=signing::MAC_INSTALLER_IDENTITY names no valid identity in the .p12 (MAC_CERTS_P12)"
             exit 1
           }
+          # pkgbuild signs a test package with the installer identity, or fails within 90 s: a
+          # keychain access prompt (a tool missing from the key's access list) would otherwise
+          # hang the installer step, which nobody can answer on a runner.
+          scripts/release/mac-keychain.sh probe "$keychain" "$MAC_INSTALLER_IDENTITY" || {
+            echo "::error title=signing::pkgbuild can't sign with MAC_INSTALLER_IDENTITY from the throwaway keychain (the probe's output is above)"
+            exit 1
+          }
           printf '%s' "$NOTARY_KEY_P8" | base64 --decode > "$RUNNER_TEMP/AuthKey.p8"
           echo "GG_SIGN=1" >> "$GITHUB_ENV"
 

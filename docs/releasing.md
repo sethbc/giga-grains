@@ -404,6 +404,18 @@ submission ID. The service carries on: follow it with `xcrun notarytool history`
 notarytool log <id>` (or `info <id>`), each with `--key`, `--key-id` and `--issuer`, and re-run
 the dispatch once Apple has processed it.
 
+**The installer step prints the first `--- giga-grains-clap.pkg` line and then nothing.** The
+first `pkgbuild --sign` is waiting on a keychain access prompt, which nobody can answer on a
+runner, so it waits until the step's timeout (`xcrun notarytool history` is empty: nothing was
+submitted). A tool may use the imported private key without a prompt only when the key's access
+list names it: `mac-keychain.sh import` authorises `codesign`, `pkgbuild`, `productbuild`,
+`productsign` and `security` (`security import -T`; `set-key-partition-list` alone isn't
+enough). The import step then runs `mac-keychain.sh probe`, which signs a test package with
+`MAC_INSTALLER_IDENTITY` and fails within 90 s if pkgbuild blocks (`pkgbuild blocked for 90 s:
+the keychain is asking for access ...`) or fails (its error follows), so a regression stops the
+run there rather than in the installer step. `security dump-keychain -a <keychain>` lists each
+key's authorised applications.
+
 **Gatekeeper refuses an installer.** make-installer.sh ends with `spctl --assess -vv` on the PKG
 (`--type install`) and the DMG (`--type open --context context:primary-signature`); run them
 yourself on a downloaded copy. `source=Unnotarized Developer ID` means the ticket is missing:

@@ -20,7 +20,9 @@
 #   - test_mac_keychain (macOS only): scripts/release/mac-keychain.sh (§6.2) imports a scratch
 #     self-signed code-signing identity into a scratch keychain, lists it, never prints either
 #     password, and deletes the keychain, leaving the user's keychain search list as it found it;
-#     a missing or wrong password, a missing .p12 and bad usage are refused, creating nothing. An
+#     a missing or wrong password, a missing .p12 and bad usage are refused, creating nothing.
+#     The imported key's access list names codesign, pkgbuild and productbuild, and probe fails
+#     at once (not at its 90 s watchdog) with an identity pkgbuild can't sign with. An
 #     EXIT trap deletes the scratch keychain and takes it out of the search list even when a
 #     check fails. The user's login keychain is never passed to the script.
 #
@@ -389,6 +391,45 @@ test_mac_keychain() {
         "$(user_keychains)" "$(printf '%s\n%s' "$kc" "$before")"
     check "mac-keychain: the identity is in the keychain" \
         "$(security find-identity -p codesigning "$kc" | grep -qF '"gg test"' && echo 0 || echo 1)"
+    # The key's access list names every tool that signs with it: make-installer.sh signs with
+    # pkgbuild and productbuild, and a tool not on the list raises a prompt nobody answers in CI.
+    local acl
+    acl="$(security dump-keychain -a "$kc" 2>&1 || true)"
+    expect_in "mac-keychain: the key's access list names /usr/bin/codesign" "$acl" \
+        "/usr/bin/codesign"
+    expect_in "mac-keychain: the key's access list names /usr/bin/pkgbuild" "$acl" \
+        "/usr/bin/pkgbuild"
+    expect_in "mac-keychain: the key's access list names /usr/bin/productbuild" "$acl" \
+        "/usr/bin/productbuild"
+
+    # probe: the scratch identity has no Installer extended key usage, so pkgbuild --sign fails at
+    # once, and probe reports pkgbuild's error, not the 90 s watchdog's, never naming the identity.
+    local started elapsed
+    mkdir -p "$dir/tmp"
+    started="$(date +%s)"
+    TMPDIR="$dir/tmp" run_release_script mac-keychain.sh probe "$kc" "gg test"
+    elapsed=$(($(date +%s) - started))
+    check "mac-keychain: probe with a non-Installer identity fails" \
+        "$( ((status != 0)) && echo 0 || echo 1)"
+    check "mac-keychain: ... within 15 s (took ${elapsed} s), not at the watchdog's 90" \
+        "$( ((elapsed < 15)) && echo 0 || echo 1)"
+    expect_in "mac-keychain: probe's failure reports pkgbuild's error" "$err" "pkgbuild failed"
+    check "mac-keychain: ... not the watchdog's message" \
+        "$(grep -qF "blocked for" <<<"$err" && echo 1 || echo 0)"
+    check "mac-keychain: probe's failure never prints the identity" \
+        "$(grep -qF "gg test" <<<"$out$err" && echo 1 || echo 0)"
+    expect_eq "mac-keychain: probe's failure prints nothing on stdout" "$out" ""
+    check "mac-keychain: probe leaves no scratch directory" \
+        "$(ls -d "$dir/tmp"/gg-keychain-probe.* >/dev/null 2>&1 && echo 1 || echo 0)"
+
+    run_release_script mac-keychain.sh probe "$dir/bogus.keychain-db" "gg test"
+    expect_eq "mac-keychain: probe with a keychain that doesn't exist: exit 2" "$status" 2
+    run_release_script mac-keychain.sh probe "$dir/t.keychain" "gg test"
+    expect_eq "mac-keychain: probe with a keychain not named *.keychain-db: exit 2" "$status" 2
+    run_release_script mac-keychain.sh probe "$kc" ""
+    expect_eq "mac-keychain: probe with an empty identity: exit 2" "$status" 2
+    run_release_script mac-keychain.sh probe "$kc"
+    expect_eq "mac-keychain: probe without an identity is bad usage" "$status" 2
 
     run_release_script mac-keychain.sh import "$p12" "$kc"
     expect_eq "mac-keychain: import into an existing keychain: exit 2" "$status" 2
