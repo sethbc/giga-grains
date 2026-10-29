@@ -130,6 +130,10 @@ if (GG_BUILD_PLUGINS)
             )
     target_include_directories(gg-tests PRIVATE ${CMAKE_SOURCE_DIR}/plugin/src)
 endif ()
+# The editor's tests reach its components' private headers too (ui/src: GrainCanvas, LoaderStrip).
+if (GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
+    target_include_directories(gg-tests PRIVATE ${CMAKE_SOURCE_DIR}/ui/src)
+endif ()
 
 list(APPEND CMAKE_MODULE_PATH ${CMAKE_SOURCE_DIR}/libs/catch2/extras)
 include(Catch)

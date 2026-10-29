@@ -154,6 +154,9 @@ class SampleLoader
     /// Sets the per-machine sample folder (spec §6.5, §6.7) and saves the settings file. False if
     /// it can't be written.
     bool setSampleFolder(const std::filesystem::path &folder);
+    /// The settings' last load folder (UTF-8; empty if none or no settings file), where the
+    /// editor's file choosers open. Reads the settings file.
+    std::string lastLoadFolder() const;
 
     /// The status (see SampleState).
     SampleStatus status() const { return status_; }

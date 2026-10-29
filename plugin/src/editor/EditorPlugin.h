@@ -26,16 +26,24 @@ namespace gg::plugin
 /// with GG_BUILD_EDITOR. The audio side is GigaGrainsPlugin's, unchanged.
 ///
 /// **The editor's context** (gg::ui::EditorContext) is this object's, for its whole life: the
-/// editor reads the active Processor's publish structures through it, and activate() and
-/// deactivate() update them there, on the main thread (see EditorContext). Publishing is on
-/// while any editor createEditor() made is alive: each turns it on when created and off, through
-/// the context's `publishing`, when destroyed (the shim has no destroy hook of its own).
+/// editor keeps a reference to it and reads the active Processor's publish structures through
+/// it, and activate() and deactivate() update them there, on the main thread (see
+/// EditorContext).
+///
+/// **Publishing** is on while any editor createEditor() made is open: each turns it on when
+/// created and off, through its own `publishing`, when destroyed (the shim has no destroy hook
+/// of its own). gui.destroy closes the shim's editor too, even when the shim keeps it (it
+/// destroys its editor only once a parent was attached), so publishing follows guiDestroy.
 class EditorPlugin : public GigaGrainsPlugin, public sst::clap_juce_shim::EditorProvider
 {
     // Before clapJuceShim, so destroyed after it: an editor the shim still holds reads the
     // context, and its destructor calls editorOpened(false).
     std::unique_ptr<gg::ui::EditorContext> editorContext_;
     uint32_t openEditors_{0}; // main thread
+    // Each editor's "still counted open" flag, which its publishing callback and guiDestroy
+    // share, so an editor is counted closed once: the last createEditor()'s, and the one the
+    // shim holds (from guiCreate to guiDestroy). Main thread.
+    std::shared_ptr<bool> lastEditor_, shimEditor_;
 
   public:
     EditorPlugin(const clap_host *host, Product product);
@@ -43,11 +51,35 @@ class EditorPlugin : public GigaGrainsPlugin, public sst::clap_juce_shim::Editor
 
     // ---- The GUI: clap_juce_shim implements CLAP's gui extension around createEditor() ----
     // Members of this subclass are destroyed before the GigaGrainsPlugin it derives from, so
-    // the shim, and any editor it still holds, goes before noteOnCount, which the editor reads.
+    // the shim, and any editor it still holds, goes before the loader and the parameters, which
+    // the editor's context reaches.
 
     bool implementsGui() const noexcept override { return clapJuceShim != nullptr; }
     std::unique_ptr<sst::clap_juce_shim::ClapJuceShim> clapJuceShim;
-    ADD_SHIM_IMPLEMENTATION(clapJuceShim)
+    // ADD_SHIM_IMPLEMENTATION(clapJuceShim), by hand: guiCreate, guiDestroy and guiAdjustSize
+    // are this class's (below); the rest forward to the shim as the macro's do.
+    bool guiCanResize() const noexcept override { return clapJuceShim->guiCanResize(); }
+    bool guiIsApiSupported(const char *api, bool isFloating) noexcept override
+    {
+        return clapJuceShim->guiIsApiSupported(api, isFloating);
+    }
+    bool guiCreate(const char *api, bool isFloating) noexcept override;
+    void guiDestroy() noexcept override;
+    bool guiSetParent(const clap_window *window) noexcept override
+    {
+        return clapJuceShim->guiSetParent(window);
+    }
+    bool guiSetScale(double scale) noexcept override { return clapJuceShim->guiSetScale(scale); }
+    bool guiAdjustSize(uint32_t *width, uint32_t *height) noexcept override;
+    bool guiSetSize(uint32_t width, uint32_t height) noexcept override
+    {
+        return clapJuceShim->guiSetSize(width, height);
+    }
+    bool guiGetSize(uint32_t *width, uint32_t *height) noexcept override
+    {
+        return clapJuceShim->guiGetSize(width, height);
+    }
+    bool guiShow() noexcept override { return clapJuceShim->guiShow(); }
     ADD_SHIM_LINUX_TIMER(clapJuceShim)
 
     /// The editor, a gg::ui::Editor. The shim calls this on the main thread, with JUCE set up.

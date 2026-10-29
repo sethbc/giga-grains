@@ -62,28 +62,41 @@ struct SampleWaveform
     double seconds{0.0}; ///< frames at the sample's rate
 };
 
+/// What "Sample folder…" did: whether the settings were saved, and if not, why, for the user.
+struct SampleFolderResult
+{
+    bool saved{false};
+    std::string message; ///< UTF-8; shown in the strip when the save failed
+};
+
 /// What the editor shows of the plugin that owns it.
+///
+/// **The editor keeps a reference to the context, never a copy**, and reads it on the main
+/// thread at each use, so the context must outlive the editor. The one exception is
+/// `publishing`, which the editor copies when it is made (each editor has its own).
 ///
 /// **The publish structures** (grains, snapshot, livePeaks, clock, sampleRate) belong to the
 /// plugin's active Processor, which the plugin replaces at every activation: they are null while
 /// the plugin is inactive, and the plugin updates them in the context it gave makeEditor, in
-/// place, on the main thread, when it activates or deactivates. So the plugin's context outlives
-/// the editor, and the editor reads them through it on the main thread at each use (each frame),
-/// never keeping a copy: a pointer kept across a deactivate() dangles. A new activation's
-/// clock starts again from 0.
+/// place, on the main thread, when it activates or deactivates. The editor reads them through it
+/// each frame, never keeping a pointer: one kept across a deactivate() dangles. A new
+/// activation's clock starts again from 0.
 struct EditorContext
 {
     std::string productName; ///< "Giga Grains" or "Giga Grains FX"
-    /// The plugin's note-on counter, polled at 30 Hz; may be null. It must outlive the editor.
-    const std::atomic<uint32_t> *noteOnCount{nullptr};
 
     /// The sample loader strip (spec §6.5): the instrument only. The editor calls these on the
     /// main thread, with UTF-8 paths; any may be empty. What they capture must outlive the
     /// editor.
     bool showSampleLoader{false};
-    std::function<void(const std::string &utf8Path)> loadSample, relinkSample, setSampleFolder;
-    /// Polled at 30 Hz with the note counter, on the main thread; the plugin may do its
-    /// main-thread work in it (applying a finished load).
+    std::function<void(const std::string &utf8Path)> loadSample, relinkSample;
+    /// Sets and saves the per-machine sample folder; the strip shows a failure's message.
+    std::function<SampleFolderResult(const std::string &utf8Path)> setSampleFolder;
+    /// The settings' last load folder (UTF-8; empty if none), where the file choosers open
+    /// until a file is chosen or dropped in this editor.
+    std::function<std::string()> lastLoadFolder;
+    /// Polled at 30 Hz, on the main thread; the plugin may do its main-thread work in it
+    /// (applying a finished load).
     std::function<SampleStatusView()> sampleStatus;
 
     /// The product's parameters' metadata and its lane (gg::core::paramMeta).
@@ -118,17 +131,22 @@ struct EditorContext
 
     /// The editor's destructor calls publishing(false): the plugin stops publishing (the shim
     /// has no destroy hook). The plugin turned it on when it created the editor. May be empty.
+    /// Copied when the editor is made, so each editor calls the one it was given.
     std::function<void(bool)> publishing;
 };
 
-/// The editor's initial size, in logical pixels. It lays out at any size the host gives it.
+/// The editor's initial size, in logical pixels. It is resizable, and lays out at any size the
+/// host gives it; the plugin asks hosts for at least the minimum (gui.adjust_size).
 inline constexpr int kEditorWidth = 900;
 inline constexpr int kEditorHeight = 500;
+inline constexpr int kEditorMinWidth = 640;
+inline constexpr int kEditorMinHeight = 360;
 
-/// Creates the M0 editor, a gg::ui::Editor: the product name and version, a MIDI note-on
-/// counter, the sample loader strip (with showSampleLoader), and the canvas stress panel. Call on
-/// the message thread with JUCE initialised, as clap_juce_shim's guiCreate does. A plugin's
-/// `context` outlives the editor (see EditorContext); a test's may be a temporary.
+/// Creates the editor, a gg::ui::Editor: the Perform view (sub-project 5's spec §6.1). A header
+/// (the product name, the preset, Perform and a disabled Edit, and the frame time), the
+/// instrument's sample loader strip (with showSampleLoader), the grain canvas, and the eight
+/// macros. Call on the message thread with JUCE initialised, as clap_juce_shim's guiCreate does.
+/// The editor keeps a reference to `context`, which must outlive it (see EditorContext).
 std::unique_ptr<juce::Component> makeEditor(const EditorContext &context);
 } // namespace gg::ui
 

@@ -122,6 +122,12 @@ bool SampleLoader::setSampleFolder(const std::filesystem::path &folder)
     return saved;
 }
 
+std::string SampleLoader::lastLoadFolder() const
+{
+    // Main thread (ruling R16), as setSampleFolder.
+    return readSettings().lastLoadFolder;
+}
+
 SampleLoader::Restored SampleLoader::restore(const std::optional<core::MediaEntry> &entry,
                                              std::optional<std::string> newerMedia) noexcept
 {

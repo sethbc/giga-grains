@@ -4,9 +4,13 @@
 
 #include "EditorPlugin.h"
 
+#include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <filesystem>
+#include <memory>
 #include <string>
+#include <utility>
 
 // createEditor() returns a std::unique_ptr<juce::Component>, whose destructor the return
 // statement may invoke, so juce::Component must be complete here. This is the only plugin
@@ -78,7 +82,6 @@ std::unique_ptr<juce::Component> EditorPlugin::createEditor()
     gg::ui::EditorContext &context = *editorContext_;
     context = gg::ui::EditorContext{};
     context.productName = descriptorFor(product())->name;
-    context.noteOnCount = &noteOnCount;
     // The instrument's loader strip (spec §6.5), on the main thread, as the loader requires. The
     // loader is GigaGrainsPlugin's, so it outlives the editor, which the shim holds.
     if (SampleLoader *loader = sampleLoader(); loader != nullptr)
@@ -104,15 +107,40 @@ std::unique_ptr<juce::Component> EditorPlugin::createEditor()
             {
             }
         };
-        // The settings file couldn't be written (false), or an allocation failed: the folder
-        // stays as it was.
+        // The settings file couldn't be written, or an allocation failed: the folder stays as
+        // it was, and the strip says so (carry-over row 198).
         context.setSampleFolder = [loader](const std::string &path) {
+            gg::ui::SampleFolderResult result;
             try
             {
-                loader->setSampleFolder(pathOf(path));
+                result.saved = loader->setSampleFolder(pathOf(path));
+                if (!result.saved)
+                {
+                    result.message =
+                        "can't save the sample folder: the settings file can't be written";
+                }
             }
             catch (...)
             {
+                result.saved = false;
+                try
+                {
+                    result.message = "can't save the sample folder: not enough memory";
+                }
+                catch (...)
+                {
+                }
+            }
+            return result;
+        };
+        context.lastLoadFolder = [loader] {
+            try
+            {
+                return loader->lastLoadFolder();
+            }
+            catch (...)
+            {
+                return std::string();
             }
         };
         // Polled by the editor's 30 Hz timer, on the main thread: it first applies what the
@@ -143,12 +171,63 @@ std::unique_ptr<juce::Component> EditorPlugin::createEditor()
     context.endGesture = [this](gg::core::ParamSlot slot) { uiEndGesture(slot); };
 
     // Audio to UI (spec §6.4): the active Processor's structures, and publishing on from now
-    // until the editor's destructor turns it off.
+    // until the editor's destructor, or guiDestroy for the shim's, turns it off. The editor
+    // copies its `publishing`, so each closes its own flag, once.
     updatePublished();
-    context.publishing = [this](bool open) { editorOpened(open); };
+    auto counted = std::make_shared<bool>(true);
+    context.publishing = [this, counted](bool open) {
+        if (!open && *counted)
+        {
+            *counted = false;
+            editorOpened(false);
+        }
+    };
     auto editor = gg::ui::makeEditor(context);
     editorOpened(true);
+    lastEditor_ = std::move(counted);
     return editor;
+}
+
+bool EditorPlugin::guiCreate(const char *api, bool isFloating) noexcept
+{
+    // The shim calls createEditor() and holds what it returns.
+    lastEditor_.reset();
+    const bool created = clapJuceShim->guiCreate(api, isFloating);
+    shimEditor_ = created ? lastEditor_ : nullptr;
+    return created;
+}
+
+void EditorPlugin::guiDestroy() noexcept
+{
+    // With a parent attached the shim destroys its editor here, whose destructor closes it.
+    // Without one (a host that created the GUI and never showed it) the shim keeps the editor
+    // until the next guiCreate or its own end, so it is closed here: publishing follows
+    // guiDestroy either way.
+    clapJuceShim->guiDestroy();
+    if (shimEditor_ != nullptr && *shimEditor_)
+    {
+        *shimEditor_ = false;
+        editorOpened(false);
+    }
+    shimEditor_.reset();
+}
+
+bool EditorPlugin::guiAdjustSize(uint32_t *width, uint32_t *height) noexcept
+{
+    // Any size from the minimum up (sub-project 5's spec §6.1), in the host's pixels: logical on
+    // macOS, physical (the GUI scale applied) on Windows and Linux.
+    if (width == nullptr || height == nullptr)
+    {
+        return false;
+    }
+    const double scale = clapJuceShim->getGuiScale();
+    const auto atLeast = [scale](uint32_t &v, int minimum) {
+        const auto lowest = static_cast<uint32_t>(std::ceil(minimum * scale));
+        v = std::max(v, lowest);
+    };
+    atLeast(*width, gg::ui::kEditorMinWidth);
+    atLeast(*height, gg::ui::kEditorMinHeight);
+    return true;
 }
 
 bool EditorPlugin::activate(double sampleRate, uint32_t minFrameCount,

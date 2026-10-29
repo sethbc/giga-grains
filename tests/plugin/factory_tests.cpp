@@ -16,19 +16,33 @@
 #include "gg/plugin/Identity.h"
 #include "PluginHarness.h"
 #if GG_BUILD_EDITOR
+#include <array>
+#include <atomic>
 #include <chrono>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
 #include <filesystem>
 #include <memory>
 #include <string>
 #include <thread>
+#include <utility>
 
+#include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <sst/jucegui/components/Knob.h>
+#include <sst/jucegui/components/ToggleButton.h>
 #include <sst/jucegui/data/Continuous.h>
 #include <sst/jucegui/style/StyleSheet.h>
 
+#include "GrainCanvas.h" // ui/src: the editor's own components
+#include "LoaderStrip.h"
 #include "editor/EditorPlugin.h"
+#include "gg/core/GrainQueue.h"
+#include "gg/core/ParamIds.h"
+#include "gg/core/UiSnapshot.h"
 #include "gg/ui/Editor.h"
+#include "gg/ui/LaneModel.h"
 #include "support/Utf8.h"
 #endif
 
@@ -200,9 +214,22 @@ TEST_CASE("both plugins expose a resizable embedded GUI", "[plugin]")
 // their component IDs, and a drop is simulated by calling the editor's filesDropped.
 namespace
 {
+/// The component with this ID anywhere in the editor (the strip's widgets are the strip's
+/// children), or null.
 const juce::Component *stripChild(const juce::Component &editor, const char *id)
 {
-    return editor.findChildWithID(id);
+    for (const juce::Component *child : editor.getChildren())
+    {
+        if (child->getComponentID() == id)
+        {
+            return child;
+        }
+        if (const juce::Component *found = stripChild(*child, id))
+        {
+            return found;
+        }
+    }
+    return nullptr;
 }
 
 juce::String labelText(const juce::Component &editor, const char *id)
@@ -561,6 +588,743 @@ TEST_CASE("the instrument's editor context outlines its sample", "[plugin]")
     CHECK(waveform.peaks == plugin->sampleLoader()->waveform().peaks);
     CHECK(waveform.frames == 192000);
     CHECK(waveform.seconds == 4.0);
+}
+
+// The Perform view (sub-project 5's spec §6): the header, the canvas, the macro row and the
+// instrument's loader strip, built headless as above. A context whose callbacks record what the
+// editor asks of the plugin stands in for the plugin where the test needs to see the calls.
+namespace
+{
+using gg::core::ParamSlot;
+
+/// What the editor asked of the plugin: 'b'egin, 'v'alue and 'e'nd, in order.
+struct GestureCall
+{
+    char kind;
+    ParamSlot slot;
+    double value;
+};
+
+/// An EditorContext whose base values start at the product's defaults and follow setValue at
+/// once (as the plugin's do once the audio thread takes them), and which records every gesture.
+struct RecordingContext
+{
+    gg::ui::EditorContext context;
+    std::vector<GestureCall> calls;
+    std::array<float, gg::core::kParamCount> values{};
+
+    explicit RecordingContext(gg::core::Mode mode)
+    {
+        context.productName = mode == gg::core::Mode::Fx ? "Giga Grains FX" : "Giga Grains";
+        context.mode = mode;
+        for (std::size_t i = 0; i < gg::core::kParamCount; ++i)
+        {
+            values[i] = gg::core::paramMeta(static_cast<ParamSlot>(i), mode).defaultVal;
+        }
+        context.baseValue = [this](ParamSlot s) { return values[static_cast<std::size_t>(s)]; };
+        context.beginGesture = [this](ParamSlot s) { calls.push_back({'b', s, 0.0}); };
+        context.setValue = [this](ParamSlot s, double v) {
+            calls.push_back({'v', s, v});
+            values[static_cast<std::size_t>(s)] = static_cast<float>(v);
+        };
+        context.endGesture = [this](ParamSlot s) { calls.push_back({'e', s, 0.0}); };
+    }
+
+    /// The kinds of the calls so far, as a string ("bvve").
+    std::string kinds() const
+    {
+        std::string out;
+        for (const GestureCall &c : calls)
+        {
+            out += c.kind;
+        }
+        return out;
+    }
+};
+
+/// The component with this ID anywhere below `root`, or null.
+juce::Component *findDeep(const juce::Component &root, const char *id)
+{
+    for (juce::Component *child : root.getChildren())
+    {
+        if (child->getComponentID() == id)
+        {
+            return child;
+        }
+        if (juce::Component *found = findDeep(*child, id))
+        {
+            return found;
+        }
+    }
+    return nullptr;
+}
+
+/// A mouse event at (x, y) in `c`'s coordinates, the left button down since `down`.
+juce::MouseEvent mouseAt(juce::Component &c, float x, float y, juce::Point<float> down,
+                         bool dragged)
+{
+    const auto now = juce::Time::getCurrentTime();
+    return juce::MouseEvent(
+        juce::Desktop::getInstance().getMainMouseSource(), {x, y},
+        juce::ModifierKeys(juce::ModifierKeys::leftButtonModifier),
+        juce::MouseInputSource::defaultPressure, juce::MouseInputSource::defaultOrientation,
+        juce::MouseInputSource::defaultRotation, juce::MouseInputSource::defaultTiltX,
+        juce::MouseInputSource::defaultTiltY, &c, &c, now, down, now, 1, dragged);
+}
+
+/// The canvas's lane geometry as the canvas lays it out before its first paint (one physical
+/// pixel per logical one).
+gg::ui::LaneGeometry laneOf(const juce::Component &canvas, bool fx, double sampleRate,
+                            int64_t sourceFrames)
+{
+    return {.width = static_cast<float>(canvas.getWidth()),
+            .height = static_cast<float>(canvas.getHeight()),
+            .pixelScale = 1.0f,
+            .fxLane = fx,
+            .sampleRate = sampleRate,
+            .ringSeconds = 16.0,
+            .sourceFrames = sourceFrames};
+}
+
+/// One second of a 48 kHz instrument sample, for the instrument's lane.
+gg::ui::SampleWaveform oneSecondSample()
+{
+    return {std::make_shared<const std::vector<float>>(94, 0.5f), 48000, 1.0};
+}
+/// One sample status, every field given.
+gg::ui::SampleStatusView statusView(gg::ui::SampleStatusView::State state,
+                                    std::string fileName = {}, std::string message = {},
+                                    double seconds = 0.0, uint32_t channels = 0,
+                                    double fileRate = 0.0, bool relinkable = false)
+{
+    return {state,    std::move(fileName), std::move(message), seconds, channels,
+            fileRate, relinkable};
+}
+} // namespace
+
+TEST_CASE("the perform view has a header, a canvas and eight macros", "[plugin]")
+{
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    CHECK(gg::ui::kEditorMinWidth == 640);
+    CHECK(gg::ui::kEditorMinHeight == 360);
+    struct Product
+    {
+        const char *id;
+        const char *name;
+        bool instrument;
+        std::array<const char *, 8> macros;
+    };
+    const std::array<Product, 2> products{{
+        {"org.sethbc.giga-grains",
+         "Giga Grains",
+         true,
+         {"Size", "Density", "Pitch", "Spray", "Texture", "Freeze", "Stereo", "Level"}},
+        {"org.sethbc.giga-grains-fx",
+         "Giga Grains FX",
+         false,
+         {"Size", "Density", "Pitch", "Spray", "Texture", "Freeze", "Feedback", "Mix"}},
+    }};
+    for (const Product &product : products)
+    {
+        INFO(product.id);
+        gg::test::PluginUnderTest instance(product.id);
+        REQUIRE(instance.valid());
+        auto *plugin = dynamic_cast<gg::plugin::EditorPlugin *>(&instance.impl());
+        REQUIRE(plugin != nullptr);
+        const std::unique_ptr<juce::Component> editor = plugin->createEditor();
+        REQUIRE(editor != nullptr);
+        CHECK(editor->getWidth() == gg::ui::kEditorWidth);
+        CHECK(editor->getHeight() == gg::ui::kEditorHeight);
+
+        for (const char *id : {"header.product", "header.preset", "header.perform", "header.edit",
+                               "header.frameMs", "canvas"})
+        {
+            INFO(id);
+            CHECK(findDeep(*editor, id) != nullptr);
+        }
+        const auto text = [&editor](const char *id) {
+            const auto *label = dynamic_cast<const juce::Label *>(findDeep(*editor, id));
+            return label != nullptr ? label->getText() : juce::String("<no label>");
+        };
+        CHECK(text("header.product") == product.name);
+        CHECK(text("header.preset") == "Init");
+        const auto *perform =
+            dynamic_cast<const juce::Button *>(findDeep(*editor, "header.perform"));
+        REQUIRE(perform != nullptr);
+        CHECK(perform->getToggleState());
+        CHECK(perform->isEnabled());
+        const auto *edit = findDeep(*editor, "header.edit");
+        REQUIRE(edit != nullptr);
+        CHECK_FALSE(edit->isEnabled()); // until M2
+
+        for (std::size_t i = 0; i < 8; ++i)
+        {
+            const std::string id = "macro." + std::to_string(i + 1);
+            INFO(id);
+            juce::Component *macro = findDeep(*editor, id.c_str());
+            REQUIRE(macro != nullptr);
+            CHECK(macro->getTitle() == product.macros[i]);
+            CHECK(macro->getWantsKeyboardFocus());
+            if (i == 5)
+            {
+                CHECK(dynamic_cast<sst::jucegui::components::ToggleButton *>(macro) != nullptr);
+            }
+            else
+            {
+                CHECK(dynamic_cast<sst::jucegui::components::Knob *>(macro) != nullptr);
+            }
+        }
+
+        // The loader strip is the instrument's alone (the FX's absence is tested above).
+        CHECK((findDeep(*editor, "sampleLoad") != nullptr) == product.instrument);
+        CHECK((findDeep(*editor, "sampleStatus") != nullptr) == product.instrument);
+
+        // At the smallest size every part still has room, inside the editor.
+        editor->setSize(gg::ui::kEditorMinWidth, gg::ui::kEditorMinHeight);
+        const auto *canvas = findDeep(*editor, "canvas");
+        CHECK(canvas->getHeight() >= 100);
+        CHECK(canvas->getWidth() >= 600);
+        for (const char *id : {"header.frameMs", "macro.1", "macro.8", "canvas"})
+        {
+            INFO(id);
+            const auto *part = findDeep(*editor, id);
+            const auto bounds = editor->getLocalArea(part->getParentComponent(), part->getBounds());
+            CHECK(editor->getLocalBounds().contains(bounds));
+            CHECK_FALSE(bounds.isEmpty());
+        }
+    }
+}
+
+TEST_CASE("a macro knob writes the base value with a gesture", "[plugin]")
+{
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    RecordingContext recording(gg::core::Mode::Fx);
+    const auto editor = gg::ui::makeEditor(recording.context);
+    auto *knob = dynamic_cast<sst::jucegui::components::Knob *>(findDeep(*editor, "macro.3"));
+    REQUIRE(knob != nullptr);
+    REQUIRE(knob->continuous() != nullptr);
+    CHECK(knob->continuous()->getValue() == 0.5f);
+
+    // As the knob does for a drag: begin, values, end.
+    knob->onBeginEdit();
+    knob->continuous()->setValueFromGUI(0.75f);
+    knob->onEndEdit();
+    REQUIRE(recording.kinds() == "bve");
+    for (const GestureCall &c : recording.calls)
+    {
+        CHECK(c.slot == ParamSlot::Macro3);
+    }
+    CHECK(recording.calls[1].value == 0.75);
+    CHECK(knob->continuous()->getValue() == 0.75f);
+
+    // The row follows a base value the host changed, at its 30 Hz refresh.
+    recording.values[static_cast<std::size_t>(ParamSlot::Macro3)] = 0.25f;
+    dynamic_cast<juce::Timer *>(editor.get())->timerCallback();
+    CHECK(knob->continuous()->getValue() == 0.25f);
+
+    // The Freeze toggle sends 1 and then 0 as it is clicked twice, each a gesture.
+    recording.calls.clear();
+    auto *freeze =
+        dynamic_cast<sst::jucegui::components::ToggleButton *>(findDeep(*editor, "macro.6"));
+    REQUIRE(freeze != nullptr);
+    const juce::Point<float> centre = freeze->getLocalBounds().getCentre().toFloat();
+    for (int click = 0; click < 2; ++click)
+    {
+        freeze->mouseDown(mouseAt(*freeze, centre.x, centre.y, centre, false));
+        freeze->mouseUp(mouseAt(*freeze, centre.x, centre.y, centre, false));
+    }
+    REQUIRE(recording.kinds() == "bvebve");
+    CHECK(recording.calls[1].slot == ParamSlot::Macro6);
+    CHECK(recording.calls[1].value == 1.0);
+    CHECK(recording.calls[4].value == 0.0);
+}
+
+TEST_CASE("arrow keys adjust a focused macro", "[plugin]")
+{
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    RecordingContext recording(gg::core::Mode::Instrument);
+    const auto editor = gg::ui::makeEditor(recording.context);
+    juce::Component *knob = findDeep(*editor, "macro.1");
+    REQUIRE(knob != nullptr);
+    const auto lastValue = [&recording] {
+        REQUIRE_FALSE(recording.calls.empty());
+        return recording.calls.back().kind == 'e'
+                   ? recording.calls[recording.calls.size() - 2].value
+                   : -1.0;
+    };
+    using Catch::Matchers::WithinAbs;
+
+    // Up: +1/100 of the range (0..1), one gesture per press.
+    CHECK(knob->keyPressed(juce::KeyPress(juce::KeyPress::upKey)));
+    CHECK(recording.kinds() == "bve");
+    CHECK_THAT(lastValue(), WithinAbs(0.51, 1e-6));
+    // Shift: +1/1000.
+    CHECK(knob->keyPressed(
+        juce::KeyPress(juce::KeyPress::upKey, juce::ModifierKeys::shiftModifier, 0)));
+    CHECK_THAT(lastValue(), WithinAbs(0.511, 1e-6));
+    // Down, and Left and Right as Down and Up.
+    CHECK(knob->keyPressed(juce::KeyPress(juce::KeyPress::downKey)));
+    CHECK_THAT(lastValue(), WithinAbs(0.501, 1e-6));
+    CHECK(knob->keyPressed(juce::KeyPress(juce::KeyPress::rightKey)));
+    CHECK_THAT(lastValue(), WithinAbs(0.511, 1e-6));
+    CHECK(knob->keyPressed(
+        juce::KeyPress(juce::KeyPress::leftKey, juce::ModifierKeys::shiftModifier, 0)));
+    CHECK_THAT(lastValue(), WithinAbs(0.510, 1e-6));
+    CHECK(recording.kinds() == "bvebvebvebvebve");
+    for (const GestureCall &c : recording.calls)
+    {
+        CHECK(c.slot == ParamSlot::Macro1);
+    }
+
+    // At the top of the range a press stays there.
+    recording.values[static_cast<std::size_t>(ParamSlot::Macro1)] = 1.0f;
+    dynamic_cast<juce::Timer *>(editor.get())->timerCallback();
+    CHECK(knob->keyPressed(juce::KeyPress(juce::KeyPress::upKey)));
+    CHECK(lastValue() == 1.0);
+}
+
+TEST_CASE("a canvas drag emits begin, values, end once", "[plugin]")
+{
+    // Review Focus 5: a drag that ends outside the window, or with the editor closing, ends its
+    // gesture exactly once, and the last value sent is the last drag position.
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+
+    SECTION("the instrument's window body sets Position, released outside the canvas")
+    {
+        RecordingContext recording(gg::core::Mode::Instrument);
+        recording.values[static_cast<std::size_t>(ParamSlot::Position)] = 0.5f;
+        recording.values[static_cast<std::size_t>(ParamSlot::Spray)] = 0.4f;
+        recording.context.sampleWaveform = [] { return oneSecondSample(); };
+        recording.context.sampleRate = 48000.0;
+        auto editor = gg::ui::makeEditor(recording.context);
+        juce::Component *canvas = findDeep(*editor, "canvas");
+        REQUIRE(canvas != nullptr);
+        const auto lane = laneOf(*canvas, false, 48000.0, 48000);
+        const auto window = gg::ui::scanWindow(0.5f, 0.4f, lane);
+        const float centre = 0.5f * (window.x0 + window.x1);
+        const float y = 0.5f * static_cast<float>(canvas->getHeight());
+        REQUIRE(gg::ui::hitTest(centre, window, 6.0f, lane) == gg::ui::DragTarget::Body);
+
+        const juce::Point<float> down{centre, y};
+        canvas->mouseDown(mouseAt(*canvas, centre, y, down, false));
+        for (float dx : {10.0f, 20.0f, 30.0f})
+        {
+            canvas->mouseDrag(mouseAt(*canvas, centre - dx, y, down, true));
+        }
+        // Released well outside the canvas, to the left of the editor.
+        canvas->mouseUp(mouseAt(*canvas, -200.0f, y, down, true));
+        REQUIRE(recording.kinds() == "bvvve");
+        CHECK(recording.calls.front().slot == ParamSlot::Position);
+        CHECK(recording.calls.back().slot == ParamSlot::Position);
+        double previous = 0.5;
+        for (std::size_t i = 1; i <= 3; ++i)
+        {
+            const GestureCall &c = recording.calls[i];
+            CHECK(c.slot == ParamSlot::Position);
+            CHECK(c.value < previous); // moving left is earlier in the file
+            previous = c.value;
+        }
+        CHECK(recording.calls[3].value ==
+              gg::ui::positionValueAtX(centre - 30.0f, lane)); // the last drag position
+
+        // Nothing more: another release or the editor closing ends nothing again.
+        canvas->mouseUp(mouseAt(*canvas, -200.0f, y, down, true));
+        editor.reset();
+        CHECK(recording.kinds() == "bvvve");
+    }
+    SECTION("the fx window's older edge sets Spray")
+    {
+        RecordingContext recording(gg::core::Mode::Fx);
+        recording.values[static_cast<std::size_t>(ParamSlot::Position)] = 0.5f;
+        recording.values[static_cast<std::size_t>(ParamSlot::Spray)] = 0.8f;
+        recording.context.sampleRate = 48000.0;
+        const auto editor = gg::ui::makeEditor(recording.context);
+        juce::Component *canvas = findDeep(*editor, "canvas");
+        REQUIRE(canvas != nullptr);
+        const auto lane = laneOf(*canvas, true, 48000.0, 0);
+        const auto window = gg::ui::scanWindow(0.5f, 0.8f, lane);
+        const float y = 10.0f;
+        REQUIRE(gg::ui::hitTest(window.x0, window, 6.0f, lane) == gg::ui::DragTarget::LeftEdge);
+
+        const juce::Point<float> down{window.x0, y};
+        canvas->mouseDown(mouseAt(*canvas, window.x0, y, down, false));
+        canvas->mouseDrag(mouseAt(*canvas, window.x0 - 40.0f, y, down, true));
+        canvas->mouseUp(mouseAt(*canvas, window.x0 - 40.0f, y, down, true));
+        REQUIRE(recording.kinds() == "bve");
+        for (const GestureCall &c : recording.calls)
+        {
+            CHECK(c.slot == ParamSlot::Spray);
+        }
+        CHECK(recording.calls[1].value > 0.8); // wider
+        CHECK(recording.calls[1].value ==
+              gg::ui::sprayValueForExtent(window.x1 - (window.x0 - 40.0f), lane));
+    }
+    SECTION("the fx window's body moves Position further back as it moves left")
+    {
+        RecordingContext recording(gg::core::Mode::Fx);
+        recording.values[static_cast<std::size_t>(ParamSlot::Position)] = 0.5f;
+        recording.values[static_cast<std::size_t>(ParamSlot::Spray)] = 0.8f;
+        const auto editor = gg::ui::makeEditor(recording.context); // inactive: no sample rate
+        juce::Component *canvas = findDeep(*editor, "canvas");
+        REQUIRE(canvas != nullptr);
+        const auto lane = laneOf(*canvas, true, 48000.0, 0);
+        const auto window = gg::ui::scanWindow(0.5f, 0.8f, lane);
+        const float x = window.x1 - 2.0f; // Position's own edge is the body (ruling R-T8a)
+        const juce::Point<float> down{x, 10.0f};
+        canvas->mouseDown(mouseAt(*canvas, x, 10.0f, down, false));
+        canvas->mouseDrag(mouseAt(*canvas, x - 50.0f, 10.0f, down, true));
+        canvas->mouseUp(mouseAt(*canvas, x - 50.0f, 10.0f, down, true));
+        REQUIRE(recording.kinds() == "bve");
+        CHECK(recording.calls[1].slot == ParamSlot::Position);
+        CHECK(recording.calls[1].value > 0.5);
+        CHECK_THAT(
+            recording.calls[1].value,
+            Catch::Matchers::WithinAbs(gg::ui::positionValueAtX(window.x1 - 50.0f, lane), 1e-6));
+    }
+    SECTION("a drag still live when the editor closes ends there")
+    {
+        RecordingContext recording(gg::core::Mode::Instrument);
+        recording.context.sampleWaveform = [] { return oneSecondSample(); };
+        recording.values[static_cast<std::size_t>(ParamSlot::Position)] = 0.5f;
+        auto editor = gg::ui::makeEditor(recording.context);
+        juce::Component *canvas = findDeep(*editor, "canvas");
+        REQUIRE(canvas != nullptr);
+        const float x = 0.5f * static_cast<float>(canvas->getWidth());
+        const juce::Point<float> down{x, 10.0f};
+        canvas->mouseDown(mouseAt(*canvas, x, 10.0f, down, false));
+        canvas->mouseDrag(mouseAt(*canvas, x + 5.0f, 10.0f, down, true));
+        editor.reset();
+        CHECK(recording.kinds() == "bve");
+    }
+    SECTION("a press outside the window, or with no sample, grabs nothing")
+    {
+        RecordingContext recording(gg::core::Mode::Instrument);
+        recording.values[static_cast<std::size_t>(ParamSlot::Position)] = 0.5f;
+        const auto editor = gg::ui::makeEditor(recording.context); // no sample: no window
+        juce::Component *canvas = findDeep(*editor, "canvas");
+        REQUIRE(canvas != nullptr);
+        const float x = 0.5f * static_cast<float>(canvas->getWidth());
+        canvas->mouseDown(mouseAt(*canvas, x, 10.0f, {x, 10.0f}, false));
+        canvas->mouseDrag(mouseAt(*canvas, x + 5.0f, 10.0f, {x, 10.0f}, true));
+        canvas->mouseUp(mouseAt(*canvas, x + 5.0f, 10.0f, {x, 10.0f}, true));
+
+        recording.context.sampleWaveform = [] { return oneSecondSample(); };
+        canvas->mouseDown(mouseAt(*canvas, 2.0f, 10.0f, {2.0f, 10.0f}, false));
+        canvas->mouseUp(mouseAt(*canvas, 2.0f, 10.0f, {2.0f, 10.0f}, false));
+        CHECK(recording.calls.empty());
+    }
+}
+
+TEST_CASE("the canvas draws the grains the queue holds", "[plugin]")
+{
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    constexpr double kRate = 48000.0;
+    constexpr int64_t kNow = 480000; // 10 s in
+    gg::core::GrainQueue queue;
+    gg::core::SnapshotBuffer snapshots;
+    std::atomic<int64_t> clock{kNow};
+    RecordingContext recording(gg::core::Mode::Fx);
+    recording.context.grains = &queue;
+    recording.context.snapshot = &snapshots;
+    recording.context.clock = &clock;
+    recording.context.sampleRate = kRate;
+
+    const auto editor = gg::ui::makeEditor(recording.context);
+    auto *canvas = dynamic_cast<gg::ui::GrainCanvas *>(findDeep(*editor, "canvas"));
+    REQUIRE(canvas != nullptr);
+    const float width = static_cast<float>(canvas->getWidth());
+    const float height = static_cast<float>(canvas->getHeight());
+
+    // Two grains of 100 ms that started just now, 4 s and 8 s behind the head, one panned up
+    // and one down; one that has already ended.
+    gg::core::UiSnapshot snapshot;
+    snapshot.clock = kNow;
+    snapshot.writeHead = kNow;
+    snapshots.push(snapshot);
+    const auto grain = [](int64_t onset, double behindSeconds, float pan) {
+        return gg::core::GrainVis{onset, static_cast<double>(kNow) - behindSeconds * kRate,
+                                  1.0f,  static_cast<float>(0.1 * kRate),
+                                  1.0f,  pan};
+    };
+    REQUIRE(queue.push(grain(kNow - 100, 4.0, -0.5f)));
+    REQUIRE(queue.push(grain(kNow - 100, 8.0, 0.5f)));
+    REQUIRE(queue.push(grain(kNow - 20000, 12.0, 0.0f))); // ended at kNow - 15200
+
+    canvas->renderFrame();
+    CHECK(canvas->liveGrainCount() == 2);
+    const float radius = 3.0f;
+    const float reach = 0.5f * height - radius;
+    const auto accum = [canvas](float x, float y) {
+        return canvas->accumAt(static_cast<uint32_t>(std::lround(x)),
+                               static_cast<uint32_t>(std::lround(y)));
+    };
+    // Each grain's capsule spans its 100 ms read, from 4 s (8 s) back to 3.9 s (7.9 s) back.
+    const float x4 = width * (1.0f - 3.95f / 16.0f);
+    const float x8 = width * (1.0f - 7.95f / 16.0f);
+    CHECK(accum(x4, 0.5f * height - 0.5f * reach) > 0.0f);
+    CHECK(accum(x8, 0.5f * height + 0.5f * reach) > 0.0f);
+    // Nothing where no grain plays: the ended grain's place, and the lane's middle.
+    CHECK(accum(width * (1.0f - 11.95f / 16.0f), 0.5f * height) == 0.0f);
+    CHECK(accum(0.5f * width, 0.5f * height) == 0.0f);
+
+    // Once both have ended (the clock moved on 100 ms), the queue empty, nothing is drawn.
+    clock.store(kNow + 4800);
+    canvas->renderFrame();
+    CHECK(canvas->liveGrainCount() == 0);
+    CHECK(accum(x4, 0.5f * height - 0.5f * reach) == 0.0f);
+
+    // Reactivated between two frames, with a clock that starts again from 0: the grains of the
+    // new activation draw at once (the extrapolation restarts rather than waiting for the old
+    // clock to come round).
+    gg::core::GrainQueue queue2;
+    gg::core::SnapshotBuffer snapshots2;
+    std::atomic<int64_t> clock2{64};
+    recording.context.grains = &queue2;
+    recording.context.snapshot = &snapshots2;
+    recording.context.clock = &clock2;
+    gg::core::UiSnapshot fresh;
+    fresh.clock = 64;
+    fresh.writeHead = 64;
+    snapshots2.push(fresh);
+    REQUIRE(queue2.push(gg::core::GrainVis{0, 64.0 - 4.0 * kRate, 1.0f, 4800.0f, 1.0f, -0.5f}));
+    canvas->renderFrame();
+    CHECK(canvas->liveGrainCount() == 1);
+    CHECK(accum(x4, 0.5f * height - 0.5f * reach) > 0.0f);
+
+    // Deactivated (the plugin nulls the pointers): the canvas draws its static parts only.
+    recording.context.grains = nullptr;
+    recording.context.snapshot = nullptr;
+    recording.context.clock = nullptr;
+    canvas->renderFrame();
+    CHECK(canvas->liveGrainCount() == 0);
+    CHECK(accum(x4, 0.5f * height - 0.5f * reach) == 0.0f);
+}
+
+TEST_CASE("the folder button reports a failed save", "[plugin]")
+{
+    // Carry-over row 198: "Sample folder..." says when the settings couldn't be saved.
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    RecordingContext recording(gg::core::Mode::Instrument);
+    gg::ui::EditorContext &context = recording.context;
+    context.showSampleLoader = true;
+    gg::ui::SampleStatusView view = statusView(gg::ui::SampleStatusView::State::None);
+    context.sampleStatus = [&view] { return view; };
+    std::string folderAsked;
+    gg::ui::SampleFolderResult result{false, "can't save the sample folder: settings.xml is "
+                                             "read-only"};
+    context.setSampleFolder = [&](const std::string &path) {
+        folderAsked = path;
+        return result;
+    };
+    const auto editor = gg::ui::makeEditor(context);
+    auto *strip = dynamic_cast<gg::ui::LoaderStrip *>(findDeep(*editor, "sampleStrip"));
+    REQUIRE(strip != nullptr);
+    // The chooser, answered at once with a folder.
+    const juce::File folder = juce::File::getCurrentWorkingDirectory();
+    strip->browse = [&folder](const gg::ui::LoaderStrip::Browse &, auto done) { done(folder); };
+    auto *button = dynamic_cast<juce::Button *>(findDeep(*editor, "sampleFolder"));
+    REQUIRE(button != nullptr);
+    REQUIRE(button->onClick);
+
+    button->onClick();
+    CHECK(folderAsked == folder.getFullPathName().toStdString());
+    CHECK(labelText(*editor, "sampleStatus") == "can't save the sample folder: settings.xml is "
+                                                "read-only");
+    // It stays through the strip's refresh, until the sample's status changes.
+    auto *timer = dynamic_cast<juce::Timer *>(editor.get());
+    timer->timerCallback();
+    CHECK(labelText(*editor, "sampleStatus").startsWith("can't save the sample folder"));
+    view = statusView(gg::ui::SampleStatusView::State::Loading, "kick.wav");
+    timer->timerCallback();
+    CHECK(labelText(*editor, "sampleStatus").startsWith("loading"));
+
+    // A save that works says where the folder is.
+    result = {true, {}};
+    button->onClick();
+    CHECK(labelText(*editor, "sampleStatus") == "sample folder: " + folder.getFullPathName());
+}
+
+TEST_CASE("the loader strip shows every sample state", "[plugin]")
+{
+    // Carry-over row 199: every state the loader can give, with a message and without.
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    using State = gg::ui::SampleStatusView::State;
+    struct Case
+    {
+        gg::ui::SampleStatusView view;
+        const char *expected;
+        bool relink;
+    };
+    const std::vector<Case> cases{
+        {statusView(State::None), "no sample", false},
+        {statusView(State::None, {}, "the session has no sample"),
+         "no sample (the session has no sample)", false},
+        {statusView(State::Loading, "kick.wav"), "loading\xe2\x80\xa6", false},
+        {statusView(State::Loading, "kick.wav", "relinking"), "loading\xe2\x80\xa6 (relinking)",
+         false},
+        {statusView(State::Loaded, "kick.wav", {}, 1.5, 2, 44100.0),
+         "loaded: 1.50 s, 2 ch, 44100 Hz", false},
+        {statusView(State::Loaded, "kick.wav", "different audio than the saved sample", 0.25, 1,
+                    48000.0),
+         "loaded: 0.25 s, 1 ch, 48000 Hz (different audio than the saved sample)", false},
+        {statusView(State::Missing, "kick.wav", {}, 0.0, 0, 0.0, true), "missing", true},
+        {statusView(State::Missing, "kick.wav", "not found", 0.0, 0, 0.0, true),
+         "missing: not found", true},
+        {statusView(State::Changed, "kick.wav", {}, 0.0, 0, 0.0, true), "missing", true},
+        {statusView(State::Changed, "kick.wav", "the file at the saved path has changed", 0.0, 0,
+                    0.0, true),
+         "missing: the file at the saved path has changed", true},
+        {statusView(State::Error, "bad.wav"), "can't load the sample", false},
+        {statusView(State::Error, "bad.wav", "can't load bad.wav: not audio"),
+         "can't load bad.wav: not audio", false},
+        // A failed relink stays relinkable (SampleLoader keeps `relinkable`): Relink stays.
+        {statusView(State::Error, "kick.wav", "can't load kick.wav: not audio", 0.0, 0, 0.0, true),
+         "can't load kick.wav: not audio", true},
+        {statusView(State::Error, "locked.wav", {}, 0.0, 0, 0.0, true), "can't load the sample",
+         true},
+    };
+    gg::ui::SampleStatusView view;
+    RecordingContext recording(gg::core::Mode::Instrument);
+    recording.context.showSampleLoader = true;
+    recording.context.sampleStatus = [&view] { return view; };
+    const auto editor = gg::ui::makeEditor(recording.context);
+    editor->setSize(1600, gg::ui::kEditorHeight); // wide enough for every status below to fit
+    auto *timer = dynamic_cast<juce::Timer *>(editor.get());
+    auto *status = dynamic_cast<juce::Label *>(findDeep(*editor, "sampleStatus"));
+    REQUIRE(status != nullptr);
+    for (const Case &c : cases)
+    {
+        INFO(c.expected);
+        view = c.view;
+        timer->timerCallback();
+        CHECK(status->getText() == juce::String::fromUTF8(c.expected));
+        CHECK(labelText(*editor, "sampleName") == juce::String(c.view.fileName));
+        CHECK(relinkShown(*editor) == c.relink);
+        CHECK(status->getTooltip().isEmpty()); // each fits
+    }
+
+    // A status too long for the strip shows whole in a tooltip.
+    const std::string longMessage(300, 'x');
+    view = statusView(State::Error, "bad.wav", "can't load bad.wav: " + longMessage);
+    timer->timerCallback();
+    CHECK(status->getText() == juce::String("can't load bad.wav: ") + longMessage.c_str());
+    CHECK(status->getTooltip() == status->getText());
+    // and loses it when the status fits again.
+    view = statusView(State::None);
+    timer->timerCallback();
+    CHECK(status->getTooltip().isEmpty());
+}
+
+TEST_CASE("the loader strip refuses other files and opens at the last folder", "[plugin]")
+{
+    // Carry-over row 198: a drop the decoder can't read is refused with a message, and the
+    // choosers start in the folder of the last file chosen or dropped (at first, the settings'
+    // last load folder).
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    RecordingContext recording(gg::core::Mode::Instrument);
+    gg::ui::EditorContext &context = recording.context;
+    context.showSampleLoader = true;
+    std::vector<std::string> loads;
+    context.loadSample = [&loads](const std::string &path) { loads.push_back(path); };
+    gg::ui::SampleStatusView view;
+    context.sampleStatus = [&view] { return view; };
+    const juce::File start = juce::File::getCurrentWorkingDirectory();
+    context.lastLoadFolder = [&start] { return start.getFullPathName().toStdString(); };
+    const auto editor = gg::ui::makeEditor(context);
+    auto *strip = dynamic_cast<gg::ui::LoaderStrip *>(findDeep(*editor, "sampleStrip"));
+    REQUIRE(strip != nullptr);
+    std::vector<juce::File> opened;
+    juce::File answer;
+    strip->browse = [&](const gg::ui::LoaderStrip::Browse &b, auto done) {
+        opened.push_back(b.initial);
+        done(answer);
+    };
+    auto *load = dynamic_cast<juce::Button *>(findDeep(*editor, "sampleLoad"));
+    REQUIRE(load != nullptr);
+
+    // At first, the settings' last load folder; cancelled (no file), nothing loads.
+    load->onClick();
+    REQUIRE(opened.size() == 1);
+    CHECK(opened[0] == start);
+    CHECK(loads.empty());
+
+    // A file outside the decoder's formats is refused, whatever its case, and says why.
+    auto *target = dynamic_cast<juce::FileDragAndDropTarget *>(editor.get());
+    REQUIRE(target != nullptr);
+    const juce::File dir = start.getChildFile("drops");
+    CHECK(target->isInterestedInFileDrag({dir.getChildFile("notes.txt").getFullPathName()}));
+    target->filesDropped({dir.getChildFile("notes.txt").getFullPathName()}, 0, 0);
+    CHECK(loads.empty());
+    CHECK(labelText(*editor, "sampleStatus") ==
+          "can't load notes.txt: not a WAV, AIFF, FLAC or MP3 file");
+    target->filesDropped({dir.getChildFile("noextension").getFullPathName()}, 0, 0);
+    CHECK(loads.empty());
+
+    // An upper-case extension is one of them: it loads, and the next chooser opens there.
+    const juce::File kick = dir.getChildFile("KICK.WAV");
+    target->filesDropped({kick.getFullPathName()}, 0, 0);
+    REQUIRE(loads.size() == 1);
+    CHECK(loads[0] == kick.getFullPathName().toStdString());
+    load->onClick();
+    CHECK(opened.back() == dir);
+
+    // A file chosen in another folder moves it there, for Relink too.
+    answer = start.getChildFile("elsewhere").getChildFile("snare.flac");
+    load->onClick();
+    CHECK(loads.back() == answer.getFullPathName().toStdString());
+    auto *relink = dynamic_cast<juce::Button *>(findDeep(*editor, "sampleRelink"));
+    REQUIRE(relink != nullptr);
+    answer = juce::File();
+    relink->onClick();
+    CHECK(opened.back() == start.getChildFile("elsewhere"));
+}
+
+TEST_CASE("publishing follows gui destroy without a parent", "[plugin]")
+{
+    // Task 10's minor (a): the shim destroys its editor in guiDestroy only once a parent was
+    // attached, so a host that creates and destroys the GUI without set_parent left publishing
+    // on. The plugin's own guiDestroy turns it off.
+#if defined(__APPLE__)
+    const char *const api = CLAP_WINDOW_API_COCOA;
+#elif defined(_WIN32)
+    const char *const api = CLAP_WINDOW_API_WIN32;
+#else
+    const char *const api = CLAP_WINDOW_API_X11;
+#endif
+    {
+        gg::test::PluginUnderTest fx("org.sethbc.giga-grains-fx");
+        REQUIRE(fx.valid());
+        auto *plugin = dynamic_cast<gg::plugin::EditorPlugin *>(&fx.impl());
+        REQUIRE(plugin != nullptr);
+        const auto *gui =
+            static_cast<const clap_plugin_gui *>(fx.clap()->get_extension(fx.clap(), CLAP_EXT_GUI));
+        REQUIRE(gui != nullptr);
+        REQUIRE(gui->create(fx.clap(), api, false));
+        CHECK(plugin->publishing());
+        gui->destroy(fx.clap());
+        CHECK_FALSE(plugin->publishing());
+        // The editor the shim kept goes with the plugin, and counts nothing closed again. (A
+        // second create would replace it, which the shim asserts against in a debug build.)
+    }
+
+    // The size a host offers is held at the minimum, and any larger size is taken as it is.
+    gg::test::PluginUnderTest fx("org.sethbc.giga-grains-fx");
+    REQUIRE(fx.valid());
+    const auto *gui =
+        static_cast<const clap_plugin_gui *>(fx.clap()->get_extension(fx.clap(), CLAP_EXT_GUI));
+    REQUIRE(gui != nullptr);
+    REQUIRE(gui->create(fx.clap(), api, false));
+    uint32_t width = 100;
+    uint32_t height = 100;
+    CHECK(gui->adjust_size(fx.clap(), &width, &height));
+    CHECK(width == static_cast<uint32_t>(gg::ui::kEditorMinWidth));
+    CHECK(height == static_cast<uint32_t>(gg::ui::kEditorMinHeight));
+    width = 1200;
+    height = 700;
+    CHECK(gui->adjust_size(fx.clap(), &width, &height));
+    CHECK(width == 1200);
+    CHECK(height == 700);
+    gui->destroy(fx.clap());
 }
 #else
 TEST_CASE("headless build exposes no gui extension", "[plugin]")
