@@ -121,6 +121,14 @@ resource, so machines must catch everything they can catch.
   ASIO) and on Linux without the PipeWire and JACK headers, so it needs the network. `asan` and
   `rtsan` build no formats and download nothing.
 
+**Warnings.** Every first-party target builds with `-Wall -Wextra` and `-Werror` (on ClangCL
+`/clang:-Wall /clang:-Wextra /WX`), through `gg::compiler-options`. Third-party code never links
+it, and its headers are SYSTEM includes (`gg_mark_system_includes` in `libs/CMakeLists.txt`), so
+fix a warning in first-party code and never edit a submodule. A new target links
+`gg::compiler-options`. Clang versions differ in what `-Wextra` flags (the rtsan build's LLVM is
+newer than Apple's), so build `asan` and `rtsan` too. `cmake/AsioGuard.cmake` fails the configure
+if anything but RtAudio's ASIO backend uses `libs/.../asiosdk` (tests `asio_guard_*`).
+
 **Presets.** They are defined in `CMakePresets.json`. Each one builds into `build/<preset>/`,
 except `windows-clangcl`, which builds into `build/windows/`.
 
@@ -442,10 +450,13 @@ $b --space [--quick | --seconds S] [--rounds N] [--commit SHA] [--json out.json]
     ratio the baseline lacks is only `not in the baseline`.
   - **A verdict over no ratios is an error** (exit 1): a run without `reference` or any engine
     case, on a model the baseline has, never passes as "0 of 0".
-- **In CI:** each build leg runs the full length with `--commit` and, when
-  `tools/gg-bench/baselines/<preset>.json` exists, `--baseline`. It prints the output, and a
-  verdict per ratio, in the step summary and uploads `gg-bench-<preset>` (`gg-bench.json` and
-  `gg-bench.txt`).
+- **In CI:** the build legs run the full length (with `--commit` and, when
+  `tools/gg-bench/baselines/<preset>.json` exists, `--baseline`) on pushes to `main`, on the
+  nightly schedule (03:17 UTC) and on `workflow_dispatch`. They print the output, and a verdict
+  per ratio, in the step summary and upload `gg-bench-<preset>` (`gg-bench.json` and
+  `gg-bench.txt`). On a pull request each leg runs `--quick` as a smoke check only: it checks no
+  baseline, prints no verdict and uploads nothing, but a crash or exit 1 or 2 still fails the
+  job.
   - **Baselines are per CPU model.** GitHub assigns a leg different CPU models from run to run
     (seen so far: Linux on AMD EPYC 7763, 9V45 and 9V74 and Intel Xeon 8370C; Windows on EPYC
     7763, 9V45 and 9V74). For unchanged code, ratios differ by up to ~20% between models and ~6%
@@ -460,8 +471,9 @@ $b --space [--quick | --seconds S] [--rounds N] [--commit SHA] [--json out.json]
     no-verdict line and exit 1 for a run with no ratios.
   - Sub-project 6 makes the gate blocking, with the published X.
 - **Refreshing a baseline** (`tools/gg-bench/baselines/README.md` has the format):
-  1. Make three separate CI runs of the same engine code
-     (`gh workflow run ci.yml --ref <branch>`). One run's IQR says nothing about the next run's
+  1. Make three separate full-length CI runs of the same engine code: runs on `main`, the
+     nightly or `gh workflow run ci.yml --ref <branch>` (a pull request's runs are `--quick` and
+     upload no artifact). One run's IQR says nothing about the next run's
      drift, which reached ~20% on Windows (INTENT §23 #47).
   2. Download each run's artifact: `gh run download <id> --pattern 'gg-bench-<preset>'`.
   3. Run `gg-bench --make-baseline <preset> tools/gg-bench/baselines/<preset>.json a.json b.json
