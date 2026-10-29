@@ -23,10 +23,11 @@ target_include_directories(gg-media PUBLIC include PRIVATE src)
 # PUBLIC: Decode.h returns gg::SampleBuffer, and gg::engine carries our compiler options to
 # whatever links gg-media. gg::core gives the manifest's MediaEntry and the settings' codec
 # (gg/core/SessionState.h, gg/core/MachineSettings.h), which the public headers use; gg-core never
-# links gg-media, and its tinyxml stays private to it (ruling M1-l). dr_libs' and r8brain's
-# headers stay private: the public headers don't include them. dr_libs' implementations are
-# compiled once, in gg::dr_libs_impl; r8brain is header-only.
+# links gg-media, and its tinyxml stays private to it (ruling M1-l). dr_libs', r8brain's and
+# utf8proc's headers stay private: the public headers don't include them. dr_libs'
+# implementations are compiled once, in gg::dr_libs_impl; r8brain is header-only; utf8proc, the
+# search's Unicode normalization, is a static C library. The tests reach src/TestHooks.h.
 target_link_libraries(gg-media
         PUBLIC gg::core gg::engine
-        PRIVATE gg::dr_libs gg::dr_libs_impl gg::r8brain gg::compiler-options
+        PRIVATE gg::dr_libs gg::dr_libs_impl gg::r8brain gg::utf8proc gg::compiler-options
         )

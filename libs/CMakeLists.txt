@@ -95,6 +95,17 @@ target_include_directories(r8brain SYSTEM INTERFACE r8brain)
 target_link_libraries(r8brain INTERFACE gg::fp-contract-off Threads::Threads)
 add_library(gg::r8brain ALIAS r8brain)
 
+# utf8proc (MIT; its Unicode data under the Unicode license), pinned at tag v2.12.0 (79cdd5a,
+# Unicode 18): Unicode normalization for gg-media's search for a missing sample, which matches a
+# file name saved in one normal form against the same name stored in the other (NFC and NFD;
+# carry-over [190]). Built from its one source file (utf8proc.c includes utf8proc_data.c), not
+# its own CMake, as a static C library without gg::compiler-options, so our -Werror never applies
+# to it. UTF8PROC_STATIC keeps utf8proc.h from declaring dllimport on Windows.
+add_library(utf8proc STATIC utf8proc/utf8proc.c)
+target_include_directories(utf8proc SYSTEM PUBLIC utf8proc)
+target_compile_definitions(utf8proc PUBLIC UTF8PROC_STATIC)
+add_library(gg::utf8proc ALIAS utf8proc)
+
 # nlohmann/json: header-only.
 add_library(nlohmann_json INTERFACE)
 target_include_directories(nlohmann_json SYSTEM INTERFACE nlohmann_json/include)

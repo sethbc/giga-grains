@@ -5,13 +5,18 @@
 #include "gg/media/Search.h"
 
 #include <algorithm>
+#include <atomic>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <vector>
 
-#include "Utf8Path.h"
+#include <utf8proc.h>
+
+#include "TestHooks.h"
 #include "gg/media/Sha256.h"
+#include "gg/media/Utf8Path.h"
 
 namespace gg::media
 {
@@ -19,6 +24,102 @@ namespace fs = std::filesystem;
 
 namespace
 {
+/// The scan's test hook (TestHooks.h); nullptr unless a test sets one.
+std::atomic<detail::ScanHook> scanHook{nullptr};
+
+/// Unicode's two canonical normal forms: composed (NFC) and decomposed (NFD).
+enum class Form
+{
+    C,
+    D,
+};
+
+/// UTF-8 `text` in normal form `form`, or nullopt if it isn't valid UTF-8 (or memory runs out).
+/// ASCII is its own normal form in both, and is copied as it is.
+std::optional<std::string> normalized(std::string_view text, Form form)
+{
+    if (std::all_of(text.begin(), text.end(),
+                    [](char c) { return static_cast<unsigned char>(c) < 0x80; }))
+    {
+        return std::string(text);
+    }
+    utf8proc_uint8_t *out = nullptr;
+    const utf8proc_ssize_t length =
+        utf8proc_map(reinterpret_cast<const utf8proc_uint8_t *>(text.data()),
+                     static_cast<utf8proc_ssize_t>(text.size()), &out,
+                     UTF8PROC_STABLE | (form == Form::C ? UTF8PROC_COMPOSE : UTF8PROC_DECOMPOSE));
+    if (length < 0 || out == nullptr)
+    {
+        return std::nullopt;
+    }
+    std::string result(reinterpret_cast<const char *>(out), static_cast<std::size_t>(length));
+    utf8proc_free(out);
+    return result;
+}
+
+/// The spellings of UTF-8 `text` a search tries, in order and each once: as saved, in NFC, in
+/// NFD. A name saved on one filesystem can be stored in the other normal form on another: macOS's
+/// HFS+ stores names decomposed, and ext4 and NTFS keep whichever they're given.
+std::vector<std::string> spellings(const std::string &text)
+{
+    std::vector<std::string> out{text};
+    for (const Form form : {Form::C, Form::D})
+    {
+        if (auto other = normalized(text, form);
+            other && std::find(out.begin(), out.end(), *other) == out.end())
+        {
+            out.push_back(std::move(*other));
+        }
+    }
+    return out;
+}
+
+/// Whether a listed file name is the saved one, as Unicode text: canonically equivalent names (the
+/// same once both are in NFC) match, so a name saved in NFC matches its NFD spelling and the other
+/// way round. A name that isn't valid UTF-8 matches only itself, byte for byte.
+class NameMatcher
+{
+  public:
+    explicit NameMatcher(const std::string &name) : name_(name), nfc_(normalized(name, Form::C)) {}
+
+    bool matches(const fs::path &filename) const
+    {
+        const auto text = toUtf8(filename);
+        if (!text)
+        {
+            return false;
+        }
+        if (*text == name_)
+        {
+            return true;
+        }
+        if (!nfc_)
+        {
+            return false;
+        }
+        const auto nfc = normalized(*text, Form::C);
+        return nfc && *nfc == *nfc_;
+    }
+
+  private:
+    std::string name_;
+    std::optional<std::string> nfc_;
+};
+
+/// Opens `folder` for the scan to list, through the test hook when one is set.
+fs::directory_iterator openFolder(const fs::path &folder, std::error_code &error)
+{
+    if (const auto hook = scanHook.load(std::memory_order_relaxed))
+    {
+        error = hook(detail::ScanStep::Open, folder);
+        if (error)
+        {
+            return {};
+        }
+    }
+    return fs::directory_iterator(folder, error);
+}
+
 /// What checking one candidate found.
 enum class Check
 {
@@ -79,16 +180,17 @@ class Candidates
 /// The index of the saved path's last separator, `/` or `\` (a path saved on Windows), or npos.
 std::size_t lastSeparator(const std::string &path) { return path.find_last_of("/\\"); }
 
-/// Step 3c: the first file named `name` under `root` that matches, or nothing. Walked by hand,
-/// depth first (each folder's contents right after its entry), with a listing per open folder:
-/// a folder that can't be opened, or fails partway through its listing, is skipped and the scan
-/// goes on, where std::filesystem::recursive_directory_iterator would end altogether on any error
-/// but EACCES. Visits at most kMaxScanEntries entries and never follows a symlinked folder.
-std::optional<fs::path> scan(const fs::path &root, const fs::path &name, Candidates &candidates)
+/// Step 3c: the first file under `root` whose name `name` matches and whose content matches, or
+/// nothing. Walked by hand, depth first (each folder's contents right after its entry), with a
+/// listing per open folder: a folder that can't be opened, or fails partway through its listing,
+/// is skipped and the scan goes on, where std::filesystem::recursive_directory_iterator would end
+/// altogether on any error but EACCES. Visits at most kMaxScanEntries entries and never follows a
+/// symlinked folder.
+std::optional<fs::path> scan(const fs::path &root, const NameMatcher &name, Candidates &candidates)
 {
     std::vector<fs::directory_iterator> open;
     std::error_code error;
-    fs::directory_iterator first(root, error);
+    fs::directory_iterator first = openFolder(root, error);
     if (error)
     {
         return std::nullopt;
@@ -105,6 +207,10 @@ std::optional<fs::path> scan(const fs::path &root, const fs::path &name, Candida
         }
         const fs::directory_entry entry = *listing;
         listing.increment(error);
+        if (const auto hook = scanHook.load(std::memory_order_relaxed); hook && !error)
+        {
+            error = hook(detail::ScanStep::Next, entry.path().parent_path());
+        }
         if (error)
         {
             // The rest of this folder can't be listed: skip it, but still visit `entry`.
@@ -116,14 +222,14 @@ std::optional<fs::path> scan(const fs::path &root, const fs::path &name, Candida
             return std::nullopt;
         }
         const fs::path &path = entry.path();
-        if (path.filename() == name && candidates.check(path) == Check::Matches)
+        if (name.matches(path.filename()) && candidates.check(path) == Check::Matches)
         {
             return path;
         }
         // Into a folder, but not through a symlink: symlink_status doesn't follow it.
         if (fs::is_directory(entry.symlink_status(error)) && !error)
         {
-            fs::directory_iterator inside(path, error);
+            fs::directory_iterator inside = openFolder(path, error);
             if (!error)
             {
                 open.push_back(std::move(inside));
@@ -138,76 +244,106 @@ std::optional<fs::path> scan(const fs::path &root, const fs::path &name, Candida
 SearchResult findSample(const core::MediaEntry &entry, const core::MachineSettings &settings)
 {
     Candidates candidates(entry);
-    const fs::path saved = detail::fromUtf8(entry.absolutePath).value_or(fs::path());
+    const fs::path saved = fromUtf8(entry.absolutePath).value_or(fs::path());
     const auto found = [&](const fs::path &candidate) {
         const fs::path where = candidate.lexically_normal();
         return SearchResult{SearchOutcome::Found, where, where != saved.lexically_normal()};
     };
+    // The first spelling of `text` under `folder` that matches.
+    const auto anySpelling = [&](const fs::path &folder,
+                                 const std::string &text) -> std::optional<fs::path> {
+        for (const auto &spelling : spellings(text))
+        {
+            if (const auto tail = fromUtf8(spelling))
+            {
+                const fs::path candidate = folder / *tail;
+                if (candidates.check(candidate) == Check::Matches)
+                {
+                    return candidate;
+                }
+            }
+        }
+        return std::nullopt;
+    };
 
-    // 1. The saved path.
-    const Check atSaved = saved.empty() ? Check::Skipped : candidates.check(saved);
-    if (atSaved == Check::Matches)
+    // 1. The saved path, in each spelling. The first spelling that holds other content is where
+    // the file changed.
+    std::optional<fs::path> changed;
+    if (!saved.empty())
     {
-        return found(saved);
+        for (const auto &spelling : spellings(entry.absolutePath))
+        {
+            if (const auto candidate = fromUtf8(spelling))
+            {
+                const Check atSaved = candidates.check(*candidate);
+                if (atSaved == Check::Matches)
+                {
+                    return found(*candidate);
+                }
+                if (atSaved == Check::Differs && !changed)
+                {
+                    changed = *candidate;
+                }
+            }
+        }
     }
 
     // 2. The sample folder and the relative path.
     const auto sampleFolder =
-        settings.sampleFolder.empty() ? std::nullopt : detail::fromUtf8(settings.sampleFolder);
+        settings.sampleFolder.empty() ? std::nullopt : fromUtf8(settings.sampleFolder);
     if (sampleFolder && !entry.relativePath.empty())
     {
-        if (const auto relative = detail::fromUtf8(entry.relativePath))
+        if (const auto match = anySpelling(*sampleFolder, entry.relativePath))
         {
-            const fs::path candidate = *sampleFolder / *relative;
-            if (candidates.check(candidate) == Check::Matches)
-            {
-                return found(candidate);
-            }
+            return found(*match);
         }
     }
 
     // 3. By name: in the saved path's folder, the last folder loaded from, then the scan.
     const std::size_t separator = lastSeparator(entry.absolutePath);
-    const auto name =
-        detail::fromUtf8(separator == std::string::npos ? entry.absolutePath
-                                                        : entry.absolutePath.substr(separator + 1));
-    if (name && !name->empty() && *name != "." && *name != "..")
+    const std::string name = separator == std::string::npos
+                                 ? entry.absolutePath
+                                 : entry.absolutePath.substr(separator + 1);
+    if (fromUtf8(name) && !name.empty() && name != "." && name != "..")
     {
         if (separator != std::string::npos)
         {
-            if (const auto folder = detail::fromUtf8(entry.absolutePath.substr(0, separator + 1)))
+            if (const auto folder = fromUtf8(entry.absolutePath.substr(0, separator + 1)))
             {
-                const fs::path candidate = *folder / *name;
-                if (candidates.check(candidate) == Check::Matches)
+                if (const auto match = anySpelling(*folder, name))
                 {
-                    return found(candidate);
+                    return found(*match);
                 }
             }
         }
         if (!settings.lastLoadFolder.empty())
         {
-            if (const auto folder = detail::fromUtf8(settings.lastLoadFolder))
+            if (const auto folder = fromUtf8(settings.lastLoadFolder))
             {
-                const fs::path candidate = *folder / *name;
-                if (candidates.check(candidate) == Check::Matches)
+                if (const auto match = anySpelling(*folder, name))
                 {
-                    return found(candidate);
+                    return found(*match);
                 }
             }
         }
         if (sampleFolder && sampleFolder->is_absolute())
         {
-            if (const auto match = scan(*sampleFolder, *name, candidates))
+            if (const auto match = scan(*sampleFolder, NameMatcher(name), candidates))
             {
                 return found(*match);
             }
         }
     }
 
-    if (atSaved == Check::Differs)
+    if (changed)
     {
-        return {SearchOutcome::Changed, saved, false};
+        return {SearchOutcome::Changed, changed->lexically_normal(), false};
     }
     return {SearchOutcome::Missing, {}, false};
 }
+
+namespace detail
+{
+void setScanHook(ScanHook hook) { scanHook.store(hook); }
+} // namespace detail
 } // namespace gg::media

@@ -25,7 +25,8 @@ enum class SearchOutcome
 struct SearchResult
 {
     SearchOutcome outcome;
-    std::filesystem::path path; // Found: the match; Changed: the saved path; Missing: empty
+    std::filesystem::path path; // Found: the match; Changed: the saved path; Missing: empty.
+                                // Lexically normal.
     bool moved;                 // Found away from the saved path: the manifest needs updating
 };
 
@@ -44,12 +45,18 @@ inline constexpr std::size_t kMaxScanEntries = 50'000;
 ///       kMaxScanEntries directory entries (files and folders alike, the match included), never
 ///       follows a symlinked folder, and skips any folder it can't open or finish listing
 ///       (permissions, a folder removed mid-scan, a failing volume), going on with the rest.
+/// Names are Unicode text, compared up to canonical equivalence: a name saved in NFC is found
+/// under its NFD spelling (as macOS's HFS+ stores names) and the other way round. So steps 1,
+/// 2, 3a and 3b try the saved spelling of what they add (the whole path in 1, the relative path
+/// in 2, the name in 3a and 3b), then its NFC and its NFD spellings, and the scan compares each
+/// name it lists with the saved one in NFC. A name that isn't valid UTF-8 matches only itself.
 /// A candidate that isn't an absolute path (a Windows path read on macOS, say) is skipped, since
 /// it would depend on the working directory, and one already checked isn't checked again. So 3a,
 /// whose candidate is 1's path or a relative one, adds nothing: it is kept for the spec's order
 /// (ruling R13). `moved` is whether the match's path differs from the saved one. When nothing
-/// matches, the outcome is Changed if the saved path holds a regular file whose fingerprint (read
-/// in full) differs, and Missing otherwise. Paths are UTF-8; filesystem errors count as
+/// matches, the outcome is Changed if a spelling of the saved path holds a regular file whose
+/// fingerprint (read in full) differs, and Missing otherwise. A Found or Changed path is
+/// lexically normal (no `.` or `..` components). Paths are UTF-8; filesystem errors count as
 /// non-matches, and nothing throws but std::bad_alloc.
 SearchResult findSample(const core::MediaEntry &entry, const core::MachineSettings &settings);
 } // namespace gg::media
