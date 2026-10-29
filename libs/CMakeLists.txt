@@ -358,4 +358,24 @@ if (GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
             JUCE_WEB_BROWSER=0
             )
     add_library(gg::juce-headers ALIAS gg-juce-headers)
+
+    # sst-jucegui (MIT; the md4c and CMakeRC it vendors are MIT too): the editor's controls and
+    # theme. Added after the shim, so its CMake makes sst-jucegui-juce-requirements an INTERFACE
+    # library over clap_juce_shim_requirements, and after gg-juce-headers, for the line below.
+    # Outside a unity build clap_juce_shim_requirements links JUCE's modules, whose sources
+    # would then compile into sst-jucegui and, through its PUBLIC link, into every target that
+    # links it (gg-ui, under our -Werror): JUCE three times over. So its requirements are
+    # re-pointed at gg-juce-headers, the same headers and definitions without the sources, and
+    # JUCE stays compiled once, in clap_juce_shim, which gg-ui and the plugin link. Its examples
+    # stay off; FORCE, so a cache from another configuration can't turn them back on.
+    set(SST_JUCEGUI_BUILD_EXAMPLES OFF CACHE BOOL "Don't build sst-jucegui's examples" FORCE)
+    add_subdirectory(sst/sst-jucegui EXCLUDE_FROM_ALL)
+    get_target_property(gg_jucegui_requirements_type sst-jucegui-juce-requirements TYPE)
+    if (NOT gg_jucegui_requirements_type STREQUAL "INTERFACE_LIBRARY")
+        message(FATAL_ERROR "sst-jucegui-juce-requirements is a ${gg_jucegui_requirements_type}, not an INTERFACE library: it would compile JUCE again")
+    endif ()
+    set_property(TARGET sst-jucegui-juce-requirements PROPERTY INTERFACE_LINK_LIBRARIES
+            gg-juce-headers)
+    gg_mark_system_includes(sst-jucegui sst-jucegui-resources sst-jucegui-juce-requirements
+            cmrc-base)
 endif ()

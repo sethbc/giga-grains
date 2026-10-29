@@ -23,6 +23,9 @@
 #include <thread>
 
 #include <juce_gui_basics/juce_gui_basics.h>
+#include <sst/jucegui/components/Knob.h>
+#include <sst/jucegui/data/Continuous.h>
+#include <sst/jucegui/style/StyleSheet.h>
 
 #include "editor/EditorPlugin.h"
 #include "gg/ui/Editor.h"
@@ -408,6 +411,55 @@ TEST_CASE("the gui's loader strip shows the sample's status and offers relink", 
         CHECK(labelText(*editor, "sampleStatus") == "the file at the saved path can't be read");
         CHECK(relinkShown(*editor));
     }
+}
+
+// sst-jucegui (libs/sst/sst-jucegui) builds against our JUCE and works without a window: a Knob
+// constructs, reads its value through the data source it's given, and paints with the built-in
+// dark style sheet.
+namespace
+{
+struct FixedContinuous final : sst::jucegui::data::Continuous
+{
+    float value{0.25f};
+    std::string getLabel() const override { return "Fixed"; }
+    float getValue() const override { return value; }
+    void setValueFromGUI(const float &f) override { value = f; }
+    void setValueFromModel(const float &f) override { value = f; }
+    float getDefaultValue() const override { return 0.5f; }
+};
+} // namespace
+
+TEST_CASE("an sst-jucegui knob constructs and reads its source", "[plugin]")
+{
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    sst::jucegui::style::StyleSheet::initializeStyleSheets([] {});
+
+    // The source outlives the knob, which unregisters from it when destroyed.
+    FixedContinuous source;
+    sst::jucegui::components::Knob knob;
+    CHECK(knob.continuous() == nullptr);
+    knob.setSource(&source);
+    REQUIRE(knob.continuous() == &source);
+    CHECK(knob.continuous()->getValue() == 0.25f);
+    CHECK(knob.getTitle() == "Fixed");
+
+    knob.setStyle(sst::jucegui::style::StyleSheet::getBuiltInStyleSheet(
+        sst::jucegui::style::StyleSheet::DARK));
+    knob.setBounds(0, 0, 48, 48);
+    juce::Image image(juce::Image::ARGB, 48, 48, true);
+    {
+        juce::Graphics g(image);
+        knob.paintEntireComponent(g, false);
+    }
+    bool painted = false;
+    for (int y = 0; y < image.getHeight() && !painted; ++y)
+    {
+        for (int x = 0; x < image.getWidth() && !painted; ++x)
+        {
+            painted = image.getPixelAt(x, y).getAlpha() != 0;
+        }
+    }
+    CHECK(painted);
 }
 #else
 TEST_CASE("headless build exposes no gui extension", "[plugin]")

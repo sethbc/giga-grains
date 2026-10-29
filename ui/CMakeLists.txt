@@ -29,9 +29,10 @@ if (GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
     target_include_directories(gg-ui PUBLIC include)
     # JUCE itself is compiled once, inside clap_juce_shim; gg::juce-headers adds its headers and
     # definitions without its sources. Every JUCE_* definition is set in libs/CMakeLists.txt.
+    # sst-jucegui (the controls) compiles against those same headers (libs/CMakeLists.txt).
     target_link_libraries(gg-ui
             PUBLIC gg::ui-core
-            PRIVATE clap_juce_shim clap_juce_shim_headers gg::juce-headers gg::engine
+            PRIVATE clap_juce_shim clap_juce_shim_headers gg::juce-headers sst-jucegui gg::engine
             gg::compiler-options
             )
 endif ()

@@ -53,6 +53,9 @@ keeps its own copyright line.
 | clap-wrapper | Copyright (c) 2022 defiantnerd | `libs/clap/clap-wrapper/LICENSE` | VST3, AU v2 and standalone (it wraps the CLAP plugin); its CLAP extension headers are in the CLAP builds too |
 | VST3 SDK 3.8.0 (`v3.8.0_build_66`, fetched by clap-wrapper) | Copyright (c) 2025, Steinberg Media Technologies GmbH | `LICENSE.txt` in the SDK checkout (the MIT text below) | VST3 |
 | sst-clap-helpers (`clap_juce_shim`) | Copyright 2019-2020, Paul Walker | `libs/sst/sst-clap-helpers/LICENSE.md` | Both products (the editor) |
+| sst-jucegui (controls and theme) | Copyright 2019-2021, Authors as indicated in the Git Transaction Log | `libs/sst/sst-jucegui/LICENSE.md` | Both products (the editor) |
+| md4c 0.5.2 (vendored in sst-jucegui) | Copyright © 2016-2024 Martin Mitáš | `libs/sst/sst-jucegui/src/sst/jucegui/markdown/md4c/LICENSE.md` | Both products (the editor) |
+| CMakeRC 2.0.0 (vendored in sst-jucegui as `cmake/CmakeRC.cmake`; its generated resource code is compiled into the editor) | Copyright (c) 2017 vector-of-bool <vectorofbool@gmail.com> | Not in the checkout: upstream's `LICENSE.txt`, https://github.com/vector-of-bool/cmrc (the MIT text below) | Both products (the editor) |
 | sst-cpputils | Copyright 2019-2021, Authors as indicated in the Git Transaction Log | `libs/sst/sst-cpputils/LICENSE.md` | Both products |
 | sst-plugininfra (patch state; all but tinyxml) | Copyright 2019-2020, Paul Walker | `libs/sst/sst-plugininfra/LICENSE_MIT.md` | Both products |
 | simde | Copyright (c) 2017 Evan Nemerson | `libs/simde/COPYING` | Both products (SSE intrinsics on ARM) |
