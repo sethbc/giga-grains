@@ -40,6 +40,9 @@ struct CloudParams
     double pitchSemitones{0.0}; ///< [-48, 48].
     double stereo{0.0};         ///< Random pan spread: 0 = every grain centred; [0, 1].
     float gain{0.5f};           ///< [0, 4].
+    /// The Texture envelope of each grain that starts from now on (spec §4; Envelope.h): 0 is
+    /// the plain Hann; [0, 1].
+    double texture{0.0};
     /// The interpolation tier of each grain that starts from now on (ruling 2). An enum, so
     /// setParams copies it as given.
     Tier quality{Tier::Normal};
@@ -70,6 +73,7 @@ struct GrainDraw
     /// exp2Det(pitchSemitones / 12) without.
     double rate;
     double durationSamples; ///< Window length in output samples, at least 16.
+    double texture{0.0};    ///< CloudParams::texture at the onset.
     float gain;
     float pan;               ///< stereo × bipolar(u), in [-1, 1]; +0 at stereo 0 (see schedule()).
     Tier tier{Tier::Normal}; ///< CloudParams::quality at the onset.
@@ -263,6 +267,7 @@ class CloudScheduler
                 .sprayOffsetSec = sprayOffsetSec,
                 .rate = rate,
                 .durationSamples = durationSamples_,
+                .texture = params_.texture,
                 .gain = params_.gain,
                 .pan = pan,
                 .tier = params_.quality,

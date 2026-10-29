@@ -246,10 +246,9 @@ struct RenderSpec
     friend bool operator==(const RenderSpec &, const RenderSpec &) = default;
 };
 
-/// The parameter whose name (paramMeta's: "Mix", "Level", "Position", "Size", "Density",
-/// "Distribution", "Pitch", "Spray", "Stereo", "Freeze", and Space's "Diffusion", "Reverb Amount",
-/// "Reverb Decay", "Reverb Size", "Reverb Damping", "Reverb Pre-delay", "Reverb Modulation" or
-/// "Dry to Reverb") is `name`, matched exactly.
+/// The parameter whose name in either product (paramMeta's, matched exactly) is `name`, or nothing.
+/// A spec's params and automation take only its own product's names: parseRenderSpec rejects the
+/// other's ("Macro Level" in an FX spec) as an unknown parameter.
 std::optional<gg::core::ParamSlot> paramSlotNamed(std::string_view name);
 
 /// Parses and validates a render spec. On failure returns nullopt and sets error to a message

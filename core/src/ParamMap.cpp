@@ -44,17 +44,20 @@ CloudParams toCloudParams(const ParamValues &effective, Mode mode) noexcept
     p.spray = 2.0 / 255.0 * (exp2Det(8.0 * value(effective, ParamSlot::Spray)) - 1.0);
     p.pitchSemitones = value(effective, ParamSlot::Pitch);
     p.stereo = value(effective, ParamSlot::Stereo);
+    p.texture = value(effective, ParamSlot::Texture);
     p.gain = static_cast<float>(1.0 / std::sqrt(std::max(1.0, p.densityHz * p.grainDurationSec)));
     return p;
 }
 
-WetParams toWetParams(const ParamValues &effective) noexcept
+WetParams toWetParams(const ParamValues &effective, Mode mode) noexcept
 {
     return {
         .levelGain =
             static_cast<float>(exp2Det(value(effective, ParamSlot::Level) * kLog2Of10 / 20.0)),
         .mix = effective[static_cast<size_t>(ParamSlot::Mix)],
         .freeze = effective[static_cast<size_t>(ParamSlot::Freeze)] > 0.5f,
+        .feedback =
+            mode == Mode::Instrument ? 0.0f : effective[static_cast<size_t>(ParamSlot::Feedback)],
     };
 }
 
@@ -73,6 +76,53 @@ SpaceParams toSpaceParams(const ParamValues &effective, Mode mode) noexcept
         .modulation = at(ParamSlot::ReverbModulation),
         .predelaySeconds = at(ParamSlot::ReverbPredelay),
     };
+}
+
+ParamValues macroOffsets(const ParamValues &effectiveMacros, Mode mode) noexcept
+{
+    // Every entry starts at +0.0f, and each recipe's term is exactly 0 at rest: 2 × 0.5f − 1 is
+    // exactly 0, so are max(0, 0), 0/0.75, smoothstep below its edge and 0 × 0. +0 plus or minus
+    // (±0) is +0, so a resting entry stays +0.0f.
+    ParamValues o{};
+    const auto macro = [&effectiveMacros](ParamSlot slot) {
+        return effectiveMacros[static_cast<size_t>(slot)];
+    };
+    const auto offset = [&o](ParamSlot slot) -> float & { return o[static_cast<size_t>(slot)]; };
+    const auto bipolar = [](float v) { return 2.0f * v - 1.0f; };
+
+    const float b1 = bipolar(macro(ParamSlot::Macro1));
+    offset(ParamSlot::Size) += 3.0f * b1;
+    offset(ParamSlot::Density) -= 1.5f * b1;
+
+    const float b2 = bipolar(macro(ParamSlot::Macro2));
+    offset(ParamSlot::Density) += 4.0f * b2;
+    offset(ParamSlot::Distribution) += 0.25f * std::max(b2, 0.0f);
+
+    offset(ParamSlot::Pitch) += 24.0f * bipolar(macro(ParamSlot::Macro3));
+
+    const float b4 = bipolar(macro(ParamSlot::Macro4));
+    offset(ParamSlot::Spray) += 0.5f * b4;
+    offset(ParamSlot::Stereo) += 0.3f * std::max(b4, 0.0f);
+
+    const float u5 = macro(ParamSlot::Macro5);
+    offset(ParamSlot::Texture) += std::min(u5 / 0.75f, 1.0f);
+    offset(ParamSlot::Diffusion) += smoothstep(0.75f, 1.0f, u5);
+
+    offset(ParamSlot::Freeze) += macro(ParamSlot::Macro6);
+
+    const float v7 = macro(ParamSlot::Macro7);
+    const float v8 = macro(ParamSlot::Macro8);
+    if (mode == Mode::Instrument)
+    {
+        offset(ParamSlot::Stereo) += 0.5f * bipolar(v7);
+        offset(ParamSlot::Level) += 12.0f * bipolar(v8);
+    }
+    else
+    {
+        offset(ParamSlot::Feedback) += 0.9f * (v7 * v7);
+        offset(ParamSlot::Mix) += 0.5f * bipolar(v8);
+    }
+    return o;
 }
 
 float softLimit(float x) noexcept

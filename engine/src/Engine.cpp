@@ -333,6 +333,7 @@ GrainSpec Engine::sampleGrain(const GrainDraw &d) const noexcept
         .startPos = std::clamp(d.positionDraw * span + d.sprayOffsetSec * source.rate, 0.0, span),
         .rate = d.rate * source.rate / config_.sampleRate,
         .durationSamples = d.durationSamples,
+        .texture = d.texture,
         .gain = d.gain,
         .pan = d.pan,
         .tier = d.tier,
@@ -369,6 +370,7 @@ bool Engine::liveGrain(const GrainDraw &d, GrainSpec &g) const noexcept
         .startPos = std::clamp(rho - d.positionDraw * config_.sampleRate, lo, hi),
         .rate = rate, // the ring runs at the output rate
         .durationSamples = dur,
+        .texture = d.texture,
         .gain = d.gain,
         .pan = d.pan,
         .tier = d.tier,

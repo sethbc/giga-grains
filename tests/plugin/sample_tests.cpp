@@ -282,6 +282,7 @@ TEST_CASE("a session restored while active plays in the first block after it (D8
     LoaderHost host;
     PluginUnderTest instrument(kInstrumentId, host.clap());
     REQUIRE(instrument.valid());
+    REQUIRE(instrument.loadDefaultsWithSeed(0)); // the same seed in every run
     REQUIRE(instrument.activate(48000.0, 512));
     const std::string state = gg::test::withSample(instrument.save(), gg::test::entryOf(file));
     REQUIRE_FALSE(state.empty());
@@ -303,6 +304,7 @@ TEST_CASE("a session restored while inactive plays in the first block after acti
     LoaderHost host;
     PluginUnderTest instrument(kInstrumentId, host.clap());
     REQUIRE(instrument.valid());
+    REQUIRE(instrument.loadDefaultsWithSeed(0)); // the same seed in every run
     REQUIRE(instrument.load(gg::test::withSample(instrument.save(), gg::test::entryOf(file))));
     CHECK(loaderOf(instrument).status().state == SampleState::Loaded);
 
@@ -323,6 +325,7 @@ TEST_CASE("two instances restoring one session render the same bits (D8)", "[plu
     {
         PluginUnderTest source(kInstrumentId);
         REQUIRE(source.valid());
+        REQUIRE(source.loadDefaultsWithSeed(0)); // the same seed in every run
         state = gg::test::withSample(source.save(), gg::test::entryOf(file));
     }
     REQUIRE_FALSE(state.empty());
@@ -331,6 +334,7 @@ TEST_CASE("two instances restoring one session render the same bits (D8)", "[plu
     LoaderHost hostA;
     PluginUnderTest a(kInstrumentId, hostA.clap());
     REQUIRE(a.valid());
+    REQUIRE(a.loadDefaultsWithSeed(0)); // the same seed in every run
     REQUIRE(a.load(state));
     REQUIRE(a.activate(48000.0, 256));
     Stereo outA(kFrames);
@@ -339,6 +343,7 @@ TEST_CASE("two instances restoring one session render the same bits (D8)", "[plu
     LoaderHost hostB;
     PluginUnderTest b(kInstrumentId, hostB.clap());
     REQUIRE(b.valid());
+    REQUIRE(b.loadDefaultsWithSeed(0)); // the same seed in every run
     REQUIRE(b.activate(48000.0, 1024));
     REQUIRE(b.load(state));
     Stereo outB(kFrames);
@@ -361,6 +366,7 @@ TEST_CASE("a missing sample stays silent and is saved unchanged", "[plugin]")
     LoaderHost host;
     PluginUnderTest instrument(kInstrumentId, host.clap());
     REQUIRE(instrument.valid());
+    REQUIRE(instrument.loadDefaultsWithSeed(0)); // the same seed in every run
     std::string state;
 
     SECTION("missing")
@@ -409,6 +415,7 @@ TEST_CASE("a newer version's manifest loads the values, silent, and saves back u
     LoaderHost host;
     PluginUnderTest instrument(kInstrumentId, host.clap());
     REQUIRE(instrument.valid());
+    REQUIRE(instrument.loadDefaultsWithSeed(0)); // the same seed in every run
 
     // A loaded sample first: the newer session must drop it.
     REQUIRE(instrument.loadSampleState(file));
@@ -490,6 +497,7 @@ TEST_CASE("a sample moved into the sample folder is found, and the state marked 
     LoaderHost host;
     PluginUnderTest instrument(kInstrumentId, host.clap());
     REQUIRE(instrument.valid());
+    REQUIRE(instrument.loadDefaultsWithSeed(0)); // the same seed in every run
     REQUIRE(instrument.load(gg::test::withSample(instrument.save(), entry)));
     const SampleStatus status = loaderOf(instrument).status();
     CHECK(status.state == SampleState::Loaded);
@@ -524,6 +532,7 @@ TEST_CASE("a load superseded at once never becomes current", "[plugin]")
     {
         PluginUnderTest instrument(kInstrumentId, host.clap());
         REQUIRE(instrument.valid());
+        REQUIRE(instrument.loadDefaultsWithSeed(0)); // the same seed in every run
         REQUIRE(instrument.activate(48000.0, 512));
         auto &loader = loaderOf(instrument);
         sources.attach(loader);
@@ -609,6 +618,7 @@ TEST_CASE("a load under way at deactivate runs at the next activation", "[plugin
     {
         PluginUnderTest instrument(kInstrumentId, host.clap());
         REQUIRE(instrument.valid());
+        REQUIRE(instrument.loadDefaultsWithSeed(0)); // the same seed in every run
         REQUIRE(instrument.activate(48000.0, 512));
         auto &loader = loaderOf(instrument);
         sources.attach(loader);
@@ -651,6 +661,7 @@ TEST_CASE("deactivate and destruction cancel a load under way at once", "[plugin
     {
         PluginUnderTest instrument(kInstrumentId, host.clap());
         REQUIRE(instrument.valid());
+        REQUIRE(instrument.loadDefaultsWithSeed(0)); // the same seed in every run
         REQUIRE(instrument.activate(48000.0, 512));
         auto &loader = loaderOf(instrument);
         sources.attach(loader);
@@ -699,6 +710,7 @@ TEST_CASE("a load while inactive plays in the first block after activate", "[plu
     LoaderHost host;
     PluginUnderTest instrument(kInstrumentId, host.clap());
     REQUIRE(instrument.valid());
+    REQUIRE(instrument.loadDefaultsWithSeed(0)); // the same seed in every run
     auto &loader = loaderOf(instrument);
     loader.requestLoad(file);
     CHECK(settle(instrument).state == SampleState::Loaded);
@@ -724,6 +736,7 @@ TEST_CASE("a reactivation at a new rate converts before the first block (R18)", 
     const auto reactivated = [&](uint32_t block, Stereo &out, RateLog &log) {
         PluginUnderTest instrument(kInstrumentId);
         REQUIRE(instrument.valid());
+        REQUIRE(instrument.loadDefaultsWithSeed(0)); // the same seed in every render
         REQUIRE(instrument.activate(44100.0, block));
         REQUIRE(instrument.loadSampleState(file));
         instrument.deactivate();
@@ -743,6 +756,7 @@ TEST_CASE("a reactivation at a new rate converts before the first block (R18)", 
     {
         PluginUnderTest instrument(kInstrumentId);
         REQUIRE(instrument.valid());
+        REQUIRE(instrument.loadDefaultsWithSeed(0)); // the same seed in every render
         REQUIRE(instrument.activate(48000.0, 512));
         REQUIRE(instrument.loadSampleState(file));
         renderNote(instrument, fresh, 512);
@@ -769,6 +783,7 @@ TEST_CASE("a reactivation keeps the old source when its file has gone or changed
     const fs::path file = gg::test::writeSineWav(dir / "gone.wav", 44100, 4.0, 220.0);
     PluginUnderTest instrument(kInstrumentId);
     REQUIRE(instrument.valid());
+    REQUIRE(instrument.loadDefaultsWithSeed(0)); // the same seed in every run
     REQUIRE(instrument.activate(44100.0, 512));
     REQUIRE(instrument.loadSampleState(file));
     const std::string manifest = savedManifest(instrument);
@@ -845,6 +860,7 @@ TEST_CASE("the activation's source is freed once a load replaces it", "[plugin]"
     LoaderHost host;
     PluginUnderTest instrument(kInstrumentId, host.clap());
     REQUIRE(instrument.valid());
+    REQUIRE(instrument.loadDefaultsWithSeed(0)); // the same seed in every run
     auto &loader = loaderOf(instrument);
     sources.attach(loader);
     REQUIRE(instrument.loadSampleState(first));
@@ -883,6 +899,7 @@ TEST_CASE("a sample loaded while a note plays swaps in without a click", "[plugi
     LoaderHost host;
     PluginUnderTest instrument(kInstrumentId, host.clap());
     REQUIRE(instrument.valid());
+    REQUIRE(instrument.loadDefaultsWithSeed(0)); // the same seed in every run
     REQUIRE(instrument.activate(48000.0, kBlock));
     REQUIRE(instrument.loadSampleState(first));
     RateLog log;
@@ -956,6 +973,7 @@ TEST_CASE("relink restores the saved sample, or loads a replacement and says so"
     LoaderHost host;
     PluginUnderTest instrument(kInstrumentId, host.clap());
     REQUIRE(instrument.valid());
+    REQUIRE(instrument.loadDefaultsWithSeed(0)); // the same seed in every run
     REQUIRE(instrument.activate(48000.0, 512));
     REQUIRE(instrument.load(gg::test::withSample(instrument.save(), entry)));
     auto &loader = loaderOf(instrument);
@@ -1028,6 +1046,7 @@ TEST_CASE("a failed load keeps the sample and the entry it had", "[plugin]")
     LoaderHost host;
     PluginUnderTest instrument(kInstrumentId, host.clap());
     REQUIRE(instrument.valid());
+    REQUIRE(instrument.loadDefaultsWithSeed(0)); // the same seed in every run
     REQUIRE(instrument.activate(48000.0, 512));
     REQUIRE(instrument.loadSampleState(good));
     const std::string manifest = savedManifest(instrument);
@@ -1058,6 +1077,7 @@ TEST_CASE("a restore of the sample already loaded keeps it, reading no file (R19
     LoaderHost host;
     PluginUnderTest instrument(kInstrumentId, host.clap());
     REQUIRE(instrument.valid());
+    REQUIRE(instrument.loadDefaultsWithSeed(0)); // the same seed in every run
     auto &loader = loaderOf(instrument);
     sources.attach(loader);
     REQUIRE(instrument.activate(48000.0, 512));
@@ -1103,6 +1123,7 @@ TEST_CASE("a restore of the sample pending activation keeps it, reading no file 
     LoaderHost host;
     PluginUnderTest instrument(kInstrumentId, host.clap());
     REQUIRE(instrument.valid());
+    REQUIRE(instrument.loadDefaultsWithSeed(0)); // the same seed in every run
     const std::string state = gg::test::withSample(instrument.save(), gg::test::entryOf(file));
     REQUIRE(instrument.load(state));
     REQUIRE(loaderOf(instrument).status().state == SampleState::Loaded);
@@ -1123,6 +1144,7 @@ TEST_CASE("a session without a sample clears the one loaded", "[plugin]")
     LoaderHost host;
     PluginUnderTest instrument(kInstrumentId, host.clap());
     REQUIRE(instrument.valid());
+    REQUIRE(instrument.loadDefaultsWithSeed(0)); // the same seed in every run
     REQUIRE(instrument.activate(48000.0, 512));
     const std::string empty = instrument.save();
     REQUIRE(instrument.loadSampleState(file));
@@ -1302,6 +1324,7 @@ TEST_CASE("a missing sample that comes back is loaded at the next activation", "
     LoaderHost host;
     PluginUnderTest instrument(kInstrumentId, host.clap());
     REQUIRE(instrument.valid());
+    REQUIRE(instrument.loadDefaultsWithSeed(0)); // the same seed in every run
     const bool active = GENERATE(false, true);
     if (active)
     {
@@ -1338,6 +1361,7 @@ TEST_CASE("a kept source's file that comes back is Loaded again at the next acti
     const fs::path aside = dir / "aside.bin";
     PluginUnderTest instrument(kInstrumentId);
     REQUIRE(instrument.valid());
+    REQUIRE(instrument.loadDefaultsWithSeed(0)); // the same seed in every run
     REQUIRE(instrument.activate(44100.0, 512));
     REQUIRE(instrument.loadSampleState(file));
     instrument.deactivate();
@@ -1407,6 +1431,7 @@ TEST_CASE("a sample present but unreadable is an Error, not Missing or Changed",
     const gg::core::MediaEntry entry = gg::test::entryOf(file);
     PluginUnderTest instrument(kInstrumentId);
     REQUIRE(instrument.valid());
+    REQUIRE(instrument.loadDefaultsWithSeed(0)); // the same seed in every run
 
     SECTION("restore")
     {
@@ -1446,3 +1471,42 @@ TEST_CASE("a sample present but unreadable is an Error, not Missing or Changed",
     }
 }
 #endif
+
+TEST_CASE("the sample waveform is computed once per sample", "[plugin]")
+{
+    // The editor's outline of the instrument's sample (sub-project 5's spec §6.2): one peak per
+    // 512 frames, computed on the main thread when the sample changes and cached until then.
+    PluginUnderTest plugin(kInstrumentId);
+    REQUIRE(plugin.valid());
+    gg::plugin::SampleLoader *loader = plugin.impl().sampleLoader();
+    REQUIRE(loader != nullptr);
+    CHECK(loader->waveform().peaks == nullptr);
+    CHECK(loader->waveform().frames == 0);
+
+    // Restored while inactive: the decoded file, at its own rate (a 4 s sine of amplitude 0.5).
+    REQUIRE(plugin.loadSampleState(gg::test::sineSampleFile("waveform")));
+    const auto decoded = loader->waveform();
+    REQUIRE(decoded.peaks != nullptr);
+    CHECK(decoded.frames == 192000);
+    CHECK(decoded.seconds == 4.0);
+    REQUIRE(decoded.peaks->size() == 375);
+    for (std::size_t i = 0; i < decoded.peaks->size(); ++i)
+    {
+        CAPTURE(i);
+        // 512 frames hold more than a period of 220 Hz, so each bucket reaches the crest.
+        CHECK((*decoded.peaks)[i] > 0.49f);
+        CHECK((*decoded.peaks)[i] <= 0.5f);
+    }
+    CHECK(loader->waveform().peaks == decoded.peaks); // cached
+
+    // Activated at another rate: the source the engine plays, converted, so a new outline in its
+    // frames, then cached.
+    REQUIRE(plugin.activate(44100.0, 512));
+    const auto converted = loader->waveform();
+    REQUIRE(converted.peaks != nullptr);
+    CHECK(converted.peaks != decoded.peaks);
+    CHECK(std::abs(converted.frames - 176400) <= 1);
+    CHECK(converted.peaks->size() == static_cast<std::size_t>((converted.frames + 511) / 512));
+    CHECK(std::abs(converted.seconds - 4.0) < 1e-4);
+    CHECK(loader->waveform().peaks == converted.peaks);
+}

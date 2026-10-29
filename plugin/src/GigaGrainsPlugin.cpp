@@ -5,15 +5,18 @@
 #include "GigaGrainsPlugin.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <optional>
+#include <random>
 #include <span>
 #include <string>
 
+#include "gg/core/Rng.h"
 #include "gg/core/SessionState.h"
 #include "gg/media/SettingsFile.h"
 #include "gg/plugin/Identity.h"
@@ -29,15 +32,19 @@ using gg::core::NoteEventType;
 using gg::core::ParamEvent;
 using gg::core::ParamSlot;
 
-// The remote-controls pages, in page order, each in slot order: "Cloud" (spec §4) and "Space"
-// (sub-project 4's spec §6.6). A page's index is its page_id.
+// The remote-controls pages, in page order, each in slot order: "Perform", the eight macros
+// (sub-project 5's spec §3.3), then "Cloud" (spec §4) and "Space" (sub-project 4's spec §6.6),
+// whose contents are unchanged. A page's index is its page_id.
 struct RemotePage
 {
     const char *name;
     std::array<ParamSlot, CLAP_REMOTE_CONTROLS_COUNT> slots;
 };
 
-constexpr std::array<RemotePage, 2> kRemotePages{{
+constexpr std::array<RemotePage, 3> kRemotePages{{
+    {"Perform",
+     {ParamSlot::Macro1, ParamSlot::Macro2, ParamSlot::Macro3, ParamSlot::Macro4, ParamSlot::Macro5,
+      ParamSlot::Macro6, ParamSlot::Macro7, ParamSlot::Macro8}},
     {"Cloud",
      {ParamSlot::Position, ParamSlot::Size, ParamSlot::Density, ParamSlot::Pitch, ParamSlot::Spray,
       ParamSlot::Stereo, ParamSlot::Freeze, ParamSlot::Mix}},
@@ -80,19 +87,40 @@ const clap_plugin_descriptor kFxDescriptor{
     kFxFeatures,
 };
 
-/// Whether `slot` is hidden in `product`: the instrument has no dry signal, so Mix and Dry to
-/// Reverb do nothing there. It keeps the parameters, hidden, so both products share one
-/// parameter list and one state format (spec §4; sub-project 4's spec §6.5). paramsInfo flags
-/// them, and their remote controls stay empty.
+/// Whether `slot` is hidden in `product`: the instrument has no dry signal and no live ring, so
+/// Mix, Dry to Reverb and Feedback do nothing there. It keeps the parameters, hidden, so both
+/// products share one parameter list and one state format (spec §4; sub-project 4's spec §6.5;
+/// sub-project 5's spec §5). paramsInfo flags them, and their remote controls stay empty.
 constexpr bool hiddenIn(Product product, ParamSlot slot) noexcept
 {
     return product == Product::Instrument &&
-           (slot == ParamSlot::Mix || slot == ParamSlot::DryToReverb);
+           (slot == ParamSlot::Mix || slot == ParamSlot::DryToReverb ||
+            slot == ParamSlot::Feedback);
 }
 
 void copyName(char (&dst)[CLAP_NAME_SIZE], const char *src) noexcept
 {
     std::snprintf(dst, sizeof(dst), "%s", src);
+}
+
+// A new instance's engine seed (sub-project 5's spec §7): two 32-bit draws from the OS's entropy
+// source, or, if std::random_device throws (it may when it has no source), a splitmix64 of the
+// steady clock. Main thread. The audio thread's randomness still comes only from gg::rng,
+// keyed by this seed.
+uint64_t freshSeed() noexcept
+{
+    try
+    {
+        std::random_device device;
+        const auto high = static_cast<uint64_t>(device()) & 0xffffffffu;
+        const auto low = static_cast<uint64_t>(device()) & 0xffffffffu;
+        return (high << 32) | low;
+    }
+    catch (...)
+    {
+        return gg::rng::splitmix64(
+            static_cast<uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count()));
+    }
 }
 
 /// The per-machine settings file: $GG_SETTINGS_FILE when set and not empty, else the user's
@@ -120,7 +148,7 @@ const clap_plugin_descriptor *descriptorFor(Product product) noexcept
 }
 
 GigaGrainsPlugin::GigaGrainsPlugin(const clap_host *host, Product product)
-    : plugHelper_t(descriptorFor(product), host), product_(product)
+    : plugHelper_t(descriptorFor(product), host), product_(product), seed_(freshSeed())
 {
     // Main thread. The first paramMeta() call builds its tables, which allocates: it's made here,
     // never on the audio thread.
@@ -190,6 +218,7 @@ bool GigaGrainsPlugin::activate(double sampleRate, uint32_t /*minFrameCount*/,
             loaderActive = true;
             processor->setSourceNow(loader_->activate(sampleRate));
         }
+        processor->setPublishing(publishing_); // an editor opened before this activation
         processor_ = std::move(processor);
         engineBlockSize_ = config.maxBlockSize;
         noteIds_.fill(NoteIdSlot{}); // a new session holds no notes
@@ -213,12 +242,13 @@ void GigaGrainsPlugin::deactivate() noexcept
     // while active that the audio thread never took is newer than the last block's events: it
     // goes into the values the next activate() starts from, as the next block would have
     // applied it. Otherwise it would apply, stale, at the first block after a reactivation.
-    gg::core::ParamValues loaded{};
-    if (loadedState_.take(loaded))
+    // Its seed is seed_ already, which the next activate() builds the engine with.
+    LoadedState loaded{};
+    if (loadedState_.take(loaded) && loaded.hasValues)
     {
         for (std::size_t s = 0; s < kParamCount; ++s)
         {
-            storeValue(static_cast<ParamSlot>(s), loaded[s]);
+            storeValue(static_cast<ParamSlot>(s), loaded.values[s]);
         }
     }
     // The same for an offer the audio thread never took (the instrument's restores hand their
@@ -263,6 +293,13 @@ void GigaGrainsPlugin::onMainThread() noexcept
             // collect() only frees; nothing it calls throws.
         }
     }
+    // A state's values the audio thread has applied, and stored in values_ after the load's own
+    // rescan: the host reads them again (carry-over row 123). Cleared first, so values applied
+    // after this ask for another call.
+    if (valuesApplied_.exchange(false, std::memory_order_acq_rel) && _host.canUseParams())
+    {
+        _host.paramsRescan(CLAP_PARAM_RESCAN_VALUES);
+    }
 }
 
 void GigaGrainsPlugin::reset() noexcept
@@ -291,11 +328,13 @@ clap_process_status GigaGrainsPlugin::processNonblocking(const clap_process *pro
     applyLoadedState();
     takeOffers();
 
-    // The call's parameter and note events, in the host's order (by time), up to the first that
-    // finds its array (events_ or notes_) full.
+    // The editor's values first, at the call's first frame, so the host's events (automation
+    // of the same parameter, say) come after them; then the call's parameter and note events,
+    // in the host's order (by time), up to the first that finds its array (events_ or notes_)
+    // full. The editor's take at most kUiQueueCapacity of events_.
+    std::size_t count = takeUiChanges(process->out_events, events_.data(), 0);
     const clap_input_events *in = process->in_events;
     const uint32_t numEvents = in != nullptr ? in->size(in) : 0;
-    std::size_t count = 0;
     std::size_t noteCount = 0;
     uint32_t next = 0;
     for (; next < numEvents; ++next)
@@ -362,6 +401,18 @@ void GigaGrainsPlugin::takeOffers() noexcept
     if (processor_->takeOffers())
     {
         storeBases();
+        requestValueRescan();
+    }
+}
+
+void GigaGrainsPlugin::requestValueRescan() noexcept
+{
+    // At most one request outstanding: on_main_thread clears the flag before it rescans.
+    if (!valuesApplied_.exchange(true, std::memory_order_acq_rel))
+    {
+        // clap_host.request_callback from the audio thread, as in requestCollect (see there).
+        // It runs at most once per state applied.
+        _host.requestCallback();
     }
 }
 
@@ -639,16 +690,23 @@ void GigaGrainsPlugin::forgetNoteIds(int16_t channel, int16_t key) noexcept
 
 void GigaGrainsPlugin::applyLoadedState() noexcept
 {
-    gg::core::ParamValues loaded{};
+    LoadedState loaded{};
     if (!loadedState_.take(loaded))
     {
         return;
     }
+    // The grains scheduled from this call's first sample on are keyed by it (Engine::setSeed).
+    processor_->setSeed(loaded.seed);
+    if (!loaded.hasValues)
+    {
+        return; // the instrument's come with its sample (takeOffers)
+    }
     for (std::size_t s = 0; s < kParamCount; ++s)
     {
-        processor_->setBase(static_cast<ParamSlot>(s), loaded[s]);
-        storeValue(static_cast<ParamSlot>(s), loaded[s]);
+        processor_->setBase(static_cast<ParamSlot>(s), loaded.values[s]);
+        storeValue(static_cast<ParamSlot>(s), loaded.values[s]);
     }
+    requestValueRescan();
 }
 
 void GigaGrainsPlugin::storeValue(ParamSlot slot, float value) noexcept
@@ -657,8 +715,133 @@ void GigaGrainsPlugin::storeValue(ParamSlot slot, float value) noexcept
     values_[s].store(std::clamp(value, minValues_[s], maxValues_[s]), std::memory_order_relaxed);
 }
 
+void GigaGrainsPlugin::uiBeginGesture(ParamSlot slot) noexcept
+{
+    queueUiChange({gg::core::paramId(slot), 0.0, UiParamChange::kBegin});
+}
+
+void GigaGrainsPlugin::uiSetValue(ParamSlot slot, double value) noexcept
+{
+    const auto s = static_cast<std::size_t>(slot);
+    if (s >= kParamCount || std::isnan(value))
+    {
+        return;
+    }
+    // Clamped as storeValue clamps, in double first (a double beyond float's range doesn't
+    // convert), then made a float, as toParamEvent makes the host's: the host is told the value
+    // the plugin applies, and a reloaded automation lane renders the same.
+    const auto v = static_cast<float>(
+        std::clamp(value, static_cast<double>(minValues_[s]), static_cast<double>(maxValues_[s])));
+    queueUiChange({gg::core::paramId(slot), static_cast<double>(v), UiParamChange::kValue});
+}
+
+void GigaGrainsPlugin::uiEndGesture(ParamSlot slot) noexcept
+{
+    queueUiChange({gg::core::paramId(slot), 0.0, UiParamChange::kEnd});
+}
+
+float GigaGrainsPlugin::uiBaseValue(ParamSlot slot) const noexcept
+{
+    const auto s = static_cast<std::size_t>(slot);
+    return s < kParamCount ? values_[s].load(std::memory_order_relaxed) : 0.0f;
+}
+
+void GigaGrainsPlugin::queueUiChange(const UiParamChange &change) noexcept
+{
+    if (change.id == CLAP_INVALID_ID || !uiQueue_.push(change))
+    {
+        return; // not a parameter, or the queue is full (SpscQueue::dropped counts it)
+    }
+    // Pairs with takeUiChanges' fence, as requestCollect's does with onMainThread's: the push
+    // and the flag's exchange here, the flag's store and the queue's load there, are a
+    // store-buffering pattern. With both fences, either that drain sees this change or this
+    // exchange sees the flag cleared and asks again, so no change waits with no flush asked for.
+    std::atomic_thread_fence(std::memory_order_seq_cst);
+    // clap_host_params.request_flush is [thread-safe, !audio-thread]; this is the main thread.
+    // One request outstanding: the host will call process() or flush, which drains every change
+    // queued by then.
+    if (_host.canUseParams() && !uiFlushRequested_.exchange(true, std::memory_order_acq_rel))
+    {
+        _host.paramsRequestFlush();
+    }
+}
+
+std::size_t GigaGrainsPlugin::takeUiChanges(const clap_output_events *out, ParamEvent *values,
+                                            std::size_t count) noexcept
+{
+    // Cleared first: a change queued after the drain asks for another flush (queueUiChange).
+    uiFlushRequested_.store(false, std::memory_order_relaxed);
+    std::atomic_thread_fence(std::memory_order_seq_cst);
+    // At most a queue's worth: the main thread may keep pushing while this runs, and the caller's
+    // array holds kUiQueueCapacity values beyond the host's (kMaxParamEvents).
+    UiParamChange change{};
+    for (uint32_t n = 0; n < kUiQueueCapacity && uiQueue_.pop(change); ++n)
+    {
+        const auto slot = gg::core::slotForId(change.id);
+        if (!slot.has_value())
+        {
+            continue; // uiBeginGesture and its siblings queue only parameters' IDs
+        }
+        bool sent = false;
+        if (change.kind == UiParamChange::kValue)
+        {
+            const auto v = static_cast<float>(change.value); // a float's value already
+            if (values != nullptr)
+            {
+                values[count++] = ParamEvent{0, *slot, false, v};
+            }
+            else
+            {
+                if (processor_ != nullptr)
+                {
+                    processor_->setBase(*slot, v);
+                }
+                storeValue(*slot, v);
+            }
+            clap_event_param_value e{};
+            e.header = {sizeof(e), 0, CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_PARAM_VALUE, 0};
+            e.param_id = change.id;
+            e.cookie = nullptr;
+            e.note_id = -1;
+            e.port_index = -1;
+            e.channel = -1;
+            e.key = -1;
+            e.value = change.value;
+            sent = out != nullptr && out->try_push(out, &e.header);
+        }
+        else
+        {
+            clap_event_param_gesture e{};
+            e.header = {sizeof(e), 0, CLAP_CORE_EVENT_SPACE_ID,
+                        change.kind == UiParamChange::kBegin
+                            ? static_cast<uint16_t>(CLAP_EVENT_PARAM_GESTURE_BEGIN)
+                            : static_cast<uint16_t>(CLAP_EVENT_PARAM_GESTURE_END),
+                        0};
+            e.param_id = change.id;
+            sent = out != nullptr && out->try_push(out, &e.header);
+        }
+        if (!sent)
+        {
+            // The host's list is full: the value applied all the same, but the host doesn't hear
+            // of it. Counted, never retried: a retry here could spin for as long as the host's
+            // list stays full.
+            uiEventsDropped_.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+    return count;
+}
+
+void GigaGrainsPlugin::setPublishing(bool on) noexcept
+{
+    publishing_ = on;
+    if (processor_ != nullptr)
+    {
+        processor_->setPublishing(on);
+    }
+}
+
 void GigaGrainsPlugin::paramsFlush(const clap_input_events *in,
-                                   const clap_output_events * /*out*/) noexcept
+                                   const clap_output_events *out) noexcept
 {
     // CLAP puts only parameter events in a flush, but a host may deliver notes there too
     // (clap-wrapper's VST3 does), and those still count, and play.
@@ -666,7 +849,9 @@ void GigaGrainsPlugin::paramsFlush(const clap_input_events *in,
     if (processor_ == nullptr)
     {
         // Inactive, so on the main thread: the values wait for activate(). Modulation and notes
-        // belong to a processing session, and the next one starts without any.
+        // belong to a processing session, and the next one starts without any. The editor's
+        // changes come first, as the host's would in process().
+        takeUiChanges(out, nullptr, 0);
         const uint32_t numEvents = in != nullptr ? in->size(in) : 0;
         for (uint32_t i = 0; i < numEvents; ++i)
         {
@@ -682,6 +867,7 @@ void GigaGrainsPlugin::paramsFlush(const clap_input_events *in,
     // next grid boundary.
     applyLoadedState();
     takeOffers();
+    takeUiChanges(out, nullptr, 0);
     if (in != nullptr)
     {
         applyBetweenBlocks(in, 0);
@@ -871,12 +1057,13 @@ bool GigaGrainsPlugin::stateLoad(const clap_istream *stream) noexcept
         {
             storeValue(static_cast<ParamSlot>(s), values[s]);
         }
-        const bool newSeed = seed != seed_;
+        // stateSave writes it from now on: the seed the audio thread is about to use.
         seed_ = seed;
         // Inactive, activate() applies the values and the seed. Active, the audio thread applies
-        // the values at the start of its next process() or params.flush; its engine took its
-        // seed when it was built, so a new seed needs a new activation, which the host makes on
-        // a restart request.
+        // them at the start of its next process() or params.flush (carry-over row 115): the seed
+        // through loadedState_ in both products, the values with it in the FX and with the
+        // sample in the instrument (D8). The instrument's two hand-offs are separate, so its
+        // seed may apply a block before or after its values.
         if (processor_ != nullptr)
         {
             if (loader_ != nullptr && restored.keep)
@@ -888,14 +1075,7 @@ bool GigaGrainsPlugin::stateLoad(const clap_istream *stream) noexcept
             {
                 processor_->sources().offer(std::move(restored.source), &values); // reserved
             }
-            else
-            {
-                loadedState_.push(values);
-            }
-            if (newSeed)
-            {
-                _host.requestRestart();
-            }
+            loadedState_.push({values, seed, loader_ == nullptr});
         }
         if (_host.canUseParams())
         {
@@ -907,6 +1087,11 @@ bool GigaGrainsPlugin::stateLoad(const clap_istream *stream) noexcept
     {
         return false;
     }
+}
+
+uint32_t GigaGrainsPlugin::remoteControlsPageCount() noexcept
+{
+    return static_cast<uint32_t>(kRemotePages.size());
 }
 
 bool GigaGrainsPlugin::remoteControlsPageGet(uint32_t pageIndex,

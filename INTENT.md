@@ -244,9 +244,101 @@ optional scale or grid quantize. This is how "shaped randomness" (§8.1) is impl
 
 **Two-rate modulation.**
 - Continuous controls (layer filters, mix) update on the 32-sample control grid (Cloud core
-  rules, below). Mix, Level, Diffusion, Reverb Amount and Dry to Reverb are also smoothed per
-  sample.
+  rules, below). Mix, Level, Diffusion, Reverb Amount, Dry to Reverb and Feedback are also
+  smoothed per sample.
 - Grain parameters are **snapshotted when each grain starts**, so each grain gets its own value.
+
+**Macros** (M1 sub-project 5; §23 #58). The eight macros are relative: each is a modulation
+source that offsets a few targets from the base values the preset sets, along a fixed factory
+recipe per product (in code; user assignments arrive with M2's mod matrix). Each is a CLAP
+parameter, 0–1, saved like any other.
+- **The effective value** of every parameter is `clamp(base + mod + Σ curves)`, in one clamp,
+  never two. Each curve is the target's offset in its own CLAP value domain (octaves for Size and
+  Density, semitones for Pitch, dB for Level, the 0–1 domain for the rest), from the macro's own
+  effective value `v = clamp(base + mod)`; a macro's own offset is 0. With `b = 2v − 1`,
+  `b⁺ = max(b, 0)` and `u = v` (`macroOffsets`, in `gg/core/ParamMap.h`):
+
+  | Macro | Polarity | Offsets |
+  |---|---|---|
+  | 1 Size | bipolar | Size `+3b`; Density `−1.5b` |
+  | 2 Density | bipolar | Density `+4b`; Distribution `+0.25·b⁺` |
+  | 3 Pitch | bipolar | Pitch `+24b` |
+  | 4 Spray | bipolar | Spray `+0.5b`; Stereo `+0.3·b⁺` |
+  | 5 Texture | unipolar | Texture `+min(u / 0.75, 1)`; Diffusion `+smoothstep(0.75, 1, u)`, with `smoothstep(e0, e1, x) = s²(3 − 2s)`, `s = clamp((x − e0)/(e1 − e0), 0, 1)` |
+  | 6 Freeze | unipolar, stepped | Freeze `+u` (effective Freeze is on above 0.5) |
+  | 7 Feedback (FX) | unipolar | Feedback `+0.9u²` |
+  | 7 Stereo (instrument) | bipolar | Stereo `+0.5b` |
+  | 8 Mix (FX) | bipolar | Mix `+0.5b` |
+  | 8 Level (instrument) | bipolar | Level `+12b` dB |
+
+  A target's offsets add in macro order. Every depth is a starting value, tuned by ear at the
+  listening check.
+- **Polarity keeps a resting preset bit-identical.** A bipolar macro rests at 0.5 and a unipolar
+  one at 0, and there every offset is exactly +0.0f (`2 × 0.5f − 1` is exactly 0), so
+  `base + mod + 0` is `base + mod` bit for bit (a −0 sum becomes +0).
+- **On the grid.** A macro event applies at the next 32-sample boundary like any other
+  parameter's (Cloud core rules, below); a target that ramps (Mix, Level, Diffusion, Feedback)
+  ramps from the macro's boundary. A `setBase` of a macro (params.flush, a state load) jumps the
+  ramps of the targets it moves, as a `setBase` of the target does, and Macro 6 is seen as
+  Freeze is for arming (ruling PU-T2a).
+- **The curves are libm-free:** plain float arithmetic, bit-identical on every platform.
+
+**Texture** (M1 sub-project 5; §23 #58): one layer parameter, 0–1, default 0, that drives the
+envelope fields of the parameter model above (shape, skew, sustain fraction) along one fixed
+family (`gg/grain/Envelope.h`). With τ the grain's Texture and d its duration in samples,
+`aMin = min(0.5, max(0.05, 16 / d))` is the gated anchor's attack and release, each at least 16
+samples and 5% of the grain, never more than half of it:
+- τ ≤ 0.5: attack `a = 0.5 + 0.4τ`, release `r = 0.5 − 0.4τ`, no sustain (at 0.5 the peak is
+  at 70% of the grain);
+- τ > 0.5: with `s = 2τ − 1`, `a = (1 − s) × 0.7 + s × aMin` and `r = (1 − s) × 0.3 + s × aMin`
+  (the lerp form, exact at both anchors; ruling PU-T3a), and a flat sustain `1 − a − r` between;
+- so `a + r ≤ 1` always. The 16-sample floor binds only the gated anchor (ruling PU-T13a): for
+  τ ≤ 0.5 the attack and release scale with the grain, as M0's Hann always has (an 8-sample
+  attack on a 16-sample grain at Texture 0, kept bit for bit), so a 16-sample grain is a plain
+  Hann only at Texture 0 and 1 (`aMin` is clamped to 0.5 there).
+
+The window at phase φ ∈ [0, 1] is `hann(warp(φ))`, with
+`warp(φ) = φ < a ? φ × (0.5/a) : (φ > 1 − r ? 1 − (1 − φ) × (0.5/r) : 0.5)` and `hann` the
+existing Hann table.
+- **Texture 0 is bit-identical to the plain Hann:** `a = r = 0.5` exactly, both scales are
+  exactly 1, and `1 − (1 − φ)` is exact for φ ∈ [0.5, 1] (Sterbenz), so `warp(φ) == φ`. Every
+  golden's WAV kept its SHA-256 (`f54cb85`).
+- **Latched per grain,** like its gain: at spawn the pool stores four doubles, the attack's end
+  `a`, the release's start `1 − r` and the two scales `0.5/a` and `0.5/r`. The one `warpPhase`
+  serves both scalar references and the SIMD interior, so they stay bit-identical by
+  construction; the SIMD interior skips the warp for a plain-Hann grain. Plain IEEE arithmetic,
+  no libm.
+- **The grain-event log** carries each grain's Texture as `"tex"`, after `"dur"` (§19).
+- The gain normalization is unchanged: Texture changes only the envelope.
+
+**Feedback** (the FX; M1 sub-project 5; §23 #58): one layer parameter, 0 to `kFeedbackMax` =
+0.95, default 0, that regenerates the wet signal into the live ring. Per sample t and channel,
+the ring's input becomes
+
+```
+ring input[t] = finite(in[t]) + fb(t) · limited[t − D]        (limited = 0 before the first sample)
+```
+
+which the ring then stores as it stores any input (non-finite as 0, clamped to ±2^20). `limited`
+is the wet signal after Level and the soft limiter, before the dry/wet mix, so `|limited| < 1`;
+`fb(t)` is Feedback's effective value, ramped per sample over 10 ms like Mix.
+- **D = 256 = M,** the ring's head margin (`kFeedbackDelay`, static-asserted equal to
+  `LiveSource::kHeadMargin`). The admission clamp keeps every grain at least M frames behind the
+  head, so the `Processor` renders the FX in pieces of at most 256 samples (it, not the engine,
+  owns the pieces): each piece's feedback was rendered before the engine writes the piece into
+  the ring, so no grain reads a frame whose feedback isn't there yet. The last 256 limited
+  samples are kept by absolute time (`t mod 256`), so the output is bit-identical at any host
+  block size and any maxBlockSize, 1 included.
+- **Feedback 0 is today's path:** a piece whose ramp is 0 throughout hands the engine its input
+  pointers, and a sample where the ramp is 0 writes the input alone, so where a piece starts never
+  changes the ring, the sign of zero included.
+- **Freeze wins.** While frozen the ring's write gain is 0 (the 20 ms ramp), so neither input nor
+  feedback is written, and the frozen buffer holds bit for bit.
+- **Bounded:** `|limited| < 1` and `fb ≤ 0.95`. 60 s at Feedback 0.95, Density 128 Hz, Size 1 s,
+  Level +12 dB and Stereo 100%, over 2 s of loud noise then silence, stays finite and below 1,
+  and its last 10 s are no louder than seconds 16–26 within 1 dB (the `[slow]` test).
+- **The instrument has no Feedback** until M2's resample source gives it a writable buffer: the
+  parameter is hidden there and maps to 0, and its renders keep their old piece size.
 
 **Hard engineering rules**
 
@@ -335,7 +427,7 @@ optional scale or grid quantize. This is how "shaped randomness" (§8.1) is impl
   - Mix and Level ramp linearly to each new target over 10 ms, per sample, as a function of the
     absolute sample. A ramp restarts from its current value only when that parameter's target
     changes (ruling M1-s). Diffusion, Reverb Amount and Dry to Reverb ramp the same way (Space,
-    below).
+    below), and so does Feedback (Feedback, above).
 - **The Cloud scheduler.**
   - Onsets: `t(k+1) = t(k) + Δ(k)`, with `Δ(k) = max(P × ((1 − d) + d × E(k)), 1/16 sample)`
     (ruling M1-g).
@@ -546,7 +638,8 @@ address this:
 
 **Determinism**
 
-- The seed lives in the plugin state.
+- The seed lives in the plugin state. A new instance draws its own from the OS's entropy source,
+  on the main thread (§18, §23 #59); the audio thread's randomness never touches the OS.
 - RNG is counter-based (SplitMix64 or Philox style), keyed by (seed, layer, stream, field, grain
   index).
 - Random distributions are written in-house. Never use `std::` distributions, because they differ
@@ -674,6 +767,18 @@ clients/  CLAP entry points + clap-wrapper targets
     License or GPLv3". Since 2026-10-28 three of its files are compiled, on Windows only, into
     RtAudio for the standalone's ASIO, under the GPLv3 option (§23 #56). No sst-plugininfra
     target builds any of it.
+- **sst-jucegui is in use since M1 sub-project 5** (§23 #58), pinned at `22a89ca`
+  (`22a89ca4e54179cbda0b8164e54e06dae5f30490`, shortcircuit-xt's pin; it has no release tags).
+  It is MIT, and so are the md4c 0.5.2 and CMakeRC 2.0.0 it vendors and the flowbite-icons
+  glyphs in its resources (`THIRD_PARTY_NOTICES.md`).
+  - It is built only with the editor, after the shim, with its examples off, and `gg-ui` links
+    it `PRIVATE`; its include directories, and CMakeRC's, are SYSTEM.
+  - **JUCE compiles once, in the shim** (ruling PU-T7a). Its `sst-jucegui-juce-requirements`
+    would link `clap_juce_shim_requirements`, which outside a unity build compiles JUCE's
+    modules into every target that links it. `libs/CMakeLists.txt` re-points it at the
+    headers-only `gg-juce-headers` plus `$<LINK_ONLY:clap_juce_shim>`, so the JUCE object code
+    stays in the static shim and the link edge to it remains, and the configure fails if the
+    wiring it replaces ever changes.
 - **sst-effects and sst-filters are in use since M1 sub-project 4** (§23 #50), pinned at
   `987b39d` and `87a171b` (neither has release tags). They are shortcircuit-xt's pins, which pair
   with our sst-basic-blocks `9cee763`.
@@ -721,8 +826,15 @@ clients/  CLAP entry points + clap-wrapper targets
 - **Queues:**
   - Parameters and commands going from the UI to the audio thread use a lossless,
     non-overwriting SPSC queue.
+    - **An as-built exception to that rule** (M1 sub-project 5; §23 #58, recorded there for the
+      director to confirm): the editor's parameter changes wait in an `SpscQueue` of 1024 that
+      never overwrites, drained by every `process()` and `params.flush`, but a change made while
+      all 1024 wait is dropped. That happens only when a host ignores `request_flush` (and
+      doesn't process) for more than 1,024 changes. A dropped gesture begin or end leaves the
+      host an unbalanced gesture.
   - Telemetry going from the audio thread to the UI may use a lossy queue that drops entries when
-    full, such as sst-cpputils' ring buffer.
+    full, such as sst-cpputils' ring buffer. The M1 grain queue is gg-core's own `SpscQueue`
+    (§17).
 
 **Threading**
 
@@ -874,6 +986,68 @@ clients/  CLAP entry points + clap-wrapper targets
   - A peak pyramid of the live buffer.
   - The engine publishes only while the editor is open.
   - Visual thinning never touches the audio RNG.
+
+**The M1 Perform view as built** (M1 sub-project 5, 2026-10-29; §23 #58). One lane, layer A's,
+for both products, on sst-jucegui's controls and its built-in dark style sheet:
+- **The layout:** a header (the product's name, the preset name, "Init" until M2's browser,
+  Perform selected, Edit greyed out until M2, and the editor's frame time averaged over 60
+  frames); in the instrument, the loader strip (§18); the canvas across the full width; and one
+  macro row below it, the eight macros in remote-control order, Macro Freeze a toggle and the
+  rest knobs. The window opens at 900 × 500 and resizes, HiDPI-aware, down to 640 × 360. A
+  focused macro moves by 1/100 of its range per arrow key, 1/1000 with Shift.
+- **The FX lane** is the 16 s live ring with the write head fixed at the right edge as "now":
+  x is seconds behind the head, history scrolls left, and the scroll stops while frozen. **The
+  instrument's lane** is static: x is the position across the loaded sample.
+- **Each sounding grain is a capsule** splatted by M0's CPU `SplatRenderer` at physical-pixel
+  resolution: x spans its read extent (start position to start + rate × length), so its width is
+  its length; brightness is its gain, clamped to 0..1; y is its pan, hard left (−1) toward the
+  top and hard right toward the bottom, since each grain has one pitch until M2's spread. Under
+  the grains, the FX draws the live ring's peaks and the instrument the sample's outline (peaks
+  of 512 frames, computed once per sample on the main thread).
+- **The scan window** sits at Position's and Spray's base values. **The FX's is one-sided,**
+  `[Position, Position + Spray]` seconds behind the head, as the engine draws a live grain
+  (ruling PU-T8a), so its newer edge is Position itself and drags as the body; the instrument's
+  is `Position ± Spray`. A dashed **ghost window** shows the effective values (modulation and
+  macros) wherever they differ. A tint marks Freeze, and a marker at the head shows Feedback
+  above 0.
+- **Direct manipulation edits base values as host gestures:** a drag on the body sets
+  Position, on an edge Spray. Each drag begins one gesture on the press, sends a value for each
+  move that changes it, and ends the gesture once, on the release wherever it lands, or from the
+  canvas's destructor. The macros' knobs and toggle send gestures the same way. No other canvas
+  gesture exists in M1.
+- **The instrument substitutes slots 7 and 8:** Macro Stereo and Macro Level, in place of the
+  FX's Macro Feedback and Macro Mix (§14, Macros), until M2's resample source gives it Feedback.
+- **Three remote-controls pages** (§18): "Perform" (the eight macros) first, then "Cloud" and
+  "Space".
+- **Audio → UI, as built** (gg-core, JUCE-free, lock-free and allocation-free on the audio
+  thread):
+  - **The grain queue:** a `GrainVis` per spawned grain (onset, start position in ring time or
+    source frames, rate, length, gain, pan), in spawn order, in an SPSC queue of 4096 that drops
+    the newest and counts them when the editor falls behind. The canvas keeps up to 8,192
+    sounding grains, dropping the oldest.
+  - **The snapshot:** a `UiSnapshot` at the end of every `process()` call (the clock, the write
+    head, the freeze setting, the active grain count, Position's and Spray's base and effective
+    values, and Feedback), through a triple buffer (`LatestValue`), so the editor always takes
+    the newest whole one.
+  - **The clock:** the sample clock at the end of the last publishing call, an atomic stored with
+    release order after its snapshot. The UI extrapolates it by wall time, never backwards within
+    an activation and at most 0.25 s past its last change.
+  - **The peak pyramid is one level in M1:** `LivePeaks`, max(|L|, |R|) per 64-frame bucket of
+    what the ring takes, indexed by ring time (the frames the write head advanced over, so a
+    freeze writes none and a grain's start position reads its own frames; ruling PU-T9a). The
+    FX writes it on every render piece whether or not the editor is open, so an editor that
+    opens late finds the ring's recent audio, never an older pass's (ruling PU-T9b).
+  - **Publishing is gated** on the editor being open for the queue and the snapshot: the
+    `Processor` reads the flag once per call, and with it off neither is written. The audio is
+    bit-identical either way. The plugin owns one editor context for its life and points it at
+    each activation's `Processor`, null while inactive (ruling PU-T10a).
+- **UI → host:** the editor's gestures and values go through the plugin's 1024-entry queue
+  (§15) to the audio thread, which takes them at the start of the next `process()` or
+  `params.flush`, before the host's events, applies each value as a host's would be, and sends
+  `CLAP_EVENT_PARAM_GESTURE_BEGIN`, `CLAP_EVENT_PARAM_VALUE` and `CLAP_EVENT_PARAM_GESTURE_END`
+  to the host's output events, so hosts record the drag as automation. Each change asks for a
+  flush (`request_flush`, one outstanding); an output event the host's list refuses is counted,
+  never retried.
 
 ### 18. State, presets and identities
 
@@ -1042,20 +1216,23 @@ they are frozen along with them.
   - Every one is `AUTOMATABLE` and `MODULATABLE`; Freeze is also `STEPPED`. Modulation adds a
     clamped offset to the base value and is never written back.
   - Both products expose the same list, so they share one state format. In the instrument, Mix
-    is `HIDDEN` and has no effect, and its remote-controls slot is empty (ruling M1-w); so is
-    Dry to Reverb (below).
-  - **Only Position's `ParamMetaData` differs between the products** (since sub-project 3; §23
-    #48): its default and display. In the instrument it is the fraction of the loaded file
-    (§14). Both are CLAP values 0–1 under one ID, so the state format stays shared, and a state
-    moved between products keeps its stored value. The instrument also hides Mix and Dry to
-    Reverb, as above. Freeze does nothing in the instrument, which has no live ring.
+    is `HIDDEN` and has no effect, and its remote-controls slot is empty (ruling M1-w); so are
+    Dry to Reverb and Feedback (below).
+  - **Three parameters' `ParamMetaData` differ between the products,** never in ID or range:
+    Position (since sub-project 3; §23 #48), in its default and display, the fraction of the
+    loaded file in the instrument (§14); Macro 7, "Macro Feedback" at 0% in the FX and "Macro
+    Stereo" at 50% in the instrument; and Macro 8, "Macro Mix" in the FX and "Macro Level" in
+    the instrument, at 50% in both (since sub-project 5; §23 #58). All are CLAP values 0–1
+    under one ID, so the state format stays shared, and a state moved between products keeps
+    its stored values. The instrument also hides Mix, Dry to Reverb and Feedback, as above.
+    Freeze does nothing in the instrument, which has no live ring.
   - The CLAP value is the parameter's sst-basic-blocks `ParamMetaData` value, a log-domain value
     for the log ranges. Values are floats end to end.
 - **Space's eight** (M1 sub-project 4; §23 #50), appended after Freeze in the same file, pinned
-  by the same test and frozen with the ten. They take the next free IDs in each scope:
-  sub-project 5's spec reserves `0x000011`–`0x000018` (the macros), `0x010009` (Texture) and
-  `0x01000A` (Feedback). The slot order is the parameter list's, and so the AUv2 order: the ten,
-  then these eight in the order below.
+  by the same test and frozen with the ten. They take the next free IDs in each scope past
+  those sub-project 5's spec had reserved, `0x000011`–`0x000018` (the macros), `0x010009`
+  (Texture) and `0x01000A` (Feedback), which it then took (below). The slot order is the
+  parameter list's, and so the AUv2 order: the ten, then these eight in the order below.
 
   | ID | Name | Range | Default |
   |---|---|---|---|
@@ -1078,17 +1255,56 @@ they are frozen along with them.
     listening check.
   - **Dry to Reverb is the FX's:** the instrument, with no dry input, marks it `HIDDEN`, and it
     does nothing there.
+- **Sub-project 5's ten** (M1 sub-project 5, the Perform UI; §23 #58), appended after Dry to
+  Reverb in the same file, pinned by the same test and frozen with the rest: the IDs its spec
+  reserved. The slot order, and so the AUv2 order, is the ten, Space's eight, then these ten in
+  the order below; there are 28 (`kParamCount`).
+
+  | ID | Name (FX / instrument) | Range | Default |
+  |---|---|---|---|
+  | `0x010009` | Texture | 0–100% (0 is M0's Hann, 100% gated; §14) | 0% |
+  | `0x01000A` | Feedback | 0–95% (`kFeedbackMax`; FX only) | 0% |
+  | `0x000011` | Macro Size | 0–100%, bipolar | 50% |
+  | `0x000012` | Macro Density | 0–100%, bipolar | 50% |
+  | `0x000013` | Macro Pitch | 0–100%, bipolar | 50% |
+  | `0x000014` | Macro Spray | 0–100%, bipolar | 50% |
+  | `0x000015` | Macro Texture | 0–100%, unipolar | 0% |
+  | `0x000016` | Macro Freeze | off/on | off |
+  | `0x000017` | Macro Feedback / Macro Stereo | 0–100%: FX unipolar, instrument bipolar | FX 0%; instrument 50% |
+  | `0x000018` | Macro Mix / Macro Level | 0–100%, bipolar | 50% |
+
+  - Every one is `AUTOMATABLE` and `MODULATABLE`; Macro Freeze is also `STEPPED`.
+  - **The macros are global** (scope 0) and relative: each offsets its targets along §14's
+    recipes, and at its default it offsets nothing, so with them at rest a preset renders as its
+    base values define it.
+  - **Feedback is the FX's:** the instrument marks it `HIDDEN`, and it does nothing there until
+    M2's resample source.
+  - They joined the patch without a version bump, as Space's did: a state saved before them
+    loads them at their defaults and renders as before (a test decodes a literal pre-Perform
+    state).
 - **The patch** (the state's `PTCH` chunk) is `gg-core`'s versioned XML: patch id
   `org.sethbc.giga-grains.patch`, version 1. Each value also carries its float bits, so a saved
-  and reloaded state renders identically, and the engine seed is saved with it. New instances
-  start at seed 0. Space's values joined it without a version bump: a parameter a state doesn't
-  mention takes its default, so a state saved before Space loads with Space off and renders as
-  before.
-- **Remote controls:** two 8-slot pages. "Cloud": Position, Size, Density, Pitch, Spray, Stereo,
-  Freeze, Mix. "Space" (since sub-project 4): Diffusion, Reverb Amount, Decay, Size, Damping,
-  Pre-delay, Modulation, Dry to Reverb. In the instrument, the Mix and Dry to Reverb slots are
-  empty. Sub-project 5 inserts a "Perform" page of the 8 macros first; "Cloud" and "Space"
-  follow it.
+  and reloaded state renders identically, and the engine seed is saved with it. **A new instance
+  draws its seed from the OS** (since sub-project 5; §23 #59): two 32-bit draws from
+  `std::random_device`, on the main thread at construction, or, if that throws, a splitmix64 of
+  the steady clock. Two instances on two tracks make different clouds, and the state carries
+  the seed, so a reopened session renders identically; `gg-render`, the tests and the goldens
+  keep explicit seeds. **A state loaded while active hands its seed to the audio thread** in the
+  plugin's loaded-state snapshot (`loadedState_`, in both products; the FX's values ride with
+  it, the instrument's with its sample, so there the two may land in different blocks, ruling
+  PU-T5a), and the engine keys every grain scheduled from that `process()` call on by it; no
+  restart is asked for. Once the audio thread has applied
+  a loaded state's values, the plugin asks the host, from the main thread, to rescan them
+  (`CLAP_PARAM_RESCAN_VALUES`). Space's and sub-project 5's values joined the patch without a
+  version bump: a parameter a state doesn't mention takes its default, so a state saved before
+  them loads with them at rest and renders as before.
+- **Remote controls:** three 8-slot pages, each page's `page_id` its index. "Perform" (since
+  sub-project 5; §23 #58), first: the eight macros in order, Macro Size to Macro Mix (in the
+  instrument, Macro Stereo and Macro Level in slots 7 and 8). "Cloud": Position, Size, Density,
+  Pitch, Spray, Stereo, Freeze, Mix. "Space" (since sub-project 4): Diffusion, Reverb Amount,
+  Decay, Size, Damping, Pre-delay, Modulation, Dry to Reverb. In the instrument, the Mix and
+  Dry to Reverb slots are empty. Inserting "Perform" moved "Cloud" and "Space" from page IDs 0
+  and 1 to 1 and 2, before any release, with their contents unchanged.
 - **The tail** (CLAP `tail`, since sub-project 4; ruling R-T7a, §23 #50) is a constant per
   product, and the plugins never call `tail.changed`:
   - **the FX's is infinite** (`CLAP_TAIL_INFINITE`): a live-buffer effect can sound with no
@@ -1142,10 +1358,18 @@ they are frozen along with them.
     director 2026-10-29, §23 #57)
   - NaN, Inf and denormal checks
 
+  Sub-project 5 added three cases (§23 #58): `fx-macros` (each macro stepped across its travel
+  over a 330 Hz sine, Macro Freeze last), `fx-feedback` (a 4 s sweep, Feedback 0.5 then 0.9,
+  Freeze from 5 s to 6.5 s) and `inst-texture` (a held note, Texture stepped from 0 to 1).
+  `fx-macros` and `inst-texture` catch all sixteen injected steps; `fx-feedback` catches 7, the
+  rest hidden from about 2.8 s to 6.6 s by the sweep's top octaves, their regeneration at
+  Feedback 0.9 and the frozen ring, which the click-injection table pins.
+
   No golden pins the audio's bits (§23 #52). The bit-exact checks are:
-  - every golden's grain-event log (each grain's onset, position, rate, duration, gain and
-    pan: the grains only, not Level, Mix or Space after them), compared exactly on every
-    platform;
+  - every golden's grain-event log (each grain's onset, position, rate, duration, texture, gain
+    and pan: the grains only, not Level, Mix, Feedback's regenerated audio or Space after them),
+    compared exactly on every platform. Texture joined the line as `"tex"` in sub-project 5
+    (§23 #58), which rewrote every `.events.jsonl` once and left every WAV's SHA-256 alone;
   - the determinism tests below, on each platform, which verify that renders are bit-exact on
     the same platform (§10);
   - the SIMD kernels against their scalar references, bit for bit;
@@ -1300,6 +1524,8 @@ director made the call.
 | 55 | utf8proc normalizes the names the search for a missing sample compares | Carry-over [190], in the M1 burn-down (Task 8). The search matched file names byte for byte, so a name saved in NFC wasn't found under its NFD spelling (macOS's HFS+ stores names decomposed; ext4 and NTFS keep whichever they're given) or the other way round. Comparing them needs Unicode's normalization tables. macOS has `CFStringNormalize` and Windows `NormalizeString`, but Linux has no system API (ICU isn't a given), and per-platform answers would follow each OS's Unicode version. So **utf8proc** (MIT; its Unicode data under the Unicode data license, permissive and AGPL-compatible), pinned at tag `v2.12.0` (`79cdd5a`, Unicode 18), gives every platform the same answer: one C file, built as a static library without our warning flags and linked privately into `gg-media`. The search tries the saved spelling, then its NFC and NFD spellings, at each step that opens a path, and the scan compares each listed name with the saved one in NFC: canonical equivalence only, with no case folding and no compatibility forms. A name that isn't valid UTF-8 matches only itself. Decided 2026-10-28 by Claude, during the M1 burn-down; see §15 |
 | 56 | Windows standalone ASIO, from the ASIO SDK 2.3.4 under GPLv3 | The director decided to enable ASIO in the Windows standalone under the Steinberg ASIO SDK's GPLv3 option (carry-over row 133; the §22 question). RtAudio's own bundled ASIO files still have no license grant, so #30's rule stands: they are never compiled, and RtAudio's `include/` is never on a path. On Windows `libs/CMakeLists.txt` creates RtAudio itself, before clap-wrapper's standalone asks for it, with no API of its own (ASIO, WASAPI and DirectSound off), then adds RtAudio's ASIO backend built against sst-plugininfra's `libs/asiosdk` (ASIO SDK 2.3.4): exactly `common/asio.cpp` ("Steinberg ASIO License or GPLv3", used under GPLv3), `host/asiodrivers.cpp` and `host/pc/asiolist.cpp` (BSD-3-Clause-style), unmodified. Our own stand-in for RtAudio's `iasiothiscallresolver.h` (`libs/thirdparty-impl/rtaudio-asio/`) does two jobs: x64 ClangCL needs no thiscall resolver, so it has none; and it gives the SDK's `ASIOExit()` a non-null `asioDrivers` that never loads a driver, since RtAudio keeps its own and its copy of `asio.cpp` adds a null check the SDK's lacks. RtAudio's other changes to its copies aren't needed: their ANSI registry calls matter only under `UNICODE`, which RtAudio isn't compiled with (the SDK's `asiolist.cpp` doesn't compile with it), and the SDK's `delete` of a one-element array of a trivially destructible struct (theirs is `delete[]`) is a formal mismatch, harmless under the MSVC ABI. The configure fails if any RtAudio source naming ASIO isn't one of those three, if RtAudio's `include/` reaches its include path, or if the SDK's `LICENSE.txt` stops offering GPLv3. The standalone's WASAPI audio and WinMM MIDI stay clap-wrapper's own; ASIO is offered beside them, with the driver's control panel. macOS and Linux are unchanged. The GPLv3-only SDK files join a binary that is already AGPLv3 and GPLv3 (§12). The configure also pins the SHA-256 (line endings normalized) of the SDK's `LICENSE.txt` and of every SDK file compiled or included, so a pin bump that changes one fails until its license is reviewed again; refuses `CLAP_WRAPPER_STANDALONE_RTAUDIO` on Windows (it would drop the native WASAPI); forces RtAudio's JACK and PulseAudio off there; and fails unless both standalones' clap-wrapper libraries define `CLAP_WRAPPER_STANDALONE_ASIO=1` and link RtAudio, so a lost handoff can't build silently without ASIO. **Distribution:** a distributed Windows build carries the SDK's `LICENSE.txt` and the GPLv3 text, the `host/` files' BSD notice, and the line "ASIO is a registered trademark of Steinberg Media Technologies GmbH." in its credits and notices; `THIRD_PARTY_NOTICES.md` holds them. **Trademark** (the director, 2026-10-29: attribution, no logo): Steinberg's ASIO Usage Guidelines in the SDK ask for the ASIO-compatible logo in a configuring dialog where ASIO is enabled manually, and for ® on first use with that attribution line in credits and documentation. We give the attribution (® on first use in our documents, the line in `THIRD_PARTY_NOTICES.md`) and don't use the logo: the plain word "ASIO" that clap-wrapper's settings dialog shows (the API's name and an "ASIO Control Panel..." button) is treated as a descriptive reference to the driver type, and the dialog is clap-wrapper's. Decided 2026-10-28 by the director, during the M1 carry-over burn-down (the trademark ruling 2026-10-29); see §15 and §22 |
 | 57 | CI speed-ups, a cache for the SDKs, and the click score's accepted blind spot | **The director's decisions of 2026-10-29,** made during the M1 carry-over burn-down's CI rounds, plus the review's amendments. **CI:** (1) a pull request runs `gg-bench --quick` as a smoke check (no baseline, no verdict, no artifact); the full-length run (§16, §19) happens on pushes to `main`, the nightly schedule and `workflow_dispatch`, and the blocking gate that sub-project 6 adds must choose its pull-request run length, since a quick run's ratios are too noisy for a baseline; (2) ccache on the macOS and Linux legs and the sanitizer job (Windows' Visual Studio generator has no compiler launcher), CI only, so no local preset changes; shallow submodules; the pinned LLVM archive cached by version and SHA-256 (the SHA-256 is checked on a hit too); (3) all caches are restored by every run and saved only on `main` (a push, the nightly, a dispatch), also after a failed build, because GitHub scopes a cache to the ref that saved it and a pull request's is never read; (4) concurrency by pull-request number, or by run id for every other run, so a newer push cancels a pull request's run and nothing else is cancelled; (5) the SDKs that clap-wrapper downloads (VST3 SDK, AudioUnitSDK, RtAudio, RtMidi, wil) are fetched by `scripts/fetch-sdks.sh` at the tags clap-wrapper pins, cached, and passed to Configure as `-DVST3_SDK_ROOT` and its siblings, because CPM's own cache is skipped when a package has a `SOURCE_DIR` (carry-over row 96). None of this changes what is built. **The click score (carry-over row 58):** `metricsVersion` 2 normalizes the click score by the level within ±5 ms and lowers the limit from 30 to 15. It catches 220 of 304 injected -20 dBFS steps; the two dense-noise cases catch none, and none of the same positions' 0 dBFS spikes (scores 9.3 to 14.6 against 15), because their own noise hides them. The director chose to **accept that blind spot** (option A) rather than lower the limit to 10 and exempt `fx-space-automate`'s Size click (11.9) or move that automation. §19's "click detection" says so; `tests/metrics/click_injection_tests.cpp` pins each case's count so a change that moves one is a decision. Decided 2026-10-29 by the director; see §16, §19 |
+| 58 | Sub-project 5 (Perform UI): eight relative macros, Texture, Feedback into the live ring, the Perform view on sst-jucegui and the audio→UI path | The director's six decisions (2026-10-27, in brainstorming): **(1)** macros are relative, each a modulation source offsetting its targets from the preset's base values, one writer per parameter; **(2)** Texture sweeps the grain envelope from smooth to gated over the lower three quarters of its macro's travel and adds Space's diffusion in the top quarter; **(3)** Feedback regenerates the wet output into the FX's live ring, and the instrument, with no writable buffer until M2's resample source, has Stereo in its seventh macro slot (the spec's "eighth" corrected, below); **(4)** the eight recipes, every depth tuned by ear at the listening check; **(5)** the canvas: the FX lane's write head fixed at the right edge with history scrolling left, the canvas on top and one macro row below in remote-control order, and a canvas drag editing base values, with ghost windows where modulation moves the grains; **(6)** pan on the vertical axis, sst-jucegui's controls on the existing JUCE 9 shim, §17's audio→UI path, a fresh seed per instance (#59), and Edit, Mod, Mutate, the preset browser and lanes B–D left in M2. **The design** (the spec and the plan, as built): ten parameters appended after Dry to Reverb at the IDs the spec reserved, Texture `0x010009`, Feedback `0x01000A` (0–0.95, hidden in the instrument) and Macros 1–8 `0x000011`–`0x000018` (Macro Freeze stepped; Macros 7 and 8 named per product, Macro 7 resting at 0 in the FX and 0.5 in the instrument), 28 in all, with no patch version bump (§18, `6af2583`); a "Perform" remote-controls page of the macros first, "Cloud" and "Space" after it, `page_id` = position; the effective value `clamp(base + mod + Σ curves)` in one clamp, each macro's own value `clamp(base + mod)`, the fixed factory recipes of §14 in each target's CLAP value domain, plain float with no libm, every offset exactly +0.0f at rest (bipolar 0.5, unipolar 0) so a resting preset is bit-identical, on the 32-sample grid (`962e153`); Texture's fixed family (`aMin = min(0.5, max(0.05, 16/d))`; τ ≤ 0.5: `a = 0.5 + 0.4τ`, `r = 0.5 − 0.4τ`; τ > 0.5: the lerp from (0.7, 0.3) to (aMin, aMin), sustain between), the window `hann(warp(φ))` with one `warpPhase` for the scalar references and the SIMD interior, the identity bit for bit at Texture 0, four doubles latched per grain, and `"tex"` in the grain-event line, which rewrote every `.events.jsonl` once and moved no WAV (`f54cb85`); Feedback's ring input `finite(in[t]) + fb(t)·limited[t − 256]`, `limited` after Level and the soft limiter, before the mix, `fb` a 10 ms ramp like Mix's, `fb ≤ 0.95`, D = 256 = M (the ring's head margin, static-asserted), the FX rendered in pieces of at most 256 samples so the output is bit-identical at any block size and maxBlockSize, a per-sample guard that writes the input alone wherever `fb` is 0, Freeze winning because the frozen ring's write gain is 0 (`711f5fe`); the publish structures in gg-core, `SpscQueue<T, N>` (the grain queue of 4096, dropping the newest and counting them), `UiSnapshot` in a triple buffer and `LivePeaks` (`4061e72`), filled by the `Processor` from its own grain sink, with the atomic clock stored after each snapshot (`d406a91`); the UI→host path, a 1024-entry `SpscQueue<UiParamChange>` drained by `process()` and `params.flush` before the host's events, every change sent on as CLAP gesture and value events by `try_push` after `request_flush` (`b1cbe6e`); `LaneModel` and `SplatRenderer::addCapsule` (`796f29e`), the lane clock and live-grain list (`f822e30`); the Perform view (§17): header, `GrainCanvas`, the macro row on sst-jucegui with its dark style sheet, 900 × 500 down to 640 × 360, and the instrument's loader strip with carry-over rows 198 and 199 closed (`d179a98`, `fe4de01`); three goldens, `fx-macros`, `fx-feedback` and `inst-texture` (§19), and the cross-feature block-size-invariance and allocation tests (`bac40b4`, `7ab5880`, `3d614bd`). With Texture 0, Feedback 0 and every macro at rest, every earlier golden's WAV kept its SHA-256 through every task. **Rulings made during the build:** PU-T8a, the FX's scan window is one-sided, `[Position, Position + Spray]` behind the head, as the engine draws a live grain (`position + spray × u`), its newer edge dragging as the body; the instrument's stays `Position ± Spray` (`b18b185`); PU-T3a, Texture's τ > 0.5 branch is the lerp `(1 − s)·0.7 + s·aMin`, the plan's curve, which lands exactly on its anchors where the plan's `0.7 + (aMin − 0.7)s` gives 0.050000000000000044 for 0.05; PU-T2a, a `setBase` of a macro jumps the ramps of every target it moves (Mix, Level, Diffusion, Feedback) and Macro Freeze is seen as Freeze for arming, so a loaded state never ramps in from stale values; PU-T4a, the freeze test checks the frozen ring bit for bit under Feedback 0.9 and the output's level with Feedback raised at the freeze, not the plan's 0.5 dB comparison, since regeneration before the freeze legitimately sits in the frozen buffer; PU-T7a, sst-jucegui's JUCE requirements are re-pointed at the headers-only `gg-juce-headers` plus `$<LINK_ONLY:clap_juce_shim>`, so JUCE compiles once, in the shim, and the configure fails if the wiring it replaces changes (`038b53a`, `6acc5fa`, `01f979a`); PU-T9a, the live peaks are indexed by ring time, the frames the head advanced over, not the sample clock, which a freeze makes diverge; PU-T9b, the FX writes the peak strip on every render piece, publishing or not, so an editor opening late never shows an older pass's peaks, while the grain queue and the snapshot stay gated on the editor (`c193784`); PU-T10a, the plugin owns one editor context for its life and updates its publish pointers in place on activate and deactivate, null while inactive, since the `Processor` they point into dies with deactivate; PU-T12a, `fx-macros` runs over a 330 Hz sine, not noise, which hid all sixteen injected clicks (a blind spot the director hadn't accepted), and `fx-feedback`'s input lasts 4 s, so Feedback 0.9 at 3 s has material (`3d614bd`); PU-T5a, the instrument's seed (in the loaded-state snapshot) and values (with its sample) may reach the audio thread in different blocks, accepted since a live load's timing is inexact anyway and the saved state is consistent (#59). PU-T13a (this task's review), the 16-sample floor binds only Texture's gated anchor, `aMin = min(0.5, max(0.05, 16/d))`: for τ ≤ 0.5 the shape is Hann-like and its attack and release scale with the grain, as the default Hann always has (an 8-sample attack on a 16-sample grain at Texture 0 is M0's behaviour, kept bit for bit), which amends the spec's §4 "never shorter than the 16-sample minimum grain"; PU-T11a, sst-clap-helpers' shim keeps the editor of a GUI a host destroys without ever showing it (no `set_parent`), and the next `guiCreate` trips its debug-only `jassert(!editor)`; publishing is correct either way (`EditorPlugin::guiDestroy` turns it off), and the fault waits on upstream in the carry-over. **The spec's corrections:** sst-jucegui is MIT (its `LICENSE.md`; §15 already said so), not GPL-3.0-or-later; the Feedback chunking is the `Processor`'s, not the engine's, since the `Processor` owns the render pieces; decision 3's Stereo replaces the instrument's seventh macro slot (Macro 7), not its eighth, which is Level. **Also recorded:** the peak pyramid is one 64-frame level in M1 (§17); a −0 base plus a −0 modulation now gives +0 once the resting offset is added (host-only input; no golden moves); the editor's 1024-entry queue drops a change made while it is full, which takes a host that ignores `request_flush` (and doesn't process) for more than 1,024 changes, and a dropped gesture begin or end leaves the host an unbalanced gesture: an as-built exception to §15's lossless rule, accepted in Task 10's review, for the director to confirm; in the 60 s Feedback 0.95 property test the wet RMS reads −0.18 dBFS over both seconds 16–26 and 50–60: it settles into self-oscillation just under the limiter, with no runaway (`711f5fe`; a listening-check item). The spec is amended in place for decision 3's slot (§1), PU-T2a (§3.1), the family, PU-T3a and PU-T13a (§4), the `Processor`'s pieces, the per-sample guard and PU-T4a (§5), PU-T8a (§6.2), PU-T9a, PU-T9b and PU-T10a (§6.4), MIT (§6.5), PU-T5a (§7) and PU-T12a (§9). See `docs/superpowers/specs/2026-10-27-m1-perform-ui-design.md` §1 and `docs/superpowers/plans/2026-10-29-m1-perform-ui.md`. Decided 2026-10-27 by the director (decisions, in brainstorming) and 2026-10-29 by Claude (rulings), during M1 sub-project 5; see §14, §15, §17, §18, §19 |
+| 59 | A fresh seed per instance, and the seed hand-off | Sub-project 5's spec §7 (the director's decision 6, #58) and carry-over rows 115 and 123, closed by `5ac8a86`. **The fresh seed:** a new instance draws its engine seed on the main thread at construction from the OS's entropy source, two 32-bit draws from `std::random_device`, falling back to a splitmix64 of the steady clock if it throws, so two instances on two tracks make different clouds; the seed is saved in the state as before, so a reloaded session renders identically, and the audio thread's randomness still comes only from `gg::rng`, keyed by it. `gg-render`, the tests and the goldens keep explicit seeds; the plugin tests that compare instances load a state with seed 0 first. It replaces "new instances start at seed 0" (§18). **The hand-off (row 115):** a state loaded while active used to need the host to honour `request_restart` for its seed to take effect, and otherwise the engine kept the old seed while `stateSave` wrote the new one, so a reload sounded different from what was heard, latent while every instance used seed 0. Now the plugin's loaded-state snapshot carries the seed in both products, the audio thread calls `Processor::setSeed` (`Engine::setSeed`), which keys every grain scheduled from that `process()` call on (sounding grains keep their draws, and the grain index keeps counting), and `stateLoad` asks for no restart. In the instrument the values travel with the sample, so the seed and the values may land in different blocks (ruling PU-T5a). **The value mirror (row 123, ruling M1-x):** once the audio thread has applied a loaded state's values, it sets a flag and requests a callback, and `on_main_thread` asks the host to rescan the values (`CLAP_PARAM_RESCAN_VALUES`), since the first rescan, at the load, may have read a value a block in flight then overwrote. Decided 2026-10-27 by the director (the fresh seed, in the spec's brainstorming) and 2026-10-29 by Claude (the hand-off), during M1 sub-project 5; see §14 and §18 |
 
 **Key sources** (checked 2026-10-26):
 - clap-wrapper releases (v0.17.0, 2026-10-20): https://github.com/free-audio/clap-wrapper/releases

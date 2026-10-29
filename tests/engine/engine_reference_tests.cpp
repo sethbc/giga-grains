@@ -463,3 +463,94 @@ TEST_CASE("engine output is the scalar reference's bit for bit", "[engine]")
         }
     }
 }
+
+TEST_CASE("textured engine output is the scalar reference's bit for bit", "[engine]")
+{
+    // Texture 0.6 (spec §4): a sustain between a short attack and release. Every grain latches
+    // it, and the SIMD interior's warped window must give the reference's bits, in Sample and
+    // Live mode, at both tiers.
+    constexpr double kTexture = 0.6;
+    const auto requireTextured = [](const std::vector<gg::GrainSpec> &grains) {
+        REQUIRE(!grains.empty());
+        for (const gg::GrainSpec &g : grains)
+        {
+            REQUIRE(g.texture == kTexture);
+        }
+    };
+
+    SECTION("sample mode, stereo source, one and two outputs")
+    {
+        constexpr int64_t kFrames = 24000;
+        gg::CloudParams params = sampleParams();
+        params.texture = kTexture;
+        for (const uint32_t outputs : {1u, 2u})
+        {
+            INFO("outputs " << outputs);
+            const std::vector<Change> changes{{.at = 0, .source = makeNoise(2, 30000, 51)},
+                                              {.at = kFrames / 2, .eco = true}};
+            gg::EngineConfig config;
+            config.maxBlockSize = kMaxBlock;
+            config.seed = 53;
+            gg::Engine engine(config);
+            SinkLog log;
+            engine.setEventSink(&SinkLog::record, &log);
+            engine.setCloudParams(params);
+            const Channels got = renderEngine(engine, params, changes, nullptr, outputs, kFrames);
+            REQUIRE_FALSE(log.overflowed);
+            requireBothTiers(log.grains);
+            requireTextured(log.grains);
+            requireSame(got, renderSampleReference(log.grains, changes, outputs, kFrames), outputs);
+        }
+    }
+
+    SECTION("live mode, through a freeze, one and two outputs")
+    {
+        constexpr int64_t kLiveFrames = 36000;
+        constexpr double kRingSeconds = 0.25;
+        Channels input;
+        for (uint32_t c = 0; c < 2; ++c)
+        {
+            input.ch[c].resize(static_cast<std::size_t>(kLiveFrames));
+            for (int64_t i = 0; i < kLiveFrames; ++i)
+            {
+                input.ch[c][static_cast<std::size_t>(i)] = noiseAt(57, c, i, 0.5f);
+            }
+        }
+        const std::vector<Change> changes{
+            {.at = 20000, .setFreeze = true, .freeze = true},
+            {.at = 26000, .setFreeze = true, .freeze = false},
+            {.at = kLiveFrames / 2, .eco = true},
+        };
+        const gg::CloudParams params{.densityHz = 300.0,
+                                     .distribution = 0.5,
+                                     .grainDurationSec = 0.04,
+                                     .position = 0.05,
+                                     .spray = 0.15,
+                                     .pitchSemitones = 5.0,
+                                     .stereo = 0.8,
+                                     .gain = 0.5f,
+                                     .texture = kTexture};
+        for (const uint32_t outputs : {1u, 2u})
+        {
+            INFO("outputs " << outputs);
+            gg::EngineConfig config;
+            config.maxBlockSize = kMaxBlock;
+            config.seed = 59;
+            config.liveSeconds = kRingSeconds;
+            gg::Engine engine(config);
+            engine.setSourceMode(gg::SourceMode::Live);
+            SinkLog log;
+            engine.setEventSink(&SinkLog::record, &log);
+            engine.setCloudParams(params);
+            const Channels got =
+                renderEngine(engine, params, changes, &input, outputs, kLiveFrames);
+            REQUIRE_FALSE(log.overflowed);
+            requireBothTiers(log.grains);
+            requireTextured(log.grains);
+            requireSame(
+                got,
+                renderLiveReference(log.grains, changes, input, kRingSeconds, outputs, kLiveFrames),
+                outputs);
+        }
+    }
+}

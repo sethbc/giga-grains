@@ -4,21 +4,21 @@
 
 // The plugins' parameters, state and remote controls (spec §4, §5), through the clap_plugin
 // vtables a host calls: parameter info, values and text; params.flush; modulation; state save
-// and load, inactive and active; the FX's unusual wiring (Review Focus 5); the remote-controls
-// pages; and the latest-wins hand-off that carries a state loaded while active.
+// and load, inactive and active; the FX's unusual wiring (Review Focus 5); and the
+// remote-controls pages. The latest-wins hand-off that carries a state loaded while active
+// (gg::core::LatestValue) is tested in tests/core/publish_tests.cpp.
 
 #include <algorithm>
 #include <array>
-#include <atomic>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
 #include <initializer_list>
 #include <limits>
 #include <string>
 #include <string_view>
-#include <thread>
 #include <utility>
 #include <vector>
 
@@ -27,7 +27,6 @@
 
 #include <clap/clap.h>
 
-#include "LatestValue.h"
 #include "PluginHarness.h"
 #include "gg/core/ParamIds.h"
 #include "gg/core/PatchState.h"
@@ -42,6 +41,7 @@ using gg::core::ParamSlot;
 using gg::core::ParamValues;
 using gg::test::fillNoise;
 using gg::test::InputEvents;
+using gg::test::OutputEvents;
 using gg::test::PluginUnderTest;
 using gg::test::sameBits;
 using gg::test::Stereo;
@@ -82,10 +82,23 @@ constexpr std::array<ExpectedParam, kParamCount> kExpected{{
     {0x000007, "Reverb Pre-delay", 0.0f, 0.5f, 0.0f},
     {0x000008, "Reverb Modulation", 0.0f, 1.0f, 0.25f},
     {0x000009, "Dry to Reverb", 0.0f, 1.0f, 0.0f},
+    // The Perform UI (sub-project 5's spec §3.3, §4, §5).
+    {0x010009, "Texture", 0.0f, 1.0f, 0.0f},
+    {0x01000A, "Feedback", 0.0f, 0.95f, 0.0f},
+    {0x000011, "Macro Size", 0.0f, 1.0f, 0.5f},
+    {0x000012, "Macro Density", 0.0f, 1.0f, 0.5f},
+    {0x000013, "Macro Pitch", 0.0f, 1.0f, 0.5f},
+    {0x000014, "Macro Spray", 0.0f, 1.0f, 0.5f},
+    {0x000015, "Macro Texture", 0.0f, 1.0f, 0.0f},
+    {0x000016, "Macro Freeze", 0.0f, 1.0f, 0.0f},
+    {0x000017, "Macro Feedback", 0.0f, 1.0f, 0.0f},
+    {0x000018, "Macro Mix", 0.0f, 1.0f, 0.5f},
 }};
-// The instrument's Position is 0–100% of the loaded file, 0% by default; the rest of its table
-// is the FX's above (spec §6.8).
+// The instrument's Position is 0–100% of the loaded file, 0% by default (spec §6.8); its last
+// two macros are Macro Stereo, 0.5 by default, and Macro Level (sub-project 5's spec §3.3). The
+// rest of its table is the FX's above.
 constexpr float kInstrumentPositionDefault = 0.0f;
+constexpr float kInstrumentMacro7Default = 0.5f;
 
 ParamValues defaults()
 {
@@ -97,8 +110,8 @@ ParamValues defaults()
     return v;
 }
 
-// A host that offers clap.params and clap.state, and counts value rescans, restart requests and
-// state.mark_dirty calls.
+// A host that offers clap.params and clap.state, and counts value rescans, restart requests,
+// params.request_flush and state.mark_dirty calls.
 class ParamsHost
 {
   public:
@@ -111,6 +124,7 @@ class ParamsHost
     uint32_t otherRescans() const noexcept { return otherRescans_; }
     uint32_t restarts() const noexcept { return restarts_; }
     uint32_t dirtyMarks() const noexcept { return dirtyMarks_; }
+    uint32_t flushRequests() const noexcept { return flushRequests_; }
 
   private:
     static ParamsHost &self(const clap_host *host)
@@ -126,7 +140,7 @@ class ParamsHost
         static const clap_host_params kParams{
             &ParamsHost::rescan,
             [](const clap_host *, clap_id, clap_param_clear_flags) {},
-            [](const clap_host *) {}, // request_flush
+            [](const clap_host *host) { ++self(host).flushRequests_; }, // request_flush
         };
         static const clap_host_state kState{
             [](const clap_host *host) { ++self(host).dirtyMarks_; }, // mark_dirty
@@ -142,6 +156,7 @@ class ParamsHost
     uint32_t otherRescans_{0};
     uint32_t restarts_{0};
     uint32_t dirtyMarks_{0};
+    uint32_t flushRequests_{0};
     clap_host host_{
         CLAP_VERSION_INIT,
         nullptr,
@@ -194,6 +209,16 @@ bool allFinite(const std::vector<float> &v)
         }
     }
     return true;
+}
+
+float peakOf(const std::vector<float> &v)
+{
+    float p = 0.0f;
+    for (float x : v)
+    {
+        p = std::max(p, std::abs(x));
+    }
+    return p;
 }
 
 bool allZero(const std::vector<float> &v)
@@ -293,24 +318,42 @@ TEST_CASE("plugin exposes every param", "[plugin]")
         REQUIRE(params->get_info(plugin.clap(), i, &info));
         const auto &expected = kExpected[i];
         CHECK(info.id == expected.id);
-        CHECK(std::string_view(info.name) == expected.name);
+        std::string_view name = expected.name;
+        if (!isFx && i == at(ParamSlot::Macro7))
+        {
+            name = "Macro Stereo";
+        }
+        if (!isFx && i == at(ParamSlot::Macro8))
+        {
+            name = "Macro Level";
+        }
+        CHECK(std::string_view(info.name) == name);
         CHECK(std::string_view(info.module).empty());
         CHECK(info.cookie == nullptr);
         CHECK(info.min_value == static_cast<double>(expected.min));
         CHECK(info.max_value == static_cast<double>(expected.max));
-        const float def =
-            i == at(ParamSlot::Position) && !isFx ? kInstrumentPositionDefault : expected.def;
+        float def = expected.def;
+        if (!isFx && i == at(ParamSlot::Position))
+        {
+            def = kInstrumentPositionDefault;
+        }
+        if (!isFx && i == at(ParamSlot::Macro7))
+        {
+            def = kInstrumentMacro7Default;
+        }
         CHECK(info.default_value == static_cast<double>(def));
 
         // Global Constraints' CLAP flags: every parameter is automatable and modulatable,
-        // Freeze is stepped, and the instrument hides Mix and Dry to Reverb, which have no dry
-        // signal to act on.
+        // Freeze and Macro Freeze are stepped, and the instrument hides Mix, Dry to Reverb and
+        // Feedback, which have no dry signal or live ring to act on.
         clap_param_info_flags flags = CLAP_PARAM_IS_AUTOMATABLE | CLAP_PARAM_IS_MODULATABLE;
-        if (i == at(ParamSlot::Freeze))
+        if (i == at(ParamSlot::Freeze) || i == at(ParamSlot::Macro6))
         {
             flags |= CLAP_PARAM_IS_STEPPED;
         }
-        if ((i == at(ParamSlot::Mix) || i == at(ParamSlot::DryToReverb)) && !isFx)
+        if ((i == at(ParamSlot::Mix) || i == at(ParamSlot::DryToReverb) ||
+             i == at(ParamSlot::Feedback)) &&
+            !isFx)
         {
             flags |= CLAP_PARAM_IS_HIDDEN;
         }
@@ -352,7 +395,7 @@ TEST_CASE("value and text round trip through clap", "[plugin]")
                 // The text has the display's precision, so the value comes back within a
                 // display step (Spray shows 10 ms steps, 1.6% of its range near 30 ms), and
                 // gives the same text.
-                if (s == at(ParamSlot::Freeze))
+                if (s == at(ParamSlot::Freeze) || s == at(ParamSlot::Macro6))
                 {
                     CHECK(back == (v > 0.5 ? 1.0 : 0.0));
                 }
@@ -649,7 +692,8 @@ TEST_CASE("state load while active applies at the next block", "[plugin]")
     // A loads state S between two blocks. The host reads the new values at once (and is asked
     // to rescan them), but the audio thread takes S only at the start of the next block, where
     // it applies like a params.flush of every value: B, which flushes S's values instead,
-    // renders the same second block, and C, which does neither, a different one.
+    // renders the same second block, and C, which does neither, a different one. All three
+    // start at S's seed, 0.
     constexpr uint32_t kBlock = 4096;
     Stereo first(kBlock);
     Stereo second(kBlock);
@@ -673,14 +717,15 @@ TEST_CASE("state load while active applies at the next block", "[plugin]")
     for (std::size_t i = 0; i < plugins.size(); ++i)
     {
         REQUIRE(plugins[i]->valid());
+        REQUIRE(plugins[i]->loadDefaultsWithSeed(0));
         REQUIRE(plugins[i]->activate(48000.0, kBlock));
         REQUIRE(plugins[i]->process(kBlock, first.data(), outs[i].data()) == CLAP_PROCESS_CONTINUE);
     }
 
     REQUIRE(a.load(state));
-    CHECK(hostA.valueRescans() == 1);
+    CHECK(hostA.valueRescans() == 2); // loadDefaultsWithSeed's, then this one's
     CHECK(hostA.otherRescans() == 0);
-    CHECK(hostA.restarts() == 0); // the same seed
+    CHECK(hostA.restarts() == 0);
     CHECK(a.value(paramId(ParamSlot::Density)) == 7.0);
     CHECK(a.impl().processor()->base(ParamSlot::Density) == 4.0f); // not yet
 
@@ -729,7 +774,7 @@ TEST_CASE("state load while active applies at the next block", "[plugin]")
         u[at(ParamSlot::Density)] = 3.0f;
         REQUIRE(a.load(gg::core::toStateXml(t, 0)));
         REQUIRE(a.load(gg::core::toStateXml(u, 0)));
-        CHECK(hostA.valueRescans() == 3);
+        CHECK(hostA.valueRescans() == 4);
         InputEvents none;
         a.flush(none.list());
         CHECK(a.impl().processor()->base(ParamSlot::Density) == 3.0f);
@@ -752,25 +797,204 @@ TEST_CASE("state load while active applies at the next block", "[plugin]")
     }
 }
 
+TEST_CASE("a new instance draws its own seed", "[plugin]")
+{
+    // Sub-project 5's spec §7: a new instance draws its engine seed from the OS's entropy
+    // source, so two instances on two tracks make different clouds. Two draws colliding, or one
+    // being 0, has a chance of 2^-64.
+    const char *id = GENERATE(kFxId, kInstrumentId);
+    CAPTURE(id);
+    PluginUnderTest a(id);
+    PluginUnderTest b(id);
+    REQUIRE(a.valid());
+    REQUIRE(b.valid());
+    const uint64_t seedA = decoded(a.save(), a.impl().mode()).seed;
+    const uint64_t seedB = decoded(b.save(), b.impl().mode()).seed;
+    CAPTURE(seedA, seedB);
+    CHECK(seedA != 0);
+    CHECK(seedB != 0);
+    CHECK(seedA != seedB);
+    // The engine is built with it.
+    REQUIRE(a.activate(48000.0, 512));
+    CHECK(a.impl().processor()->seed() == seedA);
+}
+
 TEST_CASE("state carries the engine seed", "[plugin]")
 {
-    // The seed is saved and loaded with the values. The engine takes it when it is built, at
-    // activate(), so a load that changes it while active asks the host for a restart.
-    const ParamValues values = defaults();
-
+    // The seed is saved and loaded with the values. Inactive, activate() builds the engine with
+    // it; active, it goes to the audio thread with the values, which applies it at the start of
+    // its next process() or params.flush, with no restart (carry-over row 115).
+    const char *id = GENERATE(kFxId, kInstrumentId);
+    CAPTURE(id);
     ParamsHost host;
-    PluginUnderTest plugin(kFxId, host.clap());
+    PluginUnderTest plugin(id, host.clap());
     REQUIRE(plugin.valid());
-    CHECK(decoded(plugin.save(), gg::core::Mode::Fx).seed == 0); // new instances start at 0 (§4)
+    const auto mode = plugin.impl().mode();
 
-    REQUIRE(plugin.load(gg::core::toStateXml(values, 9)));
-    CHECK(host.restarts() == 0); // inactive: activate() takes it
+    REQUIRE(plugin.loadDefaultsWithSeed(9));
+    CHECK(decoded(plugin.save(), mode).seed == 9);
     REQUIRE(plugin.activate(48000.0, 512));
-    REQUIRE(plugin.load(gg::core::toStateXml(values, 9)));
-    CHECK(host.restarts() == 0); // the same seed
-    REQUIRE(plugin.load(gg::core::toStateXml(values, 10)));
-    CHECK(host.restarts() == 1);
-    CHECK(decoded(plugin.save(), gg::core::Mode::Fx).seed == 10);
+    CHECK(plugin.impl().processor()->seed() == 9);
+
+    REQUIRE(plugin.loadDefaultsWithSeed(10));
+    CHECK(host.restarts() == 0);
+    // Saved at once: the seed the audio thread is about to use.
+    CHECK(decoded(plugin.save(), mode).seed == 10);
+    CHECK(plugin.impl().processor()->seed() == 9); // not yet
+    InputEvents none;
+    plugin.flush(none.list());
+    CHECK(plugin.impl().processor()->seed() == 10);
+
+    REQUIRE(plugin.loadDefaultsWithSeed(11));
+    Stereo out(64);
+    REQUIRE(plugin.process(64, nullptr, out.data()) == CLAP_PROCESS_CONTINUE);
+    CHECK(plugin.impl().processor()->seed() == 11);
+    CHECK(host.restarts() == 0);
+    CHECK(decoded(plugin.save(), mode).seed == 11);
+
+    SECTION("a load the audio thread never took holds through reactivation")
+    {
+        REQUIRE(plugin.loadDefaultsWithSeed(12));
+        plugin.deactivate();
+        REQUIRE(plugin.activate(48000.0, 512));
+        CHECK(plugin.impl().processor()->seed() == 12);
+        plugin.flush(none.list()); // no stale seed is left to apply
+        CHECK(plugin.impl().processor()->seed() == 12);
+    }
+}
+
+namespace
+{
+// `state`, a state `mode`'s product saved, with engine seed `seed`.
+std::string withSeed(const std::string &state, gg::core::Mode mode, uint64_t seed)
+{
+    gg::core::SessionState s = decoded(state, mode);
+    s.seed = seed;
+    return gg::core::encodeState(s);
+}
+} // namespace
+
+TEST_CASE("a loaded state's seed reaches the audio thread without a restart", "[plugin]")
+{
+    // Three instances with the same history (seed 1, one block: of noise in the FX, of a held
+    // note over a sine sample in the instrument) each load their own state while active, with
+    // seed 7, 7 and 8, then render 2 s more. The two at seed 7 render the same bits, and the one
+    // at 8 differs, from the first block after the load: the loaded seed reached the engine at
+    // once, with no restart (carry-over row 115).
+    const char *id = GENERATE(kFxId, kInstrumentId);
+    CAPTURE(id);
+    const bool isFx = std::string_view(id) == kFxId;
+    constexpr uint32_t kBlock = 512;
+    constexpr uint32_t kFrames = 96000;
+    Stereo in(kBlock + kFrames);
+    fillNoise(in, 41);
+    const auto sample = isFx ? std::filesystem::path() : gg::test::sineSampleFile("seed-handoff");
+
+    const auto run = [&](PluginUnderTest &plugin, uint64_t seed, Stereo &out) {
+        REQUIRE(plugin.valid());
+        const auto mode = plugin.impl().mode();
+        REQUIRE(plugin.loadDefaultsWithSeed(1));
+        if (isFx)
+        {
+            // Grains read about 20 ms behind the write head, so the wet signal starts early.
+            flushValues(plugin, {{ParamSlot::Position, 0.05}, {ParamSlot::Spray, 0.0}});
+        }
+        else
+        {
+            REQUIRE(plugin.loadSampleState(sample));
+        }
+        // 256 Hz, a grain every 188 samples, so grains spawn inside the first block after the
+        // load and the new seed shows there.
+        flushValues(plugin, {{ParamSlot::Density, 8.0}});
+        REQUIRE(plugin.activate(48000.0, kBlock));
+        const auto on = gg::test::noteEvent(CLAP_EVENT_NOTE_ON, 0, 60, 0);
+        InputEvents events;
+        if (!isFx)
+        {
+            events.add(&on.header);
+        }
+        Stereo first(kBlock);
+        REQUIRE(plugin.process(kBlock, isFx ? in.data() : nullptr, first.data(), events.list()) ==
+                CLAP_PROCESS_CONTINUE);
+
+        REQUIRE(plugin.load(withSeed(plugin.save(), mode, seed)));
+        CHECK(plugin.impl().processor()->seed() == 1); // not yet
+        for (uint32_t done = 0; done < kFrames; done += kBlock)
+        {
+            const uint32_t n = std::min(kBlock, kFrames - done);
+            float *inPtrs[2] = {in.left.data() + kBlock + done, in.right.data() + kBlock + done};
+            float *outPtrs[2] = {out.left.data() + done, out.right.data() + done};
+            REQUIRE(plugin.process(n, isFx ? inPtrs : nullptr, outPtrs) == CLAP_PROCESS_CONTINUE);
+            if (done == 0)
+            {
+                CHECK(plugin.impl().processor()->seed() == seed);
+                CHECK(decoded(plugin.save(), mode).seed == seed);
+            }
+        }
+    };
+
+    ParamsHost hostA;
+    PluginUnderTest a(id, hostA.clap());
+    PluginUnderTest b(id);
+    PluginUnderTest c(id);
+    Stereo outA(kFrames);
+    Stereo outB(kFrames);
+    Stereo outC(kFrames);
+    run(a, 7, outA);
+    run(b, 7, outB);
+    run(c, 8, outC);
+
+    CHECK(hostA.restarts() == 0);
+    CHECK(allFinite(outA.left));
+    CHECK(peakOf(outA.left) > 0.01f);
+    CHECK(sameBits(outA.left, outB.left));
+    CHECK(sameBits(outA.right, outB.right));
+    CHECK_FALSE(sameBits(outA.left, outC.left));
+    // The new seed acts from the first block after the load, not a block later.
+    const auto firstBlock = [](const std::vector<float> &v) {
+        return std::vector<float>(v.begin(), v.begin() + kBlock);
+    };
+    CHECK_FALSE(sameBits(firstBlock(outA.left), firstBlock(outC.left)));
+}
+
+TEST_CASE("the value mirror is rescanned after the audio thread applies a state", "[plugin]")
+{
+    // Carry-over row 123 (ruling M1-x): a state loaded while active is in values_ at once, and
+    // the host is asked to rescan them at once; the audio thread applies it at its next block,
+    // where it stores the values again, and then asks for on_main_thread, which asks the host
+    // to rescan them again, once, so it reads the values the audio thread settled on.
+    const char *id = GENERATE(kFxId, kInstrumentId);
+    CAPTURE(id);
+    ParamsHost host;
+    PluginUnderTest plugin(id, host.clap());
+    REQUIRE(plugin.valid());
+    REQUIRE(plugin.activate(48000.0, 512));
+    Stereo in(512);
+    Stereo out(512);
+
+    REQUIRE(plugin.loadDefaultsWithSeed(3));
+    CHECK(host.valueRescans() == 1);
+    plugin.onMainThread(); // the audio thread hasn't applied it yet
+    CHECK(host.valueRescans() == 1);
+    REQUIRE(plugin.process(512, in.data(), out.data()) == CLAP_PROCESS_CONTINUE);
+    CHECK(host.valueRescans() == 1);
+    plugin.onMainThread();
+    CHECK(host.valueRescans() == 2);
+    plugin.onMainThread(); // once per application
+    REQUIRE(plugin.process(512, in.data(), out.data()) == CLAP_PROCESS_CONTINUE);
+    plugin.onMainThread();
+    CHECK(host.valueRescans() == 2);
+
+    SECTION("a params.flush that applies a state asks too")
+    {
+        REQUIRE(plugin.loadDefaultsWithSeed(4));
+        CHECK(host.valueRescans() == 3);
+        InputEvents none;
+        plugin.flush(none.list());
+        plugin.onMainThread();
+        CHECK(host.valueRescans() == 4);
+    }
+    CHECK(host.otherRescans() == 0);
 }
 
 TEST_CASE("state load rejects bad state and keeps the values", "[plugin]")
@@ -968,10 +1192,12 @@ TEST_CASE("fx handles mono, missing input and new sample rates", "[plugin]")
     }
 }
 
-TEST_CASE("remote controls page lists the cloud params", "[plugin]")
+TEST_CASE("remote controls pages are perform, cloud and space", "[plugin][space]")
 {
-    // The first of two 8-slot pages (spec §4; sub-project 4's spec §6.6). The instrument leaves
-    // Mix's slot empty: Mix is hidden there.
+    // Three 8-slot pages: "Perform", the eight macros (sub-project 5's spec §3.3); then "Cloud"
+    // (spec §4) and "Space" (sub-project 4's spec §6.6), unchanged but for their place. The
+    // instrument leaves Mix's and Dry to Reverb's slots empty: they are hidden there. A page's
+    // index is its page_id. There is no fourth.
     const char *id = GENERATE(kInstrumentId, kFxId);
     CAPTURE(id);
     const bool isFx = std::string_view(id) == kFxId;
@@ -980,127 +1206,279 @@ TEST_CASE("remote controls page lists the cloud params", "[plugin]")
     const auto *remote = static_cast<const clap_plugin_remote_controls *>(
         plugin.clap()->get_extension(plugin.clap(), CLAP_EXT_REMOTE_CONTROLS));
     REQUIRE(remote != nullptr);
-    REQUIRE(remote->count(plugin.clap()) == 2);
+    REQUIRE(remote->count(plugin.clap()) == 3);
 
-    clap_remote_controls_page page;
-    std::memset(&page, 0xA5, sizeof(page)); // every field must be written
-    REQUIRE(remote->get(plugin.clap(), 0, &page));
-    CHECK(std::string_view(page.section_name) == "Cloud");
-    CHECK(std::string_view(page.page_name) == "Cloud");
-    CHECK(page.page_id == 0);
-    CHECK_FALSE(page.is_for_preset);
-    const std::array<clap_id, CLAP_REMOTE_CONTROLS_COUNT> expected{
-        0x010001,                         // Position
-        0x010002,                         // Size
-        0x010003,                         // Density
-        0x010005,                         // Pitch
-        0x010006,                         // Spray
-        0x010007,                         // Stereo
-        0x010008,                         // Freeze
-        isFx ? 0x000001 : CLAP_INVALID_ID // Mix
+    struct ExpectedPage
+    {
+        std::string_view name;
+        std::array<clap_id, CLAP_REMOTE_CONTROLS_COUNT> ids;
     };
-    for (std::size_t i = 0; i < expected.size(); ++i)
+    const std::array<ExpectedPage, 3> pages{{
+        {"Perform",
+         {0x000011,   // Macro 1
+          0x000012,   // Macro 2
+          0x000013,   // Macro 3
+          0x000014,   // Macro 4
+          0x000015,   // Macro 5
+          0x000016,   // Macro 6
+          0x000017,   // Macro 7
+          0x000018}}, // Macro 8
+        {"Cloud",
+         {0x010001,                            // Position
+          0x010002,                            // Size
+          0x010003,                            // Density
+          0x010005,                            // Pitch
+          0x010006,                            // Spray
+          0x010007,                            // Stereo
+          0x010008,                            // Freeze
+          isFx ? 0x000001 : CLAP_INVALID_ID}}, // Mix
+        {"Space",
+         {0x01000B,                            // Diffusion
+          0x000003,                            // Reverb Amount
+          0x000004,                            // Reverb Decay
+          0x000005,                            // Reverb Size
+          0x000006,                            // Reverb Damping
+          0x000007,                            // Reverb Pre-delay
+          0x000008,                            // Reverb Modulation
+          isFx ? 0x000009 : CLAP_INVALID_ID}}, // Dry to Reverb
+    }};
+    for (uint32_t p = 0; p < pages.size(); ++p)
     {
-        CAPTURE(i);
-        CHECK(page.param_ids[i] == expected[i]);
-    }
-}
-
-TEST_CASE("remote controls page lists the space params", "[plugin][space]")
-{
-    // The second page, "Space" (sub-project 4's spec §6.6). The instrument leaves Dry to
-    // Reverb's slot empty: it is hidden there, as Mix is on the Cloud page. There is no third.
-    const char *id = GENERATE(kInstrumentId, kFxId);
-    CAPTURE(id);
-    const bool isFx = std::string_view(id) == kFxId;
-    PluginUnderTest plugin(id);
-    REQUIRE(plugin.valid());
-    const auto *remote = static_cast<const clap_plugin_remote_controls *>(
-        plugin.clap()->get_extension(plugin.clap(), CLAP_EXT_REMOTE_CONTROLS));
-    REQUIRE(remote != nullptr);
-    REQUIRE(remote->count(plugin.clap()) == 2);
-
-    clap_remote_controls_page page;
-    std::memset(&page, 0xA5, sizeof(page)); // every field must be written
-    REQUIRE(remote->get(plugin.clap(), 1, &page));
-    CHECK(std::string_view(page.section_name) == "Space");
-    CHECK(std::string_view(page.page_name) == "Space");
-    CHECK(page.page_id == 1);
-    CHECK_FALSE(page.is_for_preset);
-    const std::array<clap_id, CLAP_REMOTE_CONTROLS_COUNT> expected{
-        0x01000B,                         // Diffusion
-        0x000003,                         // Reverb Amount
-        0x000004,                         // Reverb Decay
-        0x000005,                         // Reverb Size
-        0x000006,                         // Reverb Damping
-        0x000007,                         // Reverb Pre-delay
-        0x000008,                         // Reverb Modulation
-        isFx ? 0x000009 : CLAP_INVALID_ID // Dry to Reverb
-    };
-    for (std::size_t i = 0; i < expected.size(); ++i)
-    {
-        CAPTURE(i);
-        CHECK(page.param_ids[i] == expected[i]);
-    }
-    CHECK_FALSE(remote->get(plugin.clap(), 2, &page));
-}
-
-TEST_CASE("latest value hands over the newest snapshot", "[plugin]")
-{
-    using Snapshot = std::array<uint64_t, 4>;
-    gg::plugin::LatestValue<Snapshot> latest;
-    Snapshot got{};
-
-    SECTION("one thread")
-    {
-        CHECK_FALSE(latest.take(got));
-        latest.push({1, 1, 1, 1});
-        latest.push({2, 2, 2, 2});
-        REQUIRE(latest.take(got));
-        CHECK(got == Snapshot{2, 2, 2, 2});
-        CHECK_FALSE(latest.take(got));
-        latest.push({3, 3, 3, 3});
-        REQUIRE(latest.take(got));
-        CHECK(got == Snapshot{3, 3, 3, 3});
-        latest.push({4, 4, 4, 4});
-        latest.push({5, 5, 5, 5});
-        latest.push({6, 6, 6, 6});
-        REQUIRE(latest.take(got));
-        CHECK(got == Snapshot{6, 6, 6, 6});
-        CHECK_FALSE(latest.take(got));
-    }
-
-    SECTION("two threads: never torn, never older, and the last is never lost")
-    {
-        constexpr uint64_t kPushes = 200000;
-        std::atomic<bool> done{false};
-        bool torn = false;
-        bool older = false;
-        uint64_t last = 0;
-        std::thread consumer([&] {
-            for (;;)
-            {
-                const bool finished = done.load(std::memory_order_acquire);
-                if (latest.take(got))
-                {
-                    torn = torn || got[0] != got[1] || got[0] != got[2] || got[0] != got[3];
-                    older = older || got[0] <= last;
-                    last = got[0];
-                }
-                if (finished)
-                {
-                    break;
-                }
-            }
-        });
-        for (uint64_t i = 1; i <= kPushes; ++i)
+        CAPTURE(p);
+        clap_remote_controls_page page;
+        std::memset(&page, 0xA5, sizeof(page)); // every field must be written
+        REQUIRE(remote->get(plugin.clap(), p, &page));
+        CHECK(std::string_view(page.section_name) == pages[p].name);
+        CHECK(std::string_view(page.page_name) == pages[p].name);
+        CHECK(page.page_id == p);
+        CHECK_FALSE(page.is_for_preset);
+        for (std::size_t i = 0; i < pages[p].ids.size(); ++i)
         {
-            latest.push({i, i, i, i});
+            CAPTURE(i);
+            CHECK(page.param_ids[i] == pages[p].ids[i]);
         }
-        done.store(true, std::memory_order_release);
-        consumer.join();
-        CHECK_FALSE(torn);
-        CHECK_FALSE(older);
-        CHECK(last == kPushes);
     }
+    clap_remote_controls_page page;
+    CHECK_FALSE(remote->get(plugin.clap(), 3, &page));
+}
+
+namespace
+{
+using OutEvent = gg::test::OutputEvents::Event;
+
+bool isGesture(const OutEvent &e, uint16_t type, clap_id id)
+{
+    return e.header.type == type && e.header.space_id == CLAP_CORE_EVENT_SPACE_ID &&
+           e.header.time == 0 && e.header.flags == 0 &&
+           e.header.size == sizeof(clap_event_param_gesture) && e.paramId == id;
+}
+
+// A CLAP_EVENT_PARAM_VALUE as the plugin sends the host its editor's changes: global (no cookie,
+// note, port, channel or key), at time 0.
+bool isValue(const OutEvent &e, clap_id id, double value)
+{
+    return e.header.type == CLAP_EVENT_PARAM_VALUE &&
+           e.header.space_id == CLAP_CORE_EVENT_SPACE_ID && e.header.time == 0 &&
+           e.header.flags == 0 && e.header.size == sizeof(clap_event_param_value) &&
+           e.paramId == id && e.value == value && e.cookie == nullptr && e.noteId == -1 &&
+           e.portIndex == -1 && e.channel == -1 && e.key == -1;
+}
+
+std::size_t countOf(const std::vector<OutEvent> &events, uint16_t type)
+{
+    return static_cast<std::size_t>(std::count_if(
+        events.begin(), events.end(), [type](const OutEvent &e) { return e.header.type == type; }));
+}
+} // namespace
+
+TEST_CASE("ui changes reach the host as a gesture with values", "[plugin]")
+{
+    // The editor's change (spec §6.3) goes to the audio thread, which applies it and tells the
+    // host, from the next process() call: a gesture around the value, so the host records it.
+    const char *id = GENERATE(kInstrumentId, kFxId);
+    CAPTURE(id);
+    ParamsHost host;
+    PluginUnderTest plugin(id, host.clap());
+    REQUIRE(plugin.valid());
+    REQUIRE(plugin.activate(48000.0, 512));
+    auto &impl = plugin.impl();
+    const clap_id size = paramId(ParamSlot::Size);
+    REQUIRE(size == 0x010002);
+
+    impl.uiBeginGesture(ParamSlot::Size);
+    impl.uiSetValue(ParamSlot::Size, -1.0);
+    impl.uiEndGesture(ParamSlot::Size);
+    // One flush asked for: the three changes wait in one queue for the audio thread.
+    CHECK(host.flushRequests() == 1);
+    // Not applied until the audio thread takes them.
+    CHECK(impl.uiBaseValue(ParamSlot::Size) == kExpected[at(ParamSlot::Size)].def);
+
+    OutputEvents out;
+    Stereo in(64);
+    Stereo audio(64);
+    REQUIRE(plugin.process(64, in.data(), audio.data(), nullptr, 2, out.list()) ==
+            CLAP_PROCESS_CONTINUE);
+    const auto &events = out.events();
+    REQUIRE(events.size() == 3);
+    CHECK(isGesture(events[0], CLAP_EVENT_PARAM_GESTURE_BEGIN, size));
+    CHECK(isValue(events[1], size, -1.0));
+    CHECK(isGesture(events[2], CLAP_EVENT_PARAM_GESTURE_END, size));
+    CHECK(plugin.value(size) == -1.0);
+    CHECK(impl.uiBaseValue(ParamSlot::Size) == -1.0f);
+    CHECK(impl.processor()->base(ParamSlot::Size) == -1.0f);
+    CHECK(impl.uiEventsDropped() == 0);
+
+    // Drained: the next call sends nothing, and a new change asks for a flush again.
+    out.clear();
+    REQUIRE(plugin.process(64, in.data(), audio.data(), nullptr, 2, out.list()) ==
+            CLAP_PROCESS_CONTINUE);
+    CHECK(out.events().empty());
+    impl.uiSetValue(ParamSlot::Size, -2.0);
+    CHECK(host.flushRequests() == 2);
+}
+
+TEST_CASE("ui changes apply through flush when inactive", "[plugin]")
+{
+    // Before activate(), the host flushes on the main thread: the value goes into the mirror,
+    // which activate() hands to the Processor, and the events go to flush's output list.
+    const char *id = GENERATE(kInstrumentId, kFxId);
+    CAPTURE(id);
+    ParamsHost host;
+    PluginUnderTest plugin(id, host.clap());
+    REQUIRE(plugin.valid());
+    auto &impl = plugin.impl();
+    const clap_id size = paramId(ParamSlot::Size);
+
+    impl.uiBeginGesture(ParamSlot::Size);
+    impl.uiSetValue(ParamSlot::Size, -1.0);
+    impl.uiEndGesture(ParamSlot::Size);
+    CHECK(host.flushRequests() == 1);
+
+    OutputEvents out;
+    InputEvents none;
+    plugin.flush(none.list(), out.list());
+    const auto &events = out.events();
+    REQUIRE(events.size() == 3);
+    CHECK(isGesture(events[0], CLAP_EVENT_PARAM_GESTURE_BEGIN, size));
+    CHECK(isValue(events[1], size, -1.0));
+    CHECK(isGesture(events[2], CLAP_EVENT_PARAM_GESTURE_END, size));
+    CHECK(plugin.value(size) == -1.0);
+    CHECK(impl.uiBaseValue(ParamSlot::Size) == -1.0f);
+
+    REQUIRE(plugin.activate(48000.0, 512));
+    CHECK(impl.processor()->base(ParamSlot::Size) == -1.0f);
+
+    // Active, the same path through flush: the value applies at once (setBase), before the
+    // host's own events in the same flush, which win.
+    out.clear();
+    impl.uiSetValue(ParamSlot::Size, -3.0);
+    impl.uiSetValue(ParamSlot::Pitch, 5.0);
+    const auto hostPitch = gg::test::paramValue(paramId(ParamSlot::Pitch), -7.0);
+    InputEvents hostEvents;
+    hostEvents.add(&hostPitch.header);
+    plugin.flush(hostEvents.list(), out.list());
+    REQUIRE(out.events().size() == 2);
+    CHECK(isValue(out.events()[0], size, -3.0));
+    CHECK(isValue(out.events()[1], paramId(ParamSlot::Pitch), 5.0));
+    CHECK(impl.processor()->base(ParamSlot::Size) == -3.0f);
+    CHECK(impl.processor()->base(ParamSlot::Pitch) == -7.0f);
+    CHECK(plugin.value(paramId(ParamSlot::Pitch)) == -7.0);
+}
+
+TEST_CASE("a drag emits begin, values, end once", "[plugin]")
+{
+    // Review Focus 5, the plugin half: a drag of 100 moves, taken by two process() calls, the
+    // host changing the same parameter meanwhile, reaches the host as exactly one begin and one
+    // end, with every value between them in order, the last the drag's last.
+    ParamsHost host;
+    PluginUnderTest plugin(kFxId, host.clap());
+    REQUIRE(plugin.valid());
+    REQUIRE(plugin.activate(48000.0, 512));
+    auto &impl = plugin.impl();
+    const clap_id position = paramId(ParamSlot::Position);
+    const auto dragValue = [](int i) { return static_cast<double>(0.01f * static_cast<float>(i)); };
+
+    OutputEvents out;
+    Stereo in(64);
+    Stereo audio(64);
+    impl.uiBeginGesture(ParamSlot::Position);
+    for (int i = 1; i <= 50; ++i)
+    {
+        impl.uiSetValue(ParamSlot::Position, dragValue(i));
+    }
+    REQUIRE(plugin.process(64, in.data(), audio.data(), nullptr, 2, out.list()) ==
+            CLAP_PROCESS_CONTINUE);
+    for (int i = 51; i <= 100; ++i)
+    {
+        impl.uiSetValue(ParamSlot::Position, dragValue(i));
+    }
+    impl.uiEndGesture(ParamSlot::Position);
+    const auto hostMove = gg::test::paramValue(position, 0.25, 10);
+    InputEvents hostEvents;
+    hostEvents.add(&hostMove.header);
+    REQUIRE(plugin.process(64, in.data(), audio.data(), hostEvents.list(), 2, out.list()) ==
+            CLAP_PROCESS_CONTINUE);
+
+    const auto &events = out.events();
+    REQUIRE(events.size() == 102);
+    CHECK(countOf(events, CLAP_EVENT_PARAM_GESTURE_BEGIN) == 1);
+    CHECK(countOf(events, CLAP_EVENT_PARAM_GESTURE_END) == 1);
+    CHECK(isGesture(events.front(), CLAP_EVENT_PARAM_GESTURE_BEGIN, position));
+    CHECK(isGesture(events.back(), CLAP_EVENT_PARAM_GESTURE_END, position));
+    for (int i = 1; i <= 100; ++i)
+    {
+        CAPTURE(i);
+        CHECK(isValue(events[static_cast<std::size_t>(i)], position, dragValue(i)));
+    }
+    // The host's own move came after the drag's in the block, so it is the value now.
+    CHECK(plugin.value(position) == 0.25);
+    // Two flush requests at most: one per call that found the queue drained before it.
+    CHECK(host.flushRequests() == 2);
+}
+
+TEST_CASE("ui changes the host's queue refuses are counted, not retried", "[plugin]")
+{
+    ParamsHost host;
+    PluginUnderTest plugin(kFxId, host.clap());
+    REQUIRE(plugin.valid());
+    REQUIRE(plugin.activate(48000.0, 512));
+    auto &impl = plugin.impl();
+
+    impl.uiBeginGesture(ParamSlot::Density);
+    impl.uiSetValue(ParamSlot::Density, 6.0);
+    impl.uiEndGesture(ParamSlot::Density);
+    OutputEvents out(1); // one push accepted, then full
+    Stereo in(64);
+    Stereo audio(64);
+    REQUIRE(plugin.process(64, in.data(), audio.data(), nullptr, 2, out.list()) ==
+            CLAP_PROCESS_CONTINUE);
+    REQUIRE(out.events().size() == 1);
+    CHECK(isGesture(out.events()[0], CLAP_EVENT_PARAM_GESTURE_BEGIN, paramId(ParamSlot::Density)));
+    CHECK(out.refused() == 2); // each refused once
+    CHECK(impl.uiEventsDropped() == 2);
+    // The value still applied: the host's queue only carries the news.
+    CHECK(impl.processor()->base(ParamSlot::Density) == 6.0f);
+    CHECK(plugin.value(paramId(ParamSlot::Density)) == 6.0);
+}
+
+TEST_CASE("ui values are clamped and a nan is ignored", "[plugin]")
+{
+    ParamsHost host;
+    PluginUnderTest plugin(kFxId, host.clap());
+    REQUIRE(plugin.valid());
+    auto &impl = plugin.impl();
+    impl.uiSetValue(ParamSlot::Pitch, 100.0);
+    impl.uiSetValue(ParamSlot::Mix, std::numeric_limits<double>::quiet_NaN());
+    impl.uiSetValue(ParamSlot::Density, 0.1);
+    OutputEvents out;
+    InputEvents none;
+    plugin.flush(none.list(), out.list());
+    // The host gets the value the plugin applies: in range, and a float, as values are end to
+    // end (toParamEvent).
+    REQUIRE(out.events().size() == 2);
+    CHECK(isValue(out.events()[0], paramId(ParamSlot::Pitch), 24.0));
+    CHECK(isValue(out.events()[1], paramId(ParamSlot::Density), static_cast<double>(0.1f)));
+    CHECK(plugin.value(paramId(ParamSlot::Pitch)) == 24.0);
+    CHECK(plugin.value(paramId(ParamSlot::Mix)) ==
+          static_cast<double>(kExpected[at(ParamSlot::Mix)].def));
 }

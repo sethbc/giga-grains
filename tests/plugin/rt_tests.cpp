@@ -25,10 +25,12 @@
 #include <clap/clap.h>
 
 #include "PluginHarness.h"
+#include "gg/core/GrainQueue.h"
 #include "gg/core/ParamIds.h"
 #include "gg/core/PatchState.h"
 #include "gg/core/Processor.h"
 #include "gg/core/Rng.h"
+#include "gg/core/UiSnapshot.h"
 #include "gg/engine/Engine.h"
 #include "sst/basic-blocks/params/ParamMetadata.h"
 #include "support/AllocTripwire.h"
@@ -257,16 +259,153 @@ TEST_CASE("plugin process with space automated does not allocate", "[plugin][rt]
     }
 }
 
+TEST_CASE("plugin process with the perform parameters automated does not allocate", "[plugin][rt]")
+{
+    // Every one of the 28 slots automated through the CLAP events, values and then modulation,
+    // with publishing on (the editor open): the macros away from rest and back, Texture,
+    // Feedback (the FX's; hidden in the instrument, whose processor ignores it) and Freeze
+    // through Macro Freeze. The calls are the Space case's 0, 1, 512 and 2048 frames, and none
+    // allocates, the grain queue and the snapshot included.
+    const char *id = GENERATE(kInstrumentId, kFxId);
+    CAPTURE(id);
+    gg::test::PluginUnderTest plugin(id);
+    REQUIRE(plugin.valid());
+    const bool isFx = std::string_view(id) == kFxId;
+    const auto mode = plugin.impl().mode();
+    if (!isFx)
+    {
+        REQUIRE(plugin.loadSampleState(gg::test::sineSampleFile("rt-perform")));
+    }
+    plugin.impl().setPublishing(true); // as the editor does when it opens
+    REQUIRE(plugin.activate(48000.0, 512));
+
+    std::vector<float> inLeft(2048), inRight(2048), outLeft(2048), outRight(2048);
+    for (std::size_t i = 0; i < inLeft.size(); ++i)
+    {
+        inLeft[i] = static_cast<float>(gg::rng::bipolar(gg::rng::splitmix64(2 * i)));
+        inRight[i] = static_cast<float>(gg::rng::bipolar(gg::rng::splitmix64(2 * i + 1)));
+    }
+    float *inputs[2] = {inLeft.data(), inRight.data()};
+    float *outputs[2] = {outLeft.data(), outRight.data()};
+    const auto clapOn = noteOn(60, 0);
+    constexpr std::size_t kSlots = gg::core::kParamCount;
+    static_assert(kSlots == 28);
+    const auto metaOf = [mode](std::size_t s) -> const auto & {
+        return gg::core::paramMeta(static_cast<ParamSlot>(s), mode);
+    };
+    const auto stepped = [](std::size_t s) {
+        return static_cast<ParamSlot>(s) == ParamSlot::Freeze ||
+               static_cast<ParamSlot>(s) == ParamSlot::Macro6;
+    };
+    // On: each slot at 70% of its range (stepped ones on), then a modulation of a tenth of its
+    // range; values at sample 0 and modulation at sample 1, sorted by time as CLAP requires.
+    std::array<clap_event_param_value, kSlots> onValues{};
+    std::array<clap_event_param_mod, kSlots> onMods{};
+    // Off: each slot back to its default (every macro to rest, Texture and Feedback to 0, Freeze
+    // off), its modulation to 0.
+    std::array<clap_event_param_value, kSlots> offValues{};
+    std::array<clap_event_param_mod, kSlots> offMods{};
+    for (std::size_t s = 0; s < kSlots; ++s)
+    {
+        const auto slot = static_cast<ParamSlot>(s);
+        const auto &meta = metaOf(s);
+        const double range = static_cast<double>(meta.maxVal) - meta.minVal;
+        const double on = stepped(s) ? 1.0 : meta.minVal + 0.7 * range;
+        onValues[s] = gg::test::paramValue(paramId(slot), on, 0);
+        onMods[s] = gg::test::paramMod(paramId(slot), stepped(s) ? 0.0 : 0.1 * range, 1);
+        offValues[s] = gg::test::paramValue(paramId(slot), meta.defaultVal, 0);
+        offMods[s] = gg::test::paramMod(paramId(slot), 0.0, 0);
+    }
+    gg::test::InputEvents on;
+    on.add(&clapOn.header);
+    for (const auto &e : onValues)
+    {
+        on.add(&e.header);
+    }
+    for (const auto &e : onMods)
+    {
+        on.add(&e.header);
+    }
+    gg::test::InputEvents off;
+    for (std::size_t s = 0; s < kSlots; ++s)
+    {
+        off.add(&offValues[s].header);
+        off.add(&offMods[s].header);
+    }
+    gg::test::InputEvents none;
+    struct Call
+    {
+        uint32_t frames;
+        const gg::test::InputEvents *events;
+    };
+    constexpr std::size_t kCalls = 8;
+    const std::array<Call, kCalls> calls{{{0, &on},
+                                          {1, &on},
+                                          {512, &on},
+                                          {2048, &none},
+                                          {512, &off},
+                                          {2048, &none},
+                                          {1, &on},
+                                          {2048, &none}}};
+    std::array<clap_process_status, kCalls> status{};
+    auto *processor = plugin.impl().processor();
+    REQUIRE(processor != nullptr);
+    REQUIRE(plugin.impl().publishing());
+
+    // No warm-up call: a host's first process() must not allocate either.
+    AllocTripwire::resetCount();
+    {
+        AllocTripwire::Scope armed;
+        for (std::size_t i = 0; i < kCalls; ++i)
+        {
+            status[i] = plugin.process(calls[i].frames, isFx ? inputs : nullptr, outputs,
+                                       calls[i].events->list());
+        }
+    }
+    const uint64_t allocations = AllocTripwire::count();
+
+    for (const auto s : status)
+    {
+        CHECK(s == CLAP_PROCESS_CONTINUE);
+    }
+    // The last call's values reached the processor: the macros away from rest, and their
+    // targets moved by them.
+    for (const ParamSlot slot : gg::core::kMacroSlots)
+    {
+        const auto s = static_cast<std::size_t>(slot);
+        CHECK(processor->base(slot) == static_cast<float>(stepped(s) ? 1.0 : onValues[s].value));
+    }
+    CHECK(processor->base(ParamSlot::Texture) ==
+          static_cast<float>(onValues[static_cast<std::size_t>(ParamSlot::Texture)].value));
+    CHECK(processor->effective(ParamSlot::Texture) == 1.0f); // Macro Texture tops it up
+    if (isFx)
+    {
+        CHECK(processor->effective(ParamSlot::Feedback) == gg::core::kFeedbackMax);
+    }
+    // Published: grains queued and a snapshot of the last call.
+    gg::core::GrainVis grain{};
+    CHECK(processor->grainQueue().pop(grain));
+    gg::core::UiSnapshot snap{};
+    REQUIRE(processor->snapshot().take(snap));
+    CHECK(snap.clock == plugin.impl().engine()->sampleClock());
+    CHECK(std::all_of(outLeft.begin(), outLeft.end(), [](float x) { return std::isfinite(x); }));
+    if (gg::test::AllocTripwire::available()) // off under ASan; RTSan covers this
+    {
+        REQUIRE(allocations == 0);
+    }
+}
+
 TEST_CASE("plugin process takes more events than its event array holds", "[plugin][rt]")
 {
-    // An automation storm past the fixed event array (4,096): the events beyond it apply at the
-    // block end, values with setBase and modulation at the next grid boundary, without
-    // allocating; the last value per parameter wins.
+    // An automation storm past the fixed event array (kMaxParamEvents, 5,120): the events
+    // beyond it apply at the block end, values with setBase and modulation at the next grid
+    // boundary, without allocating; the last value per parameter wins.
     gg::test::PluginUnderTest plugin(kFxId);
     REQUIRE(plugin.valid());
     REQUIRE(plugin.activate(48000.0, 512));
 
-    constexpr std::size_t kValues = 5000;
+    constexpr std::size_t kValues = 6000;
+    static_assert(kValues > gg::plugin::GigaGrainsPlugin::kMaxParamEvents);
     constexpr std::size_t kMods = 100;
     std::vector<clap_event_param_value> values;
     std::vector<clap_event_param_mod> mods;
@@ -275,7 +414,7 @@ TEST_CASE("plugin process takes more events than its event array holds", "[plugi
     {
         const double v = (i % 2 == 0) ? 2.0 : 5.0 + static_cast<double>(i) / kValues;
         values.push_back(
-            gg::test::paramValue(paramId(ParamSlot::Density), v, static_cast<uint32_t>(i / 10)));
+            gg::test::paramValue(paramId(ParamSlot::Density), v, static_cast<uint32_t>(i / 12)));
     }
     for (std::size_t i = 0; i < kMods; ++i)
     {
@@ -325,7 +464,8 @@ TEST_CASE("plugin process takes more events than its event array holds", "[plugi
 TEST_CASE("plugin applies a state loaded while active without allocating", "[plugin][rt]")
 {
     // state.load (main thread) hands the values over; the audio thread applies them at the
-    // start of its next process() or params.flush, which must not allocate.
+    // start of its next process() or params.flush, which must not allocate. Each state brings
+    // a new seed (5, then 6), so the seed's hand-off runs too.
     const char *id = GENERATE(kInstrumentId, kFxId);
     CAPTURE(id);
     gg::test::PluginUnderTest plugin(id);
@@ -349,7 +489,7 @@ TEST_CASE("plugin applies a state loaded while active without allocating", "[plu
     gg::test::InputEvents none;
     clap_process_status status{};
 
-    REQUIRE(plugin.load(gg::core::toStateXml(first, 0)));
+    REQUIRE(plugin.load(gg::core::toStateXml(first, 5)));
     AllocTripwire::resetCount();
     {
         AllocTripwire::Scope armed;
@@ -358,12 +498,13 @@ TEST_CASE("plugin applies a state loaded while active without allocating", "[plu
     uint64_t allocations = AllocTripwire::count();
     CHECK(status == CLAP_PROCESS_CONTINUE);
     CHECK(plugin.impl().processor()->base(ParamSlot::Density) == 3.0f);
+    CHECK(plugin.impl().processor()->seed() == 5);
     if (gg::test::AllocTripwire::available()) // off under ASan; RTSan covers this
     {
         REQUIRE(allocations == 0);
     }
 
-    REQUIRE(plugin.load(gg::core::toStateXml(second, 0)));
+    REQUIRE(plugin.load(gg::core::toStateXml(second, 6)));
     const auto *params = paramsOf(plugin);
     AllocTripwire::resetCount();
     {
@@ -372,6 +513,7 @@ TEST_CASE("plugin applies a state loaded while active without allocating", "[plu
     }
     allocations = AllocTripwire::count();
     CHECK(plugin.impl().processor()->base(ParamSlot::Density) == 7.0f);
+    CHECK(plugin.impl().processor()->seed() == 6);
     if (gg::test::AllocTripwire::available()) // off under ASan; RTSan covers this
     {
         REQUIRE(allocations == 0);
@@ -579,6 +721,65 @@ TEST_CASE("plugin params flush does not allocate", "[plugin][rt]")
     CHECK(processor->base(ParamSlot::Density) == 6.0f);
     CHECK(processor->base(ParamSlot::Mix) == 0.25f);
     CHECK(processor->base(ParamSlot::Pitch) == 0.0f);
+    if (gg::test::AllocTripwire::available()) // off under ASan; RTSan covers this
+    {
+        REQUIRE(allocations == 0);
+    }
+}
+
+TEST_CASE("ui parameter changes do not allocate", "[plugin][rt]")
+{
+    // The editor's queue full (1,024 changes: a gesture around 1,022 values), drained by
+    // process() and then again by an active params flush, each change sent on to the host.
+    const char *id = GENERATE(kInstrumentId, kFxId);
+    CAPTURE(id);
+    gg::test::PluginUnderTest plugin(id);
+    REQUIRE(plugin.valid());
+    REQUIRE(plugin.activate(48000.0, 512));
+    auto &impl = plugin.impl();
+    const auto *params = paramsOf(plugin);
+    REQUIRE(params != nullptr);
+    constexpr std::size_t kChanges = gg::plugin::GigaGrainsPlugin::kUiQueueCapacity;
+    static_assert(kChanges == 1024);
+    const auto queueDrag = [&impl](ParamSlot slot, float base) {
+        impl.uiBeginGesture(slot);
+        for (std::size_t i = 0; i + 2 < kChanges; ++i)
+        {
+            impl.uiSetValue(slot, base + 0.0001f * static_cast<float>(i % 1000));
+        }
+        impl.uiEndGesture(slot);
+    };
+
+    std::vector<float> inLeft(512, 0.25f), inRight(512, -0.25f), outLeft(512), outRight(512);
+    float *inputs[2] = {inLeft.data(), inRight.data()};
+    float *outputs[2] = {outLeft.data(), outRight.data()};
+    gg::test::InputEvents none;
+    gg::test::OutputEvents fromProcess(kChanges);
+    gg::test::OutputEvents fromFlush(kChanges);
+    clap_process_status status{};
+
+    queueDrag(ParamSlot::Position, 0.5f);
+    AllocTripwire::resetCount();
+    {
+        AllocTripwire::Scope armed;
+        status = plugin.process(512, inputs, outputs, none.list(), 2, fromProcess.list());
+    }
+    queueDrag(ParamSlot::Spray, 0.2f); // unarmed: the main thread's side
+    {
+        AllocTripwire::Scope armed;
+        params->flush(plugin.clap(), none.list(), fromFlush.list());
+    }
+    const uint64_t allocations = AllocTripwire::count(); // both armed scopes
+
+    CHECK(status == CLAP_PROCESS_CONTINUE);
+    CHECK(fromProcess.events().size() == kChanges);
+    CHECK(fromFlush.events().size() == kChanges);
+    CHECK(impl.uiEventsDropped() == 0);
+    const float lastPosition = 0.5f + 0.0001f * static_cast<float>((kChanges - 3) % 1000);
+    const float lastSpray = 0.2f + 0.0001f * static_cast<float>((kChanges - 3) % 1000);
+    CHECK(impl.processor()->base(ParamSlot::Position) == lastPosition);
+    CHECK(impl.processor()->base(ParamSlot::Spray) == lastSpray);
+    CHECK(impl.uiBaseValue(ParamSlot::Spray) == lastSpray);
     if (gg::test::AllocTripwire::available()) // off under ASan; RTSan covers this
     {
         REQUIRE(allocations == 0);

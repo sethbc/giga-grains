@@ -156,6 +156,46 @@ std::array<md_t, kParamCount> buildTable(Mode mode)
     // effect, as it does Mix.
     at(ParamSlot::DryToReverb) =
         base(ParamSlot::DryToReverb).withName("Dry to Reverb").asPercent().withDefault(0.0f);
+
+    // The Perform UI (sub-project 5's spec §3.3, §4, §5).
+    // the grain envelope's shape, 0..1: 0 is today's Hann window.
+    at(ParamSlot::Texture) =
+        base(ParamSlot::Texture).withName("Texture").asPercent().withDefault(0.0f);
+
+    // the limited wet signal fed back into the live ring, 0..kFeedbackMax, shown as %. The
+    // instrument keeps it, hidden and with no effect, as it does Mix.
+    at(ParamSlot::Feedback) = base(ParamSlot::Feedback)
+                                  .withName("Feedback")
+                                  .asPercent()
+                                  .withRange(0.f, kFeedbackMax)
+                                  .withDefault(0.0f);
+
+    // The eight macros, 0..1 each: at rest (0.5 for a bipolar one, 0 for a unipolar one) a macro
+    // adds nothing to its targets. Macro 6 is a switch, like Freeze; Macros 7 and 8 differ by
+    // product.
+    at(ParamSlot::Macro1) =
+        base(ParamSlot::Macro1).withName("Macro Size").asPercent().withDefault(0.5f);
+    at(ParamSlot::Macro2) =
+        base(ParamSlot::Macro2).withName("Macro Density").asPercent().withDefault(0.5f);
+    at(ParamSlot::Macro3) =
+        base(ParamSlot::Macro3).withName("Macro Pitch").asPercent().withDefault(0.5f);
+    at(ParamSlot::Macro4) =
+        base(ParamSlot::Macro4).withName("Macro Spray").asPercent().withDefault(0.5f);
+    at(ParamSlot::Macro5) =
+        base(ParamSlot::Macro5).withName("Macro Texture").asPercent().withDefault(0.0f);
+    at(ParamSlot::Macro6) = base(ParamSlot::Macro6)
+                                .withName("Macro Freeze")
+                                .asOnOffBool()
+                                .withDefault(0.0f)
+                                .withFlags(kAutomatableModulatable | CLAP_PARAM_IS_STEPPED);
+    at(ParamSlot::Macro7) =
+        mode == Mode::Instrument
+            ? base(ParamSlot::Macro7).withName("Macro Stereo").asPercent().withDefault(0.5f)
+            : base(ParamSlot::Macro7).withName("Macro Feedback").asPercent().withDefault(0.0f);
+    at(ParamSlot::Macro8) = base(ParamSlot::Macro8)
+                                .withName(mode == Mode::Instrument ? "Macro Level" : "Macro Mix")
+                                .asPercent()
+                                .withDefault(0.5f);
     return t;
 }
 } // namespace

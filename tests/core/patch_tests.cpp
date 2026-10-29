@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright 2026, the Giga Grains authors (see git history)
 
-// The patch: the slice's ten parameters (spec §4) and Space's eight (sub-project 4's spec §6.5),
-// and their versioned XML state, through gg-core's
-// public API (gg/core/ParamIds.h, gg/core/PatchState.h) and its tinyxml-free internal
+// The patch: the slice's ten parameters (spec §4), Space's eight (sub-project 4's spec §6.5) and
+// the Perform UI's ten (sub-project 5's spec §3.3, §4, §5), and their versioned XML state, through
+// gg-core's public API (gg/core/ParamIds.h, gg/core/PatchState.h) and its tinyxml-free internal
 // core/src/PatchXml.h, for each product's patch XML. This file never includes
 // sst-plugininfra or tinyxml (ruling M1-l). The IDs, names, ranges and defaults are spelled out
 // literally, from Global Constraints' parameter table, so a change to gg/core/ParamIds.h or
@@ -32,9 +32,11 @@
 #include "PatchXml.h"
 #include "gg/core/ParamIds.h"
 #include "gg/core/PatchState.h"
+#include "gg/core/SessionState.h"
 #include "gg/core/Rng.h"
 #include "sst/basic-blocks/params/ParamMetadata.h"
 #include "support/DeepXml.h"
+#include "support/StateContainer.h"
 
 using gg::core::fromStateXml;
 using gg::core::kParamCount;
@@ -57,7 +59,8 @@ struct Expected
 };
 
 // Global Constraints' parameter table, copied literally: the FX's. The instrument's differs only
-// in Position's default (kInstrumentPositionDefault) and display.
+// in Position's default (kInstrumentPositionDefault) and display, and in Macro 7's and Macro 8's
+// names and Macro 7's default (kInstrumentMacros).
 constexpr std::array<Expected, kParamCount> kTable{{
     {ParamSlot::Mix, 0x000001, "Mix", 0.f, 1.f, 0.5f, kAutoMod},
     {ParamSlot::Level, 0x000002, "Level", -60.f, 12.f, 0.0f, kAutoMod},
@@ -77,6 +80,30 @@ constexpr std::array<Expected, kParamCount> kTable{{
     {ParamSlot::ReverbPredelay, 0x000007, "Reverb Pre-delay", 0.f, 0.5f, 0.0f, kAutoMod},
     {ParamSlot::ReverbModulation, 0x000008, "Reverb Modulation", 0.f, 1.f, 0.25f, kAutoMod},
     {ParamSlot::DryToReverb, 0x000009, "Dry to Reverb", 0.f, 1.f, 0.0f, kAutoMod},
+    // The Perform UI (sub-project 5's spec §3.3, §4, §5).
+    {ParamSlot::Texture, 0x010009, "Texture", 0.f, 1.f, 0.0f, kAutoMod},
+    {ParamSlot::Feedback, 0x01000A, "Feedback", 0.f, 0.95f, 0.0f, kAutoMod},
+    {ParamSlot::Macro1, 0x000011, "Macro Size", 0.f, 1.f, 0.5f, kAutoMod},
+    {ParamSlot::Macro2, 0x000012, "Macro Density", 0.f, 1.f, 0.5f, kAutoMod},
+    {ParamSlot::Macro3, 0x000013, "Macro Pitch", 0.f, 1.f, 0.5f, kAutoMod},
+    {ParamSlot::Macro4, 0x000014, "Macro Spray", 0.f, 1.f, 0.5f, kAutoMod},
+    {ParamSlot::Macro5, 0x000015, "Macro Texture", 0.f, 1.f, 0.0f, kAutoMod},
+    {ParamSlot::Macro6, 0x000016, "Macro Freeze", 0.f, 1.f, 0.0f, kAutoMod | CLAP_PARAM_IS_STEPPED},
+    {ParamSlot::Macro7, 0x000017, "Macro Feedback", 0.f, 1.f, 0.0f, kAutoMod},
+    {ParamSlot::Macro8, 0x000018, "Macro Mix", 0.f, 1.f, 0.5f, kAutoMod},
+}};
+
+/// Where the instrument's table differs from kTable but for Position: the last two macros' names,
+/// and Macro 7's default (Global Constraints).
+struct InstrumentDifference
+{
+    ParamSlot slot;
+    std::string_view name;
+    float defaultVal;
+};
+constexpr std::array<InstrumentDifference, 2> kInstrumentMacros{{
+    {ParamSlot::Macro7, "Macro Stereo", 0.5f},
+    {ParamSlot::Macro8, "Macro Level", 0.5f},
 }};
 
 /// Decay's ∞ region starts at log2 60 and its top is 2% of its travel above that (Global
@@ -89,12 +116,47 @@ constexpr float kInstrumentPositionDefault = 0.0f;
 
 uint32_t bitsOf(float f) { return std::bit_cast<uint32_t>(f); }
 
-ParamValues defaults()
+/// A param's name and default in `mode`'s product.
+std::string_view nameIn(const Expected &e, Mode mode)
+{
+    if (mode == Mode::Instrument)
+    {
+        for (const auto &d : kInstrumentMacros)
+        {
+            if (d.slot == e.slot)
+            {
+                return d.name;
+            }
+        }
+    }
+    return e.name;
+}
+float defaultIn(const Expected &e, Mode mode)
+{
+    if (mode == Mode::Instrument)
+    {
+        if (e.slot == ParamSlot::Position)
+        {
+            return kInstrumentPositionDefault;
+        }
+        for (const auto &d : kInstrumentMacros)
+        {
+            if (d.slot == e.slot)
+            {
+                return d.defaultVal;
+            }
+        }
+    }
+    return e.defaultVal;
+}
+
+/// The FX's defaults, or `mode`'s.
+ParamValues defaults(Mode mode = Mode::Fx)
 {
     ParamValues v{};
     for (size_t i = 0; i < kParamCount; ++i)
     {
-        v[i] = kTable[i].defaultVal;
+        v[i] = defaultIn(kTable[i], mode);
     }
     return v;
 }
@@ -189,8 +251,10 @@ std::string handState(std::string_view params, std::string_view version = "1",
 
 TEST_CASE("param ids, names, ranges and defaults are pinned", "[core]")
 {
-    STATIC_REQUIRE(kParamCount == 18);
-    STATIC_REQUIRE(std::is_same_v<ParamValues, std::array<float, 18>>);
+    STATIC_REQUIRE(kParamCount == 28);
+    STATIC_REQUIRE(std::is_same_v<ParamValues, std::array<float, 28>>);
+    STATIC_REQUIRE(std::is_same_v<decltype(gg::core::kFeedbackMax), const float>);
+    STATIC_REQUIRE(gg::core::kFeedbackMax == 0.95f);
     STATIC_REQUIRE(std::is_same_v<decltype(gg::core::kDecayInfinite), const float>);
     STATIC_REQUIRE(std::is_same_v<decltype(gg::core::kDecayMax), const float>);
     STATIC_REQUIRE(gg::core::kDecayInfinite == kDecayInfinite);
@@ -220,33 +284,64 @@ TEST_CASE("param ids, names, ranges and defaults are pinned", "[core]")
     }
     CHECK(gg::core::paramId(ParamSlot::Count) == CLAP_INVALID_ID);
 
-    // The instrument's table is the FX's but for Position's default (spec §6.8): the same IDs,
-    // names, ranges and flags, so both products share one state format.
+    // The instrument's table is the FX's but for Position's default (spec §6.8) and the last two
+    // macros' names and Macro 7's default (sub-project 5's spec §3.3): the same IDs, ranges and
+    // flags, so both products share one state format.
     for (size_t i = 0; i < kParamCount; ++i)
     {
         const auto &e = kTable[i];
         INFO("instrument param " << e.name);
         const auto &m = gg::core::paramMeta(e.slot, Mode::Instrument);
         CHECK(m.id == e.id);
-        CHECK(m.name == e.name);
+        CHECK(m.name == nameIn(e, Mode::Instrument));
         CHECK(m.minVal == e.minVal);
         CHECK(m.maxVal == e.maxVal);
-        CHECK(m.defaultVal ==
-              (e.slot == ParamSlot::Position ? kInstrumentPositionDefault : e.defaultVal));
+        CHECK(m.defaultVal == defaultIn(e, Mode::Instrument));
         CHECK(m.flags == e.flags);
         CHECK(m.type == gg::core::paramMeta(e.slot, Mode::Fx).type);
         CHECK(&gg::core::paramMeta(e.slot, Mode::Instrument) == &m);
     }
 
-    // Freeze is the only stepped parameter; it's an on/off switch.
-    CHECK(gg::core::paramMeta(ParamSlot::Freeze, Mode::Fx).type ==
-          sst::basic_blocks::params::ParamMetaData::INT);
+    // Freeze and Macro Freeze are the only stepped parameters; they're on/off switches.
+    for (const Mode mode : {Mode::Fx, Mode::Instrument})
+    {
+        for (size_t i = 0; i < kParamCount; ++i)
+        {
+            const auto slot = static_cast<ParamSlot>(i);
+            const bool stepped = slot == ParamSlot::Freeze || slot == ParamSlot::Macro6;
+            INFO("param " << kTable[i].name);
+            CHECK((gg::core::paramMeta(slot, mode).type ==
+                   sst::basic_blocks::params::ParamMetaData::INT) == stepped);
+        }
+    }
 
-    // IDs that aren't ours: the reserved index 0, scopes and indices one past the table,
-    // sub-project 5's reserved Texture, Feedback and first macro (0x010009, 0x01000A, 0x000011),
-    // and the "unknown id" of the bad-state test.
-    for (clap_id unknown : {0x000000u, 0x00000Au, 0x000011u, 0x010000u, 0x010009u, 0x01000Au,
-                            0x01000Cu, 0x020001u, 0x777777u, CLAP_INVALID_ID})
+    // The macros, in order.
+    STATIC_REQUIRE(gg::core::kMacroSlots == std::array{ParamSlot::Macro1, ParamSlot::Macro2,
+                                                       ParamSlot::Macro3, ParamSlot::Macro4,
+                                                       ParamSlot::Macro5, ParamSlot::Macro6,
+                                                       ParamSlot::Macro7, ParamSlot::Macro8});
+    for (size_t i = 0; i < kParamCount; ++i)
+    {
+        const auto slot = static_cast<ParamSlot>(i);
+        INFO("param " << kTable[i].name);
+        CHECK(gg::core::isMacro(slot) ==
+              (std::find(gg::core::kMacroSlots.begin(), gg::core::kMacroSlots.end(), slot) !=
+               gg::core::kMacroSlots.end()));
+    }
+    STATIC_REQUIRE_FALSE(gg::core::isMacro(ParamSlot::Count));
+
+    // Sub-project 5's reserved IDs are ours now: Texture, Feedback and the eight macros.
+    for (clap_id id : {0x010009u, 0x01000Au, 0x000011u, 0x000012u, 0x000013u, 0x000014u, 0x000015u,
+                       0x000016u, 0x000017u, 0x000018u})
+    {
+        INFO("id " << id);
+        CHECK(gg::core::slotForId(id).has_value());
+    }
+
+    // IDs that aren't ours: the reserved index 0, scopes and indices one past the table, and the
+    // "unknown id" of the bad-state test.
+    for (clap_id unknown : {0x000000u, 0x00000Au, 0x000010u, 0x000019u, 0x010000u, 0x01000Cu,
+                            0x020001u, 0x777777u, CLAP_INVALID_ID})
     {
         INFO("id " << unknown);
         CHECK_FALSE(gg::core::slotForId(unknown).has_value());
@@ -341,25 +436,100 @@ TEST_CASE("a state saved before Space loads at the defaults", "[core][space]")
 
     // Into values that differ from every default, so each one is seen to be written. The ten it
     // names come back as written (the FX's defaults, Position included in either product); the
-    // eight it doesn't take their defaults. No migration: the version is still 1.
+    // eighteen it doesn't take the product's defaults. No migration: the version is still 1.
     for (const Mode mode : {Mode::Fx, Mode::Instrument})
     {
+        INFO((mode == Mode::Fx ? "fx" : "instrument"));
+        ParamValues want = defaults(mode);
+        want[static_cast<size_t>(ParamSlot::Position)] =
+            kTable[static_cast<size_t>(ParamSlot::Position)].defaultVal;
         Loaded l = distinct();
         REQUIRE(l.load(kPreSpaceState, mode));
-        CHECK(l.valueBits() == Loaded{defaults(), 0, 0}.valueBits());
+        CHECK(l.valueBits() == Loaded{want, 0, 0}.valueBits());
         CHECK(l.seed == 0u);
         CHECK(l.migratedFromVersion == 0u);
         for (size_t i = static_cast<size_t>(ParamSlot::Diffusion); i < kParamCount; ++i)
         {
             INFO("param " << kTable[i].name);
-            CHECK(bitsOf(l.values[i]) == bitsOf(kTable[i].defaultVal));
+            CHECK(bitsOf(l.values[i]) == bitsOf(defaultIn(kTable[i], mode)));
         }
 
-        // Saving it writes today's state: the ten as they were, then the eight defaults.
+        // Saving it writes today's state: the ten as they were, then the eighteen defaults.
         const auto resaved = toStateXml(l.values, l.seed);
         const auto oldParams = kPreSpaceState.substr(0, kPreSpaceState.find("</params>"));
         CHECK(resaved.starts_with(oldParams));
-        CHECK(resaved == toStateXml(defaults(), 0));
+        CHECK(resaved == toStateXml(want, 0));
+    }
+}
+
+TEST_CASE("a state saved before the Perform UI loads at the defaults", "[core]")
+{
+    // A default FX state as main wrote it before the Perform UI (c79e045): toStateXml's output
+    // for the FX's defaults and seed 0, as encodeState writes it in PTCH, copied literally. It
+    // names the eighteen params of sub-projects 1 to 4 only.
+    constexpr std::string_view kPrePerformState =
+        R"(<patch id="org.sethbc.giga-grains.patch" version="1" name="Init"><params>)"
+        R"(<p id="1" v="0.500000000000" bits="3f000000" />)"
+        R"(<p id="2" v="0.000000000000" bits="00000000" />)"
+        R"(<p id="65537" v="0.289676576853" bits="3e94507d" />)"
+        R"(<p id="65538" v="-2.736965656281" bits="c02f2a72" />)"
+        R"(<p id="65539" v="4.000000000000" bits="40800000" />)"
+        R"(<p id="65540" v="0.500000000000" bits="3f000000" />)"
+        R"(<p id="65541" v="0.000000000000" bits="00000000" />)"
+        R"(<p id="65542" v="0.360330373049" bits="3eb87d39" />)"
+        R"(<p id="65543" v="0.500000000000" bits="3f000000" />)"
+        R"(<p id="65544" v="0.000000000000" bits="00000000" />)"
+        R"(<p id="65547" v="0.000000000000" bits="00000000" />)"
+        R"(<p id="3" v="0.000000000000" bits="00000000" />)"
+        R"(<p id="4" v="1.000000000000" bits="3f800000" />)"
+        R"(<p id="5" v="0.500000000000" bits="3f000000" />)"
+        R"(<p id="6" v="0.300000011921" bits="3e99999a" />)"
+        R"(<p id="7" v="0.000000000000" bits="00000000" />)"
+        R"(<p id="8" v="0.250000000000" bits="3e800000" />)"
+        R"(<p id="9" v="0.000000000000" bits="00000000" />)"
+        R"(</params><engine seed="0" /></patch>)";
+
+    // The eighteen come back as written; Texture and Feedback load at 0 and the macros at rest,
+    // {0.5, 0.5, 0.5, 0.5, 0, 0, 0, 0.5} in the FX, Macro Stereo at 0.5 in the instrument.
+    constexpr std::array<float, 10> kFxNew{0.f, 0.f, 0.5f, 0.5f, 0.5f, 0.5f, 0.f, 0.f, 0.f, 0.5f};
+    for (const Mode mode : {Mode::Fx, Mode::Instrument})
+    {
+        INFO((mode == Mode::Fx ? "fx" : "instrument"));
+        ParamValues want = defaults(); // the FX's eighteen, as the state names them
+        for (size_t k = 0; k < kFxNew.size(); ++k)
+        {
+            want[static_cast<size_t>(ParamSlot::Texture) + k] = kFxNew[k];
+        }
+        if (mode == Mode::Instrument)
+        {
+            want[static_cast<size_t>(ParamSlot::Macro7)] = 0.5f;
+        }
+
+        Loaded l = distinct();
+        REQUIRE(l.load(kPrePerformState, mode));
+        CHECK(l.valueBits() == Loaded{want, 0, 0}.valueBits());
+        CHECK(l.seed == 0u);
+        CHECK(l.migratedFromVersion == 0u);
+
+        // As the PTCH chunk of a session state, as the plugins saved it, with no sample.
+        const auto withOldPatch =
+            gg::test::stateContainer({gg::test::stateChunk("PTCH", kPrePerformState),
+                                      gg::test::stateChunk("MEDI", R"(<media version="1" />)")});
+        gg::core::SessionState decoded;
+        REQUIRE(gg::core::decodeState(withOldPatch, mode, decoded));
+        CHECK(Loaded{decoded.values, decoded.seed, 0}.valueBits() ==
+              Loaded{want, 0, 0}.valueBits());
+        CHECK(decoded.seed == 0u);
+
+        // Saving it writes today's state: the eighteen as they were, then the ten new defaults.
+        const auto resaved = toStateXml(l.values, l.seed);
+        const auto oldParams = kPrePerformState.substr(0, kPrePerformState.find("</params>"));
+        CHECK(resaved.starts_with(oldParams));
+        CHECK(resaved == toStateXml(want, 0));
+        if (mode == Mode::Fx)
+        {
+            CHECK(resaved == toStateXml(defaults(), 0));
+        }
     }
 }
 
@@ -409,6 +579,19 @@ TEST_CASE("display text follows the engine mapping", "[core]")
     CHECK(text(ParamSlot::ReverbPredelay, 0.5f) == "500.0 ms");
     CHECK(text(ParamSlot::ReverbModulation, 0.25f) == "25.00 %");
     CHECK(text(ParamSlot::DryToReverb, 0.f) == "0.00 %");
+    // The Perform UI's (sub-project 5's spec §3.3, §4, §5): percentages, and Macro Freeze a
+    // switch like Freeze.
+    CHECK(text(ParamSlot::Texture, 0.f) == "0.00 %");
+    CHECK(text(ParamSlot::Texture, 1.f) == "100.00 %");
+    CHECK(text(ParamSlot::Feedback, 0.f) == "0.00 %");
+    CHECK(text(ParamSlot::Feedback, 0.5f) == "50.00 %");
+    CHECK(text(ParamSlot::Feedback, 0.95f) == "95.00 %");
+    CHECK(text(ParamSlot::Macro1, 0.5f) == "50.00 %");
+    CHECK(text(ParamSlot::Macro5, 0.f) == "0.00 %");
+    CHECK(text(ParamSlot::Macro6, 0.f) == "Off");
+    CHECK(text(ParamSlot::Macro6, 1.f) == "On");
+    CHECK(text(ParamSlot::Macro7, 0.f) == "0.00 %");
+    CHECK(text(ParamSlot::Macro8, 1.f) == "100.00 %");
 }
 
 TEST_CASE("Decay shows infinity over exactly the infinite region", "[core][space]")

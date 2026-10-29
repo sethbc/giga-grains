@@ -784,3 +784,91 @@ TEST_CASE("a source swap is block-size invariant", "[determinism]")
         REQUIRE(sameBits(ref.audio.right, r.audio.right));
     }
 }
+
+namespace
+{
+// Reseeds 1.2 s in, at no multiple of any block size below.
+constexpr int64_t kReseedAt = 57611;
+
+// Renders kFrames at kParams over sineSource with seed 42, calling setSeed(newSeed) between the
+// process() calls at kReseedAt (none when newSeed is 42), with blockSizes in turn (cycling), the
+// call before the reseed cut short to end there.
+void renderReseed(const std::shared_ptr<const gg::SampleBuffer> &source, uint64_t newSeed,
+                  const std::vector<uint32_t> &blockSizes, SwapRender &r)
+{
+    gg::Engine engine(config(42));
+    engine.setSource(source);
+    engine.setCloudParams(kParams);
+    engine.setEventSink(&GrainLog::record, &r.log);
+    constexpr float kUnwritten = std::numeric_limits<float>::quiet_NaN();
+    r.audio.left.assign(static_cast<std::size_t>(kFrames), kUnwritten);
+    r.audio.right.assign(static_cast<std::size_t>(kFrames), kUnwritten);
+    int64_t done = 0;
+    std::size_t next = 0;
+    for (const int64_t end : {kReseedAt, kFrames})
+    {
+        while (done < end)
+        {
+            const uint32_t want = blockSizes[next++ % blockSizes.size()];
+            const auto n = static_cast<uint32_t>(std::min<int64_t>(want, end - done));
+            float *out[2] = {r.audio.left.data() + done, r.audio.right.data() + done};
+            engine.process(out, 2, n);
+            done += n;
+        }
+        if (end == kReseedAt && newSeed != 42)
+        {
+            engine.setSeed(newSeed);
+        }
+    }
+}
+} // namespace
+
+TEST_CASE("setSeed changes the next grains only", "[determinism]")
+{
+    // A seed set between two process() calls keys the grains whose onsets come after it (a
+    // loaded state's seed, sub-project 5's spec §7); the grains already sounding keep their
+    // draws, and the grain index k keeps counting, so the render after it is not a fresh
+    // engine's at the new seed. Pinned: up to the reseed it is seed 42's render bit for bit,
+    // after it it differs, and it is the same at every block size.
+    const auto source = sineSource();
+    SwapRender unseeded;
+    renderReseed(source, 42, {kMaxBlock}, unseeded);
+    SwapRender ref;
+    renderReseed(source, 5, {kMaxBlock}, ref);
+    REQUIRE(allFinite(ref.audio.left));
+    REQUIRE(allFinite(ref.audio.right));
+    REQUIRE_FALSE(ref.log.overflowed);
+
+    const auto same = [](const std::vector<float> &x, const std::vector<float> &y, int64_t from,
+                         int64_t to) {
+        return std::memcmp(x.data() + from, y.data() + from,
+                           static_cast<std::size_t>(to - from) * sizeof(float)) == 0;
+    };
+    REQUIRE(same(ref.audio.left, unseeded.audio.left, 0, kReseedAt));
+    REQUIRE(same(ref.audio.right, unseeded.audio.right, 0, kReseedAt));
+    REQUIRE_FALSE(same(ref.audio.left, unseeded.audio.left, kReseedAt, kFrames));
+    REQUIRE_FALSE(same(ref.audio.right, unseeded.audio.right, kReseedAt, kFrames));
+    // The grain log agrees: the grains before the reseed are seed 42's, the index runs on.
+    REQUIRE_FALSE(ref.log.grains == unseeded.log.grains);
+    for (std::size_t i = 0; i < ref.log.grains.size() && i < unseeded.log.grains.size(); ++i)
+    {
+        if (unseeded.log.grains[i].onsetSample >= kReseedAt)
+        {
+            break;
+        }
+        REQUIRE(ref.log.grains[i] == unseeded.log.grains[i]);
+    }
+
+    const auto random = randomSplit();
+    for (const std::vector<uint32_t> &blockSizes :
+         {std::vector<uint32_t>{kMaxBlock}, {1}, {64}, {511}, random})
+    {
+        INFO("first block size = " << blockSizes.front() << " of " << blockSizes.size());
+        SwapRender r;
+        renderReseed(source, 5, blockSizes, r);
+        REQUIRE_FALSE(r.log.overflowed);
+        REQUIRE(r.log.grains == ref.log.grains);
+        REQUIRE(sameBits(ref.audio.left, r.audio.left));
+        REQUIRE(sameBits(ref.audio.right, r.audio.right));
+    }
+}

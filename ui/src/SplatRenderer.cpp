@@ -46,6 +46,50 @@ inline uint32_t scaleChannel(float tint, float v) noexcept
 {
     return static_cast<uint32_t>(static_cast<int32_t>(tint * v + 0.5f));
 }
+
+/// The pixels a splat or capsule can touch, [px0, px1] × [py0, py1], and its segment's ends in
+/// order (lo <= hi; both x for a splat).
+struct PixelBox
+{
+    uint32_t px0, px1, py0, py1;
+    float lo, hi;
+};
+
+/// The guard and clip that add and addCapsule share, for the segment (x0, y) – (x1, y) grown by
+/// the radius (a splat is x0 == x1). Returns false, so nothing lands, for a non-finite argument,
+/// a radius that isn't positive, an empty canvas or a box wholly off it.
+///
+/// The bounding box is clipped to the canvas while still floating-point, so a centre far off
+/// the canvas never reaches an integer conversion. The last pixel's coordinates are doubles,
+/// which hold every uint32_t exactly: a float rounds width − 1 up to width for some widths past
+/// 2^24, which would let a splat write past the row's end.
+inline bool clipToCanvas(float x0, float x1, float y, float radius, float intensity, uint32_t width,
+                         uint32_t height, PixelBox &box) noexcept
+{
+    // Checked before min and max, which would let a NaN through on one side.
+    if (!std::isfinite(x0) || !std::isfinite(x1) || !std::isfinite(y) || !std::isfinite(radius) ||
+        !std::isfinite(intensity) || !(radius > 0.0f) || width == 0 || height == 0)
+    {
+        return false;
+    }
+    box.lo = std::min(x0, x1);
+    box.hi = std::max(x0, x1);
+    const auto maxX = static_cast<double>(width - 1);
+    const auto maxY = static_cast<double>(height - 1);
+    const double left = std::ceil(box.lo - radius);
+    const double right = std::floor(box.hi + radius);
+    const double top = std::ceil(y - radius);
+    const double bottom = std::floor(y + radius);
+    if (right < 0.0 || left > maxX || bottom < 0.0 || top > maxY)
+    {
+        return false;
+    }
+    box.px0 = static_cast<uint32_t>(std::max(left, 0.0));
+    box.px1 = static_cast<uint32_t>(std::min(right, maxX));
+    box.py0 = static_cast<uint32_t>(std::max(top, 0.0));
+    box.py1 = static_cast<uint32_t>(std::min(bottom, maxY));
+    return true;
+}
 } // namespace
 
 SplatRenderer::SplatRenderer(uint32_t width, uint32_t height)
@@ -57,31 +101,12 @@ void SplatRenderer::clear() noexcept { std::fill(accum_.begin(), accum_.end(), 0
 
 void SplatRenderer::add(float x, float y, float radius, float intensity) noexcept
 {
-    if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(radius) ||
-        !std::isfinite(intensity) || !(radius > 0.0f) || width_ == 0 || height_ == 0)
+    PixelBox box;
+    if (!clipToCanvas(x, x, y, radius, intensity, width_, height_, box))
     {
         return;
     }
-
-    // The pixels whose centres can lie within the radius: the splat's bounding box, clipped to
-    // the canvas. The bounds are clipped while still floating-point, so a centre far off the
-    // canvas never reaches an integer conversion. The last pixel's coordinates are doubles, which
-    // hold every uint32_t exactly: a float rounds width − 1 up to width for some widths past
-    // 2^24, which would let a splat write past the row's end.
-    const auto maxX = static_cast<double>(width_ - 1);
-    const auto maxY = static_cast<double>(height_ - 1);
-    const double left = std::ceil(x - radius);
-    const double right = std::floor(x + radius);
-    const double top = std::ceil(y - radius);
-    const double bottom = std::floor(y + radius);
-    if (right < 0.0 || left > maxX || bottom < 0.0 || top > maxY)
-    {
-        return;
-    }
-    const auto px0 = static_cast<uint32_t>(std::max(left, 0.0));
-    const auto px1 = static_cast<uint32_t>(std::min(right, maxX));
-    const auto py0 = static_cast<uint32_t>(std::max(top, 0.0));
-    const auto py1 = static_cast<uint32_t>(std::min(bottom, maxY));
+    const uint32_t px0 = box.px0, px1 = box.px1, py0 = box.py0, py1 = box.py1;
 
     // The weight is 1 - d^2/r^2 = (1 - dy^2/r^2) - dx^2/r^2: one base per row, then one
     // subtraction per pixel. At the centre it is exactly 1, so a splat lands its intensity there.
@@ -98,6 +123,37 @@ void SplatRenderer::add(float x, float y, float radius, float intensity) noexcep
         for (uint32_t px = px0; px <= px1; ++px)
         {
             const float dx = static_cast<float>(px) - x;
+            const float weight = rowBase - dx * dx * invR2;
+            row[px] += intensity * (weight > 0.0f ? weight : 0.0f);
+        }
+    }
+}
+
+void SplatRenderer::addCapsule(float x0, float x1, float y, float radius, float intensity) noexcept
+{
+    // The box is computed exactly as add's, so x0 == x1 covers add's pixels.
+    PixelBox box;
+    if (!clipToCanvas(x0, x1, y, radius, intensity, width_, height_, box))
+    {
+        return;
+    }
+    const float lo = box.lo, hi = box.hi;
+    const uint32_t px0 = box.px0, px1 = box.px1, py0 = box.py0, py1 = box.py1;
+
+    // add's loop, with dx measured from the pixel's nearest point on the segment: 0 between the
+    // ends, so the axis gets the full intensity. With lo == hi the nearest point is x0 itself and
+    // dx = px - x0 bit for bit, so the result is add's exactly.
+    const float invR2 = 1.0f / (radius * radius);
+    for (uint32_t py = py0; py <= py1; ++py)
+    {
+        const float dy = static_cast<float>(py) - y;
+        const float rowBase = 1.0f - dy * dy * invR2;
+        float *row = accum_.data() + static_cast<std::size_t>(py) * width_;
+        for (uint32_t px = px0; px <= px1; ++px)
+        {
+            const auto fx = static_cast<float>(px);
+            const float nearest = fx < lo ? lo : (fx > hi ? hi : fx);
+            const float dx = fx - nearest;
             const float weight = rowBase - dx * dx * invR2;
             row[px] += intensity * (weight > 0.0f ? weight : 0.0f);
         }

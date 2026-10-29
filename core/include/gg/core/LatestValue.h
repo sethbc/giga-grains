@@ -2,19 +2,20 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright 2026, the Giga Grains authors (see git history)
 
-#ifndef GG_PLUGIN_LATESTVALUE_H
-#define GG_PLUGIN_LATESTVALUE_H
+#ifndef GG_CORE_LATESTVALUE_H
+#define GG_CORE_LATESTVALUE_H
 
 #include <array>
 #include <atomic>
 #include <cstdint>
 #include <type_traits>
 
-namespace gg::plugin
+namespace gg::core
 {
 /// A lock-free, latest-wins hand-off of a value from one producer thread to one consumer
 /// thread: a triple buffer. The plugin uses it to pass a state loaded on the main thread to the
-/// audio thread (spec §5).
+/// audio thread (spec §5), and the Processor to publish its per-block UiSnapshot to the editor
+/// (SnapshotBuffer, gg/core/UiSnapshot.h).
 ///
 /// The producer writes into its own slot and swaps it with the shared middle one; the consumer
 /// swaps its own slot with the middle one when that holds a value it hasn't taken. Neither ever
@@ -65,6 +66,6 @@ template <typename T> class LatestValue
     uint8_t back_{0};                // the producer's slot
     uint8_t front_{2};               // the consumer's slot
 };
-} // namespace gg::plugin
+} // namespace gg::core
 
-#endif // GG_PLUGIN_LATESTVALUE_H
+#endif // GG_CORE_LATESTVALUE_H

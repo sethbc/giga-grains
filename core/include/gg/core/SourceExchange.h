@@ -119,7 +119,7 @@ class SourceExchange
     void retire(const PreparedSource *s) noexcept SST_CPPUTILS_NONBLOCKING;
 
   private:
-    // The mailbox, a triple buffer (as plugin::LatestValue): the main thread writes its own slot
+    // The mailbox, a triple buffer (as LatestValue): the main thread writes its own slot
     // and swaps it with the middle one; the audio thread swaps its own with the middle one when
     // that holds an offer it hasn't taken.
     static constexpr uint8_t kIndex = 0x3;

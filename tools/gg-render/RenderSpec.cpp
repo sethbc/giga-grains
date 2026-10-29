@@ -256,16 +256,28 @@ StreamSpec readStream(const json &j)
     return s;
 }
 
-/// The parameter names, for error messages: "Mix, Level, ..., Dry to Reverb".
-std::string parameterNames()
+/// `mode`'s product's parameter names, for error messages: "Mix, Level, ..., Macro Mix".
+std::string parameterNames(gg::core::Mode mode)
 {
     std::string names;
     for (std::size_t s = 0; s < gg::core::kParamCount; ++s)
     {
         names += (s == 0 ? "" : ", ") +
-                 gg::core::paramMeta(static_cast<gg::core::ParamSlot>(s), gg::core::Mode::Fx).name;
+                 gg::core::paramMeta(static_cast<gg::core::ParamSlot>(s), mode).name;
     }
     return names;
+}
+
+/// The parameter named `name` in `mode`'s product: paramSlotNamed's, unless that name is the other
+/// product's alone ("Macro Level" in an FX spec, say).
+std::optional<gg::core::ParamSlot> paramSlotNamedIn(std::string_view name, gg::core::Mode mode)
+{
+    const auto slot = paramSlotNamed(name);
+    if (slot && gg::core::paramMeta(*slot, mode).name == name)
+    {
+        return slot;
+    }
+    return std::nullopt;
 }
 
 /// v as a value for the parameter in `slot` of `mode`'s product: a finite number that, converted
@@ -297,11 +309,11 @@ std::vector<std::pair<std::string, double>> readParams(const json &j, gg::core::
     for (const auto &item : j.items())
     {
         const std::string key = fmt::format("params.{}", item.key());
-        const auto slot = paramSlotNamed(item.key());
+        const auto slot = paramSlotNamedIn(item.key(), mode);
         if (!slot)
         {
             throw SpecError(
-                fmt::format("unknown key {}: the parameters are {}", key, parameterNames()));
+                fmt::format("unknown key {}: the parameters are {}", key, parameterNames(mode)));
         }
         params.emplace_back(item.key(), parameterValue(item.value(), *slot, mode, key));
     }
@@ -349,11 +361,11 @@ std::vector<AutomationPoint> readAutomation(const json &j, gg::core::Mode mode, 
                                         name, i - 1));
         }
         p.param = o.string("param");
-        const auto slot = paramSlotNamed(p.param);
+        const auto slot = paramSlotNamedIn(p.param, mode);
         if (!slot)
         {
             throw SpecError(fmt::format(R"({}.param must be one of {}, not "{}")", name,
-                                        parameterNames(), p.param));
+                                        parameterNames(mode), p.param));
         }
         p.value = parameterValue(o.member("value"), *slot, mode, name + ".value");
         points.push_back(std::move(p));
@@ -555,13 +567,17 @@ RenderSpec readSpec(const json &j)
 
 std::optional<gg::core::ParamSlot> paramSlotNamed(std::string_view name)
 {
-    // The names are the same in both products.
-    for (std::size_t s = 0; s < gg::core::kParamCount; ++s)
+    // Either product's names: the FX's first, then the instrument's, which differ only for Macros
+    // 7 and 8. No name is one slot's in one product and another's in the other.
+    for (const auto mode : {gg::core::Mode::Fx, gg::core::Mode::Instrument})
     {
-        const auto slot = static_cast<gg::core::ParamSlot>(s);
-        if (gg::core::paramMeta(slot, gg::core::Mode::Fx).name == name)
+        for (std::size_t s = 0; s < gg::core::kParamCount; ++s)
         {
-            return slot;
+            const auto slot = static_cast<gg::core::ParamSlot>(s);
+            if (gg::core::paramMeta(slot, mode).name == name)
+            {
+                return slot;
+            }
         }
     }
     return std::nullopt;

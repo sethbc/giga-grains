@@ -549,6 +549,7 @@ TEST_CASE("fx activates with a huge max frame count", "[plugin]")
     const auto render = [&](uint32_t maxFrames, Stereo &out) {
         gg::test::PluginUnderTest fx(kFxId);
         REQUIRE(fx.valid());
+        REQUIRE(fx.loadDefaultsWithSeed(0)); // the same seed in every render
         fx.flush(params.list());
         REQUIRE(fx.activate(48000.0, maxFrames));
         CHECK(fx.impl().engineBlockSize() == std::min<uint32_t>(maxFrames, 4096));
@@ -602,6 +603,7 @@ TEST_CASE("a note freezes the fx and releasing it lets the input through again",
                             std::vector<int> &frozenKeys) {
         gg::test::PluginUnderTest fx(kFxId);
         REQUIRE(fx.valid());
+        REQUIRE(fx.loadDefaultsWithSeed(0)); // the same seed in every render
         flushParams<4>(fx, {
                                gg::test::paramValue(paramId(ParamSlot::Mix), 1.0),
                                gg::test::paramValue(paramId(ParamSlot::Spray), 0.0),
@@ -687,6 +689,7 @@ TEST_CASE("midi notes play the instrument's sample and release it", "[plugin]")
     constexpr std::size_t kRelease = 8160; // Size + 20 ms at 48 kHz
     gg::test::PluginUnderTest instrument(kInstrumentId);
     REQUIRE(instrument.valid());
+    REQUIRE(instrument.loadDefaultsWithSeed(0)); // the same seed in every run
     REQUIRE(instrument.loadSampleState(gg::test::sineSampleFile("midi-notes")));
     REQUIRE(instrument.activate(48000.0, kBlock));
 
@@ -864,6 +867,7 @@ TEST_CASE("notes render the same at any host block size", "[plugin][determinism]
     const auto render = [&](const std::vector<uint32_t> &blockSizes, Stereo &out) {
         gg::test::PluginUnderTest instrument(kInstrumentId);
         REQUIRE(instrument.valid());
+        REQUIRE(instrument.loadDefaultsWithSeed(0)); // the same seed in every render
         REQUIRE(instrument.loadSampleState(gg::test::sineSampleFile("notes-block-size")));
         REQUIRE(instrument.activate(48000.0, 2048));
         std::vector<clap_event_midi> events;
@@ -1013,6 +1017,7 @@ TEST_CASE("the fx renders the same in place as with separate buffers", "[plugin]
     const auto render = [&](bool inPlace, Stereo &out) {
         gg::test::PluginUnderTest fx(kFxId);
         REQUIRE(fx.valid());
+        REQUIRE(fx.loadDefaultsWithSeed(0)); // the same seed in every render
         setUpFxForPorts(fx);
         REQUIRE(fx.activate(48000.0, kBlock));
         Stereo in(kBlock);
@@ -1081,6 +1086,7 @@ TEST_CASE("a missing fx input is silence, however the host leaves it out", "[plu
     const auto render = [&](bool reference, Stereo &out) {
         gg::test::PluginUnderTest fx(kFxId);
         REQUIRE(fx.valid());
+        REQUIRE(fx.loadDefaultsWithSeed(0)); // the same seed in every render
         setUpFxForPorts(fx);
         REQUIRE(fx.activate(48000.0, kBlock));
         Stereo in(kBlock);
@@ -1187,6 +1193,7 @@ TEST_CASE("a missing output or output channel leaves the rest of the render unch
     const auto render = [&](bool complete, Stereo &out) {
         gg::test::PluginUnderTest plugin(id);
         REQUIRE(plugin.valid());
+        REQUIRE(plugin.loadDefaultsWithSeed(0)); // the same seed in every render
         if (isFx)
         {
             setUpFxForPorts(plugin);

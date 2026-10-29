@@ -8,12 +8,15 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <functional>
+#include <iterator>
 #include <limits>
+#include <memory>
 #include <numbers>
 #include <span>
 #include <tuple>
@@ -277,7 +280,7 @@ TEST_CASE("mix and level ramp over 10 ms", "[core]")
 
         gg::core::ParamValues minLevel{};
         minLevel[at(ParamSlot::Level)] = -60.0f;
-        const double target = gg::core::toWetParams(minLevel).levelGain;
+        const double target = gg::core::toWetParams(minLevel, Mode::Fx).levelGain;
         constexpr int64_t b = 2016; // the event's boundary
         int checked = 0;
         for (int64_t t = 0; t < kFrames; ++t)
@@ -320,9 +323,10 @@ struct TimedEvent
 };
 
 // 40 events on every slot over 3 s: base values across a range that keeps the render light, and
-// every fourth event a modulation offset of up to an eighth of that range. Some events land
-// exactly on grid points, and some share a sample with the previous slot's. Times and values
-// come from gg::rng.
+// every fourth event a modulation offset of up to an eighth of that range. Every slot has a
+// range: Space's, Texture, Feedback and the macros (which move the cloud and Space through their
+// recipes) are automated too. Some events land exactly on grid points, and some share a sample
+// with the previous slot's. Times and values come from gg::rng.
 std::vector<TimedEvent> automation()
 {
     struct Range
@@ -340,6 +344,28 @@ std::vector<TimedEvent> automation()
     ranges[at(ParamSlot::Spray)] = {0.0f, 1.0f};
     ranges[at(ParamSlot::Stereo)] = {0.0f, 1.0f};
     ranges[at(ParamSlot::Freeze)] = {0.0f, 1.0f};
+    ranges[at(ParamSlot::Diffusion)] = {0.0f, 1.0f};
+    ranges[at(ParamSlot::ReverbAmount)] = {0.0f, 1.0f};
+    ranges[at(ParamSlot::ReverbDecay)] = {-2.0f, 4.0f}; // 0.25 to 16 s, never infinite
+    ranges[at(ParamSlot::ReverbSize)] = {0.0f, 1.0f};
+    ranges[at(ParamSlot::ReverbDamping)] = {0.0f, 1.0f};
+    ranges[at(ParamSlot::ReverbPredelay)] = {0.0f, 0.5f};
+    ranges[at(ParamSlot::ReverbModulation)] = {0.0f, 1.0f};
+    ranges[at(ParamSlot::DryToReverb)] = {0.0f, 1.0f};
+    ranges[at(ParamSlot::Texture)] = {0.0f, 1.0f};
+    ranges[at(ParamSlot::Feedback)] = {0.0f, 0.5f};
+    ranges[at(ParamSlot::Macro1)] = {0.25f, 0.75f}; // Size ±1.5 octaves
+    ranges[at(ParamSlot::Macro2)] = {0.3f, 0.6f};   // Density −1.6 to +0.8 octaves
+    ranges[at(ParamSlot::Macro3)] = {0.0f, 1.0f};
+    ranges[at(ParamSlot::Macro4)] = {0.0f, 1.0f};
+    ranges[at(ParamSlot::Macro5)] = {0.0f, 1.0f};
+    ranges[at(ParamSlot::Macro6)] = {0.0f, 1.0f};
+    ranges[at(ParamSlot::Macro7)] = {0.0f, 1.0f};
+    ranges[at(ParamSlot::Macro8)] = {0.0f, 1.0f};
+    for (size_t s = 0; s < kParamCount; ++s)
+    {
+        REQUIRE(ranges[s].hi > ranges[s].lo); // every slot covered
+    }
 
     constexpr int kPerSlot = 40;
     std::vector<TimedEvent> events;
@@ -368,7 +394,7 @@ std::vector<TimedEvent> automation()
             {
                 value = (2.0 * u - 1.0) * (r.hi - r.lo) / 8.0;
             }
-            else if (slot == ParamSlot::Freeze)
+            else if (slot == ParamSlot::Freeze || slot == ParamSlot::Macro6)
             {
                 value = u < 0.5 ? 0.0 : 1.0;
             }
@@ -411,7 +437,31 @@ struct AutomationRender
     Stereo audio;
     GrainLog log;
     int64_t writeHead{0};
+    // The live ring's frames 0 .. writeHead − 1 at the end, as stored; empty if some have left
+    // its window (a render longer than the ring).
+    Stereo ring;
 };
+
+// The ring's frames 0 .. head − 1, read from its storage as stored (the sign of zero included),
+// or nothing once frame 0 has left the window.
+Stereo ringFrames(const gg::LiveSource &live, int64_t head)
+{
+    const gg::LiveSource::RingView v = live.view();
+    if (head > v.frames)
+    {
+        return {};
+    }
+    Stereo s{std::vector<float>(static_cast<std::size_t>(head)),
+             std::vector<float>(static_cast<std::size_t>(head))};
+    for (int64_t f = 0; f < head; ++f)
+    {
+        const auto slot = static_cast<std::size_t>(f % v.capacity);
+        const auto j = static_cast<std::size_t>(f);
+        s.left[j] = v.slots[2 * slot];
+        s.right[j] = v.slots[2 * slot + 1];
+    }
+    return s;
+}
 
 // Renders the whole input through a fresh FX processor in process() calls of blockSizes in turn
 // (cycling), each call given the events that fall inside it. A 0-frame call at sample `done`
@@ -453,6 +503,7 @@ void renderAutomation(const Stereo &input, const std::vector<TimedEvent> &events
         done += n;
     }
     r.writeHead = p.engine().liveWriteHead();
+    r.ring = ringFrames(p.engine().live(), r.writeHead);
 }
 } // namespace
 
@@ -506,6 +557,132 @@ TEST_CASE("processor is block-size invariant with automation", "[core][determini
         REQUIRE(r.writeHead == ref.writeHead);
         REQUIRE(sameBits(ref.audio.left, r.audio.left));
         REQUIRE(sameBits(ref.audio.right, r.audio.right));
+    }
+}
+
+namespace
+{
+// automation(), with Texture, Feedback and the eight macros automated more densely on top of it
+// (spec §9): 30 more events each, none on a grid point, every third a modulation offset of up
+// to a quarter of the range, Feedback up to 0.9 (Macro Feedback can add 0.9 more, to the 0.95
+// clamp). Times and values come from gg::rng, keyed apart from automation()'s.
+std::vector<TimedEvent> performAutomation()
+{
+    struct Perform
+    {
+        ParamSlot slot;
+        float lo, hi;
+    };
+    const std::array<Perform, 10> perform{{{ParamSlot::Texture, 0.0f, 1.0f},
+                                           {ParamSlot::Feedback, 0.0f, 0.9f},
+                                           {ParamSlot::Macro1, 0.25f, 0.75f},
+                                           {ParamSlot::Macro2, 0.3f, 0.6f},
+                                           {ParamSlot::Macro3, 0.0f, 1.0f},
+                                           {ParamSlot::Macro4, 0.0f, 1.0f},
+                                           {ParamSlot::Macro5, 0.0f, 1.0f},
+                                           {ParamSlot::Macro6, 0.0f, 1.0f},
+                                           {ParamSlot::Macro7, 0.0f, 1.0f},
+                                           {ParamSlot::Macro8, 0.0f, 1.0f}}};
+    std::vector<TimedEvent> events = automation();
+    for (std::size_t m = 0; m < perform.size(); ++m)
+    {
+        const Perform &r = perform[m];
+        for (int k = 0; k < 30; ++k)
+        {
+            const uint64_t key = 500000 + m * 1000 + static_cast<uint64_t>(k) * 4;
+            auto time = static_cast<int64_t>(uniform(78, key) * kAutomationFrames);
+            if (time % 32 == 0)
+            {
+                time += 1 + k % 31; // off the grid
+            }
+            time = std::min(time, kAutomationFrames - 1); // 143999, off the grid too
+            const double u = uniform(78, key + 1);
+            const bool isModulation = k % 3 == 2;
+            double value = 0.0;
+            if (isModulation)
+            {
+                value = (2.0 * u - 1.0) * (r.hi - r.lo) / 4.0;
+            }
+            else if (r.slot == ParamSlot::Macro6)
+            {
+                value = u < 0.5 ? 0.0 : 1.0;
+            }
+            else
+            {
+                value = r.lo + (r.hi - r.lo) * u;
+            }
+            events.push_back({time, r.slot, isModulation, value});
+        }
+    }
+    std::stable_sort(events.begin(), events.end(),
+                     [](const TimedEvent &a, const TimedEvent &b) { return a.time < b.time; });
+    return events;
+}
+} // namespace
+
+TEST_CASE("the perform parameters are block-size invariant together", "[core][determinism]")
+{
+    // Every slot automated (automation()), Texture, Feedback and the macros densely, with
+    // modulation: the macro curves, Texture's latched envelope and Feedback's ring write all
+    // render the same bits, grains, head and ring at any host block size and maxBlockSize.
+    const Stereo input = noise(kAutomationFrames, 0.5f, 31);
+    const auto events = performAutomation();
+    REQUIRE(events.size() == 40 * kParamCount + 300);
+
+    AutomationRender ref;
+    renderAutomation(input, events, 4096, {4096}, ref);
+    REQUIRE(allFinite(ref.audio.left));
+    REQUIRE(allFinite(ref.audio.right));
+    REQUIRE(peak(ref.audio.left) > 0.05f);
+    REQUIRE_FALSE(ref.log.overflowed);
+    // Not vacuous: grains latched many Textures, Freeze stopped the head for a while, and Feedback
+    // wrote into the ring (without its events, and Macro Feedback's, the ring differs).
+    std::vector<double> textures;
+    for (const gg::GrainSpec &g : ref.log.grains)
+    {
+        textures.push_back(g.texture);
+    }
+    std::sort(textures.begin(), textures.end());
+    textures.erase(std::unique(textures.begin(), textures.end()), textures.end());
+    REQUIRE(textures.size() > 10);
+    REQUIRE(ref.writeHead < kAutomationFrames - 4800);
+    REQUIRE(ref.ring.left.size() == static_cast<std::size_t>(ref.writeHead));
+    std::vector<TimedEvent> withoutFeedback;
+    std::copy_if(events.begin(), events.end(), std::back_inserter(withoutFeedback),
+                 [](const TimedEvent &e) {
+                     return e.slot != ParamSlot::Feedback && e.slot != ParamSlot::Macro7;
+                 });
+    AutomationRender dry;
+    renderAutomation(input, withoutFeedback, 4096, {4096}, dry);
+    REQUIRE(dry.writeHead == ref.writeHead);
+    REQUIRE_FALSE(sameBits(dry.ring.left, ref.ring.left));
+
+    struct Split
+    {
+        uint32_t maxBlock;
+        std::vector<uint32_t> blockSizes;
+    };
+    std::vector<Split> splits{{4096, {1}},    {4096, {7}},  {4096, {64}}, {4096, {511}},
+                              {4096, {4096}}, {64, {4096}}, {1, {4096}},  {256, {4096}}};
+    for (const uint64_t seed : {299, 300, 301})
+    {
+        auto random = randomSplit(seed);
+        REQUIRE(std::count(random.begin(), random.end(), 0u) > 0); // 0-frame calls
+        splits.push_back({4096, std::move(random)});
+    }
+    for (const Split &split : splits)
+    {
+        INFO("maxBlockSize = " << split.maxBlock << ", first block size = "
+                               << split.blockSizes.front() << " of " << split.blockSizes.size());
+        AutomationRender r;
+        renderAutomation(input, events, split.maxBlock, split.blockSizes, r);
+        REQUIRE_FALSE(r.log.overflowed);
+        REQUIRE(r.log.grains == ref.log.grains);
+        REQUIRE(r.writeHead == ref.writeHead);
+        REQUIRE(sameBits(ref.audio.left, r.audio.left));
+        REQUIRE(sameBits(ref.audio.right, r.audio.right));
+        REQUIRE(sameBits(ref.ring.left, r.ring.left));
+        REQUIRE(sameBits(ref.ring.right, r.ring.right));
     }
 }
 
@@ -762,7 +939,7 @@ TEST_CASE("the wet chain is Level, then the soft limiter, then the mix", "[core]
 
     gg::core::ParamValues plus12{};
     plus12[at(ParamSlot::Level)] = 12.0f;
-    const float g = gg::core::toWetParams(plus12).levelGain;
+    const float g = gg::core::toWetParams(plus12, Mode::Fx).levelGain;
     REQUIRE(peak(w.left) < 0.5f);
     REQUIRE(peak(w.right) < 0.5f);
     int engaged = 0;
@@ -879,12 +1056,20 @@ TEST_CASE("processor survives an automation storm", "[core][rt]")
     // (the storm sets Reverb Amount too): the output is never louder than the input plus 2.
     REQUIRE(peak(left) < peak(input.left) + 2.0f);
     REQUIRE(peak(right) < peak(input.right) + 2.0f);
+    // The effective values: the macros' clamp(base + mod), their offsets (the storm moves the
+    // macros too), then one clamp of base + mod + offset.
+    gg::core::ParamValues macros{};
+    for (const ParamSlot macro : gg::core::kMacroSlots)
+    {
+        macros[at(macro)] = clampTo(macro, lastBase[at(macro)] + lastMod[at(macro)]);
+    }
+    const gg::core::ParamValues offsets = gg::core::macroOffsets(macros, Mode::Fx);
     for (size_t s = 0; s < kParamCount; ++s)
     {
         const auto slot = static_cast<ParamSlot>(s);
         INFO("slot " << s);
         REQUIRE(p.base(slot) == lastBase[s]);
-        REQUIRE(p.effective(slot) == clampTo(slot, lastBase[s] + lastMod[s]));
+        REQUIRE(p.effective(slot) == clampTo(slot, lastBase[s] + lastMod[s] + offsets[s]));
     }
 }
 
@@ -912,6 +1097,10 @@ TEST_CASE("processor does not allocate", "[core][rt]")
     Processor p({kSampleRate, 256, 3, Mode::Fx});
     SpawnCounter counter;
     p.setEventSink(&SpawnCounter::record, &counter);
+    // Feedback regenerates into the ring from the first call (sub-project 5's spec §5): the ring
+    // input is built in preallocated buffers. The events below move Feedback and Mix again.
+    p.setBase(ParamSlot::Feedback, 0.5f);
+    p.setBase(ParamSlot::Mix, 1.0f);
 
     constexpr uint32_t kFrames = 1000;
     std::vector<float> inLeft(kFrames), inRight(kFrames);
@@ -962,6 +1151,50 @@ TEST_CASE("processor does not allocate", "[core][rt]")
 
     REQUIRE(counter.spawns > 0);
     REQUIRE(p.engine().activeGrains() > 0);
+    if (gg::test::AllocTripwire::available()) // off under ASan; RTSan covers this
+    {
+        REQUIRE(allocations == 0);
+    }
+}
+
+TEST_CASE("publishing does not allocate", "[core][publish][rt]")
+{
+    // The publish path (spec §6.4) under the tripwire: grains into the queue, which the UI never
+    // drains here, so it fills and then drops (Review Focus 4); a snapshot per call; the peaks
+    // of the ring input, Feedback's included, and of a missing input (silence). 4096-frame calls
+    // at Density 8 (256 Hz) spawn about 22 grains each, so 200 of them overflow the 4096-entry
+    // queue; 0- and 1-frame calls publish too.
+    constexpr uint32_t kFrames = 4096;
+    Processor p({kSampleRate, kFrames, 5, Mode::Fx});
+    SpawnCounter counter;
+    p.setEventSink(&SpawnCounter::record, &counter);
+    p.setBase(ParamSlot::Density, 8.0f);
+    p.setBase(ParamSlot::Feedback, 0.5f);
+    p.setBase(ParamSlot::Mix, 1.0f);
+    p.setPublishing(true);
+    const Stereo input = noise(kFrames, 0.5f, 43);
+    const float *in[2] = {input.left.data(), input.right.data()};
+    std::vector<float> o0(kFrames), o1(kFrames);
+    float *out[2] = {o0.data(), o1.data()};
+
+    AllocTripwire::resetCount();
+    {
+        AllocTripwire::Scope armed;
+        for (int i = 0; i < 200; ++i)
+        {
+            p.process(i % 50 == 49 ? nullptr : in, 2, out, 2, kFrames, {});
+            p.process(in, 2, out, 2, 0, {});
+            p.process(in, 1, out, 2, 1, {});
+        }
+    }
+    const uint64_t allocations = AllocTripwire::count();
+
+    REQUIRE(counter.spawns > gg::core::GrainQueue::kCapacity);
+    REQUIRE(p.grainQueue().dropped() == counter.spawns - gg::core::GrainQueue::kCapacity);
+    gg::core::UiSnapshot snap;
+    REQUIRE(p.snapshot().take(snap));
+    REQUIRE(snap.clock == p.engine().sampleClock());
+    REQUIRE(p.publishedClock().load() == p.engine().sampleClock());
     if (gg::test::AllocTripwire::available()) // off under ASan; RTSan covers this
     {
         REQUIRE(allocations == 0);
@@ -1221,4 +1454,599 @@ TEST_CASE("processor base values, pending changes and reset", "[core]")
     p.process(nullptr, 0, out, 2, 64, modulated);
     REQUIRE(p.base(ParamSlot::Mix) == 0.75f);
     REQUIRE(p.effective(ParamSlot::Mix) == 1.0f);
+}
+
+// The macros (sub-project 5's spec §3): effective = clamp(base + mod + Σ macro curves), on the
+// control grid like any parameter.
+
+TEST_CASE("macro offsets add to base and modulation before one clamp", "[core]")
+{
+    const auto &size = gg::core::paramMeta(ParamSlot::Size, Mode::Fx);
+    const float density = gg::core::paramMeta(ParamSlot::Density, Mode::Fx).defaultVal;
+    std::vector<float> left(64), right(64);
+    float *out[2] = {left.data(), right.data()};
+
+    SECTION("above the range")
+    {
+        Processor p({kSampleRate, 512, 3, Mode::Fx});
+        p.setBase(ParamSlot::Size, size.maxVal - 1.0f);
+        const std::array<ParamEvent, 2> events{
+            {{0, ParamSlot::Size, true, 1.0}, {0, ParamSlot::Macro1, false, 1.0}}};
+        p.process(nullptr, 0, out, 2, 64, events);
+        REQUIRE(p.base(ParamSlot::Size) == size.maxVal - 1.0f);
+        REQUIRE(p.effective(ParamSlot::Macro1) == 1.0f);
+        REQUIRE(p.effective(ParamSlot::Size) == size.maxVal); // max − 1 + 1 + 3, clamped
+        REQUIRE(p.effective(ParamSlot::Density) == density - 1.5f);
+        REQUIRE(p.base(ParamSlot::Density) == density);
+    }
+
+    SECTION("one clamp, not two")
+    {
+        // base + mod is above the range and the macro brings it back: one clamp of the whole
+        // sum gives max + 1 − 3; clamping base + mod first would give max − 3.
+        Processor p({kSampleRate, 512, 3, Mode::Fx});
+        p.setBase(ParamSlot::Size, size.maxVal);
+        const std::array<ParamEvent, 2> events{
+            {{0, ParamSlot::Size, true, 1.0}, {0, ParamSlot::Macro1, false, 0.0}}};
+        p.process(nullptr, 0, out, 2, 64, events);
+        REQUIRE(p.effective(ParamSlot::Size) == (size.maxVal + 1.0f) - 3.0f);
+        REQUIRE(p.effective(ParamSlot::Density) == density + 1.5f);
+    }
+
+    SECTION("a macro is clamped before its curve")
+    {
+        // Macro 3 at base 1 with modulation +1: its effective value is 1, so Pitch moves +24,
+        // not +72 (clamped to its range either way, so read the macro itself).
+        Processor p({kSampleRate, 512, 3, Mode::Fx});
+        p.setBase(ParamSlot::Pitch, -24.0f);
+        const std::array<ParamEvent, 2> events{
+            {{0, ParamSlot::Macro3, false, 1.0}, {0, ParamSlot::Macro3, true, 1.0}}};
+        p.process(nullptr, 0, out, 2, 64, events);
+        REQUIRE(p.effective(ParamSlot::Macro3) == 1.0f);
+        REQUIRE(p.effective(ParamSlot::Pitch) == 0.0f); // −24 + 24, not −24 + 72 → 24
+    }
+}
+
+namespace
+{
+// Every macro at its rest value (spec §3.1: 0.5 for a bipolar macro, 0 for a unipolar one; the
+// instrument's Macro Stereo is bipolar, FX's Macro Feedback unipolar), each event at its own
+// sample after 0.5 s, off the grid.
+std::vector<TimedEvent> macrosAtRest(Mode mode)
+{
+    std::vector<TimedEvent> events;
+    int64_t time = 24000 + 3;
+    for (const ParamSlot slot : gg::core::kMacroSlots)
+    {
+        const bool unipolar = slot == ParamSlot::Macro5 || slot == ParamSlot::Macro6 ||
+                              (slot == ParamSlot::Macro7 && mode == Mode::Fx);
+        const double rest = unipolar ? 0.0 : 0.5;
+        REQUIRE(gg::core::paramMeta(slot, mode).defaultVal == static_cast<float>(rest));
+        events.push_back({time, slot, false, rest});
+        time += 37;
+    }
+    return events;
+}
+
+// An instrument over 2 s of a mono noise sample, one note held from sample 0, rendered in
+// calls of up to 512 frames, with `events` at their absolute samples.
+AutomationRender renderInstrument(const std::vector<TimedEvent> &events)
+{
+    constexpr int64_t kFrames = 2 * 48000;
+    const Stereo sample = noise(kFrames, 0.5f, 29);
+    auto buffer = std::make_shared<gg::SampleBuffer>(1, kFrames, kSampleRate);
+    std::copy(sample.left.begin(), sample.left.end(), buffer->channel(0));
+    Processor p({kSampleRate, 512, 42, Mode::Instrument});
+    p.setSourceNow(gg::PreparedSource::make(std::move(buffer)));
+    AutomationRender r;
+    p.setEventSink(&GrainLog::record, &r.log);
+    r.audio.left.assign(static_cast<std::size_t>(kFrames), kNaN);
+    r.audio.right.assign(static_cast<std::size_t>(kFrames), kNaN);
+    const gg::core::NoteEvent on{0, gg::core::NoteEventType::On, 0, 60};
+    std::vector<ParamEvent> blockEvents;
+    std::size_t next = 0;
+    for (int64_t done = 0; done < kFrames;)
+    {
+        const auto n = static_cast<uint32_t>(std::min<int64_t>(512, kFrames - done));
+        blockEvents.clear();
+        for (; next < events.size() && events[next].time < done + n; ++next)
+        {
+            const TimedEvent &e = events[next];
+            blockEvents.push_back(
+                {static_cast<uint32_t>(e.time - done), e.slot, e.isModulation, e.value});
+        }
+        const auto j = static_cast<std::size_t>(done);
+        float *out[2] = {r.audio.left.data() + j, r.audio.right.data() + j};
+        p.process(nullptr, 0, out, 2, n, blockEvents,
+                  done == 0 ? std::span(&on, 1) : std::span<const gg::core::NoteEvent>{});
+        done += n;
+    }
+    return r;
+}
+} // namespace
+
+TEST_CASE("a resting preset renders bit-identically with the macros present", "[core]")
+{
+    // Spec §3.1: every macro set to its rest value by an event after 0.5 s changes nothing, in
+    // either product.
+    SECTION("FX")
+    {
+        const Stereo input = noise(2 * 48000, 0.5f, 23);
+        AutomationRender plain;
+        renderAutomation(input, {}, 512, {512}, plain);
+        AutomationRender rested;
+        renderAutomation(input, macrosAtRest(Mode::Fx), 512, {512}, rested);
+        REQUIRE(peak(plain.audio.left) > 0.05f);
+        REQUIRE(plain.log.grains.size() > 10);
+        REQUIRE(plain.ring.left.size() == input.left.size());
+        REQUIRE(rested.log.grains == plain.log.grains);
+        REQUIRE(sameBits(rested.audio.left, plain.audio.left));
+        REQUIRE(sameBits(rested.audio.right, plain.audio.right));
+        REQUIRE(sameBits(rested.ring.left, plain.ring.left));
+        REQUIRE(sameBits(rested.ring.right, plain.ring.right));
+    }
+
+    SECTION("instrument")
+    {
+        const AutomationRender plain = renderInstrument({});
+        const AutomationRender rested = renderInstrument(macrosAtRest(Mode::Instrument));
+        REQUIRE(allFinite(plain.audio.left));
+        REQUIRE(peak(plain.audio.left) > 0.05f);
+        REQUIRE(plain.log.grains.size() > 10);
+        REQUIRE(rested.log.grains == plain.log.grains);
+        REQUIRE(sameBits(rested.audio.left, plain.audio.left));
+        REQUIRE(sameBits(rested.audio.right, plain.audio.right));
+    }
+}
+
+TEST_CASE("macro events apply on the grid", "[core]")
+{
+    // A Macro 3 event at sample 5 joins the boundary at 32: Pitch moves from there, in 1-sample
+    // calls as in any others.
+    Processor p({kSampleRate, 512, 3, Mode::Fx});
+    float left = 0.0f;
+    float right = 0.0f;
+    float *out[2] = {&left, &right};
+    const ParamEvent macro3{0, ParamSlot::Macro3, false, 0.75};
+    for (int64_t t = 0; t < 64; ++t)
+    {
+        INFO("after sample " << t);
+        p.process(nullptr, 0, out, 2, 1,
+                  t == 5 ? std::span(&macro3, 1) : std::span<const ParamEvent>{});
+        if (t < 32)
+        {
+            REQUIRE(p.effective(ParamSlot::Pitch) == 0.0f);
+            REQUIRE(p.base(ParamSlot::Macro3) == 0.5f);
+        }
+        else
+        {
+            REQUIRE(p.effective(ParamSlot::Pitch) == 12.0f); // 24 × (2 × 0.75 − 1)
+            REQUIRE(p.base(ParamSlot::Macro3) == 0.75f);
+        }
+    }
+}
+
+TEST_CASE("macro freeze engages freeze", "[core]")
+{
+    constexpr uint32_t kBlock = 512;
+    std::vector<float> left(kBlock), right(kBlock);
+    float *out[2] = {left.data(), right.data()};
+    const Stereo input = noise(kBlock, 0.5f, 29);
+    const float *in[2] = {input.left.data(), input.right.data()};
+    // 20 blocks, about 0.2 s: well past the freeze's 20 ms ramp.
+    const auto run = [&](Processor &p, const ParamEvent *first) {
+        for (int k = 0; k < 20; ++k)
+        {
+            p.process(in, 2, out, 2, kBlock,
+                      k == 0 && first != nullptr ? std::span(first, 1)
+                                                 : std::span<const ParamEvent>{});
+        }
+    };
+
+    SECTION("by an event")
+    {
+        Processor p({kSampleRate, kBlock, 3, Mode::Fx});
+        run(p, nullptr); // Freeze off seen: armed
+        REQUIRE(p.engine().liveWriteHead() == 20 * kBlock);
+        const ParamEvent macro6{0, ParamSlot::Macro6, false, 1.0};
+        run(p, &macro6);
+        REQUIRE(p.base(ParamSlot::Freeze) == 0.0f);
+        REQUIRE(p.effective(ParamSlot::Freeze) == 1.0f);
+        const int64_t head = p.engine().liveWriteHead();
+        REQUIRE(head > 20 * kBlock);
+        REQUIRE(head < 40 * kBlock); // stopped
+        run(p, nullptr);
+        REQUIRE(p.engine().liveWriteHead() == head);
+
+        // Macro 6 off again: the ring runs.
+        const ParamEvent off{0, ParamSlot::Macro6, false, 0.0};
+        run(p, &off);
+        REQUIRE(p.effective(ParamSlot::Freeze) == 0.0f);
+        REQUIRE(p.engine().liveWriteHead() > head);
+    }
+
+    SECTION("by setBase, as Freeze itself")
+    {
+        Processor p({kSampleRate, kBlock, 3, Mode::Fx});
+        run(p, nullptr);
+        p.setBase(ParamSlot::Macro6, 1.0f);
+        REQUIRE(p.effective(ParamSlot::Freeze) == 1.0f);
+        run(p, nullptr);
+        const int64_t head = p.engine().liveWriteHead();
+        REQUIRE(head < 40 * kBlock);
+        run(p, nullptr);
+        REQUIRE(p.engine().liveWriteHead() == head);
+    }
+
+    SECTION("live until toggled, as Freeze is")
+    {
+        // On before the first call: not armed (ruling M1-ac), so the ring keeps running.
+        Processor p({kSampleRate, kBlock, 3, Mode::Fx});
+        p.setBase(ParamSlot::Macro6, 1.0f);
+        run(p, nullptr);
+        REQUIRE(p.effective(ParamSlot::Freeze) == 1.0f);
+        REQUIRE(p.engine().liveWriteHead() == 20 * kBlock);
+    }
+}
+
+TEST_CASE("instrument macros 7 and 8 drive Stereo and Level", "[core]")
+{
+    std::vector<float> left(64), right(64);
+    float *out[2] = {left.data(), right.data()};
+    const std::array<ParamEvent, 2> events{
+        {{0, ParamSlot::Macro7, false, 1.0}, {0, ParamSlot::Macro8, false, 1.0}}};
+
+    Processor inst({kSampleRate, 512, 3, Mode::Instrument});
+    inst.process(nullptr, 0, out, 2, 64, events);
+    CHECK(inst.effective(ParamSlot::Stereo) == 0.5f + 0.5f);
+    CHECK(inst.effective(ParamSlot::Level) == 0.0f + 12.0f);
+    CHECK(inst.effective(ParamSlot::Feedback) == 0.0f);
+    CHECK(inst.effective(ParamSlot::Mix) == 0.5f);
+
+    // The FX's are Feedback (+0.9u²) and Mix (+0.5b).
+    Processor fx({kSampleRate, 512, 3, Mode::Fx});
+    fx.process(nullptr, 0, out, 2, 64, events);
+    CHECK(fx.effective(ParamSlot::Feedback) == 0.9f);
+    CHECK(fx.effective(ParamSlot::Mix) == 1.0f);
+    CHECK(fx.effective(ParamSlot::Stereo) == 0.5f);
+    CHECK(fx.effective(ParamSlot::Level) == 0.0f);
+}
+
+TEST_CASE("setBase of a macro jumps the ramped values it moves", "[core]")
+{
+    // A state load or params.flush that sets Macro 8 (Mix) and Macro 5 (Texture, and Diffusion
+    // in its top quarter) at their tops sounds as setting Mix, Texture and Diffusion directly:
+    // the Mix and Diffusion ramps jump as setBase of Mix or Diffusion makes them. Macro 7 at its
+    // top sounds as Feedback 0.9 set directly: its ramp jumps too.
+    const Stereo input = noise(48000 / 2, 0.5f, 37);
+    AutomationRender direct;
+    renderAutomation(input, {}, 512, {512}, direct, [](Processor &p) {
+        p.setBase(ParamSlot::Mix, 1.0f);
+        p.setBase(ParamSlot::Texture, 1.0f);
+        p.setBase(ParamSlot::Diffusion, 1.0f);
+        p.setBase(ParamSlot::Feedback, 0.9f);
+    });
+    AutomationRender macros;
+    renderAutomation(input, {}, 512, {512}, macros, [](Processor &p) {
+        p.setBase(ParamSlot::Macro8, 1.0f);
+        p.setBase(ParamSlot::Macro5, 1.0f);
+        p.setBase(ParamSlot::Macro7, 1.0f); // Feedback +0.9, whose ramp jumps too
+        REQUIRE(p.effective(ParamSlot::Mix) == 1.0f);
+        REQUIRE(p.effective(ParamSlot::Texture) == 1.0f);
+        REQUIRE(p.effective(ParamSlot::Diffusion) == 1.0f);
+        REQUIRE(p.effective(ParamSlot::Feedback) == 0.9f);
+        REQUIRE(p.feedbackAt(0) == 0.9f);
+    });
+    REQUIRE(peak(direct.audio.left) > 0.05f);
+    REQUIRE(macros.log.grains == direct.log.grains);
+    REQUIRE(sameBits(macros.audio.left, direct.audio.left));
+    REQUIRE(sameBits(macros.audio.right, direct.audio.right));
+}
+
+namespace
+{
+// The RMS of both channels over the frames [from, to).
+double rmsOf(const Stereo &s, int64_t from, int64_t to)
+{
+    double sum = 0.0;
+    for (int64_t i = from; i < to; ++i)
+    {
+        const auto j = static_cast<std::size_t>(i);
+        sum += static_cast<double>(s.left[j]) * s.left[j] +
+               static_cast<double>(s.right[j]) * s.right[j];
+    }
+    return std::sqrt(sum / static_cast<double>(2 * (to - from)));
+}
+
+double dbOf(double ratio) { return 20.0 * std::log10(ratio); }
+} // namespace
+
+TEST_CASE("feedback writes the limited wet signal 256 samples late into the ring", "[core]")
+{
+    // Sub-project 5's spec §5: ring[t] = sanitize(in[t]) + fb · limited[t − 256]. With Mix 1 the
+    // output is limited itself (d × 0 + limited), so the ring's frame t + 256 must hold
+    // in[t + 256] + 0.5 × out[t], bit for bit, and its first 256 frames the input alone.
+    static_assert(Processor::kFeedbackDelay == 256);
+    constexpr uint32_t kFrames = 1025; // readLinear's second tap of frame 1023 is frame 1024
+    const Stereo input = noise(kFrames, 0.5f, 41);
+    Processor p({kSampleRate, 4096, 5, Mode::Fx});
+    p.setBase(ParamSlot::Mix, 1.0f);
+    p.setBase(ParamSlot::Level, 0.0f);
+    p.setBase(ParamSlot::Diffusion, 0.0f);
+    p.setBase(ParamSlot::Density, 6.0f);
+    p.setBase(ParamSlot::Size, -2.0f);
+    p.setBase(ParamSlot::Position, 0.0f); // right behind the head, so the wet starts at once
+    p.setBase(ParamSlot::Spray, 0.0f);
+    p.setBase(ParamSlot::Feedback, 0.5f);
+    REQUIRE(p.feedbackAt(0) == 0.5f);
+    Stereo out{std::vector<float>(kFrames, kNaN), std::vector<float>(kFrames, kNaN)};
+    const float *in[2] = {input.left.data(), input.right.data()};
+    float *o[2] = {out.left.data(), out.right.data()};
+    p.process(in, 2, o, 2, kFrames, {});
+
+    const gg::LiveSource &ring = p.engine().live();
+    const int64_t head = p.engine().liveWriteHead();
+    REQUIRE(head == kFrames);
+    gg::LiveSource::Cursor cursor;
+    int sounding = 0;
+    for (int64_t f = 0; f < 1024; ++f)
+    {
+        float l = kNaN;
+        float r = kNaN;
+        REQUIRE(ring.readLinear(static_cast<double>(f), head, cursor, l, r));
+        const auto j = static_cast<std::size_t>(f);
+        float expectedL = input.left[j];
+        float expectedR = input.right[j];
+        if (f >= 256)
+        {
+            const auto k = static_cast<std::size_t>(f - 256);
+            expectedL = input.left[j] + 0.5f * out.left[k];
+            expectedR = input.right[j] + 0.5f * out.right[k];
+            sounding += out.left[k] != 0.0f ? 1 : 0;
+        }
+        INFO("frame " << f);
+        REQUIRE(std::bit_cast<uint32_t>(l) == std::bit_cast<uint32_t>(expectedL));
+        REQUIRE(std::bit_cast<uint32_t>(r) == std::bit_cast<uint32_t>(expectedR));
+    }
+    REQUIRE(sounding > 200); // the wet signal was there to feed back
+}
+
+namespace
+{
+// 2.5 s of Feedback automation (spec §5; Review Focus 3): 0 → 0.9 at 0.3 s, → 0.2 at 1.1 s, a
+// modulation of +0.3 at 1.7 s, and back to 0 (base and modulation) just after 2.2 s, at the
+// boundary kFeedbackOff: the 10 ms ramp down reaches exactly 0 at kFeedbackZero.
+constexpr int64_t kFeedbackFrames = 48000 * 5 / 2;
+constexpr int64_t kFeedbackOff = 105632;              // the boundary of the events at 105605
+constexpr int64_t kFeedbackZero = kFeedbackOff + 480; // the first sample with fb(t) == 0
+// The input is -0.0 over [kNegativeZeroFrom, kNegativeZeroTo): through the end of the ramp and
+// past it, so the ring keeps the sign of zero only if a sample whose fb(t) is 0 writes the input
+// alone, inside a piece that started on the ramp as much as in one that started after it.
+constexpr int64_t kNegativeZeroFrom = kFeedbackZero - 200;
+constexpr int64_t kNegativeZeroTo = kFeedbackZero + 300;
+
+std::vector<TimedEvent> feedbackAutomation()
+{
+    return {{14400, ParamSlot::Feedback, false, 0.9},
+            {52800, ParamSlot::Feedback, false, 0.2},
+            {81600, ParamSlot::Feedback, true, 0.3},
+            {105605, ParamSlot::Feedback, false, 0.0},
+            {105605, ParamSlot::Feedback, true, 0.0}};
+}
+
+Stereo feedbackInput()
+{
+    Stereo input = noise(kFeedbackFrames, 0.5f, 43);
+    std::fill(input.left.begin() + kNegativeZeroFrom, input.left.begin() + kNegativeZeroTo, -0.0f);
+    std::fill(input.right.begin() + kNegativeZeroFrom, input.right.begin() + kNegativeZeroTo,
+              -0.0f);
+    return input;
+}
+
+void feedbackSetup(Processor &p)
+{
+    p.setBase(ParamSlot::Mix, 1.0f);
+    p.setBase(ParamSlot::Density, 6.0f);
+}
+} // namespace
+
+TEST_CASE("feedback is block-size invariant", "[core][determinism]")
+{
+    // The history is indexed by absolute time and the FX's pieces are at most 256 samples, so a
+    // 1-sample maxBlockSize, 0-frame calls and any split render what one 4096 call does, and
+    // write the same ring, bit for bit.
+    const Stereo input = feedbackInput();
+    const auto events = feedbackAutomation();
+
+    AutomationRender ref;
+    renderAutomation(input, events, 4096, {4096}, ref, feedbackSetup);
+    REQUIRE(allFinite(ref.audio.left));
+    REQUIRE(allFinite(ref.audio.right));
+    REQUIRE(peak(ref.audio.left) > 0.05f);
+    REQUIRE_FALSE(ref.log.overflowed);
+    // Not vacuous: the same render without the events (Feedback 0 throughout) differs.
+    AutomationRender none;
+    renderAutomation(input, {}, 4096, {4096}, none, feedbackSetup);
+    REQUIRE(none.log.grains == ref.log.grains); // feedback changes the ring, not the schedule
+    REQUIRE_FALSE(sameBits(none.audio.left, ref.audio.left));
+    // The ramp down to 0 still feeds back: the ring differs from the input on it.
+    REQUIRE(ref.writeHead == kFeedbackFrames);
+    REQUIRE(ref.ring.left.size() == static_cast<std::size_t>(kFeedbackFrames));
+    int fedOnRamp = 0;
+    for (int64_t t = kFeedbackOff; t < kFeedbackZero; ++t)
+    {
+        const auto j = static_cast<std::size_t>(t);
+        if (std::bit_cast<uint32_t>(ref.ring.left[j]) != std::bit_cast<uint32_t>(input.left[j]))
+        {
+            ++fedOnRamp;
+        }
+    }
+    REQUIRE(fedOnRamp > 400);
+    // From the ramp's end the ring is the input, bit for bit: the -0.0 samples included.
+    for (int64_t t = kFeedbackZero; t < kFeedbackFrames; ++t)
+    {
+        const auto j = static_cast<std::size_t>(t);
+        INFO("frame " << t);
+        REQUIRE(std::bit_cast<uint32_t>(ref.ring.left[j]) ==
+                std::bit_cast<uint32_t>(input.left[j]));
+        REQUIRE(std::bit_cast<uint32_t>(ref.ring.right[j]) ==
+                std::bit_cast<uint32_t>(input.right[j]));
+    }
+    REQUIRE(std::signbit(ref.ring.left[static_cast<std::size_t>(kFeedbackZero)]));
+
+    struct Split
+    {
+        uint32_t maxBlock;
+        std::vector<uint32_t> blockSizes;
+    };
+    std::vector<Split> splits{{4096, {1}},  {4096, {7}},   {4096, {511}}, {1, {4096}},
+                              {64, {4096}}, {256, {4096}}, {300, {4096}}};
+    for (const uint64_t seed : {199, 200, 201})
+    {
+        auto random = randomSplit(seed);
+        REQUIRE(std::count(random.begin(), random.end(), 0u) > 0); // 0-frame calls
+        splits.push_back({4096, std::move(random)});
+    }
+    for (const Split &split : splits)
+    {
+        INFO("maxBlockSize = " << split.maxBlock << ", first block size = "
+                               << split.blockSizes.front() << " of " << split.blockSizes.size());
+        AutomationRender r;
+        renderAutomation(input, events, split.maxBlock, split.blockSizes, r, feedbackSetup);
+        REQUIRE_FALSE(r.log.overflowed);
+        REQUIRE(r.log.grains == ref.log.grains);
+        REQUIRE(r.writeHead == ref.writeHead);
+        REQUIRE(sameBits(ref.audio.left, r.audio.left));
+        REQUIRE(sameBits(ref.audio.right, r.audio.right));
+        REQUIRE(sameBits(ref.ring.left, r.ring.left));
+        REQUIRE(sameBits(ref.ring.right, r.ring.right));
+    }
+}
+
+TEST_CASE("feedback stays bounded for 60 s", "[core][slow]")
+{
+    // Spec §5's property test: Feedback 0.95 with dense, loud settings (128 grains/s of 1 s,
+    // Level +12 dB, Stereo 100%) over 2 s of loud stereo noise, then silence, for 60 s. With Mix
+    // 1 the output is the limited wet signal, so |out| < 1 is the limiter's bound; and the
+    // regenerated level doesn't run away: the last 10 s are no louder than seconds 16 to 26
+    // (the first 10 s after the 16 s ring has filled), within 1 dB.
+    constexpr int64_t kFrames = 60 * 48000;
+    Stereo input = noise(kFrames, 0.5f, 47);
+    std::fill(input.left.begin() + 2 * 48000, input.left.end(), 0.0f);
+    std::fill(input.right.begin() + 2 * 48000, input.right.end(), 0.0f);
+    AutomationRender r;
+    renderAutomation(input, {}, 512, {512}, r, [](Processor &p) {
+        p.setBase(ParamSlot::Feedback, gg::core::kFeedbackMax);
+        p.setBase(ParamSlot::Density, 7.0f);
+        p.setBase(ParamSlot::Size, 0.0f);
+        p.setBase(ParamSlot::Mix, 1.0f);
+        p.setBase(ParamSlot::Level, 12.0f);
+        p.setBase(ParamSlot::Stereo, 1.0f);
+    });
+    REQUIRE(allFinite(r.audio.left));
+    REQUIRE(allFinite(r.audio.right));
+    REQUIRE(peak(r.audio.left) < 1.0f);
+    REQUIRE(peak(r.audio.right) < 1.0f);
+    const double settled = rmsOf(r.audio, 16 * 48000, 26 * 48000);
+    const double last = rmsOf(r.audio, 50 * 48000, 60 * 48000);
+    INFO("RMS over 16-26 s " << dbOf(settled) << " dBFS, over 50-60 s " << dbOf(last) << " dBFS");
+    REQUIRE(settled > 0.0);
+    REQUIRE(dbOf(last / settled) <= 1.0);
+}
+
+TEST_CASE("freeze stops feedback writes", "[core]")
+{
+    // Spec §5: Freeze wins. Frozen from 0.5 s, the ring's write gain falls to 0 over 20 ms and
+    // the head stops, so neither the input nor the feedback is written and the frozen buffer
+    // holds: with Feedback 0.9 acting from the start, every frame of the ring is the same, bit
+    // for bit, at 3 s as at 1 s, and the output holds its level.
+    constexpr int64_t kFrames = 3 * 48000;
+    constexpr int64_t kFreezeAt = 24000;
+    const Stereo input = noise(kFrames, 0.5f, 53);
+
+    SECTION("the frozen ring holds, bit for bit")
+    {
+        Processor p({kSampleRate, 4096, 9, Mode::Fx});
+        p.setBase(ParamSlot::Mix, 1.0f);
+        p.setBase(ParamSlot::Feedback, 0.9f);
+        Stereo out{std::vector<float>(kFrames, kNaN), std::vector<float>(kFrames, kNaN)};
+        const auto renderTo = [&](int64_t from, int64_t to) {
+            for (int64_t done = from; done < to;)
+            {
+                const auto n = static_cast<uint32_t>(std::min<int64_t>(4096, to - done));
+                const auto j = static_cast<std::size_t>(done);
+                const float *in[2] = {input.left.data() + j, input.right.data() + j};
+                float *o[2] = {out.left.data() + j, out.right.data() + j};
+                std::vector<ParamEvent> events;
+                if (kFreezeAt >= done && kFreezeAt < done + n)
+                {
+                    events.push_back(
+                        {static_cast<uint32_t>(kFreezeAt - done), ParamSlot::Freeze, false, 1.0});
+                }
+                p.process(in, 2, o, 2, n, events);
+                done += n;
+            }
+        };
+        // Every frame readLinear can reach: frames 0 .. head − 2.
+        const auto snapshot = [&p] {
+            const int64_t head = p.engine().liveWriteHead();
+            Stereo frames{std::vector<float>(static_cast<std::size_t>(head - 1)),
+                          std::vector<float>(static_cast<std::size_t>(head - 1))};
+            gg::LiveSource::Cursor cursor;
+            bool ok = true;
+            for (int64_t f = 0; f + 1 < head; ++f)
+            {
+                const auto j = static_cast<std::size_t>(f);
+                ok = ok && p.engine().live().readLinear(static_cast<double>(f), head, cursor,
+                                                        frames.left[j], frames.right[j]);
+            }
+            REQUIRE(ok);
+            return frames;
+        };
+        renderTo(0, 48000);
+        const int64_t head = p.engine().liveWriteHead();
+        // The freeze engages at its boundary, and the head stops after the 960-sample ramp.
+        REQUIRE(head > kFreezeAt);
+        REQUIRE(head <= kFreezeAt + 960 + 32);
+        const Stereo atOne = snapshot();
+        REQUIRE(peak(atOne.left) > 0.1f);
+        renderTo(48000, kFrames);
+        REQUIRE(p.engine().liveWriteHead() == head);
+        REQUIRE(p.feedbackAt(kFrames) == 0.9f); // Feedback still on: Freeze is what stops it
+        const Stereo atThree = snapshot();
+        REQUIRE(sameBits(atOne.left, atThree.left));
+        REQUIRE(sameBits(atOne.right, atThree.right));
+        // The grains go on reading the frozen buffer at a steady level.
+        const double second = rmsOf(out, 48000, 2 * 48000);
+        const double third = rmsOf(out, 2 * 48000, kFrames);
+        INFO("RMS over 1-2 s " << dbOf(second) << " dBFS, over 2-3 s " << dbOf(third) << " dBFS");
+        REQUIRE(second > 0.01);
+        REQUIRE(std::abs(dbOf(third / second)) <= 1.0);
+    }
+
+    SECTION("frozen, Feedback 0.9 sounds as Feedback 0")
+    {
+        // Feedback raised to 0.9 at the freeze's own boundary, so the two rings match up to it
+        // (Feedback acting before the freeze would put its regenerated signal in the frozen
+        // buffer, a legitimately different sound): after 1 s the output is as loud as with
+        // Feedback 0 and the same Freeze, within 0.5 dB.
+        const auto render = [&](double feedback) {
+            const std::vector<TimedEvent> events{{kFreezeAt, ParamSlot::Freeze, false, 1.0},
+                                                 {kFreezeAt, ParamSlot::Feedback, false, feedback}};
+            AutomationRender r;
+            renderAutomation(input, events, 4096, {4096}, r,
+                             [](Processor &p) { p.setBase(ParamSlot::Mix, 1.0f); });
+            return r;
+        };
+        const AutomationRender fed = render(0.9);
+        const AutomationRender plain = render(0.0);
+        REQUIRE(fed.writeHead == plain.writeHead);
+        REQUIRE(fed.writeHead <= kFreezeAt + 960 + 32);
+        const double fedRms = rmsOf(fed.audio, 48000, kFrames);
+        const double plainRms = rmsOf(plain.audio, 48000, kFrames);
+        INFO("after 1 s: Feedback 0.9 " << dbOf(fedRms) << " dBFS, Feedback 0 " << dbOf(plainRms)
+                                        << " dBFS");
+        REQUIRE(plainRms > 0.01);
+        REQUIRE(std::abs(dbOf(fedRms / plainRms)) <= 0.5);
+    }
 }

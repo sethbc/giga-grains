@@ -13,6 +13,7 @@ add_executable(gg-tests
         core/parammap_tests.cpp
         core/patch_tests.cpp
         core/processor_tests.cpp
+        core/publish_tests.cpp
         core/session_state_tests.cpp
         core/settings_tests.cpp
         core/space_processor_tests.cpp
@@ -47,6 +48,7 @@ add_executable(gg-tests
         tools/bench_tests.cpp
         tools/render_spec_tests.cpp
         tools/signals_tests.cpp
+        ui/lane_model_tests.cpp
         ui/splat_tests.cpp
         support/AllocTripwire.cpp
         )
@@ -72,14 +74,15 @@ endif ()
 # duplicate libraries"). So the plugin layers, when they're built, come first: they link the
 # engine and, with the editor, gg::ui-core. The editor layer is an object library, whose own
 # libraries CMake would put after everything listed here, so they're listed too: the plugin
-# core and gg::ui. Then gg::render, gg::ui-core, gg::bench, gg::media and gg::core, which link
+# core and gg::ui, then sst-jucegui, which gg::ui links and factory_tests.cpp's knob test
+# includes. Then gg::render, gg::ui-core, gg::bench, gg::media and gg::core, which link
 # the engine (and gg::render the metrics). gg::bench-kernels (header-only, no
 # engine dependency; the tests include its Kernels.h) follows gg::bench, which links it.
 # gg::media links gg::core, so comes first.
 set(gg_tests_libraries gg::render gg::ui-core gg::bench gg::bench-kernels gg::media gg::core
         gg::engine gg::audiometrics)
 if (GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
-    list(PREPEND gg_tests_libraries gg::plugin-impl gg-plugin-core gg::ui)
+    list(PREPEND gg_tests_libraries gg::plugin-impl gg-plugin-core gg::ui sst-jucegui)
 elseif (GG_BUILD_PLUGINS)
     list(PREPEND gg_tests_libraries gg::plugin-impl)
 endif ()
@@ -126,6 +129,10 @@ if (GG_BUILD_PLUGINS)
             plugin/sample_tests.cpp
             )
     target_include_directories(gg-tests PRIVATE ${CMAKE_SOURCE_DIR}/plugin/src)
+endif ()
+# The editor's tests reach its components' private headers too (ui/src: GrainCanvas, LoaderStrip).
+if (GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
+    target_include_directories(gg-tests PRIVATE ${CMAKE_SOURCE_DIR}/ui/src)
 endif ()
 
 list(APPEND CMAKE_MODULE_PATH ${CMAKE_SOURCE_DIR}/libs/catch2/extras)

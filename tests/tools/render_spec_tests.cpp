@@ -33,9 +33,12 @@
 #include "gg/grain/Tier.h"
 #include "gg/source/PreparedSource.h"
 #include "gg/source/SampleBuffer.h"
+#include "sst/basic-blocks/params/ParamMetadata.h"
 #include "support/Utf8.h"
 
 using Catch::Matchers::ContainsSubstring;
+using Catch::Matchers::EndsWith;
+using Catch::Matchers::StartsWith;
 using Catch::Matchers::WithinRel;
 using gg::core::Mode;
 using gg::core::NoteEvent;
@@ -513,7 +516,7 @@ TEST_CASE("event lines use the documented format", "[render]")
         .pan = 0.0f,
     };
     CHECK(gg::render::formatEventLine(g) ==
-          R"({"i":3,"onset":18000,"frac":0.5,"pos":95999.5,"rate":0.5,"dur":2880,)"
+          R"({"i":3,"onset":18000,"frac":0.5,"pos":95999.5,"rate":0.5,"dur":2880,"tex":0,)"
           R"("gain":0.8,"pan":0})");
 
     // Doubles are written shortest-round-trip, so they read back exactly.
@@ -524,20 +527,86 @@ TEST_CASE("event lines use the documented format", "[render]")
         .startPos = 0.1 + 0.2,
         .rate = 1e-7,
         .durationSamples = 16.0,
+        .texture = 0.7,
         .gain = 1.0f / 3.0f,
         .pan = -0.1f,
     };
     const std::string line = gg::render::formatEventLine(h);
     CHECK(line == R"({"i":1099511627776,"onset":1099511627776,"frac":0.1,)"
-                  R"("pos":0.30000000000000004,"rate":1e-07,"dur":16,)"
+                  R"("pos":0.30000000000000004,"rate":1e-07,"dur":16,"tex":0.7,)"
                   R"("gain":0.33333334,"pan":-0.1})");
     const auto parsed = nlohmann::json::parse(line);
     CHECK(parsed["frac"].get<double>() == h.onsetFrac);
     CHECK(parsed["pos"].get<double>() == h.startPos);
     CHECK(parsed["rate"].get<double>() == h.rate);
+    CHECK(parsed["tex"].get<double>() == h.texture);
     // gain and pan are floats, written shortest-round-trip as floats.
     CHECK(parsed["gain"].get<float>() == h.gain);
     CHECK(parsed["pan"].get<float>() == h.pan);
+}
+
+TEST_CASE("event lines carry each grain's texture", "[render]")
+{
+    // Spec §4: "tex" follows "dur". A stream at its defaults (Texture 0) writes "tex":0 on every
+    // line, in sample mode and in FX mode.
+    RenderSpec fx;
+    fx.mode = RenderMode::Fx;
+    fx.sampleRate = 48000.0;
+    fx.durationSeconds = 0.25;
+    fx.blockSize = 64;
+    fx.seed = 5;
+    fx.fx.input = {.kind = SourceKind::Noise, .seconds = 0.25, .amplitude = 0.5};
+    fx.fx.channels = 2;
+    fx.fx.params = {{"Density", 7.0}};
+    for (const RenderSpec &spec : {parseCase("sparse-sine"), fx})
+    {
+        INFO("mode " << static_cast<int>(spec.mode));
+        std::vector<std::string> events;
+        gg::render::render(spec, &events);
+        REQUIRE(events.size() > 10);
+        for (const std::string &line : events)
+        {
+            INFO(line);
+            const std::size_t dur = line.find(R"(,"dur":)");
+            const std::size_t tex = line.find(R"(,"tex":0,"gain":)");
+            REQUIRE(dur != std::string::npos);
+            REQUIRE(tex != std::string::npos);
+            REQUIRE(line.find(',', dur + 1) == tex);
+            REQUIRE(nlohmann::json::parse(line)["tex"].get<double>() == 0.0);
+        }
+    }
+}
+
+TEST_CASE("an fx spec's Texture reaches the event lines", "[render]")
+{
+    // Spec §4 end to end: Texture set by name in an FX spec, or by Macro Texture (Texture
+    // +u/0.75, so 0.375 gives exactly 0.5), is latched by every grain and written as "tex".
+    RenderSpec fx;
+    fx.mode = RenderMode::Fx;
+    fx.sampleRate = 48000.0;
+    fx.durationSeconds = 0.25;
+    fx.blockSize = 64;
+    fx.seed = 5;
+    fx.fx.input = {.kind = SourceKind::Noise, .seconds = 0.25, .amplitude = 0.5};
+    fx.fx.channels = 2;
+    RenderSpec direct = fx;
+    direct.fx.params = {{"Density", 7.0}, {"Texture", 0.5}};
+    RenderSpec macro = fx;
+    macro.fx.params = {{"Density", 7.0}, {"Macro Texture", 0.375}};
+    std::vector<std::string> directEvents;
+    gg::render::render(direct, &directEvents);
+    REQUIRE(directEvents.size() > 10);
+    for (const std::string &line : directEvents)
+    {
+        INFO(line);
+        REQUIRE(line.find(R"(,"tex":0.5,"gain":)") != std::string::npos);
+        REQUIRE(nlohmann::json::parse(line)["tex"].get<double>() == 0.5);
+    }
+    // At 0.375 Macro Texture moves Texture alone (Diffusion only from 0.75), so its grains are
+    // the direct spec's, line for line.
+    std::vector<std::string> macroEvents;
+    gg::render::render(macro, &macroEvents);
+    REQUIRE(macroEvents == directEvents);
 }
 
 TEST_CASE("fx spec parses", "[render]")
@@ -729,6 +798,60 @@ TEST_CASE("fx spec rejects bad input", "[render]")
         j["channels"] = 1;
         CHECK_THAT(rejection(j), ContainsSubstring("channels"));
     }
+}
+
+TEST_CASE("instrument specs name the instrument's macros", "[render]")
+{
+    // Macros 7 and 8 have a name per product (sub-project 5's spec §3.3): a spec names them as
+    // its own product does, and the other product's name is an unknown key.
+    CHECK(gg::render::paramSlotNamed("Macro Level") == ParamSlot::Macro8);
+    CHECK(gg::render::paramSlotNamed("Macro Mix") == ParamSlot::Macro8);
+    CHECK(gg::render::paramSlotNamed("Macro Stereo") == ParamSlot::Macro7);
+    CHECK(gg::render::paramSlotNamed("Macro Feedback") == ParamSlot::Macro7);
+    CHECK(gg::render::paramSlotNamed("Texture") == ParamSlot::Texture);
+    CHECK(gg::render::paramSlotNamed("Feedback") == ParamSlot::Feedback);
+    CHECK(gg::render::paramSlotNamed("Macro Size") == ParamSlot::Macro1);
+    CHECK_FALSE(gg::render::paramSlotNamed("Macro 8").has_value());
+    // Every name of either product finds its own slot: no name is one slot's in one product and
+    // another's in the other.
+    for (const Mode mode : {Mode::Fx, Mode::Instrument})
+    {
+        for (std::size_t s = 0; s < gg::core::kParamCount; ++s)
+        {
+            const auto slot = static_cast<ParamSlot>(s);
+            const auto &name = gg::core::paramMeta(slot, mode).name;
+            INFO("param " << name);
+            CHECK(gg::render::paramSlotNamed(name) == slot);
+        }
+    }
+
+    auto instrument = instrumentJson();
+    instrument["params"] = {{"Macro Level", 1.0}};
+    const RenderSpec inst = parseJson(instrument);
+    CHECK(inst.instrument.params ==
+          std::vector<std::pair<std::string, double>>{{"Macro Level", 1.0}});
+
+    auto fx = nlohmann::json::parse(readCase("fx-sine"));
+    fx["params"] = {{"Macro Mix", 1.0}};
+    const RenderSpec mix = parseJson(fx);
+    CHECK(mix.fx.params == std::vector<std::pair<std::string, double>>{{"Macro Mix", 1.0}});
+
+    // The instrument's name in an FX spec, and the FX's in an instrument spec, as params and as
+    // automation.
+    fx["params"] = {{"Macro Level", 1.0}};
+    // The message lists the spec's own product's names.
+    CHECK_THAT(rejection(fx), StartsWith("unknown key params.Macro Level: the parameters are "));
+    CHECK_THAT(rejection(fx), EndsWith("Macro Feedback, Macro Mix"));
+    instrument["params"] = {{"Macro Mix", 1.0}};
+    CHECK_THAT(rejection(instrument),
+               StartsWith("unknown key params.Macro Mix: the parameters are "));
+    CHECK_THAT(rejection(instrument), EndsWith("Macro Stereo, Macro Level"));
+    fx.erase("params");
+    fx["automation"] = {{{"time", 1.0}, {"param", "Macro Stereo"}, {"value", 1.0}}};
+    CHECK_THAT(rejection(fx), StartsWith("automation[0].param must be one of "));
+    fx["automation"][0]["param"] = "Macro Feedback";
+    const RenderSpec automated = parseJson(fx);
+    CHECK(automated.fx.automation == std::vector<AutomationPoint>{{1.0, "Macro Feedback", 1.0}});
 }
 
 TEST_CASE("fx render matches the processor", "[render]")

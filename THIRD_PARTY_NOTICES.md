@@ -53,12 +53,19 @@ keeps its own copyright line.
 | clap-wrapper | Copyright (c) 2022 defiantnerd | `libs/clap/clap-wrapper/LICENSE` | VST3, AU v2 and standalone (it wraps the CLAP plugin); its CLAP extension headers are in the CLAP builds too |
 | VST3 SDK 3.8.0 (`v3.8.0_build_66`, fetched by clap-wrapper) | Copyright (c) 2025, Steinberg Media Technologies GmbH | `LICENSE.txt` in the SDK checkout (the MIT text below) | VST3 |
 | sst-clap-helpers (`clap_juce_shim`) | Copyright 2019-2020, Paul Walker | `libs/sst/sst-clap-helpers/LICENSE.md` | Both products (the editor) |
+| sst-jucegui (controls and theme) | Copyright 2019-2021, Authors as indicated in the Git Transaction Log | `libs/sst/sst-jucegui/LICENSE.md` | Both products (the editor) |
+| md4c 0.5.2 (vendored in sst-jucegui) | Copyright © 2016-2024 Martin Mitáš | `libs/sst/sst-jucegui/src/sst/jucegui/markdown/md4c/LICENSE.md` | Both products (the editor) |
+| CMakeRC 2.0.0 (vendored in sst-jucegui as `cmake/CmakeRC.cmake`; its generated resource code is compiled into the editor) | Copyright (c) 2017 vector-of-bool <vectorofbool@gmail.com> | Not in the checkout: upstream's `LICENSE.txt`, https://github.com/vector-of-bool/cmrc (the MIT text below) | Both products (the editor) |
+| flowbite-icons (some of sst-jucegui's `res/glyphs`, as its `README.md` states; upstream commit 55af8e4, "Add a couple of glyphs from flowbite (#134)", added `folder.svg` and `file-music.svg`; embedded in the editor by `sst-jucegui-resources`) | Copyright (c) 2024 Themesberg | Not in the checkout: upstream's `LICENSE`, https://github.com/themesberg/flowbite-icons (the MIT text below) | Both products (the editor) |
 | sst-cpputils | Copyright 2019-2021, Authors as indicated in the Git Transaction Log | `libs/sst/sst-cpputils/LICENSE.md` | Both products |
 | sst-plugininfra (patch state; all but tinyxml) | Copyright 2019-2020, Paul Walker | `libs/sst/sst-plugininfra/LICENSE_MIT.md` | Both products |
 | simde | Copyright (c) 2017 Evan Nemerson | `libs/simde/COPYING` | Both products (SSE intrinsics on ARM) |
 | r8brain-free-src 7.6 | Copyright (c) 2013-2026 Aleksey Vaneev | `libs/r8brain/LICENSE` | Both products (sample-rate conversion; header-only) |
 | utf8proc 2.12.0 | See its own section below | `libs/utf8proc/LICENSE.md` | Both products (`gg-media`'s search for a missing sample) |
 | wil (v1.0.240803.1, fetched by clap-wrapper) | Copyright (c) Microsoft Corporation. All rights reserved. | `LICENSE` in the wil checkout | Windows standalone |
+
+The same resource library (`sst-jucegui-resources`) also embeds `surge-logo.svg` and
+`shortcircuit-logo.svg`, other projects' marks; neither product ever displays them.
 
 ### The MIT license
 

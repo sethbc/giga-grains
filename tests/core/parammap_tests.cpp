@@ -93,6 +93,7 @@ gg::CloudParams fxReference(const ParamValues &v)
     p.spray = 2.0 / 255.0 * (gg::exp2Det(8.0 * at(v, ParamSlot::Spray)) - 1.0);
     p.pitchSemitones = at(v, ParamSlot::Pitch);
     p.stereo = at(v, ParamSlot::Stereo);
+    p.texture = at(v, ParamSlot::Texture); // sub-project 5's Texture, read as it is
     p.gain = static_cast<float>(1.0 / std::sqrt(std::max(1.0, p.densityHz * p.grainDurationSec)));
     return p;
 }
@@ -105,8 +106,8 @@ bool sameApartFromPosition(const gg::CloudParams &a, const gg::CloudParams &b)
            bitsOf(a.grainDurationSec) == bitsOf(b.grainDurationSec) &&
            bitsOf(a.spray) == bitsOf(b.spray) &&
            bitsOf(a.pitchSemitones) == bitsOf(b.pitchSemitones) &&
-           bitsOf(a.stereo) == bitsOf(b.stereo) && bitsOf(a.gain) == bitsOf(b.gain) &&
-           a.quality == b.quality;
+           bitsOf(a.stereo) == bitsOf(b.stereo) && bitsOf(a.texture) == bitsOf(b.texture) &&
+           bitsOf(a.gain) == bitsOf(b.gain) && a.quality == b.quality;
 }
 
 bool sameBits(const gg::CloudParams &a, const gg::CloudParams &b)
@@ -183,7 +184,7 @@ TEST_CASE("param map follows the taper table", "[core]")
             INFO("slot " << i << " at " << v);
             const ParamValues values = with(slot, v);
             const auto cloud = toCloudParams(values, Mode::Fx);
-            const auto wet = toWetParams(values);
+            const auto wet = toWetParams(values, Mode::Fx);
             const auto space = toSpaceParams(values, Mode::Fx);
             switch (slot)
             {
@@ -259,6 +260,68 @@ TEST_CASE("param map follows the taper table", "[core]")
             case ParamSlot::DryToReverb:
                 REQUIRE(space.drySend == v);
                 break;
+            case ParamSlot::Texture:
+                // Read as it is (sub-project 5's spec §4); every other field is the defaults'.
+                {
+                    REQUIRE(cloud.texture == d(v));
+                    auto others = cloud;
+                    others.texture = 0.0;
+                    REQUIRE(sameBits(others, toCloudParams(defaults(Mode::Fx), Mode::Fx)));
+                    break;
+                }
+            case ParamSlot::Feedback:
+            {
+                // Read as it is in the FX, and 0 in the instrument, which has no ring to feed
+                // (sub-project 5's spec §5); every other wet field is the defaults'.
+                REQUIRE(wet.feedback == v);
+                REQUIRE(toWetParams(values, Mode::Instrument).feedback == 0.0f);
+                const auto w0 = toWetParams(defaults(Mode::Fx), Mode::Fx);
+                REQUIRE(w0.feedback == 0.0f);
+                REQUIRE(wet.levelGain == w0.levelGain);
+                REQUIRE(wet.mix == w0.mix);
+                REQUIRE(wet.freeze == w0.freeze);
+                REQUIRE(sameBits(cloud, toCloudParams(defaults(Mode::Fx), Mode::Fx)));
+                break;
+            }
+            case ParamSlot::Macro1:
+            case ParamSlot::Macro2:
+            case ParamSlot::Macro3:
+            case ParamSlot::Macro4:
+            case ParamSlot::Macro5:
+            case ParamSlot::Macro6:
+            case ParamSlot::Macro7:
+            case ParamSlot::Macro8:
+            {
+                // The macros act through macroOffsets before these functions: none of them moves
+                // a field here.
+                const ParamValues base = defaults(Mode::Fx);
+                const auto c0 = toCloudParams(base, Mode::Fx);
+                const auto w0 = toWetParams(base, Mode::Fx);
+                const auto s0 = toSpaceParams(base, Mode::Fx);
+                REQUIRE(cloud.densityHz == c0.densityHz);
+                REQUIRE(cloud.distribution == c0.distribution);
+                REQUIRE(cloud.grainDurationSec == c0.grainDurationSec);
+                REQUIRE(cloud.position == c0.position);
+                REQUIRE(cloud.spray == c0.spray);
+                REQUIRE(cloud.pitchSemitones == c0.pitchSemitones);
+                REQUIRE(cloud.stereo == c0.stereo);
+                REQUIRE(cloud.texture == c0.texture);
+                REQUIRE(cloud.gain == c0.gain);
+                REQUIRE(wet.levelGain == w0.levelGain);
+                REQUIRE(wet.mix == w0.mix);
+                REQUIRE(wet.freeze == w0.freeze);
+                REQUIRE(wet.feedback == w0.feedback);
+                REQUIRE(space.diffusion == s0.diffusion);
+                REQUIRE(space.amount == s0.amount);
+                REQUIRE(space.drySend == s0.drySend);
+                REQUIRE(space.decayLog2 == s0.decayLog2);
+                REQUIRE(space.infinite == s0.infinite);
+                REQUIRE(space.roomSize == s0.roomSize);
+                REQUIRE(space.hfDamping == s0.hfDamping);
+                REQUIRE(space.modulation == s0.modulation);
+                REQUIRE(space.predelaySeconds == s0.predelaySeconds);
+                break;
+            }
             case ParamSlot::Count:
                 FAIL("not a parameter");
             }
@@ -324,15 +387,15 @@ TEST_CASE("param map follows the taper table", "[core]")
     REQUIRE_THAT(spray[1], WithinRel(0.05, 1e-6));
     REQUIRE_THAT(spray[2], WithinRel(2.0, 1e-12));
     const auto level = ends(ParamSlot::Level, [](const ParamValues &v) {
-        return static_cast<double>(toWetParams(v).levelGain);
+        return static_cast<double>(toWetParams(v, Mode::Fx).levelGain);
     });
     REQUIRE_THAT(level[0], WithinRel(0.001, 1e-6));
     REQUIRE(level[1] == 1.0);
     REQUIRE_THAT(level[2], WithinRel(3.981071705534972, 1e-6));
 
     // Freeze is on above 0.5 only.
-    REQUIRE_FALSE(toWetParams(with(ParamSlot::Freeze, 0.5f)).freeze);
-    REQUIRE(toWetParams(with(ParamSlot::Freeze, std::nextafter(0.5f, 1.0f))).freeze);
+    REQUIRE_FALSE(toWetParams(with(ParamSlot::Freeze, 0.5f), Mode::Fx).freeze);
+    REQUIRE(toWetParams(with(ParamSlot::Freeze, std::nextafter(0.5f, 1.0f)), Mode::Fx).freeze);
 }
 
 TEST_CASE("space params follow the table", "[core][space]")
@@ -421,20 +484,30 @@ TEST_CASE("space params follow the table", "[core][space]")
         for (const Mode mode : {Mode::Fx, Mode::Instrument})
         {
             const auto cloud = toCloudParams(defaults(mode), mode);
-            const auto wet = toWetParams(defaults(mode));
+            const auto wet = toWetParams(defaults(mode), mode);
             for (size_t s = static_cast<size_t>(ParamSlot::Diffusion); s < kParamCount; ++s)
             {
                 const auto slot = static_cast<ParamSlot>(s);
+                if (slot == ParamSlot::Texture)
+                {
+                    continue; // the grains' envelope, a cloud field (the taper table test)
+                }
                 const auto &meta = gg::core::paramMeta(slot, mode);
                 for (const float v : {meta.minVal, meta.maxVal})
                 {
                     INFO("slot " << s << " at " << v);
                     const auto values = with(slot, v, mode);
                     CHECK(sameBits(toCloudParams(values, mode), cloud));
-                    const auto w = toWetParams(values);
+                    const auto w = toWetParams(values, mode);
                     CHECK(bitsOf(w.levelGain) == bitsOf(wet.levelGain));
                     CHECK(bitsOf(w.mix) == bitsOf(wet.mix));
                     CHECK(w.freeze == wet.freeze);
+                    // Only the FX's Feedback moves feedback; the instrument's is 0 whatever the
+                    // value, as it has no ring to feed.
+                    if (slot != ParamSlot::Feedback || mode == Mode::Instrument)
+                    {
+                        CHECK(bitsOf(w.feedback) == bitsOf(wet.feedback));
+                    }
                 }
             }
         }
@@ -594,4 +667,166 @@ TEST_CASE("soft limiter is continuous and bounded", "[core]")
     REQUIRE(softLimit(-inf) == -kBelowOne);
     // NaN, which nothing upstream should produce, is silence rather than a NaN on the output.
     REQUIRE(softLimit(std::numeric_limits<float>::quiet_NaN()) == 0.0f);
+}
+
+namespace
+{
+// The recipes' expected offsets (sub-project 5's spec §3.2), written out in double from the
+// table: one macro at `value`, the other macros at rest.
+ParamValues expectedOffsets(ParamSlot macro, double value, Mode mode)
+{
+    std::array<double, kParamCount> o{};
+    const double b = 2.0 * value - 1.0;
+    const double bPlus = std::max(b, 0.0);
+    const double u = value;
+    const auto add = [&o](ParamSlot slot, double x) { o[static_cast<size_t>(slot)] += x; };
+    switch (macro)
+    {
+    case ParamSlot::Macro1:
+        add(ParamSlot::Size, 3.0 * b);
+        add(ParamSlot::Density, -1.5 * b);
+        break;
+    case ParamSlot::Macro2:
+        add(ParamSlot::Density, 4.0 * b);
+        add(ParamSlot::Distribution, 0.25 * bPlus);
+        break;
+    case ParamSlot::Macro3:
+        add(ParamSlot::Pitch, 24.0 * b);
+        break;
+    case ParamSlot::Macro4:
+        add(ParamSlot::Spray, 0.5 * b);
+        add(ParamSlot::Stereo, 0.3 * bPlus);
+        break;
+    case ParamSlot::Macro5:
+    {
+        add(ParamSlot::Texture, std::min(u / 0.75, 1.0));
+        const double s = std::clamp((u - 0.75) / (1.0 - 0.75), 0.0, 1.0);
+        add(ParamSlot::Diffusion, s * s * (3.0 - 2.0 * s));
+        break;
+    }
+    case ParamSlot::Macro6:
+        add(ParamSlot::Freeze, u);
+        break;
+    case ParamSlot::Macro7:
+        if (mode == Mode::Fx)
+        {
+            add(ParamSlot::Feedback, 0.9 * u * u);
+        }
+        else
+        {
+            add(ParamSlot::Stereo, 0.5 * b);
+        }
+        break;
+    case ParamSlot::Macro8:
+        if (mode == Mode::Fx)
+        {
+            add(ParamSlot::Mix, 0.5 * b);
+        }
+        else
+        {
+            add(ParamSlot::Level, 12.0 * b);
+        }
+        break;
+    default:
+        FAIL("not a macro");
+    }
+    ParamValues f{};
+    for (size_t s = 0; s < kParamCount; ++s)
+    {
+        f[s] = static_cast<float>(o[s]);
+    }
+    return f;
+}
+} // namespace
+
+TEST_CASE("macro offsets follow the recipes", "[core]")
+{
+    for (const Mode mode : {Mode::Fx, Mode::Instrument})
+    {
+        for (const ParamSlot macro : gg::core::kMacroSlots)
+        {
+            for (const float v : {0.0f, 0.25f, 0.5f, 0.75f, 1.0f})
+            {
+                INFO("mode " << static_cast<int>(mode) << ", macro " << static_cast<int>(macro)
+                             << " at " << v);
+                // Every macro rests but this one; the other slots' values are ignored.
+                ParamValues m = defaults(mode);
+                m[static_cast<size_t>(macro)] = v;
+                const ParamValues offsets = gg::core::macroOffsets(m, mode);
+                const ParamValues expected = expectedOffsets(macro, d(v), mode);
+                for (size_t s = 0; s < kParamCount; ++s)
+                {
+                    INFO("slot " << s);
+                    REQUIRE_THAT(d(offsets[s]), WithinAbs(d(expected[s]), 1e-6));
+                }
+            }
+        }
+    }
+
+    SECTION("the offsets of several macros add up")
+    {
+        // Macro 4 and the instrument's Macro 7 both move Stereo; Macros 1 and 2 both Density.
+        ParamValues m = defaults(Mode::Instrument);
+        m[static_cast<size_t>(ParamSlot::Macro1)] = 1.0f;
+        m[static_cast<size_t>(ParamSlot::Macro2)] = 0.75f;
+        m[static_cast<size_t>(ParamSlot::Macro4)] = 1.0f;
+        m[static_cast<size_t>(ParamSlot::Macro7)] = 0.25f;
+        const ParamValues o = gg::core::macroOffsets(m, Mode::Instrument);
+        REQUIRE_THAT(d(o[static_cast<size_t>(ParamSlot::Density)]), WithinAbs(-1.5 + 2.0, 1e-6));
+        REQUIRE_THAT(d(o[static_cast<size_t>(ParamSlot::Stereo)]), WithinAbs(0.3 - 0.25, 1e-6));
+        REQUIRE_THAT(d(o[static_cast<size_t>(ParamSlot::Size)]), WithinAbs(3.0, 1e-6));
+    }
+
+    SECTION("the macros' own offsets are 0")
+    {
+        for (const Mode mode : {Mode::Fx, Mode::Instrument})
+        {
+            ParamValues m{};
+            m.fill(1.0f);
+            const ParamValues o = gg::core::macroOffsets(m, mode);
+            for (const ParamSlot macro : gg::core::kMacroSlots)
+            {
+                REQUIRE(o[static_cast<size_t>(macro)] == 0.0f);
+            }
+        }
+    }
+}
+
+TEST_CASE("resting macros offset nothing", "[core]")
+{
+    // Spec §3.1: a bipolar macro at 0.5 and a unipolar one at 0 contribute exactly 0, so a
+    // resting preset is bit-identical to its base values. Every entry is +0.0f, the sign
+    // included: base + (+0.0f) is base, bit for bit, for every base but −0.
+    for (const Mode mode : {Mode::Fx, Mode::Instrument})
+    {
+        const ParamValues o = gg::core::macroOffsets(defaults(mode), mode);
+        for (size_t s = 0; s < kParamCount; ++s)
+        {
+            INFO("mode " << static_cast<int>(mode) << ", slot " << s);
+            REQUIRE(bitsOf(o[s]) == bitsOf(0.0f));
+        }
+    }
+}
+
+TEST_CASE("smoothstep", "[core]")
+{
+    using gg::core::smoothstep;
+    STATIC_REQUIRE(smoothstep(0.75f, 1.0f, 0.875f) == 0.5f);
+    REQUIRE(smoothstep(0.75f, 1.0f, 0.0f) == 0.0f);
+    REQUIRE(smoothstep(0.75f, 1.0f, 0.75f) == 0.0f);
+    REQUIRE(smoothstep(0.75f, 1.0f, 0.5f) == 0.0f);
+    REQUIRE(smoothstep(0.75f, 1.0f, 1.0f) == 1.0f);
+    REQUIRE(smoothstep(0.75f, 1.0f, 2.0f) == 1.0f);
+    REQUIRE(smoothstep(2.0f, 4.0f, 3.0f) == 0.5f);
+    // s²(3 − 2s) at s = 0.25.
+    REQUIRE_THAT(d(smoothstep(0.0f, 1.0f, 0.25f)), WithinAbs(0.15625, 1e-7));
+    // Monotonic across the edge.
+    float previous = 0.0f;
+    for (int i = 0; i <= 400; ++i)
+    {
+        const float x = 0.7f + 0.35f * static_cast<float>(i) / 400.0f;
+        const float y = smoothstep(0.75f, 1.0f, x);
+        REQUIRE(y >= previous);
+        previous = y;
+    }
 }

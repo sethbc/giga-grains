@@ -5,6 +5,7 @@
 #include "gg/core/Processor.h"
 
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <cmath>
 #include <cstddef>
@@ -18,6 +19,10 @@ namespace gg::core
 // SpaceReverb's chunks must be the control grid's cells, so that its latched parameters and its
 // idle rule change on grid boundaries alone (the class comment).
 static_assert(SpaceReverb::kChunk == Processor::kControlGrid);
+// Feedback's delay is the ring's head margin (sub-project 5's spec §5): the admission clamp keeps
+// every grain at least that far behind the write head, so a piece of at most D samples never
+// reads a frame whose feedback it hasn't rendered yet.
+static_assert(Processor::kFeedbackDelay == gg::LiveSource::kHeadMargin);
 
 namespace
 {
@@ -47,6 +52,10 @@ int64_t gridCeil(int64_t a) noexcept
 }
 
 float finiteOrZero(float x) noexcept { return std::isfinite(x) ? x : 0.0f; }
+
+/// A missing ring-input channel, for the live peaks: the FX's pieces are at most
+/// kFeedbackDelay samples.
+constexpr std::array<float, Processor::kFeedbackDelay> kSilence{};
 
 /// Whether a note event's fields are in range (NoteEvent): On needs a channel 0..15 and a key
 /// 0..127, Off also takes −1 for either, AllOff takes a channel 0..15 or −1 and ignores the key.
@@ -105,6 +114,13 @@ Processor::Processor(const ProcessorConfig &config)
     {
         channel.assign(config_.maxBlockSize, 0.0f);
     }
+    if (config_.mode == Mode::Fx)
+    {
+        for (auto &channel : ringIn_)
+        {
+            channel.assign(config_.maxBlockSize, 0.0f);
+        }
+    }
     // The first paramMeta() call builds its tables, which allocates; make every call here, off
     // the audio thread, so that process() never makes it, and keep the ranges.
     for (size_t s = 0; s < kParamCount; ++s)
@@ -122,18 +138,33 @@ Processor::Processor(const ProcessorConfig &config)
     {
         engine_.setNoteGate(true); // silent until a note (spec §6.2)
     }
+    // Publishing (sub-project 5's spec §6.4): the engine's sink is ours for good, and forwards to
+    // setEventSink's. The peak strip spans the ring, N = ceil(kLiveSeconds × sampleRate) frames.
+    grainQueue_ = std::make_unique<GrainQueue>();
+    if (config_.mode == Mode::Fx)
+    {
+        livePeaks_.prepare(engine_.liveFrames());
+    }
+    engine_.setEventSink(&Processor::onGrain, this);
     updateEffective();
     jumpRamps();
 }
 
+void Processor::setSeed(uint64_t seed) noexcept
+{
+    config_.seed = seed;
+    engine_.setSeed(seed);
+}
+
 void Processor::jumpRamps() noexcept
 {
-    const WetParams w = toWetParams(effective_);
+    const WetParams w = toWetParams(effective_, config_.mode);
     mix_.jump(w.mix);
     level_.jump(w.levelGain);
     diffusion_.jump(space_.diffusion);
     amount_.jump(space_.amount);
     drySend_.jump(space_.drySend);
+    feedback_.jump(w.feedback);
 }
 
 float Processor::clampToRange(size_t slot, float value) const noexcept
@@ -151,11 +182,42 @@ void Processor::setBase(ParamSlot slot, float value) noexcept
     base_[s] = clampToRange(s, value);
     hasPendingBase_[s] = false;
     updateEffective();
-    if (slot == ParamSlot::Freeze)
+    if (slot == ParamSlot::Freeze || slot == ParamSlot::Macro6)
     {
         syncFreeze(); // Freeze set off is a transition's first half, even between calls
     }
-    const WetParams w = toWetParams(effective_);
+    const WetParams w = toWetParams(effective_, config_.mode);
+    if (isMacro(slot))
+    {
+        // A macro moves its targets' effective values (sub-project 5's spec §3.1): each ramped
+        // value whose target it changed jumps, as a setBase of the target itself makes it; the
+        // others keep their ramps.
+        if (w.mix != mix_.to)
+        {
+            mix_.jump(w.mix);
+        }
+        if (w.levelGain != level_.to)
+        {
+            level_.jump(w.levelGain);
+        }
+        if (space_.diffusion != diffusion_.to)
+        {
+            diffusion_.jump(space_.diffusion);
+        }
+        if (space_.amount != amount_.to)
+        {
+            amount_.jump(space_.amount);
+        }
+        if (space_.drySend != drySend_.to)
+        {
+            drySend_.jump(space_.drySend);
+        }
+        if (w.feedback != feedback_.to)
+        {
+            feedback_.jump(w.feedback);
+        }
+        return;
+    }
     switch (slot)
     {
     case ParamSlot::Mix:
@@ -172,6 +234,9 @@ void Processor::setBase(ParamSlot slot, float value) noexcept
         break;
     case ParamSlot::DryToReverb:
         drySend_.jump(space_.drySend);
+        break;
+    case ParamSlot::Feedback:
+        feedback_.jump(w.feedback);
         break;
     default:
         break;
@@ -269,11 +334,23 @@ void Processor::updateKeys() noexcept
 
 void Processor::updateEffective() noexcept
 {
-    // base is finite and in range, and mod is never NaN, so the sum is never NaN; an infinite
-    // mod clamps to an end of the range.
+    // Sub-project 5's spec §3.1: the macros' own effective values first, clamp(base + mod) as
+    // any slot's, then every slot's clamp(base + mod + offset), one clamp of the whole sum. A
+    // macro's own offset is 0, so its effective value is the one its curves read. At rest every
+    // offset is +0.0f and the sum is base + mod, bit for bit, but for a −0 sum (a −0 base and a
+    // −0 modulation, which only a host can send), which becomes +0.
+    // base is finite and in range, mod is never NaN, and every offset is finite (the macros are
+    // clamped to 0..1), so the sum is never NaN; an infinite mod clamps to an end of the range.
+    ParamValues macros{};
+    for (const ParamSlot slot : kMacroSlots)
+    {
+        const auto s = static_cast<size_t>(slot);
+        macros[s] = clampToRange(s, base_[s] + mod_[s]);
+    }
+    const ParamValues offsets = macroOffsets(macros, config_.mode);
     for (size_t s = 0; s < kParamCount; ++s)
     {
-        effective_[s] = clampToRange(s, base_[s] + mod_[s]);
+        effective_[s] = clampToRange(s, base_[s] + mod_[s] + offsets[s]);
     }
     engine_.setCloudParams(toCloudParams(effective_, config_.mode));
     space_ = toSpaceParams(effective_, config_.mode);
@@ -281,14 +358,15 @@ void Processor::updateEffective() noexcept
 
 void Processor::syncFreeze() noexcept
 {
-    const bool on = toWetParams(effective_).freeze;
+    const bool on = toWetParams(effective_, config_.mode).freeze;
     if (!on)
     {
         freezeArmed_ = true; // off seen: the next on engages
     }
     // Spec §6.3: in the FX a held key freezes too, with no arming, and never arms the parameter.
     const bool noteHeld = config_.mode == Mode::Fx && keyCount_ > 0;
-    engine_.setFreeze((on && freezeArmed_) || noteHeld);
+    engineFrozen_ = (on && freezeArmed_) || noteHeld;
+    engine_.setFreeze(engineFrozen_);
 }
 
 void Processor::reset() noexcept
@@ -301,11 +379,19 @@ void Processor::reset() noexcept
     updateEffective();
     // A fresh ring: Freeze waits for an off→on transition, as after construction.
     freezeArmed_ = false;
+    engineFrozen_ = false;
     engine_.setFreeze(false);
     jumpRamps();
     // The engine's clock is back at 0, and so is the reverb's time: its chunks stay on the grid.
+    // A fresh ring has no wet signal behind it to feed back.
+    for (auto &channel : wetHistory_)
+    {
+        channel.fill(0.0f);
+    }
     diffuser_.reset();
     reverb_->reset();
+    // The ring restarts at time 0, and its peak strip with it.
+    livePeaks_.reset();
 }
 
 void Processor::setSourceNow(std::shared_ptr<const PreparedSource> s)
@@ -369,7 +455,23 @@ bool Processor::takeOffers() noexcept
 
 void Processor::setEventSink(GrainEventSink sink, void *ctx) noexcept
 {
-    engine_.setEventSink(sink, ctx);
+    externalSink_ = sink;
+    externalSinkCtx_ = ctx;
+}
+
+void Processor::onGrain(void *ctx, const GrainSpec &g) noexcept
+{
+    auto *self = static_cast<Processor *>(ctx);
+    if (self->externalSink_ != nullptr)
+    {
+        self->externalSink_(self->externalSinkCtx_, g);
+    }
+    if (self->publishingThisCall_)
+    {
+        // A full queue drops the grain and counts it: the editor resumes with the next ones.
+        self->grainQueue_->push({g.onsetSample, g.startPos, static_cast<float>(g.rate),
+                                 static_cast<float>(g.durationSamples), g.gain, g.pan});
+    }
 }
 
 void Processor::process(const float *const *in, uint32_t numInChannels, float *const *out,
@@ -379,6 +481,8 @@ void Processor::process(const float *const *in, uint32_t numInChannels, float *c
 {
     // One guard for the whole call, the dry/wet sum included (spec §6.4).
     ScopedDenormalsOff denormalsOff;
+    // Read once: the whole call publishes, or none of it does (sub-project 5's spec §6.4).
+    publishingThisCall_ = publishing_.load(std::memory_order_relaxed);
     takeOffers();
     if (in == nullptr || config_.mode != Mode::Fx)
     {
@@ -405,12 +509,13 @@ void Processor::process(const float *const *in, uint32_t numInChannels, float *c
         commitPending();
         updateEffective();
         syncFreeze();
-        const WetParams w = toWetParams(effective_);
+        const WetParams w = toWetParams(effective_, config_.mode);
         mix_.retarget(w.mix, rendered, rampSamples_);
         level_.retarget(w.levelGain, rendered, rampSamples_);
         diffusion_.retarget(space_.diffusion, rendered, rampSamples_);
         amount_.retarget(space_.amount, rendered, rampSamples_);
         drySend_.retarget(space_.drySend, rendered, rampSamples_);
+        feedback_.retarget(w.feedback, rendered, rampSamples_);
     };
 
     // Puts an event at `offset` into its boundary's group, applying the pending group first if
@@ -493,6 +598,18 @@ void Processor::process(const float *const *in, uint32_t numInChannels, float *c
             std::fill_n(out[c], numFrames, 0.0f);
         }
     }
+
+    if (publishingThisCall_)
+    {
+        const int64_t clock = engine_.sampleClock();
+        snapshot_.push({clock, engine_.liveWriteHead(), engineFrozen_, engine_.activeGrains(),
+                        base_[static_cast<size_t>(ParamSlot::Position)],
+                        base_[static_cast<size_t>(ParamSlot::Spray)],
+                        effective_[static_cast<size_t>(ParamSlot::Position)],
+                        effective_[static_cast<size_t>(ParamSlot::Spray)], feedbackAt(clock)});
+        // Release: an editor that reads this clock with acquire finds the snapshot it ends.
+        publishedClock_.store(clock, std::memory_order_release);
+    }
 }
 
 void Processor::render(const Buffers &b, int64_t from, int64_t to) noexcept
@@ -504,10 +621,13 @@ void Processor::render(const Buffers &b, int64_t from, int64_t to) noexcept
     const uint32_t channels = std::min(b.numOutChannels, 2u);
     const uint32_t rendering = channels == 0 ? 2u : channels;
     float *const wet[2] = {wet_[0].data(), wet_[1].data()};
+    // The FX's pieces are at most kFeedbackDelay samples (sub-project 5's spec §5), so a piece's
+    // ring input needs only wet samples rendered before it.
+    const auto pieceMax = static_cast<int64_t>(fx ? std::min(config_.maxBlockSize, kFeedbackDelay)
+                                                  : config_.maxBlockSize);
     while (from < to)
     {
-        const auto n = static_cast<uint32_t>(
-            std::min<int64_t>(to - from, static_cast<int64_t>(config_.maxBlockSize)));
+        const auto n = static_cast<uint32_t>(std::min<int64_t>(to - from, pieceMax));
         const auto offset = static_cast<size_t>(from - b.callStart);
 
         // This piece's input: a mono input feeds both channels; a missing one is silence.
@@ -521,7 +641,44 @@ void Processor::render(const Buffers &b, int64_t from, int64_t to) noexcept
         {
             d = d != nullptr ? d + offset : nullptr;
         }
-        engine_.process(dry, b.numInChannels > 0 ? 2 : 0, wet, rendering, n);
+        // Feedback (spec §5): ring[t] = sanitize(in[t]) + fb(t) × limited[t − D], with limited
+        // from wetHistory_. The ramp changes only at boundaries, between render() calls, so it
+        // is 0 throughout a piece whose target and first value are 0: such a piece hands the
+        // engine its input as it is (the sign of zero included), as before Feedback.
+        const float *ringIn[2] = {dry[0], dry[1]};
+        uint32_t ringChannels = b.numInChannels > 0 ? 2 : 0;
+        if (fx && (feedback_.to != 0.0f || feedback_.at(from, rampSamples_) != 0.0f))
+        {
+            for (uint32_t i = 0; i < n; ++i)
+            {
+                const int64_t t = from + i;
+                const float fb = feedback_.at(t, rampSamples_);
+                const auto h = static_cast<size_t>(t % kFeedbackDelay);
+                for (size_t c = 0; c < 2; ++c)
+                {
+                    const float d = dry[c] != nullptr ? finiteOrZero(dry[c][i]) : 0.0f;
+                    // A sample where the ramp is 0 writes the input alone, as a piece without
+                    // feedback does, so where a piece starts never changes the ring.
+                    ringIn_[c][i] = fb != 0.0f ? d + fb * wetHistory_[c][h] : d;
+                }
+            }
+            ringIn[0] = ringIn_[0].data();
+            ringIn[1] = ringIn_[1].data();
+            ringChannels = 2;
+        }
+        const int64_t headBefore = engine_.liveWriteHead();
+        engine_.process(ringIn, ringChannels, wet, rendering, n);
+        if (fx)
+        {
+            // The peaks of what the ring took (spec §6.4), publishing or not (ruling PU-T9b), so
+            // the strip never holds an older pass's peaks when the editor opens: the buffers the
+            // engine was handed, over the frames its head advanced, a prefix of the piece (all
+            // of it unless a freeze stopped the head), at ring time.
+            const auto written = static_cast<uint32_t>(engine_.liveWriteHead() - headBefore);
+            const float *l = ringChannels > 0 && ringIn[0] != nullptr ? ringIn[0] : kSilence.data();
+            const float *r = ringChannels > 0 && ringIn[1] != nullptr ? ringIn[1] : kSilence.data();
+            livePeaks_.write(l, r, headBefore, written);
+        }
 
         float *dst[2] = {nullptr, nullptr};
         for (uint32_t c = 0; c < channels; ++c)
@@ -556,6 +713,11 @@ void Processor::render(const Buffers &b, int64_t from, int64_t to) noexcept
                 const float limited = softLimit(w[c] * g);
                 o[c] = fx ? d[c] * (1.0f - m) + limited * m : limited;
                 rIn[c] = fx ? m * limited + s * d[c] : limited;
+                if (fx)
+                {
+                    // Read for sample t + D's ring input, D samples from now.
+                    wetHistory_[c][static_cast<size_t>(t % kFeedbackDelay)] = limited;
+                }
             }
             if (rendering == 1)
             {

@@ -6,6 +6,7 @@
 #define GG_CORE_PROCESSOR_H
 
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <span>
@@ -14,10 +15,13 @@
 #include <sst/cpputils/rtsan_support.h>
 
 #include "gg/core/Diffuser.h"
+#include "gg/core/GrainQueue.h"
+#include "gg/core/LivePeaks.h"
 #include "gg/core/ParamIds.h"
 #include "gg/core/ParamMap.h"
 #include "gg/core/SourceExchange.h"
 #include "gg/core/SpaceReverb.h"
+#include "gg/core/UiSnapshot.h"
 #include "gg/engine/Engine.h"
 
 namespace gg::core
@@ -62,8 +66,12 @@ struct NoteEvent
 /// wet chain, real-time safe (spec §5, §6.1–§6.4).
 ///
 /// **Parameters.** Each slot has a base value and a modulation offset; the effective value,
-/// clamp(base + modulation) to the slot's range, is what reaches the engine (toCloudParams) and
-/// the wet chain (toWetParams). Values are floats: event values are converted on receipt.
+/// clamp(base + modulation + macro offset) to the slot's range, is what reaches the engine
+/// (toCloudParams) and the wet chain (toWetParams). The macro offset is the slot's entry of
+/// macroOffsets (sub-project 5's spec §3), from the eight macros' own effective values,
+/// clamp(base + modulation); a macro's own offset is 0, and every offset is exactly 0 while the
+/// macros rest. One clamp takes the whole sum. Values are floats: event values are converted on
+/// receipt.
 ///
 /// **The control grid** (spec §6.1; INTENT §14). An event, a parameter or a note event, at
 /// absolute sample a = clock + offset takes effect at the grid boundary b = ceil(a / 32) × 32,
@@ -72,12 +80,12 @@ struct NoteEvent
 /// into one sequence, so both kinds join the same boundary groups. Until b an event is pending:
 /// per slot, base and modulation apart, the latest parameter event wins, and the note events
 /// queue in order. process() renders up to each boundary that has a pending change, then:
-/// - the effective values become clamp(base + modulation);
+/// - the effective values become clamp(base + modulation + macro offset);
 /// - the group's note events apply in order to the held set (below);
 /// - the engine gets setCloudParams(toCloudParams(...)), setHeldKeys with the distinct held keys
 ///   (when the group had notes) and its freeze setting (below), which apply from b;
-/// - Mix, Level, Diffusion, Reverb Amount and Dry to Reverb ramp from their current values to
-///   their new ones.
+/// - Mix, Level, Diffusion, Reverb Amount, Dry to Reverb and Feedback ramp from their current
+///   values to their new ones.
 ///
 /// A boundary before a call's end applies in that call. One at or past the end carries over to
 /// the next call, which renders up to it first: there it merges with that call's events for
@@ -102,7 +110,8 @@ struct NoteEvent
 /// by being seen off after the construction (an activation) or the last reset(): until then an
 /// effective Freeze that is on leaves the engine live, though base() and effective() still read
 /// it on. Freeze is seen at the points where it reaches the engine: each call's first sample,
-/// each applied boundary, and a setBase() of Freeze itself (params.flush or a state load).
+/// each applied boundary, and a setBase() of Freeze itself or of Macro 6 (Macro Freeze, which adds
+/// to it; params.flush or a state load).
 /// Construction and reset() disarm it, and the reset itself doesn't arm: after a reset (a VST3
 /// suspend, say), a Freeze turned on before audio flows stays live until it is toggled, while one
 /// that is off at the next call's first sample arms. Modulation that takes the effective Freeze
@@ -137,10 +146,10 @@ struct NoteEvent
 /// thread offered it, so only a source given before the first call (setSourceNow, or an offer
 /// before it) is part of a block-size-invariant render.
 ///
-/// **The ramped values.** Mix, Level, Diffusion, Reverb Amount and Dry to Reverb ramp linearly
-/// to each new target over kRampSeconds, round(0.01 × sr) samples: R samples after its boundary
-/// a ramp is exactly at its target. A ramp is a function of the absolute sample, so it is
-/// block-size invariant too. Level ramps its linear gain. setBase() and reset() jump them.
+/// **The ramped values.** Mix, Level, Diffusion, Reverb Amount, Dry to Reverb and Feedback ramp
+/// linearly to each new target over kRampSeconds, round(0.01 × sr) samples: R samples after its
+/// boundary a ramp is exactly at its target. A ramp is a function of the absolute sample, so it
+/// is block-size invariant too. Level ramps its linear gain. setBase() and reset() jump them.
 ///
 /// **The wet chain** (spec §6.4; sub-project 4's spec §6.1). Per sample, with w the engine's
 /// output, d the FX's dry input, and m, g, δ, a and s the ramped Mix, Level gain, Diffusion,
@@ -160,12 +169,43 @@ struct NoteEvent
 /// channel, the engine's mono render is diffused as both sides, the reverb hears that channel's
 /// rIn on both sides, and the channel gets r's left.
 ///
+/// **Feedback** (FX; sub-project 5's spec §5). The engine writes its live ring from
+/// ```
+/// ring[t] = sanitize(d[t] + fb(t)·wet[t − D])     (wet[t − D] = 0 before the first sample)
+/// ```
+/// with fb the ramped Feedback, wet the limited wet signal above (after Level and the limiter,
+/// before the mix; per channel, so with one output channel the right side is the diffused mono
+/// render's) and D = kFeedbackDelay, the ring's head margin; sanitize is the ring's own (non-finite
+/// as 0, clamped). The last D samples of wet are kept by absolute time, and the FX renders in
+/// pieces of at most D samples, so the output is block-size invariant. A sample where fb is 0
+/// writes d alone, and a piece where fb is 0 throughout hands the engine the input itself, as
+/// before Feedback, so Feedback 0 renders bit for bit as it did, the sign of zero included.
+/// Frozen, the ring writes nothing, so Feedback regenerates nothing (Freeze wins). The instrument
+/// has no ring: its Feedback is 0 (toWetParams).
+///
 /// **The reverb's grid.** SpaceReverb's chunks are the control grid's cells: its time t is the
 /// absolute sample (Engine::sampleClock), which construction and reset() start at 0 with the
 /// reverb's own, so every chunk starts on a grid boundary, where the parameters change. Its
 /// other values (Decay, Size, Damping, Pre-delay, Modulation) are the effective values, which it
 /// latches at each chunk's first sample. A chunk is active when the Amount ramp isn't exactly 0
 /// at its first sample: Amount 0 keeps the reverb idle (SpaceReverb's idle rule).
+///
+/// **Publishing** (sub-project 5's spec §6.4). process() fills three lock-free structures the
+/// editor draws from, without allocating, locking or waiting; the first two only while
+/// setPublishing(true):
+/// - grainQueue(): a GrainVis per spawned grain, in spawn order; when the editor falls behind
+///   the queue drops the newest and counts them (GrainQueue::dropped).
+/// - snapshot(): a UiSnapshot at the end of every call (0-frame calls included), and
+///   publishedClock(), the sample clock it carries, stored after it with release order.
+/// - livePeaks() (FX), always, publishing or not (ruling PU-T9b), so the strip follows the ring
+///   itself and an editor that opens late finds the ring's recent audio there, not stale peaks:
+///   the peaks of the ring input, the exact buffers the engine was handed (the input, or with
+///   Feedback the input plus the fed-back wet signal), indexed by ring time: the frames the
+///   ring's write head advanced over, so a freeze, which stops the head, writes none, and a
+///   grain's startPos reads its own frames' peaks. Taken before the freeze ramp's write gain and
+///   the ring's clamp. reset() silences it with the ring.
+/// process() reads the flag once, at its start, and holds it for the whole call. With it off
+/// nothing is queued or snapshotted, and with it on or off the audio is the same, bit for bit.
 class Processor
 {
   public:
@@ -173,9 +213,14 @@ class Processor
     static constexpr uint32_t kControlGrid = 32;
     /// The FX's live ring length, in seconds (spec §6.3).
     static constexpr double kLiveSeconds = 16.0;
-    /// The ramp time of Mix, Level, Diffusion, Reverb Amount and Dry to Reverb, in seconds;
-    /// rounded to samples, at least 1 (spec §6.1).
+    /// The ramp time of Mix, Level, Diffusion, Reverb Amount, Dry to Reverb and Feedback, in
+    /// seconds; rounded to samples, at least 1 (spec §6.1).
     static constexpr double kRampSeconds = 0.01;
+    /// D, Feedback's delay in samples (sub-project 5's spec §5): the ring's frame t gets
+    /// fb(t) × the limited wet signal of sample t − D. The FX renders in pieces of at most D
+    /// samples, so each piece's feedback is already rendered when the engine writes the piece's
+    /// input into the ring, before any grain reads it.
+    static constexpr uint32_t kFeedbackDelay = 256;
 
     /// Allocates the engine (the FX with a kLiveSeconds live ring read in SourceMode::Live, the
     /// instrument in SourceMode::Sample with no source and no ring), the wet scratch buffers, the
@@ -190,17 +235,28 @@ class Processor
     /// Sets a base value at once, outside the control grid: for params.flush outside process()
     /// and for a state load. The value is clamped to the slot's range; NaN is ignored. A pending
     /// base change to the same slot is dropped, so this, the latest value, wins. The ramped
-    /// values (Mix, Level, Diffusion, Reverb Amount and Dry to Reverb) jump to the new value
-    /// without a ramp. The engine gets the new parameters from the next process() call's first
-    /// sample. Space's latched values (Decay, Size, Damping, Pre-delay and Modulation), and
-    /// whether Reverb Amount keeps the reverb active, take effect at the next reverb chunk's
-    /// first sample, the next grid boundary. Real-time safe; call it between process() calls.
+    /// values (Mix, Level, Diffusion, Reverb Amount, Dry to Reverb and Feedback) jump to the new
+    /// value without a ramp; a macro makes each ramped value whose effective value it moved jump
+    /// (Macro 5 Diffusion, the FX's Macro 7 Feedback and Macro 8 Mix, the instrument's Macro 8
+    /// Level). The engine gets the new parameters from the next process() call's first sample.
+    /// Space's latched values (Decay, Size, Damping, Pre-delay and Modulation), and whether Reverb
+    /// Amount keeps the reverb active, take effect at the next reverb chunk's first sample, the
+    /// next grid boundary. Real-time safe; call it between process() calls.
     void setBase(ParamSlot slot, float value) noexcept;
+
+    /// Sets the engine seed (Engine::setSeed): the grains scheduled from the next process()
+    /// call's first sample on are keyed by it; those already sounding keep their draws. For a
+    /// state loaded while active (sub-project 5's spec §7). Real-time safe; call it between
+    /// process() calls.
+    void setSeed(uint64_t seed) noexcept;
+    /// The engine seed in effect: ProcessorConfig::seed, or the last setSeed().
+    uint64_t seed() const noexcept { return engine_.seed(); }
 
     /// The slot's base value in effect: the last setBase() or applied event. `slot` must be a
     /// parameter: ParamSlot::Count asserts (and in release builds reads the last parameter).
     float base(ParamSlot slot) const noexcept;
-    /// The slot's effective value in effect: clamp(base + modulation). `slot` as for base().
+    /// The slot's effective value in effect: clamp(base + modulation + macro offset), as the
+    /// class comment describes. `slot` as for base().
     float effective(ParamSlot slot) const noexcept;
 
     /// Renders numFrames frames into out, applying `events` and `notes` on the control grid as
@@ -257,16 +313,39 @@ class Processor
     /// Restarts the engine (Engine::reset: the clock, the schedule and the ring time at 0), and
     /// clears the diffuser and the reverb, whose time restarts at 0 with the engine's: clearing
     /// the reverb's ~14.5 MB at once is a cost hosts expect of a reset (ruling R-T5b). A pending
-    /// change applies at once, and the ramped values jump to their targets. Every note is
+    /// change applies at once, and the ramped values jump to their targets. Feedback's history
+    /// is cleared: the fresh ring has no wet signal behind it to take back; the live peaks are
+    /// silenced with the ring (LivePeaks::reset). Every note is
     /// released, the pending ones included: heldKeys() is empty and the engine gets no keys.
     /// Freeze disengages and waits for an off→on transition (the class comment). Real-time safe;
     /// call it between process() calls.
     void reset() noexcept;
 
-    /// The engine's grain-event sink (Engine::setEventSink).
+    /// The grain-event sink (gg-render's event log, tests): called on the audio thread once per
+    /// spawned grain, in spawn order, as Engine::setEventSink describes, whether or not
+    /// publishing is on. nullptr removes it. Call it while process() isn't running.
     void setEventSink(GrainEventSink sink, void *ctx) noexcept;
 
+    /// Turns publishing on or off (the class comment): the editor's, on the main thread, as it
+    /// opens and closes. It takes effect from the next process() call's start.
+    void setPublishing(bool on) noexcept { publishing_.store(on, std::memory_order_relaxed); }
+    /// The spawned grains, for the editor (the queue's consumer).
+    GrainQueue &grainQueue() noexcept { return *grainQueue_; }
+    /// The latest UiSnapshot, for the editor (the buffer's consumer).
+    SnapshotBuffer &snapshot() noexcept { return snapshot_; }
+    /// The peak strip of the FX's live ring, kLiveSeconds long (ceil(kLiveSeconds × sampleRate)
+    /// frames), written on every call whether or not publishing is on (the class comment);
+    /// unprepared (0 frames, every read 0) in the instrument. Any thread may read it.
+    const LivePeaks &livePeaks() const noexcept { return livePeaks_; }
+    /// The sample clock at the end of the last process() call that published (0 until one has),
+    /// stored with release order after that call's snapshot.
+    const std::atomic<int64_t> &publishedClock() const noexcept { return publishedClock_; }
+
     const Engine &engine() const noexcept { return engine_; }
+
+    /// Feedback's ramped value at the absolute sample t, as the ring input uses it (for tests and
+    /// the UI snapshot): exact only for t at or after the last boundary applied.
+    float feedbackAt(int64_t t) const noexcept { return feedback_.at(t, rampSamples_); }
 
     /// Whether the reverb's return is being added: the reverb chunk holding the last rendered
     /// sample is active (the class comment). False after construction and reset().
@@ -296,6 +375,9 @@ class Processor
         int64_t callStart; ///< The absolute sample of the call's first frame.
     };
 
+    /// The engine's grain-event sink, ctx the Processor: forwards to the sink set by
+    /// setEventSink, and queues a GrainVis while this call publishes.
+    static void onGrain(void *ctx, const GrainSpec &g) noexcept SST_CPPUTILS_NONBLOCKING;
     /// Hands every source the engine has retired back to sources_ (SourceExchange::retire).
     void handBackRetired() noexcept SST_CPPUTILS_NONBLOCKING;
     /// Renders the absolute samples [from, to) of the current call.
@@ -305,7 +387,8 @@ class Processor
     void commitPending() noexcept;
     /// Recomputes the effective values, gives the engine its cloud parameters and keeps Space's.
     void updateEffective() noexcept;
-    /// Jumps every ramped value (Mix, Level, Diffusion, Amount, Dry to Reverb) to its target.
+    /// Jumps every ramped value (Mix, Level, Diffusion, Amount, Dry to Reverb, Feedback) to its
+    /// target.
     void jumpRamps() noexcept;
     /// Gives the engine its freeze setting: the effective Freeze, once armed, or in the FX any
     /// held key. An effective Freeze that is off arms it.
@@ -326,6 +409,10 @@ class Processor
     Engine engine_;
     int64_t rampSamples_;
     std::array<std::vector<float>, 2> wet_; // maxBlockSize frames each
+    // The FX's ring input while Feedback acts: maxBlockSize frames each (empty in the instrument).
+    std::array<std::vector<float>, 2> ringIn_;
+    // The FX's limited wet signal of the last kFeedbackDelay samples: sample t at t % D.
+    std::array<std::array<float, kFeedbackDelay>, 2> wetHistory_{};
 
     std::array<float, kParamCount> minVal_{};
     std::array<float, kParamCount> maxVal_{};
@@ -356,7 +443,23 @@ class Processor
     Ramp level_; // the linear gain
     Ramp diffusion_;
     Ramp amount_;
-    Ramp drySend_; // always 0 in the instrument
+    Ramp drySend_;  // always 0 in the instrument
+    Ramp feedback_; // always 0 in the instrument
+
+    // Publishing (the class comment). The external sink is setEventSink's; publishingThisCall_
+    // is publishing_ as the current process() call read it at its start; engineFrozen_ is the
+    // freeze setting last given to the engine.
+    GrainEventSink externalSink_{nullptr};
+    void *externalSinkCtx_{nullptr};
+    std::atomic<bool> publishing_{false};
+    bool publishingThisCall_{false};
+    bool engineFrozen_{false};
+    std::unique_ptr<GrainQueue> grainQueue_; // heap: 128 KB
+    SnapshotBuffer snapshot_;
+    LivePeaks livePeaks_;
+    std::atomic<int64_t> publishedClock_{0};
+    static_assert(std::atomic<bool>::is_always_lock_free);
+    static_assert(std::atomic<int64_t>::is_always_lock_free);
 
     // Space (sub-project 4's spec §6.1): the effective values in SpaceReverb's terms, the
     // diffuser on the engine's output, and the reverb (heap: about 14.5 MB, 16-byte aligned).
