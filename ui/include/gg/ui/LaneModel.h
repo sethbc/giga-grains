@@ -72,7 +72,7 @@ struct Window
     float x0, x1;
 };
 
-/// The scan window for Position and Spray's CLAP values (spec §6.2; ruling R-T8a): where the
+/// The scan window for Position and Spray's CLAP values (spec §6.2; ruling PU-T8a): where the
 /// grains read. Each value is clamped to 0..1 first (NaN to 0). Spray is 2/255 × (2^(8v) − 1)
 /// seconds (ParamMap's taper), converted to pixels at the lane's scale (width / ringSeconds, or
 /// width × sampleRate / sourceFrames).
@@ -85,6 +85,24 @@ struct Window
 /// - Instrument: ±Spray around Position, as the engine spreads a sample grain's spray either
 ///   side. Position is the fraction of the file, so the centre is at width × v.
 Window scanWindow(float positionValue, float sprayValue, const LaneGeometry &geometry) noexcept;
+
+/// Position and Spray's CLAP values, as one UiSnapshot field pair (gg-core's; copied in by the
+/// canvas, as LaneGrain is) gives them: the base values or the effective ones.
+struct ScanValues
+{
+    float position;
+    float spray;
+};
+
+/// How far an effective value must be from its base value for the ghost window to show.
+inline constexpr float kGhostThreshold = 1.0e-4f;
+
+/// The ghost window (spec §6.2): where the grains read once macros and modulation are added, the
+/// scan window at the effective values, when Position's or Spray's effective value is more than
+/// kGhostThreshold from its base value (both of the same block); nullopt when both are within it
+/// (or either difference is NaN).
+std::optional<Window> ghostWindow(const ScanValues &base, const ScanValues &effective,
+                                  const LaneGeometry &geometry) noexcept;
 
 /// The Position value whose window is anchored at x, scanWindow's inverse, for a body drag: the
 /// window's right edge (x1) on the FX lane, its centre on the instrument's. Clamped to 0..1, so
@@ -115,7 +133,7 @@ enum class DragTarget
 /// - Instrument: the right edge grabs the same way, mirrored; everything else inside is the
 ///   body. A window of no width is the body only at its own x, with an edge either side.
 /// - FX: the right edge is Position, so it and its tolerance outside the window are the body
-///   (ruling R-T8a). A window of no width (Spray 0) is the left edge just left of its x and the
+///   (ruling PU-T8a). A window of no width (Spray 0) is the left edge just left of its x and the
 ///   body from its x rightwards.
 ///
 /// A non-finite x grabs nothing.

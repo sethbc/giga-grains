@@ -56,6 +56,24 @@ class LaneClock
 /// Never behind the snapshot's head.
 int64_t headAtNow(int64_t writeHead, int64_t snapshotClock, int64_t now, bool frozen) noexcept;
 
+/// A range of ring frames, [first, end); empty when end <= first.
+struct FrameSpan
+{
+    int64_t first;
+    int64_t end;
+};
+
+/// The ring frames column x (0 .. columns − 1) of the FX lane's peak strip reads, the lane
+/// spanning columns × framesPerColumn frames up to `head` (headAtNow at UI time): from
+/// head − (columns − x) × framesPerColumn to head − (columns − x − 1) × framesPerColumn, rounded
+/// outwards, then clamped below to `oldest` (the strip's oldest whole bucket) and above to
+/// `written`, the frames the ring has actually written: headAtNow at the published clock rather
+/// than the extrapolated one. head runs on past the last published block by extrapolation, and
+/// the strip wraps, so a frame at or past `written` would read a bucket a ring's length old.
+/// Empty for a column wholly outside [oldest, written).
+FrameSpan peakColumnFrames(int x, int columns, double framesPerColumn, int64_t head, int64_t oldest,
+                           int64_t written) noexcept;
+
 /// The grains the canvas draws: those drained from the engine's grain queue that haven't ended,
 /// in the order they were spawned. Fixed in size (kCapacity, allocated at construction): a push
 /// to a full list drops the oldest grain, so a burst of grains never grows it. UI thread only.

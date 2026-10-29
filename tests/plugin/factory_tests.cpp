@@ -659,14 +659,13 @@ juce::Component *findDeep(const juce::Component &root, const char *id)
     return nullptr;
 }
 
-/// A mouse event at (x, y) in `c`'s coordinates, the left button down since `down`.
+/// A mouse event at (x, y) in `c`'s coordinates, the left button (or `button`) down since `down`.
 juce::MouseEvent mouseAt(juce::Component &c, float x, float y, juce::Point<float> down,
-                         bool dragged)
+                         bool dragged, int button = juce::ModifierKeys::leftButtonModifier)
 {
     const auto now = juce::Time::getCurrentTime();
     return juce::MouseEvent(
-        juce::Desktop::getInstance().getMainMouseSource(), {x, y},
-        juce::ModifierKeys(juce::ModifierKeys::leftButtonModifier),
+        juce::Desktop::getInstance().getMainMouseSource(), {x, y}, juce::ModifierKeys(button),
         juce::MouseInputSource::defaultPressure, juce::MouseInputSource::defaultOrientation,
         juce::MouseInputSource::defaultRotation, juce::MouseInputSource::defaultTiltX,
         juce::MouseInputSource::defaultTiltY, &c, &c, now, down, now, 1, dragged);
@@ -969,7 +968,7 @@ TEST_CASE("a canvas drag emits begin, values, end once", "[plugin]")
         REQUIRE(canvas != nullptr);
         const auto lane = laneOf(*canvas, true, 48000.0, 0);
         const auto window = gg::ui::scanWindow(0.5f, 0.8f, lane);
-        const float x = window.x1 - 2.0f; // Position's own edge is the body (ruling R-T8a)
+        const float x = window.x1 - 2.0f; // Position's own edge is the body (ruling PU-T8a)
         const juce::Point<float> down{x, 10.0f};
         canvas->mouseDown(mouseAt(*canvas, x, 10.0f, down, false));
         canvas->mouseDrag(mouseAt(*canvas, x - 50.0f, 10.0f, down, true));
@@ -1013,6 +1012,31 @@ TEST_CASE("a canvas drag emits begin, values, end once", "[plugin]")
         canvas->mouseUp(mouseAt(*canvas, 2.0f, 10.0f, {2.0f, 10.0f}, false));
         CHECK(recording.calls.empty());
     }
+    SECTION("a right-button press on the window grabs nothing")
+    {
+        RecordingContext recording(gg::core::Mode::Instrument);
+        recording.values[static_cast<std::size_t>(ParamSlot::Position)] = 0.5f;
+        recording.values[static_cast<std::size_t>(ParamSlot::Spray)] = 0.4f;
+        recording.context.sampleWaveform = [] { return oneSecondSample(); };
+        recording.context.sampleRate = 48000.0;
+        const auto editor = gg::ui::makeEditor(recording.context);
+        juce::Component *canvas = findDeep(*editor, "canvas");
+        REQUIRE(canvas != nullptr);
+        const auto lane = laneOf(*canvas, false, 48000.0, 48000);
+        const auto window = gg::ui::scanWindow(0.5f, 0.4f, lane);
+        const float y = 10.0f;
+        constexpr int kRight = juce::ModifierKeys::rightButtonModifier;
+        // The body and an edge, each of which the left button grabs.
+        for (const float x : {0.5f * (window.x0 + window.x1), window.x0})
+        {
+            REQUIRE(gg::ui::hitTest(x, window, 6.0f, lane) != gg::ui::DragTarget::None);
+            const juce::Point<float> down{x, y};
+            canvas->mouseDown(mouseAt(*canvas, x, y, down, false, kRight));
+            canvas->mouseDrag(mouseAt(*canvas, x + 20.0f, y, down, true, kRight));
+            canvas->mouseUp(mouseAt(*canvas, x + 20.0f, y, down, true, kRight));
+        }
+        CHECK(recording.calls.empty());
+    }
 }
 
 TEST_CASE("the canvas draws the grains the queue holds", "[plugin]")
@@ -1035,23 +1059,11 @@ TEST_CASE("the canvas draws the grains the queue holds", "[plugin]")
     const float width = static_cast<float>(canvas->getWidth());
     const float height = static_cast<float>(canvas->getHeight());
 
-    // Two grains of 100 ms that started just now, 4 s and 8 s behind the head, one panned up
-    // and one down; one that has already ended.
-    gg::core::UiSnapshot snapshot;
-    snapshot.clock = kNow;
-    snapshot.writeHead = kNow;
-    snapshots.push(snapshot);
     const auto grain = [](int64_t onset, double behindSeconds, float pan) {
         return gg::core::GrainVis{onset, static_cast<double>(kNow) - behindSeconds * kRate,
                                   1.0f,  static_cast<float>(0.1 * kRate),
                                   1.0f,  pan};
     };
-    REQUIRE(queue.push(grain(kNow - 100, 4.0, -0.5f)));
-    REQUIRE(queue.push(grain(kNow - 100, 8.0, 0.5f)));
-    REQUIRE(queue.push(grain(kNow - 20000, 12.0, 0.0f))); // ended at kNow - 15200
-
-    canvas->renderFrame();
-    CHECK(canvas->liveGrainCount() == 2);
     const float radius = 3.0f;
     const float reach = 0.5f * height - radius;
     const auto accum = [canvas](float x, float y) {
@@ -1061,6 +1073,21 @@ TEST_CASE("the canvas draws the grains the queue holds", "[plugin]")
     // Each grain's capsule spans its 100 ms read, from 4 s (8 s) back to 3.9 s (7.9 s) back.
     const float x4 = width * (1.0f - 3.95f / 16.0f);
     const float x8 = width * (1.0f - 7.95f / 16.0f);
+
+    // Two grains of 100 ms that started just now, 4 s and 8 s behind the head, one panned up
+    // and one down; one that has already ended. Queued after the canvas's first frame, which
+    // clears the queue (the next test).
+    gg::core::UiSnapshot snapshot;
+    snapshot.clock = kNow;
+    snapshot.writeHead = kNow;
+    snapshots.push(snapshot);
+    canvas->renderFrame();
+    REQUIRE(queue.push(grain(kNow - 100, 4.0, -0.5f)));
+    REQUIRE(queue.push(grain(kNow - 100, 8.0, 0.5f)));
+    REQUIRE(queue.push(grain(kNow - 20000, 12.0, 0.0f))); // ended at kNow - 15200
+
+    canvas->renderFrame();
+    CHECK(canvas->liveGrainCount() == 2);
     CHECK(accum(x4, 0.5f * height - 0.5f * reach) > 0.0f);
     CHECK(accum(x8, 0.5f * height + 0.5f * reach) > 0.0f);
     // Nothing where no grain plays: the ended grain's place, and the lane's middle.
@@ -1086,6 +1113,7 @@ TEST_CASE("the canvas draws the grains the queue holds", "[plugin]")
     fresh.clock = 64;
     fresh.writeHead = 64;
     snapshots2.push(fresh);
+    canvas->renderFrame(); // a new queue: cleared first
     REQUIRE(queue2.push(gg::core::GrainVis{0, 64.0 - 4.0 * kRate, 1.0f, 4800.0f, 1.0f, -0.5f}));
     canvas->renderFrame();
     CHECK(canvas->liveGrainCount() == 1);
@@ -1098,6 +1126,58 @@ TEST_CASE("the canvas draws the grains the queue holds", "[plugin]")
     canvas->renderFrame();
     CHECK(canvas->liveGrainCount() == 0);
     CHECK(accum(x4, 0.5f * height - 0.5f * reach) == 0.0f);
+}
+
+TEST_CASE("the canvas drops a stale backlog and waits for a snapshot", "[plugin]")
+{
+    // A queue's backlog when the canvas first reads it was queued while nothing drew it (an
+    // editor reopening): the first frame clears it. And the FX lane places no grain before a
+    // snapshot gives it the write head. The grains last 10 s, so the clock's extrapolation
+    // between frames (at most 0.25 s) can't end them.
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    constexpr double kRate = 48000.0;
+    constexpr int64_t kNow = 480000;
+    gg::core::GrainQueue queue;
+    gg::core::SnapshotBuffer snapshots;
+    std::atomic<int64_t> clock{kNow};
+    RecordingContext recording(gg::core::Mode::Fx);
+    recording.context.grains = &queue;
+    recording.context.snapshot = &snapshots;
+    recording.context.clock = &clock;
+    recording.context.sampleRate = kRate;
+    const auto editor = gg::ui::makeEditor(recording.context);
+    auto *canvas = dynamic_cast<gg::ui::GrainCanvas *>(findDeep(*editor, "canvas"));
+    REQUIRE(canvas != nullptr);
+    const float width = static_cast<float>(canvas->getWidth());
+    const float height = static_cast<float>(canvas->getHeight());
+    // A centred grain reading 4.5 s .. 4 s behind a write head at 0 (the head the lane would
+    // take without a snapshot), slowly, for 10 s.
+    const gg::core::GrainVis grain{
+        kNow - 100, -4.5 * kRate, 0.05f, static_cast<float>(10.0 * kRate), 1.0f, 0.0f};
+    const auto lit = [&] {
+        return canvas->accumAt(static_cast<uint32_t>(std::lround(width * (1.0f - 4.4f / 16.0f))),
+                               static_cast<uint32_t>(std::lround(0.5f * height))) > 0.0f;
+    };
+
+    REQUIRE(queue.push(grain));
+    canvas->renderFrame();
+    CHECK(canvas->liveGrainCount() == 0);
+    gg::core::GrainVis leftover;
+    CHECK_FALSE(queue.pop(leftover));
+
+    // Held but not drawn without a snapshot...
+    REQUIRE(queue.push(grain));
+    canvas->renderFrame();
+    CHECK(canvas->liveGrainCount() == 1);
+    CHECK_FALSE(lit());
+    // ... and drawn once one arrives, with the head at 0.
+    gg::core::UiSnapshot snapshot;
+    snapshot.clock = kNow;
+    snapshot.writeHead = 0;
+    snapshots.push(snapshot);
+    canvas->renderFrame();
+    CHECK(canvas->liveGrainCount() == 1);
+    CHECK(lit());
 }
 
 TEST_CASE("the folder button reports a failed save", "[plugin]")

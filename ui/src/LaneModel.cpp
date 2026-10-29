@@ -118,13 +118,24 @@ Window scanWindow(float positionValue, float sprayValue, const LaneGeometry &geo
         taperSeconds(kSpraySpanSeconds, clamp01(sprayValue)) * pixelsPerSecond(geometry);
     if (geometry.fxLane)
     {
-        // One-sided (ruling R-T8a): from Position back to Position + Spray seconds.
+        // One-sided (ruling PU-T8a): from Position back to Position + Spray seconds.
         const double newest = geometry.width * (1.0 - taperSeconds(kPositionSpanSeconds, position) /
                                                           geometry.ringSeconds);
         return {toPixel(newest - spray), toPixel(newest)};
     }
     const double centre = geometry.width * position;
     return {toPixel(centre - spray), toPixel(centre + spray)};
+}
+
+std::optional<Window> ghostWindow(const ScanValues &base, const ScanValues &effective,
+                                  const LaneGeometry &geometry) noexcept
+{
+    if (std::abs(effective.position - base.position) > kGhostThreshold ||
+        std::abs(effective.spray - base.spray) > kGhostThreshold)
+    {
+        return scanWindow(effective.position, effective.spray, geometry);
+    }
+    return std::nullopt;
 }
 
 float positionValueAtX(float x, const LaneGeometry &geometry) noexcept
@@ -170,7 +181,7 @@ DragTarget hitTest(float x, const Window &window, float edgeTolerancePx,
     }
     if (geometry.fxLane)
     {
-        // The FX window's right edge is Position itself (ruling R-T8a): the body reaches it and
+        // The FX window's right edge is Position itself (ruling PU-T8a): the body reaches it and
         // its tolerance.
         return x >= lo + inside && x <= hi + tolerance ? DragTarget::Body : DragTarget::None;
     }

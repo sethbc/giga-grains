@@ -174,7 +174,7 @@ class GigaGrainsPlugin : public plugHelper_t
     // process() call or params.flush, before the host's events there, and sends it on to the
     // host as an output event, so the host records the editor's gesture as automation. Each
     // asks the host for a flush (clap_host_params.request_flush), when it offers clap.params and
-    // none is outstanding. A change made while kUiQueueCapacity wait is dropped.
+    // none is outstanding. A change made while kUiQueueCapacity changes wait is dropped.
 
     /// The editor's gesture on `slot` begins: CLAP_EVENT_PARAM_GESTURE_BEGIN.
     void uiBeginGesture(gg::core::ParamSlot slot) noexcept;
@@ -318,9 +318,10 @@ class GigaGrainsPlugin : public plugHelper_t
     /// Takes the editor's changes queued so far (at most kUiQueueCapacity, so a main thread
     /// still pushing can't keep it here) and sends each on to `out` (try_push; a refusal is
     /// counted in uiEventsDropped_). Values: with `values`, appended to it from `count` on as
-    /// ParamEvents at offset 0, for the caller to hand to the Processor; without, applied with
-    /// setBase while active and stored in values_ either way. Returns the new count. The audio
-    /// thread, or the main thread while inactive (the queue's consumer).
+    /// ParamEvents at offset 0, for the caller to hand to the Processor (its loop after process
+    /// stores them in values_); without, applied with setBase while active and stored in values_
+    /// here, active or not. Returns the new count. The audio thread, or the main thread while
+    /// inactive (the queue's consumer).
     std::size_t takeUiChanges(const clap_output_events *out, gg::core::ParamEvent *values,
                               std::size_t count) noexcept SST_CPPUTILS_NONBLOCKING;
     /// Pushes `change` to uiQueue_ and asks the host for a flush (see uiBeginGesture). Main

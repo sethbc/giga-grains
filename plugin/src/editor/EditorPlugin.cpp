@@ -214,8 +214,9 @@ void EditorPlugin::guiDestroy() noexcept
 
 bool EditorPlugin::guiAdjustSize(uint32_t *width, uint32_t *height) noexcept
 {
-    // Any size from the minimum up (sub-project 5's spec §6.1), in the host's pixels: logical on
-    // macOS, physical (the GUI scale applied) on Windows and Linux.
+    // Any size from the minimum up (sub-project 5's spec §6.1), in the host's pixels. The shim
+    // applies a GUI scale on Windows only: getGuiScale() is 1 on macOS (logical pixels), and on
+    // Linux its guiSetScale returns false without storing the scale, so it stays 1 there too.
     if (width == nullptr || height == nullptr)
     {
         return false;
