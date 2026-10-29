@@ -104,6 +104,37 @@ TEST_CASE("sample buffer is move-only and a moved-from buffer is empty", "[sourc
     REQUIRE(c.channel(0) == samples);
 }
 
+TEST_CASE("sample buffer adopts a vector's samples without copying them", "[source]")
+{
+    // Channel c's frames at c x frames, as the buffer lays them out.
+    std::vector<float> samples(2 * 100);
+    samples[0] = 0.25f;
+    samples[100] = 0.5f;
+    samples[199] = 0.75f;
+    const float *data = samples.data();
+
+    const gg::SampleBuffer buf(2, 100, 48000.0, std::move(samples));
+    REQUIRE(buf.channels() == 2);
+    REQUIRE(buf.frames() == 100);
+    REQUIRE(buf.sampleRate() == 48000.0);
+    REQUIRE(buf.channel(0) == data); // taken, not copied
+    REQUIRE(buf.channel(1) == data + 100);
+    REQUIRE(buf.channel(0)[0] == 0.25f);
+    REQUIRE(buf.channel(1)[0] == 0.5f);
+    REQUIRE(buf.channel(1)[99] == 0.75f);
+
+    // The shape must match the samples, and is checked as the other constructor checks it.
+    REQUIRE_THROWS_AS(gg::SampleBuffer(2, 100, 48000.0, std::vector<float>(199)),
+                      std::invalid_argument);
+    REQUIRE_THROWS_AS(gg::SampleBuffer(2, 100, 48000.0, std::vector<float>(201)),
+                      std::invalid_argument);
+    REQUIRE_THROWS_AS(gg::SampleBuffer(1, 10, 0.0, std::vector<float>(10)), std::invalid_argument);
+    REQUIRE_THROWS_AS(gg::SampleBuffer(1, -1, 48000.0, std::vector<float>()),
+                      std::invalid_argument);
+    const gg::SampleBuffer empty(2, 0, 48000.0, std::vector<float>());
+    REQUIRE(empty.frames() == 0);
+}
+
 namespace
 {
 constexpr float kZero = 0.0f; // +0, bit for bit
