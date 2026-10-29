@@ -52,10 +52,14 @@ struct DecodeResult
 ///     of its audio can hold, by over 1 KiB, is refused as truncated before anything is
 ///     allocated; the buffer is then allocated once, at the header's count, or at the frames
 ///     the file holds if they're fewer;
-///   - FLAC, MP3 and ADPCM WAV, which a few bytes can make long: the audio is decoded into
-///     planes that grow as it arrives (never past the header's count while the decode is within
-///     it), so the peak is at most about twice the decoded audio, plus the final copy into the
-///     buffer; a decode past kMaxFileSeconds is refused whatever the header says.
+///   - FLAC, MP3 and ADPCM WAV, which a few bytes can make long: when the header's count is
+///     no more than the file's size vouches for (64 bytes of decoded audio a byte of the file,
+///     well above what ordinary audio decodes to), the audio is decoded straight into one
+///     allocation of that count, which becomes the buffer, so the peak is the audio itself.
+///     Otherwise (no count, or more than the file vouches for, as for a file of near-silence)
+///     it is decoded into blocks of 65,536 frames as it arrives and then copied into the buffer,
+///     so the peak is about twice the audio that decoded. A decode past kMaxFileSeconds is
+///     refused whatever the header says.
 /// - A file whose audio ends before its header's frame count is refused as truncated, with these
 ///   tolerances, for what an intact file can legitimately fall short by:
 ///   - uncompressed WAV and AIFF: up to 1 KiB (1024 bytes) of declared audio beyond the end of
@@ -64,10 +68,15 @@ struct DecodeResult
 ///   - FLAC (STREAMINFO's count is exact): none;
 ///   - MP3: two MP3 frames (2304), as its tag and the decoder may count encoder delay and padding
 ///     differently;
-///   - ADPCM WAV: one block.
-///   A FLAC whose STREAMINFO gives no count (0, a streamed encode) isn't truncation: it decodes
-///   to the end, up to kMaxFileSeconds. A file that decodes no frames at all is an error.
-/// On Windows the file is opened through dr_libs' wide-character (`_w`) functions.
+///   - ADPCM WAV: one block, whether the count comes from a `fact` chunk (which dr_wav reads
+///     only for Microsoft ADPCM) or from the data size. A data size more than one block past
+///     the end of the file is truncation too.
+///   A RIFF data size of 0 with audio after it (a recording whose header was never finished) is
+///   truncation, not an empty file. A FLAC whose STREAMINFO gives no count (0, a streamed
+///   encode) isn't truncation: it decodes to the end, up to kMaxFileSeconds. A file that decodes
+///   no frames at all is an error.
+/// The file is opened once, by its native path (wide, with `_wfopen`, on Windows), and each
+/// decoder reads it in turn.
 DecodeResult decodeAudioFile(const std::filesystem::path &path);
 } // namespace gg::media
 

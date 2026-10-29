@@ -8,7 +8,6 @@
 #include <cstdio>
 #include <cstring>
 #include <exception>
-#include <fstream>
 #include <new>
 #include <system_error>
 #include <utility>
@@ -32,8 +31,14 @@ constexpr uint32_t kMaxSampleRate = 768000;
 /// Samples decoded per read, through an interleaved scratch buffer: 4096 stereo frames, and at
 /// least one frame however many channels a file has (a WAV may claim 65535).
 constexpr uint64_t kChunkSamples = 8192;
-/// A growing buffer's first capacity, in frames, unless the header gives fewer.
-constexpr uint64_t kInitialFrames = 65536;
+/// The frames each channel of a growing decode's blocks holds.
+constexpr uint64_t kBlockFrames = 65536;
+/// How many bytes of decoded audio a compressed file's header may claim for each byte of the
+/// file, for the buffer to be allocated at the header's count before any audio is decoded.
+/// Ordinary audio decodes to well under it (FLAC to 2 to 4, ADPCM to 8, a 128 kb/s stereo MP3 to
+/// 22); a header claiming more, like a file of near-silence (a FLAC of constant subframes), has
+/// to prove its length by decoding.
+constexpr uint64_t kVouchedBytesPerFileByte = 64;
 /// How many bytes an uncompressed WAV's or AIFF's declared audio may run past the end of the file
 /// without counting as truncated (ruling R10): some writers leave the data size a little larger
 /// than what they wrote.
@@ -59,6 +64,12 @@ std::string truncated(uint64_t declared, uint64_t held)
 {
     return "the file is truncated: its header gives " + std::to_string(declared) +
            " frames, but it holds only " + std::to_string(held);
+}
+
+std::string truncatedBytes(uint64_t declared, uint64_t held)
+{
+    return "the file is truncated: its header gives " + std::to_string(declared) +
+           " bytes of audio, but it holds only " + std::to_string(held);
 }
 
 /// What decoding needs from an opened file.
@@ -158,46 +169,67 @@ DecodeResult decodeBounded(const fs::path &path, const Stream &stream, Read read
 }
 
 /// Decodes a compressed file (FLAC, MP3, ADPCM WAV), whose header can claim any length however
-/// small the file: the planes grow as audio actually arrives, never past the header's count
-/// while the decode is within it, so an honest file's planes end exactly full and a lying
-/// header's within twice what decoded. Then they're copied into the buffer.
+/// small the file.
+/// - When the header's count is no more than the file's size vouches for
+///   (kVouchedBytesPerFileByte), the audio is decoded straight into one vector of that many
+///   frames, which the buffer then adopts: an honest file's audio is held once.
+/// - Frames beyond it, or all of them when the header gives no count or claims more than the
+///   file vouches for, go into blocks of kBlockFrames allocated as they arrive, which are then
+///   copied into one vector: the peak is about twice the audio that decoded, whatever the header
+///   claims.
 template <typename Read>
-DecodeResult decodeGrowing(const fs::path &path, const Stream &stream, Read read)
+DecodeResult decodeCompressed(const fs::path &path, const Stream &stream, uint64_t fileBytes,
+                              Read read)
 {
     const uint32_t kept = std::min<uint32_t>(stream.channels, 2);
     const uint64_t limit = maxFrames(stream.sampleRate);
-    std::vector<std::vector<float>> planes(kept);
-    uint64_t capacity = 0;
-    const auto reserve = [&](uint64_t needed) {
-        if (needed <= capacity)
+    // stream.frames passed checkLength, so this can't overflow.
+    const uint64_t headFrames =
+        stream.frames * kept * sizeof(float) / kVouchedBytesPerFileByte <= fileBytes ? stream.frames
+                                                                                     : 0;
+    // Channel c's frames at c × headFrames, as SampleBuffer lays them out; and the blocks, channel
+    // c's at c × kBlockFrames.
+    std::vector<float> head(kept * headFrames);
+    std::vector<std::vector<float>> blocks;
+    const auto take = [&](const float *in, uint64_t at, uint64_t frames) {
+        while (frames > 0)
         {
-            return;
-        }
-        uint64_t next = std::max(capacity == 0 ? kInitialFrames : 2 * capacity, needed);
-        if (needed <= stream.frames)
-        {
-            next = std::min(next, stream.frames);
-        }
-        for (auto &plane : planes)
-        {
-            plane.reserve(next);
-        }
-        capacity = next;
-    };
-    // One frame past the limit, to tell a file of exactly the limit from a longer one.
-    const uint64_t done =
-        readAll(stream, limit + 1, read, [&](const float *in, uint64_t at, uint64_t frames) {
-            reserve(at + frames);
+            float *base = nullptr;
+            uint64_t stride = 0;
+            uint64_t offset = 0;
+            if (at < headFrames)
+            {
+                base = head.data();
+                stride = headFrames;
+                offset = at;
+            }
+            else
+            {
+                const uint64_t index = (at - headFrames) / kBlockFrames;
+                if (index == blocks.size())
+                {
+                    blocks.emplace_back(kept * kBlockFrames);
+                }
+                base = blocks[index].data();
+                stride = kBlockFrames;
+                offset = (at - headFrames) % kBlockFrames;
+            }
+            const uint64_t run = std::min(frames, stride - offset);
             for (uint32_t c = 0; c < kept; ++c)
             {
-                auto &plane = planes[c];
-                plane.resize(at + frames);
-                for (uint64_t n = 0; n < frames; ++n)
+                float *out = base + c * stride + offset;
+                for (uint64_t n = 0; n < run; ++n)
                 {
-                    plane[at + n] = in[n * stream.channels + c];
+                    out[n] = in[n * stream.channels + c];
                 }
             }
-        });
+            in += run * stream.channels;
+            at += run;
+            frames -= run;
+        }
+    };
+    // One frame past the limit, to tell a file of exactly the limit from a longer one.
+    const uint64_t done = readAll(stream, limit + 1, read, take);
     if (done > limit)
     {
         char text[96];
@@ -213,13 +245,36 @@ DecodeResult decodeGrowing(const fs::path &path, const Stream &stream, Read read
     {
         return failure(path, "no audio could be decoded from the file");
     }
-    auto buffer =
-        std::make_shared<SampleBuffer>(kept, static_cast<int64_t>(done), double(stream.sampleRate));
-    for (uint32_t c = 0; c < kept; ++c)
+    std::vector<float> samples;
+    if (done <= headFrames)
     {
-        std::copy_n(planes[c].data(), done, buffer->channel(c));
-        planes[c] = {};
+        // Within the header's count: the channels close up to `done` apart, in place, and the
+        // vector shrinks without reallocating.
+        for (uint32_t c = 1; c < kept; ++c)
+        {
+            std::memmove(head.data() + c * done, head.data() + c * headFrames,
+                         done * sizeof(float));
+        }
+        head.resize(kept * done);
+        samples = std::move(head);
     }
+    else
+    {
+        samples.resize(kept * done);
+        for (uint32_t c = 0; c < kept; ++c)
+        {
+            float *out = samples.data() + c * done;
+            std::copy_n(head.data() + c * headFrames, headFrames, out);
+            for (size_t b = 0; b < blocks.size(); ++b)
+            {
+                const uint64_t at = headFrames + b * kBlockFrames;
+                std::copy_n(blocks[b].data() + c * kBlockFrames, std::min(kBlockFrames, done - at),
+                            out + at);
+            }
+        }
+    }
+    auto buffer = std::make_shared<SampleBuffer>(kept, static_cast<int64_t>(done),
+                                                 double(stream.sampleRate), std::move(samples));
     return {DecodedAudio{std::move(buffer), stream.format, stream.channels}, {}};
 }
 
@@ -240,17 +295,10 @@ template <typename Decode> DecodeResult guarded(const fs::path &path, Decode dec
     }
 }
 
-#if !defined(_WIN32)
-std::string utf8(const fs::path &path)
-{
-    const auto text = path.u8string();
-    return {text.begin(), text.end()};
-}
-#endif
-
-/// A file opened for reading, by its wide-character path on Windows (where a narrow one would go
-/// through the ANSI code page) and its UTF-8 path elsewhere, with dr_wav's read, seek and tell
-/// callbacks over it.
+/// A file opened for reading by its native path: wide on Windows (where a narrow one would go
+/// through the ANSI code page), the path's own bytes elsewhere. It is opened once per decode, and
+/// dr_wav, dr_flac and dr_mp3 each read it in turn through the same read, seek and tell callbacks
+/// (the three libraries' callback types coincide, and so do their seek origins).
 ///
 /// The seek callback refuses any position before the start or past the end of the file. dr_wav
 /// skips a chunk by seeking forward in steps of at most 2^31 − 1 bytes, so a chunk size that
@@ -265,7 +313,7 @@ class InputFile
 #if defined(_WIN32)
         file_ = _wfopen(path.c_str(), L"rb");
 #else
-        file_ = std::fopen(utf8(path).c_str(), "rb");
+        file_ = std::fopen(path.c_str(), "rb");
 #endif
         if (file_ != nullptr && (!seekTo(0, SEEK_END) || !tellNow(size_) || !seekTo(0, SEEK_SET)))
         {
@@ -287,6 +335,17 @@ class InputFile
     /// The file's size when it was opened, in bytes.
     uint64_t size() const noexcept { return size_; }
 
+    /// Back to the start, for the next decoder to try.
+    bool rewind()
+    {
+        if (!seekTo(0, SEEK_SET))
+        {
+            return false;
+        }
+        position_ = 0;
+        return true;
+    }
+
     static size_t onRead(void *user, void *out, size_t bytes)
     {
         auto &self = *static_cast<InputFile *>(user);
@@ -294,24 +353,25 @@ class InputFile
         self.position_ += got;
         return got;
     }
-    static drwav_bool32 onSeek(void *user, int offset, drwav_seek_origin origin)
+    /// Origin is drwav_seek_origin, drflac_seek_origin or drmp3_seek_origin.
+    template <typename Origin> static uint32_t onSeek(void *user, int offset, Origin origin)
     {
         auto &self = *static_cast<InputFile *>(user);
-        const int64_t base = origin == DRWAV_SEEK_SET   ? 0
-                             : origin == DRWAV_SEEK_CUR ? int64_t(self.position_)
-                                                        : int64_t(self.size_);
+        const int64_t base = int(origin) == DRWAV_SEEK_SET   ? 0
+                             : int(origin) == DRWAV_SEEK_CUR ? int64_t(self.position_)
+                                                             : int64_t(self.size_);
         const int64_t target = base + offset;
         if (target < 0 || uint64_t(target) > self.size_ || !self.seekTo(target, SEEK_SET))
         {
-            return DRWAV_FALSE;
+            return 0;
         }
         self.position_ = uint64_t(target);
-        return DRWAV_TRUE;
+        return 1;
     }
-    static drwav_bool32 onTell(void *user, drwav_int64 *cursor)
+    static uint32_t onTell(void *user, long long *cursor)
     {
-        *cursor = drwav_int64(static_cast<InputFile *>(user)->position_);
-        return DRWAV_TRUE;
+        *cursor = static_cast<long long>(static_cast<InputFile *>(user)->position_);
+        return 1;
     }
 
   private:
@@ -343,21 +403,12 @@ class InputFile
     uint64_t position_{0};
 };
 
-// dr_flac's and dr_mp3's open functions: their wide-character entry points on Windows, UTF-8
-// elsewhere.
-#if defined(_WIN32)
-drflac *openFlac(const fs::path &path) { return drflac_open_file_w(path.c_str(), nullptr); }
-bool openMp3(drmp3 &mp3, const fs::path &path)
-{
-    return drmp3_init_file_w(&mp3, path.c_str(), nullptr);
-}
-#else
-drflac *openFlac(const fs::path &path) { return drflac_open_file(utf8(path).c_str(), nullptr); }
-bool openMp3(drmp3 &mp3, const fs::path &path)
-{
-    return drmp3_init_file(&mp3, utf8(path).c_str(), nullptr);
-}
-#endif
+static_assert(int(DRWAV_SEEK_SET) == int(DRFLAC_SEEK_SET) &&
+              int(DRWAV_SEEK_SET) == int(DRMP3_SEEK_SET) &&
+              int(DRWAV_SEEK_CUR) == int(DRFLAC_SEEK_CUR) &&
+              int(DRWAV_SEEK_CUR) == int(DRMP3_SEEK_CUR) &&
+              int(DRWAV_SEEK_END) == int(DRFLAC_SEEK_END) &&
+              int(DRWAV_SEEK_END) == int(DRMP3_SEEK_END));
 
 /// The size a RIFF, RIFX or W64 file's data chunk declares, which dr_wav clamps to the file
 /// before deriving its frame count, so truncation would go unnoticed. RF64 declares it in its
@@ -365,6 +416,8 @@ bool openMp3(drmp3 &mp3, const fs::path &path)
 struct DeclaredData
 {
     uint64_t bytes{0};
+    /// Whether a RIFF or RIFX data chunk declared `bytes` (0 included).
+    bool riff{false};
 };
 
 drwav_uint64 onWavChunk(void *user, drwav_read_proc, drwav_seek_proc, void *,
@@ -382,7 +435,9 @@ drwav_uint64 onWavChunk(void *user, drwav_read_proc, drwav_seek_proc, void *,
         container == drwav_container_w64 && std::memcmp(header->id.guid, kW64Data, 16) == 0;
     if (riffData || w64Data)
     {
-        static_cast<DeclaredData *>(user)->bytes = header->sizeInBytes;
+        auto &declared = *static_cast<DeclaredData *>(user);
+        declared.bytes = header->sizeInBytes;
+        declared.riff = riffData;
     }
     return 0;
 }
@@ -415,21 +470,19 @@ uint32_t pcmBytesPerFrame(const drwav &wav)
     }
 }
 
-std::optional<DecodeResult> tryWav(const fs::path &path)
+std::optional<DecodeResult> tryWav(InputFile &file, const fs::path &path)
 {
-    InputFile file(path);
-    if (!file)
-    {
-        return failure(path, "the file can't be opened");
-    }
     drwav wav;
     DeclaredData declared;
-    if (!drwav_init_ex(&wav, InputFile::onRead, InputFile::onSeek, InputFile::onTell, onWavChunk,
-                       &file, &declared, 0, nullptr))
+    if (!drwav_init_ex(&wav, InputFile::onRead, InputFile::onSeek<drwav_seek_origin>,
+                       InputFile::onTell, onWavChunk, &file, &declared, 0, nullptr))
     {
         return std::nullopt;
     }
     const uint64_t fileBytes = file.size();
+    // The bytes from the start of the audio to the end of the file.
+    const uint64_t heldBytes =
+        fileBytes > wav.dataChunkDataPos ? fileBytes - wav.dataChunkDataPos : 0;
     const bool aiff = wav.container == drwav_container_aiff;
     const bool adpcm = wav.translatedFormatTag == DR_WAVE_FORMAT_ADPCM ||
                        wav.translatedFormatTag == DR_WAVE_FORMAT_DVI_ADPCM;
@@ -457,17 +510,30 @@ std::optional<DecodeResult> tryWav(const fs::path &path)
         }
         if (adpcm)
         {
+            // dr_wav clamps the data size to the file and, without a fact chunk, counts the
+            // frames in what is left, so a short file would read as a short sound. Up to one
+            // block missing is the shortfall the decode allows anyway.
+            if (declared.bytes > heldBytes && declared.bytes - heldBytes > wav.fmt.blockAlign)
+            {
+                return failure(path, truncatedBytes(declared.bytes, heldBytes));
+            }
             if (auto bad = checkLength(path, stream))
             {
                 return std::move(*bad);
             }
-            return guarded(path, [&] { return decodeGrowing(path, stream, read); });
+            return guarded(path, [&] { return decodeCompressed(path, stream, fileBytes, read); });
+        }
+        // A data size of 0 with audio after it is a recording whose header was never finished:
+        // dr_wav reads it as no frames at all.
+        if (declared.riff && declared.bytes == 0 && heldBytes >= bytesPerFrame)
+        {
+            return failure(path, "the file is truncated: its header gives 0 bytes of audio, as a "
+                                 "recording never finished leaves it, but " +
+                                     std::to_string(heldBytes) + " bytes follow");
         }
         // What the header declares, checked against what the file holds before its length is:
         // a recording never finalized declares a placeholder size, and is truncated, not long.
         stream.frames = std::max<uint64_t>(stream.frames, declared.bytes / bytesPerFrame);
-        const uint64_t heldBytes =
-            fileBytes > wav.dataChunkDataPos ? fileBytes - wav.dataChunkDataPos : 0;
         const uint64_t held = heldBytes / bytesPerFrame;
         if (stream.frames > held)
         {
@@ -496,9 +562,10 @@ std::optional<DecodeResult> tryWav(const fs::path &path)
     return result;
 }
 
-std::optional<DecodeResult> tryFlac(const fs::path &path)
+std::optional<DecodeResult> tryFlac(InputFile &file, const fs::path &path)
 {
-    drflac *flac = openFlac(path);
+    drflac *flac = drflac_open(InputFile::onRead, InputFile::onSeek<drflac_seek_origin>,
+                               InputFile::onTell, &file, nullptr);
     if (!flac)
     {
         return std::nullopt;
@@ -509,7 +576,7 @@ std::optional<DecodeResult> tryFlac(const fs::path &path)
     if (!result)
     {
         result = guarded(path, [&] {
-            return decodeGrowing(path, stream, [&](uint64_t frames, float *out) {
+            return decodeCompressed(path, stream, file.size(), [&](uint64_t frames, float *out) {
                 return drflac_read_pcm_frames_f32(flac, frames, out);
             });
         });
@@ -522,10 +589,11 @@ std::optional<DecodeResult> tryFlac(const fs::path &path)
 /// header's count (an encoder's delay and padding that its tag accounts for differently).
 constexpr uint64_t kMp3Shortfall = 2 * 1152;
 
-std::optional<DecodeResult> tryMp3(const fs::path &path)
+std::optional<DecodeResult> tryMp3(InputFile &file, const fs::path &path)
 {
     auto mp3 = std::make_unique<drmp3>(); // large decoder state: keep it off the stack
-    if (!openMp3(*mp3, path))
+    if (!drmp3_init(mp3.get(), InputFile::onRead, InputFile::onSeek<drmp3_seek_origin>,
+                    InputFile::onTell, nullptr, &file, nullptr))
     {
         return std::nullopt;
     }
@@ -537,7 +605,7 @@ std::optional<DecodeResult> tryMp3(const fs::path &path)
     if (!result)
     {
         result = guarded(path, [&] {
-            return decodeGrowing(path, stream, [&](uint64_t frames, float *out) {
+            return decodeCompressed(path, stream, file.size(), [&](uint64_t frames, float *out) {
                 return drmp3_read_pcm_frames_f32(mp3.get(), frames, out);
             });
         });
@@ -572,24 +640,25 @@ DecodeResult decodeAudioFile(const fs::path &path)
     {
         return failure(path, "the file is empty");
     }
-    if (!std::ifstream(path, std::ios::binary))
+    InputFile file(path);
+    if (!file)
     {
         return failure(path, "the file can't be opened");
     }
 
     // By content, not extension. dr_wav and dr_flac check their headers; MP3 decoding is the most
-    // permissive, so it goes last.
-    if (auto result = tryWav(path))
+    // permissive, so it goes last. Each starts from the beginning of the file.
+    using Try = std::optional<DecodeResult> (*)(InputFile &, const fs::path &);
+    for (const Try attempt : {Try(tryWav), Try(tryFlac), Try(tryMp3)})
     {
-        return std::move(*result);
-    }
-    if (auto result = tryFlac(path))
-    {
-        return std::move(*result);
-    }
-    if (auto result = tryMp3(path))
-    {
-        return std::move(*result);
+        if (!file.rewind())
+        {
+            return failure(path, "the file can't be read");
+        }
+        if (auto result = attempt(file, path))
+        {
+            return std::move(*result);
+        }
     }
     return failure(path, "not a WAV, AIFF, FLAC or MP3 file, or one in an encoding that can't be "
                          "read");
