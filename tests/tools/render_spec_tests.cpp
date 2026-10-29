@@ -516,7 +516,7 @@ TEST_CASE("event lines use the documented format", "[render]")
         .pan = 0.0f,
     };
     CHECK(gg::render::formatEventLine(g) ==
-          R"({"i":3,"onset":18000,"frac":0.5,"pos":95999.5,"rate":0.5,"dur":2880,)"
+          R"({"i":3,"onset":18000,"frac":0.5,"pos":95999.5,"rate":0.5,"dur":2880,"tex":0,)"
           R"("gain":0.8,"pan":0})");
 
     // Doubles are written shortest-round-trip, so they read back exactly.
@@ -527,20 +527,54 @@ TEST_CASE("event lines use the documented format", "[render]")
         .startPos = 0.1 + 0.2,
         .rate = 1e-7,
         .durationSamples = 16.0,
+        .texture = 0.7,
         .gain = 1.0f / 3.0f,
         .pan = -0.1f,
     };
     const std::string line = gg::render::formatEventLine(h);
     CHECK(line == R"({"i":1099511627776,"onset":1099511627776,"frac":0.1,)"
-                  R"("pos":0.30000000000000004,"rate":1e-07,"dur":16,)"
+                  R"("pos":0.30000000000000004,"rate":1e-07,"dur":16,"tex":0.7,)"
                   R"("gain":0.33333334,"pan":-0.1})");
     const auto parsed = nlohmann::json::parse(line);
     CHECK(parsed["frac"].get<double>() == h.onsetFrac);
     CHECK(parsed["pos"].get<double>() == h.startPos);
     CHECK(parsed["rate"].get<double>() == h.rate);
+    CHECK(parsed["tex"].get<double>() == h.texture);
     // gain and pan are floats, written shortest-round-trip as floats.
     CHECK(parsed["gain"].get<float>() == h.gain);
     CHECK(parsed["pan"].get<float>() == h.pan);
+}
+
+TEST_CASE("event lines carry each grain's texture", "[render]")
+{
+    // Spec §4: "tex" follows "dur". A stream at its defaults (Texture 0) writes "tex":0 on every
+    // line, in sample mode and in FX mode.
+    RenderSpec fx;
+    fx.mode = RenderMode::Fx;
+    fx.sampleRate = 48000.0;
+    fx.durationSeconds = 0.25;
+    fx.blockSize = 64;
+    fx.seed = 5;
+    fx.fx.input = {.kind = SourceKind::Noise, .seconds = 0.25, .amplitude = 0.5};
+    fx.fx.channels = 2;
+    fx.fx.params = {{"Density", 7.0}};
+    for (const RenderSpec &spec : {parseCase("sparse-sine"), fx})
+    {
+        INFO("mode " << static_cast<int>(spec.mode));
+        std::vector<std::string> events;
+        gg::render::render(spec, &events);
+        REQUIRE(events.size() > 10);
+        for (const std::string &line : events)
+        {
+            INFO(line);
+            const std::size_t dur = line.find(R"(,"dur":)");
+            const std::size_t tex = line.find(R"(,"tex":0,"gain":)");
+            REQUIRE(dur != std::string::npos);
+            REQUIRE(tex != std::string::npos);
+            REQUIRE(line.find(',', dur + 1) == tex);
+            REQUIRE(nlohmann::json::parse(line)["tex"].get<double>() == 0.0);
+        }
+    }
 }
 
 TEST_CASE("fx spec parses", "[render]")

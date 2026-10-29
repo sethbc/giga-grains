@@ -16,6 +16,7 @@
 #include "gg/core/FpContract.h"
 #include "gg/core/Interpolate.h"
 #include "gg/core/Window.h"
+#include "gg/grain/Envelope.h"
 #include "gg/grain/GrainPool.h"
 #include "gg/source/LiveSource.h"
 
@@ -26,8 +27,13 @@
 /// For grain g at output sample t, with everything latched at the onset (GrainRows):
 ///
 ///     e   = double(t − onsetSample) − onsetFrac    (double)
-///     w   = HannTable::at(e × invDuration)         (float)
+///     w   = HannTable::at(warp(e × invDuration))   (float)
 ///     pos = startPos + rate × e                     (double)
+///
+/// warp is warpPhase with the grain's latched Texture envelope (Envelope.h; the rows' env*
+/// arrays), the identity at texture 0, which maps [0, 1] onto [0, 1]: the window is zero wherever
+/// e × invDuration is outside [0, 1], as without it, so the SIMD kernels' runs, which test
+/// the unwarped phase, are unchanged.
 ///
 /// Only samples with w > 0 contribute; elsewhere nothing is read and nothing is added. With two
 /// outputs, dst[c][t] += read_c(pos) × (w × gain_c), with gain_c the latched gainL or gainR. One
@@ -237,6 +243,17 @@ struct Linear
     }
 };
 
+namespace detail
+{
+/// Grain i's latched Texture envelope (GrainRows' env* arrays), read once per grain or call.
+inline EnvelopeShape envelopeOf(const GrainRows &rows, uint32_t i) noexcept SST_CPPUTILS_NONBLOCKING
+{
+    GG_FP_CONTRACT_OFF
+    return {rows.envAttackEnd[i], rows.envReleaseStart[i], rows.envAttackScale[i],
+            rows.envReleaseScale[i]};
+}
+} // namespace detail
+
 /// The scalar reference over a sample source: grain i of rows, over [from, to), read with
 /// Reader::read.
 template <class Reader>
@@ -252,6 +269,11 @@ void renderSampleRef(const GrainRows &rows, uint32_t i, const SampleSource &src,
     const double invDuration = rows.invDuration[i];
     const int64_t first = std::max(from, onsetSample);
     const int64_t last = std::min(to, rows.endSample[i]); // exclusive
+    if (first >= last)
+    {
+        return; // nothing to render (as at most edges of the SIMD kernels' runs)
+    }
+    const EnvelopeShape envelope = detail::envelopeOf(rows, i);
     float *const dst0 = out.dst[0];
     float *const dst1 = out.dst[1];
     if (dst1 == nullptr)
@@ -260,7 +282,7 @@ void renderSampleRef(const GrainRows &rows, uint32_t i, const SampleSource &src,
         for (int64_t t = first; t < last; ++t)
         {
             const double e = static_cast<double>(t - onsetSample) - onsetFrac;
-            const float w = hann.at(e * invDuration);
+            const float w = hann.at(warpPhase(e * invDuration, envelope));
             if (!(w > 0.0f))
             {
                 continue;
@@ -276,7 +298,7 @@ void renderSampleRef(const GrainRows &rows, uint32_t i, const SampleSource &src,
     for (int64_t t = first; t < last; ++t)
     {
         const double e = static_cast<double>(t - onsetSample) - onsetFrac;
-        const float w = hann.at(e * invDuration);
+        const float w = hann.at(warpPhase(e * invDuration, envelope));
         if (!(w > 0.0f))
         {
             continue;
@@ -446,7 +468,7 @@ struct InterleavedTaps
 
 /// The SIMD interior: grain i over [begin, end), a multiple of 4 samples, all with the window's
 /// phase in [0, 1] and every tap readable through Taps, 4 consecutive samples per step. Per
-/// lane, in double as the reference: e, the window's x = (e × invDuration) × kSize with
+/// lane, in double as the reference: e, the window's x = warp(e × invDuration) × kSize with
 /// HannTable::at's index and fraction, and pos with its floor and fraction. taps.locate turns the
 /// 4 floors into the buffer indices the reads take taps around (BufferTaps, InterleavedTaps: the
 /// floors; the live ring: their slots). Then 4-wide float, in the reference's order: the window
@@ -456,10 +478,13 @@ struct InterleavedTaps
 ///
 /// kTwoOutputs: dst[1] is written, with gainL and gainR; otherwise dst[0] alone, with gain.
 /// kStereo: with two outputs, channel 1's read feeds dst[1]; otherwise dst[1] reuses channel 0's.
-template <class Reader, bool kTwoOutputs, bool kStereo, class Taps>
-void renderInterior(const GrainRows &rows, uint32_t i, const Taps &taps, const Output &out,
-                    int64_t begin, int64_t end,
-                    const HannTable &hann) noexcept SST_CPPUTILS_NONBLOCKING
+/// kWarp: the phase goes through warpPhase; renderInterior passes false only for a grain whose
+/// envelope isIdentity, where warpPhase returns every phase in [0, 1] unchanged, so both give
+/// the same bits and a plain-Hann grain (texture 0) skips the warp's cost.
+template <class Reader, bool kTwoOutputs, bool kStereo, bool kWarp, class Taps>
+void renderInteriorSteps(const GrainRows &rows, uint32_t i, const Taps &taps, const Output &out,
+                         int64_t begin, int64_t end,
+                         const HannTable &hann) noexcept SST_CPPUTILS_NONBLOCKING
 {
     GG_FP_CONTRACT_OFF
     const int64_t onsetSample = rows.onsetSample[i];
@@ -467,6 +492,7 @@ void renderInterior(const GrainRows &rows, uint32_t i, const Taps &taps, const O
     const double startPos = rows.startPos[i];
     const double rate = rows.rate[i];
     const double invDuration = rows.invDuration[i];
+    [[maybe_unused]] const EnvelopeShape envelope = detail::envelopeOf(rows, i);
     // gain_c: the latched gainL and gainR, or with one output the grain's gain alone in gain0
     // (gainR is read only with two outputs).
     const SIMD_M128 gain0 = SIMD_MM(set1_ps)(kTwoOutputs ? rows.gainL[i] : rows.gain[i]);
@@ -486,9 +512,14 @@ void renderInterior(const GrainRows &rows, uint32_t i, const Taps &taps, const O
         for (int lane = 0; lane < 4; ++lane)
         {
             const double e = static_cast<double>(t + lane - onsetSample) - onsetFrac;
-            // HannTable::at, with the phase known to be in [0, 1]: phase 1 is the end of the
-            // last segment.
-            const double x = (e * invDuration) * HannTable::kSize;
+            // HannTable::at of the warped phase, with the phase known to be in [0, 1], and so
+            // the warped one too: phase 1 is the end of the last segment.
+            double phase = e * invDuration;
+            if constexpr (kWarp)
+            {
+                phase = warpPhase(phase, envelope);
+            }
+            const double x = phase * HannTable::kSize;
             const uint32_t k = std::min(static_cast<uint32_t>(x), HannTable::kSize - 1);
             wFrac[lane] = static_cast<float>(x - k);
             wLo[lane] = points[k];
@@ -515,6 +546,29 @@ void renderInterior(const GrainRows &rows, uint32_t i, const Taps &taps, const O
         {
             addMasked(dst1 + j, SIMD_MM(mul_ps)(s1, SIMD_MM(mul_ps)(w, gain1)), sounds);
         }
+    }
+}
+
+/// The SIMD interior (renderInteriorSteps), with the warp only where the grain's envelope isn't
+/// the identity.
+template <class Reader, bool kTwoOutputs, bool kStereo, class Taps>
+void renderInterior(const GrainRows &rows, uint32_t i, const Taps &taps, const Output &out,
+                    int64_t begin, int64_t end,
+                    const HannTable &hann) noexcept SST_CPPUTILS_NONBLOCKING
+{
+    if (begin >= end)
+    {
+        return;
+    }
+    if (isIdentity(envelopeOf(rows, i)))
+    {
+        renderInteriorSteps<Reader, kTwoOutputs, kStereo, false>(rows, i, taps, out, begin, end,
+                                                                 hann);
+    }
+    else
+    {
+        renderInteriorSteps<Reader, kTwoOutputs, kStereo, true>(rows, i, taps, out, begin, end,
+                                                                hann);
     }
 }
 } // namespace detail
@@ -583,6 +637,11 @@ void renderLiveRef(const GrainRows &rows, uint32_t i, const LiveSource &live, co
     const double invDuration = rows.invDuration[i];
     const int64_t first = std::max(from, onsetSample);
     const int64_t last = std::min(to, rows.endSample[i]); // exclusive
+    if (first >= last)
+    {
+        return; // nothing to render (as at most edges of the SIMD kernels' runs)
+    }
+    const EnvelopeShape envelope = detail::envelopeOf(rows, i);
     float *const dst0 = out.dst[0];
     float *const dst1 = out.dst[1];
     const bool twoOutputs = dst1 != nullptr;
@@ -594,7 +653,7 @@ void renderLiveRef(const GrainRows &rows, uint32_t i, const LiveSource &live, co
     for (int64_t t = first; t < last; ++t)
     {
         const double e = static_cast<double>(t - onsetSample) - onsetFrac;
-        const float w = hann.at(e * invDuration);
+        const float w = hann.at(warpPhase(e * invDuration, envelope));
         if (!(w > 0.0f))
         {
             continue;

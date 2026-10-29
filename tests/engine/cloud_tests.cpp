@@ -845,6 +845,41 @@ TEST_CASE("quality is latched per grain", "[cloud]")
     }
 }
 
+TEST_CASE("texture is sanitized and latched per grain", "[cloud]")
+{
+    // Spec §4: each grain takes CloudParams::texture as it is at its onset; a non-finite value is
+    // the default 0, and the rest is clamped to [0, 1]. Texture changes nothing else in a draw.
+    gg::CloudScheduler normal;
+    normal.setParams(cloudAt(480.0));
+    const std::vector<gg::GrainDraw> reference = collect(normal, 0, 500, 64);
+    REQUIRE(reference.size() == 5);
+    REQUIRE(reference[0].texture == 0.0); // the default
+    struct Case
+    {
+        double given;
+        double latched;
+    };
+    for (const Case c : {Case{0.3, 0.3}, Case{1.0, 1.0}, Case{-0.5, 0.0}, Case{7.0, 1.0},
+                         Case{std::numeric_limits<double>::quiet_NaN(), 0.0},
+                         Case{std::numeric_limits<double>::infinity(), 0.0}})
+    {
+        INFO("texture " << c.given);
+        gg::CloudParams p = cloudAt(480.0);
+        p.texture = c.given;
+        gg::CloudScheduler cloud;
+        cloud.setParams(p);
+        const std::vector<gg::GrainDraw> grains = collect(cloud, 0, 500, 64);
+        REQUIRE(grains.size() == reference.size());
+        for (std::size_t i = 0; i < grains.size(); ++i)
+        {
+            REQUIRE(grains[i].texture == c.latched);
+            gg::GrainDraw g = grains[i];
+            g.texture = 0.0;
+            CHECK(g == reference[i]);
+        }
+    }
+}
+
 TEST_CASE("with no key held, every draw is the scheduler's without notes", "[cloud]")
 {
     // The note pick has its own rng::Field, so a stream with no key held draws exactly what it

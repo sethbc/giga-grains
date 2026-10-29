@@ -19,11 +19,12 @@
 namespace gg::render
 {
 /// One line of the grain-event log, without the newline:
-/// `{"i":<index>,"onset":<onsetSample>,"frac":<d>,"pos":<d>,"rate":<d>,"dur":<d>,"gain":<f>,`
-/// `"pan":<f>}`. Each <d> is fmt's shortest round-trip form of the double and each <f> that of
-/// the float, so the line reads back exactly and is byte-identical on every platform. The golden
-/// event logs are compared exactly per line (a CR before a newline, and the final newline, are
-/// ignored), which makes them the cross-platform determinism gate (INTENT §14, §19).
+/// `{"i":<index>,"onset":<onsetSample>,"frac":<d>,"pos":<d>,"rate":<d>,"dur":<d>,"tex":<d>,`
+/// `"gain":<f>,"pan":<f>}`, "tex" being the grain's Texture (spec §4). Each <d> is fmt's shortest
+/// round-trip form of the double and each <f> that of the float, so the line reads back exactly and
+/// is byte-identical on every platform. The golden event logs are compared exactly per line (a CR
+/// before a newline, and the final newline, are ignored), which makes them the cross-platform
+/// determinism gate (INTENT §14, §19).
 std::string formatEventLine(const GrainSpec &g);
 
 /// Renders the spec in its mode, in process() calls of blockSize frames (a part's last call may

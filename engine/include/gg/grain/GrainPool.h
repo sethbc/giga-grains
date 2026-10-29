@@ -26,6 +26,8 @@ struct GrainSpec
     double startPos;
     double rate;            ///< Source (or ring) frames advanced per output sample.
     double durationSamples; ///< Window length in output samples, at least 16.
+    /// The Texture envelope's control, [0, 1] (spec §4; Envelope.h): 0 is the plain Hann.
+    double texture{0.0};
     float gain;
     float pan;               ///< -1 (left) .. 1 (right); see panGains().
     Tier tier{Tier::Normal}; ///< How the grain reads its source (ruling 2).
@@ -89,6 +91,13 @@ struct GrainRows
     const double *invDuration; ///< 1.0 / durationSamples
     const float *gainL;        ///< gain × panGains(pan).left
     const float *gainR;        ///< gain × panGains(pan).right
+    const double *texture;     ///< GrainSpec::texture
+    /// envelopeShape(texture, durationSamples) (Envelope.h), one array per member, which every
+    /// window site passes to warpPhase.
+    const double *envAttackEnd;
+    const double *envReleaseStart;
+    const double *envAttackScale;
+    const double *envReleaseScale;
 };
 
 /// The grain pool: a structure of arrays (INTENT §14), one array per GrainSpec field plus each
@@ -162,6 +171,9 @@ class GrainPool
     GrainSpec spec(uint32_t i) const noexcept;
 
   private:
+    /// Moves rows [from, from + n) of every array down to [to, to + n); to < from.
+    void moveRows(uint32_t from, uint32_t to, uint32_t n) noexcept SST_CPPUTILS_NONBLOCKING;
+
     uint32_t capacity_;
     uint32_t slots_; // 2 × capacity_
 
@@ -179,6 +191,11 @@ class GrainPool
     std::vector<double> invDuration_;
     std::vector<float> gainL_;
     std::vector<float> gainR_;
+    std::vector<double> texture_;
+    std::vector<double> envAttackEnd_;
+    std::vector<double> envReleaseStart_;
+    std::vector<double> envAttackScale_;
+    std::vector<double> envReleaseScale_;
     GrainRows rows_;
     uint32_t size_{0};
     // The smallest endSample_ among the stored grains, or INT64_MAX when empty: retireFinished

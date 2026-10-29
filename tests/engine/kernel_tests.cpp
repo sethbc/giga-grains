@@ -24,6 +24,7 @@
 #include "gg/core/Interpolate.h"
 #include "gg/core/Rng.h"
 #include "gg/core/Window.h"
+#include "gg/grain/Envelope.h"
 #include "gg/grain/GrainKernels.h"
 #include "gg/grain/GrainPool.h"
 #include "gg/source/InterleavedStereo.h"
@@ -124,19 +125,21 @@ bool anyNonZero(const std::vector<float> &v)
 }
 
 // The spec's §3 table for a sample source, written out per sample: for t in [onsetSample,
-// grainEndSample), e = double(t − onsetSample) − onsetFrac, w = hann(e × invDuration), skip unless
+// grainEndSample), e = double(t − onsetSample) − onsetFrac, w = hann(warp(e × invDuration)) with
+// the warp of the grain's Texture envelope (spec §4; the identity at texture 0), skip unless
 // w > 0, pos = startPos + rate × e, dst[c][t] += read_c(pos) × (w × gain_c), with read the tier's
 // interpolator. One output reads channel 0 with gain alone.
 void specSample(const gg::GrainSpec &g, SampleRead read, const float *const src[2], int64_t frames,
                 int outputs, std::vector<float> (&out)[2], const gg::HannTable &hann)
 {
     const double invDuration = 1.0 / g.durationSamples;
+    const gg::EnvelopeShape shape = gg::envelopeShape(g.texture, g.durationSamples);
     const ChannelGains gains = channelGains(g, outputs);
     for (int64_t t = g.onsetSample; t < gg::grainEndSample(g); ++t)
     {
         const int64_t n = t - g.onsetSample;
         const double e = static_cast<double>(n) - g.onsetFrac;
-        const float w = hann.at(e * invDuration);
+        const float w = hann.at(gg::warpPhase(e * invDuration, shape));
         if (!(w > 0.0f))
         {
             continue;
@@ -196,15 +199,16 @@ struct NaNOutside
 
 // Requires renderSampleRef<Reader> to match the spec's table, with read as the tier's interpolator,
 // for the brief's grain over stereo noise: two outputs from a stereo and from a mono source, and
-// one output from a stereo source.
-template <class Reader> void requireSampleArithmetic(SampleRead read)
+// one output from a stereo source. The grain has the given Texture (spec §4).
+template <class Reader> void requireSampleArithmetic(SampleRead read, double texture = 0.0)
 {
     constexpr int64_t kFrames = 2000;
     constexpr int64_t kLength = 1000;
     const gg::HannTable hann;
     const std::vector<float> left = noise(kFrames, 7, 0);
     const std::vector<float> right = noise(kFrames, 7, 1);
-    const gg::GrainSpec g = testGrain(10, 200.25);
+    gg::GrainSpec g = testGrain(10, 200.25);
+    g.texture = texture;
     REQUIRE(gg::grainEndSample(g) <= kLength);
     const OneGrain one(g);
     const gg::GrainRows &rows = one.pool.rows();
@@ -250,6 +254,30 @@ template <class Reader> void requireSampleArithmetic(SampleRead read)
 TEST_CASE("sample reference follows the spec's arithmetic", "[kernel]")
 {
     requireSampleArithmetic<Hermite>(&gg::interp::hermite4);
+}
+
+TEST_CASE("textured grains match the spec loop", "[kernel]")
+{
+    // The reference's window is hann(warp(e × invDuration)) with the shape latched at spawn,
+    // bit for bit, across the family: no sustain (0.25, 0.5), a sustain (0.75), the gate (1).
+    for (const double texture : {0.25, 0.5, 0.75, 1.0})
+    {
+        INFO("texture " << texture);
+        requireSampleArithmetic<Hermite>(&gg::interp::hermite4, texture);
+        requireSampleArithmetic<Linear>(&gg::interp::linear, texture);
+    }
+    // The latched shape is the one envelopeShape gives the spec's texture and duration.
+    gg::GrainSpec g = testGrain(10, 200.25);
+    g.texture = 0.75;
+    const OneGrain one(g);
+    const gg::GrainRows &rows = one.pool.rows();
+    const gg::EnvelopeShape e = gg::envelopeShape(0.75, g.durationSamples);
+    REQUIRE(rows.texture[0] == 0.75);
+    REQUIRE(rows.envAttackEnd[0] == e.attackEnd);
+    REQUIRE(rows.envReleaseStart[0] == e.releaseStart);
+    REQUIRE(rows.envAttackScale[0] == e.attackScale);
+    REQUIRE(rows.envReleaseScale[0] == e.releaseScale);
+    REQUIRE(one.pool.spec(0) == g);
 }
 
 TEST_CASE("reference reads nothing where the window is zero", "[kernel]")
@@ -701,8 +729,10 @@ struct Pool
 };
 
 // The brief's random grains: rates 2^[−2, 2] (or one of `rates`, when given), onsetFrac in
-// [0, 1), durations 16–9,600, pans ±1, onsets spread over [−4,000, 8,000) in order, and start
-// positions over the source and up to 2,000 frames past either end, so many reads cross an end.
+// [0, 1), durations 16–9,600, textures in [0, 1) (spec §4; every fourth exactly 0, the plain Hann,
+// which the SIMD interior renders without the warp), pans ±1, onsets spread over [−4,000, 8,000) in
+// order, and start positions over the source and up to 2,000 frames past either end, so many reads
+// cross an end.
 std::vector<gg::GrainSpec> randomGrains(uint64_t seed, uint32_t count, int64_t frames,
                                         const std::vector<double> &rates = {})
 {
@@ -718,6 +748,7 @@ std::vector<gg::GrainSpec> randomGrains(uint64_t seed, uint32_t count, int64_t f
             .startPos = -2000.0 + u01(seed, 2, k) * static_cast<double>(frames + 4000),
             .rate = rate,
             .durationSamples = 16.0 + u01(seed, 3, k) * (9600.0 - 16.0),
+            .texture = k % 4 == 0 ? 0.0 : u01(seed, 6, k),
             .gain = 0.25f + 0.75f * static_cast<float>(u01(seed, 4, k)),
             .pan = static_cast<float>(2.0 * u01(seed, 5, k) - 1.0),
         });
@@ -1379,7 +1410,9 @@ std::vector<int64_t> headTrajectory(const LiveInput &input)
 //   advances, so its interior is empty unless a freeze stops the head;
 // - 3: rate exactly 1, which makes R − pos constant while the head advances;
 // - 4–7: rates 2^[−2, 2], anywhere from 300 frames past the head to 300 before the window.
-// Durations are 16–9,600 samples, except kind 0's.
+// Durations are 16–9,600 samples, except kind 0's; textures are in [0, 1) (spec §4), every third
+// exactly 0 (the plain Hann, which the SIMD interior renders without the warp), so every kind
+// has grains of both.
 std::vector<gg::GrainSpec> liveGrains(uint64_t seed, const std::vector<int64_t> &onsets,
                                       const std::vector<int64_t> &heads, int64_t ringFrames)
 {
@@ -1420,6 +1453,7 @@ std::vector<gg::GrainSpec> liveGrains(uint64_t seed, const std::vector<int64_t> 
             .startPos = static_cast<double>(heads[static_cast<std::size_t>(onset)]) - behind,
             .rate = rate,
             .durationSamples = duration,
+            .texture = k % 3 == 0 ? 0.0 : u01(seed, 6, uk),
             .gain = 0.25f + 0.75f * static_cast<float>(u01(seed, 4, uk)),
             .pan = static_cast<float>(2.0 * u01(seed, 5, uk) - 1.0),
         });

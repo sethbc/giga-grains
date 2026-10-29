@@ -10,25 +10,27 @@
 
 #include "gg/core/Rng.h"
 #include "gg/core/Window.h"
+#include "gg/grain/Envelope.h"
 #include "gg/grain/GrainPool.h"
 #include "gg/grain/Tier.h"
 
 namespace
 {
-// Gain and pan vary with the index, so the latched channel gains differ from row to row, and so
-// does the tier.
+// Gain, pan and texture vary with the index, so the latched channel gains and envelope shapes
+// differ from row to row, and so does the tier.
 gg::GrainSpec grain(uint64_t index, int64_t onsetSample, double durationSamples)
 {
     const auto k = static_cast<float>(index % 8);
-    return {index,
-            onsetSample,
-            0.25,
-            0.0,
-            1.0,
-            durationSamples,
-            0.5f + 0.0625f * k,
-            0.25f * k - 0.875f,
-            index % 3 == 0 ? gg::Tier::Eco : gg::Tier::Normal};
+    return {.index = index,
+            .onsetSample = onsetSample,
+            .onsetFrac = 0.25,
+            .startPos = 0.0,
+            .rate = 1.0,
+            .durationSamples = durationSamples,
+            .texture = 0.125 * static_cast<double>(index % 9),
+            .gain = 0.5f + 0.0625f * k,
+            .pan = 0.25f * k - 0.875f,
+            .tier = index % 3 == 0 ? gg::Tier::Eco : gg::Tier::Normal};
 }
 
 std::vector<uint64_t> indices(const gg::GrainPool &pool)
@@ -86,6 +88,13 @@ TEST_CASE("pool keeps spawn order through retirement", "[pool]")
             REQUIRE(rows.invDuration[i] == 1.0 / g.durationSamples);
             REQUIRE(rows.gainL[i] == g.gain * gg::panGains(g.pan).left);
             REQUIRE(rows.gainR[i] == g.gain * gg::panGains(g.pan).right);
+            // The Texture envelope's shape (spec §4).
+            const gg::EnvelopeShape e = gg::envelopeShape(g.texture, g.durationSamples);
+            REQUIRE(rows.texture[i] == g.texture);
+            REQUIRE(rows.envAttackEnd[i] == e.attackEnd);
+            REQUIRE(rows.envReleaseStart[i] == e.releaseStart);
+            REQUIRE(rows.envAttackScale[i] == e.attackScale);
+            REQUIRE(rows.envReleaseScale[i] == e.releaseScale);
         }
     }
     REQUIRE(pool.size() == 0);
@@ -102,7 +111,14 @@ TEST_CASE("grain end bounds the window", "[pool]")
     {
         for (const double dur : {16.0, 16.5, 4800.0, 4800.999})
         {
-            const gg::GrainSpec g{0, 1000, frac, 0.0, 1.0, dur, 1.0f, 0.0f};
+            const gg::GrainSpec g{.index = 0,
+                                  .onsetSample = 1000,
+                                  .onsetFrac = frac,
+                                  .startPos = 0.0,
+                                  .rate = 1.0,
+                                  .durationSamples = dur,
+                                  .gain = 1.0f,
+                                  .pan = 0.0f};
             const int64_t end = gg::grainEndSample(g);
             const double elapsed = static_cast<double>(end - g.onsetSample) - g.onsetFrac;
             REQUIRE(elapsed >= dur);
