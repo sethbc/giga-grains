@@ -401,6 +401,25 @@ if (APPLE AND GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
         set_tests_properties(codesign_${format} PROPERTIES LABELS plugin)
     endforeach ()
 
+    # Notarization's signing requirements (spec §6.2), label `installer`: signed with a real
+    # identity, every bundle carries the hardened runtime, and the two standalone apps the
+    # audio-input entitlement (installer/macos/standalone.entitlements). An ad-hoc tree signs
+    # with neither, so these exist only when GG_MACOS_CODESIGN_IDENTITY isn't "-".
+    if (NOT GG_MACOS_CODESIGN_IDENTITY STREQUAL "-")
+        foreach (format IN ITEMS clap vst3 auv2 standalone standalone_fx)
+            set(entitlement "")
+            if (format MATCHES "^standalone")
+                set(entitlement com.apple.security.device.audio-input)
+            endif ()
+            add_test(NAME codesign_hardened_${format}
+                    COMMAND ${CMAKE_COMMAND} -DCODESIGN=${GG_CODESIGN}
+                    -DBUNDLE=$<TARGET_BUNDLE_DIR:gg_clapfirst_${format}>
+                    -DEXPECT_ENTITLEMENT=${entitlement}
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/installer/check-codesign-flags.cmake)
+            set_tests_properties(codesign_hardened_${format} PROPERTIES LABELS installer)
+        endforeach ()
+    endif ()
+
     # Identities (INTENT §18), label `plugin`: what the built bundles declare, read back from them.
     # - Each standalone app's bundle ID. clap-wrapper would give both the instrument's; the FX's
     #   is set in clients/clap-first (ruling T8-a). macOS keys app preferences and privacy

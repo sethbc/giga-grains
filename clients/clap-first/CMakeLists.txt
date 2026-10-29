@@ -91,10 +91,26 @@ endif ()
 # on every run, without the AudioComponents list. clap-wrapper copies the real one back only as
 # part of the AU's own link, and Ninja would then see the input changed during the link and
 # relink on every build. So the AU depends instead on a stamp that every CMake run touches.
+#
+# Notarization (spec §6.2) needs more of a real identity's signature: the hardened runtime and a
+# secure timestamp on every bundle (--timestamp asks Apple's timestamp server, so signing needs
+# the network), and on the two standalone apps the entitlements the hardened runtime would
+# otherwise deny them (installer/macos/standalone.entitlements: audio input, which the FX app
+# records). Ad hoc ("-") the command stays exactly as it was: no runtime, no timestamp, no
+# entitlements.
 if (APPLE)
+    set(gg_entitlements "${CMAKE_SOURCE_DIR}/installer/macos/standalone.entitlements")
     foreach (format IN ITEMS clap vst3 auv2 standalone standalone_fx)
+        set(sign_options "")
+        if (NOT GG_MACOS_CODESIGN_IDENTITY STREQUAL "-")
+            set(sign_options --options runtime --timestamp)
+            if (format MATCHES "^standalone")
+                list(APPEND sign_options --entitlements "${gg_entitlements}")
+            endif ()
+        endif ()
         add_custom_command(TARGET gg_clapfirst_${format} POST_BUILD
-                COMMAND ${GG_CODESIGN} --force --sign "${GG_MACOS_CODESIGN_IDENTITY}"
+                COMMAND ${GG_CODESIGN} ${sign_options}
+                --force --sign "${GG_MACOS_CODESIGN_IDENTITY}"
                 "$<TARGET_BUNDLE_DIR:gg_clapfirst_${format}>"
                 VERBATIM
                 )
