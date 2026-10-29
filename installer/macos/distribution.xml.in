@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Giga Grains — granular instrument and effect
+  SPDX-License-Identifier: AGPL-3.0-or-later
+  Copyright 2026, the Giga Grains authors (see git history)
+
+  The macOS installer's distribution (spec §6.4). make-installer.sh fills in the two version
+  placeholders with sed, so it runs outside CMake too: the numeric version (the packages') and
+  the full version string (the title's and the choices'). It puts LICENSE.txt (the AGPL, from
+  the license set) and Readme.txt beside it as the resources. Every choice is on by default, and
+  customize="always" shows them all. Only the local system domain: every location is a system
+  folder.
+-->
+<installer-gui-script minSpecVersion="2">
+    <title>Giga Grains @GG_VERSION_STRING@</title>
+    <product id="org.sethbc.giga-grains" version="@GG_VERSION_NUMERIC@"/>
+    <license file="LICENSE.txt"/>
+    <readme file="Readme.txt"/>
+    <options customize="always" require-scripts="false" hostArchitectures="x86_64,arm64"/>
+    <domains enable_anywhere="false" enable_currentUserHome="false" enable_localSystem="true"/>
+    <allowed-os-versions>
+        <os-version min="11.0"/>
+    </allowed-os-versions>
+
+    <choices-outline>
+        <line choice="org.sethbc.giga-grains.clap.pkg"/>
+        <line choice="org.sethbc.giga-grains.vst3.pkg"/>
+        <line choice="org.sethbc.giga-grains.component.pkg"/>
+        <line choice="org.sethbc.giga-grains.app.pkg"/>
+        <line choice="org.sethbc.giga-grains-fx.app.pkg"/>
+        <!-- Reserved for M2 (spec §6.9): <line choice="org.sethbc.giga-grains.content.pkg"/> -->
+    </choices-outline>
+
+    <choice id="org.sethbc.giga-grains.clap.pkg" visible="true" start_selected="true"
+            title="Giga Grains CLAP @GG_VERSION_STRING@"
+            description="Both plugins as a CLAP plugin, in /Library/Audio/Plug-Ins/CLAP.">
+        <pkg-ref id="org.sethbc.giga-grains.clap.pkg"/>
+    </choice>
+    <choice id="org.sethbc.giga-grains.vst3.pkg" visible="true" start_selected="true"
+            title="Giga Grains VST3 @GG_VERSION_STRING@"
+            description="Both plugins as a VST3 plugin, in /Library/Audio/Plug-Ins/VST3.">
+        <pkg-ref id="org.sethbc.giga-grains.vst3.pkg"/>
+    </choice>
+    <choice id="org.sethbc.giga-grains.component.pkg" visible="true" start_selected="true"
+            title="Giga Grains Audio Unit @GG_VERSION_STRING@"
+            description="Both plugins as an Audio Unit, in /Library/Audio/Plug-Ins/Components.">
+        <pkg-ref id="org.sethbc.giga-grains.component.pkg"/>
+    </choice>
+    <choice id="org.sethbc.giga-grains.app.pkg" visible="true" start_selected="true"
+            title="Giga Grains app @GG_VERSION_STRING@"
+            description="The Giga Grains standalone app, in /Applications.">
+        <pkg-ref id="org.sethbc.giga-grains.app.pkg"/>
+    </choice>
+    <choice id="org.sethbc.giga-grains-fx.app.pkg" visible="true" start_selected="true"
+            title="Giga Grains FX app @GG_VERSION_STRING@"
+            description="The Giga Grains FX standalone app, in /Applications.">
+        <pkg-ref id="org.sethbc.giga-grains-fx.app.pkg"/>
+    </choice>
+
+    <pkg-ref id="org.sethbc.giga-grains.clap.pkg" version="@GG_VERSION_NUMERIC@"
+             onConclusion="none">giga-grains-clap.pkg</pkg-ref>
+    <pkg-ref id="org.sethbc.giga-grains.vst3.pkg" version="@GG_VERSION_NUMERIC@"
+             onConclusion="none">giga-grains-vst3.pkg</pkg-ref>
+    <pkg-ref id="org.sethbc.giga-grains.component.pkg" version="@GG_VERSION_NUMERIC@"
+             onConclusion="none">giga-grains-component.pkg</pkg-ref>
+    <pkg-ref id="org.sethbc.giga-grains.app.pkg" version="@GG_VERSION_NUMERIC@"
+             onConclusion="none">giga-grains-app.pkg</pkg-ref>
+    <pkg-ref id="org.sethbc.giga-grains-fx.app.pkg" version="@GG_VERSION_NUMERIC@"
+             onConclusion="none">giga-grains-fx-app.pkg</pkg-ref>
+
+    <!--
+      Reserved for M2 (spec §6.9): the factory content (INTENT §12), in
+      /Library/Application Support/sethbc/Giga Grains/, a choice only when the tree has content.
+      make-installer.sh would build org.sethbc.giga-grains.content.pkg with that install location,
+      and the outline above would gain its line.
+
+    <choice id="org.sethbc.giga-grains.content.pkg" visible="true" start_selected="true"
+            title="Giga Grains Content @GG_VERSION_STRING@"
+            description="The factory samples and presets, in Application Support.">
+        <pkg-ref id="org.sethbc.giga-grains.content.pkg"/>
+    </choice>
+    <pkg-ref id="org.sethbc.giga-grains.content.pkg" version="@GG_VERSION_NUMERIC@"
+             onConclusion="none">giga-grains-content.pkg</pkg-ref>
+    -->
+</installer-gui-script>

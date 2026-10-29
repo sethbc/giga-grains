@@ -502,6 +502,31 @@ if (GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
             -P ${CMAKE_CURRENT_SOURCE_DIR}/installer/check-license-set.cmake)
     set_tests_properties(installer_license_set PROPERTIES LABELS installer
             FIXTURES_REQUIRED gg_products)
+
+    # The macOS PKG and DMG (spec §6.4), unsigned: installer_macos_pkg checks what
+    # installer/macos/make-installer.sh makes from the products; _missing_product and _partial_env
+    # check that it refuses, with exit 2 and nothing written, an empty products directory and a
+    # signing environment with only some of its five variables. Each writes its own folder.
+    if (APPLE)
+        foreach (case IN ITEMS pkg pkg_missing_product pkg_partial_env)
+            set(switch "")
+            if (case STREQUAL "pkg_missing_product")
+                set(switch -DMISSING=1)
+            elseif (case STREQUAL "pkg_partial_env")
+                set(switch -DPARTIAL_ENV=1)
+            endif ()
+            add_test(NAME installer_macos_${case}
+                    COMMAND ${CMAKE_COMMAND}
+                    -DSCRIPT=${PROJECT_SOURCE_DIR}/installer/macos/make-installer.sh
+                    -DPRODUCTS=${GG_PRODUCT_DIR} -DLICENSES=${GG_LICENSE_DIR}
+                    -DRESOURCES=${PROJECT_SOURCE_DIR}/installer/macos
+                    -DOUT=${CMAKE_CURRENT_BINARY_DIR}/installer-macos/${case}
+                    -DNUMERIC=${GG_VERSION_NUMERIC} -DFULL=${GG_VERSION_STRING} ${switch}
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/installer/check-macos-pkg.cmake)
+            set_tests_properties(installer_macos_${case} PROPERTIES LABELS installer
+                    FIXTURES_REQUIRED gg_products)
+        endforeach ()
+    endif ()
 endif ()
 
 # The ASIO SDK guard (cmake/AsioGuard.cmake, carry-over [116]), proven on a scratch project: the

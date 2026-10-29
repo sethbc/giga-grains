@@ -123,3 +123,23 @@ foreach (source name IN ZIP_LISTS GG_LICENSE_FILES gg_license_names)
             VERBATIM
             )
 endforeach ()
+
+# gg-installer (spec §6.3): builds gg-products, then runs the platform's installer script on them,
+# writing into GG_INSTALLER_DIR (build/<preset>/gg-installer/). The script reads the signing
+# environment itself (installer/macos/make-installer.sh says which variables), so the same target
+# makes a local unsigned installer and CI's signed one.
+set(GG_INSTALLER_DIR ${CMAKE_BINARY_DIR}/gg-installer)
+add_custom_target(gg-installer)
+add_dependencies(gg-installer gg-products)
+if (APPLE)
+    # giga-grains-<v>-macos.pkg and giga-grains-<v>-macos.dmg.
+    add_custom_command(TARGET gg-installer POST_BUILD
+            COMMAND ${CMAKE_SOURCE_DIR}/installer/macos/make-installer.sh
+            --products ${GG_PRODUCT_DIR} --out ${GG_INSTALLER_DIR}
+            --version ${GG_VERSION_NUMERIC} --full-version ${GG_VERSION_STRING}
+            --resources ${CMAKE_SOURCE_DIR}/installer/macos --licenses ${GG_LICENSE_DIR}
+            VERBATIM
+            )
+    # elseif (UNIX): the Linux tarball (Task 7). elseif (WIN32): the Windows installer and zip
+    # (Task 6).
+endif ()
