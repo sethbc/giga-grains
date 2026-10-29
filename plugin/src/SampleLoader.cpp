@@ -7,12 +7,12 @@
 #include <cassert>
 #include <exception>
 #include <new>
-#include <system_error>
 #include <utility>
 
 #include "gg/media/Sample.h"
 #include "gg/media/Search.h"
 #include "gg/media/SettingsFile.h"
+#include "gg/media/Utf8Path.h"
 
 namespace gg::plugin
 {
@@ -29,32 +29,11 @@ std::string nameOf(const std::string &utf8Path)
 }
 
 /// `path` as UTF-8; empty if it can't be converted (a wide path that isn't valid UTF-16).
-std::string utf8(const fs::path &path)
-{
-    try
-    {
-        const auto text = path.u8string();
-        return std::string(text.begin(), text.end());
-    }
-    catch (const std::system_error &)
-    {
-        return {};
-    }
-}
+std::string utf8(const fs::path &path) { return media::toUtf8(path).value_or(std::string()); }
 
 /// The path UTF-8 `text` names; empty if it can't be converted (text that isn't valid UTF-8, on
 /// Windows).
-fs::path pathOf(const std::string &text)
-{
-    try
-    {
-        return fs::path(std::u8string(text.begin(), text.end()));
-    }
-    catch (const std::system_error &)
-    {
-        return {};
-    }
-}
+fs::path pathOf(const std::string &text) { return media::fromUtf8(text).value_or(fs::path()); }
 
 /// An exception as a message for the user.
 std::string describe(const std::exception_ptr &error, const std::string &fileName)

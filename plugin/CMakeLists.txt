@@ -28,8 +28,8 @@ target_include_directories(gg-plugin-core PUBLIC include PRIVATE src)
 # gg-core's headers (the Processor, the parameter IDs) and needs sst-cpputils for
 # SST_CPPUTILS_NONBLOCKING, so whatever includes it links gg::core and sst-cpputils itself: the
 # editor layer below, and the tests. gg::media (the sample loader's decoding, conversion, search
-# and settings file) is PRIVATE too: its headers appear only in SampleLoader.cpp and
-# GigaGrainsPlugin.cpp.
+# and settings file) is PRIVATE too: its headers appear only in SampleLoader.cpp,
+# GigaGrainsPlugin.cpp and, for the UTF-8 path helper (gg/media/Utf8Path.h), EditorPlugin.cpp.
 target_link_libraries(gg-plugin-core
         PUBLIC clap clap-helpers gg::clap-wrapper-extensions
         PRIVATE gg::media gg::core sst-cpputils gg::compiler-options
@@ -57,7 +57,7 @@ else ()
     # complete type; see createEditor().
     target_link_libraries(gg-plugin-editor
             PUBLIC gg-plugin-core clap_juce_shim_headers
-            PRIVATE gg::ui gg::core clap_juce_shim gg::juce-headers sst-cpputils
+            PRIVATE gg::ui gg::media gg::core clap_juce_shim gg::juce-headers sst-cpputils
             gg::compiler-options
             )
 endif ()

@@ -11,13 +11,13 @@
 #include <limits>
 #include <stdexcept>
 #include <string_view>
-#include <system_error>
 #include <utility>
 
 #include <fmt/format.h>
 #include <nlohmann/json.hpp>
 
 #include "Signals.h"
+#include "gg/media/Utf8Path.h"
 #include "sst/basic-blocks/params/ParamMetadata.h"
 
 namespace gg::render
@@ -569,27 +569,22 @@ std::optional<gg::core::ParamSlot> paramSlotNamed(std::string_view name)
 
 std::filesystem::path pathFromUtf8(const std::string &text)
 {
-    try
-    {
-        return std::filesystem::path(std::u8string(text.begin(), text.end()));
-    }
-    catch (const std::system_error &)
+    auto path = gg::media::fromUtf8(text);
+    if (!path)
     {
         throw BadInput(fmt::format("the path {} isn't valid UTF-8", text));
     }
+    return std::move(*path);
 }
 
 std::string utf8FromPath(const std::filesystem::path &path)
 {
-    try
-    {
-        const auto text = path.u8string();
-        return {text.begin(), text.end()};
-    }
-    catch (const std::system_error &)
+    auto text = gg::media::toUtf8(path);
+    if (!text)
     {
         throw BadInput("a path can't be written as UTF-8");
     }
+    return std::move(*text);
 }
 
 void resolvePaths(RenderSpec &spec, const std::string &baseDir)

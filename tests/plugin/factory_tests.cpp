@@ -26,6 +26,7 @@
 
 #include "editor/EditorPlugin.h"
 #include "gg/ui/Editor.h"
+#include "support/Utf8.h"
 #endif
 
 namespace
@@ -217,9 +218,7 @@ bool relinkShown(const juce::Component &editor)
 
 juce::String utf8String(const std::filesystem::path &path)
 {
-    const auto text = path.u8string();
-    return juce::String::fromUTF8(reinterpret_cast<const char *>(text.data()),
-                                  static_cast<int>(text.size()));
+    return juce::String::fromUTF8(gg::test::utf8(path).c_str());
 }
 } // namespace
 
@@ -268,8 +267,7 @@ TEST_CASE("the instrument's gui has a sample loader strip that loads a dropped f
         }
         CHECK(loader->status().state == gg::plugin::SampleState::Loaded);
         REQUIRE(loader->entry().has_value());
-        CHECK(std::filesystem::path(std::u8string(loader->entry()->absolutePath.begin(),
-                                                  loader->entry()->absolutePath.end())) ==
+        CHECK(gg::test::pathOf(loader->entry()->absolutePath) ==
               std::filesystem::absolute(file).lexically_normal());
     }
 }

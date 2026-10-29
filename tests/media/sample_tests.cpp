@@ -21,6 +21,7 @@
 #include "gg/media/Sample.h"
 #include "gg/media/Sha256.h"
 #include "media/AudioFixtures.h"
+#include "support/Utf8.h"
 
 namespace
 {
@@ -28,6 +29,7 @@ namespace fs = std::filesystem;
 using gg::core::MachineSettings;
 using gg::media::loadSample;
 using gg::test::SampleFormat;
+using gg::test::utf8;
 
 /// An empty folder of the test's own.
 fs::path freshDir(const char *name)
@@ -36,12 +38,6 @@ fs::path freshDir(const char *name)
     fs::remove_all(dir);
     fs::create_directories(dir);
     return dir;
-}
-
-std::string utf8(const fs::path &path)
-{
-    const auto text = path.u8string();
-    return {text.begin(), text.end()};
 }
 
 /// Writes a 16-bit WAV of `channels` channels and `frames` frames at `rate` to `file`, creating

@@ -10,10 +10,10 @@
 #include <system_error>
 #include <utility>
 
-#include "Utf8Path.h"
 #include "gg/media/Convert.h"
 #include "gg/media/Decode.h"
 #include "gg/media/Sha256.h"
+#include "gg/media/Utf8Path.h"
 
 namespace gg::media
 {
@@ -24,7 +24,7 @@ namespace
 LoadedSample failure(const fs::path &file, const std::string &reason)
 {
     LoadedSample out;
-    out.error = detail::displayName(file) + ": " + reason;
+    out.error = displayName(file) + ": " + reason;
     return out;
 }
 
@@ -36,7 +36,7 @@ std::string relativeTo(const fs::path &file, const std::string &sampleFolder)
     {
         return {};
     }
-    const auto folder = detail::fromUtf8(sampleFolder);
+    const auto folder = fromUtf8(sampleFolder);
     if (!folder)
     {
         return {};
@@ -58,7 +58,7 @@ std::string relativeTo(const fs::path &file, const std::string &sampleFolder)
     {
         return {};
     }
-    return detail::toGenericUtf8(relative).value_or(std::string());
+    return toGenericUtf8(relative).value_or(std::string());
 }
 } // namespace
 
@@ -79,7 +79,7 @@ LoadedSample loadSample(const fs::path &file, const core::MachineSettings &setti
     }
     std::error_code error;
     const fs::path absolute = fs::absolute(file, error).lexically_normal();
-    const auto absoluteText = error ? std::nullopt : detail::toUtf8(absolute);
+    const auto absoluteText = error ? std::nullopt : toUtf8(absolute);
     if (!absoluteText)
     {
         return failure(file, "the file's path can't be recorded");

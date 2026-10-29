@@ -13,7 +13,7 @@
 #include <utility>
 #include <vector>
 
-#include "Utf8Path.h"
+#include "gg/media/Utf8Path.h"
 
 // The headers only: the implementations are compiled in gg::dr_libs_impl.
 #include <dr_flac.h>
@@ -46,7 +46,7 @@ constexpr uint64_t kDataSizeSlack = 1024;
 
 DecodeResult failure(const fs::path &path, const std::string &reason)
 {
-    return {std::nullopt, detail::displayName(path) + ": " + reason};
+    return {std::nullopt, displayName(path) + ": " + reason};
 }
 
 /// kMaxFileSeconds of audio at `rate`, in frames (exact: the rate is an integer).

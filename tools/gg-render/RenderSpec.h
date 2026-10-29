@@ -264,11 +264,12 @@ std::optional<RenderSpec> parseRenderSpec(const std::string &json, std::string &
 /// Throws BadInput for a path that isn't valid UTF-8 (on Windows).
 void resolvePaths(RenderSpec &spec, const std::string &baseDir);
 
-/// The path that UTF-8 `text` names: on Windows a wide path, so dr_libs' and the standard
-/// library's wide-character functions open it. Throws BadInput for text the conversion refuses.
+/// The path that UTF-8 `text` names (gg::media::fromUtf8): on Windows a wide path, so the
+/// standard library's wide-character functions open it. Throws BadInput for text the conversion
+/// refuses.
 std::filesystem::path pathFromUtf8(const std::string &text);
 
-/// `path` as UTF-8. Throws BadInput for a path the conversion refuses.
+/// `path` as UTF-8 (gg::media::toUtf8). Throws BadInput for a path the conversion refuses.
 std::string utf8FromPath(const std::filesystem::path &path);
 } // namespace gg::render
 
