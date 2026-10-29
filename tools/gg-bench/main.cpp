@@ -9,12 +9,13 @@
 // Kernels.h, and reports each engine case's ratio to it, which the CI gate checks. It also still
 // times M0's prototype kernels in Kernels.h. It began as the M0 kernel benchmark spike and was
 // made gate-grade in M1 (carry-over B-I2, [133], [132]; spec §5). With --canvas it times the
-// canvas renderer instead (the M0 canvas stress spike, see below).
+// canvas renderer instead (the M0 canvas stress spike, see below), and with --space, Space.
 //
 //   gg-bench [--quick | --seconds S] [--rounds N] [--grains N] [--cases a,b] [--commit SHA]
 //            [--json out.json] [--baseline baseline.json]
 //   gg-bench --make-baseline <leg> <out.json> <in.json>...
 //   gg-bench --canvas [--quick] [--json out.json]
+//   gg-bench --space [--quick] [--json out.json]
 //
 // The timing itself is in Bench.h and Bench.cpp: by default 2,000 grains of 100 ms over a 60 s
 // stereo noise source at 48 kHz, every case at block sizes 32, 64 and 256. Each configuration
@@ -40,6 +41,13 @@
 // of that total: the real canvas gets its grains from the engine. INTENT §16 budgets 3 ms of
 // UI-thread time per frame with 8,000 grains; drawing the image costs extra, which only the
 // editor's own "frame ms" readout measures.
+//
+// --space times Space's per-sample stage, the diffuser then the grid-aligned reverb, on stereo
+// noise at 48 kHz, active, with Diffusion 1, Size 0.5 and Decay 1.0 (Bench.h has every setting).
+// It prints the median, min and IQR of ns per stereo sample over 5 rounds of >= 2 s (0.2 s with
+// --quick; --seconds, --rounds and --commit apply too) and the median's % of one core at 48 kHz.
+// It is report-only, with no baseline and no ratio; its JSON is its own document, apart from
+// schema 2. Sub-project 6 publishes the figure beside the grain engine's.
 
 #include <algorithm>
 #include <array>
@@ -237,6 +245,29 @@ int runCanvas(bool quick, const std::string &jsonPath)
     return 0;
 }
 
+// ---- --space: Space's cost ----
+
+int runSpace(const gg::bench::Options &options, const std::string &jsonPath)
+{
+    const gg::bench::SpaceOptions spaceOptions{
+        .runSeconds = options.runSeconds, .rounds = options.rounds, .commit = options.commit};
+    std::string text;
+    int status = 0;
+    try
+    {
+        status = gg::bench::spaceMain(spaceOptions, jsonPath, text, [](int round, int rounds) {
+            std::fprintf(stderr, "gg-bench: round %d of %d done\n", round, rounds);
+        });
+    }
+    catch (const std::invalid_argument &e)
+    {
+        std::fprintf(stderr, "error: %s\n", e.what());
+        return 2;
+    }
+    std::fputs(text.c_str(), stdout);
+    return status;
+}
+
 void usage(std::FILE *f)
 {
     std::string cases;
@@ -250,6 +281,7 @@ void usage(std::FILE *f)
         "                [--commit SHA] [--json out.json] [--baseline baseline.json]\n"
         "       gg-bench --make-baseline <leg> <out.json> <in.json>...\n"
         "       gg-bench --canvas [--quick] [--json out.json]\n"
+        "       gg-bench --space [--quick] [--json out.json]\n"
         "\n"
         "Times the engine, the reference kernel and M0's prototype grain kernels: 2,000\n"
         "grains of 100 ms over 60 s of stereo noise at 48 kHz, at block sizes 32, 64 and\n"
@@ -261,6 +293,10 @@ void usage(std::FILE *f)
         "With --canvas, times the canvas splat renderer instead: clear, splat and\n"
         "resolve at 3200 x 1200 with 4,096, 8,192 and 16,384 grains, over 240 frames,\n"
         "and prints the results as JSON.\n"
+        "\n"
+        "With --space, times Space instead: the diffuser and the reverb on stereo noise\n"
+        "at 48 kHz, in ns per stereo sample over 5 rounds of >= 2 s. Report-only: no\n"
+        "baseline and no ratio.\n"
         "\n"
         "  --quick           runs of 0.2 s instead of 2 s (30 canvas frames, not 240)\n"
         "  --seconds S       runs of S seconds (the last of --quick and --seconds wins)\n"
@@ -276,6 +312,8 @@ void usage(std::FILE *f)
         "                    write a baseline for <leg> from gg-bench JSON runs, one entry\n"
         "                    per CPU model, and exit\n"
         "  --canvas          time the canvas renderer, not the grain kernels\n"
+        "  --space           time Space (the diffuser and the reverb), not the grain\n"
+        "                    kernels\n"
         "\n"
         "Exit status: 0 done (no ratio regressed), 1 error, 2 bad usage, 3 a ratio\n"
         "regressed.\n",
@@ -459,6 +497,7 @@ int main(int argc, char **argv)
 {
     bool quick = false;
     bool canvas = false;
+    bool space = false;
     std::string jsonPath;
     std::string baselinePath;
     std::vector<std::string> makeBaselineArgs; // non-empty: --make-baseline's values
@@ -477,6 +516,10 @@ int main(int argc, char **argv)
         else if (arg == "--canvas")
         {
             canvas = true;
+        }
+        else if (arg == "--space")
+        {
+            space = true;
         }
         else if (arg == "--seconds" && hasValue)
         {
@@ -547,6 +590,10 @@ int main(int argc, char **argv)
     if (canvas)
     {
         return runCanvas(quick, jsonPath);
+    }
+    if (space)
+    {
+        return runSpace(options, jsonPath);
     }
 
     try

@@ -139,6 +139,9 @@ catch_discover_tests(gg-tests TEST_SPEC "[serial]" ADD_TAGS_AS_LABELS
 #   - regressed: exit 3, "verdict: 3 of 3 ...";
 #   - other machine: exit 0, "no baseline for <this machine>; no verdict".
 #   CI's bench step relies on these codes: it reports exit 3 without failing (ruling 3).
+# - bench_space_cli: gg-bench --space --quick, Space's report-only cost, must exit 0 and write
+#   its JSON (the [bench] case "gg-bench --space --quick prints a per-sample cost" checks what
+#   it prints and writes).
 set(bench_cases hermite-simd,reference,engine-sample)
 add_test(NAME bench_cli
         COMMAND gg-bench --seconds 0.002 --rounds 2 --grains 50 --cases ${bench_cases}
@@ -148,6 +151,9 @@ add_test(NAME bench_make_baseline
         ${CMAKE_BINARY_DIR}/bench_cli.json ${CMAKE_BINARY_DIR}/bench_cli.json)
 set_tests_properties(bench_cli PROPERTIES LABELS bench FIXTURES_SETUP bench_json)
 set_tests_properties(bench_make_baseline PROPERTIES LABELS bench FIXTURES_REQUIRED bench_json)
+add_test(NAME bench_space_cli
+        COMMAND gg-bench --space --quick --json ${CMAKE_BINARY_DIR}/bench_space_cli.json)
+set_tests_properties(bench_space_cli PROPERTIES LABELS bench)
 set(verdict_line "ratios regressed (limit: the baseline's ratio x (1 + its tolerance))")
 set(bench_baseline_pass_args -DRATIO=1e9 -DEXPECTED_CODE=0
         "-DEXPECTED_VERDICT=verdict: 0 of 3 ${verdict_line}")

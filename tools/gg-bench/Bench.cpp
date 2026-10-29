@@ -26,6 +26,10 @@
 // each timed block, and a run's ns per grain-sample is its time over the frames it rendered times
 // that run's mean. Each warms up for 2 grain durations of audio, engine-live for 16 s, so its
 // ring is full.
+//
+// --space (runSpace) times Space's per-sample stage, the diffuser then the grid-aligned reverb,
+// over 1 s of the same stereo noise, looped, in blocks of 256 frames. It checks the clock once a
+// block, never inside one, and sums the return into a checksum, as the kernel cases do.
 
 #include "Bench.h"
 
@@ -38,6 +42,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <memory>
 #include <optional>
 #include <stdexcept>
@@ -47,8 +52,6 @@
 
 #if defined(__APPLE__)
 #include <sys/sysctl.h>
-#elif defined(__linux__)
-#include <fstream>
 #elif defined(_MSC_VER) && (defined(_M_X64) || defined(__x86_64__))
 #include <intrin.h>
 #endif
@@ -57,7 +60,10 @@
 
 #include "Kernels.h"
 #include "gg/core/DenormalGuard.h"
+#include "gg/core/Diffuser.h"
+#include "gg/core/ParamMap.h"
 #include "gg/core/Rng.h"
+#include "gg/core/SpaceReverb.h"
 #include "gg/engine/Engine.h"
 #include "gg/grain/Tier.h"
 #include "gg/source/SampleBuffer.h"
@@ -116,6 +122,13 @@ double draw(Stream stream, uint64_t index)
         gg::rng::hash({kSeed, 0, stream, gg::rng::Field::SignalNoise, index}));
 }
 
+/// Frame `index` of the bench noise's channel `stream` (kNoiseL or kNoiseR), in [-0.5, 0.5].
+float noiseSample(Stream stream, uint64_t index)
+{
+    return static_cast<float>(0.5 * gg::rng::bipolar(gg::rng::hash(
+                                        {kSeed, 0, stream, gg::rng::Field::SignalNoise, index})));
+}
+
 /// The 60 s stereo noise every configuration reads: the kernels' source, engine-sample's
 /// SampleBuffer and engine-live's input.
 struct Noise
@@ -128,13 +141,8 @@ struct Noise
         float *r = buffer->channel(1);
         for (int64_t i = 0; i < kSourceFrames; ++i)
         {
-            const auto i64 = static_cast<uint64_t>(i);
-            l[i] = static_cast<float>(
-                0.5 * gg::rng::bipolar(
-                          gg::rng::hash({kSeed, 0, kNoiseL, gg::rng::Field::SignalNoise, i64})));
-            r[i] = static_cast<float>(
-                0.5 * gg::rng::bipolar(
-                          gg::rng::hash({kSeed, 0, kNoiseR, gg::rng::Field::SignalNoise, i64})));
+            l[i] = noiseSample(kNoiseL, static_cast<uint64_t>(i));
+            r[i] = noiseSample(kNoiseR, static_cast<uint64_t>(i));
         }
     }
 
@@ -960,5 +968,222 @@ std::string compiler()
 #else
     return "unknown compiler";
 #endif
+}
+
+namespace
+{
+constexpr int64_t kSpaceNoiseFrames = 48000; // 1 s, looped frame by frame
+constexpr uint32_t kSpaceBlock = 256;        // frames between two reads of the clock
+constexpr double kSpaceWarmUpSeconds = 2.0;  // of audio: one Decay of 1.0 (2 s)
+
+/// Space's bench settings: Diffusion 1, Amount 1, Size 0.5 (roomSize 0), Decay 1.0, Damping 0.3,
+/// Modulation 0.25, no pre-delay. The FX's Dry to Reverb doesn't reach these two stages.
+constexpr gg::core::SpaceParams kSpaceParams{.diffusion = 1.0f,
+                                             .amount = 1.0f,
+                                             .drySend = 0.0f,
+                                             .decayLog2 = 1.0f,
+                                             .infinite = false,
+                                             .roomSize = 0.0f,
+                                             .hfDamping = 0.3f,
+                                             .modulation = 0.25f,
+                                             .predelaySeconds = 0.0f};
+
+/// The diffuser and the reverb, chained as Space runs them on a layer's grain sum, running
+/// on and on over looped noise.
+class SpaceStage
+{
+  public:
+    SpaceStage()
+        : reverb_(std::make_unique<gg::core::SpaceReverb>(kSampleRate)), left_(kSpaceNoiseFrames),
+          right_(kSpaceNoiseFrames)
+    {
+        diffuser_.prepare(kSampleRate);
+        for (int64_t i = 0; i < kSpaceNoiseFrames; ++i)
+        {
+            left_[i] = noiseSample(kNoiseL, static_cast<uint64_t>(i));
+            right_[i] = noiseSample(kNoiseR, static_cast<uint64_t>(i));
+        }
+    }
+
+    void warmUp()
+    {
+        const auto frames = static_cast<int64_t>(kSpaceWarmUpSeconds * kSampleRate);
+        double sink = 0.0;
+        for (int64_t done = 0; done < frames; done += kSpaceBlock)
+        {
+            sink += processBlock();
+        }
+        gSink = gSink + sink;
+    }
+
+    /// Renders blocks for at least `seconds`; returns ns per stereo sample.
+    double timeRun(double seconds)
+    {
+        using Clock = std::chrono::steady_clock;
+        const auto start = Clock::now();
+        const auto deadline = start + std::chrono::duration_cast<Clock::duration>(
+                                          std::chrono::duration<double>(seconds));
+        double sink = 0.0;
+        uint64_t blocks = 0;
+        auto now = start;
+        do
+        {
+            sink += processBlock();
+            ++blocks;
+            now = Clock::now();
+        } while (now < deadline);
+        gSink = gSink + sink;
+
+        const double ns = std::chrono::duration<double, std::nano>(now - start).count();
+        return ns / (static_cast<double>(blocks) * kSpaceBlock);
+    }
+
+  private:
+    /// One block of kSpaceBlock frames through the diffuser and the reverb; returns the sum of
+    /// the return.
+    double processBlock()
+    {
+        float sum = 0.0f;
+        for (uint32_t k = 0; k < kSpaceBlock; ++k)
+        {
+            float l = left_[at_];
+            float r = right_[at_];
+            diffuser_.process(l, r, kSpaceParams.diffusion);
+            float outL = 0.0f, outR = 0.0f;
+            reverb_->processSample(t_, l, r, kSpaceParams, true, outL, outR);
+            sum += outL + outR;
+            ++t_;
+            at_ = at_ + 1 == kSpaceNoiseFrames ? 0 : at_ + 1;
+        }
+        return static_cast<double>(sum);
+    }
+
+    gg::core::Diffuser diffuser_;
+    std::unique_ptr<gg::core::SpaceReverb> reverb_; // ~14.5 MB: on the heap
+    std::vector<float> left_, right_;
+    int64_t at_{0}; // the next frame of the noise
+    int64_t t_{0};  // the reverb's absolute time
+};
+
+/// printf's formatting of a short line (numbers and fixed labels only).
+template <typename... Args> std::string formatLine(const char *format, Args... args)
+{
+    char line[256];
+    const int n = std::snprintf(line, sizeof(line), format, args...);
+    return n > 0 ? std::string(line,
+                               std::min<std::size_t>(static_cast<std::size_t>(n), sizeof(line) - 1))
+                 : std::string();
+}
+
+bool writeText(const std::string &path, const std::string &text)
+{
+    std::ofstream out(path, std::ios::binary);
+    out << text;
+    out.close();
+    return static_cast<bool>(out);
+}
+} // namespace
+
+void validate(const SpaceOptions &options)
+{
+    if (!(options.runSeconds > 0.0 && options.runSeconds <= kMaxRunSeconds))
+    {
+        throw std::invalid_argument("the run length must be more than 0 and at most 3600 seconds");
+    }
+    if (options.rounds < 1)
+    {
+        throw std::invalid_argument("there must be at least 1 round");
+    }
+}
+
+SpaceReport runSpace(const SpaceOptions &options, const Progress &progress)
+{
+    validate(options);
+    SpaceReport report{.options = options, .machine = machine(), .compiler = compiler()};
+
+    const gg::ScopedDenormalsOff noDenormals;
+    SpaceStage stage;
+    stage.warmUp();
+    for (int r = 0; r < options.rounds; ++r)
+    {
+        report.nsPerSample.push_back(stage.timeRun(options.runSeconds));
+        if (progress)
+        {
+            progress(r + 1, options.rounds);
+        }
+    }
+
+    const std::vector<double> &runs = report.nsPerSample;
+    report.median = quantile(runs, 0.5);
+    report.min = *std::min_element(runs.begin(), runs.end());
+    report.iqr = quantile(runs, 0.75) - quantile(runs, 0.25);
+    // ns per stereo sample x 48,000 samples / 1e9 ns, as a percentage.
+    report.cpuPctOneCoreAt48k = report.median * kSampleRate / 1e9 * 100.0;
+    return report;
+}
+
+std::string toJson(const SpaceReport &report)
+{
+    const gg::core::SpaceParams &p = kSpaceParams;
+    const nlohmann::ordered_json j{
+        {"benchmark", "space"},
+        {"machine", report.machine},
+        {"compiler", report.compiler},
+        {"commit", report.options.commit},
+        {"sampleRate", kSampleRate},
+        {"runSeconds", report.options.runSeconds},
+        {"rounds", report.options.rounds},
+        {"settings",
+         {
+             {"diffusion", p.diffusion},
+             {"amount", p.amount},
+             {"size", (p.roomSize + 1.0f) / 2.0f},
+             {"decayLog2", p.decayLog2},
+             {"infinite", p.infinite},
+             {"hfDamping", p.hfDamping},
+             {"modulation", p.modulation},
+             {"predelaySeconds", p.predelaySeconds},
+             {"active", true},
+         }},
+        {"runs", report.nsPerSample},
+        {"nsPerSample", report.median},
+        {"min", report.min},
+        {"iqr", report.iqr},
+        {"cpuPctOneCoreAt48k", report.cpuPctOneCoreAt48k},
+    };
+    return j.dump(2, ' ', false, nlohmann::ordered_json::error_handler_t::replace) + "\n";
+}
+
+int spaceMain(const SpaceOptions &options, const std::string &jsonPath, std::string &out,
+              const Progress &progress)
+{
+    validate(options);
+    const SpaceReport report = runSpace(options, progress);
+
+    out +=
+        formatLine("gg-bench --space: the diffuser + reverb on stereo noise at 48 kHz, %d rounds "
+                   "of >= %g s\n",
+                   options.rounds, options.runSeconds);
+    out += "settings: Diffusion 1, Amount 1, Size 0.5, Decay 1.0, Damping 0.3, Modulation 0.25, "
+           "Pre-delay 0, active\n";
+    out += "commit:   " + options.commit + "\nmachine:  " + report.machine +
+           "\ncompiler: " + report.compiler + "\n";
+    out +=
+        formatLine("\n%-18s %12s %12s %12s %12s\n", "stage", "median", "min", "IQR", "% core @48k");
+    out += formatLine("%-18s %12.3f %12.3f %12.3f %12.3f\n", "space", report.median, report.min,
+                      report.iqr, report.cpuPctOneCoreAt48k);
+    out += "\nmedian, min and IQR: ns per stereo sample over the rounds; % core from the median\n"
+           "report-only: no baseline and no ratio\n";
+
+    if (!jsonPath.empty())
+    {
+        if (!writeText(jsonPath, toJson(report)))
+        {
+            std::fprintf(stderr, "error: couldn't write %s\n", jsonPath.c_str());
+            return 1;
+        }
+        out += "\nwrote " + jsonPath + "\n";
+    }
+    return 0;
 }
 } // namespace gg::bench

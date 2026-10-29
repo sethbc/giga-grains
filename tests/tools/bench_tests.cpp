@@ -3,13 +3,16 @@
 // Copyright 2026, the Giga Grains authors (see git history)
 
 // gg-bench's library: its statistics, its round order, its JSON (schema 2, carry-over [132]),
-// the engine cases' grain counts, the ratios and the baseline verdict (spec §5, ruling 3). The
-// bench_* tests in tests/CMakeLists.txt run the gg-bench executable itself.
+// the engine cases' grain counts, the ratios, the baseline verdict (spec §5, ruling 3) and
+// --space, Space's report-only cost. The bench_* tests in tests/CMakeLists.txt run the gg-bench
+// executable itself.
 
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <numeric>
 #include <set>
 #include <stdexcept>
@@ -415,4 +418,43 @@ TEST_CASE("make baseline", "[bench]")
     anonymous[1].erase("machine");
     CHECK_THROWS_AS(gg::bench::makeBaseline("linux-gcc12", anonymous), std::invalid_argument);
     CHECK_THROWS_AS(gg::bench::makeBaseline("linux-gcc12", {}), std::invalid_argument);
+}
+
+TEST_CASE("gg-bench --space --quick prints a per-sample cost", "[bench]")
+{
+    // What gg-bench --space --quick runs: 5 rounds of 0.2 s.
+    gg::bench::SpaceOptions options;
+    options.runSeconds = 0.2;
+    const std::filesystem::path dir{GG_TEST_OUTPUT_DIR};
+    std::filesystem::create_directories(dir);
+    const std::filesystem::path jsonPath = dir / "bench_space_quick.json";
+    std::filesystem::remove(jsonPath);
+
+    std::string output;
+    const int status = gg::bench::spaceMain(options, jsonPath.string(), output);
+    INFO(output);
+    CHECK(status == 0);
+    CHECK(output.find("space") != std::string::npos);
+
+    std::ifstream in(jsonPath, std::ios::binary);
+    REQUIRE(in);
+    const nlohmann::json j = nlohmann::json::parse(in);
+    CHECK(j.at("benchmark").get<std::string>() == "space");
+    CHECK(j.at("rounds").get<int>() == 5);
+    CHECK(j.at("runSeconds").get<double>() == 0.2);
+    const nlohmann::json &runs = j.at("runs");
+    REQUIRE(runs.is_array());
+    REQUIRE(runs.size() == 5);
+    for (const nlohmann::json &run : runs)
+    {
+        CHECK(run.get<double>() > 0.0);
+    }
+    REQUIRE(j.at("nsPerSample").is_number());
+    const double median = j.at("nsPerSample").get<double>();
+    CHECK(median > 0.0);
+    CHECK(j.at("min").get<double>() <= median);
+    CHECK(j.at("iqr").get<double>() >= 0.0);
+    CHECK(j.at("cpuPctOneCoreAt48k").get<double>() > 0.0);
+    // Report-only: no baseline and no ratio.
+    CHECK_FALSE(j.contains("ratios"));
 }
