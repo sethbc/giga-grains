@@ -391,6 +391,84 @@ TEST_CASE("a missing sample stays silent and is saved unchanged", "[plugin]")
     CHECK(savedManifest(instrument) == loadedManifest);
 }
 
+TEST_CASE("a newer version's manifest loads the values, silent, and saves back unchanged",
+          "[plugin]")
+{
+    // The director's decision of 2026-10-28 (INTENT §18): a session saved by a newer build,
+    // whose MEDI this build can't read, loads its values with no sample and the status "sample
+    // from a newer version", and a save writes the manifest back byte for byte until a load
+    // replaces it.
+    setUp("newer");
+    const fs::path file = gg::test::sineSampleFile("newer");
+    LoaderHost host;
+    PluginUnderTest instrument(kInstrumentId, host.clap());
+    REQUIRE(instrument.valid());
+
+    // A loaded sample first: the newer session must drop it.
+    REQUIRE(instrument.loadSampleState(file));
+    REQUIRE(loaderOf(instrument).status().state == SampleState::Loaded);
+
+    gg::core::SessionState values;
+    REQUIRE(gg::core::decodeState(instrument.save(), gg::core::Mode::Instrument, values));
+    values.values[static_cast<std::size_t>(gg::core::ParamSlot::Mix)] = 0.25f;
+    values.seed = 777;
+    const std::string state = gg::test::withNewerMedia(gg::core::encodeState(values));
+    REQUIRE(gg::test::stateChunkPayload(state, "MEDI") == gg::test::kNewerMedia);
+    REQUIRE(instrument.load(state));
+
+    // The values apply; there is no sample, and the status says why.
+    CHECK(instrument.value(gg::core::paramId(gg::core::ParamSlot::Mix)) == 0.25);
+    const SampleStatus status = loaderOf(instrument).status();
+    CHECK(status.state == SampleState::Newer);
+    CHECK(status.message == "sample from a newer version");
+    CHECK(status.fileName.empty());
+    CHECK_FALSE(loaderOf(instrument).entry().has_value());
+    CHECK(host.dirtyMarks() == 0);
+
+    // Saved back unchanged, inactive, active and after a deactivation; and silent.
+    CHECK(savedManifest(instrument) == gg::test::kNewerMedia);
+    REQUIRE(instrument.activate(48000.0, 512));
+    Stereo out(4800);
+    renderNote(instrument, out, 512);
+    CHECK(peak(out.left) == 0.0f);
+    CHECK(peak(out.right) == 0.0f);
+    CHECK(savedManifest(instrument) == gg::test::kNewerMedia);
+    instrument.deactivate();
+    CHECK(savedManifest(instrument) == gg::test::kNewerMedia);
+    gg::core::SessionState saved;
+    REQUIRE(gg::core::decodeState(instrument.save(), gg::core::Mode::Instrument, saved));
+    CHECK(saved.values[static_cast<std::size_t>(gg::core::ParamSlot::Mix)] == 0.25f);
+    CHECK(saved.seed == 777u);
+
+    SECTION("a load replaces the newer manifest")
+    {
+        loaderOf(instrument).requestLoad(file);
+        REQUIRE(settle(instrument).state == SampleState::Loaded);
+        CHECK_FALSE(loaderOf(instrument).newerMedia().has_value());
+        const auto entry = savedEntry(instrument);
+        REQUIRE(entry.has_value());
+        CHECK(entry->sha256Hex == gg::test::entryOf(file).sha256Hex);
+        CHECK(host.dirtyMarks() == 1);
+    }
+    SECTION("a restore of this build's state replaces it")
+    {
+        REQUIRE(instrument.load(gg::test::withSample(state, std::nullopt)));
+        CHECK(loaderOf(instrument).status().state == SampleState::None);
+        CHECK_FALSE(loaderOf(instrument).newerMedia().has_value());
+        CHECK(savedManifest(instrument) == R"(<media version="1" />)");
+    }
+}
+
+TEST_CASE("the fx ignores a newer version's manifest, as it does a sample", "[plugin]")
+{
+    // The FX has no sample, and writes an empty manifest whatever it loaded.
+    setUp("newer-fx");
+    PluginUnderTest fx(kFxId);
+    REQUIRE(fx.valid());
+    REQUIRE(fx.load(gg::test::withNewerMedia(fx.save())));
+    CHECK(savedManifest(fx) == R"(<media version="1" />)");
+}
+
 TEST_CASE("a sample moved into the sample folder is found, and the state marked dirty", "[plugin]")
 {
     const fs::path dir = gg::test::sampleDir("moved");

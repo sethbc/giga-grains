@@ -56,6 +56,7 @@ gg::ui::SampleStatusView viewOf(const SampleStatus &status)
         state = State::Changed;
         break;
     case SampleState::Error:
+    case SampleState::Newer: // the strip shows the message, "sample from a newer version"
         state = State::Error;
         break;
     }

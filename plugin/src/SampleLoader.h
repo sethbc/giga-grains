@@ -32,6 +32,7 @@ enum class SampleState
     Missing, ///< A restored session's sample wasn't found (spec §6.7); silent.
     Changed, ///< Not found, and the file at the saved path has other content; silent.
     Error,   ///< The last load failed; `message` says why. A sample loaded before keeps playing.
+    Newer,   ///< A restored session's manifest is a newer version's (INTENT §18); silent.
 };
 
 struct SampleStatus
@@ -75,7 +76,8 @@ struct SampleStatus
 /// **The manifest entry** (spec §6.6) is the requested sample, not the one playing: only a
 /// successful load or relink replaces it (and a restore, which sets it to the session's). It
 /// stays as it is while the sample is loading, missing, changed or failed to load, so a session
-/// saved then still names it.
+/// saved then still names it. A session from a newer build's manifest has no entry but keeps the
+/// manifest (newerMedia()), which a load or relink replaces in the same way.
 ///
 /// **The rate** (D8; ruling R18). A source is prepared at the active sample rate. A job the
 /// worker starts while the plugin is inactive keeps the decoded buffer instead, as a restore made
@@ -127,6 +129,10 @@ class SampleLoader
     SampleStatus status() const { return status_; }
     /// The manifest entry: what the session saves (spec §6.6).
     const std::optional<core::MediaEntry> &entry() const noexcept { return entry_; }
+    /// A newer build's manifest, as the restored session held it (core::SessionState's
+    /// newerMedia): the session saves it back unchanged until a load or relink replaces it, or
+    /// another restore. There is no entry meanwhile.
+    const std::optional<std::string> &newerMedia() const noexcept { return newerMedia_; }
 
     /// What restore() leaves the plugin to offer with the session's values (D8).
     struct Restored
@@ -149,8 +155,12 @@ class SampleLoader
     ///   active rate and returns it as `source`. Inactive, it keeps the decoded buffer for
     ///   activate(). A file found away from the saved path updates the entry and marks the state
     ///   dirty. Status: Loaded, Missing, Changed, Error, or None without an entry.
+    /// - With `newerMedia` (a newer build's manifest, which has no `entry`): no sample, nothing
+    ///   read, and nothing to offer; the manifest is kept for newerMedia(). Status: Newer, with
+    ///   the message "sample from a newer version".
     /// Never throws.
-    Restored restore(const std::optional<core::MediaEntry> &entry) noexcept;
+    Restored restore(const std::optional<core::MediaEntry> &entry,
+                     std::optional<std::string> newerMedia = std::nullopt) noexcept;
 
     /// The plugin's activate(), before it returns: waits for a job under way, applies what the
     /// worker finished, converts the sample at `sampleRate` here (see the class comment), and
@@ -242,6 +252,7 @@ class SampleLoader
 
     // Main thread.
     std::optional<core::MediaEntry> entry_;
+    std::optional<std::string> newerMedia_; // a newer build's manifest, when there's no entry_
     SampleStatus status_;
     std::shared_ptr<const PreparedSource> source_; // the source in effect, at its own rate
     std::shared_ptr<SampleBuffer> pending_;        // decoded, for activate() (restorePending)

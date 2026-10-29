@@ -225,7 +225,8 @@ inline gg::core::MediaEntry entryOf(const std::filesystem::path &file)
     return gg::media::loadSample(file, {}).entry;
 }
 
-/// `state`, a state the instrument saved, with `entry` (or none) as its sample.
+/// `state`, a state the instrument saved, with `entry` (or none) as its sample, and this build's
+/// manifest.
 inline std::string withSample(const std::string &state,
                               const std::optional<gg::core::MediaEntry> &entry)
 {
@@ -235,6 +236,26 @@ inline std::string withSample(const std::string &state,
         return {};
     }
     s.sample = entry;
+    s.newerMedia.reset();
+    return gg::core::encodeState(s);
+}
+
+/// The MEDI payload of a newer build's manifest (version 2), as this build can't read it: an
+/// element and attributes it doesn't know.
+inline const std::string kNewerMedia = R"(<media version="2"><layer id="0"><sample )"
+                                       R"(sha256="00" path="/Future/pad.wav" /></layer></media>)";
+
+/// `state`, a state the instrument saved, with `media`, a newer build's manifest, as its MEDI
+/// and no sample.
+inline std::string withNewerMedia(const std::string &state, const std::string &media = kNewerMedia)
+{
+    gg::core::SessionState s;
+    if (!gg::core::decodeState(state, gg::core::Mode::Instrument, s))
+    {
+        return {};
+    }
+    s.sample.reset();
+    s.newerMedia = media;
     return gg::core::encodeState(s);
 }
 

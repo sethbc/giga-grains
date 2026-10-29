@@ -80,6 +80,7 @@ std::string describe(const std::exception_ptr &error, const std::string &fileNam
 constexpr const char *kDifferentAudio = "different audio than the saved sample";
 constexpr const char *kMissing = "not found";
 constexpr const char *kChanged = "the file at the saved path has changed";
+constexpr const char *kNewerVersion = "sample from a newer version";
 // Short enough to fit any std::string's own buffer, so assigning it never allocates.
 constexpr const char *kCantLoad = "can't load";
 } // namespace
@@ -134,7 +135,8 @@ bool SampleLoader::setSampleFolder(const std::filesystem::path &folder)
     return media::saveSettings(settingsFile_, settings);
 }
 
-SampleLoader::Restored SampleLoader::restore(const std::optional<core::MediaEntry> &entry) noexcept
+SampleLoader::Restored SampleLoader::restore(const std::optional<core::MediaEntry> &entry,
+                                             std::optional<std::string> newerMedia) noexcept
 {
     std::shared_ptr<const PreparedSource> source;
     std::optional<Result> stale;
@@ -148,6 +150,18 @@ SampleLoader::Restored SampleLoader::restore(const std::optional<core::MediaEntr
             job_.reset();
             stale.swap(result_);
             latestRequest_ = ++lastRequest_;
+        }
+        // A newer build's manifest: no sample this build can read. Kept for the next save, and
+        // silent (INTENT §18).
+        newerMedia_ = std::move(newerMedia);
+        if (newerMedia_.has_value())
+        {
+            pending_.reset();
+            restorePending_ = false;
+            source_.reset();
+            entry_.reset();
+            status_ = {SampleState::Newer, {}, kNewerVersion, 0.0, 0, 0.0};
+            return {};
         }
         // Ruling R19: the session's sample is the one in memory. Kept as it is, entry and all;
         // only the session's values change.
@@ -500,6 +514,7 @@ void SampleLoader::apply(Result &result)
         return;
     }
     entry_ = std::move(result.entry);
+    newerMedia_.reset(); // the sample loaded replaces a newer build's manifest
     setLoadedStatus(result.differentAudio ? kDifferentAudio : "");
     // The settings remember the folder loaded from (spec §6.7), on the main thread (R16).
     if (!settingsFile_.empty())

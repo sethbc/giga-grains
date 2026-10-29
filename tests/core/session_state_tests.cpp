@@ -124,11 +124,13 @@ struct Decoded
     bool sameAs(const Decoded &o) const
     {
         return bitsOf(state.values) == bitsOf(o.state.values) && state.seed == o.state.seed &&
-               state.sample == o.state.sample && migratedFromVersion == o.migratedFromVersion;
+               state.sample == o.state.sample && state.newerMedia == o.state.newerMedia &&
+               migratedFromVersion == o.migratedFromVersion;
     }
 };
 
-// Values, a seed, a sample and a migration report that no decode here produces.
+// Values, a seed, a sample, a newer manifest and a migration report that no decode here
+// produces.
 Decoded distinct()
 {
     Decoded d;
@@ -142,6 +144,7 @@ Decoded distinct()
     e.sampleRate = 8000.0;
     e.frames = 1;
     d.state.sample = e;
+    d.state.newerMedia = "distinct";
     d.migratedFromVersion = 12345;
     return d;
 }
@@ -286,6 +289,127 @@ TEST_CASE("a pre-container state loads with no sample", "[core]")
     }
 }
 
+TEST_CASE("a newer MEDI loads the patch with no sample, and saves back unchanged", "[core]")
+{
+    // The director's decision of 2026-10-28 (INTENT §18): a manifest of a newer version loads the
+    // patch, keeps its bytes, and a save writes them back byte for byte, so an older build that
+    // saves over a newer session keeps its sample reference.
+    const SessionState s = someState(true);
+    const auto ptch = *stateChunkPayload(encodeState(s), "PTCH");
+    const std::string kGood(
+        R"(sha256="e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" size="10" )"
+        R"(path="/a.wav" relative="" format="wav" channels="2" rate="40e7700000000000" )"
+        R"(frames="48000" embed="0")");
+    // Whatever a newer build might write inside <media>: unknown elements and attributes, two
+    // samples, an embedded one, text, comments and white space, and bytes that aren't UTF-8.
+    const std::vector<std::string> newer{
+        R"(<media version="2" />)",
+        R"(<media version="2"><sample )" + kGood + " /></media>",
+        R"(<media version="3" layers="2"><sample )" + kGood +
+            R"( layer="0" /><sample sha256="ab" )"
+            R"(embed="1" layer="1" /><capture hash="ab" /></media>)",
+        "<media version=\"99\">\n  <!-- notes -->\n  <sample path=\"/\xff\xc3(\" />text\n</media>",
+        R"(<media version="2147483647"><future><nested deeper="yes" /></future></media>)",
+    };
+    for (const std::string &medi : newer)
+    {
+        INFO("MEDI '" << medi << "'");
+        const auto bytes = stateContainer({stateChunk("PTCH", ptch), stateChunk("MEDI", medi)});
+        for (const Mode mode : {Mode::Instrument, Mode::Fx})
+        {
+            Decoded d = distinct();
+            REQUIRE(d.decode(bytes, mode));
+            // The patch applies; there is no sample, and the manifest is kept as it came.
+            CHECK(bitsOf(d.state.values) == bitsOf(s.values));
+            CHECK(d.state.seed == s.seed);
+            CHECK(d.state.sample == std::nullopt);
+            REQUIRE(d.state.newerMedia.has_value());
+            CHECK(*d.state.newerMedia == medi);
+            CHECK(d.migratedFromVersion == 0u);
+
+            // Saving it writes the manifest's bytes back unchanged, and the same patch.
+            const auto saved = encodeState(d.state);
+            CHECK(stateChunkPayload(saved, "MEDI") == medi);
+            CHECK(stateChunkPayload(saved, "PTCH") == ptch);
+            CHECK(saved == bytes);
+            Decoded again = distinct();
+            REQUIRE(again.decode(saved, mode));
+            CHECK(again.state.newerMedia == d.state.newerMedia);
+        }
+    }
+
+    SECTION("a sample loaded since replaces the newer manifest")
+    {
+        Decoded d = distinct();
+        REQUIRE(d.decode(stateContainer({stateChunk("PTCH", ptch), stateChunk("MEDI", newer[1])})));
+        d.state.sample = sampleEntry();
+        CHECK(encodeState(d.state) == encodeState(someState(true)));
+    }
+
+    SECTION("a newerMedia decodeState wouldn't keep is left out")
+    {
+        for (const std::string &bad :
+             {std::string{}, std::string{"not xml"}, std::string(kEmptyMedia), mediaWith(kGood),
+              std::string{"<media version=\"2\">"}, std::string{"<media version=\"2\" />junk"},
+              std::string("<media version=\"2\" />\0", 22),
+              std::string{"<manifest version=\"2\" />"}})
+        {
+            INFO("newerMedia '" << bad << "'");
+            SessionState t = someState(false);
+            t.newerMedia = bad;
+            CHECK(encodeState(t) == encodeState(someState(false)));
+        }
+    }
+}
+
+TEST_CASE("a MEDI at this build's version reads as before, with no newer manifest", "[core]")
+{
+    // Version 1, the build's own, with and without a sample: read, never kept as bytes, and
+    // written by this build (the older-or-equal half of the newer-MEDI decision).
+    for (const bool withSample : {false, true})
+    {
+        INFO("with a sample: " << withSample);
+        const auto bytes = encodeState(someState(withSample));
+        Decoded d = distinct();
+        REQUIRE(d.decode(bytes));
+        CHECK(d.state.sample == someState(withSample).sample);
+        CHECK(d.state.newerMedia == std::nullopt);
+        CHECK(encodeState(d.state) == bytes);
+    }
+    // A pre-container state has no MEDI, and so no newer manifest.
+    Decoded d = distinct();
+    REQUIRE(d.decode(kSubProject1State));
+    CHECK(d.state.newerMedia == std::nullopt);
+}
+
+TEST_CASE("a newer MEDI that isn't a manifest still fails the whole state", "[core]")
+{
+    // Only the version is read of a newer manifest, but it must still be one: well-formed, its
+    // <media> root alone at the top, its version a whole decimal integer.
+    const auto ptch = *stateChunkPayload(encodeState(someState(false)), "PTCH");
+    const Decoded before = distinct();
+    for (const std::string &bad : {
+             std::string{"<media version=\"2\">"},
+             std::string{"<media version=\"2\"><sample></media>"},
+             std::string{"<media version=\"2\" />junk"},
+             std::string{"<media version=\"2\" /><media version=\"2\" />"},
+             std::string{"<!-- c --><media version=\"2\" />"},
+             std::string{R"(<?xml version="1.0"?><media version="2" />)"},
+             std::string{"<manifest version=\"2\" />"},
+             std::string{"<media version=\"2x\" />"},
+             std::string{"<media version=\"2147483648\" />"}, // not an int
+             std::string{"<media version=\"+2\" />"},
+             std::string("<media version=\"2\" />\0", 22),
+             "<media version=\"2\">" + gg::test::repeated("<a>", 64) + "</media>",
+         })
+    {
+        INFO("MEDI '" << bad << "'");
+        Decoded d = distinct();
+        CHECK_FALSE(d.decode(stateContainer({stateChunk("PTCH", ptch), stateChunk("MEDI", bad)})));
+        CHECK(d.sameAs(before));
+    }
+}
+
 TEST_CASE("unknown chunks are skipped", "[core]")
 {
     const SessionState s = someState(true);
@@ -400,7 +524,6 @@ TEST_CASE("session state rejects bad state and writes nothing", "[core]")
                  std::string{"<media version=\"1\"><sample "},
                  std::string{"not xml"},
                  std::string{"<manifest version=\"1\" />"},
-                 std::string{"<media version=\"2\" />"}, // newer than this build reads
                  std::string{"<media version=\"0\" />"},
                  std::string{"<media version=\"-1\" />"},
                  std::string(kEmptyMedia) + "<media version=\"1\" />", // trailing content

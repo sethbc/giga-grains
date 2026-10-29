@@ -306,6 +306,26 @@ TEST_CASE("the editor's timer applies a finished load without on_main_thread", "
     CHECK(labelText(*editor, "sampleStatus").startsWith("loaded"));
 }
 
+TEST_CASE("the instrument's gui says when a session's sample is from a newer version", "[plugin]")
+{
+    // INTENT §18: a newer build's manifest loads with no sample, and the strip says why.
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    gg::test::useSettingsFile(gg::test::sampleDir("gui-newer") / "settings.xml");
+    gg::test::PluginUnderTest instrument("org.sethbc.giga-grains");
+    REQUIRE(instrument.valid());
+    auto *plugin = dynamic_cast<gg::plugin::EditorPlugin *>(&instrument.impl());
+    REQUIRE(plugin != nullptr);
+    REQUIRE(instrument.load(gg::test::withNewerMedia(instrument.save())));
+    const std::unique_ptr<juce::Component> editor = plugin->createEditor();
+    REQUIRE(editor != nullptr);
+    auto *timer = dynamic_cast<juce::Timer *>(editor.get());
+    REQUIRE(timer != nullptr);
+    timer->timerCallback();
+    CHECK(labelText(*editor, "sampleName").isEmpty());
+    CHECK(labelText(*editor, "sampleStatus") == "sample from a newer version");
+    CHECK_FALSE(relinkShown(*editor)); // nothing to relink: this build can't read the entry
+}
+
 TEST_CASE("the fx's gui has no sample loader strip", "[plugin]")
 {
     const juce::ScopedJuceInitialiser_GUI juceGui;
