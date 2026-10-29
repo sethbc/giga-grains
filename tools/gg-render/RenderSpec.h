@@ -105,12 +105,12 @@ struct SourceSpec
     /// (0, kMaxSampleRate]. Optional; without it the source is synthesized at the render's
     /// sampleRate. A rate other than the render's exercises the engine's source-rate conversion.
     /// An instrument's sample and an FX input never have one.
-    std::optional<double> sampleRate;
+    std::optional<double> sampleRate{};
     /// file: a WAV, FLAC or MP3 file (an AIFF too, for a sample or an input), non-empty, UTF-8.
     /// In a spec file a relative path is relative to the spec's directory, or to --media-dir;
     /// gg-render resolves it before rendering (resolvePaths), and makeSignal, makeSample and
     /// makeInput open it as given.
-    std::string path;
+    std::string path{};
 
     friend bool operator==(const SourceSpec &, const SourceSpec &) = default;
 };

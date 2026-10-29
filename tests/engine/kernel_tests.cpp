@@ -227,8 +227,8 @@ template <class Reader> void requireSampleArithmetic(SampleRead read)
         std::vector<float> actual[2] = {std::vector<float>(kLength, 0.0f),
                                         std::vector<float>(kLength, 0.0f)};
         specSample(g, read, channels, kFrames, shape.outputs, expected, hann);
-        refSample<Reader>(rows, {{channels[0], channels[1]}, kFrames, shape.mono, nullptr}, shape.outputs,
-                          actual, cuts, hann);
+        refSample<Reader>(rows, {{channels[0], channels[1]}, kFrames, shape.mono, nullptr},
+                          shape.outputs, actual, cuts, hann);
 
         REQUIRE(anyNonZero(expected[0]));
         REQUIRE(sameBits(actual[0], expected[0]));

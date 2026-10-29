@@ -46,11 +46,11 @@ namespace gg::bench
 {
 struct Options
 {
-    double runSeconds{2.0};         // --seconds; --quick = 0.2
-    int rounds{5};                  // --rounds
-    uint32_t grains{2000};          // --grains
-    std::vector<std::string> cases; // --cases a,b; empty = all
-    std::string commit{"unknown"};  // --commit
+    double runSeconds{2.0};           // --seconds; --quick = 0.2
+    int rounds{5};                    // --rounds
+    uint32_t grains{2000};            // --grains
+    std::vector<std::string> cases{}; // --cases a,b; empty = all
+    std::string commit{"unknown"};    // --commit
 };
 
 struct CaseResult
@@ -70,7 +70,7 @@ struct Ratio
 {
     std::string name;
     uint32_t blockSize{0};
-    std::vector<double> runs; // one per round, in round order
+    std::vector<double> runs{}; // one per round, in round order
     double median{0.0}, iqr{0.0};
 };
 
@@ -263,7 +263,7 @@ struct SpaceReport
 {
     SpaceOptions options;
     std::string machine, compiler;
-    std::vector<double> nsPerSample;        // one per round, in round order
+    std::vector<double> nsPerSample{};      // one per round, in round order
     double median{0.0}, min{0.0}, iqr{0.0}; // of nsPerSample
     double cpuPctOneCoreAt48k{0.0};         // from the median
 };
