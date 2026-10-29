@@ -91,6 +91,10 @@ Each entry has one ratio per engine case per block size (32, 64 and 256). The en
    are still ratios of the engine code they were made from, so merge only runs of engine code
    whose ratios haven't moved since.
 
+   A `(replaced)` entry is rebaselined to its new runs whatever they show, a regression
+   included: before committing, compare each replaced entry with the old one (`git diff`) and
+   explain any ratio that moved.
+
 **A baseline is valid only against the `reference` kernel** (`renderHermiteSimd` in
 `tools/gg-bench/Kernels.h`, frozen). If that kernel changes, or anything it calls, every baseline
 has to be made again. `Kernels.h` includes no engine header, so no engine change can move it: it

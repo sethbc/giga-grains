@@ -58,9 +58,10 @@ resource, so machines must catch everything they can catch.
   - Never use the names "Mutable Instruments", "Clouds" or "Beads" in the product.
   - Pin every dependency to an exact SHA or tag.
   - ASIO® (the Windows standalone only; a registered trademark of Steinberg Media Technologies
-    GmbH) comes from sst-plugininfra's ASIO SDK 2.3.4 under its GPLv3 option: exactly
-    `common/asio.cpp`, `host/asiodrivers.cpp` and `host/pc/asiolist.cpp`, unmodified, compiled
-    into RtAudio by `libs/CMakeLists.txt`. Never compile RtAudio's bundled ASIO files, which have
+    GmbH) comes from sst-plugininfra's ASIO SDK 2.3.4: exactly `common/asio.cpp` (used under the
+    SDK's GPLv3 option), `host/asiodrivers.cpp` and `host/pc/asiolist.cpp` (BSD-3-Clause-style,
+    under the license each carries; INTENT §15), unmodified, compiled into RtAudio by
+    `libs/CMakeLists.txt`. Never compile RtAudio's bundled ASIO files, which have
     no license grant, or put its `include/` on a path. The Windows configure fails if either
     happens, or if any of those SDK files' content changes (INTENT §23 #30, #56). Use no ASIO
     logo. `THIRD_PARTY_NOTICES.md` holds the notices a distributed Windows build carries.
@@ -118,20 +119,31 @@ resource, so machines must catch everything they can catch.
     that isn't a configure preset fails before anything is cloned.
 - The first configure of a build tree that builds the plugin formats downloads the VST3 and
   AudioUnit SDKs (clap-wrapper fetches them), and RtAudio for the standalone on Windows (its
-  ASIO) and on Linux without the PipeWire and JACK headers, so it needs the network. `asan` and
+  ASIO) and on Linux without the PipeWire and JACK headers, so it needs the network. (CI
+  fetches them itself, with `scripts/fetch-sdks.sh <dir>`, which prints the `-DVST3_SDK_ROOT=...`
+  style options that make clap-wrapper use those checkouts; a local configure needs none.) `asan` and
   `rtsan` build no formats and download nothing.
 
 **Warnings.** Every first-party target builds with `-Wall -Wextra` and `-Werror` (on ClangCL
 `/clang:-Wall /clang:-Wextra /WX`), through `gg::compiler-options`. Third-party code never links
 it, and its headers are SYSTEM includes (`gg_mark_system_includes` in `libs/CMakeLists.txt`), so
 fix a warning in first-party code and never edit a submodule. A new target links
-`gg::compiler-options`. Clang versions differ in what `-Wextra` flags (the rtsan build's LLVM is
+`gg::compiler-options`, with one exception: `clients/clap-first/gg-clap-entry.cpp`, which
+clap-wrapper's own targets compile without it. Never define a `*_IMPLEMENTATION` macro
+(`STB_IMAGE_IMPLEMENTATION`, `DR_WAV_IMPLEMENTATION`, …) in a first-party file: the
+implementation belongs in `libs/thirdparty-impl/`, built without `gg::compiler-options`, or the
+library's own warnings fail the build. Only the Linux leg (GCC 12, -O2) shows
+`-Wmaybe-uninitialized`, so a green macOS build proves nothing about it. Clang versions differ in what `-Wextra` flags (the rtsan build's LLVM is
 newer than Apple's), so build `asan` and `rtsan` too. `cmake/AsioGuard.cmake` fails the configure
 if anything but RtAudio's ASIO backend uses `libs/.../asiosdk` (tests `asio_guard_*`).
 
 **CI caches** (`.github/workflows/ci.yml`; none changes what is built):
-- **CPM downloads** (VST3 SDK, AudioUnitSDK, RtAudio…): `CPM_SOURCE_CACHE`, keyed on the files that
-  hold the pins.
+- **The SDK checkouts** (VST3 SDK, AudioUnitSDK, RtAudio, RtMidi, wil): `scripts/fetch-sdks.sh`
+  clones each at the tag clap-wrapper's `cmake/base_sdks.cmake` pins into `.sdk-cache`, and
+  Configure passes `-DVST3_SDK_ROOT=...` and the rest, so clap-wrapper downloads nothing. The
+  cache is keyed by leg and by the hash of `base_sdks.cmake` and the script. (CPM's own
+  `CPM_SOURCE_CACHE` cached nothing: clap-wrapper gives every package a `SOURCE_DIR`, which makes
+  CPM skip it.) The VST3-validator step builds from `VST3_SDK_ROOT`.
 - **ccache**, macOS and Linux legs and the sanitizer job only, passed as
   `CMAKE_<LANG>_COMPILER_LAUNCHER` at CI configure (local presets are unchanged). Windows is
   uncached (the Visual Studio generator has no launcher support), and `mac-universal`'s
@@ -139,7 +151,7 @@ if anything but RtAudio's ASIO backend uses `libs/.../asiosdk` (tests `asio_guar
   prefix.
 - **The pinned LLVM archive** (sanitizer job), keyed by version and SHA-256. The SHA-256 is checked
   on a hit too.
-- **Scoping.** Every run restores all three; only runs on `main` (a push, the nightly, a
+- **Scoping.** Every run restores all of them; only runs on `main` (a push, the nightly, a
   dispatch on `main`) save them, also after a failed build. GitHub scopes a cache to the ref that
   saved it: a pull request reads `main`'s caches, but nobody reads a pull request's, so PRs never
   save. GitHub evicts a cache unused for 7 days and the least recently used ones past the
@@ -515,6 +527,9 @@ $b --space [--quick | --seconds S] [--rounds N] [--commit SHA] [--json out.json]
      from the new runs alone; models the old file lacks are added at the end. It prints each
      entry as `(kept)`, `(replaced)` or `(new)`. The legs must match. The new runs must still be
      of engine code whose ratios match the kept entries' (no engine change since).
+     **A replaced entry is rebaselined to its new runs, a regression included:** compare each
+     `(replaced)` entry with the old one (`git diff`) before committing, and explain any ratio
+     that moved.
 
   A baseline is valid only against the frozen `reference` kernel: if that kernel, or anything it
   calls, changes, make every baseline again. Its pinned hashes fail first.
@@ -553,6 +568,7 @@ $b --space [--quick | --seconds S] [--rounds N] [--commit SHA] [--json out.json]
 - **Steinberg's VST3 validator** is built from the VST3 SDK that clap-wrapper downloaded:
 
   ```sh
+  # A local build: CPM records the checkout. CI configures with VST3_SDK_ROOT instead.
   sdk="$(sed -n 's/^CPM_PACKAGE_vst3sdk_SOURCE_DIR:INTERNAL=//p' build/release/CMakeCache.txt)"
   cmake -S "$sdk" -B build/release/vst3-validator -G Ninja -DCMAKE_BUILD_TYPE=Release \
     -DSMTG_ENABLE_VSTGUI_SUPPORT=OFF -DSMTG_ENABLE_VST3_PLUGIN_EXAMPLES=OFF \
