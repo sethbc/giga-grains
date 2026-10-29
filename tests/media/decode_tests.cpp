@@ -286,6 +286,66 @@ TEST_CASE("decode tolerates a data size up to 1 KiB beyond the file (ruling R10)
     }
 }
 
+TEST_CASE("decode tolerates an AIFF frame count up to 1 KiB beyond the file (ruling R10)",
+          "[media]")
+{
+    // AIFF declares its length in COMM's frame count, not a data size: the same 1 KiB of slack
+    // applies to the bytes those frames would take. AIFF, big-endian 16-bit stereo, 4 bytes a
+    // frame (COMM's count at byte 22); AIFC `sowt`, 24-bit mono, 3 bytes a frame (byte 34, after
+    // FVER).
+    struct Case
+    {
+        bool aifc;
+        SampleFormat format;
+        uint32_t channels;
+        uint32_t bytesPerFrame;
+        size_t countOffset;
+    };
+    for (const Case c :
+         {Case{false, SampleFormat::Int16, 2, 4, 22}, Case{true, SampleFormat::Int24, 1, 3, 34}})
+    {
+        INFO((c.aifc ? "AIFC" : "AIFF"));
+        const auto audio = gg::test::makeTestAudio(c.channels, 48000, 600);
+        const auto claiming = [&](uint64_t frames, const char *name) {
+            gg::test::Bytes b{gg::test::aiffBytes(audio, c.format, c.aifc)};
+            const auto file = dir() / (std::string(name) + (c.aifc ? ".aifc" : ".aiff"));
+            b.patch(c.countOffset, frames, 4, true);
+            gg::test::writeFile(file, b.data);
+            return file;
+        };
+        // The fixture's own count, read back where the test patches it.
+        {
+            const auto bytes = gg::test::aiffBytes(audio, c.format, c.aifc);
+            REQUIRE(std::string(bytes.begin() + int(c.countOffset) - 10,
+                                bytes.begin() + int(c.countOffset) - 6) == "COMM");
+            uint32_t count = 0;
+            for (int i = 0; i < 4; ++i)
+            {
+                count = count << 8 | bytes[c.countOffset + size_t(i)];
+            }
+            REQUIRE(count == 600);
+        }
+
+        const uint64_t slackFrames = 1024 / c.bytesPerFrame; // 256 or 341
+        for (const uint64_t extra : {uint64_t{25}, slackFrames})
+        {
+            INFO("frames beyond: " << extra);
+            const auto file = claiming(600 + extra, "overstated-within");
+            const auto result = decodeAudioFile(file);
+            INFO("error: " << result.error);
+            REQUIRE(result.audio.has_value());
+            REQUIRE(result.audio->format == "aiff");
+            REQUIRE(result.audio->buffer->channels() == c.channels);
+            REQUIRE(result.audio->buffer->frames() == 600);
+            REQUIRE(maxError(*result.audio->buffer, audio, c.channels) <=
+                    gg::test::lsbOf(c.format));
+        }
+        // One frame more is past the slack (1028 or 1026 bytes): truncated.
+        const auto over = claiming(600 + slackFrames + 1, "overstated-past");
+        requireError(decodeAudioFile(over), over, "truncated");
+    }
+}
+
 TEST_CASE("decode allocates no more than the file vouches for when a header claims audio it lacks",
           "[media][serial]")
 {

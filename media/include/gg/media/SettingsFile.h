@@ -26,12 +26,20 @@ namespace gg::media
 std::filesystem::path defaultSettingsPath();
 
 /// The settings in `file`, or the defaults (both folders empty) if it can't be read, is larger
-/// than 1 MiB, or isn't settings (fromSettingsXml).
+/// than 1 MiB, or isn't settings (fromSettingsXml). On Windows the file is opened sharing delete
+/// access, so another instance's saveSettings can rename over it meanwhile.
 core::MachineSettings loadSettings(const std::filesystem::path &file);
 
 /// Writes `settings` to `file`, creating its folder if needed. The XML goes to a temporary file
-/// beside it, which is then renamed over `file`, so a failed write leaves the old settings
-/// whole. False if a folder or the file can't be written, or if a string holds a NUL byte.
+/// beside it, unique to the save (ruling R16), which is flushed to the disk (fsync; F_FULLFSYNC
+/// on macOS; FlushFileBuffers on Windows) and then renamed over `file`, and the folder is flushed
+/// after it (on Windows the rename writes through): a failed write, a crash or a power loss
+/// leaves the old settings or the new ones whole, never a partial file. A rename that fails
+/// because another program has `file` open (on Windows, which refuses to replace an open file)
+/// is tried again, 20 times in all, 25 ms apart. Once saved, it removes the temporary files of
+/// saves of `file` that crashed before their rename: those more than 10 minutes older than the
+/// file it has just written, so another instance's save in progress is never touched. False if
+/// a folder or the file can't be written, or if a string holds a NUL byte.
 bool saveSettings(const std::filesystem::path &file, const core::MachineSettings &settings);
 } // namespace gg::media
 
