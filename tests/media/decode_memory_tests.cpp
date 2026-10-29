@@ -200,6 +200,38 @@ std::vector<uint8_t> imaAdpcmBytes(uint32_t channels, uint32_t blocks, uint32_t 
     return std::move(b.data);
 }
 
+/// Sets the 36-bit frame count of flacBytes' STREAMINFO: the low nibble of byte 8 + 13, then
+/// bytes 8 + 14 to 8 + 17.
+void setFlacFrames(std::vector<uint8_t> &flac, uint64_t frames)
+{
+    flac[8 + 13] = static_cast<uint8_t>((flac[8 + 13] & 0xf0u) | ((frames >> 32) & 0x0fu));
+    for (int i = 0; i < 4; ++i)
+    {
+        flac[size_t(8 + 14 + i)] = static_cast<uint8_t>(frames >> (24 - 8 * i));
+    }
+}
+
+/// Whether every decoded sample is within one 16-bit LSB of `audio`'s, in every channel.
+bool matches16(const gg::SampleBuffer &buffer, const gg::test::TestAudio &audio)
+{
+    if (buffer.frames() != audio.frames() || buffer.channels() != audio.channels)
+    {
+        return false;
+    }
+    const double lsb = gg::test::lsbOf(gg::test::SampleFormat::Int16);
+    for (uint32_t c = 0; c < buffer.channels(); ++c)
+    {
+        for (int64_t n = 0; n < buffer.frames(); ++n)
+        {
+            if (std::abs(double(buffer.channel(c)[n]) - audio.at(n, c)) > lsb)
+            {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
 /// What decoding `file` held at its peak, measured by AllocPeak.
 struct Measured
 {
@@ -292,12 +324,7 @@ TEST_CASE("decode holds at most twice the audio when the header can't vouch for 
     auto bytes = flacBytes(audio, noCount ? Subframes::Verbatim : Subframes::Constant);
     if (noCount)
     {
-        // STREAMINFO's 36-bit count: the low nibble of byte 8 + 13, then bytes 8 + 14 to 8 + 17.
-        bytes[8 + 13] &= 0xf0u;
-        for (int i = 14; i < 18; ++i)
-        {
-            bytes[size_t(8 + i)] = 0;
-        }
+        setFlacFrames(bytes, 0);
     }
     const auto file = dir() / (noCount ? "no-count.flac" : "constant.flac");
     gg::test::writeFile(file, bytes);
@@ -311,6 +338,67 @@ TEST_CASE("decode holds at most twice the audio when the header can't vouch for 
     INFO("audio " << decoded << " bytes, peak " << m.peakBytes << " bytes ("
                   << double(m.peakBytes) / double(decoded) << "x)");
     REQUIRE(m.peakBytes <= 2 * decoded + 2 * 65536 * sizeof(float) + kOverheadBytes);
+    if (noCount)
+    {
+        // The blocks put back together: every sample where it belongs.
+        REQUIRE(matches16(*m.result.audio->buffer, audio));
+    }
+}
+
+TEST_CASE("decode trusts a compressed header up to 64 bytes of audio per byte of the file",
+          "[media]")
+{
+    if (!gg::test::AllocPeak::available())
+    {
+        SKIP("this build doesn't measure allocations (GG_SANITIZE)");
+    }
+    // Ruling R7 as amended (INTENT §23 #54). A mono verbatim FLAC of 40,960 frames (about 82 KB)
+    // whose STREAMINFO lies: just under the ratio, its claim is allocated whole before the decode
+    // proves the file truncated, and costs at most 64 times the file; just over, the audio grows
+    // in blocks as it decodes and the claim costs nothing.
+    const auto audio = gg::test::makeTestAudio(1, 48000, 10 * 4096);
+    auto bytes = flacBytes(audio, Subframes::Verbatim);
+    const uint64_t fileBytes = bytes.size();
+    const bool over = GENERATE(false, true);
+    // Mono: 4 bytes a frame, so 16 frames a byte of the file is exactly 64 bytes a byte.
+    setFlacFrames(bytes, 16 * (over ? fileBytes + 1 : fileBytes));
+    const auto file = dir() / (over ? "claim-over-64x.flac" : "claim-under-64x.flac");
+    gg::test::writeFile(file, bytes);
+
+    const auto m = decodeMeasured(file);
+    INFO("file " << fileBytes << " bytes, peak " << m.peakBytes << " bytes ("
+                 << double(m.peakBytes) / double(fileBytes) << "x the file)");
+    REQUIRE_FALSE(m.result.audio.has_value());
+    REQUIRE(m.result.error.find("truncated") != std::string::npos);
+    REQUIRE(m.complete);
+    if (over)
+    {
+        // One block of 65,536 frames held the 40,960 that came.
+        REQUIRE(m.peakBytes <= 65536 * sizeof(float) + kOverheadBytes);
+    }
+    else
+    {
+        REQUIRE(m.peakBytes >= 64 * fileBytes);
+        REQUIRE(m.peakBytes <= 64 * fileBytes + kOverheadBytes);
+    }
+}
+
+TEST_CASE("decode carries a decode past its header's count from the buffer into blocks", "[media]")
+{
+    // A stereo verbatim FLAC of 409,600 frames whose STREAMINFO claims 1000 fewer: the first
+    // 408,600 go into the buffer allocated at the claim, and a 4096-frame read straddles its end,
+    // the rest going into a block. Every sample must come out where it belongs.
+    const auto audio = gg::test::makeTestAudio(2, 48000, 100 * 4096);
+    auto bytes = flacBytes(audio, Subframes::Verbatim);
+    setFlacFrames(bytes, uint64_t(audio.frames()) - 1000);
+    const auto file = dir() / "beyond-count.flac";
+    gg::test::writeFile(file, bytes);
+
+    const auto result = decodeAudioFile(file);
+    INFO(result.error);
+    REQUIRE(result.audio.has_value());
+    REQUIRE(result.audio->buffer->frames() == audio.frames());
+    REQUIRE(matches16(*result.audio->buffer, audio));
 }
 
 TEST_CASE("decode reads the FLAC and IMA ADPCM files it is tested with", "[media]")
@@ -422,6 +510,31 @@ TEST_CASE("decode reads a RIFF data size of 0 with audio after it as truncated",
         INFO("error: " << result.error);
         REQUIRE_FALSE(result.audio.has_value());
         REQUIRE(result.error.find("truncated") != std::string::npos);
+    }
+    SECTION("an IMA ADPCM file: dr_wav refuses it, but it is truncated just the same")
+    {
+        const auto file = dir() / "ima-data-size-0.wav";
+        gg::test::writeFile(file, imaAdpcmBytes(2, 8, 256, 0));
+        const auto result = decodeAudioFile(file);
+        INFO("error: " << result.error);
+        REQUIRE_FALSE(result.audio.has_value());
+        REQUIRE(result.error.find("truncated") != std::string::npos);
+    }
+    SECTION("a chunk that fits follows: an empty file, no audio")
+    {
+        auto bytes =
+            gg::test::wavBytes(gg::test::makeTestAudio(2, 48000, 0), gg::test::SampleFormat::Int16);
+        Bytes b{std::move(bytes)};
+        b.raw("LIST");
+        b.le(4, 4);
+        b.raw("INFO");
+        b.patch(4, b.data.size() - 8, 4, false); // the RIFF size
+        const auto file = dir() / "data-size-0-then-list.wav";
+        gg::test::writeFile(file, b.data);
+        const auto result = decodeAudioFile(file);
+        INFO("error: " << result.error);
+        REQUIRE_FALSE(result.audio.has_value());
+        REQUIRE(result.error.find("no audio") != std::string::npos);
     }
     SECTION("nothing follows: no audio")
     {

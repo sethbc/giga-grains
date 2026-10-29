@@ -55,7 +55,9 @@ struct DecodeResult
 ///   - FLAC, MP3 and ADPCM WAV, which a few bytes can make long: when the header's count is
 ///     no more than the file's size vouches for (64 bytes of decoded audio a byte of the file,
 ///     well above what ordinary audio decodes to), the audio is decoded straight into one
-///     allocation of that count, which becomes the buffer, so the peak is the audio itself.
+///     allocation of that count, which becomes the buffer, so the peak is the audio itself. A
+///     header that lies within that ratio costs up to 64 times the file's size before the decode
+///     proves the file truncated (ruling R7 as amended, INTENT §23 #54).
 ///     Otherwise (no count, or more than the file vouches for, as for a file of near-silence)
 ///     it is decoded into blocks of 65,536 frames as it arrives and then copied into the buffer,
 ///     so the peak is about twice the audio that decoded. A decode past kMaxFileSeconds is
@@ -71,8 +73,11 @@ struct DecodeResult
 ///   - ADPCM WAV: one block, whether the count comes from a `fact` chunk (which dr_wav reads
 ///     only for Microsoft ADPCM) or from the data size. A data size more than one block past
 ///     the end of the file is truncation too.
-///   A RIFF data size of 0 with audio after it (a recording whose header was never finished) is
-///   truncation, not an empty file. A FLAC whose STREAMINFO gives no count (0, a streamed
+///   A RIFF data size of 0 with audio after it (a recording whose header was never finished),
+///   PCM or ADPCM, is truncation, not an empty file. An empty file with more chunks after its
+///   data chunk still has no audio, provided the bytes after the data chunk read as a chunk
+///   header (four printable characters) whose chunk fits in the file; other bytes there read as
+///   truncation. A FLAC whose STREAMINFO gives no count (0, a streamed
 ///   encode) isn't truncation: it decodes to the end, up to kMaxFileSeconds. A file that decodes
 ///   no frames at all is an error.
 /// The file is opened once, by its native path (wide, with `_wfopen`, on Windows), and each

@@ -286,10 +286,14 @@ TEST_CASE("decode tolerates a data size up to 1 KiB beyond the file (ruling R10)
     }
 }
 
-TEST_CASE("decode never allocates for audio a header claims but the file lacks", "[media][serial]")
+TEST_CASE("decode allocates no more than the file vouches for when a header claims audio it lacks",
+          "[media][serial]")
 {
     // Each file is tiny but claims up to 600 s, within every limit; allocating and zeroing that
     // much (1.8 GB for the 384 kHz stereo ones) would take far longer than the bound below.
+    // Ruling R7 as amended (INTENT §23 #54): an uncompressed file's buffer never exceeds what its
+    // bytes hold, and a compressed header is trusted only up to 64 bytes of decoded audio per byte
+    // of the file, which these tiny files are far beyond. decode_memory_tests.cpp pins that bound.
     const auto requireQuickError = [](const fs::path &file, const std::string &reason) {
         const auto start = std::chrono::steady_clock::now();
         const auto result = decodeAudioFile(file);

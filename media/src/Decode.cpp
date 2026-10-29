@@ -10,6 +10,7 @@
 #include <exception>
 #include <new>
 #include <system_error>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -35,7 +36,7 @@ constexpr uint64_t kChunkSamples = 8192;
 constexpr uint64_t kBlockFrames = 65536;
 /// How many bytes of decoded audio a compressed file's header may claim for each byte of the
 /// file, for the buffer to be allocated at the header's count before any audio is decoded.
-/// Ordinary audio decodes to well under it (FLAC to 2 to 4, ADPCM to 8, a 128 kb/s stereo MP3 to
+/// Ordinary audio decodes to well under it (FLAC to 2 to 8, ADPCM to 8, a 128 kb/s stereo MP3 to
 /// 22); a header claiming more, like a file of near-silence (a FLAC of constant subframes), has
 /// to prove its length by decoding.
 constexpr uint64_t kVouchedBytesPerFileByte = 64;
@@ -334,6 +335,19 @@ class InputFile
     explicit operator bool() const noexcept { return file_ != nullptr; }
     /// The file's size when it was opened, in bytes.
     uint64_t size() const noexcept { return size_; }
+    /// Where the next read starts, in bytes from the start of the file.
+    uint64_t position() const noexcept { return position_; }
+
+    /// Reads exactly `bytes` bytes at `at` into `out`; false if they aren't all there.
+    bool readAt(uint64_t at, void *out, size_t bytes)
+    {
+        if (at > size_ || !seekTo(int64_t(at), SEEK_SET))
+        {
+            return false;
+        }
+        position_ = at;
+        return onRead(this, out, bytes) == bytes;
+    }
 
     /// Back to the start, for the next decoder to try.
     bool rewind()
@@ -368,9 +382,10 @@ class InputFile
         self.position_ = uint64_t(target);
         return 1;
     }
-    static uint32_t onTell(void *user, long long *cursor)
+    /// drwav_int64, drflac_int64 and drmp3_int64 are one type (asserted below).
+    static uint32_t onTell(void *user, drwav_int64 *cursor)
     {
-        *cursor = static_cast<long long>(static_cast<InputFile *>(user)->position_);
+        *cursor = static_cast<drwav_int64>(static_cast<InputFile *>(user)->position_);
         return 1;
     }
 
@@ -409,6 +424,8 @@ static_assert(int(DRWAV_SEEK_SET) == int(DRFLAC_SEEK_SET) &&
               int(DRWAV_SEEK_CUR) == int(DRMP3_SEEK_CUR) &&
               int(DRWAV_SEEK_END) == int(DRFLAC_SEEK_END) &&
               int(DRWAV_SEEK_END) == int(DRMP3_SEEK_END));
+static_assert(std::is_same_v<drwav_int64, drflac_int64> &&
+              std::is_same_v<drwav_int64, drmp3_int64>);
 
 /// The size a RIFF, RIFX or W64 file's data chunk declares, which dr_wav clamps to the file
 /// before deriving its frame count, so truncation would go unnoticed. RF64 declares it in its
@@ -418,11 +435,15 @@ struct DeclaredData
     uint64_t bytes{0};
     /// Whether a RIFF or RIFX data chunk declared `bytes` (0 included).
     bool riff{false};
+    /// Where the data chunk's audio starts, in bytes from the start of the file.
+    uint64_t start{0};
+    /// The fmt chunk's block align when the data chunk was seen; 0 if none came before it.
+    uint32_t blockAlign{0};
 };
 
-drwav_uint64 onWavChunk(void *user, drwav_read_proc, drwav_seek_proc, void *,
+drwav_uint64 onWavChunk(void *user, drwav_read_proc, drwav_seek_proc, void *file,
                         const drwav_chunk_header *header, drwav_container container,
-                        const drwav_fmt *)
+                        const drwav_fmt *fmt)
 {
     // 61746164-ACF3-11D3-8CD1-00C04F8EDB8A, W64's data chunk.
     static constexpr drwav_uint8 kW64Data[16] = {0x64, 0x61, 0x74, 0x61, 0xF3, 0xAC, 0xD3, 0x11,
@@ -438,6 +459,9 @@ drwav_uint64 onWavChunk(void *user, drwav_read_proc, drwav_seek_proc, void *,
         auto &declared = *static_cast<DeclaredData *>(user);
         declared.bytes = header->sizeInBytes;
         declared.riff = riffData;
+        // dr_wav has just read the chunk's header: the file sits at its audio.
+        declared.start = static_cast<InputFile *>(file)->position();
+        declared.blockAlign = fmt != nullptr ? fmt->blockAlign : 0;
     }
     return 0;
 }
@@ -470,6 +494,36 @@ uint32_t pcmBytesPerFrame(const drwav &wav)
     }
 }
 
+/// A RIFF data size of 0 with at least `minBytes` (a frame, or an ADPCM block) after the start
+/// of the audio: a recording whose header was never finished, which dr_wav reads as no frames
+/// (or, for ADPCM, refuses to open). Unless what follows reads as a chunk header whose chunk fits
+/// in the file: then the file is an empty one with more chunks after its data, and nullopt.
+std::optional<DecodeResult> unfinished(InputFile &file, const fs::path &path,
+                                       const DeclaredData &declared, uint64_t minBytes)
+{
+    const uint64_t fileBytes = file.size();
+    const uint64_t held = fileBytes > declared.start ? fileBytes - declared.start : 0;
+    if (!declared.riff || declared.bytes != 0 || held < std::max<uint64_t>(minBytes, 1))
+    {
+        return std::nullopt;
+    }
+    uint8_t chunk[8];
+    if (held >= 8 && file.readAt(declared.start, chunk, sizeof chunk))
+    {
+        const bool printableId =
+            std::all_of(chunk, chunk + 4, [](uint8_t c) { return c >= 0x20 && c <= 0x7E; });
+        const uint64_t size = uint64_t(chunk[4]) | uint64_t(chunk[5]) << 8 |
+                              uint64_t(chunk[6]) << 16 | uint64_t(chunk[7]) << 24;
+        if (printableId && size <= held - 8)
+        {
+            return std::nullopt;
+        }
+    }
+    return failure(path, "the file is truncated: its header gives 0 bytes of audio, as a "
+                         "recording never finished leaves it, but " +
+                             std::to_string(held) + " bytes follow");
+}
+
 std::optional<DecodeResult> tryWav(InputFile &file, const fs::path &path)
 {
     drwav wav;
@@ -477,7 +531,8 @@ std::optional<DecodeResult> tryWav(InputFile &file, const fs::path &path)
     if (!drwav_init_ex(&wav, InputFile::onRead, InputFile::onSeek<drwav_seek_origin>,
                        InputFile::onTell, onWavChunk, &file, &declared, 0, nullptr))
     {
-        return std::nullopt;
+        // dr_wav refuses an ADPCM data chunk of 0 bytes outright.
+        return unfinished(file, path, declared, declared.blockAlign);
     }
     const uint64_t fileBytes = file.size();
     // The bytes from the start of the audio to the end of the file.
@@ -508,6 +563,10 @@ std::optional<DecodeResult> tryWav(InputFile &file, const fs::path &path)
         {
             return std::move(*bad);
         }
+        if (auto bad = unfinished(file, path, declared, adpcm ? wav.fmt.blockAlign : bytesPerFrame))
+        {
+            return std::move(*bad);
+        }
         if (adpcm)
         {
             // dr_wav clamps the data size to the file and, without a fact chunk, counts the
@@ -522,14 +581,6 @@ std::optional<DecodeResult> tryWav(InputFile &file, const fs::path &path)
                 return std::move(*bad);
             }
             return guarded(path, [&] { return decodeCompressed(path, stream, fileBytes, read); });
-        }
-        // A data size of 0 with audio after it is a recording whose header was never finished:
-        // dr_wav reads it as no frames at all.
-        if (declared.riff && declared.bytes == 0 && heldBytes >= bytesPerFrame)
-        {
-            return failure(path, "the file is truncated: its header gives 0 bytes of audio, as a "
-                                 "recording never finished leaves it, but " +
-                                     std::to_string(heldBytes) + " bytes follow");
         }
         // What the header declares, checked against what the file holds before its length is:
         // a recording never finalized declares a placeholder size, and is truncated, not long.
