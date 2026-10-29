@@ -390,6 +390,8 @@ void Processor::reset() noexcept
     }
     diffuser_.reset();
     reverb_->reset();
+    // The ring restarts at time 0, and its peak strip with it.
+    livePeaks_.reset();
 }
 
 void Processor::setSourceNow(std::shared_ptr<const PreparedSource> s)
@@ -666,11 +668,12 @@ void Processor::render(const Buffers &b, int64_t from, int64_t to) noexcept
         }
         const int64_t headBefore = engine_.liveWriteHead();
         engine_.process(ringIn, ringChannels, wet, rendering, n);
-        if (fx && publishingThisCall_)
+        if (fx)
         {
-            // The peaks of what the ring took (spec §6.4): the buffers the engine was handed,
-            // over the frames its head advanced, a prefix of the piece (all of it unless a
-            // freeze stopped the head), at ring time.
+            // The peaks of what the ring took (spec §6.4), publishing or not (ruling PU-T9b), so
+            // the strip never holds an older pass's peaks when the editor opens: the buffers the
+            // engine was handed, over the frames its head advanced, a prefix of the piece (all
+            // of it unless a freeze stopped the head), at ring time.
             const auto written = static_cast<uint32_t>(engine_.liveWriteHead() - headBefore);
             const float *l = ringChannels > 0 && ringIn[0] != nullptr ? ringIn[0] : kSilence.data();
             const float *r = ringChannels > 0 && ringIn[1] != nullptr ? ringIn[1] : kSilence.data();

@@ -59,6 +59,15 @@ void LivePeaks::write(const float *l, const float *r, int64_t t, uint32_t n) noe
     }
 }
 
+void LivePeaks::reset() noexcept
+{
+    for (uint32_t i = 0; i < bucketCount_; ++i)
+    {
+        peaks_[i].store(0.0f, std::memory_order_relaxed);
+    }
+    lastBucket_ = -1;
+}
+
 float LivePeaks::at(int64_t frame) const noexcept
 {
     if (frame < 0 || bucketCount_ == 0)

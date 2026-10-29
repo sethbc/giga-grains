@@ -18,7 +18,9 @@ struct UiSnapshot
 {
     int64_t clock{0};         ///< Frames processed: the Processor's absolute time.
     int64_t writeHead{0};     ///< The live ring's write head, in ring time (FX).
-    bool frozen{false};       ///< Whether Freeze is in effect.
+    bool frozen{false};       ///< The freeze setting the engine was given (Freeze, or in the
+                              ///< FX a held note): true from the call it engages, also during
+                              ///< the 20 ms freeze ramp while the write head still advances.
     uint32_t activeGrains{0}; ///< Grains sounding.
     float basePosition{0.0f}; ///< Position and Spray as set (base values, CLAP domain) ...
     float baseSpray{0.0f};

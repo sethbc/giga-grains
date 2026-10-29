@@ -47,6 +47,11 @@ class LivePeaks
     void write(const float *l, const float *r, int64_t t,
                uint32_t n) noexcept SST_CPPUTILS_NONBLOCKING;
 
+    /// The writer's, for a ring that restarts at time 0 (Processor::reset): silences every
+    /// bucket, as prepare() leaves them, and forgets the last bucket written, so the next write()
+    /// starts its first bucket from 0. Keeps the size. Real-time safe; bounded by buckets().
+    void reset() noexcept SST_CPPUTILS_NONBLOCKING;
+
     /// Any thread. The peak of the bucket holding ring frame `frame`; 0 for a negative frame or
     /// before prepare().
     float at(int64_t frame) const noexcept;

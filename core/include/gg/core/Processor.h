@@ -190,19 +190,22 @@ struct NoteEvent
 /// latches at each chunk's first sample. A chunk is active when the Amount ramp isn't exactly 0
 /// at its first sample: Amount 0 keeps the reverb idle (SpaceReverb's idle rule).
 ///
-/// **Publishing** (sub-project 5's spec §6.4). While setPublishing(true), process() fills three
-/// lock-free structures the editor draws from, without allocating, locking or waiting:
+/// **Publishing** (sub-project 5's spec §6.4). process() fills three lock-free structures the
+/// editor draws from, without allocating, locking or waiting; the first two only while
+/// setPublishing(true):
 /// - grainQueue(): a GrainVis per spawned grain, in spawn order; when the editor falls behind
 ///   the queue drops the newest and counts them (GrainQueue::dropped).
 /// - snapshot(): a UiSnapshot at the end of every call (0-frame calls included), and
 ///   publishedClock(), the sample clock it carries, stored after it with release order.
-/// - livePeaks() (FX): the peaks of the ring input, the exact buffers the engine was handed (the
-///   input, or with Feedback the input plus the fed-back wet signal), indexed by ring time: the
-///   frames the ring's write head advanced over, so a freeze, which stops the head, writes none,
-///   and a grain's startPos reads its own frames' peaks. Taken before the freeze ramp's write
-///   gain.
+/// - livePeaks() (FX), always, publishing or not (ruling PU-T9b), so the strip follows the ring
+///   itself and an editor that opens late finds the ring's recent audio there, not stale peaks:
+///   the peaks of the ring input, the exact buffers the engine was handed (the input, or with
+///   Feedback the input plus the fed-back wet signal), indexed by ring time: the frames the
+///   ring's write head advanced over, so a freeze, which stops the head, writes none, and a
+///   grain's startPos reads its own frames' peaks. Taken before the freeze ramp's write gain and
+///   the ring's clamp. reset() silences it with the ring.
 /// process() reads the flag once, at its start, and holds it for the whole call. With it off
-/// nothing is published, and with it on or off the audio is the same, bit for bit.
+/// nothing is queued or snapshotted, and with it on or off the audio is the same, bit for bit.
 class Processor
 {
   public:
@@ -311,7 +314,8 @@ class Processor
     /// clears the diffuser and the reverb, whose time restarts at 0 with the engine's: clearing
     /// the reverb's ~14.5 MB at once is a cost hosts expect of a reset (ruling R-T5b). A pending
     /// change applies at once, and the ramped values jump to their targets. Feedback's history
-    /// is cleared: the fresh ring has no wet signal behind it to take back. Every note is
+    /// is cleared: the fresh ring has no wet signal behind it to take back; the live peaks are
+    /// silenced with the ring (LivePeaks::reset). Every note is
     /// released, the pending ones included: heldKeys() is empty and the engine gets no keys.
     /// Freeze disengages and waits for an off→on transition (the class comment). Real-time safe;
     /// call it between process() calls.
@@ -330,7 +334,8 @@ class Processor
     /// The latest UiSnapshot, for the editor (the buffer's consumer).
     SnapshotBuffer &snapshot() noexcept { return snapshot_; }
     /// The peak strip of the FX's live ring, kLiveSeconds long (ceil(kLiveSeconds × sampleRate)
-    /// frames); unprepared (0 frames, every read 0) in the instrument. Any thread may read it.
+    /// frames), written on every call whether or not publishing is on (the class comment);
+    /// unprepared (0 frames, every read 0) in the instrument. Any thread may read it.
     const LivePeaks &livePeaks() const noexcept { return livePeaks_; }
     /// The sample clock at the end of the last process() call that published (0 until one has),
     /// stored with release order after that call's snapshot.

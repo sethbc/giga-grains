@@ -11,12 +11,11 @@
 #include <atomic>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <limits>
 #include <memory>
 #include <thread>
 #include <vector>
-
-#include <cstring>
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
@@ -28,6 +27,7 @@
 #include "gg/core/Processor.h"
 #include "gg/core/Rng.h"
 #include "gg/core/UiSnapshot.h"
+#include "gg/source/LiveSource.h"
 #include "support/AllocTripwire.h"
 
 using gg::core::GrainQueue;
@@ -482,6 +482,31 @@ TEST_CASE("live peaks write and read without allocating", "[core][publish][rt]")
     CHECK(sum == 100 * 0.5f);
 }
 
+TEST_CASE("live peaks reset silences every bucket and keeps the size", "[core][publish]")
+{
+    LivePeaks peaks;
+    peaks.reset(); // before prepare(): nothing to silence
+    CHECK(peaks.buckets() == 0);
+    peaks.prepare(1000);
+    const uint32_t buckets = peaks.buckets();
+    const std::vector<float> loud(1000, 0.5f);
+    peaks.write(loud.data(), loud.data(), 0, 1000);
+    peaks.write(loud.data(), loud.data(), 1000, 40); // ends inside bucket 16
+    REQUIRE(peaks.at(1039) == 0.5f);
+    peaks.reset();
+    CHECK(peaks.buckets() == buckets);
+    CHECK(peaks.frames() == 1000);
+    for (int64_t f = 0; f < 1100; ++f)
+    {
+        REQUIRE(peaks.at(f) == 0.0f);
+    }
+    // Ring time restarts at 0: the next write fills its buckets afresh.
+    const std::vector<float> soft(64, 0.25f);
+    peaks.write(soft.data(), soft.data(), 0, 10);
+    CHECK(peaks.at(0) == 0.25f);
+    CHECK(peaks.at(64) == 0.0f);
+}
+
 TEST_CASE("live peaks unprepared are silent and ignore writes", "[core][publish]")
 {
     LivePeaks peaks;
@@ -601,10 +626,6 @@ TEST_CASE("publishing off costs nothing", "[core][publish]")
     CHECK_FALSE(off.snapshot().take(snap));
     CHECK(off.publishedClock().load() == 0);
     CHECK(off.livePeaks().frames() == static_cast<int64_t>(std::ceil(16.0 * kRate)));
-    for (int64_t f = 0; f < kFrames; f += gg::core::LivePeaks::kBucket)
-    {
-        REQUIRE(off.livePeaks().at(f) == 0.0f);
-    }
 
     CHECK(on.grainQueue().pop(g));
     CHECK(on.snapshot().take(snap));
@@ -704,11 +725,13 @@ TEST_CASE("grain events reach the queue", "[core][publish]")
 
 TEST_CASE("live peaks follow the input", "[core][publish]")
 {
-    // A 0.8 burst of 64 frames at 1.0 s over silence, in the left channel only: its bucket reads
-    // 0.8 and its neighbours 0 (the ring's time is the sample clock until a freeze).
+    // A 0.8 burst of 64 frames at 1.0 s over silence in the left channel, and a −0.6 one at
+    // 52032 in the right: each bucket reads its burst's magnitude and the neighbours 0 (the
+    // ring's time is the sample clock until a freeze).
     constexpr size_t kFrames = 72000;
     Channels input{std::vector<float>(kFrames, 0.0f), std::vector<float>(kFrames, 0.0f)};
     std::fill_n(input.left.begin() + 48000, 64, 0.8f);
+    std::fill_n(input.right.begin() + 52032, 64, -0.6f);
     Processor p({kRate, 512, 3, Mode::Fx});
     p.setPublishing(true);
     run(p, input, 0, kFrames, 500);
@@ -716,20 +739,107 @@ TEST_CASE("live peaks follow the input", "[core][publish]")
     CHECK(p.livePeaks().at(48063) == 0.8f);
     CHECK(p.livePeaks().at(47999) == 0.0f);
     CHECK(p.livePeaks().at(48064) == 0.0f);
+    CHECK(p.livePeaks().at(52032) == 0.6f);
+    CHECK(p.livePeaks().at(52031) == 0.0f);
+    CHECK(p.livePeaks().at(52096) == 0.0f);
+}
 
-    SECTION("a mono input feeds both channels and a missing one is silence")
+TEST_CASE("live peaks of a mono input and of a missing one", "[core][publish]")
+{
+    // A mono input feeds both ring channels: its strip is, bucket for bucket, the strip of a
+    // stereo call with the same samples on both channels. From frame 60000 on the input is
+    // missing (a null pointer) while the buffer behind it holds a loud signal: those buckets
+    // read 0, so the strip is of what the engine was handed.
+    constexpr size_t kFrames = 72000;
+    constexpr size_t kMissingFrom = 60000;
+    Channels x = noiseInput(kFrames, 0.5f, 19);
+    std::fill_n(x.left.begin() + 48000, 64, 0.8f);
+    std::fill(x.left.begin() + kMissingFrom, x.left.end(), 0.9f); // never handed in
+    Processor mono({kRate, 512, 3, Mode::Fx});
+    Processor stereo({kRate, 512, 3, Mode::Fx});
+    float o[2][500];
+    float *out[2] = {o[0], o[1]};
+    for (size_t i = 0; i < kFrames; i += 500)
     {
-        Processor mono({kRate, 512, 3, Mode::Fx});
-        mono.setPublishing(true);
-        float o[500];
-        float *out[1] = {o};
-        for (size_t i = 0; i < kFrames; i += 500)
-        {
-            const float *in[1] = {input.left.data() + i};
-            mono.process(i < 60000 ? in : nullptr, 1, out, 1, 500, {});
-        }
-        CHECK(mono.livePeaks().at(48000) == 0.8f);
-        CHECK(mono.livePeaks().at(47999) == 0.0f);
+        const bool present = i < kMissingFrom;
+        const float *in1[1] = {x.left.data() + i};
+        const float *in2[2] = {x.left.data() + i, x.left.data() + i};
+        mono.process(present ? in1 : nullptr, 1, out, 1, 500, {});
+        stereo.process(present ? in2 : nullptr, 2, out, 2, 500, {});
+    }
+    constexpr int64_t kB = LivePeaks::kBucket;
+    for (int64_t f = 0; f < static_cast<int64_t>(kFrames); f += kB)
+    {
+        INFO("frame " << f);
+        REQUIRE(mono.livePeaks().at(f) == stereo.livePeaks().at(f));
+    }
+    CHECK(mono.livePeaks().at(48000) == 0.8f);
+    CHECK(mono.livePeaks().at(30000) > 0.25f); // the noise is there
+    const int64_t firstMissing = (static_cast<int64_t>(kMissingFrom) + kB - 1) / kB * kB;
+    for (int64_t f = firstMissing; f < static_cast<int64_t>(kFrames); f += kB)
+    {
+        INFO("frame " << f);
+        REQUIRE(mono.livePeaks().at(f) == 0.0f);
+    }
+}
+
+TEST_CASE("live peaks follow the ring when publishing turns on late", "[core][publish]")
+{
+    // Ruling PU-T9b: the strip follows the ring itself, publishing or not, so an editor that
+    // opens late reads the ring's recent audio, not an older pass's peaks. reset() silences it
+    // with the ring.
+    constexpr size_t kFrames = 49000;
+    Channels input{std::vector<float>(kFrames, 0.0f), std::vector<float>(kFrames, 0.0f)};
+    std::fill_n(input.left.begin() + 24000, 64, 0.8f);
+    Processor p({kRate, 512, 3, Mode::Fx});
+    run(p, input, 0, 48000, 512); // publishing off: the burst goes by unseen
+    p.setPublishing(true);
+    run(p, input, 48000, kFrames, 500);
+    CHECK(p.livePeaks().at(24000) == 0.8f);
+    CHECK(p.livePeaks().at(23999) == 0.0f);
+    CHECK(p.livePeaks().at(24064) == 0.0f);
+
+    p.reset();
+    for (int64_t f = 0; f < p.livePeaks().frames(); f += LivePeaks::kBucket)
+    {
+        REQUIRE(p.livePeaks().at(f) == 0.0f);
+    }
+    run(p, input, 0, 24064, 512); // ring time from 0 again
+    CHECK(p.livePeaks().at(24000) == 0.8f);
+}
+
+TEST_CASE("live peaks during the freeze ramp", "[core][publish]")
+{
+    // Freeze engaged at C: the head keeps writing for the L-sample ramp, then stops. The frames
+    // written during the ramp carry their peaks (the input's, before the write gain): a 0.8 burst
+    // early in it and a 0.7 one in its last 32 frames. Once the head stops nothing is written,
+    // so a 0.6 burst while frozen shows nowhere, and the frames at and after the head read what
+    // was last written there: in a fresh ring, nothing.
+    constexpr int64_t kC = 24000;
+    const int64_t kL = gg::LiveSource::freezeRampSamples(kRate);
+    REQUIRE(kL > 256);
+    constexpr size_t kFrames = 48000;
+    Channels input{std::vector<float>(kFrames, 0.0f), std::vector<float>(kFrames, 0.0f)};
+    std::fill_n(input.left.begin() + kC + 128, 64, 0.8f);
+    std::fill_n(input.left.begin() + kC + kL - 32, 32, 0.7f);
+    std::fill_n(input.left.begin() + kC + kL + 512, 64, 0.6f);
+    Processor p({kRate, 512, 3, Mode::Fx});
+    p.setPublishing(true);
+    run(p, input, 0, kC, 512); // live; Freeze seen off, so armed
+    p.setBase(ParamSlot::Freeze, 1.0f);
+    run(p, input, kC, kFrames, 512);
+
+    const int64_t head = p.engine().liveWriteHead();
+    REQUIRE(head == kC + kL);
+    CHECK(p.livePeaks().at(kC + 128) == 0.8f);
+    CHECK(p.livePeaks().at(kC + 191) == 0.8f);
+    CHECK(p.livePeaks().at(head - 1) == 0.7f);
+    CHECK(p.livePeaks().at(head - 32) == 0.7f);
+    constexpr int64_t kB = LivePeaks::kBucket;
+    for (int64_t f = (head + kB - 1) / kB * kB; f < static_cast<int64_t>(kFrames); f += kB)
+    {
+        INFO("frame " << f);
+        REQUIRE(p.livePeaks().at(f) == 0.0f);
     }
 }
 
