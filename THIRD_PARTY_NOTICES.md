@@ -56,12 +56,16 @@ keeps its own copyright line.
 | sst-jucegui (controls and theme) | Copyright 2019-2021, Authors as indicated in the Git Transaction Log | `libs/sst/sst-jucegui/LICENSE.md` | Both products (the editor) |
 | md4c 0.5.2 (vendored in sst-jucegui) | Copyright © 2016-2024 Martin Mitáš | `libs/sst/sst-jucegui/src/sst/jucegui/markdown/md4c/LICENSE.md` | Both products (the editor) |
 | CMakeRC 2.0.0 (vendored in sst-jucegui as `cmake/CmakeRC.cmake`; its generated resource code is compiled into the editor) | Copyright (c) 2017 vector-of-bool <vectorofbool@gmail.com> | Not in the checkout: upstream's `LICENSE.txt`, https://github.com/vector-of-bool/cmrc (the MIT text below) | Both products (the editor) |
+| flowbite-icons (some of sst-jucegui's `res/glyphs`, `folder.svg` and `file-music.svg` among them, per its `README.md`; embedded in the editor by `sst-jucegui-resources`) | Copyright (c) 2024 Themesberg | Not in the checkout: upstream's `LICENSE`, https://github.com/themesberg/flowbite-icons (the MIT text below) | Both products (the editor) |
 | sst-cpputils | Copyright 2019-2021, Authors as indicated in the Git Transaction Log | `libs/sst/sst-cpputils/LICENSE.md` | Both products |
 | sst-plugininfra (patch state; all but tinyxml) | Copyright 2019-2020, Paul Walker | `libs/sst/sst-plugininfra/LICENSE_MIT.md` | Both products |
 | simde | Copyright (c) 2017 Evan Nemerson | `libs/simde/COPYING` | Both products (SSE intrinsics on ARM) |
 | r8brain-free-src 7.6 | Copyright (c) 2013-2026 Aleksey Vaneev | `libs/r8brain/LICENSE` | Both products (sample-rate conversion; header-only) |
 | utf8proc 2.12.0 | See its own section below | `libs/utf8proc/LICENSE.md` | Both products (`gg-media`'s search for a missing sample) |
 | wil (v1.0.240803.1, fetched by clap-wrapper) | Copyright (c) Microsoft Corporation. All rights reserved. | `LICENSE` in the wil checkout | Windows standalone |
+
+The same resource library (`sst-jucegui-resources`) also embeds `surge-logo.svg` and
+`shortcircuit-logo.svg`, other projects' marks; neither product ever displays them.
 
 ### The MIT license
 

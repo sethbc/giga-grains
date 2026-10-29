@@ -365,17 +365,29 @@ if (GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
     # Outside a unity build clap_juce_shim_requirements links JUCE's modules, whose sources
     # would then compile into sst-jucegui and, through its PUBLIC link, into every target that
     # links it (gg-ui, under our -Werror): JUCE three times over. So its requirements are
-    # re-pointed at gg-juce-headers, the same headers and definitions without the sources, and
-    # JUCE stays compiled once, in clap_juce_shim, which gg-ui and the plugin link. Its examples
-    # stay off; FORCE, so a cache from another configuration can't turn them back on.
+    # re-pointed (ruling R-T7a):
+    # - at gg-juce-headers, the same headers and definitions without the sources;
+    # - and at clap_juce_shim, link-only. JUCE's object code is only in that static library,
+    #   which links its requirements PRIVATE; without this edge nothing would order it after
+    #   sst-jucegui on a link line, and GNU ld would leave sst-jucegui's JUCE symbols undefined.
+    # JUCE stays compiled once, in clap_juce_shim. The wiring replaced is checked first, so a
+    # pin bump that changes it fails here rather than linking JUCE twice or not at all. Its
+    # examples stay off; FORCE, so a cache from another configuration can't turn them back on.
     set(SST_JUCEGUI_BUILD_EXAMPLES OFF CACHE BOOL "Don't build sst-jucegui's examples" FORCE)
     add_subdirectory(sst/sst-jucegui EXCLUDE_FROM_ALL)
     get_target_property(gg_jucegui_requirements_type sst-jucegui-juce-requirements TYPE)
-    if (NOT gg_jucegui_requirements_type STREQUAL "INTERFACE_LIBRARY")
-        message(FATAL_ERROR "sst-jucegui-juce-requirements is a ${gg_jucegui_requirements_type}, not an INTERFACE library: it would compile JUCE again")
+    get_target_property(gg_jucegui_requirements_links sst-jucegui-juce-requirements
+            INTERFACE_LINK_LIBRARIES)
+    get_target_property(gg_jucegui_links sst-jucegui INTERFACE_LINK_LIBRARIES)
+    if (NOT gg_jucegui_requirements_type STREQUAL "INTERFACE_LIBRARY"
+            OR NOT gg_jucegui_requirements_links STREQUAL "clap_juce_shim_requirements")
+        message(FATAL_ERROR "sst-jucegui-juce-requirements is a ${gg_jucegui_requirements_type} linking '${gg_jucegui_requirements_links}', not an INTERFACE library over clap_juce_shim_requirements: review its re-pointing in libs/CMakeLists.txt (ruling R-T7a)")
+    endif ()
+    if (NOT gg_jucegui_links STREQUAL "sst-jucegui-juce-requirements;sst-jucegui-resources")
+        message(FATAL_ERROR "sst-jucegui links '${gg_jucegui_links}', not exactly sst-jucegui-juce-requirements and sst-jucegui-resources: review its re-pointing in libs/CMakeLists.txt (ruling R-T7a)")
     endif ()
     set_property(TARGET sst-jucegui-juce-requirements PROPERTY INTERFACE_LINK_LIBRARIES
-            gg-juce-headers)
+            gg-juce-headers $<LINK_ONLY:clap_juce_shim>)
     gg_mark_system_includes(sst-jucegui sst-jucegui-resources sst-jucegui-juce-requirements
             cmrc-base)
 endif ()
