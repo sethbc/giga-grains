@@ -106,6 +106,7 @@ TEST_CASE("grain end bounds the window", "[pool]")
     // window is zero, for any onset fraction in [0, 1). The window is evaluated as the renderers
     // do, at e × (1 / duration): it is zero there, and at e == duration exactly, so no sample a
     // renderer skips for the grain's end could have sounded (the SIMD kernels' runs rely on it).
+    // The same holds through the Texture warp at its steepest release, Texture 1's gated anchor.
     const gg::HannTable hann;
     for (const double frac : {0.0, 0.25, 0.999999})
     {
@@ -124,13 +125,16 @@ TEST_CASE("grain end bounds the window", "[pool]")
             REQUIRE(elapsed >= dur);
             REQUIRE(end - g.onsetSample <= static_cast<int64_t>(dur) + 2);
             const double invDuration = 1.0 / dur;
+            const gg::EnvelopeShape gated = gg::envelopeShape(1.0, dur);
             for (int64_t t = end; t < end + 4; ++t)
             {
                 const double e = static_cast<double>(t - g.onsetSample) - g.onsetFrac;
                 REQUIRE(e >= dur);
                 REQUIRE(hann.at(e * invDuration) == 0.0f);
+                REQUIRE(hann.at(gg::warpPhase(e * invDuration, gated)) == 0.0f);
             }
             REQUIRE(hann.at(dur * invDuration) == 0.0f);
+            REQUIRE(hann.at(gg::warpPhase(dur * invDuration, gated)) == 0.0f);
         }
     }
 }

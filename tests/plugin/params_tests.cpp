@@ -879,7 +879,8 @@ TEST_CASE("a loaded state's seed reaches the audio thread without a restart", "[
     // Three instances with the same history (seed 1, one block: of noise in the FX, of a held
     // note over a sine sample in the instrument) each load their own state while active, with
     // seed 7, 7 and 8, then render 2 s more. The two at seed 7 render the same bits, and the one
-    // at 8 differs: the loaded seed reached the engine, with no restart (carry-over row 115).
+    // at 8 differs, from the first block after the load: the loaded seed reached the engine at
+    // once, with no restart (carry-over row 115).
     const char *id = GENERATE(kFxId, kInstrumentId);
     CAPTURE(id);
     const bool isFx = std::string_view(id) == kFxId;
@@ -902,6 +903,9 @@ TEST_CASE("a loaded state's seed reaches the audio thread without a restart", "[
         {
             REQUIRE(plugin.loadSampleState(sample));
         }
+        // 256 Hz, a grain every 188 samples, so grains spawn inside the first block after the
+        // load and the new seed shows there.
+        flushValues(plugin, {{ParamSlot::Density, 8.0}});
         REQUIRE(plugin.activate(48000.0, kBlock));
         const auto on = gg::test::noteEvent(CLAP_EVENT_NOTE_ON, 0, 60, 0);
         InputEvents events;
@@ -946,6 +950,11 @@ TEST_CASE("a loaded state's seed reaches the audio thread without a restart", "[
     CHECK(sameBits(outA.left, outB.left));
     CHECK(sameBits(outA.right, outB.right));
     CHECK_FALSE(sameBits(outA.left, outC.left));
+    // The new seed acts from the first block after the load, not a block later.
+    const auto firstBlock = [](const std::vector<float> &v) {
+        return std::vector<float>(v.begin(), v.begin() + kBlock);
+    };
+    CHECK_FALSE(sameBits(firstBlock(outA.left), firstBlock(outC.left)));
 }
 
 TEST_CASE("the value mirror is rescanned after the audio thread applies a state", "[plugin]")

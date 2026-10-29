@@ -732,7 +732,10 @@ void requireSame(const Render &a, const Render &b)
 TEST_CASE("instrument notes are block-size invariant", "[core][determinism]")
 {
     // The chord and releases, a note inside one group that straddles a call's end at kB, a
-    // second onset after the set empties, and Density and Pitch automation.
+    // second onset after the set empties, Density and Pitch automation, and Texture and all
+    // eight macros (the instrument's: Macro Stereo and Macro Level as 7 and 8) automated off the
+    // grid, values and modulation. Macro Size stays at or below rest and Macro Texture below
+    // its top quarter (no Diffusion) around the release at 41000, so the silence after it holds.
     constexpr int64_t kB = 32 * 700;
     using T = NoteEventType;
     const std::vector<TimedNote> notes{{1000 + 5, T::On, 0, 60},
@@ -748,11 +751,18 @@ TEST_CASE("instrument notes are block-size invariant", "[core][determinism]")
                                        {60000 + 20, T::AllOff, -1, 0},
                                        {65000, T::On, 0, 48},
                                        {70000 + 3, T::Off, -1, -1}};
-    const std::vector<TimedParam> params{{20000 + 3, ParamSlot::Density, false, 6.0},
-                                         {kB, ParamSlot::Pitch, false, -5.0},
-                                         {30000 + 17, ParamSlot::Pitch, false, 3.0},
-                                         {45000, ParamSlot::Pitch, true, 2.0},
-                                         {55000 + 30, ParamSlot::Density, false, 3.0}};
+    const std::vector<TimedParam> params{
+        {5000 + 7, ParamSlot::Texture, false, 0.6},    {9000 + 13, ParamSlot::Macro1, false, 0.3},
+        {12000 + 1, ParamSlot::Macro4, false, 0.8},    {15000 + 19, ParamSlot::Macro5, false, 0.6},
+        {18000 + 5, ParamSlot::Macro3, false, 0.7},    {20000 + 3, ParamSlot::Density, false, 6.0},
+        {21000 + 11, ParamSlot::Texture, true, -0.3},  {kB, ParamSlot::Pitch, false, -5.0},
+        {kB, ParamSlot::Macro2, false, 0.6},           {26000 + 3, ParamSlot::Macro7, false, 0.9},
+        {28000 + 29, ParamSlot::Macro8, false, 0.25},  {30000 + 17, ParamSlot::Pitch, false, 3.0},
+        {33000 + 9, ParamSlot::Macro6, false, 1.0},    {36000 + 2, ParamSlot::Macro1, true, -0.1},
+        {38000 + 17, ParamSlot::Macro6, false, 0.0},   {45000, ParamSlot::Pitch, true, 2.0},
+        {47000 + 21, ParamSlot::Texture, false, 0.95}, {52000 + 6, ParamSlot::Macro8, true, 0.2},
+        {55000 + 30, ParamSlot::Density, false, 3.0},  {58000 + 15, ParamSlot::Macro2, false, 0.4},
+        {62000 + 30, ParamSlot::Macro5, false, 0.2},   {67000 + 1, ParamSlot::Macro3, true, -0.25}};
 
     const auto run = [&](const Split &split, Render &r) {
         auto p = instrument(42, split.maxBlock);
@@ -767,6 +777,11 @@ TEST_CASE("instrument notes are block-size invariant", "[core][determinism]")
     REQUIRE(allFinite(ref.audio.right));
     REQUIRE(ref.log.grains.size() > 30);
     REQUIRE(peakIn(ref.audio.left, 1024, 40000) > 0.01f);
+    // Texture reached the grains: some latched it, some didn't.
+    REQUIRE(std::any_of(ref.log.grains.begin(), ref.log.grains.end(),
+                        [](const gg::GrainSpec &g) { return g.texture == 0.0; }));
+    REQUIRE(std::any_of(ref.log.grains.begin(), ref.log.grains.end(),
+                        [](const gg::GrainSpec &g) { return g.texture == 1.0; }));
     // Silent before the first note, and between the release at 41000 and the next note's tail.
     REQUIRE(peakIn(ref.audio.left, 0, 1024) == 0.0f);
     REQUIRE(peakIn(ref.audio.left, 41024 + 3000 + 2, 50016) == 0.0f);

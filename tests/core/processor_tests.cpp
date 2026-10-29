@@ -14,7 +14,9 @@
 #include <cstdint>
 #include <cstring>
 #include <functional>
+#include <iterator>
 #include <limits>
+#include <memory>
 #include <numbers>
 #include <span>
 #include <tuple>
@@ -435,7 +437,31 @@ struct AutomationRender
     Stereo audio;
     GrainLog log;
     int64_t writeHead{0};
+    // The live ring's frames 0 .. writeHead − 1 at the end, as stored; empty if some have left
+    // its window (a render longer than the ring).
+    Stereo ring;
 };
+
+// The ring's frames 0 .. head − 1, read from its storage as stored (the sign of zero included),
+// or nothing once frame 0 has left the window.
+Stereo ringFrames(const gg::LiveSource &live, int64_t head)
+{
+    const gg::LiveSource::RingView v = live.view();
+    if (head > v.frames)
+    {
+        return {};
+    }
+    Stereo s{std::vector<float>(static_cast<std::size_t>(head)),
+             std::vector<float>(static_cast<std::size_t>(head))};
+    for (int64_t f = 0; f < head; ++f)
+    {
+        const auto slot = static_cast<std::size_t>(f % v.capacity);
+        const auto j = static_cast<std::size_t>(f);
+        s.left[j] = v.slots[2 * slot];
+        s.right[j] = v.slots[2 * slot + 1];
+    }
+    return s;
+}
 
 // Renders the whole input through a fresh FX processor in process() calls of blockSizes in turn
 // (cycling), each call given the events that fall inside it. A 0-frame call at sample `done`
@@ -477,6 +503,7 @@ void renderAutomation(const Stereo &input, const std::vector<TimedEvent> &events
         done += n;
     }
     r.writeHead = p.engine().liveWriteHead();
+    r.ring = ringFrames(p.engine().live(), r.writeHead);
 }
 } // namespace
 
@@ -530,6 +557,132 @@ TEST_CASE("processor is block-size invariant with automation", "[core][determini
         REQUIRE(r.writeHead == ref.writeHead);
         REQUIRE(sameBits(ref.audio.left, r.audio.left));
         REQUIRE(sameBits(ref.audio.right, r.audio.right));
+    }
+}
+
+namespace
+{
+// automation(), with Texture, Feedback and the eight macros automated more densely on top of it
+// (spec §9): 30 more events each, none on a grid point, every third a modulation offset of up
+// to a quarter of the range, Feedback up to 0.9 (Macro Feedback can add 0.9 more, to the 0.95
+// clamp). Times and values come from gg::rng, keyed apart from automation()'s.
+std::vector<TimedEvent> performAutomation()
+{
+    struct Perform
+    {
+        ParamSlot slot;
+        float lo, hi;
+    };
+    const std::array<Perform, 10> perform{{{ParamSlot::Texture, 0.0f, 1.0f},
+                                           {ParamSlot::Feedback, 0.0f, 0.9f},
+                                           {ParamSlot::Macro1, 0.25f, 0.75f},
+                                           {ParamSlot::Macro2, 0.3f, 0.6f},
+                                           {ParamSlot::Macro3, 0.0f, 1.0f},
+                                           {ParamSlot::Macro4, 0.0f, 1.0f},
+                                           {ParamSlot::Macro5, 0.0f, 1.0f},
+                                           {ParamSlot::Macro6, 0.0f, 1.0f},
+                                           {ParamSlot::Macro7, 0.0f, 1.0f},
+                                           {ParamSlot::Macro8, 0.0f, 1.0f}}};
+    std::vector<TimedEvent> events = automation();
+    for (std::size_t m = 0; m < perform.size(); ++m)
+    {
+        const Perform &r = perform[m];
+        for (int k = 0; k < 30; ++k)
+        {
+            const uint64_t key = 500000 + m * 1000 + static_cast<uint64_t>(k) * 4;
+            auto time = static_cast<int64_t>(uniform(78, key) * kAutomationFrames);
+            if (time % 32 == 0)
+            {
+                time += 1 + k % 31; // off the grid
+            }
+            time = std::min(time, kAutomationFrames - 1); // 143999, off the grid too
+            const double u = uniform(78, key + 1);
+            const bool isModulation = k % 3 == 2;
+            double value = 0.0;
+            if (isModulation)
+            {
+                value = (2.0 * u - 1.0) * (r.hi - r.lo) / 4.0;
+            }
+            else if (r.slot == ParamSlot::Macro6)
+            {
+                value = u < 0.5 ? 0.0 : 1.0;
+            }
+            else
+            {
+                value = r.lo + (r.hi - r.lo) * u;
+            }
+            events.push_back({time, r.slot, isModulation, value});
+        }
+    }
+    std::stable_sort(events.begin(), events.end(),
+                     [](const TimedEvent &a, const TimedEvent &b) { return a.time < b.time; });
+    return events;
+}
+} // namespace
+
+TEST_CASE("the perform parameters are block-size invariant together", "[core][determinism]")
+{
+    // Every slot automated (automation()), Texture, Feedback and the macros densely, with
+    // modulation: the macro curves, Texture's latched envelope and Feedback's ring write all
+    // render the same bits, grains, head and ring at any host block size and maxBlockSize.
+    const Stereo input = noise(kAutomationFrames, 0.5f, 31);
+    const auto events = performAutomation();
+    REQUIRE(events.size() == 40 * kParamCount + 300);
+
+    AutomationRender ref;
+    renderAutomation(input, events, 4096, {4096}, ref);
+    REQUIRE(allFinite(ref.audio.left));
+    REQUIRE(allFinite(ref.audio.right));
+    REQUIRE(peak(ref.audio.left) > 0.05f);
+    REQUIRE_FALSE(ref.log.overflowed);
+    // Not vacuous: grains latched many Textures, Freeze stopped the head for a while, and Feedback
+    // wrote into the ring (without its events, and Macro Feedback's, the ring differs).
+    std::vector<double> textures;
+    for (const gg::GrainSpec &g : ref.log.grains)
+    {
+        textures.push_back(g.texture);
+    }
+    std::sort(textures.begin(), textures.end());
+    textures.erase(std::unique(textures.begin(), textures.end()), textures.end());
+    REQUIRE(textures.size() > 10);
+    REQUIRE(ref.writeHead < kAutomationFrames - 4800);
+    REQUIRE(ref.ring.left.size() == static_cast<std::size_t>(ref.writeHead));
+    std::vector<TimedEvent> withoutFeedback;
+    std::copy_if(events.begin(), events.end(), std::back_inserter(withoutFeedback),
+                 [](const TimedEvent &e) {
+                     return e.slot != ParamSlot::Feedback && e.slot != ParamSlot::Macro7;
+                 });
+    AutomationRender dry;
+    renderAutomation(input, withoutFeedback, 4096, {4096}, dry);
+    REQUIRE(dry.writeHead == ref.writeHead);
+    REQUIRE_FALSE(sameBits(dry.ring.left, ref.ring.left));
+
+    struct Split
+    {
+        uint32_t maxBlock;
+        std::vector<uint32_t> blockSizes;
+    };
+    std::vector<Split> splits{{4096, {1}},    {4096, {7}},  {4096, {64}}, {4096, {511}},
+                              {4096, {4096}}, {64, {4096}}, {1, {4096}},  {256, {4096}}};
+    for (const uint64_t seed : {299, 300, 301})
+    {
+        auto random = randomSplit(seed);
+        REQUIRE(std::count(random.begin(), random.end(), 0u) > 0); // 0-frame calls
+        splits.push_back({4096, std::move(random)});
+    }
+    for (const Split &split : splits)
+    {
+        INFO("maxBlockSize = " << split.maxBlock << ", first block size = "
+                               << split.blockSizes.front() << " of " << split.blockSizes.size());
+        AutomationRender r;
+        renderAutomation(input, events, split.maxBlock, split.blockSizes, r);
+        REQUIRE_FALSE(r.log.overflowed);
+        REQUIRE(r.log.grains == ref.log.grains);
+        REQUIRE(r.writeHead == ref.writeHead);
+        REQUIRE(sameBits(ref.audio.left, r.audio.left));
+        REQUIRE(sameBits(ref.audio.right, r.audio.right));
+        REQUIRE(sameBits(ref.ring.left, r.ring.left));
+        REQUIRE(sameBits(ref.ring.right, r.ring.right));
     }
 }
 
@@ -1354,19 +1507,96 @@ TEST_CASE("macro offsets add to base and modulation before one clamp", "[core]")
     }
 }
 
+namespace
+{
+// Every macro at its rest value (spec §3.1: 0.5 for a bipolar macro, 0 for a unipolar one; the
+// instrument's Macro Stereo is bipolar, FX's Macro Feedback unipolar), each event at its own
+// sample after 0.5 s, off the grid.
+std::vector<TimedEvent> macrosAtRest(Mode mode)
+{
+    std::vector<TimedEvent> events;
+    int64_t time = 24000 + 3;
+    for (const ParamSlot slot : gg::core::kMacroSlots)
+    {
+        const bool unipolar = slot == ParamSlot::Macro5 || slot == ParamSlot::Macro6 ||
+                              (slot == ParamSlot::Macro7 && mode == Mode::Fx);
+        const double rest = unipolar ? 0.0 : 0.5;
+        REQUIRE(gg::core::paramMeta(slot, mode).defaultVal == static_cast<float>(rest));
+        events.push_back({time, slot, false, rest});
+        time += 37;
+    }
+    return events;
+}
+
+// An instrument over 2 s of a mono noise sample, one note held from sample 0, rendered in
+// calls of up to 512 frames, with `events` at their absolute samples.
+AutomationRender renderInstrument(const std::vector<TimedEvent> &events)
+{
+    constexpr int64_t kFrames = 2 * 48000;
+    const Stereo sample = noise(kFrames, 0.5f, 29);
+    auto buffer = std::make_shared<gg::SampleBuffer>(1, kFrames, kSampleRate);
+    std::copy(sample.left.begin(), sample.left.end(), buffer->channel(0));
+    Processor p({kSampleRate, 512, 42, Mode::Instrument});
+    p.setSourceNow(gg::PreparedSource::make(std::move(buffer)));
+    AutomationRender r;
+    p.setEventSink(&GrainLog::record, &r.log);
+    r.audio.left.assign(static_cast<std::size_t>(kFrames), kNaN);
+    r.audio.right.assign(static_cast<std::size_t>(kFrames), kNaN);
+    const gg::core::NoteEvent on{0, gg::core::NoteEventType::On, 0, 60};
+    std::vector<ParamEvent> blockEvents;
+    std::size_t next = 0;
+    for (int64_t done = 0; done < kFrames;)
+    {
+        const auto n = static_cast<uint32_t>(std::min<int64_t>(512, kFrames - done));
+        blockEvents.clear();
+        for (; next < events.size() && events[next].time < done + n; ++next)
+        {
+            const TimedEvent &e = events[next];
+            blockEvents.push_back(
+                {static_cast<uint32_t>(e.time - done), e.slot, e.isModulation, e.value});
+        }
+        const auto j = static_cast<std::size_t>(done);
+        float *out[2] = {r.audio.left.data() + j, r.audio.right.data() + j};
+        p.process(nullptr, 0, out, 2, n, blockEvents,
+                  done == 0 ? std::span(&on, 1) : std::span<const gg::core::NoteEvent>{});
+        done += n;
+    }
+    return r;
+}
+} // namespace
+
 TEST_CASE("a resting preset renders bit-identically with the macros present", "[core]")
 {
-    // Spec §3.1: Macro 1 set to its rest value, 0.5, by an event at 0.5 s changes nothing.
-    const Stereo input = noise(2 * 48000, 0.5f, 23);
-    AutomationRender plain;
-    renderAutomation(input, {}, 512, {512}, plain);
-    AutomationRender rested;
-    renderAutomation(input, {{24000, ParamSlot::Macro1, false, 0.5}}, 512, {512}, rested);
-    REQUIRE(peak(plain.audio.left) > 0.05f);
-    REQUIRE(plain.log.grains.size() > 10);
-    REQUIRE(rested.log.grains == plain.log.grains);
-    REQUIRE(sameBits(rested.audio.left, plain.audio.left));
-    REQUIRE(sameBits(rested.audio.right, plain.audio.right));
+    // Spec §3.1: every macro set to its rest value by an event after 0.5 s changes nothing, in
+    // either product.
+    SECTION("FX")
+    {
+        const Stereo input = noise(2 * 48000, 0.5f, 23);
+        AutomationRender plain;
+        renderAutomation(input, {}, 512, {512}, plain);
+        AutomationRender rested;
+        renderAutomation(input, macrosAtRest(Mode::Fx), 512, {512}, rested);
+        REQUIRE(peak(plain.audio.left) > 0.05f);
+        REQUIRE(plain.log.grains.size() > 10);
+        REQUIRE(plain.ring.left.size() == input.left.size());
+        REQUIRE(rested.log.grains == plain.log.grains);
+        REQUIRE(sameBits(rested.audio.left, plain.audio.left));
+        REQUIRE(sameBits(rested.audio.right, plain.audio.right));
+        REQUIRE(sameBits(rested.ring.left, plain.ring.left));
+        REQUIRE(sameBits(rested.ring.right, plain.ring.right));
+    }
+
+    SECTION("instrument")
+    {
+        const AutomationRender plain = renderInstrument({});
+        const AutomationRender rested = renderInstrument(macrosAtRest(Mode::Instrument));
+        REQUIRE(allFinite(plain.audio.left));
+        REQUIRE(peak(plain.audio.left) > 0.05f);
+        REQUIRE(plain.log.grains.size() > 10);
+        REQUIRE(rested.log.grains == plain.log.grains);
+        REQUIRE(sameBits(rested.audio.left, plain.audio.left));
+        REQUIRE(sameBits(rested.audio.right, plain.audio.right));
+    }
 }
 
 TEST_CASE("macro events apply on the grid", "[core]")
@@ -1583,15 +1813,34 @@ TEST_CASE("feedback writes the limited wet signal 256 samples late into the ring
 
 namespace
 {
-// 2.5 s of Feedback automation (spec §5; Review Focus 3): 0 → 0.9 at 0.3 s, → 0.2 at 1.1 s, and
-// a modulation of +0.3 at 1.7 s.
+// 2.5 s of Feedback automation (spec §5; Review Focus 3): 0 → 0.9 at 0.3 s, → 0.2 at 1.1 s, a
+// modulation of +0.3 at 1.7 s, and back to 0 (base and modulation) just after 2.2 s, at the
+// boundary kFeedbackOff: the 10 ms ramp down reaches exactly 0 at kFeedbackZero.
 constexpr int64_t kFeedbackFrames = 48000 * 5 / 2;
+constexpr int64_t kFeedbackOff = 105632;              // the boundary of the events at 105605
+constexpr int64_t kFeedbackZero = kFeedbackOff + 480; // the first sample with fb(t) == 0
+// The input is -0.0 over [kNegativeZeroFrom, kNegativeZeroTo): through the end of the ramp and
+// past it, so the ring keeps the sign of zero only if a sample whose fb(t) is 0 writes the input
+// alone, inside a piece that started on the ramp as much as in one that started after it.
+constexpr int64_t kNegativeZeroFrom = kFeedbackZero - 200;
+constexpr int64_t kNegativeZeroTo = kFeedbackZero + 300;
 
 std::vector<TimedEvent> feedbackAutomation()
 {
     return {{14400, ParamSlot::Feedback, false, 0.9},
             {52800, ParamSlot::Feedback, false, 0.2},
-            {81600, ParamSlot::Feedback, true, 0.3}};
+            {81600, ParamSlot::Feedback, true, 0.3},
+            {105605, ParamSlot::Feedback, false, 0.0},
+            {105605, ParamSlot::Feedback, true, 0.0}};
+}
+
+Stereo feedbackInput()
+{
+    Stereo input = noise(kFeedbackFrames, 0.5f, 43);
+    std::fill(input.left.begin() + kNegativeZeroFrom, input.left.begin() + kNegativeZeroTo, -0.0f);
+    std::fill(input.right.begin() + kNegativeZeroFrom, input.right.begin() + kNegativeZeroTo,
+              -0.0f);
+    return input;
 }
 
 void feedbackSetup(Processor &p)
@@ -1604,8 +1853,9 @@ void feedbackSetup(Processor &p)
 TEST_CASE("feedback is block-size invariant", "[core][determinism]")
 {
     // The history is indexed by absolute time and the FX's pieces are at most 256 samples, so a
-    // 1-sample maxBlockSize, 0-frame calls and any split render what one 4096 call does.
-    const Stereo input = noise(kFeedbackFrames, 0.5f, 43);
+    // 1-sample maxBlockSize, 0-frame calls and any split render what one 4096 call does, and
+    // write the same ring, bit for bit.
+    const Stereo input = feedbackInput();
     const auto events = feedbackAutomation();
 
     AutomationRender ref;
@@ -1619,6 +1869,30 @@ TEST_CASE("feedback is block-size invariant", "[core][determinism]")
     renderAutomation(input, {}, 4096, {4096}, none, feedbackSetup);
     REQUIRE(none.log.grains == ref.log.grains); // feedback changes the ring, not the schedule
     REQUIRE_FALSE(sameBits(none.audio.left, ref.audio.left));
+    // The ramp down to 0 still feeds back: the ring differs from the input on it.
+    REQUIRE(ref.writeHead == kFeedbackFrames);
+    REQUIRE(ref.ring.left.size() == static_cast<std::size_t>(kFeedbackFrames));
+    int fedOnRamp = 0;
+    for (int64_t t = kFeedbackOff; t < kFeedbackZero; ++t)
+    {
+        const auto j = static_cast<std::size_t>(t);
+        if (std::bit_cast<uint32_t>(ref.ring.left[j]) != std::bit_cast<uint32_t>(input.left[j]))
+        {
+            ++fedOnRamp;
+        }
+    }
+    REQUIRE(fedOnRamp > 400);
+    // From the ramp's end the ring is the input, bit for bit: the -0.0 samples included.
+    for (int64_t t = kFeedbackZero; t < kFeedbackFrames; ++t)
+    {
+        const auto j = static_cast<std::size_t>(t);
+        INFO("frame " << t);
+        REQUIRE(std::bit_cast<uint32_t>(ref.ring.left[j]) ==
+                std::bit_cast<uint32_t>(input.left[j]));
+        REQUIRE(std::bit_cast<uint32_t>(ref.ring.right[j]) ==
+                std::bit_cast<uint32_t>(input.right[j]));
+    }
+    REQUIRE(std::signbit(ref.ring.left[static_cast<std::size_t>(kFeedbackZero)]));
 
     struct Split
     {
@@ -1644,6 +1918,8 @@ TEST_CASE("feedback is block-size invariant", "[core][determinism]")
         REQUIRE(r.writeHead == ref.writeHead);
         REQUIRE(sameBits(ref.audio.left, r.audio.left));
         REQUIRE(sameBits(ref.audio.right, r.audio.right));
+        REQUIRE(sameBits(ref.ring.left, r.ring.left));
+        REQUIRE(sameBits(ref.ring.right, r.ring.right));
     }
 }
 
