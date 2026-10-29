@@ -3,8 +3,8 @@
 # Copyright 2026, the Giga Grains authors (see git history)
 #
 # The version (spec §6.1). The numeric part is project()'s VERSION; GG_VERSION_PRERELEASE holds
-# the pre-release suffix: dev on main, beta.N for a beta, empty for a release, dev.<yyyymmdd>.<sha7>
-# for a nightly. Nothing is derived from git at configure time.
+# the pre-release suffix: dev on main, beta.N for a beta, empty for a release,
+# dev.<yyyymmdd>.g<sha7> for a nightly. Nothing is derived from git at configure time.
 #
 #   gg_compose_version(<numeric> <prerelease> <out>)
 #

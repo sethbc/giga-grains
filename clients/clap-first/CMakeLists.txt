@@ -106,6 +106,10 @@ if (APPLE)
             set(sign_options --options runtime --timestamp)
             if (format MATCHES "^standalone")
                 list(APPEND sign_options --entitlements "${gg_entitlements}")
+                # The signature seals the entitlements, so an edit to the file relinks the app,
+                # which re-signs it.
+                set_property(TARGET gg_clapfirst_${format} APPEND PROPERTY
+                        LINK_DEPENDS "${gg_entitlements}")
             endif ()
         endif ()
         add_custom_command(TARGET gg_clapfirst_${format} POST_BUILD

@@ -25,7 +25,7 @@ endif ()
 project(GigaGrains VERSION 0.2.0 LANGUAGES C CXX)
 # The version (spec §6.1): project()'s VERSION is the numeric part, and GG_VERSION_PRERELEASE the
 # pre-release suffix. A build from main reports 0.2.0-dev; a release commit sets beta.N, or empty
-# for the milestone release, and the nightly configures with dev.<yyyymmdd>.<sha7>. Bundle
+# for the milestone release, and the nightly configures with dev.<yyyymmdd>.g<sha7>. Bundle
 # metadata takes GG_VERSION_NUMERIC alone; everything else reports GG_VERSION_STRING.
 set(GG_VERSION_PRERELEASE "dev" CACHE STRING "Pre-release suffix: dev on main, beta.N for a beta, empty for a release")
 include(cmake/version.cmake)

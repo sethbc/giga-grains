@@ -114,6 +114,14 @@ add_custom_command(TARGET gg-products POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E make_directory "${GG_LICENSE_DIR}"
         VERBATIM
         )
+# ZIP_LISTS pads the shorter list with empty items, so a name without its file (or a file
+# without its name) would slip through as an empty one: the two lists must pair up exactly.
+list(LENGTH GG_LICENSE_FILES gg_license_file_count)
+list(LENGTH gg_license_names gg_license_name_count)
+if (NOT gg_license_file_count EQUAL gg_license_name_count)
+    message(FATAL_ERROR "gg-products: GG_LICENSE_FILES has ${gg_license_file_count} entries but "
+            "gg_license_names has ${gg_license_name_count}; each license text needs one name")
+endif ()
 foreach (source name IN ZIP_LISTS GG_LICENSE_FILES gg_license_names)
     if (NOT EXISTS "${source}")
         message(FATAL_ERROR "gg-products: the license text '${source}' (${name}) doesn't exist")

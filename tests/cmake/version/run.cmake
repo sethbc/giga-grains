@@ -7,9 +7,10 @@
 #   cmake -DGG_CASE=<case> -DGG_REPO=<root> -P run.cmake
 #
 # dev, release and nightly must compose the expected version string. bad-underscore and
-# bad-empty-identifier must fail, naming GG_VERSION_PRERELEASE: this script runs itself again in
-# a nested cmake -P (GG_NESTED set), which makes the call, and checks that it failed. Nothing is
-# written, so the cases run in parallel.
+# bad-empty-identifier must fail, naming GG_VERSION_PRERELEASE with its own check's reason (a
+# character outside the set, an empty identifier): this script runs itself again in a nested
+# cmake -P (GG_NESTED set), which makes the call, and checks that it failed. Nothing is written,
+# so the cases run in parallel.
 
 cmake_minimum_required(VERSION 3.22)
 
@@ -27,12 +28,14 @@ elseif (GG_CASE STREQUAL "release")
     set(prerelease "")
     set(expected "0.2.0")
 elseif (GG_CASE STREQUAL "nightly")
-    set(prerelease "dev.20261029.95bee95")
-    set(expected "0.2.0-dev.20261029.95bee95")
+    set(prerelease "dev.20261029.g95bee95")
+    set(expected "0.2.0-dev.20261029.g95bee95")
 elseif (GG_CASE STREQUAL "bad-underscore")
     set(prerelease "beta_1")
+    set(reason "may hold only the characters")
 elseif (GG_CASE STREQUAL "bad-empty-identifier")
     set(prerelease "beta..1")
+    set(reason "has an empty identifier")
 else ()
     message(FATAL_ERROR "version test: unknown case '${GG_CASE}'")
 endif ()
@@ -57,9 +60,16 @@ else ()
     if (status EQUAL 0)
         message(FATAL_ERROR "FAIL: the suffix '${prerelease}' was accepted:\n${out}")
     endif ()
-    if (NOT err MATCHES "GG_VERSION_PRERELEASE")
+    # The message may be wrapped across lines; its words are matched with any whitespace.
+    string(REGEX REPLACE "[ \t\r\n]+" " " said "${err}")
+    if (NOT said MATCHES "GG_VERSION_PRERELEASE")
         message(FATAL_ERROR "FAIL: the suffix '${prerelease}' failed, but not naming "
                 "GG_VERSION_PRERELEASE:\n${out}\n${err}")
     endif ()
-    message(STATUS "the suffix '${prerelease}' is refused")
+    string(FIND "${said}" "${reason}" at)
+    if (at EQUAL -1)
+        message(FATAL_ERROR "FAIL: the suffix '${prerelease}' failed, but not saying "
+                "'${reason}':\n${out}\n${err}")
+    endif ()
+    message(STATUS "the suffix '${prerelease}' is refused: ${reason}")
 endif ()
