@@ -1192,7 +1192,7 @@ TEST_CASE("fx handles mono, missing input and new sample rates", "[plugin]")
     }
 }
 
-TEST_CASE("remote controls pages are perform, cloud and space", "[plugin][space]")
+TEST_CASE("remote controls pages are perform, cloud and space", "[plugin]")
 {
     // Three 8-slot pages: "Perform", the eight macros (sub-project 5's spec §3.3); then "Cloud"
     // (spec §4) and "Space" (sub-project 4's spec §6.6), unchanged but for their place. The
