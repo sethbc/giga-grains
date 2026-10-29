@@ -436,7 +436,7 @@ git commit -m "ci: tags, the nightly and an installers dispatch build, sign and 
 - Modify: `CLAUDE.md` ("Outputs" list ~line 196; the "Installing and signing the plugins" section ~line 620; the labels paragraph: add `installer`; a new "Releasing" paragraph after "Installing and signing"), `README.md` (the signing paragraph; a "Downloads" sentence: GitHub Releases, public from 0.5.0's first beta, nothing before M5), `docs/m1-carry-over.md` row 221, `INTENT.md` §19 (only if a name the docs pass wrote differs from what was built: `gg-installer`, the switch, the artifact names), `docs/superpowers/specs/2026-10-29-release-pipeline-design.md` (Status row: built, with corrections)
 
 **Interfaces:**
-- Consumes: everything above. `docs/releasing.md` covers spec §6.7 (the secrets table, the export commands, the API key, rotation, expiry dates) and §6.8 (the per-release checklist, the freeze step before 0.2.0-beta.1, the draft-then-publish step, the unsigned and the signed local builds, the hotfix branch), plus the nightly switch and the dry run.
+- Consumes: everything above. `docs/releasing.md` covers spec §6.7 (the secrets table, the export commands, the API key, rotation, expiry dates) and §6.8 (the per-release checklist, the freeze step before 0.5.0-beta.1 (nothing public, no betas, before M5), the draft-then-publish step, the unsigned and the signed local builds, the hotfix branch), plus the nightly switch and the dry run.
 
 - [ ] **Step 1: Write `docs/releasing.md`**
 
