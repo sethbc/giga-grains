@@ -8,8 +8,12 @@
 #   cmake -DPLUTIL=<plutil> -DBUNDLE=<bundle dir> -DCHECK=bundle-id -DEXPECTED=<id> -P <this file>
 #   cmake -DPLUTIL=<plutil> -DBUNDLE=<bundle dir> -DCHECK=au-components
 #         -DEXPECTED=<type>/<subtype>/<manufacturer>,... -P <this file>
+#   cmake -DPLUTIL=<plutil> -DBUNDLE=<bundle dir> -DCHECK=bundle-version -DEXPECTED=<version>
+#         -P <this file>
 #
 # bundle-id: CFBundleIdentifier must be EXPECTED.
+# bundle-version: CFBundleShortVersionString and CFBundleVersion must both be EXPECTED, the
+# version's numeric part (spec §6.1: Apple's bundle versions take no pre-release suffix).
 # au-components: AudioComponents must hold exactly the EXPECTED type/subtype/manufacturer triples,
 # comma-separated, in that order.
 
@@ -41,6 +45,14 @@ if (CHECK STREQUAL "bundle-id")
         message(FATAL_ERROR "FAIL: ${BUNDLE}: CFBundleIdentifier is '${id}', expected '${EXPECTED}'")
     endif ()
     message(STATUS "${BUNDLE}: CFBundleIdentifier ${id}")
+elseif (CHECK STREQUAL "bundle-version")
+    foreach (key IN ITEMS CFBundleShortVersionString CFBundleVersion)
+        extract(${key} raw version)
+        if (NOT version STREQUAL EXPECTED)
+            message(FATAL_ERROR "FAIL: ${BUNDLE}: ${key} is '${version}', expected '${EXPECTED}'")
+        endif ()
+        message(STATUS "${BUNDLE}: ${key} ${version}")
+    endforeach ()
 elseif (CHECK STREQUAL "au-components")
     string(REPLACE "," ";" EXPECTED "${EXPECTED}")
     extract(AudioComponents json components)

@@ -429,6 +429,17 @@ if (APPLE AND GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
     set_tests_properties(identity_standalone identity_standalone_fx identity_auv2 identity_vst3
             PROPERTIES LABELS plugin)
 
+    # Bundle versions (spec §6.1), label `installer`: each bundle's CFBundleShortVersionString and
+    # CFBundleVersion are the version's numeric part alone, which Apple requires; the pre-release
+    # suffix appears only in GG_VERSION_STRING.
+    foreach (format IN ITEMS clap vst3 auv2 standalone standalone_fx)
+        add_test(NAME version_bundle_${format}
+                COMMAND ${CMAKE_COMMAND} -DPLUTIL=${GG_PLUTIL} -DCHECK=bundle-version
+                -DBUNDLE=$<TARGET_BUNDLE_DIR:gg_clapfirst_${format}>
+                -DEXPECTED=${GG_VERSION_NUMERIC} -P ${check_identity})
+        set_tests_properties(version_bundle_${format} PROPERTIES LABELS installer)
+    endforeach ()
+
     # The AU state format (labels `plugin` and `au`): gg-au-state-tests loads the built
     # .component into its own process, registers its factories there (AudioComponentRegister;
     # nothing is installed) and checks that ClassInfo carries the CLAP state bytes, GGST
@@ -459,4 +470,14 @@ foreach (case IN ITEMS allowed other-target-source other-target-include other-ta
             -DGG_OUT=${CMAKE_CURRENT_BINARY_DIR}/asio-guard/${case}
             -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/asio-guard/run.cmake)
     set_tests_properties(asio_guard_${case} PROPERTIES LABELS "build")
+endforeach ()
+
+# The version (cmake/version.cmake, spec §6.1): gg_compose_version joins the numeric part and the
+# pre-release suffix, and refuses a suffix that isn't dot-separated [0-9A-Za-z-] identifiers.
+# Each case runs cmake -P on its own and writes nothing.
+foreach (case IN ITEMS dev release nightly bad-underscore bad-empty-identifier)
+    add_test(NAME version_${case}
+            COMMAND ${CMAKE_COMMAND} -DGG_CASE=${case} -DGG_REPO=${PROJECT_SOURCE_DIR}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/version/run.cmake)
+    set_tests_properties(version_${case} PROPERTIES LABELS "build")
 endforeach ()
