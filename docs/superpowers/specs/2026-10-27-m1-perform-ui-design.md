@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Approved in brainstorming by the director, 2026-10-27. Built 2026-10-29 (INTENT §23 #58, #59), and amended in place, each marked **Amended**: §3.1 (ruling PU-T2a), §4 (the fixed family, ruling PU-T3a), §5 (the Processor's pieces, the per-sample guard, ruling PU-T4a), §6.2 (ruling PU-T8a), §6.4 (one peak level, rulings PU-T9a, PU-T9b, PU-T10a), §6.5 (MIT), §7 (the seed hand-off, ruling PU-T5a), §9 (ruling PU-T12a, `inst-texture`) |
+| **Status** | Approved in brainstorming by the director, 2026-10-27. Built 2026-10-29 (INTENT §23 #58, #59), and amended in place, each marked **Amended**: §1 (decision 3's slot), §3.1 (ruling PU-T2a), §4 (the fixed family, rulings PU-T3a and PU-T13a), §5 (the Processor's pieces, the per-sample guard, ruling PU-T4a), §6.2 (ruling PU-T8a), §6.4 (one peak level, rulings PU-T9a, PU-T9b, PU-T10a), §6.5 (MIT), §7 (the seed hand-off, ruling PU-T5a), §9 (ruling PU-T12a, `inst-texture`) |
 | **Milestone** | M1 (Cloud core), sub-project 5 of 6 |
 | **Depends on** | Sub-project 1 (FX slice: Processor, parameter model, live ring); 3 (Sources: the instrument's sample lane); 4 (Space: Diffusion) |
 | **Authority** | INTENT.md. This spec realizes INTENT §17 for one layer, and adds §14 parameters |
@@ -32,6 +32,9 @@ Sub-project 5 turns M1's working engine into an instrument you play from its own
    adds Space's diffusion.
 3. **Feedback** regenerates the wet output into the live ring in the FX. The instrument has no writable buffer until M2's
    resample source, so its eighth macro slot is Stereo until then.
+
+   > **Amended (2026-10-29):** its **seventh** macro slot (Macro 7, Feedback in the FX) is Stereo; the eighth is Level, as
+   > §3.2's table has it (INTENT §23 #58).
 4. **The eight recipes** in §3, with every depth tuned by ear in the listening check.
 5. **The canvas:**
    - the FX lane has a fixed write head at the right edge, with history scrolling left;
@@ -145,10 +148,16 @@ Diffusion's ID belongs to sub-project 4 (Space).
   > `warp(φ) = φ < a ? φ·(0.5/a) : (φ > 1 − r ? 1 − (1 − φ)·(0.5/r) : 0.5)`; at τ = 0 both scales are exactly 1 and
   > `warp(φ) == φ` bit for bit (Sterbenz), so Texture 0 renders as the plain Hann. The pool latches `a`, `1 − r`, `0.5/a`
   > and `0.5/r` per grain; one `warpPhase` serves both scalar references and the SIMD interior. The gated anchor's
-  > attack and release are `max(16 samples, 5%)` capped at half the grain, so a 16-sample grain is a plain Hann at every
-  > Texture. The grain-event line carries `"tex"`.
+  > attack and release are `max(16 samples, 5%)` capped at half the grain; for τ ≤ 0.5 the attack and release don't
+  > depend on the duration, so a 16-sample grain is a plain Hann only at Texture 0 and 1 (`aMin` is clamped to 0.5
+  > there). The grain-event line carries `"tex"`.
 - **Every envelope is continuous at both ends,** and its attack and release are never shorter than the 16-sample minimum grain.
   The click detector in the goldens guards this.
+
+  > **Amended by ruling PU-T13a (2026-10-29):** the 16-sample floor applies to the gated anchor only,
+  > `aMin = min(0.5, max(0.05, 16 / d))`. For τ ≤ 0.5 the shape is Hann-like and its attack and release scale with the
+  > grain, as the default Hann always has: an 8-sample attack on a 16-sample grain at Texture 0 is M0's behaviour and stays
+  > bit-identical. Every envelope is still continuous at both ends.
 - **The window is evaluated per grain,** at spawn, from the grain's latched Texture value, the same way gain is latched today.
   It is deterministic and needs no libm: polynomial and `exp2Det` forms only.
 - **Gain normalization:** `1/sqrt(max(1, density × duration))` stays. Texture changes only the envelope.
@@ -224,7 +233,7 @@ Diffusion's ID belongs to sub-project 4 (Space).
 - No other canvas gestures exist in M1. Vertical drags, dropping a file and record arrive with M2's Edit work, or with
   sub-project 3 for the file drop if that sub-project specifies it.
 
-### 6.4 Audio to UI (INTENT §17, unchanged)
+### 6.4 Audio to UI (INTENT §17)
 
 - One compact event per grain spawn, through a queue that drops entries when full.
 - An atomic engine clock, from which the UI extrapolates each grain's progress.
@@ -233,7 +242,7 @@ Diffusion's ID belongs to sub-project 4 (Space).
 - The engine publishes only while the editor is open. Visual thinning never touches the audio RNG.
 - All of it is real-time safe: no allocation or locks on the audio thread. The `[rt]` tripwire covers the publish path.
 
-  > **Amended (2026-10-29), rulings PU-T9a, PU-T9b and PU-T10a:** the peak pyramid is **one level** in M1, `LivePeaks`:
+  > **Amended by rulings PU-T9a, PU-T9b and PU-T10a (2026-10-29):** the peak pyramid is **one level** in M1, `LivePeaks`:
   > max(|L|, |R|) per 64-frame bucket of what the ring takes, **indexed by ring time**, the frames the write head advanced
   > over, not the sample clock, which a freeze makes diverge (PU-T9a). The FX writes it on **every** render piece, publishing
   > or not, so an editor that opens late finds the ring's recent audio, not an older pass's peaks (PU-T9b). "Publishes only
@@ -264,7 +273,7 @@ Diffusion's ID belongs to sub-project 4 (Space).
 - **The audio thread is unaffected:** its randomness still comes only from `gg::rng`, keyed by the saved seed.
 - **gg-render, the tests and the goldens** keep explicit seeds. Loading a state uses the state's seed.
 
-  > **Amended (2026-10-29), ruling PU-T5a:** the seed comes from two 32-bit draws of `std::random_device`, or a splitmix64
+  > **Amended by ruling PU-T5a (2026-10-29):** the seed comes from two 32-bit draws of `std::random_device`, or a splitmix64
   > of the steady clock if that throws. A state loaded while active hands its seed to the audio thread in the plugin's
   > loaded-state snapshot, in both products, with no `request_restart` (carry-over row 115); `Processor::setSeed` keys the
   > grains scheduled from that `process()` call on. In the instrument the values travel with the sample, so the seed and
