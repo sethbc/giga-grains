@@ -215,6 +215,8 @@ build_components() {
             i=$((i + 1))
         done
 
+        # Two whole invocations, not one with an optional (--sign <identity>) array: bash 3.2
+        # treats "${array[@]}" of an empty array as unset under set -u.
         if [ "$signed" = "yes" ]; then
             pkgbuild --quiet --root "$stage" --component-plist "$plist" --identifier "$id" \
                 --version "$version" --install-location "$location" \
@@ -238,24 +240,26 @@ make_distribution() {
     cp "$licenses/LICENSE" "$work/resources/LICENSE.txt"
 }
 
+# build_product <product pkg>. Its local isn't named pkg, so it never shadows the global that
+# the EXIT trap reads.
 build_product() {
-    local pkg="$1"
-    echo "--- $(basename "$pkg")"
+    local product="$1"
+    echo "--- $(basename "$product")"
+    # Two whole invocations, as in build_components (bash 3.2's empty arrays under set -u).
     if [ "$signed" = "yes" ]; then
         productbuild --quiet --distribution "$work/distribution.xml" \
             --package-path "$work/packages" --resources "$work/resources" \
-            --sign "$MAC_INSTALLER_IDENTITY" "$pkg"
+            --sign "$MAC_INSTALLER_IDENTITY" "$product"
     else
         productbuild --quiet --distribution "$work/distribution.xml" \
-            --package-path "$work/packages" --resources "$work/resources" "$pkg"
+            --package-path "$work/packages" --resources "$work/resources" "$product"
     fi
 }
 
-# json_field <name> <file>: the first string value of "<name>" in notarytool's JSON output. One
-# sed, not piped into head: under pipefail, head's early exit could fail the pipeline.
+# json_field <key> <file>: the value of the top-level <key> in notarytool's JSON output, read by
+# plutil (which parses JSON); empty when the file isn't JSON or has no such key.
 json_field() {
-    local sp='[[:space:]]*'
-    sed -n "/\"$1\"$sp:/{s/.*\"$1\"$sp:$sp\"\([^\"]*\)\".*/\1/p;q;}" "$2"
+    plutil -extract "$1" raw -o - "$2" 2>/dev/null || true
 }
 
 # Submits one file to the notary service and waits. Fails, printing the submission ID, unless
@@ -264,8 +268,10 @@ notarize() {
     local file="$1" log id status
     log="$work/notary-$(basename "$file").json"
     echo "--- notarizing $(basename "$file")"
+    # --timeout: notarytool stops waiting after an hour (the service carries on), so a stuck
+    # submission fails this step, printing its ID, instead of running into the job's timeout.
     if ! xcrun notarytool submit "$file" --key "$NOTARY_KEY_FILE" --key-id "$NOTARY_KEY_ID" \
-        --issuer "$NOTARY_ISSUER_ID" --wait --output-format json >"$log"; then
+        --issuer "$NOTARY_ISSUER_ID" --wait --timeout 1h --output-format json >"$log"; then
         cat "$log"
     fi
     id="$(json_field id "$log")"
@@ -289,29 +295,36 @@ staple_and_assess() {
 }
 
 # Signs the DMG. Apple's timestamp server fails now and then ("timestamps differ by 300
-# seconds"), so a failure is retried up to three attempts, 10 s apart.
+# seconds", or "could not be reached"), so a failure whose message is about the timestamp is
+# retried, up to three attempts, 10 s apart; any other failure (a wrong identity, say) fails at
+# once. The locals aren't named pkg or dmg, so they never shadow the globals the EXIT trap reads.
 sign_dmg() {
-    local dmg="$1" attempt=1
-    while ! codesign --force --sign "$MAC_SIGNING_IDENTITY" --timestamp "$dmg"; do
+    local image="$1" attempt=1 errors="$work/codesign-dmg.err"
+    while ! codesign --force --sign "$MAC_SIGNING_IDENTITY" --timestamp "$image" 2>"$errors"; do
+        cat "$errors" >&2
+        if ! grep -qiE 'timestamp|could not be reached' "$errors"; then
+            die "codesign failed on '$image'"
+        fi
         if [ "$attempt" -ge 3 ]; then
-            die "codesign --timestamp of '$dmg' failed $attempt times"
+            die "codesign --timestamp of '$image' failed $attempt times"
         fi
         echo "codesign --timestamp failed (attempt $attempt of 3); retrying in 10 s"
         sleep 10
         attempt=$((attempt + 1))
     done
-    codesign --verify --strict -vv "$dmg"
+    cat "$errors" >&2
+    codesign --verify --strict -vv "$image"
 }
 
 build_dmg() {
-    local pkg="$1" dmg="$2" folder="$work/dmg"
-    echo "--- $(basename "$dmg")"
+    local product="$1" image="$2" folder="$work/dmg"
+    echo "--- $(basename "$image")"
     mkdir -p "$folder/Licenses"
-    cp "$pkg" "$folder/"
+    cp "$product" "$folder/"
     cp -R "$licenses/." "$folder/Licenses/"
     hdiutil create -quiet -ov -fs HFS+ -srcfolder "$folder" -volname "Giga Grains $full_version" \
         "$work/giga-grains.dmg"
-    hdiutil convert -quiet -ov -format UDZO -o "$dmg" "$work/giga-grains.dmg"
+    hdiutil convert -quiet -ov -format UDZO -o "$image" "$work/giga-grains.dmg"
 }
 
 main() {
