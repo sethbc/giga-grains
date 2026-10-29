@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /*
  * sst-effects - an open source library of audio effects
  * built by Surge Synth Team.
