@@ -199,7 +199,9 @@ Comparison compare(const Report &report, const nlohmann::json &baseline);
 /// size) ratios. Each ratio is the median over that machine's runs of each run's median ratio,
 /// and its tolerance max(0.10, 2 × (max − min) / median), so 0.10 for a single run. The commit is
 /// the runs' commit, or their distinct commits joined by commas. Throws std::invalid_argument for
-/// no runs, a run that isn't schema 2 or a machine whose runs' ratios differ.
+/// no runs, a run that isn't schema 2, a ratio whose median isn't positive and finite, a machine
+/// whose runs' ratios differ, or a result checkBaseline() rejects (a tolerance that overflows to
+/// infinity, say): it never returns a baseline compare() would refuse.
 nlohmann::json makeBaseline(const std::string &leg, const std::vector<nlohmann::json> &runs);
 
 /// How many grains an engine case admitted at each interpolation tier (ruling 2).

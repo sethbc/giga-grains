@@ -14,6 +14,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <numeric>
 #include <set>
 #include <stdexcept>
@@ -23,6 +24,7 @@
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_string.hpp>
 #include <nlohmann/json.hpp>
 
 #include "Bench.h"
@@ -521,6 +523,57 @@ TEST_CASE("make baseline", "[bench]")
     anonymous[1].erase("machine");
     CHECK_THROWS_AS(gg::bench::makeBaseline("linux-gcc12", anonymous), std::invalid_argument);
     CHECK_THROWS_AS(gg::bench::makeBaseline("linux-gcc12", {}), std::invalid_argument);
+}
+
+TEST_CASE("make baseline refuses what it can't write", "[bench]")
+{
+    // makeBaseline() checks what it makes as compare() would, so it never writes a file that
+    // --baseline then rejects, such as a NaN tolerance written as null (carry-over:
+    // "makeBaseline doesn't validate what it writes").
+    const auto rejects = [](const std::vector<double> &medians) {
+        std::vector<nlohmann::json> runs;
+        for (const double m : medians)
+        {
+            runs.push_back(benchRun("CPU A", "abc", {ratio("engine-sample", 32, 1.0)}));
+            runs.back()["ratios"][0]["median"] = m; // a NaN stays a NaN in a parsed json
+        }
+        INFO("medians " << medians.size() << ": " << medians.front() << ", ...");
+        CHECK_THROWS_AS(gg::bench::makeBaseline("test", runs), std::invalid_argument);
+    };
+    rejects({std::nan("")});                                       // a NaN ratio
+    rejects({1.0, std::nan(""), 1.0});                             // NaN among the runs
+    rejects({std::numeric_limits<double>::infinity()});            // an infinite ratio
+    rejects({0.0});                                                // ratio 0: tolerance 0/0
+    rejects({-1.0});                                               // a negative ratio
+    rejects({1e-300, 1e-300, std::numeric_limits<double>::max()}); // tolerance overflows to inf
+
+    // Finite medians whose tolerance overflows pass the check on the runs; the check on the
+    // baseline made catches it. So does an entry with no ratios.
+    std::vector<nlohmann::json> overflow;
+    for (const double m : {1e-300, 1e-300, std::numeric_limits<double>::max()})
+    {
+        overflow.push_back(benchRun("CPU A", "abc", {ratio("engine-sample", 32, m)}));
+    }
+    CHECK_THROWS_WITH(gg::bench::makeBaseline("test", overflow),
+                      Catch::Matchers::ContainsSubstring("invalid baseline"));
+    CHECK_THROWS_WITH(gg::bench::makeBaseline("test", {benchRun("CPU A", "abc", {})}),
+                      Catch::Matchers::ContainsSubstring("has no ratios"));
+
+    // The message names the run and the ratio.
+    std::vector<nlohmann::json> runs{benchRun("CPU A", "abc", {ratio("engine-live", 64, 1.0)})};
+    runs[0]["ratios"][0]["median"] = std::nan("");
+    try
+    {
+        (void)gg::bench::makeBaseline("test", runs);
+        FAIL("no exception");
+    }
+    catch (const std::invalid_argument &e)
+    {
+        const std::string what = e.what();
+        INFO(what);
+        CHECK(what.find("run 1") != std::string::npos);
+        CHECK(what.find("engine-live at block 64") != std::string::npos);
+    }
 }
 
 TEST_CASE("gg-bench --space prints a per-sample cost", "[bench]")

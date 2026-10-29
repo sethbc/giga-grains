@@ -181,6 +181,19 @@ foreach (test IN ITEMS bench_rejects_space_cases bench_rejects_canvas_seconds
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tools/check-exit-code.cmake)
     set_tests_properties(${test} PROPERTIES LABELS bench)
 endforeach ()
+# - bench_make_baseline_invalid: --make-baseline from a run whose ratio has a median of 0 (which
+#   would make a tolerance of 0/0, NaN) must exit 1 with the error and write no file.
+set(bench_bad_run ${CMAKE_CURRENT_BINARY_DIR}/bench_bad_run.json)
+file(WRITE ${bench_bad_run} "{\"schemaVersion\": 2, \"machine\": \"CPU (test)\", \"commit\": \"test\", \"ratios\": [{\"name\": \"engine-sample\", \"blockSize\": 32, \"median\": 0}]}\n")
+set(bench_invalid_baseline ${CMAKE_CURRENT_BINARY_DIR}/bench_invalid_baseline.json)
+set(bench_make_baseline_invalid_args --make-baseline test ${bench_invalid_baseline} ${bench_bad_run})
+add_test(NAME bench_make_baseline_invalid
+        COMMAND ${CMAKE_COMMAND} -DPROGRAM=$<TARGET_FILE:gg-bench>
+        "-DARGS=${bench_make_baseline_invalid_args}" -DEXPECTED_CODE=1
+        "-DEXPECTED_STDERR=error: run 1 has a ratio whose median isn't positive and finite: engine-sample at block 32"
+        -DABSENT=${bench_invalid_baseline}
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/tools/check-exit-code.cmake)
+set_tests_properties(bench_make_baseline_invalid PROPERTIES LABELS bench)
 set(verdict_line "ratios regressed (limit: the baseline's ratio x (1 + its tolerance))")
 set(bench_baseline_pass_args -DRATIO=1e9 -DEXPECTED_CODE=0
         "-DEXPECTED_VERDICT=verdict: 0 of 3 ${verdict_line}")

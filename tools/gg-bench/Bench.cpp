@@ -837,8 +837,15 @@ nlohmann::json machineEntry(const std::string &machine, const std::vector<nlohma
                                             std::to_string(mine[0] + 1) + " doesn't: " + key.first +
                                             " at block " + std::to_string(key.second));
             }
-            medians[static_cast<std::size_t>(at - keys.begin())].push_back(
-                r["median"].get<double>());
+            const auto median = r["median"].get<double>();
+            if (!(median > 0.0) || !std::isfinite(median))
+            {
+                throw std::invalid_argument(which +
+                                            " has a ratio whose median isn't positive and "
+                                            "finite: " +
+                                            key.first + " at block " + std::to_string(key.second));
+            }
+            medians[static_cast<std::size_t>(at - keys.begin())].push_back(median);
         }
     }
 
@@ -967,8 +974,19 @@ nlohmann::json makeBaseline(const std::string &leg, const std::vector<nlohmann::
     {
         entries.push_back(machineEntry(machines[m], runs, groups[m]));
     }
-    return {
+    nlohmann::json baseline{
         {"schemaVersion", kBaselineSchemaVersion}, {"leg", leg}, {"machines", std::move(entries)}};
+    // What compare() would reject is never returned, so never written: a tolerance can still
+    // overflow to infinity from finite medians.
+    try
+    {
+        checkBaseline(baseline);
+    }
+    catch (const std::invalid_argument &e)
+    {
+        throw std::invalid_argument(std::string("the runs make an invalid baseline: ") + e.what());
+    }
+    return baseline;
 }
 
 TierCounts admittedTiers(const std::string &engineCase, uint32_t grains, uint32_t blockSize)
