@@ -12,6 +12,8 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <sstream>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -1525,6 +1527,43 @@ LiveRenders renderLiveBoth(const Pool &pool, const LiveInput &input,
 }
 } // namespace
 
+// The interior's conditions at sample t of grain i, each on its own, computed afresh from the
+// rows and the ring, twice over. For a sample inside the interior where the test's own evaluation
+// found them not all holding: a condition that fails here with its value far from its bound, or
+// that holds here, is a transient fault of the machine, not of the interior. CI runs 40818957844
+// (attempt 1) and 40835080133 each failed one such sample, in blocks of 7 under Rosetta on the
+// macOS runner, far inside every margin (3,849 and 20,147 frames at the second's), and the same
+// binary passed when run again.
+template <class R>
+std::string describeBadSample(const gg::GrainRows &rows, uint32_t i, const gg::LiveSource &ring,
+                              int64_t t, int64_t frames)
+{
+    std::ostringstream out;
+    out.precision(17);
+    for (int pass = 1; pass <= 2; ++pass)
+    {
+        const double e = static_cast<double>(t - rows.onsetSample[i]) - rows.onsetFrac[i];
+        const double phase = e * rows.invDuration[i];
+        const double pos = rows.startPos[i] + rows.rate[i] * e;
+        const int64_t head = ring.headAt(t);
+        const auto r = static_cast<double>(head);
+        gg::LiveSource::Cursor cursor;
+        float left = 0.0f;
+        float right = 0.0f;
+        const bool phaseOk = phase >= 0.0 && phase <= 1.0;
+        const bool posOk = std::floor(pos) - Reach<R>::before >= 0.0;
+        const bool fadeOk = ring.fade(pos, head) == 1.0;
+        const bool readOk = R::readLive(ring, pos, head, cursor, left, right);
+        out << "; evaluation " << pass << ": phase " << phase << (phaseOk ? " ok" : " BAD")
+            << ", pos " << pos << (posOk ? " ok" : " BAD") << ", head " << head << ", fade "
+            << ring.fade(pos, head) << (fadeOk ? " ok" : " BAD") << ", read "
+            << (readOk ? "ok" : "BAD") << ", margins " << r - 1.0 - (pos + 2.0) - kM << " and "
+            << (pos - 1.0) - (r - static_cast<double>(frames)) - kM << " past M"
+            << (phaseOk && posOk && fadeOk && readOk ? " (holds)" : " (fails)");
+    }
+    return out.str();
+}
+
 TEMPLATE_TEST_CASE("live interior is exactly where the fade is one", "[kernel]", Hermite, Linear)
 {
     // 1,000 grains over a ring frozen and released 12 times. For every sample of every interior,
@@ -1557,6 +1596,7 @@ TEMPLATE_TEST_CASE("live interior is exactly where the fade is one", "[kernel]",
         int64_t badStructure = 0;
         int64_t firstBad = -1;
         uint32_t firstBadGrain = 0;
+        std::string firstBadDetail;
         ActiveGrains active(pool);
         driveRing(ring, input, {block}, [&](int64_t from, int64_t to) {
             const int64_t kink = ring.blockKink();
@@ -1612,13 +1652,14 @@ TEMPLATE_TEST_CASE("live interior is exactly where the fade is one", "[kernel]",
                         {
                             firstBad = t;
                             firstBadGrain = i;
+                            firstBadDetail = describeBadSample<TestType>(rows, i, ring, t, frames);
                         }
                         ++badSamples;
                     }
                 }
             });
         });
-        INFO("first bad sample " << firstBad << " of grain " << firstBadGrain);
+        INFO("first bad sample " << firstBad << " of grain " << firstBadGrain << firstBadDetail);
         INFO("smallest margin " << minMargin - kM << " frames past M");
         REQUIRE(badStructure == 0);
         REQUIRE(badSamples == 0);
