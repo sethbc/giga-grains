@@ -151,11 +151,38 @@ void Processor::setBase(ParamSlot slot, float value) noexcept
     base_[s] = clampToRange(s, value);
     hasPendingBase_[s] = false;
     updateEffective();
-    if (slot == ParamSlot::Freeze)
+    if (slot == ParamSlot::Freeze || slot == ParamSlot::Macro6)
     {
         syncFreeze(); // Freeze set off is a transition's first half, even between calls
     }
     const WetParams w = toWetParams(effective_);
+    if (isMacro(slot))
+    {
+        // A macro moves its targets' effective values (sub-project 5's spec §3.1): each ramped
+        // value whose target it changed jumps, as a setBase of the target itself makes it; the
+        // others keep their ramps.
+        if (w.mix != mix_.to)
+        {
+            mix_.jump(w.mix);
+        }
+        if (w.levelGain != level_.to)
+        {
+            level_.jump(w.levelGain);
+        }
+        if (space_.diffusion != diffusion_.to)
+        {
+            diffusion_.jump(space_.diffusion);
+        }
+        if (space_.amount != amount_.to)
+        {
+            amount_.jump(space_.amount);
+        }
+        if (space_.drySend != drySend_.to)
+        {
+            drySend_.jump(space_.drySend);
+        }
+        return;
+    }
     switch (slot)
     {
     case ParamSlot::Mix:
@@ -269,11 +296,23 @@ void Processor::updateKeys() noexcept
 
 void Processor::updateEffective() noexcept
 {
-    // base is finite and in range, and mod is never NaN, so the sum is never NaN; an infinite
-    // mod clamps to an end of the range.
+    // Sub-project 5's spec §3.1: the macros' own effective values first, clamp(base + mod) as
+    // any slot's, then every slot's clamp(base + mod + offset), one clamp of the whole sum. A
+    // macro's own offset is 0, so its effective value is the one its curves read. At rest every
+    // offset is +0.0f and the sum is base + mod, bit for bit, but for a −0 sum (a −0 base and a
+    // −0 modulation, which only a host can send), which becomes +0.
+    // base is finite and in range, mod is never NaN, and every offset is finite (the macros are
+    // clamped to 0..1), so the sum is never NaN; an infinite mod clamps to an end of the range.
+    ParamValues macros{};
+    for (const ParamSlot slot : kMacroSlots)
+    {
+        const auto s = static_cast<size_t>(slot);
+        macros[s] = clampToRange(s, base_[s] + mod_[s]);
+    }
+    const ParamValues offsets = macroOffsets(macros, config_.mode);
     for (size_t s = 0; s < kParamCount; ++s)
     {
-        effective_[s] = clampToRange(s, base_[s] + mod_[s]);
+        effective_[s] = clampToRange(s, base_[s] + mod_[s] + offsets[s]);
     }
     engine_.setCloudParams(toCloudParams(effective_, config_.mode));
     space_ = toSpaceParams(effective_, config_.mode);

@@ -577,6 +577,38 @@ TEST_CASE("event lines carry each grain's texture", "[render]")
     }
 }
 
+TEST_CASE("an fx spec's Texture reaches the event lines", "[render]")
+{
+    // Spec §4 end to end: Texture set by name in an FX spec, or by Macro Texture (Texture
+    // +u/0.75, so 0.375 gives exactly 0.5), is latched by every grain and written as "tex".
+    RenderSpec fx;
+    fx.mode = RenderMode::Fx;
+    fx.sampleRate = 48000.0;
+    fx.durationSeconds = 0.25;
+    fx.blockSize = 64;
+    fx.seed = 5;
+    fx.fx.input = {.kind = SourceKind::Noise, .seconds = 0.25, .amplitude = 0.5};
+    fx.fx.channels = 2;
+    RenderSpec direct = fx;
+    direct.fx.params = {{"Density", 7.0}, {"Texture", 0.5}};
+    RenderSpec macro = fx;
+    macro.fx.params = {{"Density", 7.0}, {"Macro Texture", 0.375}};
+    std::vector<std::string> directEvents;
+    gg::render::render(direct, &directEvents);
+    REQUIRE(directEvents.size() > 10);
+    for (const std::string &line : directEvents)
+    {
+        INFO(line);
+        REQUIRE(line.find(R"(,"tex":0.5,"gain":)") != std::string::npos);
+        REQUIRE(nlohmann::json::parse(line)["tex"].get<double>() == 0.5);
+    }
+    // At 0.375 Macro Texture moves Texture alone (Diffusion only from 0.75), so its grains are
+    // the direct spec's, line for line.
+    std::vector<std::string> macroEvents;
+    gg::render::render(macro, &macroEvents);
+    REQUIRE(macroEvents == directEvents);
+}
+
 TEST_CASE("fx spec parses", "[render]")
 {
     // The M0 cases are sample-mode renders.

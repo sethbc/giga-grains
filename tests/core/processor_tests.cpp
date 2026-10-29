@@ -320,9 +320,10 @@ struct TimedEvent
 };
 
 // 40 events on every slot over 3 s: base values across a range that keeps the render light, and
-// every fourth event a modulation offset of up to an eighth of that range. Some events land
-// exactly on grid points, and some share a sample with the previous slot's. Times and values
-// come from gg::rng.
+// every fourth event a modulation offset of up to an eighth of that range. Every slot has a
+// range: Space's, Texture, Feedback and the macros (which move the cloud and Space through their
+// recipes) are automated too. Some events land exactly on grid points, and some share a sample
+// with the previous slot's. Times and values come from gg::rng.
 std::vector<TimedEvent> automation()
 {
     struct Range
@@ -340,6 +341,28 @@ std::vector<TimedEvent> automation()
     ranges[at(ParamSlot::Spray)] = {0.0f, 1.0f};
     ranges[at(ParamSlot::Stereo)] = {0.0f, 1.0f};
     ranges[at(ParamSlot::Freeze)] = {0.0f, 1.0f};
+    ranges[at(ParamSlot::Diffusion)] = {0.0f, 1.0f};
+    ranges[at(ParamSlot::ReverbAmount)] = {0.0f, 1.0f};
+    ranges[at(ParamSlot::ReverbDecay)] = {-2.0f, 4.0f}; // 0.25 to 16 s, never infinite
+    ranges[at(ParamSlot::ReverbSize)] = {0.0f, 1.0f};
+    ranges[at(ParamSlot::ReverbDamping)] = {0.0f, 1.0f};
+    ranges[at(ParamSlot::ReverbPredelay)] = {0.0f, 0.5f};
+    ranges[at(ParamSlot::ReverbModulation)] = {0.0f, 1.0f};
+    ranges[at(ParamSlot::DryToReverb)] = {0.0f, 1.0f};
+    ranges[at(ParamSlot::Texture)] = {0.0f, 1.0f};
+    ranges[at(ParamSlot::Feedback)] = {0.0f, 0.5f};
+    ranges[at(ParamSlot::Macro1)] = {0.25f, 0.75f}; // Size ±1.5 octaves
+    ranges[at(ParamSlot::Macro2)] = {0.3f, 0.6f};   // Density −1.6 to +0.8 octaves
+    ranges[at(ParamSlot::Macro3)] = {0.0f, 1.0f};
+    ranges[at(ParamSlot::Macro4)] = {0.0f, 1.0f};
+    ranges[at(ParamSlot::Macro5)] = {0.0f, 1.0f};
+    ranges[at(ParamSlot::Macro6)] = {0.0f, 1.0f};
+    ranges[at(ParamSlot::Macro7)] = {0.0f, 1.0f};
+    ranges[at(ParamSlot::Macro8)] = {0.0f, 1.0f};
+    for (size_t s = 0; s < kParamCount; ++s)
+    {
+        REQUIRE(ranges[s].hi > ranges[s].lo); // every slot covered
+    }
 
     constexpr int kPerSlot = 40;
     std::vector<TimedEvent> events;
@@ -368,7 +391,7 @@ std::vector<TimedEvent> automation()
             {
                 value = (2.0 * u - 1.0) * (r.hi - r.lo) / 8.0;
             }
-            else if (slot == ParamSlot::Freeze)
+            else if (slot == ParamSlot::Freeze || slot == ParamSlot::Macro6)
             {
                 value = u < 0.5 ? 0.0 : 1.0;
             }
@@ -879,12 +902,20 @@ TEST_CASE("processor survives an automation storm", "[core][rt]")
     // (the storm sets Reverb Amount too): the output is never louder than the input plus 2.
     REQUIRE(peak(left) < peak(input.left) + 2.0f);
     REQUIRE(peak(right) < peak(input.right) + 2.0f);
+    // The effective values: the macros' clamp(base + mod), their offsets (the storm moves the
+    // macros too), then one clamp of base + mod + offset.
+    gg::core::ParamValues macros{};
+    for (const ParamSlot macro : gg::core::kMacroSlots)
+    {
+        macros[at(macro)] = clampTo(macro, lastBase[at(macro)] + lastMod[at(macro)]);
+    }
+    const gg::core::ParamValues offsets = gg::core::macroOffsets(macros, Mode::Fx);
     for (size_t s = 0; s < kParamCount; ++s)
     {
         const auto slot = static_cast<ParamSlot>(s);
         INFO("slot " << s);
         REQUIRE(p.base(slot) == lastBase[s]);
-        REQUIRE(p.effective(slot) == clampTo(slot, lastBase[s] + lastMod[s]));
+        REQUIRE(p.effective(slot) == clampTo(slot, lastBase[s] + lastMod[s] + offsets[s]));
     }
 }
 
@@ -1221,4 +1252,209 @@ TEST_CASE("processor base values, pending changes and reset", "[core]")
     p.process(nullptr, 0, out, 2, 64, modulated);
     REQUIRE(p.base(ParamSlot::Mix) == 0.75f);
     REQUIRE(p.effective(ParamSlot::Mix) == 1.0f);
+}
+
+// The macros (sub-project 5's spec §3): effective = clamp(base + mod + Σ macro curves), on the
+// control grid like any parameter.
+
+TEST_CASE("macro offsets add to base and modulation before one clamp", "[core]")
+{
+    const auto &size = gg::core::paramMeta(ParamSlot::Size, Mode::Fx);
+    const float density = gg::core::paramMeta(ParamSlot::Density, Mode::Fx).defaultVal;
+    std::vector<float> left(64), right(64);
+    float *out[2] = {left.data(), right.data()};
+
+    SECTION("above the range")
+    {
+        Processor p({kSampleRate, 512, 3, Mode::Fx});
+        p.setBase(ParamSlot::Size, size.maxVal - 1.0f);
+        const std::array<ParamEvent, 2> events{
+            {{0, ParamSlot::Size, true, 1.0}, {0, ParamSlot::Macro1, false, 1.0}}};
+        p.process(nullptr, 0, out, 2, 64, events);
+        REQUIRE(p.base(ParamSlot::Size) == size.maxVal - 1.0f);
+        REQUIRE(p.effective(ParamSlot::Macro1) == 1.0f);
+        REQUIRE(p.effective(ParamSlot::Size) == size.maxVal); // max − 1 + 1 + 3, clamped
+        REQUIRE(p.effective(ParamSlot::Density) == density - 1.5f);
+        REQUIRE(p.base(ParamSlot::Density) == density);
+    }
+
+    SECTION("one clamp, not two")
+    {
+        // base + mod is above the range and the macro brings it back: one clamp of the whole
+        // sum gives max + 1 − 3; clamping base + mod first would give max − 3.
+        Processor p({kSampleRate, 512, 3, Mode::Fx});
+        p.setBase(ParamSlot::Size, size.maxVal);
+        const std::array<ParamEvent, 2> events{
+            {{0, ParamSlot::Size, true, 1.0}, {0, ParamSlot::Macro1, false, 0.0}}};
+        p.process(nullptr, 0, out, 2, 64, events);
+        REQUIRE(p.effective(ParamSlot::Size) == (size.maxVal + 1.0f) - 3.0f);
+        REQUIRE(p.effective(ParamSlot::Density) == density + 1.5f);
+    }
+
+    SECTION("a macro is clamped before its curve")
+    {
+        // Macro 3 at base 1 with modulation +1: its effective value is 1, so Pitch moves +24,
+        // not +72 (clamped to its range either way, so read the macro itself).
+        Processor p({kSampleRate, 512, 3, Mode::Fx});
+        p.setBase(ParamSlot::Pitch, -24.0f);
+        const std::array<ParamEvent, 2> events{
+            {{0, ParamSlot::Macro3, false, 1.0}, {0, ParamSlot::Macro3, true, 1.0}}};
+        p.process(nullptr, 0, out, 2, 64, events);
+        REQUIRE(p.effective(ParamSlot::Macro3) == 1.0f);
+        REQUIRE(p.effective(ParamSlot::Pitch) == 0.0f); // −24 + 24, not −24 + 72 → 24
+    }
+}
+
+TEST_CASE("a resting preset renders bit-identically with the macros present", "[core]")
+{
+    // Spec §3.1: Macro 1 set to its rest value, 0.5, by an event at 0.5 s changes nothing.
+    const Stereo input = noise(2 * 48000, 0.5f, 23);
+    AutomationRender plain;
+    renderAutomation(input, {}, 512, {512}, plain);
+    AutomationRender rested;
+    renderAutomation(input, {{24000, ParamSlot::Macro1, false, 0.5}}, 512, {512}, rested);
+    REQUIRE(peak(plain.audio.left) > 0.05f);
+    REQUIRE(plain.log.grains.size() > 10);
+    REQUIRE(rested.log.grains == plain.log.grains);
+    REQUIRE(sameBits(rested.audio.left, plain.audio.left));
+    REQUIRE(sameBits(rested.audio.right, plain.audio.right));
+}
+
+TEST_CASE("macro events apply on the grid", "[core]")
+{
+    // A Macro 3 event at sample 5 joins the boundary at 32: Pitch moves from there, in 1-sample
+    // calls as in any others.
+    Processor p({kSampleRate, 512, 3, Mode::Fx});
+    float left = 0.0f;
+    float right = 0.0f;
+    float *out[2] = {&left, &right};
+    const ParamEvent macro3{0, ParamSlot::Macro3, false, 0.75};
+    for (int64_t t = 0; t < 64; ++t)
+    {
+        INFO("after sample " << t);
+        p.process(nullptr, 0, out, 2, 1,
+                  t == 5 ? std::span(&macro3, 1) : std::span<const ParamEvent>{});
+        if (t < 32)
+        {
+            REQUIRE(p.effective(ParamSlot::Pitch) == 0.0f);
+            REQUIRE(p.base(ParamSlot::Macro3) == 0.5f);
+        }
+        else
+        {
+            REQUIRE(p.effective(ParamSlot::Pitch) == 12.0f); // 24 × (2 × 0.75 − 1)
+            REQUIRE(p.base(ParamSlot::Macro3) == 0.75f);
+        }
+    }
+}
+
+TEST_CASE("macro freeze engages freeze", "[core]")
+{
+    constexpr uint32_t kBlock = 512;
+    std::vector<float> left(kBlock), right(kBlock);
+    float *out[2] = {left.data(), right.data()};
+    const Stereo input = noise(kBlock, 0.5f, 29);
+    const float *in[2] = {input.left.data(), input.right.data()};
+    // 20 blocks, about 0.2 s: well past the freeze's 20 ms ramp.
+    const auto run = [&](Processor &p, const ParamEvent *first) {
+        for (int k = 0; k < 20; ++k)
+        {
+            p.process(in, 2, out, 2, kBlock,
+                      k == 0 && first != nullptr ? std::span(first, 1)
+                                                 : std::span<const ParamEvent>{});
+        }
+    };
+
+    SECTION("by an event")
+    {
+        Processor p({kSampleRate, kBlock, 3, Mode::Fx});
+        run(p, nullptr); // Freeze off seen: armed
+        REQUIRE(p.engine().liveWriteHead() == 20 * kBlock);
+        const ParamEvent macro6{0, ParamSlot::Macro6, false, 1.0};
+        run(p, &macro6);
+        REQUIRE(p.base(ParamSlot::Freeze) == 0.0f);
+        REQUIRE(p.effective(ParamSlot::Freeze) == 1.0f);
+        const int64_t head = p.engine().liveWriteHead();
+        REQUIRE(head > 20 * kBlock);
+        REQUIRE(head < 40 * kBlock); // stopped
+        run(p, nullptr);
+        REQUIRE(p.engine().liveWriteHead() == head);
+
+        // Macro 6 off again: the ring runs.
+        const ParamEvent off{0, ParamSlot::Macro6, false, 0.0};
+        run(p, &off);
+        REQUIRE(p.effective(ParamSlot::Freeze) == 0.0f);
+        REQUIRE(p.engine().liveWriteHead() > head);
+    }
+
+    SECTION("by setBase, as Freeze itself")
+    {
+        Processor p({kSampleRate, kBlock, 3, Mode::Fx});
+        run(p, nullptr);
+        p.setBase(ParamSlot::Macro6, 1.0f);
+        REQUIRE(p.effective(ParamSlot::Freeze) == 1.0f);
+        run(p, nullptr);
+        const int64_t head = p.engine().liveWriteHead();
+        REQUIRE(head < 40 * kBlock);
+        run(p, nullptr);
+        REQUIRE(p.engine().liveWriteHead() == head);
+    }
+
+    SECTION("live until toggled, as Freeze is")
+    {
+        // On before the first call: not armed (ruling M1-ac), so the ring keeps running.
+        Processor p({kSampleRate, kBlock, 3, Mode::Fx});
+        p.setBase(ParamSlot::Macro6, 1.0f);
+        run(p, nullptr);
+        REQUIRE(p.effective(ParamSlot::Freeze) == 1.0f);
+        REQUIRE(p.engine().liveWriteHead() == 20 * kBlock);
+    }
+}
+
+TEST_CASE("instrument macros 7 and 8 drive Stereo and Level", "[core]")
+{
+    std::vector<float> left(64), right(64);
+    float *out[2] = {left.data(), right.data()};
+    const std::array<ParamEvent, 2> events{
+        {{0, ParamSlot::Macro7, false, 1.0}, {0, ParamSlot::Macro8, false, 1.0}}};
+
+    Processor inst({kSampleRate, 512, 3, Mode::Instrument});
+    inst.process(nullptr, 0, out, 2, 64, events);
+    CHECK(inst.effective(ParamSlot::Stereo) == 0.5f + 0.5f);
+    CHECK(inst.effective(ParamSlot::Level) == 0.0f + 12.0f);
+    CHECK(inst.effective(ParamSlot::Feedback) == 0.0f);
+    CHECK(inst.effective(ParamSlot::Mix) == 0.5f);
+
+    // The FX's are Feedback (+0.9u²) and Mix (+0.5b).
+    Processor fx({kSampleRate, 512, 3, Mode::Fx});
+    fx.process(nullptr, 0, out, 2, 64, events);
+    CHECK(fx.effective(ParamSlot::Feedback) == 0.9f);
+    CHECK(fx.effective(ParamSlot::Mix) == 1.0f);
+    CHECK(fx.effective(ParamSlot::Stereo) == 0.5f);
+    CHECK(fx.effective(ParamSlot::Level) == 0.0f);
+}
+
+TEST_CASE("setBase of a macro jumps the ramped values it moves", "[core]")
+{
+    // A state load or params.flush that sets Macro 8 (Mix) and Macro 5 (Texture, and Diffusion
+    // in its top quarter) at their tops sounds as setting Mix, Texture and Diffusion directly:
+    // the Mix and Diffusion ramps jump as setBase of Mix or Diffusion makes them.
+    const Stereo input = noise(48000 / 2, 0.5f, 37);
+    AutomationRender direct;
+    renderAutomation(input, {}, 512, {512}, direct, [](Processor &p) {
+        p.setBase(ParamSlot::Mix, 1.0f);
+        p.setBase(ParamSlot::Texture, 1.0f);
+        p.setBase(ParamSlot::Diffusion, 1.0f);
+    });
+    AutomationRender macros;
+    renderAutomation(input, {}, 512, {512}, macros, [](Processor &p) {
+        p.setBase(ParamSlot::Macro8, 1.0f);
+        p.setBase(ParamSlot::Macro5, 1.0f);
+        REQUIRE(p.effective(ParamSlot::Mix) == 1.0f);
+        REQUIRE(p.effective(ParamSlot::Texture) == 1.0f);
+        REQUIRE(p.effective(ParamSlot::Diffusion) == 1.0f);
+    });
+    REQUIRE(peak(direct.audio.left) > 0.05f);
+    REQUIRE(macros.log.grains == direct.log.grains);
+    REQUIRE(sameBits(macros.audio.left, direct.audio.left));
+    REQUIRE(sameBits(macros.audio.right, direct.audio.right));
 }

@@ -62,8 +62,12 @@ struct NoteEvent
 /// wet chain, real-time safe (spec §5, §6.1–§6.4).
 ///
 /// **Parameters.** Each slot has a base value and a modulation offset; the effective value,
-/// clamp(base + modulation) to the slot's range, is what reaches the engine (toCloudParams) and
-/// the wet chain (toWetParams). Values are floats: event values are converted on receipt.
+/// clamp(base + modulation + macro offset) to the slot's range, is what reaches the engine
+/// (toCloudParams) and the wet chain (toWetParams). The macro offset is the slot's entry of
+/// macroOffsets (sub-project 5's spec §3), from the eight macros' own effective values,
+/// clamp(base + modulation); a macro's own offset is 0, and every offset is exactly 0 while the
+/// macros rest. One clamp takes the whole sum. Values are floats: event values are converted on
+/// receipt.
 ///
 /// **The control grid** (spec §6.1; INTENT §14). An event, a parameter or a note event, at
 /// absolute sample a = clock + offset takes effect at the grid boundary b = ceil(a / 32) × 32,
@@ -72,7 +76,7 @@ struct NoteEvent
 /// into one sequence, so both kinds join the same boundary groups. Until b an event is pending:
 /// per slot, base and modulation apart, the latest parameter event wins, and the note events
 /// queue in order. process() renders up to each boundary that has a pending change, then:
-/// - the effective values become clamp(base + modulation);
+/// - the effective values become clamp(base + modulation + macro offset);
 /// - the group's note events apply in order to the held set (below);
 /// - the engine gets setCloudParams(toCloudParams(...)), setHeldKeys with the distinct held keys
 ///   (when the group had notes) and its freeze setting (below), which apply from b;
@@ -102,7 +106,8 @@ struct NoteEvent
 /// by being seen off after the construction (an activation) or the last reset(): until then an
 /// effective Freeze that is on leaves the engine live, though base() and effective() still read
 /// it on. Freeze is seen at the points where it reaches the engine: each call's first sample,
-/// each applied boundary, and a setBase() of Freeze itself (params.flush or a state load).
+/// each applied boundary, and a setBase() of Freeze itself or of Macro 6 (Macro Freeze, which adds
+/// to it; params.flush or a state load).
 /// Construction and reset() disarm it, and the reset itself doesn't arm: after a reset (a VST3
 /// suspend, say), a Freeze turned on before audio flows stays live until it is toggled, while one
 /// that is off at the next call's first sample arms. Modulation that takes the effective Freeze
@@ -191,16 +196,19 @@ class Processor
     /// and for a state load. The value is clamped to the slot's range; NaN is ignored. A pending
     /// base change to the same slot is dropped, so this, the latest value, wins. The ramped
     /// values (Mix, Level, Diffusion, Reverb Amount and Dry to Reverb) jump to the new value
-    /// without a ramp. The engine gets the new parameters from the next process() call's first
-    /// sample. Space's latched values (Decay, Size, Damping, Pre-delay and Modulation), and
-    /// whether Reverb Amount keeps the reverb active, take effect at the next reverb chunk's
-    /// first sample, the next grid boundary. Real-time safe; call it between process() calls.
+    /// without a ramp; a macro makes each ramped value whose effective value it moved jump (Macro
+    /// 5 Diffusion, the FX's Macro 8 Mix, the instrument's Macro 8 Level). The engine gets the new
+    /// parameters from the next process() call's first sample. Space's latched values (Decay, Size,
+    /// Damping, Pre-delay and Modulation), and whether Reverb Amount keeps the reverb active, take
+    /// effect at the next reverb chunk's first sample, the next grid boundary. Real-time safe; call
+    /// it between process() calls.
     void setBase(ParamSlot slot, float value) noexcept;
 
     /// The slot's base value in effect: the last setBase() or applied event. `slot` must be a
     /// parameter: ParamSlot::Count asserts (and in release builds reads the last parameter).
     float base(ParamSlot slot) const noexcept;
-    /// The slot's effective value in effect: clamp(base + modulation). `slot` as for base().
+    /// The slot's effective value in effect: clamp(base + modulation + macro offset), as the
+    /// class comment describes. `slot` as for base().
     float effective(ParamSlot slot) const noexcept;
 
     /// Renders numFrames frames into out, applying `events` and `notes` on the control grid as
