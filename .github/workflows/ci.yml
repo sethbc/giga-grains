@@ -75,12 +75,14 @@ jobs:
             bench: build/linux-gcc12/tools/gg-bench/gg-bench
     env:
       HOMEBREW_NO_AUTO_UPDATE: 1
-      # clap-wrapper downloads the VST3 SDK, Apple's AudioUnitSDK, RtAudio, RtMidi and the
-      # Windows helper library at configure time (CPM). CPM keeps each download under this
-      # directory, in a folder named by a hash of its package arguments (URL and exact tag),
-      # and reuses it when the hash matches: the cache never changes what is built, only
-      # whether it is downloaded (carry-over [96]).
-      CPM_SOURCE_CACHE: ${{ github.workspace }}/.cpm-cache
+      # The SDKs that clap-wrapper would download at configure time (the VST3 SDK, Apple's
+      # AudioUnitSDK, RtAudio, RtMidi and the Windows helper library, wil) are fetched by
+      # scripts/fetch-sdks.sh into this directory at exactly the tags clap-wrapper pins, and
+      # Configure points clap-wrapper at them (-DVST3_SDK_ROOT and the like). CPM's own cache
+      # (CPM_SOURCE_CACHE) can't do this: clap-wrapper gives every package a SOURCE_DIR, which
+      # makes CPM skip it. The cache never changes what is built, only whether it is downloaded
+      # (carry-over [96]).
+      SDK_CACHE_DIR: ${{ github.workspace }}/.sdk-cache
       # ccache for the macOS and Linux legs, CI only (the local presets are unchanged): the
       # launcher is passed at configure, and the cache never changes what is built, because
       # ccache hashes the whole compile command (every flag, -ffp-contract=off among them, the
@@ -105,22 +107,33 @@ jobs:
           submodules: recursive
           persist-credentials: false
 
-      # Keyed by leg and by the files that hold the pins (clap-wrapper's base_sdks.cmake, and
-      # libs/CMakeLists.txt, which sets what it downloads), so a changed pin starts a fresh
-      # cache. The step summary's line says whether it hit.
-      # Every cache here is restored by every run and saved only on main (a push, the nightly or a
-      # dispatch on main): GitHub scopes a cache to the ref that saved it, and a pull request can
-      # read main's but nobody reads a pull request's.
-      - name: Restore the CPM downloads
-        id: cpm_cache
+      # The SDK checkouts, keyed by leg and by the files that hold the pins (clap-wrapper's
+      # base_sdks.cmake, which names every tag, and the script that fetches them), so a changed
+      # pin starts a fresh cache. Every cache here is restored by every run and saved only on
+      # main (a push, the nightly or a dispatch on main): GitHub scopes a cache to the ref that
+      # saved it, and a pull request can read main's but nobody reads a pull request's.
+      - name: Restore the SDK checkouts
+        id: sdk_cache
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
-          path: ${{ env.CPM_SOURCE_CACHE }}
-          key: cpm-${{ matrix.preset }}-${{ hashFiles('libs/clap/clap-wrapper/cmake/base_sdks.cmake', 'libs/clap/clap-wrapper/cmake/shared_prologue.cmake', 'libs/CMakeLists.txt') }}
+          path: ${{ env.SDK_CACHE_DIR }}
+          key: sdks-${{ matrix.preset }}-${{ hashFiles('libs/clap/clap-wrapper/cmake/base_sdks.cmake', 'scripts/fetch-sdks.sh') }}
 
-      - name: Report the CPM cache
+      # On a hit every checkout is kept (its recorded pin matches) and nothing is downloaded; on
+      # a miss, each SDK is cloned at its pinned tag. Either way the script writes the -D options
+      # that Configure passes. Saved right here on a miss, so a later failure doesn't lose it.
+      - name: Fetch the SDKs
         run: |
-          echo "### CPM cache (${{ matrix.preset }}): hit=${{ steps.cpm_cache.outputs.cache-hit || 'false' }}" >> "$GITHUB_STEP_SUMMARY"
+          scripts/fetch-sdks.sh "$SDK_CACHE_DIR" | tee "$RUNNER_TEMP/fetch-sdks.log"
+          tr -d '\r' < "$RUNNER_TEMP/fetch-sdks.log" | grep '^-D' > "$SDK_CACHE_DIR/options.txt"
+          echo "### SDK cache (${{ matrix.preset }}): hit=${{ steps.sdk_cache.outputs.cache-hit || 'false' }}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Save the SDK checkouts
+        if: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && steps.sdk_cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ env.SDK_CACHE_DIR }}
+          key: ${{ steps.sdk_cache.outputs.cache-primary-key }}
 
       - name: Prepare for JUCE
         uses: surge-synthesizer/sst-githubactions/prepare-for-juce@5bb92ec9d3401eba6a85f8edea98395b3b866e84 # main
@@ -162,22 +175,16 @@ jobs:
             ccache-${{ runner.os }}-${{ matrix.preset }}-${{ matrix.os }}-
 
       - name: Configure
+        id: configure
         run: |
+          mapfile -t sdk_roots < "$SDK_CACHE_DIR/options.txt"
           launcher=()
           if [[ "$RUNNER_OS" != Windows ]]; then
             ccache --zero-stats
             launcher=(-DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
               -DCMAKE_OBJC_COMPILER_LAUNCHER=ccache -DCMAKE_OBJCXX_COMPILER_LAUNCHER=ccache)
           fi
-          cmake --preset ${{ matrix.preset }} "${launcher[@]}"
-
-      # The downloads happen in Configure. Saved on a miss only (the key is fixed by the pins).
-      - name: Save the CPM downloads
-        if: ${{ !cancelled() && github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && steps.cpm_cache.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
-        with:
-          path: ${{ env.CPM_SOURCE_CACHE }}
-          key: cpm-${{ matrix.preset }}-${{ hashFiles('libs/clap/clap-wrapper/cmake/base_sdks.cmake', 'libs/clap/clap-wrapper/cmake/shared_prologue.cmake', 'libs/CMakeLists.txt') }}
+          cmake --preset ${{ matrix.preset }} "${sdk_roots[@]}" "${launcher[@]}"
 
       - name: Build gg-all and gg-products
         id: build
@@ -379,9 +386,9 @@ jobs:
           done
           exit "$failed"
 
-      # The VST3 SDK that clap-wrapper downloads at configure time (CPM) includes public.sdk,
+      # The VST3 SDK that Configure used (VST3_SDK_ROOT, from the SDK cache) includes public.sdk,
       # so the validator (public.sdk/samples/vst-hosting/validator) is built from that same
-      # checkout. CPM records where it put the SDK in the cache.
+      # checkout.
       - name: Build Steinberg's VST3 validator
         id: vst3_validator
         if: ${{ !cancelled() && steps.products.outcome == 'success' }}
@@ -389,7 +396,7 @@ jobs:
         run: |
           build_dir="${{ matrix.build_dir }}"
           cache="$build_dir/CMakeCache.txt"
-          sdk="$(sed -n 's/^CPM_PACKAGE_vst3sdk_SOURCE_DIR:INTERNAL=//p' "$cache" | tr -d '\r')"
+          sdk="$(sed -n 's/^VST3_SDK_ROOT:[A-Z]*=//p' "$cache" | tr -d '\r')"
           echo "VST3 SDK: $sdk"
           test -f "$sdk/public.sdk/samples/vst-hosting/validator/CMakeLists.txt"
           if [[ "$RUNNER_OS" == Windows ]]; then
