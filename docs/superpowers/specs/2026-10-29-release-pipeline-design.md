@@ -14,9 +14,9 @@ Windows installer, a Linux archive, published as a GitHub Release by CI, with ev
 notice the products must carry. Today the build stops at `gg-products`, a folder of ad-hoc-signed
 bundles; the project version is 0.0.1; the repository has no tags or releases.
 
-**Its first job is the public releases: the milestone releases 0.2.0 to 0.5.0 and then 1.0.0.**
-Nightly builds come only because the same job on the existing nightly schedule costs nothing
-extra.
+**Its first job is the releases: the unpublished milestone drafts 0.2.0 to 0.4.0, then the
+public 0.5.0 betas, 0.5.0 and 1.0.0** (decision 12). Nightly builds come only because the same
+job on the existing nightly schedule costs nothing extra.
 
 **Director decisions (2026-10-29, in brainstorming):**
 
@@ -28,15 +28,15 @@ extra.
    users see SmartScreen's unknown-publisher warning once. Azure Trusted Signing (about $10 a
    month) and SignPath Foundation's free open-source program are recorded in INTENT as the
    upgrade path, to revisit once downloads make the warning matter.
-4. **Public releases precede 1.0.0,** and they are numbered by milestone: M2 ships as 0.2.0,
-   M3 as 0.3.0, M4 as 0.4.0, M5 as 0.5.0, each with betas before it (`0.2.0-beta.1`), then
-   1.0.0. "That seems cleaner" than a year of `1.0.0-beta.N`.
+4. **Releases are numbered by milestone:** M2 is tagged 0.2.0, M3 0.3.0, M4 0.4.0, M5 0.5.0,
+   then 1.0.0. "That seems cleaner" than a year of `1.0.0-beta.N`. (Amended by decision 12:
+   no betas and nothing public before M5.)
 5. **The freeze point splits.** INTENT §18 freezes the stability contracts "at the first public
-   release". The first public release, 0.2.0's first beta, freezes the plugin identities and AU
-   codes and the CLAP parameter IDs (with the AUv2 order that follows from them), because a
-   session saved with any public build must open in every later one and IDs are append-only
-   anyway. Factory preset order and the blocking CPU gate (carry-over rows 144, 148) wait for
-   1.0.0, because the presets will still be moving through the 0.x releases.
+   release". The first public release (0.5.0's first beta, decision 12) freezes the plugin
+   identities and AU codes and the CLAP parameter IDs (with the AUv2 order that follows from
+   them), because a session saved with any public build must open in every later one and IDs
+   are append-only anyway. Factory preset order and the blocking CPU gate (carry-over rows 144,
+   148) wait for 1.0.0, because the presets will still be moving through the 0.5.x releases.
 6. **Approach: extend the existing CI workflow** (§4), rather than a second release workflow.
 7. The shape the director accepted as "fine": a PKG with one component per format inside a DMG,
    installed system-wide; an Inno Setup installer plus a plain zip; a tar archive; every
@@ -59,6 +59,12 @@ extra.
 11. **Each release ships its complete corresponding source:** a tarball of the tagged tree with
     every submodule at its pin, attached to the release, with the readmes and release notes
     pointing to it and to the SDK tags clap-wrapper fetches (§6.6).
+12. **Nothing is public, and there are no betas, before M5** (the director's correction, given
+    while Task 1 ran; INTENT §23 #62). M2, M3 and M4 are tagged `v0.2.0`, `v0.3.0`, `v0.4.0`
+    and each produces a draft release the director never publishes: their own installers for
+    host testing, and the pipeline's rehearsals. M5's `v0.5.0-beta.N` are the first public
+    releases, then `v0.5.0`, then `v1.0.0`. The freeze (decision 5) moves to `v0.5.0-beta.1`;
+    the public nightly still starts with M5 (decision 10).
 
 **My call, after the builder check:** hotfixes of a superseded minor (a `v0.2.1` while `main` is
 `0.3.0-dev`) are supported when needed, not planned for: a `release/0.2` branch is cut from the
@@ -79,8 +85,8 @@ describes it in a short section.
 - Each release carries its complete corresponding source as a tarball (decision 11).
 - A pull request or an ordinary push behaves exactly as today: no installer, no secrets.
 - The products carry the version the tag names, in the bundles, the CLAP descriptors and the
-  installers, and the plugins can say which build they are (`0.2.0-beta.1`, or a nightly's
-  date and commit).
+  installers, and the plugins can say which build they are (`0.2.0`, `0.5.0-beta.1`, or a
+  nightly's date and commit).
 - Every installer and archive carries `THIRD_PARTY_NOTICES.md`, `LICENSE` (the AGPL), the GPLv3
   text, the AudioUnitSDK's Apache-2.0 text (macOS) and the ASIO SDK's `LICENSE.txt` (Windows),
   closing carry-over row 221's installer half.
@@ -119,7 +125,7 @@ describes it in a short section.
 - INTENT §15: universal macOS binaries (arm64 + x86_64), minimum macOS 11.0; Linux built against
   ubuntu-22.04 so the binaries run on older glibc (CI's Linux leg already runs there).
 - INTENT §18: the identities and the parameter IDs are frozen from the first public release,
-  0.2.0's first beta (decision 5);
+  0.5.0's first beta (decisions 5 and 12);
   the existing `identity_*` and `codesign_*` tests and `tests/core/patch_tests.cpp` keep pinning
   them.
 - Licensing (CLAUDE.md, INTENT §15): only AGPLv3-compatible code; anything taken from
@@ -166,12 +172,12 @@ describes it in a short section.
 ### 6.1 Versioning (my call, accepted in outline; the milestone numbering is decision 4)
 
 - **Semantic versions, numbered by milestone before 1.0.** Tags are `v<major>.<minor>.<patch>`
-  with an optional pre-release suffix. M2 ships as `v0.2.0`, M3 as `v0.3.0`, M4 as `v0.4.0`, M5
-  as `v0.5.0`, then `v1.0.0`; a milestone's betas are `v0.2.0-beta.1`, `v0.2.0-beta.2`, …; a fix
-  after a milestone release bumps the patch (`v0.2.1`). A tag with a suffix publishes a GitHub
-  pre-release; a bare tag a full release. Before 1.0.0, semver promises nothing about
-  compatibility between minors; INTENT §18's freeze (decision 5) promises more, and the release
-  notes say so.
+  with an optional pre-release suffix. M2 is tagged `v0.2.0`, M3 `v0.3.0`, M4 `v0.4.0` (drafts,
+  never published; no betas, decision 12), M5 `v0.5.0` with betas `v0.5.0-beta.1`,
+  `v0.5.0-beta.2`, … before it, then `v1.0.0`; a fix after a milestone release bumps the patch
+  (`v0.2.1`). A tag with a suffix makes the draft a pre-release; a bare tag a full release.
+  Before 1.0.0, semver promises nothing about compatibility between minors; INTENT §18's
+  freeze (decision 5) promises more from `v0.5.0-beta.1`, and the release notes say so.
 - **The version lives in `CMakeLists.txt`**, nothing is derived from git at configure time, so
   two checkouts of one commit build the same bytes:
   - `project(GigaGrains VERSION 0.2.0 …)` holds the numeric part;
@@ -249,7 +255,7 @@ In `cmake/products.cmake`, after `gg-products`:
   `installer/windows/make-zip.cmake`, `installer/linux/make-tarball.sh`, plus the resources
   (`installer/macos/{distribution.xml.in, Readme.rtf, standalone.entitlements}`,
   `installer/windows/{readme.txt}`, `installer/linux/README.md`, `installer/licenses/`).
-- **Output names**, with `<v>` the full version string (`0.2.0-beta.1`, `0.2.0`, `1.0.0`,
+- **Output names**, with `<v>` the full version string (`0.2.0`, `0.5.0-beta.1`, `1.0.0`,
   `0.2.0-dev.20261029.95bee95`):
   - `giga-grains-<v>-macos.dmg`
   - `giga-grains-<v>-windows-x64.exe` and `giga-grains-<v>-windows-x64.zip`
@@ -389,10 +395,11 @@ five years); the doc says to note the dates. No secret is needed for Windows or 
 
 ### 6.8 The release procedure (`docs/releasing.md`, written by this work)
 
-1. **Before the first public release** (0.2.0's first beta), once: the freeze. INTENT §18's
+1. **Before the first public release** (0.5.0's first beta, M5), once: the freeze. INTENT §18's
    freeze clause is amended (§7) and the release notes say that sessions saved from this build
    onward will open in every later release, 1.0.0 included. The `identity_*`, `codesign_*` and
-   parameter-ID tests already pin what is frozen.
+   parameter-ID tests already pin what is frozen. The 0.2.0, 0.3.0 and 0.4.0 drafts are never
+   published (decision 12); the procedure's publish step is skipped for them.
 2. **Each release:** the carry-over and INTENT are current; the first-class host matrix passed on
    a build of the release candidate (INTENT §11: bugs in Live or Bitwig block a release); for a
    milestone release, its listening gate passed; `scripts/check.sh` green; the release notes
@@ -431,10 +438,10 @@ learns: the `gg-installer` command, the switch's name, `docs/releasing.md`'s pat
   the draft release and the director's publish, the nightly, the dry run. Add a "Versioning"
   paragraph (§6.1): semver, the `dev` suffix, the tag check, nightly suffixes.
 - **§20, the roadmap:** the "→ v1.0" row moves from after M2 to after M5, before M6: "M0 to M5
-  polished; success criteria (§10) met". M2 to M5 each gain "ships as 0.<n>.0" in their Delivers
-  column, and the paragraph "Why this order after v1.0" becomes "Why this order before v1.0",
+  polished; success criteria (§10) met". M2 to M4 each gain "tagged 0.<n>.0, unpublished" and
+  M5 "ships as 0.5.0; its betas are the first public releases" in their Delivers column, and the paragraph "Why this order after v1.0" becomes "Why this order before v1.0",
   its three reasons unchanged. Part I (§10) is untouched. (Decision 8.)
-- **§18, "Frozen at first release":** "Frozen from the first public release (v0.2.0-beta.1):
+- **§18, "Frozen at first release":** "Frozen from the first public release (v0.5.0-beta.1):
   CLAP parameter IDs, the AUv2 order that follows from them, plugin identities and AU codes.
   Frozen from 1.0.0: factory preset order." The parameter table's "frozen at the first public
   release" follows.
@@ -463,7 +470,7 @@ learns: the `gg-installer` command, the switch's name, `docs/releasing.md`'s pat
   - the version string: `GG_VERSION_STRING` matches `<numeric>[-<suffix>]` with the default
     suffix `dev`, the bundles' `CFBundleShortVersionString` is the numeric part, and the CLAP
     descriptors report the full string (`factory_tests.cpp`, `smoke_tests.cpp` updated);
-  - the tag check script (§6.6) accepts `v0.2.0-beta.1` against `0.2.0` + `beta.1` and `v1.0.0`
+  - the tag check script (§6.6) accepts `v0.5.0-beta.1` against `0.5.0` + `beta.1` and `v1.0.0`
     against `1.0.0` + an empty suffix, rejects a mismatch and rejects the suffix `dev` (label
     `scripts`).
 - **The signed path is verified locally first** (decision 9: the director's identities, in the
@@ -474,10 +481,11 @@ learns: the `gg-installer` command, the switch's name, `docs/releasing.md`'s pat
 - **The source tarball** unpacks, and `cmake --preset dev` configures from it offline apart from
   the SDK fetch (a test of the script, label `scripts`: every submodule path in `.gitmodules`
   is present and non-empty in the archive).
-- **A rehearsal release:** the first real tag, `v0.2.0-beta.1`, comes with M2. The builder's
-  final report includes a dry-run run ID and, if the director agrees to tag one, a rehearsal
-  draft release from a throwaway tag (`v0.1.99-rc.1`, say, deleted afterwards with its tag), so
-  the whole path has run once before M2 needs it.
+- **A rehearsal release:** the first real tag, `v0.2.0`, comes with M2 and is itself an
+  unpublished draft (decision 12). The builder's final report includes a dry-run run ID and, if
+  the director agrees to tag one, a rehearsal draft release from a throwaway tag
+  (`v0.1.99-rc.1`, say, deleted afterwards with its tag), so the whole path has run once before
+  M2 needs it.
 - **No behaviour change:** `scripts/update-goldens.sh` before and after, every WAV SHA-256
   matching; `scripts/check.sh` green on `dev`, `asan`, `rtsan`; the format check; the carry-over
   open-row count not higher at the end than at the start (13).

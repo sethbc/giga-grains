@@ -6,9 +6,9 @@ engine as CLAP, VST3, AU v2 and standalone for macOS, Windows and Linux. Read
 [`INTENT.md`](INTENT.md) first: it says what the project is for and how it is built.
 
 **Status (2026-10-29):** M0 (foundations) and M1 (the Cloud core: both plugins make textures)
-are done; next come the installers and release pipeline, then M2. Nothing has been released yet.
-Each milestone from M2 on ships as a 0.x release (M2 as 0.2.0), and v1.0.0 follows M5
-(INTENT §20).
+are done; next come the installers and release pipeline, then M2. Nothing has been released yet,
+and nothing will be public before M5: its `0.5.0-beta.N` are the first public releases, and
+v1.0.0 follows M5 (INTENT §20).
 
 To build,
 fetch the dependencies with `git submodule update --init`, then configure, build and test with

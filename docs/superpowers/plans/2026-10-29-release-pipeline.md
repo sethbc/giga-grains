@@ -433,7 +433,7 @@ git commit -m "ci: tags, the nightly and an installers dispatch build, sign and 
 
 **Files:**
 - Create: `docs/releasing.md`
-- Modify: `CLAUDE.md` ("Outputs" list ~line 196; the "Installing and signing the plugins" section ~line 620; the labels paragraph: add `installer`; a new "Releasing" paragraph after "Installing and signing"), `README.md` (the signing paragraph; a "Downloads" sentence pointing at GitHub Releases from 0.2.0's first beta), `docs/m1-carry-over.md` row 221, `INTENT.md` §19 (only if a name the docs pass wrote differs from what was built: `gg-installer`, the switch, the artifact names), `docs/superpowers/specs/2026-10-29-release-pipeline-design.md` (Status row: built, with corrections)
+- Modify: `CLAUDE.md` ("Outputs" list ~line 196; the "Installing and signing the plugins" section ~line 620; the labels paragraph: add `installer`; a new "Releasing" paragraph after "Installing and signing"), `README.md` (the signing paragraph; a "Downloads" sentence: GitHub Releases, public from 0.5.0's first beta, nothing before M5), `docs/m1-carry-over.md` row 221, `INTENT.md` §19 (only if a name the docs pass wrote differs from what was built: `gg-installer`, the switch, the artifact names), `docs/superpowers/specs/2026-10-29-release-pipeline-design.md` (Status row: built, with corrections)
 
 **Interfaces:**
 - Consumes: everything above. `docs/releasing.md` covers spec §6.7 (the secrets table, the export commands, the API key, rotation, expiry dates) and §6.8 (the per-release checklist, the freeze step before 0.2.0-beta.1, the draft-then-publish step, the unsigned and the signed local builds, the hotfix branch), plus the nightly switch and the dry run.
@@ -489,4 +489,4 @@ Expected: `PASS`; paste the summary and the hashes line into the report.
 
 - [ ] **Step 6: Report and hand over**
 
-The final report: the dry-run run ID(s), the signed local build's `spctl` lines, the check.sh summary, the golden hash line, the carry-over count, the rehearsal's outcome, and anything the director must still do (publishing is theirs; the first real tag is `v0.2.0-beta.1` with M2).
+The final report: the dry-run run ID(s), the signed local build's `spctl` lines, the check.sh summary, the golden hash line, the carry-over count, the rehearsal's outcome, and anything the director must still do (publishing is theirs and starts with M5's `v0.5.0-beta.1`; the first tag, `v0.2.0` with M2, stays an unpublished draft).

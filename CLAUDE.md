@@ -21,8 +21,10 @@ AGPL-3.0-or-later.
   silently.
 - **The principles in §8 are the tie-breakers** when goals conflict.
 - **Where we are** (INTENT §20, §23 #61): M0 and M1 are done; next is the installers and
-  release pipeline (`docs/superpowers/specs/2026-10-29-release-pipeline-design.md`), then M2,
-  which ships as 0.2.0. Every milestone to M5 ships as a 0.x release; v1.0.0 follows M5.
+  release pipeline (`docs/superpowers/specs/2026-10-29-release-pipeline-design.md`), then M2.
+  M2, M3 and M4 are tagged 0.2.0, 0.3.0 and 0.4.0 as unpublished draft releases; nothing is
+  public and there are no betas before M5, whose `0.5.0-beta.N` are the first public releases
+  (§23 #62); v1.0.0 follows M5.
 - **The records:** each sub-project's spec in `docs/superpowers/specs/`, the published benchmark
   JSON in `docs/benchmarks/`, the listening packs in `docs/listening/`, the M0 and M1 spikes in
   `docs/spikes/`, and the carry-over in `docs/m1-carry-over.md`.
@@ -53,8 +55,8 @@ resource, so machines must catch everything they can catch.
   3. then steal grains with fades.
 
   It never clicks and never drops out.
-- **Stability contracts** (INTENT §18, §23 #61). Frozen from the first public release, 0.2.0's
-  first beta:
+- **Stability contracts** (INTENT §18, §23 #61, #62). Frozen from the first public release,
+  `v0.5.0-beta.1` (M5):
   - CLAP parameter IDs, which are append-only;
   - the AUv2 parameter order, which is ascending ID order and so follows from them;
   - plugin identities and AU codes.
@@ -561,7 +563,7 @@ $b --space [--quick | --seconds S] [--rounds N] [--commit SHA] [--json out.json]
     The `bench_baseline_*` tests pin exit 3 (a regression or a missing entry), exit 0, the
     no-verdict line and exit 1 for a run with no ratios.
   - The gate turns blocking at 1.0.0, after M5 (INTENT §23 #60, #61), with the published X. The
-    0.x public releases, from 0.2.0's first beta on, keep it report-only.
+    0.x releases, public from 0.5.0's first beta, keep it report-only.
 - **Refreshing a baseline** (`tools/gg-bench/baselines/README.md` has the format):
   1. Make three separate full-length CI runs of the same engine code: runs on `main`, the
      nightly or `gh workflow run ci.yml --ref <branch>` (a pull request's runs are `--quick` and
