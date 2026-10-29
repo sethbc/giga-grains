@@ -6,6 +6,7 @@
 #define GG_CORE_PROCESSOR_H
 
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <span>
@@ -14,10 +15,13 @@
 #include <sst/cpputils/rtsan_support.h>
 
 #include "gg/core/Diffuser.h"
+#include "gg/core/GrainQueue.h"
+#include "gg/core/LivePeaks.h"
 #include "gg/core/ParamIds.h"
 #include "gg/core/ParamMap.h"
 #include "gg/core/SourceExchange.h"
 #include "gg/core/SpaceReverb.h"
+#include "gg/core/UiSnapshot.h"
 #include "gg/engine/Engine.h"
 
 namespace gg::core
@@ -185,6 +189,20 @@ struct NoteEvent
 /// other values (Decay, Size, Damping, Pre-delay, Modulation) are the effective values, which it
 /// latches at each chunk's first sample. A chunk is active when the Amount ramp isn't exactly 0
 /// at its first sample: Amount 0 keeps the reverb idle (SpaceReverb's idle rule).
+///
+/// **Publishing** (sub-project 5's spec §6.4). While setPublishing(true), process() fills three
+/// lock-free structures the editor draws from, without allocating, locking or waiting:
+/// - grainQueue(): a GrainVis per spawned grain, in spawn order; when the editor falls behind
+///   the queue drops the newest and counts them (GrainQueue::dropped).
+/// - snapshot(): a UiSnapshot at the end of every call (0-frame calls included), and
+///   publishedClock(), the sample clock it carries, stored after it with release order.
+/// - livePeaks() (FX): the peaks of the ring input, the exact buffers the engine was handed (the
+///   input, or with Feedback the input plus the fed-back wet signal), indexed by ring time: the
+///   frames the ring's write head advanced over, so a freeze, which stops the head, writes none,
+///   and a grain's startPos reads its own frames' peaks. Taken before the freeze ramp's write
+///   gain.
+/// process() reads the flag once, at its start, and holds it for the whole call. With it off
+/// nothing is published, and with it on or off the audio is the same, bit for bit.
 class Processor
 {
   public:
@@ -299,8 +317,24 @@ class Processor
     /// call it between process() calls.
     void reset() noexcept;
 
-    /// The engine's grain-event sink (Engine::setEventSink).
+    /// The grain-event sink (gg-render's event log, tests): called on the audio thread once per
+    /// spawned grain, in spawn order, as Engine::setEventSink describes, whether or not
+    /// publishing is on. nullptr removes it. Call it while process() isn't running.
     void setEventSink(GrainEventSink sink, void *ctx) noexcept;
+
+    /// Turns publishing on or off (the class comment): the editor's, on the main thread, as it
+    /// opens and closes. It takes effect from the next process() call's start.
+    void setPublishing(bool on) noexcept { publishing_.store(on, std::memory_order_relaxed); }
+    /// The spawned grains, for the editor (the queue's consumer).
+    GrainQueue &grainQueue() noexcept { return *grainQueue_; }
+    /// The latest UiSnapshot, for the editor (the buffer's consumer).
+    SnapshotBuffer &snapshot() noexcept { return snapshot_; }
+    /// The peak strip of the FX's live ring, kLiveSeconds long (ceil(kLiveSeconds × sampleRate)
+    /// frames); unprepared (0 frames, every read 0) in the instrument. Any thread may read it.
+    const LivePeaks &livePeaks() const noexcept { return livePeaks_; }
+    /// The sample clock at the end of the last process() call that published (0 until one has),
+    /// stored with release order after that call's snapshot.
+    const std::atomic<int64_t> &publishedClock() const noexcept { return publishedClock_; }
 
     const Engine &engine() const noexcept { return engine_; }
 
@@ -336,6 +370,9 @@ class Processor
         int64_t callStart; ///< The absolute sample of the call's first frame.
     };
 
+    /// The engine's grain-event sink, ctx the Processor: forwards to the sink set by
+    /// setEventSink, and queues a GrainVis while this call publishes.
+    static void onGrain(void *ctx, const GrainSpec &g) noexcept SST_CPPUTILS_NONBLOCKING;
     /// Hands every source the engine has retired back to sources_ (SourceExchange::retire).
     void handBackRetired() noexcept SST_CPPUTILS_NONBLOCKING;
     /// Renders the absolute samples [from, to) of the current call.
@@ -403,6 +440,21 @@ class Processor
     Ramp amount_;
     Ramp drySend_;  // always 0 in the instrument
     Ramp feedback_; // always 0 in the instrument
+
+    // Publishing (the class comment). The external sink is setEventSink's; publishingThisCall_
+    // is publishing_ as the current process() call read it at its start; engineFrozen_ is the
+    // freeze setting last given to the engine.
+    GrainEventSink externalSink_{nullptr};
+    void *externalSinkCtx_{nullptr};
+    std::atomic<bool> publishing_{false};
+    bool publishingThisCall_{false};
+    bool engineFrozen_{false};
+    std::unique_ptr<GrainQueue> grainQueue_; // heap: 128 KB
+    SnapshotBuffer snapshot_;
+    LivePeaks livePeaks_;
+    std::atomic<int64_t> publishedClock_{0};
+    static_assert(std::atomic<bool>::is_always_lock_free);
+    static_assert(std::atomic<int64_t>::is_always_lock_free);
 
     // Space (sub-project 4's spec §6.1): the effective values in SpaceReverb's terms, the
     // diffuser on the engine's output, and the reverb (heap: about 14.5 MB, 16-byte aligned).

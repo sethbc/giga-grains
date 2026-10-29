@@ -5,6 +5,7 @@
 #include "gg/core/Processor.h"
 
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <cmath>
 #include <cstddef>
@@ -51,6 +52,10 @@ int64_t gridCeil(int64_t a) noexcept
 }
 
 float finiteOrZero(float x) noexcept { return std::isfinite(x) ? x : 0.0f; }
+
+/// A missing ring-input channel, for the live peaks: the FX's pieces are at most
+/// kFeedbackDelay samples.
+constexpr std::array<float, Processor::kFeedbackDelay> kSilence{};
 
 /// Whether a note event's fields are in range (NoteEvent): On needs a channel 0..15 and a key
 /// 0..127, Off also takes −1 for either, AllOff takes a channel 0..15 or −1 and ignores the key.
@@ -133,6 +138,14 @@ Processor::Processor(const ProcessorConfig &config)
     {
         engine_.setNoteGate(true); // silent until a note (spec §6.2)
     }
+    // Publishing (sub-project 5's spec §6.4): the engine's sink is ours for good, and forwards to
+    // setEventSink's. The peak strip spans the ring, N = ceil(kLiveSeconds × sampleRate) frames.
+    grainQueue_ = std::make_unique<GrainQueue>();
+    if (config_.mode == Mode::Fx)
+    {
+        livePeaks_.prepare(engine_.liveFrames());
+    }
+    engine_.setEventSink(&Processor::onGrain, this);
     updateEffective();
     jumpRamps();
 }
@@ -352,7 +365,8 @@ void Processor::syncFreeze() noexcept
     }
     // Spec §6.3: in the FX a held key freezes too, with no arming, and never arms the parameter.
     const bool noteHeld = config_.mode == Mode::Fx && keyCount_ > 0;
-    engine_.setFreeze((on && freezeArmed_) || noteHeld);
+    engineFrozen_ = (on && freezeArmed_) || noteHeld;
+    engine_.setFreeze(engineFrozen_);
 }
 
 void Processor::reset() noexcept
@@ -365,6 +379,7 @@ void Processor::reset() noexcept
     updateEffective();
     // A fresh ring: Freeze waits for an off→on transition, as after construction.
     freezeArmed_ = false;
+    engineFrozen_ = false;
     engine_.setFreeze(false);
     jumpRamps();
     // The engine's clock is back at 0, and so is the reverb's time: its chunks stay on the grid.
@@ -438,7 +453,23 @@ bool Processor::takeOffers() noexcept
 
 void Processor::setEventSink(GrainEventSink sink, void *ctx) noexcept
 {
-    engine_.setEventSink(sink, ctx);
+    externalSink_ = sink;
+    externalSinkCtx_ = ctx;
+}
+
+void Processor::onGrain(void *ctx, const GrainSpec &g) noexcept
+{
+    auto *self = static_cast<Processor *>(ctx);
+    if (self->externalSink_ != nullptr)
+    {
+        self->externalSink_(self->externalSinkCtx_, g);
+    }
+    if (self->publishingThisCall_)
+    {
+        // A full queue drops the grain and counts it: the editor resumes with the next ones.
+        self->grainQueue_->push({g.onsetSample, g.startPos, static_cast<float>(g.rate),
+                                 static_cast<float>(g.durationSamples), g.gain, g.pan});
+    }
 }
 
 void Processor::process(const float *const *in, uint32_t numInChannels, float *const *out,
@@ -448,6 +479,8 @@ void Processor::process(const float *const *in, uint32_t numInChannels, float *c
 {
     // One guard for the whole call, the dry/wet sum included (spec §6.4).
     ScopedDenormalsOff denormalsOff;
+    // Read once: the whole call publishes, or none of it does (sub-project 5's spec §6.4).
+    publishingThisCall_ = publishing_.load(std::memory_order_relaxed);
     takeOffers();
     if (in == nullptr || config_.mode != Mode::Fx)
     {
@@ -563,6 +596,18 @@ void Processor::process(const float *const *in, uint32_t numInChannels, float *c
             std::fill_n(out[c], numFrames, 0.0f);
         }
     }
+
+    if (publishingThisCall_)
+    {
+        const int64_t clock = engine_.sampleClock();
+        snapshot_.push({clock, engine_.liveWriteHead(), engineFrozen_, engine_.activeGrains(),
+                        base_[static_cast<size_t>(ParamSlot::Position)],
+                        base_[static_cast<size_t>(ParamSlot::Spray)],
+                        effective_[static_cast<size_t>(ParamSlot::Position)],
+                        effective_[static_cast<size_t>(ParamSlot::Spray)], feedbackAt(clock)});
+        // Release: an editor that reads this clock with acquire finds the snapshot it ends.
+        publishedClock_.store(clock, std::memory_order_release);
+    }
 }
 
 void Processor::render(const Buffers &b, int64_t from, int64_t to) noexcept
@@ -619,7 +664,18 @@ void Processor::render(const Buffers &b, int64_t from, int64_t to) noexcept
             ringIn[1] = ringIn_[1].data();
             ringChannels = 2;
         }
+        const int64_t headBefore = engine_.liveWriteHead();
         engine_.process(ringIn, ringChannels, wet, rendering, n);
+        if (fx && publishingThisCall_)
+        {
+            // The peaks of what the ring took (spec §6.4): the buffers the engine was handed,
+            // over the frames its head advanced, a prefix of the piece (all of it unless a
+            // freeze stopped the head), at ring time.
+            const auto written = static_cast<uint32_t>(engine_.liveWriteHead() - headBefore);
+            const float *l = ringChannels > 0 && ringIn[0] != nullptr ? ringIn[0] : kSilence.data();
+            const float *r = ringChannels > 0 && ringIn[1] != nullptr ? ringIn[1] : kSilence.data();
+            livePeaks_.write(l, r, headBefore, written);
+        }
 
         float *dst[2] = {nullptr, nullptr};
         for (uint32_t c = 0; c < channels; ++c)

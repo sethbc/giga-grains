@@ -1004,6 +1004,50 @@ TEST_CASE("processor does not allocate", "[core][rt]")
     }
 }
 
+TEST_CASE("publishing does not allocate", "[core][publish][rt]")
+{
+    // The publish path (spec §6.4) under the tripwire: grains into the queue, which the UI never
+    // drains here, so it fills and then drops (Review Focus 4); a snapshot per call; the peaks
+    // of the ring input, Feedback's included, and of a missing input (silence). 4096-frame calls
+    // at Density 8 (256 Hz) spawn about 22 grains each, so 200 of them overflow the 4096-entry
+    // queue; 0- and 1-frame calls publish too.
+    constexpr uint32_t kFrames = 4096;
+    Processor p({kSampleRate, kFrames, 5, Mode::Fx});
+    SpawnCounter counter;
+    p.setEventSink(&SpawnCounter::record, &counter);
+    p.setBase(ParamSlot::Density, 8.0f);
+    p.setBase(ParamSlot::Feedback, 0.5f);
+    p.setBase(ParamSlot::Mix, 1.0f);
+    p.setPublishing(true);
+    const Stereo input = noise(kFrames, 0.5f, 43);
+    const float *in[2] = {input.left.data(), input.right.data()};
+    std::vector<float> o0(kFrames), o1(kFrames);
+    float *out[2] = {o0.data(), o1.data()};
+
+    AllocTripwire::resetCount();
+    {
+        AllocTripwire::Scope armed;
+        for (int i = 0; i < 200; ++i)
+        {
+            p.process(i % 50 == 49 ? nullptr : in, 2, out, 2, kFrames, {});
+            p.process(in, 2, out, 2, 0, {});
+            p.process(in, 1, out, 2, 1, {});
+        }
+    }
+    const uint64_t allocations = AllocTripwire::count();
+
+    REQUIRE(counter.spawns > gg::core::GrainQueue::kCapacity);
+    REQUIRE(p.grainQueue().dropped() == counter.spawns - gg::core::GrainQueue::kCapacity);
+    gg::core::UiSnapshot snap;
+    REQUIRE(p.snapshot().take(snap));
+    REQUIRE(snap.clock == p.engine().sampleClock());
+    REQUIRE(p.publishedClock().load() == p.engine().sampleClock());
+    if (gg::test::AllocTripwire::available()) // off under ASan; RTSan covers this
+    {
+        REQUIRE(allocations == 0);
+    }
+}
+
 TEST_CASE("processor flushes denormals", "[core][denormal]")
 {
     // The whole process() call, the dry/wet sum included, runs with denormals flushed (spec
