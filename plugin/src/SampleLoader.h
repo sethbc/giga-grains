@@ -5,6 +5,7 @@
 #ifndef GG_PLUGIN_SAMPLELOADER_H
 #define GG_PLUGIN_SAMPLELOADER_H
 
+#include <atomic>
 #include <condition_variable>
 #include <cstdint>
 #include <exception>
@@ -56,8 +57,12 @@ struct SampleStatus
 /// decodes, hashes, converts and prepares a load (gg::media::loadSample, then prepare); it waits
 /// on a condition variable between jobs and never reads or writes the settings file (ruling R16).
 /// The worker starts with the first job and stops in activate(), deactivate() and the
-/// destructor, each of which waits for a job in progress to finish; a job still waiting stays
-/// queued, and runs when the worker next starts (a request, or the end of activate()). The
+/// destructor. activate() waits for a job in progress to finish. deactivate() and the destructor
+/// cancel it instead (carry-over [194]): the hash and the conversion stop between chunks, so
+/// they return within a chunk's time, plus whatever is left of the file's decode, which runs to
+/// its end (a WAV's takes milliseconds). deactivate() queues the job again, as if it hadn't
+/// started; the destructor drops it. A job still waiting stays queued, and runs when the worker
+/// next starts (a request, or the end of activate()). The
 /// worker's finished result goes back under the loader's mutex, and Callbacks::requestCallback
 /// asks the host for on_main_thread, where onMainThread() applies it. The audio thread never
 /// touches the loader: sources reach it through the active Processor's SourceExchange.
@@ -87,7 +92,18 @@ struct SampleStatus
 /// original isn't kept, spec §6.4) and converts it. So the first block after any activation
 /// renders the same whatever the machine's speed. If the file has gone or changed by then, the
 /// old source stays (the engine scales each grain's rate by source rate / output rate, so it
-/// plays at the right pitch), the manifest entry stays, and the status is Missing or Changed.
+/// plays at the right pitch), the manifest entry stays, and the status is Missing or Changed (or
+/// Error, if it is there but can't be read).
+///
+/// **A file that comes back** (carry-over [194]). While the status says the manifest's file is
+/// missing, has changed or can't be read, activate() looks for it again: with no source, it
+/// searches as the restore did, and with a source kept from before, it checks the saved path
+/// (converting the file if the rate changed, as above). Found, the sample is loaded, and the
+/// status is Loaded.
+///
+/// **Searches** go through the process's SearchCache (carry-over [192]): a search that found
+/// nothing is remembered for a while, so the instances of a project restoring one missing sample
+/// scan the sample folder once. A load or relink applied, or the sample folder set, forgets them.
 class SampleLoader
 {
   public:
@@ -107,7 +123,7 @@ class SampleLoader
     /// `settingsFile` is the per-machine settings file (spec §6.7) this instance reads, and
     /// updates after a load. Nothing is read until a request or a restore needs it.
     SampleLoader(std::filesystem::path settingsFile, Callbacks callbacks);
-    /// Stops the worker, waiting for a job in progress to finish.
+    /// Stops the worker, cancelling a job in progress (see Threads).
     ~SampleLoader();
     SampleLoader(const SampleLoader &) = delete;
     SampleLoader &operator=(const SampleLoader &) = delete;
@@ -163,13 +179,14 @@ class SampleLoader
                      std::optional<std::string> newerMedia = std::nullopt) noexcept;
 
     /// The plugin's activate(), before it returns: waits for a job under way, applies what the
-    /// worker finished, converts the sample at `sampleRate` here (see the class comment), and
-    /// returns the source the new Processor starts with (Processor::setSourceNow); nullptr for
-    /// none. Then restarts the worker if a job waits. Never throws: a failed conversion of a
-    /// pending buffer leaves no source and the status Error.
+    /// worker finished, converts the sample at `sampleRate` here, or looks again for a file that
+    /// wasn't at hand (see the class comment), and returns the source the new Processor starts
+    /// with (Processor::setSourceNow); nullptr for none. Then restarts the worker if a job waits.
+    /// Never throws: a failed conversion of a pending buffer leaves no source and the status Error.
     std::shared_ptr<const PreparedSource> activate(double sampleRate) noexcept;
-    /// The plugin's deactivate(): stops the worker, waiting for a job in progress, and applies
-    /// what it finished, as onMainThread() would but with nothing offered.
+    /// The plugin's deactivate(): stops the worker, cancelling a job in progress and queuing it
+    /// again (see Threads), and applies what it finished, as onMainThread() would but with
+    /// nothing offered.
     void deactivate() noexcept;
 
     /// clap_plugin.on_main_thread: applies a finished result, unless superseded.
@@ -212,27 +229,45 @@ class SampleLoader
         std::shared_ptr<const PreparedSource> prepared;
         bool differentAudio{false}; ///< Relink: not the entry's fingerprint
         std::string error;          ///< non-empty on failure
+        bool cancelled{false};      ///< stopped part way by cancel_: nothing else is set
     };
 
     /// Queues `job` as the only waiting one, starting the worker if needed.
     void submit(Job job);
     void startWorker();
-    void stopWorker() noexcept;
+    /// Stops the worker. A job in progress finishes, or, with `cancel`, stops part way and is
+    /// queued again, unless a newer request has replaced it.
+    void stopWorker(bool cancel) noexcept;
     void workerLoop();
     /// Runs `job` at `rate` (0: inactive, keep the decoded buffer). Worker thread.
-    Result run(Job job, double rate);
+    Result run(const Job &job, double rate);
     /// Applies the finished result, unless superseded; offers its source only while active.
     void applyResults() noexcept;
     void apply(Result &result);
     /// Makes `source` the one in effect, offering it while active.
     void setSource(std::shared_ptr<const PreparedSource> source);
-    /// gg::media::prepare, then the observer.
+    /// gg::media::prepare, then the observer. nullptr only if `cancel` was set part way.
     std::shared_ptr<const PreparedSource> prepare(std::shared_ptr<SampleBuffer> decoded,
-                                                  double rate) const;
+                                                  double rate,
+                                                  const std::atomic<bool> *cancel = nullptr) const;
     /// activate()'s conversion of the current sample at `rate`, when its source is at another:
-    /// the file decoded again and converted, or, if it has gone or changed, the old source kept
-    /// and the status Missing or Changed.
+    /// the file at the saved path decoded again and converted, or, if it has gone, changed or
+    /// can't be read, the old source kept and the status Missing, Changed or Error. When the
+    /// source is at `rate` already, only checks the file, for a status that said it wasn't at
+    /// hand. Either way, a file that is the sample's makes such a status Loaded.
     void convertNow(double rate) noexcept;
+    /// The manifest entry's file searched for (through SearchCache) and decoded, and the status
+    /// set: Loaded, Missing, Changed or Error. At `rate` 0 (inactive) the decoded buffer waits
+    /// for activate() (restorePending_) and the result is nullptr; otherwise, the source at
+    /// `rate`. A file found away from the saved path updates the entry and marks the state dirty.
+    std::shared_ptr<const PreparedSource> findAndLoad(double rate);
+    /// The status for the manifest's file not at hand: Changed when `read` (the file at `file`,
+    /// the saved path, was read and isn't the sample's); otherwise Error when a file is there
+    /// (it couldn't be read), and Missing when none is.
+    void setUnavailable(const std::string &fileName, const std::filesystem::path &file, bool read);
+    /// Whether the status says the manifest's file wasn't at hand: Missing, Changed, or the Error
+    /// for a file that can't be read.
+    bool fileUnavailable() const noexcept;
     void setLoadedStatus(std::string message);
     void setError(std::string fileName, std::string message);
     /// setError with `error` described, for a noexcept function's handler: if even that fails
@@ -269,7 +304,8 @@ class SampleLoader
     uint64_t latestRequest_{0};    // lastRequest_, for the worker to drop superseded work
     double workerRate_{0.0};       // activeRate_, for the job the worker starts
     bool stop_{false};
-    std::thread worker_; // main thread only starts and joins it
+    std::atomic<bool> cancel_{false}; // set while stopWorker(true) waits: the job stops part way
+    std::thread worker_;              // main thread only starts and joins it
 };
 } // namespace gg::plugin
 

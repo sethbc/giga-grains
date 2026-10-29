@@ -3,6 +3,7 @@
 // Copyright 2026, the Giga Grains authors (see git history)
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -217,4 +218,20 @@ TEST_CASE("convertRate of a 1 Hz file to 192 kHz and 768 kHz keeps its memory bo
         INFO("peak grew by " << grew / 1e6 << " MB for " << outputBytes / 1e6 << " MB of output");
         REQUIRE(grew < outputBytes + (512ull << 20));
     }
+}
+
+TEST_CASE("convertRate stops once its cancel flag is set", "[media]")
+{
+    // The sample loader's prompt stop (carry-over [194]). A flag never set changes nothing.
+    const auto in = sine(2, 44100.0, 44100, 440.0, 0.5);
+    std::atomic<bool> cancel{false};
+    const auto out = convertRate(in, 48000.0, &cancel);
+    const auto plain = convertRate(in, 48000.0);
+    REQUIRE(out != nullptr);
+    REQUIRE(plain != nullptr);
+    CHECK(identical(*out, *plain, 0, 0));
+    CHECK(identical(*out, *plain, 1, 1));
+    cancel = true;
+    CHECK(convertRate(in, 48000.0, &cancel) == nullptr);
+    CHECK(convertRate(in, 44100.0, &cancel) == in); // nothing to convert
 }

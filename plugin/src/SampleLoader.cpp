@@ -14,6 +14,8 @@
 #include "gg/media/SettingsFile.h"
 #include "gg/media/Utf8Path.h"
 
+#include "SearchCache.h"
+
 namespace gg::plugin
 {
 namespace
@@ -58,6 +60,8 @@ std::string describe(const std::exception_ptr &error, const std::string &fileNam
 
 constexpr const char *kDifferentAudio = "different audio than the saved sample";
 constexpr const char *kMissing = "not found";
+// Error: a file is there, but can't be read (carry-over [194]).
+constexpr const char *kUnreadable = "the file at the saved path can't be read";
 constexpr const char *kChanged = "the file at the saved path has changed";
 constexpr const char *kNewerVersion = "sample from a newer version";
 // Short enough to fit any std::string's own buffer, so assigning it never allocates.
@@ -69,7 +73,7 @@ SampleLoader::SampleLoader(std::filesystem::path settingsFile, Callbacks callbac
 {
 }
 
-SampleLoader::~SampleLoader() { stopWorker(); }
+SampleLoader::~SampleLoader() { stopWorker(true); }
 
 void SampleLoader::requestLoad(std::filesystem::path file) noexcept
 {
@@ -111,7 +115,9 @@ bool SampleLoader::setSampleFolder(const std::filesystem::path &folder)
     }
     core::MachineSettings settings = readSettings();
     settings.sampleFolder = utf8(folder);
-    return media::saveSettings(settingsFile_, settings);
+    const bool saved = media::saveSettings(settingsFile_, settings);
+    SearchCache::process().clear(); // searched again in the new folder (carry-over [192])
+    return saved;
 }
 
 SampleLoader::Restored SampleLoader::restore(const std::optional<core::MediaEntry> &entry,
@@ -159,51 +165,7 @@ SampleLoader::Restored SampleLoader::restore(const std::optional<core::MediaEntr
         status_ = {};
         if (entry.has_value())
         {
-            const core::MachineSettings settings = readSettings();
-            const media::SearchResult found = media::findSample(*entry, settings);
-            if (found.outcome == media::SearchOutcome::Found)
-            {
-                // findSample hashed the file: its fingerprint is the entry's, so loadSample needn't
-                // read it a third time.
-                media::LoadedSample loaded = media::loadSample(
-                    found.path, settings, media::FileHash{entry->sha256Hex, entry->fileSize});
-                if (!loaded.error.empty())
-                {
-                    setError(fileName, std::move(loaded.error));
-                }
-                else
-                {
-                    if (found.moved)
-                    {
-                        // The next save records where it is now (spec §6.7).
-                        entry_ = std::move(loaded.entry);
-                        if (callbacks_.markDirty)
-                        {
-                            callbacks_.markDirty();
-                        }
-                    }
-                    if (activeRate_ > 0.0)
-                    {
-                        source = prepare(std::move(loaded.decoded), activeRate_);
-                    }
-                    else
-                    {
-                        pending_ = std::move(loaded.decoded);
-                        restorePending_ = true;
-                    }
-                    setLoadedStatus({});
-                }
-            }
-            else
-            {
-                const bool changed = found.outcome == media::SearchOutcome::Changed;
-                status_ = {changed ? SampleState::Changed : SampleState::Missing,
-                           fileName,
-                           changed ? kChanged : kMissing,
-                           0.0,
-                           0,
-                           0.0};
-            }
+            source = findAndLoad(activeRate_);
         }
     }
     catch (...)
@@ -224,7 +186,7 @@ std::shared_ptr<const PreparedSource> SampleLoader::activate(double sampleRate) 
 {
     // A job under way finishes, and what the worker finished applies, as inactive: a decoded
     // buffer is converted below, and a source prepared at another rate converted again.
-    stopWorker();
+    stopWorker(false);
     applyResults();
     activeRate_ = sampleRate;
     std::string fileName;
@@ -244,6 +206,19 @@ std::shared_ptr<const PreparedSource> SampleLoader::activate(double sampleRate) 
         else if (source_ != nullptr && source_->buffer().sampleRate() != sampleRate)
         {
             convertNow(sampleRate); // ruling R18
+        }
+        else if (entry_.has_value() && fileUnavailable())
+        {
+            // The file may have come back since (carry-over [194]): looked for again, as the
+            // restore did, or, for a source kept from before, checked at the saved path.
+            if (source_ == nullptr)
+            {
+                source_ = findAndLoad(sampleRate);
+            }
+            else
+            {
+                convertNow(sampleRate);
+            }
         }
     }
     catch (...)
@@ -274,37 +249,89 @@ std::shared_ptr<const PreparedSource> SampleLoader::activate(double sampleRate) 
 
 void SampleLoader::convertNow(double rate) noexcept
 {
-    // The file again, as long as it is still the manifest's sample. Otherwise the old source
-    // stays (it plays at the right pitch), the entry stays, and the status says the file is
-    // missing or has changed (ruling R18).
-    assert(entry_.has_value());
+    // The file again, as long as it is still the manifest's sample: converted, or only checked
+    // when the source is at `rate` already. Otherwise the old source stays (it plays at the right
+    // pitch), the entry stays, and the status says the file is missing, has changed or can't be
+    // read (ruling R18).
+    assert(entry_.has_value() && source_ != nullptr);
     std::string fileName;
     try
     {
         fileName = nameOf(entry_->absolutePath);
         const fs::path file = pathOf(entry_->absolutePath);
-        media::LoadedSample loaded = media::loadSample(file, readSettings());
-        if (loaded.error.empty() && loaded.entry.sha256Hex == entry_->sha256Hex)
+        const std::optional<media::FileHash> hash = media::hashFile(file);
+        if (!hash.has_value() || hash->sha256Hex != entry_->sha256Hex ||
+            hash->size != entry_->fileSize)
         {
-            source_ = prepare(std::move(loaded.decoded), rate);
+            setUnavailable(fileName, file, hash.has_value());
             return;
         }
-        // Something at the saved path that isn't the saved audio (other content, or no longer
-        // audio at all) has changed; nothing there is missing.
-        std::error_code error;
-        const bool present = fs::is_regular_file(file, error);
-        status_ = {present ? SampleState::Changed : SampleState::Missing,
-                   fileName,
-                   present ? kChanged : kMissing,
-                   0.0,
-                   0,
-                   0.0};
+        if (source_->buffer().sampleRate() != rate)
+        {
+            media::LoadedSample loaded = media::loadSample(file, readSettings(), *hash);
+            if (!loaded.error.empty())
+            {
+                setError(fileName, std::move(loaded.error));
+                return;
+            }
+            source_ = prepare(std::move(loaded.decoded), rate);
+        }
+        if (fileUnavailable())
+        {
+            setLoadedStatus({}); // it has come back
+        }
     }
     catch (...)
     {
         // No memory, or the file system: the old source stays, and the status says why.
         setErrorNoThrow(std::current_exception(), fileName);
     }
+}
+
+std::shared_ptr<const PreparedSource> SampleLoader::findAndLoad(double rate)
+{
+    const std::string fileName = nameOf(entry_->absolutePath);
+    const fs::path saved = pathOf(entry_->absolutePath);
+    const core::MachineSettings settings = readSettings();
+    const media::SearchResult found =
+        SearchCache::process().find(*entry_, saved, settings, SearchCache::Clock::now());
+    if (found.outcome != media::SearchOutcome::Found)
+    {
+        // Changed: findSample read the file at the saved path. Missing with a file there: it
+        // couldn't read it.
+        setUnavailable(fileName, saved, found.outcome == media::SearchOutcome::Changed);
+        return nullptr;
+    }
+    // findSample hashed the file: its fingerprint is the entry's, so loadSample needn't read it a
+    // third time.
+    media::LoadedSample loaded = media::loadSample(
+        found.path, settings, media::FileHash{entry_->sha256Hex, entry_->fileSize});
+    if (!loaded.error.empty())
+    {
+        setError(fileName, std::move(loaded.error));
+        return nullptr;
+    }
+    if (found.moved)
+    {
+        // The next save records where it is now (spec §6.7).
+        entry_ = std::move(loaded.entry);
+        if (callbacks_.markDirty)
+        {
+            callbacks_.markDirty();
+        }
+    }
+    std::shared_ptr<const PreparedSource> source;
+    if (rate > 0.0)
+    {
+        source = prepare(std::move(loaded.decoded), rate);
+    }
+    else
+    {
+        pending_ = std::move(loaded.decoded);
+        restorePending_ = true;
+    }
+    setLoadedStatus({});
+    return source;
 }
 
 void SampleLoader::deactivate() noexcept
@@ -319,7 +346,7 @@ void SampleLoader::deactivate() noexcept
     {
         // A mutex that can't lock: the worker is stopped below anyway.
     }
-    stopWorker();
+    stopWorker(true); // a job under way is queued again, for the next activation
     applyResults();
 }
 
@@ -345,12 +372,13 @@ void SampleLoader::startWorker()
     }
 }
 
-void SampleLoader::stopWorker() noexcept
+void SampleLoader::stopWorker(bool cancel) noexcept
 {
     if (!worker_.joinable())
     {
         return;
     }
+    cancel_.store(cancel, std::memory_order_relaxed); // the join orders it with the worker's reads
     try
     {
         {
@@ -366,6 +394,7 @@ void SampleLoader::stopWorker() noexcept
     {
         // Only a mutex or a join that fails at the system level gets here.
     }
+    cancel_.store(false, std::memory_order_relaxed);
 }
 
 void SampleLoader::workerLoop()
@@ -390,7 +419,7 @@ void SampleLoader::workerLoop()
         try
         {
             result.fileName = utf8(job.file.filename());
-            result = run(std::move(job), rate);
+            result = run(job, rate);
         }
         catch (...)
         {
@@ -404,6 +433,17 @@ void SampleLoader::workerLoop()
             {
                 result.error = kCantLoad;
             }
+        }
+        if (result.cancelled)
+        {
+            // Stopped by deactivate(): it runs again when the worker next starts, unless a newer
+            // request has replaced it (the destructor drops the queue with the loader).
+            lock.lock();
+            if (!job_.has_value() && job.id == latestRequest_)
+            {
+                job_ = std::move(job);
+            }
+            continue; // to the wait, which sees stop_
         }
 
         // Only the latest request's result is kept: a newer request supersedes any older one,
@@ -427,12 +467,17 @@ void SampleLoader::workerLoop()
     }
 }
 
-SampleLoader::Result SampleLoader::run(Job job, double rate)
+SampleLoader::Result SampleLoader::run(const Job &job, double rate)
 {
     Result result;
     result.id = job.id;
     result.fileName = utf8(job.file.filename());
-    media::LoadedSample loaded = media::loadSample(job.file, job.settings);
+    media::LoadedSample loaded = media::loadSample(job.file, job.settings, std::nullopt, &cancel_);
+    if (cancel_.load(std::memory_order_relaxed))
+    {
+        result.cancelled = true;
+        return result;
+    }
     if (!loaded.error.empty())
     {
         result.error = std::move(loaded.error);
@@ -451,7 +496,8 @@ SampleLoader::Result SampleLoader::run(Job job, double rate)
     }
     if (rate > 0.0)
     {
-        result.prepared = prepare(std::move(loaded.decoded), rate);
+        result.prepared = prepare(std::move(loaded.decoded), rate, &cancel_);
+        result.cancelled = result.prepared == nullptr;
     }
     else
     {
@@ -495,6 +541,8 @@ void SampleLoader::apply(Result &result)
     entry_ = std::move(result.entry);
     newerMedia_.reset(); // the sample loaded replaces a newer build's manifest
     setLoadedStatus(result.differentAudio ? kDifferentAudio : "");
+    // A file loaded may be one another instance's restore found missing (carry-over [192]).
+    SearchCache::process().clear();
     // The settings remember the folder loaded from (spec §6.7), on the main thread (R16).
     if (!settingsFile_.empty())
     {
@@ -510,8 +558,8 @@ void SampleLoader::apply(Result &result)
     if (result.prepared != nullptr)
     {
         // At the active rate: a job runs at the rate in effect when it starts, and activate()
-        // and deactivate() wait for one under way, so the rate can't change under it. Applied
-        // while inactive, activate() converts it if it must.
+        // waits for one under way while deactivate() cancels it, so the rate can't change under
+        // it. Applied while inactive, activate() converts it if it must.
         pending_.reset();
         restorePending_ = false;
         setSource(std::move(result.prepared));
@@ -544,10 +592,11 @@ void SampleLoader::setSource(std::shared_ptr<const PreparedSource> source)
 }
 
 std::shared_ptr<const PreparedSource> SampleLoader::prepare(std::shared_ptr<SampleBuffer> decoded,
-                                                            double rate) const
+                                                            double rate,
+                                                            const std::atomic<bool> *cancel) const
 {
-    auto source = media::prepare(std::move(decoded), rate);
-    if (preparedObserver_)
+    auto source = media::prepare(std::move(decoded), rate, cancel);
+    if (source != nullptr && preparedObserver_)
     {
         preparedObserver_(source);
     }
@@ -568,6 +617,31 @@ void SampleLoader::setLoadedStatus(std::string message)
 void SampleLoader::setError(std::string fileName, std::string message)
 {
     status_ = {SampleState::Error, std::move(fileName), std::move(message), 0.0, 0, 0.0};
+}
+
+void SampleLoader::setUnavailable(const std::string &fileName, const fs::path &file, bool read)
+{
+    std::error_code error;
+    if (read)
+    {
+        // Something at the saved path that isn't the saved audio has changed.
+        status_ = {SampleState::Changed, fileName, kChanged, 0.0, 0, 0.0};
+    }
+    else if (file.is_absolute() && fs::is_regular_file(file, error))
+    {
+        // Present, so neither missing nor known to have changed.
+        setError(fileName, kUnreadable);
+    }
+    else
+    {
+        status_ = {SampleState::Missing, fileName, kMissing, 0.0, 0, 0.0};
+    }
+}
+
+bool SampleLoader::fileUnavailable() const noexcept
+{
+    return status_.state == SampleState::Missing || status_.state == SampleState::Changed ||
+           (status_.state == SampleState::Error && status_.message == kUnreadable);
 }
 
 void SampleLoader::setRequestError(const std::string &failedName, std::string message)

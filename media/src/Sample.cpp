@@ -63,7 +63,7 @@ std::string relativeTo(const fs::path &file, const std::string &sampleFolder)
 } // namespace
 
 LoadedSample loadSample(const fs::path &file, const core::MachineSettings &settings,
-                        std::optional<FileHash> knownHash)
+                        std::optional<FileHash> knownHash, const std::atomic<bool> *cancel)
 {
     DecodeResult decoded = decodeAudioFile(file);
     if (!decoded.audio)
@@ -72,7 +72,14 @@ LoadedSample loadSample(const fs::path &file, const core::MachineSettings &setti
         out.error = std::move(decoded.error);
         return out;
     }
-    const auto hash = knownHash ? std::move(knownHash) : hashFile(file);
+    const auto cancelled = [cancel] {
+        return cancel != nullptr && cancel->load(std::memory_order_relaxed);
+    };
+    const auto hash = knownHash ? std::move(knownHash) : hashFile(file, cancel);
+    if (cancelled())
+    {
+        return failure(file, "cancelled");
+    }
     if (!hash)
     {
         return failure(file, "the file can't be read");
@@ -100,7 +107,8 @@ LoadedSample loadSample(const fs::path &file, const core::MachineSettings &setti
     return out;
 }
 
-std::shared_ptr<const PreparedSource> prepare(std::shared_ptr<SampleBuffer> decoded, double rate)
+std::shared_ptr<const PreparedSource> prepare(std::shared_ptr<SampleBuffer> decoded, double rate,
+                                              const std::atomic<bool> *cancel)
 {
     if (decoded == nullptr)
     {
@@ -110,6 +118,7 @@ std::shared_ptr<const PreparedSource> prepare(std::shared_ptr<SampleBuffer> deco
     {
         throw std::invalid_argument("prepare: the rate must be finite and positive");
     }
-    return PreparedSource::make(convertRate(std::move(decoded), rate));
+    auto converted = convertRate(std::move(decoded), rate, cancel);
+    return converted != nullptr ? PreparedSource::make(std::move(converted)) : nullptr;
 }
 } // namespace gg::media

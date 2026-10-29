@@ -227,8 +227,8 @@ void GigaGrainsPlugin::deactivate() noexcept
     {
         storeBases();
     }
-    // The loader's worker stops (a job under way finishes), and what it finished applies with
-    // nothing offered: the next activate() gives it to the new processor.
+    // The loader's worker stops (a job under way is cancelled and queued again), and what it
+    // finished applies with nothing offered: the next activate() gives it to the new processor.
     if (loader_ != nullptr)
     {
         loader_->deactivate();

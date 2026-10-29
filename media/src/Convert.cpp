@@ -24,7 +24,8 @@ constexpr int kBlockFrames = 4096;
 constexpr double kMaxOutPerCall = 65536.0;
 } // namespace
 
-std::shared_ptr<SampleBuffer> convertRate(std::shared_ptr<SampleBuffer> in, double targetRate)
+std::shared_ptr<SampleBuffer> convertRate(std::shared_ptr<SampleBuffer> in, double targetRate,
+                                          const std::atomic<bool> *cancel)
 {
     // The header's preconditions; prepare (gg/media/Sample.h) checks them in every build.
     assert(in != nullptr);
@@ -65,6 +66,10 @@ std::shared_ptr<SampleBuffer> convertRate(std::shared_ptr<SampleBuffer> in, doub
         int64_t written = 0;
         while (written < outFrames)
         {
+            if (cancel != nullptr && cancel->load(std::memory_order_relaxed))
+            {
+                return nullptr;
+            }
             int frames = maxIn;
             if (read < inFrames)
             {

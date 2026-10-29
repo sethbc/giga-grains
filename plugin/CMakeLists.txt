@@ -18,6 +18,7 @@ add_library(gg-plugin-core STATIC
         src/GigaGrainsPlugin.cpp
         src/HelpersConfig.cpp
         src/SampleLoader.cpp
+        src/SearchCache.cpp
         )
 target_include_directories(gg-plugin-core PUBLIC include PRIVATE src)
 

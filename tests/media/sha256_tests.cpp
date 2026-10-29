@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright 2026, the Giga Grains authors (see git history)
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -77,4 +78,20 @@ TEST_CASE("hashFile of a missing file is nullopt", "[media]")
     const auto file = gg::test::scratchDir("media-sha256") / "no-such-file.bin";
     std::filesystem::remove(file);
     REQUIRE_FALSE(gg::media::hashFile(file).has_value());
+}
+
+TEST_CASE("hashFile stops once its cancel flag is set", "[media]")
+{
+    // The sample loader's prompt stop (carry-over [194]). A flag never set changes nothing.
+    const auto file = gg::test::scratchDir("media-sha256") / "cancel.bin";
+    gg::test::writeFile(file, std::vector<uint8_t>(3 * 65536, uint8_t('a')));
+    std::atomic<bool> cancel{false};
+    const auto hash = gg::media::hashFile(file, &cancel);
+    const auto plain = gg::media::hashFile(file);
+    REQUIRE(hash.has_value());
+    REQUIRE(plain.has_value());
+    CHECK(hash->sha256Hex == plain->sha256Hex);
+    CHECK(hash->size == plain->size);
+    cancel = true;
+    CHECK_FALSE(gg::media::hashFile(file, &cancel).has_value());
 }

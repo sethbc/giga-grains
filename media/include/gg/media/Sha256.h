@@ -5,6 +5,7 @@
 #ifndef GG_MEDIA_SHA256_H
 #define GG_MEDIA_SHA256_H
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -25,8 +26,10 @@ struct FileHash
 };
 
 /// The fingerprint of the file at `path`, read in 64 KiB pieces, or nullopt if it can't be
-/// opened or read to its end.
-std::optional<FileHash> hashFile(const std::filesystem::path &path);
+/// opened or read to its end. `cancel`, when given, is read before each piece: once it is set,
+/// the hash stops and gives nullopt (the sample loader's prompt stop, carry-over [194]).
+std::optional<FileHash> hashFile(const std::filesystem::path &path,
+                                 const std::atomic<bool> *cancel = nullptr);
 
 /// The SHA-256 of `bytes`, as 64 lowercase hex digits.
 std::string sha256Hex(std::span<const std::byte> bytes);
