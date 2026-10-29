@@ -5,7 +5,7 @@
 // The plugins' parameters, state and remote controls (spec §4, §5), through the clap_plugin
 // vtables a host calls: parameter info, values and text; params.flush; modulation; state save
 // and load, inactive and active; the FX's unusual wiring (Review Focus 5); the remote-controls
-// page; and the latest-wins hand-off that carries a state loaded while active.
+// pages; and the latest-wins hand-off that carries a state loaded while active.
 
 #include <algorithm>
 #include <array>
@@ -962,7 +962,8 @@ TEST_CASE("fx handles mono, missing input and new sample rates", "[plugin]")
 
 TEST_CASE("remote controls page lists the cloud params", "[plugin]")
 {
-    // One 8-slot page (spec §4). The instrument leaves Mix's slot empty: Mix is hidden there.
+    // The first of two 8-slot pages (spec §4; sub-project 4's spec §6.6). The instrument leaves
+    // Mix's slot empty: Mix is hidden there.
     const char *id = GENERATE(kInstrumentId, kFxId);
     CAPTURE(id);
     const bool isFx = std::string_view(id) == kFxId;
@@ -971,7 +972,7 @@ TEST_CASE("remote controls page lists the cloud params", "[plugin]")
     const auto *remote = static_cast<const clap_plugin_remote_controls *>(
         plugin.clap()->get_extension(plugin.clap(), CLAP_EXT_REMOTE_CONTROLS));
     REQUIRE(remote != nullptr);
-    REQUIRE(remote->count(plugin.clap()) == 1);
+    REQUIRE(remote->count(plugin.clap()) == 2);
 
     clap_remote_controls_page page;
     std::memset(&page, 0xA5, sizeof(page)); // every field must be written
@@ -995,6 +996,45 @@ TEST_CASE("remote controls page lists the cloud params", "[plugin]")
         CAPTURE(i);
         CHECK(page.param_ids[i] == expected[i]);
     }
+}
+
+TEST_CASE("remote controls page lists the space params", "[plugin][space]")
+{
+    // The second page, "Space" (sub-project 4's spec §6.6). The instrument leaves Dry to
+    // Reverb's slot empty: it is hidden there, as Mix is on the Cloud page. There is no third.
+    const char *id = GENERATE(kInstrumentId, kFxId);
+    CAPTURE(id);
+    const bool isFx = std::string_view(id) == kFxId;
+    PluginUnderTest plugin(id);
+    REQUIRE(plugin.valid());
+    const auto *remote = static_cast<const clap_plugin_remote_controls *>(
+        plugin.clap()->get_extension(plugin.clap(), CLAP_EXT_REMOTE_CONTROLS));
+    REQUIRE(remote != nullptr);
+    REQUIRE(remote->count(plugin.clap()) == 2);
+
+    clap_remote_controls_page page;
+    std::memset(&page, 0xA5, sizeof(page)); // every field must be written
+    REQUIRE(remote->get(plugin.clap(), 1, &page));
+    CHECK(std::string_view(page.section_name) == "Space");
+    CHECK(std::string_view(page.page_name) == "Space");
+    CHECK(page.page_id == 1);
+    CHECK_FALSE(page.is_for_preset);
+    const std::array<clap_id, CLAP_REMOTE_CONTROLS_COUNT> expected{
+        0x01000B,                         // Diffusion
+        0x000003,                         // Reverb Amount
+        0x000004,                         // Reverb Decay
+        0x000005,                         // Reverb Size
+        0x000006,                         // Reverb Damping
+        0x000007,                         // Reverb Pre-delay
+        0x000008,                         // Reverb Modulation
+        isFx ? 0x000009 : CLAP_INVALID_ID // Dry to Reverb
+    };
+    for (std::size_t i = 0; i < expected.size(); ++i)
+    {
+        CAPTURE(i);
+        CHECK(page.param_ids[i] == expected[i]);
+    }
+    CHECK_FALSE(remote->get(plugin.clap(), 2, &page));
 }
 
 TEST_CASE("latest value hands over the newest snapshot", "[plugin]")

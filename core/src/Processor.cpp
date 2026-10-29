@@ -252,6 +252,11 @@ void Processor::updateEffective() noexcept
     engine_.setCloudParams(toCloudParams(effective_, config_.mode));
 }
 
+bool Processor::freezeEngaged() const noexcept
+{
+    return freezeArmed_ && toWetParams(effective_).freeze;
+}
+
 void Processor::syncFreeze() noexcept
 {
     const bool on = toWetParams(effective_).freeze;

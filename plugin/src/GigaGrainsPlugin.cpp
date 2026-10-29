@@ -14,6 +14,7 @@
 #include <span>
 #include <string>
 
+#include "gg/core/ParamMap.h"
 #include "gg/core/SessionState.h"
 #include "gg/media/SettingsFile.h"
 #include "gg/plugin/Identity.h"
@@ -29,11 +30,66 @@ using gg::core::NoteEventType;
 using gg::core::ParamEvent;
 using gg::core::ParamSlot;
 
-// The remote-controls page "Cloud" (spec §4), in slot order.
-constexpr std::array<ParamSlot, CLAP_REMOTE_CONTROLS_COUNT> kCloudPage{
-    ParamSlot::Position, ParamSlot::Size,   ParamSlot::Density, ParamSlot::Pitch,
-    ParamSlot::Spray,    ParamSlot::Stereo, ParamSlot::Freeze,  ParamSlot::Mix,
+// The remote-controls pages, in page order, each in slot order: "Cloud" (spec §4) and "Space"
+// (sub-project 4's spec §6.6). A page's index is its page_id.
+struct RemotePage
+{
+    const char *name;
+    std::array<ParamSlot, CLAP_REMOTE_CONTROLS_COUNT> slots;
 };
+
+constexpr std::array<RemotePage, 2> kRemotePages{{
+    {"Cloud",
+     {ParamSlot::Position, ParamSlot::Size, ParamSlot::Density, ParamSlot::Pitch, ParamSlot::Spray,
+      ParamSlot::Stereo, ParamSlot::Freeze, ParamSlot::Mix}},
+    {"Space",
+     {ParamSlot::Diffusion, ParamSlot::ReverbAmount, ParamSlot::ReverbDecay, ParamSlot::ReverbSize,
+      ParamSlot::ReverbDamping, ParamSlot::ReverbPredelay, ParamSlot::ReverbModulation,
+      ParamSlot::DryToReverb}},
+}};
+
+// Whether `slot` enters the tail (tailFrames): the grains' Position, Spray and Size and the
+// reverb's Amount, Decay and Pre-delay.
+constexpr bool entersTail(ParamSlot slot) noexcept
+{
+    return slot == ParamSlot::Position || slot == ParamSlot::Spray || slot == ParamSlot::Size ||
+           slot == ParamSlot::ReverbAmount || slot == ParamSlot::ReverbDecay ||
+           slot == ParamSlot::ReverbPredelay;
+}
+
+// The tail of `values` in `mode`'s product at `rate`, in frames, apart from what only the audio
+// thread knows (Freeze and the held notes): see GigaGrainsPlugin's class comment. Rounded up, and
+// below kTailInfinite unless it is infinite. Real-time safe.
+uint32_t tailFrames(const gg::core::ParamValues &values, gg::core::Mode mode,
+                    double rate) noexcept SST_CPPUTILS_NONBLOCKING
+{
+    constexpr uint32_t kInfinite = GigaGrainsPlugin::kTailInfinite;
+    const gg::CloudParams cloud = gg::core::toCloudParams(values, mode);
+    double seconds = cloud.grainDurationSec;
+    if (mode == gg::core::Mode::Fx)
+    {
+        // How far back a grain can still read the ring, plus the grain itself.
+        seconds += cloud.position + cloud.spray;
+    }
+    const gg::core::SpaceParams space = gg::core::toSpaceParams(values, mode);
+    if (space.amount > 0.0f)
+    {
+        if (space.infinite)
+        {
+            return kInfinite;
+        }
+        seconds +=
+            static_cast<double>(space.predelaySeconds) +
+            GigaGrainsPlugin::kTailDecayMultiple * std::exp2(static_cast<double>(space.decayLog2));
+    }
+    const double frames = std::ceil(seconds * rate);
+    if (!(frames > 0.0))
+    {
+        return 0; // no rate yet (or NaN)
+    }
+    return frames < static_cast<double>(kInfinite - 1) ? static_cast<uint32_t>(frames)
+                                                       : kInfinite - 1;
+}
 
 const char *const kInstrumentFeatures[] = {
     CLAP_PLUGIN_FEATURE_INSTRUMENT, CLAP_PLUGIN_FEATURE_SYNTHESIZER, CLAP_PLUGIN_FEATURE_GRANULAR,
@@ -172,6 +228,11 @@ bool GigaGrainsPlugin::activate(double sampleRate, uint32_t /*minFrameCount*/,
         engineBlockSize_ = config.maxBlockSize;
         noteIds_.fill(NoteIdSlot{}); // a new session holds no notes
         collectRequested_.store(false, std::memory_order_relaxed);
+        // The tail at this rate, which the host reads after this returns: nothing to report.
+        sampleRate_.store(sampleRate, std::memory_order_relaxed);
+        sustaining_.store(false, std::memory_order_relaxed);
+        tailValuesChanged_.store(false, std::memory_order_relaxed);
+        reportedTail_ = tailGet();
         return true;
     }
     catch (...)
@@ -213,6 +274,7 @@ void GigaGrainsPlugin::deactivate() noexcept
     // The next activate() may bring a new sample rate: the processor doesn't survive into it.
     // Its SourceExchange frees the sources it still holds, here on the main thread.
     processor_.reset();
+    sustaining_.store(false, std::memory_order_relaxed); // no ring, no notes
 }
 
 void GigaGrainsPlugin::onMainThread() noexcept
@@ -247,6 +309,7 @@ void GigaGrainsPlugin::reset() noexcept
     if (processor_ != nullptr)
     {
         processor_->reset();
+        publishTail(); // every note released, Freeze disengaged
     }
     noteIds_.fill(NoteIdSlot{}); // the reset released every note
 }
@@ -331,6 +394,7 @@ clap_process_status GigaGrainsPlugin::processNonblocking(const clap_process *pro
         applyBetweenBlocks(in, next);
     }
     requestCollect();
+    publishTail();
     return CLAP_PROCESS_CONTINUE;
 }
 
@@ -366,6 +430,48 @@ void GigaGrainsPlugin::requestCollect() noexcept
         // implementation could lock or allocate. It runs at most once per retired source.
         _host.requestCallback();
     }
+}
+
+void GigaGrainsPlugin::publishTail() noexcept
+{
+    const bool sustaining =
+        product_ == Product::Fx && (processor_->freezeEngaged() || !processor_->heldKeys().empty());
+    bool changed = tailValuesChanged_.exchange(false, std::memory_order_relaxed);
+    if (sustaining != sustaining_.load(std::memory_order_relaxed))
+    {
+        sustaining_.store(sustaining, std::memory_order_relaxed);
+        changed = true;
+    }
+    if (!changed)
+    {
+        return;
+    }
+    const uint32_t tail = tailGet();
+    if (tail == reportedTail_)
+    {
+        return;
+    }
+    reportedTail_ = tail;
+    if (_host.canUseTail())
+    {
+        // clap_host_tail.changed is [audio-thread] in CLAP; as with request_callback (see
+        // requestCollect), its real-time safety is the host's.
+        _host.tailChanged();
+    }
+}
+
+uint32_t GigaGrainsPlugin::tailGet() const noexcept
+{
+    if (sustaining_.load(std::memory_order_relaxed))
+    {
+        return kTailInfinite;
+    }
+    gg::core::ParamValues values{};
+    for (std::size_t s = 0; s < kParamCount; ++s)
+    {
+        values[s] = values_[s].load(std::memory_order_relaxed);
+    }
+    return tailFrames(values, mode(), sampleRate_.load(std::memory_order_relaxed));
 }
 
 bool GigaGrainsPlugin::toParamEvent(const clap_event_header *header, ParamEvent &event) noexcept
@@ -592,7 +698,15 @@ void GigaGrainsPlugin::applyLoadedState() noexcept
 void GigaGrainsPlugin::storeValue(ParamSlot slot, float value) noexcept
 {
     const auto s = static_cast<std::size_t>(slot);
-    values_[s].store(std::clamp(value, minValues_[s], maxValues_[s]), std::memory_order_relaxed);
+    const float v = std::clamp(value, minValues_[s], maxValues_[s]);
+    if (!entersTail(slot))
+    {
+        values_[s].store(v, std::memory_order_relaxed);
+    }
+    else if (values_[s].exchange(v, std::memory_order_relaxed) != v)
+    {
+        tailValuesChanged_.store(true, std::memory_order_relaxed); // for publishTail
+    }
 }
 
 void GigaGrainsPlugin::paramsFlush(const clap_input_events *in,
@@ -625,6 +739,7 @@ void GigaGrainsPlugin::paramsFlush(const clap_input_events *in,
         applyBetweenBlocks(in, 0);
     }
     requestCollect();
+    publishTail();
 }
 
 bool GigaGrainsPlugin::paramsInfo(uint32_t paramIndex, clap_param_info *info) const noexcept
@@ -853,20 +968,24 @@ bool GigaGrainsPlugin::stateLoad(const clap_istream *stream) noexcept
 bool GigaGrainsPlugin::remoteControlsPageGet(uint32_t pageIndex,
                                              clap_remote_controls_page *page) noexcept
 {
-    if (pageIndex != 0 || page == nullptr)
+    if (pageIndex >= kRemotePages.size() || page == nullptr)
     {
         return false;
     }
+    const RemotePage &source = kRemotePages[pageIndex];
     *page = clap_remote_controls_page{};
-    copyName(page->section_name, "Cloud");
-    copyName(page->page_name, "Cloud");
-    page->page_id = 0;
+    copyName(page->section_name, source.name);
+    copyName(page->page_name, source.name);
+    page->page_id = pageIndex;
     page->is_for_preset = false;
-    for (std::size_t i = 0; i < kCloudPage.size(); ++i)
+    for (std::size_t i = 0; i < source.slots.size(); ++i)
     {
-        // Mix is hidden in the instrument (see paramsInfo), so its control stays empty there.
-        const bool hidden = product_ == Product::Instrument && kCloudPage[i] == ParamSlot::Mix;
-        page->param_ids[i] = hidden ? CLAP_INVALID_ID : gg::core::paramId(kCloudPage[i]);
+        // Mix and Dry to Reverb are hidden in the instrument (see paramsInfo), so their controls
+        // stay empty there.
+        const ParamSlot slot = source.slots[i];
+        const bool hidden = product_ == Product::Instrument &&
+                            (slot == ParamSlot::Mix || slot == ParamSlot::DryToReverb);
+        page->param_ids[i] = hidden ? CLAP_INVALID_ID : gg::core::paramId(slot);
     }
     return true;
 }

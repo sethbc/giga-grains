@@ -65,6 +65,18 @@ const clap_plugin_descriptor *descriptorFor(Product product) noexcept;
 /// settings file is $GG_SETTINGS_FILE when that is set and not empty (read once, at
 /// construction: the tests' way to keep away from the user's file), and
 /// gg::media::defaultSettingsPath() otherwise.
+///
+/// **The tail** (sub-project 4's spec §6.7). tail.get computes it from values_ and the active
+/// rate: the grains' part (the instrument's Size; the FX's Position + Spray + Size, in seconds as
+/// toCloudParams maps them), plus Pre-delay + kTailDecayMultiple × Decay when Reverb Amount is
+/// above 0; kTailInfinite when Amount is above 0 at Decay ∞, or in the FX while Freeze is engaged
+/// or a note is held (it keeps sounding with no input). The last two live on the audio thread,
+/// which publishes them as sustaining_ (publishTail) at the end of each process(), active
+/// params.flush and reset(). There too, when that flips or a value entering the tail has changed
+/// (on either thread), it calls the host's tail.changed if the tail differs from the one it last
+/// reported. CLAP marks clap_host_tail.changed [audio-thread], and clap-validator fails a plugin
+/// that calls it from the main thread, so a state load or a change while inactive is reported
+/// by the next process() (or active params.flush).
 class GigaGrainsPlugin : public plugHelper_t
 {
   public:
@@ -120,6 +132,10 @@ class GigaGrainsPlugin : public plugHelper_t
     /// The CLAP note IDs remembered for note-offs addressed by ID alone (ruling R15). When the
     /// table is full, a new ID replaces the oldest.
     static constexpr std::size_t kMaxNoteIds = 256;
+    /// CLAP's infinite tail: tail.get values from INT32_MAX up (clap/ext/tail.h).
+    static constexpr uint32_t kTailInfinite = 0x7FFFFFFF;
+    /// The reverb's part of the tail is Pre-delay plus this many times Decay (spec §6.7).
+    static constexpr double kTailDecayMultiple = 2.0;
 
   protected:
     bool activate(double sampleRate, uint32_t minFrameCount,
@@ -167,12 +183,20 @@ class GigaGrainsPlugin : public plugHelper_t
     bool stateSave(const clap_ostream *stream) noexcept override;
     bool stateLoad(const clap_istream *stream) noexcept override;
 
-    // ---- Remote controls: one page, "Cloud" (spec §4) ----
+    // ---- Remote controls: two pages, "Cloud" (spec §4) and "Space" (sub-project 4's spec
+    // §6.6) ----
 
     bool implementRemoteControls() const noexcept override { return true; }
-    uint32_t remoteControlsPageCount() noexcept override { return 1; }
+    uint32_t remoteControlsPageCount() noexcept override { return 2; }
     bool remoteControlsPageGet(uint32_t pageIndex,
                                clap_remote_controls_page *page) noexcept override;
+
+    // ---- Tail (see the class comment) ----
+
+    bool implementsTail() const noexcept override { return true; }
+    /// In frames at the last activation's rate (0 before the first). On the main or the audio
+    /// thread: real-time safe.
+    uint32_t tailGet() const noexcept SST_CPPUTILS_NONBLOCKING override;
 
   private:
     clap_process_status
@@ -220,6 +244,11 @@ class GigaGrainsPlugin : public plugHelper_t
     /// until that call comes, so every retired source is freed soon after it retires. Its
     /// real-time safety is the host's: see the call.
     void requestCollect() noexcept SST_CPPUTILS_NONBLOCKING;
+    /// Audio thread, with the processor. Publishes whether the FX keeps sounding with no input
+    /// (sustaining_) and, when that flipped or a value entering the tail changed since the last
+    /// call, calls the host's tail.changed if tailGet() differs from the tail last reported. Its
+    /// real-time safety is the host's, as requestCollect's is.
+    void publishTail() noexcept SST_CPPUTILS_NONBLOCKING;
 
     const Product product_;
 
@@ -245,6 +274,18 @@ class GigaGrainsPlugin : public plugHelper_t
     // Set by the audio thread when it asks for on_main_thread to collect retired sources,
     // cleared by on_main_thread (requestCollect).
     std::atomic<bool> collectRequested_{false};
+    // The tail (see the class comment). The rate of the last activate(), written there and read
+    // by tailGet on either thread.
+    std::atomic<double> sampleRate_{0.0};
+    // The FX keeps sounding with no input: Freeze engaged or a note held. Written by the audio
+    // thread (publishTail), cleared by activate() and deactivate().
+    std::atomic<bool> sustaining_{false};
+    // A value entering the tail changed (storeValue, on either thread), not yet published
+    // (publishTail).
+    std::atomic<bool> tailValuesChanged_{false};
+    // The tail last reported to the host, or read at activate(). Audio thread; activate() sets
+    // it.
+    uint32_t reportedTail_{0};
     // The parameter and note events of one process() call. Audio thread.
     std::array<gg::core::ParamEvent, kMaxParamEvents> events_{};
     std::array<gg::core::NoteEvent, kMaxNoteEvents> notes_{};
