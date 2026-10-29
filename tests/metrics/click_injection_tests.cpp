@@ -113,9 +113,14 @@ const std::map<std::string, int> &partlyHidden()
     static const std::map<std::string, int> cases{
         // A noise bed throughout (d RMS 0.18, and 0.15 at Eco). Accepted blind spot: row 58,
         // director option A, 2026-10-29.
-        {"dense-noise", 0},     {"dense-noise-eco", 0},
-        {"fx-automate", 11},    // the swept input's top octaves, from about 2.3 s to 3.1 s
-        {"fx-file", 14},        // loop-48k.wav's noise bursts
+        {"dense-noise", 0},
+        {"dense-noise-eco", 0},
+        {"fx-automate", 11}, // the swept input's top octaves, from about 2.3 s to 3.1 s
+        {"fx-feedback", 14}, // the swept input's top octaves, at 1.4 s and 1.9 s
+        {"fx-file", 14},     // loop-48k.wav's noise bursts
+        // A noise bed throughout: the input until 7 s, then the ring frozen by Macro Freeze. No
+        // step lifts the clean score at all; the event log still pins every macro's grains.
+        {"fx-macros", 0},
         {"fx-noise-stereo", 3}, // a noise bed until the input ends at 3 s
         {"fx-note-freeze", 10}, // loop-48k.wav's bursts, live and frozen
         {"fx-space", 6},        // noise and its reverb, until the tail decays
