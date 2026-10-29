@@ -135,10 +135,16 @@ if anything but RtAudio's ASIO backend uses `libs/.../asiosdk` (tests `asio_guar
 - **ccache**, macOS and Linux legs and the sanitizer job only, passed as
   `CMAKE_<LANG>_COMPILER_LAUNCHER` at CI configure (local presets are unchanged). Windows is
   uncached (the Visual Studio generator has no launcher support), and `mac-universal`'s
-  two-architecture compiles are largely uncached. Every run restores it; only pushes to `main` and
-  the nightly save it.
+  two-architecture compiles are largely uncached. Keyed by OS, preset and commit, restored by
+  prefix.
 - **The pinned LLVM archive** (sanitizer job), keyed by version and SHA-256. The SHA-256 is checked
   on a hit too.
+- **Scoping.** Every run restores all three; only runs on `main` (a push, the nightly, a
+  dispatch on `main`) save them, also after a failed build. GitHub scopes a cache to the ref that
+  saved it: a pull request reads `main`'s caches, but nobody reads a pull request's, so PRs never
+  save. GitHub evicts a cache unused for 7 days and the least recently used ones past the
+  repository's 10 GB; the nightly keeps them alive. After a change that alters a cache key (a pin,
+  the LLVM version), merge it and run `gh workflow run ci.yml --ref main` once to seed the caches.
 
 **Presets.** They are defined in `CMakePresets.json`. Each one builds into `build/<preset>/`,
 except `windows-clangcl`, which builds into `build/windows/`.

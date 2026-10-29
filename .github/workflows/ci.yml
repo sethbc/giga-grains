@@ -108,9 +108,12 @@ jobs:
       # Keyed by leg and by the files that hold the pins (clap-wrapper's base_sdks.cmake, and
       # libs/CMakeLists.txt, which sets what it downloads), so a changed pin starts a fresh
       # cache. The step summary's line says whether it hit.
-      - name: Cache CPM downloads
+      # Every cache here is restored by every run and saved only on main (a push, the nightly or a
+      # dispatch on main): GitHub scopes a cache to the ref that saved it, and a pull request can
+      # read main's but nobody reads a pull request's.
+      - name: Restore the CPM downloads
         id: cpm_cache
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ${{ env.CPM_SOURCE_CACHE }}
           key: cpm-${{ matrix.preset }}-${{ hashFiles('libs/clap/clap-wrapper/cmake/base_sdks.cmake', 'libs/clap/clap-wrapper/cmake/shared_prologue.cmake', 'libs/CMakeLists.txt') }}
@@ -147,9 +150,8 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get install -y ccache
 
-      # Restored on every run; saved (below) only by pushes to main and the nightly, so pull
-      # requests don't fill the repository's cache quota with a 500 MB cache per leg per run.
-      # A pull request restores main's cache.
+      # Saved (below) only on main, so pull requests don't fill the repository's cache quota
+      # with a 500 MB cache per leg per run.
       - name: Restore the compiler cache
         if: runner.os != 'Windows'
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
@@ -169,6 +171,14 @@ jobs:
           fi
           cmake --preset ${{ matrix.preset }} "${launcher[@]}"
 
+      # The downloads happen in Configure. Saved on a miss only (the key is fixed by the pins).
+      - name: Save the CPM downloads
+        if: ${{ !cancelled() && github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && steps.cpm_cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ env.CPM_SOURCE_CACHE }}
+          key: cpm-${{ matrix.preset }}-${{ hashFiles('libs/clap/clap-wrapper/cmake/base_sdks.cmake', 'libs/clap/clap-wrapper/cmake/shared_prologue.cmake', 'libs/CMakeLists.txt') }}
+
       - name: Build gg-all and gg-products
         id: build
         run: cmake --build --preset ${{ matrix.preset }} --config Release --parallel --target gg-all gg-products
@@ -186,7 +196,7 @@ jobs:
       # Saved even when the build failed (what it compiled is still good), but not by a pull
       # request.
       - name: Save the compiler cache
-        if: ${{ !cancelled() && runner.os != 'Windows' && github.event_name != 'pull_request' }}
+        if: ${{ !cancelled() && github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && runner.os != 'Windows' }}
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ${{ env.CCACHE_DIR }}
@@ -451,9 +461,9 @@ jobs:
       # The release archive is cached by version and SHA-256, so a changed pin misses. The
       # SHA-256 check below runs on a hit too: a cached archive is trusted no more than a
       # downloaded one.
-      - name: Cache the LLVM archive
+      - name: Restore the LLVM archive
         id: llvm_cache
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ${{ runner.temp }}/llvm-archive
           key: llvm-${{ env.LLVM_VERSION }}-${{ env.LLVM_SHA256 }}
@@ -479,6 +489,13 @@ jobs:
           echo "$GG_LLVM/bin" >> "$GITHUB_PATH"
           "$GG_LLVM/bin/clang++" --version
           ls "$GG_LLVM/lib/clang/20/lib/x86_64-unknown-linux-gnu/libclang_rt.rtsan.a"
+
+      - name: Save the LLVM archive
+        if: ${{ !cancelled() && github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && steps.llvm_cache.outputs.cache-hit != 'true' && steps.toolchain.outcome == 'success' }}
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ runner.temp }}/llvm-archive
+          key: llvm-${{ env.LLVM_VERSION }}-${{ env.LLVM_SHA256 }}
 
       - name: Restore the compiler cache
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
@@ -518,7 +535,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Save the compiler cache
-        if: ${{ !cancelled() && github.event_name != 'pull_request' }}
+        if: ${{ !cancelled() && github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ${{ env.CCACHE_DIR }}
