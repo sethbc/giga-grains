@@ -139,8 +139,15 @@ is how it ran before the secrets existed (run 40951179569, PR #13).
 
 **To rotate any secret:** replace it (`gh secret set <name>` again, or the web page), then
 dispatch a dry run as above. Nothing else holds a copy. To revoke the API key, revoke it in App
-Store Connect and make a new one; to retire a certificate, revoke it in the Apple Developer
-account (Certificates, Identifiers & Profiles) and export its replacement.
+Store Connect and make a new one.
+
+**To replace a certificate,** issue a new one in the Apple Developer account (Certificates,
+Identifiers & Profiles; an account may hold several Developer ID certificates at once), export
+it as above, and rotate the secrets. Leave the old one to expire; don't revoke it. **Revoke a
+Developer ID certificate only if its private key is compromised.** The account can't do it:
+Apple revokes one on a request to product-security@apple.com, and from then on nothing signed
+with it installs, or launches if already installed, notarized or not: every installer made with
+it stops working, the 0.x drafts included.
 
 **Both certificates expire,** and CI can't sign after that, so note the dates where you will see
 them coming. Keychain Access shows each certificate's expiry when you select it. From the shell,
@@ -151,8 +158,11 @@ security find-certificate -c "Developer ID Application" -p | openssl x509 -noout
 security find-certificate -c "Developer ID Installer" -p | openssl x509 -noout -enddate
 ```
 
-Installers already signed and notarized stay valid after the certificate expires: their
-signatures carry a secure timestamp.
+Expiry is far gentler than revocation: installed apps and plugins keep running, and an app
+signed while its certificate was valid still downloads and runs. For a PKG, Apple's pages
+differ: its Certificates page says a package with a trusted timestamp still installs after its
+Installer certificate expires, its Developer ID page that it must be re-signed. So rebuild any
+installer still offered after an expiry (a dry run or a new release does).
 
 The director's login keychain on 2026-10-29, checked that day: the identities, the pair made
 that day with its private keys, **expire on 2027-02-01**, cut short by the intermediate that
