@@ -10,7 +10,8 @@
 #         -P <this file>
 #
 # The signature's flags= line must name `runtime`. With EXPECT_ENTITLEMENT set, the signature's
-# entitlements must hold that key; with it empty they aren't read.
+# entitlements must hold that key set to true (`<key>KEY</key>` then `<true/>`); with it empty
+# they aren't read.
 
 cmake_minimum_required(VERSION 3.22)
 
@@ -48,11 +49,12 @@ if (NOT "${EXPECT_ENTITLEMENT}" STREQUAL "")
         message(FATAL_ERROR
                 "FAIL: codesign -d --entitlements ${BUNDLE} exited ${result}:\n${out}${err}")
     endif ()
-    string(FIND "${out}" "<key>${EXPECT_ENTITLEMENT}</key>" at)
-    if (at EQUAL -1)
-        message(FATAL_ERROR
-                "FAIL: ${BUNDLE} lacks the entitlement ${EXPECT_ENTITLEMENT}:\n${out}${err}")
+    # The key as a literal in a regex (its dots, say), then the value true, whitespace allowed.
+    string(REGEX REPLACE "([][.^$*+?()|{}\\])" "\\\\\\1" key_re "${EXPECT_ENTITLEMENT}")
+    if (NOT out MATCHES "<key>${key_re}</key>[ \t\r\n]*<true/>")
+        message(FATAL_ERROR "FAIL: ${BUNDLE} lacks the entitlement ${EXPECT_ENTITLEMENT} set to "
+                "true:\n${out}${err}")
     endif ()
-    message(STATUS "entitlement ${EXPECT_ENTITLEMENT} present")
+    message(STATUS "entitlement ${EXPECT_ENTITLEMENT} present and true")
 endif ()
 message(STATUS "PASS: ${BUNDLE}")

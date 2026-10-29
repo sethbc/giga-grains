@@ -17,6 +17,8 @@
 # au-components: AudioComponents must hold exactly the EXPECTED type/subtype/manufacturer triples,
 # comma-separated, in that order.
 
+cmake_minimum_required(VERSION 3.22)
+
 foreach (var IN ITEMS PLUTIL BUNDLE CHECK EXPECTED)
     if (NOT DEFINED ${var})
         message(FATAL_ERROR "check-bundle-identity: ${var} is not set")

@@ -29,6 +29,10 @@ elseif (NOT PLATFORM STREQUAL "Linux")
     message(FATAL_ERROR "check-license-set: PLATFORM '${PLATFORM}' isn't Darwin, Windows or Linux")
 endif ()
 
+# An absolute path only: a relative (or empty) one would be read from wherever CTest runs.
+if (NOT IS_ABSOLUTE "${DIR}")
+    message(FATAL_ERROR "check-license-set: DIR '${DIR}' isn't an absolute path")
+endif ()
 if (NOT IS_DIRECTORY "${DIR}")
     message(FATAL_ERROR "FAIL: ${DIR} doesn't exist")
 endif ()

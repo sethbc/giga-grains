@@ -20,8 +20,9 @@
 
 cmake_minimum_required(VERSION 3.22)
 
+# An empty value is refused too (as check-archive.cmake does): OUT is deleted below.
 foreach (var IN ITEMS SCRIPT PRODUCTS README OUT FULL CHECK_ARCHIVE)
-    if (NOT DEFINED ${var})
+    if (NOT DEFINED ${var} OR "${${var}}" STREQUAL "")
         message(FATAL_ERROR "check-linux-tarball: ${var} is not set")
     endif ()
 endforeach ()
