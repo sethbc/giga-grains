@@ -201,10 +201,6 @@ class Processor
     /// The distinct keys held now, ascending (for tests and the editor): the held set as of the
     /// last applied boundary, so a pending note doesn't show until its boundary.
     std::span<const uint8_t> heldKeys() const noexcept { return {keys_.data(), keyCount_}; }
-    /// Whether the Freeze parameter has the engine's freeze on now: the effective Freeze is on
-    /// and armed (the class comment), as of the last applied boundary, setBase() or reset(). A
-    /// held note's freeze (the FX's) doesn't count; heldKeys() shows that. For the plugin's tail.
-    bool freezeEngaged() const noexcept;
 
     /// Not real-time safe: while process() isn't running, for an inactive plugin, gg-render and
     /// tests. sources() holds `s` (SourceExchange::hold), and the engine reads it from the next

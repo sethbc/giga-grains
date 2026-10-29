@@ -14,7 +14,6 @@
 #include <span>
 #include <string>
 
-#include "gg/core/ParamMap.h"
 #include "gg/core/SessionState.h"
 #include "gg/media/SettingsFile.h"
 #include "gg/plugin/Identity.h"
@@ -47,49 +46,6 @@ constexpr std::array<RemotePage, 2> kRemotePages{{
       ParamSlot::ReverbDamping, ParamSlot::ReverbPredelay, ParamSlot::ReverbModulation,
       ParamSlot::DryToReverb}},
 }};
-
-// Whether `slot` enters the tail (tailFrames): the grains' Position, Spray and Size and the
-// reverb's Amount, Decay and Pre-delay.
-constexpr bool entersTail(ParamSlot slot) noexcept
-{
-    return slot == ParamSlot::Position || slot == ParamSlot::Spray || slot == ParamSlot::Size ||
-           slot == ParamSlot::ReverbAmount || slot == ParamSlot::ReverbDecay ||
-           slot == ParamSlot::ReverbPredelay;
-}
-
-// The tail of `values` in `mode`'s product at `rate`, in frames, apart from what only the audio
-// thread knows (Freeze and the held notes): see GigaGrainsPlugin's class comment. Rounded up, and
-// below kTailInfinite unless it is infinite. Real-time safe.
-uint32_t tailFrames(const gg::core::ParamValues &values, gg::core::Mode mode,
-                    double rate) noexcept SST_CPPUTILS_NONBLOCKING
-{
-    constexpr uint32_t kInfinite = GigaGrainsPlugin::kTailInfinite;
-    const gg::CloudParams cloud = gg::core::toCloudParams(values, mode);
-    double seconds = cloud.grainDurationSec;
-    if (mode == gg::core::Mode::Fx)
-    {
-        // How far back a grain can still read the ring, plus the grain itself.
-        seconds += cloud.position + cloud.spray;
-    }
-    const gg::core::SpaceParams space = gg::core::toSpaceParams(values, mode);
-    if (space.amount > 0.0f)
-    {
-        if (space.infinite)
-        {
-            return kInfinite;
-        }
-        seconds +=
-            static_cast<double>(space.predelaySeconds) +
-            GigaGrainsPlugin::kTailDecayMultiple * std::exp2(static_cast<double>(space.decayLog2));
-    }
-    const double frames = std::ceil(seconds * rate);
-    if (!(frames > 0.0))
-    {
-        return 0; // no rate yet (or NaN)
-    }
-    return frames < static_cast<double>(kInfinite - 1) ? static_cast<uint32_t>(frames)
-                                                       : kInfinite - 1;
-}
 
 const char *const kInstrumentFeatures[] = {
     CLAP_PLUGIN_FEATURE_INSTRUMENT, CLAP_PLUGIN_FEATURE_SYNTHESIZER, CLAP_PLUGIN_FEATURE_GRANULAR,
@@ -228,11 +184,7 @@ bool GigaGrainsPlugin::activate(double sampleRate, uint32_t /*minFrameCount*/,
         engineBlockSize_ = config.maxBlockSize;
         noteIds_.fill(NoteIdSlot{}); // a new session holds no notes
         collectRequested_.store(false, std::memory_order_relaxed);
-        // The tail at this rate, which the host reads after this returns: nothing to report.
-        sampleRate_.store(sampleRate, std::memory_order_relaxed);
-        sustaining_.store(false, std::memory_order_relaxed);
-        tailValuesChanged_.store(false, std::memory_order_relaxed);
-        reportedTail_ = tailGet();
+        sampleRate_.store(sampleRate, std::memory_order_relaxed); // the tail's (tailGet)
         return true;
     }
     catch (...)
@@ -274,7 +226,6 @@ void GigaGrainsPlugin::deactivate() noexcept
     // The next activate() may bring a new sample rate: the processor doesn't survive into it.
     // Its SourceExchange frees the sources it still holds, here on the main thread.
     processor_.reset();
-    sustaining_.store(false, std::memory_order_relaxed); // no ring, no notes
 }
 
 void GigaGrainsPlugin::onMainThread() noexcept
@@ -309,7 +260,6 @@ void GigaGrainsPlugin::reset() noexcept
     if (processor_ != nullptr)
     {
         processor_->reset();
-        publishTail(); // every note released, Freeze disengaged
     }
     noteIds_.fill(NoteIdSlot{}); // the reset released every note
 }
@@ -394,7 +344,6 @@ clap_process_status GigaGrainsPlugin::processNonblocking(const clap_process *pro
         applyBetweenBlocks(in, next);
     }
     requestCollect();
-    publishTail();
     return CLAP_PROCESS_CONTINUE;
 }
 
@@ -432,46 +381,26 @@ void GigaGrainsPlugin::requestCollect() noexcept
     }
 }
 
-void GigaGrainsPlugin::publishTail() noexcept
-{
-    const bool sustaining =
-        product_ == Product::Fx && (processor_->freezeEngaged() || !processor_->heldKeys().empty());
-    bool changed = tailValuesChanged_.exchange(false, std::memory_order_relaxed);
-    if (sustaining != sustaining_.load(std::memory_order_relaxed))
-    {
-        sustaining_.store(sustaining, std::memory_order_relaxed);
-        changed = true;
-    }
-    if (!changed)
-    {
-        return;
-    }
-    const uint32_t tail = tailGet();
-    if (tail == reportedTail_)
-    {
-        return;
-    }
-    reportedTail_ = tail;
-    if (_host.canUseTail())
-    {
-        // clap_host_tail.changed is [audio-thread] in CLAP; as with request_callback (see
-        // requestCollect), its real-time safety is the host's.
-        _host.tailChanged();
-    }
-}
-
 uint32_t GigaGrainsPlugin::tailGet() const noexcept
 {
-    if (sustaining_.load(std::memory_order_relaxed))
+    // A constant per product (ruling R-T7a), never a function of the values, Freeze or the
+    // notes, and never announced with clap_host_tail.changed. Don't "improve" it: clap-wrapper
+    // turns tail.changed into VST3's restartComponent(kLatencyChanged), on which the host must
+    // deactivate and reactivate the plugin (the VST3 SDK's documentation), and into AU's
+    // PropertyChanged(TailTime), both main-thread calls while CLAP makes tail.changed an
+    // audio-thread one. A tail that followed the values would restart the plugin, emptying the
+    // FX's live ring and dropping its held notes and Freeze, at every note, Freeze toggle or
+    // Reverb Amount change. So the FX, a live-buffer effect that can sound with no input at any
+    // time (Freeze, a held note, a 16 s read, an infinite reverb), is always infinite, and the
+    // instrument's is its longest finite one, kInstrumentTailSeconds.
+    if (product_ == Product::Fx)
     {
         return kTailInfinite;
     }
-    gg::core::ParamValues values{};
-    for (std::size_t s = 0; s < kParamCount; ++s)
-    {
-        values[s] = values_[s].load(std::memory_order_relaxed);
-    }
-    return tailFrames(values, mode(), sampleRate_.load(std::memory_order_relaxed));
+    const double frames =
+        std::ceil(kInstrumentTailSeconds * sampleRate_.load(std::memory_order_relaxed));
+    return frames < static_cast<double>(kTailInfinite) ? static_cast<uint32_t>(frames)
+                                                       : kTailInfinite - 1;
 }
 
 bool GigaGrainsPlugin::toParamEvent(const clap_event_header *header, ParamEvent &event) noexcept
@@ -698,15 +627,7 @@ void GigaGrainsPlugin::applyLoadedState() noexcept
 void GigaGrainsPlugin::storeValue(ParamSlot slot, float value) noexcept
 {
     const auto s = static_cast<std::size_t>(slot);
-    const float v = std::clamp(value, minValues_[s], maxValues_[s]);
-    if (!entersTail(slot))
-    {
-        values_[s].store(v, std::memory_order_relaxed);
-    }
-    else if (values_[s].exchange(v, std::memory_order_relaxed) != v)
-    {
-        tailValuesChanged_.store(true, std::memory_order_relaxed); // for publishTail
-    }
+    values_[s].store(std::clamp(value, minValues_[s], maxValues_[s]), std::memory_order_relaxed);
 }
 
 void GigaGrainsPlugin::paramsFlush(const clap_input_events *in,
@@ -739,7 +660,6 @@ void GigaGrainsPlugin::paramsFlush(const clap_input_events *in,
         applyBetweenBlocks(in, 0);
     }
     requestCollect();
-    publishTail();
 }
 
 bool GigaGrainsPlugin::paramsInfo(uint32_t paramIndex, clap_param_info *info) const noexcept

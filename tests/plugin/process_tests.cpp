@@ -145,10 +145,10 @@ class LoggingHost
         [](const clap_host *) {}, // request_callback
     };
 };
-// A stub host that offers clap.tail and counts its tail.changed calls, and those made while the
-// test isn't in an audio-thread call. CLAP marks clap_host_tail.changed [audio-thread]: the
-// tests mark their process() and active params.flush calls (onAudioThread), and every other call
-// stands for the main thread.
+// A stub host that offers clap.tail and counts its tail.changed calls, which must never come
+// (ruling R-T7a: the tail is a constant per product). It also offers clap.log, so that a test
+// querying the tail before activation (which clap-helpers reports as host misbehaviour) logs
+// nothing to the console.
 class TailHost
 {
   public:
@@ -158,39 +158,24 @@ class TailHost
 
     const clap_host *clap() const noexcept { return &host_; }
     uint32_t tailChanges() const noexcept { return tailChanges_; }
-    uint32_t offAudioThreadChanges() const noexcept { return offAudioThreadChanges_; }
-
-    /// Runs `call` as an audio-thread call.
-    template <typename Call> void onAudioThread(Call &&call)
-    {
-        audioThread_ = true;
-        call();
-        audioThread_ = false;
-    }
 
   private:
     static TailHost &self(const clap_host *host)
     {
         return *static_cast<TailHost *>(host->host_data);
     }
-    static void changed(const clap_host *host) noexcept
-    {
-        auto &h = self(host);
-        ++h.tailChanges_;
-        if (!h.audioThread_)
-        {
-            ++h.offAudioThreadChanges_;
-        }
-    }
     static const void *getExtension(const clap_host *, const char *id) noexcept
     {
-        static const clap_host_tail kTail{&TailHost::changed};
-        return std::strcmp(id, CLAP_EXT_TAIL) == 0 ? &kTail : nullptr;
+        static const clap_host_tail kTail{[](const clap_host *host) { ++self(host).tailChanges_; }};
+        static const clap_host_log kLog{[](const clap_host *, clap_log_severity, const char *) {}};
+        if (std::strcmp(id, CLAP_EXT_TAIL) == 0)
+        {
+            return &kTail;
+        }
+        return std::strcmp(id, CLAP_EXT_LOG) == 0 ? &kLog : nullptr;
     }
 
-    bool audioThread_{false};
     uint32_t tailChanges_{0};
-    uint32_t offAudioThreadChanges_{0};
     clap_host host_{
         CLAP_VERSION_INIT,
         nullptr,
@@ -217,28 +202,74 @@ uint32_t tailOf(const gg::test::PluginUnderTest &plugin)
     return tail->get(plugin.clap());
 }
 
-// The grains' part of the tail at the defaults (sub-project 4's spec §6.7), in seconds: the FX's
-// Position 0.25 s + Spray 0.05 s + Size 0.15 s, the instrument's Size 0.15 s.
-double defaultGrainTail(bool isFx) { return isFx ? 0.25 + 0.05 + 0.15 : 0.15; }
-
-// Whether `frames` is `seconds` at `rate`, to within a frame either way (the defaults' seconds
-// are rounded figures).
-bool isFrames(uint32_t frames, double seconds, double rate)
+// The instrument's tail at `rate` (ruling R-T7a): 2 s Size + 0.5 s Pre-delay + 2 × 60 s Decay,
+// rounded up to whole frames.
+uint32_t instrumentTail(double rate)
 {
-    return std::abs(static_cast<double>(frames) - seconds * rate) <= 1.0;
+    return static_cast<uint32_t>(std::ceil((2.0 + 0.5 + 2.0 * 60.0) * rate));
 }
 
 // One process() of `frames` frames of silence (the FX's input is silent, the instrument has
-// none) with `events`, as an audio-thread call of `host`.
-void processSilence(gg::test::PluginUnderTest &plugin, TailHost &host, bool isFx, uint32_t frames,
+// none) with `events`.
+void processSilence(gg::test::PluginUnderTest &plugin, bool isFx, uint32_t frames,
                     const clap_input_events *events = nullptr)
 {
     Stereo in(frames);
     Stereo out(frames);
-    clap_process_status status = CLAP_PROCESS_ERROR;
-    host.onAudioThread(
-        [&] { status = plugin.process(frames, isFx ? in.data() : nullptr, out.data(), events); });
-    REQUIRE(status == CLAP_PROCESS_CONTINUE);
+    REQUIRE(plugin.process(frames, isFx ? in.data() : nullptr, out.data(), events) ==
+            CLAP_PROCESS_CONTINUE);
+}
+
+// Drives `plugin` through the states that could change a tail computed from the values, Freeze
+// and the notes, calling `check` in each: the defaults; Freeze off and then on (armed, so
+// engaged in the FX); a note held; Reverb Amount 1 at Decay ∞; the note released; Freeze off;
+// and a state load back to the defaults.
+template <typename Check>
+void throughTailStates(gg::test::PluginUnderTest &plugin, bool isFx, Check &&check)
+{
+    const std::string defaults = plugin.save();
+    REQUIRE(plugin.activate(48000.0, 512));
+    check("defaults");
+
+    const auto freezeOff = gg::test::paramValue(paramId(ParamSlot::Freeze), 0.0);
+    const auto freezeOn = gg::test::paramValue(paramId(ParamSlot::Freeze), 1.0);
+    const auto on = noteOn(60, 0);
+    const auto off = gg::test::noteEvent(CLAP_EVENT_NOTE_OFF, 0, 60, 0);
+    const auto amount = gg::test::paramValue(paramId(ParamSlot::ReverbAmount), 1.0);
+    const auto decay = gg::test::paramValue(paramId(ParamSlot::ReverbDecay),
+                                            static_cast<double>(gg::core::kDecayMax));
+    gg::test::InputEvents offEvents;
+    offEvents.add(&freezeOff.header);
+    gg::test::InputEvents onEvents;
+    onEvents.add(&freezeOn.header);
+    processSilence(plugin, isFx, 64, offEvents.list());
+    processSilence(plugin, isFx, 64, onEvents.list());
+    check("freeze engaged");
+
+    gg::test::InputEvents noteEvents;
+    noteEvents.add(&on.header);
+    processSilence(plugin, isFx, 64, noteEvents.list());
+    REQUIRE(heldKeys(plugin) == std::vector<int>{60});
+    check("note held");
+
+    gg::test::InputEvents reverbEvents;
+    reverbEvents.add(&amount.header);
+    reverbEvents.add(&decay.header);
+    processSilence(plugin, isFx, 64, reverbEvents.list());
+    check("amount 1 at decay infinity");
+
+    gg::test::InputEvents releaseEvents;
+    releaseEvents.add(&off.header);
+    releaseEvents.add(&freezeOff.header);
+    processSilence(plugin, isFx, 64, releaseEvents.list());
+    REQUIRE(heldKeys(plugin).empty());
+    check("note released, freeze off");
+
+    REQUIRE(plugin.load(defaults));
+    plugin.onMainThread();
+    processSilence(plugin, isFx, 64);
+    plugin.onMainThread();
+    check("state loaded");
 }
 } // namespace
 
@@ -1223,225 +1254,50 @@ TEST_CASE("a missing output or output channel leaves the rest of the render unch
     }
 }
 
-TEST_CASE("tail at the defaults is the grains' part", "[plugin][space]")
+TEST_CASE("fx tail is infinite in every state", "[plugin][space]")
 {
-    // Sub-project 4's spec §6.7: with Reverb Amount 0 only the grains ring on: in the FX,
-    // Position + Spray + Size; in the instrument, Size. In frames at the active rate.
-    const char *id = GENERATE(kInstrumentId, kFxId);
-    CAPTURE(id);
-    const bool isFx = std::string_view(id) == kFxId;
-    TailHost host;
-    gg::test::PluginUnderTest plugin(id, host.clap());
-    REQUIRE(plugin.valid());
-    for (const double rate : {48000.0, 96000.0})
-    {
-        CAPTURE(rate);
-        REQUIRE(plugin.activate(rate, 512));
-        const uint32_t tail = tailOf(plugin);
-        CAPTURE(tail);
-        CHECK(isFrames(tail, defaultGrainTail(isFx), rate));
-        plugin.deactivate();
-    }
-}
-
-TEST_CASE("tail adds pre-delay and twice the decay when the reverb is up", "[plugin][space]")
-{
-    // Amount > 0 adds Pre-delay + 2 × Decay (spec §6.7; the plan's multiple). Decay 1.0 is 2 s.
-    const char *id = GENERATE(kInstrumentId, kFxId);
-    CAPTURE(id);
-    const bool isFx = std::string_view(id) == kFxId;
-    TailHost host;
-    gg::test::PluginUnderTest plugin(id, host.clap());
-    REQUIRE(plugin.valid());
-    flushParams(plugin, std::array{
-                            gg::test::paramValue(paramId(ParamSlot::ReverbAmount), 0.5),
-                            gg::test::paramValue(paramId(ParamSlot::ReverbDecay), 1.0),
-                        });
-    REQUIRE(plugin.activate(48000.0, 512));
-    uint32_t tail = tailOf(plugin);
-    CAPTURE(tail);
-    CHECK(isFrames(tail, defaultGrainTail(isFx) + 4.0, 48000.0));
-
-    // Pre-delay adds its seconds.
-    flushParams(plugin, std::array{
-                            gg::test::paramValue(paramId(ParamSlot::ReverbPredelay), 0.5),
-                        });
-    tail = tailOf(plugin);
-    CHECK(isFrames(tail, defaultGrainTail(isFx) + 4.5, 48000.0));
-}
-
-TEST_CASE("tail is infinite at decay infinity only with the reverb up", "[plugin][space]")
-{
-    const char *id = GENERATE(kInstrumentId, kFxId);
-    CAPTURE(id);
-    const bool isFx = std::string_view(id) == kFxId;
-    TailHost host;
-    gg::test::PluginUnderTest plugin(id, host.clap());
-    REQUIRE(plugin.valid());
-    flushParams(plugin, std::array{
-                            gg::test::paramValue(paramId(ParamSlot::ReverbDecay),
-                                                 static_cast<double>(gg::core::kDecayMax)),
-                        });
-    REQUIRE(plugin.activate(48000.0, 512));
-    // Amount 0: the reverb is silent, so ∞ adds nothing.
-    uint32_t tail = tailOf(plugin);
-    CAPTURE(tail);
-    CHECK(isFrames(tail, defaultGrainTail(isFx), 48000.0));
-
-    // Amount up: the room rings forever. Also at the lowest ∞ value, kDecayInfinite.
-    for (const double decay :
-         {static_cast<double>(gg::core::kDecayMax), static_cast<double>(gg::core::kDecayInfinite)})
-    {
-        CAPTURE(decay);
-        flushParams(plugin, std::array{
-                                gg::test::paramValue(paramId(ParamSlot::ReverbAmount), 0.01),
-                                gg::test::paramValue(paramId(ParamSlot::ReverbDecay), decay),
-                            });
-        CHECK(tailOf(plugin) == kInfiniteTail);
-    }
-
-    // Just below ∞, the longest finite decay: 60 s, so the tail stays finite (2 × 60 s).
-    flushParams(plugin, std::array{
-                            gg::test::paramValue(paramId(ParamSlot::ReverbDecay),
-                                                 static_cast<double>(std::nextafter(
-                                                     gg::core::kDecayInfinite, 0.0f))),
-                        });
-    tail = tailOf(plugin);
-    CHECK(tail < kInfiniteTail);
-    CHECK(std::abs(static_cast<double>(tail) - (defaultGrainTail(isFx) + 120.0) * 48000.0) < 48.0);
-}
-
-TEST_CASE("fx tail is infinite while a note is held", "[plugin][space]")
-{
-    // Spec §6.7: a held note freezes the FX's ring (sub-project 2's spec §6.3), so it keeps
-    // sounding with no input. The process() that applies the flip calls tail.changed, on the
-    // audio thread. The instrument's notes don't change its tail.
-    const char *id = GENERATE(kInstrumentId, kFxId);
-    CAPTURE(id);
-    const bool isFx = std::string_view(id) == kFxId;
-    TailHost host;
-    gg::test::PluginUnderTest plugin(id, host.clap());
-    REQUIRE(plugin.valid());
-    REQUIRE(plugin.activate(48000.0, 512));
-    const uint32_t finite = tailOf(plugin);
-    CHECK(isFrames(finite, defaultGrainTail(isFx), 48000.0));
-
-    const auto on = noteOn(60, 0);
-    gg::test::InputEvents onEvents;
-    onEvents.add(&on.header);
-    processSilence(plugin, host, isFx, 64, onEvents.list());
-    REQUIRE(heldKeys(plugin) == std::vector<int>{60});
-    CHECK(tailOf(plugin) == (isFx ? kInfiniteTail : finite));
-    CHECK(host.tailChanges() == (isFx ? 1u : 0u));
-
-    // Still held: no new change.
-    processSilence(plugin, host, isFx, 64);
-    plugin.onMainThread();
-    CHECK(host.tailChanges() == (isFx ? 1u : 0u));
-
-    const auto off = gg::test::noteEvent(CLAP_EVENT_NOTE_OFF, 0, 60, 0);
-    gg::test::InputEvents offEvents;
-    offEvents.add(&off.header);
-    processSilence(plugin, host, isFx, 64, offEvents.list());
-    REQUIRE(heldKeys(plugin).empty());
-    CHECK(tailOf(plugin) == finite);
-    CHECK(host.tailChanges() == (isFx ? 2u : 0u));
-    CHECK(host.offAudioThreadChanges() == 0);
-}
-
-TEST_CASE("fx tail is infinite while freeze is engaged", "[plugin][space]")
-{
-    // Freeze engages once armed (seen off since the activation, ruling M1-ac): a Freeze that is
-    // on from the start leaves the ring live, and the tail finite, until it is toggled.
+    // Ruling R-T7a: the FX, a live-buffer effect that can sound with no input at any time
+    // (Freeze, notes, 16 s reads, the reverb), reports an infinite tail always, and never calls
+    // tail.changed (clap-wrapper's VST3 would restart the plugin on it).
     TailHost host;
     gg::test::PluginUnderTest fx(kFxId, host.clap());
     REQUIRE(fx.valid());
-    flushParams(fx, std::array{gg::test::paramValue(paramId(ParamSlot::Freeze), 1.0)});
-    REQUIRE(fx.activate(48000.0, 512));
-    const double finite = defaultGrainTail(true);
-    processSilence(fx, host, true, 64);
-    CHECK(isFrames(tailOf(fx), finite, 48000.0)); // on, not armed
-
-    const auto off = gg::test::paramValue(paramId(ParamSlot::Freeze), 0.0);
-    gg::test::InputEvents offEvents;
-    offEvents.add(&off.header);
-    processSilence(fx, host, true, 64, offEvents.list());
-    CHECK(isFrames(tailOf(fx), finite, 48000.0)); // armed, off
-
-    const auto on = gg::test::paramValue(paramId(ParamSlot::Freeze), 1.0);
-    gg::test::InputEvents onEvents;
-    onEvents.add(&on.header);
-    processSilence(fx, host, true, 64, onEvents.list());
-    CHECK(tailOf(fx) == kInfiniteTail); // engaged
-    CHECK(host.tailChanges() == 1);
-
-    // Off again, by an active params.flush (the audio thread): finite again.
-    host.onAudioThread([&] {
-        flushParams(fx, std::array{gg::test::paramValue(paramId(ParamSlot::Freeze), 0.0)});
+    CHECK(tailOf(fx) == kInfiniteTail); // before the first activation
+    throughTailStates(fx, true, [&](const char *state) {
+        CAPTURE(state);
+        CHECK(tailOf(fx) == kInfiniteTail);
     });
-    CHECK(isFrames(tailOf(fx), finite, 48000.0));
-    CHECK(host.tailChanges() == 2);
-    CHECK(host.offAudioThreadChanges() == 0);
-
-    // The instrument has no ring to freeze: its tail stays finite.
-    TailHost instrumentHost;
-    gg::test::PluginUnderTest instrument(kInstrumentId, instrumentHost.clap());
-    REQUIRE(instrument.valid());
-    REQUIRE(instrument.activate(48000.0, 512));
-    processSilence(instrument, instrumentHost, false, 64, offEvents.list());
-    processSilence(instrument, instrumentHost, false, 64, onEvents.list());
-    CHECK(isFrames(tailOf(instrument), defaultGrainTail(false), 48000.0));
-    CHECK(instrumentHost.tailChanges() == 0);
+    fx.deactivate();
+    CHECK(tailOf(fx) == kInfiniteTail);
+    CHECK(host.tailChanges() == 0);
 }
 
-TEST_CASE("tail changes are reported on the audio thread", "[plugin][space]")
+TEST_CASE("instrument tail is its longest finite one at the active rate", "[plugin][space]")
 {
-    // CLAP marks clap_host_tail.changed [audio-thread]. A value entering the tail that changes in
-    // process() or an active params.flush is reported there; one that changes on the main thread
-    // (a state load) is reported by the next process(). A change that leaves the tail as it was
-    // (Reverb Size) reports nothing.
-    const char *id = GENERATE(kInstrumentId, kFxId);
-    CAPTURE(id);
-    const bool isFx = std::string_view(id) == kFxId;
+    // Ruling R-T7a: 2 s Size + 0.5 s Pre-delay + 2 × 60 s Decay = 122.5 s, in frames at the
+    // active rate, whatever the values and the notes; at 48 kHz before the first activation.
+    // tail.changed is never called.
     TailHost host;
-    gg::test::PluginUnderTest plugin(id, host.clap());
-    REQUIRE(plugin.valid());
-    const std::string defaults = plugin.save();
-    REQUIRE(plugin.activate(48000.0, 512));
-    const uint32_t finite = tailOf(plugin);
-
-    // In process().
-    const auto amount = gg::test::paramValue(paramId(ParamSlot::ReverbAmount), 0.5);
-    gg::test::InputEvents amountEvents;
-    amountEvents.add(&amount.header);
-    processSilence(plugin, host, isFx, 64, amountEvents.list());
-    CHECK(tailOf(plugin) > finite);
-    CHECK(host.tailChanges() == 1);
-
-    // In an active params.flush (the audio thread).
-    host.onAudioThread([&] {
-        flushParams(plugin, std::array{gg::test::paramValue(paramId(ParamSlot::ReverbDecay), 2.0)});
+    gg::test::PluginUnderTest instrument(kInstrumentId, host.clap());
+    REQUIRE(instrument.valid());
+    CHECK(tailOf(instrument) == instrumentTail(48000.0));
+    CHECK(tailOf(instrument) == 5880000u);
+    throughTailStates(instrument, false, [&](const char *state) {
+        CAPTURE(state);
+        CHECK(tailOf(instrument) == instrumentTail(48000.0));
     });
-    CHECK(host.tailChanges() == 2);
+    instrument.deactivate();
 
-    // A value outside the tail.
-    host.onAudioThread([&] {
-        flushParams(plugin, std::array{gg::test::paramValue(paramId(ParamSlot::ReverbSize), 0.9)});
-    });
-    processSilence(plugin, host, isFx, 64);
-    CHECK(host.tailChanges() == 2);
-
-    // A state load, on the main thread: tail.get has the new tail at once, and the next
-    // process() reports it.
-    REQUIRE(plugin.load(defaults));
-    plugin.onMainThread();
-    CHECK(tailOf(plugin) == finite);
-    CHECK(host.tailChanges() == 2);
-    processSilence(plugin, host, isFx, 64);
-    CHECK(host.tailChanges() == 3);
-    processSilence(plugin, host, isFx, 64);
-    CHECK(host.tailChanges() == 3);
-    CHECK(host.offAudioThreadChanges() == 0);
+    for (const double rate : {96000.0, 44100.0})
+    {
+        CAPTURE(rate);
+        REQUIRE(instrument.activate(rate, 512));
+        CHECK(tailOf(instrument) == instrumentTail(rate));
+        instrument.deactivate();
+        CHECK(tailOf(instrument) == instrumentTail(rate)); // the last activation's rate
+    }
+    CHECK(tailOf(instrument) == 5402250u); // 122.5 s at 44.1 kHz
+    CHECK(host.tailChanges() == 0);
 }
 
 TEST_CASE("reactivate at a new rate mid-tail", "[plugin][rt][space]")
@@ -1472,6 +1328,7 @@ TEST_CASE("reactivate at a new rate mid-tail", "[plugin][rt][space]")
 
     REQUIRE(fx.activate(96000.0, kBlock));
     CHECK(tailOf(fx) == kInfiniteTail);
+    CHECK(host.tailChanges() == 0);
     constexpr uint32_t kBlocks = 96000 / kBlock + 1; // a second at 96 kHz
     Stereo silence(kBlock);
     Stereo rendered(kBlock * kBlocks);
