@@ -2,23 +2,29 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright 2026, the Giga Grains authors (see git history)
 
-// Space's reverb (spec §6.3): sst-effects' Reverb 2 under gg-core's own FXConfig
-// (core/src/space/GgFxConfig.h). Tagged [space].
+// Space's reverb (spec §6.3-§6.4): sst-effects' Reverb 2 under gg-core's own FXConfig
+// (core/src/space/GgFxConfig.h), the patch, and SpaceReverb, which runs it on the grid. Tagged
+// [space].
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <memory>
 #include <numbers>
+#include <utility>
 #include <vector>
 
 #include <catch2/catch_test_macros.hpp>
 
+#include "gg/core/ParamIds.h"
 #include "gg/core/Rng.h"
+#include "gg/core/SpaceReverb.h"
 #include "space/GgFxConfig.h"
 #include "space/Reverb2Patched.h"
 
@@ -627,4 +633,458 @@ TEST_CASE("patched Reverb2 infinite stays bounded under full-scale input", "[spa
         CHECK(peakOut <= 2.25f);
         CHECK(peakState > 1.f); // the input did drive the loop past loopClip's knee
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// SpaceReverb (gg/core/SpaceReverb.h): the patched Reverb 2 on the absolute 32-sample grid, with
+// Space's parameters mapped onto it and the idle rule.
+
+namespace
+{
+using gg::core::SpaceParams;
+using gg::core::SpaceReverb;
+
+/// Space's parameters at their defaults (spec §6.5), but with Amount 1 (SpaceReverb ignores
+/// it) and the given pre-delay.
+SpaceParams spaceDefaults(float predelaySeconds = 0.f)
+{
+    return {.diffusion = 0.f,
+            .amount = 1.f,
+            .drySend = 0.f,
+            .decayLog2 = 1.f,
+            .infinite = false,
+            .roomSize = 0.f,
+            .hfDamping = 0.3f,
+            .modulation = 0.25f,
+            .predelaySeconds = predelaySeconds};
+}
+
+/// Drives `reverb` one sample at a time over `in`, from absolute time `t0`, with the
+/// parameters `params(t)` and the activity `active(t)`. Returns the output.
+template <typename Params, typename Active>
+Stereo drive(SpaceReverb &reverb, const Stereo &in, Params &&params, Active &&active,
+             int64_t t0 = 0)
+{
+    Stereo out(in.left.size());
+    for (size_t i = 0; i < in.left.size(); ++i)
+    {
+        const int64_t t = t0 + int64_t(i);
+        reverb.processSample(t, in.left[i], in.right[i], params(t), active(t), out.left[i],
+                             out.right[i]);
+    }
+    return out;
+}
+
+/// The same, always active, at fixed parameters.
+Stereo drive(SpaceReverb &reverb, const Stereo &in, const SpaceParams &p)
+{
+    return drive(reverb, in, [&p](int64_t) { return p; }, [](int64_t) { return true; });
+}
+
+/// A unit impulse on both channels at sample 0, then silence: `n` samples.
+Stereo impulse(size_t n)
+{
+    Stereo s(n);
+    s.left[0] = 1.f;
+    s.right[0] = 1.f;
+    return s;
+}
+
+/// The first sample at which either channel exceeds 1e-6 in magnitude, or -1.
+int64_t onset(const Stereo &s)
+{
+    for (size_t i = 0; i < s.left.size(); ++i)
+    {
+        if (std::fabs(s.left[i]) > 1e-6f || std::fabs(s.right[i]) > 1e-6f)
+            return int64_t(i);
+    }
+    return -1;
+}
+
+bool allFinite(const Stereo &s)
+{
+    const auto finite = [](float v) { return std::isfinite(v); };
+    return std::all_of(s.left.begin(), s.left.end(), finite) &&
+           std::all_of(s.right.begin(), s.right.end(), finite);
+}
+
+/// Every sample of [from, to) is +0.0f on both channels.
+bool positiveZeros(const Stereo &s, size_t from, size_t to)
+{
+    for (size_t i = from; i < to; ++i)
+    {
+        if (std::bit_cast<uint32_t>(s.left[i]) != 0u || std::bit_cast<uint32_t>(s.right[i]) != 0u)
+            return false;
+    }
+    return true;
+}
+
+/// Samples [from, from + n) of `s`.
+Stereo slice(const Stereo &s, size_t from, size_t n)
+{
+    Stereo r(n);
+    std::copy_n(s.left.begin() + std::ptrdiff_t(from), n, r.left.begin());
+    std::copy_n(s.right.begin() + std::ptrdiff_t(from), n, r.right.begin());
+    return r;
+}
+
+/// Stereo noise at `amplitude` (independent channels, streams `stream` and `stream + 1`).
+Stereo stereoNoise(size_t n, uint32_t stream, float amplitude)
+{
+    Stereo s(n);
+    s.left = noise(n, stream, amplitude);
+    s.right = noise(n, stream + 1, amplitude);
+    return s;
+}
+
+/// The parameter history of the call-pattern test: changes on grid boundaries only, covering
+/// every mapped value, the pre-delay and infinity.
+SpaceParams scheduled(int64_t t)
+{
+    const int64_t c = t / SpaceReverb::kChunk;
+    auto p = spaceDefaults();
+    if (c >= 200)
+    {
+        p.roomSize = 1.f;
+        p.decayLog2 = 2.5f;
+    }
+    if (c >= 400)
+    {
+        p.predelaySeconds = 0.05f;
+        p.modulation = 1.f;
+    }
+    if (c >= 700)
+    {
+        p.infinite = true;
+        p.decayLog2 = 6.f;
+        p.hfDamping = 0.f;
+    }
+    if (c >= 1000)
+    {
+        p.infinite = false;
+        p.decayLog2 = -1.f;
+        p.roomSize = -1.f;
+        p.predelaySeconds = 0.01f;
+        p.hfDamping = 1.f;
+    }
+    return p;
+}
+
+/// Idle for chunks 1200 to 1219 of the call-pattern test.
+bool scheduledActive(int64_t t)
+{
+    const int64_t c = t / SpaceReverb::kChunk;
+    return c < 1200 || c >= 1220;
+}
+} // namespace
+
+TEST_CASE("SpaceReverb return is 32 samples late at any call pattern", "[space]")
+{
+    const size_t n = 48000;
+    const auto in = stereoNoise(n, 11, 0.5f);
+
+    // One call per sample, in one run: the reference.
+    auto ref = std::make_unique<SpaceReverb>(kRate);
+    const auto expected = drive(*ref, in, scheduled, scheduledActive);
+    REQUIRE(allFinite(expected));
+    // Nothing comes back for the first chunk: the return is the previous chunk's output.
+    CHECK(positiveZeros(expected, 0, SpaceReverb::kChunk));
+    CHECK(rms(expected.left, 0.0, 1.0) > 0.01);
+    // Idle chunks return +0.
+    CHECK(positiveZeros(expected, 1200 * SpaceReverb::kChunk, 1220 * SpaceReverb::kChunk));
+
+    // The same history, split into host blocks. Each block passes the values in effect at its
+    // first sample to every sample until the next grid boundary inside it, and off the grid
+    // values that differ: a chunk must use only the values at its first sample.
+    const auto split = [&](auto &&nextBlockSize) {
+        auto reverb = std::make_unique<SpaceReverb>(kRate);
+        Stereo out(n);
+        size_t start = 0;
+        while (start < n)
+        {
+            const size_t end = std::min(n, start + nextBlockSize());
+            for (size_t i = start; i < end; ++i)
+            {
+                const auto t = int64_t(i);
+                auto p = scheduled(t);
+                if (t % SpaceReverb::kChunk != 0)
+                {
+                    p.roomSize = -p.roomSize;
+                    p.infinite = !p.infinite;
+                    p.decayLog2 += 1.f;
+                    p.predelaySeconds = 0.5f - p.predelaySeconds;
+                    p.hfDamping = 1.f - p.hfDamping;
+                    p.modulation = 1.f - p.modulation;
+                }
+                reverb->processSample(t, in.left[i], in.right[i], p, scheduledActive(t),
+                                      out.left[i], out.right[i]);
+            }
+            start = end;
+        }
+        return out;
+    };
+
+    for (const size_t blockSize : {1u, 7u, 31u, 32u, 33u, 4096u})
+    {
+        INFO("block size " << blockSize);
+        CHECK(sameBits(split([blockSize] { return blockSize; }), expected));
+    }
+    for (uint32_t seed = 0; seed < 3; ++seed)
+    {
+        INFO("random splits, stream " << seed);
+        uint64_t draw = 0;
+        const auto randomSize = [&] {
+            const auto h =
+                gg::rng::hash({kNoiseSeed, 1, seed, gg::rng::Field::SignalNoise, draw++});
+            return size_t(1 + h % 700);
+        };
+        CHECK(sameBits(split(randomSize), expected));
+    }
+}
+
+TEST_CASE("SpaceReverb predelay offsets the onset", "[space]")
+{
+    const auto in = impulse(frames(0.5));
+    auto a = std::make_unique<SpaceReverb>(kRate);
+    auto b = std::make_unique<SpaceReverb>(kRate);
+    const auto at0 = drive(*a, in, spaceDefaults(0.f));
+    const auto at100ms = drive(*b, in, spaceDefaults(0.1f));
+    const auto onset0 = onset(at0), onset100 = onset(at100ms);
+    UNSCOPED_INFO("onset at Pre-delay 0: " << onset0 << ", at 0.1 s: " << onset100);
+    REQUIRE(onset0 >= int64_t(SpaceReverb::kChunk));
+    REQUIRE(onset100 > onset0);
+    const int64_t expectedShift = std::llround(0.1 * kRate) - SpaceReverb::kChunk;
+    CHECK(std::llabs((onset100 - onset0) - expectedShift) <= 1);
+}
+
+TEST_CASE("SpaceReverb idle returns zeros and resumes empty", "[space]")
+{
+    // 3 s active at Size 100%, so the delay lines have swept their whole buffers and the clear
+    // is large (several idle chunks' budget); then idle; then 1 s active. A short idle stretch
+    // leaves part of the clear for the reactivation to finish; a long one finishes it stepwise.
+    const size_t activeChunks = chunkAt(3.0), resumeChunks = chunkAt(1.0);
+    auto params = spaceDefaults(0.02f);
+    params.roomSize = 1.f;
+    params.modulation = 1.f;
+    for (const size_t idleChunks : {1u, 10u, 400u})
+    {
+        INFO("idle chunks " << idleChunks);
+        const size_t resumeAt = (activeChunks + idleChunks) * SpaceReverb::kChunk;
+        const size_t n = resumeAt + resumeChunks * SpaceReverb::kChunk;
+        const auto in = stereoNoise(n, 21, 0.5f);
+
+        auto reverb = std::make_unique<SpaceReverb>(kRate);
+        bool pendingAtResume = false;
+        const auto out = drive(
+            *reverb, in, [&](int64_t) { return params; },
+            [&](int64_t t) {
+                const auto c = size_t(t) / SpaceReverb::kChunk;
+                if (size_t(t) == resumeAt)
+                    pendingAtResume = reverb->clearPending();
+                return c < activeChunks || c >= activeChunks + idleChunks;
+            });
+        REQUIRE(allFinite(out));
+        CHECK(rms(out.left, 1.0, 3.0) > 0.01);
+        // The idle chunks, and the first active one after them, return +0.
+        CHECK(
+            positiveZeros(out, activeChunks * SpaceReverb::kChunk, resumeAt + SpaceReverb::kChunk));
+        UNSCOPED_INFO("idle for " << idleChunks << " chunks: clear pending at reactivation "
+                                  << pendingAtResume);
+        if (idleChunks == 1)
+            CHECK(pendingAtResume); // the reactivation finished the clear
+        if (idleChunks == 400)
+            CHECK_FALSE(pendingAtResume); // the idle chunks finished it
+
+        // A fresh instance driven over the same active stretch from t = 0.
+        auto fresh = std::make_unique<SpaceReverb>(kRate);
+        const auto resumedIn = slice(in, resumeAt, n - resumeAt);
+        const auto expected = drive(*fresh, resumedIn, params);
+        CHECK(rms(expected.left, 0.1, 1.0) > 0.01);
+        CHECK(sameBits(slice(out, resumeAt, n - resumeAt), expected));
+    }
+}
+
+TEST_CASE("SpaceReverb after clear matches a fresh instance", "[space]")
+{
+    // 2 s of noise at infinity, Size 100%, then reset() in the middle of the tail it holds.
+    auto held = spaceDefaults(0.25f);
+    held.infinite = true;
+    held.decayLog2 = 6.f;
+    held.roomSize = 1.f;
+    held.modulation = 1.f;
+    auto reverb = std::make_unique<SpaceReverb>(kRate);
+    const auto tail = drive(*reverb, noiseThenSilence(1.0, 2.0, 0.5f), held);
+    REQUIRE(rms(tail.left, 1.9, 2.0) > 0.01);
+    reverb->reset();
+
+    // Then the same new history for both, from t = 0: a finite stretch, then infinity again.
+    const auto in = stereoNoise(frames(1.5), 31, 0.5f);
+    const auto params = [&](int64_t t) {
+        return t < int64_t(frames(0.75)) ? spaceDefaults(0.01f) : held;
+    };
+    const auto always = [](int64_t) { return true; };
+    const auto after = drive(*reverb, in, params, always);
+    auto fresh = std::make_unique<SpaceReverb>(kRate);
+    const auto expected = drive(*fresh, in, params, always);
+    REQUIRE(rms(expected.left, 0.5, 1.5) > 0.01);
+    CHECK(sameBits(after, expected));
+}
+
+TEST_CASE("SpaceReverb at 44.1, 96 and 192 kHz", "[space]")
+{
+    int64_t lastOnset = 0;
+    for (const double rate : {44100.0, 96000.0, 192000.0})
+    {
+        INFO("rate " << rate);
+        const size_t n = size_t(std::llround(0.5 * rate));
+        const auto in = impulse(n);
+        auto a = std::make_unique<SpaceReverb>(rate);
+        auto b = std::make_unique<SpaceReverb>(rate);
+        const auto at0 = drive(*a, in, spaceDefaults(0.f));
+        const auto at100ms = drive(*b, in, spaceDefaults(0.1f));
+        REQUIRE(allFinite(at0));
+        REQUIRE(allFinite(at100ms));
+
+        // It rings: energy in the tail, 0.3-0.5 s.
+        double tail = 0.0;
+        for (size_t i = size_t(0.3 * rate); i < n; ++i)
+            tail += double(at0.left[i]) * at0.left[i];
+        CHECK(tail > 1e-6);
+
+        // The onset moves with the rate: a later sample at a higher rate, and Pre-delay's
+        // shift in samples is 0.1 s at this rate less the 32 the grid already adds.
+        const auto onset0 = onset(at0), onset100 = onset(at100ms);
+        UNSCOPED_INFO(rate << " Hz: onset at Pre-delay 0: " << onset0
+                           << ", at 0.1 s: " << onset100);
+        CHECK(onset0 > lastOnset);
+        lastOnset = onset0;
+        const int64_t expectedShift = std::llround(0.1 * rate) - SpaceReverb::kChunk;
+        CHECK(std::llabs((onset100 - onset0) - expectedShift) <= 1);
+    }
+}
+
+namespace
+{
+/// An hour at infinity with no damping and the largest room, full modulation: `input(i)` fills
+/// one second of stereo input from absolute sample i. Rendered a second at a time. Returns the
+/// largest |output| and whether every output sample was finite.
+template <typename Input> std::pair<float, bool> hourAtInfinity(Input &&input)
+{
+    auto p = spaceDefaults();
+    p.infinite = true;
+    p.decayLog2 = gg::core::kDecayMax;
+    p.hfDamping = 0.f;
+    p.roomSize = 1.f;
+    p.modulation = 1.f;
+    auto reverb = std::make_unique<SpaceReverb>(kRate);
+    const size_t second = frames(1.0);
+    std::vector<float> l(second), r(second);
+    float peak = 0.f;
+    bool finite = true;
+    for (int s = 0; s < 3600; ++s)
+    {
+        const size_t base = size_t(s) * second;
+        input(base, l, r);
+        for (size_t i = 0; i < second; ++i)
+        {
+            float outL, outR;
+            reverb->processSample(int64_t(base + i), l[i], r[i], p, true, outL, outR);
+            finite = finite && std::isfinite(outL) && std::isfinite(outR);
+            peak = std::max({peak, std::fabs(outL), std::fabs(outR)});
+        }
+    }
+    return {peak, finite};
+}
+} // namespace
+
+// Spec §6.4: a lossless loop fed full-scale input must stay bounded for any length of render.
+// loopClip keeps what enters each delay line below 2, so each output channel (four taps whose
+// gains sum to 1.125) stays within 2.25: far inside 64.
+TEST_CASE("SpaceReverb infinite stays bounded for an hour with a sine", "[space][slow]")
+{
+    const auto [peak, finite] =
+        hourAtInfinity([](size_t base, std::vector<float> &l, std::vector<float> &r) {
+            for (size_t i = 0; i < l.size(); ++i)
+            {
+                // The phase from the sample index modulo the sine's period at 48 kHz (110 Hz
+                // has a period of 48000/110 samples; 11 periods are exactly 4800 samples).
+                const auto k = double((base + i) % 4800);
+                l[i] = r[i] = float(std::sin(2.0 * std::numbers::pi * 110.0 * k / kRate));
+            }
+        });
+    UNSCOPED_INFO("an hour of a 0 dBFS 110 Hz sine at infinity: output peak " << peak);
+    REQUIRE(finite);
+    CHECK(peak < 64.f);
+    CHECK(peak <= 2.25f);
+    CHECK(peak > 1.f);
+}
+
+TEST_CASE("SpaceReverb infinite stays bounded for an hour with noise", "[space][slow]")
+{
+    const auto [peak, finite] =
+        hourAtInfinity([](size_t base, std::vector<float> &l, std::vector<float> &r) {
+            for (size_t i = 0; i < l.size(); ++i)
+            {
+                const uint64_t index = base + i;
+                l[i] = float(gg::rng::bipolar(
+                    gg::rng::hash({kNoiseSeed, 2, 1, gg::rng::Field::SignalNoise, index})));
+                r[i] = float(gg::rng::bipolar(
+                    gg::rng::hash({kNoiseSeed, 2, 2, gg::rng::Field::SignalNoise, index})));
+            }
+        });
+    UNSCOPED_INFO("an hour of full-scale noise at infinity: output peak " << peak);
+    REQUIRE(finite);
+    CHECK(peak < 64.f);
+    CHECK(peak <= 2.25f);
+    CHECK(peak > 1.f);
+}
+
+TEST_CASE("SpaceReverb tail decays per Decay", "[space]")
+{
+    // An impulse at Decay 1.0 (2 s) and Damping 0. The level of the left channel in 20 ms
+    // windows, in dB; a line fitted to it from 5 dB to 35 dB below its peak gives the T60. A
+    // sanity check of the mapping, not a calibration: within 50% of 2 s.
+    auto p = spaceDefaults();
+    p.hfDamping = 0.f;
+    auto reverb = std::make_unique<SpaceReverb>(kRate);
+    const auto out = drive(*reverb, impulse(frames(6.0)), p);
+    REQUIRE(allFinite(out));
+
+    const size_t window = frames(0.02);
+    std::vector<double> levelDb;
+    for (size_t w = 0; (w + 1) * window <= out.left.size(); ++w)
+    {
+        double sum = 0.0;
+        for (size_t i = w * window; i < (w + 1) * window; ++i)
+            sum += double(out.left[i]) * out.left[i] + double(out.right[i]) * out.right[i];
+        levelDb.push_back(10.0 * std::log10(sum / double(2 * window) + 1e-30));
+    }
+    const auto peakAt = size_t(std::max_element(levelDb.begin(), levelDb.end()) - levelDb.begin());
+    const double peak = levelDb[peakAt];
+    size_t from = peakAt, to = peakAt;
+    while (from < levelDb.size() && levelDb[from] > peak - 5.0)
+        ++from;
+    to = from;
+    while (to < levelDb.size() && levelDb[to] > peak - 35.0)
+        ++to;
+    REQUIRE(to < levelDb.size()); // it fell 35 dB within the render
+    REQUIRE(to > from + 2);
+
+    // Least squares of dB against seconds over [from, to).
+    double sx = 0, sy = 0, sxx = 0, sxy = 0;
+    const double count = double(to - from);
+    for (size_t w = from; w < to; ++w)
+    {
+        const double x = double(w) * 0.02, y = levelDb[w];
+        sx += x;
+        sy += y;
+        sxx += x * x;
+        sxy += x * y;
+    }
+    const double slope = (count * sxy - sx * sy) / (count * sxx - sx * sx);
+    REQUIRE(slope < 0.0);
+    const double t60 = -60.0 / slope;
+    UNSCOPED_INFO("T60 at Decay 1.0 (2 s), Damping 0: " << t60 << " s");
+    CHECK(t60 > 1.0);
+    CHECK(t60 < 3.0);
 }
