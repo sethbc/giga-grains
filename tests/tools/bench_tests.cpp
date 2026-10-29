@@ -242,7 +242,8 @@ TEST_CASE("ratios pair runs from the same round", "[bench]")
 TEST_CASE("bench json escapes quotes, backslashes and control characters", "[bench]")
 {
     // Both documents, schema 2 and --space's, with them in the commit: they read back intact.
-    const std::string commit = "a\"b\\c\x01d\n";
+    const std::string commit = "a\"b\\c\x01"
+                               "d\n"; // \x01, then d
     gg::bench::Report report;
     report.options.commit = commit;
     CHECK(nlohmann::json::parse(gg::bench::toJson(report)).at("commit").get<std::string>() ==

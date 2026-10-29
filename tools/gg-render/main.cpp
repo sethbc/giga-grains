@@ -356,6 +356,7 @@ int run(int argc, char **argv)
 
 int main(int argc, char **argv)
 {
-    // Anything thrown but bad input is an internal error, exit 3 (tested in render_tests.cpp).
+    // Anything thrown but bad input is an internal error, exit 3 (tested in
+    // tests/tools/render_spec_tests.cpp).
     return gg::render::guarded([&] { return run(argc, argv); });
 }
