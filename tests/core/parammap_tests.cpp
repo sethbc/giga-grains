@@ -259,6 +259,45 @@ TEST_CASE("param map follows the taper table", "[core]")
             case ParamSlot::DryToReverb:
                 REQUIRE(space.drySend == v);
                 break;
+            case ParamSlot::Texture:
+            case ParamSlot::Feedback:
+            case ParamSlot::Macro1:
+            case ParamSlot::Macro2:
+            case ParamSlot::Macro3:
+            case ParamSlot::Macro4:
+            case ParamSlot::Macro5:
+            case ParamSlot::Macro6:
+            case ParamSlot::Macro7:
+            case ParamSlot::Macro8:
+            {
+                // The Perform UI's ten map to nothing here yet (sub-project 5's plan, Tasks 2 to
+                // 4 give them their effects): every field is the defaults'.
+                const ParamValues base = defaults(Mode::Fx);
+                const auto c0 = toCloudParams(base, Mode::Fx);
+                const auto w0 = toWetParams(base);
+                const auto s0 = toSpaceParams(base, Mode::Fx);
+                REQUIRE(cloud.densityHz == c0.densityHz);
+                REQUIRE(cloud.distribution == c0.distribution);
+                REQUIRE(cloud.grainDurationSec == c0.grainDurationSec);
+                REQUIRE(cloud.position == c0.position);
+                REQUIRE(cloud.spray == c0.spray);
+                REQUIRE(cloud.pitchSemitones == c0.pitchSemitones);
+                REQUIRE(cloud.stereo == c0.stereo);
+                REQUIRE(cloud.gain == c0.gain);
+                REQUIRE(wet.levelGain == w0.levelGain);
+                REQUIRE(wet.mix == w0.mix);
+                REQUIRE(wet.freeze == w0.freeze);
+                REQUIRE(space.diffusion == s0.diffusion);
+                REQUIRE(space.amount == s0.amount);
+                REQUIRE(space.drySend == s0.drySend);
+                REQUIRE(space.decayLog2 == s0.decayLog2);
+                REQUIRE(space.infinite == s0.infinite);
+                REQUIRE(space.roomSize == s0.roomSize);
+                REQUIRE(space.hfDamping == s0.hfDamping);
+                REQUIRE(space.modulation == s0.modulation);
+                REQUIRE(space.predelaySeconds == s0.predelaySeconds);
+                break;
+            }
             case ParamSlot::Count:
                 FAIL("not a parameter");
             }

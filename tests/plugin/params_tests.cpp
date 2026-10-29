@@ -82,10 +82,23 @@ constexpr std::array<ExpectedParam, kParamCount> kExpected{{
     {0x000007, "Reverb Pre-delay", 0.0f, 0.5f, 0.0f},
     {0x000008, "Reverb Modulation", 0.0f, 1.0f, 0.25f},
     {0x000009, "Dry to Reverb", 0.0f, 1.0f, 0.0f},
+    // The Perform UI (sub-project 5's spec §3.3, §4, §5).
+    {0x010009, "Texture", 0.0f, 1.0f, 0.0f},
+    {0x01000A, "Feedback", 0.0f, 0.95f, 0.0f},
+    {0x000011, "Macro Size", 0.0f, 1.0f, 0.5f},
+    {0x000012, "Macro Density", 0.0f, 1.0f, 0.5f},
+    {0x000013, "Macro Pitch", 0.0f, 1.0f, 0.5f},
+    {0x000014, "Macro Spray", 0.0f, 1.0f, 0.5f},
+    {0x000015, "Macro Texture", 0.0f, 1.0f, 0.0f},
+    {0x000016, "Macro Freeze", 0.0f, 1.0f, 0.0f},
+    {0x000017, "Macro Feedback", 0.0f, 1.0f, 0.0f},
+    {0x000018, "Macro Mix", 0.0f, 1.0f, 0.5f},
 }};
-// The instrument's Position is 0–100% of the loaded file, 0% by default; the rest of its table
-// is the FX's above (spec §6.8).
+// The instrument's Position is 0–100% of the loaded file, 0% by default (spec §6.8); its last
+// two macros are Macro Stereo, 0.5 by default, and Macro Level (sub-project 5's spec §3.3). The
+// rest of its table is the FX's above.
 constexpr float kInstrumentPositionDefault = 0.0f;
+constexpr float kInstrumentMacro7Default = 0.5f;
 
 ParamValues defaults()
 {
@@ -293,24 +306,42 @@ TEST_CASE("plugin exposes every param", "[plugin]")
         REQUIRE(params->get_info(plugin.clap(), i, &info));
         const auto &expected = kExpected[i];
         CHECK(info.id == expected.id);
-        CHECK(std::string_view(info.name) == expected.name);
+        std::string_view name = expected.name;
+        if (!isFx && i == at(ParamSlot::Macro7))
+        {
+            name = "Macro Stereo";
+        }
+        if (!isFx && i == at(ParamSlot::Macro8))
+        {
+            name = "Macro Level";
+        }
+        CHECK(std::string_view(info.name) == name);
         CHECK(std::string_view(info.module).empty());
         CHECK(info.cookie == nullptr);
         CHECK(info.min_value == static_cast<double>(expected.min));
         CHECK(info.max_value == static_cast<double>(expected.max));
-        const float def =
-            i == at(ParamSlot::Position) && !isFx ? kInstrumentPositionDefault : expected.def;
+        float def = expected.def;
+        if (!isFx && i == at(ParamSlot::Position))
+        {
+            def = kInstrumentPositionDefault;
+        }
+        if (!isFx && i == at(ParamSlot::Macro7))
+        {
+            def = kInstrumentMacro7Default;
+        }
         CHECK(info.default_value == static_cast<double>(def));
 
         // Global Constraints' CLAP flags: every parameter is automatable and modulatable,
-        // Freeze is stepped, and the instrument hides Mix and Dry to Reverb, which have no dry
-        // signal to act on.
+        // Freeze and Macro Freeze are stepped, and the instrument hides Mix, Dry to Reverb and
+        // Feedback, which have no dry signal or live ring to act on.
         clap_param_info_flags flags = CLAP_PARAM_IS_AUTOMATABLE | CLAP_PARAM_IS_MODULATABLE;
-        if (i == at(ParamSlot::Freeze))
+        if (i == at(ParamSlot::Freeze) || i == at(ParamSlot::Macro6))
         {
             flags |= CLAP_PARAM_IS_STEPPED;
         }
-        if ((i == at(ParamSlot::Mix) || i == at(ParamSlot::DryToReverb)) && !isFx)
+        if ((i == at(ParamSlot::Mix) || i == at(ParamSlot::DryToReverb) ||
+             i == at(ParamSlot::Feedback)) &&
+            !isFx)
         {
             flags |= CLAP_PARAM_IS_HIDDEN;
         }
@@ -352,7 +383,7 @@ TEST_CASE("value and text round trip through clap", "[plugin]")
                 // The text has the display's precision, so the value comes back within a
                 // display step (Spray shows 10 ms steps, 1.6% of its range near 30 ms), and
                 // gives the same text.
-                if (s == at(ParamSlot::Freeze))
+                if (s == at(ParamSlot::Freeze) || s == at(ParamSlot::Macro6))
                 {
                     CHECK(back == (v > 0.5 ? 1.0 : 0.0));
                 }
@@ -968,10 +999,12 @@ TEST_CASE("fx handles mono, missing input and new sample rates", "[plugin]")
     }
 }
 
-TEST_CASE("remote controls page lists the cloud params", "[plugin]")
+TEST_CASE("remote controls pages are perform, cloud and space", "[plugin][space]")
 {
-    // The first of two 8-slot pages (spec §4; sub-project 4's spec §6.6). The instrument leaves
-    // Mix's slot empty: Mix is hidden there.
+    // Three 8-slot pages: "Perform", the eight macros (sub-project 5's spec §3.3); then "Cloud"
+    // (spec §4) and "Space" (sub-project 4's spec §6.6), unchanged but for their place. The
+    // instrument leaves Mix's and Dry to Reverb's slots empty: they are hidden there. A page's
+    // index is its page_id. There is no fourth.
     const char *id = GENERATE(kInstrumentId, kFxId);
     CAPTURE(id);
     const bool isFx = std::string_view(id) == kFxId;
@@ -980,69 +1013,60 @@ TEST_CASE("remote controls page lists the cloud params", "[plugin]")
     const auto *remote = static_cast<const clap_plugin_remote_controls *>(
         plugin.clap()->get_extension(plugin.clap(), CLAP_EXT_REMOTE_CONTROLS));
     REQUIRE(remote != nullptr);
-    REQUIRE(remote->count(plugin.clap()) == 2);
+    REQUIRE(remote->count(plugin.clap()) == 3);
 
-    clap_remote_controls_page page;
-    std::memset(&page, 0xA5, sizeof(page)); // every field must be written
-    REQUIRE(remote->get(plugin.clap(), 0, &page));
-    CHECK(std::string_view(page.section_name) == "Cloud");
-    CHECK(std::string_view(page.page_name) == "Cloud");
-    CHECK(page.page_id == 0);
-    CHECK_FALSE(page.is_for_preset);
-    const std::array<clap_id, CLAP_REMOTE_CONTROLS_COUNT> expected{
-        0x010001,                         // Position
-        0x010002,                         // Size
-        0x010003,                         // Density
-        0x010005,                         // Pitch
-        0x010006,                         // Spray
-        0x010007,                         // Stereo
-        0x010008,                         // Freeze
-        isFx ? 0x000001 : CLAP_INVALID_ID // Mix
-    };
-    for (std::size_t i = 0; i < expected.size(); ++i)
+    struct ExpectedPage
     {
-        CAPTURE(i);
-        CHECK(page.param_ids[i] == expected[i]);
-    }
-}
-
-TEST_CASE("remote controls page lists the space params", "[plugin][space]")
-{
-    // The second page, "Space" (sub-project 4's spec §6.6). The instrument leaves Dry to
-    // Reverb's slot empty: it is hidden there, as Mix is on the Cloud page. There is no third.
-    const char *id = GENERATE(kInstrumentId, kFxId);
-    CAPTURE(id);
-    const bool isFx = std::string_view(id) == kFxId;
-    PluginUnderTest plugin(id);
-    REQUIRE(plugin.valid());
-    const auto *remote = static_cast<const clap_plugin_remote_controls *>(
-        plugin.clap()->get_extension(plugin.clap(), CLAP_EXT_REMOTE_CONTROLS));
-    REQUIRE(remote != nullptr);
-    REQUIRE(remote->count(plugin.clap()) == 2);
-
-    clap_remote_controls_page page;
-    std::memset(&page, 0xA5, sizeof(page)); // every field must be written
-    REQUIRE(remote->get(plugin.clap(), 1, &page));
-    CHECK(std::string_view(page.section_name) == "Space");
-    CHECK(std::string_view(page.page_name) == "Space");
-    CHECK(page.page_id == 1);
-    CHECK_FALSE(page.is_for_preset);
-    const std::array<clap_id, CLAP_REMOTE_CONTROLS_COUNT> expected{
-        0x01000B,                         // Diffusion
-        0x000003,                         // Reverb Amount
-        0x000004,                         // Reverb Decay
-        0x000005,                         // Reverb Size
-        0x000006,                         // Reverb Damping
-        0x000007,                         // Reverb Pre-delay
-        0x000008,                         // Reverb Modulation
-        isFx ? 0x000009 : CLAP_INVALID_ID // Dry to Reverb
+        std::string_view name;
+        std::array<clap_id, CLAP_REMOTE_CONTROLS_COUNT> ids;
     };
-    for (std::size_t i = 0; i < expected.size(); ++i)
+    const std::array<ExpectedPage, 3> pages{{
+        {"Perform",
+         {0x000011,   // Macro 1
+          0x000012,   // Macro 2
+          0x000013,   // Macro 3
+          0x000014,   // Macro 4
+          0x000015,   // Macro 5
+          0x000016,   // Macro 6
+          0x000017,   // Macro 7
+          0x000018}}, // Macro 8
+        {"Cloud",
+         {0x010001,                            // Position
+          0x010002,                            // Size
+          0x010003,                            // Density
+          0x010005,                            // Pitch
+          0x010006,                            // Spray
+          0x010007,                            // Stereo
+          0x010008,                            // Freeze
+          isFx ? 0x000001 : CLAP_INVALID_ID}}, // Mix
+        {"Space",
+         {0x01000B,                            // Diffusion
+          0x000003,                            // Reverb Amount
+          0x000004,                            // Reverb Decay
+          0x000005,                            // Reverb Size
+          0x000006,                            // Reverb Damping
+          0x000007,                            // Reverb Pre-delay
+          0x000008,                            // Reverb Modulation
+          isFx ? 0x000009 : CLAP_INVALID_ID}}, // Dry to Reverb
+    }};
+    for (uint32_t p = 0; p < pages.size(); ++p)
     {
-        CAPTURE(i);
-        CHECK(page.param_ids[i] == expected[i]);
+        CAPTURE(p);
+        clap_remote_controls_page page;
+        std::memset(&page, 0xA5, sizeof(page)); // every field must be written
+        REQUIRE(remote->get(plugin.clap(), p, &page));
+        CHECK(std::string_view(page.section_name) == pages[p].name);
+        CHECK(std::string_view(page.page_name) == pages[p].name);
+        CHECK(page.page_id == p);
+        CHECK_FALSE(page.is_for_preset);
+        for (std::size_t i = 0; i < pages[p].ids.size(); ++i)
+        {
+            CAPTURE(i);
+            CHECK(page.param_ids[i] == pages[p].ids[i]);
+        }
     }
-    CHECK_FALSE(remote->get(plugin.clap(), 2, &page));
+    clap_remote_controls_page page;
+    CHECK_FALSE(remote->get(plugin.clap(), 3, &page));
 }
 
 TEST_CASE("latest value hands over the newest snapshot", "[plugin]")

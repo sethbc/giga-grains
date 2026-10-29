@@ -188,11 +188,11 @@ class GigaGrainsPlugin : public plugHelper_t
     bool stateSave(const clap_ostream *stream) noexcept override;
     bool stateLoad(const clap_istream *stream) noexcept override;
 
-    // ---- Remote controls: two pages, "Cloud" (spec §4) and "Space" (sub-project 4's spec
-    // §6.6) ----
+    // ---- Remote controls: three pages, "Perform" (sub-project 5's spec §3.3), "Cloud" (spec
+    // §4) and "Space" (sub-project 4's spec §6.6) ----
 
     bool implementRemoteControls() const noexcept override { return true; }
-    uint32_t remoteControlsPageCount() noexcept override { return 2; }
+    uint32_t remoteControlsPageCount() noexcept override;
     bool remoteControlsPageGet(uint32_t pageIndex,
                                clap_remote_controls_page *page) noexcept override;
 

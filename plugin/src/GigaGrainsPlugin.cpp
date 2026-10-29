@@ -29,15 +29,19 @@ using gg::core::NoteEventType;
 using gg::core::ParamEvent;
 using gg::core::ParamSlot;
 
-// The remote-controls pages, in page order, each in slot order: "Cloud" (spec §4) and "Space"
-// (sub-project 4's spec §6.6). A page's index is its page_id.
+// The remote-controls pages, in page order, each in slot order: "Perform", the eight macros
+// (sub-project 5's spec §3.3), then "Cloud" (spec §4) and "Space" (sub-project 4's spec §6.6),
+// whose contents are unchanged. A page's index is its page_id.
 struct RemotePage
 {
     const char *name;
     std::array<ParamSlot, CLAP_REMOTE_CONTROLS_COUNT> slots;
 };
 
-constexpr std::array<RemotePage, 2> kRemotePages{{
+constexpr std::array<RemotePage, 3> kRemotePages{{
+    {"Perform",
+     {ParamSlot::Macro1, ParamSlot::Macro2, ParamSlot::Macro3, ParamSlot::Macro4, ParamSlot::Macro5,
+      ParamSlot::Macro6, ParamSlot::Macro7, ParamSlot::Macro8}},
     {"Cloud",
      {ParamSlot::Position, ParamSlot::Size, ParamSlot::Density, ParamSlot::Pitch, ParamSlot::Spray,
       ParamSlot::Stereo, ParamSlot::Freeze, ParamSlot::Mix}},
@@ -80,14 +84,15 @@ const clap_plugin_descriptor kFxDescriptor{
     kFxFeatures,
 };
 
-/// Whether `slot` is hidden in `product`: the instrument has no dry signal, so Mix and Dry to
-/// Reverb do nothing there. It keeps the parameters, hidden, so both products share one
-/// parameter list and one state format (spec §4; sub-project 4's spec §6.5). paramsInfo flags
-/// them, and their remote controls stay empty.
+/// Whether `slot` is hidden in `product`: the instrument has no dry signal and no live ring, so
+/// Mix, Dry to Reverb and Feedback do nothing there. It keeps the parameters, hidden, so both
+/// products share one parameter list and one state format (spec §4; sub-project 4's spec §6.5;
+/// sub-project 5's spec §5). paramsInfo flags them, and their remote controls stay empty.
 constexpr bool hiddenIn(Product product, ParamSlot slot) noexcept
 {
     return product == Product::Instrument &&
-           (slot == ParamSlot::Mix || slot == ParamSlot::DryToReverb);
+           (slot == ParamSlot::Mix || slot == ParamSlot::DryToReverb ||
+            slot == ParamSlot::Feedback);
 }
 
 void copyName(char (&dst)[CLAP_NAME_SIZE], const char *src) noexcept
@@ -907,6 +912,11 @@ bool GigaGrainsPlugin::stateLoad(const clap_istream *stream) noexcept
     {
         return false;
     }
+}
+
+uint32_t GigaGrainsPlugin::remoteControlsPageCount() noexcept
+{
+    return static_cast<uint32_t>(kRemotePages.size());
 }
 
 bool GigaGrainsPlugin::remoteControlsPageGet(uint32_t pageIndex,

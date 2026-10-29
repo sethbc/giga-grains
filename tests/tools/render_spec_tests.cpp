@@ -33,9 +33,12 @@
 #include "gg/grain/Tier.h"
 #include "gg/source/PreparedSource.h"
 #include "gg/source/SampleBuffer.h"
+#include "sst/basic-blocks/params/ParamMetadata.h"
 #include "support/Utf8.h"
 
 using Catch::Matchers::ContainsSubstring;
+using Catch::Matchers::EndsWith;
+using Catch::Matchers::StartsWith;
 using Catch::Matchers::WithinRel;
 using gg::core::Mode;
 using gg::core::NoteEvent;
@@ -729,6 +732,60 @@ TEST_CASE("fx spec rejects bad input", "[render]")
         j["channels"] = 1;
         CHECK_THAT(rejection(j), ContainsSubstring("channels"));
     }
+}
+
+TEST_CASE("instrument specs name the instrument's macros", "[render]")
+{
+    // Macros 7 and 8 have a name per product (sub-project 5's spec §3.3): a spec names them as
+    // its own product does, and the other product's name is an unknown key.
+    CHECK(gg::render::paramSlotNamed("Macro Level") == ParamSlot::Macro8);
+    CHECK(gg::render::paramSlotNamed("Macro Mix") == ParamSlot::Macro8);
+    CHECK(gg::render::paramSlotNamed("Macro Stereo") == ParamSlot::Macro7);
+    CHECK(gg::render::paramSlotNamed("Macro Feedback") == ParamSlot::Macro7);
+    CHECK(gg::render::paramSlotNamed("Texture") == ParamSlot::Texture);
+    CHECK(gg::render::paramSlotNamed("Feedback") == ParamSlot::Feedback);
+    CHECK(gg::render::paramSlotNamed("Macro Size") == ParamSlot::Macro1);
+    CHECK_FALSE(gg::render::paramSlotNamed("Macro 8").has_value());
+    // Every name of either product finds its own slot: no name is one slot's in one product and
+    // another's in the other.
+    for (const Mode mode : {Mode::Fx, Mode::Instrument})
+    {
+        for (std::size_t s = 0; s < gg::core::kParamCount; ++s)
+        {
+            const auto slot = static_cast<ParamSlot>(s);
+            const auto &name = gg::core::paramMeta(slot, mode).name;
+            INFO("param " << name);
+            CHECK(gg::render::paramSlotNamed(name) == slot);
+        }
+    }
+
+    auto instrument = instrumentJson();
+    instrument["params"] = {{"Macro Level", 1.0}};
+    const RenderSpec inst = parseJson(instrument);
+    CHECK(inst.instrument.params ==
+          std::vector<std::pair<std::string, double>>{{"Macro Level", 1.0}});
+
+    auto fx = nlohmann::json::parse(readCase("fx-sine"));
+    fx["params"] = {{"Macro Mix", 1.0}};
+    const RenderSpec mix = parseJson(fx);
+    CHECK(mix.fx.params == std::vector<std::pair<std::string, double>>{{"Macro Mix", 1.0}});
+
+    // The instrument's name in an FX spec, and the FX's in an instrument spec, as params and as
+    // automation.
+    fx["params"] = {{"Macro Level", 1.0}};
+    // The message lists the spec's own product's names.
+    CHECK_THAT(rejection(fx), StartsWith("unknown key params.Macro Level: the parameters are "));
+    CHECK_THAT(rejection(fx), EndsWith("Macro Feedback, Macro Mix"));
+    instrument["params"] = {{"Macro Mix", 1.0}};
+    CHECK_THAT(rejection(instrument),
+               StartsWith("unknown key params.Macro Mix: the parameters are "));
+    CHECK_THAT(rejection(instrument), EndsWith("Macro Stereo, Macro Level"));
+    fx.erase("params");
+    fx["automation"] = {{{"time", 1.0}, {"param", "Macro Stereo"}, {"value", 1.0}}};
+    CHECK_THAT(rejection(fx), StartsWith("automation[0].param must be one of "));
+    fx["automation"][0]["param"] = "Macro Feedback";
+    const RenderSpec automated = parseJson(fx);
+    CHECK(automated.fx.automation == std::vector<AutomationPoint>{{1.0, "Macro Feedback", 1.0}});
 }
 
 TEST_CASE("fx render matches the processor", "[render]")

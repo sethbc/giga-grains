@@ -62,11 +62,13 @@ constexpr std::string_view kSubProject1State =
     R"(<p id="65544" v="1.000000000000" bits="3f800000" />)"
     R"(</params><engine seed="77" /></patch>)";
 
-// The values kSubProject1State loads as, slot by slot: the ten it holds, then Space's eight at
-// their defaults (sub-project 4), which it doesn't mention.
-constexpr ParamValues kSubProject1Values{0.8f, -6.0f,    0.1f, -4.25f, 6.7f,  0.25f,
-                                         7.0f, 1.23e-5f, 0.0f, 1.0f,   0.0f,  0.0f,
-                                         1.0f, 0.5f,     0.3f, 0.0f,   0.25f, 0.0f};
+// The values kSubProject1State loads as in the FX, slot by slot: the ten it holds, then Space's
+// eight (sub-project 4) and the Perform UI's ten (sub-project 5) at their defaults, which it
+// doesn't mention.
+constexpr ParamValues kSubProject1Values{
+    0.8f, -6.0f, 0.1f, -4.25f, 6.7f, 0.25f, 7.0f,  1.23e-5f, 0.0f, 1.0f,  // sub-projects 1 to 3
+    0.0f, 0.0f,  1.0f, 0.5f,   0.3f, 0.0f,  0.25f, 0.0f,                  // Space
+    0.0f, 0.0f,  0.5f, 0.5f,   0.5f, 0.5f,  0.0f,  0.0f,     0.0f, 0.5f}; // the Perform UI
 
 std::size_t at(ParamSlot s) { return static_cast<std::size_t>(s); }
 
@@ -242,7 +244,8 @@ TEST_CASE("the container round trips with and without a sample", "[core]")
 TEST_CASE("a pre-container state loads with no sample", "[core]")
 {
     // The bare XML of sub-projects 1 and 2: its whole content is PTCH, with an empty MEDI.
-    // Today's XML for the same values is the same up to its ten params, then adds Space's eight.
+    // Today's XML for the same values is the same up to its ten params, then adds Space's eight
+    // and the Perform UI's ten.
     const auto tenParams = kSubProject1State.substr(0, kSubProject1State.find("</params>"));
     CHECK(gg::core::toStateXml(kSubProject1Values, 77).starts_with(tenParams));
 

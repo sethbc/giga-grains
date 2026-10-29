@@ -17,10 +17,13 @@ namespace sst::basic_blocks::params
 struct ParamMetaData;
 }
 
-/// The parameters: the slice's ten (spec §4) and Space's eight (sub-project 4's spec §6.5), their
+/// The parameters: the slice's ten (spec §4), Space's eight (sub-project 4's spec §6.5) and the
+/// Perform UI's ten (Texture, Feedback and eight macros; sub-project 5's spec §3.3, §4, §5), their
 /// slots, CLAP IDs and metadata. Both products expose the same list, so they share one state format
-/// (INTENT §2); only Position's metadata differs between them (sub-project 3's spec §6.8), and the
-/// instrument's plugin hides Mix and Dry to Reverb, which have no dry signal to act on there.
+/// (INTENT §2); only Position's metadata (sub-project 3's spec §6.8) and the last two macros' names
+/// and Macro 7's default (sub-project 5's spec §3.3) differ between them, and the instrument's
+/// plugin hides Mix, Dry to Reverb and Feedback, which have no dry signal or live ring to act on
+/// there.
 namespace gg::core
 {
 /// Which product: a Processor's configuration, and the parameter metadata it shows.
@@ -55,6 +58,17 @@ enum class ParamSlot : uint8_t
     ReverbPredelay,
     ReverbModulation,
     DryToReverb,
+    // The Perform UI (sub-project 5's spec §3.3, §4, §5).
+    Texture,
+    Feedback,
+    Macro1,
+    Macro2,
+    Macro3,
+    Macro4,
+    Macro5,
+    Macro6,
+    Macro7,
+    Macro8,
     Count
 };
 
@@ -72,6 +86,22 @@ inline constexpr float kDecayInfinite = 5.906890595608519f;
 /// its bottom, log2 0.25 s = -2.
 inline constexpr float kDecayMax = 6.068255709804611f;
 
+/// The top of Feedback's range: the live ring takes back at most 95% of the limited wet signal
+/// (sub-project 5's spec §5).
+inline constexpr float kFeedbackMax = 0.95f;
+
+/// The eight macros, in order (sub-project 5's spec §3.2, §3.3).
+inline constexpr std::array<ParamSlot, 8> kMacroSlots{
+    ParamSlot::Macro1, ParamSlot::Macro2, ParamSlot::Macro3, ParamSlot::Macro4,
+    ParamSlot::Macro5, ParamSlot::Macro6, ParamSlot::Macro7, ParamSlot::Macro8,
+};
+
+/// Whether `slot` is one of the eight macros.
+constexpr bool isMacro(ParamSlot slot) noexcept
+{
+    return slot >= ParamSlot::Macro1 && slot <= ParamSlot::Macro8;
+}
+
 namespace detail
 {
 /// `id = (scope << 16) | index`: scope 0 is global, scopes 1 to 4 are layers A to D, and index 0
@@ -88,8 +118,8 @@ inline constexpr std::array<clap_id, kParamCount> kParamIds{
     0x010006, // Spray
     0x010007, // Stereo
     0x010008, // Freeze
-    // Space (sub-project 4's spec §6.5): the next free IDs in each scope. Sub-project 5's spec
-    // reserves 0x000011-0x000018 (the macros), 0x010009 (Texture) and 0x01000A (Feedback).
+    // Space (sub-project 4's spec §6.5): the next free IDs in each scope, past those sub-project
+    // 5's spec had reserved (below).
     0x01000B, // Diffusion
     0x000003, // ReverbAmount
     0x000004, // ReverbDecay
@@ -98,6 +128,17 @@ inline constexpr std::array<clap_id, kParamCount> kParamIds{
     0x000007, // ReverbPredelay
     0x000008, // ReverbModulation
     0x000009, // DryToReverb
+    // The Perform UI (sub-project 5's spec §3.3): the IDs its spec reserved.
+    0x010009, // Texture
+    0x01000A, // Feedback
+    0x000011, // Macro1
+    0x000012, // Macro2
+    0x000013, // Macro3
+    0x000014, // Macro4
+    0x000015, // Macro5
+    0x000016, // Macro6
+    0x000017, // Macro7
+    0x000018, // Macro8
 };
 } // namespace detail
 
@@ -122,14 +163,18 @@ constexpr std::optional<ParamSlot> slotForId(clap_id id) noexcept
 }
 
 /// The slot's metadata in `mode`'s product: ID, name, range, default, CLAP flags (AUTOMATABLE and
-/// MODULATABLE on all, STEPPED on Freeze), and the display text and text parsing. The ranges and
-/// defaults are literal constants (INTENT §14), never computed at run time. Reverb Decay shows
-/// "∞" from kDecayInfinite up, and "∞" parses to kDecayMax. The plugin adds the HIDDEN flag
+/// MODULATABLE on all, STEPPED on Freeze and Macro 6), and the display text and text parsing. The
+/// ranges and defaults are literal constants (INTENT §14), never computed at run time. Reverb Decay
+/// shows "∞" from kDecayInfinite up, and "∞" parses to kDecayMax. The plugin adds the HIDDEN flag
 /// itself (see the namespace's note).
 ///
-/// Only Position differs between the products, and only in its default and display: the FX's is
-/// 0–16 s behind the write head, 0.25 s by default; the instrument's is 0–100% of the loaded
-/// file, 0% by default. Both are CLAP values 0–1 with the same ID, so the state format is shared.
+/// Three parameters differ between the products, never in ID or range, so the state format is
+/// shared:
+/// - Position, in its default and display: the FX's is 0–16 s behind the write head, 0.25 s by
+///   default; the instrument's is 0–100% of the loaded file, 0% by default. Both are CLAP values
+///   0–1.
+/// - Macro 7: "Macro Feedback", 0 by default, in the FX; "Macro Stereo", 0.5, in the instrument.
+/// - Macro 8: "Macro Mix" in the FX, "Macro Level" in the instrument; 0.5 in both.
 ///
 /// Static storage: both products' tables are built on the first call, which allocates, and every
 /// later call returns the same objects. Make the first call off the audio thread; saving or
