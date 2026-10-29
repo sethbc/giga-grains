@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Approved by the director 2026-10-29 (INTENT §23 #61). **Built 2026-10-29 on `release-pipeline` (PR #13)**; the runbook is `docs/releasing.md`. Corrections the build made to the text below: the signing environment is `MAC_SIGNING_IDENTITY`, `MAC_INSTALLER_IDENTITY`, `NOTARY_KEY_FILE` (the `.p8`'s path), `NOTARY_KEY_ID` and `NOTARY_ISSUER_ID`, the secrets' names (§6.4's `GG_MAC_INSTALLER_IDENTITY` was a slip); the macOS readme is `installer/macos/Readme.txt`, not `Readme.rtf` (§6.3, §6.4); the license pane's file is `LICENSE.txt`, the AGPL copied from the license set (Installer picks a pane's format by its extension); `scripts/release/check-version.sh` also takes `--print`, CMake's version with no tag check, for the nightly's numeric part and the dry run's version; `plan` also outputs `tag` and `sign` (true when the kind isn't `none` and `MAC_CERTS_P12` is set, as a step's `if:` can't read `secrets`), and fails a release without `MAC_CERTS_P12`; the `release` job has `actions: read` beside `contents: write`, to download the run's artifacts; the nightly tag is moved through the GitHub API, as the checkout keeps no credentials; the dry run's version is CMake's own (`0.2.0-dev`), not empty |
+| **Status** | Approved by the director 2026-10-29 (INTENT §23 #61). **Built 2026-10-29 on `release-pipeline` (PR #13)**; the runbook is `docs/releasing.md`. Corrections the build made to the text below: the signing environment is `MAC_SIGNING_IDENTITY`, `MAC_INSTALLER_IDENTITY`, `NOTARY_KEY_FILE` (the `.p8`'s path), `NOTARY_KEY_ID` and `NOTARY_ISSUER_ID`, the secrets' names (§6.4's `GG_MAC_INSTALLER_IDENTITY` was a slip); the macOS readme is `installer/macos/Readme.txt`, not `Readme.rtf` (§6.3, §6.4); the license pane's file is `LICENSE.txt`, the AGPL copied from the license set (Installer picks a pane's format by its extension); `scripts/release/check-version.sh` also takes `--print`, CMake's version with no tag check, for the nightly's numeric part and the dry run's version; `plan` also outputs `tag` and `sign` (true when the kind isn't `none` and all seven signing secrets are set, as a step's `if:` can't read `secrets`), and fails a release without them; the `release` job has `actions: read` beside `contents: write`, to download the run's artifacts; the nightly tag is moved through the GitHub API, as the checkout keeps no credentials; the dry run's version is CMake's own (`0.2.0-dev`), not empty. **The final-review fix wave (2026-10-29)** then made these changes: `plan` fails any installer run with some but not all of the seven secrets, and a nightly that would publish (`GG_PUBLISH_NIGHTLY` true) without them, naming the missing secrets and never a value, and the nightly publishes only when `sign` is true; the macOS import step checks that `MAC_SIGNING_IDENTITY` and `MAC_INSTALLER_IDENTITY` each name a valid identity in the `.p12`, by name or SHA-1 hash; the nightly suffix is `dev.<yyyymmdd>.g<sha7>` (§6.1); `CloseApplicationsFilter` adds `*.clap` (§6.5); notarytool waits at most an hour (`--timeout 1h`) and the DMG's signing retries only a timestamp failure (§6.2). The signed dry run is CI run 40961854969 |
 | **Milestone** | Between M1 and M2: its own spec, as the director deferred it on 2026-10-29 (INTENT §23 #60). It serves every release from M2's (0.2.0) to 1.0.0, which now follows M5 (decision 8) |
 | **Depends on** | M1 closed (PR #11, `95bee95`); the director's Apple Developer Program membership |
 | **Authority** | INTENT.md. Part II changes below each add a dated §23 row |
@@ -193,9 +193,11 @@ describes it in a short section.
   minor to the next milestone's (`0.3.0` + `dev` after `v0.2.0`). The release job
   **fails before it signs anything** if the tag and the CMake version disagree, or if the suffix
   is `dev`.
-- **Nightlies** configure with `-DGG_VERSION_PRERELEASE=dev.<yyyymmdd>.<sha7>` on the schedule
-  run only, so a nightly plugin reports, say, `0.2.0-dev.20261029.95bee95`. (Only the nightly
-  run differs from a plain CI build, and only in that string.)
+- **Nightlies** configure with `-DGG_VERSION_PRERELEASE=dev.<yyyymmdd>.g<sha7>` on the schedule
+  run only, so a nightly plugin reports, say, `0.2.0-dev.20261029.g95bee95`. The `g` before the
+  hash, as `git describe` writes it, keeps a hash of digits alone with a leading zero a valid
+  semver identifier (semver forbids a numeric identifier's leading zero). (Only the nightly run
+  differs from a plain CI build, and only in that string.)
 - **Bundle metadata takes the numeric part alone.** Apple's `CFBundleShortVersionString` and
   `CFBundleVersion` and Inno Setup's `VersionInfoVersion` must be numeric; they get `0.2.0`. The
   suffix appears in the full version string, the installer file names and the release name.
@@ -256,7 +258,7 @@ In `cmake/products.cmake`, after `gg-products`:
   (`installer/macos/{distribution.xml.in, Readme.rtf, standalone.entitlements}`,
   `installer/windows/{readme.txt}`, `installer/linux/README.md`, `installer/licenses/`).
 - **Output names**, with `<v>` the full version string (`0.2.0`, `0.5.0-beta.1`, `1.0.0`,
-  `0.2.0-dev.20261029.95bee95`):
+  `0.2.0-dev.20261029.g95bee95`):
   - `giga-grains-<v>-macos.dmg`
   - `giga-grains-<v>-windows-x64.exe` and `giga-grains-<v>-windows-x64.zip`
   - `giga-grains-<v>-linux-x86_64.tar.gz`
@@ -317,7 +319,8 @@ without it builds the zip only and says so, and the release job requires the ins
   `{commoncf}\VST3\Giga Grains.vst3\` (a folder bundle, as the build makes it); the two
   standalones → `{autopf}\Giga Grains\`, with Start-menu entries. The license set goes to
   `{autopf}\Giga Grains\licenses\` always (a fixed component).
-- `CloseApplicationsFilter=*.exe,*.vst3` as sst-cmake does, so a running host is asked to close.
+- `CloseApplicationsFilter=*.exe,*.vst3,*.clap`, sst-cmake's `*.exe,*.vst3` plus the CLAP, so a
+  running host is asked to close.
 - The zip holds the same tree as `gg-products` plus `licenses/` and `readme.txt` (where to put
   what), made with `cmake -E tar cf … --format=zip`.
 

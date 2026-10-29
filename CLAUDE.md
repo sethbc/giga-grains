@@ -309,12 +309,12 @@ runs the tests labelled either. The labels are:
   it) (not on Windows);
 - `installer` (with the editor): `installer_build_products` builds `gg-products` as the
   `gg_products` fixture the others require, so `ctest -L installer` needs no build step of its
-  own (that test runs serially). Then the license set (`installer_license_set`); on macOS the unsigned
-  PKG and DMG (`installer_macos_pkg`, and its refusals `_missing_product` and `_partial_env`),
-  each bundle's numeric version (`version_bundle_*`) and, when a real identity is configured,
-  the hardened runtime and the apps' entitlement (`codesign_hardened_*`); the Linux tarball
-  (`installer_linux_*`); the Windows zip and, where `ISCC.exe` was found, the Inno Setup
-  compile (`installer_windows_*`);
+  own (that test runs serially). Then the license set (`installer_license_set`); on macOS the
+  unsigned PKG and DMG (`installer_macos_pkg`, and its refusals `_missing_product` and
+  `_partial_env`), each bundle's numeric version (`version_bundle_*`) and, when a real identity
+  is configured, the hardened runtime and the apps' entitlement (`codesign_hardened_*`); the
+  Linux tarball (`installer_linux_*`); the Windows zip and, where `ISCC.exe` was found, the Inno
+  Setup compile (`installer_windows_*`);
 - `serial`: the Catch2 cases tagged `[serial]`, which measure time or memory and run with
   `RUN_SERIAL` (see "Tests run in parallel");
 - `plugin`: the plugins, driven through their CLAP factory. Tests labelled both `plugin` and

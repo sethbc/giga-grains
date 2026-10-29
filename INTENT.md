@@ -1468,7 +1468,7 @@ they are frozen along with them.
   first public releases, then 0.5.0, then 1.0.0; a fix to a superseded minor comes from a
   `release/0.x` branch cut at its tag. The version lives in `CMakeLists.txt` alone, the
   numeric part in `project()` and the pre-release suffix beside it, `dev` by default, so `main`
-  reports `0.2.0-dev` and never claims a release; a nightly reports `-dev.<yyyymmdd>.<sha7>`.
+  reports `0.2.0-dev` and never claims a release; a nightly reports `-dev.<yyyymmdd>.g<sha7>`.
   The `plan` job fails a tagged run before anything is built or signed if the tag and the CMake
   version disagree or the suffix is `dev`.
 

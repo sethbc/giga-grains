@@ -8,7 +8,7 @@ must not grow:
 - **Touch it, close it.** A sub-project that edits a file closes every open "when touched" row for
   that file.
 - **No net growth.** A sub-project ends with no more open rows than it started with.
-- **Sub-project 6 burns down every open row,** M0's included.
+- **Each milestone's close burns down every open row.**
 - **No external reports or upstream filings.** A row blocked on upstream stays open, noted with its
   reason ("noted; waiting on upstream"), until upstream changes.
 

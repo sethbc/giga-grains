@@ -3,7 +3,8 @@
 This is a nightly build of Giga Grains and Giga Grains FX: the installers CI makes every night
 from the latest commit on `main`, after every test and validator passed. The release always holds
 only the latest night's files, and the `nightly` tag moves to the commit they were built from.
-Its version is the next release's number with the suffix `dev.<yyyymmdd>.<commit>`.
+Its version is the next release's number with the suffix `dev.<yyyymmdd>.g<sha7>`: the date, and
+`g` and the commit's first seven hex digits.
 
 **A nightly is unsupported.** It is for trying what is coming, not for work you need to keep:
 anything in it may change or break the next night. **A session saved with a nightly may not open

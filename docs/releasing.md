@@ -23,13 +23,13 @@ secret runs.
 | Run | `release_kind` | Builds | Publishes |
 |---|---|---|---|
 | A pushed `v*` tag | `release` | The installers, always signed; the source tarball; `SHA256SUMS.txt` | A **draft** GitHub Release of the tag, a pre-release when the version has a suffix (`v0.5.0-beta.1`). The director publishes it by hand, and only from `v0.5.0-beta.1` on |
-| The nightly schedule (03:17 UTC) on `main` | `nightly` | The same, with the version `<X.Y.Z>-dev.<yyyymmdd>.<sha7>`, signed when the secrets exist | Nothing while `GG_PUBLISH_NIGHTLY` in `ci.yml` is `"false"`: the installers are the run's artifacts. From M5, when it is `"true"`, the rolling `nightly` pre-release |
+| The nightly schedule (03:17 UTC) on `main` | `nightly` | The same, with the version `<X.Y.Z>-dev.<yyyymmdd>.g<sha7>`, signed when the secrets exist | Nothing while `GG_PUBLISH_NIGHTLY` in `ci.yml` is `"false"`: the installers are the run's artifacts. From M5, when it is `"true"`, the rolling `nightly` pre-release |
 | `workflow_dispatch` with `installers: true` | `dry-run` | The same, at CMake's own version (`0.2.0-dev`), signed when the secrets exist, else unsigned | Nothing: the installers are the run's artifacts, and the step summary lists the files and their checksums |
 
 Each build leg packs its installer only after every test and validator on it passed, from the
 very products they ran against (`cmake --build ... --target gg-installer`), and uploads it as the
 artifact `installer-<preset>`. The `release` job runs only after `plan`, all three legs and the
-sanitizers passed. The files, with `<v>` the full version:
+sanitizers passed. The release files, with `<v>` the full version:
 
 - `giga-grains-<v>-macos.dmg`: the PKG (five choices: the CLAP, VST3 and AU into
   `/Library/Audio/Plug-Ins/`, the two apps into `/Applications`) and a `Licenses` folder;
@@ -80,7 +80,8 @@ is needed for Windows or Linux.
    ```
 
    (Or `base64 -i certs.p12 | pbcopy` and paste it in the web page, as the table says.) Then
-   delete `certs.p12`.
+   delete `certs.p12`, or keep a copy beside the `.p8`, outside the repository, for a local
+   throwaway keychain (below).
 4. The names: `security find-identity -v -p codesigning` lists the Application identity, and
    `security find-identity -v -p basic` lists both (the Installer certificate isn't a
    code-signing one). Copy each full name, in its quotes' contents, `Developer ID
@@ -117,8 +118,8 @@ gh workflow run ci.yml --ref main -f installers=true
 - the macOS leg's *Build the installer* summary says `signed: yes` (the step fails if
   make-installer.sh's last line disagrees with whether the secrets were there), and its
   `codesign_hardened_*` tests ran and passed (they exist only with a real identity);
-- the `release` job's summary says `dry-run: nothing published` and lists the five files and
-  their checksums.
+- the `release` job's summary says `dry-run: nothing published` and lists the release files (the
+  overview's list) and their checksums.
 
 Then check the DMG on your own Mac:
 
@@ -133,7 +134,12 @@ the same way: `spctl --assess -vv --type install <the PKG>`. Install it once (it
 administrator's password) and open the apps and the plugins in a host.
 
 Without the secrets the same dispatch still runs, unsigned: `sign=false` and `signed: no`. That
-is how it ran before the secrets existed (run 40951179569, PR #13).
+is how it ran before the secrets existed (run 40951179569, PR #13). With only some of the seven,
+`plan` fails, naming the missing ones. With all seven, the macOS leg's *Import the signing
+certificates* step also checks that `MAC_SIGNING_IDENTITY` and `MAC_INSTALLER_IDENTITY` each name
+a valid identity in the `.p12`, by its name or its SHA-1 hash, and fails naming the secret (never
+its value) if not: the `.p12` lacks that certificate, its key or the G2 intermediate, or the
+name is mistyped.
 
 ### Rotation and expiry
 
@@ -146,16 +152,23 @@ Identifiers & Profiles; an account may hold several Developer ID certificates at
 it as above, and rotate the secrets. Leave the old one to expire; don't revoke it. **Revoke a
 Developer ID certificate only if its private key is compromised.** The account can't do it:
 Apple revokes one on a request to product-security@apple.com, and from then on nothing signed
-with it installs, or launches if already installed, notarized or not: every installer made with
-it stops working, the 0.x drafts included.
+with it installs, or launches if already installed (Apple's wording makes no exception for
+notarization): every installer made with it stops working, the 0.x drafts included.
 
 **Both certificates expire,** and CI can't sign after that, so note the dates where you will see
 them coming. Keychain Access shows each certificate's expiry when you select it. From the shell,
-for the first certificate of a name (a keychain may hold several):
+every certificate whose name holds "Developer ID" (a keychain may hold several of a name, and
+`find-certificate` without `-a` shows only the first), each with its issuer, its expiry and its
+SHA-1 fingerprint, which without the colons is the hash `security find-identity -v` prints:
 
 ```sh
-security find-certificate -c "Developer ID Application" -p | openssl x509 -noout -enddate
-security find-certificate -c "Developer ID Installer" -p | openssl x509 -noout -enddate
+d="$(mktemp -d)"
+security find-certificate -a -c "Developer ID" -p > "$d/all.pem"
+(cd "$d" && split -p 'BEGIN CERTIFICATE' all.pem cert.)
+for f in "$d"/cert.*; do
+  openssl x509 -in "$f" -noout -subject -issuer -enddate -fingerprint -sha1; echo
+done
+rm -rf "$d"
 ```
 
 Expiry is far gentler than revocation: installed apps and plugins keep running, and an app
@@ -164,15 +177,22 @@ differ: its Certificates page says a package with a trusted timestamp still inst
 Installer certificate expires, its Developer ID page that it must be re-signed. So rebuild any
 installer still offered after an expiry (a dry run or a new release does).
 
-The director's login keychain on 2026-10-29, checked that day: the identities, the pair made
-that day with its private keys, **expire on 2027-02-01**, cut short by the intermediate that
-issued them (Apple's original *Developer ID Certification Authority*, which itself expires on
-2027-02-01). An older pair, made on 2021-11-07 and held without its keys, expires on 2026-11-08;
-it can't sign, and needn't be exported. CI can't sign a release or a nightly after 2027-02-01,
-so replace them before it: make the new ones from the **G2 Sub-CA** (the Developer ID
-certificate form in the Apple Developer account offers it), whose intermediate expires years
-later, check their dates, include the G2 intermediate in the `.p12`, and rotate as above. The
-API key doesn't expire.
+**The current pair** was issued on 2026-10-29 under Apple's G2 chain: both certificates' issuer
+is *Developer ID Certification Authority* with `OU=G2`, the G2 intermediate (the `.p12` must
+include it, as step 1 of the certificates says). Checked that day with the commands above, the
+Application certificate and the Installer certificate both **expire on 2027-11-28**; replace them
+before then, as above. The API key doesn't expire.
+
+**Two identities of one name.** A login keychain that still holds an earlier pair beside the
+new one (each certificate with its private key) has two identities named `Developer ID
+Application: <name> (<team>)`, and two of the Installer name. A local signed build must then name
+the new ones by their SHA-1 hashes (from `security find-identity -v`, matched to the new
+certificates by the fingerprints above): `-DGG_MACOS_CODESIGN_IDENTITY=<hash>`,
+`MAC_SIGNING_IDENTITY=<hash>` and `MAC_INSTALLER_IDENTITY=<hash>`. `codesign`, `pkgbuild` and
+`productbuild` all take a hash (tried on 2026-10-29). Given the shared name instead, `codesign`
+refuses it as ambiguous, but `pkgbuild` signed with the earlier certificate, without a word. CI
+is unaffected: its throwaway keychain holds only the `.p12`'s pair, so the secrets keep the names
+(a hash works there too).
 
 ## Each release
 
@@ -225,9 +245,9 @@ The 0.2.0, 0.3.0 and 0.4.0 drafts are never published, so skip the publish step 
    git push origin v<version>
    ```
 
-   The tag's run is `release`. `plan` checks the tag again, and that the notes file exists,
-   `MAC_CERTS_P12` is set and the commit is on `origin/main` (or a `release/*` branch, below),
-   before anything builds or signs.
+   The tag's run is `release`. `plan` checks the tag again, and that the notes file exists, all
+   seven signing secrets are set and the commit is on `origin/main` (or a `release/*` branch,
+   below), before anything builds or signs.
 9. **After the run:** the release page (Releases, or `gh release list --repo
    sethbc/giga-grains`) has a draft, `Giga Grains <version>`, with the DMG, the EXE, the zip,
    the Linux tarball, the source tarball and `SHA256SUMS.txt`. Download the DMG and the EXE from
@@ -320,12 +340,16 @@ cmake --build --preset release --target gg-installer
   ad hoc, delete `gg_assets/` again and configure with `-DGG_MACOS_CODESIGN_IDENTITY=-`.
 - macOS may ask, once per tool, whether `productbuild` or `codesign` may use the key: *Always
   Allow*.
+- When the login keychain holds two identities of one name (an earlier pair beside the current
+  one), give the three identity settings above the current pair's SHA-1 hashes instead of the
+  names ("Two identities of one name", above).
 - An existing tree keeps the `GG_VERSION_PRERELEASE` it was configured with (it's a cache
   variable), so a tree configured before a version commit still says `dev` until you configure
   it with `-DGG_VERSION_PRERELEASE=<suffix>` or start a fresh one. CI configures every run
   afresh.
 
-**A throwaway keychain, as CI makes,** to sign from a `.p12` without the login keychain:
+**A throwaway keychain, as CI makes,** to sign from a `.p12` without the login keychain (export
+`certs.p12` again as in the one-time setup, or use the copy kept beside the `.p8`):
 
 ```sh
 read -rs P12_PASSWORD && export P12_PASSWORD
@@ -341,15 +365,18 @@ prints a password.
 ## Nightlies
 
 The schedule runs every night at 03:17 UTC on `main` as `nightly`: a normal CI run, then the
-installers with the version `<X.Y.Z>-dev.<yyyymmdd>.<sha7>` (say `0.2.0-dev.20261029.95bee95`),
-signed when the secrets exist. **Until M5 it publishes nothing:** `GG_PUBLISH_NIGHTLY` at the top
+installers with the version `<X.Y.Z>-dev.<yyyymmdd>.g<sha7>` (say `0.2.0-dev.20261029.g95bee95`;
+the `g` keeps a hash of digits alone, with a leading zero, a valid semver identifier), signed when
+the secrets exist. **Until M5 it publishes nothing:** `GG_PUBLISH_NIGHTLY` at the top
 of `ci.yml` is `"false"`, the installers stay the run's `installer-*` artifacts, and the release
 job's summary says "nightly publishing is off until M5".
 
 **When M5 begins,** a commit (through a PR) sets `GG_PUBLISH_NIGHTLY: "true"`. From then on each
 nightly moves the `nightly` tag to its commit and replaces the files of the rolling `nightly`
 pre-release, published directly (not a draft), with `installer/nightly-notes.md` (and a line
-naming the version and the commit) as its body.
+naming the version and the commit) as its body. A published nightly is always signed, as its notes
+say: with the switch on, `plan` fails a nightly without the signing secrets, and the publish step
+runs only when `sign=true`.
 
 ## Troubleshooting
 
@@ -361,9 +388,14 @@ xcrun notarytool log <submission id> --key AuthKey_<key id>.p8 --key-id <key id>
 ```
 
 The log lists each file Apple refused and why: most often a bundle without the hardened runtime
-or a secure timestamp (the tree was configured ad hoc and not relinked; see the signed build), or
-a binary without a Developer ID signature. A failure before a submission ID was assigned (an
-upload or network error, or a bad key) says so; check the three `NOTARY_*` values.
+or a secure timestamp. A product without a Developer ID signature never reaches the service:
+make-installer.sh refuses it before the upload, with `'<product>' has no Developer ID
+Application signature; build the products with -DGG_MACOS_CODESIGN_IDENTITY set to that
+identity` (configure so, delete `gg_assets/` and rebuild, as the signed build above does). A
+failure before a submission ID was assigned (an upload or network error, or a bad key) says so;
+check the three `NOTARY_*` values. A submission still in progress after an hour stops the wait
+(`--timeout 1h`) and fails the same way, with its ID; the service carries on, and `xcrun
+notarytool info <id> …` shows its outcome.
 
 **Gatekeeper refuses an installer.** make-installer.sh ends with `spctl --assess -vv` on the PKG
 (`--type install`) and the DMG (`--type open --context context:primary-signature`); run them
@@ -380,7 +412,10 @@ a product inside, `codesign --verify --strict --deep -vv <bundle>` and `codesign
   release never has (the release commit didn't set `GG_VERSION_PRERELEASE`). Fix
   `CMakeLists.txt` through a PR, then move the tag (above);
 - *`docs/releases/<tag>.md` is missing* from the tagged commit;
-- *the `MAC_CERTS_P12` secret is not set*: a release is always signed (set up the secrets);
+- *a release is always signed, and these signing secrets are not set*: it names each missing
+  secret (set up the secrets);
+- *only some of the seven signing secrets are set*: any run that builds installers fails so,
+  naming the missing ones; set them all, or (for a dry run) remove them all;
 - *the tagged commit is on neither `origin/main` nor an `origin/release/*` branch*: tag the
   merged commit on `main`, not the PR branch's.
 
@@ -391,10 +426,11 @@ one in a submodule's `.gitattributes`. The remedy is in `scripts/release/source-
 drop that guard, or stage the files from `git ls-files` instead of `git archive`, so the archive
 still holds every tracked file.
 
-**Apple's timestamp server fails** now and then ("timestamps differ by 300 seconds", or a
-timeout). make-installer.sh retries the DMG's signing up to three times, 10 s apart. The bundles
-are signed while they build, without a retry, so a signing failure in the macOS leg's *Build
-gg-all and gg-products* step means re-running the failed job.
+**Apple's timestamp server fails** now and then ("timestamps differ by 300 seconds", or "could
+not be reached"). make-installer.sh retries the DMG's signing up to three times, 10 s apart,
+when codesign's message is about the timestamp; any other codesign failure stops it at once.
+The bundles are signed while they build, without a retry, so a signing failure in the macOS
+leg's *Build gg-all and gg-products* step means re-running the failed job.
 
 **The Rosetta kernel test fails on the macOS leg.** "live interior is exactly where the fade is
 one - Hermite" (`tests/engine/kernel_tests.cpp`) fails now and then in *Test the x86_64 slice
