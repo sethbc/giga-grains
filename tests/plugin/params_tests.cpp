@@ -4,12 +4,12 @@
 
 // The plugins' parameters, state and remote controls (spec §4, §5), through the clap_plugin
 // vtables a host calls: parameter info, values and text; params.flush; modulation; state save
-// and load, inactive and active; the FX's unusual wiring (Review Focus 5); the remote-controls
-// pages; and the latest-wins hand-off that carries a state loaded while active.
+// and load, inactive and active; the FX's unusual wiring (Review Focus 5); and the
+// remote-controls pages. The latest-wins hand-off that carries a state loaded while active
+// (gg::core::LatestValue) is tested in tests/core/publish_tests.cpp.
 
 #include <algorithm>
 #include <array>
-#include <atomic>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -18,7 +18,6 @@
 #include <limits>
 #include <string>
 #include <string_view>
-#include <thread>
 #include <utility>
 #include <vector>
 
@@ -27,7 +26,6 @@
 
 #include <clap/clap.h>
 
-#include "LatestValue.h"
 #include "PluginHarness.h"
 #include "gg/core/ParamIds.h"
 #include "gg/core/PatchState.h"
@@ -1067,64 +1065,4 @@ TEST_CASE("remote controls pages are perform, cloud and space", "[plugin][space]
     }
     clap_remote_controls_page page;
     CHECK_FALSE(remote->get(plugin.clap(), 3, &page));
-}
-
-TEST_CASE("latest value hands over the newest snapshot", "[plugin]")
-{
-    using Snapshot = std::array<uint64_t, 4>;
-    gg::plugin::LatestValue<Snapshot> latest;
-    Snapshot got{};
-
-    SECTION("one thread")
-    {
-        CHECK_FALSE(latest.take(got));
-        latest.push({1, 1, 1, 1});
-        latest.push({2, 2, 2, 2});
-        REQUIRE(latest.take(got));
-        CHECK(got == Snapshot{2, 2, 2, 2});
-        CHECK_FALSE(latest.take(got));
-        latest.push({3, 3, 3, 3});
-        REQUIRE(latest.take(got));
-        CHECK(got == Snapshot{3, 3, 3, 3});
-        latest.push({4, 4, 4, 4});
-        latest.push({5, 5, 5, 5});
-        latest.push({6, 6, 6, 6});
-        REQUIRE(latest.take(got));
-        CHECK(got == Snapshot{6, 6, 6, 6});
-        CHECK_FALSE(latest.take(got));
-    }
-
-    SECTION("two threads: never torn, never older, and the last is never lost")
-    {
-        constexpr uint64_t kPushes = 200000;
-        std::atomic<bool> done{false};
-        bool torn = false;
-        bool older = false;
-        uint64_t last = 0;
-        std::thread consumer([&] {
-            for (;;)
-            {
-                const bool finished = done.load(std::memory_order_acquire);
-                if (latest.take(got))
-                {
-                    torn = torn || got[0] != got[1] || got[0] != got[2] || got[0] != got[3];
-                    older = older || got[0] <= last;
-                    last = got[0];
-                }
-                if (finished)
-                {
-                    break;
-                }
-            }
-        });
-        for (uint64_t i = 1; i <= kPushes; ++i)
-        {
-            latest.push({i, i, i, i});
-        }
-        done.store(true, std::memory_order_release);
-        consumer.join();
-        CHECK_FALSE(torn);
-        CHECK_FALSE(older);
-        CHECK(last == kPushes);
-    }
 }

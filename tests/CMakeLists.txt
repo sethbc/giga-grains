@@ -13,6 +13,7 @@ add_executable(gg-tests
         core/parammap_tests.cpp
         core/patch_tests.cpp
         core/processor_tests.cpp
+        core/publish_tests.cpp
         core/session_state_tests.cpp
         core/settings_tests.cpp
         core/space_processor_tests.cpp

@@ -16,8 +16,8 @@
 #include <sst/cpputils/rtsan_support.h>
 
 #include "HelpersConfig.h"
-#include "LatestValue.h"
 #include "SampleLoader.h"
+#include "gg/core/LatestValue.h"
 #include "gg/core/ParamIds.h"
 #include "gg/core/Processor.h"
 
@@ -257,7 +257,7 @@ class GigaGrainsPlugin : public plugHelper_t
     // The base values the main thread reads (see the class comment).
     std::array<std::atomic<float>, gg::core::kParamCount> values_{};
     // A state loaded while active, on its way to the audio thread. Main thread → audio thread.
-    LatestValue<gg::core::ParamValues> loadedState_;
+    gg::core::LatestValue<gg::core::ParamValues> loadedState_;
     // The engine seed: saved and loaded with the state, and given to the processor at
     // activate(). Main thread.
     uint64_t seed_{0};
