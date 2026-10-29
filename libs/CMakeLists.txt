@@ -9,6 +9,29 @@ add_library(simde INTERFACE)
 target_include_directories(simde INTERFACE simde)
 add_library(gg::simde ALIAS simde)
 
+# Third-party headers reach our translation units through their targets' plain include
+# directories, so their warnings (-Wall -Wextra, carry-over [94]) would fail our own -Werror.
+# gg_mark_system_includes marks each named target's include directories SYSTEM, without touching
+# the submodules (carry-over [219]); call it once the targets exist. Targets that don't exist
+# are skipped.
+function (gg_mark_system_includes)
+    foreach (gg_target IN LISTS ARGN)
+        if (TARGET ${gg_target})
+            get_target_property(gg_aliased ${gg_target} ALIASED_TARGET)
+            if (gg_aliased)
+                set(gg_real ${gg_aliased})
+            else ()
+                set(gg_real ${gg_target})
+            endif ()
+            get_target_property(gg_includes ${gg_real} INTERFACE_INCLUDE_DIRECTORIES)
+            if (gg_includes)
+                set_property(TARGET ${gg_real} APPEND PROPERTY INTERFACE_SYSTEM_INCLUDE_DIRECTORIES
+                        ${gg_includes})
+            endif ()
+        endif ()
+    endforeach ()
+endfunction ()
+
 add_subdirectory(catch2 EXCLUDE_FROM_ALL)
 add_subdirectory(fmt EXCLUDE_FROM_ALL)
 
@@ -139,6 +162,8 @@ set(SST_PLUGININFRA_PROVIDE_MINIZ OFF CACHE BOOL "Giga Grains doesn't use miniz"
 set(SST_PLUGININFRA_PROVIDE_STRNATCMP ON CACHE BOOL "Declared, never built: sst-plugininfra's own target links it" FORCE)
 set(SST_PLUGININFRA_BUILD_TESTS OFF CACHE BOOL "Don't build sst-plugininfra's tests" FORCE)
 add_subdirectory(sst/sst-plugininfra EXCLUDE_FROM_ALL)
+gg_mark_system_includes(simde sst-cpputils sst-basic-blocks sst-filters sst-effects
+        sst-plugininfra::patchbase sst-plugininfra::tinyxml sst-plugininfra::filesystem clap)
 # Every translation unit that includes tinyxml.h compiles with char8_t off: sst-plugininfra's
 # filesystem shim, which tinyxml links PUBLIC, puts -fno-char8_t (MSVC: /Zc:char8_t-) on its
 # consumers, and the import.h that tinyxml.h includes needs it on Windows (path.u8string() into a
@@ -159,10 +184,12 @@ add_subdirectory(sst/sst-plugininfra EXCLUDE_FROM_ALL)
 # project starts its downloads.
 if (GG_BUILD_PLUGINS)
     add_subdirectory(clap/clap-helpers EXCLUDE_FROM_ALL)
+    gg_mark_system_includes(clap-helpers)
 
     add_library(gg-clap-wrapper-extensions INTERFACE)
     target_include_directories(gg-clap-wrapper-extensions INTERFACE
             ${CMAKE_CURRENT_SOURCE_DIR}/clap/clap-wrapper/include)
+    gg_mark_system_includes(gg-clap-wrapper-extensions)
     target_link_libraries(gg-clap-wrapper-extensions INTERFACE clap)
     add_library(gg::clap-wrapper-extensions ALIAS gg-clap-wrapper-extensions)
 endif ()
