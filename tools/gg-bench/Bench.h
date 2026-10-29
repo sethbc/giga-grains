@@ -204,6 +204,13 @@ Comparison compare(const Report &report, const nlohmann::json &baseline);
 /// infinity, say): it never returns a baseline compare() would refuse.
 nlohmann::json makeBaseline(const std::string &leg, const std::vector<nlohmann::json> &runs);
 
+/// `old` with `made`'s entries merged in, so a CPU model can be added to, or remade in, a
+/// baseline without the runs the other entries came from (CI's artifacts expire). Each of old's
+/// entries stays where it is, replaced by made's entry for the same machine when there is one;
+/// made's entries for machines old lacks follow, in made's order. Throws std::invalid_argument
+/// if either fails checkBaseline() or their legs differ.
+nlohmann::json mergeBaseline(const nlohmann::json &old, const nlohmann::json &made);
+
 /// How many grains an engine case admitted at each interpolation tier (ruling 2).
 struct TierCounts
 {

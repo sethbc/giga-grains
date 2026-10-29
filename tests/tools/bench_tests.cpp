@@ -525,6 +525,44 @@ TEST_CASE("make baseline", "[bench]")
     CHECK_THROWS_AS(gg::bench::makeBaseline("linux-gcc12", {}), std::invalid_argument);
 }
 
+TEST_CASE("merge baseline keeps the other models' entries", "[bench]")
+{
+    // A model added later needs only its own runs: the merge keeps every entry of the old file
+    // the new runs don't replace (carry-over: "Adding a model to a baseline needs the old runs").
+    const nlohmann::json old = gg::bench::makeBaseline(
+        "linux-gcc12", {benchRun("CPU A", "old", {ratio("engine-sample", 32, 1.0)}),
+                        benchRun("CPU B", "old", {ratio("engine-sample", 32, 2.0)}),
+                        benchRun("CPU C", "old", {ratio("engine-sample", 32, 3.0)})});
+    // New runs: CPU B again, and CPU D, never seen.
+    const nlohmann::json made = gg::bench::makeBaseline(
+        "linux-gcc12", {benchRun("CPU D", "new", {ratio("engine-sample", 32, 4.0)}),
+                        benchRun("CPU B", "new", {ratio("engine-sample", 32, 2.5)}),
+                        benchRun("CPU B", "new", {ratio("engine-sample", 32, 2.7)})});
+
+    const nlohmann::json merged = gg::bench::mergeBaseline(old, made);
+    CHECK(merged.at("schemaVersion").get<int>() == 2);
+    CHECK(merged.at("leg").get<std::string>() == "linux-gcc12");
+    const nlohmann::json &machines = merged.at("machines");
+    REQUIRE(machines.size() == 4);
+    // The old file's order, each replaced entry in its place; then the new models.
+    CHECK(machines[0] == old["machines"][0]);  // CPU A, kept as it was
+    CHECK(machines[1] == made["machines"][1]); // CPU B, from the new runs only
+    CHECK(machines[1].at("runs").get<int>() == 2);
+    CHECK(machines[1].at("commit").get<std::string>() == "new");
+    CHECK(machines[1]["ratios"][0].at("ratio").get<double>() == Approx(2.6));
+    CHECK(machines[2] == old["machines"][2]);  // CPU C, kept
+    CHECK(machines[3] == made["machines"][0]); // CPU D, added
+    CHECK_NOTHROW(gg::bench::checkBaseline(merged));
+
+    // A merge into a different leg's file, or into a malformed one, is an error.
+    nlohmann::json otherLeg = old;
+    otherLeg["leg"] = "windows-clangcl";
+    CHECK_THROWS_AS(gg::bench::mergeBaseline(otherLeg, made), std::invalid_argument);
+    nlohmann::json bad = old;
+    bad["machines"][0]["runs"] = 0;
+    CHECK_THROWS_AS(gg::bench::mergeBaseline(bad, made), std::invalid_argument);
+}
+
 TEST_CASE("make baseline refuses what it can't write", "[bench]")
 {
     // makeBaseline() checks what it makes as compare() would, so it never writes a file that

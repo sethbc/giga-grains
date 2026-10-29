@@ -1013,6 +1013,57 @@ TierCounts admittedTiers(const std::string &engineCase, uint32_t grains, uint32_
     return configuration.warmUpCountingTiers();
 }
 
+nlohmann::json mergeBaseline(const nlohmann::json &old, const nlohmann::json &made)
+{
+    try
+    {
+        checkBaseline(old);
+    }
+    catch (const std::invalid_argument &e)
+    {
+        throw std::invalid_argument(std::string("the baseline to merge into: ") + e.what());
+    }
+    checkBaseline(made);
+    if (old["leg"] != made["leg"])
+    {
+        throw std::invalid_argument("the baseline to merge into is for leg " +
+                                    old["leg"].get<std::string>() + ", not " +
+                                    made["leg"].get<std::string>());
+    }
+    const auto entryFor = [&made](const std::string &machine) -> const nlohmann::json * {
+        for (const nlohmann::json &m : made["machines"])
+        {
+            if (m["machine"].get<std::string>() == machine)
+            {
+                return &m;
+            }
+        }
+        return nullptr;
+    };
+    nlohmann::json merged = old;
+    nlohmann::json &machines = merged["machines"];
+    for (nlohmann::json &m : machines)
+    {
+        if (const nlohmann::json *fresh = entryFor(m["machine"].get<std::string>()))
+        {
+            m = *fresh;
+        }
+    }
+    for (const nlohmann::json &m : made["machines"])
+    {
+        const auto machine = m["machine"].get<std::string>();
+        if (std::none_of(old["machines"].begin(), old["machines"].end(),
+                         [&machine](const nlohmann::json &o) {
+                             return o["machine"].get<std::string>() == machine;
+                         }))
+        {
+            machines.push_back(m);
+        }
+    }
+    checkBaseline(merged);
+    return merged;
+}
+
 std::vector<uint32_t> roundOrder(uint32_t configurations, int round)
 {
     std::vector<uint32_t> order(configurations);

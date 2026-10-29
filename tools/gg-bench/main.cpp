@@ -13,7 +13,7 @@
 //
 //   gg-bench [--quick | --seconds S] [--rounds N] [--grains N] [--cases a,b] [--commit SHA]
 //            [--json out.json] [--baseline baseline.json]
-//   gg-bench --make-baseline <leg> <out.json> <in.json>...
+//   gg-bench --make-baseline <leg> <out.json> [--merge <old.json>] <in.json>...
 //   gg-bench --canvas [--quick] [--json out.json]
 //   gg-bench --space [--quick | --seconds S] [--rounds N] [--commit SHA] [--json out.json]
 //
@@ -35,7 +35,9 @@
 // for an error (an unreadable or malformed file, say, or a run with no ratios to check against
 // an entry) and 2 for bad usage. CI reports it without failing
 // through M1 (ruling 3). --make-baseline writes a baseline for a CI leg from the JSON of runs
-// already made, one entry per CPU model they ran on, and exits.
+// already made, one entry per CPU model they ran on, and exits. With --merge <old.json> it keeps
+// old.json's entries for the models the runs don't have, so a model can be added, or remade,
+// without the runs the other entries came from.
 //
 // --canvas times gg-ui-core's splat renderer, headless, at 3200 x 1200: a 1600 x 600 canvas on
 // a 2x display. Each frame generates the editor's stress workload (4,096, 8,192 or 16,384
@@ -288,7 +290,7 @@ void usage(std::FILE *f)
         f,
         "usage: gg-bench [--quick | --seconds S] [--rounds N] [--grains N] [--cases a,b]\n"
         "                [--commit SHA] [--json out.json] [--baseline baseline.json]\n"
-        "       gg-bench --make-baseline <leg> <out.json> <in.json>...\n"
+        "       gg-bench --make-baseline <leg> <out.json> [--merge <old.json>] <in.json>...\n"
         "       gg-bench --canvas [--quick] [--json out.json]\n"
         "       gg-bench --space [--quick | --seconds S] [--rounds N] [--commit SHA]\n"
         "                [--json out.json]\n"
@@ -318,9 +320,10 @@ void usage(std::FILE *f)
         "  --json out.json   also write the results to out.json\n"
         "  --baseline file   check the ratios against this CPU model's entry in a\n"
         "                    baseline; exit 3 if any regressed or is missing\n"
-        "  --make-baseline <leg> <out.json> <in.json>...\n"
+        "  --make-baseline <leg> <out.json> [--merge <old.json>] <in.json>...\n"
         "                    write a baseline for <leg> from gg-bench JSON runs, one entry\n"
-        "                    per CPU model, and exit\n"
+        "                    per CPU model, and exit; with --merge, keep old.json's entries\n"
+        "                    for the models the runs don't replace\n"
         "  --canvas          time the canvas renderer, not the grain kernels\n"
         "  --space           time Space (the diffuser and the reverb), not the grain\n"
         "                    kernels\n"
@@ -501,17 +504,35 @@ bool writeFile(const std::string &path, const std::string &text)
     return written && closed;
 }
 
-/// --make-baseline <leg> <out.json> <in.json>...: args are the values after the option.
+/// --make-baseline's values, <leg> <out.json> [--merge <old.json>] <in.json>..., are well formed:
+/// at least one input, and --merge only right after <out.json>, with its file.
+bool makeBaselineArgsOk(const std::vector<std::string> &args)
+{
+    const std::size_t inputs = args.size() > 2 && args[2] == "--merge" ? 4 : 2;
+    return args.size() > inputs && std::find(args.begin() + static_cast<std::ptrdiff_t>(inputs),
+                                             args.end(), "--merge") == args.end();
+}
+
+/// --make-baseline <leg> <out.json> [--merge <old.json>] <in.json>...: args are the values after
+/// the option, which makeBaselineArgsOk() accepts.
 int makeBaseline(const std::vector<std::string> &args)
 {
+    const bool merge = args[2] == "--merge";
     try
     {
+        // Every file is read before the output is written, so <out.json> may be <old.json>.
+        nlohmann::json old;
+        if (merge)
+        {
+            old = readJson(args[3]);
+        }
         std::vector<nlohmann::json> runs;
-        for (std::size_t i = 2; i < args.size(); ++i)
+        for (std::size_t i = merge ? 4 : 2; i < args.size(); ++i)
         {
             runs.push_back(readJson(args[i]));
         }
-        const nlohmann::json baseline = gg::bench::makeBaseline(args[0], runs);
+        const nlohmann::json made = gg::bench::makeBaseline(args[0], runs);
+        const nlohmann::json baseline = merge ? gg::bench::mergeBaseline(old, made) : made;
         if (!writeFile(args[1],
                        baseline.dump(2, ' ', false, nlohmann::json::error_handler_t::replace) +
                            "\n"))
@@ -519,13 +540,23 @@ int makeBaseline(const std::vector<std::string> &args)
             std::fprintf(stderr, "error: couldn't write %s\n", args[1].c_str());
             return 1;
         }
-        std::printf("wrote %s: leg %s, %zu runs\n", args[1].c_str(), args[0].c_str(), runs.size());
+        std::printf("wrote %s: leg %s, %zu runs%s%s\n", args[1].c_str(), args[0].c_str(),
+                    runs.size(), merge ? ", merged into " : "", merge ? args[3].c_str() : "");
+        const auto has = [](const nlohmann::json &b, const nlohmann::json &machine) {
+            return std::any_of(
+                b["machines"].begin(), b["machines"].end(),
+                [&machine](const nlohmann::json &m) { return m["machine"] == machine; });
+        };
         for (const nlohmann::json &m : baseline["machines"])
         {
             const auto machineRuns = m["runs"].get<std::size_t>();
-            std::printf("  %s: %zu ratios from %zu run%s\n",
+            const char *how = !merge                     ? ""
+                              : !has(made, m["machine"]) ? " (kept)"
+                              : has(old, m["machine"])   ? " (replaced)"
+                                                         : " (new)";
+            std::printf("  %s: %zu ratios from %zu run%s%s\n",
                         m["machine"].get<std::string>().c_str(), m["ratios"].size(), machineRuns,
-                        machineRuns == 1 ? "" : "s");
+                        machineRuns == 1 ? "" : "s", how);
         }
         return 0;
     }
@@ -598,9 +629,11 @@ int main(int argc, char **argv)
         }
         else if (arg == "--make-baseline" && argc - i > 3)
         {
-            // <leg> <out.json> <in.json>...: it takes the rest of the command line.
+            // <leg> <out.json> [--merge <old.json>] <in.json>...: it takes the rest of the
+            // command line.
             makeBaselineArgs.assign(argv + i + 1, argv + argc);
             i = argc - 1;
+            ok = makeBaselineArgsOk(makeBaselineArgs);
         }
         else if (arg == "--help" || arg == "-h")
         {

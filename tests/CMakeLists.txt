@@ -183,6 +183,23 @@ foreach (test IN ITEMS bench_rejects_space_cases bench_rejects_canvas_seconds
 endforeach ()
 # - bench_make_baseline_invalid: --make-baseline from a run whose ratio has a median of 0 (which
 #   would make a tolerance of 0/0, NaN) must exit 1 with the error and write no file.
+# - bench_make_baseline_merge: --make-baseline --merge, written over the file it merges into,
+#   keeps another model's entry and replaces this machine's (check-bench-merge.cmake).
+# - bench_make_baseline_bad_merge: --merge without its file and an input is bad usage (exit 2).
+add_test(NAME bench_make_baseline_merge
+        COMMAND ${CMAKE_COMMAND} -DBENCH=$<TARGET_FILE:gg-bench>
+        -DRUN_JSON=${CMAKE_BINARY_DIR}/bench_cli.json
+        -DBASELINE=${CMAKE_CURRENT_BINARY_DIR}/bench_merged_baseline.json
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/tools/check-bench-merge.cmake)
+set_tests_properties(bench_make_baseline_merge PROPERTIES LABELS bench FIXTURES_REQUIRED bench_json)
+set(bench_make_baseline_bad_merge_args --make-baseline test out.json --merge old.json)
+add_test(NAME bench_make_baseline_bad_merge
+        COMMAND ${CMAKE_COMMAND} -DPROGRAM=$<TARGET_FILE:gg-bench>
+        "-DARGS=${bench_make_baseline_bad_merge_args}" -DEXPECTED_CODE=2
+        "-DEXPECTED_STDERR=error: bad argument: --make-baseline"
+        "-DEXPECTED_STDERR2=usage: gg-bench"
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/tools/check-exit-code.cmake)
+set_tests_properties(bench_make_baseline_bad_merge PROPERTIES LABELS bench)
 set(bench_bad_run ${CMAKE_CURRENT_BINARY_DIR}/bench_bad_run.json)
 file(WRITE ${bench_bad_run} "{\"schemaVersion\": 2, \"machine\": \"CPU (test)\", \"commit\": \"test\", \"ratios\": [{\"name\": \"engine-sample\", \"blockSize\": 32, \"median\": 0}]}\n")
 set(bench_invalid_baseline ${CMAKE_CURRENT_BINARY_DIR}/bench_invalid_baseline.json)
