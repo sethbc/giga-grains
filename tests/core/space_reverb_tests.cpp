@@ -793,9 +793,9 @@ TEST_CASE("SpaceReverb return is 32 samples late at any call pattern", "[space]"
     // Idle chunks return +0.
     CHECK(positiveZeros(expected, 1200 * SpaceReverb::kChunk, 1220 * SpaceReverb::kChunk));
 
-    // The same history, split into host blocks. Each block passes the values in effect at its
-    // first sample to every sample until the next grid boundary inside it, and off the grid
-    // values that differ: a chunk must use only the values at its first sample.
+    // The same history, split into host blocks. On the grid each sample gets the scheduled
+    // values and activity; off it, different ones, the activity inverted too: a chunk must use
+    // only what it got at its first sample.
     const auto split = [&](auto &&nextBlockSize) {
         auto reverb = std::make_unique<SpaceReverb>(kRate);
         Stereo out(n);
@@ -816,8 +816,10 @@ TEST_CASE("SpaceReverb return is 32 samples late at any call pattern", "[space]"
                     p.hfDamping = 1.f - p.hfDamping;
                     p.modulation = 1.f - p.modulation;
                 }
-                reverb->processSample(t, in.left[i], in.right[i], p, scheduledActive(t),
-                                      out.left[i], out.right[i]);
+                const bool onGrid = t % SpaceReverb::kChunk == 0;
+                const bool active = onGrid ? scheduledActive(t) : !scheduledActive(t);
+                reverb->processSample(t, in.left[i], in.right[i], p, active, out.left[i],
+                                      out.right[i]);
             }
             start = end;
         }
@@ -1012,7 +1014,7 @@ TEST_CASE("SpaceReverb infinite stays bounded for an hour with a sine", "[space]
                 l[i] = r[i] = float(std::sin(2.0 * std::numbers::pi * 110.0 * k / kRate));
             }
         });
-    UNSCOPED_INFO("an hour of a 0 dBFS 110 Hz sine at infinity: output peak " << peak);
+    WARN("an hour of a 0 dBFS 110 Hz sine at infinity: output peak " << peak);
     REQUIRE(finite);
     CHECK(peak < 64.f);
     CHECK(peak <= 2.25f);
@@ -1032,22 +1034,22 @@ TEST_CASE("SpaceReverb infinite stays bounded for an hour with noise", "[space][
                     gg::rng::hash({kNoiseSeed, 2, 2, gg::rng::Field::SignalNoise, index})));
             }
         });
-    UNSCOPED_INFO("an hour of full-scale noise at infinity: output peak " << peak);
+    WARN("an hour of full-scale noise at infinity: output peak " << peak);
     REQUIRE(finite);
     CHECK(peak < 64.f);
     CHECK(peak <= 2.25f);
     CHECK(peak > 1.f);
 }
 
-TEST_CASE("SpaceReverb tail decays per Decay", "[space]")
+namespace
 {
-    // An impulse at Decay 1.0 (2 s) and Damping 0. The level of the left channel in 20 ms
-    // windows, in dB; a line fitted to it from 5 dB to 35 dB below its peak gives the T60. A
-    // sanity check of the mapping, not a calibration: within 50% of 2 s.
-    auto p = spaceDefaults();
-    p.hfDamping = 0.f;
+/// The T60 of an impulse's tail through a fresh SpaceReverb at `p`, rendered for 10 s: the
+/// level of both channels in 20 ms windows, in dB, and a least-squares line fitted to it from
+/// the first window 5 dB below its peak to the first 35 dB below it.
+double measureT60(const SpaceParams &p)
+{
     auto reverb = std::make_unique<SpaceReverb>(kRate);
-    const auto out = drive(*reverb, impulse(frames(6.0)), p);
+    const auto out = drive(*reverb, impulse(frames(10.0)), p);
     REQUIRE(allFinite(out));
 
     const size_t window = frames(0.02);
@@ -1061,16 +1063,15 @@ TEST_CASE("SpaceReverb tail decays per Decay", "[space]")
     }
     const auto peakAt = size_t(std::max_element(levelDb.begin(), levelDb.end()) - levelDb.begin());
     const double peak = levelDb[peakAt];
-    size_t from = peakAt, to = peakAt;
+    size_t from = peakAt;
     while (from < levelDb.size() && levelDb[from] > peak - 5.0)
         ++from;
-    to = from;
+    size_t to = from;
     while (to < levelDb.size() && levelDb[to] > peak - 35.0)
         ++to;
     REQUIRE(to < levelDb.size()); // it fell 35 dB within the render
     REQUIRE(to > from + 2);
 
-    // Least squares of dB against seconds over [from, to).
     double sx = 0, sy = 0, sxx = 0, sxy = 0;
     const double count = double(to - from);
     for (size_t w = from; w < to; ++w)
@@ -1083,8 +1084,91 @@ TEST_CASE("SpaceReverb tail decays per Decay", "[space]")
     }
     const double slope = (count * sxy - sx * sy) / (count * sxx - sx * sx);
     REQUIRE(slope < 0.0);
-    const double t60 = -60.0 / slope;
-    UNSCOPED_INFO("T60 at Decay 1.0 (2 s), Damping 0: " << t60 << " s");
-    CHECK(t60 > 1.0);
-    CHECK(t60 < 3.0);
+    return -60.0 / slope;
+}
+} // namespace
+
+TEST_CASE("SpaceReverb tail decays per Decay", "[space]")
+{
+    // Impulses at Damping 0 and Decay 0, 1 and 2 (labelled 1, 2 and 4 s). Two steps of Decay
+    // scale the T60 by the label's 4, less what the loop loses whatever the Decay: the fixed LF
+    // damping (0.2) and the dampers' clamped minimum (0.01) take a larger share of a longer
+    // tail. Measured, 2.95 (3.21 with LF damping 0). So the window is 2.5-5: a lost Decay
+    // mapping gives 1. Reverb 2's own formula is kept, so the T60 runs about 1.45 times the
+    // label (ruling R-T5c: recorded for the listening check, not recalibrated); at Decay 1 the
+    // window is that, within 25%.
+    double t60[3];
+    for (int d = 0; d < 3; ++d)
+    {
+        auto p = spaceDefaults();
+        p.hfDamping = 0.f;
+        p.decayLog2 = float(d);
+        t60[d] = measureT60(p);
+        WARN("T60 at Decay " << d << " (" << (1 << d) << " s), Damping 0: " << t60[d] << " s");
+    }
+    CHECK(t60[0] < t60[1]);
+    CHECK(t60[1] < t60[2]);
+    const double ratio = t60[2] / t60[0];
+    WARN("T60 ratio, Decay 2 over Decay 0: " << ratio << " (label ratio 4)");
+    CHECK(ratio > 2.5);
+    CHECK(ratio < 5.0);
+    const double expectedAt1 = 1.45 * 2.0;
+    CHECK(t60[1] > 0.75 * expectedAt1);
+    CHECK(t60[1] < 1.25 * expectedAt1);
+}
+
+TEST_CASE("SpaceReverb maps Size, Damping and Modulation", "[space]")
+{
+    // One discriminating measurement each, so that dropping any mapping fails. The fresh
+    // instance starts at Space's defaults (Size 50%, Damping 30%, Modulation 25%); each pair
+    // here is two values away from them.
+    const auto run = [](const SpaceParams &p, double seconds) {
+        auto reverb = std::make_unique<SpaceReverb>(kRate);
+        return drive(*reverb, impulse(frames(seconds)), p);
+    };
+
+    // Size: Reverb 2 scales its delay and tap times by 2^roomSize, so the onset at Size 100%
+    // (roomSize 1) is far later than at Size 0% (roomSize -1).
+    auto small = spaceDefaults(), large = spaceDefaults();
+    small.roomSize = -1.f;
+    large.roomSize = 1.f;
+    const auto smallOnset = onset(run(small, 0.5)), largeOnset = onset(run(large, 0.5));
+    WARN("onset at Size 0%: " << smallOnset << ", at Size 100%: " << largeOnset);
+    REQUIRE(smallOnset > 0);
+    CHECK(largeOnset > 2 * smallOnset);
+
+    // Damping: the tail's highs (above 4 kHz, 0.5-1.5 s) fall at Damping 100% against 0%.
+    auto bright = spaceDefaults(), dark = spaceDefaults();
+    bright.hfDamping = 0.f;
+    dark.hfDamping = 1.f;
+    const double brightHigh = rms(splitBands(run(bright, 1.5).left).high, 0.5, 1.5);
+    const double darkHigh = rms(splitBands(run(dark, 1.5).left).high, 0.5, 1.5);
+    WARN("tail above 4 kHz, Damping 100% against 0%: " << dB(darkHigh / brightHigh) << " dB");
+    REQUIRE(brightHigh > 0.0);
+    CHECK(darkHigh < 0.5 * brightHigh);
+
+    // Modulation: the tail at 100% differs from the one at 0%, by more than rounding.
+    auto still = spaceDefaults(), moving = spaceDefaults();
+    still.modulation = 0.f;
+    moving.modulation = 1.f;
+    const auto a = run(still, 1.5), b = run(moving, 1.5);
+    std::vector<float> diff(a.left.size());
+    for (size_t i = 0; i < diff.size(); ++i)
+        diff[i] = a.left[i] - b.left[i];
+    const double tail = rms(a.left, 0.5, 1.5), change = rms(diff, 0.5, 1.5);
+    WARN("tail change, Modulation 100% against 0%: " << dB(change / tail) << " dB");
+    CHECK_FALSE(sameBits(a, b));
+    CHECK(change > 0.1 * tail);
+
+    // A NaN in a mapped value takes the bottom of its range, so the output stays finite.
+    auto nan = spaceDefaults();
+    nan.roomSize = nan.hfDamping = nan.modulation = nan.decayLog2 =
+        std::numeric_limits<float>::quiet_NaN();
+    auto bottom = spaceDefaults();
+    bottom.roomSize = -1.f;
+    bottom.hfDamping = bottom.modulation = 0.f;
+    bottom.decayLog2 = -4.f;
+    const auto fromNan = run(nan, 0.5);
+    CHECK(allFinite(fromNan));
+    CHECK(sameBits(fromNan, run(bottom, 0.5)));
 }

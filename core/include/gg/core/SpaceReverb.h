@@ -6,6 +6,7 @@
 #define GG_CORE_SPACEREVERB_H
 
 #include <array>
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -33,7 +34,9 @@ namespace gg::core
 /// - rev2_room_size = roomSize, rev2_hf_damping = hfDamping, rev2_modulation = modulation, each
 ///   clamped to its range ([−1, 1], [0, 1], [0, 1]);
 /// - rev2_decay_time = decayLog2, clamped to Reverb 2's range [−4, 6] (finite Decay is within
-///   it; at ∞ the value only sets Reverb 2's ring-out estimate);
+///   it; at ∞ the value only sets Reverb 2's ring-out estimate). Reverb 2's own decay formula is
+///   kept, so the measured T60 is about 1.45 × 2^decayLog2 s at Damping 0 (ruling R-T5c);
+/// - a NaN in any of these four takes the bottom of its range;
 /// - setInfinite(infinite);
 /// - setPredelaySamples(max(0, predelaySeconds × sampleRate − 32)): the grid's 32 samples count
 ///   toward Pre-delay, so the return of an impulse is predelaySeconds late, at least 32 samples.
@@ -77,13 +80,15 @@ class SpaceReverb
     void reset() noexcept;
 
     /// One sample at absolute time t, which starts at 0 after construction or reset() and
-    /// increases by 1 per call. `params` are the values in effect at t; a chunk uses the values
-    /// at its first sample. `active` is whether this sample belongs to an active chunk (the idle
-    /// rule), read at the chunk's first sample. Writes the return for t: the reverb's output for
-    /// t − 32, or +0 while idle.
+    /// increases by 1 per call (asserted in debug builds). `params` are the values in effect at t;
+    /// a chunk uses the values at its first sample. `active` is whether this sample belongs to an
+    /// active chunk (the idle rule), read at the chunk's first sample. Writes the return for t: the
+    /// reverb's output for t − 32, or +0 while idle.
     void processSample(int64_t t, float inL, float inR, const SpaceParams &params, bool active,
                        float &outL, float &outR) noexcept SST_CPPUTILS_NONBLOCKING
     {
+        assert(t == next_ && "t must start at 0 and increase by 1 per call");
+        ++next_;
         const auto i = static_cast<size_t>(t & (kChunk - 1));
         if (i == 0)
         {
@@ -117,6 +122,7 @@ class SpaceReverb
     alignas(16) std::array<float, kChunk> left_{};
     alignas(16) std::array<float, kChunk> right_{};
     SpaceParams params_{}; // latched at the chunk's first sample
+    int64_t next_{0};      // the t the next call must pass (checked in debug builds)
     bool chunkActive_{false};
     bool ran_{false};      // the reverb has run since it was last empty
     bool clearing_{false}; // a stepwise clear is under way

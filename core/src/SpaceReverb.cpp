@@ -20,6 +20,14 @@ using space::Rev2Patched;
 
 static_assert(SpaceReverb::kChunk == GgFxConfig::blockSize);
 
+/// x clamped to [lo, hi], with NaN taken to lo (std::clamp passes NaN through).
+float clampOrLow(float x, float lo, float hi) noexcept
+{
+    if (!(x >= lo))
+        return lo;
+    return x > hi ? hi : x;
+}
+
 /// The patched Reverb 2 with its mix and width held at their targets, which upstream reaches
 /// only by smoothing from 0 over a few dozen blocks.
 class WetReverb2 final : public Rev2Patched
@@ -76,6 +84,7 @@ void SpaceReverb::reset() noexcept
     left_.fill(0.0f);
     right_.fill(0.0f);
     params_ = {};
+    next_ = 0;
     chunkActive_ = false;
     ran_ = false;
     clearing_ = false;
@@ -108,10 +117,10 @@ void SpaceReverb::endChunk() noexcept
     }
 
     auto &v = reverb_->storage.values;
-    v[Rev2Patched::rev2_room_size] = std::clamp(params_.roomSize, -1.0f, 1.0f);
-    v[Rev2Patched::rev2_hf_damping] = std::clamp(params_.hfDamping, 0.0f, 1.0f);
-    v[Rev2Patched::rev2_modulation] = std::clamp(params_.modulation, 0.0f, 1.0f);
-    v[Rev2Patched::rev2_decay_time] = std::clamp(params_.decayLog2, -4.0f, 6.0f);
+    v[Rev2Patched::rev2_room_size] = clampOrLow(params_.roomSize, -1.0f, 1.0f);
+    v[Rev2Patched::rev2_hf_damping] = clampOrLow(params_.hfDamping, 0.0f, 1.0f);
+    v[Rev2Patched::rev2_modulation] = clampOrLow(params_.modulation, 0.0f, 1.0f);
+    v[Rev2Patched::rev2_decay_time] = clampOrLow(params_.decayLog2, -4.0f, 6.0f);
     rev.setInfinite(params_.infinite);
     rev.setPredelaySamples(static_cast<float>(
         std::max(0.0, double(params_.predelaySeconds) * sampleRate_ - double(kChunk))));
