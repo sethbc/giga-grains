@@ -67,12 +67,32 @@ jobs:
             bench: build/linux-gcc12/tools/gg-bench/gg-bench
     env:
       HOMEBREW_NO_AUTO_UPDATE: 1
+      # clap-wrapper downloads the VST3 SDK, Apple's AudioUnitSDK, RtAudio, RtMidi and the
+      # Windows helper library at configure time (CPM). CPM keeps each download under this
+      # directory, in a folder named by a hash of its package arguments (URL and exact tag),
+      # and reuses it when the hash matches: the cache never changes what is built, only
+      # whether it is downloaded (carry-over [96]).
+      CPM_SOURCE_CACHE: ${{ github.workspace }}/.cpm-cache
     steps:
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           submodules: recursive
           persist-credentials: false
+
+      # Keyed by leg and by the files that hold the pins (clap-wrapper's base_sdks.cmake, and
+      # libs/CMakeLists.txt, which sets what it downloads), so a changed pin starts a fresh
+      # cache. The step summary's line says whether it hit.
+      - name: Cache CPM downloads
+        id: cpm_cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ env.CPM_SOURCE_CACHE }}
+          key: cpm-${{ matrix.preset }}-${{ hashFiles('libs/clap/clap-wrapper/cmake/base_sdks.cmake', 'libs/clap/clap-wrapper/cmake/shared_prologue.cmake', 'libs/CMakeLists.txt') }}
+
+      - name: Report the CPM cache
+        run: |
+          echo "### CPM cache (${{ matrix.preset }}): hit=${{ steps.cpm_cache.outputs.cache-hit || 'false' }}" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Prepare for JUCE
         uses: surge-synthesizer/sst-githubactions/prepare-for-juce@5bb92ec9d3401eba6a85f8edea98395b3b866e84 # main
@@ -173,7 +193,7 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
           if [[ $status == 3 ]]; then
-            echo "::warning title=gg-bench::a ratio regressed against $baseline (report-only through M1)"
+            echo "::warning title=gg-bench::a ratio regressed, or a baseline entry is missing from the run, against $baseline (report-only through M1)"
             status=0
           fi
           exit "$status"
