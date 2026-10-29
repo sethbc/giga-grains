@@ -347,6 +347,7 @@ b=build/release/tools/gg-bench/gg-bench
 $b [--quick | --seconds S] [--rounds N] [--grains N] [--cases a,b] [--commit SHA] \
    [--json out.json] [--baseline baseline.json]                  # grain kernels and engine (§16)
 $b --make-baseline <preset> out.json a.json b.json c.json        # write a CI leg's baseline
+$b --make-baseline <preset> out.json --merge old.json a.json ... # add or remake models in one
 $b --canvas [--quick] [--json out.json]                           # canvas renderer
 $b --space [--quick | --seconds S] [--rounds N] [--commit SHA] [--json out.json]  # Space
 ```
@@ -356,12 +357,17 @@ $b --space [--quick | --seconds S] [--rounds N] [--commit SHA] [--json out.json]
   - **the engine cases,** through `Engine::process`, scheduler and pan included:
     - `engine-sample` is **X**, the §16 headline's case: Normal grains reading a stereo sample
       buffer in RAM (INTENT §23 #44);
-    - `engine-sample-eco`: the same at the Eco tier (linear interpolation);
+    - `engine-sample-eco`: the same at the Eco tier (linear interpolation); the `[bench]` case
+      "engine-sample-eco runs at the Eco tier" checks every grain it admits is Eco
+      (`gg::bench::admittedTiers`);
     - `engine-live`: the same stream over a 16 s live ring, the FX's figure, published beside X;
     - `engine-full-pool`: admission when the pool is saturated (1 s grains ask for 10× its
       capacity);
   - `reference`: M0's 4-wide Hermite kernel, frozen (`renderHermiteSimd` in
-    `tools/gg-bench/Kernels.h`). It is the CPU gate's yardstick;
+    `tools/gg-bench/Kernels.h`). It is the CPU gate's yardstick. `Kernels.h` includes no engine
+    header: it holds its own frozen copies of the Hann table and the readers, so no engine
+    change can move it, and the `[bench]` case "the reference kernel's output is pinned" hashes
+    its output. Never edit those copies to follow the engine;
   - M0's prototype kernels: `linear-scalar`, `hermite-scalar`, `sinc-scalar`, `linear-simd`
     and `hermite-simd`.
 - **Timing.** Every configuration warms up once. Then each of 5 rounds (`--rounds`) times every
@@ -387,15 +393,22 @@ $b --space [--quick | --seconds S] [--rounds N] [--commit SHA] [--json out.json]
     write the JSON, or 2 for bad usage.
 - **An option a mode doesn't take is bad usage** (exit 2, with the usage): `--space` takes only
   the options shown above, `--canvas` only `--quick` and `--json`, and `--make-baseline`
-  nothing else.
+  nothing else (its `--merge` is one of its own values).
   - Sub-project 4's fix wave measured 28.49 ns per stereo sample, 0.137% of one M5 Max core,
     at its final code (`ac81dfb`; INTENT §16).
     Sub-project 6 publishes it beside X.
 - **When profiling the plugins in a VST3 host,** remember that clap-wrapper's VST3 `process`
   takes a spin lock. Time spent there is the wrapper's, not ours.
 - **Exit status:** 0 when done and no ratio regressed, 1 for an error (an unreadable or malformed
-  baseline, say), 2 for bad usage, 3 when `--baseline` finds a regressed ratio. A run on a CPU
-  model the baseline has no entry for prints `no baseline for <machine>; no verdict` and exits 0.
+  baseline, say), 2 for bad usage, 3 when `--baseline` finds a regressed ratio or a missing one.
+  A run on a CPU model the baseline has no entry for prints `no baseline for <machine>; no
+  verdict` and exits 0.
+  - **Every entry of the model's baseline is accounted for:** one the run lacks is printed as
+    `missing from this run` and counts as a failure (exit 3); the verdict line then ends `, N
+    baseline entries missing from this run`. So `--baseline` with a `--cases` subset fails. A
+    ratio the baseline lacks is only `not in the baseline`.
+  - **A verdict over no ratios is an error** (exit 1): a run without `reference` or any engine
+    case, on a model the baseline has, never passes as "0 of 0".
 - **In CI:** each build leg runs the full length with `--commit` and, when
   `tools/gg-bench/baselines/<preset>.json` exists, `--baseline`. It prints the output, and a
   verdict per ratio, in the step summary and uploads `gg-bench-<preset>` (`gg-bench.json` and
@@ -410,7 +423,8 @@ $b --space [--quick | --seconds S] [--rounds N] [--commit SHA] [--json out.json]
     on it are added to the baseline.
   - **The gate is report-only through M1** (INTENT §19, §23 #44): exit 3 becomes a
     `::warning` and the step exits 0. A crash, exit 1 or 2, or the timeout still fails the job.
-    The `bench_baseline_*` tests pin exit 3, exit 0 and the no-verdict line.
+    The `bench_baseline_*` tests pin exit 3 (a regression or a missing entry), exit 0, the
+    no-verdict line and exit 1 for a run with no ratios.
   - Sub-project 6 makes the gate blocking, with the published X.
 - **Refreshing a baseline** (`tools/gg-bench/baselines/README.md` has the format):
   1. Make three separate CI runs of the same engine code
@@ -423,15 +437,23 @@ $b --space [--quick | --seconds S] [--rounds N] [--commit SHA] [--json out.json]
      - Each ratio is the median of that model's runs, with a tolerance of
        `max(0.10, 2 × (max − min) / median)`.
      - A model seen in only one run gets the 0.10 floor.
+     - It checks what it makes as `--baseline` would: a median that isn't positive and finite,
+       or a tolerance that isn't finite, is an error (exit 1), and no file is written.
   4. Commit the file. A later CI run on a model in the file should show `pass`, but not always:
      the M1 VM's drift between runs can exceed even a tolerance from three runs (the
      verification run showed `engine-sample-eco` at block 32 at 1.1546 against a limit of
      1.0377, a false "regressed"). A run on a model the file lacks shows "no verdict".
-  5. A model with no entry gets one when you make the baseline again with later runs on it
-     included, still all of the same engine code.
+  5. **To add a model, or remake one,** without the runs the other entries came from (CI's
+     artifacts expire), merge: `gg-bench --make-baseline <preset>
+     tools/gg-bench/baselines/<preset>.json --merge tools/gg-bench/baselines/<preset>.json
+     d.json e.json f.json`. `--merge <old.json>` goes right after the output, and may be the same
+     file. Every entry of the old file stays, in place, except the runs' models', which are made
+     from the new runs alone; models the old file lacks are added at the end. It prints each
+     entry as `(kept)`, `(replaced)` or `(new)`. The legs must match. The new runs must still be
+     of engine code whose ratios match the kept entries' (no engine change since).
 
   A baseline is valid only against the frozen `reference` kernel: if that kernel, or anything it
-  calls, changes, make every baseline again.
+  calls, changes, make every baseline again. Its pinned hashes fail first.
 
 **Validators.** CI runs them on every build leg; auval runs on macOS only.
 
