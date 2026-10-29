@@ -314,8 +314,11 @@ struct Run
 /// conjunction. The bounds come from inverting the definitions, widened by 2 samples against
 /// rounding; then each end steps inward while the exact per-sample test fails, so the run holds
 /// only samples the test admits, and all of them. A rate that isn't positive, or a non-finite
-/// inversion, leaves the bounds at [first, last) and the stepping finds the run (or none); it is
-/// bounded by last − first.
+/// inversion, leaves the bounds at [first, last) and the stepping finds the run (or none), testing
+/// every sample: bounded by last − first, but no longer a few tests per end. The engine never
+/// makes such a row: every grain's rate is the pitch ratio, exp2Det of a pitch clamped to ±48
+/// semitones, times the quotient of two finite, positive sample rates (Engine::sampleGrain), so
+/// it is finite and positive for any sample rates short of about 2^1000 apart.
 template <class Reader>
 Run sampleSimdRun(const GrainRows &rows, uint32_t i, int64_t frames, int64_t first,
                   int64_t last) noexcept SST_CPPUTILS_NONBLOCKING
@@ -464,8 +467,10 @@ void renderInterior(const GrainRows &rows, uint32_t i, const Taps &taps, const O
     const double startPos = rows.startPos[i];
     const double rate = rows.rate[i];
     const double invDuration = rows.invDuration[i];
+    // gain_c: the latched gainL and gainR, or with one output the grain's gain alone in gain0
+    // (gainR is read only with two outputs).
     const SIMD_M128 gain0 = SIMD_MM(set1_ps)(kTwoOutputs ? rows.gainL[i] : rows.gain[i]);
-    const SIMD_M128 gain1 = SIMD_MM(set1_ps)(rows.gainR[i]);
+    const SIMD_M128 gain1 = SIMD_MM(set1_ps)(kTwoOutputs ? rows.gainR[i] : 0.0f);
     const SIMD_M128 zero = SIMD_MM(setzero_ps)();
     const float *const points = hann.points();
     float *const dst0 = out.dst[0];
@@ -581,9 +586,10 @@ void renderLiveRef(const GrainRows &rows, uint32_t i, const LiveSource &live, co
     float *const dst0 = out.dst[0];
     float *const dst1 = out.dst[1];
     const bool twoOutputs = dst1 != nullptr;
-    // gain_c: the latched channel gains, or with one output the grain's gain alone.
+    // gain_c: the latched channel gains, or with one output the grain's gain alone; gainR is
+    // read only with two outputs.
     const float gain0 = twoOutputs ? rows.gainL[i] : rows.gain[i];
-    const float gain1 = rows.gainR[i];
+    const float gain1 = twoOutputs ? rows.gainR[i] : 0.0f;
     LiveSource::Cursor cursor;
     for (int64_t t = first; t < last; ++t)
     {
@@ -639,10 +645,12 @@ namespace detail
 ///
 /// The phase and pos are monotone in t (as in sampleSimdRun), so they hold between two samples
 /// where they hold. On [lo, hi) R and pos are linear in t, so each margin is too, up to rounding
-/// of order 2^−12 frames at ring times up to 2^40: where a margin is >= M + 1 at both ends of a
-/// run it is above M + 1 − 2^−11 everywhere between, so the fade's two factors are both clamped
-/// to 1 there and every tap is inside the window. Hence f == 1 and the read succeeds on the
-/// whole run, for either reader (Linear's taps are a subset of the Hermite's).
+/// of order 2^−12 frames at ring times up to 2^40 (the ring's limit): where a margin is >= M + 1
+/// at both ends of a run it is above M + 1 − 2^−11 everywhere between, so the fade's two factors
+/// are both clamped to 1 there and every tap is inside the window. Hence f == 1 and the read
+/// succeeds on the whole run, for either reader (Linear's taps are a subset of the Hermite's).
+/// The rounding grows with ring time, but the one frame of slack between M + 1 and the fade's M
+/// would hold to ring times of about 2^50, where it reaches a frame.
 ///
 /// The bounds come from solving the linear conditions in n = t − onsetSample, widened by 2
 /// samples; each end then steps inward while the exact test fails, which costs a few tests per
@@ -734,9 +742,14 @@ inline Run liveRun(const GrainRows &rows, uint32_t i, const LiveSource &live, in
 /// channels are interleaved (LiveSource::RingView::slots, read through InterleavedTaps), and the
 /// ring's guard slots make each read's taps contiguous from its first tap's slot. locate finds
 /// lane 0's first-tap slot with one division, and each other lane's by adding its frame offset
-/// from lane 0 (0 to a few frames, far below capacity) and subtracting capacity once if that
-/// passes it; the read's base is that slot + Reader::kBefore. Requires every lane's first tap to
-/// be a frame >= 0, in increasing lane order.
+/// from lane 0 and subtracting capacity once if that passes it; the read's base is that slot +
+/// Reader::kBefore. Requires every lane's first tap to be a frame >= 0, in increasing lane order.
+///
+/// One subtraction is enough because every offset is below the capacity C: the 4 lanes are
+/// consecutive samples of one write() block, so the head R(t) moves at most 3 frames across them,
+/// and each lane's taps are inside its own window [R(t) − N, R(t) − 1]. Every tap of the step is
+/// therefore in one span of N + 3 frames, and a step of 4 samples needs a block of at least 4,
+/// so N + 3 < N + maxBlockSize = C.
 template <class Reader> struct RingTaps : InterleavedTaps
 {
     int64_t capacity;

@@ -13,6 +13,11 @@ namespace gg
 /// stored in the pool, so a change reaches only the grains that start after it (ruling 2). The
 /// tier changes only how a grain reads its source, never which grains spawn or what they draw.
 /// Until M2 only the engine and gg-render choose Eco; both plugins stay Normal.
+///
+/// Eco is the zero value, so a value-initialized Tier{} is Eco, not the default tier: write
+/// Tier::Normal where Normal is meant, as GrainSpec::tier and CloudParams::quality do. The
+/// renderer tests for Eco alone (Engine::renderPool), so a value outside the enum, which nothing
+/// makes, would render as Normal.
 enum class Tier : uint8_t
 {
     Eco,    ///< Linear interpolation over taps floor(pos) and floor(pos) + 1.
