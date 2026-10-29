@@ -27,7 +27,8 @@ namespace gg::media
 ///   frames per call (or one input frame's worth, when the rate rises more than 65,536-fold),
 ///   however far the rate rises.
 /// `in` must not be null, and `targetRate` must be finite and positive. Throws std::bad_alloc on
-/// allocation failure, and nothing else.
+/// allocation failure, and std::system_error if r8brain's filter-cache std::mutex fails to lock
+/// (which the standard allows and no supported platform does in practice); nothing else.
 std::shared_ptr<SampleBuffer> convertRate(std::shared_ptr<SampleBuffer> in, double targetRate);
 } // namespace gg::media
 

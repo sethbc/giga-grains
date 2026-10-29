@@ -9,8 +9,10 @@
 #include <cstdint>
 #include <cstring>
 #include <initializer_list>
+#include <limits>
 #include <numbers>
 #include <span>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -22,6 +24,7 @@
 #include "gg/core/ParamIds.h"
 #include "gg/engine/Engine.h"
 #include "PluginHarness.h"
+#include "support/AllocTripwire.h"
 
 namespace
 {
@@ -142,6 +145,132 @@ class LoggingHost
         [](const clap_host *) {}, // request_callback
     };
 };
+// A stub host that offers clap.tail and counts its tail.changed calls, which must never come
+// (ruling R-T7a: the tail is a constant per product). It also offers clap.log, so that a test
+// querying the tail before activation (which clap-helpers reports as host misbehaviour) logs
+// nothing to the console.
+class TailHost
+{
+  public:
+    TailHost() { host_.host_data = this; }
+    TailHost(const TailHost &) = delete;
+    TailHost &operator=(const TailHost &) = delete;
+
+    const clap_host *clap() const noexcept { return &host_; }
+    uint32_t tailChanges() const noexcept { return tailChanges_; }
+
+  private:
+    static TailHost &self(const clap_host *host)
+    {
+        return *static_cast<TailHost *>(host->host_data);
+    }
+    static const void *getExtension(const clap_host *, const char *id) noexcept
+    {
+        static const clap_host_tail kTail{[](const clap_host *host) { ++self(host).tailChanges_; }};
+        static const clap_host_log kLog{[](const clap_host *, clap_log_severity, const char *) {}};
+        if (std::strcmp(id, CLAP_EXT_TAIL) == 0)
+        {
+            return &kTail;
+        }
+        return std::strcmp(id, CLAP_EXT_LOG) == 0 ? &kLog : nullptr;
+    }
+
+    uint32_t tailChanges_{0};
+    clap_host host_{
+        CLAP_VERSION_INIT,
+        nullptr,
+        "gg-tests tail host",
+        "Giga Grains",
+        "",
+        "0.0.0",
+        &TailHost::getExtension,
+        [](const clap_host *) {}, // request_restart
+        [](const clap_host *) {}, // request_process
+        [](const clap_host *) {}, // request_callback
+    };
+};
+
+// CLAP's infinite tail: any value from INT32_MAX up (clap/ext/tail.h).
+constexpr uint32_t kInfiniteTail = static_cast<uint32_t>(std::numeric_limits<int32_t>::max());
+
+// tail.get, through the vtable.
+uint32_t tailOf(const gg::test::PluginUnderTest &plugin)
+{
+    const auto *tail = static_cast<const clap_plugin_tail *>(
+        plugin.clap()->get_extension(plugin.clap(), CLAP_EXT_TAIL));
+    REQUIRE(tail != nullptr);
+    return tail->get(plugin.clap());
+}
+
+// The instrument's tail at `rate` (ruling R-T7a): 2 s Size + 0.5 s Pre-delay + 2 × 60 s Decay,
+// rounded up to whole frames.
+uint32_t instrumentTail(double rate)
+{
+    return static_cast<uint32_t>(std::ceil((2.0 + 0.5 + 2.0 * 60.0) * rate));
+}
+
+// One process() of `frames` frames of silence (the FX's input is silent, the instrument has
+// none) with `events`.
+void processSilence(gg::test::PluginUnderTest &plugin, bool isFx, uint32_t frames,
+                    const clap_input_events *events = nullptr)
+{
+    Stereo in(frames);
+    Stereo out(frames);
+    REQUIRE(plugin.process(frames, isFx ? in.data() : nullptr, out.data(), events) ==
+            CLAP_PROCESS_CONTINUE);
+}
+
+// Drives `plugin` through the states that could change a tail computed from the values, Freeze
+// and the notes, calling `check` in each: the defaults; Freeze off and then on (armed, so
+// engaged in the FX); a note held; Reverb Amount 1 at Decay ∞; the note released; Freeze off;
+// and a state load back to the defaults.
+template <typename Check>
+void throughTailStates(gg::test::PluginUnderTest &plugin, bool isFx, Check &&check)
+{
+    const std::string defaults = plugin.save();
+    REQUIRE(plugin.activate(48000.0, 512));
+    check("defaults");
+
+    const auto freezeOff = gg::test::paramValue(paramId(ParamSlot::Freeze), 0.0);
+    const auto freezeOn = gg::test::paramValue(paramId(ParamSlot::Freeze), 1.0);
+    const auto on = noteOn(60, 0);
+    const auto off = gg::test::noteEvent(CLAP_EVENT_NOTE_OFF, 0, 60, 0);
+    const auto amount = gg::test::paramValue(paramId(ParamSlot::ReverbAmount), 1.0);
+    const auto decay = gg::test::paramValue(paramId(ParamSlot::ReverbDecay),
+                                            static_cast<double>(gg::core::kDecayMax));
+    gg::test::InputEvents offEvents;
+    offEvents.add(&freezeOff.header);
+    gg::test::InputEvents onEvents;
+    onEvents.add(&freezeOn.header);
+    processSilence(plugin, isFx, 64, offEvents.list());
+    processSilence(plugin, isFx, 64, onEvents.list());
+    check("freeze engaged");
+
+    gg::test::InputEvents noteEvents;
+    noteEvents.add(&on.header);
+    processSilence(plugin, isFx, 64, noteEvents.list());
+    REQUIRE(heldKeys(plugin) == std::vector<int>{60});
+    check("note held");
+
+    gg::test::InputEvents reverbEvents;
+    reverbEvents.add(&amount.header);
+    reverbEvents.add(&decay.header);
+    processSilence(plugin, isFx, 64, reverbEvents.list());
+    check("amount 1 at decay infinity");
+
+    gg::test::InputEvents releaseEvents;
+    releaseEvents.add(&off.header);
+    releaseEvents.add(&freezeOff.header);
+    processSilence(plugin, isFx, 64, releaseEvents.list());
+    REQUIRE(heldKeys(plugin).empty());
+    check("note released, freeze off");
+
+    REQUIRE(plugin.load(defaults));
+    plugin.onMainThread();
+    processSilence(plugin, isFx, 64);
+    plugin.onMainThread();
+    check("state loaded");
+}
 } // namespace
 
 TEST_CASE("fx passes audio through bit-exactly at mix 0", "[plugin]")
@@ -239,6 +368,29 @@ TEST_CASE("note-ons are counted from clap and midi", "[plugin]")
     more.add(&clapOff.header);
     REQUIRE(plugin.process(512, inputs, out.data(), more.list()) == CLAP_PROCESS_CONTINUE);
     CHECK(plugin.impl().noteOnCount.load() == 4);
+}
+
+TEST_CASE("only the midi a note event converts counts as one", "[plugin]")
+{
+    // Carry-over [195]: the events that count toward kMaxNoteEvents are those toNoteEvent
+    // converts. Other MIDI (a CC, pressure, the clock) doesn't.
+    using gg::plugin::GigaGrainsPlugin;
+    const auto counts = [](uint8_t status, uint8_t data1, uint8_t data2) {
+        const auto e = gg::test::midiEvent(status, data1, data2, 0);
+        return GigaGrainsPlugin::isNoteEvent(&e.header);
+    };
+    CHECK(counts(0x93, 60, 100));      // note-on, channel 4
+    CHECK(counts(0x90, 60, 0));        // note-on at velocity 0: a note-off
+    CHECK(counts(0x8F, 60, 0));        // note-off, channel 16
+    CHECK(counts(0xB2, 123, 0));       // CC 123, all notes off
+    CHECK_FALSE(counts(0xB0, 1, 64));  // CC 1
+    CHECK_FALSE(counts(0xB0, 120, 0)); // CC 120, all sound off: not converted
+    CHECK_FALSE(counts(0xA0, 60, 10)); // polyphonic pressure
+    CHECK_FALSE(counts(0xE0, 0, 64));  // pitch bend
+    CHECK_FALSE(counts(0xF8, 0, 0));   // the clock
+    const auto on = noteOn(60, 0);
+    CHECK(GigaGrainsPlugin::isNoteEvent(&on.header));
+    CHECK_FALSE(GigaGrainsPlugin::isNoteEvent(nullptr));
 }
 
 TEST_CASE("params flush is safe and counts note-ons", "[plugin]")
@@ -383,7 +535,9 @@ TEST_CASE("fx activates with a huge max frame count", "[plugin]")
 {
     // CLAP allows a max frame count up to INT32_MAX. The live ring holds N + maxBlockSize frames
     // (ruling M1-o), so the plugin caps the engine's block size; the output doesn't depend on it.
-    // Position 0.05 (about 20 ms) and no Spray: the grains read what this render wrote.
+    // Position 0.05 (about 20 ms) and no Spray: the grains read what this render wrote. Without
+    // the cap this test fails only through the engineBlockSize() check, and on macOS only after
+    // a ~44 s, 34 GB allocation (elsewhere the allocation itself may fail first).
     Stereo in(8193);
     fillNoise(in, 5);
     const auto position =
@@ -826,9 +980,9 @@ TEST_CASE("audio ports declare the main ports and their in-place pairs", "[plugi
             CHECK(std::string_view(info.port_type) == CLAP_PORT_STEREO);
         }
         CHECK(std::string_view(info.name) == expectedName);
-        // Only index 0 exists. In Debug, clap-helpers' Maximal checking reports this deliberate
-        // out-of-range query on stderr ("Host called clap_plugin_audio_ports.info() with an
-        // index out of bounds"): that line is expected.
+        // Only index 0 exists. clap-helpers reports this deliberate out-of-range query on stderr
+        // ("Host called clap_plugin_audio_ports.info() with an index out of bounds") at every
+        // checking level, Minimal included, so in every build: that line is expected.
         CHECK_FALSE(ports->get(plugin.clap(), 1, isInput, &info));
     };
     if (isFx)
@@ -840,7 +994,7 @@ TEST_CASE("audio ports declare the main ports and their in-place pairs", "[plugi
     {
         check(false, 0, CLAP_INVALID_ID, "Main Out");
         // The instrument has no input: another deliberate out-of-range query, and the same
-        // expected stderr line in Debug.
+        // expected stderr line, in every build.
         clap_audio_port_info info{};
         CHECK_FALSE(ports->get(plugin.clap(), 0, true, &info));
     }
@@ -1123,4 +1277,120 @@ TEST_CASE("a missing output or output channel leaves the rest of the render unch
     {
         CHECK(same(actual.left, expected.left, from, to));
     }
+}
+
+TEST_CASE("fx tail is infinite in every state", "[plugin][space]")
+{
+    // Ruling R-T7a: the FX, a live-buffer effect that can sound with no input at any time
+    // (Freeze, notes, 16 s reads, the reverb), reports an infinite tail always, and never calls
+    // tail.changed (clap-wrapper's VST3 would restart the plugin on it).
+    TailHost host;
+    gg::test::PluginUnderTest fx(kFxId, host.clap());
+    REQUIRE(fx.valid());
+    CHECK(tailOf(fx) == kInfiniteTail); // before the first activation
+    throughTailStates(fx, true, [&](const char *state) {
+        CAPTURE(state);
+        CHECK(tailOf(fx) == kInfiniteTail);
+    });
+    fx.deactivate();
+    CHECK(tailOf(fx) == kInfiniteTail);
+    CHECK(host.tailChanges() == 0);
+}
+
+TEST_CASE("instrument tail is its longest finite one at the active rate", "[plugin][space]")
+{
+    // Ruling R-T7a: 2 s Size + 0.5 s Pre-delay + 2 × 60 s Decay = 122.5 s, in frames at the
+    // active rate, whatever the values and the notes; at 48 kHz before the first activation.
+    // tail.changed is never called.
+    TailHost host;
+    gg::test::PluginUnderTest instrument(kInstrumentId, host.clap());
+    REQUIRE(instrument.valid());
+    CHECK(tailOf(instrument) == instrumentTail(48000.0));
+    CHECK(tailOf(instrument) == 5880000u);
+    throughTailStates(instrument, false, [&](const char *state) {
+        CAPTURE(state);
+        CHECK(tailOf(instrument) == instrumentTail(48000.0));
+    });
+    instrument.deactivate();
+
+    for (const double rate : {96000.0, 44100.0})
+    {
+        CAPTURE(rate);
+        REQUIRE(instrument.activate(rate, 512));
+        CHECK(tailOf(instrument) == instrumentTail(rate));
+        instrument.deactivate();
+        CHECK(tailOf(instrument) == instrumentTail(rate)); // the last activation's rate
+    }
+    CHECK(tailOf(instrument) == 5402250u); // 122.5 s at 44.1 kHz
+    CHECK(host.tailChanges() == 0);
+}
+
+TEST_CASE("instrument tail saturates below infinite", "[plugin][space]")
+{
+    // tailGet's arithmetic: 122.5 s rounded up to frames, held below CLAP's infinite (INT32_MAX
+    // and up) where a rate would reach it, and for a NaN rate.
+    using gg::plugin::GigaGrainsPlugin;
+    CHECK(GigaGrainsPlugin::instrumentTailFrames(48000.0) == 5880000u);
+    CHECK(GigaGrainsPlugin::instrumentTailFrames(44100.0) == 5402250u);
+    CHECK(GigaGrainsPlugin::instrumentTailFrames(1.0e9) == kInfiniteTail - 1);
+    CHECK(GigaGrainsPlugin::instrumentTailFrames(std::numeric_limits<double>::quiet_NaN()) ==
+          kInfiniteTail - 1);
+}
+
+TEST_CASE("reactivate at a new rate mid-tail", "[plugin][rt][space]")
+{
+    // An infinite room, ringing (the reverb active) when deactivated, then activated at twice
+    // the rate: the Processor is rebuilt, so the next second, of silence, renders silence,
+    // without allocating.
+    TailHost host;
+    gg::test::PluginUnderTest fx(kFxId, host.clap());
+    REQUIRE(fx.valid());
+    flushParams(fx, std::array{
+                        gg::test::paramValue(paramId(ParamSlot::ReverbAmount), 1.0),
+                        gg::test::paramValue(paramId(ParamSlot::ReverbDecay),
+                                             static_cast<double>(gg::core::kDecayMax)),
+                        gg::test::paramValue(paramId(ParamSlot::Diffusion), 1.0),
+                    });
+    constexpr uint32_t kBlock = 512;
+    REQUIRE(fx.activate(48000.0, kBlock));
+    Stereo in(kBlock);
+    Stereo out(kBlock);
+    for (uint32_t b = 0; b < 48000 / 2 / kBlock; ++b)
+    {
+        fillNoise(in, b);
+        REQUIRE(fx.process(kBlock, in.data(), out.data()) == CLAP_PROCESS_CONTINUE);
+    }
+    CHECK(tailOf(fx) == kInfiniteTail);
+    REQUIRE(fx.impl().processor() != nullptr);
+    CHECK(fx.impl().processor()->reverbActive());
+    fx.deactivate();
+
+    REQUIRE(fx.activate(96000.0, kBlock));
+    CHECK(tailOf(fx) == kInfiniteTail);
+    CHECK(host.tailChanges() == 0);
+    constexpr uint32_t kBlocks = 96000 / kBlock + 1; // a second at 96 kHz
+    Stereo silence(kBlock);
+    Stereo rendered(kBlock * kBlocks);
+    std::array<clap_process_status, kBlocks> status{};
+    gg::test::AllocTripwire::resetCount();
+    {
+        gg::test::AllocTripwire::Scope armed;
+        for (uint32_t b = 0; b < kBlocks; ++b)
+        {
+            float *outputs[2] = {rendered.left.data() + b * kBlock,
+                                 rendered.right.data() + b * kBlock};
+            status[b] = fx.process(kBlock, silence.data(), outputs);
+        }
+    }
+    const uint64_t allocations = gg::test::AllocTripwire::count();
+    for (const auto s : status)
+    {
+        CHECK(s == CLAP_PROCESS_CONTINUE);
+    }
+    const auto silent = [](const std::vector<float> &v) {
+        return std::all_of(v.begin(), v.end(), [](float x) { return x == 0.0f; });
+    };
+    CHECK(silent(rendered.left));
+    CHECK(silent(rendered.right));
+    REQUIRE_NO_ALLOCATIONS(allocations);
 }

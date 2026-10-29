@@ -5,7 +5,7 @@
 // The plugins' parameters, state and remote controls (spec §4, §5), through the clap_plugin
 // vtables a host calls: parameter info, values and text; params.flush; modulation; state save
 // and load, inactive and active; the FX's unusual wiring (Review Focus 5); the remote-controls
-// page; and the latest-wins hand-off that carries a state loaded while active.
+// pages; and the latest-wins hand-off that carries a state loaded while active.
 
 #include <algorithm>
 #include <array>
@@ -74,6 +74,14 @@ constexpr std::array<ExpectedParam, kParamCount> kExpected{{
     {0x010006, "Spray", 0.0f, 1.0f, 0.36033038f},
     {0x010007, "Stereo", 0.0f, 1.0f, 0.5f},
     {0x010008, "Freeze", 0.0f, 1.0f, 0.0f},
+    {0x01000B, "Diffusion", 0.0f, 1.0f, 0.0f},
+    {0x000003, "Reverb Amount", 0.0f, 1.0f, 0.0f},
+    {0x000004, "Reverb Decay", -2.0f, 6.068255709804611f, 1.0f},
+    {0x000005, "Reverb Size", 0.0f, 1.0f, 0.5f},
+    {0x000006, "Reverb Damping", 0.0f, 1.0f, 0.3f},
+    {0x000007, "Reverb Pre-delay", 0.0f, 0.5f, 0.0f},
+    {0x000008, "Reverb Modulation", 0.0f, 1.0f, 0.25f},
+    {0x000009, "Dry to Reverb", 0.0f, 1.0f, 0.0f},
 }};
 // The instrument's Position is 0–100% of the loaded file, 0% by default; the rest of its table
 // is the FX's above (spec §6.8).
@@ -266,7 +274,7 @@ std::string valueToText(const PluginUnderTest &plugin, clap_id id, double value)
 }
 } // namespace
 
-TEST_CASE("plugin exposes the ten params", "[plugin]")
+TEST_CASE("plugin exposes every param", "[plugin]")
 {
     const char *id = GENERATE(kInstrumentId, kFxId);
     CAPTURE(id);
@@ -295,13 +303,14 @@ TEST_CASE("plugin exposes the ten params", "[plugin]")
         CHECK(info.default_value == static_cast<double>(def));
 
         // Global Constraints' CLAP flags: every parameter is automatable and modulatable,
-        // Freeze is stepped, and the instrument hides Mix, which has no dry signal to mix.
+        // Freeze is stepped, and the instrument hides Mix and Dry to Reverb, which have no dry
+        // signal to act on.
         clap_param_info_flags flags = CLAP_PARAM_IS_AUTOMATABLE | CLAP_PARAM_IS_MODULATABLE;
         if (i == at(ParamSlot::Freeze))
         {
             flags |= CLAP_PARAM_IS_STEPPED;
         }
-        if (i == at(ParamSlot::Mix) && !isFx)
+        if ((i == at(ParamSlot::Mix) || i == at(ParamSlot::DryToReverb)) && !isFx)
         {
             flags |= CLAP_PARAM_IS_HIDDEN;
         }
@@ -370,6 +379,29 @@ TEST_CASE("value and text round trip through clap", "[plugin]")
               std::string::npos);
         CHECK(valueToText(plugin, paramId(ParamSlot::Size), -2.736965594166206).find("ms") !=
               std::string::npos);
+    }
+
+    SECTION("Decay shows infinity at the top, and infinity parses to the top")
+    {
+        const clap_id decay = paramId(ParamSlot::ReverbDecay);
+        CHECK(valueToText(plugin, decay, 1.0) == "2.00 s");
+        CHECK(valueToText(plugin, decay, 5.95) == "∞");
+        CHECK(valueToText(plugin, decay, static_cast<double>(gg::core::kDecayMax)) == "∞");
+        double back = 0.0;
+        REQUIRE(params->text_to_value(plugin.clap(), decay, "∞", &back));
+        CHECK(back == static_cast<double>(gg::core::kDecayMax));
+        // A bare number is seconds (4 s is 2 in log2 seconds); a unit still counts.
+        REQUIRE(params->text_to_value(plugin.clap(), decay, "4", &back));
+        CHECK(std::abs(back - 2.0) < 1e-6);
+        REQUIRE(params->text_to_value(plugin.clap(), decay, "10", &back));
+        CHECK(std::abs(back - std::log2(10.0)) < 1e-5);
+        REQUIRE(params->text_to_value(plugin.clap(), decay, "500 ms", &back));
+        CHECK(std::abs(back - (-1.0)) < 1e-5);
+        // Pre-delay is seconds, shown in ms.
+        const clap_id predelay = paramId(ParamSlot::ReverbPredelay);
+        CHECK(valueToText(plugin, predelay, 0.25) == "250.0 ms");
+        REQUIRE(params->text_to_value(plugin.clap(), predelay, "250.0 ms", &back));
+        CHECK(std::abs(back - 0.25) < 1e-6);
     }
 
     SECTION("unparseable text fails")
@@ -790,6 +822,7 @@ TEST_CASE("state load rejects bad state and keeps the values", "[plugin]")
     CHECK(plugin.save() == good);
     CHECK(host.valueRescans() == 0);
     CHECK(host.restarts() == 0);
+    // A regression guard only: a rejected load never reached mark_dirty before either.
     CHECK(host.dirtyMarks() == 0);
 
     // A save into a stream that fails fails.
@@ -937,7 +970,8 @@ TEST_CASE("fx handles mono, missing input and new sample rates", "[plugin]")
 
 TEST_CASE("remote controls page lists the cloud params", "[plugin]")
 {
-    // One 8-slot page (spec §4). The instrument leaves Mix's slot empty: Mix is hidden there.
+    // The first of two 8-slot pages (spec §4; sub-project 4's spec §6.6). The instrument leaves
+    // Mix's slot empty: Mix is hidden there.
     const char *id = GENERATE(kInstrumentId, kFxId);
     CAPTURE(id);
     const bool isFx = std::string_view(id) == kFxId;
@@ -946,7 +980,7 @@ TEST_CASE("remote controls page lists the cloud params", "[plugin]")
     const auto *remote = static_cast<const clap_plugin_remote_controls *>(
         plugin.clap()->get_extension(plugin.clap(), CLAP_EXT_REMOTE_CONTROLS));
     REQUIRE(remote != nullptr);
-    REQUIRE(remote->count(plugin.clap()) == 1);
+    REQUIRE(remote->count(plugin.clap()) == 2);
 
     clap_remote_controls_page page;
     std::memset(&page, 0xA5, sizeof(page)); // every field must be written
@@ -970,6 +1004,45 @@ TEST_CASE("remote controls page lists the cloud params", "[plugin]")
         CAPTURE(i);
         CHECK(page.param_ids[i] == expected[i]);
     }
+}
+
+TEST_CASE("remote controls page lists the space params", "[plugin][space]")
+{
+    // The second page, "Space" (sub-project 4's spec §6.6). The instrument leaves Dry to
+    // Reverb's slot empty: it is hidden there, as Mix is on the Cloud page. There is no third.
+    const char *id = GENERATE(kInstrumentId, kFxId);
+    CAPTURE(id);
+    const bool isFx = std::string_view(id) == kFxId;
+    PluginUnderTest plugin(id);
+    REQUIRE(plugin.valid());
+    const auto *remote = static_cast<const clap_plugin_remote_controls *>(
+        plugin.clap()->get_extension(plugin.clap(), CLAP_EXT_REMOTE_CONTROLS));
+    REQUIRE(remote != nullptr);
+    REQUIRE(remote->count(plugin.clap()) == 2);
+
+    clap_remote_controls_page page;
+    std::memset(&page, 0xA5, sizeof(page)); // every field must be written
+    REQUIRE(remote->get(plugin.clap(), 1, &page));
+    CHECK(std::string_view(page.section_name) == "Space");
+    CHECK(std::string_view(page.page_name) == "Space");
+    CHECK(page.page_id == 1);
+    CHECK_FALSE(page.is_for_preset);
+    const std::array<clap_id, CLAP_REMOTE_CONTROLS_COUNT> expected{
+        0x01000B,                         // Diffusion
+        0x000003,                         // Reverb Amount
+        0x000004,                         // Reverb Decay
+        0x000005,                         // Reverb Size
+        0x000006,                         // Reverb Damping
+        0x000007,                         // Reverb Pre-delay
+        0x000008,                         // Reverb Modulation
+        isFx ? 0x000009 : CLAP_INVALID_ID // Dry to Reverb
+    };
+    for (std::size_t i = 0; i < expected.size(); ++i)
+    {
+        CAPTURE(i);
+        CHECK(page.param_ids[i] == expected[i]);
+    }
+    CHECK_FALSE(remote->get(plugin.clap(), 2, &page));
 }
 
 TEST_CASE("latest value hands over the newest snapshot", "[plugin]")

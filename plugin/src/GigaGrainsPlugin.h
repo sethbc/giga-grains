@@ -65,6 +65,10 @@ const clap_plugin_descriptor *descriptorFor(Product product) noexcept;
 /// settings file is $GG_SETTINGS_FILE when that is set and not empty (read once, at
 /// construction: the tests' way to keep away from the user's file), and
 /// gg::media::defaultSettingsPath() otherwise.
+///
+/// **The tail** (sub-project 4's spec §6.7; ruling R-T7a) is a constant per product: the FX's is
+/// infinite, the instrument's kInstrumentTailSeconds at the active rate. Nothing calls
+/// clap_host_tail.changed. tailGet() says why.
 class GigaGrainsPlugin : public plugHelper_t
 {
   public:
@@ -120,6 +124,23 @@ class GigaGrainsPlugin : public plugHelper_t
     /// The CLAP note IDs remembered for note-offs addressed by ID alone (ruling R15). When the
     /// table is full, a new ID replaces the oldest.
     static constexpr std::size_t kMaxNoteIds = 256;
+    /// CLAP's infinite tail: tail.get values from INT32_MAX up (clap/ext/tail.h).
+    static constexpr uint32_t kTailInfinite = 0x7FFFFFFF;
+    /// The instrument's tail, in seconds (ruling R-T7a): the longest it can ring after its last
+    /// note, at every parameter's maximum: Size's 2 s release, Reverb Pre-delay's 0.5 s and
+    /// twice Reverb Decay's longest finite 60 s (spec §6.7's multiple).
+    static constexpr double kInstrumentTailSeconds = 2.0 + 0.5 + 2.0 * 60.0;
+    /// The rate tailGet() assumes before the first activate().
+    static constexpr double kDefaultTailRate = 48000.0;
+
+    /// The instrument's tail at `sampleRate`: kInstrumentTailSeconds in frames, rounded up,
+    /// and kTailInfinite − 1 where that would reach kTailInfinite (or for a NaN or negative
+    /// rate), so it is never read as infinite.
+    static uint32_t instrumentTailFrames(double sampleRate) noexcept;
+
+    /// Whether `header` is an event toNoteEvent converts, which counts toward kMaxNoteEvents: a
+    /// CLAP note-on, note-off or note choke, or a MIDI note-on, note-off or CC 123. Stateless.
+    static bool isNoteEvent(const clap_event_header *header) noexcept SST_CPPUTILS_NONBLOCKING;
 
   protected:
     bool activate(double sampleRate, uint32_t minFrameCount,
@@ -167,12 +188,21 @@ class GigaGrainsPlugin : public plugHelper_t
     bool stateSave(const clap_ostream *stream) noexcept override;
     bool stateLoad(const clap_istream *stream) noexcept override;
 
-    // ---- Remote controls: one page, "Cloud" (spec §4) ----
+    // ---- Remote controls: two pages, "Cloud" (spec §4) and "Space" (sub-project 4's spec
+    // §6.6) ----
 
     bool implementRemoteControls() const noexcept override { return true; }
-    uint32_t remoteControlsPageCount() noexcept override { return 1; }
+    uint32_t remoteControlsPageCount() noexcept override { return 2; }
     bool remoteControlsPageGet(uint32_t pageIndex,
                                clap_remote_controls_page *page) noexcept override;
+
+    // ---- Tail (see the class comment) ----
+
+    bool implementsTail() const noexcept override { return true; }
+    /// In frames: kTailInfinite in the FX; in the instrument kInstrumentTailSeconds at the last
+    /// activation's rate (kDefaultTailRate before the first), rounded up and below
+    /// kTailInfinite. On the main or the audio thread: real-time safe.
+    uint32_t tailGet() const noexcept SST_CPPUTILS_NONBLOCKING override;
 
   private:
     clap_process_status
@@ -182,9 +212,6 @@ class GigaGrainsPlugin : public plugHelper_t
     /// parameter or a NaN value.
     static bool toParamEvent(const clap_event_header *header,
                              gg::core::ParamEvent &event) noexcept SST_CPPUTILS_NONBLOCKING;
-    /// Whether `header` is an event toNoteEvent may convert: a CLAP note-on, note-off or note
-    /// choke, or a MIDI event. Stateless.
-    static bool isNoteEvent(const clap_event_header *header) noexcept SST_CPPUTILS_NONBLOCKING;
     /// The note event `header` as a NoteEvent (spec §6.1): CLAP's note-on, note-off and note
     /// choke, MIDI's note-on, note-off and CC 123 (all notes off on its channel, ruling R14).
     /// False for any other event. Velocity and the port are ignored; out-of-range channels and
@@ -245,6 +272,10 @@ class GigaGrainsPlugin : public plugHelper_t
     // Set by the audio thread when it asks for on_main_thread to collect retired sources,
     // cleared by on_main_thread (requestCollect).
     std::atomic<bool> collectRequested_{false};
+    // The rate of the last activate(), for the instrument's tail: written there, read by tailGet
+    // on either thread.
+    std::atomic<double> sampleRate_{kDefaultTailRate};
+    static_assert(std::atomic<double>::is_always_lock_free, "tailGet reads it on the audio thread");
     // The parameter and note events of one process() call. Audio thread.
     std::array<gg::core::ParamEvent, kMaxParamEvents> events_{};
     std::array<gg::core::NoteEvent, kMaxNoteEvents> notes_{};

@@ -7,6 +7,7 @@
 
 add_executable(gg-tests
         smoke_tests.cpp
+        core/diffuser_tests.cpp
         core/exchange_tests.cpp
         core/note_tests.cpp
         core/parammap_tests.cpp
@@ -14,6 +15,8 @@ add_executable(gg-tests
         core/processor_tests.cpp
         core/session_state_tests.cpp
         core/settings_tests.cpp
+        core/space_processor_tests.cpp
+        core/space_reverb_tests.cpp
         engine/cloud_tests.cpp
         engine/denormal_tests.cpp
         engine/determinism_tests.cpp
@@ -77,6 +80,10 @@ elseif (GG_BUILD_PLUGINS)
 endif ()
 target_link_libraries(gg-tests PRIVATE ${gg_tests_libraries} gg::compiler-options
         Catch2::Catch2WithMain nlohmann_json::nlohmann_json)
+# The Space tests (core/space_reverb_tests.cpp) reach gg-core's private Space headers (core/src,
+# as "space/..."), and through them sst-effects and sst-filters, which gg-core links PRIVATE.
+target_include_directories(gg-tests PRIVATE ${CMAKE_SOURCE_DIR}/core/src)
+target_link_libraries(gg-tests PRIVATE sst-effects sst-filters)
 # Scratch files (WAV/PNG round trips) go under the build tree, never a shared temp dir.
 target_compile_definitions(gg-tests PRIVATE GG_TEST_OUTPUT_DIR="${CMAKE_CURRENT_BINARY_DIR}/test-output"
         GG_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/golden"
@@ -133,6 +140,9 @@ catch_discover_tests(gg-tests TEST_SPEC "[serial]" ADD_TAGS_AS_LABELS
 #   - regressed: exit 3, "verdict: 3 of 3 ...";
 #   - other machine: exit 0, "no baseline for <this machine>; no verdict".
 #   CI's bench step relies on these codes: it reports exit 3 without failing (ruling 3).
+# - bench_space_cli: gg-bench --space --quick, Space's report-only cost, must exit 0 and write
+#   its JSON (the [bench] case "gg-bench --space --quick prints a per-sample cost" checks what
+#   it prints and writes).
 set(bench_cases hermite-simd,reference,engine-sample)
 add_test(NAME bench_cli
         COMMAND gg-bench --seconds 0.002 --rounds 2 --grains 50 --cases ${bench_cases}
@@ -142,6 +152,30 @@ add_test(NAME bench_make_baseline
         ${CMAKE_BINARY_DIR}/bench_cli.json ${CMAKE_BINARY_DIR}/bench_cli.json)
 set_tests_properties(bench_cli PROPERTIES LABELS bench FIXTURES_SETUP bench_json)
 set_tests_properties(bench_make_baseline PROPERTIES LABELS bench FIXTURES_REQUIRED bench_json)
+add_test(NAME bench_space_cli
+        COMMAND gg-bench --space --quick --json ${CMAKE_BINARY_DIR}/bench_space_cli.json)
+set_tests_properties(bench_space_cli PROPERTIES LABELS bench)
+# - bench_rejects_*: an option the mode doesn't take is bad usage (carry-over [151]), and so is a
+#   value --space's validation rejects. Each passes only on gg-bench's error line, then its
+#   usage (both on stderr, before anything is timed), with exit code 2 (check-exit-code.cmake).
+set(bench_rejects_space_cases_args --space --cases reference)
+set(bench_rejects_space_cases_error "--cases doesn't apply with --space")
+set(bench_rejects_canvas_seconds_args --canvas --seconds 1)
+set(bench_rejects_canvas_seconds_error "--seconds doesn't apply with --canvas")
+set(bench_rejects_make_baseline_quick_args --quick --make-baseline test out.json a.json b.json)
+set(bench_rejects_make_baseline_quick_error "--quick doesn't apply with --make-baseline")
+set(bench_rejects_space_seconds_args --space --seconds 0)
+set(bench_rejects_space_seconds_error "the run length must be more than 0")
+foreach (test IN ITEMS bench_rejects_space_cases bench_rejects_canvas_seconds
+        bench_rejects_make_baseline_quick bench_rejects_space_seconds)
+    add_test(NAME ${test}
+            COMMAND ${CMAKE_COMMAND} -DPROGRAM=$<TARGET_FILE:gg-bench>
+            "-DARGS=${${test}_args}" -DEXPECTED_CODE=2
+            "-DEXPECTED_STDERR=error: ${${test}_error}"
+            "-DEXPECTED_STDERR2=usage: gg-bench"
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tools/check-exit-code.cmake)
+    set_tests_properties(${test} PROPERTIES LABELS bench)
+endforeach ()
 set(verdict_line "ratios regressed (limit: the baseline's ratio x (1 + its tolerance))")
 set(bench_baseline_pass_args -DRATIO=1e9 -DEXPECTED_CODE=0
         "-DEXPECTED_VERDICT=verdict: 0 of 3 ${verdict_line}")

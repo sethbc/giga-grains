@@ -196,6 +196,49 @@ std::string machine();
 
 /// The compiler gg-bench was built with.
 std::string compiler();
+
+// ---- gg-bench --space: Space's cost (sub-project 4, report-only) ----
+//
+// It times Space's per-sample stage, Diffuser::process then SpaceReverb::processSample, on
+// stereo noise at 48 kHz, active, with Diffusion 1, Reverb Amount 1, Size 0.5, Decay 1.0 (log2
+// seconds, finite), Damping 0.3, Modulation 0.25 and no pre-delay. After a warm-up of 2 s of
+// audio, each round times one run of at least SpaceOptions::runSeconds and records its ns per
+// stereo sample. There is one configuration, so there is no round order, no ratio and no
+// baseline: sub-project 6 publishes the figure beside the grain engine's (INTENT §16).
+
+struct SpaceOptions
+{
+    double runSeconds{2.0};        // --seconds; --quick = 0.2
+    int rounds{5};                 // --rounds
+    std::string commit{"unknown"}; // --commit
+};
+
+struct SpaceReport
+{
+    SpaceOptions options;
+    std::string machine, compiler;
+    std::vector<double> nsPerSample;        // one per round, in round order
+    double median{0.0}, min{0.0}, iqr{0.0}; // of nsPerSample
+    double cpuPctOneCoreAt48k{0.0};         // from the median
+};
+
+/// Throws std::invalid_argument for a run length that isn't in (0, 3600] seconds or fewer than
+/// 1 round.
+void validate(const SpaceOptions &options);
+
+/// Times Space as above. Calls validate() first, so it throws before timing anything.
+SpaceReport runSpace(const SpaceOptions &options, const Progress &progress = {});
+
+/// The report as its own JSON document, apart from schema 2: {"benchmark": "space", machine,
+/// compiler, commit, sampleRate, runSeconds, rounds, the settings, "runs" (nsPerSample),
+/// "nsPerSample" (the median), "min", "iqr", "cpuPctOneCoreAt48k"}.
+std::string toJson(const SpaceReport &report);
+
+/// gg-bench --space: runs runSpace(options), puts the text gg-bench prints in `out` and, when
+/// jsonPath isn't empty, writes toJson() there. Returns gg-bench's exit status: 0, or 1 if it
+/// couldn't write the JSON. Throws std::invalid_argument for options validate() rejects.
+int spaceMain(const SpaceOptions &options, const std::string &jsonPath, std::string &out,
+              const Progress &progress = {});
 } // namespace gg::bench
 
 #endif // GG_BENCH_BENCH_H

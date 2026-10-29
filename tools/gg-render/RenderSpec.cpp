@@ -239,7 +239,7 @@ StreamSpec readStream(const json &j)
     return s;
 }
 
-/// The parameter names, for error messages: "Mix, Level, ..., Freeze".
+/// The parameter names, for error messages: "Mix, Level, ..., Dry to Reverb".
 std::string parameterNames()
 {
     std::string names;

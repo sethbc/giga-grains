@@ -1,0 +1,30 @@
+{
+  "mode": "instrument",
+  "sampleRate": 48000,
+  "durationSeconds": 5.0,
+  "blockSize": 128,
+  "seed": 1,
+  "sample": {"kind": "sine", "frequencyHz": 220, "seconds": 4.0, "amplitude": 0.5},
+  "params": {"Position": 0.25, "Density": 1.0, "Level": -6.0, "Diffusion": 0.0},
+  "automation": [
+    {"time": 0.75, "param": "Diffusion", "value": 0.0625},
+    {"time": 1.0, "param": "Diffusion", "value": 0.125},
+    {"time": 1.25, "param": "Diffusion", "value": 0.1875},
+    {"time": 1.5, "param": "Diffusion", "value": 0.25},
+    {"time": 1.75, "param": "Diffusion", "value": 0.3125},
+    {"time": 2.0, "param": "Diffusion", "value": 0.375},
+    {"time": 2.25, "param": "Diffusion", "value": 0.4375},
+    {"time": 2.5, "param": "Diffusion", "value": 0.5},
+    {"time": 2.75, "param": "Diffusion", "value": 0.5625},
+    {"time": 3.0, "param": "Diffusion", "value": 0.625},
+    {"time": 3.25, "param": "Diffusion", "value": 0.6875},
+    {"time": 3.5, "param": "Diffusion", "value": 0.75},
+    {"time": 3.75, "param": "Diffusion", "value": 0.8125},
+    {"time": 4.0, "param": "Diffusion", "value": 0.875},
+    {"time": 4.25, "param": "Diffusion", "value": 0.9375},
+    {"time": 4.5, "param": "Diffusion", "value": 1.0}
+  ],
+  "notes": [
+    {"time": 0.25, "key": 60, "duration": 4.5}
+  ]
+}

@@ -11,7 +11,7 @@
 
 #include "gg/core/ParamIds.h"
 
-/// The patch both products save: the ten parameter values and the engine seed, as versioned XML.
+/// The patch both products save: every parameter's value and the engine seed, as versioned XML.
 /// It is the payload of the session state's `PTCH` chunk, byte for byte
 /// (gg/core/SessionState.h); a state saved before the container (sub-projects 1 and 2) is this
 /// XML alone. gg-core writes and reads it with sst-plugininfra's PatchBase and tinyxml, which

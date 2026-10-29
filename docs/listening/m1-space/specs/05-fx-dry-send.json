@@ -1,0 +1,12 @@
+{
+  "mode": "fx",
+  "sampleRate": 48000,
+  "durationSeconds": 8.0,
+  "blockSize": 128,
+  "seed": 1,
+  "input": {"kind": "file", "path": "loop-48k.wav"},
+  "params": {"Mix": 0.0, "Reverb Amount": 0.8, "Dry to Reverb": 0.0},
+  "automation": [
+    {"time": 1.0, "param": "Dry to Reverb", "value": 1.0}
+  ]
+}

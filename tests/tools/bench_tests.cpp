@@ -3,13 +3,16 @@
 // Copyright 2026, the Giga Grains authors (see git history)
 
 // gg-bench's library: its statistics, its round order, its JSON (schema 2, carry-over [132]),
-// the engine cases' grain counts, the ratios and the baseline verdict (spec §5, ruling 3). The
-// bench_* tests in tests/CMakeLists.txt run the gg-bench executable itself.
+// the engine cases' grain counts, the ratios, the baseline verdict (spec §5, ruling 3) and
+// --space, Space's report-only cost. The bench_* tests in tests/CMakeLists.txt run the gg-bench
+// executable itself.
 
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <numeric>
 #include <set>
 #include <stdexcept>
@@ -236,6 +239,22 @@ TEST_CASE("ratios pair runs from the same round", "[bench]")
     CHECK(r0.at("iqr").get<double>() == Approx(0.5));
 }
 
+TEST_CASE("bench json escapes quotes, backslashes and control characters", "[bench]")
+{
+    // Both documents, schema 2 and --space's, with them in the commit: they read back intact.
+    const std::string commit = "a\"b\\c\x01"
+                               "d\n"; // \x01, then d
+    gg::bench::Report report;
+    report.options.commit = commit;
+    CHECK(nlohmann::json::parse(gg::bench::toJson(report)).at("commit").get<std::string>() ==
+          commit);
+    gg::bench::SpaceReport space;
+    space.options.commit = commit;
+    space.nsPerSample = {1.0};
+    CHECK(nlohmann::json::parse(gg::bench::toJson(space)).at("commit").get<std::string>() ==
+          commit);
+}
+
 TEST_CASE("bench json survives invalid UTF-8", "[bench]")
 {
     gg::bench::Report report;
@@ -415,4 +434,48 @@ TEST_CASE("make baseline", "[bench]")
     anonymous[1].erase("machine");
     CHECK_THROWS_AS(gg::bench::makeBaseline("linux-gcc12", anonymous), std::invalid_argument);
     CHECK_THROWS_AS(gg::bench::makeBaseline("linux-gcc12", {}), std::invalid_argument);
+}
+
+TEST_CASE("gg-bench --space prints a per-sample cost", "[bench]")
+{
+    // The output's shape, never its values: 2 rounds of 10 ms. (bench_space_cli runs
+    // gg-bench --space --quick itself.)
+    gg::bench::SpaceOptions options;
+    options.runSeconds = 0.01;
+    options.rounds = 2;
+    const std::filesystem::path dir{GG_TEST_OUTPUT_DIR};
+    std::filesystem::create_directories(dir);
+    const std::filesystem::path jsonPath = dir / "bench_space_quick.json";
+    std::filesystem::remove(jsonPath);
+
+    std::string output;
+    const int status = gg::bench::spaceMain(options, jsonPath.string(), output);
+    INFO(output);
+    CHECK(status == 0);
+    CHECK(output.find("\nspace ") != std::string::npos); // the result's row
+    CHECK(output.find("% core @48k") != std::string::npos);
+    CHECK(output.find("settings: Diffusion 1, Amount 1, Size 0.5, Decay 1, Damping 0.3, "
+                      "Modulation 0.25, Pre-delay 0, active") != std::string::npos);
+
+    std::ifstream in(jsonPath, std::ios::binary);
+    REQUIRE(in);
+    const nlohmann::json j = nlohmann::json::parse(in);
+    CHECK(j.at("benchmark").get<std::string>() == "space");
+    CHECK(j.at("rounds").get<int>() == 2);
+    CHECK(j.at("runSeconds").get<double>() == 0.01);
+    const nlohmann::json &runs = j.at("runs");
+    REQUIRE(runs.is_array());
+    REQUIRE(runs.size() == 2);
+    for (const nlohmann::json &run : runs)
+    {
+        CHECK(run.get<double>() > 0.0);
+    }
+    REQUIRE(j.at("nsPerSample").is_number());
+    const double median = j.at("nsPerSample").get<double>();
+    CHECK(median > 0.0);
+    CHECK(j.at("min").get<double>() <= median);
+    CHECK(j.at("iqr").get<double>() >= 0.0);
+    CHECK(j.at("cpuPctOneCoreAt48k").get<double>() > 0.0);
+    // Report-only: no baseline and no ratio.
+    CHECK_FALSE(j.contains("ratios"));
 }

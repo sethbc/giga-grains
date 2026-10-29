@@ -54,10 +54,9 @@ namespace
 namespace fs = std::filesystem;
 using gg::render::pathFromUtf8;
 
-constexpr int kExitPass = 0;
-constexpr int kExitCompareFailed = 1;
-constexpr int kExitBadInput = 2;
-constexpr int kExitInternalError = 3;
+using gg::render::kExitBadInput;
+using gg::render::kExitCompareFailed;
+using gg::render::kExitPass;
 
 int fail(const std::string &message)
 {
@@ -357,23 +356,7 @@ int run(int argc, char **argv)
 
 int main(int argc, char **argv)
 {
-    // [182], [184]: anything thrown but bad input, from the render, the metrics or the writers
-    // (std::bad_alloc on an extreme spec, say), is an internal error.
-    try
-    {
-        return run(argc, argv);
-    }
-    catch (const gg::render::BadInput &e)
-    {
-        return fail(e.what());
-    }
-    catch (const std::exception &e)
-    {
-        fmt::print(stderr, "gg-render: internal error: {}\n", e.what());
-    }
-    catch (...)
-    {
-        fmt::print(stderr, "gg-render: internal error\n");
-    }
-    return kExitInternalError;
+    // Anything thrown but bad input is an internal error, exit 3 (tested in
+    // tests/tools/render_spec_tests.cpp).
+    return gg::render::guarded([&] { return run(argc, argv); });
 }

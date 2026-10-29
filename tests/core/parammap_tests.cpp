@@ -3,7 +3,7 @@
 // Copyright 2026, the Giga Grains authors (see git history)
 
 // ParamMap: the patch's values to the engine's parameters (Global Constraints' parameter table),
-// and the wet chain's soft limiter (spec §6.4).
+// to Space's (sub-project 4's spec §6.5), and the wet chain's soft limiter (spec §6.4).
 //
 // Every value that reaches the grain-event log is pinned bit for bit against the table's formula
 // with exp2Det, so a mapping that used libm (or another formula) fails here; the literal targets
@@ -36,6 +36,7 @@ using gg::core::ParamSlot;
 using gg::core::ParamValues;
 using gg::core::softLimit;
 using gg::core::toCloudParams;
+using gg::core::toSpaceParams;
 using gg::core::toWetParams;
 
 namespace
@@ -183,6 +184,7 @@ TEST_CASE("param map follows the taper table", "[core]")
             const ParamValues values = with(slot, v);
             const auto cloud = toCloudParams(values, Mode::Fx);
             const auto wet = toWetParams(values);
+            const auto space = toSpaceParams(values, Mode::Fx);
             switch (slot)
             {
             case ParamSlot::Mix:
@@ -231,6 +233,31 @@ TEST_CASE("param map follows the taper table", "[core]")
                 break;
             case ParamSlot::Freeze:
                 REQUIRE(wet.freeze == (v > 0.5f));
+                break;
+            case ParamSlot::Diffusion:
+                REQUIRE(space.diffusion == v);
+                break;
+            case ParamSlot::ReverbAmount:
+                REQUIRE(space.amount == v);
+                break;
+            case ParamSlot::ReverbDecay:
+                REQUIRE(space.decayLog2 == v);
+                REQUIRE(space.infinite == (v >= gg::core::kDecayInfinite));
+                break;
+            case ParamSlot::ReverbSize:
+                REQUIRE(space.roomSize == 2.0f * v - 1.0f);
+                break;
+            case ParamSlot::ReverbDamping:
+                REQUIRE(space.hfDamping == v);
+                break;
+            case ParamSlot::ReverbPredelay:
+                REQUIRE(space.predelaySeconds == v);
+                break;
+            case ParamSlot::ReverbModulation:
+                REQUIRE(space.modulation == v);
+                break;
+            case ParamSlot::DryToReverb:
+                REQUIRE(space.drySend == v);
                 break;
             case ParamSlot::Count:
                 FAIL("not a parameter");
@@ -306,6 +333,112 @@ TEST_CASE("param map follows the taper table", "[core]")
     // Freeze is on above 0.5 only.
     REQUIRE_FALSE(toWetParams(with(ParamSlot::Freeze, 0.5f)).freeze);
     REQUIRE(toWetParams(with(ParamSlot::Freeze, std::nextafter(0.5f, 1.0f))).freeze);
+}
+
+TEST_CASE("space params follow the table", "[core][space]")
+{
+    using gg::core::kDecayInfinite;
+    using gg::core::kDecayMax;
+    using gg::core::SpaceParams;
+
+    SECTION("the defaults")
+    {
+        // Diffusion, Amount and Dry to Reverb 0 (S4); Decay 2 s; Size 50%; Damping 30%;
+        // Pre-delay 0; Modulation 25%.
+        for (const Mode mode : {Mode::Fx, Mode::Instrument})
+        {
+            const SpaceParams p = toSpaceParams(defaults(mode), mode);
+            CHECK(p.diffusion == 0.0f);
+            CHECK(p.amount == 0.0f);
+            CHECK(p.drySend == 0.0f);
+            CHECK(p.decayLog2 == 1.0f);
+            CHECK_FALSE(p.infinite);
+            CHECK(p.roomSize == 0.0f);
+            CHECK(p.hfDamping == 0.3f);
+            CHECK(p.modulation == 0.25f);
+            CHECK(p.predelaySeconds == 0.0f);
+        }
+    }
+
+    SECTION("Size is Reverb 2's room size, 2 Size - 1")
+    {
+        CHECK(toSpaceParams(with(ParamSlot::ReverbSize, 0.5f), Mode::Fx).roomSize == 0.0f);
+        CHECK(toSpaceParams(with(ParamSlot::ReverbSize, 0.0f), Mode::Fx).roomSize == -1.0f);
+        CHECK(toSpaceParams(with(ParamSlot::ReverbSize, 1.0f), Mode::Fx).roomSize == 1.0f);
+        CHECK(toSpaceParams(with(ParamSlot::ReverbSize, 0.75f), Mode::Fx).roomSize == 0.5f);
+    }
+
+    SECTION("Decay is infinite from log2 60 up")
+    {
+        const auto decay = [](float v) {
+            return toSpaceParams(with(ParamSlot::ReverbDecay, v), Mode::Fx);
+        };
+        CHECK_FALSE(decay(5.9f).infinite);
+        CHECK(decay(5.9f).decayLog2 == 5.9f);
+        CHECK(decay(5.9069f).infinite);
+        CHECK(decay(kDecayInfinite).infinite);
+        CHECK_FALSE(decay(std::nextafter(kDecayInfinite, 0.0f)).infinite);
+        CHECK(decay(kDecayMax).infinite);
+        CHECK_FALSE(decay(-2.0f).infinite);
+        CHECK(decay(-2.0f).decayLog2 == -2.0f);
+        // log2 60 to the float, and the top 2% of the travel.
+        CHECK_THAT(static_cast<double>(kDecayInfinite), WithinAbs(std::log2(60.0), 1e-6));
+        CHECK_THAT(static_cast<double>(kDecayMax - kDecayInfinite),
+                   WithinRel(0.02 * (static_cast<double>(kDecayMax) + 2.0), 1e-5));
+    }
+
+    SECTION("Dry to Reverb sends the FX's input; the instrument has none")
+    {
+        for (const float v : {0.0f, 0.25f, 0.5f, 1.0f})
+        {
+            INFO("Dry to Reverb " << v);
+            CHECK(toSpaceParams(with(ParamSlot::DryToReverb, v), Mode::Fx).drySend == v);
+            CHECK(toSpaceParams(with(ParamSlot::DryToReverb, v, Mode::Instrument), Mode::Instrument)
+                      .drySend == 0.0f);
+        }
+    }
+
+    SECTION("the instrument maps everything else as the FX does")
+    {
+        for (const auto &v : samplePoints(Mode::Instrument))
+        {
+            const auto i = toSpaceParams(v, Mode::Instrument);
+            const auto f = toSpaceParams(v, Mode::Fx);
+            CHECK(bitsOf(i.diffusion) == bitsOf(f.diffusion));
+            CHECK(bitsOf(i.amount) == bitsOf(f.amount));
+            CHECK(bitsOf(i.decayLog2) == bitsOf(f.decayLog2));
+            CHECK(i.infinite == f.infinite);
+            CHECK(bitsOf(i.roomSize) == bitsOf(f.roomSize));
+            CHECK(bitsOf(i.hfDamping) == bitsOf(f.hfDamping));
+            CHECK(bitsOf(i.modulation) == bitsOf(f.modulation));
+            CHECK(bitsOf(i.predelaySeconds) == bitsOf(f.predelaySeconds));
+        }
+    }
+
+    SECTION("the Space slots move neither the cloud nor the wet chain")
+    {
+        // Nothing reads them yet but toSpaceParams (Task 6 wires the Processor).
+        for (const Mode mode : {Mode::Fx, Mode::Instrument})
+        {
+            const auto cloud = toCloudParams(defaults(mode), mode);
+            const auto wet = toWetParams(defaults(mode));
+            for (size_t s = static_cast<size_t>(ParamSlot::Diffusion); s < kParamCount; ++s)
+            {
+                const auto slot = static_cast<ParamSlot>(s);
+                const auto &meta = gg::core::paramMeta(slot, mode);
+                for (const float v : {meta.minVal, meta.maxVal})
+                {
+                    INFO("slot " << s << " at " << v);
+                    const auto values = with(slot, v, mode);
+                    CHECK(sameBits(toCloudParams(values, mode), cloud));
+                    const auto w = toWetParams(values);
+                    CHECK(bitsOf(w.levelGain) == bitsOf(wet.levelGain));
+                    CHECK(bitsOf(w.mix) == bitsOf(wet.mix));
+                    CHECK(w.freeze == wet.freeze);
+                }
+            }
+        }
+    }
 }
 
 TEST_CASE("the instrument's Position is a fraction and its Spray is seconds", "[core]")

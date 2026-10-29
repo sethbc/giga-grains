@@ -70,6 +70,18 @@ resource, so machines must catch everything they can catch.
   statistics or spectrograms.
 - Each milestone ends with a listening gate: render A/B files plus a short checklist for the
   director.
+- **The carry-over** (`docs/m1-carry-over.md`) must not grow. The director's policy
+  (2026-10-28):
+  - **Fix, don't carry.** A sub-project's final fix wave fixes every minor a reviewer raised,
+    unless it is blocked on something outside our control (upstream, the director's ears, a
+    later feature) or is genuinely large.
+  - **Touch it, close it.** A sub-project that edits a file closes every open "when touched" row
+    for that file.
+  - **No net growth.** A sub-project ends with no more open rows than it started with. Count
+    them at its start and at its end.
+  - **Sub-project 6 burns down every open row,** M0's included.
+  - **No external reports or upstream filings.** A row blocked on upstream stays open, noted
+    with its reason, until upstream changes.
 - Reference templates for the CLAP-first build, CI and installers, all three GitHub-hosted under
   surge-synthesizer. A session may read their local clones, when they're present:
   - shortcircuit-xt, https://github.com/surge-synthesizer/shortcircuit-xt (local clone
@@ -186,6 +198,11 @@ runs the tests labelled either. The labels are:
     `tests/fixtures/audio/` holds one tiny FLAC and one MP3, the only audio committed to the
     repository. Its `README.md` gives their SHA-256s and the commands that made them. Don't
     commit any other audio: generate it.
+- `space`: Space (M1 sub-project 4): the diffuser, the patched Reverb 2 and `SpaceReverb`, the
+  `Processor`'s Space chain, and the plugins' tail and "Space" remote-controls page. `slow` also
+  marks four of them: the hour-long renders at infinite Decay (about 50 s each in `dev`, 2.5
+  minutes under ASan), the block-size invariance render and the 60 s render at extreme settings
+  (about 8 s and 13 s in `dev`); `-LE slow` leaves all five slow tests out.
 - `kernel`: the renderers' scalar references and the 4-wide SIMD sample and live kernels, which
   must match them bit for bit (`std::memcmp`);
 - `determinism`: block-size invariance;
@@ -208,6 +225,16 @@ runs the tests labelled either. The labels are:
     ClassInfo carries the CLAP state (GGST) and round-trips it for all three AU identities. It
     also pins clap-wrapper's known AU state faults (T7 223). Run it (`ctest --preset dev -L au`)
     before accepting any clap-wrapper update too.
+    - It runs on the native slice only: on CI's mac-universal leg it loads the AU natively
+      (arm64), never under Rosetta like the x86_64 slice's `gg-tests`. Keep it so when the macOS
+      leg changes, or the AU state goes unchecked there.
+    - Building `gg-tests` builds the AU bundle too (`add_dependencies(gg-tests
+      gg-au-state-tests)`), so a tests-only build takes longer.
+
+**CI's mac-universal leg must keep running `gg-tests` natively (arm64)** as well as the x86_64
+slice under Rosetta. The fp-contract tests (`fp_contract_fast.cpp`'s canary and the kernel cases)
+can fail only on arm64 Clang; Linux, Windows and the x86_64 slice can't catch a fused
+multiply-add. Keep that step whenever the macOS leg changes.
 
 **Test case names are ASCII only** (tags too). CTest passes a name to `gg-tests` on its command
 line, and on Windows a non-ASCII character there reaches Catch2's narrow `main` through the ANSI
@@ -258,15 +285,19 @@ gg-render --write-media DIR
     runs, over an `input`: a built-in `sine`, `sweep` or `noise`, or a `file` loaded and
     converted to the render's rate with `gg-media` (ruling M1-aa). The top-level `channels` key
     (1 or 2) sets a built-in input's channel count; a file keeps its own, and takes no
-    `channels`. Optional `params` sets base values by parameter name (`"Size"`, `"Density"`, …),
+    `channels`. Optional `params` sets base values by parameter name (`"Size"`, `"Density"`, …;
+    Space's are `"Diffusion"`, `"Reverb Amount"`, `"Reverb Decay"`, `"Reverb Size"`,
+    `"Reverb Damping"`, `"Reverb Pre-delay"`, `"Reverb Modulation"` and `"Dry to Reverb"`),
     optional `automation` is a time-ordered list of `{"time", "param", "value"}` points in
     seconds, and optional `notes` a time-ordered list of `{"time", "key", "duration",
     "channel"}` (channel optional). A note whose Off would fall on its On's frame is bad input
-    (ruling R17). Values are in each parameter's CLAP value domain (Density 6.0 is 64 Hz). The
-    render is exactly `durationSeconds` long.
+    (ruling R17). Values are in each parameter's CLAP value domain (Density 6.0 is 64 Hz; Reverb
+    Decay is log2 seconds, so 1.0 is 2 s, and 6.068255709804611, `kDecayMax`, is ∞; Reverb
+    Pre-delay is seconds, 0–0.5). The render is exactly `durationSeconds` long.
   - **Instrument mode** (`"mode": "instrument"`) runs Giga Grains' `Processor` the same way over
     a `sample` (a built-in signal or a `file`, loaded and converted with `gg-media`), with no
     `channels`. Its Position is the fraction of the sample, 0–1, and it is silent until a note.
+    It takes Dry to Reverb, which does nothing there.
   - **FX inputs are faded** in at their start and out at their end over 10 ms, with a raised
     cosine (sin²), so the input's own edges don't click (ruling M1-v). Sample-mode sources and
     the M0 goldens are untouched.
@@ -279,6 +310,19 @@ gg-render --write-media DIR
 - **The cases:** each case's spec is in `tests/golden/cases/`, and its expected metrics and event
   log are in `tests/golden/expected/`. Every `*.json` there is a case; a new one gets a test the
   next time CMake runs.
+  - **Space's five** (M1 sub-project 4): `fx-space` (a cloud over noise into the reverb at
+    Decay 3 s), `fx-dry-send` (Mix 0, Dry to Reverb up: the input alone in the room),
+    `inst-diffusion` (a sparse cloud with Diffusion stepped from 0 to 100%), `inst-infinite` (a
+    note at infinite Decay, released, the tail holding) and `fx-space-automate` (Size, Decay and
+    Pre-delay automated).
+  - `fx-space-automate` moves Size only at 0.5 s and in the tail at 5.0 s. Moving Size clicks
+    (accepted, S8): over a sine, any other mid-sound move scored 31 to 228 against the click
+    limit of 30. Don't add mid-sound Size moves to a golden.
+  - Every case that predates Space renders bit-identically with it, so its WAV's SHA-256 is
+    unchanged. A Space change that moves one is a regression.
+  - **The event-log comparison never sees the reverb or the diffuser:** the log records grains,
+    and Space runs after them. Across platforms, Space's five cases are checked by their metrics
+    alone, within tolerances.
 - **The `golden` tests** render every case into `build/<preset>/golden/<case>.wav` and `.png`.
   - They compare the metrics within tolerances.
   - They compare the grain-event log exactly per line (CR and final newline ignored). That
@@ -304,6 +348,7 @@ $b [--quick | --seconds S] [--rounds N] [--grains N] [--cases a,b] [--commit SHA
    [--json out.json] [--baseline baseline.json]                  # grain kernels and engine (§16)
 $b --make-baseline <preset> out.json a.json b.json c.json        # write a CI leg's baseline
 $b --canvas [--quick] [--json out.json]                           # canvas renderer
+$b --space [--quick | --seconds S] [--rounds N] [--commit SHA] [--json out.json]  # Space
 ```
 
 - **The cases** (each at blocks 32, 64 and 256; by default 2,000 grains of 100 ms over a 60 s
@@ -332,6 +377,22 @@ $b --canvas [--quick] [--json out.json]                           # canvas rende
 - **Run length:** the full default run is 30 configurations × 5 rounds × 2 s, about 5 minutes of
   timing; a CI leg's benchmark step takes about 6 minutes. `--canvas` times 240 frames after a
   20-frame warm-up, or 30 with `--quick`.
+- **`--space`** times Space's per-sample stage, the diffuser then the reverb, on stereo noise at
+  48 kHz, active, with Diffusion and Amount at 100% (`tools/gg-bench/Bench.h` lists every
+  setting). After a warm-up of 2 s of audio, each of 5 rounds times one run of at least 2 s
+  (0.2 s with `--quick`). It prints the median, min and IQR of ns per stereo sample and the
+  median's % of one core at 48 kHz, and writes its own JSON document (not schema 2).
+  - It is report-only: no ratio, no baseline, no verdict. CI's benchmark step doesn't time it;
+    ctest's `bench_space_cli` only checks that it runs. Its exit status is 0, 1 if it can't
+    write the JSON, or 2 for bad usage.
+- **An option a mode doesn't take is bad usage** (exit 2, with the usage): `--space` takes only
+  the options shown above, `--canvas` only `--quick` and `--json`, and `--make-baseline`
+  nothing else.
+  - Sub-project 4's fix wave measured 28.49 ns per stereo sample, 0.137% of one M5 Max core,
+    at its final code (`ac81dfb`; INTENT §16).
+    Sub-project 6 publishes it beside X.
+- **When profiling the plugins in a VST3 host,** remember that clap-wrapper's VST3 `process`
+  takes a spin lock. Time spent there is the wrapper's, not ours.
 - **Exit status:** 0 when done and no ratio regressed, 1 for an error (an unreadable or malformed
   baseline, say), 2 for bad usage, 3 when `--baseline` finds a regressed ratio. A run on a CPU
   model the baseline has no entry for prints `no baseline for <machine>; no verdict` and exits 0.

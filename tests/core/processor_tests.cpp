@@ -385,8 +385,10 @@ std::vector<TimedEvent> automation()
 }
 
 // Block sizes drawn from gg::rng, enough to cover kAutomationFrames: a tenth of them 0-frame
-// calls, three in ten multiples of 32 (so calls often end on a grid boundary), the rest anything
-// in 1..4096.
+// calls, three in ten multiples of 32, the rest anything in 1..4096. A multiple of 32 ends on
+// the grid only when the calls before it did, so few calls end on a grid boundary (1 to 3 of
+// about 70); the dedicated test "events for one boundary apply as one group across a call's
+// end" covers that case.
 std::vector<uint32_t> randomSplit(uint64_t seed)
 {
     std::vector<uint32_t> sizes;
@@ -873,10 +875,10 @@ TEST_CASE("processor survives an automation storm", "[core][rt]")
 
     REQUIRE(allFinite(left));
     REQUIRE(allFinite(right));
-    // Mix is a crossfade and the wet signal is limited below 1: the output is never louder than
-    // the input plus 1.
-    REQUIRE(peak(left) < peak(input.left) + 1.0f);
-    REQUIRE(peak(right) < peak(input.right) + 1.0f);
+    // Mix is a crossfade, the wet signal is limited below 1, and so is the reverb's return
+    // (the storm sets Reverb Amount too): the output is never louder than the input plus 2.
+    REQUIRE(peak(left) < peak(input.left) + 2.0f);
+    REQUIRE(peak(right) < peak(input.right) + 2.0f);
     for (size_t s = 0; s < kParamCount; ++s)
     {
         const auto slot = static_cast<ParamSlot>(s);

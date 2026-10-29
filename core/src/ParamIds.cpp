@@ -19,6 +19,13 @@ using md_t = sst::basic_blocks::params::ParamMetaData;
 
 constexpr uint32_t kAutomatableModulatable = CLAP_PARAM_IS_AUTOMATABLE | CLAP_PARAM_IS_MODULATABLE;
 
+// Reverb Decay's "∞" label covers |v - kDecayMax| < tolerance × (kDecayMax - (-2)), in float, as
+// ParamMetaData tests it. 2% of the travel, the ∞ region, nudged up by a few ulp: at exactly 0.02
+// the float kDecayInfinite (rounded down from log2 60) would fall a hair outside. With this
+// tolerance the label starts at kDecayInfinite and not a float below, the same boundary as
+// SpaceParams::infinite; patch_tests.cpp checks it float by float.
+constexpr float kDecayInfiniteLabelTolerance = 0.02000007f;
+
 // Every entry starts here. ParamMetaData's quanta-only mode, a thread-local that a
 // default-constructed ParamMetaData copies, would drop the names and display text; this table
 // always carries them, whichever thread builds it.
@@ -101,6 +108,54 @@ std::array<md_t, kParamCount> buildTable(Mode mode)
                                 .asOnOffBool()
                                 .withDefault(0.0f)
                                 .withFlags(kAutomatableModulatable | CLAP_PARAM_IS_STEPPED);
+
+    // Space (sub-project 4's spec §6.5).
+    // the diffuser's crossfade, 0..1.
+    at(ParamSlot::Diffusion) =
+        base(ParamSlot::Diffusion).withName("Diffusion").asPercent().withDefault(0.0f);
+
+    // the reverb return's gain, 0..1.
+    at(ParamSlot::ReverbAmount) =
+        base(ParamSlot::ReverbAmount).withName("Reverb Amount").asPercent().withDefault(0.0f);
+
+    // log2 seconds: 0.25 s (-2) to 60 s (kDecayInfinite), then ∞ up to kDecayMax; 2 s by
+    // default. Values below 1 s show in ms, but a bare number typed in is seconds ("500 ms"
+    // still parses).
+    at(ParamSlot::ReverbDecay) =
+        base(ParamSlot::ReverbDecay)
+            .withName("Reverb Decay")
+            .asLog2SecondsRange(-2.f, kDecayMax, 1.0f)
+            .withAlternateAsDefaultFromStringUnit(false)
+            .withCustomValueDisplay("∞", kDecayMax, kDecayInfiniteLabelTolerance);
+
+    // Reverb 2's room size is 2v - 1; 0..1 here, 50% by default.
+    at(ParamSlot::ReverbSize) =
+        base(ParamSlot::ReverbSize).withName("Reverb Size").asPercent().withDefault(0.5f);
+
+    // Reverb 2's HF damping, 0..1.
+    at(ParamSlot::ReverbDamping) =
+        base(ParamSlot::ReverbDamping).withName("Reverb Damping").asPercent().withDefault(0.3f);
+
+    // seconds, 0 to 0.5, linear; every value is below 1 s, so it shows in ms (and a bare number
+    // typed in is ms).
+    at(ParamSlot::ReverbPredelay) = base(ParamSlot::ReverbPredelay)
+                                        .withName("Reverb Pre-delay")
+                                        .asFloat()
+                                        .withRange(0.f, 0.5f)
+                                        .withDefault(0.0f)
+                                        .withLinearScaleFormatting("s")
+                                        .withMilisecondsBelowOneSecond();
+
+    // Reverb 2's modulation depth, 0..1.
+    at(ParamSlot::ReverbModulation) = base(ParamSlot::ReverbModulation)
+                                          .withName("Reverb Modulation")
+                                          .asPercent()
+                                          .withDefault(0.25f);
+
+    // the FX's input sent to the reverb, 0..1. The instrument keeps it, hidden and with no
+    // effect, as it does Mix.
+    at(ParamSlot::DryToReverb) =
+        base(ParamSlot::DryToReverb).withName("Dry to Reverb").asPercent().withDefault(0.0f);
     return t;
 }
 } // namespace

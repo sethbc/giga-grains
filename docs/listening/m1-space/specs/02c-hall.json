@@ -1,0 +1,16 @@
+{
+  "mode": "instrument",
+  "sampleRate": 48000,
+  "durationSeconds": 14.0,
+  "blockSize": 128,
+  "seed": 1,
+  "sample": {"kind": "sweep", "startHz": 50, "endHz": 8000, "seconds": 4.0, "amplitude": 0.5},
+  "params": {"Position": 0.5, "Size": -4.0, "Level": -6.0,
+             "Reverb Amount": 0.5, "Reverb Decay": 3.0, "Reverb Size": 0.9},
+  "notes": [
+    {"time": 0.25, "key": 60, "duration": 0.15},
+    {"time": 0.6, "key": 67, "duration": 0.15},
+    {"time": 0.95, "key": 72, "duration": 0.15},
+    {"time": 1.5, "key": 60, "duration": 1.0}
+  ]
+}

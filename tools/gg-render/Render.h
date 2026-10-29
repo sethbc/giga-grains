@@ -5,8 +5,12 @@
 #ifndef GG_RENDER_RENDER_H
 #define GG_RENDER_RENDER_H
 
+#include <cstdio>
+#include <exception>
 #include <string>
 #include <vector>
+
+#include <fmt/format.h>
 
 #include "RenderSpec.h"
 #include "gg/grain/GrainPool.h"
@@ -70,6 +74,39 @@ std::string formatEventLine(const GrainSpec &g);
 /// - std::bad_alloc if memory runs out.
 /// gg-render exits with status 3, an internal error, for all but BadInput.
 gg::metrics::AudioData render(const RenderSpec &spec, std::vector<std::string> *eventLines);
+
+/// gg-render's exit statuses (CLAUDE.md, "Golden renders").
+inline constexpr int kExitPass = 0;
+inline constexpr int kExitCompareFailed = 1;
+inline constexpr int kExitBadInput = 2;
+inline constexpr int kExitInternalError = 3;
+
+/// gg-render's main, around everything it does: returns run()'s status. When run() throws
+/// BadInput, prints "gg-render: <what>" to stderr and returns kExitBadInput; when it throws
+/// anything else, from the render, the metrics or the writers (std::bad_alloc on an extreme
+/// spec, say, or something not even a std::exception), prints "gg-render: internal error" (and
+/// the what(), if any) and returns kExitInternalError ([182], [184]).
+template <typename Run> int guarded(Run &&run) noexcept
+{
+    try
+    {
+        return run();
+    }
+    catch (const BadInput &e)
+    {
+        fmt::print(stderr, "gg-render: {}\n", e.what());
+        return kExitBadInput;
+    }
+    catch (const std::exception &e)
+    {
+        fmt::print(stderr, "gg-render: internal error: {}\n", e.what());
+    }
+    catch (...)
+    {
+        fmt::print(stderr, "gg-render: internal error\n");
+    }
+    return kExitInternalError;
+}
 } // namespace gg::render
 
 #endif // GG_RENDER_RENDER_H

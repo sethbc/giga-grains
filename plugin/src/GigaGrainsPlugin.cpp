@@ -29,11 +29,23 @@ using gg::core::NoteEventType;
 using gg::core::ParamEvent;
 using gg::core::ParamSlot;
 
-// The remote-controls page "Cloud" (spec §4), in slot order.
-constexpr std::array<ParamSlot, CLAP_REMOTE_CONTROLS_COUNT> kCloudPage{
-    ParamSlot::Position, ParamSlot::Size,   ParamSlot::Density, ParamSlot::Pitch,
-    ParamSlot::Spray,    ParamSlot::Stereo, ParamSlot::Freeze,  ParamSlot::Mix,
+// The remote-controls pages, in page order, each in slot order: "Cloud" (spec §4) and "Space"
+// (sub-project 4's spec §6.6). A page's index is its page_id.
+struct RemotePage
+{
+    const char *name;
+    std::array<ParamSlot, CLAP_REMOTE_CONTROLS_COUNT> slots;
 };
+
+constexpr std::array<RemotePage, 2> kRemotePages{{
+    {"Cloud",
+     {ParamSlot::Position, ParamSlot::Size, ParamSlot::Density, ParamSlot::Pitch, ParamSlot::Spray,
+      ParamSlot::Stereo, ParamSlot::Freeze, ParamSlot::Mix}},
+    {"Space",
+     {ParamSlot::Diffusion, ParamSlot::ReverbAmount, ParamSlot::ReverbDecay, ParamSlot::ReverbSize,
+      ParamSlot::ReverbDamping, ParamSlot::ReverbPredelay, ParamSlot::ReverbModulation,
+      ParamSlot::DryToReverb}},
+}};
 
 const char *const kInstrumentFeatures[] = {
     CLAP_PLUGIN_FEATURE_INSTRUMENT, CLAP_PLUGIN_FEATURE_SYNTHESIZER, CLAP_PLUGIN_FEATURE_GRANULAR,
@@ -67,6 +79,16 @@ const clap_plugin_descriptor kFxDescriptor{
     "A granular effect for evolving textures, playable from notes",
     kFxFeatures,
 };
+
+/// Whether `slot` is hidden in `product`: the instrument has no dry signal, so Mix and Dry to
+/// Reverb do nothing there. It keeps the parameters, hidden, so both products share one
+/// parameter list and one state format (spec §4; sub-project 4's spec §6.5). paramsInfo flags
+/// them, and their remote controls stay empty.
+constexpr bool hiddenIn(Product product, ParamSlot slot) noexcept
+{
+    return product == Product::Instrument &&
+           (slot == ParamSlot::Mix || slot == ParamSlot::DryToReverb);
+}
 
 void copyName(char (&dst)[CLAP_NAME_SIZE], const char *src) noexcept
 {
@@ -172,6 +194,7 @@ bool GigaGrainsPlugin::activate(double sampleRate, uint32_t /*minFrameCount*/,
         engineBlockSize_ = config.maxBlockSize;
         noteIds_.fill(NoteIdSlot{}); // a new session holds no notes
         collectRequested_.store(false, std::memory_order_relaxed);
+        sampleRate_.store(sampleRate, std::memory_order_relaxed); // the tail's (tailGet)
         return true;
     }
     catch (...)
@@ -368,6 +391,34 @@ void GigaGrainsPlugin::requestCollect() noexcept
     }
 }
 
+uint32_t GigaGrainsPlugin::tailGet() const noexcept
+{
+    // A constant per product (ruling R-T7a), never a function of the values, Freeze or the
+    // notes, and never announced with clap_host_tail.changed. Don't "improve" it: clap-wrapper
+    // turns tail.changed into VST3's restartComponent(kLatencyChanged), on which the host must
+    // deactivate and reactivate the plugin (the VST3 SDK's documentation), and into AU's
+    // PropertyChanged(TailTime), both main-thread calls while CLAP makes tail.changed an
+    // audio-thread one. A tail that followed the values would restart the plugin, emptying the
+    // FX's live ring and dropping its held notes and Freeze, at every note, Freeze toggle or
+    // Reverb Amount change. So the FX, a live-buffer effect that can sound with no input at any
+    // time (Freeze, a held note, a 16 s read, an infinite reverb), is always infinite, and the
+    // instrument's is its longest finite one, kInstrumentTailSeconds.
+    if (product_ == Product::Fx)
+    {
+        return kTailInfinite;
+    }
+    return instrumentTailFrames(sampleRate_.load(std::memory_order_relaxed));
+}
+
+uint32_t GigaGrainsPlugin::instrumentTailFrames(double sampleRate) noexcept
+{
+    const double frames = std::ceil(kInstrumentTailSeconds * sampleRate);
+    // A NaN fails both comparisons, so it saturates too.
+    return frames < static_cast<double>(kTailInfinite) && frames >= 0.0
+               ? static_cast<uint32_t>(frames)
+               : kTailInfinite - 1;
+}
+
 bool GigaGrainsPlugin::toParamEvent(const clap_event_header *header, ParamEvent &event) noexcept
 {
     if (header == nullptr || header->space_id != CLAP_CORE_EVENT_SPACE_ID)
@@ -463,9 +514,20 @@ void GigaGrainsPlugin::applyBetweenBlocks(const clap_input_events *in, uint32_t 
 
 bool GigaGrainsPlugin::isNoteEvent(const clap_event_header *header) noexcept
 {
-    return header != nullptr && header->space_id == CLAP_CORE_EVENT_SPACE_ID &&
-           (header->type == CLAP_EVENT_NOTE_ON || header->type == CLAP_EVENT_NOTE_OFF ||
-            header->type == CLAP_EVENT_NOTE_CHOKE || header->type == CLAP_EVENT_MIDI);
+    if (header == nullptr || header->space_id != CLAP_CORE_EVENT_SPACE_ID)
+    {
+        return false;
+    }
+    if (header->type == CLAP_EVENT_MIDI)
+    {
+        // Only what toNoteEvent converts, so other MIDI (clock, pressure, other CCs) doesn't
+        // count toward kMaxNoteEvents.
+        const auto *e = reinterpret_cast<const clap_event_midi *>(header);
+        const auto status = static_cast<uint8_t>(e->data[0] & 0xF0);
+        return status == 0x80 || status == 0x90 || (status == 0xB0 && e->data[1] == 123);
+    }
+    return header->type == CLAP_EVENT_NOTE_ON || header->type == CLAP_EVENT_NOTE_OFF ||
+           header->type == CLAP_EVENT_NOTE_CHOKE;
 }
 
 bool GigaGrainsPlugin::toNoteEvent(const clap_event_header *header, NoteEvent &event) noexcept
@@ -637,9 +699,7 @@ bool GigaGrainsPlugin::paramsInfo(uint32_t paramIndex, clap_param_info *info) co
     *info = clap_param_info{};
     gg::core::paramMeta(slot, mode()).toClapParamInfo<CLAP_NAME_SIZE>(info);
     info->cookie = nullptr;
-    // The instrument has no dry signal, so Mix does nothing there. It keeps the parameter,
-    // hidden, so both products share one parameter list and one state format (spec §4).
-    if (product_ == Product::Instrument && slot == ParamSlot::Mix)
+    if (hiddenIn(product_, slot))
     {
         info->flags |= CLAP_PARAM_IS_HIDDEN;
     }
@@ -851,20 +911,21 @@ bool GigaGrainsPlugin::stateLoad(const clap_istream *stream) noexcept
 bool GigaGrainsPlugin::remoteControlsPageGet(uint32_t pageIndex,
                                              clap_remote_controls_page *page) noexcept
 {
-    if (pageIndex != 0 || page == nullptr)
+    if (pageIndex >= kRemotePages.size() || page == nullptr)
     {
         return false;
     }
+    const RemotePage &source = kRemotePages[pageIndex];
     *page = clap_remote_controls_page{};
-    copyName(page->section_name, "Cloud");
-    copyName(page->page_name, "Cloud");
-    page->page_id = 0;
+    copyName(page->section_name, source.name);
+    copyName(page->page_name, source.name);
+    page->page_id = pageIndex;
     page->is_for_preset = false;
-    for (std::size_t i = 0; i < kCloudPage.size(); ++i)
+    for (std::size_t i = 0; i < source.slots.size(); ++i)
     {
-        // Mix is hidden in the instrument (see paramsInfo), so its control stays empty there.
-        const bool hidden = product_ == Product::Instrument && kCloudPage[i] == ParamSlot::Mix;
-        page->param_ids[i] = hidden ? CLAP_INVALID_ID : gg::core::paramId(kCloudPage[i]);
+        // A hidden parameter's control stays empty (hiddenIn).
+        const ParamSlot slot = source.slots[i];
+        page->param_ids[i] = hiddenIn(product_, slot) ? CLAP_INVALID_ID : gg::core::paramId(slot);
     }
     return true;
 }

@@ -61,9 +61,11 @@ constexpr std::string_view kSubProject1State =
     R"(<p id="65544" v="1.000000000000" bits="3f800000" />)"
     R"(</params><engine seed="77" /></patch>)";
 
-// The values kSubProject1State holds, slot by slot.
-constexpr ParamValues kSubProject1Values{0.8f,  -6.0f, 0.1f,     -4.25f, 6.7f,
-                                         0.25f, 7.0f,  1.23e-5f, 0.0f,   1.0f};
+// The values kSubProject1State loads as, slot by slot: the ten it holds, then Space's eight at
+// their defaults (sub-project 4), which it doesn't mention.
+constexpr ParamValues kSubProject1Values{0.8f, -6.0f,    0.1f, -4.25f, 6.7f,  0.25f,
+                                         7.0f, 1.23e-5f, 0.0f, 1.0f,   0.0f,  0.0f,
+                                         1.0f, 0.5f,     0.3f, 0.0f,   0.25f, 0.0f};
 
 std::size_t at(ParamSlot s) { return static_cast<std::size_t>(s); }
 
@@ -236,7 +238,9 @@ TEST_CASE("the container round trips with and without a sample", "[core]")
 TEST_CASE("a pre-container state loads with no sample", "[core]")
 {
     // The bare XML of sub-projects 1 and 2: its whole content is PTCH, with an empty MEDI.
-    CHECK(gg::core::toStateXml(kSubProject1Values, 77) == kSubProject1State);
+    // Today's XML for the same values is the same up to its ten params, then adds Space's eight.
+    const auto tenParams = kSubProject1State.substr(0, kSubProject1State.find("</params>"));
+    CHECK(gg::core::toStateXml(kSubProject1Values, 77).starts_with(tenParams));
 
     Decoded d = distinct();
     REQUIRE(d.decode(kSubProject1State));
@@ -255,7 +259,7 @@ TEST_CASE("a pre-container state loads with no sample", "[core]")
     // Saving it again writes a container.
     const auto bytes = encodeState(d.state);
     CHECK(bytes.starts_with("GGST"));
-    CHECK(stateChunkPayload(bytes, "PTCH") == std::string(kSubProject1State));
+    CHECK(stateChunkPayload(bytes, "PTCH") == gg::core::toStateXml(kSubProject1Values, 77));
 
     // Exactly as fromStateXml loads it, in either product: a param it doesn't mention takes the
     // product's default.
@@ -405,6 +409,9 @@ TEST_CASE("session state rejects bad state and writes nothing", "[core]")
                  R"(<?xml version="1.0" ?>)" + std::string(kEmptyMedia),
                  std::string{"<media />"},
                  std::string{"<media version=\"one\" />"},
+                 std::string{"<media version=\"1x\" />"}, // the whole attribute is the number
+                 std::string{"<media version=\" 1\" />"},
+                 std::string{"<media version=\"\" />"},
                  std::string(kEmptyMedia) + std::string("\0", 1),
                  mediaWith(sample).insert(std::string_view(R"(<media version="1">)").size(),
                                           "<sample " + sample + " />"), // two samples
