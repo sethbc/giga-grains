@@ -544,7 +544,7 @@ void validate(const Options &options)
 Report run(const Options &options, const Progress &progress)
 {
     validate(options);
-    Report report{options, machine(), compiler(), {}};
+    Report report{options, machine(), compiler(), {}, {}};
 
     const gg::ScopedDenormalsOff noDenormals;
 

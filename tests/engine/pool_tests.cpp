@@ -102,7 +102,7 @@ TEST_CASE("grain end bounds the window", "[pool]")
     {
         for (const double dur : {16.0, 16.5, 4800.0, 4800.999})
         {
-            const gg::GrainSpec g{0, 1000, frac, 0.0, 1.0, dur, 1.0f};
+            const gg::GrainSpec g{0, 1000, frac, 0.0, 1.0, dur, 1.0f, 0.0f};
             const int64_t end = gg::grainEndSample(g);
             const double elapsed = static_cast<double>(end - g.onsetSample) - g.onsetFrac;
             REQUIRE(elapsed >= dur);

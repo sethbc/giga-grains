@@ -71,7 +71,9 @@ EditorPlugin::~EditorPlugin() = default;
 
 std::unique_ptr<juce::Component> EditorPlugin::createEditor()
 {
-    gg::ui::EditorContext context{descriptorFor(product())->name, &noteOnCount};
+    gg::ui::EditorContext context;
+    context.productName = descriptorFor(product())->name;
+    context.noteOnCount = &noteOnCount;
     // The instrument's loader strip (spec §6.5), on the main thread, as the loader requires. The
     // loader is GigaGrainsPlugin's, so it outlives the editor, which the shim holds.
     if (SampleLoader *loader = sampleLoader(); loader != nullptr)

@@ -567,7 +567,7 @@ template <typename FXConfig> struct Reverb2 : core::EffectTemplateBase<FXConfig>
     static constexpr double db60{0.001}; // powf(10.f, 0.05f * -60.f);
   public:
     static constexpr int16_t streamingVersion{1};
-    static void remapParametersForStreamingVersion(int16_t streamedFrom, float *const param)
+    static void remapParametersForStreamingVersion(int16_t streamedFrom, float *const /*param*/)
     {
         // base implementation - we have never updated streaming
         // input is parameters from stream version
@@ -706,7 +706,7 @@ template <typename FXConfig> void Reverb2<FXConfig>::calc_size(float scale)
     _delay[3].setLen(msToSamples(139.4, m, sr));
 }
 
-template <typename FXConfig> void Reverb2<FXConfig>::setvars(bool init)
+template <typename FXConfig> void Reverb2<FXConfig>::setvars(bool /*init*/)
 {
     // TODO: balance the gains from the calculated decay coefficient?
     _tap_gainL[0] = 1.5f / 4.f;
