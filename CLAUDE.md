@@ -241,7 +241,10 @@ runs the tests labelled either. The labels are:
 - engine: `engine`, `cloud` (the Cloud scheduler), `live` (the live ring), `pool`, `source`,
   `rng`, `math`, `interp`, `window`, `denormal`;
 - `core`: `gg-core`'s patch, the session state container (`GGST`) and the settings' XML, the
-  parameter mapping, and the `Processor` with its notes and source hand-off;
+  parameter mapping and the macro curves, and the `Processor` with its notes, source hand-off
+  and Feedback. `slow` marks one of them, Feedback 0.95 for 60 s (over a minute in `dev`);
+  - `publish`: the audio-to-UI structures (the grain queue, the UI snapshot, the live peaks) and
+    the `Processor`'s publishing;
 - `media`: `gg-media`, the JUCE-free sample-file library (`media/`) that the plugin's loader and
   `gg-render` share: decoding, rate conversion, SHA-256, loading a sample, the search for a
   missing one and the settings file. `slow` marks one of them, the search's 50,000-entry scan.
@@ -254,7 +257,8 @@ runs the tests labelled either. The labels are:
   `Processor`'s Space chain, and the plugins' tail and "Space" remote-controls page. `slow` also
   marks four of them: the hour-long renders at infinite Decay (about 50 s each in `dev`, 2.5
   minutes under ASan), the block-size invariance render and the 60 s render at extreme settings
-  (about 8 s and 13 s in `dev`); `-LE slow` leaves all five slow tests out.
+  (about 8 s and 13 s in `dev`); `-LE slow` leaves all six slow tests out (media's one, these
+  four and core's Feedback one).
 - `kernel`: the renderers' scalar references and the 4-wide SIMD sample and live kernels, which
   must match them bit for bit (`std::memcmp`);
 - `determinism`: block-size invariance;
@@ -263,7 +267,8 @@ runs the tests labelled either. The labels are:
   only if RTSan reports an allocation made inside a nonblocking function.
 - tools: `render`, `metrics`, `bench`;
 - `golden`: the golden renders;
-- `ui`: the splat renderer;
+- `ui`: the splat renderer, the lane geometry (`LaneModel`), and the lane's clock and live-grain
+  list (`LaneState`);
 - `smoke`;
 - `build`: checks of the build system itself, run on scratch CMake projects: the `asio_guard_*`
   tests (`cmake/AsioGuard.cmake`);
@@ -343,17 +348,23 @@ gg-render --write-media DIR
     (1 or 2) sets a built-in input's channel count; a file keeps its own, and takes no
     `channels`. Optional `params` sets base values by parameter name (`"Size"`, `"Density"`, …;
     Space's are `"Diffusion"`, `"Reverb Amount"`, `"Reverb Decay"`, `"Reverb Size"`,
-    `"Reverb Damping"`, `"Reverb Pre-delay"`, `"Reverb Modulation"` and `"Dry to Reverb"`),
-    optional `automation` is a time-ordered list of `{"time", "param", "value"}` points in
+    `"Reverb Damping"`, `"Reverb Pre-delay"`, `"Reverb Modulation"` and `"Dry to Reverb"`;
+    the Perform UI's (sub-project 5) are `"Texture"`, `"Feedback"` and the macros,
+    `"Macro Size"`, `"Macro Density"`, `"Macro Pitch"`, `"Macro Spray"`, `"Macro Texture"`,
+    `"Macro Freeze"`, `"Macro Feedback"` and `"Macro Mix"`), optional `automation` is a
+    time-ordered list of `{"time", "param", "value"}` points in
     seconds, and optional `notes` a time-ordered list of `{"time", "key", "duration",
     "channel"}` (channel optional). A note whose Off would fall on its On's frame is bad input
     (ruling R17). Values are in each parameter's CLAP value domain (Density 6.0 is 64 Hz; Reverb
     Decay is log2 seconds, so 1.0 is 2 s, and 6.068255709804611, `kDecayMax`, is ∞; Reverb
-    Pre-delay is seconds, 0–0.5). The render is exactly `durationSeconds` long.
+    Pre-delay is seconds, 0–0.5; Texture and the macros are 0–1, Macro Freeze 0 or 1, Feedback
+    0–0.95). The render is exactly `durationSeconds` long.
   - **Instrument mode** (`"mode": "instrument"`) runs Giga Grains' `Processor` the same way over
     a `sample` (a built-in signal or a `file`, loaded and converted with `gg-media`), with no
     `channels`. Its Position is the fraction of the sample, 0–1, and it is silent until a note.
-    It takes Dry to Reverb, which does nothing there.
+    It takes Dry to Reverb and Feedback, which do nothing there. Its Macros 7 and 8 are
+    `"Macro Stereo"` and `"Macro Level"`: a spec takes only its own product's names, so
+    `"Macro Level"` in an FX spec, or `"Macro Mix"` in an instrument spec, is an unknown key.
   - **FX inputs are faded** in at their start and out at their end over 10 ms, with a raised
     cosine (sin²), so the input's own edges don't click (ruling M1-v). Sample-mode sources and
     the M0 goldens are untouched.
@@ -377,13 +388,27 @@ gg-render --write-media DIR
     highest clean score in the goldens. Don't add mid-sound Size moves to a golden.
   - Every case that predates Space renders bit-identically with it, so its WAV's SHA-256 is
     unchanged. A Space change that moves one is a regression.
+  - **Sub-project 5's three** (the Perform UI): `fx-macros` (each macro stepped 0, 0.25, 0.5,
+    0.75, 1 and back to rest, in slot order over a stereo 330 Hz sine, Macro Freeze on last),
+    `fx-feedback` (a 4 s stereo sweep, Feedback 0.5, then 0.9 at 3 s, Freeze from 5 s to 6.5 s)
+    and `inst-texture` (one held note, Texture stepped 0 to 1 at 1 s intervals).
+    - `fx-feedback` catches only 7 of the 16 injected click steps: the sweep's top octaves, then
+      their regeneration at Feedback 0.9 and the frozen ring, hide the rest from about 2.8 s to
+      6.6 s. Its entry in the click-injection table pins the 7 with that reason. The other two
+      catch all 16.
+    - The event log sees Texture (`tex`) and the macros' effect on the grains, but never
+      Feedback's regenerated audio: across platforms only the metrics compare that.
+    - Every older case renders bit-identically with Texture 0, Feedback 0 and the macros at
+      rest; a Perform change that moves one is a regression.
   - **The event-log comparison never sees the reverb or the diffuser:** the log records grains,
     and Space runs after them. Across platforms, Space's five cases are checked by their metrics
     alone, within tolerances.
 - **The `golden` tests** render every case into `build/<preset>/golden/<case>.wav` and `.png`.
   - They compare the metrics within tolerances.
   - They compare the grain-event log exactly per line (CR and final newline ignored). That
-    comparison is the cross-platform determinism gate.
+    comparison is the cross-platform determinism gate. Each `.events.jsonl` line is one grain:
+    `i`, `onset`, `frac`, `pos`, `rate`, `dur`, `tex` (its Texture, since sub-project 5),
+    `gain` and `pan` (`formatEventLine` in `tools/gg-render/Render.h`).
   - The click score (metricsVersion 2) is normalized by the level within ±5 ms. The
     `[golden][metrics]` tests in `tests/metrics/click_injection_tests.cpp` render every case in
     process, add a -20 dBFS step at sixteen positions in turn and require each to score above

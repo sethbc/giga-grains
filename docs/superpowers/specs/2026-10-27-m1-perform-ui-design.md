@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Approved in brainstorming by the director, 2026-10-27 |
+| **Status** | Approved in brainstorming by the director, 2026-10-27. Built 2026-10-29 (INTENT §23 #58, #59), and amended in place, each marked **Amended**: §3.1 (ruling PU-T2a), §4 (the fixed family, ruling PU-T3a), §5 (the Processor's pieces, the per-sample guard, ruling PU-T4a), §6.2 (ruling PU-T8a), §6.4 (one peak level, rulings PU-T9a, PU-T9b, PU-T10a), §6.5 (MIT), §7 (the seed hand-off, ruling PU-T5a), §9 (ruling PU-T12a, `inst-texture`) |
 | **Milestone** | M1 (Cloud core), sub-project 5 of 6 |
 | **Depends on** | Sub-project 1 (FX slice: Processor, parameter model, live ring); 3 (Sources: the instrument's sample lane); 4 (Space: Diffusion) |
 | **Authority** | INTENT.md. This spec realizes INTENT §17 for one layer, and adds §14 parameters |
@@ -65,6 +65,13 @@ Sub-project 5 turns M1's working engine into an instrument you play from its own
   where `macro_m` is the macro's own effective value (base + modulation, clamped to 0..1). This extends the Processor's
   existing `clamp(base + mod)`.
 - **Macro events behave like any parameter event.** They take effect at the next 32-sample grid boundary.
+
+  > **Amended by ruling PU-T2a (2026-10-29):** a `setBase` of a macro (params.flush or a state load) applies at once, as a
+  > `setBase` of any parameter does, and also jumps the ramps of every target whose effective value it moved (Macro 5's
+  > Diffusion, the FX's Macro 7 Feedback and Macro 8 Mix, the instrument's Macro 8 Level), so a loaded state never ramps in
+  > from stale values; a `setBase` of Macro 6 is seen as one of Freeze for arming (INTENT §14). The effective value is
+  > `clamp(base + mod + Σ)` in one clamp, never two; a −0 base plus a −0 modulation gives +0 once the resting +0 offset is
+  > added.
 - **Every curve is libm-free:** polynomials, `exp2Det` and `logDet` only (INTENT §14).
 - **Curves work in each target's CLAP value domain:**
   - Size, Density and Position are already log2-tapered, so "±N octaves" is linear in their domain;
@@ -128,6 +135,18 @@ Diffusion's ID belongs to sub-project 4 (Space).
 
   Between anchors the envelope parameters interpolate linearly. The exact family (a skewed Tukey) is fixed in the
   implementation plan, with tests.
+
+  > **Amended by the plan and ruling PU-T3a (2026-10-29):** the family as built (`engine/include/gg/grain/Envelope.h`).
+  > With τ the grain's Texture, d its duration in samples and `aMin = min(0.5, max(0.05, 16 / d))`: for τ ≤ 0.5, attack
+  > `a = 0.5 + 0.4τ` and release `r = 0.5 − 0.4τ`, no sustain; for τ > 0.5, with `s = 2τ − 1`,
+  > `a = (1 − s)·0.7 + s·aMin` and `r = (1 − s)·0.3 + s·aMin`, a flat sustain `1 − a − r` between. The τ > 0.5 branch is
+  > the plan's `a = 0.7 + (aMin − 0.7)s` written as a lerp (ruling PU-T3a): the same curve, exact at both anchors (the
+  > plan's form gives 0.050000000000000044 for 0.05). The window at phase φ is `hann(warp(φ))`, with
+  > `warp(φ) = φ < a ? φ·(0.5/a) : (φ > 1 − r ? 1 − (1 − φ)·(0.5/r) : 0.5)`; at τ = 0 both scales are exactly 1 and
+  > `warp(φ) == φ` bit for bit (Sterbenz), so Texture 0 renders as the plain Hann. The pool latches `a`, `1 − r`, `0.5/a`
+  > and `0.5/r` per grain; one `warpPhase` serves both scalar references and the SIMD interior. The gated anchor's
+  > attack and release are `max(16 samples, 5%)` capped at half the grain, so a 16-sample grain is a plain Hann at every
+  > Texture. The grain-event line carries `"tex"`.
 - **Every envelope is continuous at both ends,** and its attack and release are never shorter than the 16-sample minimum grain.
   The click detector in the goldens guards this.
 - **The window is evaluated per grain,** at spawn, from the grain's latched Texture value, the same way gain is latched today.
@@ -149,8 +168,20 @@ Diffusion's ID belongs to sub-project 4 (Space).
 
   The output is therefore **bit-identical at any host block size and any maxBlockSize**. A determinism test pins this, with
   Feedback automated.
+
+  > **Amended (2026-10-29):** the chunking is the **Processor's**, not the engine's: the Processor already owns the render
+  > pieces, and in the FX each is at most `kFeedbackDelay` = 256 samples (static-asserted equal to
+  > `LiveSource::kHeadMargin`); the instrument keeps its piece size and builds no ring input. The last 256 limited samples
+  > are kept by absolute time (`t mod 256`). A **per-sample guard**: a sample where `fb(t)` is 0 writes the input alone, and
+  > a piece whose ramp is 0 throughout hands the engine its input pointers, so where a piece starts never changes the ring,
+  > the sign of zero included. The ring input is `finite(in[t]) + fb(t)·limited[t − 256]`, which the ring stores as it
+  > stores any input (non-finite as 0, clamped to ±2^20).
 - **Freeze wins.** While frozen, the ring's write gain is 0 (Task 4's 20 ms ramp), so neither input nor feedback is written,
   and the frozen buffer holds.
+
+  > **Amended by ruling PU-T4a (2026-10-29):** the test checks the frozen ring bit for bit from 1 s to 3 s under Feedback
+  > 0.9, and the output's level within 0.5 dB with Feedback raised at the freeze, instead of a 0.5 dB comparison against a
+  > render with Feedback 0: the regeneration before the freeze legitimately sits in the frozen buffer.
 - **Stability:** the soft limiter bounds `wetPreMix` to ±1, and `fb ≤ 0.95`, so the regenerated level stays bounded. A
   property test drives Feedback 0.95 with dense, loud settings for 60 s. It checks that the output is finite, that the wet
   signal never exceeds ±1 (the limiter's bound), and that the wet RMS over the last 10 s is no higher than over the first 10 s
@@ -178,6 +209,11 @@ Diffusion's ID belongs to sub-project 4 (Space).
 
   The vertical axis is pan because each grain has a single pitch until M2's spread arrives.
 - **The scan window:** a solid window at Position's base value, with edges at ±Spray's base.
+
+  > **Amended by ruling PU-T8a (2026-10-29):** in the FX the window is one-sided, `[Position, Position + Spray]` seconds
+  > behind the head, as the engine draws a live grain (`position + spray × u`, u in [0, 1)), so its newer edge is Position
+  > itself and drags as the body, and its older edge drags Spray. The instrument's stays `Position ± Spray`, as its sample
+  > spray is bipolar. Truthfulness is the success criterion (§1).
 - **Ghost windows:** where macros or modulation move the effective value, a ghost window shows where grains actually read.
 - **Freeze:** the scroll stops and the lane takes a tint. Feedback above 0 shows a regeneration marker on the write head.
 
@@ -197,12 +233,27 @@ Diffusion's ID belongs to sub-project 4 (Space).
 - The engine publishes only while the editor is open. Visual thinning never touches the audio RNG.
 - All of it is real-time safe: no allocation or locks on the audio thread. The `[rt]` tripwire covers the publish path.
 
+  > **Amended (2026-10-29), rulings PU-T9a, PU-T9b and PU-T10a:** the peak pyramid is **one level** in M1, `LivePeaks`:
+  > max(|L|, |R|) per 64-frame bucket of what the ring takes, **indexed by ring time**, the frames the write head advanced
+  > over, not the sample clock, which a freeze makes diverge (PU-T9a). The FX writes it on **every** render piece, publishing
+  > or not, so an editor that opens late finds the ring's recent audio, not an older pass's peaks (PU-T9b). "Publishes only
+  > while the editor is open" holds for the grain queue (4096 entries, dropping the newest and counting them) and the
+  > per-block snapshot (a triple buffer), and for the atomic clock stored after each snapshot. The plugin owns one editor
+  > context for its life and points its publish fields at each activation's Processor, null while inactive (PU-T10a). INTENT
+  > §17 records the path as built.
+
 ### 6.5 Technology
 
 - **Editor:** the existing JUCE 9 shim (clap-juce-shim).
 - **Controls and theming:** knobs, the toggle, focus and one dark theme come from **sst-jucegui**. It is GPL-3.0-or-later,
   AGPL-compatible, and a new submodule pinned to an exact SHA. Its adoption also closes carry-over [213]/[344] (consolidating
   the `JUCE_*` definitions).
+
+  > **Amended (2026-10-29):** sst-jucegui is **MIT** (its `LICENSE.md`; INTENT §15 already said so), not GPL-3.0-or-later,
+  > pinned at `22a89ca4e54179cbda0b8164e54e06dae5f30490`; the md4c and CMakeRC it vendors and the flowbite-icons glyphs in
+  > its resources are MIT too (`THIRD_PARTY_NOTICES.md`). Carry-over [213]/[344] was already closed, by sub-project 1
+  > (`ec2a054`). Its JUCE requirements are re-pointed at the headers-only `gg-juce-headers` plus
+  > `$<LINK_ONLY:clap_juce_shim>`, so JUCE compiles once, in the shim (ruling PU-T7a).
 - **Canvas:** M0's CPU `SplatRenderer`, behind the `GrainCanvas` renderer interface. It held the §16 UI budget: under 3 ms at
   8,192 grains in Live and Bitwig. Carry-over [214] (clamping `px1`/`py1`) is due when it is reused, so it is in scope.
 
@@ -212,6 +263,13 @@ Diffusion's ID belongs to sub-project 4 (Space).
   like today's seed. Two instances on two tracks then make different clouds, and a reloaded session renders identically.
 - **The audio thread is unaffected:** its randomness still comes only from `gg::rng`, keyed by the saved seed.
 - **gg-render, the tests and the goldens** keep explicit seeds. Loading a state uses the state's seed.
+
+  > **Amended (2026-10-29), ruling PU-T5a:** the seed comes from two 32-bit draws of `std::random_device`, or a splitmix64
+  > of the steady clock if that throws. A state loaded while active hands its seed to the audio thread in the plugin's
+  > loaded-state snapshot, in both products, with no `request_restart` (carry-over row 115); `Processor::setSeed` keys the
+  > grains scheduled from that `process()` call on. In the instrument the values travel with the sample, so the seed and
+  > the values may land in different blocks (PU-T5a: a live load's timing is inexact anyway, and the saved state is
+  > consistent). Once the values are applied, the host is asked to rescan them (row 123).
 
 ## 8. Error handling and limits
 
@@ -236,6 +294,12 @@ Diffusion's ID belongs to sub-project 4 (Space).
 - **Goldens:**
   - an `fx-macros` case, sweeping each macro across its travel;
   - an `fx-feedback` case, with Feedback at 0.5 and 0.9, frozen and unfrozen.
+
+  > **Amended by ruling PU-T12a (2026-10-29):** `fx-macros` runs over a stereo 330 Hz sine, not noise, which hid all
+  > sixteen injected clicks, a blind spot the director hadn't accepted; it catches all sixteen. `fx-feedback`'s sweep lasts
+  > 4 s, so Feedback 0.9 at 3 s has material; it catches 7 of the 16, the rest hidden by the sweep's top octaves, their
+  > regeneration and the frozen ring (pinned in the click-injection table). A third case, `inst-texture`, steps Texture from
+  > 0 to 1 over a held instrument note, and catches all sixteen.
   - Each spectrogram is reviewed before commit. The existing goldens stay byte-identical, because Texture's default is Hann
     and Feedback's is 0.
 - **UI tests (`ui` label):**
