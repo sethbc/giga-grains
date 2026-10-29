@@ -176,6 +176,28 @@ TEST_CASE("offscreen splats are clipped safely", "[ui]")
     empty.resolveToArgb(nullptr, 0, 0xFFFFFF);
 }
 
+TEST_CASE("a splat at the right edge of a canvas over 16M pixels wide stays on it", "[ui]")
+{
+    // Past 2^24 a float no longer holds every integer: float(width - 1) rounds up to width for
+    // this width, so a clip done in float alone would let a splat at the right edge write one
+    // pixel past the end of its row: onto the first pixel of the next row, or past the canvas's
+    // storage from the last row (which ASan reports). Pixel (0, 1) is far from every splat here,
+    // so anything there came through the end of row 0.
+    constexpr uint32_t w = (1u << 24) + 4, h = 2;
+    REQUIRE(static_cast<uint32_t>(static_cast<float>(w - 1)) == w);
+    gg::ui::SplatRenderer splat(w, h);
+    const auto x = static_cast<float>(w - 1); // rounds to w, just past the last pixel
+    splat.add(x, 0, 4, 1);
+    REQUIRE(splat.accumAt(w - 1, 0) > 0.0f); // the splat lands at the right edge ...
+    REQUIRE(splat.accumAt(0, 1) == 0.0f);    // ... and not past it
+
+    // The last row's right edge, the end of the canvas's storage.
+    splat.clear();
+    splat.add(x, 1, 4, 1);
+    REQUIRE(splat.accumAt(w - 1, 1) > 0.0f);
+    REQUIRE(splat.accumAt(0, 1) == 0.0f);
+}
+
 TEST_CASE("resolve saturates monotonically", "[ui]")
 {
     const float intensities[] = {0.0f, 0.5f, 1.0f, 4.0f, 100.0f};

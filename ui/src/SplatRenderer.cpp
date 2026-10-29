@@ -64,21 +64,23 @@ void SplatRenderer::add(float x, float y, float radius, float intensity) noexcep
     }
 
     // The pixels whose centres can lie within the radius: the splat's bounding box, clipped to
-    // the canvas. The bounds are clipped while still floats, so a centre far off the canvas
-    // never reaches an integer conversion.
-    const float maxX = static_cast<float>(width_ - 1);
-    const float maxY = static_cast<float>(height_ - 1);
-    const float left = std::ceil(x - radius);
-    const float right = std::floor(x + radius);
-    const float top = std::ceil(y - radius);
-    const float bottom = std::floor(y + radius);
-    if (right < 0.0f || left > maxX || bottom < 0.0f || top > maxY)
+    // the canvas. The bounds are clipped while still floating-point, so a centre far off the
+    // canvas never reaches an integer conversion. The last pixel's coordinates are doubles, which
+    // hold every uint32_t exactly: a float rounds width − 1 up to width for some widths past
+    // 2^24, which would let a splat write past the row's end.
+    const auto maxX = static_cast<double>(width_ - 1);
+    const auto maxY = static_cast<double>(height_ - 1);
+    const double left = std::ceil(x - radius);
+    const double right = std::floor(x + radius);
+    const double top = std::ceil(y - radius);
+    const double bottom = std::floor(y + radius);
+    if (right < 0.0 || left > maxX || bottom < 0.0 || top > maxY)
     {
         return;
     }
-    const auto px0 = static_cast<uint32_t>(std::max(left, 0.0f));
+    const auto px0 = static_cast<uint32_t>(std::max(left, 0.0));
     const auto px1 = static_cast<uint32_t>(std::min(right, maxX));
-    const auto py0 = static_cast<uint32_t>(std::max(top, 0.0f));
+    const auto py0 = static_cast<uint32_t>(std::max(top, 0.0));
     const auto py1 = static_cast<uint32_t>(std::min(bottom, maxY));
 
     // The weight is 1 - d^2/r^2 = (1 - dy^2/r^2) - dx^2/r^2: one base per row, then one
