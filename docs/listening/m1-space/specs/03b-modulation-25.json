@@ -1,0 +1,16 @@
+{
+  "mode": "instrument",
+  "sampleRate": 48000,
+  "durationSeconds": 10.0,
+  "blockSize": 128,
+  "seed": 1,
+  "sample": {"kind": "sine", "frequencyHz": 220, "seconds": 4.0, "amplitude": 0.5},
+  "params": {"Position": 0.25, "Density": 6.0, "Level": -6.0,
+             "Reverb Amount": 0.6, "Reverb Decay": 6.068255709804611, "Reverb Size": 0.7,
+             "Reverb Modulation": 0.25},
+  "notes": [
+    {"time": 0.25, "key": 48, "duration": 1.5},
+    {"time": 0.25, "key": 55, "duration": 1.5},
+    {"time": 0.25, "key": 64, "duration": 1.5}
+  ]
+}
