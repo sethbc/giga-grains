@@ -107,21 +107,24 @@ std::optional<Capsule> grainCapsule(const LaneGrain &grain, int64_t nowSample, i
                    .intensity = static_cast<float>(clamp01(grain.gain))};
 }
 
-Window scanWindow(float positionValue, float sprayValue, int64_t /*headAtNow*/,
-                  const LaneGeometry &geometry) noexcept
+Window scanWindow(float positionValue, float sprayValue, const LaneGeometry &geometry) noexcept
 {
     if (!usable(geometry))
     {
         return {0.0f, 0.0f};
     }
     const double position = clamp01(positionValue);
-    const double centre =
-        geometry.fxLane ? geometry.width * (1.0 - taperSeconds(kPositionSpanSeconds, position) /
-                                                      geometry.ringSeconds)
-                        : geometry.width * position;
-    const double half =
+    const double spray =
         taperSeconds(kSpraySpanSeconds, clamp01(sprayValue)) * pixelsPerSecond(geometry);
-    return {toPixel(centre - half), toPixel(centre + half)};
+    if (geometry.fxLane)
+    {
+        // One-sided (ruling R-T8a): from Position back to Position + Spray seconds.
+        const double newest = geometry.width * (1.0 - taperSeconds(kPositionSpanSeconds, position) /
+                                                          geometry.ringSeconds);
+        return {toPixel(newest - spray), toPixel(newest)};
+    }
+    const double centre = geometry.width * position;
+    return {toPixel(centre - spray), toPixel(centre + spray)};
 }
 
 float positionValueAtX(float x, const LaneGeometry &geometry) noexcept
@@ -139,17 +142,19 @@ float positionValueAtX(float x, const LaneGeometry &geometry) noexcept
     return static_cast<float>(taperValue(kPositionSpanSeconds, behindSeconds));
 }
 
-float sprayValueForHalfWidth(float halfWidthPx, const LaneGeometry &geometry) noexcept
+float sprayValueForExtent(float extentPx, const LaneGeometry &geometry) noexcept
 {
-    if (!(halfWidthPx >= 0.0f) || !usable(geometry))
+    if (!(extentPx >= 0.0f) || !usable(geometry))
     {
         return 0.0f;
     }
-    const double seconds = static_cast<double>(halfWidthPx) / pixelsPerSecond(geometry);
+    // The FX's full width and the instrument's half-width are both Spray's seconds in pixels.
+    const double seconds = static_cast<double>(extentPx) / pixelsPerSecond(geometry);
     return static_cast<float>(taperValue(kSpraySpanSeconds, seconds));
 }
 
-DragTarget hitTest(float x, const Window &window, float edgeTolerancePx) noexcept
+DragTarget hitTest(float x, const Window &window, float edgeTolerancePx,
+                   const LaneGeometry &geometry) noexcept
 {
     if (!std::isfinite(x))
     {
@@ -159,13 +164,19 @@ DragTarget hitTest(float x, const Window &window, float edgeTolerancePx) noexcep
     const float hi = std::max(window.x0, window.x1);
     const float tolerance = edgeTolerancePx > 0.0f ? edgeTolerancePx : 0.0f; // NaN gives 0
     const float inside = std::min(tolerance, (hi - lo) / 3.0f);
-    if (x >= lo + inside && x <= hi - inside)
-    {
-        return DragTarget::Body;
-    }
     if (x >= lo - tolerance && x < lo + inside)
     {
         return DragTarget::LeftEdge;
+    }
+    if (geometry.fxLane)
+    {
+        // The FX window's right edge is Position itself (ruling R-T8a): the body reaches it and
+        // its tolerance.
+        return x >= lo + inside && x <= hi + tolerance ? DragTarget::Body : DragTarget::None;
+    }
+    if (x >= lo + inside && x <= hi - inside)
+    {
+        return DragTarget::Body;
     }
     if (x > hi - inside && x <= hi + tolerance)
     {

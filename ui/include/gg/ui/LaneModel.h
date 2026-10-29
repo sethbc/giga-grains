@@ -72,44 +72,55 @@ struct Window
     float x0, x1;
 };
 
-/// The scan window for Position and Spray's CLAP values (spec §6.2): centred at Position, with
-/// edges at ±Spray. Each value is clamped to 0..1 first (NaN to 0).
+/// The scan window for Position and Spray's CLAP values (spec §6.2; ruling R-T8a): where the
+/// grains read. Each value is clamped to 0..1 first (NaN to 0). Spray is 2/255 × (2^(8v) − 1)
+/// seconds (ParamMap's taper), converted to pixels at the lane's scale (width / ringSeconds, or
+/// width × sampleRate / sourceFrames).
 ///
-/// - FX: Position is 16/255 × (2^(8v) − 1) seconds behind the head (ParamMap's taper), so the
-///   centre is at width × (1 − seconds / ringSeconds).
-/// - Instrument: Position is the fraction of the file, so the centre is at width × v.
-/// - Both: Spray is 2/255 × (2^(8v) − 1) seconds either side, converted to pixels at the lane's
-///   scale (width / ringSeconds, or width × sampleRate / sourceFrames).
-///
-/// The FX lane is relative to the head, so the window doesn't move as the head does:
-/// `headAtNow` is part of the interface for the canvas's convenience and is unused.
-Window scanWindow(float positionValue, float sprayValue, int64_t headAtNow,
-                  const LaneGeometry &geometry) noexcept;
+/// - FX: one-sided, as the engine draws a live grain's position, Position + Spray × u with u in
+///   [0, 1) (CloudScheduler): from Position to Position + Spray seconds behind the head. Position
+///   is 16/255 × (2^(8v) − 1) seconds behind the head, so x1, the window's newer (right) edge, is
+///   Position's x, width × (1 − seconds / ringSeconds), and x0 lies Spray's pixels further left.
+///   The lane is relative to the head, so the window doesn't move as the head does.
+/// - Instrument: ±Spray around Position, as the engine spreads a sample grain's spray either
+///   side. Position is the fraction of the file, so the centre is at width × v.
+Window scanWindow(float positionValue, float sprayValue, const LaneGeometry &geometry) noexcept;
 
-/// The Position value whose window is centred at x: scanWindow's inverse, for a body drag.
-/// Clamped to 0..1, so a drag past either end of the lane pins Position to that end (left of
-/// the FX lane is 1, the oldest audio; left of the instrument lane is 0), infinities included.
-/// A NaN x or a degenerate lane gives 0.
+/// The Position value whose window is anchored at x, scanWindow's inverse, for a body drag: the
+/// window's right edge (x1) on the FX lane, its centre on the instrument's. Clamped to 0..1, so
+/// a drag past either end of the lane pins Position to that end (left of the FX lane is 1, the
+/// oldest audio; left of the instrument lane is 0), infinities included. A NaN x or a
+/// degenerate lane gives 0.
 float positionValueAtX(float x, const LaneGeometry &geometry) noexcept;
 
-/// The Spray value whose window is ±halfWidthPx wide: scanWindow's inverse, for an edge drag.
-/// Clamped to 0..1; a NaN or negative half-width, or a degenerate lane, gives 0.
-float sprayValueForHalfWidth(float halfWidthPx, const LaneGeometry &geometry) noexcept;
+/// The Spray value whose window has the extent extentPx, scanWindow's inverse, for an edge drag:
+/// on the FX lane the window's full width (x1 − x0, from Position to the dragged older edge), on
+/// the instrument's its half-width (the dragged edge's distance from the centre). Clamped to
+/// 0..1; a NaN or negative extent, or a degenerate lane, gives 0.
+float sprayValueForExtent(float extentPx, const LaneGeometry &geometry) noexcept;
 
 /// What a press at x grabs.
 enum class DragTarget
 {
     None,
-    Body,      ///< Sets Position.
-    LeftEdge,  ///< Sets Spray.
-    RightEdge, ///< Sets Spray.
+    Body,      ///< Sets Position (on the FX lane, the right edge too: it is Position).
+    LeftEdge,  ///< Sets Spray (the FX window's older edge, or either instrument edge).
+    RightEdge, ///< Sets Spray. Instrument lane only: the FX window's right edge is the Body.
 };
 
-/// Hit-tests x against the window. Each edge grabs within edgeTolerancePx outside the window
-/// and within min(edgeTolerancePx, width / 3) inside it, so the middle third of a narrow window
-/// stays the body; everything else inside is the body. A window of no width is the body only
-/// at its own x, with an edge either side. A non-finite x grabs nothing.
-DragTarget hitTest(float x, const Window &window, float edgeTolerancePx) noexcept;
+/// Hit-tests x against the window on geometry's lane. The left edge grabs within
+/// edgeTolerancePx outside the window and within min(edgeTolerancePx, width / 3) inside it, so a
+/// narrow window keeps at least its middle third for the body.
+///
+/// - Instrument: the right edge grabs the same way, mirrored; everything else inside is the
+///   body. A window of no width is the body only at its own x, with an edge either side.
+/// - FX: the right edge is Position, so it and its tolerance outside the window are the body
+///   (ruling R-T8a). A window of no width (Spray 0) is the left edge just left of its x and the
+///   body from its x rightwards.
+///
+/// A non-finite x grabs nothing.
+DragTarget hitTest(float x, const Window &window, float edgeTolerancePx,
+                   const LaneGeometry &geometry) noexcept;
 } // namespace gg::ui
 
 #endif // GG_UI_LANEMODEL_H

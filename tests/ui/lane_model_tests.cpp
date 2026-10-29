@@ -4,9 +4,11 @@
 
 // LaneModel: the canvas's JUCE-free geometry (spec §6.2-6.3): where a playing grain's capsule
 // lies on the lane, where the scan window lies, and the inverse mappings a drag needs. These
-// tests link gg-ui-core only, so they also run in the sanitizer builds.
+// tests need no editor or JUCE (one compares the tapers with gg-core's ParamMap), so they also
+// run in the sanitizer builds.
 
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <optional>
@@ -14,6 +16,8 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
+#include "gg/core/ParamIds.h"
+#include "gg/core/ParamMap.h"
 #include "gg/ui/LaneModel.h"
 
 using Catch::Matchers::WithinAbs;
@@ -244,46 +248,68 @@ TEST_CASE("a grain the lane cannot place is not drawn", "[ui]")
 
 TEST_CASE("the scan window follows the position and spray tapers", "[ui]")
 {
-    // FX: Position 0.28967658 is 0.25 s behind the head and Spray 0.36033038 is 50 ms, so the
-    // window is centred 0.25 s behind the head, 0.1 s wide: on 1600 px for 16 s, centred at
-    // 1575 px, 10 px wide.
+    // FX (ruling R-T8a): Position 0.28967658 is 0.25 s behind the head and Spray 0.36033038 is
+    // 50 ms, so the window runs from 0.25 s to 0.3 s behind the head, one-sided as the engine
+    // draws a live grain: on 1600 px for 16 s, its right edge (Position) at 1575 px, 5 px wide.
     const LaneGeometry g = fxLane();
-    const int64_t head = 48000 * 30;
-    const auto w = gg::ui::scanWindow(0.28967658f, 0.36033038f, head, g);
-    REQUIRE_THAT(0.5 * (w.x0 + w.x1), WithinAbs(1575.0, 1e-3));
-    REQUIRE_THAT(w.x1 - w.x0, WithinAbs(10.0, 1e-3));
+    const auto w = gg::ui::scanWindow(0.28967658f, 0.36033038f, g);
+    REQUIRE_THAT(w.x1, WithinAbs(1575.0, 1e-3));
+    REQUIRE_THAT(w.x1 - w.x0, WithinAbs(5.0, 1e-3));
 
-    // The lane is relative to the head, so the window doesn't move as the head does.
-    const auto later = gg::ui::scanWindow(0.28967658f, 0.36033038f, head + 48000, g);
-    REQUIRE(later.x0 == w.x0);
-    REQUIRE(later.x1 == w.x1);
-
-    // The ends of the tapers: Position 0 is the head, 1 is 16 s back; Spray 1 is ±2 s.
-    const auto atHead = gg::ui::scanWindow(0.0f, 0.0f, head, g);
+    // The ends of the tapers: Position 0 is the head, 1 is 16 s back; Spray 1 is 2 s further.
+    const auto atHead = gg::ui::scanWindow(0.0f, 0.0f, g);
     REQUIRE(atHead.x0 == 1600.0f);
     REQUIRE(atHead.x1 == 1600.0f);
-    const auto oldest = gg::ui::scanWindow(1.0f, 1.0f, head, g);
-    REQUIRE_THAT(0.5 * (oldest.x0 + oldest.x1), WithinAbs(0.0, 1e-3));
-    REQUIRE_THAT(oldest.x1 - oldest.x0, WithinAbs(400.0, 1e-3));
+    const auto oldest = gg::ui::scanWindow(1.0f, 1.0f, g);
+    REQUIRE_THAT(oldest.x1, WithinAbs(0.0, 1e-3));
+    REQUIRE_THAT(oldest.x0, WithinAbs(-200.0, 1e-3));
     // Values outside 0..1 (or NaN) are clamped first.
-    const auto clamped = gg::ui::scanWindow(1.5f, -1.0f, head, g);
-    REQUIRE(clamped.x0 == gg::ui::scanWindow(1.0f, 0.0f, head, g).x0);
+    const auto clamped = gg::ui::scanWindow(1.5f, -1.0f, g);
+    const auto top = gg::ui::scanWindow(1.0f, 0.0f, g);
+    REQUIRE(clamped.x0 == top.x0);
+    REQUIRE(clamped.x1 == top.x1);
     const auto nan = gg::ui::scanWindow(std::numeric_limits<float>::quiet_NaN(),
-                                        std::numeric_limits<float>::quiet_NaN(), head, g);
+                                        std::numeric_limits<float>::quiet_NaN(), g);
     REQUIRE(nan.x0 == 1600.0f);
     REQUIRE(nan.x1 == 1600.0f);
 
     // Instrument: Position is the fraction of the file and Spray is seconds either side, so on a
     // 2 s file across 800 px, Position 0.25 with 50 ms of Spray is centred at 200 px, ±20 px.
     const LaneGeometry inst = instrumentLane(96000);
-    const auto iw = gg::ui::scanWindow(0.25f, 0.36033038f, 0, inst);
+    const auto iw = gg::ui::scanWindow(0.25f, 0.36033038f, inst);
     REQUIRE_THAT(0.5 * (iw.x0 + iw.x1), WithinAbs(200.0, 1e-3));
     REQUIRE_THAT(iw.x1 - iw.x0, WithinAbs(40.0, 1e-3));
 }
 
+TEST_CASE("the scan window's tapers match ParamMap's", "[ui]")
+{
+    // LaneModel keeps its own copy of ParamMap's FX Position and Spray tapers (gg-ui-core doesn't
+    // link gg-core): the window's seconds must be toCloudParams's, so the copies can't drift. On
+    // the 1600 px, 16 s lane a pixel is 10 ms.
+    const LaneGeometry g = fxLane();
+    const auto secondsOf = [&](float position, float spray) {
+        gg::core::ParamValues values{};
+        values[static_cast<std::size_t>(gg::core::ParamSlot::Position)] = position;
+        values[static_cast<std::size_t>(gg::core::ParamSlot::Spray)] = spray;
+        const auto cloud = gg::core::toCloudParams(values, gg::core::Mode::Fx);
+        const auto w = gg::ui::scanWindow(position, spray, g);
+        INFO("position " << position << ", spray " << spray);
+        REQUIRE_THAT((1600.0 - w.x1) / 100.0, WithinAbs(cloud.position, 1e-5));
+        REQUIRE_THAT((w.x1 - w.x0) / 100.0, WithinAbs(cloud.spray, 1e-5));
+        return cloud;
+    };
+    const auto brief = secondsOf(0.28967658f, 0.36033038f);
+    REQUIRE_THAT(brief.position, WithinAbs(0.25, 1e-7));
+    REQUIRE_THAT(brief.spray, WithinAbs(0.05, 1e-7));
+    for (int i = 0; i <= 20; ++i)
+    {
+        const float v = static_cast<float>(i) / 20.0f;
+        secondsOf(v, 1.0f - v);
+    }
+}
+
 TEST_CASE("positionValueAtX inverts scanWindow across the lane", "[ui]")
 {
-    const int64_t head = 48000 * 30;
     for (const LaneGeometry g : {fxLane(), fxLane(317.0f), instrumentLane(96000)})
     {
         INFO((g.fxLane ? "fx" : "instrument") << " lane, " << g.width << " px");
@@ -291,9 +317,9 @@ TEST_CASE("positionValueAtX inverts scanWindow across the lane", "[ui]")
         {
             const float v = static_cast<float>(i) / 1000.0f;
             INFO("position " << v);
-            const auto w = gg::ui::scanWindow(v, 0.0f, head, g);
+            const auto w = gg::ui::scanWindow(v, 0.0f, g);
             REQUIRE(w.x0 == w.x1);
-            REQUIRE_THAT(gg::ui::positionValueAtX(w.x0, g), WithinAbs(v, 1e-5));
+            REQUIRE_THAT(gg::ui::positionValueAtX(w.x1, g), WithinAbs(v, 1e-5));
         }
         // And x -> value -> x, everywhere on the lane.
         for (int i = 0; i <= 100; ++i)
@@ -303,29 +329,37 @@ TEST_CASE("positionValueAtX inverts scanWindow across the lane", "[ui]")
             const float v = gg::ui::positionValueAtX(x, g);
             REQUIRE(v >= 0.0f);
             REQUIRE(v <= 1.0f);
-            REQUIRE_THAT(gg::ui::scanWindow(v, 0.0f, head, g).x0, WithinAbs(x, 1e-2));
+            REQUIRE_THAT(gg::ui::scanWindow(v, 0.0f, g).x1, WithinAbs(x, 1e-2));
         }
     }
 
-    // The FX value matches the taper's inverse.
+    // The FX value matches the taper's inverse, and Position stays the window's right edge
+    // whatever the Spray.
     REQUIRE_THAT(gg::ui::positionValueAtX(1575.0f, fxLane()),
                  WithinAbs(fxPositionValue(0.25), 1e-6));
+    REQUIRE_THAT(gg::ui::positionValueAtX(gg::ui::scanWindow(0.5f, 0.8f, fxLane()).x1, fxLane()),
+                 WithinAbs(0.5, 1e-5));
 
-    // spray: the half-width in pixels back to the value, inverting the window's half-width.
+    // Spray: the window's extent back to the value, its full width on the FX lane and its
+    // half-width on the instrument's.
     for (const LaneGeometry g : {fxLane(), instrumentLane(96000)})
     {
+        INFO((g.fxLane ? "fx" : "instrument") << " lane");
         for (int i = 0; i <= 1000; ++i)
         {
             const float s = static_cast<float>(i) / 1000.0f;
             INFO("spray " << s);
-            const auto w = gg::ui::scanWindow(0.5f, s, head, g);
-            REQUIRE_THAT(gg::ui::sprayValueForHalfWidth(0.5f * (w.x1 - w.x0), g),
-                         WithinAbs(s, 1e-4));
+            const auto w = gg::ui::scanWindow(0.5f, s, g);
+            const float extent = g.fxLane ? w.x1 - w.x0 : 0.5f * (w.x1 - w.x0);
+            REQUIRE_THAT(gg::ui::sprayValueForExtent(extent, g), WithinAbs(s, 1e-4));
         }
     }
-    REQUIRE_THAT(gg::ui::sprayValueForHalfWidth(5.0f, fxLane()), WithinAbs(0.36033038, 1e-6));
-    REQUIRE(gg::ui::sprayValueForHalfWidth(-3.0f, fxLane()) == 0.0f);
-    REQUIRE(gg::ui::sprayValueForHalfWidth(1e9f, fxLane()) == 1.0f);
+    // 50 ms is 5 px on the FX lane (full width) and 20 px on the 2 s instrument lane (half).
+    REQUIRE_THAT(gg::ui::sprayValueForExtent(5.0f, fxLane()), WithinAbs(0.36033038, 1e-6));
+    REQUIRE_THAT(gg::ui::sprayValueForExtent(20.0f, instrumentLane(96000)),
+                 WithinAbs(0.36033038, 1e-6));
+    REQUIRE(gg::ui::sprayValueForExtent(-3.0f, fxLane()) == 0.0f);
+    REQUIRE(gg::ui::sprayValueForExtent(1e9f, fxLane()) == 1.0f);
 }
 
 TEST_CASE("positionValueAtX clamps x outside the lane", "[ui]")
@@ -340,44 +374,68 @@ TEST_CASE("positionValueAtX clamps x outside the lane", "[ui]")
     const float nan = std::numeric_limits<float>::quiet_NaN();
     REQUIRE(gg::ui::positionValueAtX(nan, fxLane()) == 0.0f);
     REQUIRE(gg::ui::positionValueAtX(nan, instrumentLane(96000)) == 0.0f);
-    REQUIRE(gg::ui::sprayValueForHalfWidth(nan, fxLane()) == 0.0f);
+    REQUIRE(gg::ui::sprayValueForExtent(nan, fxLane()) == 0.0f);
 }
 
 TEST_CASE("hit testing", "[ui]")
 {
-    // A wide window: each edge grabs within the tolerance either side, the rest is the body.
+    const LaneGeometry inst = instrumentLane(96000);
+    const LaneGeometry fx = fxLane();
+
+    // Instrument, a wide window: each edge grabs within the tolerance either side, the rest is
+    // the body.
     const gg::ui::Window wide{100.0f, 200.0f};
-    REQUIRE(gg::ui::hitTest(100.0f, wide, 5.0f) == DragTarget::LeftEdge);
-    REQUIRE(gg::ui::hitTest(96.0f, wide, 5.0f) == DragTarget::LeftEdge);
-    REQUIRE(gg::ui::hitTest(104.0f, wide, 5.0f) == DragTarget::LeftEdge);
-    REQUIRE(gg::ui::hitTest(94.0f, wide, 5.0f) == DragTarget::None);
-    REQUIRE(gg::ui::hitTest(150.0f, wide, 5.0f) == DragTarget::Body);
-    REQUIRE(gg::ui::hitTest(106.0f, wide, 5.0f) == DragTarget::Body);
-    REQUIRE(gg::ui::hitTest(194.0f, wide, 5.0f) == DragTarget::Body);
-    REQUIRE(gg::ui::hitTest(196.0f, wide, 5.0f) == DragTarget::RightEdge);
-    REQUIRE(gg::ui::hitTest(200.0f, wide, 5.0f) == DragTarget::RightEdge);
-    REQUIRE(gg::ui::hitTest(205.0f, wide, 5.0f) == DragTarget::RightEdge);
-    REQUIRE(gg::ui::hitTest(206.0f, wide, 5.0f) == DragTarget::None);
-    REQUIRE(gg::ui::hitTest(std::numeric_limits<float>::quiet_NaN(), wide, 5.0f) ==
+    REQUIRE(gg::ui::hitTest(100.0f, wide, 5.0f, inst) == DragTarget::LeftEdge);
+    REQUIRE(gg::ui::hitTest(96.0f, wide, 5.0f, inst) == DragTarget::LeftEdge);
+    REQUIRE(gg::ui::hitTest(104.0f, wide, 5.0f, inst) == DragTarget::LeftEdge);
+    REQUIRE(gg::ui::hitTest(94.0f, wide, 5.0f, inst) == DragTarget::None);
+    REQUIRE(gg::ui::hitTest(150.0f, wide, 5.0f, inst) == DragTarget::Body);
+    REQUIRE(gg::ui::hitTest(106.0f, wide, 5.0f, inst) == DragTarget::Body);
+    REQUIRE(gg::ui::hitTest(194.0f, wide, 5.0f, inst) == DragTarget::Body);
+    REQUIRE(gg::ui::hitTest(196.0f, wide, 5.0f, inst) == DragTarget::RightEdge);
+    REQUIRE(gg::ui::hitTest(200.0f, wide, 5.0f, inst) == DragTarget::RightEdge);
+    REQUIRE(gg::ui::hitTest(205.0f, wide, 5.0f, inst) == DragTarget::RightEdge);
+    REQUIRE(gg::ui::hitTest(206.0f, wide, 5.0f, inst) == DragTarget::None);
+    REQUIRE(gg::ui::hitTest(std::numeric_limits<float>::quiet_NaN(), wide, 5.0f, inst) ==
             DragTarget::None);
 
     // A narrow window keeps its middle third for the body: the edges reach in at most a third
     // of its width, and still the full tolerance outside it.
     const gg::ui::Window narrow{100.0f, 106.0f};
-    REQUIRE(gg::ui::hitTest(97.0f, narrow, 5.0f) == DragTarget::LeftEdge);
-    REQUIRE(gg::ui::hitTest(101.0f, narrow, 5.0f) == DragTarget::LeftEdge);
-    REQUIRE(gg::ui::hitTest(103.0f, narrow, 5.0f) == DragTarget::Body);
-    REQUIRE(gg::ui::hitTest(105.0f, narrow, 5.0f) == DragTarget::RightEdge);
-    REQUIRE(gg::ui::hitTest(110.0f, narrow, 5.0f) == DragTarget::RightEdge);
+    REQUIRE(gg::ui::hitTest(97.0f, narrow, 5.0f, inst) == DragTarget::LeftEdge);
+    REQUIRE(gg::ui::hitTest(101.0f, narrow, 5.0f, inst) == DragTarget::LeftEdge);
+    REQUIRE(gg::ui::hitTest(103.0f, narrow, 5.0f, inst) == DragTarget::Body);
+    REQUIRE(gg::ui::hitTest(105.0f, narrow, 5.0f, inst) == DragTarget::RightEdge);
+    REQUIRE(gg::ui::hitTest(110.0f, narrow, 5.0f, inst) == DragTarget::RightEdge);
 
     // A window of no width (Spray 0): its edges either side, the body on it.
     const gg::ui::Window point{100.0f, 100.0f};
-    REQUIRE(gg::ui::hitTest(98.0f, point, 5.0f) == DragTarget::LeftEdge);
-    REQUIRE(gg::ui::hitTest(100.0f, point, 5.0f) == DragTarget::Body);
-    REQUIRE(gg::ui::hitTest(102.0f, point, 5.0f) == DragTarget::RightEdge);
-    REQUIRE(gg::ui::hitTest(106.0f, point, 5.0f) == DragTarget::None);
+    REQUIRE(gg::ui::hitTest(98.0f, point, 5.0f, inst) == DragTarget::LeftEdge);
+    REQUIRE(gg::ui::hitTest(100.0f, point, 5.0f, inst) == DragTarget::Body);
+    REQUIRE(gg::ui::hitTest(102.0f, point, 5.0f, inst) == DragTarget::RightEdge);
+    REQUIRE(gg::ui::hitTest(106.0f, point, 5.0f, inst) == DragTarget::None);
 
     // Tolerance 0: only the window itself.
-    REQUIRE(gg::ui::hitTest(150.0f, wide, 0.0f) == DragTarget::Body);
-    REQUIRE(gg::ui::hitTest(99.0f, wide, 0.0f) == DragTarget::None);
+    REQUIRE(gg::ui::hitTest(150.0f, wide, 0.0f, inst) == DragTarget::Body);
+    REQUIRE(gg::ui::hitTest(99.0f, wide, 0.0f, inst) == DragTarget::None);
+
+    // FX (ruling R-T8a): the right edge is Position, so it and its tolerance are the body; the
+    // left (older) edge alone sets Spray.
+    REQUIRE(gg::ui::hitTest(96.0f, wide, 5.0f, fx) == DragTarget::LeftEdge);
+    REQUIRE(gg::ui::hitTest(104.0f, wide, 5.0f, fx) == DragTarget::LeftEdge);
+    REQUIRE(gg::ui::hitTest(94.0f, wide, 5.0f, fx) == DragTarget::None);
+    REQUIRE(gg::ui::hitTest(150.0f, wide, 5.0f, fx) == DragTarget::Body);
+    REQUIRE(gg::ui::hitTest(196.0f, wide, 5.0f, fx) == DragTarget::Body);
+    REQUIRE(gg::ui::hitTest(200.0f, wide, 5.0f, fx) == DragTarget::Body);
+    REQUIRE(gg::ui::hitTest(205.0f, wide, 5.0f, fx) == DragTarget::Body);
+    REQUIRE(gg::ui::hitTest(206.0f, wide, 5.0f, fx) == DragTarget::None);
+    REQUIRE(gg::ui::hitTest(105.0f, narrow, 5.0f, fx) == DragTarget::Body);
+    REQUIRE(gg::ui::hitTest(101.0f, narrow, 5.0f, fx) == DragTarget::LeftEdge);
+    // Spray 0: the left edge just left of Position, the body from it rightwards.
+    REQUIRE(gg::ui::hitTest(98.0f, point, 5.0f, fx) == DragTarget::LeftEdge);
+    REQUIRE(gg::ui::hitTest(100.0f, point, 5.0f, fx) == DragTarget::Body);
+    REQUIRE(gg::ui::hitTest(102.0f, point, 5.0f, fx) == DragTarget::Body);
+    REQUIRE(gg::ui::hitTest(106.0f, point, 5.0f, fx) == DragTarget::None);
+    REQUIRE(gg::ui::hitTest(std::numeric_limits<float>::quiet_NaN(), wide, 5.0f, fx) ==
+            DragTarget::None);
 }
