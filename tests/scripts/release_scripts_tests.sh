@@ -11,7 +11,8 @@
 # One function per script under test:
 #   - test_check_version: scripts/release/check-version.sh (§6.1, §6.6) against scratch
 #     CMakeLists.txt files: a tag matching the version with a suffix and without, a mismatched
-#     tag, the suffix dev refused, and bad usage or an unparsable file.
+#     tag, the suffix dev refused, --print (no tag; dev accepted), and bad usage or an
+#     unparsable file.
 #   - test_source_tarball: scripts/release/source-tarball.sh (decision 11, §6.6) on a recursive
 #     clone of a scratch superproject with one submodule: the archive holds the tracked files of
 #     both under giga-grains-<version>/, no .git file or directory and no untracked file; a
@@ -132,6 +133,16 @@ test_check_version() {
     expect_in "check-version: the refusal's reason mentions dev" "$err" "dev"
     expect_eq "check-version: the refusal prints nothing on stdout" "$out" ""
 
+    run_check_version --print "$dev"
+    expect_eq "check-version: --print accepts the suffix dev" "$status" 0
+    expect_eq "check-version: --print prints the three lines for 0.2.0-dev" "$out" \
+        "$(printf 'numeric=0.2.0\nprerelease=dev\nversion=0.2.0-dev')"
+    expect_eq "check-version: --print writes nothing to stderr" "$err" ""
+
+    run_check_version --print "$release"
+    expect_eq "check-version: --print with an empty suffix prints version=0.2.0" "$out" \
+        "$(printf 'numeric=0.2.0\nprerelease=\nversion=0.2.0')"
+
     run_check_version
     expect_eq "check-version: no arguments is bad usage" "$status" 2
     expect_in "check-version: bad usage prints the usage" "$err" "usage:"
@@ -143,6 +154,9 @@ test_check_version() {
     expect_eq "check-version: a file without a project( line is unparsable" "$status" 2
     expect_eq "check-version: the unparsable file's reason is one line" \
         "$(printf '%s\n' "$err" | wc -l | tr -d ' ')" 1
+    run_check_version --print "$noproject"
+    expect_eq "check-version: --print on a file without a project( line is unparsable" \
+        "$status" 2
 }
 
 # --- source-tarball.sh ----------------------------------------------------------------------

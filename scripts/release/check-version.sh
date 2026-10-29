@@ -7,6 +7,7 @@
 # the tag disagrees with the version in CMake or the suffix is dev.
 #
 #   scripts/release/check-version.sh <tag> [<CMakeLists.txt>]
+#   scripts/release/check-version.sh --print [<CMakeLists.txt>]
 #
 # Reads the numeric version from `project(GigaGrains VERSION X.Y.Z` and the pre-release suffix
 # from `set(GG_VERSION_PRERELEASE "<s>"` in <CMakeLists.txt> (default: the repository's), and
@@ -17,14 +18,20 @@
 #   prerelease=<s>
 #   version=<full>
 #
-# Exit status: 0 when <tag> is v<full>; 1, with a one-line reason on stderr, when it isn't or
-# when <s> is dev; 2, with a one-line reason on stderr, for bad usage or an unparsable file.
+# --print checks no tag and accepts dev: it prints the same three lines for the version CMake
+# would compose, which the workflow's plan job uses for a nightly's numeric part and a dry run's
+# version.
+#
+# Exit status: 0 when <tag> is v<full> (always, with --print); 1, with a one-line reason on stderr,
+# when it isn't or when <s> is dev; 2, with a one-line reason on stderr, for bad usage or an
+# unparsable file.
 
 set -euo pipefail
 
 me="check-version.sh"
 if (($# < 1 || $# > 2)); then
     echo "usage: $0 <tag> [<CMakeLists.txt>]" >&2
+    echo "       $0 --print [<CMakeLists.txt>]" >&2
     exit 2
 fi
 tag="$1"
@@ -68,6 +75,12 @@ else
     version="$numeric-$prerelease"
 fi
 
+if [[ "$tag" == --print ]]; then
+    echo "numeric=$numeric"
+    echo "prerelease=$prerelease"
+    echo "version=$version"
+    exit 0
+fi
 if [[ "$prerelease" == "dev" ]]; then
     echo "$me: the pre-release suffix is dev ($version), which is never released;" \
         "set GG_VERSION_PRERELEASE first" >&2
