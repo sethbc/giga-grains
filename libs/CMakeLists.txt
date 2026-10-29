@@ -18,6 +18,26 @@ add_subdirectory(sst/sst-cpputils)
 set(SST_BASIC_BLOCKS_SIMD_OMIT_NATIVE_ALIASES ON CACHE BOOL "No native SIMD aliases for Giga Grains")
 add_subdirectory(sst/sst-basic-blocks)
 
+# sst-filters and sst-effects (GPL-3.0-or-later): Space's reverb, sst-effects' Reverb 2, and the
+# biquad its effect base names. Both are header-only INTERFACE targets; gg-core links them
+# PRIVATE (core/src/space/GgFxConfig.h), so their headers compile only in gg-core's sources (and
+# the tests that reach core/src), with gg::compiler-options' -ffp-contract=off. Pinned with
+# shortcircuit-xt, whose pins pair with our sst-basic-blocks. Neither has submodules of its own.
+# - sst-filters links sst-basic-blocks, so comes after it. Its tests and examples stay off.
+# - sst-effects comes before sst-plugininfra on purpose: when sst-plugininfra::tinyxml exists,
+#   its CMake compiles a preset library (CMakeRC, tinyxml) we don't use. Its tests and examples
+#   stay off, and so does Nimbus's eurorack library (no eurorack target).
+# FORCE, so a cache from another configuration can't turn any of these back.
+set(SST_FILTERS_BUILD_TESTS OFF CACHE BOOL "Don't build sst-filters' tests" FORCE)
+set(SST_FILTERS_BUILD_EXAMPLES OFF CACHE BOOL "Don't build sst-filters' examples" FORCE)
+add_subdirectory(sst/sst-filters EXCLUDE_FROM_ALL)
+set(SST_EFFECTS_BUILD_TESTS OFF CACHE BOOL "Don't build sst-effects' tests" FORCE)
+set(SST_EFFECTS_BUILD_EXAMPLES OFF CACHE BOOL "Don't build sst-effects' examples" FORCE)
+add_subdirectory(sst/sst-effects EXCLUDE_FROM_ALL)
+if (TARGET sst-effects-preset-api)
+    message(FATAL_ERROR "sst-effects built its preset library: add it before sst-plugininfra")
+endif ()
+
 # The audio-metrics tooling (tools/audiometrics) and gg-render use the libraries below. Their
 # includes are SYSTEM and none of them links gg-compiler-options, so our -Werror never applies
 # to third-party code.

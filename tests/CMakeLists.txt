@@ -14,6 +14,7 @@ add_executable(gg-tests
         core/processor_tests.cpp
         core/session_state_tests.cpp
         core/settings_tests.cpp
+        core/space_reverb_tests.cpp
         engine/cloud_tests.cpp
         engine/denormal_tests.cpp
         engine/determinism_tests.cpp
@@ -77,6 +78,10 @@ elseif (GG_BUILD_PLUGINS)
 endif ()
 target_link_libraries(gg-tests PRIVATE ${gg_tests_libraries} gg::compiler-options
         Catch2::Catch2WithMain nlohmann_json::nlohmann_json)
+# The Space tests (core/space_reverb_tests.cpp) reach gg-core's private Space headers (core/src,
+# as "space/..."), and through them sst-effects and sst-filters, which gg-core links PRIVATE.
+target_include_directories(gg-tests PRIVATE ${CMAKE_SOURCE_DIR}/core/src)
+target_link_libraries(gg-tests PRIVATE sst-effects sst-filters)
 # Scratch files (WAV/PNG round trips) go under the build tree, never a shared temp dir.
 target_compile_definitions(gg-tests PRIVATE GG_TEST_OUTPUT_DIR="${CMAKE_CURRENT_BINARY_DIR}/test-output"
         GG_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/golden"

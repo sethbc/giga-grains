@@ -31,7 +31,10 @@ target_include_directories(gg-core PUBLIC include PRIVATE src)
 # off (-fno-char8_t, MSVC /Zc:char8_t-). Only gg-core's sources include them, through the
 # internal src/Patch.h; the public headers don't, so the flag never reaches what links gg-core
 # (ruling M1-l). Linking statically, consumers still link tinyxml.
+#
+# PRIVATE too: sst-effects and sst-filters, header-only, for Space's reverb. Only the internal
+# src/space headers include them.
 target_link_libraries(gg-core
         PUBLIC gg::engine sst-basic-blocks fmt::fmt clap
-        PRIVATE sst-plugininfra::patchbase gg::compiler-options
+        PRIVATE sst-plugininfra::patchbase sst-effects sst-filters gg::compiler-options
         )
