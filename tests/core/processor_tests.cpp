@@ -656,6 +656,15 @@ TEST_CASE("the perform parameters are block-size invariant together", "[core][de
     renderAutomation(input, withoutFeedback, 4096, {4096}, dry);
     REQUIRE(dry.writeHead == ref.writeHead);
     REQUIRE_FALSE(sameBits(dry.ring.left, ref.ring.left));
+    // And the macro events change the output: without every macro slot's events (automation()'s
+    // and the perform ones), the rest of the automation renders other bits.
+    std::vector<TimedEvent> withoutMacros;
+    std::copy_if(events.begin(), events.end(), std::back_inserter(withoutMacros),
+                 [](const TimedEvent &e) { return !gg::core::isMacro(e.slot); });
+    REQUIRE(withoutMacros.size() < events.size());
+    AutomationRender plain;
+    renderAutomation(input, withoutMacros, 4096, {4096}, plain);
+    REQUIRE_FALSE(sameBits(plain.audio.left, ref.audio.left));
 
     struct Split
     {

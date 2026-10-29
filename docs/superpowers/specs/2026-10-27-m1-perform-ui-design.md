@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Approved in brainstorming by the director, 2026-10-27. Built 2026-10-29 (INTENT §23 #58, #59), and amended in place, each marked **Amended**: §1 (decision 3's slot), §3.1 (ruling PU-T2a), §4 (the fixed family, rulings PU-T3a and PU-T13a), §5 (the Processor's pieces, the per-sample guard, ruling PU-T4a), §6.2 (ruling PU-T8a), §6.4 (one peak level, rulings PU-T9a, PU-T9b, PU-T10a), §6.5 (MIT), §7 (the seed hand-off, ruling PU-T5a), §9 (ruling PU-T12a, `inst-texture`) |
+| **Status** | Approved in brainstorming by the director, 2026-10-27. Built 2026-10-29 (INTENT §23 #58, #59), and amended in place, each marked **Amended**: §1 (decision 3's slot), §3.1 (ruling PU-T2a), §4 (the fixed family, rulings PU-T3a and PU-T13a), §5 (the Processor's pieces, the per-sample guard, ruling PU-T4a), §6.2 (ruling PU-T8a), §6.4 (one peak level, rulings PU-T9a, PU-T9b, PU-T10a), §6.5 (MIT), §7 (the seed hand-off, ruling PU-T5a), §9 (ruling PU-T12a, `inst-texture`; the director's decision D3, the canvas budget, 2026-10-29) |
 | **Milestone** | M1 (Cloud core), sub-project 5 of 6 |
 | **Depends on** | Sub-project 1 (FX slice: Processor, parameter model, live ring); 3 (Sources: the instrument's sample lane); 4 (Space: Diffusion) |
 | **Authority** | INTENT.md. This spec realizes INTENT §17 for one layer, and adds §14 parameters |
@@ -294,7 +294,7 @@ Diffusion's ID belongs to sub-project 4 (Space).
   - polarity, so that at rest every target equals its base exactly;
   - the Texture anchors, plus envelope continuity and minimum attack across 0..1;
   - Feedback's ring write with fixed D;
-  - the IDs, flags, names and both remote pages.
+  - the IDs, flags, names and the three remote pages.
 - **Determinism:**
   - block-size invariance with every macro, Texture and Feedback automated, at block sizes 1, 7, 64, 511 and 4096 plus random
     splits, and with maxBlockSize 64 vs 4096;
@@ -317,6 +317,12 @@ Diffusion's ID belongs to sub-project 4 (Space).
   - the gesture event sequence of a drag;
   - `SplatRenderer` clamping ([214]).
 - **The canvas budget,** re-measured with the real Perform view at 8,192 grains in Live and Bitwig: at most 3 ms.
+
+  > **Amended by decision D3 (2026-10-29, by the director):** the budget is judged by two measurements. The densest setting
+  > a host can reach stays at or under 3 ms in Live and Bitwig, and an idle `gg-bench --canvas` run at 8,192 grains stays at
+  > or under 3 ms, taken with sub-project 6's X measurement. A run with nothing building (load average about 4) measured
+  > 2.80 ms (M0's, 2.77 ms); the idle run is sub-project 6's. See `docs/listening/m1-perform/README.md` and INTENT §16,
+  > §23 #58.
 - **The validators:** clap-validator, pluginval at strictness 10, auval ×3 and Steinberg's validator, all with the new
   parameters.
 - **The director's host and listening check:**

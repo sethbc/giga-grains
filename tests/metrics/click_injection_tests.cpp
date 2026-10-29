@@ -117,7 +117,7 @@ const std::map<std::string, int> &partlyHidden()
         {"dense-noise-eco", 0},
         {"fx-automate", 11}, // the swept input's top octaves, from about 2.3 s to 3.1 s
         // The swept input's top octaves, then their regeneration at Feedback 0.9 and the frozen
-        // ring, from about 2.8 s to 6.6 s.
+        // ring, from about 2.8 s to 6.6 s. Accepted by the director 2026-10-29 (decision D4).
         {"fx-feedback", 7},
         {"fx-file", 14},        // loop-48k.wav's noise bursts
         {"fx-noise-stereo", 3}, // a noise bed until the input ends at 3 s

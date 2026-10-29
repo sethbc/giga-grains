@@ -50,6 +50,18 @@ int64_t headAtNow(int64_t writeHead, int64_t snapshotClock, int64_t now, bool fr
     return writeHead + (now - snapshotClock);
 }
 
+FrameSpan peakColumnFrames(int x, int columns, double framesPerColumn, int64_t head, int64_t oldest,
+                           int64_t written) noexcept
+{
+    const double behind0 = (columns - x) * framesPerColumn;
+    const double behind1 = (columns - x - 1) * framesPerColumn;
+    // Both ends at most written (a column wholly past it is empty there), and end at least first.
+    const int64_t first =
+        std::min(std::max(head - static_cast<int64_t>(std::ceil(behind0)), oldest), written);
+    const int64_t end = std::min(head - static_cast<int64_t>(std::floor(behind1)), written);
+    return {first, std::max(end, first)};
+}
+
 LiveGrains::LiveGrains() : slots_(kCapacity) {}
 
 void LiveGrains::push(const LaneGrain &grain) noexcept

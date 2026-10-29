@@ -191,31 +191,21 @@ void Processor::setBase(ParamSlot slot, float value) noexcept
     {
         // A macro moves its targets' effective values (sub-project 5's spec §3.1): each ramped
         // value whose target it changed jumps, as a setBase of the target itself makes it; the
-        // others keep their ramps.
-        if (w.mix != mix_.to)
-        {
-            mix_.jump(w.mix);
-        }
-        if (w.levelGain != level_.to)
-        {
-            level_.jump(w.levelGain);
-        }
-        if (space_.diffusion != diffusion_.to)
-        {
-            diffusion_.jump(space_.diffusion);
-        }
-        if (space_.amount != amount_.to)
-        {
-            amount_.jump(space_.amount);
-        }
-        if (space_.drySend != drySend_.to)
-        {
-            drySend_.jump(space_.drySend);
-        }
-        if (w.feedback != feedback_.to)
-        {
-            feedback_.jump(w.feedback);
-        }
+        // others keep their ramps. Generic on purpose: every ramped value is checked, not only
+        // today's macro targets (Mix, Level, Diffusion, Feedback), so Amount's and Dry to
+        // Reverb's never fire now but follow a recipe that comes to move them.
+        const auto jumpIfMoved = [](Ramp &ramp, float target) {
+            if (target != ramp.to)
+            {
+                ramp.jump(target);
+            }
+        };
+        jumpIfMoved(mix_, w.mix);
+        jumpIfMoved(level_, w.levelGain);
+        jumpIfMoved(diffusion_, space_.diffusion);
+        jumpIfMoved(amount_, space_.amount);
+        jumpIfMoved(drySend_, space_.drySend);
+        jumpIfMoved(feedback_, w.feedback);
         return;
     }
     switch (slot)
@@ -641,9 +631,10 @@ void Processor::render(const Buffers &b, int64_t from, int64_t to) noexcept
         {
             d = d != nullptr ? d + offset : nullptr;
         }
-        // Feedback (spec §5): ring[t] = sanitize(in[t]) + fb(t) × limited[t − D], with limited
-        // from wetHistory_. The ramp changes only at boundaries, between render() calls, so it
-        // is 0 throughout a piece whose target and first value are 0: such a piece hands the
+        // Feedback (spec §5): ring[t] = sanitize(in[t]) + fb(t)·limited[t − D], sanitize being
+        // finiteOrZero and limited from wetHistory_; the ring clamps the sum as it clamps any
+        // input (the class comment). The ramp changes only at boundaries, between render() calls,
+        // so it is 0 throughout a piece whose target and first value are 0: such a piece hands the
         // engine its input as it is (the sign of zero included), as before Feedback.
         const float *ringIn[2] = {dry[0], dry[1]};
         uint32_t ringChannels = b.numInChannels > 0 ? 2 : 0;

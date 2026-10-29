@@ -28,14 +28,16 @@ namespace gg::ui
 /// while frozen and a regeneration marker at the head while Feedback is up.
 ///
 /// **Each frame** (renderFrame, which paint calls) it drains the context's grain queue into its
-/// own list (LiveGrains: a grain goes once it has ended), takes the newest snapshot, runs the
-/// published clock on by the wall time since it changed (LaneClock), and splats every playing
-/// grain's capsule (grainCapsule) at physical-pixel resolution into an image. paint then draws
+/// own list (LiveGrains: a grain goes once it has ended), first clearing a queue it hasn't read
+/// before (its backlog is stale), takes the newest snapshot, runs the published clock on by the
+/// wall time since it changed (LaneClock), and splats every playing grain's capsule
+/// (grainCapsule) at physical-pixel resolution into an image; the FX lane's only once a
+/// snapshot gives it the write head. paint then draws
 /// the image and, over it, the peaks, the windows, the tint and the marker. With the plugin
 /// inactive (the context's publish pointers null) it draws only those static parts.
 ///
 /// **Drags** set base values as host-visible gestures: the window's body sets Position and an
-/// edge sets Spray (hitTest; on the FX lane the newer edge is Position itself, ruling R-T8a).
+/// edge sets Spray (hitTest; on the FX lane the newer edge is Position itself, ruling PU-T8a).
 /// Each drag calls beginGesture once on the press, setValue for each move that changes the
 /// value, and endGesture once: on the release (wherever it is) or, if the canvas goes first,
 /// from its destructor. The window keeps the dragged value until the base value catches up
@@ -83,7 +85,7 @@ class GrainCanvas final : public juce::Component
     float shownPosition(double now);
     float shownSpray(double now);
 
-    void drawPeaks(juce::Graphics &g, const LaneGeometry &lane) const;
+    void drawPeaks(juce::Graphics &g, const LaneGeometry &lane);
     void drawWindow(juce::Graphics &g, const Window &w, bool ghost) const;
     void endDrag();
 
@@ -97,11 +99,16 @@ class GrainCanvas final : public juce::Component
     // The engine's view, as of the last frame.
     LaneClock clock_;
     LiveGrains grains_;
-    const void *clockSource_{nullptr}; // the clock last read: a new one is a new activation
+    const void *clockSource_{nullptr};  // the clock last read: a new one is a new activation
+    const void *grainsSource_{nullptr}; // the queue last drained: a new one is cleared first
     gg::core::UiSnapshot snapshot_{};
     bool haveSnapshot_{false};
     int64_t now_{0};
     int64_t head_{0};
+    int64_t written_{0}; // the frames the ring has written: the head at the published clock
+
+    // The peak strip's bars, kept so a frame reuses their storage rather than allocating.
+    juce::RectangleList<float> bars_;
 
     // The drag under way, if any (logical pixels).
     DragTarget drag_{DragTarget::None};

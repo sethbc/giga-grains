@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <cstring>
 #include <functional>
+#include <iterator>
 #include <limits>
 #include <memory>
 #include <numbers>
@@ -764,15 +765,16 @@ TEST_CASE("instrument notes are block-size invariant", "[core][determinism]")
         {55000 + 30, ParamSlot::Density, false, 3.0},  {58000 + 15, ParamSlot::Macro2, false, 0.4},
         {62000 + 30, ParamSlot::Macro5, false, 0.2},   {67000 + 1, ParamSlot::Macro3, true, -0.25}};
 
-    const auto run = [&](const Split &split, Render &r) {
+    const auto run = [&](const Split &split, const std::vector<TimedParam> &events, Render &r) {
         auto p = instrument(42, split.maxBlock);
         // 32 Hz of 62.5 ms grains: few overlap, so the 207 renders stay quick in Debug builds.
         p->setBase(ParamSlot::Density, 5.0f);
         p->setBase(ParamSlot::Size, -4.0f);
-        renderNotes(*p, kDetFrames, params, notes, split.blockSizes, r);
+        renderNotes(*p, kDetFrames, events, notes, split.blockSizes, r);
     };
+    const Split oneCall{"one call", 4096, {static_cast<uint32_t>(kDetFrames)}};
     Render ref;
-    run({"one call", 4096, {static_cast<uint32_t>(kDetFrames)}}, ref);
+    run(oneCall, params, ref);
     REQUIRE(allFinite(ref.audio.left));
     REQUIRE(allFinite(ref.audio.right));
     REQUIRE(ref.log.grains.size() > 30);
@@ -785,13 +787,22 @@ TEST_CASE("instrument notes are block-size invariant", "[core][determinism]")
     // Silent before the first note, and between the release at 41000 and the next note's tail.
     REQUIRE(peakIn(ref.audio.left, 0, 1024) == 0.0f);
     REQUIRE(peakIn(ref.audio.left, 41024 + 3000 + 2, 50016) == 0.0f);
+    // The macro events change the output: without them, the notes and the rest of the
+    // automation render other bits.
+    std::vector<TimedParam> withoutMacros;
+    std::copy_if(params.begin(), params.end(), std::back_inserter(withoutMacros),
+                 [](const TimedParam &e) { return !gg::core::isMacro(e.slot); });
+    REQUIRE(withoutMacros.size() < params.size());
+    Render plain;
+    run(oneCall, withoutMacros, plain);
+    REQUIRE_FALSE(sameBits(plain.audio.left, ref.audio.left));
 
     for (const Split &split : splits(kB))
     {
         INFO(split.name << ", maxBlockSize " << split.maxBlock << ", " << split.blockSizes.size()
                         << " sizes");
         Render r;
-        run(split, r);
+        run(split, params, r);
         requireSame(ref, r);
     }
 }

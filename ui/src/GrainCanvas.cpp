@@ -23,8 +23,6 @@ using gg::core::ParamSlot;
 /// The FX's lane before the first activation has a sample rate: the window doesn't depend on
 /// it, and there are no grains to place.
 constexpr double kFallbackRate = 48000.0;
-/// How far an effective value must be from the base value for the ghost window to show.
-constexpr float kGhostThreshold = 1.0e-4f;
 
 LaneGrain laneGrain(const gg::core::GrainVis &v) noexcept
 {
@@ -92,6 +90,8 @@ bool GrainCanvas::usable(const LaneGeometry &g) noexcept
 
 float GrainCanvas::baseValue(ParamSlot slot) const
 {
+    // The editor always sets context_.baseValue; the fallback to the snapshot's base values is a
+    // test seam, for a canvas made from a bare EditorContext.
     if (context_.baseValue)
     {
         return context_.baseValue(slot);
@@ -139,6 +139,16 @@ void GrainCanvas::renderFrame()
             grains_.clear();
             haveSnapshot_ = took;
         }
+        if (context_.grains != grainsSource_)
+        {
+            // A queue this canvas hasn't read (the editor opening, or a new activation): what it
+            // holds was queued while nothing drew it, so it goes unread (Processor::setPublishing).
+            grainsSource_ = context_.grains;
+            if (context_.grains != nullptr)
+            {
+                context_.grains->clear();
+            }
+        }
         if (context_.grains != nullptr)
         {
             gg::core::GrainVis v;
@@ -152,6 +162,14 @@ void GrainCanvas::renderFrame()
         head_ = haveSnapshot_
                     ? headAtNow(snapshot_.writeHead, snapshot_.clock, now_, snapshot_.frozen)
                     : 0;
+        // The ring's frames as written by the block the clock published: not extrapolated.
+        written_ = haveSnapshot_ ? headAtNow(snapshot_.writeHead, snapshot_.clock, published,
+                                             snapshot_.frozen)
+                                 : 0;
+    }
+    else
+    {
+        grainsSource_ = nullptr;
     }
 
     // One accumulator pixel per physical pixel.
@@ -169,7 +187,8 @@ void GrainCanvas::renderFrame()
     }
     splat_->clear();
     const LaneGeometry lane = geometry(scale_);
-    if (clock != nullptr && usable(lane))
+    // The FX lane places its grains by the write head, which only a snapshot gives.
+    if (clock != nullptr && usable(lane) && (!fxLane() || haveSnapshot_))
     {
         grains_.forEach([&](const LaneGrain &grain) {
             if (const auto c = grainCapsule(grain, now_, head_, lane))
@@ -232,12 +251,15 @@ void GrainCanvas::paint(juce::Graphics &g)
         drawWindow(g, scanWindow(shownPosition(now), shownSpray(now), lane), false);
         // The ghost: where the grains read once macros and modulation are added (spec §6.2),
         // shown when that differs from the base values of the same block.
-        if (live &&
-            (std::abs(snapshot_.effectivePosition - snapshot_.basePosition) > kGhostThreshold ||
-             std::abs(snapshot_.effectiveSpray - snapshot_.baseSpray) > kGhostThreshold))
+        if (live)
         {
-            drawWindow(g, scanWindow(snapshot_.effectivePosition, snapshot_.effectiveSpray, lane),
-                       true);
+            const auto ghost =
+                ghostWindow({snapshot_.basePosition, snapshot_.baseSpray},
+                            {snapshot_.effectivePosition, snapshot_.effectiveSpray}, lane);
+            if (ghost)
+            {
+                drawWindow(g, *ghost, true);
+            }
         }
     }
     const auto bounds = getLocalBounds().toFloat();
@@ -250,7 +272,7 @@ void GrainCanvas::paint(juce::Graphics &g)
     {
         // Regeneration at the head: a bar at the right edge, stronger with more Feedback, and
         // an arrowhead pointing back into the ring.
-        const float amount = std::clamp(snapshot_.feedback / 0.95f, 0.0f, 1.0f);
+        const float amount = std::clamp(snapshot_.feedback / gg::core::kFeedbackMax, 0.0f, 1.0f);
         g.setColour(theme::kFeedback.withAlpha(0.35f + 0.65f * amount));
         g.fillRect(bounds.withLeft(bounds.getRight() - 3.0f));
         const float cy = bounds.getCentreY();
@@ -267,7 +289,7 @@ void GrainCanvas::paint(juce::Graphics &g)
     filledFrames_ = std::min(filledFrames_ + 1, kAveragedFrames);
 }
 
-void GrainCanvas::drawPeaks(juce::Graphics &g, const LaneGeometry &lane) const
+void GrainCanvas::drawPeaks(juce::Graphics &g, const LaneGeometry &lane)
 {
     // One column per logical pixel, each the peak of what it spans, mirrored about the middle.
     const int columns = getWidth();
@@ -277,12 +299,12 @@ void GrainCanvas::drawPeaks(juce::Graphics &g, const LaneGeometry &lane) const
     }
     const float mid = 0.5f * static_cast<float>(getHeight());
     const float reach = std::max(0.0f, mid - 2.0f);
-    juce::RectangleList<float> bars;
+    bars_.clear(); // keeps its storage
     const auto addBar = [&](int x, float peak) {
         const float h = std::min(peak, 1.0f) * reach;
         if (h > 0.25f)
         {
-            bars.addWithoutMerging({static_cast<float>(x), mid - h, 1.0f, 2.0f * h});
+            bars_.addWithoutMerging({static_cast<float>(x), mid - h, 1.0f, 2.0f * h});
         }
     };
     if (lane.fxLane)
@@ -292,25 +314,24 @@ void GrainCanvas::drawPeaks(juce::Graphics &g, const LaneGeometry &lane) const
         {
             return;
         }
-        // Frames head − span .. head across the lane. The strip holds the last frames() frames
-        // (its oldest bucket perhaps part overwritten, so left out), and none before the ring
-        // began: those columns stay empty.
+        // Frames head − span .. head across the lane (peakColumnFrames), but none past the last
+        // published block (written_) and none older than the strip's oldest whole bucket. That
+        // is measured from head_, at least written_ and nearer the writer, which may since have
+        // overwritten the buckets just older than written_ − frames(). Those columns stay empty.
         const double framesPerColumn = kRingSeconds * lane.sampleRate / columns;
         const int64_t oldest = head_ - peaks->frames() + gg::core::LivePeaks::kBucket;
         for (int x = 0; x < columns; ++x)
         {
-            const double behind0 = (columns - x) * framesPerColumn;
-            const double behind1 = (columns - x - 1) * framesPerColumn;
-            const auto f0 = std::max(head_ - static_cast<int64_t>(std::ceil(behind0)), oldest);
-            const auto f1 = head_ - static_cast<int64_t>(std::floor(behind1));
+            const FrameSpan span =
+                peakColumnFrames(x, columns, framesPerColumn, head_, oldest, written_);
             float peak = 0.0f;
-            for (int64_t f = f0; f < f1; f += gg::core::LivePeaks::kBucket)
+            for (int64_t f = span.first; f < span.end; f += gg::core::LivePeaks::kBucket)
             {
                 peak = std::max(peak, peaks->at(f));
             }
-            if (f0 < f1)
+            if (span.first < span.end)
             {
-                peak = std::max(peak, peaks->at(f1 - 1));
+                peak = std::max(peak, peaks->at(span.end - 1));
             }
             addBar(x, peak);
         }
@@ -340,7 +361,7 @@ void GrainCanvas::drawPeaks(juce::Graphics &g, const LaneGeometry &lane) const
         }
     }
     g.setColour(theme::kPeaks.withAlpha(0.55f));
-    g.fillRectList(bars);
+    g.fillRectList(bars_);
 }
 
 void GrainCanvas::drawWindow(juce::Graphics &g, const Window &w, bool ghost) const
@@ -398,6 +419,10 @@ void GrainCanvas::mouseMove(const juce::MouseEvent &e)
 
 void GrainCanvas::mouseDown(const juce::MouseEvent &e)
 {
+    if (!e.mods.isLeftButtonDown())
+    {
+        return; // only the primary button drags; a right-click is no gesture
+    }
     if (drag_ != DragTarget::None)
     {
         endDrag(); // a second press (another touch) while the first drag is live

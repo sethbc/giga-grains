@@ -78,9 +78,9 @@ constexpr bool isIdentity(const EnvelopeShape &e) noexcept
 /// phase < a ? phase × (0.5 / a) : phase > 1 − r ? 1 − (1 − phase) × (0.5 / r) : 0.5.
 /// The identity when attackEnd == releaseStart == 0.5 (1 − (1 − phase) is exact for phase in
 /// [0.5, 1], by Sterbenz's lemma). It maps [0, 1] onto [0, 1], keeps a phase below 0 below 0 and
-/// one above 1 above 1 (both scales are at least 1), and a NaN a NaN (the first test is written
-/// !(phase >= a) for that), so
-/// HannTable::at gives 0 outside the window as it did without the warp.
+/// one above 1 above 1 (both scales are positive), and a NaN a NaN (the first test is written
+/// !(phase >= a) for that), so HannTable::at gives 0 outside the window as it did without the
+/// warp.
 constexpr double warpPhase(double phase, const EnvelopeShape &e) noexcept
 {
     GG_FP_CONTRACT_OFF

@@ -171,17 +171,18 @@ struct NoteEvent
 ///
 /// **Feedback** (FX; sub-project 5's spec §5). The engine writes its live ring from
 /// ```
-/// ring[t] = sanitize(d[t] + fb(t)·wet[t − D])     (wet[t − D] = 0 before the first sample)
+/// ring[t] = sanitize(in[t]) + fb(t)·limited[t − D]    (limited = 0 before the first sample)
 /// ```
-/// with fb the ramped Feedback, wet the limited wet signal above (after Level and the limiter,
-/// before the mix; per channel, so with one output channel the right side is the diffused mono
-/// render's) and D = kFeedbackDelay, the ring's head margin; sanitize is the ring's own (non-finite
-/// as 0, clamped). The last D samples of wet are kept by absolute time, and the FX renders in
-/// pieces of at most D samples, so the output is block-size invariant. A sample where fb is 0
-/// writes d alone, and a piece where fb is 0 throughout hands the engine the input itself, as
-/// before Feedback, so Feedback 0 renders bit for bit as it did, the sign of zero included.
-/// Frozen, the ring writes nothing, so Feedback regenerates nothing (Freeze wins). The instrument
-/// has no ring: its Feedback is 0 (toWetParams).
+/// with sanitize(x) = x when x is finite and 0 otherwise (so sanitize(in) is d above), fb the
+/// ramped Feedback, limited the wet signal above (after Level and the limiter, before the mix; per
+/// channel, so with one output channel the right side is the diffused mono render's) and
+/// D = kFeedbackDelay, the ring's head margin. The ring stores the sum as it stores any input
+/// (non-finite as 0, clamped to ±2^20). The last D samples of limited are kept by absolute time,
+/// and the FX renders in pieces of at most D samples, so the output is block-size invariant. A
+/// sample where fb is 0 writes d alone, and a piece where fb is 0 throughout hands the engine the
+/// input itself, as before Feedback, so Feedback 0 renders bit for bit as it did, the sign of zero
+/// included. Frozen, the ring writes nothing, so Feedback regenerates nothing (Freeze wins). The
+/// instrument has no ring: its Feedback is 0 (toWetParams).
 ///
 /// **The reverb's grid.** SpaceReverb's chunks are the control grid's cells: its time t is the
 /// absolute sample (Engine::sampleClock), which construction and reset() start at 0 with the
@@ -327,9 +328,13 @@ class Processor
     void setEventSink(GrainEventSink sink, void *ctx) noexcept;
 
     /// Turns publishing on or off (the class comment): the editor's, on the main thread, as it
-    /// opens and closes. It takes effect from the next process() call's start.
+    /// opens and closes. It takes effect from the next process() call's start. Turning it off
+    /// leaves the grain queue as it is: what it holds then is stale, so the consumer clears it
+    /// (GrainQueue::clear) when it starts reading a queue (the canvas, on the first frame that
+    /// finds a queue it hasn't read), rather than draw that backlog.
     void setPublishing(bool on) noexcept { publishing_.store(on, std::memory_order_relaxed); }
-    /// The spawned grains, for the editor (the queue's consumer).
+    /// The spawned grains, for the editor (the queue's consumer, which clears it on opening:
+    /// setPublishing).
     GrainQueue &grainQueue() noexcept { return *grainQueue_; }
     /// The latest UiSnapshot, for the editor (the buffer's consumer).
     SnapshotBuffer &snapshot() noexcept { return snapshot_; }
