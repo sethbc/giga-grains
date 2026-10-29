@@ -61,8 +61,10 @@ struct Metrics
     ///
     /// What it can't see: a click no larger than the material's own sample-to-sample movement.
     /// In white noise at about -23 dBFS RMS (dense-noise: d's RMS is 0.18), a -20 dBFS step moves
-    /// d by 0.1 and scores about 1, and a 0 dBFS spike scores about 11; a -20 dBFS step inside
-    /// one of loop-48k.wav's noise bursts is hidden the same way (docs/m1-carry-over.md).
+    /// d by 0.1 and scores about 1. A 0 dBFS spike scores 9.3 to 12.5 there, and 11.3 to 14.6 in
+    /// dense-noise-eco (d's RMS 0.15), under the limit of 15. A -20 dBFS step inside one of
+    /// loop-48k.wav's noise bursts is hidden the same way. Accepted (row 58, director option A,
+    /// 2026-10-29); tests/metrics/click_injection_tests.cpp pins both, case by case.
     double clickScore{};
     /// Samples (all channels) that are NaN or ±inf.
     uint64_t nonFinite{};

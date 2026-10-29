@@ -87,7 +87,7 @@ it stays under −1 dBFS. `08b` is sub-project 3's settings exactly, and peaks a
 - [ ] **6. Automating Pre-delay and Size (`06`).** Pre-delay glides like tape, with no click. It
   leaves a faint broadband haze while it moves (about −90 dBFS); is it audible? Size clicks or
   glitches: that is accepted (decision S8, "set, don't sweep"). On the golden case's click
-  detector a Size move scores 31–228 against a click limit of 30, and in `06` each move leaves
+  detector a Size move scores 31–228 against metricsVersion 1's click limit of 30, and in `06` each move leaves
   about 0.75 s of broadband hash as the reverb rings the glitch out. **Judge how bad it is,** for
   the carry-over row: tolerable for a parameter you set, or does Size need smoothing (or a
   crossfade) after all?

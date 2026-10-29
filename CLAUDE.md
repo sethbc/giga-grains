@@ -341,7 +341,11 @@ gg-render --write-media DIR
     `[golden][metrics]` tests in `tests/metrics/click_injection_tests.cpp` render every case in
     process, add a -20 dBFS step at sixteen positions in turn and require each to score above
     the limit, except at the positions a case's own noise or high frequencies hide it, which a
-    table there pins per case. A new case must catch all sixteen or be added to the table.
+    table there pins per case as an exact count. A new case must catch all sixteen or be added
+    to the table; a change that moves a count updates its entry, with the reason, in the same
+    commit. The two dense-noise cases catch none of the steps, and none of the same positions'
+    0 dBFS spikes (9.3 to 14.6 against 15): an accepted blind spot (row 58, director option A,
+    2026-10-29).
   - `golden_tamper_events` and `golden_tamper_metrics` check that the gate can fail: each
     compares a render with a golden copy that has one value changed, and passes only on
     gg-render's failure message.

@@ -103,16 +103,21 @@ AudioData withStep(const AudioData &audio, std::size_t frame)
 
 double clickScore(const AudioData &audio) { return gg::metrics::computeMetrics(audio).clickScore; }
 
-/// The cases whose own material hides a -20 dBFS step at some positions, with how many of the
-/// kPositions steps still score above the limit (measured at metricsVersion 2). Every other case
+/// The cases whose own material hides a -20 dBFS step at some positions, with exactly how many
+/// of the kPositions steps score above the limit (measured at metricsVersion 2). Every other case
 /// must catch all of them. A step moves d by 0.1 at two samples, so it can't stand out where the
 /// material's own d is about that large or larger: in white noise at about -23 dBFS RMS, d's RMS
 /// is 0.18; in a sine, d grows with the square of its frequency.
+///
+/// The counts are exact, so neither a lost catch nor a new one passes unnoticed: when a change to
+/// a golden's audio or to the metric moves one, update its entry here with the reason, in the
+/// same commit.
 const std::map<std::string, int> &partlyHidden()
 {
     static const std::map<std::string, int> cases{
-        {"dense-noise", 0},     // a noise bed throughout (d RMS 0.18)
-        {"dense-noise-eco", 0}, // the same (0.15)
+        // A noise bed throughout (d RMS 0.18, and 0.15 at Eco). Accepted blind spot: row 58,
+        // director option A, 2026-10-29.
+        {"dense-noise", 0},     {"dense-noise-eco", 0},
         {"fx-automate", 11},    // the swept input's top octaves, from about 2.3 s to 3.1 s
         {"fx-file", 14},        // loop-48k.wav's noise bursts
         {"fx-noise-stereo", 3}, // a noise bed until the input ends at 3 s
@@ -162,9 +167,22 @@ void checkInjectedSteps(gg::render::RenderMode mode, const std::string &test)
         const auto hidden = partlyHidden().find(name);
         const int expected = hidden == partlyHidden().end() ? kPositions : hidden->second;
         CAPTURE(expected);
-        CHECK(caught >= expected);
+        CHECK(caught == expected);
     }
     CHECK(rendered > 0);
+}
+
+/// The two dense-noise cases' blind spot to a full-scale spike (row 58, director option A,
+/// 2026-10-29): a single-sample spike of 1.0 added to every channel at the same sixteen
+/// positions scores 9.3 to 12.5 in dense-noise and 11.3 to 14.6 in dense-noise-eco, all under the
+/// limit of 15. Exactly how many score above it; update with the reason if it changes.
+const std::map<std::string, int> &spikesCaught()
+{
+    static const std::map<std::string, int> cases{
+        {"dense-noise", 0},
+        {"dense-noise-eco", 0},
+    };
+    return cases;
 }
 } // namespace
 
@@ -182,6 +200,37 @@ TEST_CASE("a -20 dBFS step is caught in the FX golden renders", "[golden][metric
 TEST_CASE("a -20 dBFS step is caught in the instrument golden renders", "[golden][metrics]")
 {
     checkInjectedSteps(gg::render::RenderMode::Instrument, "instrument");
+}
+
+TEST_CASE("a 0 dBFS spike in the dense-noise golden renders stays under the limit",
+          "[golden][metrics]")
+{
+    const double limit = gg::metrics::Tolerances{}.maxClickScore;
+    const std::string media = mediaDir("spike");
+    for (const auto &[name, expected] : spikesCaught())
+    {
+        CAPTURE(name);
+        const AudioData clean = gg::render::render(loadCase(name, media), nullptr);
+        REQUIRE_FALSE(clean.channels.empty());
+        const std::size_t frames = clean.channels[0].size();
+        int caught = 0;
+        std::vector<double> scores;
+        for (int i = 1; i <= kPositions; ++i)
+        {
+            const auto frame = static_cast<std::size_t>(std::llround(
+                static_cast<double>(frames) * i / static_cast<double>(kPositions + 1)));
+            AudioData spiked = clean;
+            for (auto &channel : spiked.channels)
+            {
+                channel[frame] += 1.0f;
+            }
+            const double score = clickScore(spiked);
+            scores.push_back(score);
+            caught += score > limit ? 1 : 0;
+        }
+        CAPTURE(scores);
+        CHECK(caught == expected);
+    }
 }
 
 TEST_CASE("clicks at fx-note-freeze's freeze transitions are caught", "[golden][metrics]")
