@@ -4,7 +4,7 @@
 
 | | |
 |---|---|
-| **Status** | Intent v1 · 2026-10-26 · M0 (Foundations) done 2026-10-26; M1 (Cloud core) in progress: sub-projects 1 to 3 of 6 built (the FX slice, the Cloud engine and Sources), the third on 2026-10-28 |
+| **Status** | Intent v1 · 2026-10-26 · M0 (Foundations) done 2026-10-26; M1 (Cloud core) closed 2026-10-29 (§23 #60); next: the installers and release pipeline (`docs/superpowers/specs/2026-10-29-release-pipeline-design.md`, §23 #61), then M2, which ships as 0.2.0; v1.0 follows M5 (§20) |
 | **Products** | *Giga Grains* (instrument) and *Giga Grains FX* (effect), sharing one engine |
 | **License** | AGPL-3.0-or-later |
 | **Director** | Seth Chandler. Claude writes most of the code; the director steers, listens and reviews. |
@@ -115,7 +115,9 @@ When decisions conflict, these break the tie.
 3. **Uniform source interface.** File, live, oscillator and resample sources all look the same
    to grains.
 4. **Real-time safety is non-negotiable.** The audio thread never allocates, locks or does I/O.
-   Under overload the engine degrades gracefully (it thins grains) and never drops out.
+   Under overload the engine degrades gracefully and deterministically (§14: a lower
+   interpolation tier first, then dropped new grains, then stolen grains with fades) and never
+   drops out.
 5. **Scale is a design input, not a later optimization.** The SIMD grain pool exists from day
    one. Thousands of grains is the baseline benchmark.
 6. **Deterministic.** Randomness is seeded, so the same session renders identically every time.
@@ -158,8 +160,9 @@ AAX is listed as *possible later* (§2), not as a non-goal.
 ### 12. License and content
 
 - **All project code is AGPL-3.0-or-later.** Every dependency must be AGPLv3-compatible.
-  - Compatible: AGPL-3, GPL-3 (combined under GPLv3 §13), MIT, BSD, Apache-2.0, zlib, ISC,
-    BSL-1.0, Unlicense.
+  - Compatible: AGPL-3, GPL-3 (combined under GPLv3 §13; the ASIO SDK's GPLv3 option, §23 #56),
+    MIT, BSD, Apache-2.0, zlib, ISC, BSL-1.0, Unlicense, the Unicode data license (utf8proc,
+    §23 #55).
   - **Not allowed:** GPLv2-only code, and code with no license at all.
   - JUCE is used under its AGPLv3 option.
 - **Factory content:**
@@ -201,15 +204,17 @@ and reviews. Two consequences:
 - **Source.** Owns or generates audio and exposes a batched `read(position, rate)` interface.
   The four kinds are Sample, Live, Oscillator and Resample (§4).
 - **Scheduler.** One per grain stream. It decides *when* grains start and *with what* parameters.
-  - Modes: **Cloud** (asynchronous; v1), **Sync** (tempo grid), **Voice** (MIDI/MPE notes spawn
-    streams), **Pitch-sync** (grain rate tied to pitch, for pulsar and formant sounds).
+  - Modes: **Cloud** (asynchronous; built in M1), **Sync** (tempo grid; M4), **Voice** (MIDI/MPE
+    notes spawn streams; M3), **Pitch-sync** (grain rate tied to pitch, for pulsar and formant
+    sounds; M3). All four ship before 1.0 (§20).
   - Clocks: free-running Hz (0.01 Hz up to the sample rate; the plugins' Density stops at
     400 Hz), tempo divisions, MIDI pitch-sync, external or transient trigger.
   - A distribution control runs continuously from 0 (synchronous) to 1 (random, Poisson).
   - Onsets follow a recurrence driven by the counter RNG, with sub-sample fractional timing
     (Cloud core rules, below).
 - **Grain pool.** Structure-of-arrays storage, preallocated in `activate()`.
-  - Defaults to 4,096 grains, configurable up to 16,384.
+  - Defaults to 4,096 grains (`EngineConfig::grainCapacity`; both plugins use the default). A
+    larger pool, up to 16,384, arrives with M2's budget manager.
   - Per-layer and per-voice quotas.
   - Dense index arrays with **stable** compaction that preserves spawn order, so per-sample
     summation order (and therefore output) is independent of host block size.
@@ -271,8 +276,8 @@ parameter, 0–1, saved like any other.
   | 8 Mix (FX) | bipolar | Mix `+0.5b` |
   | 8 Level (instrument) | bipolar | Level `+12b` dB |
 
-  A target's offsets add in macro order. Every depth is a starting value, tuned by ear at the
-  listening check.
+  A target's offsets add in macro order. Every depth is the spec's starting value, kept as
+  shipped at listening gate #1 (§23 #60); M2's mod matrix may revisit them.
 - **Polarity keeps a resting preset bit-identical.** A bipolar macro rests at 0.5 and a unipolar
   one at 0, and there every offset is exactly +0.0f (`2 × 0.5f − 1` is exactly 0), so
   `base + mod + 0` is `base + mod` bit for bit (a −0 sum becomes +0).
@@ -410,12 +415,14 @@ is the wet signal after Level and the soft limiter, before the dry/wet mix, so `
     the next call takes it and hands the waiting one back (§23 #49). Besides those, the loader's
     worker may briefly hold the one it is building, and a superseded one until it notices; both
     are freed off the audio thread.
-- **Memory management.** A process-wide sample pool removes duplicate copies of the same file.
-  Each instance has a memory cap, shown in the UI.
+- **Memory management** (M2). A process-wide sample pool removes duplicate copies of the same
+  file, and each instance gets a memory cap, shown in the UI; until then the 600 s cap above is
+  the only bound.
 - **Live ring buffer.**
   - Each block writes before it reads.
   - An admission clamp keeps grains from reaching the write head.
-  - The head-crossing policy is selectable. Default: clamp, with about a 256-sample crossfade.
+  - The head-crossing policy is the admission clamp with the 256-frame head-proximity fade
+    (Cloud core rules, below). Any other policy would be a later, explicit parameter.
   - Freeze and overdub use smoothed gains and crossfaded seams.
 
 **Cloud core rules** (M1 sub-project 1, the FX slice; §23 #36)
@@ -495,8 +502,8 @@ is the wet signal after Level and the soft limiter, before the dry/wet mix, so `
     libm and no RNG. It runs whatever δ is, so raising δ from 0 resumes the diffusion of what was
     already heard.
   - **The reverb** is Surge's Reverb 2 from sst-effects, patched (§15), 100% wet and at full
-    width. Fixed: `rev2_diffusion` 1.0, `rev2_buildup` 1.0 and `rev2_lf_damping` 0.2, to be
-    voiced at the listening check. Mapped: `rev2_room_size` = 2 × Size − 1, `rev2_hf_damping` =
+    width. Fixed: `rev2_diffusion` 1.0, `rev2_buildup` 1.0 and `rev2_lf_damping` 0.2, kept at
+    listening gate #1 (§23 #60). Mapped: `rev2_room_size` = 2 × Size − 1, `rev2_hf_damping` =
     Damping, `rev2_modulation` = Modulation and `rev2_decay_time` = Decay in log2 seconds.
     Reverb 2's own decay formula is kept, so the measured T60 at Damping 0 runs longer than
     Decay's label: 1.72, 2.89 and 5.09 s at 1, 2 and 4 s (ruling R-T5c).
@@ -640,8 +647,8 @@ address this:
 
 - The seed lives in the plugin state. A new instance draws its own from the OS's entropy source,
   on the main thread (§18, §23 #59); the audio thread's randomness never touches the OS.
-- RNG is counter-based (SplitMix64 or Philox style), keyed by (seed, layer, stream, field, grain
-  index).
+- RNG is counter-based: a stateless SplitMix64 mixer over a key of (seed, layer, stream, field,
+  grain index) (`gg::rng`, `engine/include/gg/core/Rng.h`).
 - Random distributions are written in-house. Never use `std::` distributions, because they differ
   between standard libraries.
 - The control grid is 32 samples, aligned to absolute sample positions (Cloud core rules).
@@ -679,7 +686,7 @@ templates are in its repository, https://github.com/surge-synthesizer/shortcircu
 engine/   framework-free, real-time-safe, headless C++ — also powers gg-render
 core/     JUCE-free gg-core: patch, parameter mapping, Processor — shared with gg-render
 media/    JUCE-free gg-media: decoding, rate conversion, SHA-256, sample search, settings file
-plugin/   CLAP implementation: params, notes/MPE, state, sample loader, UI↔audio queues
+plugin/   CLAP implementation: params, notes (MPE in M3), state, sample loader, UI↔audio queues
 ui/       JUCE editor (GrainCanvas behind a renderer interface)
 clients/  CLAP entry points + clap-wrapper targets
 ```
@@ -711,18 +718,20 @@ clients/  CLAP entry points + clap-wrapper targets
 - **clap-wrapper generates VST3, AUv2 and the standalone app.**
   - **v0.17 or newer is a hard minimum**: before that, an AU effect that takes MIDI silently
     became an instrument.
-  - Pin a commit that includes the AUv2 transport fix, which so far exists only on the `next`
-    branch.
+  - Pinned at `4e7afc3` on `next` (2026-10-24, fifteen commits after v0.17.0), which carries
+    the AUv2 transport fixes (#613, #615) that no release tag has yet; move to a tag once one
+    includes them.
   - Always list `PLUGIN_FORMATS` explicitly, because the default includes AAX.
   - AUv3 comes later. It needs the Xcode generator, one app extension per plugin, and UIKit
     support in the GUI shim.
 - **JUCE is used for the GUI only**, attached through sst-clap-helpers' `clap_juce_shim`, with
   sst-jucegui widgets.
-  - Start on **JUCE 9.0.4**. The M0 spike built the shim and both plugins against it with no
-    source changes, and on macOS arm64 every validator passed (`docs/spikes/m0-juce9.md`,
-    §23 #24). CI run 40445561691 then passed on every leg, Windows ClangCL included, with
-    JUCE's WebP support off (`JUCE_USE_WEBP=0`; §23 #29). Shortcircuit XT still ships
-    8.0.16-security, which remains the fallback.
+  - **JUCE 9.0.4** (`3fb5cbc`), since M0. The M0 spike built the shim and both plugins against
+    it with no source changes, and on macOS arm64 every validator passed
+    (`docs/spikes/m0-juce9.md`, §23 #24). CI run 40445561691 then passed on every leg, Windows
+    ClangCL included, with JUCE's WebP support off (`JUCE_USE_WEBP=0`; §23 #29). M1's editor
+    and sst-jucegui run on it (§23 #58); 8.0.16-security, Shortcircuit XT's version, is no
+    longer a fallback.
   - JUCE 9 still has no native CLAP support, which confirms the CLAP-first choice.
 - **Wanted from clap-wrapper upstream:** AUv2 tail support (its AUv2 hard-codes
   `SupportsTail()` false, so AU hosts never see the plugins' tail; §18), AUv2 MPE support, VST3
@@ -730,7 +739,9 @@ clients/  CLAP entry points + clap-wrapper targets
   through. The project files no reports or contributions upstream (the director, 2026-10-28;
   §23 #50): each wait is noted in `docs/m1-carry-over.md` and stays open until upstream changes.
 
-**Dependencies.** Pin exact SHAs. The sst libraries have no tagged releases.
+**Dependencies.** Pin exact SHAs. The sst libraries have no tagged releases. Rows without a pin
+in the bullets below (sst-waveshapers, sst-voicemanager, libFLAC, signalsmith-stretch, MTS-ESP
+and tuning-library) are planned, for M2 and M3; they are pinned when they are added.
 
 | Library | License | Use |
 |---|---|---|
@@ -751,9 +762,8 @@ clients/  CLAP entry points + clap-wrapper targets
 | libFLAC | BSD-3-Clause | Encoding embedded captures |
 | r8brain-free-src 7.6 (tag `7.6`, `cb2abb9`) | MIT | Sample-rate conversion on load, in `gg-media` (`CDSPResampler24`; header-only, with its bundled Ooura FFT), since M1 sub-project 3 |
 | utf8proc 2.12.0 (tag `v2.12.0`, `79cdd5a`; Unicode 18) | MIT (its Unicode data: the Unicode data license, permissive) | Unicode normalization in `gg-media`'s search for a missing sample, so a name saved in NFC is found under its NFD spelling and back; one C file, a static library linked privately into `gg-media`, since the M1 burn-down (§23 #55) |
-| pffft | BSD-like | FFT for Spectral Smear |
+| pffft | BSD-like | FFT: the metrics' spectra and spectrograms since M0 (§23 #21); Spectral Smear's STFT in M2 |
 | signalsmith-stretch | MIT | Transparent pitch/formant shift in the FX only (not extreme stretch) |
-| readerwriterqueue or choc | BSD / ISC | Lossless SPSC queues |
 | MTS-ESP client, tuning-library | 0BSD-style / MIT | Microtuning |
 | fmt, Catch2 | MIT / BSL-1.0 | Formatting, tests |
 | stb_image_write | public domain / MIT | Spectrogram PNGs |
@@ -825,7 +835,7 @@ clients/  CLAP entry points + clap-wrapper targets
     fingerprints sample files (§18), so it needs no dependency.
 - **Queues:**
   - Parameters and commands going from the UI to the audio thread use a lossless,
-    non-overwriting SPSC queue.
+    non-overwriting SPSC queue, gg-core's own `SpscQueue` (no third-party queue library).
     - **An as-built exception to that rule** (M1 sub-project 5; §23 #58; confirmed by the
       director 2026-10-29): the editor's parameter changes wait in an `SpscQueue` of 1,024 that
       never overwrites, drained by every `process()` and `params.flush`, but a change made while
@@ -839,9 +849,10 @@ clients/  CLAP entry points + clap-wrapper targets
 **Threading**
 
 - **One audio thread per instance.** Hosts already parallelize across tracks.
-- **Rendering is split into tasks:** layer × grain chunk, each with a private accumulator, summed
-  in a fixed order. When the host offers CLAP's thread pool (Bitwig does), the tasks run in
-  parallel; otherwise the same tasks run in a loop.
+- **Rendering will be split into tasks** (M2, with the four layers; §20, §22): layer × grain
+  chunk, each with a private accumulator, summed in a fixed order. When the host offers CLAP's
+  thread pool (Bitwig does), the tasks run in parallel; otherwise the same tasks run in a loop.
+  M1 renders its one layer on the audio thread.
 - **No plugin-owned real-time threads in v1.** Neither CLAP nor clap-wrapper can join macOS audio
   workgroups yet.
 
@@ -915,9 +926,11 @@ clients/  CLAP entry points + clap-wrapper targets
   relatively more on some legs. On Linux, block 32 costs 15% more per grain-sample than block
   256, against 8% on the M5 Max.
 - **CI's CPU gate is a regression gate,** measured as ratios within one process (carry-over
-  B-I2). It never gates on an absolute headline.
-- **Sub-project 2's optimization work is a fixed list of four levers,** each tried, kept if it
-  wins, then stop:
+  B-I2). It never gates on an absolute headline. It reports without failing through M1 and the
+  0.x releases, and turns blocking at 1.0.0, after M5, with the published X (§23 #60, #61;
+  carry-over rows 144 and 148).
+- **Sub-project 2's optimization work was a fixed list of four levers,** each tried, kept if it
+  won, then stop (§23 #39, #46):
 
   | Lever | What it attacks |
   |---|---|
@@ -926,7 +939,7 @@ clients/  CLAP entry points + clap-wrapper targets
   | Cache-aware grain scheduling | source locality across grains. It reorders memory fetches only, never the summation |
   | Contiguous vector loads with shuffles in place of the per-lane gather | 8 one-at-a-time tap loads per output sample (NEON `tbl`, SSE shuffles) |
 
-  - **A lever is kept** when its in-process ratio against the current kernel improves beyond the
+  - **A lever was kept** when its in-process ratio against the current kernel improves beyond the
     run-to-run spread, on the M5 Max or on any CI floor leg, and no leg regresses beyond its
     spread. Judging on the M5 alone would undersell the cache levers, which mainly help older
     machines.
@@ -949,7 +962,7 @@ clients/  CLAP entry points + clap-wrapper targets
   - On macOS that readout is UI-thread time only, and so a lower bound on the whole frame.
   - **Checked since sub-project 5** (§23 #58, decision D3): the densest setting a host can reach
     stays at or under 3 ms in Live and Bitwig, and an idle `gg-bench --canvas` run at 8,192
-    grains stays at or under 3 ms, taken with sub-project 6's X measurement. In sub-project 5 a
+    grains at or under 3 ms, taken with sub-project 6's X measurement (below). In sub-project 5 a
     run with nothing building (load average about 4) measured 2.80 ms (M0's, 2.77 ms).
     **Sub-project 6's idle run measured 2.87 ms** (p95 2.92 ms;
     `docs/benchmarks/2026-10-29-m1-canvas.json`, §23 #60), inside the budget.
@@ -1001,7 +1014,9 @@ clients/  CLAP entry points + clap-wrapper targets
     extrapolates each grain's progress from an atomic engine clock.
   - Triple-buffered per-block snapshots.
   - A peak pyramid of the live buffer.
-  - The engine publishes only while the editor is open.
+  - The engine publishes the grain queue and the snapshot only while the editor is open; the
+    live peaks are written always, so an editor that opens late finds the ring's recent audio
+    (ruling PU-T9b, below).
   - Visual thinning never touches the audio RNG.
 
 **The M1 Perform view as built** (M1 sub-project 5, 2026-10-29; §23 #58). One lane, layer A's,
@@ -1155,11 +1170,13 @@ for both products, on sst-jucegui's controls and its built-in dark style sheet:
 **Presets.** There is one preset system: CLAP preset discovery. clap-wrapper bridges it to VST3
 program lists and AU factory presets.
 
-**Frozen at first release.** Changing any of these breaks users' saved sessions:
+**Frozen from the first public release** (0.2.0's first beta; §23 #61). Changing any of these
+breaks users' saved sessions:
 - CLAP parameter IDs (new ones are append-only);
-- AUv2 parameter order (ascending parameter ID; §23 #60);
-- factory preset order;
-- plugin identities.
+- the AUv2 parameter order that follows from them (ascending parameter ID; §23 #60);
+- plugin identities and AU codes.
+
+**Frozen from 1.0.0:** factory preset order, which may move through the 0.x releases.
 
 **Identities**
 
@@ -1338,7 +1355,8 @@ they are frozen along with them.
   - clap-wrapper's AUv2 hard-codes `SupportsTail()` false, so AU hosts never see either tail
     (§15; carry-over). The plugins keep processing through the tail.
 
-**CLAP features for v1:**
+**CLAP features by 1.0.0** (M1 ships `params`, `note-ports`, `state`, `tail`, `audio-ports`,
+`remote-controls` and `gui`):
 - `params` with per-note modulation flags
 - `note-ports` (CLAP, MIDI and MIDI-MPE dialects)
 - `voice-info`
@@ -1348,7 +1366,7 @@ they are frozen along with them.
 - `latency` (0)
 - `audio-ports` (with an optional sidechain)
 - `render`
-- `remote-controls` (the macro row)
+- `remote-controls` (three pages, above)
 - `param-indication`
 - `track-info`
 - `gui`
@@ -1360,12 +1378,14 @@ they are frozen along with them.
 - **Unit tests (Catch2):**
   - grain onset accuracy
   - window sums
-  - interpolators and mipmaps
+  - interpolators (mipmaps from M2)
   - live-buffer head crossing
   - parameter ranges
   - state round-trip and migrations
-- **`gg-render` offline CLI.** It takes a preset, an input WAV and a MIDI/automation script, and
-  writes a WAV deterministically. It's the backbone of audio testing and how Claude "listens".
+- **`gg-render` offline CLI.** It takes a JSON render spec (a built-in or file input, parameter
+  values, automation and notes; a preset from M2) and writes a WAV, metrics, a grain-event log
+  and a spectrogram deterministically. It's the backbone of audio testing and how Claude
+  "listens".
 - **Golden renders compared by metrics:**
   - spectral distance
   - RMS envelope
@@ -1405,11 +1425,13 @@ they are frozen along with them.
   - Block-size invariance: renders at block sizes 1, 32, 64, 511 and 4096, plus random splits,
     must be bit-identical, and so must a repeated render.
   - Grain-event logs are compared across platforms.
-- **Fuzz and property tests.** Parameter sweeps, extreme values and bursts of automation must
-  produce no NaNs, crashes, runaway gain, or clicks above a threshold.
+- **Fuzz and property tests** (property tests on the state, the settings and the Processor
+  since M1; the sweep harness in M2). Parameter sweeps, extreme values and bursts of automation
+  must produce no NaNs, crashes, runaway gain, or clicks above a threshold.
 - **CPU benchmark gate in CI:** a regression gate on in-process ratios, from M1's baseline. The
-  §16 headline is a published measurement, not a CI gate. Through M1 the gate reports and never
-  fails; it turns blocking at 1.0, the first public release (§23 #60), with the published X.
+  §16 headline is a published measurement, not a CI gate. Through M1 and the 0.x releases the
+  gate reports and never fails; it turns blocking at 1.0.0, after M5 (§23 #60, #61), with the
+  published X.
 - **Real-time safety.**
   - Clang RealtimeSanitizer on upstream LLVM 20 or newer (Apple clang doesn't ship it).
   - ASan and UBSan.
@@ -1418,26 +1440,50 @@ they are frozen along with them.
 - **Machine-readable artifacts.** Spectrogram images and summary statistics, so Claude can inspect
   renders and not just assert pass/fail.
 - **A human listening gate at every milestone.**
-- **CI and release pipeline.** Adapted from Shortcircuit XT's GitHub Actions and sst-plugininfra
-  scripts:
-  - macOS: signed and notarized PKG inside a DMG;
-  - Windows: Inno Setup installer;
-  - Linux: tar archive.
+- **CI and release pipeline** (`docs/superpowers/specs/2026-10-29-release-pipeline-design.md`;
+  §23 #61). One workflow, `ci.yml`: a `v*` tag, the nightly schedule or a dispatch with
+  `installers: true` adds a `gg-installer` target per leg, packed from the very products that
+  just passed every test and validator, and a `release` job. Adapted from Shortcircuit XT's
+  GitHub Actions, sst-plugininfra's macOS installer script and sst-cmake's Inno Setup template.
+  - macOS: a PKG with one component per format (CLAP, VST3, AU, the two apps) inside a DMG,
+    installed system-wide, signed with the director's Developer ID and notarized, with the
+    certificates and an App Store Connect API key held as GitHub Actions secrets and never
+    committed.
+  - Windows: an Inno Setup installer and a plain zip, **unsigned at 1.0** (as Surge XT,
+    Shortcircuit XT and OB-Xf ship); Azure Trusted Signing or SignPath Foundation's open-source
+    program is the upgrade path once downloads make SmartScreen's warning matter.
+  - Linux: a tar archive, built on Ubuntu 22.04.
+  - Every installer carries `THIRD_PARTY_NOTICES.md`, the AGPL and GPLv3 texts and the platform
+    SDK licenses, and each release attaches its complete corresponding source (the tagged tree
+    with every submodule at its pin) beside the binaries, with the SDK tags clap-wrapper fetches
+    named next to them.
+  - A tag publishes a **draft** GitHub Release with SHA-256s; **the director publishes it by
+    hand** after installing from the real DMG and EXE and running the host smoke in Live and
+    Bitwig. The nightly builds and signs the same installers as run artifacts, and from M5 on
+    publishes them to a rolling `nightly` pre-release (a committed switch). A pull request or a
+    push to `main` builds no installer and sees no secret.
+- **Versioning.** Semantic versions numbered by milestone: M2 ships as 0.2.0, M3 as 0.3.0, M4 as
+  0.4.0, M5 as 0.5.0, then 1.0.0; betas are `0.x.0-beta.N`; a fix to a superseded minor comes
+  from a `release/0.x` branch cut at its tag. The version lives in `CMakeLists.txt` alone, the
+  numeric part in `project()` and the pre-release suffix beside it, `dev` by default, so `main`
+  reports `0.2.0-dev` and never claims a release; a nightly reports `-dev.<yyyymmdd>.<sha7>`.
+  The release job fails before signing anything if the tag and the CMake version disagree or
+  the suffix is `dev`.
 
 ### 20. Roadmap
 
 | Milestone | Delivers | Exit criteria |
 |---|---|---|
 | **M0 Foundations** (done 2026-10-26) | Repo, CMake, CI matrix (mac/win/linux), `LICENSE` (AGPL-3.0); headless engine skeleton; `gg-render`; test, golden-render, RTSan and benchmark harness; both plugin shells in every format plus standalone; validators in CI. **Spikes:** kernel benchmark (sets §16), JUCE 9 vs 8.0.16, two-descriptor CLAP to AUv2/VST3/standalone, Ableton MIDI routing into an effect, CPU canvas frame budget. | One grain stream renders deterministically. The empty plugins load in the first-class hosts and pass every validator. **Met** (§23 #29). |
-| **M1 Cloud core** (starts from `docs/m1-carry-over.md`) | Six sub-projects, each spec → plan → build → review (§23 #35): 1 FX vertical slice (`docs/superpowers/specs/2026-10-27-m1-fx-slice-design.md`); 2 Cloud engine; 3 Sources; 4 Space; 5 Perform UI; 6 Close. Together they deliver: grain pool and SIMD renderer (Eco/Normal; Eco is engine-only until M2, §23 #43), the §16 lever list (§23 #39); Cloud scheduler; parameter model; Sample and Live sources with freeze; note-triggered freeze/capture in the FX (§23 #32; built in sub-project 3 as hold and play, a note freezing the ring and repitching the grains, §23 #48); 1 layer; diffusion/reverb (built in sub-project 4 as Space: a per-layer diffuser and a patched Reverb 2 with an infinite Decay, §23 #50); state save/load; single-lane canvas plus 8 macros | Both plugins make textures. **Listening gate #1: passed 2026-10-29** on the Sources, Space and Perform packs (`docs/listening/`; §23 #60). CPU baseline recorded; the CPU gate reports without failing through M1 and turns blocking at 1.0 (§23 #44, #60). The §16 headline measured on the reference core and published: **19.5%** at block 256 (§23 #39, #60). **M1 closed 2026-10-29** by sub-project 6 (§23 #60; the carry-over's 13 open rows name what they wait on). clap-validator runs in full: M0 skipped its `param-conversions` test, which panics on a plugin with no parameters (ruling T8-c, free-audio/clap-validator#40); sub-project 1 removed the exclusion (§23 #35). |
-| **M2 Giga** | 4 layers plus morph; budget manager; no CPU regression vs the M1 measured headline (§23 #41); mipmaps and the HQ sinc tier; minutes-long buffers with persistence; Smear and Spectral Smear; resample/feedback source; full mod matrix; Mutate; factory presets and CC0 samples, including MIDI-driven FX presets (§23 #32) | Benchmarks pass. **Listening gate #2.** |
-| **→ v1.0** | M0 to M2 polished | Success criteria (§10) met. |
-| **M3 Playable** | Voice scheduler, polyphony, MPE, note expressions, polyphonic modulation, per-voice envelopes, pitch-sync/formant grains, microtuning | Listening gate. First-class hosts pass. |
-| **M4 Rhythmic** | Sync scheduler: grid, swing, probability, patterns, transport-stop/loop policies | Listening gate. Sync tests pass under loops and jumps. |
-| **M5 Synthesis and extremes** | Oscillator sources, synthetic grains, per-grain filters | Listening gate. Budget weights calibrated. |
+| **M1 Cloud core** (closed 2026-10-29; `docs/m1-carry-over.md` holds its 13 open rows) | Six sub-projects, each spec → plan → build → review (§23 #35): 1 FX vertical slice (`docs/superpowers/specs/2026-10-27-m1-fx-slice-design.md`); 2 Cloud engine; 3 Sources; 4 Space; 5 Perform UI; 6 Close. Together they deliver: grain pool and SIMD renderer (Eco/Normal; Eco is engine-only until M2, §23 #43), the §16 lever list (§23 #39); Cloud scheduler; parameter model; Sample and Live sources with freeze; note-triggered freeze/capture in the FX (§23 #32; built in sub-project 3 as hold and play, a note freezing the ring and repitching the grains, §23 #48); 1 layer; diffusion/reverb (built in sub-project 4 as Space: a per-layer diffuser and a patched Reverb 2 with an infinite Decay, §23 #50); state save/load; single-lane canvas plus 8 macros | Both plugins make textures. **Listening gate #1: passed 2026-10-29** on the Sources, Space and Perform packs (`docs/listening/`; §23 #60). CPU baseline recorded; the CPU gate reports without failing through M1 and the 0.x releases, and turns blocking at 1.0.0, after M5 (§23 #44, #60, #61). The §16 headline measured on the reference core and published: **19.5%** at block 256 (§23 #39, #60). **M1 closed 2026-10-29** by sub-project 6 (§23 #60; the carry-over's 13 open rows name what they wait on). clap-validator runs in full: M0 skipped its `param-conversions` test, which panics on a plugin with no parameters (ruling T8-c, free-audio/clap-validator#40); sub-project 1 removed the exclusion (§23 #35). |
+| **M2 Giga** | 4 layers plus morph; budget manager; no CPU regression vs the M1 measured headline (§23 #41); mipmaps and the HQ sinc tier; minutes-long buffers with persistence; Smear and Spectral Smear; resample/feedback source; full mod matrix; Mutate; factory presets and CC0 samples, including MIDI-driven FX presets (§23 #32); a timeboxed GPU-canvas spike (§17, §23 #26). **Ships as 0.2.0** (betas `0.2.0-beta.N`; the first beta is the first public release, §18, §23 #61) | Benchmarks: the report-only gate shows no regressed ratio against M1's baselines (§23 #41). **Listening gate #2.** |
+| **M3 Playable** | Voice scheduler, polyphony, MPE, note expressions, polyphonic modulation, per-voice envelopes, pitch-sync/formant grains, microtuning. **Ships as 0.3.0** | Listening gate. First-class hosts pass. |
+| **M4 Rhythmic** | Sync scheduler: grid, swing, probability, patterns, transport-stop/loop policies. **Ships as 0.4.0** | Listening gate. Sync tests pass under loops and jumps. |
+| **M5 Synthesis and extremes** | Oscillator sources, synthetic grains, per-grain filters. **Ships as 0.5.0**; the public nightly starts here (§19, §23 #61) | Listening gate. Budget weights calibrated. |
+| **→ v1.0.0** | M0 to M5 polished (§23 #61; v1.0 followed M2 until 2026-10-29) | Success criteria (§10) met. Factory preset order frozen; the CPU gate turns blocking (§16, §19). |
 | **M6 Reach** | iOS AUv3 and/or LV2, accessibility polish, community infrastructure | Target-specific validation passes. |
 
-Why this order after v1.0:
+Why this order before v1.0:
 - **Playable comes first** because it gives the instrument its own identity, and the Voice
   scheduler is groundwork for Sync.
 - **Synthesis** is the largest new surface.
@@ -1457,7 +1503,7 @@ Why this order after v1.0:
 | JUCE 9 compatibility of the shim | The M0 spike passed on macOS arm64, so the project is on 9.0.4 (§23 #24). CI run 40445561691 passed on Windows, Linux and macOS (§23 #29), and the macOS leg now also runs the mac-universal x86_64 slice's tests under Rosetta (§23 #33); 8.0.16-security is the fallback |
 | Crowded market, including free granular built into DAWs (Granulator III, Bitwig Fragments) | Differentiate on scale, the canvas, openness and portability, not on feature-count parity |
 | Open-source granular projects tend to stall | Tight v1 scope around the texture anchor; a published roadmap; verification that lets Claude-led work proceed safely |
-| Windows code-signing eligibility: SignPath's free open-source terms may exclude JUCE's dual license | Budget for Azure Artifact Signing (about $9.99/month) or an OV certificate |
+| Windows builds are unsigned at 1.0, so users see SmartScreen's unknown-publisher warning once (SignPath's free terms may exclude JUCE's dual license) | Decision 3 of §23 #61: ship unsigned, as the surge-synthesizer projects do; move to Azure Trusted Signing (about $10 a month) or SignPath once downloads make the warning matter |
 
 ### 22. Open questions
 
@@ -1473,8 +1519,8 @@ Why this order after v1.0:
 | Default behavior of rhythmic streams when the transport stops: keep running or hold | M4 |
 | An optional "Classic" Clouds-faithful mode using sst-effects' Nimbus | Post-v1 |
 | Moving from C++20 to C++23: worth it for `std::expected` (the media loader's and state decoder's error paths) and smaller conveniences, but gcc-12's library support is partial and Apple's libc++ gates some C++23 library features by macOS version (we target 11.0); no audio or determinism effect | M2, with a toolchain floor raise (gcc-13 or later) |
-| Wider x86 SIMD (AVX2, 8-wide) for the grain kernels: today x86 targets `-march=nehalem` (SSE4.2) and the macOS x86_64 slice Apple's default, with 4-wide kernels everywhere (NEON on Apple Silicon gains nothing). It would need two compiled kernel paths chosen at load by CPU features with an SSE fallback, bit-identical output between paths (as the SIMD kernels already are to the scalar reference; no FMA), a ruling that choosing a path by CPU features (with identical output) doesn't breach §14's no-CPU-adaptive-behaviour rule, and rebuilt x86 `gg-bench` baselines. Measure first, as sub-project 2 did its levers | A timeboxed spike if sub-project 6's measured x86 figure misses §16's target, or for M2's four layers |
-| Windows signing route and budget | Before first public release |
+| Wider x86 SIMD (AVX2, 8-wide) for the grain kernels: today x86 targets `-march=nehalem` (SSE4.2) and the macOS x86_64 slice Apple's default, with 4-wide kernels everywhere (NEON on Apple Silicon gains nothing). It would need two compiled kernel paths chosen at load by CPU features with an SSE fallback, bit-identical output between paths (as the SIMD kernels already are to the scalar reference; no FMA), a ruling that choosing a path by CPU features (with identical output) doesn't breach §14's no-CPU-adaptive-behaviour rule, and rebuilt x86 `gg-bench` baselines. Measure first, as sub-project 2 did its levers | A timeboxed spike for M2's four layers, if the CI floor legs' informative figures (§16) call for it |
+| ~~Windows signing route and budget~~ | **Resolved** on 2026-10-29: Windows ships unsigned at 1.0 (route 1, as Surge XT, Shortcircuit XT and OB-Xf do); Azure Trusted Signing or SignPath later; see §19, §21 and §23 #61 |
 | ~~Windows standalone ASIO: it's off, because RtAudio's bundled Steinberg ASIO files have no license grant (§23 #30). Re-enable it only from a Steinberg ASIO SDK release whose license is AGPLv3-compatible (Steinberg's GPLv3 release). Such a release now exists: ASIO SDK 2.3.4, licensed "Steinberg ASIO License or GPLv3", which sst-plugininfra bundles (§15, §23 #38). Whether to re-enable ASIO stays open~~ | **Resolved** on 2026-10-28: ASIO is on in the Windows standalone, from ASIO SDK 2.3.4 under its GPLv3 option; see §15 and §23 #56 |
 
 ### 23. Decision log
@@ -1547,6 +1593,7 @@ director made the call.
 | 58 | Sub-project 5 (Perform UI): eight relative macros, Texture, Feedback into the live ring, the Perform view on sst-jucegui and the audio→UI path | The director's six decisions (2026-10-27, in brainstorming): **(1)** macros are relative, each a modulation source offsetting its targets from the preset's base values, one writer per parameter; **(2)** Texture sweeps the grain envelope from smooth to gated over the lower three quarters of its macro's travel and adds Space's diffusion in the top quarter; **(3)** Feedback regenerates the wet output into the FX's live ring, and the instrument, with no writable buffer until M2's resample source, has Stereo in its seventh macro slot (the spec's "eighth" corrected, below); **(4)** the eight recipes, every depth tuned by ear at the listening check; **(5)** the canvas: the FX lane's write head fixed at the right edge with history scrolling left, the canvas on top and one macro row below in remote-control order, and a canvas drag editing base values, with ghost windows where modulation moves the grains; **(6)** pan on the vertical axis, sst-jucegui's controls on the existing JUCE 9 shim, §17's audio→UI path, a fresh seed per instance (#59), and Edit, Mod, Mutate, the preset browser and lanes B–D left in M2. **The design** (the spec and the plan, as built): ten parameters appended after Dry to Reverb at the IDs the spec reserved, Texture `0x010009`, Feedback `0x01000A` (0–0.95, hidden in the instrument) and Macros 1–8 `0x000011`–`0x000018` (Macro Freeze stepped; Macros 7 and 8 named per product, Macro 7 resting at 0 in the FX and 0.5 in the instrument), 28 in all, with no patch version bump (§18, `6af2583`); a "Perform" remote-controls page of the macros first, "Cloud" and "Space" after it, `page_id` = position; the effective value `clamp(base + mod + Σ curves)` in one clamp, each macro's own value `clamp(base + mod)`, the fixed factory recipes of §14 in each target's CLAP value domain, plain float with no libm, every offset exactly +0.0f at rest (bipolar 0.5, unipolar 0) so a resting preset is bit-identical, on the 32-sample grid (`962e153`); Texture's fixed family (`aMin = min(0.5, max(0.05, 16/d))`; τ ≤ 0.5: `a = 0.5 + 0.4τ`, `r = 0.5 − 0.4τ`; τ > 0.5: the lerp from (0.7, 0.3) to (aMin, aMin), sustain between), the window `hann(warp(φ))` with one `warpPhase` for the scalar references and the SIMD interior, the identity bit for bit at Texture 0, four doubles latched per grain, and `"tex"` in the grain-event line, which rewrote every `.events.jsonl` once and moved no WAV (`f54cb85`); Feedback's ring input `finite(in[t]) + fb(t)·limited[t − 256]`, `limited` after Level and the soft limiter, before the mix, `fb` a 10 ms ramp like Mix's, `fb ≤ 0.95`, D = 256 = M (the ring's head margin, static-asserted), the FX rendered in pieces of at most 256 samples so the output is bit-identical at any block size and maxBlockSize, a per-sample guard that writes the input alone wherever `fb` is 0, Freeze winning because the frozen ring's write gain is 0 (`711f5fe`); the publish structures in gg-core, `SpscQueue<T, N>` (the grain queue of 4096, dropping the newest and counting them), `UiSnapshot` in a triple buffer and `LivePeaks` (`4061e72`), filled by the `Processor` from its own grain sink, with the atomic clock stored after each snapshot (`d406a91`); the UI→host path, a 1,024-entry `SpscQueue<UiParamChange>` drained by `process()` and `params.flush` before the host's events, every change sent on as CLAP gesture and value events by `try_push` after `request_flush` (`b1cbe6e`); `LaneModel` and `SplatRenderer::addCapsule` (`796f29e`), the lane clock and live-grain list (`f822e30`); the Perform view (§17): header, `GrainCanvas`, the macro row on sst-jucegui with its dark style sheet, 900 × 500 down to 640 × 360, and the instrument's loader strip with carry-over rows 198 and 199 closed (`d179a98`, `fe4de01`); three goldens, `fx-macros`, `fx-feedback` and `inst-texture` (§19), and the cross-feature block-size-invariance and allocation tests (`bac40b4`, `7ab5880`, `3d614bd`). With Texture 0, Feedback 0 and every macro at rest, every earlier golden's WAV kept its SHA-256 through every task. **Rulings made during the build:** PU-T8a, the FX's scan window is one-sided, `[Position, Position + Spray]` behind the head, as the engine draws a live grain (`position + spray × u`), its newer edge dragging as the body; the instrument's stays `Position ± Spray` (`b18b185`); PU-T3a, Texture's τ > 0.5 branch is the lerp `(1 − s)·0.7 + s·aMin`, the plan's curve, which lands exactly on its anchors where the plan's `0.7 + (aMin − 0.7)s` gives 0.050000000000000044 for 0.05; PU-T2a, a `setBase` of a macro jumps the ramps of every target it moves (Mix, Level, Diffusion, Feedback) and Macro Freeze is seen as Freeze for arming, so a loaded state never ramps in from stale values; PU-T4a, the freeze test checks the frozen ring bit for bit under Feedback 0.9 and the output's level with Feedback raised at the freeze, not the plan's 0.5 dB comparison, since regeneration before the freeze legitimately sits in the frozen buffer; PU-T7a, sst-jucegui's JUCE requirements are re-pointed at the headers-only `gg-juce-headers` plus `$<LINK_ONLY:clap_juce_shim>`, so JUCE compiles once, in the shim, and the configure fails if the wiring it replaces changes (`038b53a`, `6acc5fa`, `01f979a`); PU-T9a, the live peaks are indexed by ring time, the frames the head advanced over, not the sample clock, which a freeze makes diverge; PU-T9b, the FX writes the peak strip on every render piece, publishing or not, so an editor opening late never shows an older pass's peaks, while the grain queue and the snapshot stay gated on the editor (`c193784`); PU-T10a, the plugin owns one editor context for its life and updates its publish pointers in place on activate and deactivate, null while inactive, since the `Processor` they point into dies with deactivate; PU-T12a, `fx-macros` runs over a 330 Hz sine, not noise, which hid all sixteen injected clicks (a blind spot the director hadn't accepted), and `fx-feedback`'s input lasts 4 s, so Feedback 0.9 at 3 s has material (`3d614bd`); PU-T5a, the instrument's seed (in the loaded-state snapshot) and values (with its sample) may reach the audio thread in different blocks, accepted since a live load's timing is inexact anyway and the saved state is consistent (#59). PU-T13a (sub-project 5's documentation review), the 16-sample floor binds only Texture's gated anchor, `aMin = min(0.5, max(0.05, 16/d))`: for τ ≤ 0.5 the shape is Hann-like and its attack and release scale with the grain, as the default Hann always has (an 8-sample attack on a 16-sample grain at Texture 0 is M0's behaviour, kept bit for bit), which amends the spec's §4 "never shorter than the 16-sample minimum grain"; PU-T11a, sst-clap-helpers' shim keeps the editor of a GUI a host destroys without ever showing it (no `set_parent`), and the next `guiCreate` trips its debug-only `jassert(!editor)`; publishing is correct either way (`EditorPlugin::guiDestroy` turns it off), and the fault waits on upstream in the carry-over. **The spec's corrections:** sst-jucegui is MIT (its `LICENSE.md`; §15 already said so), not GPL-3.0-or-later; the Feedback chunking is the `Processor`'s, not the engine's, since the `Processor` owns the render pieces; decision 3's Stereo replaces the instrument's seventh macro slot (Macro 7), not its eighth, which is Level. **Also recorded:** the peak pyramid is one 64-frame level in M1 (§17); a −0 base plus a −0 modulation now gives +0 once the resting offset is added (host-only input; no golden moves); the editor's 1,024-entry queue drops a change made while it is full, which takes a host that ignores `request_flush` (and doesn't process) for more than 1,024 changes, and a dropped gesture begin or end leaves the host an unbalanced gesture: an as-built exception to §15's lossless rule, accepted in Task 10's review and confirmed by the director 2026-10-29 (D1, below); in the 60 s Feedback 0.95 property test the wet RMS reads −0.18 dBFS over both seconds 16–26 and 50–60: it settles into self-oscillation just under the limiter, with no runaway (`711f5fe`; a listening-check item). **The director's decisions after the final review** (2026-10-29, by forced choice): **D1** the UI→audio parameter queue is accepted as built (1,024 entries, dropping a change only when a host ignores `request_flush` while more than that are queued), so §15's as-built exception stands, confirmed by the director 2026-10-29; **D2** auval lists the AU parameters in ascending CLAP-ID order, while §18 says the slot order is the AUv2 order: decided by the director 2026-10-29 to amend §18 to ID order in sub-project 6, by a row here, once clap-wrapper's AU `ParameterList` order is verified, with no code change (a carry-over row until then); **D3** the canvas frame budget is judged by the densest setting a host can reach staying at or under 3 ms in Live and Bitwig, plus an idle `gg-bench --canvas` run at 8,192 grains at or under 3 ms, taken with sub-project 6's X measurement (a run with nothing building, load average about 4, measured 2.80 ms, M0's 2.77 ms; the idle run is sub-project 6's), decided by the director 2026-10-29 (§16; the spec's §9); **D4** `fx-feedback`'s click-injection entry, 7 of the 16 steps caught, is accepted by the director 2026-10-29 (§19). The spec is amended in place for decision 3's slot (§1), PU-T2a (§3.1), the family, PU-T3a and PU-T13a (§4), the `Processor`'s pieces, the per-sample guard and PU-T4a (§5), PU-T8a (§6.2), PU-T9a, PU-T9b and PU-T10a (§6.4), MIT (§6.5), PU-T5a (§7), and PU-T12a and D3 (§9). See `docs/superpowers/specs/2026-10-27-m1-perform-ui-design.md` §1 and `docs/superpowers/plans/2026-10-29-m1-perform-ui.md`. Decided 2026-10-27 by the director (decisions, in brainstorming), 2026-10-29 by Claude (rulings) and 2026-10-29 by the director (D1–D4, after the final review), during M1 sub-project 5; see §14, §15, §16, §17, §18, §19 |
 | 59 | A fresh seed per instance, and the seed hand-off | Sub-project 5's spec §7 (the director's decision 6, #58) and carry-over rows 115 and 123, closed by `5ac8a86`. **The fresh seed:** a new instance draws its engine seed on the main thread at construction from the OS's entropy source, two 32-bit draws from `std::random_device`, falling back to a splitmix64 of the steady clock if it throws, so two instances on two tracks make different clouds; the seed is saved in the state as before, so a reloaded session renders identically, and the audio thread's randomness still comes only from `gg::rng`, keyed by it. `gg-render`, the tests and the goldens keep explicit seeds; the plugin tests that compare instances load a state with seed 0 first. It replaces "new instances start at seed 0" (§18). **The hand-off (row 115):** a state loaded while active used to need the host to honour `request_restart` for its seed to take effect, and otherwise the engine kept the old seed while `stateSave` wrote the new one, so a reload sounded different from what was heard, latent while every instance used seed 0. Now the plugin's loaded-state snapshot carries the seed in both products, the audio thread calls `Processor::setSeed` (`Engine::setSeed`), which keys every grain scheduled from that `process()` call on (sounding grains keep their draws, and the grain index keeps counting), and `stateLoad` asks for no restart. In the instrument the values travel with the sample, so the seed and the values may land in different blocks (ruling PU-T5a). **The value mirror (row 123, ruling M1-x):** once the audio thread has applied a loaded state's values, it sets a flag and requests a callback, and `on_main_thread` asks the host to rescan the values (`CLAP_PARAM_RESCAN_VALUES`), since the first rescan, at the load, may have read a value a block in flight then overwrote. Decided 2026-10-27 by the director (the fresh seed, in the spec's brainstorming) and 2026-10-29 by Claude (the hand-off), during M1 sub-project 5; see §14 and §18 |
 | 60 | M1 closed: X published as measured, the CPU gate blocking at 1.0, listening gate #1 passed, the AUv2 order is ID order | **The director's decisions of 2026-10-29,** made in sub-project 6's brainstorming, and the sub-project's measurements. **(1) The CPU gate stays report-only through M1 and turns blocking at 1.0,** the first public release, not in sub-project 6 as §19, §20 and #44 said; those sentences are amended, and carry-over rows 144 and 148 move to "At 1.0". **(2) Listening gate #1 is passed:** the director listened to the Sources, Space and Perform packs (`docs/listening/m1-sources`, `m1-space`, `m1-perform`) and accepted them; the macro depths stay at the spec's starting values (the Perform pack's tuning step closes as accepted as shipped); no further pack. **(3) The AUv2 parameter order is ascending parameter ID** (sub-project 5's decision D2, #58, carry-over row 233): verified in clap-wrapper `v0.17.0`'s `WrapAsAUV2::GetParameterList` (`libs/clap/clap-wrapper/src/wrapasauv2.cpp`), which, when a plugin provides no `CLAP_PLUGIN_AUV2_PARAM_ORDERING` extension (these plugins don't), falls back to `AUBase::GetParameterList`, and that lists the AudioUnitSDK's `flat_map` of parameters, a vector sorted by parameter ID (`AUScopeElement.h`); auval's listing agrees. §18's "slot order, and so the AUv2 order" is amended to say so, in both places and in the frozen list; the slot order itself is unchanged, and no code changes. **(4) X, measured and published** (§16): one idle session on the director's M5 Max, 2026-10-29, the `release` preset, at `be2291e` (main's engine at M1's close), the full default `gg-bench` run: `engine-sample` 2.44 / 2.21 / 2.03 ns per stereo grain-sample at blocks 32 / 64 / 256, **X = 19.5%** of one core at block 256 (23.4% / 21.2% at 32 / 64); the live figure 31.9% / 25.8% / 21.0%; Space 29.44 ns per stereo sample, 0.141%; the canvas 2.87 ms per frame at 8,192 grains (p95 2.92), inside sub-project 5's 3 ms budget (D3). The one-minute load average was 2.58 before the run, above the design's bar of 1.5, with nothing building, testing or benchmarking and only the desktop open; every in-run IQR under 3% of its median. The JSON is in `docs/benchmarks/` with a README. The ratios against the frozen `reference` kernel, 1.154 / 1.072 / 1.024, sit within 3% of sub-project 2's (carry-over row 185 closes). **(5) The carry-over's end state:** 15 open rows before sub-project 6, 13 after (185 and 233 closed); the 13 that stay open wait on upstream bumps (85, 87, 88, 218, 231), on M2/M3 features (51, 118, 119, 184, 217), on the installers (221) or on 1.0 (144, 148), each with its reason in the row. **Non-goals held:** no DSP, engine or UI change (the goldens' 22 WAV hashes unchanged, trivially); no installers or release pipeline (their own spec, next); no new CI baselines. *Decided 2026-10-29 by the director, during M1 sub-project 6; written by the Claude session that closed M1.* |
+| 61 | Installers and the release pipeline decided; v1.0 moves to after M5; milestone numbering; the freeze splits | **The director's decisions of 2026-10-29,** made in the release-pipeline brainstorming (`docs/superpowers/specs/2026-10-29-release-pipeline-design.md`, approved the same day), and the docs consistency pass that recorded them. **(1) The pipeline's first job is the public releases,** not nightlies; nightlies come only because the same job on the existing schedule costs nothing. **(2) macOS builds are signed with the director's Developer ID and notarized** from GitHub Actions secrets (the two certificates as a `.p12`, an App Store Connect API key); nothing private is committed, and a pull request never sees a secret. **(3) Windows ships unsigned at 1.0** (route 1, as Surge XT, Shortcircuit XT and OB-Xf do); Azure Trusted Signing or SignPath Foundation's open-source program is the upgrade path; §21 and §22 amended. **(4) Public releases precede 1.0.0, numbered by milestone:** M2 ships as 0.2.0, M3 as 0.3.0, M4 as 0.4.0, M5 as 0.5.0, betas as `0.x.0-beta.N`, then 1.0.0; `main` carries `0.<next>.0-dev` ("that seems cleaner" than a year of `1.0.0-beta.N`). **(5) The freeze splits:** plugin identities and AU codes and the CLAP parameter IDs (with the AUv2 order that follows from them) freeze at the first public release, 0.2.0's first beta; factory preset order and the blocking CPU gate wait for 1.0.0. §18's "frozen at first release", §16, §19, §20 and carry-over rows 144 and 148 are amended; #60's "1.0, the first public release" is superseded in its second half. **(6) The pipeline extends `ci.yml`** (a `gg-installer` CMake target per leg, a `release` job), not a second workflow and not CPack. **(7) The shape:** a PKG with one component per format inside a DMG, installed system-wide; an Inno Setup installer plus a zip; a tar archive; every installer carries the notices and licenses (carry-over row 221's installer half). **(8) v1.0 moves in the roadmap to after M5 and before M6:** M2 to M5 ship as 0.x releases first, 1.0.0 is M0 to M5 polished against §10, M6 Reach follows; §20 amended, Part I untouched. A consequence the director accepted: the blocking gate and the baselines for unseen CPU models (rows 144, 148) wait until after M5. **(9) The secrets are set during the pipeline work,** so a CI dry run is part of it, and the builder may sign locally with the keychain's identities through the environment. **(10) The public nightly starts with M5;** until then the nightly keeps its signed installers as run artifacts behind a committed switch. **(11) Each release ships its complete corresponding source** as a tarball of the tagged tree with every submodule at its pin, with the SDK tags named beside the binaries. **The docs pass** (same day, `docs-polish`): INTENT's header, §8 and §12 (Part I, with the director's sign-off: overload order; the Unicode data license and the ASIO SDK's GPLv3 option in the compatible list), §14, §15, §16, §17, §18, §19, §20, §21 and §22 brought into line with the as-built record and these decisions; CLAUDE.md and README likewise. *Decided 2026-10-29 by the director; written by the Claude session that drafted the release-pipeline spec.* |
 
 **Key sources** (checked 2026-10-26):
 - clap-wrapper releases (v0.17.0, 2026-10-20): https://github.com/free-audio/clap-wrapper/releases
@@ -1564,6 +1611,8 @@ director made the call.
 - shortcircuit-xt (reference template for the CLAP-first layout, CI and installers; GitHub,
   surge-synthesizer organization; local clone `~/src/shortcircuit-xt`):
   https://github.com/surge-synthesizer/shortcircuit-xt
+- sst-cmake (the Inno Setup template the Windows installer is adapted from, MIT):
+  https://github.com/surge-synthesizer/sst-cmake
 - surge (reference template; GitHub, surge-synthesizer organization; local clone `~/src/surge`):
   https://github.com/surge-synthesizer/surge
 - OB-Xf (reference template; GitHub, surge-synthesizer organization; local clone `~/src/OB-Xf`):
