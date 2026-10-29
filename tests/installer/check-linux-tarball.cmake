@@ -18,6 +18,8 @@
 # - MISSING: run on an empty products directory, the script exits 2 naming Giga Grains.clap and
 #   writes nothing.
 
+cmake_minimum_required(VERSION 3.22)
+
 foreach (var IN ITEMS SCRIPT PRODUCTS README OUT FULL CHECK_ARCHIVE)
     if (NOT DEFINED ${var})
         message(FATAL_ERROR "check-linux-tarball: ${var} is not set")

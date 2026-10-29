@@ -12,6 +12,8 @@
 # The signature's flags= line must name `runtime`. With EXPECT_ENTITLEMENT set, the signature's
 # entitlements must hold that key; with it empty they aren't read.
 
+cmake_minimum_required(VERSION 3.22)
+
 foreach (var IN ITEMS CODESIGN BUNDLE)
     if (NOT DEFINED ${var} OR "${${var}}" STREQUAL "")
         message(FATAL_ERROR "check-codesign-flags: ${var} is not set")

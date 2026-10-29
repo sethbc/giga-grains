@@ -11,6 +11,8 @@
 # text): the notices, the AGPL, the GPLv3 and the two MIT texts no checkout holds, plus the
 # AudioUnitSDK's Apache 2.0 text on macOS and the ASIO SDK's license on Windows.
 
+cmake_minimum_required(VERSION 3.22)
+
 foreach (var IN ITEMS DIR PLATFORM)
     if (NOT DEFINED ${var})
         message(FATAL_ERROR "check-license-set: ${var} is not set")

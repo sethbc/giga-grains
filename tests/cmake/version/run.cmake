@@ -11,6 +11,8 @@
 # a nested cmake -P (GG_NESTED set), which makes the call, and checks that it failed. Nothing is
 # written, so the cases run in parallel.
 
+cmake_minimum_required(VERSION 3.22)
+
 foreach (var IN ITEMS GG_CASE GG_REPO)
     if (NOT DEFINED ${var})
         message(FATAL_ERROR "version test: ${var} is not set")

@@ -19,6 +19,8 @@
 # A directory entry is compared without its trailing slash. Fails naming every missing,
 # forbidden, stray or non-executable entry, with the archive's listing.
 
+cmake_minimum_required(VERSION 3.22)
+
 foreach (var IN ITEMS ARCHIVE KIND EXPECT)
     if (NOT DEFINED ${var} OR "${${var}}" STREQUAL "")
         message(FATAL_ERROR "check-archive: ${var} is not set")
@@ -32,11 +34,12 @@ if (NOT EXISTS "${ARCHIVE}" OR IS_DIRECTORY "${ARCHIVE}")
 endif ()
 
 # The kind, from the magic bytes: gzip (1f 8b) or a plain tar's "ustar" at offset 257; a zip's
-# local file header, "PK\3\4".
+# local file header, "PK\3\4". Both are read as hex: a text read of these 5 bytes returns
+# "ustar" and a newline (CMake 3.31 and 4.4), which never equals "ustar".
 file(READ "${ARCHIVE}" head LIMIT 4 HEX)
-file(READ "${ARCHIVE}" ustar OFFSET 257 LIMIT 5)
+file(READ "${ARCHIVE}" ustar OFFSET 257 LIMIT 5 HEX)
 if (KIND STREQUAL "tar")
-    if (NOT head MATCHES "^1f8b" AND NOT ustar STREQUAL "ustar")
+    if (NOT head MATCHES "^1f8b" AND NOT ustar STREQUAL "7573746172")
         message(FATAL_ERROR "FAIL: ${ARCHIVE} is neither a gzip file nor a tar (it starts ${head})")
     endif ()
 elseif (NOT head STREQUAL "504b0304")

@@ -20,6 +20,8 @@
 # - PARTIAL_ENV: with MAC_SIGNING_IDENTITY=x alone, the script exits 2 naming the four variables
 #   it lacks and writes nothing.
 
+cmake_minimum_required(VERSION 3.22)
+
 foreach (var IN ITEMS SCRIPT PRODUCTS OUT RESOURCES LICENSES NUMERIC FULL)
     if (NOT DEFINED ${var})
         message(FATAL_ERROR "check-macos-pkg: ${var} is not set")
