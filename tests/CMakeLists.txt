@@ -553,6 +553,44 @@ if (GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
                     FIXTURES_REQUIRED gg_products)
         endforeach ()
     endif ()
+
+    # The Windows zip and installer (spec §6.5): installer_windows_zip checks the entries, the
+    # readme and the license set of what installer/windows/make-zip.cmake makes from the products
+    # (through check-archive.cmake, as the Linux tarball does); _missing_product checks that it
+    # refuses an empty products directory, naming every product, with nothing written.
+    # installer_windows_inno compiles installer/windows/giga-grains.iss, only where
+    # cmake/products.cmake found Inno Setup's compiler (GG_ISCC). Each writes its own folder.
+    if (WIN32)
+        foreach (case IN ITEMS zip zip_missing_product)
+            set(switch "")
+            if (case STREQUAL "zip_missing_product")
+                set(switch -DMISSING=1)
+            endif ()
+            add_test(NAME installer_windows_${case}
+                    COMMAND ${CMAKE_COMMAND}
+                    -DSCRIPT=${PROJECT_SOURCE_DIR}/installer/windows/make-zip.cmake
+                    -DPRODUCTS=${GG_PRODUCT_DIR}
+                    -DREADME=${PROJECT_SOURCE_DIR}/installer/windows/readme.txt
+                    -DOUT=${CMAKE_CURRENT_BINARY_DIR}/installer-windows/${case}
+                    -DFULL=${GG_VERSION_STRING}
+                    -DCHECK_ARCHIVE=${CMAKE_CURRENT_SOURCE_DIR}/installer/check-archive.cmake
+                    ${switch}
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/installer/check-windows-zip.cmake)
+            set_tests_properties(installer_windows_${case} PROPERTIES LABELS installer
+                    FIXTURES_REQUIRED gg_products)
+        endforeach ()
+        if (GG_ISCC)
+            add_test(NAME installer_windows_inno
+                    COMMAND ${CMAKE_COMMAND} -DISCC=${GG_ISCC}
+                    -DISS=${PROJECT_SOURCE_DIR}/installer/windows/giga-grains.iss
+                    -DPRODUCTS=${GG_PRODUCT_DIR} -DLICENSES=${GG_LICENSE_DIR}
+                    -DOUT=${CMAKE_CURRENT_BINARY_DIR}/installer-windows/inno
+                    -DNUMERIC=${GG_VERSION_NUMERIC} -DFULL=${GG_VERSION_STRING}
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/installer/check-windows-inno.cmake)
+            set_tests_properties(installer_windows_inno PROPERTIES LABELS installer
+                    FIXTURES_REQUIRED gg_products)
+        endif ()
+    endif ()
 endif ()
 
 # The ASIO SDK guard (cmake/AsioGuard.cmake, carry-over [116]), proven on a scratch project: the

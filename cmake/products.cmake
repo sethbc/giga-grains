@@ -149,5 +149,35 @@ elseif (CMAKE_SYSTEM_NAME STREQUAL "Linux")
             --readme ${CMAKE_SOURCE_DIR}/installer/linux/README.md
             VERBATIM
             )
+elseif (WIN32)
+    # giga-grains-<v>-windows-x64.zip always, by a CMake script (no shell on the Windows side), and
+    # giga-grains-<v>-windows-x64.exe when Inno Setup 6's compiler is found (spec §6.5). The
+    # release job requires the .exe (GG_ISCC, a cache variable, says whether it can be built).
+    set(gg_windows_installer_dir ${CMAKE_SOURCE_DIR}/installer/windows)
+    add_custom_command(TARGET gg-installer POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -DPRODUCTS=${GG_PRODUCT_DIR} -DOUT=${GG_INSTALLER_DIR}
+            -DFULL_VERSION=${GG_VERSION_STRING} -DREADME=${gg_windows_installer_dir}/readme.txt
+            -P ${gg_windows_installer_dir}/make-zip.cmake
+            VERBATIM
+            )
+    find_program(GG_ISCC ISCC PATHS "C:/Program Files (x86)/Inno Setup 6"
+            DOC "Inno Setup 6's command-line compiler, ISCC.exe, which builds the Windows installer")
+    if (GG_ISCC)
+        message(STATUS "gg-installer: the zip, and the installer with Inno Setup's ${GG_ISCC}")
+        # ISCC takes Windows paths; its own log names its version (giga-grains.iss prints it).
+        foreach (var IN ITEMS GG_PRODUCT_DIR GG_LICENSE_DIR GG_INSTALLER_DIR)
+            file(TO_NATIVE_PATH "${${var}}" gg_native_${var})
+        endforeach ()
+        file(TO_NATIVE_PATH "${gg_windows_installer_dir}/giga-grains.iss" gg_native_iss)
+        add_custom_command(TARGET gg-installer POST_BUILD
+                COMMAND ${GG_ISCC} /DStagedAssets=${gg_native_GG_PRODUCT_DIR}
+                /DLicenses=${gg_native_GG_LICENSE_DIR} /DVersion=${GG_VERSION_NUMERIC}
+                /DFullVersion=${GG_VERSION_STRING} /DOutDir=${gg_native_GG_INSTALLER_DIR}
+                ${gg_native_iss}
+                VERBATIM
+                )
+    else ()
+        message(STATUS "gg-installer: Inno Setup's ISCC.exe not found; gg-installer builds the "
+                "zip alone")
+    endif ()
 endif ()
-# Windows (the installer and the zip, spec §6.5) has no branch yet.
