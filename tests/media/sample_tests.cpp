@@ -185,7 +185,7 @@ TEST_CASE("loadSample of a file it can't decode gives an error and no audio", "[
 
     for (const auto &file : {garbage, dir / "missing.wav", dir})
     {
-        INFO(file.string());
+        INFO(gg::test::utf8(file));
         const auto loaded = loadSample(file, MachineSettings{utf8(dir), ""});
         REQUIRE(loaded.decoded == nullptr);
         REQUIRE_FALSE(loaded.error.empty());

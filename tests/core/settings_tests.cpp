@@ -32,6 +32,7 @@
 #include "gg/media/SettingsFile.h"
 #include "media/AudioFixtures.h"
 #include "support/DeepXml.h"
+#include "support/Utf8.h"
 
 using gg::core::fromSettingsXml;
 using gg::core::MachineSettings;
@@ -374,7 +375,7 @@ TEST_CASE("saveSettings removes the temporary files of saves that crashed, and n
     std::vector<std::string> left;
     for (const auto &e : fs::directory_iterator(dir))
     {
-        left.push_back(e.path().filename().string());
+        left.push_back(gg::test::utf8(e.path().filename()));
     }
     std::sort(left.begin(), left.end());
     REQUIRE(left == std::vector<std::string>{"other.xml.4242.0.tmp", "settings.xml",
@@ -619,7 +620,7 @@ TEST_CASE("saveSettings retries a rename that fails while another program holds 
 TEST_CASE("defaultSettingsPath is in the user's configuration folder", "[media]")
 {
     const fs::path path = gg::media::defaultSettingsPath();
-    INFO(path.string());
+    INFO(gg::test::utf8(path));
     REQUIRE(path.is_absolute());
     REQUIRE(path.filename() == "settings.xml");
 #if defined(_WIN32)

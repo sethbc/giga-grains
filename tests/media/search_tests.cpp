@@ -78,7 +78,7 @@ MediaEntry entryFor(const fs::path &path, const std::string &relative = {})
 
 void requireFound(const gg::media::SearchResult &r, const fs::path &where, bool moved)
 {
-    INFO("path: " << r.path.string());
+    INFO("path: " << utf8(r.path));
     REQUIRE(r.outcome == SearchOutcome::Found);
     REQUIRE(r.path == where);
     REQUIRE(r.moved == moved);
@@ -86,7 +86,7 @@ void requireFound(const gg::media::SearchResult &r, const fs::path &where, bool 
 
 void requireMissing(const gg::media::SearchResult &r)
 {
-    INFO("path: " << r.path.string());
+    INFO("path: " << utf8(r.path));
     REQUIRE(r.outcome == SearchOutcome::Missing);
     REQUIRE(r.path.empty());
     REQUIRE_FALSE(r.moved);
@@ -231,7 +231,7 @@ const std::string kNfdName = "cafe\xcc\x81.wav";
 /// normal form (APFS, HFS+) opens either, one that doesn't (ext4, NTFS) only the stored one.
 void requireFoundAt(const gg::media::SearchResult &r, const fs::path &stored, const fs::path &saved)
 {
-    INFO("path: " << r.path.string());
+    INFO("path: " << utf8(r.path));
     REQUIRE(r.outcome == SearchOutcome::Found);
     REQUIRE(r.path.parent_path() == stored.parent_path());
     REQUIRE(fs::equivalent(r.path, stored));

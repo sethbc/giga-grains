@@ -116,7 +116,7 @@ TEST_CASE("decode reads 16-bit, 24-bit and float WAV, mono and stereo", "[media]
     gg::test::writeFile(file, gg::test::wavBytes(audio, format));
 
     const auto result = decodeAudioFile(file);
-    INFO(file.filename().string() << ": " << result.error);
+    INFO(gg::test::utf8(file.filename()) << ": " << result.error);
     REQUIRE(result.audio.has_value());
     REQUIRE(result.error.empty());
     const auto &decoded = *result.audio;
@@ -141,7 +141,7 @@ TEST_CASE("decode reads AIFF and AIFC", "[media]")
     gg::test::writeFile(file, gg::test::aiffBytes(audio, format, aifc));
 
     const auto result = decodeAudioFile(file);
-    INFO(file.filename().string() << ": " << result.error);
+    INFO(gg::test::utf8(file.filename()) << ": " << result.error);
     REQUIRE(result.audio.has_value());
     const auto &decoded = *result.audio;
     REQUIRE(decoded.format == "aiff");
@@ -644,7 +644,7 @@ TEST_CASE("decode stops once its cancel flag is set", "[media]")
         wav, gg::test::wavBytes(gg::test::makeTestAudio(2, 48000, 48000), SampleFormat::Int16));
     const fs::path file =
         GENERATE_COPY(wav, fixture("sine-1k-48k-mono.flac"), fixture("sine-1k-48k-mono.mp3"));
-    INFO(file.filename().string());
+    INFO(gg::test::utf8(file.filename()));
     std::atomic<bool> cancel{false};
     const auto plain = decodeAudioFile(file);
     const auto unset = decodeAudioFile(file, &cancel);
