@@ -122,10 +122,10 @@ add_subdirectory(clap/clap EXCLUDE_FROM_ALL)
 
 # sst-plugininfra (MIT): gg-core's patch, its PatchBase and the tinyxml (zlib) it bundles. Only
 # the patchbase interface target and tinyxml (with the filesystem shim tinyxml links) are used.
-# - Never compile anything from its libs/asiosdk: ASIO stays off (ruling F4, INTENT §22 and
-#   §23 #30). This copy is ASIO SDK 2.3.4, whose LICENSE.txt offers Steinberg's ASIO License or
-#   GPLv3; bringing ASIO back is a separate decision. No sst-plugininfra target uses it: asiosdk
-#   has no CMake of its own and nothing adds it.
+# - Its libs/asiosdk is the ASIO SDK 2.3.4, whose LICENSE.txt offers Steinberg's ASIO License
+#   or GPLv3. No sst-plugininfra target uses it (asiosdk has no CMake of its own). Exactly three
+#   of its files are compiled, and only on Windows, into RtAudio for the standalone's ASIO,
+#   under the GPLv3 option: see the editor block below (INTENT §15, §23 #56).
 # - miniz is off: we don't use it.
 # - strnatcmp (zlib) is on but never built. We don't use it, but at this pin the library's own
 #   sst-plugininfra target links sst-plugininfra::strnatcmp unconditionally, so turning it off
@@ -175,15 +175,80 @@ if (GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
     if (APPLE)
         set(RTAUDIO_API_JACK FALSE CACHE BOOL "No JACK on Apple")
     endif ()
-    # No ASIO in the Windows standalone (ruling F4, INTENT §22). RtAudio 6.0.1 bundles Steinberg's
-    # ASIO SDK files (include/asio*, iasiodrv.h), which carry Steinberg's copyright and no license
-    # grant, and we ship no unlicensed code. With ASIO off, clap-wrapper doesn't build RtAudio on
-    # Windows at all: the standalone uses its own WASAPI audio and WinMM MIDI backends. FORCE, so
-    # a build tree configured before this change drops ASIO too.
+    # RtAudio's own APIs on Windows: none. RtAudio 6.0.1 bundles Steinberg's ASIO SDK files
+    # (include/asio*, iasiodrv.h), which carry Steinberg's copyright and no license grant, and we
+    # ship no unlicensed code (ruling F4, INTENT §23 #30). RTAUDIO_API_ASIO OFF keeps RtAudio's
+    # CMake from compiling them, and with WASAPI and DirectSound off too it never puts its
+    # include/ directory on a path. The standalone's WASAPI audio and WinMM MIDI are
+    # clap-wrapper's own backends, which don't use RtAudio. FORCE, so an older build tree's cache
+    # can't turn any of these back.
     if (WIN32)
-        set(RTAUDIO_API_ASIO OFF CACHE BOOL "No ASIO: RtAudio's bundled ASIO SDK files have no license grant" FORCE)
+        set(RTAUDIO_API_ASIO OFF CACHE BOOL "RtAudio's CMake never compiles its bundled ASIO files: they have no license grant" FORCE)
+        set(RTAUDIO_API_WASAPI OFF CACHE BOOL "The standalone's WASAPI is clap-wrapper's own" FORCE)
+        set(RTAUDIO_API_DS OFF CACHE BOOL "No DirectSound" FORCE)
     endif ()
     add_subdirectory(clap/clap-wrapper EXCLUDE_FROM_ALL)
+
+    # ASIO in the Windows standalone (the director, 2026-10-28; INTENT §15, §23 #56), from the
+    # Steinberg ASIO SDK 2.3.4 in sst-plugininfra's libs/asiosdk, used under its GPLv3 option
+    # (its LICENSE.txt: "the Steinberg ASIO License, or alternatively ... the General Public
+    # License (GPL) Version 3"). Only these SDK files are compiled, unmodified:
+    # - common/asio.cpp, with common/asio.h, asiosys.h and iasiodrv.h: under that LICENSE.txt,
+    #   so GPLv3 here;
+    # - host/asiodrivers.cpp and host/pc/asiolist.cpp, with host/asiodrivers.h, ginclude.h and
+    #   host/pc/asiolist.h: under the BSD-3-Clause-style license each carries in its header.
+    # RtAudio is created here, before the standalone asks for it, with no API of its own (above);
+    # then those files, RtAudio's ASIO backend (__WINDOWS_ASIO__) and our stand-in for RtAudio's
+    # iasiothiscallresolver.h (thirdparty-impl/rtaudio-asio, which says why) are added to it.
+    # clap-wrapper's standalone takes ASIO from RtAudio when RTAUDIO_API_ASIO is true where it
+    # is called (cmake/wrap_standalone.cmake), and RtAudio already exists by then, so
+    # guarantee_rtaudio() returns at once. So RTAUDIO_API_ASIO is set ON as a normal variable in
+    # the parent scope, where clients/clap-first calls it; the cache entry stays OFF for RtAudio's
+    # own CMake.
+    if (WIN32)
+        if (NOT CMAKE_CXX_COMPILER_FRONTEND_VARIANT MATCHES "MSVC" OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
+            message(FATAL_ERROR "The standalone's ASIO builds only for Windows x64 with MSVC or ClangCL")
+        endif ()
+        guarantee_rtaudio()
+        set(gg_asiosdk ${CMAKE_CURRENT_SOURCE_DIR}/sst/sst-plugininfra/libs/asiosdk)
+        set(gg_asio_sources
+                ${gg_asiosdk}/common/asio.cpp
+                ${gg_asiosdk}/host/asiodrivers.cpp
+                ${gg_asiosdk}/host/pc/asiolist.cpp)
+        if (NOT EXISTS ${gg_asiosdk}/LICENSE.txt)
+            message(FATAL_ERROR "No ASIO SDK at ${gg_asiosdk}: run git submodule update --init")
+        endif ()
+        file(READ ${gg_asiosdk}/LICENSE.txt gg_asio_license)
+        if (NOT gg_asio_license MATCHES "General Public License \\(GPL\\) Version 3")
+            message(FATAL_ERROR "${gg_asiosdk}/LICENSE.txt no longer offers GPLv3")
+        endif ()
+        target_sources(rtaudio PRIVATE ${gg_asio_sources})
+        target_include_directories(rtaudio PRIVATE
+                ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty-impl/rtaudio-asio
+                ${gg_asiosdk}/common
+                ${gg_asiosdk}/host
+                ${gg_asiosdk}/host/pc)
+        target_compile_definitions(rtaudio PRIVATE __WINDOWS_ASIO__)
+        target_link_libraries(base-sdk-rtaudio INTERFACE ole32 winmm advapi32 user32)
+
+        # No ASIO file of RtAudio's own may reach the build: none of its sources, and not its
+        # include/ directory. Every source whose name mentions asio must be one of the SDK's.
+        get_target_property(gg_rtaudio_dir rtaudio SOURCE_DIR)
+        get_target_property(gg_rtaudio_sources rtaudio SOURCES)
+        foreach (source IN LISTS gg_rtaudio_sources)
+            string(TOLOWER "${source}" lower)
+            if (lower MATCHES "asio" AND NOT source IN_LIST gg_asio_sources)
+                message(FATAL_ERROR "RtAudio compiles ${source}: only the ASIO SDK's files may be compiled")
+            endif ()
+        endforeach ()
+        get_target_property(gg_rtaudio_includes rtaudio INCLUDE_DIRECTORIES)
+        string(FIND "${gg_rtaudio_includes}" "${gg_rtaudio_dir}/include" gg_rtaudio_include_at)
+        if (NOT gg_rtaudio_include_at EQUAL -1)
+            message(FATAL_ERROR "RtAudio's include/ (its unlicensed ASIO headers) is on its include path")
+        endif ()
+
+        set(RTAUDIO_API_ASIO ON PARENT_SCOPE)
+    endif ()
 
     # The editor: JUCE (GUI modules only) attached through sst-clap-helpers' clap_juce_shim, as
     # Shortcircuit XT does. add_clap_juce_shim adds JUCE's modules (JUCE_MODULES_ONLY) and the

@@ -57,6 +57,11 @@ resource, so machines must catch everything they can catch.
   - No GPLv2-only code and no unlicensed code.
   - Never use the names "Mutable Instruments", "Clouds" or "Beads" in the product.
   - Pin every dependency to an exact SHA or tag.
+  - ASIO (the Windows standalone only) comes from sst-plugininfra's ASIO SDK 2.3.4 under its
+    GPLv3 option: exactly `common/asio.cpp`, `host/asiodrivers.cpp` and `host/pc/asiolist.cpp`,
+    unmodified, compiled into RtAudio by `libs/CMakeLists.txt`. Never compile RtAudio's bundled
+    ASIO files, which have no license grant, or put its `include/` on a path; the Windows
+    configure fails if either happens (INTENT §23 #30, #56).
 
 ## Working style
 
@@ -110,8 +115,9 @@ resource, so machines must catch everything they can catch.
     commit. `--configure` runs `cmake --preset` for each preset named, and doesn't build. A name
     that isn't a configure preset fails before anything is cloned.
 - The first configure of a build tree that builds the plugin formats downloads the VST3 and
-  AudioUnit SDKs (clap-wrapper fetches them), so it needs the network. `asan` and `rtsan` build
-  no formats and download nothing.
+  AudioUnit SDKs (clap-wrapper fetches them), and RtAudio for the standalone on Windows (its
+  ASIO) and on Linux without the PipeWire and JACK headers, so it needs the network. `asan` and
+  `rtsan` build no formats and download nothing.
 
 **Presets.** They are defined in `CMakePresets.json`. Each one builds into `build/<preset>/`,
 except `windows-clangcl`, which builds into `build/windows/`.
