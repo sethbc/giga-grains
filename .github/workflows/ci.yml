@@ -21,6 +21,31 @@
 # Once the build succeeds, every later check runs even if an earlier one failed, so one run
 # reports them all; any failure still fails the job. The clang-format check is in format.yml.
 #
+# The release pipeline (docs/superpowers/specs/2026-10-29-release-pipeline-design.md §6.6):
+#
+#   plan        Runs first and decides the run's release_kind; every installer step, and the
+#               release job, runs only when it isn't none:
+#                 release   a pushed v* tag. plan fails fast unless the tag matches CMake's
+#                           version (scripts/release/check-version.sh), docs/releases/<tag>.md
+#                           exists, the signing secrets do, and the tagged commit is on main or a
+#                           release/* branch. The release job makes a draft GitHub Release, which
+#                           the director publishes by hand (docs/releasing.md).
+#                 nightly   the schedule on main: the version gets the suffix
+#                           dev.<yyyymmdd>.<sha7>; the installers are kept as run artifacts and
+#                           published as the nightly pre-release only when GG_PUBLISH_NIGHTLY is
+#                           "true" (below), from M5.
+#                 dry-run   a workflow_dispatch with installers: true: the installers, signed when
+#                           the secrets exist, as run artifacts; nothing is published.
+#                 none      everything else: every pull request and push to main, a dispatch
+#                           without installers, and any run in a fork. Today's run, unchanged.
+#   build       Its legs also sign (macOS, when the secrets exist) and pack the installers, after
+#               every validator passed (gg-installer), and upload them as installer-<preset>.
+#   release     After plan, build and sanitizers all passed: the source tarball, SHA256SUMS.txt
+#               and, by kind, the draft release, the nightly pre-release, or a summary alone.
+#
+# Secrets never reach a pull request: release_kind is none there, and every step that reads one
+# runs only when it isn't. No secret is ever echoed; each reaches its step through env.
+#
 # Every third-party action is pinned by commit SHA, with its tag or branch in the comment
 # beside it.
 
@@ -29,14 +54,28 @@ name: CI
 on:
   push:
     branches: [main]
+    # A release tag (spec §6.1): v<numeric>[-<suffix>], matching CMake's version.
+    tags: ['v*']
   pull_request:
   workflow_dispatch:
+    inputs:
+      installers:
+        description: "Build and sign the installers and upload them as artifacts; publish nothing"
+        type: boolean
+        default: false
   # The nightly full-length benchmark (and a fresh run of everything else) on main.
   schedule:
     - cron: "17 3 * * *"
 
 permissions:
   contents: read
+
+env:
+  # The public nightly (spec decision 10): "false" until M5 begins, when this is flipped to
+  # "true" (INTENT §23 #61). Nothing is public, and there is no nightly release, before M5
+  # (§23 #62); until then the nightly run still builds and signs the installers and keeps them
+  # as run artifacts.
+  GG_PUBLISH_NIGHTLY: "false"
 
 # A newer push to a pull request cancels that pull request's run in progress. Every other run
 # (a push to main, the nightly, a dispatch) has a group of its own, so none is cancelled and a
@@ -50,8 +89,115 @@ defaults:
     shell: bash
 
 jobs:
+  # What this run releases (spec §6.6), decided once, before anything builds; see the header.
+  # Its outputs: release_kind (release, nightly, dry-run or none); version, the full version the
+  # installers carry (release: check-version.sh's; nightly: CMake's numeric part plus
+  # -dev.<yyyymmdd>.<sha7>; dry-run: CMake's own, as the configure composes it; none: empty);
+  # prerelease_suffix, the part of version after its first '-' (empty for a bare release, dev
+  # when version is empty); tag, the release's tag; sign, true when the installers are signed
+  # (not none, and the MAC_CERTS_P12 secret exists). A run in a fork always gets none, so a
+  # fork's schedule never tries to sign. Full history (fetch-depth 0), in this job alone, for the
+  # tag's branch check (the hotfix rule of spec §1: main or a release/* branch).
+  plan:
+    name: plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      release_kind: ${{ steps.plan.outputs.release_kind }}
+      version: ${{ steps.plan.outputs.version }}
+      prerelease_suffix: ${{ steps.plan.outputs.prerelease_suffix }}
+      tag: ${{ steps.plan.outputs.tag }}
+      sign: ${{ steps.plan.outputs.sign }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Plan the run
+        id: plan
+        env:
+          GG_INSTALLERS: ${{ inputs.installers }}
+          # Only whether the secret is set, never its value.
+          GG_HAVE_MAC_CERTS: ${{ secrets.MAC_CERTS_P12 != '' }}
+        run: |
+          fail() {
+            echo "::error title=plan::$1"
+            echo "plan: $1" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          }
+          kind=none
+          if [[ "$GITHUB_REPOSITORY" != sethbc/giga-grains ]]; then
+            echo "A fork ($GITHUB_REPOSITORY): nothing is signed, packed or published."
+          elif [[ "$GITHUB_EVENT_NAME" == push && "$GITHUB_REF" == refs/tags/v* ]]; then
+            kind=release
+          elif [[ "$GITHUB_EVENT_NAME" == schedule && "$GITHUB_REF" == refs/heads/main ]]; then
+            kind=nightly
+          elif [[ "$GITHUB_EVENT_NAME" == workflow_dispatch && "$GG_INSTALLERS" == true ]]; then
+            kind=dry-run
+          fi
+          version=""
+          tag=""
+          case "$kind" in
+            release)
+              tag="${GITHUB_REF#refs/tags/}"
+              # check-version.sh prints its own one-line reason on a mismatch or the suffix dev.
+              lines="$(scripts/release/check-version.sh "$tag")" ||
+                fail "the tag $tag does not match CMake's version (check-version.sh, above)"
+              version="$(sed -n 's/^version=//p' <<<"$lines")"
+              [[ -f "docs/releases/$tag.md" ]] ||
+                fail "docs/releases/$tag.md, the release notes, is missing (docs/releases/README.md)"
+              [[ "$GG_HAVE_MAC_CERTS" == true ]] ||
+                fail "the MAC_CERTS_P12 secret is not set, and a release is always signed"
+              commit="$(git rev-parse 'HEAD^{commit}')"
+              branch=""
+              for ref in origin/main $(git for-each-ref --format='%(refname:short)' 'refs/remotes/origin/release/*'); do
+                if git merge-base --is-ancestor "$commit" "$ref"; then
+                  branch="$ref"
+                  break
+                fi
+              done
+              [[ -n "$branch" ]] ||
+                fail "the tagged commit $commit is on neither origin/main nor an origin/release/* branch"
+              echo "The tagged commit $commit is on $branch."
+              ;;
+            nightly)
+              numeric="$(scripts/release/check-version.sh --print | sed -n 's/^numeric=//p')"
+              [[ -n "$numeric" ]] || fail "check-version.sh --print gave no numeric version"
+              version="$numeric-dev.$(date -u +%Y%m%d).${GITHUB_SHA:0:7}"
+              ;;
+            dry-run)
+              version="$(scripts/release/check-version.sh --print | sed -n 's/^version=//p')"
+              [[ -n "$version" ]] || fail "check-version.sh --print gave no version"
+              ;;
+          esac
+          if [[ -z "$version" ]]; then
+            suffix=dev
+          elif [[ "$version" == *-* ]]; then
+            suffix="${version#*-}"
+          else
+            suffix=""
+          fi
+          sign=false
+          if [[ "$kind" != none && "$GG_HAVE_MAC_CERTS" == true ]]; then
+            sign=true
+          fi
+          {
+            echo "release_kind=$kind"
+            echo "version=$version"
+            echo "prerelease_suffix=$suffix"
+            echo "tag=$tag"
+            echo "sign=$sign"
+          } | tee -a "$GITHUB_OUTPUT"
+          {
+            echo "### plan"
+            echo "release_kind=$kind, version=${version:-(none)}, prerelease_suffix=${suffix:-(empty)}, sign=$sign"
+          } >> "$GITHUB_STEP_SUMMARY"
+
   build:
     name: build (${{ matrix.preset }})
+    needs: plan
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     strategy:
@@ -95,6 +241,10 @@ jobs:
       CCACHE_NOHASHDIR: "1"
       CCACHE_MAXSIZE: 500M
       CCACHE_COMPRESS: "1"
+      # The plan job's decision (see the header); every installer step runs only when the kind
+      # isn't none.
+      GG_RELEASE_KIND: ${{ needs.plan.outputs.release_kind }}
+      GG_VERSION: ${{ needs.plan.outputs.version }}
     steps:
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -174,8 +324,35 @@ jobs:
           restore-keys: |
             ccache-${{ runner.os }}-${{ matrix.preset }}-${{ matrix.os }}-
 
+      # macOS, when the run signs (plan's sign: a kind other than none, and the secrets exist):
+      # the Developer ID certificates go into a throwaway keychain (scripts/release/mac-keychain.sh)
+      # before Configure names the identity, so the build signs every bundle with it, and the
+      # notary key is decoded for the installer step. GG_SIGN=1 tells the later steps. Each secret
+      # reaches the step through env and is decoded into $RUNNER_TEMP, never echoed; the keychain
+      # and both files are deleted in an always() step at the end of the job.
+      - name: Import the signing certificates (macOS)
+        id: keychain
+        if: ${{ needs.plan.outputs.release_kind != 'none' && needs.plan.outputs.sign == 'true' && runner.os == 'macOS' }}
+        env:
+          MAC_CERTS_P12: ${{ secrets.MAC_CERTS_P12 }}
+          P12_PASSWORD: ${{ secrets.MAC_CERTS_P12_PASSWORD }}
+          NOTARY_KEY_P8: ${{ secrets.NOTARY_KEY_P8 }}
+        run: |
+          printf '%s' "$MAC_CERTS_P12" | base64 --decode > "$RUNNER_TEMP/certs.p12"
+          scripts/release/mac-keychain.sh import "$RUNNER_TEMP/certs.p12" \
+            "$RUNNER_TEMP/signing.keychain-db"
+          rm -f "$RUNNER_TEMP/certs.p12"
+          printf '%s' "$NOTARY_KEY_P8" | base64 --decode > "$RUNNER_TEMP/AuthKey.p8"
+          echo "GG_SIGN=1" >> "$GITHUB_ENV"
+
+      # A nightly passes its pre-release suffix (dev.<yyyymmdd>.<sha7>, from plan); a release's
+      # suffix is already CMake's (plan checked it). A signing run names the Developer ID, which
+      # turns on the hardened runtime, the timestamp and the apps' entitlement (spec §6.2).
       - name: Configure
         id: configure
+        env:
+          GG_PRERELEASE_SUFFIX: ${{ needs.plan.outputs.prerelease_suffix }}
+          MAC_SIGNING_IDENTITY: ${{ env.GG_SIGN == '1' && secrets.MAC_SIGNING_IDENTITY || '' }}
         run: |
           # A loop, not mapfile: the macOS runner's bash is 3.2.
           sdk_roots=()
@@ -188,7 +365,14 @@ jobs:
             launcher=(-DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
               -DCMAKE_OBJC_COMPILER_LAUNCHER=ccache -DCMAKE_OBJCXX_COMPILER_LAUNCHER=ccache)
           fi
-          cmake --preset ${{ matrix.preset }} "${sdk_roots[@]}" "${launcher[@]}"
+          release_opts=()
+          if [[ "$GG_RELEASE_KIND" == nightly ]]; then
+            release_opts+=("-DGG_VERSION_PRERELEASE=$GG_PRERELEASE_SUFFIX")
+          fi
+          if [[ "${GG_SIGN:-}" == 1 ]]; then
+            release_opts+=("-DGG_MACOS_CODESIGN_IDENTITY=$MAC_SIGNING_IDENTITY")
+          fi
+          cmake --preset ${{ matrix.preset }} "${sdk_roots[@]}" "${launcher[@]}" "${release_opts[@]}"
 
       - name: Build gg-all and gg-products
         id: build
@@ -423,6 +607,74 @@ jobs:
         run: |
           "${{ matrix.build_dir }}/vst3-validator/bin/Release/validator${{ matrix.exe }}" "$GG_VST3"
 
+      # When the kind isn't none, and only when every step above passed (no !cancelled()), so an
+      # installer is packed only from products that passed every test and validator: gg-installer
+      # (cmake/products.cmake) writes the leg's installer into <build dir>/gg-installer/. On
+      # macOS the signing variables are set, from secrets, only when GG_SIGN is (empty means
+      # unset to installer/macos/make-installer.sh), and its `signed:` line must agree with
+      # GG_SIGN; Windows ships unsigned (spec decision 3) and Linux has nothing to sign. The
+      # expected files, named by plan's version, are staged in $RUNNER_TEMP/installer for the
+      # upload: macOS the DMG (the PKG is inside it), Windows the zip and the Inno Setup EXE
+      # (GG_ISCC must have been found at configure), Linux the tarball.
+      - name: Build the installer
+        id: installer
+        if: ${{ needs.plan.outputs.release_kind != 'none' && steps.products.outcome == 'success' }}
+        timeout-minutes: 45
+        env:
+          MAC_SIGNING_IDENTITY: ${{ env.GG_SIGN == '1' && secrets.MAC_SIGNING_IDENTITY || '' }}
+          MAC_INSTALLER_IDENTITY: ${{ env.GG_SIGN == '1' && secrets.MAC_INSTALLER_IDENTITY || '' }}
+          NOTARY_KEY_ID: ${{ env.GG_SIGN == '1' && secrets.NOTARY_KEY_ID || '' }}
+          NOTARY_ISSUER_ID: ${{ env.GG_SIGN == '1' && secrets.NOTARY_ISSUER_ID || '' }}
+          NOTARY_KEY_FILE: ${{ env.GG_SIGN == '1' && format('{0}/AuthKey.p8', runner.temp) || '' }}
+        run: |
+          log="$RUNNER_TEMP/gg-installer.log"
+          cmake --build --preset ${{ matrix.preset }} --config Release --target gg-installer 2>&1 | tee "$log"
+          dir="${{ matrix.build_dir }}/gg-installer"
+          case "$RUNNER_OS" in
+            macOS) files=("giga-grains-$GG_VERSION-macos.dmg") ;;
+            Windows) files=("giga-grains-$GG_VERSION-windows-x64.zip" "giga-grains-$GG_VERSION-windows-x64.exe") ;;
+            *) files=("giga-grains-$GG_VERSION-linux-x86_64.tar.gz") ;;
+          esac
+          stage="$RUNNER_TEMP/installer"
+          rm -rf "$stage"
+          mkdir -p "$stage"
+          for file in "${files[@]}"; do
+            if [[ ! -f "$dir/$file" ]]; then
+              echo "::error title=gg-installer::no $file in $dir"
+              ls -la "$dir" || true
+              exit 1
+            fi
+            cp "$dir/$file" "$stage/"
+          done
+          if [[ "$RUNNER_OS" == macOS ]]; then
+            signed="$(tr -d '\r' < "$log" | grep -E '^signed: (yes|no)$' | tail -n 1 | cut -d ' ' -f 2 || true)"
+            expected=no
+            if [[ "${GG_SIGN:-}" == 1 ]]; then
+              expected=yes
+            fi
+            if [[ "$signed" != "$expected" ]]; then
+              echo "::error title=gg-installer::make-installer.sh said signed: ${signed:-(nothing)}, expected signed: $expected"
+              exit 1
+            fi
+          else
+            signed=no
+          fi
+          {
+            echo "### Installer (${{ matrix.preset }}, $GG_RELEASE_KIND, $GG_VERSION)"
+            echo "signed: $signed"
+            echo '```'
+            ls -l "$stage"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the installer
+        if: ${{ steps.installer.outcome == 'success' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: installer-${{ matrix.preset }}
+          path: ${{ runner.temp }}/installer/
+          if-no-files-found: error
+
       - name: Upload golden renders
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -440,6 +692,14 @@ jobs:
             ${{ matrix.build_dir }}/gg-bench.json
             ${{ matrix.build_dir }}/gg-bench.txt
           if-no-files-found: error
+
+      # Whenever the import ran, whatever happened since (also on a failure or a cancel): the
+      # throwaway keychain leaves the search list and is deleted, with the decoded secrets.
+      - name: Delete the signing keychain (macOS)
+        if: ${{ always() && runner.os == 'macOS' && (steps.keychain.outcome == 'success' || steps.keychain.outcome == 'failure') }}
+        run: |
+          rm -f "$RUNNER_TEMP/certs.p12" "$RUNNER_TEMP/AuthKey.p8"
+          scripts/release/mac-keychain.sh delete "$RUNNER_TEMP/signing.keychain-db"
 
   sanitizers:
     name: sanitizers (asan, rtsan)
@@ -551,3 +811,142 @@ jobs:
         with:
           path: ${{ env.CCACHE_DIR }}
           key: ccache-sanitizers-llvm-${{ env.LLVM_VERSION }}-${{ github.sha }}
+
+  # When the kind isn't none, and only after plan, every build leg and the sanitizers passed (a
+  # red sanitizer run blocks a release). The only job that may write to the repository
+  # (contents: write, for the release; actions: read, to download this run's artifacts with gh).
+  # It downloads the three legs' installer-* artifacts, writes the complete corresponding source
+  # (scripts/release/source-tarball.sh, from a recursive checkout; spec decision 11) and
+  # SHA256SUMS.txt over every file, then, by kind: release makes a draft release of the tag,
+  # which the director publishes by hand; nightly moves the nightly tag and updates the nightly
+  # pre-release, only when GG_PUBLISH_NIGHTLY is "true"; dry-run only lists the files. gh, with
+  # the job's own token: no third-party action.
+  release:
+    name: release
+    needs: [plan, build, sanitizers]
+    if: ${{ needs.plan.outputs.release_kind != 'none' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GG_RELEASE_KIND: ${{ needs.plan.outputs.release_kind }}
+      GG_VERSION: ${{ needs.plan.outputs.version }}
+      GG_PRERELEASE_SUFFIX: ${{ needs.plan.outputs.prerelease_suffix }}
+      GG_TAG: ${{ needs.plan.outputs.tag }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1 # already the default; see the build job
+          submodules: recursive
+          persist-credentials: false
+
+      # Every file the release carries, in $RUNNER_TEMP/dist: the four installers by name, the
+      # source tarball, and SHA256SUMS.txt over them.
+      - name: Gather the release files
+        run: |
+          artifacts="$RUNNER_TEMP/artifacts"
+          dist="$RUNNER_TEMP/dist"
+          gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" --pattern 'installer-*' \
+            --dir "$artifacts"
+          mkdir -p "$dist"
+          find "$artifacts" -type f -exec mv {} "$dist/" \;
+          for file in "giga-grains-$GG_VERSION-macos.dmg" \
+              "giga-grains-$GG_VERSION-windows-x64.zip" "giga-grains-$GG_VERSION-windows-x64.exe" \
+              "giga-grains-$GG_VERSION-linux-x86_64.tar.gz"; do
+            if [[ ! -f "$dist/$file" ]]; then
+              echo "::error title=release::no $file among this run's installer-* artifacts"
+              ls -la "$dist"
+              exit 1
+            fi
+          done
+          scripts/release/source-tarball.sh . "$GG_VERSION" "$dist/giga-grains-$GG_VERSION-source.tar.gz"
+          (cd "$dist" && sha256sum -- *) > "$RUNNER_TEMP/SHA256SUMS.txt"
+          mv "$RUNNER_TEMP/SHA256SUMS.txt" "$dist/SHA256SUMS.txt"
+          cat "$dist/SHA256SUMS.txt"
+          echo "GG_DIST=$dist" >> "$GITHUB_ENV"
+
+      # A draft, never published here: the director publishes it by hand after installing from it
+      # (docs/releasing.md). A pre-release when the version has a suffix. --verify-tag: the tag
+      # must exist already; nothing here creates one. A rerun refuses to make a second draft.
+      - name: Make the draft release (release)
+        if: ${{ needs.plan.outputs.release_kind == 'release' }}
+        run: |
+          if gh release view "$GG_TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            echo "::error title=release::a release for $GG_TAG exists already; delete the draft to make it again"
+            exit 1
+          fi
+          prerelease=()
+          if [[ -n "$GG_PRERELEASE_SUFFIX" ]]; then
+            prerelease=(--prerelease)
+          fi
+          gh release create "$GG_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --draft \
+            "${prerelease[@]}" --title "Giga Grains $GG_VERSION" \
+            --notes-file "docs/releases/$GG_TAG.md" "$GG_DIST"/*
+          {
+            echo "### release: draft $GG_TAG made (Giga Grains $GG_VERSION${GG_PRERELEASE_SUFFIX:+, a pre-release})"
+            echo '```'
+            (cd "$GG_DIST" && ls -l)
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # From M5 (GG_PUBLISH_NIGHTLY): the nightly tag moves to this commit (through the API, as
+      # the checkout keeps no credentials), the nightly pre-release is made or its notes updated
+      # (installer/nightly-notes.md plus this build's version and commit), every asset not in
+      # this run's set is deleted, and this run's are uploaded. Published directly, not a draft.
+      - name: Publish the nightly (nightly, from M5)
+        if: ${{ needs.plan.outputs.release_kind == 'nightly' && env.GG_PUBLISH_NIGHTLY == 'true' }}
+        run: |
+          repo="$GITHUB_REPOSITORY"
+          if gh api "repos/$repo/git/refs/tags/nightly" > /dev/null 2>&1; then
+            gh api -X PATCH "repos/$repo/git/refs/tags/nightly" -f sha="$GITHUB_SHA" -F force=true > /dev/null
+          else
+            gh api -X POST "repos/$repo/git/refs" -f ref=refs/tags/nightly -f sha="$GITHUB_SHA" > /dev/null
+          fi
+          notes="$RUNNER_TEMP/nightly-notes.md"
+          {
+            cat installer/nightly-notes.md
+            echo
+            echo "This build: Giga Grains $GG_VERSION, from commit $GITHUB_SHA."
+          } > "$notes"
+          if gh release view nightly --repo "$repo" > /dev/null 2>&1; then
+            gh release edit nightly --repo "$repo" --prerelease --title "Giga Grains nightly" \
+              --notes-file "$notes"
+          else
+            gh release create nightly --repo "$repo" --verify-tag --prerelease \
+              --title "Giga Grains nightly" --notes-file "$notes"
+          fi
+          gh release view nightly --repo "$repo" --json assets --jq '.assets[].name' |
+            while IFS= read -r asset; do
+              if [[ -n "$asset" && ! -f "$GG_DIST/$asset" ]]; then
+                gh release delete-asset nightly "$asset" --repo "$repo" --yes
+              fi
+            done
+          gh release upload nightly "$GG_DIST"/* --repo "$repo" --clobber
+          echo "### nightly: published Giga Grains $GG_VERSION as the nightly pre-release" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Nightly publishing is off (nightly, until M5)
+        if: ${{ needs.plan.outputs.release_kind == 'nightly' && env.GG_PUBLISH_NIGHTLY != 'true' }}
+        run: |
+          {
+            echo "### nightly: nightly publishing is off until M5 (GG_PUBLISH_NIGHTLY)"
+            echo "The installers are this run's installer-* artifacts. Nothing was published."
+            echo '```'
+            (cd "$GG_DIST" && ls -l)
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: List the files (dry-run)
+        if: ${{ needs.plan.outputs.release_kind == 'dry-run' }}
+        run: |
+          {
+            echo "### dry-run: nothing published"
+            echo "A release of Giga Grains $GG_VERSION would carry these files; the installers are"
+            echo "this run's installer-* artifacts."
+            echo '```'
+            (cd "$GG_DIST" && ls -l && cat SHA256SUMS.txt)
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
