@@ -55,8 +55,8 @@
 /// - Sample mode requires "source" and "stream", and every "stream" key but "distribution",
 ///   which defaults to 0 (periodic onsets, as in M0), and "quality", which defaults to "normal"
 ///   (see StreamSpec::quality). "source" needs "kind" plus the keys its kind uses (see
-///   SourceSpec); "source.sampleRate" is optional. Keys a kind doesn't use may be present and
-///   are ignored.
+///   SourceSpec), and no key only another kind uses; "source.sampleRate" is optional for a
+///   built-in kind and an error for a file.
 /// - Instrument mode requires "sample", read as a source but without "sampleRate"; "params",
 ///   "automation" and "notes" are optional. It has no input, so no "channels".
 /// - FX mode requires "input", read as a source but without "sampleRate", and "channels",

@@ -1343,3 +1343,101 @@ TEST_CASE("gg-render's guard maps what it catches to its exit statuses", "[rende
     CHECK(guarded([]() -> int { throw 42; }) == gg::render::kExitInternalError);
     CHECK(gg::render::kExitInternalError == 3);
 }
+
+TEST_CASE("a source key its kind doesn't use is rejected", "[render]")
+{
+    // Carry-over [66]: a key another kind reads used to be skipped unread, so a sine with
+    // "startHz": "x" parsed. Each kind now takes only its own keys, in every role.
+    struct Role
+    {
+        std::string key;
+        nlohmann::json spec;
+    };
+    const std::vector<Role> roles{{"source", nlohmann::json::parse(readCase("sparse-sine"))},
+                                  {"sample", instrumentJson()},
+                                  {"input", fxFileJson()}};
+    const nlohmann::json kinds = nlohmann::json::parse(R"({
+        "sine": {"kind": "sine", "frequencyHz": 220, "seconds": 2.0, "amplitude": 0.5},
+        "sweep": {"kind": "sweep", "startHz": 50, "endHz": 8000, "seconds": 2.0,
+                  "amplitude": 0.5},
+        "noise": {"kind": "noise", "seconds": 2.0, "amplitude": 0.5},
+        "file": {"kind": "file", "path": "loop-48k.wav"}})");
+    // Each kind with every key it doesn't use, given a value of the wrong type ("x") and of the
+    // right one.
+    const std::map<std::string, std::vector<std::string>> unused{
+        {"sine", {"startHz", "endHz", "path"}},
+        {"sweep", {"frequencyHz", "path"}},
+        {"noise", {"frequencyHz", "startHz", "endHz", "path"}},
+        {"file", {"frequencyHz", "startHz", "endHz", "seconds", "amplitude", "sampleRate"}}};
+    for (const auto &role : roles)
+    {
+        for (const auto &[kind, keys] : unused)
+        {
+            for (const auto &key : keys)
+            {
+                for (const nlohmann::json &value : {nlohmann::json("x"), nlohmann::json(100)})
+                {
+                    CAPTURE(role.key, kind, key, value.dump());
+                    auto j = role.spec;
+                    if (role.key == "input" && kind != "file")
+                    {
+                        j["channels"] = 1; // a built-in input needs its channel count
+                    }
+                    j[role.key] = kinds[kind];
+                    std::string error;
+                    REQUIRE(gg::render::parseRenderSpec(j.dump(), error).has_value());
+                    j[role.key][key] = value;
+                    // An instrument's sample and an FX input have no sampleRate of any kind.
+                    CHECK(rejection(j) ==
+                          (key == "sampleRate" && role.key != "source"
+                               ? "unknown key " + role.key + ".sampleRate"
+                               : role.key + "." + key + " doesn't apply to kind \"" + kind + "\""));
+                }
+            }
+        }
+    }
+    // sampleRate applies to every built-in kind of a sample-mode source, and to nothing else.
+    for (const std::string kind : {"sine", "sweep", "noise"})
+    {
+        auto j = roles[0].spec;
+        j["source"] = kinds[kind];
+        j["source"]["sampleRate"] = 44100;
+        CHECK(parseJson(j).source.sampleRate == 44100.0);
+    }
+}
+
+TEST_CASE("every committed render spec parses", "[render]")
+{
+    // The golden cases and the listening packs' specs: the stricter source keys ([66]) must
+    // reject none of them.
+    const std::filesystem::path golden{GG_GOLDEN_DIR};
+    std::vector<std::filesystem::path> specs;
+    for (const auto &entry : std::filesystem::directory_iterator(golden / "cases"))
+    {
+        specs.push_back(entry.path());
+    }
+    const auto listening = golden.parent_path().parent_path() / "docs" / "listening";
+    for (const auto &pack : std::filesystem::directory_iterator(listening))
+    {
+        if (std::filesystem::is_directory(pack.path() / "specs"))
+        {
+            for (const auto &entry : std::filesystem::directory_iterator(pack.path() / "specs"))
+            {
+                specs.push_back(entry.path());
+            }
+        }
+    }
+    std::erase_if(specs, [](const auto &p) { return p.extension() != ".json"; });
+    // 19 golden cases and the M1 packs' 23 specs when this was written; more is fine.
+    CHECK(specs.size() >= 42);
+    for (const auto &path : specs)
+    {
+        std::ifstream in(path, std::ios::binary);
+        REQUIRE(in.good());
+        const std::string text{std::istreambuf_iterator<char>(in), {}};
+        std::string error;
+        const bool parsed = gg::render::parseRenderSpec(text, error).has_value();
+        INFO(path.string() << ": " << error);
+        CHECK(parsed);
+    }
+}

@@ -159,23 +159,40 @@ SourceSpec readSource(const json &j, SignalRole role)
                      {"kind", "frequencyHz", "startHz", "endHz", "seconds", "amplitude", "path"});
     SourceSpec s;
     const std::string kind = o.string("kind");
+    // Each kind takes only its own keys (carry-over [66]): a key only another kind reads would go
+    // unread, so a sine's "startHz": "x" would parse. A built-in kind lists "sampleRate", which
+    // Object has already refused unless this is a sample-mode source.
+    const auto onlyKeys = [&](std::initializer_list<std::string_view> own) {
+        for (const auto &item : j.items())
+        {
+            if (std::find(own.begin(), own.end(), item.key()) == own.end())
+            {
+                throw SpecError(
+                    fmt::format(R"({}.{} doesn't apply to kind "{}")", name, item.key(), kind));
+            }
+        }
+    };
     if (kind == "sine")
     {
+        onlyKeys({"kind", "frequencyHz", "seconds", "amplitude", "sampleRate"});
         s.kind = SourceKind::Sine;
         s.frequencyHz = o.positive("frequencyHz");
     }
     else if (kind == "sweep")
     {
+        onlyKeys({"kind", "startHz", "endHz", "seconds", "amplitude", "sampleRate"});
         s.kind = SourceKind::Sweep;
         s.startHz = o.positive("startHz");
         s.endHz = o.positive("endHz");
     }
     else if (kind == "noise")
     {
+        onlyKeys({"kind", "seconds", "amplitude", "sampleRate"});
         s.kind = SourceKind::Noise;
     }
     else if (kind == "file")
     {
+        onlyKeys({"kind", "path"});
         s.kind = SourceKind::File;
         s.path = o.string("path");
         if (s.path.empty())
