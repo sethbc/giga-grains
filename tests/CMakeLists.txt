@@ -438,3 +438,16 @@ if (APPLE AND GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
     add_dependencies(gg-tests gg-au-state-tests)
     catch_discover_tests(gg-au-state-tests ADD_TAGS_AS_LABELS)
 endif ()
+
+# The ASIO SDK guard (cmake/AsioGuard.cmake, carry-over [116]), proven on a scratch project: the
+# one allowed use configures, and every misuse fails the configure naming it. Each case builds
+# in its own folder under the test output.
+foreach (case IN ITEMS allowed other-target-source other-target-include other-target-link
+        other-file-in-allowed-target other-dir-in-allowed-target
+        allowed-source-in-other-target-of-a-subdirectory directory-include)
+    add_test(NAME asio_guard_${case}
+            COMMAND ${CMAKE_COMMAND} -DGG_GUARD_CASE=${case} -DGG_REPO=${PROJECT_SOURCE_DIR}
+            -DGG_OUT=${CMAKE_CURRENT_BINARY_DIR}/asio-guard/${case}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/asio-guard/run.cmake)
+    set_tests_properties(asio_guard_${case} PROPERTIES LABELS "build")
+endforeach ()

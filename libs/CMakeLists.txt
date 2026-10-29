@@ -289,6 +289,12 @@ if (GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
                 ${gg_asiosdk}/host
                 ${gg_asiosdk}/host/pc)
         target_compile_definitions(rtaudio PRIVATE __WINDOWS_ASIO__)
+        # What cmake/AsioGuard.cmake allows (carry-over [116]): this target, these sources and
+        # these include directories use libs/asiosdk, and nothing else does.
+        set_property(GLOBAL PROPERTY GG_ASIO_TARGET rtaudio)
+        set_property(GLOBAL PROPERTY GG_ASIO_SOURCES ${gg_asio_sources})
+        set_property(GLOBAL PROPERTY GG_ASIO_INCLUDE_DIRS
+                ${gg_asiosdk}/common ${gg_asiosdk}/host ${gg_asiosdk}/host/pc)
         target_link_libraries(base-sdk-rtaudio INTERFACE ole32 winmm advapi32 user32)
 
         # No ASIO file of RtAudio's own may reach the build: none of its sources, and not its
