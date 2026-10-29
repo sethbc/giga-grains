@@ -95,8 +95,9 @@ if (UNIX AND NOT APPLE)
 endif ()
 add_library(gg::pffft ALIAS pffft)
 
-# stb: header-only; stb_image_write.h (the spectrogram writer) and stb_image.h (the tests read it back). gg::stb gives the header; the implementation
-# is compiled exactly once, in gg::stb_impl, built as gg::dr_libs_impl is.
+# stb: header-only; stb_image_write.h (the spectrogram writer) and stb_image.h (the tests read it
+# back). gg::stb gives the headers; the implementation is compiled exactly once, in
+# gg::stb_impl, built as gg::dr_libs_impl is.
 add_library(stb INTERFACE)
 target_include_directories(stb SYSTEM INTERFACE stb)
 add_library(gg::stb ALIAS stb)
