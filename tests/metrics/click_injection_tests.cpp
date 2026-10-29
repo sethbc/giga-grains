@@ -27,8 +27,10 @@
 #include "gg/metrics/AudioData.h"
 #include "gg/metrics/Metrics.h"
 #include "gg/metrics/WavIO.h"
+#include "support/Utf8.h"
 
 using gg::metrics::AudioData;
+using gg::test::utf8;
 
 namespace
 {
@@ -37,12 +39,6 @@ namespace
 constexpr float kStep = 0.1f;
 /// Positions per case, at round(frames · i / (kPositions + 1)) for i = 1 … kPositions.
 constexpr int kPositions = 16;
-
-std::string utf8(const std::filesystem::path &path)
-{
-    const auto text = path.u8string();
-    return {text.begin(), text.end()};
-}
 
 /// The test media (gg-render --write-media), in a directory of the calling test's own: the tests
 /// run as parallel processes.

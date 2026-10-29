@@ -20,6 +20,7 @@
 
 #include "gg/metrics/AudioData.h"
 #include "gg/metrics/Spectrogram.h"
+#include "support/Utf8.h"
 
 // stb_image's PNG reader, for this file only: nothing else in the project reads images, so
 // gg::stb_impl compiles just the writer.
@@ -30,6 +31,7 @@
 
 namespace fs = std::filesystem;
 using gg::metrics::AudioData;
+using gg::test::utf8;
 
 namespace
 {
@@ -57,12 +59,6 @@ fs::path scratch(const fs::path &name)
     const fs::path dir = fs::path{GG_TEST_OUTPUT_DIR} / "spectrogram";
     fs::create_directories(dir);
     return dir / name;
-}
-
-std::string utf8(const fs::path &p)
-{
-    const std::u8string s = p.u8string();
-    return {s.begin(), s.end()};
 }
 
 /// A decoded PNG: its size, the channel count stored in the file, and its pixels as 8-bit gray.

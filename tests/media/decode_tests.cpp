@@ -15,6 +15,7 @@
 
 #include "gg/media/Decode.h"
 #include "media/AudioFixtures.h"
+#include "support/Utf8.h"
 
 #if !defined(_WIN32)
 #include <unistd.h>
@@ -70,8 +71,7 @@ void requireError(const gg::media::DecodeResult &result, const fs::path &file,
     REQUIRE_FALSE(result.error.empty());
     // "<file name>: <reason>", the reason searched apart, since names like truncated.flac
     // contain the words a reason does.
-    const auto u8name = file.filename().u8string();
-    const std::string prefix = std::string(u8name.begin(), u8name.end()) + ": ";
+    const std::string prefix = gg::test::utf8(file.filename()) + ": ";
     REQUIRE(result.error.starts_with(prefix));
     REQUIRE(result.error.find(reason, prefix.size()) != std::string::npos);
 }

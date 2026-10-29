@@ -33,6 +33,7 @@
 #include "gg/grain/Tier.h"
 #include "gg/source/PreparedSource.h"
 #include "gg/source/SampleBuffer.h"
+#include "support/Utf8.h"
 
 using Catch::Matchers::ContainsSubstring;
 using Catch::Matchers::WithinRel;
@@ -47,6 +48,7 @@ using gg::render::NoteSpec;
 using gg::render::RenderMode;
 using gg::render::RenderSpec;
 using gg::render::SourceKind;
+using gg::test::utf8;
 
 namespace
 {
@@ -114,13 +116,6 @@ RenderSpec parseJson(const nlohmann::json &j)
     INFO(error);
     REQUIRE(spec.has_value());
     return *spec;
-}
-
-/// `path` as the UTF-8 the spec's paths are in.
-std::string utf8(const std::filesystem::path &path)
-{
-    const auto text = path.u8string();
-    return {text.begin(), text.end()};
 }
 
 /// The test media (gg-render --write-media), written into a directory of this test's own under

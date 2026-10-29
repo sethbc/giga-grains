@@ -26,6 +26,7 @@
 #include "TestHooks.h"
 #include "gg/media/Sha256.h"
 #include "media/AudioFixtures.h"
+#include "support/Utf8.h"
 
 namespace
 {
@@ -34,6 +35,8 @@ using gg::core::MachineSettings;
 using gg::core::MediaEntry;
 using gg::media::findSample;
 using gg::media::SearchOutcome;
+using gg::test::pathOf;
+using gg::test::utf8;
 
 /// An empty folder of the test's own.
 fs::path freshDir(const char *name)
@@ -42,12 +45,6 @@ fs::path freshDir(const char *name)
     fs::remove_all(dir);
     fs::create_directories(dir);
     return dir;
-}
-
-std::string utf8(const fs::path &path)
-{
-    const auto text = path.u8string();
-    return {text.begin(), text.end()};
 }
 
 /// Writes `text` to `file`, creating its folder.
@@ -229,11 +226,6 @@ namespace
 // names, spells it e and a combining acute accent (U+0065 U+0301).
 const std::string kNfcName = "caf\xc3\xa9.wav";
 const std::string kNfdName = "cafe\xcc\x81.wav";
-
-fs::path pathOf(const std::string &text)
-{
-    return fs::path(std::u8string(text.begin(), text.end()));
-}
 
 /// Found at the file `stored` names, by whichever spelling: a filesystem that ignores the
 /// normal form (APFS, HFS+) opens either, one that doesn't (ext4, NTFS) only the stored one.
