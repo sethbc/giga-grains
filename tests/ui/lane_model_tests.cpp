@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <limits>
 #include <optional>
+#include <vector>
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
@@ -19,6 +20,7 @@
 #include "gg/core/ParamIds.h"
 #include "gg/core/ParamMap.h"
 #include "gg/ui/LaneModel.h"
+#include "gg/ui/LaneState.h"
 
 using Catch::Matchers::WithinAbs;
 using gg::ui::DragTarget;
@@ -438,4 +440,140 @@ TEST_CASE("hit testing", "[ui]")
     REQUIRE(gg::ui::hitTest(106.0f, point, 5.0f, fx) == DragTarget::None);
     REQUIRE(gg::ui::hitTest(std::numeric_limits<float>::quiet_NaN(), wide, 5.0f, fx) ==
             DragTarget::None);
+}
+
+// LaneState: the canvas's UI-time bookkeeping (JUCE-free, so it runs under the sanitizers too):
+// the engine clock extrapolated between the snapshots, and the grains still playing.
+
+TEST_CASE("the lane clock extrapolates the published clock", "[ui]")
+{
+    gg::ui::LaneClock clock;
+    CHECK_FALSE(clock.valid());
+    CHECK_FALSE(clock.update(48000, 10.0, kRate)); // the first frame: now is the clock
+    CHECK(clock.valid());
+    CHECK(clock.now() == 48000);
+
+    // No new block for 10 ms: now runs on at the sample rate.
+    CHECK_FALSE(clock.update(48000, 10.010, kRate));
+    CHECK(clock.now() == 48480);
+
+    // A block lands that is behind the extrapolation: now never steps back.
+    CHECK_FALSE(clock.update(48256, 10.011, kRate));
+    CHECK(clock.now() == 48480);
+    // ... and runs on from the new clock once that passes it.
+    CHECK_FALSE(clock.update(48256, 10.020, kRate));
+    CHECK(clock.now() == 48256 + 432); // 9 ms past the new block
+
+    // The host stops calling process: the extrapolation stops after kMaxExtrapolationSeconds.
+    CHECK_FALSE(clock.update(48256, 20.0, kRate));
+    const auto held = clock.now();
+    CHECK(held == 48256 + static_cast<int64_t>(
+                              std::llround(gg::ui::LaneClock::kMaxExtrapolationSeconds * kRate)));
+    CHECK_FALSE(clock.update(48256, 30.0, kRate));
+    CHECK(clock.now() == held);
+
+    // A wall clock that goes backwards adds nothing.
+    CHECK_FALSE(clock.update(48256, 5.0, kRate));
+    CHECK(clock.now() == held);
+}
+
+TEST_CASE("the lane clock restarts with a new activation", "[ui]")
+{
+    gg::ui::LaneClock clock;
+    clock.update(480000, 1.0, kRate);
+    // A reactivation's Processor starts again from 0: update says so, and now follows at once.
+    CHECK(clock.update(64, 1.5, kRate));
+    CHECK(clock.now() == 64);
+    CHECK_FALSE(clock.update(64, 1.5, kRate));
+    CHECK_FALSE(clock.update(128, 1.6, kRate));
+    CHECK(clock.now() == 128);
+
+    // Inactive: no clock until the next update, which starts afresh.
+    clock.reset();
+    CHECK_FALSE(clock.valid());
+    CHECK(clock.now() == 0);
+    CHECK_FALSE(clock.update(32, 2.0, kRate));
+    CHECK(clock.now() == 32);
+
+    // A sample rate that isn't positive and finite extrapolates nothing.
+    CHECK_FALSE(clock.update(32, 3.0, 0.0));
+    CHECK(clock.now() == 32);
+    CHECK_FALSE(clock.update(32, 4.0, std::numeric_limits<double>::quiet_NaN()));
+    CHECK(clock.now() == 32);
+}
+
+TEST_CASE("the write head extrapolates unless frozen", "[ui]")
+{
+    CHECK(gg::ui::headAtNow(1000, 5000, 5480, false) == 1480);
+    CHECK(gg::ui::headAtNow(1000, 5000, 5480, true) == 1000);
+    // A now behind the snapshot (a snapshot newer than the last clock read) never moves it back.
+    CHECK(gg::ui::headAtNow(1000, 5000, 4000, false) == 1000);
+}
+
+namespace
+{
+gg::ui::LaneGrain liveGrain(int64_t onset, float duration, double startPos = 0.0)
+{
+    return {.onsetSample = onset,
+            .startPos = startPos,
+            .rate = 1.0f,
+            .durationSamples = duration,
+            .gain = 1.0f,
+            .pan = 0.0f};
+}
+
+std::vector<double> startPositions(const gg::ui::LiveGrains &grains)
+{
+    std::vector<double> out;
+    grains.forEach([&out](const gg::ui::LaneGrain &g) { out.push_back(g.startPos); });
+    return out;
+}
+} // namespace
+
+TEST_CASE("live grains are kept until they end", "[ui]")
+{
+    gg::ui::LiveGrains grains;
+    CHECK(grains.size() == 0);
+    grains.push(liveGrain(100, 50.0f, 1.0));  // plays 100 .. 149
+    grains.push(liveGrain(120, 100.0f, 2.0)); // plays 120 .. 219
+    grains.push(liveGrain(400, 10.0f, 3.0));  // not started yet: kept
+    grains.prune(149);
+    CHECK(startPositions(grains) == std::vector<double>{1.0, 2.0, 3.0});
+    grains.prune(150); // the first has ended
+    CHECK(startPositions(grains) == std::vector<double>{2.0, 3.0});
+    grains.prune(220);
+    CHECK(startPositions(grains) == std::vector<double>{3.0});
+
+    // A grain that can never play (no duration, or a NaN one) goes at the first prune.
+    grains.push(liveGrain(500, 0.0f, 4.0));
+    grains.push(liveGrain(500, std::numeric_limits<float>::quiet_NaN(), 5.0));
+    grains.prune(0);
+    CHECK(startPositions(grains) == std::vector<double>{3.0});
+
+    grains.clear();
+    CHECK(grains.size() == 0);
+}
+
+TEST_CASE("live grains drop the oldest when full", "[ui]")
+{
+    gg::ui::LiveGrains grains;
+    const auto n = gg::ui::LiveGrains::kCapacity;
+    for (std::size_t i = 0; i < n + 3; ++i)
+    {
+        grains.push(liveGrain(0, 1.0e6f, static_cast<double>(i)));
+    }
+    REQUIRE(grains.size() == n);
+    const auto kept = startPositions(grains);
+    CHECK(kept.front() == 3.0); // the three oldest went
+    CHECK(kept.back() == static_cast<double>(n + 2));
+
+    // Pruning a full list keeps its order; a push while it is still full drops the oldest again.
+    grains.prune(0);
+    CHECK(grains.size() == n);
+    grains.push(liveGrain(10, 1.0f, -1.0)); // ends at 11
+    CHECK(grains.size() == n);
+    CHECK(startPositions(grains).back() == -1.0);
+    grains.prune(11);
+    CHECK(grains.size() == n - 1);
+    CHECK(startPositions(grains).front() == 4.0);
 }

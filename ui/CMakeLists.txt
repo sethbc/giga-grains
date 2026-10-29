@@ -11,6 +11,7 @@
 
 add_library(gg-ui-core STATIC
         src/LaneModel.cpp
+        src/LaneState.cpp
         src/SplatRenderer.cpp
         src/StressGrains.cpp
         )
