@@ -145,6 +145,19 @@ elseif (CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
 endif ()
 list(APPEND OS_COMPILE_OPTIONS ${GG_FP_CONTRACT_OFF_OPTIONS})
 
+# Warnings (carry-over [94]): -Wall -Wextra on every first-party target (the ones that link this
+# interface target; third-party code never does, so it keeps its own warnings and our flags never
+# reach it). -Werror comes with the OS options on macOS and Linux, and as /WX on ClangCL. Under
+# clang-cl, /Wall is clang's -Weverything, so the GNU spellings go through /clang:. Plain MSVC
+# (cl.exe) is not a supported compiler.
+if (CMAKE_CXX_COMPILER_FRONTEND_VARIANT MATCHES "MSVC")
+    if (CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        list(APPEND OS_COMPILE_OPTIONS /clang:-Wall /clang:-Wextra /WX)
+    endif ()
+elseif (CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    list(APPEND OS_COMPILE_OPTIONS -Wall -Wextra)
+endif ()
+
 # That flag alone, for third-party code compiled from source (libs/CMakeLists.txt): it computes
 # with the project's rounding but keeps its own warnings, out of our -Werror.
 add_library(gg-fp-contract-off INTERFACE)
