@@ -314,12 +314,12 @@ void GrainCanvas::drawPeaks(juce::Graphics &g, const LaneGeometry &lane)
         {
             return;
         }
-        // Frames head − span .. head across the lane, but only those written (peakColumnFrames):
-        // the strip holds the last frames() frames before written_ (its oldest bucket perhaps
-        // part overwritten, so left out), and none before the ring began or past the last
-        // published block: those columns stay empty.
+        // Frames head − span .. head across the lane (peakColumnFrames), but none past the last
+        // published block (written_) and none older than the strip's oldest whole bucket. That
+        // is measured from head_, at least written_ and nearer the writer, which may since have
+        // overwritten the buckets just older than written_ − frames(). Those columns stay empty.
         const double framesPerColumn = kRingSeconds * lane.sampleRate / columns;
-        const int64_t oldest = written_ - peaks->frames() + gg::core::LivePeaks::kBucket;
+        const int64_t oldest = head_ - peaks->frames() + gg::core::LivePeaks::kBucket;
         for (int x = 0; x < columns; ++x)
         {
             const FrameSpan span =

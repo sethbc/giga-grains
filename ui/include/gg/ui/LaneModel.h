@@ -99,8 +99,8 @@ inline constexpr float kGhostThreshold = 1.0e-4f;
 
 /// The ghost window (spec §6.2): where the grains read once macros and modulation are added, the
 /// scan window at the effective values, when Position's or Spray's effective value is more than
-/// kGhostThreshold from its base value (both of the same block); nullopt when both are within it
-/// (or either difference is NaN).
+/// kGhostThreshold from its base value (both of the same block); nullopt when neither difference
+/// exceeds the threshold (a NaN difference never does).
 std::optional<Window> ghostWindow(const ScanValues &base, const ScanValues &effective,
                                   const LaneGeometry &geometry) noexcept;
 

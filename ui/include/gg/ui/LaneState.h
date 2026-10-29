@@ -66,7 +66,8 @@ struct FrameSpan
 /// The ring frames column x (0 .. columns − 1) of the FX lane's peak strip reads, the lane
 /// spanning columns × framesPerColumn frames up to `head` (headAtNow at UI time): from
 /// head − (columns − x) × framesPerColumn to head − (columns − x − 1) × framesPerColumn, rounded
-/// outwards, then clamped below to `oldest` (the strip's oldest whole bucket) and above to
+/// outwards, then clamped below to `oldest` (the strip's oldest whole bucket, which the canvas
+/// measures from `head`, since the writer may be past `written`) and above to
 /// `written`, the frames the ring has actually written: headAtNow at the published clock rather
 /// than the extrapolated one. head runs on past the last published block by extrapolation, and
 /// the strip wraps, so a frame at or past `written` would read a bucket a ring's length old.

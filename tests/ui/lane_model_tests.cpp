@@ -484,9 +484,12 @@ TEST_CASE("a peak column reads only the frames the ring has written", "[ui]")
     constexpr double kPerColumn = 480.0;
     constexpr int64_t kWritten = 1'000'000;
     constexpr int64_t kOldest = kWritten - 768'000 + 64; // a 16 s strip at 48 kHz
-    const auto span = [](int x, int64_t head, int columns = kColumns) {
+    // No default argument for the column count: a local may not appear in one (GCC 12 rejects
+    // it, constexpr or not).
+    const auto spanOf = [](int columns, int x, int64_t head) {
         return gg::ui::peakColumnFrames(x, columns, kPerColumn, head, kOldest, kWritten);
     };
+    const auto span = [&spanOf](int x, int64_t head) { return spanOf(kColumns, x, head); };
 
     // The head at the written frames: column x reads its own 480 frames, up to the head.
     for (const int x : {0, 50, 99})
@@ -514,9 +517,9 @@ TEST_CASE("a peak column reads only the frames the ring has written", "[ui]")
 
     // A lane longer than the strip (2,000 columns, 20 s): the oldest columns start at the
     // strip's oldest whole bucket, or read nothing.
-    CHECK(span(0, kWritten, 2000).first == kOldest);
-    CHECK(span(0, kWritten, 2000).end == kOldest);
-    const gg::ui::FrameSpan inside = span(1999, kWritten, 2000);
+    CHECK(spanOf(2000, 0, kWritten).first == kOldest);
+    CHECK(spanOf(2000, 0, kWritten).end == kOldest);
+    const gg::ui::FrameSpan inside = spanOf(2000, 1999, kWritten);
     CHECK(inside.first == kWritten - 480);
     CHECK(inside.end == kWritten);
 }
