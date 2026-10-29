@@ -20,11 +20,14 @@ L=build/release/listening/m1-perform
 $r --write-media "$L/media"             # loop-48k.wav, for file 08
 for s in docs/listening/m1-perform/specs/*.json; do
   n=$(basename "$s" .json)
-  $r "$s" --media-dir "$L/media" -o "$L/$n.wav" --spectrogram "$L/$n.png"
+  $r "$s" --media-dir "$L/media" -o "$L/$n.wav" --spectrogram "$L/$n.png" \
+     --metrics "$L/$n.metrics.json" --events "$L/$n.events.jsonl"
 done
 ```
 
-Each file is a 48 kHz, stereo, 32-bit float WAV, with a spectrogram PNG beside it. Every render
+Each file is a 48 kHz, stereo, 32-bit float WAV, with a spectrogram PNG, the audio metrics and
+the grain-event log (one line per grain: its onset, read position, duration and so on) beside
+it. Every render
 is deterministic, so on one platform the same commit gives the same bytes.
 
 ## The files
@@ -39,53 +42,62 @@ file. A rising sweep shows on the spectrogram where in time each grain reads: a 
 further back sits lower.
 
 The sweeps run in steps, the way an automation lane would step them. A **bipolar** macro (Size,
-Density, Pitch, Spray, Stereo, Mix, Level) does this:
+Density, Pitch, Spray, Stereo, Level; Mix's `08` is the exception, below) does this:
 
 - it rests at 50% until 0.5 s;
-- it steps down to 0 by 1.5 s, in 1/16 steps every 0.125 s, and holds there until 2.0 s;
-- it climbs to 100% by 4.0 s and holds there until 4.5 s;
-- it returns to rest by 5.5 s.
+- it steps down to 0 by 1.5 s, in 1/16 steps every 0.125 s, and **holds the bottom for 2 s**
+  (4 s in `02`, so that 1 Hz gives several onsets);
+- it climbs to 100% over 2 s, in the same steps, and **holds the top for 2 s** (2.5 s in `01`,
+  two of its 1.2 s grains);
+- it returns to rest over 1 s and rests for 1.5 s more.
+
+So in `03`, `04`, `07b` and `08b` the bottom is held over 1.5–3.5 s and the top over 5.5–7.5 s;
+in `01` the top is held over 5.5–8.0 s; in `02` the bottom over 1.5–5.5 s and the top over
+7.5–9.5 s. The "bottom" and "top" levels in the table are measured over the last 1.5 s of each
+hold (the last 1.3 s of `01`'s top, the last 3 s of `02`'s bottom), once the cloud is steady.
+`08` (Mix) runs over a 4 s loop, too short for the pattern: it climbs once, from 0 to 100%.
 
 A **unipolar** macro (Texture, Feedback) climbs from 0 at 0.5 s to 100% at 4.5 s, in 1/32
 steps every 0.125 s. It holds there until 5.5 s, then steps back to 0 by 6.5 s.
 
 **Holes in the cloud.** At the FX's defaults, the onsets' spacing at Distribution 50% is random
 enough to leave short silences. A 30 s render at the defaults has 13 spacings over 150 ms, the
-longest 240 ms, which leaves up to 90 ms with no grain sounding. Every file at the default
-Density and seed 1 shares the same onsets, so the same holes recur: near 1.9 s, 2.96 s (in `01`)
-and 5.45 s. They are Distribution's behaviour, not a macro's.
+longest 240 ms, which leaves up to 90 ms with no grain sounding. Files with the same seed and
+Density history share the same onsets, so the same holes recur (near 5.45 s in `04` and `06`,
+for example). They are Distribution's behaviour, not a macro's.
 
 | File | Length | What it is | Listen for |
 |---|---|---|---|
-| `01-macro-size.wav` | 7.0 s | **Macro Size**, bipolar, over the sweep. Size goes from 150 ms down to 19 ms and up to 1.2 s. Density moves the other way, from 16 Hz up to 45 Hz and down to 5.7 Hz. Peak −4.2 dBFS at 5.26 s. RMS −19.4 dBFS at the bottom, −20.2 at the top, −19.8 at rest. | The bottom should be a buzzy, grainy smear and the top a slow, smooth wash. Density moves only half as far as Size (1.5 octaves to its 3), so the overlap still follows Size: about 0.85 at the bottom, where the cloud has gaps, and 6.8 at the top. **On the way back down (5.0–5.5 s), the bump.** The long grains still sounding overlap the denser short ones that follow. RMS rises to −14.2 dBFS and peaks at −4.2 dBFS, past the wet soft limiter's knee (0.5), and at 5.24 s the spectrogram shows a ladder of harmonics up to Nyquist, most likely the limiter's. Can you hear it? |
-| `02-macro-density.wav` | 7.0 s | **Macro Density**, bipolar, over the sweep. Density goes from 16 Hz down to 1 Hz and up to 256 Hz. Distribution rises from 50% to 75% in the top half. Peak −9.8 dBFS. RMS −24.9 dBFS at the bottom (pulses and silence), −21.5 at the top, −19.8 at rest. | Separate pulses at the bottom (the spectrogram shows isolated blobs from 0.9 to 2.1 s), a dense cloud at the top. The grains' gain normalization holds the level within about 5 dB across the travel. Do the sparse pulses "pulse", and does the dense end "cloud"? |
-| `03-macro-pitch.wav` | 7.0 s | **Macro Pitch**, bipolar, over a 220 Hz sine (its right channel a fifth up, 330 Hz). ±24 semitones: 55 Hz to 880 Hz on the left. Each 1/16 step is 3 semitones, so you hear a staircase. A host's knob glides. Peak −9.0 dBFS. RMS −21.0 dBFS at the bottom, −19.7 at the top. | Both extremes still sound like the input, two octaves down and two up. Does ±24 feel like the right range for one knob, or too wide to play? |
-| `04-macro-spray.wav` | 7.0 s | **Macro Spray**, bipolar, over the sweep. Spray goes from 50 ms down to 0 and up to 0.92 s. Stereo rises from 50% to 80% in the top half. Peak −8.8 dBFS. RMS −17.9 dBFS at the bottom, −19.3 at the top. The left–right correlation is 0.95 at the bottom and 0.86 at the top. | At the bottom the grains lock onto one point, and the cloud follows the sweep as one line. At the top the line breaks into several pitches, all **below** the line: the FX's spray reaches only further back in time (see observation (d)). The cloud widens a little. |
+| `01-macro-size.wav` | 10.5 s | **Macro Size**, bipolar, over the sweep. Size goes from 150 ms down to 19 ms and up to 1.2 s. Density moves the other way, from 16 Hz up to 45 Hz and down to 5.7 Hz. The top is held 2.5 s (13 onsets). Peak −6.0 dBFS at 8.82 s, on the way back down. RMS −20.4 dBFS at the bottom, −21.4 at the top, −20.7 at rest. | The bottom should be a buzzy, grainy smear (broadband haze over 1.5–3.5 s) and the top a slow, smooth wash. Density moves only half as far as Size (1.5 octaves to its 3), so the overlap still follows Size: about 0.85 at the bottom, where the cloud has gaps, and 6.8 at the top. The level holds within about 1 dB from bottom to top. **On the way back down (8.0–9.0 s)** RMS rises to −16.6 dBFS: the last long grains overlap the denser short ones that follow (observation (f)). Can you hear the swell? |
+| `02-macro-density.wav` | 12.0 s | **Macro Density**, bipolar, over the sweep. Density goes from 16 Hz down to 1 Hz and up to 256 Hz. Distribution rises from 50% to 75% in the top half. The bottom is held 4 s (six onsets, at 1.89–4.93 s). Peak −9.0 dBFS. RMS −25.8 dBFS over the whole bottom hold (pulses and silence), −19.8 at the top, −18.7 at rest. | Separate pulses at the bottom (isolated blobs on the spectrogram), a dense cloud at the top. The grains' gain normalization holds the level within about 7 dB across the travel. Do the sparse pulses "pulse", and does the dense end "cloud"? |
+| `03-macro-pitch.wav` | 10.0 s | **Macro Pitch**, bipolar, over a 220 Hz sine (its right channel a fifth up, 330 Hz). ±24 semitones: 55 Hz to 880 Hz on the left. Each 1/16 step is 3 semitones, so you hear a staircase. A host's knob glides. Peak −9.3 dBFS. RMS −18.4 dBFS at the bottom, −19.0 at the top, −19.0 at rest. | Both extremes still sound like the input, two octaves down and two up, each held for 2 s. Does ±24 feel like the right range for one knob, or too wide to play? |
+| `04-macro-spray.wav` | 10.0 s | **Macro Spray**, bipolar, over the sweep. Spray goes from 50 ms down to 0 and up to 0.92 s. Stereo rises from 50% to 80% in the top half. Peak −8.3 dBFS. RMS −16.0 dBFS at the bottom, −19.5 at the top, −19.6 at rest. The left–right correlation is 0.98 at the bottom, 0.86 at the top and 0.96 at rest. | At the bottom the grains lock onto one point, and the cloud follows the sweep as one line (a little louder, most likely because the grains then overlap in phase). At the top the line breaks into several pitches, all **below** the line: the FX's spray reaches only further back in time (see observation (d)). The cloud widens a little. |
 | `05-macro-texture.wav` | 7.5 s | **Macro Texture**, unipolar, over a 220 Hz sine, Density 3.0 (8 Hz) so the grains barely overlap. Texture runs from 0 to 1 over the first three quarters of the travel (0.5–3.5 s), then Diffusion from 0 to 100% over the last quarter (3.5–4.5 s). Peak −4.75 dBFS at 4.87 s. Click score 0.00. | Smooth swells become gated tones, then the diffuser blurs them. **The level climbs with the travel:** RMS −22.6 dBFS at rest and −13.8 at the top, about 9 dB louder. A gated grain carries more energy than a Hann one, and the gain normalization doesn't compensate. Should the macro compensate the level? Faint vertical streaks up to about 7 kHz from 4.3 s are most likely the gated edges, diffused. No click. |
 | `06-macro-freeze.wav` | 7.5 s | **Macro Freeze** (stepped) over the sweep: on at 1.5 s, off at 3.5 s, on at 5.0 s, off at 6.5 s. Peak −9.7 dBFS. RMS −18 to −20 dBFS throughout. | While frozen, the pitch holds (flat lines on the spectrogram) as the input sweeps on underneath. On release the cloud jumps to the sweep's current pitch, through a dip of about 20 ms. The spectrogram shows a streak at each release, but there is no click (click score 1.86). |
 | `07-macro-feedback.wav` | 8.0 s | **Macro Feedback**, unipolar, over the sweep, which stops at 4.5 s. Feedback is 0.9·u², up to 0.9. Peak −9.4 dBFS. RMS −19.1 dBFS over 1.5–2.5 s and −19.4 over 3.5–4.5 s. After the input stops: −21.9 over 4.5–5.0 s, −38.6 over 5.0–5.5 s. | As the macro rises, echoes stack up below the line, one every 0.26 s (Position plus the 256-sample feedback delay). After the input stops at full Feedback, about six repeats ring out, and the tail is gone by about 6 s. At Level −6 dB the regenerated tail falls 35–40 dB a second. Is the top of the travel regenerative enough? The fine control in the low half comes from the u² curve. |
-| `07b-macro-stereo.wav` | 7.5 s | The instrument's **Macro Stereo**, bipolar. The sample is 4 s of noise, read at Position 0.5, and key 60 is held from 0.25 s to 7.25 s. Stereo goes from 50% down to 0 and up to 100%. Peak −9.1 dBFS. RMS −21 to −23 dBFS throughout. | Use headphones. The correlation is 0.98 at rest, 1.00 at the bottom (mono) and 0.78 at the top. Even at the top the image stays fairly narrow. Is that wide enough? |
+| `07b-macro-stereo.wav` | 10.0 s | The instrument's **Macro Stereo**, bipolar. The sample is 4 s of noise, read at Position 0.5, and key 60 is held from 0.25 s to 9.75 s. Stereo goes from 50% down to 0 and up to 100%. Peak −8.3 dBFS. RMS −21.9 dBFS at the bottom, −22.2 at the top, −22.5 at rest. | Use headphones. The correlation is 0.95 at rest, 1.00 at the bottom (mono) and 0.71 at the top. Even at the top the image stays fairly narrow. Is that wide enough? |
 | `08-macro-mix.wav` | 5.0 s | **Macro Mix** over `loop-48k.wav` (noise bursts every 250 ms, 4 s long), with Mix's base at 50%. The macro starts at 0, so Mix starts at 0 (dry only). It climbs to 100% (wet only) in 1/32 steps every 0.1 s, from 0.4 s to 3.5 s. Peak −3.7 dBFS (a dry burst). RMS −28.4 dBFS over 0–0.3 s (dry), −37.7 over 3.5–4.0 s (wet). | The dry bursts, separated by silence, turn into the grains' smear of them, with no zipper (Mix ramps over 10 ms). **The wet is about 9 dB quieter than the dry** at Level −6 dB, or about 3 dB at the default 0 dB. Is the crossfade's loudness acceptable? |
-| `08b-macro-level.wav` | 7.5 s | The instrument's **Macro Level**, bipolar. The sample is a sine sweep, 50 Hz to 8 kHz over 4 s at amplitude 0.5, read at Position 0.5, and key 60 is held from 0.25 s to 7.25 s. Level goes from −6 dB down to −18 dB and up to +6 dB. Peak −2.1 dBFS at 4.04 s. RMS −30.5 dBFS at the bottom, −7.9 at the top, −19.8 at rest. | The 24 dB of travel measures 22.6 dB: the top end is in the wet soft limiter. From 3.4 s to 4.8 s the spectrogram fills with harmonics up to Nyquist. Is the top's distortion audible? From the default Level (0 dB) the macro's top is +12 dB, deeper still. Is ±12 dB the right depth? |
+| `08b-macro-level.wav` | 10.0 s | The instrument's **Macro Level**, bipolar. The sample is a sine sweep, 50 Hz to 8 kHz over 4 s at amplitude 0.5, read at Position 0.5, and key 60 is held from 0.25 s to 9.75 s. Level goes from −6 dB down to −18 dB and up to +6 dB. Peak −1.7 dBFS at 6.83 s. RMS −31.3 dBFS at the bottom, −8.0 at the top, −19.9 at rest. | The 24 dB of travel measures 23.3 dB, the top end in the wet soft limiter. From about 5.0 s to 8.2 s the spectrogram fills with harmonics up to Nyquist. Is the top's distortion audible? From the default Level (0 dB) the macro's top is +12 dB, deeper still. Is ±12 dB the right depth? |
 | `09-texture-steps.wav` | 8.0 s | **Texture** over a held instrument note: a 220 Hz sine sample at Position 25%, Density 2.0 (4 Hz), Size 177 ms, Distribution 0 (regular onsets). The grains are separate, at a 71% duty cycle, so each envelope's shape shows. Texture is 0, 0.25, 0.5, 0.75 and 1, for 1.5 s each from 0 s. Peak −10.3 dBFS. RMS −20.8, −20.8, −20.8, −18.4 and −16.8 dBFS per step. Click score 0.00. | **Hann** (0); a **swell** peaking at 60% of the grain (0.25), then at 70% (0.5); a short attack with a 45% **sustain** (0.75); **gated**, with 8.8 ms raised-cosine edges and a 90% sustain (1). From 6.0 s the spectrogram widens the gated grains' skirts to about 2 kHz. Does the travel go from smooth to gated with no click, and does 0.5 sound like a swell? |
 | `10-feedback-50.wav` | 8.0 s | **Feedback 0.5**, unfrozen, over the sweep, which stops at 3.0 s. Peak −7.2 dBFS. RMS −18.8 dBFS while the input plays. After it stops: −21.5, −45.5 and −77 dBFS over 3.0–3.5, 3.5–4.0 and 4.0–5.0 s. | About four echoes after the input stops, each 0.26 s apart and lower on the sweep. They should fade cleanly. |
 | `11-feedback-90.wav` | 8.0 s | **Feedback 0.9**, as `10`. Peak −5.9 dBFS. RMS −18.5 dBFS while the input plays. After it stops: −21.1, −38.7 and −60.8 dBFS. | About eight echoes, gone by about 5.5 s. At Level −6 dB, 0.9 is still far from self-oscillation. |
 | `11b-feedback-90-level-0.wav` | 8.0 s | **Feedback 0.9 at Level 0 dB** (the default Level), as `11`. Peak −1.8 dBFS. RMS −11.4 dBFS while the input plays. After it stops: −13.6, −21.9 and −33.3 dBFS, and still −96 dBFS at 7.5–8.0 s. | A long tail, which is what the macro's top is for. **From 0.5 s to 4.5 s, broadband streaks reach Nyquist.** In the top six bands they measure −76 to −101 dB, against −144 to −158 dB in `11`. This is observation (b) at its loudest: the wet soft limiter, driven by the regenerated signal. Is it audible as hash or grit? |
 | `12-feedback-90-freeze.wav` | 8.0 s | **Feedback 0.9, then Freeze** on at 2.0 s and off at 4.5 s, over the sweep, which stops at 3.0 s. Peak −7.8 dBFS. RMS −18.8 dBFS while frozen (2.0–4.5 s). After the release: −20.3 over 4.5–5.0 s and −38.3 over 5.0–5.5 s. | Freeze wins: the frozen ring holds steady, with no build-up, while Feedback stays at 0.9. On release the echoes ring out as in `11`. The streak at 4.5 s is the 20 ms jump out of the frozen pitch, not a click (click score 1.84). |
-| `13-fx-scan-window.wav` | 9.0 s | **The FX scan window.** The sweep runs 9 s at a fixed Position 0.5, which is 0.94 s behind the head. Spray climbs from 0 to 100% in 1/32 steps every 0.2 s, from 1.2 s to 7.4 s. Peak −7.4 dBFS. RMS −18.6 dBFS over 4.0–4.5 s, −19.5 over 7.4–9.0 s. Silent for the first 0.94 s, while the grains read from before the input began. | The grain-event log shows every grain reading at least 0.941 s behind the head. That is Position, never less. At full Spray the grains read 1.04 s to 2.89 s behind. On the rising sweep the cloud spreads only **downward** in pitch, up to about 0.9 octaves below the Spray-0 line, never above it. Spray's exponential taper keeps the spread small (under 0.2 s) for the first 60% of the travel. Compare with the drawn window: see observation (d). |
+| `13-fx-scan-window.wav` | 9.0 s | **The FX scan window.** The sweep runs 9 s at a fixed Position 0.5, which is 0.94 s behind the head. Spray climbs from 0 to 100% in 1/32 steps every 0.2 s, from 1.2 s to 7.4 s. Peak −7.4 dBFS. RMS −18.6 dBFS over 4.0–4.5 s, −19.5 over 7.4–9.0 s. Silent for the first 0.94 s, while the grains read from before the input began. | The grain-event log shows every grain reading at least 0.941 s behind the head. That is Position, never less. At full Spray the grains read 1.04 s to 2.89 s behind. On the rising sweep the cloud spreads only **downward** in pitch, up to about 0.9 octaves below the Spray-0 line, never above it. Spray's exponential taper keeps the spread small for the first 60% of the parameter's travel: about 0.2 s at Spray 60%. Compare with the drawn window: see observation (d). |
 
 ## Checklist (spec §9)
 
 - [ ] **1. Each macro across its travel** (`01`–`08`, `07b`, `08b`). Every macro sounds good
   from one end to the other, with no dead zone and no cliff. The depths are starting values
   (spec §3.2). **Tune them by ear.** The values live in `core/src/ParamMap.cpp`'s
-  `macroOffsets`, and the tuned values are to be committed there and recorded in the spec's
-  decision notes. These come up in the renders:
+  `macroOffsets`. When you settle them, the tuned values are committed there and recorded in a
+  new "Decision notes" section at the end of the spec (in the style of Task 13's amendments) and
+  in INTENT §23's #58. These come up in the renders:
   - **Size:** Density compensates only half of Size's octaves, so the overlap still follows
     Size (`01`).
   - **Pitch:** is ±24 semitones the right range (`03`)?
-  - **Spray:** with the exponential taper, the first 60% of the travel barely spreads (`04`,
-    `13`).
+  - **Spray:** with the exponential taper, the first 60% of the Spray parameter's travel
+    barely spreads (`13`); Macro Spray's top reaches Spray 86%, 0.92 s (`04`).
   - **Texture:** the macro gets about 9 dB louder toward its top (`05`).
   - **Feedback:** is 0.9·u² regenerative enough at Level −6 dB (`07`, `11`, `11b`)?
   - **Stereo:** the top reaches a correlation of only 0.78 (`07b`).
@@ -123,9 +135,10 @@ and 5.45 s. They are Distribution's behaviour, not a macro's.
   Spray on a sustained input).
 - **(e) The macOS FX standalone asks for microphone permission on first launch.** Allow it to
   hear the FX standalone.
-- **(f) Macro Size's swell** (`01`, 5.0–5.5 s). Bringing Size down from the top lets the last
-  long grains overlap the new, denser short ones. That gives about 5 dB of swell into the soft
-  limiter.
+- **(f) A move down from Macro Size's top swells** (`01`, 8.0–9.0 s). With the top held, the
+  level is steady (−21.4 dBFS RMS). Bringing the macro back to rest over 1 s lets the last long
+  grains (up to 1.2 s) overlap the denser, shorter ones that follow: RMS rises about 4 dB, to
+  −16.6 dBFS, and peaks at −6.0 dBFS, at the soft limiter's knee. A faster move swells more.
 - **(g) Holes at the defaults.** Distribution 50% leaves brief silences, up to about 90 ms (see
   "Holes in the cloud" above). Is that the right default character?
 
@@ -155,8 +168,8 @@ build of the commit you are judging (CLAUDE.md, "Validators", shows the AU's ins
   (instrument), and automated in Live. Both the knob and the automation sound smooth, with no
   zipper; Macro Freeze switches.
 - [ ] **Depths tuned by ear.** For each macro, note the depth you would change and to what (see
-  item 1 above). The tuned values get committed in `ParamMap.cpp` and recorded in the spec's
-  decision notes.
+  item 1 above). The tuned values get committed in `ParamMap.cpp` and recorded in a new
+  "Decision notes" section at the end of the spec and in INTENT §23's #58.
 - [ ] **Feedback and Freeze in a performance.** On the FX, play a loop, ride Macro Feedback up
   and down, and punch Macro Freeze on and off. The tail regenerates without running away. Freeze
   holds and releases without a click. The canvas shows the freeze tint and the feedback marker
@@ -168,12 +181,19 @@ build of the commit you are judging (CLAUDE.md, "Validators", shows the AU's ins
   - The FX's window should be one-sided (observation (d)).
   - Drag the window body (Position) and an edge (Spray). Each drag should record as automation
     in the host.
-- [ ] **The frame-ms readout at 8,192 grains,** in Live 12 and in Bitwig: at most 3 ms (INTENT
-  §16). **Caveat:** the M0 stress panel is gone, so the real view draws only the grains that are
-  playing. The engine's pool holds 4,096 at most, and its densest setting (Density 400 Hz, Size
-  2 s) sounds about 800 at a time, so 8,192 grains can't be reached in a host. Read the frame ms
-  at that densest setting, in a full-screen editor too. For 8,192 grains offline, `gg-bench
-  --canvas` measures the renderer at 3200×1200 physical pixels (see Verification).
+- [ ] **The frame-ms readout,** in Live 12 and in Bitwig: at most 3 ms (INTENT §16). **Spec §9
+  asks for it at 8,192 grains, which a host can't reach.** The M0 stress panel is gone, so the
+  real view draws only the grains that are playing. The engine's pool holds 4,096 at most, and
+  its densest setting (Density 400 Hz, Size 2 s) sounds about 800 at a time. Read the frame ms
+  at that densest setting, in a full-screen editor too.
+- [ ] **Decide how the frame budget is judged.** Offline, `gg-bench --canvas` measured this build
+  at 3.66 ms per frame at 8,192 grains on a loaded machine, **over the 3 ms budget**, and at
+  2.80 ms on a second, less loaded run (see Verification). Choose one:
+  - **amend spec §9** to "the densest reachable host setting at most 3 ms in Live and Bitwig,
+    plus `gg-bench --canvas` at 8,192 grains on an idle machine at most 3 ms" (the idle run is
+    best taken with sub-project 6's measurement of X); or
+  - **treat the budget as a blocker** until an idle `gg-bench --canvas` run at 8,192 grains is
+    under 3 ms.
 
 ## Verification at fe4de01
 
@@ -214,7 +234,20 @@ the reference kernel's, median over 5 rounds. Task 3 measured its ratios under h
 | engine-sample-eco | 64 | 0.7603 (0.0021) | 0.754 / 0.753 |
 | engine-sample-eco | 256 | 0.6780 (0.0205) | 0.657 / 0.679 |
 
-`engine-sample` (X) at block 256 is 18.98% of one core at 48 kHz in this run. For reference,
-`gg-bench --canvas` (while `scripts/check.sh` was building on the same machine) gives a median
-of 3.66 ms per frame at 8,192 grains, at 3200×1200 physical pixels (a 1600×600-point canvas at
-2×), larger than the editor's default 900×500 window; 3.05 ms at 4,096 grains.
+`engine-sample` (X) at block 256 is 18.98% of one core at 48 kHz in this run.
+
+**The canvas** (`gg-bench --canvas`: the splat renderer, headless, at 3200×1200 physical pixels,
+a 1600×600-point canvas at 2×, larger than the editor's default 900×500 window; the median of
+240 frames). **The first run exceeds INTENT §16's 3 ms budget**, at both 8,192 and 4,096 grains.
+It ran while `scripts/check.sh` was building on the same machine. A second run, with the load
+average at about 4 and nothing building, came in under the budget, matching M0's 2.77 ms (idle,
+same canvas; `docs/spikes/m0-canvas-budget.md`).
+
+| grains | run 1, during a build (mean, p95) | run 2, load ~4 (mean, p95) | M0, idle |
+|---|---|---|---|
+| 4,096 | **3.05 ms** (3.26, 4.23) | 2.51 ms (2.54, 2.77) | |
+| 8,192 | **3.66 ms** (3.94, 5.01) | 2.80 ms (2.82, 3.02) | 2.77 ms |
+| 16,384 | 4.79 ms (5.15, 6.67) | 3.52 ms (3.52, 3.60) | |
+
+Neither run was on an idle machine. An idle re-run belongs with sub-project 6's measurement of X,
+and the checklist above asks for the decision this needs.
