@@ -36,8 +36,9 @@ void Diffuser::prepare(double sampleRate)
     assert(std::isfinite(sampleRate) && sampleRate > 0.0);
     for (size_t i = 0; i < stages_.size(); ++i)
     {
-        auto len =
-            primeAtLeast(static_cast<uint32_t>(std::llround(kLengthsMs[i] * sampleRate / 1000.0)));
+        const double nominal = kLengthsMs[i] * sampleRate / 1000.0;
+        assert(nominal < 2147483648.0 && "a sample rate past any real one");
+        auto len = primeAtLeast(static_cast<uint32_t>(std::llround(nominal)));
         // Distinct from every earlier length: the next prime up, as often as it takes.
         while (std::any_of(stages_.begin(), stages_.begin() + static_cast<std::ptrdiff_t>(i),
                            [len](const Allpass &a) { return a.line.size() == len; }))

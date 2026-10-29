@@ -144,7 +144,8 @@ TEST_CASE("diffuser at one spreads an impulse", "[core][space]")
 TEST_CASE("diffuser lengths are distinct primes", "[core][space]")
 {
     constexpr std::array<double, 8> ms{4.1, 5.9, 8.3, 13.7, 4.7, 6.7, 7.9, 12.3};
-    for (double sr : {44100.0, 48000.0, 96000.0, 192000.0})
+    // 8 kHz makes a collision: 7.9 ms rounds to 63, whose next prime, 67, is 8.3 ms's too.
+    for (double sr : {8000.0, 44100.0, 48000.0, 96000.0, 192000.0})
     {
         CAPTURE(sr);
         Diffuser d;
@@ -163,10 +164,17 @@ TEST_CASE("diffuser lengths are distinct primes", "[core][space]")
         }
     }
 
-    // A worked example at 48 kHz: 4.1 ms is 196.8, rounded to 197, already prime.
+    // The lengths at 48 kHz, pinned. A worked example: 4.1 ms is 196.8, rounded to 197, already
+    // prime.
     Diffuser d;
     d.prepare(48000.0);
-    CHECK(d.lengths()[0] == 197);
+    CHECK(d.lengths() == std::array<uint32_t, 8>{197, 283, 401, 659, 227, 331, 379, 593});
+
+    // The collision at 8 kHz, worked: 8.3 ms is 66.4, rounded to 66, raised to 67; then
+    // 7.9 ms is 63.2, rounded to 63, raised to 67 (taken), so to the next prime, 71.
+    d.prepare(8000.0);
+    CHECK(d.lengths()[2] == 67);
+    CHECK(d.lengths()[6] == 71);
 }
 
 TEST_CASE("diffuser is energy-preserving at one", "[core][space]")

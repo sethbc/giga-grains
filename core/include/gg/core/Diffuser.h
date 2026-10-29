@@ -6,6 +6,7 @@
 #define GG_CORE_DIFFUSER_H
 
 #include <array>
+#include <cassert>
 #include <cstdint>
 #include <vector>
 
@@ -53,6 +54,7 @@ class Diffuser
     /// Diffuses one frame in place by amount (0–1). prepare() must have been called.
     void process(float &l, float &r, float amount) noexcept SST_CPPUTILS_NONBLOCKING
     {
+        assert(!stages_[0].line.empty() && "prepare() must be called first");
         float dl = l, dr = r;
         for (int s = 0; s < kStages; ++s)
         {

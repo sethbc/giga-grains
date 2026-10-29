@@ -105,6 +105,10 @@ class SpaceReverb
             endChunk();
     }
 
+    /// Whether the chunk of the last processSample call is active: its return is added (the
+    /// idle rule). False after construction or reset().
+    bool chunkActive() const noexcept { return chunkActive_; }
+
     /// Whether a clear begun by idle chunks is still unfinished: the next active chunk would
     /// finish it. For tests.
     bool clearPending() const noexcept { return clearing_; }
@@ -122,7 +126,7 @@ class SpaceReverb
     alignas(16) std::array<float, kChunk> left_{};
     alignas(16) std::array<float, kChunk> right_{};
     SpaceParams params_{}; // latched at the chunk's first sample
-    int64_t next_{0};      // the t the next call must pass (checked in debug builds)
+    int64_t next_{0};      // the t the next call must pass: counted always, checked in debug
     bool chunkActive_{false};
     bool ran_{false};      // the reverb has run since it was last empty
     bool clearing_{false}; // a stepwise clear is under way

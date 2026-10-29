@@ -173,7 +173,8 @@ class Processor
     static constexpr uint32_t kControlGrid = 32;
     /// The FX's live ring length, in seconds (spec §6.3).
     static constexpr double kLiveSeconds = 16.0;
-    /// The Mix and Level ramp time, in seconds; rounded to samples, at least 1 (spec §6.1).
+    /// The ramp time of Mix, Level, Diffusion, Reverb Amount and Dry to Reverb, in seconds;
+    /// rounded to samples, at least 1 (spec §6.1).
     static constexpr double kRampSeconds = 0.01;
 
     /// Allocates the engine (the FX with a kLiveSeconds live ring read in SourceMode::Live, the
@@ -188,9 +189,12 @@ class Processor
 
     /// Sets a base value at once, outside the control grid: for params.flush outside process()
     /// and for a state load. The value is clamped to the slot's range; NaN is ignored. A pending
-    /// base change to the same slot is dropped, so this, the latest value, wins. Mix and Level
-    /// jump to the new value without a ramp. The engine gets the new parameters from the next
-    /// process() call's first sample. Real-time safe; call it between process() calls.
+    /// base change to the same slot is dropped, so this, the latest value, wins. The ramped
+    /// values (Mix, Level, Diffusion, Reverb Amount and Dry to Reverb) jump to the new value
+    /// without a ramp. The engine gets the new parameters from the next process() call's first
+    /// sample. Space's latched values (Decay, Size, Damping, Pre-delay and Modulation), and
+    /// whether Reverb Amount keeps the reverb active, take effect at the next reverb chunk's
+    /// first sample, the next grid boundary. Real-time safe; call it between process() calls.
     void setBase(ParamSlot slot, float value) noexcept;
 
     /// The slot's base value in effect: the last setBase() or applied event. `slot` must be a
@@ -266,7 +270,7 @@ class Processor
 
     /// Whether the reverb's return is being added: the reverb chunk holding the last rendered
     /// sample is active (the class comment). False after construction and reset().
-    bool reverbActive() const noexcept { return reverbChunkActive_; }
+    bool reverbActive() const noexcept { return reverb_->chunkActive(); }
 
   private:
     /// A linear ramp from `from` at sample `start` to `to` at start + length, held there.
@@ -359,7 +363,6 @@ class Processor
     SpaceParams space_{};
     Diffuser diffuser_;
     std::unique_ptr<SpaceReverb> reverb_;
-    bool reverbChunkActive_{false}; // the current chunk's: its return is added
 };
 } // namespace gg::core
 

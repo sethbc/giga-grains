@@ -17,6 +17,7 @@
 #include <limits>
 #include <memory>
 #include <numbers>
+#include <optional>
 #include <span>
 #include <utility>
 #include <vector>
@@ -136,9 +137,11 @@ ParamValues defaults(Mode mode)
 constexpr NoteEvent kNoteOn60{0, NoteEventType::On, 0, 60};
 
 // Renders `input` (the FX's input; ignored by the instrument) through `p` in calls of `block`
-// frames, with `first` given to the first call.
+// frames, with `first` given to the first call. The call starting at frame `noOutputAt`, if
+// any, gets no output channels, so its frames stay NaN.
 Stereo renderBlocks(Processor &p, const Stereo &input, uint32_t numInChannels,
-                    uint32_t numOutChannels, uint32_t block, std::span<const NoteEvent> first = {})
+                    uint32_t numOutChannels, uint32_t block, std::span<const NoteEvent> first = {},
+                    std::size_t noOutputAt = SIZE_MAX)
 {
     const std::size_t frames = input.left.size();
     Stereo out(frames, kNaN);
@@ -147,7 +150,8 @@ Stereo renderBlocks(Processor &p, const Stereo &input, uint32_t numInChannels,
         const auto n = static_cast<uint32_t>(std::min<std::size_t>(block, frames - done));
         const float *in[2] = {input.left.data() + done, input.right.data() + done};
         float *o[2] = {out.left.data() + done, out.right.data() + done};
-        p.process(numInChannels > 0 ? in : nullptr, numInChannels, o, numOutChannels, n, {},
+        p.process(numInChannels > 0 ? in : nullptr, numInChannels, o,
+                  done == noOutputAt ? 0 : numOutChannels, n, {},
                   done == 0 ? first : std::span<const NoteEvent>());
     }
     return out;
@@ -156,9 +160,10 @@ Stereo renderBlocks(Processor &p, const Stereo &input, uint32_t numInChannels,
 // What the Processor rendered before Space (main at 5eefffc), computed from an Engine driven as
 // the Processor drives it, with today's formula: wet = softLimit(w × g), out = d × (1 − m) +
 // wet × m in the FX, wet in the instrument. Every parameter at its default but Mix; the
-// instrument plays key 60 from the first sample.
+// instrument plays key 60 from the first sample. With one output channel, the engine renders
+// mono and the FX's dry signal is the left input; only `left` is meaningful then.
 Stereo oldChain(Mode mode, const Stereo &input, float mix,
-                const std::shared_ptr<const gg::PreparedSource> &source)
+                const std::shared_ptr<const gg::PreparedSource> &source, uint32_t outChannels = 2)
 {
     const bool fx = mode == Mode::Fx;
     gg::EngineConfig config;
@@ -190,7 +195,7 @@ Stereo oldChain(Mode mode, const Stereo &input, float mix,
     {
         const auto n = static_cast<uint32_t>(std::min<std::size_t>(512, frames - done));
         const float *in[2] = {input.left.data() + done, input.right.data() + done};
-        engine.process(fx ? in : nullptr, fx ? 2 : 0, wet, 2, n);
+        engine.process(fx ? in : nullptr, fx ? 2 : 0, wet, outChannels, n);
         for (uint32_t i = 0; i < n; ++i)
         {
             const float l = gg::core::softLimit(wetL[i] * w.levelGain);
@@ -216,11 +221,23 @@ TEST_CASE("space at defaults is bit-identical to the old chain", "[core][space]"
     // for bit, the sign of zero included. The FX's inputs carry −0 every 5th sample from 0.5 s,
     // so at Mix 0 the old chain gives −0 wherever the wet signal there is negative or −0: the
     // diffuser and the return must not add a +0 to those.
+    //
+    // Stereo, mono (one output channel: the engine's mono render) and stereo with one call in
+    // the middle given no output channels, after which the render goes on as if it had them.
     constexpr int64_t kFrames = 2 * 48000;
+    constexpr std::size_t kNoOutputCall = 40 * 512;
     const Mode mode = GENERATE(Mode::Fx, Mode::Instrument);
     const bool useNoise = GENERATE(false, true);
     const float mix = GENERATE(0.0f, 0.5f, 1.0f);
-    CAPTURE(mode == Mode::Fx, useNoise, mix);
+    enum class Outputs
+    {
+        Stereo,
+        Mono,
+        StereoWithNone
+    };
+    const Outputs outputs = GENERATE(Outputs::Stereo, Outputs::Mono, Outputs::StereoWithNone);
+    const bool mono = outputs == Outputs::Mono;
+    CAPTURE(mode == Mode::Fx, useNoise, mix, static_cast<int>(outputs));
 
     Stereo input = useNoise ? noise(kFrames, 0.5f, 3) : sine(kFrames, 220.0, 0.5f);
     for (std::size_t i = 24000; i < input.left.size(); i += 5)
@@ -229,7 +246,7 @@ TEST_CASE("space at defaults is bit-identical to the old chain", "[core][space]"
         input.right[i] = -0.0f;
     }
     const auto source = sourceOf(input);
-    const Stereo expected = oldChain(mode, input, mix, source);
+    Stereo expected = oldChain(mode, input, mix, source, mono ? 1 : 2);
 
     Processor p({kSampleRate, 4096, 42, mode});
     p.setBase(ParamSlot::Mix, mix);
@@ -239,17 +256,36 @@ TEST_CASE("space at defaults is bit-identical to the old chain", "[core][space]"
     }
     // The instrument plays key 60; a note would freeze the FX (spec §6.3).
     const Stereo actual =
-        renderBlocks(p, input, 2, 2, 512,
+        renderBlocks(p, input, 2, mono ? 1 : 2, 512,
                      mode == Mode::Instrument ? std::span<const NoteEvent>(&kNoteOn60, 1)
-                                              : std::span<const NoteEvent>());
+                                              : std::span<const NoteEvent>(),
+                     outputs == Outputs::StereoWithNone ? kNoOutputCall : SIZE_MAX);
     CHECK_FALSE(p.reverbActive());
+    if (mono)
+    {
+        // The right channel is never written; compare the left only.
+        CHECK(std::all_of(actual.right.begin(), actual.right.end(),
+                          [](float x) { return std::isnan(x); }));
+        expected.right = actual.right;
+    }
+    if (outputs == Outputs::StereoWithNone)
+    {
+        // That call wrote nothing; the old chain's frames there stand in for its NaNs.
+        for (std::size_t i = kNoOutputCall; i < kNoOutputCall + 512; ++i)
+        {
+            REQUIRE(std::isnan(actual.left[i]));
+            REQUIRE(std::isnan(actual.right[i]));
+            expected.left[i] = actual.left[i];
+            expected.right[i] = actual.right[i];
+        }
+    }
 
     // Guards against a vacuous pass: the grains sound, and at Mix 0 there are −0s to keep.
     CHECK(peak(expected.left) > 0.05f);
     if (mode == Mode::Fx && mix == 0.0f)
     {
         CHECK(negativeZeros(expected.left) > 100);
-        CHECK(negativeZeros(expected.right) > 100);
+        CHECK((mono || negativeZeros(expected.right) > 100));
         CHECK(negativeZeros(actual.left) == negativeZeros(expected.left));
     }
     CHECK(sameBits(actual.left, expected.left));
@@ -426,7 +462,7 @@ void renderSpace(Mode mode, const Stereo &input, const std::vector<TimedEvent> &
 }
 } // namespace
 
-TEST_CASE("space output is block-size invariant", "[core][space][determinism]")
+TEST_CASE("space output is block-size invariant", "[core][space][determinism][slow]")
 {
     // Review Focus 2: the reverb's chunks sit on the absolute grid and carry across calls of any
     // size, maxBlockSize below 32 included, and 0-frame calls.
@@ -506,19 +542,20 @@ TEST_CASE("dry to reverb at mix zero puts the input in the room", "[core][space]
         CHECK(room.left[i] == input.left[i]);
         CHECK(room.right[i] == input.right[i]);
     }
-    std::size_t first = 0;
+    std::optional<std::size_t> first;
     int differ = 0;
     for (std::size_t i = 0; i < 12000; ++i)
     {
         if (room.left[i] != input.left[i])
         {
-            first = first == 0 ? i : first;
+            first = first.value_or(i);
             ++differ;
         }
     }
-    WARN("the return first reaches the left output at sample " << first);
-    CHECK(first >= Processor::kControlGrid);
-    CHECK(differ > 12000 - static_cast<int>(first) - 100);
+    REQUIRE(first.has_value());
+    WARN("the return first reaches the left output at sample " << *first);
+    CHECK(*first >= Processor::kControlGrid);
+    CHECK(differ > 12000 - static_cast<int>(*first) - 100);
     CHECK(peak(room.left, 12000 + 4800) > 0.01f); // the room rings on after the input stops
     CHECK(peak(room.right, 12000 + 4800) > 0.01f);
     CHECK(allFinite(room.left));
@@ -623,6 +660,78 @@ TEST_CASE("diffusion and reverb amount ramp like mix", "[core][space]")
     }
 }
 
+TEST_CASE("dry to reverb ramps like mix", "[core][space]")
+{
+    // An event at grid boundary b moves Dry to Reverb from s0 to s1 over the 10 ms ramp, as it
+    // does Mix. At Mix 0 the reverb hears s·d alone, and at a finite Decay it is linear in what
+    // it hears, so the return with the send ramped is the return with it held at s0 plus the
+    // return of u·(s1 − s0)·d at a send of 100%, u the ramp's value (0 before b, 1 from
+    // b + 480): (a) = (b) + (c), to rounding. Before b, (a) is (b) bit for bit.
+    constexpr int64_t kFrames = 24000;
+    constexpr int64_t kRamp = 480;
+    constexpr int64_t b = 200 * 32;
+    constexpr float s0 = 0.2f;
+    constexpr float s1 = 1.0f;
+    const Stereo input = noise(kFrames, 0.2f, 37);
+    // The return alone, out − d (Mix 0: out = d + softLimit(a·r), r below the knee).
+    const auto returnOf = [](const Stereo &in, float send, const ParamEvent *event) {
+        Processor p({kSampleRate, 512, 42, Mode::Fx});
+        p.setBase(ParamSlot::Mix, 0.0f);
+        p.setBase(ParamSlot::ReverbAmount, 1.0f);
+        p.setBase(ParamSlot::DryToReverb, send);
+        Stereo out(kFrames, kNaN);
+        for (int64_t done = 0; done < kFrames; done += 512)
+        {
+            const auto j = static_cast<std::size_t>(done);
+            const float *i[2] = {in.left.data() + j, in.right.data() + j};
+            float *o[2] = {out.left.data() + j, out.right.data() + j};
+            const auto n = static_cast<uint32_t>(std::min<int64_t>(512, kFrames - done));
+            ParamEvent e{};
+            const bool here = event != nullptr && event->offset >= done &&
+                              event->offset < done + static_cast<int64_t>(n);
+            if (here)
+            {
+                e = *event;
+                e.offset = static_cast<uint32_t>(event->offset - done);
+            }
+            p.process(i, 2, o, 2, n, here ? std::span(&e, 1) : std::span<const ParamEvent>());
+        }
+        std::vector<float> r(kFrames);
+        for (std::size_t i = 0; i < r.size(); ++i)
+        {
+            r[i] = out.left[i] - in.left[i];
+        }
+        return r;
+    };
+    const ParamEvent move{static_cast<uint32_t>(b), ParamSlot::DryToReverb, false, s1};
+    const auto ramped = returnOf(input, s0, &move);
+    const auto held = returnOf(input, s0, nullptr);
+    Stereo step(kFrames);
+    for (int64_t i = b; i < kFrames; ++i)
+    {
+        const double u =
+            i >= b + kRamp ? 1.0 : static_cast<double>(i - b) / static_cast<double>(kRamp);
+        const auto j = static_cast<std::size_t>(i);
+        step.left[j] = static_cast<float>(u * (s1 - s0) * input.left[j]);
+        step.right[j] = static_cast<float>(u * (s1 - s0) * input.right[j]);
+    }
+    const auto stepReturn = returnOf(step, 1.0f, nullptr);
+
+    REQUIRE(peak(ramped) > 0.01f);
+    REQUIRE(peak(ramped) < 0.5f);
+    REQUIRE(peak(stepReturn, static_cast<std::size_t>(b + kRamp)) > 0.01f);
+    const auto bi = static_cast<std::size_t>(b);
+    CHECK(std::memcmp(ramped.data(), held.data(), bi * sizeof(float)) == 0);
+    double worst = 0.0;
+    for (std::size_t i = bi; i < ramped.size(); ++i)
+    {
+        worst = std::max(worst, std::abs(static_cast<double>(ramped[i]) -
+                                         (static_cast<double>(held[i]) + stepReturn[i])));
+    }
+    CAPTURE(worst);
+    CHECK(worst < 1e-5);
+}
+
 TEST_CASE("the instrument ignores dry to reverb", "[core][space]")
 {
     // The instrument has no dry signal: its reverb hears the wet signal, whatever Dry to Reverb
@@ -699,6 +808,51 @@ TEST_CASE("space handles mono and missing channels", "[core][space]")
         CHECK(std::all_of(mono.right.begin(), mono.right.end(),
                           [](float x) { return std::isnan(x); })); // never written
     }
+    SECTION("calls with no output channel keep the render going")
+    {
+        // With Amount and Diffusion on: outputs, then 16 calls with none, then outputs again.
+        // The engine, the diffuser and the reverb run on through the calls with none, so once
+        // outputs return the render is the one that had them all along.
+        const Stereo all = renderBlocks(*processor(0.5f), input, 2, 2, 512);
+        auto p = processor(0.5f);
+        Stereo gapped(kFrames, kNaN);
+        constexpr std::size_t kGapFrom = 8 * 512;
+        constexpr std::size_t kGapTo = 24 * 512;
+        for (std::size_t done = 0; done < gapped.left.size(); done += 512)
+        {
+            const auto n = static_cast<uint32_t>(std::min<std::size_t>(512, kFrames - done));
+            const float *in[2] = {input.left.data() + done, input.right.data() + done};
+            float *o[2] = {gapped.left.data() + done, gapped.right.data() + done};
+            const bool none = done >= kGapFrom && done < kGapTo;
+            p->process(in, 2, none ? nullptr : o, none ? 0 : 2, n, {});
+        }
+        CHECK(p->reverbActive());
+        CHECK(std::all_of(gapped.left.begin() + kGapFrom, gapped.left.begin() + kGapTo,
+                          [](float x) { return std::isnan(x); }));
+        for (const auto &[a, b] :
+             {std::pair{&all.left, &gapped.left}, std::pair{&all.right, &gapped.right}})
+        {
+            CHECK(std::equal(a->begin(), a->begin() + kGapFrom, b->begin()));
+            CHECK(std::equal(a->begin() + kGapTo, a->end(), b->begin() + kGapTo));
+        }
+        CHECK(peak(all.left, kGapTo) > 0.05f);
+    }
+    SECTION("a huge dry input sent to the reverb leaves its return finite")
+    {
+        // Reverb 2 sums (L + R)·0.5, which overflows past about 8.5e37: the Processor clamps
+        // what it sends to ±1e6. A burst near the float's top, then silence: the return is
+        // there and finite. (An inf there would leave NaN in the loop until the next clear,
+        // which softLimit would turn into a silent return.)
+        Stereo huge(kFrames);
+        std::fill_n(huge.left.begin(), 64, 3.0e38f);
+        std::fill_n(huge.right.begin(), 64, 3.0e38f);
+        auto p = processor(0.0f);
+        const Stereo out = renderBlocks(*p, huge, 2, 2, 512);
+        CHECK(allFinite(out.left));
+        CHECK(allFinite(out.right));
+        CHECK(peak(out.left, 1024) > 0.5f); // the return is there, limited
+        CHECK(peak(out.left, 1024) < 1.0f);
+    }
     SECTION("a mono input feeds both channels")
     {
         const Stereo mono = renderBlocks(*processor(0.5f), input, 1, 2, 512);
@@ -736,7 +890,7 @@ TEST_CASE("space handles mono and missing channels", "[core][space]")
     }
 }
 
-TEST_CASE("space extreme settings stay bounded", "[core][space][rt]")
+TEST_CASE("space extreme settings stay bounded", "[core][space][rt][slow]")
 {
     // Review Focus 5: Decay flipping in and out of ∞ every 0.5 s, Damping 0, Size 100%,
     // Modulation 100%, Dry to Reverb 100%, Diffusion 100%, Amount 100%, Mix 100% and Level at

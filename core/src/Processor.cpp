@@ -306,7 +306,6 @@ void Processor::reset() noexcept
     // The engine's clock is back at 0, and so is the reverb's time: its chunks stay on the grid.
     diffuser_.reset();
     reverb_->reset();
-    reverbChunkActive_ = false;
 }
 
 void Processor::setSourceNow(std::shared_ptr<const PreparedSource> s)
@@ -504,7 +503,6 @@ void Processor::render(const Buffers &b, int64_t from, int64_t to) noexcept
     // hear what they would have, and the next call continues the same render.
     const uint32_t channels = std::min(b.numOutChannels, 2u);
     const uint32_t rendering = channels == 0 ? 2u : channels;
-    constexpr int64_t gridMask = Processor::kControlGrid - 1;
     float *const wet[2] = {wet_[0].data(), wet_[1].data()};
     while (from < to)
     {
@@ -541,10 +539,6 @@ void Processor::render(const Buffers &b, int64_t from, int64_t to) noexcept
             const float a = amount_.at(t, rampSamples_);
             const float s = drySend_.at(t, rampSamples_);
             const bool active = a != 0.0f; // read by the reverb at a chunk's first sample
-            if ((t & gridMask) == 0)
-            {
-                reverbChunkActive_ = active;
-            }
             // Read both inputs before writing either output: out may be in, and a mono input
             // feeds both channels.
             float d[2] = {0.0f, 0.0f};
@@ -567,9 +561,16 @@ void Processor::render(const Buffers &b, int64_t from, int64_t to) noexcept
             {
                 rIn[1] = rIn[0];
             }
+            // Reverb 2 sums (L + R)·0.5, which overflows to inf (and its loop to NaN, held until
+            // the next clear) past about 8.5e37: a huge but finite dry input sent at 100% would.
+            // The wet side is bounded by softLimit; ±1e6 is far past anything audible.
+            for (float &v : rIn)
+            {
+                v = std::clamp(v, -1.0e6f, 1.0e6f);
+            }
             float r[2];
             reverb_->processSample(t, rIn[0], rIn[1], space_, active, r[0], r[1]);
-            if (reverbChunkActive_)
+            if (reverb_->chunkActive())
             {
                 // Only here: an idle chunk adds nothing, not even a +0 that would turn a −0 to +0.
                 o[0] += softLimit(a * r[0]);

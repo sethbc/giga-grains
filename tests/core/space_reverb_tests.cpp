@@ -94,14 +94,16 @@ TEST_CASE("Reverb2 builds and rings with GgFxConfig", "[space]")
     }
     REQUIRE(earlyEnergy > 0.0);
 
-    // A tail: some chunk wholly after 0.2 s is non-zero.
+    // A tail: the chunks wholly after 0.2 s hold more than a thousandth of the early energy (a
+    // 2 s decay keeps far more; rounding noise far less).
     const int firstLateChunk = int(std::ceil(0.2 * storage.sampleRate / kChunk));
-    bool tail = false;
+    double lateEnergy = 0.0;
     for (int c = firstLateChunk; c < kChunks; ++c)
     {
-        tail = tail || chunkEnergy[c] > 0.0;
+        lateEnergy += chunkEnergy[c];
     }
-    REQUIRE(tail);
+    WARN("energy: early " << earlyEnergy << ", after 0.2 s " << lateEnergy);
+    REQUIRE(lateEnergy > 1e-3 * earlyEnergy);
 
     // Spec §6.3 budgets Reverb 2's fixed arrays; the report records the measured size.
     CHECK(sizeof(Rev2) > 8u * 1024 * 1024);
@@ -262,8 +264,8 @@ BandChange infiniteBandChange(float hfDamping)
     REQUIRE(
         std::all_of(out.left.begin(), out.left.end(), [](float v) { return std::isfinite(v); }));
     const auto change = bandChange(out.left);
-    UNSCOPED_INFO("hf damping " << hfDamping << ": low " << change.low << " dB, mid " << change.mid
-                                << " dB, high " << change.high << " dB");
+    WARN("hf damping " << hfDamping << ": low " << change.low << " dB, mid " << change.mid
+                       << " dB, high " << change.high << " dB");
     return change;
 }
 
@@ -336,8 +338,7 @@ TEST_CASE("patched Reverb2 leaving infinite decays", "[space]")
                             [&](size_t c) { reverb->setInfinite(c < chunkAt(2.0)); });
     const double held = rms(out.left, 1.5, 2.0);
     const double after = rms(out.left, 7.5, 8.0);
-    UNSCOPED_INFO("RMS 1.5-2 s " << held << ", 7.5-8 s " << after << ": " << dB(after / held)
-                                 << " dB");
+    WARN("RMS 1.5-2 s " << held << ", 7.5-8 s " << after << ": " << dB(after / held) << " dB");
     REQUIRE(held > 0.01);
     CHECK(dB(after / held) < -40.0);
 }
@@ -411,15 +412,16 @@ TEST_CASE("patched Reverb2 predelay glide has no click", "[space]")
     };
     const float heldStep = maxStep(run(false));
     const float glideStep = maxStep(run(true));
-    UNSCOPED_INFO("largest step: held " << heldStep << ", glide " << glideStep << " ("
-                                        << glideStep / heldStep << "x)");
+    WARN("largest step: held " << heldStep << ", glide " << glideStep << " ("
+                               << glideStep / heldStep << "x)");
     REQUIRE(heldStep > 0.f);
     // Why 1.6: at kPredelayMaxRate (0.5 samples per sample) the read advances at between 0.5
     // and 1.5 samples per sample, so a glide multiplies the tone's frequency, and with it its
     // largest step, by at most 1.5. The LF damper's ~77 Hz high-pass passes 330 Hz about 3%
-    // louder than 220 Hz (1.5 x 1.03 = 1.55), and turning a glide round or stopping it only
-    // changes the rate. 1.6 leaves room for that (measured here: about 1.58, the largest in
-    // the stretch gliding at 1.5); a jump is many times larger (below).
+    // louder than 220 Hz (1.5 x 1.03 = 1.55), turning a glide round or stopping it only
+    // changes the rate, and the linear interpolation between samples can only round a step
+    // down, never up. 1.6 leaves room for that (measured here: about 1.58, the largest in the
+    // stretch gliding at 1.5); a jump is many times larger (below).
     CHECK(glideStep <= 1.6f * heldStep);
 
     // The test can fail: the same moves through Reverb 2's own pre-delay, which jumps, click.
@@ -434,7 +436,7 @@ TEST_CASE("patched Reverb2 predelay glide has no click", "[space]")
         storage.values[Rev2::rev2_predelay] =
             target > 0.f ? float(std::log2(target / kRate)) : -8.f;
     }));
-    UNSCOPED_INFO("largest step with jumps: " << jumpStep << " (" << jumpStep / heldStep << "x)");
+    WARN("largest step with jumps: " << jumpStep << " (" << jumpStep / heldStep << "x)");
     CHECK(jumpStep > 1.6f * heldStep);
 }
 
@@ -516,6 +518,28 @@ TEST_CASE("patched Reverb2 clear matches a fresh instance", "[space]")
                      renderFresh(storage, 1.0, true, longest)));
 }
 
+TEST_CASE("patched Reverb2 clear after a rate change matches a fresh instance", "[space]")
+{
+    // Cleared at 48 kHz after 2.6 s, whose delay-line writes reached the window that 48 kHz's
+    // reach clears (131,072 - ~17,400) but not all of the larger one that 96 kHz's needs: the
+    // clear zeroes its own window and keeps how far the writes went below it (dirtyEnd). Then
+    // 0.1 s at 96 kHz and a clear there, which must also zero what the first one left: then the
+    // instance renders as a fresh one at 96 kHz.
+    GgFxConfig::Storage storage;
+    storage.sampleRate = kRate;
+    setRingingValues(storage);
+    auto used = usedReverb(storage, 2.6);
+    used->clear();
+    storage.sampleRate = 2.0 * kRate;
+    used->initialize();
+    render(*used, noiseThenSilence(0.1, 0.1, 0.5f), [](size_t) {});
+    used->clear();
+    const auto a = renderAfter(*used, storage, 1.0, true, 2000.f);
+    const auto b = renderFresh(storage, 1.0, true, 2000.f);
+    REQUIRE(rms(b.left, 0.0, 1.0) > 0.01);
+    REQUIRE(sameBits(a, b));
+}
+
 TEST_CASE("patched Reverb2 clear in steps matches clear at once", "[space]")
 {
     // Two instances used alike for 3 s; one cleared at once, one 4,096 floats at a time.
@@ -531,7 +555,7 @@ TEST_CASE("patched Reverb2 clear in steps matches clear at once", "[space]")
         ++steps;
         REQUIRE(steps < 100000);
     }
-    UNSCOPED_INFO("clearStep(4096) took " << steps << " calls");
+    WARN("clearStep(4096) took " << steps << " calls");
     CHECK(steps > 10);
 
     const auto a = renderAfter(*atOnce, storage, 2.0, true, 2000.f);
@@ -626,8 +650,8 @@ TEST_CASE("patched Reverb2 infinite stays bounded under full-scale input", "[spa
             finite = finite && std::isfinite(out.left[i]) && std::isfinite(out.right[i]);
             peakOut = std::max({peakOut, std::fabs(out.left[i]), std::fabs(out.right[i])});
         }
-        UNSCOPED_INFO((sine ? "sine" : "noise")
-                      << ": loop state peak " << peakState << ", output peak " << peakOut);
+        WARN((sine ? "sine" : "noise")
+             << ": loop state peak " << peakState << ", output peak " << peakOut);
         REQUIRE(finite);
         CHECK(peakState <= 2.f);
         CHECK(peakOut <= 2.25f);
@@ -852,7 +876,7 @@ TEST_CASE("SpaceReverb predelay offsets the onset", "[space]")
     const auto at0 = drive(*a, in, spaceDefaults(0.f));
     const auto at100ms = drive(*b, in, spaceDefaults(0.1f));
     const auto onset0 = onset(at0), onset100 = onset(at100ms);
-    UNSCOPED_INFO("onset at Pre-delay 0: " << onset0 << ", at 0.1 s: " << onset100);
+    WARN("onset at Pre-delay 0: " << onset0 << ", at 0.1 s: " << onset100);
     REQUIRE(onset0 >= int64_t(SpaceReverb::kChunk));
     REQUIRE(onset100 > onset0);
     const int64_t expectedShift = std::llround(0.1 * kRate) - SpaceReverb::kChunk;
@@ -890,8 +914,8 @@ TEST_CASE("SpaceReverb idle returns zeros and resumes empty", "[space]")
         // The idle chunks, and the first active one after them, return +0.
         CHECK(
             positiveZeros(out, activeChunks * SpaceReverb::kChunk, resumeAt + SpaceReverb::kChunk));
-        UNSCOPED_INFO("idle for " << idleChunks << " chunks: clear pending at reactivation "
-                                  << pendingAtResume);
+        WARN("idle for " << idleChunks << " chunks: clear pending at reactivation "
+                         << pendingAtResume);
         if (idleChunks == 1)
             CHECK(pendingAtResume); // the reactivation finished the clear
         if (idleChunks == 400)
@@ -956,8 +980,7 @@ TEST_CASE("SpaceReverb at 44.1, 96 and 192 kHz", "[space]")
         // The onset moves with the rate: a later sample at a higher rate, and Pre-delay's
         // shift in samples is 0.1 s at this rate less the 32 the grid already adds.
         const auto onset0 = onset(at0), onset100 = onset(at100ms);
-        UNSCOPED_INFO(rate << " Hz: onset at Pre-delay 0: " << onset0
-                           << ", at 0.1 s: " << onset100);
+        WARN(rate << " Hz: onset at Pre-delay 0: " << onset0 << ", at 0.1 s: " << onset100);
         CHECK(onset0 > lastOnset);
         lastOnset = onset0;
         const int64_t expectedShift = std::llround(0.1 * rate) - SpaceReverb::kChunk;

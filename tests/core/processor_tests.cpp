@@ -385,8 +385,10 @@ std::vector<TimedEvent> automation()
 }
 
 // Block sizes drawn from gg::rng, enough to cover kAutomationFrames: a tenth of them 0-frame
-// calls, three in ten multiples of 32 (so calls often end on a grid boundary), the rest anything
-// in 1..4096.
+// calls, three in ten multiples of 32, the rest anything in 1..4096. A multiple of 32 ends on
+// the grid only when the calls before it did, so few calls end on a grid boundary (1 to 3 of
+// about 70); the dedicated test "events for one boundary apply as one group across a call's
+// end" covers that case.
 std::vector<uint32_t> randomSplit(uint64_t seed)
 {
     std::vector<uint32_t> sizes;

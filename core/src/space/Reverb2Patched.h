@@ -208,6 +208,9 @@ template <typename FXConfig> struct Reverb2 : core::EffectTemplateBase<FXConfig>
 
     Reverb2(typename FXConfig::GlobalStorage *s, typename FXConfig::EffectStorage *e,
             typename FXConfig::ValueStorage *p);
+    // GG PATCH: neither copyable nor movable: _clearSpans points into this instance's arrays.
+    Reverb2(const Reverb2 &) = delete;
+    Reverb2 &operator=(const Reverb2 &) = delete;
 
     void initialize()
     {
@@ -255,6 +258,7 @@ template <typename FXConfig> struct Reverb2 : core::EffectTemplateBase<FXConfig>
     /// At g = 0, the loop is Reverb 2's own.
     void setInfinite(bool on) noexcept
     {
+        assert(!_clearing);
         _infinite = on;
     }
 
@@ -272,6 +276,7 @@ template <typename FXConfig> struct Reverb2 : core::EffectTemplateBase<FXConfig>
     /// R-T2a). Call it before the first processBlock after a clear for that.
     void setPredelaySamples(float target) noexcept
     {
+        assert(!_clearing);
         double t = target > 0.f ? double(target) : 0.0;
         t = std::min(
             {t, kMaxPredelaySeconds * this->sampleRate(), double(PREDELAY_BUFFER_SIZE - 2)});
@@ -717,6 +722,7 @@ template <typename FXConfig> void Reverb2<FXConfig>::setvars(bool init)
 
 template <typename FXConfig> void Reverb2<FXConfig>::processBlock(float *dataL, float *dataR)
 {
+    assert(!_clearing); // GG PATCH
     float scale = powf(2.f, 1.f * this->floatValue(rev2_room_size));
     calc_size(scale);
 
