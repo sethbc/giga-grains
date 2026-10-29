@@ -126,6 +126,12 @@ Processor::Processor(const ProcessorConfig &config)
     jumpRamps();
 }
 
+void Processor::setSeed(uint64_t seed) noexcept
+{
+    config_.seed = seed;
+    engine_.setSeed(seed);
+}
+
 void Processor::jumpRamps() noexcept
 {
     const WetParams w = toWetParams(effective_);

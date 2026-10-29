@@ -219,6 +219,15 @@ class Engine
     void process(float *const *out, uint32_t numChannels,
                  uint32_t numFrames) noexcept SST_CPPUTILS_NONBLOCKING;
 
+    /// Sets the seed that keys the schedule's random draws (EngineConfig::seed) from the next
+    /// process() call on: the grains whose onsets it schedules use it, and the grains already
+    /// sounding keep their draws. The grain index keeps counting, so what follows isn't a fresh
+    /// engine's render at `seed`; it is the same at any block split, like any change made
+    /// between process() calls. Real-time safe; call it between process() calls.
+    void setSeed(uint64_t seed) noexcept { config_.seed = seed; }
+    /// The seed in effect: EngineConfig::seed, or the last setSeed().
+    uint64_t seed() const noexcept { return config_.seed; }
+
     double sampleRate() const noexcept { return config_.sampleRate; }
     /// Frames rendered since construction or the last reset().
     int64_t sampleClock() const noexcept { return clock_; }

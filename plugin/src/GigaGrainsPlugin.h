@@ -47,9 +47,17 @@ const clap_plugin_descriptor *descriptorFor(Product product) noexcept;
 /// - values_, an atomic per-parameter store of the base values, which the main thread reads
 ///   (params.get_value, state save). The audio thread writes it as it hands values to the
 ///   Processor; the main thread writes it while inactive, and on a state load.
-/// - loadedState_ (the FX) or the Processor's SourceExchange (the instrument, with its sample),
-///   which take a state loaded while active to the audio thread, where it applies at the start
-///   of the next process() or params.flush.
+/// - loadedState_ (the FX's values) or the Processor's SourceExchange (the instrument's, with
+///   its sample), which take a state loaded while active to the audio thread, where it applies
+///   at the start of the next process() or params.flush. loadedState_ also carries the state's
+///   engine seed, in both products, so a seed loaded while active needs no restart (carry-over
+///   row 115). Once the audio thread has applied a state's values, and stored them in values_,
+///   it sets valuesApplied_ and asks for on_main_thread, which asks the host to rescan the
+///   values (carry-over row 123, ruling M1-x): the host's first rescan, at the load, may read
+///   a value a block in flight then overwrote.
+///
+/// **The seed** (sub-project 5's spec §7). A new instance draws its own engine seed, on the main
+/// thread at construction, from std::random_device; a state brings its own.
 ///
 /// **The sample** (the instrument; spec §6.4–§6.7). The SampleLoader keeps the manifest entry
 /// and the source on the main thread, and loads on its own worker thread. Sources reach the
@@ -232,8 +240,14 @@ class GigaGrainsPlugin : public plugHelper_t
     /// boundary. Needs the processor; audio thread.
     void applyBetweenBlocks(const clap_input_events *in,
                             uint32_t first) noexcept SST_CPPUTILS_NONBLOCKING;
-    /// Applies a state loaded since the last call, if there is one. Audio thread.
+    /// Applies a state loaded since the last call, if there is one: its seed, and its values
+    /// when it carries them (the FX). Audio thread.
     void applyLoadedState() noexcept SST_CPPUTILS_NONBLOCKING;
+    /// Audio thread, after a state's values went into values_: sets valuesApplied_ and asks
+    /// the host for on_main_thread (clap_host.request_callback, thread-safe), once until that
+    /// call comes, where the host is asked to rescan the values. Its real-time safety is the
+    /// host's, as requestCollect's is.
+    void requestValueRescan() noexcept SST_CPPUTILS_NONBLOCKING;
     /// Stores a base value in values_, clamped to the parameter's range, as the Processor
     /// clamps it.
     void storeValue(gg::core::ParamSlot slot, float value) noexcept SST_CPPUTILS_NONBLOCKING;
@@ -256,11 +270,22 @@ class GigaGrainsPlugin : public plugHelper_t
 
     // The base values the main thread reads (see the class comment).
     std::array<std::atomic<float>, gg::core::kParamCount> values_{};
-    // A state loaded while active, on its way to the audio thread. Main thread → audio thread.
-    gg::core::LatestValue<gg::core::ParamValues> loadedState_;
-    // The engine seed: saved and loaded with the state, and given to the processor at
-    // activate(). Main thread.
-    uint64_t seed_{0};
+    // A state loaded while active, on its way to the audio thread: its seed, and in the FX its
+    // values (the instrument's go with its sample, through the SourceExchange).
+    struct LoadedState
+    {
+        gg::core::ParamValues values;
+        uint64_t seed;
+        bool hasValues;
+    };
+    // Main thread → audio thread.
+    gg::core::LatestValue<LoadedState> loadedState_;
+    // The engine seed: drawn at construction, saved and loaded with the state, given to the
+    // processor at activate() and, loaded while active, through loadedState_. Main thread.
+    uint64_t seed_;
+    // Set by the audio thread when it has stored a state's values in values_, cleared by
+    // on_main_thread, which then asks the host to rescan them (requestValueRescan).
+    std::atomic<bool> valuesApplied_{false};
 
     // Built by activate() and destroyed by deactivate(), on the main thread; between the two,
     // the audio thread's.

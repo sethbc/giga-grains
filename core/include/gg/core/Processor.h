@@ -204,6 +204,14 @@ class Processor
     /// it between process() calls.
     void setBase(ParamSlot slot, float value) noexcept;
 
+    /// Sets the engine seed (Engine::setSeed): the grains scheduled from the next process()
+    /// call's first sample on are keyed by it; those already sounding keep their draws. For a
+    /// state loaded while active (sub-project 5's spec §7). Real-time safe; call it between
+    /// process() calls.
+    void setSeed(uint64_t seed) noexcept;
+    /// The engine seed in effect: ProcessorConfig::seed, or the last setSeed().
+    uint64_t seed() const noexcept { return engine_.seed(); }
+
     /// The slot's base value in effect: the last setBase() or applied event. `slot` must be a
     /// parameter: ParamSlot::Count asserts (and in release builds reads the last parameter).
     float base(ParamSlot slot) const noexcept;

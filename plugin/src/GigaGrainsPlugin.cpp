@@ -5,15 +5,18 @@
 #include "GigaGrainsPlugin.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <optional>
+#include <random>
 #include <span>
 #include <string>
 
+#include "gg/core/Rng.h"
 #include "gg/core/SessionState.h"
 #include "gg/media/SettingsFile.h"
 #include "gg/plugin/Identity.h"
@@ -100,6 +103,26 @@ void copyName(char (&dst)[CLAP_NAME_SIZE], const char *src) noexcept
     std::snprintf(dst, sizeof(dst), "%s", src);
 }
 
+// A new instance's engine seed (sub-project 5's spec §7): two 32-bit draws from the OS's entropy
+// source, or, if std::random_device throws (it may when it has no source), a splitmix64 of the
+// steady clock. Main thread. The audio thread's randomness still comes only from gg::rng,
+// keyed by this seed.
+uint64_t freshSeed() noexcept
+{
+    try
+    {
+        std::random_device device;
+        const auto high = static_cast<uint64_t>(device()) & 0xffffffffu;
+        const auto low = static_cast<uint64_t>(device()) & 0xffffffffu;
+        return (high << 32) | low;
+    }
+    catch (...)
+    {
+        return gg::rng::splitmix64(
+            static_cast<uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count()));
+    }
+}
+
 /// The per-machine settings file: $GG_SETTINGS_FILE when set and not empty, else the user's
 /// (gg::media::defaultSettingsPath). See the class comment.
 std::filesystem::path settingsFile()
@@ -125,7 +148,7 @@ const clap_plugin_descriptor *descriptorFor(Product product) noexcept
 }
 
 GigaGrainsPlugin::GigaGrainsPlugin(const clap_host *host, Product product)
-    : plugHelper_t(descriptorFor(product), host), product_(product)
+    : plugHelper_t(descriptorFor(product), host), product_(product), seed_(freshSeed())
 {
     // Main thread. The first paramMeta() call builds its tables, which allocates: it's made here,
     // never on the audio thread.
@@ -218,12 +241,13 @@ void GigaGrainsPlugin::deactivate() noexcept
     // while active that the audio thread never took is newer than the last block's events: it
     // goes into the values the next activate() starts from, as the next block would have
     // applied it. Otherwise it would apply, stale, at the first block after a reactivation.
-    gg::core::ParamValues loaded{};
-    if (loadedState_.take(loaded))
+    // Its seed is seed_ already, which the next activate() builds the engine with.
+    LoadedState loaded{};
+    if (loadedState_.take(loaded) && loaded.hasValues)
     {
         for (std::size_t s = 0; s < kParamCount; ++s)
         {
-            storeValue(static_cast<ParamSlot>(s), loaded[s]);
+            storeValue(static_cast<ParamSlot>(s), loaded.values[s]);
         }
     }
     // The same for an offer the audio thread never took (the instrument's restores hand their
@@ -267,6 +291,13 @@ void GigaGrainsPlugin::onMainThread() noexcept
         {
             // collect() only frees; nothing it calls throws.
         }
+    }
+    // A state's values the audio thread has applied, and stored in values_ after the load's own
+    // rescan: the host reads them again (carry-over row 123). Cleared first, so values applied
+    // after this ask for another call.
+    if (valuesApplied_.exchange(false, std::memory_order_acq_rel) && _host.canUseParams())
+    {
+        _host.paramsRescan(CLAP_PARAM_RESCAN_VALUES);
     }
 }
 
@@ -367,6 +398,18 @@ void GigaGrainsPlugin::takeOffers() noexcept
     if (processor_->takeOffers())
     {
         storeBases();
+        requestValueRescan();
+    }
+}
+
+void GigaGrainsPlugin::requestValueRescan() noexcept
+{
+    // At most one request outstanding: on_main_thread clears the flag before it rescans.
+    if (!valuesApplied_.exchange(true, std::memory_order_acq_rel))
+    {
+        // clap_host.request_callback from the audio thread, as in requestCollect (see there).
+        // It runs at most once per state applied.
+        _host.requestCallback();
     }
 }
 
@@ -644,16 +687,23 @@ void GigaGrainsPlugin::forgetNoteIds(int16_t channel, int16_t key) noexcept
 
 void GigaGrainsPlugin::applyLoadedState() noexcept
 {
-    gg::core::ParamValues loaded{};
+    LoadedState loaded{};
     if (!loadedState_.take(loaded))
     {
         return;
     }
+    // The grains scheduled from this call's first sample on are keyed by it (Engine::setSeed).
+    processor_->setSeed(loaded.seed);
+    if (!loaded.hasValues)
+    {
+        return; // the instrument's come with its sample (takeOffers)
+    }
     for (std::size_t s = 0; s < kParamCount; ++s)
     {
-        processor_->setBase(static_cast<ParamSlot>(s), loaded[s]);
-        storeValue(static_cast<ParamSlot>(s), loaded[s]);
+        processor_->setBase(static_cast<ParamSlot>(s), loaded.values[s]);
+        storeValue(static_cast<ParamSlot>(s), loaded.values[s]);
     }
+    requestValueRescan();
 }
 
 void GigaGrainsPlugin::storeValue(ParamSlot slot, float value) noexcept
@@ -876,12 +926,13 @@ bool GigaGrainsPlugin::stateLoad(const clap_istream *stream) noexcept
         {
             storeValue(static_cast<ParamSlot>(s), values[s]);
         }
-        const bool newSeed = seed != seed_;
+        // stateSave writes it from now on: the seed the audio thread is about to use.
         seed_ = seed;
         // Inactive, activate() applies the values and the seed. Active, the audio thread applies
-        // the values at the start of its next process() or params.flush; its engine took its
-        // seed when it was built, so a new seed needs a new activation, which the host makes on
-        // a restart request.
+        // them at the start of its next process() or params.flush (carry-over row 115): the seed
+        // through loadedState_ in both products, the values with it in the FX and with the
+        // sample in the instrument (D8). The instrument's two hand-offs are separate, so its
+        // seed may apply a block before or after its values.
         if (processor_ != nullptr)
         {
             if (loader_ != nullptr && restored.keep)
@@ -893,14 +944,7 @@ bool GigaGrainsPlugin::stateLoad(const clap_istream *stream) noexcept
             {
                 processor_->sources().offer(std::move(restored.source), &values); // reserved
             }
-            else
-            {
-                loadedState_.push(values);
-            }
-            if (newSeed)
-            {
-                _host.requestRestart();
-            }
+            loadedState_.push({values, seed, loader_ == nullptr});
         }
         if (_host.canUseParams())
         {

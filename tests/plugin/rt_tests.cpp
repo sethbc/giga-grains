@@ -325,7 +325,8 @@ TEST_CASE("plugin process takes more events than its event array holds", "[plugi
 TEST_CASE("plugin applies a state loaded while active without allocating", "[plugin][rt]")
 {
     // state.load (main thread) hands the values over; the audio thread applies them at the
-    // start of its next process() or params.flush, which must not allocate.
+    // start of its next process() or params.flush, which must not allocate. Each state brings
+    // a new seed (5, then 6), so the seed's hand-off runs too.
     const char *id = GENERATE(kInstrumentId, kFxId);
     CAPTURE(id);
     gg::test::PluginUnderTest plugin(id);
@@ -349,7 +350,7 @@ TEST_CASE("plugin applies a state loaded while active without allocating", "[plu
     gg::test::InputEvents none;
     clap_process_status status{};
 
-    REQUIRE(plugin.load(gg::core::toStateXml(first, 0)));
+    REQUIRE(plugin.load(gg::core::toStateXml(first, 5)));
     AllocTripwire::resetCount();
     {
         AllocTripwire::Scope armed;
@@ -358,12 +359,13 @@ TEST_CASE("plugin applies a state loaded while active without allocating", "[plu
     uint64_t allocations = AllocTripwire::count();
     CHECK(status == CLAP_PROCESS_CONTINUE);
     CHECK(plugin.impl().processor()->base(ParamSlot::Density) == 3.0f);
+    CHECK(plugin.impl().processor()->seed() == 5);
     if (gg::test::AllocTripwire::available()) // off under ASan; RTSan covers this
     {
         REQUIRE(allocations == 0);
     }
 
-    REQUIRE(plugin.load(gg::core::toStateXml(second, 0)));
+    REQUIRE(plugin.load(gg::core::toStateXml(second, 6)));
     const auto *params = paramsOf(plugin);
     AllocTripwire::resetCount();
     {
@@ -372,6 +374,7 @@ TEST_CASE("plugin applies a state loaded while active without allocating", "[plu
     }
     allocations = AllocTripwire::count();
     CHECK(plugin.impl().processor()->base(ParamSlot::Density) == 7.0f);
+    CHECK(plugin.impl().processor()->seed() == 6);
     if (gg::test::AllocTripwire::available()) // off under ASan; RTSan covers this
     {
         REQUIRE(allocations == 0);

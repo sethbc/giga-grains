@@ -27,10 +27,12 @@
 
 #include "Factory.h"
 #include "GigaGrainsPlugin.h"
+#include "gg/core/ParamIds.h"
 #include "gg/core/Rng.h"
 #include "gg/core/SessionState.h"
 #include "gg/media/Sample.h"
 #include "media/AudioFixtures.h"
+#include "sst/basic-blocks/params/ParamMetadata.h"
 
 namespace gg::test
 {
@@ -439,6 +441,23 @@ class PluginUnderTest
     bool loadSampleState(const std::filesystem::path &file) const
     {
         return load(withSample(save(), entryOf(file)));
+    }
+    /// Loads a state of every parameter at its default (paramMeta), no sample and engine seed
+    /// `seed`, through state.load. A new instance draws a seed of its own (sub-project 5's spec
+    /// §7), so a test that compares an instance bit for bit with another, or checks a level its
+    /// render reaches, loads this first: loadDefaultsWithSeed(0) gives every instance the seed
+    /// they all had before, the same in every run. In the instrument it clears the sample, so
+    /// load the sample after it.
+    bool loadDefaultsWithSeed(uint64_t seed) const
+    {
+        gg::core::SessionState s;
+        for (std::size_t i = 0; i < gg::core::kParamCount; ++i)
+        {
+            s.values[i] =
+                gg::core::paramMeta(static_cast<gg::core::ParamSlot>(i), impl().mode()).defaultVal;
+        }
+        s.seed = seed;
+        return load(gg::core::encodeState(s));
     }
 
     /// Activates (main thread) and starts processing (audio thread).

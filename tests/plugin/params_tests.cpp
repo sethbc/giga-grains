@@ -14,6 +14,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
 #include <initializer_list>
 #include <limits>
 #include <string>
@@ -205,6 +206,16 @@ bool allFinite(const std::vector<float> &v)
         }
     }
     return true;
+}
+
+float peakOf(const std::vector<float> &v)
+{
+    float p = 0.0f;
+    for (float x : v)
+    {
+        p = std::max(p, std::abs(x));
+    }
+    return p;
 }
 
 bool allZero(const std::vector<float> &v)
@@ -678,7 +689,8 @@ TEST_CASE("state load while active applies at the next block", "[plugin]")
     // A loads state S between two blocks. The host reads the new values at once (and is asked
     // to rescan them), but the audio thread takes S only at the start of the next block, where
     // it applies like a params.flush of every value: B, which flushes S's values instead,
-    // renders the same second block, and C, which does neither, a different one.
+    // renders the same second block, and C, which does neither, a different one. All three
+    // start at S's seed, 0.
     constexpr uint32_t kBlock = 4096;
     Stereo first(kBlock);
     Stereo second(kBlock);
@@ -702,14 +714,15 @@ TEST_CASE("state load while active applies at the next block", "[plugin]")
     for (std::size_t i = 0; i < plugins.size(); ++i)
     {
         REQUIRE(plugins[i]->valid());
+        REQUIRE(plugins[i]->loadDefaultsWithSeed(0));
         REQUIRE(plugins[i]->activate(48000.0, kBlock));
         REQUIRE(plugins[i]->process(kBlock, first.data(), outs[i].data()) == CLAP_PROCESS_CONTINUE);
     }
 
     REQUIRE(a.load(state));
-    CHECK(hostA.valueRescans() == 1);
+    CHECK(hostA.valueRescans() == 2); // loadDefaultsWithSeed's, then this one's
     CHECK(hostA.otherRescans() == 0);
-    CHECK(hostA.restarts() == 0); // the same seed
+    CHECK(hostA.restarts() == 0);
     CHECK(a.value(paramId(ParamSlot::Density)) == 7.0);
     CHECK(a.impl().processor()->base(ParamSlot::Density) == 4.0f); // not yet
 
@@ -758,7 +771,7 @@ TEST_CASE("state load while active applies at the next block", "[plugin]")
         u[at(ParamSlot::Density)] = 3.0f;
         REQUIRE(a.load(gg::core::toStateXml(t, 0)));
         REQUIRE(a.load(gg::core::toStateXml(u, 0)));
-        CHECK(hostA.valueRescans() == 3);
+        CHECK(hostA.valueRescans() == 4);
         InputEvents none;
         a.flush(none.list());
         CHECK(a.impl().processor()->base(ParamSlot::Density) == 3.0f);
@@ -781,25 +794,195 @@ TEST_CASE("state load while active applies at the next block", "[plugin]")
     }
 }
 
+TEST_CASE("a new instance draws its own seed", "[plugin]")
+{
+    // Sub-project 5's spec §7: a new instance draws its engine seed from the OS's entropy
+    // source, so two instances on two tracks make different clouds. Two draws colliding, or one
+    // being 0, has a chance of 2^-64.
+    const char *id = GENERATE(kFxId, kInstrumentId);
+    CAPTURE(id);
+    PluginUnderTest a(id);
+    PluginUnderTest b(id);
+    REQUIRE(a.valid());
+    REQUIRE(b.valid());
+    const uint64_t seedA = decoded(a.save(), a.impl().mode()).seed;
+    const uint64_t seedB = decoded(b.save(), b.impl().mode()).seed;
+    CAPTURE(seedA, seedB);
+    CHECK(seedA != 0);
+    CHECK(seedB != 0);
+    CHECK(seedA != seedB);
+    // The engine is built with it.
+    REQUIRE(a.activate(48000.0, 512));
+    CHECK(a.impl().processor()->seed() == seedA);
+}
+
 TEST_CASE("state carries the engine seed", "[plugin]")
 {
-    // The seed is saved and loaded with the values. The engine takes it when it is built, at
-    // activate(), so a load that changes it while active asks the host for a restart.
-    const ParamValues values = defaults();
-
+    // The seed is saved and loaded with the values. Inactive, activate() builds the engine with
+    // it; active, it goes to the audio thread with the values, which applies it at the start of
+    // its next process() or params.flush, with no restart (carry-over row 115).
+    const char *id = GENERATE(kFxId, kInstrumentId);
+    CAPTURE(id);
     ParamsHost host;
-    PluginUnderTest plugin(kFxId, host.clap());
+    PluginUnderTest plugin(id, host.clap());
     REQUIRE(plugin.valid());
-    CHECK(decoded(plugin.save(), gg::core::Mode::Fx).seed == 0); // new instances start at 0 (§4)
+    const auto mode = plugin.impl().mode();
 
-    REQUIRE(plugin.load(gg::core::toStateXml(values, 9)));
-    CHECK(host.restarts() == 0); // inactive: activate() takes it
+    REQUIRE(plugin.loadDefaultsWithSeed(9));
+    CHECK(decoded(plugin.save(), mode).seed == 9);
     REQUIRE(plugin.activate(48000.0, 512));
-    REQUIRE(plugin.load(gg::core::toStateXml(values, 9)));
-    CHECK(host.restarts() == 0); // the same seed
-    REQUIRE(plugin.load(gg::core::toStateXml(values, 10)));
-    CHECK(host.restarts() == 1);
-    CHECK(decoded(plugin.save(), gg::core::Mode::Fx).seed == 10);
+    CHECK(plugin.impl().processor()->seed() == 9);
+
+    REQUIRE(plugin.loadDefaultsWithSeed(10));
+    CHECK(host.restarts() == 0);
+    // Saved at once: the seed the audio thread is about to use.
+    CHECK(decoded(plugin.save(), mode).seed == 10);
+    CHECK(plugin.impl().processor()->seed() == 9); // not yet
+    InputEvents none;
+    plugin.flush(none.list());
+    CHECK(plugin.impl().processor()->seed() == 10);
+
+    REQUIRE(plugin.loadDefaultsWithSeed(11));
+    Stereo out(64);
+    REQUIRE(plugin.process(64, nullptr, out.data()) == CLAP_PROCESS_CONTINUE);
+    CHECK(plugin.impl().processor()->seed() == 11);
+    CHECK(host.restarts() == 0);
+    CHECK(decoded(plugin.save(), mode).seed == 11);
+
+    SECTION("a load the audio thread never took holds through reactivation")
+    {
+        REQUIRE(plugin.loadDefaultsWithSeed(12));
+        plugin.deactivate();
+        REQUIRE(plugin.activate(48000.0, 512));
+        CHECK(plugin.impl().processor()->seed() == 12);
+        plugin.flush(none.list()); // no stale seed is left to apply
+        CHECK(plugin.impl().processor()->seed() == 12);
+    }
+}
+
+namespace
+{
+// `state`, a state `mode`'s product saved, with engine seed `seed`.
+std::string withSeed(const std::string &state, gg::core::Mode mode, uint64_t seed)
+{
+    gg::core::SessionState s = decoded(state, mode);
+    s.seed = seed;
+    return gg::core::encodeState(s);
+}
+} // namespace
+
+TEST_CASE("a loaded state's seed reaches the audio thread without a restart", "[plugin]")
+{
+    // Three instances with the same history (seed 1, one block: of noise in the FX, of a held
+    // note over a sine sample in the instrument) each load their own state while active, with
+    // seed 7, 7 and 8, then render 2 s more. The two at seed 7 render the same bits, and the one
+    // at 8 differs: the loaded seed reached the engine, with no restart (carry-over row 115).
+    const char *id = GENERATE(kFxId, kInstrumentId);
+    CAPTURE(id);
+    const bool isFx = std::string_view(id) == kFxId;
+    constexpr uint32_t kBlock = 512;
+    constexpr uint32_t kFrames = 96000;
+    Stereo in(kBlock + kFrames);
+    fillNoise(in, 41);
+    const auto sample = isFx ? std::filesystem::path() : gg::test::sineSampleFile("seed-handoff");
+
+    const auto run = [&](PluginUnderTest &plugin, uint64_t seed, Stereo &out) {
+        REQUIRE(plugin.valid());
+        const auto mode = plugin.impl().mode();
+        REQUIRE(plugin.loadDefaultsWithSeed(1));
+        if (isFx)
+        {
+            // Grains read about 20 ms behind the write head, so the wet signal starts early.
+            flushValues(plugin, {{ParamSlot::Position, 0.05}, {ParamSlot::Spray, 0.0}});
+        }
+        else
+        {
+            REQUIRE(plugin.loadSampleState(sample));
+        }
+        REQUIRE(plugin.activate(48000.0, kBlock));
+        const auto on = gg::test::noteEvent(CLAP_EVENT_NOTE_ON, 0, 60, 0);
+        InputEvents events;
+        if (!isFx)
+        {
+            events.add(&on.header);
+        }
+        Stereo first(kBlock);
+        REQUIRE(plugin.process(kBlock, isFx ? in.data() : nullptr, first.data(), events.list()) ==
+                CLAP_PROCESS_CONTINUE);
+
+        REQUIRE(plugin.load(withSeed(plugin.save(), mode, seed)));
+        CHECK(plugin.impl().processor()->seed() == 1); // not yet
+        for (uint32_t done = 0; done < kFrames; done += kBlock)
+        {
+            const uint32_t n = std::min(kBlock, kFrames - done);
+            float *inPtrs[2] = {in.left.data() + kBlock + done, in.right.data() + kBlock + done};
+            float *outPtrs[2] = {out.left.data() + done, out.right.data() + done};
+            REQUIRE(plugin.process(n, isFx ? inPtrs : nullptr, outPtrs) == CLAP_PROCESS_CONTINUE);
+            if (done == 0)
+            {
+                CHECK(plugin.impl().processor()->seed() == seed);
+                CHECK(decoded(plugin.save(), mode).seed == seed);
+            }
+        }
+    };
+
+    ParamsHost hostA;
+    PluginUnderTest a(id, hostA.clap());
+    PluginUnderTest b(id);
+    PluginUnderTest c(id);
+    Stereo outA(kFrames);
+    Stereo outB(kFrames);
+    Stereo outC(kFrames);
+    run(a, 7, outA);
+    run(b, 7, outB);
+    run(c, 8, outC);
+
+    CHECK(hostA.restarts() == 0);
+    CHECK(allFinite(outA.left));
+    CHECK(peakOf(outA.left) > 0.01f);
+    CHECK(sameBits(outA.left, outB.left));
+    CHECK(sameBits(outA.right, outB.right));
+    CHECK_FALSE(sameBits(outA.left, outC.left));
+}
+
+TEST_CASE("the value mirror is rescanned after the audio thread applies a state", "[plugin]")
+{
+    // Carry-over row 123 (ruling M1-x): a state loaded while active is in values_ at once, and
+    // the host is asked to rescan them at once; the audio thread applies it at its next block,
+    // where it stores the values again, and then asks for on_main_thread, which asks the host
+    // to rescan them again, once, so it reads the values the audio thread settled on.
+    const char *id = GENERATE(kFxId, kInstrumentId);
+    CAPTURE(id);
+    ParamsHost host;
+    PluginUnderTest plugin(id, host.clap());
+    REQUIRE(plugin.valid());
+    REQUIRE(plugin.activate(48000.0, 512));
+    Stereo in(512);
+    Stereo out(512);
+
+    REQUIRE(plugin.loadDefaultsWithSeed(3));
+    CHECK(host.valueRescans() == 1);
+    plugin.onMainThread(); // the audio thread hasn't applied it yet
+    CHECK(host.valueRescans() == 1);
+    REQUIRE(plugin.process(512, in.data(), out.data()) == CLAP_PROCESS_CONTINUE);
+    CHECK(host.valueRescans() == 1);
+    plugin.onMainThread();
+    CHECK(host.valueRescans() == 2);
+    plugin.onMainThread(); // once per application
+    REQUIRE(plugin.process(512, in.data(), out.data()) == CLAP_PROCESS_CONTINUE);
+    plugin.onMainThread();
+    CHECK(host.valueRescans() == 2);
+
+    SECTION("a params.flush that applies a state asks too")
+    {
+        REQUIRE(plugin.loadDefaultsWithSeed(4));
+        CHECK(host.valueRescans() == 3);
+        InputEvents none;
+        plugin.flush(none.list());
+        plugin.onMainThread();
+        CHECK(host.valueRescans() == 4);
+    }
+    CHECK(host.otherRescans() == 0);
 }
 
 TEST_CASE("state load rejects bad state and keeps the values", "[plugin]")
