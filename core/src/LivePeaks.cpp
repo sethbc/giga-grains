@@ -31,7 +31,7 @@ void LivePeaks::prepare(int64_t ringFrames)
 void LivePeaks::write(const float *l, const float *r, int64_t t, uint32_t n) noexcept
 {
     assert(t >= 0);
-    if (bucketCount_ == 0 || n == 0)
+    if (bucketCount_ == 0 || n == 0 || t < 0)
     {
         return;
     }

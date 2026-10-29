@@ -177,6 +177,8 @@ class GrainPool
     uint32_t capacity_;
     uint32_t slots_; // 2 × capacity_
 
+    // The per-grain arrays, slots_ long. Every array here is also moved by moveRows in
+    // GrainPool.cpp, and the constructor points rows_ at it: add a new one to both.
     std::vector<uint64_t> index_;
     std::vector<int64_t> onsetSample_;
     std::vector<double> onsetFrac_;

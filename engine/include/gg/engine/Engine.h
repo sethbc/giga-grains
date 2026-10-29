@@ -244,7 +244,7 @@ class Engine
     /// The write head R: frames written into the live ring since construction or reset(). It
     /// stops while frozen.
     int64_t liveWriteHead() const noexcept { return live_.head(); }
-    /// The live ring itself, for tests: read it with liveWriteHead() as the head.
+    /// The live ring itself, read-only: read it with liveWriteHead() as the head.
     const LiveSource &live() const noexcept { return live_; }
 
   private:
