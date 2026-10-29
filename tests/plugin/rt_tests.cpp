@@ -143,6 +143,120 @@ TEST_CASE("plugin process does not allocate", "[plugin][rt]")
     }
 }
 
+TEST_CASE("plugin process with space automated does not allocate", "[plugin][rt][space]")
+{
+    // Every Space parameter automated through the CLAP events, values and modulation: Decay
+    // into ∞ and out again, the reverb on and then off (its idle clear) and on again, the
+    // pre-delay gliding. The calls are 0, 1, 512 and 2048 frames long, and none allocates.
+    const char *id = GENERATE(kInstrumentId, kFxId);
+    CAPTURE(id);
+    gg::test::PluginUnderTest plugin(id);
+    REQUIRE(plugin.valid());
+    const bool isFx = std::string_view(id) == kFxId;
+    if (!isFx)
+    {
+        REQUIRE(plugin.loadSampleState(gg::test::sineSampleFile("rt-space")));
+    }
+    REQUIRE(plugin.activate(48000.0, 512));
+
+    std::vector<float> inLeft(2048), inRight(2048), outLeft(2048), outRight(2048);
+    for (std::size_t i = 0; i < inLeft.size(); ++i)
+    {
+        inLeft[i] = static_cast<float>(gg::rng::bipolar(gg::rng::splitmix64(2 * i)));
+        inRight[i] = static_cast<float>(gg::rng::bipolar(gg::rng::splitmix64(2 * i + 1)));
+    }
+    float *inputs[2] = {inLeft.data(), inRight.data()};
+    float *outputs[2] = {outLeft.data(), outRight.data()};
+    const auto clapOn = noteOn(60, 0);
+    const auto value = [](ParamSlot slot, double v, uint32_t time) {
+        return gg::test::paramValue(paramId(slot), v, time);
+    };
+    const auto mod = [](ParamSlot slot, double v, uint32_t time) {
+        return gg::test::paramMod(paramId(slot), v, time);
+    };
+    const auto infinite = static_cast<double>(gg::core::kDecayMax);
+    // Sorted by time, as CLAP requires.
+    const std::array onValues{
+        value(ParamSlot::ReverbAmount, 1.0, 0),     value(ParamSlot::ReverbDecay, infinite, 0),
+        value(ParamSlot::Diffusion, 0.9, 0),        value(ParamSlot::ReverbSize, 1.0, 1),
+        value(ParamSlot::ReverbDamping, 0.0, 1),    value(ParamSlot::ReverbPredelay, 0.3, 1),
+        value(ParamSlot::ReverbModulation, 1.0, 1), value(ParamSlot::DryToReverb, 1.0, 1),
+    };
+    const std::array onMods{
+        mod(ParamSlot::ReverbDecay, 0.5, 1),       mod(ParamSlot::Diffusion, -0.2, 1),
+        mod(ParamSlot::ReverbPredelay, 0.1, 1),    mod(ParamSlot::ReverbSize, -0.3, 1),
+        mod(ParamSlot::ReverbModulation, -0.4, 1), mod(ParamSlot::DryToReverb, -0.5, 1),
+    };
+    // Out of ∞ and the reverb off.
+    const std::array offValues{value(ParamSlot::ReverbAmount, 0.0, 0),
+                               value(ParamSlot::ReverbDecay, 1.0, 0)};
+    const std::array offMods{mod(ParamSlot::ReverbDecay, 0.0, 0)};
+    gg::test::InputEvents on;
+    on.add(&clapOn.header);
+    for (const auto &e : onValues)
+    {
+        on.add(&e.header);
+    }
+    for (const auto &e : onMods)
+    {
+        on.add(&e.header);
+    }
+    gg::test::InputEvents off;
+    for (const auto &e : offValues)
+    {
+        off.add(&e.header);
+    }
+    off.add(&offMods[0].header);
+    gg::test::InputEvents none;
+    struct Call
+    {
+        uint32_t frames;
+        const gg::test::InputEvents *events;
+    };
+    constexpr std::size_t kCalls = 8;
+    const std::array<Call, kCalls> calls{{{0, &on},
+                                          {1, &on},
+                                          {512, &on},
+                                          {2048, &none},
+                                          {512, &off},
+                                          {2048, &none}, // idle: the clear runs
+                                          {1, &on},
+                                          {2048, &none}}};
+    std::array<clap_process_status, kCalls> status{};
+    std::array<bool, kCalls> active{};
+    const auto *processor = plugin.impl().processor();
+    REQUIRE(processor != nullptr);
+
+    // No warm-up call: a host's first process() must not allocate either.
+    AllocTripwire::resetCount();
+    {
+        AllocTripwire::Scope armed;
+        for (std::size_t i = 0; i < kCalls; ++i)
+        {
+            status[i] = plugin.process(calls[i].frames, isFx ? inputs : nullptr, outputs,
+                                       calls[i].events->list());
+            active[i] = processor->reverbActive();
+        }
+    }
+    const uint64_t allocations = AllocTripwire::count();
+
+    for (const auto s : status)
+    {
+        CHECK(s == CLAP_PROCESS_CONTINUE);
+    }
+    // The reverb ran, went idle and ran again; the last values reached the processor.
+    CHECK(active[3]);
+    CHECK_FALSE(active[5]);
+    CHECK(active[7]);
+    CHECK(processor->effective(ParamSlot::ReverbDecay) >= gg::core::kDecayInfinite);
+    CHECK(processor->effective(ParamSlot::ReverbPredelay) == 0.3f + 0.1f);
+    CHECK(std::all_of(outLeft.begin(), outLeft.end(), [](float x) { return std::isfinite(x); }));
+    if (gg::test::AllocTripwire::available()) // off under ASan; RTSan covers this
+    {
+        REQUIRE(allocations == 0);
+    }
+}
+
 TEST_CASE("plugin process takes more events than its event array holds", "[plugin][rt]")
 {
     // An automation storm past the fixed event array (4,096): the events beyond it apply at the

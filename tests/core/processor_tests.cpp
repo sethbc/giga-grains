@@ -873,10 +873,10 @@ TEST_CASE("processor survives an automation storm", "[core][rt]")
 
     REQUIRE(allFinite(left));
     REQUIRE(allFinite(right));
-    // Mix is a crossfade and the wet signal is limited below 1: the output is never louder than
-    // the input plus 1.
-    REQUIRE(peak(left) < peak(input.left) + 1.0f);
-    REQUIRE(peak(right) < peak(input.right) + 1.0f);
+    // Mix is a crossfade, the wet signal is limited below 1, and so is the reverb's return
+    // (the storm sets Reverb Amount too): the output is never louder than the input plus 2.
+    REQUIRE(peak(left) < peak(input.left) + 2.0f);
+    REQUIRE(peak(right) < peak(input.right) + 2.0f);
     for (size_t s = 0; s < kParamCount; ++s)
     {
         const auto slot = static_cast<ParamSlot>(s);

@@ -15,6 +15,7 @@ add_executable(gg-tests
         core/processor_tests.cpp
         core/session_state_tests.cpp
         core/settings_tests.cpp
+        core/space_processor_tests.cpp
         core/space_reverb_tests.cpp
         engine/cloud_tests.cpp
         engine/denormal_tests.cpp

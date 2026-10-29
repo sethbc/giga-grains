@@ -15,6 +15,10 @@
 
 namespace gg::core
 {
+// SpaceReverb's chunks must be the control grid's cells, so that its latched parameters and its
+// idle rule change on grid boundaries alone (the class comment).
+static_assert(SpaceReverb::kChunk == Processor::kControlGrid);
+
 namespace
 {
 EngineConfig engineConfig(const ProcessorConfig &c)
@@ -93,8 +97,10 @@ void Processor::Ramp::jump(float target) noexcept
 }
 
 Processor::Processor(const ProcessorConfig &config)
-    : config_(config), engine_(engineConfig(config)), rampSamples_(rampLength(config.sampleRate))
+    : config_(config), engine_(engineConfig(config)), rampSamples_(rampLength(config.sampleRate)),
+      reverb_(std::make_unique<SpaceReverb>(config.sampleRate))
 {
+    diffuser_.prepare(config_.sampleRate);
     for (auto &channel : wet_)
     {
         channel.assign(config_.maxBlockSize, 0.0f);
@@ -117,9 +123,17 @@ Processor::Processor(const ProcessorConfig &config)
         engine_.setNoteGate(true); // silent until a note (spec §6.2)
     }
     updateEffective();
+    jumpRamps();
+}
+
+void Processor::jumpRamps() noexcept
+{
     const WetParams w = toWetParams(effective_);
     mix_.jump(w.mix);
     level_.jump(w.levelGain);
+    diffusion_.jump(space_.diffusion);
+    amount_.jump(space_.amount);
+    drySend_.jump(space_.drySend);
 }
 
 float Processor::clampToRange(size_t slot, float value) const noexcept
@@ -142,13 +156,25 @@ void Processor::setBase(ParamSlot slot, float value) noexcept
         syncFreeze(); // Freeze set off is a transition's first half, even between calls
     }
     const WetParams w = toWetParams(effective_);
-    if (slot == ParamSlot::Mix)
+    switch (slot)
     {
+    case ParamSlot::Mix:
         mix_.jump(w.mix);
-    }
-    else if (slot == ParamSlot::Level)
-    {
+        break;
+    case ParamSlot::Level:
         level_.jump(w.levelGain);
+        break;
+    case ParamSlot::Diffusion:
+        diffusion_.jump(space_.diffusion);
+        break;
+    case ParamSlot::ReverbAmount:
+        amount_.jump(space_.amount);
+        break;
+    case ParamSlot::DryToReverb:
+        drySend_.jump(space_.drySend);
+        break;
+    default:
+        break;
     }
 }
 
@@ -250,6 +276,7 @@ void Processor::updateEffective() noexcept
         effective_[s] = clampToRange(s, base_[s] + mod_[s]);
     }
     engine_.setCloudParams(toCloudParams(effective_, config_.mode));
+    space_ = toSpaceParams(effective_, config_.mode);
 }
 
 void Processor::syncFreeze() noexcept
@@ -275,9 +302,11 @@ void Processor::reset() noexcept
     // A fresh ring: Freeze waits for an off→on transition, as after construction.
     freezeArmed_ = false;
     engine_.setFreeze(false);
-    const WetParams w = toWetParams(effective_);
-    mix_.jump(w.mix);
-    level_.jump(w.levelGain);
+    jumpRamps();
+    // The engine's clock is back at 0, and so is the reverb's time: its chunks stay on the grid.
+    diffuser_.reset();
+    reverb_->reset();
+    reverbChunkActive_ = false;
 }
 
 void Processor::setSourceNow(std::shared_ptr<const PreparedSource> s)
@@ -380,6 +409,9 @@ void Processor::process(const float *const *in, uint32_t numInChannels, float *c
         const WetParams w = toWetParams(effective_);
         mix_.retarget(w.mix, rendered, rampSamples_);
         level_.retarget(w.levelGain, rendered, rampSamples_);
+        diffusion_.retarget(space_.diffusion, rendered, rampSamples_);
+        amount_.retarget(space_.amount, rendered, rampSamples_);
+        drySend_.retarget(space_.drySend, rendered, rampSamples_);
     };
 
     // Puts an event at `offset` into its boundary's group, applying the pending group first if
@@ -467,8 +499,12 @@ void Processor::process(const float *const *in, uint32_t numInChannels, float *c
 void Processor::render(const Buffers &b, int64_t from, int64_t to) noexcept
 {
     const bool fx = config_.mode == Mode::Fx;
-    // Channels 0 and 1 carry the signal; one output channel gets the engine's mono render.
+    // Channels 0 and 1 carry the signal; one output channel gets the engine's mono render. With
+    // no output channel the engine renders stereo all the same, so the diffuser and the reverb
+    // hear what they would have, and the next call continues the same render.
     const uint32_t channels = std::min(b.numOutChannels, 2u);
+    const uint32_t rendering = channels == 0 ? 2u : channels;
+    constexpr int64_t gridMask = Processor::kControlGrid - 1;
     float *const wet[2] = {wet_[0].data(), wet_[1].data()};
     while (from < to)
     {
@@ -487,12 +523,7 @@ void Processor::render(const Buffers &b, int64_t from, int64_t to) noexcept
         {
             d = d != nullptr ? d + offset : nullptr;
         }
-        engine_.process(dry, b.numInChannels > 0 ? 2 : 0, wet, channels, n);
-        if (channels == 0)
-        {
-            from += n;
-            continue; // nothing to write; the engine has still run
-        }
+        engine_.process(dry, b.numInChannels > 0 ? 2 : 0, wet, rendering, n);
 
         float *dst[2] = {nullptr, nullptr};
         for (uint32_t c = 0; c < channels; ++c)
@@ -504,21 +535,52 @@ void Processor::render(const Buffers &b, int64_t from, int64_t to) noexcept
             const int64_t t = from + i;
             const float m = mix_.at(t, rampSamples_);
             const float g = level_.at(t, rampSamples_);
+            // The ramps stay between in-range values; the clamp keeps the diffuser's crossfade
+            // from extrapolating whatever happens.
+            const float delta = std::clamp(diffusion_.at(t, rampSamples_), 0.0f, 1.0f);
+            const float a = amount_.at(t, rampSamples_);
+            const float s = drySend_.at(t, rampSamples_);
+            const bool active = a != 0.0f; // read by the reverb at a chunk's first sample
+            if ((t & gridMask) == 0)
+            {
+                reverbChunkActive_ = active;
+            }
             // Read both inputs before writing either output: out may be in, and a mono input
             // feeds both channels.
             float d[2] = {0.0f, 0.0f};
-            for (uint32_t c = 0; c < channels; ++c)
+            for (uint32_t c = 0; c < rendering; ++c)
             {
                 d[c] = dry[c] != nullptr ? finiteOrZero(dry[c][i]) : 0.0f;
             }
+            // One channel: its mono render is diffused as both sides, and its rIn feeds both.
+            float w[2] = {wet[0][i], rendering > 1 ? wet[1][i] : wet[0][i]};
+            diffuser_.process(w[0], w[1], delta);
+            float o[2];
+            float rIn[2];
+            for (uint32_t c = 0; c < 2; ++c)
+            {
+                const float limited = softLimit(w[c] * g);
+                o[c] = fx ? d[c] * (1.0f - m) + limited * m : limited;
+                rIn[c] = fx ? m * limited + s * d[c] : limited;
+            }
+            if (rendering == 1)
+            {
+                rIn[1] = rIn[0];
+            }
+            float r[2];
+            reverb_->processSample(t, rIn[0], rIn[1], space_, active, r[0], r[1]);
+            if (reverbChunkActive_)
+            {
+                // Only here: an idle chunk adds nothing, not even a +0 that would turn a −0 to +0.
+                o[0] += softLimit(a * r[0]);
+                o[1] += softLimit(a * r[1]);
+            }
             for (uint32_t c = 0; c < channels; ++c)
             {
-                if (dst[c] == nullptr)
+                if (dst[c] != nullptr)
                 {
-                    continue;
+                    dst[c][i] = o[c];
                 }
-                const float w = softLimit(wet[c][i] * g);
-                dst[c][i] = fx ? d[c] * (1.0f - m) + w * m : w;
             }
         }
         from += n;
