@@ -84,7 +84,7 @@ VersionInfoVersion={#Version}
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0
-CloseApplicationsFilter=*.exe,*.vst3
+CloseApplicationsFilter=*.exe,*.vst3,*.clap
 ; {app} is this folder; the directory page is hidden, so the apps and licenses always go here.
 DefaultDirName={autopf}\Giga Grains
 DefaultGroupName=Giga Grains

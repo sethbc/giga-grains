@@ -56,6 +56,12 @@ foreach (folder IN ITEMS "Giga Grains.vst3" "licenses")
         string(APPEND missing "\n  '${folder}' (a folder)")
     endif ()
 endforeach ()
+# The VST3 bundle's binary, where a host looks for it: a bundle folder without it is no plugin.
+set(vst3_binary "Giga Grains.vst3/Contents/x86_64-win/Giga Grains.vst3")
+if (IS_DIRECTORY "${PRODUCTS}/Giga Grains.vst3"
+        AND (NOT EXISTS "${PRODUCTS}/${vst3_binary}" OR IS_DIRECTORY "${PRODUCTS}/${vst3_binary}"))
+    string(APPEND missing "\n  '${vst3_binary}' (the VST3 bundle's binary, a file)")
+endif ()
 if (missing)
     message(FATAL_ERROR "make-zip: missing from '${PRODUCTS}':${missing}")
 endif ()
