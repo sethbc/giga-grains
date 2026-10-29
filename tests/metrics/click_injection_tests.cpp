@@ -116,11 +116,10 @@ const std::map<std::string, int> &partlyHidden()
         {"dense-noise", 0},
         {"dense-noise-eco", 0},
         {"fx-automate", 11}, // the swept input's top octaves, from about 2.3 s to 3.1 s
-        {"fx-feedback", 14}, // the swept input's top octaves, at 1.4 s and 1.9 s
-        {"fx-file", 14},     // loop-48k.wav's noise bursts
-        // A noise bed throughout: the input until 7 s, then the ring frozen by Macro Freeze. No
-        // step lifts the clean score at all; the event log still pins every macro's grains.
-        {"fx-macros", 0},
+        // The swept input's top octaves, then their regeneration at Feedback 0.9 and the frozen
+        // ring, from about 2.8 s to 6.6 s.
+        {"fx-feedback", 7},
+        {"fx-file", 14},        // loop-48k.wav's noise bursts
         {"fx-noise-stereo", 3}, // a noise bed until the input ends at 3 s
         {"fx-note-freeze", 10}, // loop-48k.wav's bursts, live and frozen
         {"fx-space", 6},        // noise and its reverb, until the tail decays
