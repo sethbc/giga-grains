@@ -464,6 +464,27 @@ if (APPLE AND GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
     catch_discover_tests(gg-au-state-tests ADD_TAGS_AS_LABELS)
 endif ()
 
+# The installers (spec §6), label `installer`. installer_build_products builds gg-products (not
+# in `all`) into build/<preset>/gg-products/, as the fixture every later installer_* test
+# requires, so `ctest -L installer` needs no build step of its own. It runs alone: a build can
+# relink the bundles other tests read. The products exist only with the editor and the formats.
+if (GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
+    add_test(NAME installer_build_products
+            COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --config $<CONFIG>
+            --target gg-products)
+    set_tests_properties(installer_build_products PROPERTIES LABELS installer
+            FIXTURES_SETUP gg_products RUN_SERIAL TRUE)
+
+    # The license set (spec §6.3, carry-over row 221): gg-products/licenses/ holds exactly the
+    # platform's notices and license texts, none of them a stub.
+    add_test(NAME installer_license_set
+            COMMAND ${CMAKE_COMMAND} -DDIR=${CMAKE_BINARY_DIR}/gg-products/licenses
+            -DPLATFORM=${CMAKE_SYSTEM_NAME}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/installer/check-license-set.cmake)
+    set_tests_properties(installer_license_set PROPERTIES LABELS installer
+            FIXTURES_REQUIRED gg_products)
+endif ()
+
 # The ASIO SDK guard (cmake/AsioGuard.cmake, carry-over [116]), proven on a scratch project: the
 # one allowed use configures, and every misuse fails the configure naming it. Each case builds
 # in its own folder under the test output.
