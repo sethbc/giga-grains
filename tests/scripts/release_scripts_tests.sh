@@ -11,8 +11,8 @@
 # One function per script under test:
 #   - test_check_version: scripts/release/check-version.sh (§6.1, §6.6) against scratch
 #     CMakeLists.txt files: a tag matching the version with a suffix and without, a mismatched
-#     tag, the suffix dev refused, --print (no tag; dev accepted), and bad usage or an
-#     unparsable file.
+#     tag, the suffix dev refused, --print (no tag; dev accepted), and bad usage, an unparsable
+#     file or a suffix with an empty identifier.
 #   - test_source_tarball: scripts/release/source-tarball.sh (decision 11, §6.6) on a recursive
 #     clone of a scratch superproject with one submodule: the archive holds the tracked files of
 #     both under giga-grains-<version>/, no .git file or directory and no untracked file; a
@@ -154,9 +154,20 @@ test_check_version() {
     expect_eq "check-version: a file without a project( line is unparsable" "$status" 2
     expect_eq "check-version: the unparsable file's reason is one line" \
         "$(printf '%s\n' "$err" | wc -l | tr -d ' ')" 1
+    expect_in "check-version: the unparsable file's reason names the project( line" "$err" \
+        "expected one 'project(GigaGrains VERSION X.Y.Z' line"
     run_check_version --print "$noproject"
     expect_eq "check-version: --print on a file without a project( line is unparsable" \
         "$status" 2
+
+    local emptyid="$dir/emptyid.txt"
+    write_version_cmake "$emptyid" "beta..1"
+    run_check_version v0.2.0-beta..1 "$emptyid"
+    expect_eq "check-version: a suffix with an empty identifier (beta..1) is refused: exit 2" \
+        "$status" 2
+    expect_in "check-version: the refusal says the identifier is empty" "$err" \
+        "has an empty identifier"
+    expect_eq "check-version: the refusal prints nothing on stdout" "$out" ""
 }
 
 # --- source-tarball.sh ----------------------------------------------------------------------
@@ -337,13 +348,20 @@ test_mac_keychain() {
     expect_eq "mac-keychain: import with an empty P12_PASSWORD: exit 2" "$status" 2
     check "mac-keychain: the refusals create no keychain" "$([[ -e "$kc" ]] && echo 1 || echo 0)"
 
+    # These refusals run with P12_PASSWORD=secret: none may print it.
     export P12_PASSWORD=secret
+    local refused=""
     run_release_script mac-keychain.sh import "$dir/missing.p12" "$kc"
     expect_eq "mac-keychain: a missing .p12: exit 2" "$status" 2
+    refused="$refused$out$err"
     run_release_script mac-keychain.sh import "$p12" "$dir/t.keychain"
     expect_eq "mac-keychain: a keychain not named *.keychain-db: exit 2" "$status" 2
+    refused="$refused$out$err"
     run_release_script mac-keychain.sh import "$p12" "$dir/nope/t.keychain-db"
     expect_eq "mac-keychain: a keychain in a missing directory: exit 2" "$status" 2
+    refused="$refused$out$err"
+    check "mac-keychain: the path refusals never print the .p12 password" \
+        "$(grep -qF secret <<<"$refused" && echo 1 || echo 0)"
     check "mac-keychain: the bad paths create no keychain" "$([[ -e "$kc" ]] && echo 1 || echo 0)"
 
     # A wrong password fails the import, and the half-made keychain is deleted again.
@@ -374,6 +392,8 @@ test_mac_keychain() {
 
     run_release_script mac-keychain.sh import "$p12" "$kc"
     expect_eq "mac-keychain: import into an existing keychain: exit 2" "$status" 2
+    check "mac-keychain: that refusal never prints the .p12 password" \
+        "$(grep -qF secret <<<"$out$err" && echo 1 || echo 0)"
     check "mac-keychain: the refusal leaves the keychain" "$([[ -f "$kc" ]] && echo 0 || echo 1)"
 
     # A keychain in the user's own Keychains folder is refused (here a scratch HOME's, so the

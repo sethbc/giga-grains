@@ -16,7 +16,9 @@
 # use its keys, puts it first in the user's keychain search list (keeping the rest), lets the
 # Apple tools use the keys without a prompt (security set-key-partition-list), and prints the
 # identities `security find-identity -p codesigning` finds in it: every matching one, then the
-# valid ones. A failure after the keychain is created deletes it again.
+# valid ones (without -v, so an identity that isn't valid, say for a missing intermediate
+# certificate, is still listed, and the log shows why codesign won't use it). A failure after
+# the keychain is created deletes it again.
 #
 # delete takes <keychain path> out of the user's search list and deletes it; a keychain that's
 # already gone is no error, and prints nothing.
@@ -25,9 +27,10 @@
 # `ps` can see them for the moment it runs. A keychain in ~/Library/Keychains or
 # /Library/Keychains (the login and System keychains) is refused, never touched.
 #
-# Exit status: 0 on success; 1 when a security command fails; 2, with a one-line reason on
-# stderr, for bad usage, an unset or empty P12_PASSWORD, a missing <p12 file> or a refused
-# keychain path, before anything is created or changed.
+# Exit status: 0 on success; non-zero (the failing command's status) when a security or openssl
+# command fails; 2, with a one-line reason on stderr, for bad usage, an unset or empty
+# P12_PASSWORD, a missing <p12 file> or a refused keychain path, before anything is created or
+# changed.
 
 set -euo pipefail
 set +x # Never traced, even under bash -x or an inherited SHELLOPTS: no password is printed.
