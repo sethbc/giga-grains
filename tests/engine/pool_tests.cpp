@@ -204,9 +204,9 @@ TEST_CASE("pool admission matches a brute-force count", "[pool]")
     // samples, against capacity 64. The reference admits a grain when fewer than 64 of the grains
     // it has admitted still sound at the onset (end > onset), by a linear scan over the ends it
     // hasn't yet seen pass. The pool runs as the engine drives it: canAdmit, an early retirement
-    // when storage is full, and a retirement at each block's end, a sample past the last onset
-    // checked (the next onset is at or after it). Blocks are 1 to 3,000 samples long; the longer
-    // ones admit more than 64 grains, so storage fills within them.
+    // when storage is full, and a retirement at each block's end sample, which is past every
+    // onset checked in the block, and at or before the next onset. Blocks are 1 to 3,000 samples
+    // long; the longer ones admit more than 64 grains, so storage fills within them.
     constexpr uint32_t kCapacity = 64;
     constexpr uint64_t kGrains = 20000;
     using gg::rng::Field;
