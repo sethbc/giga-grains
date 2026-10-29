@@ -11,6 +11,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <numeric>
@@ -25,6 +26,7 @@
 #include <nlohmann/json.hpp>
 
 #include "Bench.h"
+#include "Kernels.h"
 
 using Catch::Approx;
 
@@ -478,4 +480,91 @@ TEST_CASE("gg-bench --space prints a per-sample cost", "[bench]")
     CHECK(j.at("cpuPctOneCoreAt48k").get<double>() > 0.0);
     // Report-only: no baseline and no ratio.
     CHECK_FALSE(j.contains("ratios"));
+}
+
+namespace
+{
+/// FNV-1a over each float's bits, little end first, continuing from h.
+uint64_t fnv1a(uint64_t h, const std::vector<float> &v)
+{
+    for (const float f : v)
+    {
+        uint32_t bits = 0;
+        std::memcpy(&bits, &f, sizeof(bits));
+        for (int byte = 0; byte < 4; ++byte)
+        {
+            h ^= (bits >> (8 * byte)) & 0xffu;
+            h *= 0x100000001b3ull;
+        }
+    }
+    return h;
+}
+
+/// A 64-bit LCG (Knuth's MMIX constants): the workload below depends on nothing but integer
+/// arithmetic, so neither the engine's RNG nor a libm can move it.
+struct Lcg
+{
+    uint64_t state;
+    uint64_t next()
+    {
+        state = state * 6364136223846793005ull + 1442695040888963407ull;
+        return state;
+    }
+};
+} // namespace
+
+TEST_CASE("the reference kernel's output is pinned", "[bench]")
+{
+    // renderHermiteSimd is the CPU gate's yardstick: every committed baseline is a ratio against
+    // its time, so what it computes must never move (carry-over: "The reference kernel isn't
+    // self-contained"). Kernels.h holds its own copies of the window and the readers, apart from
+    // the engine's; this pins their output, so a change to them fails here, not silently in the
+    // ratios. The hashes were taken from the kernel as it was when the baselines were made, and
+    // the scalar Hermite reference must match it bit for bit. The linear kernels are pinned too.
+    constexpr int64_t kFrames = 48000;
+    Lcg rng{0x1234};
+    std::vector<float> srcL(kFrames), srcR(kFrames);
+    for (int64_t i = 0; i < kFrames; ++i)
+    {
+        // [-0.5, 0.5): the top 24 bits, exact in float.
+        srcL[static_cast<std::size_t>(i)] =
+            static_cast<float>(static_cast<double>(rng.next() >> 40) / 16777216.0 - 0.5);
+        srcR[static_cast<std::size_t>(i)] =
+            static_cast<float>(static_cast<double>(rng.next() >> 40) / 16777216.0 - 0.5);
+    }
+    gg::bench::GrainBatch batch;
+    batch.resize(64);
+    for (std::size_t g = 0; g < batch.size(); ++g)
+    {
+        batch.pos[g] =
+            static_cast<double>(rng.next() >> 11) / 9007199254740992.0 * kFrames; // [0, frames)
+        batch.rate[g] = 0.5 + 1.5 * static_cast<double>(g) / 63.0;
+        batch.envPhase[g] = static_cast<float>(g) / 64.0f;
+        batch.envInc[g] = 1.0f / 4800.0f;
+        batch.gain[g] = 0.25f + 0.01f * static_cast<float>(g);
+    }
+    // Grains across both ends of the source (the bounds-checked path) and one whose window ends
+    // within the block.
+    batch.pos[0] = -3.7;
+    batch.pos[1] = 0.25;
+    batch.pos[2] = kFrames - 100.6;
+    batch.pos[3] = kFrames - 1.5;
+    batch.envPhase[4] = 1.0f - 100.0f / 4800.0f;
+
+    // Blocks of 256 and 37 samples (the SIMD steps, then a tail of 1) and of 1 (the tail alone).
+    const auto hash = [&](gg::bench::Kernel kernel) {
+        uint64_t h = 0xcbf29ce484222325ull;
+        for (const uint32_t n : {256u, 37u, 1u})
+        {
+            std::vector<float> outL(n), outR(n);
+            kernel(batch, srcL.data(), srcR.data(), kFrames, outL.data(), outR.data(), n);
+            h = fnv1a(h, outL);
+            h = fnv1a(h, outR);
+        }
+        return h;
+    };
+    CHECK(hash(gg::bench::renderHermiteSimd) == 0xcc738eaf2c70df7eull);
+    CHECK(hash(gg::bench::renderHermiteScalar) == 0xcc738eaf2c70df7eull);
+    CHECK(hash(gg::bench::renderLinearSimd) == 0x300874d5efa10a70ull);
+    CHECK(hash(gg::bench::renderLinearScalar) == 0x300874d5efa10a70ull);
 }
