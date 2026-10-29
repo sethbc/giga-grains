@@ -186,7 +186,7 @@ Stereo oldChain(Mode mode, const Stereo &input, float mix,
         const uint8_t key = 60;
         engine.setHeldKeys(std::span(&key, 1));
     }
-    const gg::core::WetParams w = gg::core::toWetParams(v);
+    const gg::core::WetParams w = gg::core::toWetParams(v, mode);
     const std::size_t frames = input.left.size();
     Stereo out(frames);
     std::vector<float> wetL(512), wetR(512);

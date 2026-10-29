@@ -18,6 +18,10 @@ namespace gg::core
 // SpaceReverb's chunks must be the control grid's cells, so that its latched parameters and its
 // idle rule change on grid boundaries alone (the class comment).
 static_assert(SpaceReverb::kChunk == Processor::kControlGrid);
+// Feedback's delay is the ring's head margin (sub-project 5's spec §5): the admission clamp keeps
+// every grain at least that far behind the write head, so a piece of at most D samples never
+// reads a frame whose feedback it hasn't rendered yet.
+static_assert(Processor::kFeedbackDelay == gg::LiveSource::kHeadMargin);
 
 namespace
 {
@@ -105,6 +109,13 @@ Processor::Processor(const ProcessorConfig &config)
     {
         channel.assign(config_.maxBlockSize, 0.0f);
     }
+    if (config_.mode == Mode::Fx)
+    {
+        for (auto &channel : ringIn_)
+        {
+            channel.assign(config_.maxBlockSize, 0.0f);
+        }
+    }
     // The first paramMeta() call builds its tables, which allocates; make every call here, off
     // the audio thread, so that process() never makes it, and keep the ranges.
     for (size_t s = 0; s < kParamCount; ++s)
@@ -134,12 +145,13 @@ void Processor::setSeed(uint64_t seed) noexcept
 
 void Processor::jumpRamps() noexcept
 {
-    const WetParams w = toWetParams(effective_);
+    const WetParams w = toWetParams(effective_, config_.mode);
     mix_.jump(w.mix);
     level_.jump(w.levelGain);
     diffusion_.jump(space_.diffusion);
     amount_.jump(space_.amount);
     drySend_.jump(space_.drySend);
+    feedback_.jump(w.feedback);
 }
 
 float Processor::clampToRange(size_t slot, float value) const noexcept
@@ -161,7 +173,7 @@ void Processor::setBase(ParamSlot slot, float value) noexcept
     {
         syncFreeze(); // Freeze set off is a transition's first half, even between calls
     }
-    const WetParams w = toWetParams(effective_);
+    const WetParams w = toWetParams(effective_, config_.mode);
     if (isMacro(slot))
     {
         // A macro moves its targets' effective values (sub-project 5's spec §3.1): each ramped
@@ -187,6 +199,10 @@ void Processor::setBase(ParamSlot slot, float value) noexcept
         {
             drySend_.jump(space_.drySend);
         }
+        if (w.feedback != feedback_.to)
+        {
+            feedback_.jump(w.feedback);
+        }
         return;
     }
     switch (slot)
@@ -205,6 +221,9 @@ void Processor::setBase(ParamSlot slot, float value) noexcept
         break;
     case ParamSlot::DryToReverb:
         drySend_.jump(space_.drySend);
+        break;
+    case ParamSlot::Feedback:
+        feedback_.jump(w.feedback);
         break;
     default:
         break;
@@ -326,7 +345,7 @@ void Processor::updateEffective() noexcept
 
 void Processor::syncFreeze() noexcept
 {
-    const bool on = toWetParams(effective_).freeze;
+    const bool on = toWetParams(effective_, config_.mode).freeze;
     if (!on)
     {
         freezeArmed_ = true; // off seen: the next on engages
@@ -349,6 +368,11 @@ void Processor::reset() noexcept
     engine_.setFreeze(false);
     jumpRamps();
     // The engine's clock is back at 0, and so is the reverb's time: its chunks stay on the grid.
+    // A fresh ring has no wet signal behind it to feed back.
+    for (auto &channel : wetHistory_)
+    {
+        channel.fill(0.0f);
+    }
     diffuser_.reset();
     reverb_->reset();
 }
@@ -450,12 +474,13 @@ void Processor::process(const float *const *in, uint32_t numInChannels, float *c
         commitPending();
         updateEffective();
         syncFreeze();
-        const WetParams w = toWetParams(effective_);
+        const WetParams w = toWetParams(effective_, config_.mode);
         mix_.retarget(w.mix, rendered, rampSamples_);
         level_.retarget(w.levelGain, rendered, rampSamples_);
         diffusion_.retarget(space_.diffusion, rendered, rampSamples_);
         amount_.retarget(space_.amount, rendered, rampSamples_);
         drySend_.retarget(space_.drySend, rendered, rampSamples_);
+        feedback_.retarget(w.feedback, rendered, rampSamples_);
     };
 
     // Puts an event at `offset` into its boundary's group, applying the pending group first if
@@ -549,10 +574,13 @@ void Processor::render(const Buffers &b, int64_t from, int64_t to) noexcept
     const uint32_t channels = std::min(b.numOutChannels, 2u);
     const uint32_t rendering = channels == 0 ? 2u : channels;
     float *const wet[2] = {wet_[0].data(), wet_[1].data()};
+    // The FX's pieces are at most kFeedbackDelay samples (sub-project 5's spec §5), so a piece's
+    // ring input needs only wet samples rendered before it.
+    const auto pieceMax = static_cast<int64_t>(fx ? std::min(config_.maxBlockSize, kFeedbackDelay)
+                                                  : config_.maxBlockSize);
     while (from < to)
     {
-        const auto n = static_cast<uint32_t>(
-            std::min<int64_t>(to - from, static_cast<int64_t>(config_.maxBlockSize)));
+        const auto n = static_cast<uint32_t>(std::min<int64_t>(to - from, pieceMax));
         const auto offset = static_cast<size_t>(from - b.callStart);
 
         // This piece's input: a mono input feeds both channels; a missing one is silence.
@@ -566,7 +594,32 @@ void Processor::render(const Buffers &b, int64_t from, int64_t to) noexcept
         {
             d = d != nullptr ? d + offset : nullptr;
         }
-        engine_.process(dry, b.numInChannels > 0 ? 2 : 0, wet, rendering, n);
+        // Feedback (spec §5): ring[t] = sanitize(in[t]) + fb(t) × limited[t − D], with limited
+        // from wetHistory_. The ramp changes only at boundaries, between render() calls, so it
+        // is 0 throughout a piece whose target and first value are 0: such a piece hands the
+        // engine its input as it is (the sign of zero included), as before Feedback.
+        const float *ringIn[2] = {dry[0], dry[1]};
+        uint32_t ringChannels = b.numInChannels > 0 ? 2 : 0;
+        if (fx && (feedback_.to != 0.0f || feedback_.at(from, rampSamples_) != 0.0f))
+        {
+            for (uint32_t i = 0; i < n; ++i)
+            {
+                const int64_t t = from + i;
+                const float fb = feedback_.at(t, rampSamples_);
+                const auto h = static_cast<size_t>(t % kFeedbackDelay);
+                for (size_t c = 0; c < 2; ++c)
+                {
+                    const float d = dry[c] != nullptr ? finiteOrZero(dry[c][i]) : 0.0f;
+                    // A sample where the ramp is 0 writes the input alone, as a piece without
+                    // feedback does, so where a piece starts never changes the ring.
+                    ringIn_[c][i] = fb != 0.0f ? d + fb * wetHistory_[c][h] : d;
+                }
+            }
+            ringIn[0] = ringIn_[0].data();
+            ringIn[1] = ringIn_[1].data();
+            ringChannels = 2;
+        }
+        engine_.process(ringIn, ringChannels, wet, rendering, n);
 
         float *dst[2] = {nullptr, nullptr};
         for (uint32_t c = 0; c < channels; ++c)
@@ -601,6 +654,11 @@ void Processor::render(const Buffers &b, int64_t from, int64_t to) noexcept
                 const float limited = softLimit(w[c] * g);
                 o[c] = fx ? d[c] * (1.0f - m) + limited * m : limited;
                 rIn[c] = fx ? m * limited + s * d[c] : limited;
+                if (fx)
+                {
+                    // Read for sample t + D's ring input, D samples from now.
+                    wetHistory_[c][static_cast<size_t>(t % kFeedbackDelay)] = limited;
+                }
             }
             if (rendering == 1)
             {

@@ -26,6 +26,9 @@ struct WetParams
     float levelGain; ///< Level as a linear gain: exp2Det(dB × log2(10) / 20).
     float mix;       ///< Mix, the dry/wet crossfade m in [0, 1].
     bool freeze;     ///< Freeze is on above 0.5.
+    /// Feedback, fb in [0, kFeedbackMax]: the share of the limited wet signal the FX writes back
+    /// into its live ring (sub-project 5's spec §5). Always 0 in the instrument, which has no ring.
+    float feedback;
 };
 
 /// What Space, the diffuser and the reverb after the wet chain, takes from the parameters
@@ -60,8 +63,9 @@ struct SpaceParams
 ///   normalization (spec §6.4), which each grain latches at its onset.
 CloudParams toCloudParams(const ParamValues &effective, Mode mode) noexcept;
 
-/// Level, Mix and Freeze, as WetParams documents.
-WetParams toWetParams(const ParamValues &effective) noexcept;
+/// Level, Mix, Freeze and Feedback, as WetParams documents. Feedback is 0 in the instrument,
+/// whatever its value: it has no live ring.
+WetParams toWetParams(const ParamValues &effective, Mode mode) noexcept;
 
 /// Space's eight parameters, as SpaceParams documents. Dry to Reverb is 0 in the instrument,
 /// whatever its value: it has no dry input.

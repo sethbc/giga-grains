@@ -184,7 +184,7 @@ TEST_CASE("param map follows the taper table", "[core]")
             INFO("slot " << i << " at " << v);
             const ParamValues values = with(slot, v);
             const auto cloud = toCloudParams(values, Mode::Fx);
-            const auto wet = toWetParams(values);
+            const auto wet = toWetParams(values, Mode::Fx);
             const auto space = toSpaceParams(values, Mode::Fx);
             switch (slot)
             {
@@ -270,6 +270,19 @@ TEST_CASE("param map follows the taper table", "[core]")
                     break;
                 }
             case ParamSlot::Feedback:
+            {
+                // Read as it is in the FX, and 0 in the instrument, which has no ring to feed
+                // (sub-project 5's spec §5); every other wet field is the defaults'.
+                REQUIRE(wet.feedback == v);
+                REQUIRE(toWetParams(values, Mode::Instrument).feedback == 0.0f);
+                const auto w0 = toWetParams(defaults(Mode::Fx), Mode::Fx);
+                REQUIRE(w0.feedback == 0.0f);
+                REQUIRE(wet.levelGain == w0.levelGain);
+                REQUIRE(wet.mix == w0.mix);
+                REQUIRE(wet.freeze == w0.freeze);
+                REQUIRE(sameBits(cloud, toCloudParams(defaults(Mode::Fx), Mode::Fx)));
+                break;
+            }
             case ParamSlot::Macro1:
             case ParamSlot::Macro2:
             case ParamSlot::Macro3:
@@ -279,11 +292,11 @@ TEST_CASE("param map follows the taper table", "[core]")
             case ParamSlot::Macro7:
             case ParamSlot::Macro8:
             {
-                // Feedback is the Processor's (Task 4), and the macros act through macroOffsets
-                // before these functions: none of them moves a field here.
+                // The macros act through macroOffsets before these functions: none of them moves
+                // a field here.
                 const ParamValues base = defaults(Mode::Fx);
                 const auto c0 = toCloudParams(base, Mode::Fx);
-                const auto w0 = toWetParams(base);
+                const auto w0 = toWetParams(base, Mode::Fx);
                 const auto s0 = toSpaceParams(base, Mode::Fx);
                 REQUIRE(cloud.densityHz == c0.densityHz);
                 REQUIRE(cloud.distribution == c0.distribution);
@@ -297,6 +310,7 @@ TEST_CASE("param map follows the taper table", "[core]")
                 REQUIRE(wet.levelGain == w0.levelGain);
                 REQUIRE(wet.mix == w0.mix);
                 REQUIRE(wet.freeze == w0.freeze);
+                REQUIRE(wet.feedback == w0.feedback);
                 REQUIRE(space.diffusion == s0.diffusion);
                 REQUIRE(space.amount == s0.amount);
                 REQUIRE(space.drySend == s0.drySend);
@@ -373,15 +387,15 @@ TEST_CASE("param map follows the taper table", "[core]")
     REQUIRE_THAT(spray[1], WithinRel(0.05, 1e-6));
     REQUIRE_THAT(spray[2], WithinRel(2.0, 1e-12));
     const auto level = ends(ParamSlot::Level, [](const ParamValues &v) {
-        return static_cast<double>(toWetParams(v).levelGain);
+        return static_cast<double>(toWetParams(v, Mode::Fx).levelGain);
     });
     REQUIRE_THAT(level[0], WithinRel(0.001, 1e-6));
     REQUIRE(level[1] == 1.0);
     REQUIRE_THAT(level[2], WithinRel(3.981071705534972, 1e-6));
 
     // Freeze is on above 0.5 only.
-    REQUIRE_FALSE(toWetParams(with(ParamSlot::Freeze, 0.5f)).freeze);
-    REQUIRE(toWetParams(with(ParamSlot::Freeze, std::nextafter(0.5f, 1.0f))).freeze);
+    REQUIRE_FALSE(toWetParams(with(ParamSlot::Freeze, 0.5f), Mode::Fx).freeze);
+    REQUIRE(toWetParams(with(ParamSlot::Freeze, std::nextafter(0.5f, 1.0f)), Mode::Fx).freeze);
 }
 
 TEST_CASE("space params follow the table", "[core][space]")
@@ -470,7 +484,7 @@ TEST_CASE("space params follow the table", "[core][space]")
         for (const Mode mode : {Mode::Fx, Mode::Instrument})
         {
             const auto cloud = toCloudParams(defaults(mode), mode);
-            const auto wet = toWetParams(defaults(mode));
+            const auto wet = toWetParams(defaults(mode), mode);
             for (size_t s = static_cast<size_t>(ParamSlot::Diffusion); s < kParamCount; ++s)
             {
                 const auto slot = static_cast<ParamSlot>(s);
@@ -484,10 +498,16 @@ TEST_CASE("space params follow the table", "[core][space]")
                     INFO("slot " << s << " at " << v);
                     const auto values = with(slot, v, mode);
                     CHECK(sameBits(toCloudParams(values, mode), cloud));
-                    const auto w = toWetParams(values);
+                    const auto w = toWetParams(values, mode);
                     CHECK(bitsOf(w.levelGain) == bitsOf(wet.levelGain));
                     CHECK(bitsOf(w.mix) == bitsOf(wet.mix));
                     CHECK(w.freeze == wet.freeze);
+                    // Only the FX's Feedback moves feedback; the instrument's is 0 whatever the
+                    // value, as it has no ring to feed.
+                    if (slot != ParamSlot::Feedback || mode == Mode::Instrument)
+                    {
+                        CHECK(bitsOf(w.feedback) == bitsOf(wet.feedback));
+                    }
                 }
             }
         }

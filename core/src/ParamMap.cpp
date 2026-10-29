@@ -49,13 +49,15 @@ CloudParams toCloudParams(const ParamValues &effective, Mode mode) noexcept
     return p;
 }
 
-WetParams toWetParams(const ParamValues &effective) noexcept
+WetParams toWetParams(const ParamValues &effective, Mode mode) noexcept
 {
     return {
         .levelGain =
             static_cast<float>(exp2Det(value(effective, ParamSlot::Level) * kLog2Of10 / 20.0)),
         .mix = effective[static_cast<size_t>(ParamSlot::Mix)],
         .freeze = effective[static_cast<size_t>(ParamSlot::Freeze)] > 0.5f,
+        .feedback =
+            mode == Mode::Instrument ? 0.0f : effective[static_cast<size_t>(ParamSlot::Feedback)],
     };
 }
 

@@ -80,8 +80,8 @@ struct NoteEvent
 /// - the group's note events apply in order to the held set (below);
 /// - the engine gets setCloudParams(toCloudParams(...)), setHeldKeys with the distinct held keys
 ///   (when the group had notes) and its freeze setting (below), which apply from b;
-/// - Mix, Level, Diffusion, Reverb Amount and Dry to Reverb ramp from their current values to
-///   their new ones.
+/// - Mix, Level, Diffusion, Reverb Amount, Dry to Reverb and Feedback ramp from their current
+///   values to their new ones.
 ///
 /// A boundary before a call's end applies in that call. One at or past the end carries over to
 /// the next call, which renders up to it first: there it merges with that call's events for
@@ -142,10 +142,10 @@ struct NoteEvent
 /// thread offered it, so only a source given before the first call (setSourceNow, or an offer
 /// before it) is part of a block-size-invariant render.
 ///
-/// **The ramped values.** Mix, Level, Diffusion, Reverb Amount and Dry to Reverb ramp linearly
-/// to each new target over kRampSeconds, round(0.01 × sr) samples: R samples after its boundary
-/// a ramp is exactly at its target. A ramp is a function of the absolute sample, so it is
-/// block-size invariant too. Level ramps its linear gain. setBase() and reset() jump them.
+/// **The ramped values.** Mix, Level, Diffusion, Reverb Amount, Dry to Reverb and Feedback ramp
+/// linearly to each new target over kRampSeconds, round(0.01 × sr) samples: R samples after its
+/// boundary a ramp is exactly at its target. A ramp is a function of the absolute sample, so it
+/// is block-size invariant too. Level ramps its linear gain. setBase() and reset() jump them.
 ///
 /// **The wet chain** (spec §6.4; sub-project 4's spec §6.1). Per sample, with w the engine's
 /// output, d the FX's dry input, and m, g, δ, a and s the ramped Mix, Level gain, Diffusion,
@@ -165,6 +165,20 @@ struct NoteEvent
 /// channel, the engine's mono render is diffused as both sides, the reverb hears that channel's
 /// rIn on both sides, and the channel gets r's left.
 ///
+/// **Feedback** (FX; sub-project 5's spec §5). The engine writes its live ring from
+/// ```
+/// ring[t] = sanitize(d[t] + fb(t)·wet[t − D])     (wet[t − D] = 0 before the first sample)
+/// ```
+/// with fb the ramped Feedback, wet the limited wet signal above (after Level and the limiter,
+/// before the mix; per channel, so with one output channel the right side is the diffused mono
+/// render's) and D = kFeedbackDelay, the ring's head margin; sanitize is the ring's own (non-finite
+/// as 0, clamped). The last D samples of wet are kept by absolute time, and the FX renders in
+/// pieces of at most D samples, so the output is block-size invariant. A sample where fb is 0
+/// writes d alone, and a piece where fb is 0 throughout hands the engine the input itself, as
+/// before Feedback, so Feedback 0 renders bit for bit as it did, the sign of zero included.
+/// Frozen, the ring writes nothing, so Feedback regenerates nothing (Freeze wins). The instrument
+/// has no ring: its Feedback is 0 (toWetParams).
+///
 /// **The reverb's grid.** SpaceReverb's chunks are the control grid's cells: its time t is the
 /// absolute sample (Engine::sampleClock), which construction and reset() start at 0 with the
 /// reverb's own, so every chunk starts on a grid boundary, where the parameters change. Its
@@ -178,9 +192,14 @@ class Processor
     static constexpr uint32_t kControlGrid = 32;
     /// The FX's live ring length, in seconds (spec §6.3).
     static constexpr double kLiveSeconds = 16.0;
-    /// The ramp time of Mix, Level, Diffusion, Reverb Amount and Dry to Reverb, in seconds;
-    /// rounded to samples, at least 1 (spec §6.1).
+    /// The ramp time of Mix, Level, Diffusion, Reverb Amount, Dry to Reverb and Feedback, in
+    /// seconds; rounded to samples, at least 1 (spec §6.1).
     static constexpr double kRampSeconds = 0.01;
+    /// D, Feedback's delay in samples (sub-project 5's spec §5): the ring's frame t gets
+    /// fb(t) × the limited wet signal of sample t − D. The FX renders in pieces of at most D
+    /// samples, so each piece's feedback is already rendered when the engine writes the piece's
+    /// input into the ring, before any grain reads it.
+    static constexpr uint32_t kFeedbackDelay = 256;
 
     /// Allocates the engine (the FX with a kLiveSeconds live ring read in SourceMode::Live, the
     /// instrument in SourceMode::Sample with no source and no ring), the wet scratch buffers, the
@@ -195,13 +214,13 @@ class Processor
     /// Sets a base value at once, outside the control grid: for params.flush outside process()
     /// and for a state load. The value is clamped to the slot's range; NaN is ignored. A pending
     /// base change to the same slot is dropped, so this, the latest value, wins. The ramped
-    /// values (Mix, Level, Diffusion, Reverb Amount and Dry to Reverb) jump to the new value
-    /// without a ramp; a macro makes each ramped value whose effective value it moved jump (Macro
-    /// 5 Diffusion, the FX's Macro 8 Mix, the instrument's Macro 8 Level). The engine gets the new
-    /// parameters from the next process() call's first sample. Space's latched values (Decay, Size,
-    /// Damping, Pre-delay and Modulation), and whether Reverb Amount keeps the reverb active, take
-    /// effect at the next reverb chunk's first sample, the next grid boundary. Real-time safe; call
-    /// it between process() calls.
+    /// values (Mix, Level, Diffusion, Reverb Amount, Dry to Reverb and Feedback) jump to the new
+    /// value without a ramp; a macro makes each ramped value whose effective value it moved jump
+    /// (Macro 5 Diffusion, the FX's Macro 7 Feedback and Macro 8 Mix, the instrument's Macro 8
+    /// Level). The engine gets the new parameters from the next process() call's first sample.
+    /// Space's latched values (Decay, Size, Damping, Pre-delay and Modulation), and whether Reverb
+    /// Amount keeps the reverb active, take effect at the next reverb chunk's first sample, the
+    /// next grid boundary. Real-time safe; call it between process() calls.
     void setBase(ParamSlot slot, float value) noexcept;
 
     /// Sets the engine seed (Engine::setSeed): the grains scheduled from the next process()
@@ -273,7 +292,8 @@ class Processor
     /// Restarts the engine (Engine::reset: the clock, the schedule and the ring time at 0), and
     /// clears the diffuser and the reverb, whose time restarts at 0 with the engine's: clearing
     /// the reverb's ~14.5 MB at once is a cost hosts expect of a reset (ruling R-T5b). A pending
-    /// change applies at once, and the ramped values jump to their targets. Every note is
+    /// change applies at once, and the ramped values jump to their targets. Feedback's history
+    /// is cleared: the fresh ring has no wet signal behind it to take back. Every note is
     /// released, the pending ones included: heldKeys() is empty and the engine gets no keys.
     /// Freeze disengages and waits for an off→on transition (the class comment). Real-time safe;
     /// call it between process() calls.
@@ -283,6 +303,10 @@ class Processor
     void setEventSink(GrainEventSink sink, void *ctx) noexcept;
 
     const Engine &engine() const noexcept { return engine_; }
+
+    /// Feedback's ramped value at the absolute sample t, as the ring input uses it (for tests and
+    /// the UI snapshot): exact only for t at or after the last boundary applied.
+    float feedbackAt(int64_t t) const noexcept { return feedback_.at(t, rampSamples_); }
 
     /// Whether the reverb's return is being added: the reverb chunk holding the last rendered
     /// sample is active (the class comment). False after construction and reset().
@@ -321,7 +345,8 @@ class Processor
     void commitPending() noexcept;
     /// Recomputes the effective values, gives the engine its cloud parameters and keeps Space's.
     void updateEffective() noexcept;
-    /// Jumps every ramped value (Mix, Level, Diffusion, Amount, Dry to Reverb) to its target.
+    /// Jumps every ramped value (Mix, Level, Diffusion, Amount, Dry to Reverb, Feedback) to its
+    /// target.
     void jumpRamps() noexcept;
     /// Gives the engine its freeze setting: the effective Freeze, once armed, or in the FX any
     /// held key. An effective Freeze that is off arms it.
@@ -342,6 +367,10 @@ class Processor
     Engine engine_;
     int64_t rampSamples_;
     std::array<std::vector<float>, 2> wet_; // maxBlockSize frames each
+    // The FX's ring input while Feedback acts: maxBlockSize frames each (empty in the instrument).
+    std::array<std::vector<float>, 2> ringIn_;
+    // The FX's limited wet signal of the last kFeedbackDelay samples: sample t at t % D.
+    std::array<std::array<float, kFeedbackDelay>, 2> wetHistory_{};
 
     std::array<float, kParamCount> minVal_{};
     std::array<float, kParamCount> maxVal_{};
@@ -372,7 +401,8 @@ class Processor
     Ramp level_; // the linear gain
     Ramp diffusion_;
     Ramp amount_;
-    Ramp drySend_; // always 0 in the instrument
+    Ramp drySend_;  // always 0 in the instrument
+    Ramp feedback_; // always 0 in the instrument
 
     // Space (sub-project 4's spec §6.1): the effective values in SpaceReverb's terms, the
     // diffuser on the engine's output, and the reverb (heap: about 14.5 MB, 16-byte aligned).
