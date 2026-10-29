@@ -20,6 +20,12 @@ AGPL-3.0-or-later.
 - **When a task conflicts with INTENT.md, stop.** Propose an INTENT.md amendment; don't diverge
   silently.
 - **The principles in §8 are the tie-breakers** when goals conflict.
+- **Where we are** (INTENT §20, §23 #61): M0 and M1 are done; next is the installers and
+  release pipeline (`docs/superpowers/specs/2026-10-29-release-pipeline-design.md`), then M2,
+  which ships as 0.2.0. Every milestone to M5 ships as a 0.x release; v1.0.0 follows M5.
+- **The records:** each sub-project's spec in `docs/superpowers/specs/`, the published benchmark
+  JSON in `docs/benchmarks/`, the listening packs in `docs/listening/`, the M0 and M1 spikes in
+  `docs/spikes/`, and the carry-over in `docs/m1-carry-over.md`.
 
 Development is Claude-led. The director steers, listens and reviews. Ears are the scarce
 resource, so machines must catch everything they can catch.
@@ -47,11 +53,13 @@ resource, so machines must catch everything they can catch.
   3. then steal grains with fades.
 
   It never clicks and never drops out.
-- **Stability contracts** (frozen from the first public release):
+- **Stability contracts** (INTENT §18, §23 #61). Frozen from the first public release, 0.2.0's
+  first beta:
   - CLAP parameter IDs, which are append-only;
-  - AUv2 parameter order;
-  - factory preset order;
+  - the AUv2 parameter order, which is ascending ID order and so follows from them;
   - plugin identities and AU codes.
+
+  Frozen from 1.0.0: factory preset order.
 - **Licensing:**
   - Only AGPLv3-compatible dependencies.
   - No GPLv2-only code and no unlicensed code.
@@ -87,7 +95,9 @@ resource, so machines must catch everything they can catch.
     for that file.
   - **No net growth.** A sub-project ends with no more open rows than it started with. Count
     them at its start and at its end.
-  - **Sub-project 6 burns down every open row,** M0's included.
+  - **Sub-project 6 burned the carry-over down** to 13 open rows, each naming what it waits on
+    (upstream bumps, M2/M3 features, the installers or 1.0.0; INTENT §23 #60). Work after M1
+    ends with no more open rows than it started with.
   - **No external reports or upstream filings.** A row blocked on upstream stays open, noted
     with its reason, until upstream changes.
 - Reference templates for the CLAP-first build, CI and installers, all three GitHub-hosted under
@@ -95,15 +105,21 @@ resource, so machines must catch everything they can catch.
   - shortcircuit-xt, https://github.com/surge-synthesizer/shortcircuit-xt (local clone
     `~/src/shortcircuit-xt`)
   - also surge, https://github.com/surge-synthesizer/surge (local clone `~/src/surge`), and
-    OB-Xf, https://github.com/surge-synthesizer/OB-Xf (local clone `~/src/OB-Xf`).
+    OB-Xf, https://github.com/surge-synthesizer/OB-Xf (local clone `~/src/OB-Xf`);
+  - for the installers, sst-plugininfra's `scripts/installer_mac/make_installer.sh` (pinned in
+    `libs/sst/sst-plugininfra`) and sst-cmake's `innosetup/installer.iss` (MIT,
+    https://github.com/surge-synthesizer/sst-cmake; shortcircuit-xt vendors it under
+    `libs/sst/sst-cmake`).
 
 ## Build and test
 
 **Setup.**
 - You need CMake 3.22 or newer, and Ninja (Visual Studio 2022 with ClangCL on Windows).
-- Fetch the dependencies with `git submodule update --init`.
+- Fetch the dependencies with `git submodule update --init --recursive` (what CI and
+  `worktree-setup.sh` check out; today no nested submodule is built).
 - **In a linked worktree** (`git worktree add …`), run its `scripts/worktree-setup.sh
-  [--configure dev,asan,rtsan]` instead.
+  [--configure dev,asan,rtsan]` instead. Its `--configure` applies the same Homebrew-LLVM
+  default for `rtsan` as `check.sh` does.
   - It checks out every submodule recursively at the commits HEAD pins, taking the objects from
     the main checkout's submodule repositories, so it works offline. A commit the main checkout
     lacks is fetched from upstream, and the script says which.
@@ -132,7 +148,7 @@ fix a warning in first-party code and never edit a submodule. A new target links
 clap-wrapper's own targets compile without it. Never define a `*_IMPLEMENTATION` macro
 (`STB_IMAGE_IMPLEMENTATION`, `DR_WAV_IMPLEMENTATION`, …) in a first-party file: the
 implementation belongs in `libs/thirdparty-impl/`, built without `gg::compiler-options`, or the
-library's own warnings fail the build. Only the Linux leg (GCC 12, -O2) shows
+library's own warnings fail the build. Only the Linux leg (GCC 12, Release, so `-O3`) shows
 `-Wmaybe-uninitialized`, so a green macOS build proves nothing about it. Clang versions differ in what `-Wextra` flags (the rtsan build's LLVM is
 newer than Apple's), so build `asan` and `rtsan` too. `cmake/AsioGuard.cmake` fails the configure
 if anything but RtAudio's ASIO backend uses `libs/.../asiosdk` (tests `asio_guard_*`).
@@ -147,8 +163,8 @@ if anything but RtAudio's ASIO backend uses `libs/.../asiosdk` (tests `asio_guar
 - **ccache**, macOS and Linux legs and the sanitizer job only, passed as
   `CMAKE_<LANG>_COMPILER_LAUNCHER` at CI configure (local presets are unchanged). Windows is
   uncached (the Visual Studio generator has no launcher support), and `mac-universal`'s
-  two-architecture compiles are largely uncached. Keyed by OS, preset and commit, restored by
-  prefix.
+  two-architecture compiles are largely uncached. Keyed by OS, preset, runner image and commit
+  (the sanitizer job's by the LLVM version and commit), restored by prefix.
 - **The pinned LLVM archive** (sanitizer job), keyed by version and SHA-256. The SHA-256 is checked
   on a hit too.
 - **Scoping.** Every run restores all of them; only runs on `main` (a push, the nightly, a
@@ -178,6 +194,9 @@ cmake --build --preset dev
 ctest --preset dev --output-on-failure
 ```
 
+- **The top-level options** (`CMakeLists.txt`): `GG_BUILD_PLUGINS` (default ON; the plugin core
+  and, with the editor, the formats), `GG_BUILD_EDITOR`, `GG_SANITIZE` (ASan + UBSan; the `asan`
+  preset) and `GG_USE_RTSAN` (the `rtsan` preset).
 - **`GG_BUILD_EDITOR`** (default ON) builds the JUCE editor and clap-wrapper's CLAP, VST3, AUv2
   and standalone targets. With it OFF (and `GG_BUILD_PLUGINS` ON), the plugins build headless:
   - only `gg-plugin-core`, the JUCE-free audio side and CLAP factory, with no gui extension;
@@ -265,7 +284,9 @@ runs the tests labelled either. The labels are:
 - `rt`: the allocation tripwire. In the `rtsan` build, two tests labelled both `rt` and `rtsan`
   check that RTSan is active: one checks the build flag, and `rtsan_negative_control` passes
   only if RTSan reports an allocation made inside a nonblocking function.
-- tools: `render`, `metrics`, `bench`;
+- tools: `render` (gg-render's CLI, `render_write_media_alone` and
+  `render_spectrogram_utf8_path` among them), `metrics`, `bench` (gg-bench's command line: the
+  `bench_rejects_*`, `bench_make_baseline_*`, `bench_baseline_*` and `bench_space_cli` tests);
 - `golden`: the golden renders;
 - `ui`: the splat renderer, the lane geometry (`LaneModel`), and the lane's clock and live-grain
   list (`LaneState`);
@@ -274,6 +295,8 @@ runs the tests labelled either. The labels are:
   tests (`cmake/AsioGuard.cmake`);
 - `scripts`: `check.sh` and `worktree-setup.sh`, in scratch trees with stub `cmake` and `ctest`
   and in scratch git repositories (not on Windows);
+- `serial`: the Catch2 cases tagged `[serial]`, which measure time or memory and run with
+  `RUN_SERIAL` (see "Tests run in parallel");
 - `plugin`: the plugins, driven through their CLAP factory. Tests labelled both `plugin` and
   `rt` put the allocation tripwire on `process` and `params.flush`. On macOS this label also
   covers checks of the built bundles (with the editor only):
@@ -315,8 +338,8 @@ code page, so the name matches nothing and the test fails with "No tests ran". S
   - a test that has to share a file, or that measures time, must not run beside the others. For
     an `add_test` in `tests/CMakeLists.txt`, set its `RESOURCE_LOCK` or `RUN_SERIAL` property.
     Catch2 cases are discovered after the build, so `set_tests_properties` can't reach them.
-    Tag the case (`[serial]`, say), discover it separately, and leave it out of the main
-    discovery:
+    Tag the case `[serial]`: `tests/CMakeLists.txt` discovers those cases separately and leaves
+    them out of the main discovery:
 
     ```cmake
     catch_discover_tests(gg-tests TEST_SPEC "~[serial]" ADD_TAGS_AS_LABELS)
@@ -376,7 +399,19 @@ gg-render --write-media DIR
   internal error.
 - **The cases:** each case's spec is in `tests/golden/cases/`, and its expected metrics and event
   log are in `tests/golden/expected/`. Every `*.json` there is a case; a new one gets a test the
-  next time CMake runs.
+  next time CMake runs. There are 22.
+  - **M0's four,** in sample mode: `sparse-sine` (8 grains a second over a 220 Hz sine),
+    `sparse-sine-44k1` (the same source converted to 44.1 kHz), `dense-noise` (400 grains a
+    second over noise, up a fifth) and `sweep-stretch` (long grains over a sweep, down an
+    octave); `dense-noise-eco` (sub-project 2) is `dense-noise` at the Eco tier.
+  - **Sub-project 1's five,** the first FX cases: `fx-sine` (the defaults over a mono 220 Hz
+    sine), `fx-noise-stereo` (stereo noise, Stereo 1, Pitch +7), `fx-automate` (a sweep with
+    Density and Freeze automated), `fx-file` (the generated `loop-48k.wav`) and
+    `fx-note-freeze` (that file, Mix 1, two notes freezing and repitching the ring).
+  - **Sub-project 3's four,** the first instrument cases: `inst-note` (one note over a sweep),
+    `inst-chord` (three notes over a sine), `inst-release` (a short note over noise, the
+    release tail) and `inst-file-44k1` (two notes over the generated `tone-44k1.wav`, converted
+    to 48 kHz).
   - **Space's five** (M1 sub-project 4): `fx-space` (a cloud over noise into the reverb at
     Decay 3 s), `fx-dry-send` (Mix 0, Dry to Reverb up: the input alone in the room),
     `inst-diffusion` (a sparse cloud with Diffusion stepped from 0 to 100%), `inst-infinite` (a
@@ -488,12 +523,12 @@ $b --space [--quick | --seconds S] [--rounds N] [--commit SHA] [--json out.json]
   - It is report-only: no ratio, no baseline, no verdict. CI's benchmark step doesn't time it;
     ctest's `bench_space_cli` only checks that it runs. Its exit status is 0, 1 if it can't
     write the JSON, or 2 for bad usage.
-- **An option a mode doesn't take is bad usage** (exit 2, with the usage): `--space` takes only
-  the options shown above, `--canvas` only `--quick` and `--json`, and `--make-baseline`
-  nothing else (its `--merge` is one of its own values).
   - Sub-project 4's fix wave measured 28.49 ns per stereo sample, 0.137% of one M5 Max core,
     at its final code (`ac81dfb`; INTENT §16), and sub-project 6's idle run 29.44 ns, 0.141%,
     published beside X (19.5% at block 256; `docs/benchmarks/`, INTENT §23 #60).
+- **An option a mode doesn't take is bad usage** (exit 2, with the usage): `--space` takes only
+  the options shown above, `--canvas` only `--quick` and `--json`, and `--make-baseline`
+  nothing else (its `--merge` is one of its own values).
 - **When profiling the plugins in a VST3 host,** remember that clap-wrapper's VST3 `process`
   takes a spin lock. Time spent there is the wrapper's, not ours.
 - **Exit status:** 0 when done and no ratio regressed, 1 for an error (an unreadable or malformed
@@ -521,12 +556,12 @@ $b --space [--quick | --seconds S] [--rounds N] [--commit SHA] [--json out.json]
     have entries for the mac leg's Apple M1 VM, Windows' EPYC 7763 and 9V74, and Linux's EPYC
     7763 and 9V45. A model with no entry gets no verdict (the summary says so) until later runs
     on it are added to the baseline.
-  - **The gate is report-only through M1** (INTENT §19, §23 #44): exit 3 becomes a
+  - **The gate is report-only until 1.0.0** (INTENT §19, §23 #44, #60, #61): exit 3 becomes a
     `::warning` and the step exits 0. A crash, exit 1 or 2, or the timeout still fails the job.
     The `bench_baseline_*` tests pin exit 3 (a regression or a missing entry), exit 0, the
     no-verdict line and exit 1 for a run with no ratios.
-  - The gate turns blocking at 1.0, the first public release (INTENT §23 #60), with the
-    published X.
+  - The gate turns blocking at 1.0.0, after M5 (INTENT §23 #60, #61), with the published X. The
+    0.x public releases, from 0.2.0's first beta on, keep it report-only.
 - **Refreshing a baseline** (`tools/gg-bench/baselines/README.md` has the format):
   1. Make three separate full-length CI runs of the same engine code: runs on `main`, the
      nightly or `gh workflow run ci.yml --ref <branch>` (a pull request's runs are `--quick` and
@@ -623,6 +658,7 @@ $b --space [--quick | --seconds S] [--rounds N] [--commit SHA] [--json out.json]
   `GG_MACOS_CODESIGN_IDENTITY`.
   - It defaults to `-`, which signs ad hoc.
   - Pass a Developer ID to sign with a real identity. A release build needs more than that:
-    hardened runtime, a timestamp and notarization.
+    hardened runtime, a timestamp and notarization, which the release pipeline adds
+    (`docs/superpowers/specs/2026-10-29-release-pipeline-design.md`; not built yet).
   - Strict hosts such as Ableton Live won't load a bundle that carries only the linker's
     signature (`docs/spikes/m0-host-matrix.md`).

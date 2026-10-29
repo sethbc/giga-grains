@@ -33,7 +33,8 @@
 // <machine>; no verdict" when the file has no entry for this model. The exit status is 0 if none
 // regressed and none was missing (or there was no verdict), 3 if any regressed or was missing, 1
 // for an error (an unreadable or malformed file, say, or a run with no ratios to check against
-// an entry) and 2 for bad usage. CI reports it without failing through M1 (ruling 3).
+// an entry) and 2 for bad usage. CI reports it without failing until 1.0.0 (ruling 3; INTENT §23
+// #61).
 // --make-baseline writes a baseline for a CI leg from the JSON of runs already made, one entry
 // per CPU model they ran on, and exits. With --merge <old.json> it keeps old.json's entries for
 // the models the runs don't have, so a model can be added, or remade, without the runs the other

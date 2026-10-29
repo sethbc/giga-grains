@@ -11,10 +11,10 @@
 #               pluginval (strictness 10), auval (macOS) and Steinberg's VST3 validator. gg-bench
 #               runs at full length (ruling T10-c) on pushes to main, on the nightly schedule and
 #               on workflow_dispatch, and reports its in-process ratios, with a verdict against
-#               the leg's baseline when there is one; through M1 it is report-only (ruling 3).
-#               On a pull request it runs --quick, as a smoke check only (no verdict, no
-#               artifact). Sub-project 6 makes the gate blocking, with the published §16
-#               headline (INTENT §16, §19).
+#               the leg's baseline when there is one; report-only until 1.0.0 (ruling 3; INTENT
+#               §23 #60, #61). On a pull request it runs --quick, as a smoke check only (no
+#               verdict, no artifact). The gate turns blocking at 1.0.0, after M5, with the
+#               published §16 headline (INTENT §16, §19).
 #   sanitizers  ASan + UBSan, and RealtimeSanitizer, with upstream clang 20 (the pinned LLVM
 #               20.1.8 release) on ubuntu-24.04.
 #
@@ -249,7 +249,7 @@ jobs:
       # Full length on pushes to main, the nightly schedule and workflow_dispatch; --quick on a
       # pull request. A quick run is a smoke check: it must not crash, but its ratios are too
       # noisy for the baseline, so it checks none, prints no verdict and uploads nothing.
-      # Reported, not gated through M1 (ruling 3; INTENT §16, §19). gg-bench times the kernels,
+      # Reported, not gated until 1.0.0 (ruling 3; INTENT §16, §19, §23 #61). gg-bench times the kernels,
       # the frozen reference kernel and the real engine at full length (runs of 2 s, 5 interleaved
       # rounds; ruling T10-c) and reports each engine case's ratio to the reference,
       # which cancels the runner's speed but not its microarchitecture. When this leg has a
@@ -264,7 +264,7 @@ jobs:
       # bench_baseline_* tests pin exit 3 for a regression, exit 0 for a pass, and exit 0 with
       # the no-verdict line for a model the baseline lacks. A full run is time-boxed: about 6
       # minutes on every leg; a quick one takes under a minute.
-      - name: Benchmark (full length on main, nightly and dispatch, else --quick; not gated through M1)
+      - name: Benchmark (full length on main, nightly and dispatch, else --quick; not gated until 1.0.0)
         id: bench
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         timeout-minutes: 30
@@ -298,7 +298,7 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
           if [[ $status == 3 ]]; then
-            echo "::warning title=gg-bench::a ratio regressed, or a baseline entry is missing from the run, against $baseline (report-only through M1)"
+            echo "::warning title=gg-bench::a ratio regressed, or a baseline entry is missing from the run, against $baseline (report-only until 1.0.0)"
             status=0
           fi
           exit "$status"

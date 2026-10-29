@@ -1,7 +1,7 @@
 # Benchmarks: the published measurements
 
 The JSON files here are `gg-bench`'s own output from the runs INTENT publishes. Each is kept as
-written; `tools/gg-bench/README` in CLAUDE.md ("Benchmarks") describes the modes and the schema.
+written; CLAUDE.md's "Benchmarks" section describes the modes and the schema.
 
 ## 2026-10-29: M1's headline (sub-project 6, Close)
 

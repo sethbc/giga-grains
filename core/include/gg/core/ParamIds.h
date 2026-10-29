@@ -35,8 +35,9 @@ enum class Mode
 
 /// A parameter's index in the patch, the processor and the plugin's value store. Slots are the
 /// code's names for the parameters; they're never saved. What's saved, and frozen at the first
-/// public release, is the CLAP ID (INTENT §18). The slot order is the parameter list's order, and
-/// so the AUv2 parameter order, also frozen at the first public release: new slots are appended.
+/// public release, is the CLAP ID (INTENT §18). The slot order is the parameter list's order; the
+/// AUv2 order is ascending CLAP ID (INTENT §18, §23 #60), frozen with the IDs: new slots are
+/// appended with new IDs.
 enum class ParamSlot : uint8_t
 {
     Mix,
