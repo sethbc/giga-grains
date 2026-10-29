@@ -281,6 +281,22 @@ TEST_CASE("findSample matches a name saved in NFC to its NFD spelling, and back"
     }
 }
 
+#if !defined(_WIN32)
+TEST_CASE("findSample hashes a file once when two candidates are the same file", "[media]")
+{
+    // The saved path and the last folder loaded from (a symlink to the saved folder) name one
+    // file of the right size and other content: it is hashed once, not once per spelling.
+    const auto dir = freshDir("search-hash-once");
+    put(dir / "old" / "kick.wav", kSameSize);
+    fs::create_directory_symlink(dir / "old", dir / "link");
+    const unsigned before = gg::media::detail::candidateHashCount();
+    const auto r =
+        findSample(entryFor(dir / "old" / "kick.wav"), MachineSettings{"", utf8(dir / "link")});
+    REQUIRE(r.outcome == SearchOutcome::Changed);
+    REQUIRE(gg::media::detail::candidateHashCount() - before == 1);
+}
+#endif
+
 TEST_CASE("findSample's match by name is canonical equivalence, nothing looser", "[media]")
 {
     // Without its accent, or in another case, the name is another name.

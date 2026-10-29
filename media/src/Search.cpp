@@ -29,6 +29,9 @@ namespace
 /// The scan's test hook (TestHooks.h); nullptr unless a test sets one.
 std::atomic<detail::ScanHook> scanHook{nullptr};
 
+/// How many candidate files the searches have hashed (TestHooks.h).
+std::atomic<unsigned> candidateHashes{0};
+
 /// Unicode's two canonical normal forms: composed (NFC) and decomposed (NFD).
 enum class Form
 {
@@ -178,6 +181,7 @@ class Candidates
                 return prior.second;
             }
         }
+        candidateHashes.fetch_add(1, std::memory_order_relaxed);
         const auto hash = hashFile(candidate);
         const Check result = !hash ? Check::NoFile
                              : hash->size == entry_.fileSize && hash->sha256Hex == entry_.sha256Hex
@@ -361,5 +365,6 @@ SearchResult findSample(const core::MediaEntry &entry, const core::MachineSettin
 namespace detail
 {
 void setScanHook(ScanHook hook) { scanHook.store(hook); }
+unsigned candidateHashCount() { return candidateHashes.load(); }
 } // namespace detail
 } // namespace gg::media

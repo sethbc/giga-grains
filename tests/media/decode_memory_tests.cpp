@@ -536,6 +536,49 @@ TEST_CASE("decode reads a RIFF data size of 0 with audio after it as truncated",
         REQUIRE_FALSE(result.audio.has_value());
         REQUIRE(result.error.find("no audio") != std::string::npos);
     }
+    SECTION("RIFX: the next chunk's size is read big-endian")
+    {
+        // A big-endian 16-bit stereo WAVE with a data size of 0, then another chunk.
+        const auto rifx = [](uint32_t nextSize) {
+            std::vector<uint8_t> v;
+            const auto text = [&](const char *s) { v.insert(v.end(), s, s + 4); };
+            const auto be = [&](uint64_t x, int n) {
+                for (int i = n - 1; i >= 0; --i)
+                {
+                    v.push_back(uint8_t(x >> (8 * i)));
+                }
+            };
+            text("RIFX");
+            be(4 + 24 + 8 + 12, 4);
+            text("WAVE");
+            text("fmt ");
+            be(16, 4);
+            be(1, 2); // PCM
+            be(2, 2); // channels
+            be(48000, 4);
+            be(48000 * 4, 4);
+            be(4, 2);
+            be(16, 2);
+            text("data");
+            be(0, 4);
+            text("LIST");
+            be(nextSize, 4);
+            text("INFO");
+            return v;
+        };
+        const auto fitting = dir() / "rifx-data-size-0-then-list.wav";
+        gg::test::writeFile(fitting, rifx(4)); // 4 bytes follow: fits (read little-endian: 2^26)
+        auto result = decodeAudioFile(fitting);
+        INFO("error: " << result.error);
+        REQUIRE_FALSE(result.audio.has_value());
+        REQUIRE(result.error.find("no audio") != std::string::npos);
+        const auto garbage = dir() / "rifx-data-size-0-then-garbage.wav";
+        gg::test::writeFile(garbage, rifx(0x7ffffff0u)); // runs past the end of the file
+        result = decodeAudioFile(garbage);
+        INFO("error: " << result.error);
+        REQUIRE_FALSE(result.audio.has_value());
+        REQUIRE(result.error.find("truncated") != std::string::npos);
+    }
     SECTION("nothing follows: no audio")
     {
         const auto file = dir() / "data-size-0-empty.wav";

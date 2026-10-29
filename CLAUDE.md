@@ -121,8 +121,8 @@ resource, so machines must catch everything they can catch.
   AudioUnit SDKs (clap-wrapper fetches them), and RtAudio for the standalone on Windows (its
   ASIO) and on Linux without the PipeWire and JACK headers, so it needs the network. (CI
   fetches them itself, with `scripts/fetch-sdks.sh <dir>`, which prints the `-DVST3_SDK_ROOT=...`
-  style options that make clap-wrapper use those checkouts; a local configure needs none.) `asan` and
-  `rtsan` build no formats and download nothing.
+  style options that make clap-wrapper use those checkouts; a local configure needs none.)
+  `asan` and `rtsan` build no formats and download nothing.
 
 **Warnings.** Every first-party target builds with `-Wall -Wextra` and `-Werror` (on ClangCL
 `/clang:-Wall /clang:-Wextra /WX`), through `gg::compiler-options`. Third-party code never links

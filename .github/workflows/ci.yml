@@ -177,7 +177,11 @@ jobs:
       - name: Configure
         id: configure
         run: |
-          mapfile -t sdk_roots < "$SDK_CACHE_DIR/options.txt"
+          # A loop, not mapfile: the macOS runner's bash is 3.2.
+          sdk_roots=()
+          while IFS= read -r line || [ -n "$line" ]; do
+            if [ -n "$line" ]; then sdk_roots+=("$line"); fi
+          done < "$SDK_CACHE_DIR/options.txt"
           launcher=()
           if [[ "$RUNNER_OS" != Windows ]]; then
             ccache --zero-stats

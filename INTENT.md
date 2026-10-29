@@ -903,10 +903,10 @@ clients/  CLAP entry points + clap-wrapper targets
     still be well-formed, with its `<media>` root alone and an integer `version`; nothing
     inside it is read. A future `MEDI` (any version) must pass the nesting pre-scan: at most 64
     deep, no `<?` after the first node, quoted attributes and well-formed `&#…;` references, or
-    this build fails the whole state. The patch loads, and the instrument is silent, its status reading
-    *sample from a newer version*. The manifest's bytes are kept, and a save writes them back
-    unchanged, so an older build that saves over a newer session keeps its sample reference.
-    A load or a relink replaces it, as it replaces any manifest. A newer `PTCH` migrates.
+    this build fails the whole state. The patch loads, and the instrument is silent, its status
+    reading *sample from a newer version*. The manifest's bytes are kept, and a save writes them
+    back unchanged, so an older build that saves over a newer session keeps its sample
+    reference. A load or a relink replaces it, as it replaces any manifest. A newer `PTCH` migrates.
   - Unknown chunk IDs are skipped, so a newer build's chunks don't break an older one.
   - A state that starts with `<` is a pre-container state, saved by sub-projects 1 and 2: all
     `PTCH`, with no sample.

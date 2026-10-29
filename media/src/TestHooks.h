@@ -32,6 +32,10 @@ using ScanHook = std::error_code (*)(ScanStep step, const std::filesystem::path 
 /// Sets the scan's hook (nullptr: none). Not to be called while a search runs.
 void setScanHook(ScanHook hook);
 
+/// How many candidate files findSample has hashed so far in this process: a file reached by two
+/// spellings (a link, or a normalization-insensitive file system) is hashed once.
+unsigned candidateHashCount();
+
 /// saveSettings's steps.
 enum class SaveStep
 {
