@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Milestone** | M1 Cloud core (INTENT §20), sub-project 4 of 6 |
-| **Status** | Approved by the director, 2026-10-28. Decisions S1–S8 made by the director, 2026-10-28, by forced choice. Amended during the build, in place and marked with each ruling's ID: §6.3 (P1, R-T2b, R-T5a, R-T5b), §6.4 (`loopClip`, R-T8a, P2), §6.7 (R-T7a); INTENT §23 #50 records them |
+| **Status** | Approved by the director, 2026-10-28. Decisions S1–S8 made by the director, 2026-10-28, by forced choice. Amended during the build, in place and marked with each ruling's ID: §6.3 (P1, R-T2a, R-T2b, R-T5a, R-T5b, and the fork per the director's no-filing policy), §6.4 (`loopClip`, R-T8a, P2), §6.7 (R-T7a); INTENT §23 #50 records them |
 | **Spec authority** | `INTENT.md`; this document records how this sub-project implements it |
 | **Builds on** | The FX-slice spec (the `Processor` and its wet chain), the Sources spec (notes, freeze, the instrument's sound) |
 | **Feeds** | Sub-project 5 (Perform UI): its Texture macro drives Diffusion in the top quarter of its travel (`2026-10-27-m1-perform-ui-design.md` §3, §4) |
@@ -201,6 +201,14 @@ return is added after.
   marked, rather than a fork of the whole sst-effects repository; sst-effects itself stays an
   unmodified pinned submodule. INTENT §15 records the patch. Offering the two changes upstream is
   left for later.
+
+  > **Amended (2026-10-28; INTENT §23 #50):** the patch grew beyond two changes: ∞ is now the
+  > decay multiplier at exactly 1, a 0.5 Hz DC blocker in place of the LF damping (ruling R-T8a),
+  > the HF clamp at 0 and `loopClip` (§6.4); plus the smoothed pre-delay, and `clear()` and
+  > `clearStep()` (rulings R-T2b, R-T5a). They are selected by calls (`setInfinite`,
+  > `setPredelaySamples`, `clear`), not by the `FXConfig`; with none used, the copy renders
+  > bit-identically to Surge's. It sits in `core/src/space/Reverb2Patched.h`. **It isn't offered
+  > upstream:** the director's policy (2026-10-28) is no external reports or upstream filings.
 - **CPU when off:** while Amount and Dry to Reverb are both 0 and Amount has been 0 long enough,
   the reverb may skip processing, but only on a rule that depends on the parameter history alone
   (never on CPU, never on signal level measured in ways that differ by block size). Raising Amount
@@ -303,8 +311,8 @@ Space takes the next free IDs in each scope.
 > announcing it.
 > - **The FX's is `CLAP_TAIL_INFINITE`:** a live-buffer effect can sound with no input at any time
 >   (Freeze, a held note, a 16 s read, an infinite reverb).
-> - **The instrument's is its longest finite one,** (2 s, Size's maximum + 0.5 s, Pre-delay's
->   maximum + 2 × 60 s, Decay's longest finite) × the active rate: 122.5 s.
+> - **The instrument's is its longest finite one,** 122.5 s at the active rate (2 + 0.5 + 2 × 60
+>   s: Size's maximum, Pre-delay's maximum and twice Decay's longest finite value).
 > - **Why:** clap-wrapper turns `tail.changed` into VST3's `restartComponent(kLatencyChanged)`, on
 >   which the host deactivates and reactivates the plugin, and into AU's
 >   `PropertyChanged(TailTime)`. Following the values would have restarted the FX at every note,

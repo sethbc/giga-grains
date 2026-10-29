@@ -229,10 +229,11 @@ runs the tests labelled either. The labels are:
       leg changes, or the AU state goes unchecked there.
     - Building `gg-tests` builds the AU bundle too (`add_dependencies(gg-tests
       gg-au-state-tests)`), so a tests-only build takes longer.
-- **CI's mac-universal leg must keep running `gg-tests` natively (arm64)** as well as the x86_64
-  slice under Rosetta. The fp-contract tests (`fp_contract_fast.cpp`'s canary and the kernel
-  cases) can fail only on arm64 Clang; Linux, Windows and the x86_64 slice can't catch a fused
-  multiply-add. Keep that step whenever the macOS leg changes.
+
+**CI's mac-universal leg must keep running `gg-tests` natively (arm64)** as well as the x86_64
+slice under Rosetta. The fp-contract tests (`fp_contract_fast.cpp`'s canary and the kernel cases)
+can fail only on arm64 Clang; Linux, Windows and the x86_64 slice can't catch a fused
+multiply-add. Keep that step whenever the macOS leg changes.
 
 **Test case names are ASCII only** (tags too). CTest passes a name to `gg-tests` on its command
 line, and on Windows a non-ASCII character there reaches Catch2's narrow `main` through the ANSI
@@ -374,9 +375,9 @@ $b --space [--quick | --seconds S] [--rounds N] [--commit SHA] [--json out.json]
   20-frame warm-up, or 30 with `--quick`.
 - **`--space`** times Space's per-sample stage, the diffuser then the reverb, on stereo noise at
   48 kHz, active, with Diffusion and Amount at 100% (`tools/gg-bench/Bench.h` lists every
-  setting). After 2 s of warm-up, each of 5 rounds times one run of at least 2 s (0.2 s with
-  `--quick`). It prints the median, min and IQR of ns per stereo sample and the median's % of one
-  core at 48 kHz, and writes its own JSON document (not schema 2).
+  setting). After a warm-up of 2 s of audio, each of 5 rounds times one run of at least 2 s
+  (0.2 s with `--quick`). It prints the median, min and IQR of ns per stereo sample and the
+  median's % of one core at 48 kHz, and writes its own JSON document (not schema 2).
   - It is report-only: no ratio, no baseline, no verdict, and CI doesn't run it. Its exit status
     is 0, 1 if it can't write the JSON, or 2 for bad usage.
   - Sub-project 4 measured 29.05 ns per stereo sample, 0.139% of one M5 Max core (INTENT §16).
