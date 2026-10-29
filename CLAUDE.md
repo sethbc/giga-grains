@@ -129,6 +129,17 @@ fix a warning in first-party code and never edit a submodule. A new target links
 newer than Apple's), so build `asan` and `rtsan` too. `cmake/AsioGuard.cmake` fails the configure
 if anything but RtAudio's ASIO backend uses `libs/.../asiosdk` (tests `asio_guard_*`).
 
+**CI caches** (`.github/workflows/ci.yml`; none changes what is built):
+- **CPM downloads** (VST3 SDK, AudioUnitSDK, RtAudio…): `CPM_SOURCE_CACHE`, keyed on the files that
+  hold the pins.
+- **ccache**, macOS and Linux legs and the sanitizer job only, passed as
+  `CMAKE_<LANG>_COMPILER_LAUNCHER` at CI configure (local presets are unchanged). Windows is
+  uncached (the Visual Studio generator has no launcher support), and `mac-universal`'s
+  two-architecture compiles are largely uncached. Every run restores it; only pushes to `main` and
+  the nightly save it.
+- **The pinned LLVM archive** (sanitizer job), keyed by version and SHA-256. The SHA-256 is checked
+  on a hit too.
+
 **Presets.** They are defined in `CMakePresets.json`. Each one builds into `build/<preset>/`,
 except `windows-clangcl`, which builds into `build/windows/`.
 
@@ -236,6 +247,8 @@ runs the tests labelled either. The labels are:
 - `golden`: the golden renders;
 - `ui`: the splat renderer;
 - `smoke`;
+- `build`: checks of the build system itself, run on scratch CMake projects: the `asio_guard_*`
+  tests (`cmake/AsioGuard.cmake`);
 - `scripts`: `check.sh` and `worktree-setup.sh`, in scratch trees with stub `cmake` and `ctest`
   and in scratch git repositories (not on Windows);
 - `plugin`: the plugins, driven through their CLAP factory. Tests labelled both `plugin` and

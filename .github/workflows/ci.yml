@@ -38,10 +38,11 @@ on:
 permissions:
   contents: read
 
-# One run per workflow and ref (or pull request). A newer push to a pull request cancels the
-# run in progress; a push to main, the nightly and a manual dispatch are never cancelled.
+# A newer push to a pull request cancels that pull request's run in progress. Every other run
+# (a push to main, the nightly, a dispatch) has a group of its own, so none is cancelled and a
+# queued full benchmark is never replaced by a later run.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 defaults:
@@ -96,11 +97,10 @@ jobs:
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # fetch-depth 1 (the default, spelled out): the action then also runs
-          # `git submodule update --init --force --depth=1 --recursive`, so every submodule,
-          # JUCE's nested ones included, is fetched shallow at its exact pinned commit (GitHub
-          # serves any commit by SHA). The pins are the superproject's gitlinks, so they are
-          # unchanged.
+          # Already shallow, now explicit: with fetch-depth 1 (the default) the action runs
+          # `git submodule update --init --force --depth=1 --recursive`, so every submodule is
+          # fetched at its exact pinned commit only. Spelling it out changes nothing and brings
+          # no speed-up.
           fetch-depth: 1
           submodules: recursive
           persist-credentials: false
@@ -147,9 +147,12 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get install -y ccache
 
+      # Restored on every run; saved (below) only by pushes to main and the nightly, so pull
+      # requests don't fill the repository's cache quota with a 500 MB cache per leg per run.
+      # A pull request restores main's cache.
       - name: Restore the compiler cache
         if: runner.os != 'Windows'
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ${{ env.CCACHE_DIR }}
           key: ccache-${{ runner.os }}-${{ matrix.preset }}-${{ matrix.os }}-${{ github.sha }}
@@ -179,6 +182,15 @@ jobs:
             ccache --show-stats
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # Saved even when the build failed (what it compiled is still good), but not by a pull
+      # request.
+      - name: Save the compiler cache
+        if: ${{ !cancelled() && runner.os != 'Windows' && github.event_name != 'pull_request' }}
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-${{ runner.os }}-${{ matrix.preset }}-${{ matrix.os }}-${{ github.sha }}
 
       - name: Test (unit, plugin and golden)
         run: ctest --preset ${{ matrix.preset }} -C Release --output-on-failure
@@ -429,7 +441,7 @@ jobs:
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 1 # also shallow submodules, as in the build job
+          fetch-depth: 1 # already the default; see the build job
           submodules: recursive
           persist-credentials: false
 
@@ -469,7 +481,7 @@ jobs:
           ls "$GG_LLVM/lib/clang/20/lib/x86_64-unknown-linux-gnu/libclang_rt.rtsan.a"
 
       - name: Restore the compiler cache
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ${{ env.CCACHE_DIR }}
           key: ccache-sanitizers-llvm-${{ env.LLVM_VERSION }}-${{ github.sha }}
@@ -504,3 +516,10 @@ jobs:
             ccache --show-stats
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Save the compiler cache
+        if: ${{ !cancelled() && github.event_name != 'pull_request' }}
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-sanitizers-llvm-${{ env.LLVM_VERSION }}-${{ github.sha }}
