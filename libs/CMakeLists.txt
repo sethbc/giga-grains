@@ -365,7 +365,8 @@ if (GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
     # Outside a unity build clap_juce_shim_requirements links JUCE's modules, whose sources
     # would then compile into sst-jucegui and, through its PUBLIC link, into every target that
     # links it (gg-ui, under our -Werror): JUCE three times over. So its requirements are
-    # re-pointed (ruling R-T7a):
+    # re-pointed (sub-project 5's ruling PU-T7a, recorded in INTENT §23 at the sub-project's
+    # close):
     # - at gg-juce-headers, the same headers and definitions without the sources;
     # - and at clap_juce_shim, link-only. JUCE's object code is only in that static library,
     #   which links its requirements PRIVATE; without this edge nothing would order it after
@@ -381,10 +382,10 @@ if (GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
     get_target_property(gg_jucegui_links sst-jucegui INTERFACE_LINK_LIBRARIES)
     if (NOT gg_jucegui_requirements_type STREQUAL "INTERFACE_LIBRARY"
             OR NOT gg_jucegui_requirements_links STREQUAL "clap_juce_shim_requirements")
-        message(FATAL_ERROR "sst-jucegui-juce-requirements is a ${gg_jucegui_requirements_type} linking '${gg_jucegui_requirements_links}', not an INTERFACE library over clap_juce_shim_requirements: review its re-pointing in libs/CMakeLists.txt (ruling R-T7a)")
+        message(FATAL_ERROR "sst-jucegui-juce-requirements is a ${gg_jucegui_requirements_type} linking '${gg_jucegui_requirements_links}', not an INTERFACE library over clap_juce_shim_requirements: review its re-pointing in libs/CMakeLists.txt (sub-project 5's ruling PU-T7a)")
     endif ()
     if (NOT gg_jucegui_links STREQUAL "sst-jucegui-juce-requirements;sst-jucegui-resources")
-        message(FATAL_ERROR "sst-jucegui links '${gg_jucegui_links}', not exactly sst-jucegui-juce-requirements and sst-jucegui-resources: review its re-pointing in libs/CMakeLists.txt (ruling R-T7a)")
+        message(FATAL_ERROR "sst-jucegui links '${gg_jucegui_links}', not exactly sst-jucegui-juce-requirements and sst-jucegui-resources: review its re-pointing in libs/CMakeLists.txt (sub-project 5's ruling PU-T7a)")
     endif ()
     set_property(TARGET sst-jucegui-juce-requirements PROPERTY INTERFACE_LINK_LIBRARIES
             gg-juce-headers $<LINK_ONLY:clap_juce_shim>)
