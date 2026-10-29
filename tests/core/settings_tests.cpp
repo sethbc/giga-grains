@@ -6,6 +6,7 @@
 // gg-media's settings file (gg/media/SettingsFile.h), tagged [media]. Every file test works in a
 // folder of its own under GG_TEST_OUTPUT_DIR and never touches the user's settings file.
 
+#include <array>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
@@ -17,9 +18,12 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include "XmlText.h"
 #include "gg/core/MachineSettings.h"
+#include "gg/core/Rng.h"
 #include "gg/media/SettingsFile.h"
 #include "media/AudioFixtures.h"
+#include "support/DeepXml.h"
 
 using gg::core::fromSettingsXml;
 using gg::core::MachineSettings;
@@ -190,6 +194,103 @@ TEST_CASE("settings XML nested deeper than 64 elements is rejected without parsi
         }
         REQUIRE(fromSettingsXml(xml + "</settings>", out));
     }
+}
+
+TEST_CASE("settings XML that tinyxml would nest deeper than it looks is rejected", "[core]")
+{
+    // The shapes a scan of the bytes can miscount (tests/support/DeepXml.h): each would overflow
+    // tinyxml's stack. A process killed here is the failure.
+    for (const gg::test::DeepXml &shape : gg::test::deepXmlShapes())
+        DYNAMIC_SECTION(shape.name)
+        {
+            MachineSettings out = kSome;
+            REQUIRE_FALSE(fromSettingsXml(shape.head +
+                                              R"(<settings version="1" sampleFolder="/S">)" +
+                                              shape.body + "</settings>",
+                                          out));
+            REQUIRE(out == kSome);
+        }
+}
+
+TEST_CASE("the XML nesting scan never passes what tinyxml nests deeper", "[core]")
+{
+    // gg-core's scan (core/src/XmlText.h), shared by the settings, PTCH and MEDI, against tinyxml
+    // itself: 200,000 short documents strung from the tokens where the two readings could part
+    // (quotes, declarations, unknown nodes, character references, UTF-8 lead bytes). Whatever
+    // the scan passes at a depth, tinyxml must nest no deeper.
+    static constexpr std::array<std::string_view, 44> kTokens{
+        "<a>",         "</a>",        "<a/>",        "<a x=\"", "<a x='", "<a x=", "\"",
+        "'",           ">",           "/>",          "/",       "=",      " ",     "\t",
+        "a",           "<",           "</",          "<1",      "< a",    "<!--",  "-->",
+        "<![CDATA[",   "]]>",         "<!X",         "<?xml ",  "<?xml",  "<?x",   "?>",
+        " version=\"", " encoding='", " VERSION=\"", "&#x",     "&#",     "x;",    "1;",
+        ";",           "&amp;",       "&#x41;",      "\xe0",    "\xc3",   "\xf0",  "\x80",
+        "<\x80",       "\xef\xbb\xbf"};
+    static constexpr std::array<std::string_view, 4> kHeads{"", "<?xml version=\"1.0\"?>",
+                                                            "\xef\xbb\xbf", "<a>"};
+    std::array<std::size_t, 4> passed{}; // per depth limit, of documents tinyxml nests at all
+    for (uint64_t d = 0; d < 200'000; ++d)
+    {
+        const auto draw = [&](uint64_t field) {
+            return gg::rng::hash(
+                {0x7e57'0000'0000'0185ull + d, 0, 0, gg::rng::Field::SignalNoise, field});
+        };
+        std::string xml(kHeads[draw(0) % kHeads.size()]);
+        const uint64_t count = 1 + draw(1) % 40;
+        for (uint64_t t = 0; t < count; ++t)
+        {
+            xml += kTokens[draw(2 + t) % kTokens.size()];
+        }
+        // Parsed only when the scan passes it at some limit, as gg-core does: a debug build's
+        // tinyxml asserts on some documents the scan refuses (a declaration cut short).
+        if (!gg::core::xmlNestingWithin(xml, passed.size() - 1))
+        {
+            continue;
+        }
+        const std::size_t depth = gg::core::tinyxmlDepth(xml);
+        for (std::size_t limit = 0; limit < passed.size(); ++limit)
+        {
+            if (gg::core::xmlNestingWithin(xml, limit))
+            {
+                if (depth > limit)
+                {
+                    INFO("document " << d << ": '" << xml << "'");
+                    FAIL("the scan passes it at depth " << limit << "; tinyxml nests " << depth);
+                }
+                passed[limit] += depth > 0 ? 1 : 0;
+            }
+        }
+    }
+    // The check isn't empty: many documents that nest pass at each limit but 0.
+    CHECK(passed[0] == 0);
+    for (std::size_t limit = 1; limit < passed.size(); ++limit)
+    {
+        INFO("depth limit " << limit);
+        CHECK(passed[limit] > 1000);
+    }
+}
+
+TEST_CASE("settings XML with a declaration after the first node is rejected", "[core]")
+{
+    // Only the first node may be a declaration (carry-over: "Search and settings minors").
+    const std::vector<std::string> bad{
+        R"(<settings version="1" sampleFolder="/S" /><?xml version="1.0"?>)",
+        R"(<!-- c --><?xml version="1.0"?><settings version="1" sampleFolder="/S" />)",
+        R"(<?xml version="1.0"?><?xml version="1.0"?><settings version="1" sampleFolder="/S" />)",
+        R"(<settings version="1" sampleFolder="/S"><?xml version="1.0"?></settings>)",
+        R"(<settings version="1" sampleFolder="/S"><?pi?></settings>)",
+    };
+    for (const auto &xml : bad)
+    {
+        INFO(xml);
+        MachineSettings out = kSome;
+        REQUIRE_FALSE(fromSettingsXml(xml, out));
+        REQUIRE(out == kSome);
+    }
+    MachineSettings out;
+    REQUIRE(
+        fromSettingsXml(R"(<?xml version="1.0"?><settings version="1" sampleFolder="/S" />)", out));
+    REQUIRE(out.sampleFolder == "/S");
 }
 
 TEST_CASE("loadSettings gives the defaults for a missing, corrupt or huge file", "[media]")

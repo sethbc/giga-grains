@@ -32,6 +32,7 @@
 #include "gg/core/PatchState.h"
 #include "gg/core/Rng.h"
 #include "sst/basic-blocks/params/ParamMetadata.h"
+#include "support/DeepXml.h"
 
 using gg::core::fromStateXml;
 using gg::core::kParamCount;
@@ -625,6 +626,19 @@ TEST_CASE("patch rejects or sanitizes bad state", "[core]")
         }
         CHECK_FALSE(p.load(replaceOnce(good, "<params>", "<params>" + sixtyFive)));
         CHECK(p.sameAs(before));
+    }
+
+    SECTION("XML that tinyxml would nest deeper than it looks fails")
+    {
+        // The shapes a scan of the bytes can miscount (tests/support/DeepXml.h): each would
+        // overflow tinyxml's stack. A process killed here is the failure.
+        for (const gg::test::DeepXml &shape : gg::test::deepXmlShapes())
+            DYNAMIC_SECTION(shape.name)
+            {
+                CHECK_FALSE(
+                    p.load(shape.head + replaceOnce(good, "<params>", "<params>" + shape.body)));
+                CHECK(p.sameAs(before));
+            }
     }
 
     SECTION("another patch's id fails")

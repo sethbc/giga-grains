@@ -28,6 +28,7 @@
 #include "gg/core/Rng.h"
 #include "gg/core/SessionState.h"
 #include "sst/basic-blocks/params/ParamMetadata.h"
+#include "support/DeepXml.h"
 #include "support/StateContainer.h"
 
 using gg::core::decodeState;
@@ -565,6 +566,34 @@ TEST_CASE("a state nested deeper than 64 elements fails, in PTCH or MEDI", "[cor
             d.decode(stateContainer({stateChunk("PTCH", deep), stateChunk("MEDI", medi)})));
         REQUIRE(d.sameAs(before));
     }
+}
+
+TEST_CASE("a state that tinyxml would nest deeper than it looks fails, in PTCH or MEDI", "[core]")
+{
+    // The shapes a scan of the bytes can miscount (tests/support/DeepXml.h): each would overflow
+    // tinyxml's stack and crash the host as the project opens. A process killed here is the
+    // failure.
+    const auto good = encodeState(someState(true));
+    const auto ptch = *stateChunkPayload(good, "PTCH");
+    const auto medi = *stateChunkPayload(good, "MEDI");
+    const Decoded before = distinct();
+    for (const gg::test::DeepXml &shape : gg::test::deepXmlShapes())
+        DYNAMIC_SECTION(shape.name)
+        {
+            Decoded d = distinct();
+            const std::string deepMedi =
+                shape.head + R"(<media version="1">)" + shape.body + "</media>";
+            CHECK_FALSE(
+                d.decode(stateContainer({stateChunk("PTCH", ptch), stateChunk("MEDI", deepMedi)})));
+            CHECK(d.sameAs(before));
+
+            std::string deepPtch = ptch;
+            deepPtch.insert(deepPtch.find("<params>") + 8, shape.body);
+            deepPtch.insert(0, shape.head);
+            CHECK_FALSE(
+                d.decode(stateContainer({stateChunk("PTCH", deepPtch), stateChunk("MEDI", medi)})));
+            CHECK(d.sameAs(before));
+        }
 }
 
 TEST_CASE("every valid entry round trips, whatever bytes its strings hold", "[core]")

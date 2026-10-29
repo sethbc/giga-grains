@@ -21,6 +21,7 @@ add_library(gg-core STATIC
         src/SessionState.cpp
         src/SourceExchange.cpp
         src/SpaceReverb.cpp
+        src/XmlText.cpp
         )
 add_library(gg::core ALIAS gg-core)
 
