@@ -3,8 +3,8 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright 2026, the Giga Grains authors (see git history)
 #
-# Checks scripts/check.sh and scripts/worktree-setup.sh (carry-over [130], [131], [132]) in
-# scratch repositories, never this one:
+# Checks scripts/check.sh and scripts/worktree-setup.sh (carry-over [130], [131], [132]), and
+# scripts/update-goldens.sh's WAV hashes (INTENT §19), in scratch repositories, never this one:
 #
 #   tests/scripts/scripts_tests.sh <scratch dir> <cmake>
 #
@@ -21,6 +21,8 @@
 #     a project of four tests (one passes, "fails one" and fails_two fail, skipped is skipped;
 #     passes and "fails one" are labelled core and rt) with a test preset like ours: all of it
 #     (fail), -L core -E fails (pass) and -L nosuchlabel (none).
+# update-goldens.sh runs in the same fake tree with a stub gg-render: its per-case WAV SHA-256s,
+# and the cases changed, new or gone since the previous run.
 # worktree-setup.sh runs in real scratch git repositories: a linked worktree whose submodule pin
 # the main checkout's copy has (the local path), and one whose pin it lacks and whose upstream
 # doesn't advertise as a ref (the fetch path); and a name that isn't a preset, refused before
@@ -76,10 +78,11 @@ expect_not_in() { # <name> <text> <unexpected>
 
 cat >"$work/bin/cmake" <<'EOF'
 #!/usr/bin/env bash
-# Stub cmake: -P scripts run in the real one; a configure writes a cache; a build only logs.
+# Stub cmake: -P scripts and -E commands run in the real one; a configure writes a cache; a build
+# only logs.
 set -euo pipefail
 case "$1" in
-    -D | -P) exec "$REAL_CMAKE" "$@" ;;
+    -D | -P | -E) exec "$REAL_CMAKE" "$@" ;;
     --preset)
         dir="$("$REAL_CMAKE" -D "PRESET=$2" -P scripts/preset-dir.cmake)"
         dir="${dir#dir }"
@@ -215,6 +218,71 @@ for version in 3.31.6 4.4.5; do
     expect_in "ctest $version: no tests says so" "$out" "    No tests were found!!!"
     check "ctest $version: no tests: exit 1" "$((status == 1 ? 0 : 1))"
 done
+
+# --- update-goldens.sh's WAV hashes, in the same fake tree ------------------------------------
+
+# A stub gg-render in build/dev: --write-media makes the folder, a render writes "audio of <case>"
+# as its WAV (" changed" added for a case named in $FAKE_CHANGED) and empty metrics and events,
+# and a comparison passes.
+mkdir -p "$repo/build/dev/tools/gg-render" "$repo/tests/golden/cases"
+: >"$repo/build/dev/CMakeCache.txt"
+cat >"$repo/build/dev/tools/gg-render/gg-render" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+spec="" wav="" metrics="" events=""
+while (($# > 0)); do
+    case "$1" in
+        --write-media)
+            mkdir -p "$2"
+            exit 0
+            ;;
+        -o) wav="$2" && shift ;;
+        --metrics) metrics="$2" && shift ;;
+        --events) events="$2" && shift ;;
+        --spectrogram | --media-dir | --compare | --compare-events) shift ;;
+        *) spec="$1" ;;
+    esac
+    shift
+done
+name="$(basename "$spec" .json)"
+if [[ -n "$wav" ]]; then
+    case " ${FAKE_CHANGED:-} " in
+        *" $name "*) echo "audio of $name changed" >"$wav" ;;
+        *) echo "audio of $name" >"$wav" ;;
+    esac
+fi
+if [[ -n "$metrics" ]]; then : >"$metrics"; fi
+if [[ -n "$events" ]]; then : >"$events"; fi
+EOF
+chmod +x "$repo/build/dev/tools/gg-render/gg-render"
+cp "$src/scripts/update-goldens.sh" "$repo/scripts/"
+echo '{}' >"$repo/tests/golden/cases/a.json"
+echo '{}' >"$repo/tests/golden/cases/b.json"
+run_update() { # sets $out and $status
+    status=0
+    out="$(cd "$repo" && PATH="$work/bin:$PATH" REAL_CMAKE="$real_cmake" FAKE_LOG="$log" \
+        scripts/update-goldens.sh 2>&1)" || status=$?
+}
+echo "audio of a" >"$work/expected-a.wav"
+hash_a="$("$real_cmake" -E sha256sum "$work/expected-a.wav")"
+hash_a="${hash_a%% *}"
+
+run_update
+check "update-goldens, first run: exit 0" "$status"
+expect_in "update-goldens prints each case's WAV SHA-256" "$out" "  $hash_a a"
+expect_in "update-goldens, first run: nothing to compare" "$out" \
+    "No previous run's hashes in build/dev/golden; the next run compares with these."
+run_update
+expect_in "update-goldens, unchanged WAVs" "$out" "  every case's WAV is unchanged (2 compared)"
+FAKE_CHANGED=b run_update
+expect_in "update-goldens names a changed WAV" "$out" "  1 of 2 compared changed: b"
+expect_not_in "update-goldens names only the changed WAV" "$out" "changed: a"
+rm "$repo/tests/golden/cases/a.json"
+echo '{}' >"$repo/tests/golden/cases/c.json"
+FAKE_CHANGED=b run_update
+expect_in "update-goldens: the rest unchanged" "$out" "  every case's WAV is unchanged (1 compared)"
+expect_in "update-goldens names a new case" "$out" "  new since then: c"
+expect_in "update-goldens names a gone case" "$out" "  gone since then: a"
 
 # --- worktree-setup.sh, in scratch git repositories -----------------------------------------
 

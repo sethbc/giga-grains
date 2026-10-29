@@ -345,6 +345,12 @@ gg-render --write-media DIR
     expected files.
   - It leaves WAVs and spectrograms in `<build-dir>/golden/`.
   - It then checks the new goldens.
+  - Last, it prints each case's WAV SHA-256 and lists the cases whose WAV changed, or are new or
+    gone, since its previous run in that build tree (`<build-dir>/golden/wav-sha256.txt`). For a
+    change meant to leave the output alone (a refactor, a feature at its defaults), run it before
+    and after, and say in the commit that every hash matches: the goldens' metrics allow 0.5 dB,
+    and the event log holds only the grains, so a small gain error after them passes the goldens
+    (INTENT §19).
 - Look at every spectrogram before committing new goldens, and say in the commit message why they
   changed.
 
