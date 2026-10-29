@@ -390,6 +390,13 @@ TEST_CASE("value and text round trip through clap", "[plugin]")
         double back = 0.0;
         REQUIRE(params->text_to_value(plugin.clap(), decay, "∞", &back));
         CHECK(back == static_cast<double>(gg::core::kDecayMax));
+        // A bare number is seconds (4 s is 2 in log2 seconds); a unit still counts.
+        REQUIRE(params->text_to_value(plugin.clap(), decay, "4", &back));
+        CHECK(std::abs(back - 2.0) < 1e-6);
+        REQUIRE(params->text_to_value(plugin.clap(), decay, "10", &back));
+        CHECK(std::abs(back - std::log2(10.0)) < 1e-5);
+        REQUIRE(params->text_to_value(plugin.clap(), decay, "500 ms", &back));
+        CHECK(std::abs(back - (-1.0)) < 1e-5);
         // Pre-delay is seconds, shown in ms.
         const clap_id predelay = paramId(ParamSlot::ReverbPredelay);
         CHECK(valueToText(plugin, predelay, 0.25) == "250.0 ms");
@@ -815,6 +822,7 @@ TEST_CASE("state load rejects bad state and keeps the values", "[plugin]")
     CHECK(plugin.save() == good);
     CHECK(host.valueRescans() == 0);
     CHECK(host.restarts() == 0);
+    // A regression guard only: a rejected load never reached mark_dirty before either.
     CHECK(host.dirtyMarks() == 0);
 
     // A save into a stream that fails fails.

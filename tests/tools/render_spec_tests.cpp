@@ -13,7 +13,9 @@
 #include <limits>
 #include <map>
 #include <memory>
+#include <new>
 #include <set>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -1324,4 +1326,20 @@ TEST_CASE("a chord's grains take its three keys, and its release decays to silen
     {
         CHECK(nlohmann::json::parse(line)["onset"].get<int64_t>() < 60000); // none after 1.25 s
     }
+}
+
+TEST_CASE("gg-render's guard maps what it catches to its exit statuses", "[render]")
+{
+    // main runs everything through guarded: no CLI test reaches an internal error (carry-over
+    // [182]), so the mapping is tested here. It prints to stderr, which this test doesn't read.
+    using gg::render::guarded;
+    CHECK(guarded([] { return 0; }) == gg::render::kExitPass);
+    CHECK(guarded([] { return 1; }) == gg::render::kExitCompareFailed);
+    CHECK(guarded([]() -> int { throw gg::render::BadInput("a bad spec"); }) ==
+          gg::render::kExitBadInput);
+    CHECK(guarded([]() -> int { throw std::runtime_error("broken"); }) ==
+          gg::render::kExitInternalError);
+    CHECK(guarded([]() -> int { throw std::bad_alloc(); }) == gg::render::kExitInternalError);
+    CHECK(guarded([]() -> int { throw 42; }) == gg::render::kExitInternalError);
+    CHECK(gg::render::kExitInternalError == 3);
 }

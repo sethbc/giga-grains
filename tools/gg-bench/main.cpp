@@ -15,7 +15,10 @@
 //            [--json out.json] [--baseline baseline.json]
 //   gg-bench --make-baseline <leg> <out.json> <in.json>...
 //   gg-bench --canvas [--quick] [--json out.json]
-//   gg-bench --space [--quick] [--json out.json]
+//   gg-bench --space [--quick | --seconds S] [--rounds N] [--commit SHA] [--json out.json]
+//
+// An option that doesn't apply to the mode chosen (--grains with --space, say, or anything
+// beside --make-baseline) is bad usage: exit 2, never silently ignored.
 //
 // The timing itself is in Bench.h and Bench.cpp: by default 2,000 grains of 100 ms over a 60 s
 // stereo noise source at 48 kHz, every case at block sizes 32, 64 and 256. Each configuration
@@ -45,7 +48,7 @@
 // --space times Space's per-sample stage, the diffuser then the grid-aligned reverb, on stereo
 // noise at 48 kHz, active, with Diffusion 1, Size 0.5 and Decay 1.0 (Bench.h has every setting).
 // It prints the median, min and IQR of ns per stereo sample over 5 rounds of >= 2 s (0.2 s with
-// --quick; --seconds, --rounds and --commit apply too) and the median's % of one core at 48 kHz.
+// --quick; --seconds and --rounds set them) and the median's % of one core at 48 kHz.
 // It is report-only, with no baseline and no ratio; its JSON is its own document, apart from
 // schema 2. Sub-project 6 publishes the figure beside the grain engine's.
 
@@ -61,6 +64,7 @@
 #include <cstdlib>
 #include <exception>
 #include <fstream>
+#include <initializer_list>
 #include <limits>
 #include <stdexcept>
 #include <string>
@@ -247,6 +251,8 @@ int runCanvas(bool quick, const std::string &jsonPath)
 
 // ---- --space: Space's cost ----
 
+void usage(std::FILE *f);
+
 int runSpace(const gg::bench::Options &options, const std::string &jsonPath)
 {
     const gg::bench::SpaceOptions spaceOptions{
@@ -261,7 +267,8 @@ int runSpace(const gg::bench::Options &options, const std::string &jsonPath)
     }
     catch (const std::invalid_argument &e)
     {
-        std::fprintf(stderr, "error: %s\n", e.what());
+        std::fprintf(stderr, "error: %s\n\n", e.what());
+        usage(stderr);
         return 2;
     }
     std::fputs(text.c_str(), stdout);
@@ -281,7 +288,8 @@ void usage(std::FILE *f)
         "                [--commit SHA] [--json out.json] [--baseline baseline.json]\n"
         "       gg-bench --make-baseline <leg> <out.json> <in.json>...\n"
         "       gg-bench --canvas [--quick] [--json out.json]\n"
-        "       gg-bench --space [--quick] [--json out.json]\n"
+        "       gg-bench --space [--quick | --seconds S] [--rounds N] [--commit SHA]\n"
+        "                [--json out.json]\n"
         "\n"
         "Times the engine, the reference kernel and M0's prototype grain kernels: 2,000\n"
         "grains of 100 ms over 60 s of stereo noise at 48 kHz, at block sizes 32, 64 and\n"
@@ -315,9 +323,32 @@ void usage(std::FILE *f)
         "  --space           time Space (the diffuser and the reverb), not the grain\n"
         "                    kernels\n"
         "\n"
+        "An option the mode doesn't take is bad usage.\n"
+        "\n"
         "Exit status: 0 done (no ratio regressed), 1 error, 2 bad usage, 3 a ratio\n"
         "regressed.\n",
         cases.c_str());
+}
+
+/// The options each mode takes, beside its own: anything else given with it is bad usage.
+bool applies(std::string_view option, bool canvas, bool space, bool makeBaseline)
+{
+    const auto among = [option](std::initializer_list<std::string_view> list) {
+        return std::find(list.begin(), list.end(), option) != list.end();
+    };
+    if (makeBaseline)
+    {
+        return option == "--make-baseline";
+    }
+    if (canvas)
+    {
+        return among({"--canvas", "--quick", "--json"});
+    }
+    if (space)
+    {
+        return among({"--space", "--quick", "--seconds", "--rounds", "--commit", "--json"});
+    }
+    return !among({"--canvas", "--space", "--make-baseline"});
 }
 
 /// The whole of s as a double.
@@ -501,11 +532,13 @@ int main(int argc, char **argv)
     std::string jsonPath;
     std::string baselinePath;
     std::vector<std::string> makeBaselineArgs; // non-empty: --make-baseline's values
+    std::vector<std::string_view> given;       // every option, for applies()
     gg::bench::Options options;
     for (int i = 1; i < argc; ++i)
     {
         const int at = i; // the option; i moves on past its value, if it takes one
         const std::string_view arg = argv[i];
+        given.push_back(arg);
         const bool hasValue = i + 1 < argc;
         bool ok = true;
         if (arg == "--quick")
@@ -569,6 +602,21 @@ int main(int argc, char **argv)
         {
             std::fprintf(stderr, "error: bad argument: %s%s%s\n\n", argv[at], i > at ? " " : "",
                          i > at ? argv[i] : "");
+            usage(stderr);
+            return 2;
+        }
+    }
+
+    for (const std::string_view option : given)
+    {
+        if (!applies(option, canvas, space, !makeBaselineArgs.empty()))
+        {
+            const char *mode = !makeBaselineArgs.empty() ? "--make-baseline"
+                               : canvas                  ? "--canvas"
+                               : space                   ? "--space"
+                                                         : "the grain kernels' timing";
+            std::fprintf(stderr, "error: %.*s doesn't apply with %s\n\n",
+                         static_cast<int>(option.size()), option.data(), mode);
             usage(stderr);
             return 2;
         }

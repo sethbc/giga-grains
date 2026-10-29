@@ -208,12 +208,16 @@ bool parseMedia(std::string_view payload, std::optional<MediaEntry> &sample)
         return false;
     }
     // The <media> root, alone at the top level, at a version this build reads.
+    // The version is the whole attribute, in decimal ("1x" isn't 1, as tinyxml's
+    // QueryIntAttribute would read it).
     const TiXmlElement *media = doc.RootElement();
-    int version{0};
     if (media == nullptr || std::strcmp(media->Value(), "media") != 0 ||
-        doc.FirstChild() != media || media->NextSibling() != nullptr ||
-        media->QueryIntAttribute("version", &version) != TIXML_SUCCESS || version < 1 ||
-        version > kMediaVersion)
+        doc.FirstChild() != media || media->NextSibling() != nullptr)
+    {
+        return false;
+    }
+    const auto version = parseDecimal<int>(media->Attribute("version"));
+    if (!version || *version < 1 || *version > kMediaVersion)
     {
         return false;
     }

@@ -80,6 +80,16 @@ const clap_plugin_descriptor kFxDescriptor{
     kFxFeatures,
 };
 
+/// Whether `slot` is hidden in `product`: the instrument has no dry signal, so Mix and Dry to
+/// Reverb do nothing there. It keeps the parameters, hidden, so both products share one
+/// parameter list and one state format (spec §4; sub-project 4's spec §6.5). paramsInfo flags
+/// them, and their remote controls stay empty.
+constexpr bool hiddenIn(Product product, ParamSlot slot) noexcept
+{
+    return product == Product::Instrument &&
+           (slot == ParamSlot::Mix || slot == ParamSlot::DryToReverb);
+}
+
 void copyName(char (&dst)[CLAP_NAME_SIZE], const char *src) noexcept
 {
     std::snprintf(dst, sizeof(dst), "%s", src);
@@ -397,10 +407,16 @@ uint32_t GigaGrainsPlugin::tailGet() const noexcept
     {
         return kTailInfinite;
     }
-    const double frames =
-        std::ceil(kInstrumentTailSeconds * sampleRate_.load(std::memory_order_relaxed));
-    return frames < static_cast<double>(kTailInfinite) ? static_cast<uint32_t>(frames)
-                                                       : kTailInfinite - 1;
+    return instrumentTailFrames(sampleRate_.load(std::memory_order_relaxed));
+}
+
+uint32_t GigaGrainsPlugin::instrumentTailFrames(double sampleRate) noexcept
+{
+    const double frames = std::ceil(kInstrumentTailSeconds * sampleRate);
+    // A NaN fails both comparisons, so it saturates too.
+    return frames < static_cast<double>(kTailInfinite) && frames >= 0.0
+               ? static_cast<uint32_t>(frames)
+               : kTailInfinite - 1;
 }
 
 bool GigaGrainsPlugin::toParamEvent(const clap_event_header *header, ParamEvent &event) noexcept
@@ -498,9 +514,20 @@ void GigaGrainsPlugin::applyBetweenBlocks(const clap_input_events *in, uint32_t 
 
 bool GigaGrainsPlugin::isNoteEvent(const clap_event_header *header) noexcept
 {
-    return header != nullptr && header->space_id == CLAP_CORE_EVENT_SPACE_ID &&
-           (header->type == CLAP_EVENT_NOTE_ON || header->type == CLAP_EVENT_NOTE_OFF ||
-            header->type == CLAP_EVENT_NOTE_CHOKE || header->type == CLAP_EVENT_MIDI);
+    if (header == nullptr || header->space_id != CLAP_CORE_EVENT_SPACE_ID)
+    {
+        return false;
+    }
+    if (header->type == CLAP_EVENT_MIDI)
+    {
+        // Only what toNoteEvent converts, so other MIDI (clock, pressure, other CCs) doesn't
+        // count toward kMaxNoteEvents.
+        const auto *e = reinterpret_cast<const clap_event_midi *>(header);
+        const auto status = static_cast<uint8_t>(e->data[0] & 0xF0);
+        return status == 0x80 || status == 0x90 || (status == 0xB0 && e->data[1] == 123);
+    }
+    return header->type == CLAP_EVENT_NOTE_ON || header->type == CLAP_EVENT_NOTE_OFF ||
+           header->type == CLAP_EVENT_NOTE_CHOKE;
 }
 
 bool GigaGrainsPlugin::toNoteEvent(const clap_event_header *header, NoteEvent &event) noexcept
@@ -672,11 +699,7 @@ bool GigaGrainsPlugin::paramsInfo(uint32_t paramIndex, clap_param_info *info) co
     *info = clap_param_info{};
     gg::core::paramMeta(slot, mode()).toClapParamInfo<CLAP_NAME_SIZE>(info);
     info->cookie = nullptr;
-    // The instrument has no dry signal, so Mix and Dry to Reverb do nothing there. It keeps the
-    // parameters, hidden, so both products share one parameter list and one state format (spec
-    // §4; sub-project 4's spec §6.5).
-    if (product_ == Product::Instrument &&
-        (slot == ParamSlot::Mix || slot == ParamSlot::DryToReverb))
+    if (hiddenIn(product_, slot))
     {
         info->flags |= CLAP_PARAM_IS_HIDDEN;
     }
@@ -900,12 +923,9 @@ bool GigaGrainsPlugin::remoteControlsPageGet(uint32_t pageIndex,
     page->is_for_preset = false;
     for (std::size_t i = 0; i < source.slots.size(); ++i)
     {
-        // Mix and Dry to Reverb are hidden in the instrument (see paramsInfo), so their controls
-        // stay empty there.
+        // A hidden parameter's control stays empty (hiddenIn).
         const ParamSlot slot = source.slots[i];
-        const bool hidden = product_ == Product::Instrument &&
-                            (slot == ParamSlot::Mix || slot == ParamSlot::DryToReverb);
-        page->param_ids[i] = hidden ? CLAP_INVALID_ID : gg::core::paramId(slot);
+        page->param_ids[i] = hiddenIn(product_, slot) ? CLAP_INVALID_ID : gg::core::paramId(slot);
     }
     return true;
 }

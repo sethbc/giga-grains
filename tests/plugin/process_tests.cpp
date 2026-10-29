@@ -370,6 +370,29 @@ TEST_CASE("note-ons are counted from clap and midi", "[plugin]")
     CHECK(plugin.impl().noteOnCount.load() == 4);
 }
 
+TEST_CASE("only the midi a note event converts counts as one", "[plugin]")
+{
+    // Carry-over [195]: the events that count toward kMaxNoteEvents are those toNoteEvent
+    // converts. Other MIDI (a CC, pressure, the clock) doesn't.
+    using gg::plugin::GigaGrainsPlugin;
+    const auto counts = [](uint8_t status, uint8_t data1, uint8_t data2) {
+        const auto e = gg::test::midiEvent(status, data1, data2, 0);
+        return GigaGrainsPlugin::isNoteEvent(&e.header);
+    };
+    CHECK(counts(0x93, 60, 100));      // note-on, channel 4
+    CHECK(counts(0x90, 60, 0));        // note-on at velocity 0: a note-off
+    CHECK(counts(0x8F, 60, 0));        // note-off, channel 16
+    CHECK(counts(0xB2, 123, 0));       // CC 123, all notes off
+    CHECK_FALSE(counts(0xB0, 1, 64));  // CC 1
+    CHECK_FALSE(counts(0xB0, 120, 0)); // CC 120, all sound off: not converted
+    CHECK_FALSE(counts(0xA0, 60, 10)); // polyphonic pressure
+    CHECK_FALSE(counts(0xE0, 0, 64));  // pitch bend
+    CHECK_FALSE(counts(0xF8, 0, 0));   // the clock
+    const auto on = noteOn(60, 0);
+    CHECK(GigaGrainsPlugin::isNoteEvent(&on.header));
+    CHECK_FALSE(GigaGrainsPlugin::isNoteEvent(nullptr));
+}
+
 TEST_CASE("params flush is safe and counts note-ons", "[plugin]")
 {
     const char *id = GENERATE(kInstrumentId, kFxId);
@@ -512,7 +535,9 @@ TEST_CASE("fx activates with a huge max frame count", "[plugin]")
 {
     // CLAP allows a max frame count up to INT32_MAX. The live ring holds N + maxBlockSize frames
     // (ruling M1-o), so the plugin caps the engine's block size; the output doesn't depend on it.
-    // Position 0.05 (about 20 ms) and no Spray: the grains read what this render wrote.
+    // Position 0.05 (about 20 ms) and no Spray: the grains read what this render wrote. Without
+    // the cap this test fails only through the engineBlockSize() check, and on macOS only after
+    // a ~44 s, 34 GB allocation (elsewhere the allocation itself may fail first).
     Stereo in(8193);
     fillNoise(in, 5);
     const auto position =
@@ -955,9 +980,9 @@ TEST_CASE("audio ports declare the main ports and their in-place pairs", "[plugi
             CHECK(std::string_view(info.port_type) == CLAP_PORT_STEREO);
         }
         CHECK(std::string_view(info.name) == expectedName);
-        // Only index 0 exists. In Debug, clap-helpers' Maximal checking reports this deliberate
-        // out-of-range query on stderr ("Host called clap_plugin_audio_ports.info() with an
-        // index out of bounds"): that line is expected.
+        // Only index 0 exists. clap-helpers reports this deliberate out-of-range query on stderr
+        // ("Host called clap_plugin_audio_ports.info() with an index out of bounds") at every
+        // checking level, Minimal included, so in every build: that line is expected.
         CHECK_FALSE(ports->get(plugin.clap(), 1, isInput, &info));
     };
     if (isFx)
@@ -969,7 +994,7 @@ TEST_CASE("audio ports declare the main ports and their in-place pairs", "[plugi
     {
         check(false, 0, CLAP_INVALID_ID, "Main Out");
         // The instrument has no input: another deliberate out-of-range query, and the same
-        // expected stderr line in Debug.
+        // expected stderr line, in every build.
         clap_audio_port_info info{};
         CHECK_FALSE(ports->get(plugin.clap(), 0, true, &info));
     }
@@ -1300,11 +1325,23 @@ TEST_CASE("instrument tail is its longest finite one at the active rate", "[plug
     CHECK(host.tailChanges() == 0);
 }
 
+TEST_CASE("instrument tail saturates below infinite", "[plugin][space]")
+{
+    // tailGet's arithmetic: 122.5 s rounded up to frames, held below CLAP's infinite (INT32_MAX
+    // and up) where a rate would reach it, and for a NaN rate.
+    using gg::plugin::GigaGrainsPlugin;
+    CHECK(GigaGrainsPlugin::instrumentTailFrames(48000.0) == 5880000u);
+    CHECK(GigaGrainsPlugin::instrumentTailFrames(44100.0) == 5402250u);
+    CHECK(GigaGrainsPlugin::instrumentTailFrames(1.0e9) == kInfiniteTail - 1);
+    CHECK(GigaGrainsPlugin::instrumentTailFrames(std::numeric_limits<double>::quiet_NaN()) ==
+          kInfiniteTail - 1);
+}
+
 TEST_CASE("reactivate at a new rate mid-tail", "[plugin][rt][space]")
 {
-    // An infinite room, deactivated while it rings and activated at twice the rate: the next
-    // second renders finite, without allocating. Until Task 6 wires the reverb this exercises
-    // the parameters alone; it covers the reverb once it lands (ruling P3).
+    // An infinite room, ringing (the reverb active) when deactivated, then activated at twice
+    // the rate: the Processor is rebuilt, so the next second, of silence, renders silence,
+    // without allocating.
     TailHost host;
     gg::test::PluginUnderTest fx(kFxId, host.clap());
     REQUIRE(fx.valid());
@@ -1324,6 +1361,8 @@ TEST_CASE("reactivate at a new rate mid-tail", "[plugin][rt][space]")
         REQUIRE(fx.process(kBlock, in.data(), out.data()) == CLAP_PROCESS_CONTINUE);
     }
     CHECK(tailOf(fx) == kInfiniteTail);
+    REQUIRE(fx.impl().processor() != nullptr);
+    CHECK(fx.impl().processor()->reverbActive());
     fx.deactivate();
 
     REQUIRE(fx.activate(96000.0, kBlock));
@@ -1348,7 +1387,10 @@ TEST_CASE("reactivate at a new rate mid-tail", "[plugin][rt][space]")
     {
         CHECK(s == CLAP_PROCESS_CONTINUE);
     }
-    CHECK(allFinite(rendered.left));
-    CHECK(allFinite(rendered.right));
+    const auto silent = [](const std::vector<float> &v) {
+        return std::all_of(v.begin(), v.end(), [](float x) { return x == 0.0f; });
+    };
+    CHECK(silent(rendered.left));
+    CHECK(silent(rendered.right));
     REQUIRE_NO_ALLOCATIONS(allocations);
 }

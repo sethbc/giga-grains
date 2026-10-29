@@ -155,6 +155,27 @@ set_tests_properties(bench_make_baseline PROPERTIES LABELS bench FIXTURES_REQUIR
 add_test(NAME bench_space_cli
         COMMAND gg-bench --space --quick --json ${CMAKE_BINARY_DIR}/bench_space_cli.json)
 set_tests_properties(bench_space_cli PROPERTIES LABELS bench)
+# - bench_rejects_*: an option the mode doesn't take is bad usage (carry-over [151]), and so is a
+#   value --space's validation rejects. Each passes only on gg-bench's error line, then its
+#   usage (both on stderr, before anything is timed), with exit code 2 (check-exit-code.cmake).
+set(bench_rejects_space_cases_args --space --cases reference)
+set(bench_rejects_space_cases_error "--cases doesn't apply with --space")
+set(bench_rejects_canvas_seconds_args --canvas --seconds 1)
+set(bench_rejects_canvas_seconds_error "--seconds doesn't apply with --canvas")
+set(bench_rejects_make_baseline_quick_args --quick --make-baseline test out.json a.json b.json)
+set(bench_rejects_make_baseline_quick_error "--quick doesn't apply with --make-baseline")
+set(bench_rejects_space_seconds_args --space --seconds 0)
+set(bench_rejects_space_seconds_error "the run length must be more than 0")
+foreach (test IN ITEMS bench_rejects_space_cases bench_rejects_canvas_seconds
+        bench_rejects_make_baseline_quick bench_rejects_space_seconds)
+    add_test(NAME ${test}
+            COMMAND ${CMAKE_COMMAND} -DPROGRAM=$<TARGET_FILE:gg-bench>
+            "-DARGS=${${test}_args}" -DEXPECTED_CODE=2
+            "-DEXPECTED_STDERR=error: ${${test}_error}"
+            "-DEXPECTED_STDERR2=usage: gg-bench"
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tools/check-exit-code.cmake)
+    set_tests_properties(${test} PROPERTIES LABELS bench)
+endforeach ()
 set(verdict_line "ratios regressed (limit: the baseline's ratio x (1 + its tolerance))")
 set(bench_baseline_pass_args -DRATIO=1e9 -DEXPECTED_CODE=0
         "-DEXPECTED_VERDICT=verdict: 0 of 3 ${verdict_line}")

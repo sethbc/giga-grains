@@ -133,6 +133,15 @@ class GigaGrainsPlugin : public plugHelper_t
     /// The rate tailGet() assumes before the first activate().
     static constexpr double kDefaultTailRate = 48000.0;
 
+    /// The instrument's tail at `sampleRate`: kInstrumentTailSeconds in frames, rounded up,
+    /// and kTailInfinite − 1 where that would reach kTailInfinite (or for a NaN or negative
+    /// rate), so it is never read as infinite.
+    static uint32_t instrumentTailFrames(double sampleRate) noexcept;
+
+    /// Whether `header` is an event toNoteEvent converts, which counts toward kMaxNoteEvents: a
+    /// CLAP note-on, note-off or note choke, or a MIDI note-on, note-off or CC 123. Stateless.
+    static bool isNoteEvent(const clap_event_header *header) noexcept SST_CPPUTILS_NONBLOCKING;
+
   protected:
     bool activate(double sampleRate, uint32_t minFrameCount,
                   uint32_t maxFrameCount) noexcept override;
@@ -203,9 +212,6 @@ class GigaGrainsPlugin : public plugHelper_t
     /// parameter or a NaN value.
     static bool toParamEvent(const clap_event_header *header,
                              gg::core::ParamEvent &event) noexcept SST_CPPUTILS_NONBLOCKING;
-    /// Whether `header` is an event toNoteEvent may convert: a CLAP note-on, note-off or note
-    /// choke, or a MIDI event. Stateless.
-    static bool isNoteEvent(const clap_event_header *header) noexcept SST_CPPUTILS_NONBLOCKING;
     /// The note event `header` as a NoteEvent (spec §6.1): CLAP's note-on, note-off and note
     /// choke, MIDI's note-on, note-off and CC 123 (all notes off on its channel, ruling R14).
     /// False for any other event. Velocity and the port are ignored; out-of-range channels and
@@ -269,6 +275,7 @@ class GigaGrainsPlugin : public plugHelper_t
     // The rate of the last activate(), for the instrument's tail: written there, read by tailGet
     // on either thread.
     std::atomic<double> sampleRate_{kDefaultTailRate};
+    static_assert(std::atomic<double>::is_always_lock_free, "tailGet reads it on the audio thread");
     // The parameter and note events of one process() call. Audio thread.
     std::array<gg::core::ParamEvent, kMaxParamEvents> events_{};
     std::array<gg::core::NoteEvent, kMaxNoteEvents> notes_{};

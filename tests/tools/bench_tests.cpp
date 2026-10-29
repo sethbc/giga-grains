@@ -239,6 +239,21 @@ TEST_CASE("ratios pair runs from the same round", "[bench]")
     CHECK(r0.at("iqr").get<double>() == Approx(0.5));
 }
 
+TEST_CASE("bench json escapes quotes, backslashes and control characters", "[bench]")
+{
+    // Both documents, schema 2 and --space's, with them in the commit: they read back intact.
+    const std::string commit = "a\"b\\c\x01d\n";
+    gg::bench::Report report;
+    report.options.commit = commit;
+    CHECK(nlohmann::json::parse(gg::bench::toJson(report)).at("commit").get<std::string>() ==
+          commit);
+    gg::bench::SpaceReport space;
+    space.options.commit = commit;
+    space.nsPerSample = {1.0};
+    CHECK(nlohmann::json::parse(gg::bench::toJson(space)).at("commit").get<std::string>() ==
+          commit);
+}
+
 TEST_CASE("bench json survives invalid UTF-8", "[bench]")
 {
     gg::bench::Report report;
@@ -420,11 +435,13 @@ TEST_CASE("make baseline", "[bench]")
     CHECK_THROWS_AS(gg::bench::makeBaseline("linux-gcc12", {}), std::invalid_argument);
 }
 
-TEST_CASE("gg-bench --space --quick prints a per-sample cost", "[bench]")
+TEST_CASE("gg-bench --space prints a per-sample cost", "[bench]")
 {
-    // What gg-bench --space --quick runs: 5 rounds of 0.2 s.
+    // The output's shape, never its values: 2 rounds of 10 ms. (bench_space_cli runs
+    // gg-bench --space --quick itself.)
     gg::bench::SpaceOptions options;
-    options.runSeconds = 0.2;
+    options.runSeconds = 0.01;
+    options.rounds = 2;
     const std::filesystem::path dir{GG_TEST_OUTPUT_DIR};
     std::filesystem::create_directories(dir);
     const std::filesystem::path jsonPath = dir / "bench_space_quick.json";
@@ -434,17 +451,20 @@ TEST_CASE("gg-bench --space --quick prints a per-sample cost", "[bench]")
     const int status = gg::bench::spaceMain(options, jsonPath.string(), output);
     INFO(output);
     CHECK(status == 0);
-    CHECK(output.find("space") != std::string::npos);
+    CHECK(output.find("\nspace ") != std::string::npos); // the result's row
+    CHECK(output.find("% core @48k") != std::string::npos);
+    CHECK(output.find("settings: Diffusion 1, Amount 1, Size 0.5, Decay 1, Damping 0.3, "
+                      "Modulation 0.25, Pre-delay 0, active") != std::string::npos);
 
     std::ifstream in(jsonPath, std::ios::binary);
     REQUIRE(in);
     const nlohmann::json j = nlohmann::json::parse(in);
     CHECK(j.at("benchmark").get<std::string>() == "space");
-    CHECK(j.at("rounds").get<int>() == 5);
-    CHECK(j.at("runSeconds").get<double>() == 0.2);
+    CHECK(j.at("rounds").get<int>() == 2);
+    CHECK(j.at("runSeconds").get<double>() == 0.01);
     const nlohmann::json &runs = j.at("runs");
     REQUIRE(runs.is_array());
-    REQUIRE(runs.size() == 5);
+    REQUIRE(runs.size() == 2);
     for (const nlohmann::json &run : runs)
     {
         CHECK(run.get<double>() > 0.0);

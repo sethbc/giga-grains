@@ -409,6 +409,9 @@ TEST_CASE("session state rejects bad state and writes nothing", "[core]")
                  R"(<?xml version="1.0" ?>)" + std::string(kEmptyMedia),
                  std::string{"<media />"},
                  std::string{"<media version=\"one\" />"},
+                 std::string{"<media version=\"1x\" />"}, // the whole attribute is the number
+                 std::string{"<media version=\" 1\" />"},
+                 std::string{"<media version=\"\" />"},
                  std::string(kEmptyMedia) + std::string("\0", 1),
                  mediaWith(sample).insert(std::string_view(R"(<media version="1">)").size(),
                                           "<sample " + sample + " />"), // two samples

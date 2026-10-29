@@ -119,11 +119,13 @@ std::array<md_t, kParamCount> buildTable(Mode mode)
         base(ParamSlot::ReverbAmount).withName("Reverb Amount").asPercent().withDefault(0.0f);
 
     // log2 seconds: 0.25 s (-2) to 60 s (kDecayInfinite), then ∞ up to kDecayMax; 2 s by
-    // default.
+    // default. Values below 1 s show in ms, but a bare number typed in is seconds ("500 ms"
+    // still parses).
     at(ParamSlot::ReverbDecay) =
         base(ParamSlot::ReverbDecay)
             .withName("Reverb Decay")
             .asLog2SecondsRange(-2.f, kDecayMax, 1.0f)
+            .withAlternateAsDefaultFromStringUnit(false)
             .withCustomValueDisplay("∞", kDecayMax, kDecayInfiniteLabelTolerance);
 
     // Reverb 2's room size is 2v - 1; 0..1 here, 50% by default.

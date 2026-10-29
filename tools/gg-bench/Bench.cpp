@@ -1157,15 +1157,18 @@ std::string toJson(const SpaceReport &report)
 int spaceMain(const SpaceOptions &options, const std::string &jsonPath, std::string &out,
               const Progress &progress)
 {
-    validate(options);
-    const SpaceReport report = runSpace(options, progress);
+    const SpaceReport report = runSpace(options, progress); // validates the options
+    const gg::core::SpaceParams &p = kSpaceParams;
 
     out +=
         formatLine("gg-bench --space: the diffuser + reverb on stereo noise at 48 kHz, %d rounds "
                    "of >= %g s\n",
                    options.rounds, options.runSeconds);
-    out += "settings: Diffusion 1, Amount 1, Size 0.5, Decay 1.0, Damping 0.3, Modulation 0.25, "
-           "Pre-delay 0, active\n";
+    out += formatLine("settings: Diffusion %g, Amount %g, Size %g, Decay %g%s, Damping %g, "
+                      "Modulation %g, Pre-delay %g, active\n",
+                      double(p.diffusion), double(p.amount), double((p.roomSize + 1.0f) / 2.0f),
+                      double(p.decayLog2), p.infinite ? " (infinite)" : "", double(p.hfDamping),
+                      double(p.modulation), double(p.predelaySeconds));
     out += "commit:   " + options.commit + "\nmachine:  " + report.machine +
            "\ncompiler: " + report.compiler + "\n";
     out +=
