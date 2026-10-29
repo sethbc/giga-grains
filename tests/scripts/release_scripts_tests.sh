@@ -16,6 +16,12 @@
 #     clone of a scratch superproject with one submodule: the archive holds the tracked files of
 #     both under giga-grains-<version>/, no .git file or directory and no untracked file; a
 #     deinitialised submodule, an export-ignore attribute and bad usage are refused.
+#   - test_mac_keychain (macOS only): scripts/release/mac-keychain.sh (§6.2) imports a scratch
+#     self-signed code-signing identity into a scratch keychain, lists it, never prints either
+#     password, and deletes the keychain, leaving the user's keychain search list as it found it;
+#     a missing or wrong password, a missing .p12 and bad usage are refused, creating nothing. An
+#     EXIT trap deletes the scratch keychain and takes it out of the search list even when a
+#     check fails. The user's login keychain is never passed to the script.
 #
 # Prints "ok: <name>" or "FAIL: <name>" per check; the exit status is the number of failures
 # (capped at 1).
@@ -241,8 +247,153 @@ test_source_tarball() {
     expect_eq "source-tarball: an output in a missing directory is bad usage" "$status" 2
 }
 
+# --- mac-keychain.sh ------------------------------------------------------------------------
+
+# Prints the user's keychain search list, one path per line, unquoted.
+user_keychains() {
+    security list-keychains -d user | sed -e 's/^[[:space:]]*"//' -e 's/"[[:space:]]*$//'
+}
+# Takes <keychain> out of the user's search list, if it's there, and deletes it, if it exists,
+# without the script under test: the EXIT trap's cleanup, so a failing check never leaves a stray
+# keychain in the search list. Only ever called with the scratch keychain's path.
+remove_scratch_keychain() { # <keychain>
+    local kc="$1" line
+    local rest=()
+    while IFS= read -r line; do
+        if [[ -n "$line" && "$line" != "$kc" ]]; then
+            rest+=("$line")
+        fi
+    done < <(user_keychains)
+    if user_keychains | grep -qxF -- "$kc"; then
+        security list-keychains -d user -s ${rest[@]+"${rest[@]}"}
+    fi
+    if [[ -e "$kc" ]]; then
+        security delete-keychain "$kc" || true
+    fi
+}
+# 0 when <keychain> is in the user's search list, else 1.
+in_search_list() { # <keychain>
+    user_keychains | grep -qxF -- "$1" && echo 0 || echo 1
+}
+
+test_mac_keychain() {
+    if [[ "$(uname)" != Darwin ]]; then
+        echo "ok: mac-keychain: skipped (not macOS)"
+        return 0
+    fi
+    local script="$src/scripts/release/mac-keychain.sh"
+    local dir="$work/mac-keychain"
+    mkdir -p "$dir"
+    dir="$(cd "$dir" && pwd -P)"
+    local kc="$dir/t.keychain-db" p12="$dir/t.p12"
+    mac_keychain_scratch="$kc"
+    trap 'remove_scratch_keychain "$mac_keychain_scratch"' EXIT
+
+    check "mac-keychain: the script is executable" "$([[ -x "$script" ]] && echo 0 || echo 1)"
+
+    local before
+    before="$(user_keychains)"
+
+    # A self-signed identity with the code-signing extended key usage, so find-identity's
+    # codesigning policy matches it. The .p12 uses SHA-1/3DES, which every macOS's security import
+    # reads, rather than OpenSSL 3's PBES2 default, which an older one rejects; LibreSSL and
+    # OpenSSL 3 and 4 all write it.
+    openssl req -x509 -newkey rsa:2048 -keyout "$dir/k.pem" -out "$dir/c.pem" -days 2 -nodes \
+        -subj '/CN=gg test' -addext 'extendedKeyUsage=codeSigning' >/dev/null 2>&1
+    openssl pkcs12 -export -out "$p12" -inkey "$dir/k.pem" -in "$dir/c.pem" \
+        -passout pass:secret -keypbe PBE-SHA1-3DES -certpbe PBE-SHA1-3DES -macalg sha1
+
+    # Refusals create nothing.
+    run_release_script mac-keychain.sh
+    expect_eq "mac-keychain: no arguments is bad usage" "$status" 2
+    expect_in "mac-keychain: bad usage prints the usage" "$err" "usage:"
+    run_release_script mac-keychain.sh frob "$kc"
+    expect_eq "mac-keychain: an unknown command is bad usage" "$status" 2
+    run_release_script mac-keychain.sh import "$p12"
+    expect_eq "mac-keychain: import without a keychain is bad usage" "$status" 2
+    run_release_script mac-keychain.sh delete
+    expect_eq "mac-keychain: delete without a keychain is bad usage" "$status" 2
+
+    unset P12_PASSWORD
+    run_release_script mac-keychain.sh import "$p12" "$kc"
+    expect_eq "mac-keychain: import without P12_PASSWORD: exit 2" "$status" 2
+    expect_in "mac-keychain: the refusal names P12_PASSWORD" "$err" "P12_PASSWORD"
+    export P12_PASSWORD=""
+    run_release_script mac-keychain.sh import "$p12" "$kc"
+    expect_eq "mac-keychain: import with an empty P12_PASSWORD: exit 2" "$status" 2
+    check "mac-keychain: the refusals create no keychain" "$([[ -e "$kc" ]] && echo 1 || echo 0)"
+
+    export P12_PASSWORD=secret
+    run_release_script mac-keychain.sh import "$dir/missing.p12" "$kc"
+    expect_eq "mac-keychain: a missing .p12: exit 2" "$status" 2
+    run_release_script mac-keychain.sh import "$p12" "$dir/t.keychain"
+    expect_eq "mac-keychain: a keychain not named *.keychain-db: exit 2" "$status" 2
+    run_release_script mac-keychain.sh import "$p12" "$dir/nope/t.keychain-db"
+    expect_eq "mac-keychain: a keychain in a missing directory: exit 2" "$status" 2
+    check "mac-keychain: the bad paths create no keychain" "$([[ -e "$kc" ]] && echo 1 || echo 0)"
+
+    # A wrong password fails the import, and the half-made keychain is deleted again.
+    export P12_PASSWORD=wrongpw
+    run_release_script mac-keychain.sh import "$p12" "$kc"
+    check "mac-keychain: a wrong password fails the import" "$( ((status != 0)) && echo 0 || echo 1)"
+    check "mac-keychain: a failed import leaves no keychain" "$([[ -e "$kc" ]] && echo 1 || echo 0)"
+    expect_eq "mac-keychain: a failed import leaves the search list alone" "$(user_keychains)" \
+        "$before"
+    check "mac-keychain: a failed import never prints the password" \
+        "$(grep -qF wrongpw <<<"$out$err" && echo 1 || echo 0)"
+
+    export P12_PASSWORD=secret
+    run_release_script mac-keychain.sh import "$p12" "$kc"
+    expect_eq "mac-keychain: import: exit 0" "$status" 0
+    expect_in "mac-keychain: import lists the identity" "$out" "gg test"
+    check "mac-keychain: import never prints the .p12 password" \
+        "$(grep -qF secret <<<"$out$err" && echo 1 || echo 0)"
+    # The keychain's own password is 48 hex digits (openssl rand -hex 24); the identity's SHA-1
+    # hash, which find-identity prints, is 40.
+    check "mac-keychain: import never prints the keychain's password" \
+        "$(grep -qE '[0-9A-Fa-f]{48}' <<<"$out$err" && echo 1 || echo 0)"
+    check "mac-keychain: import creates the keychain" "$([[ -f "$kc" ]] && echo 0 || echo 1)"
+    expect_eq "mac-keychain: import puts the keychain first in the search list, keeping the rest" \
+        "$(user_keychains)" "$(printf '%s\n%s' "$kc" "$before")"
+    check "mac-keychain: the identity is in the keychain" \
+        "$(security find-identity -p codesigning "$kc" | grep -qF '"gg test"' && echo 0 || echo 1)"
+
+    run_release_script mac-keychain.sh import "$p12" "$kc"
+    expect_eq "mac-keychain: import into an existing keychain: exit 2" "$status" 2
+    check "mac-keychain: the refusal leaves the keychain" "$([[ -f "$kc" ]] && echo 0 || echo 1)"
+
+    # A keychain in the user's own Keychains folder is refused (here a scratch HOME's, so the
+    # real login keychain is never named, even if the guard were broken), whether the folder is
+    # there or not.
+    HOME="$dir/home" run_release_script mac-keychain.sh delete \
+        "$dir/home/Library/Keychains/login.keychain-db"
+    expect_eq "mac-keychain: delete refuses a keychain in a missing ~/Library/Keychains" \
+        "$status" 2
+    mkdir -p "$dir/home/Library/Keychains"
+    HOME="$dir/home" run_release_script mac-keychain.sh delete \
+        "$dir/home/Library/Keychains/login.keychain-db"
+    expect_eq "mac-keychain: delete refuses a keychain in ~/Library/Keychains" "$status" 2
+
+    run_release_script mac-keychain.sh delete "$kc"
+    expect_eq "mac-keychain: delete: exit 0" "$status" 0
+    check "mac-keychain: delete removes the file" "$([[ -e "$kc" ]] && echo 1 || echo 0)"
+    expect_eq "mac-keychain: delete takes it out of the search list" "$(in_search_list "$kc")" 1
+    expect_eq "mac-keychain: the search list is as it was" "$(user_keychains)" "$before"
+
+    run_release_script mac-keychain.sh delete "$kc"
+    expect_eq "mac-keychain: deleting a keychain that's gone: exit 0" "$status" 0
+    expect_eq "mac-keychain: ... quietly" "$out$err" ""
+    run_release_script mac-keychain.sh delete "$dir/gone/t.keychain-db"
+    expect_eq "mac-keychain: deleting a keychain whose directory is gone: exit 0" "$status" 0
+
+    unset P12_PASSWORD
+    remove_scratch_keychain "$kc"
+    trap - EXIT
+}
+
 test_check_version
 test_source_tarball
+test_mac_keychain
 
 echo "$failures failed"
 ((failures == 0))
