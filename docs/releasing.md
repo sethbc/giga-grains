@@ -393,9 +393,16 @@ make-installer.sh refuses it before the upload, with `'<product>' has no Develop
 Application signature; build the products with -DGG_MACOS_CODESIGN_IDENTITY set to that
 identity` (configure so, delete `gg_assets/` and rebuild, as the signed build above does). A
 failure before a submission ID was assigned (an upload or network error, or a bad key) says so;
-check the three `NOTARY_*` values. A submission still in progress after an hour stops the wait
-(`--timeout 1h`) and fails the same way, with its ID; the service carries on, and `xcrun
-notarytool info <id> …` shows its outcome.
+check the three `NOTARY_*` values. A submission still in progress after 25 minutes stops the wait
+(`--timeout 25m`) and fails the same way, with its ID (next entry).
+
+**A slow notarization.** CI's *Build the installer* step streams make-installer.sh's output as it
+runs (`USES_TERMINAL`), so its log shows how far the script got. A first notarization from a new
+team or API key can take far longer than later ones, tens of minutes. The script waits up to 25
+minutes per submission (the PKG, then the DMG; the step allows 70) and then fails, printing the
+submission ID. The service carries on: follow it with `xcrun notarytool history` and `xcrun
+notarytool log <id>` (or `info <id>`), each with `--key`, `--key-id` and `--issuer`, and re-run
+the dispatch once Apple has processed it.
 
 **Gatekeeper refuses an installer.** make-installer.sh ends with `spctl --assess -vv` on the PKG
 (`--type install`) and the DMG (`--type open --context context:primary-signature`); run them

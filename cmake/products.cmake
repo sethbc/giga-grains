@@ -135,7 +135,10 @@ endforeach ()
 # gg-installer (spec §6.3): builds gg-products, then runs the platform's installer script on them,
 # writing into GG_INSTALLER_DIR (build/<preset>/gg-installer/). The script reads the signing
 # environment itself (installer/macos/make-installer.sh says which variables), so the same target
-# makes a local unsigned installer and CI's signed one.
+# makes a local unsigned installer and CI's signed one. Each command is USES_TERMINAL: Ninja then
+# runs it in the console pool and streams its output as it runs, instead of holding it until the
+# command exits, so a long notarization shows its progress and a timed-out CI step shows how far
+# the script got.
 set(GG_INSTALLER_DIR ${CMAKE_BINARY_DIR}/gg-installer)
 add_custom_target(gg-installer)
 add_dependencies(gg-installer gg-products)
@@ -146,7 +149,7 @@ if (APPLE)
             --products ${GG_PRODUCT_DIR} --out ${GG_INSTALLER_DIR}
             --version ${GG_VERSION_NUMERIC} --full-version ${GG_VERSION_STRING}
             --resources ${CMAKE_SOURCE_DIR}/installer/macos --licenses ${GG_LICENSE_DIR}
-            VERBATIM
+            VERBATIM USES_TERMINAL
             )
 elseif (CMAKE_SYSTEM_NAME STREQUAL "Linux")
     # giga-grains-<v>-linux-x86_64.tar.gz (spec §6.5).
@@ -155,7 +158,7 @@ elseif (CMAKE_SYSTEM_NAME STREQUAL "Linux")
             --products ${GG_PRODUCT_DIR} --out ${GG_INSTALLER_DIR}
             --full-version ${GG_VERSION_STRING}
             --readme ${CMAKE_SOURCE_DIR}/installer/linux/README.md
-            VERBATIM
+            VERBATIM USES_TERMINAL
             )
 elseif (WIN32)
     # giga-grains-<v>-windows-x64.zip always, by a CMake script (no shell on the Windows side), and
@@ -166,7 +169,7 @@ elseif (WIN32)
             COMMAND ${CMAKE_COMMAND} -DPRODUCTS=${GG_PRODUCT_DIR} -DOUT=${GG_INSTALLER_DIR}
             -DFULL_VERSION=${GG_VERSION_STRING} -DREADME=${gg_windows_installer_dir}/readme.txt
             -P ${gg_windows_installer_dir}/make-zip.cmake
-            VERBATIM
+            VERBATIM USES_TERMINAL
             )
     find_program(GG_ISCC ISCC PATHS "C:/Program Files (x86)/Inno Setup 6"
             DOC "Inno Setup 6's command-line compiler, ISCC.exe, which builds the Windows installer")
@@ -182,7 +185,7 @@ elseif (WIN32)
                 /DLicenses=${gg_native_GG_LICENSE_DIR} /DVersion=${GG_VERSION_NUMERIC}
                 /DFullVersion=${GG_VERSION_STRING} /DOutDir=${gg_native_GG_INSTALLER_DIR}
                 ${gg_native_iss}
-                VERBATIM
+                VERBATIM USES_TERMINAL
                 )
     else ()
         message(STATUS "gg-installer: Inno Setup's ISCC.exe not found; gg-installer builds the "

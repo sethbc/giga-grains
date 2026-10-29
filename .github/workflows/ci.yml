@@ -681,7 +681,7 @@ jobs:
       - name: Build the installer
         id: installer
         if: ${{ needs.plan.outputs.release_kind != 'none' && steps.products.outcome == 'success' }}
-        timeout-minutes: 45
+        timeout-minutes: 70
         env:
           MAC_SIGNING_IDENTITY: ${{ env.GG_SIGN == '1' && secrets.MAC_SIGNING_IDENTITY || '' }}
           MAC_INSTALLER_IDENTITY: ${{ env.GG_SIGN == '1' && secrets.MAC_INSTALLER_IDENTITY || '' }}

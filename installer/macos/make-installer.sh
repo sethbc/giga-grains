@@ -45,9 +45,9 @@
 # notarization or the Gatekeeper checks. The products themselves are signed when they're built.
 #
 # The last line it prints is `signed: yes` or `signed: no`. Exit status: 0 when done; 1 when a
-# step fails (a failed notarization prints its submission ID); 2 for bad usage, a signing
-# environment with only some of its five variables, or a missing product, before anything is
-# written.
+# step fails (a failed notarization prints its submission ID, as does one still in progress after
+# 25 minutes, the most it waits for each submission); 2 for bad usage, a signing environment with
+# only some of its five variables, or a missing product, before anything is written.
 
 set -euo pipefail
 
@@ -268,10 +268,11 @@ notarize() {
     local file="$1" log id status
     log="$work/notary-$(basename "$file").json"
     echo "--- notarizing $(basename "$file")"
-    # --timeout: notarytool stops waiting after an hour (the service carries on), so a stuck
-    # submission fails this step, printing its ID, instead of running into the job's timeout.
+    # --timeout: notarytool stops waiting after 25 minutes (the service carries on), so a stuck
+    # submission fails, printing its ID, inside CI's 70-minute installer step, PKG and DMG both,
+    # instead of running into the step's timeout.
     if ! xcrun notarytool submit "$file" --key "$NOTARY_KEY_FILE" --key-id "$NOTARY_KEY_ID" \
-        --issuer "$NOTARY_ISSUER_ID" --wait --timeout 1h --output-format json >"$log"; then
+        --issuer "$NOTARY_ISSUER_ID" --wait --timeout 25m --output-format json >"$log"; then
         cat "$log"
     fi
     id="$(json_field id "$log")"
