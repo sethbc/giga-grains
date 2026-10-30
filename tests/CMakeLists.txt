@@ -354,6 +354,7 @@ foreach (spec IN LISTS GG_GOLDEN_CASE_SPECS)
     add_test(NAME golden_${case}
             COMMAND gg-render ${spec}
             --media-dir ${GG_GOLDEN_MEDIA_DIR}
+            --content-dir ${GG_GOLDEN_MEDIA_DIR}
             -o ${CMAKE_BINARY_DIR}/golden/${case}.wav
             --spectrogram ${CMAKE_BINARY_DIR}/golden/${case}.png
             --compare ${CMAKE_CURRENT_SOURCE_DIR}/golden/expected/${case}.metrics.json
