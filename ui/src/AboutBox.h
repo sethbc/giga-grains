@@ -22,7 +22,7 @@ namespace gg::ui
 /// plain, in a monospaced font. Only a notice's name is ever shown, never its source path.
 ///
 /// A modal over its parent: size it to cover the editor and make it visible. Escape, Close and a
-/// press outside the panel hide it and call onClose It is a keyboard focus container, so Tab
+/// press outside the panel hide it and call onClose. It is a keyboard focus container, so Tab
 /// stays among its own controls. Component IDs: about.product, about.version,
 /// about.format, about.license, about.repository, about.source, about.list, about.text (the
 /// viewer's holder), about.plain, about.close.

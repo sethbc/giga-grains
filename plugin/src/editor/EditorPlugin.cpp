@@ -263,6 +263,8 @@ std::unique_ptr<juce::Component> EditorPlugin::createEditor()
     // The view chosen, kept while the instance lives (spec §6.2); never saved.
     context.view = [this] { return lastView_; };
     context.setView = [this](gg::ui::View view) { lastView_ = view; };
+    context.layer = [this] { return lastLayer_; };
+    context.setLayer = [this](uint8_t layer) { lastLayer_ = layer; };
 
     // The base values and the editor's gestures (sub-project 5's spec §6.3), through the
     // plugin's UI queue (GigaGrainsPlugin::uiBeginGesture).

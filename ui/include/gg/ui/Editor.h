@@ -173,6 +173,11 @@ struct EditorContext
     /// life (it is not saved, and is no parameter). Either may be empty: Perform, kept nowhere.
     std::function<View()> view;
     std::function<void(View)> setView;
+    /// The layer the editor last had selected (0 to 3), kept the same way beside the view: an
+    /// editor opens with layer() selected and calls setLayer at each selection. Either may be
+    /// empty: layer A, kept nowhere.
+    std::function<uint8_t()> layer;
+    std::function<void(uint8_t)> setLayer;
 
     /// The editor's destructor calls publishing(false): the plugin stops publishing (the shim
     /// has no destroy hook). The plugin turned it on when it created the editor. May be empty.

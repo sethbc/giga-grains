@@ -318,6 +318,12 @@ TEST_CASE("every view opens and closes in both products and themes", "[plugin]")
                             checkControlsFit(*viewOf(*editor, view));
                         }
                     }
+                    // Opening, switching and drawing a view sends the host nothing: no gesture,
+                    // no value (the audio is bit-identical with the editor open).
+                    gg::test::OutputEvents out;
+                    processBlock(instance, fx, out.list());
+                    processBlock(instance, fx, out.list());
+                    CHECK(out.events().empty());
                 }
                 // Destroyed, the editor turned publishing off.
                 CHECK_FALSE(plugin->publishing());
@@ -904,6 +910,35 @@ TEST_CASE("the view chosen is remembered per plugin instance", "[plugin]")
     gg::test::PluginUnderTest other("org.sethbc.giga-grains-fx");
     REQUIRE(other.valid());
     CHECK(gg::ui::currentView(*editorPluginOf(other)->createEditor()) == View::Perform);
+}
+
+TEST_CASE("the selected layer is remembered per plugin instance", "[plugin]")
+{
+    // Spec §6.2: selection is UI state, per instance, kept beside the view; not saved.
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    gg::test::PluginUnderTest fx("org.sethbc.giga-grains-fx");
+    REQUIRE(fx.valid());
+    auto *plugin = editorPluginOf(fx);
+    {
+        const auto editor = plugin->createEditor();
+        CHECK(plugin->editorContext().layer() == 0);
+        CHECK(editor->keyPressed(commandKey('C', true)));
+        CHECK(plugin->editorContext().layer() == 2);
+    }
+    {
+        const auto editor = plugin->createEditor();
+        CHECK(plugin->editorContext().layer() == 2);
+        const auto *cSize = findDeep(*viewOf(*editor, View::Edit),
+                                     controlId(gg::core::layerSlot(gg::core::LayerParam::Size, 2)));
+        CHECK(cSize != nullptr);
+        CHECK(editor->keyPressed(commandKey('A', true)));
+        CHECK(plugin->editorContext().layer() == 0);
+    }
+    gg::test::PluginUnderTest other("org.sethbc.giga-grains-fx");
+    REQUIRE(other.valid());
+    auto *otherPlugin = editorPluginOf(other);
+    const auto otherEditor = otherPlugin->createEditor();
+    CHECK(otherPlugin->editorContext().layer() == 0);
 }
 
 TEST_CASE("the About box keeps the keys and the focus to itself", "[plugin]")

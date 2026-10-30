@@ -471,6 +471,11 @@ void ParamControl::setSpreadBand(std::optional<std::pair<float, float>> lowHigh0
     repaint();
 }
 
+std::optional<std::pair<float, float>> ParamControl::spreadBand() const noexcept
+{
+    return impl_->band;
+}
+
 ParamSlot ParamControl::slot() const noexcept { return impl_->value.slot(); }
 
 float ParamControl::shownValue() const noexcept { return impl_->value.value(); }

@@ -13,6 +13,7 @@
 #include <sst/basic-blocks/params/ParamMetadata.h>
 
 #include "../Palette.h"
+#include "gg/ui/LayerColours.h"
 #include "gg/ui/RouteEdits.h"
 #include "gg/ui/Rings.h"
 #include "gg/ui/UndoStack.h"
@@ -39,7 +40,18 @@ constexpr int kPadW = 2 * (2 + 2), kPadH = 2 * (2 + 2) + 20;
 /// the panel's header already says. A name that is only the title stays whole.
 juce::String shortLabel(const ParamControl &control, const char *panelTitle)
 {
-    const juce::String name = control.shownLabel();
+    juce::String name = control.shownLabel();
+    // A per-layer global ("Level B", "Layer B On") sits in its own layer's panel: the panel is
+    // the layer, so the letter goes, as it does from a layer parameter's name.
+    if (const auto layer = gg::core::perLayerGlobalLayer(control.slot()))
+    {
+        const juce::String letter = juce::String::charToString(kLayerLetters[*layer]);
+        name = name.replace(" " + letter + " ", " ");
+        if (name.endsWith(" " + letter))
+        {
+            name = name.dropLastCharacters(2);
+        }
+    }
     const juce::String prefix = juce::String(panelTitle) + " ";
     return name.startsWith(prefix) && name.length() > prefix.length()
                ? name.substring(prefix.length())
@@ -76,7 +88,9 @@ class Cell final : public juce::Component
         }
         if (kind == Kind::Menu)
         {
-            caption_ = base_->getTitle();
+            // As a knob's label: the panel's title the header already says is left off.
+            caption_ = shortLabel(*base_, panelTitle);
+            setName(caption_); // the tests' handle on what is drawn
         }
         const bool knobLike = kind == Kind::Knob;
         const int w = spread_                 ? kKnobW + kSpreadW
@@ -229,6 +243,10 @@ struct ParamPanel::Impl
         {
             ringBefore = routes;
             ringSlot = routeSlot;
+            if (context.undo != nullptr)
+            {
+                context.undo->beginGroup(); // undo waits for the drag (UndoStack::busy)
+            }
         }
         setDepth(routes, routeSlot, depth01 * (meta.maxVal - meta.minVal));
         context.setRoutes(routes);
@@ -241,6 +259,7 @@ struct ParamPanel::Impl
         if (ringBefore && context.undo != nullptr)
         {
             context.undo->pushRoutes(*ringBefore, ringAfter, "route " + std::to_string(ringSlot));
+            context.undo->endGroup();
         }
         ringBefore.reset();
     }

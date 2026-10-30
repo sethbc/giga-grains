@@ -134,6 +134,8 @@ class ParamControl final : public juce::Component, public juce::DragAndDropTarge
     /// The spread pair's faint band on the base knob, from low to high in 0..1 of its range;
     /// nothing for none.
     void setSpreadBand(std::optional<std::pair<float, float>> lowHigh01);
+    /// The band as last set: low and high in 0..1 of the range; nothing when none is drawn.
+    std::optional<std::pair<float, float>> spreadBand() const noexcept;
 
     gg::core::ParamSlot slot() const noexcept;
     /// What the control displays: the value sent while an edit holds it, else the base value.

@@ -4,6 +4,8 @@
 
 #include "LoaderStrip.h"
 
+#include "SampleFiles.h"
+
 #include <algorithm>
 #include <string>
 #include <utility>
@@ -17,7 +19,6 @@ namespace
 /// The formats the loader decodes (spec §6.4), for "Load…" and "Relink…", and the same as
 /// extensions for a drop (File::hasFileExtension ignores case).
 constexpr const char *kSampleFilePatterns = "*.wav;*.aif;*.aiff;*.aifc;*.flac;*.mp3";
-constexpr const char *kSampleFileExtensions = "wav;aif;aiff;aifc;flac;mp3";
 
 constexpr float kFontHeight = 14.0f;
 
@@ -192,12 +193,10 @@ void LoaderStrip::filesDropped(const juce::StringArray &files)
     {
         return;
     }
-    // Not parsed as a juce::File, which needs an absolute path: the loader takes it as given.
-    const juce::File file = juce::File::createFileWithoutCheckingPath(files[0]);
-    if (!file.hasFileExtension(kSampleFileExtensions))
+    if (!isSampleFilePath(files[0]))
     {
         // The decoder would refuse it: say so here, and leave the sample alone.
-        setNotice("can't load " + file.getFileName() + ": not a WAV, AIFF, FLAC or MP3 file");
+        setNotice(notSampleFileNotice(files[0]));
         refresh();
         return;
     }

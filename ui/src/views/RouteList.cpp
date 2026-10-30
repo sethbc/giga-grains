@@ -245,9 +245,27 @@ struct RouteList::Impl
         };
         row.target.onChange = [this, slot, &row] {
             const int sel = row.target.getSelectedId();
-            edit(slot, [slot, sel](ModRoutes &r) {
-                r[slot - 1u].target =
+            const gg::core::Mode mode = context.mode;
+            edit(slot, [slot, sel, mode](ModRoutes &r) {
+                ModRoute &route = r[slot - 1u];
+                const ParamSlot next =
                     sel == kNoTarget ? ParamSlot::Count : static_cast<ParamSlot>(sel - 1);
+                // The depth is in the target's units: carry it over as the same fraction of the
+                // new range (clamped to it), not as the old number.
+                if (next != ParamSlot::Count && route.target != ParamSlot::Count &&
+                    next != route.target)
+                {
+                    const auto &was = gg::core::paramMeta(route.target, mode);
+                    const auto &now = gg::core::paramMeta(next, mode);
+                    const float wasRange = was.maxVal - was.minVal;
+                    const float nowRange = now.maxVal - now.minVal;
+                    if (wasRange > 0.0f && nowRange > 0.0f)
+                    {
+                        route.depth =
+                            std::clamp(route.depth * (nowRange / wasRange), -nowRange, nowRange);
+                    }
+                }
+                route.target = next;
             });
         };
         row.targetLayer.onChange = [this, slot, &row] {
@@ -267,6 +285,10 @@ struct RouteList::Impl
         // A depth drag is one undo entry: the routes at its start, and as it ends.
         row.depth.onDragStart = [this, slot] {
             depthSlot = slot;
+            if (context.undo != nullptr)
+            {
+                context.undo->beginGroup(); // undo waits for the drag (UndoStack::busy)
+            }
             depthBefore = routes();
             depthAfter = depthBefore;
         };
@@ -290,6 +312,7 @@ struct RouteList::Impl
             if (depthSlot == slot && context.undo != nullptr)
             {
                 context.undo->pushRoutes(depthBefore, depthAfter, "route " + std::to_string(slot));
+                context.undo->endGroup();
             }
             depthSlot = 0;
         };

@@ -198,7 +198,7 @@ void MorphPad::mouseDown(const juce::MouseEvent &e)
 {
     // The second press of a double-click moves nothing: mouseDoubleClick, which JUCE sends after
     // that press's mouseUp, makes the one gesture, so a double-click is a single undo entry.
-    if (impl_->dragging || e.getNumberOfClicks() >= 2)
+    if (e.getNumberOfClicks() >= 2)
     {
         return;
     }
@@ -231,16 +231,8 @@ void MorphPad::mouseUp(const juce::MouseEvent &)
 
 void MorphPad::mouseDoubleClick(const juce::MouseEvent &)
 {
-    // The second press has begun a gesture: the centre is its value. Otherwise a gesture of its
-    // own.
-    if (impl_->dragging)
-    {
-        impl_->set({0.5f, 0.5f});
-    }
-    else
-    {
-        impl_->gestureTo({0.5f, 0.5f});
-    }
+    // The second press began no gesture (mouseDown), so this is the gesture of its own.
+    impl_->gestureTo({0.5f, 0.5f});
     repaint();
 }
 

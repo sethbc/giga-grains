@@ -16,6 +16,7 @@
 #include "gg/plugin/Identity.h"
 #include "PluginHarness.h"
 #if GG_BUILD_EDITOR
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -1583,6 +1584,14 @@ TEST_CASE("a drop onto lane A loads, onto lane B is refused", "[plugin]")
     CHECK(loads[1] == std::pair<int, std::string>{1, "/tmp/b.wav"});
     REQUIRE(notices.size() == 1);
     CHECK(notices[0] == "layer B takes a sample after the session format's next version");
+    // A file the decoder can't read is refused as the loader strip refuses it, on any lane, and
+    // never reaches the loader.
+    dropOn(0, "/tmp/notes.txt");
+    dropOn(1, "/tmp/noextension");
+    CHECK(loads.size() == 2);
+    REQUIRE(notices.size() == 3);
+    CHECK(notices[1] == "can't load notes.txt: not a WAV, AIFF, FLAC or MP3 file");
+    CHECK(notices[2] == "can't load noextension: not a WAV, AIFF, FLAC or MP3 file");
     // A drop left of the lanes is no lane's.
     canvas->filesDropped(juce::StringArray{"/tmp/c.wav"}, 10, canvas->laneBounds(1).getCentreY());
     CHECK(loads.size() == 2);
@@ -2663,7 +2672,7 @@ TEST_CASE("the Edit view draws rings from the routes and follows the base values
     view.refresh();
     CHECK(ringsOf(ParamSlot::B_Size).empty());
 
-    // A base value the host changed shows at refresh, in the control and in the spread band.
+    // A base value the host changed shows at refresh, in the control (the band: its own test).
     recording.values[static_cast<std::size_t>(ParamSlot::B_Pitch)] = 5.0f;
     view.refresh();
     auto *pitch = dynamic_cast<gg::ui::ParamControl *>(
@@ -2671,6 +2680,62 @@ TEST_CASE("the Edit view draws rings from the routes and follows the base values
     REQUIRE(pitch != nullptr);
     CHECK(pitch->shownValue() == 5.0f);
     CHECK(routeReads > 1);
+}
+
+TEST_CASE("a spread pair's band is its spread either side of the base value", "[plugin]")
+{
+    // Spec §6.5: Size +- its octaves, Pitch +- its semitones, Position +- Spray on a Sample layer
+    // and Position to Position + Spray on a Live one (all in 0..1 of the base's range).
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    RecordingContext recording(gg::core::Mode::Fx);
+    gg::ui::EditView view(recording.context);
+    view.setSize(900, 500);
+    view.refresh();
+    const auto set = [&](ParamSlot slot, float v) {
+        recording.values[static_cast<std::size_t>(slot)] = v;
+    };
+    const auto bandOn = [&](ParamSlot slot) {
+        view.refresh();
+        auto *control =
+            dynamic_cast<gg::ui::ParamControl *>(findDeep(view, controlId(slot).toRawUTF8()));
+        REQUIRE(control != nullptr);
+        return control->spreadBand();
+    };
+    const auto expected = [&](ParamSlot slot, float low, float high) {
+        const auto &meta = gg::core::paramMeta(slot, gg::core::Mode::Fx);
+        const float range = meta.maxVal - meta.minVal;
+        const auto to01 = [&](float v) {
+            return std::clamp((v - meta.minVal) / range, 0.0f, 1.0f);
+        };
+        return std::pair{to01(low), to01(high)};
+    };
+
+    set(ParamSlot::Size, -2.0f);
+    set(ParamSlot::SizeSpread, 0.5f);
+    const auto size = bandOn(ParamSlot::Size);
+    REQUIRE(size.has_value());
+    CHECK(*size == expected(ParamSlot::Size, -2.5f, -1.5f));
+
+    set(ParamSlot::Pitch, 3.0f);
+    set(ParamSlot::PitchSpread, 7.0f);
+    const auto pitch = bandOn(ParamSlot::Pitch);
+    REQUIRE(pitch.has_value());
+    CHECK(*pitch == expected(ParamSlot::Pitch, -4.0f, 10.0f));
+
+    set(ParamSlot::Pitch, 0.0f);
+    set(ParamSlot::PitchSpread, 0.0f);
+    CHECK_FALSE(bandOn(ParamSlot::Pitch).has_value()); // no spread, no band
+
+    set(ParamSlot::Position, 0.5f);
+    set(ParamSlot::Spray, 0.25f);
+    set(ParamSlot::Source, static_cast<float>(gg::core::SourceKind::Sample));
+    const auto sample = bandOn(ParamSlot::Position);
+    REQUIRE(sample.has_value());
+    CHECK(*sample == expected(ParamSlot::Position, 0.25f, 0.75f));
+    set(ParamSlot::Source, static_cast<float>(gg::core::SourceKind::Live));
+    const auto live = bandOn(ParamSlot::Position);
+    REQUIRE(live.has_value());
+    CHECK(*live == expected(ParamSlot::Position, 0.5f, 0.75f));
 }
 
 TEST_CASE("mod mode drags the Edit view's rings and nothing else", "[plugin]")
@@ -3081,6 +3146,109 @@ TEST_CASE("the route list edits and clears a slot", "[plugin]")
     REQUIRE(depth != nullptr);
     depth->setValue(0.5, juce::sendNotificationSync);
     CHECK(h.routes[0].depth == 0.5f);
+}
+
+TEST_CASE("a held ring drag or depth drag keeps undo from changing the routes under it", "[plugin]")
+{
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    {
+        ModHarness h(gg::core::Mode::Fx);
+        gg::ui::EditView view(h.recording.context);
+        view.setSize(900, 500);
+        view.setModMode(true);
+        view.refresh();
+        auto *size = dynamic_cast<gg::ui::ParamControl *>(
+            findDeep(view, controlId(ParamSlot::Size).toRawUTF8()));
+        REQUIRE(size != nullptr);
+        const auto start = h.routes;
+        h.undo.pushRoutes(gg::core::ModRoutes{}, start, "earlier");
+        size->onRingDrag(1, 0.3f);
+        const auto mid = h.routes;
+        REQUIRE(mid != start);
+        h.undo.undo(); // mid-drag: nothing
+        CHECK(h.routes == mid);
+        CHECK(h.undo.size() == 1);
+        size->onRingRelease();
+        CHECK(h.undo.size() == 2);
+        h.undo.undo();
+        CHECK(h.routes == start); // the routes before the drag, not a stale before
+    }
+    {
+        ModHarness h(gg::core::Mode::Fx);
+        gg::ui::ModView view(h.recording.context);
+        view.setSize(900, 500);
+        view.refresh();
+        auto *depth = dynamic_cast<juce::Slider *>(findDeep(view, "route.1.depth"));
+        REQUIRE(depth != nullptr);
+        REQUIRE(depth->onDragStart);
+        REQUIRE(depth->onDragEnd);
+        const auto start = h.routes;
+        h.undo.pushRoutes(gg::core::ModRoutes{}, start, "earlier");
+        depth->onDragStart();
+        depth->setValue(0.5, juce::sendNotificationSync);
+        const auto mid = h.routes;
+        REQUIRE(mid != start);
+        h.undo.undo(); // mid-drag: nothing
+        CHECK(h.routes == mid);
+        CHECK(h.undo.size() == 1);
+        depth->onDragEnd();
+        CHECK(h.undo.size() == 2);
+        h.undo.undo();
+        CHECK(h.routes == start);
+    }
+}
+
+TEST_CASE("retargeting a route scales its depth to the new target's units", "[plugin]")
+{
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    ModHarness h(gg::core::Mode::Fx);
+    gg::core::ModRoute route;
+    route.source = gg::core::ModSource::Lfo1;
+    route.target = ParamSlot::Pitch;
+    route.depth = 6.0f;
+    h.routes[12] = route;
+    gg::ui::ModView view(h.recording.context);
+    view.setSize(900, 500);
+    view.refresh();
+    auto *target = dynamic_cast<juce::ComboBox *>(findDeep(view, "route.13.target"));
+    REQUIRE(target != nullptr);
+    target->setSelectedId(static_cast<int>(ParamSlot::Spray) + 1, juce::sendNotificationSync);
+    REQUIRE(h.routes[12].target == ParamSlot::Spray);
+    const auto &pitch = gg::core::paramMeta(ParamSlot::Pitch, gg::core::Mode::Fx);
+    const auto &spray = gg::core::paramMeta(ParamSlot::Spray, gg::core::Mode::Fx);
+    const float expected = 6.0f * ((spray.maxVal - spray.minVal) / (pitch.maxVal - pitch.minVal));
+    CHECK(h.routes[12].depth == expected);
+    CHECK(h.routes[12].depth != 6.0f);
+}
+
+TEST_CASE("a per-layer global drops its letter in its layer's panel and keeps it in the tooltip",
+          "[plugin]")
+{
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    ModHarness h(gg::core::Mode::Fx);
+    gg::ui::EditView view(h.recording.context);
+    view.setSize(900, 500);
+    view.setLayer(1);
+    view.refresh();
+    auto *level = dynamic_cast<gg::ui::ParamControl *>(
+        findDeep(view, controlId(ParamSlot::LevelB).toRawUTF8()));
+    REQUIRE(level != nullptr);
+    CHECK(level->getTitle() == "Level B");
+    CHECK(level->shownLabel() == "Level");
+    CHECK(level->tooltip() == "Level B");
+}
+
+TEST_CASE("a menu's caption leaves off its panel's title", "[plugin]")
+{
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    ModHarness h(gg::core::Mode::Fx);
+    gg::ui::ModView view(h.recording.context);
+    view.setSize(900, 500);
+    view.refresh();
+    auto *shape = findDeep(view, controlId(ParamSlot::Lfo1Shape).toRawUTF8());
+    REQUIRE(shape != nullptr);
+    REQUIRE(shape->getParentComponent() != nullptr);
+    CHECK(shape->getParentComponent()->getName() == "Shape"); // not "LFO 1 Shape" under "LFO 1"
 }
 
 TEST_CASE("the source strip has 24 chips and the layer's letter on the per-layer ones", "[plugin]")

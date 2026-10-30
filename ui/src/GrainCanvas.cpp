@@ -4,6 +4,8 @@
 
 #include "GrainCanvas.h"
 
+#include "SampleFiles.h"
+
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -1060,6 +1062,12 @@ void GrainCanvas::filesDropped(const juce::StringArray &files, int x, int y)
         return;
     }
     const auto layer = static_cast<uint8_t>(found);
+    if (!isSampleFilePath(files[0]))
+    {
+        // As the loader strip refuses it: a notice, and the layer's sample stays.
+        postNotice(*this, context_, notSampleFileNotice(files[0]).toStdString());
+        return;
+    }
     const std::string path = files[0].toStdString();
     if (context_.loadSampleFor && context_.loadSampleFor(layer, path))
     {

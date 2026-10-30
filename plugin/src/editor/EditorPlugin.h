@@ -118,6 +118,8 @@ class EditorPlugin : public GigaGrainsPlugin, public sst::clap_juce_shim::Editor
     // The view the editor last showed, which the next one opens on (spec §6.2): the instance's,
     // not its state's. Main thread.
     gg::ui::View lastView_{gg::ui::View::Perform};
+    // The layer the editor last had selected, kept beside the view the same way. Main thread.
+    uint8_t lastLayer_{0};
     // Each editor's "still counted open" flag, which its publishing callback and guiDestroy
     // share, so an editor is counted closed once: the last createEditor()'s, and the one the
     // shim holds (from guiCreate to guiDestroy). Main thread.

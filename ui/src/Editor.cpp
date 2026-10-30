@@ -275,6 +275,7 @@ class Editor final : public juce::Component,
         addChildComponent(about_);
 
         selectView(context.view ? context.view() : View::Perform);
+        selectLayer(context.layer ? context.layer() : uint8_t{0});
         lastSetting_ = context.theme ? context.theme() : ThemeChoice::Dark;
         applyTheme(lastSetting_);
 
@@ -321,6 +322,10 @@ class Editor final : public juce::Component,
         perform_.setSelectedLayer(layer_);
         edit_.setLayer(layer_);
         mod_.setLayer(layer_);
+        if (context_.setLayer)
+        {
+            context_.setLayer(layer_);
+        }
     }
 
     /// The header's switch: applies `theme` here, then saves it; a save that fails is said in

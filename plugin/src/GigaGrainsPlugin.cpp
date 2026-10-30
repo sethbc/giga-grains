@@ -1322,7 +1322,9 @@ bool GigaGrainsPlugin::stateLoad(const clap_istream *stream) noexcept
                 processor_->sources().offer(std::move(restored.source), &values); // reserved
             }
             // The routes on the editor's channel too, first, so an edit made before this load
-            // and not yet taken can't apply after it (applyLoadedState).
+            // and not yet taken can't apply after it (applyLoadedState). A load's routes can
+            // apply one block before its seed and values, for the FX as for the instrument
+            // (VW-T4a): harmless, since the next block applies the rest.
             uiRoutesPending_.push(routes_);
             loadedState_.push({values, routes_, seed, loader_ == nullptr});
         }
