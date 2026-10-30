@@ -562,6 +562,17 @@ if (GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
     set_tests_properties(installer_build_products PROPERTIES LABELS installer
             FIXTURES_SETUP gg_products RUN_SERIAL TRUE)
 
+    # The content (M2 sub-project 5's spec §6.11): gg-products/content/ holds the factory presets
+    # gg-presets packed and the fetched samples, with the provenance, the CC0 text and the version
+    # file, which the installers' Content component carries. Its minimums are 0 presets in the
+    # first group (no factory sources yet); the factory-content task raises them to 24 and 8.
+    add_test(NAME installer_content_staged
+            COMMAND ${CMAKE_COMMAND} -DDIR=${GG_PRODUCT_DIR}/content
+            -DPIN=${GG_CONTENT_PIN} -DPRODUCTS_MIN=0 -DMIDI_MIN=0
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/installer/check-content.cmake)
+    set_tests_properties(installer_content_staged PROPERTIES LABELS installer
+            FIXTURES_REQUIRED gg_products)
+
     # The license set (spec §6.3, carry-over row 221): gg-products/licenses/ holds exactly the
     # platform's notices and license texts, none of them a stub.
     add_test(NAME installer_license_set
@@ -589,7 +600,8 @@ if (GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
                     -DPRODUCTS=${GG_PRODUCT_DIR} -DLICENSES=${GG_LICENSE_DIR}
                     -DRESOURCES=${PROJECT_SOURCE_DIR}/installer/macos
                     -DOUT=${CMAKE_CURRENT_BINARY_DIR}/installer-macos/${case}
-                    -DNUMERIC=${GG_VERSION_NUMERIC} -DFULL=${GG_VERSION_STRING} ${switch}
+                    -DNUMERIC=${GG_VERSION_NUMERIC} -DFULL=${GG_VERSION_STRING}
+                    -DCONTENT=${GG_PRODUCT_DIR}/content ${switch}
                     -P ${CMAKE_CURRENT_SOURCE_DIR}/installer/check-macos-pkg.cmake)
             set_tests_properties(installer_macos_${case} PROPERTIES LABELS installer
                     FIXTURES_REQUIRED gg_products)
@@ -613,7 +625,7 @@ if (GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
                     -DPRODUCTS=${GG_PRODUCT_DIR}
                     -DREADME=${PROJECT_SOURCE_DIR}/installer/linux/README.md
                     -DOUT=${CMAKE_CURRENT_BINARY_DIR}/installer-linux/${case}
-                    -DFULL=${GG_VERSION_STRING}
+                    -DFULL=${GG_VERSION_STRING} -DCONTENT=${GG_PRODUCT_DIR}/content
                     -DCHECK_ARCHIVE=${CMAKE_CURRENT_SOURCE_DIR}/installer/check-archive.cmake
                     ${switch}
                     -P ${CMAKE_CURRENT_SOURCE_DIR}/installer/check-linux-tarball.cmake)
@@ -640,7 +652,7 @@ if (GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
                     -DPRODUCTS=${GG_PRODUCT_DIR}
                     -DREADME=${PROJECT_SOURCE_DIR}/installer/windows/readme.txt
                     -DOUT=${CMAKE_CURRENT_BINARY_DIR}/installer-windows/${case}
-                    -DFULL=${GG_VERSION_STRING}
+                    -DFULL=${GG_VERSION_STRING} -DCONTENT=${GG_PRODUCT_DIR}/content
                     -DCHECK_ARCHIVE=${CMAKE_CURRENT_SOURCE_DIR}/installer/check-archive.cmake
                     ${switch}
                     -P ${CMAKE_CURRENT_SOURCE_DIR}/installer/check-windows-zip.cmake)
@@ -654,6 +666,7 @@ if (GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
                     -DPRODUCTS=${GG_PRODUCT_DIR} -DLICENSES=${GG_LICENSE_DIR}
                     -DOUT=${CMAKE_CURRENT_BINARY_DIR}/installer-windows/inno
                     -DNUMERIC=${GG_VERSION_NUMERIC} -DFULL=${GG_VERSION_STRING}
+                    -DCONTENT=${GG_PRODUCT_DIR}/content
                     -P ${CMAKE_CURRENT_SOURCE_DIR}/installer/check-windows-inno.cmake)
             set_tests_properties(installer_windows_inno PROPERTIES LABELS installer
                     FIXTURES_REQUIRED gg_products)

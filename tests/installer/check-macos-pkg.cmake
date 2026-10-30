@@ -7,12 +7,15 @@
 #
 #   cmake -DSCRIPT=<make-installer.sh> -DPRODUCTS=<gg-products> -DOUT=<scratch dir>
 #         -DRESOURCES=<installer/macos> -DLICENSES=<gg-products/licenses> -DNUMERIC=<X.Y.Z>
-#         -DFULL=<full version> [-DMISSING=1 | -DPARTIAL_ENV=1] -P <this file>
+#         -DFULL=<full version> [-DCONTENT=<staged content dir>] [-DMISSING=1 | -DPARTIAL_ENV=1]
+#         -P <this file>
 #
 # Every case runs the script with the five signing variables unset, through /bin/bash (macOS's
 # bash 3.2), into OUT/out, which it first deletes.
 # - By default: the script exits 0 and its last line is `signed: no`; the PKG's Distribution
-#   names the five components, the version, both architectures, macOS 11.0, the title and the
+#   names the five components (six with CONTENT, which is passed to the script as --content: the
+#   Content choice in the outline, its pkg-ref, and a component installing the staged folder's
+#   Presets, Samples and the rest at /Library/Application Support/sethbc/Giga Grains), the version, both architectures, macOS 11.0, the title and the
 #   two panes; each component installs its one product where spec §6.4's table says, not
 #   relocatable; and the DMG is a UDZO image holding the PKG and Licenses/.
 # - MISSING: run on an empty products directory, the script exits 2 naming Giga Grains.clap and
@@ -47,10 +50,16 @@ if (PARTIAL_ENV)
     list(APPEND env_args MAC_SIGNING_IDENTITY=x)
 endif ()
 
+set(content_args "")
+if (CONTENT)
+    set(content_args --content "${CONTENT}")
+endif ()
+
 execute_process(
         COMMAND ${CMAKE_COMMAND} -E env ${env_args}
         /bin/bash "${SCRIPT}" --products "${products}" --out "${out_dir}" --version "${NUMERIC}"
         --full-version "${FULL}" --resources "${RESOURCES}" --licenses "${LICENSES}"
+        ${content_args}
         RESULT_VARIABLE result
         OUTPUT_VARIABLE stdout
         ERROR_VARIABLE stderr)
@@ -125,6 +134,27 @@ set(locations /Library/Audio/Plug-Ins/CLAP /Library/Audio/Plug-Ins/VST3
         /Library/Audio/Plug-Ins/Components /Applications /Applications)
 set(bundles "Giga Grains.clap" "Giga Grains.vst3" "Giga Grains.component" "Giga Grains.app"
         "Giga Grains FX.app")
+set(expected_components 5)
+if (CONTENT)
+    # The Content component (spec 6.11): its payload root holds the staged folder's own entries.
+    set(expected_components 6)
+    list(APPEND ids org.sethbc.giga-grains.content.pkg)
+    list(APPEND locations "/Library/Application Support/sethbc/Giga Grains")
+    list(APPEND bundles "")
+    if (NOT distribution MATCHES "<line choice=\"org.sethbc.giga-grains.content.pkg\"/>")
+        string(APPEND failures "\n  Distribution's outline has no line for the Content choice")
+    endif ()
+    if (NOT distribution MATCHES "<choice id=\"org.sethbc.giga-grains.content.pkg\"")
+        string(APPEND failures "\n  Distribution has no Content choice")
+    endif ()
+    if (NOT distribution MATCHES "giga-grains-content.pkg</pkg-ref>")
+        string(APPEND failures "\n  Distribution doesn't name giga-grains-content.pkg")
+    endif ()
+    file(GLOB content_roots RELATIVE "${CONTENT}" "${CONTENT}/*")
+    list(SORT content_roots)
+elseif (distribution MATCHES "<choice id=\"org.sethbc.giga-grains.content.pkg\"")
+    string(APPEND failures "\n  Distribution names a Content choice without --content")
+endif ()
 
 foreach (needle IN ITEMS "version=\"${NUMERIC}\"" "hostArchitectures=\"x86_64,arm64\""
         "customize=\"always\"" "<os-version min=\"11.0\"/>" "<title>Giga Grains ${FULL}</title>"
@@ -142,8 +172,9 @@ endforeach ()
 
 file(GLOB package_infos "${expanded}/*.pkg/PackageInfo")
 list(LENGTH package_infos component_count)
-if (NOT component_count EQUAL 5)
-    string(APPEND failures "\n  the PKG holds ${component_count} components, not 5")
+if (NOT component_count EQUAL expected_components)
+    string(APPEND failures
+            "\n  the PKG holds ${component_count} components, not ${expected_components}")
 endif ()
 foreach (id location bundle IN ZIP_LISTS ids locations bundles)
     string(FIND "${distribution}" "<pkg-ref id=\"${id}\"" at)
@@ -181,8 +212,14 @@ foreach (id location bundle IN ZIP_LISTS ids locations bundles)
             list(APPEND roots "${CMAKE_MATCH_1}")
         endif ()
     endforeach ()
-    if (NOT bom_result EQUAL 0 OR NOT roots STREQUAL "${bundle}")
-        string(APPEND failures "\n  ${id}'s payload root holds '${roots}', not '${bundle}'")
+    list(SORT roots)
+    if (bundle STREQUAL "")
+        set(want "${content_roots}")
+    else ()
+        set(want "${bundle}")
+    endif ()
+    if (NOT bom_result EQUAL 0 OR NOT roots STREQUAL "${want}")
+        string(APPEND failures "\n  ${id}'s payload root holds '${roots}', not '${want}'")
     endif ()
 endforeach ()
 
@@ -224,4 +261,5 @@ endif ()
 if (failures)
     message(FATAL_ERROR "FAIL: make-installer.sh's unsigned PKG and DMG:${failures}\n${transcript}")
 endif ()
-message(STATUS "PASS: make-installer.sh wrote ${pkg} (5 components) and a UDZO ${dmg}, unsigned")
+message(STATUS "PASS: make-installer.sh wrote ${pkg} (${expected_components} components) and a "
+        "UDZO ${dmg}, unsigned")

@@ -13,9 +13,14 @@ install from this zip instead, copy each file where you want it:
   Giga Grains.clap                    C:\Program Files\Common Files\CLAP\
   Giga Grains.vst3 (a folder)         C:\Program Files\Common Files\VST3\
   Giga Grains.exe, Giga Grains FX.exe anywhere you like: they're the standalone apps
+  content (a folder)                  C:\ProgramData\sethbc\Giga Grains\ : copy the folder's
+                                      entries (Presets, Samples, ...) into it, so that
+                                      C:\ProgramData\sethbc\Giga Grains\Presets exists
 
-Copying into C:\Program Files needs an administrator's permission. The CLAP and the VST3 each
-hold both plugins, Giga Grains and Giga Grains FX.
+Copying into C:\Program Files or C:\ProgramData needs an administrator's permission. The CLAP and
+the VST3 each hold both plugins, Giga Grains and Giga Grains FX. The content folder holds the
+factory presets and the CC0 samples they use; its PROVENANCE.md says where each sample came from
+and its license (LICENSE-CC0-1.0.txt).
 
 What it runs on
 ---------------

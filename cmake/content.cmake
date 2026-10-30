@@ -37,3 +37,60 @@ else ()
             COMMENT "Fetching the content into ${CMAKE_BINARY_DIR}/content-cache"
             VERBATIM)
 endif ()
+
+# The pin's tag and zip SHA-256, for content-version.txt (below), and a configure that re-runs when
+# the pin changes.
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${GG_CONTENT_PIN})
+file(STRINGS ${GG_CONTENT_PIN} gg_pin_lines)
+set(GG_CONTENT_TAG "")
+set(GG_CONTENT_ZIP_SHA256 "")
+foreach (line IN LISTS gg_pin_lines)
+    if (line MATCHES "^tag +([^ ]+)")
+        set(GG_CONTENT_TAG "${CMAKE_MATCH_1}")
+    elseif (line MATCHES "^sha256 +([0-9a-f]+)")
+        set(GG_CONTENT_ZIP_SHA256 "${CMAKE_MATCH_1}")
+    endif ()
+endforeach ()
+if (NOT GG_CONTENT_TAG OR NOT GG_CONTENT_ZIP_SHA256)
+    message(FATAL_ERROR "${GG_CONTENT_PIN} has no tag or sha256 line")
+endif ()
+
+# gg-presets (M2 sub-project 5's spec §6.11): packs every preset source,
+# content/presets/<Product>/<name>.json, into
+# ${CMAKE_BINARY_DIR}/content/Presets/<Product>/<name>.ggpreset with gg-render --pack-preset, which
+# gg-products stages into the installers' Content component. <Product> is "Giga Grains" or
+# "Giga Grains FX"; a product folder with no source (the repository has none until the factory
+# presets are written) packs nothing, and both output folders exist all the same. Only these
+# folders are packed: tests/fixtures/presets/ holds test sources, not factory content. The sources
+# are globbed at configure (CONFIGURE_DEPENDS re-runs it when one comes or goes), and an output
+# whose source is gone is deleted then, so it can't reach the installers.
+set(GG_PRESETS_DIR ${CMAKE_BINARY_DIR}/content/Presets)
+set(gg_preset_outputs "")
+foreach (product IN ITEMS "Giga Grains" "Giga Grains FX")
+    file(MAKE_DIRECTORY "${GG_PRESETS_DIR}/${product}")
+    file(GLOB gg_preset_sources CONFIGURE_DEPENDS
+            "${CMAKE_SOURCE_DIR}/content/presets/${product}/*.json")
+    list(SORT gg_preset_sources)
+    set(gg_product_outputs "")
+    foreach (source IN LISTS gg_preset_sources)
+        get_filename_component(stem "${source}" NAME_WE)
+        set(output "${GG_PRESETS_DIR}/${product}/${stem}.ggpreset")
+        add_custom_command(OUTPUT "${output}"
+                COMMAND gg-render --pack-preset "${source}" -o "${output}"
+                --content-dir "${GG_CONTENT_ROOT}"
+                DEPENDS gg-render "${source}"
+                COMMENT "Packing the preset ${product}/${stem}"
+                VERBATIM)
+        list(APPEND gg_product_outputs "${output}")
+    endforeach ()
+    file(GLOB gg_stale "${GG_PRESETS_DIR}/${product}/*")
+    foreach (file IN LISTS gg_stale)
+        if (NOT file IN_LIST gg_product_outputs)
+            file(REMOVE_RECURSE "${file}")
+        endif ()
+    endforeach ()
+    list(APPEND gg_preset_outputs ${gg_product_outputs})
+endforeach ()
+add_custom_target(gg-presets DEPENDS ${gg_preset_outputs})
+# A preset may name content samples (gg-render checks them against the content folder).
+add_dependencies(gg-presets gg-content)

@@ -5,7 +5,8 @@
 # Makes the Windows zip (spec §6.5). The gg-installer target runs it (cmake/products.cmake). A
 # CMake script, so the Windows side needs no shell:
 #
-#   cmake -DPRODUCTS=<dir> -DOUT=<dir> -DFULL_VERSION=<v> -DREADME=<readme.txt> -P make-zip.cmake
+#   cmake -DPRODUCTS=<dir> -DOUT=<dir> -DFULL_VERSION=<v> -DREADME=<readme.txt>
+#         [-DCONTENT=<dir>] -P make-zip.cmake
 #
 #   PRODUCTS      the four products, as gg-products gathers them: Giga Grains.clap,
 #                 Giga Grains.vst3 (a folder bundle), Giga Grains.exe and Giga Grains FX.exe; and
@@ -13,9 +14,11 @@
 #   OUT           where to write giga-grains-<v>-windows-x64.zip.
 #   FULL_VERSION  the full version string, <v> (the file name and its top-level folder).
 #   README        installer/windows/readme.txt, which goes in as readme.txt.
+#   CONTENT       the staged factory content (gg-products' content/: Presets/, Samples/, ...),
+#                 which goes in as content/. Without it the zip has no content/.
 #
-# Every entry sits under giga-grains-<v>/: the four products, licenses/ and readme.txt, the same
-# tree as the Linux tarball. No install script: readme.txt says where each product goes, and the
+# Every entry sits under giga-grains-<v>/: the four products, licenses/, readme.txt and, with
+# CONTENT, content/, the same tree as the Linux tarball. No install script: readme.txt says where each product goes, and the
 # Inno Setup installer (giga-grains.iss) puts them there.
 #
 # It fails naming every missing input before it writes anything, and leaves no partial zip when
@@ -42,6 +45,11 @@ endif ()
 foreach (var IN ITEMS PRODUCTS OUT README)
     get_filename_component(${var} "${${var}}" ABSOLUTE)
 endforeach ()
+if (DEFINED CONTENT AND NOT "${CONTENT}" STREQUAL "")
+    get_filename_component(CONTENT "${CONTENT}" ABSOLUTE)
+else ()
+    set(CONTENT "")
+endif ()
 
 # The inputs, each checked before anything is written; every missing one is named, one per line
 # (a line starting with spaces is printed as it is, never re-wrapped).
@@ -71,6 +79,9 @@ endif ()
 if (NOT EXISTS "${README}" OR IS_DIRECTORY "${README}")
     message(FATAL_ERROR "make-zip: the readme '${README}' isn't a file")
 endif ()
+if (CONTENT AND (NOT IS_DIRECTORY "${CONTENT}/Presets" OR NOT IS_DIRECTORY "${CONTENT}/Samples"))
+    message(FATAL_ERROR "make-zip: the content '${CONTENT}' has no Presets/ and Samples/")
+endif ()
 
 set(top "giga-grains-${FULL_VERSION}")
 set(zip "${OUT}/${top}-windows-x64.zip")
@@ -93,6 +104,10 @@ file(MAKE_DIRECTORY "${staging}/${top}")
 file(COPY "${PRODUCTS}/Giga Grains.clap" "${PRODUCTS}/Giga Grains.vst3"
         "${PRODUCTS}/Giga Grains.exe" "${PRODUCTS}/Giga Grains FX.exe" "${PRODUCTS}/licenses"
         DESTINATION "${staging}/${top}")
+if (CONTENT)
+    # The folder's entries go under content/ (file(COPY) of a folder keeps its own name).
+    file(COPY "${CONTENT}/" DESTINATION "${staging}/${top}/content")
+endif ()
 file(COPY_FILE "${README}" "${staging}/${top}/readme.txt" RESULT copy_result)
 if (NOT copy_result STREQUAL "0")
     fail("copying '${README}' failed: ${copy_result}")

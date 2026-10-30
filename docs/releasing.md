@@ -31,15 +31,28 @@ very products they ran against (`cmake --build ... --target gg-installer`), and 
 artifact `installer-<preset>`. The `release` job runs only after `plan`, all three legs and the
 sanitizers passed. The release files, with `<v>` the full version:
 
-- `giga-grains-<v>-macos.dmg`: the PKG (five choices: the CLAP, VST3 and AU into
-  `/Library/Audio/Plug-Ins/`, the two apps into `/Applications`) and a `Licenses` folder;
-- `giga-grains-<v>-windows-x64.exe` (Inno Setup) and `giga-grains-<v>-windows-x64.zip`,
+- `giga-grains-<v>-macos.dmg`: the PKG (six choices: the CLAP, VST3 and AU into
+  `/Library/Audio/Plug-Ins/`, the two apps into `/Applications`, and the Content into
+  `/Library/Application Support/sethbc/Giga Grains`) and a `Licenses` folder;
+- `giga-grains-<v>-windows-x64.exe` (Inno Setup; its Content component installs to
+  `C:\ProgramData\sethbc\Giga Grains`) and `giga-grains-<v>-windows-x64.zip` (with `content/`),
   unsigned (INTENT §19);
-- `giga-grains-<v>-linux-x86_64.tar.gz`;
+- `giga-grains-<v>-linux-x86_64.tar.gz` (with `content/`);
 - `giga-grains-<v>-source.tar.gz`, the tagged tree with every submodule at its pin (the
   complete corresponding source), made by the `release` job with
   `scripts/release/source-tarball.sh`;
 - `SHA256SUMS.txt` over all of them.
+
+### The content
+
+Every installer carries the factory content (the Content component): the CC0 samples, packed
+into the presets' folders with the factory presets. The samples are not in this repository: they
+are a zip released in https://github.com/sethbc/giga-grains-content, pinned by
+`content/pin.txt` (tag, URL, SHA-256). To ship different samples, release a new tag there (never
+move one), change `pin.txt` to it in a commit of its own, and let CI's content cache re-key
+(`scripts/fetch-content.sh`). `gg-products` stages the pinned release with the packed presets
+(`gg-presets`) and a `content-version.txt` naming the tag, and fails rather than ship a partial
+component; `installer_content_staged` (`ctest -L installer`) checks the staged folder.
 
 ## One-time setup
 
