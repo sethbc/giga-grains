@@ -1,0 +1,15 @@
+{
+  "mode": "fx",
+  "sampleRate": 48000,
+  "durationSeconds": 7.0,
+  "blockSize": 128,
+  "seed": 1,
+  "input": {"kind": "sweep", "startHz": 50, "endHz": 700, "seconds": 6.5, "amplitude": 0.5},
+  "channels": 1,
+  "params": {"Mix": 1.0, "Position": 0.35, "Density": 5.0, "Size": -3.5},
+  "mod": [
+    {"slot": 13, "source": "Transport Beat", "target": "Position", "targetLayer": "A", "depth": 0.2, "curve": "Unipolar"},
+    {"slot": 14, "source": "Transport Bar", "target": "Pitch", "targetLayer": "A", "depth": 12, "curve": "Unipolar"}
+  ],
+  "transport": {"tempoBpm": 120, "playing": true, "startBeat": 0}
+}

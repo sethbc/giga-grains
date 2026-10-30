@@ -26,7 +26,9 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
+#include "core/LayersFixture.h"
 #include "gg/core/DenormalGuard.h"
+#include "gg/core/ModMatrix.h"
 #include "gg/core/ParamIds.h"
 #include "gg/core/ParamMap.h"
 #include "gg/core/Processor.h"
@@ -57,26 +59,49 @@ float clampTo(ParamSlot s, float v)
     return std::clamp(v, meta.minVal, meta.maxVal);
 }
 
-// Records spawned grains into preallocated storage: the sink runs inside process().
+// Records spawned grains, with their layers, into preallocated storage: the sink runs inside
+// process(). With more than one layer on, the order across layers follows the process() calls
+// (each call renders layer A's piece, then B's, ...), so only each layer's own sequence is
+// block-size invariant (layer()).
 struct GrainLog
 {
     static constexpr std::size_t kCapacity = 16384;
     std::vector<gg::GrainSpec> grains;
+    std::vector<uint32_t> layers; // grains[i]'s layer
     bool overflowed{false};
 
-    GrainLog() { grains.reserve(kCapacity); }
+    GrainLog()
+    {
+        grains.reserve(kCapacity);
+        layers.reserve(kCapacity);
+    }
 
-    static void record(void *ctx, const gg::GrainSpec &g)
+    static void record(void *ctx, uint32_t layer, const gg::GrainSpec &g)
     {
         auto *log = static_cast<GrainLog *>(ctx);
         if (log->grains.size() < kCapacity)
         {
             log->grains.push_back(g);
+            log->layers.push_back(layer);
         }
         else
         {
             log->overflowed = true;
         }
+    }
+
+    // Layer l's grains, in the order the sink saw them.
+    std::vector<gg::GrainSpec> layer(uint32_t l) const
+    {
+        std::vector<gg::GrainSpec> out;
+        for (std::size_t i = 0; i < grains.size(); ++i)
+        {
+            if (layers[i] == l)
+            {
+                out.push_back(grains[i]);
+            }
+        }
+        return out;
     }
 };
 
@@ -322,11 +347,16 @@ struct TimedEvent
     double value;
 };
 
-// 40 events on every slot over 3 s: base values across a range that keeps the render light, and
-// every fourth event a modulation offset of up to an eighth of that range. Every slot has a
-// range: Space's, Texture, Feedback and the macros (which move the cloud and Space through their
-// recipes) are automated too. Some events land exactly on grid points, and some share a sample
-// with the previous slot's. Times and values come from gg::rng.
+// The 28 M1 slots, which automation() covers. The other 190 (M2 sub-project 1's spec §6.9) are
+// covered by everySlotAutomation(), with the layers they act on switched on.
+constexpr size_t kM1Slots = static_cast<size_t>(ParamSlot::Source);
+static_assert(kM1Slots == 28);
+
+// 40 events on every M1 slot over 3 s: base values across a range that keeps the render light,
+// and every fourth event a modulation offset of up to an eighth of that range. Every M1 slot has
+// a range: Space's, Texture, Feedback and the macros (which move the cloud and Space through
+// their recipes) are automated too. Some events land exactly on grid points, and some share a
+// sample with the previous slot's. Times and values come from gg::rng.
 std::vector<TimedEvent> automation()
 {
     struct Range
@@ -362,7 +392,7 @@ std::vector<TimedEvent> automation()
     ranges[at(ParamSlot::Macro6)] = {0.0f, 1.0f};
     ranges[at(ParamSlot::Macro7)] = {0.0f, 1.0f};
     ranges[at(ParamSlot::Macro8)] = {0.0f, 1.0f};
-    for (size_t s = 0; s < kParamCount; ++s)
+    for (size_t s = 0; s < kM1Slots; ++s)
     {
         REQUIRE(ranges[s].hi > ranges[s].lo); // every slot covered
     }
@@ -370,7 +400,7 @@ std::vector<TimedEvent> automation()
     constexpr int kPerSlot = 40;
     std::vector<TimedEvent> events;
     std::array<int64_t, kPerSlot> previousSlotTimes{};
-    for (size_t s = 0; s < kParamCount; ++s)
+    for (size_t s = 0; s < kM1Slots; ++s)
     {
         const auto slot = static_cast<ParamSlot>(s);
         const Range r = ranges[s];
@@ -464,12 +494,14 @@ Stereo ringFrames(const gg::LiveSource &live, int64_t head)
 }
 
 // Renders the whole input through a fresh FX processor in process() calls of blockSizes in turn
-// (cycling), each call given the events that fall inside it. A 0-frame call at sample `done`
-// takes the events stamped `done`, at offset 0. `setup`, if given, runs on the processor before
-// the first call, after the event sink is set.
+// (cycling), each call given the events, notes and MIDI controls that fall inside it. A 0-frame
+// call at sample `done` takes those stamped `done`, at offset 0. `setup`, if given, runs on the
+// processor before the first call, after the event sink is set.
 void renderAutomation(const Stereo &input, const std::vector<TimedEvent> &events, uint32_t maxBlock,
                       const std::vector<uint32_t> &blockSizes, AutomationRender &r,
-                      const std::function<void(Processor &)> &setup = {})
+                      const std::function<void(Processor &)> &setup = {},
+                      const std::vector<gg::test::layers::TimedNote> &notes = {},
+                      const std::vector<gg::test::layers::TimedControl> &controls = {})
 {
     const auto frames = static_cast<int64_t>(input.left.size());
     Processor p({kSampleRate, maxBlock, 42, Mode::Fx});
@@ -482,7 +514,13 @@ void renderAutomation(const Stereo &input, const std::vector<TimedEvent> &events
     r.audio.right.assign(static_cast<std::size_t>(frames), kNaN);
     std::vector<ParamEvent> blockEvents;
     blockEvents.reserve(events.size());
+    std::vector<gg::core::NoteEvent> blockNotes;
+    blockNotes.reserve(notes.size());
+    std::vector<gg::core::ControlEvent> blockControls;
+    blockControls.reserve(controls.size());
     std::size_t nextEvent = 0;
+    std::size_t nextNote = 0;
+    std::size_t nextControl = 0;
     int64_t done = 0;
     for (std::size_t next = 0; done < frames; ++next)
     {
@@ -496,10 +534,24 @@ void renderAutomation(const Stereo &input, const std::vector<TimedEvent> &events
             blockEvents.push_back(
                 {static_cast<uint32_t>(e.time - done), e.slot, e.isModulation, e.value});
         }
+        blockNotes.clear();
+        for (; nextNote < notes.size() && notes[nextNote].time < limit; ++nextNote)
+        {
+            const auto &e = notes[nextNote];
+            blockNotes.push_back(
+                {static_cast<uint32_t>(e.time - done), e.type, e.channel, e.key, e.velocity});
+        }
+        blockControls.clear();
+        for (; nextControl < controls.size() && controls[nextControl].time < limit; ++nextControl)
+        {
+            const auto &c = controls[nextControl];
+            blockControls.push_back(
+                {static_cast<uint32_t>(c.time - done), c.kind, c.channel, c.value});
+        }
         const auto j = static_cast<std::size_t>(done);
         const float *in[2] = {input.left.data() + j, input.right.data() + j};
         float *out[2] = {r.audio.left.data() + j, r.audio.right.data() + j};
-        p.process(in, 2, out, 2, n, blockEvents);
+        p.process(in, 2, out, 2, n, blockEvents, blockNotes, blockControls);
         done += n;
     }
     r.writeHead = p.engine().liveWriteHead();
@@ -511,7 +563,7 @@ TEST_CASE("processor is block-size invariant with automation", "[core][determini
 {
     const Stereo input = noise(kAutomationFrames, 0.5f, 21);
     const auto events = automation();
-    REQUIRE(events.size() == 40 * kParamCount);
+    REQUIRE(events.size() == 40 * kM1Slots);
 
     AutomationRender ref;
     renderAutomation(input, events, 4096, {4096}, ref);
@@ -618,19 +670,130 @@ std::vector<TimedEvent> performAutomation()
                      [](const TimedEvent &a, const TimedEvent &b) { return a.time < b.time; });
     return events;
 }
+
+// performAutomation(), with every slot past the 28 M1 ones automated too (M2 sub-project 1's spec
+// §6.9): layer A's 37 new parameters, layers B to D's 48 each and the nine layer globals, 10 events
+// each across the slot's whole range in the FX's paramMeta, none on a grid point, every third a
+// modulation offset of up to a quarter of the range, except on a stepped parameter (Freeze, Source,
+// the LFO shapes, Step Length, the Layer On switches), whose values are whole. The Layer On
+// switches are on three times in four, so layers go off for longer than the ramp and come back.
+// Times and values come from gg::rng, keyed apart from the others'.
+std::vector<TimedEvent> everySlotAutomation()
+{
+    constexpr int kPerSlot = 10;
+    std::vector<TimedEvent> events = performAutomation();
+    for (std::size_t s = kM1Slots; s < kParamCount; ++s)
+    {
+        const auto slot = static_cast<ParamSlot>(s);
+        const auto &meta = gg::core::paramMeta(slot, Mode::Fx);
+        const double lo = meta.minVal;
+        const double hi = meta.maxVal;
+        REQUIRE(hi > lo);
+        const bool stepped = meta.type != sst::basic_blocks::params::ParamMetaData::FLOAT;
+        const auto layer = gg::core::perLayerGlobalLayer(slot);
+        const bool layerOn = layer && slot == gg::core::layerOnSlot(*layer);
+        for (int k = 0; k < kPerSlot; ++k)
+        {
+            const uint64_t key = 900000 + s * 1000 + static_cast<uint64_t>(k) * 4;
+            auto time = static_cast<int64_t>(uniform(79, key) * kAutomationFrames);
+            if (time % 32 == 0)
+            {
+                time += 1 + k % 31; // off the grid
+            }
+            time = std::min(time, kAutomationFrames - 1);
+            const double u = uniform(79, key + 1);
+            const bool isModulation = !stepped && k % 3 == 2;
+            double value = 0.0;
+            if (isModulation)
+            {
+                value = (2.0 * u - 1.0) * (hi - lo) / 4.0;
+            }
+            else if (layerOn)
+            {
+                value = u < 0.75 ? 1.0 : 0.0;
+            }
+            else if (stepped)
+            {
+                value = std::min(std::floor(lo + (hi - lo + 1.0) * u), hi);
+            }
+            else
+            {
+                value = lo + (hi - lo) * u;
+            }
+            events.push_back({time, slot, isModulation, value});
+        }
+    }
+    std::stable_sort(events.begin(), events.end(),
+                     [](const TimedEvent &a, const TimedEvent &b) { return a.time < b.time; });
+    return events;
+}
+
+// Layers B to D switched on, each layer given a sine sample for the times its Source is Sample, a
+// route from every mod source (gg::test::layers::allSourceRoutes) and a playing transport.
+void everyLayerSetup(Processor &p)
+{
+    const std::array<double, 4> hz{196.0, 293.66, 440.0, 659.25};
+    for (uint8_t L = 0; L < gg::core::kLayers; ++L)
+    {
+        p.setBase(gg::core::layerOnSlot(L), 1.0f);
+        p.setSourceNow(L, gg::test::layers::sine(hz[L]));
+    }
+    p.setRoutes(gg::test::layers::allSourceRoutes(Mode::Fx));
+    p.setTransport({true, 0.5, 132.0, true, 4});
+}
+
+// Two short notes with velocities (they freeze the rings for a while and gate the envelopes), and
+// MIDI controls of every kind off the grid: the matrix's event-driven sources move.
+std::vector<gg::test::layers::TimedNote> everyLayerNotes()
+{
+    using gg::core::NoteEventType;
+    return {{30011, NoteEventType::On, 0, 64, 0.8f},
+            {41017, NoteEventType::Off, 0, 64},
+            {90007, NoteEventType::On, 1, 55, 0.3f},
+            {99013, NoteEventType::Off, 1, 55}};
+}
+
+std::vector<gg::test::layers::TimedControl> everyLayerControls()
+{
+    std::vector<gg::test::layers::TimedControl> c;
+    for (int k = 0; k < 24; ++k)
+    {
+        const auto key = static_cast<uint64_t>(3 * k);
+        auto time = static_cast<int64_t>(uniform(80, key) * (kAutomationFrames - 1));
+        if (time % 32 == 0)
+        {
+            time += 1; // off the grid
+        }
+        c.push_back({time, static_cast<gg::core::ControlKind>(k % 3),
+                     static_cast<int16_t>(k % 2 == 0 ? -1 : 2),
+                     static_cast<float>(uniform(80, key + 1))});
+    }
+    std::stable_sort(c.begin(), c.end(),
+                     [](const auto &a, const auto &b) { return a.time < b.time; });
+    return c;
+}
 } // namespace
 
 TEST_CASE("the perform parameters are block-size invariant together", "[core][determinism]")
 {
-    // Every slot automated (automation()), Texture, Feedback and the macros densely, with
-    // modulation: the macro curves, Texture's latched envelope and Feedback's ring write all
-    // render the same bits, grains, head and ring at any host block size and maxBlockSize.
+    // Every one of the 218 slots automated (automation() for the M1 slots, everySlotAutomation()
+    // for the rest), Texture, Feedback and the macros densely, with modulation, layers B to D on,
+    // a route from every mod source, a transport, notes and MIDI controls: the macro curves,
+    // Texture's latched envelope, Feedback's ring write, the layers' switches, sources, spreads
+    // and morph, and the matrix all render the same bits, grains, head and ring at any host block
+    // size and maxBlockSize.
     const Stereo input = noise(kAutomationFrames, 0.5f, 31);
-    const auto events = performAutomation();
-    REQUIRE(events.size() == 40 * kParamCount + 300);
+    const auto events = everySlotAutomation();
+    REQUIRE(events.size() == 40 * kM1Slots + 300 + 10 * (kParamCount - kM1Slots));
+    const auto notes = everyLayerNotes();
+    const auto controls = everyLayerControls();
+    const auto render = [&](const std::vector<TimedEvent> &ev, uint32_t maxBlock,
+                            const std::vector<uint32_t> &blockSizes, AutomationRender &r) {
+        renderAutomation(input, ev, maxBlock, blockSizes, r, everyLayerSetup, notes, controls);
+    };
 
     AutomationRender ref;
-    renderAutomation(input, events, 4096, {4096}, ref);
+    render(events, 4096, {4096}, ref);
     REQUIRE(allFinite(ref.audio.left));
     REQUIRE(allFinite(ref.audio.right));
     REQUIRE(peak(ref.audio.left) > 0.05f);
@@ -645,6 +808,11 @@ TEST_CASE("the perform parameters are block-size invariant together", "[core][de
     std::sort(textures.begin(), textures.end());
     textures.erase(std::unique(textures.begin(), textures.end()), textures.end());
     REQUIRE(textures.size() > 10);
+    for (uint8_t L = 0; L < gg::core::kLayers; ++L)
+    {
+        INFO("layer " << int{L});
+        REQUIRE(ref.log.layer(L).size() > 3);
+    }
     REQUIRE(ref.writeHead < kAutomationFrames - 4800);
     REQUIRE(ref.ring.left.size() == static_cast<std::size_t>(ref.writeHead));
     std::vector<TimedEvent> withoutFeedback;
@@ -653,7 +821,7 @@ TEST_CASE("the perform parameters are block-size invariant together", "[core][de
                      return e.slot != ParamSlot::Feedback && e.slot != ParamSlot::Macro7;
                  });
     AutomationRender dry;
-    renderAutomation(input, withoutFeedback, 4096, {4096}, dry);
+    render(withoutFeedback, 4096, {4096}, dry);
     REQUIRE(dry.writeHead == ref.writeHead);
     REQUIRE_FALSE(sameBits(dry.ring.left, ref.ring.left));
     // And the macro events change the output: without every macro slot's events (automation()'s
@@ -663,7 +831,7 @@ TEST_CASE("the perform parameters are block-size invariant together", "[core][de
                  [](const TimedEvent &e) { return !gg::core::isMacro(e.slot); });
     REQUIRE(withoutMacros.size() < events.size());
     AutomationRender plain;
-    renderAutomation(input, withoutMacros, 4096, {4096}, plain);
+    render(withoutMacros, 4096, {4096}, plain);
     REQUIRE_FALSE(sameBits(plain.audio.left, ref.audio.left));
 
     struct Split
@@ -684,9 +852,13 @@ TEST_CASE("the perform parameters are block-size invariant together", "[core][de
         INFO("maxBlockSize = " << split.maxBlock << ", first block size = "
                                << split.blockSizes.front() << " of " << split.blockSizes.size());
         AutomationRender r;
-        renderAutomation(input, events, split.maxBlock, split.blockSizes, r);
+        render(events, split.maxBlock, split.blockSizes, r);
         REQUIRE_FALSE(r.log.overflowed);
-        REQUIRE(r.log.grains == ref.log.grains);
+        for (uint32_t L = 0; L < gg::core::kLayers; ++L)
+        {
+            INFO("layer " << L);
+            REQUIRE(r.log.layer(L) == ref.log.layer(L));
+        }
         REQUIRE(r.writeHead == ref.writeHead);
         REQUIRE(sameBits(ref.audio.left, r.audio.left));
         REQUIRE(sameBits(ref.audio.right, r.audio.right));
@@ -1065,14 +1237,21 @@ TEST_CASE("processor survives an automation storm", "[core][rt]")
     // (the storm sets Reverb Amount too): the output is never louder than the input plus 2.
     REQUIRE(peak(left) < peak(input.left) + 2.0f);
     REQUIRE(peak(right) < peak(input.right) + 2.0f);
-    // The effective values: the macros' clamp(base + mod), their offsets (the storm moves the
-    // macros too), then one clamp of base + mod + offset.
-    gg::core::ParamValues macros{};
-    for (const ParamSlot macro : gg::core::kMacroSlots)
+    // The effective values: the macros' clamp(base + mod), the factory routes' offsets from them
+    // (the storm moves the macros too), then one clamp of base + mod + offset.
+    std::array<gg::core::ModSourceValues, gg::core::kLayers> sources{};
+    for (size_t m = 0; m < gg::core::kMacroSlots.size(); ++m)
     {
-        macros[at(macro)] = clampTo(macro, lastBase[at(macro)] + lastMod[at(macro)]);
+        const ParamSlot macro = gg::core::kMacroSlots[m];
+        for (auto &layer : sources)
+        {
+            layer.v[static_cast<size_t>(gg::core::ModSource::Macro1) + m] =
+                clampTo(macro, lastBase[at(macro)] + lastMod[at(macro)]);
+        }
     }
-    const gg::core::ParamValues offsets = gg::core::macroOffsets(macros, Mode::Fx);
+    gg::core::ParamValues offsets{};
+    gg::core::applyRoutes(p.routes(), sources, offsets);
+    REQUIRE(p.routes() == gg::core::factoryRoutes(Mode::Fx));
     for (size_t s = 0; s < kParamCount; ++s)
     {
         const auto slot = static_cast<ParamSlot>(s);
@@ -1089,7 +1268,7 @@ struct SpawnCounter
 {
     uint64_t spawns{0};
 
-    static void record(void *ctx, const gg::GrainSpec &)
+    static void record(void *ctx, uint32_t, const gg::GrainSpec &)
     {
         ++static_cast<SpawnCounter *>(ctx)->spawns;
     }
@@ -1129,8 +1308,14 @@ TEST_CASE("processor does not allocate", "[core][rt]")
     {
         const auto slot = static_cast<ParamSlot>(s);
         const auto offset = static_cast<uint32_t>(s * 97);
-        const double value =
-            slot == ParamSlot::Density ? 8.0 : (slot == ParamSlot::Size ? -4.0 : 0.4);
+        // Every layer switched on, so the call ends with grains sounding (M2 sub-project 1's spec
+        // §6.3).
+        const bool layerOn = gg::core::perLayerGlobalLayer(slot) &&
+                             slot == gg::core::layerOnSlot(*gg::core::perLayerGlobalLayer(slot));
+        const double value = slot == ParamSlot::Density ? 8.0
+                             : slot == ParamSlot::Size  ? -4.0
+                             : layerOn                  ? 1.0
+                                                        : 0.4;
         events.push_back({offset, slot, false, value});
         events.push_back({offset + 3, slot, true, 0.1});
     }
@@ -1384,10 +1569,11 @@ TEST_CASE("processor configures the engine for its mode", "[core]")
     }
     SECTION("instrument")
     {
-        // No ring and no source in this slice: the wet signal alone, which is silence, whatever
-        // the input.
+        // No source in this slice: the wet signal alone, which is silence, whatever the input.
+        // The input feeds the 16 s rings (M2 sub-project 1's spec §6.2), which layer A, reading
+        // a sample, doesn't read.
         Processor p({kSampleRate, 512, 1, Mode::Instrument});
-        REQUIRE(p.engine().liveFrames() == 0);
+        REQUIRE(p.engine().liveFrames() == 16 * 48000);
         // The instrument's defaults: Position at the start of the file (spec §6.8).
         for (size_t s = 0; s < kParamCount; ++s)
         {
@@ -1518,17 +1704,16 @@ TEST_CASE("macro offsets add to base and modulation before one clamp", "[core]")
 
 namespace
 {
-// Every macro at its rest value (spec §3.1: 0.5 for a bipolar macro, 0 for a unipolar one; the
-// instrument's Macro Stereo is bipolar, FX's Macro Feedback unipolar), each event at its own
-// sample after 0.5 s, off the grid.
+// Every macro at its rest value (spec §3.1: 0.5 for a bipolar macro, 0 for a unipolar one; Macro
+// Feedback is unipolar in both products), each event at its own sample after 0.5 s, off the grid.
 std::vector<TimedEvent> macrosAtRest(Mode mode)
 {
     std::vector<TimedEvent> events;
     int64_t time = 24000 + 3;
     for (const ParamSlot slot : gg::core::kMacroSlots)
     {
-        const bool unipolar = slot == ParamSlot::Macro5 || slot == ParamSlot::Macro6 ||
-                              (slot == ParamSlot::Macro7 && mode == Mode::Fx);
+        const bool unipolar =
+            slot == ParamSlot::Macro5 || slot == ParamSlot::Macro6 || slot == ParamSlot::Macro7;
         const double rest = unipolar ? 0.0 : 0.5;
         REQUIRE(gg::core::paramMeta(slot, mode).defaultVal == static_cast<float>(rest));
         events.push_back({time, slot, false, rest});
@@ -1698,18 +1883,21 @@ TEST_CASE("macro freeze engages freeze", "[core]")
     }
 }
 
-TEST_CASE("instrument macros 7 and 8 drive Stereo and Level", "[core]")
+TEST_CASE("instrument macros 7 and 8 drive Feedback and Level", "[core]")
 {
     std::vector<float> left(64), right(64);
     float *out[2] = {left.data(), right.data()};
     const std::array<ParamEvent, 2> events{
         {{0, ParamSlot::Macro7, false, 1.0}, {0, ParamSlot::Macro8, false, 1.0}}};
 
+    // Macro 7 is Macro Feedback in both products (M2 sub-project 1's spec §6.9): in the
+    // instrument it moves Feedback, which does nothing there yet, and Stereo stays at its base.
     Processor inst({kSampleRate, 512, 3, Mode::Instrument});
     inst.process(nullptr, 0, out, 2, 64, events);
-    CHECK(inst.effective(ParamSlot::Stereo) == 0.5f + 0.5f);
+    CHECK(inst.effective(ParamSlot::Stereo) == 0.5f);
     CHECK(inst.effective(ParamSlot::Level) == 0.0f + 12.0f);
-    CHECK(inst.effective(ParamSlot::Feedback) == 0.0f);
+    CHECK(inst.effective(ParamSlot::Feedback) == 0.9f);
+    CHECK(inst.feedbackAt(64) == 0.0f); // the instrument's Feedback is 0 (toWetParams)
     CHECK(inst.effective(ParamSlot::Mix) == 0.5f);
 
     // The FX's are Feedback (+0.9u²) and Mix (+0.5b).

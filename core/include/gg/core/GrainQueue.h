@@ -19,12 +19,13 @@ namespace gg::core
 struct GrainVis
 {
     int64_t onsetSample{0};      ///< As GrainSpec::onsetSample: output samples, absolute time.
-    double startPos{0.0};        ///< Where it starts reading: ring time (FX) or source frames
-                                 ///< (instrument), as GrainSpec::startPos.
+    double startPos{0.0};        ///< Where it starts reading: ring time (a grain reading the
+                                 ///< ring) or source frames (a sample), as GrainSpec::startPos.
     float rate{0.0f};            ///< Source (or ring) frames advanced per output sample.
     float durationSamples{0.0f}; ///< Its length in output samples.
     float gain{0.0f};
-    float pan{0.0f}; ///< -1 (left) .. 1 (right), as GrainSpec::pan.
+    float pan{0.0f};  ///< -1 (left) .. 1 (right), as GrainSpec::pan.
+    uint8_t layer{0}; ///< The layer that spawned it, 0 to 3 (A to D; M2 sub-project 1's spec §6.7).
 };
 
 /// A single-producer, single-consumer ring of N values of T, fixed in size: push never blocks,

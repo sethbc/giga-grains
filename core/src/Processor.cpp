@@ -6,9 +6,13 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cassert>
 #include <cmath>
 #include <cstddef>
+#include <limits>
+#include <optional>
+#include <stdexcept>
 
 #include "gg/core/DenormalGuard.h"
 #include "gg/core/ParamMap.h"
@@ -26,13 +30,29 @@ static_assert(Processor::kFeedbackDelay == gg::LiveSource::kHeadMargin);
 
 namespace
 {
-EngineConfig engineConfig(const ProcessorConfig &c)
+/// The configuration the engines would reject, rejected before anything is allocated.
+const ProcessorConfig &validated(const ProcessorConfig &c)
+{
+    if (!std::isfinite(c.sampleRate) || c.sampleRate <= 0.0)
+    {
+        throw std::invalid_argument("Processor: sampleRate must be finite and > 0");
+    }
+    if (c.maxBlockSize == 0)
+    {
+        throw std::invalid_argument("Processor: maxBlockSize must be > 0");
+    }
+    return c;
+}
+
+/// Layer L's engine: a kLiveSeconds ring in both products (M2 sub-project 1's spec §6.2).
+EngineConfig engineConfig(const ProcessorConfig &c, uint8_t layer)
 {
     EngineConfig e;
     e.sampleRate = c.sampleRate;
     e.maxBlockSize = c.maxBlockSize;
     e.seed = c.seed;
-    e.liveSeconds = c.mode == Mode::Fx ? Processor::kLiveSeconds : 0.0;
+    e.liveSeconds = Processor::kLiveSeconds;
+    e.layer = layer;
     return e;
 }
 
@@ -53,7 +73,7 @@ int64_t gridCeil(int64_t a) noexcept
 
 float finiteOrZero(float x) noexcept { return std::isfinite(x) ? x : 0.0f; }
 
-/// A missing ring-input channel, for the live peaks: the FX's pieces are at most
+/// A missing ring-input channel, for the live peaks: the pieces are at most
 /// kFeedbackDelay samples.
 constexpr std::array<float, Processor::kFeedbackDelay> kSilence{};
 
@@ -72,6 +92,62 @@ bool validNote(const NoteEvent &n) noexcept
         return inRange(n.channel, -1, 15);
     }
     return false;
+}
+
+/// Whether a control event's fields are in range (ControlEvent): a known kind, a channel 0..15 or
+/// −1, a finite value.
+bool validControl(const ControlEvent &c) noexcept
+{
+    return c.kind <= ControlKind::PitchBend && c.channel >= -1 && c.channel <= 15 &&
+           std::isfinite(c.value);
+}
+
+/// v clamped to [0, 1], NaN as 0.
+float unitClamped(float v) noexcept { return v >= 0.0f ? (v <= 1.0f ? v : 1.0f) : 0.0f; }
+
+/// Whether some route moves its target with time alone (the class comment's Time-varying
+/// routes): a time-varying source, a non-zero depth and a target it reaches.
+bool anyTimeVarying(const ModRoutes &routes) noexcept
+{
+    for (const ModRoute &r : routes)
+    {
+        const bool reaches =
+            !isLayerTarget(r.target) || r.targetLayer == kAllLayers || r.targetLayer < kLayers;
+        if (isTimeVarying(r.source) && r.depth != 0.0f && isValidTarget(r.target) && reaches)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+// sameCloud compares every field of CloudParams: a field added there must be added there too.
+static_assert(sizeof(CloudParams) == 96, "CloudParams changed: update sameCloud");
+
+/// Whether two CloudParams are the same, bit for bit (+0 and −0 differ, so the engine is never
+/// spared a value that would change a bit).
+bool sameCloud(const CloudParams &a, const CloudParams &b) noexcept
+{
+    const auto same = [](double x, double y) {
+        return std::bit_cast<uint64_t>(x) == std::bit_cast<uint64_t>(y);
+    };
+    return same(a.densityHz, b.densityHz) && same(a.distribution, b.distribution) &&
+           same(a.grainDurationSec, b.grainDurationSec) && same(a.position, b.position) &&
+           same(a.spray, b.spray) && same(a.pitchSemitones, b.pitchSemitones) &&
+           same(a.stereo, b.stereo) &&
+           std::bit_cast<uint32_t>(a.gain) == std::bit_cast<uint32_t>(b.gain) &&
+           same(a.texture, b.texture) && a.quality == b.quality &&
+           a.sprayInSeconds == b.sprayInSeconds &&
+           same(a.pitchSpreadSemitones, b.pitchSpreadSemitones) &&
+           same(a.sizeSpreadOctaves, b.sizeSpreadOctaves);
+}
+
+/// Whether `s` is a modulator's control (LFO 1 Rate to Step 16, in any layer): no route targets
+/// one, so its effective value is clamp(base + modulation).
+bool isModulatorControl(ParamSlot s) noexcept
+{
+    const std::optional<LayerRef> ref = layerOf(s);
+    return ref && ref->param >= LayerParam::Lfo1Rate;
 }
 } // namespace
 
@@ -105,22 +181,15 @@ void Processor::Ramp::jump(float target) noexcept
     start = 0;
 }
 
+Processor::Layer::Layer(const EngineConfig &config) : engine(config) {}
+
 Processor::Processor(const ProcessorConfig &config)
-    : config_(config), engine_(engineConfig(config)), rampSamples_(rampLength(config.sampleRate)),
+    : config_(validated(config)), rampSamples_(rampLength(config.sampleRate)),
+      pieceMax_(std::min(config.maxBlockSize, kFeedbackDelay)), routes_(factoryRoutes(config.mode)),
+      timeVarying_(anyTimeVarying(routes_)), follower_(config.sampleRate),
+      cellSeconds_(static_cast<double>(kControlGrid) / config.sampleRate),
       reverb_(std::make_unique<SpaceReverb>(config.sampleRate))
 {
-    diffuser_.prepare(config_.sampleRate);
-    for (auto &channel : wet_)
-    {
-        channel.assign(config_.maxBlockSize, 0.0f);
-    }
-    if (config_.mode == Mode::Fx)
-    {
-        for (auto &channel : ringIn_)
-        {
-            channel.assign(config_.maxBlockSize, 0.0f);
-        }
-    }
     // The first paramMeta() call builds its tables, which allocates; make every call here, off
     // the audio thread, so that process() never makes it, and keep the ranges.
     for (size_t s = 0; s < kParamCount; ++s)
@@ -130,41 +199,93 @@ Processor::Processor(const ProcessorConfig &config)
         maxVal_[s] = meta.maxVal;
         base_[s] = clampToRange(s, meta.defaultVal);
     }
-    if (config_.mode == Mode::Fx)
-    {
-        engine_.setSourceMode(SourceMode::Live);
-    }
-    else
-    {
-        engine_.setNoteGate(true); // silent until a note (spec §6.2)
-    }
-    // Publishing (sub-project 5's spec §6.4): the engine's sink is ours for good, and forwards to
-    // setEventSink's. The peak strip spans the ring, N = ceil(kLiveSeconds × sampleRate) frames.
+    // Publishing (sub-project 5's spec §6.4): the engines' sink is ours for good, and forwards to
+    // setEventSink's after each piece. Each peak strip spans its ring, N = ceil(kLiveSeconds ×
+    // sampleRate) frames.
     grainQueue_ = std::make_unique<GrainQueue>();
-    if (config_.mode == Mode::Fx)
+    for (uint8_t L = 0; L < kLayers; ++L)
     {
-        livePeaks_.prepare(engine_.liveFrames());
+        const EngineConfig engine = engineConfig(config_, L);
+        layers_[L] = std::make_unique<Layer>(engine);
+        Layer &l = *layers_[L];
+        l.diffuser.prepare(config_.sampleRate);
+        for (auto &channel : l.wet)
+        {
+            channel.assign(pieceMax_, 0.0f);
+        }
+        for (auto &channel : l.ringIn)
+        {
+            channel.assign(pieceMax_, 0.0f);
+        }
+        l.peaks.prepare(l.engine.liveFrames());
+        // The pool's storage bound on the spawns of one block (spec §6.7).
+        l.events.reserve(2 * static_cast<size_t>(engine.grainCapacity));
+        if (config_.mode == Mode::Instrument)
+        {
+            l.engine.setNoteGate(true); // silent until a note (spec §6.2)
+        }
+        l.engine.setEventSink(&Processor::onGrain, this);
     }
-    engine_.setEventSink(&Processor::onGrain, this);
+    // The kinds (the FX's layers read their rings) and the cloud parameters.
     updateEffective();
+    // A layer off by default (B to D) starts with its engine disabled, so it spawns nothing
+    // before it is switched on; layer A's is never told, as M1's engine wasn't.
+    for (uint8_t L = 0; L < kLayers; ++L)
+    {
+        if (!layerOn(effective_, L))
+        {
+            layers_[L]->engine.setEnabled(false);
+            layers_[L]->enabledGiven = false;
+        }
+    }
     jumpRamps();
 }
 
 void Processor::setSeed(uint64_t seed) noexcept
 {
     config_.seed = seed;
-    engine_.setSeed(seed);
+    for (const auto &l : layers_)
+    {
+        l->engine.setSeed(seed);
+    }
 }
 
 void Processor::jumpRamps() noexcept
 {
-    const WetParams w = toWetParams(effective_, config_.mode);
-    mix_.jump(w.mix);
-    level_.jump(w.levelGain);
-    diffusion_.jump(space_.diffusion);
+    mix_.jump(toWetParams(effective_, config_.mode, 0).mix);
     amount_.jump(space_.amount);
     drySend_.jump(space_.drySend);
-    feedback_.jump(w.feedback);
+    const MorphParams morph = toMorphParams(effective_);
+    morphX_.jump(morph.x);
+    morphY_.jump(morph.y);
+    for (uint8_t L = 0; L < kLayers; ++L)
+    {
+        Layer &l = *layers_[L];
+        const WetParams w = toWetParams(effective_, config_.mode, L);
+        l.level.jump(w.levelGain);
+        l.diffusion.jump(layerDiffusion(effective_, L));
+        l.feedback.jump(w.feedback);
+        l.on.jump(layerOn(effective_, L) ? 1.0f : 0.0f);
+    }
+}
+
+void Processor::retargetRamps(int64_t t) noexcept
+{
+    mix_.retarget(toWetParams(effective_, config_.mode, 0).mix, t, rampSamples_);
+    amount_.retarget(space_.amount, t, rampSamples_);
+    drySend_.retarget(space_.drySend, t, rampSamples_);
+    const MorphParams morph = toMorphParams(effective_);
+    morphX_.retarget(morph.x, t, rampSamples_);
+    morphY_.retarget(morph.y, t, rampSamples_);
+    for (uint8_t L = 0; L < kLayers; ++L)
+    {
+        Layer &l = *layers_[L];
+        const WetParams w = toWetParams(effective_, config_.mode, L);
+        l.level.retarget(w.levelGain, t, rampSamples_);
+        l.diffusion.retarget(layerDiffusion(effective_, L), t, rampSamples_);
+        l.feedback.retarget(w.feedback, t, rampSamples_);
+        l.on.retarget(layerOn(effective_, L) ? 1.0f : 0.0f, t, rampSamples_);
+    }
 }
 
 float Processor::clampToRange(size_t slot, float value) const noexcept
@@ -182,42 +303,30 @@ void Processor::setBase(ParamSlot slot, float value) noexcept
     base_[s] = clampToRange(s, value);
     hasPendingBase_[s] = false;
     updateEffective();
-    if (slot == ParamSlot::Freeze || slot == ParamSlot::Macro6)
+    const std::optional<LayerRef> ref = layerOf(slot);
+    if (slot == ParamSlot::Macro6 || (ref && ref->param == LayerParam::Freeze))
     {
         syncFreeze(); // Freeze set off is a transition's first half, even between calls
     }
-    const WetParams w = toWetParams(effective_, config_.mode);
     if (isMacro(slot))
     {
-        // A macro moves its targets' effective values (sub-project 5's spec §3.1): each ramped
-        // value whose target it changed jumps, as a setBase of the target itself makes it; the
-        // others keep their ramps. Generic on purpose: every ramped value is checked, not only
-        // today's macro targets (Mix, Level, Diffusion, Feedback), so Amount's and Dry to
-        // Reverb's never fire now but follow a recipe that comes to move them.
-        const auto jumpIfMoved = [](Ramp &ramp, float target) {
-            if (target != ramp.to)
-            {
-                ramp.jump(target);
-            }
-        };
-        jumpIfMoved(mix_, w.mix);
-        jumpIfMoved(level_, w.levelGain);
-        jumpIfMoved(diffusion_, space_.diffusion);
-        jumpIfMoved(amount_, space_.amount);
-        jumpIfMoved(drySend_, space_.drySend);
-        jumpIfMoved(feedback_, w.feedback);
+        // A macro moves its routes' targets' effective values (sub-project 5's spec §3.1; M2
+        // sub-project 1's spec §6.8): each ramped value whose target it changed jumps, as a
+        // setBase of the target itself makes it; the others keep their ramps.
+        jumpMovedRamps();
         return;
     }
+    const auto jumpIfMoved = [](Ramp &ramp, float target) {
+        if (target != ramp.to)
+        {
+            ramp.jump(target);
+        }
+    };
+    const MorphParams morph = toMorphParams(effective_);
     switch (slot)
     {
     case ParamSlot::Mix:
-        mix_.jump(w.mix);
-        break;
-    case ParamSlot::Level:
-        level_.jump(w.levelGain);
-        break;
-    case ParamSlot::Diffusion:
-        diffusion_.jump(space_.diffusion);
+        mix_.jump(toWetParams(effective_, config_.mode, 0).mix);
         break;
     case ParamSlot::ReverbAmount:
         amount_.jump(space_.amount);
@@ -225,11 +334,173 @@ void Processor::setBase(ParamSlot slot, float value) noexcept
     case ParamSlot::DryToReverb:
         drySend_.jump(space_.drySend);
         break;
-    case ParamSlot::Feedback:
-        feedback_.jump(w.feedback);
+    case ParamSlot::MorphX:
+        morphX_.jump(morph.x);
+        break;
+    case ParamSlot::MorphY:
+        morphY_.jump(morph.y);
         break;
     default:
         break;
+    }
+    // A layer's Level (Level for layer A, Level B to D) or Layer On switch.
+    if (const std::optional<uint8_t> L = perLayerGlobalLayer(slot))
+    {
+        Layer &l = *layers_[*L];
+        if (slot == levelSlot(*L))
+        {
+            l.level.jump(toWetParams(effective_, config_.mode, *L).levelGain);
+        }
+        else
+        {
+            l.on.jump(layerOn(effective_, *L) ? 1.0f : 0.0f);
+        }
+    }
+    if (ref)
+    {
+        Layer &l = *layers_[ref->layer];
+        const WetParams w = toWetParams(effective_, config_.mode, ref->layer);
+        switch (ref->param)
+        {
+        case LayerParam::Diffusion:
+            l.diffusion.jump(layerDiffusion(effective_, ref->layer));
+            break;
+        case LayerParam::Feedback:
+            l.feedback.jump(w.feedback);
+            break;
+        case LayerParam::Source:
+            // Feedback follows the kind (spec §6.4): a kind that moved its target makes it jump,
+            // as a macro's move does.
+            jumpIfMoved(l.feedback, w.feedback);
+            break;
+        default:
+            break;
+        }
+    }
+}
+
+void Processor::setBases(const ParamValues &values) noexcept
+{
+    // Ruling FR-3: setBase() on every slot in slot order, with the effective values recomputed
+    // once. A NaN leaves its slot, and setBase()'s side effects at it, alone; no saved state holds
+    // one, so that case takes the calls themselves, but for Freeze's arming (below).
+    if (std::any_of(values.begin(), values.end(), [](float v) { return std::isnan(v); }))
+    {
+        std::array<bool, kLayers> armed{};
+        for (uint8_t L = 0; L < kLayers; ++L)
+        {
+            armed[L] = layers_[L]->freezeArmed;
+        }
+        for (size_t s = 0; s < kParamCount; ++s)
+        {
+            setBase(static_cast<ParamSlot>(s), values[s]);
+        }
+        for (uint8_t L = 0; L < kLayers; ++L)
+        {
+            layers_[L]->freezeArmed = armed[L];
+        }
+        syncFreeze();
+        return;
+    }
+    for (size_t s = 0; s < kParamCount; ++s)
+    {
+        base_[s] = clampToRange(s, values[s]);
+    }
+    hasPendingBase_.fill(false);
+    // The engines take their parameters and kind as values, the last given winning, so one
+    // update gives what the calls' last one gave. (A period the calls move and move back flags
+    // the scheduler's rescale where one update doesn't, and that rescale recomputes the pending
+    // onset it already has.)
+    updateEffective();
+    // Ruling FR-8 (INTENT §23 #40): Freeze arms from the loaded values alone, every layer alike.
+    // A layer whose loaded Freeze is off arms; one whose Freeze is on stays live until toggled if
+    // not yet armed (a fresh ring, or one since the last reset()), and freezes at once if armed.
+    // The calls would arm a layer at an earlier slot's syncFreeze(), from its old value (layers B
+    // to D at layer A's Freeze), and freeze an empty ring at a load.
+    syncFreeze();
+    // Every ramped value's own slot is among the calls, and setBase() of it jumps it to its
+    // target; after that only a macro and its layer's Source (for Feedback) move that target, and
+    // each jumps it if moved. So the calls leave every ramped value jumped to its final target.
+    jumpRamps();
+}
+
+void Processor::jumpMovedRamps() noexcept
+{
+    // Generic on purpose: every ramped value is checked, whatever routes move it.
+    const auto jumpIfMoved = [](Ramp &ramp, float target) {
+        if (target != ramp.to)
+        {
+            ramp.jump(target);
+        }
+    };
+    const MorphParams morph = toMorphParams(effective_);
+    jumpIfMoved(mix_, toWetParams(effective_, config_.mode, 0).mix);
+    jumpIfMoved(amount_, space_.amount);
+    jumpIfMoved(drySend_, space_.drySend);
+    jumpIfMoved(morphX_, morph.x);
+    jumpIfMoved(morphY_, morph.y);
+    for (uint8_t L = 0; L < kLayers; ++L)
+    {
+        Layer &l = *layers_[L];
+        const WetParams w = toWetParams(effective_, config_.mode, L);
+        jumpIfMoved(l.level, w.levelGain);
+        jumpIfMoved(l.diffusion, layerDiffusion(effective_, L));
+        jumpIfMoved(l.feedback, w.feedback);
+        jumpIfMoved(l.on, layerOn(effective_, L) ? 1.0f : 0.0f);
+    }
+}
+
+void Processor::setRoutes(const ModRoutes &routes) noexcept
+{
+    routes_ = routes;
+    timeVarying_ = anyTimeVarying(routes_);
+    updateEffective();
+    jumpMovedRamps(); // as a loaded state's values do
+}
+
+void Processor::setTransport(const Transport &transport) noexcept
+{
+    if ((transport_.playing() != 0.0f) != transport.playing)
+    {
+        transportChanged_ = true; // Transport Playing changes at the next call's first boundary
+    }
+    transport_.set(transport);
+}
+
+float Processor::sourceValue(ModSource s, uint8_t layer) const noexcept
+{
+    const auto i = static_cast<size_t>(s);
+    if (s >= ModSource::Macro1 && s <= ModSource::Macro8)
+    {
+        return effective_[static_cast<size_t>(
+            kMacroSlots[i - static_cast<size_t>(ModSource::Macro1)])];
+    }
+    if (isPerLayerSource(s))
+    {
+        return layerAt(layer).modulatorValues[i - static_cast<size_t>(ModSource::Lfo1)];
+    }
+    switch (s)
+    {
+    case ModSource::ModWheel:
+        return midi_.modWheel;
+    case ModSource::Aftertouch:
+        return midi_.aftertouch;
+    case ModSource::PitchBend:
+        return midi_.pitchBend;
+    case ModSource::Velocity:
+        return midi_.velocity;
+    case ModSource::Key:
+        return midi_.key;
+    case ModSource::EnvFollower:
+        return followerValue_;
+    case ModSource::TransportBeat:
+        return transportBeat_;
+    case ModSource::TransportBar:
+        return transportBar_;
+    case ModSource::TransportPlaying:
+        return transportPlaying_;
+    default:
+        return 0.0f; // None, Count and beyond
     }
 }
 
@@ -261,6 +532,14 @@ void Processor::commitPending() noexcept
         {
             mod_[s] = pendingMod_[s];
         }
+        // A modulator's control is in effect for the cell its boundary starts, as the sources
+        // step there before the effective values are recomputed: no route targets it, so its
+        // effective value is already known.
+        if ((hasPendingBase_[s] || hasPendingMod_[s]) &&
+            isModulatorControl(static_cast<ParamSlot>(s)))
+        {
+            effective_[s] = clampToRange(s, base_[s] + mod_[s]);
+        }
     }
     hasPendingBase_.fill(false);
     hasPendingMod_.fill(false);
@@ -269,7 +548,77 @@ void Processor::commitPending() noexcept
         hasPendingNotes_ = false;
         updateKeys();
     }
+    midi_ = pendingMidi_;
     hasPending_ = false;
+}
+
+void Processor::scanInput(const Buffers &b, int64_t to) noexcept
+{
+    // A mono input feeds both channels: its one channel is the whole input.
+    const uint32_t channels = std::min(b.numInChannels, 2u);
+    float peak = cellPeak_;
+    for (int64_t t = std::max(inputScanned_, b.callStart); t < to; ++t)
+    {
+        const auto i = static_cast<size_t>(t - b.callStart);
+        for (uint32_t c = 0; c < channels; ++c)
+        {
+            if (b.in[c] == nullptr)
+            {
+                continue;
+            }
+            const float a = std::fabs(b.in[c][i]);
+            // NaN fails both comparisons and infinity the second: each counts as 0.
+            if (a > peak && a <= std::numeric_limits<float>::max())
+            {
+                peak = a;
+            }
+        }
+    }
+    cellPeak_ = peak;
+    inputScanned_ = std::max(inputScanned_, to);
+}
+
+void Processor::stepSourcesAt(int64_t c) noexcept
+{
+    // The held set as of c: c's notes are committed before c steps.
+    const bool gate = keyCount_ > 0;
+    for (uint8_t L = 0; L < kLayers; ++L)
+    {
+        Layer &l = *layers_[L];
+        LayerModulators &m = l.modulators;
+        auto &v = l.modulatorValues; // Lfo1, Lfo2, Env1, Env2, Random1, Random2, Step
+        v[0] = m.lfo[0].step(lfoParams(effective_, L, 0), cellSeconds_);
+        v[1] = m.lfo[1].step(lfoParams(effective_, L, 1), cellSeconds_);
+        v[2] = m.env[0].step(envParams(effective_, L, 0), gate, cellSeconds_);
+        v[3] = m.env[1].step(envParams(effective_, L, 1), gate, cellSeconds_);
+        v[4] = m.random[0].step(randomParams(effective_, L, 0), cellSeconds_, config_.seed, L,
+                                rng::Field::ModRandom1);
+        v[5] = m.random[1].step(randomParams(effective_, L, 1), cellSeconds_, config_.seed, L,
+                                rng::Field::ModRandom2);
+        v[6] = m.stepSeq.step(stepParams(effective_, L), cellSeconds_);
+    }
+    // The previous cell's input peak, [c − 32, c).
+    const float peak = cellPeak_;
+    const float *peakChannel = &peak;
+    followerValue_ = follower_.step(&peakChannel, 1, 1);
+    cellPeak_ = 0.0f;
+    // The transport's values for the cell, then one cell on.
+    transportBeat_ = transport_.beatPhase();
+    transportBar_ = transport_.barPhase();
+    transportPlaying_ = transport_.playing();
+    transport_.step(cellSeconds_);
+    lastStepped_ = c;
+}
+
+void Processor::stepSources(const Buffers &b, int64_t upTo, int64_t scanTo) noexcept
+{
+    constexpr auto grid = static_cast<int64_t>(kControlGrid);
+    for (int64_t c = lastStepped_ + grid; c <= upTo; c += grid)
+    {
+        scanInput(b, c);
+        stepSourcesAt(c);
+    }
+    scanInput(b, scanTo);
 }
 
 void Processor::applyNote(const NoteEvent &n) noexcept
@@ -278,6 +627,9 @@ void Processor::applyNote(const NoteEvent &n) noexcept
     {
     case NoteEventType::On:
         held_[static_cast<size_t>(n.key)] |= static_cast<uint16_t>(1u << n.channel);
+        // Spec §6.8: the last note-on's velocity and key / 127, from its boundary.
+        pendingMidi_.velocity = unitClamped(n.velocity);
+        pendingMidi_.key = static_cast<float>(n.key) / 127.0f;
         break;
     case NoteEventType::Off:
     {
@@ -319,128 +671,241 @@ void Processor::updateKeys() noexcept
             keys_[keyCount_++] = static_cast<uint8_t>(k);
         }
     }
-    engine_.setHeldKeys(heldKeys());
+    for (const auto &l : layers_)
+    {
+        l->engine.setHeldKeys(heldKeys());
+    }
 }
 
 void Processor::updateEffective() noexcept
 {
-    // Sub-project 5's spec §3.1: the macros' own effective values first, clamp(base + mod) as
-    // any slot's, then every slot's clamp(base + mod + offset), one clamp of the whole sum. A
-    // macro's own offset is 0, so its effective value is the one its curves read. At rest every
-    // offset is +0.0f and the sum is base + mod, bit for bit, but for a −0 sum (a −0 base and a
-    // −0 modulation, which only a host can send), which becomes +0.
-    // base is finite and in range, mod is never NaN, and every offset is finite (the macros are
-    // clamped to 0..1), so the sum is never NaN; an infinite mod clamps to an end of the range.
-    ParamValues macros{};
+    // Sub-project 5's spec §3.1, M2 sub-project 1's spec §6.8: the macros' own effective values
+    // first, clamp(base + mod) as any slot's (no route targets a macro, so this is their final
+    // value), then every source's value, the routes' offsets, and every slot's
+    // clamp(base + mod + offset), one clamp of the whole sum. At rest the factory routes' offsets
+    // are all +0.0f and the sum is base + mod, bit for bit, but for a −0 sum (a −0 base and a −0
+    // modulation, which only a host can send), which becomes +0.
+    // base is finite and in range and mod is never NaN; the routes' depths are finite, but two
+    // huge ones can sum to ±∞ − ∞: a NaN sum takes no offset. An infinite one clamps to an end of
+    // the range.
     for (const ParamSlot slot : kMacroSlots)
     {
         const auto s = static_cast<size_t>(slot);
-        macros[s] = clampToRange(s, base_[s] + mod_[s]);
+        effective_[s] = clampToRange(s, base_[s] + mod_[s]);
     }
-    const ParamValues offsets = macroOffsets(macros, config_.mode);
+    for (uint8_t L = 0; L < kLayers; ++L)
+    {
+        for (size_t i = 0; i < sources_[L].v.size(); ++i)
+        {
+            sources_[L].v[i] = sourceValue(static_cast<ModSource>(i), L);
+        }
+    }
+    ParamValues offsets{};
+    applyRoutes(routes_, sources_, offsets);
     for (size_t s = 0; s < kParamCount; ++s)
     {
-        effective_[s] = clampToRange(s, base_[s] + mod_[s] + offsets[s]);
+        const float sum = base_[s] + mod_[s] + offsets[s];
+        effective_[s] = clampToRange(s, std::isnan(sum) ? base_[s] + mod_[s] : sum);
     }
-    engine_.setCloudParams(toCloudParams(effective_, config_.mode));
+    for (uint8_t L = 0; L < kLayers; ++L)
+    {
+        Layer &l = *layers_[L];
+        // The scheduler takes the same values twice as once, so an unchanged layer is spared the
+        // call: the per-cell path of a time-varying route stays cheap.
+        const CloudParams cloud = toCloudParams(effective_, config_.mode, L);
+        if (!l.cloudGiven || !sameCloud(cloud, l.cloud))
+        {
+            l.engine.setCloudParams(cloud);
+            l.cloud = cloud;
+            l.cloudGiven = true;
+        }
+        // Spec §6.4: a kind switch applies from the engine's next call, the grains sounding
+        // finishing on their own source.
+        const SourceMode kind = builtKind(sourceKindOf(effective_, L), config_.mode);
+        if (kind != l.kind)
+        {
+            l.engine.setSourceMode(kind);
+            l.kind = kind;
+        }
+    }
     space_ = toSpaceParams(effective_, config_.mode);
 }
 
 void Processor::syncFreeze() noexcept
 {
-    const bool on = toWetParams(effective_, config_.mode).freeze;
-    if (!on)
-    {
-        freezeArmed_ = true; // off seen: the next on engages
-    }
-    // Spec §6.3: in the FX a held key freezes too, with no arming, and never arms the parameter.
+    // Spec §6.3: in the FX a held key freezes every layer, with no arming, and never arms the
+    // parameter.
     const bool noteHeld = config_.mode == Mode::Fx && keyCount_ > 0;
-    engineFrozen_ = (on && freezeArmed_) || noteHeld;
-    engine_.setFreeze(engineFrozen_);
+    for (uint8_t L = 0; L < kLayers; ++L)
+    {
+        Layer &l = *layers_[L];
+        const bool on = toWetParams(effective_, config_.mode, L).freeze;
+        if (!on)
+        {
+            l.freezeArmed = true; // off seen: the next on engages
+        }
+        l.engineFrozen = (on && l.freezeArmed) || noteHeld;
+        l.engine.setFreeze(l.engineFrozen);
+    }
 }
 
 void Processor::reset() noexcept
 {
-    engine_.reset();
+    for (const auto &l : layers_)
+    {
+        l->engine.reset();
+    }
     commitPending();
-    // Every note released (spec §6.1), and the engine told: Engine::reset keeps its keys.
+    // Every note released (spec §6.1), and the engines told: Engine::reset keeps their keys.
     held_.fill(0);
     updateKeys();
-    updateEffective();
-    // A fresh ring: Freeze waits for an off→on transition, as after construction.
-    freezeArmed_ = false;
-    engineFrozen_ = false;
-    engine_.setFreeze(false);
-    jumpRamps();
-    // The engine's clock is back at 0, and so is the reverb's time: its chunks stay on the grid.
-    // A fresh ring has no wet signal behind it to feed back.
-    for (auto &channel : wetHistory_)
+    // The sources restart with the clock (the class comment), the transport as never given: the
+    // host's next setTransport() is then a change, as a fresh Processor's first is, and applies
+    // at the next call's first boundary.
+    midi_ = {};
+    pendingMidi_ = {};
+    for (const auto &l : layers_)
     {
-        channel.fill(0.0f);
+        l->modulators.reset();
+        l->modulatorValues.fill(0.0f);
+        l->cloudGiven = false; // the engine is told again, as before
     }
-    diffuser_.reset();
+    follower_.reset();
+    followerValue_ = 0.0f;
+    transportBeat_ = 0.0f;
+    transportBar_ = 0.0f;
+    transportPlaying_ = 0.0f;
+    transport_ = {};
+    transportChanged_ = false;
+    lastStepped_ = -static_cast<int64_t>(kControlGrid);
+    inputScanned_ = 0;
+    cellPeak_ = 0.0f;
+    updateEffective();
+    // Fresh rings: Freeze waits for an off→on transition, as after construction.
+    for (const auto &l : layers_)
+    {
+        l->freezeArmed = false;
+        l->engineFrozen = false;
+        l->engine.setFreeze(false);
+    }
+    jumpRamps();
+    // The engines' clocks are back at 0, and so is the reverb's time: its chunks stay on the
+    // grid. A fresh ring has no wet signal behind it to feed back, and its peak strip restarts
+    // at time 0 with it.
+    for (const auto &l : layers_)
+    {
+        for (auto &channel : l->wetHistory)
+        {
+            channel.fill(0.0f);
+        }
+        l->diffuser.reset();
+        l->peaks.reset();
+        l->events.clear();
+        l->droppedEvents = 0;
+    }
     reverb_->reset();
-    // The ring restarts at time 0, and its peak strip with it.
-    livePeaks_.reset();
 }
 
-void Processor::setSourceNow(std::shared_ptr<const PreparedSource> s)
+void Processor::setSourceNow(uint8_t layer, std::shared_ptr<const PreparedSource> s)
 {
-    // process() isn't running, so this thread may take the audio side's role in sources_. An
-    // offer not yet taken and a source taken but not adopted are both superseded.
-    takeOffers();
-    if (hasPendingSource_)
+    // process() isn't running, so this thread may take the audio side's role in the layer's
+    // sources. An offer not yet taken and a source taken but not adopted are both superseded.
+    Layer &l = layerAt(layer);
+    takeLayerOffers(l);
+    if (l.hasPendingSource)
     {
-        sources_.retire(pendingSource_);
-        hasPendingSource_ = false;
+        l.sources.retire(l.pendingSource);
+        l.hasPendingSource = false;
     }
     // A retired source waiting would leave no room for the ones the replacement hands back.
-    handBackRetired();
-    engine_.replaceSource(sources_.hold(std::move(s)));
-    handBackRetired();
-    sources_.collect();
+    handBackRetired(l);
+    l.engine.replaceSource(l.sources.hold(std::move(s)));
+    handBackRetired(l);
+    l.sources.collect();
 }
 
-void Processor::handBackRetired() noexcept
+void Processor::handBackRetired(Layer &l) noexcept
 {
-    while (const PreparedSource *retired = engine_.takeRetiredSource())
+    while (const PreparedSource *retired = l.engine.takeRetiredSource())
     {
-        sources_.retire(retired);
+        l.sources.retire(retired);
     }
 }
 
 bool Processor::takeOffers() noexcept
 {
+    bool applied = false;
+    for (const auto &l : layers_)
+    {
+        if (takeLayerOffers(*l))
+        {
+            applied = true;
+        }
+    }
+    return applied;
+}
+
+bool Processor::takeLayerOffers(Layer &l) noexcept
+{
     // A retired source first: one waiting to be taken would keep the engine from adopting.
-    handBackRetired();
+    handBackRetired(l);
     SourceOffer offer;
-    const bool offered = sources_.poll(offer);
+    const bool offered = l.sources.poll(offer);
     if (offered)
     {
         if (offer.hasValues)
         {
-            for (size_t s = 0; s < kParamCount; ++s)
-            {
-                setBase(static_cast<ParamSlot>(s), offer.values[s]);
-            }
+            setBases(offer.values);
         }
         // A keep-source offer (ruling R19) leaves the source alone: the engine's, and one taken
         // but not yet adopted.
         if (!offer.keepSource)
         {
-            if (hasPendingSource_)
+            if (l.hasPendingSource)
             {
-                sources_.retire(pendingSource_); // superseded before the engine ever read it
+                l.sources.retire(l.pendingSource); // superseded before the engine ever read it
             }
-            pendingSource_ = offer.source;
-            hasPendingSource_ = true;
+            l.pendingSource = offer.source;
+            l.hasPendingSource = true;
         }
     }
-    if (hasPendingSource_ && engine_.adoptSource(pendingSource_))
+    if (l.hasPendingSource && l.engine.adoptSource(l.pendingSource))
     {
-        hasPendingSource_ = false;
+        l.hasPendingSource = false;
     }
     return offered && offer.hasValues;
+}
+
+uint64_t Processor::droppedGrainEvents() const noexcept
+{
+    uint64_t dropped = 0;
+    for (const auto &l : layers_)
+    {
+        dropped += l->droppedEvents;
+    }
+    return dropped;
+}
+
+void Processor::setTaskRunner(TaskRunner *runner) noexcept
+{
+    runner_ = runner != nullptr ? runner : &serialRunner_;
+}
+
+void Processor::layerTask(void *ctx, uint32_t i) noexcept
+{
+    static_cast<Processor *>(ctx)->execTask(i);
+}
+
+void Processor::execTask(uint32_t i) noexcept
+{
+    // Spec §6.7: a pool thread's floating-point mode isn't the audio thread's, and the engine's own
+    // guard covers only Engine::process, not the diffuser, the limiter and Feedback after it.
+    ScopedDenormalsOff denormalsOff;
+    if (i < taskCount_)
+    {
+        renderLayerPiece(taskLayers_[i], pieceFrom_, pieceN_, pieceDry_.data(), pieceHasInput_,
+                         pieceRendering_);
+    }
 }
 
 void Processor::setEventSink(GrainEventSink sink, void *ctx) noexcept
@@ -449,32 +914,108 @@ void Processor::setEventSink(GrainEventSink sink, void *ctx) noexcept
     externalSinkCtx_ = ctx;
 }
 
-void Processor::onGrain(void *ctx, const GrainSpec &g) noexcept
+void Processor::onGrain(void *ctx, uint32_t layer, const GrainSpec &g) noexcept
 {
     auto *self = static_cast<Processor *>(ctx);
-    if (self->externalSink_ != nullptr)
+    // Each engine's layer is its index (engineConfig), below kLayers.
+    // Called on the thread of the layer's task (spec §6.7): it touches only that layer's buffer
+    // and count.
+    Layer &l = *self->layers_[std::min<uint32_t>(layer, kLayers - 1)];
+    // Within the capacity reserved at construction a push_back never allocates.
+    if (l.events.size() < l.events.capacity())
     {
-        self->externalSink_(self->externalSinkCtx_, g);
+        l.events.push_back(g);
     }
-    if (self->publishingThisCall_)
+    else
     {
-        // A full queue drops the grain and counts it: the editor resumes with the next ones.
-        self->grainQueue_->push({g.onsetSample, g.startPos, static_cast<float>(g.rate),
-                                 static_cast<float>(g.durationSamples), g.gain, g.pan});
+        ++l.droppedEvents;
     }
+}
+
+void Processor::drainEvents() noexcept
+{
+    for (uint8_t L = 0; L < kLayers; ++L)
+    {
+        std::vector<GrainSpec> &events = layers_[L]->events;
+        for (const GrainSpec &g : events)
+        {
+            if (externalSink_ != nullptr)
+            {
+                externalSink_(externalSinkCtx_, L, g);
+            }
+            if (publishingThisCall_)
+            {
+                // A full queue drops the grain and counts it: the editor resumes with the next
+                // ones.
+                grainQueue_->push({g.onsetSample, g.startPos, static_cast<float>(g.rate),
+                                   static_cast<float>(g.durationSamples), g.gain, g.pan, L});
+            }
+        }
+        events.clear(); // keeps the capacity
+    }
+}
+
+bool Processor::layerRendering(uint8_t layer) const noexcept
+{
+    const Layer &l = layerAt(layer);
+    return l.on.to != 0.0f || l.on.at(l.engine.sampleClock(), rampSamples_) != 0.0f;
+}
+
+void Processor::weightsAt(int64_t t, const std::array<bool, kLayers> &rendering,
+                          std::array<float, kLayers> &weights) const noexcept
+{
+    // Spec §6.3, D1 as amended in Task 10's fix round: the bilinear corner weights of the clamped
+    // pad, each times its layer's on/off ramp, normalized by their sum, then times
+    // min(1, Σ r_K), so the amplitude sum fades with the ramps when less than one whole layer is
+    // on (the last layer switched off, the first switched on). Every term is a product of
+    // non-negative values, so no weight is −0; one layer rendering at r = 1 gets
+    // (b / b) × min(1, 1), exactly 1.
+    static_assert(kLayers == 4);
+    const float x = std::clamp(morphX_.at(t, rampSamples_), 0.001f, 0.999f);
+    const float y = std::clamp(morphY_.at(t, rampSamples_), 0.001f, 0.999f);
+    const float ix = 1.0f - x;
+    const float iy = 1.0f - y;
+    const std::array<float, kLayers> corner{ix * iy, x * iy, ix * y, x * y};
+    std::array<float, kLayers> rb{};
+    float sum = 0.0f;
+    float ramps = 0.0f;
+    for (size_t L = 0; L < kLayers; ++L)
+    {
+        const float r = rendering[L] ? layers_[L]->on.at(t, rampSamples_) : 0.0f;
+        rb[L] = r * corner[L];
+        sum += rb[L];
+        ramps += r;
+    }
+    const float fade = std::min(1.0f, ramps);
+    for (size_t L = 0; L < kLayers; ++L)
+    {
+        weights[L] = sum > 0.0f ? rb[L] / sum * fade : 0.0f;
+    }
+}
+
+float Processor::morphWeightAt(uint8_t layer, int64_t t) const noexcept
+{
+    // r_K is each ramp's value at t: a layer that isn't rendering has its ramp at 0 there.
+    std::array<bool, kLayers> rendering{};
+    rendering.fill(true);
+    std::array<float, kLayers> weights{};
+    weightsAt(t, rendering, weights);
+    return weights[std::min<size_t>(layer, kLayers - 1)];
 }
 
 void Processor::process(const float *const *in, uint32_t numInChannels, float *const *out,
                         uint32_t numOutChannels, uint32_t numFrames,
-                        std::span<const ParamEvent> events,
-                        std::span<const NoteEvent> notes) noexcept
+                        std::span<const ParamEvent> events, std::span<const NoteEvent> notes,
+                        std::span<const ControlEvent> controls) noexcept
 {
     // One guard for the whole call, the dry/wet sum included (spec §6.4).
     ScopedDenormalsOff denormalsOff;
     // Read once: the whole call publishes, or none of it does (sub-project 5's spec §6.4).
     publishingThisCall_ = publishing_.load(std::memory_order_relaxed);
     takeOffers();
-    if (in == nullptr || config_.mode != Mode::Fx)
+    // The input feeds the rings in both products (M2 sub-project 1's spec §6.2), and the mix in
+    // the FX alone (render).
+    if (in == nullptr)
     {
         numInChannels = 0;
     }
@@ -482,7 +1023,7 @@ void Processor::process(const float *const *in, uint32_t numInChannels, float *c
     {
         numOutChannels = 0;
     }
-    const int64_t start = engine_.sampleClock();
+    const int64_t start = layers_[0]->engine.sampleClock();
     const int64_t end = start + static_cast<int64_t>(numFrames);
     const Buffers buffers{in, numInChannels, out, numOutChannels, start};
 
@@ -497,15 +1038,42 @@ void Processor::process(const float *const *in, uint32_t numInChannels, float *c
         render(buffers, rendered, pendingAt_);
         rendered = pendingAt_;
         commitPending();
+        stepSources(buffers, rendered, rendered); // the sources' values for the cell from here
         updateEffective();
         syncFreeze();
-        const WetParams w = toWetParams(effective_, config_.mode);
-        mix_.retarget(w.mix, rendered, rampSamples_);
-        level_.retarget(w.levelGain, rendered, rampSamples_);
-        diffusion_.retarget(space_.diffusion, rendered, rampSamples_);
-        amount_.retarget(space_.amount, rendered, rampSamples_);
-        drySend_.retarget(space_.drySend, rendered, rampSamples_);
-        feedback_.retarget(w.feedback, rendered, rampSamples_);
+        retargetRamps(rendered);
+    };
+
+    // While a route moves with time alone, every grid boundary below `limit` (and below end) is
+    // applied, as an empty group where none pends (the class comment's Time-varying routes). The
+    // next boundary to step is the next to apply: every one before it was applied, and a pending
+    // group is never past it (its events' joins applied the cells before them). One before it
+    // (events joining the boundary already applied, at `rendered`) applies there first.
+    const auto applyCellsBelow = [&](int64_t limit) {
+        if (!timeVarying_)
+        {
+            return;
+        }
+        for (;;)
+        {
+            const int64_t c = lastStepped_ + static_cast<int64_t>(kControlGrid);
+            if (c >= limit || c >= end)
+            {
+                return;
+            }
+            assert(!hasPending_ || pendingAt_ <= c);
+            if (hasPending_ && pendingAt_ < c)
+            {
+                applyPending();
+                continue;
+            }
+            if (!hasPending_)
+            {
+                pendingAt_ = c;
+                hasPending_ = true;
+            }
+            applyPending();
+        }
     };
 
     // Puts an event at `offset` into its boundary's group, applying the pending group first if
@@ -515,6 +1083,7 @@ void Processor::process(const float *const *in, uint32_t numInChannels, float *c
         // max: an out-of-order event can't land before what is already rendered. rendered is
         // either the call's start, which a is at or after, or a boundary.
         const int64_t b = std::max(gridCeil(a), rendered);
+        applyCellsBelow(b);
         // Sorted events have non-decreasing boundaries, so a later one ends the pending group.
         // Every boundary but the last is at most end − 32, before this call's end.
         if (hasPending_ && b > pendingAt_)
@@ -528,15 +1097,31 @@ void Processor::process(const float *const *in, uint32_t numInChannels, float *c
         }
     };
 
-    // The two spans merged by offset into one sequence, a parameter event first at a tie. The
-    // order between the kinds doesn't matter: a group's parameter changes and notes are
-    // independent, and each kind keeps its own order.
+    // A change of the host's playing flag applies at the call's first boundary (setTransport).
+    if (transportChanged_)
+    {
+        transportChanged_ = false;
+        join(0);
+    }
+
+    // The three spans merged by offset into one sequence, at a tie a parameter event first, then a
+    // note, then a control. The order between the kinds doesn't matter: a group's parameter
+    // changes, notes and controls are independent, and each kind keeps its own order.
     size_t nextEvent = 0;
     size_t nextNote = 0;
-    while (nextEvent < events.size() || nextNote < notes.size())
+    size_t nextControl = 0;
+    constexpr uint64_t kNone = std::numeric_limits<uint64_t>::max();
+    for (;;)
     {
-        if (nextNote == notes.size() ||
-            (nextEvent < events.size() && events[nextEvent].offset <= notes[nextNote].offset))
+        const uint64_t eventAt = nextEvent < events.size() ? events[nextEvent].offset : kNone;
+        const uint64_t noteAt = nextNote < notes.size() ? notes[nextNote].offset : kNone;
+        const uint64_t controlAt =
+            nextControl < controls.size() ? controls[nextControl].offset : kNone;
+        if (eventAt == kNone && noteAt == kNone && controlAt == kNone)
+        {
+            break;
+        }
+        if (eventAt <= noteAt && eventAt <= controlAt)
         {
             const ParamEvent &e = events[nextEvent++];
             const auto s = static_cast<size_t>(e.slot);
@@ -557,7 +1142,7 @@ void Processor::process(const float *const *in, uint32_t numInChannels, float *c
                 hasPendingBase_[s] = true;
             }
         }
-        else
+        else if (noteAt <= controlAt)
         {
             const NoteEvent &n = notes[nextNote++];
             if (!validNote(n))
@@ -568,7 +1153,30 @@ void Processor::process(const float *const *in, uint32_t numInChannels, float *c
             applyNote(n);
             hasPendingNotes_ = true;
         }
+        else
+        {
+            const ControlEvent &c = controls[nextControl++];
+            if (!validControl(c))
+            {
+                continue;
+            }
+            join(c.offset);
+            const float v = unitClamped(c.value);
+            switch (c.kind)
+            {
+            case ControlKind::ModWheel:
+                pendingMidi_.modWheel = v;
+                break;
+            case ControlKind::Aftertouch:
+                pendingMidi_.aftertouch = v;
+                break;
+            case ControlKind::PitchBend:
+                pendingMidi_.pitchBend = v;
+                break;
+            }
+        }
     }
+    applyCellsBelow(end);
     // A boundary at end carries over, like one past it: the next call's events at offset 0
     // belong to the same group, which a single call spanning both would apply once.
     if (hasPending_ && pendingAt_ < end)
@@ -579,7 +1187,10 @@ void Processor::process(const float *const *in, uint32_t numInChannels, float *c
     // A source that retired in this call goes back now, not at the next call's start: the host
     // may not call again for a while (it stopped processing), and the main thread can only free
     // what was handed back.
-    handBackRetired();
+    for (const auto &l : layers_)
+    {
+        handBackRetired(*l);
+    }
 
     for (uint32_t c = 2; c < numOutChannels; ++c)
     {
@@ -591,33 +1202,154 @@ void Processor::process(const float *const *in, uint32_t numInChannels, float *c
 
     if (publishingThisCall_)
     {
-        const int64_t clock = engine_.sampleClock();
-        snapshot_.push({clock, engine_.liveWriteHead(), engineFrozen_, engine_.activeGrains(),
+        // Layer A's view, with every layer's grains (M2 sub-project 1's spec §6.2).
+        const Layer &a = *layers_[0];
+        const int64_t clock = a.engine.sampleClock();
+        uint32_t active = 0;
+        for (const auto &l : layers_)
+        {
+            active += l->engine.activeGrains();
+        }
+        snapshot_.push({clock, a.engine.liveWriteHead(), a.engineFrozen, active,
                         base_[static_cast<size_t>(ParamSlot::Position)],
                         base_[static_cast<size_t>(ParamSlot::Spray)],
                         effective_[static_cast<size_t>(ParamSlot::Position)],
-                        effective_[static_cast<size_t>(ParamSlot::Spray)], feedbackAt(clock)});
+                        effective_[static_cast<size_t>(ParamSlot::Spray)], feedbackAt(0, clock)});
         // Release: an editor that reads this clock with acquire finds the snapshot it ends.
         publishedClock_.store(clock, std::memory_order_release);
+    }
+}
+
+void Processor::renderLayerPiece(uint8_t L, int64_t from, uint32_t n, const float *const dry[2],
+                                 bool hasInput, uint32_t rendering) noexcept
+{
+    Layer &l = *layers_[L];
+    const bool renders = rendering_[L];
+    if (renders != l.enabledGiven)
+    {
+        // Spec §6.3: off, the engine spawns nothing and its grains end here; on again, the
+        // pending onset is forced to this boundary, so the layer speaks at once.
+        l.engine.setEnabled(renders);
+        l.enabledGiven = renders;
+        if (!renders)
+        {
+            // Nothing of the layer sounds while it is off, so nothing of it is kept for when it
+            // comes back: the diffuser's lines and the limited history start from silence then,
+            // as the pool does.
+            l.diffuser.reset();
+            for (auto &channel : l.wetHistory)
+            {
+                channel.fill(0.0f);
+            }
+        }
+    }
+
+    // Feedback (sub-project 5's spec §5): ring[t] = sanitize(in[t]) + fb(t)·limited[t − D],
+    // sanitize being finiteOrZero and limited from wetHistory; the ring clamps the sum as it
+    // clamps any input (the class comment). The ramp changes only at boundaries, between render()
+    // calls, so it is 0 throughout a piece whose target and first value are 0: such a piece hands
+    // the engine its input as it is (the sign of zero included), as before Feedback.
+    const float *ringIn[2] = {dry[0], dry[1]};
+    uint32_t ringChannels = hasInput ? 2 : 0;
+    if (l.feedback.to != 0.0f || l.feedback.at(from, rampSamples_) != 0.0f)
+    {
+        for (uint32_t i = 0; i < n; ++i)
+        {
+            const int64_t t = from + i;
+            const float fb = l.feedback.at(t, rampSamples_);
+            const auto h = static_cast<size_t>(t % kFeedbackDelay);
+            for (size_t c = 0; c < 2; ++c)
+            {
+                const float d = dry[c] != nullptr ? finiteOrZero(dry[c][i]) : 0.0f;
+                // A sample where the ramp is 0 writes the input alone, as a piece without
+                // feedback does, so where a piece starts never changes the ring.
+                l.ringIn[c][i] = fb != 0.0f ? d + fb * l.wetHistory[c][h] : d;
+            }
+        }
+        ringIn[0] = l.ringIn[0].data();
+        ringIn[1] = l.ringIn[1].data();
+        ringChannels = 2;
+    }
+    const int64_t headBefore = l.engine.liveWriteHead();
+    float *const wet[2] = {l.wet[0].data(), l.wet[1].data()};
+    if (renders)
+    {
+        l.engine.process(ringIn, ringChannels, wet, rendering, n);
+    }
+    else
+    {
+        // Off: the ring is written and the clock advances (Engine::setEnabled), nothing else.
+        l.engine.process(ringIn, ringChannels, nullptr, 0, n);
+    }
+    // The peaks of what the ring took (spec §6.4), publishing or not (ruling PU-T9b), so the
+    // strip never holds an older pass's peaks when the editor opens: the buffers the engine was
+    // handed, over the frames its head advanced, a prefix of the piece (all of it unless a freeze
+    // stopped the head), at ring time.
+    const auto written = static_cast<uint32_t>(l.engine.liveWriteHead() - headBefore);
+    const float *left = ringChannels > 0 && ringIn[0] != nullptr ? ringIn[0] : kSilence.data();
+    const float *right = ringChannels > 0 && ringIn[1] != nullptr ? ringIn[1] : kSilence.data();
+    l.peaks.write(left, right, headBefore, written);
+    if (!renders)
+    {
+        return;
+    }
+
+    const std::array<float, kFeedbackDelay> &weight = weights_[L];
+    for (uint32_t i = 0; i < n; ++i)
+    {
+        const int64_t t = from + i;
+        const float g = l.level.at(t, rampSamples_);
+        // The ramps stay between in-range values; the clamp keeps the diffuser's crossfade
+        // from extrapolating whatever happens.
+        const float delta = std::clamp(l.diffusion.at(t, rampSamples_), 0.0f, 1.0f);
+        // One channel: its mono render is diffused as both sides.
+        float w[2] = {wet[0][i], rendering > 1 ? wet[1][i] : wet[0][i]};
+        l.diffuser.process(w[0], w[1], delta);
+        for (size_t c = 0; c < 2; ++c)
+        {
+            const float limited = softLimit(w[c] * g);
+            // Read for sample t + D's ring input, D samples from now.
+            l.wetHistory[c][static_cast<size_t>(t % kFeedbackDelay)] = limited;
+            wet[c][i] = limited * weight[i];
+        }
     }
 }
 
 void Processor::render(const Buffers &b, int64_t from, int64_t to) noexcept
 {
     const bool fx = config_.mode == Mode::Fx;
-    // Channels 0 and 1 carry the signal; one output channel gets the engine's mono render. With
-    // no output channel the engine renders stereo all the same, so the diffuser and the reverb
+    // Channels 0 and 1 carry the signal; one output channel gets the engines' mono render. With
+    // no output channel the engines render stereo all the same, so the diffusers and the reverb
     // hear what they would have, and the next call continues the same render.
     const uint32_t channels = std::min(b.numOutChannels, 2u);
     const uint32_t rendering = channels == 0 ? 2u : channels;
-    float *const wet[2] = {wet_[0].data(), wet_[1].data()};
-    // The FX's pieces are at most kFeedbackDelay samples (sub-project 5's spec §5), so a piece's
-    // ring input needs only wet samples rendered before it.
-    const auto pieceMax = static_cast<int64_t>(fx ? std::min(config_.maxBlockSize, kFeedbackDelay)
-                                                  : config_.maxBlockSize);
+    // The sources step at every boundary the range covers (none of them has a group pending: those
+    // end a range), and the follower's input is scanned, before any output is written over it.
+    if (from < to)
+    {
+        stepSources(b, to - 1, to);
+    }
     while (from < to)
     {
-        const auto n = static_cast<uint32_t>(std::min<int64_t>(to - from, pieceMax));
+        // Pieces are at most kFeedbackDelay samples in both products (sub-project 5's spec §5;
+        // M2 sub-project 1's spec §6.2), so a piece's ring input needs only wet samples rendered
+        // before it.
+        int64_t n = std::min<int64_t>(to - from, pieceMax_);
+        // A layer ramping off stops rendering at the sample its ramp reaches 0 (the class
+        // comment): the piece ends there, so that is where it stops however the host splits
+        // blocks.
+        for (const auto &l : layers_)
+        {
+            if (l->on.to == 0.0f && l->on.at(from, rampSamples_) != 0.0f)
+            {
+                const int64_t zero = l->on.start + rampSamples_;
+                if (zero > from && zero < from + n)
+                {
+                    n = zero - from;
+                }
+            }
+        }
+        const auto count = static_cast<uint32_t>(n);
         const auto offset = static_cast<size_t>(from - b.callStart);
 
         // This piece's input: a mono input feeds both channels; a missing one is silence.
@@ -631,84 +1363,98 @@ void Processor::render(const Buffers &b, int64_t from, int64_t to) noexcept
         {
             d = d != nullptr ? d + offset : nullptr;
         }
-        // Feedback (spec §5): ring[t] = sanitize(in[t]) + fb(t)·limited[t − D], sanitize being
-        // finiteOrZero and limited from wetHistory_; the ring clamps the sum as it clamps any
-        // input (the class comment). The ramp changes only at boundaries, between render() calls,
-        // so it is 0 throughout a piece whose target and first value are 0: such a piece hands the
-        // engine its input as it is (the sign of zero included), as before Feedback.
-        const float *ringIn[2] = {dry[0], dry[1]};
-        uint32_t ringChannels = b.numInChannels > 0 ? 2 : 0;
-        if (fx && (feedback_.to != 0.0f || feedback_.at(from, rampSamples_) != 0.0f))
+
+        // Which layers render, and their weights, fixed before any layer renders (spec §6.7).
+        for (size_t L = 0; L < kLayers; ++L)
         {
-            for (uint32_t i = 0; i < n; ++i)
+            const Ramp &on = layers_[L]->on;
+            rendering_[L] = on.to != 0.0f || on.at(from, rampSamples_) != 0.0f;
+        }
+        std::array<float, kLayers> weights{};
+        for (uint32_t i = 0; i < count; ++i)
+        {
+            weightsAt(from + i, rendering_, weights);
+            for (size_t L = 0; L < kLayers; ++L)
             {
-                const int64_t t = from + i;
-                const float fb = feedback_.at(t, rampSamples_);
-                const auto h = static_cast<size_t>(t % kFeedbackDelay);
-                for (size_t c = 0; c < 2; ++c)
-                {
-                    const float d = dry[c] != nullptr ? finiteOrZero(dry[c][i]) : 0.0f;
-                    // A sample where the ramp is 0 writes the input alone, as a piece without
-                    // feedback does, so where a piece starts never changes the ring.
-                    ringIn_[c][i] = fb != 0.0f ? d + fb * wetHistory_[c][h] : d;
-                }
+                weights_[L][i] = weights[L];
             }
-            ringIn[0] = ringIn_[0].data();
-            ringIn[1] = ringIn_[1].data();
-            ringChannels = 2;
         }
-        const int64_t headBefore = engine_.liveWriteHead();
-        engine_.process(ringIn, ringChannels, wet, rendering, n);
-        if (fx)
+        // The layers (spec §6.7): the off layers' ring writes inline, then one task per rendering
+        // layer, in order A to D, from the piece state fixed here, read-only until run() returns.
+        // One rendering layer runs inline, without a request.
+        pieceFrom_ = from;
+        pieceN_ = count;
+        pieceDry_ = {dry[0], dry[1]};
+        pieceHasInput_ = b.numInChannels > 0;
+        pieceRendering_ = rendering;
+        taskCount_ = 0;
+        for (uint8_t L = 0; L < kLayers; ++L)
         {
-            // The peaks of what the ring took (spec §6.4), publishing or not (ruling PU-T9b), so
-            // the strip never holds an older pass's peaks when the editor opens: the buffers the
-            // engine was handed, over the frames its head advanced, a prefix of the piece (all
-            // of it unless a freeze stopped the head), at ring time.
-            const auto written = static_cast<uint32_t>(engine_.liveWriteHead() - headBefore);
-            const float *l = ringChannels > 0 && ringIn[0] != nullptr ? ringIn[0] : kSilence.data();
-            const float *r = ringChannels > 0 && ringIn[1] != nullptr ? ringIn[1] : kSilence.data();
-            livePeaks_.write(l, r, headBefore, written);
+            if (rendering_[L])
+            {
+                taskLayers_[taskCount_++] = L;
+            }
+            else
+            {
+                renderLayerPiece(L, from, count, dry, pieceHasInput_, rendering);
+            }
         }
+        if (taskCount_ == 1)
+        {
+            execTask(0);
+        }
+        else if (taskCount_ > 1)
+        {
+            runner_->run(taskCount_, &layerTask, this);
+        }
+        // The piece's grain events, in layer order A to D (spec §6.7), after the join.
+        drainEvents();
+        // No task outside a request: a host that calls thread_pool.exec now (a CLAP violation)
+        // runs nothing (execTask checks i < taskCount_).
+        taskCount_ = 0;
 
         float *dst[2] = {nullptr, nullptr};
         for (uint32_t c = 0; c < channels; ++c)
         {
             dst[c] = b.out[c] != nullptr ? b.out[c] + offset : nullptr;
         }
-        for (uint32_t i = 0; i < n; ++i)
+        for (uint32_t i = 0; i < count; ++i)
         {
             const int64_t t = from + i;
             const float m = mix_.at(t, rampSamples_);
-            const float g = level_.at(t, rampSamples_);
-            // The ramps stay between in-range values; the clamp keeps the diffuser's crossfade
-            // from extrapolating whatever happens.
-            const float delta = std::clamp(diffusion_.at(t, rampSamples_), 0.0f, 1.0f);
             const float a = amount_.at(t, rampSamples_);
             const float s = drySend_.at(t, rampSamples_);
             const bool active = a != 0.0f; // read by the reverb at a chunk's first sample
             // Read both inputs before writing either output: out may be in, and a mono input
-            // feeds both channels.
+            // feeds both channels. The instrument's input feeds the rings alone.
             float d[2] = {0.0f, 0.0f};
             for (uint32_t c = 0; c < rendering; ++c)
             {
-                d[c] = dry[c] != nullptr ? finiteOrZero(dry[c][i]) : 0.0f;
+                d[c] = fx && dry[c] != nullptr ? finiteOrZero(dry[c][i]) : 0.0f;
             }
-            // One channel: its mono render is diffused as both sides, and its rIn feeds both.
-            float w[2] = {wet[0][i], rendering > 1 ? wet[1][i] : wet[0][i]};
-            diffuser_.process(w[0], w[1], delta);
+            // The layers' sum (spec §6.3): the first rendering layer assigns, each later one
+            // adds, in order A to D; with none rendering it is +0.
+            float wet[2] = {0.0f, 0.0f};
+            bool first = true;
+            for (size_t L = 0; L < kLayers; ++L)
+            {
+                if (!rendering_[L])
+                {
+                    continue;
+                }
+                const Layer &l = *layers_[L];
+                for (size_t c = 0; c < 2; ++c)
+                {
+                    wet[c] = first ? l.wet[c][i] : wet[c] + l.wet[c][i];
+                }
+                first = false;
+            }
             float o[2];
             float rIn[2];
             for (uint32_t c = 0; c < 2; ++c)
             {
-                const float limited = softLimit(w[c] * g);
-                o[c] = fx ? d[c] * (1.0f - m) + limited * m : limited;
-                rIn[c] = fx ? m * limited + s * d[c] : limited;
-                if (fx)
-                {
-                    // Read for sample t + D's ring input, D samples from now.
-                    wetHistory_[c][static_cast<size_t>(t % kFeedbackDelay)] = limited;
-                }
+                o[c] = fx ? d[c] * (1.0f - m) + wet[c] * m : wet[c];
+                rIn[c] = fx ? m * wet[c] + s * d[c] : wet[c];
             }
             if (rendering == 1)
             {

@@ -17,6 +17,7 @@
 
 #include "sst/plugininfra/patch-support/patch_base.h"
 
+#include "gg/core/ModMatrix.h"
 #include "gg/core/ParamIds.h"
 #include "gg/core/PatchState.h"
 
@@ -28,10 +29,10 @@ struct Param : sst::plugininfra::patch_support::ParamBase
     using ParamBase::ParamBase;
 };
 
-/// The patch: every parameter's value, the engine seed and a name, and their versioned XML
-/// state (sst-plugininfra's PatchBase, plus the `bits` attribute and the <engine seed> element
-/// described in gg/core/PatchState.h). Main thread only: constructing, saving and loading
-/// allocate.
+/// The patch: every parameter's value, the engine seed, the mod matrix's routes and a name, and
+/// their versioned XML state (sst-plugininfra's PatchBase, plus the `bits` attribute and the
+/// <engine seed> and <mod> elements described in gg/core/PatchState.h). Main thread only:
+/// constructing, saving and loading allocate.
 ///
 /// The patch holds pointers to its own members (PatchBase's params and paramMap, and the state
 /// hooks), so it can't be copied or moved.
@@ -44,6 +45,10 @@ struct Patch : sst::plugininfra::patch_support::PatchBase<Patch, Param>
     /// Written as <engine seed="…"/> by the additionalToState hook. Missing or malformed, it loads
     /// as 0.
     uint64_t seed{0};
+    /// Written as <mod> by the additionalToState hook (the routes isSavableRoute accepts), and
+    /// read back by additionalFromState at version 2 and later; every slot empty otherwise, until
+    /// the migration from version 1 sets the factory routes.
+    ModRoutes routes{};
     /// The version the last successful fromState migrated from: 0 when the state was already at
     /// patchVersion.
     uint32_t migratedFromVersion{0};
@@ -64,8 +69,21 @@ struct Patch : sst::plugininfra::patch_support::PatchBase<Patch, Param>
     /// onResetToInit isn't.
     bool fromState(const std::string &xml);
 
-    void migratePatchFromVersion(uint32_t fromVersion) { migratedFromVersion = fromVersion; }
-    float migrateParamValueFromVersion(Param *, float v, uint32_t) { return v; }
+    /// PatchBase calls it after the values (their exact `bits` included), the seed and the
+    /// routes have loaded, when the state's version isn't patchVersion. From version 1 (or
+    /// older), M1's state: the factory routes, and in the instrument Macro 7 folded into Stereo
+    /// (fromStateXml in gg/core/PatchState.h). A newer version keeps what loaded.
+    void migratePatchFromVersion(uint32_t fromVersion);
+    /// Values need no migration; this notes whether a version-1 state held the instrument's Macro
+    /// 7, which M1 otherwise loaded at its default (0.5).
+    float migrateParamValueFromVersion(Param *p, float v, uint32_t version)
+    {
+        if (version < 2 && p == &param(ParamSlot::Macro7))
+        {
+            m1Macro7Loaded_ = true;
+        }
+        return v;
+    }
 
   private:
     static constexpr size_t index(ParamSlot slot) noexcept
@@ -76,6 +94,9 @@ struct Patch : sst::plugininfra::patch_support::PatchBase<Patch, Param>
 
     Mode mode_;
     std::array<Param, kParamCount> values;
+    /// Whether a version-1 load set Macro 7 (migrateParamValueFromVersion). Only a new Patch
+    /// loads (Patch::fromState loads into one), so it never carries over from an earlier load.
+    bool m1Macro7Loaded_{false};
 };
 } // namespace gg::core
 

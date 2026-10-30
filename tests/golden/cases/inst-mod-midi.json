@@ -1,0 +1,40 @@
+{
+  "mode": "instrument",
+  "sampleRate": 48000,
+  "durationSeconds": 7.0,
+  "blockSize": 128,
+  "seed": 1,
+  "sample": {"kind": "sine", "frequencyHz": 220, "seconds": 4.0, "amplitude": 0.5},
+  "params": {"Position": 0.25, "Density": 4.0, "Size": -5.0, "Level": -12.0},
+  "mod": [
+    {"slot": 13, "source": "Mod Wheel", "target": "Size", "targetLayer": "A", "depth": 3.0, "curve": "Unipolar"},
+    {"slot": 14, "source": "Aftertouch", "target": "Density", "targetLayer": "A", "depth": 2.0, "curve": "Unipolar"},
+    {"slot": 15, "source": "Pitch Bend", "target": "Pitch", "targetLayer": "A", "depth": 2.0, "curve": "Bipolar"},
+    {"slot": 16, "source": "Velocity", "target": "Level", "targetLayer": "A", "depth": 12.0, "curve": "Unipolar"},
+    {"slot": 17, "source": "Key", "target": "Texture", "targetLayer": "A", "depth": 1.0, "curve": "Unipolar"}
+  ],
+  "controls": [
+    {"time": 0.0, "kind": "modWheel", "value": 0.0},
+    {"time": 0.25, "kind": "modWheel", "value": 0.1},
+    {"time": 0.5, "kind": "modWheel", "value": 0.2},
+    {"time": 0.75, "kind": "modWheel", "value": 0.3},
+    {"time": 1.0, "kind": "modWheel", "value": 0.4},
+    {"time": 1.25, "kind": "modWheel", "value": 0.5},
+    {"time": 1.5, "kind": "modWheel", "value": 0.6},
+    {"time": 1.75, "kind": "modWheel", "value": 0.7},
+    {"time": 2.0, "kind": "modWheel", "value": 0.8},
+    {"time": 2.25, "kind": "modWheel", "value": 0.9},
+    {"time": 2.5, "kind": "modWheel", "value": 1.0},
+    {"time": 3.0, "kind": "aftertouch", "value": 0.5},
+    {"time": 3.5, "kind": "aftertouch", "value": 1.0},
+    {"time": 4.5, "kind": "pitchBend", "value": 1.0},
+    {"time": 5.0, "kind": "aftertouch", "value": 0.0},
+    {"time": 5.25, "kind": "pitchBend", "value": 0.0},
+    {"time": 6.0, "kind": "pitchBend", "value": 0.5}
+  ],
+  "notes": [
+    {"time": 0.0, "key": 60, "duration": 2.25, "velocity": 100},
+    {"time": 2.25, "key": 67, "duration": 2.25, "velocity": 50},
+    {"time": 4.5, "key": 72, "duration": 2.25, "velocity": 127}
+  ]
+}

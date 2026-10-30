@@ -31,9 +31,11 @@ struct GrainSpec
     float gain;
     float pan;               ///< -1 (left) .. 1 (right); see panGains().
     Tier tier{Tier::Normal}; ///< How the grain reads its source (ruling 2).
-    /// Which of the engine's two sample-source slots the grain reads, 0 or 1: the source current
-    /// at its onset, so it finishes on that source even if another is adopted while it sounds
-    /// (Engine::adoptSource). 0 in Live mode, where it isn't read.
+    /// The source the grain reads, latched at its onset so it finishes there whatever changes
+    /// while it sounds: 0 or 1, one of the engine's two sample-source slots (the sample current
+    /// at its onset, kept when another is adopted; Engine::adoptSource), or 2
+    /// (Engine::kLiveSlot), the live ring (kept when the source mode changes;
+    /// Engine::setSourceMode).
     uint8_t sourceSlot{0};
 
     /// Every member, sourceSlot included (as the plan asked): two grains that differ only in
@@ -142,7 +144,7 @@ class GrainPool
     ///
     /// Requires the onsets passed here, and the nowSample of every retireFinished() call before
     /// them, not to decrease between clear()s: an end forgotten at one onset is never counted
-    /// again. Whatever restarts time (Engine::reset, a source-mode switch) must clear() the pool.
+    /// again. Whatever restarts time (Engine::reset) must clear() the pool.
     bool canAdmit(int64_t onset) noexcept SST_CPPUTILS_NONBLOCKING;
 
     /// Whether all 2 × capacity() slots are in use, so spawn() would fail.
@@ -160,9 +162,11 @@ class GrainPool
     /// Removes every grain and forgets every end, so time may restart.
     void clear() noexcept SST_CPPUTILS_NONBLOCKING;
 
-    /// Moves every stored grain to source slot `slot`, so it reads that slot's source from now
-    /// on (Engine::setSource, which replaces the source every grain reads).
-    void assignSourceSlot(uint8_t slot) noexcept SST_CPPUTILS_NONBLOCKING;
+    /// Moves every stored grain whose source slot is below `below` to source slot `slot`, so it
+    /// reads that slot's source from now on; the others keep theirs. Engine::setSource passes
+    /// Engine::kLiveSlot as `below`: it replaces the sample every sample grain reads, and the
+    /// grains reading the ring stay on it.
+    void assignSourceSlot(uint8_t slot, uint8_t below) noexcept SST_CPPUTILS_NONBLOCKING;
 
     /// The stored grains' fields, in spawn order.
     const GrainRows &rows() const noexcept { return rows_; }

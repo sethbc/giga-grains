@@ -10,6 +10,7 @@
 #include <cmath>
 #include <cstring>
 #include <optional>
+#include <string_view>
 #include <system_error>
 #include <utility>
 
@@ -43,37 +44,194 @@ std::array<char, 9> bitsToHex(float v)
     return out;
 }
 
-// The float written by bitsToHex: exactly 8 hex digits, or nothing.
-std::optional<float> hexToBits(const char *s)
+// These parsers return whether they read a value into `out` (left alone otherwise), rather than
+// a std::optional: GCC 13's -Wmaybe-uninitialized at -O3 misreads an optional's payload as
+// uninitialized once it is inlined into a longer condition (CI's Linux leg).
+
+// The float written by bitsToHex: exactly 8 hex digits.
+bool hexToBits(const char *s, float &out)
 {
     if (s == nullptr || std::strlen(s) != 8)
     {
-        return std::nullopt;
+        return false;
     }
     uint32_t u{0};
     const auto [end, ec] = std::from_chars(s, s + 8, u, 16);
     if (ec != std::errc{} || end != s + 8)
     {
-        return std::nullopt;
+        return false;
     }
-    return std::bit_cast<float>(u);
+    out = std::bit_cast<float>(u);
+    return true;
 }
 
-// A whole decimal uint64, or nothing.
-std::optional<uint64_t> parseSeed(const char *s)
+// A whole decimal unsigned integer that fits a T.
+template <typename T> bool parseDecimal(const char *s, T &out)
 {
     if (s == nullptr)
     {
-        return std::nullopt;
+        return false;
     }
     const auto len = std::strlen(s);
-    uint64_t seed{0};
-    const auto [end, ec] = std::from_chars(s, s + len, seed, 10);
+    T n{0};
+    const auto [end, ec] = std::from_chars(s, s + len, n, 10);
     if (len == 0 || ec != std::errc{} || end != s + len)
     {
-        return std::nullopt;
+        return false;
     }
-    return seed;
+    out = n;
+    return true;
+}
+
+// The decimal text of an unsigned integer, NUL-terminated. Never locale-dependent.
+std::array<char, 24> decimal(uint64_t n)
+{
+    std::array<char, 24> text{};
+    const auto [end, ec] = std::to_chars(text.data(), text.data() + text.size() - 1, n);
+    (void)ec; // 20 digits at most: it always fits
+    *end = '\0';
+    return text;
+}
+
+// A route's layer attributes (gg/core/PatchState.h): A to D, and `special`'s word, "same" for a
+// sourceLayer (kSameLayer) or "all" for a targetLayer (kAllLayers).
+constexpr std::array<const char *, kLayers> kLayerNames{"A", "B", "C", "D"};
+constexpr const char *kSameLayerName = "same";
+constexpr const char *kAllLayersName = "all";
+
+const char *layerName(uint8_t layer, uint8_t special, const char *specialName)
+{
+    if (layer == special)
+    {
+        return specialName;
+    }
+    return layer < kLayers ? kLayerNames[layer] : "";
+}
+
+// Neither a layer (0 to 3) nor kSameLayer or kAllLayers: what layerNamed returns for any other
+// text.
+constexpr uint8_t kNoLayer = 0xFD;
+static_assert(kNoLayer >= kLayers && kNoLayer != kSameLayer && kNoLayer != kAllLayers);
+
+// The layer `s` names: A to D, or `special` for `specialName`; kNoLayer for anything else.
+uint8_t layerNamed(const char *s, uint8_t special, const char *specialName)
+{
+    if (s == nullptr)
+    {
+        return kNoLayer;
+    }
+    const std::string_view text(s);
+    if (text == specialName)
+    {
+        return special;
+    }
+    for (uint8_t layer = 0; layer < kLayers; ++layer)
+    {
+        if (text == kLayerNames[layer])
+        {
+            return layer;
+        }
+    }
+    return kNoLayer;
+}
+
+// The float a `bits` attribute holds, into `out`, when it agrees with its value's text (`v`,
+// `depth`); false otherwise, and the text stands.
+bool exactBits(const char *bits, double text, float &out)
+{
+    float exact{0.0f};
+    if (!hexToBits(bits, exact) ||
+        !(std::fabs(static_cast<double>(exact) - text) <= kTextTolerance))
+    {
+        return false;
+    }
+    out = exact;
+    return true;
+}
+
+// One <route>, written as gg/core/PatchState.h describes. `r` must be isSavableRoute.
+TiXmlElement routeElement(size_t slot, const ModRoute &r)
+{
+    TiXmlElement e("route");
+    e.SetAttribute("slot", decimal(slot + 1).data());
+    e.SetAttribute("source", modSourceName(r.source));
+    e.SetAttribute("sourceLayer", layerName(r.sourceLayer, kSameLayer, kSameLayerName));
+    e.SetAttribute("target", decimal(paramId(r.target)).data());
+    e.SetAttribute("targetLayer", layerName(r.targetLayer, kAllLayers, kAllLayersName));
+    e.SetDoubleAttribute("depth", static_cast<double>(r.depth));
+    e.SetAttribute(kBitsAttribute, bitsToHex(r.depth).data());
+    e.SetAttribute("curve", modCurveName(r.curve));
+    return e;
+}
+
+// The route a <route> element holds, or an empty slot (ModRoute{}) when any attribute is missing
+// or malformed (gg/core/PatchState.h). Its `slot` is the caller's. Every field is held as a plain
+// value, its enumeration's Count (or kNoLayer) when unread, never as a std::optional (GCC 13's
+// -Wmaybe-uninitialized, above).
+ModRoute parseRoute(const TiXmlElement &e)
+{
+    ModSource source = ModSource::Count;
+    if (const char *name = e.Attribute("source"))
+    {
+        if (const auto named = modSourceNamed(name))
+        {
+            source = *named;
+        }
+    }
+    ModCurve curve = ModCurve::Count;
+    if (const char *name = e.Attribute("curve"))
+    {
+        if (const auto named = modCurveNamed(name))
+        {
+            curve = *named;
+        }
+    }
+    ParamSlot target = ParamSlot::Count;
+    if (clap_id id{0}; parseDecimal(e.Attribute("target"), id))
+    {
+        if (const auto slot = slotForId(id))
+        {
+            target = *slot;
+        }
+    }
+    const uint8_t sourceLayer = layerNamed(e.Attribute("sourceLayer"), kSameLayer, kSameLayerName);
+    const uint8_t targetLayer = layerNamed(e.Attribute("targetLayer"), kAllLayers, kAllLayersName);
+    double text{0};
+    if (source == ModSource::Count || curve == ModCurve::Count || target == ParamSlot::Count ||
+        !isValidTarget(target) || sourceLayer == kNoLayer || targetLayer == kNoLayer ||
+        e.QueryDoubleAttribute("depth", &text) != TIXML_SUCCESS || !std::isfinite(text))
+    {
+        return ModRoute{};
+    }
+    float depth = static_cast<float>(text);
+    exactBits(e.Attribute(kBitsAttribute), text, depth); // the exact float, when it agrees
+    if (!std::isfinite(depth))
+    {
+        return ModRoute{}; // finite as a double, beyond a float's range
+    }
+    return ModRoute{source, sourceLayer, target, targetLayer, depth, curve};
+}
+
+// The routes of a <mod> element: each <route> with a `slot` of 1 to kModSlots sets that slot,
+// to its route or, when the rest of it is malformed, to an empty one; in document order, so the
+// later of two naming one slot wins. Anything else inside <mod> is ignored.
+ModRoutes parseMod(const TiXmlElement *mod)
+{
+    ModRoutes routes{};
+    if (mod == nullptr)
+    {
+        return routes;
+    }
+    for (const auto *e = mod->FirstChildElement("route"); e != nullptr;
+         e = e->NextSiblingElement("route"))
+    {
+        uint32_t slot{0};
+        if (parseDecimal(e->Attribute("slot"), slot) && slot >= 1 && slot <= kModSlots)
+        {
+            routes[slot - 1] = parseRoute(*e);
+        }
+    }
+    return routes;
 }
 
 float sanitize(float v, const md_t &m)
@@ -125,7 +283,22 @@ std::array<Param, kParamCount> makeValues(Mode mode, std::index_sequence<I...>)
 {
     return {Param{paramMeta(static_cast<ParamSlot>(I), mode)}...};
 }
+
+// M1's instrument default for Macro 7 (Macro Stereo), which an M1 state without it, or with a
+// NaN, loaded at (spec §6.10).
+constexpr float kM1Macro7Default = 0.5f;
 } // namespace
+
+bool isSavableRoute(const ModRoute &route) noexcept
+{
+    const auto layerOk = [](uint8_t layer, uint8_t special) {
+        return layer < kLayers || layer == special;
+    };
+    return route.source != ModSource::None && route.source < ModSource::Count &&
+           route.curve < ModCurve::Count && isValidTarget(route.target) &&
+           layerOk(route.sourceLayer, kSameLayer) && layerOk(route.targetLayer, kAllLayers) &&
+           std::isfinite(route.depth);
+}
 
 std::array<Param, kParamCount> Patch::defaultValues(Mode mode)
 {
@@ -145,37 +318,69 @@ Patch::Patch(Mode mode) : mode_(mode), values(defaultValues(mode))
     // PatchBase has already set the value from `v` (through the migration hook) when it calls
     // this; the exact bits replace it, through the same hook.
     fromAdditionalParamAttributes = [this](Param &p, TiXmlElement *e, uint32_t version) {
-        const auto exact = hexToBits(e->Attribute(kBitsAttribute));
         double text{0};
-        if (!exact || e->QueryDoubleAttribute("v", &text) != TIXML_SUCCESS)
+        if (e->QueryDoubleAttribute("v", &text) != TIXML_SUCCESS)
         {
             return;
         }
-        if (!(std::fabs(static_cast<double>(*exact) - text) <= kTextTolerance))
+        if (float exact{0.0f}; exactBits(e->Attribute(kBitsAttribute), text, exact))
         {
-            return;
+            p.value = migrateParamValueFromVersion(&p, exact, version);
         }
-        p.value = migrateParamValueFromVersion(&p, *exact, version);
     };
 
     additionalToState = [this](TiXmlElement &root) {
-        std::array<char, 24> text{};
-        const auto [end, ec] = std::to_chars(text.data(), text.data() + text.size() - 1, seed);
-        (void)ec; // 20 digits at most: it always fits
-        *end = '\0';
         TiXmlElement engine("engine");
-        engine.SetAttribute("seed", text.data());
+        engine.SetAttribute("seed", decimal(seed).data());
         root.InsertEndChild(engine);
+
+        TiXmlElement mod("mod");
+        for (size_t k = 0; k < kModSlots; ++k)
+        {
+            if (isSavableRoute(routes[k]))
+            {
+                mod.InsertEndChild(routeElement(k, routes[k]));
+            }
+        }
+        root.InsertEndChild(mod);
     };
-    additionalFromState = [this](TiXmlElement *root, uint32_t) {
+    additionalFromState = [this](TiXmlElement *root, uint32_t version) {
         seed = 0;
         if (const auto *engine = root->FirstChildElement("engine"))
         {
-            seed = parseSeed(engine->Attribute("seed")).value_or(0);
+            parseDecimal(engine->Attribute("seed"), seed); // left 0 when malformed
         }
+        // Version 1 has no <mod>: its routes are the migration's, so any <mod> it holds is
+        // ignored.
+        routes = version >= 2 ? parseMod(root->FirstChildElement("mod")) : ModRoutes{};
     };
 
     resetToInit();
+}
+
+void Patch::migratePatchFromVersion(uint32_t fromVersion)
+{
+    migratedFromVersion = fromVersion;
+    if (fromVersion >= 2)
+    {
+        return; // a newer version: what loaded stands
+    }
+    routes = factoryRoutes(mode_);
+    if (mode_ != Mode::Instrument)
+    {
+        return; // the FX's Macro 7 was Macro Feedback in M1 already
+    }
+    // The exact floats loaded (PatchBase has applied `bits`), clamped to 0–1 as M1 loaded them,
+    // a NaN at M1's default. Stereo's range and default are M1's: 0–1, 0.5.
+    const auto asM1Loaded = [](float v, float fallback) {
+        return std::isnan(v) ? fallback : std::clamp(v, 0.0f, 1.0f);
+    };
+    Param &stereo = param(ParamSlot::Stereo);
+    Param &macro7 = param(ParamSlot::Macro7);
+    const float v = asM1Loaded(m1Macro7Loaded_ ? macro7.value : kM1Macro7Default, kM1Macro7Default);
+    const float base = asM1Loaded(stereo.value, stereo.meta.defaultVal);
+    stereo.value = std::clamp(base + 0.5f * (2.0f * v - 1.0f), 0.0f, 1.0f);
+    macro7.value = 0.0f; // Macro Feedback's rest
 }
 
 bool Patch::fromState(const std::string &xml)
@@ -201,6 +406,7 @@ bool Patch::fromState(const std::string &xml)
     std::memcpy(name, loaded.name, sizeof(name));
     name[sizeof(name) - 1] = '\0';
     seed = loaded.seed;
+    routes = loaded.routes;
     migratedFromVersion = loaded.migratedFromVersion;
     dirty = false;
     return true;

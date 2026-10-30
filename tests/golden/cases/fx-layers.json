@@ -1,0 +1,10 @@
+{
+  "mode": "fx",
+  "sampleRate": 48000,
+  "durationSeconds": 6.0,
+  "blockSize": 128,
+  "seed": 1,
+  "input": {"kind": "noise", "seconds": 5.5, "amplitude": 0.5},
+  "channels": 2,
+  "params": {"Mix": 1.0, "Layer B On": 1, "Layer C On": 1, "Layer D On": 1, "B Pitch": 7, "C Size": -4.643856189774724, "D Pitch": -12}
+}

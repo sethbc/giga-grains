@@ -5,6 +5,7 @@
 #ifndef GG_SOURCE_PREPAREDSOURCE_H
 #define GG_SOURCE_PREPAREDSOURCE_H
 
+#include <cstdint>
 #include <memory>
 
 #include "gg/source/InterleavedStereo.h"
@@ -39,11 +40,30 @@ class PreparedSource
     /// without channels, or when make() couldn't allocate it. Real-time safe.
     const InterleavedStereo &pairs() const noexcept { return pairs_; }
 
+    /// One level of the source's pyramid (spec §6.5): what the kernels read, the planar buffer
+    /// (its frame count with it) and the interleaved pairs, at `decimation` source frames per
+    /// level frame. Level 0 is the source itself, decimation 1: buffer() and pairs().
+    struct Level
+    {
+        const SampleBuffer *buffer;
+        const InterleavedStereo *pairs;
+        uint32_t decimation;
+    };
+    /// The levels there are: 1 in wave 1 (level 0 alone; sub-project 3 fills the pyramid).
+    uint32_t levelCount() const noexcept { return 1; }
+    /// Level n, or level 0 when n >= levelCount(). Real-time safe.
+    const Level &level(uint32_t n) const noexcept
+    {
+        static_cast<void>(n); // one level: every index reads level 0
+        return level0_;
+    }
+
   private:
     explicit PreparedSource(std::shared_ptr<const SampleBuffer> buffer) noexcept;
 
     std::shared_ptr<const SampleBuffer> buffer_; // never null
     InterleavedStereo pairs_;
+    Level level0_; // buffer_ and pairs_, decimation 1
 };
 } // namespace gg
 

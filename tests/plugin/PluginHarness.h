@@ -33,6 +33,7 @@
 #include "gg/media/Sample.h"
 #include "media/AudioFixtures.h"
 #include "sst/basic-blocks/params/ParamMetadata.h"
+#include "support/StubPool.h"
 
 namespace gg::test
 {
@@ -252,6 +253,111 @@ inline clap_event_midi midiEvent(uint8_t status, uint8_t data1, uint8_t data2,
     e.data[2] = data2;
     return e;
 }
+
+/// A clap_event_transport at time 0: the beats timeline at `beats` (in beats), `tempo` BPM, playing
+/// or stopped, in `tsigNum`/4. The seconds timeline, the loop and the bar fields are absent (0).
+inline clap_event_transport transportEvent(double tempo, bool playing, double beats = 0.0,
+                                           uint16_t tsigNum = 4) noexcept
+{
+    clap_event_transport e{};
+    e.header.size = sizeof(e);
+    e.header.time = 0;
+    e.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
+    e.header.type = CLAP_EVENT_TRANSPORT;
+    // One integer type throughout: GCC's -Wextra rejects a conditional whose arms mix an
+    // enumerator and an unsigned.
+    uint32_t flags = CLAP_TRANSPORT_HAS_TEMPO | CLAP_TRANSPORT_HAS_BEATS_TIMELINE |
+                     CLAP_TRANSPORT_HAS_TIME_SIGNATURE;
+    if (playing)
+    {
+        flags |= CLAP_TRANSPORT_IS_PLAYING;
+    }
+    e.flags = flags;
+    e.song_pos_beats = static_cast<clap_beattime>(std::llround(beats * CLAP_BEATTIME_FACTOR));
+    e.tempo = tempo;
+    e.tsig_num = tsigNum;
+    e.tsig_denom = 4;
+    return e;
+}
+
+/// A host that offers clap.thread-pool (M2 sub-project 1's spec §6.7: the stand-in for a host's
+/// pool). Its request_exec counts the request and the tasks it asks for, then runs them through
+/// the plugin's own clap_plugin_thread_pool.exec on a StubPool of two std::threads (and the
+/// calling thread, as a host's pool may use it), returning once all have returned. With
+/// declining set, it counts the request and returns false, running nothing, as a busy host may:
+/// the plugin then runs them itself. Call attach() with the instance once it exists. Like
+/// StubPool it is the host's side of the request, so it isn't real-time safe and RTSan doesn't
+/// check it; the tasks it runs, the plugin's, are checked.
+class PoolHost
+{
+  public:
+    explicit PoolHost(bool declining = false) : declining_(declining) { host_.host_data = this; }
+    PoolHost(const PoolHost &) = delete;
+    PoolHost &operator=(const PoolHost &) = delete;
+
+    const clap_host *clap() const noexcept { return &host_; }
+    void attach(const clap_plugin *plugin) noexcept { plugin_ = plugin; }
+    uint64_t requests() const noexcept { return requests_; }
+    uint64_t tasks() const noexcept { return tasks_; }
+    void resetCounts() noexcept
+    {
+        requests_ = 0;
+        tasks_ = 0;
+    }
+
+  private:
+    static PoolHost &self(const clap_host *host) noexcept
+    {
+        return *static_cast<PoolHost *>(host->host_data);
+    }
+    static bool requestExec(const clap_host *host, uint32_t numTasks) noexcept
+    {
+        auto &me = self(host);
+        ++me.requests_;
+        me.tasks_ += numTasks;
+        if (me.declining_ || me.plugin_ == nullptr)
+        {
+            return false;
+        }
+        me.exec_ = static_cast<const clap_plugin_thread_pool *>(
+            me.plugin_->get_extension(me.plugin_, CLAP_EXT_THREAD_POOL));
+        if (me.exec_ == nullptr)
+        {
+            return false;
+        }
+        me.pool_.run(numTasks, &PoolHost::task, &me);
+        return true;
+    }
+    static void task(void *ctx, uint32_t index) noexcept
+    {
+        auto &me = *static_cast<PoolHost *>(ctx);
+        me.exec_->exec(me.plugin_, index);
+    }
+    static const void *getExtension(const clap_host *, const char *id) noexcept
+    {
+        static const clap_host_thread_pool kPool{&PoolHost::requestExec};
+        return std::strcmp(id, CLAP_EXT_THREAD_POOL) == 0 ? &kPool : nullptr;
+    }
+
+    const bool declining_;
+    const clap_plugin *plugin_{nullptr};
+    const clap_plugin_thread_pool *exec_{nullptr};
+    uint64_t requests_{0};
+    uint64_t tasks_{0};
+    StubPool pool_{2};
+    clap_host host_{
+        CLAP_VERSION_INIT,
+        nullptr,
+        "gg-tests pool host",
+        "Giga Grains",
+        "",
+        "0.0.0",
+        &PoolHost::getExtension,
+        [](const clap_host *) {}, // request_restart
+        [](const clap_host *) {}, // request_process
+        [](const clap_host *) {}, // request_callback
+    };
+};
 
 /// The scratch folder of the plugin test `name`: GG_TEST_OUTPUT_DIR/plugin-sample-<name>/,
 /// created if needed.
@@ -527,6 +633,7 @@ class PluginUnderTest
                 gg::core::paramMeta(static_cast<gg::core::ParamSlot>(i), impl().mode()).defaultVal;
         }
         s.seed = seed;
+        s.routes = gg::core::factoryRoutes(impl().mode());
         return load(gg::core::encodeState(s));
     }
 
@@ -558,11 +665,13 @@ class PluginUnderTest
 
     /// Runs one process() call. `inputs` and `outputs` hold one port's channel pointers each
     /// (`inputChannels` and 2 of them); a null pointer means the port is absent from the call.
-    /// The plugin's output events go to `outEvents`, or to a list that discards them.
+    /// The plugin's output events go to `outEvents`, or to a list that discards them. The call
+    /// carries `transport` (process.transport), or none.
     clap_process_status process(uint32_t frames, float **inputs, float **outputs,
                                 const clap_input_events *events = nullptr,
                                 uint32_t inputChannels = 2,
-                                const clap_output_events *outEvents = nullptr)
+                                const clap_output_events *outEvents = nullptr,
+                                const clap_event_transport *transport = nullptr)
     {
         InputEvents none;
         clap_audio_buffer in{inputs, nullptr, inputChannels, 0, 0};
@@ -570,7 +679,7 @@ class PluginUnderTest
         clap_process process{};
         process.steady_time = -1;
         process.frames_count = frames;
-        process.transport = nullptr;
+        process.transport = transport;
         process.audio_inputs = inputs != nullptr ? &in : nullptr;
         process.audio_inputs_count = inputs != nullptr ? 1 : 0;
         process.audio_outputs = outputs != nullptr ? &out : nullptr;

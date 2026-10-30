@@ -36,11 +36,15 @@ const EngineConfig &validated(const EngineConfig &config)
     {
         throw std::invalid_argument("Engine: grainCapacity must be below 2^31");
     }
+    // Four layers, A to D (spec §6.2).
+    if (config.layer >= 4)
+    {
+        throw std::invalid_argument("Engine: layer must be below 4");
+    }
     return config;
 }
 
-// M1 has one layer with one stream (spec §6.2): layer A is layer 0, and its stream is stream 0.
-constexpr uint32_t kLayer = 0;
+// A layer has one stream (spec §6.2): stream 0. M3's Voice scheduler adds streams.
 constexpr uint32_t kStream = 0;
 } // namespace
 
@@ -57,7 +61,9 @@ Engine::SourceSlot Engine::slotFor(const PreparedSource *source) noexcept
     slot.source = source;
     if (source != nullptr)
     {
-        const SampleBuffer &buffer = source->buffer();
+        // Level 0, the full-rate buffer, is the one the kernels read (spec §6.5).
+        const PreparedSource::Level &level = source->level(0);
+        const SampleBuffer &buffer = *level.buffer;
         slot.rate = buffer.sampleRate();
         // A source without channels has nothing to read; keep frames at 0 so the
         // interpolators never touch its (null) data.
@@ -69,7 +75,7 @@ Engine::SourceSlot Engine::slotFor(const PreparedSource *source) noexcept
             slot.frames = buffer.frames();
             // The SIMD sample kernel's stereo reads (§16 lever 2); null for a mono source, or
             // when PreparedSource::make couldn't allocate the copy.
-            slot.interleaved = source->pairs().data();
+            slot.interleaved = level.pairs->data();
         }
     }
     return slot;
@@ -97,18 +103,20 @@ void Engine::replaceCurrent(const PreparedSource *source) noexcept
     {
         // No source: the grains still sounding would read nothing, so they end here. Kept, they
         // would hold the current slot until their ends, and a later adoption that flipped back
-        // into it would hand them its source mid-window.
+        // into it would hand them its source mid-window. This ends the ring's grains too: a
+        // source removed entirely is the one hard cut that remains, by design.
         clearGrains();
         currentSlot() = SourceSlot{};
         previousSlot() = SourceSlot{};
         return;
     }
-    // Every grain still sounding now reads the new source, in the current slot.
+    // Every sample grain still sounding now reads the new source, in the current slot; the
+    // ring's grains (kLiveSlot) keep reading the ring.
     const int64_t lastEnd = std::max(slots_[0].lastEnd, slots_[1].lastEnd);
     currentSlot() = slotFor(source);
     currentSlot().lastEnd = lastEnd;
     previousSlot() = SourceSlot{};
-    pool_.assignSourceSlot(current_);
+    pool_.assignSourceSlot(current_, kLiveSlot);
 }
 
 void Engine::setPreparedSource(std::shared_ptr<const PreparedSource> prepared) noexcept
@@ -234,14 +242,25 @@ void Engine::process(const float *const *in, uint32_t numInChannels, float *cons
                      uint32_t numChannels, uint32_t numFrames) noexcept
 {
     ScopedDenormalsOff denormalsOff;
-    // The source mode and the freeze setting apply from this call's first frame.
+    // The source mode, the enable gate and the freeze setting apply from this call's first frame.
     if (requestedMode_ != mode_)
     {
+        // Spec §6.4: the scheduler draws for the new kind from here, and the pool keeps its
+        // grains, each finishing on the source it started on (its row's sourceSlot).
         mode_ = requestedMode_;
-        // The pool's grains belong to the old source: their positions mean nothing in the new
-        // one.
-        clearGrains();
         cloud_.setSourceMode(mode_, config_.liveSeconds);
+    }
+    if (requestedEnabled_ != enabled_)
+    {
+        enabled_ = requestedEnabled_;
+        if (enabled_)
+        {
+            cloud_.forceNextOnset(); // the first grain sounds at this frame (spec §6.2)
+        }
+        else
+        {
+            clearGrains(); // off: the grains still sounding end here
+        }
     }
     live_.setFrozen(freeze_);
     if (in == nullptr)
@@ -288,9 +307,9 @@ void Engine::processBlock(const float *const *in, uint32_t numInChannels, float 
 
     // Spawn this block's grains, then render, then retire. renderedTo is the sample up to
     // which the pool has already been rendered; admit() moves it forward when it has to
-    // retire grains early to make room.
+    // retire grains early to make room. Disabled, nothing spawns (and the pool is empty).
     int64_t renderedTo = blockStart;
-    cloud_.schedule(blockStart, numFrames, config_.seed, kLayer, kStream, [&](const GrainDraw &d) {
+    const auto spawn = [&](const GrainDraw &d) {
         if (mode_ == SourceMode::Live)
         {
             GrainSpec g;
@@ -307,7 +326,11 @@ void Engine::processBlock(const float *const *in, uint32_t numInChannels, float 
         {
             admit(sampleGrain(d), dst, blockStart, renderedTo);
         }
-    });
+    };
+    if (enabled_)
+    {
+        cloud_.schedule(blockStart, numFrames, config_.seed, config_.layer, kStream, spawn);
+    }
     renderPool(dst, blockStart, renderedTo, blockEnd);
     clock_ = blockEnd;
     pool_.retireFinished(blockEnd);
@@ -374,6 +397,7 @@ bool Engine::liveGrain(const GrainDraw &d, GrainSpec &g) const noexcept
         .gain = d.gain,
         .pan = d.pan,
         .tier = d.tier,
+        .sourceSlot = kLiveSlot,
     };
     return true;
 }
@@ -402,14 +426,15 @@ void Engine::admit(const GrainSpec &g, float *const dst[2], int64_t blockStart,
     // grains still sounding at the onset, fewer than capacity by canAdmit.
     [[maybe_unused]] const bool spawned = pool_.spawn(g);
     assert(spawned);
-    if (mode_ == SourceMode::Sample)
+    if (g.sourceSlot != kLiveSlot)
     {
+        // A sample slot's source retires only once its last grain has ended (retirePrevious).
         int64_t &lastEnd = slots_[g.sourceSlot].lastEnd;
         lastEnd = std::max(lastEnd, grainEndSample(g));
     }
     if (sink_ != nullptr)
     {
-        sink_(sinkCtx_, g);
+        sink_(sinkCtx_, config_.layer, g);
     }
 }
 
@@ -422,13 +447,18 @@ void Engine::renderPool(float *const dst[2], int64_t blockStart, int64_t from, i
     // Grain-major, in spawn order: every grain adds to every sample of [from, to) before the
     // next grain starts, so each sample sums its grains in spawn order. With one output (dst[1]
     // null) the kernels carry source channel 0, unpanned. Each grain reads with its own latched
-    // tier (ruling 2).
+    // tier (ruling 2) from the source it latched at its onset (spec §6.4): the ring for
+    // kLiveSlot, otherwise that sample slot's source, whatever the mode now in effect.
     const kernels::Output output{{dst[0], dst[1]}, blockStart};
     const GrainRows &rows = pool_.rows();
     const uint32_t n = pool_.size();
-    if (mode_ == SourceMode::Live)
+    const auto view = [](const SourceSlot &s) {
+        return kernels::SampleSource{{s.data[0], s.data[1]}, s.frames, s.mono, s.interleaved};
+    };
+    const kernels::SampleSource sources[2] = {view(slots_[0]), view(slots_[1])};
+    for (uint32_t i = 0; i < n; ++i)
     {
-        for (uint32_t i = 0; i < n; ++i)
+        if (rows.sourceSlot[i] == kLiveSlot)
         {
             if (rows.tier[i] == Tier::Eco)
             {
@@ -438,16 +468,8 @@ void Engine::renderPool(float *const dst[2], int64_t blockStart, int64_t from, i
             {
                 kernels::renderLiveSimd<kernels::Hermite>(rows, i, live_, output, from, to, hann_);
             }
+            continue;
         }
-        return;
-    }
-    // Each grain reads the source of the slot it latched at its onset.
-    const auto view = [](const SourceSlot &s) {
-        return kernels::SampleSource{{s.data[0], s.data[1]}, s.frames, s.mono, s.interleaved};
-    };
-    const kernels::SampleSource sources[2] = {view(slots_[0]), view(slots_[1])};
-    for (uint32_t i = 0; i < n; ++i)
-    {
         const kernels::SampleSource &source = sources[rows.sourceSlot[i]];
         if (rows.tier[i] == Tier::Eco)
         {

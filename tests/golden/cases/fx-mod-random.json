@@ -1,0 +1,14 @@
+{
+  "mode": "fx",
+  "sampleRate": 48000,
+  "durationSeconds": 7.0,
+  "blockSize": 128,
+  "seed": 1,
+  "input": {"kind": "sine", "frequencyHz": 330, "seconds": 6.5, "amplitude": 0.4},
+  "channels": 2,
+  "params": {"Mix": 1.0, "Density": 5.0, "Size": -3.0, "Stereo": 0.5, "A Random 1 Rate": 2.0, "A Random 1 Smooth": 0.0, "A Random 2 Rate": 0.0, "A Random 2 Smooth": 0.5},
+  "mod": [
+    {"slot": 13, "source": "Random 1", "target": "Pitch", "targetLayer": "A", "depth": 7, "curve": "Bipolar"},
+    {"slot": 14, "source": "Random 2", "target": "Stereo", "targetLayer": "A", "depth": 0.5, "curve": "Bipolar"}
+  ]
+}

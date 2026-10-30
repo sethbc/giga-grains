@@ -725,7 +725,7 @@ TEST_CASE("the perform view has a header, a canvas and eight macros", "[plugin]"
         {"org.sethbc.giga-grains",
          "Giga Grains",
          true,
-         {"Size", "Density", "Pitch", "Spray", "Texture", "Freeze", "Stereo", "Level"}},
+         {"Size", "Density", "Pitch", "Spray", "Texture", "Freeze", "Feedback", "Level"}},
         {"org.sethbc.giga-grains-fx",
          "Giga Grains FX",
          false,

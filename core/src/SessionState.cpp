@@ -273,7 +273,7 @@ std::string encodeState(const SessionState &state)
     // a state that fails to load and loses the whole session (ruling R9).
     assert(!state.sample || isValidMediaEntry(*state.sample));
     const bool writeSample = state.sample && isValidMediaEntry(*state.sample);
-    const std::string patch = toStateXml(state.values, state.seed);
+    const std::string patch = toStateXml(state.values, state.seed, state.routes);
     // With no sample, a newer build's manifest goes back as it came (INTENT §18).
     const bool writeNewer = !state.sample && state.newerMedia && isNewerMedia(*state.newerMedia);
     const std::string media =
@@ -299,7 +299,7 @@ bool decodeState(std::string_view bytes, Mode mode, SessionState &out,
     {
         // A pre-container state: PTCH alone, read exactly as before the container, so every
         // state that loaded then loads now (XML followed by a NUL included).
-        if (!fromStateXml(bytes, loaded.values, loaded.seed, mode, &migrated))
+        if (!fromStateXml(bytes, loaded.values, loaded.seed, loaded.routes, mode, &migrated))
         {
             return false;
         }
@@ -344,7 +344,7 @@ bool decodeState(std::string_view bytes, Mode mode, SessionState &out,
         bool newer{false};
         if (!patch || !media || patch->find('\0') != std::string_view::npos ||
             !parseMedia(*media, loaded.sample, newer) ||
-            !fromStateXml(*patch, loaded.values, loaded.seed, mode, &migrated))
+            !fromStateXml(*patch, loaded.values, loaded.seed, loaded.routes, mode, &migrated))
         {
             return false;
         }

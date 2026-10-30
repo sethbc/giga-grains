@@ -66,6 +66,10 @@ endif ()
 
 message(STATUS "Giga Grains ${GG_VERSION_STRING}")
 message(STATUS "Compiler is ${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}")
+# The toolchain floor (C++23): GCC 13 or newer. Apple clang and ClangCL compile C++23 as they are.
+if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 13)
+    message(FATAL_ERROR "Giga Grains needs GCC 13 or newer for C++23; ${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION} found")
+endif ()
 
 include(cmake/compiler-options.cmake)
 

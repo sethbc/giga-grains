@@ -1,0 +1,14 @@
+{
+  "mode": "fx",
+  "sampleRate": 48000,
+  "durationSeconds": 10.0,
+  "blockSize": 128,
+  "seed": 1,
+  "input": {"kind": "sweep", "startHz": 110, "endHz": 1760, "seconds": 10.0, "amplitude": 0.5},
+  "channels": 2,
+  "params": {"Mix": 1.0, "Level": -6.0, "Position": 0.45, "Density": 5.0, "A LFO 1 Rate": -2.0, "A LFO 1 Shape": 0, "A LFO 2 Rate": 0.0, "A LFO 2 Shape": 4},
+  "mod": [
+    {"slot": 13, "source": "LFO 1", "target": "Position", "targetLayer": "A", "depth": 0.15, "curve": "Bipolar"},
+    {"slot": 14, "source": "LFO 2", "target": "Pitch", "targetLayer": "A", "depth": 12, "curve": "Bipolar"}
+  ]
+}

@@ -9,9 +9,6 @@ namespace gg
 namespace
 {
 constexpr double kMinDensityHz = 0.01;
-constexpr double kMinDurationSamples = 16.0; // the minimum window length
-// Keeps grainEndSample and the int64 sample arithmetic exact; about 3000 years at 48 kHz.
-constexpr double kMaxDurationSamples = 0x1.0p52;
 constexpr float kMaxGain = 4.0f;
 
 double finiteOr(double v, double fallback) noexcept { return std::isfinite(v) ? v : fallback; }
@@ -53,6 +50,10 @@ void CloudScheduler::setParams(const CloudParams &in) noexcept
     p.texture = std::clamp(finiteOr(in.texture, d.texture), 0.0, 1.0);
     p.quality = in.quality;
     p.sprayInSeconds = in.sprayInSeconds;
+    p.pitchSpreadSemitones = std::clamp(finiteOr(in.pitchSpreadSemitones, d.pitchSpreadSemitones),
+                                        0.0, kMaxPitchSpreadSemitones);
+    p.sizeSpreadOctaves =
+        std::clamp(finiteOr(in.sizeSpreadOctaves, d.sizeSpreadOctaves), 0.0, kMaxSizeSpreadOctaves);
 
     const double oldPeriod = period_;
     const double oldDistribution = params_.distribution;
@@ -124,6 +125,10 @@ void CloudScheduler::updateDerived() noexcept
     // The product can overflow to +inf, which the clamp maps to the maximum.
     durationSamples_ = std::clamp(params_.grainDurationSec * sampleRate_, kMinDurationSamples,
                                   kMaxDurationSamples);
+    // Deterministic (logDet, no libm), as it reaches the grain-event log. A duration that isn't
+    // positive has no log: it takes the shortest spread duration, which the clamp holds anyway.
+    durationLog2_ = params_.grainDurationSec > 0.0 ? logDet(params_.grainDurationSec) / logDet(2.0)
+                                                   : kMinSpreadLog2Seconds;
     pitchRatio_ = exp2Det(params_.pitchSemitones / 12.0);
 }
 } // namespace gg

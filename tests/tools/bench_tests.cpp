@@ -193,6 +193,32 @@ TEST_CASE("engine cases report their grain counts", "[bench]")
         }
     }
     CHECK(report.ratios.empty()); // no reference case, so no ratios
+
+    // The four-layer cases. engine-layers shares the grains out among its layers (13, 13, 12
+    // and 12 of these 50; 500 each of the default 2,000, so its count matches X's), and
+    // engine-layers-full gives each layer all of them (4 x 50). A layered case's count is the
+    // total over its layers. 50 grains, not the default: at 2,000 the Debug build's warm-ups
+    // take over a minute (the default's spread is checked by "engine-layers admits its grains
+    // across four layers").
+    const gg::bench::Report layers =
+        gg::bench::run({.runSeconds = 0.002,
+                        .rounds = 1,
+                        .grains = 50,
+                        .cases = {"engine-layers", "engine-layers-full"}});
+    REQUIRE(layers.results.size() == 6);
+    for (const gg::bench::CaseResult &r : layers.results)
+    {
+        INFO(r.name << " at block " << r.blockSize << ": " << r.grains << " grains");
+        CHECK(r.kind == "engine");
+        REQUIRE(r.nsPerGrainSample.size() == 1);
+        CHECK(r.nsPerGrainSample[0] > 0.0);
+        CHECK(r.cpuPctOneCoreAt48k > 0.0);
+        CHECK((r.name == "engine-layers" || r.name == "engine-layers-full"));
+        const double total = r.name == "engine-layers" ? 50.0 : 200.0;
+        CHECK(r.grains >= total - 2.0);
+        CHECK(r.grains <= total + 2.0);
+    }
+    CHECK(layers.ratios.empty());
 }
 
 namespace
@@ -438,7 +464,7 @@ TEST_CASE("the committed baselines are well formed", "[bench]")
 {
     // CI checks each leg's run against its file, so each must pass checkBaseline(): an entry per
     // CPU model with every engine case at every block size, each once.
-    const std::vector<std::string> legs{"linux-gcc12", "mac-universal", "windows-clangcl"};
+    const std::vector<std::string> legs{"linux-gcc13", "mac-universal", "windows-clangcl"};
     for (const std::string &leg : legs)
     {
         INFO(leg);
@@ -451,8 +477,9 @@ TEST_CASE("the committed baselines are well formed", "[bench]")
         for (const nlohmann::json &m : baseline.at("machines"))
         {
             INFO(m.at("machine").get<std::string>());
-            // Exactly the 4 engine cases x 3 block sizes (a duplicate or a stray case would
-            // pass a count of 12).
+            // Exactly M1's 4 engine cases x 3 block sizes (a duplicate or a stray case would
+            // pass a count of 12). engine-layers and engine-layers-full have no entries yet:
+            // report-only until three full runs are merged in.
             std::set<std::pair<std::string, uint32_t>> found;
             for (const nlohmann::json &r : m.at("ratios"))
             {
@@ -495,9 +522,9 @@ TEST_CASE("make baseline", "[bench]")
         benchRun("CPU A", "def", {ratio("engine-sample", 32, 1.0), ratio("engine-live", 64, 2.0)}),
     };
 
-    const nlohmann::json baseline = gg::bench::makeBaseline("linux-gcc12", runs);
+    const nlohmann::json baseline = gg::bench::makeBaseline("linux-gcc13", runs);
     CHECK(baseline.at("schemaVersion").get<int>() == 2);
-    CHECK(baseline.at("leg").get<std::string>() == "linux-gcc12");
+    CHECK(baseline.at("leg").get<std::string>() == "linux-gcc13");
     const nlohmann::json &machines = baseline.at("machines");
     REQUIRE(machines.size() == 2);
 
@@ -536,11 +563,11 @@ TEST_CASE("make baseline", "[bench]")
     // no run at all.
     std::vector<nlohmann::json> missing = runs;
     missing[2]["ratios"].erase(1);
-    CHECK_THROWS_AS(gg::bench::makeBaseline("linux-gcc12", missing), std::invalid_argument);
+    CHECK_THROWS_AS(gg::bench::makeBaseline("linux-gcc13", missing), std::invalid_argument);
     std::vector<nlohmann::json> anonymous = runs;
     anonymous[1].erase("machine");
-    CHECK_THROWS_AS(gg::bench::makeBaseline("linux-gcc12", anonymous), std::invalid_argument);
-    CHECK_THROWS_AS(gg::bench::makeBaseline("linux-gcc12", {}), std::invalid_argument);
+    CHECK_THROWS_AS(gg::bench::makeBaseline("linux-gcc13", anonymous), std::invalid_argument);
+    CHECK_THROWS_AS(gg::bench::makeBaseline("linux-gcc13", {}), std::invalid_argument);
 }
 
 TEST_CASE("merge baseline keeps the other models' entries", "[bench]")
@@ -548,18 +575,18 @@ TEST_CASE("merge baseline keeps the other models' entries", "[bench]")
     // A model added later needs only its own runs: the merge keeps every entry of the old file
     // the new runs don't replace (carry-over: "Adding a model to a baseline needs the old runs").
     const nlohmann::json old = gg::bench::makeBaseline(
-        "linux-gcc12", {benchRun("CPU A", "old", {ratio("engine-sample", 32, 1.0)}),
+        "linux-gcc13", {benchRun("CPU A", "old", {ratio("engine-sample", 32, 1.0)}),
                         benchRun("CPU B", "old", {ratio("engine-sample", 32, 2.0)}),
                         benchRun("CPU C", "old", {ratio("engine-sample", 32, 3.0)})});
     // New runs: CPU B again, and CPU D, never seen.
     const nlohmann::json made = gg::bench::makeBaseline(
-        "linux-gcc12", {benchRun("CPU D", "new", {ratio("engine-sample", 32, 4.0)}),
+        "linux-gcc13", {benchRun("CPU D", "new", {ratio("engine-sample", 32, 4.0)}),
                         benchRun("CPU B", "new", {ratio("engine-sample", 32, 2.5)}),
                         benchRun("CPU B", "new", {ratio("engine-sample", 32, 2.7)})});
 
     const nlohmann::json merged = gg::bench::mergeBaseline(old, made);
     CHECK(merged.at("schemaVersion").get<int>() == 2);
-    CHECK(merged.at("leg").get<std::string>() == "linux-gcc12");
+    CHECK(merged.at("leg").get<std::string>() == "linux-gcc13");
     const nlohmann::json &machines = merged.at("machines");
     REQUIRE(machines.size() == 4);
     // The old file's order, each replaced entry in its place; then the new models.
@@ -799,4 +826,40 @@ TEST_CASE("engine-sample-eco runs at the Eco tier", "[bench]")
     CHECK_THROWS_AS(gg::bench::admittedTiers("reference", 50, 32), std::invalid_argument);
     CHECK_THROWS_AS(gg::bench::admittedTiers("no-such-case", 50, 32), std::invalid_argument);
     CHECK_THROWS_AS(gg::bench::admittedTiers("engine-sample", 50, 48), std::invalid_argument);
+}
+
+TEST_CASE("engine-layers admits its grains across four layers", "[bench]")
+{
+    // Spec §6.12: four engines, layers 0 to 3, each engine-sample's setup with 500 of the 2,000
+    // grains, rendered through a SerialRunner and summed in layer order. After the warm-up (two
+    // grain durations) each layer's engine sounds its share, all Normal, and every layer has
+    // admitted at least one grain duration's worth.
+    const gg::bench::TierCounts tiers = gg::bench::admittedTiers("engine-layers", 2000, 256);
+    CHECK(tiers.normal >= 2000);
+    CHECK(tiers.eco == 0);
+    REQUIRE(tiers.activeGrains.size() == 4);
+    uint32_t total = 0;
+    for (std::size_t layer = 0; layer < tiers.activeGrains.size(); ++layer)
+    {
+        INFO("layer " << layer << ": " << tiers.activeGrains[layer] << " grains");
+        CHECK(tiers.activeGrains[layer] >= 450);
+        CHECK(tiers.activeGrains[layer] <= 550);
+        total += tiers.activeGrains[layer];
+    }
+    CHECK(total >= 1996);
+    CHECK(total <= 2004);
+
+    // engine-layers-full: every layer gets all of the grains, so 4 x 50 here.
+    const gg::bench::TierCounts full = gg::bench::admittedTiers("engine-layers-full", 50, 64);
+    CHECK(full.normal >= 200);
+    CHECK(full.eco == 0);
+    REQUIRE(full.activeGrains.size() == 4);
+    for (const uint32_t active : full.activeGrains)
+    {
+        CHECK(active >= 45);
+        CHECK(active <= 55);
+    }
+
+    // A one-layer case reports its one engine.
+    CHECK(gg::bench::admittedTiers("engine-sample", 50, 64).activeGrains.size() == 1);
 }

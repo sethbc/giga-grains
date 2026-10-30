@@ -1,7 +1,7 @@
 # Giga Grains
 
 Giga Grains is an open-source (AGPL-3.0-or-later) pair of plugins: *Giga Grains*, a granular
-synthesizer, and *Giga Grains FX*, a granular effect, both built from one shared C++20 grain
+synthesizer, and *Giga Grains FX*, a granular effect, both built from one shared C++23 grain
 engine as CLAP, VST3, AU v2 and standalone for macOS, Windows and Linux. Read
 [`INTENT.md`](INTENT.md) first: it says what the project is for and how it is built.
 

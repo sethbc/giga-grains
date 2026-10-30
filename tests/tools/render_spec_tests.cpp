@@ -3,6 +3,7 @@
 // Copyright 2026, the Giga Grains authors (see git history)
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -17,6 +18,8 @@
 #include <set>
 #include <stdexcept>
 #include <string>
+#include <string_view>
+#include <utility>
 #include <vector>
 
 #include <catch2/catch_test_macros.hpp>
@@ -140,7 +143,7 @@ struct Grains
 {
     std::vector<gg::GrainSpec> spawned;
     bool overflowed{false};
-    static void record(void *ctx, const gg::GrainSpec &g)
+    static void record(void *ctx, uint32_t, const gg::GrainSpec &g)
     {
         auto &self = *static_cast<Grains *>(ctx);
         if (self.spawned.size() < self.spawned.capacity())
@@ -157,7 +160,7 @@ struct Grains
         std::vector<std::string> out;
         for (const auto &g : spawned)
         {
-            out.push_back(gg::render::formatEventLine(g));
+            out.push_back(gg::render::formatEventLine(0, g)); // the engine is layer A's
         }
         return out;
     }
@@ -515,9 +518,9 @@ TEST_CASE("event lines use the documented format", "[render]")
         .gain = 0.8f,
         .pan = 0.0f,
     };
-    CHECK(gg::render::formatEventLine(g) ==
-          R"({"i":3,"onset":18000,"frac":0.5,"pos":95999.5,"rate":0.5,"dur":2880,"tex":0,)"
-          R"("gain":0.8,"pan":0})");
+    CHECK(gg::render::formatEventLine(0, g) ==
+          R"({"i":3,"layer":0,"onset":18000,"frac":0.5,"pos":95999.5,"rate":0.5,"dur":2880,)"
+          R"("tex":0,"gain":0.8,"pan":0})");
 
     // Doubles are written shortest-round-trip, so they read back exactly.
     const gg::GrainSpec h{
@@ -531,11 +534,13 @@ TEST_CASE("event lines use the documented format", "[render]")
         .gain = 1.0f / 3.0f,
         .pan = -0.1f,
     };
-    const std::string line = gg::render::formatEventLine(h);
-    CHECK(line == R"({"i":1099511627776,"onset":1099511627776,"frac":0.1,)"
+    // M2 sub-project 1's spec §6.7: "layer" follows "i".
+    const std::string line = gg::render::formatEventLine(3, h);
+    CHECK(line == R"({"i":1099511627776,"layer":3,"onset":1099511627776,"frac":0.1,)"
                   R"("pos":0.30000000000000004,"rate":1e-07,"dur":16,"tex":0.7,)"
                   R"("gain":0.33333334,"pan":-0.1})");
     const auto parsed = nlohmann::json::parse(line);
+    CHECK(parsed["layer"].get<uint32_t>() == 3);
     CHECK(parsed["frac"].get<double>() == h.onsetFrac);
     CHECK(parsed["pos"].get<double>() == h.startPos);
     CHECK(parsed["rate"].get<double>() == h.rate);
@@ -802,11 +807,12 @@ TEST_CASE("fx spec rejects bad input", "[render]")
 
 TEST_CASE("instrument specs name the instrument's macros", "[render]")
 {
-    // Macros 7 and 8 have a name per product (sub-project 5's spec §3.3): a spec names them as
-    // its own product does, and the other product's name is an unknown key.
+    // Macro 8 has a name per product (sub-project 5's spec §3.3): a spec names it as its own
+    // product does, and the other product's name is an unknown key. Macro 7 is Macro Feedback in
+    // both (M2 sub-project 1's spec §6.9), so "Macro Stereo" names nothing.
     CHECK(gg::render::paramSlotNamed("Macro Level") == ParamSlot::Macro8);
     CHECK(gg::render::paramSlotNamed("Macro Mix") == ParamSlot::Macro8);
-    CHECK(gg::render::paramSlotNamed("Macro Stereo") == ParamSlot::Macro7);
+    CHECK_FALSE(gg::render::paramSlotNamed("Macro Stereo").has_value());
     CHECK(gg::render::paramSlotNamed("Macro Feedback") == ParamSlot::Macro7);
     CHECK(gg::render::paramSlotNamed("Texture") == ParamSlot::Texture);
     CHECK(gg::render::paramSlotNamed("Feedback") == ParamSlot::Feedback);
@@ -837,21 +843,78 @@ TEST_CASE("instrument specs name the instrument's macros", "[render]")
     CHECK(mix.fx.params == std::vector<std::pair<std::string, double>>{{"Macro Mix", 1.0}});
 
     // The instrument's name in an FX spec, and the FX's in an instrument spec, as params and as
-    // automation.
+    // automation; and "Macro Stereo" in either.
     fx["params"] = {{"Macro Level", 1.0}};
-    // The message lists the spec's own product's names.
+    // The message lists the spec's own product's names, the layers' globals last.
     CHECK_THAT(rejection(fx), StartsWith("unknown key params.Macro Level: the parameters are "));
-    CHECK_THAT(rejection(fx), EndsWith("Macro Feedback, Macro Mix"));
+    CHECK_THAT(rejection(fx), ContainsSubstring("Macro Feedback, Macro Mix, A Source"));
+    CHECK_THAT(rejection(fx), EndsWith("Level B, Level C, Level D"));
     instrument["params"] = {{"Macro Mix", 1.0}};
     CHECK_THAT(rejection(instrument),
                StartsWith("unknown key params.Macro Mix: the parameters are "));
-    CHECK_THAT(rejection(instrument), EndsWith("Macro Stereo, Macro Level"));
+    CHECK_THAT(rejection(instrument), ContainsSubstring("Macro Feedback, Macro Level, A Source"));
+    instrument["params"] = {{"Macro Stereo", 1.0}};
+    CHECK_THAT(rejection(instrument),
+               StartsWith("unknown key params.Macro Stereo: the parameters are "));
+    instrument.erase("params");
+    instrument["automation"] = {{{"time", 1.0}, {"param", "Macro Feedback"}, {"value", 1.0}}};
+    CHECK(parseJson(instrument).instrument.automation ==
+          std::vector<AutomationPoint>{{1.0, "Macro Feedback", 1.0}});
     fx.erase("params");
     fx["automation"] = {{{"time", 1.0}, {"param", "Macro Stereo"}, {"value", 1.0}}};
     CHECK_THAT(rejection(fx), StartsWith("automation[0].param must be one of "));
     fx["automation"][0]["param"] = "Macro Feedback";
     const RenderSpec automated = parseJson(fx);
     CHECK(automated.fx.automation == std::vector<AutomationPoint>{{1.0, "Macro Feedback", 1.0}});
+}
+
+TEST_CASE("specs name layer parameters by their letter or by their M1 names", "[render]")
+{
+    // M2 sub-project 1's spec §6.9: a layer parameter is displayed with its layer's letter, and
+    // the bare M1 names of layer A's eleven M1 parameters are layer A's, in either product, so
+    // every M1 spec still parses.
+    CHECK(gg::render::paramSlotNamed("Size") == ParamSlot::Size);
+    CHECK(gg::render::paramSlotNamed("A Size") == ParamSlot::Size);
+    CHECK(gg::render::paramSlotNamed("B Size") == ParamSlot::B_Size);
+    CHECK(gg::render::paramSlotNamed("D Step 16") == ParamSlot::D_Step16);
+    CHECK(gg::render::paramSlotNamed("C LFO 1 Rate") == ParamSlot::C_Lfo1Rate);
+    CHECK(gg::render::paramSlotNamed("A Source") == ParamSlot::Source);
+    CHECK(gg::render::paramSlotNamed("Morph X") == ParamSlot::MorphX);
+    CHECK(gg::render::paramSlotNamed("Level B") == ParamSlot::LevelB);
+    const std::array<std::pair<std::string_view, ParamSlot>, 11> m1{{
+        {"Position", ParamSlot::Position},
+        {"Size", ParamSlot::Size},
+        {"Density", ParamSlot::Density},
+        {"Distribution", ParamSlot::Distribution},
+        {"Pitch", ParamSlot::Pitch},
+        {"Spray", ParamSlot::Spray},
+        {"Stereo", ParamSlot::Stereo},
+        {"Freeze", ParamSlot::Freeze},
+        {"Texture", ParamSlot::Texture},
+        {"Feedback", ParamSlot::Feedback},
+        {"Diffusion", ParamSlot::Diffusion},
+    }};
+    for (const auto &[name, slot] : m1)
+    {
+        INFO("param " << name);
+        CHECK(gg::render::paramSlotNamed(name) == slot);
+        CHECK(gg::core::paramMeta(slot, Mode::Fx).name == "A " + std::string(name));
+    }
+    // A bare new name is not an alias: only M1's names had no letter.
+    CHECK_FALSE(gg::render::paramSlotNamed("Source").has_value());
+    CHECK_FALSE(gg::render::paramSlotNamed("B Level").has_value());
+
+    // In a spec, as params and as automation, in either product: the bare and the lettered name
+    // set the same slot.
+    for (auto j : {nlohmann::json::parse(readCase("fx-sine")), instrumentJson()})
+    {
+        j["params"] = {{"Size", -3.0}, {"B Size", -4.0}, {"A Density", 5.0}};
+        j["automation"] = {{{"time", 0.5}, {"param", "A Size"}, {"value", -2.0}},
+                           {{"time", 0.6}, {"param", "Stereo"}, {"value", 1.0}}};
+        const RenderSpec spec = parseJson(j);
+        const auto &params = spec.mode == RenderMode::Fx ? spec.fx.params : spec.instrument.params;
+        CHECK(params.size() == 3);
+    }
 }
 
 TEST_CASE("fx render matches the processor", "[render]")
@@ -903,7 +966,7 @@ TEST_CASE("fx render matches the processor", "[render]")
     {
         std::vector<gg::GrainSpec> spawned;
         bool overflowed{false};
-        static void record(void *ctx, const gg::GrainSpec &g)
+        static void record(void *ctx, uint32_t, const gg::GrainSpec &g)
         {
             auto &self = *static_cast<Grains *>(ctx);
             if (self.spawned.size() < self.spawned.capacity())
@@ -929,7 +992,7 @@ TEST_CASE("fx render matches the processor", "[render]")
     std::vector<std::string> expectedEvents;
     for (const auto &g : grains.spawned)
     {
-        expectedEvents.push_back(gg::render::formatEventLine(g));
+        expectedEvents.push_back(gg::render::formatEventLine(0, g)); // layer A alone is on
     }
 
     // Exactly durationSeconds, stereo, with no release tail.
@@ -1061,8 +1124,8 @@ TEST_CASE("note specs reject bad input", "[render]")
         j["notes"][0].erase("key");
         CHECK(rejection(j) == "notes[0].key is missing");
         j = good;
-        j["notes"][0]["velocity"] = 100;
-        CHECK(rejection(j) == "unknown key notes[0].velocity");
+        j["notes"][0]["velocty"] = 100;
+        CHECK(rejection(j) == "unknown key notes[0].velocty");
         j = good;
         j["notes"] = {{"time", 0.0}};
         CHECK(rejection(j) == "notes must be a JSON array");
@@ -1548,6 +1611,12 @@ TEST_CASE("every committed render spec parses", "[render]")
     std::erase_if(specs, [](const auto &p) { return p.extension() != ".json"; });
     // 19 golden cases and the M1 packs' 23 specs when this was written; more is fine.
     CHECK(specs.size() >= 42);
+    // The one spec that no longer parses, kept unchanged as the record of M1's listening pack: it
+    // automates the instrument's "Macro Stereo", which M2 sub-project 1 made Macro Feedback in
+    // both products (spec §6.9). It must fail for that reason alone.
+    const std::filesystem::path retired =
+        listening / "m1-perform" / "specs" / "07b-macro-stereo.json";
+    size_t retiredSeen = 0;
     for (const auto &path : specs)
     {
         std::ifstream in(path, std::ios::binary);
@@ -1556,6 +1625,526 @@ TEST_CASE("every committed render spec parses", "[render]")
         std::string error;
         const bool parsed = gg::render::parseRenderSpec(text, error).has_value();
         INFO(gg::test::utf8(path) << ": " << error);
+        if (std::filesystem::equivalent(path, retired))
+        {
+            ++retiredSeen;
+            CHECK_FALSE(parsed);
+            CHECK(error.ends_with(R"(not "Macro Stereo")"));
+            continue;
+        }
         CHECK(parsed);
     }
+    CHECK(retiredSeen == 1);
+}
+
+namespace
+{
+/// An FX spec of its own for M2 sub-project 1's keys (spec §6.11): layer B on, reading a sample of
+/// its own, a mono sine input feeding layer A's live ring.
+nlohmann::json fxLayersJson()
+{
+    return nlohmann::json::parse(R"({
+        "mode": "fx", "sampleRate": 48000, "durationSeconds": 2.0, "blockSize": 128, "seed": 1,
+        "input": {"kind": "sine", "frequencyHz": 220, "seconds": 2.0, "amplitude": 0.5},
+        "channels": 1,
+        "samples": {"B": {"kind": "sweep", "startHz": 100, "endHz": 4000, "seconds": 2.0,
+                          "amplitude": 0.5}},
+        "params": {"Layer B On": 1, "B Source": 0, "B Density": 5.0}})");
+}
+
+/// Whether `line`, an event line, is layer `layer`'s; and its "rate".
+bool lineOfLayer(const std::string &line, int layer)
+{
+    return nlohmann::json::parse(line).at("layer").get<int>() == layer;
+}
+double lineRate(const std::string &line)
+{
+    return nlohmann::json::parse(line).at("rate").get<double>();
+}
+} // namespace
+
+TEST_CASE("specs give any layer a sample", "[render]")
+{
+    using gg::render::SourceSpec;
+
+    // The FX: any layer, A to D, in layer order whatever the JSON's order.
+    auto j = fxLayersJson();
+    j["samples"]["D"] = {{"kind", "file"}, {"path", "loop-48k.wav"}};
+    j["samples"]["A"] = {{"kind", "noise"}, {"seconds", 1.0}, {"amplitude", 0.25}};
+    const RenderSpec fx = parseJson(j);
+    REQUIRE(fx.fx.layerSamples.size() == 3);
+    CHECK(fx.fx.layerSamples[0].first == 0);
+    CHECK(fx.fx.layerSamples[0].second ==
+          SourceSpec{.kind = SourceKind::Noise, .seconds = 1.0, .amplitude = 0.25});
+    CHECK(fx.fx.layerSamples[1].first == 1);
+    CHECK(fx.fx.layerSamples[1].second == SourceSpec{.kind = SourceKind::Sweep,
+                                                     .startHz = 100.0,
+                                                     .endHz = 4000.0,
+                                                     .seconds = 2.0,
+                                                     .amplitude = 0.5});
+    CHECK(fx.fx.layerSamples[2].first == 3);
+    CHECK(fx.fx.layerSamples[2].second ==
+          SourceSpec{.kind = SourceKind::File, .path = "loop-48k.wav"});
+
+    // The instrument: "sample" is layer A's, and "samples" gives the others theirs.
+    auto inst = instrumentJson();
+    inst["samples"] = {
+        {"C", {{"kind", "sine"}, {"frequencyHz", 330}, {"seconds", 1.0}, {"amplitude", 0.5}}}};
+    const RenderSpec instrument = parseJson(inst);
+    CHECK(instrument.instrument.sample.kind == SourceKind::Sweep);
+    REQUIRE(instrument.instrument.layerSamples.size() == 1);
+    CHECK(instrument.instrument.layerSamples[0].first == 2);
+    CHECK(instrument.instrument.layerSamples[0].second.frequencyHz == 330.0);
+
+    // Without "samples", nothing.
+    CHECK(parseJson(instrumentJson()).instrument.layerSamples.empty());
+    CHECK(parseCase("fx-sine").fx.layerSamples.empty());
+
+    // A relative path is resolved like the others.
+    RenderSpec resolved = fx;
+    const std::filesystem::path base = std::filesystem::path{GG_TEST_OUTPUT_DIR} / "layer media";
+    gg::render::resolvePaths(resolved, utf8(base));
+    CHECK(resolved.fx.layerSamples[2].second.path == utf8(base / "loop-48k.wav"));
+    CHECK(resolved.fx.layerSamples[0].second.path.empty());
+
+    SECTION("the instrument's layer A twice")
+    {
+        auto bad = instrumentJson();
+        bad["samples"] = {{"A", {{"kind", "noise"}, {"seconds", 1.0}, {"amplitude", 0.5}}}};
+        CHECK(rejection(bad) == "samples.A duplicates sample");
+    }
+    SECTION("a layer that isn't one")
+    {
+        auto bad = fxLayersJson();
+        bad["samples"]["E"] = bad["samples"]["B"];
+        CHECK(rejection(bad) == "unknown key samples.E");
+    }
+    SECTION("not an object")
+    {
+        auto bad = fxLayersJson();
+        bad["samples"] = nlohmann::json::array();
+        CHECK(rejection(bad) == "samples must be a JSON object");
+    }
+    SECTION("a layer's sample takes no sampleRate, and is checked as a sample is")
+    {
+        auto bad = fxLayersJson();
+        bad["samples"]["B"]["sampleRate"] = 44100;
+        CHECK(rejection(bad) == "unknown key samples.B.sampleRate");
+        bad = fxLayersJson();
+        bad["samples"]["B"]["frequencyHz"] = 220;
+        CHECK(rejection(bad) == R"(samples.B.frequencyHz doesn't apply to kind "sweep")");
+    }
+}
+
+TEST_CASE("specs set mod routes by name", "[render]")
+{
+    using gg::render::RouteSpec;
+
+    auto j = fxLayersJson();
+    j["mod"] = nlohmann::json::parse(R"([
+        {"slot": 13, "source": "LFO 1", "sourceLayer": "C", "target": "Pitch",
+         "targetLayer": "B", "depth": 12, "curve": "Unipolar"},
+        {"slot": 48, "source": "Mod Wheel", "target": "A Size", "depth": -1.5},
+        {"slot": 14, "source": "Env Follower", "target": "Mix", "depth": 0.25},
+        {"slot": 1, "source": "None"},
+        {"slot": 15, "source": "Velocity", "target": "Level", "targetLayer": "D", "depth": -6}
+    ])");
+    const RenderSpec spec = parseJson(j);
+    CHECK(spec.fx.mod == std::vector<RouteSpec>{
+                             {13, "LFO 1", "C", "Pitch", "B", 12.0, "Unipolar"},
+                             {48, "Mod Wheel", "same", "A Size", "all", -1.5, "Bipolar"},
+                             {14, "Env Follower", "same", "Mix", "all", 0.25, "Bipolar"},
+                             {1, "None", "same", "", "all", 0.0, "Bipolar"},
+                             {15, "Velocity", "same", "Level", "D", -6.0, "Bipolar"},
+                         });
+    // The instrument takes them too, by its own names.
+    auto inst = instrumentJson();
+    inst["mod"] = {{{"slot", 12}, {"source", "Macro 8"}, {"target", "Level"}, {"depth", 6.0}}};
+    CHECK(parseJson(inst).instrument.mod ==
+          std::vector<RouteSpec>{{12, "Macro 8", "same", "Level", "all", 6.0, "Bipolar"}});
+    CHECK(parseJson(instrumentJson()).instrument.mod.empty());
+
+    const auto withRoute = [](nlohmann::json route) {
+        auto bad = fxLayersJson();
+        bad["mod"] = {{{"slot", 12}, {"source", "LFO 1"}, {"target", "Pitch"}, {"depth", 1.0}},
+                      std::move(route)};
+        return bad;
+    };
+    const nlohmann::json route = {
+        {"slot", 20}, {"source", "LFO 2"}, {"target", "Size"}, {"depth", 1.0}};
+    {
+        INFO("the base route parses");
+        parseJson(withRoute(route));
+    }
+    SECTION("a slot named twice")
+    {
+        auto r = route;
+        r["slot"] = 12;
+        CHECK(rejection(withRoute(r)) == "mod[1].slot 12 is named twice");
+    }
+    SECTION("slots are 1 to 48")
+    {
+        for (const nlohmann::json &slot :
+             {nlohmann::json(0), nlohmann::json(49), nlohmann::json(1.0), nlohmann::json("1")})
+        {
+            auto r = route;
+            r["slot"] = slot;
+            CHECK(rejection(withRoute(r)) == "mod[1].slot must be an integer from 1 to 48");
+        }
+    }
+    SECTION("an unknown source")
+    {
+        auto bad = fxLayersJson();
+        bad["mod"] = {{{"slot", 2}, {"source", "lfo 1"}, {"target", "Pitch"}, {"depth", 1.0}}};
+        CHECK_THAT(rejection(bad), StartsWith("mod[0].source is not a modulation source"));
+    }
+    SECTION("a bad sourceLayer")
+    {
+        auto r = route;
+        r["sourceLayer"] = "all";
+        CHECK_THAT(rejection(withRoute(r)), StartsWith("mod[1].sourceLayer must be"));
+    }
+    SECTION("a target in layers B to D")
+    {
+        for (const char *name : {"B Pitch", "D Size", "Level C", "Layer B On"})
+        {
+            auto r = route;
+            r["target"] = name;
+            INFO(name);
+            CHECK_THAT(rejection(withRoute(r)),
+                       ContainsSubstring("give the layer-A name and targetLayer"));
+        }
+        auto r = route;
+        r["target"] = "B Pitch";
+        CHECK(rejection(withRoute(r)) ==
+              "mod[1].target names layer B; give the layer-A name and targetLayer");
+    }
+    SECTION("a parameter that isn't a target")
+    {
+        for (const char *name : {"Macro Size", "A LFO 1 Rate", "A Step 16"})
+        {
+            auto r = route;
+            r["target"] = name;
+            INFO(name);
+            CHECK(rejection(withRoute(r)) == "mod[1].target is not a modulation target");
+        }
+    }
+    SECTION("an unknown or other product's target")
+    {
+        auto r = route;
+        r["target"] = "Macro Level"; // the instrument's name for Macro 8
+        CHECK_THAT(rejection(withRoute(r)), StartsWith("mod[1].target must be one of"));
+    }
+    SECTION("a targetLayer")
+    {
+        auto r = route;
+        r["targetLayer"] = "E";
+        CHECK_THAT(rejection(withRoute(r)), StartsWith("mod[1].targetLayer must be"));
+        r = route;
+        r["target"] = "Mix";
+        r["targetLayer"] = "A";
+        CHECK(rejection(withRoute(r)) ==
+              R"(mod[1].targetLayer doesn't apply to the global target "Mix")");
+    }
+    SECTION("a bad depth")
+    {
+        auto r = route;
+        r["depth"] = "deep";
+        CHECK(rejection(withRoute(r)) == "mod[1].depth must be a finite number");
+        r["depth"] = 1e300; // beyond float's range
+        CHECK(rejection(withRoute(r)) == "mod[1].depth must be a finite number");
+        r.erase("depth");
+        CHECK(rejection(withRoute(r)) == "mod[1].depth is missing");
+    }
+    SECTION("a bad curve")
+    {
+        auto r = route;
+        r["curve"] = "bipolar";
+        CHECK_THAT(rejection(withRoute(r)), StartsWith("mod[1].curve must be one of"));
+    }
+    SECTION("a missing target")
+    {
+        auto r = route;
+        r.erase("target");
+        CHECK(rejection(withRoute(r)) == "mod[1].target is missing");
+    }
+    SECTION("None takes nothing but the slot")
+    {
+        auto bad = fxLayersJson();
+        bad["mod"] = {{{"slot", 3}, {"source", "None"}, {"target", "Pitch"}}};
+        CHECK(rejection(bad) == R"(mod[0].target doesn't apply to source "None")");
+    }
+    SECTION("unknown keys and shapes")
+    {
+        auto r = route;
+        r["amount"] = 1.0;
+        CHECK(rejection(withRoute(r)) == "unknown key mod[1].amount");
+        auto bad = fxLayersJson();
+        bad["mod"] = nlohmann::json::object();
+        CHECK(rejection(bad) == "mod must be a JSON array");
+    }
+}
+
+TEST_CASE("specs send MIDI controls", "[render]")
+{
+    using gg::render::ControlSpec;
+
+    auto j = fxLayersJson();
+    j["controls"] = nlohmann::json::parse(R"([
+        {"time": 0.25, "kind": "modWheel", "value": 1.0},
+        {"time": 0.25, "kind": "aftertouch", "value": 0.5, "channel": 15},
+        {"time": 1.5, "kind": "pitchBend", "value": 0}
+    ])");
+    CHECK(parseJson(j).fx.controls == std::vector<ControlSpec>{{0.25, "modWheel", 1.0, 0},
+                                                               {0.25, "aftertouch", 0.5, 15},
+                                                               {1.5, "pitchBend", 0.0, 0}});
+    auto inst = instrumentJson();
+    inst["controls"] = {{{"time", 0.0}, {"kind", "pitchBend"}, {"value", 0.75}}};
+    CHECK(parseJson(inst).instrument.controls ==
+          std::vector<ControlSpec>{{0.0, "pitchBend", 0.75, 0}});
+    CHECK(parseJson(instrumentJson()).instrument.controls.empty());
+
+    const auto withControl = [](const std::string &key, const nlohmann::json &value) {
+        auto bad = fxLayersJson();
+        bad["controls"] = {{{"time", 0.5}, {"kind", "modWheel"}, {"value", 0.5}}};
+        if (value.is_null())
+        {
+            bad["controls"][0].erase(key);
+        }
+        else
+        {
+            bad["controls"][0][key] = value;
+        }
+        return bad;
+    };
+    CHECK(rejection(withControl("kind", "cc1")) ==
+          "controls[0].kind must be modWheel, aftertouch or pitchBend");
+    CHECK(rejection(withControl("value", 1.5)) == "controls[0].value must be from 0 to 1");
+    CHECK(rejection(withControl("value", -0.1)) == "controls[0].value must be from 0 to 1");
+    CHECK(rejection(withControl("value", nullptr)) == "controls[0].value is missing");
+    CHECK(rejection(withControl("channel", 16)) ==
+          "controls[0].channel must be an integer from 0 to 15");
+    CHECK_THAT(rejection(withControl("time", 2.0)), StartsWith("controls[0].time must be >= 0"));
+    CHECK_THAT(rejection(withControl("time", -1.0)), StartsWith("controls[0].time must be >= 0"));
+    CHECK(rejection(withControl("velocity", 1)) == "unknown key controls[0].velocity");
+
+    auto unordered = fxLayersJson();
+    unordered["controls"] = {{{"time", 0.5}, {"kind", "modWheel"}, {"value", 0.5}},
+                             {{"time", 0.25}, {"kind", "modWheel"}, {"value", 0.5}}};
+    CHECK_THAT(rejection(unordered), StartsWith("controls[1].time is before controls[0].time"));
+    auto notArray = fxLayersJson();
+    notArray["controls"] = 1;
+    CHECK(rejection(notArray) == "controls must be a JSON array");
+}
+
+TEST_CASE("specs set a steady transport", "[render]")
+{
+    using gg::render::TransportSpec;
+
+    auto j = fxLayersJson();
+    j["transport"] = {{"tempoBpm", 96.5}, {"playing", false}, {"startBeat", 3.25}};
+    CHECK(parseJson(j).fx.transport == TransportSpec{96.5, false, 3.25});
+    j["transport"] = {{"tempoBpm", 120}};
+    CHECK(parseJson(j).fx.transport == TransportSpec{120.0, true, 0.0}); // playing, from beat 0
+    auto inst = instrumentJson();
+    inst["transport"] = {{"tempoBpm", 140}, {"playing", true}, {"startBeat", 0}};
+    CHECK(parseJson(inst).instrument.transport == TransportSpec{140.0, true, 0.0});
+    CHECK_FALSE(parseJson(instrumentJson()).instrument.transport.has_value());
+
+    const auto withTransport = [](nlohmann::json transport) {
+        auto bad = fxLayersJson();
+        bad["transport"] = std::move(transport);
+        return bad;
+    };
+    CHECK(rejection(withTransport({{"tempoBpm", 0}})) == "transport.tempoBpm must be > 0");
+    CHECK(rejection(withTransport({{"playing", true}})) == "transport.tempoBpm is missing");
+    CHECK(rejection(withTransport({{"tempoBpm", 120}, {"playing", 1}})) ==
+          "transport.playing must be true or false");
+    CHECK(rejection(withTransport({{"tempoBpm", 120}, {"startBeat", -1}})) ==
+          "transport.startBeat must be >= 0");
+    CHECK(rejection(withTransport({{"tempo", 120}})) == "unknown key transport.tempo");
+    CHECK(rejection(withTransport(nlohmann::json::array())) == "transport must be a JSON object");
+}
+
+TEST_CASE("notes take a velocity", "[render]")
+{
+    auto j = instrumentJson();
+    j["notes"][1]["velocity"] = 127;
+    j["notes"][2]["velocity"] = 0;
+    const RenderSpec spec = parseJson(j);
+    REQUIRE(spec.instrument.notes.size() == 3);
+    CHECK(spec.instrument.notes[0].velocity == 100); // the default
+    CHECK(spec.instrument.notes[1].velocity == 127);
+    CHECK(spec.instrument.notes[2].velocity == 0);
+
+    for (const nlohmann::json &v :
+         {nlohmann::json(128), nlohmann::json(-1), nlohmann::json(64.0), nlohmann::json("loud")})
+    {
+        auto bad = instrumentJson();
+        bad["notes"][0]["velocity"] = v;
+        CHECK(rejection(bad) == "notes[0].velocity must be an integer from 0 to 127");
+    }
+}
+
+TEST_CASE("sample mode takes none of the layer, mod, control or transport keys", "[render]")
+{
+    const nlohmann::json values = nlohmann::json::parse(R"({
+        "samples": {"B": {"kind": "noise", "seconds": 1.0, "amplitude": 0.5}},
+        "mod": [{"slot": 13, "source": "LFO 1", "target": "Pitch", "depth": 1}],
+        "controls": [{"time": 0.5, "kind": "modWheel", "value": 1}],
+        "transport": {"tempoBpm": 120}})");
+    for (const auto &item : values.items())
+    {
+        auto j = nlohmann::json::parse(readCase("sparse-sine"));
+        j[item.key()] = item.value();
+        INFO(item.key());
+        CHECK(rejection(j) == "unknown key " + item.key());
+    }
+}
+
+TEST_CASE("a mod route reaches layer B's grains through its sample", "[render]")
+{
+    // LFO 1 (1 Hz, sine) to Pitch on layer B alone, 12 semitones deep: B's grains, reading the
+    // sweep "samples"."B" gives it, change rate as the LFO turns; layer A's live grains don't.
+    auto j = fxLayersJson();
+    j["mod"] = {{{"slot", 13},
+                 {"source", "LFO 1"},
+                 {"target", "Pitch"},
+                 {"targetLayer", "B"},
+                 {"depth", 12.0},
+                 {"curve", "Bipolar"}}};
+    std::vector<std::string> events;
+    const auto audio = gg::render::render(parseJson(j), &events);
+    REQUIRE(audio.channels.size() == 2);
+
+    std::set<double> bRates;
+    std::set<double> aRates;
+    for (const auto &line : events)
+    {
+        (lineOfLayer(line, 1) ? bRates : aRates).insert(lineRate(line));
+    }
+    INFO(events.size() << " grains");
+    CHECK(bRates.size() > 10); // the LFO's sweep through ±12 semitones
+    CHECK(*bRates.rbegin() / *bRates.begin() > 2.0);
+    CHECK(aRates == std::set<double>{1.0});
+
+    // Without the route, B's grains keep one rate.
+    std::vector<std::string> still;
+    gg::render::render(parseJson(fxLayersJson()), &still);
+    std::set<double> stillB;
+    for (const auto &line : still)
+    {
+        if (lineOfLayer(line, 1))
+        {
+            stillB.insert(lineRate(line));
+        }
+    }
+    CHECK(stillB == std::set<double>{1.0});
+}
+
+TEST_CASE("layer samples, routes, controls, transport and velocity render as the processor does",
+          "[render]")
+{
+    // An instrument render in blocks of 100 frames, which the 32-sample grid doesn't divide,
+    // against the same Processor fed in one call: layer C's own sample, routes from the Mod Wheel,
+    // Pitch Bend, Velocity and the transport's beat, controls on and off the grid, and two
+    // velocities.
+    auto j = instrumentJson();
+    j["durationSeconds"] = 0.5;
+    j["blockSize"] = 100;
+    j["notes"] = {{{"time", 0.05}, {"key", 60}, {"duration", 0.3}, {"velocity", 30}},
+                  {{"time", 0.1}, {"key", 67}, {"duration", 0.3}}};
+    j["params"] = {{"Position", 0.5}, {"Density", 6.0}, {"Layer C On", 1}};
+    j["samples"] = {{"C", {{"kind", "noise"}, {"seconds", 1.0}, {"amplitude", 0.5}}}};
+    j["mod"] = nlohmann::json::parse(R"([
+        {"slot": 13, "source": "Mod Wheel", "target": "Pitch", "targetLayer": "A", "depth": 7},
+        {"slot": 14, "source": "Velocity", "target": "Size", "depth": 2},
+        {"slot": 15, "source": "Transport Beat", "target": "Position", "targetLayer": "C",
+         "depth": 0.4, "curve": "Unipolar"},
+        {"slot": 16, "source": "Pitch Bend", "target": "Pitch", "targetLayer": "C", "depth": 12},
+        {"slot": 1, "source": "None"}
+    ])");
+    j["controls"] = nlohmann::json::parse(R"([
+        {"time": 0.1, "kind": "modWheel", "value": 1.0},
+        {"time": 0.2, "kind": "pitchBend", "value": 0.0, "channel": 3},
+        {"time": 0.3, "kind": "aftertouch", "value": 0.5}
+    ])");
+    j["transport"] = {{"tempoBpm", 150}, {"playing", true}, {"startBeat", 2.5}};
+    const RenderSpec spec = parseJson(j);
+    std::vector<std::string> events;
+    const auto rendered = gg::render::render(spec, &events);
+
+    using gg::core::ControlEvent;
+    using gg::core::ControlKind;
+    constexpr std::size_t frames = 24000;
+    Processor processor({48000.0, 4096, 1, Mode::Instrument});
+    processor.setSourceNow(gg::render::makeSample(spec.instrument.sample, 48000.0, 1));
+    processor.setSourceNow(
+        2, gg::render::makeSample(spec.instrument.layerSamples[0].second, 48000.0, 1));
+    processor.setBase(ParamSlot::Position, 0.5f);
+    processor.setBase(ParamSlot::Density, 6.0f);
+    processor.setBase(ParamSlot::LayerCOn, 1.0f);
+    auto routes = processor.routes();
+    routes[12] = {.source = gg::core::ModSource::ModWheel,
+                  .target = ParamSlot::Pitch,
+                  .targetLayer = 0,
+                  .depth = 7.0f};
+    routes[13] = {
+        .source = gg::core::ModSource::Velocity, .target = ParamSlot::Size, .depth = 2.0f};
+    routes[14] = {.source = gg::core::ModSource::TransportBeat,
+                  .target = ParamSlot::Position,
+                  .targetLayer = 2,
+                  .depth = 0.4f,
+                  .curve = gg::core::ModCurve::Unipolar};
+    routes[15] = {.source = gg::core::ModSource::PitchBend,
+                  .target = ParamSlot::Pitch,
+                  .targetLayer = 2,
+                  .depth = 12.0f};
+    routes[0] = {};
+    processor.setRoutes(routes);
+    processor.setTransport({.hasBeats = true,
+                            .beatPosition = 2.5,
+                            .tempoBpm = 150.0,
+                            .playing = true,
+                            .beatsPerBar = 4});
+    const std::vector<NoteEvent> notes{
+        {2400, NoteEventType::On, 0, 60, 30.0f / 127.0f},
+        {4800, NoteEventType::On, 0, 67, 100.0f / 127.0f},
+        {16800, NoteEventType::Off, 0, 60, 30.0f / 127.0f},
+        {19200, NoteEventType::Off, 0, 67, 100.0f / 127.0f},
+    };
+    const std::vector<ControlEvent> controls{
+        {4800, ControlKind::ModWheel, 0, 1.0f},
+        {9600, ControlKind::PitchBend, 3, 0.0f},
+        {14400, ControlKind::Aftertouch, 0, 0.5f},
+    };
+    Grains grains;
+    grains.spawned.reserve(8192);
+    processor.setEventSink(&Grains::record, &grains);
+    std::vector<float> left(frames);
+    std::vector<float> right(frames);
+    float *const out[2] = {left.data(), right.data()};
+    processor.process(nullptr, 0, out, 2, frames, {}, notes, controls);
+
+    REQUIRE_FALSE(grains.overflowed);
+    REQUIRE(rendered.channels.size() == 2);
+    CHECK(bitIdentical(rendered.channels[0], left));
+    CHECK(bitIdentical(rendered.channels[1], right));
+    CHECK(events.size() == grains.spawned.size());
+
+    // Guard against a vacuous pass: each of the new keys changed the render.
+    const auto differs = [&](const char *key) {
+        auto without = j;
+        without.erase(key);
+        const auto other = gg::render::render(parseJson(without), nullptr);
+        return !bitIdentical(other.channels[0], rendered.channels[0]);
+    };
+    CHECK(differs("samples"));
+    CHECK(differs("mod"));
+    CHECK(differs("controls"));
+    CHECK(differs("transport"));
+    auto loud = j;
+    loud["notes"][0].erase("velocity");
+    CHECK_FALSE(bitIdentical(gg::render::render(parseJson(loud), nullptr).channels[0],
+                             rendered.channels[0]));
 }

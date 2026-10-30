@@ -1,0 +1,18 @@
+{
+  "mode": "instrument",
+  "sampleRate": 48000,
+  "durationSeconds": 6.0,
+  "blockSize": 128,
+  "seed": 1,
+  "sample": {"kind": "sine", "frequencyHz": 220, "seconds": 4.0, "amplitude": 0.5},
+  "params": {"Position": 0.25, "Density": 5.0, "Size": -3.321928094887362, "Level": -6.0, "A Pitch Spread": 0.0},
+  "automation": [
+    {"time": 1.0, "param": "A Pitch Spread", "value": 2.0},
+    {"time": 2.0, "param": "A Pitch Spread", "value": 7.0},
+    {"time": 3.0, "param": "A Pitch Spread", "value": 12.0},
+    {"time": 4.0, "param": "A Pitch Spread", "value": 24.0}
+  ],
+  "notes": [
+    {"time": 0.0, "key": 60, "duration": 5.5}
+  ]
+}

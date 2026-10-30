@@ -52,6 +52,12 @@ struct CloudParams
     /// GrainDraw carrying the spray's offset in seconds for the source to convert. Live mode
     /// ignores it: its spray is already seconds. Copied as given.
     bool sprayInSeconds{false};
+    /// Each grain's pitch spread in semitones (M2 spec §6.6): the grain plays
+    /// spread × bipolar(u) semitones off its pitch, before the ±48 clamp; [0, 48].
+    double pitchSpreadSemitones{0.0};
+    /// Each grain's size spread in octaves (M2 spec §6.6): the grain's duration is
+    /// grainDurationSec × 2^(spread × bipolar(u)), clamped to [5 ms, 2 s]; [0, 4].
+    double sizeSpreadOctaves{0.0};
 };
 
 /// One grain as the scheduler draws it, before the source turns it into a GrainSpec. Every
@@ -70,10 +76,15 @@ struct GrainDraw
     /// source adds to positionDraw at its own rate (Engine::sampleGrain). Otherwise +0.
     double sprayOffsetSec;
     /// The pitch ratio: exp2Det(clamp(pitchSemitones + (key − 60), −48, 48) / 12) with a key,
-    /// exp2Det(pitchSemitones / 12) without.
+    /// exp2Det(pitchSemitones / 12) without. With a pitch spread s,
+    /// exp2Det(clamp(pitchSemitones + (key − 60) + s × bipolar(u), −48, 48) / 12), the key term
+    /// 0 without a key and u keyed by PitchSpread (M2 spec §6.6).
     double rate;
-    double durationSamples; ///< Window length in output samples, at least 16.
-    double texture{0.0};    ///< CloudParams::texture at the onset.
+    /// Window length in output samples, at least 16: grainDurationSec × sampleRate, or with a
+    /// size spread s, exp2Det(clamp(log2(grainDurationSec) + s × bipolar(u), log2 0.005,
+    /// log2 2)) × sampleRate, u keyed by SizeSpread (M2 spec §6.6).
+    double durationSamples;
+    double texture{0.0}; ///< CloudParams::texture at the onset.
     float gain;
     float pan;               ///< stereo × bipolar(u), in [-1, 1]; +0 at stereo 0 (see schedule()).
     Tier tier{Tier::Normal}; ///< CloudParams::quality at the onset.
@@ -119,6 +130,14 @@ struct GrainDraw
 /// is emitted. Keys added to a non-empty set don't move the onset, and k keeps counting across
 /// notes. With the note gate on (the instrument), no grain is emitted while no key is held: the
 /// stream is held as if off.
+///
+/// **Spreads** (M2 spec §6.6). A pitch spread adds pitchSpreadSemitones × bipolar(u) to the
+/// grain's semitones before the ±48 clamp, and a size spread adds sizeSpreadOctaves × bipolar(u)
+/// to its log2 duration in seconds, clamped to [log2 0.005, log2 2]; each u has its own field,
+/// PitchSpread and SizeSpread. A spread of 0 takes M1's path, with no draw and no log, so the
+/// rate and the duration are M1's bit for bit (the two paths meet only approximately as the
+/// spread goes to 0). The gain stays the layer's: its normalization uses the layer's Size, not
+/// the grain's.
 ///
 /// Every random field of a grain has its own rng::Field, keyed by (seed, layer, stream, field,
 /// k), so the draws don't depend on block size, call order or each other.
@@ -172,13 +191,24 @@ class CloudScheduler
     /// (the FX).
     void setNoteGate(bool gate) noexcept { noteGate_ = gate; }
 
+    /// Forces an onset at the next schedule() call that runs the stream, at its blockStart: the
+    /// same path the first key held after none takes (setHeldKeys; the class comment's
+    /// **Notes**). Engine::setEnabled calls it when a layer is switched on (spec §6.2).
+    void forceNextOnset() noexcept { onsetForced_ = true; }
+
     /// Restarts the schedule: the next onset is t = 0 with k = 0. Keeps the sample rate, the
     /// controls, the held keys and the note gate.
     void reset() noexcept;
 
     /// Calls emit(const GrainDraw &) for every grain with onsetSample in
     /// [blockStart, blockStart + numFrames), in onset order. Blocks must be contiguous from the
-    /// last reset(), starting at 0. seed, layer and stream key the random draws.
+    /// last reset(), starting at 0, but for one gap: Engine::process calls this only while its
+    /// layer is enabled, and when its enable flag turns on (Engine::setEnabled only requests it)
+    /// Engine::process forces an onset (forceNextOnset), so the first block after a disabled gap
+    /// starts where the engine resumes.
+    /// The forced onset moves the pending onset to that block's blockStart and forgets the last
+    /// grain, so nothing is drawn for the gap and nothing is rescaled from before it. seed, layer
+    /// and stream key the random draws.
     ///
     /// While the stream is off, or gated with no key held, nothing is emitted, and the pending
     /// onset keeps its time. If that time has passed when the stream is turned back on, the
@@ -235,9 +265,32 @@ class CloudScheduler
                 const auto i = std::min(static_cast<uint32_t>(u * static_cast<double>(keyCount_)),
                                         keyCount_ - 1);
                 note = keys_[i];
+            }
+            if (params_.pitchSpreadSemitones != 0.0)
+            {
+                // M2 spec §6.6: the spread is added before the clamp.
+                const double keyTerm = note >= 0 ? static_cast<double>(note - 60) : 0.0;
+                const double semis =
+                    params_.pitchSemitones + keyTerm +
+                    params_.pitchSpreadSemitones * rng::bipolar(key(rng::Field::PitchSpread));
+                rate = exp2Det(std::clamp(semis, -kMaxPitchSemitones, kMaxPitchSemitones) / 12.0);
+            }
+            else if (note >= 0)
+            {
                 rate = exp2Det(std::clamp(params_.pitchSemitones + static_cast<double>(note - 60),
                                           -kMaxPitchSemitones, kMaxPitchSemitones) /
                                12.0);
+            }
+            double durationSamples = durationSamples_;
+            if (params_.sizeSpreadOctaves != 0.0)
+            {
+                // M2 spec §6.6: the spread is in the log2 domain, within Size's range.
+                const double log2Seconds =
+                    std::clamp(durationLog2_ + params_.sizeSpreadOctaves *
+                                                   rng::bipolar(key(rng::Field::SizeSpread)),
+                               kMinSpreadLog2Seconds, kMaxSpreadLog2Seconds);
+                durationSamples = std::clamp(exp2Det(log2Seconds) * sampleRate_,
+                                             kMinDurationSamples, kMaxDurationSamples);
             }
             // Live mode: seconds behind the head, further back only. Sample mode: a fraction of
             // the source, with the spray folded in, or with sprayInSeconds the position alone and
@@ -266,7 +319,7 @@ class CloudScheduler
                 .positionDraw = positionDraw,
                 .sprayOffsetSec = sprayOffsetSec,
                 .rate = rate,
-                .durationSamples = durationSamples_,
+                .durationSamples = durationSamples,
                 .texture = params_.texture,
                 .gain = params_.gain,
                 .pan = pan,
@@ -284,6 +337,18 @@ class CloudScheduler
     }
 
   private:
+    // The bounds on CloudParams::pitchSpreadSemitones and CloudParams::sizeSpreadOctaves.
+    static constexpr double kMaxPitchSpreadSemitones = 48.0;
+    static constexpr double kMaxSizeSpreadOctaves = 4.0;
+    // The bounds on a spread grain's log2 duration in seconds: log2 0.005 and log2 2, Size's
+    // range (M2 spec §6.6).
+    static constexpr double kMinSpreadLog2Seconds = -7.643856189774724;
+    static constexpr double kMaxSpreadLog2Seconds = 1.0;
+    // The minimum window length in samples, and the maximum, which keeps grainEndSample and the
+    // int64 sample arithmetic exact (about 3000 years at 48 kHz).
+    static constexpr double kMinDurationSamples = 16.0;
+    static constexpr double kMaxDurationSamples = 0x1.0p52;
+
     void updateDerived() noexcept;
 
     /// Δ for the unit-exponential draw e, with the current period and distribution.
@@ -304,6 +369,8 @@ class CloudScheduler
     double densityHz_{0.0}; // <= 0 when off
     double period_{0.0};    // P = sampleRate_ / densityHz_, when on
     double durationSamples_{0.0};
+    // log2(grainDurationSec), for the size spread; log2 0.005 when the duration isn't positive.
+    double durationLog2_{0.0};
     double pitchRatio_{1.0}; // exp2Det(pitchSemitones / 12)
 
     double nextOnset_{0.0}; // t(nextK_), in output samples since reset()
@@ -318,8 +385,10 @@ class CloudScheduler
     // The held keys, ascending: the first keyCount_ entries (spec §6.1).
     std::array<uint8_t, 128> keys_{};
     uint32_t keyCount_{0};
-    bool noteGate_{false};    // no grain while no key is held (the instrument)
-    bool onsetForced_{false}; // the held set went from empty to non-empty since the last run
+    bool noteGate_{false}; // no grain while no key is held (the instrument)
+    // The held set went from empty to non-empty, or forceNextOnset() was called, since the
+    // last run.
+    bool onsetForced_{false};
 };
 } // namespace gg
 

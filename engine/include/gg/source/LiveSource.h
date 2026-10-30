@@ -118,6 +118,22 @@ class LiveSource
     };
     RingView view() const noexcept { return {slots_, capacity_, frames_}; }
 
+    /// One level of the ring's pyramid (spec §6.5): the ring view the kernels read, at
+    /// `decimation` ring frames per level frame. Level 0 is the ring itself, decimation 1.
+    struct Level
+    {
+        RingView view;
+        uint32_t decimation;
+    };
+    /// The levels there are: 1 in wave 1 (level 0 alone; sub-project 2 builds the ring's levels).
+    uint32_t levelCount() const noexcept { return 1; }
+    /// Level n, or level 0 when n >= levelCount(). Real-time safe.
+    Level level(uint32_t n) const noexcept
+    {
+        static_cast<void>(n); // one level: every index reads level 0
+        return {view(), 1};
+    }
+
     /// How many more frames the head will advance after output sample t of the last write()
     /// block, if the freeze setting doesn't change: +infinity when not frozen; when frozen, the
     /// frames left in the ramp, 0 once the head has stopped.

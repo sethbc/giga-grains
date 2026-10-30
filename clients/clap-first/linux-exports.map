@@ -1,0 +1,16 @@
+/* Giga Grains — granular instrument and effect
+ * SPDX-License-Identifier: AGPL-3.0-or-later
+ * Copyright 2026, the Giga Grains authors (see git history)
+ *
+ * The Linux CLAP's and VST3 module's exports (clients/clap-first/CMakeLists.txt): the CLAP entry
+ * and the VST3 SDK's three entry points, nothing else. A name a module doesn't define is skipped.
+ */
+{
+    global:
+        clap_entry;
+        GetPluginFactory;
+        ModuleEntry;
+        ModuleExit;
+    local:
+        *;
+};

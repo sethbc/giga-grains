@@ -9,6 +9,10 @@ add_executable(gg-tests
         smoke_tests.cpp
         core/diffuser_tests.cpp
         core/exchange_tests.cpp
+        core/layers_tests.cpp
+        core/mod_matrix_tests.cpp
+        core/mod_processor_tests.cpp
+        core/mod_sources_tests.cpp
         core/note_tests.cpp
         core/parammap_tests.cpp
         core/patch_tests.cpp
@@ -18,6 +22,7 @@ add_executable(gg-tests
         core/settings_tests.cpp
         core/space_processor_tests.cpp
         core/space_reverb_tests.cpp
+        core/threads_tests.cpp
         engine/cloud_tests.cpp
         engine/denormal_tests.cpp
         engine/determinism_tests.cpp
@@ -33,6 +38,7 @@ add_executable(gg-tests
         engine/rng_tests.cpp
         engine/rt_tests.cpp
         engine/sample_buffer_tests.cpp
+        engine/task_runner_tests.cpp
         engine/window_tests.cpp
         media/convert_tests.cpp
         media/decode_memory_tests.cpp

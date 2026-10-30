@@ -28,7 +28,7 @@ TEST_CASE("parameter ids stay below clap-wrapper's VST3 range", "[plugin]")
     REQUIRE(params != nullptr);
 
     const uint32_t count = params->count(plugin.clap());
-    REQUIRE(count == 28);
+    REQUIRE(count == 218);
     for (uint32_t i = 0; i < count; ++i)
     {
         clap_param_info info{};

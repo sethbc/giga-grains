@@ -5,6 +5,7 @@
 #include "RenderSpec.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <initializer_list>
@@ -17,6 +18,7 @@
 #include <nlohmann/json.hpp>
 
 #include "Signals.h"
+#include "gg/core/ModMatrix.h"
 #include "gg/media/Utf8Path.h"
 #include "sst/basic-blocks/params/ParamMetadata.h"
 
@@ -136,8 +138,9 @@ class Object
     std::string prefix_;
 };
 
-/// Which signal readSource reads: a sample-mode "source", an instrument's "sample" or an FX
-/// "input". The last two are made at the render's rate, so have no "sampleRate".
+/// Which signal readSource reads: a sample-mode "source", an instrument's "sample" (or a layer's,
+/// in "samples") or an FX "input". The last two are made at the render's rate, so have no
+/// "sampleRate".
 enum class SignalRole
 {
     Source,
@@ -145,9 +148,12 @@ enum class SignalRole
     Input,
 };
 
-SourceSpec readSource(const json &j, SignalRole role)
+/// The signal `j`, named in errors by `key` ("samples.B"), or by its role's key when that is
+/// empty.
+SourceSpec readSource(const json &j, SignalRole role, std::string key = {})
 {
-    const std::string name = role == SignalRole::Source   ? "source"
+    const std::string name = !key.empty()                 ? std::move(key)
+                             : role == SignalRole::Source ? "source"
                              : role == SignalRole::Sample ? "sample"
                                                           : "input";
     const Object o =
@@ -256,7 +262,27 @@ StreamSpec readStream(const json &j)
     return s;
 }
 
-/// `mode`'s product's parameter names, for error messages: "Mix, Level, ..., Macro Mix".
+/// Layer A's slot of the layer parameter whose M1 name, before layers named their parameters with
+/// their letter ("Size" for "A Size"; M2 sub-project 1's spec §6.9), is `name`, so that every M1
+/// spec still parses; nothing for any other name.
+std::optional<gg::core::ParamSlot> m1LayerAlias(std::string_view name)
+{
+    static constexpr std::array<std::string_view, 11> kM1Names{
+#define GG_M1_NAME(enumName, index, display) display,
+        GG_LAYER_PARAMS_M1(GG_M1_NAME)
+#undef GG_M1_NAME
+    };
+    for (std::size_t i = 0; i < kM1Names.size(); ++i)
+    {
+        if (kM1Names[i] == name)
+        {
+            return gg::core::layerSlot(static_cast<gg::core::LayerParam>(i), 0);
+        }
+    }
+    return std::nullopt;
+}
+
+/// `mode`'s product's parameter names, for error messages: "Mix, Level, A Position, ..., Level D".
 std::string parameterNames(gg::core::Mode mode)
 {
     std::string names;
@@ -269,9 +295,14 @@ std::string parameterNames(gg::core::Mode mode)
 }
 
 /// The parameter named `name` in `mode`'s product: paramSlotNamed's, unless that name is the other
-/// product's alone ("Macro Level" in an FX spec, say).
+/// product's alone ("Macro Level" in an FX spec, say). A bare M1 name ("Size") is layer A's in
+/// either product.
 std::optional<gg::core::ParamSlot> paramSlotNamedIn(std::string_view name, gg::core::Mode mode)
 {
+    if (const auto alias = m1LayerAlias(name))
+    {
+        return alias;
+    }
     const auto slot = paramSlotNamed(name);
     if (slot && gg::core::paramMeta(*slot, mode).name == name)
     {
@@ -384,7 +415,7 @@ std::vector<NoteSpec> readNotes(const json &j, double sampleRate, double duratio
     for (std::size_t i = 0; i < j.size(); ++i)
     {
         const std::string name = fmt::format("notes[{}]", i);
-        const Object o(j[i], name, name + ".", {"time", "key", "duration", "channel"});
+        const Object o(j[i], name, name + ".", {"time", "key", "duration", "channel", "velocity"});
         NoteSpec n;
         n.timeSeconds = o.number("time");
         if (!beforeEnd(n.timeSeconds, durationSeconds, sampleRate, end))
@@ -410,16 +441,266 @@ std::vector<NoteSpec> readNotes(const json &j, double sampleRate, double duratio
         {
             n.channel = static_cast<uint8_t>(o.integerUpTo("channel", 15));
         }
+        if (o.has("velocity"))
+        {
+            n.velocity = static_cast<uint8_t>(o.integerUpTo("velocity", 127));
+        }
         notes.push_back(n);
     }
     return notes;
 }
 
-/// The keys instrument and FX mode share: "params", "automation" and "notes", all optional.
-void readProcessorKeys(const Object &o, const RenderSpec &spec, gg::core::Mode mode,
-                       std::vector<std::pair<std::string, double>> &params,
-                       std::vector<AutomationPoint> &automation, std::vector<NoteSpec> &notes)
+/// The layer (0 to 3) that the letter `text` ("A" to "D") names; nothing for any other text.
+std::optional<uint8_t> layerOfLetter(std::string_view text)
 {
+    if (text.size() == 1 && text[0] >= 'A' && text[0] < 'A' + gg::core::kLayers)
+    {
+        return static_cast<uint8_t>(text[0] - 'A');
+    }
+    return std::nullopt;
+}
+
+/// "samples": a source per layer letter, in layer order.
+std::vector<std::pair<uint8_t, SourceSpec>> readLayerSamples(const json &j)
+{
+    const Object o(j, "samples", "samples.", {"A", "B", "C", "D"});
+    static_assert(gg::core::kLayers == 4, "the letters above are the layers'");
+    std::vector<std::pair<uint8_t, SourceSpec>> samples;
+    for (uint8_t layer = 0; layer < gg::core::kLayers; ++layer)
+    {
+        const std::string letter(1, static_cast<char>('A' + layer));
+        if (o.has(letter))
+        {
+            samples.emplace_back(
+                layer, readSource(o.member(letter), SignalRole::Sample, "samples." + letter));
+        }
+    }
+    return samples;
+}
+
+/// Every source's name (gg::core::modSourceName), for error messages: "None, Macro 1, ...".
+std::string modSourceNames()
+{
+    std::string names;
+    for (std::size_t s = 0; s < static_cast<std::size_t>(gg::core::ModSource::Count); ++s)
+    {
+        names += (s == 0 ? "" : ", ");
+        names += gg::core::modSourceName(static_cast<gg::core::ModSource>(s));
+    }
+    return names;
+}
+
+/// Every curve's name (gg::core::modCurveName), for error messages.
+std::string modCurveNames()
+{
+    std::string names;
+    for (std::size_t c = 0; c < static_cast<std::size_t>(gg::core::ModCurve::Count); ++c)
+    {
+        names += (c == 0 ? "" : ", ");
+        names += gg::core::modCurveName(static_cast<gg::core::ModCurve>(c));
+    }
+    return names;
+}
+
+/// One route of "mod", named in errors by `name` ("mod[3]"), with the parameter names of `mode`'s
+/// product. See RouteSpec.
+RouteSpec readRoute(const json &j, const std::string &name, gg::core::Mode mode)
+{
+    const Object o(j, name, name + ".",
+                   {"slot", "source", "sourceLayer", "target", "targetLayer", "depth", "curve"});
+    RouteSpec r;
+    const json &slot = o.member("slot");
+    if (!slot.is_number_unsigned() || slot.get<uint64_t>() < 1 ||
+        slot.get<uint64_t>() > gg::core::kModSlots)
+    {
+        throw SpecError(
+            fmt::format("{}.slot must be an integer from 1 to {}", name, gg::core::kModSlots));
+    }
+    r.slot = static_cast<uint8_t>(slot.get<uint64_t>());
+    r.source = o.string("source");
+    const auto source = gg::core::modSourceNamed(r.source);
+    if (!source)
+    {
+        throw SpecError(
+            fmt::format(R"({}.source is not a modulation source: "{}" (the sources are )"
+                        "{})",
+                        name, r.source, modSourceNames()));
+    }
+    if (*source == gg::core::ModSource::None)
+    {
+        // An empty slot: any other key would go unread.
+        for (const auto &item : j.items())
+        {
+            if (item.key() != "slot" && item.key() != "source")
+            {
+                throw SpecError(
+                    fmt::format(R"({}.{} doesn't apply to source "None")", name, item.key()));
+            }
+        }
+        return r;
+    }
+    if (o.has("sourceLayer"))
+    {
+        r.sourceLayer = o.string("sourceLayer");
+        if (r.sourceLayer != "same" && !layerOfLetter(r.sourceLayer))
+        {
+            throw SpecError(
+                fmt::format(R"({}.sourceLayer must be "A", "B", "C", "D" or "same")", name));
+        }
+    }
+    r.target = o.string("target");
+    const auto target = paramSlotNamedIn(r.target, mode);
+    if (!target)
+    {
+        throw SpecError(fmt::format(R"({}.target must be one of {}, not "{}")", name,
+                                    parameterNames(mode), r.target));
+    }
+    // A layer kind is named by layer A's slot, and targetLayer picks the layers (gg::core::
+    // isValidTarget).
+    const auto ref = gg::core::layerOf(*target);
+    const auto layer =
+        ref ? std::optional<uint8_t>(ref->layer) : gg::core::perLayerGlobalLayer(*target);
+    if (layer && *layer != 0)
+    {
+        throw SpecError(fmt::format("{}.target names layer {}; give the layer-A name and "
+                                    "targetLayer",
+                                    name, static_cast<char>('A' + *layer)));
+    }
+    if (!gg::core::isValidTarget(*target))
+    {
+        throw SpecError(fmt::format("{}.target is not a modulation target", name));
+    }
+    if (o.has("targetLayer"))
+    {
+        if (!gg::core::isLayerTarget(*target))
+        {
+            throw SpecError(fmt::format(R"({}.targetLayer doesn't apply to the global target "{}")",
+                                        name, r.target));
+        }
+        r.targetLayer = o.string("targetLayer");
+        if (r.targetLayer != "all" && !layerOfLetter(r.targetLayer))
+        {
+            throw SpecError(
+                fmt::format(R"({}.targetLayer must be "A", "B", "C", "D" or "all")", name));
+        }
+    }
+    r.depth = o.number("depth");
+    // The Processor takes it as a float, a conversion defined only within float's range.
+    if (!(std::abs(r.depth) <= std::numeric_limits<float>::max()))
+    {
+        throw SpecError(fmt::format("{}.depth must be a finite number", name));
+    }
+    if (o.has("curve"))
+    {
+        r.curve = o.string("curve");
+        if (!gg::core::modCurveNamed(r.curve))
+        {
+            throw SpecError(fmt::format(R"({}.curve must be one of {}, not "{}")", name,
+                                        modCurveNames(), r.curve));
+        }
+    }
+    return r;
+}
+
+/// "mod": routes, each slot named once.
+std::vector<RouteSpec> readMod(const json &j, gg::core::Mode mode)
+{
+    if (!j.is_array())
+    {
+        throw SpecError("mod must be a JSON array");
+    }
+    std::vector<RouteSpec> routes;
+    std::array<bool, gg::core::kModSlots> named{};
+    for (std::size_t i = 0; i < j.size(); ++i)
+    {
+        const std::string name = fmt::format("mod[{}]", i);
+        RouteSpec r = readRoute(j[i], name, mode);
+        if (named[r.slot - 1u])
+        {
+            throw SpecError(fmt::format("{}.slot {} is named twice", name, r.slot));
+        }
+        named[r.slot - 1u] = true;
+        routes.push_back(std::move(r));
+    }
+    return routes;
+}
+
+std::vector<ControlSpec> readControls(const json &j, double sampleRate, double durationSeconds)
+{
+    if (!j.is_array())
+    {
+        throw SpecError("controls must be a JSON array");
+    }
+    const int64_t end = framesFor(durationSeconds, sampleRate);
+    std::vector<ControlSpec> controls;
+    for (std::size_t i = 0; i < j.size(); ++i)
+    {
+        const std::string name = fmt::format("controls[{}]", i);
+        const Object o(j[i], name, name + ".", {"time", "kind", "value", "channel"});
+        ControlSpec c;
+        c.timeSeconds = o.number("time");
+        if (!beforeEnd(c.timeSeconds, durationSeconds, sampleRate, end))
+        {
+            throw SpecError(timeError(name));
+        }
+        if (!controls.empty() && c.timeSeconds < controls.back().timeSeconds)
+        {
+            throw SpecError(fmt::format("{}.time is before controls[{}].time: list the controls "
+                                        "in time order",
+                                        name, i - 1));
+        }
+        c.kind = o.string("kind");
+        if (c.kind != "modWheel" && c.kind != "aftertouch" && c.kind != "pitchBend")
+        {
+            throw SpecError(fmt::format("{}.kind must be modWheel, aftertouch or pitchBend", name));
+        }
+        c.value = o.number("value");
+        if (!(c.value >= 0.0 && c.value <= 1.0))
+        {
+            throw SpecError(fmt::format("{}.value must be from 0 to 1", name));
+        }
+        if (o.has("channel"))
+        {
+            c.channel = static_cast<uint8_t>(o.integerUpTo("channel", 15));
+        }
+        controls.push_back(std::move(c));
+    }
+    return controls;
+}
+
+TransportSpec readTransport(const json &j)
+{
+    const Object o(j, "transport", "transport.", {"tempoBpm", "playing", "startBeat"});
+    TransportSpec t;
+    t.tempoBpm = o.positive("tempoBpm");
+    if (o.has("playing"))
+    {
+        const json &playing = o.member("playing");
+        if (!playing.is_boolean())
+        {
+            throw SpecError("transport.playing must be true or false");
+        }
+        t.playing = playing.get<bool>();
+    }
+    if (o.has("startBeat"))
+    {
+        t.startBeat = o.number("startBeat");
+        if (!(t.startBeat >= 0.0))
+        {
+            throw SpecError("transport.startBeat must be >= 0");
+        }
+    }
+    return t;
+}
+
+/// The keys instrument and FX mode share, all optional: "params", "automation", "notes",
+/// "samples", "mod", "controls" and "transport". `Spec` is InstrumentSpec or FxSpec.
+template <typename Spec>
+void readProcessorKeys(const Object &o, const RenderSpec &spec, gg::core::Mode mode, Spec &out)
+{
+    auto &params = out.params;
+    auto &automation = out.automation;
+    auto &notes = out.notes;
     if (o.has("params"))
     {
         params = readParams(o.member("params"), mode);
@@ -433,6 +714,22 @@ void readProcessorKeys(const Object &o, const RenderSpec &spec, gg::core::Mode m
     {
         notes = readNotes(o.member("notes"), spec.sampleRate, spec.durationSeconds);
     }
+    if (o.has("samples"))
+    {
+        out.layerSamples = readLayerSamples(o.member("samples"));
+    }
+    if (o.has("mod"))
+    {
+        out.mod = readMod(o.member("mod"), mode);
+    }
+    if (o.has("controls"))
+    {
+        out.controls = readControls(o.member("controls"), spec.sampleRate, spec.durationSeconds);
+    }
+    if (o.has("transport"))
+    {
+        out.transport = readTransport(o.member("transport"));
+    }
 }
 
 /// The instrument keys of a spec whose sampleRate and durationSeconds are already read.
@@ -440,8 +737,12 @@ InstrumentSpec readInstrument(const Object &o, const RenderSpec &spec)
 {
     InstrumentSpec instrument;
     instrument.sample = readSource(o.member("sample"), SignalRole::Sample);
-    readProcessorKeys(o, spec, gg::core::Mode::Instrument, instrument.params, instrument.automation,
-                      instrument.notes);
+    readProcessorKeys(o, spec, gg::core::Mode::Instrument, instrument);
+    // "sample" is layer A's.
+    if (!instrument.layerSamples.empty() && instrument.layerSamples.front().first == 0)
+    {
+        throw SpecError("samples.A duplicates sample");
+    }
     return instrument;
 }
 
@@ -469,7 +770,7 @@ FxSpec readFx(const Object &o, const RenderSpec &spec)
         }
         fx.channels = static_cast<uint32_t>(channels);
     }
-    readProcessorKeys(o, spec, gg::core::Mode::Fx, fx.params, fx.automation, fx.notes);
+    readProcessorKeys(o, spec, gg::core::Mode::Fx, fx);
     return fx;
 }
 
@@ -508,13 +809,13 @@ Object topLevel(const json &j, RenderMode mode)
                 "the spec",
                 "",
                 {"mode", "sampleRate", "durationSeconds", "blockSize", "seed", "sample", "params",
-                 "automation", "notes"}};
+                 "automation", "notes", "samples", "mod", "controls", "transport"}};
     case RenderMode::Fx:
         return {j,
                 "the spec",
                 "",
                 {"mode", "sampleRate", "durationSeconds", "blockSize", "seed", "input", "channels",
-                 "params", "automation", "notes"}};
+                 "params", "automation", "notes", "samples", "mod", "controls", "transport"}};
     case RenderMode::Sample:
         break;
     }
@@ -567,8 +868,13 @@ RenderSpec readSpec(const json &j)
 
 std::optional<gg::core::ParamSlot> paramSlotNamed(std::string_view name)
 {
-    // Either product's names: the FX's first, then the instrument's, which differ only for Macros
-    // 7 and 8. No name is one slot's in one product and another's in the other.
+    // A bare M1 name is layer A's (spec §6.9). Then either product's names: the FX's first, then
+    // the instrument's, which differ only for Macro 8. No name is one slot's in one product and
+    // another's in the other.
+    if (const auto alias = m1LayerAlias(name))
+    {
+        return alias;
+    }
     for (const auto mode : {gg::core::Mode::Fx, gg::core::Mode::Instrument})
     {
         for (std::size_t s = 0; s < gg::core::kParamCount; ++s)
@@ -605,7 +911,15 @@ std::string utf8FromPath(const std::filesystem::path &path)
 
 void resolvePaths(RenderSpec &spec, const std::string &baseDir)
 {
-    for (SourceSpec *s : {&spec.source, &spec.instrument.sample, &spec.fx.input})
+    std::vector<SourceSpec *> sources{&spec.source, &spec.instrument.sample, &spec.fx.input};
+    for (auto *layerSamples : {&spec.instrument.layerSamples, &spec.fx.layerSamples})
+    {
+        for (auto &layerSample : *layerSamples)
+        {
+            sources.push_back(&layerSample.second);
+        }
+    }
+    for (SourceSpec *s : sources)
     {
         if (s->kind != SourceKind::File || s->path.empty())
         {

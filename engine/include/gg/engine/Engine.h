@@ -34,15 +34,23 @@ struct EngineConfig
     /// stored in N + maxBlockSize frames (plus 3 guard frames) so that a block's later frames
     /// never overwrite the window (ruling M1-o; see the class comment and LiveSource).
     double liveSeconds{0.0};
+    /// The layer this engine plays (spec §6.2): the `layer` field of every random draw's key.
+    /// Below 4. Layer A is 0, which keys every draw as M1's one-layer engine did.
+    uint32_t layer{0};
 };
 
 /// Called on the audio thread, from inside process(), once for every grain that spawns, in
-/// spawn order. It must be real-time safe.
-using GrainEventSink = void (*)(void *ctx, const GrainSpec &);
+/// spawn order, with the engine's EngineConfig::layer (M2 sub-project 1's spec §6.7). It must be
+/// real-time safe.
+using GrainEventSink = void (*)(void *ctx, uint32_t layer, const GrainSpec &);
 
-/// The grain engine: one Cloud grain stream (layer 0, stream 0) reading one source, either a
-/// sample (SourceMode::Sample, the default) or the live ring (SourceMode::Live). When a new
-/// sample source is adopted, the grains already sounding finish on the old one (adoptSource).
+/// The grain engine, one layer's (spec §6.2): one Cloud grain stream (layer EngineConfig::layer,
+/// stream 0) whose new grains read one source kind, a sample (SourceMode::Sample, the default)
+/// or the live ring (SourceMode::Live). Each grain keeps reading the source it started on: when a
+/// new sample source is adopted, the grains already sounding finish on the old one
+/// (adoptSource), and when the source mode changes they finish on their sample or on the ring
+/// (setSourceMode). Its pool row says which (GrainSpec::sourceSlot: a sample slot, or kLiveSlot).
+/// The enable gate (setEnabled) holds the stream off while the ring and the clock run on.
 ///
 /// With the same configuration, source, input and parameter changes (at the same sample
 /// positions), the output and the grain events are bit-identical however the host splits blocks
@@ -85,18 +93,24 @@ using GrainEventSink = void (*)(void *ctx, const GrainSpec &);
 class Engine
 {
   public:
+    /// GrainSpec::sourceSlot of a grain reading the live ring; 0 and 1 are the sample slots.
+    static constexpr uint8_t kLiveSlot = 2;
+
     /// Allocates everything process() needs, the live ring included. Throws
     /// std::invalid_argument if sampleRate is not finite and positive, maxBlockSize is 0,
-    /// liveSeconds is not finite and >= 0, or grainCapacity is 2^31 or more (all checked before
-    /// anything is allocated), or if the ring's storage, N + maxBlockSize frames, would exceed
-    /// 2^40.
+    /// liveSeconds is not finite and >= 0, grainCapacity is 2^31 or more, or layer is 4 or more
+    /// (all checked before anything is allocated), or if the ring's storage, N + maxBlockSize
+    /// frames, would exceed 2^40.
     explicit Engine(const EngineConfig &config);
 
     /// Not real-time safe: call only while process() is not running. PreparedSource::make, then
-    /// an adoption that replaces the source every grain reads: the grains still sounding go on
-    /// at their positions in the new source, and the grains from the next onset on read it too.
+    /// an adoption that replaces the source every sample grain reads: the sample grains still
+    /// sounding go on at their positions in the new source, and the grains from the next onset
+    /// on read it too.
     /// nullptr means no source: the schedule keeps running but no grains spawn in Sample mode,
-    /// and the grains still sounding, which would read nothing, end at once.
+    /// and the grains still sounding, which would read nothing, end at once. That ends the
+    /// grains reading the ring too: a source removed entirely is the one hard cut that remains,
+    /// by design. Otherwise grains reading the ring are left alone.
     ///
     /// The engine owns this source, keeping it alive until the next setSource or its
     /// destruction; takeRetiredSource never hands it back. Sources adopted with adoptSource that
@@ -114,13 +128,13 @@ class Engine
     /// contract, and the engine owns `source` in the same way. Never throws.
     void setPreparedSource(std::shared_ptr<const PreparedSource> source) noexcept;
 
-    /// setPreparedSource's replacement (every grain still sounding goes on in `source` too), for
-    /// a source the caller owns, as adoptSource's are: not real-time safe, call it only while
-    /// process() is not running. The sources it replaces are handed back as setPreparedSource
-    /// hands them back (a setSource source is let go), and `source` is then an adopted source
-    /// like any other: a later adoption replaces it, and takeRetiredSource hands it back once no
-    /// grain reads it. nullptr means no source. `source` must not be in play already or waiting
-    /// to be handed back; take every retired source first, so the hand-backs fit. Never throws.
+    /// setPreparedSource's replacement (every sample grain still sounding goes on in `source` too),
+    /// for a source the caller owns, as adoptSource's are: not real-time safe, call it only while
+    /// process() is not running. The sources it replaces are handed back as setPreparedSource hands
+    /// them back (a setSource source is let go), and `source` is then an adopted source like any
+    /// other: a later adoption replaces it, and takeRetiredSource hands it back once no grain reads
+    /// it. nullptr means no source. `source` must not be in play already or waiting to be handed
+    /// back; take every retired source first, so the hand-backs fit. Never throws.
     void replaceSource(const PreparedSource *source) noexcept;
 
     /// Real-time safe, but not synchronized with process(): call it on the audio thread between
@@ -167,11 +181,22 @@ class Engine
     /// setCloudParams.
     void setNoteGate(bool gate) noexcept;
 
-    /// Which source grains read. Live needs a ring (liveSeconds > 0); without one the call is
-    /// ignored. Takes effect from the next process() call's first frame: the grains still
-    /// sounding from the old source are silenced, and the scheduler draws position and spray
-    /// for the new one. Real-time safe, with the same threading rule as setCloudParams.
+    /// Which source new grains read (spec §6.4). Live needs a ring (liveSeconds > 0); without
+    /// one the call is ignored. Takes effect from the next process() call's first frame: the
+    /// scheduler draws position and spray for the new kind from that frame, and the grains still
+    /// sounding finish on the source they started on (their sample slot or the ring), so a switch
+    /// doesn't click. Real-time safe, with the same threading rule as setCloudParams.
     void setSourceMode(SourceMode mode) noexcept;
+
+    /// The enable gate (spec §6.2). Takes effect from the next process() call's first frame. Off:
+    /// the grains still sounding end there, and no grain spawns while off; the ring is still
+    /// written, and the clock, the retirement of sources and freeze go on, so a layer switched on
+    /// later reads recent audio. On again: the pending onset is forced to that frame
+    /// (CloudScheduler::forceNextOnset), as a first held key forces it. The default is on.
+    /// Real-time safe, with the same threading rule as setCloudParams.
+    void setEnabled(bool enabled) noexcept { requestedEnabled_ = enabled; }
+    /// The enable gate in effect: set by the last process() call (see setEnabled).
+    bool enabled() const noexcept { return enabled_; }
 
     /// Freezes the live ring (see LiveSource): the write gain ramps to 0 over 20 ms and then the
     /// head stops, so grains keep reading what the ring holds; off, the head resumes and the gain
@@ -187,11 +212,11 @@ class Engine
 
     /// Silences every grain and restarts the clock, the schedule and ring time at 0. Keeps the
     /// current source (the previous one retires, see takeRetiredSource), the source mode, the
-    /// Cloud parameters, the held keys, the note gate, the freeze setting and the sink: the next
-    /// process() continues as a new engine with those settings would, a freeze ramping down from
-    /// its first frame. The ring's old frames can't be read again. Real-time safe, but not
-    /// synchronized with process(): call it on the audio thread between process() calls, or while
-    /// process() is not running.
+    /// enable gate, the Cloud parameters, the held keys, the note gate, the freeze setting and
+    /// the sink: the next process() continues as a new engine with those settings would, a
+    /// freeze ramping down from its first frame. The ring's old frames can't be read again.
+    /// Real-time safe, but not synchronized with process(): call it on the audio thread between
+    /// process() calls, or while process() is not running.
     void reset() noexcept;
 
     /// Renders numFrames frames, overwriting out[0 .. numChannels). Before rendering, if there is
@@ -257,9 +282,10 @@ class Engine
     bool liveGrain(const GrainDraw &d, GrainSpec &g) const noexcept;
     void admit(const GrainSpec &g, float *const dst[2], int64_t blockStart,
                int64_t &renderedTo) noexcept SST_CPPUTILS_NONBLOCKING;
-    /// Adds every pool grain into dst over [from, to), through gg/grain/GrainKernels.h with each
-    /// grain's latched tier: the SIMD sample kernel in Sample mode, each grain reading its own
-    /// source slot, the SIMD live kernel in Live mode.
+    /// Adds every pool grain into dst over [from, to), in spawn order, through
+    /// gg/grain/GrainKernels.h with each grain's latched tier and source, whatever the mode in
+    /// effect: the SIMD live kernel for a grain of kLiveSlot, otherwise the SIMD sample kernel
+    /// reading the grain's sample slot.
     void renderPool(float *const dst[2], int64_t blockStart, int64_t from,
                     int64_t to) noexcept SST_CPPUTILS_NONBLOCKING;
 
@@ -279,18 +305,18 @@ class Engine
         bool mono{true};
         const float *interleaved{nullptr}; // a stereo source's pairs; null if mono or none
         double rate{0.0};                  // the source's sample rate; unused without one
-        // The latest grainEndSample of the grains admitted to this slot; INT64_MIN when none
-        // has been since the last clear.
+        // The latest grainEndSample of the grains admitted to this slot (never a ring grain);
+        // INT64_MIN when none has been since the last clear.
         int64_t lastEnd{std::numeric_limits<int64_t>::min()};
     };
     /// The slot reading `source`, with no grains yet.
     static SourceSlot slotFor(const PreparedSource *source) noexcept SST_CPPUTILS_NONBLOCKING;
-    /// Hands the previous slot's source back, and frees the slot, once its last grain has ended
-    /// and nothing else is waiting to be handed back. setSource's own source is just let go.
+    /// Hands the previous slot's source back, and frees the slot, once its last sample grain has
+    /// ended and nothing else is waiting to be handed back. setSource's own source is just let go.
     void retirePrevious() noexcept SST_CPPUTILS_NONBLOCKING;
     /// The replacement setPreparedSource and replaceSource share: hands back the adopted sources
-    /// in play and makes `source` current, read by every grain still sounding. owned_ is left
-    /// to the caller.
+    /// in play and makes `source` current, read by every sample grain still sounding (the ring's
+    /// grains keep the ring). owned_ is left to the caller.
     void replaceCurrent(const PreparedSource *source) noexcept;
     /// pool_.clear(), and no slot has grains any more.
     void clearGrains() noexcept SST_CPPUTILS_NONBLOCKING;
@@ -312,8 +338,11 @@ class Engine
     uint32_t retiredCount_{0};
 
     // In effect, and as last requested; process() applies the requests at its first frame.
+    // mode_ is the kind new grains read; it never chooses a sounding grain's kernel.
     SourceMode mode_{SourceMode::Sample};
     SourceMode requestedMode_{SourceMode::Sample};
+    bool enabled_{true};
+    bool requestedEnabled_{true};
     bool freeze_{false};
 
     GrainEventSink sink_{nullptr};

@@ -18,14 +18,24 @@
 // for a quarter of a run.
 //
 // The engine cases (spec §5): engine-sample (X), engine-sample-eco (X at the Eco tier),
-// engine-live and engine-full-pool. Each owns a gg::Engine (48 kHz, maxBlockSize 256, seeded with
-// the bench seed) rendering one Cloud stream of Options::grains overlapping grains of 100 ms
-// (density grains / 0.1 Hz, periodic) at +7 semitones, stereo 1, over the same noise: in Sample
-// mode the noise is the source; in Live mode it is the input, fed block by block. The timed block
-// is one Engine::process call. A configuration's grain count is the mean of activeGrains() after
-// each timed block, and a run's ns per grain-sample is its time over the frames it rendered times
-// that run's mean. Each warms up for 2 grain durations of audio, engine-live for 16 s, so its
-// ring is full.
+// engine-live and engine-full-pool, then the four-layer cases engine-layers and
+// engine-layers-full (M2 layers spec §6.12, report-only). Each one-layer case owns a gg::Engine
+// (48 kHz, maxBlockSize 256, seeded with the bench seed) rendering one Cloud stream of
+// Options::grains overlapping grains of 100 ms (density grains / 0.1 Hz, periodic) at +7
+// semitones, stereo 1, over the same noise: in Sample mode the noise is the source; in Live mode
+// it is the input, fed block by block. The timed block is one Engine::process call. A
+// configuration's grain count is the mean of activeGrains() after each timed block, and a run's
+// ns per grain-sample is its time over the frames it rendered times that run's mean. Each warms
+// up for 2 grain durations of audio, engine-live for 16 s, so its ring is full.
+//
+// A four-layer case owns four such engines, layers 0 to 3 (EngineConfig::layer, so each draws
+// its own schedule from the same seed), each with engine-sample's setup at its layer's grain
+// count: engine-layers shares Options::grains out among them (500 each by default, so its total
+// matches X's), engine-layers-full gives each all of them (8,000 in all). Its timed block runs
+// the four Engine::process calls as a SerialRunner's tasks, each into its layer's own buffers,
+// then sums the four in layer order into the output, as the Processor's task loop does on a
+// host without a thread pool. Its grain count is the total over the layers. A one-layer case
+// renders its engine straight into the output: no runner, no sum.
 //
 // --space (runSpace) times Space's per-sample stage, the diffuser then the grid-aligned reverb,
 // over 1 s of the same stereo noise, looped, in blocks of 256 frames. It checks the clock once a
@@ -65,6 +75,7 @@
 #include "gg/core/Rng.h"
 #include "gg/core/SpaceReverb.h"
 #include "gg/engine/Engine.h"
+#include "gg/engine/TaskRunner.h"
 #include "gg/grain/GrainPool.h"
 #include "gg/grain/Tier.h"
 #include "gg/source/SampleBuffer.h"
@@ -284,11 +295,30 @@ EngineSetup engineSample(uint32_t grains)
 struct EngineCase
 {
     const char *name;
+    /// One layer's setup, from that layer's grain count.
     EngineSetup (*setup)(uint32_t grains);
+    /// How many engines the case renders, one per layer (EngineConfig::layer 0 to layers - 1).
+    /// With 1, the engine renders straight into the output; with more, they render through a
+    /// SerialRunner and are summed in layer order.
+    uint32_t layers{1};
+    /// For more than one layer: true shares the case's grains out among the layers (each gets
+    /// grains / layers, the first grains % layers one more, so the total is the grains), false
+    /// gives every layer all of them (grains x layers in all).
+    bool shareGrains{false};
 };
 
+/// The grains layer `layer` of `engineCase` gets out of the case's `grains`.
+uint32_t layerGrains(const EngineCase &engineCase, uint32_t grains, uint32_t layer)
+{
+    if (!engineCase.shareGrains)
+    {
+        return grains;
+    }
+    return grains / engineCase.layers + (layer < grains % engineCase.layers ? 1 : 0);
+}
+
 /// The engine cases, in report order. Each is engine-sample with its own changes.
-constexpr std::array<EngineCase, 4> kEngineCases{{
+constexpr std::array<EngineCase, 6> kEngineCases{{
     {"engine-sample", engineSample},
     // X at the Eco tier: every grain reads with linear interpolation (ruling 2).
     {"engine-sample-eco",
@@ -317,23 +347,42 @@ constexpr std::array<EngineCase, 4> kEngineCases{{
          s.warmUpSeconds = 2.0 * s.params.grainDurationSec;
          return s;
      }},
+    // Four layers at X's grain count (spec §6.12): four engine-sample engines, layers 0 to 3,
+    // with 500 grains each by default, 2,000 in all. Report-only beside X.
+    {"engine-layers", engineSample, 4, true},
+    // Four layers at four times X's grain count: 2,000 grains each by default, 8,000 in all.
+    {"engine-layers-full", engineSample, 4, false},
 }};
 
-/// One engine case at one block size: an Engine that keeps rendering from round to round.
+/// One engine case at one block size: its engines, one per layer, which keep rendering from
+/// round to round.
 class EngineConfiguration final : public Configuration
 {
   public:
     EngineConfiguration(const EngineCase &engineCase, uint32_t blockSize, const Noise &noise,
                         uint32_t grains)
-        : Configuration(engineCase.name, "engine", blockSize), setup_(engineCase.setup(grains)),
-          engine_(setup_.config), noise_(noise), outL_(blockSize), outR_(blockSize)
+        : Configuration(engineCase.name, "engine", blockSize),
+          setup_(engineCase.setup(layerGrains(engineCase, grains, 0))), noise_(noise),
+          outL_(blockSize), outR_(blockSize)
     {
-        if (setup_.mode == gg::SourceMode::Sample)
+        // Every buffer the timed blocks use is allocated here, never in processBlock().
+        for (uint32_t layer = 0; layer < engineCase.layers; ++layer)
         {
-            engine_.setSource(noise.buffer);
+            EngineSetup s = engineCase.setup(layerGrains(engineCase, grains, layer));
+            s.config.layer = layer;
+            auto engine = std::make_unique<gg::Engine>(s.config);
+            if (s.mode == gg::SourceMode::Sample)
+            {
+                engine->setSource(noise.buffer);
+            }
+            engine->setCloudParams(s.params);
+            engine->setSourceMode(s.mode);
+            engines_.push_back(std::move(engine));
         }
-        engine_.setCloudParams(setup_.params);
-        engine_.setSourceMode(setup_.mode);
+        if (engineCase.layers > 1)
+        {
+            layerOut_.assign(2 * std::size_t{engineCase.layers}, std::vector<float>(blockSize));
+        }
     }
 
     void warmUp() override
@@ -352,12 +401,15 @@ class EngineConfiguration final : public Configuration
         const auto deadline = start + std::chrono::duration_cast<Clock::duration>(
                                           std::chrono::duration<double>(seconds));
         uint64_t blocks = 0;
-        uint64_t active = 0; // activeGrains() summed over the blocks
+        uint64_t active = 0; // activeGrains() summed over the blocks and the layers
         auto now = start;
         do
         {
             processBlock();
-            active += engine_.activeGrains();
+            for (const auto &engine : engines_)
+            {
+                active += engine->activeGrains();
+            }
             ++blocks;
             now = Clock::now();
         } while (now < deadline);
@@ -379,44 +431,93 @@ class EngineConfiguration final : public Configuration
                    : static_cast<double>(timedActive_) / static_cast<double>(timedBlocks_);
     }
 
-    /// Warms up, as run() does, with an event sink counting each admitted grain's tier.
+    /// Warms up, as run() does, with an event sink on every layer's engine counting each
+    /// admitted grain's tier; then records each engine's activeGrains().
     TierCounts warmUpCountingTiers()
     {
         TierCounts counts;
-        engine_.setEventSink(
-            [](void *ctx, const gg::GrainSpec &g) {
-                TierCounts &c = *static_cast<TierCounts *>(ctx);
-                ++(g.tier == gg::Tier::Eco ? c.eco : c.normal);
-            },
-            &counts);
+        for (const auto &engine : engines_)
+        {
+            engine->setEventSink(
+                [](void *ctx, uint32_t, const gg::GrainSpec &g) {
+                    TierCounts &c = *static_cast<TierCounts *>(ctx);
+                    ++(g.tier == gg::Tier::Eco ? c.eco : c.normal);
+                },
+                &counts);
+        }
         warmUp();
-        engine_.setEventSink(nullptr, nullptr);
+        for (const auto &engine : engines_)
+        {
+            engine->setEventSink(nullptr, nullptr);
+            counts.activeGrains.push_back(engine->activeGrains());
+        }
         return counts;
     }
 
   private:
-    /// One Engine::process call of one block; in Live mode, with the next block of the noise as
-    /// its input.
+    /// One block: a one-layer case's one Engine::process call into the output; a layered
+    /// case's Engine::process calls, one SerialRunner task per layer into its own buffers, then
+    /// their sum in layer order. In Live mode each engine's input is the next block of the noise.
     void processBlock()
     {
         const uint32_t n = blockSize();
-        float *const out[2] = {outL_.data(), outR_.data()};
-        if (setup_.mode == gg::SourceMode::Live)
+        if (engines_.size() == 1)
         {
-            const float *const in[2] = {noise_.left() + inputAt_, noise_.right() + inputAt_};
-            engine_.process(in, 2, out, 2, n);
-            inputAt_ = (inputAt_ + n) % kSourceFrames;
+            render(*engines_[0], outL_.data(), outR_.data());
         }
         else
         {
-            engine_.process(out, 2, n);
+            runner_.run(static_cast<uint32_t>(engines_.size()), renderLayer, this);
+            std::copy_n(layerOut_[0].data(), n, outL_.data());
+            std::copy_n(layerOut_[1].data(), n, outR_.data());
+            for (std::size_t layer = 1; layer < engines_.size(); ++layer)
+            {
+                const float *l = layerOut_[2 * layer].data();
+                const float *r = layerOut_[2 * layer + 1].data();
+                for (uint32_t i = 0; i < n; ++i)
+                {
+                    outL_[i] += l[i];
+                    outR_[i] += r[i];
+                }
+            }
+        }
+        if (setup_.mode == gg::SourceMode::Live)
+        {
+            inputAt_ = (inputAt_ + n) % kSourceFrames;
         }
     }
 
-    EngineSetup setup_;
-    gg::Engine engine_;
+    /// One Engine::process call of one block into outL and outR.
+    void render(gg::Engine &engine, float *outL, float *outR) noexcept
+    {
+        const uint32_t n = blockSize();
+        float *const out[2] = {outL, outR};
+        if (setup_.mode == gg::SourceMode::Live)
+        {
+            const float *const in[2] = {noise_.left() + inputAt_, noise_.right() + inputAt_};
+            engine.process(in, 2, out, 2, n);
+        }
+        else
+        {
+            engine.process(out, 2, n);
+        }
+    }
+
+    /// A layered case's task: layer `index`'s engine renders into its own buffers. Engine::process
+    /// sets, and restores, its own floating-point mode.
+    static void renderLayer(void *ctx, uint32_t index) noexcept
+    {
+        auto &self = *static_cast<EngineConfiguration *>(ctx);
+        self.render(*self.engines_[index], self.layerOut_[2 * std::size_t{index}].data(),
+                    self.layerOut_[2 * std::size_t{index} + 1].data());
+    }
+
+    EngineSetup setup_; // layer 0's; every layer has the same mode and warm-up
+    std::vector<std::unique_ptr<gg::Engine>> engines_; // one per layer, in layer order
     const Noise &noise_;
-    int64_t inputAt_{0}; // the live input's next frame in the noise
+    gg::SerialRunner runner_;
+    std::vector<std::vector<float>> layerOut_; // a layered case's: layer L's left, then right
+    int64_t inputAt_{0};                       // the live input's next frame in the noise
     uint64_t timedBlocks_{0};
     uint64_t timedActive_{0};
     std::vector<float> outL_, outR_;

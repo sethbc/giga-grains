@@ -1,0 +1,15 @@
+{
+  "mode": "fx",
+  "sampleRate": 48000,
+  "durationSeconds": 6.0,
+  "blockSize": 128,
+  "seed": 1,
+  "input": {"kind": "sine", "frequencyHz": 330, "seconds": 5.5, "amplitude": 0.4},
+  "channels": 2,
+  "params": {"Mix": 1.0, "B Pitch": 7, "B Size": -3.0},
+  "automation": [
+    {"time": 1.0, "param": "Layer B On", "value": 1},
+    {"time": 2.5, "param": "Layer B On", "value": 0},
+    {"time": 3.0, "param": "Layer B On", "value": 1}
+  ]
+}

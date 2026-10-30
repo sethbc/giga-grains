@@ -4,7 +4,7 @@ Guidance for Claude Code sessions working in this repository.
 
 ## Start here
 
-giga-grains builds two plugins from one shared C++20 grain engine:
+giga-grains builds two plugins from one shared C++23 grain engine:
 
 - **Giga Grains**, a granular synthesizer;
 - **Giga Grains FX**, a granular effect.
@@ -25,7 +25,9 @@ AGPL-3.0-or-later.
   is `docs/releasing.md`). **M2 is in progress** as seven sub-projects in four waves, run by one
   agent session each (`docs/superpowers/specs/2026-10-29-m2-programme-design.md`: read its §6
   for your sub-project's scope and what it owns, and its §7 for the rules every sub-project
-  builds on). M2, M3 and M4 are tagged 0.2.0, 0.3.0 and 0.4.0 as
+  builds on). Sub-project 1, Layers and structure, is built (INTENT §23 #65): four layers, the
+  morph, the Source kind, the mod matrix, render tasks and the patch at version 2, which wave 2
+  builds on. M2, M3 and M4 are tagged 0.2.0, 0.3.0 and 0.4.0 as
   unpublished draft releases; nothing is public and there are no betas before M5, whose
   `0.5.0-beta.N` are the first public releases (§23 #62); v1.0.0 follows M5.
 - **The records:** each sub-project's spec in `docs/superpowers/specs/`, the published benchmark
@@ -156,10 +158,31 @@ fix a warning in first-party code and never edit a submodule. A new target links
 clap-wrapper's own targets compile without it. Never define a `*_IMPLEMENTATION` macro
 (`STB_IMAGE_IMPLEMENTATION`, `DR_WAV_IMPLEMENTATION`, …) in a first-party file: the
 implementation belongs in `libs/thirdparty-impl/`, built without `gg::compiler-options`, or the
-library's own warnings fail the build. Only the Linux leg (GCC 12, Release, so `-O3`) shows
-`-Wmaybe-uninitialized`, so a green macOS build proves nothing about it. Clang versions differ in what `-Wextra` flags (the rtsan build's LLVM is
-newer than Apple's), so build `asan` and `rtsan` too. `cmake/AsioGuard.cmake` fails the configure
-if anything but RtAudio's ASIO backend uses `libs/.../asiosdk` (tests `asio_guard_*`).
+library's own warnings fail the build. Only the Linux leg (GCC 13, Release, so `-O3`) shows
+`-Wmaybe-uninitialized`, so a green macOS build proves nothing about it. Clang versions differ in
+what `-Wextra` flags (the rtsan build's LLVM is newer than Apple's), so build `asan` and `rtsan`
+too. `cmake/AsioGuard.cmake` fails the configure if anything but RtAudio's ASIO backend uses
+`libs/.../asiosdk` (tests `asio_guard_*`).
+
+**GCC 13's own diagnostics.** M2 sub-project 1 paid four CI rounds for these; each has a fix:
+- `-Warray-bounds` on a `Count` sentinel indexing an array, even behind a check: index through a
+  bounded accessor (`ParamMap.cpp`'s `read`, which clamps the index);
+- `-Wmaybe-uninitialized` on a `std::optional` built in a ternary: use a plain value with a
+  sentinel;
+- `-Wrange-loop-construct` on a by-value structured binding in a range-for: bind `const auto &`;
+- `-Wextra`'s conditional with an enumerator in one arm and an integer in the other: give both
+  arms one integer type.
+
+Homebrew's `gcc@13` on arm64 macOS fails in its own `arm_acle.h`, so it can't serve as a local
+check. CI's Linux leg is the only GCC build: push early (as a draft pull request).
+
+**The Linux products' libstdc++.** On Linux with GCC, outside the sanitizer builds, the four
+products link libstdc++ and libgcc statically with their symbols kept local, and the CLAP and
+VST3 export their entry points alone (`clients/clap-first/CMakeLists.txt`,
+`linux-exports.map`; INTENT §15). CI's Linux leg checks it after the build: "Linux products need
+no libstdc++ newer than Ubuntu 22.04's" fails on a `GLIBCXX` above 3.4.30, a `CXXABI` above
+1.3.13 or an exported `std::` symbol, and lists each product's symbol versions in the step
+summary.
 
 **CI caches** (`.github/workflows/ci.yml`; none changes what is built):
 - **The SDK checkouts** (VST3 SDK, AudioUnitSDK, RtAudio, RtMidi, wil): `scripts/fetch-sdks.sh`
@@ -192,7 +215,7 @@ except `windows-clangcl`, which builds into `build/windows/`.
 | `asan` | ASan + UBSan, Debug, with `GG_BUILD_EDITOR=OFF`: the engine, `gg-core`, `gg-media`, the UI core, the tools, the plugin core and the tests. No editor, JUCE or plugin formats. |
 | `rtsan` | RealtimeSanitizer, RelWithDebInfo, built like `asan` (`GG_BUILD_EDITOR=OFF`). Needs upstream LLVM 20 or newer in `$GG_LLVM` (Apple clang has no RTSan). |
 | `mac-universal` | Release for arm64 + x86_64. CI's macOS leg, which also runs the x86_64 slice's tests and golden checks under Rosetta. |
-| `windows-clangcl`, `linux-gcc12` | CI's Windows and Linux legs. |
+| `windows-clangcl`, `linux-gcc13` | CI's Windows and Linux legs. |
 
 Every preset uses the same three commands:
 
@@ -264,6 +287,10 @@ scripts/check.sh [--presets dev,asan,rtsan] [-L label]... [--no-format] [--allow
   Linux, with CTest 3.22 or newer (the `scripts` test replays CTest 3.31's and 4.4's real
   output). Windows Git Bash is unsupported: nothing has run them there.
 - Paste its summary as the evidence in a report.
+- **One gate at a time per machine.** Two gates in two worktrees at once fail falsely:
+  `scripts_release`'s keychain check (the keychain search list is per user) and
+  `rtsan_negative_control`'s `atos`, which can hang. Rerun a failure of either alone before
+  believing it.
 
 **Tests.** `gg-tests` is the Catch2 suite, and each Catch2 tag becomes a CTest label. To run one
 area, use `ctest --preset dev -L <label>`. `-L` takes a regular expression, and repeated `-L`
@@ -271,9 +298,18 @@ options must all match: `-L core -L rt` runs only the tests labelled both, and `
 runs the tests labelled either. The labels are:
 - engine: `engine`, `cloud` (the Cloud scheduler), `live` (the live ring), `pool`, `source`,
   `rng`, `math`, `interp`, `window`, `denormal`;
-- `core`: `gg-core`'s patch, the session state container (`GGST`) and the settings' XML, the
-  parameter mapping and the macro curves, and the `Processor` with its notes, source hand-off
-  and Feedback. `slow` marks one of them, Feedback 0.95 for 60 s (over a minute in `dev`);
+- `core`: `gg-core`'s patch (with its `<mod>` routes and the migration from version 1), the
+  session state container (`GGST`) and the settings' XML, the parameter mapping, and the
+  `Processor` with its layers, notes, source hand-off, Feedback and render tasks. `slow` marks
+  one of them, Feedback 0.95 for 60 s (over a minute in `dev`);
+  - `layers` (M2 sub-project 1): the four layers, in the engine (the layer's RNG key, the enable
+    gate, the kind switch, the spreads) and in the `Processor` (the sum in order, the morph law,
+    on and off, the kinds, the instrument's input into the rings, the event order);
+  - `mod`: the mod matrix: its routes, curves and factory routes (M1's `macroOffsets` bit for
+    bit), the modulation sources, and the `Processor`'s per-cell application;
+  - `threads`: `TaskRunner`, `SerialRunner` and the tests' `StubPool` (`engine`), and the
+    `Processor`'s render tasks (`core`): the same bytes with no pool and pools of 1, 2 and 8
+    workers, a declining pool, and the tasks' denormal mode and allocations;
   - `publish`: the audio-to-UI structures (the grain queue, the UI snapshot, the live peaks) and
     the `Processor`'s publishing;
 - `media`: `gg-media`, the JUCE-free sample-file library (`media/`) that the plugin's loader and
@@ -303,8 +339,8 @@ runs the tests labelled either. The labels are:
 - `ui`: the splat renderer, the lane geometry (`LaneModel`), and the lane's clock and live-grain
   list (`LaneState`);
 - `smoke`;
-- `build`: checks of the build system itself, run on scratch CMake projects: the `asio_guard_*`
-  tests (`cmake/AsioGuard.cmake`);
+- `build`: checks of the build system itself: the `asio_guard_*` tests, run on scratch CMake
+  projects (`cmake/AsioGuard.cmake`), and `gg-tests`' "the build is C++23" (also `smoke`);
 - `scripts`: `check.sh` and `worktree-setup.sh`, in scratch trees with stub `cmake` and `ctest`
   and in scratch git repositories, and the release scripts in `scripts/release/`
   (`tests/scripts/release_scripts_tests.sh`: the tag check, the source tarball and the signing
@@ -392,24 +428,48 @@ gg-render --write-media DIR
     runs, over an `input`: a built-in `sine`, `sweep` or `noise`, or a `file` loaded and
     converted to the render's rate with `gg-media` (ruling M1-aa). The top-level `channels` key
     (1 or 2) sets a built-in input's channel count; a file keeps its own, and takes no
-    `channels`. Optional `params` sets base values by parameter name (`"Size"`, `"Density"`, …;
-    Space's are `"Diffusion"`, `"Reverb Amount"`, `"Reverb Decay"`, `"Reverb Size"`,
-    `"Reverb Damping"`, `"Reverb Pre-delay"`, `"Reverb Modulation"` and `"Dry to Reverb"`;
-    the Perform UI's (sub-project 5) are `"Texture"`, `"Feedback"` and the macros,
-    `"Macro Size"`, `"Macro Density"`, `"Macro Pitch"`, `"Macro Spray"`, `"Macro Texture"`,
-    `"Macro Freeze"`, `"Macro Feedback"` and `"Macro Mix"`), optional `automation` is a
-    time-ordered list of `{"time", "param", "value"}` points in
+    `channels`. Optional `params` sets base values by parameter name, the name the plugin
+    displays: a layer parameter's carries its layer's letter (`"A Size"`, `"B Size"`, …,
+    `"D Step 16"`; M2 sub-project 1's spec §6.9), and the bare M1 names of layer A's eleven
+    (`"Position"`, `"Size"`, `"Density"`, `"Distribution"`, `"Pitch"`, `"Spray"`, `"Stereo"`,
+    `"Freeze"`, `"Texture"`, `"Feedback"`, `"Diffusion"`) mean layer A's, so every M1 spec
+    still parses. The globals keep their names: Space's are `"Reverb Amount"`,
+    `"Reverb Decay"`, `"Reverb Size"`, `"Reverb Damping"`, `"Reverb Pre-delay"`,
+    `"Reverb Modulation"` and `"Dry to Reverb"`; the macros are `"Macro Size"`,
+    `"Macro Density"`, `"Macro Pitch"`, `"Macro Spray"`, `"Macro Texture"`, `"Macro Freeze"`,
+    `"Macro Feedback"` (Macro 7 in both products) and `"Macro Mix"`; the layers' are
+    `"Morph X"`, `"Morph Y"`, `"Layer A On"` … `"Layer D On"` and `"Level B"` … `"Level D"`.
+    Optional `automation` is a time-ordered list of `{"time", "param", "value"}` points in
     seconds, and optional `notes` a time-ordered list of `{"time", "key", "duration",
-    "channel"}` (channel optional). A note whose Off would fall on its On's frame is bad input
-    (ruling R17). Values are in each parameter's CLAP value domain (Density 6.0 is 64 Hz; Reverb
-    Decay is log2 seconds, so 1.0 is 2 s, and 6.068255709804611, `kDecayMax`, is ∞; Reverb
+    "channel", "velocity"}` (channel optional; velocity optional, 0–127, default 100, reaching
+    only the mod matrix's Velocity source). A note whose Off would fall on its On's frame is bad
+    input (ruling R17). Values are in each parameter's CLAP value domain (Density 6.0 is 64 Hz;
+    Reverb Decay is log2 seconds, so 1.0 is 2 s, and 6.068255709804611, `kDecayMax`, is ∞; Reverb
     Pre-delay is seconds, 0–0.5; Texture and the macros are 0–1, Macro Freeze 0 or 1, Feedback
     0–0.95). The render is exactly `durationSeconds` long.
+  - **Layers, routes, controls and the transport** (M2 sub-project 1's spec §6.11), each
+    optional in FX and instrument mode, and unknown keys in sample mode
+    (`tools/gg-render/RenderSpec.h` documents each):
+    - `samples` maps layer letters to source specs (`{"B": {"kind": "file", "path": …}}`),
+      each handed to that layer before the render; the instrument's `sample` is layer A's, so
+      `samples.A` beside it is an error, and an FX layer reads its sample only with its Source
+      set to Sample (`"B Source": 0`).
+    - `mod` is a list of routes `{"slot", "source", "sourceLayer", "target", "targetLayer",
+      "depth", "curve"}` (slot 1–48, source and curve by their saved names, a target by its
+      layer-A or global name with `targetLayer` `"A"`–`"D"` or `"all"`), set on top of the
+      factory routes; a slot named twice is an error, and `"source": "None"` clears one.
+    - `controls` is a time-ordered list of `{"time", "kind", "value", "channel"}`, kinds
+      `modWheel`, `aftertouch` and `pitchBend`, values 0–1, sent as MIDI control events.
+    - `transport` is `{"tempoBpm", "playing", "startBeat"}`, a steady transport set once before
+      the render (playing by default, from beat 0); without it the transport sources hold at 0.
   - **Instrument mode** (`"mode": "instrument"`) runs Giga Grains' `Processor` the same way over
     a `sample` (a built-in signal or a `file`, loaded and converted with `gg-media`), with no
     `channels`. Its Position is the fraction of the sample, 0–1, and it is silent until a note.
-    It takes Dry to Reverb and Feedback, which do nothing there. Its Macros 7 and 8 are
-    `"Macro Stereo"` and `"Macro Level"`: a spec takes only its own product's names, so
+    It takes Dry to Reverb, which does nothing there, and Feedback, which acts only on a layer
+    whose Source is Live (an instrument spec has no input, so such a layer's ring holds
+    silence). Its Macro 8 is
+    `"Macro Level"` (Macro 7 is `"Macro Feedback"`, as in the FX; `"Macro Stereo"` names
+    nothing since M2 sub-project 1): a spec takes only its own product's names, so
     `"Macro Level"` in an FX spec, or `"Macro Mix"` in an instrument spec, is an unknown key.
   - **FX inputs are faded** in at their start and out at their end over 10 ms, with a raised
     cosine (sin²), so the input's own edges don't click (ruling M1-v). Sample-mode sources and
@@ -422,7 +482,7 @@ gg-render --write-media DIR
   internal error.
 - **The cases:** each case's spec is in `tests/golden/cases/`, and its expected metrics and event
   log are in `tests/golden/expected/`. Every `*.json` there is a case; a new one gets a test the
-  next time CMake runs. There are 22.
+  next time CMake runs. There are 36.
   - **M0's four,** in sample mode: `sparse-sine` (8 grains a second over a 220 Hz sine),
     `sparse-sine-44k1` (the same source converted to 44.1 kHz), `dense-noise` (400 grains a
     second over noise, up a fifth) and `sweep-stretch` (long grains over a sweep, down an
@@ -458,6 +518,33 @@ gg-render --write-media DIR
       Feedback's regenerated audio: across platforms only the metrics compare that.
     - Every older case renders bit-identically with Texture 0, Feedback 0 and the macros at
       rest; a Perform change that moves one is a regression.
+  - **M2 sub-project 1's fourteen** (layers and the mod matrix; its spec §10), each 6 to 8 s:
+    - layers: `fx-layers` (stereo noise, four Live layers, B Pitch +7, C Size 40 ms, D Pitch
+      -12, the pad at rest), `inst-layers-morph` (four Sample layers, a sweep, a 330 Hz sine,
+      noise and a lower sweep, one held note, Morph X and Y stepped around the square and back
+      to the centre), `inst-pitch-spread` (one note over a sine, A Pitch Spread 0, 2, 7, 12, 24
+      at 1 s intervals), `inst-size-spread` (one note over noise, Size 100 ms, A Size Spread 0,
+      0.5, 1, 2 octaves), `fx-layer-switch` (Layer B On at 1 s, off at 2.5 s, on at 3 s, over a
+      330 Hz sine), `fx-source-switch` (layer A Live, Sample over `loop-48k.wav` from 1 s, Live
+      again from 2.5 s) and `fx-macros-layers` (Macro Size, then Macro Pitch stepped with layers
+      A and B on);
+    - the mod sources: `fx-mod-lfo` (LFO 1 sine 0.5 Hz to Position, LFO 2 square 2 Hz to Pitch
+      ±12, over a 50–700 Hz sweep), `inst-mod-env` (Env 1 to Size and Level, Env 2 to Diffusion,
+      two notes with a gap), `fx-mod-random` (Random 1 at 4 Hz to Pitch, Random 2 at 1 Hz,
+      Smooth 50%, to Stereo), `fx-mod-step` (Step at 4 Hz, Length 12, to Pitch ±12: a figure),
+      `inst-mod-midi` (mod wheel to Size, aftertouch to Density, pitch bend to Pitch, velocity to
+      Level, key to Texture, over three notes), `fx-mod-follower` (the follower of
+      `loop-48k.wav`'s bursts to Density) and `fx-mod-transport` (120 BPM playing, the beat
+      phase to Position, the bar phase to Pitch, over the same sweep).
+    - Four hide some injected click steps, pinned in the click-injection table: `fx-layers`
+      catches none (the four layers' noise bed, as in dense-noise), `fx-mod-follower` 15 (a
+      burst hides the step at 3.53 s), `inst-layers-morph` 5 (layer C's noise, near silent only
+      on the pad's Y = 0 and X = 1 edges and near its corner X 0, Y 0) and
+      `inst-size-spread` 3 (the note's noise bed). The other ten catch all 16; the two sweeps
+      end at 700 Hz so that the octave the LFO and the bar phase add stays below the top
+      octaves that hide steps.
+    - Every one of the 22 M1 cases renders bit-identically with layers B to D off and the
+      factory routes: a layers or matrix change that moves one is a regression.
   - **The event-log comparison never sees the reverb or the diffuser:** the log records grains,
     and Space runs after them. Across platforms, Space's five cases are checked by their metrics
     alone, within tolerances.
@@ -465,8 +552,12 @@ gg-render --write-media DIR
   - They compare the metrics within tolerances.
   - They compare the grain-event log exactly per line (CR and final newline ignored). That
     comparison is the cross-platform determinism gate. Each `.events.jsonl` line is one grain:
-    `i`, `onset`, `frac`, `pos`, `rate`, `dur`, `tex` (its Texture, since sub-project 5),
-    `gain` and `pan` (`formatEventLine` in `tools/gg-render/Render.h`).
+    `i`, `layer` (0–3, since M2 sub-project 1), `onset`, `frac`, `pos`, `rate`, `dur`, `tex`
+    (its Texture, since sub-project 5), `gain` and `pan` (`formatEventLine` in
+    `tools/gg-render/Render.h`). Across layers the lines are in piece, layer, spawn order, so how
+    two layers' grains interleave depends on the block size (INTENT §19, ruling LS-T10b): each
+    layer's own lines, and the audio, are block-size invariant, and each golden renders at its
+    spec's block size. Compare logs across block sizes per layer.
   - The click score (metricsVersion 2) is normalized by the level within ±5 ms. The
     `[golden][metrics]` tests in `tests/metrics/click_injection_tests.cpp` render every case in
     process, add a -20 dBFS step at sixteen positions in turn and require each to score above
@@ -518,6 +609,12 @@ $b --space [--quick | --seconds S] [--rounds N] [--commit SHA] [--json out.json]
     - `engine-live`: the same stream over a 16 s live ring, the FX's figure, published beside X;
     - `engine-full-pool`: admission when the pool is saturated (1 s grains ask for 10× its
       capacity);
+    - `engine-layers`: four `engine-sample` engines (layers 0 to 3) sharing its 2,000 grains, 500
+      each, rendered through `SerialRunner` and summed in layer order, as a host without a thread
+      pool pays for four layers; report-only beside X, with no baseline entry yet (M2 layers
+      spec §6.12);
+    - `engine-layers-full`: the same with 2,000 grains in every layer, 8,000 in all; report-only
+      beside X, with no baseline entry yet;
   - `reference`: M0's 4-wide Hermite kernel, frozen (`renderHermiteSimd` in
     `tools/gg-bench/Kernels.h`). It is the CPU gate's yardstick. `Kernels.h` includes no engine
     header: it holds its own frozen copies of the Hann table and the readers, so no engine
@@ -535,9 +632,9 @@ $b --space [--quick | --seconds S] [--rounds N] [--commit SHA] [--json out.json]
   `reference` for any ratio to be printed.
 - **Other options:** `--grains N` changes the grain count; `--cases a,b` runs only those cases
   (the default is all; `--help` lists them).
-- **Run length:** the full default run is 30 configurations × 5 rounds × 2 s, about 5 minutes of
-  timing; a CI leg's benchmark step takes about 6 minutes. `--canvas` times 240 frames after a
-  20-frame warm-up, or 30 with `--quick`.
+- **Run length:** the full default run is 36 configurations × 5 rounds × 2 s, about 6 minutes of
+  timing; a CI leg's benchmark step took about 6 minutes before the two layer cases added one.
+  `--canvas` times 240 frames after a 20-frame warm-up, or 30 with `--quick`.
 - **`--space`** times Space's per-sample stage, the diffuser then the reverb, on stereo noise at
   48 kHz, active, with Diffusion and Amount at 100% (`tools/gg-bench/Bench.h` lists every
   setting). After a warm-up of 2 s of audio, each of 5 rounds times one run of at least 2 s

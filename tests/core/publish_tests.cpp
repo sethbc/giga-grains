@@ -60,7 +60,8 @@ GrainVis grain(int64_t onset)
 bool sameGrain(const GrainVis &a, const GrainVis &b)
 {
     return a.onsetSample == b.onsetSample && a.startPos == b.startPos && a.rate == b.rate &&
-           a.durationSamples == b.durationSamples && a.gain == b.gain && a.pan == b.pan;
+           a.durationSamples == b.durationSamples && a.gain == b.gain && a.pan == b.pan &&
+           a.layer == b.layer;
 }
 
 // The peak a bucket should hold: max(|l|, |r|) over frames [from, to) of the test signal.
@@ -531,7 +532,7 @@ struct SpecLog
 
     SpecLog() { grains.reserve(kCapacity); }
 
-    static void record(void *ctx, const gg::GrainSpec &g)
+    static void record(void *ctx, uint32_t, const gg::GrainSpec &g)
     {
         auto *log = static_cast<SpecLog *>(ctx);
         if (log->grains.size() < kCapacity)
@@ -678,11 +679,13 @@ TEST_CASE("the snapshot carries effective position and spray", "[core][publish]"
     CHECK(s.clock == 4000);
 }
 
-TEST_CASE("the instrument publishes snapshots but no peaks", "[core][publish]")
+TEST_CASE("the instrument publishes snapshots and its rings' peaks", "[core][publish]")
 {
+    // M2 sub-project 1's spec §6.2: the instrument's layers have rings too, fed from its input
+    // (none here), so the head advances over silence.
     Processor p({kRate, 512, 3, Mode::Instrument});
     p.setPublishing(true);
-    CHECK(p.livePeaks().frames() == 0);
+    CHECK(p.livePeaks().frames() == static_cast<int64_t>(std::ceil(16.0 * kRate)));
     const std::array<gg::core::NoteEvent, 1> note{{{0, gg::core::NoteEventType::On, 0, 60}}};
     float l[512];
     float r[512];
@@ -691,8 +694,9 @@ TEST_CASE("the instrument publishes snapshots but no peaks", "[core][publish]")
     UiSnapshot s;
     REQUIRE(p.snapshot().take(s));
     CHECK(s.clock == 512);
-    CHECK(s.writeHead == 0);
+    CHECK(s.writeHead == 512);
     CHECK(s.feedback == 0.0f);
+    CHECK(p.livePeaks().at(0) == 0.0f);
 }
 
 TEST_CASE("grain events reach the queue", "[core][publish]")

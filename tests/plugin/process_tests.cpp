@@ -21,7 +21,9 @@
 
 #include <clap/clap.h>
 
+#include "gg/core/ModMatrix.h"
 #include "gg/core/ParamIds.h"
+#include "gg/core/Processor.h"
 #include "gg/engine/Engine.h"
 #include "PluginHarness.h"
 #include "support/AllocTripwire.h"
@@ -953,9 +955,11 @@ void storeBlock(const Stereo &block, std::size_t k, Stereo &out)
 
 TEST_CASE("audio ports declare the main ports and their in-place pairs", "[plugin]")
 {
-    // C-m4. The instrument has one output, port ID 0, with no in-place pair. The FX's input is
-    // port ID 0 and its output port ID 1, each the other's in-place pair, so a host may hand the
-    // FX the same buffers for both. Both are main, stereo, and two channels wide.
+    // C-m4. The instrument's output is port ID 0, main, with no in-place pair; its input is the
+    // sidechain (M2 sub-project 1's spec §6.4, D2): port ID 2, not main, no in-place pair. The
+    // FX's input is port ID 0 and its output port ID 1, each the other's in-place pair, so a host
+    // may hand the FX the same buffers for both, and both main. Every port is stereo, two
+    // channels wide.
     const char *id = GENERATE(kInstrumentId, kFxId);
     CAPTURE(id);
     const bool isFx = std::string_view(id) == kFxId;
@@ -965,18 +969,18 @@ TEST_CASE("audio ports declare the main ports and their in-place pairs", "[plugi
         plugin.clap()->get_extension(plugin.clap(), CLAP_EXT_AUDIO_PORTS));
     REQUIRE(ports != nullptr);
 
-    REQUIRE(ports->count(plugin.clap(), true) == (isFx ? 1u : 0u));
+    REQUIRE(ports->count(plugin.clap(), true) == 1u);
     REQUIRE(ports->count(plugin.clap(), false) == 1u);
 
     const auto check = [&](bool isInput, clap_id expectedId, clap_id expectedPair,
-                           std::string_view expectedName) {
+                           std::string_view expectedName, uint32_t expectedFlags) {
         CAPTURE(isInput);
         clap_audio_port_info info;
         std::memset(&info, 0xA5, sizeof(info)); // every field must be written
         REQUIRE(ports->get(plugin.clap(), 0, isInput, &info));
         CHECK(info.id == expectedId);
         CHECK(info.in_place_pair == expectedPair);
-        CHECK(info.flags == CLAP_AUDIO_PORT_IS_MAIN);
+        CHECK(info.flags == expectedFlags);
         CHECK(info.channel_count == 2u);
         CHECK(info.port_type != nullptr);
         if (info.port_type != nullptr)
@@ -991,16 +995,288 @@ TEST_CASE("audio ports declare the main ports and their in-place pairs", "[plugi
     };
     if (isFx)
     {
-        check(true, 0, 1, "Main In");
-        check(false, 1, 0, "Main Out");
+        check(true, 0, 1, "Main In", CLAP_AUDIO_PORT_IS_MAIN);
+        check(false, 1, 0, "Main Out", CLAP_AUDIO_PORT_IS_MAIN);
     }
     else
     {
-        check(false, 0, CLAP_INVALID_ID, "Main Out");
-        // The instrument has no input: another deliberate out-of-range query, and the same
-        // expected stderr line, in every build.
+        check(true, 2, CLAP_INVALID_ID, "Sidechain In", 0);
+        check(false, 0, CLAP_INVALID_ID, "Main Out", CLAP_AUDIO_PORT_IS_MAIN);
+    }
+}
+
+TEST_CASE("the instrument has a sidechain input", "[plugin]")
+{
+    // D2 (M2 sub-project 1's spec §6.4): the instrument's input port feeds every layer's live
+    // ring, so a layer whose Source is Live plays it while a note is held; with the input silent,
+    // the same render is silent. Its output stays as it was (the ports test above).
+    {
+        gg::test::PluginUnderTest instrument(kInstrumentId);
+        REQUIRE(instrument.valid());
+        const auto *ports = static_cast<const clap_plugin_audio_ports *>(
+            instrument.clap()->get_extension(instrument.clap(), CLAP_EXT_AUDIO_PORTS));
+        REQUIRE(ports != nullptr);
+        REQUIRE(ports->count(instrument.clap(), true) == 1u);
         clap_audio_port_info info{};
-        CHECK_FALSE(ports->get(plugin.clap(), 0, true, &info));
+        REQUIRE(ports->get(instrument.clap(), 0, true, &info));
+        CHECK(info.id == 2u);
+        CHECK(info.flags == 0u);
+        CHECK(std::string_view(info.name) == "Sidechain In");
+    }
+    constexpr uint32_t kBlock = 512;
+    constexpr std::size_t kBlocks = 40; // about 0.43 s
+    const auto render = [&](float amplitude) {
+        gg::test::PluginUnderTest instrument(kInstrumentId);
+        REQUIRE(instrument.valid());
+        REQUIRE(instrument.loadDefaultsWithSeed(0));
+        const std::array<clap_event_param_value, 2> live{
+            gg::test::paramValue(paramId(gg::core::layerSlot(gg::core::LayerParam::Source, 0)),
+                                 1.0),                                      // Live
+            gg::test::paramValue(paramId(ParamSlot::Position), 0.28967658), // 0.25 s behind
+        };
+        flushParams(instrument, live);
+        REQUIRE(instrument.activate(48000.0, kBlock));
+        const auto on = noteOn(60, 0);
+        Stereo in(kBlock);
+        Stereo out(kBlock);
+        float peak = 0.0f;
+        for (std::size_t k = 0; k < kBlocks; ++k)
+        {
+            for (uint32_t i = 0; i < kBlock; ++i)
+            {
+                const double t = static_cast<double>(k * kBlock + i) / 48000.0;
+                in.left[i] =
+                    amplitude * static_cast<float>(std::sin(2.0 * std::numbers::pi * 220.0 * t));
+                in.right[i] = in.left[i];
+            }
+            gg::test::InputEvents events;
+            if (k == 0)
+            {
+                events.add(&on.header);
+            }
+            REQUIRE(instrument.process(kBlock, in.data(), out.data(), events.list()) ==
+                    CLAP_PROCESS_CONTINUE);
+            if (k >= kBlocks / 2)
+            {
+                peak = std::max(peak, peakIn(out, 0, kBlock));
+            }
+        }
+        CHECK(heldKeys(instrument) == std::vector<int>{60});
+        return peak;
+    };
+    CHECK(render(0.5f) > 0.05f);
+    CHECK(render(0.0f) == 0.0f);
+}
+
+namespace
+{
+// Renders kPoolCalls calls of 256 frames (one piece each) of noise through a fresh instance of
+// `id` on `host`, with the defaults at seed 0, note 60 held from the first call, every layer's
+// Source Live (so the instrument's play its sidechain input) and layers A to `lastOn` on. With
+// `pool`, attaches the instance to it first.
+constexpr uint32_t kPoolBlock = 256;
+constexpr std::size_t kPoolCalls = 64;
+
+struct Rendered
+{
+    std::vector<float> left;
+    std::vector<float> right;
+};
+
+Rendered poolRender(const char *id, const clap_host *host, gg::test::PoolHost *pool, uint8_t lastOn)
+{
+    gg::test::PluginUnderTest plugin(id, host);
+    REQUIRE(plugin.valid());
+    if (pool != nullptr)
+    {
+        pool->attach(plugin.clap());
+    }
+    REQUIRE(plugin.loadDefaultsWithSeed(0));
+    std::vector<clap_event_param_value> values;
+    for (uint8_t layer = 0; layer < gg::core::kLayers; ++layer)
+    {
+        values.push_back(gg::test::paramValue(
+            paramId(gg::core::layerSlot(gg::core::LayerParam::Source, layer)), 1.0));
+        values.push_back(gg::test::paramValue(paramId(gg::core::layerOnSlot(layer)),
+                                              layer <= lastOn ? 1.0 : 0.0));
+        values.push_back(gg::test::paramValue(
+            paramId(gg::core::layerSlot(gg::core::LayerParam::Pitch, layer)), 3.0 * layer));
+    }
+    gg::test::InputEvents list;
+    for (const auto &v : values)
+    {
+        list.add(&v.header);
+    }
+    plugin.flush(list.list());
+    REQUIRE(plugin.activate(48000.0, kPoolBlock));
+
+    Stereo in(kPoolBlock);
+    Stereo out(static_cast<uint32_t>(kPoolBlock * kPoolCalls));
+    const auto on = noteOn(60, 0);
+    for (std::size_t k = 0; k < kPoolCalls; ++k)
+    {
+        fillNoise(in, 1000 + k * 2 * kPoolBlock);
+        float *outPtrs[2] = {out.left.data() + k * kPoolBlock, out.right.data() + k * kPoolBlock};
+        gg::test::InputEvents events;
+        if (k == 0)
+        {
+            events.add(&on.header);
+        }
+        REQUIRE(plugin.process(kPoolBlock, in.data(), outPtrs, events.list()) ==
+                CLAP_PROCESS_CONTINUE);
+    }
+    return {out.left, out.right};
+}
+} // namespace
+
+TEST_CASE("the thread pool extension requests one task per rendering layer", "[plugin]")
+{
+    // Spec §6.7 (I3, I4): the plugin offers clap.thread-pool, asks a host that offers its pool for
+    // one task per rendering layer per piece (a piece with one renders it inline, asking
+    // nothing), and renders the same bytes with the host's pool, with a host that declines and
+    // with a host that has none (Review Focus 4).
+    const char *id = GENERATE(kInstrumentId, kFxId);
+    CAPTURE(id);
+    {
+        gg::test::PluginUnderTest plugin(id);
+        REQUIRE(plugin.valid());
+        CHECK(plugin.clap()->get_extension(plugin.clap(), CLAP_EXT_THREAD_POOL) != nullptr);
+    }
+
+    SECTION("layer A alone asks nothing")
+    {
+        gg::test::PoolHost pool;
+        const Rendered withPool = poolRender(id, pool.clap(), &pool, 0);
+        CHECK(pool.requests() == 0);
+        const Rendered without = poolRender(id, gg::test::stubHost(), nullptr, 0);
+        CHECK(sameBits(withPool.left, without.left));
+        CHECK(sameBits(withPool.right, without.right));
+    }
+
+    const uint8_t lastOn = GENERATE(uint8_t{1}, uint8_t{3});
+    CAPTURE(lastOn);
+    const Rendered reference = poolRender(id, gg::test::stubHost(), nullptr, lastOn);
+    CHECK(std::any_of(reference.left.begin(), reference.left.end(),
+                      [](float x) { return std::abs(x) > 0.01f; }));
+
+    gg::test::PoolHost pool;
+    const Rendered withPool = poolRender(id, pool.clap(), &pool, lastOn);
+    CHECK(pool.requests() == kPoolCalls);
+    CHECK(pool.tasks() == kPoolCalls * (lastOn + 1u));
+    CHECK(sameBits(withPool.left, reference.left));
+    CHECK(sameBits(withPool.right, reference.right));
+
+    gg::test::PoolHost declining(true);
+    const Rendered looped = poolRender(id, declining.clap(), &declining, lastOn);
+    CHECK(declining.requests() == kPoolCalls);
+    CHECK(sameBits(looped.left, reference.left));
+    CHECK(sameBits(looped.right, reference.right));
+}
+
+TEST_CASE("midi controls and velocity reach the processor", "[plugin]")
+{
+    // Spec §6.8: CC 1 is Mod Wheel, channel pressure Aftertouch and pitch bend Pitch Bend, each
+    // / its range (bend (msb << 7 | lsb) / 16383); a note-on's velocity is Velocity, CLAP's as
+    // it comes (0..1) and MIDI's / 127. In process() at their offsets, and by params.flush at
+    // the next grid boundary, so after the next call.
+    const char *id = GENERATE(kInstrumentId, kFxId);
+    CAPTURE(id);
+    gg::test::PluginUnderTest plugin(id);
+    REQUIRE(plugin.valid());
+    REQUIRE(plugin.activate(48000.0, 512));
+    const auto *processor = plugin.impl().processor();
+    REQUIRE(processor != nullptr);
+    using gg::core::ModSource;
+    const auto source = [&](ModSource s) { return processor->sourceValue(s, 0); };
+    Stereo in(256);
+    Stereo out(256);
+    CHECK(source(ModSource::PitchBend) == 0.5f);
+
+    auto clapOn = gg::test::noteEvent(CLAP_EVENT_NOTE_ON, 0, 60, 0);
+    clapOn.velocity = 0.5;
+    const auto wheel = gg::test::midiEvent(0xB0, 1, 64, 0);
+    const auto bendCentre = gg::test::midiEvent(0xE0, 0x00, 0x40, 0);
+    const auto pressure = gg::test::midiEvent(0xD3, 100, 0, 0);
+    gg::test::InputEvents first;
+    first.add(&clapOn.header);
+    first.add(&wheel.header);
+    first.add(&bendCentre.header);
+    first.add(&pressure.header);
+    REQUIRE(plugin.process(256, in.data(), out.data(), first.list()) == CLAP_PROCESS_CONTINUE);
+    CHECK(source(ModSource::ModWheel) == 64.0f / 127.0f);
+    CHECK(source(ModSource::PitchBend) == 8192.0f / 16383.0f);
+    CHECK(std::abs(source(ModSource::PitchBend) - 0.5f) < 1e-4f);
+    CHECK(source(ModSource::Aftertouch) == 100.0f / 127.0f);
+    CHECK(source(ModSource::Velocity) == 0.5f);
+    CHECK(heldKeys(plugin) == std::vector<int>{60});
+
+    // The bend's extremes, a MIDI note-on's velocity, and another CC (7) that changes nothing.
+    const auto bendDown = gg::test::midiEvent(0xE0, 0x00, 0x00, 10);
+    const auto volume = gg::test::midiEvent(0xB0, 7, 127, 20);
+    const auto midiOn = gg::test::midiEvent(0x90, 64, 64, 30);
+    gg::test::InputEvents second;
+    second.add(&bendDown.header);
+    second.add(&volume.header);
+    second.add(&midiOn.header);
+    REQUIRE(plugin.process(256, in.data(), out.data(), second.list()) == CLAP_PROCESS_CONTINUE);
+    CHECK(source(ModSource::PitchBend) == 0.0f);
+    CHECK(source(ModSource::ModWheel) == 64.0f / 127.0f);
+    CHECK(source(ModSource::Velocity) == 64.0f / 127.0f);
+
+    // Through params.flush: queued for the next boundary.
+    const auto bendUp = gg::test::midiEvent(0xE0, 0x7F, 0x7F, 0);
+    const auto wheelUp = gg::test::midiEvent(0xB0, 1, 127, 0);
+    gg::test::InputEvents flushed;
+    flushed.add(&bendUp.header);
+    flushed.add(&wheelUp.header);
+    plugin.flush(flushed.list());
+    REQUIRE(plugin.process(256, in.data(), out.data()) == CLAP_PROCESS_CONTINUE);
+    CHECK(source(ModSource::PitchBend) == 1.0f);
+    CHECK(source(ModSource::ModWheel) == 1.0f);
+}
+
+TEST_CASE("the transport reaches the processor", "[plugin]")
+{
+    // Spec §6.8: process.transport sets the transport sources each call: the beat phase
+    // advances while the host plays, at its tempo, and holds where a stopped transport puts it;
+    // the bar is the time signature's numerator in beats. A call with no transport keeps the last.
+    const char *id = GENERATE(kInstrumentId, kFxId);
+    CAPTURE(id);
+    gg::test::PluginUnderTest plugin(id);
+    REQUIRE(plugin.valid());
+    REQUIRE(plugin.activate(48000.0, 512));
+    const auto *processor = plugin.impl().processor();
+    REQUIRE(processor != nullptr);
+    using gg::core::ModSource;
+    const auto source = [&](ModSource s) { return processor->sourceValue(s, 0); };
+    Stereo in(256);
+    Stereo out(256);
+
+    // 120 BPM from beat 0: 256 frames are 256 / 24000 beats.
+    const auto playing = gg::test::transportEvent(120.0, true, 0.0);
+    REQUIRE(plugin.process(256, in.data(), out.data(), nullptr, 2, nullptr, &playing) ==
+            CLAP_PROCESS_CONTINUE);
+    const float first = source(ModSource::TransportBeat);
+    CHECK(first > 0.0f);
+    CHECK(first < 0.02f);
+    CHECK(source(ModSource::TransportPlaying) == 1.0f);
+    const auto next = gg::test::transportEvent(120.0, true, 256.0 / 24000.0);
+    REQUIRE(plugin.process(256, in.data(), out.data(), nullptr, 2, nullptr, &next) ==
+            CLAP_PROCESS_CONTINUE);
+    const float second = source(ModSource::TransportBeat);
+    CHECK(second > first);
+    REQUIRE(plugin.process(256, in.data(), out.data()) == CLAP_PROCESS_CONTINUE);
+    CHECK(source(ModSource::TransportBeat) > second); // no event: it plays on
+
+    // Stopped at beat 1.5 in 3/4: a beat phase of 0.5 and a bar phase of 0.5, held.
+    const auto stopped = gg::test::transportEvent(90.0, false, 1.5, 3);
+    for (int k = 0; k < 2; ++k)
+    {
+        REQUIRE(plugin.process(256, in.data(), out.data(), nullptr, 2, nullptr, &stopped) ==
+                CLAP_PROCESS_CONTINUE);
+        CHECK(source(ModSource::TransportBeat) == 0.5f);
+        CHECK(source(ModSource::TransportBar) == 0.5f);
+        CHECK(source(ModSource::TransportPlaying) == 0.0f);
     }
 }
 

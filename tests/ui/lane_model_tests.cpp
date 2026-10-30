@@ -293,6 +293,9 @@ TEST_CASE("the scan window's tapers match ParamMap's", "[ui]")
         gg::core::ParamValues values{};
         values[static_cast<std::size_t>(gg::core::ParamSlot::Position)] = position;
         values[static_cast<std::size_t>(gg::core::ParamSlot::Spray)] = spray;
+        // A layer reading its ring, as the FX's layers do by default (M2 sub-project 1's §6.4).
+        values[static_cast<std::size_t>(gg::core::ParamSlot::Source)] =
+            static_cast<float>(gg::core::SourceKind::Live);
         const auto cloud = gg::core::toCloudParams(values, gg::core::Mode::Fx);
         const auto w = gg::ui::scanWindow(position, spray, g);
         INFO("position " << position << ", spray " << spray);

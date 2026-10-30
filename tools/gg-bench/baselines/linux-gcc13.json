@@ -1,5 +1,5 @@
 {
-  "leg": "linux-gcc12",
+  "leg": "linux-gcc13",
   "machines": [
     {
       "commit": "a911b93c49f5698026f8d725f4b7647932d6d824",

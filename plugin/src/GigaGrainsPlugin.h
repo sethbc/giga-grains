@@ -19,8 +19,11 @@
 #include "SampleLoader.h"
 #include "gg/core/GrainQueue.h"
 #include "gg/core/LatestValue.h"
+#include "gg/core/ModMatrix.h"
 #include "gg/core/ParamIds.h"
 #include "gg/core/Processor.h"
+#include "gg/engine/TaskRunner.h"
+#include "gg/source/SourceMode.h"
 
 namespace gg::plugin
 {
@@ -53,31 +56,51 @@ const clap_plugin_descriptor *descriptorFor(Product product) noexcept;
 
 /// The CLAP adapter around gg::core::Processor, for both products: the JUCE-free plugin core
 /// (spec §5). It maps CLAP's parameters, state and remote controls onto the Processor; the
-/// sound is the Processor's. The FX's input feeds the live ring and the dry side of the Mix; the
-/// instrument plays the sample its SampleLoader gives it from notes, and is silent without one.
-/// Both products pass their CLAP and MIDI notes to the Processor (toNoteEvent), on the control
-/// grid. This class has no GUI. The editor is added by a subclass, EditorPlugin
+/// sound is the Processor's. Both products have an audio input, which feeds every layer's live
+/// ring (M2 sub-project 1's spec §6.4): the FX's main input, which also feeds the dry side of the
+/// Mix, and the instrument's sidechain (D2), which only a Live layer reads. The instrument's
+/// Sample layers play the sample its SampleLoader gives them, from notes, and are silent without
+/// one. Both products pass their CLAP and MIDI notes to the Processor (toNoteEvent), their MIDI
+/// controls (toControlEvent: Mod Wheel, Aftertouch, Pitch Bend) and the host's transport, all on
+/// the control grid. This class has no GUI. The editor is added by a subclass, EditorPlugin
 /// (editor/EditorPlugin.h), built only with GG_BUILD_EDITOR; makePlugin() picks the class.
 ///
 /// **Threads** (INTENT §15). The main thread owns the Processor's lifetime (activate,
-/// deactivate), the seed, the state and the sample loader; the audio thread owns the Processor
-/// in between, and with it events_ and notes_. Parameter values cross over in two ways:
+/// deactivate), the seed, the routes, the state and the sample loader; the audio thread owns the
+/// Processor in between, and with it events_, notes_ and controls_. Parameter values cross over
+/// in two ways:
 /// - values_, an atomic per-parameter store of the base values, which the main thread reads
 ///   (params.get_value, state save). The audio thread writes it as it hands values to the
 ///   Processor; the main thread writes it while inactive, and on a state load.
 /// - loadedState_ (the FX's values) or the Processor's SourceExchange (the instrument's, with
 ///   its sample), which take a state loaded while active to the audio thread, where it applies
 ///   at the start of the next process() or params.flush. loadedState_ also carries the state's
-///   engine seed, in both products, so a seed loaded while active needs no restart (carry-over
-///   row 115). Once the audio thread has applied a state's values, and stored them in values_,
-///   it sets valuesApplied_ and asks for on_main_thread, which asks the host to rescan the
-///   values (carry-over row 123, ruling M1-x): the host's first rescan, at the load, may read
-///   a value a block in flight then overwrote.
+///   engine seed and its mod-matrix routes, in both products, so a seed loaded while active needs
+///   no restart (carry-over row 115). Once the audio thread has applied a state's values, and
+///   stored them in values_, it sets valuesApplied_ and asks for on_main_thread, which asks the
+///   host to rescan the values (carry-over row 123, ruling M1-x): the host's first rescan, at the
+///   load, may read a value a block in flight then overwrote.
 /// - uiQueue_, the editor's changes (uiBeginGesture, uiSetValue, uiEndGesture: spec §6.3), main
 ///   thread → audio thread. process() and an active params.flush take them before the host's
 ///   events and apply the values as the host's are applied, then send each change on to the
 ///   host as an output event; an inactive flush, on the main thread, stores the values in
 ///   values_ for activate().
+///
+/// **The thread pool** (M2 sub-project 1's spec §6.7). The Processor hands each piece's rendering
+/// layers to poolRunner_ (activate: Processor::setTaskRunner), which asks the host to run them on
+/// its pool (clap_host_thread_pool.request_exec) when the host offers one, and runs them itself, in
+/// order, when it doesn't or declines. The host runs each task through clap_plugin_thread_pool.exec
+/// (threadPoolExec), on any of its threads, while request_exec waits; the output is the same bits
+/// either way.
+///
+/// **Source kinds and text** (M2 sub-project 1's spec §6.4). A layer's Position (and Spray)
+/// text follows its kind: the Live display (seconds behind the head) on a Live layer, the Sample
+/// display (a percentage of the file) on a Sample layer, in either product, read from the Source
+/// slot's base value in values_ (displayModeOf). When a layer's built kind changes, whoever owns
+/// values_ then (the audio thread while active, the main thread while not) notes it
+/// (checkKinds) and asks for on_main_thread, which asks the host to rescan the text. The text
+/// follows the base value, not the effective one the audio follows, because a host can't rescan
+/// text at the modulation rate, and what is shown is what the user set (ruling FR-6).
 ///
 /// **The seed** (sub-project 5's spec §7). A new instance draws its own engine seed, on the main
 /// thread at construction, from std::random_device; a state brings its own.
@@ -157,6 +180,10 @@ class GigaGrainsPlugin : public plugHelper_t
     /// they move to that boundary from their own, so past this cap the output is no longer block-
     /// size invariant.
     static constexpr std::size_t kMaxNoteEvents = 1024;
+    /// The most MIDI control events (CC 1, channel pressure, pitch bend) one process() call hands
+    /// to the Processor in one go (its control span). Controls beyond it apply at the block's end,
+    /// at the next grid boundary, as notes beyond kMaxNoteEvents do.
+    static constexpr std::size_t kMaxControlEvents = 1024;
     /// The CLAP note IDs remembered for note-offs addressed by ID alone (ruling R15). When the
     /// table is full, a new ID replaces the oldest.
     static constexpr std::size_t kMaxNoteIds = 256;
@@ -210,6 +237,16 @@ class GigaGrainsPlugin : public plugHelper_t
     /// Whether `header` is an event toNoteEvent converts, which counts toward kMaxNoteEvents: a
     /// CLAP note-on, note-off or note choke, or a MIDI note-on, note-off or CC 123. Stateless.
     static bool isNoteEvent(const clap_event_header *header) noexcept SST_CPPUTILS_NONBLOCKING;
+    /// Whether `header` is an event toControlEvent converts, which counts toward
+    /// kMaxControlEvents: a MIDI CC 1, channel pressure or pitch bend. Stateless.
+    static bool isControlEvent(const clap_event_header *header) noexcept SST_CPPUTILS_NONBLOCKING;
+    /// The MIDI control `header` as a ControlEvent (M2 sub-project 1's spec §6.8), at its time,
+    /// on its channel: CC 1 (0xBn, controller 1) is ModWheel, value / 127; channel pressure
+    /// (0xDn) is Aftertouch, pressure / 127; pitch bend (0xEn) is PitchBend,
+    /// (msb << 7 | lsb) / 16383, so its centre 0x2000 is 8192 / 16383. Each data byte is taken as
+    /// its 7 bits. False for any other event. Stateless.
+    static bool toControlEvent(const clap_event_header *header,
+                               gg::core::ControlEvent &event) noexcept SST_CPPUTILS_NONBLOCKING;
 
   protected:
     bool activate(double sampleRate, uint32_t minFrameCount,
@@ -221,6 +258,15 @@ class GigaGrainsPlugin : public plugHelper_t
     /// On the audio thread, never concurrent with process(): real-time safe.
     void reset() noexcept SST_CPPUTILS_NONBLOCKING override;
     clap_process_status process(const clap_process *process) noexcept override;
+
+    // ---- The thread pool (see the class comment) ----
+
+    bool implementsThreadPool() const noexcept override { return true; }
+    /// clap_plugin_thread_pool.exec: task `taskIndex` of the request the Processor's runner made
+    /// (Processor::execTask). The host calls it only while that request_exec waits, so only
+    /// inside our process(), on any of its threads; an index past the piece's tasks, or a call
+    /// while inactive, does nothing.
+    void threadPoolExec(uint32_t taskIndex) noexcept SST_CPPUTILS_NONBLOCKING override;
 
     bool implementsAudioPorts() const noexcept override { return true; }
     uint32_t audioPortsCount(bool isInput) const noexcept override;
@@ -257,8 +303,9 @@ class GigaGrainsPlugin : public plugHelper_t
     bool stateSave(const clap_ostream *stream) noexcept override;
     bool stateLoad(const clap_istream *stream) noexcept override;
 
-    // ---- Remote controls: three pages, "Perform" (sub-project 5's spec §3.3), "Cloud" (spec
-    // §4) and "Space" (sub-project 4's spec §6.6) ----
+    // ---- Remote controls: eight pages, M1's "Perform" (sub-project 5's spec §3.3), "Cloud"
+    // (spec §4) and "Space" (sub-project 4's spec §6.6), then "Layers", "Morph" and "Cloud B" to
+    // "Cloud D" (M2 sub-project 1's spec §6.9) ----
 
     bool implementRemoteControls() const noexcept override { return true; }
     uint32_t remoteControlsPageCount() noexcept override;
@@ -283,8 +330,9 @@ class GigaGrainsPlugin : public plugHelper_t
                              gg::core::ParamEvent &event) noexcept SST_CPPUTILS_NONBLOCKING;
     /// The note event `header` as a NoteEvent (spec §6.1): CLAP's note-on, note-off and note
     /// choke, MIDI's note-on, note-off and CC 123 (all notes off on its channel, ruling R14).
-    /// False for any other event. Velocity and the port are ignored; out-of-range channels and
-    /// keys pass through, for the Processor to drop.
+    /// False for any other event. An On carries its velocity, the mod matrix's Velocity source
+    /// (M2 sub-project 1's spec §6.8): CLAP's 0..1 as it comes, MIDI's / 127. The port is
+    /// ignored; out-of-range channels and keys pass through, for the Processor to drop.
     ///
     /// CLAP note IDs (ruling R15): a note-on with an ID ≥ 0 and an in-range channel and key is
     /// remembered in noteIds_. A note-off or choke with an ID ≥ 0 forgets it, and if its channel
@@ -296,13 +344,13 @@ class GigaGrainsPlugin : public plugHelper_t
                      gg::core::NoteEvent &event) noexcept SST_CPPUTILS_NONBLOCKING;
     /// Forgets the note IDs remembered for (`channel`, `key`), −1 matching any. Audio thread.
     void forgetNoteIds(int16_t channel, int16_t key) noexcept SST_CPPUTILS_NONBLOCKING;
-    /// Applies the parameter and note events of `in` from index `first` between two process()
-    /// calls: values at once with setBase, modulation and notes at the next control-grid
-    /// boundary. Needs the processor; audio thread.
+    /// Applies the parameter, note and control events of `in` from index `first` between two
+    /// process() calls: values at once with setBase, modulation, notes and controls at the next
+    /// control-grid boundary. Needs the processor; audio thread.
     void applyBetweenBlocks(const clap_input_events *in,
                             uint32_t first) noexcept SST_CPPUTILS_NONBLOCKING;
-    /// Applies a state loaded since the last call, if there is one: its seed, and its values
-    /// when it carries them (the FX). Audio thread.
+    /// Applies a state loaded since the last call, if there is one: its seed and its routes, and
+    /// its values when it carries them (the FX). Audio thread.
     void applyLoadedState() noexcept SST_CPPUTILS_NONBLOCKING;
     /// Audio thread, after a state's values went into values_: sets valuesApplied_ and asks
     /// the host for on_main_thread (clap_host.request_callback, thread-safe), once until that
@@ -329,6 +377,19 @@ class GigaGrainsPlugin : public plugHelper_t
     void queueUiChange(const UiParamChange &change) noexcept;
     /// Stores the Processor's base values in values_.
     void storeBases() noexcept SST_CPPUTILS_NONBLOCKING;
+    /// Layer `layer`'s built kind as values_ has it: builtKind(sourceKindOf(...)) of its Source
+    /// slot's base value. Any thread.
+    gg::SourceMode kindOf(uint8_t layer) const noexcept SST_CPPUTILS_NONBLOCKING;
+    /// The product whose display Position and Spray take for the parameter in `slot`: the FX's
+    /// (seconds behind the head) for a Live layer's, the instrument's (a percentage of the file)
+    /// for a Sample layer's (kindOf), and the product's own for every other parameter.
+    gg::core::Mode displayModeOf(gg::core::ParamSlot slot) const noexcept;
+    /// Compares each layer's kindOf with shownKinds_ and, if any changed, records them and asks
+    /// for on_main_thread (clap_host.request_callback, thread-safe), once until that call comes,
+    /// where the host is asked to rescan the text. Whoever owns values_: the audio thread while
+    /// active, the main thread while not. Its real-time safety is the host's, as requestCollect's
+    /// is.
+    void checkKinds() noexcept SST_CPPUTILS_NONBLOCKING;
     /// Audio thread. When a source the audio thread handed back awaits the main thread's
     /// collect, asks the host for on_main_thread (clap_host.request_callback, thread-safe), once
     /// until that call comes, so every retired source is freed soon after it retires. Its
@@ -348,6 +409,7 @@ class GigaGrainsPlugin : public plugHelper_t
     struct LoadedState
     {
         gg::core::ParamValues values;
+        gg::core::ModRoutes routes;
         uint64_t seed;
         bool hasValues;
     };
@@ -356,9 +418,39 @@ class GigaGrainsPlugin : public plugHelper_t
     // The engine seed: drawn at construction, saved and loaded with the state, given to the
     // processor at activate() and, loaded while active, through loadedState_. Main thread.
     uint64_t seed_;
+    // The mod matrix's routes in effect (M2 sub-project 1's spec §6.10): the product's factory
+    // routes in a new instance, a loaded state's from its load on; saved with the state, given to
+    // the processor at activate() and, loaded while active, through loadedState_. Routes have no
+    // other way to change yet. Main thread.
+    gg::core::ModRoutes routes_;
     // Set by the audio thread when it has stored a state's values in values_, cleared by
     // on_main_thread, which then asks the host to rescan them (requestValueRescan).
     std::atomic<bool> valuesApplied_{false};
+    // Each layer's built kind as last noted by checkKinds, whose caller owns it (see there).
+    std::array<gg::SourceMode, gg::core::kLayers> shownKinds_{};
+    // Set by checkKinds when a layer's kind changed, cleared by on_main_thread, which then asks
+    // the host to rescan the parameters' text.
+    std::atomic<bool> kindsChanged_{false};
+
+    // The Processor's runner (see the class comment): the host's pool, or a loop on the calling
+    // thread. Its run() is only ever called by Processor::process, so only inside our process(),
+    // on the audio thread: CLAP allows request_exec there alone (clap-helpers checks the thread,
+    // when the host offers clap.thread-check).
+    class HostPoolRunner final : public gg::TaskRunner
+    {
+      public:
+        explicit HostPoolRunner(GigaGrainsPlugin &plugin) noexcept : plugin_(plugin) {}
+        /// Asks the host to run the `count` tasks (request_exec), when it offers its pool;
+        /// otherwise, or if it declines (CLAP's rule: the plugin then runs them itself), runs
+        /// fn(ctx, i) for each i in order. The host reaches each task through threadPoolExec,
+        /// which calls Processor::execTask, the very function fn(ctx, i) is (the Processor's
+        /// layerTask with ctx the Processor), so either way each task runs once.
+        void run(uint32_t count, gg::TaskFn fn, void *ctx) noexcept override;
+
+      private:
+        GigaGrainsPlugin &plugin_;
+    };
+    HostPoolRunner poolRunner_{*this};
 
     // Built by activate() and destroyed by deactivate(), on the main thread; between the two,
     // the audio thread's.
@@ -382,9 +474,10 @@ class GigaGrainsPlugin : public plugHelper_t
     std::atomic<bool> uiFlushRequested_{false};
     std::atomic<uint64_t> uiEventsDropped_{0}; // the consumer's
     bool publishing_{false};                   // main thread: the editor is open
-    // The parameter and note events of one process() call. Audio thread.
+    // The parameter, note and control events of one process() call. Audio thread.
     std::array<gg::core::ParamEvent, kMaxParamEvents> events_{};
     std::array<gg::core::NoteEvent, kMaxNoteEvents> notes_{};
+    std::array<gg::core::ControlEvent, kMaxControlEvents> controls_{};
     // The CLAP note IDs of the notes held (toNoteEvent). A free slot has id −1; age orders the
     // slots, the oldest replaced first. Audio thread; activate() and reset() clear it.
     struct NoteIdSlot

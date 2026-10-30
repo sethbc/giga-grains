@@ -1,7 +1,7 @@
 # gg-bench baselines
 
 One file per CI leg, named after the leg's preset: `mac-universal.json`, `windows-clangcl.json`,
-`linux-gcc12.json`. CI's benchmark step passes `--baseline tools/gg-bench/baselines/<preset>.json`
+`linux-gcc13.json`. CI's benchmark step passes `--baseline tools/gg-bench/baselines/<preset>.json`
 to `gg-bench` when that file exists, and reports a verdict for every engine ratio. Through M1 the
 verdict is report-only (spec ruling 3): a regression is a warning, never a failed job.
 Sub-project 6 makes it blocking, with the published §16 headline.
@@ -23,12 +23,16 @@ Each entry has one ratio per engine case per block size (32, 64 and 256). The en
 - `engine-live`: X read from the live ring, the FX's figure;
 - `engine-full-pool`: admission when the pool is saturated.
 
+`engine-layers` (four layers of 500 grains, X's count) and `engine-layers-full` (four of 2,000)
+are timed and print ratios, but have no entries yet: they are report-only until three full runs
+are merged in (`--merge`, below), and a ratio a file lacks is only `not in the baseline`.
+
 ## Format
 
 ```json
 {
   "schemaVersion": 2,
-  "leg": "linux-gcc12",
+  "leg": "linux-gcc13",
   "machines": [
     {
       "machine": "AMD EPYC 7763 64-Core Processor (x86_64)",

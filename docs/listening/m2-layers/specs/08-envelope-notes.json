@@ -1,0 +1,19 @@
+{
+  "mode": "instrument",
+  "sampleRate": 48000,
+  "durationSeconds": 12.0,
+  "blockSize": 128,
+  "seed": 1,
+  "sample": {"kind": "sweep", "startHz": 50, "endHz": 8000, "seconds": 4.0, "amplitude": 0.5},
+  "params": {"Position": 0.5, "Density": 5.0, "Size": -5.0, "Level": -21.0, "Reverb Amount": 0.25, "A Env 1 Attack": -1.0, "A Env 1 Decay": 0.0, "A Env 1 Sustain": 0.3, "A Env 1 Release": 0.0, "A Env 2 Attack": 1.584962500721156, "A Env 2 Decay": 1.0, "A Env 2 Sustain": 0.7, "A Env 2 Release": 1.584962500721156},
+  "mod": [
+    {"slot": 13, "source": "Env 1", "target": "Size", "targetLayer": "A", "depth": 3.0, "curve": "Unipolar"},
+    {"slot": 14, "source": "Env 1", "target": "Level", "targetLayer": "A", "depth": 15.0, "curve": "Unipolar"},
+    {"slot": 15, "source": "Env 2", "target": "Diffusion", "targetLayer": "A", "depth": 1.0, "curve": "Unipolar"}
+  ],
+  "notes": [
+    {"time": 0.5, "key": 60, "duration": 2.5},
+    {"time": 4.0, "key": 64, "duration": 2.5},
+    {"time": 7.5, "key": 67, "duration": 3.0}
+  ]
+}

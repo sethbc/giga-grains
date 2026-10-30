@@ -1,0 +1,15 @@
+{
+  "mode": "fx",
+  "sampleRate": 48000,
+  "durationSeconds": 6.0,
+  "blockSize": 128,
+  "seed": 1,
+  "input": {"kind": "sine", "frequencyHz": 220, "seconds": 5.5, "amplitude": 0.4},
+  "channels": 1,
+  "samples": {"A": {"kind": "file", "path": "loop-48k.wav"}},
+  "params": {"Mix": 1.0, "A Source": 1, "Position": 0.4},
+  "automation": [
+    {"time": 1.0, "param": "A Source", "value": 0},
+    {"time": 2.5, "param": "A Source", "value": 1}
+  ]
+}

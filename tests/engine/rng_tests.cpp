@@ -89,3 +89,30 @@ TEST_CASE("Field values are pinned", "[rng]")
     REQUIRE(note != onset);
     REQUIRE(note != pan);
 }
+
+TEST_CASE("the rng fields are append-only", "[rng]")
+{
+    // M2's fields (spec §6.6, §6.8) are appended after M1's; none of M1's moves.
+    using gg::rng::Field;
+    STATIC_REQUIRE(static_cast<uint32_t>(Field::PitchSpread) == 5);
+    STATIC_REQUIRE(static_cast<uint32_t>(Field::SizeSpread) == 6);
+    STATIC_REQUIRE(static_cast<uint32_t>(Field::ModRandom1) == 7);
+    STATIC_REQUIRE(static_cast<uint32_t>(Field::ModRandom2) == 8);
+    STATIC_REQUIRE(static_cast<uint32_t>(Field::SignalNoise) == 100);
+
+    // Every field keys its own draw.
+    using gg::rng::hash;
+    const Field fields[] = {Field::PositionJitter, Field::Onset,       Field::Pan,
+                            Field::Note,           Field::PitchSpread, Field::SizeSpread,
+                            Field::ModRandom1,     Field::ModRandom2,  Field::SignalNoise};
+    for (const Field a : fields)
+    {
+        for (const Field b : fields)
+        {
+            if (a != b)
+            {
+                REQUIRE(hash({1, 0, 0, a, 7}) != hash({1, 0, 0, b, 7}));
+            }
+        }
+    }
+}

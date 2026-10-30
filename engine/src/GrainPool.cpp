@@ -170,9 +170,11 @@ void GrainPool::clear() noexcept
     heapSize_ = 0;
 }
 
-void GrainPool::assignSourceSlot(uint8_t slot) noexcept
+void GrainPool::assignSourceSlot(uint8_t slot, uint8_t below) noexcept
 {
-    std::fill_n(sourceSlot_.begin(), size_, slot);
+    std::replace_if(
+        sourceSlot_.begin(), sourceSlot_.begin() + size_, [below](uint8_t s) { return s < below; },
+        slot);
 }
 
 GrainSpec GrainPool::spec(uint32_t i) const noexcept
