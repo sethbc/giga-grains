@@ -6,11 +6,15 @@
 #define GG_SOURCE_LIVESOURCE_H
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <limits>
-#include <vector>
+#include <memory>
+#include <span>
 
 #include <sst/cpputils/rtsan_support.h>
+
+#include "gg/source/RingStorage.h"
 
 namespace gg
 {
@@ -45,7 +49,29 @@ namespace gg
 /// ±kMaxInputMagnitude. A mono input fills both channels; a missing input, or a missing channel
 /// of a stereo one, is silence.
 ///
-/// **Reads** never touch a frame outside [R(t) − N, R(t) − 1]; see fade() and read().
+/// **The window** (M2 sub-project 2's spec §6.1). What a sample may read is [E − W, E − 1]:
+/// - with no splice selected, E = R(t) and W = N, or min(L, N) while Loop is on with length L
+///   (setLoop), so a loop is the newest L frames;
+/// - while splice k is selected (selectSplice), the span between marks k and k + 1 (the last
+///   mark's to the head): E is the later mark, or R(t) for the last splice, and E − W the earlier.
+/// The window's oldest frame is never below R(t) − N, so every frame in it is the one written for
+/// it (see Storage). At the defaults (Loop off, no splice) it is M1's [R(t) − N, R(t) − 1], bit
+/// for bit. The settings apply from the next write(), which captures them for its block.
+///
+/// **Overdub.** write() may take a gain o per frame: the frame written at R is then
+/// sanitize(sanitize(in) + o × frame(R − P)) before the freeze gain, with the period P = min(L, N)
+/// while Loop is on, else N. Frame R − P is still in storage when R is written (the slots hold
+/// N + B frames), and a frame before 0 is silence. Where o is 0, or no gains are given, the frame
+/// is the input alone, by M1's path, so Overdub 0 keeps every bit (the sign of zero included).
+///
+/// **Splice marks:** at most kMaxSplices ring-time positions, ascending, in a fixed array. A
+/// mark older than R − N has left storage and is dropped at the next write().
+///
+/// **Storage** lives in a RingStorage: the one prepare() allocates, which the source owns, or one
+/// the caller owns, swapped in by adoptStorage() (a resize, ring time going on) or
+/// restoreStorage() (a restore, ring time restarting).
+///
+/// **Reads** never touch a frame outside the window; see fade() and read().
 class LiveSource
 {
   public:
@@ -58,15 +84,56 @@ class LiveSource
     /// signal, and low enough that no sum of grains can overflow a float.
     static constexpr float kMaxInputMagnitude = 1048576.0f;
 
+    /// The most frames adoptStorage() copies itself (spec §6.5): the newest 64 KB per channel.
+    static constexpr int64_t kAdoptCopyFrames = 8192;
+    /// The most splice marks a ring keeps (spec §6.1).
+    static constexpr uint32_t kMaxSplices = 32;
+
     /// L = round(kFreezeRampSeconds × sampleRate) samples, at least 1.
     static int64_t freezeRampSamples(double sampleRate) noexcept;
 
-    /// Allocates a ring whose window is N = ceil(seconds × sampleRate) frames (no ring when
-    /// seconds is 0), stored in N + maxBlockSize slots (see the class comment), and resets. Not
-    /// real-time safe. sampleRate must be finite and > 0, and maxBlockSize > 0 (0 counts as 1).
-    /// Throws std::invalid_argument when seconds is not finite and >= 0, or when the storage
-    /// would exceed 2^40 frames.
+    /// A ring with no storage yet: the rate (for the freeze ramp) and the largest block write()
+    /// takes, which a storage must leave room for (capacity() − frames() >= maxBlockSize; 0 counts
+    /// as 1). Not enabled() until adoptStorage() or restoreStorage() gives it storage. Lets go of
+    /// any storage it had: one it owned is freed, and one the caller gave stays the caller's,
+    /// without being handed back. Resets (see reset()). Not real-time safe: it may free.
+    void prepare(double sampleRate, uint32_t maxBlockSize) noexcept;
+
+    /// prepare(sampleRate, maxBlockSize), then a RingStorage the source owns, whose window is
+    /// N = ceil(seconds × sampleRate) frames (no ring when seconds is 0), stored in
+    /// N + maxBlockSize slots (see the class comment). For the callers that size the ring once (the
+    /// Engine's constructor, the tests, gg-bench and gg-render's sample mode). Not real-time safe.
+    /// sampleRate must be finite and > 0. Throws std::invalid_argument, changing nothing, when
+    /// seconds is not finite and >= 0, or when the storage would exceed 2^40 frames.
     void prepare(double sampleRate, double seconds, uint32_t maxBlockSize);
+
+    /// The ring exchange's audio-thread half (spec §6.5), for a resize: swaps in `next`, whose
+    /// slots already hold the window's frames below `copiedTo` at their slots (frame f at f mod
+    /// next->capacity()), copied by the main thread from the frames it found stable. Copies
+    /// [copiedTo, head()) itself, the frames written since, as far as both windows reach, and
+    /// refreshes next's guard slots. Ring time continues: the head, the freeze state and the write
+    /// gain stay. `previous` gets the storage replaced, for the main thread to free: nullptr when
+    /// the source owned it (it keeps that one until the next prepare() or its destruction, so
+    /// nothing is freed here) or had none. Marks older than the new window are dropped (as
+    /// write() drops them). The loop's W follows the new N.
+    ///
+    /// Returns false, changing nothing (previous is set to nullptr), when next is null or already
+    /// this ring's, when its capacity leaves less than a block's slack past its frames, when
+    /// copiedTo is past the head, or when the copy would be more than kAdoptCopyFrames frames:
+    /// the main thread then copies again from the current head. Real-time safe, with the
+    /// threading rule of the setters: on the audio thread between write() calls.
+    bool adoptStorage(RingStorage *next, int64_t copiedTo,
+                      RingStorage *&previous) noexcept SST_CPPUTILS_NONBLOCKING;
+
+    /// A restore (spec §6.6): `next` holds frames [0, frames) at their slots. Ring time restarts
+    /// with the head at `frames`, not frozen, the write gain 1, and `marks` replace the current
+    /// ones: those ascending, in the new window and below `frames`, the first kMaxSplices of them.
+    /// `previous` gets the storage replaced, as adoptStorage() hands it back. Nothing happens
+    /// (previous is set to nullptr) when next is null or already this ring's, or its capacity
+    /// leaves less than a block's slack. Refreshes next's guard slots; copies no frame. Real-time
+    /// safe, with the threading rule of the setters.
+    void restoreStorage(RingStorage *next, int64_t frames, std::span<const int64_t> marks,
+                        RingStorage *&previous) noexcept SST_CPPUTILS_NONBLOCKING;
 
     /// N, the ring length in frames; 0 when there is no ring.
     int64_t frames() const noexcept { return frames_; }
@@ -79,13 +146,47 @@ class LiveSource
     /// The freeze setting for the next write() and after.
     void setFrozen(bool frozen) noexcept { frozen_ = frozen; }
 
+    // The window and the marks (spec §6.1). Each setter is real-time safe and takes effect from
+    // the next write(); call them on the audio thread between write() calls.
+
+    /// Loop on: the window is the newest min(lengthFrames, N) frames, and overdub's period the
+    /// same; off, both are N. A length below 1 counts as 1.
+    void setLoop(bool on, int64_t lengthFrames) noexcept
+    {
+        loopOn_ = on;
+        loopLength_ = lengthFrames;
+    }
+
+    /// Selects splice k: 0 none (the whole window, the loop's if Loop is on), k >= 1 the span from
+    /// the k-th mark, oldest first, to the next or, for the last mark, to the head. A k past the
+    /// mark count selects the last splice. When the marks that write() drops include the selected
+    /// span's first, the selection falls back to 0; when they are all older, it follows its span.
+    void selectSplice(uint32_t k) noexcept { spliceRequest_ = k; }
+
+    /// Adds a mark at ring time `ringTime`, keeping them ascending. False, changing nothing, when
+    /// kMaxSplices are kept, a mark is there already, or ringTime is outside [head − N, head] or
+    /// below 0. The selection keeps its index (Splice counts from the oldest mark).
+    bool addSplice(int64_t ringTime) noexcept SST_CPPUTILS_NONBLOCKING;
+
+    /// Removes every mark; the selection then falls to 0 at the next write() (none to select).
+    void clearSplices() noexcept { markCount_ = 0; }
+
+    /// The marks, ascending.
+    uint32_t spliceCount() const noexcept { return markCount_; }
+    std::span<const int64_t> splices() const noexcept { return {marks_.data(), markCount_}; }
+
     /// Writes the input for output samples [blockStart, blockStart + numFrames), where
     /// in[c] + offset is channel c's first sample, and records R(t) for those samples (headAt()
-    /// and headRunAfter()). Blocks must be contiguous from reset(), and numFrames at most the
+    /// and headRunAfter()), the window for the block (anchorAt(), windowFrames()) and the marks
+    /// still in storage. Blocks must be contiguous from reset(), and numFrames at most the
     /// maxBlockSize given to prepare(): a longer block would overwrite frames its own earlier
-    /// samples read. Requires enabled().
+    /// samples read. Does nothing but record without storage.
+    ///
+    /// overdubGain + offset, when not null, is the first frame's overdub gain, one per frame
+    /// (see Overdub in the class comment); nullptr is 0 throughout, M1's write bit for bit.
     void write(const float *const *in, uint32_t numInChannels, uint32_t offset, int64_t blockStart,
-               uint32_t numFrames) noexcept SST_CPPUTILS_NONBLOCKING;
+               uint32_t numFrames,
+               const float *overdubGain = nullptr) noexcept SST_CPPUTILS_NONBLOCKING;
 
     /// R after the last write(): the frames written since reset().
     int64_t head() const noexcept { return head_; }
@@ -97,6 +198,29 @@ class LiveSource
     {
         return blockHead_ + std::min(t - blockStart_ + 1, blockAdvance_);
     }
+
+    /// The window's end E at output sample t of the last write() block: headAt(t), or while a
+    /// splice is selected its later mark (at most the head), or headAt(t) for the last splice.
+    /// Position and Spray read seconds behind it (Engine's admission clamp).
+    int64_t anchorAt(int64_t t) const noexcept { return windowEnd(headAt(t)); }
+
+    /// headRunAfter(t), or 0 while a splice is selected: a splice's window doesn't move with the
+    /// head (the last splice's end does, which admission then treats as still, conservatively).
+    double anchorRunAfter(int64_t t) const noexcept { return splice_ == 0 ? headRunAfter(t) : 0.0; }
+
+    /// W at output sample t of the last write() block: the window's length, anchorAt(t) less its
+    /// oldest frame. N or the loop's length with no splice selected, a splice's span while one is.
+    /// It varies within a block only for the last splice while the head advances, whose start
+    /// stays at its mark as its end follows the head.
+    int64_t windowFramesAt(int64_t t) const noexcept
+    {
+        const int64_t head = headAt(t);
+        return windowEnd(head) - windowOldest(head);
+    }
+
+    /// W in effect at the end of the last write() block (a splice's span, the loop or N): the
+    /// length of the window as of head(), which a capture reads.
+    int64_t windowFrames() const noexcept { return windowEnd(head_) - windowOldest(head_); }
 
     /// The sample of the last write() block from which on the head stands still for the rest of
     /// the block: blockStart + the frames written in the block, which is the block's end unless
@@ -146,21 +270,25 @@ class LiveSource
         return static_cast<double>(blockRamp_ - std::min(t - blockStart_ + 1, blockRamp_));
     }
 
-    /// The head-proximity fade for a read at pos (ring time) while the head is at R (spec §6.3):
+    /// The head-proximity fade for a read at pos (ring time) while the head is at R (spec §6.3),
+    /// over the window [E − W, E − 1] of the last write() block (E and E − W from R; see The
+    /// window in the class comment):
     ///
-    ///     g = clamp((R − 1 − (pos + 2)) / M, 0, 1) × clamp(((pos − 1) − (R − N)) / M, 0, 1)
+    ///     g = clamp((E − 1 − (pos + 2)) / M, 0, 1) × clamp(((pos − 1) − (E − W)) / M, 0, 1)
     ///
-    /// It is 1 while every tap is at least M frames inside both ends of the window, and falls
-    /// linearly to 0 over M frames as a tap nears either end: the newest frame, or the oldest
-    /// one, R − N, which the next frame written moves out of the window. (The slot it overwrites
-    /// holds frame R − N − B, already outside the window; see Storage.) Frozen, those two ends are
-    /// the seam where the ring's newest and oldest frames meet, so this is the head-crossing
-    /// crossfade.
+    /// With no splice and no loop, E = R and W = N: M1's fade, bit for bit. It is 1 while every
+    /// tap is at least M frames inside both ends of the window, and falls linearly to 0 over M
+    /// frames as a tap nears either end: the newest frame, or the oldest one, which the next frame
+    /// written moves out of the window. (The slot it overwrites holds frame R − N − B, already
+    /// outside the window; see Storage.) Frozen, those two ends are the seam where the ring's
+    /// newest and oldest frames meet, so this is the head-crossing crossfade; a loop's or a
+    /// splice's two ends are crossfaded the same way, and a grain admitted under a wider window
+    /// that now reads outside a narrower one is taken out by it.
     double fade(double pos, int64_t head) const noexcept
     {
-        const auto r = static_cast<double>(head);
-        const double toHead = (r - 1.0 - (pos + 2.0)) / kMargin;
-        const double fromTail = ((pos - 1.0) - (r - static_cast<double>(frames_))) / kMargin;
+        const auto end = static_cast<double>(windowEnd(head));
+        const double toHead = (end - 1.0 - (pos + 2.0)) / kMargin;
+        const double fromTail = ((pos - 1.0) - static_cast<double>(windowOldest(head))) / kMargin;
         return unit(toHead) * unit(fromTail);
     }
 
@@ -175,15 +303,15 @@ class LiveSource
 
     /// Reads both channels at pos (ring time) with interp::catmullRom, the 4-point Hermite of
     /// interp::hermite4, over taps floor(pos) − 1 .. floor(pos) + 2. Returns false and reads
-    /// nothing unless every tap is in the window [head − N, head − 1], where head is R(t) of a
-    /// sample t of the last write() block; every frame there is the one written for it (see
-    /// Storage in the class comment). Taps before frame 0 read as 0.
+    /// nothing unless every tap is in the window [E − W, E − 1] at head, where head is R(t) of a
+    /// sample t of the last write() block (see fade()); every frame there is the one written for
+    /// it (see Storage in the class comment). Taps before frame 0 read as 0.
     bool read(double pos, int64_t head, Cursor &cursor, float &left,
               float &right) const noexcept SST_CPPUTILS_NONBLOCKING;
 
     /// The Eco tier's read: both channels at pos with interp::lerp, the line of interp::linear,
     /// over taps floor(pos) and floor(pos) + 1. Returns false and reads nothing unless both taps
-    /// are in the window [head − N, head − 1], as read() requires of its four. Taps before frame
+    /// are in the window [E − W, E − 1] at head, as read() requires of its four. Taps before frame
     /// 0 read as 0. The check is for this read's own reach; the renderer's fade() stays the
     /// one for the Hermite's reach, floor(pos) − 1 .. floor(pos) + 2, which is a frame wider at
     /// each end, so for a linear read it is conservative: wherever fade() is above 0, both taps
@@ -211,11 +339,46 @@ class LiveSource
     // clamp(x, 0, 1), with NaN read as 0.
     static double unit(double x) noexcept { return x > 0.0 ? (x < 1.0 ? x : 1.0) : 0.0; }
 
-    std::vector<float> storage_; // C + kGuardFrames slots of 2 floats: slot s's channel c at 2s + c
-    float *slots_{nullptr};
-    int64_t frames_{0};     // N, the window
-    int64_t capacity_{0};   // C = N + maxBlockSize slots (ruling M1-o)
-    int64_t rampLength_{1}; // L
+    // The last write() block's window at head R(t): its end E, and its oldest frame E − W, never
+    // below R(t) − N.
+    int64_t windowEnd(int64_t head) const noexcept
+    {
+        return splice_ == 0 ? head : std::min(head, spliceEnd_);
+    }
+    int64_t windowOldest(int64_t head) const noexcept
+    {
+        return splice_ == 0 ? head - window_ : std::max(spliceStart_, head - frames_);
+    }
+
+    // Points the source at `storage` (nullptr: none), for prepare(), adoptStorage() and
+    // restoreStorage(); the head and the write slot are the caller's.
+    void attach(RingStorage *storage) noexcept;
+    // Hands the current storage back through `previous`: nullptr when the source owns it (then
+    // kept in retired_ until prepare() or destruction, so nothing is freed on the audio thread)
+    // or has none.
+    void release(RingStorage *&previous) noexcept;
+    // W without a splice, from the loop setting and N.
+    int64_t loopWindow() const noexcept;
+    // Drops the marks before `oldest` (they have left storage) and moves the selection with them.
+    void dropMarksBefore(int64_t oldest) noexcept SST_CPPUTILS_NONBLOCKING;
+    // The selection in effect, from the request and the marks, for the block just written.
+    void selectWindow() noexcept;
+
+    RingStorage *storage_{nullptr};        // the slots' storage, owned_ or the caller's
+    std::unique_ptr<RingStorage> owned_;   // the storage prepare(rate, seconds, block) allocated
+    std::unique_ptr<RingStorage> retired_; // owned_ once replaced, freed by the next prepare()
+    float *slots_{nullptr};                // C + kGuardFrames slots of 2 floats: s's c at 2s + c
+    int64_t frames_{0};                    // N, the storage's window
+    int64_t capacity_{0};                  // C = N + maxBlockSize slots (ruling M1-o)
+    int64_t maxBlock_{1};                  // B, the largest block write() takes
+    int64_t rampLength_{1};                // L
+
+    // The window settings (setLoop, selectSplice) and the marks.
+    bool loopOn_{false};
+    int64_t loopLength_{0};
+    uint32_t spliceRequest_{0};
+    std::array<int64_t, kMaxSplices> marks_{};
+    uint32_t markCount_{0};
 
     bool frozen_{false};
     int64_t ramp_{1};      // the write gain is ramp_ / rampLength_, ramp_ in [0, rampLength_]
@@ -227,6 +390,10 @@ class LiveSource
     int64_t blockHead_{0};    // R before the block
     int64_t blockAdvance_{0}; // frames written in the block, on its first blockAdvance_ samples
     int64_t blockRamp_{0};    // ramp_ before the block
+    int64_t window_{0};       // W with no splice (the loop's or N), and overdub's period P
+    uint32_t splice_{0};      // the splice selected, 0 for none
+    int64_t spliceStart_{0};  // its first mark
+    int64_t spliceEnd_{0};    // its later mark, or INT64_MAX for the last splice (to the head)
 };
 } // namespace gg
 

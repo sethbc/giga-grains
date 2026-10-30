@@ -6,6 +6,8 @@
 
 #include <cmath>
 #include <cstddef>
+#include <limits>
+#include <memory>
 #include <stdexcept>
 
 #include "gg/core/Interpolate.h"
@@ -27,6 +29,19 @@ float sanitize(float x) noexcept
     }
     return std::clamp(x, -LiveSource::kMaxInputMagnitude, LiveSource::kMaxInputMagnitude);
 }
+
+// Sets a storage's guard slots, C .. C + 2, to slots 0 .. 2, as write() keeps them: a main
+// thread's copy fills the slots alone.
+void mirrorGuards(RingStorage &storage) noexcept
+{
+    float *const p = storage.slots();
+    const int64_t c = storage.capacity();
+    for (int64_t g = 0; g < RingStorage::kGuardFrames; ++g)
+    {
+        p[2 * (c + g)] = p[2 * g];
+        p[2 * (c + g) + 1] = p[2 * g + 1];
+    }
+}
 } // namespace
 
 int64_t LiveSource::freezeRampSamples(double sampleRate) noexcept
@@ -34,6 +49,16 @@ int64_t LiveSource::freezeRampSamples(double sampleRate) noexcept
     // llround is exact; the min keeps its argument in range for any finite rate.
     const double samples = std::min(kFreezeRampSeconds * sampleRate, kMaxRingFrames);
     return std::max<int64_t>(1, std::llround(samples));
+}
+
+void LiveSource::prepare(double sampleRate, uint32_t maxBlockSize) noexcept
+{
+    rampLength_ = freezeRampSamples(sampleRate);
+    maxBlock_ = static_cast<int64_t>(std::max<uint32_t>(1, maxBlockSize));
+    attach(nullptr);
+    owned_.reset();
+    retired_.reset();
+    reset();
 }
 
 void LiveSource::prepare(double sampleRate, double seconds, uint32_t maxBlockSize)
@@ -48,23 +73,44 @@ void LiveSource::prepare(double sampleRate, double seconds, uint32_t maxBlockSiz
     {
         throw std::invalid_argument("LiveSource: the ring would exceed 2^40 frames");
     }
-    frames_ = static_cast<int64_t>(frames);
-    rampLength_ = freezeRampSamples(sampleRate);
-    if (frames_ > 0)
+    // Ruling M1-o: a whole block's worth of slots past the window, so the frames a block writes
+    // after sample t never land in t's window (see Storage in LiveSource.h). Allocated before
+    // anything changes, so a failure leaves the ring as it was.
+    std::unique_ptr<RingStorage> storage;
+    if (frames > 0.0)
     {
-        // Ruling M1-o: a whole block's worth of slots past the window, so the frames a block
-        // writes after sample t never land in t's window (see Storage in LiveSource.h).
-        capacity_ = frames_ + static_cast<int64_t>(block);
-        storage_.assign(2 * static_cast<std::size_t>(capacity_ + kGuardFrames), 0.0f);
-        slots_ = storage_.data();
+        storage = std::make_unique<RingStorage>(static_cast<int64_t>(frames), maxBlockSize);
     }
-    else
-    {
-        capacity_ = 0;
-        storage_.clear();
-        slots_ = nullptr;
-    }
+    prepare(sampleRate, maxBlockSize);
+    owned_ = std::move(storage);
+    attach(owned_.get());
     reset();
+}
+
+void LiveSource::attach(RingStorage *storage) noexcept
+{
+    static_assert(RingStorage::kGuardFrames == kGuardFrames);
+    storage_ = storage;
+    slots_ = storage != nullptr ? storage->slots() : nullptr;
+    frames_ = storage != nullptr ? storage->frames() : 0;
+    capacity_ = storage != nullptr ? storage->capacity() : 0;
+}
+
+void LiveSource::release(RingStorage *&previous) noexcept
+{
+    const bool owned = storage_ != nullptr && storage_ == owned_.get();
+    previous = owned ? nullptr : storage_;
+    if (owned)
+    {
+        // retired_ is empty here: owned_ is set only by prepare(), which empties retired_, and
+        // leaves at most once after it. So the move frees nothing.
+        retired_ = std::move(owned_);
+    }
+}
+
+int64_t LiveSource::loopWindow() const noexcept
+{
+    return loopOn_ && frames_ > 0 ? std::clamp(loopLength_, int64_t{1}, frames_) : frames_;
 }
 
 void LiveSource::reset() noexcept
@@ -77,17 +123,159 @@ void LiveSource::reset() noexcept
     blockHead_ = 0;
     blockAdvance_ = 0;
     blockRamp_ = ramp_;
+    markCount_ = 0; // ring time restarts, so the old marks name nothing
+    window_ = loopWindow();
+    splice_ = 0;
+}
+
+bool LiveSource::addSplice(int64_t ringTime) noexcept
+{
+    if (frames_ == 0 || markCount_ == kMaxSplices || ringTime > head_ ||
+        ringTime < std::max<int64_t>(0, head_ - frames_))
+    {
+        return false;
+    }
+    uint32_t at = 0;
+    while (at < markCount_ && marks_[at] < ringTime)
+    {
+        ++at;
+    }
+    if (at < markCount_ && marks_[at] == ringTime)
+    {
+        return false; // a mark is there already
+    }
+    for (uint32_t i = markCount_; i > at; --i)
+    {
+        marks_[i] = marks_[i - 1];
+    }
+    marks_[at] = ringTime;
+    ++markCount_;
+    return true;
+}
+
+void LiveSource::dropMarksBefore(int64_t oldest) noexcept
+{
+    uint32_t dropped = 0;
+    while (dropped < markCount_ && marks_[dropped] < oldest)
+    {
+        ++dropped;
+    }
+    if (dropped == 0)
+    {
+        return;
+    }
+    // The selection in effect follows its span to its new index; a span whose first mark left
+    // storage is gone, and the selection falls back to the whole window.
+    const uint32_t selected = std::min(spliceRequest_, markCount_);
+    for (uint32_t i = dropped; i < markCount_; ++i)
+    {
+        marks_[i - dropped] = marks_[i];
+    }
+    markCount_ -= dropped;
+    if (selected > 0)
+    {
+        spliceRequest_ = selected <= dropped ? 0 : selected - dropped;
+    }
+}
+
+void LiveSource::selectWindow() noexcept
+{
+    splice_ = std::min(spliceRequest_, markCount_);
+    if (splice_ > 0)
+    {
+        spliceStart_ = marks_[splice_ - 1];
+        spliceEnd_ = splice_ < markCount_ ? marks_[splice_] : std::numeric_limits<int64_t>::max();
+    }
+}
+
+bool LiveSource::adoptStorage(RingStorage *next, int64_t copiedTo, RingStorage *&previous) noexcept
+{
+    previous = nullptr;
+    if (next == nullptr || next == storage_ || next->capacity() - next->frames() < maxBlock_ ||
+        copiedTo > head_ || head_ - copiedTo > kAdoptCopyFrames)
+    {
+        return false;
+    }
+    // The frames written since copiedTo, as far as both windows reach: older ones have left the
+    // old storage or are outside the new window. At most kAdoptCopyFrames.
+    float *const dst = next->slots();
+    const int64_t nextCapacity = next->capacity();
+    const int64_t from = std::max({copiedTo, head_ - next->frames(), head_ - frames_, int64_t{0}});
+    if (from < head_)
+    {
+        int64_t s = from % capacity_;
+        int64_t d = from % nextCapacity;
+        for (int64_t f = from; f < head_; ++f)
+        {
+            dst[2 * d] = slots_[2 * s];
+            dst[2 * d + 1] = slots_[2 * s + 1];
+            if (++s == capacity_)
+            {
+                s = 0;
+            }
+            if (++d == nextCapacity)
+            {
+                d = 0;
+            }
+        }
+    }
+    mirrorGuards(*next);
+    release(previous);
+    attach(next);
+    writeSlot_ = head_ % capacity_;
+    window_ = loopWindow();
+    dropMarksBefore(head_ - frames_);
+    selectWindow();
+    return true;
+}
+
+void LiveSource::restoreStorage(RingStorage *next, int64_t frames, std::span<const int64_t> marks,
+                                RingStorage *&previous) noexcept
+{
+    previous = nullptr;
+    if (next == nullptr || next == storage_ || next->capacity() - next->frames() < maxBlock_)
+    {
+        return;
+    }
+    mirrorGuards(*next);
+    release(previous);
+    attach(next);
+    frozen_ = false;
+    ramp_ = rampLength_;
+    head_ = std::max<int64_t>(0, frames);
+    writeSlot_ = head_ % capacity_;
+    // Until the next write(), R(t) is the head.
+    blockHead_ = head_;
+    blockAdvance_ = 0;
+    blockRamp_ = ramp_;
+    markCount_ = 0;
+    const int64_t oldest = std::max<int64_t>(0, head_ - frames_);
+    for (const int64_t m : marks)
+    {
+        if (markCount_ == kMaxSplices)
+        {
+            break;
+        }
+        if (m >= oldest && m < head_ && (markCount_ == 0 || m > marks_[markCount_ - 1]))
+        {
+            marks_[markCount_++] = m;
+        }
+    }
+    window_ = loopWindow();
+    selectWindow();
 }
 
 void LiveSource::write(const float *const *in, uint32_t numInChannels, uint32_t offset,
-                       int64_t blockStart, uint32_t numFrames) noexcept
+                       int64_t blockStart, uint32_t numFrames, const float *overdubGain) noexcept
 {
     blockStart_ = blockStart;
     blockHead_ = head_;
     blockRamp_ = ramp_;
     blockAdvance_ = 0;
+    window_ = loopWindow(); // this block's W, and overdub's period P
     if (frames_ == 0)
     {
+        splice_ = 0;
         return; // no ring
     }
 
@@ -103,7 +291,15 @@ void LiveSource::write(const float *const *in, uint32_t numInChannels, uint32_t 
         s = s != nullptr ? s + offset : nullptr;
     }
 
+    const float *const gains = overdubGain != nullptr ? overdubGain + offset : nullptr;
+
     float *const slots = slots_;
+    // Overdub reads frame R − P from its slot, (R − P) mod C: P <= N < C, so it wraps once.
+    int64_t backSlot = writeSlot_ - window_;
+    if (backSlot < 0)
+    {
+        backSlot += capacity_;
+    }
     int64_t written = 0;
     for (uint32_t j = 0; j < numFrames; ++j)
     {
@@ -122,6 +318,14 @@ void LiveSource::write(const float *const *in, uint32_t numInChannels, uint32_t 
         }
         float l = src[0] != nullptr ? sanitize(src[0][j]) : 0.0f;
         float r = src[1] != nullptr ? sanitize(src[1][j]) : 0.0f;
+        // A gain of 0, or a frame R − P before frame 0 (silence), writes the input alone, by M1's
+        // path: the sum would turn a −0 input into +0. The sum is stored as any input is.
+        if (gains != nullptr && gains[j] != 0.0f && head_ + written >= window_)
+        {
+            const float o = gains[j];
+            l = sanitize(l + o * slots[2 * backSlot]);
+            r = sanitize(r + o * slots[2 * backSlot + 1]);
+        }
         if (ramp_ != rampLength_)
         {
             const float gain = static_cast<float>(ramp_) / static_cast<float>(rampLength_);
@@ -139,10 +343,18 @@ void LiveSource::write(const float *const *in, uint32_t numInChannels, uint32_t 
         {
             writeSlot_ = 0;
         }
+        if (++backSlot == capacity_)
+        {
+            backSlot = 0;
+        }
         ++written;
     }
     head_ += written;
     blockAdvance_ = written;
+    // The marks that left storage go (spec §6.1), then the block's window is captured. The
+    // oldest mark kept is at or after R(t) − N for every sample t of the block.
+    dropMarksBefore(head_ - frames_);
+    selectWindow();
 }
 
 template <int kTaps>
@@ -163,8 +375,9 @@ bool LiveSource::readTaps(double pos, int64_t head, Cursor &cursor, float &left,
     const int64_t first = i - kBefore;
     // Exact integer bounds on the window, so no rounding in fade() can let a stale or unwritten
     // tap through. Inside it every slot holds its own frame, even with the rest of the block
-    // already written (ruling M1-o; see Storage in LiveSource.h).
-    if (first < head - frames_ || first + (kTaps - 1) > head - 1)
+    // already written (ruling M1-o; see Storage in LiveSource.h): its oldest frame is never below
+    // head − N.
+    if (first < windowOldest(head) || first + (kTaps - 1) > windowEnd(head) - 1)
     {
         return false;
     }
@@ -173,7 +386,8 @@ bool LiveSource::readTaps(double pos, int64_t head, Cursor &cursor, float &left,
     float r[kTaps];
     if (first < 0)
     {
-        // Taps before frame 0 are silence. Here head − N <= first < 0, so head < N. The block has
+        // Taps before frame 0 are silence. Here head − N <= the window's oldest <= first < 0, so
+        // head < N. The block has
         // written at most maxBlockSize − 1 frames past head − 1, so no frame yet written is at or
         // past C = N + maxBlockSize: none has wrapped, and frame i is in slot i.
         for (int64_t k = 0; k < kTaps; ++k)

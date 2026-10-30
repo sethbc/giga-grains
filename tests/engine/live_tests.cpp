@@ -25,6 +25,7 @@
 #include "gg/core/Interpolate.h"
 #include "gg/core/Rng.h"
 #include "gg/engine/Engine.h"
+#include "gg/source/RingStorage.h"
 
 namespace
 {
@@ -1366,4 +1367,535 @@ TEST_CASE("a grain whose read span exceeds the ring is dropped", "[live]")
             REQUIRE(log.grains.size() == 20);
         }
     }
+}
+
+// M2 sub-project 2 (spec §6.1, §6.5): the ring's window W (a loop or a splice), overdub, splice
+// marks and the storage exchange.
+
+namespace
+{
+// Frame f's value in the storage tests: exact in float for every frame they write.
+float rampValue(int64_t f) { return static_cast<float>(f); }
+
+// Writes frames [ring.head(), to) of rampValue into `ring` in blocks of `block`, output sample t
+// carrying frame t (not frozen, so R(t) = t + 1).
+void writeRamp(gg::LiveSource &ring, int64_t to, int64_t block)
+{
+    std::vector<float> l(static_cast<std::size_t>(block));
+    std::vector<float> r(static_cast<std::size_t>(block));
+    for (int64_t start = ring.head(); start < to; start += block)
+    {
+        const int64_t n = std::min(block, to - start);
+        for (int64_t j = 0; j < n; ++j)
+        {
+            l[static_cast<std::size_t>(j)] = rampValue(start + j);
+            r[static_cast<std::size_t>(j)] = -rampValue(start + j);
+        }
+        const float *in[2] = {l.data(), r.data()};
+        ring.write(in, 2, 0, start, static_cast<uint32_t>(n));
+    }
+}
+
+// Frame f's two channels as the ring stores them (slot f mod capacity).
+std::pair<float, float> storedFrame(const gg::LiveSource::RingView &view, int64_t f)
+{
+    const int64_t s = f % view.capacity;
+    return {view.slots[2 * s], view.slots[2 * s + 1]};
+}
+
+// A main thread's copy of frames [from, to) from the ring's storage into `next`, frame f at slot
+// f mod next.capacity() (spec §6.5).
+void copyFrames(const gg::LiveSource &ring, gg::RingStorage &next, int64_t from, int64_t to)
+{
+    const gg::LiveSource::RingView view = ring.view();
+    for (int64_t f = std::max<int64_t>(0, from); f < to; ++f)
+    {
+        const auto [l, r] = storedFrame(view, f);
+        const int64_t s = f % next.capacity();
+        next.slots()[2 * s] = l;
+        next.slots()[2 * s + 1] = r;
+    }
+}
+
+// The common Live-mode parameters of the window tests: grains well behind the head, sprayed.
+gg::CloudParams windowParams(double position)
+{
+    return {.densityHz = 80.0,
+            .distribution = 0.5,
+            .grainDurationSec = 0.05,
+            .position = position,
+            .spray = 0.3,
+            .pitchSemitones = 0.0,
+            .stereo = 0.5,
+            .gain = 0.5f};
+}
+} // namespace
+
+TEST_CASE("a loop longer than the ring is the ring", "[engine][live]")
+{
+    // Review Focus 1: Loop on at a length past N, or a splice selected with no marks, is the
+    // identity on M1's render, bit for bit, over 4 s of a 1 s ring (so the ring wraps).
+    const auto input = noiseInput(4 * 48000, 21);
+    const auto render = [&](int which) {
+        gg::Engine engine(liveConfig(kSampleRate, 512, 1.0));
+        engine.setSourceMode(gg::SourceMode::Live);
+        engine.setCloudParams(windowParams(0.6));
+        const int64_t n = engine.liveFrames();
+        if (which == 1)
+        {
+            engine.live().setLoop(true, 2 * n);
+        }
+        else if (which == 2)
+        {
+            engine.live().setLoop(true, n);
+        }
+        else if (which == 3)
+        {
+            engine.live().selectSplice(1);
+        }
+        return run(engine, input, 512, {{2 * 48000, true}, {3 * 48000, false}});
+    };
+    const auto reference = render(0);
+    REQUIRE(peak(reference.left) > 0.05f);
+    for (const int which : {1, 2, 3})
+    {
+        INFO("variant " << which);
+        const auto out = render(which);
+        REQUIRE(sameBits(out.left, reference.left));
+        REQUIRE(sameBits(out.right, reference.right));
+    }
+}
+
+TEST_CASE("a loop narrows the window", "[engine][live]")
+{
+    // A 4 s ring with Loop on at 0.5 s: Position 2 s asks for audio outside the loop, so the
+    // admission clamp puts every grain inside it, at least M frames from both of its ends, as it
+    // keeps them inside the ring's N without a loop (the Engine class comment's lo and hi with W
+    // for N).
+    constexpr int64_t kW = 24000; // 0.5 s
+    gg::Engine engine(liveConfig(kSampleRate, 512, 4.0));
+    engine.setSourceMode(gg::SourceMode::Live);
+    engine.setCloudParams(windowParams(2.0));
+    engine.live().setLoop(true, kW);
+    SinkLog log;
+    engine.setEventSink(&SinkLog::record, &log);
+    const auto out = run(engine, noiseInput(5 * 48000, 22), 512);
+    REQUIRE(allFinite(out.left));
+    REQUIRE(engine.live().windowFrames() == kW);
+    REQUIRE(engine.live().frames() == 4 * 48000);
+    REQUIRE_FALSE(log.overflowed);
+    REQUIRE(log.grains.size() > 300);
+
+    double worstTail = std::numeric_limits<double>::infinity();
+    double worstHead = std::numeric_limits<double>::infinity();
+    for (const gg::GrainSpec &g : log.grains)
+    {
+        // Not frozen: at the onset T the head is at T + 1, and it moves with the grain.
+        const double rho = static_cast<double>(g.onsetSample) + g.onsetFrac + 1.0;
+        const double dur = g.durationSamples;
+        const double lo =
+            rho - static_cast<double>(kW) + 1.0 + kM + std::max(0.0, dur * (1.0 - g.rate));
+        const double hi = rho - 3.0 - kM - std::max(0.0, dur * (g.rate - 1.0));
+        worstTail = std::min(worstTail, g.startPos - lo);
+        worstHead = std::min(worstHead, hi - g.startPos);
+    }
+    CHECK(worstTail >= -1e-6);
+    CHECK(worstHead >= -1e-6);
+    CHECK(worstTail < 1.0); // not vacuous: Position 2 s puts grains against the loop's start
+
+    // The fade crossfades the loop's two ends: 0 at the oldest frame's tap, 1 M frames inside.
+    gg::LiveSource ring;
+    ring.prepare(1000.0, 4.0, 64); // N = 4000
+    ring.setLoop(true, 1000);
+    writeRamp(ring, 6000, 64);
+    const int64_t end = ring.head();
+    REQUIRE(ring.windowFrames() == 1000);
+    REQUIRE(ring.anchorAt(5999) == end);
+    const auto oldest = static_cast<double>(end - 1000);
+    REQUIRE(ring.fade(oldest - 1.0, end) == 0.0);
+    REQUIRE(ring.fade(oldest + 1.0, end) == 0.0);
+    REQUIRE(ring.fade(oldest + 1.0 + kM / 2.0, end) == 0.5);
+    REQUIRE(ring.fade(oldest + 1.0 + kM, end) == 1.0);
+    gg::LiveSource::Cursor c;
+    float l = 0.0f;
+    float r = 0.0f;
+    REQUIRE_FALSE(ring.read(oldest, end, c, l, r)); // its first tap is the frame before W
+    REQUIRE(ring.read(oldest + 1.0, end, c, l, r));
+    REQUIRE(l == rampValue(end - 1000 + 1));
+    // Without the loop the same position is inside the ring's window again.
+    ring.setLoop(false, 1000);
+    ring.write(nullptr, 0, 0, 6000, 0);
+    REQUIRE(ring.windowFrames() == 4000);
+    REQUIRE(ring.read(oldest, end, c, l, r));
+}
+
+TEST_CASE("overdub 0 is the M1 write", "[engine][live]")
+{
+    // write() with nullptr gains and with gains of 0 store the same bits in every slot, the
+    // guard slots included, −0 inputs kept as −0, over three wraps of a looped ring.
+    constexpr int64_t kBlock = 64;
+    gg::LiveSource a;
+    gg::LiveSource b;
+    for (gg::LiveSource *ring : {&a, &b})
+    {
+        ring->prepare(1000.0, 1.0, static_cast<uint32_t>(kBlock));
+        ring->setLoop(true, 250);
+    }
+    std::vector<float> l(static_cast<std::size_t>(kBlock));
+    std::vector<float> r(static_cast<std::size_t>(kBlock));
+    const std::vector<float> zeros(static_cast<std::size_t>(kBlock), 0.0f);
+    for (int64_t start = 0; start < 3200; start += kBlock)
+    {
+        for (int64_t j = 0; j < kBlock; ++j)
+        {
+            const int64_t f = start + j;
+            l[static_cast<std::size_t>(j)] = f % 3 == 0 ? -0.0f : rampValue(f) * 1e-3f;
+            r[static_cast<std::size_t>(j)] = f % 5 == 0 ? -0.0f : -rampValue(f) * 1e-3f;
+        }
+        const float *in[2] = {l.data(), r.data()};
+        if (start == 1600)
+        {
+            a.setFrozen(true); // through the freeze ramp and back
+            b.setFrozen(true);
+        }
+        if (start == 2240)
+        {
+            a.setFrozen(false);
+            b.setFrozen(false);
+        }
+        a.write(in, 2, 0, start, static_cast<uint32_t>(kBlock));
+        b.write(in, 2, 0, start, static_cast<uint32_t>(kBlock), zeros.data());
+    }
+    REQUIRE(a.head() == b.head());
+    const auto va = a.view();
+    const auto vb = b.view();
+    const auto floats = static_cast<std::size_t>(2 * (va.capacity + 3));
+    REQUIRE(std::memcmp(va.slots, vb.slots, floats * sizeof(float)) == 0);
+    std::size_t negativeZeros = 0;
+    for (std::size_t i = 0; i < floats; ++i)
+    {
+        negativeZeros += va.slots[i] == 0.0f && std::signbit(va.slots[i]) ? 1 : 0;
+    }
+    REQUIRE(negativeZeros > 100);
+}
+
+TEST_CASE("overdub recycles at the period", "[engine][live]")
+{
+    // A 1 s ring at 48 kHz, an impulse at frame 100 and Overdub 0.5 on every frame: with Loop on
+    // at 0.25 s the impulse comes back every 12000 frames, halved each pass; with Loop off, every
+    // N = 48000 frames.
+    for (const bool loop : {true, false})
+    {
+        INFO((loop ? "Loop on at 0.25 s" : "Loop off"));
+        const int64_t period = loop ? 12000 : 48000;
+        constexpr int64_t kBlock = 512;
+        gg::LiveSource ring;
+        ring.prepare(48000.0, 1.0, static_cast<uint32_t>(kBlock));
+        ring.setLoop(loop, 12000);
+        const int64_t total = loop ? 40000 : 48300;
+        std::vector<float> in(static_cast<std::size_t>(kBlock));
+        const std::vector<float> half(static_cast<std::size_t>(kBlock), 0.5f);
+        for (int64_t start = 0; start < total; start += kBlock)
+        {
+            const int64_t n = std::min(kBlock, total - start);
+            for (int64_t j = 0; j < n; ++j)
+            {
+                in[static_cast<std::size_t>(j)] = start + j == 100 ? 1.0f : 0.0f;
+            }
+            const float *mono[1] = {in.data()};
+            ring.write(mono, 1, 0, start, static_cast<uint32_t>(n), half.data());
+        }
+        REQUIRE(ring.head() == total);
+        const auto view = ring.view();
+        REQUIRE(total < view.capacity); // no frame overwritten: each is in slot f
+        float want = 1.0f;
+        for (int64_t f = 100; f < total; f += period)
+        {
+            INFO("frame " << f);
+            REQUIRE(storedFrame(view, f).first == want);
+            REQUIRE(storedFrame(view, f).second == want); // mono fills both channels
+            REQUIRE(storedFrame(view, f - 1).first == 0.0f);
+            REQUIRE(storedFrame(view, f + 1).first == 0.0f);
+            want *= 0.5f;
+        }
+        REQUIRE(want == (loop ? 0.0625f : 0.25f)); // 4 passes looped, 2 not
+        if (!loop)
+        {
+            REQUIRE(storedFrame(view, 12100).first == 0.0f);
+        }
+    }
+}
+
+TEST_CASE("overdub with feedback sums in order", "[engine][live]")
+{
+    // Spec §6.1: with Feedback too, frame R is sanitize(in) + fb·limited + o·ring[R − P], summed
+    // left to right. The Processor hands the ring sanitize(in) + fb·limited; the ring adds the
+    // overdub term. Frame 0's values round differently in another order, so the order is seen.
+    gg::LiveSource ring;
+    ring.prepare(1000.0, 1.0, 64);
+    ring.setLoop(true, 10); // P = 10
+    std::vector<float> first(10);
+    for (int64_t f = 0; f < 10; ++f)
+    {
+        first[static_cast<std::size_t>(f)] = 0.05f * static_cast<float>(f + 1);
+    }
+    const float s[3] = {0.1f, -0.37f, 0.62f};
+    const float lim[3] = {0.7f, 0.33f, -0.91f};
+    const float back[3] = {0.37f, -0.123f, 0.555f};
+    first[0] = back[0];
+    first[1] = back[1];
+    first[2] = back[2];
+    const float fb = 0.85f;
+    const float o = 0.9f;
+    const float *firstIn[1] = {first.data()};
+    ring.write(firstIn, 1, 0, 0, 10);
+
+    float in[3];
+    for (int i = 0; i < 3; ++i)
+    {
+        in[i] = s[i] + fb * lim[i]; // the Processor's sum
+    }
+    const float gains[3] = {o, o, o};
+    const float *mono[1] = {in};
+    ring.write(mono, 1, 0, 10, 3, gains);
+    const auto view = ring.view();
+    for (int i = 0; i < 3; ++i)
+    {
+        INFO("frame " << 10 + i);
+        const float want = (s[i] + fb * lim[i]) + o * back[i];
+        REQUIRE(storedFrame(view, 10 + i).first == want);
+    }
+    REQUIRE(s[0] + (fb * lim[0] + o * back[0]) != (s[0] + fb * lim[0]) + o * back[0]);
+}
+
+TEST_CASE("splices are kept ascending and age out", "[engine][live]")
+{
+    gg::LiveSource ring;
+    ring.prepare(1000.0, 1.0, 64); // N = 1000
+    writeRamp(ring, 640, 64);
+    REQUIRE(ring.head() == 640);
+    REQUIRE(ring.addSplice(300));
+    REQUIRE(ring.addSplice(100));
+    REQUIRE(ring.addSplice(200));
+    REQUIRE(ring.spliceCount() == 3);
+    REQUIRE(std::vector<int64_t>(ring.splices().begin(), ring.splices().end()) ==
+            std::vector<int64_t>{100, 200, 300});
+    REQUIRE_FALSE(ring.addSplice(200)); // a duplicate
+    REQUIRE_FALSE(ring.addSplice(641)); // past the head
+    REQUIRE_FALSE(ring.addSplice(-1));  // before the first frame
+    REQUIRE(ring.addSplice(640));       // at the head
+    for (int64_t m = 400; ring.spliceCount() < gg::LiveSource::kMaxSplices; ++m)
+    {
+        REQUIRE(ring.addSplice(m));
+    }
+    REQUIRE_FALSE(ring.addSplice(50)); // a 33rd
+    REQUIRE(std::is_sorted(ring.splices().begin(), ring.splices().end()));
+    ring.clearSplices();
+    REQUIRE(ring.spliceCount() == 0);
+    REQUIRE(ring.splices().empty());
+
+    REQUIRE(ring.addSplice(300));
+    REQUIRE(ring.addSplice(100));
+    REQUIRE(ring.addSplice(200));
+    ring.selectSplice(2); // [200, 300)
+    writeRamp(ring, 1152, 64);
+    // Frame 100 left the ring at head 1101; 200 is still in it.
+    REQUIRE(ring.spliceCount() == 2);
+    REQUIRE(std::vector<int64_t>(ring.splices().begin(), ring.splices().end()) ==
+            std::vector<int64_t>{200, 300});
+    // The selection followed its span, now splice 1.
+    REQUIRE(ring.anchorAt(1151) == 300);
+    REQUIRE(ring.windowFrames() == 100);
+
+    // A selection past the count clamps to the last splice, [300, head).
+    ring.selectSplice(5);
+    ring.write(nullptr, 0, 0, 1152, 0);
+    REQUIRE(ring.anchorAt(1152) == 1152);
+    REQUIRE(ring.windowFrames() == 1152 - 300);
+
+    // A selection whose first mark leaves the ring falls back to the whole window.
+    ring.selectSplice(1); // [200, 300)
+    ring.write(nullptr, 0, 0, 1152, 0);
+    REQUIRE(ring.windowFrames() == 100);
+    writeRamp(ring, 1216, 64);
+    REQUIRE(ring.spliceCount() == 1);
+    REQUIRE(ring.windowFrames() == 1000);
+    REQUIRE(ring.anchorAt(1215) == 1216);
+}
+
+TEST_CASE("a selected splice anchors the window", "[engine][live]")
+{
+    // A 4 s ring of a ramp, frozen, marks at 1 s and 2 s: splice 1 is [48000, 96000). Its end
+    // anchors the window, which is 1 s long, and holds still.
+    gg::LiveSource ring;
+    ring.prepare(kSampleRate, 4.0, 512);
+    writeRamp(ring, 4 * 48000, 512);
+    ring.setFrozen(true);
+    ring.write(nullptr, 0, 0, 4 * 48000, 512);
+    ring.write(nullptr, 0, 0, 4 * 48000 + 512, 512);
+    const int64_t head = ring.head();
+    REQUIRE(head == 4 * 48000 + rampFrames(kSampleRate)); // stopped
+    REQUIRE(ring.addSplice(48000));
+    REQUIRE(ring.addSplice(96000));
+    ring.selectSplice(1);
+    const int64_t t0 = 4 * 48000 + 1024;
+    ring.write(nullptr, 0, 0, t0, 512);
+    for (const int64_t t : {t0, t0 + 511})
+    {
+        REQUIRE(ring.anchorAt(t) == 96000);
+        REQUIRE(ring.anchorRunAfter(t) == 0.0);
+    }
+    REQUIRE(ring.windowFrames() == 48000);
+
+    gg::LiveSource::Cursor c;
+    float l = 0.0f;
+    float r = 0.0f;
+    REQUIRE(ring.read(96000.0 - 3.0, head, c, l, r)); // taps 95996 .. 95999
+    REQUIRE(l == rampValue(95997));
+    REQUIRE(r == -rampValue(95997));
+    REQUIRE_FALSE(ring.read(96000.0 - 2.0, head, c, l, r)); // tap 96000 is past the span
+    REQUIRE_FALSE(ring.read(96000.0 + 1.0, head, c, l, r));
+    REQUIRE(ring.read(48000.0 + 1.0, head, c, l, r)); // taps 48000 .. 48003
+    REQUIRE(l == rampValue(48001));
+    REQUIRE_FALSE(ring.read(48000.0, head, c, l, r)); // tap 47999 is before it
+    REQUIRE(ring.fade(48001.0, head) == 0.0);
+    REQUIRE(ring.fade(48001.0 + kM, head) == 1.0);
+    REQUIRE(ring.fade(96000.0 - 3.0 - kM, head) == 1.0);
+    REQUIRE(ring.fade(96000.0 - 3.0, head) == 0.0);
+
+    // Through the engine: once splice 1 is selected, every grain admitted reads inside it.
+    gg::Engine engine(liveConfig(kSampleRate, 512, 4.0));
+    engine.setSourceMode(gg::SourceMode::Live);
+    engine.setCloudParams(windowParams(0.5));
+    SinkLog log;
+    engine.setEventSink(&SinkLog::record, &log);
+    run(engine, noiseInput(5 * 48000, 23), 512, {{4 * 48000, true}});
+    REQUIRE(engine.liveWriteHead() == 4 * 48000 + rampFrames(kSampleRate));
+    REQUIRE(engine.live().addSplice(48000));
+    REQUIRE(engine.live().addSplice(96000));
+    engine.live().selectSplice(1);
+    const std::size_t before = log.grains.size();
+    const auto out = run(engine, noiseInput(48000, 24), 512);
+    REQUIRE(allFinite(out.left));
+    REQUIRE(peak(out.left) > 0.01f);
+    REQUIRE(log.grains.size() - before > 50);
+    for (std::size_t k = before; k < log.grains.size(); ++k)
+    {
+        const gg::GrainSpec &g = log.grains[k];
+        INFO("grain " << k << " at " << g.startPos);
+        REQUIRE(g.startPos >= 48000.0 + 1.0 + kM);
+        REQUIRE(g.startPos + g.durationSamples * g.rate <= 96000.0 - 3.0 - kM + 1e-6);
+    }
+}
+
+TEST_CASE("adopting storage keeps the window", "[engine][live]")
+{
+    // A 2 s ring of a ramp, written past a wrap. The main thread copies the window as of R0 into
+    // a 4 s storage, the audio thread writes 4096 more frames, and the adoption copies those
+    // itself: every frame of the old window then reads as it was, from the new storage.
+    constexpr int64_t kN = 96000;
+    gg::LiveSource ring;
+    ring.prepare(kSampleRate, 2.0, 512);
+    writeRamp(ring, 3 * 48000, 512);
+    const int64_t r0 = ring.head();
+
+    gg::RingStorage bigger(4 * 48000, 512);
+    REQUIRE(bigger.frames() == 4 * 48000);
+    REQUIRE(bigger.capacity() == 4 * 48000 + 512);
+    REQUIRE(bigger.bytes() == 2 * (4 * 48000 + 512 + 3) * sizeof(float));
+    copyFrames(ring, bigger, r0 - kN, r0);
+    writeRamp(ring, r0 + 4096, 512);
+    const int64_t head = ring.head();
+
+    gg::RingStorage *previous = &bigger; // overwritten
+    // A gap past kAdoptCopyFrames, or a storage without a block's slack, is declined.
+    REQUIRE_FALSE(
+        ring.adoptStorage(&bigger, head - gg::LiveSource::kAdoptCopyFrames - 1, previous));
+    gg::RingStorage narrow(4 * 48000, 256);
+    REQUIRE_FALSE(ring.adoptStorage(&narrow, r0, previous));
+    REQUIRE(ring.frames() == kN);
+
+    REQUIRE(ring.adoptStorage(&bigger, r0, previous));
+    REQUIRE(previous == nullptr); // the ring owned its first storage
+    REQUIRE(ring.head() == head);
+    REQUIRE(ring.frames() == 4 * 48000);
+    REQUIRE(ring.view().slots == bigger.slots());
+    gg::LiveSource::Cursor c;
+    bool same = true;
+    for (int64_t f = head - kN + 1; f <= head - 3; ++f)
+    {
+        float l = 0.0f;
+        float r = 0.0f;
+        same = same && ring.read(static_cast<double>(f), head, c, l, r) && l == rampValue(f) &&
+               r == -rampValue(f);
+    }
+    REQUIRE(same);
+    for (int64_t g = 0; g < 3; ++g) // the guard slots mirror slots 0 .. 2
+    {
+        REQUIRE(bigger.slots()[2 * (bigger.capacity() + g)] == bigger.slots()[2 * g]);
+        REQUIRE(bigger.slots()[2 * (bigger.capacity() + g) + 1] == bigger.slots()[2 * g + 1]);
+    }
+    // Ring time continues: the next frames land after the head.
+    writeRamp(ring, head + 1000, 512);
+    float l = 0.0f;
+    float r = 0.0f;
+    REQUIRE(ring.read(static_cast<double>(head + 500), ring.head(), c, l, r));
+    REQUIRE(l == rampValue(head + 500));
+
+    // A storage the caller owns is handed back when replaced; a 1 s one keeps the newest second.
+    gg::RingStorage second(48000, 512);
+    copyFrames(ring, second, ring.head() - 48000, ring.head());
+    REQUIRE(ring.adoptStorage(&second, ring.head(), previous));
+    REQUIRE(previous == &bigger);
+    REQUIRE(ring.frames() == 48000);
+    const int64_t now = ring.head();
+    same = true;
+    for (int64_t f = now - 48000 + 1; f <= now - 3; ++f)
+    {
+        same = same && ring.read(static_cast<double>(f), now, c, l, r) && l == rampValue(f);
+    }
+    REQUIRE(same);
+    REQUIRE_FALSE(ring.read(static_cast<double>(now - 48000), now, c, l, r));
+}
+
+TEST_CASE("restoring storage restarts ring time", "[engine][live]")
+{
+    // A restore (spec §6.6): the storage arrives filled with frames [0, frames), the head at the
+    // frame count, not frozen, the marks with it.
+    gg::LiveSource ring;
+    ring.prepare(kSampleRate, 512);
+    REQUIRE_FALSE(ring.enabled());
+    ring.setFrozen(true);
+    gg::RingStorage next(48000, 512);
+    for (int64_t f = 0; f < 48000; ++f)
+    {
+        next.slots()[2 * f] = rampValue(f);
+        next.slots()[2 * f + 1] = -rampValue(f);
+    }
+    gg::RingStorage *previous = &next; // overwritten
+    const int64_t marks[] = {12000, 24000};
+    ring.restoreStorage(&next, 48000, marks, previous);
+    REQUIRE(previous == nullptr); // there was no storage
+    REQUIRE(ring.enabled());
+    REQUIRE(ring.head() == 48000);
+    REQUIRE(ring.frames() == 48000);
+    REQUIRE(std::vector<int64_t>(ring.splices().begin(), ring.splices().end()) ==
+            std::vector<int64_t>{12000, 24000});
+    REQUIRE(std::isinf(ring.headRunAfter(0))); // not frozen
+    gg::LiveSource::Cursor c;
+    bool same = true;
+    for (int64_t f = 1; f <= 47996; ++f)
+    {
+        float l = 0.0f;
+        float r = 0.0f;
+        same = same && ring.read(static_cast<double>(f), 48000, c, l, r) && l == rampValue(f) &&
+               r == -rampValue(f);
+    }
+    REQUIRE(same);
+    // The write gain is 1 and ring time goes on from the head.
+    const std::vector<float> ones(512, 1.0f);
+    const float *mono[1] = {ones.data()};
+    ring.write(mono, 1, 0, 0, 512);
+    REQUIRE(ring.head() == 48512);
+    REQUIRE(storedFrame(ring.view(), 48000).first == 1.0f);
 }

@@ -241,6 +241,12 @@ void Engine::process(float *const *out, uint32_t numChannels, uint32_t numFrames
 void Engine::process(const float *const *in, uint32_t numInChannels, float *const *out,
                      uint32_t numChannels, uint32_t numFrames) noexcept
 {
+    process(in, numInChannels, out, numChannels, numFrames, nullptr);
+}
+
+void Engine::process(const float *const *in, uint32_t numInChannels, float *const *out,
+                     uint32_t numChannels, uint32_t numFrames, const float *overdubGain) noexcept
+{
     ScopedDenormalsOff denormalsOff;
     // The source mode, the enable gate and the freeze setting apply from this call's first frame.
     if (requestedMode_ != mode_)
@@ -274,13 +280,14 @@ void Engine::process(const float *const *in, uint32_t numInChannels, float *cons
     for (uint32_t done = 0; done < numFrames;)
     {
         const uint32_t n = std::min(numFrames - done, config_.maxBlockSize);
-        processBlock(in, numInChannels, out, numChannels, done, n);
+        processBlock(in, numInChannels, out, numChannels, done, n, overdubGain);
         done += n;
     }
 }
 
 void Engine::processBlock(const float *const *in, uint32_t numInChannels, float *const *out,
-                          uint32_t numChannels, uint32_t offset, uint32_t numFrames) noexcept
+                          uint32_t numChannels, uint32_t offset, uint32_t numFrames,
+                          const float *overdubGain) noexcept
 {
     for (uint32_t c = 0; c < numChannels; ++c)
     {
@@ -297,12 +304,13 @@ void Engine::processBlock(const float *const *in, uint32_t numInChannels, float 
     const int64_t blockStart = clock_;
     const int64_t blockEnd = blockStart + static_cast<int64_t>(numFrames);
     // The whole block's input goes into the ring before any grain reads (spec §6.3). At sample t
-    // grains read only the window [R(t) − N, R(t) − 1], and the ring keeps numFrames <=
-    // maxBlockSize slots beyond the window (ruling M1-o), so nothing written here after t
-    // reaches t, not even by overwriting the window's oldest frames.
+    // grains read only the window, inside [R(t) − N, R(t) − 1], and the ring keeps numFrames <=
+    // maxBlockSize slots beyond it (ruling M1-o), so nothing written here after t reaches t, not
+    // even by overwriting the window's oldest frames. The overdub gains are offset with the input
+    // (LiveSource::write).
     if (live_.enabled())
     {
-        live_.write(in, numInChannels, offset, blockStart, numFrames);
+        live_.write(in, numInChannels, offset, blockStart, numFrames, overdubGain);
     }
 
     // Spawn this block's grains, then render, then retire. renderedTo is the sample up to
@@ -366,22 +374,23 @@ GrainSpec Engine::sampleGrain(const GrainDraw &d) const noexcept
 
 bool Engine::liveGrain(const GrainDraw &d, GrainSpec &g) const noexcept
 {
-    // The admission clamp (spec §6.3; the class comment has the derivation). Between output
-    // samples the head moves linearly while it advances, so at the real onset T = t0 + frac it
-    // is at ρ = R(t0) + min(frac, run), and after T it advances min(e, run − that) more frames
-    // in e samples.
+    // The admission clamp (spec §6.3; the class comment has the derivation), over the ring's
+    // window: its end in place of the head, its length W in place of N (M2 sub-project 2's spec
+    // §6.1). Between output samples the head moves linearly while it advances, so at the real
+    // onset T = t0 + frac it is at ρ = R(t0) + min(frac, run), and after T it advances min(e,
+    // run − that) more frames in e samples. A selected splice's window holds still: run 0.
     constexpr double kM = static_cast<double>(LiveSource::kHeadMargin);
     const int64_t t0 = d.onsetSample;
-    const double run = live_.headRunAfter(t0); // +inf when not frozen
+    const double run = live_.anchorRunAfter(t0); // +inf when not frozen and no splice
     const double step = std::min(d.onsetFrac, run);
-    const double rho = static_cast<double>(live_.headAt(t0)) + step;
+    const double rho = static_cast<double>(live_.anchorAt(t0)) + step;
     const double dur = d.durationSamples;
     const double rate = d.rate;
     // The frames the head advances during the grain's life.
     const double span = std::min(dur, run - step);
     const double hi = rho - 3.0 - kM - std::max(0.0, dur * rate - span);
-    const double lo =
-        rho - static_cast<double>(live_.frames()) + 1.0 + kM + std::max(0.0, span * (1.0 - rate));
+    const double lo = rho - static_cast<double>(live_.windowFramesAt(t0)) + 1.0 + kM +
+                      std::max(0.0, span * (1.0 - rate));
     if (lo > hi)
     {
         return false; // the grain's read span doesn't fit the ring

@@ -10,6 +10,7 @@ add_library(gg-engine STATIC
         src/GrainPool.cpp
         src/LiveSource.cpp
         src/PreparedSource.cpp
+        src/RingStorage.cpp
         src/SampleBuffer.cpp
         src/Version.cpp
         src/Window.cpp

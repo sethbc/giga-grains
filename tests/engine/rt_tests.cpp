@@ -19,6 +19,7 @@
 
 #include "gg/engine/Engine.h"
 #include "gg/source/PreparedSource.h"
+#include "gg/source/RingStorage.h"
 #include "support/AllocTripwire.h"
 
 using gg::test::AllocTripwire;
@@ -523,3 +524,95 @@ TEST_CASE("engine source kind switch does not allocate", "[engine][rt]")
 #if GG_USE_RTSAN
 TEST_CASE("rtsan is active in this build", "[rt][rtsan]") { REQUIRE(SST_CPPUTILS_HAS_RTSAN == 1); }
 #endif
+
+TEST_CASE("the ring's window, splices, adoption and overdub do not allocate", "[engine][rt]")
+{
+    // M2 sub-project 2's spec §7: every LiveSource setter, a storage adoption with a 4,096-frame
+    // gap to copy, a restore and process() with overdub gains, under the tripwire (and RTSan's
+    // nonblocking checks in that build). The storages are allocated before the scope, as the
+    // main thread allocates them.
+    gg::EngineConfig config{48000.0, 512, 4096, 5};
+    config.liveSeconds = 2.0;
+    gg::Engine engine(config);
+    engine.setSourceMode(gg::SourceMode::Live);
+    engine.setCloudParams({.densityHz = 200.0,
+                           .distribution = 1.0,
+                           .grainDurationSec = 0.05,
+                           .position = 0.4,
+                           .spray = 0.2,
+                           .stereo = 1.0,
+                           .gain = 0.5f});
+    SpawnCounter counter;
+    engine.setEventSink(&SpawnCounter::record, &counter);
+
+    std::vector<float> inLeft(4096), inRight(4096), gains(4096, 0.5f);
+    for (std::size_t i = 0; i < inLeft.size(); ++i)
+    {
+        inLeft[i] = static_cast<float>(std::sin(2.0 * std::numbers::pi * 220.0 * i / 48000.0));
+        inRight[i] = -inLeft[i];
+        gains[i] = i % 1024 < 128 ? 0.0f : 0.5f;
+    }
+    const float *in[2] = {inLeft.data(), inRight.data()};
+    std::vector<float> left(4096), right(4096);
+    float *out[2] = {left.data(), right.data()};
+    for (int i = 0; i < 30; ++i) // warm up: the ring holds 2.5 s, grains sound
+    {
+        engine.process(in, 2, out, 2, 4096);
+    }
+
+    // The main thread's half of a resize: a 3 s storage holding the window as of r0.
+    gg::RingStorage bigger(3 * 48000, 512);
+    gg::RingStorage restored(48000, 512);
+    const int64_t r0 = engine.liveWriteHead();
+    {
+        const gg::LiveSource::RingView view = engine.live().view();
+        for (int64_t f = r0 - view.frames; f < r0; ++f)
+        {
+            const int64_t from = f % view.capacity;
+            const int64_t to = f % bigger.capacity();
+            bigger.slots()[2 * to] = view.slots[2 * from];
+            bigger.slots()[2 * to + 1] = view.slots[2 * from + 1];
+        }
+    }
+    const int64_t marks[] = {1000, 20000};
+    const uint64_t spawnsBefore = counter.spawns;
+    bool adopted = false;
+    gg::RingStorage *previous = nullptr;
+    gg::RingStorage *handedBack = &restored;
+
+    AllocTripwire::resetCount();
+    {
+        AllocTripwire::Scope armed;
+        engine.process(in, 2, out, 2, 4096); // the 4,096-frame gap since r0
+        gg::LiveSource &live = engine.live();
+        adopted = live.adoptStorage(&bigger, r0, previous);
+        for (int i = 0; i < 16; ++i)
+        {
+            live.setLoop(i % 2 == 1, 6000 + 1000 * i);
+            const int64_t head = live.head();
+            live.addSplice(head - 30000);
+            live.addSplice(head - 9000);
+            live.selectSplice(static_cast<uint32_t>(i % 4));
+            engine.process(in, 2, out, 2, 4096, gains.data());
+            engine.process(in, 1, out, 2, 1, gains.data());
+            engine.process(in, 2, out, 2, 0, gains.data());
+            if (i % 5 == 4)
+            {
+                live.clearSplices();
+            }
+        }
+        live.restoreStorage(&restored, 48000, marks, handedBack);
+        engine.process(in, 2, out, 2, 4096, gains.data());
+    }
+    const uint64_t allocations = AllocTripwire::count();
+
+    REQUIRE(adopted);
+    REQUIRE(previous == nullptr); // the engine's ring owned its first storage
+    REQUIRE(handedBack == &bigger);
+    REQUIRE(engine.liveFrames() == 48000);
+    REQUIRE(counter.spawns > spawnsBefore);
+    if (gg::test::AllocTripwire::available()) // off under ASan; RTSan covers this
+    {
+        REQUIRE(allocations == 0);
+    }
+}

@@ -1351,3 +1351,52 @@ TEST_CASE("the level accessor returns level 0 for any index", "[engine][layers]"
         REQUIRE(level.decimation == 1);
     }
 }
+
+TEST_CASE("process splits the overdub gains like the input", "[engine][live]")
+{
+    // M2 sub-project 2's spec §6.1: process(…, overdubGain) hands the ring one gain per frame,
+    // offset like the input when a long call is split into maxBlockSize blocks, so one 3000-frame
+    // call and calls of 100 store the same ring bits. Without gains, it is the M1 process().
+    gg::EngineConfig config;
+    config.maxBlockSize = 256;
+    config.liveSeconds = 1.0;
+    const auto input = noiseInput(3000, 4);
+    std::vector<float> gains(3000);
+    for (std::size_t i = 0; i < gains.size(); ++i)
+    {
+        gains[i] = i % 700 < 350 ? 0.0f : 0.25f + static_cast<float>(i % 7) * 0.1f;
+    }
+    const auto ringOf = [](const gg::Engine &e) {
+        const gg::LiveSource::RingView v = e.live().view();
+        return std::vector<float>(v.slots, v.slots + 2 * (v.capacity + 3));
+    };
+    std::vector<float> left(3000);
+    std::vector<float> right(3000);
+    float *out[2] = {left.data(), right.data()};
+
+    gg::Engine whole(config);
+    whole.live().setLoop(true, 640);
+    const float *in[1] = {input.data()};
+    whole.process(in, 1, out, 2, 3000, gains.data());
+
+    gg::Engine pieces(config);
+    pieces.live().setLoop(true, 640);
+    for (std::size_t done = 0; done < 3000; done += 100)
+    {
+        const float *at[1] = {input.data() + done};
+        float *o[2] = {left.data() + done, right.data() + done};
+        pieces.process(at, 1, o, 2, 100, gains.data() + done);
+    }
+    REQUIRE(whole.liveWriteHead() == 3000);
+    REQUIRE(ringOf(whole) == ringOf(pieces));
+
+    // The overdub is heard in the ring: it differs from the same input written without gains.
+    gg::Engine plain(config);
+    plain.live().setLoop(true, 640);
+    plain.process(in, 1, out, 2, 3000);
+    gg::Engine nullGains(config);
+    nullGains.live().setLoop(true, 640);
+    nullGains.process(in, 1, out, 2, 3000, nullptr);
+    REQUIRE(ringOf(plain) == ringOf(nullGains));
+    REQUIRE(ringOf(plain) != ringOf(whole));
+}

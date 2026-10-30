@@ -86,6 +86,13 @@ using GrainEventSink = void (*)(void *ctx, uint32_t layer, const GrainSpec &);
 /// oldest frame, unless the freeze setting changes while it sounds. If lo > hi, the grain is
 /// dropped and counted in droppedGrains().
 ///
+/// **The window** (M2 sub-project 2's spec §6.1). Where N appears above, the clamp uses the
+/// ring's window length W at the onset (LiveSource::windowFramesAt: N, a loop's length or a
+/// splice's span), ρ is taken at the window's end (LiveSource::anchorAt: the head, or a selected
+/// splice's later mark), and the head's run is LiveSource::anchorRunAfter (0 while a splice is
+/// selected, whose window holds still). With Loop off and no splice it is the clamp above, bit for
+/// bit.
+///
 /// What admission can't foresee, a freeze that stops the head under a grain or an unfreeze
 /// that moves the oldest frame onto it, the head-proximity fade (LiveSource::fade) covers: each
 /// output sample multiplies the grain by the fade at its read position, and where the fade is
@@ -240,6 +247,14 @@ class Engine
     void process(const float *const *in, uint32_t numInChannels, float *const *out,
                  uint32_t numChannels, uint32_t numFrames) noexcept SST_CPPUTILS_NONBLOCKING;
 
+    /// process() with the ring's overdub gains (M2 sub-project 2's spec §6.1): overdubGain[i] is
+    /// the gain of the frame written for this call's sample i, numFrames of them, split with the
+    /// input when the call is; nullptr is 0 throughout, the process() above bit for bit. See
+    /// LiveSource::write().
+    void process(const float *const *in, uint32_t numInChannels, float *const *out,
+                 uint32_t numChannels, uint32_t numFrames,
+                 const float *overdubGain) noexcept SST_CPPUTILS_NONBLOCKING;
+
     /// M0's form: process(nullptr, 0, out, numChannels, numFrames), with no input.
     void process(float *const *out, uint32_t numChannels,
                  uint32_t numFrames) noexcept SST_CPPUTILS_NONBLOCKING;
@@ -271,11 +286,15 @@ class Engine
     int64_t liveWriteHead() const noexcept { return live_.head(); }
     /// The live ring itself, read-only: read it with liveWriteHead() as the head.
     const LiveSource &live() const noexcept { return live_; }
+    /// The live ring, for the Processor's window, splice and storage calls (LiveSource::setLoop,
+    /// selectSplice, addSplice, adoptStorage, …), made between process() calls on the audio
+    /// thread, as setCloudParams is: each applies from the next process() call's first frame.
+    LiveSource &live() noexcept { return live_; }
 
   private:
     void processBlock(const float *const *in, uint32_t numInChannels, float *const *out,
-                      uint32_t numChannels, uint32_t offset,
-                      uint32_t numFrames) noexcept SST_CPPUTILS_NONBLOCKING;
+                      uint32_t numChannels, uint32_t offset, uint32_t numFrames,
+                      const float *overdubGain) noexcept SST_CPPUTILS_NONBLOCKING;
     /// The grain a draw makes from the current sample source.
     GrainSpec sampleGrain(const GrainDraw &d) const noexcept;
     /// The grain a draw makes from the live ring, admission-clamped; false when it can't fit.
