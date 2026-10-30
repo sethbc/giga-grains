@@ -438,3 +438,78 @@ TEST_CASE("clap-wrapper's au save ignores the plugin's save result", "[plugin][a
                     "  }\n"
                     "  return noErr;\n") != std::string::npos);
 }
+
+namespace
+{
+// An AU render callback that fills every buffer it is asked for with 0.25 and counts the calls.
+OSStatus feedInput(void *refCon, AudioUnitRenderActionFlags *, const AudioTimeStamp *, UInt32,
+                   UInt32 frames, AudioBufferList *data)
+{
+    ++*static_cast<int *>(refCon);
+    for (UInt32 b = 0; b < data->mNumberBuffers; ++b)
+    {
+        auto *samples = static_cast<float *>(data->mBuffers[b].mData);
+        const UInt32 n = data->mBuffers[b].mDataByteSize / sizeof(float);
+        for (UInt32 i = 0; i < n && i < frames * data->mBuffers[b].mNumberChannels; ++i)
+        {
+            samples[i] = 0.25f;
+        }
+    }
+    return noErr;
+}
+} // namespace
+
+TEST_CASE("each au identity has one stereo input and renders pulling it", "[plugin][au]")
+{
+    // M2 sub-project 1's spec §6.4 (D2): the instrument's sidechain is its AU's input element 0,
+    // as the FX's main input is its. Each identity has one stereo input and one stereo output
+    // element, and renders slices that pull the input through a render callback: auval's bus and
+    // render checks, in process, without the machine's component registry.
+    const Identity id = GENERATE(Catch::Generators::from_range(kIdentities));
+    CAPTURE(id.name);
+    Unit unit(id);
+    REQUIRE(unit.valid());
+    for (const AudioUnitScope scope : {kAudioUnitScope_Input, kAudioUnitScope_Output})
+    {
+        CAPTURE(scope);
+        UInt32 elements = 0;
+        UInt32 size = sizeof(elements);
+        REQUIRE(AudioUnitGetProperty(unit.get(), kAudioUnitProperty_ElementCount, scope, 0,
+                                     &elements, &size) == noErr);
+        CHECK(elements == 1);
+        AudioStreamBasicDescription format{};
+        size = sizeof(format);
+        REQUIRE(AudioUnitGetProperty(unit.get(), kAudioUnitProperty_StreamFormat, scope, 0, &format,
+                                     &size) == noErr);
+        CHECK(format.mChannelsPerFrame == 2);
+    }
+
+    int pulls = 0;
+    AURenderCallbackStruct callback{&feedInput, &pulls};
+    REQUIRE(AudioUnitSetProperty(unit.get(), kAudioUnitProperty_SetRenderCallback,
+                                 kAudioUnitScope_Input, 0, &callback, sizeof(callback)) == noErr);
+    AudioStreamBasicDescription out{};
+    UInt32 size = sizeof(out);
+    REQUIRE(AudioUnitGetProperty(unit.get(), kAudioUnitProperty_StreamFormat,
+                                 kAudioUnitScope_Output, 0, &out, &size) == noErr);
+    REQUIRE((out.mFormatFlags & kAudioFormatFlagIsNonInterleaved) != 0);
+    constexpr UInt32 kFrames = 512;
+    std::array<std::array<float, kFrames>, 2> channels{};
+    std::array<std::byte, sizeof(AudioBufferList) + sizeof(AudioBuffer)> storage{};
+    auto *buffers = reinterpret_cast<AudioBufferList *>(storage.data());
+    buffers->mNumberBuffers = 2;
+    AudioTimeStamp time{};
+    time.mFlags = kAudioTimeStampSampleTimeValid;
+    for (int slice = 0; slice < 4; ++slice)
+    {
+        CAPTURE(slice);
+        for (UInt32 c = 0; c < 2; ++c)
+        {
+            buffers->mBuffers[c] = AudioBuffer{1, kFrames * sizeof(float), channels[c].data()};
+        }
+        AudioUnitRenderActionFlags flags = 0;
+        CHECK(AudioUnitRender(unit.get(), &flags, &time, 0, kFrames, buffers) == noErr);
+        time.mSampleTime += kFrames;
+    }
+    CHECK(pulls == 4);
+}
