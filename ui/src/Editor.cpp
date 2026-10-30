@@ -5,14 +5,21 @@
 #include "gg/ui/Editor.h"
 
 #include <algorithm>
+#include <chrono>
+#include <mach/mach.h>
+#include <sys/resource.h>
+#include <cstdio>
+#include <cstdlib>
 #include <functional>
 #include <memory>
+#include <string>
 
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <sst/jucegui/components/BaseStyles.h>
 #include <sst/jucegui/style/JUCELookAndFeelAdapter.h>
 #include <sst/jucegui/style/StyleAndSettingsConsumer.h>
 
+#include "GlGrainCanvas.h"
 #include "GrainCanvas.h"
 #include "LoaderStrip.h"
 #include "MacroRow.h"
@@ -74,12 +81,46 @@ class Editor final : public juce::Component,
         }
         addAndMakeVisible(canvas_);
         addAndMakeVisible(macros_);
+        // Spike: GG_GPU_CANVAS=gl puts the OpenGL candidate where the canvas is, and hides the
+        // CPU canvas (its VBlank repaint then paints nothing).
+        if (const char *gpu = std::getenv("GG_GPU_CANVAS");
+            gpu != nullptr && std::string(gpu) == "gl")
+        {
+            uint32_t n = 0;
+            if (const char *sg = std::getenv("GG_STRESS_GRAINS"); sg != nullptr)
+            {
+                n = static_cast<uint32_t>(std::max(0L, std::atol(sg)));
+            }
+            gl_ = std::make_unique<GlGrainCanvas>(n);
+            canvas_.setVisible(false);
+            addAndMakeVisible(*gl_);
+        }
+        mainThreadCpuAtStart_ = mainThreadCpuSeconds();
+        processCpuAtStart_ = processCpuSeconds();
 
         const auto style = theme::darkStyle();
         lookAndFeel_.setStyle(style);
         setStyle(style);
 
-        setSize(kEditorWidth, kEditorHeight);
+        // Spike hooks (spike/gpu-canvas only): GG_EDITOR_SIZE=WxH sets the initial size, and
+        // GG_FRAME_LOG_SECONDS=S prints the frame readout to stderr S seconds after construction
+        // and exits the process, so the readout can be taken without a hand on the window.
+        int w = kEditorWidth, h = kEditorHeight;
+        if (const char *size = std::getenv("GG_EDITOR_SIZE"); size != nullptr && *size != '\0')
+        {
+            int sw = 0, sh = 0;
+            if (std::sscanf(size, "%dx%d", &sw, &sh) == 2 && sw > 0 && sh > 0)
+            {
+                w = sw;
+                h = sh;
+            }
+        }
+        if (const char *secs = std::getenv("GG_FRAME_LOG_SECONDS");
+            secs != nullptr && *secs != '\0')
+        {
+            logAfterSeconds_ = std::atof(secs);
+        }
+        setSize(w, h);
         timerCallback();
         startTimerHz(30);
     }
@@ -125,6 +166,10 @@ class Editor final : public juce::Component,
         macros_.setBounds(area.removeFromBottom(kMacroRowHeight));
         area.removeFromBottom(kGap);
         canvas_.setBounds(area);
+        if (gl_)
+        {
+            gl_->setBounds(area);
+        }
     }
 
     // ---- juce::FileDragAndDropTarget: the strip's drop target, the whole editor ----
@@ -153,6 +198,47 @@ class Editor final : public juce::Component,
         macros_.refresh();
         frameMs_.setText("frame ms (avg 60): " + juce::String(canvas_.averageFrameMs(), 2),
                          juce::dontSendNotification);
+        if (logAfterSeconds_ > 0.0)
+        {
+            const double elapsed =
+                std::chrono::duration<double>(std::chrono::steady_clock::now() - constructed_)
+                    .count();
+            if (elapsed >= logAfterSeconds_)
+            {
+                const juce::Rectangle<int> b = canvas_.getBounds();
+                const double mainCpu = mainThreadCpuSeconds() - mainThreadCpuAtStart_;
+                const double procCpu = processCpuSeconds() - processCpuAtStart_;
+                if (gl_)
+                {
+                    std::fprintf(stderr,
+                                 "gg-frame renderer=gl gl_thread_ms=%.3f gpu_ms=%.3f frames=%llu "
+                                 "timer=%d glversion=%d.%d fb=%ux%u canvas=%dx%d editor=%dx%d "
+                                 "scale=%.2f stress=%u main_cpu_s=%.3f proc_cpu_s=%.3f "
+                                 "elapsed=%.1f\n",
+                                 gl_->averageGlThreadMs(), gl_->averageGpuMs(),
+                                 static_cast<unsigned long long>(gl_->frames()),
+                                 gl_->gpuTimerWorks() ? 1 : 0, gl_->glMajor(), gl_->glMinor(),
+                                 gl_->fbWidth(), gl_->fbHeight(), b.getWidth(), b.getHeight(),
+                                 getWidth(), getHeight(), gl_->pixelScale(),
+                                 static_cast<unsigned>(gl_->frames() > 0 ? 1 : 0), mainCpu, procCpu,
+                                 elapsed);
+                }
+                else
+                {
+                    std::fprintf(stderr,
+                                 "gg-frame renderer=cpu ui_ms=%.3f frames=%llu canvas=%dx%d "
+                                 "editor=%dx%d scale=%.2f stress=%d main_cpu_s=%.3f "
+                                 "proc_cpu_s=%.3f elapsed=%.1f\n",
+                                 canvas_.averageFrameMs(),
+                                 static_cast<unsigned long long>(canvas_.totalFrames()),
+                                 b.getWidth(), b.getHeight(), getWidth(), getHeight(),
+                                 canvas_.pixelScale(), canvas_.stressMode() ? 1 : 0, mainCpu,
+                                 procCpu, elapsed);
+                }
+                std::fflush(stderr);
+                std::_Exit(0);
+            }
+        }
     }
 
   private:
@@ -194,6 +280,35 @@ class Editor final : public juce::Component,
     GrainCanvas canvas_;
     MacroRow macros_;
     juce::TooltipWindow tooltips_{this, 600};
+
+    // Spike hooks.
+    static double mainThreadCpuSeconds()
+    {
+        thread_basic_info_data_t info{};
+        mach_msg_type_number_t count = THREAD_BASIC_INFO_COUNT;
+        const thread_t thread = mach_thread_self();
+        const kern_return_t kr =
+            thread_info(thread, THREAD_BASIC_INFO, reinterpret_cast<thread_info_t>(&info), &count);
+        mach_port_deallocate(mach_task_self(), thread);
+        if (kr != KERN_SUCCESS)
+        {
+            return 0.0;
+        }
+        return static_cast<double>(info.user_time.seconds + info.system_time.seconds) +
+               static_cast<double>(info.user_time.microseconds + info.system_time.microseconds) *
+                   1e-6;
+    }
+    static double processCpuSeconds()
+    {
+        rusage ru{};
+        getrusage(RUSAGE_SELF, &ru);
+        return static_cast<double>(ru.ru_utime.tv_sec + ru.ru_stime.tv_sec) +
+               static_cast<double>(ru.ru_utime.tv_usec + ru.ru_stime.tv_usec) * 1e-6;
+    }
+    std::unique_ptr<GlGrainCanvas> gl_;
+    double logAfterSeconds_{0.0};
+    double mainThreadCpuAtStart_{0.0}, processCpuAtStart_{0.0};
+    std::chrono::steady_clock::time_point constructed_{std::chrono::steady_clock::now()};
 };
 
 std::unique_ptr<juce::Component> makeEditor(const EditorContext &context)

@@ -108,6 +108,10 @@ class GrainCanvas final : public juce::Component, public juce::FileDragAndDropTa
     juce::Rectangle<int> laneBounds(uint8_t layer) const;
     /// Whether GG_STRESS_GRAINS asked for the synthetic workload.
     bool stressMode() const noexcept { return stressCount_ > 0; }
+    /// The physical pixels per logical pixel of the last paint (spike readout).
+    float pixelScale() const noexcept { return scale_; }
+    /// The frames painted since construction (spike readout).
+    uint64_t totalFrames() const noexcept { return totalFrames_; }
 
     void paint(juce::Graphics &g) override;
     void mouseMove(const juce::MouseEvent &e) override;
@@ -223,6 +227,7 @@ class GrainCanvas final : public juce::Component, public juce::FileDragAndDropTa
     std::array<double, kAveragedFrames> frameMs_{};
     std::size_t nextFrame_{0};
     std::size_t filledFrames_{0};
+    uint64_t totalFrames_{0};
 
     // Repaints on every display refresh while the canvas is on screen.
     juce::VBlankAttachment vblank_{this, [this] { repaint(); }};

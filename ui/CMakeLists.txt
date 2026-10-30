@@ -32,6 +32,7 @@ target_link_libraries(gg-ui-core PUBLIC gg::core PRIVATE gg::engine gg::compiler
 if (GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
     add_library(gg-ui STATIC
             src/Editor.cpp
+            src/GlGrainCanvas.cpp
             src/GrainCanvas.cpp
             src/LoaderStrip.cpp
             src/MacroRow.cpp
@@ -48,7 +49,7 @@ if (GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
     target_link_libraries(gg-ui
             PUBLIC gg::ui-core gg::core
             PRIVATE clap_juce_shim clap_juce_shim_headers gg::juce-headers sst-jucegui gg::engine
-            gg::compiler-options
+            gg::compiler-options gg::juce-opengl-impl
             )
     # Its embedded notices (gg/ui/Notices.h's noticeTexts(), the About box's texts) are a
     # generated source that cmake/products.cmake attaches with gg_add_notices: the license set

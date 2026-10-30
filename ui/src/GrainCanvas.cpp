@@ -445,6 +445,7 @@ void GrainCanvas::paint(juce::Graphics &g)
     frameMs_[nextFrame_] = std::chrono::duration<double, std::milli>(Clock::now() - start).count();
     nextFrame_ = (nextFrame_ + 1) % kAveragedFrames;
     filledFrames_ = std::min(filledFrames_ + 1, kAveragedFrames);
+    ++totalFrames_;
 }
 
 void GrainCanvas::drawLane(juce::Graphics &g, uint8_t layer, const Palette &pal)

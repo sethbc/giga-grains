@@ -359,6 +359,19 @@ if (GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
             )
     add_library(gg::juce-headers ALIAS gg-juce-headers)
 
+    # The GPU canvas spike (M2 sub-project 6, Task 17; spike/gpu-canvas only): juce_opengl,
+    # compiled once here as the other third-party implementations are (beside stb_impl), with
+    # gg-juce-headers' includes and definitions and without gg::compiler-options. macOS only
+    # for the spike: the module needs the OpenGL framework there, EGL/GL on Linux and opengl32
+    # on Windows.
+    if (APPLE)
+        add_library(gg-juce-opengl-impl STATIC thirdparty-impl/JuceOpenGLImpl.mm)
+        target_link_libraries(gg-juce-opengl-impl PRIVATE gg-juce-headers "-framework OpenGL")
+        target_compile_definitions(gg-juce-opengl-impl PUBLIC JUCE_MODULE_AVAILABLE_juce_opengl=1)
+        target_link_libraries(gg-juce-opengl-impl INTERFACE "-framework OpenGL")
+        add_library(gg::juce-opengl-impl ALIAS gg-juce-opengl-impl)
+    endif ()
+
     # sst-jucegui (MIT; the md4c and CMakeRC it vendors are MIT too): the editor's controls and
     # theme. Added after the shim, so its CMake makes sst-jucegui-juce-requirements an INTERFACE
     # library over clap_juce_shim_requirements, and after gg-juce-headers, for the line below.
