@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | **Approved by the programme manager 2026-10-30** against the programme design and INTENT, with two notes: the FX view's Reverb section in PR 1 is accepted (§6.1), and the INTENT §23 row takes the next free number at merge, after sub-projects 3, 2, 4 and 5 (§13). **The director's decisions D1–D11, 2026-10-30,** relayed by the programme manager, are recorded in §8 and applied in place: every recommended option (D1 to D11, option 1 each). Sub-project 5 replaces the contents of the header label `header.preset` with its preset strip and browser button; this sub-project keeps that ID and bounds slot and moves nothing else in the header's left group (§4). **Built (PR 1), 2026-10-30** (the plan: `docs/superpowers/plans/2026-10-30-m2-views.md`): where the build changed what this document said, the text is marked **Amended** in place with its ruling's ID (`VW-T<task><letter>`), and §16 lists every ruling. **PR 2 pending:** it waits for the program manager's word that wave 2 and sub-project 5 have merged. |
+| **Status** | **Approved by the programme manager 2026-10-30** against the programme design and INTENT, with two notes: the FX view's Reverb section in PR 1 is accepted (§6.1), and the INTENT §23 row takes the next free number at merge, after sub-projects 3, 2, 4 and 5 (§13). **The director's decisions D1–D11, 2026-10-30,** relayed by the programme manager, are recorded in §8 and applied in place: every recommended option (D1 to D11, option 1 each); **D12** (the canvas's repaint rate, from the final review), 2026-10-30: option 2, the display's rate. Sub-project 5 replaces the contents of the header label `header.preset` with its preset strip and browser button; this sub-project keeps that ID and bounds slot and moves nothing else in the header's left group (§4). **Built (PR 1), 2026-10-30** (the plan: `docs/superpowers/plans/2026-10-30-m2-views.md`): where the build changed what this document said, the text is marked **Amended** in place with its ruling's ID (`VW-T<task><letter>`), and §16 lists every ruling. **PR 2 pending:** it waits for the program manager's word that wave 2 and sub-project 5 have merged. |
 | **Milestone** | M2 Giga (INTENT §20, §23 #64), sub-project 6 of 7; wave 3, merged second, after sub-project 5. Started with wave 2 (programme design §6, "Wave rules"): the work that needs only wave 1 is built now; the work that needs wave 2's parameters waits until wave 2 has merged and this branch is rebased. |
 | **Spec authority** | `INTENT.md`, then `docs/superpowers/specs/2026-10-29-m2-programme-design.md` (its §6.6, §7 and §12 are this sub-project's charter: realized here, not reopened). This document records how this sub-project implements them. |
 | **Builds on** | M2 sub-project 1 as built (§23 #65): four layers, the morph law (D1), the Source kind, Pitch and Size Spread, the 48-slot mod matrix and its sources, the 218 parameters, the patch at version 2, the per-layer grain events and live peaks; M1's Perform view (§23 #58): the canvas, `LaneModel`, `LaneState`, `SplatRenderer`, `MacroRow`, `LoaderStrip`, the UI → host gesture path and the audio → UI publish path; sst-jucegui at `22a89ca`. |
@@ -608,7 +608,7 @@ never the only cue.
 **Keyboard navigation:** every control takes focus (sst-jucegui's do; the canvas, the pad and
 the lane headers get `setWantsKeyboardFocus`); Tab and Shift+Tab move in reading order through
 sst-jucegui's `KeyboardTraverser`; arrows adjust the focused control (1/100, Shift 1/1000);
-Space or Return toggles a toggle, opens a menu; Escape ends a drag or closes the About box.
+Space or Return toggles a toggle, opens a menu; Escape ends a canvas drag or closes the About box (a pad drag ends with the mouse button).
 View switching: ⌘1–⌘4 / Ctrl+1–4; layer selection: ⌘⇧A–D / Ctrl+Shift+A–D (letters the hosts
 don't bind with those modifiers in Live or Bitwig; a host that eats them loses only the
 shortcut). The focused control shows sst-jucegui's focus ring; the canvas's focused lane shows
@@ -707,12 +707,12 @@ Linux and on Windows; Metal is macOS-only, so it would be a second renderer. If 
 breaks, Metal is the macOS lever. The 4.10 ms is contended and is no budget figure; the live
 readout idle is TBD (idle run, Task 18b).
 
-**Amended** (VW-T17b): **an open finding, the repaint rate.** The CPU canvas repaints on every
+**Amended** (VW-T17b): **the repaint rate, decided (D12, §8).** The CPU canvas repaints on every
 VBlank it can make: on the spike's 240 Hz display it painted about 156 frames a second, about 65%
 of the message thread at the contended 4.1 ms (about 45% at the headless idle 2.87 ms, an
-estimate). §16's budget is per frame and is not affected. Whether to cap the repaint rate is an
-engineering call within §16, carried into the final review and the idle measurement; a cap that
-changes what a user sees (the motion's smoothness) goes to the director as a forced choice.
+estimate). §16's budget is per frame and is not affected. The director chose, by forced choice on
+2026-10-30, to keep the display's rate with no cap (D12 option 2): `GrainCanvas`'s
+`VBlankAttachment` is unchanged.
 
 ### 6.12 `gg-bench --canvas` with four lanes
 
@@ -871,6 +871,23 @@ below and applied in §6.
    a host window that remembered 900 × 500 keeps it, since the editor lays out at any size.
 2. *Keep 900 × 500.* *Cost:* lanes of 60 px at the default.
 3. *1024 × 640.* *Cost:* large on a laptop screen beside a host's mixer.
+
+**D12. The canvas's repaint rate** (§6.11; raised by the final review). **Decided: option 2.**
+The canvas repaints on every VBlank (`GrainCanvas`'s `VBlankAttachment`), so its rate is the
+display's: the spike measured about 156 frames a second on a 240 Hz display, about 65% of the
+message thread at the contended 4.1 ms a frame (the spike's figure, under load), and about 35% at
+120 Hz idle is an estimate (about 2.9 ms a frame at the 1600 x 600 canvas). Each open editor adds
+its own share.
+1. *Cap at 60 Hz* (the worker's recommendation). *Cost:* motion on a 120 or 240 Hz display looks
+   less smooth than the display could show; the message thread's share falls to about a quarter
+   of the 240 Hz figure.
+2. **The display's rate, no cap.** *Cost:* the message thread's share grows with the display's
+   rate, about 65% on a 240 Hz display under load (measured, contended) and about 35% at 120 Hz
+   idle (an estimate); a host's UI shares that thread, and each open editor adds its own share.
+3. *Cap only above 120 Hz.* *Cost:* a rule with a threshold to explain; 144 and 240 Hz displays
+   paint at 120 Hz, 60 and 120 Hz displays as they are.
+
+The director's decision, 2026-10-30: option 2.
 
 ## 9. My calls
 
@@ -1061,7 +1078,7 @@ review cycle decides, and the sub-project's final report lists the deferred ones
   the pad with its corners, the file drop; the Edit, Mod and FX views as built, with the table
   rule; undo/redo (D7); the themes and the per-machine setting (D8, D9); the palette (D4); the
   keyboard map; the About box; the GPU spike's result and the renderer paragraph amended to it;
-  "drag vertically for pitch spread" amended per D2; the window's size (D11).
+  "drag vertically for pitch spread" amended per D2; the window's size (D11); the repaint rate (D12).
 - **§18:** `settings.xml`'s `theme` attribute (read as dark when missing; the version stays 1); the
   route path noted beside the state's routes ("Routes have no other way to change yet" no
   longer holds).
@@ -1117,7 +1134,7 @@ canvas figure §16 gets is TBD (idle run, Task 18b).
 Each is an engineering ruling Claude made in the build, during review or in a task's report, and
 each changed what this document said: the text is marked **Amended** where it applies. IDs are
 `VW-T<task><letter>`. Rulings about the process (models, waves, merges) are in the build's
-ledger, not here. The director's decisions are D1–D11 (§8).
+ledger, not here. The director's decisions are D1–D12 (§8).
 
 | ID | Section | The ruling |
 |---|---|---|
@@ -1147,4 +1164,4 @@ ledger, not here. The director's decisions are D1–D11 (§8).
 | VW-T15f | §6.8 | While undo or redo applies, the stack ignores what its callbacks ask of it. |
 | VW-T15g | §6.6 | In Perform only the strip and the macro row take a chip (reached by ⌘1 mid-drag); the pad takes none. |
 | VW-T17a | §6.11 | The GPU spike's decision: the CPU renderer stays, on the ratios and the risk clause. |
-| VW-T17b | §6.11 | Open: the canvas repaints at the display's rate; a cap is the final review's question, the director's if it changes what a user sees. |
+| VW-T17b | §6.11 | Decided (D12, §8): the canvas repaints at the display's rate, no cap; the director's choice, 2026-10-30. |
