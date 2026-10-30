@@ -51,11 +51,17 @@ std::string labelFor(ParamSlot slot, gg::core::Mode mode)
 /// A continuous control's source: the parameter's value.
 struct ContinuousSource final : jdata::Continuous
 {
-    explicit ContinuousSource(ParamValue &v) : value(v) {}
+    ContinuousSource(ParamValue &v, const bool &inertFlag) : value(v), inert(inertFlag) {}
 
     std::string getLabel() const override { return value.label(); }
     float getValue() const override { return value.value(); }
-    void setValueFromGUI(const float &f) override { value.set(f); }
+    void setValueFromGUI(const float &f) override
+    {
+        if (!inert)
+        {
+            value.set(f);
+        }
+    }
     void setValueFromModel(const float &) override {} // the model is the plugin's base value
     float getDefaultValue() const override { return value.meta().defaultVal; }
     float getMin() const override { return value.meta().minVal; }
@@ -66,17 +72,24 @@ struct ContinuousSource final : jdata::Continuous
     }
 
     ParamValue &value;
+    const bool &inert; ///< mod mode: every path that sets the value, the accessibility one too
 };
 
 /// A stepped control's source: the parameter's value as its step, an on/off one's by > 0.5.
 struct DiscreteSource final : jdata::Discrete
 {
-    explicit DiscreteSource(ParamValue &v) : value(v) {}
+    DiscreteSource(ParamValue &v, const bool &inertFlag) : value(v), inert(inertFlag) {}
 
     std::string getLabel() const override { return value.label(); }
     int getValue() const override { return step(value.value()); }
     int getDefaultValue() const override { return step(value.meta().defaultVal); }
-    void setValueFromGUI(const int &i) override { value.set(static_cast<float>(i)); }
+    void setValueFromGUI(const int &i) override
+    {
+        if (!inert)
+        {
+            value.set(static_cast<float>(i));
+        }
+    }
     void setValueFromModel(const int &) override {}
     int getMin() const override { return step(value.meta().minVal); }
     int getMax() const override { return step(value.meta().maxVal); }
@@ -95,6 +108,7 @@ struct DiscreteSource final : jdata::Discrete
     }
 
     ParamValue &value;
+    const bool &inert;
 };
 
 /// Whether the control takes edits: off in mod mode.
@@ -199,10 +213,16 @@ namespace
 /// Makes `editor` the control: its edits are the value's gestures.
 template <typename Editor, typename Source>
 std::unique_ptr<juce::Component> wire(std::unique_ptr<Control<Editor>> editor, Source *source,
-                                      ParamValue &value, Inertia *&inertia)
+                                      ParamValue &value, Inertia *&inertia, const bool &modMode)
 {
     editor->setSource(source);
-    editor->onBeginEdit = [&value] { value.begin(); };
+    // No gesture opens in mod mode, whichever path (the accessibility interface's) asks.
+    editor->onBeginEdit = [&value, &modMode] {
+        if (!modMode)
+        {
+            value.begin();
+        }
+    };
     editor->onEndEdit = [&value] { value.end(); };
     inertia = editor.get();
     return editor;
@@ -233,36 +253,36 @@ ParamControl::ParamControl(const EditorContext &context, ParamSlot slot, Kind ki
     case Kind::Knob:
     case Kind::HSlider:
     case Kind::VSlider:
-        m.continuous = std::make_unique<ContinuousSource>(m.value);
+        m.continuous = std::make_unique<ContinuousSource>(m.value, m.modMode);
         if (kind == Kind::Knob)
         {
             m.control = wire(std::make_unique<Control<jcmp::Knob>>(), m.continuous.get(), m.value,
-                             m.inertia);
+                             m.inertia, m.modMode);
         }
         else if (kind == Kind::HSlider)
         {
             m.control = wire(std::make_unique<Control<jcmp::HSlider>>(), m.continuous.get(),
-                             m.value, m.inertia);
+                             m.value, m.inertia, m.modMode);
         }
         else
         {
             m.control = wire(std::make_unique<Control<jcmp::VSlider>>(), m.continuous.get(),
-                             m.value, m.inertia);
+                             m.value, m.inertia, m.modMode);
         }
         break;
     case Kind::Toggle:
     {
-        m.discrete = std::make_unique<DiscreteSource>(m.value);
+        m.discrete = std::make_unique<DiscreteSource>(m.value, m.modMode);
         auto toggle = std::make_unique<Control<jcmp::ToggleButton>>();
         toggle->setLabel(m.value.label());
         toggle->setDrawMode(jcmp::ToggleButton::DrawMode::LABELED);
-        m.control = wire(std::move(toggle), m.discrete.get(), m.value, m.inertia);
+        m.control = wire(std::move(toggle), m.discrete.get(), m.value, m.inertia, m.modMode);
         break;
     }
     case Kind::Menu:
-        m.discrete = std::make_unique<DiscreteSource>(m.value);
+        m.discrete = std::make_unique<DiscreteSource>(m.value, m.modMode);
         m.control = wire(std::make_unique<Control<jcmp::MenuButtonDiscreteEditor>>(),
-                         m.discrete.get(), m.value, m.inertia);
+                         m.discrete.get(), m.value, m.inertia, m.modMode);
         break;
     }
     addAndMakeVisible(*m.control);
@@ -305,6 +325,8 @@ void ParamControl::setRings(std::vector<Ring> rings)
     }
     repaint();
 }
+
+const std::vector<ParamControl::Ring> &ParamControl::rings() const noexcept { return impl_->rings; }
 
 void ParamControl::setSpreadBand(std::optional<std::pair<float, float>> lowHigh01)
 {

@@ -33,6 +33,7 @@
 #include <sst/jucegui/components/Knob.h>
 #include <sst/jucegui/components/MenuButton.h>
 #include <sst/jucegui/components/ToggleButton.h>
+#include <sst/jucegui/components/VSlider.h>
 #include <sst/jucegui/data/Continuous.h>
 #include <sst/jucegui/style/StyleSheet.h>
 
@@ -44,6 +45,7 @@
 #include "MorphPad.h"
 #include "Palette.h"
 #include "ParamControl.h"
+#include "views/EditView.h"
 #include "editor/EditorPlugin.h"
 #include "editor/UiSettings.h"
 #include "gg/core/GrainQueue.h"
@@ -1986,6 +1988,265 @@ TEST_CASE("Escape closes the About box", "[plugin]")
     close->onClick(); // triggerClick() does nothing off screen
     CHECK_FALSE(box.isVisible());
     CHECK(closed == 2);
+}
+
+namespace
+{
+/// The components below `root` of type T, in tree order.
+template <typename T> void collect(juce::Component &root, std::vector<T *> &out)
+{
+    for (juce::Component *child : root.getChildren())
+    {
+        if (auto *t = dynamic_cast<T *>(child))
+        {
+            out.push_back(t);
+        }
+        collect(*child, out);
+    }
+}
+
+juce::String controlId(ParamSlot slot) { return "param." + juce::String(gg::core::paramId(slot)); }
+
+/// The Edit view's placed slots for `layer`: slotsIn over its thirteen panels, less what the
+/// product hides.
+std::vector<ParamSlot> editSlots(uint8_t layer, gg::core::Mode mode)
+{
+    std::vector<ParamSlot> out;
+    for (uint8_t p = 0; p <= static_cast<uint8_t>(gg::ui::Panel::Step); ++p)
+    {
+        for (const ParamSlot slot : gg::ui::slotsIn(static_cast<gg::ui::Panel>(p), layer))
+        {
+            if (!gg::ui::hiddenIn(slot, mode))
+            {
+                out.push_back(slot);
+            }
+        }
+    }
+    return out;
+}
+} // namespace
+
+TEST_CASE("the Edit view shows every placed parameter of the layer", "[plugin]")
+{
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    for (const gg::core::Mode mode : {gg::core::Mode::Fx, gg::core::Mode::Instrument})
+    {
+        RecordingContext recording(mode);
+        gg::ui::EditView view(recording.context);
+        view.setSize(900, 500);
+        CHECK(view.getComponentID() == "view.edit");
+        REQUIRE(view.panels().size() == 13);
+        CHECK(view.layer() == 0);
+
+        const auto b = editSlots(1, mode);
+        const auto d = editSlots(3, mode);
+        view.setLayer(1);
+        CHECK(view.layer() == 1);
+        REQUIRE_FALSE(b.empty());
+        for (const ParamSlot slot : b)
+        {
+            INFO(gg::core::paramMeta(slot, mode).name);
+            CHECK(findDeep(view, controlId(slot).toRawUTF8()) != nullptr);
+        }
+        CHECK(findDeep(view, controlId(ParamSlot::Size).toRawUTF8()) == nullptr); // A's, now gone
+
+        view.setLayer(3);
+        for (const ParamSlot slot : d)
+        {
+            INFO(gg::core::paramMeta(slot, mode).name);
+            CHECK(findDeep(view, controlId(slot).toRawUTF8()) != nullptr);
+        }
+        CHECK(findDeep(view, controlId(ParamSlot::B_Size).toRawUTF8()) == nullptr);
+        CHECK(findDeep(view, controlId(ParamSlot::D_Size).toRawUTF8()) != nullptr);
+    }
+}
+
+TEST_CASE("the Edit view's layer can follow the strip's selection", "[plugin]")
+{
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    RecordingContext recording(gg::core::Mode::Fx);
+    gg::ui::EditView view(recording.context);
+    uint8_t selected = 2;
+    view.setSelectedLayer([&selected] { return selected; });
+    view.refresh();
+    CHECK(view.layer() == 2);
+    CHECK(findDeep(view, controlId(ParamSlot::C_Size).toRawUTF8()) != nullptr);
+    selected = 0;
+    view.refresh();
+    CHECK(findDeep(view, controlId(ParamSlot::Size).toRawUTF8()) != nullptr);
+}
+
+TEST_CASE("spread pairs sit together", "[plugin]")
+{
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    RecordingContext recording(gg::core::Mode::Fx);
+    gg::ui::EditView view(recording.context);
+    view.setSize(900, 500);
+    for (const uint8_t layer : {0, 2})
+    {
+        view.setLayer(layer);
+        const auto pair = [&](gg::core::LayerParam base, gg::core::LayerParam spread) {
+            const auto *a = findDeep(view, controlId(gg::core::layerSlot(base, layer)).toRawUTF8());
+            const auto *b =
+                findDeep(view, controlId(gg::core::layerSlot(spread, layer)).toRawUTF8());
+            REQUIRE(a != nullptr);
+            REQUIRE(b != nullptr);
+            CHECK(a->getParentComponent() == b->getParentComponent());
+            CHECK(a->getRight() <= b->getX()); // the spread at the base's right
+        };
+        pair(gg::core::LayerParam::Size, gg::core::LayerParam::SizeSpread);
+        pair(gg::core::LayerParam::Position, gg::core::LayerParam::Spray);
+        pair(gg::core::LayerParam::Pitch, gg::core::LayerParam::PitchSpread);
+    }
+    // Density has no spread: its own cell.
+    const auto *density = findDeep(view, controlId(ParamSlot::C_Density).toRawUTF8());
+    REQUIRE(density != nullptr);
+    CHECK(density->getParentComponent()->getNumChildComponents() == 1);
+}
+
+TEST_CASE("the Filter panel is hidden while empty and the Step panel has sixteen sliders",
+          "[plugin]")
+{
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    RecordingContext recording(gg::core::Mode::Fx);
+    gg::ui::EditView view(recording.context);
+    view.setSize(640, 360);
+    int visible = 0;
+    for (gg::ui::ParamPanel *panel : view.panels())
+    {
+        INFO(gg::ui::panelName(panel->panel()));
+        if (panel->panel() == gg::ui::Panel::Filter)
+        {
+            CHECK(panel->controls().empty());
+            CHECK_FALSE(panel->isVisible());
+        }
+        else
+        {
+            CHECK_FALSE(panel->controls().empty());
+            CHECK(panel->isVisible());
+            ++visible;
+        }
+        if (panel->panel() == gg::ui::Panel::Step)
+        {
+            std::vector<sst::jucegui::components::VSlider *> sliders;
+            collect(*panel, sliders);
+            CHECK(sliders.size() == 16);
+            for (const auto *slider : sliders)
+            {
+                CHECK(slider->getParentComponent()->getWidth() == 20);
+            }
+            CHECK(panel->controls().size() == 18); // and Rate and Length
+        }
+    }
+    CHECK(visible == 12);
+    // Wrapped in the view's width: every visible panel lies inside the scrolled content.
+    for (gg::ui::ParamPanel *panel : view.panels())
+    {
+        if (panel->isVisible())
+        {
+            CHECK(panel->getRight() <= 640);
+            CHECK(panel->getHeight() > 20);
+            for (gg::ui::ParamPanel *other : view.panels())
+            {
+                if (other != panel && other->isVisible())
+                {
+                    CHECK_FALSE(panel->getBounds().intersects(other->getBounds()));
+                }
+            }
+        }
+    }
+    // The instrument hides Mix, and nothing else of the Edit view.
+    RecordingContext instrument(gg::core::Mode::Instrument);
+    gg::ui::EditView iview(instrument.context);
+    CHECK(findDeep(iview, controlId(ParamSlot::Mix).toRawUTF8()) == nullptr);
+}
+
+TEST_CASE("the Edit view draws rings from the routes and follows the base values", "[plugin]")
+{
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    RecordingContext recording(gg::core::Mode::Fx);
+    gg::core::ModRoutes routes = gg::core::factoryRoutes(gg::core::Mode::Fx);
+    int routeReads = 0;
+    recording.context.routes = [&routes, &routeReads] {
+        ++routeReads;
+        return routes;
+    };
+    recording.context.setRoutes = [&routes](const gg::core::ModRoutes &r) { routes = r; };
+    gg::ui::EditView view(recording.context);
+    view.setSize(900, 500);
+    view.setLayer(1);
+    view.refresh();
+
+    const auto ringsOf =
+        [&view](ParamSlot slot) -> const std::vector<gg::ui::ParamControl::Ring> & {
+        auto *control =
+            dynamic_cast<gg::ui::ParamControl *>(findDeep(view, controlId(slot).toRawUTF8()));
+        REQUIRE(control != nullptr);
+        return control->rings();
+    };
+    const auto &size = ringsOf(ParamSlot::B_Size);
+    REQUIRE(size.size() == 1);
+    CHECK(size[0].slot == 1);
+    CHECK(size[0].bipolar);
+    CHECK(size[0].colour == gg::ui::Palette::dark().sourceFamilies[0]);
+    CHECK(ringsOf(ParamSlot::B_Density).size() == 2);
+    CHECK(ringsOf(ParamSlot::B_PitchSpread).empty());
+
+    // A route's change reaches the ring at the next refresh; a route to layer C alone leaves B's.
+    routes[0].targetLayer = 2;
+    view.refresh();
+    CHECK(ringsOf(ParamSlot::B_Size).empty());
+
+    // A base value the host changed shows at refresh, in the control and in the spread band.
+    recording.values[static_cast<std::size_t>(ParamSlot::B_Pitch)] = 5.0f;
+    view.refresh();
+    auto *pitch = dynamic_cast<gg::ui::ParamControl *>(
+        findDeep(view, controlId(ParamSlot::B_Pitch).toRawUTF8()));
+    REQUIRE(pitch != nullptr);
+    CHECK(pitch->shownValue() == 5.0f);
+    CHECK(routeReads > 1);
+}
+
+TEST_CASE("mod mode drags the Edit view's rings and nothing else", "[plugin]")
+{
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    RecordingContext recording(gg::core::Mode::Fx);
+    gg::core::ModRoutes routes = gg::core::factoryRoutes(gg::core::Mode::Fx);
+    recording.context.routes = [&routes] { return routes; };
+    recording.context.setRoutes = [&routes](const gg::core::ModRoutes &r) { routes = r; };
+    gg::ui::EditView view(recording.context);
+    view.setSize(900, 500);
+    view.refresh();
+    view.setModMode(true);
+
+    auto *size = dynamic_cast<gg::ui::ParamControl *>(
+        findDeep(view, controlId(ParamSlot::Size).toRawUTF8()));
+    REQUIRE(size != nullptr);
+    REQUIRE(size->rings().size() == 1);
+
+    // The accessibility interface can't set the value in mod mode, as nothing else can.
+    auto *knob = childOfType<sst::jucegui::components::Knob>(*size);
+    REQUIRE(knob != nullptr);
+    const std::unique_ptr<juce::AccessibilityHandler> handler(knob->createAccessibilityHandler());
+    REQUIRE(handler != nullptr);
+    REQUIRE(handler->getValueInterface() != nullptr);
+    const float before = size->shownValue();
+    handler->getValueInterface()->setValue(0.5);
+    handler->getValueInterface()->setValueAsString("0.1");
+    CHECK(recording.calls.empty());
+    CHECK(size->shownValue() == before);
+
+    // A ring drag writes its route's depth, in the parameter's units, through the context.
+    size->onRingDrag(1, 0.25f);
+    const auto &meta = gg::core::paramMeta(ParamSlot::Size, gg::core::Mode::Fx);
+    CHECK(routes[0].depth == 0.25f * (meta.maxVal - meta.minVal));
+    CHECK(routes[1].depth == gg::core::factoryRoutes(gg::core::Mode::Fx)[1].depth);
+    CHECK(recording.calls.empty());
+
+    // Out of mod mode, the same interface edits as a gesture.
+    view.setModMode(false);
+    handler->getValueInterface()->setValue(0.5);
+    CHECK(recording.kinds() == "bve");
 }
 #else
 TEST_CASE("headless build exposes no gui extension", "[plugin]")

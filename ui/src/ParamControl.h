@@ -36,8 +36,9 @@ namespace gg::ui
 /// **Mod mode** (spec §6.6) leaves the control's own value inert: it takes no mouse or key
 /// edit. The rings, one arc per route targeting the parameter, drawn around a knob in slot order
 /// (a bipolar one centred on the base value), are draggable then: a vertical drag on a ring calls
-/// onRingDrag with its new depth. A knob also draws a spread pair's band (setSpreadBand). Only
-/// a Knob draws rings and the band.
+/// onRingDrag with its new depth. Nothing changes the value then, the accessibility interface's
+/// setValue and setValueAsString included. A knob also draws a spread pair's band (setSpreadBand).
+/// Only a Knob draws rings and the band.
 ///
 /// Message thread only. The context is the editor's (see EditorContext): read at each use.
 class ParamControl final : public juce::Component
@@ -80,6 +81,7 @@ class ParamControl final : public juce::Component
     };
     /// The rings drawn around the knob, inside out in the order given (slot order).
     void setRings(std::vector<Ring> rings);
+    const std::vector<Ring> &rings() const noexcept;
     /// Mod mode: a vertical drag on a ring, with the ring's matrix slot and its new depth.
     std::function<void(uint8_t slot, float depth01)> onRingDrag;
     /// The drop target's hover (Task 12 wires it).

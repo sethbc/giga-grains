@@ -14,6 +14,7 @@
 
 #include "gg/core/GrainQueue.h"
 #include "gg/core/LivePeaks.h"
+#include "gg/core/ModMatrix.h"
 #include "gg/core/ParamIds.h"
 #include "gg/core/UiSnapshot.h"
 
@@ -116,6 +117,12 @@ struct EditorContext
     std::function<float(gg::core::ParamSlot)> baseValue;
     std::function<void(gg::core::ParamSlot)> beginGesture, endGesture;
     std::function<void(gg::core::ParamSlot, double)> setValue;
+
+    /// The mod matrix's routes (M2 sub-project 6's spec §6.6), main thread: the plugin's
+    /// current routes (a copy), and a replacement for all 48, which it applies on the audio
+    /// thread. What they capture outlives the editor. Empty means no routes (no rings).
+    std::function<gg::core::ModRoutes()> routes;
+    std::function<void(const gg::core::ModRoutes &)> setRoutes;
 
     /// The spawned grains (spec §6.4); the editor is the queue's consumer. See the publish
     /// structures above; null while inactive.

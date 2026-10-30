@@ -208,6 +208,8 @@ std::unique_ptr<juce::Component> EditorPlugin::createEditor()
     context.beginGesture = [this](gg::core::ParamSlot slot) { uiBeginGesture(slot); };
     context.setValue = [this](gg::core::ParamSlot slot, double value) { uiSetValue(slot, value); };
     context.endGesture = [this](gg::core::ParamSlot slot) { uiEndGesture(slot); };
+    context.routes = [this] { return uiRoutes(); };
+    context.setRoutes = [this](const gg::core::ModRoutes &routes) { uiSetRoutes(routes); };
 
     // Audio to UI (spec §6.4): the active Processor's structures, and publishing on from now
     // until the editor's destructor, or guiDestroy for the shim's, turns it off. The editor

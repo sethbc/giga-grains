@@ -20,6 +20,7 @@ add_library(gg-ui-core STATIC
         src/SplatRenderer.cpp
         src/StressGrains.cpp
         src/UndoStack.cpp
+        src/views/Rings.cpp
         )
 add_library(gg::ui-core ALIAS gg-ui-core)
 
@@ -40,6 +41,8 @@ if (GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
             src/LayerStrip.cpp
             src/MorphPad.cpp
             src/AboutBox.cpp
+            src/views/EditView.cpp
+            src/views/ParamPanel.cpp
             )
     add_library(gg::ui ALIAS gg-ui)
 
