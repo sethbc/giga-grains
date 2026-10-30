@@ -91,7 +91,8 @@ namespace
 /// loader does it.
 std::shared_ptr<const PreparedSource> loadFile(const std::string &path, double sampleRate)
 {
-    auto loaded = gg::media::loadSample(pathFromUtf8(path), gg::core::MachineSettings{});
+    auto loaded = gg::media::loadSample(pathFromUtf8(path), gg::core::MachineSettings{},
+                                        gg::media::kDefaultDecodeBound);
     if (!loaded.decoded)
     {
         throw BadInput(loaded.error);

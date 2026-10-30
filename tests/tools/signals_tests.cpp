@@ -136,7 +136,7 @@ std::string freshDirectory(const std::string &name)
 /// What gg-media decodes `path` to, converted to `rate`.
 std::shared_ptr<gg::SampleBuffer> decodeAt(const std::string &path, double rate)
 {
-    auto decoded = gg::media::decodeAudioFile(pathOf(path));
+    auto decoded = gg::media::decodeAudioFile(pathOf(path), gg::media::kDefaultDecodeBound);
     INFO(decoded.error);
     REQUIRE(decoded.audio.has_value());
     return gg::media::convertRate(decoded.audio->buffer, rate);

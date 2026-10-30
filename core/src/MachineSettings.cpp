@@ -37,6 +37,7 @@ std::string toSettingsXml(const MachineSettings &settings)
     root.SetAttribute("version", kMachineSettingsVersion);
     root.SetAttribute("sampleFolder", escapeAmpersands(upToNul(settings.sampleFolder)));
     root.SetAttribute("lastLoadFolder", escapeAmpersands(upToNul(settings.lastLoadFolder)));
+    root.SetAttribute("capturesFolder", escapeAmpersands(upToNul(settings.capturesFolder)));
     doc.InsertEndChild(root);
     std::ostringstream oss;
     oss << doc;
@@ -82,6 +83,7 @@ bool fromSettingsXml(std::string_view xml, MachineSettings &out)
     }
     out.sampleFolder = attribute(*root, "sampleFolder");
     out.lastLoadFolder = attribute(*root, "lastLoadFolder");
+    out.capturesFolder = attribute(*root, "capturesFolder");
     return true;
 }
 } // namespace gg::core

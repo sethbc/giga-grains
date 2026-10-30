@@ -6,6 +6,7 @@
 #define GG_MEDIA_SAMPLE_H
 
 #include <atomic>
+#include <cstdint>
 #include <filesystem>
 #include <memory>
 #include <optional>
@@ -13,6 +14,8 @@
 
 #include "gg/core/MachineSettings.h"
 #include "gg/core/SessionState.h"
+#include "gg/media/Decode.h"
+#include "gg/media/SamplePool.h"
 #include "gg/media/Sha256.h"
 #include "gg/source/PreparedSource.h"
 #include "gg/source/SampleBuffer.h"
@@ -30,8 +33,8 @@ struct LoadedSample
     std::string error;                     // non-empty on failure; decoded null
 };
 
-/// Decodes `file` (decodeAudioFile), hashes it (hashFile) and fills its entry. Main or loader
-/// thread.
+/// Decodes `file` (decodeAudioFile, bounded by `maxDecodedBytes`), hashes it (hashFile) and
+/// fills its entry. Main or loader thread.
 /// - The entry is isValidMediaEntry: the SHA-256 and size are the file's; `absolutePath` is
 ///   `file` made absolute and lexically normal, in UTF-8, symlinks kept as the user chose them;
 ///   `format` and `channels` (as stored in the file) are decodeAudioFile's; `sampleRate` and
@@ -41,7 +44,8 @@ struct LoadedSample
 ///   are compared with their symlinks resolved (std::filesystem::weakly_canonical), so a folder
 ///   reached through a symlink (macOS's /var for /private/var, say) still counts.
 /// - On failure `decoded` is null, `entry` is default and `error` names the file and the reason:
-///   decodeAudioFile's message, or a failure to read the file for its hash.
+///   decodeAudioFile's message (its refusal of a file over `maxDecodedBytes` among them), or a
+///   failure to read the file for its hash.
 /// - `knownHash`, when given, is taken as the file's fingerprint instead of hashing it again: a
 ///   restore passes the one findSample just checked, so the file is read twice, not three times.
 /// - A known limitation: the file is read twice, to decode it and then to hash it (or, with
@@ -51,7 +55,7 @@ struct LoadedSample
 ///   between the two: once it is set, the load fails, with an error saying so (the sample
 ///   loader's prompt stop, carry-over [194]).
 LoadedSample loadSample(const std::filesystem::path &file, const core::MachineSettings &settings,
-                        std::optional<FileHash> knownHash = std::nullopt,
+                        uint64_t maxDecodedBytes, std::optional<FileHash> knownHash = std::nullopt,
                         const std::atomic<bool> *cancel = nullptr);
 
 /// `decoded` converted to `rate` (convertRate: the same buffer when the rates match), then made a
@@ -59,8 +63,14 @@ LoadedSample loadSample(const std::filesystem::path &file, const core::MachineSe
 /// plugin passes the host's rate. nullptr if `cancel` is set during the conversion (convertRate).
 /// Throws std::invalid_argument if `decoded` is null or `rate` isn't finite and positive, and
 /// std::bad_alloc if memory runs out.
+///
+/// With `share`, the key of `decoded`'s file at `rate` (`share->rate` should be `rate`), the
+/// process's SamplePool is asked first: a live source of that key is returned as it is, with no
+/// conversion and nothing built; otherwise the new source is made and remembered under the key,
+/// so the next instance to load the file shares it (spec §6.5).
 std::shared_ptr<const PreparedSource> prepare(std::shared_ptr<SampleBuffer> decoded, double rate,
-                                              const std::atomic<bool> *cancel = nullptr);
+                                              const std::atomic<bool> *cancel = nullptr,
+                                              const PoolKey *share = nullptr);
 } // namespace gg::media
 
 #endif // GG_MEDIA_SAMPLE_H

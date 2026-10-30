@@ -440,6 +440,37 @@ fs::path defaultSettingsPath()
 #endif
 }
 
+fs::path defaultCapturesFolder()
+{
+#if defined(_WIN32)
+    const wchar_t *profile = ::_wgetenv(L"USERPROFILE");
+    if (profile == nullptr || !fs::path(profile).is_absolute())
+    {
+        return {};
+    }
+    return fs::path(profile) / L"Music" / L"Giga Grains" / L"Captures";
+#else
+    fs::path music;
+#if !defined(__APPLE__)
+    if (const char *xdg = std::getenv("XDG_MUSIC_DIR");
+        xdg != nullptr && fs::path(xdg).is_absolute())
+    {
+        music = xdg;
+    }
+#endif
+    if (music.empty())
+    {
+        const fs::path home = homeFolder();
+        if (home.empty())
+        {
+            return {};
+        }
+        music = home / "Music";
+    }
+    return music / "Giga Grains" / "Captures";
+#endif
+}
+
 core::MachineSettings loadSettings(const fs::path &file)
 {
     std::error_code error;
@@ -463,7 +494,8 @@ core::MachineSettings loadSettings(const fs::path &file)
 bool saveSettings(const fs::path &file, const core::MachineSettings &settings)
 {
     if (settings.sampleFolder.find('\0') != std::string::npos ||
-        settings.lastLoadFolder.find('\0') != std::string::npos)
+        settings.lastLoadFolder.find('\0') != std::string::npos ||
+        settings.capturesFolder.find('\0') != std::string::npos)
     {
         return false;
     }

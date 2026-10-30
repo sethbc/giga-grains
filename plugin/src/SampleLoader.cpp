@@ -287,7 +287,8 @@ void SampleLoader::convertNow(double rate) noexcept
         }
         if (source_->buffer().sampleRate() != rate)
         {
-            media::LoadedSample loaded = media::loadSample(file, readSettings(), *hash);
+            media::LoadedSample loaded =
+                media::loadSample(file, readSettings(), media::kDefaultDecodeBound, *hash);
             if (!loaded.error.empty())
             {
                 setError(fileName, std::move(loaded.error));
@@ -323,8 +324,9 @@ std::shared_ptr<const PreparedSource> SampleLoader::findAndLoad(double rate)
     }
     // findSample hashed the file: its fingerprint is the entry's, so loadSample needn't read it a
     // third time.
-    media::LoadedSample loaded = media::loadSample(
-        found.path, settings, media::FileHash{entry_->sha256Hex, entry_->fileSize});
+    media::LoadedSample loaded =
+        media::loadSample(found.path, settings, media::kDefaultDecodeBound,
+                          media::FileHash{entry_->sha256Hex, entry_->fileSize});
     if (!loaded.error.empty())
     {
         setError(fileName, std::move(loaded.error));
@@ -541,7 +543,8 @@ SampleLoader::Result SampleLoader::run(const Job &job, double rate)
     Result result;
     result.id = job.id;
     result.fileName = utf8(job.file.filename());
-    media::LoadedSample loaded = media::loadSample(job.file, job.settings, std::nullopt, &cancel_);
+    media::LoadedSample loaded = media::loadSample(
+        job.file, job.settings, media::kDefaultDecodeBound, std::nullopt, &cancel_);
     if (cancel_.load(std::memory_order_relaxed))
     {
         result.cancelled = true;

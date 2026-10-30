@@ -28,6 +28,8 @@ namespace
 namespace fs = std::filesystem;
 using gg::core::MachineSettings;
 using gg::media::loadSample;
+/// The memory cap's ceiling: nothing here is refused for its size.
+constexpr uint64_t kBound = gg::media::kDefaultDecodeBound;
 using gg::test::SampleFormat;
 using gg::test::utf8;
 
@@ -52,7 +54,7 @@ void writeWav(const fs::path &file, uint32_t channels, uint32_t rate, int64_t fr
 /// The relative path loadSample records for `file` with `sampleFolder` as the sample folder.
 std::string relativeOf(const fs::path &file, const fs::path &sampleFolder)
 {
-    const auto loaded = loadSample(file, MachineSettings{utf8(sampleFolder), ""});
+    const auto loaded = loadSample(file, MachineSettings{utf8(sampleFolder), ""}, kBound);
     INFO(loaded.error);
     REQUIRE(loaded.decoded != nullptr);
     return loaded.entry.relativePath;
@@ -66,7 +68,7 @@ TEST_CASE("loadSample fills the entry from the file", "[media]")
     const auto file = dir / fs::path(u8"kick-é音.wav");
     writeWav(file, 2, 44100, 1234);
 
-    const auto loaded = loadSample(file, MachineSettings{});
+    const auto loaded = loadSample(file, MachineSettings{}, kBound);
     INFO(loaded.error);
     REQUIRE(loaded.error.empty());
     REQUIRE(loaded.decoded != nullptr);
@@ -98,7 +100,7 @@ TEST_CASE("loadSample takes a fingerprint it is given instead of hashing the fil
     const auto file = dir / "known.wav";
     writeWav(file, 1, 48000, 100);
     const gg::media::FileHash given{std::string(64, 'a'), 12345};
-    const auto loaded = loadSample(file, MachineSettings{}, given);
+    const auto loaded = loadSample(file, MachineSettings{}, kBound, given);
     INFO(loaded.error);
     REQUIRE(loaded.error.empty());
     REQUIRE(loaded.decoded != nullptr);
@@ -112,7 +114,7 @@ TEST_CASE("loadSample records the channels the file stores, not the two it keeps
     const auto dir = freshDir("sample-channels");
     const auto file = dir / "quad.wav";
     writeWav(file, 4, 48000, 100);
-    const auto loaded = loadSample(file, MachineSettings{});
+    const auto loaded = loadSample(file, MachineSettings{}, kBound);
     REQUIRE(loaded.decoded != nullptr);
     REQUIRE(loaded.decoded->channels() == 2);
     REQUIRE(loaded.entry.channels == 4);
@@ -125,7 +127,8 @@ TEST_CASE("loadSample records the absolute path lexically normal", "[media]")
     const auto dir = freshDir("sample-absolute");
     writeWav(dir / "a" / "kick.wav", 1, 48000, 10);
     // An absolute path with `.` and `..` in it comes back normal.
-    const auto loaded = loadSample(dir / "a" / "." / ".." / "a" / "kick.wav", MachineSettings{});
+    const auto loaded =
+        loadSample(dir / "a" / "." / ".." / "a" / "kick.wav", MachineSettings{}, kBound);
     REQUIRE(loaded.decoded != nullptr);
     // Normal form on each platform: on Windows that is backslashes throughout, though
     // GG_TEST_OUTPUT_DIR comes with forward slashes.
@@ -171,7 +174,7 @@ TEST_CASE("loadSample sees through symlinks to the sample folder, as macOS's /va
     REQUIRE(relativeOf(real / "sub" / "kick.wav", viaLink) == "sub/kick.wav");
     REQUIRE(relativeOf(viaLink / "sub" / "kick.wav", real) == "sub/kick.wav");
     // The entry's absolute path keeps the spelling the file was given.
-    const auto loaded = loadSample(viaLink / "sub" / "kick.wav", MachineSettings{});
+    const auto loaded = loadSample(viaLink / "sub" / "kick.wav", MachineSettings{}, kBound);
     REQUIRE(loaded.entry.absolutePath == utf8(viaLink / "sub" / "kick.wav"));
 }
 #endif
@@ -186,7 +189,7 @@ TEST_CASE("loadSample of a file it can't decode gives an error and no audio", "[
     for (const auto &file : {garbage, dir / "missing.wav", dir})
     {
         INFO(gg::test::utf8(file));
-        const auto loaded = loadSample(file, MachineSettings{utf8(dir), ""});
+        const auto loaded = loadSample(file, MachineSettings{utf8(dir), ""}, kBound);
         REQUIRE(loaded.decoded == nullptr);
         REQUIRE_FALSE(loaded.error.empty());
         REQUIRE(loaded.entry == gg::core::MediaEntry{});
@@ -197,7 +200,7 @@ TEST_CASE("prepare at the file's rate keeps the decoded buffer, bit for bit", "[
 {
     const auto dir = freshDir("sample-prepare-same-rate");
     writeWav(dir / "kick.wav", 2, 48000, 480);
-    const auto loaded = loadSample(dir / "kick.wav", MachineSettings{});
+    const auto loaded = loadSample(dir / "kick.wav", MachineSettings{}, kBound);
     REQUIRE(loaded.decoded != nullptr);
     const std::vector<float> left(loaded.decoded->channel(0),
                                   loaded.decoded->channel(0) + loaded.decoded->frames());
@@ -213,7 +216,7 @@ TEST_CASE("prepare converts 44.1 kHz to 48 kHz into a stereo source with its pai
 {
     const auto dir = freshDir("sample-prepare-convert");
     writeWav(dir / "kick.wav", 2, 44100, 4410);
-    const auto loaded = loadSample(dir / "kick.wav", MachineSettings{});
+    const auto loaded = loadSample(dir / "kick.wav", MachineSettings{}, kBound);
     REQUIRE(loaded.decoded != nullptr);
 
     const auto source = gg::media::prepare(loaded.decoded, 48000.0);
@@ -249,4 +252,16 @@ TEST_CASE("prepare refuses no buffer and a rate that isn't finite and positive",
         INFO("rate " << rate);
         REQUIRE_THROWS_AS(gg::media::prepare(buffer, rate), std::invalid_argument);
     }
+}
+
+TEST_CASE("loadSample refuses a file over its bound, with decodeAudioFile's message", "[media]")
+{
+    // 100 mono frames decode to 400 bytes.
+    const auto dir = freshDir("sample-bound");
+    const auto file = dir / "small.wav";
+    writeWav(file, 1, 48000, 100);
+    REQUIRE(loadSample(file, MachineSettings{}, 400).decoded != nullptr);
+    const auto refused = loadSample(file, MachineSettings{}, 399);
+    REQUIRE(refused.decoded == nullptr);
+    REQUIRE(refused.error == "small.wav: needs 1 MB, the memory cap allows 0 MB");
 }

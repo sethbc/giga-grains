@@ -400,7 +400,7 @@ inline std::filesystem::path sineSampleFile(const std::string &name)
 /// folder. Empty if the file doesn't load.
 inline gg::core::MediaEntry entryOf(const std::filesystem::path &file)
 {
-    return gg::media::loadSample(file, {}).entry;
+    return gg::media::loadSample(file, {}, gg::media::kDefaultDecodeBound).entry;
 }
 
 /// `state`, a state the instrument saved, with `entry` (or none) as its sample (layer A's), and

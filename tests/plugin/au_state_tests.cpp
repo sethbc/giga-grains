@@ -319,7 +319,8 @@ TEST_CASE("au class info carries the clap state and round-trips it", "[plugin][a
         if (isInstrument)
         {
             const auto file = sineFile("round-trip");
-            state.samples[0] = gg::media::loadSample(file, {}).entry;
+            state.samples[0] =
+                gg::media::loadSample(file, {}, gg::media::kDefaultDecodeBound).entry;
             REQUIRE(gg::core::isValidMediaEntry(*state.samples[0]));
         }
         const std::string changed = gg::core::encodeState(state);
