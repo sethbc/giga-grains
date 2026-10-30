@@ -13,6 +13,7 @@
 #include <sst/cpputils/rtsan_support.h>
 
 #include "gg/core/Window.h"
+#include "gg/grain/Budget.h"
 #include "gg/grain/CloudScheduler.h"
 #include "gg/grain/GrainPool.h"
 #include "gg/grain/SincTable.h"
@@ -27,7 +28,9 @@ struct EngineConfig
 {
     double sampleRate{48000.0};  ///< Output sample rate; finite and > 0.
     uint32_t maxBlockSize{4096}; ///< process() works in blocks of at most this many frames; > 0.
-    /// The most grains that may sound at once; below 2^31, since the pool stores twice as many.
+    /// The most grains that may be admitted to sound at once, at most kMaxGrainCapacity (spec
+    /// §6.6); the pool stores twice as many. A stolen grain fading out still sounds, so up to
+    /// one more per steal in flight may sound beside them.
     uint32_t grainCapacity{4096};
     uint64_t seed{0};
     /// > 0 allocates a stereo live ring, which SourceMode::Live reads (spec §6.3); 0 means no
@@ -45,6 +48,12 @@ struct EngineConfig
 /// real-time safe.
 using GrainEventSink = void (*)(void *ctx, uint32_t layer, const GrainSpec &);
 
+/// Called on the audio thread, from inside process(), once for every grain the overload ladder
+/// steals (M2 engine spec §6.5), with the engine's EngineConfig::layer, the stolen grain's index
+/// and the onset of the grain it makes room for, immediately before that grain's GrainEventSink
+/// call. It must be real-time safe.
+using GrainStealSink = void (*)(void *ctx, uint32_t layer, uint64_t index, int64_t onset);
+
 /// The grain engine, one layer's (spec §6.2): one Cloud grain stream (layer EngineConfig::layer,
 /// stream 0) whose new grains read one source kind, a sample (SourceMode::Sample, the default)
 /// or the live ring (SourceMode::Live). Each grain keeps reading the source it started on: when a
@@ -59,8 +68,9 @@ using GrainEventSink = void (*)(void *ctx, uint32_t layer, const GrainSpec &);
 /// - each grain's read position and window phase come from its elapsed time since its onset,
 ///   never from state accumulated across blocks;
 /// - grains are summed in spawn order;
-/// - a grain is admitted when fewer than grainCapacity grains are still sounding at its onset,
-///   and otherwise dropped. That depends only on the schedule, not on block boundaries;
+/// - a grain is admitted, lowered, admitted by stealing or dropped by the overload ladder
+///   (below) from the grains still sounding at its onset, their latched ends and weights, and
+///   the quota in effect. That depends only on the schedule, not on block boundaries;
 /// - live mode writes each block's input into the ring before any grain reads it. At output
 ///   sample t a grain reads only the window [R(t) − N, R(t) − 1]: frames written at or before
 ///   t, and at least M = 256 frames before it unless a freeze has stopped the head and the fade
@@ -91,6 +101,22 @@ using GrainEventSink = void (*)(void *ctx, uint32_t layer, const GrainSpec &);
 /// that moves the oldest frame onto it, the head-proximity fade (LiveSource::fade) covers: each
 /// output sample multiplies the grain by the fade at its read position, and where the fade is
 /// 0 nothing is read, so neither stale data nor NaN can reach the output.
+///
+/// **The overload ladder** (M2 engine spec §6.4, §6.5; INTENT §14). Each sounding grain weighs
+/// w(t) = grainWeight(t, stereo) (Budget.h), stereo when it reads a source of two or more
+/// channels or the ring, and the pool's ledger keeps W(o), the summed weight of the grains
+/// whose end is after o. A draw at onset o with tier q is:
+/// 1. admitted at q if W(o) + w(q) <= quota and fewer than grainCapacity grains sound;
+/// 2. otherwise, with that room, admitted at the highest lower tier t (Normal, then Eco) with
+///    W(o) + w(t) <= quota, and counted in loweredGrains();
+/// 3. otherwise the oldest unstolen sounding grain (GrainPool::oldestSounding) is stolen if it
+///    has sounded at least kStealThreshold of its window, (o − onsetSample) − onsetFrac >=
+///    0.5 × durationSamples, and W(o) − w(old) + w(t) <= quota for some t <= q: it ends at
+///    o + min(kStealFade, what it had left) (GrainPool::steal), keeping its weight until then;
+///    the draw is admitted at the highest such t and the steal counted in stolenGrains() and
+///    reported to the steal sink. Otherwise the draw is dropped and counted in droppedGrains().
+/// At most one grain is stolen per draw, and a stolen grain is never stolen again. The grain
+/// latches the tier and weight chosen (GrainSpec::tier, GrainSpec::weight).
 class Engine
 {
   public:
@@ -99,7 +125,8 @@ class Engine
 
     /// Allocates everything process() needs, the live ring included. Throws
     /// std::invalid_argument if sampleRate is not finite and positive, maxBlockSize is 0,
-    /// liveSeconds is not finite and >= 0, grainCapacity is 2^31 or more, or layer is 4 or more
+    /// liveSeconds is not finite and >= 0, grainCapacity is above kMaxGrainCapacity, or layer is
+    /// 4 or more
     /// (all checked before anything is allocated), or if the ring's storage, N + maxBlockSize
     /// frames, would exceed 2^40.
     explicit Engine(const EngineConfig &config);
@@ -211,10 +238,21 @@ class Engine
     /// while process() is not running.
     void setEventSink(GrainEventSink sink, void *ctx) noexcept;
 
+    /// The steal sink (see GrainStealSink), with setEventSink's rules; nullptr removes it.
+    void setStealSink(GrainStealSink sink, void *ctx) noexcept;
+
+    /// This engine's share of the Budget, in weight units (M2 engine spec §6.4): the overload
+    /// ladder admits grains while their summed weight fits it. The default, kUnlimitedQuota,
+    /// never binds, so only grainCapacity can. Applies from the next process() call's first
+    /// frame, to every draw from then on; the grains already sounding are not cut. Real-time
+    /// safe, with the same threading rule as setCloudParams. Kept by reset().
+    void setQuota(uint64_t units) noexcept { requestedQuota_ = units; }
+
     /// Silences every grain and restarts the clock, the schedule and ring time at 0. Keeps the
     /// current source (the previous one retires, see takeRetiredSource), the source mode, the
-    /// enable gate, the Cloud parameters, the held keys, the note gate, the freeze setting and
-    /// the sink: the next process() continues as a new engine with those settings would, a
+    /// enable gate, the Cloud parameters, the held keys, the note gate, the freeze setting, the
+    /// quota and the sinks, and zeroes the dropped, lowered and stolen counts: the next process()
+    /// continues as a new engine with those settings would, a
     /// freeze ramping down from its first frame. The ring's old frames can't be read again.
     /// Real-time safe, but not synchronized with process(): call it on the audio thread between
     /// process() calls, or while process() is not running.
@@ -260,9 +298,15 @@ class Engine
     /// The grains still sounding after the last process() call: the pool retires the finished
     /// ones at the end of every block.
     uint32_t activeGrains() const noexcept { return pool_.size(); }
-    /// Grains the schedule asked for that found the pool full or, in Live mode, whose read span
+    /// Grains the schedule asked for that the overload ladder dropped (no room by quota or
+    /// capacity, and the oldest grain not yet stealable) or, in Live mode, whose read span
     /// doesn't fit the ring, since construction or reset().
     uint64_t droppedGrains() const noexcept { return dropped_; }
+    /// Grains admitted at a lower tier than their draw's, by the overload ladder's rung 2 or by
+    /// a steal, since construction or reset().
+    uint64_t loweredGrains() const noexcept { return lowered_; }
+    /// Grains the overload ladder stole to admit another, since construction or reset().
+    uint64_t stolenGrains() const noexcept { return stolen_; }
     /// The source mode in effect: set by the last process() call (see setSourceMode).
     SourceMode sourceMode() const noexcept { return mode_; }
     /// N, the live ring's length in frames; 0 without a ring.
@@ -349,9 +393,18 @@ class Engine
 
     GrainEventSink sink_{nullptr};
     void *sinkCtx_{nullptr};
+    GrainStealSink stealSink_{nullptr};
+    void *stealCtx_{nullptr};
+
+    // The quota in effect, and as last requested (setQuota); process() applies it at its first
+    // frame.
+    uint64_t quota_{kUnlimitedQuota};
+    uint64_t requestedQuota_{kUnlimitedQuota};
 
     int64_t clock_{0};
     uint64_t dropped_{0};
+    uint64_t lowered_{0};
+    uint64_t stolen_{0};
 };
 } // namespace gg
 

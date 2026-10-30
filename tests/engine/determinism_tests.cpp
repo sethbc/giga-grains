@@ -21,6 +21,7 @@
 #include "gg/core/MathDet.h"
 #include "gg/core/Rng.h"
 #include "gg/engine/Engine.h"
+#include "gg/grain/Budget.h"
 #include "gg/grain/Tier.h"
 #include "gg/source/PreparedSource.h"
 
@@ -959,6 +960,120 @@ TEST_CASE("a source kind switch is block-size invariant", "[determinism]")
         renderKindSwitch(input, source, blockSizes, r);
         REQUIRE_FALSE(r.log.overflowed);
         REQUIRE(r.log.grains == ref.log.grains);
+        REQUIRE(sameBits(ref.audio.left, r.audio.left));
+        REQUIRE(sameBits(ref.audio.right, r.audio.right));
+    }
+}
+
+namespace
+{
+// The overload ladder's exit case (spec §6.5): 16,384 one-second grains a second into one engine
+// of capacity 16,384 at a quota of 1,024 Normal stereo grains (4,096 units), over the stereo
+// sine, for 1.5 s. The quota fills within the first 3,000 samples; the grains drawn after it
+// drop until the oldest is half-way, at 0.5 s, and from then on steal one grain at a time.
+constexpr int64_t kOverloadFrames = 72000;
+constexpr uint64_t kOverloadQuota = 4096;
+
+struct Steal
+{
+    uint64_t index;
+    int64_t onset;
+    friend bool operator==(const Steal &, const Steal &) = default;
+};
+
+struct OverloadRender
+{
+    Render audio;
+    std::vector<Steal> steals;
+    bool overflowed{false};
+    uint64_t spawned{0};
+    uint64_t dropped{0};
+    uint64_t lowered{0};
+    uint64_t stolen{0};
+
+    OverloadRender() { steals.reserve(4096); }
+
+    static void spawn(void *ctx, uint32_t, const gg::GrainSpec &)
+    {
+        ++static_cast<OverloadRender *>(ctx)->spawned;
+    }
+    static void steal(void *ctx, uint32_t, uint64_t index, int64_t onset)
+    {
+        auto *r = static_cast<OverloadRender *>(ctx);
+        if (r->steals.size() < r->steals.capacity())
+        {
+            r->steals.push_back({index, onset});
+        }
+        else
+        {
+            r->overflowed = true;
+        }
+    }
+};
+
+void renderOverload(const std::shared_ptr<const gg::SampleBuffer> &source,
+                    const std::vector<uint32_t> &blockSizes, OverloadRender &r)
+{
+    gg::Engine engine({kSampleRate, kMaxBlock, gg::kMaxGrainCapacity, 42});
+    engine.setSource(source);
+    gg::CloudParams p = kParams;
+    p.densityHz = 16384.0; // periodic: an onset every 375/128 samples, exactly
+    p.distribution = 0.0;
+    p.grainDurationSec = 1.0;
+    engine.setCloudParams(p);
+    engine.setQuota(kOverloadQuota);
+    engine.setEventSink(&OverloadRender::spawn, &r);
+    engine.setStealSink(&OverloadRender::steal, &r);
+    constexpr float kUnwritten = std::numeric_limits<float>::quiet_NaN();
+    r.audio.left.assign(static_cast<std::size_t>(kOverloadFrames), kUnwritten);
+    r.audio.right.assign(static_cast<std::size_t>(kOverloadFrames), kUnwritten);
+    int64_t done = 0;
+    for (std::size_t next = 0; done < kOverloadFrames; ++next)
+    {
+        const uint32_t want = blockSizes[next % blockSizes.size()];
+        const auto n = static_cast<uint32_t>(std::min<int64_t>(want, kOverloadFrames - done));
+        float *out[2] = {r.audio.left.data() + done, r.audio.right.data() + done};
+        engine.process(out, 2, n);
+        done += n;
+    }
+    r.dropped = engine.droppedGrains();
+    r.lowered = engine.loweredGrains();
+    r.stolen = engine.stolenGrains();
+}
+} // namespace
+
+TEST_CASE("the overload ladder is block-size invariant", "[determinism][budget]")
+{
+    const auto source = sineSource();
+    OverloadRender ref;
+    renderOverload(source, {kMaxBlock}, ref);
+    REQUIRE(allFinite(ref.audio.left));
+    REQUIRE(allFinite(ref.audio.right));
+    REQUIRE(peak(ref.audio.left) > 0.05f);
+    REQUIRE_FALSE(ref.overflowed);
+    // Guard against a vacuous pass: every rung but the first was taken.
+    REQUIRE(ref.dropped > 0);
+    REQUIRE(ref.stolen > 0);
+    REQUIRE(ref.steals.size() == ref.stolen);
+    REQUIRE(ref.spawned + ref.dropped == 24576); // 1.5 s at 16,384 Hz
+    // Nothing steals before the oldest grain is half-way.
+    REQUIRE(ref.steals.front().onset >= 24000);
+
+    // The reference is the 4096-frame render; each of these renders over a thousand grains for
+    // 1.5 s, so the reference isn't rendered twice.
+    const auto random = randomSplit();
+    for (const auto &blockSizes : {std::vector<uint32_t>{1}, std::vector<uint32_t>{32},
+                                   std::vector<uint32_t>{64}, std::vector<uint32_t>{511}, random})
+    {
+        INFO("first block size = " << blockSizes.front() << " of " << blockSizes.size());
+        OverloadRender r;
+        renderOverload(source, blockSizes, r);
+        REQUIRE_FALSE(r.overflowed);
+        REQUIRE(r.spawned == ref.spawned);
+        REQUIRE(r.dropped == ref.dropped);
+        REQUIRE(r.lowered == ref.lowered);
+        REQUIRE(r.stolen == ref.stolen);
+        REQUIRE(r.steals == ref.steals);
         REQUIRE(sameBits(ref.audio.left, r.audio.left));
         REQUIRE(sameBits(ref.audio.right, r.audio.right));
     }

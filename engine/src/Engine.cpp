@@ -31,10 +31,10 @@ const EngineConfig &validated(const EngineConfig &config)
     {
         throw std::invalid_argument("Engine: liveSeconds must be finite and >= 0");
     }
-    // The pool stores 2 × grainCapacity grains, a count held in a uint32_t (GrainPool).
-    if (config.grainCapacity >= (uint32_t{1} << 31))
+    // Spec §6.6: the pool's ceiling (it stores 2 × grainCapacity grains).
+    if (config.grainCapacity > kMaxGrainCapacity)
     {
-        throw std::invalid_argument("Engine: grainCapacity must be below 2^31");
+        throw std::invalid_argument("Engine: grainCapacity must be at most 16384");
     }
     // Four layers, A to D (spec §6.2).
     if (config.layer >= 4)
@@ -223,6 +223,12 @@ void Engine::setEventSink(GrainEventSink sink, void *ctx) noexcept
     sinkCtx_ = ctx;
 }
 
+void Engine::setStealSink(GrainStealSink sink, void *ctx) noexcept
+{
+    stealSink_ = sink;
+    stealCtx_ = ctx;
+}
+
 void Engine::reset() noexcept
 {
     clearGrains();
@@ -230,6 +236,8 @@ void Engine::reset() noexcept
     live_.reset();
     clock_ = 0;
     dropped_ = 0;
+    lowered_ = 0;
+    stolen_ = 0;
     retirePrevious(); // no grain reads it any more
 }
 
@@ -263,6 +271,7 @@ void Engine::process(const float *const *in, uint32_t numInChannels, float *cons
         }
     }
     live_.setFrozen(freeze_);
+    quota_ = requestedQuota_; // spec §6.4: from this call's first frame
     if (in == nullptr)
     {
         numInChannels = 0;
@@ -402,28 +411,81 @@ bool Engine::liveGrain(const GrainDraw &d, GrainSpec &g) const noexcept
     return true;
 }
 
-void Engine::admit(const GrainSpec &g, float *const dst[2], int64_t blockStart,
+void Engine::admit(const GrainSpec &draw, float *const dst[2], int64_t blockStart,
                    int64_t &renderedTo) noexcept
 {
-    // Count only the grains still sounding at the onset, so admission doesn't depend on where
-    // the block boundaries fall (the pool may still store grains that finished earlier in the
-    // block, because retirement normally waits for the block's end).
-    if (!pool_.canAdmit(g.onsetSample))
+    const int64_t onset = draw.onsetSample;
+    if (pool_.storageFull())
+    {
+        // Many grains finished in this block. Finish the pool up to the onset, so the grains
+        // retired here have played all their samples, then retire them, before the ladder looks
+        // at the rows: what is left is the grains still sounding at the onset. Retiring early
+        // changes no output and no decision, which depend only on the grains still sounding.
+        renderPool(dst, blockStart, renderedTo, onset);
+        renderedTo = onset;
+        pool_.retireFinished(onset);
+        if (pool_.storageFull())
+        {
+            // Every stored grain still sounds: 2 × capacity, which only grains stolen faster
+            // than their fades end can make. Nothing can be stored, so the draw drops.
+            ++dropped_;
+            return;
+        }
+    }
+
+    // The overload ladder (spec §6.5; the class comment). Count only the grains still sounding
+    // at the onset, by their latched ends and weights, so admission doesn't depend on where the
+    // block boundaries fall (the pool may still store grains that finished earlier in the block,
+    // because retirement normally waits for the block's end; carry-over row 51).
+    const bool stereo = draw.sourceSlot == kLiveSlot || !slots_[draw.sourceSlot].mono;
+    const uint64_t load = pool_.soundingWeight(onset);
+    // The highest tier t <= the draw's with base + w(t) <= quota_, into `tier`.
+    const auto fits = [this, &draw, stereo](uint64_t base, Tier &tier) {
+        for (int t = static_cast<int>(draw.tier); t >= 0; --t)
+        {
+            const auto candidate = static_cast<Tier>(t);
+            if (base + grainWeight(candidate, stereo) <= quota_)
+            {
+                tier = candidate;
+                return true;
+            }
+        }
+        return false;
+    };
+    Tier tier = draw.tier;
+    bool admitted = pool_.soundingCount(onset) < pool_.capacity() && fits(load, tier);
+    if (!admitted)
+    {
+        // Rung 3: the oldest unstolen sounding grain, once it is half-way, and only if its
+        // weight makes room. Its weight stays in the ledger until its new end; the draw is
+        // admitted on its credit.
+        const GrainRows &rows = pool_.rows();
+        uint32_t row = 0;
+        if (pool_.oldestSounding(onset, row) &&
+            static_cast<double>(onset - rows.onsetSample[row]) - rows.onsetFrac[row] >=
+                kStealThreshold * rows.durationSamples[row] &&
+            fits(load - rows.weight[row], tier))
+        {
+            const uint64_t index = rows.index[row];
+            pool_.steal(row, onset);
+            ++stolen_;
+            if (stealSink_ != nullptr)
+            {
+                stealSink_(stealCtx_, config_.layer, index, onset);
+            }
+            admitted = true;
+        }
+    }
+    if (!admitted)
     {
         ++dropped_;
         return;
     }
-    if (pool_.storageFull())
-    {
-        // More than capacity grains finished in this block. Finish the pool up to the onset, so
-        // the grains retired here have played all their samples, then retire them: fewer than
-        // capacity still sound, so g fits.
-        renderPool(dst, blockStart, renderedTo, g.onsetSample);
-        renderedTo = g.onsetSample;
-        pool_.retireFinished(g.onsetSample);
-    }
-    // Can't fail: storage was full only if the retirement above just ran, and it left only the
-    // grains still sounding at the onset, fewer than capacity by canAdmit.
+    lowered_ += tier != draw.tier ? 1 : 0;
+    GrainSpec g = draw;
+    g.tier = tier;
+    g.weight = static_cast<uint8_t>(grainWeight(tier, stereo));
+    // Can't fail: storage isn't full (above), and a steal stores nothing.
     [[maybe_unused]] const bool spawned = pool_.spawn(g);
     assert(spawned);
     if (g.sourceSlot != kLiveSlot)

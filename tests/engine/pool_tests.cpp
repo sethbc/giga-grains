@@ -2,14 +2,17 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright 2026, the Giga Grains authors (see git history)
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <vector>
 
 #include <catch2/catch_test_macros.hpp>
 
 #include "gg/core/Rng.h"
 #include "gg/core/Window.h"
+#include "gg/grain/Budget.h"
 #include "gg/grain/Envelope.h"
 #include "gg/grain/GrainPool.h"
 #include "gg/grain/Tier.h"
@@ -284,4 +287,223 @@ TEST_CASE("pool admission matches a brute-force count", "[pool]")
     REQUIRE(admitted.size() < kGrains);
     REQUIRE(earlyRetirements > 0);
     REQUIRE(endsRetiredAtBlockEnd > 0);
+}
+
+namespace
+{
+// A grain of the given weight, onset and window length, for the ledger's tests.
+gg::GrainSpec weighted(uint64_t index, int64_t onsetSample, double durationSamples, uint8_t weight)
+{
+    gg::GrainSpec g = grain(index, onsetSample, durationSamples);
+    g.weight = weight;
+    return g;
+}
+
+uint64_t draw(uint32_t stream, uint64_t k)
+{
+    return gg::rng::hash({11, 0, stream, gg::rng::Field::SignalNoise, k});
+}
+} // namespace
+
+TEST_CASE("the weighted ledger matches a brute-force sum", "[pool]")
+{
+    // 1,000 grains of weights 1 to 12 and lengths 16 to 4,000 samples, onsets advancing by 0 to
+    // 19 samples, into a pool large enough that storage never fills. At 200 onsets (one every
+    // fifth grain) soundingWeight and soundingCount must equal the sum and count, by a scan, of
+    // the spawned grains whose end is after the onset; the pool is also retired at some of them,
+    // as the engine retires at block ends, which must change neither answer.
+    constexpr uint32_t kGrains = 1000;
+    gg::GrainPool pool(kGrains);
+    std::vector<gg::GrainSpec> spawned;
+    int64_t onset = 0;
+    uint32_t checks = 0;
+    uint64_t largest = 0;
+    for (uint64_t k = 0; k < kGrains; ++k)
+    {
+        onset += static_cast<int64_t>(draw(0, k) % 20);
+        const auto weight = static_cast<uint8_t>(1 + draw(1, k) % 12);
+        const double dur = 16.0 + static_cast<double>(draw(2, k) % 3985);
+        if (k % 5 == 0)
+        {
+            uint64_t sum = 0;
+            uint32_t count = 0;
+            for (const gg::GrainSpec &g : spawned)
+            {
+                if (gg::grainEndSample(g) > onset)
+                {
+                    sum += g.weight;
+                    ++count;
+                }
+            }
+            INFO("grain " << k << " at onset " << onset);
+            REQUIRE(pool.soundingWeight(onset) == sum);
+            REQUIRE(pool.soundingCount(onset) == count);
+            REQUIRE(pool.soundingWeight(onset) == sum); // forgetting twice changes nothing
+            largest = std::max(largest, sum);
+            ++checks;
+            if (draw(3, k) % 4 == 0)
+            {
+                pool.retireFinished(onset);
+            }
+        }
+        const gg::GrainSpec g = weighted(k, onset, dur, weight);
+        REQUIRE(pool.spawn(g));
+        spawned.push_back(g);
+    }
+    REQUIRE(checks == 200);
+    REQUIRE(largest > 500); // many grains overlapped
+}
+
+TEST_CASE("a steal moves the end and keeps the heap and earliestEnd correct", "[pool]")
+{
+    // 300 grains with onsets 0 to 299 and lengths 2,000 to 5,999 samples. From onset 1,000 on,
+    // in steps of 7 samples, a grain chosen at random among those still sounding is stolen: its
+    // end moves to onset + min(256, end - onset), its fade's start and scale are latched, and
+    // the heap's sum and count must still match a scanned model with the moved ends. Retiring at
+    // each step must remove exactly the grains whose (moved) end has passed, keeping spawn
+    // order; oldestSounding must return the first unstolen sounding grain.
+    constexpr uint32_t kGrains = 300;
+    gg::GrainPool pool(kGrains);
+    struct Model
+    {
+        uint64_t index;
+        int64_t end;
+        uint8_t weight;
+        bool stolen;
+    };
+    std::vector<Model> model;
+    for (uint64_t k = 0; k < kGrains; ++k)
+    {
+        const auto weight = static_cast<uint8_t>(1 + draw(4, k) % 12);
+        const gg::GrainSpec g = weighted(k, static_cast<int64_t>(k),
+                                         2000.0 + static_cast<double>(draw(5, k) % 4000), weight);
+        REQUIRE(pool.spawn(g));
+        model.push_back({k, gg::grainEndSample(g), weight, false});
+    }
+    uint32_t steals = 0;
+    uint32_t shortSteals = 0;
+    for (int64_t onset = 1000; onset < 7000; onset += 7)
+    {
+        // The model: what still sounds, its weight, and the first unstolen sounding grain.
+        uint64_t sum = 0;
+        uint32_t count = 0;
+        std::vector<std::size_t> sounding;
+        std::size_t oldest = model.size();
+        for (std::size_t m = 0; m < model.size(); ++m)
+        {
+            if (model[m].end > onset)
+            {
+                sum += model[m].weight;
+                ++count;
+                sounding.push_back(m);
+                if (!model[m].stolen && oldest == model.size())
+                {
+                    oldest = m;
+                }
+            }
+        }
+        INFO("onset " << onset);
+        REQUIRE(pool.soundingWeight(onset) == sum);
+        REQUIRE(pool.soundingCount(onset) == count);
+        uint32_t row = 0;
+        const bool found = pool.oldestSounding(onset, row);
+        REQUIRE(found == (oldest != model.size()));
+        if (found)
+        {
+            REQUIRE(pool.rows().index[row] == model[oldest].index);
+            REQUIRE(pool.rows().fadeStart[row] == std::numeric_limits<int64_t>::max());
+        }
+
+        // Steal a random sounding grain not stolen before.
+        std::vector<std::size_t> candidates;
+        for (const std::size_t m : sounding)
+        {
+            if (!model[m].stolen)
+            {
+                candidates.push_back(m);
+            }
+        }
+        if (!candidates.empty() && draw(6, static_cast<uint64_t>(onset)) % 3 != 0)
+        {
+            const std::size_t m =
+                candidates[draw(7, static_cast<uint64_t>(onset)) % candidates.size()];
+            uint32_t r = 0;
+            while (pool.rows().index[r] != model[m].index)
+            {
+                ++r;
+            }
+            const int64_t left = model[m].end - onset;
+            const int64_t fade = std::min<int64_t>(gg::kStealFade, left);
+            pool.steal(r, onset);
+            model[m].end = onset + fade;
+            model[m].stolen = true;
+            REQUIRE(pool.rows().endSample[r] == onset + fade);
+            REQUIRE(pool.rows().fadeStart[r] == onset);
+            REQUIRE(pool.rows().invFade[r] == 1.0f / static_cast<float>(fade));
+            ++steals;
+            shortSteals += left < gg::kStealFade ? 1 : 0;
+        }
+
+        // Retire at the next onset, as the engine does at a block's end before it: exactly the
+        // grains whose end has passed go, the rest stay in spawn order with their rows.
+        const int64_t now = onset + 7;
+        pool.retireFinished(now);
+        std::vector<uint64_t> expected;
+        for (const Model &g : model)
+        {
+            if (g.end > now)
+            {
+                expected.push_back(g.index);
+            }
+        }
+        REQUIRE(indices(pool) == expected);
+        const gg::GrainRows &rows = pool.rows();
+        for (uint32_t i = 0; i < pool.size(); ++i)
+        {
+            const Model &g = model[rows.index[i]];
+            REQUIRE(rows.endSample[i] == g.end);
+            REQUIRE(rows.weight[i] == g.weight);
+            REQUIRE((rows.fadeStart[i] != std::numeric_limits<int64_t>::max()) == g.stolen);
+            REQUIRE((rows.invFade[i] != 0.0f) == g.stolen);
+        }
+    }
+    REQUIRE(pool.size() == 0);
+    REQUIRE(steals > 200);
+    REQUIRE(shortSteals > 0); // some grains had less than the fade left
+}
+
+TEST_CASE("a steal of a grain with less than the fade left fades over what remains", "[pool]")
+{
+    gg::GrainPool pool(4);
+    // Ends at 1,000 + 498 + 2 = 1,500.
+    REQUIRE(pool.spawn(weighted(0, 1000, 498.0, 4)));
+    REQUIRE(pool.spawn(weighted(1, 1001, 4000.0, 3)));
+    REQUIRE(pool.rows().fadeStart[0] == std::numeric_limits<int64_t>::max());
+    REQUIRE(pool.rows().invFade[0] == 0.0f);
+    REQUIRE(pool.soundingWeight(1400) == 7);
+
+    // 100 samples left, fewer than kStealFade: the fade covers them, so the end stays.
+    uint32_t row = 9;
+    REQUIRE(pool.oldestSounding(1400, row));
+    REQUIRE(row == 0);
+    pool.steal(row, 1400);
+    REQUIRE(pool.rows().endSample[0] == 1500);
+    REQUIRE(pool.rows().fadeStart[0] == 1400);
+    REQUIRE(pool.rows().invFade[0] == 1.0f / 100.0f);
+    // Its weight stays in the ledger until its end (spec §6.5).
+    REQUIRE(pool.soundingWeight(1499) == 7);
+    REQUIRE(pool.soundingWeight(1500) == 3);
+
+    // A stolen grain is never the oldest again; the next one is.
+    REQUIRE(pool.oldestSounding(1400, row));
+    REQUIRE(row == 1);
+    // One sample left: F is 1.
+    pool.steal(1, 5002);
+    REQUIRE(pool.rows().endSample[1] == 5003);
+    REQUIRE(pool.rows().invFade[1] == 1.0f);
+    REQUIRE_FALSE(pool.oldestSounding(5002, row));
+    REQUIRE(pool.soundingCount(5002) == 1);
+    pool.retireFinished(5003);
+    REQUIRE(pool.size() == 0);
+    REQUIRE(pool.soundingWeight(5003) == 0);
 }

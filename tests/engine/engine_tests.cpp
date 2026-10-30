@@ -22,6 +22,7 @@
 #include "gg/core/Rng.h"
 #include "gg/core/Window.h"
 #include "gg/engine/Engine.h"
+#include "gg/grain/Budget.h"
 #include "gg/grain/GrainKernels.h"
 #include "gg/grain/GrainPool.h"
 #include "gg/grain/SincTable.h"
@@ -1351,5 +1352,332 @@ TEST_CASE("the level accessor returns level 0 for any index", "[engine][layers]"
         REQUIRE(level.view.capacity == view.capacity);
         REQUIRE(level.view.frames == view.frames);
         REQUIRE(level.decimation == 1);
+    }
+}
+
+namespace
+{
+// The steals and spawns in the order the engine reports them, recorded without allocating.
+struct OrderLog
+{
+    struct Event
+    {
+        bool steal;
+        uint64_t index;
+        int64_t onset;
+        gg::Tier tier;
+    };
+    static constexpr std::size_t kCapacity = 4096;
+    std::vector<Event> events;
+    bool overflowed{false};
+
+    OrderLog() { events.reserve(kCapacity); }
+
+    void push(const Event &e)
+    {
+        if (events.size() < kCapacity)
+        {
+            events.push_back(e);
+        }
+        else
+        {
+            overflowed = true;
+        }
+    }
+    static void spawn(void *ctx, uint32_t, const gg::GrainSpec &g)
+    {
+        static_cast<OrderLog *>(ctx)->push({false, g.index, g.onsetSample, g.tier});
+    }
+    static void steal(void *ctx, uint32_t, uint64_t index, int64_t onset)
+    {
+        static_cast<OrderLog *>(ctx)->push({true, index, onset, gg::Tier::Normal});
+    }
+    uint64_t count(bool steals) const
+    {
+        return static_cast<uint64_t>(std::count_if(
+            events.begin(), events.end(), [steals](const Event &e) { return e.steal == steals; }));
+    }
+};
+
+// 200 Hz of one-second grains, periodic and centred: an onset every 240 samples, each grain
+// sounding 48,002 samples (durationSamples 48,000), so 200 are wanted at once.
+gg::CloudParams overload() { return params(200.0, 1.0, 0.5, 0.0, 0.0, 0.25f); }
+} // namespace
+
+TEST_CASE("the quota lowers the tier before it drops", "[engine][budget]")
+{
+    // 16 Hz of 0.1 s grains: an onset every 3,000 samples and each grain 4,802 long, so exactly
+    // one other grain sounds at every onset after the first. The draws are HQ; no quota below
+    // 12 units fits an HQ stereo grain, so each is lowered to the highest tier that fits.
+    gg::CloudParams p = params(16.0, 0.1, 0.5, 0.0, 0.0, 0.5f);
+    p.quality = gg::Tier::HQ;
+    const auto run = [&](uint32_t channels, uint64_t quota, SinkLog &log) {
+        gg::Engine engine(gg::EngineConfig{});
+        engine.setSource(makeSine(channels, 96000, 48000.0));
+        engine.setCloudParams(p);
+        engine.setQuota(quota);
+        engine.setEventSink(&SinkLog::record, &log);
+        const Render r = render(engine, 96000, 256);
+        REQUIRE(allFinite(r.left));
+        REQUIRE(peak(r.left) > 0.0f);
+        REQUIRE_FALSE(log.overflowed);
+        REQUIRE(log.grains.size() == 32);
+        REQUIRE(engine.loweredGrains() == 32);
+        REQUIRE(engine.droppedGrains() == 0);
+        REQUIRE(engine.stolenGrains() == 0);
+    };
+
+    SECTION("stereo, 11 units: two Normal grains fit, one HQ grain doesn't")
+    {
+        SinkLog log;
+        run(2, 11, log);
+        for (const gg::GrainSpec &g : log.grains)
+        {
+            REQUIRE(g.tier == gg::Tier::Normal);
+            REQUIRE(g.weight == gg::grainWeight(gg::Tier::Normal, true));
+        }
+    }
+    SECTION("stereo, 7 units: Normal, then Eco beside it, in turn")
+    {
+        // Grain 0 finds 0 units sounding (Normal, 4), grain 1 finds 4 (Normal would be 8, Eco is
+        // 7), grain 2 finds grain 1's 3 (Normal, 7), and so on.
+        SinkLog log;
+        run(2, 7, log);
+        for (std::size_t k = 0; k < log.grains.size(); ++k)
+        {
+            INFO("grain " << k);
+            const gg::Tier t = k % 2 == 0 ? gg::Tier::Normal : gg::Tier::Eco;
+            REQUIRE(log.grains[k].tier == t);
+            REQUIRE(log.grains[k].weight == gg::grainWeight(t, true));
+        }
+    }
+    SECTION("mono, 8 units: a mono HQ grain is 9, two mono Normal grains 6")
+    {
+        SinkLog log;
+        run(1, 8, log);
+        for (const gg::GrainSpec &g : log.grains)
+        {
+            REQUIRE(g.tier == gg::Tier::Normal);
+            REQUIRE(g.weight == gg::grainWeight(gg::Tier::Normal, false));
+        }
+    }
+}
+
+TEST_CASE("a spent quota drops while the oldest grain is young and steals after half",
+          "[engine][budget]")
+{
+    // A quota of 10 Normal stereo grains (40 units). Grains 0 to 9 fill it; Eco (3) doesn't fit
+    // beside them. Grains 10 to 99 find the oldest grain, grain 0, less than half-way, and drop.
+    // Grain 100, at 24,000, finds grain 0 exactly half-way and steals it: grain 0 now ends at
+    // 24,256 and keeps its weight until then (spec §6.5), so grain 101, at 24,240, finds 44
+    // units and drops, and grain 102 steals grain 1. So grains 100 to 118 steal grains 0 to 9,
+    // one each, every other onset; then the oldest unstolen grain is grain 100, young again, and
+    // grains 119 to 199 drop.
+    gg::Engine engine(gg::EngineConfig{});
+    engine.setSource(makeSine(2, 96000, 48000.0));
+    engine.setCloudParams(overload());
+    engine.setQuota(40);
+    OrderLog log;
+    engine.setEventSink(&OrderLog::spawn, &log);
+    engine.setStealSink(&OrderLog::steal, &log);
+
+    render(engine, 24000, 100);
+    REQUIRE(log.count(false) == 10);
+    REQUIRE(engine.droppedGrains() == 90);
+    REQUIRE(engine.stolenGrains() == 0);
+
+    const Render r = render(engine, 24000, 100);
+    REQUIRE(allFinite(r.left));
+    REQUIRE_FALSE(log.overflowed);
+    REQUIRE(log.count(false) == 20);
+    REQUIRE(log.count(true) == 10);
+    REQUIRE(engine.stolenGrains() == 10);
+    REQUIRE(engine.droppedGrains() == 180);
+    REQUIRE(engine.loweredGrains() == 0);
+    // Each steal is one admission's: grain 100 + 2j steals grain j at its onset.
+    std::size_t j = 0;
+    for (std::size_t e = 0; e < log.events.size(); ++e)
+    {
+        if (log.events[e].steal)
+        {
+            INFO("steal " << j);
+            REQUIRE(log.events[e].index == j);
+            REQUIRE(log.events[e].onset == static_cast<int64_t>(24000 + 480 * j));
+            REQUIRE(e + 1 < log.events.size());
+            REQUIRE_FALSE(log.events[e + 1].steal);
+            REQUIRE(log.events[e + 1].index == 100 + 2 * j);
+            REQUIRE(log.events[e + 1].tier == gg::Tier::Normal);
+            ++j;
+        }
+    }
+    REQUIRE(j == 10);
+
+    engine.reset();
+    REQUIRE(engine.stolenGrains() == 0);
+    REQUIRE(engine.loweredGrains() == 0);
+    REQUIRE(engine.droppedGrains() == 0);
+}
+
+TEST_CASE("the capacity drops or steals like a spent quota", "[engine][budget]")
+{
+    // Capacity 32, quota unlimited: grains 0 to 31 fill the pool and 32 to 99 drop while grain 0
+    // is young. From grain 100 each onset steals the oldest unstolen grain: a stolen grain still
+    // sounds, but rung 3 doesn't ask for capacity, only for weight, and the quota is unlimited.
+    // So grains 100 to 131 steal grains 0 to 31, one each, and 132 to 199 drop.
+    gg::EngineConfig config;
+    config.grainCapacity = 32;
+    gg::Engine engine(config);
+    engine.setSource(makeSine(2, 96000, 48000.0));
+    engine.setCloudParams(overload());
+    OrderLog log;
+    engine.setEventSink(&OrderLog::spawn, &log);
+    engine.setStealSink(&OrderLog::steal, &log);
+
+    render(engine, 24000, 64);
+    REQUIRE(log.count(false) == 32);
+    REQUIRE(engine.droppedGrains() == 68);
+    REQUIRE(engine.stolenGrains() == 0);
+
+    render(engine, 24000, 64);
+    REQUIRE_FALSE(log.overflowed);
+    REQUIRE(log.count(false) == 64);
+    REQUIRE(engine.stolenGrains() == 32);
+    REQUIRE(engine.droppedGrains() == 136);
+    REQUIRE(engine.loweredGrains() == 0);
+}
+
+TEST_CASE("a steal sink reports each steal before the spawn", "[engine][budget]")
+{
+    // The capacity case above: every steal is reported, with the stolen grain's index and the
+    // onset of the grain it makes room for, immediately before that grain's spawn.
+    gg::EngineConfig config;
+    config.grainCapacity = 32;
+    config.layer = 2;
+    gg::Engine engine(config);
+    engine.setSource(makeSine(2, 96000, 48000.0));
+    engine.setCloudParams(overload());
+    OrderLog log;
+    engine.setEventSink(&OrderLog::spawn, &log);
+    struct Layers
+    {
+        OrderLog *log;
+        bool layerTwo{true};
+        static void steal(void *ctx, uint32_t layer, uint64_t index, int64_t onset)
+        {
+            auto *self = static_cast<Layers *>(ctx);
+            self->layerTwo = self->layerTwo && layer == 2;
+            OrderLog::steal(self->log, layer, index, onset);
+        }
+    } layers{&log};
+    engine.setStealSink(&Layers::steal, &layers);
+    render(engine, 48000, 1000);
+    REQUIRE_FALSE(log.overflowed);
+    REQUIRE(layers.layerTwo);
+
+    uint64_t steals = 0;
+    for (std::size_t e = 0; e < log.events.size(); ++e)
+    {
+        if (!log.events[e].steal)
+        {
+            continue;
+        }
+        INFO("event " << e);
+        REQUIRE(log.events[e].index == steals);
+        REQUIRE(e + 1 < log.events.size());
+        REQUIRE_FALSE(log.events[e + 1].steal);
+        REQUIRE(log.events[e + 1].onset == log.events[e].onset);
+        REQUIRE(log.events[e + 1].index == 100 + steals);
+        ++steals;
+    }
+    REQUIRE(steals == 32);
+    REQUIRE(engine.stolenGrains() == 32);
+
+    // Removing the sink stops the reports, not the steals.
+    engine.setStealSink(nullptr, nullptr);
+    engine.reset();
+    const std::size_t reported = log.events.size();
+    engine.setEventSink(nullptr, nullptr);
+    render(engine, 48000, 1000);
+    REQUIRE(log.events.size() == reported);
+    REQUIRE(engine.stolenGrains() == 32);
+}
+
+TEST_CASE("grainCapacity above 16384 is refused", "[engine][budget]")
+{
+    REQUIRE(gg::kMaxGrainCapacity == 16384);
+    for (const uint32_t bad : {gg::kMaxGrainCapacity + 1, uint32_t{1} << 20})
+    {
+        INFO("grainCapacity " << bad);
+        gg::EngineConfig config;
+        config.grainCapacity = bad;
+        REQUIRE_THROWS_AS(gg::Engine(config), std::invalid_argument);
+    }
+    gg::EngineConfig config;
+    config.grainCapacity = gg::kMaxGrainCapacity;
+    REQUIRE_NOTHROW(gg::Engine(config));
+}
+
+TEST_CASE("an unlimited quota admits as M1", "[engine][budget]")
+{
+    // The M1 saturation test's stream (400 Hz of 50 ms grains, about 20 wanted at once).
+    const auto source = makeSine(2, 48000, 48000.0);
+    const auto p = params(400.0, 0.05, 0.5, 0.5, -5.0, 0.7f);
+    struct Run
+    {
+        Render audio;
+        SinkLog log;
+        uint64_t dropped{0}, lowered{0}, stolen{0};
+    };
+    const auto run = [&](uint32_t capacity, bool setUnlimited, Run &r) {
+        gg::EngineConfig config;
+        config.grainCapacity = capacity;
+        config.seed = 11;
+        gg::Engine engine(config);
+        engine.setSource(source);
+        engine.setCloudParams(p);
+        if (setUnlimited)
+        {
+            engine.setQuota(gg::kUnlimitedQuota);
+        }
+        engine.setEventSink(&SinkLog::record, &r.log);
+        r.audio = render(engine, 24000, 333);
+        r.dropped = engine.droppedGrains();
+        r.lowered = engine.loweredGrains();
+        r.stolen = engine.stolenGrains();
+    };
+
+    SECTION("with room, every scheduled grain is admitted at its draw's tier")
+    {
+        Run r;
+        run(4096, false, r);
+        REQUIRE_FALSE(r.log.overflowed);
+        REQUIRE(r.log.grains.size() == 200); // 0.5 s at 400 Hz
+        for (std::size_t k = 0; k < r.log.grains.size(); ++k)
+        {
+            REQUIRE(r.log.grains[k].index == k);
+            REQUIRE(r.log.grains[k].tier == gg::Tier::Normal);
+            REQUIRE(r.log.grains[k].weight == gg::grainWeight(gg::Tier::Normal, true));
+        }
+        REQUIRE(r.dropped == 0);
+        REQUIRE(r.lowered == 0);
+        REQUIRE(r.stolen == 0);
+    }
+    SECTION("no quota set is the unlimited quota, at room and at capacity")
+    {
+        for (const uint32_t capacity : {4096u, 4u})
+        {
+            INFO("capacity " << capacity);
+            Run byDefault;
+            Run unlimited;
+            run(capacity, false, byDefault);
+            run(capacity, true, unlimited);
+            REQUIRE(sameBits(byDefault.audio.left, unlimited.audio.left));
+            REQUIRE(sameBits(byDefault.audio.right, unlimited.audio.right));
+            REQUIRE(byDefault.log.grains == unlimited.log.grains);
+            REQUIRE(byDefault.dropped == unlimited.dropped);
+            REQUIRE(byDefault.stolen == unlimited.stolen);
+            REQUIRE(byDefault.lowered == 0);
+            REQUIRE(unlimited.lowered == 0);
+        }
     }
 }

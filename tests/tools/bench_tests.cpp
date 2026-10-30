@@ -183,8 +183,11 @@ TEST_CASE("engine cases report their grain counts", "[bench]")
         }
         else if (r.name == "engine-full-pool")
         {
-            CHECK(r.grains >= 97.0); // capacity 50 + 48 = 98, against 500 grains of demand
-            CHECK(r.grains <= 98.0);
+            // Capacity 50 + 48 = 98, against 500 grains of demand. A full pool steals (M2 engine
+            // spec §6.6): a stolen grain sounds for its 256-sample fade beside the 98, and onsets
+            // come every 96 samples (500 Hz), so at most 3 fade at once.
+            CHECK(r.grains >= 97.0);
+            CHECK(r.grains <= 101.0);
         }
         else
         {

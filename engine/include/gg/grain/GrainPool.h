@@ -37,6 +37,12 @@ struct GrainSpec
     /// (Engine::kLiveSlot), the live ring (kept when the source mode changes;
     /// Engine::setSourceMode).
     uint8_t sourceSlot{0};
+    /// What the grain costs while it sounds, grainWeight(tier, stereo) (Budget.h): latched by
+    /// Engine::admit with the tier the ladder chose. The pool's ledger sums it.
+    uint8_t weight{4};
+    /// The mipmap level the grain reads (M2 engine spec §6.3); 0, the full-rate source, until
+    /// the engine sets it.
+    uint8_t level{0};
 
     /// Every member, sourceSlot included (as the plan asked): two grains that differ only in
     /// the slot they read compare unequal. Only tests compare GrainSpecs.
@@ -100,6 +106,13 @@ struct GrainRows
     const double *envReleaseStart;
     const double *envAttackScale;
     const double *envReleaseScale;
+    const uint8_t *weight; ///< GrainSpec::weight
+    const uint8_t *level;  ///< GrainSpec::level
+    /// The output sample at which the grain was stolen, so its fade starts (spec §6.5), or
+    /// INT64_MAX while it hasn't been: GrainPool::steal.
+    const int64_t *fadeStart;
+    /// 1 / F, the stolen grain's fade length F in samples; 0 while it hasn't been stolen.
+    const float *invFade;
 };
 
 /// The grain pool: a structure of arrays (INTENT §14), one array per GrainSpec field plus each
@@ -109,9 +122,15 @@ struct GrainRows
 ///
 /// **Admission** (ruling T3-b) allows capacity() grains to sound at once: canAdmit(onset) is true
 /// when fewer than capacity() of the grains spawned since the last clear() still sound at the
-/// onset (grainEndSample > onset). A min-heap of their end samples answers that in O(log
-/// capacity) without touching the arrays, so a grain that has finished but is still stored
-/// doesn't count.
+/// onset (endSample > onset). A min-heap of their ends answers that in O(log capacity) without
+/// touching the arrays, so a grain that has finished but is still stored doesn't count.
+///
+/// **The ledger** (M2 engine spec §6.4; carry-over row 51). Each heap entry carries its grain's
+/// weight and row, and the pool keeps the sum of the entries' weights, so soundingWeight(onset)
+/// is exactly the weight of the grains still sounding at the onset. Each row keeps its entry's
+/// position in the heap, moved by every sift and by moveRows, so steal() can move a grain's end
+/// earlier and decrease its heap key in O(log capacity), lowering earliestEnd_ with it: the end
+/// is mutable, and retirement and admission both see the moved end.
 ///
 /// **Storage** holds 2 × capacity() grains, finished or not, so the engine retires them once per
 /// block, after rendering, rather than at each admission (carry-over [103]). At a block's end
@@ -126,7 +145,8 @@ class GrainPool
 {
   public:
     /// Allocates 2 × capacity slots per array, and the heap. capacity must be below 2^31, since
-    /// the slot count is a uint32_t (the engine's default capacity is 4096).
+    /// the slot count is a uint32_t (the engine's default capacity is 4096, and it allows at most
+    /// kMaxGrainCapacity).
     explicit GrainPool(uint32_t capacity);
 
     // rows() points into this pool's own arrays.
@@ -138,14 +158,37 @@ class GrainPool
     /// The stored grains, finished or not; at most 2 × capacity().
     uint32_t size() const noexcept { return size_; }
 
-    /// Whether a grain with this onset may spawn: true when fewer than capacity() of the grains
-    /// spawned since the last clear() have grainEndSample > onset. First forgets every end
-    /// <= onset.
+    /// The summed weight of the grains spawned since the last clear() whose end (endSample, as
+    /// a steal may have moved it) is after the onset. First forgets every end <= onset.
     ///
-    /// Requires the onsets passed here, and the nowSample of every retireFinished() call before
-    /// them, not to decrease between clear()s: an end forgotten at one onset is never counted
-    /// again. Whatever restarts time (Engine::reset) must clear() the pool.
-    bool canAdmit(int64_t onset) noexcept SST_CPPUTILS_NONBLOCKING;
+    /// Requires the onsets passed here and to soundingCount, canAdmit, oldestSounding and steal,
+    /// and the nowSample of every retireFinished() call before them, not to decrease between
+    /// clear()s: an end forgotten at one onset is never counted again. Whatever restarts time
+    /// (Engine::reset) must clear() the pool.
+    uint64_t soundingWeight(int64_t onset) noexcept SST_CPPUTILS_NONBLOCKING;
+
+    /// How many of the grains spawned since the last clear() have an end after the onset. First
+    /// forgets every end <= onset, with soundingWeight's requirement.
+    uint32_t soundingCount(int64_t onset) noexcept SST_CPPUTILS_NONBLOCKING;
+
+    /// Whether a grain with this onset may spawn by count: soundingCount(onset) < capacity().
+    bool canAdmit(int64_t onset) noexcept SST_CPPUTILS_NONBLOCKING
+    {
+        return soundingCount(onset) < capacity_;
+    }
+
+    /// The oldest grain that may be stolen at the onset (spec §6.5): the first stored row, in
+    /// spawn order, whose end is after the onset and that hasn't been stolen. False when there
+    /// is none. Its scan starts from a cursor that only advances between retireFinished() calls
+    /// (a row it passes has ended or been stolen, so it is never the answer again) and restarts
+    /// at each, so the work is bounded by the rows stored.
+    bool oldestSounding(int64_t onset, uint32_t &row) noexcept SST_CPPUTILS_NONBLOCKING;
+
+    /// Steals the grain in `row`, which must sound at the onset and not have been stolen: with
+    /// F = min(kStealFade, endSample − onset), its end moves to onset + F, its fade starts at
+    /// the onset with invFade 1 / F, its heap key decreases to the new end and earliestEnd_
+    /// follows. Its weight stays in the ledger until the new end.
+    void steal(uint32_t row, int64_t onset) noexcept SST_CPPUTILS_NONBLOCKING;
 
     /// Whether all 2 × capacity() slots are in use, so spawn() would fail.
     bool storageFull() const noexcept { return size_ == slots_; }
@@ -154,9 +197,9 @@ class GrainPool
     /// Doesn't check canAdmit(): the caller does.
     bool spawn(const GrainSpec &g) noexcept SST_CPPUTILS_NONBLOCKING;
 
-    /// Removes every grain whose grainEndSample is <= nowSample, keeping the rest in spawn order,
-    /// and forgets their ends. nowSample must not exceed any onset later passed to canAdmit()
-    /// before the next clear().
+    /// Removes every grain whose endSample is <= nowSample, keeping the rest in spawn order, and
+    /// forgets their ends. nowSample must not exceed any onset later passed to soundingWeight()
+    /// and the others before the next clear(). Restarts oldestSounding's cursor.
     void retireFinished(int64_t nowSample) noexcept SST_CPPUTILS_NONBLOCKING;
 
     /// Removes every grain and forgets every end, so time may restart.
@@ -175,8 +218,25 @@ class GrainPool
     GrainSpec spec(uint32_t i) const noexcept;
 
   private:
-    /// Moves rows [from, from + n) of every array down to [to, to + n); to < from.
+    /// Moves rows [from, from + n) of every array down to [to, to + n); to < from. The rows'
+    /// heap entries follow them.
     void moveRows(uint32_t from, uint32_t to, uint32_t n) noexcept SST_CPPUTILS_NONBLOCKING;
+
+    // One sounding grain's ledger entry: its end, its weight and its row.
+    struct HeapEntry
+    {
+        int64_t end;
+        uint32_t weight;
+        uint32_t row;
+    };
+    // heapPos_ of a row that has no heap entry: its end has been forgotten.
+    static constexpr uint32_t kNotInHeap = std::numeric_limits<uint32_t>::max();
+    // Writes e at heap position pos and records the position in its row.
+    void place(uint32_t pos, const HeapEntry &e) noexcept SST_CPPUTILS_NONBLOCKING;
+    void siftUp(uint32_t pos) noexcept SST_CPPUTILS_NONBLOCKING;
+    void siftDown(uint32_t pos) noexcept SST_CPPUTILS_NONBLOCKING;
+    // Forgets every end <= t: pops them, subtracting their weights.
+    void forgetEnds(int64_t t) noexcept SST_CPPUTILS_NONBLOCKING;
 
     uint32_t capacity_;
     uint32_t slots_; // 2 × capacity_
@@ -202,16 +262,26 @@ class GrainPool
     std::vector<double> envReleaseStart_;
     std::vector<double> envAttackScale_;
     std::vector<double> envReleaseScale_;
+    std::vector<uint8_t> weight_;
+    std::vector<uint8_t> level_;
+    std::vector<int64_t> fadeStart_;
+    std::vector<float> invFade_;
+    // Each row's position in heap_, or kNotInHeap. Not in GrainRows: the renderers don't read it.
+    std::vector<uint32_t> heapPos_;
     GrainRows rows_;
     uint32_t size_{0};
     // The smallest endSample_ among the stored grains, or INT64_MAX when empty: retireFinished
     // has nothing to do before it.
     int64_t earliestEnd_{std::numeric_limits<int64_t>::max()};
 
-    // A min-heap (std::greater) in heap_[0, heapSize_) of the ends canAdmit() still counts. Its
-    // entries are a sub-multiset of the stored grains' ends, so it never holds more than slots_.
-    std::vector<int64_t> heap_;
+    // A min-heap by end in heap_[0, heapSize_) of the grains soundingWeight() still counts: one
+    // entry per stored grain whose end hasn't been forgotten, so it never holds more than slots_.
+    // heapWeight_ is the sum of the entries' weights, exactly.
+    std::vector<HeapEntry> heap_;
     uint32_t heapSize_{0};
+    uint64_t heapWeight_{0};
+    // oldestSounding's scan starts here: every row below it has ended or been stolen.
+    uint32_t cursor_{0};
 };
 } // namespace gg
 
