@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | **Draft for the programme manager's approval** (2026-10-30). §8 lists the forced choices for the director; nothing is built |
+| **Status** | **Approved by the programme manager 2026-10-30** against the programme design and INTENT, with the `AUDI` amendment confirmed (float32 WAV payloads, no libFLAC; INTENT §15 and §18 amended as §13 says) and three notes applied in place: this sub-project's §23 row takes the next free number at merge (sub-project 3 merges first; §13); the mod matrix's target rule for wave 2's layer parameters (refuse the modulators' controls by name, admit every other layer parameter) is sub-project 3's, so after the rebase Loop Length, Overdub and Splice are admitted and this sub-project tests that rather than implementing it (§6.3, §10); sub-project 5 adds `gg/media/ContentPaths.h` under `media/` as a new file only and passes the content roots to `findSample` (§6.7). **The director's decisions D1–D7, 2026-10-30, by forced choice, relayed by the programme manager: every recommended option** (option 1 of each), recorded in §8 and applied in place. Not yet built: Phase B starts with the plan, `docs/superpowers/plans/2026-10-30-m2-sources.md` |
 | **Milestone** | M2 Giga (INTENT §20, §23 #64), sub-project 2 of 7; wave 2, merged second (after 3, before 4) |
 | **Spec authority** | `INTENT.md`, then `docs/superpowers/specs/2026-10-29-m2-programme-design.md` (its §6.2, §7 and §12 are this sub-project's charter: realized here, not reopened). This document records how this sub-project implements them |
 | **Builds on** | M2 sub-project 1 as merged (`ab9f4e2`, PR #15; INTENT §23 #65): four layers each with a 16 s ring and two sample slots, the Source-kind parameter with `builtKind`, the per-layer `SourceExchange`, the 256-sample pieces and Feedback, the patch at version 2, the reserved index block `0x..40`–`0x..4F`; M1's `gg-media`, the `GGST` container, the loader and the search (§23 #48, #49, #53) |
@@ -260,7 +260,10 @@ is a setting, §6.5). No patch version bump: a state without them loads them at 
   and so are their bits; the parameter's `max` changes, which is a range change before any
   freeze (the CLAP ID is the same, and hosts rescan on the next load).
 - Loop Length, Overdub and Splice are routes' targets like any layer parameter (sub-project 1's
-  rule: any parameter but a macro or a modulator's control); Ring Length is not a target.
+  rule: any parameter but a macro or a modulator's control). The target rule that admits wave 2's
+  layer parameters is sub-project 3's (the programme manager, 2026-10-30): after the rebase onto
+  it, a `[core][mod]` test checks the three are admitted and Ring Length, which is not automatable,
+  is refused as a target there too, or named in the report if 3's rule admits it.
 
 ### 6.4 Commands and capture (I38)
 
@@ -514,8 +517,11 @@ here.
 Each a forced choice; the recommended option is first, with one line on what each costs. Nothing
 engineering-only is here (that is §9).
 
+**The director's answers, 2026-10-30, relayed by the programme manager:** option 1 of every
+decision, D1 to D7. Each is marked below and applied in §6.
+
 **D1. Which rings a session saves** (§6.6; what "the ring saved and restored" means for a ring
-that isn't held).
+that isn't held). **Decided: option 1.**
 1. **A ring is saved when it is held: frozen, or Loop on.** A plain live ring refills from the
    input and isn't saved. *Cost:* a project reopened with an unfrozen Live layer starts with an
    empty ring, as today, so Position reads silence until it refills (16 s by default); Freeze on
@@ -527,7 +533,7 @@ that isn't held).
    what §23 #40 deferred to this sub-project to fix; the exit criterion "a frozen minutes-long
    ring reopens" isn't met.
 
-**D2. The memory cap's default and ceiling** (§6.5; shown by sub-project 6).
+**D2. The memory cap's default and ceiling** (§6.5; shown by sub-project 6). **Decided: option 1.**
 1. **Default 1 GiB, ceiling 16 GiB, floor 64 MiB.** *Cost:* four 300 s rings with levels (about
    0.9 GB) plus any sample exceed the default, so a user who wants four maximal rings raises the
    cap once per instance.
@@ -537,7 +543,7 @@ that isn't held).
    5-minute stereo sample with its pyramid (345 MB) already exceed it; the cap is raised often.
 
 **D3. The longest ring** (`kRingMaxSeconds`, §6.3; also the top of Loop Length and of Position's
-widened range).
+widened range). **Decided: option 1.**
 1. **300 s (5 minutes).** *Cost:* 115 MB plus 115 of levels per stereo ring at 48 kHz; Position's
    CLAP range tops at 1.528.
 2. *600 s (10 minutes), M1's sample cap.* *Cost:* 460 MB per ring with levels; four of them don't
@@ -545,14 +551,14 @@ widened range).
    of the knob.
 3. *120 s (2 minutes).* *Cost:* "minutes-long" by a hair; a longer ring is a later range change.
 
-**D4. What the Resample source hears** (§6.2).
+**D4. What the Resample source hears** (§6.2). **Decided: option 1.**
 1. **The instance output as the listener hears it:** the mix with the dry signal (FX), the
    reverb's return and, from sub-project 4, the limiter; INTENT §14's words. *Cost:* in the FX at
    Mix 50% a Resample layer re-grains the dry input too, and the reverb's tail recurses.
 2. *The layers' weighted sum before the mix and the reverb* (grains alone). *Cost:* "resampling
    its own output" no longer means the output; the reverb never recurses, which some will miss.
 
-**D5. What Loop does while the ring isn't frozen** (§6.1).
+**D5. What Loop does while the ring isn't frozen** (§6.1). **Decided: option 1.**
 1. **A sound-on-sound looper:** the window is the last Loop Length seconds, the input keeps
    entering, and Overdub recycles each frame leaving the window at its gain, so the loop decays by
    Overdub per pass (0: a plain delay-length window; 100%: it never decays). Freeze then holds the
@@ -562,14 +568,14 @@ widened range).
    *Cost:* two ways to stop the head, and an unfrozen Overdub needs a second write path over a
    stopped head; the looper's decay-per-pass is lost.
 
-**D6. How splices are numbered** (§6.1; the Splice parameter's values).
+**D6. How splices are numbered** (§6.1; the Splice parameter's values). **Decided: option 1.**
 1. **From the oldest mark inside the window:** splice 1 is the oldest span, the last the newest.
    *Cost:* on a live (unfrozen) ring the numbering shifts as marks age out; on a held ring, the
    normal case, it is stable and automatable.
 2. *From the newest:* splice 1 is the most recent cut. *Cost:* every new mark renumbers the rest,
    so a Splice value in automation or a preset points elsewhere after a mark is added.
 
-**D7. The default captures folder** (§6.6; `capturesFolder` in `settings.xml`, settable).
+**D7. The default captures folder** (§6.6; `capturesFolder` in `settings.xml`, settable). **Decided: option 1.**
 1. **The user's Music folder: `~/Music/Giga Grains/Captures`** (Windows `%USERPROFILE%\Music\Giga
    Grains\Captures`, Linux `$XDG_MUSIC_DIR` or `~/Music`). *Cost:* a second folder beside the
    sample folder to carry when a project moves (collect and save gathers both).
@@ -775,7 +781,7 @@ in the fix wave unless blocked outside our control or genuinely large (the polic
   `--save-state` and `operations`.
 - **§20:** nothing (the M2 row already names this sub-project).
 - **§21:** the memory risk's mitigation as built.
-- **§23 #66:** this sub-project's director decisions (D1–D7), the codec call and the libFLAC
+- **§23, the next free row at merge** (after sub-project 3's; the programme manager's note): this sub-project's director decisions (D1–D7), the codec call and the libFLAC
   amendment, the §9 calls that amend Part II (the tap's content, the resize through the main
   thread, Ring Length not automatable, the restored ring arming Freeze), and the rulings made
   during the build.
