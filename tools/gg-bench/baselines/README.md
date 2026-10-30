@@ -23,9 +23,12 @@ Each entry has one ratio per engine case per block size (32, 64 and 256). The en
 - `engine-live`: X read from the live ring, the FX's figure;
 - `engine-full-pool`: admission when the pool is saturated.
 
-`engine-layers` (four layers of 500 grains, X's count) and `engine-layers-full` (four of 2,000)
-are timed and print ratios, but have no entries yet: they are report-only until three full runs
-are merged in (`--merge`, below), and a ratio a file lacks is only `not in the baseline`.
+`engine-layers` (four layers of 500 grains, X's count), `engine-layers-full` (four of 2,000) and
+`engine-live-long` (`engine-live`'s stream over a 300 s ring, its reads spanning it; M2
+sub-project 2) are timed and print ratios, but have no entries yet: they are report-only until
+three full runs are merged in (`--merge`, below), and a ratio a file lacks is only `not in the
+baseline`. A `--quick` run caps `engine-live-long`'s 300 s warm-up at 16 s, so its quick ratios
+read a partly filled ring; only full-length runs make entries.
 
 ## Format
 

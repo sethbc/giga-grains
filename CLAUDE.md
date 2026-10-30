@@ -27,7 +27,10 @@ AGPL-3.0-or-later.
   for your sub-project's scope and what it owns, and its §7 for the rules every sub-project
   builds on). Sub-project 1, Layers and structure, is built (INTENT §23 #65): four layers, the
   morph, the Source kind, the mod matrix, render tasks and the patch at version 2, which wave 2
-  builds on. M2, M3 and M4 are tagged 0.2.0, 0.3.0 and 0.4.0 as
+  builds on. Sub-project 2, Sources and persistence, is built in part (INTENT §23 #66): the
+  Resample source, rings of 1 to 300 s with loop, overdub, splices and capture, the memory cap,
+  the sample pool, `MEDI` v2, `AUDI`, `INST` and rings saved with the session; its ring
+  pyramids wait for sub-project 3. M2, M3 and M4 are tagged 0.2.0, 0.3.0 and 0.4.0 as
   unpublished draft releases; nothing is public and there are no betas before M5, whose
   `0.5.0-beta.N` are the first public releases (§23 #62); v1.0.0 follows M5.
 - **The records:** each sub-project's spec in `docs/superpowers/specs/`, the published benchmark
@@ -299,9 +302,13 @@ runs the tests labelled either. The labels are:
 - engine: `engine`, `cloud` (the Cloud scheduler), `live` (the live ring), `pool`, `source`,
   `rng`, `math`, `interp`, `window`, `denormal`;
 - `core`: `gg-core`'s patch (with its `<mod>` routes and the migration from version 1), the
-  session state container (`GGST`) and the settings' XML, the parameter mapping, and the
-  `Processor` with its layers, notes, source hand-off, Feedback and render tasks. `slow` marks
-  one of them, Feedback 0.95 for 60 s (over a minute in `dev`);
+  session state container (`GGST`, with `MEDI` v2, `AUDI` and `INST`) and the settings' XML,
+  the parameter mapping, and the `Processor` with its layers, notes, source hand-off, Feedback
+  and render tasks. `slow` marks two of them, Feedback 0.95 for 60 s (over a minute in `dev`)
+  and the worst Resample loop for 60 s;
+  - `source` (also an engine label; in `core` since M2 sub-project 2): the `Processor`'s
+    Resample tap, ring parameters, commands, ring exchange (resize and restore) and ring read,
+    with their determinism and tripwire cases (`tests/core/source_tests.cpp`);
   - `layers` (M2 sub-project 1): the four layers, in the engine (the layer's RNG key, the enable
     gate, the kind switch, the spreads) and in the `Processor` (the sum in order, the morph law,
     on and off, the kinds, the instrument's input into the rings, the event order);
@@ -314,7 +321,10 @@ runs the tests labelled either. The labels are:
     the `Processor`'s publishing;
 - `media`: `gg-media`, the JUCE-free sample-file library (`media/`) that the plugin's loader and
   `gg-render` share: decoding, rate conversion, SHA-256, loading a sample, the search for a
-  missing one and the settings file. `slow` marks one of them, the search's 50,000-entry scan.
+  missing one (with the content roots and the captures folder) and the settings file, and since
+  M2 sub-project 2 the memory cap's accounting (`MemoryBudget`; the 600 s file cap is gone), the
+  sample pool, float32 WAV bytes, a ring's saved audio and collect and save. `slow` marks one of
+  them, the search's 50,000-entry scan.
   - The WAV, AIFF and AIFC files they decode are written at run time
     (`tests/media/AudioFixtures.h`). dr_libs can't write FLAC or MP3, so
     `tests/fixtures/audio/` holds one tiny FLAC and one MP3, the only audio committed to the
@@ -324,17 +334,19 @@ runs the tests labelled either. The labels are:
   `Processor`'s Space chain, and the plugins' tail and "Space" remote-controls page. `slow` also
   marks four of them: the hour-long renders at infinite Decay (about 50 s each in `dev`, 2.5
   minutes under ASan), the block-size invariance render and the 60 s render at extreme settings
-  (about 8 s and 13 s in `dev`); `-LE slow` leaves all six slow tests out (media's one, these
-  four and core's Feedback one).
+  (about 8 s and 13 s in `dev`); `-LE slow` leaves all eight slow tests out (media's one, these
+  four, core's two and render's embed-cap save, about 8 s).
 - `kernel`: the renderers' scalar references and the 4-wide SIMD sample and live kernels, which
   must match them bit for bit (`std::memcmp`);
 - `determinism`: block-size invariance;
 - `rt`: the allocation tripwire. In the `rtsan` build, two tests labelled both `rt` and `rtsan`
   check that RTSan is active: one checks the build flag, and `rtsan_negative_control` passes
   only if RTSan reports an allocation made inside a nonblocking function.
-- tools: `render` (gg-render's CLI, `render_write_media_alone` and
-  `render_spectrogram_utf8_path` among them), `metrics`, `bench` (gg-bench's command line: the
-  `bench_rejects_*`, `bench_make_baseline_*`, `bench_baseline_*` and `bench_space_cli` tests);
+- tools: `render` (gg-render's CLI, `render_write_media_alone`,
+  `render_spectrogram_utf8_path`, `render_write_media_fixtures`, `render_write_media_lists_fixtures`
+  and `render_state_roundtrip` among them), `metrics`, `bench` (gg-bench's command line: the
+  `bench_rejects_*`, `bench_make_baseline_*`, `bench_baseline_*` and `bench_space_cli` tests;
+  and the in-process cases, `engine-live-long`'s at `--quick`'s warm-up among them);
 - `golden`: the golden renders;
 - `ui`: the splat renderer, the lane geometry (`LaneModel`), and the lane's clock and live-grain
   list (`LaneState`);
@@ -357,8 +369,11 @@ runs the tests labelled either. The labels are:
 - `serial`: the Catch2 cases tagged `[serial]`, which measure time or memory and run with
   `RUN_SERIAL` (see "Tests run in parallel");
 - `plugin`: the plugins, driven through their CLAP factory. Tests labelled both `plugin` and
-  `rt` put the allocation tripwire on `process` and `params.flush`. On macOS this label also
-  covers checks of the built bundles (with the editor only):
+  `rt` put the allocation tripwire on `process` and `params.flush`. Since M2 sub-project 2,
+  `tests/plugin/persist_tests.cpp` covers the four loaders, rings saved and restored, the Ring
+  Length resize, the memory cap, capture and collect and save (two of them, the ring reader's
+  stress tests, also `threads`). On macOS this label also covers checks of the built bundles
+  (with the editor only):
   - `codesign_*`: strict signature checks, which Ableton Live's scanner needs to pass;
   - `identity_*`: the frozen identities (INTENT §18), read back from the bundles: both
     standalone bundle IDs, the AU's three components and the VST3 class IDs. Run them before
@@ -390,10 +405,15 @@ code page, so the name matches nothing and the test fails with "No tests ran". S
 - **Keep new tests parallel-safe:**
   - never write a path that another test writes: unit tests' scratch files go in
     `GG_TEST_OUTPUT_DIR` under a name of their own, and each golden case writes its own files;
-  - never touch the user's per-machine settings file. The instrument (the FX reads none) reads
-    the file `GG_SETTINGS_FILE` names, when it is set and not empty, instead of the user's;
-    `tests/plugin/PluginHarness.h` points it at a scratch file, and a test that reads the
-    settings points it at its own (`useSettingsFile`) before it creates the instance;
+  - never touch the user's per-machine settings file. Both products (since M2 sub-project 2; the
+    FX read none before) read the file `GG_SETTINGS_FILE` names, when it is set and not empty,
+    instead of the user's; `tests/plugin/PluginHarness.h` points it at a scratch file, and a
+    test that reads the settings points it at its own (`useSettingsFile`) before it creates the
+    instance;
+  - never write the user's captures folder (`~/Music/Giga Grains/Captures` by default): a test
+    that saves rings or captures uses `useMediaScratch(name)`, a settings file of its own whose
+    captures folder is in its scratch directory, and `gg-render --save-state` files audio only
+    in the `--captures-dir` it is given;
   - a test that has to share a file, or that measures time, must not run beside the others. For
     an `add_test` in `tests/CMakeLists.txt`, set its `RESOURCE_LOCK` or `RUN_SERIAL` property.
     Catch2 cases are discovered after the build, so `set_tests_properties` can't reach them.
@@ -412,6 +432,7 @@ code page, so the name matches nothing and the test fails with "No tests ran". S
 gg-render <spec.json> [-o out.wav] [--metrics out.json] [--events out.jsonl]
           [--spectrogram out.png] [--compare golden.metrics.json]
           [--compare-events golden.events.jsonl] [--block-size N] [--media-dir DIR]
+          [--content-dir DIR] [--captures-dir DIR] [--save-state out.ggst]
 gg-render --write-media DIR
 ```
 
@@ -462,12 +483,39 @@ gg-render --write-media DIR
       `modWheel`, `aftertouch` and `pitchBend`, values 0–1, sent as MIDI control events.
     - `transport` is `{"tempoBpm", "playing", "startBeat"}`, a steady transport set once before
       the render (playing by default, from beat 0); without it the transport sources hold at 0.
+  - **Sessions and ring operations** (M2 sub-project 2's spec §6.10; INTENT §19), each optional
+    in FX and instrument mode, and unknown keys in sample mode:
+    - `state` is a `GGST` file (a relative path as a file source's), restored before the render
+      as the plugin's `stateLoad` would: values, routes, samples, rings and the memory cap;
+      `params` and `mod` then override it. Its samples are found only by content path under
+      `--content-dir`, then in the spec's directory (or `--media-dir`), never searched by name,
+      and its filed rings in `--captures-dir`. The spec's seed is the render's, not the state's.
+      An instrument spec may leave out `sample` beside `state`; layer A's is then the state's.
+    - `operations` is a time-ordered list of `{"time", "layer", "op", …}`: `splice` (a mark
+      `behind` seconds behind the head, default 0), `clearSplices`, and `capture` (`splice` 0
+      for the loop window or k for its k-th span, `into` a layer letter whose sample it becomes,
+      and/or `file`, written as a float32 WAV). A capture's `file` is used as written, so a
+      relative one is relative to the working directory, like `-o`, not to the spec.
+      `gg-render` cuts its calls at a capture's frame, so it lands on that sample at any block
+      size; a splice or clear is a command event.
+    - `memoryCapMiB` (64–16384; the state's, or 1024) sets the cap; a ring or sample past it is
+      bad input (exit 2).
+    - The ring parameters are `"A Ring Length"` (log2 seconds: 4.0 is 16 s; set in `params`
+      only, an error in `automation`, since it isn't automatable), `"A Loop"`, `"A Loop Length"`
+      (log2 seconds), `"A Overdub"` (0–1) and `"A Splice"` (0–32), and B to D's; a Resample
+      layer is `"B Source": 2`.
+    - `--save-state out.ggst` writes the session at the render's end: the values, routes, cap,
+      file samples by reference, captures, and the rings of layers whose Freeze or Loop is on
+      (their loop window, with the marks inside it), embedded up to 32 MiB and filed past it as
+      `<sha256>.wav` in `--captures-dir` (which it then needs). A built-in signal sample has no
+      file, so it isn't saved. Sample mode with `--save-state` is bad input.
   - **Instrument mode** (`"mode": "instrument"`) runs Giga Grains' `Processor` the same way over
-    a `sample` (a built-in signal or a `file`, loaded and converted with `gg-media`), with no
-    `channels`. Its Position is the fraction of the sample, 0–1, and it is silent until a note.
+    a `sample` (a built-in signal or a `file`, loaded and converted with `gg-media`; optional
+    beside `state`), with no `channels`. Its Position is the fraction of the sample, 0–1, and
+    it is silent until a note.
     It takes Dry to Reverb, which does nothing there, and Feedback, which acts only on a layer
-    whose Source is Live (an instrument spec has no input, so such a layer's ring holds
-    silence). Its Macro 8 is
+    whose Source is Live or Resample (an instrument spec has no input, so a Live layer's ring
+    holds silence; a Resample layer's hears the instrument's output). Its Macro 8 is
     `"Macro Level"` (Macro 7 is `"Macro Feedback"`, as in the FX; `"Macro Stereo"` names
     nothing since M2 sub-project 1): a spec takes only its own product's names, so
     `"Macro Level"` in an FX spec, or `"Macro Mix"` in an instrument spec, is an unknown key.
@@ -477,12 +525,15 @@ gg-render --write-media DIR
 - A relative file path is taken from the spec's directory, or from `--media-dir`. The golden
   cases' media are generated, never committed: `--write-media DIR` writes them, and the
   `golden_media` test does so into `build/<preset>/golden-media` as a fixture every golden test
-  requires.
+  requires. Since M2 sub-project 2 they include `sine-330.wav`, `noise-2s.wav` and two session
+  states rendered by `gg-render` itself, `frozen-ring.ggst` (a 20 s ring frozen with two
+  splices, embedded) and `four-samples.ggst` (four Sample layers by content path, no machine
+  path in it), the same bytes on every run on one machine.
 - Its exit status is 0 for a pass, 1 when a comparison fails, 2 for bad input and 3 for an
   internal error.
 - **The cases:** each case's spec is in `tests/golden/cases/`, and its expected metrics and event
   log are in `tests/golden/expected/`. Every `*.json` there is a case; a new one gets a test the
-  next time CMake runs. There are 36.
+  next time CMake runs. There are 43.
   - **M0's four,** in sample mode: `sparse-sine` (8 grains a second over a 220 Hz sine),
     `sparse-sine-44k1` (the same source converted to 44.1 kHz), `dense-noise` (400 grains a
     second over noise, up a fifth) and `sweep-stretch` (long grains over a sweep, down an
@@ -545,6 +596,22 @@ gg-render --write-media DIR
       octaves that hide steps.
     - Every one of the 22 M1 cases renders bit-identically with layers B to D off and the
       factory routes: a layers or matrix change that moves one is a regression.
+  - **M2 sub-project 2's seven** (sources and persistence; its spec §10):
+    `inst-resample-feedback` (layer A Sample over a 220 Hz sine, one held note, layer B Resample
+    at Pitch +12, Feedback 0.6), `fx-resample` (layer A Live over a sweep, layer B Resample at
+    Pitch -12, Position 0.5 s), `fx-long-ring` (24 s, Ring Length 60 s, an 8 s burst, then
+    Position stepped to 10, 18 and 22 s behind), `fx-loop-overdub` (Loop 1 s, Overdub 0.7 over a
+    noise-burst pattern, Freeze at 4 s, Overdub to 0 at 6 s), `fx-splice-capture` (Freeze at
+    2 s, two splices, Splice 1 then 2, splice 2 captured into layer B at 4 s at Pitch +7),
+    `fx-ring-restore` (`state: frozen-ring.ggst`, restored with Freeze on and scanned: the
+    restore gate) and `inst-four-samples` (`state: four-samples.ggst`, four Sample layers by
+    content path under `--content-dir`, one held note).
+    - Every one of the 36 earlier cases renders bit-identically with Ring Length 16 s, Loop off,
+      Overdub 0, no splice, no Resample layer, nothing embedded and the cap at its default: a
+      sources change that moves one is a regression. The ring pyramid's task (after sub-project
+      3) names any case its level selection moves.
+    - The event log sees neither the tap's audio nor a restored ring's frames, only the grains
+      that read them, so across platforms the metrics compare those.
   - **The event-log comparison never sees the reverb or the diffuser:** the log records grains,
     and Space runs after them. Across platforms, Space's five cases are checked by their metrics
     alone, within tolerances.
@@ -607,6 +674,11 @@ $b --space [--quick | --seconds S] [--rounds N] [--commit SHA] [--json out.json]
       "engine-sample-eco runs at the Eco tier" checks every grain it admits is Eco
       (`gg::bench::admittedTiers`);
     - `engine-live`: the same stream over a 16 s live ring, the FX's figure, published beside X;
+    - `engine-live-long`: `engine-live`'s stream over a 300 s ring, Position 150 s and Spray
+      300 s so the reads span it, warmed up for 300 s of audio so the ring is full: a
+      minutes-long buffer's cache cost; report-only beside X, with no baseline entry yet (M2
+      sources spec §6.11). Each of its three configurations holds a ~115 MB ring, about 345 MB
+      in all, and gg-bench builds every configuration before warming any up;
     - `engine-full-pool`: admission when the pool is saturated (1 s grains ask for 10× its
       capacity);
     - `engine-layers`: four `engine-sample` engines (layers 0 to 3) sharing its 2,000 grains, 500
@@ -624,7 +696,11 @@ $b --space [--quick | --seconds S] [--rounds N] [--commit SHA] [--json out.json]
     and `hermite-simd`.
 - **Timing.** Every configuration warms up once. Then each of 5 rounds (`--rounds`) times every
   configuration once, for at least 2 s (`--seconds`; `--quick` is 0.2 s), in an order rotated by
-  the round and reversed in odd rounds. Each result is the median, min and IQR over the rounds.
+  the round and reversed in odd rounds. `--quick` also caps every engine case's warm-up at 16 s
+  of audio, the longest any case but `engine-live-long` uses, so only that case's quick run
+  changes: it reads a partly filled ring, and its quick ratios don't compare with a full run's
+  (ruling SP-T9a; the full-length run keeps the 300 s fill). The last of `--quick` and
+  `--seconds` wins. Each result is the median, min and IQR over the rounds.
   The JSON (`--json`) keeps every run, the run length, the round count and `--commit`.
 - **The ratio.** Each engine case's ns per grain-sample over `reference`'s in the same round,
   then the median and IQR over the rounds. Because the two run side by side in one process, the
@@ -632,8 +708,10 @@ $b --space [--quick | --seconds S] [--rounds N] [--commit SHA] [--json out.json]
   `reference` for any ratio to be printed.
 - **Other options:** `--grains N` changes the grain count; `--cases a,b` runs only those cases
   (the default is all; `--help` lists them).
-- **Run length:** the full default run is 36 configurations × 5 rounds × 2 s, about 6 minutes of
-  timing; a CI leg's benchmark step took about 6 minutes before the two layer cases added one.
+- **Run length:** the full default run is 39 configurations × 5 rounds × 2 s, about 6.5 minutes
+  of timing, plus `engine-live-long`'s three 300 s warm-ups, a few minutes more of wall time; a
+  CI leg's benchmark step took about 6 minutes before the two layer cases and
+  `engine-live-long` were added.
   `--canvas` times 240 frames after a 20-frame warm-up, or 30 with `--quick`.
 - **`--space`** times Space's per-sample stage, the diffuser then the reverb, on stereo noise at
   48 kHz, active, with Diffusion and Amount at 100% (`tools/gg-bench/Bench.h` lists every

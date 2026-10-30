@@ -241,6 +241,14 @@ and reviews. Two consequences:
   - The resample tap reads the instance output 256 samples late, the quantum of the Feedback
     pieces and never the host block, so block-size invariance holds; it costs nothing, and adds
     no latency, while no layer's source is Resample (M2 programme design §7.2; §23 #64).
+    - **As built** (M2 sub-project 2, 2026-10-30; §23 #66): the tap hears `out` as the host
+      hears it, the mix with the dry signal and the reverb's return, and from sub-project 4 the
+      limiter (the director's D4, option 1), so in the FX a Resample layer re-grains the dry
+      input too and the reverb's tail recurses. The `Processor` keeps the last 256 output
+      samples per channel by absolute time (`t mod 256`), written after each piece's output
+      while some layer's Source is Resample and cleared when the first one becomes Resample, so
+      that layer's first 256 samples read silence. A Resample layer's ring input for sample t
+      is `tap[t − 256]` in place of the instance input; one output channel feeds both sides.
   - It also has a DC blocker and a soft limiter.
 
 **Layers and the chain** (M2 sub-project 1, built 2026-10-30; §23 #65). Four layers, A to D,
@@ -253,15 +261,20 @@ strip and a fixed grain-event buffer. The `Processor` (`gg-core`) is the instanc
 four, the morph, the mod matrix, the held set, Space and the mix. Everything is allocated at
 construction, whatever a layer's kind and whether it is on, since a kind switch or an on/off is
 a parameter change on the audio thread. Memory at 48 kHz is about 45 MB per instance: four rings
-about 25 MB, four pools about 5 MB, the reverb 14.5 MB and the event buffers about 2.4 MB (the
-memory cap is sub-project 2's).
+about 25 MB, four pools about 5 MB, the reverb 14.5 MB and the event buffers about 2.4 MB. Since
+M2 sub-project 2 (§23 #66) a ring's length is its layer's Ring Length, 16 s by default, and a
+ring of another length is allocated on the main thread and adopted through the layer's exchange
+(Live ring buffer, below); the rings and samples are bounded by the per-instance memory cap
+(Memory management, below), the fixed costs above documented, not counted.
 
 Both products render in pieces of at most 256 samples (`kFeedbackDelay`; M1's instrument rendered
 whole blocks, and block-size invariance makes the piece size change no bit). Per piece:
 
 ```
 per layer L (A..D), one task:
-   ring_L[t] = sanitize(in[t]) + fb_L(t) · limited_L[t − 256]
+   ring_L[t] = sanitize(x_L[t]) + fb_L(t) · limited_L[t − 256] + o_L(t) · ring_L[R − P]
+              (x_L: the input, or tap[t − 256] on a Resample layer; o_L: its Overdub; P its
+               period; both since M2 sub-project 2, Live ring buffer, below)
    w'_L      = δ_L > 0 ? w_L + δ_L·(diffuse_L(w_L) − w_L) : w_L   (w_L: its grains)
    limited_L = softLimit(w'_L · g_L)                                (g_L: its Level's gain)
    wet_L     = limited_L · weight_L(t)                              (its morph weight)
@@ -325,12 +338,20 @@ w_L sums the layer's grains in spawn order.
 frozen: **0 Sample, 1 Live, 2 Resample, 3 Spectral, 4 Oscillator.** Its default differs by
 product, as Position's does: Live in the FX, Sample in the instrument.
 - **Sample and Live are built, in both products.** An FX layer set to Sample reads the sample
-  `gg-render` gives it, or nothing in the plugin, whose loader feeds layer A alone until
-  sub-project 2's per-layer media; an instrument layer set to Live reads its ring.
-- **The unbuilt kinds fall back to the product's default kind:** Resample, Spectral and
-  Oscillator render as Live in the FX and as Sample in the instrument, the parameter keeping its
-  value, so a state saved with Resample plays as Resample once that kind lands. The fallback is
-  one function, `builtKind(kind, mode)` (`gg/core/ParamMap.h`), which sub-projects 2 and 4 edit.
+  `gg-render` gives it, or its own loader's in the plugin (since M2 sub-project 2, four loaders
+  per instance in both products, one per layer; §18); an instrument layer set to Live reads its
+  ring.
+- **Resample is built, in both products** (M2 sub-project 2, 2026-10-30; §23 #66). A Resample
+  layer is a Live-mode engine whose ring the tap feeds instead of the input (Mix and global FX,
+  above): `builtKind(Resample, mode)` is Live in both products, the kernels are the live kernels,
+  and Position, Spray, Freeze, Feedback, Loop, Overdub and splices work on it unchanged. The text
+  rule (ruling FR-6) and the text rescan treat it as Live. So the instrument, whose layers
+  default to Sample, has a writable buffer and Feedback.
+- **The unbuilt kinds fall back to the product's default kind:** Spectral and Oscillator (and
+  Resample until sub-project 2) render as Live in the FX and as Sample in the instrument, the
+  parameter keeping its value, so a state saved with an unbuilt kind plays as that kind once it
+  lands. The fallback is one function, `builtKind(kind, mode)` (`gg/core/ParamMap.h`), which
+  sub-project 4 edits next.
 - **Position, Spray and Feedback follow the layer's built kind, not the product.** A Live layer
   reads seconds behind the write head, one-sided (ruling M1-k); a Sample layer reads the fraction
   of its sample with Spray bipolar in seconds (Notes, below); Feedback writes a Live layer's ring
@@ -556,9 +577,17 @@ like Mix.
   Level +12 dB and Stereo 100%, over 2 s of loud noise then silence, stays finite and below 1,
   and its last 10 s are no louder than seconds 16–26 within 1 dB (the `[slow]` test).
 - **Feedback follows the layer's kind** (since M2 sub-project 1; §23 #65): it writes a Live
-  layer's ring, in either product, and is 0 on a Sample layer, which has no writable buffer
-  until the resample source (M2 sub-project 2). So it is shown in the instrument too, where M1
-  hid it and mapped it to 0, and the instrument's Macro 7 acts on its Live layers.
+  layer's ring, in either product, and is 0 on a Sample layer, which has no writable buffer. So
+  it is shown in the instrument too, where M1 hid it and mapped it to 0, and the instrument's
+  Macro 7 acts on its Live layers. Since M2 sub-project 2 (§23 #66) it writes a Resample layer's
+  ring too, so the instrument's Macro 7 and Feedback act on a Resample layer: the writable buffer
+  the instrument lacked. With Overdub up, the frame written is
+  `sanitize(in) + fb·limited[t − 256] + o·ring[R − P]`, in that order (Live ring buffer, below).
+- **A Resample loop stays bounded:** the tap is bounded (`|out| ≤ 2 + |d|`), the ring clamps at
+  ±2^20, Overdub ≤ 1, Feedback ≤ 0.95 and `|limited| < 1`. A Resample layer at Pitch 0, Position
+  256 samples behind and Overdub 1 is a comb that can grow by the layer's Level per pass; the
+  `[core][source][slow]` test renders that worst case for 60 s and requires it finite and
+  bounded.
 
 **Hard engineering rules**
 
@@ -587,16 +616,22 @@ like Mix.
   - **Formats:** WAV (RIFF, RF64 or W64; PCM 8–32-bit or float), AIFF/AIFC, FLAC and MP3, decoded
     with dr_libs. The format comes from the content, never the extension. A mono file stays mono;
     a wider one keeps its first two channels.
-  - **The M1 cap is 600 s** of the file's own audio, whatever the host's rate, checked against
+  - **M1's cap was 600 s** of the file's own audio, whatever the host's rate, checked against
     the header before anything is allocated, and against what a FLAC, MP3 or ADPCM decode
-    yields, whatever its header says. M2's memory cap replaces it.
+    yields, whatever its header says. **M2 sub-project 2 removed it** (`kMaxFileSeconds`; §23
+    #66): a decode is bounded by the bytes the instance's memory cap leaves free (Memory
+    management, below), checked the same two ways, and the cap's ceiling, 16 GiB
+    (`kDefaultDecodeBound`), is the decoder's absolute bound. A refusal reads *needs N MB, the
+    memory cap allows M MB*, or *decodes to more than the memory cap allows (M MB)* for a
+    compressed file that overruns, after the file's name.
   - **Decoding memory follows what the file holds** (ruling R7, amended by §23 #54).
     Uncompressed audio is allocated once, at most at what the file's bytes can hold. A FLAC, MP3
     or ADPCM header is trusted up to 64 bytes of decoded audio per byte of the file: within
     that, the audio decodes straight into one buffer of the header's count and is held once.
     The cost: a header that lies within the ratio can cost up to 64× the file's size before the
     decode proves the file truncated. Beyond the ratio, or with no count, decoding grows as it
-    goes, to about twice the audio that decoded. M2's memory cap remains the real bound.
+    goes, to about twice the audio that decoded. The memory cap is the real bound (since M2
+    sub-project 2).
   - **A truncated file is refused** (ruling R8), with a tolerance for what an intact file can
     fall short by:
     - uncompressed WAV and AIFF: a declared audio size up to 1 KiB beyond the end of the file,
@@ -630,15 +665,126 @@ like Mix.
     the next call takes it and hands the waiting one back (§23 #49). Besides those, the loader's
     worker may briefly hold the one it is building, and a superseded one until it notices; both
     are freed off the audio thread.
-- **Memory management** (M2). A process-wide sample pool removes duplicate copies of the same
-  file, and each instance gets a memory cap, shown in the UI; until then the 600 s cap above is
-  the only bound.
+- **Memory management** (built in M2 sub-project 2, 2026-10-30; §23 #66). A process-wide sample
+  pool removes duplicate copies of the same file, and each instance has a memory cap, shown in
+  the UI by sub-project 6.
+  - **The cap** is a per-instance setting, `memoryCapMiB`, saved in the state's `INST` chunk
+    (§18), not a parameter (a host shouldn't automate memory): **default 1 GiB, floor 64 MiB,
+    ceiling 16 GiB** (the director's D2, option 1). Lowering it evicts nothing; it refuses what
+    comes next.
+  - **What it counts** (`gg::media::MemoryBudget`, pure arithmetic on the main and loader
+    threads): what the instance references, never what the OS has. Every layer's ring storage
+    of record with its levels, every sample source a loader holds (planar, interleaved and its
+    levels), a ring held for the next activation and a capture loaded into a layer. A source
+    draining in the exchange (the one the engine plays out after a swap, or one retired and not
+    yet collected) isn't counted, so a refusal never depends on when the main thread collects a
+    retired source (§23 #66, ruling SP-T7b); the cost is that an instance can hold one sample's
+    bytes past its cap for a grain's length. A load or a ring of a new length is checked with
+    what it replaces still counted, since both live until the swap. A shared pool entry counts
+    in full in every instance that holds it, so a refusal never depends on another instance.
+    The fixed costs (the pools, the reverb, the event buffers, about 45 MB at 48 kHz, Layers and
+    the chain, above) are documented, not counted.
+  - **What it refuses, deterministically, with a status:** a load or a relink whose decoded
+    size (from the header, with ruling R7's 64× trust for compressed files, then checked against
+    what decodes), at the active rate with its interleaved copy and levels, would take the
+    instance past the cap; a Ring Length whose storage would; a restore's ring or sample that
+    would (the state loads, the offending ring or sample is left out). The check comes before
+    anything is allocated; what is in memory is never evicted to make room. The status reads
+    *over the memory cap: needs N MB, F MB free of C MB* (the need rounded up, the free space
+    down).
+  - **The sample pool** (`gg::media::SamplePool`, one per process, main and loader threads, one
+    mutex): prepared sources by key (SHA-256, size, the rate's bits), held weakly, so it keeps
+    nothing alive and the last instance to let go frees the entry. Ten instances of one project
+    hold one copy of a shared sample's planar buffer, interleaved copy and levels. Find and
+    insert are one step under the lock, so two loaders that build one key at once share the
+    first to arrive; a source prepared for another rate is refused. Rings are per instance and
+    never pooled.
+  - **By example, at 48 kHz:** a 16 s stereo ring is 3 MB; a 300 s one 115 MB, and about as much
+    again for its levels once the ring pyramid lands (sub-project 2's last task, after
+    sub-project 3; Mipmaps, above); four 300 s rings with levels are about 920 MB, under the
+    default with no room for a long sample, which is the point of the cap.
 - **Live ring buffer.**
   - Each block writes before it reads.
   - An admission clamp keeps grains from reaching the write head.
   - The head-crossing policy is the admission clamp with the 256-frame head-proximity fade
     (Cloud core rules, below). Any other policy would be a later, explicit parameter.
   - Freeze and overdub use smoothed gains and crossfaded seams.
+  - **As built in M2 sub-project 2** (2026-10-30; §23 #66), the ring is an instrument: its
+    length a parameter, a window narrowed by a loop or a splice, overdub, splice marks and
+    capture, each a function of the sample clock and the parameter history, applied on the
+    control grid, and at its default the identity on M1's bits. The parameters are five per
+    layer at `0x..40`–`0x..44` (§18).
+  - **Ring Length** (1 s to `kRingMaxSeconds` = 300 s, the director's D3, option 1; default
+    16 s) is neither automatable nor modulatable: its storage can't be allocated on the audio
+    thread. The frames live in a `RingStorage` apart from the source. The plugin's main thread
+    watches each layer's requested length (`Processor::ringSecondsRequested`, published at the
+    grid boundary), allocates the new storage, the cap permitting, copies the **stable part** of
+    the current window into it with the ring read below, and offers it with that head `R₀`
+    through the layer's `SourceExchange`. The audio thread adopts it at a call's start: it copies
+    the frames written since `R₀` itself, at most `kAdoptCopyFrames` = 8,192 (the newest 64 KB
+    per channel), and swaps the pointer; the old storage goes back to be freed. An offer whose
+    gap is past the bound is declined, and the main thread makes it again from the current head.
+    Grains sounding read the same frames from the new storage, so a resize is inaudible; a grain
+    reading older than a shorter new window fades out by the window rule. After the swap the
+    engine's Position and Spray reach the new ring (`Engine::ringResized`). A resize lands at a
+    call's start, so it is part of a block-size-invariant render only when made before the first
+    call, as a sample swap is; `gg-render` sizes every ring there. The status reads *resizing*
+    meanwhile, or the cap's refusal. The exchange holds at most one storage in flight per layer;
+    a restore replaces an unadopted resize.
+  - **The window** is `[E − W, E − 1]`, the window length W generalizing N: with no splice
+    selected E is the head R and W is N, or `min(L, N)` while **Loop** is on with **Loop Length**
+    L (50 ms to 300 s, clamped to the ring), so a loop is the newest L frames. The admission
+    clamp and the head-proximity fade use W wherever they used N, so a grain never reads outside
+    the window and its two ends are crossfaded over 256 frames, as a frozen ring's seam is. A
+    grain admitted under a wider window and reading past a narrower one is taken out by the
+    per-sample fade. Loop on an unfrozen ring is a sound-on-sound looper (the director's D5,
+    option 1): the input keeps entering, and Overdub recycles each frame leaving the window;
+    Loop alone (Overdub 0) only narrows the scan window, and Freeze then holds the loop.
+  - **Overdub** (0–100%, the gain o, ramped per sample over 10 ms like Feedback): each frame
+    written is `sanitize(in[t]) + fb·limited[t − 256] + o(t)·ring[R − P]`, stored as any input is
+    (non-finite as 0, clamped to ±2^20), with the period P = `min(L, N)` while Loop is on, else
+    N: the frame leaving the window, still in storage (the slots hold N + B). So Overdub without
+    Loop is a ring-length sound-on-sound. A piece whose Overdub ramp is 0 throughout writes by
+    M1's path, so Overdub 0 is bit-identical to M1, the sign of zero included. Freeze wins, as
+    over Feedback: frozen, nothing is written.
+  - **Splices:** at most `kMaxSplices` = 32 marks per layer, ring-time positions kept ascending
+    in a fixed array. A mark m leaves storage once `R − N > m`, decided per sample from R alone,
+    never per block (ruling SP-T1a), and is dropped at the next write. **Splice** (stepped 0–32)
+    selects one: splice k ≥ 1 is the span from the k-th mark still in storage, oldest first (the
+    director's D6, option 1; ruling SP-T1b), to the next, or to the head for the last; the
+    window is that span, Position and Spray reading seconds behind its end. A request past the
+    count is the last splice, and the selection falls back to the whole window only when no mark
+    is left; 0 selects the whole window (the loop's, with Loop on). On a live ring the numbering
+    shifts as marks age out; on a held ring, the normal case, it is stable and automatable.
+  - **Commands on the grid:** a `CommandEvent` (`AddSplice`, `ClearSplices`) joins its boundary's
+    group after the group's parameters, in order. `AddSplice` marks `value` seconds behind the
+    window's end (the head, or a selected splice's end), clamped into the window; a mark on an
+    existing one, or a 33rd, is ignored. At most 64 commands apply per group
+    (`kMaxGroupCommands`, twice the marks, so a full set and a clear always fit); later ones are
+    ignored. A command on a layer that reads a sample is ignored. The plugin sends them through
+    the editor's 256-entry command queue, applied from the next `process()` call's first
+    boundary (a `params.flush` leaves them queued); `gg-render` takes them in `operations`.
+  - **The ring parameters act whatever the layer's kind** (ruling SP-T5c): a Sample layer's ring
+    keeps recording for a later switch (sub-project 1), so its Loop, Loop Length, Overdub and
+    Splice shape the ring a switch to Live then hears; only the commands are gated on the kind.
+  - **The ring read** (main thread, without stopping the audio thread), a seqlock's reader: the
+    audio thread stores each layer's head with release order after every piece's write, and
+    bumps a storage epoch, odd during an adoption or a reset, around a change. The reader takes W
+    and the marks from the layer's published `RingMeta`, the epoch, the storage, then `R₀` from
+    the head atomic with acquire order; copies frames `[max(0, R₀ − W), R₀)` from their slots;
+    issues an acquire fence; then reads the head `R₁` and the epoch again. The copy is the window
+    as of `R₀` when the epoch held and `R₁ − max(0, R₀ − W) ≤ N`; otherwise it copies again (ruling
+    SP-T5a: up to one block is written past the published head, so the check is the window's
+    length N, not the storage's capacity C). A frozen ring passes at once.
+  - **Capture** reads a layer's window, or a splice of it, on the main thread with the ring read,
+    into a stereo `SampleBuffer` at the host rate, which then goes wherever a loaded sample goes:
+    a layer's sample through its loader (the pool and the cap apply), the session's `MEDI` as an
+    embedded or filed capture (§18), or a float32 WAV the user names. The span is the **loop
+    window**: the newest `min(L, N)` frames while Loop is on, else the newest `min(head, N)`, from
+    the Loop and Loop Length base values; then the capture's splice argument, 0 for that whole
+    window and k counting from the oldest mark inside it (ruling SP-T8a). The Splice parameter's
+    selection doesn't narrow it. The plugin's API is `captureRing`, `loadCapture` and
+    `saveCapture`, main thread only, for sub-project 6's gestures.
 
 **Cloud core rules** (M1 sub-project 1, the FX slice; §23 #36)
 
@@ -782,7 +928,9 @@ like Mix.
   - Its window is N = 16 s of stereo frames, `[R − N, R − 1]` for write head R. It is stored in
     N + maxBlockSize frames, so a block written whole before it renders never overwrites a frame
     still in a sample's window. Output is independent of the host block size and of
-    maxBlockSize (ruling M1-o).
+    maxBlockSize (ruling M1-o). Since M2 sub-project 2, N is the layer's Ring Length (16 s by
+    default) and the readable window is `[E − W, E − 1]`, narrowed by Loop or a selected splice
+    (Live ring buffer, above); at the defaults it is this one, bit for bit.
   - Non-finite input is stored as 0, and finite input is clamped to ±2^20; in-range audio is
     unchanged (ruling M1-p).
   - **The admission clamp** sets the grain's start delay so that every Hermite tap
@@ -799,9 +947,14 @@ like Mix.
     head and ramps the gain back over 20 ms. The ramp is an exact integer count, so it doesn't
     depend on where blocks fall.
   - **Freeze is live until toggled** (§23 #40; ruling M1-ac), each layer's Freeze arming on its
-    own since M2 sub-project 1. The ring isn't saved until M2, so
-    a fresh ring starts empty. The parameter therefore engages the engine's freeze only once
-    armed, and it arms by being seen off after the activation or the last reset:
+    own since M2 sub-project 1. A ring that wasn't saved starts empty, so the parameter engages
+    the engine's freeze only once armed, and it arms by being seen off after the activation or
+    the last reset. **A restored ring is the exception** (M2 sub-project 2; §23 #40 amended by
+    §23 #66): a session saves a layer's ring when it is held, its Freeze or Loop base value on
+    (the director's D1, option 1; §18), and a layer whose ring is restored arms at the load, so
+    a Freeze that is on holds the restored ring from the first sample (ruling SP-T1c: the ring
+    restores with the head stopped and the write gain 0, no ramp). A layer whose ring wasn't
+    saved (an M1 state, a plain live ring) keeps the rule below, ruling FR-8 unchanged:
     - Freeze is seen where it reaches the engine: each call's first sample, each applied grid
       boundary, and a `setBase` of Freeze itself (params.flush).
     - A state load arms from its loaded values alone, every layer alike (`Processor::setBases`,
@@ -894,6 +1047,11 @@ address this:
   rendered each (§15).
 - Every modulation source is a function of the sample clock, the parameter history and the
   host's events; the random sources draw from the counter RNG (The mod matrix, above).
+- The ring's operations (M2 sub-project 2; §23 #66) draw nothing: Loop, Loop Length, Overdub,
+  Splice and the commands apply on the grid, a mark's aging is decided per sample, and the tap is
+  kept by absolute time. A ring resize or restore lands at a call's start, as a sample swap does.
+  The SIMD live kernel reads the window's end and oldest frame from `LiveSource`, so it stays bit
+  for bit the scalar reference's under a loop or a splice (ruling SP-T1d).
 - Any reused sst modulator or effect that seeds its RNG from the clock is patched to use the
   engine RNG. Reverb 2, the first reused effect (§23 #50), has no randomness: its modulation is a
   deterministic quadrature oscillator. sst-effects and sst-filters are header-only and compile in
@@ -955,7 +1113,11 @@ clients/  CLAP entry points + clap-wrapper targets
   on the audio thread: decoding (`gg/media/Decode.h`), rate conversion (`Convert.h`), the
   SHA-256 fingerprint (`Sha256.h`), loading a sample with its manifest entry (`Sample.h`), the
   search for a missing one (`Search.h`) and the per-machine settings file (`SettingsFile.h`).
-  The plugin's loader and `gg-render` share it. It links `gg-core` for the manifest entry and
+  M2 sub-project 2 (§23 #66) added the memory cap's accounting (`MemoryBudget.h`), the
+  process-wide sample pool (`SamplePool.h`), float32 WAV bytes and their decoding from memory
+  (`WavBytes.h`, `decodeAudioBytes` in `Decode.h`), a ring's audio saved and restored
+  (`RingAudio.h`) and collect and save (`Collect.h`), with no new dependency.
+  The plugin's loaders and `gg-render` share it. It links `gg-core` for the manifest entry and
   the settings' XML; `gg-core` never links it. It has no JUCE.
 - **The plugin builds in two layers.** `gg-plugin-core` is the CLAP audio side and the factory,
   with no JUCE. `gg-plugin-editor` adds the JUCE editor through `clap_juce_shim`.
@@ -991,8 +1153,10 @@ clients/  CLAP entry points + clap-wrapper targets
   §23 #50): each wait is noted in `docs/m2-carry-over.md` and stays open until upstream changes.
 
 **Dependencies.** Pin exact SHAs. The sst libraries have no tagged releases. Rows without a pin
-in the bullets below (sst-waveshapers, sst-voicemanager, libFLAC, signalsmith-stretch, MTS-ESP
-and tuning-library) are planned, for M2 and M3; they are pinned when they are added.
+in the bullets below (sst-waveshapers, sst-voicemanager, signalsmith-stretch, MTS-ESP and
+tuning-library) are planned, for M2 and M3; they are pinned when they are added. libFLAC, once
+planned for encoding embedded captures, is not needed: M2 sub-project 2 embeds float32 WAV bytes,
+which restore bit for bit and need no encoder (§18, §23 #66).
 
 | Library | License | Use |
 |---|---|---|
@@ -1010,7 +1174,6 @@ and tuning-library) are planned, for M2 and M3; they are pinned when they are ad
 | tinyxml (bundled in sst-plugininfra) | zlib | The patch state's XML, private to `gg-core` |
 | simde | MIT | SSE intrinsics on ARM/NEON |
 | dr_libs (dr_wav / dr_flac / dr_mp3) | Unlicense / MIT-0 | Audio file decoding: `gg-render`'s WAVs, and `gg-media`'s WAV, AIFF, FLAC and MP3 samples |
-| libFLAC | BSD-3-Clause | Encoding embedded captures |
 | r8brain-free-src 7.6 (tag `7.6`, `cb2abb9`) | MIT | Sample-rate conversion on load, in `gg-media` (`CDSPResampler24`; header-only, with its bundled Ooura FFT), since M1 sub-project 3 |
 | utf8proc 2.12.0 (tag `v2.12.0`, `79cdd5a`; Unicode 18) | MIT (its Unicode data: the Unicode data license, permissive) | Unicode normalization in `gg-media`'s search for a missing sample, so a name saved in NFC is found under its NFD spelling and back; one C file, a static library linked privately into `gg-media`, since the M1 burn-down (§23 #55) |
 | pffft | BSD-like | FFT: the metrics' spectra and spectrograms since M0 (§23 #21); Spectral Smear's STFT in M2 |
@@ -1135,7 +1298,11 @@ and tuning-library) are planned, for M2 and M3; they are pinned when they are ad
 **Host robustness**
 
 - Handle 0- and 1-sample blocks. Never rely on the declared minimum frame count.
-- Keep `params.flush` trivial. The AUv2 wrapper renders silence if its lock is contended.
+- Keep `params.flush` trivial. The AUv2 wrapper renders silence if its lock is contended. So it
+  adopts no ring (M2 sub-project 2; ruling SP-T7a, §23 #66): an offer that carries a ring (a
+  resize or a restore) is taken whole in a flush, its values, source and ring kept as one unit,
+  and applied at the next `process()` call's start, a frozen restore held from that call's
+  first sample.
 - Keep an internal monotonic sample clock and detect loops and jumps from discontinuities, rather
   than trusting host loop flags.
 - Accept MPE both as CLAP note expressions (Bitwig) and as the MIDI-MPE dialect (Ableton and
@@ -1170,6 +1337,16 @@ and tuning-library) are planned, for M2 and M3; they are pinned when they are ad
     each, 8,000 in all. Both are in the default case list, so CI's legs time them, their ratios
     "not in the baseline"; their figures are measured at sub-project 7's idle run, which adds
     their baseline entries. X's case and definition are unchanged.
+  - **A long-ring case is published beside X, report-only** (since M2 sub-project 2; §23 #66):
+    `engine-live-long`, `engine-live`'s stream over a 300 s ring instead of 16 s, Position 150 s
+    and Spray 300 s so the reads span the ring, warmed up for 300 s of audio so the ring is full:
+    the cache cost of a minutes-long buffer. It is in the default case list, its ratios "not in
+    the baseline" until three full CI runs are merged in at the close; each of its three
+    configurations holds a 115 MB ring. Under `--quick`, a smoke check with no verdict, every
+    engine case's warm-up is capped at 16 s, the longest any other case uses, so the other cases'
+    quick runs are unchanged and `engine-live-long`'s reads a partly filled ring (ruling SP-T9a).
+    `engine-live`'s figure with the ring pyramid's levels is measured when they land.
+    `engine-sample`, X, is untouched by sub-project 2.
   - **Space's cost is published beside X too** (`gg-bench --space`, report-only, with no ratio or
     baseline; §23 #50): the diffuser and the reverb on stereo noise at 48 kHz, per stereo sample.
     Sub-project 4's fix wave measured 28.49 ns, 0.137% of one M5 Max core, at its final code
@@ -1382,15 +1559,49 @@ sub-project 6 (§23 #65):
   then chunks, each a four-character ID, a u64 payload length and the payload.
 - `PTCH`: the patch, using sst-plugininfra PatchBase with migrations. Its bytes are the patch
   XML's, unchanged.
-- `MEDI`: the media manifest, as XML: a `<media version="1">` root with zero or one `<sample>`
-  (M1 loads at most one sample). A sample's attributes:
+- `MEDI`: the media manifest, as XML. Version 1 (M1 and M2 sub-project 1) is a
+  `<media version="1">` root with zero or one `<sample>` (M1 loads at most one sample). A
+  sample's attributes:
   - `sha256`, 64 lowercase hex digits, and `size`, in bytes: the file's fingerprint;
   - `path`, absolute, and `relative`, to the sample folder with `/` separators (empty when the
     file is outside it), both UTF-8;
   - `format` (`wav`, `aiff`, `flac` or `mp3`), `channels` (as stored in the file), `rate` (the
     double's bits, as 16 hex digits, so it comes back bit for bit) and `frames`: the file's;
-  - `embed`, always 0 until M2.
-- `AUDI` (optional): embedded audio as FLAC. Reserved for M2, and not written yet.
+  - `embed`, always 0 in version 1.
+- **`MEDI` version 2** (M2 sub-project 2, 2026-10-30; §23 #66), which this build writes: at most
+  one `<sample>` and at most one `<ring>` per layer, the samples first, each in layer order. A
+  version-1 entry loads as layer A's.
+  - `<sample>` takes `layer` (`A`–`D`) first, then version 1's attributes in their order, then
+    `content`, the content-relative reference (the file's path inside a content root, `/`
+    separators, empty when it wasn't loaded from one; sub-project 5 names the roots), and
+    `audio`, its `AUDI` payload's id when `embed="1"` ("0" otherwise). An embedded sample is a
+    capture that never touched disk, with no `path` or `relative`; a filed capture's `path` is in
+    the captures folder.
+  - `<ring layer frames rate splices sha256 size embed audio | path>`: a saved ring, its window
+    as float32 WAV bytes (oldest frame first), `rate` the host rate it was written at (as a
+    double's bits), `splices` its marks as frames from the window's start (decimal, one space
+    apart, at most 32), `sha256` and `size` of the WAV bytes, embedded (`audio`, no `path`) or
+    filed (`path`, no `audio`). A ring is stereo, so it has no `channels`, and it has no `head`
+    or `loop`: Freeze, Loop, Loop Length, Overdub and Splice are the layer's parameters in
+    `PTCH` (ruling SP-T3d).
+  - The attributes' escaping, the 64-deep pre-scan, the NUL rule and the all-or-nothing reading
+    are version 1's; a malformed `<ring>`, or one with more than 32 marks, fails the state as a
+    malformed entry does.
+- `AUDI` (optional, since M2 sub-project 2): the embedded audio, one chunk holding every payload,
+  so the container keeps one of each known ID: a u32 count, then per payload a u32 id (above 0,
+  unique), a u64 length and the bytes, each a complete float32 WAV file (RIFF,
+  `WAVE_FORMAT_IEEE_FLOAT`, the extensible form for stereo; a 44-byte header mono, 68 stereo;
+  ruling SP-T3c), the bytes a filed capture has. An entry's `sha256` and `size` are of those
+  bytes, so an embedded payload and its filed twin have one fingerprint. Written only when there
+  is a payload. **Not FLAC** (the codec call, §23 #66): float32 restores bit for bit, so a
+  reopened session renders identically rather than within tolerance; a ring's floats, which may
+  exceed ±1 (it clamps at ±2^20), need no scaling; one representation serves embedded and filed
+  audio, `gg-media` decodes both (`decodeAudioBytes` over dr_wav's memory reader) and any tool
+  opens a capture; and there is no encoder to pin. The cost: about 2.5× 24-bit FLAC's size, so
+  the 32 MB embed cap holds about 83 s of stereo at 48 kHz.
+- `INST` (optional, since M2 sub-project 2): the per-instance settings,
+  `<instance version="1" memoryCapMiB="1024" />`; absent, the defaults; a newer `version` loads
+  its known attributes and keeps nothing else (it references no media).
 - **Reading is all or nothing.** A bad magic, another container version, a chunk running past
   the end, a missing or repeated `PTCH` or `MEDI`, or one that fails to parse rejects the whole
   state and changes nothing.
@@ -1406,23 +1617,81 @@ sub-project 6 (§23 #65):
     reading *sample from a newer version*. The manifest's bytes are kept, and a save writes them
     back unchanged, so an older build that saves over a newer session keeps its sample
     reference. A load or a relink replaces it, as it replaces any manifest. A newer `PTCH` migrates.
+    Beside a newer `MEDI` this build keeps the `AUDI` chunk's bytes verbatim, unparsed, and
+    writes them back too, so a newer build's embedded audio survives this build's save (ruling
+    SP-T3b; the cost, a 64 MiB state copied once more).
+  - **An entry naming a missing `AUDI` payload doesn't fail the state** (ruling SP-T3a): an M1
+    or sub-project 1 build that re-saves a version-2 state keeps `MEDI` byte for byte and drops
+    `AUDI`, an unknown chunk, and an older build's save should lose no more than it must (§23
+    #53). The patch and every other entry load; a sample entry loads with its layer's status
+    *embedded audio missing* (a session saved then leaves it out), and a ring entry is left out
+    with that status. The cost: a corrupt state loads with a status instead of refusing.
+  - An older build loads a state of this one with its patch and *sample from a newer version*,
+    skipping `AUDI` and `INST`; this build loads M1's and sub-project 1's states unchanged.
   - Unknown chunk IDs are skipped, so a newer build's chunks don't break an older one.
   - A state that starts with `<` is a pre-container state, saved by sub-projects 1 and 2: all
     `PTCH`, with no sample.
   - The plugins refuse a state longer than 64 MiB, and read no further (`kMaxStateBytes`).
-- **Writing.** Both products write the container, the FX with an empty `MEDI`. `encodeState`
-  never writes a `MEDI` entry that wouldn't decode: debug builds assert, and release builds leave
-  it out, losing one sample reference rather than the whole session (ruling R9). A newer
-  build's `MEDI` that the instrument loaded is written back byte for byte.
+- **Writing.** Both products write the container: `PTCH`, `MEDI`, `AUDI` when there is a
+  payload, and `INST`. Since M2 sub-project 2 both write their layers' entries in `MEDI` (the FX
+  had none before; with no sample it still writes an empty one). `encodeState` never writes a
+  `MEDI` entry that wouldn't decode: debug builds assert, and release builds leave it out, losing
+  one sample reference rather than the whole session (ruling R9). A newer build's `MEDI` that
+  this build loaded is written back byte for byte.
 - **`MEDI` records the requested sample, not the one playing.** Only a load or a relink replaces
   it (and a restore sets it), so a session saved while its sample is missing, loading or failed
-  to load still names it.
+  to load still names it. Since M2 sub-project 2 each layer's loader records its own entry.
+
+**What a session saves** (M2 sub-project 2, 2026-10-30; §23 #66):
+- **A ring is saved when it is held** (the director's D1, option 1): its layer's Freeze or Loop
+  base value on. A plain live ring refills from the input and isn't saved, so a project
+  reopened with an unfrozen Live layer starts with an empty ring.
+- **A saved ring is the loop window** (ruling SP-T8a): `min(L, N)` frames when Loop is on, else
+  `min(head, N)`, from the Loop and Loop Length base values (ruling SP-T8b), with every mark
+  inside it. The Splice selection doesn't narrow a save: Splice is a saved parameter and
+  reselects on restore, and narrowing would lose the other splices. The cost: a save of a
+  spliced ring keeps more audio than the selection, never less.
+- **A save of a running ring keeps W frames** (ruling SP-T7c): it reads with the ring read
+  (§14), retrying rather than waiting for a gap between `process()` calls, which the main thread
+  can't see; a front the head lapped on the last try is saved as silence, so the loop's period
+  and the marks' offsets survive. A frozen ring's WAV bytes and fingerprint are cached by its
+  storage epoch, head and window start (frozen rings only: a live ring's every write moves its
+  head; ruling SP-T7d), so a host that saves every few seconds hashes an unchanged frozen ring
+  once.
+- **Loaded samples** are saved by reference, with their content path when they have one;
+  **captures** loaded into a layer by the embed rule below.
 
 **Sample handling**
 - **What gets embedded:**
   - User samples are referenced, not embedded.
   - Captures and freezes are embedded up to **32 MB per instance**. Beyond that, they are written
-    to a captures folder as FLAC files named by hash, and referenced from the state.
+    to a captures folder as files named by hash, and referenced from the state.
+  - **As built** (M2 sub-project 2; §23 #66): at save, the rings and captures to persist are
+    taken in layer order, rings before captures within a layer; each is embedded in `AUDI`
+    while the payloads with it stay at or under `kEmbedCapBytes` = 32 × 2^20 bytes, and
+    otherwise written to the captures folder as `<sha256>.wav`, float32 WAV (skipped when a file
+    of that name and size is there), and referenced by path. So a session's embedded audio never
+    exceeds 32 MB, and the state stays under the 64 MiB read cap. A write that fails leaves that
+    entry out with the status *not saved: captures folder unwritable*, and the rest saves (R9's
+    spirit).
+  - **The captures folder** is a per-machine setting, `capturesFolder` in `settings.xml`;
+    absent, `~/Music/Giga Grains/Captures` (Windows `%USERPROFILE%\Music\Giga Grains\Captures`,
+    Linux `$XDG_MUSIC_DIR` or `~/Music`; the director's D7, option 1), made on first use.
+- **Restore of the rings** (M2 sub-project 2, inside `stateLoad`, synchronous as D8 is): each
+  saved ring, from its payload or its file found by the search below (its fingerprint
+  verified; an embedded payload isn't hashed again, since the container already reads all or
+  nothing, ruling SP-T6a), is decoded into a `RingStorage` of the layer's Ring Length, converted
+  with r8brain if the host rate differs (the marks scaled by the WAV header's rate, ruling
+  SP-T6b; a ring longer than the new length keeps its newest frames), checked against the
+  memory cap, and offered with the layer's values and sample, so the first `process()` after
+  opening has every ring and sample in place. Inactive, the rings wait for `activate()`. A ring
+  that can't be found, whose payload is missing, that the cap refuses or that won't decode is
+  left out with its status (*ring not found*, *embedded audio missing*, *ring not restored:
+  …*). A restore's statuses stay until the next restore or until the layer is no longer held;
+  an activation clears only a save's *not saved* messages (ruling SP-T7g).
+  - **Deterministic, not continuous** (ruling SP-T7e): the restored session renders the same
+    on every restore, but not identically to the saved session continuing, since the clock and
+    the grain index restart at 0, as any reopened session's do.
 - **Loading** (D8). A session restore loads its sample before it returns, so every render after
   opening is complete, and two exports of one project are identical.
   - `stateLoad` finds, verifies and decodes the sample on the main thread, where hosts expect a
@@ -1438,14 +1707,28 @@ sub-project 6 (§23 #65):
     preset recall then take no time, and a file deleted since keeps playing.
   - A large sample makes opening a project a few seconds slower.
   - Loads by button, drop or relink decode in the background (§14).
+  - Since M2 sub-project 2 (§23 #66) each layer has its own loader, in both products, sharing
+    the instance's memory cap, the search cache and the sample pool; a restore runs the loaders
+    in layer order, an embedded sample from its `AUDI` payload, then the rings. The
+    instrument's layer-A strip drives loader A as before.
 - **Finding a missing sample** (D5). Inside `stateLoad`, each candidate must match the
-  manifest's size, then its SHA-256; the first that does loads. The candidates, in order:
+  manifest's size, then its SHA-256; the first that does loads. The candidates, in order (as
+  M2 sub-project 2 extended them; §23 #66):
   1. the absolute path;
-  2. the sample folder plus the relative path (a moved drive, or another machine with the same
+  2. each content root plus the entry's content-relative reference, when it has one (the roots
+     and their order are sub-project 5's `gg/media/ContentPaths.h`; `findSample` takes them as
+     an argument, and `gg-render` passes `--content-dir`);
+  3. the sample folder plus the relative path (a moved drive, or another machine with the same
      library);
-  3. a file of the same name: in the saved path's folder, then in the last folder loaded from,
+  4. the captures folder plus the file's name, for an entry whose saved path's folder is a
+     captures folder (named `Captures`, the default's name on any machine, or the setting's
+     folder's name), so a project moved with its captures folder reopens whole; a filed ring is
+     found this way too;
+  5. a file of the same name: in the saved path's folder, then in the last folder loaded from,
      then anywhere under the sample folder. That scan visits at most 50,000 entries, never
      follows a symlinked folder, and skips a folder it can't list.
+
+  `SearchCache` remembers misses keyed also by the content roots and the captures folder.
 
   A match away from the saved path updates the manifest and marks the state dirty. With no
   match, the instrument stays silent and the status reads *missing*, or *changed* when the file
@@ -1453,12 +1736,21 @@ sub-project 6 (§23 #65):
 - **Per-machine settings:** `settings.xml`, in `~/Library/Application Support/Giga Grains/` on
   macOS, `%APPDATA%\Giga Grains\` on Windows, and `$XDG_CONFIG_HOME/giga-grains/` (or
   `~/.config/giga-grains/`) on Linux. It holds the sample folder, which the user sets once, and
-  the last folder loaded from, updated on each load. It is read and written on the main thread
-  only, through a temporary file unique to each save, renamed over it (ruling R16).
+  the last folder loaded from, updated on each load, and since M2 sub-project 2 the captures
+  folder (`capturesFolder`, above). It is read and written on the main thread only, through a
+  temporary file unique to each save, renamed over it (ruling R16).
 - **Missing media:** shows placeholders, with relink and a "collect and save" command.
   - In M1 the instrument's loader strip shows *missing* or *changed* with Relink. A file whose
     fingerprint matches restores the sample; another loads as a replacement, and the status
-    says so. "Collect and save" comes in M2.
+    says so.
+  - **Collect and save** (built in M2 sub-project 2; §23 #66; sub-project 6 wires the button):
+    `gg::media::collectMedia` copies every referenced file that can be found (samples, filed
+    rings and filed captures) into a folder, named `<name>` or, on a clash with other content,
+    `<name>-<sha256 prefix>`, checks each copy's hash (a copy that fails is removed), and
+    returns the state with each entry's `path` in the folder and `relative` recomputed, and a
+    list of what it couldn't find. The plugin's `collectAndSave(folder)` saves first, then
+    collects every file that save references, so an active instance's filed rings travel with
+    the project (ruling SP-T7f), and marks the state dirty. Embedded audio needs no collecting.
 
 **Presets.** There is one preset system: CLAP preset discovery. clap-wrapper bridges it to VST3
 program lists and AU factory presets.
@@ -1690,6 +1982,33 @@ they are frozen along with them.
     row has names a parameter. Wave 3 adds no parameters.
   - They joined with the patch's version bump (The patch, below), and a state that doesn't
     mention one loads it at its default.
+- **M2 sub-project 2's twenty** (Sources and persistence; §23 #66): five per layer in its
+  reserved block, `0x..40`–`0x..44` in each of scopes 1 to 4 (`GG_LAYER_PARAMS_M2_SOURCES`,
+  appended to `GG_LAYER_PARAMS`; `0x45`–`0x4F` stay unused, and scope 0's block takes nothing,
+  since the memory cap is a setting), displayed with the layer's letter, module "Layer A" to
+  "Layer D": **238 parameters in all**, 53 per layer. Pinned by the same test (`tests/support/
+  ParamTable.h`); the next-free constants are unchanged. No patch version bump: a state without
+  them loads them at their defaults.
+
+  | Index | Name | Range | Default | Flags |
+  |---|---|---|---|---|
+  | `40` | Ring Length | 1 s – 300 s, log (log2 seconds) | 16 s | neither automatable nor modulatable: the main thread resizes the ring (§14) |
+  | `41` | Loop | off/on | off | stepped |
+  | `42` | Loop Length | 50 ms – 300 s, log (log2 seconds); clamped to the ring in effect | 1 s | |
+  | `43` | Overdub | 0–100% | 0% | ramped per sample |
+  | `44` | Splice | stepped 0–32 (0: the whole window) | 0 | stepped |
+
+  - All but Ring Length are `AUTOMATABLE` and `MODULATABLE`. Loop Length, Overdub and Splice
+    are routes' targets like any layer parameter; whether Ring Length is refused as a target
+    follows sub-project 3's target rule for wave 2's parameters, checked after the rebase onto
+    it.
+  - **Position's range widens** to the longest ring without moving any M1 value: the Live
+    mapping `(16/255)(2^(8v) − 1)` seconds stays, and the CLAP maximum rises from 1 to
+    `kPositionMax` = 1.5279342 (`log2(300 × 255 / 16 + 1) / 8`, rounded to the nearest float;
+    ruling SP-T2a), where the mapping gives 300 s. A Sample layer's Position is still the
+    fraction of its file, clamped to 1, and typing "100%" there parses to 1.0, not the maximum,
+    so a later switch to Live reads M1's 16 s rather than 300 s (ruling SP-T2b). A range change
+    before any freeze: the ID is the same, and hosts rescan on the next load.
 - **The patch** (the state's `PTCH` chunk) is `gg-core`'s versioned XML: patch id
   `org.sethbc.giga-grains.patch`, version 2 since M2 sub-project 1 (1 through M1; below). Each
   value also carries its float bits, so a saved
@@ -1800,6 +2119,18 @@ input, which every validator accepts, so D2's fallback was not needed; §14, §1
   values, automation and notes; a preset from M2) and writes a WAV, metrics, a grain-event log
   and a spectrogram deterministically. It's the backbone of audio testing and how Claude
   "listens".
+  - **Sessions and ring operations** (M2 sub-project 2; §23 #66): `state` names a `GGST` file
+    restored before the render as a plugin's `stateLoad` would (values, routes, samples, rings
+    and the memory cap; `params` then override), its samples found only through
+    `--content-dir` and the spec's directory, never searched by name, and the spec's seed, not
+    the state's, is the render's; `--save-state` writes the session at the render's end, the
+    held rings and captures embedded or, past the embed cap, filed in `--captures-dir`, file
+    samples by reference (a built-in signal sample has no file and isn't saved); `operations`
+    are timed `splice`, `clearSplices` and `capture` steps, `gg-render` cutting its calls at a
+    capture's frame so the capture lands on that sample at any block size (a capture's `file`
+    is relative to the working directory, like `-o`); `memoryCapMiB` sets the cap, so a refusal
+    is testable (exit 2). Ring Length is set in `params` before the render, never automated
+    (ruling SP-T8c).
 - **Golden renders compared by metrics:**
   - spectral distance
   - RMS envelope
@@ -1853,6 +2184,23 @@ input, which every validator accepts, so D2's fallback was not needed; §14, §1
   5.1 s. With layers B to D off, the pad at rest, both spreads 0 and the factory routes alone,
   every one of the 22 earlier cases' WAVs kept its SHA-256 through every task.
 
+  M2 sub-project 2 adds seven cases (§23 #66), so there are 43: `inst-resample-feedback` (layer
+  A Sample over a 220 Hz sine, one held note, layer B Resample at Pitch +12 with Feedback 0.6:
+  the instrument granulating its own output), `fx-resample` (layer A Live over a sweep, layer B
+  Resample at Pitch −12, Position 0.5 s), `fx-long-ring` (24 s, Ring Length 60 s, an 8 s burst,
+  then Position stepped to 10, 18 and 22 s behind: history past 16 s), `fx-loop-overdub` (Loop
+  1 s, Overdub 0.7 over a noise-burst pattern, Freeze at 4 s, Overdub to 0 at 6 s),
+  `fx-splice-capture` (Freeze at 2 s, two splices, Splice 1 then 2, splice 2 captured into
+  layer B at 4 s and played at Pitch +7), `fx-ring-restore` (the generated `frozen-ring.ggst`, a
+  20 s ring frozen with two splices and embedded, restored with Freeze on and scanned for 4 s:
+  the restore gate) and `inst-four-samples` (the generated `four-samples.ggst`, four Sample
+  layers found by content-relative reference under `--content-dir`, one held note: `MEDI`
+  version 2 and the content reference). Their state files are written by `gg-render
+  --write-media`, never committed. With Ring Length 16 s, Loop off, Overdub 0, no splice, no
+  Resample layer, nothing embedded and the cap at its default, every one of the 36 earlier
+  cases' WAVs kept its SHA-256 through every task so far; the ring pyramid's task, after
+  sub-project 3, names in its commit any case its level selection moves.
+
   No golden pins the audio's bits (§23 #52). The bit-exact checks are:
   - every golden's grain-event log (each grain's layer, onset, position, rate, duration,
     texture, gain and pan: the grains only, not Level, the morph, Mix, Feedback's regenerated
@@ -1881,7 +2229,11 @@ input, which every validator accepts, so D2's fallback was not needed; §14, §1
   - Block-size invariance: renders at block sizes 1, 32, 64, 511 and 4096, plus random splits,
     must be bit-identical, and so must a repeated render. Since M2 sub-project 1 these include
     four-layer FX and instrument renders with every source kind switched in, every modulation
-    source active and routes to every layer.
+    source active and routes to every layer, and since M2 sub-project 2 (§23 #66) renders with a
+    Resample layer, a loop with overdub, splices, and a `gg-render` capture at a frame off the
+    control grid (block sizes 1, 77, 128, 1000 and 4096 for the capture). A ring resize or
+    restore is part of such a render only when made before the first call, as `gg-render`
+    makes them.
   - **Thread-pool invariance** (since M2 sub-project 1; §15, §23 #65): the four-layer FX and
     instrument renders, each layer switched between Sample, Live and an unbuilt kind and Feedback
     on two layers, render the same bytes, the same grains in the same order and the same ring
@@ -1891,7 +2243,8 @@ input, which every validator accepts, so D2's fallback was not needed; §14, §1
     the tasks on the stub's threads, its own lock and wait exempt as a stand-in for the host's
     pool (ruling LS-T11b). The stand-in for the in-host survey: the `[plugin]` tests' fake host
     pool checks that the plugin asks for exactly one task per rendering layer and renders the
-    same bytes with the pool, with a declining pool and with none.
+    same bytes with the pool, with a declining pool and with none. Since M2 sub-project 2 a
+    Resample layer fed back, a loop and overdub render the same bytes on any pool too.
   - Grain-event logs are compared across platforms.
 - **Fuzz and property tests** (property tests on the state, the settings and the Processor
   since M1; the sweep harness in M2). Parameter sweeps, extreme values and bursts of automation
@@ -1903,7 +2256,10 @@ input, which every validator accepts, so D2's fallback was not needed; §14, §1
 - **Real-time safety.**
   - Clang RealtimeSanitizer on upstream LLVM 20 or newer (Apple clang doesn't ship it).
   - ASan and UBSan.
-  - Tripwires that fail tests on allocation or locking in the audio path.
+  - Tripwires that fail tests on allocation or locking in the audio path. Since M2 sub-project 2
+    (§23 #66) they cover a Resample layer's piece, a loop with overdub, a splice command, a ring
+    adoption with its bounded copy, a frozen restore, and the plugins' `process` and
+    `params.flush` with a resize, a restore and a ring command pending.
 - **Format validators in CI:** clap-validator, pluginval, auval, and Steinberg's VST3 validator.
 - **Machine-readable artifacts.** Spectrogram images and summary statistics, so Claude can inspect
   renders and not just assert pass/fail.
@@ -1972,8 +2328,8 @@ Why this order before v1.0:
 | Older and x86 machines pay 2× to 3× the M5 Max's CPU share for the same grain count | The four §16 levers, judged on every CI leg; the informative floor figures (§16); the budget manager; the quality tiers |
 | Determinism is fragile: one CPU-adaptive rule, `std::` distribution or thread-order sum silently breaks it | Rules in §14; block-size invariance tests from M0 |
 | Multithreading is uneven across formats; there's no workgroup join via CLAP/clap-wrapper | Single-threaded v1; tasks only when the host offers a thread pool |
-| Memory blow-up: layers × minutes × mipmaps × instances | RAM cap per instance, shown in the UI; shared sample pool; buffer resolution options |
-| Large state chunks slow or crash hosts | 32 MB embed cap; a 64 MiB state read cap; captures folder; background decoding for interactive loads (a session restore loads its sample synchronously, D8, §18) |
+| Memory blow-up: layers × minutes × mipmaps × instances | As built in M2 sub-project 2 (§14, §23 #66): a per-instance memory cap (default 1 GiB, 64 MiB to 16 GiB) that refuses a load, a Ring Length or a restore deterministically, with a status, before anything is allocated, shown in the UI by sub-project 6; a process-wide sample pool holding each prepared sample once, weakly; rings of 1 to 300 s; the fixed costs documented. Buffer resolution options remain a later lever |
+| Large state chunks slow or crash hosts | 32 MB embed cap (float32 WAV payloads in `AUDI`, then the captures folder; M2 sub-project 2); a 64 MiB state read cap; a frozen ring's fingerprint cached, so a host saving every few seconds hashes it once; background decoding for interactive loads (a session restore loads its samples and rings synchronously, D8, §18) |
 | Clicks and level pumping at extremes (head crossing, normalizing thousands of grains) | Engine invariants in §14; click detector in the golden tests |
 | sst API churn (no releases); clap-wrapper bugs (transport, AU tail) | Pinned SHAs; upstream fixes; host smoke tests |
 | JUCE 9 compatibility of the shim | The M0 spike passed on macOS arm64, so the project is on 9.0.4 (§23 #24). CI run 40445561691 passed on Windows, Linux and macOS (§23 #29), and the macOS leg now also runs the mac-universal x86_64 slice's tests under Rosetta (§23 #33); 8.0.16-security is the fallback |
@@ -2076,6 +2432,7 @@ director made the call.
 | 63 | The carry-over splits for M2 | **The director's request of 2026-10-29,** made while the release-pipeline plan ran. `docs/m1-carry-over.md` becomes M1's frozen record: a paragraph under its title says so, and nothing else in it changes after row 221's narrowing, made just before the split. Its 13 open rows (51, 85, 87, 88, 118, 119, 144, 148, 184, 217, 218, 221 and 232; row 221 narrowed to the About box, its installer half closed by the release pipeline's commits) move to `docs/m2-carry-over.md` with their numbers; that file repeats the policy's five rules unchanged and is the carry-over from now on, its new rows numbered from 300. The no-net-growth count is that file's open rows, 13 at the split. §20's M1 and M2 rows, the pointers in §14 and §15 and CLAUDE.md point at the M2 file. (A row's number is the line it stood on before the freeze; in the M1 file each now stands 5 lines lower. #60's list names the shim row 231; it stood on line 232.) *Decided 2026-10-29 by the director; written by the Claude session that wrote the release procedure.* |
 | 64 | M2 planned as a programme: seven sub-projects in four waves, run by agents | **The director's eight decisions of 2026-10-29,** made in the M2 brainstorming (`docs/superpowers/specs/2026-10-29-m2-programme-design.md`, which places every M2 deliverable, §5 there): **(1)** one listening gate, at M2's close; the sub-projects render packs for the record only. **(2)** Structure first: layers, the parameter scopes and the mod matrix before persistence, engine scale, content and views; persistence-first was declined (it writes the state format twice). **(3)** "Everything should be M2": the Edit, Mod and FX views all land in M2, and with them §22's C++23 move (sub-project 1's first task, with a revert path) and AVX2 spike (sub-project 3, measured), the global delay, limiter, layer filter and grain buses of §14, and preset discovery. **(4)** Agents run the sub-projects, larger and in parallel where the dependencies allow: wave 1 Layers and structure alone; wave 2 Engine scale, Sources and persistence, Extremes and the FX chain in parallel (merge order 3, 2, 4, each rebased and re-verified); wave 3 Presets and content, Views; wave 4 Close. **(5)** The programme manager approves each sub-project spec; the director sees each spec's forced choices. **(6)** The live buffer's operations (overdub, loop length, splices, record/capture; §4, §5), which no milestone had dated, are M2's. **(7)** The factory macro routes target every layer. **(8)** The CC0 samples come from downloads with recorded provenance and from our own tools, in a public content repository the director creates, whose tagged zip is the release asset §12 allows. **Cross-cutting rules the sub-projects build on** (the design's §7): the per-layer chain is M1's, kept per layer, so one layer renders bit-identically to M1; the resample tap reads 256 samples late (§14); render tasks are the layers, so the M1 hashes hold (§15, §22); Source kind is a per-layer stepped parameter defined in wave 1 with its whole enumeration, and both products expose every kind; layer parameters keep scope 1's indices in scopes 2 to 4, wave 2's sub-projects append inside reserved index blocks, and the mod matrix's routings live in the patch, not as parameters; sub-project 1 alone bumps the patch version (the instrument's Macro 7 becomes Feedback there), sub-project 2 alone adds chunks (`AUDI`, `MEDI` v2 with a content-relative reference); the `AUDI` codec is sub-project 2's choice, under a criterion that every restore renders identically and matches the saved session within the goldens' tolerances; X keeps its definition and new benchmark cases are report-only beside it; checks that need a DAW are the close's. The carry-over should end M2 at 8 open rows (51, 118, 119, 217 and 221 closed; the rest upstream, 1.0.0 or M3). *Decided 2026-10-29 by the director; written by the Claude session that ran the brainstorming.* |
 | 65 | M2 sub-project 1 (Layers and structure): four layers and the morph, the Source kind, pitch and size spread, the mod matrix, render tasks on the host's thread pool, the patch at version 2, C++23 | **The director's five decisions** (2026-10-29, by forced choice on the spec, relayed by the programme manager; `docs/superpowers/specs/2026-10-29-m2-layers-design.md` §8): **D1** option 1, the morph law is the sum-normalized vector law with the pad resting at the centre (declined: the nearest corner at full level, and plain bilinear resting at corner A); **D2** option 1, the instrument gets a sidechain input port in this wave, feeding every layer's ring, with a fallback (drop the port if auval or pluginval reject an `aumu` with an input bus) that was not needed: CI's macOS leg (run on `1aa7114`) passed auval on all three identities with the instrument's input bus, and pluginval and Steinberg's validator passed too; **D3** option 3, each layer has two LFOs, two envelopes, two random sources and one 16-step sequencer; **D4** option 1, Pitch Spread is 0–24 semitones, uniform bipolar; **D5** option 2, Size Spread (0–2 octaves, uniform bipolar) joins Pitch Spread in M2, and the rest of §14's spread model goes to §22. **The programme manager's acceptance** (2026-10-29): carry-over rows 118 and 119 move from sub-project 2 to this one, since the Source-kind parameter makes the switch reachable in both products in wave 1. **The design** (the spec and `docs/superpowers/plans/2026-10-29-m2-layers.md`, as built): C++23 for every first-party target with a GCC 13 floor that the configure enforces, the Linux leg `linux-gcc13` on ubuntu-22.04 with gcc-13 from the `ubuntu-toolchain-r/test` PPA, its baseline file renamed (§15; `6a816e9`, `3d15b06`); `gg::Engine` as one layer's engine: `EngineConfig::layer` keying every draw (layer A's are M1's), an enable gate whose re-enable forces an onset, a source-kind switch that lets the sounding grains finish on their source (rows 118 and 119), and the level accessor (`263696d`); Pitch Spread and Size Spread, `rng::Field` 5 and 6 (`db51439`); `TaskRunner`, `SerialRunner` and the tests' `StubPool` (`6038030`); the 218-parameter table, layers B to D at scope 1's indices, the next-free indices `0x31` and `0x22`, the three reserved blocks, Macro 7 "Macro Feedback" in both products (§18; `6d55d10`); the mod matrix's routes, six curves and twelve factory routes, M1's `macroOffsets` bit for bit (`af37670`); the modulation sources, libm-free (`515c1bc`); the patch at version 2, `<mod>` and the migration with the instrument's Macro 7 folded into Stereo (`a660295`); the layer-aware `ParamMap` and `builtKind` (`a9cb6e7`); the four layers in the `Processor`, the per-layer chain, the morph law, on/off, the kinds and both products' 256-sample pieces (`27f4f02`, `1235944`); `"layer"` in the grain-event line, which rewrote the 22 expected `.events.jsonl` files by that insertion alone (`88e7c8f`); one task per rendering layer on the runner, bit-identical with any pool (`fec8410`); the matrix in the `Processor`, every source stepped per grid cell and per-cell application while a time-varying route is active (`f668876`, `5d8263b`, `cd568c0`; that path's cost is unmeasured, since `gg-bench` times the engine, not the `Processor`, and is for sub-project 7's idle run or a later `Processor` benchmark); `gg-render`'s `samples`, `mod`, `controls`, `transport` and velocity keys (`fb586f7`); the plugin's sidechain port, eight remote pages, `clap.thread-pool`, the MIDI controls, the transport and the routes in the state (`f393ecd`, `8824c26`); `engine-layers` and `engine-layers-full`, report-only beside X (§16; `c5e066c`); the fourteen goldens, 36 cases in all, with `fx-layers`, `fx-mod-follower`, `inst-layers-morph` and `inst-size-spread` pinned in the click-injection table at 0, 15, 5 and 3 (§19); and the listening pack, `docs/listening/m2-layers/` (fourteen specs, a README and a host checklist), rendered for the record and heard at M2's close, which puts two questions to the director's sitting: under D1 uncorrelated layers sum quieter than one layer alone (two about 4 dB down, four 6–7 dB: should the pad keep power rather than amplitude?), and Env 1's release is barely audible in the instrument, since no grain spawns after a note-off, so the release reaches only the last grains and the reverb's tail. GCC 13's warnings were fixed in first-party code: `-Warray-bounds` by one bounded `ParamMap` accessor (`d0c0657`), `-Wmaybe-uninitialized` by a plain slot in `parseRoute` (`e0f7fb7`), `-Wrange-loop-construct` by reference bindings (`c288d3b`) and `-Wextra`'s enumerator-and-integer conditional by the test harness's transport flags of one integer type (`1aa7114`). With layers B to D off, the pad at rest, both spreads 0 and only the factory routes, every one of the 22 M1 goldens kept its WAV SHA-256 through every task. **The spec's calls that amend Part II** (its §9): each layer owns its pool of 4,096; a layer switched on speaks at once (the forced onset) and off clears its pool after the 10 ms ramp; off layers keep writing their rings; both products have four 16 s rings, the instrument's fed from the sidechain; unbuilt kinds render as the product's default kind (`builtKind`), keeping their value; Position, Spray and Feedback follow the layer's kind, not the product, so Feedback is shown in the instrument; notes act on every layer; routes may not target a macro or a modulator's control; display names carry the layer letter, with the bare M1 names as layer A's in `gg-render`. **Rulings made during the build** (IDs given here: LS, Layers and structure, then the task): LS-P1 (2026-10-29, the plan's pre-flight), `<route>` writes `target` as the target slot's CLAP ID in decimal, as `<p id>` does, never its name, since a renamed parameter must not break saved routes; `source` and `curve` by their stable identifiers, layers as `A`–`D`, `same` and `all`; LS-T1a, GCC 13 defines `__cplusplus` as 202100L for `-std=c++23`, so the smoke test's bound is `> 202002L`, and the PPA step installs gcc-13 and g++-13 itself, since the pinned `prepare-for-juce` installs no compiler (`3d15b06`); LS-T5a, the M1 listening spec `docs/listening/m1-perform/specs/07b-macro-stereo.json` no longer parses (Macro Stereo is gone), and stays as the gate's frozen record, with a test pinning its failure; LS-T7a, the random glide's time constant is Smooth / rate and the follower is a 5 ms / 200 ms one-pole with a 1e-20 flush, the tests pinning the formulas' values, and the envelope's double level and `sineDet`'s clamp to ±1 are accepted; LS-T9a, a version-1 instrument state with no Macro 7 folds M1's default 0.5, the writer leaves out a route that wouldn't read back as itself, and a later malformed `<route>` naming a valid slot empties it; LS-T10a (Task 10's fix round), the morph law gains the factor `min(1, Σ_K r_K)`, `weight_L = (r_L·b_L / Σ_K r_K·b_K) × min(1, Σ_K r_K)`, because the normalized weight kept a lone layer at 1 until its ramp was exactly 0, so switching off the last layer cut where the spec says it fades over 10 ms; one layer at r = 1 still weighs exactly 1.0 (`1235944`); LS-T10b, the event log's inter-layer interleaving follows the pieces (which end at call ends, at grid boundaries with changes, at 256-sample cuts and where an off-ramp reaches 0), so it differs between block sizes, while each layer's sequence and the audio are invariant and the goldens render at a fixed block size, so the cross-platform gate holds (§19); LS-T10c, the piece is cut where an off-ramp reaches 0, a layer's diffuser and Feedback history are cleared when it turns off, and a `setBase` of a layer's Source jumps its Feedback ramp; LS-T11a, each layer counts its own dropped grain events and `droppedGrainEvents` sums them; LS-T11b, `StubPool`'s own lock and wait are exempt from RTSan as a stand-in for a host's pool, the tasks it runs still checked; LS-T12a, `reset()` forgets the host's transport, so a reset `Processor` renders as a fresh one (`01d03e1`; the review found it kept), and `setRoutes` jumps the ramps it moves; LS-T13a, `gg-render`'s transport key is `tempoBpm` (the spec said `tempo`), the instrument's `sample` stays required and is layer A's, so `samples.A` beside it is the duplicate error, and built-in layer samples share the spec's seed; LS-T14a, the instrument's routes travel with its seed in the loaded-state snapshot and may land a block apart from its values, as PU-T5a accepts for the seed, and auval, not runnable on the build machine, is replaced there by the in-process AU test of every identity's stereo input, CI's auval being the check (`8824c26`; it passed on `1aa7114`). **The spec is amended in place** for §6.1 (LS-T1a and the C++23 library features not yet used), §6.3 (LS-T10a), §6.7 (LS-T10b, LS-T11a, LS-T11b), §6.8 (the per-layer globals as targets), §6.9 (LS-T5a), §6.10 (LS-P1), §6.11 (LS-T13a) and §12 (rows 118 and 119 closed), and the plan's Global Constraints for LS-T10a. **The carry-over:** rows 118 and 119 closed by `263696d`, 13 open rows to 11, none added. Decided 2026-10-29 by the director (D1–D5) and the programme manager (rows 118 and 119), and 2026-10-29 and 2026-10-30 by Claude (the rulings), during M2 sub-project 1; *written by the Claude session that ran sub-project 1*; see §14, §15, §16, §17, §18, §19, §20, §22. **The final review's fix wave** (2026-10-30): the whole-branch review found no Critical issue and five Important ones, fixed with its minors. Ruling FR-1: a layer parameter's index is read from the X-macro's index column (`layerParamIndex`, and `slotForId` through its reverse table), never from its row's position, and scope 0's table spans `0x00`–`0x7F`, so wave 2 appends its rows inside its blocks with no placeholder rows; the next-free constants are the next free index below the blocks; and the 218-row table the plugin and patch tests both spelled out is one header, `tests/support/ParamTable.h` (§18; `2869412`). Ruling FR-2: on Linux with GCC the four products link libstdc++ and libgcc statically, their symbols kept local, and the CLAP and the VST3 export their entry points alone, since the GCC 13 floor's headers reference `GLIBCXX_3.4.32`, which a stock 22.04 lacks; CI's Linux leg checks the ceiling (§15; `4cc8230`). Ruling FR-3: a state load (an offer's values, the plugin's activation and its loaded state) sets every base with `Processor::setBases`, one recomputation of the effective values where 218 `setBase` calls made 218 (106 µs to 3.0 µs in a release build on the M5 Max), with the calls' result bit for bit but for Freeze's arming (FR-8, below) (`9cbded1`). Ruling FR-5: the grain canvas shows layer A alone (§17), and a piece's task count is 0 once its tasks are joined, so a thread-pool call outside a request runs nothing (`88230e8`). Ruling FR-6: Position and Spray's text follows Source's base value, not its effective one (§18). Ruling FR-7: Transport Playing has no golden (§19). `CLAUDE.md` now names GCC 13's four diagnostic families with their fixes and warns that two gates on one machine fail falsely, and the listening checklist says the instrument's layers B to D are silent unless their Source is Live. Every golden WAV kept its SHA-256 (36 cases); the carry-over stays at 11 open rows. Ruling FR-8 (the controller, on the fix report): `setBases` arms Freeze from the loaded values alone, every layer alike, with one `syncFreeze()` after the update (so a Freeze loaded on stays live until toggled if its layer isn't yet armed, and freezes at once if it is), since the calls one slot at a time armed layers B to D at layer A's Freeze, from their old values, and froze their empty rings at a load, #40's bug (§14). *Decided 2026-10-30 by Claude, in the fix wave, and by the controller (FR-8)* |
+| 66 <!-- The next free row on the m2-sources branch; renumbered at the rebase onto main, after sub-project 3's row (the program manager's note, spec §13). Update every "§23 #66" in INTENT.md, CLAUDE.md and docs/superpowers/specs/2026-10-30-m2-sources-design.md with it. --> | M2 sub-project 2 (Sources and persistence): the Resample source, rings of 1 to 300 s with loop, overdub, splices and capture, the memory cap and the sample pool, `MEDI` version 2, `AUDI` as float32 WAV, `INST`, the captures folder, rings saved and restored, collect and save | **Built in part** (2026-10-30; `docs/superpowers/specs/2026-10-30-m2-sources-design.md` and `docs/superpowers/plans/2026-10-30-m2-sources.md`, PR #19): Tasks 1 to 9 built, reviewed and merged, the goldens and listening pack (Task 10) and this documentation (Task 11) in parallel; the ring pyramids (Task 12) wait for sub-project 3's merge and the rebase onto it, then the final review and its fix wave (Task 13). **The director's seven decisions** (2026-10-30, by forced choice on the spec, relayed by the program manager; the spec's §8): option 1 of each. **D1**, a session saves a ring when it is held, its Freeze or Loop on; a plain live ring isn't saved (declined: every Live and Resample ring, which fills the embed cap with transient audio; no ring, which leaves #40's frozen pad unheld). **D2**, the memory cap defaults to 1 GiB, floor 64 MiB, ceiling 16 GiB (declined: 2 GiB, which lets ten instances claim 20 GB; 512 MiB, which one long ring and one long sample exceed). **D3**, the longest ring is 300 s, also the top of Loop Length and of Position's widened range (declined: 600 s, 460 MB a ring with levels; 120 s). **D4**, the Resample source hears the instance output as the listener does, the dry signal, the reverb's return and, from sub-project 4, the limiter (declined: the layers' sum before the mix). **D5**, Loop on an unfrozen ring is a sound-on-sound looper, Overdub recycling each frame leaving the window (declined: Loop stopping the head as Freeze does). **D6**, splices are numbered from the oldest mark (declined: from the newest, which renumbers on every new mark). **D7**, the default captures folder is `~/Music/Giga Grains/Captures` (declined: inside the sample folder). **The program manager's approval** (2026-10-30): the spec against the program design and INTENT, with three notes: this row takes the next free number at merge; the mod matrix's target rule for wave 2's layer parameters is sub-project 3's, so this sub-project tests that Loop Length, Overdub and Splice are admitted after the rebase rather than implementing it (until then Ring Length is admitted as a target too); and `gg/media/ContentPaths.h` is sub-project 5's, `findSample` taking the content roots as an argument. **The codec call and the libFLAC amendment** (the spec's §5 and §9, confirmed by the program manager at the approval): `AUDI` payloads are float32 WAV bytes, not FLAC, since float32 restores bit for bit, which exceeds the program design's criterion (every restore renders identically and matches the saved session within the goldens' tolerances), a ring's floats beyond ±1 need no scaling, one representation serves embedded and filed audio, and a dependency that only encodes isn't worth building on three platforms; the cost is about 2.5× 24-bit FLAC's size, so the 32 MB embed cap holds about 83 s of stereo at 48 kHz. §18's "as FLAC" is amended and §15's planned libFLAC row removed; the program design's exit "libFLAC is pinned" is met by not needing it. **The design** (as built; §14, §15, §16, §18, §19, §21): `RingStorage` apart from `LiveSource`, the window `[E − W, E − 1]` generalizing N, Overdub with its period, 32 splice marks in a fixed array and the `AddSplice` and `ClearSplices` commands on the grid (Task 1); the five ring parameters at `0x..40`–`0x..44` in every layer scope, 238 parameters in all, Resample built (`builtKind(Resample)` is Live in both products) and Position's CLAP range widened to `kPositionMax` with no M1 value moved (Task 2); `MEDI` version 2, `AUDI`, `INST` and float32 WAV bytes (Task 3); the memory budget, the sample pool and the captures folder setting, the 600 s cap removed (Task 4); the `Processor`'s Resample tap, ring parameters and commands, the ring exchange and the ring read (Task 5); a ring's audio saved and restored, the content roots and the captures folder in the search, and `collectMedia` (Task 6); `MediaSession`, four loaders per instance in both products, the rings saved and restored, the Ring Length watcher, capture and collect and save (Task 7); `gg-render`'s `state`, `--save-state`, `operations`, `memoryCapMiB`, `--content-dir`, `--captures-dir` and the two generated state fixtures (Task 8); and `engine-live-long`, report-only beside X (§16; Task 9). With Ring Length 16 s, Loop off, Overdub 0, no splice, no Resample layer, nothing embedded and the cap at its default, every one of the 36 goldens kept its WAV SHA-256 through every task. **The spec's calls that amend Part II** (its §9): the tap hears the output (D4) and costs nothing while no layer is Resample; Ring Length is resized by the main thread through the exchange, the audio thread's copy bounded at 8,192 frames, and so is neither automatable nor modulatable; a restored ring arms Freeze, so a reopened frozen pad is held from the first sample, while an unsaved ring keeps "live until toggled" (§23 #40 amended; FR-8 unchanged); Resample is a Live-mode engine fed by the tap; the window length W generalizes N, so loop and splice share the fade and the admission clamp; Overdub's period is the loop with Loop on, else the ring; capture reads on the main thread without stopping the audio thread; one `AUDI` chunk with ids; the memory cap in `INST`, a setting rather than a parameter; the cap counts an instance's references in full, shared or not; the pool holds weakly; the 600 s cap is removed outright; `findSample` takes the content roots as an argument; collect and save is a `gg-media` function plus a plugin command; four loaders per instance in both products, the FX writing `MEDI` entries; `gg-render` cuts its calls at a capture's frame; the restore goldens' state files are generated, never committed; one benchmark case. **Rulings made during the build** (IDs given here: SP, Sources and persistence, then the task; SP-T1a to SP-T1d are the build ledger's R1-1 to R1-4): SP-P1 (the plan's pre-flight), the engine's and `gg-core`'s `kMaxSplices` are both 32, checked by a `static_assert`; SP-T1a, a mark's aging and a selected splice's fallback are decided per sample from the head alone, never per block, so block-size invariance holds; SP-T1b, under D6 the Splice request stays the caller's value and counts from the oldest mark still in storage, a request past the count is the last splice, and the selection falls back to the whole window only when no mark is left; SP-T1c, a frozen restore comes back with the head stopped and the write gain 0, held from the first sample with no ramp; SP-T1d, an ownership exception the program manager was told of: `GrainKernels.h`'s `liveRun` (sub-project 3's file) takes the window's end and oldest frame from `LiveSource`, a minimal edit by addition, since the SIMD live kernel assumed the full ring's margin and, under a loop or a splice narrower than the ring, could differ from the scalar reference by one bit (after days of continuous running), and no edit inside `source/` could restore the identity, with `[kernel]` tests under a loop and a splice; SP-T2a, `kPositionMax` is 1.5279342f (the plan's 1.5279259f was a miscalculation); SP-T2b, typing "100%" into a Sample layer's Position parses to 1.0, not `kPositionMax`, so a later switch to Live reads M1's 16 s behind, not 300 s; SP-T3a, an entry naming a missing `AUDI` payload loads with its layer's status *embedded audio missing* and the rest of the state, since an older build's re-save keeps `MEDI` and drops `AUDI` (§23 #53's intent; the cost, a corrupt state loads with a status instead of refusing); SP-T3b, beside a newer `MEDI` the `AUDI` chunk is kept verbatim and written back; SP-T3c, a payload's WAV header is 44 bytes mono and 68 stereo (extensible), not the spec's 48; SP-T3d, a `<ring>` has no `channels` (a ring is stereo) and no `head` or `loop` (the layer's parameters carry them), and more than 32 marks fail the state; SP-T4a, the pool's find and insert are one step under its lock, so two loaders building one key share the first, and a source prepared at another rate is refused; SP-T5a, the ring read's check is `R₁ − max(0, R₀ − W) ≤ N`, the window's length, not the spec's "< C", since up to one block is written past the published head, and the reader copies, issues an acquire fence, then reads `R₁` and the epoch, taking W from `ringMeta` and `R₀` from the head atomic (the meta can name a previous ring's head); SP-T5b, after a resize the engine's Position and Spray reach the new ring (`Engine::ringResized`, added to the shared `Engine` by addition); SP-T5c, Loop, Loop Length, Overdub and Splice act on a layer's ring whatever its Source kind, a Sample layer's ring recording for a later switch, and only the commands are ignored on Sample layers (one rule for the ring, no per-kind gate on the audio thread; the cost, an Overdub left up on a Sample layer surprises on a switch to Live, listed for the director); SP-T5d, at most 64 commands apply per boundary group (`kMaxGroupCommands`), later ones ignored; SP-T6a, a restore doesn't hash an embedded payload again (the container is read all or nothing; a filed ring's hash is verified by the search), the cost being that a corrupted payload of the right length restores as noise; SP-T6b, a restored ring's marks scale by its WAV header's rate, as its frame count does; SP-T7a (the program manager), `params.flush` adopts no ring, since "params.flush stays trivial" is a non-negotiable: an offer carrying a ring is taken whole in a flush and applied, values, source and ring, at the next `process()` call's start; SP-T7b, a source draining in the exchange isn't counted against the cap, so a refusal never depends on when a retired source is collected (a spec amendment; the cost, an instance briefly holds one sample's bytes past its cap for a grain's length); SP-T7c, a save of a running ring keeps W frames, writing silence over any front the head lapped, as the resize's stable copy does, so the loop's period and the marks' offsets survive; SP-T7d, the fingerprint cache applies to frozen rings alone; SP-T7e, a restored session renders deterministically, the same on every restore, but not identically to the saved session continuing, since the clock and the grain index restart at 0; SP-T7f, collect and save saves first, then collects every file that save references, filed rings included; SP-T7g, an activation clears only a save's *not saved* messages, and a restore's *ring not found* stays until the next restore or until its layer is no longer held; SP-T8a, a saved ring is the loop window, `min(L, N)` frames with Loop on, else `min(head, N)`, with every mark inside it, the Splice selection not narrowing a save (it is a saved parameter and reselects on restore), and a capture follows the loop window, then its `splice` argument, k counting from the oldest mark inside the window (the cost, a save of a spliced ring keeps more audio than the selection, never less); SP-T8b, that window comes from the Loop and Loop Length base values, as D1 decides by the bases, so a capture while Loop Length is modulated takes the base length; SP-T8c, `gg-render`'s state keys: the spec's seed is the render's, not the state's; built-in signal samples aren't saved by `--save-state` (no file to name); a capture's `file` is relative to the working directory, like `-o`; an instrument spec may leave out `sample` beside `state`; Ring Length is set in `params`, never `automation`; SP-T9a, under `--quick` every engine case's warm-up is capped at 16 s, the longest any other case uses, so only `engine-live-long`'s quick run changes, and its full-length run keeps the 300 s fill. **Left to later sub-projects:** the UI for all of it, the memory readout, the strips and the ring gestures (6), which also owns the live peaks' 16 s after a resize; the content folder's layout and roots (5). **The spec is amended in place** for §6.1 (SP-T1a, SP-T1b, SP-T5c), §6.3 (SP-T2a, SP-T2b), §6.4 (the `AddSplice` anchor and SP-T5d, SP-T5a, SP-T8a), §6.5 (SP-T7b, SP-T7a, SP-T5b), §6.6 (SP-T3a to SP-T3d, SP-T8a, SP-T8b, SP-T7c to SP-T7e, SP-T6a, SP-T6b, SP-T7g), §6.10 (SP-T8c), §6.11 (SP-T9a), §12 (the count rules retired) and §13 (as made), and its status reads Built in part. **The carry-over:** none of the 11 open rows of `docs/m2-carry-over.md` is this sub-project's (the spec's §12); the build's deferred minors are logged there as plain rows after the final fix wave (the director has retired the count rules). Decided 2026-10-30 by the director (D1–D7), the program manager (the approval's notes, the codec amendment and SP-T7a) and Claude (the rest), during M2 sub-project 2; *written by the Claude session that ran its documentation task*; see §14, §15, §16, §18, §19, §21. |
 
 **Key sources** (checked 2026-10-26):
 - clap-wrapper releases (v0.17.0, 2026-10-20): https://github.com/free-audio/clap-wrapper/releases
