@@ -1508,13 +1508,14 @@ TEST_CASE("double-click freezes one lane", "[plugin]")
     REQUIRE(gg::ui::hitTestRect(x, y, r, gg::ui::GrainCanvas::kEdgeTolerancePx, lane) ==
             gg::ui::DragTarget::Body);
     const juce::Point<float> at{off + x, y};
-    // JUCE's order for a double-click: down, up, down (click count 2), double-click, up.
+    // JUCE's order for a double-click: down, up, down (click count 2), up, then the double-click
+    // (Component::internalMouseUp calls mouseUp first).
     const auto doubleClick = [&] {
         canvas->mouseDown(mouseAt(*canvas, off + x, y, at, false));
         canvas->mouseUp(mouseAt(*canvas, off + x, y, at, false));
         canvas->mouseDown(mouseAt(*canvas, off + x, y, at, false));
-        canvas->mouseDoubleClick(mouseAt(*canvas, off + x, y, at, false));
         canvas->mouseUp(mouseAt(*canvas, off + x, y, at, false));
+        canvas->mouseDoubleClick(mouseAt(*canvas, off + x, y, at, false));
     };
     // A body press that never moves is no gesture.
     canvas->mouseDown(mouseAt(*canvas, off + x, y, at, false));
