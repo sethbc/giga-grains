@@ -127,7 +127,7 @@ sub-project 6 draws the lanes, the strips and the gestures.
    tolerance (goal 1, stronger than the criterion); the ring's floats, which may exceed ±1 (the
    ring clamps at ±2^20), need no scaling; one representation serves embedded and filed audio,
    `gg-media`'s decoder reads both, and any tool opens a capture; no new dependency. *Cost:*
-   about 2.5× the size of 24-bit FLAC at ordinary levels, so the 32 MB embed cap holds about 87 s
+   about 2.5× the size of 24-bit FLAC at ordinary levels, so the 32 MiB embed cap holds about 87 s
    of stereo at 48 kHz instead of about 2 minutes; longer rings go to the captures folder sooner.
 2. *FLAC at 24 bits through libFLAC.* *Gains:* smaller. *Costs:* lossy for floats (24-bit
    quantization after a per-payload scale, about −144 dBFS of error, within the goldens'

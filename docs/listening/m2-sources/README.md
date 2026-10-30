@@ -65,7 +65,7 @@ click score was 262 against the limit of 15, and with other seeds 24 to 1,320. A
 (`06`, `07`) the five changes happen to fall between grains and score 1.8 and 2.2. D6's "no click
 at a change" holds only there. It is for the director to hear and decide (sub-project 7). The
 golden `fx-splice-capture` runs at 8 Hz and 50 ms and passes only because its two changes fall
-between grains. The fix (a later task, before the build is reported ready) will remove this
+between grains. The fix (task 12a, before the build is reported ready) will remove this
 note.
 
 ## Host checklist
