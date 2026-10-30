@@ -327,7 +327,9 @@ void GigaGrainsPlugin::onMainThread() noexcept
             // collect() only frees; nothing it calls throws.
         }
     }
-    // The next batch of a Mutate press, once the host has drained the last one.
+    // The next batch of a Mutate press, once the host has drained the last one. Cleared first:
+    // slots still waiting after it ask for another call (flushMutate).
+    mutateCallbackRequested_ = false;
     flushMutate();
     // A state's values the audio thread has applied, and stored in values_ after the load's own
     // rescan: the host reads them again (carry-over row 123). Cleared first, so values applied
@@ -973,7 +975,10 @@ std::size_t GigaGrainsPlugin::takeUiChanges(const clap_output_events *out, Param
                                             std::size_t count) noexcept
 {
     // Cleared first: a change queued after the drain asks for another flush (queueUiChange).
-    uiFlushRequested_.store(false, std::memory_order_relaxed);
+    // Release (T10-R2a): the main thread's acquire load of the cleared flag (mutateDrainSeen)
+    // then sees everything this thread did before the clear, an earlier drain's pops and its
+    // storeValues. Nothing else on this thread changes.
+    uiFlushRequested_.store(false, std::memory_order_release);
     std::atomic_thread_fence(std::memory_order_seq_cst);
     // At most a queue's worth: the main thread may keep pushing while this runs, and the caller's
     // array holds kUiQueueCapacity values beyond the host's (kMaxParamEvents).
@@ -1277,6 +1282,10 @@ void GigaGrainsPlugin::applyState(gg::core::SessionState &&state, LoadKind kind)
         restored = loader_->restore(state.sample, std::move(state.newerMedia));
     }
     const auto &values = state.values;
+    // A Mutate press cut short by this load (T10-R2b): the slots it had not sent are dropped,
+    // and every batch it did send counts as applied, so the next press starts from these values.
+    mutatePending_.reset();
+    mutateSentGen_.fill(0);
     for (std::size_t s = 0; s < kParamCount; ++s)
     {
         storeValue(static_cast<ParamSlot>(s), values[s]);
@@ -1423,6 +1432,7 @@ void GigaGrainsPlugin::flushMutate() noexcept
         }
         mutateBatchArmed_ = true;
         mutateArm();
+        requestMutateCallback();
         return;
     }
     // Nothing to send now: arm once more after the last batch's drain was seen, so the drain
@@ -1430,6 +1440,19 @@ void GigaGrainsPlugin::flushMutate() noexcept
     if (!mutateArmed_ && mutateAppliedGen_ < mutateGen_)
     {
         mutateArm();
+    }
+    requestMutateCallback();
+}
+
+void GigaGrainsPlugin::requestMutateCallback() noexcept
+{
+    // Slots wait for a drain. With the editor closed nothing else ticks, and a host without
+    // clap.params flushes only inside process: ask for on_main_thread, once until it comes, so
+    // the rest is sent as the drains are seen (T10-R2b).
+    if (mutatePending_.any() && !mutateCallbackRequested_)
+    {
+        mutateCallbackRequested_ = true;
+        _host.requestCallback(); // [thread-safe]; this is the main thread
     }
 }
 

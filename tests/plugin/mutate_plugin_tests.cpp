@@ -45,6 +45,7 @@ class FlushHost
 
     const clap_host *clap() const noexcept { return &host_; }
     uint32_t flushRequests() const noexcept { return flushRequests_; }
+    uint32_t callbackRequests() const noexcept { return callbackRequests_; }
 
   private:
     static const void *getExtension(const clap_host *, const char *id) noexcept
@@ -60,6 +61,7 @@ class FlushHost
     }
 
     uint32_t flushRequests_{0};
+    uint32_t callbackRequests_{0};
     clap_host host_{
         CLAP_VERSION_INIT,
         nullptr,
@@ -68,9 +70,11 @@ class FlushHost
         "",
         "0.0.0",
         &FlushHost::getExtension,
-        [](const clap_host *) {}, // request_restart
-        [](const clap_host *) {}, // request_process
-        [](const clap_host *) {}, // request_callback
+        [](const clap_host *) {},   // request_restart
+        [](const clap_host *) {},   // request_process
+        [](const clap_host *host) { // request_callback
+            ++static_cast<FlushHost *>(host->host_data)->callbackRequests_;
+        },
     };
 };
 
@@ -343,7 +347,7 @@ TEST_CASE("three presses before any drain drop nothing on a host without clap.pa
     CHECK(impl.uiQueueDropped() == 0);
     const auto all = drainAll(plugin, 32);
     CHECK(impl.uiQueueDropped() == 0);
-    // Every slot heard ends where the two presses left it.
+    // Every slot heard ends where the three presses left it.
     const auto after = bases(impl);
     for (const auto &[id, one] : all)
     {
@@ -395,6 +399,66 @@ TEST_CASE("Mutate waits for the host's drain however long it takes, with clap.pa
         }
     }
     CHECK(all.size() >= countMoved(before, after));
+}
+
+TEST_CASE("a preset load during a multi-batch press discards the unsent slots", "[plugin][mutate]")
+{
+    const auto run = [](bool withLoad) {
+        gg::test::PluginUnderTest plugin(kFx);
+        REQUIRE(plugin.valid());
+        REQUIRE(plugin.loadDefaultsWithSeed(5));
+        GigaGrainsPlugin &impl = plugin.impl();
+        everythingMoves(plugin);
+        std::vector<float> result;
+        if (withLoad)
+        {
+            impl.mutate(1.0f);
+            const auto first = drain(plugin);
+            CHECK(first.size() == GigaGrainsPlugin::kMutateBatch);
+            // Slots still wait: the load comes before the rest is sent.
+            impl.loadInit();
+            // Nothing of the press reaches the host again.
+            const auto rest = drainAll(plugin);
+            CHECK(rest.empty());
+            // The values are INIT's: its defaults (layers B to D off again).
+            for (std::size_t s = 0; s < kParamCount; ++s)
+            {
+                CHECK(same(impl.uiBaseValue(static_cast<ParamSlot>(s)),
+                           gg::core::paramMeta(static_cast<ParamSlot>(s), impl.mode()).defaultVal));
+            }
+        }
+        else
+        {
+            impl.mutate(0.0f); // the same press counter, no change
+            impl.loadInit();
+            drainAll(plugin);
+        }
+        // The next press starts from the loaded values.
+        unlockAll(impl);
+        impl.mutate(1.0f);
+        drainAll(plugin);
+        CHECK(impl.uiQueueDropped() == 0);
+        return bases(impl);
+    };
+    // A press that starts from the loaded values gives what it gives from the same values with
+    // the same counter, whether or not a press was cut short before.
+    CHECK(run(true) == run(false));
+}
+
+TEST_CASE("slots a press leaves waiting ask the host for a main-thread callback",
+          "[plugin][mutate]")
+{
+    FlushHost host;
+    gg::test::PluginUnderTest plugin(kFx, host.clap());
+    REQUIRE(plugin.valid());
+    REQUIRE(plugin.loadDefaultsWithSeed(6));
+    GigaGrainsPlugin &impl = plugin.impl();
+    const uint32_t before = host.callbackRequests();
+    impl.mutate(1.0f); // layers B to D off: one batch, nothing waits
+    CHECK(host.callbackRequests() == before);
+    everythingMoves(plugin);
+    impl.mutate(1.0f); // more than one batch: the rest waits for the host's drain
+    CHECK(host.callbackRequests() > before);
 }
 
 TEST_CASE("two presses before a drain give the same sound as two presses a drain apart",

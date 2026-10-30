@@ -598,13 +598,17 @@ class GigaGrainsPlugin : public plugHelper_t
     /// if the flag is clear: every drain clears it first, and only a push or an arm sets it, so
     /// a clear flag seen after an arm is a drain that began after it, which takes every entry
     /// queued before the arm (takeUiChanges pops up to a whole queue's worth, and the pairing
-    /// fences there and in mutateArm make it see them). Advances the generations below when it
-    /// has. Main thread.
+    /// fences there and in mutateArm make it see them; the clear is a release store, which this
+    /// acquire load pairs with, so a later push sees the pops and a press the storeValues of every
+    /// drain before the one seen; the fences order the flag against the queue, nothing more).
+    /// Advances the generations below when it has. Main thread.
     void mutateDrainSeen() noexcept;
     /// Sets uiFlushRequested_ and, when that asks for a flush the host offers (clap.params) and
     /// none was outstanding, asks for one: as queueUiChange does after a push, and on a host
     /// without clap.params too, where only the drains clear the flag. Main thread.
     void mutateArm() noexcept;
+    /// Asks the host for on_main_thread while slots wait unsent, once until it comes. Main thread.
+    void requestMutateCallback() noexcept;
     // Mutate: the user's locks, the press counter, the slots waiting to be sent (one value each,
     // a later press's replacing an earlier's), and the record of the values sent, by batch
     // generation. Main thread only; none of it reaches the audio thread but as uiQueue_'s
@@ -620,7 +624,8 @@ class GigaGrainsPlugin : public plugHelper_t
     uint32_t mutateStartedGen_{0}; // batches up to this one have had a drain begin after them
     uint32_t mutateAppliedGen_{0}; // and up to this one, a drain end: applied, in values_
     bool mutateArmed_{false};      // armed, and no drain seen since
-    bool mutateBatchArmed_{false}; // a batch went out since the last drain seen
+    bool mutateCallbackRequested_{false}; // on_main_thread asked for, not yet come
+    bool mutateBatchArmed_{false};        // a batch went out since the last drain seen
     // The editor's changes, main thread → audio thread (or the main thread's own flush while
     // inactive): see uiBeginGesture.
     gg::core::SpscQueue<UiParamChange, kUiQueueCapacity> uiQueue_;
