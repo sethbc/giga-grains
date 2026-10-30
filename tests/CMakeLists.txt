@@ -498,6 +498,16 @@ if (APPLE AND GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
     catch_discover_tests(gg-au-state-tests ADD_TAGS_AS_LABELS)
 endif ()
 
+# gg-snap (M2 sub-project 6): the views as PNGs. snap_cli runs it into a scratch directory and
+# checks the 32 files (label `plugin`). It points the settings at a scratch file itself.
+if (APPLE AND GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
+    add_test(NAME snap_cli
+            COMMAND ${CMAKE_COMMAND} -DTOOL=$<TARGET_FILE:gg-snap>
+            -DOUT=${CMAKE_CURRENT_BINARY_DIR}/test-output/snap_cli
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/plugin/check-snap.cmake)
+    set_tests_properties(snap_cli PROPERTIES LABELS plugin)
+endif ()
+
 # The installers (spec §6), label `installer`. installer_build_products builds gg-products (not
 # in `all`) into build/<preset>/gg-products/, as the fixture every later installer_* test
 # requires, so `ctest -L installer` needs no build step of its own. It runs alone: a build can
