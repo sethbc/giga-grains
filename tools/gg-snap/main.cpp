@@ -413,7 +413,7 @@ std::string snapProduct(const Product &product, const fs::path &outDir,
             {
                 return std::string("selectView failed: ") + viewName;
             }
-            for (const Size size : sizes)
+            for (const Size &size : sizes)
             {
                 editor->setSize(size.w, size.h);
                 instance.block();

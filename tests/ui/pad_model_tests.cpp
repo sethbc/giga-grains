@@ -46,7 +46,7 @@ TEST_CASE("the pad maps pixels to Morph X and Y with Y up", "[ui]")
         float px, py, x, y;
         const char *what;
     };
-    for (const Case c : {
+    for (const Case &c : {
              Case{0.0f, 0.0f, 0.0f, 1.0f, "top-left (C)"},
              Case{0.0f, 200.0f, 0.0f, 0.0f, "bottom-left (A)"},
              Case{200.0f, 200.0f, 1.0f, 0.0f, "bottom-right (B)"},

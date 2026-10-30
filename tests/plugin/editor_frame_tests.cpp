@@ -294,7 +294,7 @@ TEST_CASE("every view opens and closes in both products and themes", "[plugin]")
                     REQUIRE(gg::ui::selectView(*editor, view));
                     CHECK(gg::ui::currentView(*editor) == view);
                     processBlock(instance, fx); // a snapshot and grains for the canvas
-                    for (const auto size : {std::pair{960, 600}, std::pair{640, 360}})
+                    for (const auto &size : {std::pair{960, 600}, std::pair{640, 360}})
                     {
                         INFO(size.first << " x " << size.second);
                         editor->setSize(size.first, size.second);
@@ -341,7 +341,7 @@ TEST_CASE("every view opens on an inactive plugin", "[plugin]")
         {
             INFO(viewId(view));
             REQUIRE(gg::ui::selectView(*editor, view));
-            for (const auto size : {std::pair{960, 600}, std::pair{640, 360}})
+            for (const auto &size : {std::pair{960, 600}, std::pair{640, 360}})
             {
                 editor->setSize(size.first, size.second);
                 tick(*editor);

@@ -174,7 +174,7 @@ TEST_CASE("rate maps to y", "[ui]")
     {
         float rate, y;
     };
-    for (const Case c :
+    for (const Case &c :
          {Case{1.0f, 50.0f}, Case{16.0f, 3.0f}, Case{1.0f / 16.0f, 97.0f}, Case{2.0f, 38.25f},
           Case{0.5f, 61.75f}, Case{256.0f, 3.0f}, Case{1.0f / 256.0f, 97.0f}})
     {
@@ -207,7 +207,7 @@ TEST_CASE("rate maps to y", "[ui]")
     {
         float gain, intensity;
     };
-    for (const GainCase c :
+    for (const GainCase &c :
          {GainCase{0.4f, 0.4f}, GainCase{1.0f, 1.0f}, GainCase{2.5f, 1.0f}, GainCase{-1.0f, 0.0f}})
     {
         INFO("gain " << c.gain);
@@ -333,7 +333,7 @@ TEST_CASE("the scan window's tapers match ParamMap's", "[ui]")
 
 TEST_CASE("positionValueAtX inverts scanWindow across the lane", "[ui]")
 {
-    for (const LaneGeometry g : {fxLane(), fxLane(317.0f), instrumentLane(96000)})
+    for (const LaneGeometry &g : {fxLane(), fxLane(317.0f), instrumentLane(96000)})
     {
         INFO((g.fxLane ? "fx" : "instrument") << " lane, " << g.width << " px");
         for (int i = 0; i <= 1000; ++i)
@@ -365,7 +365,7 @@ TEST_CASE("positionValueAtX inverts scanWindow across the lane", "[ui]")
 
     // Spray: the window's extent back to the value, its full width on the FX lane and its
     // half-width on the instrument's.
-    for (const LaneGeometry g : {fxLane(), instrumentLane(96000)})
+    for (const LaneGeometry &g : {fxLane(), instrumentLane(96000)})
     {
         INFO((g.fxLane ? "fx" : "instrument") << " lane");
         for (int i = 0; i <= 1000; ++i)

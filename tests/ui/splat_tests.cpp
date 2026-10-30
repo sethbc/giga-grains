@@ -304,7 +304,7 @@ TEST_CASE("a capsule equals a splat when its ends coincide", "[ui]")
     {
         float x, y, r, intensity;
     };
-    for (const Case c :
+    for (const Case &c :
          {Case{10, 10, 3, 0.7f}, Case{20.5f, 5.25f, 2.5f, 1.0f}, Case{0.3f, 23.6f, 4.0f, 0.4f}})
     {
         INFO("splat at " << c.x << ", " << c.y << ", radius " << c.r);
