@@ -359,8 +359,9 @@ TEST_CASE("stream.quality parses and rejects", "[render]")
 
 TEST_CASE("eco golden has the normal golden's events", "[golden]")
 {
-    // The tier changes how a grain reads, never which grains spawn or what they draw, and the
-    // event line doesn't print it: the two expected event logs are the same bytes.
+    // The tier changes how a grain reads, never which grains spawn or what they draw: the two
+    // expected event logs are the same bytes but for each line's "tier" (M2 engine spec §6.7),
+    // 0 for Eco where Normal's is 1.
     const auto read = [](const std::string &name) {
         const auto path = std::filesystem::path{GG_GOLDEN_DIR} / "expected" / name;
         std::ifstream in(path, std::ios::binary);
@@ -370,7 +371,16 @@ TEST_CASE("eco golden has the normal golden's events", "[golden]")
     const std::string normal = read("dense-noise.events.jsonl");
     const std::string eco = read("dense-noise-eco.events.jsonl");
     REQUIRE_FALSE(normal.empty());
-    CHECK(eco == normal);
+    std::string asEco = normal;
+    std::size_t lines = 0;
+    for (std::size_t at = asEco.find(R"("tier":1,)"); at != std::string::npos;
+         at = asEco.find(R"("tier":1,)", at + 1))
+    {
+        asEco[at + 7] = '0';
+        ++lines;
+    }
+    CHECK(lines == static_cast<std::size_t>(std::count(normal.begin(), normal.end(), '\n')));
+    CHECK(eco == asEco);
 }
 
 TEST_CASE("render with Poisson onsets does not depend on block size", "[render]")
@@ -527,7 +537,7 @@ TEST_CASE("event lines use the documented format", "[render]")
     };
     CHECK(gg::render::formatEventLine(0, g) ==
           R"({"i":3,"layer":0,"onset":18000,"frac":0.5,"pos":95999.5,"rate":0.5,"dur":2880,)"
-          R"("tex":0,"gain":0.8,"pan":0})");
+          R"("tex":0,"tier":1,"lvl":0,"gain":0.8,"pan":0})");
 
     // Doubles are written shortest-round-trip, so they read back exactly.
     const gg::GrainSpec h{
@@ -540,11 +550,14 @@ TEST_CASE("event lines use the documented format", "[render]")
         .texture = 0.7,
         .gain = 1.0f / 3.0f,
         .pan = -0.1f,
+        .tier = gg::Tier::HQ,
+        .level = 3,
     };
-    // M2 sub-project 1's spec §6.7: "layer" follows "i".
+    // M2 sub-project 1's spec §6.7: "layer" follows "i". M2 engine spec §6.7: "tier" (0 Eco,
+    // 1 Normal, 2 HQ) and "lvl" (the latched mip level) follow "tex".
     const std::string line = gg::render::formatEventLine(3, h);
     CHECK(line == R"({"i":1099511627776,"layer":3,"onset":1099511627776,"frac":0.1,)"
-                  R"("pos":0.30000000000000004,"rate":1e-07,"dur":16,"tex":0.7,)"
+                  R"("pos":0.30000000000000004,"rate":1e-07,"dur":16,"tex":0.7,"tier":2,"lvl":3,)"
                   R"("gain":0.33333334,"pan":-0.1})");
     const auto parsed = nlohmann::json::parse(line);
     CHECK(parsed["layer"].get<uint32_t>() == 3);
@@ -552,6 +565,8 @@ TEST_CASE("event lines use the documented format", "[render]")
     CHECK(parsed["pos"].get<double>() == h.startPos);
     CHECK(parsed["rate"].get<double>() == h.rate);
     CHECK(parsed["tex"].get<double>() == h.texture);
+    CHECK(parsed["tier"].get<int>() == 2);
+    CHECK(parsed["lvl"].get<int>() == 3);
     // gain and pan are floats, written shortest-round-trip as floats.
     CHECK(parsed["gain"].get<float>() == h.gain);
     CHECK(parsed["pan"].get<float>() == h.pan);
@@ -580,7 +595,7 @@ TEST_CASE("event lines carry each grain's texture", "[render]")
         {
             INFO(line);
             const std::size_t dur = line.find(R"(,"dur":)");
-            const std::size_t tex = line.find(R"(,"tex":0,"gain":)");
+            const std::size_t tex = line.find(R"(,"tex":0,"tier":1,"lvl":0,"gain":)");
             REQUIRE(dur != std::string::npos);
             REQUIRE(tex != std::string::npos);
             REQUIRE(line.find(',', dur + 1) == tex);
@@ -611,7 +626,7 @@ TEST_CASE("an fx spec's Texture reaches the event lines", "[render]")
     for (const std::string &line : directEvents)
     {
         INFO(line);
-        REQUIRE(line.find(R"(,"tex":0.5,"gain":)") != std::string::npos);
+        REQUIRE(line.find(R"(,"tex":0.5,"tier":1,"lvl":0,"gain":)") != std::string::npos);
         REQUIRE(nlohmann::json::parse(line)["tex"].get<double>() == 0.5);
     }
     // At 0.375 Macro Texture moves Texture alone (Diffusion only from 0.75), so its grains are
@@ -619,6 +634,117 @@ TEST_CASE("an fx spec's Texture reaches the event lines", "[render]")
     std::vector<std::string> macroEvents;
     gg::render::render(macro, &macroEvents);
     REQUIRE(macroEvents == directEvents);
+}
+
+TEST_CASE("the event line carries tier and lvl", "[render]")
+{
+    // M2 engine spec §6.7: "tier" is the tier the grain latched and "lvl" its mip level. An HQ
+    // grain at +12 reads level 1 of the 4 s source's pyramid (rate 2); a Normal grain reads
+    // level 0 whatever its rate.
+    struct Case
+    {
+        gg::Tier quality;
+        const char *fields;
+    };
+    for (const Case c : {Case{gg::Tier::HQ, R"(,"tier":2,"lvl":1,"gain":)"},
+                         Case{gg::Tier::Normal, R"(,"tier":1,"lvl":0,"gain":)"}})
+    {
+        INFO("quality " << static_cast<int>(c.quality));
+        RenderSpec spec = parseCase("sparse-sine");
+        spec.stream.quality = c.quality;
+        spec.stream.pitchSemitones = 12.0;
+        std::vector<std::string> events;
+        gg::render::render(spec, &events);
+        REQUIRE(events.size() > 10);
+        for (const std::string &line : events)
+        {
+            INFO(line);
+            const std::size_t tex = line.find(R"(,"tex":)");
+            const std::size_t tier = line.find(c.fields);
+            REQUIRE(tex != std::string::npos);
+            REQUIRE(tier != std::string::npos);
+            REQUIRE(line.find(',', tex + 1) == tier);
+        }
+    }
+}
+
+namespace
+{
+/// Checks that every steal line in `events` is followed at once by the spawn it made room for
+/// (the same layer's, at the steal's onset), that it steals a grain the same layer spawned
+/// earlier, and that no grain is stolen twice; returns how many steal lines there are.
+std::size_t checkSteals(const std::vector<std::string> &events)
+{
+    std::set<std::pair<uint32_t, uint64_t>> spawned;
+    std::set<std::pair<uint32_t, uint64_t>> stolen;
+    std::size_t steals = 0;
+    for (std::size_t n = 0; n < events.size(); ++n)
+    {
+        INFO("line " << n << ": " << events[n]);
+        const auto line = nlohmann::json::parse(events[n]);
+        const auto layer = line["layer"].get<uint32_t>();
+        const auto index = line["i"].get<uint64_t>();
+        if (!line.contains("steal"))
+        {
+            REQUIRE(spawned.insert({layer, index}).second);
+            continue;
+        }
+        ++steals;
+        REQUIRE(line.size() == 3);
+        REQUIRE(events[n] ==
+                gg::render::formatStealLine(layer, index, line["steal"].get<int64_t>()));
+        REQUIRE(spawned.contains({layer, index}));
+        REQUIRE(stolen.insert({layer, index}).second);
+        REQUIRE(n + 1 < events.size());
+        const auto next = nlohmann::json::parse(events[n + 1]);
+        REQUIRE_FALSE(next.contains("steal"));
+        REQUIRE(next["layer"].get<uint32_t>() == layer);
+        REQUIRE(next["onset"].get<int64_t>() == line["steal"].get<int64_t>());
+    }
+    return steals;
+}
+} // namespace
+
+TEST_CASE("a steal is a line of its own in order", "[render]")
+{
+    // M2 engine spec §6.7: a steal is {"i":k,"layer":L,"steal":o}, k the stolen grain's index
+    // and o the onset of the grain it made room for, right before that grain's line.
+    CHECK(gg::render::formatStealLine(2, 17, 48000) == R"({"i":17,"layer":2,"steal":48000})");
+    CHECK(gg::render::formatStealLine(0, uint64_t{1} << 40, int64_t{1} << 40) ==
+          R"({"i":1099511627776,"layer":0,"steal":1099511627776})");
+
+    // FX mode: an HQ cloud of 400 Hz and 500 ms grains over Budget 256 (1,024 units, 85 HQ
+    // stereo grains) steals from 250 ms on.
+    RenderSpec fx;
+    fx.mode = RenderMode::Fx;
+    fx.sampleRate = 48000.0;
+    fx.durationSeconds = 1.0;
+    fx.blockSize = 64;
+    fx.seed = 5;
+    fx.fx.input = {.kind = SourceKind::Noise, .seconds = 1.0, .amplitude = 0.5};
+    fx.fx.channels = 2;
+    fx.fx.params = {{"Mix", 1.0},
+                    {"Budget", 256.0},
+                    {"Quality", 2.0},
+                    {"Density", 8.643856189774725},
+                    {"Size", -1.0}};
+    // Sample mode, with no quota: 48,000 grains a second (the scheduler's ceiling, one per
+    // sample) of 86 ms fill the engine's 4,096 grains in 85.3 ms, when the oldest has sounded
+    // more than half its window, so each draw from then to the end at 90 ms steals. (The cost is
+    // about 4,096 grains for one grain's length, so the grains are barely longer than that.)
+    RenderSpec sample = parseCase("dense-noise");
+    sample.durationSeconds = 0.09;
+    sample.stream.grainRateHz = 48000.0;
+    sample.stream.grainDurationMs = 86.0;
+    for (const RenderSpec &spec : {fx, sample})
+    {
+        INFO("mode " << static_cast<int>(spec.mode));
+        std::vector<std::string> events;
+        gg::render::render(spec, &events);
+        const std::size_t steals = checkSteals(events);
+        INFO(steals << " steals in " << events.size() << " lines");
+        CHECK(steals > 10);
+    }
 }
 
 TEST_CASE("fx spec parses", "[render]")

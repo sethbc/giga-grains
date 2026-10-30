@@ -546,6 +546,9 @@ class Processor
     /// the overload ladder steals, with its layer, the stolen grain's index and the onset of the
     /// grain it made room for, right before that grain's setEventSink call (the class comment),
     /// whether or not publishing is on. nullptr removes it. Call it while process() isn't running.
+    /// A steal that takes the last slot of its layer's event buffer leaves that buffer no room for
+    /// its spawn, so the sinks see the steal without it; no schedule the engine admits gets there,
+    /// and the dropped spawn is counted in droppedGrainEvents().
     void setStealSink(GrainStealSink sink, void *ctx) noexcept;
 
     /// Turns publishing on or off (the class comment): the editor's, on the main thread, as it
