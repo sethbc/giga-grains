@@ -7,6 +7,7 @@
 
 add_executable(gg-tests
         smoke_tests.cpp
+        core/delay_tests.cpp
         core/diffuser_tests.cpp
         core/exchange_tests.cpp
         core/layers_tests.cpp

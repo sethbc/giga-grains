@@ -14,6 +14,7 @@
 # here, never in gg-engine.
 
 add_library(gg-core STATIC
+        src/Delay.cpp
         src/Diffuser.cpp
         src/LivePeaks.cpp
         src/MachineSettings.cpp
