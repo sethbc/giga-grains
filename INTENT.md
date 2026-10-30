@@ -362,14 +362,15 @@ per-layer parameters, each uniform bipolar, 0 by default:
 - At 0 neither draws, and each takes M1's path bit for bit. The fields were appended to
   `rng::Field`, so no existing draw changed. The grain-event line's `rate` and `dur` carry both.
   The scheduler accepts up to 48 semitones and 4 octaves; the parameters reach 24 and 2.
-- The canvas's y axis stays pan until sub-project 6 frees it for pitch (§17).
+- Since M2 sub-project 6 the canvas's y axis is pitch, so Pitch Spread shows there (§17).
 
 **The mod matrix** (M2 sub-project 1; the director's D3, option 3, 2026-10-29; the programme
 design's decision 7; §23 #64, #65). `gg/core/ModMatrix.h` and `gg/core/ModSources.h`.
 - **48 slots**, each `{source, sourceLayer, target, targetLayer, depth, curve}`, saved in the
   patch (`PTCH`'s `<mod>`, §18), never as parameters, and evaluated in slot order. A fresh
   instance, and a migrated M1 state, fill slots 1 to 12 with the factory routes (below); any
-  slot may be edited or cleared (from `gg-render` and a state until sub-project 6's Mod view).
+  slot may be edited or cleared (from `gg-render`, a state and, since M2 sub-project 6, the Mod
+  view; §17, §18).
 - **The sources,** each a value in [0, 1] on the 32-sample grid, each a function of the sample
   clock, the parameter history and the host's events, never of time, CPU or thread:
 
@@ -1249,6 +1250,20 @@ and tuning-library) are planned, for M2 and M3; they are pinned when they are ad
     run with nothing building (load average about 4) measured 2.80 ms (M0's, 2.77 ms).
     **Sub-project 6's idle run measured 2.87 ms** (p95 2.92 ms;
     `docs/benchmarks/2026-10-29-m1-canvas.json`, §23 #60), inside the budget.
+  - **With four lanes** (since M2 sub-project 6; §23 #NN <!-- number at merge -->):
+    `gg-bench --canvas` times the shipped path, the banded resolve with the four layers' tints,
+    and its JSON says so (`"lanes": 4`, `"resolve": "banded"`); the figures above are the
+    one-tint resolve's. **M2 sub-project 6's idle run at 8,192 grains:** TBD (idle run, Task
+    18b) (`docs/benchmarks/`: TBD (idle run, Task 18b)). The GPU spike read the live canvas's
+    own readout at 4.10 ms, `drawImage` and the overlays included (8,192 stress grains, the
+    canvas 1600 × 600 logical at 2×), under contention (load average 10.9 to 18.6, five agent
+    sessions on the machine), so that is no budget figure; the live readout idle is TBD (idle
+    run, Task 18b) (`docs/spikes/m2-gpu-canvas.md`).
+  - **Open: the repaint rate.** The CPU canvas repaints on every VBlank it can make. On the
+    spike's 240 Hz display it painted about 156 frames a second, about 65% of the message thread
+    at the contended 4.1 ms. The budget is per frame and is not affected. Whether to cap the
+    repaint rate is sub-project 6's final review's question, and the director's, by forced
+    choice, if a cap changes what a user sees.
 - **SIMD:** 4-wide via sst and simde, behind an internal batch API. Add xsimd or Highway runtime
   dispatch only if profiling demands it.
 
@@ -1260,9 +1275,10 @@ and tuning-library) are planned, for M2 and M3; they are pinned when they are ad
   - x = position
   - size = grain length
   - brightness = gain
-  - offset = pitch or pan
-- **Direct manipulation:** drag the scan window, drag the spray edges, drag vertically for pitch
-  spread, freeze, drop a file, record.
+  - offset = pitch (since M2 sub-project 6, the director's D1; pan is no longer drawn)
+- **Direct manipulation:** drag the scan window, drag the spray edges, drag the window's top and
+  bottom edges for pitch spread and its body vertically for pitch (D2, amending "drag vertically
+  for pitch spread"; §23 #NN <!-- number at merge -->), freeze, drop a file, record.
 - **Eight macros**, matching the CLAP remote-controls page size: Size, Density, Pitch, Spray,
   Texture, Freeze, Feedback, Mix.
   - Each drives several parameters along curves.
@@ -1292,6 +1308,16 @@ and tuning-library) are planned, for M2 and M3; they are pinned when they are ad
   - A GPU backend gets a timeboxed spike in M2. Candidates are Visage (which ships a CLAP example
     but is desktop-only) and native Metal/GL. The CPU renderer held the §16 UI budget in the M0
     host check, so the spike didn't move earlier (§23 #26).
+  - **The M2 spike decided: the CPU renderer stays** (M2 sub-project 6,
+    `docs/spikes/m2-gpu-canvas.md`; §23 #NN <!-- number at merge -->). JUCE OpenGL and Metal
+    were built and measured on the branch `spike/gpu-canvas` (`082a874`, unmerged); Visage was
+    not tried, since a second UI framework beside JUCE is a new platform risk by definition.
+    Measured interleaved at one contended load, both beat the CPU path by 6.6× to 45× depending
+    on the column, but neither clears the criterion's "no new platform risk": OpenGL is
+    deprecated on macOS and went unmeasured in the hosts, under Rosetta, on Linux and on Windows;
+    Metal is macOS-only, so it would be a second renderer beside the CPU one. If the budget ever
+    breaks, Metal is the macOS lever, and M0's levers (resolve only the rows grains touched)
+    come first.
 - **Audio → UI data.**
   - One compact event per grain *spawn*, sent through a queue that drops entries when full. The UI
     extrapolates each grain's progress from an atomic engine clock.
@@ -1306,7 +1332,8 @@ and tuning-library) are planned, for M2 and M3; they are pinned when they are ad
 for both products, on sst-jucegui's controls and its built-in dark style sheet. M2 sub-project 1
 is headless by choice: the view still shows layer A alone, and layers B to D are reached through
 the host's generic editor, automation, the remote-controls pages and `gg-render` until
-sub-project 6 (§23 #65):
+sub-project 6 (§23 #65). M2 sub-project 6 replaced the view (The M2 views as built, below); this
+record stays as M1 built it, and its audio → UI and UI → host paths stand, extended by addition:
 - **The layout:** a header (the product's name, the preset name, "Init" until M2's browser,
   Perform selected, Edit greyed out until M2, and the editor's frame time averaged over 60
   frames); in the instrument, the loader strip (§18); the canvas across the full width; and one
@@ -1373,6 +1400,79 @@ sub-project 6 (§23 #65):
   to the host's output events, so hosts record the drag as automation. Each change asks for a
   flush (`request_flush`, one outstanding); an output event the host's list refuses is counted,
   never retried.
+
+**The M2 views as built** (M2 sub-project 6, PR 1, 2026-10-30; the spec
+`docs/superpowers/specs/2026-10-30-m2-views-design.md`; the director's D1–D11,
+§23 #NN <!-- number at merge -->). Four views on sst-jucegui, in both products. PR 2 adds wave 2's parameters to the same layout
+table, the FX view's Delay and Limiter, the memory readout, the FX's loader strip, drops onto
+lanes B to D, and record, capture and splice on the lanes.
+- **The frame:** the window opens at **960 × 600** (D11) and lays out down to 640 × 360,
+  HiDPI-aware. The header holds the product's name (a click opens the About box), the preset
+  name (`header.preset`, the browser's slot), **Perform · Edit · Mod · FX** as a radio group,
+  undo and redo (their tooltips name the entry), the Dark/Light switch, a notice line (4 s) and
+  the frame time. One view shows at a time; switching shows and hides, so the canvas keeps its
+  grains. The plugin instance remembers the last view while it lives; the view, the selected
+  layer, the theme and the undo stack are never parameters and never in the state.
+- **Perform:** four lanes always (D3), equal height, one per layer, each with its header cell,
+  the layer strip's: the letter in its color (a click selects the layer for Edit and Mod), On,
+  Level (a horizontal slider), Source and Freeze. An off layer's lane is dimmed. **A lane draws
+  its layer by its built kind,** in either product: a Live layer's as M1's FX lane (the ring,
+  the head at the right edge), a Sample layer's as M1's instrument lane. **The vertical axis is
+  pitch** (D1): a grain at rate `r` lies `12·log2(r)` semitones from the lane's center, ±48
+  semitones across the lane, clamped; a reverse or non-finite rate draws at the center. One
+  accumulator for the four lanes, its resolve tinted per lane. **The scan window is a
+  rectangle** (D2): x from Position and Spray as M1, y from Pitch ± Pitch Spread. Its left and
+  right edges drag Spray, its top and bottom edges Pitch Spread, and its body Position or Pitch,
+  locked to the axis the first 4 px pick; a corner takes the Spray edge, and a thin rectangle
+  keeps a body to grab. A dashed ghost rectangle shows the effective values. A double-click on
+  a lane's body toggles that layer's Freeze; each lane has its own freeze tint and Feedback
+  marker. In the instrument a file dropped onto lane A loads; any other lane refuses it with a
+  notice until PR 2. **The XY pad:** A bottom-left, B bottom-right, C top-left, D top-right, Y
+  up, each quadrant shaded by the morph law's weight; a drag is one gesture pair on Morph X and
+  Y. The macro row is M1's. The canvas keeps up to 8,192 sounding grains per layer.
+- **Edit:** the selected layer's panels (D5): Source, Scheduler, Grain, Pitch, Space, Filter
+  (hidden while empty), LFO 1 and 2, Env 1 and 2, Random 1 and 2, and Step, under a compact
+  strip. One table (`ui/include/gg/ui/EditLayout.h`) places every parameter slot exactly once;
+  a test fails, naming the slot, on any parameter no view shows. A spread pair draws together,
+  the base knob's arc showing the spread's extent. Routes show as rings on knobs and as dots on
+  toggles and menus, in their source family's color.
+- **Mod** (D6): the strip, 24 source chips in five families, the Edit panels in mod mode (the
+  controls inert, the rings draggable for depth, a ring's click selecting its route), and the
+  48-slot route list (source, source layer, target, target layer, depth, curve, clear). A chip
+  dropped on a control adds a route in the first empty slot, a quarter of the target's range,
+  Bipolar (Unipolar for a stepped or on/off target), on the selected layer; a drop whose source
+  already reaches the control selects that route instead; a full matrix, a macro and a modulator's
+  control refuse the drop with a notice. The factory routes are ordinary rows.
+- **FX:** Reverb (Amount, Decay, Size, Damping, Pre-delay, Modulation, and Dry to Reverb in the
+  FX) and Output (Mix, in the FX). **Reverb Size sets on release** (D10): the knob shows its
+  target while dragged and sends one value at the gesture's end, so moving it from the UI is one
+  step, never a sweep. Automation and a host's gestures are unchanged and still click (row 217,
+  closed as decided).
+- **Undo and redo** (D7): one stack per plugin instance, 200 entries, kept across the editor's
+  close and open. One entry per editor gesture (the pad's two parameters make one), one per
+  route edit, and whole-state entries for sub-project 5's Mutate and preset recall. An undo
+  replays through the gesture path, so hosts record it as automation, or through the route path.
+  Host automation and state loads push nothing, and nothing undoes while a gesture is open.
+- **Themes** (D8, D9): dark by default, light by the header's switch, kept per machine in
+  `settings.xml` (§18); every open editor follows a change within a second. The lanes stay dark
+  in both themes. **The layer palette** (D4): Okabe–Ito's **A orange `#E69F00`, B sky blue
+  `#56B4E9`, C bluish green `#009E73`, D reddish purple `#CC79A7`**, the letter beside the color
+  everywhere it shows. The source families take four more colors: macros yellow (an ochre in
+  light), modulators vermilion, MIDI blue, the follower gray, the transport the text color.
+- **The keyboard:** Tab and Shift+Tab reach every control in reading order, the canvas, the pad
+  and the header's buttons included; arrows step a focused control by 1/100 of its range (Shift
+  1/1000), and on the canvas move the selected lane's window (Position and Pitch, Shift the
+  spreads). The command modifier (⌘ on macOS, Ctrl elsewhere) with Z undoes, with Shift+Z or Y
+  redoes, with 1 to 4 picks the view, with Shift+A to D the layer, and with I opens the About
+  box; Escape ends a drag or closes the box.
+- **The About box:** the product, its version (`gg::kVersion`), the format the host loaded, the
+  license line, the repository's link and the line that each release attaches its source, and
+  the installers' license set, byte for byte (embedded at build time from the one list in
+  `cmake/licenses.cmake`; a test compares each text with its file), as Markdown or plain text.
+  It is modal. Carry-over row 221 is closed.
+- **Audio → UI, by addition:** `UiSnapshot` gains a `LaneSnapshot` per layer (its write head,
+  freeze, on state, built kind, base and effective Position, Spray, Pitch and Pitch Spread, and
+  Feedback) and the base and effective Morph X and Y; M1's fields are unchanged.
 
 ### 18. State, presets and identities
 
@@ -1454,7 +1554,11 @@ sub-project 6 (§23 #65):
   macOS, `%APPDATA%\Giga Grains\` on Windows, and `$XDG_CONFIG_HOME/giga-grains/` (or
   `~/.config/giga-grains/`) on Linux. It holds the sample folder, which the user sets once, and
   the last folder loaded from, updated on each load. It is read and written on the main thread
-  only, through a temporary file unique to each save, renamed over it (ruling R16).
+  only, through a temporary file unique to each save, renamed over it (ruling R16). Since M2
+  sub-project 6 it also holds the editor's theme (§17; §23 #NN <!-- number at merge -->): a
+  `theme` attribute, `dark` or `light`, written only once a theme is chosen and read as dark when
+  missing or anything but `light`, so the file's version stays 1. Both products read and write
+  it, the FX for the theme alone; `GG_SETTINGS_FILE` points both at a scratch file in the tests.
 - **Missing media:** shows placeholders, with relink and a "collect and save" command.
   - In M1 the instrument's loader strip shows *missing* or *changed* with Relink. A file whose
     fingerprint matches restores the sample; another loads as a replacement, and the status
@@ -1708,7 +1812,14 @@ they are frozen along with them.
   version bump: a parameter a state doesn't mention takes its default, so a state saved before
   them loads with them at rest and renders as before. Since M2 sub-project 1 the mod matrix's
   routes ride with the seed in that snapshot, so in the instrument they too may land a block
-  apart from its values (ruling LS-T14a, as PU-T5a).
+  apart from its values (ruling LS-T14a, as PU-T5a). **Since M2 sub-project 6 the editor sets
+  routes too** (the Mod view and the rings; §23 #NN <!-- number at merge -->), on the main
+  thread, through `uiSetRoutes`: `routes_` is updated, so a save carries them, the host is told
+  the state is dirty, and the routes reach the audio thread through a channel of their own, a
+  `LatestValue<ModRoutes>` taken after the loaded state, since one channel would let an edit
+  overwrite a pending load. A state load while active also pushes its routes onto that channel,
+  so the later of a load and an edit wins in either order, and a deactivation drops an edit the
+  audio thread never took (ruling VW-T4a). A route edit makes no parameter event.
   - **Version 2** (M2 sub-project 1, M2's one patch version bump; §23 #64, #65) adds the 190 new
     parameters' `<p>` entries and, after `<engine>`, a `<mod>` element holding the mod matrix's
     routes: one `<route>` per slot in use, in slot order, an empty slot left out.
@@ -1907,6 +2018,24 @@ input, which every validator accepts, so D2's fallback was not needed; §14, §1
 - **Format validators in CI:** clap-validator, pluginval, auval, and Steinberg's VST3 validator.
 - **Machine-readable artifacts.** Spectrogram images and summary statistics, so Claude can inspect
   renders and not just assert pass/fail.
+- **The editor's tests** (since M2 sub-project 6; §23 #NN <!-- number at merge -->).
+  - The editor's math is framework-free in `gg-ui-core` (the lanes, the pitch axis, the scan
+    rectangle and its hit test, the pad's law, the banded resolve, the layout table, the rings,
+    the route edits and the undo stack), tested on every leg and under ASan, UBSan and RTSan.
+  - The GUI tests (`[plugin]`) drive the real editor headless, through the plugins' CLAP
+    factory, on every leg that builds the editor; the sanitizer presets build none. Each view
+    opens, draws and closes in both products and both themes, at 960 × 600 and 640 × 360, where
+    every control must lie inside its view; the gestures, the drops, undo through the gesture
+    path, the theme setting, the keyboard and the About box each have theirs.
+  - **Every parameter is reachable from the UI,** by two machine checks: a `[ui]` test walks the
+    218 slots through the layout table, each placed exactly once, and a `[plugin]` test walks
+    the built editor's views for each slot's control. A parameter a later wave adds fails both,
+    naming it, until it is placed.
+  - **`gg-snap`** draws every view as PNGs, headless (two products, four views, two themes, two
+    sizes: 32 files). `snap_cli` runs it on macOS; CI's macOS leg uploads its output as the
+    `gg-snapshots` artifact on every run, so the director and the reviewers can see the views
+    without a host; the sub-project's listening pack (`docs/listening/m2-views/`) commits the
+    960 × 600 set.
 - **A human listening gate at every milestone.** From M2, one sitting at the milestone's close
   (§23 #64): each sub-project renders its pack for the record, and the director listens once.
 - **From M2 the sub-projects are run by agent sessions** (§23 #64): a programme-manager session
@@ -1988,7 +2117,7 @@ Why this order before v1.0:
 | ~~Plugin identities: CLAP IDs (proposed `org.sethbc.giga-grains`, `org.sethbc.giga-grains-fx`), AU manufacturer code (at least one uppercase letter) and subtypes. Frozen at first release.~~ | **Resolved** in M0 (2026-10-26): see §18 and §23 #20 |
 | ~~JUCE 9.0.4 vs 8.0.16-security for the GUI shim~~ | **Resolved** in M0 (2026-10-26): JUCE 9.0.4; see §15 and §23 #24 |
 | ~~How Ableton Live routes MIDI into VST3/AU effects (sets how prominent MIDI-driven FX features are)~~ | **Resolved** in M0 (2026-10-26): a MIDI track's "MIDI To" reaches Giga Grains FX as VST3 and as AU, and MIDI-driven FX features are first-class; see §23 #25 and `docs/spikes/m0-ableton-midi-fx.md` |
-| ~~Whether the CPU canvas holds its frame budget, or a GPU backend is needed~~ | **Resolved** in M0 (2026-10-26): it holds (under 3 ms of UI-thread time at 8,192 grains in both first-class hosts), and the GPU backend spike stays in M2; see §16, §17 and §23 #26 |
+| ~~Whether the CPU canvas holds its frame budget, or a GPU backend is needed~~ | **Resolved** in M0 (2026-10-26): it holds (under 3 ms of UI-thread time at 8,192 grains in both first-class hosts), and the GPU backend spike stays in M2; see §16, §17 and §23 #26. **The M2 spike resolved the GPU backend** (2026-10-30, M2 sub-project 6): the CPU renderer stays. JUCE OpenGL and Metal each beat it by 6.6× to 45×, measured interleaved at one contended load, but OpenGL is deprecated on macOS and went unmeasured in hosts, under Rosetta, on Linux and on Windows, and Metal is macOS-only; Metal is the macOS lever if the budget ever breaks (`docs/spikes/m2-gpu-canvas.md`; §17, §23 #NN <!-- number at merge -->) |
 | Which hosts besides Bitwig accept CLAP thread-pool requests under load | M2 sub-project 1 built the tasks and the pool support, with a fake host pool as the machine-checked stand-in (§15, §19, §23 #65); the in-host survey stays sub-project 7's (the close's) checklist (§23 #64) |
 | Whether grain buses with channel masks are enough for v1 sound design, or per-grain filters are needed sooner | M2 sub-project 4 (§23 #64) |
 | Logic Pro's MPE and tail behavior with the wrapped AUv2 | M3 |
@@ -2076,6 +2205,7 @@ director made the call.
 | 63 | The carry-over splits for M2 | **The director's request of 2026-10-29,** made while the release-pipeline plan ran. `docs/m1-carry-over.md` becomes M1's frozen record: a paragraph under its title says so, and nothing else in it changes after row 221's narrowing, made just before the split. Its 13 open rows (51, 85, 87, 88, 118, 119, 144, 148, 184, 217, 218, 221 and 232; row 221 narrowed to the About box, its installer half closed by the release pipeline's commits) move to `docs/m2-carry-over.md` with their numbers; that file repeats the policy's five rules unchanged and is the carry-over from now on, its new rows numbered from 300. The no-net-growth count is that file's open rows, 13 at the split. §20's M1 and M2 rows, the pointers in §14 and §15 and CLAUDE.md point at the M2 file. (A row's number is the line it stood on before the freeze; in the M1 file each now stands 5 lines lower. #60's list names the shim row 231; it stood on line 232.) *Decided 2026-10-29 by the director; written by the Claude session that wrote the release procedure.* |
 | 64 | M2 planned as a programme: seven sub-projects in four waves, run by agents | **The director's eight decisions of 2026-10-29,** made in the M2 brainstorming (`docs/superpowers/specs/2026-10-29-m2-programme-design.md`, which places every M2 deliverable, §5 there): **(1)** one listening gate, at M2's close; the sub-projects render packs for the record only. **(2)** Structure first: layers, the parameter scopes and the mod matrix before persistence, engine scale, content and views; persistence-first was declined (it writes the state format twice). **(3)** "Everything should be M2": the Edit, Mod and FX views all land in M2, and with them §22's C++23 move (sub-project 1's first task, with a revert path) and AVX2 spike (sub-project 3, measured), the global delay, limiter, layer filter and grain buses of §14, and preset discovery. **(4)** Agents run the sub-projects, larger and in parallel where the dependencies allow: wave 1 Layers and structure alone; wave 2 Engine scale, Sources and persistence, Extremes and the FX chain in parallel (merge order 3, 2, 4, each rebased and re-verified); wave 3 Presets and content, Views; wave 4 Close. **(5)** The programme manager approves each sub-project spec; the director sees each spec's forced choices. **(6)** The live buffer's operations (overdub, loop length, splices, record/capture; §4, §5), which no milestone had dated, are M2's. **(7)** The factory macro routes target every layer. **(8)** The CC0 samples come from downloads with recorded provenance and from our own tools, in a public content repository the director creates, whose tagged zip is the release asset §12 allows. **Cross-cutting rules the sub-projects build on** (the design's §7): the per-layer chain is M1's, kept per layer, so one layer renders bit-identically to M1; the resample tap reads 256 samples late (§14); render tasks are the layers, so the M1 hashes hold (§15, §22); Source kind is a per-layer stepped parameter defined in wave 1 with its whole enumeration, and both products expose every kind; layer parameters keep scope 1's indices in scopes 2 to 4, wave 2's sub-projects append inside reserved index blocks, and the mod matrix's routings live in the patch, not as parameters; sub-project 1 alone bumps the patch version (the instrument's Macro 7 becomes Feedback there), sub-project 2 alone adds chunks (`AUDI`, `MEDI` v2 with a content-relative reference); the `AUDI` codec is sub-project 2's choice, under a criterion that every restore renders identically and matches the saved session within the goldens' tolerances; X keeps its definition and new benchmark cases are report-only beside it; checks that need a DAW are the close's. The carry-over should end M2 at 8 open rows (51, 118, 119, 217 and 221 closed; the rest upstream, 1.0.0 or M3). *Decided 2026-10-29 by the director; written by the Claude session that ran the brainstorming.* |
 | 65 | M2 sub-project 1 (Layers and structure): four layers and the morph, the Source kind, pitch and size spread, the mod matrix, render tasks on the host's thread pool, the patch at version 2, C++23 | **The director's five decisions** (2026-10-29, by forced choice on the spec, relayed by the programme manager; `docs/superpowers/specs/2026-10-29-m2-layers-design.md` §8): **D1** option 1, the morph law is the sum-normalized vector law with the pad resting at the centre (declined: the nearest corner at full level, and plain bilinear resting at corner A); **D2** option 1, the instrument gets a sidechain input port in this wave, feeding every layer's ring, with a fallback (drop the port if auval or pluginval reject an `aumu` with an input bus) that was not needed: CI's macOS leg (run on `1aa7114`) passed auval on all three identities with the instrument's input bus, and pluginval and Steinberg's validator passed too; **D3** option 3, each layer has two LFOs, two envelopes, two random sources and one 16-step sequencer; **D4** option 1, Pitch Spread is 0–24 semitones, uniform bipolar; **D5** option 2, Size Spread (0–2 octaves, uniform bipolar) joins Pitch Spread in M2, and the rest of §14's spread model goes to §22. **The programme manager's acceptance** (2026-10-29): carry-over rows 118 and 119 move from sub-project 2 to this one, since the Source-kind parameter makes the switch reachable in both products in wave 1. **The design** (the spec and `docs/superpowers/plans/2026-10-29-m2-layers.md`, as built): C++23 for every first-party target with a GCC 13 floor that the configure enforces, the Linux leg `linux-gcc13` on ubuntu-22.04 with gcc-13 from the `ubuntu-toolchain-r/test` PPA, its baseline file renamed (§15; `6a816e9`, `3d15b06`); `gg::Engine` as one layer's engine: `EngineConfig::layer` keying every draw (layer A's are M1's), an enable gate whose re-enable forces an onset, a source-kind switch that lets the sounding grains finish on their source (rows 118 and 119), and the level accessor (`263696d`); Pitch Spread and Size Spread, `rng::Field` 5 and 6 (`db51439`); `TaskRunner`, `SerialRunner` and the tests' `StubPool` (`6038030`); the 218-parameter table, layers B to D at scope 1's indices, the next-free indices `0x31` and `0x22`, the three reserved blocks, Macro 7 "Macro Feedback" in both products (§18; `6d55d10`); the mod matrix's routes, six curves and twelve factory routes, M1's `macroOffsets` bit for bit (`af37670`); the modulation sources, libm-free (`515c1bc`); the patch at version 2, `<mod>` and the migration with the instrument's Macro 7 folded into Stereo (`a660295`); the layer-aware `ParamMap` and `builtKind` (`a9cb6e7`); the four layers in the `Processor`, the per-layer chain, the morph law, on/off, the kinds and both products' 256-sample pieces (`27f4f02`, `1235944`); `"layer"` in the grain-event line, which rewrote the 22 expected `.events.jsonl` files by that insertion alone (`88e7c8f`); one task per rendering layer on the runner, bit-identical with any pool (`fec8410`); the matrix in the `Processor`, every source stepped per grid cell and per-cell application while a time-varying route is active (`f668876`, `5d8263b`, `cd568c0`; that path's cost is unmeasured, since `gg-bench` times the engine, not the `Processor`, and is for sub-project 7's idle run or a later `Processor` benchmark); `gg-render`'s `samples`, `mod`, `controls`, `transport` and velocity keys (`fb586f7`); the plugin's sidechain port, eight remote pages, `clap.thread-pool`, the MIDI controls, the transport and the routes in the state (`f393ecd`, `8824c26`); `engine-layers` and `engine-layers-full`, report-only beside X (§16; `c5e066c`); the fourteen goldens, 36 cases in all, with `fx-layers`, `fx-mod-follower`, `inst-layers-morph` and `inst-size-spread` pinned in the click-injection table at 0, 15, 5 and 3 (§19); and the listening pack, `docs/listening/m2-layers/` (fourteen specs, a README and a host checklist), rendered for the record and heard at M2's close, which puts two questions to the director's sitting: under D1 uncorrelated layers sum quieter than one layer alone (two about 4 dB down, four 6–7 dB: should the pad keep power rather than amplitude?), and Env 1's release is barely audible in the instrument, since no grain spawns after a note-off, so the release reaches only the last grains and the reverb's tail. GCC 13's warnings were fixed in first-party code: `-Warray-bounds` by one bounded `ParamMap` accessor (`d0c0657`), `-Wmaybe-uninitialized` by a plain slot in `parseRoute` (`e0f7fb7`), `-Wrange-loop-construct` by reference bindings (`c288d3b`) and `-Wextra`'s enumerator-and-integer conditional by the test harness's transport flags of one integer type (`1aa7114`). With layers B to D off, the pad at rest, both spreads 0 and only the factory routes, every one of the 22 M1 goldens kept its WAV SHA-256 through every task. **The spec's calls that amend Part II** (its §9): each layer owns its pool of 4,096; a layer switched on speaks at once (the forced onset) and off clears its pool after the 10 ms ramp; off layers keep writing their rings; both products have four 16 s rings, the instrument's fed from the sidechain; unbuilt kinds render as the product's default kind (`builtKind`), keeping their value; Position, Spray and Feedback follow the layer's kind, not the product, so Feedback is shown in the instrument; notes act on every layer; routes may not target a macro or a modulator's control; display names carry the layer letter, with the bare M1 names as layer A's in `gg-render`. **Rulings made during the build** (IDs given here: LS, Layers and structure, then the task): LS-P1 (2026-10-29, the plan's pre-flight), `<route>` writes `target` as the target slot's CLAP ID in decimal, as `<p id>` does, never its name, since a renamed parameter must not break saved routes; `source` and `curve` by their stable identifiers, layers as `A`–`D`, `same` and `all`; LS-T1a, GCC 13 defines `__cplusplus` as 202100L for `-std=c++23`, so the smoke test's bound is `> 202002L`, and the PPA step installs gcc-13 and g++-13 itself, since the pinned `prepare-for-juce` installs no compiler (`3d15b06`); LS-T5a, the M1 listening spec `docs/listening/m1-perform/specs/07b-macro-stereo.json` no longer parses (Macro Stereo is gone), and stays as the gate's frozen record, with a test pinning its failure; LS-T7a, the random glide's time constant is Smooth / rate and the follower is a 5 ms / 200 ms one-pole with a 1e-20 flush, the tests pinning the formulas' values, and the envelope's double level and `sineDet`'s clamp to ±1 are accepted; LS-T9a, a version-1 instrument state with no Macro 7 folds M1's default 0.5, the writer leaves out a route that wouldn't read back as itself, and a later malformed `<route>` naming a valid slot empties it; LS-T10a (Task 10's fix round), the morph law gains the factor `min(1, Σ_K r_K)`, `weight_L = (r_L·b_L / Σ_K r_K·b_K) × min(1, Σ_K r_K)`, because the normalized weight kept a lone layer at 1 until its ramp was exactly 0, so switching off the last layer cut where the spec says it fades over 10 ms; one layer at r = 1 still weighs exactly 1.0 (`1235944`); LS-T10b, the event log's inter-layer interleaving follows the pieces (which end at call ends, at grid boundaries with changes, at 256-sample cuts and where an off-ramp reaches 0), so it differs between block sizes, while each layer's sequence and the audio are invariant and the goldens render at a fixed block size, so the cross-platform gate holds (§19); LS-T10c, the piece is cut where an off-ramp reaches 0, a layer's diffuser and Feedback history are cleared when it turns off, and a `setBase` of a layer's Source jumps its Feedback ramp; LS-T11a, each layer counts its own dropped grain events and `droppedGrainEvents` sums them; LS-T11b, `StubPool`'s own lock and wait are exempt from RTSan as a stand-in for a host's pool, the tasks it runs still checked; LS-T12a, `reset()` forgets the host's transport, so a reset `Processor` renders as a fresh one (`01d03e1`; the review found it kept), and `setRoutes` jumps the ramps it moves; LS-T13a, `gg-render`'s transport key is `tempoBpm` (the spec said `tempo`), the instrument's `sample` stays required and is layer A's, so `samples.A` beside it is the duplicate error, and built-in layer samples share the spec's seed; LS-T14a, the instrument's routes travel with its seed in the loaded-state snapshot and may land a block apart from its values, as PU-T5a accepts for the seed, and auval, not runnable on the build machine, is replaced there by the in-process AU test of every identity's stereo input, CI's auval being the check (`8824c26`; it passed on `1aa7114`). **The spec is amended in place** for §6.1 (LS-T1a and the C++23 library features not yet used), §6.3 (LS-T10a), §6.7 (LS-T10b, LS-T11a, LS-T11b), §6.8 (the per-layer globals as targets), §6.9 (LS-T5a), §6.10 (LS-P1), §6.11 (LS-T13a) and §12 (rows 118 and 119 closed), and the plan's Global Constraints for LS-T10a. **The carry-over:** rows 118 and 119 closed by `263696d`, 13 open rows to 11, none added. Decided 2026-10-29 by the director (D1–D5) and the programme manager (rows 118 and 119), and 2026-10-29 and 2026-10-30 by Claude (the rulings), during M2 sub-project 1; *written by the Claude session that ran sub-project 1*; see §14, §15, §16, §17, §18, §19, §20, §22. **The final review's fix wave** (2026-10-30): the whole-branch review found no Critical issue and five Important ones, fixed with its minors. Ruling FR-1: a layer parameter's index is read from the X-macro's index column (`layerParamIndex`, and `slotForId` through its reverse table), never from its row's position, and scope 0's table spans `0x00`–`0x7F`, so wave 2 appends its rows inside its blocks with no placeholder rows; the next-free constants are the next free index below the blocks; and the 218-row table the plugin and patch tests both spelled out is one header, `tests/support/ParamTable.h` (§18; `2869412`). Ruling FR-2: on Linux with GCC the four products link libstdc++ and libgcc statically, their symbols kept local, and the CLAP and the VST3 export their entry points alone, since the GCC 13 floor's headers reference `GLIBCXX_3.4.32`, which a stock 22.04 lacks; CI's Linux leg checks the ceiling (§15; `4cc8230`). Ruling FR-3: a state load (an offer's values, the plugin's activation and its loaded state) sets every base with `Processor::setBases`, one recomputation of the effective values where 218 `setBase` calls made 218 (106 µs to 3.0 µs in a release build on the M5 Max), with the calls' result bit for bit but for Freeze's arming (FR-8, below) (`9cbded1`). Ruling FR-5: the grain canvas shows layer A alone (§17), and a piece's task count is 0 once its tasks are joined, so a thread-pool call outside a request runs nothing (`88230e8`). Ruling FR-6: Position and Spray's text follows Source's base value, not its effective one (§18). Ruling FR-7: Transport Playing has no golden (§19). `CLAUDE.md` now names GCC 13's four diagnostic families with their fixes and warns that two gates on one machine fail falsely, and the listening checklist says the instrument's layers B to D are silent unless their Source is Live. Every golden WAV kept its SHA-256 (36 cases); the carry-over stays at 11 open rows. Ruling FR-8 (the controller, on the fix report): `setBases` arms Freeze from the loaded values alone, every layer alike, with one `syncFreeze()` after the update (so a Freeze loaded on stays live until toggled if its layer isn't yet armed, and freezes at once if it is), since the calls one slot at a time armed layers B to D at layer A's Freeze, from their old values, and froze their empty rings at a load, #40's bug (§14). *Decided 2026-10-30 by Claude, in the fix wave, and by the controller (FR-8)* |
+| NN <!-- number at merge --> | M2 sub-project 6 (Views), PR 1: the four views, four lanes with a pitch axis, the layer strip and the XY pad, the Mod view and the route path, undo and redo, themes and the palette, the About box, the GPU spike | **The director's eleven decisions** (2026-10-30, by forced choice on the spec, relayed by the program manager; `docs/superpowers/specs/2026-10-30-m2-views-design.md` §8), option 1 each: **D1** the lane's vertical axis is pitch, ±48 semitones across the lane, and pan is no longer drawn; **D2** the scan window is a rectangle, its left and right edges Spray, its top and bottom edges Pitch Spread and its body Position or Pitch, locked to the axis the first 4 px pick, which amends §17's "drag vertically for pitch spread"; **D3** four lanes always, an off layer's dimmed; **D4** Okabe–Ito's palette, A orange `#E69F00`, B sky blue `#56B4E9`, C bluish green `#009E73`, D reddish purple `#CC79A7`, the letter beside the color everywhere; **D5** the Edit view shows one layer at a time; **D6** the Mod view is the Edit panels under a strip of source chips, with the route list beside them; **D7** undo covers the editor's own edits, 200 deep, kept while the instance lives, plus whole-state entries for sub-project 5's Mutate and preset recall; **D8** dark by default, light by the header's switch, kept per machine; **D9** the lanes stay dark in both themes; **D10** Reverb Size sets on release in the FX view (row 217); **D11** the window opens at 960 × 600. **The program manager's acceptance** (2026-10-30): the FX view's Reverb section is PR 1's, and this row takes the next free number at merge, after sub-projects 3, 2, 4 and 5. **The design** (the spec and `docs/superpowers/plans/2026-10-30-m2-views.md`, as built in PR 1; §17): `UiSnapshot`'s per-lane fields and the morph (`5c15566`); the route path from the editor (`c40f585`); the license set in one list, embedded into the editor (`2ad02b2`); the theme as a per-machine setting (`3a4df76`, `007a8fe`); the palette, the layout table and `ParamControl` (`d84081c`, `9044019`); the lanes' math in `gg-ui-core`: the pitch axis, the scan rectangle and its hit test, the axis lock, the pad's law and the banded resolve (`fbfcb0a`, `228e97f`); `gg-bench --canvas` timing the four-lane banded resolve (`c729f02`); the undo stack (`4ba69ca`, `9296b48`); the layer strip and the pad (`e691a1e`, `e0b3de4`); the About box (`2116004`); the Edit view (`462495d`, `b6f1842`); four lanes on the canvas (`75c412f`, `946e283`, `ce7974d`); the FX view (`0d8969c`); the Mod view (`7df6ca0`, `688f9bd`); the GPU spike (`2291278`); the editor's frame, with the four views, undo and redo, the themes, the keyboard and the About box in one editor (`b07f25a`, `50c9e0c`); and `gg-snap`, CI's `gg-snapshots` artifact and the listening pack, `docs/listening/m2-views/` (16 snapshots, three render specs and the host checklist), made for the record and seen and heard at M2's close (`0cc3cf7`). No parameter was added and no DSP changed; every one of the 36 goldens kept its WAV SHA-256 at every check made (the wave-1 gate at `228e97f`, and Task 15 at `b07f25a` and `50c9e0c`), and at the PR's head: TBD (Task 18b). **The canvas figure** (§16): `gg-bench --canvas` idle at 8,192 grains with four lanes, TBD (idle run, Task 18b). **The spec's calls that amend Part II** (its §9): a lane draws its layer by the layer's built kind, in either product; one canvas with one accumulator, its resolve tinted per lane; the layer strip is the lanes' header column; the theme is a per-machine setting both products read, never in the state; the editor sets routes through a route path of its own (VW-T4a, below); Reverb Size sets on release in the UI, with automation unchanged. **The GPU spike** (`docs/spikes/m2-gpu-canvas.md`; the code on `spike/gpu-canvas` at `082a874`, unmerged): JUCE OpenGL and Metal were built and measured within the timebox; Visage was not tried. Interleaved, five runs a path, at 8,192 stress grains on a canvas of 1600 × 600 logical at 2×, under contention (load average 10.9 to 18.6): the CPU path's readout 4.10 ms, OpenGL 0.20 ms on its GL thread plus 0.38 ms of GPU, Metal 0.09 ms on the UI thread plus 0.45 ms of GPU, so the candidates win by 6.6× to 45× depending on the column; neither clears "no new platform risk", so the CPU renderer stays (§17, §22). **Rulings made during the build** (IDs: VW, Views, then the task; the spec's §16 lists them, each marked **Amended** in place): VW-T2a, a corner of the scan rectangle takes the Spray edge, and on a Live lane the right corners take the top and bottom edges, since the right side is the body (PU-T8a); VW-T2b, the body keeps a height to grab, `max(tol, H/2 − tol)` either side of its center, the top and bottom edges grabbing only beyond it, so a rectangle at Pitch Spread 0 has a body; VW-T2c, a reverse grain draws centered, as rate 0 does; VW-T3a, macros, modulators and MIDI take three of the four hues Okabe–Ito leaves after the layers', yellow (an ochre on the light ground, where the yellow is about 1.2:1), vermilion and blue, and since the fourth, black, can't be seen on the dark ground, the follower is gray and the transport the text color; VW-T3b, the GUI tests run on every leg built with the editor, as M1's do (the spec's macOS-only premise was wrong), and only `snap_cli` is macOS-only; VW-T3c, a layer's Level is placed once, in its Space panel, and the strip shows On, Level, Source and Freeze as second controls with the same IDs; VW-T4a, the routes take a `LatestValue<ModRoutes>` channel of their own, taken after the loaded state, since one channel would let an edit overwrite a pending load; a load while active also feeds it and a deactivation drops an untaken edit, so the later write wins in either order (§18); VW-T5a, the undo stack lives in `gg-ui-core`, framework-free and sanitizer-tested, and `EditorPlugin` owns the instance, declared to outlive every editor; VW-T6a, the settings file's NUL guard covers `theme`, one addition to sub-project 2's `media/src/SettingsFile.cpp`; VW-T9a, the canvas keeps 8,192 grains per layer, not across the four, so a dense layer can't push another's out; VW-T9b, the lanes are half-open row ranges, a shared row the lower lane's; VW-T9c, a press in a lane selects its layer, and a body press that never moves 4 px is no gesture; VW-T10a, the pad's drag is one undo entry, "Morph", and a real double-click two, its first press an ordinary click (a checklist item); VW-T11a, rings are drawn on knobs only, since the Step sliders and every modulator's control are no target, and the spread band takes Position and Spray as their 0–1 values; VW-T11b, mod mode's inertness covers the accessibility value interface; VW-T12a, toggles and menus show one dot per route in its source family's color, their depth edited in the route list; VW-T12b, a route to all layers counts as that source's route on every layer, so a drop selects it rather than doubling it; VW-T14a, the About box's format comes at run time from clap-wrapper's `clap-wrapper.host-information/0` extension, since every format wraps the same plugin code; VW-T15a, notices reach the header through the component tree (`NoticeSink`); VW-T15b, the view chosen is remembered per plugin instance, unsaved; VW-T15c, the About box is modal, the keys and Tab its own while it shows; VW-T15d, undo and redo do nothing while a gesture or group is open, the gesture's control alone able to end it consistently with the host; VW-T15e, a parameter entry's `before` is the control's shown value at its gesture's begin, since `base` lags the audio thread just after a gesture; VW-T15f, while undo or redo applies, the stack ignores what its callbacks ask of it; VW-T17a, the spike's decision rests on the ratios and the risk clause, not on absolute figures, so it is not provisional on the idle run; VW-T17b, open: the canvas repaints on every VBlank it can make, about 156 times a second on the spike's 240 Hz display, about 65% of the message thread at the contended 4.1 ms; §16's budget is per frame and is not affected, and a cap is the final review's question, and the director's by forced choice if it changes what a user sees. **The carry-over:** rows 217 (`0d8969c`) and 221 (`2116004`) closed, and `THIRD_PARTY_NOTICES.md` now says the About box shows the texts; rows 85 and 232 name `plugin/src/editor/EditorPlugin.h` and `.cpp`, which this sub-project edited, and stay open, waiting on upstream; the director retired the count rules on 2026-10-30. Decided 2026-10-30 by the director (D1–D11) and the program manager (the acceptance), and 2026-10-30 by Claude (the rulings), during M2 sub-project 6; *written by the Claude session that ran sub-project 6*; PR 2 appends to this row; see §14, §16, §17, §18, §19, §22 |
 
 **Key sources** (checked 2026-10-26):
 - clap-wrapper releases (v0.17.0, 2026-10-20): https://github.com/free-audio/clap-wrapper/releases

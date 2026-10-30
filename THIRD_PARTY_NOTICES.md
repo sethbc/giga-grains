@@ -11,7 +11,8 @@ together with `LICENSE` (the AGPL), the GPLv3 text, CMakeRC's and flowbite-icons
 AudioUnitSDK's `LICENSE.txt` in a macOS build and the ASIO SDK's `LICENSE.txt` in a Windows build.
 Every installer carries them in its `licenses/` directory, which `gg-products` assembles
 (`cmake/products.cmake`) from the pinned checkouts and, for the two MIT texts no checkout holds,
-from `installer/licenses/`. The editor's about box doesn't show them yet (carry-over row 221).
+from `installer/licenses/`. The editor's About box shows the same set, embedded into the editor
+at build time from the same list (`cmake/licenses.cmake`).
 
 "Both products" means Giga Grains (the instrument) and Giga Grains FX (the effect), in every
 format they ship in: CLAP, VST3, AU v2 and standalone, on macOS, Windows and Linux, unless a
