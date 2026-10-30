@@ -155,9 +155,10 @@ struct ControlEvent
 /// the caller (a host pool's request_exec, StubPool's barrier).
 ///
 /// **Source kind** (spec §6.4). Each layer reads the kind builtKind(sourceKindOf(...)) gives:
-/// Sample or Live, in either product. Position, Spray and Feedback follow the kind (toCloudParams,
-/// toWetParams). A change applies at its boundary (Engine::setSourceMode): the grains sounding
-/// finish on the source they started on.
+/// Sample, Live or Spectral, in either product (Spectral smears the layer's sample, else its ring:
+/// layerMaterial). Position, Spray and Feedback follow the kind (toCloudParams, toWetParams;
+/// Feedback acts on Live alone). A change applies at its boundary (Engine::setSourceMode): the
+/// grains sounding finish on the source they started on.
 ///
 /// **Grain events** (spec §6.7). Each layer's engine records its spawns into its own fixed buffer
 /// of 2 × grainCapacity events while it renders a piece; after the piece's layers have rendered,
@@ -513,6 +514,11 @@ class Processor
     /// back to sources(layer) and is freed there (SourceExchange::collect), on the calling thread.
     /// `layer` is below kLayers.
     void setSourceNow(uint8_t layer, std::shared_ptr<const PreparedSource> s);
+    /// What layer `layer`'s Spectral kind smears and the units its Position takes (the extremes
+    /// spec §6.2): Sample when its engine holds a sample, else Live (its ring). A change, from
+    /// setSourceNow or a source adopted at a process() call's start, re-sends the layer's cloud
+    /// parameters (toCloudParams) before the call renders. `layer` is below kLayers.
+    SourceMode layerMaterial(uint8_t layer) const noexcept;
     /// Layer A's: setSourceNow(0, s).
     void setSourceNow(std::shared_ptr<const PreparedSource> s) { setSourceNow(0, std::move(s)); }
 
@@ -662,6 +668,8 @@ class Processor
         // The enable gate last given to the engine (Engine::setEnabled), and the kind.
         bool enabledGiven{true};
         SourceMode kind{SourceMode::Sample};
+        // The material last given to toCloudParams (layerMaterial): what a Spectral layer smears.
+        SourceMode material{SourceMode::Live};
         // The cloud parameters last given to the engine, if cloudGiven (updateEffective).
         CloudParams cloud{};
         bool cloudGiven{false};
@@ -732,6 +740,11 @@ class Processor
     /// Makes each ramped value whose target the effective values moved jump to it (setBase() of a
     /// macro, setRoutes()).
     void jumpMovedRamps() noexcept;
+    /// Gives layer L's engine its cloud parameters (from the effective values and its material),
+    /// unless they are what it has.
+    void sendCloudParams(uint8_t L) noexcept;
+    /// Re-sends the cloud parameters of every layer whose material changed since they were sent.
+    void syncMaterial() noexcept;
     /// Recomputes the effective values, gives each engine its cloud parameters and source kind,
     /// and keeps Space's.
     void updateEffective() noexcept;

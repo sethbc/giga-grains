@@ -605,12 +605,12 @@ TEST_CASE("grain events come in piece, layer, spawn order", "[core][layers]")
 
 TEST_CASE("the unbuilt kinds fall back to the product's default", "[core][layers]")
 {
-    // Spec §6.4: Resample, Spectral and Oscillator render as Live in the FX and as Sample in the
-    // instrument, the parameter keeping its value.
+    // Spec §6.4: Resample and Oscillator render as Live in the FX and as Sample in the
+    // instrument, the parameter keeping its value (Spectral is built: spectral_processor_tests).
     float l[1];
     float r[1];
     float *out[2] = {l, r};
-    for (const float kind : {2.0f, 3.0f, 4.0f})
+    for (const float kind : {2.0f, 4.0f})
     {
         INFO("Source " << kind);
         Processor fx({kRate, 512, 1, Mode::Fx});

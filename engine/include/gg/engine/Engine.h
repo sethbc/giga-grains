@@ -314,6 +314,8 @@ class Engine
     /// Whether the current sample slot holds a source: the Spectral Smear's material is then the
     /// sample, else the live ring (the extremes spec §6.2).
     bool hasSampleSource() const noexcept { return slots_[current_].source != nullptr; }
+    /// The cloud parameters in effect, as the scheduler clamped them (CloudScheduler::params).
+    const CloudParams &cloudParams() const noexcept { return cloud_.params(); }
     /// The Spectral Smear, read-only; null without EngineConfig::spectral.
     const SpectralSource *spectral() const noexcept { return spectral_.get(); }
 

@@ -723,18 +723,18 @@ TEST_CASE("the layer-aware maps read each layer's slots", "[core][layers]")
 
     SECTION("the built kinds, and the unbuilt ones' fallback")
     {
-        // M2 sub-project 1's spec §6.4: Sample and Live are built in both products; Resample,
-        // Spectral and Oscillator render as the product's default kind.
+        // M2 sub-project 1's spec §6.4: Sample and Live are built in both products, and Spectral
+        // since sub-project 4's; Resample and Oscillator render as the product's default kind.
         for (const Mode mode : {Mode::Fx, Mode::Instrument})
         {
             CHECK(builtKind(SourceKind::Sample, mode) == SourceMode::Sample);
             CHECK(builtKind(SourceKind::Live, mode) == SourceMode::Live);
         }
         CHECK(builtKind(SourceKind::Resample, Mode::Fx) == SourceMode::Live);
-        CHECK(builtKind(SourceKind::Spectral, Mode::Fx) == SourceMode::Live);
+        CHECK(builtKind(SourceKind::Spectral, Mode::Fx) == SourceMode::Spectral);
+        CHECK(builtKind(SourceKind::Spectral, Mode::Instrument) == SourceMode::Spectral);
         CHECK(builtKind(SourceKind::Oscillator, Mode::Fx) == SourceMode::Live);
         CHECK(builtKind(SourceKind::Resample, Mode::Instrument) == SourceMode::Sample);
-        CHECK(builtKind(SourceKind::Spectral, Mode::Instrument) == SourceMode::Sample);
         CHECK(builtKind(SourceKind::Oscillator, Mode::Instrument) == SourceMode::Sample);
     }
 
@@ -838,8 +838,12 @@ TEST_CASE("the layer-aware maps read each layer's slots", "[core][layers]")
         v[slotOf(LayerParam::Source, 2)] = 1.0f;
         CHECK(toWetParams(v, Mode::Instrument, 2).feedback == 0.5f);
         // The unbuilt kinds feed back as the product's default kind does.
-        v[slotOf(LayerParam::Source, 2)] = 3.0f;
+        v[slotOf(LayerParam::Source, 2)] = 2.0f;
         CHECK(toWetParams(v, Mode::Fx, 2).feedback == 0.5f);
+        CHECK(toWetParams(v, Mode::Instrument, 2).feedback == 0.0f);
+        // A Spectral layer takes none, in either product (the extremes spec §6.2).
+        v[slotOf(LayerParam::Source, 2)] = 3.0f;
+        CHECK(toWetParams(v, Mode::Fx, 2).feedback == 0.0f);
         CHECK(toWetParams(v, Mode::Instrument, 2).feedback == 0.0f);
     }
 
@@ -1002,7 +1006,7 @@ TEST_CASE("smear 0 is M1's cloud params bit for bit", "[core]")
     // bit for bit. Over every slot's range at once (samplePoints, every Source kind among them),
     // with each layer's Smear set to 0, every layer maps as before, the jitter and the detune are
     // +0 (so the scheduler draws neither), and the material changes nothing for a Sample or a
-    // Live layer.
+    // Live layer (a Spectral layer's Position takes the material's units).
     for (const Mode mode : {Mode::Fx, Mode::Instrument})
     {
         INFO("mode " << (mode == Mode::Fx ? "fx" : "instrument"));
@@ -1022,6 +1026,11 @@ TEST_CASE("smear 0 is M1's cloud params bit for bit", "[core]")
                 REQUIRE(sameCloudBits(p, preSmearReference(v, mode, layer)));
                 REQUIRE(bitsOf(p.smearJitterSec) == bitsOf(0.0));
                 REQUIRE(bitsOf(p.smearDetuneSemitones) == bitsOf(0.0));
+                if (gg::core::builtKind(gg::core::sourceKindOf(v, layer), mode) ==
+                    gg::SourceMode::Spectral)
+                {
+                    continue; // a Spectral layer's Position takes its material's units
+                }
                 for (const gg::SourceMode material : {gg::SourceMode::Sample, gg::SourceMode::Live})
                 {
                     REQUIRE(sameCloudBits(toCloudParams(v, mode, layer, material), p));

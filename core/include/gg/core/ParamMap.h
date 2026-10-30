@@ -61,9 +61,9 @@ struct SpaceParams
 SourceKind sourceKindOf(const ParamValues &effective, uint8_t layer) noexcept;
 
 /// The source kind a layer of `kind` reads in `mode`'s product (spec §6.4): Sample and Live are
-/// built in wave 1, in both products; the unbuilt kinds (Resample, Spectral, Oscillator) fall back
-/// to the product's default kind, Live in the FX and Sample in the instrument. The one function
-/// sub-projects 2 and 4 edit when their kinds arrive.
+/// built in wave 1 and Spectral in M2 sub-project 4, in both products; the unbuilt kinds (Resample,
+/// Oscillator) fall back to the product's default kind, Live in the FX and Sample in the
+/// instrument. The one function sub-projects 2 and 4 edit when their kinds arrive.
 SourceMode builtKind(SourceKind kind, Mode mode) noexcept;
 
 /// Layer `layer`'s Cloud stream controls (`layer` below kLayers, asserted), from its own slots
@@ -100,8 +100,6 @@ CloudParams toCloudParams(const ParamValues &effective, Mode mode, uint8_t layer
 /// Live (seconds behind the head), while its grains draw their spray one-sided, as Live's (the
 /// scheduler's Spectral mode). A Sample or Live layer ignores `material` and takes its own units.
 /// The three-argument form passes the kind's own units (Sample's for Sample, Live's otherwise).
-/// Until builtKind returns Spectral every built kind is Sample or Live, so `material` changes
-/// nothing yet.
 CloudParams toCloudParams(const ParamValues &effective, Mode mode, uint8_t layer,
                           SourceMode material) noexcept;
 

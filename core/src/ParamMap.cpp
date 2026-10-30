@@ -62,7 +62,6 @@ SourceMode positionUnits(SourceMode kind, SourceMode material) noexcept
         // The extremes spec §6.2: its Position addresses its material, a sample's fraction or
         // the ring's seconds behind the head, while the scheduler's Spectral mode draws its spray
         // one-sided, as Live's (sprayInSeconds is a Sample-mode flag, which it ignores).
-        // builtKind doesn't return Spectral yet, so this changes nothing until it does.
         return material;
     }
     return material;
@@ -87,8 +86,9 @@ SourceMode builtKind(SourceKind kind, Mode mode) noexcept
         return SourceMode::Sample;
     case SourceKind::Live:
         return SourceMode::Live;
-    case SourceKind::Resample:
     case SourceKind::Spectral:
+        return SourceMode::Spectral;
+    case SourceKind::Resample:
     case SourceKind::Oscillator:
         break;
     }
@@ -140,7 +140,7 @@ CloudParams toCloudParams(const ParamValues &effective, Mode mode, uint8_t layer
 CloudParams toCloudParams(const ParamValues &effective, Mode mode, uint8_t layer) noexcept
 {
     // The kind's own units: Sample's for a Sample layer, Live's for every other (a Spectral
-    // layer's own units, too, once it is built).
+    // layer's material is the Processor's to say: layerMaterial).
     const SourceMode kind = builtKind(sourceKindOf(effective, layer), mode);
     return toCloudParams(effective, mode, layer,
                          kind == SourceMode::Sample ? SourceMode::Sample : SourceMode::Live);

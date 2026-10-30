@@ -26,6 +26,7 @@ add_executable(gg-tests
         core/settings_tests.cpp
         core/space_processor_tests.cpp
         core/space_reverb_tests.cpp
+        core/spectral_processor_tests.cpp
         core/threads_tests.cpp
         engine/cloud_tests.cpp
         engine/denormal_tests.cpp

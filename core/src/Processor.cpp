@@ -55,6 +55,7 @@ EngineConfig engineConfig(const ProcessorConfig &c, uint8_t layer)
     e.seed = c.seed;
     e.liveSeconds = Processor::kLiveSeconds;
     e.layer = layer;
+    e.spectral = true; // the Spectral kind (extremes spec §6.2), built in both products
     return e;
 }
 
@@ -779,15 +780,7 @@ void Processor::updateEffective() noexcept
     for (uint8_t L = 0; L < kLayers; ++L)
     {
         Layer &l = *layers_[L];
-        // The scheduler takes the same values twice as once, so an unchanged layer is spared the
-        // call: the per-cell path of a time-varying route stays cheap.
-        const CloudParams cloud = toCloudParams(effective_, config_.mode, L);
-        if (!l.cloudGiven || !sameCloud(cloud, l.cloud))
-        {
-            l.engine.setCloudParams(cloud);
-            l.cloud = cloud;
-            l.cloudGiven = true;
-        }
+        sendCloudParams(L);
         // Spec §6.4: a kind switch applies from the engine's next call, the grains sounding
         // finishing on their own source.
         const SourceMode kind = builtKind(sourceKindOf(effective_, L), config_.mode);
@@ -805,6 +798,43 @@ void Processor::updateEffective() noexcept
     delay_.setTimeSamples(static_cast<double>(delayParams_.timeSeconds) * config_.sampleRate);
     limiterParams_ = limiterParams(effective_);
     limiterReleaseCoeff_ = releaseCoefficient(limiterParams_.releaseSeconds, config_.sampleRate);
+}
+
+SourceMode Processor::layerMaterial(uint8_t layer) const noexcept
+{
+    return layerAt(layer).engine.hasSampleSource() ? SourceMode::Sample : SourceMode::Live;
+}
+
+void Processor::sendCloudParams(uint8_t L) noexcept
+{
+    Layer &l = *layers_[L];
+    // The material is the units of a Spectral layer's Position (the extremes spec §6.2); a Sample
+    // or Live layer ignores it.
+    const SourceMode material = layerMaterial(L);
+    // The scheduler takes the same values twice as once, so an unchanged layer is spared the
+    // call: the per-cell path of a time-varying route stays cheap.
+    const CloudParams cloud = toCloudParams(effective_, config_.mode, L, material);
+    l.material = material;
+    if (!l.cloudGiven || !sameCloud(cloud, l.cloud))
+    {
+        l.engine.setCloudParams(cloud);
+        l.cloud = cloud;
+        l.cloudGiven = true;
+    }
+}
+
+void Processor::syncMaterial() noexcept
+{
+    // A source adopted or removed changes what a Spectral layer smears, and so the units of its
+    // Position: its cloud parameters go again, at the call's start or in setSourceNow, which is
+    // where a source changes.
+    for (uint8_t L = 0; L < kLayers; ++L)
+    {
+        if (layers_[L]->cloudGiven && layerMaterial(L) != layers_[L]->material)
+        {
+            sendCloudParams(L);
+        }
+    }
 }
 
 void Processor::syncFreeze() noexcept
@@ -904,6 +934,7 @@ void Processor::setSourceNow(uint8_t layer, std::shared_ptr<const PreparedSource
     l.engine.replaceSource(l.sources.hold(std::move(s)));
     handBackRetired(l);
     l.sources.collect();
+    syncMaterial();
 }
 
 void Processor::handBackRetired(Layer &l) noexcept
@@ -924,6 +955,7 @@ bool Processor::takeOffers() noexcept
             applied = true;
         }
     }
+    syncMaterial();
     return applied;
 }
 
