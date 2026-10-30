@@ -8,6 +8,7 @@
 // tinyxml (ruling M1-l). The containers it can't get from encodeState (unknown chunks, missing
 // ones, other versions) it builds byte by byte with support/StateContainer.h.
 
+#include <algorithm>
 #include <array>
 #include <bit>
 #include <cmath>
@@ -23,6 +24,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include "gg/core/ModMatrix.h"
 #include "gg/core/ParamIds.h"
 #include "gg/core/PatchState.h"
 #include "gg/core/Rng.h"
@@ -33,10 +35,12 @@
 
 using gg::core::decodeState;
 using gg::core::encodeState;
+using gg::core::factoryRoutes;
 using gg::core::isValidMediaEntry;
 using gg::core::kParamCount;
 using gg::core::MediaEntry;
 using gg::core::Mode;
+using gg::core::ModRoutes;
 using gg::core::ParamSlot;
 using gg::core::ParamValues;
 using gg::core::SessionState;
@@ -47,7 +51,8 @@ using gg::test::stateContainer;
 namespace
 {
 // A state sub-project 1 saved: toStateXml's output for kSubProject1Values and seed 77, copied
-// literally. Every state saved before the container loads this way.
+// literally. Every state saved before the container loads this way, migrating from patch
+// version 1.
 constexpr std::string_view kSubProject1State =
     R"(<patch id="org.sethbc.giga-grains.patch" version="1" name="Init"><params>)"
     R"(<p id="1" v="0.800000011921" bits="3f4ccccd" />)"
@@ -92,6 +97,35 @@ std::array<uint32_t, kParamCount> bitsOf(const ParamValues &v)
     return b;
 }
 
+/// Whether two matrices are the same, every depth bit for bit.
+bool sameRoutes(const ModRoutes &a, const ModRoutes &b)
+{
+    for (std::size_t k = 0; k < gg::core::kModSlots; ++k)
+    {
+        if (!(a[k] == b[k]) ||
+            std::bit_cast<uint32_t>(a[k].depth) != std::bit_cast<uint32_t>(b[k].depth))
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+/// The instrument's factory routes and two of a user's: what someState saves.
+ModRoutes someRoutes()
+{
+    ModRoutes r = factoryRoutes(Mode::Instrument);
+    r[19] = {gg::core::ModSource::Lfo1, 2,     ParamSlot::Pitch,
+             gg::core::kAllLayers,      -0.0f, gg::core::ModCurve::Bipolar};
+    r[47] = {gg::core::ModSource::EnvFollower,
+             gg::core::kSameLayer,
+             ParamSlot::ReverbAmount,
+             gg::core::kAllLayers,
+             1.2345678e-7f,
+             gg::core::ModCurve::TopQuarter};
+    return r;
+}
+
 // A sample entry whose every field differs from a default MediaEntry, with a UTF-8 path that
 // needs XML escaping: ä, ✓, a double quote, and the characters tinyxml treats specially.
 MediaEntry sampleEntry()
@@ -115,6 +149,7 @@ SessionState someState(bool withSample)
     SessionState s;
     s.values = kSubProject1Values;
     s.seed = 0x0123456789abcdefull;
+    s.routes = someRoutes();
     if (withSample)
     {
         s.sample = sampleEntry();
@@ -137,11 +172,12 @@ struct Decoded
     {
         return bitsOf(state.values) == bitsOf(o.state.values) && state.seed == o.state.seed &&
                state.sample == o.state.sample && state.newerMedia == o.state.newerMedia &&
+               sameRoutes(state.routes, o.state.routes) &&
                migratedFromVersion == o.migratedFromVersion;
     }
 };
 
-// Values, a seed, a sample, a newer manifest and a migration report that no decode here
+// Values, a seed, a sample, a newer manifest, routes and a migration report that no decode here
 // produces.
 Decoded distinct()
 {
@@ -157,6 +193,8 @@ Decoded distinct()
     e.frames = 1;
     d.state.sample = e;
     d.state.newerMedia = "distinct";
+    d.state.routes.fill({gg::core::ModSource::Step, 3, ParamSlot::Spray, 3, 0.5f,
+                         gg::core::ModCurve::RampThreeQuarters});
     d.migratedFromVersion = 12345;
     return d;
 }
@@ -181,7 +219,7 @@ TEST_CASE("the container's layout is GGST, version 1, PTCH then MEDI", "[core]")
 
     const SessionState s = someState(false);
     const auto bytes = encodeState(s);
-    const auto ptch = gg::core::toStateXml(s.values, s.seed);
+    const auto ptch = gg::core::toStateXml(s.values, s.seed, s.routes);
 
     // The magic, the version as a little-endian u32, then PTCH holding toStateXml's bytes
     // unchanged, then an empty MEDI, and nothing else.
@@ -223,6 +261,7 @@ TEST_CASE("the container round trips with and without a sample", "[core]")
             CHECK(bitsOf(d.state.values) == bitsOf(s.values));
             CHECK(d.state.seed == s.seed);
             CHECK(d.state.sample == s.sample);
+            CHECK(sameRoutes(d.state.routes, s.routes));
             CHECK(d.migratedFromVersion == 0u);
             // Saving what was loaded writes the same bytes again.
             CHECK(encodeState(d.state) == bytes);
@@ -253,18 +292,22 @@ TEST_CASE("the container round trips with and without a sample", "[core]")
 
 TEST_CASE("a pre-container state loads with no sample", "[core]")
 {
-    // The bare XML of sub-projects 1 and 2: its whole content is PTCH, with an empty MEDI.
-    // Today's XML for the same values is the same up to its ten params, then adds Space's eight
-    // and the Perform UI's ten.
-    const auto tenParams = kSubProject1State.substr(0, kSubProject1State.find("</params>"));
-    CHECK(gg::core::toStateXml(kSubProject1Values, 77).starts_with(tenParams));
+    // The bare XML of sub-projects 1 and 2: its whole content is PTCH, with an empty MEDI. It is
+    // patch version 1, so it migrates (gg/core/PatchState.h): the factory routes. Today's XML for
+    // the same values is the same up to its ten params but for its version, then adds the
+    // other params and the routes.
+    const auto fxRoutes = factoryRoutes(Mode::Fx);
+    std::string tenParams(kSubProject1State.substr(0, kSubProject1State.find("</params>")));
+    tenParams.replace(tenParams.find(R"(version="1")"), 11, R"(version="2")");
+    CHECK(gg::core::toStateXml(kSubProject1Values, 77, fxRoutes).starts_with(tenParams));
 
     Decoded d = distinct();
     REQUIRE(d.decode(kSubProject1State));
     CHECK(bitsOf(d.state.values) == bitsOf(kSubProject1Values));
     CHECK(d.state.seed == 77u);
     CHECK(d.state.sample == std::nullopt);
-    CHECK(d.migratedFromVersion == 0u);
+    CHECK(sameRoutes(d.state.routes, fxRoutes));
+    CHECK(d.migratedFromVersion == 1u);
 
     // As before the container, bytes after the XML's NUL are ignored: an old state never fails
     // to load now that loaded then.
@@ -276,7 +319,8 @@ TEST_CASE("a pre-container state loads with no sample", "[core]")
     // Saving it again writes a container.
     const auto bytes = encodeState(d.state);
     CHECK(bytes.starts_with("GGST"));
-    CHECK(stateChunkPayload(bytes, "PTCH") == gg::core::toStateXml(kSubProject1Values, 77));
+    CHECK(stateChunkPayload(bytes, "PTCH") ==
+          gg::core::toStateXml(kSubProject1Values, 77, fxRoutes));
 
     // Exactly as fromStateXml loads it, in either product: a param it doesn't mention takes the
     // product's default.
@@ -288,17 +332,90 @@ TEST_CASE("a pre-container state loads with no sample", "[core]")
     {
         ParamValues values{};
         uint64_t seed = 0;
-        REQUIRE(gg::core::fromStateXml(noPosition, values, seed, mode));
+        ModRoutes routes{};
+        REQUIRE(gg::core::fromStateXml(noPosition, values, seed, routes, mode));
+        CHECK(sameRoutes(routes, factoryRoutes(mode)));
         Decoded bare = distinct();
         REQUIRE(bare.decode(noPosition, mode));
         CHECK(bitsOf(bare.state.values) == bitsOf(values));
+        CHECK(sameRoutes(bare.state.routes, routes));
         Decoded wrapped = distinct();
         REQUIRE(wrapped.decode(
             stateContainer({stateChunk("PTCH", noPosition), stateChunk("MEDI", kEmptyMedia)}),
             mode));
         CHECK(bitsOf(wrapped.state.values) == bitsOf(values));
+        CHECK(sameRoutes(wrapped.state.routes, routes));
         CHECK(wrapped.state.values[at(ParamSlot::Position)] ==
               gg::core::paramMeta(ParamSlot::Position, mode).defaultVal);
+    }
+}
+
+TEST_CASE("the container carries the routes", "[core]")
+{
+    // The routes go in PTCH's <mod> (patch version 2) and come back bit for bit, in either
+    // product; saving what was loaded writes the same bytes again.
+    for (const bool withSample : {false, true})
+    {
+        INFO("with a sample: " << withSample);
+        const SessionState s = someState(withSample);
+        const auto bytes = encodeState(s);
+        const auto ptch = stateChunkPayload(bytes, "PTCH");
+        REQUIRE(ptch.has_value());
+        CHECK(ptch->find(R"(<engine seed="81985529216486895" /><mod><route slot="1" )") !=
+              std::string::npos);
+        CHECK(ptch->find(R"(<route slot="20" source="LFO 1" sourceLayer="C" target="65541" )"
+                         R"(targetLayer="all" depth="-0.000000000000" bits="80000000" )"
+                         R"(curve="Bipolar" />)") != std::string::npos);
+        for (const Mode mode : {Mode::Instrument, Mode::Fx})
+        {
+            Decoded d = distinct();
+            REQUIRE(d.decode(bytes, mode));
+            CHECK(sameRoutes(d.state.routes, s.routes));
+            CHECK(d.migratedFromVersion == 0u);
+            CHECK(encodeState(d.state) == bytes);
+        }
+    }
+
+    // No routes: an empty <mod>, and every slot empty again.
+    SessionState empty = someState(false);
+    empty.routes = ModRoutes{};
+    const auto bytes = encodeState(empty);
+    CHECK(stateChunkPayload(bytes, "PTCH")->ends_with("<mod /></patch>"));
+    Decoded d = distinct();
+    REQUIRE(d.decode(bytes));
+    CHECK(sameRoutes(d.state.routes, ModRoutes{}));
+
+    // A version 1 PTCH, in a container or bare, migrates: the factory routes, and in the
+    // instrument Macro 7 folded into Stereo (gg/core/PatchState.h). kSubProject1State's Stereo is
+    // 0; with Macro 7 at 0.8 it becomes 0.5 × (2 × 0.8 − 1).
+    std::string m1(kSubProject1State);
+    m1.insert(m1.find("</params>"), R"(<p id="23" v="0.800000011921" bits="3f4ccccd" />)");
+    const float folded = std::clamp(0.0f + 0.5f * (2.0f * 0.8f - 1.0f), 0.0f, 1.0f);
+    for (const Mode mode : {Mode::Instrument, Mode::Fx})
+    {
+        INFO((mode == Mode::Fx ? "fx" : "instrument"));
+        Decoded bare = distinct();
+        REQUIRE(bare.decode(m1, mode));
+        Decoded wrapped = distinct();
+        REQUIRE(wrapped.decode(
+            stateContainer({stateChunk("PTCH", m1), stateChunk("MEDI", kEmptyMedia)}), mode));
+        for (const Decoded *x : {&bare, &wrapped})
+        {
+            CHECK(x->migratedFromVersion == 1u);
+            CHECK(sameRoutes(x->state.routes, factoryRoutes(mode)));
+            const float stereo = x->state.values[at(ParamSlot::Stereo)];
+            const float macro7 = x->state.values[at(ParamSlot::Macro7)];
+            if (mode == Mode::Instrument)
+            {
+                CHECK(std::bit_cast<uint32_t>(stereo) == std::bit_cast<uint32_t>(folded));
+                CHECK(macro7 == 0.0f);
+            }
+            else
+            {
+                CHECK(stereo == 0.0f);
+                CHECK(std::bit_cast<uint32_t>(macro7) == std::bit_cast<uint32_t>(0.8f));
+            }
+        }
     }
 }
 
@@ -586,11 +703,12 @@ TEST_CASE("session state rejects bad state and writes nothing", "[core]")
     SECTION("a newer patch version loads through the migration hooks")
     {
         auto newer = ptch;
-        newer.replace(newer.find(R"(version="1")"), 11, R"(version="99")");
+        newer.replace(newer.find(R"(version="2")"), 11, R"(version="99")");
         REQUIRE(d.decode(stateContainer({stateChunk("PTCH", newer), stateChunk("MEDI", medi)})));
         CHECK(d.migratedFromVersion == 99u);
         CHECK(bitsOf(d.state.values) == bitsOf(s.values));
         CHECK(d.state.sample == s.sample);
+        CHECK(sameRoutes(d.state.routes, s.routes));
 
         // A failed decode keeps that report; the next good one at the current version clears it.
         CHECK_FALSE(d.decode(good.substr(0, good.size() - 1)));

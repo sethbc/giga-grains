@@ -21,6 +21,7 @@
 #include <cstdio>
 #include <cstring>
 #include <limits>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -32,17 +33,29 @@
 #include <clap/clap.h>
 
 #include "PatchXml.h"
+#include "gg/core/ModMatrix.h"
 #include "gg/core/ParamIds.h"
 #include "gg/core/PatchState.h"
+#include "gg/core/Processor.h"
 #include "gg/core/SessionState.h"
 #include "gg/core/Rng.h"
+#include "gg/source/PreparedSource.h"
+#include "gg/source/SampleBuffer.h"
 #include "sst/basic-blocks/params/ParamMetadata.h"
 #include "support/DeepXml.h"
 #include "support/StateContainer.h"
 
+using gg::core::factoryRoutes;
 using gg::core::fromStateXml;
+using gg::core::kAllLayers;
+using gg::core::kModSlots;
 using gg::core::kParamCount;
+using gg::core::kSameLayer;
+using gg::core::ModCurve;
 using gg::core::Mode;
+using gg::core::ModRoute;
+using gg::core::ModRoutes;
+using gg::core::ModSource;
 using gg::core::ParamSlot;
 using gg::core::ParamValues;
 using gg::core::toStateXml;
@@ -258,6 +271,22 @@ constexpr float kInstrumentSourceDefault = 0.0f;
 
 uint32_t bitsOf(float f) { return std::bit_cast<uint32_t>(f); }
 
+/// Whether two matrices are the same, every depth bit for bit (so -0 isn't +0).
+bool sameRoutes(const ModRoutes &a, const ModRoutes &b)
+{
+    for (size_t k = 0; k < kModSlots; ++k)
+    {
+        if (!(a[k] == b[k]) || bitsOf(a[k].depth) != bitsOf(b[k].depth))
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+/// The FX's factory routes: the routes most of these tests save.
+const ModRoutes kFxRoutes = factoryRoutes(Mode::Fx);
+
 /// A param's name and default in `mode`'s product.
 std::string_view nameIn(const Expected &e, Mode mode)
 {
@@ -336,10 +365,11 @@ struct Loaded
     ParamValues values{};
     uint64_t seed{0};
     uint32_t migratedFromVersion{0};
+    ModRoutes routes{};
 
     bool load(std::string_view xml, Mode mode = Mode::Fx)
     {
-        return fromStateXml(xml, values, seed, mode, &migratedFromVersion);
+        return fromStateXml(xml, values, seed, routes, mode, &migratedFromVersion);
     }
 
     std::array<uint32_t, kParamCount> valueBits() const
@@ -354,12 +384,12 @@ struct Loaded
     bool sameAs(const Loaded &o) const
     {
         return valueBits() == o.valueBits() && seed == o.seed &&
-               migratedFromVersion == o.migratedFromVersion;
+               migratedFromVersion == o.migratedFromVersion && sameRoutes(routes, o.routes);
     }
     float operator[](ParamSlot s) const { return values[static_cast<size_t>(s)]; }
 };
 
-// Values, seed and migration report that differ from every load's result.
+// Values, seed, migration report and routes that differ from every load's result.
 Loaded distinct()
 {
     Loaded l;
@@ -377,11 +407,18 @@ Loaded distinct()
     }
     l.seed = 42;
     l.migratedFromVersion = 12345;
+    // Every slot in use, unlike any factory route.
+    for (size_t k = 0; k < kModSlots; ++k)
+    {
+        l.routes[k] = {
+            ModSource::Macro8,   2, ParamSlot::Pitch, 1, 0.125f * static_cast<float>(k + 1),
+            ModCurve::TopQuarter};
+    }
     return l;
 }
 
 // A state written by hand, the way PatchBase writes it: <p id> in decimal.
-std::string handState(std::string_view params, std::string_view version = "1",
+std::string handState(std::string_view params, std::string_view version = "2",
                       std::string_view extra = "")
 {
     std::string s = R"(<patch id="org.sethbc.giga-grains.patch" version=")";
@@ -607,9 +644,9 @@ TEST_CASE("the id table has the next free indices and the reserved blocks", "[co
 
 TEST_CASE("the state lists every param in slot order", "[core]")
 {
-    CHECK(gg::core::kPatchVersion == 1u);
-    const auto state = toStateXml(defaults(), 0);
-    CHECK(state.starts_with(R"(<patch id="org.sethbc.giga-grains.patch" version="1" )"));
+    CHECK(gg::core::kPatchVersion == 2u);
+    const auto state = toStateXml(defaults(), 0, kFxRoutes);
+    CHECK(state.starts_with(R"(<patch id="org.sethbc.giga-grains.patch" version="2" )"));
 
     // Each param once, in slot order, its id in decimal, with its float bits.
     size_t from = 0;
@@ -627,7 +664,10 @@ TEST_CASE("the state lists every param in slot order", "[core]")
         std::snprintf(bits, sizeof(bits), "%08x", static_cast<unsigned>(bitsOf(e.defaultVal)));
         CHECK(state.find(std::string(R"(bits=")") + bits + R"(")", at) < state.find("/>", at));
     }
-    CHECK(state.find(R"(<engine seed="0" />)") != std::string::npos);
+    // Then the engine seed, then the routes, and the end of the patch.
+    const auto engine = state.find(R"(</params><engine seed="0" /><mod><route slot="1" )");
+    REQUIRE(engine != std::string::npos);
+    CHECK(state.ends_with("</mod></patch>"));
 
     // The defaults load back as the defaults.
     Loaded l = distinct();
@@ -635,6 +675,7 @@ TEST_CASE("the state lists every param in slot order", "[core]")
     CHECK(l.valueBits() == Loaded{defaults(), 0, 0}.valueBits());
     CHECK(l.seed == 0u);
     CHECK(l.migratedFromVersion == 0u);
+    CHECK(sameRoutes(l.routes, kFxRoutes));
 }
 
 TEST_CASE("a param missing from a state takes the product's default", "[core]")
@@ -643,7 +684,7 @@ TEST_CASE("a param missing from a state takes the product's default", "[core]")
     ParamValues saved = defaults();
     saved[static_cast<size_t>(ParamSlot::Position)] = 0.7f;
     saved[static_cast<size_t>(ParamSlot::Size)] = -1.0f;
-    const auto full = toStateXml(saved, 4);
+    const auto full = toStateXml(saved, 4, kFxRoutes);
     const auto from = full.find(R"(<p id="65537" )");
     REQUIRE(from != std::string::npos);
     const auto to = full.find("/>", from);
@@ -693,7 +734,9 @@ TEST_CASE("a state saved before Space loads at the defaults", "[core][space]")
 
     // Into values that differ from every default, so each one is seen to be written. The ten it
     // names come back as written (the FX's defaults, Position included in either product); the
-    // eighteen it doesn't take the product's defaults. No migration: the version is still 1.
+    // others take the product's defaults. It is a version 1 state, so it migrates: the factory
+    // routes, and in the instrument its Macro 7, absent, is M1's default (0.5), which leaves
+    // Stereo where it was (spec §6.10).
     for (const Mode mode : {Mode::Fx, Mode::Instrument})
     {
         INFO((mode == Mode::Fx ? "fx" : "instrument"));
@@ -704,18 +747,22 @@ TEST_CASE("a state saved before Space loads at the defaults", "[core][space]")
         REQUIRE(l.load(kPreSpaceState, mode));
         CHECK(l.valueBits() == Loaded{want, 0, 0}.valueBits());
         CHECK(l.seed == 0u);
-        CHECK(l.migratedFromVersion == 0u);
+        CHECK(l.migratedFromVersion == 1u);
+        CHECK(sameRoutes(l.routes, factoryRoutes(mode)));
         for (size_t i = static_cast<size_t>(ParamSlot::Diffusion); i < kParamCount; ++i)
         {
             INFO("param " << kTable[i].name);
             CHECK(bitsOf(l.values[i]) == bitsOf(defaultIn(kTable[i], mode)));
         }
 
-        // Saving it writes today's state: the ten as they were, then the eighteen defaults.
-        const auto resaved = toStateXml(l.values, l.seed);
-        const auto oldParams = kPreSpaceState.substr(0, kPreSpaceState.find("</params>"));
+        // Saving it writes today's state, at version 2: the ten as they were, then the others'
+        // defaults, then the routes.
+        const auto resaved = toStateXml(l.values, l.seed, l.routes);
+        const auto oldParams =
+            replaceOnce(std::string(kPreSpaceState.substr(0, kPreSpaceState.find("</params>"))),
+                        R"(version="1")", R"(version="2")");
         CHECK(resaved.starts_with(oldParams));
-        CHECK(resaved == toStateXml(want, 0));
+        CHECK(resaved == toStateXml(want, 0, factoryRoutes(mode)));
     }
 }
 
@@ -748,7 +795,7 @@ TEST_CASE("a state saved before the Perform UI loads at the defaults", "[core]")
 
     // The eighteen come back as written; Texture and Feedback load at 0 and the macros at rest,
     // {0.5, 0.5, 0.5, 0.5, 0, 0, 0, 0.5}, in either product, and the rest at the product's
-    // defaults.
+    // defaults. A version 1 state, it migrates as kPreSpaceState does above.
     constexpr std::array<float, 10> kFxNew{0.f, 0.f, 0.5f, 0.5f, 0.5f, 0.5f, 0.f, 0.f, 0.f, 0.5f};
     for (const Mode mode : {Mode::Fx, Mode::Instrument})
     {
@@ -766,7 +813,8 @@ TEST_CASE("a state saved before the Perform UI loads at the defaults", "[core]")
         REQUIRE(l.load(kPrePerformState, mode));
         CHECK(l.valueBits() == Loaded{want, 0, 0}.valueBits());
         CHECK(l.seed == 0u);
-        CHECK(l.migratedFromVersion == 0u);
+        CHECK(l.migratedFromVersion == 1u);
+        CHECK(sameRoutes(l.routes, factoryRoutes(mode)));
 
         // As the PTCH chunk of a session state, as the plugins saved it, with no sample.
         const auto withOldPatch =
@@ -777,15 +825,19 @@ TEST_CASE("a state saved before the Perform UI loads at the defaults", "[core]")
         CHECK(Loaded{decoded.values, decoded.seed, 0}.valueBits() ==
               Loaded{want, 0, 0}.valueBits());
         CHECK(decoded.seed == 0u);
+        CHECK(sameRoutes(decoded.routes, factoryRoutes(mode)));
 
-        // Saving it writes today's state: the eighteen as they were, then the ten new defaults.
-        const auto resaved = toStateXml(l.values, l.seed);
-        const auto oldParams = kPrePerformState.substr(0, kPrePerformState.find("</params>"));
+        // Saving it writes today's state, at version 2: the eighteen as they were, then the
+        // others' defaults, then the routes.
+        const auto resaved = toStateXml(l.values, l.seed, l.routes);
+        const auto oldParams =
+            replaceOnce(std::string(kPrePerformState.substr(0, kPrePerformState.find("</params>"))),
+                        R"(version="1")", R"(version="2")");
         CHECK(resaved.starts_with(oldParams));
-        CHECK(resaved == toStateXml(want, 0));
+        CHECK(resaved == toStateXml(want, 0, factoryRoutes(mode)));
         if (mode == Mode::Fx)
         {
-            CHECK(resaved == toStateXml(defaults(), 0));
+            CHECK(resaved == toStateXml(defaults(), 0, kFxRoutes));
         }
     }
 }
@@ -977,7 +1029,8 @@ TEST_CASE("state round trips exactly", "[core]")
     size_t valuesChecked = 0;
     for (size_t r = 0; r < rounds.size(); ++r)
     {
-        const auto state = toStateXml(rounds[r], 0x0123456789abcdefull);
+        const auto &routes = r % 2 == 0 ? kFxRoutes : factoryRoutes(Mode::Instrument);
+        const auto state = toStateXml(rounds[r], 0x0123456789abcdefull, routes);
 
         Loaded loaded = distinct();
         REQUIRE(loaded.load(state));
@@ -994,8 +1047,9 @@ TEST_CASE("state round trips exactly", "[core]")
         }
         CHECK(loaded.seed == 0x0123456789abcdefull);
         CHECK(loaded.migratedFromVersion == 0u);
+        CHECK(sameRoutes(loaded.routes, routes));
         // Saving what was loaded writes the same state again.
-        CHECK(toStateXml(loaded.values, loaded.seed) == state);
+        CHECK(toStateXml(loaded.values, loaded.seed, loaded.routes) == state);
     }
     CHECK(valuesChecked == (kRandomRounds + 3) * kParamCount);
 }
@@ -1020,9 +1074,10 @@ TEST_CASE("both products' patches write the same state", "[core]")
         const uint64_t seed =
             gg::rng::hash({0x5eed'7e57'0000'0205ull, 0, 1, gg::rng::Field::SignalNoise, r});
         INFO("round " << r);
-        const std::string fx = gg::core::patchXml(v, seed, Mode::Fx);
-        REQUIRE(gg::core::patchXml(v, seed, Mode::Instrument) == fx);
-        REQUIRE(toStateXml(v, seed) == fx);
+        const auto &routes = r % 2 == 0 ? kFxRoutes : factoryRoutes(Mode::Instrument);
+        const std::string fx = gg::core::patchXml(v, seed, routes, Mode::Fx);
+        REQUIRE(gg::core::patchXml(v, seed, routes, Mode::Instrument) == fx);
+        REQUIRE(toStateXml(v, seed, routes) == fx);
     }
 }
 
@@ -1047,7 +1102,7 @@ TEST_CASE("state keeps values its 12-decimal text can't", "[core]")
         {
             saved[i] = std::clamp(t, kTable[i].minVal, kTable[i].maxVal);
         }
-        const auto state = toStateXml(saved, 0);
+        const auto state = toStateXml(saved, 0, kFxRoutes);
         Loaded loaded = distinct();
         REQUIRE(loaded.load(state));
         for (size_t i = 0; i < kParamCount; ++i)
@@ -1076,7 +1131,7 @@ TEST_CASE("state seed round trips at its extremes", "[core]")
         INFO("seed " << seed);
         Loaded loaded = distinct();
         loaded.seed = 7;
-        REQUIRE(loaded.load(toStateXml(defaults(), seed)));
+        REQUIRE(loaded.load(toStateXml(defaults(), seed, kFxRoutes)));
         CHECK(loaded.seed == seed);
     }
 }
@@ -1085,7 +1140,7 @@ TEST_CASE("patch rejects or sanitizes bad state", "[core]")
 {
     const Loaded source = distinct();
     const uint64_t sourceSeed = 0x0123456789abcdefull;
-    const auto good = toStateXml(source.values, sourceSeed);
+    const auto good = toStateXml(source.values, sourceSeed, source.routes);
 
     Loaded p = distinct();
     const Loaded before = distinct();
@@ -1149,8 +1204,8 @@ TEST_CASE("patch rejects or sanitizes bad state", "[core]")
             R"(<patch id="org.sethbc.giga-grains.patch" version="1" name="Hand"></patch>)";
         for (const std::string &bad :
              {std::string{}, std::string{"garbage"}, std::string{"<preset/>"},
-              replaceOnce(good, R"(version="1")", ""),
-              replaceOnce(good, R"(version="1")", R"(version="one")"), noParams})
+              replaceOnce(good, R"(version="2")", ""),
+              replaceOnce(good, R"(version="2")", R"(version="one")"), noParams})
         {
             INFO("state '" << bad << "'");
             CHECK_FALSE(p.load(bad));
@@ -1167,6 +1222,7 @@ TEST_CASE("patch rejects or sanitizes bad state", "[core]")
         REQUIRE(p.load(withUnknown));
         CHECK(p.valueBits() == source.valueBits());
         CHECK(p.seed == sourceSeed);
+        CHECK(sameRoutes(p.routes, source.routes));
     }
 
     SECTION("out-of-range and non-numeric values are clamped or ignored")
@@ -1185,10 +1241,12 @@ TEST_CASE("patch rejects or sanitizes bad state", "[core]")
         CHECK((mix == 0.5f || mix == 0.f || mix == 1.f));
         const float distribution = p[ParamSlot::Distribution];
         CHECK((distribution == 0.5f || distribution == 1.f));
-        // Params the state doesn't mention take their defaults.
+        // Params the state doesn't mention take their defaults, and with no <mod> every slot is
+        // empty.
         CHECK(p[ParamSlot::Density] == 4.0f);
         CHECK(p.seed == 0u);
         CHECK(p.migratedFromVersion == 0u);
+        CHECK(sameRoutes(p.routes, ModRoutes{}));
     }
 
     SECTION("float bits that disagree with v are ignored")
@@ -1206,11 +1264,12 @@ TEST_CASE("patch rejects or sanitizes bad state", "[core]")
 
     SECTION("a newer version loads through the migration hooks")
     {
-        auto newer = replaceOnce(good, R"(version="1")", R"(version="99")");
+        auto newer = replaceOnce(good, R"(version="2")", R"(version="99")");
         REQUIRE(p.load(newer));
         CHECK(p.migratedFromVersion == 99u);
         CHECK(p.valueBits() == source.valueBits());
         CHECK(p.seed == sourceSeed);
+        CHECK(sameRoutes(p.routes, source.routes));
 
         // The next load at the current version needs no migration.
         REQUIRE(p.load(good));
@@ -1230,7 +1289,7 @@ TEST_CASE("patch rejects or sanitizes bad state", "[core]")
         {
             INFO("engine element " << bad);
             p.seed = 9;
-            REQUIRE(p.load(handState(R"(<p id="1" v="0.25" />)", "1", bad)));
+            REQUIRE(p.load(handState(R"(<p id="1" v="0.25" />)", "2", bad)));
             CHECK(p.seed == 0u);
         }
     }
@@ -1239,8 +1298,644 @@ TEST_CASE("patch rejects or sanitizes bad state", "[core]")
     {
         ParamValues values{};
         uint64_t seed = 5;
-        REQUIRE(fromStateXml(good, values, seed, Mode::Fx));
+        ModRoutes routes{};
+        REQUIRE(fromStateXml(good, values, seed, routes, Mode::Fx));
         CHECK(seed == sourceSeed);
         CHECK(values[0] == source.values[0]);
+        CHECK(sameRoutes(routes, source.routes));
+    }
+}
+
+// ---- Patch version 2: the routes, and the migration from version 1 (M2 sub-project 1's spec
+// §6.10).
+
+namespace
+{
+/// A float's bits as PatchBase's states write them: 8 lowercase hex digits.
+std::string hexBits(float f)
+{
+    char text[9];
+    std::snprintf(text, sizeof(text), "%08x", static_cast<unsigned>(bitsOf(f)));
+    return text;
+}
+
+// An M1 FX state at the FX's defaults, as toStateXml wrote it at 1f8cb33 (version 1, the 28 M1
+// params in slot order, no <mod>), written by hand in that form: the defaults' v texts and bits
+// as kPrePerformState has them, then Texture, Feedback and the macros at rest.
+constexpr std::string_view kM1FxState =
+    R"(<patch id="org.sethbc.giga-grains.patch" version="1" name="Init"><params>)"
+    R"(<p id="1" v="0.500000000000" bits="3f000000" />)"
+    R"(<p id="2" v="0.000000000000" bits="00000000" />)"
+    R"(<p id="65537" v="0.289676576853" bits="3e94507d" />)"
+    R"(<p id="65538" v="-2.736965656281" bits="c02f2a72" />)"
+    R"(<p id="65539" v="4.000000000000" bits="40800000" />)"
+    R"(<p id="65540" v="0.500000000000" bits="3f000000" />)"
+    R"(<p id="65541" v="0.000000000000" bits="00000000" />)"
+    R"(<p id="65542" v="0.360330373049" bits="3eb87d39" />)"
+    R"(<p id="65543" v="0.500000000000" bits="3f000000" />)"
+    R"(<p id="65544" v="0.000000000000" bits="00000000" />)"
+    R"(<p id="65547" v="0.000000000000" bits="00000000" />)"
+    R"(<p id="3" v="0.000000000000" bits="00000000" />)"
+    R"(<p id="4" v="1.000000000000" bits="3f800000" />)"
+    R"(<p id="5" v="0.500000000000" bits="3f000000" />)"
+    R"(<p id="6" v="0.300000011921" bits="3e99999a" />)"
+    R"(<p id="7" v="0.000000000000" bits="00000000" />)"
+    R"(<p id="8" v="0.250000000000" bits="3e800000" />)"
+    R"(<p id="9" v="0.000000000000" bits="00000000" />)"
+    R"(<p id="65545" v="0.000000000000" bits="00000000" />)"
+    R"(<p id="65546" v="0.000000000000" bits="00000000" />)"
+    R"(<p id="17" v="0.500000000000" bits="3f000000" />)"
+    R"(<p id="18" v="0.500000000000" bits="3f000000" />)"
+    R"(<p id="19" v="0.500000000000" bits="3f000000" />)"
+    R"(<p id="20" v="0.500000000000" bits="3f000000" />)"
+    R"(<p id="21" v="0.000000000000" bits="00000000" />)"
+    R"(<p id="22" v="0.000000000000" bits="00000000" />)"
+    R"(<p id="23" v="0.000000000000" bits="00000000" />)"
+    R"(<p id="24" v="0.500000000000" bits="3f000000" />)"
+    R"(</params><engine seed="0" /></patch>)";
+
+// An M1 instrument state in the same form: the instrument's M1 defaults (Position 0), but Stereo
+// (65543) at 0.3 and Macro 7 (23, M1's Macro Stereo) at 0.8, and seed 7.
+constexpr std::string_view kM1InstrumentState =
+    R"(<patch id="org.sethbc.giga-grains.patch" version="1" name="Init"><params>)"
+    R"(<p id="1" v="0.500000000000" bits="3f000000" />)"
+    R"(<p id="2" v="0.000000000000" bits="00000000" />)"
+    R"(<p id="65537" v="0.000000000000" bits="00000000" />)"
+    R"(<p id="65538" v="-2.736965656281" bits="c02f2a72" />)"
+    R"(<p id="65539" v="4.000000000000" bits="40800000" />)"
+    R"(<p id="65540" v="0.500000000000" bits="3f000000" />)"
+    R"(<p id="65541" v="0.000000000000" bits="00000000" />)"
+    R"(<p id="65542" v="0.360330373049" bits="3eb87d39" />)"
+    R"(<p id="65543" v="0.300000011921" bits="3e99999a" />)"
+    R"(<p id="65544" v="0.000000000000" bits="00000000" />)"
+    R"(<p id="65547" v="0.000000000000" bits="00000000" />)"
+    R"(<p id="3" v="0.000000000000" bits="00000000" />)"
+    R"(<p id="4" v="1.000000000000" bits="3f800000" />)"
+    R"(<p id="5" v="0.500000000000" bits="3f000000" />)"
+    R"(<p id="6" v="0.300000011921" bits="3e99999a" />)"
+    R"(<p id="7" v="0.000000000000" bits="00000000" />)"
+    R"(<p id="8" v="0.250000000000" bits="3e800000" />)"
+    R"(<p id="9" v="0.000000000000" bits="00000000" />)"
+    R"(<p id="65545" v="0.000000000000" bits="00000000" />)"
+    R"(<p id="65546" v="0.000000000000" bits="00000000" />)"
+    R"(<p id="17" v="0.500000000000" bits="3f000000" />)"
+    R"(<p id="18" v="0.500000000000" bits="3f000000" />)"
+    R"(<p id="19" v="0.500000000000" bits="3f000000" />)"
+    R"(<p id="20" v="0.500000000000" bits="3f000000" />)"
+    R"(<p id="21" v="0.000000000000" bits="00000000" />)"
+    R"(<p id="22" v="0.000000000000" bits="00000000" />)"
+    R"(<p id="23" v="0.800000011921" bits="3f4ccccd" />)"
+    R"(<p id="24" v="0.500000000000" bits="3f000000" />)"
+    R"(</params><engine seed="7" /></patch>)";
+
+/// The instrument's M1 fold of Macro 7 (Macro Stereo) into Stereo, in the spec's float
+/// expression and order.
+float foldedStereo(float stereo, float macro7)
+{
+    return std::clamp(stereo + 0.5f * (2.0f * macro7 - 1.0f), 0.0f, 1.0f);
+}
+
+/// The slots a route may target (isValidTarget), in slot order.
+std::vector<ParamSlot> validTargets()
+{
+    std::vector<ParamSlot> t;
+    for (size_t i = 0; i < kParamCount; ++i)
+    {
+        if (gg::core::isValidTarget(static_cast<ParamSlot>(i)))
+        {
+            t.push_back(static_cast<ParamSlot>(i));
+        }
+    }
+    return t;
+}
+
+/// 48 routes, every slot in use, drawn from the engine's RNG: any source, curve and valid target,
+/// every layer choice, and depths that the 12-decimal text can't hold among them.
+ModRoutes randomRoutes(uint64_t round)
+{
+    static const std::vector<ParamSlot> targets = validTargets();
+    constexpr std::array<float, 8> kSpecial{-0.0f,
+                                            0.0f,
+                                            std::numeric_limits<float>::denorm_min(),
+                                            -1.2345678e-7f,
+                                            std::numeric_limits<float>::max(),
+                                            std::numeric_limits<float>::lowest(),
+                                            72.0f,
+                                            -0.001f};
+    const auto draw = [round](uint32_t field, uint64_t k) {
+        return gg::rng::hash(
+            {0x5eed'7e57'0000'0009ull + round, 0, field, gg::rng::Field::SignalNoise, k});
+    };
+    constexpr std::array<uint8_t, 5> kSourceLayers{0, 1, 2, 3, kSameLayer};
+    constexpr std::array<uint8_t, 5> kTargetLayers{0, 1, 2, 3, kAllLayers};
+    ModRoutes r{};
+    for (uint64_t k = 0; k < kModSlots; ++k)
+    {
+        ModRoute &route = r[k];
+        route.source =
+            static_cast<ModSource>(1 + draw(0, k) % (static_cast<uint64_t>(ModSource::Count) - 1));
+        route.sourceLayer = kSourceLayers[draw(1, k) % kSourceLayers.size()];
+        route.target = targets[draw(2, k) % targets.size()];
+        route.targetLayer = kTargetLayers[draw(3, k) % kTargetLayers.size()];
+        route.curve = static_cast<ModCurve>(draw(4, k) % static_cast<uint64_t>(ModCurve::Count));
+        route.depth = k < kSpecial.size() ? kSpecial[k] : randomIn(-100.0f, 100.0f, draw(5, k));
+    }
+    return r;
+}
+
+/// A <route> element with these attributes, in this order.
+std::string routeXml(const std::vector<std::pair<std::string, std::string>> &attributes)
+{
+    std::string s = "<route";
+    for (const auto &[name, value] : attributes)
+    {
+        s += " " + name + "=\"" + value + "\"";
+    }
+    return s + " />";
+}
+
+/// The attributes of a good route in slot 5: LFO 1 on layer B, to Pitch on layer C, depth -2.5,
+/// UnipolarSquared.
+std::vector<std::pair<std::string, std::string>> slot5Attributes()
+{
+    return {{"slot", "5"},        {"source", "LFO 1"},         {"sourceLayer", "B"},
+            {"target", "65541"},  {"targetLayer", "C"},        {"depth", "-2.500000000000"},
+            {"bits", "c0200000"}, {"curve", "UnipolarSquared"}};
+}
+const ModRoute kSlot5Route{ModSource::Lfo1,          1, ParamSlot::Pitch, 2, -2.5f,
+                           ModCurve::UnipolarSquared};
+
+/// Three routes, in slots 1 to 3.
+ModRoutes threeRoutes()
+{
+    ModRoutes r{};
+    r[0] = {ModSource::Macro1, kSameLayer, ParamSlot::Size, kAllLayers, 3.0f, ModCurve::Bipolar};
+    r[1] = {ModSource::Lfo2, 3, ParamSlot::Density, 0, -1.5f, ModCurve::Unipolar};
+    r[2] = {ModSource::ModWheel, kSameLayer, ParamSlot::Mix,
+            kAllLayers,          0.25f,      ModCurve::BipolarPositive};
+    return r;
+}
+
+/// One second of the instrument over a mono noise sample, one note held from sample 0, with
+/// every base value set to `values` and a modulation of `stereoMod` on Stereo from sample 0.
+struct InstrumentRender
+{
+    std::vector<float> left, right;
+    float effectiveStereo{0.0f};
+};
+InstrumentRender renderInstrument(const ParamValues &values, float stereoMod)
+{
+    constexpr double kRate = 48000.0;
+    constexpr int64_t kFrames = 48000;
+    auto buffer = std::make_shared<gg::SampleBuffer>(1, kFrames, kRate);
+    for (int64_t i = 0; i < kFrames; ++i)
+    {
+        const double u = gg::rng::uniform01(
+            gg::rng::hash({0x5eed'7e57'0000'0019ull, 0, 0, gg::rng::Field::SignalNoise,
+                           static_cast<uint64_t>(i)}));
+        buffer->channel(0)[i] = static_cast<float>(0.5 * (2.0 * u - 1.0));
+    }
+    gg::core::Processor p({kRate, 512, 42, Mode::Instrument});
+    p.setSourceNow(gg::PreparedSource::make(std::move(buffer)));
+    for (size_t i = 0; i < kParamCount; ++i)
+    {
+        p.setBase(static_cast<ParamSlot>(i), values[i]);
+    }
+    InstrumentRender r;
+    r.left.assign(static_cast<size_t>(kFrames), 0.0f);
+    r.right.assign(static_cast<size_t>(kFrames), 0.0f);
+    const gg::core::NoteEvent on{0, gg::core::NoteEventType::On, 0, 60};
+    const gg::core::ParamEvent mod{0, ParamSlot::Stereo, true, static_cast<double>(stereoMod)};
+    for (int64_t done = 0; done < kFrames;)
+    {
+        const auto n = static_cast<uint32_t>(std::min<int64_t>(512, kFrames - done));
+        float *out[2] = {r.left.data() + done, r.right.data() + done};
+        const bool first = done == 0;
+        p.process(nullptr, 0, out, 2, n,
+                  first && stereoMod != 0.0f ? std::span(&mod, 1)
+                                             : std::span<const gg::core::ParamEvent>{},
+                  first ? std::span(&on, 1) : std::span<const gg::core::NoteEvent>{});
+        done += n;
+    }
+    r.effectiveStereo = p.effective(ParamSlot::Stereo);
+    return r;
+}
+
+bool sameSamples(const std::vector<float> &a, const std::vector<float> &b)
+{
+    return a.size() == b.size() && std::memcmp(a.data(), b.data(), a.size() * sizeof(float)) == 0;
+}
+} // namespace
+
+TEST_CASE("routes round-trip through the patch", "[core]")
+{
+    // 100 rounds of 48 routes, every slot in use, in either product: each comes back as written,
+    // its depth bit for bit, and saving what was loaded writes the same state again.
+    for (uint64_t round = 0; round < 100; ++round)
+    {
+        INFO("round " << round);
+        const ModRoutes routes = randomRoutes(round);
+        for (const ModRoute &route : routes)
+        {
+            REQUIRE(gg::core::isSavableRoute(route));
+        }
+        const auto state = toStateXml(defaults(), round, routes);
+        for (const Mode mode : {Mode::Fx, Mode::Instrument})
+        {
+            Loaded l = distinct();
+            REQUIRE(l.load(state, mode));
+            CHECK(l.migratedFromVersion == 0u);
+            CHECK(sameRoutes(l.routes, routes));
+            CHECK(toStateXml(l.values, l.seed, l.routes) == state);
+        }
+    }
+
+    SECTION("empty slots are left out, and a route it can't write is left out with them")
+    {
+        ModRoutes routes = threeRoutes();
+        routes[47] = kSlot5Route;
+        ModRoutes unsavable = routes;
+        unsavable[10] = {ModSource::Count, kSameLayer, ParamSlot::Size,
+                         kAllLayers,       1.0f,       ModCurve::Bipolar};
+        unsavable[11] = {ModSource::Macro1, kSameLayer, ParamSlot::Macro2,
+                         kAllLayers,        1.0f,       ModCurve::Bipolar};
+        unsavable[12] = {ModSource::Macro1, kSameLayer, ParamSlot::B_Size,
+                         kAllLayers,        1.0f,       ModCurve::Bipolar};
+        unsavable[13] = {ModSource::Macro1, kAllLayers, ParamSlot::Size,
+                         kAllLayers,        1.0f,       ModCurve::Bipolar};
+        unsavable[14] = {ModSource::Macro1, kSameLayer, ParamSlot::Size,
+                         kSameLayer,        1.0f,       ModCurve::Bipolar};
+        unsavable[15] = {ModSource::Macro1,
+                         kSameLayer,
+                         ParamSlot::Size,
+                         kAllLayers,
+                         std::numeric_limits<float>::quiet_NaN(),
+                         ModCurve::Bipolar};
+        unsavable[16] = {ModSource::Macro1,
+                         kSameLayer,
+                         ParamSlot::Size,
+                         kAllLayers,
+                         std::numeric_limits<float>::infinity(),
+                         ModCurve::Bipolar};
+        unsavable[17] = {ModSource::Macro1, kSameLayer, ParamSlot::Size,
+                         kAllLayers,        1.0f,       ModCurve::Count};
+        unsavable[18] = {ModSource::Macro1, 4,    ParamSlot::Size,
+                         kAllLayers,        1.0f, ModCurve::Bipolar};
+        unsavable[19] = {ModSource::Macro1, kSameLayer, ParamSlot::Count,
+                         kAllLayers,        1.0f,       ModCurve::Bipolar};
+        for (size_t k = 10; k < 20; ++k)
+        {
+            INFO("slot " << k + 1);
+            CHECK_FALSE(gg::core::isSavableRoute(unsavable[k]));
+        }
+
+        const auto state = toStateXml(defaults(), 0, routes);
+        CHECK(toStateXml(defaults(), 0, unsavable) == state);
+        size_t written = 0;
+        for (size_t at = state.find("<route "); at != std::string::npos;
+             at = state.find("<route ", at + 1))
+        {
+            ++written;
+        }
+        CHECK(written == 4);
+        CHECK(state.find(R"(<route slot="48" )") != std::string::npos);
+
+        Loaded l = distinct();
+        REQUIRE(l.load(state));
+        CHECK(sameRoutes(l.routes, routes));
+
+        // With every slot empty, <mod> is empty.
+        CHECK(toStateXml(defaults(), 0, ModRoutes{})
+                  .ends_with(R"(<engine seed="0" /><mod /></patch>)"));
+    }
+}
+
+TEST_CASE("a route's target is saved by its CLAP ID", "[core]")
+{
+    // Names aren't frozen, IDs are (INTENT §18): a route names its target by the slot's CLAP ID
+    // in decimal, as <p id> does, so a renamed parameter never breaks a saved route.
+    ModRoutes routes{};
+    routes[0] = {ModSource::Macro1, kSameLayer, ParamSlot::Size,
+                 kAllLayers,        3.0f,       ModCurve::Bipolar};
+    routes[1] = {ModSource::Velocity, kSameLayer, ParamSlot::Level, 2, 6.0f, ModCurve::Unipolar};
+    routes[2] = {ModSource::Key, kSameLayer, ParamSlot::LayerAOn, 3, 1.0f, ModCurve::Unipolar};
+    routes[3] = {ModSource::Macro8, kSameLayer, ParamSlot::Mix,
+                 kAllLayers,        0.5f,       ModCurve::Bipolar};
+    const auto state = toStateXml(defaults(), 0, routes);
+    CHECK(state.find(
+              R"(<mod><route slot="1" source="Macro 1" sourceLayer="same" target="65538" )"
+              R"(targetLayer="all" depth="3.000000000000" bits="40400000" curve="Bipolar" />)") !=
+          std::string::npos);
+    CHECK(state.find(R"(<route slot="2" source="Velocity" sourceLayer="same" target="2" )"
+                     R"(targetLayer="C" )") != std::string::npos);
+    CHECK(state.find(R"(<route slot="3" source="Key" sourceLayer="same" target="27" )"
+                     R"(targetLayer="D" )") != std::string::npos);
+    CHECK(state.find(R"(<route slot="4" source="Macro 8" sourceLayer="same" target="1" )") !=
+          std::string::npos);
+    // No parameter's name is written.
+    CHECK(state.find("Size") == std::string::npos);
+    CHECK(state.find("Level") == std::string::npos);
+
+    // A route written by hand for 65538 is A Size, whatever its name.
+    const auto hand =
+        handState("", "2",
+                  R"(<mod><route slot="7" source="Env 2" sourceLayer="A" target="65538" )"
+                  R"(targetLayer="B" depth="-1.000000000000" bits="bf800000" curve="TopQuarter" />)"
+                  R"(</mod>)");
+    Loaded l = distinct();
+    REQUIRE(l.load(hand));
+    ModRoutes want{};
+    want[6] = {ModSource::Env2, 0, ParamSlot::Size, 1, -1.0f, ModCurve::TopQuarter};
+    CHECK(sameRoutes(l.routes, want));
+    CHECK(l.routes[6].target == ParamSlot::Size);
+    CHECK(gg::core::paramId(l.routes[6].target) == 0x010002u);
+}
+
+TEST_CASE("a version 1 FX state migrates to the factory routes", "[core]")
+{
+    // The literal state's bits are the floats' (std::bit_cast).
+    REQUIRE(hexBits(0.5f) == "3f000000");
+    REQUIRE(hexBits(0.28967658f) == "3e94507d");
+    REQUIRE(hexBits(-2.736965594166206f) == "c02f2a72");
+    REQUIRE(hexBits(0.36033038f) == "3eb87d39");
+    REQUIRE(hexBits(0.3f) == "3e99999a");
+    REQUIRE(hexBits(0.8f) == "3f4ccccd");
+
+    Loaded l = distinct();
+    REQUIRE(l.load(kM1FxState, Mode::Fx));
+    CHECK(l.migratedFromVersion == 1u);
+    CHECK(sameRoutes(l.routes, factoryRoutes(Mode::Fx)));
+    // Every value as before: the 28 as saved (the FX's defaults) and M2's at their defaults.
+    CHECK(l.valueBits() == Loaded{defaults(Mode::Fx), 0, 0}.valueBits());
+    CHECK(l.seed == 0u);
+
+    // The FX's Macro 7 was Macro Feedback in M1 already: untouched, and so is Stereo.
+    std::string withMacro7(kM1FxState);
+    withMacro7 = replaceOnce(withMacro7, R"(<p id="23" v="0.000000000000" bits="00000000" />)",
+                             R"(<p id="23" v="0.800000011921" bits="3f4ccccd" />)");
+    withMacro7 = replaceOnce(withMacro7, R"(<p id="65543" v="0.500000000000" bits="3f000000" />)",
+                             R"(<p id="65543" v="0.300000011921" bits="3e99999a" />)");
+    Loaded m = distinct();
+    REQUIRE(m.load(withMacro7, Mode::Fx));
+    CHECK(bitsOf(m[ParamSlot::Macro7]) == bitsOf(0.8f));
+    CHECK(bitsOf(m[ParamSlot::Stereo]) == bitsOf(0.3f));
+    CHECK(sameRoutes(m.routes, factoryRoutes(Mode::Fx)));
+
+    // Any <mod> in a version 1 state is ignored: the migration decides version 1's routes.
+    Loaded withMod = distinct();
+    REQUIRE(
+        withMod.load(replaceOnce(std::string(kM1FxState), "</patch>",
+                                 routeXml(slot5Attributes()).insert(0, "<mod>") + "</mod></patch>"),
+                     Mode::Fx));
+    CHECK(sameRoutes(withMod.routes, factoryRoutes(Mode::Fx)));
+}
+
+TEST_CASE("a version 1 instrument state folds Macro 7 into Stereo", "[core]")
+{
+    Loaded l = distinct();
+    REQUIRE(l.load(kM1InstrumentState, Mode::Instrument));
+    CHECK(l.migratedFromVersion == 1u);
+    CHECK(l.seed == 7u);
+    CHECK(sameRoutes(l.routes, factoryRoutes(Mode::Instrument)));
+
+    // Stereo's base takes Macro 7's M1 recipe, bit for bit; Macro 7 (Macro Feedback now) rests
+    // at 0; every other value is as saved, or M2's default.
+    const float folded = foldedStereo(0.3f, 0.8f);
+    CHECK(folded > 0.59f);
+    CHECK(folded < 0.61f);
+    ParamValues want = defaults(Mode::Instrument);
+    want[static_cast<size_t>(ParamSlot::Stereo)] = folded;
+    want[static_cast<size_t>(ParamSlot::Macro7)] = 0.0f;
+    CHECK(bitsOf(l[ParamSlot::Stereo]) == bitsOf(folded));
+    CHECK(bitsOf(l[ParamSlot::Macro7]) == bitsOf(0.0f));
+    CHECK(l.valueBits() == Loaded{want, 0, 0}.valueBits());
+
+    // The fold clamps to Stereo's range, 0 to 1.
+    const auto withValues = [](std::string_view stereo, std::string_view macro7) {
+        std::string s(kM1InstrumentState);
+        s = replaceOnce(s, R"(<p id="65543" v="0.300000011921" bits="3e99999a" />)", stereo);
+        s = replaceOnce(s, R"(<p id="23" v="0.800000011921" bits="3f4ccccd" />)", macro7);
+        return s;
+    };
+    Loaded high = distinct();
+    REQUIRE(high.load(withValues(R"(<p id="65543" v="0.900000000000" />)",
+                                 R"(<p id="23" v="1.000000000000" bits="3f800000" />)"),
+                      Mode::Instrument));
+    CHECK(high[ParamSlot::Stereo] == 1.0f);
+    CHECK(high[ParamSlot::Macro7] == 0.0f);
+    Loaded low = distinct();
+    REQUIRE(low.load(withValues(R"(<p id="65543" v="0.100000000000" />)",
+                                R"(<p id="23" v="0.000000000000" bits="00000000" />)"),
+                     Mode::Instrument));
+    CHECK(low[ParamSlot::Stereo] == 0.0f);
+
+    // A state with no Macro 7 (saved before the Perform UI) folds M1's default for it, 0.5,
+    // which leaves Stereo exactly where it was; so does a NaN, which M1 loaded as its default.
+    // Out-of-range values are clamped first, as M1 loaded them.
+    Loaded absent = distinct();
+    REQUIRE(absent.load(withValues(R"(<p id="65543" v="0.300000011921" bits="3e99999a" />)", ""),
+                        Mode::Instrument));
+    CHECK(bitsOf(absent[ParamSlot::Stereo]) == bitsOf(0.3f));
+    CHECK(absent[ParamSlot::Macro7] == 0.0f);
+    Loaded nan = distinct();
+    REQUIRE(nan.load(withValues(R"(<p id="65543" v="0.300000011921" bits="3e99999a" />)",
+                                R"(<p id="23" v="nan" bits="7fc00000" />)"),
+                     Mode::Instrument));
+    CHECK(bitsOf(nan[ParamSlot::Stereo]) == bitsOf(0.3f));
+    CHECK(nan[ParamSlot::Macro7] == 0.0f);
+    Loaded over = distinct();
+    REQUIRE(over.load(withValues(R"(<p id="65543" v="1.5" />)", R"(<p id="23" v="-3" />)"),
+                      Mode::Instrument));
+    CHECK(bitsOf(over[ParamSlot::Stereo]) == bitsOf(foldedStereo(1.0f, 0.0f)));
+
+    // At version 2 nothing folds: Macro 7 is Macro Feedback.
+    Loaded v2 = distinct();
+    REQUIRE(
+        v2.load(replaceOnce(std::string(kM1InstrumentState), R"(version="1")", R"(version="2")"),
+                Mode::Instrument));
+    CHECK(v2.migratedFromVersion == 0u);
+    CHECK(bitsOf(v2[ParamSlot::Stereo]) == bitsOf(0.3f));
+    CHECK(bitsOf(v2[ParamSlot::Macro7]) == bitsOf(0.8f));
+    CHECK(sameRoutes(v2.routes, ModRoutes{}));
+}
+
+TEST_CASE("the render after the migration is bit for bit the M1 render", "[core]")
+{
+    // M1 rendered kM1InstrumentState with its values as saved and its Macro 7's recipe, Macro
+    // Stereo's offset 0.5 × (2v − 1) on Stereo (M1's macroOffsets). With Macro 4 at rest that
+    // offset was Stereo's whole macro offset, added after the base exactly as a modulation is, so
+    // a modulation of it stands in for M1's recipe here. Macro 7 at 0.8 now drives Feedback,
+    // which does nothing in the instrument on a Sample layer. The migrated state, with that
+    // offset in Stereo's base and Macro 7 at 0, must render the same bytes.
+    Loaded migrated = distinct();
+    REQUIRE(migrated.load(kM1InstrumentState, Mode::Instrument));
+    ParamValues m1 = defaults(Mode::Instrument);
+    m1[static_cast<size_t>(ParamSlot::Stereo)] = 0.3f;
+    m1[static_cast<size_t>(ParamSlot::Macro7)] = 0.8f;
+    const float m1Offset = 0.5f * (2.0f * 0.8f - 1.0f);
+
+    const InstrumentRender after = renderInstrument(migrated.values, 0.0f);
+    const InstrumentRender before = renderInstrument(m1, m1Offset);
+    const float peak =
+        *std::max_element(after.left.begin(), after.left.end(),
+                          [](float a, float b) { return std::fabs(a) < std::fabs(b); });
+    REQUIRE(std::fabs(peak) > 0.01f);
+    CHECK(bitsOf(after.effectiveStereo) == bitsOf(before.effectiveStereo));
+    CHECK(bitsOf(after.effectiveStereo) == bitsOf(foldedStereo(0.3f, 0.8f)));
+    CHECK(sameSamples(after.left, before.left));
+    CHECK(sameSamples(after.right, before.right));
+
+    // Stereo matters to this render: without Macro 7's offset it differs.
+    const InstrumentRender unfolded = renderInstrument(m1, 0.0f);
+    CHECK_FALSE(
+        (sameSamples(unfolded.left, after.left) && sameSamples(unfolded.right, after.right)));
+}
+
+TEST_CASE("a malformed route loads as an empty slot", "[core]")
+{
+    const ModRoutes three = threeRoutes();
+    const auto good = toStateXml(defaults(), 9, three);
+    const auto withRoute = [&good](const std::string &route) {
+        return replaceOnce(good, "</mod>", route + "</mod>");
+    };
+
+    // The good route in slot 5 loads (the control), its depth from `bits`, or from `depth` when
+    // `bits` is malformed or disagrees.
+    ModRoutes withSlot5 = three;
+    withSlot5[4] = kSlot5Route;
+    {
+        Loaded l = distinct();
+        REQUIRE(l.load(withRoute(routeXml(slot5Attributes()))));
+        CHECK(sameRoutes(l.routes, withSlot5));
+        for (const std::string bits : {"zz", "3f800000", "c020000", ""})
+        {
+            INFO("bits " << bits);
+            auto a = slot5Attributes();
+            a[6].second = bits;
+            REQUIRE(l.load(withRoute(routeXml(a))));
+            CHECK(sameRoutes(l.routes, withSlot5));
+        }
+    }
+
+    // One attribute changed, or left out: that route alone is an empty slot, and the load goes
+    // on.
+    const std::vector<std::pair<std::string, std::vector<std::string>>> bad{
+        {"slot", {"0", "49", "-1", "x", "", "4.5", "1e1", "5x", "4294967301"}},
+        {"source", {"Nope", "macro 1", "LFO1", ""}},
+        {"sourceLayer", {"E", "b", "all", "1", ""}},
+        {"target",
+         {"abc", "", "999999", "131074", "65551", "23", "65538x", "-65538", "0x10002",
+          "4294967295"}},
+        {"targetLayer", {"E", "c", "same", "2", ""}},
+        {"depth", {"x", "nan", "inf", "-inf", "", "1e999"}},
+        {"curve", {"Nope", "bipolar", "Count", ""}},
+    };
+    for (const auto &[name, values] : bad)
+    {
+        const auto attributes = slot5Attributes();
+        const auto at = std::find_if(attributes.begin(), attributes.end(),
+                                     [&name](const auto &a) { return a.first == name; });
+        REQUIRE(at != attributes.end());
+        std::vector<std::vector<std::pair<std::string, std::string>>> variants;
+        for (const auto &v : values)
+        {
+            auto a = attributes;
+            a[static_cast<size_t>(at - attributes.begin())].second = v;
+            variants.push_back(a);
+        }
+        auto missing = attributes;
+        missing.erase(missing.begin() + (at - attributes.begin()));
+        variants.push_back(missing);
+        for (const auto &a : variants)
+        {
+            const auto route = routeXml(a);
+            INFO("route " << route);
+            Loaded l = distinct();
+            REQUIRE(l.load(withRoute(route)));
+            CHECK(sameRoutes(l.routes, three));
+            CHECK(l.migratedFromVersion == 0u);
+            CHECK(l.seed == 9u);
+        }
+    }
+
+    // Slot 48 is the last: it loads.
+    {
+        auto a = slot5Attributes();
+        a[0].second = "48";
+        ModRoutes want = three;
+        want[47] = kSlot5Route;
+        Loaded l = distinct();
+        REQUIRE(l.load(withRoute(routeXml(a))));
+        CHECK(sameRoutes(l.routes, want));
+    }
+
+    // Of two routes naming one slot, the later wins.
+    {
+        auto a = slot5Attributes();
+        a[0].second = "2";
+        ModRoutes later = three;
+        later[1] = kSlot5Route;
+        Loaded l = distinct();
+        REQUIRE(l.load(withRoute(routeXml(a))));
+        CHECK(sameRoutes(l.routes, later));
+        REQUIRE(l.load(replaceOnce(good, "<mod>", "<mod>" + routeXml(a))));
+        CHECK(sameRoutes(l.routes, three));
+        // A later route that is malformed still names its slot: it leaves it empty.
+        a[1].second = "Nope";
+        ModRoutes emptied = three;
+        emptied[1] = {};
+        REQUIRE(l.load(withRoute(routeXml(a))));
+        CHECK(sameRoutes(l.routes, emptied));
+    }
+}
+
+TEST_CASE("a version 3 state with an extra element loads", "[core]")
+{
+    // A newer version loads through PatchBase's newer-version path (spec §6.10): an element this
+    // build doesn't know, unknown attributes on a <route> and unknown elements inside <mod> are
+    // ignored, and the rest loads.
+    Loaded source = distinct();
+    for (size_t i = 0; i < kParamCount; ++i)
+    {
+        source.values[i] = randomIn(kTable[i].minVal, kTable[i].maxVal, 0x93'0000ull + i);
+    }
+    source.routes = randomRoutes(1234);
+    source.routes[20] = {}; // an empty slot among them
+    const auto good = toStateXml(source.values, 77, source.routes);
+    auto newer = replaceOnce(good, R"(version="2")", R"(version="3")");
+    newer =
+        replaceOnce(newer, "</patch>", R"(<layers count="4"><layer id="A" /></layers></patch>)");
+    newer = replaceOnce(newer, "<mod>", R"(<mod><lfo rate="2" /><route />)");
+    newer = replaceOnce(newer, R"(<route slot="1" )", R"(<route shape="7" slot="1" )");
+    newer = replaceOnce(newer, "</mod>", R"(<macro id="9" /></mod>)");
+
+    for (const Mode mode : {Mode::Fx, Mode::Instrument})
+    {
+        Loaded l = distinct();
+        REQUIRE(l.load(newer, mode));
+        CHECK(l.migratedFromVersion == 3u);
+        CHECK(l.seed == 77u);
+        CHECK(l.valueBits() == source.valueBits());
+        CHECK(sameRoutes(l.routes, source.routes));
+    }
+}
+
+TEST_CASE("an empty <mod> is 48 empty slots", "[core]")
+{
+    const auto good = toStateXml(defaults(), 3, threeRoutes());
+    const auto from = good.find("<mod>");
+    REQUIRE(from != std::string::npos);
+    const auto to = good.find("</mod>");
+    REQUIRE(to != std::string::npos);
+    const auto modElement = good.substr(from, to + std::strlen("</mod>") - from);
+    for (const std::string replacement : {"<mod />", "<mod></mod>", ""})
+    {
+        INFO("<mod> as '" << replacement << "'");
+        Loaded l = distinct();
+        REQUIRE(l.load(replaceOnce(good, modElement, replacement)));
+        CHECK(l.migratedFromVersion == 0u);
+        CHECK(sameRoutes(l.routes, ModRoutes{}));
+        CHECK(l.valueBits() == Loaded{defaults(), 0, 0}.valueBits());
+        CHECK(l.seed == 3u);
     }
 }

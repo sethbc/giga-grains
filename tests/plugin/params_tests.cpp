@@ -29,6 +29,7 @@
 #include <clap/clap.h>
 
 #include "PluginHarness.h"
+#include "gg/core/ModMatrix.h"
 #include "gg/core/ParamIds.h"
 #include "gg/core/PatchState.h"
 #include "gg/core/Processor.h"
@@ -853,7 +854,8 @@ TEST_CASE("state load while active applies at the next block", "[plugin]")
     s[at(ParamSlot::Mix)] = 0.9f;
     s[at(ParamSlot::Position)] = 0.05f;
     s[at(ParamSlot::Spray)] = 0.0f;
-    const std::string state = gg::core::toStateXml(s, 0);
+    const std::string state =
+        gg::core::toStateXml(s, 0, gg::core::factoryRoutes(gg::core::Mode::Fx));
 
     ParamsHost hostA;
     PluginUnderTest a(kFxId, hostA.clap());
@@ -905,7 +907,7 @@ TEST_CASE("state load while active applies at the next block", "[plugin]")
     {
         ParamValues t = s;
         t[at(ParamSlot::Density)] = 2.0f;
-        REQUIRE(a.load(gg::core::toStateXml(t, 0)));
+        REQUIRE(a.load(gg::core::toStateXml(t, 0, gg::core::factoryRoutes(gg::core::Mode::Fx))));
         CHECK(a.impl().processor()->base(ParamSlot::Density) == 7.0f);
         InputEvents none;
         a.flush(none.list());
@@ -919,8 +921,8 @@ TEST_CASE("state load while active applies at the next block", "[plugin]")
         t[at(ParamSlot::Stereo)] = 0.0f;
         ParamValues u = s;
         u[at(ParamSlot::Density)] = 3.0f;
-        REQUIRE(a.load(gg::core::toStateXml(t, 0)));
-        REQUIRE(a.load(gg::core::toStateXml(u, 0)));
+        REQUIRE(a.load(gg::core::toStateXml(t, 0, gg::core::factoryRoutes(gg::core::Mode::Fx))));
+        REQUIRE(a.load(gg::core::toStateXml(u, 0, gg::core::factoryRoutes(gg::core::Mode::Fx))));
         CHECK(hostA.valueRescans() == 4);
         InputEvents none;
         a.flush(none.list());
@@ -932,7 +934,7 @@ TEST_CASE("state load while active applies at the next block", "[plugin]")
     {
         ParamValues t = s;
         t[at(ParamSlot::Density)] = 5.5f;
-        REQUIRE(a.load(gg::core::toStateXml(t, 0)));
+        REQUIRE(a.load(gg::core::toStateXml(t, 0, gg::core::factoryRoutes(gg::core::Mode::Fx))));
         a.deactivate();
         flushValues(a, {{ParamSlot::Pitch, 3.0}}); // inactive, after the load
         REQUIRE(a.activate(48000.0, kBlock));
@@ -1157,8 +1159,10 @@ TEST_CASE("state load rejects bad state and keeps the values", "[plugin]")
 
     ParamValues other = defaults();
     other[at(ParamSlot::Density)] = 1.0f;
-    const std::string otherXml = gg::core::toStateXml(other, 3);
-    const std::string otherState = gg::core::encodeState({other, 3, std::nullopt, std::nullopt});
+    const std::string otherXml =
+        gg::core::toStateXml(other, 3, gg::core::factoryRoutes(gg::core::Mode::Fx));
+    const std::string otherState = gg::core::encodeState(
+        {other, 3, std::nullopt, std::nullopt, gg::core::factoryRoutes(gg::core::Mode::Fx)});
 
     SECTION("not a state")
     {
@@ -1220,10 +1224,13 @@ TEST_CASE("state is a container, and save, load, save gives the same bytes", "[p
     {
         values[s] = static_cast<float>(a.value(kExpected[s].id));
     }
-    REQUIRE(a.load(gg::core::encodeState({values, 11, std::nullopt, std::nullopt})));
+    REQUIRE(a.load(gg::core::encodeState(
+        {values, 11, std::nullopt, std::nullopt, gg::core::factoryRoutes(mode)})));
     const std::string saved = a.save();
-    CHECK(saved == gg::core::encodeState({values, 11, std::nullopt, std::nullopt}));
-    CHECK(gg::test::stateChunkPayload(saved, "PTCH") == gg::core::toStateXml(values, 11));
+    CHECK(saved == gg::core::encodeState(
+                       {values, 11, std::nullopt, std::nullopt, gg::core::factoryRoutes(mode)}));
+    CHECK(gg::test::stateChunkPayload(saved, "PTCH") ==
+          gg::core::toStateXml(values, 11, gg::core::factoryRoutes(mode)));
     CHECK(gg::test::stateChunkPayload(saved, "MEDI") == std::string(R"(<media version="1" />)"));
     CHECK(decoded(saved, mode).sample == std::nullopt);
 

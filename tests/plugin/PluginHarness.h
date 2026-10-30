@@ -527,6 +527,7 @@ class PluginUnderTest
                 gg::core::paramMeta(static_cast<gg::core::ParamSlot>(i), impl().mode()).defaultVal;
         }
         s.seed = seed;
+        s.routes = gg::core::factoryRoutes(impl().mode());
         return load(gg::core::encodeState(s));
     }
 

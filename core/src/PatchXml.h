@@ -11,15 +11,17 @@
 #include <cstdint>
 #include <string>
 
+#include "gg/core/ModMatrix.h"
 #include "gg/core/ParamIds.h"
 
 namespace gg::core
 {
-/// The state of these values and this seed, written by a Patch with `mode`'s metadata.
+/// The state of these values, this seed and these routes, written by a Patch with `mode`'s
+/// metadata.
 /// toStateXml writes Mode::Fx's, whatever the product, which is right only while both products
 /// write the same bytes: a test holds the two to that (carry-over "toStateXml builds a
 /// Patch(Mode::Fx)"), so the day their XML differs, toStateXml must take the mode.
-std::string patchXml(const ParamValues &values, uint64_t seed, Mode mode);
+std::string patchXml(const ParamValues &values, uint64_t seed, const ModRoutes &routes, Mode mode);
 } // namespace gg::core
 
 #endif // GG_CORE_PATCHXML_H

@@ -26,6 +26,7 @@
 
 #include "PluginHarness.h"
 #include "gg/core/GrainQueue.h"
+#include "gg/core/ModMatrix.h"
 #include "gg/core/ParamIds.h"
 #include "gg/core/PatchState.h"
 #include "gg/core/Processor.h"
@@ -489,7 +490,9 @@ TEST_CASE("plugin applies a state loaded while active without allocating", "[plu
     gg::test::InputEvents none;
     clap_process_status status{};
 
-    REQUIRE(plugin.load(gg::core::toStateXml(first, 5)));
+    REQUIRE(plugin.load(gg::core::toStateXml(
+        first, 5,
+        gg::core::factoryRoutes(isFx ? gg::core::Mode::Fx : gg::core::Mode::Instrument))));
     AllocTripwire::resetCount();
     {
         AllocTripwire::Scope armed;
@@ -504,7 +507,9 @@ TEST_CASE("plugin applies a state loaded while active without allocating", "[plu
         REQUIRE(allocations == 0);
     }
 
-    REQUIRE(plugin.load(gg::core::toStateXml(second, 6)));
+    REQUIRE(plugin.load(gg::core::toStateXml(
+        second, 6,
+        gg::core::factoryRoutes(isFx ? gg::core::Mode::Fx : gg::core::Mode::Instrument))));
     const auto *params = paramsOf(plugin);
     AllocTripwire::resetCount();
     {
@@ -598,7 +603,9 @@ TEST_CASE("plugin reset does not allocate and a restored Freeze plays live", "[p
     }
     restored[static_cast<std::size_t>(ParamSlot::Mix)] = 1.0f;
     restored[static_cast<std::size_t>(ParamSlot::Freeze)] = 1.0f;
-    REQUIRE(plugin.load(gg::core::toStateXml(restored, 0)));
+    REQUIRE(plugin.load(gg::core::toStateXml(
+        restored, 0,
+        gg::core::factoryRoutes(isFx ? gg::core::Mode::Fx : gg::core::Mode::Instrument))));
     REQUIRE(plugin.activate(48000.0, 512));
     CHECK(plugin.value(paramId(ParamSlot::Freeze)) == 1.0); // Freeze still reads On
 

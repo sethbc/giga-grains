@@ -16,6 +16,7 @@
 #include <span>
 #include <string>
 
+#include "gg/core/ModMatrix.h"
 #include "gg/core/Rng.h"
 #include "gg/core/SessionState.h"
 #include "gg/media/SettingsFile.h"
@@ -971,10 +972,13 @@ bool GigaGrainsPlugin::stateSave(const clap_ostream *stream) noexcept
         }
         // The session container (gg/core/SessionState.h), with the instrument's manifest entry
         // as it stands, whether the sample is loaded, loading, missing or failed (spec §6.6), or
-        // a newer build's manifest as it came. The FX has no sample: an empty manifest.
+        // a newer build's manifest as it came. The FX has no sample: an empty manifest. The
+        // routes are the product's factory routes, the only ones the Processor applies so far
+        // (its macro recipes); a loaded state's routes aren't applied yet.
         const std::string bytes = gg::core::encodeState(
             {values, seed_, loader_ != nullptr ? loader_->entry() : std::nullopt,
-             loader_ != nullptr ? loader_->newerMedia() : std::nullopt});
+             loader_ != nullptr ? loader_->newerMedia() : std::nullopt,
+             gg::core::factoryRoutes(mode())});
 
         // A stream may take fewer bytes than offered: write until all are in.
         const char *data = bytes.data();
