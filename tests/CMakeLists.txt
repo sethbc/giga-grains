@@ -38,6 +38,7 @@ add_executable(gg-tests
         engine/rng_tests.cpp
         engine/rt_tests.cpp
         engine/sample_buffer_tests.cpp
+        engine/sinc_table_tests.cpp
         engine/task_runner_tests.cpp
         engine/window_tests.cpp
         media/convert_tests.cpp

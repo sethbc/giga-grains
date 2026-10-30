@@ -26,6 +26,7 @@
 #include "gg/engine/Engine.h"
 #include "gg/grain/GrainKernels.h"
 #include "gg/grain/GrainPool.h"
+#include "gg/grain/SincTable.h"
 #include "gg/source/LiveSource.h"
 
 namespace
@@ -182,7 +183,7 @@ std::unique_ptr<gg::GrainPool> poolOf(const std::vector<gg::GrainSpec> &grains)
 // each grain's tier names.
 void referenceSample(const gg::GrainPool &pool, const gg::SampleBuffer &source,
                      const gg::kernels::Output &out, int64_t from, int64_t to,
-                     const gg::HannTable &hann)
+                     const gg::kernels::Tables &tables)
 {
     const bool mono = source.channels() == 1;
     const gg::kernels::SampleSource src{{source.channel(0), source.channel(mono ? 0 : 1)},
@@ -194,12 +195,17 @@ void referenceSample(const gg::GrainPool &pool, const gg::SampleBuffer &source,
         if (pool.rows().tier[i] == gg::Tier::Eco)
         {
             gg::kernels::renderSampleRef<gg::kernels::Linear>(pool.rows(), i, src, out, from, to,
-                                                              hann);
+                                                              tables);
+        }
+        else if (pool.rows().tier[i] == gg::Tier::HQ)
+        {
+            gg::kernels::renderSampleRef<gg::kernels::Sinc>(pool.rows(), i, src, out, from, to,
+                                                            tables);
         }
         else
         {
             gg::kernels::renderSampleRef<gg::kernels::Hermite>(pool.rows(), i, src, out, from, to,
-                                                               hann);
+                                                               tables);
         }
     }
 }
@@ -216,6 +222,8 @@ Channels renderSampleReference(const std::vector<gg::GrainSpec> &grains,
     }
     const auto pool = poolOf(grains);
     const gg::HannTable hann;
+    const gg::SincTable sinc;
+    const gg::kernels::Tables tables{hann, sinc};
     const gg::kernels::Output out{{ref.ch[0].data(), outputs == 2 ? ref.ch[1].data() : nullptr}, 0};
     std::vector<const Change *> sources;
     for (const Change &c : changes)
@@ -230,7 +238,7 @@ Channels renderSampleReference(const std::vector<gg::GrainSpec> &grains,
     for (std::size_t k = 0; k < sources.size(); ++k)
     {
         const int64_t to = k + 1 < sources.size() ? sources[k + 1]->at : frames;
-        referenceSample(*pool, *sources[k]->source, out, sources[k]->at, to, hann);
+        referenceSample(*pool, *sources[k]->source, out, sources[k]->at, to, tables);
     }
     return ref;
 }
@@ -251,6 +259,8 @@ Channels renderLiveReference(const std::vector<gg::GrainSpec> &grains,
     const auto pool = poolOf(grains);
     const gg::GrainRows &rows = pool->rows();
     const gg::HannTable hann;
+    const gg::SincTable sinc;
+    const gg::kernels::Tables tables{hann, sinc};
     const gg::kernels::Output out{{ref.ch[0].data(), outputs == 2 ? ref.ch[1].data() : nullptr}, 0};
     gg::LiveSource ring;
     ring.prepare(kSampleRate, liveSeconds, kMaxBlock);
@@ -279,12 +289,17 @@ Channels renderLiveReference(const std::vector<gg::GrainSpec> &grains,
                 if (rows.tier[i] == gg::Tier::Eco)
                 {
                     gg::kernels::renderLiveRef<gg::kernels::Linear>(rows, i, ring, out, blockStart,
-                                                                    blockEnd, hann);
+                                                                    blockEnd, tables);
+                }
+                else if (rows.tier[i] == gg::Tier::HQ)
+                {
+                    gg::kernels::renderLiveRef<gg::kernels::Sinc>(rows, i, ring, out, blockStart,
+                                                                  blockEnd, tables);
                 }
                 else
                 {
                     gg::kernels::renderLiveRef<gg::kernels::Hermite>(rows, i, ring, out, blockStart,
-                                                                     blockEnd, hann);
+                                                                     blockEnd, tables);
                 }
             }
         }

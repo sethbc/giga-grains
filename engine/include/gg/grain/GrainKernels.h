@@ -18,6 +18,7 @@
 #include "gg/core/Window.h"
 #include "gg/grain/Envelope.h"
 #include "gg/grain/GrainPool.h"
+#include "gg/grain/SincTable.h"
 #include "gg/source/LiveSource.h"
 
 /// The grain renderers: each adds one pool grain into the output over output samples
@@ -42,11 +43,38 @@
 /// Every sample depends only on t and the grain, never on which call renders it, so splitting
 /// [from, to) anywhere gives the same bits.
 ///
-/// A reader policy (Hermite, Linear) gives the scalar read the references use, its reach (a read
-/// at pos takes taps floor(pos) − kBefore .. floor(pos) + kAfter), and read4, the same read for 4
-/// lanes whose taps are all inside the buffer, which the SIMD kernels use.
+/// A reader policy (Hermite, Linear, Sinc) gives the scalar read the references use, its reach (a
+/// read at pos takes taps floor(pos) − kBefore .. floor(pos) + kAfter), read4, the same read for 4
+/// lanes whose taps are all inside the buffer, which the SIMD kernels use, and the live ring's
+/// read and head-proximity fade, with the reach the fade is for (kFadeBefore, kFadeAfter). Every
+/// read takes the grain's ReadParams, latched per grain: the sinc's table and stretch, which only
+/// Sinc reads.
 namespace gg::kernels
 {
+/// What a reader takes beside its taps: the sinc's table and the grain's stretch (spec §6.2).
+/// Hermite and Linear ignore both.
+struct ReadParams
+{
+    const SincTable *sinc;
+    float stretch;
+};
+
+/// The stretch of a grain whose residual rate is r (spec §6.2): s = min(1, 1 / r), one IEEE
+/// division, so the sinc's cutoff follows an upward rate and stays at the source's Nyquist
+/// otherwise. A rate that isn't above 1, NaN included, gives 1.
+inline float stretchOf(double residualRate) noexcept
+{
+    GG_FP_CONTRACT_OFF
+    return residualRate > 1.0 ? static_cast<float>(1.0 / residualRate) : 1.0f;
+}
+
+/// The tables the renderers read: the grain window, and the HQ tier's windowed sinc.
+struct Tables
+{
+    const HannTable &hann;
+    const SincTable &sinc;
+};
+
 /// A sample buffer's channels. data[1] is read only when !mono and there are two outputs; a mono
 /// source feeds both outputs from data[0]. frames may be 0 (with null data): every read is then
 /// silence.
@@ -86,6 +114,9 @@ inline void transpose4(SIMD_M128 *r) noexcept SST_CPPUTILS_NONBLOCKING
     r[2] = SIMD_MM(movelh_ps)(t2, t3);
     r[3] = SIMD_MM(movehl_ps)(t3, t2);
 }
+
+/// clamp(x, 0, 1), with NaN read as 0: LiveSource::fade's clamp.
+inline double unit(double x) noexcept { return x > 0.0 ? (x < 1.0 ? x : 1.0) : 0.0; }
 } // namespace detail
 
 /// The Normal tier's reader: the 4-point Hermite (Catmull-Rom) over taps floor(pos) − 1 ..
@@ -94,9 +125,12 @@ struct Hermite
 {
     static constexpr int64_t kBefore = 1;
     static constexpr int64_t kAfter = 2;
+    /// The reach LiveSource::fade is for: the Hermite's own.
+    static constexpr int64_t kFadeBefore = 1;
+    static constexpr int64_t kFadeAfter = 2;
 
-    static float read(const float *data, int64_t frames,
-                      double pos) noexcept SST_CPPUTILS_NONBLOCKING
+    static float read(const float *data, int64_t frames, double pos,
+                      const ReadParams & /*params*/) noexcept SST_CPPUTILS_NONBLOCKING
     {
         return interp::hermite4(data, frames, pos);
     }
@@ -106,8 +140,8 @@ struct Hermite
     /// interp::catmullRom's expressions in its order. Frame f is data[kStride × f]: 1 for a planar
     /// channel, 2 for one channel of interleaved pairs.
     template <int64_t kStride = 1>
-    static SIMD_M128 read4(const float *data, const int64_t *base,
-                           SIMD_M128 frac) noexcept SST_CPPUTILS_NONBLOCKING
+    static SIMD_M128 read4(const float *data, const int64_t *base, SIMD_M128 frac,
+                           const ReadParams & /*params*/) noexcept SST_CPPUTILS_NONBLOCKING
     {
         GG_FP_CONTRACT_OFF
         alignas(16) float q0[4];
@@ -129,7 +163,8 @@ struct Hermite
     /// read4 for both channels of interleaved pairs (frame f's channel c at pairs[2f + c]), whose
     /// taps are all inside: a lane's 4 taps of both channels are the 8 floats from
     /// pairs + 2 × (base − 1), two 4-float loads, transposed into each channel's taps.
-    static void read4Pair(const float *pairs, const int64_t *base, SIMD_M128 frac, SIMD_M128 &left,
+    static void read4Pair(const float *pairs, const int64_t *base, SIMD_M128 frac,
+                          const ReadParams & /*params*/, SIMD_M128 &left,
                           SIMD_M128 &right) noexcept SST_CPPUTILS_NONBLOCKING
     {
         GG_FP_CONTRACT_OFF
@@ -172,10 +207,17 @@ struct Hermite
 
     /// False, reading nothing, unless every tap is inside the ring's window at head.
     static bool readLive(const LiveSource &live, double pos, int64_t head,
-                         LiveSource::Cursor &cursor, float &l,
+                         LiveSource::Cursor &cursor, const ReadParams & /*params*/, float &l,
                          float &r) noexcept SST_CPPUTILS_NONBLOCKING
     {
         return live.read(pos, head, cursor, l, r);
+    }
+
+    /// The head-proximity fade for this reach: LiveSource::fade.
+    static double fade(const LiveSource &live, double pos,
+                       int64_t head) noexcept SST_CPPUTILS_NONBLOCKING
+    {
+        return live.fade(pos, head);
     }
 };
 
@@ -185,9 +227,13 @@ struct Linear
 {
     static constexpr int64_t kBefore = 0;
     static constexpr int64_t kAfter = 1;
+    /// The reach LiveSource::fade is for: the Hermite's, a frame wider than the line's at each
+    /// end, so the fade is conservative for it (LiveSource::readLinear).
+    static constexpr int64_t kFadeBefore = 1;
+    static constexpr int64_t kFadeAfter = 2;
 
-    static float read(const float *data, int64_t frames,
-                      double pos) noexcept SST_CPPUTILS_NONBLOCKING
+    static float read(const float *data, int64_t frames, double pos,
+                      const ReadParams & /*params*/) noexcept SST_CPPUTILS_NONBLOCKING
     {
         return interp::linear(data, frames, pos);
     }
@@ -195,8 +241,8 @@ struct Linear
     /// interp::linear for 4 lanes whose taps are all inside data: lane k reads at
     /// base[k] + frac[k], as Hermite::read4 (kStride too), through interp::lerp's a + (b − a) × t.
     template <int64_t kStride = 1>
-    static SIMD_M128 read4(const float *data, const int64_t *base,
-                           SIMD_M128 frac) noexcept SST_CPPUTILS_NONBLOCKING
+    static SIMD_M128 read4(const float *data, const int64_t *base, SIMD_M128 frac,
+                           const ReadParams & /*params*/) noexcept SST_CPPUTILS_NONBLOCKING
     {
         GG_FP_CONTRACT_OFF
         alignas(16) float q0[4];
@@ -212,7 +258,8 @@ struct Linear
 
     /// read4 for both channels of interleaved pairs, as Hermite::read4Pair: a lane's 2 taps of
     /// both channels are the 4 floats from pairs + 2 × base, one load, transposed.
-    static void read4Pair(const float *pairs, const int64_t *base, SIMD_M128 frac, SIMD_M128 &left,
+    static void read4Pair(const float *pairs, const int64_t *base, SIMD_M128 frac,
+                          const ReadParams & /*params*/, SIMD_M128 &left,
                           SIMD_M128 &right) noexcept SST_CPPUTILS_NONBLOCKING
     {
         GG_FP_CONTRACT_OFF
@@ -236,10 +283,208 @@ struct Linear
 
     /// False, reading nothing, unless both taps are inside the ring's window at head.
     static bool readLive(const LiveSource &live, double pos, int64_t head,
-                         LiveSource::Cursor &cursor, float &l,
+                         LiveSource::Cursor &cursor, const ReadParams & /*params*/, float &l,
                          float &r) noexcept SST_CPPUTILS_NONBLOCKING
     {
         return live.readLinear(pos, head, cursor, l, r);
+    }
+
+    /// The head-proximity fade: LiveSource::fade, for the Hermite's reach (kFadeBefore,
+    /// kFadeAfter).
+    static double fade(const LiveSource &live, double pos,
+                       int64_t head) noexcept SST_CPPUTILS_NONBLOCKING
+    {
+        return live.fade(pos, head);
+    }
+};
+
+/// The HQ tier's reader (spec §6.2): the 16-tap windowed sinc over taps floor(pos) − 7 ..
+/// floor(pos) + 8, stretched by the grain's stretch s (stretchOf). For a read at pos with
+/// frac = float(pos − floor(pos)), in float and in k order:
+///
+///     c_k = SincTable::at((float(k) − frac) × s)        for k = −7 … 8
+///     y   = (Σ c_k × tap_k) / (Σ c_k), or 0 where Σ c_k == 0
+///
+/// The normalization keeps DC exact and the gain independent of s. From a sample buffer a tap
+/// outside [0, frames) reads 0; from the live ring the read needs all 16 taps inside the window
+/// (LiveSource::gatherTaps<16>), and the fade is for the sinc's own reach.
+struct Sinc
+{
+    static constexpr int64_t kTaps = SincTable::kTaps;
+    static constexpr int64_t kBefore = SincTable::kBefore;
+    static constexpr int64_t kAfter = SincTable::kAfter;
+    static constexpr int64_t kFadeBefore = kBefore;
+    static constexpr int64_t kFadeAfter = kAfter;
+
+    /// The read above at pos, with frame f of the channel at data[kStride × f]: 1 for a planar
+    /// channel, 2 for one channel of interleaved pairs. 0 unless pos is in (−9, frames + 8),
+    /// outside which every tap is outside the source; that test also rejects NaN and ±inf.
+    template <int64_t kStride = 1>
+    static float read(const float *data, int64_t frames, double pos,
+                      const ReadParams &params) noexcept SST_CPPUTILS_NONBLOCKING
+    {
+        GG_FP_CONTRACT_OFF
+        if (!(pos > -9.0 && pos < static_cast<double>(frames) + 8.0))
+        {
+            return 0.0f;
+        }
+        const double base = std::floor(pos);
+        const auto i = static_cast<int64_t>(base);
+        const auto frac = static_cast<float>(pos - base);
+        float num = 0.0f;
+        float den = 0.0f;
+        for (int64_t k = -kBefore; k <= kAfter; ++k)
+        {
+            const float c = params.sinc->at((static_cast<float>(k) - frac) * params.stretch);
+            const int64_t f = i + k;
+            const float tap = f >= 0 && f < frames ? data[kStride * f] : 0.0f;
+            num += c * tap;
+            den += c;
+        }
+        return den != 0.0f ? num / den : 0.0f;
+    }
+
+    /// read for 4 lanes whose taps are all inside data: lane k reads at base[k] + frac[k], as
+    /// Hermite::read4 (kStride too), with the scalar read's arithmetic lane by lane.
+    template <int64_t kStride = 1>
+    static SIMD_M128 read4(const float *data, const int64_t *base, SIMD_M128 frac,
+                           const ReadParams &params) noexcept SST_CPPUTILS_NONBLOCKING
+    {
+        GG_FP_CONTRACT_OFF
+        SIMD_M128 taps[kTaps];
+        for (int64_t k = 0; k < kTaps; ++k)
+        {
+            alignas(16) float q[4];
+            for (int lane = 0; lane < 4; ++lane)
+            {
+                q[lane] = data[kStride * (base[lane] - kBefore + k)];
+            }
+            taps[k] = SIMD_MM(load_ps)(q);
+        }
+        SIMD_M128 c[kTaps];
+        const SIMD_M128 den = coefficients4(frac, params, c);
+        return sum4(c, den, taps);
+    }
+
+    /// read4 for both channels of interleaved pairs, whose taps are all inside: a lane's 16 taps
+    /// of both channels are the 32 floats from pairs + 2 × (base − 7), eight 4-float loads, each
+    /// transposed across the lanes into two taps of each channel. Both channels share the lanes'
+    /// coefficients, which the scalar read computes the same for each.
+    static void read4Pair(const float *pairs, const int64_t *base, SIMD_M128 frac,
+                          const ReadParams &params, SIMD_M128 &left,
+                          SIMD_M128 &right) noexcept SST_CPPUTILS_NONBLOCKING
+    {
+        GG_FP_CONTRACT_OFF
+        SIMD_M128 tapsL[kTaps];
+        SIMD_M128 tapsR[kTaps];
+        for (int64_t m = 0; m < kTaps / 2; ++m)
+        {
+            SIMD_M128 a[4]; // lane k: taps 2m and 2m + 1 (from the first), L R L R
+            for (int lane = 0; lane < 4; ++lane)
+            {
+                a[lane] = SIMD_MM(loadu_ps)(pairs + 2 * (base[lane] - kBefore) + 4 * m);
+            }
+            detail::transpose4(a); // tap 2m left, tap 2m right, tap 2m + 1 left, tap 2m + 1 right
+            tapsL[2 * m] = a[0];
+            tapsR[2 * m] = a[1];
+            tapsL[2 * m + 1] = a[2];
+            tapsR[2 * m + 1] = a[3];
+        }
+        SIMD_M128 c[kTaps];
+        const SIMD_M128 den = coefficients4(frac, params, c);
+        left = sum4(c, den, tapsL);
+        right = sum4(c, den, tapsR);
+    }
+
+    /// The 4 lanes' coefficients, c[k + 7] holding c_k: each lane's from SincTable::at, scalar,
+    /// with the scalar read's x. Returns den = Σ c_k, from 0 in k order, as the scalar read sums
+    /// it.
+    static SIMD_M128 coefficients4(SIMD_M128 frac, const ReadParams &params,
+                                   SIMD_M128 *c) noexcept SST_CPPUTILS_NONBLOCKING
+    {
+        GG_FP_CONTRACT_OFF
+        alignas(16) float f[4];
+        SIMD_MM(store_ps)(f, frac);
+        SIMD_M128 den = SIMD_MM(setzero_ps)();
+        for (int64_t k = 0; k < kTaps; ++k)
+        {
+            const auto offset = static_cast<float>(k - kBefore);
+            alignas(16) float q[4];
+            for (int lane = 0; lane < 4; ++lane)
+            {
+                q[lane] = params.sinc->at((offset - f[lane]) * params.stretch);
+            }
+            c[k] = SIMD_MM(load_ps)(q);
+            den = SIMD_MM(add_ps)(den, c[k]);
+        }
+        return den;
+    }
+
+    /// (Σ c_k × tap_k) / den in 4 lanes, the sum from 0 in k order, and 0 in a lane whose den is
+    /// 0: the scalar read's last two lines.
+    static SIMD_M128 sum4(const SIMD_M128 *c, SIMD_M128 den,
+                          const SIMD_M128 *taps) noexcept SST_CPPUTILS_NONBLOCKING
+    {
+        GG_FP_CONTRACT_OFF
+        const SIMD_M128 zero = SIMD_MM(setzero_ps)();
+        SIMD_M128 num = zero;
+        for (int64_t k = 0; k < kTaps; ++k)
+        {
+            num = SIMD_MM(add_ps)(num, SIMD_MM(mul_ps)(c[k], taps[k]));
+        }
+        // den != 0 is true for a NaN den too, where the scalar read divides as well.
+        return SIMD_MM(and_ps)(SIMD_MM(cmpneq_ps)(den, zero), SIMD_MM(div_ps)(num, den));
+    }
+
+    /// Both channels at pos from the live ring: the read above over the 16 taps
+    /// LiveSource::gatherTaps<16> gathers. False, reading nothing, unless all 16 are inside the
+    /// ring's window at head.
+    static bool readLive(const LiveSource &live, double pos, int64_t head,
+                         LiveSource::Cursor &cursor, const ReadParams &params, float &l,
+                         float &r) noexcept SST_CPPUTILS_NONBLOCKING
+    {
+        GG_FP_CONTRACT_OFF
+        float tapsL[kTaps];
+        float tapsR[kTaps];
+        if (!live.gatherTaps<static_cast<int>(kTaps)>(pos, head, cursor, tapsL, tapsR))
+        {
+            return false;
+        }
+        const double base = std::floor(pos); // gatherTaps accepted pos: it is finite
+        const auto frac = static_cast<float>(pos - base);
+        float numL = 0.0f;
+        float numR = 0.0f;
+        float den = 0.0f;
+        for (int64_t k = 0; k < kTaps; ++k)
+        {
+            const float c =
+                params.sinc->at((static_cast<float>(k - kBefore) - frac) * params.stretch);
+            numL += c * tapsL[k];
+            numR += c * tapsR[k];
+            den += c;
+        }
+        l = den != 0.0f ? numL / den : 0.0f;
+        r = den != 0.0f ? numR / den : 0.0f;
+        return true;
+    }
+
+    /// The HQ head-proximity fade (spec §6.2): LiveSource::fade's expression with the sinc's
+    /// reach,
+    ///
+    ///     g = clamp((R − 1 − (pos + 8)) / M, 0, 1) × clamp(((pos − 7) − (R − N)) / M, 0, 1)
+    ///
+    /// so g is 0 before any of the 16 taps leaves the window [R − N, R − 1].
+    static double fade(const LiveSource &live, double pos,
+                       int64_t head) noexcept SST_CPPUTILS_NONBLOCKING
+    {
+        GG_FP_CONTRACT_OFF
+        constexpr auto kMargin = static_cast<double>(LiveSource::kHeadMargin);
+        const auto r = static_cast<double>(head);
+        const double toHead = (r - 1.0 - (pos + static_cast<double>(kAfter))) / kMargin;
+        const double fromTail =
+            ((pos - static_cast<double>(kBefore)) - (r - static_cast<double>(live.frames()))) /
+            kMargin;
+        return detail::unit(toHead) * detail::unit(fromTail);
     }
 };
 
@@ -254,12 +499,22 @@ inline EnvelopeShape envelopeOf(const GrainRows &rows, uint32_t i) noexcept SST_
 }
 } // namespace detail
 
+namespace detail
+{
+/// Grain i's ReadParams: the sinc's table and the stretch of its rate (stretchOf).
+inline ReadParams paramsOf(const GrainRows &rows, uint32_t i,
+                           const Tables &tables) noexcept SST_CPPUTILS_NONBLOCKING
+{
+    return {&tables.sinc, stretchOf(rows.rate[i])};
+}
+} // namespace detail
+
 /// The scalar reference over a sample source: grain i of rows, over [from, to), read with
-/// Reader::read.
+/// Reader::read and the grain's ReadParams.
 template <class Reader>
 void renderSampleRef(const GrainRows &rows, uint32_t i, const SampleSource &src, const Output &out,
                      int64_t from, int64_t to,
-                     const HannTable &hann) noexcept SST_CPPUTILS_NONBLOCKING
+                     const Tables &tables) noexcept SST_CPPUTILS_NONBLOCKING
 {
     GG_FP_CONTRACT_OFF
     const int64_t onsetSample = rows.onsetSample[i];
@@ -274,6 +529,8 @@ void renderSampleRef(const GrainRows &rows, uint32_t i, const SampleSource &src,
         return; // nothing to render (as at most edges of the SIMD kernels' runs)
     }
     const EnvelopeShape envelope = detail::envelopeOf(rows, i);
+    const ReadParams params = detail::paramsOf(rows, i, tables);
+    const HannTable &hann = tables.hann;
     float *const dst0 = out.dst[0];
     float *const dst1 = out.dst[1];
     if (dst1 == nullptr)
@@ -289,7 +546,7 @@ void renderSampleRef(const GrainRows &rows, uint32_t i, const SampleSource &src,
             }
             const double pos = startPos + rate * e;
             const auto j = static_cast<std::size_t>(t - out.blockStart);
-            dst0[j] += Reader::read(src.data[0], src.frames, pos) * (w * gain);
+            dst0[j] += Reader::read(src.data[0], src.frames, pos, params) * (w * gain);
         }
         return;
     }
@@ -305,8 +562,8 @@ void renderSampleRef(const GrainRows &rows, uint32_t i, const SampleSource &src,
         }
         const double pos = startPos + rate * e;
         const auto j = static_cast<std::size_t>(t - out.blockStart);
-        const float s0 = Reader::read(src.data[0], src.frames, pos);
-        const float s1 = src.mono ? s0 : Reader::read(src.data[1], src.frames, pos);
+        const float s0 = Reader::read(src.data[0], src.frames, pos, params);
+        const float s1 = src.mono ? s0 : Reader::read(src.data[1], src.frames, pos, params);
         dst0[j] += s0 * (w * gainL);
         dst1[j] += s1 * (w * gainR);
     }
@@ -428,14 +685,14 @@ struct BufferTaps
     void locate(int64_t *) const noexcept SST_CPPUTILS_NONBLOCKING {}
 
     template <class Reader, bool kBoth>
-    void read(const int64_t *base, SIMD_M128 frac, SIMD_M128 &s0,
+    void read(const int64_t *base, SIMD_M128 frac, const ReadParams &params, SIMD_M128 &s0,
               SIMD_M128 &s1) const noexcept SST_CPPUTILS_NONBLOCKING
     {
-        s0 = Reader::read4(data[0], base, frac);
+        s0 = Reader::read4(data[0], base, frac, params);
         s1 = s0;
         if constexpr (kBoth)
         {
-            s1 = Reader::read4(data[1], base, frac);
+            s1 = Reader::read4(data[1], base, frac, params);
         }
     }
 };
@@ -451,16 +708,16 @@ struct InterleavedTaps
     void locate(int64_t *) const noexcept SST_CPPUTILS_NONBLOCKING {}
 
     template <class Reader, bool kBoth>
-    void read(const int64_t *base, SIMD_M128 frac, SIMD_M128 &s0,
+    void read(const int64_t *base, SIMD_M128 frac, const ReadParams &params, SIMD_M128 &s0,
               SIMD_M128 &s1) const noexcept SST_CPPUTILS_NONBLOCKING
     {
         if constexpr (kBoth)
         {
-            Reader::read4Pair(pairs, base, frac, s0, s1);
+            Reader::read4Pair(pairs, base, frac, params, s0, s1);
         }
         else
         {
-            s0 = Reader::template read4<2>(pairs, base, frac);
+            s0 = Reader::template read4<2>(pairs, base, frac, params);
             s1 = s0;
         }
     }
@@ -472,9 +729,9 @@ struct InterleavedTaps
 /// HannTable::at's index and fraction, and pos with its floor and fraction. taps.locate turns the
 /// 4 floors into the buffer indices the reads take taps around (BufferTaps, InterleavedTaps: the
 /// floors; the live ring: their slots). Then 4-wide float, in the reference's order: the window
-/// lerp, the w > 0 mask, the read (taps.read, through Reader's 4-lane read), read × (w × gain_c),
-/// and the masked add. How the taps are laid out changes only where the same floats are loaded
-/// from.
+/// lerp, the w > 0 mask, the read (taps.read, through Reader's 4-lane read with the grain's
+/// ReadParams), read × (w × gain_c), and the masked add. How the taps are laid out changes only
+/// where the same floats are loaded from.
 ///
 /// kTwoOutputs: dst[1] is written, with gainL and gainR; otherwise dst[0] alone, with gain.
 /// kStereo: with two outputs, channel 1's read feeds dst[1]; otherwise dst[1] reuses channel 0's.
@@ -484,7 +741,7 @@ struct InterleavedTaps
 template <class Reader, bool kTwoOutputs, bool kStereo, bool kWarp, class Taps>
 void renderInteriorSteps(const GrainRows &rows, uint32_t i, const Taps &taps, const Output &out,
                          int64_t begin, int64_t end,
-                         const HannTable &hann) noexcept SST_CPPUTILS_NONBLOCKING
+                         const Tables &tables) noexcept SST_CPPUTILS_NONBLOCKING
 {
     GG_FP_CONTRACT_OFF
     const int64_t onsetSample = rows.onsetSample[i];
@@ -498,7 +755,8 @@ void renderInteriorSteps(const GrainRows &rows, uint32_t i, const Taps &taps, co
     const SIMD_M128 gain0 = SIMD_MM(set1_ps)(kTwoOutputs ? rows.gainL[i] : rows.gain[i]);
     const SIMD_M128 gain1 = SIMD_MM(set1_ps)(kTwoOutputs ? rows.gainR[i] : 0.0f);
     const SIMD_M128 zero = SIMD_MM(setzero_ps)();
-    const float *const points = hann.points();
+    const ReadParams params = paramsOf(rows, i, tables);
+    const float *const points = tables.hann.points();
     float *const dst0 = out.dst[0];
     float *const dst1 = out.dst[1];
     for (int64_t t = begin; t < end; t += 4)
@@ -540,7 +798,7 @@ void renderInteriorSteps(const GrainRows &rows, uint32_t i, const Taps &taps, co
         const SIMD_M128 frac = SIMD_MM(load_ps)(posFrac);
         SIMD_M128 s0;
         SIMD_M128 s1;
-        taps.template read<Reader, kTwoOutputs && kStereo>(base, frac, s0, s1);
+        taps.template read<Reader, kTwoOutputs && kStereo>(base, frac, params, s0, s1);
         addMasked(dst0 + j, SIMD_MM(mul_ps)(s0, SIMD_MM(mul_ps)(w, gain0)), sounds);
         if constexpr (kTwoOutputs)
         {
@@ -554,7 +812,7 @@ void renderInteriorSteps(const GrainRows &rows, uint32_t i, const Taps &taps, co
 template <class Reader, bool kTwoOutputs, bool kStereo, class Taps>
 void renderInterior(const GrainRows &rows, uint32_t i, const Taps &taps, const Output &out,
                     int64_t begin, int64_t end,
-                    const HannTable &hann) noexcept SST_CPPUTILS_NONBLOCKING
+                    const Tables &tables) noexcept SST_CPPUTILS_NONBLOCKING
 {
     // No arithmetic here: the guard is for uniformity with every other kernel function.
     GG_FP_CONTRACT_OFF
@@ -565,12 +823,12 @@ void renderInterior(const GrainRows &rows, uint32_t i, const Taps &taps, const O
     if (isIdentity(envelopeOf(rows, i)))
     {
         renderInteriorSteps<Reader, kTwoOutputs, kStereo, false>(rows, i, taps, out, begin, end,
-                                                                 hann);
+                                                                 tables);
     }
     else
     {
         renderInteriorSteps<Reader, kTwoOutputs, kStereo, true>(rows, i, taps, out, begin, end,
-                                                                hann);
+                                                                tables);
     }
 }
 } // namespace detail
@@ -585,7 +843,7 @@ void renderInterior(const GrainRows &rows, uint32_t i, const Taps &taps, const O
 template <class Reader>
 void renderSampleSimd(const GrainRows &rows, uint32_t i, const SampleSource &src, const Output &out,
                       int64_t from, int64_t to,
-                      const HannTable &hann) noexcept SST_CPPUTILS_NONBLOCKING
+                      const Tables &tables) noexcept SST_CPPUTILS_NONBLOCKING
 {
     const int64_t first = std::max(from, rows.onsetSample[i]);
     const int64_t last = std::min(to, rows.endSample[i]); // exclusive
@@ -596,40 +854,41 @@ void renderSampleSimd(const GrainRows &rows, uint32_t i, const SampleSource &src
     const detail::Run run = detail::sampleSimdRun<Reader>(rows, i, src.frames, first, last);
     const int64_t simdEnd = run.begin + (run.end - run.begin) / 4 * 4;
     const detail::BufferTaps taps{{src.data[0], src.data[1]}};
-    renderSampleRef<Reader>(rows, i, src, out, first, run.begin, hann);
+    renderSampleRef<Reader>(rows, i, src, out, first, run.begin, tables);
     if (out.dst[1] == nullptr)
     {
-        detail::renderInterior<Reader, false, false>(rows, i, taps, out, run.begin, simdEnd, hann);
+        detail::renderInterior<Reader, false, false>(rows, i, taps, out, run.begin, simdEnd,
+                                                     tables);
     }
     else if (src.mono)
     {
-        detail::renderInterior<Reader, true, false>(rows, i, taps, out, run.begin, simdEnd, hann);
+        detail::renderInterior<Reader, true, false>(rows, i, taps, out, run.begin, simdEnd, tables);
     }
     else if (src.interleaved != nullptr)
     {
         const detail::InterleavedTaps pairs{src.interleaved};
-        detail::renderInterior<Reader, true, true>(rows, i, pairs, out, run.begin, simdEnd, hann);
+        detail::renderInterior<Reader, true, true>(rows, i, pairs, out, run.begin, simdEnd, tables);
     }
     else
     {
-        detail::renderInterior<Reader, true, true>(rows, i, taps, out, run.begin, simdEnd, hann);
+        detail::renderInterior<Reader, true, true>(rows, i, taps, out, run.begin, simdEnd, tables);
     }
-    renderSampleRef<Reader>(rows, i, src, out, simdEnd, last, hann);
+    renderSampleRef<Reader>(rows, i, src, out, simdEnd, last, tables);
 }
 
 /// The scalar reference over the live ring: grain i of rows, over [from, to), read with
-/// Reader::readLive. [from, to) must lie in the ring's last write() block, whose R(t) the
-/// head-proximity fade and the read use. Per sample, after w > 0:
+/// Reader::readLive and the grain's ReadParams. [from, to) must lie in the ring's last write()
+/// block, whose R(t) the head-proximity fade and the read use. Per sample, after w > 0:
 ///
-///     f = float(LiveSource::fade(pos, R(t)))
+///     f = float(Reader::fade(pos, R(t)))
 ///
-/// and the sample contributes only when f > 0 and the read succeeds:
+/// (LiveSource::fade for Hermite and Linear, Sinc::fade for the sinc's reach), and the sample
+/// contributes only when f > 0 and the read succeeds:
 /// dst[c][t] += read_c(pos) × ((w × f) × gain_c), or, with one output, ring channel 0 ×
 /// ((w × f) × gain).
 template <class Reader>
 void renderLiveRef(const GrainRows &rows, uint32_t i, const LiveSource &live, const Output &out,
-                   int64_t from, int64_t to,
-                   const HannTable &hann) noexcept SST_CPPUTILS_NONBLOCKING
+                   int64_t from, int64_t to, const Tables &tables) noexcept SST_CPPUTILS_NONBLOCKING
 {
     GG_FP_CONTRACT_OFF
     const int64_t onsetSample = rows.onsetSample[i];
@@ -644,6 +903,8 @@ void renderLiveRef(const GrainRows &rows, uint32_t i, const LiveSource &live, co
         return; // nothing to render (as at most edges of the SIMD kernels' runs)
     }
     const EnvelopeShape envelope = detail::envelopeOf(rows, i);
+    const ReadParams params = detail::paramsOf(rows, i, tables);
+    const HannTable &hann = tables.hann;
     float *const dst0 = out.dst[0];
     float *const dst1 = out.dst[1];
     const bool twoOutputs = dst1 != nullptr;
@@ -663,11 +924,11 @@ void renderLiveRef(const GrainRows &rows, uint32_t i, const LiveSource &live, co
         // The read position is in ring time; the head is R(t), from this block's write.
         const double pos = startPos + rate * e;
         const int64_t head = live.headAt(t);
-        const auto f = static_cast<float>(live.fade(pos, head));
+        const auto f = static_cast<float>(Reader::fade(live, pos, head));
         float l = 0.0f;
         float r = 0.0f;
         // Where the fade is 0 the taps aren't read at all, so stale data can never contribute.
-        if (!(f > 0.0f) || !Reader::readLive(live, pos, head, cursor, l, r))
+        if (!(f > 0.0f) || !Reader::readLive(live, pos, head, cursor, params, l, r))
         {
             continue;
         }
@@ -696,31 +957,39 @@ namespace detail
 /// slope 1 or 0, satisfies the interior's conditions. Requires lo < hi, live.enabled(), and a
 /// finite rate > 0 and invDuration > 0.
 ///
-/// The conditions, with e, pos and the phase as the reference computes them:
+/// The conditions, with e, pos and the phase as the reference computes them, and b and a the
+/// reach Reader::fade is for (Reader::kFadeBefore and kFadeAfter: 1 and 2 for Hermite and
+/// Linear, 7 and 8 for Sinc):
 /// - the window's phase e × invDuration is in [0, 1];
-/// - pos >= 1, so the Hermite's first tap, floor(pos) − 1, is a frame >= 0 (not the silence
-///   before frame 0, which read() supplies itself);
-/// - R − 1 − (pos + 2) >= M + 1 and (pos − 1) − (R − N) >= M + 1: every Hermite tap one frame
-///   beyond the fade's margin M at both ends of the window;
-/// - and, at the run's two ends, fade(pos, R) == 1.0 exactly and read()'s window bounds hold.
+/// - pos >= b, so the reach's first tap, floor(pos) − b, is a frame >= 0 (not the silence
+///   before frame 0, which the reader supplies itself);
+/// - R − 1 − (pos + a) >= M + 1 and (pos − b) − (R − N) >= M + 1: every tap of the reach one
+///   frame beyond the fade's margin M at both ends of the window;
+/// - and, at the run's two ends, Reader::fade(pos, R) == 1.0 exactly and the reach's window
+///   bounds hold.
 ///
 /// The phase and pos are monotone in t (as in sampleSimdRun), so they hold between two samples
 /// where they hold. On [lo, hi) R and pos are linear in t, so each margin is too, up to rounding
 /// of order 2^−12 frames at ring times up to 2^40 frames (over 260 days at 48 kHz): where a margin
 /// is >= M + 1 at both ends of a run it is above M + 1 − 2^−11 everywhere between, so the fade's
 /// two factors are both clamped to 1 there and every tap is inside the window. Hence f == 1 and the
-/// read succeeds on the whole run, for either reader (Linear's taps are a subset of the Hermite's).
+/// read succeeds on the whole run (Linear's taps are a subset of its fade's reach, the Hermite's).
 /// The rounding grows with ring time, but the one frame of slack between M + 1 and the fade's M
 /// would hold to ring times of about 2^50, where it reaches a frame.
 ///
 /// The bounds come from solving the linear conditions in n = t − onsetSample, widened by 2
 /// samples; each end then steps inward while the exact test fails, which costs a few tests per
 /// end (at most hi − lo). A part where the solution isn't finite is empty.
-inline Run liveRun(const GrainRows &rows, uint32_t i, const LiveSource &live, int64_t lo,
-                   int64_t hi, int64_t r0, int64_t slope) noexcept SST_CPPUTILS_NONBLOCKING
+template <class Reader>
+Run liveRun(const GrainRows &rows, uint32_t i, const LiveSource &live, int64_t lo, int64_t hi,
+            int64_t r0, int64_t slope) noexcept SST_CPPUTILS_NONBLOCKING
 {
     GG_FP_CONTRACT_OFF
     constexpr double kM = static_cast<double>(LiveSource::kHeadMargin);
+    constexpr int64_t kBefore = Reader::kFadeBefore;
+    constexpr int64_t kAfter = Reader::kFadeAfter;
+    constexpr auto kB = static_cast<double>(kBefore);
+    constexpr auto kA = static_cast<double>(kAfter);
     const int64_t onsetSample = rows.onsetSample[i];
     const double onsetFrac = rows.onsetFrac[i];
     const double startPos = rows.startPos[i];
@@ -734,34 +1003,38 @@ inline Run liveRun(const GrainRows &rows, uint32_t i, const LiveSource &live, in
         const double e = static_cast<double>(t - onsetSample) - onsetFrac;
         const double phase = e * invDuration;
         const double pos = startPos + rate * e;
-        if (!(phase >= 0.0 && phase <= 1.0 && pos >= 1.0 && pos < 0x1.0p62))
+        if (!(phase >= 0.0 && phase <= 1.0 && pos >= kB && pos < 0x1.0p62))
         {
             return false;
         }
         const int64_t head = live.headAt(t);
         const auto r = static_cast<double>(head);
-        if (!(r - 1.0 - (pos + 2.0) >= kM + 1.0 && (pos - 1.0) - (r - window) >= kM + 1.0))
+        if (!(r - 1.0 - (pos + kA) >= kM + 1.0 && (pos - kB) - (r - window) >= kM + 1.0))
         {
             return false;
         }
         const auto base = static_cast<int64_t>(std::floor(pos));
-        return live.fade(pos, head) == 1.0 && base - 1 >= head - frames && base + 2 <= head - 1;
+        return Reader::fade(live, pos, head) == 1.0 && base - kBefore >= head - frames &&
+               base + kAfter <= head - 1;
     };
 
     // With R = rho0 + s × n (n = t − onsetSample, rho0 = r0 − s × (lo − onsetSample)) and pos =
-    // startPos + rate × (n − onsetFrac), in exact arithmetic:
-    // - toward the head:  (s − rate) × n >= M + 4 + startPos − rate × onsetFrac − rho0 =: kHead
-    // - from the tail:    (rate − s) × n >= M + 2 − N + rho0 − startPos + rate × onsetFrac =: kTail
-    // - pos >= 1:         n >= onsetFrac + (1 − startPos) / rate
+    // startPos + rate × (n − onsetFrac), in exact arithmetic (a + 2 is 4 for the Hermite's reach,
+    // b + 1 is 2):
+    // - toward the head:  (s − rate) × n >= M + a + 2 + startPos − rate × onsetFrac − rho0 =: kHead
+    // - from the tail:    (rate − s) × n >= M + b + 1 − N + rho0 − startPos + rate × onsetFrac
+    //                                                                                     =: kTail
+    // - pos >= b:         n >= onsetFrac + (b − startPos) / rate
     // - the phase:        onsetFrac <= n <= onsetFrac + duration
     const auto s = static_cast<double>(slope);
     const double nLo = static_cast<double>(lo - onsetSample);
     const double nHi = static_cast<double>(hi - onsetSample); // exclusive
     const double rho0 = static_cast<double>(r0) - s * nLo;
     const double c = s - rate;
-    const double kHead = kM + 4.0 + startPos - rate * onsetFrac - rho0;
-    const double kTail = kM + 2.0 - window + rho0 - startPos + rate * onsetFrac;
-    double nFirst = std::max(onsetFrac, onsetFrac + (1.0 - startPos) / rate);
+    const double kHead = kM + static_cast<double>(kAfter + 2) + startPos - rate * onsetFrac - rho0;
+    const double kTail =
+        kM + static_cast<double>(kBefore + 1) - window + rho0 - startPos + rate * onsetFrac;
+    double nFirst = std::max(onsetFrac, onsetFrac + (kB - startPos) / rate);
     double nLast = onsetFrac + rows.durationSamples[i];
     if (c > 0.0)
     {
@@ -801,10 +1074,11 @@ inline Run liveRun(const GrainRows &rows, uint32_t i, const LiveSource &live, in
 
 /// The live ring's taps for the SIMD interior: frame f is in slot f mod capacity, whose two
 /// channels are interleaved (LiveSource::RingView::slots, read through InterleavedTaps), and the
-/// ring's guard slots make each read's taps contiguous from its first tap's slot. locate finds
-/// lane 0's first-tap slot with one division, and each other lane's by adding its frame offset
-/// from lane 0 and subtracting capacity once if that passes it; the read's base is that slot +
-/// Reader::kBefore. Requires every lane's first tap to be a frame >= 0, in increasing lane order.
+/// ring's 15 guard slots make each read's taps (up to the sinc's 16) contiguous from its first
+/// tap's slot. locate finds lane 0's first-tap slot with one division, and each other lane's by
+/// adding its frame offset from lane 0 and subtracting capacity once if that passes it; the read's
+/// base is that slot + Reader::kBefore. Requires every lane's first tap to be a frame >= 0, in
+/// increasing lane order.
 ///
 /// One subtraction is enough because every offset is below the capacity C: the 4 lanes are
 /// consecutive samples of one write() block, so the head R(t) moves at most 3 frames across them,
@@ -831,12 +1105,13 @@ template <class Reader> struct RingTaps : InterleavedTaps
 
 /// The live interior of grain i over [from, to), which must lie in the ring's last write()
 /// block: [max(from, onset), min(to, endSample)) split at blockKink(), and on each side the
-/// samples detail::liveRun admits. On every sample there the window's phase is in [0, 1], every
-/// tap is a frame >= 0 inside the window at R(t), and the reference's fade is exactly 1, so
+/// samples detail::liveRun<Reader> admits. On every sample there the window's phase is in [0, 1],
+/// every tap is a frame >= 0 inside the window at R(t), and the reference's fade is exactly 1, so
 /// renderLiveRef's amplitude is (w × 1) × gain_c = w × gain_c, the sample kernel's. Empty when
 /// there is no ring, or the grain's rate isn't finite and > 0.
-inline LiveInterior liveInterior(const GrainRows &rows, uint32_t i, const LiveSource &live,
-                                 int64_t from, int64_t to) noexcept SST_CPPUTILS_NONBLOCKING
+template <class Reader>
+LiveInterior liveInterior(const GrainRows &rows, uint32_t i, const LiveSource &live, int64_t from,
+                          int64_t to) noexcept SST_CPPUTILS_NONBLOCKING
 {
     const int64_t first = std::max(from, rows.onsetSample[i]);
     const int64_t last = std::max(first, std::min(to, rows.endSample[i]));
@@ -852,14 +1127,16 @@ inline LiveInterior liveInterior(const GrainRows &rows, uint32_t i, const LiveSo
     if (first < kink)
     {
         // The head advances by one per sample: R(t) = R(first) + (t − first).
-        const detail::Run run = detail::liveRun(rows, i, live, first, kink, live.headAt(first), 1);
+        const detail::Run run =
+            detail::liveRun<Reader>(rows, i, live, first, kink, live.headAt(first), 1);
         in.begin[0] = run.begin;
         in.end[0] = run.end;
     }
     if (kink < last)
     {
         // The head stands still.
-        const detail::Run run = detail::liveRun(rows, i, live, kink, last, live.headAt(kink), 0);
+        const detail::Run run =
+            detail::liveRun<Reader>(rows, i, live, kink, last, live.headAt(kink), 0);
         in.begin[1] = run.begin;
         in.end[1] = run.end;
     }
@@ -875,13 +1152,13 @@ inline LiveInterior liveInterior(const GrainRows &rows, uint32_t i, const LiveSo
 template <class Reader>
 void renderLiveSimd(const GrainRows &rows, uint32_t i, const LiveSource &live, const Output &out,
                     int64_t from, int64_t to,
-                    const HannTable &hann) noexcept SST_CPPUTILS_NONBLOCKING
+                    const Tables &tables) noexcept SST_CPPUTILS_NONBLOCKING
 {
     if (std::max(from, rows.onsetSample[i]) >= std::min(to, rows.endSample[i]))
     {
         return;
     }
-    const LiveInterior in = liveInterior(rows, i, live, from, to);
+    const LiveInterior in = liveInterior<Reader>(rows, i, live, from, to);
     const LiveSource::RingView ring = live.view();
     const detail::RingTaps<Reader> taps{{ring.slots}, ring.capacity};
     int64_t done = from;
@@ -889,18 +1166,19 @@ void renderLiveSimd(const GrainRows &rows, uint32_t i, const LiveSource &live, c
     {
         const int64_t begin = in.begin[part];
         const int64_t simdEnd = begin + (in.end[part] - begin) / 4 * 4;
-        renderLiveRef<Reader>(rows, i, live, out, done, begin, hann);
+        renderLiveRef<Reader>(rows, i, live, out, done, begin, tables);
         if (out.dst[1] == nullptr)
         {
-            detail::renderInterior<Reader, false, false>(rows, i, taps, out, begin, simdEnd, hann);
+            detail::renderInterior<Reader, false, false>(rows, i, taps, out, begin, simdEnd,
+                                                         tables);
         }
         else
         {
-            detail::renderInterior<Reader, true, true>(rows, i, taps, out, begin, simdEnd, hann);
+            detail::renderInterior<Reader, true, true>(rows, i, taps, out, begin, simdEnd, tables);
         }
         done = simdEnd;
     }
-    renderLiveRef<Reader>(rows, i, live, out, done, to, hann);
+    renderLiveRef<Reader>(rows, i, live, out, done, to, tables);
 }
 } // namespace gg::kernels
 

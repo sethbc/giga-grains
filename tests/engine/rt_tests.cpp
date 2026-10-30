@@ -7,6 +7,7 @@
 // their other checks, and the tripwire's own test SKIPs. The RTSan build also aborts on any
 // allocation, lock or blocking call made inside the SST_CPPUTILS_NONBLOCKING process().
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <memory>
@@ -25,12 +26,13 @@ using gg::test::AllocTripwire;
 
 namespace
 {
-// Counts spawns, the Eco ones and the ones reading the ring, without allocating: the sink runs
-// inside process().
+// Counts spawns, the Eco ones, the HQ ones and the ones reading the ring, without allocating: the
+// sink runs inside process().
 struct SpawnCounter
 {
     uint64_t spawns{0};
     uint64_t eco{0};
+    uint64_t hq{0};
     uint64_t live{0};
 
     static void record(void *ctx, uint32_t, const gg::GrainSpec &g)
@@ -38,6 +40,7 @@ struct SpawnCounter
         auto *counter = static_cast<SpawnCounter *>(ctx);
         ++counter->spawns;
         counter->eco += g.tier == gg::Tier::Eco ? 1 : 0;
+        counter->hq += g.tier == gg::Tier::HQ ? 1 : 0;
         counter->live += g.sourceSlot == gg::Engine::kLiveSlot ? 1 : 0;
     }
 };
@@ -389,6 +392,80 @@ TEST_CASE("engine process does not allocate at the Eco tier", "[rt]")
     REQUIRE(counter.eco > ecoBefore);                     // Eco grains spawned while armed
     REQUIRE(counter.spawns - counter.eco > normalBefore); // and Normal ones
     REQUIRE(engine.activeGrains() > 0);
+    if (gg::test::AllocTripwire::available()) // off under ASan; RTSan covers this
+    {
+        REQUIRE(allocations == 0);
+    }
+}
+
+TEST_CASE("engine process does not allocate at the HQ tier", "[rt]")
+{
+    // The HQ grains read through the 16-tap sinc kernels (spec §6.2), up a fifth so they are
+    // stretched, alongside Normal grains still sounding: both outputs and one, sample and live
+    // sources, calls of 0, 1, 300 and 1,000 samples, and a quality change to Normal and back to
+    // HQ inside the armed span.
+    gg::CloudParams params{.densityHz = 200.0,
+                           .distribution = 1.0,
+                           .grainDurationSec = 0.05,
+                           .position = 0.5,
+                           .spray = 0.5,
+                           .pitchSemitones = 7.0,
+                           .stereo = 1.0,
+                           .gain = 0.5f};
+    std::vector<float> inLeft(1000), inRight(1000);
+    for (std::size_t i = 0; i < inLeft.size(); ++i)
+    {
+        inLeft[i] = static_cast<float>(std::sin(2.0 * std::numbers::pi * 220.0 * i / 48000.0));
+        inRight[i] = -inLeft[i];
+    }
+    const float *in[2] = {inLeft.data(), inRight.data()};
+    std::vector<float> left(1000), right(1000);
+    float *out[2] = {left.data(), right.data()};
+
+    gg::EngineConfig config{48000.0, 256, 4096, 9};
+    config.liveSeconds = 1.0;
+    gg::Engine engine(config);
+    engine.setSource(stereoSine(330.0));
+    SECTION("sample source") {}
+    SECTION("live ring")
+    {
+        engine.setSourceMode(gg::SourceMode::Live);
+        params.position = 0.01;
+        params.spray = 0.02;
+    }
+    engine.setCloudParams(params); // Normal: these grains are still sounding when HQ starts
+    SpawnCounter counter;
+    engine.setEventSink(&SpawnCounter::record, &counter);
+    for (int i = 0; i < 4; ++i) // warm up until grains are sounding
+    {
+        engine.process(in, 2, out, 2, 1000);
+    }
+    gg::CloudParams hq = params;
+    hq.quality = gg::Tier::HQ;
+    engine.setCloudParams(hq);
+    engine.process(in, 2, out, 2, 1); // the next armed call renders both tiers' grains
+    const uint64_t hqBefore = counter.hq;
+    const uint64_t normalBefore = counter.spawns - counter.hq;
+
+    AllocTripwire::resetCount();
+    {
+        AllocTripwire::Scope armed;
+        for (int i = 0; i < 20; ++i)
+        {
+            engine.setCloudParams(i == 10 || i == 11 ? params : hq);
+            engine.process(in, 2, out, 2, 0);
+            engine.process(in, 2, out, 2, 1);
+            engine.process(in, 2, out, 2, 1000);
+            engine.process(in, 2, out, 1, 300);
+        }
+    }
+    const uint64_t allocations = AllocTripwire::count();
+
+    REQUIRE(counter.hq > hqBefore);                      // HQ grains spawned while armed
+    REQUIRE(counter.spawns - counter.hq > normalBefore); // and Normal ones
+    REQUIRE(engine.activeGrains() > 0);
+    REQUIRE(
+        std::all_of(left.begin(), left.begin() + 300, [](float x) { return std::isfinite(x); }));
     if (gg::test::AllocTripwire::available()) // off under ASan; RTSan covers this
     {
         REQUIRE(allocations == 0);

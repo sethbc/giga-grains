@@ -450,6 +450,7 @@ void Engine::renderPool(float *const dst[2], int64_t blockStart, int64_t from, i
     // tier (ruling 2) from the source it latched at its onset (spec §6.4): the ring for
     // kLiveSlot, otherwise that sample slot's source, whatever the mode now in effect.
     const kernels::Output output{{dst[0], dst[1]}, blockStart};
+    const kernels::Tables tables{hann_, sinc_};
     const GrainRows &rows = pool_.rows();
     const uint32_t n = pool_.size();
     const auto view = [](const SourceSlot &s) {
@@ -462,22 +463,30 @@ void Engine::renderPool(float *const dst[2], int64_t blockStart, int64_t from, i
         {
             if (rows.tier[i] == Tier::Eco)
             {
-                kernels::renderLiveSimd<kernels::Linear>(rows, i, live_, output, from, to, hann_);
+                kernels::renderLiveSimd<kernels::Linear>(rows, i, live_, output, from, to, tables);
+            }
+            else if (rows.tier[i] == Tier::HQ)
+            {
+                kernels::renderLiveSimd<kernels::Sinc>(rows, i, live_, output, from, to, tables);
             }
             else
             {
-                kernels::renderLiveSimd<kernels::Hermite>(rows, i, live_, output, from, to, hann_);
+                kernels::renderLiveSimd<kernels::Hermite>(rows, i, live_, output, from, to, tables);
             }
             continue;
         }
         const kernels::SampleSource &source = sources[rows.sourceSlot[i]];
         if (rows.tier[i] == Tier::Eco)
         {
-            kernels::renderSampleSimd<kernels::Linear>(rows, i, source, output, from, to, hann_);
+            kernels::renderSampleSimd<kernels::Linear>(rows, i, source, output, from, to, tables);
+        }
+        else if (rows.tier[i] == Tier::HQ)
+        {
+            kernels::renderSampleSimd<kernels::Sinc>(rows, i, source, output, from, to, tables);
         }
         else
         {
-            kernels::renderSampleSimd<kernels::Hermite>(rows, i, source, output, from, to, hann_);
+            kernels::renderSampleSimd<kernels::Hermite>(rows, i, source, output, from, to, tables);
         }
     }
 }

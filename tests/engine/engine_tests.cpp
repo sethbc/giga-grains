@@ -24,6 +24,7 @@
 #include "gg/engine/Engine.h"
 #include "gg/grain/GrainKernels.h"
 #include "gg/grain/GrainPool.h"
+#include "gg/grain/SincTable.h"
 #include "gg/source/PreparedSource.h"
 
 namespace
@@ -708,6 +709,7 @@ Render referenceRender(const std::vector<gg::GrainSpec> &grains, int64_t frames,
         REQUIRE(pool.spawn(g));
     }
     const gg::HannTable hann;
+    const gg::SincTable sinc;
     const gg::kernels::Output out{{r.left.data(), r.right.data()}, 0};
     for (uint32_t i = 0; i < pool.size(); ++i)
     {
@@ -716,7 +718,7 @@ Render referenceRender(const std::vector<gg::GrainSpec> &grains, int64_t frames,
         const gg::kernels::SampleSource src{
             {buf.channel(0), buf.channel(0)}, buf.frames(), true, nullptr};
         gg::kernels::renderSampleRef<gg::kernels::Hermite>(pool.rows(), i, src, out, 0, frames,
-                                                           hann);
+                                                           {hann, sinc});
     }
     return r;
 }

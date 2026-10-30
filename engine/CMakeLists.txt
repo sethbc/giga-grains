@@ -11,6 +11,7 @@ add_library(gg-engine STATIC
         src/LiveSource.cpp
         src/PreparedSource.cpp
         src/SampleBuffer.cpp
+        src/SincTable.cpp
         src/Version.cpp
         src/Window.cpp
         )

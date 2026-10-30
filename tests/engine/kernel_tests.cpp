@@ -27,6 +27,7 @@
 #include "gg/grain/Envelope.h"
 #include "gg/grain/GrainKernels.h"
 #include "gg/grain/GrainPool.h"
+#include "gg/grain/SincTable.h"
 #include "gg/source/InterleavedStereo.h"
 #include "gg/source/LiveSource.h"
 
@@ -34,11 +35,52 @@ namespace
 {
 using gg::kernels::Hermite;
 using gg::kernels::Linear;
-
-// A sample-buffer interpolator: interp::hermite4 (Normal) or interp::linear (Eco).
-using SampleRead = float (*)(const float *, int64_t, double);
+using gg::kernels::Sinc;
+using gg::kernels::Tables;
 
 constexpr float kNaN = std::numeric_limits<float>::quiet_NaN();
+constexpr float kZero = 0.0f;
+
+// The kernels' tables, built once.
+const Tables &kernelTables()
+{
+    static const gg::HannTable hann;
+    static const gg::SincTable sinc;
+    static const Tables tables{hann, sinc};
+    return tables;
+}
+
+// What a reader takes beside its taps: the sinc table and a stretch, which only Sinc reads.
+gg::kernels::ReadParams readParams(float stretch = 1.0f) { return {&kernelTables().sinc, stretch}; }
+
+// The spec's stretch for a grain at rate r (§6.2), written out: s = min(1, 1 / r).
+float specStretch(double rate) { return rate > 1.0 ? static_cast<float>(1.0 / rate) : 1.0f; }
+
+// The spec's HQ read (§6.2), written out per tap: for k = −7 … 8, x_k = (k − frac) × s and
+// c_k = T(x_k), the table read in float; y = (Σ c_k × tap_k) / (Σ c_k), both sums in k order and
+// in float, with a tap outside [0, frames) reading 0.
+float specSinc(const float *data, int64_t frames, double pos, float stretch)
+{
+    if (!(pos > -9.0 && pos < static_cast<double>(frames) + 8.0))
+    {
+        return 0.0f; // every tap is outside the source
+    }
+    const double base = std::floor(pos);
+    const auto i = static_cast<int64_t>(base);
+    const auto frac = static_cast<float>(pos - base);
+    float num = 0.0f;
+    float den = 0.0f;
+    for (int64_t k = -7; k <= 8; ++k)
+    {
+        const float x = (static_cast<float>(k) - frac) * stretch;
+        const float c = kernelTables().sinc.at(x);
+        const int64_t j = i + k;
+        const float tap = j >= 0 && j < frames ? data[j] : 0.0f;
+        num += c * tap;
+        den += c;
+    }
+    return den != 0.0f ? num / den : 0.0f;
+}
 
 // Uniform noise in [-0.5, 0.5) from gg::rng, one stream per channel.
 std::vector<float> noise(int64_t frames, uint64_t seed, uint32_t channel)
@@ -95,6 +137,8 @@ ChannelGains channelGains(const gg::GrainSpec &g, int outputs)
     return {{g.gain * p.left, g.gain * p.right}};
 }
 
+bool sameBits(float a, float b) { return std::memcmp(&a, &b, sizeof(float)) == 0; }
+
 bool sameBits(const std::vector<float> &a, const std::vector<float> &b)
 {
     return a.size() == b.size() && std::memcmp(a.data(), b.data(), a.size() * sizeof(float)) == 0;
@@ -128,9 +172,10 @@ bool anyNonZero(const std::vector<float> &v)
 // grainEndSample), e = double(t − onsetSample) − onsetFrac, w = hann(warp(e × invDuration)) with
 // the warp of the grain's Texture envelope (spec §4; the identity at texture 0), skip unless
 // w > 0, pos = startPos + rate × e, dst[c][t] += read_c(pos) × (w × gain_c), with read the tier's
-// interpolator. One output reads channel 0 with gain alone.
-void specSample(const gg::GrainSpec &g, SampleRead read, const float *const src[2], int64_t frames,
-                int outputs, std::vector<float> (&out)[2], const gg::HannTable &hann)
+// interpolator (read(data, frames, pos)). One output reads channel 0 with gain alone.
+template <class Read>
+void specSample(const gg::GrainSpec &g, Read read, const float *const src[2], int64_t frames,
+                int outputs, std::vector<float> (&out)[2], const Tables &tables)
 {
     const double invDuration = 1.0 / g.durationSamples;
     const gg::EnvelopeShape shape = gg::envelopeShape(g.texture, g.durationSamples);
@@ -139,7 +184,7 @@ void specSample(const gg::GrainSpec &g, SampleRead read, const float *const src[
     {
         const int64_t n = t - g.onsetSample;
         const double e = static_cast<double>(n) - g.onsetFrac;
-        const float w = hann.at(gg::warpPhase(e * invDuration, shape));
+        const float w = tables.hann.at(gg::warpPhase(e * invDuration, shape));
         if (!(w > 0.0f))
         {
             continue;
@@ -157,8 +202,7 @@ void specSample(const gg::GrainSpec &g, SampleRead read, const float *const src[
 // engine's blocks do.
 template <class Reader = Hermite>
 void refSample(const gg::GrainRows &rows, const gg::kernels::SampleSource &src, int outputs,
-               std::vector<float> (&out)[2], const std::vector<int64_t> &cuts,
-               const gg::HannTable &hann)
+               std::vector<float> (&out)[2], const std::vector<int64_t> &cuts, const Tables &tables)
 {
     for (std::size_t k = 0; k + 1 < cuts.size(); ++k)
     {
@@ -166,28 +210,23 @@ void refSample(const gg::GrainRows &rows, const gg::kernels::SampleSource &src, 
         const int64_t to = cuts[k + 1];
         const gg::kernels::Output o{
             {out[0].data() + from, outputs == 2 ? out[1].data() + from : nullptr}, from};
-        gg::kernels::renderSampleRef<Reader>(rows, 0, src, o, from, to, hann);
+        gg::kernels::renderSampleRef<Reader>(rows, 0, src, o, from, to, tables);
     }
 }
 
 // Hermite, but a live read any of whose taps (floor(pos) − 1 .. floor(pos) + 2) falls outside
 // [100, 600) returns NaN in both channels, as the sample test's source would; and it counts its
 // reads. The ring itself can't hold NaN (LiveSource stores non-finite input as 0).
-struct NaNOutside
+struct NaNOutside : Hermite
 {
     static inline int64_t reads = 0;
 
-    static float read(const float *data, int64_t frames,
-                      double pos) noexcept SST_CPPUTILS_NONBLOCKING
-    {
-        return Hermite::read(data, frames, pos);
-    }
     static bool readLive(const gg::LiveSource &live, double pos, int64_t head,
-                         gg::LiveSource::Cursor &cursor, float &l,
+                         gg::LiveSource::Cursor &cursor, const gg::kernels::ReadParams &p, float &l,
                          float &r) noexcept SST_CPPUTILS_NONBLOCKING
     {
         ++reads;
-        const bool ok = Hermite::readLive(live, pos, head, cursor, l, r);
+        const bool ok = Hermite::readLive(live, pos, head, cursor, p, l, r);
         const double base = std::floor(pos);
         if (base - 1.0 < 100.0 || base + 2.0 >= 600.0)
         {
@@ -199,16 +238,18 @@ struct NaNOutside
 
 // Requires renderSampleRef<Reader> to match the spec's table, with read as the tier's interpolator,
 // for the brief's grain over stereo noise: two outputs from a stereo and from a mono source, and
-// one output from a stereo source. The grain has the given Texture (spec §4).
-template <class Reader> void requireSampleArithmetic(SampleRead read, double texture = 0.0)
+// one output from a stereo source. The grain has the given Texture (spec §4) and rate.
+template <class Reader, class Read>
+void requireSampleArithmetic(Read read, double texture = 0.0, double rate = 1.5)
 {
     constexpr int64_t kFrames = 2000;
     constexpr int64_t kLength = 1000;
-    const gg::HannTable hann;
+    const Tables &tables = kernelTables();
     const std::vector<float> left = noise(kFrames, 7, 0);
     const std::vector<float> right = noise(kFrames, 7, 1);
     gg::GrainSpec g = testGrain(10, 200.25);
     g.texture = texture;
+    g.rate = rate;
     REQUIRE(gg::grainEndSample(g) <= kLength);
     const OneGrain one(g);
     const gg::GrainRows &rows = one.pool.rows();
@@ -232,9 +273,9 @@ template <class Reader> void requireSampleArithmetic(SampleRead read, double tex
                                           std::vector<float>(kLength, 0.0f)};
         std::vector<float> actual[2] = {std::vector<float>(kLength, 0.0f),
                                         std::vector<float>(kLength, 0.0f)};
-        specSample(g, read, channels, kFrames, shape.outputs, expected, hann);
+        specSample(g, read, channels, kFrames, shape.outputs, expected, tables);
         refSample<Reader>(rows, {{channels[0], channels[1]}, kFrames, shape.mono, nullptr},
-                          shape.outputs, actual, cuts, hann);
+                          shape.outputs, actual, cuts, tables);
 
         REQUIRE(anyNonZero(expected[0]));
         REQUIRE(sameBits(actual[0], expected[0]));
@@ -293,7 +334,7 @@ TEST_CASE("reference reads nothing where the window is zero", "[kernel]")
     constexpr int64_t kLength = 1600;
     constexpr double kDuration = 498.0;
     constexpr double kStart = 100.5;
-    const gg::HannTable hann;
+    const Tables &tables = kernelTables();
     const gg::GrainSpec g{.index = 0,
                           .onsetSample = kOnset,
                           .onsetFrac = 0.0,
@@ -309,11 +350,11 @@ TEST_CASE("reference reads nothing where the window is zero", "[kernel]")
 
     // The premises: the window is zero exactly at n = 0, 498 and 499, and the positions read
     // there touch NaN, while those inside don't.
-    REQUIRE(hann.at(0.0 * invDuration) == 0.0f);
-    REQUIRE(hann.at(1.0 * invDuration) > 0.0f);
-    REQUIRE(hann.at(497.0 * invDuration) > 0.0f);
-    REQUIRE(hann.at(498.0 * invDuration) == 0.0f);
-    REQUIRE(hann.at(499.0 * invDuration) == 0.0f);
+    REQUIRE(tables.hann.at(0.0 * invDuration) == 0.0f);
+    REQUIRE(tables.hann.at(1.0 * invDuration) > 0.0f);
+    REQUIRE(tables.hann.at(497.0 * invDuration) > 0.0f);
+    REQUIRE(tables.hann.at(498.0 * invDuration) == 0.0f);
+    REQUIRE(tables.hann.at(499.0 * invDuration) == 0.0f);
 
     SECTION("sample source")
     {
@@ -341,7 +382,8 @@ TEST_CASE("reference reads nothing where the window is zero", "[kernel]")
                                              std::vector<float>(kLength, 0.0f)};
                 const gg::kernels::SampleSource src{
                     {left.data(), mono ? left.data() : right.data()}, kFrames, mono, nullptr};
-                refSample(rows, src, outputs, out, {0, 999, 1000, 1001, 1300, 1499, kLength}, hann);
+                refSample(rows, src, outputs, out, {0, 999, 1000, 1001, 1300, 1499, kLength},
+                          tables);
                 REQUIRE(allFinite(out[0]));
                 REQUIRE(allFinite(out[1]));
                 REQUIRE(anyNonZero(out[0]));
@@ -379,7 +421,7 @@ TEST_CASE("reference reads nothing where the window is zero", "[kernel]")
                 ring.write(in, 2, 0, b, static_cast<uint32_t>(kBlock));
                 const gg::kernels::Output o{
                     {out[0].data() + b, outputs == 2 ? out[1].data() + b : nullptr}, b};
-                gg::kernels::renderLiveRef<NaNOutside>(rows, 0, ring, o, b, b + kBlock, hann);
+                gg::kernels::renderLiveRef<NaNOutside>(rows, 0, ring, o, b, b + kBlock, tables);
             }
             REQUIRE(allFinite(out[0]));
             REQUIRE(allFinite(out[1]));
@@ -401,7 +443,7 @@ TEST_CASE("live reference follows the spec's arithmetic", "[kernel]")
     constexpr int64_t kBlock = 100;
     constexpr int64_t kFreezeAt = 3000;
     constexpr int64_t kLength = 4400;
-    const gg::HannTable hann;
+    const Tables &tables = kernelTables();
     const std::vector<float> left = noise(kLength, 5, 0);
     const std::vector<float> right = noise(kLength, 5, 1);
     const gg::GrainSpec g = testGrain(3700, 3300.25);
@@ -437,7 +479,7 @@ TEST_CASE("live reference follows the spec's arithmetic", "[kernel]")
                  t < std::min(b + kBlock, gg::grainEndSample(g)); ++t)
             {
                 const double e = static_cast<double>(t - g.onsetSample) - g.onsetFrac;
-                const float w = hann.at(e * invDuration);
+                const float w = tables.hann.at(e * invDuration);
                 if (!(w > 0.0f))
                 {
                     continue;
@@ -461,7 +503,7 @@ TEST_CASE("live reference follows the spec's arithmetic", "[kernel]")
 
             const gg::kernels::Output o{
                 {actual[0].data() + b, outputs == 2 ? actual[1].data() + b : nullptr}, b};
-            gg::kernels::renderLiveRef<Hermite>(rows, 0, ring, o, b, b + kBlock, hann);
+            gg::kernels::renderLiveRef<Hermite>(rows, 0, ring, o, b, b + kBlock, tables);
         }
         REQUIRE(ring.head() == kFreezeAt + gg::LiveSource::freezeRampSamples(kRate));
         REQUIRE(fadeOne > 0);
@@ -477,7 +519,7 @@ TEST_CASE("eco reference reads linearly", "[kernel]")
 {
     // The Eco tier (ruling 2) is the same arithmetic with interp::linear, or the ring's linear
     // read, in place of the Hermite.
-    const gg::HannTable hann;
+    const Tables &tables = kernelTables();
 
     SECTION("sample source")
     {
@@ -494,8 +536,8 @@ TEST_CASE("eco reference reads linearly", "[kernel]")
                                      std::vector<float>(kLength, 0.0f)};
         std::vector<float> normal[2] = {std::vector<float>(kLength, 0.0f),
                                         std::vector<float>(kLength, 0.0f)};
-        refSample<Linear>(one.pool.rows(), src, 2, eco, {0, kLength}, hann);
-        refSample<Hermite>(one.pool.rows(), src, 2, normal, {0, kLength}, hann);
+        refSample<Linear>(one.pool.rows(), src, 2, eco, {0, kLength}, tables);
+        refSample<Hermite>(one.pool.rows(), src, 2, normal, {0, kLength}, tables);
         REQUIRE(anyNonZero(eco[0]));
         REQUIRE_FALSE(sameBits(eco[0], normal[0]));
         REQUIRE_FALSE(sameBits(eco[1], normal[1]));
@@ -556,7 +598,7 @@ TEST_CASE("eco reference reads linearly", "[kernel]")
                      t < std::min(b + kBlock, gg::grainEndSample(g)); ++t)
                 {
                     const double e = static_cast<double>(t - g.onsetSample) - g.onsetFrac;
-                    const float w = hann.at(e * invDuration);
+                    const float w = tables.hann.at(e * invDuration);
                     if (!(w > 0.0f))
                     {
                         continue;
@@ -592,10 +634,10 @@ TEST_CASE("eco reference reads linearly", "[kernel]")
 
                 const gg::kernels::Output o{
                     {actual[0].data() + b, outputs == 2 ? actual[1].data() + b : nullptr}, b};
-                gg::kernels::renderLiveRef<Linear>(rows, 0, ring, o, b, b + kBlock, hann);
+                gg::kernels::renderLiveRef<Linear>(rows, 0, ring, o, b, b + kBlock, tables);
                 const gg::kernels::Output n{
                     {normal[0].data() + b, outputs == 2 ? normal[1].data() + b : nullptr}, b};
-                gg::kernels::renderLiveRef<Hermite>(rows, 0, ring, n, b, b + kBlock, hann);
+                gg::kernels::renderLiveRef<Hermite>(rows, 0, ring, n, b, b + kBlock, tables);
             }
             REQUIRE(ring.head() == kFreezeAt + ramp);
             REQUIRE(fadeOne > 0);
@@ -625,7 +667,7 @@ TEST_CASE("eco reference reads linearly", "[kernel]")
             gg::LiveSource::Cursor cursor;
             float l = kNaN;
             float r = kNaN;
-            REQUIRE(Linear::readLive(ring, pos, head, cursor, l, r));
+            REQUIRE(Linear::readLive(ring, pos, head, cursor, readParams(), l, r));
             REQUIRE(l == gg::interp::linear(left.data(), head, pos));
             REQUIRE(r == gg::interp::linear(right.data(), head, pos));
         };
@@ -634,7 +676,7 @@ TEST_CASE("eco reference reads linearly", "[kernel]")
             gg::LiveSource::Cursor cursor;
             float l = 0.25f;
             float r = 0.25f;
-            REQUIRE_FALSE(Linear::readLive(ring, pos, head, cursor, l, r));
+            REQUIRE_FALSE(Linear::readLive(ring, pos, head, cursor, readParams(), l, r));
             REQUIRE(l == 0.25f); // nothing read
             REQUIRE(r == 0.25f);
         };
@@ -689,12 +731,204 @@ TEST_CASE("eco reference reads linearly", "[kernel]")
             INFO("pos " << pos);
             float l = kNaN;
             float r = kNaN;
-            REQUIRE(Linear::readLive(ring, pos, head, cursor, l, r));
+            REQUIRE(Linear::readLive(ring, pos, head, cursor, readParams(), l, r));
             REQUIRE(l == gg::interp::linear(left.data(), head, pos));
             REQUIRE(r == gg::interp::linear(right.data(), head, pos));
         }
     }
 }
+TEST_CASE("sinc reference follows the spec's arithmetic", "[kernel]")
+{
+    // The HQ tier (spec §6.2) is the same per-sample arithmetic with the 16-tap windowed sinc,
+    // written out tap by tap (specSinc), in place of the Hermite: at stretch 1 (rate 0.75) and
+    // stretched (rate 1/0.6, so s = 0.6).
+    const Tables &tables = kernelTables();
+
+    SECTION("sample source")
+    {
+        for (const double rate : {0.75, 1.0 / 0.6})
+        {
+            const float stretch = specStretch(rate);
+            INFO("rate " << rate << ", stretch " << stretch);
+            REQUIRE(gg::kernels::stretchOf(rate) == stretch);
+            const auto read = [stretch](const float *data, int64_t frames, double pos) {
+                return specSinc(data, frames, pos, stretch);
+            };
+            requireSampleArithmetic<Sinc>(read, 0.0, rate);
+            requireSampleArithmetic<Sinc>(read, 0.75, rate);
+        }
+        REQUIRE(specStretch(1.0 / 0.6) <= 0.6f);
+        REQUIRE(specStretch(1.0) == 1.0f);
+
+        // Not vacuous: the HQ and Normal renders of the same grain differ.
+        constexpr int64_t kFrames = 2000;
+        constexpr int64_t kLength = 1000;
+        const std::vector<float> left = noise(kFrames, 7, 0);
+        const std::vector<float> right = noise(kFrames, 7, 1);
+        const OneGrain one(testGrain(10, 200.25));
+        const gg::kernels::SampleSource src{{left.data(), right.data()}, kFrames, false, nullptr};
+        std::vector<float> hq[2] = {std::vector<float>(kLength, 0.0f),
+                                    std::vector<float>(kLength, 0.0f)};
+        std::vector<float> normal[2] = {std::vector<float>(kLength, 0.0f),
+                                        std::vector<float>(kLength, 0.0f)};
+        refSample<Sinc>(one.pool.rows(), src, 2, hq, {0, kLength}, tables);
+        refSample<Hermite>(one.pool.rows(), src, 2, normal, {0, kLength}, tables);
+        REQUIRE(anyNonZero(hq[0]));
+        REQUIRE_FALSE(sameBits(hq[0], normal[0]));
+        REQUIRE_FALSE(sameBits(hq[1], normal[1]));
+    }
+
+    SECTION("the reader's read and its stride")
+    {
+        // Sinc::read is the spec's read at any position, across both ends of the source and
+        // outside it, and at a stride of 2 it reads frame f at data[2f]: one channel of
+        // interleaved pairs.
+        constexpr int64_t kFrames = 40;
+        const std::vector<float> left = noise(kFrames, 9, 0);
+        const std::vector<float> right = noise(kFrames, 9, 1);
+        gg::InterleavedStereo pairs;
+        pairs.assign(left.data(), right.data(), kFrames);
+        int64_t nonZero = 0;
+        for (const float stretch : {1.0f, 0.6f, 0.25f})
+        {
+            for (double pos = -12.0; pos < static_cast<double>(kFrames) + 12.0; pos += 0.37)
+            {
+                INFO("stretch " << stretch << ", pos " << pos);
+                const float want = specSinc(left.data(), kFrames, pos, stretch);
+                const float got = Sinc::read(left.data(), kFrames, pos, readParams(stretch));
+                REQUIRE(std::memcmp(&got, &want, sizeof(float)) == 0);
+                const float strided =
+                    Sinc::read<2>(pairs.data(), kFrames, pos, readParams(stretch));
+                REQUIRE(std::memcmp(&strided, &want, sizeof(float)) == 0);
+                const float wantRight = specSinc(right.data(), kFrames, pos, stretch);
+                const float stridedRight =
+                    Sinc::read<2>(pairs.data() + 1, kFrames, pos, readParams(stretch));
+                REQUIRE(std::memcmp(&stridedRight, &wantRight, sizeof(float)) == 0);
+                nonZero += want != 0.0f;
+            }
+        }
+        REQUIRE(nonZero > 300);
+        for (const double pos :
+             {-9.0, static_cast<double>(kFrames) + 8.0, std::numeric_limits<double>::quiet_NaN(),
+              std::numeric_limits<double>::infinity(), -std::numeric_limits<double>::infinity()})
+        {
+            INFO("pos " << pos);
+            const float got = Sinc::read(left.data(), kFrames, pos, readParams());
+            REQUIRE(std::memcmp(&got, &kZero, sizeof(float)) == 0);
+        }
+    }
+
+    SECTION("live ring")
+    {
+        // The eco test's frozen ring, read with the sinc against a copy of what the ring stores,
+        // with the HQ fade written out for the sinc's reach, taps floor(pos) − 7 .. floor(pos) +
+        // 8 (spec §6.2): g = clamp((R − 1 − (pos + 8)) / M, 0, 1) × clamp(((pos − 7) − (R − N)) /
+        // M, 0, 1). Each grain's fade runs from 1 through (0, 1) to 0: at rate 1 (stretch 1) it
+        // closes in once the head stops, at rate 1/0.6 (stretch 0.6) from the start.
+        constexpr double kRate = 48000.0;
+        constexpr int64_t kBlock = 100;
+        constexpr int64_t kFreezeAt = 3000;
+        constexpr int64_t kLength = 4500;
+        constexpr auto kMargin = static_cast<double>(gg::LiveSource::kHeadMargin);
+        const auto unit = [](double x) { return x > 0.0 ? (x < 1.0 ? x : 1.0) : 0.0; };
+        const int64_t ramp = gg::LiveSource::freezeRampSamples(kRate);
+        const std::vector<float> input[2] = {noise(kLength, 5, 0), noise(kLength, 5, 1)};
+        std::vector<float> stored[2] = {input[0], input[1]};
+        for (auto &channel : stored)
+        {
+            for (int64_t j = kFreezeAt; j < kLength; ++j)
+            {
+                const int64_t r = std::max<int64_t>(0, ramp - 1 - (j - kFreezeAt));
+                channel[static_cast<std::size_t>(j)] *=
+                    static_cast<float>(r) / static_cast<float>(ramp);
+            }
+        }
+        struct Case
+        {
+            double rate;
+            double startPos;
+            double duration;
+        };
+        for (const Case c : {Case{1.0, 3360.25, 700.0}, Case{1.0 / 0.6, 3300.25, 480.0}})
+        {
+            gg::GrainSpec g = testGrain(3700, c.startPos);
+            g.rate = c.rate;
+            g.durationSamples = c.duration;
+            REQUIRE(gg::grainEndSample(g) <= kLength);
+            const OneGrain one(g);
+            const gg::GrainRows &rows = one.pool.rows();
+            const double invDuration = 1.0 / g.durationSamples;
+            const float stretch = specStretch(c.rate);
+            for (const int outputs : {2, 1})
+            {
+                INFO("rate " << c.rate << ", " << outputs << " outputs");
+                const ChannelGains gains = channelGains(g, outputs);
+                gg::LiveSource ring;
+                ring.prepare(kRate, 1.0, static_cast<uint32_t>(kBlock));
+                const int64_t frames = ring.frames();
+                std::vector<float> expected[2] = {std::vector<float>(kLength, 0.0f),
+                                                  std::vector<float>(kLength, 0.0f)};
+                std::vector<float> actual[2] = {std::vector<float>(kLength, 0.0f),
+                                                std::vector<float>(kLength, 0.0f)};
+                int64_t fadeOne = 0;
+                int64_t fadePartial = 0;
+                int64_t fadeZero = 0;
+                for (int64_t b = 0; b < kLength; b += kBlock)
+                {
+                    ring.setFrozen(b >= kFreezeAt);
+                    const float *in[2] = {input[0].data() + b, input[1].data() + b};
+                    ring.write(in, 2, 0, b, static_cast<uint32_t>(kBlock));
+
+                    for (int64_t t = std::max(b, g.onsetSample);
+                         t < std::min(b + kBlock, gg::grainEndSample(g)); ++t)
+                    {
+                        const double e = static_cast<double>(t - g.onsetSample) - g.onsetFrac;
+                        const float w = tables.hann.at(e * invDuration);
+                        if (!(w > 0.0f))
+                        {
+                            continue;
+                        }
+                        const double pos = g.startPos + g.rate * e;
+                        const int64_t head = ring.headAt(t);
+                        const auto r = static_cast<double>(head);
+                        const double toHead = (r - 1.0 - (pos + 8.0)) / kMargin;
+                        const double fromTail =
+                            ((pos - 7.0) - (r - static_cast<double>(frames))) / kMargin;
+                        const auto f = static_cast<float>(unit(toHead) * unit(fromTail));
+                        REQUIRE(Sinc::fade(ring, pos, head) == unit(toHead) * unit(fromTail));
+                        fadeOne += f == 1.0f;
+                        fadePartial += f > 0.0f && f < 1.0f;
+                        fadeZero += f == 0.0f;
+                        // All 16 taps must be in the window.
+                        const auto i = static_cast<int64_t>(std::floor(pos));
+                        if (!(f > 0.0f) || i - 7 < head - frames || i + 8 > head - 1)
+                        {
+                            continue;
+                        }
+                        for (int ch = 0; ch < outputs; ++ch)
+                        {
+                            const float read = specSinc(stored[ch].data(), kLength, pos, stretch);
+                            expected[ch][static_cast<std::size_t>(t)] +=
+                                read * ((w * f) * gains.c[ch]);
+                        }
+                    }
+
+                    const gg::kernels::Output o{
+                        {actual[0].data() + b, outputs == 2 ? actual[1].data() + b : nullptr}, b};
+                    gg::kernels::renderLiveRef<Sinc>(rows, 0, ring, o, b, b + kBlock, tables);
+                }
+                REQUIRE(ring.head() == kFreezeAt + ramp);
+                REQUIRE(fadeOne > 0);
+                REQUIRE(fadePartial > 0);
+                REQUIRE(fadeZero > 0);
+                REQUIRE(anyNonZero(expected[0]));
+                REQUIRE(sameBits(actual[0], expected[0]));
+                REQUIRE(sameBits(actual[1], expected[1]));
+            }
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------------------------
 // The SIMD sample kernel, held to the reference bit for bit (std::memcmp).
 
@@ -783,18 +1017,18 @@ enum class Kernel
 // Every grain of the pool, in spawn order, over [from, to) in one call each.
 template <class R>
 void renderAll(Kernel kernel, const Pool &pool, const SampleSource &src, Buffers &b, int64_t from,
-               int64_t to, const gg::HannTable &hann)
+               int64_t to, const Tables &tables)
 {
     const gg::kernels::Output o = b.output();
     for (uint32_t i = 0; i < pool.size(); ++i)
     {
         if (kernel == Kernel::Ref)
         {
-            gg::kernels::renderSampleRef<R>(pool.rows(), i, src, o, from, to, hann);
+            gg::kernels::renderSampleRef<R>(pool.rows(), i, src, o, from, to, tables);
         }
         else
         {
-            gg::kernels::renderSampleSimd<R>(pool.rows(), i, src, o, from, to, hann);
+            gg::kernels::renderSampleSimd<R>(pool.rows(), i, src, o, from, to, tables);
         }
     }
 }
@@ -803,13 +1037,13 @@ void renderAll(Kernel kernel, const Pool &pool, const SampleSource &src, Buffers
 // buffers filled with `fill`, and returns both.
 template <class R>
 std::pair<Buffers, Buffers> renderBoth(const Pool &pool, const SampleSource &src, int outputs,
-                                       int64_t from, int64_t to, const gg::HannTable &hann,
+                                       int64_t from, int64_t to, const Tables &tables,
                                        float fill = 0.0f)
 {
     Buffers ref(from, to, outputs, fill);
     Buffers simd(from, to, outputs, fill);
-    renderAll<R>(Kernel::Ref, pool, src, ref, from, to, hann);
-    renderAll<R>(Kernel::Simd, pool, src, simd, from, to, hann);
+    renderAll<R>(Kernel::Ref, pool, src, ref, from, to, tables);
+    renderAll<R>(Kernel::Simd, pool, src, simd, from, to, tables);
     return {std::move(ref), std::move(simd)};
 }
 
@@ -850,6 +1084,38 @@ template <> struct Reach<Linear>
     static constexpr double before = 0.0;
     static constexpr double after = 1.0;
 };
+template <> struct Reach<Sinc>
+{
+    static constexpr double before = 7.0;
+    static constexpr double after = 8.0;
+};
+
+// The reach each reader's live fade is for (Reader::fade): the Hermite's for Linear too, whose
+// fade is LiveSource::fade (wider than its own taps, so conservative), and the sinc's own.
+template <class R> struct FadeReach : Reach<R>
+{
+};
+template <> struct FadeReach<Linear> : Reach<Hermite>
+{
+};
+
+// The stretch the kernels give grain i (spec §6.2): min(1, 1 / rate).
+float stretchOfGrain(const gg::GrainRows &rows, uint32_t i) { return specStretch(rows.rate[i]); }
+
+// Requires the pool to hold grains at stretch 1 and grains stretched to 0.6 or below (rate 1/0.6
+// or above), so that a case run with Sinc reads at both.
+void requireBothStretches(const gg::GrainRows &rows, uint32_t count)
+{
+    bool unstretched = false;
+    bool stretched = false;
+    for (uint32_t i = 0; i < count; ++i)
+    {
+        unstretched = unstretched || stretchOfGrain(rows, i) == 1.0f;
+        stretched = stretched || stretchOfGrain(rows, i) <= 0.6f;
+    }
+    REQUIRE(unstretched);
+    REQUIRE(stretched);
+}
 
 // The exact condition under which the SIMD kernel may render output sample t of grain i: the
 // window's phase is in [0, 1] and every tap of the read is inside [0, frames).
@@ -925,15 +1191,16 @@ struct Noise
 };
 } // namespace
 
-TEMPLATE_TEST_CASE("simd sample kernel matches the reference", "[kernel]", Hermite, Linear)
+TEMPLATE_TEST_CASE("simd sample kernel matches the reference", "[kernel]", Hermite, Linear, Sinc)
 {
-    const gg::HannTable hann;
+    const Tables &tables = kernelTables();
     const Noise src(kNoiseFrames, 11);
     const Pool pool(randomGrains(21, 500, kNoiseFrames));
+    requireBothStretches(pool.rows(), pool.size());
 
     {
         INFO("block [0, 4096)");
-        auto [ref, simd] = renderBoth<TestType>(pool, src.stereo(), 2, 0, 4096, hann);
+        auto [ref, simd] = renderBoth<TestType>(pool, src.stereo(), 2, 0, 4096, tables);
         REQUIRE(anyNonZero(ref.ch[0]));
         REQUIRE(anyNonZero(ref.ch[1]));
         REQUIRE(sameBits(simd.ch[0], ref.ch[0]));
@@ -945,7 +1212,7 @@ TEMPLATE_TEST_CASE("simd sample kernel matches the reference", "[kernel]", Hermi
         const int64_t from = -4000 + static_cast<int64_t>(u01(31, 0, k) * 22000.0);
         const int64_t to = from + static_cast<int64_t>(u01(31, 1, k) * 512.0);
         INFO("call " << k << ", [" << from << ", " << to << ")");
-        auto [ref, simd] = renderBoth<TestType>(pool, src.stereo(), 2, from, to, hann);
+        auto [ref, simd] = renderBoth<TestType>(pool, src.stereo(), 2, from, to, tables);
         REQUIRE(sameBits(simd.ch[0], ref.ch[0]));
         REQUIRE(sameBits(simd.ch[1], ref.ch[1]));
         requireExactRuns<TestType>(pool, kNoiseFrames, from, to);
@@ -953,7 +1220,7 @@ TEMPLATE_TEST_CASE("simd sample kernel matches the reference", "[kernel]", Hermi
 }
 
 TEMPLATE_TEST_CASE("simd sample kernel matches the reference on sources of 1 to 4 frames",
-                   "[kernel]", Hermite, Linear)
+                   "[kernel]", Hermite, Linear, Sinc)
 {
     // Sources too short for the Hermite's 4 taps (1–3 frames) or just long enough (4), and for
     // the line's 2 taps (1 frame) or more. Each planar channel is its own allocation of exactly
@@ -961,16 +1228,24 @@ TEMPLATE_TEST_CASE("simd sample kernel matches the reference on sources of 1 to 
     // planar one is a heap overflow under ASan, which std::memcmp alone could miss. Grains start a
     // quarter frame at a time from 3 frames before the source to 3 past it, slow enough to stay
     // inside it for many samples, and each is rendered in calls of 1–7 samples at every alignment.
-    const gg::HannTable hann;
-    for (int64_t frames = 1; frames <= 4; ++frames)
+    // For the sinc, sources of 15 and 16 frames too: one frame short of its 16 taps, and just long
+    // enough.
+    const Tables &tables = kernelTables();
+    const auto longest = std::max<int64_t>(
+        4, static_cast<int64_t>(Reach<TestType>::before + Reach<TestType>::after) + 1);
+    for (int64_t frames = 1; frames <= longest; ++frames)
     {
+        if (frames > 4 && frames < longest - 1)
+        {
+            continue;
+        }
         INFO(frames << " frames");
         const Noise src(frames, 71);
         std::vector<gg::GrainSpec> specs;
         uint64_t k = 0;
         for (int quarter = -12; quarter <= 4 * static_cast<int>(frames) + 12; ++quarter)
         {
-            for (const double rate : {1.0 / 16.0, 0.25, 1.0, -0.25})
+            for (const double rate : {1.0 / 16.0, 0.25, 1.0, -0.25, 1.0 / 0.6})
             {
                 specs.push_back({
                     .index = k,
@@ -990,6 +1265,7 @@ TEMPLATE_TEST_CASE("simd sample kernel matches the reference on sources of 1 to 
                              return a.onsetSample < b.onsetSample;
                          });
         const Pool pool(specs);
+        requireBothStretches(pool.rows(), pool.size());
         int64_t end = 0;
         for (const gg::GrainSpec &g : specs)
         {
@@ -1020,7 +1296,7 @@ TEMPLATE_TEST_CASE("simd sample kernel matches the reference on sources of 1 to 
         {
             INFO(shape.name);
             Buffers ref(0, end, shape.outputs);
-            renderAll<TestType>(Kernel::Ref, pool, shape.source, ref, 0, end, hann);
+            renderAll<TestType>(Kernel::Ref, pool, shape.source, ref, 0, end, tables);
             REQUIRE(anyNonZero(ref.ch[0]));
             for (int64_t length = 1; length <= 7; ++length)
             {
@@ -1036,7 +1312,7 @@ TEMPLATE_TEST_CASE("simd sample kernel matches the reference on sources of 1 to 
                     for (uint32_t i = 0; i < pool.size(); ++i)
                     {
                         gg::kernels::renderSampleSimd<TestType>(pool.rows(), i, shape.source, o,
-                                                                from, to, hann);
+                                                                from, to, tables);
                     }
                     requireExactRuns<TestType>(pool, frames, from, to);
                 }
@@ -1048,21 +1324,23 @@ TEMPLATE_TEST_CASE("simd sample kernel matches the reference on sources of 1 to 
 }
 
 TEMPLATE_TEST_CASE("simd sample kernel matches the reference at the source ends", "[kernel]",
-                   Hermite, Linear)
+                   Hermite, Linear, Sinc)
 {
-    // Review focus 1. Grains whose reads come within 3 frames of frame 0 or of the last frame,
-    // in steps of a quarter frame: some start there and move away, some arrive there from
+    // Review focus 1. Grains whose reads come within 3 frames of frame 0 or of the last frame
+    // (for the sinc, within 9: one past its reach), in steps of a quarter frame: some start there
+    // and move away, some arrive there from
     // outside the source (at 0) or from inside it (at the end) at mid-life, and some end there.
     // Each is rendered in ragged calls, offset by 0–3 samples so the SIMD steps fall at every
     // alignment, and compared with one reference call over the whole span.
-    const gg::HannTable hann;
+    const Tables &tables = kernelTables();
     const Noise src(kNoiseFrames, 13);
-    const std::vector<double> rates = {0.25, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0};
+    const std::vector<double> rates = {0.25, 0.5, 1.0, 1.0 / 0.6, 1.5, 2.0, 3.0, 4.0};
     std::vector<gg::GrainSpec> specs;
     uint64_t k = 0;
+    const int quarters = std::max(12, 4 * (static_cast<int>(Reach<TestType>::after) + 1));
     for (const double boundary : {0.0, static_cast<double>(kNoiseFrames - 1)})
     {
-        for (int quarter = -12; quarter <= 12; ++quarter)
+        for (int quarter = -quarters; quarter <= quarters; ++quarter)
         {
             for (const double rate : rates)
             {
@@ -1087,6 +1365,7 @@ TEMPLATE_TEST_CASE("simd sample kernel matches the reference at the source ends"
         }
     }
     const Pool pool(specs);
+    requireBothStretches(pool.rows(), pool.size());
     int64_t end = 0;
     for (const gg::GrainSpec &g : specs)
     {
@@ -1094,7 +1373,7 @@ TEMPLATE_TEST_CASE("simd sample kernel matches the reference at the source ends"
     }
 
     Buffers ref(0, end, 2);
-    renderAll<TestType>(Kernel::Ref, pool, src.stereo(), ref, 0, end, hann);
+    renderAll<TestType>(Kernel::Ref, pool, src.stereo(), ref, 0, end, tables);
     REQUIRE(anyNonZero(ref.ch[0]));
     REQUIRE(anyNonZero(ref.ch[1]));
     const std::vector<int64_t> lengths = {61, 64, 1, 128, 3, 250, 2, 37};
@@ -1110,7 +1389,7 @@ TEMPLATE_TEST_CASE("simd sample kernel matches the reference at the source ends"
             for (uint32_t i = 0; i < pool.size(); ++i)
             {
                 gg::kernels::renderSampleSimd<TestType>(pool.rows(), i, src.stereo(), o, from, to,
-                                                        hann);
+                                                        tables);
             }
             requireExactRuns<TestType>(pool, kNoiseFrames, from, to);
             from = to;
@@ -1121,17 +1400,18 @@ TEMPLATE_TEST_CASE("simd sample kernel matches the reference at the source ends"
 }
 
 TEMPLATE_TEST_CASE("simd sample kernel matches the reference at extreme rates and lengths",
-                   "[kernel]", Hermite, Linear)
+                   "[kernel]", Hermite, Linear, Sinc)
 {
     // Review focus 4: pitch ±48 semitones, and a 3,600 s grain at 768 kHz, whose elapsed time
     // and window phase pass 2^31 samples.
-    const gg::HannTable hann;
+    const Tables &tables = kernelTables();
     const Noise src(kNoiseFrames, 17);
 
     SECTION("rates 1/16 and 16")
     {
         const Pool pool(randomGrains(23, 500, kNoiseFrames, {1.0 / 16.0, 16.0}));
-        auto [ref, simd] = renderBoth<TestType>(pool, src.stereo(), 2, 0, 4096, hann);
+        requireBothStretches(pool.rows(), pool.size());
+        auto [ref, simd] = renderBoth<TestType>(pool, src.stereo(), 2, 0, 4096, tables);
         REQUIRE(anyNonZero(ref.ch[0]));
         REQUIRE(sameBits(simd.ch[0], ref.ch[0]));
         REQUIRE(sameBits(simd.ch[1], ref.ch[1]));
@@ -1141,7 +1421,7 @@ TEMPLATE_TEST_CASE("simd sample kernel matches the reference at extreme rates an
             const int64_t from = -4000 + static_cast<int64_t>(u01(33, 0, k) * 22000.0);
             const int64_t to = from + static_cast<int64_t>(u01(33, 1, k) * 512.0);
             INFO("call " << k << ", [" << from << ", " << to << ")");
-            auto [r, s] = renderBoth<TestType>(pool, src.stereo(), 2, from, to, hann);
+            auto [r, s] = renderBoth<TestType>(pool, src.stereo(), 2, from, to, tables);
             REQUIRE(sameBits(s.ch[0], r.ch[0]));
             REQUIRE(sameBits(s.ch[1], r.ch[1]));
         }
@@ -1175,7 +1455,7 @@ TEMPLATE_TEST_CASE("simd sample kernel matches the reference at extreme rates an
                 const int64_t from = probe - 2000;
                 const int64_t to = std::min(probe + 4096, end + 5);
                 Buffers ref(from, to, 2);
-                renderAll<TestType>(Kernel::Ref, pool, src.stereo(), ref, from, to, hann);
+                renderAll<TestType>(Kernel::Ref, pool, src.stereo(), ref, from, to, tables);
                 REQUIRE(anyNonZero(ref.ch[0]));
                 REQUIRE(anyNonZero(ref.ch[1]));
                 Buffers simd(from, to, 2);
@@ -1185,7 +1465,7 @@ TEMPLATE_TEST_CASE("simd sample kernel matches the reference at extreme rates an
                     const gg::kernels::Output o{
                         {simd.ch[0].data() + (a - from), simd.ch[1].data() + (a - from)}, a};
                     gg::kernels::renderSampleSimd<TestType>(pool.rows(), 0, src.stereo(), o, a, b,
-                                                            hann);
+                                                            tables);
                     a = b;
                 }
                 REQUIRE(sameBits(simd.ch[0], ref.ch[0]));
@@ -1200,14 +1480,14 @@ TEMPLATE_TEST_CASE("simd sample kernel matches the reference at extreme rates an
 }
 
 TEMPLATE_TEST_CASE("simd sample kernel matches the reference for every output shape", "[kernel]",
-                   Hermite, Linear)
+                   Hermite, Linear, Sinc)
 {
     // Review focus 5: one output (a null dst[1]), a mono source into one or two outputs, an
     // empty source, and calls of 0, 1, 2, 3 and 5 samples at every alignment against the grains'
     // onsets. The pool's short grains all start within [0, 64), the first with onsetFrac 0, so
     // its first window value is exactly 0 inside a SIMD step; the outputs start at −0 in one
     // pass, which a lane the window masks must leave alone, as the reference does.
-    const gg::HannTable hann;
+    const Tables &tables = kernelTables();
     const Noise src(kNoiseFrames, 19);
     std::vector<gg::GrainSpec> specs = randomGrains(25, 64, kNoiseFrames);
     for (uint32_t k = 0; k < specs.size(); ++k)
@@ -1218,6 +1498,7 @@ TEMPLATE_TEST_CASE("simd sample kernel matches the reference for every output sh
     }
     specs[0].onsetFrac = 0.0;
     const Pool pool(specs);
+    requireBothStretches(pool.rows(), pool.size());
 
     struct Shape
     {
@@ -1239,7 +1520,7 @@ TEMPLATE_TEST_CASE("simd sample kernel matches the reference for every output sh
             INFO(shape.name << ", outputs start at " << (std::signbit(fill) ? "-0" : "+0"));
             {
                 auto [ref, simd] =
-                    renderBoth<TestType>(pool, shape.source, shape.outputs, 0, 300, hann, fill);
+                    renderBoth<TestType>(pool, shape.source, shape.outputs, 0, 300, tables, fill);
                 REQUIRE(sameBits(simd.ch[0], ref.ch[0]));
                 REQUIRE(sameBits(simd.ch[1], ref.ch[1]));
                 REQUIRE(anyNonZero(ref.ch[0]) == (shape.source.frames > 0));
@@ -1251,7 +1532,7 @@ TEMPLATE_TEST_CASE("simd sample kernel matches the reference for every output sh
                 {
                     INFO("[" << from << ", " << from + length << ")");
                     auto [ref, simd] = renderBoth<TestType>(pool, shape.source, shape.outputs, from,
-                                                            from + length, hann, fill);
+                                                            from + length, tables, fill);
                     REQUIRE(sameBits(simd.ch[0], ref.ch[0]));
                     REQUIRE(sameBits(simd.ch[1], ref.ch[1]));
                 }
@@ -1261,11 +1542,11 @@ TEMPLATE_TEST_CASE("simd sample kernel matches the reference for every output sh
 }
 
 TEMPLATE_TEST_CASE("simd sample kernel matches the reference with non-finite taps", "[kernel]",
-                   Hermite, Linear)
+                   Hermite, Linear, Sinc)
 {
     // NaN, +inf and −inf frames scattered through both channels. The outputs compare equal with
     // NaN == NaN, since a NaN's payload may depend on the operand order the compiler picks.
-    const gg::HannTable hann;
+    const Tables &tables = kernelTables();
     Noise src(kNoiseFrames, 29);
     constexpr float kInf = std::numeric_limits<float>::infinity();
     for (int64_t f = 0; f < kNoiseFrames; ++f)
@@ -1287,7 +1568,8 @@ TEMPLATE_TEST_CASE("simd sample kernel matches the reference with non-finite tap
     }
     src.interleave();
     const Pool pool(randomGrains(27, 500, kNoiseFrames));
-    auto [ref, simd] = renderBoth<TestType>(pool, src.stereo(), 2, 0, 4096, hann);
+    requireBothStretches(pool.rows(), pool.size());
+    auto [ref, simd] = renderBoth<TestType>(pool, src.stereo(), 2, 0, 4096, tables);
     REQUIRE(anyNaN(ref.ch[0]));
     REQUIRE(anyNaN(ref.ch[1]));
     REQUIRE(!allFinite(ref.ch[0]));
@@ -1300,7 +1582,7 @@ TEMPLATE_TEST_CASE("simd sample kernel matches the reference with non-finite tap
         const int64_t from = -4000 + static_cast<int64_t>(u01(35, 0, k) * 22000.0);
         const int64_t to = from + static_cast<int64_t>(u01(35, 1, k) * 512.0);
         INFO("call " << k << ", [" << from << ", " << to << ")");
-        auto [r, s] = renderBoth<TestType>(pool, src.stereo(), 2, from, to, hann);
+        auto [r, s] = renderBoth<TestType>(pool, src.stereo(), 2, from, to, tables);
         REQUIRE(sameOrBothNaN(s.ch[0], r.ch[0]));
         REQUIRE(sameOrBothNaN(s.ch[1], r.ch[1]));
     }
@@ -1529,8 +1811,7 @@ struct LiveRenders
 // piece, in spawn order, with renderLiveRef<R> and renderLiveSimd<R>, into separate outputs.
 template <class R>
 LiveRenders renderLiveBoth(const Pool &pool, const LiveInput &input,
-                           const std::vector<int64_t> &lengths, int outputs,
-                           const gg::HannTable &hann)
+                           const std::vector<int64_t> &lengths, int outputs, const Tables &tables)
 {
     LiveRenders r{Buffers(0, input.length, outputs), Buffers(0, input.length, outputs), {}, 0};
     const gg::kernels::Output refOut = r.ref.output();
@@ -1541,13 +1822,14 @@ LiveRenders renderLiveBoth(const Pool &pool, const LiveInput &input,
     prepareRing(ring);
     driveRing(ring, input, lengths, [&](int64_t from, int64_t to) {
         active.each(from, to, [&](uint32_t i) {
-            gg::kernels::renderLiveRef<R>(rows, i, ring, refOut, from, to, hann);
-            gg::kernels::renderLiveSimd<R>(rows, i, ring, simdOut, from, to, hann);
+            gg::kernels::renderLiveRef<R>(rows, i, ring, refOut, from, to, tables);
+            gg::kernels::renderLiveSimd<R>(rows, i, ring, simdOut, from, to, tables);
             if (std::max(from, rows.onsetSample[i]) >= std::min(to, rows.endSample[i]))
             {
                 return;
             }
-            const gg::kernels::LiveInterior in = gg::kernels::liveInterior(rows, i, ring, from, to);
+            const gg::kernels::LiveInterior in =
+                gg::kernels::liveInterior<R>(rows, i, ring, from, to);
             const int64_t moving = (in.end[0] - in.begin[0]) / 4 * 4;
             const int64_t still = (in.end[1] - in.begin[1]) / 4 * 4;
             r.stats.simdSamples += moving + still;
@@ -1586,29 +1868,31 @@ std::string describeBadSample(const gg::GrainRows &rows, uint32_t i, const gg::L
         float right = 0.0f;
         const bool phaseOk = phase >= 0.0 && phase <= 1.0;
         const bool posOk = std::floor(pos) - Reach<R>::before >= 0.0;
-        const bool fadeOk = ring.fade(pos, head) == 1.0;
-        const bool readOk = R::readLive(ring, pos, head, cursor, left, right);
+        const bool fadeOk = R::fade(ring, pos, head) == 1.0;
+        const bool readOk =
+            R::readLive(ring, pos, head, cursor, readParams(stretchOfGrain(rows, i)), left, right);
         out << "; evaluation " << pass << ": phase " << phase << (phaseOk ? " ok" : " BAD")
             << ", pos " << pos << (posOk ? " ok" : " BAD") << ", head " << head << ", fade "
-            << ring.fade(pos, head) << (fadeOk ? " ok" : " BAD") << ", read "
-            << (readOk ? "ok" : "BAD") << ", margins " << r - 1.0 - (pos + 2.0) - kM << " and "
-            << (pos - 1.0) - (r - static_cast<double>(frames)) - kM << " past M"
-            << (phaseOk && posOk && fadeOk && readOk ? " (holds)" : " (fails)");
+            << R::fade(ring, pos, head) << (fadeOk ? " ok" : " BAD") << ", read "
+            << (readOk ? "ok" : "BAD") << ", margins " << r - 1.0 - (pos + FadeReach<R>::after) - kM
+            << " and " << (pos - FadeReach<R>::before) - (r - static_cast<double>(frames)) - kM
+            << " past M" << (phaseOk && posOk && fadeOk && readOk ? " (holds)" : " (fails)");
     }
     return out.str();
 }
 
-TEMPLATE_TEST_CASE("live interior is exactly where the fade is one", "[kernel]", Hermite, Linear)
+TEMPLATE_TEST_CASE("live interior is exactly where the fade is one", "[kernel]", Hermite, Linear,
+                   Sinc)
 {
     // 1,000 grains over a ring frozen and released 12 times. For every sample of every interior,
     // in blocks of 7 and 511: the window's phase is in [0, 1], every tap is a frame at or after
     // frame 0, the reference's fade is exactly 1.0, and the reader's read succeeds. The interior
     // is conservative (one frame inside the fade's margins), but it must still hold nearly all of
     // the samples where those hold, and some interiors must be empty: short grains, and grains in
-    // a fade all their life. Every interior sample also keeps both of the Hermite's margins at
-    // least M + 1 − 2^−10 frames: liveRun admits a run only where they are >= M + 1 at its ends,
-    // and between them they can fall short of that only by rounding (of order 2^−12 frames).
-    const gg::HannTable hann;
+    // a fade all their life. Every interior sample also keeps both of its fade's margins (the
+    // Hermite's for Hermite and Linear, the sinc's for Sinc) at least M + 1 − 2^−10 frames:
+    // liveRun admits a run only where they are >= M + 1 at its ends, and between them they can
+    // fall short of that only by rounding (of order 2^−12 frames).
     const LiveInput input(300000, 51, freezeToggles(53, 12, 12000.0));
     const std::vector<int64_t> heads = headTrajectory(input);
     gg::LiveSource ring;
@@ -1617,6 +1901,7 @@ TEMPLATE_TEST_CASE("live interior is exactly where the fade is one", "[kernel]",
     REQUIRE(frames == 24000);
     const Pool pool(liveGrains(55, spreadOnsets(input.length, 1000), heads, frames));
     const gg::GrainRows &rows = pool.rows();
+    requireBothStretches(rows, pool.size());
 
     for (const int64_t block : {7, 511})
     {
@@ -1640,7 +1925,7 @@ TEMPLATE_TEST_CASE("live interior is exactly where the fade is one", "[kernel]",
                 const int64_t first = std::max(from, rows.onsetSample[i]);
                 const int64_t last = std::min(to, rows.endSample[i]);
                 const gg::kernels::LiveInterior in =
-                    gg::kernels::liveInterior(rows, i, ring, from, to);
+                    gg::kernels::liveInterior<TestType>(rows, i, ring, from, to);
                 if (first >= last)
                 {
                     badStructure += in.begin[0] != in.end[0] || in.begin[1] != in.end[1];
@@ -1662,10 +1947,12 @@ TEMPLATE_TEST_CASE("live interior is exactly where the fade is one", "[kernel]",
                     const int64_t head = ring.headAt(t);
                     float l = 0.0f;
                     float r = 0.0f;
-                    const bool holds = phase >= 0.0 && phase <= 1.0 &&
-                                       std::floor(pos) - Reach<TestType>::before >= 0.0 &&
-                                       ring.fade(pos, head) == 1.0 &&
-                                       TestType::readLive(ring, pos, head, cursor, l, r);
+                    const bool holds =
+                        phase >= 0.0 && phase <= 1.0 &&
+                        std::floor(pos) - Reach<TestType>::before >= 0.0 &&
+                        TestType::fade(ring, pos, head) == 1.0 &&
+                        TestType::readLive(ring, pos, head, cursor,
+                                           readParams(stretchOfGrain(rows, i)), l, r);
                     const bool inside =
                         (t >= in.begin[0] && t < in.end[0]) || (t >= in.begin[1] && t < in.end[1]);
                     fadeOneSamples += holds;
@@ -1674,8 +1961,9 @@ TEMPLATE_TEST_CASE("live interior is exactly where the fade is one", "[kernel]",
                     {
                         // The margins as liveRun states them: toward the head and from the tail.
                         const auto rt = static_cast<double>(head);
-                        const double toHead = rt - 1.0 - (pos + 2.0);
-                        const double fromTail = (pos - 1.0) - (rt - static_cast<double>(frames));
+                        const double toHead = rt - 1.0 - (pos + FadeReach<TestType>::after);
+                        const double fromTail = (pos - FadeReach<TestType>::before) -
+                                                (rt - static_cast<double>(frames));
                         const double margin = std::min(toHead, fromTail);
                         minMargin = std::min(minMargin, margin);
                         badMargins += !(margin >= kM + 1.0 - 0x1.0p-10);
@@ -1705,21 +1993,22 @@ TEMPLATE_TEST_CASE("live interior is exactly where the fade is one", "[kernel]",
     }
 }
 
-TEMPLATE_TEST_CASE("simd live kernel matches the reference", "[kernel]", Hermite, Linear)
+TEMPLATE_TEST_CASE("simd live kernel matches the reference", "[kernel]", Hermite, Linear, Sinc)
 {
     // 300 grains at rates 0.25–4 over a ring that is never frozen, in ragged blocks and in
     // blocks of 511, into two outputs and into one.
-    const gg::HannTable hann;
+    const Tables &tables = kernelTables();
     const LiveInput input(100000, 61, {});
     const std::vector<int64_t> heads = headTrajectory(input);
     const Pool pool(liveGrains(63, spreadOnsets(input.length, 300), heads, 24000));
+    requireBothStretches(pool.rows(), pool.size());
     const std::vector<int64_t> ragged = {61, 64, 1, 128, 3, 250, 2, 37, 511};
     for (const std::vector<int64_t> &lengths : {ragged, std::vector<int64_t>{511}})
     {
         for (const int outputs : {2, 1})
         {
             INFO(outputs << " outputs, first block " << lengths[0]);
-            const LiveRenders r = renderLiveBoth<TestType>(pool, input, lengths, outputs, hann);
+            const LiveRenders r = renderLiveBoth<TestType>(pool, input, lengths, outputs, tables);
             REQUIRE(anyNonZero(r.ref.ch[0]));
             REQUIRE(anyNonZero(r.ref.ch[1]) == (outputs == 2));
             REQUIRE(r.stats.simdSamples > 200000);
@@ -1731,7 +2020,7 @@ TEMPLATE_TEST_CASE("simd live kernel matches the reference", "[kernel]", Hermite
 }
 
 TEMPLATE_TEST_CASE("simd live kernel matches the reference through freeze and wrap", "[kernel]",
-                   Hermite, Linear)
+                   Hermite, Linear, Sinc)
 {
     // Review focus 2. A 0.5 s ring, written until it has wrapped 20 times, frozen and released
     // at 30 random samples, some inside the freeze ramp and nearly all inside a block. 300
@@ -1739,7 +2028,7 @@ TEMPLATE_TEST_CASE("simd live kernel matches the reference through freeze and wr
     // moment the head stops. In blocks of 1, 7, 64 and 511: the head stops inside a block, so
     // an interior has a part before the kink and a part after it, with the edges and the fade
     // through the reference. Every block size must also give the same output.
-    const gg::HannTable hann;
+    const Tables &tables = kernelTables();
     const std::vector<int64_t> toggles = freezeToggles(71, 30, 28000.0);
     int64_t frozenTotal = 0;
     for (std::size_t k = 0; k + 1 < toggles.size(); k += 2)
@@ -1788,12 +2077,13 @@ TEMPLATE_TEST_CASE("simd live kernel matches the reference through freeze and wr
         specs[k].index = k;
     }
     const Pool pool(specs);
+    requireBothStretches(pool.rows(), pool.size());
 
     std::vector<float> first[2];
     for (const int64_t block : {511, 64, 7, 1})
     {
         INFO("blocks of " << block);
-        const LiveRenders r = renderLiveBoth<TestType>(pool, input, {block}, 2, hann);
+        const LiveRenders r = renderLiveBoth<TestType>(pool, input, {block}, 2, tables);
         REQUIRE(r.finalHead >= 20 * capacity);
         REQUIRE(anyNonZero(r.ref.ch[0]));
         REQUIRE(anyNonZero(r.ref.ch[1]));
@@ -1816,8 +2106,114 @@ TEMPLATE_TEST_CASE("simd live kernel matches the reference through freeze and wr
     }
     {
         INFO("one output, blocks of 64");
-        const LiveRenders r = renderLiveBoth<TestType>(pool, input, {64}, 1, hann);
+        const LiveRenders r = renderLiveBoth<TestType>(pool, input, {64}, 1, tables);
         REQUIRE(sameBits(r.simd.ch[0], r.ref.ch[0]));
         REQUIRE(!anyNonZero(r.simd.ch[1]));
+    }
+}
+
+namespace
+{
+// Sinc, but it counts its live reads and those any of whose 16 taps, floor(pos) − 7 ..
+// floor(pos) + 8, is outside the window [head − N, head − 1]: the reference must never ask for
+// one, since the HQ fade is 0 before any tap leaves the window.
+struct SincWindowProbe : Sinc
+{
+    static inline int64_t reads = 0;
+    static inline int64_t outside = 0;
+
+    static bool readLive(const gg::LiveSource &live, double pos, int64_t head,
+                         gg::LiveSource::Cursor &cursor, const gg::kernels::ReadParams &p, float &l,
+                         float &r) noexcept SST_CPPUTILS_NONBLOCKING
+    {
+        ++reads;
+        const double base = std::floor(pos);
+        outside += base - 7.0 < static_cast<double>(head - live.frames()) ||
+                   base + 8.0 > static_cast<double>(head - 1);
+        return Sinc::readLive(live, pos, head, cursor, p, l, r);
+    }
+};
+} // namespace
+
+TEST_CASE("hq live reads nothing beyond the window", "[kernel]")
+{
+    // Review Focus 5. A 0.5 s ring frozen from sample 30,000: the head stops 960 samples later
+    // and stays, so the window [R − N, R − 1] is fixed, and its two ends meet at the seam. One
+    // grain at a time reads up to and across them: at even indices from below the newest frame
+    // at rates 1 to 2 (stretch 1 to 0.5) into and past it, at odd ones from below the oldest
+    // frame into the window. Wherever any of a read's 16 taps would be outside the window, both
+    // kernels' output is exactly +0, and the reference never asks the reader for such a read.
+    const LiveInput input(60000, 81, {30000});
+    const std::vector<int64_t> heads = headTrajectory(input);
+    const int64_t stopped = heads.back();
+    REQUIRE(heads[31000] == stopped);
+    constexpr int64_t kFrames = 24000;
+    const std::vector<double> rates = {1.0, 1.0 / 0.6, 1.25, 2.0, 0.5, 1.5};
+    std::vector<gg::GrainSpec> specs;
+    for (uint32_t k = 0; k < 12; ++k)
+    {
+        const double rate = rates[k % rates.size()];
+        const bool towardHead = k % 2 == 0;
+        specs.push_back({
+            .index = k,
+            .onsetSample = 31000 + 2100 * static_cast<int64_t>(k),
+            .onsetFrac = 0.3,
+            .startPos = towardHead ? static_cast<double>(stopped) - 600.0 - 25.0 * k
+                                   : static_cast<double>(stopped - kFrames) - 700.0 + 25.0 * k,
+            .rate = rate,
+            .durationSamples = 2000.0,
+            .gain = 0.75f,
+            .pan = 0.25f,
+        });
+    }
+    const Pool pool(specs);
+    const gg::GrainRows &rows = pool.rows();
+    requireBothStretches(rows, pool.size());
+
+    for (const int64_t block : {511, 64, 7})
+    {
+        INFO("blocks of " << block);
+        SincWindowProbe::reads = 0;
+        SincWindowProbe::outside = 0;
+        const LiveRenders r =
+            renderLiveBoth<SincWindowProbe>(pool, input, {block}, 2, kernelTables());
+        REQUIRE(SincWindowProbe::reads > 0);
+        REQUIRE(SincWindowProbe::outside == 0);
+        REQUIRE(sameBits(r.simd.ch[0], r.ref.ch[0]));
+        REQUIRE(sameBits(r.simd.ch[1], r.ref.ch[1]));
+        REQUIRE(r.stats.simdSamples > 1000);
+
+        int64_t beyond = 0;   // sounding samples with a tap outside the window
+        int64_t sounding = 0; // and with every tap inside, nonzero
+        for (uint32_t i = 0; i < pool.size(); ++i)
+        {
+            for (int64_t t = rows.onsetSample[i]; t < rows.endSample[i]; ++t)
+            {
+                const double e = static_cast<double>(t - rows.onsetSample[i]) - rows.onsetFrac[i];
+                if (!(kernelTables().hann.at(e * rows.invDuration[i]) > 0.0f))
+                {
+                    continue;
+                }
+                const double base = std::floor(rows.startPos[i] + rows.rate[i] * e);
+                const auto head = static_cast<double>(heads[static_cast<std::size_t>(t)]);
+                const bool out =
+                    base - 7.0 < head - static_cast<double>(kFrames) || base + 8.0 > head - 1.0;
+                const auto j = static_cast<std::size_t>(t);
+                for (int c = 0; c < 2; ++c)
+                {
+                    if (out &&
+                        (!sameBits(r.ref.ch[c][j], kZero) || !sameBits(r.simd.ch[c][j], kZero)))
+                    {
+                        INFO("grain " << i << ", t " << t << ", channel " << c);
+                        REQUIRE(sameBits(r.ref.ch[c][j], kZero));
+                        REQUIRE(sameBits(r.simd.ch[c][j], kZero));
+                    }
+                }
+                beyond += out;
+                sounding += !out && r.ref.ch[0][j] != 0.0f;
+            }
+        }
+        REQUIRE(beyond > 2000);
+        REQUIRE(sounding > 2000);
     }
 }

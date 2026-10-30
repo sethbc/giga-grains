@@ -15,6 +15,7 @@
 #include "gg/core/Window.h"
 #include "gg/grain/CloudScheduler.h"
 #include "gg/grain/GrainPool.h"
+#include "gg/grain/SincTable.h"
 #include "gg/source/LiveSource.h"
 #include "gg/source/PreparedSource.h"
 #include "gg/source/SampleBuffer.h"
@@ -291,6 +292,7 @@ class Engine
 
     EngineConfig config_;
     HannTable hann_;
+    SincTable sinc_; // the HQ tier's windowed sinc, built here, off the audio thread
     GrainPool pool_;
     CloudScheduler cloud_;
     LiveSource live_;
