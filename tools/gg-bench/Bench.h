@@ -51,6 +51,7 @@ namespace gg::bench
 struct Options
 {
     double runSeconds{2.0};           // --seconds; --quick = 0.2
+    bool quick{false};                // --quick: caps each engine case's warm-up (Bench.cpp)
     int rounds{5};                    // --rounds
     uint32_t grains{2000};            // --grains
     std::vector<std::string> cases{}; // --cases a,b; empty = all
@@ -233,6 +234,20 @@ struct TierCounts
 /// its layers (TierCounts::activeGrains), without timing anything. Throws std::invalid_argument for
 /// a name that isn't an engine case, a block size run() doesn't use (32, 64 and 256) or 0 grains.
 TierCounts admittedTiers(const std::string &engineCase, uint32_t grains, uint32_t blockSize);
+
+/// An engine case's setup as run() uses it, before any warm-up: its live ring's length in
+/// seconds (0 for Sample mode), whether it reads the live ring, the reads' position and spray in
+/// seconds, and its warm-up in seconds of audio (capped under --quick). Throws
+/// std::invalid_argument for a name that isn't an engine case or 0 grains.
+struct EngineCaseSettings
+{
+    double liveSeconds{0.0};
+    bool live{false};
+    double position{0.0};
+    double spray{0.0};
+    double warmUpSeconds{0.0};
+};
+EngineCaseSettings engineCaseSettings(const std::string &engineCase, uint32_t grains, bool quick);
 
 /// The order round `round` (r) runs `configurations` (n) configurations in. Even rounds run
 /// 0, 1, ..., n - 1 rotated left by r: order[i] = (i + r) mod n. Odd rounds run that order's

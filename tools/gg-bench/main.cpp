@@ -590,6 +590,7 @@ int main(int argc, char **argv)
         if (arg == "--quick")
         {
             quick = true;
+            options.quick = true;
             options.runSeconds = 0.2;
         }
         else if (arg == "--canvas")
@@ -603,6 +604,7 @@ int main(int argc, char **argv)
         else if (arg == "--seconds" && hasValue)
         {
             ok = parseDouble(argv[++i], options.runSeconds);
+            options.quick = false; // the last of --quick and --seconds wins
         }
         else if (arg == "--rounds" && hasValue)
         {

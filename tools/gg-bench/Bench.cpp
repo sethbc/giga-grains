@@ -318,6 +318,11 @@ uint32_t layerGrains(const EngineCase &engineCase, uint32_t grains, uint32_t lay
     return grains / engineCase.layers + (layer < grains % engineCase.layers ? 1 : 0);
 }
 
+/// --quick caps every engine case's warm-up at this many seconds of audio: engine-live's 16 s, the
+/// longest warm-up of the other engine cases. Without the cap, a quick run would render
+/// engine-live-long's 300 s ring at each block size before timing anything.
+constexpr double kQuickMaxWarmUpSeconds = 16.0;
+
 /// The engine cases, in report order. Each is engine-sample with its own changes.
 constexpr std::array<EngineCase, 7> kEngineCases{{
     {"engine-sample", engineSample},
@@ -373,11 +378,15 @@ class EngineConfiguration final : public Configuration
 {
   public:
     EngineConfiguration(const EngineCase &engineCase, uint32_t blockSize, const Noise &noise,
-                        uint32_t grains)
+                        uint32_t grains, bool quick)
         : Configuration(engineCase.name, "engine", blockSize),
           setup_(engineCase.setup(layerGrains(engineCase, grains, 0))), noise_(noise),
           outL_(blockSize), outR_(blockSize)
     {
+        if (quick)
+        {
+            setup_.warmUpSeconds = std::min(setup_.warmUpSeconds, kQuickMaxWarmUpSeconds);
+        }
         // Every buffer the timed blocks use is allocated here, never in processBlock().
         for (uint32_t layer = 0; layer < engineCase.layers; ++layer)
         {
@@ -694,8 +703,8 @@ Report run(const Options &options, const Progress &progress)
         }
         for (const uint32_t n : kBlockSizes)
         {
-            configurations.push_back(
-                std::make_unique<EngineConfiguration>(e, n, source(), options.grains));
+            configurations.push_back(std::make_unique<EngineConfiguration>(
+                e, n, source(), options.grains, options.quick));
         }
     }
 
@@ -1123,8 +1132,32 @@ TierCounts admittedTiers(const std::string &engineCase, uint32_t grains, uint32_
     }
     const gg::ScopedDenormalsOff noDenormals;
     const Noise noise;
-    EngineConfiguration configuration(*e, blockSize, noise, grains);
+    EngineConfiguration configuration(*e, blockSize, noise, grains, false);
     return configuration.warmUpCountingTiers();
+}
+
+EngineCaseSettings engineCaseSettings(const std::string &engineCase, uint32_t grains, bool quick)
+{
+    const auto e =
+        std::find_if(kEngineCases.begin(), kEngineCases.end(),
+                     [&engineCase](const EngineCase &c) { return engineCase == c.name; });
+    if (e == kEngineCases.end())
+    {
+        throw std::invalid_argument("not an engine case: " + engineCase);
+    }
+    if (grains < 1)
+    {
+        throw std::invalid_argument("there must be at least 1 grain");
+    }
+    const EngineSetup s = e->setup(layerGrains(*e, grains, 0));
+    EngineCaseSettings settings;
+    settings.liveSeconds = s.config.liveSeconds;
+    settings.live = s.mode == gg::SourceMode::Live;
+    settings.position = s.params.position;
+    settings.spray = s.params.spray;
+    settings.warmUpSeconds =
+        quick ? std::min(s.warmUpSeconds, kQuickMaxWarmUpSeconds) : s.warmUpSeconds;
+    return settings;
 }
 
 nlohmann::json mergeBaseline(const nlohmann::json &old, const nlohmann::json &made)
