@@ -149,6 +149,15 @@ resource, so machines must catch everything they can catch.
   fetches them itself, with `scripts/fetch-sdks.sh <dir>`, which prints the `-DVST3_SDK_ROOT=...`
   style options that make clap-wrapper use those checkouts; a local configure needs none.)
   `asan` and `rtsan` build no formats and download nothing.
+- **The content** (M2 sub-project 5's spec §6.5): the CC0 samples the factory presets load, a
+  zip released in https://github.com/sethbc/giga-grains-content and pinned by
+  `content/pin.txt` (tag, URL, SHA-256). Configure downloads nothing, in any preset. The
+  `content_fixture` test (label `golden`) builds the `gg-content` target, which fetches the zip
+  once per build tree into `build/<preset>/content-cache/content/`
+  (`scripts/fetch-content.cmake`: the SHA-256 checked, a mismatch deleted, `.gg-pin` written
+  last), so the first `ctest` of a tree needs the network and later ones are offline.
+  `-DGG_CONTENT_DIR=<dir>/content` points a tree at a folder `scripts/fetch-content.sh <dir>`
+  filled, as CI does; `gg-content` then only checks its `.gg-pin` against the pin.
 
 **Warnings.** Every first-party target builds with `-Wall -Wextra` and `-Werror` (on ClangCL
 `/clang:-Wall /clang:-Wextra /WX`), through `gg::compiler-options`. Third-party code never links
@@ -198,6 +207,11 @@ summary.
   (the sanitizer job's by the LLVM version and commit), restored by prefix.
 - **The pinned LLVM archive** (sanitizer job), keyed by version and SHA-256. The SHA-256 is checked
   on a hit too.
+- **The content** (every build leg and the sanitizer job): `scripts/fetch-content.sh` fetches
+  the zip `content/pin.txt` pins into `.content-cache`, and every configure passes
+  `-DGG_CONTENT_DIR=$CONTENT_CACHE_DIR/content`. Keyed by the hash of `content/pin.txt` and
+  `scripts/fetch-content.cmake` alone (the content is the same on every leg); a hit downloads
+  nothing.
 - **Scoping.** Every run restores all of them; only runs on `main` (a push, the nightly, a
   dispatch on `main`) save them, also after a failed build. GitHub scopes a cache to the ref that
   saved it: a pull request reads `main`'s caches, but nobody reads a pull request's, so PRs never
@@ -478,6 +492,8 @@ gg-render --write-media DIR
   cases' media are generated, never committed: `--write-media DIR` writes them, and the
   `golden_media` test does so into `build/<preset>/golden-media` as a fixture every golden test
   requires.
+- The `content_fixture` test (label `golden`, fixture `content`) fetches the pinned CC0 content
+  into the build tree (see "Setup"), for the cases and tests that read it.
 - Its exit status is 0 for a pass, 1 when a comparison fails, 2 for bad input and 3 for an
   internal error.
 - **The cases:** each case's spec is in `tests/golden/cases/`, and its expected metrics and event

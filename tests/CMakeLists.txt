@@ -303,6 +303,12 @@ endif ()
 # into <build>/golden-media, a fixture every golden test requires, and the cases' relative paths
 # resolve there (--media-dir). That applies to every relative path in every case, so a future
 # case that reads a committed file must give its path some other way than relative to the spec.
+# The CC0 content (spec §6.5; cmake/content.cmake): content_fixture builds gg-content, which
+# fetches the pinned zip into <build>/content-cache once (offline afterwards), or checks
+# GG_CONTENT_DIR against the pin, as the fixture `content` for the tests that read it.
+add_test(NAME content_fixture
+        COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --config $<CONFIG> --target gg-content)
+set_tests_properties(content_fixture PROPERTIES LABELS golden FIXTURES_SETUP content)
 set(GG_GOLDEN_MEDIA_DIR ${CMAKE_BINARY_DIR}/golden-media)
 add_test(NAME golden_media COMMAND gg-render --write-media ${GG_GOLDEN_MEDIA_DIR})
 set_tests_properties(golden_media PROPERTIES LABELS golden FIXTURES_SETUP golden_media)
