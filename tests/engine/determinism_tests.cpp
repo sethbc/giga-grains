@@ -967,12 +967,29 @@ TEST_CASE("a source kind switch is block-size invariant", "[determinism]")
 
 namespace
 {
+// An overload case: periodic onsets of grains of one length into one engine of the given
+// capacity and quota, over the stereo sine.
+struct OverloadCase
+{
+    int64_t frames;
+    double densityHz;
+    double grainDurationSec;
+    uint32_t capacity;
+    uint64_t quota;
+    bool drops; ///< whether the quota fills before the oldest grain is half-way, so some drop
+};
+
 // The overload ladder's exit case (spec §6.5): 16,384 one-second grains a second into one engine
-// of capacity 16,384 at a quota of 1,024 Normal stereo grains (4,096 units), over the stereo
-// sine, for 1.5 s. The quota fills within the first 3,000 samples; the grains drawn after it
-// drop until the oldest is half-way, at 0.5 s, and from then on steal one grain at a time.
-constexpr int64_t kOverloadFrames = 72000;
-constexpr uint64_t kOverloadQuota = 4096;
+// of capacity 16,384 at a quota of 1,024 Normal stereo grains (4,096 units), for 1.5 s. The
+// quota fills within the first 3,000 samples; the grains drawn after it drop until the oldest is
+// half-way, at 0.5 s, and from then on each draw steals one grain while the oldest unstolen one
+// is half-way (ruling ES-T2a).
+constexpr OverloadCase kExitCase{72000, 16384.0, 1.0, gg::kMaxGrainCapacity, 4096, true};
+// The same at a small size, which always runs (ruling ES-T2b): 4,096 grains of 100 ms a second
+// into capacity 4,096 at a quota of 256 grains (1,024 units), for 0.5 s. The quota fills at
+// 62.5 ms, after the oldest grain is half-way (50 ms), so every draw past it steals the oldest
+// unstolen grain, which is then 62.5 ms old: none drops.
+constexpr OverloadCase kSmallCase{24000, 4096.0, 0.1, 4096, 1024, false};
 
 struct Steal
 {
@@ -991,7 +1008,7 @@ struct OverloadRender
     uint64_t lowered{0};
     uint64_t stolen{0};
 
-    OverloadRender() { steals.reserve(4096); }
+    OverloadRender() { steals.reserve(16384); }
 
     static void spawn(void *ctx, uint32_t, const gg::GrainSpec &)
     {
@@ -1011,27 +1028,27 @@ struct OverloadRender
     }
 };
 
-void renderOverload(const std::shared_ptr<const gg::SampleBuffer> &source,
+void renderOverload(const OverloadCase &c, const std::shared_ptr<const gg::SampleBuffer> &source,
                     const std::vector<uint32_t> &blockSizes, OverloadRender &r)
 {
-    gg::Engine engine({kSampleRate, kMaxBlock, gg::kMaxGrainCapacity, 42});
+    gg::Engine engine({kSampleRate, kMaxBlock, c.capacity, 42});
     engine.setSource(source);
     gg::CloudParams p = kParams;
-    p.densityHz = 16384.0; // periodic: an onset every 375/128 samples, exactly
+    p.densityHz = c.densityHz; // periodic: 48,000 / 2^n is exact
     p.distribution = 0.0;
-    p.grainDurationSec = 1.0;
+    p.grainDurationSec = c.grainDurationSec;
     engine.setCloudParams(p);
-    engine.setQuota(kOverloadQuota);
+    engine.setQuota(c.quota);
     engine.setEventSink(&OverloadRender::spawn, &r);
     engine.setStealSink(&OverloadRender::steal, &r);
     constexpr float kUnwritten = std::numeric_limits<float>::quiet_NaN();
-    r.audio.left.assign(static_cast<std::size_t>(kOverloadFrames), kUnwritten);
-    r.audio.right.assign(static_cast<std::size_t>(kOverloadFrames), kUnwritten);
+    r.audio.left.assign(static_cast<std::size_t>(c.frames), kUnwritten);
+    r.audio.right.assign(static_cast<std::size_t>(c.frames), kUnwritten);
     int64_t done = 0;
-    for (std::size_t next = 0; done < kOverloadFrames; ++next)
+    for (std::size_t next = 0; done < c.frames; ++next)
     {
         const uint32_t want = blockSizes[next % blockSizes.size()];
-        const auto n = static_cast<uint32_t>(std::min<int64_t>(want, kOverloadFrames - done));
+        const auto n = static_cast<uint32_t>(std::min<int64_t>(want, c.frames - done));
         float *out[2] = {r.audio.left.data() + done, r.audio.right.data() + done};
         engine.process(out, 2, n);
         done += n;
@@ -1040,34 +1057,37 @@ void renderOverload(const std::shared_ptr<const gg::SampleBuffer> &source,
     r.lowered = engine.loweredGrains();
     r.stolen = engine.stolenGrains();
 }
-} // namespace
 
-TEST_CASE("the overload ladder is block-size invariant", "[determinism][budget]")
+// Renders the case at 4096-frame blocks, the reference, then at 1, 32, 64 and 511 and a random
+// split: identical bytes, counters and steal lists. The reference isn't rendered twice.
+void checkOverloadInvariance(const OverloadCase &c)
 {
     const auto source = sineSource();
     OverloadRender ref;
-    renderOverload(source, {kMaxBlock}, ref);
+    renderOverload(c, source, {kMaxBlock}, ref);
     REQUIRE(allFinite(ref.audio.left));
     REQUIRE(allFinite(ref.audio.right));
     REQUIRE(peak(ref.audio.left) > 0.05f);
     REQUIRE_FALSE(ref.overflowed);
-    // Guard against a vacuous pass: every rung but the first was taken.
-    REQUIRE(ref.dropped > 0);
+    // Guard against a vacuous pass: the steal was taken, and the drop where the case reaches it.
+    REQUIRE((ref.dropped > 0) == c.drops);
     REQUIRE(ref.stolen > 0);
     REQUIRE(ref.steals.size() == ref.stolen);
-    REQUIRE(ref.spawned + ref.dropped == 24576); // 1.5 s at 16,384 Hz
+    // Every onset in the render, periodic: frames × density / rate of them.
+    const auto onsets =
+        static_cast<uint64_t>(std::ceil(static_cast<double>(c.frames) * c.densityHz / kSampleRate));
+    REQUIRE(ref.spawned + ref.dropped == onsets);
     // Nothing steals before the oldest grain is half-way.
-    REQUIRE(ref.steals.front().onset >= 24000);
+    REQUIRE(ref.steals.front().onset >=
+            static_cast<int64_t>(0.5 * c.grainDurationSec * kSampleRate));
 
-    // The reference is the 4096-frame render; each of these renders over a thousand grains for
-    // 1.5 s, so the reference isn't rendered twice.
     const auto random = randomSplit();
     for (const auto &blockSizes : {std::vector<uint32_t>{1}, std::vector<uint32_t>{32},
                                    std::vector<uint32_t>{64}, std::vector<uint32_t>{511}, random})
     {
         INFO("first block size = " << blockSizes.front() << " of " << blockSizes.size());
         OverloadRender r;
-        renderOverload(source, blockSizes, r);
+        renderOverload(c, source, blockSizes, r);
         REQUIRE_FALSE(r.overflowed);
         REQUIRE(r.spawned == ref.spawned);
         REQUIRE(r.dropped == ref.dropped);
@@ -1077,4 +1097,17 @@ TEST_CASE("the overload ladder is block-size invariant", "[determinism][budget]"
         REQUIRE(sameBits(ref.audio.left, r.audio.left));
         REQUIRE(sameBits(ref.audio.right, r.audio.right));
     }
+}
+} // namespace
+
+// Rendering over a thousand grains for 1.5 s at six block splits takes minutes in Debug, so it
+// is slow (ruling ES-T2b); its small sibling below always runs.
+TEST_CASE("the overload ladder is block-size invariant", "[determinism][budget][slow]")
+{
+    checkOverloadInvariance(kExitCase);
+}
+
+TEST_CASE("the overload ladder is block-size invariant at a small size", "[determinism][budget]")
+{
+    checkOverloadInvariance(kSmallCase);
 }

@@ -111,7 +111,9 @@ using GrainStealSink = void (*)(void *ctx, uint32_t layer, uint64_t index, int64
 ///    W(o) + w(t) <= quota, and counted in loweredGrains();
 /// 3. otherwise the oldest unstolen sounding grain (GrainPool::oldestSounding) is stolen if it
 ///    has sounded at least kStealThreshold of its window, (o − onsetSample) − onsetFrac >=
-///    0.5 × durationSamples, and W(o) − w(old) + w(t) <= quota for some t <= q: it ends at
+///    0.5 × durationSamples, and (W(o) − W_fading(o)) − w(old) + w(t) <= quota for some
+///    t <= q, W_fading the weight of the grains already stolen and fading (ruling ES-T2a;
+///    GrainPool::fadingWeight): it ends at
 ///    o + min(kStealFade, what it had left) (GrainPool::steal), keeping its weight until then;
 ///    the draw is admitted at the highest such t and the steal counted in stolenGrains() and
 ///    reported to the steal sink. Otherwise the draw is dropped and counted in droppedGrains().

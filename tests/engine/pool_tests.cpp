@@ -386,6 +386,7 @@ TEST_CASE("a steal moves the end and keeps the heap and earliestEnd correct", "[
     {
         // The model: what still sounds, its weight, and the first unstolen sounding grain.
         uint64_t sum = 0;
+        uint64_t fading = 0;
         uint32_t count = 0;
         std::vector<std::size_t> sounding;
         std::size_t oldest = model.size();
@@ -394,6 +395,7 @@ TEST_CASE("a steal moves the end and keeps the heap and earliestEnd correct", "[
             if (model[m].end > onset)
             {
                 sum += model[m].weight;
+                fading += model[m].stolen ? model[m].weight : 0;
                 ++count;
                 sounding.push_back(m);
                 if (!model[m].stolen && oldest == model.size())
@@ -404,6 +406,7 @@ TEST_CASE("a steal moves the end and keeps the heap and earliestEnd correct", "[
         }
         INFO("onset " << onset);
         REQUIRE(pool.soundingWeight(onset) == sum);
+        REQUIRE(pool.fadingWeight(onset) == fading);
         REQUIRE(pool.soundingCount(onset) == count);
         uint32_t row = 0;
         const bool found = pool.oldestSounding(onset, row);
@@ -490,9 +493,11 @@ TEST_CASE("a steal of a grain with less than the fade left fades over what remai
     REQUIRE(pool.rows().endSample[0] == 1500);
     REQUIRE(pool.rows().fadeStart[0] == 1400);
     REQUIRE(pool.rows().invFade[0] == 1.0f / 100.0f);
-    // Its weight stays in the ledger until its end (spec §6.5).
+    // Its weight stays in the ledger until its end (spec §6.5), as fading weight.
     REQUIRE(pool.soundingWeight(1499) == 7);
+    REQUIRE(pool.fadingWeight(1499) == 4);
     REQUIRE(pool.soundingWeight(1500) == 3);
+    REQUIRE(pool.fadingWeight(1500) == 0);
 
     // A stolen grain is never the oldest again; the next one is.
     REQUIRE(pool.oldestSounding(1400, row));
@@ -501,9 +506,11 @@ TEST_CASE("a steal of a grain with less than the fade left fades over what remai
     pool.steal(1, 5002);
     REQUIRE(pool.rows().endSample[1] == 5003);
     REQUIRE(pool.rows().invFade[1] == 1.0f);
+    REQUIRE(pool.fadingWeight(5002) == 3);
     REQUIRE_FALSE(pool.oldestSounding(5002, row));
     REQUIRE(pool.soundingCount(5002) == 1);
     pool.retireFinished(5003);
     REQUIRE(pool.size() == 0);
     REQUIRE(pool.soundingWeight(5003) == 0);
+    REQUIRE(pool.fadingWeight(5003) == 0);
 }

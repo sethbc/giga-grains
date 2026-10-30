@@ -1469,10 +1469,11 @@ TEST_CASE("a spent quota drops while the oldest grain is young and steals after 
     // A quota of 10 Normal stereo grains (40 units). Grains 0 to 9 fill it; Eco (3) doesn't fit
     // beside them. Grains 10 to 99 find the oldest grain, grain 0, less than half-way, and drop.
     // Grain 100, at 24,000, finds grain 0 exactly half-way and steals it: grain 0 now ends at
-    // 24,256 and keeps its weight until then (spec §6.5), so grain 101, at 24,240, finds 44
-    // units and drops, and grain 102 steals grain 1. So grains 100 to 118 steal grains 0 to 9,
-    // one each, every other onset; then the oldest unstolen grain is grain 100, young again, and
-    // grains 119 to 199 drop.
+    // 24,256 and keeps its weight in the ledger until then (spec §6.5), so grain 101, at 24,240,
+    // finds 44 units, more than rungs 1 and 2 allow; but rung 3 leaves the 4 fading units out
+    // (ruling ES-T2a), so it steals grain 1. So grains 100 to 109 steal grains 0 to 9, one each,
+    // at every onset; then the oldest unstolen grain is grain 100, young again, and grains 110
+    // to 199 drop.
     gg::Engine engine(gg::EngineConfig{});
     engine.setSource(makeSine(2, 96000, 48000.0));
     engine.setCloudParams(overload());
@@ -1494,7 +1495,7 @@ TEST_CASE("a spent quota drops while the oldest grain is young and steals after 
     REQUIRE(engine.stolenGrains() == 10);
     REQUIRE(engine.droppedGrains() == 180);
     REQUIRE(engine.loweredGrains() == 0);
-    // Each steal is one admission's: grain 100 + 2j steals grain j at its onset.
+    // Each steal is one admission's: grain 100 + j steals grain j at its onset.
     std::size_t j = 0;
     for (std::size_t e = 0; e < log.events.size(); ++e)
     {
@@ -1502,10 +1503,10 @@ TEST_CASE("a spent quota drops while the oldest grain is young and steals after 
         {
             INFO("steal " << j);
             REQUIRE(log.events[e].index == j);
-            REQUIRE(log.events[e].onset == static_cast<int64_t>(24000 + 480 * j));
+            REQUIRE(log.events[e].onset == static_cast<int64_t>(24000 + 240 * j));
             REQUIRE(e + 1 < log.events.size());
             REQUIRE_FALSE(log.events[e + 1].steal);
-            REQUIRE(log.events[e + 1].index == 100 + 2 * j);
+            REQUIRE(log.events[e + 1].index == 100 + j);
             REQUIRE(log.events[e + 1].tier == gg::Tier::Normal);
             ++j;
         }
@@ -1516,6 +1517,31 @@ TEST_CASE("a spent quota drops while the oldest grain is young and steals after 
     REQUIRE(engine.stolenGrains() == 0);
     REQUIRE(engine.loweredGrains() == 0);
     REQUIRE(engine.droppedGrains() == 0);
+}
+
+TEST_CASE("under a spent quota the steals after half run at the onset rate", "[engine][budget]")
+{
+    // A quota of 50 Normal stereo grains (200 units): grains 0 to 49 fill it by 11,760, and
+    // grains 50 to 99 drop. Over the 0.25 s from 0.5 s, each of the 50 onsets finds the oldest
+    // unstolen grain half-way and steals it, although the grains stolen in the last 256 samples
+    // still fade in the ledger (ruling ES-T2a): one steal per admission, at the onset rate, and
+    // no drop.
+    gg::Engine engine(gg::EngineConfig{});
+    engine.setSource(makeSine(2, 96000, 48000.0));
+    engine.setCloudParams(overload());
+    engine.setQuota(200);
+    render(engine, 24000, 128);
+    REQUIRE(engine.stolenGrains() == 0);
+    REQUIRE(engine.droppedGrains() == 50);
+    SinkLog log;
+    engine.setEventSink(&SinkLog::record, &log);
+    const uint64_t droppedBefore = engine.droppedGrains();
+    render(engine, 12000, 128);
+    REQUIRE_FALSE(log.overflowed);
+    REQUIRE(log.grains.size() == 50);
+    REQUIRE(engine.stolenGrains() == log.grains.size());
+    REQUIRE(engine.droppedGrains() == droppedBefore);
+    REQUIRE(engine.loweredGrains() == 0);
 }
 
 TEST_CASE("the capacity drops or steals like a spent quota", "[engine][budget]")

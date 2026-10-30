@@ -167,6 +167,12 @@ class GrainPool
     /// (Engine::reset) must clear() the pool.
     uint64_t soundingWeight(int64_t onset) noexcept SST_CPPUTILS_NONBLOCKING;
 
+    /// The part of soundingWeight(onset) that belongs to stolen grains still fading: the summed
+    /// weight of the grains whose fadeStart isn't INT64_MAX and whose end is after the onset
+    /// (ruling ES-T2a; the overload ladder's rung 3 leaves it out of its room test). First
+    /// forgets every end <= onset, with soundingWeight's requirement.
+    uint64_t fadingWeight(int64_t onset) noexcept SST_CPPUTILS_NONBLOCKING;
+
     /// How many of the grains spawned since the last clear() have an end after the onset. First
     /// forgets every end <= onset, with soundingWeight's requirement.
     uint32_t soundingCount(int64_t onset) noexcept SST_CPPUTILS_NONBLOCKING;
@@ -187,7 +193,7 @@ class GrainPool
     /// Steals the grain in `row`, which must sound at the onset and not have been stolen: with
     /// F = min(kStealFade, endSample − onset), its end moves to onset + F, its fade starts at
     /// the onset with invFade 1 / F, its heap key decreases to the new end and earliestEnd_
-    /// follows. Its weight stays in the ledger until the new end.
+    /// follows. Its weight stays in the ledger until the new end, counted in fadingWeight().
     void steal(uint32_t row, int64_t onset) noexcept SST_CPPUTILS_NONBLOCKING;
 
     /// Whether all 2 × capacity() slots are in use, so spawn() would fail.
@@ -276,10 +282,12 @@ class GrainPool
 
     // A min-heap by end in heap_[0, heapSize_) of the grains soundingWeight() still counts: one
     // entry per stored grain whose end hasn't been forgotten, so it never holds more than slots_.
-    // heapWeight_ is the sum of the entries' weights, exactly.
+    // heapWeight_ is the sum of the entries' weights, exactly, and fadingWeight_ the sum of the
+    // stolen ones' (an entry joins it at its steal and leaves it when its end is forgotten).
     std::vector<HeapEntry> heap_;
     uint32_t heapSize_{0};
     uint64_t heapWeight_{0};
+    uint64_t fadingWeight_{0};
     // oldestSounding's scan starts here: every row below it has ended or been stolen.
     uint32_t cursor_{0};
 };

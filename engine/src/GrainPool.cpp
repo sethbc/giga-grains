@@ -102,6 +102,10 @@ void GrainPool::forgetEnds(int64_t t) noexcept
     while (heapSize_ > 0 && heap_[0].end <= t)
     {
         heapWeight_ -= heap_[0].weight;
+        if (fadeStart_[heap_[0].row] != std::numeric_limits<int64_t>::max())
+        {
+            fadingWeight_ -= heap_[0].weight;
+        }
         heapPos_[heap_[0].row] = kNotInHeap;
         if (--heapSize_ > 0)
         {
@@ -115,6 +119,12 @@ uint64_t GrainPool::soundingWeight(int64_t onset) noexcept
 {
     forgetEnds(onset);
     return heapWeight_;
+}
+
+uint64_t GrainPool::fadingWeight(int64_t onset) noexcept
+{
+    forgetEnds(onset);
+    return fadingWeight_;
 }
 
 uint32_t GrainPool::soundingCount(int64_t onset) noexcept
@@ -154,6 +164,7 @@ void GrainPool::steal(uint32_t row, int64_t onset) noexcept
     invFade_[row] = 1.0f / static_cast<float>(fade);
     // The key only decreases (or stays), so the entry can only move up.
     const uint32_t pos = heapPos_[row];
+    fadingWeight_ += heap_[pos].weight;
     heap_[pos].end = end;
     siftUp(pos);
     earliestEnd_ = end < earliestEnd_ ? end : earliestEnd_;
@@ -290,6 +301,7 @@ void GrainPool::clear() noexcept
     // The rows' heap positions go with them: spawn() sets each anew.
     heapSize_ = 0;
     heapWeight_ = 0;
+    fadingWeight_ = 0;
     cursor_ = 0;
 }
 
