@@ -824,7 +824,7 @@ TEST_CASE("modulation is block-size invariant", "[core][mod][determinism]")
     // boundaries rather than at applied ones: the same again.
     const Stereo input = noise(kInvarianceFrames, 0.5f, 49);
     const auto events = layerAutomation();
-    for (const auto [mode, timeVarying] :
+    for (const auto &[mode, timeVarying] :
          {std::pair{Mode::Fx, true}, std::pair{Mode::Instrument, true}, std::pair{Mode::Fx, false},
           std::pair{Mode::Instrument, false}})
     {

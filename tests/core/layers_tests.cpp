@@ -147,7 +147,7 @@ TEST_CASE("the weight is exactly 1 with one layer on anywhere on the pad", "[cor
         render(p, &input, 0, kFrames, {4096}, {}, centre);
     }
     REQUIRE(peak(centre.left) > 0.05f);
-    for (const auto [x, y] :
+    for (const auto &[x, y] :
          std::array<std::array<float, 2>, 3>{{{0.0f, 0.0f}, {1.0f, 1.0f}, {0.37f, 0.9f}}})
     {
         INFO("Morph (" << x << ", " << y << ")");
