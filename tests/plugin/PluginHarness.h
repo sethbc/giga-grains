@@ -403,8 +403,8 @@ inline gg::core::MediaEntry entryOf(const std::filesystem::path &file)
     return gg::media::loadSample(file, {}).entry;
 }
 
-/// `state`, a state the instrument saved, with `entry` (or none) as its sample, and this build's
-/// manifest.
+/// `state`, a state the instrument saved, with `entry` (or none) as its sample (layer A's), and
+/// this build's manifest.
 inline std::string withSample(const std::string &state,
                               const std::optional<gg::core::MediaEntry> &entry)
 {
@@ -413,14 +413,14 @@ inline std::string withSample(const std::string &state,
     {
         return {};
     }
-    s.sample = entry;
+    s.samples[0] = entry;
     s.newerMedia.reset();
     return gg::core::encodeState(s);
 }
 
-/// The MEDI payload of a newer build's manifest (version 2), as this build can't read it: an
+/// The MEDI payload of a newer build's manifest (version 3), as this build can't read it: an
 /// element and attributes it doesn't know.
-inline const std::string kNewerMedia = R"(<media version="2"><layer id="0"><sample )"
+inline const std::string kNewerMedia = R"(<media version="3"><layer id="0"><sample )"
                                        R"(sha256="00" path="/Future/pad.wav" /></layer></media>)";
 
 /// `state`, a state the instrument saved, with `media`, a newer build's manifest, as its MEDI
@@ -432,7 +432,7 @@ inline std::string withNewerMedia(const std::string &state, const std::string &m
     {
         return {};
     }
-    s.sample.reset();
+    s.samples[0].reset();
     s.newerMedia = media;
     return gg::core::encodeState(s);
 }

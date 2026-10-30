@@ -6,8 +6,9 @@
 # the pinned dr_libs (gg/media/Decode.h), sample-rate conversion with the pinned r8brain-free-src
 # (gg/media/Convert.h), the file fingerprint, an in-house SHA-256 (gg/media/Sha256.h), loading a
 # sample with its manifest entry (gg/media/Sample.h), the search for a missing one
-# (gg/media/Search.h) and the per-machine settings file (gg/media/SettingsFile.h). Shared by the
-# plugins' loader and the tools; never on the audio thread.
+# (gg/media/Search.h), the per-machine settings file (gg/media/SettingsFile.h) and the float32
+# WAV bytes of embedded and filed captures (gg/media/WavBytes.h). Shared by the plugins' loader
+# and the tools; never on the audio thread.
 
 add_library(gg-media STATIC
         src/Convert.cpp
@@ -16,6 +17,7 @@ add_library(gg-media STATIC
         src/Search.cpp
         src/SettingsFile.cpp
         src/Sha256.cpp
+        src/WavBytes.cpp
         )
 add_library(gg::media ALIAS gg-media)
 

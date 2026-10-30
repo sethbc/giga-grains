@@ -157,7 +157,7 @@ std::optional<gg::core::MediaEntry> savedEntry(const PluginUnderTest &plugin)
 {
     gg::core::SessionState s;
     REQUIRE(gg::core::decodeState(plugin.save(), gg::core::Mode::Instrument, s));
-    return s.sample;
+    return s.samples[0];
 }
 
 float peak(const std::vector<float> &v, std::size_t from = 0,
@@ -468,7 +468,7 @@ TEST_CASE("a newer version's manifest loads the values, silent, and saves back u
         REQUIRE(instrument.load(gg::test::withSample(state, std::nullopt)));
         CHECK(loaderOf(instrument).status().state == SampleState::None);
         CHECK_FALSE(loaderOf(instrument).newerMedia().has_value());
-        CHECK(savedManifest(instrument) == R"(<media version="1" />)");
+        CHECK(savedManifest(instrument) == R"(<media version="2" />)");
     }
 }
 
@@ -479,7 +479,7 @@ TEST_CASE("the fx ignores a newer version's manifest, as it does a sample", "[pl
     PluginUnderTest fx(kFxId);
     REQUIRE(fx.valid());
     REQUIRE(fx.load(gg::test::withNewerMedia(fx.save())));
-    CHECK(savedManifest(fx) == R"(<media version="1" />)");
+    CHECK(savedManifest(fx) == R"(<media version="2" />)");
 }
 
 TEST_CASE("a sample moved into the sample folder is found, and the state marked dirty", "[plugin]")
@@ -835,7 +835,7 @@ TEST_CASE("a load before the audio thread takes a restore keeps the restore's va
     REQUIRE(gg::core::decodeState(instrument.save(), gg::core::Mode::Instrument, s));
     const auto density = static_cast<std::size_t>(gg::core::ParamSlot::Density);
     s.values[density] = 3.0f;
-    s.sample = gg::test::entryOf(first);
+    s.samples[0] = gg::test::entryOf(first);
     REQUIRE(instrument.load(gg::core::encodeState(s)));
     loaderOf(instrument).requestLoad(second);
     REQUIRE(settle(instrument).state == SampleState::Loaded);
@@ -1083,7 +1083,7 @@ TEST_CASE("a restore of the sample already loaded keeps it, reading no file (R19
     REQUIRE(instrument.activate(48000.0, 512));
     gg::core::SessionState s;
     REQUIRE(gg::core::decodeState(instrument.save(), gg::core::Mode::Instrument, s));
-    s.sample = gg::test::entryOf(file);
+    s.samples[0] = gg::test::entryOf(file);
     REQUIRE(instrument.load(gg::core::encodeState(s)));
     REQUIRE(loader.status().state == SampleState::Loaded);
     REQUIRE(sources.count() == 1);
@@ -1166,9 +1166,9 @@ TEST_CASE("the FX has no loader and saves an empty manifest", "[plugin]")
     // A state carrying a sample (from the instrument, say) loads; the FX ignores the sample.
     gg::core::SessionState s;
     REQUIRE(gg::core::decodeState(fx.save(), gg::core::Mode::Fx, s));
-    s.sample = gg::test::entryOf(file);
+    s.samples[0] = gg::test::entryOf(file);
     REQUIRE(fx.load(gg::core::encodeState(s)));
-    CHECK(savedManifest(fx) == "<media version=\"1\" />");
+    CHECK(savedManifest(fx) == "<media version=\"2\" />");
 }
 
 TEST_CASE("the sample folder is saved in the settings file", "[plugin]")

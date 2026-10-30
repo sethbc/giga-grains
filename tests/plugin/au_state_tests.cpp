@@ -299,7 +299,7 @@ TEST_CASE("au class info carries the clap state and round-trips it", "[plugin][a
     gg::core::SessionState state;
     REQUIRE(gg::core::decodeState(bytes, id.mode, state));
     CHECK(state.values[static_cast<std::size_t>(ParamSlot::Pitch)] == 0.0);
-    CHECK_FALSE(state.sample.has_value());
+    CHECK_FALSE(state.samples[0].has_value());
 
     SECTION("a fresh unit given the state saves the same bytes")
     {
@@ -319,8 +319,8 @@ TEST_CASE("au class info carries the clap state and round-trips it", "[plugin][a
         if (isInstrument)
         {
             const auto file = sineFile("round-trip");
-            state.sample = gg::media::loadSample(file, {}).entry;
-            REQUIRE(gg::core::isValidMediaEntry(*state.sample));
+            state.samples[0] = gg::media::loadSample(file, {}).entry;
+            REQUIRE(gg::core::isValidMediaEntry(*state.samples[0]));
         }
         const std::string changed = gg::core::encodeState(state);
         REQUIRE(changed != bytes);
@@ -338,7 +338,7 @@ TEST_CASE("au class info carries the clap state and round-trips it", "[plugin][a
         gg::core::SessionState back;
         REQUIRE(gg::core::decodeState(resaved, id.mode, back));
         CHECK(back.seed == state.seed);
-        CHECK(back.sample == state.sample);
+        CHECK(back.samples[0] == state.samples[0]);
     }
 }
 

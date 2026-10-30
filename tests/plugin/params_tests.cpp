@@ -1040,8 +1040,13 @@ TEST_CASE("state load rejects bad state and keeps the values", "[plugin]")
     other[at(ParamSlot::Density)] = 1.0f;
     const std::string otherXml =
         gg::core::toStateXml(other, 3, gg::core::factoryRoutes(gg::core::Mode::Fx));
-    const std::string otherState = gg::core::encodeState(
-        {other, 3, std::nullopt, std::nullopt, gg::core::factoryRoutes(gg::core::Mode::Fx)});
+    const std::string otherState = [&] {
+        gg::core::SessionState state;
+        state.values = other;
+        state.seed = 3;
+        state.routes = gg::core::factoryRoutes(gg::core::Mode::Fx);
+        return gg::core::encodeState(state);
+    }();
 
     SECTION("not a state")
     {
@@ -1110,13 +1115,17 @@ TEST_CASE("state is a container, and save, load, save gives the same bytes", "[p
         gg::core::ModSource::ModWheel, gg::core::kSameLayer, ParamSlot::Pitch, 2, 0.375f,
         gg::core::ModCurve::Unipolar};
     REQUIRE(routes != gg::core::factoryRoutes(mode));
-    REQUIRE(a.load(gg::core::encodeState({values, 11, std::nullopt, std::nullopt, routes})));
+    gg::core::SessionState state;
+    state.values = values;
+    state.seed = 11;
+    state.routes = routes;
+    REQUIRE(a.load(gg::core::encodeState(state)));
     const std::string saved = a.save();
-    CHECK(saved == gg::core::encodeState({values, 11, std::nullopt, std::nullopt, routes}));
+    CHECK(saved == gg::core::encodeState(state));
     CHECK(gg::test::stateChunkPayload(saved, "PTCH") == gg::core::toStateXml(values, 11, routes));
     CHECK(decoded(saved, mode).routes == routes);
-    CHECK(gg::test::stateChunkPayload(saved, "MEDI") == std::string(R"(<media version="1" />)"));
-    CHECK(decoded(saved, mode).sample == std::nullopt);
+    CHECK(gg::test::stateChunkPayload(saved, "MEDI") == std::string(R"(<media version="2" />)"));
+    CHECK(decoded(saved, mode).samples[0] == std::nullopt);
 
     PluginUnderTest b(id);
     REQUIRE(b.valid());

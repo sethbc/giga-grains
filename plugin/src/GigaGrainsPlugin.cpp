@@ -1184,11 +1184,18 @@ bool GigaGrainsPlugin::stateSave(const clap_ostream *stream) noexcept
         }
         // The session container (gg/core/SessionState.h), with the instrument's manifest entry
         // as it stands, whether the sample is loaded, loading, missing or failed (spec §6.6), or
-        // a newer build's manifest as it came. The FX has no sample: an empty manifest. The
-        // routes are those in effect (routes_).
-        const std::string bytes = gg::core::encodeState(
-            {values, seed_, loader_ != nullptr ? loader_->entry() : std::nullopt,
-             loader_ != nullptr ? loader_->newerMedia() : std::nullopt, routes_});
+        // a newer build's manifest as it came: layer A's, the instrument's one loader. The FX
+        // has no sample: an empty manifest. The routes are those in effect (routes_).
+        gg::core::SessionState state;
+        state.values = values;
+        state.seed = seed_;
+        if (loader_ != nullptr)
+        {
+            state.samples[0] = loader_->entry();
+            state.newerMedia = loader_->newerMedia();
+        }
+        state.routes = routes_;
+        const std::string bytes = gg::core::encodeState(state);
 
         // A stream may take fewer bytes than offered: write until all are in.
         const char *data = bytes.data();
@@ -1265,7 +1272,7 @@ bool GigaGrainsPlugin::stateLoad(const clap_istream *stream) noexcept
         SampleLoader::Restored restored;
         if (loader_ != nullptr)
         {
-            restored = loader_->restore(loaded.sample, std::move(loaded.newerMedia));
+            restored = loader_->restore(loaded.samples[0], std::move(loaded.newerMedia));
         }
         const auto &values = loaded.values;
         const uint64_t seed = loaded.seed;
