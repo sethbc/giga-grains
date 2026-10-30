@@ -65,18 +65,12 @@ Engine::SourceSlot Engine::slotFor(const PreparedSource *source) noexcept
         // without channels has frames 0 there, so the interpolators never touch its (null) data;
         // interleaved is the SIMD sample kernel's stereo reads (§16 lever 2), null for a mono
         // source or when PreparedSource::make couldn't allocate the copy. Past levelCount() the
-        // views are level 0's, as level(n) is; renderPool reads the top level instead.
+        // levels are level 0's, as level(n) is; renderPool reads the top level instead.
         slot.rate = source->buffer().sampleRate();
         slot.levelCount = source->levelCount();
         for (uint32_t n = 0; n < kMaxMipLevels; ++n)
         {
-            const PreparedSource::Level &level = source->level(n);
-            slot.views[n] = {{level.data[0], level.data[1]},
-                             level.frames,
-                             level.mono,
-                             level.interleaved,
-                             level.stride,
-                             level.decimation};
+            slot.levels[n] = source->level(n);
         }
     }
     return slot;
@@ -360,7 +354,7 @@ GrainSpec Engine::sampleGrain(const GrainDraw &d) const noexcept
     // An HQ draw latches the level of its rate, in level-0 frames per output sample (spec §6.3);
     // admit() lowers it to 0 with the tier if the ladder lowers the tier.
     const SourceSlot &source = slots_[current_];
-    const int64_t frames = source.views[0].frames;
+    const int64_t frames = source.levels[0].frames;
     const double span = frames > 1 ? static_cast<double>(frames - 1) : 0.0;
     const double rate = d.rate * source.rate / config_.sampleRate;
     return {
@@ -444,7 +438,7 @@ void Engine::admit(const GrainSpec &draw, float *const dst[2], int64_t blockStar
     // at the onset, by their latched ends and weights, so admission doesn't depend on where the
     // block boundaries fall (the pool may still store grains that finished earlier in the block,
     // because retirement normally waits for the block's end; carry-over row 51).
-    const bool stereo = draw.sourceSlot == kLiveSlot || !slots_[draw.sourceSlot].views[0].mono;
+    const bool stereo = draw.sourceSlot == kLiveSlot || !slots_[draw.sourceSlot].levels[0].mono;
     const uint64_t load = pool_.soundingWeight(onset);
     // The highest tier t <= the draw's with base + w(t) <= quota_, into `tier`.
     const auto fits = [this, &draw, stereo](uint64_t base, Tier &tier) {
@@ -527,6 +521,21 @@ void Engine::renderPool(float *const dst[2], int64_t blockStart, int64_t from, i
     const kernels::Tables tables{hann_, sinc_};
     const GrainRows &rows = pool_.rows();
     const uint32_t n = pool_.size();
+    // The kernels' view of every level of both slots, once per call.
+    kernels::SampleSource views[2][kMaxMipLevels];
+    for (uint32_t s = 0; s < 2; ++s)
+    {
+        for (uint32_t l = 0; l < kMaxMipLevels; ++l)
+        {
+            const PreparedSource::Level &level = slots_[s].levels[l];
+            views[s][l] = {{level.data[0], level.data[1]},
+                           level.frames,
+                           level.mono,
+                           level.interleaved,
+                           level.stride,
+                           level.decimation};
+        }
+    }
     for (uint32_t i = 0; i < n; ++i)
     {
         if (rows.sourceSlot[i] == kLiveSlot)
@@ -549,9 +558,9 @@ void Engine::renderPool(float *const dst[2], int64_t blockStart, int64_t from, i
             }
             continue;
         }
-        const SourceSlot &slot = slots_[rows.sourceSlot[i]];
+        const uint8_t s = rows.sourceSlot[i];
         const kernels::SampleSource &source =
-            slot.views[std::min<uint32_t>(rows.level[i], slot.levelCount - 1)];
+            views[s][std::min<uint32_t>(rows.level[i], slots_[s].levelCount - 1)];
         if (rows.tier[i] == Tier::Eco)
         {
             kernels::renderSampleSimd<kernels::Linear>(rows, i, source, output, from, to, tables);

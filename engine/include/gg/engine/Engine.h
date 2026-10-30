@@ -15,7 +15,6 @@
 #include "gg/core/Window.h"
 #include "gg/grain/Budget.h"
 #include "gg/grain/CloudScheduler.h"
-#include "gg/grain/GrainKernels.h"
 #include "gg/grain/GrainPool.h"
 #include "gg/grain/SincTable.h"
 #include "gg/source/LiveSource.h"
@@ -357,10 +356,10 @@ class Engine
     struct SourceSlot
     {
         const PreparedSource *source{nullptr};
-        // The kernels' view of each level (spec §6.3): views[n] is source->level(n) for n below
-        // levelCount, and a copy of level 0 above it. Level 0's interleaved is a stereo
-        // source's pairs, null if mono, none or not allocated.
-        kernels::SampleSource views[kMaxMipLevels]{};
+        // Each level the kernels may read (spec §6.3): levels[n] is source->level(n) for n below
+        // levelCount, and a copy of level 0 above it; renderPool makes the kernels' views of them.
+        // Level 0's interleaved is a stereo source's pairs, null if mono, none or not allocated.
+        PreparedSource::Level levels[kMaxMipLevels]{};
         uint32_t levelCount{1};
         double rate{0.0}; // the source's sample rate; unused without one
         // The latest grainEndSample of the grains admitted to this slot (never a ring grain);
