@@ -511,9 +511,9 @@ void Processor::reset() noexcept
         l->diffuser.reset();
         l->peaks.reset();
         l->events.clear();
+        l->droppedEvents = 0;
     }
     reverb_->reset();
-    droppedEvents_ = 0;
 }
 
 void Processor::setSourceNow(uint8_t layer, std::shared_ptr<const PreparedSource> s)
@@ -589,6 +589,38 @@ bool Processor::takeLayerOffers(Layer &l) noexcept
     return offered && offer.hasValues;
 }
 
+uint64_t Processor::droppedGrainEvents() const noexcept
+{
+    uint64_t dropped = 0;
+    for (const auto &l : layers_)
+    {
+        dropped += l->droppedEvents;
+    }
+    return dropped;
+}
+
+void Processor::setTaskRunner(TaskRunner *runner) noexcept
+{
+    runner_ = runner != nullptr ? runner : &serialRunner_;
+}
+
+void Processor::layerTask(void *ctx, uint32_t i) noexcept
+{
+    static_cast<Processor *>(ctx)->execTask(i);
+}
+
+void Processor::execTask(uint32_t i) noexcept
+{
+    // Spec §6.7: a pool thread's floating-point mode isn't the audio thread's, and the engine's own
+    // guard covers only Engine::process, not the diffuser, the limiter and Feedback after it.
+    ScopedDenormalsOff denormalsOff;
+    if (i < taskCount_)
+    {
+        renderLayerPiece(taskLayers_[i], pieceFrom_, pieceN_, pieceDry_.data(), pieceHasInput_,
+                         pieceRendering_);
+    }
+}
+
 void Processor::setEventSink(GrainEventSink sink, void *ctx) noexcept
 {
     externalSink_ = sink;
@@ -599,15 +631,17 @@ void Processor::onGrain(void *ctx, uint32_t layer, const GrainSpec &g) noexcept
 {
     auto *self = static_cast<Processor *>(ctx);
     // Each engine's layer is its index (engineConfig), below kLayers.
-    std::vector<GrainSpec> &events = self->layers_[std::min<uint32_t>(layer, kLayers - 1)]->events;
+    // Called on the thread of the layer's task (spec §6.7): it touches only that layer's buffer
+    // and count.
+    Layer &l = *self->layers_[std::min<uint32_t>(layer, kLayers - 1)];
     // Within the capacity reserved at construction a push_back never allocates.
-    if (events.size() < events.capacity())
+    if (l.events.size() < l.events.capacity())
     {
-        events.push_back(g);
+        l.events.push_back(g);
     }
     else
     {
-        ++self->droppedEvents_;
+        ++l.droppedEvents;
     }
 }
 
@@ -979,11 +1013,35 @@ void Processor::render(const Buffers &b, int64_t from, int64_t to) noexcept
                 weights_[L][i] = weights[L];
             }
         }
+        // The layers (spec §6.7): the off layers' ring writes inline, then one task per rendering
+        // layer, in order A to D, from the piece state fixed here, read-only until run() returns.
+        // One rendering layer runs inline, without a request.
+        pieceFrom_ = from;
+        pieceN_ = count;
+        pieceDry_ = {dry[0], dry[1]};
+        pieceHasInput_ = b.numInChannels > 0;
+        pieceRendering_ = rendering;
+        taskCount_ = 0;
         for (uint8_t L = 0; L < kLayers; ++L)
         {
-            renderLayerPiece(L, from, count, dry, b.numInChannels > 0, rendering);
+            if (rendering_[L])
+            {
+                taskLayers_[taskCount_++] = L;
+            }
+            else
+            {
+                renderLayerPiece(L, from, count, dry, pieceHasInput_, rendering);
+            }
         }
-        // The piece's grain events, in layer order A to D (spec §6.7).
+        if (taskCount_ == 1)
+        {
+            execTask(0);
+        }
+        else if (taskCount_ > 1)
+        {
+            runner_->run(taskCount_, &layerTask, this);
+        }
+        // The piece's grain events, in layer order A to D (spec §6.7), after the join.
         drainEvents();
 
         float *dst[2] = {nullptr, nullptr};

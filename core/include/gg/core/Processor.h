@@ -24,6 +24,7 @@
 #include "gg/core/SpaceReverb.h"
 #include "gg/core/UiSnapshot.h"
 #include "gg/engine/Engine.h"
+#include "gg/engine/TaskRunner.h"
 
 namespace gg::core
 {
@@ -101,6 +102,26 @@ struct NoteEvent
 /// the host splits blocks. Switched on again, the engine is enabled at that boundary, which forces
 /// an onset there, and the ramp rises from 0. Switched off and on again within the ramp, the
 /// ramp turns from its current value and the engine is never disabled.
+///
+/// **Threads** (spec §6.7). Per piece, after the boundary's changes and with every input to the
+/// layers fixed (the piece's bounds and input, the channels the engines render, which layers
+/// render, the morph weights for every sample of the piece, computed serially into a per-piece
+/// buffer, and the ramps, effective values and engines' parameters, which change only between
+/// pieces), process() first writes the off layers' rings inline, then hands the rendering layers,
+/// in order A to D, to the TaskRunner (setTaskRunner) as one task each: task i renders layer
+/// taskLayers_[i]'s piece (execTask), the same layer whatever thread runs it. A piece with one
+/// rendering layer renders it inline, with no request; with none there is nothing to run. A task
+/// touches only its own layer: its engine, diffuser, ramps' reads, wet, ring-input and history
+/// buffers, peak strip, event buffer and dropped-event count; everything else it reads (the piece
+/// state, the weights, rendering_, rampSamples_) is read-only until run() returns, and nothing in
+/// it calls the host, allocates, locks or draws from a stateful RNG. Each task sets
+/// ScopedDenormalsOff on its own thread for its duration, since a pool thread's floating-point mode
+/// isn't the audio thread's (and Engine::process's own guard covers only the engine). After the
+/// join, on the calling thread, the grain events are drained in layer order A to D and the layers
+/// are summed in that order, as the serial loop did, so the output is the same bits with any
+/// runner, any pool size and a host that declines (it then loops, SerialRunner's way). The
+/// runner's run() must return only once every task has returned, with their writes visible to
+/// the caller (a host pool's request_exec, StubPool's barrier).
 ///
 /// **Source kind** (spec §6.4). Each layer reads the kind builtKind(sourceKindOf(...)) gives:
 /// Sample or Live, in either product. Position, Spray and Feedback follow the kind (toCloudParams,
@@ -349,6 +370,17 @@ class Processor
                  uint32_t numOutChannels, uint32_t numFrames, std::span<const ParamEvent> events,
                  std::span<const NoteEvent> notes = {}) noexcept SST_CPPUTILS_NONBLOCKING;
 
+    /// The runner the layer tasks go to (the class comment's Threads), from the next process()
+    /// call; nullptr selects the built-in SerialRunner, the default. Used only inside process(), so
+    /// set it while no process() call runs (the plugin sets it at activation).
+    void setTaskRunner(TaskRunner *runner) noexcept;
+
+    /// Renders task i of the current piece: layer taskLayers_[i]'s piece, from the piece state the
+    /// caller fixed before its request (the class comment's Threads). For the runner, on any
+    /// thread, only while process() waits on that request: the plugin's thread-pool exec calls it.
+    /// An index past the piece's task count does nothing.
+    void execTask(uint32_t i) noexcept SST_CPPUTILS_NONBLOCKING;
+
     /// The distinct keys held now, ascending (for tests and the editor): the held set as of the
     /// last applied boundary, so a pending note doesn't show until its boundary.
     std::span<const uint8_t> heldKeys() const noexcept { return {keys_.data(), keyCount_}; }
@@ -441,7 +473,7 @@ class Processor
 
     /// The grain events a full layer buffer kept from the sink and the grain queue (the class
     /// comment) since construction or the last reset(); the audio is never affected.
-    uint64_t droppedGrainEvents() const noexcept { return droppedEvents_; }
+    uint64_t droppedGrainEvents() const noexcept;
 
     /// Whether the reverb's return is being added: the reverb chunk holding the last rendered
     /// sample is active (the class comment). False after construction and reset().
@@ -486,8 +518,11 @@ class Processor
         // The limited wet signal of the last kFeedbackDelay samples: sample t at t % D.
         std::array<std::array<float, kFeedbackDelay>, 2> wetHistory{};
         LivePeaks peaks;
-        // This piece's spawns, drained after the piece: reserved to 2 × grainCapacity.
+        // This piece's spawns, drained after the piece: reserved to 2 × grainCapacity. The events
+        // a full buffer kept from the sink since the construction or the last reset(), per layer
+        // so that each task counts its own (droppedGrainEvents sums them).
         std::vector<GrainSpec> events;
+        uint64_t droppedEvents{0};
         // Freeze has been seen off since the construction or the last reset(), so on engages it;
         // engineFrozen is the freeze setting last given to the engine.
         bool freezeArmed{false};
@@ -531,9 +566,12 @@ class Processor
     /// Renders the absolute samples [from, to) of the current call.
     void render(const Buffers &b, int64_t from, int64_t to) noexcept SST_CPPUTILS_NONBLOCKING;
     /// Renders layer L's piece [from, from + n) into its wet buffer (the class comment), or, when
-    /// it isn't rendering, only writes its ring.
+    /// it isn't rendering, only writes its ring. A rendering layer's runs as its task (execTask),
+    /// on any thread, so it writes only layer L's state and reads the rest read-only (Threads).
     void renderLayerPiece(uint8_t L, int64_t from, uint32_t n, const float *const dry[2],
                           bool hasInput, uint32_t rendering) noexcept SST_CPPUTILS_NONBLOCKING;
+    /// The TaskFn handed to the runner, ctx the Processor: execTask(i).
+    static void layerTask(void *ctx, uint32_t i) noexcept SST_CPPUTILS_NONBLOCKING;
     /// The morph weights of the four layers at sample t, with r_K the on/off ramps' values where
     /// rendering[K] and 0 elsewhere.
     void weightsAt(int64_t t, const std::array<bool, kLayers> &rendering,
@@ -565,6 +603,19 @@ class Processor
     // The current piece's: which layers render, and their weights per sample.
     std::array<bool, kLayers> rendering_{};
     std::array<std::array<float, kFeedbackDelay>, kLayers> weights_{};
+    // The current piece's state for its tasks (the class comment's Threads), fixed before the
+    // request and read-only while it runs: the piece's bounds, its input, the channels the
+    // engines render, and the rendering layers, in order A to D, one task each.
+    int64_t pieceFrom_{0};
+    uint32_t pieceN_{0};
+    std::array<const float *, 2> pieceDry_{};
+    bool pieceHasInput_{false};
+    uint32_t pieceRendering_{2};
+    std::array<uint8_t, kLayers> taskLayers_{};
+    uint32_t taskCount_{0};
+    // setTaskRunner's runner, or serialRunner_.
+    SerialRunner serialRunner_;
+    TaskRunner *runner_{&serialRunner_};
 
     std::array<float, kParamCount> minVal_{};
     std::array<float, kParamCount> maxVal_{};
@@ -600,7 +651,6 @@ class Processor
     void *externalSinkCtx_{nullptr};
     std::atomic<bool> publishing_{false};
     bool publishingThisCall_{false};
-    uint64_t droppedEvents_{0};
     std::unique_ptr<GrainQueue> grainQueue_; // heap: 128 KB
     SnapshotBuffer snapshot_;
     std::atomic<int64_t> publishedClock_{0};

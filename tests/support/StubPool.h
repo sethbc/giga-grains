@@ -12,6 +12,8 @@
 #include <thread>
 #include <vector>
 
+#include <sst/cpputils/rtsan_support.h>
+
 #include "gg/engine/TaskRunner.h"
 
 namespace gg::test
@@ -33,7 +35,11 @@ namespace gg::test
 ///
 /// It sets no floating-point mode on its threads: each task sets its own (ScopedDenormalsOff),
 /// and this stub must not hide a task that forgets. It isn't real-time safe (run() locks and
-/// waits), so nothing of it carries SST_CPPUTILS_NONBLOCKING.
+/// waits), so nothing of it carries SST_CPPUTILS_NONBLOCKING. Under RealtimeSanitizer, run()'s
+/// own locking and waiting are exempt (SST_CPPUTILS_RTSAN_DISABLE), as a host's request_exec is
+/// the host's: called from a nonblocking Processor::process(), the stub stands for the host, and
+/// only the tasks it runs, on the calling thread and on its own (each a nonblocking function),
+/// are checked.
 class StubPool final : public gg::TaskRunner
 {
   public:
@@ -72,18 +78,22 @@ class StubPool final : public gg::TaskRunner
         }
 
         {
-            std::lock_guard lock(mutex_);
-            count_ = count;
-            fn_ = fn;
-            ctx_ = ctx;
-            next_.store(0, std::memory_order_relaxed);
-            finished_ = 0;
-            ++generation_;
+            SST_CPPUTILS_RTSAN_DISABLE; // the host's side of the request (the class comment)
+            {
+                std::lock_guard lock(mutex_);
+                count_ = count;
+                fn_ = fn;
+                ctx_ = ctx;
+                next_.store(0, std::memory_order_relaxed);
+                finished_ = 0;
+                ++generation_;
+            }
+            wake_.notify_all();
         }
-        wake_.notify_all();
 
         drain(count, fn, ctx);
 
+        SST_CPPUTILS_RTSAN_DISABLE;
         std::unique_lock lock(mutex_);
         done_.wait(lock, [this] { return finished_ == workers_; });
     }
