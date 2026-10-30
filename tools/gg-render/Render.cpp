@@ -7,15 +7,24 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
+#include <ios>
+#include <iterator>
 #include <memory>
 #include <stdexcept>
+#include <string>
+#include <system_error>
 
 #include <fmt/format.h>
 
 #include "Signals.h"
 #include "gg/core/ModMatrix.h"
 #include "gg/core/ModSources.h"
+#include "gg/core/Preset.h"
+#include "gg/core/PresetInfo.h"
 #include "gg/core/Processor.h"
+#include "gg/core/SessionState.h"
 #include "gg/engine/Engine.h"
 #include "gg/source/SampleBuffer.h"
 
@@ -253,8 +262,8 @@ uint8_t layerOrElse(const std::string &letter, uint8_t otherwise)
                : otherwise;
 }
 
-/// The routes in effect for the render: `routes` (the factory routes) with each of the spec's
-/// routes set in its slot.
+} // namespace
+
 gg::core::ModRoutes routesWith(gg::core::ModRoutes routes, const std::vector<RouteSpec> &mod)
 {
     for (const RouteSpec &r : mod)
@@ -280,6 +289,57 @@ gg::core::ModRoutes routesWith(gg::core::ModRoutes routes, const std::vector<Rou
         routes.at(r.slot - 1u) = route;
     }
     return routes;
+}
+
+namespace
+{
+/// The state of the preset file at `path` (RenderSpec::preset), for `mode`'s product. Throws
+/// BadInput, with the reason, for a file that can't be read, is longer than kMaxStateBytes, isn't
+/// a preset file this version reads, is the other product's, or names a sample (which gg-render
+/// reads with --content-dir once MEDI version 2 has content-relative references: sub-project 2).
+gg::core::SessionState readPresetFile(const std::string &path, gg::core::Mode mode)
+{
+    const std::filesystem::path file = pathFromUtf8(path);
+    std::error_code error;
+    const auto size = std::filesystem::file_size(file, error);
+    std::ifstream in(file, std::ios::binary);
+    if (error || !in)
+    {
+        throw BadInput(fmt::format("can't read the preset {}", path));
+    }
+    if (size > gg::core::kMaxStateBytes)
+    {
+        throw BadInput(
+            fmt::format("the preset {} is longer than {} bytes", path, gg::core::kMaxStateBytes));
+    }
+    const std::string bytes{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+    if (in.bad() || bytes.size() > gg::core::kMaxStateBytes)
+    {
+        throw BadInput(fmt::format("can't read the preset {}", path));
+    }
+    gg::core::PresetInfo info;
+    gg::core::SessionState state;
+    if (!gg::core::readPreset(bytes, mode, info, state))
+    {
+        // Why not, for the message: not a preset at all, or the other product's.
+        if (!gg::core::presetInfoOf(bytes, info))
+        {
+            throw BadInput(fmt::format("{} isn't a preset file this version reads", path));
+        }
+        if (info.product != mode)
+        {
+            throw BadInput(fmt::format("the preset is for {}, not {}", productName(info.product),
+                                       productName(mode)));
+        }
+        throw BadInput(fmt::format("the preset {} doesn't load", path));
+    }
+    if (state.sample)
+    {
+        throw BadInput(fmt::format("the preset {} names a sample, which gg-render can't read "
+                                   "before MEDI version 2 (after sub-project 2 merges)",
+                                   path));
+    }
+    return state;
 }
 
 /// The controls as control events at absolute frames, in the spec's (time) order.
@@ -315,6 +375,15 @@ gg::metrics::AudioData renderProcessor(const RenderSpec &spec, std::vector<std::
     const auto &mod = fx ? spec.fx.mod : spec.instrument.mod;
     const auto &transport = fx ? spec.fx.transport : spec.instrument.transport;
     const auto frames = static_cast<std::size_t>(framesFor(spec.durationSeconds, spec.sampleRate));
+    const gg::core::Mode mode = fx ? gg::core::Mode::Fx : gg::core::Mode::Instrument;
+    // Read first, so a bad preset fails before anything is made. A plain value, not one built in
+    // a ternary or a std::optional (GCC 13's -Wmaybe-uninitialized; CLAUDE.md).
+    const bool hasPreset = !spec.preset.empty();
+    gg::core::SessionState preset;
+    if (hasPreset)
+    {
+        preset = readPresetFile(spec.preset, mode);
+    }
 
     // The FX's input, silent after its own length (and cut at the render's end); the instrument
     // has none.
@@ -329,8 +398,13 @@ gg::metrics::AudioData renderProcessor(const RenderSpec &spec, std::vector<std::
     }
     const auto inputChannels = static_cast<uint32_t>(input.channels.size());
 
-    gg::core::Processor processor({spec.sampleRate, spec.blockSize, spec.seed,
-                                   fx ? gg::core::Mode::Fx : gg::core::Mode::Instrument});
+    // The preset first, its seed ignored (the spec's is the render's); then the spec's own keys on
+    // top of it (M2 sub-project 5's spec §6.10).
+    gg::core::Processor processor({spec.sampleRate, spec.blockSize, spec.seed, mode});
+    if (hasPreset)
+    {
+        processor.setBases(preset.values);
+    }
     if (!fx)
     {
         processor.setSourceNow(makeSample(spec.instrument.sample, spec.sampleRate, spec.seed));
@@ -343,9 +417,9 @@ gg::metrics::AudioData renderProcessor(const RenderSpec &spec, std::vector<std::
     {
         processor.setBase(slotNamed(name), static_cast<float>(value));
     }
-    if (!mod.empty())
+    if (hasPreset || !mod.empty())
     {
-        processor.setRoutes(routesWith(processor.routes(), mod));
+        processor.setRoutes(routesWith(hasPreset ? preset.routes : processor.routes(), mod));
     }
     if (transport)
     {

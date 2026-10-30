@@ -55,6 +55,7 @@ add_executable(gg-tests
         metrics/spectrogram_tests.cpp
         tools/bench_kernel_tests.cpp
         tools/bench_tests.cpp
+        tools/preset_source_tests.cpp
         tools/render_spec_tests.cpp
         tools/signals_tests.cpp
         ui/lane_model_tests.cpp
@@ -110,6 +111,7 @@ target_include_directories(gg-tests PRIVATE ${CMAKE_SOURCE_DIR}/media/src)
 target_compile_definitions(gg-tests PRIVATE GG_TEST_OUTPUT_DIR="${CMAKE_CURRENT_BINARY_DIR}/test-output"
         GG_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/golden"
         GG_AUDIO_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/audio"
+        GG_PRESET_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/presets"
         GG_BENCH_BASELINE_DIR="${CMAKE_SOURCE_DIR}/tools/gg-bench/baselines")
 # 0 or 1, so tests can use #if GG_USE_RTSAN for checks that only hold in the RTSan build.
 target_compile_definitions(gg-tests PRIVATE GG_USE_RTSAN=$<BOOL:${GG_USE_RTSAN}>)
@@ -318,6 +320,51 @@ add_test(NAME render_write_media_alone
         --block-size 64 -o ${CMAKE_CURRENT_BINARY_DIR}/write-media-alone/x.wav)
 set_tests_properties(render_write_media_alone PROPERTIES LABELS render
         PASS_REGULAR_EXPRESSION "excludes --write-media|--write-media excludes")
+# Presets (M2 sub-project 5's spec §6.6, §6.10): render_pack_preset packs the FX's test source
+# into <build>/tests/packed-presets, the fixture packed_presets; render_preset_option renders an
+# FX spec through it with --preset, and render_preset_wrong_product refuses it for an instrument
+# spec (exit 2, with the reason).
+set(GG_PACKED_PRESETS ${CMAKE_CURRENT_BINARY_DIR}/packed-presets)
+add_test(NAME render_pack_preset
+        COMMAND gg-render --pack-preset ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/presets/fx-test.json
+        -o ${GG_PACKED_PRESETS}/fx-test.ggpreset)
+set_tests_properties(render_pack_preset PROPERTIES LABELS render
+        FIXTURES_SETUP packed_presets)
+add_test(NAME render_preset_option
+        COMMAND gg-render ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/presets/render-fx-preset.json
+        --preset ${GG_PACKED_PRESETS}/fx-test.ggpreset
+        -o ${GG_PACKED_PRESETS}/render-fx-preset.wav)
+set_tests_properties(render_preset_option PROPERTIES LABELS render
+        FIXTURES_REQUIRED packed_presets)
+set(render_preset_wrong_product_args
+        ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/presets/render-inst-preset.json
+        --preset ${GG_PACKED_PRESETS}/fx-test.ggpreset)
+add_test(NAME render_preset_wrong_product
+        COMMAND ${CMAKE_COMMAND} -DPROGRAM=$<TARGET_FILE:gg-render>
+        "-DARGS=${render_preset_wrong_product_args}" -DEXPECTED_CODE=2
+        "-DEXPECTED_STDERR=gg-render: "
+        "-DEXPECTED_STDERR2=the preset is for Giga Grains FX, not Giga Grains"
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/tools/check-exit-code.cmake)
+set_tests_properties(render_preset_wrong_product PROPERTIES LABELS render
+        FIXTURES_REQUIRED packed_presets)
+# --pack-preset takes only -o and --content-dir: another option is refused (exit 2); and a source
+# that doesn't parse (here a render spec) is bad input, with the parser's message.
+add_test(NAME render_pack_preset_alone
+        COMMAND gg-render --pack-preset ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/presets/fx-test.json
+        -o ${CMAKE_CURRENT_BINARY_DIR}/pack-preset-alone/x.ggpreset --block-size 64)
+set_tests_properties(render_pack_preset_alone PROPERTIES LABELS render
+        PASS_REGULAR_EXPRESSION "excludes --pack-preset|--pack-preset excludes")
+set(render_pack_preset_bad_source_args
+        --pack-preset ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/presets/render-fx-preset.json
+        -o ${CMAKE_CURRENT_BINARY_DIR}/pack-preset-bad-source.ggpreset)
+add_test(NAME render_pack_preset_bad_source
+        COMMAND ${CMAKE_COMMAND} -DPROGRAM=$<TARGET_FILE:gg-render>
+        "-DARGS=${render_pack_preset_bad_source_args}" -DEXPECTED_CODE=2
+        "-DEXPECTED_STDERR=gg-render: "
+        "-DEXPECTED_STDERR2=unknown key blockSize"
+        -DABSENT=${CMAKE_CURRENT_BINARY_DIR}/pack-preset-bad-source.ggpreset
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/tools/check-exit-code.cmake)
+set_tests_properties(render_pack_preset_bad_source PROPERTIES LABELS render)
 # A non-ASCII --spectrogram path (carry-over [181]): gg-render exits 0 only if the PNG was
 # written, which on Windows needs the wide-path open, not stbi_write_png's narrow one.
 add_test(NAME render_spectrogram_utf8_path

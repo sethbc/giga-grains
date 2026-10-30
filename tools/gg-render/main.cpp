@@ -12,17 +12,24 @@
 //   gg-render <spec.json> [-o out.wav] [--metrics out.json] [--events out.jsonl]
 //             [--spectrogram out.png] [--compare golden.metrics.json]
 //             [--compare-events golden.events.jsonl] [--block-size N] [--media-dir DIR]
+//             [--preset file.ggpreset] [--content-dir DIR]
 //   gg-render --write-media DIR
+//   gg-render --pack-preset <source.json> -o <out.ggpreset> [--content-dir DIR]
 //
 // --media-dir resolves the spec's relative file paths against DIR instead of the spec's
-// directory. --write-media writes the test media the golden cases read (writeTestMedia in
-// Signals.h) into DIR, and does nothing else.
+// directory. --preset sets the spec's "preset" key, or overrides it, and is resolved like it
+// (RenderSpec::preset). --content-dir is the content folder a preset's content-relative samples
+// are taken from; until MEDI version 2 (after sub-project 2 merges) no preset names a sample, and
+// it is accepted and unused. --write-media writes the test media the golden cases read
+// (writeTestMedia in Signals.h) into DIR, and does nothing else. --pack-preset compiles a preset
+// source (PresetSource.h) into the preset file -o names, and takes no other option but
+// --content-dir.
 //
-// Exit status: 0 = pass (every requested comparison matched, or the media were written),
-// 1 = a comparison failed, 2 = bad input (arguments, spec, source, sample, input or golden files)
-// or an output that couldn't be written, 3 = an internal error (anything else thrown, such as
-// std::logic_error or std::bad_alloc). Every path is UTF-8 (on Windows the arguments are
-// converted to it, and files are opened with wide paths).
+// Exit status: 0 = pass (every requested comparison matched, the media were written or the preset
+// packed), 1 = a comparison failed, 2 = bad input (arguments, spec, source, sample, input, preset,
+// preset source or golden files) or an output that couldn't be written, 3 = an internal error
+// (anything else thrown, such as std::logic_error or std::bad_alloc). Every path is UTF-8 (on
+// Windows the arguments are converted to it, and files are opened with wide paths).
 
 #include <cstddef>
 #include <cstdint>
@@ -41,9 +48,11 @@
 #include <CLI/CLI.hpp>
 #include <fmt/format.h>
 
+#include "PresetSource.h"
 #include "Render.h"
 #include "RenderSpec.h"
 #include "Signals.h"
+#include "gg/core/PresetInfo.h"
 #include "gg/metrics/AudioData.h"
 #include "gg/metrics/Metrics.h"
 #include "gg/metrics/Spectrogram.h"
@@ -177,12 +186,17 @@ int run(int argc, char **argv)
     std::string goldenEventsPath;
     uint32_t blockSize = 0;
     std::string mediaDir;
+    std::string presetPath;
+    std::string contentDir;
     std::string writeMediaDir;
-    // Every option but --write-media, which takes none of them.
+    std::string packSourcePath;
+    // Every option but --write-media, which takes none of them, and --pack-preset, which takes
+    // only -o and --content-dir.
     std::vector<CLI::Option *> renderOptions;
     renderOptions.push_back(app.add_option("spec", specPath, "The render spec (JSON)"));
-    renderOptions.push_back(
-        app.add_option("-o,--output", wavPath, "Write the render as a 32-bit float WAV"));
+    auto *const outputOption = app.add_option(
+        "-o,--output", wavPath,
+        "Write the render as a 32-bit float WAV; with --pack-preset, the preset file to write");
     renderOptions.push_back(
         app.add_option("--metrics", metricsPath, "Write the render's metrics (JSON)"));
     renderOptions.push_back(
@@ -204,14 +218,29 @@ int run(int argc, char **argv)
         app.add_option("--media-dir", mediaDir,
                        "Resolve the spec's relative file paths against this directory instead "
                        "of the spec's"));
+    renderOptions.push_back(app.add_option(
+        "--preset", presetPath,
+        "Apply this preset file before the spec's own params and mod: sets the spec's \"preset\" "
+        "key, or overrides it, resolved like it (against the spec's directory or --media-dir)"));
+    auto *const contentDirOption =
+        app.add_option("--content-dir", contentDir,
+                       "The content folder a preset's content-relative samples are taken from");
     auto *const writeMediaOption = app.add_option(
         "--write-media", writeMediaDir,
         "Write the test media the golden cases read into this directory, and exit; it takes no "
         "other option");
+    auto *const packPresetOption = app.add_option(
+        "--pack-preset", packSourcePath,
+        "Compile this preset source (JSON) into the preset file -o names, and exit; it takes no "
+        "other option but --content-dir");
     for (CLI::Option *option : renderOptions)
     {
         writeMediaOption->excludes(option);
+        packPresetOption->excludes(option);
     }
+    writeMediaOption->excludes(outputOption);
+    writeMediaOption->excludes(contentDirOption);
+    writeMediaOption->excludes(packPresetOption);
     try
     {
         app.parse(argc, argv);
@@ -233,6 +262,41 @@ int run(int argc, char **argv)
                    writeMediaDir);
         return kExitPass;
     }
+    if (!packSourcePath.empty())
+    {
+        if (wavPath.empty())
+        {
+            return fail("--pack-preset needs -o <out.ggpreset>");
+        }
+        const auto sourceText = readFile(packSourcePath);
+        if (!sourceText)
+        {
+            return fail(fmt::format("can't read {}", packSourcePath));
+        }
+        std::string error;
+        const auto source = gg::render::parsePresetSource(*sourceText, error);
+        if (!source)
+        {
+            return fail(fmt::format("{}: {}", packSourcePath, error));
+        }
+        std::optional<fs::path> contentRoot;
+        if (!contentDir.empty())
+        {
+            contentRoot = pathFromUtf8(contentDir);
+        }
+        const std::string bytes = gg::render::packPreset(*source, contentRoot, error);
+        if (bytes.empty())
+        {
+            return fail(fmt::format("{}: {}", packSourcePath, error));
+        }
+        if (!writeFile(wavPath, bytes))
+        {
+            return fail(fmt::format("can't write {}", wavPath));
+        }
+        fmt::print("packed {} ({}) into {}\n", source->info.name,
+                   gg::core::modeName(source->info.product), wavPath);
+        return kExitPass;
+    }
     if (specPath.empty())
     {
         return fail("no render spec given (see --help)");
@@ -248,6 +312,14 @@ int run(int argc, char **argv)
     if (!spec)
     {
         return fail(fmt::format("{}: {}", specPath, error));
+    }
+    if (!presetPath.empty())
+    {
+        if (spec->mode == gg::render::RenderMode::Sample)
+        {
+            return fail(fmt::format("{}: --preset needs an instrument or FX spec", specPath));
+        }
+        spec->preset = presetPath;
     }
     gg::render::resolvePaths(
         *spec, mediaDir.empty() ? gg::render::utf8FromPath(pathFromUtf8(specPath).parent_path())

@@ -346,8 +346,9 @@ runs the tests labelled either. The labels are:
 - `rt`: the allocation tripwire. In the `rtsan` build, two tests labelled both `rt` and `rtsan`
   check that RTSan is active: one checks the build flag, and `rtsan_negative_control` passes
   only if RTSan reports an allocation made inside a nonblocking function.
-- tools: `render` (gg-render's CLI, `render_write_media_alone` and
-  `render_spectrogram_utf8_path` among them), `metrics`, `bench` (gg-bench's command line: the
+- tools: `render` (gg-render's CLI, `render_write_media_alone`, `render_spectrogram_utf8_path`
+  and the presets' `render_pack_preset*` and `render_preset_*` among them; and its preset
+  sources, `tests/tools/preset_source_tests.cpp`), `metrics`, `bench` (gg-bench's command line: the
   `bench_rejects_*`, `bench_make_baseline_*`, `bench_baseline_*` and `bench_space_cli` tests);
 - `golden`: the golden renders;
 - `ui`: the splat renderer, the lane geometry (`LaneModel`), and the lane's clock and live-grain
@@ -426,7 +427,9 @@ code page, so the name matches nothing and the test fails with "No tests ran". S
 gg-render <spec.json> [-o out.wav] [--metrics out.json] [--events out.jsonl]
           [--spectrogram out.png] [--compare golden.metrics.json]
           [--compare-events golden.events.jsonl] [--block-size N] [--media-dir DIR]
+          [--preset file.ggpreset] [--content-dir DIR]
 gg-render --write-media DIR
+gg-render --pack-preset <source.json> -o <out.ggpreset> [--content-dir DIR]
 ```
 
 - It's built at `build/<preset>/tools/gg-render/gg-render`.
@@ -476,6 +479,11 @@ gg-render --write-media DIR
       `modWheel`, `aftertouch` and `pitchBend`, values 0–1, sent as MIDI control events.
     - `transport` is `{"tempoBpm", "playing", "startBeat"}`, a steady transport set once before
       the render (playing by default, from beat 0); without it the transport sources hold at 0.
+    - `preset` (M2 sub-project 5's spec §6.10) is a `.ggpreset` file's path, resolved like a
+      file's. It is applied first: an FX preset in an instrument spec, or the reverse, is bad
+      input (exit 2: "the preset is for Giga Grains FX, not Giga Grains"); then its values and
+      routes replace the defaults and the factory routes, and the spec's `params`, `mod` and
+      `samples` go on top. Its seed is ignored: the spec's is the render's.
   - **Instrument mode** (`"mode": "instrument"`) runs Giga Grains' `Processor` the same way over
     a `sample` (a built-in signal or a `file`, loaded and converted with `gg-media`), with no
     `channels`. Its Position is the fraction of the sample, 0–1, and it is silent until a note.
@@ -488,6 +496,16 @@ gg-render --write-media DIR
   - **FX inputs are faded** in at their start and out at their end over 10 ms, with a raised
     cosine (sin²), so the input's own edges don't click (ruling M1-v). Sample-mode sources and
     the M0 goldens are untouched.
+- **`--preset FILE`** sets the spec's `preset`, or overrides it, and is resolved as the key is
+  (so a relative one from the spec's directory or `--media-dir`). **`--content-dir DIR`** is the
+  content folder a preset's content-relative samples are taken from; no preset names a sample
+  until MEDI version 2 (after sub-project 2 merges), so for now it is accepted and unused.
+- **`--pack-preset`** compiles a preset source (`tools/gg-render/PresetSource.h`: `product`,
+  `name`, `tags` from the vocabulary, optional `author` and `description`, and `params`, `mod`
+  and `samples` in the spec's vocabulary) into the preset file `-o` names, the product's defaults
+  and factory routes under the source's. It takes no other option but `--content-dir`, and a
+  bad source exits 2 with the parser's message. `tests/fixtures/presets/` holds the test sources
+  (`fx-test.json`, `inst-test.json`).
 - A relative file path is taken from the spec's directory, or from `--media-dir`. The golden
   cases' media are generated, never committed: `--write-media DIR` writes them, and the
   `golden_media` test does so into `build/<preset>/golden-media` as a fixture every golden test
