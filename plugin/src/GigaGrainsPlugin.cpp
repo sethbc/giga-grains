@@ -239,12 +239,14 @@ bool GigaGrainsPlugin::activate(double sampleRate, uint32_t /*minFrameCount*/,
             mode(),
         };
         auto processor = std::make_unique<gg::core::Processor>(config);
-        // The values set while inactive, or left by the last activation.
+        // The values set while inactive, or left by the last activation, set at once (ruling
+        // FR-3: one recomputation, not one per slot).
+        gg::core::ParamValues values{};
         for (std::size_t s = 0; s < kParamCount; ++s)
         {
-            processor->setBase(static_cast<ParamSlot>(s),
-                               values_[s].load(std::memory_order_relaxed));
+            values[s] = values_[s].load(std::memory_order_relaxed);
         }
+        processor->setBases(values);
         // The routes in effect: the factory routes, or a loaded state's.
         processor->setRoutes(routes_);
         // The host's pool, when it offers one, renders the layers (spec §6.7).
@@ -907,9 +909,10 @@ void GigaGrainsPlugin::applyLoadedState() noexcept
     {
         return; // the instrument's come with its sample (takeOffers)
     }
+    // One recomputation for the whole state on the audio thread, not one per slot (ruling FR-3).
+    processor_->setBases(loaded.values);
     for (std::size_t s = 0; s < kParamCount; ++s)
     {
-        processor_->setBase(static_cast<ParamSlot>(s), loaded.values[s]);
         storeValue(static_cast<ParamSlot>(s), loaded.values[s]);
     }
     requestValueRescan();

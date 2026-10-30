@@ -267,7 +267,7 @@ struct ControlEvent
 /// restored while active (D8), if any. Each process() call starts with takeOffers(), and ends by
 /// handing back what retired during it. takeOffers() does, for each layer in turn: hands its
 /// engine's retired sources back to its sources() (Engine::takeRetiredSource →
-/// SourceExchange::retire), polls for a new offer, applies its values at once (as setBase does),
+/// SourceExchange::retire), polls for a new offer, applies its values at once (setBases),
 /// and holds its source until Engine::adoptSource accepts it: at once, unless two sources are still
 /// in play, and then at the start of a later call, within Size. So an offer's values apply from the
 /// first call that takes it, and its source from that call too, or, when two sources are already in
@@ -391,6 +391,11 @@ class Processor
     /// at the next reverb chunk's first sample, the next grid boundary. Real-time safe; call it
     /// between process() calls.
     void setBase(ParamSlot slot, float value) noexcept;
+    /// Sets every slot's base value at once: for a state load (ruling FR-3). The result is
+    /// exactly that of setBase() on every slot in slot order, bases, effective values, ramps,
+    /// engines and Freeze's arming alike, but the effective values are recomputed once, not once
+    /// per slot. Real-time safe; call it between process() calls.
+    void setBases(const ParamValues &values) noexcept;
 
     /// Sets every layer's engine seed (Engine::setSeed): the grains scheduled from the next
     /// process() call's first sample on are keyed by it; those already sounding keep their draws.
@@ -487,7 +492,7 @@ class Processor
 
     /// Real-time safe; the start of every process() call, and for the plugin's params.flush: for
     /// each layer in turn, hands its engine's retired sources back to its sources(), takes a new
-    /// offer from it, applies the offer's values (as setBase does), and has the engine adopt the
+    /// offer from it, applies the offer's values (setBases), and has the engine adopt the
     /// source waiting, if it can. Returns whether an offer's values were applied. Call it on the
     /// audio thread between process() calls, or on another while process() isn't running.
     bool takeOffers() noexcept SST_CPPUTILS_NONBLOCKING;
@@ -696,6 +701,11 @@ class Processor
     /// Recomputes the effective values, gives each engine its cloud parameters and source kind,
     /// and keeps Space's.
     void updateEffective() noexcept;
+    /// The effective values `base` gives, with the modulation, routes and sources in effect (the
+    /// macros' from `base`), into `effective`, and the sources' values into `sources`: the values
+    /// updateEffective() computes, bit for bit, with nothing told to the engines.
+    void effectiveFor(const ParamValues &base, ParamValues &effective,
+                      std::array<ModSourceValues, kLayers> &sources) const noexcept;
     /// Jumps every ramped value to its target.
     void jumpRamps() noexcept;
     /// Ramps every ramped value from its value at t to its target.

@@ -379,6 +379,58 @@ void Processor::setBase(ParamSlot slot, float value) noexcept
     }
 }
 
+void Processor::setBases(const ParamValues &values) noexcept
+{
+    // Ruling FR-3: setBase() on every slot in slot order, with the effective values recomputed
+    // once. A NaN leaves its slot, and setBase()'s side effects at it, alone; no saved state holds
+    // one, so that case takes the calls themselves.
+    if (std::any_of(values.begin(), values.end(), [](float v) { return std::isnan(v); }))
+    {
+        for (size_t s = 0; s < kParamCount; ++s)
+        {
+            setBase(static_cast<ParamSlot>(s), values[s]);
+        }
+        return;
+    }
+    // Freeze's arming is the one side effect that depends on the values between the calls:
+    // setBase() of a layer's Freeze or of Macro 6 runs syncFreeze(), and each layer whose
+    // effective Freeze is off then is armed, from the bases set so far. The effective values at
+    // each such slot are recomputed here (effectiveFor, which tells the engines nothing).
+    ParamValues staged = base_;
+    ParamValues partial{};
+    std::array<ModSourceValues, kLayers> partialSources{};
+    for (size_t s = 0; s < kParamCount; ++s)
+    {
+        staged[s] = clampToRange(s, values[s]);
+        const auto slot = static_cast<ParamSlot>(s);
+        const std::optional<LayerRef> ref = layerOf(slot);
+        if (slot == ParamSlot::Macro6 || (ref && ref->param == LayerParam::Freeze))
+        {
+            effectiveFor(staged, partial, partialSources);
+            for (uint8_t L = 0; L < kLayers; ++L)
+            {
+                if (!toWetParams(partial, config_.mode, L).freeze)
+                {
+                    layers_[L]->freezeArmed = true;
+                }
+            }
+        }
+    }
+    base_ = staged;
+    hasPendingBase_.fill(false);
+    // The engines take their parameters and kind as values, the last given winning, so one
+    // update gives what the calls' last one gave. (A period the calls move and move back flags
+    // the scheduler's rescale where one update doesn't, and that rescale recomputes the pending
+    // onset it already has.) The last Freeze slot follows every macro, and nothing after it moves
+    // a Freeze, so the calls' last syncFreeze() saw these values.
+    updateEffective();
+    syncFreeze();
+    // Every ramped value's own slot is among the calls, and setBase() of it jumps it to its
+    // target; after that only a macro and its layer's Source (for Feedback) move that target, and
+    // each jumps it if moved. So the calls leave every ramped value jumped to its final target.
+    jumpRamps();
+}
+
 void Processor::jumpMovedRamps() noexcept
 {
     // Generic on purpose: every ramped value is checked, whatever routes move it.
@@ -643,25 +695,7 @@ void Processor::updateEffective() noexcept
     // base is finite and in range and mod is never NaN; the routes' depths are finite, but two
     // huge ones can sum to ±∞ − ∞: a NaN sum takes no offset. An infinite one clamps to an end of
     // the range.
-    for (const ParamSlot slot : kMacroSlots)
-    {
-        const auto s = static_cast<size_t>(slot);
-        effective_[s] = clampToRange(s, base_[s] + mod_[s]);
-    }
-    for (uint8_t L = 0; L < kLayers; ++L)
-    {
-        for (size_t i = 0; i < sources_[L].v.size(); ++i)
-        {
-            sources_[L].v[i] = sourceValue(static_cast<ModSource>(i), L);
-        }
-    }
-    ParamValues offsets{};
-    applyRoutes(routes_, sources_, offsets);
-    for (size_t s = 0; s < kParamCount; ++s)
-    {
-        const float sum = base_[s] + mod_[s] + offsets[s];
-        effective_[s] = clampToRange(s, std::isnan(sum) ? base_[s] + mod_[s] : sum);
-    }
+    effectiveFor(base_, effective_, sources_);
     for (uint8_t L = 0; L < kLayers; ++L)
     {
         Layer &l = *layers_[L];
@@ -684,6 +718,36 @@ void Processor::updateEffective() noexcept
         }
     }
     space_ = toSpaceParams(effective_, config_.mode);
+}
+
+void Processor::effectiveFor(const ParamValues &base, ParamValues &effective,
+                             std::array<ModSourceValues, kLayers> &sources) const noexcept
+{
+    // updateEffective()'s values (its comment), from `base`. `effective` may be effective_: a
+    // macro source reads the macro's value just written, and nothing else here reads effective_.
+    for (const ParamSlot slot : kMacroSlots)
+    {
+        const auto s = static_cast<size_t>(slot);
+        effective[s] = clampToRange(s, base[s] + mod_[s]);
+    }
+    for (uint8_t L = 0; L < kLayers; ++L)
+    {
+        for (size_t i = 0; i < sources[L].v.size(); ++i)
+        {
+            const auto src = static_cast<ModSource>(i);
+            sources[L].v[i] = src >= ModSource::Macro1 && src <= ModSource::Macro8
+                                  ? effective[static_cast<size_t>(
+                                        kMacroSlots[i - static_cast<size_t>(ModSource::Macro1)])]
+                                  : sourceValue(src, L);
+        }
+    }
+    ParamValues offsets{};
+    applyRoutes(routes_, sources, offsets);
+    for (size_t s = 0; s < kParamCount; ++s)
+    {
+        const float sum = base[s] + mod_[s] + offsets[s];
+        effective[s] = clampToRange(s, std::isnan(sum) ? base[s] + mod_[s] : sum);
+    }
 }
 
 void Processor::syncFreeze() noexcept
@@ -810,10 +874,7 @@ bool Processor::takeLayerOffers(Layer &l) noexcept
     {
         if (offer.hasValues)
         {
-            for (size_t s = 0; s < kParamCount; ++s)
-            {
-                setBase(static_cast<ParamSlot>(s), offer.values[s]);
-            }
+            setBases(offer.values);
         }
         // A keep-source offer (ruling R19) leaves the source alone: the engine's, and one taken
         // but not yet adopted.

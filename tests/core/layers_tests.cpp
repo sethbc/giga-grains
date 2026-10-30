@@ -29,6 +29,7 @@
 #include "gg/metrics/Metrics.h"
 #include "gg/source/PreparedSource.h"
 #include "gg/source/SampleBuffer.h"
+#include "sst/basic-blocks/params/ParamMetadata.h"
 #include "support/AllocTripwire.h"
 
 using gg::core::LayerParam;
@@ -781,5 +782,189 @@ TEST_CASE("four layers do not allocate", "[core][layers][rt]")
     if (AllocTripwire::available()) // off under ASan; RTSan covers this
     {
         REQUIRE(allocations == 0);
+    }
+}
+
+namespace
+{
+// A value for every slot, each moved from its default in `mode` (ruling FR-3's test): layers B
+// and C on, D off, layers A, B and D's Freeze on and C's off, a Source of each built kind and the
+// unbuilt Resample, both spreads up, every macro moved but Macro Freeze, and every other
+// continuous slot at a point of the middle half of its range drawn from gg::rng, away from its
+// default. With `nanEvery` not 0, every nanEvery-th slot is NaN instead.
+gg::core::ParamValues movedValues(Mode mode, uint64_t seed, size_t nanEvery = 0)
+{
+    gg::core::ParamValues v{};
+    for (size_t s = 0; s < gg::core::kParamCount; ++s)
+    {
+        const auto slot = static_cast<ParamSlot>(s);
+        const auto &meta = gg::core::paramMeta(slot, mode);
+        const double u = uniform(seed, s);
+        float value =
+            meta.minVal + (meta.maxVal - meta.minVal) * static_cast<float>(0.25 + 0.5 * u);
+        if (meta.type == sst::basic_blocks::params::ParamMetaData::INT)
+        {
+            value = std::floor(value);
+        }
+        if (value == meta.defaultVal)
+        {
+            value = meta.minVal + (meta.maxVal - meta.minVal) * 0.3f;
+        }
+        v[s] = value;
+    }
+    const auto set = [&v](ParamSlot slot, float value) { v[static_cast<size_t>(slot)] = value; };
+    set(ParamSlot::LayerAOn, 1.0f);
+    set(ParamSlot::LayerBOn, 1.0f);
+    set(ParamSlot::LayerCOn, 1.0f);
+    set(ParamSlot::LayerDOn, 0.0f);
+    set(slotOf(LayerParam::Freeze, 0), 1.0f);
+    set(slotOf(LayerParam::Freeze, 1), 1.0f);
+    set(slotOf(LayerParam::Freeze, 2), 0.0f);
+    set(slotOf(LayerParam::Freeze, 3), 1.0f);
+    set(ParamSlot::Macro6, 0.0f);
+    // A Sample, B Live (the other product's default for one of them), C the unbuilt Resample.
+    set(slotOf(LayerParam::Source, 0), 0.0f);
+    set(slotOf(LayerParam::Source, 1), 1.0f);
+    set(slotOf(LayerParam::Source, 2), 2.0f);
+    set(slotOf(LayerParam::Source, 3), 1.0f);
+    for (uint8_t L = 0; L < 4; ++L)
+    {
+        set(slotOf(LayerParam::PitchSpread, L), 5.0f + L);
+        set(slotOf(LayerParam::SizeSpread, L), 0.5f + 0.25f * L);
+        set(slotOf(LayerParam::Density, L), 7.0f); // 128 Hz: grains within the 4 pieces
+        set(slotOf(LayerParam::Size, L), -4.0f);
+        set(slotOf(LayerParam::Position, L), 0.1f); // a Live layer reads the last 0.05 s or so
+        set(gg::core::levelSlot(L), -6.0f);
+    }
+    // Near the pad's middle once the transport sources' routes have moved it (Bar to Morph Y
+    // -0.3 while stopped), so every layer on is heard.
+    set(ParamSlot::MorphX, 0.6f);
+    set(ParamSlot::MorphY, 0.8f);
+    set(ParamSlot::Macro1, 0.8f);
+    set(ParamSlot::Mix, 0.9f);
+    // Macro 8 a little below rest: the FX's Mix stays below 1, so a fresh FX, whose rings hold
+    // silence, still sounds its dry input.
+    set(ParamSlot::Macro8, 0.45f);
+    if (nanEvery != 0)
+    {
+        for (size_t s = 0; s < gg::core::kParamCount; s += nanEvery)
+        {
+            v[s] = kNaN;
+        }
+    }
+    return v;
+}
+
+// Two Processors alike, one given `values` by setBase on every slot in slot order, the other by
+// setBases, after `preRoll` frames (with a Mix event left mid-ramp at its end); then 4 pieces of
+// 256. The output, every base and every effective value must match bit for bit. With
+// `macroFreezeFirst`, Macro Freeze is on from construction, so no layer's Freeze is armed while
+// the pre-roll fills the rings.
+void requireSetBasesMatchesSetBase(Mode mode, const gg::core::ParamValues &values, int64_t preRoll,
+                                   bool macroFreezeFirst = false)
+{
+    constexpr int64_t kPieces = 4 * 256;
+    const int64_t frames = preRoll + kPieces;
+    const Stereo input = noise(frames, 0.5f, 61);
+    const Stereo *in = mode == Mode::Fx ? &input : nullptr;
+    // The instrument's notes; the FX's held key would freeze every layer.
+    const std::vector<TimedNote> notes =
+        mode == Mode::Instrument ? std::vector<TimedNote>{{0, NoteEventType::On, 0, 60},
+                                                          {preRoll + 300, NoteEventType::On, 0, 67}}
+                                 : std::vector<TimedNote>{};
+    const std::vector<TimedEvent> preRollEvents{
+        {preRoll > 0 ? preRoll - 200 : 0, ParamSlot::Mix, false, 0.2}};
+    const auto make = [&]() {
+        auto p = std::make_unique<Processor>(gg::core::ProcessorConfig{kRate, 256, 71, mode});
+        p->setRoutes(allSourceRoutes(mode));
+        if (macroFreezeFirst)
+        {
+            p->setBase(ParamSlot::Macro6, 1.0f);
+        }
+        for (uint8_t L = 0; L < 4; ++L)
+        {
+            p->setSourceNow(L, sine(110.0 * (L + 1)));
+        }
+        return p;
+    };
+    auto one = make();
+    auto all = make();
+    Stereo outOne = silence(frames);
+    Stereo outAll = silence(frames);
+    if (preRoll > 0)
+    {
+        render(*one, in, 0, preRoll, {256}, preRollEvents, outOne, nullptr, {}, notes);
+        render(*all, in, 0, preRoll, {256}, preRollEvents, outAll, nullptr, {}, notes);
+    }
+    for (size_t s = 0; s < gg::core::kParamCount; ++s)
+    {
+        one->setBase(static_cast<ParamSlot>(s), values[s]);
+    }
+    AllocTripwire::resetCount();
+    {
+        AllocTripwire::Scope armed;
+        all->setBases(values);
+    }
+    const auto allocations = AllocTripwire::count();
+    for (size_t s = 0; s < gg::core::kParamCount; ++s)
+    {
+        const auto slot = static_cast<ParamSlot>(s);
+        INFO("slot " << s << " " << gg::core::paramMeta(slot, mode).name);
+        REQUIRE(bitsOf(one->base(slot)) == bitsOf(all->base(slot)));
+        REQUIRE(bitsOf(one->effective(slot)) == bitsOf(all->effective(slot)));
+    }
+    render(*one, in, preRoll, frames, {256}, {}, outOne, nullptr, {}, notes);
+    render(*all, in, preRoll, frames, {256}, {}, outAll, nullptr, {}, notes);
+    REQUIRE(peakIn(outOne.left, preRoll, frames) > 1e-3f);
+    REQUIRE(sameBits(outOne.left, outAll.left));
+    REQUIRE(sameBits(outOne.right, outAll.right));
+    for (uint8_t L = 0; L < 4; ++L)
+    {
+        INFO("layer " << int{L});
+        REQUIRE(bitsOf(one->feedbackAt(L, frames)) == bitsOf(all->feedbackAt(L, frames)));
+        REQUIRE(one->engine(L).liveWriteHead() == all->engine(L).liveWriteHead()); // frozen alike
+    }
+    if (macroFreezeFirst)
+    {
+        // Layer B froze (its head stopped after the 20 ms ramp); layer C, whose Freeze is off,
+        // didn't.
+        REQUIRE(all->engine(1).liveWriteHead() < all->engine(2).liveWriteHead());
+    }
+    if (AllocTripwire::available()) // off under ASan; RTSan covers the audio thread's calls
+    {
+        REQUIRE(allocations == 0);
+    }
+}
+} // namespace
+
+TEST_CASE("setBases is setBase on every slot in slot order", "[core][layers]")
+{
+    // Ruling FR-3: a state load (an offer's values, the plugin's activation and loaded state)
+    // recomputes the effective values once. Its result is the 218 calls' bit for bit: on fresh
+    // Processors (whose Freeze isn't armed: the calls arm layers B to D at layer A's Freeze, from
+    // their old values), after a pre-roll with a ramp running, and back to the defaults again.
+    for (const Mode mode : {Mode::Fx, Mode::Instrument})
+    {
+        INFO((mode == Mode::Fx ? "fx" : "instrument"));
+        const gg::core::ParamValues moved = movedValues(mode, 83);
+        requireSetBasesMatchesSetBase(mode, moved, 0);
+        requireSetBasesMatchesSetBase(mode, moved, 2 * 256);
+        // Macro Freeze on as well: its slot arms each layer whose Freeze is off then.
+        gg::core::ParamValues macroFreeze = moved;
+        macroFreeze[static_cast<size_t>(ParamSlot::Macro6)] = 1.0f;
+        requireSetBasesMatchesSetBase(mode, macroFreeze, 0);
+        requireSetBasesMatchesSetBase(mode, macroFreeze, 2 * 256);
+        gg::core::ParamValues defaults{};
+        for (size_t s = 0; s < gg::core::kParamCount; ++s)
+        {
+            defaults[s] = gg::core::paramMeta(static_cast<ParamSlot>(s), mode).defaultVal;
+        }
+        requireSetBasesMatchesSetBase(mode, defaults, 2 * 256);
+        // Every layer frozen by Macro Freeze but none armed, the rings full, then Macro Freeze off
+        // with layer B's Freeze on: the calls arm B at Macro Freeze's slot, before B's own, so B
+        // freezes; a single syncFreeze() at the end would leave it playing live.
+        requireSetBasesMatchesSetBase(mode, moved, 24000, true);
+        // A NaN leaves its slot alone, as setBase does.
+        requireSetBasesMatchesSetBase(mode, movedValues(mode, 89, 7), 2 * 256);
     }
 }
