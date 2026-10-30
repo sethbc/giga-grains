@@ -30,6 +30,7 @@
 #include "Bench.h"
 #include "Kernels.h"
 #include "gg/grain/Budget.h"
+#include "gg/grain/KernelDispatch.h"
 #include "support/Utf8.h"
 
 using Catch::Approx;
@@ -168,7 +169,7 @@ TEST_CASE("bench lists the engine cases in report order", "[bench]")
     REQUIRE(at != names.end());
     CHECK(std::vector<std::string>(at, names.end()) ==
           std::vector<std::string>{"engine-layers-full", "engine-sample-hq", "engine-sample-hq-up",
-                                   "engine-overload"});
+                                   "engine-overload", "engine-sample-sse"});
 }
 
 TEST_CASE("bench rejects a run longer than an hour", "[bench]")
@@ -943,6 +944,20 @@ TEST_CASE("engine-sample-hq-up admits HQ grains", "[bench]")
     CHECK(tiers.normal == 0);
     CHECK(tiers.lowered == 0);
     CHECK(tiers.dropped == 0);
+}
+
+TEST_CASE("engine-sample-sse renders on the 4-wide kernels", "[bench]")
+{
+    // The AVX2 spike's fallback case (M2 engine spec §6.12): X's grains on the SSE table, whatever
+    // engine-sample dispatched to.
+    const gg::bench::TierCounts sse = gg::bench::admittedTiers("engine-sample-sse", 50, 64);
+    CHECK(sse.kernelLanes == std::vector<uint32_t>{4});
+    CHECK(sse.normal >= 50);
+    CHECK(sse.eco == 0);
+    CHECK(sse.hq == 0);
+    const gg::bench::TierCounts x = gg::bench::admittedTiers("engine-sample", 50, 64);
+    CHECK(x.kernelLanes == std::vector<uint32_t>{gg::kernels::dispatch().lanes});
+    CHECK(x.normal == sse.normal);
 }
 
 TEST_CASE("engine-overload drops and steals at a spent quota", "[bench]")

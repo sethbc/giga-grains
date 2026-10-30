@@ -25,6 +25,22 @@
 
 namespace gg
 {
+namespace kernels
+{
+struct Dispatch;
+} // namespace kernels
+
+/// Which kernel table an Engine renders with (gg/grain/KernelDispatch.h, M2 engine spec §6.12).
+/// Both render the same bits; only the speed differs.
+enum class KernelChoice : uint8_t
+{
+    /// kernels::dispatch(): the 8-wide AVX2 kernels where the build has them and the CPU runs
+    /// them, unless GG_FORCE_SSE was set when the table was resolved; the 4-wide ones otherwise.
+    Auto,
+    /// kernels::sseKernels(), the 4-wide kernels, always: gg-bench's engine-sample-sse.
+    Sse,
+};
+
 struct EngineConfig
 {
     double sampleRate{48000.0};  ///< Output sample rate; finite and > 0.
@@ -42,6 +58,8 @@ struct EngineConfig
     /// The layer this engine plays (spec §6.2): the `layer` field of every random draw's key.
     /// Below 4. Layer A is 0, which keys every draw as M1's one-layer engine did.
     uint32_t layer{0};
+    /// The kernel table this engine renders with, chosen once, at construction.
+    KernelChoice kernels{KernelChoice::Auto};
 };
 
 /// Called on the audio thread, from inside process(), once for every grain that spawns, in
@@ -327,6 +345,9 @@ class Engine
     int64_t liveWriteHead() const noexcept { return live_.head(); }
     /// The live ring itself, read-only: read it with liveWriteHead() as the head.
     const LiveSource &live() const noexcept { return live_; }
+    /// The kernel table this engine renders with (EngineConfig::kernels), chosen at
+    /// construction.
+    const kernels::Dispatch &kernelTable() const noexcept { return *kernels_; }
 
   private:
     void processBlock(const float *const *in, uint32_t numInChannels, float *const *out,
@@ -338,14 +359,15 @@ class Engine
     bool liveGrain(const GrainDraw &d, GrainSpec &g) const noexcept;
     void admit(const GrainSpec &g, float *const dst[2], int64_t blockStart,
                int64_t &renderedTo) noexcept SST_CPPUTILS_NONBLOCKING;
-    /// Adds every pool grain into dst over [from, to), in spawn order, through
-    /// gg/grain/GrainKernels.h with each grain's latched tier and source, whatever the mode in
-    /// effect: the SIMD live kernel for a grain of kLiveSlot, otherwise the SIMD sample kernel
+    /// Adds every pool grain into dst over [from, to), in spawn order, through the engine's
+    /// kernel table (kernelTable()) with each grain's latched tier and source, whatever the mode
+    /// in effect: the SIMD live kernel for a grain of kLiveSlot, otherwise the SIMD sample kernel
     /// reading the grain's sample slot.
     void renderPool(float *const dst[2], int64_t blockStart, int64_t from,
                     int64_t to) noexcept SST_CPPUTILS_NONBLOCKING;
 
     EngineConfig config_;
+    const kernels::Dispatch *kernels_; // the table renderPool calls, set at construction
     HannTable hann_;
     SincTable sinc_; // the HQ tier's windowed sinc, built here, off the audio thread
     GrainPool pool_;

@@ -34,7 +34,10 @@
 // - the engine-scale cases (M2 engine spec §6.10), report-only beside X: engine-sample-hq (X at
 //   the HQ tier), engine-sample-hq-up (the same at Pitch +19, reading mip level 1) and
 //   engine-overload (one engine at capacity 16,384 and a quota of Options::grains Normal grains,
-//   asked for 1 s grains at four times that rate, so the overload ladder drops and steals).
+//   asked for 1 s grains at four times that rate, so the overload ladder drops and steals);
+// - engine-sample-sse (the AVX2 spike, M2 engine spec §6.12), report-only beside X: X on the
+//   4-wide kernels (EngineConfig::kernels), so that where engine-sample dispatches to the 8-wide
+//   AVX2 kernels the two ratios compare the paths in the same rounds.
 // Every engine case's ratio, ns per grain-sample over reference's in the same round, cancels the
 // machine's speed (ruling 3), though not its microarchitecture: on CI the same code's ratios
 // differ by up to ~20% between the CPU models GitHub assigns a leg. A baseline file therefore
@@ -235,6 +238,9 @@ struct TierCounts
     /// Each layer's engine's activeGrains() after the warm-up, in layer order: one entry for a
     /// one-layer case, four for engine-layers and engine-layers-full.
     std::vector<uint32_t> activeGrains{};
+    /// Each layer's engine's kernel width, kernelTable().lanes, in layer order: 4 for the SSE (or
+    /// NEON) kernels, 8 for the AVX2 ones (engine-sample-sse: always 4).
+    std::vector<uint32_t> kernelLanes{};
 };
 
 /// Builds engine case `engineCase` at `blockSize` with `grains` grains exactly as run() does,
@@ -243,7 +249,8 @@ struct TierCounts
 /// carries the tier the pool latches for it. It proves which tier a case runs at
 /// (engine-sample-eco: Eco; engine-sample-hq and engine-sample-hq-up: HQ; the others: Normal),
 /// how a layered case's grains are spread over its layers (TierCounts::activeGrains), and what
-/// engine-overload's ladder did (TierCounts::lowered, stolen, dropped), without timing anything.
+/// engine-overload's ladder did (TierCounts::lowered, stolen, dropped), and which kernels its
+/// engines render with (TierCounts::kernelLanes), without timing anything.
 /// Throws std::invalid_argument for a name that isn't an engine case, a block size run() doesn't
 /// use (32, 64 and 256) or 0 grains.
 TierCounts admittedTiers(const std::string &engineCase, uint32_t grains, uint32_t blockSize);

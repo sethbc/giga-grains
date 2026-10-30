@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <memory>
 #include <sstream>
 #include <string>
 #include <utility>
@@ -24,13 +25,16 @@
 #include "gg/core/Interpolate.h"
 #include "gg/core/Rng.h"
 #include "gg/core/Window.h"
+#include "gg/engine/Engine.h"
 #include "gg/grain/Budget.h"
 #include "gg/grain/Envelope.h"
 #include "gg/grain/GrainKernels.h"
 #include "gg/grain/GrainPool.h"
+#include "gg/grain/KernelDispatch.h"
 #include "gg/grain/SincTable.h"
 #include "gg/source/InterleavedStereo.h"
 #include "gg/source/LiveSource.h"
+#include "gg/source/SampleBuffer.h"
 
 namespace
 {
@@ -2741,4 +2745,320 @@ TEMPLATE_TEST_CASE("a stolen grain fades through the reference and the simd kern
             }
         }
     }
+}
+
+// The AVX2 spike (M2 engine spec §6.12): the kernel tables, and the 8-wide kernels against the
+// 4-wide ones.
+namespace
+{
+using gg::kernels::Dispatch;
+
+template <class R> gg::kernels::SampleKernel sampleKernel(const Dispatch &d);
+template <> gg::kernels::SampleKernel sampleKernel<Hermite>(const Dispatch &d)
+{
+    return d.sampleHermite;
+}
+template <> gg::kernels::SampleKernel sampleKernel<Linear>(const Dispatch &d)
+{
+    return d.sampleLinear;
+}
+template <> gg::kernels::SampleKernel sampleKernel<Sinc>(const Dispatch &d) { return d.sampleSinc; }
+
+template <class R> gg::kernels::LiveKernel liveKernel(const Dispatch &d);
+template <> gg::kernels::LiveKernel liveKernel<Hermite>(const Dispatch &d) { return d.liveHermite; }
+template <> gg::kernels::LiveKernel liveKernel<Linear>(const Dispatch &d) { return d.liveLinear; }
+template <> gg::kernels::LiveKernel liveKernel<Sinc>(const Dispatch &d) { return d.liveSinc; }
+
+// Every grain of the pool, in spawn order, over [from, to) in one call each, through a table.
+template <class R>
+void renderAllWith(const Dispatch &table, const Pool &pool, const SampleSource &src, Buffers &b,
+                   int64_t from, int64_t to, const Tables &tables)
+{
+    const gg::kernels::Output o = b.output();
+    for (uint32_t i = 0; i < pool.size(); ++i)
+    {
+        sampleKernel<R>(table)(pool.rows(), i, src, o, from, to, tables);
+    }
+}
+
+// The samples of [from, to) that a table of `lanes` lanes renders through its widest interior:
+// each grain's sampleSimdRun, rounded down to whole steps.
+template <class R>
+int64_t wideSamples(const Pool &pool, const SampleSource &src, int64_t from, int64_t to,
+                    int64_t lanes)
+{
+    int64_t n = 0;
+    for (uint32_t i = 0; i < pool.size(); ++i)
+    {
+        const int64_t first = std::max(from, pool.rows().onsetSample[i]);
+        const int64_t last = std::min(to, pool.rows().endSample[i]);
+        if (first < last)
+        {
+            const gg::kernels::detail::Run run = gg::kernels::detail::sampleSimdRun<R>(
+                pool.rows(), i, src.frames, src.decimation, first, last);
+            n += (run.end - run.begin) / lanes * lanes;
+        }
+    }
+    return n;
+}
+
+// Over a sample source: the reader's random grains, and the same grains three in four stolen,
+// at each of the reader's decimations, from every source shape into two outputs and one, in one
+// call and in 24 random ones. The AVX2 table's output is the SSE table's and the reference's, bit
+// for bit, and the 8-wide interior renders most of it.
+template <class R> void requireAvx2SampleBits(const Dispatch &sse, const Dispatch &avx2)
+{
+    const Tables &tables = kernelTables();
+    const Noise src(kNoiseFrames, 101);
+    int64_t wide = 0;
+    for (const uint32_t d : decimationsOf<R>())
+    {
+        const std::vector<gg::GrainSpec> specs =
+            atDecimation(randomGrains(103, 300, kNoiseFrames), d);
+        const Pool plain(specs);
+        const Pool stolen(specs, stealsFor(specs, 105));
+        struct Shape
+        {
+            const char *name;
+            SampleSource source;
+            int outputs;
+        };
+        const Shape shapes[] = {{"interleaved stereo, two outputs", src.stereo(d), 2},
+                                {"planar stereo, two outputs", src.stereoPlanar(d), 2},
+                                {"mono, two outputs", src.mono(d), 2},
+                                {"stereo, one output", src.stereo(d), 1}};
+        for (const Pool *pool : {&plain, &stolen})
+        {
+            for (const Shape &shape : shapes)
+            {
+                INFO("decimation " << d << ", " << shape.name
+                                   << (pool == &stolen ? ", stolen" : ""));
+                for (uint64_t k = 0; k <= 24; ++k)
+                {
+                    const int64_t from =
+                        k == 0 ? 0 : -4000 + static_cast<int64_t>(u01(107, 0, k) * 22000.0);
+                    const int64_t to =
+                        k == 0 ? 4096 : from + static_cast<int64_t>(u01(107, 1, k) * 512.0);
+                    INFO("call " << k << ", [" << from << ", " << to << ")");
+                    Buffers ref(from, to, shape.outputs);
+                    Buffers a(from, to, shape.outputs);
+                    Buffers b(from, to, shape.outputs);
+                    renderAll<R>(Kernel::Ref, *pool, shape.source, ref, from, to, tables);
+                    renderAllWith<R>(sse, *pool, shape.source, a, from, to, tables);
+                    renderAllWith<R>(avx2, *pool, shape.source, b, from, to, tables);
+                    REQUIRE(anyNonZero(b.ch[0]) == anyNonZero(ref.ch[0]));
+                    for (int c = 0; c < 2; ++c)
+                    {
+                        REQUIRE(sameBits(b.ch[c], a.ch[c]));
+                        REQUIRE(sameBits(b.ch[c], ref.ch[c]));
+                    }
+                    wide += wideSamples<R>(*pool, shape.source, from, to, 8);
+                }
+            }
+        }
+    }
+    REQUIRE(wide > 1000000);
+}
+
+// Over the live ring: grains of every kind (liveGrains), and the same three in four stolen, over
+// a ring frozen and released at 12 samples, in ragged blocks and in blocks of 511, 8 (one 8-wide
+// step at most per part) and 7 (none), into two outputs and one. The AVX2 table's output is the
+// SSE table's and the reference's, bit for bit.
+template <class R> void requireAvx2LiveBits(const Dispatch &sse, const Dispatch &avx2)
+{
+    const Tables &tables = kernelTables();
+    const LiveInput input(60000, 111, freezeToggles(113, 12, 3000.0));
+    const std::vector<int64_t> heads = headTrajectory(input);
+    const std::vector<gg::GrainSpec> specs =
+        liveGrains(115, spreadOnsets(input.length - 10000, 200), heads, 24000);
+    const Pool plain(specs);
+    const Pool stolen(specs, stealsFor(specs, 117));
+    const std::vector<int64_t> ragged = {61, 64, 1, 128, 3, 250, 2, 37, 511};
+    int64_t wide = 0;
+    for (const Pool *pool : {&plain, &stolen})
+    {
+        for (const std::vector<int64_t> &lengths :
+             {ragged, std::vector<int64_t>{511}, std::vector<int64_t>{8}, std::vector<int64_t>{7}})
+        {
+            for (const int outputs : {2, 1})
+            {
+                INFO(outputs << " outputs, first block " << lengths[0]
+                             << (pool == &stolen ? ", stolen" : ""));
+                Buffers ref(0, input.length, outputs);
+                Buffers a(0, input.length, outputs);
+                Buffers b(0, input.length, outputs);
+                const gg::kernels::Output refOut = ref.output();
+                const gg::kernels::Output aOut = a.output();
+                const gg::kernels::Output bOut = b.output();
+                const gg::GrainRows &rows = pool->rows();
+                ActiveGrains active(*pool);
+                gg::LiveSource ring;
+                prepareRing(ring);
+                driveRing(ring, input, lengths, [&](int64_t from, int64_t to) {
+                    active.each(from, to, [&](uint32_t i) {
+                        gg::kernels::renderLiveRef<R>(rows, i, ring, 1, refOut, from, to, tables);
+                        liveKernel<R>(sse)(rows, i, ring, 1, aOut, from, to, tables);
+                        liveKernel<R>(avx2)(rows, i, ring, 1, bOut, from, to, tables);
+                        if (std::max(from, rows.onsetSample[i]) < std::min(to, rows.endSample[i]))
+                        {
+                            const gg::kernels::LiveInterior in =
+                                gg::kernels::liveInterior<R>(rows, i, ring, 1, from, to);
+                            wide += (in.end[0] - in.begin[0]) / 8 * 8 +
+                                    (in.end[1] - in.begin[1]) / 8 * 8;
+                        }
+                    });
+                });
+                REQUIRE(anyNonZero(ref.ch[0]));
+                for (int c = 0; c < 2; ++c)
+                {
+                    REQUIRE(sameBits(b.ch[c], a.ch[c]));
+                    REQUIRE(sameBits(b.ch[c], ref.ch[c]));
+                }
+            }
+        }
+    }
+    REQUIRE(wide > 1000000);
+}
+
+// A noise source for the engines, 4 s of stereo at 48 kHz.
+std::shared_ptr<gg::SampleBuffer> engineNoise()
+{
+    auto buffer = std::make_shared<gg::SampleBuffer>(2, 192000, 48000.0);
+    const std::vector<float> l = noise(192000, 121, 0);
+    const std::vector<float> r = noise(192000, 121, 1);
+    std::copy(l.begin(), l.end(), buffer->channel(0));
+    std::copy(r.begin(), r.end(), buffer->channel(1));
+    return buffer;
+}
+
+// 1 s from an engine with the given kernels, in blocks of 61, at the given tier, over the noise.
+std::vector<float> renderEngineWith(gg::KernelChoice kernels, gg::Tier tier,
+                                    const std::shared_ptr<gg::SampleBuffer> &source)
+{
+    gg::EngineConfig config;
+    config.maxBlockSize = 256;
+    config.seed = 123;
+    config.kernels = kernels;
+    gg::Engine engine(config);
+    engine.setSource(source);
+    gg::CloudParams params;
+    params.densityHz = 2000.0;
+    params.grainDurationSec = 0.05;
+    params.position = 0.5;
+    params.spray = 0.4;
+    params.pitchSemitones = 5.0;
+    params.stereo = 1.0;
+    params.quality = tier;
+    engine.setCloudParams(params);
+    constexpr uint32_t kBlock = 61;
+    std::vector<float> out(2 * 48000);
+    for (uint32_t done = 0; done < 48000; done += kBlock)
+    {
+        const uint32_t n = std::min(kBlock, 48000 - done);
+        float *channels[2] = {out.data() + done, out.data() + 48000 + done};
+        engine.process(channels, 2, n);
+    }
+    return out;
+}
+} // namespace
+
+TEST_CASE("the avx2 kernels match the sse kernels bit for bit", "[kernel]")
+{
+    const Dispatch &sse = gg::kernels::sseKernels();
+    const Dispatch *avx2 = gg::kernels::avx2Kernels();
+    if (avx2 == nullptr)
+    {
+        SKIP("this build or CPU has no AVX2 kernels (GG_KERNELS_AVX2 "
+             << GG_KERNELS_AVX2 << ", cpuRunsAvx2 " << gg::kernels::cpuRunsAvx2() << ")");
+    }
+    REQUIRE(avx2->lanes == 8);
+    SECTION("sample sources")
+    {
+        requireAvx2SampleBits<Hermite>(sse, *avx2);
+        requireAvx2SampleBits<Linear>(sse, *avx2);
+        requireAvx2SampleBits<Sinc>(sse, *avx2);
+    }
+    SECTION("the live ring")
+    {
+        requireAvx2LiveBits<Hermite>(sse, *avx2);
+        requireAvx2LiveBits<Linear>(sse, *avx2);
+        requireAvx2LiveBits<Sinc>(sse, *avx2);
+    }
+    SECTION("an engine on each table")
+    {
+        // Whatever dispatch() resolved to, an Sse engine and an AVX2 engine render the same.
+        const std::shared_ptr<gg::SampleBuffer> source = engineNoise();
+        for (const gg::Tier tier : {gg::Tier::Normal, gg::Tier::Eco, gg::Tier::HQ})
+        {
+            const std::vector<float> a = renderEngineWith(gg::KernelChoice::Sse, tier, source);
+            const std::vector<float> b = renderEngineWith(gg::KernelChoice::Auto, tier, source);
+            REQUIRE(anyNonZero(a));
+            REQUIRE(sameBits(a, b));
+        }
+    }
+}
+
+TEST_CASE("GG_FORCE_SSE selects the fallback", "[kernel]")
+{
+    namespace k = gg::kernels;
+    const Dispatch &sse = k::sseKernels();
+    REQUIRE(sse.lanes == 4);
+    REQUIRE(sse.sampleHermite == &k::renderSampleSimd<Hermite>);
+    REQUIRE(sse.sampleLinear == &k::renderSampleSimd<Linear>);
+    REQUIRE(sse.sampleSinc == &k::renderSampleSimd<Sinc>);
+    REQUIRE(sse.liveHermite == &k::renderLiveSimd<Hermite>);
+    REQUIRE(sse.liveLinear == &k::renderLiveSimd<Linear>);
+    REQUIRE(sse.liveSinc == &k::renderLiveSimd<Sinc>);
+
+    // The probe's shape: the AVX2 table exists exactly where the build has it and the CPU runs
+    // it, and then every entry is its own.
+    const bool runs = k::cpuRunsAvx2();
+    if (GG_KERNELS_AVX2 == 0)
+    {
+        REQUIRE_FALSE(runs);
+    }
+    const Dispatch *avx2 = k::avx2Kernels();
+    REQUIRE((avx2 != nullptr) == runs);
+    if (avx2 != nullptr)
+    {
+        REQUIRE(avx2->lanes == 8);
+        REQUIRE(avx2->sampleHermite != sse.sampleHermite);
+        REQUIRE(avx2->sampleLinear != sse.sampleLinear);
+        REQUIRE(avx2->sampleSinc != sse.sampleSinc);
+        REQUIRE(avx2->liveHermite != sse.liveHermite);
+        REQUIRE(avx2->liveLinear != sse.liveLinear);
+        REQUIRE(avx2->liveSinc != sse.liveSinc);
+    }
+
+    // The environment's path: GG_FORCE_SSE set and not empty forces the SSE table; unset or
+    // empty leaves the choice to the CPU.
+    REQUIRE(&k::resolveKernels("1", true) == &sse);
+    REQUIRE(&k::resolveKernels("0", true) == &sse);
+    REQUIRE(&k::resolveKernels("1", false) == &sse);
+    REQUIRE(&k::resolveKernels(nullptr, false) == &sse);
+    REQUIRE(&k::resolveKernels("", false) == &sse);
+    const Dispatch &unforced = k::resolveKernels(nullptr, true);
+    REQUIRE(unforced.lanes == (GG_KERNELS_AVX2 ? 8u : 4u));
+    REQUIRE(&k::resolveKernels("", true) == &unforced);
+    if (avx2 != nullptr)
+    {
+        REQUIRE(&unforced == avx2);
+    }
+
+    // dispatch() is one of the two tables, and an engine keeps the one it was constructed with.
+    // forceSse() switches dispatch() to the SSE table for the rest of the process (so for any
+    // test after this one in the same process: their bits are the same either way).
+    const Dispatch &before = k::dispatch();
+    REQUIRE((&before == &sse || &before == avx2));
+    const gg::Engine early(gg::EngineConfig{});
+    REQUIRE(&early.kernelTable() == &before);
+    k::forceSse();
+    REQUIRE(&k::dispatch() == &sse);
+    REQUIRE(&early.kernelTable() == &before);
+    const gg::Engine automatic(gg::EngineConfig{});
+    REQUIRE(&automatic.kernelTable() == &sse);
+    gg::EngineConfig forcedConfig;
+    forcedConfig.kernels = gg::KernelChoice::Sse;
+    const gg::Engine forced(forcedConfig);
+    REQUIRE(&forced.kernelTable() == &sse);
 }

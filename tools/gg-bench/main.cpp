@@ -7,7 +7,8 @@
 // headline's case, beside engine-sample-eco, engine-live (the FX's figure), engine-full-pool, and
 // the report-only cases: the four-layer engine-layers and engine-layers-full, then
 // engine-sample-hq and engine-sample-hq-up (X at the HQ tier, at Pitch 0 and +19) and
-// engine-overload (the overload ladder at a spent quota). It times them against
+// engine-overload (the overload ladder at a spent quota), and engine-sample-sse (X on the 4-wide
+// kernels, the AVX2 spike's fallback). It times them against
 // the reference kernel, M0's hermite-simd frozen in Kernels.h, and reports each engine case's ratio
 // to it, which the CI gate checks. It also still times M0's prototype kernels in Kernels.h. It
 // began as the M0 kernel benchmark spike and was made gate-grade in M1 (carry-over B-I2, [133],

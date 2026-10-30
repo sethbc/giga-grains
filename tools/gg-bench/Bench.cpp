@@ -21,7 +21,8 @@
 // engine-live and engine-full-pool, then the four-layer cases engine-layers and
 // engine-layers-full (M2 layers spec §6.12, report-only), then engine-sample-hq,
 // engine-sample-hq-up and engine-overload (M2 engine spec §6.10, report-only; engine-overload
-// sets its engine's quota, EngineSetup::quota, before the warm-up). Each one-layer case owns a
+// sets its engine's quota, EngineSetup::quota, before the warm-up), then engine-sample-sse (the
+// AVX2 spike, spec §6.12, report-only: X on the 4-wide kernels). Each one-layer case owns a
 // gg::Engine (48 kHz, maxBlockSize 256, seeded with the bench seed) rendering one Cloud stream of
 // Options::grains overlapping grains of 100 ms (density grains / 0.1 Hz, periodic) at +7
 // semitones, stereo 1, over the same noise: in Sample mode the noise is the source; in Live mode
@@ -80,6 +81,7 @@
 #include "gg/engine/TaskRunner.h"
 #include "gg/grain/Budget.h"
 #include "gg/grain/GrainPool.h"
+#include "gg/grain/KernelDispatch.h"
 #include "gg/grain/Tier.h"
 #include "gg/source/SampleBuffer.h"
 #include "gg/source/SourceMode.h"
@@ -326,7 +328,7 @@ uint32_t layerGrains(const EngineCase &engineCase, uint32_t grains, uint32_t lay
 }
 
 /// The engine cases, in report order. Each is engine-sample with its own changes.
-constexpr std::array<EngineCase, 9> kEngineCases{{
+constexpr std::array<EngineCase, 10> kEngineCases{{
     {"engine-sample", engineSample},
     // X at the Eco tier: every grain reads with linear interpolation (ruling 2).
     {"engine-sample-eco",
@@ -389,6 +391,16 @@ constexpr std::array<EngineCase, 9> kEngineCases{{
          s.params.grainDurationSec = 1.0;
          s.quota = uint64_t{grains} * gg::kNormalStereoWeight;
          s.warmUpSeconds = 2.0 * s.params.grainDurationSec;
+         return s;
+     }},
+    // The AVX2 spike (M2 engine spec §6.12), report-only beside X: X on the 4-wide kernels
+    // (EngineConfig::kernels), whatever the CPU runs. Where engine-sample dispatches to the 8-wide
+    // AVX2 kernels, the two ratios in the same rounds are the spike's measurement; elsewhere both
+    // run the same kernels.
+    {"engine-sample-sse",
+     [](uint32_t grains) {
+         EngineSetup s = engineSample(grains);
+         s.config.kernels = gg::KernelChoice::Sse;
          return s;
      }},
 }};
@@ -495,6 +507,7 @@ class EngineConfiguration final : public Configuration
             counts.lowered += engine->loweredGrains();
             counts.stolen += engine->stolenGrains();
             counts.dropped += engine->droppedGrains();
+            counts.kernelLanes.push_back(engine->kernelTable().lanes);
         }
         return counts;
     }

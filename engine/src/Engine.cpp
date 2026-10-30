@@ -12,6 +12,7 @@
 
 #include "gg/core/DenormalGuard.h"
 #include "gg/grain/GrainKernels.h"
+#include "gg/grain/KernelDispatch.h"
 
 namespace gg
 {
@@ -48,7 +49,12 @@ const EngineConfig &validated(const EngineConfig &config)
 constexpr uint32_t kStream = 0;
 } // namespace
 
-Engine::Engine(const EngineConfig &config) : config_(validated(config)), pool_(config.grainCapacity)
+// The kernel table is chosen here, off the audio thread: the first Engine resolves dispatch()
+// (reading GG_FORCE_SSE and the CPU's features) for the whole process.
+Engine::Engine(const EngineConfig &config)
+    : config_(validated(config)),
+      kernels_(config.kernels == KernelChoice::Sse ? &kernels::sseKernels() : &kernels::dispatch()),
+      pool_(config.grainCapacity)
 {
     cloud_.prepare(config_.sampleRate);
     // process() writes into the ring in blocks of at most maxBlockSize frames (ruling M1-o).
@@ -537,43 +543,25 @@ void Engine::renderPool(float *const dst[2], int64_t blockStart, int64_t from, i
                            level.decimation};
         }
     }
+    const kernels::Dispatch &k = *kernels_;
     for (uint32_t i = 0; i < n; ++i)
     {
         if (rows.sourceSlot[i] == kLiveSlot)
         {
             const uint32_t decimation = live_.level(rows.level[i]).decimation;
-            if (rows.tier[i] == Tier::Eco)
-            {
-                kernels::renderLiveSimd<kernels::Linear>(rows, i, live_, decimation, output, from,
-                                                         to, tables);
-            }
-            else if (rows.tier[i] == Tier::HQ)
-            {
-                kernels::renderLiveSimd<kernels::Sinc>(rows, i, live_, decimation, output, from, to,
-                                                       tables);
-            }
-            else
-            {
-                kernels::renderLiveSimd<kernels::Hermite>(rows, i, live_, decimation, output, from,
-                                                          to, tables);
-            }
+            const kernels::LiveKernel live = rows.tier[i] == Tier::Eco  ? k.liveLinear
+                                             : rows.tier[i] == Tier::HQ ? k.liveSinc
+                                                                        : k.liveHermite;
+            live(rows, i, live_, decimation, output, from, to, tables);
             continue;
         }
         const uint8_t s = rows.sourceSlot[i];
         const kernels::SampleSource &source =
             views[s][std::min<uint32_t>(rows.level[i], slots_[s].levelCount - 1)];
-        if (rows.tier[i] == Tier::Eco)
-        {
-            kernels::renderSampleSimd<kernels::Linear>(rows, i, source, output, from, to, tables);
-        }
-        else if (rows.tier[i] == Tier::HQ)
-        {
-            kernels::renderSampleSimd<kernels::Sinc>(rows, i, source, output, from, to, tables);
-        }
-        else
-        {
-            kernels::renderSampleSimd<kernels::Hermite>(rows, i, source, output, from, to, tables);
-        }
+        const kernels::SampleKernel sample = rows.tier[i] == Tier::Eco  ? k.sampleLinear
+                                             : rows.tier[i] == Tier::HQ ? k.sampleSinc
+                                                                        : k.sampleHermite;
+        sample(rows, i, source, output, from, to, tables);
     }
 }
 } // namespace gg
