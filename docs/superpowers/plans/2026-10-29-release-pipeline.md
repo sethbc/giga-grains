@@ -433,10 +433,11 @@ git commit -m "ci: tags, the nightly and an installers dispatch build, sign and 
 
 **Files:**
 - Create: `docs/releasing.md`
-- Modify: `CLAUDE.md` ("Outputs" list ~line 196; the "Installing and signing the plugins" section ~line 620; the labels paragraph: add `installer`; a new "Releasing" paragraph after "Installing and signing"), `README.md` (the signing paragraph; a "Downloads" sentence pointing at GitHub Releases from 0.2.0's first beta), `docs/m1-carry-over.md` row 221, `INTENT.md` §19 (only if a name the docs pass wrote differs from what was built: `gg-installer`, the switch, the artifact names), `docs/superpowers/specs/2026-10-29-release-pipeline-design.md` (Status row: built, with corrections)
+- Create: `docs/m2-carry-over.md` (Step 2b)
+- Modify: `CLAUDE.md` ("Outputs" list ~line 196; the "Installing and signing the plugins" section ~line 620; the labels paragraph: add `installer`; a new "Releasing" paragraph after "Installing and signing"), `README.md` (the signing paragraph; a "Downloads" sentence: GitHub Releases, public from 0.5.0's first beta, nothing before M5), `docs/m1-carry-over.md` row 221, `INTENT.md` §19 (only if a name the docs pass wrote differs from what was built: `gg-installer`, the switch, the artifact names), `docs/superpowers/specs/2026-10-29-release-pipeline-design.md` (Status row: built, with corrections)
 
 **Interfaces:**
-- Consumes: everything above. `docs/releasing.md` covers spec §6.7 (the secrets table, the export commands, the API key, rotation, expiry dates) and §6.8 (the per-release checklist, the freeze step before 0.2.0-beta.1, the draft-then-publish step, the unsigned and the signed local builds, the hotfix branch), plus the nightly switch and the dry run.
+- Consumes: everything above. `docs/releasing.md` covers spec §6.7 (the secrets table, the export commands, the API key, rotation, expiry dates) and §6.8 (the per-release checklist, the freeze step before 0.5.0-beta.1 (nothing public, no betas, before M5), the draft-then-publish step, the unsigned and the signed local builds, the hotfix branch), plus the nightly switch and the dry run.
 
 - [ ] **Step 1: Write `docs/releasing.md`**
 
@@ -446,6 +447,10 @@ Sections, in order: Overview (the three run kinds, what each publishes); One-tim
 
 CLAUDE.md: add `gg-installer` to Outputs; rewrite the signing bullets for the end state (a real identity adds the hardened runtime, timestamp and entitlement; the installer script notarizes); add the `installer` label; add a "Releasing" paragraph: the version in CMake and `GG_VERSION_PRERELEASE`, `cmake --build --preset release --target gg-installer`, the three run kinds, `docs/releasing.md`. README: the signing paragraph's last sentence and a Downloads line. Carry-over row 221: the installer half **Closed** by this branch's commits (name them); the row now reads as the About box alone, "M2's views or later". Spec Status row: "Built <date> on <branch>" with any corrections.
 
+- [ ] **Step 2b: Split the carry-over for M2** (the director, 2026-10-29)
+
+Create `docs/m2-carry-over.md`: the policy header copied from the M1 file (the five rules, unchanged), then one row per row still open in `docs/m1-carry-over.md` after Step 2 (13 today; row 221 narrowed to the About box), each keeping its original number in the first column with a pointer `(M1 row N)` and its text, origin and "when" columns as they stand. Nothing else moves. Then freeze `docs/m1-carry-over.md`: add, under its title, one paragraph saying it is M1's closed record, that its open rows moved to `docs/m2-carry-over.md` on 2026-10-29 with their numbers, and that it is no longer edited; change nothing else in it. Point CLAUDE.md ("The carry-over" in Working style, the "Where we are"/"The records" bullets) and INTENT §20's M1 and M2 rows at the M2 file, and restate the no-net-growth count as the M2 file's row count. Count the rows in both files in the report.
+
 - [ ] **Step 3: Check the docs against the build**
 
 Run: `grep -n 'gg-installer\|GG_PUBLISH_NIGHTLY\|releasing.md' CLAUDE.md INTENT.md README.md docs/releasing.md | head -40`
@@ -454,7 +459,7 @@ Expected: every name matches the code (`grep -rn GG_PUBLISH_NIGHTLY .github` fin
 - [ ] **Step 4: Commit**
 
 ```bash
-git add docs/releasing.md CLAUDE.md README.md docs/m1-carry-over.md INTENT.md docs/superpowers/specs/2026-10-29-release-pipeline-design.md
+git add docs/releasing.md CLAUDE.md README.md docs/m1-carry-over.md docs/m2-carry-over.md INTENT.md docs/superpowers/specs/2026-10-29-release-pipeline-design.md
 git commit -m "docs: the release procedure, and the installers in CLAUDE.md, README and the carry-over"
 ```
 
@@ -489,4 +494,4 @@ Expected: `PASS`; paste the summary and the hashes line into the report.
 
 - [ ] **Step 6: Report and hand over**
 
-The final report: the dry-run run ID(s), the signed local build's `spctl` lines, the check.sh summary, the golden hash line, the carry-over count, the rehearsal's outcome, and anything the director must still do (publishing is theirs; the first real tag is `v0.2.0-beta.1` with M2).
+The final report: the dry-run run ID(s), the signed local build's `spctl` lines, the check.sh summary, the golden hash line, the carry-over count, the rehearsal's outcome, and anything the director must still do (publishing is theirs and starts with M5's `v0.5.0-beta.1`; the first tag, `v0.2.0` with M2, stays an unpublished draft).

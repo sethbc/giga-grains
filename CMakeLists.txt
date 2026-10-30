@@ -22,7 +22,15 @@ if (GG_USE_RTSAN AND IS_ABSOLUTE "${CMAKE_CXX_COMPILER}" AND NOT EXISTS "${CMAKE
             "GG_LLVM=/opt/homebrew/opt/llvm cmake --preset rtsan")
 endif ()
 
-project(GigaGrains VERSION 0.0.1 LANGUAGES C CXX)
+project(GigaGrains VERSION 0.2.0 LANGUAGES C CXX)
+# The version (spec §6.1): project()'s VERSION is the numeric part, and GG_VERSION_PRERELEASE the
+# pre-release suffix. A build from main reports 0.2.0-dev; a release commit sets beta.N, or empty
+# for the milestone release, and the nightly configures with dev.<yyyymmdd>.g<sha7>. Bundle
+# metadata takes GG_VERSION_NUMERIC alone; everything else reports GG_VERSION_STRING.
+set(GG_VERSION_PRERELEASE "dev" CACHE STRING "Pre-release suffix: dev on main, beta.N for a beta, empty for a release")
+include(cmake/version.cmake)
+gg_compose_version("${PROJECT_VERSION}" "${GG_VERSION_PRERELEASE}" GG_VERSION_STRING)
+set(GG_VERSION_NUMERIC "${PROJECT_VERSION}")
 
 option(GG_BUILD_PLUGINS "Build the plugins: their core, and the formats with GG_BUILD_EDITOR" ON)
 # GG_BUILD_EDITOR=OFF with GG_BUILD_PLUGINS=ON builds the plugins headless: the JUCE-free plugin
@@ -43,9 +51,11 @@ option(GG_COPY_PLUGIN_AFTER_BUILD "Copy plugins to the user plugin folders after
 set(GG_JUCE_PATH "${CMAKE_SOURCE_DIR}/libs/JUCE" CACHE PATH "JUCE checkout used for the UI")
 if (APPLE AND GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
     # clients/clap-first signs every macOS bundle with this identity after building it, and the
-    # codesign_* tests verify the signatures. "-" signs ad hoc; a Developer ID signs with a real
-    # identity. That alone doesn't make a distributable bundle: distribution also needs the
-    # hardened runtime, a secure timestamp and notarization, which this build doesn't do yet.
+    # codesign_* tests verify the signatures. "-" signs ad hoc, locally and on every CI run but a
+    # tag's or the nightly's. A Developer ID signs with a real identity, and then also with the
+    # hardened runtime and a secure timestamp, and the two standalone apps with their
+    # entitlements (installer/macos/standalone.entitlements: the microphone). The installer is
+    # notarized after that. See docs/superpowers/specs/2026-10-29-release-pipeline-design.md §6.2.
     set(GG_MACOS_CODESIGN_IDENTITY "-" CACHE STRING
             "Identity that signs the macOS plugin bundles and apps: - (ad hoc) or a Developer ID")
     if ("${GG_MACOS_CODESIGN_IDENTITY}" STREQUAL "")
@@ -54,7 +64,7 @@ if (APPLE AND GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
     find_program(GG_CODESIGN codesign REQUIRED)
 endif ()
 
-message(STATUS "Giga Grains ${PROJECT_VERSION}")
+message(STATUS "Giga Grains ${GG_VERSION_STRING}")
 message(STATUS "Compiler is ${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}")
 
 include(cmake/compiler-options.cmake)

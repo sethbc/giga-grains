@@ -416,7 +416,7 @@ TEST_CASE("clap-wrapper's au save ignores the plugin's save result", "[plugin][a
     // are clap-wrapper's own, at the pinned commit; when an update changes them, this fails.
     // When it does: re-check SaveState and RestoreState by hand (does SaveState now honour
     // save()'s result, and RestoreState load()'s?), update these lines or the behavioural pins
-    // above to match, and update T7 (223)'s row in docs/m1-carry-over.md.
+    // above to match, and update its row, 87 (T7 223), in docs/m2-carry-over.md.
     const auto source =
         std::filesystem::path(GG_CLAP_WRAPPER_SOURCE_DIR) / "src" / "wrapasauv2.cpp";
     std::ifstream file(source, std::ios::binary);

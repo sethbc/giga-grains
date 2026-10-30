@@ -3,6 +3,8 @@
 // Copyright 2026, the Giga Grains authors (see git history)
 
 #include <algorithm>
+#include <string>
+#include <string_view>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -10,10 +12,19 @@
 
 TEST_CASE("engine library links and reports version", "[smoke]")
 {
-    // The library's version is the build's (CMake's PROJECT_VERSION), "MAJOR.MINOR.PATCH".
+    // The library's version is the build's (spec §6.1): the numeric part, CMake's PROJECT_VERSION
+    // "MAJOR.MINOR.PATCH", then "-" and the pre-release suffix unless that is empty.
     REQUIRE(gg::kVersion == GG_VERSION_STRING);
-    REQUIRE(std::count(gg::kVersion.begin(), gg::kVersion.end(), '.') == 2);
-    REQUIRE(std::all_of(gg::kVersion.begin(), gg::kVersion.end(),
+    REQUIRE(gg::kVersion.rfind(GG_VERSION_NUMERIC, 0) == 0);
+
+    const std::string_view numeric{GG_VERSION_NUMERIC};
+    REQUIRE(std::count(numeric.begin(), numeric.end(), '.') == 2);
+    REQUIRE(std::all_of(numeric.begin(), numeric.end(),
                         [](char c) { return c == '.' || (c >= '0' && c <= '9'); }));
+
+    if (std::string_view(GG_VERSION_PRERELEASE).empty())
+        REQUIRE(gg::kVersion == GG_VERSION_NUMERIC);
+    else
+        REQUIRE(gg::kVersion == std::string(GG_VERSION_NUMERIC) + "-" + GG_VERSION_PRERELEASE);
     STATIC_REQUIRE(sizeof(void *) == 8);
 }

@@ -7,9 +7,11 @@ distributed build must carry: for each dependency that ships in a product, its l
 copyright line, the license text or a precise pointer to it, and the products that contain it.
 
 A distributed build includes this file, in the installer and in its documentation or about box,
-together with `LICENSE` (the AGPL), the GPLv3 text and, in a Windows build, the ASIO SDK's
-`LICENSE.txt` (carry-over: shipping the notices and licenses with the installers, blocked on the
-installer work).
+together with `LICENSE` (the AGPL), the GPLv3 text, CMakeRC's and flowbite-icons' MIT texts, the
+AudioUnitSDK's `LICENSE.txt` in a macOS build and the ASIO SDK's `LICENSE.txt` in a Windows build.
+Every installer carries them in its `licenses/` directory, which `gg-products` assembles
+(`cmake/products.cmake`) from the pinned checkouts and, for the two MIT texts no checkout holds,
+from `installer/licenses/`. The editor's about box doesn't show them yet (carry-over row 221).
 
 "Both products" means Giga Grains (the instrument) and Giga Grains FX (the effect), in every
 format they ship in: CLAP, VST3, AU v2 and standalone, on macOS, Windows and Linux, unless a

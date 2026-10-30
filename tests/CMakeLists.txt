@@ -251,14 +251,19 @@ endforeach ()
 
 # The scripts (carry-over [130]-[132]), label `scripts`: scripts/check.sh against stub cmake and
 # ctest (replaying CTest 3.31's and 4.4's recorded output) in a fake source tree, and
-# scripts/worktree-setup.sh in scratch git repositories, all under the build tree. Not on
-# Windows, where the scripts' bash (Git Bash) is unverified (CLAUDE.md).
+# scripts/worktree-setup.sh in scratch git repositories, all under the build tree; and the
+# release pipeline's scripts (scripts/release/) against scratch files. Not on Windows, where the
+# scripts' bash (Git Bash) is unverified (CLAUDE.md).
 if (NOT WIN32)
     find_program(GG_BASH bash REQUIRED)
     add_test(NAME scripts_check_and_worktree_setup
             COMMAND ${GG_BASH} ${CMAKE_CURRENT_SOURCE_DIR}/scripts/scripts_tests.sh
             ${CMAKE_CURRENT_BINARY_DIR}/scripts-tests ${CMAKE_COMMAND})
     set_tests_properties(scripts_check_and_worktree_setup PROPERTIES LABELS scripts)
+    add_test(NAME scripts_release
+            COMMAND ${GG_BASH} ${CMAKE_CURRENT_SOURCE_DIR}/scripts/release_scripts_tests.sh
+            ${CMAKE_CURRENT_BINARY_DIR}/release-scripts-tests)
+    set_tests_properties(scripts_release PROPERTIES LABELS scripts)
 endif ()
 
 # RTSan's negative control (rtsan build only), labels `rt` and `rtsan`: a program that allocates
@@ -396,6 +401,25 @@ if (APPLE AND GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
         set_tests_properties(codesign_${format} PROPERTIES LABELS plugin)
     endforeach ()
 
+    # Notarization's signing requirements (spec §6.2), label `installer`: signed with a real
+    # identity, every bundle carries the hardened runtime, and the two standalone apps the
+    # audio-input entitlement (installer/macos/standalone.entitlements). An ad-hoc tree signs
+    # with neither, so these exist only when GG_MACOS_CODESIGN_IDENTITY isn't "-".
+    if (NOT GG_MACOS_CODESIGN_IDENTITY STREQUAL "-")
+        foreach (format IN ITEMS clap vst3 auv2 standalone standalone_fx)
+            set(entitlement "")
+            if (format MATCHES "^standalone")
+                set(entitlement com.apple.security.device.audio-input)
+            endif ()
+            add_test(NAME codesign_hardened_${format}
+                    COMMAND ${CMAKE_COMMAND} -DCODESIGN=${GG_CODESIGN}
+                    -DBUNDLE=$<TARGET_BUNDLE_DIR:gg_clapfirst_${format}>
+                    -DEXPECT_ENTITLEMENT=${entitlement}
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/installer/check-codesign-flags.cmake)
+            set_tests_properties(codesign_hardened_${format} PROPERTIES LABELS installer)
+        endforeach ()
+    endif ()
+
     # Identities (INTENT §18), label `plugin`: what the built bundles declare, read back from them.
     # - Each standalone app's bundle ID. clap-wrapper would give both the instrument's; the FX's
     #   is set in clients/clap-first (ruling T8-a). macOS keys app preferences and privacy
@@ -429,6 +453,17 @@ if (APPLE AND GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
     set_tests_properties(identity_standalone identity_standalone_fx identity_auv2 identity_vst3
             PROPERTIES LABELS plugin)
 
+    # Bundle versions (spec §6.1), label `installer`: each bundle's CFBundleShortVersionString and
+    # CFBundleVersion are the version's numeric part alone, which Apple requires; the pre-release
+    # suffix appears only in GG_VERSION_STRING.
+    foreach (format IN ITEMS clap vst3 auv2 standalone standalone_fx)
+        add_test(NAME version_bundle_${format}
+                COMMAND ${CMAKE_COMMAND} -DPLUTIL=${GG_PLUTIL} -DCHECK=bundle-version
+                -DBUNDLE=$<TARGET_BUNDLE_DIR:gg_clapfirst_${format}>
+                -DEXPECTED=${GG_VERSION_NUMERIC} -P ${check_identity})
+        set_tests_properties(version_bundle_${format} PROPERTIES LABELS installer)
+    endforeach ()
+
     # The AU state format (labels `plugin` and `au`): gg-au-state-tests loads the built
     # .component into its own process, registers its factories there (AudioComponentRegister;
     # nothing is installed) and checks that ClassInfo carries the CLAP state bytes, GGST
@@ -448,6 +483,116 @@ if (APPLE AND GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
     catch_discover_tests(gg-au-state-tests ADD_TAGS_AS_LABELS)
 endif ()
 
+# The installers (spec §6), label `installer`. installer_build_products builds gg-products (not
+# in `all`) into build/<preset>/gg-products/, as the fixture every later installer_* test
+# requires, so `ctest -L installer` needs no build step of its own. It runs alone: a build can
+# relink the bundles other tests read. The products exist only with the editor and the formats.
+if (GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
+    add_test(NAME installer_build_products
+            COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --config $<CONFIG>
+            --target gg-products)
+    set_tests_properties(installer_build_products PROPERTIES LABELS installer
+            FIXTURES_SETUP gg_products RUN_SERIAL TRUE)
+
+    # The license set (spec §6.3, carry-over row 221): gg-products/licenses/ holds exactly the
+    # platform's notices and license texts, none of them a stub.
+    add_test(NAME installer_license_set
+            COMMAND ${CMAKE_COMMAND} -DDIR=${CMAKE_BINARY_DIR}/gg-products/licenses
+            -DPLATFORM=${CMAKE_SYSTEM_NAME}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/installer/check-license-set.cmake)
+    set_tests_properties(installer_license_set PROPERTIES LABELS installer
+            FIXTURES_REQUIRED gg_products)
+
+    # The macOS PKG and DMG (spec §6.4), unsigned: installer_macos_pkg checks what
+    # installer/macos/make-installer.sh makes from the products; _missing_product and _partial_env
+    # check that it refuses, with exit 2 and nothing written, an empty products directory and a
+    # signing environment with only some of its five variables. Each writes its own folder.
+    if (APPLE)
+        foreach (case IN ITEMS pkg pkg_missing_product pkg_partial_env)
+            set(switch "")
+            if (case STREQUAL "pkg_missing_product")
+                set(switch -DMISSING=1)
+            elseif (case STREQUAL "pkg_partial_env")
+                set(switch -DPARTIAL_ENV=1)
+            endif ()
+            add_test(NAME installer_macos_${case}
+                    COMMAND ${CMAKE_COMMAND}
+                    -DSCRIPT=${PROJECT_SOURCE_DIR}/installer/macos/make-installer.sh
+                    -DPRODUCTS=${GG_PRODUCT_DIR} -DLICENSES=${GG_LICENSE_DIR}
+                    -DRESOURCES=${PROJECT_SOURCE_DIR}/installer/macos
+                    -DOUT=${CMAKE_CURRENT_BINARY_DIR}/installer-macos/${case}
+                    -DNUMERIC=${GG_VERSION_NUMERIC} -DFULL=${GG_VERSION_STRING} ${switch}
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/installer/check-macos-pkg.cmake)
+            set_tests_properties(installer_macos_${case} PROPERTIES LABELS installer
+                    FIXTURES_REQUIRED gg_products)
+        endforeach ()
+    endif ()
+
+    # The Linux tarball (spec §6.5): installer_linux_tarball checks the entries, the executable
+    # bits, the README and the license set of what installer/linux/make-tarball.sh makes from the
+    # products (through tests/installer/check-archive.cmake, which the Windows zip shares);
+    # _missing_product checks that it refuses an empty products directory with exit 2 and nothing
+    # written. Each writes its own folder.
+    if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        foreach (case IN ITEMS tarball tarball_missing_product)
+            set(switch "")
+            if (case STREQUAL "tarball_missing_product")
+                set(switch -DMISSING=1)
+            endif ()
+            add_test(NAME installer_linux_${case}
+                    COMMAND ${CMAKE_COMMAND}
+                    -DSCRIPT=${PROJECT_SOURCE_DIR}/installer/linux/make-tarball.sh
+                    -DPRODUCTS=${GG_PRODUCT_DIR}
+                    -DREADME=${PROJECT_SOURCE_DIR}/installer/linux/README.md
+                    -DOUT=${CMAKE_CURRENT_BINARY_DIR}/installer-linux/${case}
+                    -DFULL=${GG_VERSION_STRING}
+                    -DCHECK_ARCHIVE=${CMAKE_CURRENT_SOURCE_DIR}/installer/check-archive.cmake
+                    ${switch}
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/installer/check-linux-tarball.cmake)
+            set_tests_properties(installer_linux_${case} PROPERTIES LABELS installer
+                    FIXTURES_REQUIRED gg_products)
+        endforeach ()
+    endif ()
+
+    # The Windows zip and installer (spec §6.5): installer_windows_zip checks the entries, the
+    # readme and the license set of what installer/windows/make-zip.cmake makes from the products
+    # (through check-archive.cmake, as the Linux tarball does); _missing_product checks that it
+    # refuses an empty products directory, naming every product, with nothing written.
+    # installer_windows_inno compiles installer/windows/giga-grains.iss, only where
+    # cmake/products.cmake found Inno Setup's compiler (GG_ISCC). Each writes its own folder.
+    if (WIN32)
+        foreach (case IN ITEMS zip zip_missing_product)
+            set(switch "")
+            if (case STREQUAL "zip_missing_product")
+                set(switch -DMISSING=1)
+            endif ()
+            add_test(NAME installer_windows_${case}
+                    COMMAND ${CMAKE_COMMAND}
+                    -DSCRIPT=${PROJECT_SOURCE_DIR}/installer/windows/make-zip.cmake
+                    -DPRODUCTS=${GG_PRODUCT_DIR}
+                    -DREADME=${PROJECT_SOURCE_DIR}/installer/windows/readme.txt
+                    -DOUT=${CMAKE_CURRENT_BINARY_DIR}/installer-windows/${case}
+                    -DFULL=${GG_VERSION_STRING}
+                    -DCHECK_ARCHIVE=${CMAKE_CURRENT_SOURCE_DIR}/installer/check-archive.cmake
+                    ${switch}
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/installer/check-windows-zip.cmake)
+            set_tests_properties(installer_windows_${case} PROPERTIES LABELS installer
+                    FIXTURES_REQUIRED gg_products)
+        endforeach ()
+        if (GG_ISCC)
+            add_test(NAME installer_windows_inno
+                    COMMAND ${CMAKE_COMMAND} -DISCC=${GG_ISCC}
+                    -DISS=${PROJECT_SOURCE_DIR}/installer/windows/giga-grains.iss
+                    -DPRODUCTS=${GG_PRODUCT_DIR} -DLICENSES=${GG_LICENSE_DIR}
+                    -DOUT=${CMAKE_CURRENT_BINARY_DIR}/installer-windows/inno
+                    -DNUMERIC=${GG_VERSION_NUMERIC} -DFULL=${GG_VERSION_STRING}
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/installer/check-windows-inno.cmake)
+            set_tests_properties(installer_windows_inno PROPERTIES LABELS installer
+                    FIXTURES_REQUIRED gg_products)
+        endif ()
+    endif ()
+endif ()
+
 # The ASIO SDK guard (cmake/AsioGuard.cmake, carry-over [116]), proven on a scratch project: the
 # one allowed use configures, and every misuse fails the configure naming it. Each case builds
 # in its own folder under the test output.
@@ -459,4 +604,14 @@ foreach (case IN ITEMS allowed other-target-source other-target-include other-ta
             -DGG_OUT=${CMAKE_CURRENT_BINARY_DIR}/asio-guard/${case}
             -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/asio-guard/run.cmake)
     set_tests_properties(asio_guard_${case} PROPERTIES LABELS "build")
+endforeach ()
+
+# The version (cmake/version.cmake, spec §6.1): gg_compose_version joins the numeric part and the
+# pre-release suffix, and refuses a suffix that isn't dot-separated [0-9A-Za-z-] identifiers.
+# Each case runs cmake -P on its own and writes nothing.
+foreach (case IN ITEMS dev release nightly bad-underscore bad-empty-identifier)
+    add_test(NAME version_${case}
+            COMMAND ${CMAKE_COMMAND} -DGG_CASE=${case} -DGG_REPO=${PROJECT_SOURCE_DIR}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/version/run.cmake)
+    set_tests_properties(version_${case} PROPERTIES LABELS "build")
 endforeach ()

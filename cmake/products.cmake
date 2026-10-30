@@ -5,7 +5,8 @@
 # gg-products: gathers every built plugin format into one directory, ${CMAKE_BINARY_DIR}/gg-products
 # (build/<preset>/gg-products/), for validation and packaging:
 #   Giga Grains.clap, Giga Grains.vst3, Giga Grains.component (macOS),
-#   and the standalones Giga Grains / Giga Grains FX (.app on macOS, .exe on Windows).
+#   the standalones Giga Grains / Giga Grains FX (.app on macOS, .exe on Windows),
+#   and licenses/, the notices and license texts every installer carries (below).
 # Adapted from Shortcircuit XT's cmake/basic-installer.cmake.
 
 set(GG_PRODUCT_DIR ${CMAKE_BINARY_DIR}/gg-products)
@@ -66,4 +67,128 @@ elseif (WIN32)
 else ()
     gg_add_product(standalone "")
     gg_add_product(standalone_fx "")
+endif ()
+
+# The license set (spec §6.3, carry-over row 221): every installer carries THIRD_PARTY_NOTICES.md
+# and the license texts it points to, which gg-products writes into GG_LICENSE_DIR
+# (build/<preset>/gg-products/licenses/) under these published names:
+#   THIRD_PARTY_NOTICES.md, LICENSE (the AGPL), GPL-3.0.txt (sst-basic-blocks' LICENSE.md is the
+#   GPLv3 text), CMakeRC-LICENSE.txt and flowbite-icons-LICENSE.txt (MIT texts no checkout holds,
+#   kept in installer/licenses/), AudioUnitSDK-LICENSE.txt (macOS, the Apache 2.0 text of the SDK
+#   checkout clap-wrapper builds the AU from) and ASIO-SDK-LICENSE.txt (Windows, the ASIO SDK's).
+# GG_LICENSE_FILES is the list of their source paths, each checked here at configure time.
+set(GG_LICENSE_DIR ${GG_PRODUCT_DIR}/licenses)
+set(GG_LICENSE_FILES
+        ${CMAKE_SOURCE_DIR}/THIRD_PARTY_NOTICES.md
+        ${CMAKE_SOURCE_DIR}/LICENSE
+        ${CMAKE_SOURCE_DIR}/libs/sst/sst-basic-blocks/LICENSE.md
+        ${CMAKE_SOURCE_DIR}/installer/licenses/CMakeRC-LICENSE.txt
+        ${CMAKE_SOURCE_DIR}/installer/licenses/flowbite-icons-LICENSE.txt)
+set(gg_license_names THIRD_PARTY_NOTICES.md LICENSE GPL-3.0.txt CMakeRC-LICENSE.txt
+        flowbite-icons-LICENSE.txt)
+if (APPLE)
+    # CI passes AUDIOUNIT_SDK_ROOT (scripts/fetch-sdks.sh); a local tree has CPM's checkout,
+    # recorded in the cache when clients/clap-first was processed, before this file.
+    if (NOT "${AUDIOUNIT_SDK_ROOT}" STREQUAL "")
+        set(gg_au_license "${AUDIOUNIT_SDK_ROOT}/LICENSE.txt")
+    else ()
+        set(gg_au_license "${CPM_PACKAGE_AudioUnitSDK_SOURCE_DIR}/LICENSE.txt")
+    endif ()
+    if (NOT EXISTS "${gg_au_license}")
+        message(FATAL_ERROR "gg-products: no AudioUnitSDK LICENSE.txt at '${gg_au_license}'; "
+                "neither AUDIOUNIT_SDK_ROOT ('${AUDIOUNIT_SDK_ROOT}') nor "
+                "CPM_PACKAGE_AudioUnitSDK_SOURCE_DIR ('${CPM_PACKAGE_AudioUnitSDK_SOURCE_DIR}') "
+                "names an SDK checkout that has one")
+    endif ()
+    list(APPEND GG_LICENSE_FILES "${gg_au_license}")
+    list(APPEND gg_license_names AudioUnitSDK-LICENSE.txt)
+elseif (WIN32)
+    list(APPEND GG_LICENSE_FILES
+            ${CMAKE_SOURCE_DIR}/libs/sst/sst-plugininfra/libs/asiosdk/LICENSE.txt)
+    list(APPEND gg_license_names ASIO-SDK-LICENSE.txt)
+endif ()
+
+add_custom_command(TARGET gg-products POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E echo "gg-products: licenses"
+        COMMAND ${CMAKE_COMMAND} -E rm -rf "${GG_LICENSE_DIR}"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${GG_LICENSE_DIR}"
+        VERBATIM
+        )
+# ZIP_LISTS pads the shorter list with empty items, so a name without its file (or a file
+# without its name) would slip through as an empty one: the two lists must pair up exactly.
+list(LENGTH GG_LICENSE_FILES gg_license_file_count)
+list(LENGTH gg_license_names gg_license_name_count)
+if (NOT gg_license_file_count EQUAL gg_license_name_count)
+    message(FATAL_ERROR "gg-products: GG_LICENSE_FILES has ${gg_license_file_count} entries but "
+            "gg_license_names has ${gg_license_name_count}; each license text needs one name")
+endif ()
+foreach (source name IN ZIP_LISTS GG_LICENSE_FILES gg_license_names)
+    if (NOT EXISTS "${source}")
+        message(FATAL_ERROR "gg-products: the license text '${source}' (${name}) doesn't exist")
+    endif ()
+    add_custom_command(TARGET gg-products POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy "${source}" "${GG_LICENSE_DIR}/${name}"
+            VERBATIM
+            )
+endforeach ()
+
+# gg-installer (spec §6.3): builds gg-products, then runs the platform's installer script on them,
+# writing into GG_INSTALLER_DIR (build/<preset>/gg-installer/). The script reads the signing
+# environment itself (installer/macos/make-installer.sh says which variables), so the same target
+# makes a local unsigned installer and CI's signed one. Each command is USES_TERMINAL: Ninja then
+# runs it in the console pool and streams its output as it runs, instead of holding it until the
+# command exits, so a long notarization shows its progress and a timed-out CI step shows how far
+# the script got.
+set(GG_INSTALLER_DIR ${CMAKE_BINARY_DIR}/gg-installer)
+add_custom_target(gg-installer)
+add_dependencies(gg-installer gg-products)
+if (APPLE)
+    # giga-grains-<v>-macos.pkg and giga-grains-<v>-macos.dmg.
+    add_custom_command(TARGET gg-installer POST_BUILD
+            COMMAND ${CMAKE_SOURCE_DIR}/installer/macos/make-installer.sh
+            --products ${GG_PRODUCT_DIR} --out ${GG_INSTALLER_DIR}
+            --version ${GG_VERSION_NUMERIC} --full-version ${GG_VERSION_STRING}
+            --resources ${CMAKE_SOURCE_DIR}/installer/macos --licenses ${GG_LICENSE_DIR}
+            VERBATIM USES_TERMINAL
+            )
+elseif (CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    # giga-grains-<v>-linux-x86_64.tar.gz (spec §6.5).
+    add_custom_command(TARGET gg-installer POST_BUILD
+            COMMAND ${CMAKE_SOURCE_DIR}/installer/linux/make-tarball.sh
+            --products ${GG_PRODUCT_DIR} --out ${GG_INSTALLER_DIR}
+            --full-version ${GG_VERSION_STRING}
+            --readme ${CMAKE_SOURCE_DIR}/installer/linux/README.md
+            VERBATIM USES_TERMINAL
+            )
+elseif (WIN32)
+    # giga-grains-<v>-windows-x64.zip always, by a CMake script (no shell on the Windows side), and
+    # giga-grains-<v>-windows-x64.exe when Inno Setup 6's compiler is found (spec §6.5). The
+    # release job requires the .exe (GG_ISCC, a cache variable, says whether it can be built).
+    set(gg_windows_installer_dir ${CMAKE_SOURCE_DIR}/installer/windows)
+    add_custom_command(TARGET gg-installer POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -DPRODUCTS=${GG_PRODUCT_DIR} -DOUT=${GG_INSTALLER_DIR}
+            -DFULL_VERSION=${GG_VERSION_STRING} -DREADME=${gg_windows_installer_dir}/readme.txt
+            -P ${gg_windows_installer_dir}/make-zip.cmake
+            VERBATIM USES_TERMINAL
+            )
+    find_program(GG_ISCC ISCC PATHS "C:/Program Files (x86)/Inno Setup 6"
+            DOC "Inno Setup 6's command-line compiler, ISCC.exe, which builds the Windows installer")
+    if (GG_ISCC)
+        message(STATUS "gg-installer: the zip, and the installer with Inno Setup's ${GG_ISCC}")
+        # ISCC takes Windows paths; its own log names its version (giga-grains.iss prints it).
+        foreach (var IN ITEMS GG_PRODUCT_DIR GG_LICENSE_DIR GG_INSTALLER_DIR)
+            file(TO_NATIVE_PATH "${${var}}" gg_native_${var})
+        endforeach ()
+        file(TO_NATIVE_PATH "${gg_windows_installer_dir}/giga-grains.iss" gg_native_iss)
+        add_custom_command(TARGET gg-installer POST_BUILD
+                COMMAND ${GG_ISCC} /DStagedAssets=${gg_native_GG_PRODUCT_DIR}
+                /DLicenses=${gg_native_GG_LICENSE_DIR} /DVersion=${GG_VERSION_NUMERIC}
+                /DFullVersion=${GG_VERSION_STRING} /DOutDir=${gg_native_GG_INSTALLER_DIR}
+                ${gg_native_iss}
+                VERBATIM USES_TERMINAL
+                )
+    else ()
+        message(STATUS "gg-installer: Inno Setup's ISCC.exe not found; gg-installer builds the "
+                "zip alone")
+    endif ()
 endif ()

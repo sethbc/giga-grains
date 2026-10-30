@@ -17,8 +17,13 @@ add_library(gg-engine STATIC
 add_library(gg::engine ALIAS gg-engine)
 
 target_include_directories(gg-engine PUBLIC include)
-# PUBLIC so plugin and UI targets can use GG_VERSION_STRING directly.
-target_compile_definitions(gg-engine PUBLIC GG_VERSION_STRING="${PROJECT_VERSION}")
+# PUBLIC so plugin and UI targets can use them directly: GG_VERSION_STRING is the full version
+# ("0.2.0-dev"), GG_VERSION_NUMERIC its numeric part and GG_VERSION_PRERELEASE its suffix, which
+# is empty for a release (the top-level CMakeLists.txt, spec §6.1).
+target_compile_definitions(gg-engine PUBLIC
+        GG_VERSION_STRING="${GG_VERSION_STRING}"
+        GG_VERSION_NUMERIC="${GG_VERSION_NUMERIC}"
+        GG_VERSION_PRERELEASE="${GG_VERSION_PRERELEASE}")
 # sst-cpputils is PUBLIC: Engine.h uses its SST_CPPUTILS_NONBLOCKING annotation. sst-basic-blocks
 # and simde are PUBLIC: GrainKernels.h's SIMD kernels include <sst/basic-blocks/simd/setup.h>.
 target_link_libraries(gg-engine PUBLIC gg::compiler-options sst-cpputils sst-basic-blocks simde)

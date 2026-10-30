@@ -9,8 +9,9 @@
 
 namespace gg
 {
-/// The project version ("MAJOR.MINOR.PATCH"), taken from CMake's PROJECT_VERSION through the
-/// GG_VERSION_STRING compile definition. Defined in the gg-engine library.
+/// The project version ("MAJOR.MINOR.PATCH[-prerelease]", as cmake/version.cmake composes it),
+/// taken from CMake's GG_VERSION_STRING through the compile definition of that name. Defined in
+/// the gg-engine library.
 extern const std::string_view kVersion;
 } // namespace gg
 
