@@ -788,10 +788,11 @@ TEST_CASE("four layers do not allocate", "[core][layers][rt]")
 namespace
 {
 // A value for every slot, each moved from its default in `mode` (ruling FR-3's test): layers B
-// and C on, D off, layers A, B and D's Freeze on and C's off, a Source of each built kind and the
-// unbuilt Resample, both spreads up, every macro moved but Macro Freeze, and every other
-// continuous slot at a point of the middle half of its range drawn from gg::rng, away from its
-// default. With `nanEvery` not 0, every nanEvery-th slot is NaN instead.
+// and C on, D off, a Source of each built kind and the unbuilt Resample, both spreads up, every
+// macro moved but Macro Freeze, and every other continuous slot at a point of the middle half of
+// its range drawn from gg::rng, away from its default. No Freeze is loaded on, Macro Freeze
+// included: there setBases arms by its own rule (ruling FR-8), not the calls'. With `nanEvery`
+// not 0, every nanEvery-th slot is NaN instead.
 gg::core::ParamValues movedValues(Mode mode, uint64_t seed, size_t nanEvery = 0)
 {
     gg::core::ParamValues v{};
@@ -817,10 +818,10 @@ gg::core::ParamValues movedValues(Mode mode, uint64_t seed, size_t nanEvery = 0)
     set(ParamSlot::LayerBOn, 1.0f);
     set(ParamSlot::LayerCOn, 1.0f);
     set(ParamSlot::LayerDOn, 0.0f);
-    set(slotOf(LayerParam::Freeze, 0), 1.0f);
-    set(slotOf(LayerParam::Freeze, 1), 1.0f);
-    set(slotOf(LayerParam::Freeze, 2), 0.0f);
-    set(slotOf(LayerParam::Freeze, 3), 1.0f);
+    for (uint8_t L = 0; L < 4; ++L)
+    {
+        set(slotOf(LayerParam::Freeze, L), 0.0f);
+    }
     set(ParamSlot::Macro6, 0.0f);
     // A Sample, B Live (the other product's default for one of them), C the unbuilt Resample.
     set(slotOf(LayerParam::Source, 0), 0.0f);
@@ -858,8 +859,8 @@ gg::core::ParamValues movedValues(Mode mode, uint64_t seed, size_t nanEvery = 0)
 // Two Processors alike, one given `values` by setBase on every slot in slot order, the other by
 // setBases, after `preRoll` frames (with a Mix event left mid-ramp at its end); then 4 pieces of
 // 256. The output, every base and every effective value must match bit for bit. With
-// `macroFreezeFirst`, Macro Freeze is on from construction, so no layer's Freeze is armed while
-// the pre-roll fills the rings.
+// `macroFreezeFirst`, Macro Freeze is on from construction, so every layer is frozen but none is
+// armed while the pre-roll fills the rings.
 void requireSetBasesMatchesSetBase(Mode mode, const gg::core::ParamValues &values, int64_t preRoll,
                                    bool macroFreezeFirst = false)
 {
@@ -924,12 +925,6 @@ void requireSetBasesMatchesSetBase(Mode mode, const gg::core::ParamValues &value
         REQUIRE(bitsOf(one->feedbackAt(L, frames)) == bitsOf(all->feedbackAt(L, frames)));
         REQUIRE(one->engine(L).liveWriteHead() == all->engine(L).liveWriteHead()); // frozen alike
     }
-    if (macroFreezeFirst)
-    {
-        // Layer B froze (its head stopped after the 20 ms ramp); layer C, whose Freeze is off,
-        // didn't.
-        REQUIRE(all->engine(1).liveWriteHead() < all->engine(2).liveWriteHead());
-    }
     if (AllocTripwire::available()) // off under ASan; RTSan covers the audio thread's calls
     {
         REQUIRE(allocations == 0);
@@ -940,31 +935,148 @@ void requireSetBasesMatchesSetBase(Mode mode, const gg::core::ParamValues &value
 TEST_CASE("setBases is setBase on every slot in slot order", "[core][layers]")
 {
     // Ruling FR-3: a state load (an offer's values, the plugin's activation and loaded state)
-    // recomputes the effective values once. Its result is the 218 calls' bit for bit: on fresh
-    // Processors (whose Freeze isn't armed: the calls arm layers B to D at layer A's Freeze, from
-    // their old values), after a pre-roll with a ramp running, and back to the defaults again.
+    // recomputes the effective values once. For a load with no Freeze on, its result is the 218
+    // calls' bit for bit: on fresh Processors, after a pre-roll with a ramp running, and back to
+    // the defaults again. (A load with Freeze on arms by ruling FR-8: the next test.)
     for (const Mode mode : {Mode::Fx, Mode::Instrument})
     {
         INFO((mode == Mode::Fx ? "fx" : "instrument"));
         const gg::core::ParamValues moved = movedValues(mode, 83);
         requireSetBasesMatchesSetBase(mode, moved, 0);
         requireSetBasesMatchesSetBase(mode, moved, 2 * 256);
-        // Macro Freeze on as well: its slot arms each layer whose Freeze is off then.
-        gg::core::ParamValues macroFreeze = moved;
-        macroFreeze[static_cast<size_t>(ParamSlot::Macro6)] = 1.0f;
-        requireSetBasesMatchesSetBase(mode, macroFreeze, 0);
-        requireSetBasesMatchesSetBase(mode, macroFreeze, 2 * 256);
         gg::core::ParamValues defaults{};
         for (size_t s = 0; s < gg::core::kParamCount; ++s)
         {
             defaults[s] = gg::core::paramMeta(static_cast<ParamSlot>(s), mode).defaultVal;
         }
         requireSetBasesMatchesSetBase(mode, defaults, 2 * 256);
-        // Every layer frozen by Macro Freeze but none armed, the rings full, then Macro Freeze off
-        // with layer B's Freeze on: the calls arm B at Macro Freeze's slot, before B's own, so B
-        // freezes; a single syncFreeze() at the end would leave it playing live.
+        // Every layer frozen by Macro Freeze but none armed, the rings full, then a load that
+        // turns Macro Freeze off: every layer is seen off and arms, and the rings play live.
         requireSetBasesMatchesSetBase(mode, moved, 24000, true);
         // A NaN leaves its slot alone, as setBase does.
         requireSetBasesMatchesSetBase(mode, movedValues(mode, 89, 7), 2 * 256);
+    }
+}
+
+namespace
+{
+// Renders the next 2048 frames of `input` (the FX's input, the instrument's sidechain) through p
+// from `clock`, in pieces of 256, and returns which layers' rings froze: a frozen ring's head
+// stops after the 20 ms ramp, so it advances less than the frames rendered.
+std::array<bool, 4> frozenAfter(Processor &p, const Stereo &input, int64_t &clock,
+                                const std::vector<TimedNote> &notes = {})
+{
+    constexpr int64_t kFrames = 2048;
+    std::array<int64_t, 4> before{};
+    for (uint8_t L = 0; L < 4; ++L)
+    {
+        before[L] = p.engine(L).liveWriteHead();
+    }
+    Stereo out = silence(clock + kFrames);
+    render(p, &input, clock, clock + kFrames, {256}, {}, out, nullptr, {}, notes);
+    clock += kFrames;
+    std::array<bool, 4> frozen{};
+    for (uint8_t L = 0; L < 4; ++L)
+    {
+        frozen[L] = p.engine(L).liveWriteHead() - before[L] < kFrames;
+    }
+    return frozen;
+}
+} // namespace
+
+TEST_CASE("a state load arms Freeze from its loaded values alone, every layer alike", "[core]")
+{
+    // Ruling FR-8 (INTENT §23 #40): a Freeze that is on when a state loads into a fresh ring stays
+    // live until it is toggled, in every layer alike, so the effect is heard after a reload. The
+    // calls one slot at a time would have armed layers B to D at layer A's Freeze, from their old
+    // values, and frozen their empty rings.
+    using Frozen = std::array<bool, 4>;
+    constexpr Frozen kNone{false, false, false, false};
+    const Stereo input = noise(5 * 2048, 0.5f, 97);
+    for (const Mode mode : {Mode::Fx, Mode::Instrument})
+    {
+        INFO((mode == Mode::Fx ? "fx" : "instrument"));
+        const auto defaults = [mode] {
+            gg::core::ParamValues v{};
+            for (size_t s = 0; s < gg::core::kParamCount; ++s)
+            {
+                v[s] = gg::core::paramMeta(static_cast<ParamSlot>(s), mode).defaultVal;
+            }
+            return v;
+        }();
+
+        // Every layer's Freeze on: no layer freezes; toggling layer B's freezes it alone.
+        {
+            gg::core::ParamValues v = defaults;
+            for (uint8_t L = 0; L < 4; ++L)
+            {
+                v[static_cast<size_t>(slotOf(LayerParam::Freeze, L))] = 1.0f;
+            }
+            Processor p({kRate, 256, 101, mode});
+            p.setBases(v);
+            int64_t clock = 0;
+            REQUIRE(frozenAfter(p, input, clock) == kNone);
+            p.setBase(slotOf(LayerParam::Freeze, 1), 0.0f);
+            p.setBase(slotOf(LayerParam::Freeze, 1), 1.0f);
+            REQUIRE(frozenAfter(p, input, clock) == Frozen{false, true, false, false});
+        }
+
+        // Macro Freeze on instead: no layer freezes; toggling Macro Freeze freezes them all.
+        {
+            gg::core::ParamValues v = defaults;
+            v[static_cast<size_t>(ParamSlot::Macro6)] = 1.0f;
+            Processor p({kRate, 256, 101, mode});
+            p.setBases(v);
+            for (uint8_t L = 0; L < 4; ++L)
+            {
+                REQUIRE(p.effective(slotOf(LayerParam::Freeze, L)) == 1.0f);
+            }
+            int64_t clock = 0;
+            REQUIRE(frozenAfter(p, input, clock) == kNone);
+            p.setBase(ParamSlot::Macro6, 0.0f);
+            p.setBase(ParamSlot::Macro6, 1.0f);
+            REQUIRE(frozenAfter(p, input, clock) == Frozen{true, true, true, true});
+        }
+
+        // The same with a NaN in the values (the slot-by-slot path, setBase()'s own).
+        {
+            gg::core::ParamValues v = defaults;
+            for (uint8_t L = 0; L < 4; ++L)
+            {
+                v[static_cast<size_t>(slotOf(LayerParam::Freeze, L))] = 1.0f;
+            }
+            v[static_cast<size_t>(ParamSlot::ReverbSize)] = kNaN;
+            Processor p({kRate, 256, 101, mode});
+            p.setBases(v);
+            int64_t clock = 0;
+            REQUIRE(frozenAfter(p, input, clock) == kNone);
+        }
+
+        // A layer whose loaded Freeze is off arms: turned on afterwards, it freezes.
+        {
+            Processor p({kRate, 256, 101, mode});
+            p.setBases(defaults);
+            p.setBase(slotOf(LayerParam::Freeze, 2), 1.0f);
+            int64_t clock = 0;
+            REQUIRE(frozenAfter(p, input, clock) == Frozen{false, false, true, false});
+        }
+    }
+
+    // The FX: a held key freezes every layer, with no arming, after such a load too.
+    {
+        gg::core::ParamValues v{};
+        for (size_t s = 0; s < gg::core::kParamCount; ++s)
+        {
+            v[s] = gg::core::paramMeta(static_cast<ParamSlot>(s), Mode::Fx).defaultVal;
+        }
+        for (uint8_t L = 0; L < 4; ++L)
+        {
+            v[static_cast<size_t>(slotOf(LayerParam::Freeze, L))] = 1.0f;
+        }
+        Processor p({kRate, 256, 101, Mode::Fx});
+        p.setBases(v);
+        int64_t clock = 0;
+        REQUIRE(frozenAfter(p, input, clock, {{0, NoteEventType::On, 0, 60}}) ==
+                Frozen{true, true, true, true});
     }
 }

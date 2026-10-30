@@ -245,7 +245,8 @@ struct ControlEvent
 /// effective Freeze that is on leaves the engine live, though base() and effective() still read
 /// it on. Freeze is seen at the points where it reaches the engine: each call's first sample,
 /// each applied boundary, and a setBase() of a layer's Freeze or of Macro 6 (Macro Freeze, whose
-/// factory route adds to every layer's; params.flush or a state load).
+/// factory route adds to every layer's; params.flush), and once a state load (setBases) has set
+/// every value: a load arms from its loaded values alone, every layer alike (INTENT §23 #40).
 /// Construction and reset() disarm it, and the reset itself doesn't arm: after a reset (a VST3
 /// suspend, say), a Freeze turned on before audio flows stays live until it is toggled, while one
 /// that is off at the next call's first sample arms. Modulation that takes the effective Freeze
@@ -391,10 +392,12 @@ class Processor
     /// at the next reverb chunk's first sample, the next grid boundary. Real-time safe; call it
     /// between process() calls.
     void setBase(ParamSlot slot, float value) noexcept;
-    /// Sets every slot's base value at once: for a state load (ruling FR-3). The result is
-    /// exactly that of setBase() on every slot in slot order, bases, effective values, ramps,
-    /// engines and Freeze's arming alike, but the effective values are recomputed once, not once
-    /// per slot. Real-time safe; call it between process() calls.
+    /// Sets every slot's base value at once: for a state load (ruling FR-3). The result is that
+    /// of setBase() on every slot in slot order, bases, effective values, ramps and engines
+    /// alike, but the effective values are recomputed once, not once per slot. Freeze arms from
+    /// the loaded values alone, every layer alike: a layer whose loaded Freeze is off arms, and
+    /// one whose Freeze is on stays live until toggled (INTENT §23 #40; ruling FR-8). Real-time
+    /// safe; call it between process() calls.
     void setBases(const ParamValues &values) noexcept;
 
     /// Sets every layer's engine seed (Engine::setSeed): the grains scheduled from the next
@@ -701,11 +704,6 @@ class Processor
     /// Recomputes the effective values, gives each engine its cloud parameters and source kind,
     /// and keeps Space's.
     void updateEffective() noexcept;
-    /// The effective values `base` gives, with the modulation, routes and sources in effect (the
-    /// macros' from `base`), into `effective`, and the sources' values into `sources`: the values
-    /// updateEffective() computes, bit for bit, with nothing told to the engines.
-    void effectiveFor(const ParamValues &base, ParamValues &effective,
-                      std::array<ModSourceValues, kLayers> &sources) const noexcept;
     /// Jumps every ramped value to its target.
     void jumpRamps() noexcept;
     /// Ramps every ramped value from its value at t to its target.
