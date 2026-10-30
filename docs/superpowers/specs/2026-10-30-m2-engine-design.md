@@ -163,6 +163,14 @@ tests need to force.
   effective value's nearest step); no exception is made.
 - **The ladder may lower a grain's tier below its layer's Quality only under overload** (§6.5).
   Nothing else changes a grain's tier.
+- **The mod matrix's target rule** (the programme manager's ruling PM-1, 2026-10-30, found while
+  reviewing sub-project 4's spec): `isValidTarget` admitted a layer parameter only below
+  `LFO 1 Rate`, so every wave-2 layer parameter, Quality included, would have been silently
+  refused as a route target. Since this sub-project merges first in wave 2, the fix is its:
+  the layer rule refuses the modulators' own controls by name (the LFO, Env, Random and Step
+  parameters, `isModulatorControl`) and admits every other layer parameter, with a test that a
+  route to Quality is accepted and a route to `LFO 1 Rate` refused. Sub-projects 2 and 4 rely on
+  it after rebasing.
 - `gg-render`'s sample mode takes `"quality": "hq"` beside `"eco"` and `"normal"`.
 
 ### 6.2 The HQ kernel: the windowed sinc (I17)
@@ -714,7 +722,9 @@ the fix wave unless blocked outside our control or genuinely large (the policy).
   the overload ladder's block-size invariance test; the mipmap unit tests.
 - **§21:** the memory risk row names the pyramid's cost.
 - **§22:** the AVX2 row resolved either way, with the measurement.
-- **§23 #66:** this sub-project's director decisions (D1–D5, with their dates), the AVX2 ruling,
+- **§14 (the mod matrix's targets):** the layer rule as amended by PM-1 (§6.1).
+- **§23 #66:** this sub-project's director decisions (D1–D5, with their dates), the programme
+  manager's ruling PM-1 (the mod matrix's target rule), the AVX2 ruling,
   its rulings made during the build, and the §9 calls that amend Part II (the plugins' pool
   size, the overshoot, one copy per level).
 
