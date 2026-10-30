@@ -1677,3 +1677,62 @@ TEST_CASE("reactivate at a new rate mid-tail", "[plugin][rt][space]")
     CHECK(silent(rendered.right));
     REQUIRE_NO_ALLOCATIONS(allocations);
 }
+
+TEST_CASE("a spectral layer renders through the factory in both products", "[plugin]")
+{
+    // M2 sub-project 4's spec §6.2: layer A on the Spectral kind, its material the FX's ring or
+    // the instrument's sample. The render is finite and, once the STFT has filled, not silent.
+    const char *id = GENERATE("org.sethbc.giga-grains", "org.sethbc.giga-grains-fx");
+    CAPTURE(id);
+    const bool isFx = std::string_view(id) == "org.sethbc.giga-grains-fx";
+    gg::test::PluginUnderTest plugin(id);
+    REQUIRE(plugin.valid());
+    if (!isFx)
+    {
+        REQUIRE(plugin.loadSampleState(gg::test::sineSampleFile("process-spectral")));
+    }
+    const auto spectral = gg::test::paramValue(
+        gg::core::paramId(gg::core::layerSlot(gg::core::LayerParam::Source, 0)), 3.0);
+    const auto smear = gg::test::paramValue(
+        gg::core::paramId(gg::core::layerSlot(gg::core::LayerParam::Smear, 0)), 1.0);
+    const auto mix = gg::test::paramValue(gg::core::paramId(gg::core::ParamSlot::Mix), 1.0);
+    const auto density =
+        gg::test::paramValue(gg::core::paramId(gg::core::ParamSlot::Density), 6.0); // 64 Hz
+    {
+        gg::test::InputEvents list;
+        list.add(&spectral.header);
+        list.add(&smear.header);
+        list.add(&density.header);
+        if (isFx)
+        {
+            list.add(&mix.header);
+        }
+        plugin.flush(list.list());
+    }
+    REQUIRE(plugin.activate(48000.0, 512));
+    const auto on = gg::test::noteEvent(CLAP_EVENT_NOTE_ON, 0, 60, 0);
+    float peak = 0.0f;
+    bool finite = true;
+    for (int b = 0; b < 192; ++b)
+    {
+        Stereo in(512);
+        fillNoise(in, static_cast<uint64_t>(b) + 1);
+        Stereo out(512);
+        gg::test::InputEvents events;
+        if (b == 0 && !isFx) // a note would freeze the FX's ring
+        {
+            events.add(&on.header);
+        }
+        REQUIRE(plugin.process(512, in.data(), out.data(), events.list()) == CLAP_PROCESS_CONTINUE);
+        for (const auto *ch : {&out.left, &out.right})
+        {
+            for (const float v : *ch)
+            {
+                finite = finite && std::isfinite(v);
+                peak = std::max(peak, std::abs(v));
+            }
+        }
+    }
+    CHECK(finite);
+    CHECK(peak > 1e-4f);
+}

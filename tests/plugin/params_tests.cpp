@@ -1201,15 +1201,18 @@ TEST_CASE("fx handles mono, missing input and new sample rates", "[plugin]")
     }
 }
 
-TEST_CASE("remote controls pages are eight", "[plugin]")
+TEST_CASE("remote controls pages are thirteen", "[plugin]")
 {
-    // Eight 8-slot pages (M2 sub-project 1's spec §6.9): "Perform", the eight macros (sub-project
+    // Thirteen 8-slot pages (M2 sub-project 1's spec §6.9; sub-project 4's spec §6.8 adds the
+    // last five): "Perform", the eight macros (sub-project
     // 5's spec §3.3); "Cloud" (layer A's, spec §4) and "Space" (sub-project 4's spec §6.6), M1's
     // three at indices 0 to 2, unchanged; then "Layers" (the four switches and the four Levels),
     // "Morph" (X and Y, then six empty slots), and "Cloud B" to "Cloud D", each that layer's
-    // Position, Size, Density, Pitch, Spray, Stereo, Freeze and Level. The instrument leaves
+    // Position, Size, Density, Pitch, Spray, Stereo, Freeze and Level; then "FX" (the delay's five
+    // and the limiter's three, in table order) and "Filter A" to "Filter D" (that layer's Smear,
+    // Bus Split and two buses' Filter, Cutoff and Resonance), pages 8 to 12. The instrument leaves
     // Mix's and Dry to Reverb's slots empty: they are hidden there. A page's index is its
-    // page_id. There is no ninth.
+    // page_id. There is no fourteenth.
     const char *id = GENERATE(kInstrumentId, kFxId);
     CAPTURE(id);
     const bool isFx = std::string_view(id) == kFxId;
@@ -1218,7 +1221,7 @@ TEST_CASE("remote controls pages are eight", "[plugin]")
     const auto *remote = static_cast<const clap_plugin_remote_controls *>(
         plugin.clap()->get_extension(plugin.clap(), CLAP_EXT_REMOTE_CONTROLS));
     REQUIRE(remote != nullptr);
-    REQUIRE(remote->count(plugin.clap()) == 8);
+    REQUIRE(remote->count(plugin.clap()) == 13);
 
     struct ExpectedPage
     {
@@ -1238,7 +1241,13 @@ TEST_CASE("remote controls pages are eight", "[plugin]")
                              s | 0x08, // Freeze
                              level}};  // Level
     };
-    const std::array<ExpectedPage, 8> pages{{
+    // Layer L's filter page (scope L + 1): Smear 0x60 to Bus 2 Resonance 0x67.
+    const auto filter = [](std::string_view name, uint32_t scope) {
+        const clap_id s = scope << 16;
+        return ExpectedPage{
+            name, {s | 0x60, s | 0x61, s | 0x62, s | 0x63, s | 0x64, s | 0x65, s | 0x66, s | 0x67}};
+    };
+    const std::array<ExpectedPage, 13> pages{{
         {"Perform",
          {0x000011,   // Macro 1
           0x000012,   // Macro 2
@@ -1283,6 +1292,19 @@ TEST_CASE("remote controls pages are eight", "[plugin]")
         cloud("Cloud B", 2, 0x00001F),
         cloud("Cloud C", 3, 0x000020),
         cloud("Cloud D", 4, 0x000021),
+        {"FX",
+         {0x000060,   // Delay Amount
+          0x000061,   // Delay Time
+          0x000062,   // Delay Feedback
+          0x000063,   // Delay Damping
+          0x000064,   // Delay Ping-pong
+          0x000065,   // Limiter Mode
+          0x000066,   // Limiter Ceiling
+          0x000067}}, // Limiter Release
+        filter("Filter A", 1),
+        filter("Filter B", 2),
+        filter("Filter C", 3),
+        filter("Filter D", 4),
     }};
     for (uint32_t p = 0; p < pages.size(); ++p)
     {
@@ -1301,7 +1323,7 @@ TEST_CASE("remote controls pages are eight", "[plugin]")
         }
     }
     clap_remote_controls_page page;
-    CHECK_FALSE(remote->get(plugin.clap(), 8, &page));
+    CHECK_FALSE(remote->get(plugin.clap(), 13, &page));
 }
 
 TEST_CASE("state carries the routes", "[plugin]")
