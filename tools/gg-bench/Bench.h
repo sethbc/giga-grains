@@ -23,6 +23,8 @@
 // The cases (spec §5):
 // - the M0 prototype kernels (Kernels.h), each over the M0 workload: Options::grains grains of
 //   100 ms over 60 s of stereo noise;
+// - hermite-simd-grainfilter (GrainFilterKernel.h), INTENT §22's per-grain filter spike (M2
+//   extremes spec §6.10): hermite-simd plus one CytomicSVF per grain, over the same workload;
 // - `reference`: renderHermiteSimd on that workload, frozen as the CPU gate's yardstick;
 // - the engine cases, each a gg::Engine at 48 kHz rendering one Cloud stream through
 //   Engine::process: engine-sample (X, the headline), engine-sample-eco (X at the Eco tier),

@@ -4,7 +4,10 @@
 
 // The kernel cases time the prototype grain kernels in Kernels.h. They are the M0 kernel
 // benchmark spike, whose numbers set the CPU target in INTENT §16. The reference case is one of
-// them, renderHermiteSimd, under its own name.
+// them, renderHermiteSimd, under its own name. hermite-simd-grainfilter (GrainFilterKernel.h) is
+// INTENT §22's measurement (M2 extremes spec §6.10): hermite-simd with a CytomicSVF per grain,
+// over the same workload; its configuration also keeps the grains' filters, one per batch slot,
+// and starts a respawned grain's filter from silence.
 //
 // The workload is a 60 s stereo noise source at 48 kHz, read by Options::grains grains (2,000 by
 // default) of 100 ms. Each grain has a random position and a random rate in [0.5, 2]. A timed
@@ -68,6 +71,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "GrainFilterKernel.h"
 #include "Kernels.h"
 #include "gg/core/DenormalGuard.h"
 #include "gg/core/Diffuser.h"
@@ -117,6 +121,9 @@ constexpr std::array<KernelInfo, 5> kKernels{{
 /// The CPU gate's yardstick: M0's hermite-simd, frozen (see Kernels.h).
 constexpr KernelInfo kReferenceKernel{kReference, renderHermiteSimd};
 
+/// INTENT §22's per-grain filter spike (GrainFilterKernel.h), listed after hermite-simd.
+constexpr const char *kGrainFilter = "hermite-simd-grainfilter";
+
 /// Which quantity a draw is for; each gets its own RNG stream.
 enum Stream : uint32_t
 {
@@ -164,14 +171,42 @@ struct Noise
 
 volatile double gSink = 0.0; // the rendered output feeds this, so it can't be optimised away
 
+/// A kernel of Kernels.h: it keeps no state, so a respawned grain needs nothing.
+struct PlainKernel
+{
+    Kernel fn;
+
+    void operator()(const GrainBatch &b, const float *srcL, const float *srcR, int64_t frames,
+                    float *outL, float *outR, uint32_t n) const noexcept
+    {
+        fn(b, srcL, srcR, frames, outL, outR, n);
+    }
+    void respawned(std::size_t) noexcept {}
+};
+
+/// hermite-simd-grainfilter: renderHermiteSimdGrainFilter over its own filters, one per grain
+/// slot; a respawned grain's filter starts from silence.
+struct GrainFilterKernel
+{
+    GrainFilterBank bank;
+
+    void operator()(const GrainBatch &b, const float *srcL, const float *srcR, int64_t frames,
+                    float *outL, float *outR, uint32_t n) noexcept
+    {
+        renderHermiteSimdGrainFilter(bank, b, srcL, srcR, frames, outL, outR, n);
+    }
+    void respawned(std::size_t g) noexcept { bank.reset(g); }
+};
+
 /// One kernel at one block size, with grains that keep reading the source: whenever a grain's
-/// window ends, the grain respawns at a new random position and rate.
-class KernelConfiguration final : public Configuration
+/// window ends, the grain respawns at a new random position and rate. Render is PlainKernel or
+/// GrainFilterKernel.
+template <typename Render> class KernelConfiguration final : public Configuration
 {
   public:
-    KernelConfiguration(const KernelInfo &kernel, uint32_t blockSize, const Noise &source,
+    KernelConfiguration(const char *name, Render render, uint32_t blockSize, const Noise &source,
                         uint32_t grains, double warmUpSeconds)
-        : Configuration(kernel.name, "kernel", blockSize), fn_(kernel.fn), source_(source),
+        : Configuration(name, "kernel", blockSize), render_(std::move(render)), source_(source),
           warmUpSeconds_(warmUpSeconds), outL_(blockSize), outR_(blockSize)
     {
         // The same starting grains for every configuration, with their windows at staggered
@@ -199,8 +234,8 @@ class KernelConfiguration final : public Configuration
         {
             std::fill_n(outL_.begin(), n, 0.0f);
             std::fill_n(outR_.begin(), n, 0.0f);
-            fn_(grains_, source_.left(), source_.right(), kSourceFrames, outL_.data(), outR_.data(),
-                n);
+            render_(grains_, source_.left(), source_.right(), kSourceFrames, outL_.data(),
+                    outR_.data(), n);
             advance(n);
             for (uint32_t i = 0; i < n; ++i)
             {
@@ -233,6 +268,7 @@ class KernelConfiguration final : public Configuration
         grains_.envPhase[g] = envPhase;
         grains_.envInc[g] = static_cast<float>(1.0 / kGrainSamples);
         grains_.gain[g] = static_cast<float>(0.5 + 0.5 * draw(kGain, s));
+        render_.respawned(g);
     }
 
     /// Moves every grain on by n samples, respawning those whose window has ended.
@@ -253,7 +289,7 @@ class KernelConfiguration final : public Configuration
         }
     }
 
-    Kernel fn_;
+    Render render_;
     const Noise &source_;
     double warmUpSeconds_;
     GrainBatch grains_;
@@ -610,6 +646,7 @@ std::vector<std::string> caseNames()
     {
         names.emplace_back(k.name);
     }
+    names.emplace_back(kGrainFilter);
     names.emplace_back(kReferenceKernel.name);
     for (const EngineCase &e : kEngineCases)
     {
@@ -659,20 +696,31 @@ Report run(const Options &options, const Progress &progress)
         return *noise;
     };
     std::vector<std::unique_ptr<Configuration>> configurations;
-    std::vector<KernelInfo> kernels(kKernels.begin(), kKernels.end());
-    kernels.push_back(kReferenceKernel);
-    for (const KernelInfo &k : kernels)
-    {
+    const auto addKernel = [&](const KernelInfo &k) {
         if (!selected(options, k.name))
         {
-            continue;
+            return;
         }
         for (const uint32_t n : kBlockSizes)
         {
-            configurations.push_back(std::make_unique<KernelConfiguration>(
-                k, n, source(), options.grains, options.runSeconds / 4.0));
+            configurations.push_back(std::make_unique<KernelConfiguration<PlainKernel>>(
+                k.name, PlainKernel{k.fn}, n, source(), options.grains, options.runSeconds / 4.0));
+        }
+    };
+    for (const KernelInfo &k : kKernels)
+    {
+        addKernel(k);
+    }
+    if (selected(options, kGrainFilter))
+    {
+        for (const uint32_t n : kBlockSizes)
+        {
+            configurations.push_back(std::make_unique<KernelConfiguration<GrainFilterKernel>>(
+                kGrainFilter, GrainFilterKernel{GrainFilterBank(options.grains, n, kSampleRate)}, n,
+                source(), options.grains, options.runSeconds / 4.0));
         }
     }
+    addKernel(kReferenceKernel);
     for (const EngineCase &e : kEngineCases)
     {
         if (!selected(options, e.name))

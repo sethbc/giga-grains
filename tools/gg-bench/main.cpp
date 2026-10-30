@@ -405,11 +405,12 @@ bool parseCases(std::string_view s, std::vector<std::string> &out)
 void printReport(const gg::bench::Report &report)
 {
     const gg::bench::Options &o = report.options;
-    std::printf("\n%-18s %6s %9s %12s %12s %12s %12s\n", "case", "block", "grains", "median", "min",
+    // The case column fits the longest name, hermite-simd-grainfilter.
+    std::printf("\n%-24s %6s %9s %12s %12s %12s %12s\n", "case", "block", "grains", "median", "min",
                 "IQR", "% core @48k");
     for (const gg::bench::CaseResult &r : report.results)
     {
-        std::printf("%-18s %6u %9.1f %12.4f %12.4f %12.4f %12.3f\n", r.name.c_str(), r.blockSize,
+        std::printf("%-24s %6u %9.1f %12.4f %12.4f %12.4f %12.3f\n", r.name.c_str(), r.blockSize,
                     r.grains, r.median, r.min, r.iqr, r.cpuPctOneCoreAt48k);
     }
     std::printf("\nmedian, min and IQR: ns per stereo grain-sample over %d rounds of >= %g s; "

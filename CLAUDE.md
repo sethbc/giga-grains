@@ -621,7 +621,8 @@ $b --space [--quick | --seconds S] [--rounds N] [--commit SHA] [--json out.json]
     change can move it, and the `[bench]` case "the reference kernel's output is pinned" hashes
     its output. Never edit those copies to follow the engine;
   - M0's prototype kernels: `linear-scalar`, `hermite-scalar`, `sinc-scalar`, `linear-simd`
-    and `hermite-simd`.
+    and `hermite-simd`, then `hermite-simd-grainfilter` (`GrainFilterKernel.h`: `hermite-simd`
+    plus a 1 kHz `CytomicSVF` per grain, INTENT §22's per-grain filter measurement).
 - **Timing.** Every configuration warms up once. Then each of 5 rounds (`--rounds`) times every
   configuration once, for at least 2 s (`--seconds`; `--quick` is 0.2 s), in an order rotated by
   the round and reversed in odd rounds. Each result is the median, min and IQR over the rounds.
@@ -632,8 +633,8 @@ $b --space [--quick | --seconds S] [--rounds N] [--commit SHA] [--json out.json]
   `reference` for any ratio to be printed.
 - **Other options:** `--grains N` changes the grain count; `--cases a,b` runs only those cases
   (the default is all; `--help` lists them).
-- **Run length:** the full default run is 36 configurations × 5 rounds × 2 s, about 6 minutes of
-  timing; a CI leg's benchmark step took about 6 minutes before the two layer cases added one.
+- **Run length:** the full default run is 39 configurations × 5 rounds × 2 s, about 6.5 minutes
+  of timing; a CI leg's benchmark step took about 6 minutes before the two layer cases added one.
   `--canvas` times 240 frames after a 20-frame warm-up, or 30 with `--quick`.
 - **`--space`** times Space's per-sample stage, the diffuser then the reverb, on stereo noise at
   48 kHz, active, with Diffusion and Amount at 100% (`tools/gg-bench/Bench.h` lists every
