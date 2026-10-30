@@ -807,7 +807,11 @@ TEST_CASE("Quality maps to the layer's tier and Budget to units", "[core][layers
             INFO("layer " << int{layer});
             const auto quality = [&](float x) {
                 ParamValues v = defaults(mode);
-                v[static_cast<size_t>(layerSlot(LayerParam::Quality, layer))] = x;
+                // Clamped: GCC 13's -Warray-bounds sees layerSlot's Count sentinel otherwise
+                // (CLAUDE.md, "GCC 13's own diagnostics").
+                const size_t slot = std::min<size_t>(
+                    static_cast<size_t>(layerSlot(LayerParam::Quality, layer)), kParamCount - 1);
+                v[slot] = x;
                 // Only this layer's tier moves.
                 for (uint8_t other = 0; other < gg::core::kLayers; ++other)
                 {
