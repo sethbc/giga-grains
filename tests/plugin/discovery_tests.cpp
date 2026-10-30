@@ -656,6 +656,52 @@ TEST_CASE("init creates the user folder and declares it", "[plugin][discovery]")
     CHECK_FALSE(listed.back().factory);
 }
 
+TEST_CASE("every FILE location is an absolute path in the OS's own form", "[plugin][discovery]")
+{
+    // The CLAP spec (preset-discovery.h, CLAP_PRESET_DISCOVERY_LOCATION_FILE): "a path which
+    // works with the OS file system functions (open, stat, ...)", with '/' and '\' both separators
+    // on Windows. So a Windows location starts with its drive, never with a '/' (clap-validator
+    // 0.4.1-127 asks for '/C:\...', which no Windows file function opens); a POSIX one with '/'.
+    const Scratch scratch("native-form");
+    const Environment env(scratch, true);
+    const Provider p;
+    const auto files = p.declared.locationsOfKind(CLAP_PRESET_DISCOVERY_LOCATION_FILE);
+    REQUIRE(files.size() >= 2);
+    for (const auto &l : files)
+    {
+        REQUIRE(l.location.has_value());
+        const std::string &location = *l.location;
+        CAPTURE(location);
+        REQUIRE(location.size() > 3);
+        CHECK(gg::media::fromUtf8(location).value().is_absolute());
+#if defined(_WIN32)
+        const char drive = location[0];
+        CHECK(((drive >= 'A' && drive <= 'Z') || (drive >= 'a' && drive <= 'z')));
+        CHECK(location[1] == ':');
+        CHECK((location[2] == '\\' || location[2] == '/'));
+#else
+        CHECK(location[0] == '/');
+#endif
+    }
+
+    // A host crawls a declared folder and hands back each file as the folder's location, a
+    // separator (on Windows the native '\', as std::filesystem and Rust's walkers join) and the
+    // name: get_metadata takes that form.
+#if defined(_WIN32)
+    const std::string separator = "\\";
+#else
+    const std::string separator = "/";
+#endif
+    const std::string crawled = *files.front().location + separator + "Glass Hold.ggpreset";
+    Received received;
+    REQUIRE(p.provider->get_metadata(p.provider, CLAP_PRESET_DISCOVERY_LOCATION_FILE,
+                                     crawled.c_str(), &received.receiver));
+    CHECK(received.errors.empty());
+    REQUIRE(received.presets.size() == 1);
+    CHECK(received.presets[0].name == "Glass Hold");
+    CHECK(received.presets[0].flags == CLAP_PRESET_DISCOVERY_IS_FACTORY_CONTENT);
+}
+
 TEST_CASE("a content-version.txt line longer than the cap is cut", "[plugin][discovery]")
 {
     const Scratch scratch("long-version");

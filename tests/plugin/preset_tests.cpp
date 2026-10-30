@@ -228,6 +228,29 @@ TEST_CASE("a preset file loaded by preset-load sets its values and routes", "[pl
           expected.values[at(ParamSlot::Density)]);
 }
 
+TEST_CASE("preset-load takes a FILE location in the OS's own form", "[plugin][preset]")
+{
+    // The form discovery declares and a host's crawl hands back (discovery_tests.cpp): on Windows
+    // the drive and native separators throughout, as %APPDATA% gives them; elsewhere '/'.
+    std::string location = utf8(fixtureFile("native", Mode::Fx));
+#if defined(_WIN32)
+    std::replace(location.begin(), location.end(), '/', '\\');
+    REQUIRE(location.size() > 3);
+    CHECK(location[1] == ':');
+    CHECK(location[2] == '\\');
+#else
+    REQUIRE(location.front() == '/');
+#endif
+    PresetHost host;
+    PluginUnderTest plugin(kFxId, host.clap());
+    REQUIRE(plugin.valid());
+    REQUIRE(plugin.loadPreset(CLAP_PRESET_DISCOVERY_LOCATION_FILE, location.c_str(), nullptr));
+    CHECK(plugin.impl().presetName() == "Glass Hold");
+    REQUIRE(host.calls().size() == 1);
+    CHECK(host.calls()[0].loaded);
+    CHECK(host.calls()[0].location == location); // announced as the host gave it
+}
+
 TEST_CASE("preset-load refuses a missing file, a non-preset file and an unknown location",
           "[plugin][preset]")
 {
