@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | **Draft, 2026-10-30,** for the programme manager's approval against the programme design and INTENT, and for the director's answers to §8. Not yet planned or built |
+| **Status** | **Approved by the programme manager 2026-10-30** against the programme design and INTENT. **The director's decisions D1–D5, 2026-10-30,** are recorded in §8 and applied in place: D1 option 1, D2 option 1, D3 option 1, D4 option 1, D5 option 1. Not yet built: the plan is `docs/superpowers/plans/2026-10-30-m2-engine.md` |
 | **Milestone** | M2 Giga (INTENT §20, §23 #64), sub-project 3 of 7; wave 2, merged first (sub-projects 2 and 4 rebase on this one) |
 | **Spec authority** | `INTENT.md`, then `docs/superpowers/specs/2026-10-29-m2-programme-design.md` (its §6.3, §7 and §12 are this sub-project's charter: realized here, not reopened). This document records how this sub-project implements them |
 | **Builds on** | M2 sub-project 1 as merged (`ab9f4e2`, PR #15; INTENT §23 #65): four layers each with its own `gg::Engine` and pool of 4,096, the Source kind, the mod matrix, render tasks, the patch at version 2, the mip-level accessor (`levelCount()`, `level(n)`) on `PreparedSource` and `LiveSource`, and the reserved index block `0x..50`–`0x..5F` in every scope |
@@ -43,7 +43,7 @@ This sub-project delivers the programme design's inventory items I14 to I19 (§6
 3. **Bit-identity with M1 at Normal with no overload.** With every layer at Normal and no layer
    over its quota, every one of the 36 goldens keeps its WAV SHA-256 through every task, in both
    products.
-4. **HQ is real.** A 16-tap (or 12-tap, D3) windowed sinc, SIMD, matching its scalar reference bit
+4. **HQ is real.** A 16-tap (D3) windowed sinc, SIMD, matching its scalar reference bit
    for bit, with the file pyramid so an upward transposition at HQ is anti-aliased; the
    `engine-sample-hq` figure published beside X.
 5. **No CPU regression on X:** `engine-sample` shows no `regressed` ratio against the committed
@@ -168,7 +168,7 @@ tests need to force.
 ### 6.2 The HQ kernel: the windowed sinc (I17)
 
 **The reader.** A third reader policy beside `Hermite` and `Linear` in `GrainKernels.h`:
-`Sinc` with `kTaps` = 16 (D3; 12 if the director chooses), `kBefore` = kTaps/2 − 1,
+`Sinc` with `kTaps` = 16 (D3), `kBefore` = kTaps/2 − 1,
 `kAfter` = kTaps/2. For a read at position `pos` with fractional part `frac` and stretch
 `s` ≤ 1:
 
@@ -530,7 +530,11 @@ call (0, 1 and up to 4,096 among them):
 Each a forced choice; the recommended option is first, with one line on what each costs. Nothing
 engineering-only is here (that is §9).
 
-**D1. The budget: a parameter, and its default** (§6.4).
+**The director's answers, 2026-10-30, relayed by the programme manager:** every recommended
+option: D1 option 1, D2 option 1, D3 option 1, D4 option 1, D5 option 1. Each is marked below
+and was already applied in §6.
+
+**D1. The budget: a parameter, and its default** (§6.4). **Decided: option 1.**
 1. **A global "Budget" parameter, 256 to 16,384 Normal grains, default 4,096,** saved with the
    session. *Cost:* one more global control to explain (sub-project 6 shows it); at the default,
    four HQ layers at full Density and Size degrade (by design), while anything at Normal in M2's
@@ -541,7 +545,7 @@ engineering-only is here (that is §9).
 3. *A fixed constant of 4,096, no parameter.* *Cost:* no session can raise or lower its ceiling
    for its machine; the only bound is the pool.
 
-**D2. How layers share the budget** (§6.4).
+**D2. How layers share the budget** (§6.4). **Decided: option 1.**
 1. **Equal shares among the layers that are rendering,** recomputed when one switches on or off.
    *Cost:* switching a second layer on halves the first's ceiling, audible only under overload; a
    sparse layer's unused share is wasted.
@@ -549,14 +553,14 @@ engineering-only is here (that is §9).
 3. *Each layer gets the whole budget.* *Cost:* four layers may cost four budgets; the bound is per
    layer, not per instance, which the programme design asked for.
 
-**D3. The HQ kernel's length** (§6.2).
+**D3. The HQ kernel's length** (§6.2). **Decided: option 1.**
 1. **16 taps.** *Cost:* about a third more per HQ grain than 12 taps (weight 12 against 9); at
    16 taps the first image sits at least 70 dB down and the passband holds to 0.4 of Nyquist.
 2. *12 taps.* *Cost:* images about 10 dB higher and a softer top octave, for a quarter less CPU.
 
 **D4. When the ladder steals rather than drops** (§6.5): the oldest sounding grain is stolen, with
 a 256-sample fade, only once it has sounded for this share of its window; before that, new grains
-are dropped.
+are dropped. **Decided: option 1.**
 1. **Half.** *Cost:* under sustained overload a grain's second half is cut by a fade; the stream
    refreshes at its onset rate once the oldest grain is past its peak.
 2. *Ninety percent:* only tails are ever cut. *Cost:* under overload most new grains are dropped
@@ -564,7 +568,7 @@ are dropped.
 3. *A quarter:* steal eagerly. *Cost:* grains are cut off during their swell, so overload sounds
    choppy rather than thinned.
 
-**D5. Which tiers read the mip pyramid** (§6.3).
+**D5. Which tiers read the mip pyramid** (§6.3). **Decided: option 1.**
 1. **HQ only:** Eco and Normal keep reading the full-rate source, as in M1. *Cost:* Normal still
    aliases above rate 1 (an octave up on a bright file folds its top octave), and HQ is the only
    anti-aliased tier; every M1 golden keeps its hash.
