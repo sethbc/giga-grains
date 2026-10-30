@@ -8,8 +8,10 @@ Sub-project 6 makes it blocking, with the published §16 headline.
 
 **Baselines are per CPU model.** GitHub runs a leg on whichever CPU model it assigns. So far
 Linux has landed on AMD EPYC 7763, 9V45 and 9V74 and Intel Xeon 8370C, and Windows on EPYC 7763,
-9V45 and 9V74. The files have entries for the mac leg's Apple M1 VM, Windows' EPYC 7763 and 9V74,
-and Linux's EPYC 7763 and 9V45; the other models get no verdict yet. The ratio
+9V45, 9V74 and Intel Xeon 8370C. The files have entries for the mac leg's Apple M1 VM, Windows'
+EPYC 7763, 9V45, 9V74 and Xeon 8370C, and Linux's EPYC 7763 and 9V45; the other models get no
+verdict yet. Windows' EPYC 9V74 entry is older than the rest: it was made from the SSE-era
+engine code (12 ratios) and is stale until a run lands on that model and remakes it. The ratio
 cancels a machine's speed but not its microarchitecture: for unchanged code, ratios differ by up
 to ~20% between models and by up to ~6% on one model. So each leg's file has one entry per CPU
 model, keyed by gg-bench's `machine` string (for example `AMD EPYC 7763 64-Core Processor
@@ -23,15 +25,21 @@ Each entry has one ratio per engine case per block size (32, 64 and 256). The en
 - `engine-live`: X read from the live ring, the FX's figure;
 - `engine-full-pool`: admission when the pool is saturated.
 
-The report-only cases are timed and print ratios, but have no entries yet: they are report-only
-until three full runs are merged in (`--merge`, below), and a ratio a file lacks is only `not in
-the baseline`. They are:
+The report-only cases are timed and print ratios, and stay report-only (the whole gate is, until
+1.0.0). Since the AVX2 task of M2 sub-project 3 (INTENT §23 #66) the x86 entries made from three
+full-length runs have them too, 30 ratios an entry (ten cases at three blocks), so those legs
+report a verdict for them; the `mac-universal` entry (the M1 VM) and Windows' older EPYC 9V74 one
+have none, and a ratio a file lacks is only `not in the baseline`. They are:
 - `engine-layers` (four layers of 500 grains, X's count) and `engine-layers-full` (four of
   2,000);
 - `engine-sample-hq`: X at the HQ tier, the HQ figure (M2 engine spec §6.10);
 - `engine-sample-hq-up`: the same at Pitch +19, each grain reading the source's mip level 1;
 - `engine-overload`: the overload ladder, one engine at capacity 16,384 with a quota of X's
-  grains (2,000 Normal grains' worth by default), asked for 1 s grains at four times that rate.
+  grains (2,000 Normal grains' worth by default), asked for 1 s grains at four times that rate;
+- `engine-sample-sse`: X with the 4-wide kernels forced (`EngineConfig::kernels` = `Sse`), run
+  beside `engine-sample` (dispatched to the 8-wide AVX2 kernels where the CPU has them) in the
+  same process and rounds: the fallback's figure. On an x86 leg `engine-sample` should sit below
+  it (13% to 35% in the spike, `docs/spikes/m2-avx2.md`).
 
 ## Format
 
