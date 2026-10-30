@@ -44,6 +44,7 @@ std::vector<RingSpec> ringsFor(const gg::core::ModRoutes &routes, gg::core::Para
     {
         const gg::core::ModRoute &r = routes[i];
         if (r.source == ModSource::None || r.source >= ModSource::Count || r.target != target ||
+            !gg::core::isValidTarget(r.target) ||
             (layered && r.targetLayer != gg::core::kAllLayers && r.targetLayer != layer))
         {
             continue;

@@ -94,3 +94,17 @@ TEST_CASE("rings colour by the source's family", "[ui][mod]")
     CHECK(family(ModSource::TransportBar) == 4);
     CHECK(family(ModSource::TransportPlaying) == 4);
 }
+
+TEST_CASE("rings skip a target a route cannot reach", "[ui][mod]")
+{
+    // Layer B's Size slot is no valid target (a route names layer A's and a targetLayer), and a
+    // modulator's own control never is.
+    ModRoutes routes{};
+    routes[0] = ModRoute{ModSource::Macro1, gg::core::kSameLayer, ParamSlot::B_Size, 1, 1.0f,
+                         ModCurve::Bipolar};
+    routes[1] = ModRoute{
+        ModSource::Macro1, gg::core::kSameLayer, ParamSlot::Lfo1Rate, gg::core::kAllLayers, 1.0f,
+        ModCurve::Bipolar};
+    CHECK(gg::ui::ringsFor(routes, ParamSlot::B_Size, 1, 0.0f, 1.0f).empty());
+    CHECK(gg::ui::ringsFor(routes, ParamSlot::Lfo1Rate, 0, 0.0f, 1.0f).empty());
+}

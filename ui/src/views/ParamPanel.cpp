@@ -132,7 +132,6 @@ struct ParamPanel::Impl
         ParamControl *control{nullptr};
         ParamControl *spread{nullptr};
         bool knob{false};
-        ParamSlot target{ParamSlot::Count};
         uint8_t layer{0};
         std::optional<std::pair<float, float>> band;
     };
@@ -171,7 +170,7 @@ struct ParamPanel::Impl
             entry.control = &cell->base();
             entry.spread = cell->spread();
             entry.knob = kind == Kind::Knob;
-            std::tie(entry.target, entry.layer) = routeTargetOf(slot);
+            entry.layer = routeTargetOf(slot).second;
             for (ParamControl *c : {entry.control, entry.spread})
             {
                 if (c == nullptr)
@@ -260,20 +259,28 @@ struct ParamPanel::Impl
                     e.control->setSpreadBand(band);
                 }
             }
-            if (!e.knob)
+            for (ParamControl *c : {e.control, e.spread})
             {
-                continue; // only a knob draws rings (see the class comment)
+                if (c != nullptr && (c != e.control || e.knob)) // only a knob draws rings
+                {
+                    refreshRings(*c, routes, palette);
+                }
             }
-            const auto &meta = gg::core::paramMeta(e.control->slot(), context.mode);
-            std::vector<ParamControl::Ring> rings;
-            for (const RingSpec &r : ringsFor(routes, e.target, e.layer, meta.minVal, meta.maxVal))
-            {
-                rings.push_back({r.slot, r.depth01, r.bipolar, palette.sourceFamilies[r.family]});
-            }
-            if (!sameRings(rings, e.control->rings()))
-            {
-                e.control->setRings(std::move(rings));
-            }
+        }
+    }
+
+    void refreshRings(ParamControl &c, const gg::core::ModRoutes &routes, const Palette &palette)
+    {
+        const auto [target, ringLayer] = routeTargetOf(c.slot());
+        const auto &meta = gg::core::paramMeta(c.slot(), context.mode);
+        std::vector<ParamControl::Ring> rings;
+        for (const RingSpec &r : ringsFor(routes, target, ringLayer, meta.minVal, meta.maxVal))
+        {
+            rings.push_back({r.slot, r.depth01, r.bipolar, palette.sourceFamilies[r.family]});
+        }
+        if (!sameRings(rings, c.rings()))
+        {
+            c.setRings(std::move(rings));
         }
     }
 
@@ -287,9 +294,9 @@ struct ParamPanel::Impl
                           });
     }
 
-    /// Lays the cells out wrapping in a `contentWidth` wide area at `origin`; returns the extent
-    /// they take.
-    juce::Point<int> layoutCells(int contentWidth, juce::Point<int> origin)
+    /// Wraps the cells in a `contentWidth` wide area at `origin`, moving them there when `place`;
+    /// returns the extent they take. Measuring (place false) leaves the components alone.
+    juce::Point<int> layoutCells(int contentWidth, juce::Point<int> origin, bool place)
     {
         juce::FlexBox box;
         box.flexDirection = juce::FlexBox::Direction::row;
@@ -299,17 +306,21 @@ struct ParamPanel::Impl
         box.alignContent = juce::FlexBox::AlignContent::flexStart;
         for (const auto &cell : cells)
         {
-            box.items.add(juce::FlexItem(*cell)
-                              .withWidth(static_cast<float>(cell->natural().x))
-                              .withHeight(static_cast<float>(cell->natural().y))
+            box.items.add(juce::FlexItem(static_cast<float>(cell->natural().x),
+                                         static_cast<float>(cell->natural().y))
                               .withFlex(0.0f, 0.0f));
         }
         box.performLayout(juce::Rectangle<int>(origin.x, origin.y, contentWidth, 100000));
         int right = 0, bottom = 0;
-        for (const auto &cell : cells)
+        for (int i = 0; i < box.items.size(); ++i)
         {
-            right = std::max(right, cell->getRight() - origin.x);
-            bottom = std::max(bottom, cell->getBottom() - origin.y);
+            const auto bounds = box.items[i].currentBounds.toNearestInt();
+            if (place)
+            {
+                cells[static_cast<std::size_t>(i)]->setBounds(bounds);
+            }
+            right = std::max(right, bounds.getRight() - origin.x);
+            bottom = std::max(bottom, bounds.getBottom() - origin.y);
         }
         return {right, bottom};
     }
@@ -382,7 +393,7 @@ juce::Point<int> ParamPanel::preferredSize(int maxWidth)
     {
         widest = std::max(widest, cell->natural().x);
     }
-    const auto extent = impl_->layoutCells(std::max(widest, maxWidth - kPadW), {0, 0});
+    const auto extent = impl_->layoutCells(std::max(widest, maxWidth - kPadW), {0, 0}, false);
     return {extent.x + kPadW, extent.y + kPadH};
 }
 
@@ -390,6 +401,6 @@ void ParamPanel::resized()
 {
     sst::jucegui::components::NamedPanel::resized();
     const auto area = getContentArea();
-    impl_->layoutCells(area.getWidth(), area.getPosition());
+    impl_->layoutCells(area.getWidth(), area.getPosition(), true);
 }
 } // namespace gg::ui

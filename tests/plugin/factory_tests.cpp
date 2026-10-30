@@ -2161,6 +2161,36 @@ TEST_CASE("the Filter panel is hidden while empty and the Step panel has sixteen
     CHECK(findDeep(iview, controlId(ParamSlot::Mix).toRawUTF8()) == nullptr);
 }
 
+TEST_CASE("the Edit view's cells stay inside their panel's content area", "[plugin]")
+{
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    RecordingContext recording(gg::core::Mode::Fx);
+    gg::ui::EditView view(recording.context);
+    view.setSize(900, 500);
+    const auto check = [&view] {
+        for (gg::ui::ParamPanel *panel : view.panels())
+        {
+            if (!panel->isVisible())
+            {
+                continue;
+            }
+            const auto area = panel->getContentArea();
+            for (juce::Component *cell : panel->getChildren())
+            {
+                INFO(gg::ui::panelName(panel->panel()));
+                CHECK(area.contains(cell->getBounds()));
+            }
+        }
+    };
+    check();
+    view.setLayer(1);
+    check();
+    view.setLayer(3); // the same shapes as B's: no panel resizes
+    check();
+    view.setSize(900, 400); // a height-only change
+    check();
+}
+
 TEST_CASE("the Edit view draws rings from the routes and follows the base values", "[plugin]")
 {
     const juce::ScopedJuceInitialiser_GUI juceGui;
@@ -2191,6 +2221,11 @@ TEST_CASE("the Edit view draws rings from the routes and follows the base values
     CHECK(size[0].colour == gg::ui::Palette::dark().sourceFamilies[0]);
     CHECK(ringsOf(ParamSlot::B_Density).size() == 2);
     CHECK(ringsOf(ParamSlot::B_PitchSpread).empty());
+    // The spread knobs have rings too: the factory route Macro 4 to Spray is slot 6.
+    const auto &spray = ringsOf(ParamSlot::B_Spray);
+    REQUIRE(spray.size() == 1);
+    CHECK(spray[0].slot == 6);
+    CHECK(spray[0].colour == gg::ui::Palette::dark().sourceFamilies[0]);
 
     // A route's change reaches the ring at the next refresh; a route to layer C alone leaves B's.
     routes[0].targetLayer = 2;

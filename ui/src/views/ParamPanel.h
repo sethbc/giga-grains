@@ -44,6 +44,7 @@ class ParamPanel final : public sst::jucegui::components::NamedPanel
     /// Follows the base values and the routes.
     void refresh();
     void setModMode(bool on);
+    /// The controls now; setLayer deletes them, so pointers taken before it are stale after.
     std::vector<ParamControl *> controls();
 
     /// The size that fits the cells in `maxWidth`, wrapping; (0, 0) when the panel has none.
