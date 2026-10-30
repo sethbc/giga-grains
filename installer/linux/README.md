@@ -26,7 +26,8 @@ The CLAP and the VST3 each hold both plugins, Giga Grains and Giga Grains FX.
 ## What it runs on
 
 The plugins and the apps are built on Ubuntu 22.04 (glibc 2.35), for x86_64 only. A
-distribution with an older glibc may not run them.
+distribution with an older glibc may not run them. They carry their own libstdc++, so the
+system's libstdc++6 version doesn't matter; its glibc does.
 
 ## The project
 

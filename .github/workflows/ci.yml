@@ -469,6 +469,49 @@ jobs:
         id: build
         run: cmake --build --preset ${{ matrix.preset }} --config Release --parallel --target gg-all gg-products
 
+      # INTENT §15: the Linux products run on an Ubuntu 22.04 baseline, whose libstdc++6 (GCC 12)
+      # provides up to GLIBCXX_3.4.30 and CXXABI_1.3.13. This runner's libstdc++6 came from the
+      # gcc-13 PPA, so loading a product here proves nothing: each ELF file under gg-products must
+      # need no newer version, and export no std:: symbol (the products link libstdc++ statically
+      # and keep it local; clients/clap-first/CMakeLists.txt). The versions each file needs go in
+      # the step summary either way.
+      - name: Linux products need no libstdc++ newer than Ubuntu 22.04's
+        if: ${{ !cancelled() && steps.build.outcome == 'success' && matrix.os == 'ubuntu-22.04' }}
+        run: |
+          products="$PWD/${{ matrix.build_dir }}/gg-products"
+          files=()
+          while IFS= read -r -d '' f; do
+            if file -b "$f" | grep -q '^ELF'; then files+=("$f"); fi
+          done < <(find "$products" -type f -print0 | sort -z)
+          if [[ ${#files[@]} -eq 0 ]]; then
+            echo "::error::no ELF file under $products"
+            exit 1
+          fi
+          too_new='^(GLIBCXX_3\.4\.(3[1-9]|[4-9][0-9])|GLIBCXX_3\.([5-9]|[1-9][0-9])(\..*)?|CXXABI_1\.3\.(1[4-9]|[2-9][0-9])|CXXABI_1\.([4-9]|[1-9][0-9])(\..*)?)$'
+          status=0
+          echo "### Linux products' symbol versions" >> "$GITHUB_STEP_SUMMARY"
+          for f in "${files[@]}"; do
+            name="${f#"$products"/}"
+            versions="$(objdump -T "$f" | grep -o 'GLIBCXX_[0-9.]*\|CXXABI_[0-9.]*\|GLIBC_[0-9.]*' | sort -uV || true)"
+            {
+              echo "#### $name"
+              echo '```'
+              echo "${versions:-(none)}"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            bad="$(printf '%s\n' "$versions" | grep -E "$too_new" || true)"
+            if [[ -n "$bad" ]]; then
+              echo "::error::$name needs a libstdc++ newer than Ubuntu 22.04's: $(echo $bad)"
+              status=1
+            fi
+            exported="$(nm -D --defined-only "$f" | awk '{print $NF}' | grep -E '^(_ZSt|_ZNSt|_ZNKSt)' || true)"
+            if [[ -n "$exported" ]]; then
+              echo "::error::$name exports std:: symbols, e.g. $(echo "$exported" | head -n 3 | tr '\n' ' ')"
+              status=1
+            fi
+          done
+          exit "$status"
+
       - name: Compiler cache statistics
         if: ${{ !cancelled() && runner.os != 'Windows' }}
         run: |

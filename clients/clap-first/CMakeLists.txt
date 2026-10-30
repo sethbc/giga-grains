@@ -146,3 +146,35 @@ if (APPLE)
         endforeach ()
     endif ()
 endif ()
+
+# Linux with GCC (INTENT §15): the products run on an Ubuntu 22.04 baseline, whose libstdc++6
+# (GCC 12) provides up to GLIBCXX_3.4.30 and CXXABI_1.3.13. The GCC 13 floor's headers reference
+# newer symbols (<iostream>'s std::ios_base_library_init is GLIBCXX_3.4.32), so every product
+# links libstdc++ and libgcc statically (ruling FR-2). --exclude-libs keeps those static copies'
+# symbols local, so a host's own libstdc++ can't interpose on them; one flag per archive, since
+# -Wl, splits at commas. The CLAP and the VST3 module also export their entry points alone
+# (linux-exports.map): namespace std's default visibility would otherwise export every std::
+# template our code instantiates, whatever -fvisibility says. CI's Linux leg checks the result
+# (".github/workflows/ci.yml": "Linux products need no libstdc++ newer than Ubuntu 22.04's").
+# The sanitizer builds, whose runtimes want the shared libstdc++, build no products, and are left
+# out in any case.
+if (CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU"
+        AND NOT GG_SANITIZE AND NOT GG_USE_RTSAN)
+    set(gg_linux_exports "${CMAKE_CURRENT_SOURCE_DIR}/linux-exports.map")
+    foreach (format IN ITEMS clap vst3 standalone standalone_fx)
+        set(product gg_clapfirst_${format})
+        if (NOT TARGET ${product})
+            message(FATAL_ERROR "No ${product}: clap-wrapper's product targets have new names")
+        endif ()
+        target_link_options(${product} PRIVATE
+                -static-libstdc++ -static-libgcc
+                -Wl,--exclude-libs,libstdc++.a
+                -Wl,--exclude-libs,libgcc.a
+                -Wl,--exclude-libs,libgcc_eh.a
+                )
+        if (format STREQUAL "clap" OR format STREQUAL "vst3")
+            target_link_options(${product} PRIVATE "-Wl,--version-script=${gg_linux_exports}")
+            set_property(TARGET ${product} APPEND PROPERTY LINK_DEPENDS "${gg_linux_exports}")
+        endif ()
+    endforeach ()
+endif ()

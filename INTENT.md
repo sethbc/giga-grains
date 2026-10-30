@@ -914,7 +914,11 @@ address this:
 - Universal macOS builds via `CMAKE_OSX_ARCHITECTURES=arm64;x86_64`, minimum macOS 11.0.
 - Linux builds against an ubuntu-22.04 baseline so the binaries run on older glibc. CI's leg, the
   `linux-gcc13` preset (`linux-gcc12` until M2 sub-project 1), installs gcc-13 and g++-13 from the
-  `ubuntu-toolchain-r/test` PPA, since the 22.04 image has GCC 10 to 12 only.
+  `ubuntu-toolchain-r/test` PPA, since the 22.04 image has GCC 10 to 12 only. The Linux products
+  link libstdc++ and libgcc statically, their symbols kept local, since the GCC 13 floor's headers
+  reference symbols a stock 22.04's libstdc++6 lacks (`std::ios_base_library_init`,
+  `GLIBCXX_3.4.32`), and CI's leg checks the ceiling: no product may need more than
+  `GLIBCXX_3.4.30` and `CXXABI_1.3.13`, or export a `std::` symbol (§23 #65).
 
 **Plugin architecture: CLAP-first.** This follows the Shortcircuit XT pattern. The working
 templates are in its repository, https://github.com/surge-synthesizer/shortcircuit-xt, at
