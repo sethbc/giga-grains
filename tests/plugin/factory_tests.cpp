@@ -36,6 +36,7 @@
 #include <sst/jucegui/data/Continuous.h>
 #include <sst/jucegui/style/StyleSheet.h>
 
+#include "AboutBox.h"
 #include "GrainCanvas.h" // ui/src: the editor's own components
 #include "LayerStrip.h"
 #include "LoaderStrip.h"
@@ -52,6 +53,8 @@
 #include "gg/ui/Editor.h"
 #include "gg/ui/LaneModel.h"
 #include "gg/ui/UndoStack.h"
+#include "gg/ui/Notices.h"
+#include "gg/core/Version.h"
 #include "support/Utf8.h"
 #endif
 
@@ -1911,6 +1914,79 @@ TEST_CASE("arrows move the pad", "[plugin]")
     CHECK(f.undo.size() == 4);
 }
 
+TEST_CASE("the About box lists the license set", "[plugin]")
+{
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    const auto notices = gg::ui::noticeTexts();
+    REQUIRE(!notices.empty());
+
+    gg::ui::AboutBox box("Giga Grains FX", "VST3");
+    box.setBounds(0, 0, 800, 520);
+
+    const auto *list = dynamic_cast<const juce::ListBox *>(findDeep(box, "about.list"));
+    REQUIRE(list != nullptr);
+    REQUIRE(list->getListBoxModel() != nullptr);
+    REQUIRE(list->getListBoxModel()->getNumRows() == static_cast<int>(notices.size()));
+    for (std::size_t i = 0; i < notices.size(); ++i)
+    {
+        CHECK(box.rowName(static_cast<int>(i)) ==
+              juce::String::fromUTF8(notices[i].name.data(),
+                                     static_cast<int>(notices[i].name.size())));
+    }
+
+    // The product, the version and the format are shown; the build's paths never are.
+    const auto *version = dynamic_cast<const juce::Label *>(findDeep(box, "about.version"));
+    REQUIRE(version != nullptr);
+    CHECK(version->getText().contains(
+        juce::String::fromUTF8(gg::kVersion.data(), static_cast<int>(gg::kVersion.size()))));
+    const auto *format = dynamic_cast<const juce::Label *>(findDeep(box, "about.format"));
+    REQUIRE(format != nullptr);
+    CHECK(format->getText().contains("VST3"));
+    CHECK(findDeep(box, "about.repository") != nullptr);
+
+    // The first text shown is the notices' first.
+    const std::string_view first = notices[0].text.substr(0, 40);
+    CHECK(box.shownText().startsWith(
+        juce::String::fromUTF8(first.data(), static_cast<int>(first.size()))));
+    CHECK_FALSE(box.shownText().contains(juce::String::fromUTF8(
+        notices[0].sourcePath.data(), static_cast<int>(notices[0].sourcePath.size()))));
+
+    // Another row shows its own text; "Plain text" shows the Markdown raw.
+    if (notices.size() > 1)
+    {
+        box.selectNotice(1);
+        const std::string_view second = notices[1].text.substr(0, 40);
+        CHECK(box.shownText().startsWith(
+            juce::String::fromUTF8(second.data(), static_cast<int>(second.size()))));
+    }
+    box.selectNotice(0);
+    box.setPlainText(true);
+    CHECK(box.shownText().startsWith(
+        juce::String::fromUTF8(first.data(), static_cast<int>(first.size()))));
+}
+
+TEST_CASE("Escape closes the About box", "[plugin]")
+{
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    gg::ui::AboutBox box("Giga Grains", "CLAP");
+    int closed = 0;
+    box.onClose = [&closed] { ++closed; };
+    box.setBounds(0, 0, 800, 520);
+    box.setVisible(true);
+    REQUIRE(box.isVisible());
+    CHECK(box.keyPressed(juce::KeyPress(juce::KeyPress::escapeKey)));
+    CHECK_FALSE(box.isVisible());
+    CHECK(closed == 1);
+
+    // The Close button does the same.
+    box.setVisible(true);
+    auto *close = dynamic_cast<juce::Button *>(findDeep(box, "about.close"));
+    REQUIRE(close != nullptr);
+    REQUIRE(close->onClick);
+    close->onClick(); // triggerClick() does nothing off screen
+    CHECK_FALSE(box.isVisible());
+    CHECK(closed == 2);
+}
 #else
 TEST_CASE("headless build exposes no gui extension", "[plugin]")
 {

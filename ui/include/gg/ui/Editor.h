@@ -86,6 +86,9 @@ struct SampleFolderResult
 struct EditorContext
 {
     std::string productName; ///< "Giga Grains" or "Giga Grains FX"
+    /// The plugin format the host loaded: "CLAP", "VST3", "AU" or "Standalone", as the About box
+    /// shows it; empty when the plugin can't tell.
+    std::string formatName;
 
     /// The sample loader strip (spec §6.5): the instrument only. The editor calls these on the
     /// main thread, with UTF-8 paths; any may be empty. What they capture must outlive the

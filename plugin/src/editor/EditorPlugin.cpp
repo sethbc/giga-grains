@@ -17,6 +17,10 @@
 // translation unit that includes JUCE.
 #include <juce_gui_basics/juce_gui_basics.h>
 
+#include <cstring>
+
+#include <clapwrapper/wrapper_host.h>
+
 #include "gg/core/Processor.h"
 #include "gg/media/Utf8Path.h"
 #include "gg/ui/Editor.h"
@@ -61,6 +65,40 @@ gg::ui::SampleStatusView viewOf(const SampleStatus &status)
     return {state,           status.fileName, status.message,   status.seconds,
             status.channels, status.fileRate, status.relinkable};
 }
+
+/// The format clap-wrapper loaded the plugin as, from its host-information extension: "VST3",
+/// "AU" (v2 or v3) or "Standalone". A host that doesn't offer it has loaded the CLAP itself, so
+/// "CLAP"; a flavor not named here (AAX isn't a format of ours) gives "".
+std::string formatOf(const clap_host *host)
+{
+    if (host == nullptr)
+    {
+        return {};
+    }
+    const auto *info = static_cast<const clap_wrapper_host_information_t *>(
+        host->get_extension(host, CLAP_WRAPPER_HOST_INFORMATION));
+    const char *flavor = info != nullptr && info->get_wrapper_flavor != nullptr
+                             ? info->get_wrapper_flavor(host)
+                             : nullptr;
+    if (flavor == nullptr)
+    {
+        return "CLAP";
+    }
+    if (std::strcmp(flavor, CLAP_WRAPPER_HOST_FLAVOR_VST3) == 0)
+    {
+        return "VST3";
+    }
+    if (std::strcmp(flavor, CLAP_WRAPPER_HOST_FLAVOR_AUV2) == 0 ||
+        std::strcmp(flavor, CLAP_WRAPPER_HOST_FLAVOR_AUV3) == 0)
+    {
+        return "AU";
+    }
+    if (std::strcmp(flavor, CLAP_WRAPPER_HOST_FLAVOR_STANDALONE) == 0)
+    {
+        return "Standalone";
+    }
+    return {};
+}
 } // namespace
 
 EditorPlugin::EditorPlugin(const clap_host *host, Product product)
@@ -82,6 +120,7 @@ std::unique_ptr<juce::Component> EditorPlugin::createEditor()
     gg::ui::EditorContext &context = *editorContext_;
     context = gg::ui::EditorContext{};
     context.productName = descriptorFor(product())->name;
+    context.formatName = formatOf(_host.host());
     // The instrument's loader strip (spec §6.5), on the main thread, as the loader requires. The
     // loader is GigaGrainsPlugin's, so it outlives the editor, which the shim holds.
     if (SampleLoader *loader = sampleLoader(); loader != nullptr)

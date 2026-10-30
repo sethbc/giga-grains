@@ -39,6 +39,7 @@ if (GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
             src/ParamControl.cpp
             src/LayerStrip.cpp
             src/MorphPad.cpp
+            src/AboutBox.cpp
             )
     add_library(gg::ui ALIAS gg-ui)
 
