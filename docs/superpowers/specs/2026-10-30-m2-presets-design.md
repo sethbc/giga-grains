@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Milestone** | M2 Giga (INTENT §20), sub-project 5 of 7, wave 3 (merged first in its wave) |
-| **Status** | **Spec ready for the programme manager, 2026-10-30.** Decisions D1–D9 (§8) await the director. Not yet planned or built |
+| **Status** | **Approved by the programme manager 2026-10-30** against the programme design and INTENT, with two notes applied in place: this sub-project's INTENT §23 row takes the next free number at merge (sub-project 3 merges first), and under `media/` it adds the new header `gg/media/ContentPaths.h` alone, header-only, editing nothing else there until sub-project 2 merges and this branch rebases (§6.4). **The director's decisions D1–D9, 2026-10-30, by forced choice, relayed by the programme manager: every recommended option** (option 1 of each), recorded in §8 and applied in place. Coordination with sub-project 6 (§6.8): it keeps the header label's component ID `header.preset` and its bounds slot for this sub-project, which replaces that label's contents and moves nothing else in the header. Not yet built |
 | **Spec authority** | `INTENT.md`; the programme design (`docs/superpowers/specs/2026-10-29-m2-programme-design.md`), whose §6.5, §7.5 and §7.8 this document realizes and does not reopen |
 | **Builds on** | Sub-project 1 (layers, the mod matrix, the patch at version 2, `gg-render`'s layer keys; INTENT §23 #65); the release pipeline's reserved Content component (release-pipeline spec §6.9); M1's state container (INTENT §18) and Perform view (§17) |
 | **Starts from** | `main` at `ab9f4e2` (PR #15 merged) on branch `m2-presets`; `docs/m2-carry-over.md` with **11 open rows** |
@@ -268,7 +268,7 @@ Both plugins implement `clap.preset-load/2`. `from_location(kind, location, load
 
 ### 6.4 The content search path (programme design §7.8)
 
-`gg/media/ContentPaths.h` (gg-media, JUCE-free, so `gg-render` and the plugins share it):
+`gg/media/ContentPaths.h` (gg-media, JUCE-free, so `gg-render` and the plugins share it; **header-only and the one new file under `media/`,** by the programme manager's note: nothing existing there, `media/CMakeLists.txt` included, is edited before sub-project 2 merges):
 - **The content roots,** in order; a content-relative reference resolves to the first root where
   the file exists:
   1. `GG_CONTENT_DIR`, when set and not empty (tests, `gg-render`, a developer tree);
@@ -399,8 +399,12 @@ vocabulary is a list in `gg/core/Preset.h`, and a source with a word outside it 
 
 ### 6.8 The browser (INTENT §17, "Presets and editing"; I25, I29)
 
-Replaces the header's "Init" label in both products' editors, in the same 90 px slot grown to what
-the header allows:
+Replaces the header's "Init" label in both products' editors. **Coordination with sub-project 6
+(the programme manager, 2026-10-30):** the views sub-project keeps the label's component ID
+`header.preset` and its bounds slot; this sub-project replaces that label's contents with the preset
+strip and the browser's button, under the same ID and in the same slot, and moves nothing else in
+the header. The slot is 90 px today; the strip fits it (the name elided in the middle) and grows
+only if sub-project 6 widens the slot.
 - **The header strip:** `‹` and `›` (previous and next in the browser's current list), the preset
   name (edited-dot per §6.2), which opens the browser. Keyboard: the strip's buttons take focus like
   the macros; `‹`/`›` on the arrow keys when focused.
@@ -561,7 +565,11 @@ content root), this sub-project stops at that boundary and says so in its report
 Each a forced choice; the recommended option is first, with one line on what each costs. Nothing
 engineering-only is here (that is §9).
 
-**D1. How many factory presets, and how they are spread** (§6.6). The floor is 40 and 8 MIDI-driven
+**The director's answers, 2026-10-30, relayed by the programme manager: every recommended option.**
+D1 option 1, D2 option 1, D3 option 1, D4 option 1, D5 option 1, D6 option 1, D7 option 1, D8
+option 1, D9 option 1. Each is marked below and applied in §6.
+
+**D1. How many factory presets, and how they are spread** (§6.6). The floor is 40 and 8 MIDI-driven **Decided: option 1.**
 FX presets.
 1. **48: 24 per product, 8 of the FX's MIDI-driven; by focus 16 textures, 12 playable, 8 rhythmic,
    12 extreme.** *Cost:* 48 goldens and 48 pack renders; the rhythmic presets use the Step
@@ -572,7 +580,7 @@ FX presets.
    listening for the close; a longer host list.
 
 **D2. Where the CC0 samples come from** (§6.5; programme design decision 8 fixed "downloads with
-recorded provenance and our own tools").
+recorded provenance and our own tools"). **Decided: option 1.**
 1. **The Versilian Community Sample Library (CC0-1.0, GitHub, pinned by commit) for the recorded
    material, plus signals our tools generate.** *Cost:* one library's character across the
    recorded half (orchestral and folk instruments, voices, percussion); no field recordings.
@@ -582,7 +590,7 @@ recorded provenance and our own tools").
    log in), each handed over with its URL and author. *Cost:* the director's time before the
    second group can voice; the same provenance record applies.
 
-**D3. What Mutate touches by default** (§6.9).
+**D3. What Mutate touches by default** (§6.9). **Decided: option 1.**
 1. **The structure stays locked, the sound moves:** Mix, the Levels, Layer On, Source, Freeze, the
    macros, Morph X/Y, Reverb Amount, Dry to Reverb, Step Length and every off layer's parameters
    are locked; every other parameter of the on layers and Space's five voiced ones move. *Cost:*
@@ -594,20 +602,20 @@ recorded provenance and our own tools").
 3. *Everything but the macros.* *Cost:* a press can switch layers and sources on and off and
    silence a preset with Mix; the amount knob is the only guard.
 
-**D4. Mutate's law** (§6.9).
+**D4. Mutate's law** (§6.9). **Decided: option 1.**
 1. **Relative jitter:** each unlocked value moves by up to `amount × range` either way, in its CLAP
    domain. *Cost:* repeated presses random-walk; a large amount is needed to leave a preset's
    neighbourhood.
 2. *Blend toward a fresh random point:* `v + amount × (random − v)`. *Cost:* small amounts drift
    every parameter toward the range's middle on average; at 100% the preset is forgotten.
 
-**D5. What a preset without a sample does to the sample you have** (§6.2).
+**D5. What a preset without a sample does to the sample you have** (§6.2). **Decided: option 1.**
 1. **Keeps it:** a settings-only preset plays on your own material; a preset that names a sample
    loads it. *Cost:* INIT doesn't unload a sample (a "Clear sample" stays the loader strip's job).
 2. *Sets the state exactly:* no sample in the preset, no sample after it. *Cost:* every factory
    instrument preset must carry a sample, and a user's sample is gone after any preset pick.
 
-**D6. Whose seed a loaded preset uses** (§6.1, §6.2).
+**D6. Whose seed a loaded preset uses** (§6.1, §6.2). **Decided: option 1.**
 1. **The instance keeps its seed;** the preset's is ignored. *Cost:* the same preset on two tracks
    makes two different clouds (as two fresh instances do today); a preset's render in the pack is
    one seed's.
@@ -615,7 +623,7 @@ recorded provenance and our own tools").
    preset is identical until a parameter moves, and a saved user preset pins the seed it was made
    with.
 
-**D7. How the eight MIDI-driven FX presets rest** (§6.6).
+**D7. How the eight MIDI-driven FX presets rest** (§6.6). **Decided: option 1.**
 1. **They sound without a note and transform under one:** the input is granulated as the preset
    says, and a held note freezes the ring and repitches the cloud to the keys. *Cost:* a user who
    never routes MIDI hears an ordinary preset and may not find the feature; the description and
@@ -623,14 +631,14 @@ recorded provenance and our own tools").
 2. *Dry until played:* Velocity routes to Mix, so the effect is heard only while notes are held.
    *Cost:* without MIDI routed the preset seems to do nothing.
 
-**D8. What INIT is** (§6.2).
+**D8. What INIT is** (§6.2). **Decided: option 1.**
 1. **A fresh instance, bit for bit:** every default, the factory routes, nothing else. *Cost:* INIT
    is dry and plain; the first good sound is one preset away.
 2. *A voiced Init* (a little Diffusion and Reverb Amount, a slow LFO on Position). *Cost:* "Init"
    no longer means the defaults; `fx-sine` and the other default-valued goldens would describe a
    state no button reaches.
 
-**D9. Which presets a product's browser lists** (§6.1, §6.8).
+**D9. Which presets a product's browser lists** (§6.1, §6.8). **Decided: option 1.**
 1. **Its own:** the FX lists FX presets, the instrument instrument presets; a preset file carries
    its product. *Cost:* a sound made in one product can't be picked from the other's list (a
    session state still loads across products, as today).
@@ -815,7 +823,8 @@ the fix wave unless blocked outside our control or genuinely large (the policy).
 - **§20:** the M2 row's "factory presets and CC0 samples, including MIDI-driven FX presets;
   preset discovery" marked built with the count (D1).
 - **§22:** no row.
-- **§23 #66:** this sub-project's director decisions (D1–D9, with dates), the rulings made during
+- **§23, the next free row at merge** (sub-project 3 merges before this one, so the number is
+  taken then): this sub-project's director decisions (D1–D9, 2026-10-30), the rulings made during
   the build, and the §9 calls that amend Part II (the element in `PTCH`, the sources in this
   repository, INIT as a plugin location, the file-name order).
 
