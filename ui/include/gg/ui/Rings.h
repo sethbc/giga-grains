@@ -24,6 +24,10 @@ struct RingSpec
         family; ///< the source's family: 0 macros, 1 modulators, 2 MIDI, 3 follower, 4 transport
 };
 
+/// A source's family, as RingSpec::family numbers them: 0 macros, 1 modulators, 2 MIDI, 3
+/// follower, 4 transport (None counts as a macro's).
+uint8_t sourceFamily(gg::core::ModSource source) noexcept;
+
 /// The routes that target a control, in slot order. `target` is the route's target: layer A's
 /// slot for a layer parameter, Level or Layer A On, else the global's own; `layer` is the layer
 /// the control belongs to (ignored for a global target). A route counts when its source isn't

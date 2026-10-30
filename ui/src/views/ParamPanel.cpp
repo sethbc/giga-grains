@@ -7,12 +7,15 @@
 #include <algorithm>
 #include <cmath>
 #include <optional>
+#include <string>
 #include <utility>
 
 #include <sst/basic-blocks/params/ParamMetadata.h>
 
 #include "../Palette.h"
+#include "gg/ui/RouteEdits.h"
 #include "gg/ui/Rings.h"
+#include "gg/ui/UndoStack.h"
 
 namespace gg::ui
 {
@@ -35,22 +38,6 @@ bool isStep(ParamSlot slot)
 {
     const auto ref = gg::core::layerOf(slot);
     return ref && ref->param >= LayerParam::Step1 && ref->param <= LayerParam::Step16;
-}
-
-/// A route's target for a control's slot, and the layer the control is on: layer A's slot for a
-/// layer parameter, Level or Layer A On for a per-layer global; a global's own, layer 0.
-std::pair<ParamSlot, uint8_t> routeTargetOf(ParamSlot slot)
-{
-    if (const auto ref = gg::core::layerOf(slot))
-    {
-        return {gg::core::layerSlot(ref->param, 0), ref->layer};
-    }
-    if (const auto layer = gg::core::perLayerGlobalLayer(slot))
-    {
-        return {slot == gg::core::levelSlot(*layer) ? ParamSlot::Level : ParamSlot::LayerAOn,
-                *layer};
-    }
-    return {slot, 0};
 }
 
 /// One cell: a control, its spread beside it, or a menu's caption above it.
@@ -131,7 +118,7 @@ struct ParamPanel::Impl
     {
         ParamControl *control{nullptr};
         ParamControl *spread{nullptr};
-        bool knob{false};
+        bool step{false};
         uint8_t layer{0};
         std::optional<std::pair<float, float>> band;
     };
@@ -143,6 +130,7 @@ struct ParamPanel::Impl
 
     void build()
     {
+        endRingDrag(); // the controls the drag came from go below
         entries.clear();
         cells.clear();
         std::vector<ParamSlot> consumed;
@@ -169,7 +157,7 @@ struct ParamPanel::Impl
             Entry entry;
             entry.control = &cell->base();
             entry.spread = cell->spread();
-            entry.knob = kind == Kind::Knob;
+            entry.step = kind == Kind::VSlider;
             entry.layer = routeTargetOf(slot).second;
             for (ParamControl *c : {entry.control, entry.spread})
             {
@@ -178,8 +166,16 @@ struct ParamPanel::Impl
                     continue;
                 }
                 c->setModMode(modMode);
+                c->setSourceDropEnabled(modMode);
                 c->onRingDrag = [this, controlSlot = c->slot()](uint8_t routeSlot, float depth01) {
                     dragRing(controlSlot, routeSlot, depth01);
+                };
+                c->onRingRelease = [this] { endRingDrag(); };
+                c->onSourceDrop = [this, controlSlot = c->slot()](gg::core::ModSource source) {
+                    if (owner.onSourceDrop)
+                    {
+                        owner.onSourceDrop(controlSlot, source);
+                    }
                 };
             }
             entries.push_back(entry);
@@ -191,7 +187,7 @@ struct ParamPanel::Impl
     }
 
     /// A ring dragged to a depth: the route's, in the parameter's own units.
-    void dragRing(ParamSlot controlSlot, uint8_t routeSlot, float depth01) const
+    void dragRing(ParamSlot controlSlot, uint8_t routeSlot, float depth01)
     {
         if (!context.routes || !context.setRoutes || routeSlot < 1 ||
             routeSlot > gg::core::kModSlots)
@@ -200,8 +196,24 @@ struct ParamPanel::Impl
         }
         const auto &meta = gg::core::paramMeta(controlSlot, context.mode);
         gg::core::ModRoutes routes = context.routes();
-        routes[routeSlot - 1u].depth = depth01 * (meta.maxVal - meta.minVal);
+        if (!ringBefore)
+        {
+            ringBefore = routes;
+            ringSlot = routeSlot;
+        }
+        setDepth(routes, routeSlot, depth01 * (meta.maxVal - meta.minVal));
         context.setRoutes(routes);
+        ringAfter = routes;
+    }
+
+    /// The drag is over: its edits are one undo entry.
+    void endRingDrag()
+    {
+        if (ringBefore && context.undo != nullptr)
+        {
+            context.undo->pushRoutes(*ringBefore, ringAfter, "route " + std::to_string(ringSlot));
+        }
+        ringBefore.reset();
     }
 
     /// The spread pair's band on the base knob, in 0..1 of the base's range (spec §6.5): Size ±
@@ -261,7 +273,7 @@ struct ParamPanel::Impl
             }
             for (ParamControl *c : {e.control, e.spread})
             {
-                if (c != nullptr && (c != e.control || e.knob)) // only a knob draws rings
+                if (c != nullptr && !e.step) // the Step sliders are no targets
                 {
                     refreshRings(*c, routes, palette);
                 }
@@ -332,6 +344,9 @@ struct ParamPanel::Impl
     bool modMode{false};
     std::vector<std::unique_ptr<Cell>> cells;
     std::vector<Entry> entries;
+    std::optional<gg::core::ModRoutes> ringBefore; ///< the routes as a ring drag found them
+    gg::core::ModRoutes ringAfter{};
+    uint8_t ringSlot{0};
 };
 
 ParamPanel::ParamPanel(const EditorContext &context, Panel panel, uint8_t layer)
@@ -360,10 +375,13 @@ void ParamPanel::setModMode(bool on)
     impl_->modMode = on;
     for (const auto &e : impl_->entries)
     {
-        e.control->setModMode(on);
-        if (e.spread != nullptr)
+        for (ParamControl *c : {e.control, e.spread})
         {
-            e.spread->setModMode(on);
+            if (c != nullptr)
+            {
+                c->setModMode(on);
+                c->setSourceDropEnabled(on);
+            }
         }
     }
 }

@@ -10,9 +10,7 @@ namespace gg::ui
 {
 using gg::core::ModSource;
 
-namespace
-{
-uint8_t familyOf(ModSource s) noexcept
+uint8_t sourceFamily(ModSource s) noexcept
 {
     if (s <= ModSource::Macro8)
     {
@@ -28,7 +26,6 @@ uint8_t familyOf(ModSource s) noexcept
     }
     return s >= ModSource::TransportBeat ? 4 : 2;
 }
-} // namespace
 
 std::vector<RingSpec> ringsFor(const gg::core::ModRoutes &routes, gg::core::ParamSlot target,
                                uint8_t layer, float rangeMin, float rangeMax) noexcept
@@ -50,7 +47,7 @@ std::vector<RingSpec> ringsFor(const gg::core::ModRoutes &routes, gg::core::Para
             continue;
         }
         out.push_back({static_cast<uint8_t>(i + 1), r.depth / range,
-                       r.curve == gg::core::ModCurve::Bipolar, familyOf(r.source)});
+                       r.curve == gg::core::ModCurve::Bipolar, sourceFamily(r.source)});
     }
     return out;
 }

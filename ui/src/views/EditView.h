@@ -41,6 +41,8 @@ class EditView final : public juce::Component
     void refresh();
     /// The controls' own values are inert, their rings draggable.
     void setModMode(bool on);
+    /// A source chip was dropped on the control of this slot (mod mode).
+    std::function<void(gg::core::ParamSlot, gg::core::ModSource)> onSourceDrop;
     std::vector<ParamPanel *> panels();
 
     void resized() override;

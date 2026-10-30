@@ -29,6 +29,13 @@ struct EditView::Impl
         for (const Panel p : kPanels)
         {
             panels.push_back(std::make_unique<ParamPanel>(context, p, layer));
+            panels.back()->onSourceDrop = [this](gg::core::ParamSlot slot,
+                                                 gg::core::ModSource source) {
+                if (owner.onSourceDrop)
+                {
+                    owner.onSourceDrop(slot, source);
+                }
+            };
             content.addChildComponent(*panels.back()); // layout() shows those with controls
         }
         layout();

@@ -47,6 +47,8 @@
 #include "ParamControl.h"
 #include "views/EditView.h"
 #include "views/FxView.h"
+#include "views/ModView.h"
+#include "views/SourceStrip.h"
 #include "editor/EditorPlugin.h"
 #include "editor/UiSettings.h"
 #include "gg/core/GrainQueue.h"
@@ -2777,6 +2779,273 @@ TEST_CASE("Decay reads infinity at the top", "[plugin]")
         findDeep(view, controlId(ParamSlot::ReverbDecay).toRawUTF8()));
     REQUIRE(decay != nullptr);
     CHECK(decay->shownText() == "\xE2\x88\x9E");
+}
+
+namespace
+{
+/// A Mod view's context: the routes kept here, an undo stack that replays into them, and the
+/// notices shown.
+struct ModHarness
+{
+    RecordingContext recording;
+    gg::core::ModRoutes routes;
+    std::vector<std::string> notices;
+    gg::ui::UndoStack undo;
+
+    explicit ModHarness(gg::core::Mode mode)
+        : recording(mode), routes(gg::core::factoryRoutes(mode)),
+          undo({[](ParamSlot, float) {}, [this](const gg::core::ModRoutes &r) { routes = r; }})
+    {
+        recording.context.routes = [this] { return routes; };
+        recording.context.setRoutes = [this](const gg::core::ModRoutes &r) { routes = r; };
+        recording.context.undo = &undo;
+        recording.context.notice = [this](const std::string &text) { notices.push_back(text); };
+    }
+};
+
+/// Drops chip `source` (a ModSource index) on `target`.
+void dropChip(juce::Component *target, int source)
+{
+    auto *t = dynamic_cast<juce::DragAndDropTarget *>(target);
+    REQUIRE(t != nullptr);
+    const juce::DragAndDropTarget::SourceDetails details(
+        juce::var("modsource:" + juce::String(source)), nullptr, juce::Point<int>(5, 5));
+    REQUIRE(t->isInterestedInDragSource(details));
+    t->itemDropped(details);
+}
+} // namespace
+
+TEST_CASE("the Mod view routes a dropped chip", "[plugin]")
+{
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    ModHarness h(gg::core::Mode::Fx);
+    gg::ui::ModView view(h.recording.context);
+    view.setSize(900, 500);
+    view.setLayer(1);
+    view.refresh();
+
+    // "modsource:9" is LFO 1; the first empty slot after the twelve factory routes is 13.
+    dropChip(findDeep(view, controlId(ParamSlot::B_Size).toRawUTF8()), 9);
+    CHECK(h.routes[12].source == gg::core::ModSource::Lfo1);
+    CHECK(h.routes[12].target == ParamSlot::Size);
+    CHECK(h.routes[12].targetLayer == 1);
+    CHECK(h.undo.size() == 1);
+    CHECK(h.notices.empty());
+    // The chip's route is in the list, and the control has a ring for it.
+    view.refresh();
+    auto *source = dynamic_cast<juce::ComboBox *>(findDeep(view, "route.13.source"));
+    REQUIRE(source != nullptr);
+    CHECK(source->getSelectedId() == 9 + 1);
+    auto *size = dynamic_cast<gg::ui::ParamControl *>(
+        findDeep(view, controlId(ParamSlot::B_Size).toRawUTF8()));
+    REQUIRE(size != nullptr);
+    CHECK(size->rings().size() == 2);
+
+    // A second drop of the same route selects it: no new route, no new undo entry.
+    const auto routesAfter = h.routes;
+    dropChip(findDeep(view, controlId(ParamSlot::B_Size).toRawUTF8()), 9);
+    CHECK(h.routes == routesAfter);
+    CHECK(h.undo.size() == 1);
+    CHECK(h.notices.empty());
+
+    // Undo takes it away again.
+    h.undo.undo();
+    CHECK(h.routes[12].source == gg::core::ModSource::None);
+}
+
+TEST_CASE("the Mod view refuses a drop with a notice", "[plugin]")
+{
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    ModHarness h(gg::core::Mode::Fx);
+    gg::ui::ModView view(h.recording.context);
+    view.setSize(900, 500);
+    view.setLayer(0);
+    view.refresh();
+    const auto factory = h.routes;
+
+    // A Step slider is no target.
+    dropChip(
+        findDeep(view, controlId(gg::core::layerSlot(gg::core::LayerParam::Step1, 0)).toRawUTF8()),
+        9);
+    REQUIRE(h.notices.size() == 1);
+    CHECK_FALSE(h.notices[0].empty());
+    CHECK(h.routes == factory);
+    CHECK(h.undo.size() == 0);
+
+    // A full matrix refuses.
+    for (std::size_t i = 12; i < h.routes.size(); ++i)
+    {
+        h.routes[i].source = gg::core::ModSource::Lfo2;
+        h.routes[i].target = ParamSlot::Pitch;
+        h.routes[i].targetLayer = 0;
+    }
+    const auto full = h.routes;
+    dropChip(findDeep(view, controlId(ParamSlot::Size).toRawUTF8()), 9);
+    REQUIRE(h.notices.size() == 2);
+    CHECK(h.notices[1] == "the matrix is full: 48 routes");
+    CHECK(h.routes == full);
+}
+
+TEST_CASE("the Mod view marks a toggle's and a menu's routes with dots", "[plugin]")
+{
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    ModHarness h(gg::core::Mode::Fx);
+    gg::ui::ModView view(h.recording.context);
+    view.setSize(900, 500);
+    view.setLayer(0);
+    view.refresh();
+    // The Edit panels' controls: the layer strip above them has a Source and a Freeze too.
+    const juce::Component *edit = findDeep(view, "view.edit");
+    REQUIRE(edit != nullptr);
+    const auto controlOf = [edit](ParamSlot slot) {
+        auto *c =
+            dynamic_cast<gg::ui::ParamControl *>(findDeep(*edit, controlId(slot).toRawUTF8()));
+        REQUIRE(c != nullptr);
+        return c;
+    };
+    // The factory route Macro Freeze to Freeze reaches the toggle.
+    gg::ui::ParamControl *freeze = controlOf(ParamSlot::Freeze);
+    REQUIRE(freeze->rings().size() == 1);
+    CHECK(freeze->rings()[0].colour == gg::ui::Palette::dark().sourceFamilies[0]);
+    // A chip dropped on the Source menu adds a dot in the modulators' colour.
+    gg::ui::ParamControl *menu = controlOf(ParamSlot::Source);
+    CHECK(menu->rings().empty());
+    dropChip(menu, 9);
+    view.refresh();
+    REQUIRE(menu->rings().size() == 1);
+    CHECK(menu->rings()[0].colour == gg::ui::Palette::dark().sourceFamilies[1]);
+    CHECK(h.routes[12].curve == gg::core::ModCurve::Unipolar);
+}
+
+TEST_CASE("a ring drag in the Mod view sets the depth in one undo entry", "[plugin]")
+{
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    ModHarness h(gg::core::Mode::Fx);
+    gg::ui::ModView view(h.recording.context);
+    view.setSize(900, 500);
+    view.setLayer(0);
+    view.refresh();
+    auto *size = dynamic_cast<gg::ui::ParamControl *>(
+        findDeep(view, controlId(ParamSlot::Size).toRawUTF8()));
+    REQUIRE(size != nullptr);
+    REQUIRE(size->rings().size() == 1);
+    const auto &meta = gg::core::paramMeta(ParamSlot::Size, gg::core::Mode::Fx);
+    const float range = meta.maxVal - meta.minVal;
+    const float depth0 = h.routes[0].depth;
+
+    size->onRingDrag(1, 0.1f);
+    size->onRingDrag(1, 0.2f);
+    size->onRingDrag(1, 0.3f);
+    CHECK(h.routes[0].depth == 0.3f * range);
+    CHECK(h.undo.size() == 0); // still dragging
+    size->mouseUp(mouseAt(*size, 5, 5, {5, 5}, true));
+    CHECK(h.undo.size() == 1);
+    CHECK(h.undo.undoLabel() == "route 1");
+    h.undo.undo();
+    CHECK(h.routes[0].depth == depth0);
+    h.undo.redo();
+    CHECK(h.routes[0].depth == 0.3f * range);
+    // A press that moved no ring is no entry.
+    size->mouseUp(mouseAt(*size, 5, 5, {5, 5}, false));
+    CHECK(h.undo.size() == 1);
+    CHECK(h.recording.calls.empty());
+}
+
+TEST_CASE("the route list edits and clears a slot", "[plugin]")
+{
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    ModHarness h(gg::core::Mode::Fx);
+    gg::ui::ModView view(h.recording.context);
+    view.setSize(900, 500);
+    view.refresh();
+    const auto factory = h.routes;
+
+    // 48 rows, the factory routes' slots shown, the rest empty ("-").
+    for (int slot = 1; slot <= 48; ++slot)
+    {
+        INFO(slot);
+        CHECK(findDeep(view, ("route." + std::to_string(slot) + ".source").c_str()) != nullptr);
+    }
+    auto *source13 = dynamic_cast<juce::ComboBox *>(findDeep(view, "route.13.source"));
+    REQUIRE(source13 != nullptr);
+    CHECK(source13->getSelectedId() == 1);
+    CHECK(source13->getText() == juce::String::fromUTF8("\xe2\x80\x94"));
+
+    // A curve choice is one undo entry.
+    auto *curve = dynamic_cast<juce::ComboBox *>(findDeep(view, "route.1.curve"));
+    REQUIRE(curve != nullptr);
+    curve->setSelectedId(static_cast<int>(gg::core::ModCurve::UnipolarSquared) + 1,
+                         juce::sendNotificationSync);
+    CHECK(h.routes[0].curve == gg::core::ModCurve::UnipolarSquared);
+    CHECK(h.undo.size() == 1);
+
+    // Clear.
+    auto *clear = dynamic_cast<juce::Button *>(findDeep(view, "route.2.clear"));
+    REQUIRE(clear != nullptr);
+    REQUIRE(clear->onClick);
+    clear->onClick();
+    CHECK(h.routes[1] == gg::core::ModRoute{});
+    CHECK(h.routes[2] == factory[2]);
+    CHECK(h.undo.size() == 2);
+    view.refresh();
+    auto *source2 = dynamic_cast<juce::ComboBox *>(findDeep(view, "route.2.source"));
+    REQUIRE(source2 != nullptr);
+    CHECK(source2->getSelectedId() == 1);
+    h.undo.undo();
+    view.refresh();
+    CHECK(source2->getSelectedId() == static_cast<int>(factory[1].source) + 1);
+
+    // The depth slider writes the depth in the target's units.
+    auto *depth = dynamic_cast<juce::Slider *>(findDeep(view, "route.1.depth"));
+    REQUIRE(depth != nullptr);
+    depth->setValue(0.5, juce::sendNotificationSync);
+    CHECK(h.routes[0].depth == 0.5f);
+}
+
+TEST_CASE("the source strip has 24 chips and the layer's letter on the per-layer ones", "[plugin]")
+{
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    gg::ui::SourceStrip strip;
+    strip.setSize(660, 80);
+    for (int i = 1; i <= 24; ++i)
+    {
+        INFO(i);
+        auto *chip = dynamic_cast<gg::ui::SourceChip *>(
+            findDeep(strip, ("source." + std::to_string(i)).c_str()));
+        REQUIRE(chip != nullptr);
+        CHECK(chip->description() == juce::String("modsource:") + juce::String(i));
+    }
+    CHECK(strip.getComponentID() == "sources");
+    auto *lfo = dynamic_cast<gg::ui::SourceChip *>(findDeep(strip, "source.9"));
+    auto *wheel = dynamic_cast<gg::ui::SourceChip *>(findDeep(strip, "source.16"));
+    REQUIRE(lfo != nullptr);
+    REQUIRE(wheel != nullptr);
+    strip.setLayer(2);
+    CHECK(lfo->getButtonText().endsWith(" C"));
+    CHECK_FALSE(wheel->getButtonText().endsWith(" C"));
+    strip.setLayer(3);
+    CHECK(lfo->getButtonText().endsWith(" D"));
+}
+
+TEST_CASE("the Mod view's knobs are inert", "[plugin]")
+{
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    ModHarness h(gg::core::Mode::Fx);
+    gg::ui::ModView view(h.recording.context);
+    view.setSize(900, 500);
+    view.refresh();
+    auto *size = dynamic_cast<gg::ui::ParamControl *>(
+        findDeep(view, controlId(ParamSlot::Size).toRawUTF8()));
+    REQUIRE(size != nullptr);
+    auto *knob = childOfType<sst::jucegui::components::Knob>(*size);
+    REQUIRE(knob != nullptr);
+    const float before = size->shownValue();
+    knob->mouseDown(mouseAt(*knob, 20, 20, {20, 20}, false));
+    knob->mouseDrag(mouseAt(*knob, 20, 60, {20, 20}, true));
+    knob->mouseUp(mouseAt(*knob, 20, 60, {20, 20}, true));
+    CHECK(h.recording.calls.empty());
+    CHECK(size->shownValue() == before);
+    CHECK(h.undo.size() == 0);
 }
 #else
 TEST_CASE("headless build exposes no gui extension", "[plugin]")

@@ -146,7 +146,9 @@ constexpr float kRingGap = 2.0f;     ///< between the knob's circle and the firs
 constexpr float kRingSpacing = 3.0f; ///< between rings, at most
 constexpr float kRingStroke = 2.0f;
 constexpr float kRingDragPx = 150.0f; ///< a full depth's vertical drag, as sst-jucegui's knobs
-constexpr float kArcSweep = 0.8f;     ///< sst-jucegui's knob arc: ±0.8π about the top
+constexpr float kDotSize = 6.0f;      ///< a toggle's or menu's route dot
+constexpr float kDotPitch = 8.0f;
+constexpr float kArcSweep = 0.8f; ///< sst-jucegui's knob arc: ±0.8π about the top
 
 /// An arc's angle for a value in 0..1, as sst-jucegui's knob draws its own.
 float angleOf(float v01)
@@ -202,6 +204,8 @@ struct ParamControl::Impl
     Inertia *inertia{nullptr};
 
     bool modMode{false};
+    bool dropEnabled{false};
+    bool dropHover{false};
     std::vector<Ring> rings;
     std::optional<std::pair<float, float>> band;
     std::optional<std::size_t> dragRing; ///< the ring a mod-mode drag holds
@@ -377,9 +381,22 @@ void ParamControl::resized()
 void ParamControl::paintOverChildren(juce::Graphics &g)
 {
     const Impl &m = *impl_;
+    if (m.dropHover)
+    {
+        g.setColour(paletteOf(*this).accent);
+        g.drawRoundedRectangle(getLocalBounds().toFloat().reduced(1.0f), 4.0f, 2.0f);
+    }
     const auto circle = m.knobCircle();
     if (circle.isEmpty())
     {
+        // No arc to draw on: one dot per route, right to left from the top right corner.
+        for (std::size_t i = 0; i < m.rings.size(); ++i)
+        {
+            const float x = static_cast<float>(getWidth()) - 2.0f - kDotSize -
+                            static_cast<float>(i) * kDotPitch;
+            g.setColour(m.rings[i].colour);
+            g.fillEllipse(x, 2.0f, kDotSize, kDotSize);
+        }
         return;
     }
     const auto centre = circle.getCentre();
@@ -467,6 +484,75 @@ void ParamControl::mouseUp(const juce::MouseEvent &)
     {
         impl_->dragRing.reset();
         repaint();
+    }
+    if (impl_->modMode && onRingRelease)
+    {
+        onRingRelease();
+    }
+}
+
+void ParamControl::setSourceDropEnabled(bool on)
+{
+    impl_->dropEnabled = on;
+    if (!on && impl_->dropHover)
+    {
+        impl_->dropHover = false;
+        repaint();
+    }
+}
+
+namespace
+{
+constexpr const char *kSourcePrefix = "modsource:";
+
+/// The ModSource a chip's drag description names; nothing for any other description.
+std::optional<gg::core::ModSource> sourceOf(const juce::var &description)
+{
+    const juce::String text = description.toString();
+    if (!text.startsWith(kSourcePrefix))
+    {
+        return std::nullopt;
+    }
+    const int index = text.fromFirstOccurrenceOf(kSourcePrefix, false, false).getIntValue();
+    if (index < 1 || index >= static_cast<int>(gg::core::ModSource::Count))
+    {
+        return std::nullopt;
+    }
+    return static_cast<gg::core::ModSource>(index);
+}
+} // namespace
+
+bool ParamControl::isInterestedInDragSource(const SourceDetails &details)
+{
+    return impl_->dropEnabled && sourceOf(details.description).has_value();
+}
+
+void ParamControl::itemDragEnter(const SourceDetails &)
+{
+    impl_->dropHover = true;
+    repaint();
+    if (onDropHover)
+    {
+        onDropHover();
+    }
+}
+
+void ParamControl::itemDragExit(const SourceDetails &)
+{
+    impl_->dropHover = false;
+    repaint();
+}
+
+void ParamControl::itemDropped(const SourceDetails &details)
+{
+    impl_->dropHover = false;
+    repaint();
+    if (const auto source = sourceOf(details.description); source && impl_->dropEnabled)
+    {
+        if (onSourceDrop)
+        {
+            onSourceDrop(*source);
+        }
     }
 }
 } // namespace gg::ui

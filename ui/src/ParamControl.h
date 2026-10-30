@@ -38,10 +38,15 @@ namespace gg::ui
 /// (a bipolar one centred on the base value), are draggable then: a vertical drag on a ring calls
 /// onRingDrag with its new depth. Nothing changes the value then, the accessibility interface's
 /// setValue and setValueAsString included. A knob also draws a spread pair's band (setSpreadBand).
-/// Only a Knob draws rings and the band.
+/// Only a Knob draws rings and the band; a toggle or a menu, which have no arc to draw, shows one
+/// small dot in the source family's colour for each route targeting it, at its top right.
+///
+/// **A drop target for a Mod view source chip** (setSourceDropEnabled): a dragged
+/// "modsource:<ModSource index>" description is accepted and onSourceDrop gets the source, whatever
+/// the control's Kind; whether it can be a target is the owner's to judge.
 ///
 /// Message thread only. The context is the editor's (see EditorContext): read at each use.
-class ParamControl final : public juce::Component
+class ParamControl final : public juce::Component, public juce::DragAndDropTarget
 {
   public:
     enum class Kind
@@ -90,8 +95,19 @@ class ParamControl final : public juce::Component
     const std::vector<Ring> &rings() const noexcept;
     /// Mod mode: a vertical drag on a ring, with the ring's matrix slot and its new depth.
     std::function<void(uint8_t slot, float depth01)> onRingDrag;
-    /// The drop target's hover (Task 12 wires it).
+    /// Mod mode: the mouse went up after a ring drag (or any press): the drag's gesture is over.
+    std::function<void()> onRingRelease;
+    /// A chip is dragged over the control.
     std::function<void()> onDropHover;
+    /// A chip was dropped on the control.
+    std::function<void(gg::core::ModSource)> onSourceDrop;
+
+    /// Whether a source chip may be dropped on the control: off by default.
+    void setSourceDropEnabled(bool on);
+    bool isInterestedInDragSource(const SourceDetails &details) override;
+    void itemDragEnter(const SourceDetails &details) override;
+    void itemDragExit(const SourceDetails &details) override;
+    void itemDropped(const SourceDetails &details) override;
 
     /// The spread pair's faint band on the base knob, from low to high in 0..1 of its range;
     /// nothing for none.

@@ -19,6 +19,7 @@ add_library(gg-ui-core STATIC
         src/PadModel.cpp
         src/SplatRenderer.cpp
         src/StressGrains.cpp
+        src/RouteEdits.cpp
         src/UndoStack.cpp
         src/views/Rings.cpp
         )
@@ -44,6 +45,9 @@ if (GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
             src/views/EditView.cpp
             src/views/ParamPanel.cpp
             src/views/FxView.cpp
+            src/views/SourceStrip.cpp
+            src/views/RouteList.cpp
+            src/views/ModView.cpp
             )
     add_library(gg::ui ALIAS gg-ui)
 

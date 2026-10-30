@@ -56,6 +56,7 @@ add_executable(gg-tests
         tools/signals_tests.cpp
         ui/lane_model_tests.cpp
         ui/rings_tests.cpp
+        ui/route_edits_tests.cpp
         ui/edit_layout_tests.cpp
         ui/undo_stack_tests.cpp
         ui/pad_model_tests.cpp
