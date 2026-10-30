@@ -157,6 +157,13 @@ void EditorPlugin::fillPresetContext(gg::ui::EditorContext &context)
             return false;
         }
     };
+    context.mutate = [this](float amount) { mutate(amount); };
+    context.flushMutate = [this] { flushMutate(); };
+    context.mutateLocked = [this](gg::core::ParamSlot slot) { return mutateLocked(slot); };
+    context.setMutateLock = [this](gg::core::ParamSlot slot, bool locked) {
+        setMutateLock(slot, locked);
+    };
+    context.resetMutateLocks = [this] { resetMutateLocks(); };
     context.contentStatus = [this] {
         try
         {

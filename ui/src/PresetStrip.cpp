@@ -62,10 +62,18 @@ PresetStrip::PresetStrip(const EditorContext &context) : context_(context)
     styleButton(prev_, "preset.prev", juce::String::fromUTF8("\xe2\x80\xb9"));
     styleButton(name_, "preset.name", "Init");
     styleButton(next_, "preset.next", juce::String::fromUTF8("\xe2\x80\xba"));
+    styleButton(mutate_, "preset.mutate", "Mutate");
     name_.setColour(juce::TextButton::textColourOffId, theme::kText);
     name_.setTooltip("The preset: click to browse");
     prev_.setTooltip("Previous preset");
     next_.setTooltip("Next preset");
+    mutate_.setTooltip("Mutate: move the sound at random, within the locks");
+    mutate_.onClick = [this] {
+        if (onMutate)
+        {
+            onMutate();
+        }
+    };
     prev_.onClick = [this] {
         if (onPrev)
         {
@@ -87,6 +95,7 @@ PresetStrip::PresetStrip(const EditorContext &context) : context_(context)
     addAndMakeVisible(prev_);
     addAndMakeVisible(name_);
     addAndMakeVisible(next_);
+    addAndMakeVisible(mutate_);
     refresh();
 }
 
@@ -117,9 +126,16 @@ void PresetStrip::setBrowserOpen(bool open)
     name_.setToggleState(open, juce::dontSendNotification);
 }
 
+void PresetStrip::setMutateOpen(bool open)
+{
+    mutate_.setToggleState(open, juce::dontSendNotification);
+}
+
 void PresetStrip::resized()
 {
     auto area = getLocalBounds();
+    mutate_.setBounds(area.removeFromRight(kMutateWidth));
+    area.removeFromRight(4);
     prev_.setBounds(area.removeFromLeft(kArrowWidth));
     next_.setBounds(area.removeFromRight(kArrowWidth));
     name_.setBounds(area);

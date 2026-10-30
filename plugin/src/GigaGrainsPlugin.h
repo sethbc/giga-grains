@@ -24,6 +24,7 @@
 #include "gg/core/GrainQueue.h"
 #include "gg/core/LatestValue.h"
 #include "gg/core/ModMatrix.h"
+#include "gg/core/Mutate.h"
 #include "gg/core/ParamIds.h"
 #include "gg/core/Processor.h"
 #include "gg/core/SessionState.h"
@@ -231,6 +232,36 @@ class GigaGrainsPlugin : public plugHelper_t
     /// otherwise. Main thread.
     void setPublishing(bool on) noexcept;
     bool publishing() const noexcept { return publishing_; }
+
+    // ---- Mutate (M2 sub-project 5's spec §6.9): main thread ----
+
+    /// The most slots one batch of Mutate's result sends to the editor's queue: at three entries
+    /// each (begin, value, end) it fills at most 900 of kUiQueueCapacity.
+    static constexpr std::size_t kMutateBatch = 300;
+
+    /// Mutate: moves every parameter not locked by `amount` (gg::core::mutate: 0 to 1; relative
+    /// jitter in each one's value domain), press number mutateCounter_ of this instance's seed.
+    /// The locks are mutateLocked's, plus every parameter of a layer that is off now (re-read at
+    /// each press). Each slot whose value changed is sent as the editor's gesture (begin, value,
+    /// end through uiQueue_), so the audio thread, the host and its automation hear it as a
+    /// control moved by hand; the slots go in batches of at most kMutateBatch (flushMutate), the
+    /// first now. A press computes from the base values with the earlier press's unsent slots
+    /// applied. Deterministic: the same seed, locks, values and press give the same sound. May
+    /// leave the values unchanged (amount 0, or all locked).
+    void mutate(float amount) noexcept;
+    /// Sends the next batch of the slots a press left, when the editor's queue has been drained
+    /// since the last one (the host's flush or process() is asked for after each change, which
+    /// clears uiFlushRequested_ as it drains). The editor's 30 Hz tick and on_main_thread call it.
+    /// Nothing to do when no slots wait.
+    void flushMutate() noexcept;
+    /// Whether Mutate leaves `slot` where it is: its lock, which a press ORs with the off layers'.
+    /// The locks start as structuralLocks(mode()) and keep until changed or reset; they are not
+    /// state. False for an out-of-range slot.
+    bool mutateLocked(gg::core::ParamSlot slot) const noexcept;
+    void setMutateLock(gg::core::ParamSlot slot, bool locked) noexcept;
+    /// The locks to defaultMutateLocks of the current values: the structural set, and every
+    /// parameter of the layers that are off now.
+    void resetMutateLocks() noexcept;
 
     // ---- Presets (M2 sub-project 5's spec §6.2): main thread ----
 
@@ -549,6 +580,20 @@ class GigaGrainsPlugin : public plugHelper_t
     // on either thread.
     std::atomic<double> sampleRate_{kDefaultTailRate};
     static_assert(std::atomic<double>::is_always_lock_free, "tailGet reads it on the audio thread");
+    /// The base values as the next press starts from: values_ with the slots of earlier presses
+    /// not yet sent applied. Main thread.
+    gg::core::ParamValues mutateInput() const noexcept;
+    // Mutate (mutate): the locks, the press counter, and the slots a press has not yet sent.
+    // Main thread only; none of it reaches the audio thread but as uiQueue_'s changes.
+    gg::core::LockSet mutateLocks_{};
+    uint32_t mutateCounter_{0};
+    struct PendingSlot
+    {
+        gg::core::ParamSlot slot;
+        float value;
+    };
+    std::vector<PendingSlot> pendingMutate_;
+    std::size_t pendingMutateNext_{0}; // the first of pendingMutate_ not yet sent
     // The editor's changes, main thread → audio thread (or the main thread's own flush while
     // inactive): see uiBeginGesture.
     gg::core::SpscQueue<UiParamChange, kUiQueueCapacity> uiQueue_;

@@ -172,6 +172,7 @@ GigaGrainsPlugin::GigaGrainsPlugin(const clap_host *host, Product product)
     // Main thread. The first paramMeta() call builds its tables, which allocates: it's made here,
     // never on the audio thread.
     catalogSettingsFile_ = settingsFile(); // the browser's catalog reads this file (presetCatalog)
+    mutateLocks_ = gg::core::structuralLocks(mode());
     for (std::size_t s = 0; s < kParamCount; ++s)
     {
         const auto &meta = gg::core::paramMeta(static_cast<ParamSlot>(s), mode());
@@ -326,6 +327,8 @@ void GigaGrainsPlugin::onMainThread() noexcept
             // collect() only frees; nothing it calls throws.
         }
     }
+    // The next batch of a Mutate press, once the host has drained the last one.
+    flushMutate();
     // A state's values the audio thread has applied, and stored in values_ after the load's own
     // rescan: the host reads them again (carry-over row 123). Cleared first, so values applied
     // after this ask for another call.
@@ -1319,6 +1322,101 @@ void GigaGrainsPlugin::applyState(gg::core::SessionState &&state, LoadKind kind)
     {
         _host.stateMarkDirty();
     }
+}
+
+// ---- Mutate (spec §6.9) ----
+
+gg::core::ParamValues GigaGrainsPlugin::mutateInput() const noexcept
+{
+    gg::core::ParamValues in{};
+    for (std::size_t s = 0; s < kParamCount; ++s)
+    {
+        in[s] = values_[s].load(std::memory_order_relaxed);
+    }
+    for (std::size_t i = pendingMutateNext_; i < pendingMutate_.size(); ++i)
+    {
+        in[static_cast<std::size_t>(pendingMutate_[i].slot)] = pendingMutate_[i].value;
+    }
+    return in;
+}
+
+void GigaGrainsPlugin::mutate(float amount) noexcept
+{
+    try
+    {
+        const gg::core::ParamValues in = mutateInput();
+        // The off layers' parameters stay as they are however the locks stand: a layer that is
+        // off now is not mutated, and one that was switched on since is.
+        const gg::core::LockSet locks = mutateLocks_ | gg::core::offLayerLocks(in);
+        gg::core::ParamValues out{};
+        gg::core::mutate(in, locks, amount, seed_, mutateCounter_++, mode(), out);
+        if (pendingMutateNext_ >= pendingMutate_.size())
+        {
+            pendingMutate_.clear();
+            pendingMutateNext_ = 0;
+        }
+        for (std::size_t s = 0; s < kParamCount; ++s)
+        {
+            if (out[s] != in[s])
+            {
+                pendingMutate_.push_back({static_cast<ParamSlot>(s), out[s]});
+            }
+        }
+    }
+    catch (...)
+    {
+        // Out of memory: the press changes nothing it has not already queued.
+    }
+    flushMutate();
+}
+
+void GigaGrainsPlugin::flushMutate() noexcept
+{
+    if (pendingMutateNext_ >= pendingMutate_.size())
+    {
+        pendingMutate_.clear();
+        pendingMutateNext_ = 0;
+        return;
+    }
+    // A flush is outstanding: the audio thread has not drained what is queued, and the next
+    // batch would be on top of it. The editor's tick tries again.
+    if (uiFlushRequested_.load(std::memory_order_acquire))
+    {
+        return;
+    }
+    const std::size_t end = std::min(pendingMutate_.size(), pendingMutateNext_ + kMutateBatch);
+    for (; pendingMutateNext_ < end; ++pendingMutateNext_)
+    {
+        const PendingSlot &p = pendingMutate_[pendingMutateNext_];
+        uiBeginGesture(p.slot);
+        uiSetValue(p.slot, static_cast<double>(p.value));
+        uiEndGesture(p.slot);
+    }
+    if (pendingMutateNext_ >= pendingMutate_.size())
+    {
+        pendingMutate_.clear();
+        pendingMutateNext_ = 0;
+    }
+}
+
+bool GigaGrainsPlugin::mutateLocked(ParamSlot slot) const noexcept
+{
+    const auto s = static_cast<std::size_t>(slot);
+    return s < kParamCount && mutateLocks_.test(s);
+}
+
+void GigaGrainsPlugin::setMutateLock(ParamSlot slot, bool locked) noexcept
+{
+    const auto s = static_cast<std::size_t>(slot);
+    if (s < kParamCount)
+    {
+        mutateLocks_.set(s, locked);
+    }
+}
+
+void GigaGrainsPlugin::resetMutateLocks() noexcept
+{
+    mutateLocks_ = gg::core::defaultMutateLocks(mutateInput(), mode());
 }
 
 bool GigaGrainsPlugin::presetEdited() const noexcept

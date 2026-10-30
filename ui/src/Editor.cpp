@@ -16,6 +16,7 @@
 #include "GrainCanvas.h"
 #include "LoaderStrip.h"
 #include "MacroRow.h"
+#include "MutatePanel.h"
 #include "PresetBrowser.h"
 #include "PresetStrip.h"
 #include "Theme.h"
@@ -46,7 +47,7 @@ class Editor final : public juce::Component,
         : sst::jucegui::style::StyleConsumer(
               sst::jucegui::components::base_styles::Base::styleClass),
           publishing_(context.publishing), lookAndFeel_(this), preset_(context), canvas_(context),
-          macros_(context), browser_(context)
+          macros_(context), browser_(context), mutatePanel_(context)
     {
         setOpaque(true);
         const juce::String product = juce::String::fromUTF8(
@@ -59,7 +60,14 @@ class Editor final : public juce::Component,
         product_.setTooltip(
             "version " +
             juce::String::fromUTF8(gg::kVersion.data(), static_cast<int>(gg::kVersion.size())));
-        preset_.onName = [this] { browser_.setVisible(!browser_.isVisible()); };
+        preset_.onName = [this] {
+            mutatePanel_.setVisible(false);
+            browser_.setVisible(!browser_.isVisible());
+        };
+        preset_.onMutate = [this] {
+            browser_.setVisible(false);
+            mutatePanel_.setVisible(!mutatePanel_.isVisible());
+        };
         preset_.onPrev = [this] { browser_.step(-1); };
         preset_.onNext = [this] { browser_.step(1); };
         setUpLabel(frameMs_, "header.frameMs", {}, juce::FontOptions(12.0f), theme::kDimText);
@@ -79,7 +87,8 @@ class Editor final : public juce::Component,
         }
         addAndMakeVisible(canvas_);
         addAndMakeVisible(macros_);
-        addChildComponent(browser_); // over the canvas and the macros while shown
+        addChildComponent(browser_);     // over the canvas and the macros while shown
+        addChildComponent(mutatePanel_); // likewise; one of the two at a time
 
         const auto style = theme::darkStyle();
         lookAndFeel_.setStyle(style);
@@ -115,7 +124,7 @@ class Editor final : public juce::Component,
         auto area = getLocalBounds();
         auto header = area.removeFromTop(kHeaderHeight).reduced(kMargin, 6);
         product_.setBounds(header.removeFromLeft(150));
-        preset_.setBounds(header.removeFromLeft(90));
+        preset_.setBounds(header.removeFromLeft(PresetStrip::kWidth));
         header.removeFromLeft(12);
         perform_.setBounds(header.removeFromLeft(76));
         header.removeFromLeft(4);
@@ -129,6 +138,7 @@ class Editor final : public juce::Component,
             area.removeFromTop(kGap);
         }
         browser_.setBounds(area);
+        mutatePanel_.setBounds(area);
         macros_.setBounds(area.removeFromBottom(kMacroRowHeight));
         area.removeFromBottom(kGap);
         canvas_.setBounds(area);
@@ -160,7 +170,9 @@ class Editor final : public juce::Component,
         macros_.refresh();
         preset_.refresh();
         preset_.setBrowserOpen(browser_.isVisible());
+        preset_.setMutateOpen(mutatePanel_.isVisible());
         browser_.refresh();
+        mutatePanel_.refresh();
         frameMs_.setText("frame ms (avg 60): " + juce::String(canvas_.averageFrameMs(), 2),
                          juce::dontSendNotification);
     }
@@ -205,6 +217,7 @@ class Editor final : public juce::Component,
     GrainCanvas canvas_;
     MacroRow macros_;
     PresetBrowser browser_;
+    MutatePanel mutatePanel_;
     juce::TooltipWindow tooltips_{this, 600};
 };
 
