@@ -344,7 +344,8 @@ template <class Reader> struct RingTaps8 : InterleavedTaps8
 
 /// detail::renderInteriorSteps, 8 samples per step: [begin, end) a multiple of 8 samples, each
 /// as that function requires.
-template <class Reader, bool kTwoOutputs, bool kStereo, bool kWarp, class Taps, class Dec>
+template <class Reader, bool kTwoOutputs, bool kStereo, bool kWarp, class Taps,
+          detail::DecimationLike Dec>
 GG_AVX2 void renderInteriorSteps8(const GrainRows &rows, uint32_t i, const Taps &taps,
                                   Dec decimation, const Output &out, int64_t begin, int64_t end,
                                   const Tables &tables) noexcept SST_CPPUTILS_NONBLOCKING
@@ -410,7 +411,7 @@ GG_AVX2 void renderInteriorSteps8(const GrainRows &rows, uint32_t i, const Taps 
 }
 
 /// detail::renderInterior over 8-sample steps.
-template <class Reader, bool kTwoOutputs, bool kStereo, class Taps, class Dec>
+template <class Reader, bool kTwoOutputs, bool kStereo, class Taps, detail::DecimationLike Dec>
 GG_AVX2 void renderInterior8(const GrainRows &rows, uint32_t i, const Taps &taps, Dec decimation,
                              const Output &out, int64_t begin, int64_t end,
                              const Tables &tables) noexcept SST_CPPUTILS_NONBLOCKING
@@ -433,7 +434,7 @@ GG_AVX2 void renderInterior8(const GrainRows &rows, uint32_t i, const Taps &taps
 }
 
 /// detail::renderSampleInterior over 8-sample steps, with the same choice of taps.
-template <class Reader, int64_t kStride, class Dec>
+template <class Reader, int64_t kStride, detail::DecimationLike Dec>
 GG_AVX2 void renderSampleInterior8(const GrainRows &rows, uint32_t i, const SampleSource &src,
                                    Dec decimation, const Output &out, int64_t begin, int64_t end,
                                    const Tables &tables) noexcept SST_CPPUTILS_NONBLOCKING
@@ -461,7 +462,7 @@ GG_AVX2 void renderSampleInterior8(const GrainRows &rows, uint32_t i, const Samp
 
 /// detail::renderSampleSimdAt with the 8-wide interior: the reference before the run, the run's
 /// steps of 8 then of 4, and the reference after its last whole step of 4.
-template <class Reader, int64_t kStride, class Dec>
+template <class Reader, int64_t kStride, detail::DecimationLike Dec>
 GG_AVX2 void renderSampleAvx2At(const GrainRows &rows, uint32_t i, const SampleSource &src,
                                 Dec decimation, const Output &out, int64_t first, int64_t last,
                                 const Tables &tables) noexcept SST_CPPUTILS_NONBLOCKING
@@ -509,7 +510,7 @@ GG_AVX2 void renderSampleAvx2(const GrainRows &rows, uint32_t i, const SampleSou
 /// renderLiveSimd<Reader> with the 8-wide interior, at `decimation` (a uint32_t or
 /// detail::UnitDecimation): on each part of liveInterior, its steps of 8 then its last whole step
 /// of 4; the reference everywhere else.
-template <class Reader, class Dec>
+template <class Reader, detail::DecimationLike Dec>
 GG_AVX2 void renderLiveAvx2At(const GrainRows &rows, uint32_t i, const LiveSource &live,
                               Dec decimation, const Output &out, int64_t from, int64_t to,
                               const Tables &tables) noexcept SST_CPPUTILS_NONBLOCKING

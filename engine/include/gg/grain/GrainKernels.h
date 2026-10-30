@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
 
@@ -562,6 +563,11 @@ struct UnitDecimation
 {
 };
 
+/// What a renderer's `decimation` may be: a level's decimation at run time, or level 0's known at
+/// compile time. A plain int is neither, so a literal needs its `u`.
+template <class D>
+concept DecimationLike = std::same_as<D, uint32_t> || std::same_as<D, UnitDecimation>;
+
 /// 1 / UnitDecimation: a multiply by it returns the other operand unchanged, with no arithmetic.
 struct UnitScale
 {
@@ -581,7 +587,7 @@ constexpr UnitScale invDecimation(UnitDecimation) noexcept SST_CPPUTILS_NONBLOCK
 
 /// Grain i's ReadParams, read at a level of the given decimation (a uint32_t or UnitDecimation):
 /// the sinc's table and the stretch of its residual rate, stretchOf(rate × invDec) (spec §6.3).
-template <class Dec>
+template <DecimationLike Dec>
 ReadParams paramsOf(const GrainRows &rows, uint32_t i, const Tables &tables,
                     Dec decimation) noexcept SST_CPPUTILS_NONBLOCKING
 {
@@ -594,7 +600,7 @@ namespace detail
 {
 /// renderSampleRef over [first, last), inside the grain's [onsetSample, endSample), with the
 /// source's stride as kStride, at `decimation` (src.decimation, or UnitDecimation for 1).
-template <class Reader, int64_t kStride, class Dec>
+template <class Reader, int64_t kStride, DecimationLike Dec>
 void renderSampleRefAt(const GrainRows &rows, uint32_t i, const SampleSource &src, Dec decimation,
                        const Output &out, int64_t first, int64_t last,
                        const Tables &tables) noexcept SST_CPPUTILS_NONBLOCKING
@@ -720,7 +726,7 @@ struct Run
 /// exp2Det of a pitch clamped to ±48 semitones, times the quotient of two finite, positive sample
 /// rates (Engine::sampleGrain), so it is finite and positive for any sample rates short of about
 /// 2^1000 apart.
-template <class Reader, class Dec>
+template <class Reader, DecimationLike Dec>
 Run sampleSimdRun(const GrainRows &rows, uint32_t i, int64_t frames, Dec decimation, int64_t first,
                   int64_t last) noexcept SST_CPPUTILS_NONBLOCKING
 {
@@ -870,7 +876,7 @@ struct InterleavedTaps
 /// kWarp: the phase goes through warpPhase; renderInterior passes false only for a grain whose
 /// envelope isIdentity, where warpPhase returns every phase in [0, 1] unchanged, so both give
 /// the same bits and a plain-Hann grain (texture 0) skips the warp's cost.
-template <class Reader, bool kTwoOutputs, bool kStereo, bool kWarp, class Taps, class Dec>
+template <class Reader, bool kTwoOutputs, bool kStereo, bool kWarp, class Taps, DecimationLike Dec>
 void renderInteriorSteps(const GrainRows &rows, uint32_t i, const Taps &taps, Dec decimation,
                          const Output &out, int64_t begin, int64_t end,
                          const Tables &tables) noexcept SST_CPPUTILS_NONBLOCKING
@@ -942,7 +948,7 @@ void renderInteriorSteps(const GrainRows &rows, uint32_t i, const Taps &taps, De
 
 /// The SIMD interior (renderInteriorSteps), with the warp only where the grain's envelope isn't
 /// the identity.
-template <class Reader, bool kTwoOutputs, bool kStereo, class Taps, class Dec>
+template <class Reader, bool kTwoOutputs, bool kStereo, class Taps, DecimationLike Dec>
 void renderInterior(const GrainRows &rows, uint32_t i, const Taps &taps, Dec decimation,
                     const Output &out, int64_t begin, int64_t end,
                     const Tables &tables) noexcept SST_CPPUTILS_NONBLOCKING
@@ -969,7 +975,7 @@ void renderInterior(const GrainRows &rows, uint32_t i, const Taps &taps, Dec dec
 /// `decimation` (src.decimation, or UnitDecimation for 1): one output reads channel 0 alone, a
 /// mono source channel 0 for both outputs, and a stereo source into two outputs its interleaved
 /// pairs when it has them, its channels otherwise.
-template <class Reader, int64_t kStride, class Dec>
+template <class Reader, int64_t kStride, DecimationLike Dec>
 void renderSampleInterior(const GrainRows &rows, uint32_t i, const SampleSource &src,
                           Dec decimation, const Output &out, int64_t begin, int64_t end,
                           const Tables &tables) noexcept SST_CPPUTILS_NONBLOCKING
@@ -1000,7 +1006,7 @@ namespace detail
 {
 /// renderSampleSimd over [first, last), inside the grain's [onsetSample, endSample), with the
 /// source's stride as kStride, at `decimation` (src.decimation, or UnitDecimation for 1).
-template <class Reader, int64_t kStride, class Dec>
+template <class Reader, int64_t kStride, DecimationLike Dec>
 void renderSampleSimdAt(const GrainRows &rows, uint32_t i, const SampleSource &src, Dec decimation,
                         const Output &out, int64_t first, int64_t last,
                         const Tables &tables) noexcept SST_CPPUTILS_NONBLOCKING
@@ -1066,7 +1072,7 @@ void renderSampleSimd(const GrainRows &rows, uint32_t i, const SampleSource &src
 /// contributes only when f > 0 and the read succeeds:
 /// dst[c][t] += read_c(posL) × ((w × f) × gain_c), or, with one output, ring channel 0 ×
 /// ((w × f) × gain).
-template <class Reader, class Dec>
+template <class Reader, detail::DecimationLike Dec>
 void renderLiveRef(const GrainRows &rows, uint32_t i, const LiveSource &live, Dec decimation,
                    const Output &out, int64_t from, int64_t to,
                    const Tables &tables) noexcept SST_CPPUTILS_NONBLOCKING
@@ -1169,7 +1175,7 @@ namespace detail
 /// The bounds come from solving the linear conditions in n = t − onsetSample, widened by 2
 /// samples; each end then steps inward while the exact test fails, which costs a few tests per
 /// end (at most hi − lo). A part where the solution isn't finite is empty.
-template <class Reader, class Dec>
+template <class Reader, DecimationLike Dec>
 Run liveRun(const GrainRows &rows, uint32_t i, const LiveSource &live, Dec decimation, int64_t lo,
             int64_t hi, int64_t r0, int64_t slope) noexcept SST_CPPUTILS_NONBLOCKING
 {
@@ -1308,7 +1314,7 @@ template <class Reader> struct RingTaps : InterleavedTaps
 /// and the reference's fade is exactly 1, so renderLiveRef's amplitude is (w × 1) × gain_c = w ×
 /// gain_c, the sample kernel's. Empty when there is no ring, or the grain's rate isn't finite and
 /// positive. Reads at `decimation`, as renderLiveRef.
-template <class Reader, class Dec>
+template <class Reader, detail::DecimationLike Dec>
 LiveInterior liveInterior(const GrainRows &rows, uint32_t i, const LiveSource &live, Dec decimation,
                           int64_t from, int64_t to) noexcept SST_CPPUTILS_NONBLOCKING
 {
@@ -1345,7 +1351,7 @@ LiveInterior liveInterior(const GrainRows &rows, uint32_t i, const LiveSource &l
 namespace detail
 {
 /// renderLiveSimd at `decimation`, a uint32_t or UnitDecimation.
-template <class Reader, class Dec>
+template <class Reader, DecimationLike Dec>
 void renderLiveSimdAt(const GrainRows &rows, uint32_t i, const LiveSource &live, Dec decimation,
                       const Output &out, int64_t from, int64_t to,
                       const Tables &tables) noexcept SST_CPPUTILS_NONBLOCKING

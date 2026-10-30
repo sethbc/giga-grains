@@ -56,6 +56,10 @@ Engine::Engine(const EngineConfig &config)
       kernels_(config.kernels == KernelChoice::Sse ? &kernels::sseKernels() : &kernels::dispatch()),
       pool_(config.grainCapacity)
 {
+#if !GG_KERNELS_AVX2
+    // Without the AVX2 table every table is the SSE one, and renderPool calls its kernels directly.
+    assert(kernels_ == &kernels::sseKernels());
+#endif
     cloud_.prepare(config_.sampleRate);
     // process() writes into the ring in blocks of at most maxBlockSize frames (ruling M1-o).
     live_.prepare(config_.sampleRate, config_.liveSeconds, config_.maxBlockSize);

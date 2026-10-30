@@ -428,7 +428,7 @@ TEST_CASE("reference reads nothing where the window is zero", "[kernel]")
                 ring.write(in, 2, 0, b, static_cast<uint32_t>(kBlock));
                 const gg::kernels::Output o{
                     {out[0].data() + b, outputs == 2 ? out[1].data() + b : nullptr}, b};
-                gg::kernels::renderLiveRef<NaNOutside>(rows, 0, ring, 1, o, b, b + kBlock, tables);
+                gg::kernels::renderLiveRef<NaNOutside>(rows, 0, ring, 1u, o, b, b + kBlock, tables);
             }
             REQUIRE(allFinite(out[0]));
             REQUIRE(allFinite(out[1]));
@@ -510,7 +510,7 @@ TEST_CASE("live reference follows the spec's arithmetic", "[kernel]")
 
             const gg::kernels::Output o{
                 {actual[0].data() + b, outputs == 2 ? actual[1].data() + b : nullptr}, b};
-            gg::kernels::renderLiveRef<Hermite>(rows, 0, ring, 1, o, b, b + kBlock, tables);
+            gg::kernels::renderLiveRef<Hermite>(rows, 0, ring, 1u, o, b, b + kBlock, tables);
         }
         REQUIRE(ring.head() == kFreezeAt + gg::LiveSource::freezeRampSamples(kRate));
         REQUIRE(fadeOne > 0);
@@ -641,10 +641,10 @@ TEST_CASE("eco reference reads linearly", "[kernel]")
 
                 const gg::kernels::Output o{
                     {actual[0].data() + b, outputs == 2 ? actual[1].data() + b : nullptr}, b};
-                gg::kernels::renderLiveRef<Linear>(rows, 0, ring, 1, o, b, b + kBlock, tables);
+                gg::kernels::renderLiveRef<Linear>(rows, 0, ring, 1u, o, b, b + kBlock, tables);
                 const gg::kernels::Output n{
                     {normal[0].data() + b, outputs == 2 ? normal[1].data() + b : nullptr}, b};
-                gg::kernels::renderLiveRef<Hermite>(rows, 0, ring, 1, n, b, b + kBlock, tables);
+                gg::kernels::renderLiveRef<Hermite>(rows, 0, ring, 1u, n, b, b + kBlock, tables);
             }
             REQUIRE(ring.head() == kFreezeAt + ramp);
             REQUIRE(fadeOne > 0);
@@ -922,7 +922,7 @@ TEST_CASE("sinc reference follows the spec's arithmetic", "[kernel]")
 
                     const gg::kernels::Output o{
                         {actual[0].data() + b, outputs == 2 ? actual[1].data() + b : nullptr}, b};
-                    gg::kernels::renderLiveRef<Sinc>(rows, 0, ring, 1, o, b, b + kBlock, tables);
+                    gg::kernels::renderLiveRef<Sinc>(rows, 0, ring, 1u, o, b, b + kBlock, tables);
                 }
                 REQUIRE(ring.head() == kFreezeAt + ramp);
                 REQUIRE(fadeOne > 0);
@@ -1294,6 +1294,14 @@ void requireExactRuns(const Pool &pool, int64_t frames, uint32_t d, int64_t from
         }
         const gg::kernels::detail::Run run =
             gg::kernels::detail::sampleSimdRun<R>(rows, i, frames, d, first, last);
+        if (d == 1)
+        {
+            // Level 0 renders through the compile-time unit decimation: the same run.
+            const gg::kernels::detail::Run unit = gg::kernels::detail::sampleSimdRun<R>(
+                rows, i, frames, gg::kernels::detail::UnitDecimation{}, first, last);
+            REQUIRE(unit.begin == run.begin);
+            REQUIRE(unit.end == run.end);
+        }
         INFO("grain " << i << ", [" << first << ", " << last << "), run [" << run.begin << ", "
                       << run.end << ")");
         REQUIRE(first <= run.begin);
@@ -1310,6 +1318,23 @@ void requireExactRuns(const Pool &pool, int64_t frames, uint32_t d, int64_t from
             }
         }
     }
+}
+
+// liveInterior at decimation 1, which also requires UnitDecimation (level 0's compile-time
+// decimation) to give the same parts.
+template <class R, class Ring>
+gg::kernels::LiveInterior liveInteriorAtOne(const gg::GrainRows &rows, uint32_t i, const Ring &ring,
+                                            int64_t from, int64_t to)
+{
+    const gg::kernels::LiveInterior in = gg::kernels::liveInterior<R>(rows, i, ring, 1u, from, to);
+    const gg::kernels::LiveInterior unit = gg::kernels::liveInterior<R>(
+        rows, i, ring, gg::kernels::detail::UnitDecimation{}, from, to);
+    for (int p = 0; p < 2; ++p)
+    {
+        REQUIRE(unit.begin[p] == in.begin[p]);
+        REQUIRE(unit.end[p] == in.end[p]);
+    }
+    return in;
 }
 
 // A stereo noise source. stereo() carries the interleaved copy the engine builds (§16 lever 2),
@@ -2061,18 +2086,17 @@ LiveRenders renderLiveBoth(const Pool &pool, const LiveInput &input,
     prepareRing(ring);
     driveRing(ring, input, lengths, [&](int64_t from, int64_t to) {
         active.each(from, to, [&](uint32_t i) {
-            gg::kernels::renderLiveRef<R>(rows, i, ring, 1, refOut, from, to, tables);
-            gg::kernels::renderLiveSimd<R>(rows, i, ring, 1, simdOut, from, to, tables);
+            gg::kernels::renderLiveRef<R>(rows, i, ring, 1u, refOut, from, to, tables);
+            gg::kernels::renderLiveSimd<R>(rows, i, ring, 1u, simdOut, from, to, tables);
             if (avx2 != nullptr)
             {
-                liveKernel<R> (*avx2)(rows, i, ring, 1, wideOut, from, to, tables);
+                liveKernel<R> (*avx2)(rows, i, ring, 1u, wideOut, from, to, tables);
             }
             if (std::max(from, rows.onsetSample[i]) >= std::min(to, rows.endSample[i]))
             {
                 return;
             }
-            const gg::kernels::LiveInterior in =
-                gg::kernels::liveInterior<R>(rows, i, ring, 1, from, to);
+            const gg::kernels::LiveInterior in = liveInteriorAtOne<R>(rows, i, ring, from, to);
             const int64_t moving = (in.end[0] - in.begin[0]) / 4 * 4;
             const int64_t still = (in.end[1] - in.begin[1]) / 4 * 4;
             r.stats.simdSamples += moving + still;
@@ -2174,7 +2198,7 @@ TEMPLATE_TEST_CASE("live interior is exactly where the fade is one", "[kernel]",
                 const int64_t first = std::max(from, rows.onsetSample[i]);
                 const int64_t last = std::min(to, rows.endSample[i]);
                 const gg::kernels::LiveInterior in =
-                    gg::kernels::liveInterior<TestType>(rows, i, ring, 1, from, to);
+                    liveInteriorAtOne<TestType>(rows, i, ring, from, to);
                 if (first >= last)
                 {
                     badStructure += in.begin[0] != in.end[0] || in.begin[1] != in.end[1];
@@ -2791,13 +2815,13 @@ TEMPLATE_TEST_CASE("a stolen grain fades through the reference and the simd kern
                 prepareRing(ring);
                 driveRing(ring, input, lengths, [&](int64_t from, int64_t to) {
                     active.each(from, to, [&](uint32_t i) {
-                        gg::kernels::renderLiveRef<TestType>(rows, i, ring, 1, refOut, from, to,
+                        gg::kernels::renderLiveRef<TestType>(rows, i, ring, 1u, refOut, from, to,
                                                              tables);
-                        gg::kernels::renderLiveSimd<TestType>(rows, i, ring, 1, simdOut, from, to,
+                        gg::kernels::renderLiveSimd<TestType>(rows, i, ring, 1u, simdOut, from, to,
                                                               tables);
                         if (avx2 != nullptr)
                         {
-                            liveKernel<TestType> (*avx2)(rows, i, ring, 1, wideOut, from, to,
+                            liveKernel<TestType> (*avx2)(rows, i, ring, 1u, wideOut, from, to,
                                                          tables);
                         }
                         const int64_t first = std::max(from, rows.onsetSample[i]);
@@ -2807,7 +2831,7 @@ TEMPLATE_TEST_CASE("a stolen grain fades through the reference and the simd kern
                             return;
                         }
                         const gg::kernels::LiveInterior in =
-                            gg::kernels::liveInterior<TestType>(rows, i, ring, 1, from, to);
+                            liveInteriorAtOne<TestType>(rows, i, ring, from, to);
                         for (int p = 0; p < 2; ++p)
                         {
                             simdSamples += in.end[p] - in.begin[p];
@@ -2897,6 +2921,13 @@ int64_t wideSamples(const Pool &pool, const SampleSource &src, int64_t from, int
         {
             const gg::kernels::detail::Run run = gg::kernels::detail::sampleSimdRun<R>(
                 pool.rows(), i, src.frames, src.decimation, first, last);
+            if (src.decimation == 1)
+            {
+                const gg::kernels::detail::Run unit = gg::kernels::detail::sampleSimdRun<R>(
+                    pool.rows(), i, src.frames, gg::kernels::detail::UnitDecimation{}, first, last);
+                REQUIRE(unit.begin == run.begin);
+                REQUIRE(unit.end == run.end);
+            }
             n += (run.end - run.begin) / lanes * lanes;
         }
     }
@@ -3040,13 +3071,13 @@ template <class R> void requireAvx2LiveBits(const Dispatch &sse, const Dispatch 
                 prepareRing(ring);
                 driveRing(ring, input, lengths, [&](int64_t from, int64_t to) {
                     active.each(from, to, [&](uint32_t i) {
-                        gg::kernels::renderLiveRef<R>(rows, i, ring, 1, refOut, from, to, tables);
-                        liveKernel<R>(sse)(rows, i, ring, 1, aOut, from, to, tables);
-                        liveKernel<R>(avx2)(rows, i, ring, 1, bOut, from, to, tables);
+                        gg::kernels::renderLiveRef<R>(rows, i, ring, 1u, refOut, from, to, tables);
+                        liveKernel<R>(sse)(rows, i, ring, 1u, aOut, from, to, tables);
+                        liveKernel<R>(avx2)(rows, i, ring, 1u, bOut, from, to, tables);
                         if (std::max(from, rows.onsetSample[i]) < std::min(to, rows.endSample[i]))
                         {
                             const gg::kernels::LiveInterior in =
-                                gg::kernels::liveInterior<R>(rows, i, ring, 1, from, to);
+                                liveInteriorAtOne<R>(rows, i, ring, from, to);
                             wide += (in.end[0] - in.begin[0]) / 8 * 8 +
                                     (in.end[1] - in.begin[1]) / 8 * 8;
                         }

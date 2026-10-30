@@ -360,15 +360,17 @@ class Engine
     bool liveGrain(const GrainDraw &d, GrainSpec &g) const noexcept;
     void admit(const GrainSpec &g, float *const dst[2], int64_t blockStart,
                int64_t &renderedTo) noexcept SST_CPPUTILS_NONBLOCKING;
-    /// Adds every pool grain into dst over [from, to), in spawn order, through the engine's
-    /// kernel table (kernelTable()) with each grain's latched tier and source, whatever the mode
-    /// in effect: the SIMD live kernel for a grain of kLiveSlot, otherwise the SIMD sample kernel
-    /// reading the grain's sample slot.
+    /// Adds every pool grain into dst over [from, to), in spawn order, with each grain's latched
+    /// tier and source, whatever the mode in effect: the SIMD live kernel for a grain of
+    /// kLiveSlot, otherwise the SIMD sample kernel reading the grain's sample slot. With
+    /// GG_KERNELS_AVX2 it calls through the engine's kernel table (kernelTable()); without it
+    /// every table is the SSE one, and it calls the 4-wide kernels directly.
     void renderPool(float *const dst[2], int64_t blockStart, int64_t from,
                     int64_t to) noexcept SST_CPPUTILS_NONBLOCKING;
 
     EngineConfig config_;
-    const kernels::Dispatch *kernels_; // the table renderPool calls, set at construction
+    const kernels::Dispatch *kernels_; // kernelTable()'s table, set at construction; renderPool
+                                       // calls it only with GG_KERNELS_AVX2
     HannTable hann_;
     SincTable sinc_; // the HQ tier's windowed sinc, built here, off the audio thread
     GrainPool pool_;
