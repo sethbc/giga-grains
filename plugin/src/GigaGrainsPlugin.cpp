@@ -192,9 +192,6 @@ GigaGrainsPlugin::GigaGrainsPlugin(const clap_host *host, Product product)
     for (uint8_t layer = 0; layer < gg::core::kLayers; ++layer)
     {
         shownKinds_[layer] = kindOf(layer); // the defaults' kinds: nothing to rescan yet
-        shownRingLengths_[layer] =
-            values_[static_cast<std::size_t>(gg::core::layerSlot(LayerParam::RingLength, layer))]
-                .load(std::memory_order_relaxed);
     }
     // Four loaders, one per layer, in both products (M2 sub-project 2's spec §6.8).
     media_ = std::make_unique<MediaSession>(
@@ -262,6 +259,10 @@ bool GigaGrainsPlugin::activate(double sampleRate, uint32_t /*minFrameCount*/,
         // every layer's ring at its Ring Length, a restored one in place (M2 sub-project 2).
         mediaActive = true;
         media_->activate(*processor, sampleRate, config.maxBlockSize);
+        for (uint8_t layer = 0; layer < gg::core::kLayers; ++layer)
+        {
+            shownRingSeconds_[layer] = processor->ringSecondsRequested(layer); // sized already
+        }
         processor->setPublishing(publishing_); // an editor opened before this activation
         processor_ = std::move(processor);
         engineBlockSize_ = config.maxBlockSize;
@@ -529,9 +530,9 @@ clap_process_status GigaGrainsPlugin::processNonblocking(const clap_process *pro
     return CLAP_PROCESS_CONTINUE;
 }
 
-void GigaGrainsPlugin::takeOffers() noexcept
+void GigaGrainsPlugin::takeOffers(bool adoptRings) noexcept
 {
-    if (processor_->takeOffers())
+    if (processor_->takeOffers(adoptRings))
     {
         storeBases();
         requestValueRescan();
@@ -591,15 +592,20 @@ void GigaGrainsPlugin::checkKinds() noexcept
 
 void GigaGrainsPlugin::checkRingLengths() noexcept
 {
+    // The Processor's request, not values_: a base value applies at its grid boundary, which for
+    // an event in a call's last grid step is the next call's start, after values_ has it, so
+    // values_ would ask for the watcher before the request it reads has changed, and never again.
+    if (processor_ == nullptr)
+    {
+        return; // inactive: activate() sizes the rings
+    }
     bool changed = false;
     for (uint8_t layer = 0; layer < gg::core::kLayers; ++layer)
     {
-        const float v =
-            values_[static_cast<std::size_t>(gg::core::layerSlot(LayerParam::RingLength, layer))]
-                .load(std::memory_order_relaxed);
-        if (v != shownRingLengths_[layer])
+        const double seconds = processor_->ringSecondsRequested(layer);
+        if (seconds != shownRingSeconds_[layer])
         {
-            shownRingLengths_[layer] = v;
+            shownRingSeconds_[layer] = seconds;
             changed = true;
         }
     }
@@ -1131,13 +1137,13 @@ void GigaGrainsPlugin::paramsFlush(const clap_input_events *in,
             }
         }
         checkKinds();
-        checkRingLengths();
-        return;
+        return; // inactive: activate() sizes the rings
     }
     // Active, so on the audio thread, between process() calls: notes and controls, like
-    // modulation, join the next grid boundary. The offers include rings (the class comment).
+    // modulation, join the next grid boundary. An offer carrying a ring waits, whole, for the next
+    // process() call's start (the class comment), so a flush copies no ring frame.
     applyLoadedState();
-    takeOffers();
+    takeOffers(false);
     takeUiChanges(out, nullptr, 0);
     if (in != nullptr)
     {
@@ -1311,8 +1317,9 @@ bool GigaGrainsPlugin::stateLoad(const clap_istream *stream) noexcept
             return false;
         }
         // The allocations left before the state takes effect, made before anything changes:
-        // room in each exchange for the offers below, which then can't throw, so a bad_alloc
-        // here still changes nothing (all or nothing).
+        // room in each exchange for the offers below, a source's and a ring's
+        // (SourceExchange::reserve), which then can't throw, so a bad_alloc here still changes
+        // nothing (all or nothing).
         if (processor_ != nullptr)
         {
             for (uint8_t layer = 0; layer < gg::core::kLayers; ++layer)
@@ -1325,9 +1332,10 @@ bool GigaGrainsPlugin::stateLoad(const clap_istream *stream) noexcept
         // leaves its layer's status saying why.
         const double activeRate =
             processor_ != nullptr ? sampleRate_.load(std::memory_order_relaxed) : 0.0;
-        MediaSession::Restored restored = media_->restore(loaded, activeRate);
-        const auto &values = loaded.values;
+        const gg::core::ParamValues values = loaded.values;
         const uint64_t seed = loaded.seed;
+        const gg::core::ModRoutes routes = loaded.routes;
+        MediaSession::Restored restored = media_->restore(std::move(loaded), activeRate);
         for (std::size_t s = 0; s < kParamCount; ++s)
         {
             storeValue(static_cast<ParamSlot>(s), values[s]);
@@ -1335,7 +1343,7 @@ bool GigaGrainsPlugin::stateLoad(const clap_istream *stream) noexcept
         // stateSave writes them from now on: the seed and the routes the audio thread is about
         // to use.
         seed_ = seed;
-        routes_ = loaded.routes;
+        routes_ = routes;
         // Inactive, activate() applies the values, the seed and the routes, with the samples
         // and rings. Active, the audio thread applies them at the start of its next process() or
         // params.flush (carry-over row 115): the seed and the routes through loadedState_, the
@@ -1370,7 +1378,7 @@ bool GigaGrainsPlugin::stateLoad(const clap_istream *stream) noexcept
                 if (restored.rings[layer].has_value())
                 {
                     processor_->sources(layer).offerRing(std::move(restored.storages[layer]),
-                                                         *restored.rings[layer]);
+                                                         *restored.rings[layer]); // reserved
                 }
             }
             loadedState_.push({values, routes_, seed, false});
@@ -1379,7 +1387,6 @@ bool GigaGrainsPlugin::stateLoad(const clap_istream *stream) noexcept
         else
         {
             checkKinds(); // inactive: the main thread owns values_
-            checkRingLengths();
         }
         if (_host.canUseParams())
         {

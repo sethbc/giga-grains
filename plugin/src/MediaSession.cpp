@@ -14,6 +14,12 @@
 #include <thread>
 #include <utility>
 
+#if defined(_WIN32)
+#include <process.h>
+#else
+#include <unistd.h>
+#endif
+
 #include "gg/core/ParamMap.h"
 #include "gg/media/Decode.h"
 #include "gg/media/Search.h"
@@ -70,6 +76,16 @@ uint64_t decodeBound(const media::MemoryBudget &b, uint64_t also) noexcept
 
 std::string utf8(const fs::path &path) { return media::toUtf8(path).value_or(std::string()); }
 
+/// The process's id, for a temporary file's name.
+unsigned long processId() noexcept
+{
+#if defined(_WIN32)
+    return static_cast<unsigned long>(::_getpid());
+#else
+    return static_cast<unsigned long>(::getpid());
+#endif
+}
+
 /// Writes `bytes` to `path` through a temporary file beside it, so a file of that name is always
 /// whole. False if it can't.
 bool writeWhole(const fs::path &path, const std::string &bytes)
@@ -77,7 +93,11 @@ bool writeWhole(const fs::path &path, const std::string &bytes)
     std::error_code error;
     fs::create_directories(path.parent_path(), error);
     fs::path temporary = path;
-    temporary += ".partial";
+    // Unique to this process and this write, so two instances (or hosts) filing the same ring at
+    // once never write one temporary file.
+    static std::atomic<uint32_t> writes{0};
+    temporary += "." + std::to_string(processId()) + "-" +
+                 std::to_string(writes.fetch_add(1, std::memory_order_relaxed)) + ".partial";
     {
         std::ofstream out(temporary, std::ios::binary | std::ios::trunc);
         if (!out)
@@ -144,13 +164,25 @@ struct ReadDone
     int64_t valid{0};
     int64_t to{0};
     int64_t head{0};
+    uint32_t epoch{0};  // e0, the storage epoch the copy is of
+    bool frozen{false}; // the meta's: the engine was given its freeze
+    bool cached{false}; // the probe said the caller holds this copy: nothing was copied
     std::vector<int64_t> marks;
 };
 
-template <class Copy>
+/// `probe(meta, e0, r0, span)`, before the copy, may say the caller already holds that copy
+/// (the save's cache of a frozen ring): the read then ends there, `cached`, without copying.
+/// `replaced`, when given, is set when the read failed with a ring there (the storage replaced
+/// under every try, or the whole copy lapped), as against no ring or an empty span.
+template <class Probe, class Copy>
 std::optional<ReadDone> readWith(const core::Processor &processor, uint8_t layer,
-                                 const RingSpanRequest &request, int64_t maxFrames, Copy &&copy)
+                                 const RingSpanRequest &request, int64_t maxFrames, Probe &&probe,
+                                 Copy &&copy, bool *replaced = nullptr)
 {
+    if (replaced != nullptr)
+    {
+        *replaced = false;
+    }
     ReadDone done;
     for (int attempt = 0; attempt < kRingReadTries; ++attempt)
     {
@@ -183,6 +215,17 @@ std::optional<ReadDone> readWith(const core::Processor &processor, uint8_t layer
         {
             return std::nullopt;
         }
+        done.frozen = meta.frozen;
+        if (probe(meta, e0, r0, span))
+        {
+            done.from = span.from;
+            done.valid = span.from;
+            done.to = span.to;
+            done.head = r0;
+            done.epoch = e0;
+            done.cached = true;
+            return done;
+        }
         // 5. The copy.
         copy(*read.storage, span.from, span.to);
         // 6. No frame load completes after what follows.
@@ -200,16 +243,32 @@ std::optional<ReadDone> readWith(const core::Processor &processor, uint8_t layer
         {
             if (valid >= span.to)
             {
-                return std::nullopt; // the head lapped the whole copy
+                break; // the head lapped the whole copy
             }
             done.from = span.from;
             done.valid = valid;
             done.to = span.to;
             done.head = r0;
+            done.epoch = e0;
             return done;
         }
     }
+    if (replaced != nullptr)
+    {
+        *replaced = true;
+    }
     return std::nullopt;
+}
+
+/// readWith with no cache to probe.
+template <class Copy>
+std::optional<ReadDone> readWith(const core::Processor &processor, uint8_t layer,
+                                 const RingSpanRequest &request, int64_t maxFrames, Copy &&copy)
+{
+    return readWith(
+        processor, layer, request, maxFrames,
+        [](const core::RingMeta &, uint32_t, int64_t, const Span &) { return false; },
+        std::forward<Copy>(copy));
 }
 } // namespace
 
@@ -335,54 +394,54 @@ std::optional<MediaSession::SavedRing> MediaSession::readForSave(const core::Pro
     failed = false;
     RingSlot &slot = rings_[layer];
     const RingSpanRequest request = windowOf(values, layer, 0);
-    // The cache: an unchanged ring (same storage epoch, head and window start) isn't read or
-    // hashed again.
-    const core::RingRead read = processor.ringRead(layer);
-    const uint32_t epoch = read.storageEpoch->load(std::memory_order_acquire);
-    if (read.storage == nullptr)
+    // The cache (spec §6.6), probed through the one reader: a frozen ring whose storage epoch,
+    // head and window start are the ones encoded last isn't copied or hashed again. Only a frozen
+    // one: nothing writes its frames while the head stands, where a live ring's every write moves
+    // the head (so its key would change anyway), and a frozen ring is the spec's case.
+    std::shared_ptr<SampleBuffer> buffer;
+    const auto probe = [&slot](const core::RingMeta &meta, uint32_t e0, int64_t r0,
+                               const Span &span) {
+        return meta.frozen && slot.cached && slot.encoded != nullptr && slot.cacheEpoch == e0 &&
+               slot.cacheHead == r0 && slot.cacheOldest == span.from;
+    };
+    const auto done = readWith(
+        processor, layer, request, 0, probe,
+        [&](const RingStorage &storage, int64_t from, int64_t to) {
+            buffer =
+                media::ringToBuffer(storage.slots(), storage.capacity(), from, to - from, rate_);
+        },
+        &failed);
+    if (!done.has_value())
     {
-        return std::nullopt;
+        return std::nullopt; // no ring, an empty one, or one replaced under every try (failed)
     }
-    const core::RingMeta meta = processor.ringMeta(layer);
-    const int64_t head = read.head->load(std::memory_order_acquire);
-    std::vector<int64_t> marks;
-    const Span span = spanOf(request, meta, head, read.storage->frames(), marks);
-    if (span.to <= span.from)
+    if (!done->cached)
     {
-        return std::nullopt; // an empty ring: nothing to save
-    }
-    const bool hit = slot.cached && slot.encoded != nullptr && (epoch & 1u) == 0 &&
-                     slot.cacheEpoch == epoch && slot.cacheHead == head &&
-                     slot.cacheOldest == span.from &&
-                     read.storageEpoch->load(std::memory_order_acquire) == epoch;
-    int64_t oldest = span.from;
-    if (!hit)
-    {
-        const std::optional<RingCopy> copy = readRing(processor, layer, request, rate_);
-        if (!copy.has_value())
+        // The window keeps its length W: a front the head lapped during the copy is saved as
+        // silence, as the resize's stable part is, so the loop's period and the marks' offsets
+        // survive.
+        const auto lapped = static_cast<std::size_t>(done->valid - done->from);
+        for (uint32_t c = 0; c < 2; ++c)
         {
-            failed = true;
-            return std::nullopt;
+            std::fill_n(buffer->channel(c), lapped, 0.0f);
         }
-        slot.encoded = std::make_shared<media::EncodedRing>(media::encodeRing(*copy->window));
+        slot.encoded = std::make_shared<media::EncodedRing>(media::encodeRing(*buffer));
         ++ringsEncoded_;
-        slot.cached = true;
-        slot.cacheEpoch = epoch;
-        slot.cacheHead = copy->head;
-        slot.cacheOldest = copy->oldest;
-        oldest = copy->oldest;
-        marks = copy->marks;
+        slot.cached = done->frozen;
+        slot.cacheEpoch = done->epoch;
+        slot.cacheHead = done->head;
+        slot.cacheOldest = done->from;
     }
     SavedRing out;
     out.entry.layer = layer;
-    out.entry.frames = slot.cacheHead - oldest;
+    out.entry.frames = done->to - done->from;
     out.entry.sampleRate = rate_;
     out.entry.channels = 2;
-    for (const int64_t m : marks)
+    for (const int64_t m : done->marks)
     {
-        if (m >= oldest && m < slot.cacheHead)
+        if (m >= done->from && m < done->to)
         {
-            out.entry.splices.push_back(m - oldest);
+            out.entry.splices.push_back(m - done->from);
         }
     }
     out.entry.sha256Hex = slot.encoded->sha256Hex;
@@ -415,6 +474,8 @@ core::SessionState MediaSession::save(const core::ParamValues &values, uint64_t 
         // Returns the payload id (embedded), 0 with `path` set (filed), or kUnwritable. (A
         // plain value, not an optional: GCC 13's -Wmaybe-uninitialized.)
         constexpr int64_t kUnwritable = -1;
+        bool haveFolder = false;
+        fs::path folder; // the captures folder, read from the settings once per save
         const auto place = [&](const std::shared_ptr<const std::string> &bytes,
                                const std::string &sha256Hex, std::string &path) -> int64_t {
             if (embedded + bytes->size() <= core::kEmbedCapBytes)
@@ -423,13 +484,27 @@ core::SessionState MediaSession::save(const core::ParamValues &values, uint64_t 
                 state.audio.push_back({nextId, *bytes});
                 return nextId++;
             }
-            const fs::path folder = capturesFolder();
+            std::error_code error;
+            // A copy collect and save made (collectAndSave) is where the project keeps it.
+            for (const auto &[sha, copy] : collected_)
+            {
+                if (sha == sha256Hex && fs::is_regular_file(copy, error) &&
+                    fs::file_size(copy, error) == bytes->size() && !error)
+                {
+                    path = utf8(copy);
+                    return path.empty() ? kUnwritable : int64_t{0};
+                }
+            }
+            if (!haveFolder)
+            {
+                folder = capturesFolder();
+                haveFolder = true;
+            }
             if (folder.empty())
             {
                 return kUnwritable;
             }
             const fs::path file = folder / (sha256Hex + ".wav");
-            std::error_code error;
             const bool present = fs::is_regular_file(file, error) &&
                                  fs::file_size(file, error) == bytes->size() && !error;
             if (!present && !writeWhole(file, *bytes))
@@ -442,8 +517,12 @@ core::SessionState MediaSession::save(const core::ParamValues &values, uint64_t 
         for (uint8_t l = 0; l < kLayers; ++l)
         {
             RingSlot &slot = rings_[l];
-            // The ring (D1).
-            if (held(values, l))
+            // The ring (D1). A layer no longer held has nothing to say about its ring.
+            if (!held(values, l))
+            {
+                slot.persistStatus.clear();
+            }
+            else
             {
                 std::optional<SavedRing> ring;
                 bool failed = false;
@@ -528,8 +607,7 @@ core::SessionState MediaSession::save(const core::ParamValues &values, uint64_t 
     return state;
 }
 
-MediaSession::Restored MediaSession::restore(const core::SessionState &state,
-                                             double activeRate) noexcept
+MediaSession::Restored MediaSession::restore(core::SessionState state, double activeRate) noexcept
 {
     Restored out;
     setMemoryCapMiB(state.memoryCapMiB);
@@ -544,13 +622,17 @@ MediaSession::Restored MediaSession::restore(const core::SessionState &state,
     }
     try
     {
-        newerAudio_ = state.newerAudio;
+        newerAudio_ = std::move(state.newerAudio);
+        // The payloads, moved out of the state once and shared: each sample or ring that keeps
+        // one aliases its string, so no payload is copied.
+        const auto payloads =
+            std::make_shared<const std::vector<core::AudioPayload>>(std::move(state.audio));
         const auto payloadOf = [&](uint32_t id) -> std::shared_ptr<const std::string> {
-            for (const auto &p : state.audio)
+            for (const auto &p : *payloads)
             {
                 if (p.id == id)
                 {
-                    return std::make_shared<const std::string>(p.bytes);
+                    return std::shared_ptr<const std::string>(payloads, &p.bytes);
                 }
             }
             return nullptr;
@@ -665,6 +747,12 @@ void MediaSession::activate(core::Processor &processor, double sampleRate, uint3
     for (uint8_t l = 0; l < kLayers; ++l)
     {
         RingSlot &slot = rings_[l];
+        // A save's status was about the last Processor's ring; a restore's stands until the next
+        // restore or the layer is no longer held.
+        if (slot.persistStatus == kCapturesUnwritable || slot.persistStatus == kRingReplaced)
+        {
+            slot.persistStatus.clear();
+        }
         const RingStorage *storage = processor.ringRead(l).storage;
         slot.frames = storage != nullptr ? storage->frames() : 0;
         slot.offerPending = false;
@@ -895,7 +983,8 @@ void MediaSession::pollRingLengths(core::Processor &processor) noexcept
         }
         catch (...)
         {
-            slot.resizeStatus = "not enough memory to resize the ring";
+            // Short enough for any std::string's own buffer: assigning it never allocates.
+            slot.resizeStatus = "out of memory";
         }
     }
     refreshBudget();
@@ -970,33 +1059,58 @@ bool MediaSession::saveCapture(const SampleBuffer &buffer, const std::filesystem
 
 media::CollectResult MediaSession::collectAndSave(const std::filesystem::path &folder)
 {
-    core::SessionState state;
-    for (uint8_t l = 0; l < kLayers; ++l)
+    // The save first (the controller's ruling): an active instance's filed rings and captures
+    // are written to the captures folder as a save writes them, then travel with the project.
+    core::ParamValues values{};
+    if (baseValue_)
     {
-        const auto &entry = loaders_[l]->entry();
-        if (entry.has_value() && !entry->embed)
+        for (std::size_t s = 0; s < core::kParamCount; ++s)
         {
-            state.samples[l] = *entry;
-        }
-        const RingSlot &slot = rings_[l];
-        if (slot.pendingEntry.has_value() && slot.pendingBytes == nullptr)
-        {
-            state.rings[l] = *slot.pendingEntry; // a filed ring held for the next activation
+            values[s] = baseValue_(static_cast<core::ParamSlot>(s));
         }
     }
+    core::SessionState state = save(values, 0, {}, active_);
+    state.audio.clear(); // embedded audio needs no collecting
     const core::MachineSettings settings =
         settingsFile_.empty() ? core::MachineSettings{} : media::loadSettings(settingsFile_);
     // Sub-project 5 names the content roots (ContentPaths.h); none until then.
     media::CollectResult result = media::collectMedia(state, folder, settings, {});
+    const auto remember = [this](const std::string &sha256Hex, const std::string &path) {
+        if (const auto copy = media::fromUtf8(path))
+        {
+            std::erase_if(collected_, [&](const auto &c) { return c.first == sha256Hex; });
+            collected_.emplace_back(sha256Hex, *copy);
+        }
+    };
     for (uint8_t l = 0; l < kLayers; ++l)
     {
-        if (state.samples[l].has_value() && result.state.samples[l].has_value())
+        const auto &before = state.samples[l];
+        const auto &after = result.state.samples[l];
+        if (before.has_value() && after.has_value() && !before->embed &&
+            after->absolutePath != before->absolutePath)
         {
-            loaders_[l]->relocate(*result.state.samples[l]);
+            const auto &entry = loaders_[l]->entry();
+            if (entry.has_value() && entry->embed)
+            {
+                remember(after->sha256Hex, after->absolutePath); // a capture, filed by the save
+            }
+            else
+            {
+                loaders_[l]->relocate(*after);
+            }
         }
-        if (state.rings[l].has_value() && result.state.rings[l].has_value())
+        const auto &ringBefore = state.rings[l];
+        const auto &ringAfter = result.state.rings[l];
+        if (ringBefore.has_value() && ringAfter.has_value() && !ringBefore->embed &&
+            ringAfter->absolutePath != ringBefore->absolutePath)
         {
-            rings_[l].pendingEntry = result.state.rings[l];
+            remember(ringAfter->sha256Hex, ringAfter->absolutePath);
+            RingSlot &slot = rings_[l];
+            if (slot.pendingEntry.has_value() &&
+                slot.pendingEntry->sha256Hex == ringAfter->sha256Hex)
+            {
+                slot.pendingEntry->absolutePath = ringAfter->absolutePath;
+            }
         }
     }
     if (markDirty_)

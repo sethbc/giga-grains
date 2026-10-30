@@ -910,12 +910,12 @@ void Processor::handBackRetired(Layer &l) noexcept
     }
 }
 
-bool Processor::takeOffers() noexcept
+bool Processor::takeOffers(bool adoptRings) noexcept
 {
     bool applied = false;
     for (const auto &l : layers_)
     {
-        if (takeLayerOffers(*l))
+        if (takeLayerOffers(*l, adoptRings))
         {
             applied = true;
         }
@@ -923,29 +923,62 @@ bool Processor::takeOffers() noexcept
     return applied;
 }
 
-bool Processor::takeLayerOffers(Layer &l) noexcept
+bool Processor::takeLayerOffers(Layer &l, bool adoptRings) noexcept
 {
     // A retired source first: one waiting to be taken would keep the engine from adopting.
     handBackRetired(l);
-    SourceOffer offer;
-    const bool offered = l.sources.poll(offer);
-    if (offered)
+    bool applied = false;
+    if (l.hasDeferredOffer)
     {
-        if (offer.hasValues)
+        if (!adoptRings)
         {
-            setBases(offer.values);
-        }
-        // A keep-source offer (ruling R19) leaves the source alone: the engine's, and one taken
-        // but not yet adopted.
-        if (!offer.keepSource)
-        {
-            if (l.hasPendingSource)
+            // Still waiting for a call's start: newer offers wait in the mailbox behind it.
+            if (l.hasPendingSource && l.engine.adoptSource(l.pendingSource))
             {
-                l.sources.retire(l.pendingSource); // superseded before the engine ever read it
+                l.hasPendingSource = false;
             }
-            l.pendingSource = offer.source;
-            l.hasPendingSource = true;
+            return false;
         }
+        // The older offer first, then whatever came after it.
+        l.hasDeferredOffer = false;
+        applied = applyOffer(l, l.deferredOffer);
+    }
+    SourceOffer offer;
+    if (l.sources.poll(offer))
+    {
+        if (!adoptRings && offer.hasRing)
+        {
+            l.deferredOffer = offer; // whole: its values, source and ring land together
+            l.hasDeferredOffer = true;
+        }
+        else if (applyOffer(l, offer))
+        {
+            applied = true;
+        }
+    }
+    if (l.hasPendingSource && l.engine.adoptSource(l.pendingSource))
+    {
+        l.hasPendingSource = false;
+    }
+    return applied;
+}
+
+bool Processor::applyOffer(Layer &l, const SourceOffer &offer) noexcept
+{
+    if (offer.hasValues)
+    {
+        setBases(offer.values);
+    }
+    // A keep-source offer (ruling R19) leaves the source alone: the engine's, and one taken but
+    // not yet adopted.
+    if (!offer.keepSource)
+    {
+        if (l.hasPendingSource)
+        {
+            l.sources.retire(l.pendingSource); // superseded before the engine ever read it
+        }
+        l.pendingSource = offer.source;
+        l.hasPendingSource = true;
     }
     if (l.hasPendingSource && l.engine.adoptSource(l.pendingSource))
     {
@@ -953,7 +986,7 @@ bool Processor::takeLayerOffers(Layer &l) noexcept
     }
     // The ring last (M2 sub-project 2's spec §6.5): after the values, so a restore's Freeze arms
     // over what they set.
-    if (offered && offer.hasRing)
+    if (offer.hasRing)
     {
         if (adoptRing(l, offer.ring))
         {
@@ -964,7 +997,7 @@ bool Processor::takeLayerOffers(Layer &l) noexcept
             l.sources.markRingDeclined();
         }
     }
-    return offered && offer.hasValues;
+    return offer.hasValues;
 }
 
 bool Processor::adoptRing(Layer &l, const RingOffer &offer) noexcept

@@ -157,6 +157,64 @@ std::vector<float> interleaved(const gg::SampleBuffer &buffer, int64_t from = 0)
     return v;
 }
 
+// An FX state whose layer A holds a frozen 100 s ring of a ramp, embedded: 38.4 MB of WAV, over
+// the 32 MiB embed cap, so a save files it.
+struct BigRing
+{
+    std::shared_ptr<gg::SampleBuffer> window;
+    gg::core::RingEntry entry;
+    std::string state;
+};
+
+BigRing bigRing()
+{
+    constexpr int64_t kFrames = 100 * 48000;
+    BigRing out;
+    gg::core::SessionState s = fxDefaults();
+    s.values[slotIndex(LayerParam::Freeze, 0)] = 1.0f;
+    s.values[slotIndex(LayerParam::RingLength, 0)] = static_cast<float>(std::log2(100.0));
+    out.window = ramp(kFrames);
+    gg::media::EncodedRing encoded = gg::media::encodeRing(*out.window);
+    out.entry.layer = 0;
+    out.entry.frames = kFrames;
+    out.entry.sampleRate = kRate;
+    out.entry.sha256Hex = encoded.sha256Hex;
+    out.entry.fileSize = encoded.size;
+    out.entry.embed = true;
+    out.entry.audioId = 1;
+    s.rings[0] = out.entry;
+    s.audio.push_back({1, std::move(encoded.wavBytes)});
+    out.state = gg::core::encodeState(s);
+    REQUIRE(out.state.size() > gg::core::kEmbedCapBytes);
+    return out;
+}
+
+// A host that counts request_callback calls (any thread).
+class CallbackHost
+{
+  public:
+    CallbackHost() { host_.host_data = this; }
+    CallbackHost(const CallbackHost &) = delete;
+    CallbackHost &operator=(const CallbackHost &) = delete;
+    const clap_host *clap() const noexcept { return &host_; }
+    uint32_t callbacks() const noexcept { return callbacks_.load(); }
+
+  private:
+    std::atomic<uint32_t> callbacks_{0};
+    clap_host host_{
+        CLAP_VERSION_INIT,
+        nullptr,
+        "gg-tests callback host",
+        "Giga Grains",
+        "",
+        "0.0.0",
+        [](const clap_host *, const char *) -> const void * { return nullptr; },
+        [](const clap_host *) {}, // request_restart
+        [](const clap_host *) {}, // request_process
+        [](const clap_host *host) { ++static_cast<CallbackHost *>(host->host_data)->callbacks_; },
+    };
+};
+
 // Loads `state` into a new FX instance (inactive), activates it and renders `blocks` silent
 // blocks: the output.
 std::vector<float> renderRestored(const std::string &state, int blocks,
@@ -223,24 +281,10 @@ TEST_CASE("a filed ring over the embed cap goes to the captures folder", "[plugi
     // is filed as <sha256>.wav, the state stays small, and a restore finds it there.
     const fs::path dir = gg::test::useMediaScratch("ring-filed");
     fs::remove_all(dir / "captures");
-    constexpr int64_t kFrames = 100 * 48000;
-    gg::core::SessionState s = fxDefaults();
-    s.values[slotIndex(LayerParam::Freeze, 0)] = 1.0f;
-    s.values[slotIndex(LayerParam::RingLength, 0)] = static_cast<float>(std::log2(100.0));
-    const auto window = ramp(kFrames);
-    gg::media::EncodedRing encoded = gg::media::encodeRing(*window);
-    gg::core::RingEntry entry;
-    entry.layer = 0;
-    entry.frames = kFrames;
-    entry.sampleRate = kRate;
-    entry.sha256Hex = encoded.sha256Hex;
-    entry.fileSize = encoded.size;
-    entry.embed = true;
-    entry.audioId = 1;
-    s.rings[0] = entry;
-    s.audio.push_back({1, std::move(encoded.wavBytes)});
-    const std::string big = gg::core::encodeState(s);
-    REQUIRE(big.size() > gg::core::kEmbedCapBytes);
+    const BigRing ring = bigRing();
+    const auto &window = ring.window;
+    const auto &entry = ring.entry;
+    const std::string &big = ring.state;
 
     std::string state;
     {
@@ -248,7 +292,7 @@ TEST_CASE("a filed ring over the embed cap goes to the captures folder", "[plugi
         REQUIRE(fx.valid());
         REQUIRE(fx.load(big));
         REQUIRE(fx.activate(kRate, kBlock));
-        CHECK(fx.impl().processor()->ringRead(0).storage->frames() == kFrames);
+        CHECK(fx.impl().processor()->ringRead(0).storage->frames() == entry.frames);
         state = fx.save();
     }
     CHECK(state.size() < 64 * 1024);
@@ -448,6 +492,36 @@ TEST_CASE("capture, load into a layer, save and restore", "[plugin]")
     CHECK(idle.impl().media().status(2) == "no ring to capture");
 }
 
+TEST_CASE("collect and save gathers a filed ring", "[plugin]")
+{
+    // The controller's ruling: collect and save saves first, so an active instance's filed ring
+    // (written to the captures folder) travels with the project, and later saves reference the
+    // copy.
+    const fs::path dir = gg::test::useMediaScratch("collect-ring");
+    fs::remove_all(dir / "captures");
+    const BigRing ring = bigRing();
+    PluginUnderTest fx(kFxId);
+    REQUIRE(fx.valid());
+    REQUIRE(fx.load(ring.state));
+    REQUIRE(fx.activate(kRate, kBlock));
+    const fs::path folder = dir / "collected";
+    fs::remove_all(folder);
+    const gg::media::CollectResult result = fx.impl().media().collectAndSave(folder);
+    CHECK(result.missing.empty());
+    REQUIRE(result.copied.size() == 1);
+    const fs::path copy = folder / (ring.entry.sha256Hex + ".wav");
+    CHECK(fs::file_size(copy) == ring.entry.fileSize);
+    const gg::core::SessionState saved = decoded(fx.save(), gg::core::Mode::Fx);
+    REQUIRE(saved.rings[0].has_value());
+    CHECK(fs::path(saved.rings[0]->absolutePath) == copy);
+    // The captures folder may go: the project's copy restores it.
+    fs::remove_all(dir / "captures");
+    std::vector<float> restored;
+    gg::core::SessionState moved = saved;
+    renderRestored(gg::core::encodeState(moved), 1, &restored);
+    CHECK(restored == interleaved(*ring.window));
+}
+
 TEST_CASE("collect and save gathers the files", "[plugin]")
 {
     // Spec §6.7: every layer's file copied into one folder, the entries then pointing there.
@@ -509,6 +583,113 @@ TEST_CASE("a Ring Length change resizes while processing", "[plugin]")
     REQUIRE(after.size() == before.size() + 2 * kBlock);
     CHECK(std::equal(before.begin(), before.end(), after.begin()));
     CHECK(processor->engine(0).live().frames() == 4 * 48000);
+}
+
+TEST_CASE("params.flush adopts no ring: the offer waits whole for the next process call",
+          "[plugin]")
+{
+    // The programme manager's ruling (CLAUDE.md: params.flush stays trivial): a restore offered
+    // while active is a ring, a source and values on layer A's exchange; a flush takes none of it,
+    // and the next process() call applies it all at its start, the ring held from that call's
+    // first sample, so it renders as a restore made before the first call does.
+    gg::test::useMediaScratch("flush-no-ring");
+    PluginUnderTest a(kFxId);
+    frozenFx(a);
+    gg::core::SessionState s = decoded(a.save(), gg::core::Mode::Fx);
+    s.values[static_cast<std::size_t>(ParamSlot::Density)] = 3.0f;
+    const std::string state = gg::core::encodeState(s);
+    const std::vector<float> expected = renderRestored(state, 20);
+
+    PluginUnderTest b(kFxId);
+    REQUIRE(b.valid());
+    REQUIRE(b.activate(kRate, kBlock));
+    const auto *processor = b.impl().processor();
+    const gg::RingStorage *before = processor->ringRead(0).storage;
+    REQUIRE(b.load(state));
+    REQUIRE(processor->sources(0).ringAdoptionPending());
+    b.flush(gg::test::InputEvents().list());
+    CHECK(processor->ringRead(0).storage == before); // nothing adopted
+    CHECK(processor->sources(0).ringAdoptionPending());
+    CHECK(processor->base(ParamSlot::Density) != 3.0f); // the values wait with their ring
+    std::vector<float> out;
+    render(b, 20, 0, &out, true);
+    CHECK_FALSE(processor->sources(0).ringAdoptionPending());
+    CHECK(processor->base(ParamSlot::Density) == 3.0f);
+    CHECK(gg::test::sameBits(out, expected));
+}
+
+TEST_CASE("a Ring Length event in a call's last grid step still reaches the watcher", "[plugin]")
+{
+    // The base applies at its grid boundary, here the next call's start: the request for the
+    // watcher must follow the Processor's request, not the value the host sent.
+    gg::test::useMediaScratch("ring-late-event");
+    CallbackHost host;
+    PluginUnderTest fx(kFxId, host.clap());
+    REQUIRE(fx.valid());
+    REQUIRE(fx.activate(kRate, kBlock));
+    render(fx, 4, 1);
+    const auto ringLength = gg::test::paramValue(idOf(LayerParam::RingLength, 0), 2.0, kBlock - 10);
+    gg::test::InputEvents events;
+    events.add(&ringLength.header);
+    Stereo in(kBlock);
+    Stereo out(kBlock);
+    REQUIRE(fx.process(kBlock, in.data(), out.data(), events.list()) == CLAP_PROCESS_CONTINUE);
+    fx.onMainThread(); // the request hasn't changed yet: nothing to resize
+    const auto *processor = fx.impl().processor();
+    CHECK_FALSE(processor->sources(0).ringAdoptionPending());
+    const uint32_t before = host.callbacks();
+    render(fx, 1, 2); // the boundary applies the new base at this call's start
+    CHECK(host.callbacks() > before);
+    fx.onMainThread();
+    CHECK(fx.impl().media().status(0) == "resizing");
+    render(fx, 1, 3);
+    CHECK(processor->ringRead(0).storage->frames() == 4 * 48000);
+}
+
+TEST_CASE("a live ring under Loop and Overdub is encoded again at each save", "[plugin]")
+{
+    // The save's cache holds a frozen ring's bytes alone: a live ring's frames change as it
+    // writes, so two saves with writes between give different bytes.
+    gg::test::useMediaScratch("ring-overdub-save");
+    PluginUnderTest fx(kFxId);
+    REQUIRE(fx.valid());
+    REQUIRE(fx.activate(kRate, kBlock));
+    setParam(fx, idOf(LayerParam::Loop, 0), 1.0);
+    setParam(fx, idOf(LayerParam::LoopLength, 0), -2.0);
+    setParam(fx, idOf(LayerParam::Overdub, 0), 0.7);
+    render(fx, 40, 81);
+    const auto &media = fx.impl().media();
+    const gg::core::SessionState first = decoded(fx.save(), gg::core::Mode::Fx);
+    render(fx, 3, 82);
+    const gg::core::SessionState second = decoded(fx.save(), gg::core::Mode::Fx);
+    CHECK(media.ringsEncoded() == 2);
+    REQUIRE(first.audio.size() == 1);
+    REQUIRE(second.audio.size() == 1);
+    CHECK(first.audio[0].bytes != second.audio[0].bytes);
+    CHECK(first.rings[0]->sha256Hex != second.rings[0]->sha256Hex);
+}
+
+TEST_CASE("a ring status goes once the layer is no longer held", "[plugin]")
+{
+    const fs::path dir = gg::test::useMediaScratch("ring-status-clears");
+    gg::core::SessionState s = fxDefaults();
+    s.values[slotIndex(LayerParam::Freeze, 0)] = 1.0f;
+    gg::core::RingEntry entry;
+    entry.frames = 48000;
+    entry.sampleRate = kRate;
+    entry.sha256Hex = std::string(64, 'd');
+    entry.fileSize = 384068;
+    entry.absolutePath = gg::test::utf8(dir / "gone" / "Captures" / "gone.wav");
+    s.rings[0] = entry;
+    PluginUnderTest fx(kFxId);
+    REQUIRE(fx.valid());
+    REQUIRE(fx.load(gg::core::encodeState(s)));
+    REQUIRE(fx.activate(kRate, kBlock));
+    CHECK(fx.impl().media().status(0) == "ring not found"); // a restore's status stands
+    setParam(fx, paramId(ParamSlot::Freeze), 0.0);
+    render(fx, 1, 3);
+    fx.save();
+    CHECK(fx.impl().media().status(0).empty());
 }
 
 TEST_CASE("INST carries the cap", "[plugin]")
@@ -710,8 +891,37 @@ TEST_CASE("the ring reader's copies match what the audio thread wrote", "[plugin
     uint64_t reads = 0;
     uint64_t trimmed = 0;
     uint64_t bad = 0;
+    uint32_t swaps = 0;
+    uint32_t declinesSeen = 0;
     while (!done.load(std::memory_order_acquire))
     {
+        // Every 25 reads, a storage swap through the exchange (this thread has the main thread's
+        // role: it offers, collects and alone dereferences storage): a new 1 s storage holding
+        // the stable part of a whole-window read, so reads under way meet a changed epoch. A
+        // declined one is offered again.
+        const uint32_t declines = p.ringAdoptionsDeclined(0);
+        if (reads % 25 == 24 && (!p.sources(0).ringAdoptionPending() || declines != declinesSeen))
+        {
+            declinesSeen = declines;
+            const auto copy = gg::plugin::readRing(p, 0, {}, kRate);
+            if (copy.has_value() && copy->oldest == std::max<int64_t>(0, copy->head - kN))
+            {
+                const int64_t frames = kN;
+                auto next = std::make_unique<gg::RingStorage>(frames, kPiece);
+                const gg::SampleBuffer &w = *copy->window;
+                for (int64_t f = std::max(copy->oldest, copy->head - frames); f < copy->head; ++f)
+                {
+                    const int64_t d = f % next->capacity();
+                    next->slots()[2 * d] = w.channel(0)[f - copy->oldest];
+                    next->slots()[2 * d + 1] = w.channel(1)[f - copy->oldest];
+                }
+                gg::core::RingOffer how;
+                how.copiedTo = copy->head;
+                p.sources(0).offerRing(std::move(next), how);
+                ++swaps;
+            }
+        }
+        p.sources(0).collect();
         const auto copy = gg::plugin::readRing(p, 0, {}, kRate);
         if (!copy.has_value())
         {
@@ -736,7 +946,101 @@ TEST_CASE("the ring reader's copies match what the audio thread wrote", "[plugin
         }
     }
     audio.join();
-    INFO("reads " << reads << ", trimmed " << trimmed);
+    p.sources(0).collect();
+    INFO("reads " << reads << ", trimmed " << trimmed << ", swaps " << swaps << ", adopted "
+                  << swaps - p.ringAdoptionsDeclined(0));
     CHECK(reads > 10);
+    CHECK(swaps >= 3);
+    CHECK(swaps > p.ringAdoptionsDeclined(0)); // some adopted mid-run
     CHECK(bad == 0);
+}
+
+TEST_CASE("a save of a running ring keeps the window's length", "[plugin][threads]")
+{
+    // The controller's ruling: when the head laps the front of a save's copy, the save keeps W
+    // frames and writes silence over that front, so the loop's period and the marks' offsets
+    // survive. One thread renders a Processor whose 1 s ring takes a ramp (as the reader test's);
+    // the other saves it (D1: Freeze on in the values saved) as fast as it can. Every saved ring
+    // is N frames once the ring is full, silence then the ramp, contiguous. Bounded: 10 s of audio.
+    const fs::path dir = gg::test::useMediaScratch("ring-save-running");
+    constexpr int64_t kN = 48000;
+    constexpr uint32_t kPiece = 256;
+    constexpr int64_t kTotal = 10 * 48000;
+    gg::core::Processor p({kRate, kPiece, 7, gg::core::Mode::Fx});
+    p.setBase(layerSlot(LayerParam::RingLength, 0), 0.0f); // 1 s
+    gg::plugin::MediaSession media(gg::core::Mode::Fx, dir / "settings.xml", {}, {});
+    media.activate(p, kRate, kPiece);
+    REQUIRE(p.ringRead(0).storage->frames() == kN);
+    gg::core::ParamValues values = fxDefaults().values;
+    values[slotIndex(LayerParam::Freeze, 0)] = 1.0f;
+    values[slotIndex(LayerParam::RingLength, 0)] = 0.0f;
+    std::atomic<bool> done{false};
+    std::atomic<bool> full{false};
+    std::thread audio([&] {
+        std::vector<float> left(kPiece), right(kPiece), outL(kPiece), outR(kPiece);
+        const float *in[2] = {left.data(), right.data()};
+        float *out[2] = {outL.data(), outR.data()};
+        for (int64_t t = 0; t < kTotal; t += kPiece)
+        {
+            for (uint32_t i = 0; i < kPiece; ++i)
+            {
+                const auto v = static_cast<float>(1 + (t + i) % 1000000);
+                left[i] = v;
+                right[i] = -v;
+            }
+            p.process(in, 2, out, 2, kPiece, {});
+            if (t >= 2 * kN)
+            {
+                full.store(true, std::memory_order_release);
+            }
+        }
+        done.store(true, std::memory_order_release);
+    });
+    uint64_t saves = 0;
+    uint64_t lapped = 0;
+    uint64_t bad = 0;
+    while (!done.load(std::memory_order_acquire))
+    {
+        if (!full.load(std::memory_order_acquire))
+        {
+            std::this_thread::yield();
+            continue;
+        }
+        const gg::core::SessionState s = media.save(values, 0, {}, &p);
+        if (!s.rings[0].has_value() || s.audio.size() != 1)
+        {
+            ++bad; // a running 1 s ring is always saved
+            continue;
+        }
+        ++saves;
+        const gg::media::DecodeResult wav =
+            gg::media::decodeAudioBytes(s.audio[0].bytes, gg::media::kDefaultDecodeBound);
+        if (s.rings[0]->frames != kN || !wav.audio.has_value() || wav.audio->buffer->frames() != kN)
+        {
+            ++bad;
+            continue;
+        }
+        const gg::SampleBuffer &w = *wav.audio->buffer;
+        int64_t f = 0;
+        while (f < kN && w.channel(0)[f] == 0.0f && w.channel(1)[f] == 0.0f)
+        {
+            ++f; // the lapped front, silent (the ramp is never 0)
+        }
+        lapped += f > 0 ? 1 : 0;
+        for (int64_t g = f + 1; g < kN; ++g)
+        {
+            const float expected =
+                w.channel(0)[g - 1] == 1000000.0f ? 1.0f : w.channel(0)[g - 1] + 1.0f;
+            if (w.channel(0)[g] != expected || w.channel(1)[g] != -expected)
+            {
+                ++bad;
+                break;
+            }
+        }
+    }
+    audio.join();
+    INFO("saves " << saves << ", lapped " << lapped);
+    CHECK(saves > 5);
+    CHECK(bad == 0);
+    media.deactivate(nullptr, values);
 }

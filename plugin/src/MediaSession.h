@@ -12,6 +12,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "SampleLoader.h"
@@ -59,10 +60,11 @@ struct RingSpanRequest
 /// copy whose oldest frames the head lapped while it copied is still good from max(from, R1 − N)
 /// on. A read is tried up to 8 times for the whole span (a frozen ring passes at once, a running
 /// one whose head moved during the copy fails the whole-span check), and the last try, if its
-/// epoch held, is kept with its lapped front trimmed. nullopt with no ring, an empty span, or the
-/// storage replaced under every try. Main thread only: the storage may be read only on the
-/// thread that frees it (Processor::ringRead). Consumes the layer's RingMeta (Processor::ringMeta,
-/// which has one consumer), for the marks.
+/// epoch held, is kept with its lapped front trimmed (a capture's; a save keeps the window's
+/// length and writes silence over that front instead, MediaSession::save). nullopt with no ring, an
+/// empty span, or the storage replaced under every try. Main thread only: the storage may be read
+/// only on the thread that frees it (Processor::ringRead). Consumes the layer's RingMeta
+/// (Processor::ringMeta, which has one consumer), for the marks.
 std::optional<RingCopy> readRing(const core::Processor &processor, uint8_t layer,
                                  const RingSpanRequest &request, double rate);
 
@@ -77,21 +79,28 @@ std::optional<RingCopy> readRing(const core::Processor &processor, uint8_t layer
 /// ring of record (gg::media::ringBytes of the window the layer was last given, while active: the
 /// Processor's own 16 s ring, a resize offered or set, a restore's) and the WAV bytes of a ring
 /// held for the next activation. It counts what the instance references, never what the audio
-/// thread has yet to hand back, so a refusal never depends on timing. A ring of a new length is
-/// checked with the ring it replaces still counted (both live until the swap); so is a restored
-/// ring.
+/// thread has yet to hand back: a source still draining in an exchange (the one the engine plays
+/// out after a swap, or one retired and not yet collected) isn't counted (a spec §6.5 amendment),
+/// because a refusal must not depend on when a retired source is collected. A ring of a new
+/// length is checked with the ring it replaces still counted (both live until the swap); so is a
+/// restored ring.
 ///
 /// **Rings saved** (D1): a layer's ring is saved when its Freeze or Loop base value is on, as its
-/// window (RingSpanRequest: the loop's when Loop is on), read with readRing (the save retries,
-/// then trims, rather than waiting for a gap between process() calls, which the main thread can't
-/// see), its marks inside it. Rings and embedded captures then take the embed rule (spec §6.6) in
-/// layer order, rings before captures: embedded in AUDI while the payloads stay within
-/// core::kEmbedCapBytes, else filed in the captures folder as `<sha256>.wav`.
+/// window (RingSpanRequest: the loop's when Loop is on), read with readRing's protocol (the save
+/// retries rather than waiting for a gap between process() calls, which the main thread can't
+/// see; a front the head lapped on the last try is saved as silence, so the window keeps its
+/// length W and the marks their offsets), its marks inside it. A frozen ring's WAV bytes and hash
+/// are cached by (storage epoch, head, window start); a live ring's every write moves its head.
+/// Rings and embedded captures then take the embed rule (spec §6.6) in layer order, rings before
+/// captures: embedded in AUDI while the payloads stay within core::kEmbedCapBytes, else filed in
+/// the captures folder as `<sha256>.wav`.
 ///
 /// **Status texts** (status()): "resizing" while a resize is in flight; "over the memory cap:
 /// needs N MB, F MB free of C MB" (gg::media::MemoryBudget::refusal) for a ring the cap refused;
 /// "not saved: captures folder unwritable" and "not saved: the ring was being replaced" for a
-/// save; "ring not found", "embedded audio missing" and "ring not restored: <why>" for a restore;
+/// save (cleared by the next save that writes the ring, at activation, or when the layer is no
+/// longer held); "ring not found", "embedded audio missing" and "ring not restored: <why>" for a
+/// restore (cleared by the next restore, or when the layer is no longer held);
 /// "no ring to capture"; else the loader's status message.
 class MediaSession
 {
@@ -147,7 +156,9 @@ class MediaSession
     /// held from the first sample when the layer's loaded Freeze is on. Inactive (`activeRate`
     /// 0), the rings wait for activate(). A ring that can't be found, whose payload is missing,
     /// that the cap refuses or that won't decode is left out, with its status. Never throws.
-    Restored restore(const core::SessionState &state, double activeRate) noexcept;
+    /// `state` is taken by value: its AUDI payloads are moved into shared storage that the
+    /// restored samples and held rings alias, never copied.
+    Restored restore(core::SessionState state, double activeRate) noexcept;
 
     /// The plugin's activate(), with the new Processor before its first call: every loader's
     /// source (Processor::setSourceNow) and every layer's ring at its Ring Length
@@ -184,9 +195,11 @@ class MediaSession
     /// Writes `buffer` to `path` as a float32 WAV (gg::media::encodeFloat32Wav), creating its
     /// folder. False if it can't be written.
     bool saveCapture(const SampleBuffer &buffer, const std::filesystem::path &path);
-    /// Collect and save (spec §6.7): every loader's file and every filed ring held for the next
-    /// activation, copied into `folder` by gg::media::collectMedia, the entries then pointing at
-    /// the copies, and the state marked dirty.
+    /// Collect and save (spec §6.7): a save first (the rings and captures it files go to the
+    /// captures folder, as save() writes them), then every file that save references, samples,
+    /// filed rings and filed captures, copied into `folder` by gg::media::collectMedia; the
+    /// loaders' entries then point at the copies, and later saves reference the copies of filed
+    /// audio of the same content. Marks the state dirty.
     media::CollectResult collectAndSave(const std::filesystem::path &folder);
 
     /// Layer `layer`'s status message (the class comment).
@@ -243,6 +256,9 @@ class MediaSession
     std::array<std::unique_ptr<SampleLoader>, core::kLayers> loaders_;
     std::array<RingSlot, core::kLayers> rings_;
     std::optional<std::string> newerAudio_; // a newer manifest's AUDI, kept for the save
+    // The copies collect and save made of filed audio, by SHA-256: a later save references the
+    // copy instead of the captures folder.
+    std::vector<std::pair<std::string, std::filesystem::path>> collected_;
     core::Processor *active_{nullptr};
     double rate_{0.0};
     uint32_t maxBlock_{0};

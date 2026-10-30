@@ -67,19 +67,37 @@ SearchCache::Stamps SearchCache::stampsOf(const core::MediaEntry &entry,
         }
     }
     // The captures folder and the saved path's name, after either separator, as findSample
-    // takes them.
+    // takes them (its step 4), for an entry saved in a captures folder: one named "Captures", or
+    // as the setting's folder is. The default folder is looked up only for such an entry.
     const auto separator = entry.absolutePath.find_last_of("/\\");
-    const std::string name = separator == std::string::npos
-                                 ? entry.absolutePath
-                                 : entry.absolutePath.substr(separator + 1);
+    if (separator == std::string::npos || separator == 0)
+    {
+        return stamps;
+    }
+    const std::string name = entry.absolutePath.substr(separator + 1);
+    const std::string savedFolder = entry.absolutePath.substr(0, separator);
+    const auto parent = savedFolder.find_last_of("/\\");
+    const std::string folderName =
+        parent == std::string::npos ? savedFolder : savedFolder.substr(parent + 1);
     // Plain values, not an optional built in a ternary (GCC 13's -Wmaybe-uninitialized).
-    std::filesystem::path captures = media::defaultCapturesFolder();
+    std::filesystem::path captures;
     if (!settings.capturesFolder.empty())
     {
         captures = media::fromUtf8(settings.capturesFolder).value_or(std::filesystem::path());
     }
+    const bool inCaptures =
+        folderName == "Captures" ||
+        (!captures.empty() && media::toUtf8(captures.filename()).value_or("") == folderName);
+    if (!inCaptures || name.empty())
+    {
+        return stamps;
+    }
+    if (captures.empty())
+    {
+        captures = media::defaultCapturesFolder();
+    }
     const auto fileName = media::fromUtf8(name);
-    if (!name.empty() && fileName && !captures.empty())
+    if (fileName && !captures.empty())
     {
         stamps.inCaptures = stampOf(captures / *fileName);
     }

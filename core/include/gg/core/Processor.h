@@ -631,7 +631,14 @@ class Processor
     /// source waiting, if it can, and adopts or declines the offer's ring (the class comment's
     /// ring exchange). Returns whether an offer's values were applied. Call it on the
     /// audio thread between process() calls, or on another while process() isn't running.
-    bool takeOffers() noexcept SST_CPPUTILS_NONBLOCKING;
+    ///
+    /// With `adoptRings` false (params.flush, which stays trivial: CLAUDE.md), an offer that
+    /// carries a ring is taken whole and kept, its values, source and ring alike, and nothing
+    /// more is taken from that layer's sources() until a takeOffers() that adopts rings (the next
+    /// process() call's start, setSourceNow or setRingNow) applies it first, then takes the next.
+    /// So the offer stays one unit, and its ring is adopted at a call's start, held from that
+    /// call's first sample when it is a frozen restore. An offer without a ring applies as ever.
+    bool takeOffers(bool adoptRings = true) noexcept SST_CPPUTILS_NONBLOCKING;
 
     /// The hand-off through which the plugin's main thread offers layer `layer`'s sources to
     /// process() (the class comment); `layer` below kLayers. Its main-thread calls (offer,
@@ -739,6 +746,10 @@ class Processor
         // if hasPendingSource.
         const PreparedSource *pendingSource{nullptr};
         bool hasPendingSource{false};
+        // An offer with a ring that a takeOffers(false) took whole, for the next takeOffers()
+        // that adopts rings, if hasDeferredOffer.
+        SourceOffer deferredOffer{};
+        bool hasDeferredOffer{false};
         Engine engine;
         Diffuser diffuser;
         Ramp level; // the linear gain
@@ -816,7 +827,10 @@ class Processor
     /// and, while this call publishes, the grain queue; then empties the buffers.
     void drainEvents() noexcept SST_CPPUTILS_NONBLOCKING;
     /// takeOffers() for one layer.
-    bool takeLayerOffers(Layer &l) noexcept SST_CPPUTILS_NONBLOCKING;
+    bool takeLayerOffers(Layer &l, bool adoptRings = true) noexcept SST_CPPUTILS_NONBLOCKING;
+    /// Applies one offer taken from the layer's sources(): its values, its source and its ring.
+    /// Returns whether it brought values.
+    bool applyOffer(Layer &l, const SourceOffer &offer) noexcept SST_CPPUTILS_NONBLOCKING;
     /// Hands every source the layer's engine has retired back to its sources
     /// (SourceExchange::retire).
     static void handBackRetired(Layer &l) noexcept SST_CPPUTILS_NONBLOCKING;

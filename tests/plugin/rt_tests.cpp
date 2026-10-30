@@ -1218,8 +1218,9 @@ TEST_CASE("plugin process and flush adopt rings and apply commands without alloc
           "[plugin][rt]")
 {
     // M2 sub-project 2's spec §7: a ring resize's offer (the bounded copy of the frames written
-    // since the main thread's), a restored ring's offer and a ring command, taken by process()
-    // and by params.flush, neither of which allocates or frees.
+    // since the main thread's), a restored ring's offer and a ring command. process() takes them
+    // without allocating or freeing; params.flush, with one pending, adopts no ring (it stays
+    // trivial: the offer waits whole for the next process() call) and doesn't allocate either.
     const char *id = GENERATE(kInstrumentId, kFxId);
     CAPTURE(id);
     const bool isFx = std::string_view(id) == kFxId;
@@ -1247,8 +1248,17 @@ TEST_CASE("plugin process and flush adopt rings and apply commands without alloc
         REQUIRE(plugin.process(512, inputs, outputs, none.list()) == CLAP_PROCESS_CONTINUE);
     }
 
-    // A resize, adopted by process(), then one adopted by params.flush.
+    // A resize: a flush with it pending adopts nothing, the next process() adopts it.
     ringLength(2.0);
+    const gg::RingStorage *before = processor->ringRead(0).storage;
+    AllocTripwire::resetCount();
+    {
+        AllocTripwire::Scope armed;
+        params->flush(plugin.clap(), none.list(), gg::test::discardingOutputEvents());
+    }
+    REQUIRE_NO_ALLOCATIONS(AllocTripwire::count());
+    CHECK(processor->ringRead(0).storage == before);
+    CHECK(processor->sources(0).ringAdoptionPending());
     AllocTripwire::resetCount();
     {
         AllocTripwire::Scope armed;
@@ -1256,15 +1266,8 @@ TEST_CASE("plugin process and flush adopt rings and apply commands without alloc
     }
     REQUIRE_NO_ALLOCATIONS(AllocTripwire::count());
     CHECK(processor->ringRead(0).storage->frames() == 4 * 48000);
-    ringLength(3.0);
-    AllocTripwire::resetCount();
-    {
-        AllocTripwire::Scope armed;
-        params->flush(plugin.clap(), none.list(), gg::test::discardingOutputEvents());
-    }
-    REQUIRE_NO_ALLOCATIONS(AllocTripwire::count());
-    CHECK(processor->ringRead(0).storage->frames() == 8 * 48000);
-    plugin.onMainThread(); // frees the storages replaced
+    CHECK_FALSE(processor->sources(0).ringAdoptionPending());
+    plugin.onMainThread(); // frees the storage replaced
 
     // A restored ring (layer A's Freeze on: D1 saves it), taken by process(), then by a flush.
     const auto freeze = gg::test::paramValue(paramId(ParamSlot::Freeze), 1.0);
@@ -1290,6 +1293,14 @@ TEST_CASE("plugin process and flush adopt rings and apply commands without alloc
     {
         AllocTripwire::Scope armed;
         params->flush(plugin.clap(), none.list(), gg::test::discardingOutputEvents());
+        params->flush(plugin.clap(), none.list(), gg::test::discardingOutputEvents());
+    }
+    REQUIRE_NO_ALLOCATIONS(AllocTripwire::count());
+    CHECK(processor->sources(0).ringAdoptionPending()); // a flush adopts no ring
+    AllocTripwire::resetCount();
+    {
+        AllocTripwire::Scope armed;
+        plugin.process(512, inputs, outputs, none.list());
     }
     REQUIRE_NO_ALLOCATIONS(AllocTripwire::count());
     CHECK_FALSE(processor->sources(0).ringAdoptionPending());

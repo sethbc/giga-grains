@@ -122,9 +122,9 @@ class SourceExchange
     /// Never allocates.
     void offerValues(const ParamValues &values);
 
-    /// Main thread. Makes room for one more source, so that the next offer() or hold() doesn't
-    /// allocate: an all-or-nothing caller allocates here, before it changes anything. Throws
-    /// std::bad_alloc.
+    /// Main thread. Makes room for one more source and one more ring, so that the next offer()
+    /// or hold(), and the next offerRing() or holdRing(), don't allocate: an all-or-nothing caller
+    /// allocates here, before it changes anything. Throws std::bad_alloc.
     void reserve();
 
     /// Main thread. Holds `s` without offering it, for a caller that gives it to the engine

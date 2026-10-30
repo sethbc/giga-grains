@@ -131,6 +131,11 @@ void SourceExchange::reserve()
     {
         owned_.reserve(std::max<std::size_t>(4, 2 * owned_.capacity()));
     }
+    // And a ring's slot, for an offerRing() after it (a restore's).
+    if (rings_.size() == rings_.capacity())
+    {
+        rings_.reserve(std::max<std::size_t>(4, 2 * rings_.capacity()));
+    }
 }
 
 const PreparedSource *SourceExchange::hold(std::shared_ptr<const PreparedSource> s)

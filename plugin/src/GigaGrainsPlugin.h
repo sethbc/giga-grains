@@ -120,12 +120,12 @@ const clap_plugin_descriptor *descriptorFor(Product product) noexcept;
 /// after a process() polled its layer lands one call later; the values never come after their
 /// ring); while inactive, activate() converts them at the new rate before it returns, as it does
 /// the samples it has at any new rate (ruling R18), and sets every ring at its Ring Length. The
-/// audio thread asks for on_main_thread when a layer's Ring Length base changes
+/// audio thread asks for on_main_thread when a layer's requested ring changes
 /// (checkRingLengths), where the watcher resizes the ring (MediaSession::pollRingLengths). A
-/// ring adoption's bounded copy (at most LiveSource::kAdoptCopyFrames frames of each channel) may
-/// run in params.flush, which takes the offers as process() does: it is the same bounded,
-/// allocation-free copy, so params.flush stays real-time safe (the [rt] tests cover it). The
-/// per-machine
+/// ring is never adopted in params.flush, which stays trivial (CLAUDE.md): a flush takes an offer
+/// carrying a ring whole and leaves it, values, source and ring, to the next process() call's
+/// start (Processor::takeOffers), so a restored frozen ring is still held from its first processed
+/// sample. The per-machine
 /// settings file is $GG_SETTINGS_FILE when that is set and not empty (read once, at
 /// construction: the tests' way to keep away from the user's file), and
 /// gg::media::defaultSettingsPath() otherwise.
@@ -386,9 +386,10 @@ class GigaGrainsPlugin : public plugHelper_t
     /// Stores a base value in values_, clamped to the parameter's range, as the Processor
     /// clamps it.
     void storeValue(gg::core::ParamSlot slot, float value) noexcept SST_CPPUTILS_NONBLOCKING;
-    /// Takes the Processor's offers (Processor::takeOffers) and, when one brought values, puts
-    /// them in values_. Audio thread, or the main thread with the audio thread stopped.
-    void takeOffers() noexcept SST_CPPUTILS_NONBLOCKING;
+    /// Takes the Processor's offers (Processor::takeOffers, adopting rings or, for a flush, not)
+    /// and, when one brought values, puts them in values_. Audio thread, or the main thread with
+    /// the audio thread stopped.
+    void takeOffers(bool adoptRings = true) noexcept SST_CPPUTILS_NONBLOCKING;
     /// Takes the editor's changes queued so far (at most kUiQueueCapacity, so a main thread
     /// still pushing can't keep it here) and sends each on to `out` (try_push; a refusal is
     /// counted in uiEventsDropped_). Values: with `values`, appended to it from `count` on as
@@ -416,8 +417,10 @@ class GigaGrainsPlugin : public plugHelper_t
     /// active, the main thread while not. Its real-time safety is the host's, as requestCollect's
     /// is.
     void checkKinds() noexcept SST_CPPUTILS_NONBLOCKING;
-    /// As checkKinds, for each layer's Ring Length base in values_ (shownRingLengths_): a change
-    /// asks for on_main_thread, once until that call comes, where the resize watcher runs.
+    /// As checkKinds, for each layer's requested ring (Processor::ringSecondsRequested, which
+    /// changes when the Ring Length base applies at its boundary; shownRingSeconds_): a change asks
+    /// for on_main_thread, once until that call comes, where the resize watcher runs. Audio
+    /// thread, or the main thread while the audio thread is stopped; nothing while inactive.
     void checkRingLengths() noexcept SST_CPPUTILS_NONBLOCKING;
     /// Audio thread. When a source the audio thread handed back awaits the main thread's
     /// collect, asks the host for on_main_thread (clap_host.request_callback, thread-safe), once
@@ -460,9 +463,9 @@ class GigaGrainsPlugin : public plugHelper_t
     // Set by checkKinds when a layer's kind changed, cleared by on_main_thread, which then asks
     // the host to rescan the parameters' text.
     std::atomic<bool> kindsChanged_{false};
-    // Each layer's Ring Length base as last noted by checkRingLengths, whose caller owns it (as
-    // shownKinds_), and its flag, cleared by on_main_thread.
-    std::array<float, gg::core::kLayers> shownRingLengths_{};
+    // Each layer's requested ring, in seconds, as last noted by checkRingLengths (set by activate()
+    // to the rings it sized), and its flag, cleared by on_main_thread.
+    std::array<double, gg::core::kLayers> shownRingSeconds_{};
     std::atomic<bool> ringLengthsChanged_{false};
 
     // The Processor's runner (see the class comment): the host's pool, or a loop on the calling
