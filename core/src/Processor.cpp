@@ -1585,7 +1585,7 @@ void Processor::render(const Buffers &b, int64_t from, int64_t to) noexcept
             // association matters to the goldens' bytes); otherwise the wet side is split from
             // the dry one, limited, and the dry added after it.
             const bool limiting = !limiter_.isOff() || limiterParams_.mode != LimiterMode::Off;
-            float side[2];
+            float side[2]{};
             if (limiting)
             {
                 for (uint32_t c = 0; c < 2; ++c)
