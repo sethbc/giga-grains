@@ -1359,3 +1359,323 @@ TEST_CASE("spray in seconds spreads start frames around the position", "[cloud]"
         }
     }
 }
+
+namespace
+{
+// A grain's pitch spread (spec §6.6): the rate the scheduler draws for grain k with the given
+// Pitch, spread and held key (−1 for none).
+double spreadRate(double pitch, double spread, int key, uint64_t k)
+{
+    const double u = gg::rng::bipolar(gg::rng::hash({kSeed, 0, 0, gg::rng::Field::PitchSpread, k}));
+    const double semis = pitch + (key >= 0 ? static_cast<double>(key - 60) : 0.0) + spread * u;
+    return gg::exp2Det(std::clamp(semis, -48.0, 48.0) / 12.0);
+}
+
+// A grain's size spread (spec §6.6): the duration in samples the scheduler draws for grain k.
+double spreadDuration(double sizeSec, double spread, double sampleRate, uint64_t k)
+{
+    const double u = gg::rng::bipolar(gg::rng::hash({kSeed, 0, 0, gg::rng::Field::SizeSpread, k}));
+    const double log2Size = gg::logDet(sizeSec) / gg::logDet(2.0);
+    const double seconds = gg::exp2Det(std::clamp(log2Size + spread * u, -7.643856189774724, 1.0));
+    return std::max(16.0, seconds * sampleRate);
+}
+
+// Non-default values for every control the spreads could disturb.
+gg::CloudParams busyParams()
+{
+    gg::CloudParams p = cloudAt(200.0, 0.5);
+    p.grainDurationSec = 0.07;
+    p.position = 0.4;
+    p.spray = 0.3;
+    p.pitchSemitones = 7.3;
+    p.stereo = 0.8;
+    p.gain = 0.75f;
+    p.texture = 0.25;
+    return p;
+}
+} // namespace
+
+TEST_CASE("pitch spread 0 leaves every rate bit for bit", "[cloud]")
+{
+    for (const gg::CloudParams &base : {gg::CloudParams{}, busyParams()})
+    {
+        for (const double zero : {0.0, -0.0})
+        {
+            INFO("pitch " << base.pitchSemitones << ", spread " << zero);
+            gg::CloudParams explicitZero = base;
+            explicitZero.pitchSpreadSemitones = zero;
+            explicitZero.sizeSpreadOctaves = zero;
+
+            gg::CloudScheduler a;
+            a.setParams(base);
+            gg::CloudScheduler b;
+            b.setParams(explicitZero);
+            const auto grainsA = collectGrains(a, 1000, 97);
+            const auto grainsB = collectGrains(b, 1000, 97);
+            REQUIRE(grainsA == grainsB);
+            // And both are the scheduler's draws before the spreads: M1's.
+            const auto m1 = drawsWithoutNotes(base, 48000.0, gg::SourceMode::Sample, 1000);
+            for (std::size_t i = 0; i < m1.size(); ++i)
+            {
+                gg::GrainDraw expected = m1[i];
+                expected.texture = base.texture; // drawsWithoutNotes leaves it at 0
+                REQUIRE(grainsB[i] == expected);
+            }
+
+            // With a key held, the rate is M1's keyed rate.
+            const std::array<uint8_t, 1> held{72};
+            a.reset();
+            a.setHeldKeys(held);
+            b.reset();
+            b.setHeldKeys(held);
+            const auto keyedA = collectGrains(a, 1000, 97);
+            const auto keyedB = collectGrains(b, 1000, 97);
+            REQUIRE(keyedA == keyedB);
+            const double keyedRate =
+                gg::exp2Det(std::clamp(base.pitchSemitones + 12.0, -48.0, 48.0) / 12.0);
+            bool allKeyed = true;
+            for (const gg::GrainDraw &g : keyedB)
+            {
+                allKeyed = allKeyed && g.rate == keyedRate;
+            }
+            REQUIRE(allKeyed);
+        }
+    }
+}
+
+TEST_CASE("pitch spread 24 stays within the clamp", "[cloud]")
+{
+    struct Case
+    {
+        double pitch;
+        int key; // −1: none held
+    };
+    // Pitch 24 alone reaches [0, 48) semitones; with key 84 (+24) or key 36 (−24) at Pitch ±24
+    // the spread runs past ±48, and the clamp holds the rate at 16 or 1/16.
+    for (const Case c : {Case{24.0, -1}, Case{24.0, 84}, Case{-24.0, 36}})
+    {
+        INFO("pitch " << c.pitch << ", key " << c.key);
+        gg::CloudParams p = cloudAt(4800.0); // a period of 10 samples
+        p.pitchSemitones = c.pitch;
+        p.pitchSpreadSemitones = 24.0;
+        gg::CloudScheduler cloud;
+        cloud.setParams(p);
+        if (c.key >= 0)
+        {
+            const std::array<uint8_t, 1> held{static_cast<uint8_t>(c.key)};
+            cloud.setHeldKeys(held);
+        }
+        const auto grains = collectGrains(cloud, 10000, 256);
+
+        const double centre =
+            gg::exp2Det(std::clamp(c.pitch + (c.key >= 0 ? c.key - 60 : 0), -48.0, 48.0) / 12.0);
+        bool inRange = true;
+        bool keyed = true;
+        std::size_t below = 0;
+        std::size_t above = 0;
+        std::size_t clamped = 0;
+        for (const gg::GrainDraw &g : grains)
+        {
+            inRange = inRange && g.rate >= gg::exp2Det(-4.0) && g.rate <= gg::exp2Det(4.0);
+            keyed = keyed && g.rate == spreadRate(c.pitch, 24.0, c.key, g.index);
+            below += g.rate < centre ? 1 : 0;
+            above += g.rate > centre ? 1 : 0;
+            clamped += (g.rate == 16.0 || g.rate == 1.0 / 16.0) ? 1 : 0;
+        }
+        REQUIRE(inRange);
+        REQUIRE(keyed);
+        if (c.key < 0)
+        {
+            // Both halves of the spread are hit, about equally.
+            REQUIRE(below > 4500);
+            REQUIRE(above > 4500);
+            REQUIRE(clamped == 0);
+        }
+        else
+        {
+            // Half the draws pass the bound and are clamped to it.
+            REQUIRE(clamped > 4500);
+            REQUIRE(clamped < 5500);
+        }
+    }
+}
+
+TEST_CASE("size spread 0 leaves every duration bit for bit", "[cloud]")
+{
+    for (const double size : {0.1, 0.07, 0.001, 3.0})
+    {
+        INFO("size " << size);
+        gg::CloudParams base = busyParams();
+        base.grainDurationSec = size;
+        gg::CloudParams explicitZero = base;
+        explicitZero.sizeSpreadOctaves = 0.0;
+
+        gg::CloudScheduler a;
+        a.setParams(base);
+        gg::CloudScheduler b;
+        b.setParams(explicitZero);
+        const auto grainsA = collectGrains(a, 1000, 97);
+        const auto grainsB = collectGrains(b, 1000, 97);
+        REQUIRE(grainsA == grainsB);
+        const double m1 = std::max(size * 48000.0, 16.0);
+        bool allM1 = true;
+        for (const gg::GrainDraw &g : grainsB)
+        {
+            allM1 = allM1 && g.durationSamples == m1;
+        }
+        REQUIRE(allM1);
+    }
+}
+
+TEST_CASE("size spread 2 stays within Size's range", "[cloud]")
+{
+    struct Case
+    {
+        double size;
+        double sampleRate;
+        double spread;
+    };
+    // 100 ms ± 2 octaves is 25–400 ms, inside Size's range; 1 s reaches past 2 s, and 10 ms below
+    // 5 ms, which the clamp holds; at 1 kHz, 5 ms is 5 samples, below the 16-sample floor.
+    for (const Case c : {Case{0.1, 48000.0, 2.0}, Case{1.0, 48000.0, 2.0}, Case{0.01, 48000.0, 2.0},
+                         Case{0.01, 1000.0, 4.0}})
+    {
+        INFO("size " << c.size << ", rate " << c.sampleRate << ", spread " << c.spread);
+        gg::CloudParams p = cloudAt(c.sampleRate / 10.0); // a period of 10 samples
+        p.grainDurationSec = c.size;
+        p.sizeSpreadOctaves = c.spread;
+        gg::CloudScheduler cloud;
+        cloud.prepare(c.sampleRate);
+        cloud.setParams(p);
+        const auto grains = collectGrains(cloud, 10000, 256);
+
+        const double centre = c.size * c.sampleRate;
+        // exp2Det(log2 0.005) is 0.005 to within a few ulp.
+        const double lowest = std::max(16.0, 0.005 * c.sampleRate * (1.0 - 1e-12));
+        // The duration the lower clamp gives, exactly.
+        const double clampedLow = std::max(16.0, gg::exp2Det(-7.643856189774724) * c.sampleRate);
+        bool inRange = true;
+        bool keyed = true;
+        bool gainKept = true;
+        std::size_t below = 0;
+        std::size_t above = 0;
+        std::size_t atBound = 0;
+        for (const gg::GrainDraw &g : grains)
+        {
+            inRange = inRange && g.durationSamples >= lowest &&
+                      g.durationSamples <= 2.0 * c.sampleRate && g.durationSamples >= 16.0;
+            keyed = keyed &&
+                    g.durationSamples == spreadDuration(c.size, c.spread, c.sampleRate, g.index);
+            gainKept = gainKept && g.gain == p.gain; // the layer's Size normalizes, not the grain's
+            below += g.durationSamples < centre ? 1 : 0;
+            above += g.durationSamples > centre ? 1 : 0;
+            atBound += (g.durationSamples == 2.0 * c.sampleRate || g.durationSamples == clampedLow)
+                           ? 1
+                           : 0;
+        }
+        REQUIRE(inRange);
+        REQUIRE(keyed);
+        REQUIRE(gainKept);
+        // At 1 kHz the Size itself, 10 samples, is below the floor: nothing is shorter.
+        if (c.sampleRate == 1000.0)
+        {
+            REQUIRE(below == 0);
+        }
+        else
+        {
+            REQUIRE(below > 2500);
+        }
+        REQUIRE(above > 2500);
+        if (c.size == 0.1)
+        {
+            REQUIRE(atBound == 0);
+            REQUIRE(grains[0].durationSamples >= 0.025 * 48000.0 * (1.0 - 1e-12));
+        }
+        else
+        {
+            // The bound is 1 octave from the Size, so a quarter of the 4 octaves drawn pass it;
+            // at 1 kHz, the 16-sample floor (16 ms) holds every draw below log2 0.016, over half.
+            REQUIRE(atBound > (c.sampleRate == 1000.0 ? 5000u : 2200u));
+            REQUIRE(atBound < (c.sampleRate == 1000.0 ? 6500u : 2800u));
+        }
+    }
+}
+
+TEST_CASE("the spreads are sanitized", "[cloud]")
+{
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    const double inf = std::numeric_limits<double>::infinity();
+    const gg::CloudParams base = busyParams();
+    gg::CloudScheduler reference;
+    reference.setParams(base);
+    const auto m1 = collectGrains(reference, 200, 97);
+
+    SECTION("a non-finite or negative spread is 0")
+    {
+        for (const double bad : {nan, inf, -inf, -1.0})
+        {
+            INFO("spread " << bad);
+            gg::CloudParams p = base;
+            p.pitchSpreadSemitones = bad;
+            p.sizeSpreadOctaves = bad;
+            gg::CloudScheduler cloud;
+            cloud.setParams(p);
+            REQUIRE(collectGrains(cloud, 200, 97) == m1);
+        }
+    }
+
+    SECTION("a spread past its range is clamped to it")
+    {
+        gg::CloudParams p = base;
+        p.pitchSpreadSemitones = 100.0;
+        p.sizeSpreadOctaves = 9.0;
+        gg::CloudScheduler cloud;
+        cloud.setParams(p);
+        const auto grains = collectGrains(cloud, 200, 97);
+        bool clamped = true;
+        for (const gg::GrainDraw &g : grains)
+        {
+            clamped =
+                clamped && g.rate == spreadRate(base.pitchSemitones, 48.0, -1, g.index) &&
+                g.durationSamples == spreadDuration(base.grainDurationSec, 4.0, 48000.0, g.index);
+        }
+        REQUIRE(clamped);
+    }
+}
+
+TEST_CASE("a spread changes no other draw", "[cloud]")
+{
+    const gg::CloudParams base = busyParams();
+    gg::CloudParams spread = base;
+    spread.pitchSpreadSemitones = 12.0;
+    spread.sizeSpreadOctaves = 1.5;
+    for (const gg::SourceMode mode : {gg::SourceMode::Sample, gg::SourceMode::Live})
+    {
+        gg::CloudScheduler a;
+        a.setSourceMode(mode, 4.0);
+        a.setParams(base);
+        gg::CloudScheduler b;
+        b.setSourceMode(mode, 4.0);
+        b.setParams(spread);
+        const std::array<uint8_t, 3> held{48, 60, 67};
+        a.setHeldKeys(held);
+        b.setHeldKeys(held);
+        const auto grainsA = collectGrains(a, 1000, 97);
+        const auto grainsB = collectGrains(b, 1000, 97);
+        bool same = true;
+        bool spreadRates = false;
+        bool spreadSizes = false;
+        for (std::size_t i = 0; i < grainsA.size(); ++i)
+        {
+            gg::GrainDraw g = grainsB[i];
+            spreadRates = spreadRates || g.rate != grainsA[i].rate;
+            spreadSizes = spreadSizes || g.durationSamples != grainsA[i].durationSamples;
+            g.rate = grainsA[i].rate;
+            g.durationSamples = grainsA[i].durationSamples;
+            same = same && g == grainsA[i];
+        }
+        REQUIRE(same);
+        REQUIRE(spreadRates);
+        REQUIRE(spreadSizes);
+    }
+}

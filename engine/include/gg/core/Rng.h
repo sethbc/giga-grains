@@ -29,9 +29,13 @@ constexpr uint64_t splitmix64(uint64_t x) noexcept
 enum class Field : uint32_t
 {
     PositionJitter = 1,
-    Onset = 2, ///< the Cloud scheduler's interval to the next grain onset
-    Pan = 3,   ///< a grain's stereo pan
-    Note = 4,  ///< which held key a grain plays (spec §6.1)
+    Onset = 2,       ///< the Cloud scheduler's interval to the next grain onset
+    Pan = 3,         ///< a grain's stereo pan
+    Note = 4,        ///< which held key a grain plays (spec §6.1)
+    PitchSpread = 5, ///< a grain's pitch spread, bipolar (M2 spec §6.6)
+    SizeSpread = 6,  ///< a grain's size spread, bipolar (M2 spec §6.6)
+    ModRandom1 = 7,  ///< the first random modulation source (M2 spec §6.8)
+    ModRandom2 = 8,  ///< the second random modulation source (M2 spec §6.8)
     SignalNoise = 100,
 };
 
