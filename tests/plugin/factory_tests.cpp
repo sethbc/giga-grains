@@ -39,6 +39,7 @@
 #include "GrainCanvas.h" // ui/src: the editor's own components
 #include "LoaderStrip.h"
 #include "MacroRow.h"
+#include "Palette.h"
 #include "ParamControl.h"
 #include "editor/EditorPlugin.h"
 #include "editor/UiSettings.h"
@@ -1656,6 +1657,16 @@ TEST_CASE("a ParamControl in mod mode drags its rings and not its value", "[plug
         image.getPixelAt(juce::roundToInt(onRing.x), juce::roundToInt(onRing.y - 1.0f));
     CHECK(atRing.getAlpha() > 0);
     CHECK(atRing.getRed() > atRing.getBlue());
+}
+
+TEST_CASE("the light palette's macro colour shows on its ground", "[plugin]")
+{
+    // Okabe-Ito's yellow is about 1.2:1 on the light background, so light() darkens it.
+    const gg::ui::Palette &light = gg::ui::Palette::light();
+    const gg::ui::Palette &dark = gg::ui::Palette::dark();
+    CHECK(light.sourceFamilies[0] != dark.sourceFamilies[0]);
+    CHECK(light.sourceFamilies[0].getPerceivedBrightness() <
+          light.background.getPerceivedBrightness());
 }
 
 TEST_CASE("the macro row is unchanged", "[plugin]")

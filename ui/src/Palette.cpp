@@ -56,6 +56,9 @@ Palette makeLight()
     p.outline = juce::Colour(0xffc9cdd6);
     p.accent = juce::Colour(0xff1f7a99);
     p.notice = juce::Colour(0xffd55e00); // Okabe–Ito's vermillion, legible on the light ground
+    // Okabe–Ito's yellow is about 1.2:1 on the light ground: the macros take a darkened ochre
+    // (about 4:1), the transport Okabe–Ito's black.
+    p.sourceFamilies[0] = juce::Colour(0xff8f7a00);
     p.sourceFamilies[4] = juce::Colour(0xff000000);
     return p;
 }

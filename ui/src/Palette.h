@@ -36,7 +36,8 @@ struct Palette
     /// The layers A to D: kLayerTints, opaque.
     std::array<juce::Colour, 4> layers;
     /// The Mod view's source families (spec §6.6, §6.9), in order: macros, modulators, MIDI,
-    /// follower, transport. From Okabe–Ito's eight, apart from the layers' four: yellow,
+    /// follower, transport. From Okabe–Ito's eight, apart from the layers' four: yellow (in
+    /// light() darkened to an ochre, 0x8f7a00, since the yellow is about 1.2:1 on its ground),
     /// vermillion, blue, its black shown as grey for the follower, and, for the transport, its
     /// black in light() and the text's near-white in dark(), where black wouldn't show.
     std::array<juce::Colour, 5> sourceFamilies;
