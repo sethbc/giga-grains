@@ -20,9 +20,12 @@ AGPL-3.0-or-later.
 - **When a task conflicts with INTENT.md, stop.** Propose an INTENT.md amendment; don't diverge
   silently.
 - **The principles in §8 are the tie-breakers** when goals conflict.
-- **Where we are** (INTENT §20, §23 #61): M0 and M1 are done, and so are the installers and
+- **Where we are** (INTENT §20, §23 #61, #64): M0 and M1 are done, and so are the installers and
   release pipeline (`docs/superpowers/specs/2026-10-29-release-pipeline-design.md`; the runbook
-  is `docs/releasing.md`); next is M2. M2, M3 and M4 are tagged 0.2.0, 0.3.0 and 0.4.0 as
+  is `docs/releasing.md`). **M2 is in progress** as seven sub-projects in four waves, run by one
+  agent session each (`docs/superpowers/specs/2026-10-29-m2-programme-design.md`: read its §6
+  for your sub-project's scope and what it owns, and its §7 for the rules every sub-project
+  builds on). M2, M3 and M4 are tagged 0.2.0, 0.3.0 and 0.4.0 as
   unpublished draft releases; nothing is public and there are no betas before M5, whose
   `0.5.0-beta.N` are the first public releases (§23 #62); v1.0.0 follows M5.
 - **The records:** each sub-project's spec in `docs/superpowers/specs/`, the published benchmark
