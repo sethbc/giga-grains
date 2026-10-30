@@ -430,7 +430,7 @@ void GrainCanvas::paint(juce::Graphics &g)
         drawLane(g, layer, pal);
     }
     // A 1 px rule between lanes, the selected lane outlined in its colour, and the frame.
-    g.setColour(pal.outline);
+    g.setColour(pal.laneRule);
     for (uint8_t layer = 1; layer < kLaneCount; ++layer)
     {
         const juce::Rectangle<int> b = laneBounds(layer);
@@ -478,7 +478,7 @@ void GrainCanvas::drawLane(juce::Graphics &g, uint8_t layer, const Palette &pal)
     if (!usable(lane))
     {
         // A Sample lane with no sample: nothing to place, so say what to do.
-        g.setColour(pal.dimText);
+        g.setColour(pal.laneText);
         g.setFont(juce::FontOptions(14.0f));
         g.drawText(juce::String("Load a sample, or drop one here"),
                    juce::Rectangle<int>(0, b.getY(), b.getWidth(), b.getHeight()),
@@ -563,10 +563,12 @@ void GrainCanvas::drawPeaks(juce::Graphics &g, uint8_t layer, const LaneGeometry
     };
     const auto stale = [&](const void *source, int64_t key) {
         const bool same = strip.valid && strip.source == source && strip.key == key &&
-                          strip.width == columns && strip.height == static_cast<int>(lane.height) &&
+                          strip.top == static_cast<int>(lane.top) && strip.width == columns &&
+                          strip.height == static_cast<int>(lane.height) &&
                           strip.rate == lane.sampleRate;
         strip.source = source;
         strip.key = key;
+        strip.top = static_cast<int>(lane.top);
         strip.width = columns;
         strip.height = static_cast<int>(lane.height);
         strip.rate = lane.sampleRate;
@@ -580,6 +582,7 @@ void GrainCanvas::drawPeaks(juce::Graphics &g, uint8_t layer, const LaneGeometry
         if (peaks == nullptr || context_.clock == nullptr || peaks->frames() <= 0)
         {
             strip.valid = false;
+            strip.outline.reset();
             return;
         }
         // Frames head − span .. head across the lane (peakColumnFrames), but none past the last
@@ -592,6 +595,7 @@ void GrainCanvas::drawPeaks(juce::Graphics &g, uint8_t layer, const LaneGeometry
                   static_cast<int64_t>(std::floor(static_cast<double>(head) / framesPerColumn))))
         {
             strip.bars.clear(); // keeps its storage
+            strip.outline.reset();
             const int64_t oldest = head - peaks->frames() + gg::core::LivePeaks::kBucket;
             for (int x = 0; x < columns; ++x)
             {
@@ -616,11 +620,13 @@ void GrainCanvas::drawPeaks(juce::Graphics &g, uint8_t layer, const LaneGeometry
         if (wave.peaks == nullptr || wave.peaks->empty())
         {
             strip.valid = false;
+            strip.outline.reset();
             return;
         }
         const std::vector<float> &p = *wave.peaks;
         if (stale(wave.peaks.get(), static_cast<int64_t>(p.size())))
         {
+            strip.outline = wave.peaks;
             strip.bars.clear();
             const double perColumn = static_cast<double>(p.size()) / columns;
             for (int x = 0; x < columns; ++x)

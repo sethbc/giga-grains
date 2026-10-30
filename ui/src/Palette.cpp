@@ -33,6 +33,8 @@ Palette makeDark()
     p.dimText = juce::Colour(0xff9aa0ab);
     p.outline = juce::Colour(0xff2c313b);
     p.accent = juce::Colour(0xff6fc3df);
+    p.laneRule = juce::Colour(0xff2c313b);
+    p.laneText = juce::Colour(0xff9aa0ab);
     p.peaks = juce::Colour(0xff3b4150);
     p.window = juce::Colour(0xff6fc3df);
     p.ghost = juce::Colour(0xffe8e8ec);

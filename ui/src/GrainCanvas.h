@@ -193,8 +193,10 @@ class GrainCanvas final : public juce::Component, public juce::FileDragAndDropTa
     {
         juce::RectangleList<float> bars;
         const void *source{nullptr};
+        /// A Sample strip's outline, held so `source` can't be a freed address reused.
+        std::shared_ptr<const std::vector<float>> outline;
         int64_t key{0};
-        int width{0}, height{0};
+        int top{0}, width{0}, height{0};
         double rate{0.0};
         bool valid{false};
     };

@@ -1508,7 +1508,19 @@ TEST_CASE("double-click freezes one lane", "[plugin]")
     REQUIRE(gg::ui::hitTestRect(x, y, r, gg::ui::GrainCanvas::kEdgeTolerancePx, lane) ==
             gg::ui::DragTarget::Body);
     const juce::Point<float> at{off + x, y};
-    canvas->mouseDoubleClick(mouseAt(*canvas, off + x, y, at, false));
+    // JUCE's order for a double-click: down, up, down (click count 2), double-click, up.
+    const auto doubleClick = [&] {
+        canvas->mouseDown(mouseAt(*canvas, off + x, y, at, false));
+        canvas->mouseUp(mouseAt(*canvas, off + x, y, at, false));
+        canvas->mouseDown(mouseAt(*canvas, off + x, y, at, false));
+        canvas->mouseDoubleClick(mouseAt(*canvas, off + x, y, at, false));
+        canvas->mouseUp(mouseAt(*canvas, off + x, y, at, false));
+    };
+    // A body press that never moves is no gesture.
+    canvas->mouseDown(mouseAt(*canvas, off + x, y, at, false));
+    canvas->mouseUp(mouseAt(*canvas, off + x, y, at, false));
+    CHECK(recording.calls.empty());
+    doubleClick();
     REQUIRE(recording.kinds() == "bve");
     const ParamSlot freeze = layerSlot(LayerParam::Freeze, 2);
     CHECK(recording.calls[0].slot == freeze);
@@ -1516,7 +1528,7 @@ TEST_CASE("double-click freezes one lane", "[plugin]")
     CHECK(recording.calls[1].value == 1.0);
     CHECK(recording.calls[2].slot == freeze);
     // Again: off.
-    canvas->mouseDoubleClick(mouseAt(*canvas, off + x, y, at, false));
+    doubleClick();
     REQUIRE(recording.kinds() == "bvebve");
     CHECK(recording.calls[4].value == 0.0);
     // Not on an edge, nor outside the rectangle.
@@ -2702,3 +2714,102 @@ TEST_CASE("headless build exposes no gui extension", "[plugin]")
     }
 }
 #endif
+
+TEST_CASE("the canvas paints four lanes, and again after a resize", "[plugin]")
+{
+    // Paints into an image so drawLane, the peak strips' cache, the off lane's transparency layer
+    // and the Sample lane's hint run (and so run under the sanitizers).
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    constexpr double kRate = 48000.0;
+    constexpr int64_t kFrames = 16 * 48000;
+    std::array<gg::core::LivePeaks, gg::core::kLayers> peaks;
+    std::vector<float> noise(static_cast<std::size_t>(kFrames));
+    for (std::size_t i = 0; i < noise.size(); ++i)
+    {
+        noise[i] = 0.5f * static_cast<float>(std::sin(0.01 * static_cast<double>(i)));
+    }
+    for (auto &p : peaks)
+    {
+        p.prepare(kFrames);
+        p.write(noise.data(), noise.data(), 0, static_cast<uint32_t>(kFrames));
+    }
+    gg::core::GrainQueue queue;
+    gg::core::SnapshotBuffer snapshots;
+    std::atomic<int64_t> clock{kFrames};
+    RecordingContext recording(gg::core::Mode::Fx);
+    recording.context.grains = &queue;
+    recording.context.snapshot = &snapshots;
+    recording.context.clock = &clock;
+    recording.context.sampleRate = kRate;
+    recording.context.livePeaksFor = [&peaks](uint8_t layer) { return &peaks[layer]; };
+    // Lane D is a Sample lane with a sample; lane C (index 2) has none and shows its hint.
+    recording.context.sampleWaveformFor = [](uint8_t layer) {
+        return layer == 3 ? oneSecondSample() : gg::ui::SampleWaveform{};
+    };
+    gg::core::UiSnapshot snapshot;
+    snapshot.clock = kFrames;
+    snapshot.writeHead = kFrames;
+    for (uint8_t layer = 0; layer < gg::core::kLayers; ++layer)
+    {
+        auto &lane = snapshot.lanes[layer];
+        lane.writeHead = kFrames;
+        lane.builtKind = layer < 2 ? 1 : 0;
+        lane.on = layer != 1; // lane B is off: drawn at 40%
+        lane.feedback = layer == 0 ? 0.5f : 0.0f;
+        lane.frozen = layer == 0;
+        lane.effectivePosition = 0.3f; // a ghost
+    }
+    snapshots.push(snapshot);
+    const auto editor = gg::ui::makeEditor(recording.context);
+    auto *canvas = canvasOf(*editor);
+    REQUIRE(canvas != nullptr);
+
+    const auto paintInto = [&](int width, int height) {
+        canvas->setBounds(0, 0, width, height);
+        juce::Image image(juce::Image::ARGB, width, height, true);
+        juce::Graphics g(image);
+        canvas->paint(g);
+        return image;
+    };
+    const auto litPixels = [&](const juce::Image &image, uint8_t layer) {
+        const juce::Rectangle<int> b = canvas->laneBounds(layer);
+        const juce::Colour ground = gg::ui::Palette::dark().lane;
+        int lit = 0;
+        for (int y = b.getY() + 2; y < b.getBottom() - 1; ++y)
+        {
+            for (int x = b.getX() + 2; x < b.getRight() - 4; ++x)
+            {
+                lit += image.getPixelAt(x, y) != ground ? 1 : 0;
+            }
+        }
+        return lit;
+    };
+    juce::Image image = paintInto(900, 403);
+    CHECK(litPixels(image, 0) > 0); // peaks, rectangle, tint, marker
+    CHECK(litPixels(image, 1) > 0); // off, but drawn
+    CHECK(litPixels(image, 2) > 0); // the hint
+    CHECK(litPixels(image, 3) > 0); // the sample's outline
+    CHECK(image.getPixelAt(10, 10) == gg::ui::Palette::dark().lane); // the header column
+    image = paintInto(900, 403);                                     // the cached strips
+    CHECK(litPixels(image, 0) > 0);
+    image = paintInto(900, 404); // lane tops move, heights may not
+    CHECK(litPixels(image, 2) > 0);
+    CHECK(litPixels(image, 3) > 0);
+    image = paintInto(700, 500);
+    CHECK(litPixels(image, 3) > 0);
+    CHECK(canvas->averageFrameMs() > 0.0);
+}
+
+TEST_CASE("the lanes' overlay colours are the same in both themes", "[plugin]")
+{
+    // D9: the lanes stay dark in the light theme, so everything drawn on them is theme-invariant.
+    const gg::ui::Palette &dark = gg::ui::Palette::dark();
+    const gg::ui::Palette &light = gg::ui::Palette::light();
+    CHECK(light.lane == dark.lane);
+    CHECK(light.laneRule == dark.laneRule);
+    CHECK(light.laneText == dark.laneText);
+    CHECK(light.peaks == dark.peaks);
+    CHECK(light.freeze == dark.freeze);
+    CHECK(light.feedback == dark.feedback);
+    CHECK(light.layers == dark.layers);
+}

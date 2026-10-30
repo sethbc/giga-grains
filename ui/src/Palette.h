@@ -16,9 +16,10 @@ namespace gg::ui
 /// (M1's colours, the default, D8) and light(). sst-jucegui's controls take their colours from
 /// its own dark and light style sheets; these are for the editor's surfaces, text and canvas.
 ///
-/// **The lanes stay dark in both** (D9): `lane`, `peaks`, `window`, `ghost`, `freeze` and
-/// `feedback` are the same in light() as in dark(), since the canvas is additive light on a
-/// dark ground. The layers' colours (kLayerTints, Okabe–Ito's four) are the same in both too.
+/// **The lanes stay dark in both** (D9): `lane`, `laneRule`, `laneText`, `peaks`, `window`,
+/// `ghost`, `freeze` and `feedback` are the same in light() as in dark(), since the canvas is
+/// additive light on a dark ground. The layers' colours (kLayerTints, Okabe–Ito's four) are the
+/// same in both too.
 struct Palette
 {
     // The editor's surfaces and text.
@@ -27,6 +28,8 @@ struct Palette
     juce::Colour text, dimText, outline;
     juce::Colour accent; ///< the view selected, a focused or selected control
     // The canvas.
+    juce::Colour laneRule; ///< the rules between lanes and the canvas's frame
+    juce::Colour laneText; ///< a hint drawn on a lane ("Load a sample, ...")
     juce::Colour peaks;    ///< the live ring's or the sample's outline
     juce::Colour window;   ///< the scan window at the base values
     juce::Colour ghost;    ///< where the effective values have it
