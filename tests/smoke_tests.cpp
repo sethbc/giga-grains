@@ -29,4 +29,8 @@ TEST_CASE("engine library links and reports version", "[smoke]")
     STATIC_REQUIRE(sizeof(void *) == 8);
 }
 
-TEST_CASE("the build is C++23", "[smoke][build]") { STATIC_REQUIRE(__cplusplus >= 202302L); }
+TEST_CASE("the build is C++23", "[smoke][build]")
+{
+    // Beyond C++20: GCC 13 reports 202100L for -std=c++23 (202302L arrived in GCC 14).
+    STATIC_REQUIRE(__cplusplus > 202002L);
+}
