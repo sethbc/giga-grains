@@ -343,3 +343,31 @@ TEST_CASE("reset keeps the mode and ends the fade", "[core][fx]")
     CHECK(l == 0.5f);
     CHECK(r == 0.25f);
 }
+
+TEST_CASE("jump snaps the mode with no fade", "[core][limiter]")
+{
+    // A fade from Off would pass 10 ms of the first samples unlimited; jump makes the first
+    // sample the mode's law alone.
+    constexpr float kCeiling = 0.25f;
+    Limiter lim;
+    lim.prepare(kSr, kRamp);
+    lim.jump(LimiterMode::Peak);
+    float l = 1.0f, r = -0.5f;
+    lim.process(l, r, LimiterMode::Peak, kCeiling, releaseCoeff(0.1));
+    CHECK(std::abs(l) <= kCeiling);
+    CHECK(std::abs(r) <= kCeiling);
+    CHECK_FALSE(lim.isOff());
+
+    lim.jump(LimiterMode::Soft);
+    l = 1.0f;
+    r = 0.0f;
+    lim.process(l, r, LimiterMode::Soft, kCeiling, releaseCoeff(0.1));
+    CHECK(l < kCeiling);
+    CHECK(lim.gain() == 1.0f);
+
+    lim.jump(LimiterMode::Off);
+    CHECK(lim.isOff());
+    l = 3.0f;
+    lim.process(l, r, LimiterMode::Off, kCeiling, releaseCoeff(0.1));
+    CHECK(l == 3.0f);
+}

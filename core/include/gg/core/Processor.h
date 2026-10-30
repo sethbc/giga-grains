@@ -15,9 +15,11 @@
 
 #include <sst/cpputils/rtsan_support.h>
 
+#include "gg/core/Delay.h"
 #include "gg/core/Diffuser.h"
 #include "gg/core/GrainQueue.h"
 #include "gg/core/LivePeaks.h"
+#include "gg/core/Limiter.h"
 #include "gg/core/ModMatrix.h"
 #include "gg/core/ModSources.h"
 #include "gg/core/ParamIds.h"
@@ -310,6 +312,20 @@ struct ControlEvent
 /// channel, each engine's mono render is diffused as both sides, the reverb hears that channel's
 /// rIn on both sides, and the channel gets r's left. The instrument's input feeds its layers'
 /// rings alone: it has no dry path.
+///
+/// **The serial tail** (sub-project 4's spec §6.4–§6.6). After the layers' sum and before the
+/// reverb, the global delay (Delay.h) takes the wet sum: `wet' = wet + amount·echo`, its time
+/// moved at each boundary and glided to, its amount, feedback and damper coefficient ramped like
+/// Mix; at Amount 0 the sum passes untouched. After the reverb's return, the global limiter
+/// (Limiter.h) takes the wet side alone, and the FX's dry signal is added after it:
+/// ```
+/// Off:        out = d·(1 − m) + wet'·m  [+ softLimit(a·r)]          (the lines above)
+/// Soft, Peak: side = wet'·m  [+ softLimit(a·r)]   out = d·(1 − m) + limit(side)   (FX)
+///             side = wet'    [+ softLimit(a·r)]   out = limit(side)               (instrument)
+/// ```
+/// With the mode Off and settled, the Off expressions stand as written, so the stages at rest
+/// leave every output bit for bit. The limiter fades its mode changes over 10 ms; a setBase()
+/// of the mode, setBases() and reset() jump it, as they jump the ramps.
 ///
 /// **Feedback** (sub-project 5's spec §5), per layer. Each engine writes its live ring from
 /// ```
@@ -823,6 +839,23 @@ class Processor
     // reverb (heap: about 14.5 MB, 16-byte aligned).
     SpaceParams space_{};
     std::unique_ptr<SpaceReverb> reverb_;
+
+    // The delay and the limiter (sub-project 4's spec §6.4–§6.6), the serial tail after the
+    // layers' sum. The parameters below are the effective values at the last boundary; the five
+    // ramps move the delay's amount, feedback and damper coefficient and the limiter's ceiling
+    // and release coefficient as Mix does. The limiter's mode and the ping-pong switch are
+    // stepped: the limiter crossfades its own mode changes.
+    Delay delay_;
+    Limiter limiter_;
+    DelayParams delayParams_{};
+    LimiterParams limiterParams_{};
+    float delayDampCoeff_{1.0f};      ///< The damper's one-pole coefficient for Delay Damping.
+    float limiterReleaseCoeff_{1.0f}; ///< Peak's per-sample release coefficient.
+    Ramp delayAmount_;
+    Ramp delayFeedback_;
+    Ramp delayDamp_;
+    Ramp limiterCeiling_;
+    Ramp limiterRelease_;
 };
 } // namespace gg::core
 

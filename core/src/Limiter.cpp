@@ -22,4 +22,11 @@ void Limiter::reset() noexcept
     gain_ = 1.0;
     settle();
 }
+
+void Limiter::jump(LimiterMode mode) noexcept
+{
+    mode_ = mode;
+    gain_ = 1.0;
+    settle();
+}
 } // namespace gg::core

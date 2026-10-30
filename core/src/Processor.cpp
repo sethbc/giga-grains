@@ -15,6 +15,7 @@
 #include <stdexcept>
 
 #include "gg/core/DenormalGuard.h"
+#include "gg/core/MathDet.h"
 #include "gg/core/ParamMap.h"
 #include "fx/BusFilter.h"
 #include "sst/basic-blocks/params/ParamMetadata.h"
@@ -145,6 +146,27 @@ bool sameCloud(const CloudParams &a, const CloudParams &b) noexcept
            same(a.smearDetuneSemitones, b.smearDetuneSemitones) && same(a.busSplit, b.busSplit);
 }
 
+/// The delay damper's one-pole coefficient for Delay Damping (spec §6.4): the cutoff runs from
+/// 20 kHz at 0 to 500 Hz at 1, exponentially, f_c = exp2Det(log2(20000) + damping × (log2(500) −
+/// log2(20000))), and coeff = 1 − exp2Det(−f_c × 2π / ln 2 / sampleRate). No libm.
+float dampCoefficient(float damping, double sampleRate) noexcept
+{
+    constexpr double kLog2Of20k = 14.287712379549449;
+    constexpr double kLog2Of500 = 8.965784284662087;
+    constexpr double kTwoPiOverLn2 = 9.064720283654388;
+    const double cutoff =
+        exp2Det(kLog2Of20k + static_cast<double>(damping) * (kLog2Of500 - kLog2Of20k));
+    return static_cast<float>(1.0 - exp2Det(-cutoff * kTwoPiOverLn2 / sampleRate));
+}
+
+/// Peak's per-sample release coefficient for a release time constant in seconds (spec §6.5):
+/// 1 − exp2Det(−(1/ln 2) / (release × sampleRate)). No libm.
+float releaseCoefficient(float releaseSeconds, double sampleRate) noexcept
+{
+    constexpr double kInvLn2 = 1.4426950408889634;
+    return static_cast<float>(
+        1.0 - exp2Det(-kInvLn2 / (static_cast<double>(releaseSeconds) * sampleRate)));
+}
 } // namespace
 
 float Processor::Ramp::at(int64_t t, int64_t length) const noexcept
@@ -188,6 +210,9 @@ Processor::Processor(const ProcessorConfig &config)
       cellSeconds_(static_cast<double>(kControlGrid) / config.sampleRate),
       reverb_(std::make_unique<SpaceReverb>(config.sampleRate))
 {
+    // The delay's line allocates, so it is sized here, off the audio thread.
+    delay_.prepare(config_.sampleRate);
+    limiter_.prepare(config_.sampleRate, static_cast<uint32_t>(rampSamples_));
     // The first paramMeta() call builds its tables, which allocates; make every call here, off
     // the audio thread, so that process() never makes it, and keep the ranges.
     for (size_t s = 0; s < kParamCount; ++s)
@@ -262,6 +287,14 @@ void Processor::jumpRamps() noexcept
     mix_.jump(toWetParams(effective_, config_.mode, 0).mix);
     amount_.jump(space_.amount);
     drySend_.jump(space_.drySend);
+    delayAmount_.jump(delayParams_.amount);
+    delayFeedback_.jump(delayParams_.feedback);
+    delayDamp_.jump(delayDampCoeff_);
+    limiterCeiling_.jump(limiterParams_.ceilingGain);
+    limiterRelease_.jump(limiterReleaseCoeff_);
+    // The limiter's mode snaps too: its own 10 ms fade would let a new Processor's, or a loaded
+    // Peak state's, first 10 ms through unlimited.
+    limiter_.jump(limiterParams_.mode);
     const MorphParams morph = toMorphParams(effective_);
     morphX_.jump(morph.x);
     morphY_.jump(morph.y);
@@ -281,6 +314,11 @@ void Processor::retargetRamps(int64_t t) noexcept
     mix_.retarget(toWetParams(effective_, config_.mode, 0).mix, t, rampSamples_);
     amount_.retarget(space_.amount, t, rampSamples_);
     drySend_.retarget(space_.drySend, t, rampSamples_);
+    delayAmount_.retarget(delayParams_.amount, t, rampSamples_);
+    delayFeedback_.retarget(delayParams_.feedback, t, rampSamples_);
+    delayDamp_.retarget(delayDampCoeff_, t, rampSamples_);
+    limiterCeiling_.retarget(limiterParams_.ceilingGain, t, rampSamples_);
+    limiterRelease_.retarget(limiterReleaseCoeff_, t, rampSamples_);
     const MorphParams morph = toMorphParams(effective_);
     morphX_.retarget(morph.x, t, rampSamples_);
     morphY_.retarget(morph.y, t, rampSamples_);
@@ -340,6 +378,25 @@ void Processor::setBase(ParamSlot slot, float value) noexcept
         break;
     case ParamSlot::DryToReverb:
         drySend_.jump(space_.drySend);
+        break;
+    case ParamSlot::DelayAmount:
+        delayAmount_.jump(delayParams_.amount);
+        break;
+    case ParamSlot::DelayFeedback:
+        delayFeedback_.jump(delayParams_.feedback);
+        break;
+    case ParamSlot::DelayDamping:
+        delayDamp_.jump(delayDampCoeff_);
+        break;
+    case ParamSlot::LimiterMode:
+        // As a ramped value's setBase jumps it: only process()'s events and the matrix fade.
+        limiter_.jump(limiterParams_.mode);
+        break;
+    case ParamSlot::LimiterCeiling:
+        limiterCeiling_.jump(limiterParams_.ceilingGain);
+        break;
+    case ParamSlot::LimiterRelease:
+        limiterRelease_.jump(limiterReleaseCoeff_);
         break;
     case ParamSlot::MorphX:
         morphX_.jump(morph.x);
@@ -444,6 +501,11 @@ void Processor::jumpMovedRamps() noexcept
     jumpIfMoved(mix_, toWetParams(effective_, config_.mode, 0).mix);
     jumpIfMoved(amount_, space_.amount);
     jumpIfMoved(drySend_, space_.drySend);
+    jumpIfMoved(delayAmount_, delayParams_.amount);
+    jumpIfMoved(delayFeedback_, delayParams_.feedback);
+    jumpIfMoved(delayDamp_, delayDampCoeff_);
+    jumpIfMoved(limiterCeiling_, limiterParams_.ceilingGain);
+    jumpIfMoved(limiterRelease_, limiterReleaseCoeff_);
     jumpIfMoved(morphX_, morph.x);
     jumpIfMoved(morphY_, morph.y);
     for (uint8_t L = 0; L < kLayers; ++L)
@@ -736,6 +798,13 @@ void Processor::updateEffective() noexcept
         }
     }
     space_ = toSpaceParams(effective_, config_.mode);
+    // The delay and the limiter (spec §6.4–§6.6): the read's target moves at each boundary (the
+    // delay glides to it), the ramps' targets are taken from these at retargetRamps.
+    delayParams_ = delayParams(effective_);
+    delayDampCoeff_ = dampCoefficient(delayParams_.damping, config_.sampleRate);
+    delay_.setTimeSamples(static_cast<double>(delayParams_.timeSeconds) * config_.sampleRate);
+    limiterParams_ = limiterParams(effective_);
+    limiterReleaseCoeff_ = releaseCoefficient(limiterParams_.releaseSeconds, config_.sampleRate);
 }
 
 void Processor::syncFreeze() noexcept
@@ -763,6 +832,9 @@ void Processor::reset() noexcept
         l->engine.reset();
     }
     commitPending();
+    // The delay's line is cleared and its read forgets the glide before the effective values
+    // below set its time, which then applies at once; the limiter is reset after them, by jump.
+    delay_.reset();
     // Every note released (spec §6.1), and the engines told: Engine::reset keeps their keys.
     held_.fill(0);
     updateKeys();
@@ -1488,6 +1560,15 @@ void Processor::render(const Buffers &b, int64_t from, int64_t to) noexcept
                 }
                 first = false;
             }
+            // The delay (spec §6.4), after the sum and before the reverb: one mono render is
+            // delayed as a pair. At Amount 0 it leaves the frame untouched, bit for bit.
+            if (rendering == 1)
+            {
+                wet[1] = wet[0];
+            }
+            delay_.process(wet[0], wet[1], delayAmount_.at(t, rampSamples_),
+                           delayFeedback_.at(t, rampSamples_), delayDamp_.at(t, rampSamples_),
+                           delayParams_.pingPong);
             float o[2];
             float rIn[2];
             for (uint32_t c = 0; c < 2; ++c)
@@ -1498,6 +1579,19 @@ void Processor::render(const Buffers &b, int64_t from, int64_t to) noexcept
             if (rendering == 1)
             {
                 rIn[1] = rIn[0];
+            }
+            // The limiter (spec §6.5) takes the wet side alone, after the reverb's return: with
+            // its mode Off and settled, the M1 expressions below stand as they were (the
+            // association matters to the goldens' bytes); otherwise the wet side is split from
+            // the dry one, limited, and the dry added after it.
+            const bool limiting = !limiter_.isOff() || limiterParams_.mode != LimiterMode::Off;
+            float side[2];
+            if (limiting)
+            {
+                for (uint32_t c = 0; c < 2; ++c)
+                {
+                    side[c] = fx ? wet[c] * m : wet[c];
+                }
             }
             // Reverb 2 sums (L + R)·0.5, which overflows to inf (and its loop to NaN, held until
             // the next clear) past about 8.5e37: a huge but finite dry input sent at 100% would.
@@ -1511,8 +1605,19 @@ void Processor::render(const Buffers &b, int64_t from, int64_t to) noexcept
             if (reverb_->chunkActive())
             {
                 // Only here: an idle chunk adds nothing, not even a +0 that would turn a −0 to +0.
-                o[0] += softLimit(a * r[0]);
-                o[1] += softLimit(a * r[1]);
+                float *wetSide = limiting ? side : o;
+                wetSide[0] += softLimit(a * r[0]);
+                wetSide[1] += softLimit(a * r[1]);
+            }
+            if (limiting)
+            {
+                limiter_.process(side[0], side[1], limiterParams_.mode,
+                                 limiterCeiling_.at(t, rampSamples_),
+                                 limiterRelease_.at(t, rampSamples_));
+                for (uint32_t c = 0; c < 2; ++c)
+                {
+                    o[c] = fx ? d[c] * (1.0f - m) + side[c] : side[c];
+                }
             }
             for (uint32_t c = 0; c < channels; ++c)
             {

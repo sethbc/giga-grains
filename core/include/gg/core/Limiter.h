@@ -59,6 +59,16 @@ class Limiter
     /// Peak's gain back to 1 and any fade ended: the next call is the last-set mode's law alone.
     void reset() noexcept;
 
+    /// Snaps to `mode` with no fade: the weights are the mode's alone, Peak's gain 1, and the
+    /// next call is the mode's law from its first sample. For the Processor's construction, a
+    /// loaded state and reset, where a fade from Off would let 10 ms of the wet signal through
+    /// unlimited.
+    void jump(LimiterMode mode) noexcept;
+
+    /// True when process() is the identity until the mode changes: the mode is Off and no fade
+    /// is running. The Processor skips the wet side's split then.
+    bool isOff() const noexcept { return mode_ == LimiterMode::Off && !fading_; }
+
     /// Limits one frame in place, per the laws above. ceiling is the linear ceiling (> 0);
     /// releaseCoeff, 0–1, is Peak's per-sample one-pole release coefficient.
     void process(float &l, float &r, LimiterMode mode, float ceiling,

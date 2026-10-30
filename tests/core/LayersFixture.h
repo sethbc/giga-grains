@@ -9,7 +9,7 @@
 // processor_tests.cpp): the signals, the grain log, the block-split renderer, the four-layer
 // render of the block-size invariance test (M2 sub-project 1's spec §6.2–§6.4), which the
 // thread-pool invariance test (§6.7) renders through each runner, and a route from every mod
-// source (§6.8).
+// source (§6.8). The automation covers the delay and the limiter too (sub-project 4).
 
 #include <algorithm>
 #include <array>
@@ -327,6 +327,18 @@ inline std::vector<TimedEvent> layerAutomation()
             targets.push_back({gg::core::layerSlot(r, L), 0.0f, 1.0f, false});
         }
     }
+    // The serial tail (M2 sub-project 4's spec §6.4, §6.5): the delay's time glides between 1 ms
+    // and 2 s (log2 seconds), its return, feedback, damping and ping-pong move, and the limiter
+    // takes every mode (stepped 0 to 2, so Off, Soft and Peak each come and go), ceiling and
+    // release.
+    targets.push_back({ParamSlot::DelayAmount, 0.0f, 0.8f, false});
+    targets.push_back({ParamSlot::DelayTime, -9.9657843f, 1.0f, false});
+    targets.push_back({ParamSlot::DelayFeedback, 0.0f, 0.95f, false});
+    targets.push_back({ParamSlot::DelayDamping, 0.0f, 1.0f, false});
+    targets.push_back({ParamSlot::DelayPingPong, 0.0f, 1.0f, true});
+    targets.push_back({ParamSlot::LimiterMode, 0.0f, 2.0f, true});
+    targets.push_back({ParamSlot::LimiterCeiling, -24.0f, 0.0f, false});
+    targets.push_back({ParamSlot::LimiterRelease, -6.6438562f, 0.0f, false});
 
     std::vector<TimedEvent> events;
     for (std::size_t t = 0; t < targets.size(); ++t)
