@@ -31,6 +31,7 @@
 #include "gg/core/PatchState.h"
 #include "gg/core/Processor.h"
 #include "core/LayersFixture.h"
+#include "gg/grain/Budget.h"
 #include "gg/metrics/Metrics.h"
 #include "gg/source/PreparedSource.h"
 #include "gg/source/SampleBuffer.h"
@@ -1130,7 +1131,8 @@ TEST_CASE("quotas split the budget equally among rendering layers", "[core][laye
 {
     // M2 engine spec §6.4: each rendering layer's engine gets floor(4 × Budget / n) weight units.
     // Budget 512 (2,048 units) under one HQ cloud of 400 Hz and 2 s grains (800 grains asked
-    // for, 12 units each): layer A alone keeps about 2,048 / 12 grains sounding; with B on from
+    // for, each an HQ stereo grain's weight, 27 units): layer A alone keeps about 2,048 / 27
+    // grains sounding; with B on from
     // the start, each keeps about half that. From 1 s the ladder steals the oldest grains, one per
     // draw, until each grain that filled the quota has been stolen (the new ones are young), so
     // each layer steals about as many grains as its quota holds.
@@ -1162,13 +1164,14 @@ TEST_CASE("quotas split the budget equally among rendering layers", "[core][laye
     INFO("A alone: " << alone.activeA << " sounding, " << alone.stolenA << " stolen; with B: A "
                      << both.activeA << " and " << both.stolenA << ", B " << both.activeB << " and "
                      << both.stolenB);
-    // Overloaded: the ladder stole, and A's grains fill its quota (2,048 / 12 = 170, with the
+    // Overloaded: the ladder stole, and A's grains fill its quota (2,048 / 27 = 75, with the
     // few still fading).
+    const double fit = 2048.0 / gg::grainWeight(gg::Tier::HQ, true);
     REQUIRE(alone.stolenA > 0);
     CHECK(alone.activeB == 0);
     CHECK(alone.stolenB == 0);
-    CHECK(alone.activeA >= 160);
-    CHECK(alone.activeA <= 180);
+    CHECK(alone.activeA >= 0.95 * fit);
+    CHECK(alone.activeA <= 1.1 * fit);
     // With B, A's share halves, and B's is the same: the grains sounding and the steals alike.
     const double half = alone.activeA / 2.0;
     CHECK(std::abs(both.activeA - half) <= 0.1 * half);
@@ -1228,7 +1231,7 @@ TEST_CASE("lowering Budget under a cloud cuts nothing at once", "[core][layers][
 {
     // Review Focus 1 (M2 engine spec §6.4, §6.5): a quota applies to the draws from its boundary
     // on; the grains sounding are not cut. The instrument's layer A, an HQ cloud of 1 s grains
-    // at 400 Hz under the default Budget, has about 160 grains (1,920 units) sounding at 0.4 s
+    // at 400 Hz under the default Budget, has about 160 grains (4,320 units) sounding at 0.4 s
     // (19,200, a boundary), when Budget drops to 256 (1,024 units). From there:
     // - every draw is dropped until the grains end and the load falls under the quota: the
     //   output over the next 256 samples is exactly that of the same render with the note
@@ -1312,7 +1315,7 @@ TEST_CASE("a state without Budget loads at 4096 grains", "[core][layers][budget]
 {
     // M2 engine spec §6.8: a state saved before Budget loads it at its default, 4,096 grains
     // (16,384 units), whatever the instance had: an HQ cloud of 1 s grains at 400 Hz (240
-    // grains, 2,880 units, at 0.6 s) is lowered under Budget 512 and untouched once such a state
+    // grains, 6,480 units, at 0.6 s) is lowered under Budget 512 and untouched once such a state
     // is loaded, rendering as an instance that never had Budget set.
     constexpr int64_t kFrames = 28800;
     gg::core::ParamValues saved{};

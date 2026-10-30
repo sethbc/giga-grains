@@ -1701,7 +1701,7 @@ TEST_CASE("the quota lowers the tier before it drops", "[engine][budget]")
 {
     // 16 Hz of 0.1 s grains: an onset every 3,000 samples and each grain 4,802 long, so exactly
     // one other grain sounds at every onset after the first. The draws are HQ; no quota below
-    // 12 units fits an HQ stereo grain, so each is lowered to the highest tier that fits.
+    // 27 units fits an HQ stereo grain, so each is lowered to the highest tier that fits.
     gg::CloudParams p = params(16.0, 0.1, 0.5, 0.0, 0.0, 0.5f);
     p.quality = gg::Tier::HQ;
     const auto run = [&](uint32_t channels, uint64_t quota, SinkLog &log) {
@@ -1744,7 +1744,7 @@ TEST_CASE("the quota lowers the tier before it drops", "[engine][budget]")
             REQUIRE(log.grains[k].weight == gg::grainWeight(t, true));
         }
     }
-    SECTION("mono, 8 units: a mono HQ grain is 9, two mono Normal grains 6")
+    SECTION("mono, 8 units: a mono HQ grain is 20, two mono Normal grains 6")
     {
         SinkLog log;
         run(1, 8, log);

@@ -15,11 +15,14 @@ namespace gg
 /// What each sounding grain costs per output sample, in integer weight units, by its tier and
 /// whether it reads two channels (M2 engine spec §6.4): kGrainWeights[tier][stereo], index 0 mono,
 /// 1 stereo (a stereo or wider sample, or the live ring). Normal stereo, X's case, is the unit of
-/// 4. Provisional (M5 calibrates them), but they never change at run time.
+/// 4. Provisional (M5 calibrates them), but they never change at run time. HQ's row is Normal's
+/// times r, rounded, with r the median of three `gg-bench --quick` runs' engine-sample-hq over
+/// engine-sample, median ns per grain-sample at block 256, on an Apple M5 Max (2026-10-30, ruling
+/// ES-T8b): 6.7856, 6.6045 and 7.4324, so r = 6.7856 and {round(3r), round(4r)} = {20, 27}.
 inline constexpr uint8_t kGrainWeights[3][2] = {
-    {2, 3},  // Eco
-    {3, 4},  // Normal
-    {9, 12}, // HQ
+    {2, 3},   // Eco
+    {3, 4},   // Normal
+    {20, 27}, // HQ
 };
 
 /// One "grain" of Budget: a Budget of N grains is 4N weight units.
