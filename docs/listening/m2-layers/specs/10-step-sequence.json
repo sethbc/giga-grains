@@ -1,0 +1,13 @@
+{
+  "mode": "fx",
+  "sampleRate": 48000,
+  "durationSeconds": 10.0,
+  "blockSize": 128,
+  "seed": 1,
+  "input": {"kind": "sine", "frequencyHz": 220, "seconds": 10.0, "amplitude": 0.5},
+  "channels": 2,
+  "params": {"Mix": 1.0, "Level": -6.0, "Density": 6.0, "Size": -4.058893689053568, "Position": 0.1, "Spray": 0.0, "A Step Rate": 2.0, "A Step Length": 12, "A Step 1": 0.5, "A Step 2": 0.625, "A Step 3": 0.7916666666666666, "A Step 4": 1.0, "A Step 5": 0.9166666666666666, "A Step 6": 0.7916666666666666, "A Step 7": 0.625, "A Step 8": 0.5, "A Step 9": 0.2916666666666667, "A Step 10": 0.4166666666666667, "A Step 11": 0.5, "A Step 12": 0.7083333333333334},
+  "mod": [
+    {"slot": 13, "source": "Step", "target": "Pitch", "targetLayer": "A", "depth": 12, "curve": "Bipolar"}
+  ]
+}

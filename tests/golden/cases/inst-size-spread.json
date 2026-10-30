@@ -1,0 +1,17 @@
+{
+  "mode": "instrument",
+  "sampleRate": 48000,
+  "durationSeconds": 6.0,
+  "blockSize": 128,
+  "seed": 1,
+  "sample": {"kind": "noise", "seconds": 4.0, "amplitude": 0.5},
+  "params": {"Position": 0.25, "Density": 4.0, "Size": -3.321928094887362, "Level": -6.0, "A Size Spread": 0.0},
+  "automation": [
+    {"time": 1.0, "param": "A Size Spread", "value": 0.5},
+    {"time": 2.0, "param": "A Size Spread", "value": 1.0},
+    {"time": 3.0, "param": "A Size Spread", "value": 2.0}
+  ],
+  "notes": [
+    {"time": 0.0, "key": 60, "duration": 5.0}
+  ]
+}

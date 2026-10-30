@@ -1,0 +1,12 @@
+{
+  "mode": "fx",
+  "sampleRate": 48000,
+  "durationSeconds": 5.0,
+  "blockSize": 128,
+  "seed": 1,
+  "input": {"kind": "file", "path": "loop-48k.wav"},
+  "params": {"Mix": 1.0, "Level": -6.0, "Density": -1.0, "Size": -4.058893689053568, "Position": 0.05, "Spray": 0.0},
+  "mod": [
+    {"slot": 13, "source": "Env Follower", "target": "Density", "targetLayer": "A", "depth": 30.0, "curve": "Unipolar"}
+  ]
+}

@@ -5,10 +5,11 @@
 #ifndef GG_TESTS_CORE_LAYERSFIXTURE_H
 #define GG_TESTS_CORE_LAYERSFIXTURE_H
 
-// What the four-layer tests share (layers_tests.cpp, threads_tests.cpp): the signals, the grain
-// log, the block-split renderer, and the four-layer render of the block-size invariance test
-// (M2 sub-project 1's spec §6.2–§6.4), which the thread-pool invariance test (§6.7) renders
-// through each runner.
+// What the four-layer tests share (layers_tests.cpp, threads_tests.cpp, mod_processor_tests.cpp,
+// processor_tests.cpp): the signals, the grain log, the block-split renderer, the four-layer
+// render of the block-size invariance test (M2 sub-project 1's spec §6.2–§6.4), which the
+// thread-pool invariance test (§6.7) renders through each runner, and a route from every mod
+// source (§6.8).
 
 #include <algorithm>
 #include <array>
@@ -21,6 +22,7 @@
 #include <numbers>
 #include <vector>
 
+#include "gg/core/ModMatrix.h"
 #include "gg/core/ParamIds.h"
 #include "gg/core/ParamMap.h"
 #include "gg/core/Processor.h"
@@ -365,6 +367,46 @@ inline std::vector<uint32_t> randomSplit(uint64_t seed)
         total += n;
     }
     return sizes;
+}
+
+// A route of `source` (its own layer for a per-layer source) to `target` on `targetLayer`.
+inline gg::core::ModRoute route(gg::core::ModSource source, gg::core::ParamSlot target,
+                                uint8_t targetLayer, float depth, gg::core::ModCurve curve,
+                                uint8_t sourceLayer = gg::core::kSameLayer)
+{
+    return gg::core::ModRoute{source, sourceLayer, target, targetLayer, depth, curve};
+}
+
+// Every source routed somewhere (one route per source; the per-layer ones from each target's own
+// layer, on every layer), after the factory routes: the routes of the invariance and allocation
+// tests.
+inline gg::core::ModRoutes allSourceRoutes(gg::core::Mode mode)
+{
+    using gg::core::kAllLayers;
+    using gg::core::ModCurve;
+    using gg::core::ModSource;
+    using gg::core::ParamSlot;
+    gg::core::ModRoutes r = gg::core::factoryRoutes(mode);
+    const std::array<gg::core::ModRoute, 16> extra{{
+        route(ModSource::Lfo1, ParamSlot::Position, kAllLayers, 0.2f, ModCurve::Bipolar),
+        route(ModSource::Lfo2, ParamSlot::Pitch, kAllLayers, 3.0f, ModCurve::Bipolar),
+        route(ModSource::Env1, ParamSlot::Level, kAllLayers, 6.0f, ModCurve::Unipolar),
+        route(ModSource::Env2, ParamSlot::Texture, kAllLayers, 0.5f, ModCurve::Unipolar),
+        route(ModSource::Random1, ParamSlot::Spray, kAllLayers, 0.2f, ModCurve::Bipolar),
+        route(ModSource::Random2, ParamSlot::Stereo, kAllLayers, 0.5f, ModCurve::Unipolar),
+        route(ModSource::Step, ParamSlot::Density, kAllLayers, 1.0f, ModCurve::Bipolar),
+        route(ModSource::ModWheel, ParamSlot::Size, kAllLayers, 1.0f, ModCurve::Bipolar),
+        route(ModSource::Aftertouch, ParamSlot::Distribution, kAllLayers, 0.5f, ModCurve::Unipolar),
+        route(ModSource::PitchBend, ParamSlot::Pitch, kAllLayers, 2.0f, ModCurve::Bipolar),
+        route(ModSource::Velocity, ParamSlot::Level, kAllLayers, -6.0f, ModCurve::Unipolar),
+        route(ModSource::Key, ParamSlot::PitchSpread, kAllLayers, 2.0f, ModCurve::Unipolar),
+        route(ModSource::EnvFollower, ParamSlot::Diffusion, kAllLayers, 0.5f, ModCurve::Unipolar),
+        route(ModSource::TransportBeat, ParamSlot::MorphX, kAllLayers, 0.3f, ModCurve::Bipolar),
+        route(ModSource::TransportBar, ParamSlot::MorphY, kAllLayers, 0.3f, ModCurve::Bipolar),
+        route(ModSource::TransportPlaying, ParamSlot::Mix, kAllLayers, -0.2f, ModCurve::Unipolar),
+    }};
+    std::copy(extra.begin(), extra.end(), r.begin() + 12);
+    return r;
 }
 
 struct LayersRender

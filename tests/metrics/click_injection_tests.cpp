@@ -119,12 +119,25 @@ const std::map<std::string, int> &partlyHidden()
         // The swept input's top octaves, then their regeneration at Feedback 0.9 and the frozen
         // ring, from about 2.8 s to 6.6 s. Accepted by the director 2026-10-29 (decision D4).
         {"fx-feedback", 7},
-        {"fx-file", 14},        // loop-48k.wav's noise bursts
+        {"fx-file", 14}, // loop-48k.wav's noise bursts
+        // Four layers' noise bed throughout (M2 sub-project 1's spec §10: stereo noise, the four
+        // layers at their own pitch and size), as in dense-noise.
+        {"fx-layers", 0},
+        // loop-48k.wav's burst at 3.5 s, re-grained densely 20 ms behind the head, hides the step
+        // at 3.53 s; the bursts' gaps and the silence after 4 s catch the rest.
+        {"fx-mod-follower", 15},
         {"fx-noise-stereo", 3}, // a noise bed until the input ends at 3 s
         {"fx-note-freeze", 10}, // loop-48k.wav's bursts, live and frozen
         {"fx-space", 6},        // noise and its reverb, until the tail decays
         {"inst-infinite", 11},  // the note's noise bed, until the infinite tail is quiet enough
-        {"inst-release", 5},    // the note's noise bed, from 0.25 s to its release
+        // Layer C's noise sample: its weight, (1 - x)y, is near 0 only where the pad is on its
+        // Y = 0 or X = 1 edge (1.0 s to 3.0 s) or near the corner X 0, Y 0 (about 5.2 s); the
+        // steps there are caught, the rest hidden.
+        {"inst-layers-morph", 5},
+        {"inst-release", 5}, // the note's noise bed, from 0.25 s to its release
+        // The note's noise bed: caught only in a gap between grains at 1.8 s and after the note's
+        // last grains end, at about 5.1 s.
+        {"inst-size-spread", 3},
     };
     return cases;
 }

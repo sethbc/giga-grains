@@ -1,0 +1,24 @@
+{
+  "mode": "fx",
+  "sampleRate": 48000,
+  "durationSeconds": 7.0,
+  "blockSize": 128,
+  "seed": 1,
+  "input": {"kind": "sine", "frequencyHz": 330, "seconds": 6.5, "amplitude": 0.4},
+  "channels": 2,
+  "params": {"Mix": 1.0, "Density": 5.0, "Size": -2.5, "Layer B On": 1, "B Pitch": 7, "B Size": -3.5},
+  "automation": [
+    {"time": 0.5, "param": "Macro Size", "value": 0.0},
+    {"time": 0.9, "param": "Macro Size", "value": 0.25},
+    {"time": 1.3, "param": "Macro Size", "value": 0.5},
+    {"time": 1.7, "param": "Macro Size", "value": 0.75},
+    {"time": 2.1, "param": "Macro Size", "value": 1.0},
+    {"time": 2.5, "param": "Macro Size", "value": 0.5},
+    {"time": 3.5, "param": "Macro Pitch", "value": 0.0},
+    {"time": 3.9, "param": "Macro Pitch", "value": 0.25},
+    {"time": 4.3, "param": "Macro Pitch", "value": 0.5},
+    {"time": 4.7, "param": "Macro Pitch", "value": 0.75},
+    {"time": 5.1, "param": "Macro Pitch", "value": 1.0},
+    {"time": 5.5, "param": "Macro Pitch", "value": 0.5}
+  ]
+}

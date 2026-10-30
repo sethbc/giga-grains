@@ -457,7 +457,7 @@ gg-render --write-media DIR
   internal error.
 - **The cases:** each case's spec is in `tests/golden/cases/`, and its expected metrics and event
   log are in `tests/golden/expected/`. Every `*.json` there is a case; a new one gets a test the
-  next time CMake runs. There are 22.
+  next time CMake runs. There are 36.
   - **M0's four,** in sample mode: `sparse-sine` (8 grains a second over a 220 Hz sine),
     `sparse-sine-44k1` (the same source converted to 44.1 kHz), `dense-noise` (400 grains a
     second over noise, up a fifth) and `sweep-stretch` (long grains over a sweep, down an
@@ -493,6 +493,33 @@ gg-render --write-media DIR
       Feedback's regenerated audio: across platforms only the metrics compare that.
     - Every older case renders bit-identically with Texture 0, Feedback 0 and the macros at
       rest; a Perform change that moves one is a regression.
+  - **M2 sub-project 1's fourteen** (layers and the mod matrix; its spec §10), each 6 to 8 s:
+    - layers: `fx-layers` (stereo noise, four Live layers, B Pitch +7, C Size 40 ms, D Pitch
+      -12, the pad at rest), `inst-layers-morph` (four Sample layers, a sweep, a 330 Hz sine,
+      noise and a lower sweep, one held note, Morph X and Y stepped around the square and back
+      to the centre), `inst-pitch-spread` (one note over a sine, A Pitch Spread 0, 2, 7, 12, 24
+      at 1 s intervals), `inst-size-spread` (one note over noise, Size 100 ms, A Size Spread 0,
+      0.5, 1, 2 octaves), `fx-layer-switch` (Layer B On at 1 s, off at 2.5 s, on at 3 s, over a
+      330 Hz sine), `fx-source-switch` (layer A Live, Sample over `loop-48k.wav` from 1 s, Live
+      again from 2.5 s) and `fx-macros-layers` (Macro Size, then Macro Pitch stepped with layers
+      A and B on);
+    - the mod sources: `fx-mod-lfo` (LFO 1 sine 0.5 Hz to Position, LFO 2 square 2 Hz to Pitch
+      ±12, over a 50–700 Hz sweep), `inst-mod-env` (Env 1 to Size and Level, Env 2 to Diffusion,
+      two notes with a gap), `fx-mod-random` (Random 1 at 4 Hz to Pitch, Random 2 at 1 Hz,
+      Smooth 50%, to Stereo), `fx-mod-step` (Step at 4 Hz, Length 12, to Pitch ±12: a figure),
+      `inst-mod-midi` (mod wheel to Size, aftertouch to Density, pitch bend to Pitch, velocity to
+      Level, key to Texture, over three notes), `fx-mod-follower` (the follower of
+      `loop-48k.wav`'s bursts to Density) and `fx-mod-transport` (120 BPM playing, the beat
+      phase to Position, the bar phase to Pitch, over the same sweep).
+    - Four hide some injected click steps, pinned in the click-injection table: `fx-layers`
+      catches none (the four layers' noise bed, as in dense-noise), `fx-mod-follower` 15 (a
+      burst hides the step at 3.53 s), `inst-layers-morph` 5 (layer C's noise, near silent only
+      on the pad's Y = 0 and X = 1 edges and near its corner X 0, Y 0) and
+      `inst-size-spread` 3 (the note's noise bed). The other ten catch all 16; the two sweeps
+      end at 700 Hz so that the octave the LFO and the bar phase add stays below the top
+      octaves that hide steps.
+    - Every one of the 22 M1 cases renders bit-identically with layers B to D off and the
+      factory routes: a layers or matrix change that moves one is a regression.
   - **The event-log comparison never sees the reverb or the diffuser:** the log records grains,
     and Space runs after them. Across platforms, Space's five cases are checked by their metrics
     alone, within tolerances.

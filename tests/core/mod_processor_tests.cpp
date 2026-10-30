@@ -64,13 +64,6 @@ uint32_t bitsOf(float f) { return std::bit_cast<uint32_t>(f); }
 
 ParamSlot slotOf(LayerParam p, uint8_t layer) { return layerSlot(p, layer); }
 
-// A route of `source` (its own layer for a per-layer source) to `target` on `targetLayer`.
-ModRoute route(ModSource source, ParamSlot target, uint8_t targetLayer, float depth, ModCurve curve,
-               uint8_t sourceLayer = kSameLayer)
-{
-    return ModRoute{source, sourceLayer, target, targetLayer, depth, curve};
-}
-
 // No routes but `r`, in slot 1.
 ModRoutes only(const ModRoute &r)
 {
@@ -153,34 +146,6 @@ void renderHeldNote(const ModRoutes &routes, int64_t frames, InstrumentRun &r)
     p.setEventSink(&Log::record, &r.log);
     r.audio = silence(frames);
     render(p, nullptr, 0, frames, {512}, {}, r.audio, &r.log, {}, {{0, NoteEventType::On, 0, 60}});
-}
-
-// Every source routed somewhere (one route per source; the per-layer ones from each target's own
-// layer, on every layer), after the factory routes: the routes of the invariance and allocation
-// tests.
-ModRoutes allSourceRoutes(Mode mode)
-{
-    ModRoutes r = gg::core::factoryRoutes(mode);
-    const std::array<ModRoute, 16> extra{{
-        route(ModSource::Lfo1, ParamSlot::Position, kAllLayers, 0.2f, ModCurve::Bipolar),
-        route(ModSource::Lfo2, ParamSlot::Pitch, kAllLayers, 3.0f, ModCurve::Bipolar),
-        route(ModSource::Env1, ParamSlot::Level, kAllLayers, 6.0f, ModCurve::Unipolar),
-        route(ModSource::Env2, ParamSlot::Texture, kAllLayers, 0.5f, ModCurve::Unipolar),
-        route(ModSource::Random1, ParamSlot::Spray, kAllLayers, 0.2f, ModCurve::Bipolar),
-        route(ModSource::Random2, ParamSlot::Stereo, kAllLayers, 0.5f, ModCurve::Unipolar),
-        route(ModSource::Step, ParamSlot::Density, kAllLayers, 1.0f, ModCurve::Bipolar),
-        route(ModSource::ModWheel, ParamSlot::Size, kAllLayers, 1.0f, ModCurve::Bipolar),
-        route(ModSource::Aftertouch, ParamSlot::Distribution, kAllLayers, 0.5f, ModCurve::Unipolar),
-        route(ModSource::PitchBend, ParamSlot::Pitch, kAllLayers, 2.0f, ModCurve::Bipolar),
-        route(ModSource::Velocity, ParamSlot::Level, kAllLayers, -6.0f, ModCurve::Unipolar),
-        route(ModSource::Key, ParamSlot::PitchSpread, kAllLayers, 2.0f, ModCurve::Unipolar),
-        route(ModSource::EnvFollower, ParamSlot::Diffusion, kAllLayers, 0.5f, ModCurve::Unipolar),
-        route(ModSource::TransportBeat, ParamSlot::MorphX, kAllLayers, 0.3f, ModCurve::Bipolar),
-        route(ModSource::TransportBar, ParamSlot::MorphY, kAllLayers, 0.3f, ModCurve::Bipolar),
-        route(ModSource::TransportPlaying, ParamSlot::Mix, kAllLayers, -0.2f, ModCurve::Unipolar),
-    }};
-    std::copy(extra.begin(), extra.end(), r.begin() + 12);
-    return r;
 }
 
 // The modulators' controls, different on every layer, so each layer's sources differ.

@@ -1,0 +1,14 @@
+{
+  "mode": "fx",
+  "sampleRate": 48000,
+  "durationSeconds": 4.5,
+  "blockSize": 128,
+  "seed": 1,
+  "input": {"kind": "file", "path": "loop-48k.wav"},
+  "params": {"Mix": 1.0, "Level": -6.0, "Level B": -6.0, "Level C": -6.0, "Level D": -6.0, "Density": 5.0, "B Pitch": 7, "B Size": -4.058893689053568, "B Density": 5.0, "C Pitch": -12, "C Size": -1.736965594166206, "C Density": 5.0, "D Pitch": 12, "D Size": -5.058893689053568, "D Density": 5.0},
+  "automation": [
+    {"time": 1.5, "param": "Layer B On", "value": 1},
+    {"time": 1.5, "param": "Layer C On", "value": 1},
+    {"time": 1.5, "param": "Layer D On", "value": 1}
+  ]
+}
