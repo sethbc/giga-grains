@@ -61,22 +61,17 @@ Engine::SourceSlot Engine::slotFor(const PreparedSource *source) noexcept
     slot.source = source;
     if (source != nullptr)
     {
-        // Level 0, the full-rate buffer, is the one the kernels read (spec §6.5).
+        // Level 0, the full-rate source, is the one the kernels read (spec §6.3). A source
+        // without channels has frames 0 there, so the interpolators never touch its (null) data;
+        // interleaved is the SIMD sample kernel's stereo reads (§16 lever 2), null for a mono
+        // source or when PreparedSource::make couldn't allocate the copy.
         const PreparedSource::Level &level = source->level(0);
-        const SampleBuffer &buffer = *level.buffer;
-        slot.rate = buffer.sampleRate();
-        // A source without channels has nothing to read; keep frames at 0 so the
-        // interpolators never touch its (null) data.
-        if (buffer.channels() > 0)
-        {
-            slot.mono = buffer.channels() == 1;
-            slot.data[0] = buffer.channel(0);
-            slot.data[1] = slot.mono ? slot.data[0] : buffer.channel(1);
-            slot.frames = buffer.frames();
-            // The SIMD sample kernel's stereo reads (§16 lever 2); null for a mono source, or
-            // when PreparedSource::make couldn't allocate the copy.
-            slot.interleaved = level.pairs->data();
-        }
+        slot.rate = source->buffer().sampleRate();
+        slot.data[0] = level.data[0];
+        slot.data[1] = level.data[1];
+        slot.frames = level.frames;
+        slot.mono = level.mono;
+        slot.interleaved = level.interleaved;
     }
     return slot;
 }

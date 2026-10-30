@@ -9,6 +9,7 @@ add_library(gg-engine STATIC
         src/Engine.cpp
         src/GrainPool.cpp
         src/LiveSource.cpp
+        src/Mipmap.cpp
         src/PreparedSource.cpp
         src/SampleBuffer.cpp
         src/SincTable.cpp

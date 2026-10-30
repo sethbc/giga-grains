@@ -12,15 +12,18 @@
 
 /// Fractional-position readers for one channel of `frames` samples. Taps outside [0, frames)
 /// read as zero, so no position (including NaN and ±inf) reads outside the buffer, and `data`
-/// may be null when `frames` is 0.
+/// may be null when `frames` is 0. Frame f is data[kStride × f]: 1 for a planar channel, 2 for
+/// one channel of interleaved pairs (spec §6.3), read with the same arithmetic, so a channel
+/// gives the same bits at either stride.
 namespace gg::interp
 {
 namespace detail
 {
+template <int64_t kStride = 1>
 inline float tap(const float *data, int64_t frames, int64_t i) noexcept
 {
     GG_FP_CONTRACT_OFF
-    return (i >= 0 && i < frames) ? data[i] : 0.0f;
+    return (i >= 0 && i < frames) ? data[kStride * i] : 0.0f;
 }
 } // namespace detail
 
@@ -33,6 +36,7 @@ inline float lerp(float a, float b, float t) noexcept
 }
 
 /// Linear interpolation between taps floor(pos) and floor(pos) + 1.
+template <int64_t kStride = 1>
 inline float linear(const float *data, int64_t frames, double pos) noexcept
 {
     GG_FP_CONTRACT_OFF
@@ -45,7 +49,8 @@ inline float linear(const float *data, int64_t frames, double pos) noexcept
     const double base = std::floor(pos);
     const auto i = static_cast<int64_t>(base);
     const auto t = static_cast<float>(pos - base);
-    return lerp(detail::tap(data, frames, i), detail::tap(data, frames, i + 1), t);
+    return lerp(detail::tap<kStride>(data, frames, i), detail::tap<kStride>(data, frames, i + 1),
+                t);
 }
 
 /// The 4-point Catmull-Rom curve through taps p0 .. p3 at t in [0, 1) between p1 and p2. Every
@@ -62,6 +67,7 @@ inline float catmullRom(float p0, float p1, float p2, float p3, float t) noexcep
 
 /// 4-point Catmull-Rom over taps floor(pos) - 1 .. floor(pos) + 2. Reproduces polynomials up to
 /// degree 2 exactly (up to float rounding).
+template <int64_t kStride = 1>
 inline float hermite4(const float *data, int64_t frames, double pos) noexcept
 {
     GG_FP_CONTRACT_OFF
@@ -74,8 +80,9 @@ inline float hermite4(const float *data, int64_t frames, double pos) noexcept
     const double base = std::floor(pos);
     const auto i = static_cast<int64_t>(base);
     const auto t = static_cast<float>(pos - base);
-    return catmullRom(detail::tap(data, frames, i - 1), detail::tap(data, frames, i),
-                      detail::tap(data, frames, i + 1), detail::tap(data, frames, i + 2), t);
+    return catmullRom(
+        detail::tap<kStride>(data, frames, i - 1), detail::tap<kStride>(data, frames, i),
+        detail::tap<kStride>(data, frames, i + 1), detail::tap<kStride>(data, frames, i + 2), t);
 }
 } // namespace gg::interp
 

@@ -26,6 +26,7 @@
 #include "gg/grain/GrainKernels.h"
 #include "gg/grain/GrainPool.h"
 #include "gg/grain/SincTable.h"
+#include "gg/source/Mipmap.h"
 #include "gg/source/PreparedSource.h"
 
 namespace
@@ -1321,23 +1322,28 @@ TEST_CASE("a sample replaced while ring grains sound leaves them on the ring", "
     REQUIRE(sameBits(a.right, b.right));
 }
 
-TEST_CASE("the level accessor returns level 0 for any index", "[engine][layers]")
+TEST_CASE("the level accessor returns level 0 for any index past the count", "[engine][layers]")
 {
-    // Spec §6.5: one level in wave 1, and any index past the last reads level 0.
+    // Spec §6.3: level 0 is the source as the kernels read it, and any index past the last
+    // level reads level 0.
     for (const uint32_t channels : {1u, 2u})
     {
         INFO("channels = " << channels);
         const auto source = gg::PreparedSource::make(makeSine(channels, 4800, 48000.0));
-        REQUIRE(source->levelCount() == 1);
+        REQUIRE(source->levelCount() == gg::mipLevelCount(4800));
+        REQUIRE(source->levelCount() == 5);
         const gg::PreparedSource::Level &level0 = source->level(0);
-        REQUIRE(level0.buffer == &source->buffer());
-        REQUIRE(level0.pairs == &source->pairs());
+        REQUIRE(level0.data[0] == source->buffer().channel(0));
+        REQUIRE(level0.data[1] == source->buffer().channel(channels == 1 ? 0 : 1));
+        REQUIRE(level0.frames == 4800);
+        REQUIRE(level0.stride == 1);
+        REQUIRE(level0.interleaved == source->pairs().data());
+        REQUIRE(level0.mono == (channels == 1));
         REQUIRE(level0.decimation == 1);
-        for (const uint32_t n : {1u, 7u, 0xFFFFFFFFu})
+        for (const uint32_t n : {5u, 7u, 0xFFFFFFFFu})
         {
             REQUIRE(&source->level(n) == &level0);
         }
-        REQUIRE(source->level(7).buffer == source->level(0).buffer);
     }
 
     gg::LiveSource live;
