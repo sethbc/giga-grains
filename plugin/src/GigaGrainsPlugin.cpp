@@ -20,6 +20,7 @@
 #include "gg/core/ParamMap.h"
 #include "gg/core/Rng.h"
 #include "gg/core/SessionState.h"
+#include "SettingsPath.h"
 #include "gg/media/SettingsFile.h"
 #include "gg/plugin/Identity.h"
 #include "sst/basic-blocks/params/ParamMetadata.h"
@@ -150,24 +151,6 @@ uint64_t freshSeed() noexcept
         return gg::rng::splitmix64(
             static_cast<uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count()));
     }
-}
-
-/// The per-machine settings file: $GG_SETTINGS_FILE when set and not empty, else the user's
-/// (gg::media::defaultSettingsPath). See the class comment.
-std::filesystem::path settingsFile()
-{
-#if defined(_WIN32)
-    if (const wchar_t *file = ::_wgetenv(L"GG_SETTINGS_FILE"); file != nullptr && *file != 0)
-    {
-        return std::filesystem::path(file);
-    }
-#else
-    if (const char *file = std::getenv("GG_SETTINGS_FILE"); file != nullptr && *file != 0)
-    {
-        return std::filesystem::path(file);
-    }
-#endif
-    return gg::media::defaultSettingsPath();
 }
 } // namespace
 

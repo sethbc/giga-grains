@@ -42,6 +42,7 @@ add_executable(gg-tests
         engine/sample_buffer_tests.cpp
         engine/task_runner_tests.cpp
         engine/window_tests.cpp
+        media/content_paths_tests.cpp
         media/convert_tests.cpp
         media/decode_memory_tests.cpp
         media/decode_tests.cpp
