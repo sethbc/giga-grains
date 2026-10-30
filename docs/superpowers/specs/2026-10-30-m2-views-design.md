@@ -241,7 +241,10 @@ in its colour, large (click: select the layer for Edit and Mod; the selected one
 the On toggle (`Layer A On` …); a Level slider (`Level`, `Level B` …), horizontal; the Source kind
 as a menu button (`A Source` …); a Freeze toggle (`A Freeze` …). Every control is a gesture on
 its parameter, as the macros are, with `HeldValue`. An off layer's lane and header are dimmed,
-its peaks still drawn.
+its peaks still drawn. **As built** (`fae408d`): the On toggle reads "On" and the Level slider
+draws its track alone, with no label (its tooltip and accessibility name give the parameter's
+full name), so the cell fits at 640 × 360. The header column is chrome, not lane: it follows
+the theme, painted in the theme's background, while the lanes stay dark in both themes (D9).
 
 **The lane's body.** Each lane is M1's lane for its own layer, by that layer's **built kind**
 (`builtKind` of the Source's base value, ruling FR-6's rule):
@@ -272,8 +275,8 @@ in `LaneModel` as before, tested without JUCE.
 
 **Amended** (VW-T9b): the lanes are half-open row ranges, `[H·L/4, H·(L+1)/4)` of the canvas's
 height `H`, so a row two lanes would share belongs to the lower lane and a press reaches one
-lane. A press in a lane selects its layer, as a click on its letter does, even when it grabs
-nothing (VW-T9c).
+lane. **Amended** (VW-T9c): a press in a lane selects its layer, as a click on its letter does,
+even when it grabs nothing.
 
 **The resolve** tints each lane's rows with its layer's colour (`SplatRenderer::resolveToArgb`
 gains a banded overload: a list of `{rowBegin, rowEnd, rgbTint}`; the M1 overload is the one-band
@@ -290,7 +293,7 @@ Spread from the snapshot, §6.4), dashed, when any of the four differs by more t
   centre, in semitones, clamped 0–24);
 - the body sets **Position** horizontally or **Pitch** vertically: the first 4 logical px of
   movement pick the axis, and the drag stays on it until release (axis lock), so a diagonal press
-  edits one parameter; **as built** (VW-T9c), the body's gesture begins when the axis is
+  edits one parameter; **Amended** (VW-T9c): the body's gesture begins when the axis is
   decided, so a press that never moves 4 px is no gesture;
 - a corner (within the edge tolerance of both) takes the horizontal edge. **Amended**
   (VW-T2a): "the horizontal edge" is the edge dragged horizontally, the Spray edge (left or
@@ -367,7 +370,8 @@ base values through `baseValue(slot)`.
 view's rings and the Mod view); `formatName` (the About box); `theme`, `setTheme`, `view` and
 `setView` (the frame). M1's `livePeaks` (layer A's alone) is removed. `LaneSnapshot`'s fields are
 the struct's above, with `on` from the `Processor`'s `layerRendering` (the on ramp's target or
-value is non-zero); the snapshot grows from about 48 bytes to about 230.
+value is non-zero); the snapshot grows from 48 bytes to 256 (48 + 4 × 48 for the lanes + 16
+for the morph).
 
 ### 6.5 The Edit view
 
@@ -425,7 +429,10 @@ No slider needs them: the Step sliders, like every modulator's control, are no m
 band takes Position and Spray as their 0–1 values, as the lane's rectangle does. **Amended**
 (VW-T12a): a toggle or a menu (Freeze, Source, an On switch) shows one 6 px dot per route at its
 top right, in the source family's color, in slot order; a switch or a menu step has no arc to
-draw a depth on, so its depth is edited in the Mod view's route list.
+draw a depth on, so its depth is edited in the Mod view's route list. **As built**
+(`fae408d`): a knob draws its label across its cell, wrapped to two lines, without the panel's
+own title ("Rate" in LFO 1's panel, "Decay" in Reverb's); the full name stays in the tooltip and
+the accessibility name. Parameter names are unchanged.
 
 ### 6.6 The Mod view and the route path
 
@@ -436,7 +443,11 @@ with the selected layer's letter (`sourceLayer` = same); the selected layer's **
 the same components in "mod mode"; and the **route list** at the right (240 px, scrollable): 48
 rows, each slot's source, source layer (A–D or same), target with its layer (A–D or all), depth
 (a bipolar slider in the target's range), curve (a menu of the six), and a clear button; empty
-slots read "—".
+slots read "—". **As built** (`fae408d`): a route that appears in a slot that was empty at the
+list's last look (a drop, an undo or redo, a state load) scrolls into view, the newest such one,
+outlined; the rows' boxes, sliders and buttons take the theme's palette. **Amended**
+(VW-T12a): the controls in mod mode show their routes as rings on knobs and as dots on toggles
+and menus (§6.5), so a toggle's or a menu's depth is edited in this list.
 
 **Drag a chip onto a control** (`juce::DragAndDropContainer` at the editor): the route goes into
 the first empty slot with `source` the chip's, `sourceLayer` same, `target` the control's
@@ -461,7 +472,11 @@ rows use JUCE's stock widgets, not sst-jucegui's.
 Macro knobs in the Perform view take drops too (a macro as a target is refused by
 `isValidTarget`, and the control says so), so the strip's targets are Edit's and the lanes'
 header controls; the pad's Morph X/Y and the strip's Levels and On switches are valid targets
-and take drops.
+and take drops. **Amended** (VW-T15g): in the Perform view only the layer strip's controls and
+the macro row take a chip; the macros refuse it with "a macro can't be a target". The source
+chips live in the Mod view, so a chip reaches Perform only by switching views mid-drag (⌘1).
+The pad takes no drop (`MorphPad` is no drop target): Morph X and Y remain valid targets,
+routed from the route list.
 
 **The route path** (plugin, by addition). Today routes change only by a state load. The editor
 gets `uiRoutes()` and `uiSetRoutes(const ModRoutes &)` on `GigaGrainsPlugin`: main thread;
@@ -643,7 +658,7 @@ text's name, never its source path. A **Plain text** toggle shows any text as mo
 text. **Amended** (VW-T15c): **the box is modal.** While it shows, Escape closes it and every
 other key, ⌘I included, is its own, so nothing changes behind it; Tab stays among its own
 controls, and the Editor's traverser hands focus to it; a click outside its panel closes it. Row
-221 is **Closed** by `2116004` (§12).
+221 is **Closed** by `2ad02b2` and `2116004` (§12).
 
 ### 6.11 The GPU spike
 
@@ -730,7 +745,8 @@ leg that builds the editor builds it. Per product it activates the plugin, creat
 loads a generated 2 s sine into the instrument, turns layers B and C on, adds one route (LFO 1
 to layer A's Pitch), runs 200 blocks and writes `<product>-<view>-<theme>-<w>x<h>.png`: 32 files
 at the default sizes. It sets `GG_STRESS_GRAINS=2048` and points `GG_SETTINGS_FILE` at a scratch
-file. `snap_cli` (macOS, with the editor) runs it and checks the 32 names; CI's macOS leg uploads
+file. `snap_cli` (macOS, with the editor; labels `plugin` and `slow`, a 300 s timeout since
+`fae408d`) runs it and checks the 32 names; CI's macOS leg uploads
 the output as `gg-snapshots`. The GUI tests draw each view with `createComponentSnapshot`
 themselves, not through the tool's code.
 
@@ -922,7 +938,9 @@ Engineering choices, each with its reason.
   freeze, head, kind and Feedback; the morph fields; trivially copyable; the tripwire on the
   publish path with four layers (`[rt]`, `[rtsan]`).
 - `[plugin]`: `uiSetRoutes` reaches the render (the bytes equal a state load's with the same
-  routes) and the saved state, under the tripwire; `UndoStack`: entries coalesce per gesture,
+  routes) and the saved state, under the tripwire; `UndoStack` (**Amended**, VW-T5a: `[ui]`, in
+  `gg-ui-core`, `tests/ui/undo_stack_tests.cpp`; the GUI tests check the replay through the
+  plugin and the stack surviving the editor): entries coalesce per gesture,
   undo and redo replay through the gesture path (the host sees begin, value, end), a whole-state
   entry round-trips, depth 200, closing and reopening the editor keeps the stack.
 - `[plugin]` GUI tests (macOS; **Amended**, VW-T3b: every leg built with the editor; in
@@ -1024,9 +1042,13 @@ the fix wave unless blocked outside our control or genuinely large (the policy).
 restated in PR 2's report.
 
 **As built (PR 1):** row **217** is **Closed** by `0d8969c` (the FX view's Reverb Size sets on
-release, §6.7) and row **221** by `2116004` (the About box, §6.10); `docs/m2-carry-over.md` marks
+release, §6.7) and row **221** by `2ad02b2` and `2116004` (the embedded texts and the About
+box, §6.10); `docs/m2-carry-over.md` marks
 both. `THIRD_PARTY_NOTICES.md`'s sentence that the About box doesn't show the texts yet now says
-it does. **Amended:** the director retired the carry-over's count rules on 2026-10-30, so the
+it does. **Amended:** the director retired the carry-over's count rules on 2026-10-30 (relayed
+by the program manager; the controller's ruling keeps this statement here and in INTENT's
+§23 row, while the policy text in CLAUDE.md and the carry-over file is the program manager's to
+reword), so the
 count above is no longer a target; a minor deferred from a review is fixed or deferred as the
 review cycle decides, and the sub-project's final report lists the deferred ones.
 
@@ -1123,5 +1145,6 @@ ledger, not here. The director's decisions are D1–D11 (§8).
 | VW-T15d | §6.8 | No undo mid-gesture: undo and redo wait while a gesture or group is open. |
 | VW-T15e | §6.8 | A parameter entry's `before` is the control's shown value at the gesture's begin. |
 | VW-T15f | §6.8 | While undo or redo applies, the stack ignores what its callbacks ask of it. |
+| VW-T15g | §6.6 | In Perform only the strip and the macro row take a chip (reached by ⌘1 mid-drag); the pad takes none. |
 | VW-T17a | §6.11 | The GPU spike's decision: the CPU renderer stays, on the ratios and the risk clause. |
 | VW-T17b | §6.11 | Open: the canvas repaints at the display's rate; a cap is the final review's question, the director's if it changes what a user sees. |

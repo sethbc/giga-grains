@@ -306,7 +306,8 @@ runs the tests labelled either. The labels are:
     gate, the kind switch, the spreads) and in the `Processor` (the sum in order, the morph law,
     on and off, the kinds, the instrument's input into the rings, the event order);
   - `mod`: the mod matrix: its routes, curves and factory routes (M1's `macroOffsets` bit for
-    bit), the modulation sources, and the `Processor`'s per-cell application;
+    bit), the modulation sources, and the `Processor`'s per-cell application; also the editor's
+    rings (`tests/ui/rings_tests.cpp`, tagged `[ui][mod]`);
   - `threads`: `TaskRunner`, `SerialRunner` and the tests' `StubPool` (`engine`), and the
     `Processor`'s render tasks (`core`): the same bytes with no pool and pools of 1, 2 and 8
     workers, a declining pool, and the tasks' denormal mode and allocations;
@@ -324,8 +325,8 @@ runs the tests labelled either. The labels are:
   `Processor`'s Space chain, and the plugins' tail and "Space" remote-controls page. `slow` also
   marks four of them: the hour-long renders at infinite Decay (about 50 s each in `dev`, 2.5
   minutes under ASan), the block-size invariance render and the 60 s render at extreme settings
-  (about 8 s and 13 s in `dev`); `-LE slow` leaves all six slow tests out (media's one, these
-  four and core's Feedback one).
+  (about 8 s and 13 s in `dev`); `-LE slow` leaves all seven slow tests out (media's one, these
+  four, core's Feedback one and `snap_cli`, below, about 66 s in `dev`).
 - `kernel`: the renderers' scalar references and the 4-wide SIMD sample and live kernels, which
   must match them bit for bit (`std::memcmp`);
 - `determinism`: block-size invariance;
@@ -376,10 +377,14 @@ runs the tests labelled either. The labels are:
     inside its view; "every parameter is reachable from the UI" walks the views for each slot's
     control; undo replays through the gesture path and survives the editor; the theme switch
     persists and a second editor follows; the keyboard reaches every control; the view is kept
-    per instance. A GUI test that wants one control searches below its view's ID
+    per instance; no label is elided or collides at 960 × 600 (the strip's toggle reads "On" and
+    its Level slider has no label); the light theme reads at 4.5:1, the strip's column following
+    the theme while the lanes stay dark; a route added in slot 13 scrolls into the Mod view's
+    list. A GUI test that wants one control searches below its view's ID
     (`view.perform`, `view.edit`, `view.mod`, `view.fx`): the strip's controls share their
     `param.<id>` with the Edit panels'.
-  - `snap_cli` (macOS, with the editor) runs `gg-snap` ("The views as PNGs" below).
+  - `snap_cli` (macOS, with the editor; also `slow`) runs `gg-snap` ("The views as PNGs"
+    below).
 
   On macOS this label also covers checks of the built bundles (with the editor only):
   - `codesign_*`: strict signature checks, which Ableton Live's scanner needs to pass;
@@ -768,9 +773,9 @@ gg-snap <out-dir> [--sizes 960x600,640x360]
 - **It never touches your settings:** it sets `GG_STRESS_GRAINS=2048` (below) and points
   `GG_SETTINGS_FILE` at a scratch file in the system's temporary folder, removed afterwards.
 - **Exit status:** 0, 1 with a message on stderr, 2 for bad usage.
-- **`snap_cli`** (label `plugin`; macOS, with the editor) runs it into
-  `build/<preset>/tests/test-output/snap_cli` and requires exactly the 32 names, each a PNG of
-  more than 1,000 bytes. It takes about 66 s in `dev`.
+- **`snap_cli`** (labels `plugin` and `slow`, a 300 s timeout; macOS, with the editor) runs it
+  into `build/<preset>/tests/test-output/snap_cli` and requires exactly the 32 names, each a PNG
+  of at least 1,000 bytes. It takes about 66 s in `dev`, so `-LE slow` leaves it out.
 - **CI's macOS leg** runs it after the tests and uploads the files as the `gg-snapshots`
   artifact. Only a tool failure, or no files at all, fails the job: the pictures are looked at,
   not compared.
