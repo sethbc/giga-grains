@@ -814,9 +814,14 @@ TEST_CASE("plugin params flush with notes does not allocate", "[plugin][rt]")
 
     const auto clapOn = noteOn(60, 0);
     const auto midiOn = midiNoteOn(67, 0);
+    // MIDI controls, which a flush passes as it does notes (M2 sub-project 1's spec §6.8).
+    const auto wheel = gg::test::midiEvent(0xB0, 1, 127, 0);
+    const auto bend = gg::test::midiEvent(0xE0, 0x7F, 0x7F, 0);
     gg::test::InputEvents notes;
     notes.add(&clapOn.header);
     notes.add(&midiOn.header);
+    notes.add(&wheel.header);
+    notes.add(&bend.header);
     const uint32_t notesBefore = plugin.impl().noteOnCount.load();
 
     AllocTripwire::resetCount();
@@ -827,6 +832,12 @@ TEST_CASE("plugin params flush with notes does not allocate", "[plugin][rt]")
     const uint64_t allocations = AllocTripwire::count();
 
     CHECK(plugin.impl().noteOnCount.load() - notesBefore == 2);
+    // They wait for the next boundary, which the next call applies.
+    std::vector<float> left(64), right(64);
+    float *outputs[2] = {left.data(), right.data()};
+    REQUIRE(plugin.process(64, nullptr, outputs) == CLAP_PROCESS_CONTINUE);
+    CHECK(plugin.impl().processor()->sourceValue(gg::core::ModSource::ModWheel, 0) == 1.0f);
+    CHECK(plugin.impl().processor()->sourceValue(gg::core::ModSource::PitchBend, 0) == 1.0f);
     if (gg::test::AllocTripwire::available()) // off under ASan; RTSan covers this
     {
         REQUIRE(allocations == 0);
@@ -1088,4 +1099,117 @@ TEST_CASE("plugin note ids stay bounded and do not allocate", "[plugin][rt]")
     CHECK_FALSE(key3Held);
     CHECK(held[3] == 0); // a remembered ID 1 would have left 126
     REQUIRE_NO_ALLOCATIONS(allocations);
+}
+
+TEST_CASE("plugin process with four layers, controls and the pool does not allocate",
+          "[plugin][rt]")
+{
+    // M2 sub-project 1's spec §6.7, §6.8: the four layers on (the instrument's A on its sample,
+    // the others Live on the sidechain), the host's thread pool taking their tasks (a host that
+    // accepts and one that declines), MIDI controls (more than kMaxControlEvents in one call, so
+    // the rest apply at the block's end), velocity, the transport each call, and a last call with
+    // the transport alone. (A params.flush with controls is "plugin params flush with notes does
+    // not allocate"'s: Debug builds log MIDI in a flush, T8-e.) The tripwire counts the audio
+    // thread's allocations; under RTSan the tasks the pool's threads run (the plugin's exec) are
+    // checked too.
+    const char *id = GENERATE(kInstrumentId, kFxId);
+    const bool declining = GENERATE(false, true);
+    CAPTURE(id, declining);
+    const bool isFx = std::string_view(id) == kFxId;
+    gg::test::PoolHost host(declining);
+    gg::test::PluginUnderTest plugin(id, host.clap());
+    REQUIRE(plugin.valid());
+    host.attach(plugin.clap());
+    if (!isFx)
+    {
+        REQUIRE(plugin.loadSampleState(gg::test::sineSampleFile("rt-pool")));
+    }
+    {
+        std::vector<clap_event_param_value> values;
+        for (uint8_t layer = 0; layer < gg::core::kLayers; ++layer)
+        {
+            values.push_back(gg::test::paramValue(paramId(gg::core::layerOnSlot(layer)), 1.0));
+            values.push_back(gg::test::paramValue(
+                paramId(gg::core::layerSlot(gg::core::LayerParam::Source, layer)),
+                layer == 0 && !isFx ? 0.0 : 1.0));
+        }
+        gg::test::InputEvents list;
+        for (const auto &v : values)
+        {
+            list.add(&v.header);
+        }
+        plugin.flush(list.list());
+    }
+    REQUIRE(plugin.activate(48000.0, 512));
+
+    std::vector<float> inLeft(2048), inRight(2048), outLeft(2048), outRight(2048);
+    for (std::size_t i = 0; i < inLeft.size(); ++i)
+    {
+        inLeft[i] = static_cast<float>(gg::rng::bipolar(gg::rng::splitmix64(2 * i)));
+        inRight[i] = static_cast<float>(gg::rng::bipolar(gg::rng::splitmix64(2 * i + 1)));
+    }
+    float *inputs[2] = {inLeft.data(), inRight.data()};
+    float *outputs[2] = {outLeft.data(), outRight.data()};
+    auto clapOn = noteOn(60, 0);
+    clapOn.velocity = 0.25;
+    const auto midiOn = midiNoteOn(64, 0);
+    const auto bend = gg::test::midiEvent(0xE0, 0x10, 0x50, 1);
+    const auto pressure = gg::test::midiEvent(0xD0, 90, 0, 2);
+    // More CCs than one call hands the Processor: the last 100 apply at the block's end, the last
+    // of them (99 / 127) at the next call's first boundary.
+    constexpr std::size_t kWheels = gg::plugin::GigaGrainsPlugin::kMaxControlEvents + 100;
+    std::vector<clap_event_midi> wheels;
+    wheels.reserve(kWheels);
+    for (std::size_t i = 0; i < kWheels; ++i)
+    {
+        wheels.push_back(gg::test::midiEvent(0xB0, 1, static_cast<uint8_t>(i % 128), 3));
+    }
+    gg::test::InputEvents events;
+    events.add(&clapOn.header);
+    events.add(&midiOn.header);
+    events.add(&bend.header);
+    events.add(&pressure.header);
+    for (const auto &w : wheels)
+    {
+        events.add(&w.header);
+    }
+    const auto transport = gg::test::transportEvent(128.0, true, 3.25);
+    constexpr std::array<uint32_t, 4> kFrames{0, 1, 512, 2048};
+    std::array<clap_process_status, kFrames.size()> status{};
+    auto *processor = plugin.impl().processor();
+    REQUIRE(processor != nullptr);
+
+    // No warm-up call: a host's first process() must not allocate either.
+    AllocTripwire::resetCount();
+    {
+        AllocTripwire::Scope armed;
+        for (std::size_t i = 0; i < kFrames.size(); ++i)
+        {
+            status[i] =
+                plugin.process(kFrames[i], inputs, outputs, events.list(), 2, nullptr, &transport);
+        }
+        plugin.process(512, inputs, outputs, nullptr, 2, nullptr, &transport);
+    }
+    const uint64_t allocations = AllocTripwire::count();
+
+    for (const auto s : status)
+    {
+        CHECK(s == CLAP_PROCESS_CONTINUE);
+    }
+    using gg::core::ModSource;
+    CHECK(heldKeys(plugin) == std::vector<int>{60, 64});
+    CHECK(processor->sourceValue(ModSource::Velocity, 0) == 100.0f / 127.0f); // the last note-on
+    CHECK(processor->sourceValue(ModSource::PitchBend, 0) == ((0x50 << 7) | 0x10) / 16383.0f);
+    CHECK(processor->sourceValue(ModSource::Aftertouch, 0) == 90.0f / 127.0f);
+    CHECK(processor->sourceValue(ModSource::ModWheel, 0) == 99.0f / 127.0f);
+    CHECK(processor->sourceValue(ModSource::TransportPlaying, 0) == 1.0f);
+    // Every call with four layers asked the host for four tasks per piece.
+    CHECK(host.requests() > 0);
+    CHECK(host.tasks() == 4 * host.requests());
+    CHECK(std::all_of(outLeft.begin(), outLeft.end(), [](float x) { return std::isfinite(x); }));
+    CHECK(std::any_of(outLeft.begin(), outLeft.end(), [](float x) { return x != 0.0f; }));
+    if (gg::test::AllocTripwire::available()) // off under ASan; RTSan covers this
+    {
+        REQUIRE(allocations == 0);
+    }
 }

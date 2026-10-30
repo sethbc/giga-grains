@@ -254,8 +254,8 @@ ParamValues defaults()
     return v;
 }
 
-// A host that offers clap.params and clap.state, and counts value rescans, restart requests,
-// params.request_flush and state.mark_dirty calls.
+// A host that offers clap.params and clap.state, and counts value rescans, text rescans, restart
+// requests, params.request_flush and state.mark_dirty calls.
 class ParamsHost
 {
   public:
@@ -265,6 +265,7 @@ class ParamsHost
 
     const clap_host *clap() const noexcept { return &host_; }
     uint32_t valueRescans() const noexcept { return valueRescans_; }
+    uint32_t textRescans() const noexcept { return textRescans_; }
     uint32_t otherRescans() const noexcept { return otherRescans_; }
     uint32_t restarts() const noexcept { return restarts_; }
     uint32_t dirtyMarks() const noexcept { return dirtyMarks_; }
@@ -277,7 +278,10 @@ class ParamsHost
     }
     static void rescan(const clap_host *host, clap_param_rescan_flags flags) noexcept
     {
-        ++(flags == CLAP_PARAM_RESCAN_VALUES ? self(host).valueRescans_ : self(host).otherRescans_);
+        auto &me = self(host);
+        ++(flags == CLAP_PARAM_RESCAN_VALUES ? me.valueRescans_
+           : flags == CLAP_PARAM_RESCAN_TEXT ? me.textRescans_
+                                             : me.otherRescans_);
     }
     static const void *getExtension(const clap_host *, const char *id) noexcept
     {
@@ -297,6 +301,7 @@ class ParamsHost
     }
 
     uint32_t valueRescans_{0};
+    uint32_t textRescans_{0};
     uint32_t otherRescans_{0};
     uint32_t restarts_{0};
     uint32_t dirtyMarks_{0};
@@ -1224,13 +1229,18 @@ TEST_CASE("state is a container, and save, load, save gives the same bytes", "[p
     {
         values[s] = static_cast<float>(a.value(kExpected[s].id));
     }
-    REQUIRE(a.load(gg::core::encodeState(
-        {values, 11, std::nullopt, std::nullopt, gg::core::factoryRoutes(mode)})));
+    // The factory routes and one of the user's (M2 sub-project 1's spec §6.10): the routes in
+    // effect are saved as they were loaded.
+    gg::core::ModRoutes routes = gg::core::factoryRoutes(mode);
+    routes[30] = gg::core::ModRoute{
+        gg::core::ModSource::ModWheel, gg::core::kSameLayer, ParamSlot::Pitch, 2, 0.375f,
+        gg::core::ModCurve::Unipolar};
+    REQUIRE(routes != gg::core::factoryRoutes(mode));
+    REQUIRE(a.load(gg::core::encodeState({values, 11, std::nullopt, std::nullopt, routes})));
     const std::string saved = a.save();
-    CHECK(saved == gg::core::encodeState(
-                       {values, 11, std::nullopt, std::nullopt, gg::core::factoryRoutes(mode)}));
-    CHECK(gg::test::stateChunkPayload(saved, "PTCH") ==
-          gg::core::toStateXml(values, 11, gg::core::factoryRoutes(mode)));
+    CHECK(saved == gg::core::encodeState({values, 11, std::nullopt, std::nullopt, routes}));
+    CHECK(gg::test::stateChunkPayload(saved, "PTCH") == gg::core::toStateXml(values, 11, routes));
+    CHECK(decoded(saved, mode).routes == routes);
     CHECK(gg::test::stateChunkPayload(saved, "MEDI") == std::string(R"(<media version="1" />)"));
     CHECK(decoded(saved, mode).sample == std::nullopt);
 
@@ -1346,12 +1356,15 @@ TEST_CASE("fx handles mono, missing input and new sample rates", "[plugin]")
     }
 }
 
-TEST_CASE("remote controls pages are perform, cloud and space", "[plugin]")
+TEST_CASE("remote controls pages are eight", "[plugin]")
 {
-    // Three 8-slot pages: "Perform", the eight macros (sub-project 5's spec §3.3); then "Cloud"
-    // (spec §4) and "Space" (sub-project 4's spec §6.6), unchanged but for their place. The
-    // instrument leaves Mix's and Dry to Reverb's slots empty: they are hidden there. A page's
-    // index is its page_id. There is no fourth.
+    // Eight 8-slot pages (M2 sub-project 1's spec §6.9): "Perform", the eight macros (sub-project
+    // 5's spec §3.3); "Cloud" (layer A's, spec §4) and "Space" (sub-project 4's spec §6.6), M1's
+    // three at indices 0 to 2, unchanged; then "Layers" (the four switches and the four Levels),
+    // "Morph" (X and Y, then six empty slots), and "Cloud B" to "Cloud D", each that layer's
+    // Position, Size, Density, Pitch, Spray, Stereo, Freeze and Level. The instrument leaves
+    // Mix's and Dry to Reverb's slots empty: they are hidden there. A page's index is its
+    // page_id. There is no ninth.
     const char *id = GENERATE(kInstrumentId, kFxId);
     CAPTURE(id);
     const bool isFx = std::string_view(id) == kFxId;
@@ -1360,14 +1373,27 @@ TEST_CASE("remote controls pages are perform, cloud and space", "[plugin]")
     const auto *remote = static_cast<const clap_plugin_remote_controls *>(
         plugin.clap()->get_extension(plugin.clap(), CLAP_EXT_REMOTE_CONTROLS));
     REQUIRE(remote != nullptr);
-    REQUIRE(remote->count(plugin.clap()) == 3);
+    REQUIRE(remote->count(plugin.clap()) == 8);
 
     struct ExpectedPage
     {
         std::string_view name;
         std::array<clap_id, CLAP_REMOTE_CONTROLS_COUNT> ids;
     };
-    const std::array<ExpectedPage, 3> pages{{
+    // Layer L's cloud page (scope L + 1), with its Level.
+    const auto cloud = [](std::string_view name, uint32_t scope, clap_id level) {
+        const clap_id s = scope << 16;
+        return ExpectedPage{name,
+                            {s | 0x01, // Position
+                             s | 0x02, // Size
+                             s | 0x03, // Density
+                             s | 0x05, // Pitch
+                             s | 0x06, // Spray
+                             s | 0x07, // Stereo
+                             s | 0x08, // Freeze
+                             level}};  // Level
+    };
+    const std::array<ExpectedPage, 8> pages{{
         {"Perform",
          {0x000011,   // Macro 1
           0x000012,   // Macro 2
@@ -1395,6 +1421,23 @@ TEST_CASE("remote controls pages are perform, cloud and space", "[plugin]")
           0x000007,                            // Reverb Pre-delay
           0x000008,                            // Reverb Modulation
           isFx ? 0x000009 : CLAP_INVALID_ID}}, // Dry to Reverb
+        {"Layers",
+         {0x00001B,   // Layer A On
+          0x00001C,   // Layer B On
+          0x00001D,   // Layer C On
+          0x00001E,   // Layer D On
+          0x000002,   // Level
+          0x00001F,   // Level B
+          0x000020,   // Level C
+          0x000021}}, // Level D
+        {"Morph",
+         {0x000019, // Morph X
+          0x00001A, // Morph Y
+          CLAP_INVALID_ID, CLAP_INVALID_ID, CLAP_INVALID_ID, CLAP_INVALID_ID, CLAP_INVALID_ID,
+          CLAP_INVALID_ID}},
+        cloud("Cloud B", 2, 0x00001F),
+        cloud("Cloud C", 3, 0x000020),
+        cloud("Cloud D", 4, 0x000021),
     }};
     for (uint32_t p = 0; p < pages.size(); ++p)
     {
@@ -1413,7 +1456,149 @@ TEST_CASE("remote controls pages are perform, cloud and space", "[plugin]")
         }
     }
     clap_remote_controls_page page;
-    CHECK_FALSE(remote->get(plugin.clap(), 3, &page));
+    CHECK_FALSE(remote->get(plugin.clap(), 8, &page));
+}
+
+TEST_CASE("state carries the routes", "[plugin]")
+{
+    // M2 sub-project 1's spec §6.10: the routes are part of the state. A new instance's are the
+    // factory routes; a loaded state's are saved back as they came, and reach the Processor at
+    // activate() and, loaded while active, at the next block.
+    const char *id = GENERATE(kInstrumentId, kFxId);
+    CAPTURE(id);
+    const auto mode = std::strcmp(id, kFxId) == 0 ? gg::core::Mode::Fx : gg::core::Mode::Instrument;
+    {
+        PluginUnderTest fresh(id);
+        REQUIRE(fresh.valid());
+        CHECK(decoded(fresh.save(), mode).routes == gg::core::factoryRoutes(mode));
+    }
+
+    gg::core::SessionState state;
+    for (std::size_t s = 0; s < kParamCount; ++s)
+    {
+        state.values[s] = gg::core::paramMeta(static_cast<ParamSlot>(s), mode).defaultVal;
+    }
+    state.seed = 5;
+    state.routes = gg::core::factoryRoutes(mode);
+    state.routes[20] = gg::core::ModRoute{
+        gg::core::ModSource::ModWheel, gg::core::kSameLayer, ParamSlot::Pitch, 1, 0.25f,
+        gg::core::ModCurve::Bipolar};
+    const std::string bytes = gg::core::encodeState(state);
+
+    PluginUnderTest plugin(id);
+    REQUIRE(plugin.valid());
+    REQUIRE(plugin.load(bytes));
+    CHECK(plugin.save() == bytes);
+    REQUIRE(plugin.activate(48000.0, 512));
+    REQUIRE(plugin.impl().processor() != nullptr);
+    CHECK(plugin.impl().processor()->routes() == state.routes);
+
+    // Loaded while active: the next block applies them, and a save has them at once.
+    state.routes[20].depth = -0.5f;
+    state.routes[3] = gg::core::ModRoute{};
+    const std::string other = gg::core::encodeState(state);
+    REQUIRE(plugin.load(other));
+    CHECK(plugin.save() == other);
+    Stereo in(64);
+    Stereo out(64);
+    REQUIRE(plugin.process(64, in.data(), out.data()) == CLAP_PROCESS_CONTINUE);
+    CHECK(plugin.impl().processor()->routes() == state.routes);
+
+    // And a reactivation keeps them.
+    plugin.deactivate();
+    REQUIRE(plugin.activate(44100.0, 256));
+    CHECK(plugin.impl().processor()->routes() == state.routes);
+}
+
+TEST_CASE("a kind change asks for a text rescan", "[plugin]")
+{
+    // Spec §6.4: Position's display follows its layer's built kind, seconds behind the head on a
+    // Live layer and a percentage of the file on a Sample layer, in either product, active or
+    // not. When a layer's kind changes the host is asked, once, on the main thread, to rescan
+    // the parameters' text. An unbuilt kind is the product's default kind (builtKind), so a
+    // change to one that falls back to the same kind asks nothing.
+    const char *id = GENERATE(kInstrumentId, kFxId);
+    CAPTURE(id);
+    const bool isFx = std::string_view(id) == kFxId;
+    ParamsHost host;
+    PluginUnderTest plugin(id, host.clap());
+    REQUIRE(plugin.valid());
+    const auto source = gg::core::layerSlot(gg::core::LayerParam::Source, 1);
+    const clap_id position = paramId(gg::core::layerSlot(gg::core::LayerParam::Position, 1));
+    const clap_id positionA = paramId(ParamSlot::Position);
+    const double seconds = static_cast<double>(0.28967658f); // 0.25 s on a Live layer
+    const double other = isFx ? 0.0 : 1.0; // Sample in the FX, Live in the instrument
+    const auto showsSeconds = [&](clap_id id_) {
+        return valueToText(plugin, id_, seconds) == "0.25 s";
+    };
+    CHECK(showsSeconds(position) == isFx);
+    CHECK(showsSeconds(positionA) == isFx);
+
+    SECTION("while inactive")
+    {
+        flushValues(plugin, {{source, other}});
+        CHECK(showsSeconds(position) == !isFx);
+        CHECK(showsSeconds(positionA) == isFx); // layer A is unchanged
+        if (!isFx)
+        {
+            CHECK(valueToText(plugin, position, 0.25).find('%') == std::string::npos);
+        }
+        else
+        {
+            CHECK(valueToText(plugin, position, 0.25).find('%') != std::string::npos);
+        }
+        double back = -1.0;
+        const std::string text = valueToText(plugin, position, 0.6);
+        REQUIRE(plugin.params()->text_to_value(plugin.clap(), position, text.c_str(), &back));
+        CHECK(std::abs(back - 0.6) < 0.01);
+        plugin.onMainThread();
+        CHECK(host.textRescans() == 1);
+        plugin.onMainThread();
+        CHECK(host.textRescans() == 1);
+        // Resample falls back to the product's default kind: back to the first display.
+        flushValues(plugin, {{source, 2.0}});
+        plugin.onMainThread();
+        CHECK(host.textRescans() == 2);
+        CHECK(showsSeconds(position) == isFx);
+    }
+
+    SECTION("while active, from process and from a state load")
+    {
+        REQUIRE(plugin.activate(48000.0, 512));
+        Stereo in(64);
+        Stereo out(64);
+        const auto toOther = gg::test::paramValue(paramId(source), other);
+        InputEvents events;
+        events.add(&toOther.header);
+        REQUIRE(plugin.process(64, in.data(), out.data(), events.list()) == CLAP_PROCESS_CONTINUE);
+        CHECK(showsSeconds(position) == !isFx);
+        CHECK(host.textRescans() == 0); // on the main thread only
+        plugin.onMainThread();
+        CHECK(host.textRescans() == 1);
+        REQUIRE(plugin.process(64, in.data(), out.data()) == CLAP_PROCESS_CONTINUE);
+        plugin.onMainThread();
+        CHECK(host.textRescans() == 1); // once per change
+
+        // Resample in the FX is Live, in the instrument Sample: each product's default kind.
+        const auto toDefault = gg::test::paramValue(paramId(source), 2.0);
+        InputEvents back;
+        back.add(&toDefault.header);
+        REQUIRE(plugin.process(64, in.data(), out.data(), back.list()) == CLAP_PROCESS_CONTINUE);
+        plugin.onMainThread();
+        CHECK(host.textRescans() == 2);
+        CHECK(showsSeconds(position) == isFx);
+
+        // A state load that changes the kind asks once the audio thread has applied it.
+        auto loaded =
+            decoded(plugin.save(), isFx ? gg::core::Mode::Fx : gg::core::Mode::Instrument);
+        loaded.values[at(source)] = static_cast<float>(other);
+        REQUIRE(plugin.load(gg::core::encodeState(loaded)));
+        REQUIRE(plugin.process(64, in.data(), out.data()) == CLAP_PROCESS_CONTINUE);
+        plugin.onMainThread();
+        CHECK(host.textRescans() == 3);
+        CHECK(showsSeconds(position) == !isFx);
+    }
+    CHECK(host.otherRescans() == 0);
 }
 
 namespace
