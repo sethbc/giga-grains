@@ -43,6 +43,7 @@
 #include "gg/source/SampleBuffer.h"
 #include "sst/basic-blocks/params/ParamMetadata.h"
 #include "support/DeepXml.h"
+#include "support/ParamTable.h"
 #include "support/StateContainer.h"
 
 using gg::core::factoryRoutes;
@@ -73,168 +74,22 @@ struct Expected
     uint32_t flags;
 };
 
-/// One row of Global Constraints' parameter table, as the plan spells it.
-struct Row
-{
-    clap_id id;
-    std::string_view name;
-    float minVal, maxVal, defaultVal;
-    uint32_t flags;
-};
 constexpr uint32_t kStepped = kAutoMod | CLAP_PARAM_IS_STEPPED;
 
-// Global Constraints' parameter table, copied literally: the FX's. The instrument's differs only
-// in every layer's Position default (kInstrumentPositionDefault) and display and Source default
+// Global Constraints' parameter table, spelled out literally in tests/support/ParamTable.h (the
+// FX's), with each slot and its CLAP flags. The instrument's differs only in every layer's
+// Position default (kInstrumentPositionDefault) and display and Source default
 // (kInstrumentSourceDefault), and in Macro 8's name (kInstrumentMacros).
-//
-// The 28 M1 slots, in slot order: layer A's eleven M1 parameters among them, named with their
-// layer's letter since M2 sub-project 1 (spec §6.9).
-constexpr std::array<Row, 28> kM1Rows{{
-    {0x000001, "Mix", 0.f, 1.f, 0.5f, kAutoMod},
-    {0x000002, "Level", -60.f, 12.f, 0.0f, kAutoMod},
-    {0x010001, "A Position", 0.f, 1.f, 0.28967658f, kAutoMod},
-    {0x010002, "A Size", -7.643856189774724f, 1.f, -2.736965594166206f, kAutoMod},
-    {0x010003, "A Density", -2.f, 8.643856189774725f, 4.0f, kAutoMod},
-    {0x010004, "A Distribution", 0.f, 1.f, 0.5f, kAutoMod},
-    {0x010005, "A Pitch", -24.f, 24.f, 0.0f, kAutoMod},
-    {0x010006, "A Spray", 0.f, 1.f, 0.36033038f, kAutoMod},
-    {0x010007, "A Stereo", 0.f, 1.f, 0.5f, kAutoMod},
-    {0x010008, "A Freeze", 0.f, 1.f, 0.0f, kStepped},
-    {0x01000B, "A Diffusion", 0.f, 1.f, 0.0f, kAutoMod},
-    {0x000003, "Reverb Amount", 0.f, 1.f, 0.0f, kAutoMod},
-    {0x000004, "Reverb Decay", -2.f, 6.068255709804611f, 1.0f, kAutoMod},
-    {0x000005, "Reverb Size", 0.f, 1.f, 0.5f, kAutoMod},
-    {0x000006, "Reverb Damping", 0.f, 1.f, 0.3f, kAutoMod},
-    {0x000007, "Reverb Pre-delay", 0.f, 0.5f, 0.0f, kAutoMod},
-    {0x000008, "Reverb Modulation", 0.f, 1.f, 0.25f, kAutoMod},
-    {0x000009, "Dry to Reverb", 0.f, 1.f, 0.0f, kAutoMod},
-    // The Perform UI (sub-project 5's spec §3.3, §4, §5).
-    {0x010009, "A Texture", 0.f, 1.f, 0.0f, kAutoMod},
-    {0x01000A, "A Feedback", 0.f, 0.95f, 0.0f, kAutoMod},
-    {0x000011, "Macro Size", 0.f, 1.f, 0.5f, kAutoMod},
-    {0x000012, "Macro Density", 0.f, 1.f, 0.5f, kAutoMod},
-    {0x000013, "Macro Pitch", 0.f, 1.f, 0.5f, kAutoMod},
-    {0x000014, "Macro Spray", 0.f, 1.f, 0.5f, kAutoMod},
-    {0x000015, "Macro Texture", 0.f, 1.f, 0.0f, kAutoMod},
-    {0x000016, "Macro Freeze", 0.f, 1.f, 0.0f, kStepped},
-    {0x000017, "Macro Feedback", 0.f, 1.f, 0.0f, kAutoMod},
-    {0x000018, "Macro Mix", 0.f, 1.f, 0.5f, kAutoMod},
-}};
-
-// Layer A's 37 new parameters (M2 sub-project 1's spec §6.9), slots 28 to 64, in index order.
-// Rates are log2 Hz (0.01 Hz to 50 Hz), envelope times log2 seconds (1 ms to 10 s).
-constexpr float kRateMin = -6.643856189774724f, kRateMax = 5.643856189774724f;
-constexpr float kTimeMin = -9.965784284662087f, kTimeMax = 3.321928094887362f;
-constexpr std::array<Row, 37> kLayerANewRows{{
-    {0x01000C, "A Source", 0.f, 4.f, 1.0f, kStepped},
-    {0x01000D, "A Pitch Spread", 0.f, 24.f, 0.0f, kAutoMod},
-    {0x01000E, "A Size Spread", 0.f, 2.f, 0.0f, kAutoMod},
-    {0x01000F, "A LFO 1 Rate", kRateMin, kRateMax, 0.0f, kAutoMod},
-    {0x010010, "A LFO 1 Shape", 0.f, 4.f, 0.0f, kStepped},
-    {0x010011, "A LFO 2 Rate", kRateMin, kRateMax, -2.0f, kAutoMod},
-    {0x010012, "A LFO 2 Shape", 0.f, 4.f, 1.0f, kStepped},
-    {0x010013, "A Env 1 Attack", kTimeMin, kTimeMax, -6.643856189774724f, kAutoMod},
-    {0x010014, "A Env 1 Decay", kTimeMin, kTimeMax, -2.321928094887362f, kAutoMod},
-    {0x010015, "A Env 1 Sustain", 0.f, 1.f, 1.0f, kAutoMod},
-    {0x010016, "A Env 1 Release", kTimeMin, kTimeMax, -2.321928094887362f, kAutoMod},
-    {0x010017, "A Env 2 Attack", kTimeMin, kTimeMax, -1.0f, kAutoMod},
-    {0x010018, "A Env 2 Decay", kTimeMin, kTimeMax, 0.0f, kAutoMod},
-    {0x010019, "A Env 2 Sustain", 0.f, 1.f, 0.5f, kAutoMod},
-    {0x01001A, "A Env 2 Release", kTimeMin, kTimeMax, 0.0f, kAutoMod},
-    {0x01001B, "A Random 1 Rate", kRateMin, kRateMax, 1.0f, kAutoMod},
-    {0x01001C, "A Random 1 Smooth", 0.f, 1.f, 0.0f, kAutoMod},
-    {0x01001D, "A Random 2 Rate", kRateMin, kRateMax, -1.0f, kAutoMod},
-    {0x01001E, "A Random 2 Smooth", 0.f, 1.f, 0.5f, kAutoMod},
-    {0x01001F, "A Step Rate", kRateMin, kRateMax, 2.0f, kAutoMod},
-    {0x010020, "A Step Length", 1.f, 16.f, 16.0f, kStepped},
-    {0x010021, "A Step 1", 0.f, 1.f, 0.0f, kAutoMod},
-    {0x010022, "A Step 2", 0.f, 1.f, 0.0f, kAutoMod},
-    {0x010023, "A Step 3", 0.f, 1.f, 0.0f, kAutoMod},
-    {0x010024, "A Step 4", 0.f, 1.f, 0.0f, kAutoMod},
-    {0x010025, "A Step 5", 0.f, 1.f, 0.0f, kAutoMod},
-    {0x010026, "A Step 6", 0.f, 1.f, 0.0f, kAutoMod},
-    {0x010027, "A Step 7", 0.f, 1.f, 0.0f, kAutoMod},
-    {0x010028, "A Step 8", 0.f, 1.f, 0.0f, kAutoMod},
-    {0x010029, "A Step 9", 0.f, 1.f, 0.0f, kAutoMod},
-    {0x01002A, "A Step 10", 0.f, 1.f, 0.0f, kAutoMod},
-    {0x01002B, "A Step 11", 0.f, 1.f, 0.0f, kAutoMod},
-    {0x01002C, "A Step 12", 0.f, 1.f, 0.0f, kAutoMod},
-    {0x01002D, "A Step 13", 0.f, 1.f, 0.0f, kAutoMod},
-    {0x01002E, "A Step 14", 0.f, 1.f, 0.0f, kAutoMod},
-    {0x01002F, "A Step 15", 0.f, 1.f, 0.0f, kAutoMod},
-    {0x010030, "A Step 16", 0.f, 1.f, 0.0f, kAutoMod},
-}};
-
-// The nine new globals (spec §6.9), the last slots.
-constexpr std::array<Row, 9> kNewGlobalRows{{
-    {0x000019, "Morph X", 0.f, 1.f, 0.5f, kAutoMod},
-    {0x00001A, "Morph Y", 0.f, 1.f, 0.5f, kAutoMod},
-    {0x00001B, "Layer A On", 0.f, 1.f, 1.0f, kStepped},
-    {0x00001C, "Layer B On", 0.f, 1.f, 0.0f, kStepped},
-    {0x00001D, "Layer C On", 0.f, 1.f, 0.0f, kStepped},
-    {0x00001E, "Layer D On", 0.f, 1.f, 0.0f, kStepped},
-    {0x00001F, "Level B", -60.f, 12.f, 0.0f, kAutoMod},
-    {0x000020, "Level C", -60.f, 12.f, 0.0f, kAutoMod},
-    {0x000021, "Level D", -60.f, 12.f, 0.0f, kAutoMod},
-}};
-
-// All 218, in slot order: the rows above, with layers B to D generated from layer A's 48 rows in
-// index order (the M1 ones found by ID), each with its letter for "A" and its scope for 1.
 std::array<Expected, kParamCount> buildExpected()
 {
-    // Plain checks, not Catch2's: this runs before any test case, at static initialization.
-    const auto expect = [](bool ok) {
-        if (!ok)
-        {
-            throw std::logic_error("the expected parameter table is malformed");
-        }
-    };
+    const auto &rows = gg::test::paramTable();
     std::array<Expected, kParamCount> t{};
-    size_t slot = 0;
-    const auto push = [&t, &slot, &expect](clap_id id, std::string name, const Row &r) {
-        expect(slot < kParamCount);
-        t[slot] = {static_cast<ParamSlot>(slot),
-                   id,
-                   std::move(name),
-                   r.minVal,
-                   r.maxVal,
-                   r.defaultVal,
-                   r.flags};
-        ++slot;
-    };
-    for (const Row &r : kM1Rows)
+    for (size_t i = 0; i < kParamCount; ++i)
     {
-        push(r.id, std::string(r.name), r);
+        const auto &r = rows[i];
+        t[i] = {static_cast<ParamSlot>(i),      r.id, r.name, r.min, r.max, r.def,
+                r.stepped ? kStepped : kAutoMod};
     }
-    for (const Row &r : kLayerANewRows)
-    {
-        push(r.id, std::string(r.name), r);
-    }
-    std::vector<Row> layerA;
-    for (clap_id index = 0x01; index <= 0x0B; ++index)
-    {
-        const auto at = std::find_if(kM1Rows.begin(), kM1Rows.end(),
-                                     [index](const Row &r) { return r.id == (0x010000u | index); });
-        expect(at != kM1Rows.end());
-        layerA.push_back(*at);
-    }
-    layerA.insert(layerA.end(), kLayerANewRows.begin(), kLayerANewRows.end());
-    expect(layerA.size() == 48);
-    for (const char letter : {'B', 'C', 'D'})
-    {
-        const auto scope = static_cast<clap_id>(letter - 'A' + 1);
-        for (const Row &r : layerA)
-        {
-            expect(r.name.starts_with("A "));
-            push((scope << 16) | (r.id & 0xFFFFu),
-                 std::string(1, letter) + std::string(r.name.substr(1)), r);
-        }
-    }
-    for (const Row &r : kNewGlobalRows)
-    {
-        push(r.id, std::string(r.name), r);
-    }
-    expect(slot == kParamCount);
     return t;
 }
 const std::array<Expected, kParamCount> kTable = buildExpected();
@@ -551,9 +406,10 @@ TEST_CASE("param ids, names, ranges and defaults are pinned", "[core]")
 
 TEST_CASE("the id table has the next free indices and the reserved blocks", "[core]")
 {
-    // M2 sub-project 1's spec §6.9: no index of any scope falls in 0x40 to 0x7F (wave 2's), and
-    // the recorded next-free indices are the table's largest plus one, in the layer scopes and
-    // in scope 0.
+    // M2 sub-project 1's spec §6.9: no index of this sub-project's falls in 0x40 to 0x7F (wave
+    // 2's), and the recorded next-free indices are the next free index below the reserved blocks,
+    // one past the table's largest index below them, in the layer scopes and in scope 0. Wave 2's
+    // rows, inside their blocks, are left out of both checks.
     STATIC_REQUIRE(gg::core::kReservedIndexBegin == 0x40u);
     STATIC_REQUIRE(gg::core::kReservedIndexEnd == 0x7Fu);
     STATIC_REQUIRE(gg::core::kNextFreeLayerIndex == 0x31u);
@@ -566,11 +422,16 @@ TEST_CASE("the id table has the next free indices and the reserved blocks", "[co
         const clap_id id = gg::core::paramId(slot);
         const uint32_t index = id & 0xFFFFu;
         INFO("param " << kTable[i].name << ", id " << id);
-        CHECK((index < gg::core::kReservedIndexBegin || index > gg::core::kReservedIndexEnd));
+        CHECK(index <= gg::core::kReservedIndexEnd);
         CHECK((id >> 16) <= 4u);
-        uint32_t &maxIndex = (id >> 16) == 0 ? maxGlobalIndex : maxLayerIndex;
-        maxIndex = std::max(maxIndex, index);
+        if (index < gg::core::kReservedIndexBegin)
+        {
+            uint32_t &maxIndex = (id >> 16) == 0 ? maxGlobalIndex : maxLayerIndex;
+            maxIndex = std::max(maxIndex, index);
+        }
     }
+    STATIC_REQUIRE(gg::core::kNextFreeLayerIndex <= gg::core::kReservedIndexBegin);
+    STATIC_REQUIRE(gg::core::kNextFreeGlobalIndex <= gg::core::kReservedIndexBegin);
     CHECK(maxLayerIndex + 1 == gg::core::kNextFreeLayerIndex);
     CHECK(maxGlobalIndex + 1 == gg::core::kNextFreeGlobalIndex);
 
@@ -624,7 +485,9 @@ TEST_CASE("the id table has the next free indices and the reserved blocks", "[co
             const auto s = static_cast<size_t>(slot);
             CHECK_FALSE(seen[s]);
             seen[s] = true;
-            CHECK(gg::core::paramId(slot) == ((layer + 1u) << 16 | (p + 1)));
+            CHECK(gg::core::paramId(slot) ==
+                  ((layer + 1u) << 16 | gg::core::layerParamIndex(param)));
+            CHECK(gg::core::paramId(slot) == kTable[s].id);
             CHECK(gg::core::layerOf(slot) == LayerRef{param, layer});
             CHECK(kTable[s].name.starts_with(std::string(1, static_cast<char>('A' + layer)) + " "));
         }
@@ -640,6 +503,64 @@ TEST_CASE("the id table has the next free indices and the reserved blocks", "[co
                slot == ParamSlot::LayerBOn || slot == ParamSlot::LayerCOn ||
                slot == ParamSlot::LayerDOn));
     }
+}
+
+TEST_CASE("a layer index no row has is no parameter, and a gap in the index column is kept",
+          "[core]")
+{
+    // M2 programme design §7.1: wave 2 appends layer rows inside its reserved blocks, so the index
+    // column has gaps (0x31 to 0x3F, and each block's unused indices). The index is read from the
+    // column, never from a row's position. The mechanism, on a column with gaps:
+    using gg::core::detail::rowsByIndex;
+    using gg::core::detail::validIndexColumn;
+    constexpr std::array<uint32_t, 4> kGapped{0x01, 0x02, 0x41, 0x60};
+    STATIC_REQUIRE(validIndexColumn(kGapped));
+    constexpr auto rows = rowsByIndex(kGapped);
+    STATIC_REQUIRE(rows.size() == 0x80);
+    STATIC_REQUIRE(rows[0x01] == 0);
+    STATIC_REQUIRE(rows[0x02] == 1);
+    STATIC_REQUIRE(rows[0x41] == 2);
+    STATIC_REQUIRE(rows[0x60] == 3);
+    for (uint32_t index = 0; index < rows.size(); ++index)
+    {
+        INFO("index " << index);
+        if (index != 0x01 && index != 0x02 && index != 0x41 && index != 0x60)
+        {
+            CHECK(rows[index] == kGapped.size());
+        }
+    }
+    // Index 0, an index past 0x7F, a repeat and rows out of index order are no column.
+    STATIC_REQUIRE_FALSE(validIndexColumn(std::array<uint32_t, 2>{0x00, 0x01}));
+    STATIC_REQUIRE_FALSE(validIndexColumn(std::array<uint32_t, 2>{0x01, 0x80}));
+    STATIC_REQUIRE_FALSE(validIndexColumn(std::array<uint32_t, 2>{0x02, 0x02}));
+    STATIC_REQUIRE_FALSE(validIndexColumn(std::array<uint32_t, 2>{0x03, 0x02}));
+
+    // The table's own: every index of every scope (0x00 to 0x7F) that no ID in the table has is no
+    // parameter, the reserved blocks' and 0x31 to 0x3F among them, and every ID in the table leads
+    // to its slot.
+    std::array<std::array<bool, 0x80>, 5> used{};
+    for (size_t i = 0; i < kParamCount; ++i)
+    {
+        const clap_id id = kTable[i].id;
+        INFO("param " << kTable[i].name << ", id " << id);
+        REQUIRE((id >> 16) <= 4u);
+        REQUIRE((id & 0xFFFFu) < 0x80u);
+        used[id >> 16][id & 0xFFFFu] = true;
+        REQUIRE(gg::core::slotForId(id) == kTable[i].slot);
+        CHECK(gg::core::paramId(*gg::core::slotForId(id)) == id);
+    }
+    size_t unused = 0;
+    for (clap_id scope = 0; scope <= 4; ++scope)
+    {
+        for (clap_id index = 0; index < 0x80; ++index)
+        {
+            const clap_id id = scope << 16 | index;
+            INFO("id " << id);
+            CHECK(gg::core::slotForId(id).has_value() == used[scope][index]);
+            unused += used[scope][index] ? 0 : 1;
+        }
+    }
+    CHECK(unused == 5 * 0x80 - kParamCount);
 }
 
 TEST_CASE("the state lists every param in slot order", "[core]")

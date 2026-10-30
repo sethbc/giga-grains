@@ -37,8 +37,13 @@ enum class Mode
 /// `X(name, index, "Display Name")`. A layer parameter's CLAP ID is `(layer + 1) << 16 | index`,
 /// the same index in each of the scopes 1 to 4, and it is displayed with its layer's letter ("A
 /// Size" ... "D Size"). The enum LayerParam, layers B to D's ParamSlot entries and their IDs are
-/// generated from it, so no name is typed four times. Append-only, as the IDs are: a new row takes
-/// kNextFreeLayerIndex.
+/// generated from it, so no name is typed four times. Append-only, as the IDs are. A wave-2
+/// sub-project (M2 programme design §7.1) appends `X(Name, 0x4N, "Name")`, its index inside its
+/// reserved block, at the end of GG_LAYER_PARAMS_M2, or adds a list GG_LAYER_PARAMS_M2_<n> to
+/// GG_LAYER_PARAMS. Rows stay in index order, and an index left unused stays unused: an index is
+/// read from this column (layerParamIndex, slotForId), never from a row's position. The
+/// GG_LAYER_PARAMS* macros stay defined on purpose: ParamIds.cpp and tools/gg-render/RenderSpec.cpp
+/// expand them too.
 #define GG_LAYER_PARAMS_M1(X)                                                                      \
     X(Position, 0x01, "Position")                                                                  \
     X(Size, 0x02, "Size")                                                                          \
@@ -91,8 +96,8 @@ enum class Mode
     X(Step16, 0x30, "Step 16")
 #define GG_LAYER_PARAMS(X) GG_LAYER_PARAMS_M1(X) GG_LAYER_PARAMS_M2(X)
 
-/// One layer's parameter, whichever layer: its index in the layer's scope is `p + 1`
-/// (layerParamIndex).
+/// One layer's parameter, whichever layer: its value is its row's position in GG_LAYER_PARAMS, and
+/// its index in the layer's scope is the row's index column (layerParamIndex).
 enum class LayerParam : uint8_t
 {
 #define GG_LAYER_PARAM_ENUM(name, index, display) name,
@@ -108,10 +113,64 @@ inline constexpr uint8_t kLayers = 4;
 inline constexpr size_t kLayerParamCount = 48;
 static_assert(static_cast<size_t>(LayerParam::Count) == kLayerParamCount);
 
-/// The parameter's index in its layer's scope, 0x01 to 0x30: its enum value plus 1 (index 0 is
-/// reserved).
-constexpr uint32_t layerParamIndex(LayerParam p) noexcept { return static_cast<uint32_t>(p) + 1u; }
+/// The indices a scope can hold: 0x00 (reserved) to 0x7F, the top of wave 2's reserved blocks
+/// (kReservedIndexEnd).
+inline constexpr uint32_t kScopeIndices = 0x80;
 
+namespace detail
+{
+/// Each row's index, by its LayerParam value: GG_LAYER_PARAMS's index column.
+inline constexpr std::array<uint32_t, kLayerParamCount> kLayerParamIndices{
+#define GG_LAYER_PARAM_INDEX(name, index, display) (index),
+    GG_LAYER_PARAMS(GG_LAYER_PARAM_INDEX)
+#undef GG_LAYER_PARAM_INDEX
+};
+
+/// Whether `indices`, a list's index column, can be a layer list: every index in 0x01 to 0x7F,
+/// strictly ascending (rows in index order, none repeated).
+template <size_t N> constexpr bool validIndexColumn(const std::array<uint32_t, N> &indices) noexcept
+{
+    for (size_t i = 0; i < N; ++i)
+    {
+        if (indices[i] == 0 || indices[i] >= kScopeIndices ||
+            (i > 0 && indices[i] <= indices[i - 1]))
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+/// The reverse of an index column: each index 0x00 to 0x7F's row position, or N where no row has
+/// that index. `indices` must be a valid column (validIndexColumn).
+template <size_t N>
+constexpr std::array<size_t, kScopeIndices>
+rowsByIndex(const std::array<uint32_t, N> &indices) noexcept
+{
+    std::array<size_t, kScopeIndices> t{};
+    t.fill(N);
+    for (size_t i = 0; i < N; ++i)
+    {
+        t[indices[i] % kScopeIndices] = i;
+    }
+    return t;
+}
+
+static_assert(validIndexColumn(kLayerParamIndices));
+
+/// The layer scopes' rows by index: kLayerParamCount where an index is no row's.
+inline constexpr auto kLayerRowsByIndex = rowsByIndex(kLayerParamIndices);
+} // namespace detail
+
+/// The parameter's index in its layer's scope, from its row's index column: 0x01 to 0x30 for this
+/// sub-project's rows, 0x40 to 0x7F for wave 2's (index 0 is reserved); 0 for LayerParam::Count.
+constexpr uint32_t layerParamIndex(LayerParam p) noexcept
+{
+    const auto i = static_cast<size_t>(p);
+    return i < kLayerParamCount ? detail::kLayerParamIndices[i] : 0u;
+}
+
+// Each row's ID pin: its LayerParam's index is the one its row names.
 #define GG_LAYER_PARAM_INDEX_CHECK(name, index, display)                                           \
     static_assert(layerParamIndex(LayerParam::name) == (index));
 GG_LAYER_PARAMS(GG_LAYER_PARAM_INDEX_CHECK)
@@ -213,8 +272,9 @@ constexpr bool isMacro(ParamSlot slot) noexcept
     return slot >= ParamSlot::Macro1 && slot <= ParamSlot::Macro8;
 }
 
-/// The next free index in every layer scope (1 to 4) and in scope 0 (M2 sub-project 1's spec
-/// §6.9): a new parameter takes it, and a test pins each as the table's largest index plus one.
+/// The next free index below the reserved blocks in every layer scope (1 to 4) and in scope 0 (M2
+/// sub-project 1's spec §6.9): a new parameter outside wave 2's blocks takes it, and a test pins
+/// each as one past the table's largest index below kReservedIndexBegin.
 inline constexpr uint32_t kNextFreeLayerIndex = 0x31, kNextFreeGlobalIndex = 0x22;
 
 /// The indices reserved in every scope for M2's wave 2 (spec §6.9): 0x40-0x4F for sub-project 2,
@@ -319,9 +379,10 @@ inline constexpr std::array<clap_id, kParamCount> kParamIds{
     0x000021, // LevelD
 };
 
-/// Scope 0's slots by index; ParamSlot::Count where an index isn't one.
+/// Scope 0's slots by index, 0x00 to 0x7F, so that wave 2's reserved blocks work as in the layer
+/// scopes; ParamSlot::Count where an index isn't one.
 inline constexpr auto kGlobalSlots = [] {
-    std::array<ParamSlot, kNextFreeGlobalIndex> t{};
+    std::array<ParamSlot, kScopeIndices> t{};
     t.fill(ParamSlot::Count);
     for (size_t i = 0; i < kParamCount; ++i)
     {
@@ -435,17 +496,19 @@ constexpr std::optional<uint8_t> perLayerGlobalLayer(ParamSlot slot) noexcept
     return std::nullopt;
 }
 
-/// The slot with this CLAP ID, if it's one of ours: arithmetic in the layer scopes, a table in
-/// scope 0.
+/// The slot with this CLAP ID, if it's one of ours: a table by index in each scope, the layer
+/// scopes' from GG_LAYER_PARAMS's index column, so an index no row has (a gap, a reserved block's
+/// unused index) is nothing.
 constexpr std::optional<ParamSlot> slotForId(clap_id id) noexcept
 {
     const uint32_t scope = id >> 16;
     const uint32_t index = id & 0xFFFFu;
     if (scope >= 1 && scope <= kLayers)
     {
-        if (index >= 1 && index <= kLayerParamCount)
+        if (index < kScopeIndices && detail::kLayerRowsByIndex[index] < kLayerParamCount)
         {
-            return layerSlot(static_cast<LayerParam>(index - 1), static_cast<uint8_t>(scope - 1));
+            return layerSlot(static_cast<LayerParam>(detail::kLayerRowsByIndex[index]),
+                             static_cast<uint8_t>(scope - 1));
         }
         return std::nullopt;
     }
