@@ -10,13 +10,14 @@
 // to it, which the CI gate checks. It also still times M0's prototype kernels in Kernels.h. It
 // began as the M0 kernel benchmark spike and was made gate-grade in M1 (carry-over B-I2, [133],
 // [132]; spec §5). With --canvas it times the canvas renderer instead (the M0 canvas stress spike,
-// see below), and with --space, Space.
+// see below), with --space, Space, and with --chain, the bus filters, the delay and the limiter.
 //
 //   gg-bench [--quick | --seconds S] [--rounds N] [--grains N] [--cases a,b] [--commit SHA]
 //            [--json out.json] [--baseline baseline.json]
 //   gg-bench --make-baseline <leg> <out.json> [--merge <old.json>] <in.json>...
 //   gg-bench --canvas [--quick] [--json out.json]
 //   gg-bench --space [--quick | --seconds S] [--rounds N] [--commit SHA] [--json out.json]
+//   gg-bench --chain [--quick | --seconds S] [--rounds N] [--commit SHA] [--json out.json]
 //
 // An option that doesn't apply to the mode chosen (--grains with --space, say, or anything
 // beside --make-baseline) is bad usage: exit 2, never silently ignored.
@@ -57,6 +58,10 @@
 // --quick; --seconds and --rounds set them) and the median's % of one core at 48 kHz.
 // It is report-only, with no baseline and no ratio; its JSON is its own document, apart from
 // schema 2. Sub-project 6 publishes the figure beside the grain engine's.
+//
+// --chain times the units the extremes sub-project adds after the grains, per stereo sample on
+// stereo noise at 48 kHz: two bus filters, the delay and the limiter (Bench.h has every setting).
+// It takes --space's options and, like it, is report-only with its own JSON.
 
 #include <algorithm>
 #include <array>
@@ -259,6 +264,28 @@ int runCanvas(bool quick, const std::string &jsonPath)
 
 void usage(std::FILE *f);
 
+int runChain(const gg::bench::Options &options, const std::string &jsonPath)
+{
+    const gg::bench::ChainOptions chainOptions{
+        .runSeconds = options.runSeconds, .rounds = options.rounds, .commit = options.commit};
+    std::string text;
+    int status = 0;
+    try
+    {
+        status = gg::bench::chainMain(chainOptions, jsonPath, text, [](int round, int rounds) {
+            std::fprintf(stderr, "gg-bench: round %d of %d done\n", round, rounds);
+        });
+    }
+    catch (const std::invalid_argument &e)
+    {
+        std::fprintf(stderr, "error: %s\n\n", e.what());
+        usage(stderr);
+        return 2;
+    }
+    std::fputs(text.c_str(), stdout);
+    return status;
+}
+
 int runSpace(const gg::bench::Options &options, const std::string &jsonPath)
 {
     const gg::bench::SpaceOptions spaceOptions{
@@ -296,6 +323,8 @@ void usage(std::FILE *f)
         "       gg-bench --canvas [--quick] [--json out.json]\n"
         "       gg-bench --space [--quick | --seconds S] [--rounds N] [--commit SHA]\n"
         "                [--json out.json]\n"
+        "       gg-bench --chain [--quick | --seconds S] [--rounds N] [--commit SHA]\n"
+        "                [--json out.json]\n"
         "\n"
         "Times the engine, the reference kernel and M0's prototype grain kernels: 2,000\n"
         "grains of 100 ms over 60 s of stereo noise at 48 kHz, at block sizes 32, 64 and\n"
@@ -311,6 +340,9 @@ void usage(std::FILE *f)
         "With --space, times Space instead: the diffuser and the reverb on stereo noise\n"
         "at 48 kHz, in ns per stereo sample over 5 rounds of >= 2 s. Report-only: no\n"
         "baseline and no ratio.\n"
+        "\n"
+        "With --chain, times the new FX units instead: two bus filters, the delay and the\n"
+        "limiter on stereo noise at 48 kHz, reported as --space is.\n"
         "\n"
         "  --quick           runs of 0.2 s instead of 2 s (30 canvas frames, not 240)\n"
         "  --seconds S       runs of S seconds (the last of --quick and --seconds wins)\n"
@@ -329,6 +361,8 @@ void usage(std::FILE *f)
         "  --canvas          time the canvas renderer, not the grain kernels\n"
         "  --space           time Space (the diffuser and the reverb), not the grain\n"
         "                    kernels\n"
+        "  --chain           time the bus filters, the delay and the limiter, not the\n"
+        "                    grain kernels\n"
         "\n"
         "An option the mode doesn't take is bad usage.\n"
         "\n"
@@ -338,7 +372,7 @@ void usage(std::FILE *f)
 }
 
 /// The options each mode takes, beside its own: anything else given with it is bad usage.
-bool applies(std::string_view option, bool canvas, bool space, bool makeBaseline)
+bool applies(std::string_view option, bool canvas, bool space, bool chain, bool makeBaseline)
 {
     const auto among = [option](std::initializer_list<std::string_view> list) {
         return std::find(list.begin(), list.end(), option) != list.end();
@@ -355,7 +389,11 @@ bool applies(std::string_view option, bool canvas, bool space, bool makeBaseline
     {
         return among({"--space", "--quick", "--seconds", "--rounds", "--commit", "--json"});
     }
-    return !among({"--canvas", "--space", "--make-baseline"});
+    if (chain)
+    {
+        return among({"--chain", "--quick", "--seconds", "--rounds", "--commit", "--json"});
+    }
+    return !among({"--canvas", "--space", "--chain", "--make-baseline"});
 }
 
 /// The whole of s as a double.
@@ -576,6 +614,7 @@ int main(int argc, char **argv)
     bool quick = false;
     bool canvas = false;
     bool space = false;
+    bool chain = false;
     std::string jsonPath;
     std::string baselinePath;
     std::vector<std::string> makeBaselineArgs; // non-empty: --make-baseline's values
@@ -600,6 +639,10 @@ int main(int argc, char **argv)
         else if (arg == "--space")
         {
             space = true;
+        }
+        else if (arg == "--chain")
+        {
+            chain = true;
         }
         else if (arg == "--seconds" && hasValue)
         {
@@ -658,11 +701,12 @@ int main(int argc, char **argv)
 
     for (const std::string_view option : given)
     {
-        if (!applies(option, canvas, space, !makeBaselineArgs.empty()))
+        if (!applies(option, canvas, space, chain, !makeBaselineArgs.empty()))
         {
             const char *mode = !makeBaselineArgs.empty() ? "--make-baseline"
                                : canvas                  ? "--canvas"
                                : space                   ? "--space"
+                               : chain                   ? "--chain"
                                                          : "the grain kernels' timing";
             std::fprintf(stderr, "error: %.*s doesn't apply with %s\n\n",
                          static_cast<int>(option.size()), option.data(), mode);
@@ -691,6 +735,10 @@ int main(int argc, char **argv)
     if (space)
     {
         return runSpace(options, jsonPath);
+    }
+    if (chain)
+    {
+        return runChain(options, jsonPath);
     }
 
     try

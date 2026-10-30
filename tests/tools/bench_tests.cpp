@@ -990,3 +990,72 @@ TEST_CASE("engine-layers admits its grains across four layers", "[bench]")
     // A one-layer case reports its one engine.
     CHECK(gg::bench::admittedTiers("engine-sample", 50, 64).activeGrains.size() == 1);
 }
+
+TEST_CASE("engine-sample-smear, engine-buses and engine-spectral run", "[bench]")
+{
+    // The three present with positive medians, then each admits grains (Normal tier) after its
+    // warm-up. Shape only: no timing figure is checked.
+    const gg::bench::Report report =
+        gg::bench::run({.runSeconds = 0.002,
+                        .rounds = 2,
+                        .grains = 50,
+                        .cases = {"engine-sample-smear", "engine-buses", "engine-spectral"}});
+    for (const char *name : {"engine-sample-smear", "engine-buses", "engine-spectral"})
+    {
+        INFO(name);
+        const auto count = std::count_if(
+            report.results.begin(), report.results.end(), [name](const gg::bench::CaseResult &r) {
+                return r.name == name && r.kind == "engine" && r.median > 0.0;
+            });
+        CHECK(count == 3); // blocks 32, 64 and 256
+    }
+    for (const char *name : {"engine-sample-smear", "engine-buses", "engine-spectral"})
+    {
+        INFO(name);
+        const gg::bench::TierCounts tiers = gg::bench::admittedTiers(name, 50, 256);
+        CHECK(tiers.normal >= 50);
+        CHECK(tiers.eco == 0);
+        REQUIRE(tiers.activeGrains.size() == 1);
+        CHECK(tiers.activeGrains[0] > 0);
+    }
+}
+
+TEST_CASE("the chain benchmark runs and writes its json", "[bench]")
+{
+    gg::bench::ChainOptions options;
+    options.runSeconds = 0.01;
+    options.rounds = 2;
+    const std::filesystem::path dir{GG_TEST_OUTPUT_DIR};
+    std::filesystem::create_directories(dir);
+    const std::filesystem::path jsonPath = dir / "bench_chain_quick.json";
+    std::filesystem::remove(jsonPath);
+
+    std::string output;
+    const int status = gg::bench::chainMain(options, gg::test::utf8(jsonPath), output);
+    INFO(output);
+    CHECK(status == 0);
+    CHECK(output.find("\nchain ") != std::string::npos);
+    CHECK(output.find("% core @48k") != std::string::npos);
+
+    std::ifstream in(jsonPath, std::ios::binary);
+    REQUIRE(in);
+    const nlohmann::json j = nlohmann::json::parse(in);
+    CHECK(j.at("benchmark").get<std::string>() == "chain");
+    CHECK(j.at("rounds").get<int>() == 2);
+    const nlohmann::json &runs = j.at("runs");
+    REQUIRE(runs.is_array());
+    REQUIRE(runs.size() == 2);
+    for (const nlohmann::json &run : runs)
+    {
+        CHECK(run.get<double>() > 0.0);
+    }
+    const double median = j.at("nsPerSample").get<double>();
+    CHECK(median > 0.0);
+    CHECK(j.at("min").get<double>() <= median);
+    CHECK(j.at("iqr").get<double>() >= 0.0);
+    CHECK(j.at("cpuPctOneCoreAt48k").get<double>() > 0.0);
+    CHECK_FALSE(j.contains("ratios"));
+
+    CHECK_THROWS_AS(gg::bench::runChain({.runSeconds = 0.0}), std::invalid_argument);
+    CHECK_THROWS_AS(gg::bench::runChain({.rounds = 0}), std::invalid_argument);
+}

@@ -187,18 +187,25 @@ set_tests_properties(bench_make_baseline PROPERTIES LABELS bench FIXTURES_REQUIR
 add_test(NAME bench_space_cli
         COMMAND gg-bench --space --quick --json ${CMAKE_BINARY_DIR}/bench_space_cli.json)
 set_tests_properties(bench_space_cli PROPERTIES LABELS bench)
+# - bench_chain_cli: gg-bench --chain --quick, the new FX units' report-only cost, likewise.
+add_test(NAME bench_chain_cli
+        COMMAND gg-bench --chain --quick --json ${CMAKE_BINARY_DIR}/bench_chain_cli.json)
+set_tests_properties(bench_chain_cli PROPERTIES LABELS bench)
 # - bench_rejects_*: an option the mode doesn't take is bad usage (carry-over [151]), and so is a
 #   value --space's validation rejects. Each passes only on gg-bench's error line, then its
 #   usage (both on stderr, before anything is timed), with exit code 2 (check-exit-code.cmake).
 set(bench_rejects_space_cases_args --space --cases reference)
 set(bench_rejects_space_cases_error "--cases doesn't apply with --space")
+set(bench_rejects_chain_grains_args --chain --grains 10)
+set(bench_rejects_chain_grains_error "--grains doesn't apply with --chain")
 set(bench_rejects_canvas_seconds_args --canvas --seconds 1)
 set(bench_rejects_canvas_seconds_error "--seconds doesn't apply with --canvas")
 set(bench_rejects_make_baseline_quick_args --quick --make-baseline test out.json a.json b.json)
 set(bench_rejects_make_baseline_quick_error "--quick doesn't apply with --make-baseline")
 set(bench_rejects_space_seconds_args --space --seconds 0)
 set(bench_rejects_space_seconds_error "the run length must be more than 0")
-foreach (test IN ITEMS bench_rejects_space_cases bench_rejects_canvas_seconds
+foreach (test IN ITEMS bench_rejects_space_cases bench_rejects_chain_grains
+        bench_rejects_canvas_seconds
         bench_rejects_make_baseline_quick bench_rejects_space_seconds)
     add_test(NAME ${test}
             COMMAND ${CMAKE_COMMAND} -DPROGRAM=$<TARGET_FILE:gg-bench>

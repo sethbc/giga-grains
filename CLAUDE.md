@@ -596,6 +596,7 @@ $b --make-baseline <preset> out.json a.json b.json c.json        # write a CI le
 $b --make-baseline <preset> out.json --merge old.json a.json ... # add or remake models in one
 $b --canvas [--quick] [--json out.json]                           # canvas renderer
 $b --space [--quick | --seconds S] [--rounds N] [--commit SHA] [--json out.json]  # Space
+$b --chain [--quick | --seconds S] [--rounds N] [--commit SHA] [--json out.json]  # FX units
 ```
 
 - **The cases** (each at blocks 32, 64 and 256; by default 2,000 grains of 100 ms over a 60 s
@@ -615,6 +616,15 @@ $b --space [--quick | --seconds S] [--rounds N] [--commit SHA] [--json out.json]
       spec §6.12);
     - `engine-layers-full`: the same with 2,000 grains in every layer, 8,000 in all; report-only
       beside X, with no baseline entry yet;
+    - `engine-sample-smear`: `engine-sample` with Smear's position jitter (50 ms) and
+      micro-detune (0.5 semitones); report-only, with no baseline entry yet (M2 extremes spec
+      §6.10);
+    - `engine-buses`: `engine-sample` with half its grains on the layer's second bus, rendered
+      through the two-bus `Engine::process` into two pairs of buffers that are summed after;
+      report-only, with no baseline entry yet;
+    - `engine-spectral`: `engine-sample` with Spectral grains (Position 0.5, 1 s of Spray) over
+      the Spectral Smear's ring, which the engine fills from the same noise as sample material,
+      after a 2 s warm-up so the ring holds smear; report-only, with no baseline entry yet;
   - `reference`: M0's 4-wide Hermite kernel, frozen (`renderHermiteSimd` in
     `tools/gg-bench/Kernels.h`). It is the CPU gate's yardstick. `Kernels.h` includes no engine
     header: it holds its own frozen copies of the Hann table and the readers, so no engine
@@ -633,7 +643,7 @@ $b --space [--quick | --seconds S] [--rounds N] [--commit SHA] [--json out.json]
   `reference` for any ratio to be printed.
 - **Other options:** `--grains N` changes the grain count; `--cases a,b` runs only those cases
   (the default is all; `--help` lists them).
-- **Run length:** the full default run is 39 configurations × 5 rounds × 2 s, about 6.5 minutes
+- **Run length:** the full default run is 48 configurations × 5 rounds × 2 s, about 8 minutes
   of timing; a CI leg's benchmark step took about 6 minutes before the two layer cases added one.
   `--canvas` times 240 frames after a 20-frame warm-up, or 30 with `--quick`.
 - **`--space`** times Space's per-sample stage, the diffuser then the reverb, on stereo noise at
@@ -647,8 +657,15 @@ $b --space [--quick | --seconds S] [--rounds N] [--commit SHA] [--json out.json]
   - Sub-project 4's fix wave measured 28.49 ns per stereo sample, 0.137% of one M5 Max core,
     at its final code (`ac81dfb`; INTENT §16), and sub-project 6's idle run 29.44 ns, 0.141%,
     published beside X (19.5% at block 256; `docs/benchmarks/`, INTENT §23 #60).
-- **An option a mode doesn't take is bad usage** (exit 2, with the usage): `--space` takes only
-  the options shown above, `--canvas` only `--quick` and `--json`, and `--make-baseline`
+- **`--chain`** times the units the extremes sub-project adds after the grains, per stereo
+  sample on stereo noise at 48 kHz: two `BusFilter`s (Low-pass, 1 kHz, resonance 0.5), the
+  `Delay` (375 ms, feedback 0.5, damping 0.3, ping-pong, amount 1) and the `Limiter` (Peak,
+  ceiling 0.5, release 100 ms) (`tools/gg-bench/Bench.h` lists every setting). It takes
+  `--space`'s options and prints and writes as it does (its own JSON, `"benchmark": "chain"`).
+  - It is report-only: no ratio, no baseline, no verdict. CI's benchmark step doesn't time it;
+    ctest's `bench_chain_cli` only checks that it runs. Its exit status is as `--space`'s.
+- **An option a mode doesn't take is bad usage** (exit 2, with the usage): `--space` and `--chain`
+  take only the options shown above, `--canvas` only `--quick` and `--json`, and `--make-baseline`
   nothing else (its `--merge` is one of its own values).
 - **When profiling the plugins in a VST3 host,** remember that clap-wrapper's VST3 `process`
   takes a spin lock. Time spent there is the wrapper's, not ours.

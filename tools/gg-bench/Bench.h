@@ -32,7 +32,10 @@
 // - the four-layer engine cases (M2 layers spec §6.12), report-only beside X: engine-layers,
 //   four such engines (layers 0 to 3) sharing X's grains, 500 each, rendered through a
 //   SerialRunner and summed in layer order; and engine-layers-full, the same with all of the
-//   grains in every layer (8,000 in all by default).
+//   grains in every layer (8,000 in all by default);
+// - three cases of the extremes sub-project (spec §6.10), each engine-sample with a change:
+//   engine-sample-smear (Smear's jitter and detune), engine-buses (half the grains on the second
+//   bus, through the two-bus process) and engine-spectral (Spectral grains over the smear ring).
 // Every engine case's ratio, ns per grain-sample over reference's in the same round, cancels the
 // machine's speed (ruling 3), though not its microarchitecture: on CI the same code's ratios
 // differ by up to ~20% between the CPU models GitHub assigns a leg. A baseline file therefore
@@ -294,6 +297,48 @@ std::string toJson(const SpaceReport &report);
 /// jsonPath isn't empty, writes toJson() there. Returns gg-bench's exit status: 0, or 1 if it
 /// couldn't write the JSON. Throws std::invalid_argument for options validate() rejects.
 int spaceMain(const SpaceOptions &options, const std::string &jsonPath, std::string &out,
+              const Progress &progress = {});
+
+// ---- gg-bench --chain: the new FX units' cost (extremes sub-project 4, report-only) ----
+//
+// It times the units M2 sub-project 4 adds after the grains, per stereo sample on stereo noise at
+// 48 kHz: two BusFilters (Low-pass, 1 kHz, resonance 0.5), each filtering the noise on its own
+// bus, their sum through the Delay (375 ms, feedback 0.5, damping 0.3, ping-pong, amount 1) and
+// the Limiter (Peak, ceiling 0.5, release 100 ms). Like --space it has one configuration, so no
+// round order, ratio or baseline; it takes --space's options and has its own JSON.
+
+struct ChainOptions
+{
+    double runSeconds{2.0};        // --seconds; --quick = 0.2
+    int rounds{5};                 // --rounds
+    std::string commit{"unknown"}; // --commit
+};
+
+struct ChainReport
+{
+    ChainOptions options;
+    std::string machine, compiler;
+    std::vector<double> nsPerSample{};      // one per round, in round order
+    double median{0.0}, min{0.0}, iqr{0.0}; // of nsPerSample
+    double cpuPctOneCoreAt48k{0.0};         // from the median
+};
+
+/// Throws std::invalid_argument for a run length that isn't in (0, 3600] seconds or fewer than
+/// 1 round.
+void validate(const ChainOptions &options);
+
+/// Times the chain as above. Calls validate() first, so it throws before timing anything.
+ChainReport runChain(const ChainOptions &options, const Progress &progress = {});
+
+/// The report as its own JSON document, apart from schema 2: {"benchmark": "chain", machine,
+/// compiler, commit, sampleRate, runSeconds, rounds, the settings, "runs" (nsPerSample),
+/// "nsPerSample" (the median), "min", "iqr", "cpuPctOneCoreAt48k"}.
+std::string toJson(const ChainReport &report);
+
+/// gg-bench --chain: runs runChain(options), puts the text gg-bench prints in `out` and, when
+/// jsonPath isn't empty, writes toJson() there. Returns gg-bench's exit status: 0, or 1 if it
+/// couldn't write the JSON. Throws std::invalid_argument for options validate() rejects.
+int chainMain(const ChainOptions &options, const std::string &jsonPath, std::string &out,
               const Progress &progress = {});
 } // namespace gg::bench
 
