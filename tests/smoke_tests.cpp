@@ -28,3 +28,5 @@ TEST_CASE("engine library links and reports version", "[smoke]")
         REQUIRE(gg::kVersion == std::string(GG_VERSION_NUMERIC) + "-" + GG_VERSION_PRERELEASE);
     STATIC_REQUIRE(sizeof(void *) == 8);
 }
+
+TEST_CASE("the build is C++23", "[smoke][build]") { STATIC_REQUIRE(__cplusplus >= 202302L); }

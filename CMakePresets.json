@@ -70,12 +70,12 @@
       "binaryDir": "${sourceDir}/build/windows"
     },
     {
-      "name": "linux-gcc12",
+      "name": "linux-gcc13",
       "inherits": "release",
-      "displayName": "Linux (Ninja, Release, gcc-12)",
+      "displayName": "Linux (Ninja, Release, gcc-13)",
       "cacheVariables": {
-        "CMAKE_C_COMPILER": "gcc-12",
-        "CMAKE_CXX_COMPILER": "g++-12"
+        "CMAKE_C_COMPILER": "gcc-13",
+        "CMAKE_CXX_COMPILER": "g++-13"
       }
     }
   ],
@@ -106,8 +106,8 @@
       "configuration": "Release"
     },
     {
-      "name": "linux-gcc12",
-      "configurePreset": "linux-gcc12"
+      "name": "linux-gcc13",
+      "configurePreset": "linux-gcc13"
     }
   ],
   "testPresets": [
@@ -157,9 +157,9 @@
       "configuration": "Release"
     },
     {
-      "name": "linux-gcc12",
+      "name": "linux-gcc13",
       "inherits": "base",
-      "configurePreset": "linux-gcc12"
+      "configurePreset": "linux-gcc13"
     }
   ]
 }

@@ -438,7 +438,7 @@ TEST_CASE("the committed baselines are well formed", "[bench]")
 {
     // CI checks each leg's run against its file, so each must pass checkBaseline(): an entry per
     // CPU model with every engine case at every block size, each once.
-    const std::vector<std::string> legs{"linux-gcc12", "mac-universal", "windows-clangcl"};
+    const std::vector<std::string> legs{"linux-gcc13", "mac-universal", "windows-clangcl"};
     for (const std::string &leg : legs)
     {
         INFO(leg);
@@ -495,9 +495,9 @@ TEST_CASE("make baseline", "[bench]")
         benchRun("CPU A", "def", {ratio("engine-sample", 32, 1.0), ratio("engine-live", 64, 2.0)}),
     };
 
-    const nlohmann::json baseline = gg::bench::makeBaseline("linux-gcc12", runs);
+    const nlohmann::json baseline = gg::bench::makeBaseline("linux-gcc13", runs);
     CHECK(baseline.at("schemaVersion").get<int>() == 2);
-    CHECK(baseline.at("leg").get<std::string>() == "linux-gcc12");
+    CHECK(baseline.at("leg").get<std::string>() == "linux-gcc13");
     const nlohmann::json &machines = baseline.at("machines");
     REQUIRE(machines.size() == 2);
 
@@ -536,11 +536,11 @@ TEST_CASE("make baseline", "[bench]")
     // no run at all.
     std::vector<nlohmann::json> missing = runs;
     missing[2]["ratios"].erase(1);
-    CHECK_THROWS_AS(gg::bench::makeBaseline("linux-gcc12", missing), std::invalid_argument);
+    CHECK_THROWS_AS(gg::bench::makeBaseline("linux-gcc13", missing), std::invalid_argument);
     std::vector<nlohmann::json> anonymous = runs;
     anonymous[1].erase("machine");
-    CHECK_THROWS_AS(gg::bench::makeBaseline("linux-gcc12", anonymous), std::invalid_argument);
-    CHECK_THROWS_AS(gg::bench::makeBaseline("linux-gcc12", {}), std::invalid_argument);
+    CHECK_THROWS_AS(gg::bench::makeBaseline("linux-gcc13", anonymous), std::invalid_argument);
+    CHECK_THROWS_AS(gg::bench::makeBaseline("linux-gcc13", {}), std::invalid_argument);
 }
 
 TEST_CASE("merge baseline keeps the other models' entries", "[bench]")
@@ -548,18 +548,18 @@ TEST_CASE("merge baseline keeps the other models' entries", "[bench]")
     // A model added later needs only its own runs: the merge keeps every entry of the old file
     // the new runs don't replace (carry-over: "Adding a model to a baseline needs the old runs").
     const nlohmann::json old = gg::bench::makeBaseline(
-        "linux-gcc12", {benchRun("CPU A", "old", {ratio("engine-sample", 32, 1.0)}),
+        "linux-gcc13", {benchRun("CPU A", "old", {ratio("engine-sample", 32, 1.0)}),
                         benchRun("CPU B", "old", {ratio("engine-sample", 32, 2.0)}),
                         benchRun("CPU C", "old", {ratio("engine-sample", 32, 3.0)})});
     // New runs: CPU B again, and CPU D, never seen.
     const nlohmann::json made = gg::bench::makeBaseline(
-        "linux-gcc12", {benchRun("CPU D", "new", {ratio("engine-sample", 32, 4.0)}),
+        "linux-gcc13", {benchRun("CPU D", "new", {ratio("engine-sample", 32, 4.0)}),
                         benchRun("CPU B", "new", {ratio("engine-sample", 32, 2.5)}),
                         benchRun("CPU B", "new", {ratio("engine-sample", 32, 2.7)})});
 
     const nlohmann::json merged = gg::bench::mergeBaseline(old, made);
     CHECK(merged.at("schemaVersion").get<int>() == 2);
-    CHECK(merged.at("leg").get<std::string>() == "linux-gcc12");
+    CHECK(merged.at("leg").get<std::string>() == "linux-gcc13");
     const nlohmann::json &machines = merged.at("machines");
     REQUIRE(machines.size() == 4);
     // The old file's order, each replaced entry in its place; then the new models.

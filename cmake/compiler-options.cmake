@@ -50,7 +50,7 @@ add_library(gg-compiler-options INTERFACE)
 
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "Never want shared if not specified")
 set(CMAKE_CXX_EXTENSIONS OFF)
-set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_VISIBILITY_PRESET hidden)
 set(CMAKE_C_VISIBILITY_PRESET hidden)
@@ -156,14 +156,6 @@ if (CMAKE_CXX_COMPILER_FRONTEND_VARIANT MATCHES "MSVC")
     endif ()
 elseif (CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
     list(APPEND OS_COMPILE_OPTIONS -Wall -Wextra)
-    # GCC 12 only: -Wall's -Wrestrict is a false positive in libstdc++'s std::string code
-    # (std::string::assign/operator= from a string_view, e.g. sst-basic-blocks' ParamMetaData;
-    # GCC bug 105329 and its family), fixed in GCC 13. Narrowly off for 12.x; every other
-    # compiler keeps it.
-    if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 12
-            AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 13)
-        list(APPEND OS_COMPILE_OPTIONS -Wno-restrict)
-    endif ()
 endif ()
 
 # That flag alone, for third-party code compiled from source (libs/CMakeLists.txt): it computes

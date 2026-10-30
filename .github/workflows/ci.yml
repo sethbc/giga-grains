@@ -4,7 +4,7 @@
 #
 # The required checks (INTENT §19):
 #
-#   build       macOS (universal), Windows (ClangCL) and Linux (gcc-12): gg-all and gg-products,
+#   build       macOS (universal), Windows (ClangCL) and Linux (gcc-13): gg-all and gg-products,
 #               then ctest. ctest includes the golden event-log comparison, so this job is the
 #               cross-platform determinism gate. On macOS the universal build's x86_64 slice runs
 #               too, under Rosetta: the unit tests and the golden checks. Then clap-validator,
@@ -249,9 +249,9 @@ jobs:
             bench: build/windows/tools/gg-bench/Release/gg-bench.exe
             exe: .exe
           - os: ubuntu-22.04
-            preset: linux-gcc12
-            build_dir: build/linux-gcc12
-            bench: build/linux-gcc12/tools/gg-bench/gg-bench
+            preset: linux-gcc13
+            build_dir: build/linux-gcc13
+            bench: build/linux-gcc13/tools/gg-bench/gg-bench
     env:
       HOMEBREW_NO_AUTO_UPDATE: 1
       # The SDKs that clap-wrapper would download at configure time (the VST3 SDK, Apple's
@@ -318,11 +318,21 @@ jobs:
           path: ${{ env.SDK_CACHE_DIR }}
           key: ${{ steps.sdk_cache.outputs.cache-primary-key }}
 
+      # gcc-13 for the C++23 build (the m2-layers spec, §6.1), on ubuntu-22.04: its image has GCC
+      # 10 to 12 only and its archive no gcc-13, and prepare-for-juce installs no compiler (it only
+      # points update-alternatives at /usr/bin/gcc-<gccversion>). So gcc-13 and g++-13 come from
+      # the ubuntu-toolchain-r/test PPA, installed here, before it.
+      - name: Install gcc-13 from the ubuntu-toolchain-r/test PPA (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo add-apt-repository -y ppa:ubuntu-toolchain-r/test && sudo apt-get update
+          sudo apt-get install -y gcc-13 g++-13
+
       - name: Prepare for JUCE
         uses: surge-synthesizer/sst-githubactions/prepare-for-juce@5bb92ec9d3401eba6a85f8edea98395b3b866e84 # main
         with:
           os: ${{ runner.os }}
-          gccversion: 12
+          gccversion: 13
 
       # libxi-dev: JUCE 9's juce_gui_basics includes <X11/extensions/XInput2.h> on Linux
       # (JUCE_USE_XINPUT defaults to 1), and prepare-for-juce doesn't install it.

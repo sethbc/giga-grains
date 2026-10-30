@@ -4,7 +4,7 @@ Guidance for Claude Code sessions working in this repository.
 
 ## Start here
 
-giga-grains builds two plugins from one shared C++20 grain engine:
+giga-grains builds two plugins from one shared C++23 grain engine:
 
 - **Giga Grains**, a granular synthesizer;
 - **Giga Grains FX**, a granular effect.
@@ -156,7 +156,7 @@ fix a warning in first-party code and never edit a submodule. A new target links
 clap-wrapper's own targets compile without it. Never define a `*_IMPLEMENTATION` macro
 (`STB_IMAGE_IMPLEMENTATION`, `DR_WAV_IMPLEMENTATION`, …) in a first-party file: the
 implementation belongs in `libs/thirdparty-impl/`, built without `gg::compiler-options`, or the
-library's own warnings fail the build. Only the Linux leg (GCC 12, Release, so `-O3`) shows
+library's own warnings fail the build. Only the Linux leg (GCC 13, Release, so `-O3`) shows
 `-Wmaybe-uninitialized`, so a green macOS build proves nothing about it. Clang versions differ in what `-Wextra` flags (the rtsan build's LLVM is
 newer than Apple's), so build `asan` and `rtsan` too. `cmake/AsioGuard.cmake` fails the configure
 if anything but RtAudio's ASIO backend uses `libs/.../asiosdk` (tests `asio_guard_*`).
@@ -192,7 +192,7 @@ except `windows-clangcl`, which builds into `build/windows/`.
 | `asan` | ASan + UBSan, Debug, with `GG_BUILD_EDITOR=OFF`: the engine, `gg-core`, `gg-media`, the UI core, the tools, the plugin core and the tests. No editor, JUCE or plugin formats. |
 | `rtsan` | RealtimeSanitizer, RelWithDebInfo, built like `asan` (`GG_BUILD_EDITOR=OFF`). Needs upstream LLVM 20 or newer in `$GG_LLVM` (Apple clang has no RTSan). |
 | `mac-universal` | Release for arm64 + x86_64. CI's macOS leg, which also runs the x86_64 slice's tests and golden checks under Rosetta. |
-| `windows-clangcl`, `linux-gcc12` | CI's Windows and Linux legs. |
+| `windows-clangcl`, `linux-gcc13` | CI's Windows and Linux legs. |
 
 Every preset uses the same three commands:
 
