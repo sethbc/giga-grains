@@ -166,9 +166,11 @@ struct EditorContext
     std::vector<std::string> tagVocabulary;
 
     /// Mutate (spec §6.9), main thread; any may be empty. `mutate(amount)` (0 to 1) moves every
-    /// parameter not locked, as the editor's gestures; the plugin sends them in batches, and the
-    /// editor's 30 Hz tick calls `flushMutate` to send the next. `mutateLocked` and
-    /// `setMutateLock` read and set a parameter's lock; `resetMutateLocks` restores the defaults.
+    /// parameter not locked, nor of a layer that is off, as the editor's gestures; the plugin
+    /// sends them in batches as the host drains them, and the editor's 30 Hz tick calls
+    /// `flushMutate` to send the next. `mutateLocked` and `setMutateLock` read and set a
+    /// parameter's lock (the user's: an off layer's rule is apart); `resetMutateLocks` restores
+    /// the structural locks.
     std::function<void(float amount)> mutate;
     std::function<void()> flushMutate;
     std::function<bool(gg::core::ParamSlot)> mutateLocked;

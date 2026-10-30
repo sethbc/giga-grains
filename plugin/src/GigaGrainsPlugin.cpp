@@ -1325,77 +1325,111 @@ void GigaGrainsPlugin::applyState(gg::core::SessionState &&state, LoadKind kind)
 }
 
 // ---- Mutate (spec §6.9) ----
+//
+// The queue's room (T10-I2). uiQueue_ holds kUiQueueCapacity (1,024) entries and its producer,
+// this thread, can't read how many wait, so Mutate bounds its own share by when it sends: a batch
+// (at most kMutateBatch slots, 300 entries) goes out only once every earlier batch has been seen
+// to start draining (mutateDrainSeen). A drain seen to begin after batch n's arm takes all of
+// batch n; batch n - 1 went out only after an earlier drain was seen, which has ended by then.
+// So at any moment at most two of Mutate's batches wait in the queue, batch n being drained and
+// batch n + 1: 600 entries, and the other 424 are the editor's other changes'. Each batch is
+// whole gestures, so no begin, value and end is ever split by the queue filling. When nothing
+// drains (a host without clap.params while inactive, or one that never flushes), Mutate waits
+// with its slots unsent: nothing is dropped.
+
+void GigaGrainsPlugin::mutateDrainSeen() noexcept
+{
+    if (!mutateArmed_ || uiFlushRequested_.load(std::memory_order_acquire))
+    {
+        return;
+    }
+    // A drain began after the arm, so after the drain seen before it (which this thread saw
+    // before it armed again) had ended: what that one took is applied, in values_.
+    mutateArmed_ = false;
+    mutateAppliedGen_ = mutateStartedGen_;
+    mutateStartedGen_ = mutateArmedGen_;
+    mutateBatchArmed_ = false;
+}
+
+void GigaGrainsPlugin::mutateArm() noexcept
+{
+    // Pairs with takeUiChanges' fence, as queueUiChange's does: a drain whose clearing of the
+    // flag comes after this exchange sees every entry pushed before it.
+    std::atomic_thread_fence(std::memory_order_seq_cst);
+    if (!uiFlushRequested_.exchange(true, std::memory_order_acq_rel) && _host.canUseParams())
+    {
+        _host.paramsRequestFlush(); // [thread-safe, !audio-thread]; this is the main thread
+    }
+    mutateArmed_ = true;
+    mutateArmedGen_ = mutateGen_;
+}
 
 gg::core::ParamValues GigaGrainsPlugin::mutateInput() const noexcept
 {
     gg::core::ParamValues in{};
     for (std::size_t s = 0; s < kParamCount; ++s)
     {
-        in[s] = values_[s].load(std::memory_order_relaxed);
-    }
-    for (std::size_t i = pendingMutateNext_; i < pendingMutate_.size(); ++i)
-    {
-        in[static_cast<std::size_t>(pendingMutate_[i].slot)] = pendingMutate_[i].value;
+        in[s] = mutatePending_.test(s) ? mutatePendingValue_[s]
+                : mutateSentGen_[s] > mutateAppliedGen_
+                    ? mutateSentValue_[s]
+                    : values_[s].load(std::memory_order_relaxed);
     }
     return in;
 }
 
 void GigaGrainsPlugin::mutate(float amount) noexcept
 {
-    try
+    mutateDrainSeen();
+    const gg::core::ParamValues in = mutateInput();
+    // The off layers' parameters stay as they are however the locks stand: a layer that is off
+    // now is not mutated, and one that was switched on since is.
+    const gg::core::LockSet locks = mutateLocks_ | gg::core::offLayerLocks(in);
+    gg::core::ParamValues out{};
+    gg::core::mutate(in, locks, amount, seed_, mutateCounter_++, mode(), out);
+    for (std::size_t s = 0; s < kParamCount; ++s)
     {
-        const gg::core::ParamValues in = mutateInput();
-        // The off layers' parameters stay as they are however the locks stand: a layer that is
-        // off now is not mutated, and one that was switched on since is.
-        const gg::core::LockSet locks = mutateLocks_ | gg::core::offLayerLocks(in);
-        gg::core::ParamValues out{};
-        gg::core::mutate(in, locks, amount, seed_, mutateCounter_++, mode(), out);
-        if (pendingMutateNext_ >= pendingMutate_.size())
+        if (out[s] != in[s])
         {
-            pendingMutate_.clear();
-            pendingMutateNext_ = 0;
+            // One value a slot: a slot still waiting from an earlier press takes this one's.
+            mutatePending_.set(s);
+            mutatePendingValue_[s] = out[s];
         }
-        for (std::size_t s = 0; s < kParamCount; ++s)
-        {
-            if (out[s] != in[s])
-            {
-                pendingMutate_.push_back({static_cast<ParamSlot>(s), out[s]});
-            }
-        }
-    }
-    catch (...)
-    {
-        // Out of memory: the press changes nothing it has not already queued.
     }
     flushMutate();
 }
 
 void GigaGrainsPlugin::flushMutate() noexcept
 {
-    if (pendingMutateNext_ >= pendingMutate_.size())
+    mutateDrainSeen();
+    if (mutatePending_.any() && !mutateBatchArmed_)
     {
-        pendingMutate_.clear();
-        pendingMutateNext_ = 0;
+        ++mutateGen_;
+        std::size_t sent = 0;
+        for (std::size_t s = 0; s < kParamCount && sent < kMutateBatch; ++s)
+        {
+            if (!mutatePending_.test(s))
+            {
+                continue;
+            }
+            const auto slot = static_cast<ParamSlot>(s);
+            const float value = mutatePendingValue_[s];
+            uiBeginGesture(slot);
+            uiSetValue(slot, static_cast<double>(value));
+            uiEndGesture(slot);
+            mutatePending_.reset(s);
+            mutateSentValue_[s] = value;
+            mutateSentGen_[s] = mutateGen_;
+            ++sent;
+        }
+        mutateBatchArmed_ = true;
+        mutateArm();
         return;
     }
-    // A flush is outstanding: the audio thread has not drained what is queued, and the next
-    // batch would be on top of it. The editor's tick tries again.
-    if (uiFlushRequested_.load(std::memory_order_acquire))
+    // Nothing to send now: arm once more after the last batch's drain was seen, so the drain
+    // after it shows that batch applied and the next press reads values_ again.
+    if (!mutateArmed_ && mutateAppliedGen_ < mutateGen_)
     {
-        return;
-    }
-    const std::size_t end = std::min(pendingMutate_.size(), pendingMutateNext_ + kMutateBatch);
-    for (; pendingMutateNext_ < end; ++pendingMutateNext_)
-    {
-        const PendingSlot &p = pendingMutate_[pendingMutateNext_];
-        uiBeginGesture(p.slot);
-        uiSetValue(p.slot, static_cast<double>(p.value));
-        uiEndGesture(p.slot);
-    }
-    if (pendingMutateNext_ >= pendingMutate_.size())
-    {
-        pendingMutate_.clear();
-        pendingMutateNext_ = 0;
+        mutateArm();
     }
 }
 
@@ -1416,7 +1450,7 @@ void GigaGrainsPlugin::setMutateLock(ParamSlot slot, bool locked) noexcept
 
 void GigaGrainsPlugin::resetMutateLocks() noexcept
 {
-    mutateLocks_ = gg::core::defaultMutateLocks(mutateInput(), mode());
+    mutateLocks_ = gg::core::structuralLocks(mode());
 }
 
 bool GigaGrainsPlugin::presetEdited() const noexcept

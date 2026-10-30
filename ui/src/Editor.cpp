@@ -64,9 +64,10 @@ class Editor final : public juce::Component,
             mutatePanel_.setVisible(false);
             browser_.setVisible(!browser_.isVisible());
         };
-        preset_.onMutate = [this] {
+        // The browser's Mutate button: the browser closes and the panel opens in its place.
+        browser_.onMutate = [this] {
             browser_.setVisible(false);
-            mutatePanel_.setVisible(!mutatePanel_.isVisible());
+            mutatePanel_.setVisible(true);
         };
         preset_.onPrev = [this] { browser_.step(-1); };
         preset_.onNext = [this] { browser_.step(1); };
@@ -124,7 +125,7 @@ class Editor final : public juce::Component,
         auto area = getLocalBounds();
         auto header = area.removeFromTop(kHeaderHeight).reduced(kMargin, 6);
         product_.setBounds(header.removeFromLeft(150));
-        preset_.setBounds(header.removeFromLeft(PresetStrip::kWidth));
+        preset_.setBounds(header.removeFromLeft(90));
         header.removeFromLeft(12);
         perform_.setBounds(header.removeFromLeft(76));
         header.removeFromLeft(4);
@@ -170,7 +171,6 @@ class Editor final : public juce::Component,
         macros_.refresh();
         preset_.refresh();
         preset_.setBrowserOpen(browser_.isVisible());
-        preset_.setMutateOpen(mutatePanel_.isVisible());
         browser_.refresh();
         mutatePanel_.refresh();
         frameMs_.setText("frame ms (avg 60): " + juce::String(canvas_.averageFrameMs(), 2),

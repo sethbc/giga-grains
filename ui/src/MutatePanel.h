@@ -23,8 +23,11 @@ namespace gg::ui
 /// unlocking all 16 together. Each layer's heading has "Lock all" ("mutate.lockall.<letter>")
 /// and "Unlock all" ("mutate.unlockall.<letter>").
 ///
-/// The locks are the plugin's (EditorContext::mutateLocked); the toggles follow them at each
-/// refresh. Escape closes the panel. The instrument's hidden Mix and Dry to Reverb have no row.
+/// The locks are the user's, the plugin's (EditorContext::mutateLocked); the toggles follow them
+/// at each refresh. An off layer's rows are dimmed and its heading says so: a press leaves an off
+/// layer alone by its own rule, whatever its locks, and mutates it once it is on. Shown, the
+/// panel takes the keyboard focus, and Escape closes it. The editor opens it from the preset
+/// browser's "Mutate". The instrument's hidden Mix and Dry to Reverb have no row.
 ///
 /// Message thread only. The context is the editor's (see EditorContext): read at each use.
 class MutatePanel final : public juce::Component
@@ -39,6 +42,7 @@ class MutatePanel final : public juce::Component
 
     void paint(juce::Graphics &g) override;
     void resized() override;
+    void visibilityChanged() override;
     bool keyPressed(const juce::KeyPress &key) override;
 
   private:

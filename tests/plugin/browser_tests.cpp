@@ -323,8 +323,9 @@ TEST_CASE("the header's preset strip keeps the label's place", "[plugin][ui]")
     Fixture f;
     auto &strip = *find(*f.editor, "header.preset");
     CHECK(strip.getX() == 162);
-    CHECK(strip.getWidth() == 150); // the name's 90 and Mutate
+    CHECK(strip.getWidth() == 90);
     CHECK(strip.getParentComponent() == f.editor.get());
+    CHECK(find(strip, "preset.mutate") == nullptr); // Mutate is the browser's (spec §6.9)
     CHECK(find(strip, "preset.prev") != nullptr);
     CHECK(find(strip, "preset.next") != nullptr);
     CHECK(f.nameText() == "Init");
@@ -652,16 +653,28 @@ juce::Component &panel(Fixture &f)
     REQUIRE(component != nullptr);
     return *component;
 }
+
+/// Opens the panel as the user does: the browser, then its Mutate button.
+void openPanel(Fixture &f)
+{
+    f.openBrowser();
+    click(need<juce::TextButton>(f.browser(), "preset.mutate"));
+    REQUIRE(panel(f).isVisible());
+}
+
+juce::TextButton &lockRow(Fixture &f, ParamSlot slot)
+{
+    return need<juce::TextButton>(panel(f), lockId(slot).c_str());
+}
 } // namespace
 
-TEST_CASE("the Mutate button opens the panel with its knob, buttons and lock rows",
+TEST_CASE("the browser's Mutate button opens the panel with its knob, buttons and lock rows",
           "[plugin][ui][mutate]")
 {
     const Machine machine("mutate-open");
     Fixture f;
     CHECK_FALSE(panel(f).isVisible());
-    click(f.button("preset.mutate"));
-    CHECK(panel(f).isVisible());
+    openPanel(f);
     CHECK_FALSE(f.browser().isVisible());
 
     auto &knob = need<sst::jucegui::components::Knob>(panel(f), "mutate.amount");
@@ -673,27 +686,39 @@ TEST_CASE("the Mutate button opens the panel with its knob, buttons and lock row
     CHECK(find(panel(f), "mutate.reset") != nullptr);
 
     // The structural locks start on, the sound's parameters off.
-    CHECK(need<juce::TextButton>(panel(f), lockId(ParamSlot::Mix).c_str()).getToggleState());
-    CHECK_FALSE(need<juce::TextButton>(panel(f), lockId(ParamSlot::Size).c_str()).getToggleState());
+    CHECK(lockRow(f, ParamSlot::Mix).getToggleState());
+    CHECK_FALSE(lockRow(f, ParamSlot::Size).getToggleState());
 
-    // The browser and the panel take turns; the button closes the panel again.
+    // The browser and the panel take turns: the name opens the browser over it, and Close
+    // closes the panel.
     click(f.button("preset.name"));
     CHECK(f.browser().isVisible());
     CHECK_FALSE(panel(f).isVisible());
-    click(f.button("preset.mutate"));
+    click(need<juce::TextButton>(f.browser(), "preset.mutate"));
     CHECK(panel(f).isVisible());
     CHECK_FALSE(f.browser().isVisible());
-    click(f.button("preset.mutate"));
+    click(need<juce::TextButton>(panel(f), "mutate.close"));
+    CHECK_FALSE(panel(f).isVisible());
+    CHECK_FALSE(f.browser().isVisible());
+}
+
+TEST_CASE("Escape closes the Mutate panel", "[plugin][ui][mutate]")
+{
+    const Machine machine("mutate-escape");
+    Fixture f;
+    openPanel(f);
+    CHECK(panel(f).getWantsKeyboardFocus());
+    CHECK(panel(f).keyPressed(juce::KeyPress(juce::KeyPress::escapeKey)));
     CHECK_FALSE(panel(f).isVisible());
 }
 
-TEST_CASE("a lock toggle flips the plugin's lock and Reset locks restores the defaults",
+TEST_CASE("a lock toggle flips the plugin's lock and Reset locks restores the structural locks",
           "[plugin][ui][mutate]")
 {
     const Machine machine("mutate-lock");
     Fixture f;
-    click(f.button("preset.mutate"));
-    auto &size = need<juce::TextButton>(panel(f), lockId(ParamSlot::Size).c_str());
+    openPanel(f);
+    auto &size = lockRow(f, ParamSlot::Size);
     CHECK_FALSE(f.impl->mutateLocked(ParamSlot::Size));
     click(size);
     CHECK(f.impl->mutateLocked(ParamSlot::Size));
@@ -701,15 +726,41 @@ TEST_CASE("a lock toggle flips the plugin's lock and Reset locks restores the de
     CHECK_FALSE(f.impl->mutateLocked(ParamSlot::Size));
 
     click(size);
-    auto &mix = need<juce::TextButton>(panel(f), lockId(ParamSlot::Mix).c_str());
+    auto &mix = lockRow(f, ParamSlot::Mix);
     click(mix);
     CHECK_FALSE(f.impl->mutateLocked(ParamSlot::Mix));
     click(f.button("mutate.reset"));
     CHECK(f.impl->mutateLocked(ParamSlot::Mix));
     CHECK_FALSE(f.impl->mutateLocked(ParamSlot::Size));
+    // Layer B is off, but its locks are the user's alone: Reset leaves them off.
+    CHECK_FALSE(f.impl->mutateLocked(ParamSlot::B_Size));
     f.tick();
     CHECK(mix.getToggleState());
     CHECK_FALSE(size.getToggleState());
+}
+
+TEST_CASE("an off layer's rows are dimmed apart from their locks", "[plugin][ui][mutate]")
+{
+    const Machine machine("mutate-offlayer");
+    Fixture f;
+    openPanel(f);
+    f.tick();
+    // Layer B is off by default: Mutate leaves it alone, which its rows show, dimmed, while its
+    // own locks stay off.
+    auto &bSize = lockRow(f, ParamSlot::B_Size);
+    CHECK(bSize.getAlpha() < 1.0f);
+    CHECK_FALSE(bSize.getToggleState());
+    CHECK(lockRow(f, ParamSlot::Size).getAlpha() == 1.0f);
+
+    // Switched on, it is mutated, and its rows are no longer dimmed.
+    f.impl->uiBeginGesture(ParamSlot::LayerBOn);
+    f.impl->uiSetValue(ParamSlot::LayerBOn, 1.0);
+    f.impl->uiEndGesture(ParamSlot::LayerBOn);
+    gg::test::InputEvents none;
+    f.plugin.flush(none.list());
+    REQUIRE(f.impl->uiBaseValue(ParamSlot::LayerBOn) == 1.0f);
+    f.tick();
+    CHECK(bSize.getAlpha() == 1.0f);
 }
 
 TEST_CASE("a layer's 16 steps lock together and a layer locks and unlocks whole",
@@ -717,11 +768,11 @@ TEST_CASE("a layer's 16 steps lock together and a layer locks and unlocks whole"
 {
     const Machine machine("mutate-steps");
     Fixture f;
-    click(f.button("preset.mutate"));
+    openPanel(f);
     // One row for layer A's step sequence (named by its Step 1), and none for Step 2 to 16.
     CHECK(find(panel(f), lockId(ParamSlot::Step2).c_str()) == nullptr);
     CHECK(find(panel(f), lockId(ParamSlot::Step16).c_str()) == nullptr);
-    click(need<juce::TextButton>(panel(f), lockId(ParamSlot::Step1).c_str()));
+    click(lockRow(f, ParamSlot::Step1));
     for (uint8_t i = 0; i < 16; ++i)
     {
         const auto slot = gg::core::layerSlot(
@@ -755,7 +806,7 @@ TEST_CASE("the Mutate button moves the sound and marks the preset edited", "[plu
     gg::test::Stereo in(64);
     gg::test::Stereo out(64);
     CHECK_FALSE(f.nameText().endsWith(juce::String::fromUTF8(" \xe2\x80\xa2")));
-    click(f.button("preset.mutate"));
+    openPanel(f);
     click(f.button("mutate.go"));
     REQUIRE(f.plugin.process(64, in.data(), out.data()) == CLAP_PROCESS_CONTINUE);
     f.tick();

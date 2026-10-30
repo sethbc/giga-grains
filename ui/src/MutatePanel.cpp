@@ -18,6 +18,7 @@
 #include <sst/jucegui/data/Continuous.h>
 
 #include "Theme.h"
+#include "gg/core/Mutate.h"
 
 namespace gg::ui
 {
@@ -34,6 +35,7 @@ constexpr int kGap = 4;
 constexpr int kHeadingHeight = 26;
 constexpr int kBarHeight = 64;
 constexpr float kDefaultAmount = 0.15f;
+constexpr float kOffAlpha = 0.4f; // an off layer's rows
 
 juce::String fromUtf8(const std::string &text) { return juce::String::fromUTF8(text.c_str()); }
 
@@ -102,6 +104,7 @@ struct MutatePanel::Impl
         juce::TextButton lockAll, unlockAll; // a layer's only
         std::vector<std::unique_ptr<Row>> rows;
         bool isLayer{false};
+        juce::String title;
         std::vector<ParamSlot> layerSlots; // all of a layer's, for lock all
     };
 
@@ -142,12 +145,13 @@ struct MutatePanel::Impl
         Impl &owner;
     };
 
-    Impl(MutatePanel &p, const EditorContext &c) : panel(p), context(c), content(*this) {}
+    Impl(const EditorContext &c) : context(c), content(*this) {}
 
     void addSection(const juce::String &title, const juce::String &idLetter, bool isLayer)
     {
         auto section = std::make_unique<Section>();
         section->isLayer = isLayer;
+        section->title = title;
         section->heading.setText(title, juce::dontSendNotification);
         section->heading.setFont(juce::FontOptions(14.0f, juce::Font::bold));
         section->heading.setColour(juce::Label::textColourId, theme::kText);
@@ -203,19 +207,42 @@ struct MutatePanel::Impl
         showLocks();
     }
 
-    /// Every toggle on while all its slots are locked.
+    /// Every toggle on while all its slots are locked by the user; a row dimmed while all its
+    /// slots are an off layer's (offLayerLocks of the current values), which a press leaves
+    /// alone whatever its lock says.
     void showLocks()
     {
+        gg::core::LockSet off;
+        if (context.baseValue)
+        {
+            gg::core::ParamValues values{};
+            for (std::size_t s = 0; s < gg::core::kParamCount; ++s)
+            {
+                values[s] = context.baseValue(static_cast<ParamSlot>(s));
+            }
+            off = gg::core::offLayerLocks(values);
+        }
         for (auto &section : sections)
         {
+            bool sectionOff = section->isLayer;
             for (auto &row : section->rows)
             {
                 bool all = context.mutateLocked != nullptr;
+                bool allOff = true;
                 for (const ParamSlot slot : row->slots)
                 {
                     all = all && context.mutateLocked(slot);
+                    allOff = allOff && off.test(static_cast<std::size_t>(slot));
                 }
                 row->button.setToggleState(all, juce::dontSendNotification);
+                row->button.setAlpha(allOff ? kOffAlpha : 1.0f);
+                sectionOff = sectionOff && allOff;
+            }
+            if (section->isLayer)
+            {
+                section->heading.setText(sectionOff ? section->title + " (off: not mutated)"
+                                                    : section->title,
+                                         juce::dontSendNotification);
             }
         }
     }
@@ -285,7 +312,6 @@ struct MutatePanel::Impl
         }
     }
 
-    MutatePanel &panel;
     const EditorContext &context;
     AmountSource amountSource;
     jcmp::Knob amountKnob;
@@ -297,8 +323,7 @@ struct MutatePanel::Impl
     juce::Rectangle<int> barArea;
 };
 
-MutatePanel::MutatePanel(const EditorContext &context)
-    : impl_(std::make_unique<Impl>(*this, context))
+MutatePanel::MutatePanel(const EditorContext &context) : impl_(std::make_unique<Impl>(context))
 {
     Impl &m = *impl_;
     setComponentID("preset.mutatePanel");
@@ -328,8 +353,8 @@ MutatePanel::MutatePanel(const EditorContext &context)
     styleButton(m.close, "mutate.close", "Close");
     m.go.setColour(juce::TextButton::textColourOffId, theme::kText);
     m.go.setTooltip("Move every parameter that is not locked, by the amount");
-    m.reset.setTooltip("Lock the structure (Mix, Level, the layers' on switches, the macros...)"
-                       " and the layers that are off");
+    m.reset.setTooltip("Lock the structure alone (Mix, Level, the layers' on switches, the"
+                       " macros...); a layer that is off is left alone while it is off");
     m.go.onClick = [this] {
         if (impl_->context.mutate)
         {
@@ -395,6 +420,19 @@ void MutatePanel::resized()
     area.removeFromTop(kGap);
     m.viewport.setBounds(area);
     m.content.layoutFor(std::max(kRowWidth + 8, m.viewport.getMaximumVisibleWidth()));
+}
+
+void MutatePanel::visibilityChanged()
+{
+    // As the browser does: shown, the panel takes the keyboard focus, so Escape reaches it.
+    if (isVisible())
+    {
+        impl_->showLocks();
+        if (isShowing())
+        {
+            grabKeyboardFocus();
+        }
+    }
 }
 
 bool MutatePanel::keyPressed(const juce::KeyPress &key)

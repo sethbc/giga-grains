@@ -326,6 +326,14 @@ PresetBrowser::PresetBrowser(const EditorContext &context)
     favorites_.setClickingTogglesState(true);
     favorites_.onClick = [this] { applyFilter(); };
     styleButton(saveButton_, "preset.save", juce::String::fromUTF8("Save as\xe2\x80\xa6"));
+    styleButton(mutateButton_, "preset.mutate", "Mutate");
+    mutateButton_.setTooltip("Mutate: move the sound at random, within the locks");
+    mutateButton_.onClick = [this] {
+        if (onMutate)
+        {
+            onMutate();
+        }
+    };
     styleButton(deleteButton_, "preset.delete", "Delete");
     styleButton(folderButton_, "preset.folder",
                 juce::String::fromUTF8("Content folder\xe2\x80\xa6"));
@@ -346,7 +354,8 @@ PresetBrowser::PresetBrowser(const EditorContext &context)
     list_.setWantsKeyboardFocus(true);
 
     for (juce::Component *c : std::initializer_list<juce::Component *>{
-             &search_, &favorites_, &list_, &saveButton_, &deleteButton_, &folderButton_, &status_})
+             &search_, &favorites_, &list_, &saveButton_, &mutateButton_, &deleteButton_,
+             &folderButton_, &status_})
     {
         addAndMakeVisible(*c);
     }
@@ -389,6 +398,8 @@ void PresetBrowser::resized()
     area.removeFromBottom(kGap);
     auto buttons = area.removeFromBottom(kControlHeight);
     saveButton_.setBounds(buttons.removeFromLeft(90));
+    buttons.removeFromLeft(kGap);
+    mutateButton_.setBounds(buttons.removeFromLeft(70));
     buttons.removeFromLeft(kGap);
     deleteButton_.setBounds(buttons.removeFromLeft(70));
     buttons.removeFromLeft(kGap);

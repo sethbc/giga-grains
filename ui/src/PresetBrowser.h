@@ -23,8 +23,9 @@ namespace gg::ui
 /// ("preset.search"), a Favorites toggle ("preset.favorites"), the tags as toggles
 /// ("preset.tag.<word>": the four focus tags always, then the other tags the listed presets
 /// carry), the list ("preset.list", one row per preset, each with a star "preset.star"),
-/// "Save as…" ("preset.save"), "Delete" ("preset.delete"), "Content folder…" ("preset.folder")
-/// and the status line ("preset.status").
+/// "Save as…" ("preset.save"), "Mutate" ("preset.mutate", spec §6.9: it calls onMutate, and the
+/// editor shows the Mutate panel in the browser's place), "Delete" ("preset.delete"), "Content
+/// folder…" ("preset.folder") and the status line ("preset.status").
 ///
 /// - Choosing a row loads it (by a click or the arrow keys) and leaves the browser open; Escape
 ///   closes it. The arrow keys work from the search field too.
@@ -52,6 +53,8 @@ class PresetBrowser final : public juce::Component,
     /// nothing), perhaps later. By default an asynchronous juce::FileChooser, which the browser
     /// owns. Tests replace it.
     std::function<void(const Browse &, std::function<void(const juce::File &)>)> browse;
+    /// The Mutate button: the editor closes the browser and opens the Mutate panel. May be empty.
+    std::function<void()> onMutate;
 
     explicit PresetBrowser(const EditorContext &context);
     ~PresetBrowser() override;
@@ -110,7 +113,7 @@ class PresetBrowser final : public juce::Component,
     std::vector<std::string> shownTags_;
     std::vector<std::unique_ptr<juce::TextButton>> tagButtons_;
     juce::TextEditor search_;
-    juce::TextButton favorites_, saveButton_, deleteButton_, folderButton_;
+    juce::TextButton favorites_, saveButton_, mutateButton_, deleteButton_, folderButton_;
     juce::ListBox list_;
     juce::Label status_;
     std::unique_ptr<SavePanel> savePanel_;
