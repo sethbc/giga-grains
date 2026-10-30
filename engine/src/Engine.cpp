@@ -543,25 +543,64 @@ void Engine::renderPool(float *const dst[2], int64_t blockStart, int64_t from, i
                            level.decimation};
         }
     }
+#if GG_KERNELS_AVX2
+    // The table this engine was constructed with (EngineConfig::kernels): one indirect call per
+    // grain.
     const kernels::Dispatch &k = *kernels_;
+#endif
     for (uint32_t i = 0; i < n; ++i)
     {
         if (rows.sourceSlot[i] == kLiveSlot)
         {
             const uint32_t decimation = live_.level(rows.level[i]).decimation;
+#if GG_KERNELS_AVX2
             const kernels::LiveKernel live = rows.tier[i] == Tier::Eco  ? k.liveLinear
                                              : rows.tier[i] == Tier::HQ ? k.liveSinc
                                                                         : k.liveHermite;
             live(rows, i, live_, decimation, output, from, to, tables);
+#else
+            // Without the AVX2 table every engine's is sseKernels(), so its kernels are called
+            // directly (and may be inlined), with no indirect call per grain.
+            if (rows.tier[i] == Tier::Eco)
+            {
+                kernels::renderLiveSimd<kernels::Linear>(rows, i, live_, decimation, output, from,
+                                                         to, tables);
+            }
+            else if (rows.tier[i] == Tier::HQ)
+            {
+                kernels::renderLiveSimd<kernels::Sinc>(rows, i, live_, decimation, output, from, to,
+                                                       tables);
+            }
+            else
+            {
+                kernels::renderLiveSimd<kernels::Hermite>(rows, i, live_, decimation, output, from,
+                                                          to, tables);
+            }
+#endif
             continue;
         }
         const uint8_t s = rows.sourceSlot[i];
         const kernels::SampleSource &source =
             views[s][std::min<uint32_t>(rows.level[i], slots_[s].levelCount - 1)];
+#if GG_KERNELS_AVX2
         const kernels::SampleKernel sample = rows.tier[i] == Tier::Eco  ? k.sampleLinear
                                              : rows.tier[i] == Tier::HQ ? k.sampleSinc
                                                                         : k.sampleHermite;
         sample(rows, i, source, output, from, to, tables);
+#else
+        if (rows.tier[i] == Tier::Eco)
+        {
+            kernels::renderSampleSimd<kernels::Linear>(rows, i, source, output, from, to, tables);
+        }
+        else if (rows.tier[i] == Tier::HQ)
+        {
+            kernels::renderSampleSimd<kernels::Sinc>(rows, i, source, output, from, to, tables);
+        }
+        else
+        {
+            kernels::renderSampleSimd<kernels::Hermite>(rows, i, source, output, from, to, tables);
+        }
+#endif
     }
 }
 } // namespace gg
