@@ -290,21 +290,27 @@ DragTarget hitTestRect(float x, float y, const WindowRect &w, float edgeToleranc
     {
         return DragTarget::None;
     }
-    // Down: the same tolerance rule, with both edges, as the instrument's x.
+    // Down (ruling VW-T2b): the body is the rectangle less the tolerance at each edge, but at
+    // least 2 × the tolerance high, centred, so a thin band (the default Pitch Spread 0) keeps a
+    // body to grab. Each edge grabs from the tolerance beyond the rectangle's edge or the body's,
+    // whichever is further out, to the body: M1's rule for a rectangle 4 tolerances high or more.
     const float lo = std::min(w.y0, w.y1);
     const float hi = std::max(w.y0, w.y1);
     const float tolerance = edgeTolerancePx > 0.0f ? edgeTolerancePx : 0.0f; // NaN gives 0
-    const float inside = std::min(tolerance, (hi - lo) / 3.0f);
+    const float centre = 0.5f * (lo + hi);
+    const float half = std::max(tolerance, 0.5f * (hi - lo) - tolerance);
+    const float bodyLo = centre - half;
+    const float bodyHi = centre + half;
     DragTarget down = DragTarget::None;
-    if (y >= lo - tolerance && y < lo + inside)
-    {
-        down = DragTarget::TopEdge;
-    }
-    else if (y >= lo + inside && y <= hi - inside)
+    if (y >= bodyLo && y <= bodyHi)
     {
         down = DragTarget::Body;
     }
-    else if (y > hi - inside && y <= hi + tolerance)
+    else if (y < bodyLo && y >= std::min(lo, bodyLo) - tolerance)
+    {
+        down = DragTarget::TopEdge;
+    }
+    else if (y > bodyHi && y <= std::max(hi, bodyHi) + tolerance)
     {
         down = DragTarget::BottomEdge;
     }

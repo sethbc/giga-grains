@@ -195,13 +195,17 @@ std::optional<WindowRect> ghostRect(const ScanRectValues &base, const ScanRectVa
 /// set Spray, the top and bottom edges Pitch Spread, the body Position or Pitch (decideAxis).
 ///
 /// - x by M1's rules (hitTest, both lanes' kinds included): the FX's right side is the body.
-/// - y by the same tolerance rule: the top edge grabs within edgeTolerancePx above w.y0 and
-///   within min(edgeTolerancePx, height / 3) below it, the bottom edge mirrored, the rest between
-///   them is the body. A band of no height is the body only at its own y, an edge either side.
-/// - A corner, within the tolerance of a left or right edge and of the top or bottom edge, takes
-///   the horizontal edge: the one whose drag is horizontal (LeftEdge or RightEdge), as M1's
-///   window did. On the FX lane the right side is the body, so there the top and bottom edges
-///   run to it.
+/// - y by the minimum body (ruling VW-T2b): the body is the rectangle's height less
+///   edgeTolerancePx at each edge, but never less than 2 × edgeTolerancePx high, centred on the
+///   rectangle, so a band thinner than that (Pitch Spread 0, the default, or a small spread) is
+///   grown to it for hit-testing. The top edge grabs from edgeTolerancePx above the higher of
+///   w.y0 and the body's top down to the body, never inside the body; the bottom edge mirrored.
+///   A rectangle 4 × edgeTolerancePx high or more keeps M1's rule: each edge within the
+///   tolerance either side of it. It is M1's Spray-0 rule on the FX lane, mirrored vertically.
+/// - The corner rule (ruling VW-T2a): a press within a left or right edge's region and a top or
+///   bottom edge's takes the Spray edge, the one dragged horizontally (LeftEdge or RightEdge),
+///   as M1's window did. On the FX lane the right side is the body, so there the right corners
+///   take TopEdge and BottomEdge.
 ///
 /// A press outside the lane (x outside 0 .. width, y outside top .. top + height, both
 /// inclusive), a non-finite coordinate or a lane that can't place anything grabs nothing.

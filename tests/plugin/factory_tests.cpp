@@ -1074,7 +1074,7 @@ TEST_CASE("the canvas draws the grains the queue holds", "[plugin]")
     const float height = static_cast<float>(canvas->getHeight());
 
     // The lane's vertical axis is pitch (M2 Views' D1): rate 4, two octaves up, lies half the
-    // reach above the centre, and rate 1/4 half the reach below it.
+    // reach above the centre, and rate 1/2, an octave down, a quarter of the reach below it.
     const auto grain = [](int64_t onset, double behindSeconds, float rate) {
         return gg::core::GrainVis{onset, static_cast<double>(kNow) - behindSeconds * kRate,
                                   rate,  static_cast<float>(0.1 * kRate),
@@ -1087,9 +1087,10 @@ TEST_CASE("the canvas draws the grains the queue holds", "[plugin]")
                                static_cast<uint32_t>(std::lround(y)));
     };
     // Each grain's capsule spans its 100 ms read, at its rate: from 4 s back to 3.6 s back (rate
-    // 4), and from 8 s back to 7.975 s back (rate 1/4); x4 and x8 are the reads' middles.
+    // 4), and from 8 s back to 7.95 s back (rate 1/2, wide enough that the clock's extrapolation
+    // between frames can't scroll it off x8); x4 and x8 are the reads' middles.
     const float x4 = width * (1.0f - 3.8f / 16.0f);
-    const float x8 = width * (1.0f - 7.9875f / 16.0f);
+    const float x8 = width * (1.0f - 7.975f / 16.0f);
 
     // Two grains of 100 ms that started just now, 4 s and 8 s behind the head, one pitched up
     // and one down; one that has already ended. Queued after the canvas's first frame, which
@@ -1100,13 +1101,13 @@ TEST_CASE("the canvas draws the grains the queue holds", "[plugin]")
     snapshots.push(snapshot);
     canvas->renderFrame();
     REQUIRE(queue.push(grain(kNow - 100, 4.0, 4.0f)));
-    REQUIRE(queue.push(grain(kNow - 100, 8.0, 0.25f)));
+    REQUIRE(queue.push(grain(kNow - 100, 8.0, 0.5f)));
     REQUIRE(queue.push(grain(kNow - 20000, 12.0, 1.0f))); // ended at kNow - 15200
 
     canvas->renderFrame();
     CHECK(canvas->liveGrainCount() == 2);
     CHECK(accum(x4, 0.5f * height - 0.5f * reach) > 0.0f);
-    CHECK(accum(x8, 0.5f * height + 0.5f * reach) > 0.0f);
+    CHECK(accum(x8, 0.5f * height + 0.25f * reach) > 0.0f);
     // Nothing where no grain plays: the ended grain's place, and the lane's middle.
     CHECK(accum(width * (1.0f - 11.95f / 16.0f), 0.5f * height) == 0.0f);
     CHECK(accum(0.5f * width, 0.5f * height) == 0.0f);

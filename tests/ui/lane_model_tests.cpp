@@ -746,21 +746,70 @@ TEST_CASE("hitTestRect names every region", "[ui]")
               {kNaN, 200.0f, None, "a NaN x"},
               {150.0f, kNaN, None, "a NaN y"},
           });
-    // A band of no height (Pitch Spread 0): the body only on its own row, an edge either side.
+    // Ruling VW-T2b: the body is at least 2 × the tolerance high, centred on the band, and the
+    // top and bottom edges grab only in the tolerance beyond that grown body. A band of no
+    // height (Pitch Spread 0) is the body within 5 px of it, its edges the 5 px beyond.
     check(inst, {100.0f, 200.0f, 200.0f, 200.0f},
           {
               {150.0f, 200.0f, Body, "the band"},
-              {150.0f, 198.0f, TopEdge, "just above the band"},
-              {150.0f, 202.0f, BottomEdge, "just below the band"},
-              {150.0f, 206.0f, None, "below the band's tolerance"},
+              {150.0f, 196.0f, Body, "4 px above the band"},
+              {150.0f, 204.0f, Body, "4 px below the band"},
+              {150.0f, 195.0f, Body, "the grown body's top row"},
+              {150.0f, 194.0f, TopEdge, "just above the grown body"},
+              {150.0f, 190.0f, TopEdge, "the top edge's last row"},
+              {150.0f, 189.0f, None, "above the top edge's tolerance"},
+              {150.0f, 206.0f, BottomEdge, "just below the grown body"},
+              {150.0f, 210.0f, BottomEdge, "the bottom edge's last row"},
+              {150.0f, 211.0f, None, "below the bottom edge's tolerance"},
+              {100.0f, 194.0f, LeftEdge, "the top-left corner of the grown body"},
           });
-    // A short rectangle keeps its middle third for the body, as M1's narrow window does.
+    // A short rectangle (6 px) is grown to the same 10 px body, centred on it.
     check(inst, {100.0f, 200.0f, 200.0f, 206.0f},
           {
-              {150.0f, 201.0f, TopEdge, "the top edge"},
-              {150.0f, 203.0f, Body, "the middle third"},
-              {150.0f, 205.0f, BottomEdge, "the bottom edge"},
+              {150.0f, 201.0f, Body, "inside, near the top"},
+              {150.0f, 203.0f, Body, "the middle"},
+              {150.0f, 205.0f, Body, "inside, near the bottom"},
+              {150.0f, 197.0f, TopEdge, "above the grown body"},
+              {150.0f, 209.0f, BottomEdge, "below the grown body"},
           });
+    // A 14 px rectangle (between 2 and 4 tolerances): the body its middle 10 px, each edge from
+    // the tolerance outside the rectangle to the body.
+    check(inst, {100.0f, 200.0f, 200.0f, 214.0f},
+          {
+              {150.0f, 207.0f, Body, "the middle"},
+              {150.0f, 202.0f, Body, "the body's top row"},
+              {150.0f, 201.0f, TopEdge, "inside, above the body"},
+              {150.0f, 195.0f, TopEdge, "the tolerance outside"},
+              {150.0f, 194.0f, None, "past the tolerance outside"},
+              {150.0f, 213.0f, BottomEdge, "inside, below the body"},
+              {150.0f, 219.0f, BottomEdge, "the tolerance outside, below"},
+          });
+    // The ruling's cases: Pitch 0 with a spread of 0 and of 2 on a 50 px lane, where 2
+    // semitones are under 1 px either side. A press at the band's centre row and up to the
+    // tolerance less 1 px from it grabs the body; the tolerance plus 1 px grabs an edge; past
+    // the edges' tolerance, nothing (or, at the window's left edge, the left edge).
+    const LaneGeometry small = instrumentLane(96000, 800.0f, 50.0f);
+    for (const float spread : {0.0f, 2.0f})
+    {
+        const WindowRect band = gg::ui::scanRect({0.25f, 0.36033038f, 0.0f, spread}, small);
+        const float c = 0.5f * (band.y0 + band.y1);
+        const float mid = 0.5f * (band.x0 + band.x1);
+        REQUIRE(c == 25.0f);
+        REQUIRE(band.y1 - band.y0 < 2.0f);
+        INFO("Pitch Spread " << spread);
+        check(small, band,
+              {
+                  {mid, c, Body, "the band's centre row"},
+                  {mid, c - 4.0f, Body, "centre - (tolerance - 1)"},
+                  {mid, c + 4.0f, Body, "centre + (tolerance - 1)"},
+                  {mid, c - 6.0f, TopEdge, "centre - (tolerance + 1)"},
+                  {mid, c + 6.0f, BottomEdge, "centre + (tolerance + 1)"},
+                  {mid, c - 11.0f, None, "centre - (2 tolerances + 1)"},
+                  {mid, c + 11.0f, None, "centre + (2 tolerances + 1)"},
+                  {band.x0, c - 6.0f, LeftEdge, "the left edge's corner"},
+                  {band.x0, c, LeftEdge, "the left edge at the centre row"},
+              });
+    }
     // Outside the lane grabs nothing, even within an edge's tolerance: a rectangle at the lane's
     // top (y 100) and its left (x 0) edges.
     check(inst, {-50.0f, 200.0f, 102.0f, 250.0f},
