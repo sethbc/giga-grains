@@ -11,6 +11,7 @@ add_library(gg-engine STATIC
         src/LiveSource.cpp
         src/PreparedSource.cpp
         src/SampleBuffer.cpp
+        src/SpectralSource.cpp
         src/Version.cpp
         src/Window.cpp
         )
@@ -27,3 +28,5 @@ target_compile_definitions(gg-engine PUBLIC
 # sst-cpputils is PUBLIC: Engine.h uses its SST_CPPUTILS_NONBLOCKING annotation. sst-basic-blocks
 # and simde are PUBLIC: GrainKernels.h's SIMD kernels include <sst/basic-blocks/simd/setup.h>.
 target_link_libraries(gg-engine PUBLIC gg::compiler-options sst-cpputils sst-basic-blocks simde)
+# pffft is PRIVATE: only SpectralSource.cpp includes it (the header forward-declares its setup).
+target_link_libraries(gg-engine PRIVATE gg::pffft)
