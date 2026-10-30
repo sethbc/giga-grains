@@ -30,7 +30,11 @@
 // - the four-layer engine cases (M2 layers spec §6.12), report-only beside X: engine-layers,
 //   four such engines (layers 0 to 3) sharing X's grains, 500 each, rendered through a
 //   SerialRunner and summed in layer order; and engine-layers-full, the same with all of the
-//   grains in every layer (8,000 in all by default).
+//   grains in every layer (8,000 in all by default);
+// - the engine-scale cases (M2 engine spec §6.10), report-only beside X: engine-sample-hq (X at
+//   the HQ tier), engine-sample-hq-up (the same at Pitch +19, reading mip level 1) and
+//   engine-overload (one engine at capacity 16,384 and a quota of Options::grains Normal grains,
+//   asked for 1 s grains at four times that rate, so the overload ladder drops and steals).
 // Every engine case's ratio, ns per grain-sample over reference's in the same round, cancels the
 // machine's speed (ruling 3), though not its microarchitecture: on CI the same code's ratios
 // differ by up to ~20% between the CPU models GitHub assigns a leg. A baseline file therefore
@@ -163,7 +167,8 @@ std::vector<std::string> caseNames();
 using Progress = std::function<void(int round, int rounds)>;
 
 /// Throws std::invalid_argument for an unknown case, a run length that isn't in (0, 3600]
-/// seconds, fewer than 1 round or 0 grains.
+/// seconds, fewer than 1 round, 0 grains or more than kMaxGrainCapacity − 48 (16,336), the most
+/// whose engine-full-pool capacity, grains + 48, the engine accepts.
 void validate(const Options &options);
 
 /// Times the cases options.cases names (all of them when it's empty), each at block sizes 32, 64
@@ -215,11 +220,18 @@ nlohmann::json makeBaseline(const std::string &leg, const std::vector<nlohmann::
 /// if either fails checkBaseline() or their legs differ.
 nlohmann::json mergeBaseline(const nlohmann::json &old, const nlohmann::json &made);
 
-/// How many grains an engine case admitted at each interpolation tier (ruling 2).
+/// How many grains an engine case admitted at each interpolation tier (ruling 2), and what its
+/// overload ladder did meanwhile (M2 engine spec §6.10).
 struct TierCounts
 {
     uint64_t eco{0};
     uint64_t normal{0};
+    uint64_t hq{0};
+    /// The engines' loweredGrains(), stolenGrains() and droppedGrains() after the warm-up,
+    /// summed over the layers.
+    uint64_t lowered{0};
+    uint64_t stolen{0};
+    uint64_t dropped{0};
     /// Each layer's engine's activeGrains() after the warm-up, in layer order: one entry for a
     /// one-layer case, four for engine-layers and engine-layers-full.
     std::vector<uint32_t> activeGrains{};
@@ -229,9 +241,11 @@ struct TierCounts
 /// warms it up as run() does, and counts the tier of every grain it admitted meanwhile, through
 /// its engines' event sinks (every layer's, for a four-layer case): each admitted grain's spec
 /// carries the tier the pool latches for it. It proves which tier a case runs at
-/// (engine-sample-eco: Eco; the others: Normal), and how a layered case's grains are spread over
-/// its layers (TierCounts::activeGrains), without timing anything. Throws std::invalid_argument for
-/// a name that isn't an engine case, a block size run() doesn't use (32, 64 and 256) or 0 grains.
+/// (engine-sample-eco: Eco; engine-sample-hq and engine-sample-hq-up: HQ; the others: Normal),
+/// how a layered case's grains are spread over its layers (TierCounts::activeGrains), and what
+/// engine-overload's ladder did (TierCounts::lowered, stolen, dropped), without timing anything.
+/// Throws std::invalid_argument for a name that isn't an engine case, a block size run() doesn't
+/// use (32, 64 and 256) or 0 grains.
 TierCounts admittedTiers(const std::string &engineCase, uint32_t grains, uint32_t blockSize);
 
 /// The order round `round` (r) runs `configurations` (n) configurations in. Even rounds run

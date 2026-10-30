@@ -23,9 +23,15 @@ Each entry has one ratio per engine case per block size (32, 64 and 256). The en
 - `engine-live`: X read from the live ring, the FX's figure;
 - `engine-full-pool`: admission when the pool is saturated.
 
-`engine-layers` (four layers of 500 grains, X's count) and `engine-layers-full` (four of 2,000)
-are timed and print ratios, but have no entries yet: they are report-only until three full runs
-are merged in (`--merge`, below), and a ratio a file lacks is only `not in the baseline`.
+The report-only cases are timed and print ratios, but have no entries yet: they are report-only
+until three full runs are merged in (`--merge`, below), and a ratio a file lacks is only `not in
+the baseline`. They are:
+- `engine-layers` (four layers of 500 grains, X's count) and `engine-layers-full` (four of
+  2,000);
+- `engine-sample-hq`: X at the HQ tier, the HQ figure (M2 engine spec §6.10);
+- `engine-sample-hq-up`: the same at Pitch +19, each grain reading the source's mip level 1;
+- `engine-overload`: the overload ladder, one engine at capacity 16,384 with a quota of X's
+  grains (2,000 Normal grains' worth by default), asked for 1 s grains at four times that rate.
 
 ## Format
 

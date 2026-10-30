@@ -29,6 +29,7 @@
 
 #include "Bench.h"
 #include "Kernels.h"
+#include "gg/grain/Budget.h"
 #include "support/Utf8.h"
 
 using Catch::Approx;
@@ -153,6 +154,21 @@ TEST_CASE("bench rejects bad options", "[bench]")
     CHECK_THROWS_AS(gg::bench::run({.rounds = 0}), std::invalid_argument);
     CHECK_THROWS_AS(gg::bench::run({.runSeconds = 0.0}), std::invalid_argument);
     CHECK_THROWS_AS(gg::bench::run({.grains = 0}), std::invalid_argument);
+    // engine-full-pool's capacity is grains + 48, which the engine bounds at kMaxGrainCapacity:
+    // validate() rejects more, before anything is built.
+    CHECK_THROWS_AS(gg::bench::validate({.grains = gg::kMaxGrainCapacity - 47}),
+                    std::invalid_argument);
+    CHECK_NOTHROW(gg::bench::validate({.grains = gg::kMaxGrainCapacity - 48}));
+}
+
+TEST_CASE("bench lists the engine cases in report order", "[bench]")
+{
+    const std::vector<std::string> names = gg::bench::caseNames();
+    const auto at = std::find(names.begin(), names.end(), "engine-layers-full");
+    REQUIRE(at != names.end());
+    CHECK(std::vector<std::string>(at, names.end()) ==
+          std::vector<std::string>{"engine-layers-full", "engine-sample-hq", "engine-sample-hq-up",
+                                   "engine-overload"});
 }
 
 TEST_CASE("bench rejects a run longer than an hour", "[bench]")
@@ -222,6 +238,37 @@ TEST_CASE("engine cases report their grain counts", "[bench]")
         CHECK(r.grains <= total + 2.0);
     }
     CHECK(layers.ratios.empty());
+
+    // The engine-scale cases (M2 engine spec §6.10). The two HQ cases sound their 50 grains, as
+    // X does. engine-overload's quota is 50 Normal grains' worth, 200 units, so at most 66 Eco
+    // grains (3 units each) fit it, with one more for the overshoot ("engine-overload drops and
+    // steals at a spent quota" checks its ladder).
+    const gg::bench::Report scale =
+        gg::bench::run({.runSeconds = 0.002,
+                        .rounds = 1,
+                        .grains = 50,
+                        .cases = {"engine-sample-hq", "engine-sample-hq-up", "engine-overload"}});
+    REQUIRE(scale.results.size() == 9);
+    for (const gg::bench::CaseResult &r : scale.results)
+    {
+        INFO(r.name << " at block " << r.blockSize << ": " << r.grains << " grains");
+        CHECK(r.kind == "engine");
+        REQUIRE(r.nsPerGrainSample.size() == 1);
+        CHECK(r.nsPerGrainSample[0] > 0.0);
+        CHECK(r.cpuPctOneCoreAt48k > 0.0);
+        if (r.name == "engine-overload")
+        {
+            CHECK(r.grains >= 45.0);
+            CHECK(r.grains <= 67.0);
+        }
+        else
+        {
+            CHECK((r.name == "engine-sample-hq" || r.name == "engine-sample-hq-up"));
+            CHECK(r.grains >= 49.0);
+            CHECK(r.grains <= 51.0);
+        }
+    }
+    CHECK(scale.ratios.empty());
 }
 
 namespace
@@ -865,4 +912,56 @@ TEST_CASE("engine-layers admits its grains across four layers", "[bench]")
 
     // A one-layer case reports its one engine.
     CHECK(gg::bench::admittedTiers("engine-sample", 50, 64).activeGrains.size() == 1);
+}
+
+TEST_CASE("engine-sample-hq runs at the HQ tier", "[bench]")
+{
+    // M2 engine spec §6.10: engine-sample at HQ, so every grain it admits is HQ (its quota is
+    // unlimited, so the ladder lowers none).
+    for (const uint32_t blockSize : {32u, 64u, 256u})
+    {
+        INFO("block " << blockSize);
+        const gg::bench::TierCounts tiers =
+            gg::bench::admittedTiers("engine-sample-hq", 50, blockSize);
+        CHECK(tiers.hq >= 50); // at least one grain duration's worth
+        CHECK(tiers.eco == 0);
+        CHECK(tiers.normal == 0);
+        CHECK(tiers.lowered == 0);
+        CHECK(tiers.stolen == 0);
+        CHECK(tiers.dropped == 0);
+    }
+    // The other cases admit no HQ grain.
+    CHECK(gg::bench::admittedTiers("engine-sample", 50, 64).hq == 0);
+}
+
+TEST_CASE("engine-sample-hq-up admits HQ grains", "[bench]")
+{
+    // The same at Pitch +19 (rate 2.997), each grain reading the pyramid's level 1.
+    const gg::bench::TierCounts tiers = gg::bench::admittedTiers("engine-sample-hq-up", 50, 64);
+    CHECK(tiers.hq >= 50);
+    CHECK(tiers.eco == 0);
+    CHECK(tiers.normal == 0);
+    CHECK(tiers.lowered == 0);
+    CHECK(tiers.dropped == 0);
+}
+
+TEST_CASE("engine-overload drops and steals at a spent quota", "[bench]")
+{
+    // One engine at capacity 16,384 and a quota of `grains` Normal grains, asked for 1 s grains
+    // at 4 x grains a second: after the 2 s warm-up the ladder has dropped and stolen grains, and
+    // what sounds stays within the quota's worth of the lightest grains, Eco's 3 units each, plus
+    // at most one (spec §6.5's bounded overshoot). It lowers none (ruling ES-T8a): every draw is
+    // Normal on the stereo noise, 4 units, and the quota is a multiple of 4, so every load is a
+    // multiple of 4. When Normal doesn't fit, the load is the quota and Eco's 3 doesn't fit
+    // either, and each steal swaps 4 for 4. Rung 2's test still runs on every overloaded draw.
+    constexpr uint32_t grains = 50;
+    const gg::bench::TierCounts tiers = gg::bench::admittedTiers("engine-overload", grains, 64);
+    INFO("eco " << tiers.eco << ", normal " << tiers.normal << ", hq " << tiers.hq << ", lowered "
+                << tiers.lowered << ", stolen " << tiers.stolen << ", dropped " << tiers.dropped
+                << ", active " << tiers.activeGrains.at(0));
+    CHECK(tiers.lowered == 0);
+    CHECK(tiers.dropped > 0);
+    CHECK(tiers.stolen > 0);
+    REQUIRE(tiers.activeGrains.size() == 1);
+    CHECK(tiers.activeGrains[0] <= grains * 4 / 3 + 1);
 }
