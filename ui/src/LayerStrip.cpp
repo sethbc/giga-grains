@@ -30,19 +30,19 @@ constexpr int kLabelHeight = 20;
 /// The layer's letter in its colour: a filled button, the letter dark on it.
 struct LetterButton final : jcmp::TextPushButton
 {
-    LetterButton(char letter, juce::Colour tint) : tint_(tint) { setLabel(std::string(1, letter)); }
+    LetterButton(uint8_t layer) : layer_(layer) { setLabel(std::string(1, kLayerLetters[layer])); }
 
     void paint(juce::Graphics &g) override
     {
         const auto area = getLocalBounds().toFloat().reduced(1.0f);
-        g.setColour(tint_);
+        g.setColour(paletteOf(*this).layers[layer_]);
         g.fillRoundedRectangle(area, 4.0f);
         g.setColour(juce::Colours::black.withAlpha(0.85f));
         g.setFont(juce::FontOptions(area.getHeight() * 0.7f, juce::Font::bold));
         g.drawText(getLabel(), getLocalBounds(), juce::Justification::centred);
     }
 
-    juce::Colour tint_;
+    uint8_t layer_;
 };
 
 ParamControl::Kind kindOf(const EditorContext &context, ParamSlot slot)
@@ -89,11 +89,10 @@ LayerStrip::LayerStrip(const EditorContext &context, Layout layout)
     setComponentID("strip");
     setTitle("Layers");
     impl_->layout = layout;
-    const Palette &palette = Palette::dark();
     for (uint8_t layer = 0; layer < gg::core::kLayers; ++layer)
     {
         Impl::Cell &cell = impl_->cells[layer];
-        cell.letter = std::make_unique<LetterButton>(kLayerLetters[layer], palette.layers[layer]);
+        cell.letter = std::make_unique<LetterButton>(layer);
         cell.letter->setComponentID("strip." + juce::String(static_cast<int>(layer)) + ".letter");
         cell.letter->setTitle(std::string("Layer ") + kLayerLetters[layer]);
         cell.letter->setOnCallback([this, layer] {

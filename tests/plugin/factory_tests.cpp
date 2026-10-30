@@ -1853,6 +1853,43 @@ TEST_CASE("double-click centres the pad", "[plugin]")
     CHECK(f.undo.size() == 1);
 }
 
+TEST_CASE("a real double-click sequence centres the pad in one undo entry", "[plugin]")
+{
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    PadFixture f;
+    f.recording.values[static_cast<std::size_t>(ParamSlot::MorphX)] = 0.9f;
+    f.recording.values[static_cast<std::size_t>(ParamSlot::MorphY)] = 0.1f;
+    f.pad->refresh();
+    gg::ui::MorphPad &pad = *f.pad;
+    const juce::Point<float> at{20.0f, 20.0f};
+    const auto click = [&](int clicks) {
+        const auto now = juce::Time::getCurrentTime();
+        return juce::MouseEvent(
+            juce::Desktop::getInstance().getMainMouseSource(), at,
+            juce::ModifierKeys(juce::ModifierKeys::leftButtonModifier),
+            juce::MouseInputSource::defaultPressure, juce::MouseInputSource::defaultOrientation,
+            juce::MouseInputSource::defaultRotation, juce::MouseInputSource::defaultTiltX,
+            juce::MouseInputSource::defaultTiltY, &pad, &pad, now, at, now, clicks, false);
+    };
+    // JUCE's order: press, release, press (2 clicks), release, then mouseDoubleClick.
+    pad.mouseDown(click(1));
+    pad.mouseUp(click(1));
+    pad.mouseDown(click(2));
+    pad.mouseUp(click(2));
+    pad.mouseDoubleClick(click(2));
+    CHECK(f.value(ParamSlot::MorphX) == 0.5f);
+    CHECK(f.value(ParamSlot::MorphY) == 0.5f);
+    // The first press is an ordinary click (one entry); the double-click itself adds one.
+    CHECK(f.undo.size() == 2);
+    f.undo.undo();
+    f.undo.undo();
+    REQUIRE(f.undone.size() == 4);
+    for (std::size_t i = 2; i < 4; ++i)
+    {
+        CHECK(f.undone[i].second == (f.undone[i].first == ParamSlot::MorphX ? 0.9f : 0.1f));
+    }
+}
+
 TEST_CASE("arrows move the pad", "[plugin]")
 {
     const juce::ScopedJuceInitialiser_GUI juceGui;
