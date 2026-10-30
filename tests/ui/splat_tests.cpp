@@ -536,7 +536,9 @@ TEST_CASE("the banded resolve tints each band", "[ui]")
 TEST_CASE("one band equals the M1 resolve", "[ui]")
 {
     // The one-tint resolve is the banded one's one-band case, bit for bit, over a 64 x 64
-    // canvas of random splats and capsules.
+    // canvas of random splats and capsules; and its output is M1's: the FNV-1a hash of the four
+    // tints' pixels below was computed by the one-tint resolve at ab9f4e2 (M1's, before the
+    // banded one existed), so the comparison is not the function with itself.
     constexpr uint32_t n = 64;
     gg::ui::SplatRenderer splat(n, n);
     uint64_t state = 0x243F6A8885A308D3ull;
@@ -559,6 +561,7 @@ TEST_CASE("one band equals the M1 resolve", "[ui]")
             splat.addCapsule(x, x + 20.0f * next(), y, r, intensity);
         }
     }
+    uint64_t hash = 1469598103934665603ull;
     for (const uint32_t tint : {0xFFC46Bu, 0xE69F00u, 0xFFFFFFu, 0x000000u})
     {
         INFO("tint " << tint);
@@ -567,5 +570,13 @@ TEST_CASE("one band equals the M1 resolve", "[ui]")
         const gg::ui::TintBand band{0, n, tint};
         splat.resolveToArgb(banded.data(), n, std::span<const gg::ui::TintBand>(&band, 1));
         CHECK(std::memcmp(m1.data(), banded.data(), m1.size() * sizeof(uint32_t)) == 0);
+        for (const uint32_t px : m1)
+        {
+            for (int b = 0; b < 4; ++b)
+            {
+                hash = (hash ^ ((px >> (8 * b)) & 0xFFu)) * 1099511628211ull;
+            }
+        }
     }
+    CHECK(hash == 0x21C1E8A53A30A778ull);
 }

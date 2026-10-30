@@ -392,3 +392,59 @@ TEST_CASE("undo and redo wait while a gesture or a group is open", "[ui]")
     s.redo();
     CHECK(m.valueCalls.size() == 2);
 }
+
+TEST_CASE("nested groups make one entry, closed by the outermost", "[ui]")
+{
+    Model m;
+    UndoStack s{m.callbacks()};
+    s.beginGroup();
+    s.beginGesture(ParamSlot::MorphX, 0.5f, "Morph X");
+    s.endGesture(ParamSlot::MorphX, 0.1f);
+    s.beginGroup(); // nested
+    s.beginGesture(ParamSlot::MorphY, 0.5f, "Morph Y");
+    s.endGesture(ParamSlot::MorphY, 0.9f);
+    s.endGroup(); // the inner one closes nothing
+    CHECK(s.busy());
+    CHECK(s.size() == 0);
+    s.endGroup();
+    CHECK_FALSE(s.busy());
+    REQUIRE(s.size() == 1);
+    CHECK(s.undoLabel() == "Morph X");
+    s.undo();
+    REQUIRE(m.valueCalls.size() == 2);
+    CHECK(m.valueCalls[0] == std::pair{ParamSlot::MorphY, 0.5f});
+    CHECK(m.valueCalls[1] == std::pair{ParamSlot::MorphX, 0.5f});
+
+    // An extra endGroup is harmless.
+    s.endGroup();
+    CHECK_FALSE(s.busy());
+}
+
+TEST_CASE("a snapshot entry undoes its routes before its values", "[ui]")
+{
+    // Routes first on undo, values first on redo: the order of the two callbacks is part of the
+    // API sub-project 5's Mutate and recall rely on.
+    std::vector<char> order;
+    ParamValues values{};
+    ModRoutes routes{};
+    UndoStack s{{.setValue =
+                     [&](ParamSlot slot, float v) {
+                         values[static_cast<std::size_t>(slot)] = v;
+                         order.push_back('v');
+                     },
+                 .setRoutes =
+                     [&](const ModRoutes &r) {
+                         routes = r;
+                         order.push_back('r');
+                     }}};
+    ParamValues vBefore{};
+    ParamValues vAfter = vBefore;
+    vAfter[static_cast<std::size_t>(ParamSlot::Texture)] = 0.9f;
+    vAfter[static_cast<std::size_t>(ParamSlot::Size)] = 0.4f;
+    s.pushSnapshot("Mutate", vBefore, ModRoutes{}, vAfter, routesWith(2, 0.5f));
+    s.undo();
+    CHECK(std::string(order.begin(), order.end()) == "rvv");
+    order.clear();
+    s.redo();
+    CHECK(std::string(order.begin(), order.end()) == "vvr");
+}
