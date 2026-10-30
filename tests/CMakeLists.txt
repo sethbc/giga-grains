@@ -13,6 +13,7 @@ add_executable(gg-tests
         core/mod_matrix_tests.cpp
         core/mod_processor_tests.cpp
         core/mod_sources_tests.cpp
+        core/mutate_tests.cpp
         core/note_tests.cpp
         core/parammap_tests.cpp
         core/patch_tests.cpp
