@@ -73,10 +73,17 @@ AU in Live. Note the host and format of anything that fails.
 
 ### Layers B to D
 
+**In the instrument, layers B to D are silent unless their Source is Live.** The sample loader
+feeds layer A alone until the session format's next version (MEDI v2; spec §6.4), so a layer B
+to D left at Sample, the instrument's default, has no sample to read. That silence is expected,
+not a bug: to hear one of them in the instrument, set its Source to Live and route audio into
+the sidechain (below). In the FX every layer is Live by default and sounds.
+
 - [ ] **From the generic editor.** In each product, open the host's generic parameter view.
   Layers B to D's parameters are there as `B Position` … `D Step 16`, with `Layer B On` …
-  `Layer D On`, `Level B` … `Level D`, `Morph X` and `Morph Y`. Switch layer B on, set its
-  Pitch and Size, and hear it join layer A.
+  `Layer D On`, `Level B` … `Level D`, `Morph X` and `Morph Y`. Switch layer B on (in the
+  instrument, with `B Source` at Live and the sidechain fed), set its Pitch and Size, and hear it
+  join layer A.
 - [ ] **From the remote pages.** In Bitwig, step through the device's eight remote-control pages
   (spec §6.9): "Perform", "Cloud" and "Space" as in M1, then "Layers" (the four Layer On
   switches and the four Levels), "Morph" (Morph X and Y) and "Cloud B" to "Cloud D" (that
@@ -95,7 +102,7 @@ AU in Live. Note the host and format of anything that fails.
 
 - [ ] **Routed from a track.** Put Giga Grains on an instrument track, route another track's audio
   into its sidechain input, and switch a layer's Source to Live. Play notes: that layer granulates
-  the routed audio, and the others keep their samples.
+  the routed audio, and layer A keeps its sample.
 
 ### Sessions from M1
 

@@ -159,9 +159,30 @@ clap-wrapper's own targets compile without it. Never define a `*_IMPLEMENTATION`
 (`STB_IMAGE_IMPLEMENTATION`, `DR_WAV_IMPLEMENTATION`, …) in a first-party file: the
 implementation belongs in `libs/thirdparty-impl/`, built without `gg::compiler-options`, or the
 library's own warnings fail the build. Only the Linux leg (GCC 13, Release, so `-O3`) shows
-`-Wmaybe-uninitialized`, so a green macOS build proves nothing about it. Clang versions differ in what `-Wextra` flags (the rtsan build's LLVM is
-newer than Apple's), so build `asan` and `rtsan` too. `cmake/AsioGuard.cmake` fails the configure
-if anything but RtAudio's ASIO backend uses `libs/.../asiosdk` (tests `asio_guard_*`).
+`-Wmaybe-uninitialized`, so a green macOS build proves nothing about it. Clang versions differ in
+what `-Wextra` flags (the rtsan build's LLVM is newer than Apple's), so build `asan` and `rtsan`
+too. `cmake/AsioGuard.cmake` fails the configure if anything but RtAudio's ASIO backend uses
+`libs/.../asiosdk` (tests `asio_guard_*`).
+
+**GCC 13's own diagnostics.** M2 sub-project 1 paid four CI rounds for these; each has a fix:
+- `-Warray-bounds` on a `Count` sentinel indexing an array, even behind a check: index through a
+  bounded accessor (`ParamMap.cpp`'s `read`, which clamps the index);
+- `-Wmaybe-uninitialized` on a `std::optional` built in a ternary: use a plain value with a
+  sentinel;
+- `-Wrange-loop-construct` on a by-value structured binding in a range-for: bind `const auto &`;
+- `-Wextra`'s conditional with an enumerator in one arm and an integer in the other: give both
+  arms one integer type.
+
+Homebrew's `gcc@13` on arm64 macOS fails in its own `arm_acle.h`, so it can't serve as a local
+check. CI's Linux leg is the only GCC build: push early (as a draft pull request).
+
+**The Linux products' libstdc++.** On Linux with GCC, outside the sanitizer builds, the four
+products link libstdc++ and libgcc statically with their symbols kept local, and the CLAP and
+VST3 export their entry points alone (`clients/clap-first/CMakeLists.txt`,
+`linux-exports.map`; INTENT §15). CI's Linux leg checks it after the build: "Linux products need
+no libstdc++ newer than Ubuntu 22.04's" fails on a `GLIBCXX` above 3.4.30, a `CXXABI` above
+1.3.13 or an exported `std::` symbol, and lists each product's symbol versions in the step
+summary.
 
 **CI caches** (`.github/workflows/ci.yml`; none changes what is built):
 - **The SDK checkouts** (VST3 SDK, AudioUnitSDK, RtAudio, RtMidi, wil): `scripts/fetch-sdks.sh`
@@ -266,6 +287,10 @@ scripts/check.sh [--presets dev,asan,rtsan] [-L label]... [--no-format] [--allow
   Linux, with CTest 3.22 or newer (the `scripts` test replays CTest 3.31's and 4.4's real
   output). Windows Git Bash is unsupported: nothing has run them there.
 - Paste its summary as the evidence in a report.
+- **One gate at a time per machine.** Two gates in two worktrees at once fail falsely:
+  `scripts_release`'s keychain check (the keychain search list is per user) and
+  `rtsan_negative_control`'s `atos`, which can hang. Rerun a failure of either alone before
+  believing it.
 
 **Tests.** `gg-tests` is the Catch2 suite, and each Catch2 tag becomes a CTest label. To run one
 area, use `ctest --preset dev -L <label>`. `-L` takes a regular expression, and repeated `-L`

@@ -98,7 +98,9 @@ const clap_plugin_descriptor *descriptorFor(Product product) noexcept;
 /// display (a percentage of the file) on a Sample layer, in either product, read from the Source
 /// slot's base value in values_ (displayModeOf). When a layer's built kind changes, whoever owns
 /// values_ then (the audio thread while active, the main thread while not) notes it
-/// (checkKinds) and asks for on_main_thread, which asks the host to rescan the text.
+/// (checkKinds) and asks for on_main_thread, which asks the host to rescan the text. The text
+/// follows the base value, not the effective one the audio follows, because a host can't rescan
+/// text at the modulation rate, and what is shown is what the user set (ruling FR-6).
 ///
 /// **The seed** (sub-project 5's spec §7). A new instance draws its own engine seed, on the main
 /// thread at construction, from std::random_device; a state brings its own.

@@ -536,10 +536,15 @@ Macros 1–8 (M1; `0A`–`10` were never used and stay unused), then:
 
 **Next free global index: `0x22`.**
 
-**The reservations,** recorded in `ParamIds.h` as named constants and comments, and pinned by a
-test that fails if any defined ID's index falls inside them or if the recorded next-free constants
-differ from the table's maxima plus one: in scope 0 and in each layer scope, `0x40`–`0x4F` for
-sub-project 2, `0x50`–`0x5F` for 3, `0x60`–`0x7F` for 4. Wave 3 adds no parameters.
+**The reservations,** recorded in `ParamIds.h` as named constants and comments: in scope 0 and in
+each layer scope, `0x40`–`0x4F` for sub-project 2, `0x50`–`0x5F` for 3, `0x60`–`0x7F` for 4. Wave 3
+adds no parameters. *As built, after the final review (ruling FR-1, INTENT §23 #65):* each wave-2
+sub-project appends its rows inside its block, at the end of `GG_LAYER_PARAMS_M2` (or in a new list
+added to `GG_LAYER_PARAMS`), in index order. A layer parameter's index is read from the X-macro's
+index column, never from its row's position, so an unused index names no parameter, and scope 0's
+table spans `0x00`–`0x7F` alike. A test fails if an index passes `0x7F`, if the next-free
+constants differ from one past the table's largest index below the blocks, or if an index no row
+has names a parameter.
 
 **Names.** Every layer parameter is displayed with its layer's letter, "A Size" … "D Size", with
 the CLAP `module` "Layer A" … "Layer D" for hosts that show paths; globals keep their names.
