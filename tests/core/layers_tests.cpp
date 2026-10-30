@@ -472,6 +472,40 @@ TEST_CASE("a layer switched off ramps over 10 ms then spawns nothing", "[core][l
     CHECK(allFinite(out.left));
 }
 
+TEST_CASE("switching off the last layer fades over 10 ms", "[core][layers]")
+{
+    // D1 as amended (Task 10's fix round): the weights are times min(1, Σ r_K), so layer A
+    // alone, switched off, fades with its ramp, (b/b) × r, rather than staying at 1 until the
+    // ramp reaches 0 and being cut there. A Sample layer over a sine, with no input and Mix 1:
+    // the output is the layer alone, where a cut is a click.
+    constexpr int64_t kOff = 24000; // a grid boundary
+    constexpr int64_t kFrames = 36000;
+    Processor p({kRate, 4096, 55, Mode::Fx});
+    wetOnly(p);
+    p.setBase(ParamSlot::Source, 0.0f); // Sample
+    p.setBase(ParamSlot::Position, 0.5f);
+    p.setBase(ParamSlot::Density, 6.0f);
+    p.setSourceNow(0, sine(440.0));
+    Stereo out = silence(kFrames);
+    const std::vector<TimedEvent> off{{kOff, ParamSlot::LayerAOn, false, 0.0}};
+    render(p, nullptr, 0, kOff + 1, {4096}, off, out);
+    CHECK(p.morphWeightAt(0, kOff) == 1.0f);
+    CHECK_THAT(p.morphWeightAt(0, kOff + kRamp / 4), Catch::Matchers::WithinAbs(0.75, 1e-6));
+    CHECK_THAT(p.morphWeightAt(0, kOff + kRamp / 2), Catch::Matchers::WithinAbs(0.5, 1e-6));
+    CHECK_THAT(p.morphWeightAt(0, kOff + kRamp - 1), Catch::Matchers::WithinAbs(1.0 / 480, 1e-6));
+    CHECK(p.morphWeightAt(0, kOff + kRamp) == 0.0f);
+    render(p, nullptr, kOff + 1, kFrames, {4096}, off, out);
+    CHECK_FALSE(p.layerRendering(0));
+    // Full level before the switch, fading through the ramp, nothing after it.
+    const float before = peakIn(out.left, kOff - kRamp, kOff);
+    REQUIRE(before > 0.05f);
+    CHECK(peakIn(out.left, kOff + kRamp / 2, kOff + kRamp / 2 + 48) < 0.6f * before);
+    CHECK(peakIn(out.left, kOff + kRamp - 24, kOff + kRamp) < 0.06f * before);
+    CHECK(peakIn(out.left, kOff + kRamp, kFrames) == 0.0f);
+    const gg::metrics::AudioData audio{kRate, {out.left, out.right}};
+    CHECK(gg::metrics::computeMetrics(audio).clickScore < 15.0);
+}
+
 TEST_CASE("a layer toggled within its ramp keeps its grains", "[core][layers]")
 {
     // Review Focus 1: off at t and on again at t + 160, inside the 10 ms ramp. The ramp turns

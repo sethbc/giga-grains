@@ -643,9 +643,12 @@ bool Processor::layerRendering(uint8_t layer) const noexcept
 void Processor::weightsAt(int64_t t, const std::array<bool, kLayers> &rendering,
                           std::array<float, kLayers> &weights) const noexcept
 {
-    // Spec §6.3, D1: the bilinear corner weights of the clamped pad, each times its layer's
-    // on/off ramp, normalized by their sum. Every term is a product of non-negative values, so
-    // no weight is −0; one layer rendering at r = 1 gets b / b, exactly 1.
+    // Spec §6.3, D1 as amended in Task 10's fix round: the bilinear corner weights of the clamped
+    // pad, each times its layer's on/off ramp, normalized by their sum, then times
+    // min(1, Σ r_K), so the amplitude sum fades with the ramps when less than one whole layer is
+    // on (the last layer switched off, the first switched on). Every term is a product of
+    // non-negative values, so no weight is −0; one layer rendering at r = 1 gets
+    // (b / b) × min(1, 1), exactly 1.
     static_assert(kLayers == 4);
     const float x = std::clamp(morphX_.at(t, rampSamples_), 0.001f, 0.999f);
     const float y = std::clamp(morphY_.at(t, rampSamples_), 0.001f, 0.999f);
@@ -654,15 +657,18 @@ void Processor::weightsAt(int64_t t, const std::array<bool, kLayers> &rendering,
     const std::array<float, kLayers> corner{ix * iy, x * iy, ix * y, x * y};
     std::array<float, kLayers> rb{};
     float sum = 0.0f;
+    float ramps = 0.0f;
     for (size_t L = 0; L < kLayers; ++L)
     {
         const float r = rendering[L] ? layers_[L]->on.at(t, rampSamples_) : 0.0f;
         rb[L] = r * corner[L];
         sum += rb[L];
+        ramps += r;
     }
+    const float fade = std::min(1.0f, ramps);
     for (size_t L = 0; L < kLayers; ++L)
     {
-        weights[L] = sum > 0.0f ? rb[L] / sum : 0.0f;
+        weights[L] = sum > 0.0f ? rb[L] / sum * fade : 0.0f;
     }
 }
 

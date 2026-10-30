@@ -82,9 +82,16 @@ struct NoteEvent
 /// each later one adds, and with none rendering wet is +0. The weight is the morph law (D1):
 /// with x and y the ramped Morph X and Morph Y clamped to [0.001, 0.999], b_A = (1 − x)(1 − y),
 /// b_B = x(1 − y), b_C = (1 − x)y, b_D = xy, r_L the layer's on/off ramp (0 for a layer not
-/// rendering) and s = Σ r_K·b_K, weight_L = s > 0 ? r_L·b_L / s : 0. One layer rendering with its
-/// ramp at 1 weighs exactly 1.0f wherever the pad is, so layer A alone renders M1's chain bit for
-/// bit.
+/// rendering) and s = Σ r_K·b_K,
+/// ```
+/// weight_L = s > 0 ? (r_L·b_L / s) × min(1, Σ_K r_K) : 0
+/// ```
+/// The factor min(1, Σ_K r_K) is 1 whenever at least one whole layer's worth of ramps is on, where
+/// the law is D1's sum-normalized vector law; below that (the last rendering layer switched off,
+/// or the first switched on) it makes the amplitude sum follow the ramps, so the last layer fades
+/// out over its ramp instead of being cut when the ramp reaches 0 (D1 as amended in Task 10's fix
+/// round). One layer rendering with its ramp at 1 weighs exactly 1.0f wherever the pad is
+/// ((b/b) × min(1, 1)), so layer A alone renders M1's chain bit for bit.
 ///
 /// A layer's Layer On switch ramps r_L over kRampSeconds. A layer renders while its ramp's
 /// target or value is non-zero (layerRendering). Once the ramp is down at 0 the layer is off: its
