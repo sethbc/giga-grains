@@ -127,7 +127,7 @@ sub-project 6 draws the lanes, the strips and the gestures.
    tolerance (goal 1, stronger than the criterion); the ring's floats, which may exceed ±1 (the
    ring clamps at ±2^20), need no scaling; one representation serves embedded and filed audio,
    `gg-media`'s decoder reads both, and any tool opens a capture; no new dependency. *Cost:*
-   about 2.5× the size of 24-bit FLAC at ordinary levels, so the 32 MB embed cap holds about 83 s
+   about 2.5× the size of 24-bit FLAC at ordinary levels, so the 32 MB embed cap holds about 87 s
    of stereo at 48 kHz instead of about 2 minutes; longer rings go to the captures folder sooner.
 2. *FLAC at 24 bits through libFLAC.* *Gains:* smaller. *Costs:* lossy for floats (24-bit
    quantization after a per-payload scale, about −144 dBFS of error, within the goldens'
@@ -300,7 +300,7 @@ Two things a parameter can't carry: adding a splice mark, and capturing the ring
   thread applies them at the next boundary as it applies a parameter change; `gg-render` takes
   them in its `operations` list (§6.10). A command on a Sample layer is ignored.
 
-  > **Amended (2026-10-30), as built (Tasks 1 and 5; ruling SP-T5d):** `AddSplice` marks `value`
+  > **Amended (2026-10-30), as built (Tasks 1 and 5; the plan's anchor change):** `AddSplice` marks `value`
   > seconds behind the window's end at `b`, `anchorAt(b)`: the head, or a selected splice's end
   > (§6.1: Position and Spray read behind it too), clamped into the window. A group's commands
   > apply after its parameters, in order, at most `kMaxGroupCommands` = 64 (twice the marks, so
@@ -891,7 +891,7 @@ are sub-project 6's; 85, 87, 88, 218 and 232 wait on upstream; 144 and 148 on 1.
 **Touched files with open rows:** `core/include/gg/core/Processor.h` (184, above). No open
 "when touched" row names a file this sub-project edits.
 
-**Expected at the end: 11 open rows,** no new rows. Every minor the final review raises is fixed
+~~**Expected at the end: 11 open rows,** no new rows.~~ (Superseded: the count rules are retired; see the Amended block below.) Every minor the final review raises is fixed
 in the fix wave unless blocked outside our control or genuinely large (the policy).
 
 > **Amended (2026-10-30), by the director's retirement of the count rules** (relayed by the

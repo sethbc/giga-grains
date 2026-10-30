@@ -52,7 +52,7 @@ file peaks above -0.7 dBFS.
 | `05-frozen-loop.wav` | 12.0 s | The FX with Loop on, Loop Length 1 s, over a 4 s sweep; Freeze at 4 s. From 6 s Spray steps from 10% to 80% of its range in eight steps of 0.75 s. Peak -3.0 dBFS. RMS -12.3 dBFS. | The held loop's seam, crossfaded over 256 frames: no click where its end meets its start. Spray then smears the grains across the loop without leaving it. |
 | `06-splices.wav` | 20.0 s | The FX with an 8 s ring over an 8 s sweep, frozen at 8 s and cut into four splices (marks 7, 5, 3 and 1 s behind the head, so spans of 2, 2, 2 and 1 s). Splice 1 at 9 s, 2 at 11 s, 3 at 13 s, 4 at 15 s, then 0 (the whole ring) at 17 s. Position 0.2 s behind each span's end, Density 4 Hz, Size 50 ms. Peak -4.6 dBFS. RMS -20.1 dBFS. | Each span alone, a different part of the sweep each time, then the whole; no click at a change (D6). The grains are sparse and short on purpose, see "A finding" below. |
 | `07-capture-to-layer.wav` | 20.0 s | `06` with splice 2 captured into layer B at 8.2 s (B Source Sample, Pitch +7, Position 0.2 s) while layer A steps through the splices as in `06`. Peak -5.2 dBFS. RMS -20.5 dBFS. | The capture plays as a sample under the ring: the second span of the sweep, a fifth up, beside whatever span A is on. |
-| `08a-ring-restore-a.wav`, `08b-ring-restore-b.wav` | 6.0 s each | `a`: `frozen-ring.ggst` (a generated 20 s sweep ring, frozen, with two splices) restored with Freeze on and scanned for 6 s (Position 0.5 stepped to 1.1 each second); the state at the end of the render goes to `08-saved.ggst`. `b`: that saved state restored and the same 6 s rendered. Peak -4.0 dBFS. RMS -13.8 dBFS. SHA-256 of both: `c60c0a190f28f73c0eb264551b1c97dc94646fad7be78ef051ecb81376848e2e`. | Identical files: the reopened pad is the saved one, from its first sample. The check is the hash, not the ear. |
+| `08a-ring-restore-a.wav`, `08b-ring-restore-b.wav` | 6.0 s each | `a`: `frozen-ring.ggst` (a generated 20 s sweep ring, frozen, with two splices) restored with Freeze on and scanned for 6 s (Position 0.5 stepped to 1.1 each second); the state at the end of the render goes to `08-saved.ggst`. (A deviation from spec §11, which saves it at 0 s of the scan; harmless, because the ring is frozen.) `b`: that saved state restored and the same 6 s rendered. Peak -4.0 dBFS. RMS -13.8 dBFS. SHA-256 of both: `c60c0a190f28f73c0eb264551b1c97dc94646fad7be78ef051ecb81376848e2e`. | Identical files: the reopened pad is the saved one, from its first sample. The check is the hash, not the ear. |
 | `09-resize-live.wav` | 20.0 s | The FX with a 60 s ring over a 19.5 s sweep, scanning 3 s behind. Peak -4.3 dBFS. RMS -13.9 dBFS. `gg-render` sets a ring's length before the render and can't resize one mid-render, so this file is the 60 s ring's steady state, not the resize. | A steady scan from a ring that holds the whole file. The resize itself (16 s to 60 s to 8 s while scanning) is heard only in a host: see the checklist. |
 | `10-fx-sample-layer.wav` | 8.0 s | The FX over a stereo sweep, layer B on with Source Sample, loaded with `loop-48k.wav` (Position 0.25, Density 16 Hz, Size 125 ms), the pad at the centre. Peak -5.9 dBFS. RMS -19.5 dBFS. | A sample layer inside the effect: the loop's bursts re-grained by layer B beside layer A's grains of the input. |
 
@@ -63,8 +63,10 @@ admitted under the wider window and now past the narrower one "out by the per-sa
 the fade is per sample, not a ramp in time: with 8 Hz grains of 50 ms (`06`'s first draft) the
 click score was 262 against the limit of 15, and with other seeds 24 to 1,320. At 4 Hz and 50 ms
 (`06`, `07`) the five changes happen to fall between grains and score 1.8 and 2.2. D6's "no click
-at a change" holds only there. It is for the director to hear and decide (sub-project 7). The golden `fx-splice-capture` runs
-at 8 Hz and 50 ms, and its two changes happen to fall clean.
+at a change" holds only there. It is for the director to hear and decide (sub-project 7). The
+golden `fx-splice-capture` runs at 8 Hz and 50 ms and passes only because its two changes fall
+between grains. The fix (a later task, before the build is reported ready) will remove this
+note.
 
 ## Host checklist
 

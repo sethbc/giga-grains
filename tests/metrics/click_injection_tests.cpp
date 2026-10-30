@@ -144,6 +144,7 @@ const std::map<std::string, int> &partlyHidden()
         {"fx-mod-follower", 15},
         // A frozen sweep's spans, re-grained, and layer B's pitched capture of one: the sweep's
         // top octaves, up to 2 kHz and +7 semitones, hide two of the steps.
+        // Its Splice changes fall between grains; regenerate the case and recount at task 12a.
         {"fx-splice-capture", 14},
         {"fx-noise-stereo", 3}, // a noise bed until the input ends at 3 s
         {"fx-note-freeze", 10}, // loop-48k.wav's bursts, live and frozen

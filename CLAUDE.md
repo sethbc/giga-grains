@@ -308,7 +308,8 @@ runs the tests labelled either. The labels are:
   and the worst Resample loop for 60 s;
   - `source` (also an engine label; in `core` since M2 sub-project 2): the `Processor`'s
     Resample tap, ring parameters, commands, ring exchange (resize and restore) and ring read,
-    with their determinism and tripwire cases (`tests/core/source_tests.cpp`);
+    with their determinism and tripwire cases (among them `tests/core/source_tests.cpp` and the
+    ring-exchange cases of `tests/core/exchange_tests.cpp`);
   - `layers` (M2 sub-project 1): the four layers, in the engine (the layer's RNG key, the enable
     gate, the kind switch, the spreads) and in the `Processor` (the sum in order, the morph law,
     on and off, the kinds, the instrument's input into the rings, the event order);
@@ -492,7 +493,8 @@ gg-render --write-media DIR
       and its filed rings in `--captures-dir`. The spec's seed is the render's, not the state's.
       An instrument spec may leave out `sample` beside `state`; layer A's is then the state's.
     - `operations` is a time-ordered list of `{"time", "layer", "op", …}`: `splice` (a mark
-      `behind` seconds behind the head, default 0), `clearSplices`, and `capture` (`splice` 0
+      `behind` seconds behind the window's end (the head, or a selected splice's end), default
+      0), `clearSplices`, and `capture` (`splice` 0
       for the loop window or k for its k-th span, `into` a layer letter whose sample it becomes,
       and/or `file`, written as a float32 WAV). A capture's `file` is used as written, so a
       relative one is relative to the working directory, like `-o`, not to the spec.
@@ -596,16 +598,27 @@ gg-render --write-media DIR
       octaves that hide steps.
     - Every one of the 22 M1 cases renders bit-identically with layers B to D off and the
       factory routes: a layers or matrix change that moves one is a regression.
-  - **M2 sub-project 2's seven** (sources and persistence; its spec §10):
-    `inst-resample-feedback` (layer A Sample over a 220 Hz sine, one held note, layer B Resample
-    at Pitch +12, Feedback 0.6), `fx-resample` (layer A Live over a sweep, layer B Resample at
-    Pitch -12, Position 0.5 s), `fx-long-ring` (24 s, Ring Length 60 s, an 8 s burst, then
-    Position stepped to 10, 18 and 22 s behind), `fx-loop-overdub` (Loop 1 s, Overdub 0.7 over a
-    noise-burst pattern, Freeze at 4 s, Overdub to 0 at 6 s), `fx-splice-capture` (Freeze at
-    2 s, two splices, Splice 1 then 2, splice 2 captured into layer B at 4 s at Pitch +7),
-    `fx-ring-restore` (`state: frozen-ring.ggst`, restored with Freeze on and scanned: the
-    restore gate) and `inst-four-samples` (`state: four-samples.ggst`, four Sample layers by
-    content path under `--content-dir`, one held note).
+  - **M2 sub-project 2's seven** (sources and persistence; its spec §10), 4 to 24 s:
+    - `inst-resample-feedback` (the instrument: layer A Sample over a 220 Hz sine, one held
+      note, layer B a Resample layer at Pitch +12 with Feedback 0.6), `fx-resample` (a stereo
+      sweep, layer B Resample at Pitch -12, Position 0.5 s), `fx-long-ring` (24 s: Ring Length
+      60 s, an 8 s noise burst, then Position stepped to 10, 18 and 22 s behind at 12, 18 and
+      22 s), `fx-loop-overdub` (`loop-48k.wav`, Loop on, Loop Length 1 s, Overdub 0.7, Freeze at
+      4 s, Overdub to 0 at 6 s), `fx-splice-capture` (a sweep, Freeze at 2 s, two splices 1.5 and
+      0.5 s behind, Splice 1 at 2.5 s and 2 at 3.5 s, splice 2 captured into layer B at 4 s,
+      layer B Sample at Pitch +7; Size 50 ms, Density 8 Hz), `fx-ring-restore` (`state:
+      frozen-ring.ggst`, a 20 s ring frozen with two splices, embedded; restored with Freeze on
+      and scanned for 4 s: the restore gate) and `inst-four-samples` (`state: four-samples.ggst`,
+      four Sample layers by content path under `--content-dir`, one held note).
+    - Five hide some injected click steps, pinned in the click-injection table: `fx-loop-overdub`
+      12 (the bursts' own edges), `fx-long-ring` 4 (an 8 s noise burst held in the ring, a noise
+      bed everywhere but the silence from 8 to 12 s), `fx-splice-capture` 14 (the sweep's top
+      octaves, to 2 kHz and +7 semitones), `inst-four-samples` 3 (one layer is noise: a noise
+      bed under the note) and `inst-resample-feedback` 6 (the cascade of octaves fills the
+      spectrum). `fx-resample` and `fx-ring-restore` catch all 16.
+    - `fx-splice-capture`'s two Splice changes fall between grains on purpose, until a later task
+      (12a) fixes the click a window change makes under sounding grains; 12a regenerates the
+      case and recounts its entry.
     - Every one of the 36 earlier cases renders bit-identically with Ring Length 16 s, Loop off,
       Overdub 0, no splice, no Resample layer, nothing embedded and the cap at its default: a
       sources change that moves one is a regression. The ring pyramid's task (after sub-project
