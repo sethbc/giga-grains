@@ -1028,3 +1028,76 @@ TEST_CASE("routes survive setBase jumps like macros", "[core][mod]")
     CHECK(sameBits(macro.left, direct.left));
     CHECK(sameBits(macro.right, direct.right));
 }
+
+TEST_CASE("quality modulated per cell under overload does not allocate", "[core][mod][budget][rt]")
+{
+    // Review Focus 3 (M2 engine spec §6.1, §6.5): LFO 1, a 20 Hz square, on layer A's Quality,
+    // depth 1 bipolar around Normal: the draws alternate between Eco and HQ 40 times a second,
+    // under Budget 256 (1,024 units) and a 400 Hz cloud of 500 ms grains, so the ladder lowers
+    // and steals throughout. The tripwire holds, and every grain's tier is its cell's Quality or a
+    // lower rung.
+    constexpr int64_t kFrames = 48000;
+    constexpr uint32_t kCell = 32;
+    const Stereo input = noise(kFrames, 0.5f, 21);
+    Processor p({kRate, 512, 23, Mode::Fx});
+    p.setBase(ParamSlot::Mix, 1.0f);
+    p.setBase(ParamSlot::Budget, 256.0f);
+    p.setBase(ParamSlot::Density, 8.643856189774725f); // 400 Hz
+    p.setBase(ParamSlot::Size, -1.0f);                 // 500 ms
+    p.setBase(ParamSlot::Lfo1Rate, std::log2(20.0f));
+    p.setBase(ParamSlot::Lfo1Shape, 4.0f); // Square
+    Log log;
+    p.setEventSink(&Log::record, &log);
+    p.setStealSink(&Log::recordSteal, &log);
+    const ModRoutes routes =
+        only(route(ModSource::Lfo1, ParamSlot::Quality, 0, 1.0f, ModCurve::Bipolar));
+    Stereo out = silence(kFrames);
+    // Each cell's Quality: after a call of one cell, the boundary at its end waits for the next
+    // call, so the effective value is the cell's.
+    std::vector<float> quality(kFrames / kCell, -1.0f);
+    AllocTripwire::resetCount();
+    {
+        AllocTripwire::Scope armed;
+        p.setRoutes(routes);
+        for (int64_t done = 0; done < kFrames; done += kCell)
+        {
+            const auto j = static_cast<std::size_t>(done);
+            const float *in[2] = {input.left.data() + j, input.right.data() + j};
+            float *o[2] = {out.left.data() + j, out.right.data() + j};
+            p.process(in, 2, o, 2, kCell, {});
+            quality[j / kCell] = p.effective(ParamSlot::Quality);
+        }
+    }
+    const uint64_t allocations = AllocTripwire::count();
+    if (AllocTripwire::available()) // off under ASan; RTSan covers this
+    {
+        REQUIRE(allocations == 0);
+    }
+    REQUIRE_FALSE(log.overflowed);
+    REQUIRE(allFinite(out.left));
+    REQUIRE(allFinite(out.right));
+    CHECK(std::count(quality.begin(), quality.end(), 0.0f) > 100);
+    CHECK(std::count(quality.begin(), quality.end(), 2.0f) > 100);
+    std::array<uint64_t, 3> tiers{};
+    uint64_t below = 0;
+    bool withinCell = true;
+    for (const Log::Event &e : log.events)
+    {
+        const auto tier = static_cast<int>(e.grain.tier);
+        REQUIRE(tier >= 0);
+        REQUIRE(tier <= 2);
+        ++tiers[static_cast<std::size_t>(tier)];
+        const float q = quality[static_cast<std::size_t>(e.grain.onsetSample) / kCell];
+        withinCell = withinCell && static_cast<float>(tier) <= q;
+        below += static_cast<float>(tier) < q ? 1 : 0;
+    }
+    CHECK(withinCell);
+    // Every tier admitted, the lowered ones counted as such, and the ladder stole.
+    CHECK(tiers[0] > 0);
+    CHECK(tiers[1] > 0); // HQ draws lowered to Normal
+    CHECK(tiers[2] > 0);
+    CHECK(below > 0);
+    CHECK(below == p.loweredGrains());
+    CHECK(p.stolenGrains() > 0);
+    CHECK(p.stolenGrains() == log.steals.size());
+}

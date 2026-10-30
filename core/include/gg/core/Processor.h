@@ -27,6 +27,7 @@
 #include "gg/core/UiSnapshot.h"
 #include "gg/engine/Engine.h"
 #include "gg/engine/TaskRunner.h"
+#include "gg/grain/Budget.h"
 
 namespace gg::core
 {
@@ -36,6 +37,9 @@ struct ProcessorConfig
     uint32_t maxBlockSize; ///< > 0. process() renders longer calls in pieces of this size.
     uint64_t seed;         ///< The engine seed (saved in the state).
     Mode mode;             ///< Which product (gg/core/ParamIds.h).
+    /// Each layer's EngineConfig::grainCapacity (M2 engine spec §6.6): at most kMaxGrainCapacity.
+    /// The plugins keep the default, 4,096 grains a layer.
+    uint32_t grainCapacity{4096};
 };
 
 /// A parameter change inside one process() call: a value (CLAP's param value event) or a
@@ -152,13 +156,24 @@ struct ControlEvent
 /// toWetParams). A change applies at its boundary (Engine::setSourceMode): the grains sounding
 /// finish on the source they started on.
 ///
-/// **Grain events** (spec §6.7). Each layer's engine records its spawns into its own fixed buffer
-/// of 2 × grainCapacity events while it renders a piece; after the piece's layers have rendered,
-/// the buffers are drained in layer order A to D into the sink (setEventSink) and, while
-/// publishing, the grain queue. So the sink sees the grains in piece, layer, spawn order: for one
-/// layer that is spawn order. A buffer that is full drops the event from the sink and the queue
-/// (never from the audio) and counts it (droppedGrainEvents); no schedule the engine admits fills
-/// it within one piece.
+/// **Grain events** (spec §6.7; M2 engine spec §6.7). Each layer's engine records its spawns and
+/// its steals, in the order it reports them (a steal right before the spawn whose admission
+/// stole), into its own fixed buffer of 4 × grainCapacity events while it renders a piece; after
+/// the piece's layers have rendered, the buffers are drained in layer order A to D: each spawn
+/// into the sink (setEventSink) and, while publishing, the grain queue, each steal into the steal
+/// sink (setStealSink) alone. So the sinks see the events in piece, layer, report order: for one
+/// layer that is the engine's order. A buffer that is full drops the event from the sinks and the
+/// queue (never from the audio) and counts it (droppedGrainEvents); no schedule the engine admits
+/// fills it within one piece (at most 2 × grainCapacity spawns, each with at most one steal).
+///
+/// **The quotas** (M2 engine spec §6.4). Budget's effective value, as weight units (budgetUnits),
+/// is kept by updateEffective; each piece, once the rendering layers are fixed and before any
+/// task runs, each rendering layer's engine gets the quota floor(units / n), n the layers
+/// rendering (Engine::setQuota, only when it differs from the one last given), on the calling
+/// thread. A layer that isn't rendering keeps its quota and spawns nothing. The rendering set and
+/// Budget change only at piece boundaries, so the quotas do too, from state known there: the
+/// ladder's decisions are block-size invariant and the same with any runner. loweredGrains(),
+/// stolenGrains() and each engine's droppedGrains() count them.
 ///
 /// **Parameters.** Each slot has a base value and a modulation offset; the effective value,
 /// clamp(base + modulation + route offset) to the slot's range, is what reaches the engine
@@ -373,7 +388,7 @@ class Processor
     /// grain-event buffer) and the reverb (about 14.5 MB): about 45 MB at 48 kHz. Every parameter
     /// starts at its default with no modulation, so layer A is on and B to D are off. Throws
     /// std::invalid_argument for the configurations Engine rejects (sampleRate not finite and > 0,
-    /// maxBlockSize 0).
+    /// maxBlockSize 0, grainCapacity above kMaxGrainCapacity).
     ///
     /// It reads every slot's metadata (paramMeta), whose first call allocates, so process()
     /// never makes that first call. Freeze starts disengaged, as the class comment describes.
@@ -527,6 +542,11 @@ class Processor
     /// spawned grain with its layer, in piece, layer, spawn order (the class comment), whether or
     /// not publishing is on. nullptr removes it. Call it while process() isn't running.
     void setEventSink(GrainEventSink sink, void *ctx) noexcept;
+    /// The steal sink (gg-render's event log, tests): called on the audio thread once per grain
+    /// the overload ladder steals, with its layer, the stolen grain's index and the onset of the
+    /// grain it made room for, right before that grain's setEventSink call (the class comment),
+    /// whether or not publishing is on. nullptr removes it. Call it while process() isn't running.
+    void setStealSink(GrainStealSink sink, void *ctx) noexcept;
 
     /// Turns publishing on or off (the class comment): the editor's, on the main thread, as it
     /// opens and closes. It takes effect from the next process() call's start. Turning it off
@@ -574,6 +594,16 @@ class Processor
     /// comment) since construction or the last reset(); the audio is never affected.
     uint64_t droppedGrainEvents() const noexcept;
 
+    /// The four engines' Engine::loweredGrains() and Engine::stolenGrains(), summed (M2 engine spec
+    /// §6.5): since construction or the last reset().
+    uint64_t loweredGrains() const noexcept;
+    uint64_t stolenGrains() const noexcept;
+    /// Layer `layer`'s Engine::activeGrains() (`layer` below kLayers), for tests.
+    uint32_t layerActiveGrains(uint8_t layer) const noexcept
+    {
+        return layerAt(layer).engine.activeGrains();
+    }
+
     /// Whether the reverb's return is being added: the reverb chunk holding the last rendered
     /// sample is active (the class comment). False after construction and reset().
     bool reverbActive() const noexcept { return reverb_->chunkActive(); }
@@ -594,6 +624,20 @@ class Processor
         /// Ramps from the value at t to target, from t; unchanged if target is already `to`.
         void retarget(float target, int64_t t, int64_t length) noexcept;
         void jump(float target) noexcept;
+    };
+
+    /// One entry of a layer's event buffer (the class comment's Grain events): a spawn's grain, or
+    /// a steal's stolen grain index and the onset of the grain it made room for.
+    struct LayerEvent
+    {
+        enum class Kind : uint8_t
+        {
+            Spawn,
+            Steal,
+        } kind;
+        GrainSpec grain;
+        uint64_t index;
+        int64_t onset;
     };
 
     /// One layer (M2 sub-project 1's spec §6.2): its engine and its whole wet chain.
@@ -621,11 +665,15 @@ class Processor
         // The limited wet signal of the last kFeedbackDelay samples: sample t at t % D.
         std::array<std::array<float, kFeedbackDelay>, 2> wetHistory{};
         LivePeaks peaks;
-        // This piece's spawns, drained after the piece: reserved to 2 × grainCapacity. The events
-        // a full buffer kept from the sink since the construction or the last reset(), per layer
-        // so that each task counts its own (droppedGrainEvents sums them).
-        std::vector<GrainSpec> events;
+        // This piece's spawns and steals, in the engine's order, drained after the piece: reserved
+        // to 4 × grainCapacity. The events a full buffer kept from the sinks since the
+        // construction or the last reset(), per layer so that each task counts its own
+        // (droppedGrainEvents sums them).
+        std::vector<LayerEvent> events;
         uint64_t droppedEvents{0};
+        // The quota last given to the engine (Engine::setQuota): the engine's own default until
+        // the first piece that renders the layer.
+        uint64_t quotaGiven{kUnlimitedQuota};
         // Freeze has been seen off since the construction or the last reset(), so on engages it;
         // engineFrozen is the freeze setting last given to the engine.
         bool freezeArmed{false};
@@ -666,8 +714,13 @@ class Processor
     /// (drainEvents empties it), or counts it when the buffer is full.
     static void onGrain(void *ctx, uint32_t layer,
                         const GrainSpec &g) noexcept SST_CPPUTILS_NONBLOCKING;
-    /// Hands each buffered grain event, layer by layer A to D, to the sink set by setEventSink
-    /// and, while this call publishes, the grain queue; then empties the buffers.
+    /// The engines' steal sink, ctx the Processor: appends the steal to its layer's buffer, in
+    /// order with the spawns, or counts it when the buffer is full.
+    static void onSteal(void *ctx, uint32_t layer, uint64_t index,
+                        int64_t onset) noexcept SST_CPPUTILS_NONBLOCKING;
+    /// Hands each buffered event, layer by layer A to D, in order: a spawn to the sink set by
+    /// setEventSink and, while this call publishes, the grain queue; a steal to the sink set by
+    /// setStealSink. Then empties the buffers.
     void drainEvents() noexcept SST_CPPUTILS_NONBLOCKING;
     /// takeOffers() for one layer.
     bool takeLayerOffers(Layer &l) noexcept SST_CPPUTILS_NONBLOCKING;
@@ -727,6 +780,9 @@ class Processor
     std::array<std::unique_ptr<Layer>, kLayers> layers_;
     // The current piece's: which layers render, and their weights per sample.
     std::array<bool, kLayers> rendering_{};
+    // Budget's effective value as weight units (budgetUnits), the rendering layers' shared
+    // budget: kept by updateEffective, split into the quotas per piece (the class comment).
+    uint64_t budgetUnits_{0};
     std::array<std::array<float, kFeedbackDelay>, kLayers> weights_{};
     // The current piece's state for its tasks (the class comment's Threads), fixed before the
     // request and read-only while it runs: the piece's bounds, its input, the channels the
@@ -798,6 +854,8 @@ class Processor
     // is publishing_ as the current process() call read it at its start.
     GrainEventSink externalSink_{nullptr};
     void *externalSinkCtx_{nullptr};
+    GrainStealSink externalStealSink_{nullptr};
+    void *externalStealSinkCtx_{nullptr};
     std::atomic<bool> publishing_{false};
     bool publishingThisCall_{false};
     std::unique_ptr<GrainQueue> grainQueue_; // heap: 128 KB

@@ -27,6 +27,9 @@ static_assert(SpaceReverb::kChunk == Processor::kControlGrid);
 // every grain at least that far behind the write head, so a piece of at most D samples never
 // reads a frame whose feedback it hasn't rendered yet.
 static_assert(Processor::kFeedbackDelay == gg::LiveSource::kHeadMargin);
+// A Budget grain is a Normal grain reading a stereo source, the engine's unit (M2 engine spec
+// §6.4): budgetUnits' units are the engines' weight units.
+static_assert(kBudgetUnitsPerGrain == gg::kNormalStereoWeight);
 
 namespace
 {
@@ -41,6 +44,11 @@ const ProcessorConfig &validated(const ProcessorConfig &c)
     {
         throw std::invalid_argument("Processor: maxBlockSize must be > 0");
     }
+    if (c.grainCapacity > gg::kMaxGrainCapacity)
+    {
+        throw std::invalid_argument(
+            "Processor: ProcessorConfig::grainCapacity must be at most kMaxGrainCapacity (16384)");
+    }
     return c;
 }
 
@@ -53,6 +61,7 @@ EngineConfig engineConfig(const ProcessorConfig &c, uint8_t layer)
     e.seed = c.seed;
     e.liveSeconds = Processor::kLiveSeconds;
     e.layer = layer;
+    e.grainCapacity = c.grainCapacity; // M2 engine spec §6.6
     return e;
 }
 
@@ -218,13 +227,15 @@ Processor::Processor(const ProcessorConfig &config)
             channel.assign(pieceMax_, 0.0f);
         }
         l.peaks.prepare(l.engine.liveFrames());
-        // The pool's storage bound on the spawns of one block (spec §6.7).
-        l.events.reserve(2 * static_cast<size_t>(engine.grainCapacity));
+        // The pool's storage bound on the spawns of one block (spec §6.7), each with at most one
+        // steal before it (M2 engine spec §6.5).
+        l.events.reserve(4 * static_cast<size_t>(engine.grainCapacity));
         if (config_.mode == Mode::Instrument)
         {
             l.engine.setNoteGate(true); // silent until a note (spec §6.2)
         }
         l.engine.setEventSink(&Processor::onGrain, this);
+        l.engine.setStealSink(&Processor::onSteal, this);
     }
     // The kinds (the FX's layers read their rings) and the cloud parameters.
     updateEffective();
@@ -728,6 +739,8 @@ void Processor::updateEffective() noexcept
             l.kind = kind;
         }
     }
+    // M2 engine spec §6.4: the rendering layers' shared budget, split into their quotas per piece.
+    budgetUnits_ = budgetUnits(effective_);
     space_ = toSpaceParams(effective_, config_.mode);
 }
 
@@ -886,6 +899,26 @@ uint64_t Processor::droppedGrainEvents() const noexcept
     return dropped;
 }
 
+uint64_t Processor::loweredGrains() const noexcept
+{
+    uint64_t lowered = 0;
+    for (const auto &l : layers_)
+    {
+        lowered += l->engine.loweredGrains();
+    }
+    return lowered;
+}
+
+uint64_t Processor::stolenGrains() const noexcept
+{
+    uint64_t stolen = 0;
+    for (const auto &l : layers_)
+    {
+        stolen += l->engine.stolenGrains();
+    }
+    return stolen;
+}
+
 void Processor::setTaskRunner(TaskRunner *runner) noexcept
 {
     runner_ = runner != nullptr ? runner : &serialRunner_;
@@ -914,6 +947,12 @@ void Processor::setEventSink(GrainEventSink sink, void *ctx) noexcept
     externalSinkCtx_ = ctx;
 }
 
+void Processor::setStealSink(GrainStealSink sink, void *ctx) noexcept
+{
+    externalStealSink_ = sink;
+    externalStealSinkCtx_ = ctx;
+}
+
 void Processor::onGrain(void *ctx, uint32_t layer, const GrainSpec &g) noexcept
 {
     auto *self = static_cast<Processor *>(ctx);
@@ -924,7 +963,23 @@ void Processor::onGrain(void *ctx, uint32_t layer, const GrainSpec &g) noexcept
     // Within the capacity reserved at construction a push_back never allocates.
     if (l.events.size() < l.events.capacity())
     {
-        l.events.push_back(g);
+        l.events.push_back({LayerEvent::Kind::Spawn, g, 0, 0});
+    }
+    else
+    {
+        ++l.droppedEvents;
+    }
+}
+
+void Processor::onSteal(void *ctx, uint32_t layer, uint64_t index, int64_t onset) noexcept
+{
+    auto *self = static_cast<Processor *>(ctx);
+    // As onGrain, on the layer's task's thread, into the same buffer: the steal stays before the
+    // spawn its admission makes, which the engine reports right after it.
+    Layer &l = *self->layers_[std::min<uint32_t>(layer, kLayers - 1)];
+    if (l.events.size() < l.events.capacity())
+    {
+        l.events.push_back({LayerEvent::Kind::Steal, {}, index, onset});
     }
     else
     {
@@ -936,9 +991,18 @@ void Processor::drainEvents() noexcept
 {
     for (uint8_t L = 0; L < kLayers; ++L)
     {
-        std::vector<GrainSpec> &events = layers_[L]->events;
-        for (const GrainSpec &g : events)
+        std::vector<LayerEvent> &events = layers_[L]->events;
+        for (const LayerEvent &e : events)
         {
+            if (e.kind == LayerEvent::Kind::Steal)
+            {
+                if (externalStealSink_ != nullptr)
+                {
+                    externalStealSink_(externalStealSinkCtx_, L, e.index, e.onset);
+                }
+                continue;
+            }
+            const GrainSpec &g = e.grain;
             if (externalSink_ != nullptr)
             {
                 externalSink_(externalSinkCtx_, L, g);
@@ -1369,6 +1433,24 @@ void Processor::render(const Buffers &b, int64_t from, int64_t to) noexcept
         {
             const Ramp &on = layers_[L]->on;
             rendering_[L] = on.to != 0.0f || on.at(from, rampSamples_) != 0.0f;
+        }
+        // The quotas (M2 engine spec §6.4): the Budget split equally among the layers rendering
+        // this piece, given here, serially, before any task runs. A layer not rendering keeps its
+        // quota: it spawns nothing.
+        const auto renderingCount =
+            static_cast<uint64_t>(std::count(rendering_.begin(), rendering_.end(), true));
+        if (renderingCount > 0)
+        {
+            const uint64_t quota = budgetUnits_ / renderingCount;
+            for (size_t L = 0; L < kLayers; ++L)
+            {
+                Layer &l = *layers_[L];
+                if (rendering_[L] && quota != l.quotaGiven)
+                {
+                    l.engine.setQuota(quota);
+                    l.quotaGiven = quota;
+                }
+            }
         }
         std::array<float, kLayers> weights{};
         for (uint32_t i = 0; i < count; ++i)

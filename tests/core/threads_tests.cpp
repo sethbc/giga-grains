@@ -346,3 +346,135 @@ TEST_CASE("layer tasks do not allocate", "[core][threads][rt]")
     CHECK(allFinite(o0));
     REQUIRE_NO_ALLOCATIONS(allocations);
 }
+
+namespace
+{
+// The overloaded four-layer render's setup (M2 engine spec §6.7): the FX over noise for 1 s, A at
+// HQ, B Normal, C Eco, D HQ, every layer at Density 400 Hz and Size 500 ms, Budget 256 (1,024
+// units, 256 per layer while four render): every rung of the ladder runs, in every layer.
+LayersSetup overloadSetup(gg::TaskRunner *runner)
+{
+    LayersSetup s;
+    s.runner = runner;
+    s.frames = 48000;
+    s.configure = [](Processor &p) {
+        constexpr std::array<float, 4> kQuality{2.0f, 1.0f, 0.0f, 2.0f};
+        for (uint8_t L = 0; L < 4; ++L)
+        {
+            p.setBase(layerSlot(LayerParam::Quality, L), kQuality[L]);
+            p.setBase(layerSlot(LayerParam::Density, L), 8.643856189774725f); // 400 Hz
+            p.setBase(layerSlot(LayerParam::Size, L), -1.0f);                 // 500 ms
+        }
+        p.setBase(ParamSlot::Budget, 256.0f);
+    };
+    return s;
+}
+
+// Off the grid: layer D off at 0.4 s and on again at 0.6 s, so the quotas move with the rendering
+// set, and Budget up to 512 at 0.75 s.
+std::vector<TimedEvent> overloadEvents()
+{
+    return {{19205, gg::core::layerOnSlot(3), false, 0.0},
+            {28803, gg::core::layerOnSlot(3), false, 1.0},
+            {36007, ParamSlot::Budget, false, 512.0}};
+}
+
+// Each steal came right before the spawn it made room for: the same layer's, at its onset.
+bool stealsPrecedeTheirSpawns(const Log &log)
+{
+    for (const Log::Steal &s : log.steals)
+    {
+        if (s.next >= log.events.size() || log.events[s.next].layer != s.layer ||
+            log.events[s.next].grain.onsetSample != s.onset)
+        {
+            return false;
+        }
+    }
+    return true;
+}
+} // namespace
+
+TEST_CASE("an overloaded four-layer render is the same with any pool",
+          "[core][threads][budget][determinism]")
+{
+    // M2 engine spec §6.4, §6.7: the quotas are fixed serially before the tasks run, from state
+    // known at the boundary, so the bytes, the grains, the steals (in order with the spawns) and
+    // the ladder's counters are the same through the serial runner and stub pools of 1, 2 and 8
+    // workers, at every block size.
+    const Stereo input = noise(48000, 0.5f, 53);
+    const auto events = overloadEvents();
+    LayersRender ref;
+    renderLayers(input, events, 4096, {4096}, ref, overloadSetup(nullptr));
+    REQUIRE(allFinite(ref.audio.left));
+    REQUIRE(allFinite(ref.audio.right));
+    REQUIRE(peak(ref.audio.left) > 0.05f);
+    REQUIRE_FALSE(ref.log.overflowed);
+    // Not vacuous: every rung ran.
+    REQUIRE(ref.lowered > 0);
+    REQUIRE(ref.stolen > 0);
+    REQUIRE(ref.stolen == ref.log.steals.size());
+    REQUIRE(ref.dropped[0] + ref.dropped[1] + ref.dropped[2] + ref.dropped[3] > 0);
+    REQUIRE(stealsPrecedeTheirSpawns(ref.log));
+    for (uint32_t L = 0; L < 4; ++L)
+    {
+        INFO("layer " << L);
+        REQUIRE(ref.log.layer(L).size() > 10);
+        REQUIRE_FALSE(ref.log.layerSteals(L).empty());
+    }
+
+    for (const uint32_t block : {1u, 32u, 64u, 511u, 4096u})
+    {
+        INFO("block size " << block);
+        LayersRender serial;
+        renderLayers(input, events, 4096, {block}, serial, overloadSetup(nullptr));
+        REQUIRE_FALSE(serial.log.overflowed);
+        REQUIRE(sameBits(ref.audio.left, serial.audio.left));
+        REQUIRE(sameBits(ref.audio.right, serial.audio.right));
+        REQUIRE(serial.lowered == ref.lowered);
+        REQUIRE(serial.stolen == ref.stolen);
+        REQUIRE(serial.dropped == ref.dropped);
+        REQUIRE(stealsPrecedeTheirSpawns(serial.log));
+        for (uint32_t L = 0; L < 4; ++L)
+        {
+            INFO("layer " << L);
+            REQUIRE(serial.log.layer(L) == ref.log.layer(L));
+            REQUIRE(serial.log.layerSteals(L) == ref.log.layerSteals(L));
+            REQUIRE(serial.heads[L] == ref.heads[L]);
+        }
+
+        for (const unsigned workers : {1u, 2u, 8u})
+        {
+            INFO(workers << " workers");
+            StubPool pool(workers);
+            LayersRender r;
+            renderLayers(input, events, 4096, {block}, r, overloadSetup(&pool));
+            REQUIRE_FALSE(r.log.overflowed);
+            REQUIRE(sameBits(serial.audio.left, r.audio.left));
+            REQUIRE(sameBits(serial.audio.right, r.audio.right));
+            REQUIRE(r.heads == serial.heads);
+            REQUIRE(r.lowered == serial.lowered);
+            REQUIRE(r.stolen == serial.stolen);
+            REQUIRE(r.dropped == serial.dropped);
+            // The sinks' order too: drained after the join in layer order, each steal before
+            // the spawn it made room for.
+            REQUIRE(r.log.events.size() == serial.log.events.size());
+            bool sameOrder = true;
+            for (std::size_t i = 0; i < r.log.events.size(); ++i)
+            {
+                sameOrder = sameOrder && r.log.events[i].layer == serial.log.events[i].layer &&
+                            r.log.events[i].grain == serial.log.events[i].grain;
+            }
+            REQUIRE(sameOrder);
+            REQUIRE(r.log.steals.size() == serial.log.steals.size());
+            bool sameSteals = true;
+            for (std::size_t i = 0; i < r.log.steals.size(); ++i)
+            {
+                const Log::Steal &a = r.log.steals[i];
+                const Log::Steal &b = serial.log.steals[i];
+                sameSteals = sameSteals && a.layer == b.layer && a.index == b.index &&
+                             a.onset == b.onset && a.next == b.next;
+            }
+            REQUIRE(sameSteals);
+        }
+    }
+}
