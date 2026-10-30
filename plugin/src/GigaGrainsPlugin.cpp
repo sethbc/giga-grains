@@ -291,6 +291,11 @@ void GigaGrainsPlugin::deactivate() noexcept
             storeValue(static_cast<ParamSlot>(s), loaded.values[s]);
         }
     }
+    // An edit of the editor's routes the audio thread never took is routes_ already, which the
+    // next activate() hands over: dropped, so it can't apply, stale, at the first block after a
+    // reactivation over an edit made while inactive.
+    gg::core::ModRoutes staleRoutes;
+    uiRoutesPending_.take(staleRoutes);
     // The same for an offer the audio thread never took (the instrument's restores hand their
     // values over with their source, D8): its values apply now, and go into values_.
     if (processor_ != nullptr && processor_->takeOffers())
@@ -898,24 +903,33 @@ void GigaGrainsPlugin::forgetNoteIds(int16_t channel, int16_t key) noexcept
 void GigaGrainsPlugin::applyLoadedState() noexcept
 {
     LoadedState loaded{};
-    if (!loadedState_.take(loaded))
+    if (loadedState_.take(loaded))
     {
-        return;
+        // The grains scheduled from this call's first sample on are keyed by it
+        // (Engine::setSeed).
+        processor_->setSeed(loaded.seed);
+        processor_->setRoutes(loaded.routes);
+        // The instrument's values come with its sample (takeOffers).
+        if (loaded.hasValues)
+        {
+            // One recomputation for the whole state on the audio thread, not one per slot (ruling
+            // FR-3).
+            processor_->setBases(loaded.values);
+            for (std::size_t s = 0; s < kParamCount; ++s)
+            {
+                storeValue(static_cast<ParamSlot>(s), loaded.values[s]);
+            }
+            requestValueRescan();
+        }
     }
-    // The grains scheduled from this call's first sample on are keyed by it (Engine::setSeed).
-    processor_->setSeed(loaded.seed);
-    processor_->setRoutes(loaded.routes);
-    if (!loaded.hasValues)
+    // The editor's routes, after a loaded state's. A state load pushes its routes here too, so
+    // this channel always holds the main thread's newest routes_: whichever of a load and an edit
+    // came later wins, also when both land before the same call.
+    gg::core::ModRoutes routes;
+    if (uiRoutesPending_.take(routes))
     {
-        return; // the instrument's come with its sample (takeOffers)
+        processor_->setRoutes(routes);
     }
-    // One recomputation for the whole state on the audio thread, not one per slot (ruling FR-3).
-    processor_->setBases(loaded.values);
-    for (std::size_t s = 0; s < kParamCount; ++s)
-    {
-        storeValue(static_cast<ParamSlot>(s), loaded.values[s]);
-    }
-    requestValueRescan();
 }
 
 void GigaGrainsPlugin::storeValue(ParamSlot slot, float value) noexcept
@@ -953,6 +967,19 @@ float GigaGrainsPlugin::uiBaseValue(ParamSlot slot) const noexcept
 {
     const auto s = static_cast<std::size_t>(slot);
     return s < kParamCount ? values_[s].load(std::memory_order_relaxed) : 0.0f;
+}
+
+void GigaGrainsPlugin::uiSetRoutes(const gg::core::ModRoutes &routes) noexcept
+{
+    routes_ = routes; // what stateSave writes from now on
+    if (processor_ != nullptr)
+    {
+        uiRoutesPending_.push(routes_); // never allocates; inactive, activate() hands routes_ over
+    }
+    if (_host.canUseState())
+    {
+        _host.stateMarkDirty();
+    }
 }
 
 void GigaGrainsPlugin::queueUiChange(const UiParamChange &change) noexcept
@@ -1294,6 +1321,9 @@ bool GigaGrainsPlugin::stateLoad(const clap_istream *stream) noexcept
             {
                 processor_->sources().offer(std::move(restored.source), &values); // reserved
             }
+            // The routes on the editor's channel too, first, so an edit made before this load
+            // and not yet taken can't apply after it (applyLoadedState).
+            uiRoutesPending_.push(routes_);
             loadedState_.push({values, routes_, seed, loader_ == nullptr});
         }
         else
