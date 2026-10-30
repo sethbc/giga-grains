@@ -132,6 +132,7 @@ endif ()
 # inspect a plugin instance. gg::plugin-impl is linked above, first.
 if (GG_BUILD_PLUGINS)
     target_sources(gg-tests PRIVATE
+            plugin/catalog_tests.cpp
             plugin/discovery_tests.cpp
             plugin/factory_tests.cpp
             plugin/identity_tests.cpp

@@ -15,8 +15,10 @@
 
 add_library(gg-plugin-core STATIC
         src/Factory.cpp
+        src/Favorites.cpp
         src/GigaGrainsPlugin.cpp
         src/HelpersConfig.cpp
+        src/PresetCatalog.cpp
         src/PresetDiscovery.cpp
         src/SampleLoader.cpp
         src/SearchCache.cpp
@@ -30,8 +32,9 @@ target_include_directories(gg-plugin-core PUBLIC include PRIVATE src)
 # gg-core's headers (the Processor, the parameter IDs) and needs sst-cpputils for
 # SST_CPPUTILS_NONBLOCKING, so whatever includes it links gg::core and sst-cpputils itself: the
 # editor layer below, and the tests. gg::media (the sample loader's decoding, conversion, search
-# and settings file) is PRIVATE too: its headers appear only in SampleLoader.cpp,
-# GigaGrainsPlugin.cpp and, for the UTF-8 path helper (gg/media/Utf8Path.h), EditorPlugin.cpp.
+# and settings file, and the content search path) is PRIVATE too: its headers appear only in
+# SampleLoader.cpp, GigaGrainsPlugin.cpp, PresetCatalog.cpp and, for the UTF-8 path helper
+# (gg/media/Utf8Path.h), EditorPlugin.cpp.
 target_link_libraries(gg-plugin-core
         PUBLIC clap clap-helpers gg::clap-wrapper-extensions
         PRIVATE gg::media gg::core sst-cpputils gg::compiler-options
