@@ -8,8 +8,11 @@
 
 #include <cmath>
 #include <cstdint>
+#include <atomic>
 #include <memory>
 #include <string>
+#include <thread>
+#include <vector>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -110,18 +113,60 @@ TEST_CASE("the pool holds nothing alive once its holders let go", "[media]")
     pool.clear();
 }
 
-TEST_CASE("insert keeps the source weakly and replaces an entry of the same key", "[media]")
+TEST_CASE("insert keeps the source weakly and does not replace a live entry of the same key",
+          "[media]")
 {
     auto &pool = SamplePool::process();
     pool.clear();
     auto a = gg::PreparedSource::make(stereoBuffer(48000.0));
     auto b = gg::PreparedSource::make(stereoBuffer(48000.0));
-    pool.insert(kKey, a);
+    REQUIRE(pool.insert(kKey, a) == a);
     REQUIRE(pool.find(kKey) == a);
-    pool.insert(kKey, b);
+    // The second insert gets the first's source back, and the pool still holds the first.
+    REQUIRE(pool.insert(kKey, b) == a);
+    REQUIRE(pool.find(kKey) == a);
+    REQUIRE(pool.alive() == 1);
+    // Once the first has gone, the key is free again.
+    a.reset();
+    REQUIRE(pool.alive() == 0);
+    REQUIRE(pool.insert(kKey, b) == b);
     REQUIRE(pool.find(kKey) == b);
     REQUIRE(pool.alive() == 1);
     b.reset();
     REQUIRE(pool.alive() == 0);
+    pool.clear();
+}
+
+TEST_CASE("concurrent prepares of one key end up sharing one source", "[media]")
+{
+    auto &pool = SamplePool::process();
+    pool.clear();
+    constexpr int kThreads = 8;
+    std::vector<std::shared_ptr<const gg::PreparedSource>> got(kThreads);
+    std::atomic<bool> go{false};
+    std::vector<std::thread> threads;
+    for (int t = 0; t < kThreads; ++t)
+    {
+        threads.emplace_back([&, t] {
+            const auto decoded = stereoBuffer(44100.0);
+            while (!go.load())
+            {
+                std::this_thread::yield();
+            }
+            got[std::size_t(t)] = gg::media::prepare(decoded, 48000.0, nullptr, &kKey);
+        });
+    }
+    go.store(true);
+    for (auto &thread : threads)
+    {
+        thread.join();
+    }
+    for (const auto &source : got)
+    {
+        REQUIRE(source != nullptr);
+        REQUIRE(source == got[0]);
+    }
+    REQUIRE(pool.find(kKey) == got[0]);
+    REQUIRE(pool.alive() == 1);
     pool.clear();
 }

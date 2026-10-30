@@ -61,13 +61,15 @@ LoadedSample loadSample(const std::filesystem::path &file, const core::MachineSe
 /// `decoded` converted to `rate` (convertRate: the same buffer when the rates match), then made a
 /// PreparedSource, with the interleaved copy for a stereo buffer. Main or loader thread; the
 /// plugin passes the host's rate. nullptr if `cancel` is set during the conversion (convertRate).
-/// Throws std::invalid_argument if `decoded` is null or `rate` isn't finite and positive, and
-/// std::bad_alloc if memory runs out.
+/// Throws std::invalid_argument if `decoded` is null, `rate` isn't finite and positive, or
+/// `share->rate` isn't `rate` (bit for bit), and std::bad_alloc if memory runs out.
 ///
-/// With `share`, the key of `decoded`'s file at `rate` (`share->rate` should be `rate`), the
+/// With `share`, the key of `decoded`'s file at `rate` (`share->rate` must be `rate`), the
 /// process's SamplePool is asked first: a live source of that key is returned as it is, with no
 /// conversion and nothing built; otherwise the new source is made and remembered under the key,
-/// so the next instance to load the file shares it (spec §6.5).
+/// so the next instance to load the file shares it (spec §6.5). Lookup and remembering are
+/// separate steps, so two loaders can both build; the pool keeps the first source to arrive
+/// (SamplePool::insert), and both get that one back.
 std::shared_ptr<const PreparedSource> prepare(std::shared_ptr<SampleBuffer> decoded, double rate,
                                               const std::atomic<bool> *cancel = nullptr,
                                               const PoolKey *share = nullptr);

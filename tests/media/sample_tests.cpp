@@ -265,3 +265,15 @@ TEST_CASE("loadSample refuses a file over its bound, with decodeAudioFile's mess
     REQUIRE(refused.decoded == nullptr);
     REQUIRE(refused.error == "small.wav: needs 1 MB, the memory cap allows 0 MB");
 }
+
+TEST_CASE("prepare refuses a key whose rate is not the rate it converts to", "[media]")
+{
+    gg::media::SamplePool::process().clear();
+    auto decoded = std::make_shared<gg::SampleBuffer>(2, 441, 44100.0);
+    const gg::media::PoolKey wrong{std::string(64, 'c'), 1764, 96000.0};
+    REQUIRE_THROWS_AS(gg::media::prepare(decoded, 48000.0, nullptr, &wrong), std::invalid_argument);
+    REQUIRE(gg::media::SamplePool::process().alive() == 0);
+    const gg::media::PoolKey right{std::string(64, 'c'), 1764, 48000.0};
+    REQUIRE(gg::media::prepare(decoded, 48000.0, nullptr, &right) != nullptr);
+    gg::media::SamplePool::process().clear();
+}

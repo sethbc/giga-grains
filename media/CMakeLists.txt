@@ -9,12 +9,15 @@
 # (gg/media/MemoryBudget.h), the process's pool of shared sources (gg/media/SamplePool.h), the
 # search for a missing one (gg/media/Search.h), the per-machine settings file
 # (gg/media/SettingsFile.h) and the float32 WAV bytes of embedded and filed captures
-# (gg/media/WavBytes.h). Shared by the plugins' loader and the tools; never on the audio thread.
+# (gg/media/WavBytes.h), a ring as such a file and back (gg/media/RingAudio.h) and collect and
+# save (gg/media/Collect.h). Shared by the plugins' loader and the tools; never on the audio thread.
 
 add_library(gg-media STATIC
+        src/Collect.cpp
         src/Convert.cpp
         src/Decode.cpp
         src/MemoryBudget.cpp
+        src/RingAudio.cpp
         src/Sample.cpp
         src/SamplePool.cpp
         src/Search.cpp

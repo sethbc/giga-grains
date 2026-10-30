@@ -4,6 +4,7 @@
 
 #include "gg/media/Sample.h"
 
+#include <bit>
 #include <cmath>
 #include <optional>
 #include <stdexcept>
@@ -122,6 +123,10 @@ std::shared_ptr<const PreparedSource> prepare(std::shared_ptr<SampleBuffer> deco
     }
     if (share != nullptr)
     {
+        if (std::bit_cast<uint64_t>(share->rate) != std::bit_cast<uint64_t>(rate))
+        {
+            throw std::invalid_argument("prepare: the key's rate must be the rate converted to");
+        }
         if (auto live = SamplePool::process().find(*share))
         {
             return live;
@@ -135,7 +140,9 @@ std::shared_ptr<const PreparedSource> prepare(std::shared_ptr<SampleBuffer> deco
     auto source = PreparedSource::make(std::move(converted));
     if (share != nullptr)
     {
-        SamplePool::process().insert(*share, source);
+        // Another loader may have built the same key meanwhile: the pool's source wins, ours is
+        // dropped, so every instance shares one.
+        return SamplePool::process().insert(*share, source);
     }
     return source;
 }

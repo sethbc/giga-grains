@@ -42,10 +42,12 @@ add_executable(gg-tests
         engine/task_runner_tests.cpp
         engine/window_tests.cpp
         media/budget_tests.cpp
+        media/collect_tests.cpp
         media/convert_tests.cpp
         media/decode_memory_tests.cpp
         media/decode_tests.cpp
         media/pool_tests.cpp
+        media/ring_audio_tests.cpp
         media/sample_tests.cpp
         media/search_tests.cpp
         media/sha256_tests.cpp

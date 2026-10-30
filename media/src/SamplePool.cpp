@@ -39,18 +39,24 @@ std::shared_ptr<const PreparedSource> SamplePool::find(const PoolKey &key)
     return nullptr;
 }
 
-void SamplePool::insert(const PoolKey &key, const std::shared_ptr<const PreparedSource> &source)
+std::shared_ptr<const PreparedSource>
+SamplePool::insert(const PoolKey &key, const std::shared_ptr<const PreparedSource> &source)
 {
     const std::lock_guard lock(mutex_);
     for (Entry &e : entries_)
     {
         if (sameKey(e.key, key))
         {
+            if (auto live = e.source.lock())
+            {
+                return live;
+            }
             e.source = source;
-            return;
+            return source;
         }
     }
     entries_.push_back({key, source});
+    return source;
 }
 
 std::size_t SamplePool::alive() const

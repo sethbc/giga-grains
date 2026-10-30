@@ -41,9 +41,13 @@ class SamplePool
     /// The live source of `key`, or nullptr when none is alive. Prunes the entries whose
     /// source has gone.
     std::shared_ptr<const PreparedSource> find(const PoolKey &key);
-    /// Remembers `source` (weakly) under `key`, replacing any entry of the same key. Throws
-    /// std::bad_alloc if memory runs out.
-    void insert(const PoolKey &key, const std::shared_ptr<const PreparedSource> &source);
+    /// Remembers `source` (weakly) under `key` unless a live source already holds the key, and
+    /// returns the one the pool holds: `source` itself, or the live one it found, which is not
+    /// replaced. Find and insert are one step under one lock, so two loaders that both built a
+    /// source of one key end up sharing the first to arrive. An entry whose source has gone is
+    /// replaced. Throws std::bad_alloc if memory runs out.
+    std::shared_ptr<const PreparedSource>
+    insert(const PoolKey &key, const std::shared_ptr<const PreparedSource> &source);
     /// The entries whose source is alive (tests and diagnostics).
     std::size_t alive() const;
     /// Forgets every entry (tests).
