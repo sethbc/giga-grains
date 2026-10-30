@@ -43,13 +43,14 @@
 ///         <ring layer="B" frames="96000" rate="40e7700000000000" splices="12000 24000"
 ///         sha256="5d41…" size="768068" embed="1" audio="1" /></media>
 ///
-///   and `<media version="2" />` with none. The attributes are the entries' fields, in their
-///   order, `layer` its letter, A to D. A <sample> has version 1's attributes (below), then
-///   `content`, the content-relative path, and `audio`, its AUDI payload's id, written "0"
-///   unless `embed` is 1. A <ring> has no `channels` (a ring is stereo) and no `head` or `loop`
-///   (the layer's parameters carry them); `splices` is its marks in decimal, one space between
-///   each, "" with none; embedded (`embed="1"`) it has `audio` and no `path`, filed
-///   (`embed="0"`) it has `path` and no `audio`.
+///   and `<media version="2" />` with none. A <sample>'s attributes are `layer`, its letter (A
+///   to D), first, then version 1's attributes (below) in their order, then `content`, the
+///   content-relative path, and `audio`, its AUDI payload's id, written "0" unless `embed` is 1.
+///   A <ring>'s are RingEntry's fields in its order, `layer` its letter; it has no `channels` (a
+///   ring is stereo) and no `head` or `loop` (the layer's parameters carry them); `splices` is its
+///   marks in decimal, one space between each, "" with none; embedded (`embed="1"`) it has `audio`
+///   and no `path`, filed
+///   (`embed="0"`) it has `path` and no `audio`. A ring has at most kMaxSplices marks.
 ///   Version 1, which M1 and M2 sub-project 1 wrote, held zero or one <sample>, layer A's:
 ///
 ///       <media version="1"><sample sha256="e3b0…b855" size="1234" path="/Samples/a.wav"
@@ -151,12 +152,23 @@ struct SessionState
     /// The embedded payloads, ids unique and above 0. decodeState keeps those an entry names, in
     /// AUDI's order.
     std::vector<AudioPayload> audio;
+    /// Whether layer k's embedded sample or ring named a payload the AUDI chunk lacks (an older
+    /// build that kept a newer MEDI but not its AUDI saved it, say): decodeState then keeps the
+    /// entry, with its `audioId`, and sets this, so the layer can say its embedded audio is
+    /// missing, and the rest of the state loads. encodeState leaves such an entry out unless
+    /// `audio` holds its payload (ruling R9: the reference is lost, not the session).
+    std::array<bool, kLayers> sampleAudioMissing{};
+    std::array<bool, kLayers> ringAudioMissing{};
     /// The memory cap, kMemoryCapMinMiB to kMemoryCapMaxMiB (INST).
     uint32_t memoryCapMiB{kMemoryCapDefaultMiB};
     /// A manifest of a newer version than this build reads (its `version` above 2): the MEDI
     /// payload byte for byte, kept so that saving the session writes it back unchanged. The
     /// build can't read its entries, so `samples` and `rings` are then empty (INTENT §18).
     std::optional<std::string> newerMedia;
+    /// Beside a newer manifest, the AUDI payload byte for byte, unparsed (AUDI carries no version,
+    /// and a newer build's may be laid out otherwise), so that a save writes it back with
+    /// `newerMedia`, which may embed audio from it. Empty when the state had no AUDI.
+    std::optional<std::string> newerAudio;
     /// The mod matrix's routes (gg/core/ModMatrix.h), every slot empty by default. A state of
     /// patch version 1 (M1's) decodes with factoryRoutes(mode) (gg/core/PatchState.h).
     ModRoutes routes{};
@@ -170,7 +182,8 @@ struct SessionState
 bool isValidMediaEntry(const MediaEntry &entry) noexcept;
 
 /// Whether `entry` is a ring encodeState can write: `layer` below kLayers, `frames` not
-/// negative, `channels` 2, `splices` strictly ascending from 0 and below `frames`, `sha256Hex` 64
+/// negative, `channels` 2, `splices` at most kMaxSplices, strictly ascending from 0 and below
+/// `frames`, `sha256Hex` 64
 /// lowercase hex digits, and either `embed` with `audioId` above 0 and no path, or not `embed`
 /// with `audioId` 0 and a path holding no NUL byte. encodeState also needs an embedded entry's
 /// payload in `audio` and the entry in its own layer's slot. Every such entry decodes back equal
@@ -181,7 +194,9 @@ bool isValidRingEntry(const RingEntry &entry) noexcept;
 /// then INST. decodeState loads whatever it writes.
 /// - Each entry in `state.samples` and `state.rings` must be isValidMediaEntry or
 ///   isValidRingEntry, sit in its own layer's slot and, when embedded, name a payload in
-///   `state.audio`; each payload's id must be above 0 and unique. Debug builds assert all of it.
+///   `state.audio`; each payload's id must be above 0 and unique. Debug builds assert all of it,
+///   but for an embedded entry whose `sampleAudioMissing` or `ringAudioMissing` is set: one
+///   decodeState loaded without its payload, left out in every build.
 /// - In release builds, an entry or payload that isn't is left out, and the rest is written: a
 ///   state that fails to load would lose the whole session, where this loses one reference
 ///   (ruling R9). A payload no entry names is still written.
@@ -189,7 +204,8 @@ bool isValidRingEntry(const RingEntry &entry) noexcept;
 /// - With no sample and no ring, `state.newerMedia`, if any, is MEDI, byte for byte: the newer
 ///   manifest decodeState kept. Only one decodeState would keep again is written; any other is
 ///   left out, and MEDI is written empty. An entry takes its place: loading one replaces the
-///   manifest.
+///   manifest. With the newer manifest, `state.newerAudio`, if any, is AUDI, byte for byte, in
+///   place of `state.audio`'s payloads.
 std::string encodeState(const SessionState &state);
 
 /// Loads a session state into `mode`'s product. All or nothing; on false `out` is untouched.
@@ -213,12 +229,16 @@ std::string encodeState(const SessionState &state);
 ///     - Version 2 has at most one <sample> and one <ring> per layer, in any order, each with a
 ///       `layer` of A to D. A <sample> has version 1's attributes, `embed` 0 or 1, then
 ///       `content` and `audio` (0 unless `embed` is 1, and then above 0). A <ring> has `frames`
-///       (not negative), `rate`, `splices` (as written: strictly ascending, below `frames`),
+///       (not negative), `rate`, `splices` (as written: at most kMaxSplices, strictly
+///       ascending, below `frames`),
 ///       `sha256`, `size`, `embed` 0 or 1, and `audio` above 0 when embedded or `path` when not.
-///     - An embedded entry whose `audio` isn't among AUDI's payloads fails the state.
+///     - An embedded entry whose `audio` isn't among AUDI's payloads (or with no AUDI) still
+///       loads, with its `audioId`, and its layer's `sampleAudioMissing` or `ringAudioMissing`
+///       set; the rest of the state loads.
 ///     - A payload holding a NUL byte fails, PTCH's and INST's too.
 ///   - AUDI must be exactly its count's payloads, each id above 0 and unique; a payload no entry
-///     names is ignored (not kept in `out.audio`).
+///     names is ignored (not kept in `out.audio`). Beside a newer MEDI it isn't read at all:
+///     `out.newerAudio` keeps its bytes.
 ///   - INST must be well-formed XML whose only top-level node is an <instance> root with an
 ///     integer `version` from 1; a newer version is read the same way. Its `memoryCapMiB`, an
 ///     integer, is clamped to kMemoryCapMinMiB to kMemoryCapMaxMiB; absent or not an integer it
@@ -227,7 +247,8 @@ std::string encodeState(const SessionState &state);
 ///     reads it), or can't be read safely, before tinyxml parses it.
 ///   - A MEDI of a newer version, well-formed with its <media> root alone at the top level and
 ///     an integer `version` above this build's, loads with no sample and no ring: `out.newerMedia`
-///     keeps its bytes, so a save writes them back unchanged, and nothing inside <media> is read
+///     keeps its bytes (and `out.newerAudio` AUDI's), so a save writes them back unchanged, and
+///     nothing inside <media> is read
 ///     (the director's decision of 2026-10-28, INTENT §18). Where a newer PTCH migrates, a newer
 ///     MEDI can't: this build doesn't know what its sample needs. A future MEDI must still
 ///     pass the pre-scan above (at most 64 deep, no <? after the first node, quoted

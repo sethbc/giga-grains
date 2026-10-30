@@ -256,7 +256,10 @@ struct Decoded
         return bitsOf(state.values) == bitsOf(o.state.values) && state.seed == o.state.seed &&
                state.samples == o.state.samples && state.rings == o.state.rings &&
                state.audio == o.state.audio && state.memoryCapMiB == o.state.memoryCapMiB &&
-               state.newerMedia == o.state.newerMedia && sameRoutes(state.routes, o.state.routes) &&
+               state.sampleAudioMissing == o.state.sampleAudioMissing &&
+               state.ringAudioMissing == o.state.ringAudioMissing &&
+               state.newerMedia == o.state.newerMedia && state.newerAudio == o.state.newerAudio &&
+               sameRoutes(state.routes, o.state.routes) &&
                migratedFromVersion == o.migratedFromVersion;
     }
 };
@@ -288,7 +291,10 @@ Decoded distinct()
     d.state.rings[1] = r;
     d.state.audio = {{77, "distinct"}};
     d.state.memoryCapMiB = 4321;
+    d.state.sampleAudioMissing[2] = true;
+    d.state.ringAudioMissing[0] = true;
     d.state.newerMedia = "distinct";
+    d.state.newerAudio = "distinct";
     d.state.routes.fill({gg::core::ModSource::Step, 3, ParamSlot::Spray, 3, 0.5f,
                          gg::core::ModCurve::RampThreeQuarters});
     d.migratedFromVersion = 12345;
@@ -617,38 +623,61 @@ TEST_CASE("a newer MEDI loads the patch with no sample, and saves back unchanged
         R"(<media version="4"><ring layer="E" audio="0" /><sample layer="A" embed="1" )"
         R"(audio="99" /></media>)",
     };
+    // Beside it, no AUDI, an AUDI this build could read, and one it couldn't (a newer build's
+    // layout): AUDI carries no version, so beside a newer manifest it is kept unread and written
+    // back as it came (the controller's ruling (b)).
+    const std::vector<std::optional<std::string>> audis{
+        std::nullopt,
+        audioChunkPayload({{99, "a payload the newer manifest names"}, {3, ""}}),
+        std::string("a future layout\0\xff", 17),
+    };
     for (const std::string &medi : newer)
     {
-        INFO("MEDI '" << medi << "'");
-        const auto bytes = stateContainer(
-            {stateChunk("PTCH", ptch), stateChunk("MEDI", medi), stateChunk("INST", kDefaultInst)});
-        for (const Mode mode : {Mode::Instrument, Mode::Fx})
+        for (const auto &audi : audis)
         {
-            Decoded d = distinct();
-            REQUIRE(d.decode(bytes, mode));
-            // The patch applies; there is no sample, and the manifest is kept as it came.
-            CHECK(bitsOf(d.state.values) == bitsOf(s.values));
-            CHECK(d.state.seed == s.seed);
-            CHECK(noEntries(d.state));
-            REQUIRE(d.state.newerMedia.has_value());
-            CHECK(*d.state.newerMedia == medi);
-            CHECK(d.migratedFromVersion == 0u);
+            INFO("MEDI '" << medi << "'");
+            INFO("AUDI: " << (audi ? std::to_string(audi->size()) + " bytes" : "none"));
+            const auto bytes =
+                audi ? stateContainer({stateChunk("PTCH", ptch), stateChunk("MEDI", medi),
+                                       stateChunk("AUDI", *audi), stateChunk("INST", kDefaultInst)})
+                     : stateContainer({stateChunk("PTCH", ptch), stateChunk("MEDI", medi),
+                                       stateChunk("INST", kDefaultInst)});
+            for (const Mode mode : {Mode::Instrument, Mode::Fx})
+            {
+                Decoded d = distinct();
+                REQUIRE(d.decode(bytes, mode));
+                // The patch applies; there is no sample, and the manifest and its AUDI are kept
+                // as they came.
+                CHECK(bitsOf(d.state.values) == bitsOf(s.values));
+                CHECK(d.state.seed == s.seed);
+                CHECK(noEntries(d.state));
+                REQUIRE(d.state.newerMedia.has_value());
+                CHECK(*d.state.newerMedia == medi);
+                CHECK(d.state.newerAudio == audi);
+                CHECK(d.migratedFromVersion == 0u);
 
-            // Saving it writes the manifest's bytes back unchanged, and the same patch.
-            const auto saved = encodeState(d.state);
-            CHECK(stateChunkPayload(saved, "MEDI") == medi);
-            CHECK(stateChunkPayload(saved, "PTCH") == ptch);
-            CHECK(saved == bytes);
-            Decoded again = distinct();
-            REQUIRE(again.decode(saved, mode));
-            CHECK(again.state.newerMedia == d.state.newerMedia);
+                // Saving it writes the manifest's and AUDI's bytes back unchanged, and the same
+                // patch.
+                const auto saved = encodeState(d.state);
+                CHECK(stateChunkPayload(saved, "MEDI") == medi);
+                CHECK(stateChunkPayload(saved, "AUDI") == audi);
+                CHECK(stateChunkPayload(saved, "PTCH") == ptch);
+                CHECK(saved == bytes);
+                Decoded again = distinct();
+                REQUIRE(again.decode(saved, mode));
+                CHECK(again.state.newerMedia == d.state.newerMedia);
+                CHECK(again.state.newerAudio == d.state.newerAudio);
+            }
         }
     }
 
     SECTION("a sample or a ring loaded since replaces the newer manifest")
     {
+        // And its AUDI with it.
         Decoded d = distinct();
-        REQUIRE(d.decode(stateContainer({stateChunk("PTCH", ptch), stateChunk("MEDI", newer[1])})));
+        REQUIRE(d.decode(stateContainer({stateChunk("PTCH", ptch), stateChunk("MEDI", newer[1]),
+                                         stateChunk("AUDI", *audis[2])})));
+        REQUIRE(d.state.newerAudio == audis[2]);
         d.state.samples[0] = sampleEntry();
         CHECK(encodeState(d.state) == encodeState(someState(true)));
 
@@ -787,19 +816,38 @@ TEST_CASE("session state rejects bad state and writes nothing", "[core]")
     SECTION("truncated at every byte offset")
     {
         // A state with every chunk, the embedded entries naming AUDI's payloads. Cut just before
-        // INST, it is a whole state without one, which loads with the default memory cap.
+        // INST, it is a whole state without one, which loads with the default memory cap; cut
+        // just before AUDI, a whole state without either, whose embedded entries load with their
+        // audio missing.
         const auto full = encodeState(fullState());
         const auto inst = stateChunk("INST", *stateChunkPayload(full, "INST"));
-        REQUIRE(full.ends_with(inst));
+        const auto audi = stateChunk("AUDI", *stateChunkPayload(full, "AUDI"));
+        REQUIRE(full.ends_with(audi + inst));
         const std::size_t instAt = full.size() - inst.size();
+        const std::size_t audiAt = instAt - audi.size();
         for (std::size_t n = 0; n < full.size(); ++n)
         {
             INFO("cut at " << n << " of " << full.size());
-            if (n == instAt)
+            if (n == instAt || n == audiAt)
             {
                 REQUIRE(d.decode(std::string_view(full).substr(0, n)));
                 REQUIRE(d.state.memoryCapMiB == gg::core::kMemoryCapDefaultMiB);
-                REQUIRE(d.state.audio == fullState().audio);
+                REQUIRE(d.state.samples == fullState().samples);
+                REQUIRE(d.state.rings == fullState().rings);
+                if (n == instAt)
+                {
+                    REQUIRE(d.state.audio == fullState().audio);
+                    REQUIRE(d.state.sampleAudioMissing == std::array<bool, 4>{});
+                    REQUIRE(d.state.ringAudioMissing == std::array<bool, 4>{});
+                }
+                else
+                {
+                    REQUIRE(d.state.audio.empty());
+                    REQUIRE(d.state.sampleAudioMissing ==
+                            std::array<bool, 4>{false, false, true, true});
+                    REQUIRE(d.state.ringAudioMissing ==
+                            std::array<bool, 4>{true, false, true, false});
+                }
                 d = distinct();
                 continue;
             }
@@ -1559,9 +1607,12 @@ TEST_CASE("an embedded ring's payload comes back byte for byte", "[core]")
     CHECK(d.state.audio == s.audio);
 }
 
-TEST_CASE("an entry naming a missing payload fails the state", "[core]")
+TEST_CASE("an entry naming a missing payload loads with its audio missing", "[core]")
 {
-    // Review Focus 5: an embedded entry is its payload; without it the state isn't whole.
+    // Review Focus 5, the controller's ruling (a): an embedded entry whose payload isn't there
+    // (an older build that kept a newer MEDI but not its AUDI saved it, say) loads with its
+    // layer's audio marked missing, and the rest of the state loads; a save then leaves the entry
+    // out (R9), losing the reference, not the session.
     const auto ptch = *stateChunkPayload(encodeState(someState(false)), "PTCH");
     const std::string embeddedSample = sampleElement(edited(
         edited(kGoodSample2, R"(embed="0")", R"(embed="1")"), R"(audio="0")", R"(audio="5")"));
@@ -1569,29 +1620,86 @@ TEST_CASE("an entry naming a missing payload fails the state", "[core]")
     const auto audi = [](std::initializer_list<std::pair<uint32_t, std::string>> payloads) {
         return stateChunk("AUDI", audioChunkPayload(payloads));
     };
-    const Decoded before = distinct();
-    for (const auto &[what, bad] : std::initializer_list<std::pair<const char *, std::string>>{
-             {"a sample, no AUDI", stateContainer({stateChunk("PTCH", ptch),
-                                                   stateChunk("MEDI", media2(embeddedSample))})},
-             {"a sample, another payload",
+    using Flags = std::array<bool, gg::core::kLayers>;
+    struct Case
+    {
+        const char *what;
+        std::string state;
+        Flags sampleMissing;
+        Flags ringMissing;
+        std::vector<AudioPayload> audio;
+    };
+    for (const Case &c : std::initializer_list<Case>{
+             {"a sample, no AUDI",
+              stateContainer(
+                  {stateChunk("PTCH", ptch), stateChunk("MEDI", media2(embeddedSample))}),
+              {true, false, false, false},
+              {},
+              {}},
+             {"a sample, other payloads",
               stateContainer({stateChunk("PTCH", ptch), stateChunk("MEDI", media2(embeddedSample)),
-                              audi({{1, "x"}, {6, "y"}})})},
+                              audi({{1, "x"}, {6, "y"}})}),
+              {true, false, false, false},
+              {},
+              {}},
              {"a ring, no AUDI",
-              stateContainer({stateChunk("PTCH", ptch), stateChunk("MEDI", media2(ring))})},
+              stateContainer({stateChunk("PTCH", ptch), stateChunk("MEDI", media2(ring))}),
+              {},
+              {false, true, false, false},
+              {}},
              {"a ring, an empty AUDI",
               stateContainer(
-                  {stateChunk("PTCH", ptch), stateChunk("MEDI", media2(ring)), audi({})})},
+                  {stateChunk("PTCH", ptch), stateChunk("MEDI", media2(ring)), audi({})}),
+              {},
+              {false, true, false, false},
+              {}},
              {"a ring found, a sample not",
               stateContainer({stateChunk("PTCH", ptch),
-                              stateChunk("MEDI", media2(embeddedSample + ring)),
-                              audi({{1, "x"}})})}})
+                              stateChunk("MEDI", media2(embeddedSample + ring)), audi({{1, "x"}})}),
+              {true, false, false, false},
+              {},
+              {{1, "x"}}},
+             {"a sample found, a ring not",
+              stateContainer({stateChunk("PTCH", ptch),
+                              stateChunk("MEDI", media2(embeddedSample + ring)), audi({{5, "s"}})}),
+              {},
+              {false, true, false, false},
+              {{5, "s"}}}})
     {
-        INFO(what);
+        INFO(c.what);
         Decoded d = distinct();
-        CHECK_FALSE(d.decode(bad));
-        CHECK(d.sameAs(before));
+        REQUIRE(d.decode(c.state));
+        CHECK(d.state.sampleAudioMissing == c.sampleMissing);
+        CHECK(d.state.ringAudioMissing == c.ringMissing);
+        CHECK(d.state.audio == c.audio);
+        // The entries load as written, ids and all; so does the patch.
+        const bool withSample = c.state.find("<sample ") != std::string::npos;
+        const bool withRing = c.state.find("<ring ") != std::string::npos;
+        CHECK(d.state.samples[0].has_value() == withSample);
+        CHECK(d.state.rings[1].has_value() == withRing);
+        if (withSample)
+        {
+            CHECK(d.state.samples[0]->embed);
+            CHECK(d.state.samples[0]->audioId == 5u);
+        }
+        if (withRing)
+        {
+            CHECK(d.state.rings[1]->audioId == 1u);
+        }
+        CHECK(d.state.seed == someState(false).seed);
+        CHECK(bitsOf(d.state.values) == bitsOf(someState(false).values));
+
+        // Saved, an entry whose audio is missing is left out (in every build: no assert), and one
+        // whose audio was found is kept with its payload.
+        Decoded again = distinct();
+        REQUIRE(again.decode(encodeState(d.state)));
+        CHECK(again.state.samples[0].has_value() == (withSample && !c.sampleMissing[0]));
+        CHECK(again.state.rings[1].has_value() == (withRing && !c.ringMissing[1]));
+        CHECK(again.state.sampleAudioMissing == Flags{});
+        CHECK(again.state.ringAudioMissing == Flags{});
+        CHECK(again.state.audio == c.audio);
     }
-    // With its payload, each loads.
+    // With its payload, each loads, nothing missing.
     Decoded d = distinct();
     REQUIRE(d.decode(
         stateContainer({stateChunk("PTCH", ptch), stateChunk("MEDI", media2(embeddedSample + ring)),
@@ -1599,6 +1707,8 @@ TEST_CASE("an entry naming a missing payload fails the state", "[core]")
     CHECK(d.state.samples[0]->audioId == 5u);
     CHECK(d.state.rings[1]->audioId == 1u);
     CHECK(d.state.audio == std::vector<AudioPayload>{{5, "s"}, {1, "r"}});
+    CHECK(d.state.sampleAudioMissing == Flags{});
+    CHECK(d.state.ringAudioMissing == Flags{});
 }
 
 TEST_CASE("an unreferenced payload is ignored", "[core]")
@@ -1826,7 +1936,6 @@ TEST_CASE("a malformed MEDI version 2 fails", "[core]")
              ring(R"(embed="1")", R"(embed="yes")"),
              ring(R"( audio="1")", ""),
              ring(R"(audio="1")", R"(audio="0")"),
-             ring(R"(audio="1")", R"(audio="2")"),                    // no such payload
              ring(R"(embed="1" audio="1")", R"(embed="0")"),          // filed, no path
              media2(ringElement(kGoodRing) + ringElement(kGoodRing)), // two in layer B
          })
@@ -1898,4 +2007,50 @@ TEST_CASE("a malformed INST fails", "[core]")
                                      stateChunk("INST", bad)})));
         CHECK(d.sameAs(before));
     }
+}
+
+TEST_CASE("a ring holds at most kMaxSplices marks", "[core]")
+{
+    // The engine's splices are a fixed array of kMaxSplices (32): more marks than that are
+    // malformed, as an unordered list is, in the entry and in MEDI.
+    STATIC_REQUIRE(gg::core::kMaxSplices == 32);
+    RingEntry ring = ringEntry(1, 0);
+    ring.splices.clear();
+    for (int64_t k = 0; k < 32; ++k)
+    {
+        ring.splices.push_back(k * 1000);
+    }
+    REQUIRE(isValidRingEntry(ring));
+    SessionState s = someState(false);
+    s.rings[1] = ring;
+    Decoded d = distinct();
+    REQUIRE(d.decode(encodeState(s)));
+    REQUIRE(d.state.rings[1].has_value());
+    CHECK(d.state.rings[1]->splices.size() == 32);
+
+    ring.splices.push_back(32 * 1000);
+    CHECK_FALSE(isValidRingEntry(ring));
+
+    // 33 marks in MEDI fail the state.
+    std::string marks;
+    for (int k = 0; k < 33; ++k)
+    {
+        marks += (k > 0 ? " " : "") + std::to_string(k);
+    }
+    const auto ptch = *stateChunkPayload(encodeState(someState(false)), "PTCH");
+    const auto with = [&](const std::string &splices) {
+        return stateContainer(
+            {stateChunk("PTCH", ptch),
+             stateChunk("MEDI", media2(ringElement(
+                                    edited(edited(kGoodRing, R"(frames="10")", R"(frames="100")"),
+                                           R"(splices="1 2")", R"(splices=")" + splices + "\"")))),
+             stateChunk("AUDI", audioChunkPayload({{1, "x"}}))});
+    };
+    const Decoded before = distinct();
+    d = distinct();
+    CHECK_FALSE(d.decode(with(marks)));
+    CHECK(d.sameAs(before));
+    marks.resize(marks.rfind(' ')); // 32
+    REQUIRE(d.decode(with(marks)));
+    CHECK(d.state.rings[1]->splices.size() == 32);
 }

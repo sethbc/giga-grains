@@ -283,7 +283,8 @@ std::optional<uint8_t> parseLayer(const char *s)
     return static_cast<uint8_t>(s[0] - 'A');
 }
 
-// The marks as splicesText writes them, strictly ascending and below `frames`, or nothing.
+// The marks as splicesText writes them, at most kMaxSplices, strictly ascending and below
+// `frames`, or nothing.
 std::optional<std::vector<int64_t>> parseSplices(const char *s, int64_t frames)
 {
     if (s == nullptr)
@@ -296,7 +297,8 @@ std::optional<std::vector<int64_t>> parseSplices(const char *s, int64_t frames)
     {
         const auto space = rest.find(' ');
         const auto mark = parseDecimal<int64_t>(rest.substr(0, space));
-        if (!mark || *mark < 0 || *mark >= frames || (!out.empty() && *mark <= out.back()))
+        if (!mark || *mark < 0 || *mark >= frames || (!out.empty() && *mark <= out.back()) ||
+            out.size() == kMaxSplices)
         {
             return std::nullopt;
         }
@@ -631,7 +633,7 @@ bool isValidMediaEntry(const MediaEntry &entry) noexcept
 bool isValidRingEntry(const RingEntry &entry) noexcept
 {
     if (entry.layer >= kLayers || entry.frames < 0 || entry.channels != 2 ||
-        !isSha256Hex(entry.sha256Hex))
+        entry.splices.size() > kMaxSplices || !isSha256Hex(entry.sha256Hex))
     {
         return false;
     }
@@ -675,7 +677,8 @@ std::string encodeState(const SessionState &state)
             anyEntry = true;
             const bool writable =
                 isValidMediaEntry(*e) && e->layer == k && (!e->embed || hasId(ids, e->audioId));
-            assert(writable);
+            // One decodeState loaded without its payload is left out in every build.
+            assert(writable || state.sampleAudioMissing[k]);
             samples[k] = writable ? &*e : nullptr;
         }
         if (const auto &r = state.rings[k])
@@ -683,15 +686,20 @@ std::string encodeState(const SessionState &state)
             anyEntry = true;
             const bool writable =
                 isValidRingEntry(*r) && r->layer == k && (!r->embed || hasId(ids, r->audioId));
-            assert(writable);
+            assert(writable || state.ringAudioMissing[k]);
             rings[k] = writable ? &*r : nullptr;
         }
     }
     const std::string patch = toStateXml(state.values, state.seed, state.routes);
-    // With no entry, a newer build's manifest goes back as it came (INTENT §18).
+    // With no entry, a newer build's manifest goes back as it came (INTENT §18), and the AUDI
+    // beside it, which it may embed audio from.
     const bool writeNewer = !anyEntry && state.newerMedia && isNewerMedia(*state.newerMedia);
     const std::string media = writeNewer ? *state.newerMedia : mediaXml(samples, rings);
-    const std::string audio = payloads.empty() ? std::string{} : audioChunk(payloads);
+    const bool newerAudio = writeNewer && state.newerAudio.has_value();
+    const bool writeAudio = newerAudio || !payloads.empty();
+    const std::string audio = newerAudio   ? *state.newerAudio
+                              : writeAudio ? audioChunk(payloads)
+                                           : std::string{};
     const std::string instance =
         instanceXml(std::clamp(state.memoryCapMiB, kMemoryCapMinMiB, kMemoryCapMaxMiB));
 
@@ -702,7 +710,7 @@ std::string encodeState(const SessionState &state)
     appendLittleEndian(out, kStateContainerVersion, 4);
     appendChunk(out, kPatchChunk, patch);
     appendChunk(out, kMediaChunk, media);
-    if (!payloads.empty())
+    if (writeAudio)
     {
         appendChunk(out, kAudioChunk, audio);
     }
@@ -769,33 +777,39 @@ bool decodeState(std::string_view bytes, Mode mode, SessionState &out,
                 *slot = payload;
             }
         }
-        std::vector<std::pair<uint32_t, std::string_view>> payloads;
         Manifest manifest;
         if (!patch || !media || patch->find('\0') != std::string_view::npos ||
-            (audio && !parseAudio(*audio, payloads)) ||
             (instance && !parseInstance(*instance, loaded.memoryCapMiB)) ||
             !parseMedia(*media, manifest))
         {
             return false;
         }
-        // Every embedded entry's payload must be there; those named are kept, in AUDI's order.
+        // Beside a newer manifest AUDI is kept unread: it carries no version, and a newer build's
+        // may be laid out otherwise.
+        std::vector<std::pair<uint32_t, std::string_view>> payloads;
+        if (audio && !manifest.newer && !parseAudio(*audio, payloads))
+        {
+            return false;
+        }
+        // An embedded entry whose payload isn't there loads, marked missing; those named and
+        // found are kept, in AUDI's order.
         std::vector<uint32_t> named;
         for (uint8_t k = 0; k < kLayers; ++k)
         {
             const auto &s = manifest.samples[k];
             const auto &r = manifest.rings[k];
-            for (const auto &[embedded, id] : {std::pair{s && s->embed, s ? s->audioId : 0u},
-                                               std::pair{r && r->embed, r ? r->audioId : 0u}})
+            const auto found = [&](uint32_t id) {
+                return std::ranges::any_of(payloads, [&](const auto &p) { return p.first == id; });
+            };
+            if (s && s->embed)
             {
-                if (!embedded)
-                {
-                    continue;
-                }
-                if (std::ranges::none_of(payloads, [&](const auto &p) { return p.first == id; }))
-                {
-                    return false;
-                }
-                named.push_back(id);
+                loaded.sampleAudioMissing[k] = !found(s->audioId);
+                named.push_back(s->audioId);
+            }
+            if (r && r->embed)
+            {
+                loaded.ringAudioMissing[k] = !found(r->audioId);
+                named.push_back(r->audioId);
             }
         }
         if (!fromStateXml(*patch, loaded.values, loaded.seed, loaded.routes, mode, &migrated))
@@ -814,6 +828,10 @@ bool decodeState(std::string_view bytes, Mode mode, SessionState &out,
         if (manifest.newer)
         {
             loaded.newerMedia.emplace(*media);
+            if (audio)
+            {
+                loaded.newerAudio.emplace(*audio);
+            }
         }
     }
 
