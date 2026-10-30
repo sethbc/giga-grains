@@ -26,7 +26,7 @@
 // - `reference`: renderHermiteSimd on that workload, frozen as the CPU gate's yardstick;
 // - the engine cases, each a gg::Engine at 48 kHz rendering one Cloud stream through
 //   Engine::process: engine-sample (X, the headline), engine-sample-eco (X at the Eco tier),
-//   engine-live and engine-full-pool;
+//   engine-live, engine-live-long (a 300 s ring, report-only) and engine-full-pool;
 // - the four-layer engine cases (M2 layers spec §6.12), report-only beside X: engine-layers,
 //   four such engines (layers 0 to 3) sharing X's grains, 500 each, rendered through a
 //   SerialRunner and summed in layer order; and engine-layers-full, the same with all of the

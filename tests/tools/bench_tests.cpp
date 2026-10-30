@@ -863,3 +863,26 @@ TEST_CASE("engine-layers admits its grains across four layers", "[bench]")
     // A one-layer case reports its one engine.
     CHECK(gg::bench::admittedTiers("engine-sample", 50, 64).activeGrains.size() == 1);
 }
+
+TEST_CASE("engine-live-long builds and admits its grains", "[bench][slow]")
+{
+    // The 300 s ring (spec §6.11), at quick's run length. 50 grains, not the default 2,000: the
+    // warm-up is 300 s of audio, and a Debug build would spend minutes on it at the default.
+    const gg::bench::Report report = gg::bench::run(
+        {.runSeconds = 0.2, .rounds = 1, .grains = 50, .cases = {"reference", "engine-live-long"}});
+    std::vector<uint32_t> blockSizes;
+    for (const gg::bench::CaseResult &r : report.results)
+    {
+        if (r.name != "engine-live-long")
+        {
+            continue;
+        }
+        INFO("block " << r.blockSize << ": " << r.grains << " grains");
+        CHECK(r.kind == "engine");
+        REQUIRE(r.nsPerGrainSample.size() == 1);
+        CHECK(r.nsPerGrainSample[0] > 0.0);
+        CHECK(r.grains > 45.0);
+        blockSizes.push_back(r.blockSize);
+    }
+    CHECK(blockSizes == std::vector<uint32_t>{32, 64, 256});
+}

@@ -18,15 +18,16 @@
 // for a quarter of a run.
 //
 // The engine cases (spec §5): engine-sample (X), engine-sample-eco (X at the Eco tier),
-// engine-live and engine-full-pool, then the four-layer cases engine-layers and
-// engine-layers-full (M2 layers spec §6.12, report-only). Each one-layer case owns a gg::Engine
-// (48 kHz, maxBlockSize 256, seeded with the bench seed) rendering one Cloud stream of
-// Options::grains overlapping grains of 100 ms (density grains / 0.1 Hz, periodic) at +7
-// semitones, stereo 1, over the same noise: in Sample mode the noise is the source; in Live mode
-// it is the input, fed block by block. The timed block is one Engine::process call. A
-// configuration's grain count is the mean of activeGrains() after each timed block, and a run's
-// ns per grain-sample is its time over the frames it rendered times that run's mean. Each warms
-// up for 2 grain durations of audio, engine-live for 16 s, so its ring is full.
+// engine-live, engine-live-long (a 300 s ring, report-only) and engine-full-pool, then the
+// four-layer cases engine-layers and engine-layers-full (M2 layers spec §6.12, report-only).
+// Each one-layer case owns a gg::Engine (48 kHz, maxBlockSize 256, seeded with the bench seed)
+// rendering one Cloud stream of Options::grains overlapping grains of 100 ms (density grains /
+// 0.1 Hz, periodic) at +7 semitones, stereo 1, over the same noise: in Sample mode the noise is
+// the source; in Live mode it is the input, fed block by block. The timed block is one
+// Engine::process call. A configuration's grain count is the mean of activeGrains() after each
+// timed block, and a run's ns per grain-sample is its time over the frames it rendered times that
+// run's mean. Each warms up for 2 grain durations of audio, engine-live for 16 s and
+// engine-live-long for 300 s, so its ring is full.
 //
 // A four-layer case owns four such engines, layers 0 to 3 (EngineConfig::layer, so each draws
 // its own schedule from the same seed), each with engine-sample's setup at its layer's grain
@@ -318,7 +319,7 @@ uint32_t layerGrains(const EngineCase &engineCase, uint32_t grains, uint32_t lay
 }
 
 /// The engine cases, in report order. Each is engine-sample with its own changes.
-constexpr std::array<EngineCase, 6> kEngineCases{{
+constexpr std::array<EngineCase, 7> kEngineCases{{
     {"engine-sample", engineSample},
     // X at the Eco tier: every grain reads with linear interpolation (ruling 2).
     {"engine-sample-eco",
@@ -336,6 +337,18 @@ constexpr std::array<EngineCase, 6> kEngineCases{{
          s.params.position = 4.0;
          s.params.spray = 8.0;
          s.warmUpSeconds = 16.0; // fills the ring
+         return s;
+     }},
+    // The same at the 300 s ring (spec §6.11): reads 150 s behind the head, spread over the
+    // whole ring by a 300 s spray, after a 300 s warm-up that fills it. Report-only.
+    {"engine-live-long",
+     [](uint32_t grains) {
+         EngineSetup s = engineSample(grains);
+         s.config.liveSeconds = 300.0;
+         s.mode = gg::SourceMode::Live;
+         s.params.position = 150.0;
+         s.params.spray = 300.0;
+         s.warmUpSeconds = 300.0; // fills the ring
          return s;
      }},
     // Admission under saturation: grains of 1 s at the same density ask for 10x the pool.
