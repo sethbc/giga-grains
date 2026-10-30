@@ -413,7 +413,8 @@ void Processor::setBases(const ParamValues &values) noexcept
     // onset it already has.)
     updateEffective();
     // Ruling FR-8 (INTENT §23 #40): Freeze arms from the loaded values alone, every layer alike.
-    // A layer whose loaded Freeze is off arms; one whose Freeze is on stays live until toggled.
+    // A layer whose loaded Freeze is off arms; one whose Freeze is on stays live until toggled if
+    // not yet armed (a fresh ring, or one since the last reset()), and freezes at once if armed.
     // The calls would arm a layer at an earlier slot's syncFreeze(), from its old value (layers B
     // to D at layer A's Freeze), and freeze an empty ring at a load.
     syncFreeze();

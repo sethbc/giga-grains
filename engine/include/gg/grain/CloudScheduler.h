@@ -203,8 +203,9 @@ class CloudScheduler
     /// Calls emit(const GrainDraw &) for every grain with onsetSample in
     /// [blockStart, blockStart + numFrames), in onset order. Blocks must be contiguous from the
     /// last reset(), starting at 0, but for one gap: Engine::process calls this only while its
-    /// layer is enabled, and re-enabling it forces an onset (Engine::setEnabled,
-    /// forceNextOnset), so the first block after a disabled gap starts where the engine resumes.
+    /// layer is enabled, and when its enable flag turns on (Engine::setEnabled only requests it)
+    /// Engine::process forces an onset (forceNextOnset), so the first block after a disabled gap
+    /// starts where the engine resumes.
     /// The forced onset moves the pending onset to that block's blockStart and forgets the last
     /// grain, so nothing is drawn for the gap and nothing is rescaled from before it. seed, layer
     /// and stream key the random draws.

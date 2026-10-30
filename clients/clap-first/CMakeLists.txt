@@ -177,4 +177,7 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU"
             set_property(TARGET ${product} APPEND PROPERTY LINK_DEPENDS "${gg_linux_exports}")
         endif ()
     endforeach ()
+else ()
+    message(STATUS "The products link libstdc++ dynamically (not Linux with GCC, or a sanitizer "
+            "build): no static libstdc++, no Linux export map")
 endif ()

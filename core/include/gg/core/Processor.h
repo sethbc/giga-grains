@@ -246,7 +246,8 @@ struct ControlEvent
 /// it on. Freeze is seen at the points where it reaches the engine: each call's first sample,
 /// each applied boundary, and a setBase() of a layer's Freeze or of Macro 6 (Macro Freeze, whose
 /// factory route adds to every layer's; params.flush), and once a state load (setBases) has set
-/// every value: a load arms from its loaded values alone, every layer alike (INTENT §23 #40).
+/// every value: a load arms from its loaded values alone, every layer alike, so a layer not yet
+/// armed whose loaded Freeze is on stays live until toggled (INTENT §23 #40).
 /// Construction and reset() disarm it, and the reset itself doesn't arm: after a reset (a VST3
 /// suspend, say), a Freeze turned on before audio flows stays live until it is toggled, while one
 /// that is off at the next call's first sample arms. Modulation that takes the effective Freeze
@@ -396,8 +397,9 @@ class Processor
     /// of setBase() on every slot in slot order, bases, effective values, ramps and engines
     /// alike, but the effective values are recomputed once, not once per slot. Freeze arms from
     /// the loaded values alone, every layer alike: a layer whose loaded Freeze is off arms, and
-    /// one whose Freeze is on stays live until toggled (INTENT §23 #40; ruling FR-8). Real-time
-    /// safe; call it between process() calls.
+    /// one whose Freeze is on stays live until toggled if not yet armed (a fresh ring, or one
+    /// since the last reset()), while one already armed freezes at once (INTENT §23 #40; ruling
+    /// FR-8). Real-time safe; call it between process() calls.
     void setBases(const ParamValues &values) noexcept;
 
     /// Sets every layer's engine seed (Engine::setSeed): the grains scheduled from the next

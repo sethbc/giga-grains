@@ -501,6 +501,7 @@ jobs:
             } >> "$GITHUB_STEP_SUMMARY"
             bad="$(printf '%s\n' "$versions" | grep -E "$too_new" || true)"
             if [[ -n "$bad" ]]; then
+              # $(echo $bad), unquoted: flatten lines.
               echo "::error::$name needs a libstdc++ newer than Ubuntu 22.04's: $(echo $bad)"
               status=1
             fi
