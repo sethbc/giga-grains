@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | **Draft for the programme manager's approval** (2026-10-30). The director's decisions D1–D8 (§8) are open; nothing is planned or built until they are answered. Written by the sub-project's worker session from the programme design's §6.4 and §7, which it realizes and does not reopen |
+| **Status** | **Approved by the programme manager 2026-10-30** against the programme design and INTENT, with three notes applied in place (§4, §6.3, §13): the named edits inside sub-projects 3's and 2's files are accepted as described, resolved at this sub-project's rebase with the `Field` numbers assigned then; the `isValidTarget` layer rule is sub-project 3's, found done after the rebase and only tested here; the §23 row takes the next free number at merge. **The director's decisions D1–D8, 2026-10-30,** relayed by the programme manager, are recorded in §8 and applied in §6: every recommended option (D1–D8 option 1). Written by the sub-project's worker session from the programme design's §6.4 and §7, which it realizes and does not reopen. Not yet built |
 | **Milestone** | M2 Giga (INTENT §20, §23 #64), sub-project 4 of 7; wave 2, with sub-projects 3 and 2, **merged third** |
 | **Spec authority** | `INTENT.md`, then `docs/superpowers/specs/2026-10-29-m2-programme-design.md` (its §6.4, §7 and §12 are this sub-project's charter). This document records how this sub-project implements them |
 | **Builds on** | M2 sub-project 1 as merged (`ab9f4e2`, PR #15; INTENT §23 #65): the four layers, the per-layer chain of §7.2, the Source-kind parameter with its enumeration (Spectral = 3 exists and falls back), the mod matrix, the reserved index block `0x..60`–`0x..7F`, the render tasks; M1's Space (`core/src/space/`, the diffuser, the soft limiter, the 32-sample grid) |
@@ -130,7 +130,11 @@ draw them are sub-project 6's (programme design §6.6).
   - `core/include/gg/core/ModMatrix.h`: `isValidTarget`'s layer rule, which today admits a layer
     parameter only below `LFO 1 Rate` (so that no modulator's control is a target) and must
     instead refuse the modulators' controls by name, or every wave-2 layer parameter is silently
-    dropped as a route; the new globals need no change;
+    dropped as a route. **Assigned to sub-project 3 by the programme manager (2026-10-30),** which
+    merges first: this sub-project finds it done after its rebase and only tests that its eight
+    layer parameters are admitted (§10); until the rebase its own branch carries the same
+    one-line change so its tests and goldens run, and drops it at the rebase. The new globals
+    need no change;
   - `engine/include/gg/core/MathDet.h` and `core/include/gg/core/ModSources.h`: `sineDet` moves
     into the engine, bit for bit (the Spectral source's phases need it; `ModSources` keeps using
     it from there).
@@ -350,8 +354,8 @@ octave, SIMD stereo.
 - **Mod targets.** The six filter parameters, Bus Split and Smear are per-layer targets like any
   layer parameter (by layer A's slot, on one layer or every layer); the stepped type is a target as
   Freeze is. `isValidTarget`'s layer rule changes from "below LFO 1 Rate" to "not a modulator's
-  control" (§4), which sub-projects 2's and 3's layer parameters need too. The new globals (§6.4,
-  §6.5) take no layer, as Mix and the reverb's do, and need no change there.
+  control", sub-project 3's change (§4), which this sub-project's routes rely on and test. The new
+  globals (§6.4, §6.5) take no layer, as Mix and the reverb's do, and need no change there.
 
 ### 6.4 The global delay (I23)
 
@@ -573,10 +577,14 @@ definition. The `reference` kernel and `Kernels.h` are untouched.
 ## 8. Decisions for the director
 
 Each a forced choice; the recommended option is first, with one line on what each costs. Nothing
-engineering-only is here (that is §9). The answers are recorded here and applied in §6 before the
-plan is written.
+engineering-only is here (that is §9).
 
-**D1. What the Spectral Smear source smears** (§6.2).
+**The director's answers, 2026-10-30, relayed by the programme manager:** every recommended
+option. D1 option 1, D2 option 1, D3 option 1, D4 option 1, D5 option 1, D6 option 1, D7 option 1,
+D8 option 1. Each is marked below and applied in §6 as written there (§6 was drafted around the
+recommended options; the alternatives' text in §6.1, §6.2 and §6.3 is now moot).
+
+**D1. What the Spectral Smear source smears** (§6.2). **Decided: option 1 (2026-10-30).**
 1. **The layer's sample when it holds one, otherwise its live ring:** in the instrument a sample
    (or the sidechain on a layer without one), in the FX the input (or a sample `gg-render` or a
    later loader gives the layer). *Cost:* what a Spectral layer smears changes when a sample is
@@ -587,7 +595,7 @@ plan is written.
    kinds' fallback. *Cost:* an FX layer can't smear a sample it holds, and an instrument layer
    can't smear its sidechain.
 
-**D2. Freeze on a Spectral layer** (§6.2).
+**D2. Freeze on a Spectral layer** (§6.2). **Decided: option 1 (2026-10-30).**
 1. **Freeze holds the material, not the smear:** the layer's ring freezes as on a Live layer, so
    the material under the window stands still while the smear keeps evolving with new phases: a
    spectral freeze; Position still scans the frozen material. *Cost:* a frozen Spectral layer never
@@ -595,7 +603,7 @@ plan is written.
 2. *Freeze also freezes the smear's own ring,* so the grains read a held 5 s of smear and the
    texture loops exactly. *Cost:* a 5 s loop becomes audible as a loop; the evolving smear stops.
 
-**D3. How grains are split across the two buses** (§6.3).
+**D3. How grains are split across the two buses** (§6.3). **Decided: option 1 (2026-10-30).**
 1. **By chance per grain:** Bus Split is the share of grains on bus 2, each grain's bus drawn from
    the counter RNG at spawn; 0 is M1's one bus. *Cost:* at 50% which bus a given grain takes is
    the seed's business, so two seeds filter a cloud differently.
@@ -605,7 +613,7 @@ plan is written.
 3. *By pan side:* grains panned left of a threshold (Bus Split) take bus 1, the rest bus 2.
    *Cost:* with Stereo at 0 every grain is centred and one bus is empty; the split follows Stereo.
 
-**D4. The bus filter's model** (§6.3).
+**D4. The bus filter's model** (§6.3). **Decided: option 1 (2026-10-30).**
 1. **A 12 dB/octave state-variable filter** (sst-filters' `CytomicSVF`): Off, Low-pass, High-pass,
    Band-pass, Notch, with Resonance; smooth under modulation, cheap (16 per instance), libm-free.
    *Cost:* a gentle slope; no self-oscillation or saturation character.
@@ -615,7 +623,7 @@ plan is written.
    four to eight times the cost, its tanh stages use libm (cross-platform last-bit differences, as
    Reverb 2), and a single model for every type.
 
-**D5. The limiter's stronger mode, "Peak"** (§6.5).
+**D5. The limiter's stronger mode, "Peak"** (§6.5). **Decided: option 1 (2026-10-30).**
 1. **A zero-lookahead peak limiter:** instant attack to the Ceiling, a Release time; no latency,
    plain arithmetic. *Cost:* a single-sample peak is clamped rather than anticipated, so a hard
    transient is flattened for that sample instead of ducked ahead of it.
@@ -625,7 +633,7 @@ plan is written.
    every mode, since VST3 and AU hosts restart the plugin on a latency change; every golden moves
    once; the FX's dry path would have to be delayed too.
 
-**D6. How Delay Time changes** (§6.4).
+**D6. How Delay Time changes** (§6.4). **Decided: option 1 (2026-10-30).**
 1. **It glides,** the read position moving toward the new time at no more than half a sample per
    sample (Space's Pre-delay rule), so a move bends pitch like tape and never clicks. *Cost:* a
    large jump takes up to twice its size to arrive, bending pitch meanwhile.
@@ -634,7 +642,7 @@ plan is written.
 3. *It jumps* at the next grid cell, as Reverb Size does. *Cost:* a click or glitch on every
    move, as Size's accepted artefact (row 217).
 
-**D7. Delay Feedback's top, and the instrument's tail** (§6.4, §6.5).
+**D7. Delay Feedback's top, and the instrument's tail** (§6.4, §6.5). **Decided: option 1 (2026-10-30).**
 1. **100%, the loop soft-clipped,** so the delay can hold a repeat forever, as Decay ∞ does; the
    instrument's reported tail stays its constant 122.5 s (R-T7a). *Cost:* a host that suspends an
    instrument after its reported tail cuts a held delay 122.5 s after the last note; the FX, whose
@@ -646,7 +654,7 @@ plan is written.
    about five minutes (a 95% loop at 2 s decays 60 dB in about 270 s), with the same suspension
    trade-off further out.
 
-**D8. How strong Smear is at 100%** (§6.1).
+**D8. How strong Smear is at 100%** (§6.1). **Decided: option 1 (2026-10-30).**
 1. **Full:** the overlap is raised toward 32, the jitter is ±half a grain's length, the detune
    ±50 cents. *Cost:* at Smear 1 a tonal source chorusses audibly (±50 cents), and the raised
    density costs CPU where the layer's own overlap was low (never above the 400 Hz ceiling).
@@ -869,8 +877,8 @@ questions, not open defects.
 - **§22:** the buses row resolved with the measurement and its figures (§6.10); two new rows,
   post-M2: a global DC blocker (nothing needs it yet), and Feedback into a Spectral layer's
   material.
-- **§23:** one row, numbered at the merge after sub-projects 3's and 2's rows, for D1–D8 with
-  their dates, the rulings made during the build, and the §9 calls that amend Part II (the
+- **§23:** one row, taking the next free number at the merge (the programme manager's note), for
+  D1–D8 with their dates, the rulings made during the build, and the §9 calls that amend Part II (the
   Spectral kind's Position, Spray, Freeze and Feedback rules; the limiter's Off default; the
   spectral ring's size; the Field numbering at the rebase).
 
