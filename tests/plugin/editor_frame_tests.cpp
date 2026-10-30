@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -20,7 +21,9 @@
 #include <catch2/catch_test_macros.hpp>
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <sst/jucegui/accessibility/KeyboardTraverser.h>
+#include <sst/jucegui/components/BaseStyles.h>
 #include <sst/jucegui/components/Knob.h>
+#include <sst/jucegui/style/StyleSheet.h>
 #include <sst/jucegui/data/Continuous.h>
 
 #include "GrainCanvas.h"
@@ -1008,4 +1011,181 @@ TEST_CASE("an undo while a gesture is open does nothing", "[plugin]")
     CHECK(stack->size() == 2);
     tick(*editor);
     CHECK(findDeep(*editor, "header.undo")->isEnabled());
+}
+
+// ---- Task 16b: what the committed snapshots showed -----------------------------------------
+
+namespace
+{
+/// WCAG's contrast ratio of two opaque colors.
+double contrast(juce::Colour a, juce::Colour b)
+{
+    const auto luminance = [](juce::Colour c) {
+        const auto lin = [](float v) {
+            return v <= 0.03928f ? v / 12.92 : std::pow((v + 0.055) / 1.055, 2.4);
+        };
+        return 0.2126 * lin(c.getFloatRed()) + 0.7152 * lin(c.getFloatGreen()) +
+               0.0722 * lin(c.getFloatBlue());
+    };
+    const double la = luminance(a), lb = luminance(b);
+    return (std::max(la, lb) + 0.05) / (std::min(la, lb) + 0.05);
+}
+} // namespace
+
+TEST_CASE("no control's label is elided or collides at 960 by 600", "[plugin]")
+{
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    for (const char *id : kProducts)
+    {
+        INFO(id);
+        gg::test::PluginUnderTest instance(id);
+        REQUIRE(instance.valid());
+        const auto editor = editorPluginOf(instance)->createEditor();
+        editor->setSize(960, 600);
+        for (const View view : kViews)
+        {
+            INFO(viewId(view));
+            REQUIRE(gg::ui::selectView(*editor, view));
+            tick(*editor);
+            std::vector<gg::ui::ParamControl *> controls;
+            collect(*viewOf(*editor, view), controls);
+            for (const gg::ui::ParamControl *control : controls)
+            {
+                if (!visibleIn(*control, *viewOf(*editor, view)))
+                {
+                    continue;
+                }
+                INFO(control->getComponentID() << " (" << control->getTitle() << ") shows \""
+                                               << control->shownLabel() << "\"");
+                CHECK(control->labelFits());
+            }
+        }
+    }
+}
+
+TEST_CASE("the route list's combo boxes hold their text", "[plugin]")
+{
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    gg::test::PluginUnderTest instance("org.sethbc.giga-grains-fx");
+    REQUIRE(instance.valid());
+    const auto editor = editorPluginOf(instance)->createEditor();
+    editor->setSize(960, 600);
+    REQUIRE(gg::ui::selectView(*editor, View::Mod));
+    tick(*editor);
+    juce::Component *routes = findDeep(*editor, "routes");
+    REQUIRE(routes != nullptr);
+    std::vector<juce::ComboBox *> combos;
+    collect(*routes, combos);
+    REQUIRE(combos.size() == 48 * 5);
+    for (juce::ComboBox *combo : combos)
+    {
+        const juce::Font font = combo->getLookAndFeel().getComboBoxFont(*combo);
+        // The text's room: the box less its arrow's and the label's own padding.
+        const float room = static_cast<float>(combo->getWidth()) - 17.0f - 6.0f;
+        for (int i = 0; i < combo->getNumItems(); ++i)
+        {
+            INFO(combo->getComponentID() << " item " << combo->getItemText(i));
+            CHECK(gg::ui::ParamControl::textWidth(font, combo->getItemText(i)) <= room);
+        }
+    }
+}
+
+TEST_CASE("the light theme reads: the strip column, the lanes' ground and the route list",
+          "[plugin]")
+{
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    ownSettings("frame-light-contrast");
+    gg::test::PluginUnderTest instance("org.sethbc.giga-grains-fx");
+    REQUIRE(instance.valid());
+    const auto editor = editorPluginOf(instance)->createEditor();
+    editor->setSize(960, 600);
+    for (const ThemeChoice theme : {ThemeChoice::Light, ThemeChoice::Dark})
+    {
+        INFO((theme == ThemeChoice::Light ? "light" : "dark"));
+        REQUIRE(gg::ui::setTheme(*editor, theme));
+        const auto &palette =
+            *(theme == ThemeChoice::Light ? &gg::ui::Palette::light() : &gg::ui::Palette::dark());
+        namespace style = sst::jucegui::style;
+        const auto sheet = style::StyleSheet::getBuiltInStyleSheet(
+            theme == ThemeChoice::Light ? style::StyleSheet::LIGHT : style::StyleSheet::DARK);
+        const juce::Colour labels =
+            sheet->getColour(sst::jucegui::components::base_styles::BaseLabel::styleClass,
+                             sst::jucegui::components::base_styles::BaseLabel::labelcolor);
+
+        // The strip column is chrome (the lanes are dark, D9; the cells beside them are not): its
+        // ground, which the canvas paints, reads against the controls' text and the palette's.
+        REQUIRE(gg::ui::selectView(*editor, View::Perform));
+        tick(*editor);
+        juce::Component *canvas = findDeep(*editor, "canvas");
+        REQUIRE(canvas != nullptr);
+        const juce::Image image =
+            canvas->createComponentSnapshot(canvas->getLocalBounds(), true, 1.0f);
+        const juce::Colour ground = image.getPixelAt(1, 200).withAlpha(1.0f);
+        CHECK(contrast(ground, labels) >= 4.5);
+        CHECK(contrast(ground, palette.text) >= 4.5);
+        // The lanes themselves stay dark in both (D9).
+        const juce::Colour lane = image.getPixelAt(canvas->getWidth() - 40, 3).withAlpha(1.0f);
+        CHECK(lane.getBrightness() < 0.25f);
+
+        // The Mod view's route list takes the theme: text on its boxes reads, and a light box is
+        // light.
+        REQUIRE(gg::ui::selectView(*editor, View::Mod));
+        tick(*editor);
+        std::vector<juce::ComboBox *> combos;
+        collect(*findDeep(*editor, "routes"), combos);
+        REQUIRE_FALSE(combos.empty());
+        for (const juce::ComboBox *combo : {combos.front(), combos.back()})
+        {
+            const auto colourOf = [combo](int id) { return combo->findColour(id).withAlpha(1.0f); };
+            const juce::Colour box = colourOf(juce::ComboBox::backgroundColourId);
+            CHECK(contrast(box, colourOf(juce::ComboBox::textColourId)) >= 4.5);
+            CHECK(contrast(box, palette.background) >= 1.0);
+            CHECK((box.getBrightness() > 0.5f) == (theme == ThemeChoice::Light));
+        }
+        std::vector<juce::Slider *> sliders;
+        collect(*findDeep(*editor, "routes"), sliders);
+        REQUIRE_FALSE(sliders.empty());
+        const juce::Slider *depth = sliders.front();
+        CHECK(contrast(depth->findColour(juce::Slider::textBoxBackgroundColourId).withAlpha(1.0f),
+                       depth->findColour(juce::Slider::textBoxTextColourId).withAlpha(1.0f)) >=
+              4.5);
+        CHECK((depth->findColour(juce::Slider::textBoxBackgroundColourId).getBrightness() > 0.5f) ==
+              (theme == ThemeChoice::Light));
+    }
+}
+
+TEST_CASE("a route added in slot 13 scrolls into the Mod view's list", "[plugin]")
+{
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    for (const char *id : kProducts)
+    {
+        INFO(id);
+        gg::test::PluginUnderTest instance(id);
+        REQUIRE(instance.valid());
+        auto *plugin = editorPluginOf(instance);
+        const auto editor = plugin->createEditor();
+        editor->setSize(960, 600);
+        REQUIRE(gg::ui::selectView(*editor, View::Mod));
+        tick(*editor);
+        const auto &context = plugin->editorContext();
+        juce::Component *routes = findDeep(*editor, "routes");
+        REQUIRE(routes != nullptr);
+        const auto visible = [routes](int slot) {
+            const juce::Component *row =
+                findDeep(*routes, "route." + juce::String(slot) + ".source");
+            REQUIRE(row != nullptr);
+            return routes->getLocalBounds().contains(
+                routes->getLocalArea(row->getParentComponent(), row->getBounds()));
+        };
+        gg::core::ModRoutes now = context.routes();
+        REQUIRE(now[12].source == gg::core::ModSource::None);
+        CHECK_FALSE(visible(13)); // below the fold, as it was
+        now[12].source = gg::core::ModSource::Lfo1;
+        now[12].target = ParamSlot::Pitch;
+        now[12].targetLayer = 0;
+        now[12].depth = 0.4f;
+        context.setRoutes(now);
+        tick(*editor);
+        CHECK(visible(13));
+    }
 }

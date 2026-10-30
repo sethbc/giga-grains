@@ -430,8 +430,11 @@ void GrainCanvas::paint(juce::Graphics &g)
     // The context knows the display's scale; the image follows it.
     scale_ = std::max(0.25f, g.getInternalContext().getPhysicalPixelScaleFactor());
     renderFrame();
-    // The header column is the layer strip's: only its ground is ours.
-    g.fillAll(pal.lane);
+    // The header column is the layer strip's, and chrome: its ground follows the theme (the
+    // strip's text is the theme's). The lanes beside it stay dark in both (D9).
+    g.fillAll(pal.background);
+    g.setColour(pal.lane);
+    g.fillRect(kLaneHeaderWidth, 0, std::max(0, getWidth() - kLaneHeaderWidth), getHeight());
     for (uint8_t layer = 0; layer < kLaneCount; ++layer)
     {
         drawLane(g, layer, pal);

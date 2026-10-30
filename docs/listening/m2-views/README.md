@@ -70,7 +70,8 @@ over the span given).
 
 ## The renders
 
-Every layer runs at **Level -6 dB**, the FX files at Mix 100% over a stereo sine sweep at amplitude
+Layer A runs at **Level -6 dB** in every file, and file 02's layer B does too; every other layer
+stays at its default, 0 dB. The FX files at Mix 100% over a stereo sine sweep at amplitude
 0.5, 110 Hz to 1760 Hz, as long as the file. The FX's Position is seconds behind the input, set by
 `16/255 * (2^(8p) - 1)`: 0.3 is 0.27 s, 0.45 is 0.70 s. Spray is `2/255 * (2^(8s) - 1)`: 0.3 is
 0.03 s, 0.6 is 0.21 s.

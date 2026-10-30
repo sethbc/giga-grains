@@ -81,6 +81,22 @@ class ParamControl final : public juce::Component, public juce::DragAndDropTarge
     /// The control's own value is inert; its rings are draggable.
     void setModMode(bool on);
 
+    /// The text drawn as the control's label, where the parameter's own name is too long for
+    /// its cell ("Rate" for "LFO 1 Rate" in the LFO 1 panel). The tooltip and the accessibility
+    /// name stay the full name. Empty restores the parameter's.
+    void setShownLabel(const juce::String &text);
+    juce::String shownLabel() const;
+    /// A slider's label and value, drawn over its track: off, a short slider carries neither
+    /// (the tooltip and the accessibility interface do).
+    void setSliderText(bool on);
+    /// The width of `text` set in `font`.
+    static float textWidth(const juce::Font &font, const juce::String &text);
+    /// The label as it is drawn, wrapped to the lines it gets.
+    juce::StringArray labelLines() const;
+    /// Whether the label (and, on a slider that draws them, its value) is drawn whole: each line
+    /// within the width it gets, in the lines it gets, clear of the control's track.
+    bool labelFits() const;
+
     /// A route's ring: its matrix slot (1 to 48), its depth as a fraction of the parameter's
     /// range (negative lowers), whether it swings both ways, and its source family's colour.
     struct Ring

@@ -109,9 +109,15 @@ LayerStrip::LayerStrip(const EditorContext &context, Layout layout)
             return control;
         };
         cell.on = make(gg::core::layerOnSlot(layer));
+        cell.on->setShownLabel(
+            "On"); // the cell is a letter and two toggles wide; the name is the tooltip's
         // A horizontal slider (spec §6.3), which fits a lane's height where a knob wouldn't.
         cell.level = std::make_unique<ParamControl>(context, gg::core::levelSlot(layer),
                                                     ParamControl::Kind::HSlider);
+        // The row has room for the track alone: no label and value over it (the tooltip and
+        // the accessibility name say which layer's level this is).
+        cell.level->setSliderText(false);
+        cell.level->setTooltip(cell.level->getTitle());
         addAndMakeVisible(*cell.level);
         cell.source = make(gg::core::layerSlot(LayerParam::Source, layer));
         cell.freeze = make(gg::core::layerSlot(LayerParam::Freeze, layer));

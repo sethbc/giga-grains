@@ -148,7 +148,12 @@ constexpr float kRingStroke = 2.0f;
 constexpr float kRingDragPx = 150.0f; ///< a full depth's vertical drag, as sst-jucegui's knobs
 constexpr float kDotSize = 6.0f;      ///< a toggle's or menu's route dot
 constexpr float kDotPitch = 8.0f;
-constexpr float kArcSweep = 0.8f; ///< sst-jucegui's knob arc: ±0.8π about the top
+constexpr float kLabelFontSize = 11.0f;
+constexpr int kLabelLines = 2; ///< a knob's label wraps into at most these
+constexpr int kLabelPad = 1;   ///< a knob's label's margin, each side
+constexpr float kToggleLabelPad = 4.0f;
+constexpr int kSliderTextHeight = 34; ///< a slider's height for its label and value over its track
+constexpr float kArcSweep = 0.8f;     ///< sst-jucegui's knob arc: ±0.8π about the top
 
 /// An arc's angle for a value in 0..1, as sst-jucegui's knob draws its own.
 float angleOf(float v01)
@@ -203,6 +208,8 @@ struct ParamControl::Impl
     std::unique_ptr<juce::Component> control;
     Inertia *inertia{nullptr};
 
+    juce::String shown; ///< the drawn label, when it isn't the parameter's
+    bool sliderText{true};
     bool modMode{false};
     bool dropEnabled{false};
     bool dropHover{false};
@@ -289,6 +296,10 @@ ParamControl::ParamControl(const EditorContext &context, ParamSlot slot, Kind ki
                          m.discrete.get(), m.value, m.inertia, m.modMode);
         break;
     }
+    if (auto *knob = dynamic_cast<jcmp::Knob *>(m.control.get()))
+    {
+        knob->setDrawLabel(false); // paintOverChildren draws it, across the whole cell
+    }
     addAndMakeVisible(*m.control);
 }
 
@@ -339,6 +350,109 @@ void ParamControl::setModMode(bool on)
     repaint();
 }
 
+void ParamControl::setShownLabel(const juce::String &text)
+{
+    Impl &m = *impl_;
+    const juce::String full = getTitle();
+    m.shown = text == full ? juce::String() : text;
+    if (auto *toggle = dynamic_cast<jcmp::ToggleButton *>(m.control.get()))
+    {
+        toggle->setLabel(shownLabel().toStdString());
+    }
+    // The full name stays in the hover text, unless an owner wrote its own.
+    if (m.shown.isNotEmpty() && tooltip().isEmpty())
+    {
+        setTooltip(full);
+    }
+    repaint();
+}
+
+juce::String ParamControl::shownLabel() const
+{
+    return impl_->shown.isNotEmpty() ? impl_->shown : getTitle();
+}
+
+void ParamControl::setSliderText(bool on)
+{
+    impl_->sliderText = on;
+    if (auto *slider = dynamic_cast<jcmp::HSlider *>(impl_->control.get()))
+    {
+        slider->setShowLabel(on);
+        slider->setShowValue(on);
+    }
+    repaint();
+}
+
+float ParamControl::textWidth(const juce::Font &font, const juce::String &text)
+{
+    juce::GlyphArrangement glyphs;
+    glyphs.addLineOfText(font, text, 0.0f, 0.0f);
+    return glyphs.getBoundingBox(0, -1, true).getWidth();
+}
+
+juce::StringArray ParamControl::labelLines() const
+{
+    const juce::String text = shownLabel();
+    if (impl_->kind != Kind::Knob)
+    {
+        return juce::StringArray{text};
+    }
+    // A knob's label wraps at its spaces, into at most two lines.
+    const juce::Font font{juce::FontOptions(kLabelFontSize)};
+    const float width = static_cast<float>(getWidth() - 2 * kLabelPad);
+    juce::StringArray lines;
+    juce::String line;
+    for (const juce::String &word : juce::StringArray::fromTokens(text, " ", ""))
+    {
+        const juce::String joined = line.isEmpty() ? word : line + " " + word;
+        if (line.isNotEmpty() && textWidth(font, joined) > width)
+        {
+            lines.add(line);
+            line = word;
+        }
+        else
+        {
+            line = joined;
+        }
+    }
+    lines.add(line);
+    return lines;
+}
+
+bool ParamControl::labelFits() const
+{
+    const Impl &m = *impl_;
+    const juce::Font font{juce::FontOptions(kLabelFontSize)};
+    const auto widest = [&font](const juce::StringArray &lines) {
+        float w = 0.0f;
+        for (const auto &line : lines)
+        {
+            w = std::max(w, textWidth(font, line));
+        }
+        return w;
+    };
+    switch (m.kind)
+    {
+    case Kind::Knob:
+    {
+        const auto lines = labelLines();
+        return lines.size() <= kLabelLines &&
+               widest(lines) <= static_cast<float>(getWidth() - 2 * kLabelPad);
+    }
+    case Kind::Toggle:
+        return widest(labelLines()) + 2.0f * kToggleLabelPad <= static_cast<float>(getWidth());
+    case Kind::VSlider: // draws no text
+        break;
+    case Kind::HSlider:
+        return !m.sliderText ||
+               (getHeight() >= kSliderTextHeight &&
+                widest({shownLabel(), shownText()}) <= static_cast<float>(getWidth()));
+    case Kind::Menu:
+        break;
+    }
+    return true;
+}
+
 void ParamControl::setRings(std::vector<Ring> rings)
 {
     impl_->rings = std::move(rings);
@@ -387,6 +501,23 @@ void ParamControl::paintOverChildren(juce::Graphics &g)
         g.drawRoundedRectangle(getLocalBounds().toFloat().reduced(1.0f), 4.0f, 2.0f);
     }
     const auto circle = m.knobCircle();
+    if (m.kind == Kind::Knob && m.control != nullptr)
+    {
+        // The label under the circle, in the cell's whole width (the sst knob's own is as wide
+        // as the circle), in one or two lines.
+        const auto lines = labelLines();
+        const int top = m.control->getY() + m.control->getWidth();
+        const int lineH = static_cast<int>(kLabelFontSize) + 3;
+        g.setColour(paletteOf(*this).text);
+        g.setFont(juce::FontOptions(kLabelFontSize));
+        for (int i = 0; i < lines.size() && i < kLabelLines; ++i)
+        {
+            g.drawText(
+                lines[i],
+                juce::Rectangle<int>(kLabelPad, top + i * lineH, getWidth() - 2 * kLabelPad, lineH),
+                juce::Justification::centred);
+        }
+    }
     if (circle.isEmpty())
     {
         // No arc to draw on: one dot per route, right to left from the top right corner.

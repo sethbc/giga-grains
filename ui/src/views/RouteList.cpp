@@ -29,7 +29,9 @@ using gg::core::ModRoute;
 using gg::core::ModRoutes;
 using gg::core::ParamSlot;
 
-constexpr int kRowH = 70, kLineH = 20, kPad = 4;
+constexpr int kRowH = 96, kLineH = 20, kPad = 4;
+constexpr float kBoxFontSize = 12.0f; ///< the boxes' text: the 240 px list is narrow
+constexpr int kArrowW = 16;           ///< a combo box's arrow zone
 constexpr int kNoTarget = static_cast<int>(gg::core::kParamCount) + 1; ///< the "—" target's id
 
 const juce::String kEmpty = juce::String::fromUTF8("\xe2\x80\x94"); // an em dash
@@ -49,6 +51,22 @@ juce::String targetName(ParamSlot slot, gg::core::Mode mode)
     return juce::String::fromUTF8(name.c_str());
 }
 
+/// A curve's name as the list shows it: the saved CamelCase one with spaces ("Unipolar Squared").
+juce::String curveText(gg::core::ModCurve curve)
+{
+    const juce::String saved(gg::core::modCurveName(curve));
+    juce::String text;
+    for (int i = 0; i < saved.length(); ++i)
+    {
+        if (i > 0 && juce::CharacterFunctions::isUpperCase(saved[i]))
+        {
+            text << ' ';
+        }
+        text << saved[i];
+    }
+    return text;
+}
+
 /// The depth slider's range: the target's span either way, 1 for none.
 double depthRange(ParamSlot target, gg::core::Mode mode)
 {
@@ -60,6 +78,47 @@ double depthRange(ParamSlot target, gg::core::Mode mode)
     const double range = static_cast<double>(meta.maxVal) - static_cast<double>(meta.minVal);
     return range > 0.0 && std::isfinite(range) ? range : 1.0;
 }
+
+/// The list's boxes: a smaller font than JUCE's default and a narrower arrow, so that the 240 px
+/// list's names fit whole.
+struct BoxLookAndFeel final : juce::LookAndFeel_V4
+{
+    juce::Font getComboBoxFont(juce::ComboBox &) override
+    {
+        return juce::Font(juce::FontOptions(kBoxFontSize));
+    }
+    juce::Font getPopupMenuFont() override
+    {
+        return juce::Font(juce::FontOptions(kBoxFontSize + 1.0f));
+    }
+
+    void positionComboBoxText(juce::ComboBox &box, juce::Label &label) override
+    {
+        label.setBounds(1, 1, box.getWidth() - kArrowW - 1, box.getHeight() - 2);
+        label.setFont(getComboBoxFont(box));
+    }
+
+    void drawComboBox(juce::Graphics &g, int width, int height, bool, int, int, int, int,
+                      juce::ComboBox &box) override
+    {
+        const auto bounds = juce::Rectangle<float>(0.0f, 0.0f, static_cast<float>(width),
+                                                   static_cast<float>(height));
+        g.setColour(box.findColour(juce::ComboBox::backgroundColourId));
+        g.fillRoundedRectangle(bounds, 3.0f);
+        g.setColour(box.findColour(juce::ComboBox::outlineColourId));
+        g.drawRoundedRectangle(bounds.reduced(0.5f), 3.0f, 1.0f);
+        const auto arrow =
+            juce::Rectangle<float>(static_cast<float>(width - kArrowW), 0.0f,
+                                   static_cast<float>(kArrowW), static_cast<float>(height))
+                .withSizeKeepingCentre(8.0f, 4.0f);
+        juce::Path path;
+        path.addTriangle(arrow.getX(), arrow.getY(), arrow.getRight(), arrow.getY(),
+                         arrow.getCentreX(), arrow.getBottom());
+        g.setColour(
+            box.findColour(juce::ComboBox::arrowColourId).withAlpha(box.isEnabled() ? 1.0f : 0.3f));
+        g.fillPath(path);
+    }
+};
 } // namespace
 
 struct RouteList::Impl
@@ -102,13 +161,20 @@ struct RouteList::Impl
             build(static_cast<uint8_t>(i + 1), *rows[i]);
         }
         content.setSize(240, static_cast<int>(rows.size()) * kRowH);
+        applyColours();
     }
 
     void build(uint8_t slot, Row &row)
     {
+        for (juce::ComboBox *box :
+             {&row.source, &row.sourceLayer, &row.target, &row.targetLayer, &row.curve})
+        {
+            box->setLookAndFeel(&boxLook);
+        }
         const juce::String id = "route." + juce::String(static_cast<int>(slot)) + ".";
         row.number.setText(juce::String(static_cast<int>(slot)), juce::dontSendNotification);
         row.number.setFont(juce::FontOptions(11.0f));
+        row.number.setBorderSize(juce::BorderSize<int>(0, 0, 0, 2)); // "13" in 18 px
         row.number.setJustificationType(juce::Justification::centredLeft);
         row.number.setInterceptsMouseClicks(false, false);
 
@@ -146,8 +212,7 @@ struct RouteList::Impl
         row.curve.setComponentID(id + "curve");
         for (int c = 0; c < static_cast<int>(gg::core::ModCurve::Count); ++c)
         {
-            row.curve.addItem(
-                juce::String(gg::core::modCurveName(static_cast<gg::core::ModCurve>(c))), c + 1);
+            row.curve.addItem(curveText(static_cast<gg::core::ModCurve>(c)), c + 1);
         }
 
         row.depth.setComponentID(id + "depth");
@@ -237,6 +302,58 @@ struct RouteList::Impl
         }
     }
 
+    ~Impl()
+    {
+        for (auto &row : rows)
+        {
+            for (juce::ComboBox *box :
+                 {&row->source, &row->sourceLayer, &row->target, &row->targetLayer, &row->curve})
+            {
+                box->setLookAndFeel(nullptr);
+            }
+            row->depth.setLookAndFeel(nullptr);
+            row->clear.setLookAndFeel(nullptr);
+        }
+    }
+
+    /// The boxes, the depth sliders and the clear buttons take the theme's colors (the editor's
+    /// palette, found above the list), so a light theme has no dark box in it.
+    void applyColours()
+    {
+        const Palette &pal = paletteOf(owner);
+        const juce::Colour box = pal.header, text = pal.text;
+        for (auto &row : rows)
+        {
+            for (juce::ComboBox *combo :
+                 {&row->source, &row->sourceLayer, &row->target, &row->targetLayer, &row->curve})
+            {
+                combo->setColour(juce::ComboBox::backgroundColourId, box);
+                combo->setColour(juce::ComboBox::textColourId, text);
+                combo->setColour(juce::ComboBox::outlineColourId, pal.outline);
+                combo->setColour(juce::ComboBox::arrowColourId, text);
+                combo->setColour(juce::ComboBox::focusedOutlineColourId, pal.accent);
+                combo->setColour(juce::PopupMenu::backgroundColourId, box);
+                combo->setColour(juce::PopupMenu::textColourId, text);
+                combo->setColour(juce::PopupMenu::highlightedBackgroundColourId,
+                                 pal.accent.withAlpha(0.35f));
+                combo->setColour(juce::PopupMenu::highlightedTextColourId, text);
+                combo->repaint();
+            }
+            row->number.setColour(juce::Label::textColourId, pal.dimText);
+            row->depth.setColour(juce::Slider::textBoxBackgroundColourId, box);
+            row->depth.setColour(juce::Slider::textBoxTextColourId, text);
+            row->depth.setColour(juce::Slider::textBoxOutlineColourId, pal.outline);
+            row->depth.setColour(juce::Slider::textBoxHighlightColourId,
+                                 pal.accent.withAlpha(0.35f));
+            row->depth.setColour(juce::Slider::backgroundColourId, pal.outline);
+            row->depth.setColour(juce::Slider::trackColourId, pal.accent);
+            row->depth.setColour(juce::Slider::thumbColourId, pal.accent);
+            row->clear.setColour(juce::TextButton::buttonColourId, box);
+            row->clear.setColour(juce::TextButton::textColourOffId, text);
+            row->clear.setColour(juce::TextButton::textColourOnId, text);
+        }
+    }
+
     ModRoutes routes() const { return context.routes ? context.routes() : ModRoutes{}; }
 
     /// Changes the matrix by `change`: one setRoutes, one undo entry.
@@ -266,6 +383,20 @@ struct RouteList::Impl
         if (shown && *shown == now)
         {
             return;
+        }
+        // A route that appeared since the last look (a drop, a redo, the host's patch) comes
+        // into view: the newest one, outlined.
+        uint8_t added = 0;
+        if (shown)
+        {
+            for (std::size_t i = 0; i < now.size(); ++i)
+            {
+                if (now[i].source != gg::core::ModSource::None &&
+                    (*shown)[i].source == gg::core::ModSource::None)
+                {
+                    added = static_cast<uint8_t>(i + 1);
+                }
+            }
         }
         shown = now;
         refreshing = true;
@@ -298,6 +429,10 @@ struct RouteList::Impl
             row.clear.setEnabled(active);
         }
         refreshing = false;
+        if (added != 0)
+        {
+            owner.select(added);
+        }
     }
 
     void layoutRows(int width)
@@ -309,16 +444,22 @@ struct RouteList::Impl
             Row &row = *rows[i];
             auto area = juce::Rectangle<int>(kPad, static_cast<int>(i) * kRowH + kPad, inner,
                                              kRowH - 2 * kPad);
+            // Four lines: the source and its layer; the target and its layer; the curve; the
+            // depth (its slider, its value).
             auto line1 = area.removeFromTop(kLineH);
             row.number.setBounds(line1.removeFromLeft(18));
             row.clear.setBounds(line1.removeFromRight(24));
-            row.sourceLayer.setBounds(line1.removeFromRight(52).reduced(1, 0));
+            row.sourceLayer.setBounds(line1.removeFromRight(56).reduced(1, 0));
             row.source.setBounds(line1.reduced(1, 0));
             area.removeFromTop(2);
             auto line2 = area.removeFromTop(kLineH);
-            row.curve.setBounds(line2.removeFromRight(86).reduced(1, 0));
-            row.targetLayer.setBounds(line2.removeFromRight(52).reduced(1, 0));
+            line2.removeFromLeft(18);
+            row.targetLayer.setBounds(line2.removeFromRight(56).reduced(1, 0));
             row.target.setBounds(line2.reduced(1, 0));
+            area.removeFromTop(2);
+            auto line3 = area.removeFromTop(kLineH);
+            line3.removeFromLeft(18);
+            row.curve.setBounds(line3.reduced(1, 0));
             area.removeFromTop(2);
             row.depth.setBounds(area.removeFromTop(kLineH));
         }
@@ -326,6 +467,7 @@ struct RouteList::Impl
 
     RouteList &owner;
     const EditorContext &context;
+    BoxLookAndFeel boxLook;
     juce::Viewport viewport;
     Content content;
     std::array<std::unique_ptr<Row>, gg::core::kModSlots> rows;
@@ -345,6 +487,10 @@ RouteList::RouteList(const EditorContext &context) : impl_(std::make_unique<Impl
 RouteList::~RouteList() = default;
 
 void RouteList::refresh() { impl_->refresh(); }
+
+void RouteList::parentHierarchyChanged() { impl_->applyColours(); }
+
+void RouteList::lookAndFeelChanged() { impl_->applyColours(); }
 
 void RouteList::select(uint8_t slot)
 {

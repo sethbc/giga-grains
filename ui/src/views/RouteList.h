@@ -38,6 +38,10 @@ class RouteList final : public juce::Component
     uint8_t selected() const noexcept;
 
     void resized() override;
+    /// The boxes' colors follow the editor's palette: found above the list, taken again at a theme
+    /// switch.
+    void parentHierarchyChanged() override;
+    void lookAndFeelChanged() override;
 
   private:
     struct Impl;

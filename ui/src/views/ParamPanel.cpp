@@ -34,6 +34,18 @@ constexpr int kStepW = 20, kStepH = kKnobH;
 // NamedPanel's content area is its bounds less 2 + 2 on each side and its 20 px header.
 constexpr int kPadW = 2 * (2 + 2), kPadH = 2 * (2 + 2) + 20;
 
+/// The label a control carries in its panel: the parameter's name less the panel's own title
+/// ("Rate" for "LFO 1 Rate" in LFO 1's panel, "Amount" for "Reverb Amount" in Reverb's), which
+/// the panel's header already says. A name that is only the title stays whole.
+juce::String shortLabel(const ParamControl &control, const char *panelTitle)
+{
+    const juce::String name = control.shownLabel();
+    const juce::String prefix = juce::String(panelTitle) + " ";
+    return name.startsWith(prefix) && name.length() > prefix.length()
+               ? name.substring(prefix.length())
+               : name;
+}
+
 bool isStep(ParamSlot slot)
 {
     const auto ref = gg::core::layerOf(slot);
@@ -44,7 +56,8 @@ bool isStep(ParamSlot slot)
 class Cell final : public juce::Component
 {
   public:
-    Cell(const EditorContext &context, ParamSlot slot, Kind kind, std::optional<ParamSlot> spread)
+    Cell(const EditorContext &context, ParamSlot slot, Kind kind, std::optional<ParamSlot> spread,
+         const char *panelTitle)
         : base_(std::make_unique<ParamControl>(context, slot, kind))
     {
         addAndMakeVisible(*base_);
@@ -52,6 +65,14 @@ class Cell final : public juce::Component
         {
             spread_ = std::make_unique<ParamControl>(context, *spread, Kind::Knob);
             addAndMakeVisible(*spread_);
+        }
+        for (ParamControl *control : {base_.get(), spread_.get()})
+        {
+            if (control != nullptr && control->getComponentID().isNotEmpty() &&
+                kind != Kind::VSlider)
+            {
+                control->setShownLabel(shortLabel(*control, panelTitle));
+            }
         }
         if (kind == Kind::Menu)
         {
@@ -155,7 +176,7 @@ struct ParamPanel::Impl
             const Kind kind = isStep(slot)
                                   ? Kind::VSlider
                                   : ParamControl::kindFor(gg::core::paramMeta(slot, context.mode));
-            auto cell = std::make_unique<Cell>(context, slot, kind, spread);
+            auto cell = std::make_unique<Cell>(context, slot, kind, spread, panelName(panel));
             Entry entry;
             entry.control = &cell->base();
             entry.spread = cell->spread();

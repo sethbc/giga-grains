@@ -3219,8 +3219,9 @@ TEST_CASE("the canvas paints four lanes, and again after a resize", "[plugin]")
     CHECK(litPixels(image, 1) > 0); // off, but drawn
     CHECK(litPixels(image, 2) > 0); // the hint
     CHECK(litPixels(image, 3) > 0); // the sample's outline
-    CHECK(image.getPixelAt(10, 10) == gg::ui::Palette::dark().lane); // the header column
-    image = paintInto(900, 403);                                     // the cached strips
+    CHECK(image.getPixelAt(10, 10) ==
+          gg::ui::Palette::dark().background); // the header column (chrome)
+    image = paintInto(900, 403);               // the cached strips
     CHECK(litPixels(image, 0) > 0);
     image = paintInto(900, 404); // lane tops move, heights may not
     CHECK(litPixels(image, 2) > 0);

@@ -20,6 +20,7 @@
 
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -97,9 +98,15 @@ bool parseSizes(const std::string &text, std::vector<Size> &out)
         const std::size_t comma = std::min(text.find(',', at), text.size());
         const std::string item = text.substr(at, comma - at);
         Size s{};
-        char tail = 0;
-        if (std::sscanf(item.c_str(), "%dx%d%c", &s.w, &s.h, &tail) != 2 || s.w < 1 || s.h < 1 ||
-            s.w > 8192 || s.h > 8192)
+        // "<w>x<h>", all of it: from_chars stops at the first character that isn't a digit.
+        const char *const end = item.data() + item.size();
+        const auto w = std::from_chars(item.data(), end, s.w);
+        if (w.ec != std::errc{} || w.ptr == end || *w.ptr != 'x')
+        {
+            return false;
+        }
+        const auto h = std::from_chars(w.ptr + 1, end, s.h);
+        if (h.ec != std::errc{} || h.ptr != end || s.w < 1 || s.h < 1 || s.w > 8192 || s.h > 8192)
         {
             return false;
         }
