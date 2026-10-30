@@ -15,9 +15,19 @@ namespace gg::core
 {
 namespace
 {
+/// The one reader of a ParamValues here: `slot` must be a parameter. ParamSlot::Count, which
+/// layerSlot, levelSlot and layerOnSlot return for a layer of kLayers or more, asserts, and in
+/// release builds reads the last slot rather than out of bounds, as Processor::base() does.
+float read(const ParamValues &v, ParamSlot slot) noexcept
+{
+    const auto i = static_cast<size_t>(slot);
+    assert(i < kParamCount);
+    return v[std::min(i, kParamCount - 1)];
+}
+
 double value(const ParamValues &v, ParamSlot slot) noexcept
 {
-    return static_cast<double>(v[static_cast<size_t>(slot)]);
+    return static_cast<double>(read(v, slot));
 }
 
 /// log2(10): dB × kLog2Of10 / 20 is log2 of the linear gain.
@@ -30,7 +40,7 @@ constexpr float kBelowOne = 0x1.fffffep-1f;
 SourceKind sourceKindOf(const ParamValues &effective, uint8_t layer) noexcept
 {
     assert(layer < kLayers);
-    const float v = effective[static_cast<size_t>(layerSlot(LayerParam::Source, layer))];
+    const float v = read(effective, layerSlot(LayerParam::Source, layer));
     // In range already (the Processor clamps every effective value); the clamp keeps a caller's
     // stray value an enumerator. floor(v + 0.5) is exact: the nearest integer, halves up.
     const float rounded = std::floor(std::clamp(v, 0.0f, 4.0f) + 0.5f);
@@ -90,7 +100,7 @@ CloudParams toCloudParams(const ParamValues &effective, Mode mode) noexcept
 WetParams toWetParams(const ParamValues &effective, Mode mode, uint8_t layer) noexcept
 {
     assert(layer < kLayers);
-    const auto at = [&effective](ParamSlot slot) { return effective[static_cast<size_t>(slot)]; };
+    const auto at = [&effective](ParamSlot slot) { return read(effective, slot); };
     const bool live = builtKind(sourceKindOf(effective, layer), mode) == SourceMode::Live;
     return {
         .levelGain =
@@ -109,24 +119,23 @@ WetParams toWetParams(const ParamValues &effective, Mode mode) noexcept
 float layerDiffusion(const ParamValues &effective, uint8_t layer) noexcept
 {
     assert(layer < kLayers);
-    return effective[static_cast<size_t>(layerSlot(LayerParam::Diffusion, layer))];
+    return read(effective, layerSlot(LayerParam::Diffusion, layer));
 }
 
 bool layerOn(const ParamValues &effective, uint8_t layer) noexcept
 {
     assert(layer < kLayers);
-    return effective[static_cast<size_t>(layerOnSlot(layer))] > 0.5f;
+    return read(effective, layerOnSlot(layer)) > 0.5f;
 }
 
 MorphParams toMorphParams(const ParamValues &effective) noexcept
 {
-    return {.x = effective[static_cast<size_t>(ParamSlot::MorphX)],
-            .y = effective[static_cast<size_t>(ParamSlot::MorphY)]};
+    return {.x = read(effective, ParamSlot::MorphX), .y = read(effective, ParamSlot::MorphY)};
 }
 
 SpaceParams toSpaceParams(const ParamValues &effective, Mode mode) noexcept
 {
-    const auto at = [&effective](ParamSlot slot) { return effective[static_cast<size_t>(slot)]; };
+    const auto at = [&effective](ParamSlot slot) { return read(effective, slot); };
     const float decay = at(ParamSlot::ReverbDecay);
     return {
         .diffusion = at(ParamSlot::Diffusion),
@@ -147,9 +156,7 @@ ParamValues macroOffsets(const ParamValues &effectiveMacros, Mode mode) noexcept
     // exactly 0, so are max(0, 0), 0/0.75, smoothstep below its edge and 0 × 0. +0 plus or minus
     // (±0) is +0, so a resting entry stays +0.0f.
     ParamValues o{};
-    const auto macro = [&effectiveMacros](ParamSlot slot) {
-        return effectiveMacros[static_cast<size_t>(slot)];
-    };
+    const auto macro = [&effectiveMacros](ParamSlot slot) { return read(effectiveMacros, slot); };
     const auto offset = [&o](ParamSlot slot) -> float & { return o[static_cast<size_t>(slot)]; };
     const auto bipolar = [](float v) { return 2.0f * v - 1.0f; };
 

@@ -16,6 +16,10 @@
 /// Each function takes the effective values, clamp(base + modulation + macro offsets), as the
 /// Processor holds them; macroOffsets gives the macros' share (sub-project 5's spec §3).
 ///
+/// **The layer argument.** Every layer-aware function takes `layer` below kLayers. A larger one
+/// asserts, and a release build reads the last parameter's slot rather than out of bounds (the
+/// slot helpers give ParamSlot::Count for it), as Processor::base() does for ParamSlot::Count.
+///
 /// Every value that reaches the grain-event log is plain IEEE arithmetic, exp2Det and std::sqrt
 /// (correctly rounded), never another libm call, so it is bit-identical on every platform
 /// (INTENT §14).
@@ -50,7 +54,7 @@ struct SpaceParams
 };
 
 /// Layer `layer`'s Source kind (M2 sub-project 1's spec §6.4): its Source value rounded to the
-/// nearest integer (halves up), 0 to 4. `layer` is below kLayers.
+/// nearest integer (halves up), 0 to 4. `layer` is below kLayers (asserted; the namespace's note).
 SourceKind sourceKindOf(const ParamValues &effective, uint8_t layer) noexcept;
 
 /// The source kind a layer of `kind` reads in `mode`'s product (spec §6.4): Sample and Live are
@@ -59,7 +63,7 @@ SourceKind sourceKindOf(const ParamValues &effective, uint8_t layer) noexcept;
 /// sub-projects 2 and 4 edit when their kinds arrive.
 SourceMode builtKind(SourceKind kind, Mode mode) noexcept;
 
-/// Layer `layer`'s Cloud stream controls (`layer` below kLayers), from its own slots
+/// Layer `layer`'s Cloud stream controls (`layer` below kLayers, asserted), from its own slots
 /// (layerSlot):
 /// - densityHz = exp2Det(Density);
 /// - distribution = Distribution;
@@ -82,19 +86,21 @@ CloudParams toCloudParams(const ParamValues &effective, Mode mode, uint8_t layer
 /// Sample in the instrument) it is M1's mapping, bit for bit.
 CloudParams toCloudParams(const ParamValues &effective, Mode mode) noexcept;
 
-/// Layer `layer`'s wet chain values, as WetParams documents (`layer` below kLayers): its Level
-/// (levelSlot: Level for layer A, Level B to D for the others), the global Mix, its Freeze and its
-/// Feedback, which is 0 unless the layer's built kind is Live.
+/// Layer `layer`'s wet chain values, as WetParams documents (`layer` below kLayers, asserted): its
+/// Level (levelSlot: Level for layer A, Level B to D for the others), the global Mix, its Freeze
+/// and its Feedback, which is 0 unless the layer's built kind is Live.
 WetParams toWetParams(const ParamValues &effective, Mode mode, uint8_t layer) noexcept;
 
 /// Layer A's: toWetParams(effective, mode, 0). At the products' default Source it is M1's: the
 /// instrument's Feedback is 0, as its layer A reads a sample.
 WetParams toWetParams(const ParamValues &effective, Mode mode) noexcept;
 
-/// Layer `layer`'s Diffusion, the diffuser's crossfade δ in [0, 1] (`layer` below kLayers).
+/// Layer `layer`'s Diffusion, the diffuser's crossfade δ in [0, 1] (`layer` below kLayers,
+/// asserted).
 float layerDiffusion(const ParamValues &effective, uint8_t layer) noexcept;
 
-/// Whether layer `layer`'s Layer On switch is on: its value above 0.5 (`layer` below kLayers).
+/// Whether layer `layer`'s Layer On switch is on: its value above 0.5 (`layer` below kLayers,
+/// asserted).
 bool layerOn(const ParamValues &effective, uint8_t layer) noexcept;
 
 /// The morph pad's position (spec §6.3), Morph X and Morph Y, each in [0, 1].
