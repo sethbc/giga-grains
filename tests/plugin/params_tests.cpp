@@ -303,7 +303,7 @@ TEST_CASE("plugin exposes every param", "[plugin]")
     const auto *params = plugin.params();
     REQUIRE(params != nullptr);
     REQUIRE(params->count(plugin.clap()) == kParamCount);
-    REQUIRE(params->count(plugin.clap()) == 218);
+    REQUIRE(params->count(plugin.clap()) == 258);
 
     for (uint32_t i = 0; i < kParamCount; ++i)
     {

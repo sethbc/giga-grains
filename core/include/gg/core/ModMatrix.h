@@ -129,7 +129,8 @@ constexpr bool isValidTarget(ParamSlot target) noexcept
     }
     if (const auto ref = layerOf(target))
     {
-        return ref->layer == 0 && ref->param < LayerParam::Lfo1Rate;
+        return ref->layer == 0 &&
+               !(ref->param >= LayerParam::Lfo1Rate && ref->param <= LayerParam::Step16);
     }
     return !perLayerGlobalLayer(target) || target == ParamSlot::Level ||
            target == ParamSlot::LayerAOn;

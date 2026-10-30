@@ -4,9 +4,10 @@
 
 // The patch: the slice's ten parameters (spec §4), Space's eight (sub-project 4's spec §6.5), the
 // Perform UI's ten (sub-project 5's spec §3.3, §4, §5) and M2's layers (M2 sub-project 1's spec
-// §6.9: 48 per layer, A to D, and nine globals; 218 in all), and their versioned XML state, through
-// gg-core's public API (gg/core/ParamIds.h, gg/core/PatchState.h) and its tinyxml-free internal
-// core/src/PatchXml.h, for each product's patch XML. This file never includes
+// §6.9: 48 per layer, A to D, and nine globals; 218 in all) with the Extremes' eight per layer
+// and eight globals (M2 sub-project 4's spec §6.7; 258 in all), and their versioned XML state,
+// through gg-core's public API (gg/core/ParamIds.h, gg/core/PatchState.h) and its tinyxml-free
+// internal core/src/PatchXml.h, for each product's patch XML. This file never includes
 // sst-plugininfra or tinyxml (ruling M1-l). The IDs, names, ranges and defaults are spelled out
 // literally, from Global Constraints' parameter table, so a change to gg/core/ParamIds.h or
 // ParamIds.cpp fails these tests. CLAP parameter IDs are frozen at the first public release and
@@ -289,8 +290,8 @@ std::string handState(std::string_view params, std::string_view version = "2",
 
 TEST_CASE("param ids, names, ranges and defaults are pinned", "[core]")
 {
-    STATIC_REQUIRE(kParamCount == 218);
-    STATIC_REQUIRE(std::is_same_v<ParamValues, std::array<float, 218>>);
+    STATIC_REQUIRE(kParamCount == 258);
+    STATIC_REQUIRE(std::is_same_v<ParamValues, std::array<float, 258>>);
     STATIC_REQUIRE(std::is_same_v<std::underlying_type_t<ParamSlot>, uint16_t>);
     STATIC_REQUIRE(std::is_same_v<decltype(gg::core::kFeedbackMax), const float>);
     STATIC_REQUIRE(gg::core::kFeedbackMax == 0.95f);
@@ -342,8 +343,8 @@ TEST_CASE("param ids, names, ranges and defaults are pinned", "[core]")
     }
 
     // The stepped parameters, and only they, are integers: the switches (each layer's Freeze,
-    // Macro Freeze, the Layer On switches) and the choices (each layer's Source, LFO shapes and
-    // Step Length).
+    // Macro Freeze, the Layer On switches, Delay Ping-pong) and the choices (each layer's Source,
+    // LFO shapes, Step Length and bus filter types, and Limiter Mode).
     for (const Mode mode : {Mode::Fx, Mode::Instrument})
     {
         size_t steppedCount = 0;
@@ -356,7 +357,7 @@ TEST_CASE("param ids, names, ranges and defaults are pinned", "[core]")
             CHECK((gg::core::paramMeta(slot, mode).type ==
                    sst::basic_blocks::params::ParamMetaData::INT) == stepped);
         }
-        CHECK(steppedCount == 4 * 5 + 1 + 4);
+        CHECK(steppedCount == 4 * 7 + 1 + 4 + 2);
     }
 
     // Each layer parameter's CLAP module names its layer; a global's is empty.
@@ -397,7 +398,7 @@ TEST_CASE("param ids, names, ranges and defaults are pinned", "[core]")
     // test.
     for (clap_id unknown : {0x000000u, 0x00000Au, 0x000010u, 0x000022u, 0x010000u, 0x010031u,
                             0x020000u, 0x020031u, 0x040031u, 0x050001u, 0x000040u, 0x01004Fu,
-                            0x030060u, 0x04007Fu, 0x777777u, CLAP_INVALID_ID})
+                            0x030068u, 0x04007Fu, 0x000068u, 0x777777u, CLAP_INVALID_ID})
     {
         INFO("id " << unknown);
         CHECK_FALSE(gg::core::slotForId(unknown).has_value());
@@ -435,15 +436,42 @@ TEST_CASE("the id table has the next free indices and the reserved blocks", "[co
     CHECK(maxLayerIndex + 1 == gg::core::kNextFreeLayerIndex);
     CHECK(maxGlobalIndex + 1 == gg::core::kNextFreeGlobalIndex);
 
+    // M2 sub-project 4's block (its spec §6.7): 0x60 to 0x67 are used in every scope, each the
+    // table's parameter, and 0x68 to 0x7F are free in every scope.
+    for (clap_id scope = 0; scope <= 4; ++scope)
+    {
+        for (clap_id index = 0x60; index <= 0x7F; ++index)
+        {
+            const clap_id id = scope << 16 | index;
+            INFO("id " << id);
+            const auto slot = gg::core::slotForId(id);
+            CHECK(slot.has_value() == (index <= 0x67));
+            if (slot)
+            {
+                CHECK(kTable[static_cast<size_t>(*slot)].id == id);
+            }
+        }
+    }
+
     // The helpers between a flat slot and (layer parameter, layer).
     using gg::core::LayerParam;
     using gg::core::LayerRef;
     STATIC_REQUIRE(gg::core::kLayers == 4);
-    STATIC_REQUIRE(gg::core::kLayerParamCount == 48);
+    STATIC_REQUIRE(gg::core::kLayerParamCount == 56);
     STATIC_REQUIRE(gg::core::layerParamIndex(LayerParam::Position) == 0x01u);
     STATIC_REQUIRE(gg::core::layerParamIndex(LayerParam::Diffusion) == 0x0Bu);
     STATIC_REQUIRE(gg::core::layerParamIndex(LayerParam::Source) == 0x0Cu);
     STATIC_REQUIRE(gg::core::layerParamIndex(LayerParam::Step16) == 0x30u);
+    STATIC_REQUIRE(gg::core::layerParamIndex(LayerParam::Smear) == 0x60u);
+    STATIC_REQUIRE(gg::core::layerParamIndex(LayerParam::Bus2Resonance) == 0x67u);
+    STATIC_REQUIRE(gg::core::slotForId(0x010060) == ParamSlot::Smear);
+    STATIC_REQUIRE(gg::core::slotForId(0x040067) == ParamSlot::D_Bus2Resonance);
+    STATIC_REQUIRE(gg::core::slotForId(0x000060) == ParamSlot::DelayAmount);
+    STATIC_REQUIRE(gg::core::slotForId(0x000067) == ParamSlot::LimiterRelease);
+    STATIC_REQUIRE(gg::core::layerSlot(LayerParam::Smear, 0) == ParamSlot::Smear);
+    STATIC_REQUIRE(gg::core::layerOf(ParamSlot::B_Bus1Cutoff) ==
+                   LayerRef{LayerParam::Bus1Cutoff, 1});
+    STATIC_REQUIRE(gg::core::layerOf(ParamSlot::DelayAmount) == std::nullopt);
     STATIC_REQUIRE(gg::core::slotForId(0x020001) == ParamSlot::B_Position);
     STATIC_REQUIRE(gg::core::layerOf(ParamSlot::D_Step16) == LayerRef{LayerParam::Step16, 3});
     STATIC_REQUIRE(gg::core::layerOf(ParamSlot::Feedback) == LayerRef{LayerParam::Feedback, 0});

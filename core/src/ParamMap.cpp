@@ -5,6 +5,7 @@
 #include "gg/core/ParamMap.h"
 
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <cmath>
 #include <cstddef>
@@ -222,6 +223,60 @@ StepParams stepParams(const ParamValues &effective, uint8_t layer) noexcept
         p.steps[i] = read(effective, layerSlot(step, layer));
     }
     return p;
+}
+
+float layerSmear(const ParamValues &effective, uint8_t layer) noexcept
+{
+    assert(layer < kLayers);
+    return read(effective, layerSlot(LayerParam::Smear, layer));
+}
+
+float layerBusSplit(const ParamValues &effective, uint8_t layer) noexcept
+{
+    assert(layer < kLayers);
+    return read(effective, layerSlot(LayerParam::BusSplit, layer));
+}
+
+BusParams busParams(const ParamValues &effective, uint8_t layer) noexcept
+{
+    assert(layer < kLayers);
+    static constexpr std::array<std::array<LayerParam, 3>, 2> kBusSlots{{
+        {LayerParam::Bus1Filter, LayerParam::Bus1Cutoff, LayerParam::Bus1Resonance},
+        {LayerParam::Bus2Filter, LayerParam::Bus2Cutoff, LayerParam::Bus2Resonance},
+    }};
+    BusParams p{};
+    for (size_t bus = 0; bus < kBusSlots.size(); ++bus)
+    {
+        const auto &slots = kBusSlots[bus];
+        p.type[bus] = static_cast<BusFilterType>(static_cast<uint8_t>(
+            roundedIn(read(effective, layerSlot(slots[0], layer)), 0.0f, 4.0f)));
+        p.cutoffHz[bus] = exp2Of(effective, layerSlot(slots[1], layer));
+        p.resonance[bus] = read(effective, layerSlot(slots[2], layer));
+    }
+    return p;
+}
+
+DelayParams delayParams(const ParamValues &effective) noexcept
+{
+    const auto at = [&effective](ParamSlot slot) { return read(effective, slot); };
+    return {
+        .amount = at(ParamSlot::DelayAmount),
+        .timeSeconds = exp2Of(effective, ParamSlot::DelayTime),
+        .feedback = at(ParamSlot::DelayFeedback),
+        .damping = at(ParamSlot::DelayDamping),
+        .pingPong = at(ParamSlot::DelayPingPong) > 0.5f,
+    };
+}
+
+LimiterParams limiterParams(const ParamValues &effective) noexcept
+{
+    return {
+        .mode = static_cast<LimiterMode>(
+            static_cast<uint8_t>(roundedIn(read(effective, ParamSlot::LimiterMode), 0.0f, 2.0f))),
+        .ceilingGain = static_cast<float>(
+            exp2Det(value(effective, ParamSlot::LimiterCeiling) * kLog2Of10 / 20.0)),
+        .releaseSeconds = exp2Of(effective, ParamSlot::LimiterRelease),
+    };
 }
 
 float softLimit(float x) noexcept

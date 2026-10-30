@@ -6,6 +6,7 @@
 #define GG_CORE_PARAMMAP_H
 
 #include <algorithm>
+#include <array>
 
 #include "gg/core/ModSources.h"
 #include "gg/core/ParamIds.h"
@@ -152,6 +153,55 @@ RandomParams randomParams(const ParamValues &effective, uint8_t layer, int which
 /// Layer `layer`'s step sequencer: the rate exp2Det(Step Rate) Hz, Step Length rounded to the
 /// nearest integer (halves up) and clamped to 1..16, and Step 1 to Step 16 as they are.
 StepParams stepParams(const ParamValues &effective, uint8_t layer) noexcept;
+
+/// Layer `layer`'s Smear (M2 sub-project 4's spec §6.1), as it is, in [0, 1] (`layer` below
+/// kLayers, asserted).
+float layerSmear(const ParamValues &effective, uint8_t layer) noexcept;
+
+/// Layer `layer`'s Bus Split (spec §6.3), the share of its grains on bus 2, as it is, in [0, 1]
+/// (`layer` below kLayers, asserted).
+float layerBusSplit(const ParamValues &effective, uint8_t layer) noexcept;
+
+/// A layer's two bus filters (spec §6.3), index 0 for bus 1 and 1 for bus 2.
+struct BusParams
+{
+    /// Bus N Filter rounded to the nearest integer (halves up, as sourceKindOf rounds), 0 to 4.
+    std::array<BusFilterType, 2> type;
+    /// Bus N Cutoff in Hz: exp2Det(slot), the slot being log2 Hz, 20 Hz to 20 kHz.
+    std::array<float, 2> cutoffHz;
+    /// Bus N Resonance, as it is, in [0, 1].
+    std::array<float, 2> resonance;
+};
+
+/// Layer `layer`'s bus filters, as BusParams documents (`layer` below kLayers, asserted).
+BusParams busParams(const ParamValues &effective, uint8_t layer) noexcept;
+
+/// What the global delay takes from the parameters (spec §6.4).
+struct DelayParams
+{
+    float amount;      ///< Delay Amount, the return's gain, in [0, 1].
+    float timeSeconds; ///< Delay Time in seconds: exp2Det(slot), the slot being log2 seconds.
+    float feedback;    ///< Delay Feedback, in [0, 1].
+    float damping;     ///< Delay Damping, in [0, 1].
+    bool pingPong;     ///< Delay Ping-pong is on above 0.5.
+};
+
+/// The delay's five parameters, as DelayParams documents.
+DelayParams delayParams(const ParamValues &effective) noexcept;
+
+/// What the global limiter takes from the parameters (spec §6.5).
+struct LimiterParams
+{
+    /// Limiter Mode rounded to the nearest integer (halves up), 0 to 2.
+    LimiterMode mode;
+    /// Limiter Ceiling as a linear gain: exp2Det(dB × log2(10) / 20), as Level's gain is made.
+    float ceilingGain;
+    /// Limiter Release in seconds: exp2Det(slot), the slot being log2 seconds.
+    float releaseSeconds;
+};
+
+/// The limiter's three parameters, as LimiterParams documents.
+LimiterParams limiterParams(const ParamValues &effective) noexcept;
 } // namespace gg::core
 
 #endif // GG_CORE_PARAMMAP_H

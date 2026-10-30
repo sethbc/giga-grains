@@ -776,6 +776,133 @@ TEST_CASE("the layer-aware maps read each layer's slots", "[core][layers]")
     }
 }
 
+TEST_CASE("bus, delay and limiter readers map their slots", "[core]")
+{
+    // M2 sub-project 4's spec §6.7: the Extremes' forty parameters as the chain will read them.
+    // Every exp2 is exp2Det's, bit for bit; the literal targets are checked within a tolerance.
+    using gg::core::BusFilterType;
+    using gg::core::LayerParam;
+    using gg::core::layerSlot;
+    using gg::core::LimiterMode;
+    const auto slotOf = [](LayerParam p, uint8_t layer) {
+        return static_cast<size_t>(layerSlot(p, layer));
+    };
+    const auto exp2Of = [](float v) { return static_cast<float>(gg::exp2Det(d(v))); };
+
+    SECTION("the defaults")
+    {
+        for (const Mode mode : {Mode::Fx, Mode::Instrument})
+        {
+            const ParamValues v = defaults(mode);
+            for (uint8_t layer = 0; layer < gg::core::kLayers; ++layer)
+            {
+                INFO("layer " << int{layer});
+                CHECK(gg::core::layerSmear(v, layer) == 0.0f);
+                CHECK(gg::core::layerBusSplit(v, layer) == 0.0f);
+                const gg::core::BusParams b = gg::core::busParams(v, layer);
+                for (size_t bus = 0; bus < 2; ++bus)
+                {
+                    CHECK(b.type[bus] == BusFilterType::Off);
+                    CHECK(b.cutoffHz[bus] == exp2Of(9.965784284662087f));
+                    CHECK_THAT(b.cutoffHz[bus], WithinRel(1000.0f, 1e-5f));
+                    CHECK(b.resonance[bus] == 0.0f);
+                }
+            }
+            const gg::core::DelayParams delay = gg::core::delayParams(v);
+            CHECK(delay.amount == 0.0f);
+            CHECK(delay.timeSeconds == exp2Of(-1.415037499278844f));
+            CHECK_THAT(delay.timeSeconds, WithinRel(0.375f, 1e-5f));
+            CHECK(delay.feedback == 0.4f);
+            CHECK(delay.damping == 0.3f);
+            CHECK_FALSE(delay.pingPong);
+            const gg::core::LimiterParams limiter = gg::core::limiterParams(v);
+            CHECK(limiter.mode == LimiterMode::Off);
+            CHECK(limiter.ceilingGain ==
+                  static_cast<float>(gg::exp2Det(-1.0 * 3.321928094887362 / 20.0)));
+            CHECK_THAT(limiter.ceilingGain, WithinRel(0.8912509f, 1e-6f));
+            CHECK(limiter.releaseSeconds == exp2Of(-3.321928094887362f));
+            CHECK_THAT(limiter.releaseSeconds, WithinRel(0.1f, 1e-5f));
+        }
+    }
+
+    SECTION("each layer's Smear, Bus Split and bus filters come from its own slots")
+    {
+        ParamValues v = defaults();
+        v[slotOf(LayerParam::Smear, 2)] = 0.3f;
+        v[slotOf(LayerParam::BusSplit, 2)] = 0.7f;
+        v[slotOf(LayerParam::Bus1Filter, 2)] = 1.0f;
+        v[slotOf(LayerParam::Bus1Cutoff, 2)] = 12.0f;
+        v[slotOf(LayerParam::Bus1Resonance, 2)] = 0.25f;
+        v[slotOf(LayerParam::Bus2Filter, 2)] = 3.0f;
+        v[slotOf(LayerParam::Bus2Cutoff, 2)] = 9.965784284662087f;
+        v[slotOf(LayerParam::Bus2Resonance, 2)] = 0.9f;
+        CHECK(gg::core::layerSmear(v, 2) == 0.3f);
+        CHECK(gg::core::layerBusSplit(v, 2) == 0.7f);
+        const gg::core::BusParams c = gg::core::busParams(v, 2);
+        CHECK(c.type[0] == BusFilterType::LowPass);
+        CHECK(c.cutoffHz[0] == exp2Of(12.0f));
+        CHECK(c.cutoffHz[0] == 4096.0f);
+        CHECK(c.resonance[0] == 0.25f);
+        CHECK(c.type[1] == BusFilterType::BandPass);
+        CHECK_THAT(c.cutoffHz[1], WithinRel(1000.0f, 1e-5f));
+        CHECK(c.resonance[1] == 0.9f);
+        // Layer A's are untouched by layer C's.
+        CHECK(gg::core::layerSmear(v, 0) == 0.0f);
+        CHECK(gg::core::layerBusSplit(v, 0) == 0.0f);
+        CHECK(gg::core::busParams(v, 0).type[0] == BusFilterType::Off);
+        CHECK(gg::core::busParams(v, 0).resonance[1] == 0.0f);
+    }
+
+    SECTION("the filter type rounds to the nearest kind, halves up")
+    {
+        ParamValues v = defaults();
+        const auto at = [&](float x) {
+            v[slotOf(LayerParam::Bus2Filter, 1)] = x;
+            return gg::core::busParams(v, 1).type[1];
+        };
+        CHECK(at(0.0f) == BusFilterType::Off);
+        CHECK(at(0.49f) == BusFilterType::Off);
+        CHECK(at(0.5f) == BusFilterType::LowPass);
+        CHECK(at(2.0f) == BusFilterType::HighPass);
+        CHECK(at(2.5f) == BusFilterType::BandPass);
+        CHECK(at(3.0f) == BusFilterType::BandPass);
+        CHECK(at(4.0f) == BusFilterType::Notch);
+    }
+
+    SECTION("the delay's and the limiter's globals")
+    {
+        ParamValues v = defaults();
+        v[static_cast<size_t>(ParamSlot::DelayAmount)] = 0.6f;
+        v[static_cast<size_t>(ParamSlot::DelayTime)] = -1.0f;
+        v[static_cast<size_t>(ParamSlot::DelayFeedback)] = 0.8f;
+        v[static_cast<size_t>(ParamSlot::DelayDamping)] = 0.1f;
+        v[static_cast<size_t>(ParamSlot::DelayPingPong)] = 1.0f;
+        v[static_cast<size_t>(ParamSlot::LimiterMode)] = 2.0f;
+        v[static_cast<size_t>(ParamSlot::LimiterCeiling)] = -6.0f;
+        v[static_cast<size_t>(ParamSlot::LimiterRelease)] = -1.0f;
+        const gg::core::DelayParams delay = gg::core::delayParams(v);
+        CHECK(delay.amount == 0.6f);
+        CHECK(delay.timeSeconds == 0.5f);
+        CHECK(delay.feedback == 0.8f);
+        CHECK(delay.damping == 0.1f);
+        CHECK(delay.pingPong);
+        const gg::core::LimiterParams limiter = gg::core::limiterParams(v);
+        CHECK(limiter.mode == LimiterMode::Peak);
+        CHECK(limiter.ceilingGain ==
+              static_cast<float>(gg::exp2Det(-6.0 * 3.321928094887362 / 20.0)));
+        CHECK(limiter.releaseSeconds == 0.5f);
+        // Ping-pong is on above 0.5; the mode rounds halves up.
+        v[static_cast<size_t>(ParamSlot::DelayPingPong)] = 0.5f;
+        CHECK_FALSE(gg::core::delayParams(v).pingPong);
+        v[static_cast<size_t>(ParamSlot::LimiterMode)] = 0.5f;
+        CHECK(gg::core::limiterParams(v).mode == LimiterMode::Soft);
+        v[static_cast<size_t>(ParamSlot::LimiterMode)] = 0.49f;
+        CHECK(gg::core::limiterParams(v).mode == LimiterMode::Off);
+        v[static_cast<size_t>(ParamSlot::LimiterCeiling)] = 0.0f;
+        CHECK(gg::core::limiterParams(v).ceilingGain == 1.0f);
+    }
+}
+
 TEST_CASE("soft limiter is continuous and bounded", "[core]")
 {
     constexpr float kBelowOne = 0x1.fffffep-1f; // the largest float below 1

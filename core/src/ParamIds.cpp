@@ -89,6 +89,30 @@ md_t lfoShape(LfoShape defaultShape)
         .withFlags(kAutomatableModulatable | CLAP_PARAM_IS_STEPPED);
 }
 
+// A grain bus's filter type, stepped 0..4 (BusFilterType), Off by default (M2 sub-project 4's spec
+// §6.3).
+md_t busFilterType()
+{
+    return fresh()
+        .asInt()
+        .withRange(0.f, 4.f)
+        .withDefault(0.0f)
+        .withUnorderedMapFormatting(
+            {{0, "Off"}, {1, "Low-pass"}, {2, "High-pass"}, {3, "Band-pass"}, {4, "Notch"}})
+        .withFlags(kAutomatableModulatable | CLAP_PARAM_IS_STEPPED);
+}
+
+// A grain bus's filter cutoff in log2 Hz: 20 Hz (4.321928...) to 20 kHz (14.287712...), 1 kHz
+// (9.965784...) by default, shown in Hz.
+md_t busCutoff()
+{
+    return fresh()
+        .asFloat()
+        .withRange(4.321928094887363f, 14.287712379549449f)
+        .withDefault(9.965784284662087f)
+        .withATwoToTheBFormatting(1.f, 1.f, "Hz");
+}
+
 // A layer parameter's metadata in `mode`'s product, the same in every layer, but for its ID and
 // name. The bounds and defaults are literals: none is computed with libm (INTENT §14).
 md_t layerMeta(LayerParam p, Mode mode)
@@ -236,6 +260,23 @@ md_t layerMeta(LayerParam p, Mode mode)
             .withDimensionlessFormatting()
             .withFlags(kAutomatableModulatable | CLAP_PARAM_IS_STEPPED);
 
+    // M2 sub-project 4's spec §6.7: Smear, the bus split and the buses' filters, 0..1 each but for
+    // the types and the cutoffs.
+    case LayerParam::Smear:
+        return fresh().asPercent().withDefault(0.0f);
+    case LayerParam::BusSplit:
+        // the share of the layer's grains on bus 2.
+        return fresh().asPercent().withDefault(0.0f);
+    case LayerParam::Bus1Filter:
+    case LayerParam::Bus2Filter:
+        return busFilterType();
+    case LayerParam::Bus1Cutoff:
+    case LayerParam::Bus2Cutoff:
+        return busCutoff();
+    case LayerParam::Bus1Resonance:
+    case LayerParam::Bus2Resonance:
+        return fresh().asPercent().withDefault(0.0f);
+
     default:
         break; // the steps, above; LayerParam::Count isn't a parameter
     }
@@ -359,6 +400,51 @@ std::array<md_t, kParamCount> buildTable(Mode mode)
                        .withDefault(layer == 0 ? 1.0f : 0.0f)
                        .withFlags(kAutomatableModulatable | CLAP_PARAM_IS_STEPPED);
     }
+
+    // The Extremes' globals (M2 sub-project 4's spec §6.7), the same in both products.
+    // The delay: its return's gain, 0..1.
+    at(ParamSlot::DelayAmount) =
+        base(ParamSlot::DelayAmount).withName("Delay Amount").asPercent().withDefault(0.0f);
+    // log2 seconds: 1 ms (-9.965784...) to 2 s (1), 375 ms (-1.415037...) by default, shown in ms
+    // below 1 s.
+    at(ParamSlot::DelayTime) =
+        base(ParamSlot::DelayTime)
+            .withName("Delay Time")
+            .asLog2SecondsRange(-9.965784284662087f, 1.f, -1.415037499278844f)
+            .withMilisecondsBelowOneSecond();
+    at(ParamSlot::DelayFeedback) =
+        base(ParamSlot::DelayFeedback).withName("Delay Feedback").asPercent().withDefault(0.4f);
+    at(ParamSlot::DelayDamping) =
+        base(ParamSlot::DelayDamping).withName("Delay Damping").asPercent().withDefault(0.3f);
+    // off (0) / on (1): ping-pong above 0.5.
+    at(ParamSlot::DelayPingPong) = base(ParamSlot::DelayPingPong)
+                                       .withName("Delay Ping-pong")
+                                       .asOnOffBool()
+                                       .withDefault(0.0f)
+                                       .withFlags(kAutomatableModulatable | CLAP_PARAM_IS_STEPPED);
+    // The limiter: its mode, stepped 0..2 (LimiterMode), Off by default.
+    at(ParamSlot::LimiterMode) =
+        base(ParamSlot::LimiterMode)
+            .withName("Limiter Mode")
+            .asInt()
+            .withRange(0.f, 2.f)
+            .withDefault(0.0f)
+            .withUnorderedMapFormatting({{0, "Off"}, {1, "Soft"}, {2, "Peak"}})
+            .withFlags(kAutomatableModulatable | CLAP_PARAM_IS_STEPPED);
+    // dB, -24 to 0, -1 dB by default.
+    at(ParamSlot::LimiterCeiling) = base(ParamSlot::LimiterCeiling)
+                                        .withName("Limiter Ceiling")
+                                        .asFloat()
+                                        .withRange(-24.f, 0.f)
+                                        .withDefault(-1.f)
+                                        .withLinearScaleFormatting("dB");
+    // log2 seconds: 10 ms (-6.643856...) to 1 s (0), 100 ms (-3.321928...) by default, shown in ms
+    // below 1 s.
+    at(ParamSlot::LimiterRelease) =
+        base(ParamSlot::LimiterRelease)
+            .withName("Limiter Release")
+            .asLog2SecondsRange(-6.643856189774724f, 0.f, -3.321928094887362f)
+            .withMilisecondsBelowOneSecond();
     return t;
 }
 } // namespace
