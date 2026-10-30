@@ -367,34 +367,51 @@ bool writeWholeFile(const std::filesystem::path &path, const std::string &bytes)
     return !out.fail();
 }
 
-/// The newest-first-to-oldest window a capture or a save reads from a layer's ring.
+/// The window a capture or a save reads from a layer's ring.
 struct RingWindow
 {
     int64_t start{0};           ///< The oldest frame, in ring time.
     int64_t frames{0};          ///< 0 when the ring is empty.
-    std::vector<int64_t> marks; ///< The layer's marks in storage, ascending, in ring time.
+    std::vector<int64_t> marks; ///< The marks inside the loop window, ascending, in ring time.
 };
 
-/// Layer `layer`'s ring as the main thread reads it between process() calls: the whole window
-/// (the newest min(head, N) frames), or, for `splice` above 0 with a mark in storage, the span of
-/// that splice (LiveSource's numbering: the marks still in storage, oldest first, the last
-/// mark's span running to the head).
-RingWindow ringWindow(const gg::core::Processor &processor, uint8_t layer, uint32_t splice)
+/// Layer `layer`'s ring as the main thread reads it between process() calls: the loop window
+/// (the newest min(L, N) frames while Loop is on, else min(head, N)), or, for `splice` above 0
+/// with a mark inside that window, the span of that splice (the marks inside it, oldest first;
+/// a splice past the count is the last, whose span runs to the head). A save passes splice 0.
+RingWindow ringWindow(const gg::core::Processor &processor, uint8_t layer, uint32_t splice,
+                      double sampleRate)
 {
     const gg::core::RingMeta meta = processor.ringMeta(layer);
     const gg::core::RingRead ring = processor.ringRead(layer);
     RingWindow w;
     const int64_t n = ring.storage != nullptr ? ring.storage->frames() : 0;
     const int64_t head = meta.head;
+    // The window: the newest min(L, N) frames while Loop is on (L the Loop Length base in frames,
+    // as the Processor hands it to LiveSource), else min(head, N). meta.windowFrames is not used:
+    // it follows the Splice selection too, which neither a save nor splice 0 does.
+    gg::core::ParamValues bases{};
+    for (std::size_t s = 0; s < gg::core::kParamCount; ++s)
+    {
+        bases[s] = processor.base(static_cast<gg::core::ParamSlot>(s));
+    }
+    const gg::core::RingParams ringParams = gg::core::toRingParams(bases, layer);
+    int64_t window = n;
+    if (ringParams.loop)
+    {
+        window = std::min(n, std::max<int64_t>(1, static_cast<int64_t>(std::llround(
+                                                      ringParams.loopSeconds * sampleRate))));
+    }
+    w.frames = std::min(head, window);
+    w.start = head - w.frames;
+    // The marks inside the window, ascending; splices count from the oldest of them.
     for (uint32_t k = 0; k < meta.spliceCount; ++k)
     {
-        if (meta.splices[k] >= head - n)
+        if (meta.splices[k] >= w.start && meta.splices[k] <= head)
         {
             w.marks.push_back(meta.splices[k]);
         }
     }
-    w.frames = std::min(head, n);
-    w.start = head - w.frames;
     if (splice > 0 && !w.marks.empty())
     {
         const std::size_t kept = w.marks.size();
@@ -478,7 +495,7 @@ void saveSession(const gg::core::Processor &processor, const RenderSpec &spec, u
         };
         if (base(gg::core::LayerParam::Freeze) >= 0.5f || base(gg::core::LayerParam::Loop) >= 0.5f)
         {
-            const RingWindow w = ringWindow(processor, layer, 0);
+            const RingWindow w = ringWindow(processor, layer, 0, spec.sampleRate);
             if (w.frames >= 1)
             {
                 const auto buffer = ringBuffer(processor, layer, w, spec.sampleRate);
@@ -617,6 +634,7 @@ gg::metrics::AudioData renderProcessor(const RenderSpec &spec, std::vector<std::
     const bool saving = !options.saveStatePath.empty();
     // A sample file's manifest entry, for a save: by content path when it lies in a content root
     // or the media directory, else by its absolute path.
+    // (A second decode of a file makeSample already loaded: makeSample keeps no manifest entry.)
     const auto fileEntry = [&](const std::string &path) {
         auto loaded = gg::media::loadSample(pathFromUtf8(path), settings, room());
         if (!loaded.decoded)
@@ -868,7 +886,7 @@ gg::metrics::AudioData renderProcessor(const RenderSpec &spec, std::vector<std::
 
     // A capture, between calls: the thread is the audio thread, so the ring can be read in place.
     const auto capture = [&](const OperationSpec &op) {
-        const RingWindow w = ringWindow(processor, op.layer, op.splice);
+        const RingWindow w = ringWindow(processor, op.layer, op.splice, spec.sampleRate);
         if (w.frames < 1)
         {
             throw BadInput(fmt::format("nothing to capture at {} s: layer {}'s ring is empty",

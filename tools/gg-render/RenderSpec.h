@@ -106,7 +106,10 @@
 ///   number from 64 to 16384; the state's, or 1024, without it) is the per-instance memory cap;
 ///   a ring or sample that would go past it is bad input (exit 2). A layer's Ring Length is set
 ///   before the render ("A Ring Length" in "params"; it can't be automated). "operations" are in
-///   time order; see OperationSpec. Sample mode takes none of these.
+///   time order; see OperationSpec. Sample mode takes none of these. gg-render's --save-state
+///   writes the session at the end: a built-in signal sample ("sine", "sweep", "noise") is not in
+///   it (there is no file to name), a file sample, a capture made into a layer and the rings of
+///   layers whose Freeze or Loop is on (their loop window, with the marks inside it) are.
 /// - Parameters (in "params", "automation" and a route's "target") are named as the product
 ///   displays them, so "B Size" is layer B's; a bare M1 name ("Size") is layer A's.
 /// - Any other key, including another mode's, is an error, so a misspelt key never silently
@@ -289,13 +292,15 @@ struct ControlSpec
 ///   takes "behind" (>= 0, at most kRingMaxSeconds; 0 by default) and no other optional key.
 /// - "clearSplices": removes every mark; takes no optional key.
 /// - "capture": reads the ring on the calling thread (the thread is the audio thread between
-///   calls, so there is no race): the whole ring ("splice" 0, the default: its newest frames,
-///   all of them once the ring has filled) or the span of splice `splice` (1 to 32, numbered as
-///   the Splice parameter numbers them), as a stereo buffer at the render's rate. "into", a layer
-///   letter, makes it that layer's sample (a layer reads it with its Source set to Sample); "file"
-///   writes it as a 32-bit float WAV (parent directories are made; the path is used as written,
-///   relative to the working directory). At least one of "into" and "file" is required. A capture
-///   of an empty ring is bad input.
+///   calls, so there is no race). The window is the layer's loop window: the newest min(L, N)
+///   frames while its Loop is on (L the Loop Length base), else the ring's newest min(head, N);
+///   "splice" 0 (the default) is all of it, and "splice" k (1 to 32) the span of the k-th mark
+///   inside the window, counted from the oldest (a k past the count is the last splice), as a
+///   stereo buffer at the render's rate. The Splice parameter's selection doesn't narrow it.
+///   "into", a layer letter, makes it that layer's sample (a layer reads it with its Source set to
+///   Sample); "file" writes it as a 32-bit float WAV (parent directories are made; the path is used
+///   as written, so a relative one is relative to the working directory, like -o, not to the spec).
+///   At least one of "into" and "file" is required. A capture of an empty ring is bad input.
 /// "layer" is a letter "A" to "D". "splice", "into" and "file" belong to "capture" alone and
 /// "behind" to "splice" alone, so a key that would go unread is an error.
 struct OperationSpec
@@ -441,11 +446,9 @@ std::optional<gg::core::ParamSlot> paramSlotNamed(std::string_view name);
 std::optional<RenderSpec> parseRenderSpec(const std::string &json, std::string &error);
 
 /// Makes the spec's relative file paths (a file source, sample, layer sample, input or state)
-/// relative to
-/// `baseDir`: baseDir / path, joined as std::filesystem paths. Absolute paths, and the empty path
-/// of a built-in signal, are kept. Every path is UTF-8. gg-render passes the spec's directory, or
-/// the
-/// --media-dir directory when it is given.
+/// relative to `baseDir`: baseDir / path, joined as std::filesystem paths. Absolute paths, and
+/// the empty path of a built-in signal, are kept. Every path is UTF-8. gg-render passes the
+/// spec's directory, or the --media-dir directory when it is given.
 /// Throws BadInput for a path that isn't valid UTF-8 (on Windows).
 void resolvePaths(RenderSpec &spec, const std::string &baseDir);
 

@@ -2369,36 +2369,97 @@ TEST_CASE("a ring operation render matches for any block size, capture included"
     const std::string dir = freshDirectory("ring-ops-blocks");
     auto j = ringFxJson(2.0);
     j["params"] = {{"B Source", 0}, {"Layer B On", 1}, {"A Ring Length", 3.0}};
+    // A capture at 0.3 s + 7 samples, off the 32-sample grid, and one at 1.0 s into layer B.
     j["operations"] = nlohmann::json::parse(R"([
         {"time": 0.3, "layer": "A", "op": "splice", "behind": 0.1},
         {"time": 0.7, "layer": "A", "op": "splice"},
         {"time": 1.0, "layer": "A", "op": "capture", "splice": 1, "into": "B"}])");
-    j["operations"][2]["file"] = dir + "/cap-" + "N" + ".wav";
+    j["operations"].insert(
+        j["operations"].begin() + 1,
+        nlohmann::json{{"time", 0.3 + 7.0 / 48000.0}, {"layer", "A"}, {"op", "capture"}});
     std::vector<float> reference;
     std::vector<float> capture;
+    std::vector<float> offGrid;
     for (const uint32_t blockSize : {128u, 1u, 77u, 1000u, 4096u})
     {
         auto k = j;
         k["blockSize"] = blockSize;
-        k["operations"][2]["file"] = dir + "/cap-" + std::to_string(blockSize) + ".wav";
+        const std::string tail = std::to_string(blockSize) + ".wav";
+        k["operations"][1]["file"] = dir + "/off-grid-" + tail;
+        k["operations"][3]["file"] = dir + "/cap-" + tail;
         const auto out = gg::render::render(parseJson(k), nullptr);
-        const auto cap = gg::metrics::readAudioFile(k["operations"][2]["file"].get<std::string>());
+        const auto cap = gg::metrics::readAudioFile(dir + "/cap-" + tail);
+        const auto off = gg::metrics::readAudioFile(dir + "/off-grid-" + tail);
         REQUIRE(cap.has_value());
+        REQUIRE(off.has_value());
         INFO("block size " << blockSize);
         if (reference.empty())
         {
             reference = out.channels[0];
             capture = cap->channels[0];
+            offGrid = off->channels[0];
             CHECK(capture.size() > 0);
+            CHECK(offGrid.size() == 14407);
         }
         CHECK(bitIdentical(out.channels[0], reference));
         CHECK(bitIdentical(cap->channels[0], capture));
+        CHECK(bitIdentical(off->channels[0], offGrid));
     }
     // The capture reached layer B: without it layer B is silent and the render differs.
     auto without = j;
     without["operations"] = nlohmann::json::array();
     CHECK_FALSE(
         bitIdentical(gg::render::render(parseJson(without), nullptr).channels[0], reference));
+}
+
+TEST_CASE("under Loop a capture and a save use the loop window, marks inside it", "[render]")
+{
+    const std::string dir = freshDirectory("ring-loop-window");
+    // Loop Length 2^-1 = 0.5 s = 24000 frames of a 3 s ring that has run 1.0 s. Marks on the
+    // grid at 0.3 s (outside the window [0.5 s, 1.0 s)), 0.6 s and 0.8 s (inside).
+    auto j = ringFxJson(1.0);
+    j["params"] = {{"A Ring Length", std::log2(3.0)}, {"A Loop", 1}, {"A Loop Length", -1.0}};
+    j["operations"] = nlohmann::json::parse(R"([
+        {"time": 0.3, "layer": "A", "op": "splice"},
+        {"time": 0.6, "layer": "A", "op": "splice"},
+        {"time": 0.8, "layer": "A", "op": "splice"},
+        {"time": 0.95, "layer": "A", "op": "capture", "splice": 0},
+        {"time": 0.95, "layer": "A", "op": "capture", "splice": 1},
+        {"time": 0.95, "layer": "A", "op": "capture", "splice": 2},
+        {"time": 0.95, "layer": "A", "op": "capture", "splice": 9}])");
+    for (int i = 0; i < 4; ++i)
+    {
+        j["operations"][3 + i]["file"] = dir + "/c" + std::to_string(i) + ".wav";
+    }
+    gg::render::RenderOptions options;
+    options.saveStatePath = dir + "/s.ggst";
+    const RenderSpec spec = parseJson(j);
+    (void)gg::render::render(spec, nullptr, options);
+    const auto input = gg::render::makeInput(spec.fx.input, 1, 48000.0, 1);
+    const std::size_t head = 45600; // 0.95 s
+    const auto expect = [&](int i, std::size_t from, std::size_t count) {
+        const auto cap = gg::metrics::readAudioFile(dir + "/c" + std::to_string(i) + ".wav");
+        REQUIRE(cap.has_value());
+        INFO("capture " << i);
+        REQUIRE(cap->channels[0].size() == count);
+        const std::vector<float> want(input.channels[0].begin() + static_cast<long>(from),
+                                      input.channels[0].begin() + static_cast<long>(from + count));
+        CHECK(bitIdentical(cap->channels[0], want));
+    };
+    expect(0, head - 24000, 24000);  // splice 0: the last L frames
+    expect(1, 28800, 38400 - 28800); // splice 1: the oldest mark inside, 0.6 s, to 0.8 s
+    expect(2, 38400, head - 38400);  // splice 2: 0.8 s to the head
+    expect(3, 38400, head - 38400);  // past the count: the last
+
+    // The save at 1.0 s (Loop is on, so the ring is kept): the window [0.5 s, 1.0 s) with the two
+    // marks inside it, as frames from its start; the mark at 0.3 s is outside and dropped.
+    const auto state = decodeFile(options.saveStatePath, Mode::Fx);
+    REQUIRE(state.rings[0].has_value());
+    const auto &ring = *state.rings[0];
+    CHECK(ring.frames == 24000);
+    REQUIRE(ring.splices.size() == 2);
+    CHECK(ring.splices[0] == 28800 - 24000);
+    CHECK(ring.splices[1] == 38400 - 24000);
 }
 
 TEST_CASE("a capture is the ring's newest frames, or a splice's span", "[render]")
@@ -2483,8 +2544,9 @@ TEST_CASE("a state saves the rings whose Freeze or Loop is on, and a render rest
     CHECK(state.rings[0]->channels == 2);
     CHECK(state.rings[0]->splices.size() == 1);
     CHECK(state.rings[1]->splices.empty());
-    // A ring that never filled saves what it holds: layer B ran for the whole 2 s of the render.
-    CHECK(state.rings[1]->frames == 96000);
+    // Layer B's Loop Length is 0.5 s of a 16 s ring that ran for 2 s: its loop window is saved,
+    // not the 2 s the ring holds.
+    CHECK(state.rings[1]->frames == 24000);
     CHECK(state.rings[0]->frames > 48000);
     CHECK(state.rings[0]->frames < 96000);
     CHECK(state.values[static_cast<std::size_t>(ParamSlot::LayerBOn)] == 1.0f);

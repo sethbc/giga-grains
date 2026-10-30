@@ -222,7 +222,8 @@ int run(int argc, char **argv)
     renderOptions.push_back(app.add_option(
         "--save-state", saveStatePath,
         "Write the session state (rings, samples, values) at the render's end; instrument and "
-        "FX specs only"));
+        "FX specs only. Built-in signal samples (sine, sweep, noise) are not saved, only file "
+        "samples and captures"));
     auto *const writeMediaOption = app.add_option(
         "--write-media", writeMediaDir,
         "Write the test media the golden cases read into this directory, and exit; it takes no "
