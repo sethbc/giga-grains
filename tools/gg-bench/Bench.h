@@ -91,6 +91,9 @@ struct Report
     std::string machine, compiler;
     std::vector<CaseResult> results;
     std::vector<Ratio> ratios; // computeRatios(results)
+    /// kernelLanes() when the report was made: which kernel table the engine cases' Auto
+    /// engines rendered with (engine-sample-sse's are always 4-wide).
+    uint32_t kernelLanes{0};
 };
 
 /// One ratio checked against a baseline: regressed when ratio > limit = the baseline's ratio
@@ -184,7 +187,8 @@ Report run(const Options &options, const Progress &progress = {});
 /// median and IQR. Throws std::invalid_argument if the two have different run counts.
 std::vector<Ratio> computeRatios(const Report &report);
 
-/// The report as JSON schema 2: schemaVersion, machine, compiler, commit, runSeconds, rounds,
+/// The report as JSON schema 2: schemaVersion, machine, kernelLanes, compiler, commit, runSeconds,
+/// rounds,
 /// results (each CaseResult's fields, with nsPerGrainSample as "runs") and ratios (each Ratio's
 /// fields). Invalid UTF-8 in a string (the commit, say) is replaced, never an error.
 std::string toJson(const Report &report);
@@ -271,6 +275,13 @@ std::string machine();
 
 /// The compiler gg-bench was built with.
 std::string compiler();
+
+/// The width of the kernel table gg::kernels::dispatch() resolved to in this process: 8 for the
+/// AVX2 kernels, 4 for the SSE (or NEON) ones (M2 engine spec §6.12).
+uint32_t kernelLanes();
+
+/// kernelLanes() for people: "8-wide (AVX2)" or "4-wide".
+std::string kernelsName(uint32_t lanes);
 
 // ---- gg-bench --space: Space's cost (sub-project 4, report-only) ----
 //

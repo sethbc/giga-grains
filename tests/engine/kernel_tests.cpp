@@ -10,11 +10,13 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <memory>
 #include <sstream>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -1047,6 +1049,107 @@ enum class Kernel
     Simd
 };
 
+using gg::kernels::Dispatch;
+
+// A table's sample and live kernels for reader R, or for the reader R derives from (a test's
+// probe of Sinc reads through the table's Sinc kernels, which render the same bits).
+template <class R> gg::kernels::SampleKernel sampleKernel(const Dispatch &d)
+{
+    if constexpr (std::is_base_of_v<Sinc, R>)
+    {
+        return d.sampleSinc;
+    }
+    else if constexpr (std::is_base_of_v<Linear, R>)
+    {
+        return d.sampleLinear;
+    }
+    else
+    {
+        static_assert(std::is_base_of_v<Hermite, R>);
+        return d.sampleHermite;
+    }
+}
+template <class R> gg::kernels::LiveKernel liveKernel(const Dispatch &d)
+{
+    if constexpr (std::is_base_of_v<Sinc, R>)
+    {
+        return d.liveSinc;
+    }
+    else if constexpr (std::is_base_of_v<Linear, R>)
+    {
+        return d.liveLinear;
+    }
+    else
+    {
+        static_assert(std::is_base_of_v<Hermite, R>);
+        return d.liveHermite;
+    }
+}
+
+// The tables every SIMD check renders through (M2 engine spec §6.12: the kernel tests run both
+// paths against the reference): the 4-wide one, whose kernels are renderSampleSimd and
+// renderLiveSimd themselves, and the 8-wide AVX2 one where this build and CPU have it. On Apple
+// Silicon and under Rosetta the AVX2 half is skipped.
+std::vector<const Dispatch *> simdTables()
+{
+    std::vector<const Dispatch *> tables{&gg::kernels::sseKernels()};
+    if (const Dispatch *avx2 = gg::kernels::avx2Kernels(); avx2 != nullptr)
+    {
+        tables.push_back(avx2);
+    }
+    return tables;
+}
+
+// Every grain of the pool, in spawn order, over [from, to) in one call each, through a table.
+template <class R>
+void renderAllWith(const Dispatch &table, const Pool &pool, const SampleSource &src, Buffers &b,
+                   int64_t from, int64_t to, const Tables &tables)
+{
+    const gg::kernels::Output o = b.output();
+    for (uint32_t i = 0; i < pool.size(); ++i)
+    {
+        sampleKernel<R>(table)(pool.rows(), i, src, o, from, to, tables);
+    }
+}
+
+// Equal bits, or both NaN: a NaN's payload may depend on the operand order the compiler picks.
+bool sameOrBothNaN(const std::vector<float> &a, const std::vector<float> &b)
+{
+    if (a.size() != b.size())
+    {
+        return false;
+    }
+    for (std::size_t k = 0; k < a.size(); ++k)
+    {
+        if (std::memcmp(&a[k], &b[k], sizeof(float)) != 0 &&
+            !(std::isnan(a[k]) && std::isnan(b[k])))
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+// Requires the AVX2 table, where there is one, to render what the 4-wide kernel rendered into
+// `simd`: the same bits (or NaN where it is NaN), so whatever the case then holds the 4-wide
+// output to (the reference, mostly bit for bit) holds for the 8-wide output too. The 8-wide
+// render starts from `fill`, as the 4-wide one did.
+template <class R>
+void requireAvx2Renders(const Buffers &simd, const Pool &pool, const SampleSource &src,
+                        int64_t from, int64_t to, const Tables &tables, float fill)
+{
+    const Dispatch *avx2 = gg::kernels::avx2Kernels();
+    if (avx2 == nullptr)
+    {
+        return;
+    }
+    INFO("the AVX2 table");
+    Buffers wide(from, to, simd.outputs, fill);
+    renderAllWith<R>(*avx2, pool, src, wide, from, to, tables);
+    REQUIRE(sameOrBothNaN(wide.ch[0], simd.ch[0]));
+    REQUIRE(sameOrBothNaN(wide.ch[1], simd.ch[1]));
+}
+
 // Every grain of the pool, in spawn order, over [from, to) in one call each.
 template <class R>
 void renderAll(Kernel kernel, const Pool &pool, const SampleSource &src, Buffers &b, int64_t from,
@@ -1067,7 +1170,8 @@ void renderAll(Kernel kernel, const Pool &pool, const SampleSource &src, Buffers
 }
 
 // Renders the pool over [from, to) with the reference and with the SIMD kernel, each into fresh
-// buffers filled with `fill`, and returns both.
+// buffers filled with `fill`, and returns both; the AVX2 table, where there is one, must render
+// the SIMD kernel's output (requireAvx2Renders).
 template <class R>
 std::pair<Buffers, Buffers> renderBoth(const Pool &pool, const SampleSource &src, int outputs,
                                        int64_t from, int64_t to, const Tables &tables,
@@ -1077,25 +1181,8 @@ std::pair<Buffers, Buffers> renderBoth(const Pool &pool, const SampleSource &src
     Buffers simd(from, to, outputs, fill);
     renderAll<R>(Kernel::Ref, pool, src, ref, from, to, tables);
     renderAll<R>(Kernel::Simd, pool, src, simd, from, to, tables);
+    requireAvx2Renders<R>(simd, pool, src, from, to, tables, fill);
     return {std::move(ref), std::move(simd)};
-}
-
-// Equal bits, or both NaN: a NaN's payload may depend on the operand order the compiler picks.
-bool sameOrBothNaN(const std::vector<float> &a, const std::vector<float> &b)
-{
-    if (a.size() != b.size())
-    {
-        return false;
-    }
-    for (std::size_t k = 0; k < a.size(); ++k)
-    {
-        if (std::memcmp(&a[k], &b[k], sizeof(float)) != 0 &&
-            !(std::isnan(a[k]) && std::isnan(b[k])))
-        {
-            return false;
-        }
-    }
-    return true;
 }
 
 bool anyNaN(const std::vector<float> &v)
@@ -1402,26 +1489,30 @@ TEMPLATE_TEST_CASE("simd sample kernel matches the reference on sources of 1 to 
                 Buffers ref(0, end, shape.outputs);
                 renderAll<TestType>(Kernel::Ref, pool, shape.source, ref, 0, end, tables);
                 REQUIRE(anyNonZero(ref.ch[0]));
-                for (int64_t length = 1; length <= 7; ++length)
+                for (const Dispatch *table : simdTables())
                 {
-                    INFO("calls of " << length);
-                    Buffers simd(0, end, shape.outputs);
-                    for (int64_t from = 0; from < end; from += length)
+                    INFO(table->lanes << "-wide kernels");
+                    for (int64_t length = 1; length <= 7; ++length)
                     {
-                        const int64_t to = std::min(end, from + length);
-                        const gg::kernels::Output o{
-                            {simd.ch[0].data() + from,
-                             shape.outputs == 2 ? simd.ch[1].data() + from : nullptr},
-                            from};
-                        for (uint32_t i = 0; i < pool.size(); ++i)
+                        INFO("calls of " << length);
+                        Buffers simd(0, end, shape.outputs);
+                        for (int64_t from = 0; from < end; from += length)
                         {
-                            gg::kernels::renderSampleSimd<TestType>(pool.rows(), i, shape.source, o,
-                                                                    from, to, tables);
+                            const int64_t to = std::min(end, from + length);
+                            const gg::kernels::Output o{
+                                {simd.ch[0].data() + from,
+                                 shape.outputs == 2 ? simd.ch[1].data() + from : nullptr},
+                                from};
+                            for (uint32_t i = 0; i < pool.size(); ++i)
+                            {
+                                sampleKernel<TestType> (*table)(pool.rows(), i, shape.source, o,
+                                                                from, to, tables);
+                            }
+                            requireExactRuns<TestType>(pool, frames, d, from, to);
                         }
-                        requireExactRuns<TestType>(pool, frames, d, from, to);
+                        REQUIRE(sameBits(simd.ch[0], ref.ch[0]));
+                        REQUIRE(sameBits(simd.ch[1], ref.ch[1]));
                     }
-                    REQUIRE(sameBits(simd.ch[0], ref.ch[0]));
-                    REQUIRE(sameBits(simd.ch[1], ref.ch[1]));
                 }
             }
         }
@@ -1485,27 +1576,31 @@ TEMPLATE_TEST_CASE("simd sample kernel matches the reference at the source ends"
         REQUIRE(anyNonZero(ref.ch[0]));
         REQUIRE(anyNonZero(ref.ch[1]));
         const std::vector<int64_t> lengths = {61, 64, 1, 128, 3, 250, 2, 37};
-        for (int64_t offset = 0; offset < 4; ++offset)
+        for (const Dispatch *table : simdTables())
         {
-            INFO("offset " << offset);
-            Buffers simd(0, end, 2);
-            int64_t from = 0;
-            for (std::size_t c = 0; from < end; ++c)
+            INFO(table->lanes << "-wide kernels");
+            for (int64_t offset = 0; offset < 8; ++offset)
             {
-                const int64_t to =
-                    std::min(end, c == 0 ? offset : from + lengths[c % lengths.size()]);
-                const gg::kernels::Output o{{simd.ch[0].data() + from, simd.ch[1].data() + from},
-                                            from};
-                for (uint32_t i = 0; i < pool.size(); ++i)
+                INFO("offset " << offset);
+                Buffers simd(0, end, 2);
+                int64_t from = 0;
+                for (std::size_t c = 0; from < end; ++c)
                 {
-                    gg::kernels::renderSampleSimd<TestType>(pool.rows(), i, src.stereo(d), o, from,
-                                                            to, tables);
+                    const int64_t to =
+                        std::min(end, c == 0 ? offset : from + lengths[c % lengths.size()]);
+                    const gg::kernels::Output o{
+                        {simd.ch[0].data() + from, simd.ch[1].data() + from}, from};
+                    for (uint32_t i = 0; i < pool.size(); ++i)
+                    {
+                        sampleKernel<TestType> (*table)(pool.rows(), i, src.stereo(d), o, from, to,
+                                                        tables);
+                    }
+                    requireExactRuns<TestType>(pool, kNoiseFrames, d, from, to);
+                    from = to;
                 }
-                requireExactRuns<TestType>(pool, kNoiseFrames, d, from, to);
-                from = to;
+                REQUIRE(sameBits(simd.ch[0], ref.ch[0]));
+                REQUIRE(sameBits(simd.ch[1], ref.ch[1]));
             }
-            REQUIRE(sameBits(simd.ch[0], ref.ch[0]));
-            REQUIRE(sameBits(simd.ch[1], ref.ch[1]));
         }
     }
 }
@@ -1578,18 +1673,23 @@ TEMPLATE_TEST_CASE("simd sample kernel matches the reference at extreme rates an
                     renderAll<TestType>(Kernel::Ref, pool, src.stereo(d), ref, from, to, tables);
                     REQUIRE(anyNonZero(ref.ch[0]));
                     REQUIRE(anyNonZero(ref.ch[1]));
-                    Buffers simd(from, to, 2);
-                    for (int64_t a = from; a < to;)
+                    for (const Dispatch *table : simdTables())
                     {
-                        const int64_t b = std::min(to, a + 509);
-                        const gg::kernels::Output o{
-                            {simd.ch[0].data() + (a - from), simd.ch[1].data() + (a - from)}, a};
-                        gg::kernels::renderSampleSimd<TestType>(pool.rows(), 0, src.stereo(d), o, a,
-                                                                b, tables);
-                        a = b;
+                        INFO(table->lanes << "-wide kernels");
+                        Buffers simd(from, to, 2);
+                        for (int64_t a = from; a < to;)
+                        {
+                            const int64_t b = std::min(to, a + 509);
+                            const gg::kernels::Output o{
+                                {simd.ch[0].data() + (a - from), simd.ch[1].data() + (a - from)},
+                                a};
+                            sampleKernel<TestType> (*table)(pool.rows(), 0, src.stereo(d), o, a, b,
+                                                            tables);
+                            a = b;
+                        }
+                        REQUIRE(sameBits(simd.ch[0], ref.ch[0]));
+                        REQUIRE(sameBits(simd.ch[1], ref.ch[1]));
                     }
-                    REQUIRE(sameBits(simd.ch[0], ref.ch[0]));
-                    REQUIRE(sameBits(simd.ch[1], ref.ch[1]));
                     requireExactRuns<TestType>(pool, kNoiseFrames, d, from, to);
                     const gg::kernels::detail::Run run =
                         gg::kernels::detail::sampleSimdRun<TestType>(pool.rows(), 0, kNoiseFrames,
@@ -1941,7 +2041,10 @@ struct LiveRenders
 };
 
 // Drives a fresh ring over the input in `lengths`, and renders every grain of the pool over each
-// piece, in spawn order, with renderLiveRef<R> and renderLiveSimd<R>, into separate outputs.
+// piece, in spawn order, with renderLiveRef<R> and renderLiveSimd<R>, into separate outputs. Where
+// there is an AVX2 table, its live kernel for R renders into a third output, which must be the
+// SIMD kernel's, bit for bit (or NaN where it is NaN), so whatever the case holds the SIMD output
+// to holds for the 8-wide output too.
 template <class R>
 LiveRenders renderLiveBoth(const Pool &pool, const LiveInput &input,
                            const std::vector<int64_t> &lengths, int outputs, const Tables &tables)
@@ -1949,6 +2052,9 @@ LiveRenders renderLiveBoth(const Pool &pool, const LiveInput &input,
     LiveRenders r{Buffers(0, input.length, outputs), Buffers(0, input.length, outputs), {}, 0};
     const gg::kernels::Output refOut = r.ref.output();
     const gg::kernels::Output simdOut = r.simd.output();
+    const Dispatch *avx2 = gg::kernels::avx2Kernels();
+    Buffers wide(0, avx2 != nullptr ? input.length : 0, outputs);
+    const gg::kernels::Output wideOut = wide.output();
     const gg::GrainRows &rows = pool.rows();
     ActiveGrains active(pool);
     gg::LiveSource ring;
@@ -1957,6 +2063,10 @@ LiveRenders renderLiveBoth(const Pool &pool, const LiveInput &input,
         active.each(from, to, [&](uint32_t i) {
             gg::kernels::renderLiveRef<R>(rows, i, ring, 1, refOut, from, to, tables);
             gg::kernels::renderLiveSimd<R>(rows, i, ring, 1, simdOut, from, to, tables);
+            if (avx2 != nullptr)
+            {
+                liveKernel<R> (*avx2)(rows, i, ring, 1, wideOut, from, to, tables);
+            }
             if (std::max(from, rows.onsetSample[i]) >= std::min(to, rows.endSample[i]))
             {
                 return;
@@ -1972,6 +2082,12 @@ LiveRenders renderLiveBoth(const Pool &pool, const LiveInput &input,
         });
     });
     r.finalHead = ring.head();
+    if (avx2 != nullptr)
+    {
+        INFO("the AVX2 table");
+        REQUIRE(sameOrBothNaN(wide.ch[0], r.simd.ch[0]));
+        REQUIRE(sameOrBothNaN(wide.ch[1], r.simd.ch[1]));
+    }
     return r;
 }
 } // namespace
@@ -2663,6 +2779,10 @@ TEMPLATE_TEST_CASE("a stolen grain fades through the reference and the simd kern
                 Buffers simd(0, input.length, outputs);
                 const gg::kernels::Output refOut = ref.output();
                 const gg::kernels::Output simdOut = simd.output();
+                // The AVX2 table's render, where there is one (simdTables).
+                const Dispatch *avx2 = gg::kernels::avx2Kernels();
+                Buffers wide(0, input.length, outputs);
+                const gg::kernels::Output wideOut = wide.output();
                 int64_t fadingInside = 0;   // fading samples where the interior's conditions hold
                 int64_t interiorFading = 0; // interior samples at or after a fade's start
                 int64_t simdSamples = 0;
@@ -2675,6 +2795,11 @@ TEMPLATE_TEST_CASE("a stolen grain fades through the reference and the simd kern
                                                              tables);
                         gg::kernels::renderLiveSimd<TestType>(rows, i, ring, 1, simdOut, from, to,
                                                               tables);
+                        if (avx2 != nullptr)
+                        {
+                            liveKernel<TestType> (*avx2)(rows, i, ring, 1, wideOut, from, to,
+                                                         tables);
+                        }
                         const int64_t first = std::max(from, rows.onsetSample[i]);
                         const int64_t last = std::min(to, rows.endSample[i]);
                         if (first >= last)
@@ -2742,6 +2867,12 @@ TEMPLATE_TEST_CASE("a stolen grain fades through the reference and the simd kern
                 REQUIRE(sameBits(ref.ch[1], expected.ch[1]));
                 REQUIRE(sameBits(simd.ch[0], ref.ch[0]));
                 REQUIRE(sameBits(simd.ch[1], ref.ch[1]));
+                if (avx2 != nullptr)
+                {
+                    INFO("the AVX2 table");
+                    REQUIRE(sameBits(wide.ch[0], ref.ch[0]));
+                    REQUIRE(sameBits(wide.ch[1], ref.ch[1]));
+                }
             }
         }
     }
@@ -2751,36 +2882,6 @@ TEMPLATE_TEST_CASE("a stolen grain fades through the reference and the simd kern
 // 4-wide ones.
 namespace
 {
-using gg::kernels::Dispatch;
-
-template <class R> gg::kernels::SampleKernel sampleKernel(const Dispatch &d);
-template <> gg::kernels::SampleKernel sampleKernel<Hermite>(const Dispatch &d)
-{
-    return d.sampleHermite;
-}
-template <> gg::kernels::SampleKernel sampleKernel<Linear>(const Dispatch &d)
-{
-    return d.sampleLinear;
-}
-template <> gg::kernels::SampleKernel sampleKernel<Sinc>(const Dispatch &d) { return d.sampleSinc; }
-
-template <class R> gg::kernels::LiveKernel liveKernel(const Dispatch &d);
-template <> gg::kernels::LiveKernel liveKernel<Hermite>(const Dispatch &d) { return d.liveHermite; }
-template <> gg::kernels::LiveKernel liveKernel<Linear>(const Dispatch &d) { return d.liveLinear; }
-template <> gg::kernels::LiveKernel liveKernel<Sinc>(const Dispatch &d) { return d.liveSinc; }
-
-// Every grain of the pool, in spawn order, over [from, to) in one call each, through a table.
-template <class R>
-void renderAllWith(const Dispatch &table, const Pool &pool, const SampleSource &src, Buffers &b,
-                   int64_t from, int64_t to, const Tables &tables)
-{
-    const gg::kernels::Output o = b.output();
-    for (uint32_t i = 0; i < pool.size(); ++i)
-    {
-        sampleKernel<R>(table)(pool.rows(), i, src, o, from, to, tables);
-    }
-}
-
 // The samples of [from, to) that a table of `lanes` lanes renders through its widest interior:
 // each grain's sampleSimdRun, rounded down to whole steps.
 template <class R>
@@ -3104,4 +3205,22 @@ TEST_CASE("GG_FORCE_SSE selects the fallback", "[kernel]")
     forcedConfig.kernels = gg::KernelChoice::Sse;
     const gg::Engine forced(forcedConfig);
     REQUIRE(&forced.kernelTable() == &sse);
+}
+
+// Hidden ([.], and not tagged [kernel], so gg-tests '[kernel]' leaves it out): the
+// kernel_force_sse_env test (tests/CMakeLists.txt, label kernel) runs it alone, in a fresh
+// process whose environment sets GG_FORCE_SSE=1, so the name dispatch() reads is checked: where
+// the CPU runs AVX2, a misspelled name would resolve to the 8-wide table here. It fails if run
+// without the variable, so a test that lost its environment can't pass.
+TEST_CASE("GG_FORCE_SSE in the environment forces the 4-wide table", "[.][force-sse]")
+{
+    const char *force = std::getenv("GG_FORCE_SSE");
+    REQUIRE(force != nullptr);
+    REQUIRE(*force != '\0');
+    // Nothing in this process has resolved the table yet: this is the first call.
+    REQUIRE(&gg::kernels::dispatch() == &gg::kernels::sseKernels());
+    REQUIRE(gg::kernels::dispatch().lanes == 4);
+    const gg::Engine engine(gg::EngineConfig{});
+    REQUIRE(engine.kernelTable().lanes == 4);
+    INFO("the CPU runs AVX2: " << gg::kernels::cpuRunsAvx2());
 }

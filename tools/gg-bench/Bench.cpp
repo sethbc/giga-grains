@@ -708,7 +708,7 @@ void validate(const Options &options)
 Report run(const Options &options, const Progress &progress)
 {
     validate(options);
-    Report report{options, machine(), compiler(), {}, {}};
+    Report report{options, machine(), compiler(), {}, {}, kernelLanes()};
 
     const gg::ScopedDenormalsOff noDenormals;
 
@@ -842,13 +842,10 @@ std::string toJson(const Report &report)
         });
     }
     const nlohmann::ordered_json j{
-        {"schemaVersion", kSchemaVersion},
-        {"machine", report.machine},
-        {"compiler", report.compiler},
-        {"commit", report.options.commit},
-        {"runSeconds", report.options.runSeconds},
-        {"rounds", report.options.rounds},
-        {"results", std::move(results)},
+        {"schemaVersion", kSchemaVersion},   {"machine", report.machine},
+        {"kernelLanes", report.kernelLanes}, {"compiler", report.compiler},
+        {"commit", report.options.commit},   {"runSeconds", report.options.runSeconds},
+        {"rounds", report.options.rounds},   {"results", std::move(results)},
         {"ratios", std::move(ratios)},
     };
     return j.dump(2, ' ', false, nlohmann::ordered_json::error_handler_t::replace) + "\n";
@@ -1257,6 +1254,10 @@ double quantile(std::vector<double> v, double q)
     const std::size_t hi = std::min(lo + 1, v.size() - 1);
     return v[lo] + (h - static_cast<double>(lo)) * (v[hi] - v[lo]);
 }
+
+uint32_t kernelLanes() { return gg::kernels::dispatch().lanes; }
+
+std::string kernelsName(uint32_t lanes) { return lanes == 8 ? "8-wide (AVX2)" : "4-wide"; }
 
 std::string machine()
 {

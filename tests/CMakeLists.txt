@@ -151,6 +151,13 @@ catch_discover_tests(gg-tests TEST_SPEC "~[serial]" ADD_TAGS_AS_LABELS)
 catch_discover_tests(gg-tests TEST_SPEC "[serial]" ADD_TAGS_AS_LABELS
         PROPERTIES RUN_SERIAL TRUE)
 
+# GG_FORCE_SSE (M2 engine spec §6.12): the hidden case "GG_FORCE_SSE in the environment forces the
+# 4-wide table", alone in a process whose environment sets the variable, so dispatch() resolves
+# with it. Label kernel.
+add_test(NAME kernel_force_sse_env
+        COMMAND gg-tests "GG_FORCE_SSE in the environment forces the 4-wide table")
+set_tests_properties(kernel_force_sse_env PROPERTIES LABELS kernel ENVIRONMENT GG_FORCE_SSE=1)
+
 # gg-bench's command line, label `bench`. The bench tests check the timings' shape, never their
 # values, so they run beside the others.
 # - bench_cli: a tiny run of a kernel, the reference and an engine case must exit 0 and write its

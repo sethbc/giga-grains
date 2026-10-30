@@ -45,6 +45,12 @@ TEST_CASE("bench json matches schema 2", "[bench]")
     REQUIRE(j.at("schemaVersion").is_number_integer());
     CHECK(j.at("schemaVersion").get<int>() == 2);
     CHECK(j.at("machine").is_string());
+    // Which kernel table the engine cases' Auto engines rendered with (the AVX2 spike).
+    REQUIRE(j.at("kernelLanes").is_number_integer());
+    CHECK(j.at("kernelLanes").get<uint32_t>() == gg::kernels::dispatch().lanes);
+    CHECK(j.at("kernelLanes").get<uint32_t>() == report.kernelLanes);
+    CHECK(gg::bench::kernelsName(8) == "8-wide (AVX2)");
+    CHECK(gg::bench::kernelsName(4) == "4-wide");
     CHECK(j.at("compiler").is_string());
     CHECK(j.at("commit").is_string());
     CHECK(j.at("commit").get<std::string>() == "unknown");

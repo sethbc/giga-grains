@@ -733,8 +733,9 @@ int main(int argc, char **argv)
     std::printf("gg-bench: %u grains of 100 ms, 60 s stereo noise at 48 kHz, %d interleaved "
                 "rounds of >= %g s\n",
                 options.grains, options.rounds, options.runSeconds);
-    std::printf("commit:   %s\nmachine:  %s\ncompiler: %s\n", options.commit.c_str(),
-                machine().c_str(), compiler().c_str());
+    std::printf("commit:   %s\nmachine:  %s\nkernels:  %s\ncompiler: %s\n", options.commit.c_str(),
+                machine().c_str(), gg::bench::kernelsName(gg::bench::kernelLanes()).c_str(),
+                compiler().c_str());
     std::fflush(stdout);
 
     const gg::bench::Report report = gg::bench::run(options, [](int round, int rounds) {
