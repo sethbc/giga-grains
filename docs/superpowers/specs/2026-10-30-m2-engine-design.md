@@ -196,7 +196,7 @@ y    = (Σ_k c_k × tap_k) / (Σ_k c_k)        both sums in k order, float
   0.1 dB to 0.4 of the source's Nyquist and the first image is at least 70 dB down at 16 taps
   (60 dB at 12). The normalization by Σ c_k keeps DC exact and makes the stretched kernel's gain
   independent of `s`.
-  **Amended (2026-10-30), ES-T1a):** β is 8.0. At s = 1 the kernel is within 0.0007 dB to 0.3 of the source's
+  **Amended (2026-10-30, ES-T1a):** β is 8.0. At s = 1 the kernel is within 0.0007 dB to 0.3 of the source's
   sampling rate and at least 81.7 dB down from 0.7. At s = 0.5 the 16 taps cover only half of the
   window, and the stopband is −37 dB (−34 to −40 dB for β 6 to 10); the 70 dB pin there is
   withdrawn, and the test pins at most −35 dB, with the cutoff following the stretch.
@@ -205,7 +205,7 @@ y    = (Σ_k c_k × tap_k) / (Σ_k c_k)        both sums in k order, float
   Nyquist) and `1/r` ∈ (0.5, 1] for the residual upward rate, so the cutoff follows the rate and
   nothing above the output's Nyquist is read in. `s` is a per-grain constant, latched with the
   grain, and `1/r` is one IEEE division.
-  **Amended (2026-10-30), ES-T1a):** the level is `floor(log2 r)` (§6.3), so a residual rate just under 2 gets the
+  **Amended (2026-10-30, ES-T1a):** the level is `floor(log2 r)` (§6.3), so a residual rate just under 2 gets the
   weakest anti-aliasing (s just over 0.5, the stopband near −37 dB), improving to −82 dB at exactly
   an octave, where a level is read at rate 1. On a tone, HQ leaves 39 dB less fold-back than Normal
   at +11 semitones and 41 dB at +23, against 82 to 83 dB at +12, +24 and +36. Rounding the level
@@ -237,7 +237,7 @@ y    = (Σ_k c_k × tap_k) / (Σ_k c_k)        both sums in k order, float
 - **Cost.** M0 measured the scalar 16-tap sinc at 8.6 ns per stereo grain-sample against the
   SIMD Hermite's 2.1 (INTENT §16); the SIMD sinc is expected between 3 and 5 ns. Its weight in
   the table (§6.4) is set from `engine-sample-hq`'s measurement at the build's end.
-  **Amended (2026-10-30), ES-T8b):** the SIMD sinc costs about 6.8 times Normal's per grain-sample, not 1.5 to
+  **Amended (2026-10-30, ES-T8b):** the SIMD sinc costs about 6.8 times Normal's per grain-sample, not 1.5 to
   2.5: the median of three `--quick` runs of `engine-sample-hq` over `engine-sample` at block 256
   on the M5 Max (6.79, 6.60, 7.43; the machine's load average was about 10), and 16.9 ns against
   2.42 at block 64 in Task 8's first run. The figure is HQ's weight in §6.4. The published M5 Max
@@ -358,8 +358,9 @@ channel count `c`, with `w(t) = kGrainWeights[t][c]`:
 2. **Lower the tier** (INTENT §14, rung 1): otherwise, the highest tier `t < q` with `W(o) + w(t)
    ≤ quota`, Normal before Eco; the grain latches `t`. An Eco layer has nothing lower.
    **Amended (2026-10-30, ES-T10a):** under sustained overload the ladder mostly steals and
-   re-admits at the draw's tier, so lowering is rare (with HQ at 27 units, layers A and B of
-   `fx-overload` steal from 0.25 s at Budget 4,096 and lowering stays near 5 per 200 admissions);
+   re-admits at the draw's tier, so lowering is rare (with HQ at 27 units, layer B of
+   `fx-overload` steals from 0.375 s (onset 18,011) and layer A from 0.386 s (18,547) at Budget
+   4,096, and lowering stays near 5 per 200 admissions);
    rung 1 matters mostly for a layer whose quota has room for a cheaper grain but not its own.
 3. **Steal, or drop** (rungs 2 and 3, in their order by the threshold): if no tier fits, or the
    pool's capacity is reached, look at **the oldest sounding grain** (the first stored grain in
@@ -451,8 +452,10 @@ scanned model.
   on takes its share at the boundary" is checked as equality with a render whose Budget halves at
   that boundary and returns where B's ramp reaches 0 (A's sounding set differs before the switch,
   so a literal comparison could not hold); the pool test runs the FX for 1 s (29.6 s in `dev`).
-  A `Processor` instance holds about 45 MB plus about 4 MB of event buffers (`Processor.h`'s
-  "about 45 MB" is stale).
+  A `Processor` instance holds about 51 MB at 48 kHz: rings 25, pools 5, the reverb 14.5 and
+  the event buffers 6.3 MB (4 layers x 4 x 4,096 `LayerEvent`s x 96 bytes = 6,291,456 bytes;
+  corrected by the final review from "45 MB plus about 4 MB", and `Processor.h`'s comment now
+  says it).
 
 ### 6.8 Parameters: the reserved block (programme design §7.1)
 
@@ -489,7 +492,8 @@ AU order follows from the IDs. Nothing is frozen before M5.
     Size 500 ms, A and B at HQ, C Normal, D Eco, Budget automated 4,096 → 1,024 at 2 s → 256 at
     4 s → 4,096 at 6 s: the counts in the log; layer D switched off at 5 s and on at 5.5 s, so
     the quotas move with the rendering set. **Amended (2026-10-30, ES-T10a):** with HQ at 27
-    units, layers A and B steal from 0.25 s at Budget 4,096, and lowering stays near 5 per 200
+    units, layer B steals from 0.375 s (onset 18,011) and layer A from 0.386 s (18,547) at Budget
+    4,096, and lowering stays near 5 per 200
     admissions; the case shows the steal rung from the start, the drop rung in the first moments
     after each Budget cut, and rare lowerings.
   - `inst-overload`: the instrument, two notes, one layer at HQ with one-second grains at Density

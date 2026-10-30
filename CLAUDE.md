@@ -333,8 +333,11 @@ runs the tests labelled either. The labels are:
 - `kernel`: the renderers' scalar references and the SIMD sample and live kernels (4-wide, and
   since M2 sub-project 3 the 8-wide AVX2 ones beside them, chosen at load), which must match them
   bit for bit (`std::memcmp`); every case runs through both tables, and the AVX2-against-SSE case
-  skips in a build or on a CPU with no AVX2 kernels (Rosetta's x86_64 slice tests the fallback). Set `GG_FORCE_SSE` (set and not empty) to make a
-  process, or a ctest, use the 4-wide table; `kernel_force_sse_env` checks it;
+  skips in a build or on a CPU with no AVX2 kernels (Rosetta's x86_64 slice tests the fallback).
+  CI's Linux and Windows test steps set `GG_REQUIRE_AVX2=1`, and then `kernel_require_avx2` fails
+  if there is no 8-wide table, so those legs can't fall back unnoticed; a ClangCL below 19 builds
+  the 4-wide table alone. Set `GG_FORCE_SSE` (set and not empty) to make a process, or a ctest,
+  use the 4-wide table; `kernel_force_sse_env` checks it;
 - `determinism`: block-size invariance;
 - `rt`: the allocation tripwire. In the `rtsan` build, two tests labelled both `rt` and `rtsan`
   check that RTSan is active: one checks the build flag, and `rtsan_negative_control` passes
@@ -588,10 +591,10 @@ gg-render --write-media DIR
     (its latched mip level; both since M2 sub-project 3), `gain` and `pan` (`formatEventLine` in
     `tools/gg-render/Render.h`). A grain the overload ladder stole also has a line,
     `{"i":k,"layer":L,"steal":o}` (`formatStealLine`), right before the line of the grain it made
-    room for, `o` that grain's onset sample. Across layers the lines are in piece, layer, spawn order, so how
-    two layers' grains interleave depends on the block size (INTENT §19, ruling LS-T10b): each
-    layer's own lines, and the audio, are block-size invariant, and each golden renders at its
-    spec's block size. Compare logs across block sizes per layer.
+    room for, `o` that grain's onset sample. Across layers the lines are in piece, layer, spawn
+    order, so how two layers' grains interleave depends on the block size (INTENT §19, ruling
+    LS-T10b): each layer's own lines, and the audio, are block-size invariant, and each golden
+    renders at its spec's block size. Compare logs across block sizes per layer.
   - The click score (metricsVersion 2) is normalized by the level within ±5 ms. The
     `[golden][metrics]` tests in `tests/metrics/click_injection_tests.cpp` render every case in
     process, add a -20 dBFS step at sixteen positions in turn and require each to score above
