@@ -3224,3 +3224,23 @@ TEST_CASE("GG_FORCE_SSE in the environment forces the 4-wide table", "[.][force-
     REQUIRE(engine.kernelTable().lanes == 4);
     INFO("the CPU runs AVX2: " << gg::kernels::cpuRunsAvx2());
 }
+
+// Hidden ([.]): the kernel_require_avx2 test (tests/CMakeLists.txt, label kernel) runs it alone.
+// The x86 CI legs (Linux and Windows) set GG_REQUIRE_AVX2=1 in their test step, and then the 8-wide
+// table must exist and be chosen by the CPU: without this, "the avx2 kernels match the sse kernels
+// bit for bit" would SKIP if cpuRunsAvx2() regressed, and every leg would render the same bits on
+// the 4-wide table with the gate green. Without the variable (arm64, a CPU without AVX2, the
+// mac-universal leg and its x86_64 slice) the case passes and requires nothing.
+TEST_CASE("GG_REQUIRE_AVX2 requires the 8-wide table", "[.][require-avx2]")
+{
+    const char *require = std::getenv("GG_REQUIRE_AVX2");
+    if (require == nullptr || *require == '\0')
+    {
+        SUCCEED("GG_REQUIRE_AVX2 is not set: the 8-wide table is not required here");
+        return;
+    }
+    INFO("GG_KERNELS_AVX2 " << GG_KERNELS_AVX2 << ", cpuRunsAvx2 " << gg::kernels::cpuRunsAvx2());
+    const gg::kernels::Dispatch *avx2 = gg::kernels::avx2Kernels();
+    REQUIRE(avx2 != nullptr);
+    REQUIRE(avx2->lanes == 8);
+}

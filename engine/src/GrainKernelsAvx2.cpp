@@ -27,11 +27,6 @@
 
 #if GG_KERNELS_AVX2
 
-// ClangCL's <immintrin.h> declares the AVX2 intrinsics without /arch:AVX2 only from Clang 19 on.
-#if defined(_MSC_VER) && defined(__clang__) && __clang_major__ < 19
-#error "The AVX2 kernels need ClangCL 19 or newer (its <immintrin.h> hides AVX2 below that)"
-#endif
-
 #include <algorithm>
 #include <cmath>
 #include <cstdint>

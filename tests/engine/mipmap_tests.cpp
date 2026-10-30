@@ -3,6 +3,7 @@
 // Copyright 2026, the Giga Grains authors (see git history)
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <complex>
 #include <cstddef>
@@ -306,4 +307,31 @@ TEST_CASE("a level's guard frames are zero", "[source][interp]")
             }
         }
     }
+}
+
+TEST_CASE("make stops and returns nullptr once the cancel flag is set", "[source][interp]")
+{
+    std::atomic<bool> cancel{false};
+    const auto buffer = makeSine(2, 4000);
+
+    // A flag that is never set changes nothing: the same levels as with no flag.
+    const auto plain = gg::PreparedSource::make(buffer);
+    const auto unset = gg::PreparedSource::make(buffer, &cancel);
+    REQUIRE(unset != nullptr);
+    REQUIRE(unset->levelCount() == plain->levelCount());
+    REQUIRE(unset->levelCount() > 1);
+    for (uint32_t n = 0; n < plain->levelCount(); ++n)
+    {
+        const gg::PreparedSource::Level &a = plain->level(n);
+        const gg::PreparedSource::Level &b = unset->level(n);
+        REQUIRE(a.frames == b.frames);
+        REQUIRE(std::memcmp(a.data[0], b.data[0],
+                            sizeof(float) * static_cast<std::size_t>(a.frames) *
+                                static_cast<std::size_t>(a.stride)) == 0);
+    }
+
+    // Set, it builds nothing: what a null buffer gives.
+    cancel.store(true);
+    REQUIRE(gg::PreparedSource::make(buffer, &cancel) == nullptr);
+    REQUIRE(gg::PreparedSource::make(nullptr, &cancel) == nullptr);
 }

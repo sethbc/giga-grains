@@ -208,6 +208,8 @@ struct Hermite
     }
 
     /// interp::catmullRom(p0, p1, p2, p3, t) in 4 lanes, through its expressions in its order.
+    /// Its 8-wide twin is in GrainKernelsAvx2.cpp: change both together, or the AVX2 table's bits
+    /// drift from this one's.
     static SIMD_M128 curve4(SIMD_M128 p0, SIMD_M128 p1, SIMD_M128 p2, SIMD_M128 p3,
                             SIMD_M128 frac) noexcept SST_CPPUTILS_NONBLOCKING
     {
@@ -301,6 +303,8 @@ struct Linear
     }
 
     /// interp::lerp(a, b, t) in 4 lanes: a + (b − a) × t.
+    /// Its 8-wide twin is in GrainKernelsAvx2.cpp: change both together, or the AVX2 table's bits
+    /// drift from this one's.
     static SIMD_M128 line4(SIMD_M128 a, SIMD_M128 b,
                            SIMD_M128 frac) noexcept SST_CPPUTILS_NONBLOCKING
     {
@@ -426,6 +430,8 @@ struct Sinc
     /// The 4 lanes' coefficients, c[k + 7] holding c_k: each lane's from SincTable::at, scalar,
     /// with the scalar read's x. Returns den = Σ c_k, from 0 in k order, as the scalar read sums
     /// it.
+    /// Its 8-wide twin is in GrainKernelsAvx2.cpp: change both together, or the AVX2 table's bits
+    /// drift from this one's.
     static SIMD_M128 coefficients4(SIMD_M128 frac, const ReadParams &params,
                                    SIMD_M128 *c) noexcept SST_CPPUTILS_NONBLOCKING
     {
@@ -449,6 +455,8 @@ struct Sinc
 
     /// (Σ c_k × tap_k) / den in 4 lanes, the sum from 0 in k order, and 0 in a lane whose den is
     /// 0: the scalar read's last two lines.
+    /// Its 8-wide twin is in GrainKernelsAvx2.cpp: change both together, or the AVX2 table's bits
+    /// drift from this one's.
     static SIMD_M128 sum4(const SIMD_M128 *c, SIMD_M128 den,
                           const SIMD_M128 *taps) noexcept SST_CPPUTILS_NONBLOCKING
     {
@@ -756,6 +764,8 @@ Run sampleSimdRun(const GrainRows &rows, uint32_t i, int64_t frames, uint32_t de
 /// dst[0..3] += y in the lanes where mask is set; the other lanes keep their bits exactly. A blend,
 /// not an add of +0: it is exactly the reference's skip for any dst, a −0, a NaN or a denormal
 /// under DAZ included (accepted ruling, Task 6).
+/// Its 8-wide twin is in GrainKernelsAvx2.cpp: change both together, or the AVX2 table's bits drift
+/// from this one's.
 inline void addMasked(float *dst, SIMD_M128 y, SIMD_M128 mask) noexcept SST_CPPUTILS_NONBLOCKING
 {
     GG_FP_CONTRACT_OFF

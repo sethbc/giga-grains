@@ -385,7 +385,8 @@ class Processor
     /// Allocates the four layers (each an engine with a kLiveSeconds live ring, in both products,
     /// reading the kind its Source gives: Live in the FX and Sample, with no source, in the
     /// instrument by default; its wet scratch buffers, its diffuser's lines, its peak strip and its
-    /// grain-event buffer) and the reverb (about 14.5 MB): about 45 MB at 48 kHz. Every parameter
+    /// grain-event buffer) and the reverb (about 14.5 MB): about 51 MB at 48 kHz (rings 25, pools
+    /// 5, reverb 14.5, event buffers 6.3: 4 layers × 4 × 4,096 events × 96 bytes). Every parameter
     /// starts at its default with no modulation, so layer A is on and B to D are off. Throws
     /// std::invalid_argument for the configurations Engine rejects (sampleRate not finite and > 0,
     /// maxBlockSize 0, grainCapacity above kMaxGrainCapacity).

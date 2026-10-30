@@ -6,6 +6,7 @@
 #define GG_SOURCE_PREPAREDSOURCE_H
 
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -39,7 +40,13 @@ class PreparedSource
     /// level it stops there, keeping the levels already built (levelCount() says how many).
     /// nullptr gives nullptr. Throws std::bad_alloc only if this object itself can't be
     /// allocated.
-    static std::shared_ptr<const PreparedSource> make(std::shared_ptr<const SampleBuffer> buffer);
+    ///
+    /// `cancel`, if not null, is read (relaxed) on entry and before each level: once it
+    /// is true, make() stops and returns nullptr, as for a null buffer, so a loader superseded
+    /// while its source is preparing doesn't build the rest of the pyramid (about 1.75 s of
+    /// worker time for a 10-minute stereo file). The caller discards a nullptr it asked for.
+    static std::shared_ptr<const PreparedSource> make(std::shared_ptr<const SampleBuffer> buffer,
+                                                      const std::atomic<bool> *cancel = nullptr);
 
     PreparedSource(const PreparedSource &) = delete;
     PreparedSource &operator=(const PreparedSource &) = delete;

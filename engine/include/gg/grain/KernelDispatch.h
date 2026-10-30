@@ -15,7 +15,11 @@
 /// AVX2 spike: M2 engine spec §6.12): x86-64 with GCC or Clang (ClangCL included), 0 elsewhere,
 /// where every table holds the 4-wide kernels. A universal macOS build has them in its x86_64
 /// slice only.
-#if (defined(__x86_64__) || defined(_M_X64)) && (defined(__clang__) || defined(__GNUC__))
+/// ClangCL below 19 is left out (final review I2): its <immintrin.h> declares the AVX2 intrinsics
+/// without /arch:AVX2 only from Clang 19 on (VS 2022 ships 17 and 18 before 17.14), so such a build
+/// gets the 4-wide table everywhere instead of failing to compile.
+#if (defined(__x86_64__) || defined(_M_X64)) && (defined(__clang__) || defined(__GNUC__)) &&       \
+    !(defined(_MSC_VER) && defined(__clang__) && __clang_major__ < 19)
 #define GG_KERNELS_AVX2 1
 #else
 #define GG_KERNELS_AVX2 0

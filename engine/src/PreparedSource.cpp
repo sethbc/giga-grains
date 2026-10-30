@@ -4,6 +4,7 @@
 
 #include "gg/source/PreparedSource.h"
 
+#include <atomic>
 #include <new>
 #include <utility>
 
@@ -51,9 +52,12 @@ void PreparedSource::buildLevel(uint32_t n)
 }
 
 std::shared_ptr<const PreparedSource>
-PreparedSource::make(std::shared_ptr<const SampleBuffer> buffer)
+PreparedSource::make(std::shared_ptr<const SampleBuffer> buffer, const std::atomic<bool> *cancel)
 {
-    if (buffer == nullptr)
+    const auto cancelled = [cancel]() noexcept {
+        return cancel != nullptr && cancel->load(std::memory_order_relaxed);
+    };
+    if (buffer == nullptr || cancelled())
     {
         return nullptr;
     }
@@ -80,6 +84,10 @@ PreparedSource::make(std::shared_ptr<const SampleBuffer> buffer)
         const uint32_t count = mipLevelCount(b.frames());
         for (uint32_t n = 1; n < count; ++n)
         {
+            if (cancelled())
+            {
+                return nullptr;
+            }
             try
             {
                 source->buildLevel(n);

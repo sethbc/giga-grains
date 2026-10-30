@@ -162,6 +162,14 @@ add_test(NAME kernel_force_sse_env
         COMMAND gg-tests "GG_FORCE_SSE in the environment forces the 4-wide table")
 set_tests_properties(kernel_force_sse_env PROPERTIES LABELS kernel ENVIRONMENT GG_FORCE_SSE=1)
 
+# GG_REQUIRE_AVX2 (final review I1): the hidden case "GG_REQUIRE_AVX2 requires the 8-wide table"
+# fails when the variable is set in the CTest environment and avx2Kernels() is null. CI's Linux and
+# Windows test steps set it, so those legs can't fall back to the 4-wide table unnoticed; unset (a
+# local run, arm64, the mac-universal leg) it passes and requires nothing. Label kernel.
+add_test(NAME kernel_require_avx2
+        COMMAND gg-tests "GG_REQUIRE_AVX2 requires the 8-wide table")
+set_tests_properties(kernel_require_avx2 PROPERTIES LABELS kernel)
+
 # gg-bench's command line, label `bench`. The bench tests check the timings' shape, never their
 # values, so they run beside the others.
 # - bench_cli: a tiny run of a kernel, the reference and an engine case must exit 0 and write its

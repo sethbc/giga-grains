@@ -89,8 +89,12 @@ inline uint8_t mipLevelFor(double rate, uint32_t levelCount) noexcept
 ///
 ///     out[outStride × m] = Σ_{k=0}^{54} kHalfband[k] × in[inStride × (2m + k − 27)],
 ///
-/// accumulated in float from 0 in k order, taps outside [0, inFrames) zero. Allocates nothing;
-/// PreparedSource::make calls it off the audio thread. `in` may be null when inFrames is 0.
+/// accumulated in float from 0 in k order, taps outside [0, inFrames) zero. The code skips the
+/// zero taps (the odd offsets from the centre) and the taps outside the input instead of
+/// multiplying them, so the sum is this one only for finite input: a NaN or an infinity in the
+/// input would have spread to every output the zero taps reach, and here reaches fewer. Nothing
+/// sanitizes a decoded float file today. Allocates nothing; PreparedSource::make calls it off the
+/// audio thread. `in` may be null when inFrames is 0.
 void decimateHalfband(const float *in, int64_t inFrames, int64_t inStride, float *out,
                       int64_t outFrames, int64_t outStride) noexcept;
 } // namespace gg

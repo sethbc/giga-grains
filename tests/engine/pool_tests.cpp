@@ -480,8 +480,7 @@ TEST_CASE("a steal moves the end and keeps the heap and earliestEnd correct", "[
     REQUIRE(shortSteals > 0); // some grains had at most the fade left
 }
 
-TEST_CASE("a steal of a grain with less than the fade left keeps its end and does not fade",
-          "[pool]")
+TEST_CASE("a steal of a grain with at most the fade left keeps its end and does not fade", "[pool]")
 {
     // Ruling ES-T6a: a grain with at most kStealFade samples left already ends no later than a
     // fade would, so a steal only marks it stolen (fadeStart, so it is never stolen again): its

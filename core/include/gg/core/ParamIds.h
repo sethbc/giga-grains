@@ -43,10 +43,12 @@ enum class Mode
 /// sub-project (M2 programme design §7.1) appends `X(Name, 0x4N, "Name")`, its index inside its
 /// reserved block, at the end of GG_LAYER_PARAMS_M2, or adds a list GG_LAYER_PARAMS_M2_<n> to
 /// GG_LAYER_PARAMS and GG_LAYER_PARAMS_SINCE_M1, as sub-project 3's GG_LAYER_PARAMS_M2_ENGINE is,
-/// and its index to the reserved-block static_assert below. Rows stay in index order, and an index
-/// left unused stays unused: an index is read from this column (layerParamIndex, slotForId), never
-/// from a row's position. The GG_LAYER_PARAMS* macros stay defined on purpose: ParamIds.cpp and
-/// tools/gg-render/RenderSpec.cpp expand them too.
+/// and its index to the reserved-block static_assert below. The index column must stay strictly
+/// ascending (validIndexColumn): a list whose block lies below 0x50 goes between
+/// GG_LAYER_PARAMS_M2 and GG_LAYER_PARAMS_M2_ENGINE in both macros, not after the latter. Rows stay
+/// in index order, and an index left unused stays unused: an index is read from this column
+/// (layerParamIndex, slotForId), never from a row's position. The GG_LAYER_PARAMS* macros stay
+/// defined on purpose: ParamIds.cpp and tools/gg-render/RenderSpec.cpp expand them too.
 #define GG_LAYER_PARAMS_M1(X)                                                                      \
     X(Position, 0x01, "Position")                                                                  \
     X(Size, 0x02, "Size")                                                                          \
@@ -318,7 +320,7 @@ enum class LfoShape : uint8_t
 
 namespace detail
 {
-/// The first slot of layer A's new parameters, and of layer B's 48.
+/// The first slot of layer A's new parameters, and of layer B's 49.
 inline constexpr size_t kLayerANewFirst = static_cast<size_t>(ParamSlot::Source);
 inline constexpr size_t kLayerBFirst = static_cast<size_t>(ParamSlot::B_Position);
 inline constexpr size_t kLayersEnd = static_cast<size_t>(ParamSlot::MorphX);
