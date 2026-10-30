@@ -130,6 +130,35 @@ TEST_CASE("settings XML edited by hand loads, with a declaration and comments", 
     }
 }
 
+TEST_CASE("the theme attribute round trips", "[core]")
+{
+    // The editor's theme (M2 sub-project 6's spec §6.9): the attribute `theme`, written only
+    // when set, at version 1 still.
+    MachineSettings light{"/S", "/L"};
+    light.theme = "light";
+    const std::string xml = toSettingsXml(light);
+    REQUIRE(xml.starts_with("<settings version=\"1\" "));
+    REQUIRE(xml.find(" theme=\"light\"") != std::string::npos);
+    MachineSettings back;
+    REQUIRE(fromSettingsXml(xml, back));
+    REQUIRE(back == light);
+    REQUIRE(toSettingsXml(kSome).find("theme") == std::string::npos);
+
+    // XML without it reads the theme as empty, whatever `out` held.
+    MachineSettings out{"x", "y", "light"};
+    REQUIRE(fromSettingsXml(R"(<settings version="1" sampleFolder="/S" />)", out));
+    REQUIRE(out == MachineSettings{"/S", ""});
+    REQUIRE(out.theme.empty());
+
+    // An M1 settings string, exactly as M1's toSettingsXml wrote it, still parses.
+    const std::string m1 = "<settings version=\"1\" sampleFolder=\"/Users/me/Samples\" "
+                           "lastLoadFolder=\"/Users/me/Kicks\" />";
+    MachineSettings fromM1;
+    REQUIRE(fromSettingsXml(m1, fromM1));
+    REQUIRE(fromM1 == MachineSettings{"/Users/me/Samples", "/Users/me/Kicks"});
+    REQUIRE(fromM1.theme.empty());
+}
+
 TEST_CASE("settings XML that isn't settings is rejected and changes nothing", "[core]")
 {
     const std::vector<std::string> bad{

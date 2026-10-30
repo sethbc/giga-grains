@@ -38,9 +38,11 @@
 #include "GrainCanvas.h" // ui/src: the editor's own components
 #include "LoaderStrip.h"
 #include "editor/EditorPlugin.h"
+#include "editor/UiSettings.h"
 #include "gg/core/GrainQueue.h"
 #include "gg/core/ParamIds.h"
 #include "gg/core/UiSnapshot.h"
+#include "gg/media/SettingsFile.h"
 #include "gg/ui/Editor.h"
 #include "gg/ui/LaneModel.h"
 #include "support/Utf8.h"
@@ -1413,6 +1415,63 @@ TEST_CASE("publishing follows gui destroy without a parent", "[plugin]")
     CHECK(width == 1200);
     CHECK(height == 700);
     gui->destroy(fx.clap());
+}
+
+TEST_CASE("the theme setting is read and written", "[plugin]")
+{
+    // The editor's theme is per machine (M2 sub-project 6's spec §6.9), in the settings file
+    // the loader keeps its folders in. No GUI: the setting is file I/O on the main thread, so
+    // this runs on every leg with the editor.
+    const auto dir = gg::test::sampleDir("theme-setting");
+    const auto file = dir / "settings.xml";
+    std::filesystem::remove(file);
+    gg::test::useSettingsFile(file);
+    CHECK(gg::plugin::readTheme() == gg::plugin::ThemeName::Dark); // no file yet
+
+    // The loader's sample folder, written first, survives the theme's writes.
+    {
+        gg::test::PluginUnderTest instrument("org.sethbc.giga-grains");
+        REQUIRE(instrument.valid());
+        auto *plugin = dynamic_cast<gg::plugin::EditorPlugin *>(&instrument.impl());
+        REQUIRE(plugin != nullptr);
+        REQUIRE(plugin->sampleLoader() != nullptr);
+        REQUIRE(plugin->sampleLoader()->setSampleFolder(dir / "library"));
+    }
+    const std::string library = gg::media::loadSettings(file).sampleFolder;
+    REQUIRE_FALSE(library.empty());
+
+    CHECK(gg::plugin::writeTheme(gg::plugin::ThemeName::Light));
+    CHECK(gg::plugin::readTheme() == gg::plugin::ThemeName::Light);
+    CHECK(gg::media::loadSettings(file).theme == "light");
+    CHECK(gg::media::loadSettings(file).sampleFolder == library);
+
+    CHECK(gg::plugin::writeTheme(gg::plugin::ThemeName::Dark));
+    CHECK(gg::plugin::readTheme() == gg::plugin::ThemeName::Dark);
+    CHECK(gg::media::loadSettings(file).theme == "dark");
+    CHECK(gg::media::loadSettings(file).sampleFolder == library);
+
+    // Anything but "light" is the dark theme.
+    gg::core::MachineSettings odd = gg::media::loadSettings(file);
+    odd.theme = "Light";
+    REQUIRE(gg::media::saveSettings(file, odd));
+    CHECK(gg::plugin::readTheme() == gg::plugin::ThemeName::Dark);
+}
+
+TEST_CASE("a theme write into an unwritable folder fails cleanly", "[plugin]")
+{
+    // The settings file's folder can't be made: a regular file stands where it would go.
+    const auto dir = gg::test::sampleDir("theme-unwritable");
+    const auto blocker = dir / "not-a-folder";
+    std::filesystem::remove_all(blocker);
+    gg::test::writeFile(blocker, std::vector<uint8_t>{'x'});
+    REQUIRE(std::filesystem::is_regular_file(blocker));
+    gg::test::useSettingsFile(blocker / "settings.xml");
+
+    bool written = true;
+    REQUIRE_NOTHROW(written = gg::plugin::writeTheme(gg::plugin::ThemeName::Light));
+    CHECK_FALSE(written);
+    CHECK(gg::plugin::readTheme() == gg::plugin::ThemeName::Dark);
+    CHECK(std::filesystem::is_regular_file(blocker));
 }
 #else
 TEST_CASE("headless build exposes no gui extension", "[plugin]")
