@@ -52,6 +52,10 @@ add_executable(gg-tests
         metrics/click_injection_tests.cpp
         metrics/metrics_tests.cpp
         metrics/spectrogram_tests.cpp
+        sweep/sweep_bursts_tests.cpp
+        sweep/sweep_extremes_tests.cpp
+        sweep/sweep_overload_tests.cpp
+        sweep/sweep_params_tests.cpp
         tools/bench_kernel_tests.cpp
         tools/bench_tests.cpp
         tools/render_spec_tests.cpp
