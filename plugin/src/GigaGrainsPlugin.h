@@ -9,7 +9,9 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <memory>
+#include <string>
 #include <utility>
 
 #include <clap/clap.h>
@@ -22,6 +24,7 @@
 #include "gg/core/ModMatrix.h"
 #include "gg/core/ParamIds.h"
 #include "gg/core/Processor.h"
+#include "gg/core/SessionState.h"
 #include "gg/engine/TaskRunner.h"
 #include "gg/source/SourceMode.h"
 
@@ -103,7 +106,8 @@ const clap_plugin_descriptor *descriptorFor(Product product) noexcept;
 /// text at the modulation rate, and what is shown is what the user set (ruling FR-6).
 ///
 /// **The seed** (sub-project 5's spec §7). A new instance draws its own engine seed, on the main
-/// thread at construction, from std::random_device; a state brings its own.
+/// thread at construction, from std::random_device; a session state brings its own, and a preset
+/// keeps the instance's (M2 sub-project 5's D6).
 ///
 /// **The sample** (the instrument; spec §6.4–§6.7). The SampleLoader keeps the manifest entry
 /// and the source on the main thread, and loads on its own worker thread. Sources reach the
@@ -226,6 +230,30 @@ class GigaGrainsPlugin : public plugHelper_t
     void setPublishing(bool on) noexcept;
     bool publishing() const noexcept { return publishing_; }
 
+    // ---- Presets (M2 sub-project 5's spec §6.2): main thread ----
+
+    /// Loads the preset file `file` (gg/core/Preset.h) for this product, all or nothing: reads at
+    /// most kMaxStateBytes + 1 bytes of it, checks it with readPreset, then applies it as a state
+    /// load does (applyState, LoadKind::Preset), keeping the seed (D6) and, when it names no
+    /// sample, the sample loaded (D5). False, with `error` saying why and nothing changed, when
+    /// the file can't be read ("can't read <file name>", and `osError`, if given, the errno of a
+    /// file that can't be opened, 0 otherwise), is longer than kMaxStateBytes ("the preset is
+    /// larger than 64 MiB"), or isn't a preset of this product ("not a Giga Grains FX preset",
+    /// "not a Giga Grains preset"). A preset of this product whose values don't decode can't be
+    /// read either. May throw std::bad_alloc, changing nothing.
+    bool loadPresetFile(const std::filesystem::path &file, std::string &error,
+                        int32_t *osError = nullptr);
+    /// INIT (spec §6.2, D8): applies initState(mode()) as a preset (every default, the factory
+    /// routes, the name "Init"), keeping the seed and the sample, as a fresh instance sounds. May
+    /// throw std::bad_alloc, changing nothing.
+    void loadInit();
+    /// The name of the preset loaded last, or of the session restored (its state's `name`):
+    /// "Init" in a new instance. stateSave writes it as the state's name.
+    std::string presetName() const { return presetName_; }
+    /// Whether any base value (values_) differs from the loaded preset's, bit for bit, over every
+    /// parameter: the header's edited mark. False in a new instance and right after a load.
+    bool presetEdited() const noexcept;
+
     /// The rate of the last activate(), kDefaultTailRate before the first. Main thread.
     double activeSampleRate() const noexcept { return sampleRate_.load(std::memory_order_relaxed); }
 
@@ -303,6 +331,16 @@ class GigaGrainsPlugin : public plugHelper_t
     bool stateSave(const clap_ostream *stream) noexcept override;
     bool stateLoad(const clap_istream *stream) noexcept override;
 
+    // ---- Preset load (clap.preset-load, spec §6.2) ----
+
+    bool implementsPresetLoad() const noexcept override { return true; }
+    /// CLAP_PRESET_DISCOVERY_LOCATION_FILE: loadPresetFile(location); _PLUGIN with the load key
+    /// kInitLoadKey: loadInit(). Anything else fails with "unknown preset location". Tells the
+    /// host (clap_host_preset_load, when it offers it): loaded() with the same kind, location and
+    /// key on success, on_error() with the reason otherwise.
+    bool presetLoadFromLocation(uint32_t locationKind, const char *location,
+                                const char *loadKey) noexcept override;
+
     // ---- Remote controls: eight pages, M1's "Perform" (sub-project 5's spec §3.3), "Cloud"
     // (spec §4) and "Space" (sub-project 4's spec §6.6), then "Layers", "Morph" and "Cloud B" to
     // "Cloud D" (M2 sub-project 1's spec §6.9) ----
@@ -321,6 +359,20 @@ class GigaGrainsPlugin : public plugHelper_t
     uint32_t tailGet() const noexcept SST_CPPUTILS_NONBLOCKING override;
 
   private:
+    /// What a state applied by applyState is: a session (state.load), whose seed and sample
+    /// replace the instance's, or a preset (a file or INIT), which keeps the seed (D6) and, when
+    /// it names no sample, the sample (D5).
+    enum class LoadKind
+    {
+        Session,
+        Preset,
+    };
+    /// The one state-load path (spec §6.2), for stateLoad and the presets: `state`'s values and
+    /// routes (and its seed and sample per `kind`) take effect as stateLoad's comment says, its
+    /// name becomes presetName_ and its values presetValues_, and the host rescans the values.
+    /// Main thread. All or nothing: may throw std::bad_alloc before anything changes.
+    void applyState(gg::core::SessionState &&state, LoadKind kind);
+
     clap_process_status
     processNonblocking(const clap_process *process) noexcept SST_CPPUTILS_NONBLOCKING;
     void countNoteOns(const clap_input_events *events) noexcept SST_CPPUTILS_NONBLOCKING;
@@ -423,6 +475,10 @@ class GigaGrainsPlugin : public plugHelper_t
     // the processor at activate() and, loaded while active, through loadedState_. Routes have no
     // other way to change yet. Main thread.
     gg::core::ModRoutes routes_;
+    // The loaded preset's name and base values (applyState; "Init" and the defaults in a new
+    // instance): presetName(), presetEdited(). Main thread.
+    std::string presetName_{"Init"};
+    gg::core::ParamValues presetValues_{};
     // Set by the audio thread when it has stored a state's values in values_, cleared by
     // on_main_thread, which then asks the host to rescan them (requestValueRescan).
     std::atomic<bool> valuesApplied_{false};

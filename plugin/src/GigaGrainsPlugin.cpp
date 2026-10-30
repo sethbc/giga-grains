@@ -5,12 +5,15 @@
 #include "GigaGrainsPlugin.h"
 
 #include <algorithm>
+#include <bit>
+#include <cerrno>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <optional>
 #include <random>
 #include <span>
@@ -18,10 +21,13 @@
 
 #include "gg/core/ModMatrix.h"
 #include "gg/core/ParamMap.h"
+#include "gg/core/Preset.h"
+#include "gg/core/PresetInfo.h"
 #include "gg/core/Rng.h"
 #include "gg/core/SessionState.h"
 #include "SettingsPath.h"
 #include "gg/media/SettingsFile.h"
+#include "gg/media/Utf8Path.h"
 #include "gg/plugin/Identity.h"
 #include "sst/basic-blocks/params/ParamMetadata.h"
 
@@ -171,6 +177,7 @@ GigaGrainsPlugin::GigaGrainsPlugin(const clap_host *host, Product product)
         minValues_[s] = meta.minVal;
         maxValues_[s] = meta.maxVal;
         storeValue(static_cast<ParamSlot>(s), meta.defaultVal);
+        presetValues_[s] = values_[s].load(std::memory_order_relaxed); // INIT's: not edited
     }
     for (uint8_t layer = 0; layer < gg::core::kLayers; ++layer)
     {
@@ -1171,8 +1178,8 @@ bool GigaGrainsPlugin::stateSave(const clap_ostream *stream) noexcept
         // routes are those in effect (routes_).
         const std::string bytes = gg::core::encodeState(
             {values, seed_, loader_ != nullptr ? loader_->entry() : std::nullopt,
-             loader_ != nullptr ? loader_->newerMedia() : std::nullopt, routes_, "Init",
-             std::nullopt});
+             loader_ != nullptr ? loader_->newerMedia() : std::nullopt, routes_, presetName_,
+             std::nullopt}); // the preset's name, but a session: no <preset>
 
         // A stream may take fewer bytes than offered: write until all are in.
         const char *data = bytes.data();
@@ -1233,67 +1240,211 @@ bool GigaGrainsPlugin::stateLoad(const clap_istream *stream) noexcept
         {
             return false;
         }
-        // The one allocation left before the state takes effect, made before anything changes:
-        // room in the exchange for the offer below, which then can't throw, so a bad_alloc here
-        // still changes nothing (all or nothing).
-        if (loader_ != nullptr && processor_ != nullptr)
-        {
-            processor_->sources().reserve();
-        }
-        // The instrument's sample, found and decoded before this returns (D8); while active,
-        // offered to the audio thread below in one hand-off with the values, so the process()
-        // that takes them applies both. The sample already in memory, when it is the session's,
-        // is kept and only the values are offered (ruling R19). The FX ignores a sample (a state
-        // from the instrument).
-        // restore() never throws: a sample it can't load leaves its status saying why.
-        SampleLoader::Restored restored;
-        if (loader_ != nullptr)
-        {
-            restored = loader_->restore(loaded.sample, std::move(loaded.newerMedia));
-        }
-        const auto &values = loaded.values;
-        const uint64_t seed = loaded.seed;
-        for (std::size_t s = 0; s < kParamCount; ++s)
-        {
-            storeValue(static_cast<ParamSlot>(s), values[s]);
-        }
-        // stateSave writes them from now on: the seed and the routes the audio thread is about
-        // to use.
-        seed_ = seed;
-        routes_ = loaded.routes;
-        // Inactive, activate() applies the values, the seed and the routes. Active, the audio
-        // thread applies them at the start of its next process() or params.flush (carry-over row
-        // 115): the seed and the routes through loadedState_ in both products, the values with
-        // them in the FX and with the sample in the instrument (D8). The instrument's two
-        // hand-offs are separate, so its seed and routes may apply a block before or after its
-        // values.
-        if (processor_ != nullptr)
-        {
-            if (loader_ != nullptr && restored.keep)
-            {
-                // The sample in memory is the session's (ruling R19): its values alone.
-                processor_->sources().offerValues(values); // never allocates
-            }
-            else if (loader_ != nullptr)
-            {
-                processor_->sources().offer(std::move(restored.source), &values); // reserved
-            }
-            loadedState_.push({values, routes_, seed, loader_ == nullptr});
-        }
-        else
-        {
-            checkKinds(); // inactive: the main thread owns values_
-        }
-        if (_host.canUseParams())
-        {
-            _host.paramsRescan(CLAP_PARAM_RESCAN_VALUES);
-        }
+        applyState(std::move(loaded), LoadKind::Session);
         return true;
     }
     catch (...)
     {
         return false;
     }
+}
+
+void GigaGrainsPlugin::applyState(gg::core::SessionState &&state, LoadKind kind)
+{
+    // The one allocation left before the state takes effect, made before anything changes:
+    // room in the exchange for the offer below, which then can't throw, so a bad_alloc here
+    // still changes nothing (all or nothing).
+    if (loader_ != nullptr && processor_ != nullptr)
+    {
+        processor_->sources().reserve();
+    }
+    // The instrument's sample, found and decoded before this returns (D8); while active,
+    // offered to the audio thread below in one hand-off with the values, so the process() that
+    // takes them applies both. The sample already in memory, when it is the session's, is kept
+    // and only the values are offered (ruling R19). A preset that names no sample keeps the one
+    // loaded, entry and source, and reads nothing (D5): its values are offered alone, as R19's
+    // are. The FX ignores a sample (a state from the instrument).
+    // restore() never throws: a sample it can't load leaves its status saying why.
+    const bool keepSample = kind == LoadKind::Preset && !state.sample.has_value();
+    SampleLoader::Restored restored;
+    if (loader_ != nullptr && !keepSample)
+    {
+        // content-relative references resolve here (Task 14)
+        restored = loader_->restore(state.sample, std::move(state.newerMedia));
+    }
+    const auto &values = state.values;
+    for (std::size_t s = 0; s < kParamCount; ++s)
+    {
+        storeValue(static_cast<ParamSlot>(s), values[s]);
+        // As storeValue clamps it: what presetEdited compares values_ with.
+        presetValues_[s] = std::clamp(values[s], minValues_[s], maxValues_[s]);
+    }
+    // stateSave writes them from now on: the seed and the routes the audio thread is about to
+    // use, and the name. A preset keeps the instance's seed (D6): its own is ignored.
+    if (kind == LoadKind::Session)
+    {
+        seed_ = state.seed;
+    }
+    routes_ = state.routes;
+    presetName_ = std::move(state.name); // a move: nothing left to throw
+    // Inactive, activate() applies the values, the seed and the routes. Active, the audio thread
+    // applies them at the start of its next process() or params.flush (carry-over row 115): the
+    // seed and the routes through loadedState_ in both products, the values with them in the FX
+    // and with the sample in the instrument (D8). The instrument's two hand-offs are separate,
+    // so its seed and routes may apply a block before or after its values.
+    if (processor_ != nullptr)
+    {
+        if (loader_ != nullptr && (keepSample || restored.keep))
+        {
+            // The sample in memory stays (R19, D5): the values alone.
+            processor_->sources().offerValues(values); // never allocates
+        }
+        else if (loader_ != nullptr)
+        {
+            processor_->sources().offer(std::move(restored.source), &values); // reserved
+        }
+        loadedState_.push({values, routes_, seed_, loader_ == nullptr});
+    }
+    else
+    {
+        checkKinds(); // inactive: the main thread owns values_
+    }
+    if (_host.canUseParams())
+    {
+        _host.paramsRescan(CLAP_PARAM_RESCAN_VALUES);
+    }
+}
+
+bool GigaGrainsPlugin::presetEdited() const noexcept
+{
+    for (std::size_t s = 0; s < kParamCount; ++s)
+    {
+        if (std::bit_cast<uint32_t>(values_[s].load(std::memory_order_relaxed)) !=
+            std::bit_cast<uint32_t>(presetValues_[s]))
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool GigaGrainsPlugin::loadPresetFile(const std::filesystem::path &file, std::string &error,
+                                      int32_t *osError)
+{
+    if (osError != nullptr)
+    {
+        *osError = 0;
+    }
+    const std::string name = gg::media::displayName(file);
+    errno = 0;
+    std::ifstream in(file, std::ios::binary);
+    if (!in)
+    {
+        if (osError != nullptr)
+        {
+            *osError = errno;
+        }
+        error = "can't read " + name;
+        return false;
+    }
+    // At most one byte past kMaxStateBytes, as stateLoad reads a state: a longer file fails there.
+    std::string bytes;
+    char buffer[4096];
+    for (;;)
+    {
+        const auto want =
+            std::min<std::size_t>(sizeof(buffer), gg::core::kMaxStateBytes + 1 - bytes.size());
+        in.read(buffer, static_cast<std::streamsize>(want));
+        const auto got = static_cast<std::size_t>(in.gcount());
+        bytes.append(buffer, got);
+        if (bytes.size() > gg::core::kMaxStateBytes)
+        {
+            error = "the preset is larger than 64 MiB";
+            return false;
+        }
+        if (got < want)
+        {
+            if (in.bad())
+            {
+                error = "can't read " + name;
+                return false;
+            }
+            break; // the end of the file
+        }
+    }
+
+    gg::core::PresetInfo info;
+    gg::core::SessionState state;
+    if (!gg::core::readPreset(bytes, mode(), info, state))
+    {
+        // A preset of this product that still doesn't load is damaged; anything else, a session
+        // state, the other product's preset or another file, isn't one of ours.
+        gg::core::PresetInfo found;
+        if (gg::core::presetInfoOf(bytes, found) && found.product == mode())
+        {
+            error = "can't read " + name;
+        }
+        else
+        {
+            error = std::string("not a ") + descriptorFor(product_)->name + " preset";
+        }
+        return false;
+    }
+    applyState(std::move(state), LoadKind::Preset);
+    return true;
+}
+
+void GigaGrainsPlugin::loadInit() { applyState(gg::core::initState(mode()), LoadKind::Preset); }
+
+bool GigaGrainsPlugin::presetLoadFromLocation(uint32_t locationKind, const char *location,
+                                              const char *loadKey) noexcept
+{
+    bool loaded = false;
+    bool outOfMemory = false;
+    int32_t osError = 0;
+    std::string error;
+    try
+    {
+        if (locationKind == CLAP_PRESET_DISCOVERY_LOCATION_FILE && location != nullptr)
+        {
+            if (const auto file = gg::media::fromUtf8(location))
+            {
+                loaded = loadPresetFile(*file, error, &osError);
+            }
+            else
+            {
+                error = std::string("can't read ") + location; // not a path on this system
+            }
+        }
+        else if (locationKind == CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN && loadKey != nullptr &&
+                 loadKey == gg::core::kInitLoadKey)
+        {
+            loadInit();
+            loaded = true;
+        }
+        else
+        {
+            error = "unknown preset location";
+        }
+    }
+    catch (...)
+    {
+        loaded = false; // std::bad_alloc, before anything changed
+        outOfMemory = true;
+    }
+    if (_host.canUsePresetLoad())
+    {
+        if (loaded)
+        {
+            _host.presetLoadLoaded(locationKind, location, loadKey);
+        }
+        else
+        {
+            _host.presetLoadOnError(locationKind, location, loadKey, osError,
+                                    outOfMemory ? "out of memory" : error.c_str());
+        }
+    }
+    return loaded;
 }
 
 uint32_t GigaGrainsPlugin::remoteControlsPageCount() noexcept
