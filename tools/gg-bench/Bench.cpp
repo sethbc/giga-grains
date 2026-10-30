@@ -80,6 +80,9 @@
 #include "gg/grain/Tier.h"
 #include "gg/source/SampleBuffer.h"
 #include "gg/source/SourceMode.h"
+#include "gg/ui/LayerColours.h"
+#include "gg/ui/SplatRenderer.h"
+#include "gg/ui/StressGrains.h"
 
 namespace gg::bench
 {
@@ -1437,4 +1440,136 @@ int spaceMain(const SpaceOptions &options, const std::string &jsonPath, std::str
     }
     return 0;
 }
+
+// ---- gg-bench --canvas ----
+
+namespace
+{
+constexpr uint32_t kCanvasWidth = 3200;
+constexpr uint32_t kCanvasHeight = 1200;
+constexpr float kCanvasPixelScale = 2.0f; // a 1600 x 600 canvas on a 2x display
+constexpr std::array<uint32_t, 3> kCanvasGrains{4096, 8192, 16384};
+constexpr int kCanvasWarmupFrames = 20;
+constexpr double kCanvasBudgetMs = 3.0; // INTENT §16, at 8,000 grains
+constexpr uint32_t kCanvasLanes = 4;
+
+/// The p-th quantile (0..1) of v, nearest rank: the canvas reports a measured frame time, where
+/// gg::bench::quantile interpolates between two. v must not be empty.
+double nearestRank(std::vector<double> v, double p)
+{
+    std::sort(v.begin(), v.end());
+    const auto rank = static_cast<std::size_t>(p * static_cast<double>(v.size() - 1) + 0.5);
+    return v[std::min(rank, v.size() - 1)];
+}
+
+/// The four lanes: the canvas's height in quarters, each in its layer's tint.
+std::array<gg::ui::TintBand, kCanvasLanes> canvasBands()
+{
+    std::array<gg::ui::TintBand, kCanvasLanes> bands{};
+    for (uint32_t lane = 0; lane < kCanvasLanes; ++lane)
+    {
+        bands[lane] = {lane * kCanvasHeight / kCanvasLanes,
+                       (lane + 1) * kCanvasHeight / kCanvasLanes, gg::ui::kLayerTints[lane]};
+    }
+    return bands;
+}
+
+CanvasResult measureCanvas(uint32_t grains, int frames, gg::ui::SplatRenderer &canvas,
+                           std::vector<uint32_t> &pixels)
+{
+    using Clock = std::chrono::steady_clock;
+    const auto ms = [](Clock::duration d) {
+        return std::chrono::duration<double, std::milli>(d).count();
+    };
+    const auto bands = canvasBands();
+    std::vector<gg::ui::Splat> splats(grains);
+    std::vector<double> generateMs, clearMs, splatMs, resolveMs, totalMs;
+    uint64_t sink = 0;
+    for (int f = 0; f < kCanvasWarmupFrames + frames; ++f)
+    {
+        const auto t0 = Clock::now();
+        gg::ui::stressGrains(static_cast<uint64_t>(f), grains, kCanvasWidth, kCanvasHeight,
+                             kCanvasPixelScale, splats.data());
+        const auto t1 = Clock::now();
+        canvas.clear();
+        const auto t2 = Clock::now();
+        for (const gg::ui::Splat &s : splats)
+        {
+            canvas.add(s.x, s.y, s.radius, s.intensity);
+        }
+        const auto t3 = Clock::now();
+        canvas.resolveToArgb(pixels.data(), kCanvasWidth, bands);
+        const auto t4 = Clock::now();
+        sink += pixels[(static_cast<std::size_t>(f) * 7919u) % pixels.size()];
+        if (f >= kCanvasWarmupFrames)
+        {
+            generateMs.push_back(ms(t1 - t0));
+            clearMs.push_back(ms(t2 - t1));
+            splatMs.push_back(ms(t3 - t2));
+            resolveMs.push_back(ms(t4 - t3));
+            totalMs.push_back(ms(t4 - t1));
+        }
+    }
+    gSink = gSink + static_cast<double>(sink);
+
+    double mean = 0.0;
+    for (const double t : totalMs)
+    {
+        mean += t;
+    }
+    mean /= static_cast<double>(totalMs.size());
+    return {grains,
+            nearestRank(generateMs, 0.5),
+            nearestRank(clearMs, 0.5),
+            nearestRank(splatMs, 0.5),
+            nearestRank(resolveMs, 0.5),
+            nearestRank(totalMs, 0.5),
+            mean,
+            nearestRank(totalMs, 0.95)};
+}
+
+double round3(double x) { return std::round(x * 1000.0) / 1000.0; }
+} // namespace
+
+CanvasReport runCanvas(int frames)
+{
+    if (frames < 1)
+    {
+        throw std::invalid_argument("the canvas needs at least 1 frame");
+    }
+    gg::ui::SplatRenderer canvas(kCanvasWidth, kCanvasHeight);
+    std::vector<uint32_t> pixels(static_cast<std::size_t>(kCanvasWidth) * kCanvasHeight);
+    CanvasReport report;
+    report.frames = frames;
+    for (const uint32_t grains : kCanvasGrains)
+    {
+        report.results.push_back(measureCanvas(grains, frames, canvas, pixels));
+    }
+    return report;
+}
+
+std::string toJson(const CanvasReport &report)
+{
+    nlohmann::ordered_json results = nlohmann::ordered_json::array();
+    for (const CanvasResult &r : report.results)
+    {
+        results.push_back({{"grains", r.grains},
+                           {"generateMs", round3(r.generateMs)},
+                           {"clearMs", round3(r.clearMs)},
+                           {"splatMs", round3(r.splatMs)},
+                           {"resolveMs", round3(r.resolveMs)},
+                           {"totalMs", round3(r.totalMs)},
+                           {"totalMsMean", round3(r.totalMsMean)},
+                           {"totalMsP95", round3(r.totalMsP95)}});
+    }
+    const nlohmann::ordered_json j{
+        {"benchmark", "canvas"},   {"machine", machine()},
+        {"compiler", compiler()},  {"width", kCanvasWidth},
+        {"height", kCanvasHeight}, {"pixelScale", static_cast<double>(kCanvasPixelScale)},
+        {"lanes", kCanvasLanes},   {"resolve", "banded"},
+        {"frames", report.frames}, {"budgetMs", kCanvasBudgetMs},
+        {"results", results}};
+    return j.dump(2) + "\n";
+}
+
 } // namespace gg::bench
