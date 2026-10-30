@@ -1428,6 +1428,9 @@ void Processor::render(const Buffers &b, int64_t from, int64_t to) noexcept
         }
         // The piece's grain events, in layer order A to D (spec §6.7), after the join.
         drainEvents();
+        // No task outside a request: a host that calls thread_pool.exec now (a CLAP violation)
+        // runs nothing (execTask checks i < taskCount_).
+        taskCount_ = 0;
 
         float *dst[2] = {nullptr, nullptr};
         for (uint32_t c = 0; c < channels; ++c)

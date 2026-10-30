@@ -154,7 +154,11 @@ void GrainCanvas::renderFrame()
             gg::core::GrainVis v;
             while (context_.grains->pop(v))
             {
-                grains_.push(laneGrain(v));
+                // INTENT §17: until the layers' views, the view still shows layer A alone.
+                if (v.layer == 0)
+                {
+                    grains_.push(laneGrain(v));
+                }
             }
         }
         now_ = clock_.now();
