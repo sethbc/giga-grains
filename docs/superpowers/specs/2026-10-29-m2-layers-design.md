@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | **Approved by the programme manager 2026-10-29** against the programme design and INTENT, with one amendment accepted (rows 118 and 119 move from sub-project 2 to this one, §12). **The director's decisions D1–D5, 2026-10-29,** are recorded in §8 and applied in place: D1 option 1, D2 option 1, D3 option 3, D4 option 1, D5 option 2. Not yet built: Phase B (the plan, then the build) starts from this version |
+| **Status** | **Approved by the programme manager 2026-10-29** against the programme design and INTENT, with one amendment accepted (rows 118 and 119 move from sub-project 2 to this one, §12). **The director's decisions D1–D5, 2026-10-29,** are recorded in §8 and applied in place: D1 option 1, D2 option 1, D3 option 3, D4 option 1, D5 option 2. **Built** 2026-10-30 (PR #15; INTENT §23 #65), amended in place, each marked **Amended**: §6.1 (the smoke test's bound and the PPA step, ruling LS-T1a; no C++23 library feature used yet), §6.3 (the `min(1, Σ r_K)` factor, ruling LS-T10a), §6.7 (the event order, ruling LS-T10b; the per-layer dropped-event counts and the stub pool's RTSan exemption, rulings LS-T11a and LS-T11b), §6.8 (Level and Layer A On as layer targets), §6.9 (the 07b listening spec, ruling LS-T5a), §6.10 (the `<route>` target as a CLAP ID, ruling LS-P1), §6.11 (`tempoBpm`, ruling LS-T13a), §12 (rows 118 and 119 accepted by the programme manager, and closed) |
 | **Milestone** | M2 Giga (INTENT §20, §23 #64), sub-project 1 of 7; wave 1, alone |
 | **Spec authority** | `INTENT.md`, then `docs/superpowers/specs/2026-10-29-m2-programme-design.md` (its §6.1, §7 and §12 are this sub-project's charter: realized here, not reopened). This document records how this sub-project implements them |
 | **Builds on** | M1 as closed (§23 #60): the `Processor` and its wet chain, the Cloud engine, Sources, Space, the Perform UI's macros, Texture and Feedback; the release pipeline (§23 #61) |
@@ -179,6 +179,16 @@ task reverts (§6.1).
   C++23 row records which leg failed and why, and the rest of this sub-project proceeds on C++20.
   Nothing else here depends on the standard.
 
+  > **Amended (2026-10-30), as built:** every leg went green within the timebox, with no revert
+  > (`6a816e9`, `3d15b06`; INTENT §22's row resolved). By ruling LS-T1a, GCC 13 defines
+  > `__cplusplus` as 202100L for `-std=c++23`, so the smoke test (§10's `[build]` item) checks
+  > `__cplusplus > 202002L`, not `>= 202302L`; and the pinned `prepare-for-juce` installs no
+  > compiler, so the Linux leg's own step adds the PPA and installs gcc-13 and g++-13 before it.
+  > The configure's floor message has no scratch-project test. No first-party code uses a C++23
+  > library feature yet: the new parsers kept their files' existing error paths (a malformed
+  > `<route>` loads as an empty slot; `gg-render`'s spec errors are its `SpecError` exceptions), so
+  > `std::expected` and `std::to_underlying` wait for code that needs them.
+
 ### 6.2 Layers in the engine and the `Processor` (I1)
 
 **`gg::Engine` is one layer's engine.** Its M1 contract holds (`Engine.h`'s class comment), with
@@ -278,6 +288,16 @@ instance, after the tasks join:
   and option 1's denominator vanishes only when every on layer's ramp is 0, where every weight is 0
   by definition (`s > 0 ? r_L·b_L / s : 0`). So one layer on always gives `b_A / b_A`, exactly
   1.0, wherever the pad is.
+
+  > **Amended by ruling LS-T10a (2026-10-30, Task 10's fix round):** the law as built is
+  > `weight_L = s > 0 ? (r_L·b_L / s) × min(1, Σ_K r_K) : 0`, `s = Σ_K r_K·b_K`. The normalized
+  > weight alone kept a lone layer at 1 until its ramp was exactly 0, so switching off the last
+  > layer cut instead of fading over the 10 ms this section requires; the factor makes the
+  > amplitude sum follow the ramps whenever less than one whole layer's worth is on, so the last
+  > layer fades out and the first switched on from all off fades in. With a whole layer's worth
+  > on it is 1 and the law is D1's; one layer at `r = 1` still weighs exactly 1.0 (`(b/b) × 1`),
+  > so layer A alone is M1's bit for bit (`1235944`). It is the stated behaviour, not the
+  > formula, that is the intent: an engineering ruling, not a director's choice.
 - Every weight is plain float arithmetic per sample, no libm; a −0 weight can't arise since the
   ramps and bilinears are products of non-negative values.
 
@@ -362,6 +382,17 @@ instance, after the tasks join:
   layer order A to D and calls the external sink (`gg-render`'s log) and the UI grain queue
   (single producer, as before) in that order. The event log is therefore ordered by piece, then
   layer, then spawn; for one layer it is M1's order.
+
+  > **Amended by rulings LS-T10b, LS-T11a and LS-T11b (2026-10-30):** pieces end at call ends,
+  > at grid boundaries with changes, at 256-sample cuts and where a layer's off-ramp reaches 0
+  > (the piece is cut there, LS-T10c, so the layer stops on the same sample at any block size),
+  > so how two layers' grains interleave in the log depends on the block size. Each layer's own
+  > sequence, and the audio, are block-size invariant, and every golden renders at its spec's
+  > fixed block size, so the cross-platform gate holds; a test that compares logs across block
+  > sizes compares them per layer (INTENT §19). A full buffer drops the event from the sink and
+  > the queue, never from the audio, and each layer counts its own drops, which
+  > `droppedGrainEvents()` sums (LS-T11a). In the RTSan build the stub pool's own lock and wait,
+  > a stand-in for the host's pool, are exempt; the tasks it runs are still checked (LS-T11b).
 - **The grain-event line gains `"layer"`** after `"i"` (`{"i":…,"layer":0,"onset":…}`), which
   rewrites every expected `.events.jsonl` once with every WAV unchanged, as `"tex"` did
   (§23 #58). `GrainVis` gains `layer` too, for 6's lanes.
@@ -402,6 +433,12 @@ none. A per-layer source's `sourceLayer` is A to D or *Same* (the target's layer
 layer or on **every layer** (the programme design's target model, decision 7). "Every layer" for
 Level means the four Levels (A's global and B–D's). Globals without a layer (Mix, the reverb's,
 Morph X and Y, the Ons) take no layer.
+
+> **Amended (2026-10-30), as built (Task 6, `af37670`):** a per-layer kind is named by layer A's
+> slot, and the per-layer globals too: Level and Layer A On are layer targets, reaching Level B to
+> D and Layer B to D On through `targetLayer` (`isLayerTarget`, `routeTargetSlot` in
+> `gg/core/ModMatrix.h`). Layers B to D's slots, Level B to D and Layer B to D On are refused as
+> targets. So of the globals only Mix, the reverb's and Morph X and Y take no layer.
 
 **Curves,** chosen so the eight M1 recipes are expressible exactly: `Unipolar` u, `Bipolar`
 2u − 1, `BipolarPositive` max(2u − 1, 0), `UnipolarSquared` u², `RampThreeQuarters`
@@ -509,6 +546,12 @@ the CLAP `module` "Layer A" … "Layer D" for hosts that show paths; globals kee
 `gg-render` accepts the displayed names and keeps the bare M1 names ("Size") as layer A's aliases,
 so every M1 spec and listening spec is unchanged.
 
+> **Amended by ruling LS-T5a (2026-10-30):** all but one. The M1 Perform pack's
+> `docs/listening/m1-perform/specs/07b-macro-stereo.json` names the instrument's "Macro Stereo",
+> which is gone since Macro 7 is Feedback in both products (§6.10), so it no longer parses. It
+> stays unchanged as listening gate #1's frozen record, its README says why, and a test pins the
+> failure explicitly.
+
 **Metadata that differs between the products** shrinks to Position's default and display, Source's
 default and Macro 8's name; Macro 7 is "Macro Feedback", unipolar, 0 by default, in both (§6.10).
 The instrument hides Mix and Dry to Reverb; Feedback is shown in both (§6.4).
@@ -527,6 +570,18 @@ Level). Eight pages.
   empty slots omitted). This is M2's one
   patch version bump: wave 2 adds parameters absent → default with no bump, and sub-project 2 alone
   adds chunks.
+
+  > **Amended by ruling LS-P1 (2026-10-29, the plan's pre-flight), as built (`a660295`):** a
+  > `<route>` writes `target` as the target slot's CLAP ID in decimal, as `<p id>` does (layer A's
+  > for a per-layer kind), never its display name: IDs are frozen and names aren't, so a renamed
+  > parameter can't break a saved route. `source` and `curve` are their stable identifiers
+  > (`modSourceName`, "Macro 1" … "Transport Playing"; `modCurveName`, "Unipolar" …
+  > "TopQuarter"), the layers `A` to `D`, `same` and `all`, and the depth carries `bits`, as a
+  > `<p>` does, so it reads back exactly: `<route slot="1" source="Macro 1" sourceLayer="same"
+  > target="65538" targetLayer="all" depth="3.000000000000" bits="40400000" curve="Bipolar" />`
+  > (`gg/core/PatchState.h`). The writer leaves out a route that wouldn't read back as itself; a
+  > malformed `<route>` loads as an empty slot. `gg-render`'s spec keeps display names: it owns
+  > the lookup (ruling LS-T9a has the edge cases).
 - **Migration from version 1** (an M1 state): every new parameter takes its default (layer A's
   Source takes the product's default kind, so an M1 FX state is Live and an M1 instrument state
   Sample); the twelve factory routes fill slots 1 to 12; and **the instrument's Macro 7 is
@@ -559,6 +614,11 @@ stay errors):
   `"velocity"` (default 100);
 - `"transport"`: `{"tempo", "playing", "startBeat"}`, a steady transport the render advances
   itself, or absent (the sources hold at 0).
+
+  > **Amended by ruling LS-T13a (2026-10-30):** the key is `"tempoBpm"`, not `"tempo"`
+  > (`{"tempoBpm", "playing", "startBeat"}`: tempo required, playing true and startBeat 0 by
+  > default). The instrument's `"sample"` stays required and is layer A's, so `"samples"."A"`
+  > beside it is the duplicate error; built-in layer samples share the spec's seed.
 
 Sample mode is untouched, so the M0 and Eco goldens don't move. The event line gains `"layer"`
 (§6.7).
@@ -840,6 +900,13 @@ open row names a file this sub-project edits.
 
 **Expected at the end: 11 open rows,** no new rows. Every minor the final review raises is fixed in
 the fix wave unless blocked outside our control or genuinely large (the policy).
+
+> **Amended (2026-10-30), as built:** rows 118 and 119, moved here with the programme manager's
+> acceptance of 2026-10-29, are closed by Task 2's `263696d` (118: "engine source kind switch does
+> not allocate" switches 20 times, both ways, under the tripwire with sample and ring grains
+> sounding; 119: "a source kind switch lets sounding grains finish", bit for bit against an
+> engine whose stream turns off at the switch frame), and marked **Closed** in
+> `docs/m2-carry-over.md`: 13 open rows to 11, none added.
 
 ## 13. INTENT changes (Part II, with one §23 row in the same change)
 

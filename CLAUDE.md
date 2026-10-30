@@ -25,7 +25,9 @@ AGPL-3.0-or-later.
   is `docs/releasing.md`). **M2 is in progress** as seven sub-projects in four waves, run by one
   agent session each (`docs/superpowers/specs/2026-10-29-m2-programme-design.md`: read its §6
   for your sub-project's scope and what it owns, and its §7 for the rules every sub-project
-  builds on). M2, M3 and M4 are tagged 0.2.0, 0.3.0 and 0.4.0 as
+  builds on). Sub-project 1, Layers and structure, is built (INTENT §23 #65): four layers, the
+  morph, the Source kind, the mod matrix, render tasks and the patch at version 2, which wave 2
+  builds on. M2, M3 and M4 are tagged 0.2.0, 0.3.0 and 0.4.0 as
   unpublished draft releases; nothing is public and there are no betas before M5, whose
   `0.5.0-beta.N` are the first public releases (§23 #62); v1.0.0 follows M5.
 - **The records:** each sub-project's spec in `docs/superpowers/specs/`, the published benchmark
@@ -271,9 +273,18 @@ options must all match: `-L core -L rt` runs only the tests labelled both, and `
 runs the tests labelled either. The labels are:
 - engine: `engine`, `cloud` (the Cloud scheduler), `live` (the live ring), `pool`, `source`,
   `rng`, `math`, `interp`, `window`, `denormal`;
-- `core`: `gg-core`'s patch, the session state container (`GGST`) and the settings' XML, the
-  parameter mapping and the macro curves, and the `Processor` with its notes, source hand-off
-  and Feedback. `slow` marks one of them, Feedback 0.95 for 60 s (over a minute in `dev`);
+- `core`: `gg-core`'s patch (with its `<mod>` routes and the migration from version 1), the
+  session state container (`GGST`) and the settings' XML, the parameter mapping, and the
+  `Processor` with its layers, notes, source hand-off, Feedback and render tasks. `slow` marks
+  one of them, Feedback 0.95 for 60 s (over a minute in `dev`);
+  - `layers` (M2 sub-project 1): the four layers, in the engine (the layer's RNG key, the enable
+    gate, the kind switch, the spreads) and in the `Processor` (the sum in order, the morph law,
+    on and off, the kinds, the instrument's input into the rings, the event order);
+  - `mod`: the mod matrix: its routes, curves and factory routes (M1's `macroOffsets` bit for
+    bit), the modulation sources, and the `Processor`'s per-cell application;
+  - `threads`: `TaskRunner`, `SerialRunner` and the tests' `StubPool` (`engine`), and the
+    `Processor`'s render tasks (`core`): the same bytes with no pool and pools of 1, 2 and 8
+    workers, a declining pool, and the tasks' denormal mode and allocations;
   - `publish`: the audio-to-UI structures (the grain queue, the UI snapshot, the live peaks) and
     the `Processor`'s publishing;
 - `media`: `gg-media`, the JUCE-free sample-file library (`media/`) that the plugin's loader and
@@ -303,8 +314,8 @@ runs the tests labelled either. The labels are:
 - `ui`: the splat renderer, the lane geometry (`LaneModel`), and the lane's clock and live-grain
   list (`LaneState`);
 - `smoke`;
-- `build`: checks of the build system itself, run on scratch CMake projects: the `asio_guard_*`
-  tests (`cmake/AsioGuard.cmake`);
+- `build`: checks of the build system itself: the `asio_guard_*` tests, run on scratch CMake
+  projects (`cmake/AsioGuard.cmake`), and `gg-tests`' "the build is C++23" (also `smoke`);
 - `scripts`: `check.sh` and `worktree-setup.sh`, in scratch trees with stub `cmake` and `ctest`
   and in scratch git repositories, and the release scripts in `scripts/release/`
   (`tests/scripts/release_scripts_tests.sh`: the tag check, the source tarball and the signing
@@ -407,8 +418,8 @@ gg-render --write-media DIR
     seconds, and optional `notes` a time-ordered list of `{"time", "key", "duration",
     "channel", "velocity"}` (channel optional; velocity optional, 0–127, default 100, reaching
     only the mod matrix's Velocity source). A note whose Off would fall on its On's frame is bad
-    input (ruling R17). Values are in each parameter's CLAP value domain (Density 6.0 is 64 Hz; Reverb
-    Decay is log2 seconds, so 1.0 is 2 s, and 6.068255709804611, `kDecayMax`, is ∞; Reverb
+    input (ruling R17). Values are in each parameter's CLAP value domain (Density 6.0 is 64 Hz;
+    Reverb Decay is log2 seconds, so 1.0 is 2 s, and 6.068255709804611, `kDecayMax`, is ∞; Reverb
     Pre-delay is seconds, 0–0.5; Texture and the macros are 0–1, Macro Freeze 0 or 1, Feedback
     0–0.95). The render is exactly `durationSeconds` long.
   - **Layers, routes, controls and the transport** (M2 sub-project 1's spec §6.11), each
@@ -429,7 +440,9 @@ gg-render --write-media DIR
   - **Instrument mode** (`"mode": "instrument"`) runs Giga Grains' `Processor` the same way over
     a `sample` (a built-in signal or a `file`, loaded and converted with `gg-media`), with no
     `channels`. Its Position is the fraction of the sample, 0–1, and it is silent until a note.
-    It takes Dry to Reverb and Feedback, which do nothing there. Its Macro 8 is
+    It takes Dry to Reverb, which does nothing there, and Feedback, which acts only on a layer
+    whose Source is Live (an instrument spec has no input, so such a layer's ring holds
+    silence). Its Macro 8 is
     `"Macro Level"` (Macro 7 is `"Macro Feedback"`, as in the FX; `"Macro Stereo"` names
     nothing since M2 sub-project 1): a spec takes only its own product's names, so
     `"Macro Level"` in an FX spec, or `"Macro Mix"` in an instrument spec, is an unknown key.
@@ -488,8 +501,11 @@ gg-render --write-media DIR
   - They compare the grain-event log exactly per line (CR and final newline ignored). That
     comparison is the cross-platform determinism gate. Each `.events.jsonl` line is one grain:
     `i`, `layer` (0–3, since M2 sub-project 1), `onset`, `frac`, `pos`, `rate`, `dur`, `tex`
-    (its Texture, since sub-project 5),
-    `gain` and `pan` (`formatEventLine` in `tools/gg-render/Render.h`).
+    (its Texture, since sub-project 5), `gain` and `pan` (`formatEventLine` in
+    `tools/gg-render/Render.h`). Across layers the lines are in piece, layer, spawn order, so how
+    two layers' grains interleave depends on the block size (INTENT §19, ruling LS-T10b): each
+    layer's own lines, and the audio, are block-size invariant, and each golden renders at its
+    spec's block size. Compare logs across block sizes per layer.
   - The click score (metricsVersion 2) is normalized by the level within ±5 ms. The
     `[golden][metrics]` tests in `tests/metrics/click_injection_tests.cpp` render every case in
     process, add a -20 dBFS step at sixteen positions in turn and require each to score above
@@ -565,8 +581,8 @@ $b --space [--quick | --seconds S] [--rounds N] [--commit SHA] [--json out.json]
 - **Other options:** `--grains N` changes the grain count; `--cases a,b` runs only those cases
   (the default is all; `--help` lists them).
 - **Run length:** the full default run is 36 configurations × 5 rounds × 2 s, about 6 minutes of
-  timing; a CI leg's benchmark step took about 6 minutes before the two layer cases added one. `--canvas` times 240 frames after a
-  20-frame warm-up, or 30 with `--quick`.
+  timing; a CI leg's benchmark step took about 6 minutes before the two layer cases added one.
+  `--canvas` times 240 frames after a 20-frame warm-up, or 30 with `--quick`.
 - **`--space`** times Space's per-sample stage, the diffuser then the reverb, on stereo noise at
   48 kHz, active, with Diffusion and Amount at 100% (`tools/gg-bench/Bench.h` lists every
   setting). After a warm-up of 2 s of audio, each of 5 rounds times one run of at least 2 s
