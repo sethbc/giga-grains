@@ -6,6 +6,7 @@
 #define GG_UI_EDITOR_H
 
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -69,6 +70,20 @@ struct SampleFolderResult
     std::string message; ///< UTF-8; shown in the strip when the save failed
 };
 
+/// One row of the preset browser (M2 sub-project 5's spec §6.8): a catalog entry
+/// (gg::plugin::PresetEntry), mirrored here because the UI doesn't include plugin headers.
+struct PresetRow
+{
+    std::size_t index{
+        0}; ///< the entry's index in the catalog: what loadPreset, setFavorite, deletePreset take
+    std::string name, description; ///< UTF-8
+    std::vector<std::string> tags; ///< words of EditorContext::tagVocabulary
+    bool isInit{false};            ///< INIT, the plugin's defaults, which has no file
+    bool factory{false};           ///< a preset of the factory content (else a user preset)
+    bool favorite{false};
+    bool loaded{false}; ///< the entry whose name is presetName(), INIT's kind matching
+};
+
 /// What the editor shows of the plugin that owns it.
 ///
 /// **The editor keeps a reference to the context, never a copy**, and reads it on the main
@@ -128,6 +143,27 @@ struct EditorContext
     /// The instrument's sample outline, main thread: cached by the plugin, so it is cheap to
     /// call every frame; empty in the FX and with no sample.
     std::function<SampleWaveform()> sampleWaveform;
+
+    /// The preset strip and browser (spec §6.8), main thread; any may be empty. `presetRows`
+    /// rescans the preset folders, then lists the entries in the catalog's order. `loadPreset`
+    /// loads entry `index` and returns "" or an error for the user; the plugin announces the load
+    /// to the host. `presetName` is the loaded preset's name, `presetEdited` whether a value
+    /// differs from it. `savePreset` writes the current sound to the user's presets folder
+    /// ("" or an error; with `overwrite` false an existing name is an error beginning "a preset
+    /// named"). `setContentFolder` saves the settings' content folder ("" or an error).
+    /// `tagVocabulary` is the tags' words, the four focus tags first.
+    std::function<std::vector<PresetRow>()> presetRows;
+    std::function<std::string(std::size_t index)> loadPreset;
+    std::function<std::string()> presetName;
+    std::function<bool()> presetEdited;
+    std::function<void(std::size_t index, bool on)> setFavorite;
+    std::function<std::string(const std::string &name, const std::vector<std::string> &tags,
+                              const std::string &description, bool overwrite)>
+        savePreset;
+    std::function<bool(std::size_t index)> deletePreset;
+    std::function<std::string()> contentStatus;
+    std::function<std::string(const std::string &utf8Folder)> setContentFolder;
+    std::vector<std::string> tagVocabulary;
 
     /// The editor's destructor calls publishing(false): the plugin stops publishing (the shim
     /// has no destroy hook). The plugin turned it on when it created the editor. May be empty.

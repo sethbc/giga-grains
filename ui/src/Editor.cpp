@@ -16,6 +16,8 @@
 #include "GrainCanvas.h"
 #include "LoaderStrip.h"
 #include "MacroRow.h"
+#include "PresetBrowser.h"
+#include "PresetStrip.h"
 #include "Theme.h"
 #include "gg/core/Version.h"
 
@@ -43,7 +45,8 @@ class Editor final : public juce::Component,
     explicit Editor(const EditorContext &context)
         : sst::jucegui::style::StyleConsumer(
               sst::jucegui::components::base_styles::Base::styleClass),
-          publishing_(context.publishing), lookAndFeel_(this), canvas_(context), macros_(context)
+          publishing_(context.publishing), lookAndFeel_(this), preset_(context), canvas_(context),
+          macros_(context), browser_(context)
     {
         setOpaque(true);
         const juce::String product = juce::String::fromUTF8(
@@ -52,11 +55,13 @@ class Editor final : public juce::Component,
 
         setUpLabel(product_, "header.product", product, juce::FontOptions(18.0f, juce::Font::bold),
                    theme::kText);
-        setUpLabel(preset_, "header.preset", "Init", juce::FontOptions(15.0f), theme::kDimText);
+        addAndMakeVisible(preset_);
         product_.setTooltip(
             "version " +
             juce::String::fromUTF8(gg::kVersion.data(), static_cast<int>(gg::kVersion.size())));
-        preset_.setTooltip("The preset");
+        preset_.onName = [this] { browser_.setVisible(!browser_.isVisible()); };
+        preset_.onPrev = [this] { browser_.step(-1); };
+        preset_.onNext = [this] { browser_.step(1); };
         setUpLabel(frameMs_, "header.frameMs", {}, juce::FontOptions(12.0f), theme::kDimText);
         frameMs_.setJustificationType(juce::Justification::centredRight);
         frameMs_.setTooltip("The canvas's frame time, the mean of the last 60 frames");
@@ -74,6 +79,7 @@ class Editor final : public juce::Component,
         }
         addAndMakeVisible(canvas_);
         addAndMakeVisible(macros_);
+        addChildComponent(browser_); // over the canvas and the macros while shown
 
         const auto style = theme::darkStyle();
         lookAndFeel_.setStyle(style);
@@ -122,6 +128,7 @@ class Editor final : public juce::Component,
             strip_->setBounds(area.removeFromTop(28));
             area.removeFromTop(kGap);
         }
+        browser_.setBounds(area);
         macros_.setBounds(area.removeFromBottom(kMacroRowHeight));
         area.removeFromBottom(kGap);
         canvas_.setBounds(area);
@@ -151,6 +158,9 @@ class Editor final : public juce::Component,
             strip_->refresh();
         }
         macros_.refresh();
+        preset_.refresh();
+        preset_.setBrowserOpen(browser_.isVisible());
+        browser_.refresh();
         frameMs_.setText("frame ms (avg 60): " + juce::String(canvas_.averageFrameMs(), 2),
                          juce::dontSendNotification);
     }
@@ -188,11 +198,13 @@ class Editor final : public juce::Component,
     const std::function<void(bool)> publishing_; // this editor's own (EditorContext)
     sst::jucegui::style::LookAndFeelManager lookAndFeel_;
 
-    juce::Label product_, preset_, frameMs_;
+    juce::Label product_, frameMs_;
+    PresetStrip preset_;
     juce::TextButton perform_, edit_;
     std::unique_ptr<LoaderStrip> strip_; // the instrument's only
     GrainCanvas canvas_;
     MacroRow macros_;
+    PresetBrowser browser_;
     juce::TooltipWindow tooltips_{this, 600};
 };
 

@@ -10,13 +10,16 @@
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <utility>
+#include <vector>
 
 // createEditor() returns a std::unique_ptr<juce::Component>, whose destructor the return
 // statement may invoke, so juce::Component must be complete here. This is the only plugin
 // translation unit that includes JUCE.
 #include <juce_gui_basics/juce_gui_basics.h>
 
+#include "gg/core/PresetInfo.h"
 #include "gg/core/Processor.h"
 #include "gg/media/Utf8Path.h"
 #include "gg/ui/Editor.h"
@@ -74,6 +77,100 @@ EditorPlugin::EditorPlugin(const clap_host *host, Product product)
 }
 
 EditorPlugin::~EditorPlugin() = default;
+
+void EditorPlugin::fillPresetContext(gg::ui::EditorContext &context)
+{
+    // The preset strip and browser (spec §6.8), main thread. Nothing may throw into JUCE's
+    // callbacks; one that can't finish gives the user "out of memory" or nothing.
+    for (const std::string_view tag : gg::core::presetTagVocabulary())
+    {
+        context.tagVocabulary.emplace_back(tag);
+    }
+    context.presetRows = [this] {
+        std::vector<gg::ui::PresetRow> rows;
+        try
+        {
+            PresetCatalog &catalog = presetCatalog();
+            catalog.rescan();
+            const std::string loaded = presetName();
+            bool marked = false;
+            const auto &entries = catalog.entries();
+            rows.reserve(entries.size());
+            for (std::size_t i = 0; i < entries.size(); ++i)
+            {
+                const PresetEntry &entry = entries[i];
+                gg::ui::PresetRow row;
+                row.index = i;
+                row.name = entry.info.name;
+                row.description = entry.info.description;
+                row.tags = entry.info.tags;
+                row.isInit = entry.kind == PresetKind::Init;
+                row.factory = entry.kind == PresetKind::Factory;
+                row.favorite = entry.favorite;
+                // The first entry of the loaded name; INIT's name belongs to INIT alone.
+                if (!marked && entry.info.name == loaded &&
+                    (entry.kind == PresetKind::Init) == (loaded == "Init"))
+                {
+                    row.loaded = marked = true;
+                }
+                rows.push_back(std::move(row));
+            }
+        }
+        catch (...)
+        {
+            rows.clear();
+        }
+        return rows;
+    };
+    context.loadPreset = [this](std::size_t index) { return loadCatalogPreset(index); };
+    context.presetName = [this] {
+        try
+        {
+            return presetName();
+        }
+        catch (...)
+        {
+            return std::string();
+        }
+    };
+    context.presetEdited = [this] { return presetEdited(); };
+    context.setFavorite = [this](std::size_t index, bool on) {
+        try
+        {
+            presetCatalog().setFavorite(index, on);
+        }
+        catch (...)
+        {
+        }
+    };
+    context.savePreset = [this](const std::string &name, const std::vector<std::string> &tags,
+                                const std::string &description, bool overwrite) {
+        return savePreset(name, tags, description, overwrite);
+    };
+    context.deletePreset = [this](std::size_t index) {
+        try
+        {
+            return presetCatalog().remove(index);
+        }
+        catch (...)
+        {
+            return false;
+        }
+    };
+    context.contentStatus = [this] {
+        try
+        {
+            return presetCatalog().contentStatus();
+        }
+        catch (...)
+        {
+            return std::string();
+        }
+    };
+    context.setContentFolder = [this](const std::string &folder) {
+        return setContentFolder(folder);
+    };
+}
 
 std::unique_ptr<juce::Component> EditorPlugin::createEditor()
 {
@@ -169,6 +266,8 @@ std::unique_ptr<juce::Component> EditorPlugin::createEditor()
     context.beginGesture = [this](gg::core::ParamSlot slot) { uiBeginGesture(slot); };
     context.setValue = [this](gg::core::ParamSlot slot, double value) { uiSetValue(slot, value); };
     context.endGesture = [this](gg::core::ParamSlot slot) { uiEndGesture(slot); };
+
+    fillPresetContext(context);
 
     // Audio to UI (spec §6.4): the active Processor's structures, and publishing on from now
     // until the editor's destructor, or guiDestroy for the shim's, turns it off. The editor

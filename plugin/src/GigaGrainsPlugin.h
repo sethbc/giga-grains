@@ -13,11 +13,13 @@
 #include <memory>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include <clap/clap.h>
 #include <sst/cpputils/rtsan_support.h>
 
 #include "HelpersConfig.h"
+#include "PresetCatalog.h"
 #include "SampleLoader.h"
 #include "gg/core/GrainQueue.h"
 #include "gg/core/LatestValue.h"
@@ -254,6 +256,28 @@ class GigaGrainsPlugin : public plugHelper_t
     /// parameter: the header's edited mark. False in a new instance and right after a load.
     bool presetEdited() const noexcept;
 
+    // ---- The preset browser (spec §6.8): main thread ----
+
+    /// The browser's catalog of this product's presets, made on first use from mode() and the
+    /// settings file this instance was created with (the loader's), and scanned then.
+    PresetCatalog &presetCatalog();
+    /// Loads catalog entry `index` (INIT through loadInit, a file through loadPresetFile) and
+    /// tells the host with clap_host_preset_load.loaded, with the location kind, location and
+    /// load key presetLoadFromLocation takes for it. "" on success, else the error for the user
+    /// ("can't read <file>", "out of memory", "no such preset"), and the host hears nothing.
+    std::string loadCatalogPreset(std::size_t index) noexcept;
+    /// Save as…: the current sound (the base values, the routes, and the instrument's sample
+    /// entry as stateSave writes them) as the user preset `name`, with `tags` (only the
+    /// vocabulary's words are kept) and `description`, through PresetCatalog::save. On success it
+    /// is the loaded preset (presetName() is `name`, and presetEdited() false) and the host's
+    /// state is marked dirty. "" or the error for the user.
+    std::string savePreset(const std::string &name, const std::vector<std::string> &tags,
+                           const std::string &description, bool overwrite) noexcept;
+    /// Saves the per-machine settings' content folder (UTF-8; empty clears it). "" on success,
+    /// else why not: a path with a NUL byte (the settings writer would cut it there), or a
+    /// settings file that can't be written.
+    std::string setContentFolder(const std::string &utf8Folder) noexcept;
+
     /// The rate of the last activate(), kDefaultTailRate before the first. Main thread.
     double activeSampleRate() const noexcept { return sampleRate_.load(std::memory_order_relaxed); }
 
@@ -478,6 +502,9 @@ class GigaGrainsPlugin : public plugHelper_t
     // The loaded preset's name and base values (applyState; "Init" and the defaults in a new
     // instance): presetName(), presetEdited(). Main thread.
     std::string presetName_{"Init"};
+    // The browser's catalog (presetCatalog()), made on first use, and the settings file it reads.
+    std::filesystem::path catalogSettingsFile_;
+    std::unique_ptr<PresetCatalog> catalog_;
     gg::core::ParamValues presetValues_{};
     // Set by the audio thread when it has stored a state's values in values_, cleared by
     // on_main_thread, which then asks the host to rescan them (requestValueRescan).

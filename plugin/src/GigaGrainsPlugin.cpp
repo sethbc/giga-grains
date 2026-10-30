@@ -171,6 +171,7 @@ GigaGrainsPlugin::GigaGrainsPlugin(const clap_host *host, Product product)
 {
     // Main thread. The first paramMeta() call builds its tables, which allocates: it's made here,
     // never on the audio thread.
+    catalogSettingsFile_ = settingsFile(); // the browser's catalog reads this file (presetCatalog)
     for (std::size_t s = 0; s < kParamCount; ++s)
     {
         const auto &meta = gg::core::paramMeta(static_cast<ParamSlot>(s), mode());
@@ -1313,6 +1314,11 @@ void GigaGrainsPlugin::applyState(gg::core::SessionState &&state, LoadKind kind)
     {
         _host.paramsRescan(CLAP_PARAM_RESCAN_VALUES);
     }
+    // A preset changed the plugin's state (its values, routes and name): the host should save it.
+    if (kind == LoadKind::Preset && _host.canUseState())
+    {
+        _host.stateMarkDirty();
+    }
 }
 
 bool GigaGrainsPlugin::presetEdited() const noexcept
@@ -1395,6 +1401,133 @@ bool GigaGrainsPlugin::loadPresetFile(const std::filesystem::path &file, std::st
 }
 
 void GigaGrainsPlugin::loadInit() { applyState(gg::core::initState(mode()), LoadKind::Preset); }
+
+PresetCatalog &GigaGrainsPlugin::presetCatalog()
+{
+    if (catalog_ == nullptr)
+    {
+        catalog_ = std::make_unique<PresetCatalog>(mode(), catalogSettingsFile_);
+    }
+    return *catalog_;
+}
+
+std::string GigaGrainsPlugin::loadCatalogPreset(std::size_t index) noexcept
+{
+    try
+    {
+        const auto &entries = presetCatalog().entries();
+        if (index >= entries.size())
+        {
+            return "no such preset";
+        }
+        const PresetEntry entry = entries[index]; // a copy: loading may not touch the catalog
+        std::string error;
+        uint32_t kind = CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN;
+        std::string location;
+        if (entry.kind == PresetKind::Init)
+        {
+            loadInit();
+        }
+        else
+        {
+            kind = CLAP_PRESET_DISCOVERY_LOCATION_FILE;
+            const auto utf8 = gg::media::toUtf8(entry.file);
+            if (!utf8 || !loadPresetFile(entry.file, error))
+            {
+                return error.empty() ? "can't read " + gg::media::displayName(entry.file) : error;
+            }
+            location = *utf8;
+        }
+        if (_host.canUsePresetLoad())
+        {
+            // The identity the host's own load would use: a file's location with no load key,
+            // INIT's load key with no location (PresetDiscovery).
+            const std::string key(gg::core::kInitLoadKey);
+            _host.presetLoadLoaded(
+                kind, kind == CLAP_PRESET_DISCOVERY_LOCATION_FILE ? location.c_str() : nullptr,
+                kind == CLAP_PRESET_DISCOVERY_LOCATION_FILE ? nullptr : key.c_str());
+        }
+        return {};
+    }
+    catch (...)
+    {
+        return "out of memory";
+    }
+}
+
+std::string GigaGrainsPlugin::savePreset(const std::string &name,
+                                         const std::vector<std::string> &tags,
+                                         const std::string &description, bool overwrite) noexcept
+{
+    try
+    {
+        gg::core::PresetInfo info;
+        info.name = name;
+        info.product = mode();
+        info.description = description;
+        for (const auto &tag : tags)
+        {
+            if (gg::core::isPresetTag(tag) &&
+                std::find(info.tags.begin(), info.tags.end(), tag) == info.tags.end())
+            {
+                info.tags.push_back(tag);
+            }
+        }
+        gg::core::ParamValues values{};
+        for (std::size_t s = 0; s < kParamCount; ++s)
+        {
+            values[s] = values_[s].load(std::memory_order_relaxed);
+        }
+        const std::string bytes = gg::core::encodePreset(
+            info, {values, 0, loader_ != nullptr ? loader_->entry() : std::nullopt,
+                   loader_ != nullptr ? loader_->newerMedia() : std::nullopt, routes_, info.name,
+                   std::nullopt});
+        std::string error = presetCatalog().save(info, bytes, overwrite);
+        if (!error.empty())
+        {
+            return error;
+        }
+        presetName_ = info.name;
+        presetValues_ = values; // the saved sound is the loaded preset: not edited
+        if (_host.canUseState())
+        {
+            _host.stateMarkDirty();
+        }
+        return {};
+    }
+    catch (...)
+    {
+        return "out of memory";
+    }
+}
+
+std::string GigaGrainsPlugin::setContentFolder(const std::string &utf8Folder) noexcept
+{
+    // The settings writer cuts a string at its first NUL (gg/core/MachineSettings.h): refuse it
+    // before anything is saved.
+    if (utf8Folder.find('\0') != std::string::npos)
+    {
+        return "the content folder's path is not valid";
+    }
+    try
+    {
+        if (catalogSettingsFile_.empty())
+        {
+            return "can't save the content folder: there is no settings file";
+        }
+        auto settings = gg::media::loadSettings(catalogSettingsFile_);
+        settings.contentFolder = utf8Folder;
+        if (!gg::media::saveSettings(catalogSettingsFile_, settings))
+        {
+            return "can't save the content folder: the settings file can't be written";
+        }
+        return {};
+    }
+    catch (...)
+    {
+        return "can't save the content folder: not enough memory";
+    }
+}
 
 bool GigaGrainsPlugin::presetLoadFromLocation(uint32_t locationKind, const char *location,
                                               const char *loadKey) noexcept
