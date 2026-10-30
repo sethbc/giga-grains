@@ -230,6 +230,7 @@ void Engine::reset() noexcept
     live_.reset();
     clock_ = 0;
     dropped_ = 0;
+    bus2Used_ = false;
     retirePrevious(); // no grain reads it any more
 }
 
@@ -240,6 +241,12 @@ void Engine::process(float *const *out, uint32_t numChannels, uint32_t numFrames
 
 void Engine::process(const float *const *in, uint32_t numInChannels, float *const *out,
                      uint32_t numChannels, uint32_t numFrames) noexcept
+{
+    process(in, numInChannels, out, numChannels, nullptr, numFrames);
+}
+
+void Engine::process(const float *const *in, uint32_t numInChannels, float *const *out,
+                     uint32_t numChannels, float *const *bus2, uint32_t numFrames) noexcept
 {
     ScopedDenormalsOff denormalsOff;
     // The source mode, the enable gate and the freeze setting apply from this call's first frame.
@@ -259,7 +266,8 @@ void Engine::process(const float *const *in, uint32_t numInChannels, float *cons
         }
         else
         {
-            clearGrains(); // off: the grains still sounding end here
+            clearGrains();     // off: the grains still sounding end here
+            bus2Used_ = false; // and bus 2 is empty until its next admission (extremes §6.3)
         }
     }
     live_.setFrozen(freeze_);
@@ -274,13 +282,14 @@ void Engine::process(const float *const *in, uint32_t numInChannels, float *cons
     for (uint32_t done = 0; done < numFrames;)
     {
         const uint32_t n = std::min(numFrames - done, config_.maxBlockSize);
-        processBlock(in, numInChannels, out, numChannels, done, n);
+        processBlock(in, numInChannels, out, numChannels, bus2, done, n);
         done += n;
     }
 }
 
 void Engine::processBlock(const float *const *in, uint32_t numInChannels, float *const *out,
-                          uint32_t numChannels, uint32_t offset, uint32_t numFrames) noexcept
+                          uint32_t numChannels, float *const *bus2, uint32_t offset,
+                          uint32_t numFrames) noexcept
 {
     for (uint32_t c = 0; c < numChannels; ++c)
     {
@@ -293,6 +302,20 @@ void Engine::processBlock(const float *const *in, uint32_t numInChannels, float 
         numChannels > 0 && out[0] != nullptr ? out[0] + offset : nullptr,
         numChannels > 1 && out[1] != nullptr ? out[1] + offset : nullptr,
     };
+    // Bus 1 goes to out too unless there is a bus2, which takes out's layout (extremes §6.3).
+    BlockOutputs outputs{{{dst[0], dst[1]}, {dst[0], dst[1]}}};
+    if (bus2 != nullptr)
+    {
+        for (uint32_t c = 0; c < 2; ++c)
+        {
+            float *const channel = bus2[c] != nullptr ? bus2[c] + offset : nullptr;
+            if (channel != nullptr)
+            {
+                std::fill_n(channel, numFrames, 0.0f);
+            }
+            outputs.bus[1][c] = dst[c] != nullptr ? channel : nullptr;
+        }
+    }
 
     const int64_t blockStart = clock_;
     const int64_t blockEnd = blockStart + static_cast<int64_t>(numFrames);
@@ -315,7 +338,7 @@ void Engine::processBlock(const float *const *in, uint32_t numInChannels, float 
             GrainSpec g;
             if (liveGrain(d, g))
             {
-                admit(g, dst, blockStart, renderedTo);
+                admit(g, outputs, blockStart, renderedTo);
             }
             else
             {
@@ -324,14 +347,14 @@ void Engine::processBlock(const float *const *in, uint32_t numInChannels, float 
         }
         else if (currentSlot().source != nullptr)
         {
-            admit(sampleGrain(d), dst, blockStart, renderedTo);
+            admit(sampleGrain(d), outputs, blockStart, renderedTo);
         }
     };
     if (enabled_)
     {
         cloud_.schedule(blockStart, numFrames, config_.seed, config_.layer, kStream, spawn);
     }
-    renderPool(dst, blockStart, renderedTo, blockEnd);
+    renderPool(outputs, blockStart, renderedTo, blockEnd);
     clock_ = blockEnd;
     pool_.retireFinished(blockEnd);
     // The previous source retires at the first block end at or past its last grain's end.
@@ -404,7 +427,7 @@ bool Engine::liveGrain(const GrainDraw &d, GrainSpec &g) const noexcept
     return true;
 }
 
-void Engine::admit(const GrainSpec &g, float *const dst[2], int64_t blockStart,
+void Engine::admit(const GrainSpec &g, const BlockOutputs &outputs, int64_t blockStart,
                    int64_t &renderedTo) noexcept
 {
     // Count only the grains still sounding at the onset, so admission doesn't depend on where
@@ -420,7 +443,7 @@ void Engine::admit(const GrainSpec &g, float *const dst[2], int64_t blockStart,
         // More than capacity grains finished in this block. Finish the pool up to the onset, so
         // the grains retired here have played all their samples, then retire them: fewer than
         // capacity still sound, so g fits.
-        renderPool(dst, blockStart, renderedTo, g.onsetSample);
+        renderPool(outputs, blockStart, renderedTo, g.onsetSample);
         renderedTo = g.onsetSample;
         pool_.retireFinished(g.onsetSample);
     }
@@ -434,24 +457,34 @@ void Engine::admit(const GrainSpec &g, float *const dst[2], int64_t blockStart,
         int64_t &lastEnd = slots_[g.sourceSlot].lastEnd;
         lastEnd = std::max(lastEnd, grainEndSample(g));
     }
+    if (g.bus != 0)
+    {
+        bus2Used_ = true; // sticky until reset() or the gate turning off (extremes spec §6.3)
+    }
     if (sink_ != nullptr)
     {
         sink_(sinkCtx_, config_.layer, g);
     }
 }
 
-void Engine::renderPool(float *const dst[2], int64_t blockStart, int64_t from, int64_t to) noexcept
+void Engine::renderPool(const BlockOutputs &outputs, int64_t blockStart, int64_t from,
+                        int64_t to) noexcept
 {
-    if (from >= to || dst[0] == nullptr)
+    if (from >= to || (outputs.bus[0][0] == nullptr && outputs.bus[1][0] == nullptr))
     {
         return;
     }
     // Grain-major, in spawn order: every grain adds to every sample of [from, to) before the
-    // next grain starts, so each sample sums its grains in spawn order. With one output (dst[1]
-    // null) the kernels carry source channel 0, unpanned. Each grain reads with its own latched
-    // tier (ruling 2) from the source it latched at its onset (spec §6.4): the ring for
-    // kLiveSlot, otherwise that sample slot's source, whatever the mode now in effect.
-    const kernels::Output output{{dst[0], dst[1]}, blockStart};
+    // next grain starts, so each sample sums its grains in spawn order. With one output (a bus's
+    // second channel null) the kernels carry source channel 0, unpanned. Each grain reads with its
+    // own latched tier (ruling 2) from the source it latched at its onset (spec §6.4): the ring for
+    // kLiveSlot, otherwise that sample slot's source, whatever the mode now in effect. Each
+    // grain adds into its row's bus (extremes spec §6.3), so each bus sums in spawn order; a bus
+    // whose first channel is null (out's, or a null bus2 channel) takes nothing.
+    const kernels::Output busOutputs[2] = {
+        {{outputs.bus[0][0], outputs.bus[0][1]}, blockStart},
+        {{outputs.bus[1][0], outputs.bus[1][1]}, blockStart},
+    };
     const GrainRows &rows = pool_.rows();
     const uint32_t n = pool_.size();
     const auto view = [](const SourceSlot &s) {
@@ -460,6 +493,11 @@ void Engine::renderPool(float *const dst[2], int64_t blockStart, int64_t from, i
     const kernels::SampleSource sources[2] = {view(slots_[0]), view(slots_[1])};
     for (uint32_t i = 0; i < n; ++i)
     {
+        const kernels::Output &output = busOutputs[rows.bus[i] != 0 ? 1 : 0];
+        if (output.dst[0] == nullptr)
+        {
+            continue;
+        }
         if (rows.sourceSlot[i] == kLiveSlot)
         {
             if (rows.tier[i] == Tier::Eco)

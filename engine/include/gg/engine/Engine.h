@@ -193,7 +193,8 @@ class Engine
     /// written, and the clock, the retirement of sources and freeze go on, so a layer switched on
     /// later reads recent audio. On again: the pending onset is forced to that frame
     /// (CloudScheduler::forceNextOnset), as a first held key forces it. The default is on.
-    /// Real-time safe, with the same threading rule as setCloudParams.
+    /// Turning off also lowers bus2Used(). Real-time safe, with the same threading rule as
+    /// setCloudParams.
     void setEnabled(bool enabled) noexcept { requestedEnabled_ = enabled; }
     /// The enable gate in effect: set by the last process() call (see setEnabled).
     bool enabled() const noexcept { return enabled_; }
@@ -210,13 +211,13 @@ class Engine
     /// while process() is not running.
     void setEventSink(GrainEventSink sink, void *ctx) noexcept;
 
-    /// Silences every grain and restarts the clock, the schedule and ring time at 0. Keeps the
-    /// current source (the previous one retires, see takeRetiredSource), the source mode, the
-    /// enable gate, the Cloud parameters, the held keys, the note gate, the freeze setting and
-    /// the sink: the next process() continues as a new engine with those settings would, a
-    /// freeze ramping down from its first frame. The ring's old frames can't be read again.
-    /// Real-time safe, but not synchronized with process(): call it on the audio thread between
-    /// process() calls, or while process() is not running.
+    /// Silences every grain, lowers bus2Used() and restarts the clock, the schedule and ring time
+    /// at 0. Keeps the current source (the previous one retires, see takeRetiredSource), the source
+    /// mode, the enable gate, the Cloud parameters, the held keys, the note gate, the freeze
+    /// setting and the sink: the next process() continues as a new engine with those settings
+    /// would, a freeze ramping down from its first frame. The ring's old frames can't be read
+    /// again. Real-time safe, but not synchronized with process(): call it on the audio thread
+    /// between process() calls, or while process() is not running.
     void reset() noexcept;
 
     /// Renders numFrames frames, overwriting out[0 .. numChannels). Before rendering, if there is
@@ -240,6 +241,19 @@ class Engine
     void process(const float *const *in, uint32_t numInChannels, float *const *out,
                  uint32_t numChannels, uint32_t numFrames) noexcept SST_CPPUTILS_NONBLOCKING;
 
+    /// The two-bus form (extremes spec §6.3): as above, but the grains whose bus is 1
+    /// (GrainSpec::bus, from CloudParams::busSplit) are added into bus2 instead of out, the
+    /// bus-0 grains into out, each bus summing its grains in spawn order. bus2 is null, the
+    /// five-argument form exactly (every grain into out), or two channel pointers of numFrames
+    /// frames each, which the call overwrites as it does out: both are zeroed, and bus2 takes
+    /// out's layout (with one output channel, bus2[0] carries source channel 0 unpanned and
+    /// bus2[1] is only zeroed; when out renders nothing, bus2 is only zeroed). A null bus2
+    /// channel pointer is skipped as out's are. At a split of 0 no grain is on bus 1, so out is
+    /// the five-argument form's render bit for bit and bus2 is all +0.
+    void process(const float *const *in, uint32_t numInChannels, float *const *out,
+                 uint32_t numChannels, float *const *bus2,
+                 uint32_t numFrames) noexcept SST_CPPUTILS_NONBLOCKING;
+
     /// M0's form: process(nullptr, 0, out, numChannels, numFrames), with no input.
     void process(float *const *out, uint32_t numChannels,
                  uint32_t numFrames) noexcept SST_CPPUTILS_NONBLOCKING;
@@ -262,6 +276,11 @@ class Engine
     /// Grains the schedule asked for that found the pool full or, in Live mode, whose read span
     /// doesn't fit the ring, since construction or reset().
     uint64_t droppedGrains() const noexcept { return dropped_; }
+    /// True from the first admission of a bus-1 grain (whichever process() form runs) until
+    /// reset() or the enable gate turning off, where the pool is cleared; false at construction.
+    /// It stays raised while no grain is on bus 1 any more, so a layer that sums bus2 after its
+    /// filter keeps the filter's tail (extremes spec §6.3).
+    bool bus2Used() const noexcept { return bus2Used_; }
     /// The source mode in effect: set by the last process() call (see setSourceMode).
     SourceMode sourceMode() const noexcept { return mode_; }
     /// N, the live ring's length in frames; 0 without a ring.
@@ -274,19 +293,26 @@ class Engine
 
   private:
     void processBlock(const float *const *in, uint32_t numInChannels, float *const *out,
-                      uint32_t numChannels, uint32_t offset,
+                      uint32_t numChannels, float *const *bus2, uint32_t offset,
                       uint32_t numFrames) noexcept SST_CPPUTILS_NONBLOCKING;
     /// The grain a draw makes from the current sample source.
     GrainSpec sampleGrain(const GrainDraw &d) const noexcept;
     /// The grain a draw makes from the live ring, admission-clamped; false when it can't fit.
     bool liveGrain(const GrainDraw &d, GrainSpec &g) const noexcept;
-    void admit(const GrainSpec &g, float *const dst[2], int64_t blockStart,
+    /// Where a block's grains go: bus[b] are the two channel pointers bus b's grains are added
+    /// into, at the block's first frame. Without bus2, bus[1] is bus[0], so every grain goes to
+    /// out.
+    struct BlockOutputs
+    {
+        float *bus[2][2];
+    };
+    void admit(const GrainSpec &g, const BlockOutputs &outputs, int64_t blockStart,
                int64_t &renderedTo) noexcept SST_CPPUTILS_NONBLOCKING;
-    /// Adds every pool grain into dst over [from, to), in spawn order, through
+    /// Adds every pool grain into its row's bus over [from, to), in spawn order, through
     /// gg/grain/GrainKernels.h with each grain's latched tier and source, whatever the mode in
     /// effect: the SIMD live kernel for a grain of kLiveSlot, otherwise the SIMD sample kernel
     /// reading the grain's sample slot.
-    void renderPool(float *const dst[2], int64_t blockStart, int64_t from,
+    void renderPool(const BlockOutputs &outputs, int64_t blockStart, int64_t from,
                     int64_t to) noexcept SST_CPPUTILS_NONBLOCKING;
 
     EngineConfig config_;
@@ -344,6 +370,8 @@ class Engine
     bool enabled_{true};
     bool requestedEnabled_{true};
     bool freeze_{false};
+    // Raised at the first bus-1 admission; lowered by reset() and the gate turning off.
+    bool bus2Used_{false};
 
     GrainEventSink sink_{nullptr};
     void *sinkCtx_{nullptr};

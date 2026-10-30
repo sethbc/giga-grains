@@ -25,13 +25,14 @@ using gg::test::AllocTripwire;
 
 namespace
 {
-// Counts spawns, the Eco ones and the ones reading the ring, without allocating: the sink runs
-// inside process().
+// Counts spawns, the Eco ones, the ones reading the ring and the ones on bus 1, without
+// allocating: the sink runs inside process().
 struct SpawnCounter
 {
     uint64_t spawns{0};
     uint64_t eco{0};
     uint64_t live{0};
+    uint64_t bus1{0};
 
     static void record(void *ctx, uint32_t, const gg::GrainSpec &g)
     {
@@ -39,6 +40,7 @@ struct SpawnCounter
         ++counter->spawns;
         counter->eco += g.tier == gg::Tier::Eco ? 1 : 0;
         counter->live += g.sourceSlot == gg::Engine::kLiveSlot ? 1 : 0;
+        counter->bus1 += g.bus == 1 ? 1 : 0;
     }
 };
 
@@ -513,6 +515,55 @@ TEST_CASE("engine source kind switch does not allocate", "[engine][rt]")
     REQUIRE(alternated);
     REQUIRE(counter.live > liveBefore);                                 // ring grains spawned
     REQUIRE(counter.spawns - counter.live > spawnsBefore - liveBefore); // and sample grains
+    REQUIRE(engine.activeGrains() > 0);
+    if (gg::test::AllocTripwire::available()) // off under ASan; RTSan covers this
+    {
+        REQUIRE(allocations == 0);
+    }
+}
+
+TEST_CASE("engine process with two buses does not allocate", "[engine][rt]")
+{
+    // The extremes spec §6.3: the two-bus process() at a split of 0.5, so the armed calls spawn,
+    // render and retire grains on both buses, in odd block sizes, 0- and 1-frame ones among them.
+    gg::Engine engine(gg::EngineConfig{48000.0, 256, 4096, 7});
+    engine.setSource(stereoSine(330.0));
+    engine.setCloudParams({.densityHz = 200.0,
+                           .distribution = 1.0,
+                           .grainDurationSec = 0.05,
+                           .position = 0.5,
+                           .spray = 0.5,
+                           .pitchSemitones = 7.0,
+                           .stereo = 1.0,
+                           .gain = 0.5f,
+                           .busSplit = 0.5});
+    SpawnCounter counter;
+    engine.setEventSink(&SpawnCounter::record, &counter);
+
+    std::vector<float> left(700), right(700), left2(700), right2(700);
+    float *out[2] = {left.data(), right.data()};
+    float *bus2[2] = {left2.data(), right2.data()};
+    for (int i = 0; i < 50; ++i) // warm up until grains are sounding on both buses
+    {
+        engine.process(nullptr, 0, out, 2, bus2, 64);
+    }
+    REQUIRE(engine.bus2Used());
+    const uint64_t spawnsBefore = counter.spawns;
+    const uint64_t bus1Before = counter.bus1;
+
+    constexpr uint32_t kBlocks[] = {64, 1, 0, 333, 700};
+    AllocTripwire::resetCount();
+    {
+        AllocTripwire::Scope armed;
+        for (int i = 0; i < 100; ++i)
+        {
+            engine.process(nullptr, 0, out, 2, bus2, kBlocks[i % 5]);
+        }
+    }
+    const uint64_t allocations = AllocTripwire::count();
+
+    REQUIRE(counter.bus1 > bus1Before);                                 // bus-1 grains spawned
+    REQUIRE(counter.spawns - counter.bus1 > spawnsBefore - bus1Before); // and bus-0 grains
     REQUIRE(engine.activeGrains() > 0);
     if (gg::test::AllocTripwire::available()) // off under ASan; RTSan covers this
     {

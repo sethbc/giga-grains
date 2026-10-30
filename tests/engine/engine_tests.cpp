@@ -1351,3 +1351,189 @@ TEST_CASE("the level accessor returns level 0 for any index", "[engine][layers]"
         REQUIRE(level.decimation == 1);
     }
 }
+
+namespace
+{
+// A render through the two-bus process(): `out` and `bus2`, both starting as NaN as render()'s
+// outputs do, so a sample the call didn't write (or zero) fails allFinite().
+struct BusRender
+{
+    Render out;
+    Render bus2;
+};
+
+// Renders input[0, frames) through the engine as a mono input, in blocks of the given sizes
+// (cycled), into out and bus2.
+BusRender renderBuses(gg::Engine &engine, const std::vector<float> &input, int64_t frames,
+                      const std::vector<uint32_t> &blockSizes)
+{
+    const auto size = static_cast<std::size_t>(frames);
+    BusRender r{{std::vector<float>(size, kUnwritten), std::vector<float>(size, kUnwritten)},
+                {std::vector<float>(size, kUnwritten), std::vector<float>(size, kUnwritten)}};
+    std::size_t next = 0;
+    for (int64_t done = 0; done < frames;)
+    {
+        const uint32_t want = blockSizes[next++ % blockSizes.size()];
+        const auto n = static_cast<uint32_t>(std::min<int64_t>(want, frames - done));
+        const float *in[1] = {input.data() + done};
+        float *out[2] = {r.out.left.data() + done, r.out.right.data() + done};
+        float *bus2[2] = {r.bus2.left.data() + done, r.bus2.right.data() + done};
+        engine.process(in, 1, out, 2, bus2, n);
+        done += n;
+    }
+    return r;
+}
+
+// The same through the one-bus process(), with the same blocks.
+Render renderOneBus(gg::Engine &engine, const std::vector<float> &input, int64_t frames,
+                    const std::vector<uint32_t> &blockSizes)
+{
+    const auto size = static_cast<std::size_t>(frames);
+    Render r{std::vector<float>(size, kUnwritten), std::vector<float>(size, kUnwritten)};
+    std::size_t next = 0;
+    for (int64_t done = 0; done < frames;)
+    {
+        const uint32_t want = blockSizes[next++ % blockSizes.size()];
+        const auto n = static_cast<uint32_t>(std::min<int64_t>(want, frames - done));
+        const float *in[1] = {input.data() + done};
+        float *out[2] = {r.left.data() + done, r.right.data() + done};
+        engine.process(in, 1, out, 2, n);
+        done += n;
+    }
+    return r;
+}
+
+// Every sample +0, the sign included.
+bool allPositiveZero(const std::vector<float> &v)
+{
+    return std::all_of(v.begin(), v.end(), [](float x) { return x == 0.0f && !std::signbit(x); });
+}
+
+// A stereo cloud over a stereo sine (Sample mode) or the ring (Live mode), Poisson and panned
+// full width, at the given bus split: about ten 50 ms grains overlap.
+gg::CloudParams busParams(gg::SourceMode mode, double busSplit)
+{
+    return {.densityHz = 200.0,
+            .distribution = 1.0,
+            .grainDurationSec = 0.05,
+            .position = mode == gg::SourceMode::Live ? 0.2 : 0.5,
+            .spray = 0.1,
+            .pitchSemitones = 5.0,
+            .stereo = 1.0,
+            .gain = 0.5f,
+            .busSplit = busSplit};
+}
+
+// An engine with a 16 s ring and a stereo sine source, in `mode`, at the given bus split.
+std::unique_ptr<gg::Engine> busEngine(gg::SourceMode mode, double busSplit)
+{
+    auto engine = std::make_unique<gg::Engine>(liveConfig());
+    engine->setSource(makeSine(2, 96000, 48000.0, 330.0));
+    engine->setSourceMode(mode);
+    engine->setCloudParams(busParams(mode, busSplit));
+    return engine;
+}
+
+// Host blocks of every kind: 0- and 1-frame blocks among them.
+const std::vector<uint32_t> kBusBlocks{256, 1, 0, 77, 1024};
+} // namespace
+
+TEST_CASE("two buses with split 0 render the one-bus bytes", "[engine]")
+{
+    // The extremes spec §6.3: at a split of 0 every grain is on bus 0, so out is the one-bus
+    // render bit for bit and bus2 is only zeroed.
+    const auto input = noiseInput(24000, 11);
+    for (const gg::SourceMode mode : {gg::SourceMode::Sample, gg::SourceMode::Live})
+    {
+        INFO("live = " << (mode == gg::SourceMode::Live));
+        auto oneBus = busEngine(mode, 0.0);
+        auto twoBus = busEngine(mode, 0.0);
+        REQUIRE_FALSE(twoBus->bus2Used());
+        const Render expected = renderOneBus(*oneBus, input, 24000, kBusBlocks);
+        const BusRender got = renderBuses(*twoBus, input, 24000, kBusBlocks);
+        REQUIRE(peak(expected.left) > 0.05f);
+        REQUIRE(sameBits(got.out.left, expected.left));
+        REQUIRE(sameBits(got.out.right, expected.right));
+        REQUIRE(allPositiveZero(got.bus2.left));
+        REQUIRE(allPositiveZero(got.bus2.right));
+        REQUIRE_FALSE(twoBus->bus2Used());
+        REQUIRE(twoBus->activeGrains() == oneBus->activeGrains());
+    }
+}
+
+TEST_CASE("two buses share the grains", "[engine]")
+{
+    // Split 0.5: each grain renders into its row's bus, so out + bus2 is the one-bus render to
+    // rounding (only the order of the sum differs). A bus-1 grain reaches bus2 only through its
+    // pool row, so this also proves Engine::sampleGrain's and liveGrain's bus copies.
+    const auto input = noiseInput(24000, 12);
+    for (const gg::SourceMode mode : {gg::SourceMode::Sample, gg::SourceMode::Live})
+    {
+        INFO("live = " << (mode == gg::SourceMode::Live));
+        auto oneBus = busEngine(mode, 0.5);
+        auto twoBus = busEngine(mode, 0.5);
+        SinkLog log;
+        twoBus->setEventSink(&SinkLog::record, &log);
+        const Render expected = renderOneBus(*oneBus, input, 24000, kBusBlocks);
+        const BusRender got = renderBuses(*twoBus, input, 24000, kBusBlocks);
+        REQUIRE_FALSE(log.overflowed);
+        const auto onBus1 = std::count_if(log.grains.begin(), log.grains.end(),
+                                          [](const gg::GrainSpec &g) { return g.bus == 1; });
+        REQUIRE(onBus1 > 0);
+        REQUIRE(static_cast<std::size_t>(onBus1) < log.grains.size());
+        REQUIRE(allFinite(got.out.left));
+        REQUIRE(allFinite(got.bus2.right));
+        REQUIRE(peak(got.out.left) > 0.05f);
+        REQUIRE(peak(got.out.right) > 0.05f);
+        REQUIRE(peak(got.bus2.left) > 0.05f);
+        REQUIRE(peak(got.bus2.right) > 0.05f);
+        float worst = 0.0f;
+        for (std::size_t i = 0; i < expected.left.size(); ++i)
+        {
+            worst =
+                std::max(worst, std::abs(got.out.left[i] + got.bus2.left[i] - expected.left[i]));
+            worst =
+                std::max(worst, std::abs(got.out.right[i] + got.bus2.right[i] - expected.right[i]));
+        }
+        REQUIRE(worst <= 1e-5f);
+        REQUIRE(twoBus->bus2Used());
+        REQUIRE(oneBus->bus2Used()); // the flag follows admissions, whichever process() runs
+    }
+}
+
+TEST_CASE("bus2Used is sticky until a reset or the gate", "[engine]")
+{
+    // The extremes spec §6.3: raised at the first bus-1 admission, kept while no grain is on bus
+    // 1 any more, and lowered only where the pool is cleared for good (reset() and the gate).
+    const auto input = noiseInput(48000, 13);
+    auto engine = busEngine(gg::SourceMode::Sample, 0.5);
+    REQUIRE_FALSE(engine->bus2Used());
+    renderBuses(*engine, input, 4800, kBusBlocks);
+    REQUIRE(engine->bus2Used());
+
+    // Split back to 0, and long enough for every bus-1 grain to end: still raised.
+    engine->setCloudParams(busParams(gg::SourceMode::Sample, 0.0));
+    const BusRender after = renderBuses(*engine, input, 24000, kBusBlocks);
+    REQUIRE(engine->bus2Used());
+    REQUIRE(std::all_of(after.bus2.left.end() - 4800, after.bus2.left.end(),
+                        [](float x) { return x == 0.0f; }));
+
+    engine->reset();
+    REQUIRE_FALSE(engine->bus2Used());
+    renderBuses(*engine, input, 4800, kBusBlocks); // split 0: still lowered
+    REQUIRE_FALSE(engine->bus2Used());
+
+    engine->setCloudParams(busParams(gg::SourceMode::Sample, 0.5));
+    renderBuses(*engine, input, 4800, kBusBlocks);
+    REQUIRE(engine->bus2Used());
+    engine->setEnabled(false);
+    REQUIRE(engine->bus2Used()); // the gate applies at the next block
+    renderBuses(*engine, input, 64, kBusBlocks);
+    REQUIRE_FALSE(engine->bus2Used());
+    REQUIRE(engine->activeGrains() == 0);
+
+    // On again, the next bus-1 admission raises it.
+    engine->setEnabled(true);
+    renderBuses(*engine, input, 4800, kBusBlocks);
+    REQUIRE(engine->bus2Used());
+}
