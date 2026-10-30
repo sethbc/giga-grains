@@ -336,11 +336,18 @@ TEST_CASE("stream.quality parses and rejects", "[render]")
     REQUIRE(normal.has_value());
     CHECK(normal->stream.quality == Tier::Normal);
 
+    // M2 sub-project 3's spec §6.1: "hq", the windowed sinc.
+    const auto hq = gg::render::parseRenderSpec(withQuality("hq").dump(), error);
+    INFO(error);
+    REQUIRE(hq.has_value());
+    CHECK(hq->stream.quality == Tier::HQ);
+
     for (const nlohmann::json &bad :
-         {nlohmann::json("hq"), nlohmann::json(3), nlohmann::json("Eco"), nlohmann::json(nullptr)})
+         {nlohmann::json("best"), nlohmann::json("HQ"), nlohmann::json(3), nlohmann::json(2),
+          nlohmann::json("Eco"), nlohmann::json(nullptr)})
     {
         INFO(bad.dump());
-        CHECK(rejection(withQuality(bad)) == R"(stream.quality must be "eco" or "normal")");
+        CHECK(rejection(withQuality(bad)) == R"(stream.quality must be "eco", "normal" or "hq")");
     }
 
     // The golden case is dense-noise at Eco, and nothing else.
@@ -845,10 +852,10 @@ TEST_CASE("instrument specs name the instrument's macros", "[render]")
     // The instrument's name in an FX spec, and the FX's in an instrument spec, as params and as
     // automation; and "Macro Stereo" in either.
     fx["params"] = {{"Macro Level", 1.0}};
-    // The message lists the spec's own product's names, the layers' globals last.
+    // The message lists the spec's own product's names, the layers' globals and Budget last.
     CHECK_THAT(rejection(fx), StartsWith("unknown key params.Macro Level: the parameters are "));
     CHECK_THAT(rejection(fx), ContainsSubstring("Macro Feedback, Macro Mix, A Source"));
-    CHECK_THAT(rejection(fx), EndsWith("Level B, Level C, Level D"));
+    CHECK_THAT(rejection(fx), EndsWith("Level B, Level C, Level D, Budget"));
     instrument["params"] = {{"Macro Mix", 1.0}};
     CHECK_THAT(rejection(instrument),
                StartsWith("unknown key params.Macro Mix: the parameters are "));
@@ -900,7 +907,8 @@ TEST_CASE("specs name layer parameters by their letter or by their M1 names", "[
         CHECK(gg::render::paramSlotNamed(name) == slot);
         CHECK(gg::core::paramMeta(slot, Mode::Fx).name == "A " + std::string(name));
     }
-    // A bare new name is not an alias: only M1's names had no letter.
+    // A bare new name is not an alias: only M1's names had no letter, and M2 sub-project 3's
+    // Quality, whose bare name is layer A's (its spec §6.9).
     CHECK_FALSE(gg::render::paramSlotNamed("Source").has_value());
     CHECK_FALSE(gg::render::paramSlotNamed("B Level").has_value());
 
@@ -914,6 +922,39 @@ TEST_CASE("specs name layer parameters by their letter or by their M1 names", "[
         const RenderSpec spec = parseJson(j);
         const auto &params = spec.mode == RenderMode::Fx ? spec.fx.params : spec.instrument.params;
         CHECK(params.size() == 3);
+    }
+}
+
+TEST_CASE("specs name Quality and Budget", "[render]")
+{
+    // M2 sub-project 3's spec §6.9: "A Quality" ... "D Quality" (0, 1, 2), and bare "Quality" for
+    // layer A's, and "Budget" (a count), as params and as automation, in either product.
+    CHECK(gg::render::paramSlotNamed("Quality") == ParamSlot::Quality);
+    CHECK(gg::render::paramSlotNamed("A Quality") == ParamSlot::Quality);
+    CHECK(gg::render::paramSlotNamed("B Quality") == ParamSlot::B_Quality);
+    CHECK(gg::render::paramSlotNamed("D Quality") == ParamSlot::D_Quality);
+    CHECK(gg::render::paramSlotNamed("Budget") == ParamSlot::Budget);
+    CHECK_FALSE(gg::render::paramSlotNamed("A Budget").has_value());
+
+    for (auto j : {nlohmann::json::parse(readCase("fx-sine")), instrumentJson()})
+    {
+        j["params"] = {{"Budget", 1024}, {"B Quality", 2}, {"Quality", 0}};
+        j["automation"] = {{{"time", 0.5}, {"param", "Budget"}, {"value", 256}},
+                           {{"time", 0.6}, {"param", "D Quality"}, {"value", 2}}};
+        const RenderSpec spec = parseJson(j);
+        const auto &params = spec.mode == RenderMode::Fx ? spec.fx.params : spec.instrument.params;
+        const auto &automation =
+            spec.mode == RenderMode::Fx ? spec.fx.automation : spec.instrument.automation;
+        CHECK(params.size() == 3);
+        CHECK(automation.size() == 2);
+
+        // In range only: Budget is 256 to 16,384 and Quality 0 to 2.
+        auto low = j;
+        low["params"] = {{"Budget", 100}};
+        CHECK(rejection(low) == "params.Budget must be in Budget's range, 256 to 16384");
+        auto high = j;
+        high["params"] = {{"B Quality", 3}};
+        CHECK(rejection(high) == "params.B Quality must be in B Quality's range, 0 to 2");
     }
 }
 

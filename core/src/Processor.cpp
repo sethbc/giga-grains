@@ -142,12 +142,12 @@ bool sameCloud(const CloudParams &a, const CloudParams &b) noexcept
            same(a.sizeSpreadOctaves, b.sizeSpreadOctaves);
 }
 
-/// Whether `s` is a modulator's control (LFO 1 Rate to Step 16, in any layer): no route targets
-/// one, so its effective value is clamp(base + modulation).
-bool isModulatorControl(ParamSlot s) noexcept
+/// Whether `s` is a modulator's control (isModulatorControl, in any layer): no route targets one,
+/// so its effective value is clamp(base + modulation).
+bool isModulatorControlSlot(ParamSlot s) noexcept
 {
     const std::optional<LayerRef> ref = layerOf(s);
-    return ref && ref->param >= LayerParam::Lfo1Rate;
+    return ref && isModulatorControl(ref->param);
 }
 } // namespace
 
@@ -536,7 +536,7 @@ void Processor::commitPending() noexcept
         // step there before the effective values are recomputed: no route targets it, so its
         // effective value is already known.
         if ((hasPendingBase_[s] || hasPendingMod_[s]) &&
-            isModulatorControl(static_cast<ParamSlot>(s)))
+            isModulatorControlSlot(static_cast<ParamSlot>(s)))
         {
             effective_[s] = clampToRange(s, base_[s] + mod_[s]);
         }

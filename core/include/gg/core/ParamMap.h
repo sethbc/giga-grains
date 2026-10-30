@@ -6,6 +6,7 @@
 #define GG_CORE_PARAMMAP_H
 
 #include <algorithm>
+#include <cstdint>
 
 #include "gg/core/ModSources.h"
 #include "gg/core/ParamIds.h"
@@ -80,6 +81,8 @@ SourceMode builtKind(SourceKind kind, Mode mode) noexcept;
 ///     source's rate;
 /// - pitchSemitones = Pitch; stereo = Stereo; texture = Texture (sub-project 5's spec §4);
 /// - pitchSpreadSemitones = Pitch Spread; sizeSpreadOctaves = Size Spread (spec §6.6);
+/// - quality = Quality rounded to the nearest step (lround) and clamped to 0..2: Eco, Normal or HQ
+///   (M2 sub-project 3's spec §6.1); a NaN is Normal;
 /// - gain = 1/sqrt(max(1, densityHz × grainDurationSec)), the expected overlap's power
 ///   normalization (spec §6.4), which each grain latches at its onset.
 CloudParams toCloudParams(const ParamValues &effective, Mode mode, uint8_t layer) noexcept;
@@ -96,6 +99,17 @@ WetParams toWetParams(const ParamValues &effective, Mode mode, uint8_t layer) no
 /// Layer A's: toWetParams(effective, mode, 0). At the products' default Source it is M1's: the
 /// instrument's Feedback is 0, as its layer A reads a sample.
 WetParams toWetParams(const ParamValues &effective, Mode mode) noexcept;
+
+/// The weight units one Budget grain is worth: a Normal grain reading a stereo source, X's case
+/// (M2 sub-project 3's spec §6.4), so a budget "of N grains" is N × 4 units. It must equal the
+/// engine's weight for that grain.
+inline constexpr uint32_t kBudgetUnitsPerGrain = 4;
+
+/// Budget's effective value as weight units, the layers' shared budget (M2 sub-project 3's spec
+/// §6.4): the count rounded to the nearest integer (lround: halves away from zero) and clamped to
+/// 256..16,384, times kBudgetUnitsPerGrain, so 1,024 to 65,536 units; a NaN count is the default,
+/// 4,096 (16,384 units).
+uint64_t budgetUnits(const ParamValues &effective) noexcept;
 
 /// Layer `layer`'s Diffusion, the diffuser's crossfade δ in [0, 1] (`layer` below kLayers,
 /// asserted).

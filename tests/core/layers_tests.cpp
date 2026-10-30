@@ -935,7 +935,7 @@ void requireSetBasesMatchesSetBase(Mode mode, const gg::core::ParamValues &value
 TEST_CASE("setBases is setBase on every slot in slot order", "[core][layers]")
 {
     // Ruling FR-3: a state load (an offer's values, the plugin's activation and loaded state)
-    // recomputes the effective values once. For a load with no Freeze on, its result is the 218
+    // recomputes the effective values once. For a load with no Freeze on, its result is the 223
     // calls' bit for bit: on fresh Processors, after a pre-roll with a ramp running, and back to
     // the defaults again. (A load with Freeze on arms by ruling FR-8: the next test.)
     for (const Mode mode : {Mode::Fx, Mode::Instrument})

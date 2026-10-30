@@ -18,9 +18,10 @@ struct ParamMetaData;
 }
 
 /// The parameters: the slice's ten (spec §4), Space's eight (sub-project 4's spec §6.5), the
-/// Perform UI's ten (Texture, Feedback and eight macros; sub-project 5's spec §3.3, §4, §5) and
+/// Perform UI's ten (Texture, Feedback and eight macros; sub-project 5's spec §3.3, §4, §5),
 /// M2's layers (M2 sub-project 1's spec §6.9): 48 parameters per layer, A to D, and nine new
-/// globals, 218 in all. Their slots, CLAP IDs and metadata. Both products expose the same list, so
+/// globals, and M2 sub-project 3's Quality, per layer, and Budget (its spec §6.8): 49 per layer
+/// and 223 in all. Their slots, CLAP IDs and metadata. Both products expose the same list, so
 /// they share one state format (INTENT §2); only Position's metadata (sub-project 3's spec §6.8),
 /// Source's default and Macro 8's name differ between them, and the instrument's plugin hides Mix
 /// and Dry to Reverb, which have no dry signal to act on there.
@@ -33,17 +34,19 @@ enum class Mode
     Fx,         ///< The input feeds the live ring and the dry side of the Mix.
 };
 
-/// The 48 parameters of a layer (M2 sub-project 1's spec §6.9), one row each, in index order:
+/// The 49 parameters of a layer (M2 sub-project 1's spec §6.9, and M2 sub-project 3's Quality in
+/// its reserved block, its spec §6.8), one row each, in index order:
 /// `X(name, index, "Display Name")`. A layer parameter's CLAP ID is `(layer + 1) << 16 | index`,
 /// the same index in each of the scopes 1 to 4, and it is displayed with its layer's letter ("A
 /// Size" ... "D Size"). The enum LayerParam, layers B to D's ParamSlot entries and their IDs are
 /// generated from it, so no name is typed four times. Append-only, as the IDs are. A wave-2
 /// sub-project (M2 programme design §7.1) appends `X(Name, 0x4N, "Name")`, its index inside its
 /// reserved block, at the end of GG_LAYER_PARAMS_M2, or adds a list GG_LAYER_PARAMS_M2_<n> to
-/// GG_LAYER_PARAMS. Rows stay in index order, and an index left unused stays unused: an index is
-/// read from this column (layerParamIndex, slotForId), never from a row's position. The
-/// GG_LAYER_PARAMS* macros stay defined on purpose: ParamIds.cpp and tools/gg-render/RenderSpec.cpp
-/// expand them too.
+/// GG_LAYER_PARAMS and GG_LAYER_PARAMS_SINCE_M1, as sub-project 3's GG_LAYER_PARAMS_M2_ENGINE is,
+/// and its index to the reserved-block static_assert below. Rows stay in index order, and an index
+/// left unused stays unused: an index is read from this column (layerParamIndex, slotForId), never
+/// from a row's position. The GG_LAYER_PARAMS* macros stay defined on purpose: ParamIds.cpp and
+/// tools/gg-render/RenderSpec.cpp expand them too.
 #define GG_LAYER_PARAMS_M1(X)                                                                      \
     X(Position, 0x01, "Position")                                                                  \
     X(Size, 0x02, "Size")                                                                          \
@@ -94,7 +97,12 @@ enum class Mode
     X(Step14, 0x2E, "Step 14")                                                                     \
     X(Step15, 0x2F, "Step 15")                                                                     \
     X(Step16, 0x30, "Step 16")
-#define GG_LAYER_PARAMS(X) GG_LAYER_PARAMS_M1(X) GG_LAYER_PARAMS_M2(X)
+/// M2 sub-project 3's (Engine scale and quality; its spec §6.1, §6.8), in its block 0x50-0x5F: a
+/// layer's interpolation tier, stepped 0 Eco, 1 Normal, 2 HQ (gg::Tier).
+#define GG_LAYER_PARAMS_M2_ENGINE(X) X(Quality, 0x50, "Quality")
+#define GG_LAYER_PARAMS(X) GG_LAYER_PARAMS_M1(X) GG_LAYER_PARAMS_M2(X) GG_LAYER_PARAMS_M2_ENGINE(X)
+/// The rows after layer A's eleven M1 ones: layer A's new slots, in order.
+#define GG_LAYER_PARAMS_SINCE_M1(X) GG_LAYER_PARAMS_M2(X) GG_LAYER_PARAMS_M2_ENGINE(X)
 
 /// One layer's parameter, whichever layer: its value is its row's position in GG_LAYER_PARAMS, and
 /// its index in the layer's scope is the row's index column (layerParamIndex).
@@ -110,7 +118,7 @@ enum class LayerParam : uint8_t
 inline constexpr uint8_t kLayers = 4;
 
 /// The parameters per layer.
-inline constexpr size_t kLayerParamCount = 48;
+inline constexpr size_t kLayerParamCount = 49;
 static_assert(static_cast<size_t>(LayerParam::Count) == kLayerParamCount);
 
 /// The indices a scope can hold: 0x00 (reserved) to 0x7F, the top of wave 2's reserved blocks
@@ -162,8 +170,9 @@ static_assert(validIndexColumn(kLayerParamIndices));
 inline constexpr auto kLayerRowsByIndex = rowsByIndex(kLayerParamIndices);
 } // namespace detail
 
-/// The parameter's index in its layer's scope, from its row's index column: 0x01 to 0x30 for this
-/// sub-project's rows, 0x40 to 0x7F for wave 2's (index 0 is reserved); 0 for LayerParam::Count.
+/// The parameter's index in its layer's scope, from its row's index column: 0x01 to 0x30 for M2
+/// sub-project 1's rows, 0x40 to 0x7F for wave 2's (index 0 is reserved); 0 for
+/// LayerParam::Count.
 constexpr uint32_t layerParamIndex(LayerParam p) noexcept
 {
     const auto i = static_cast<size_t>(p);
@@ -183,8 +192,10 @@ GG_LAYER_PARAMS(GG_LAYER_PARAM_INDEX_CHECK)
 /// appended with new IDs.
 ///
 /// The 28 M1 slots come first, in their order (layer A's eleven M1 parameters among them, under
-/// their M1 names), then layer A's 37 new parameters, then layers B, C and D in full (`B_Position`
-/// ... `D_Step16`, 48 each), then the nine new globals (M2 sub-project 1's spec §6.9).
+/// their M1 names), then layer A's 38 new parameters (M2 sub-project 1's 37 and sub-project 3's
+/// Quality), then layers B, C and D in full (`B_Position` ... `D_Quality`, 49 each), then the nine
+/// new globals (M2 sub-project 1's spec §6.9) and Budget (M2 sub-project 3's spec §6.8). A layer
+/// row appended to GG_LAYER_PARAMS moves the later layers' slots, never an ID.
 enum class ParamSlot : uint16_t
 {
     Mix,
@@ -222,7 +233,7 @@ enum class ParamSlot : uint16_t
 #define GG_LAYER_B_SLOT(name, index, display) B_##name,
 #define GG_LAYER_C_SLOT(name, index, display) C_##name,
 #define GG_LAYER_D_SLOT(name, index, display) D_##name,
-    GG_LAYER_PARAMS_M2(GG_LAYER_A_SLOT)
+    GG_LAYER_PARAMS_SINCE_M1(GG_LAYER_A_SLOT)
     GG_LAYER_PARAMS(GG_LAYER_B_SLOT) GG_LAYER_PARAMS(GG_LAYER_C_SLOT)
         GG_LAYER_PARAMS(GG_LAYER_D_SLOT)
 #undef GG_LAYER_A_SLOT
@@ -239,6 +250,8 @@ enum class ParamSlot : uint16_t
     LevelB,
     LevelC,
     LevelD,
+    // M2 sub-project 3's (its spec §6.4, §6.8): the count of Normal stereo grains the layers share.
+    Budget,
     Count
 };
 
@@ -278,8 +291,8 @@ constexpr bool isMacro(ParamSlot slot) noexcept
 inline constexpr uint32_t kNextFreeLayerIndex = 0x31, kNextFreeGlobalIndex = 0x22;
 
 /// The indices reserved in every scope for M2's wave 2 (spec §6.9): 0x40-0x4F for sub-project 2,
-/// 0x50-0x5F for sub-project 3 and 0x60-0x7F for sub-project 4. No parameter of this sub-project
-/// takes one.
+/// 0x50-0x5F for sub-project 3 and 0x60-0x7F for sub-project 4. No parameter of sub-project 1
+/// takes one; sub-project 3's Quality and Budget take 0x50 (a static_assert below pins it).
 inline constexpr uint32_t kReservedIndexBegin = 0x40, kReservedIndexEnd = 0x7F;
 
 /// A layer's Source kind: what its grains read (M2 sub-project 1's spec §6.9). Layer A's
@@ -361,8 +374,8 @@ inline constexpr std::array<clap_id, kParamCount> kParamIds{
 #define GG_LAYER_B_ID(name, index, display) 0x020000u | (index),
 #define GG_LAYER_C_ID(name, index, display) 0x030000u | (index),
 #define GG_LAYER_D_ID(name, index, display) 0x040000u | (index),
-    GG_LAYER_PARAMS_M2(GG_LAYER_A_ID) GG_LAYER_PARAMS(GG_LAYER_B_ID) GG_LAYER_PARAMS(GG_LAYER_C_ID)
-        GG_LAYER_PARAMS(GG_LAYER_D_ID)
+    GG_LAYER_PARAMS_SINCE_M1(GG_LAYER_A_ID) GG_LAYER_PARAMS(GG_LAYER_B_ID)
+        GG_LAYER_PARAMS(GG_LAYER_C_ID) GG_LAYER_PARAMS(GG_LAYER_D_ID)
 #undef GG_LAYER_A_ID
 #undef GG_LAYER_B_ID
 #undef GG_LAYER_C_ID
@@ -377,6 +390,8 @@ inline constexpr std::array<clap_id, kParamCount> kParamIds{
     0x00001F, // LevelB
     0x000020, // LevelC
     0x000021, // LevelD
+    // M2 sub-project 3's spec §6.8: in its reserved block.
+    0x000050, // Budget
 };
 
 /// Scope 0's slots by index, 0x00 to 0x7F, so that wave 2's reserved blocks work as in the layer
@@ -393,6 +408,32 @@ inline constexpr auto kGlobalSlots = [] {
     }
     return t;
 }();
+
+// The reserved blocks' one index in use: 0x50, M2 sub-project 3's, in every scope (Quality in
+// the layer scopes, Budget in scope 0). A wave-2 row adds its index here.
+static_assert([] {
+    for (const clap_id id : kParamIds)
+    {
+        const uint32_t index = id & 0xFFFFu;
+        if (index >= kReservedIndexBegin && index <= kReservedIndexEnd && index != 0x50u)
+        {
+            return false;
+        }
+    }
+    for (clap_id scope = 0; scope <= kLayers; ++scope)
+    {
+        bool used = false;
+        for (const clap_id id : kParamIds)
+        {
+            used = used || id == (scope << 16 | 0x50u);
+        }
+        if (!used)
+        {
+            return false;
+        }
+    }
+    return true;
+}());
 } // namespace detail
 
 /// The CLAP ID of a slot; CLAP_INVALID_ID for ParamSlot::Count.
@@ -544,8 +585,9 @@ static_assert([] {
 const char *paramModule(ParamSlot slot) noexcept;
 
 /// The slot's metadata in `mode`'s product: ID, name, range, default, CLAP flags (AUTOMATABLE and
-/// MODULATABLE on all, STEPPED on the switches and the stepped choices: Freeze, Macro 6, Source,
-/// the LFO shapes, Step Length and the Layer On switches), and the display text and text parsing.
+/// MODULATABLE on all, STEPPED on the switches, the stepped choices and the count: Freeze, Macro
+/// 6, Source, the LFO shapes, Step Length, the Layer On switches, Quality and Budget), and the
+/// display text and text parsing.
 /// A layer parameter's name carries its layer's letter ("A Size"). The ranges and defaults are
 /// literal constants (INTENT §14), never computed at run time. Reverb Decay shows "∞" from
 /// kDecayInfinite up, and "∞" parses to kDecayMax. The plugin adds the HIDDEN flag itself (see the
