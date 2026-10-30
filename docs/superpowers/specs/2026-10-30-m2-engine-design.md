@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | **Approved by the programme manager 2026-10-30** against the programme design and INTENT. **The director's decisions D1–D5, 2026-10-30,** are recorded in §8 and applied in place: D1 option 1, D2 option 1, D3 option 1, D4 option 1, D5 option 1. Built on branch `m2-engine` (PR #16): the plan is `docs/superpowers/plans/2026-10-30-m2-engine.md`. Rulings made during the build are marked **Amended (2026-10-30)** where they change a section, and INTENT §23 #66 lists them by ID. The status becomes Built when the programme manager accepts the final report |
+| **Status** | **Approved by the programme manager 2026-10-30** against the programme design and INTENT. **The director's decisions D1–D5, 2026-10-30,** are recorded in §8 and applied in place: D1 option 1, D2 option 1, D3 option 1, D4 option 1, D5 option 1. Built on branch `m2-engine` (PR #16): the plan is `docs/superpowers/plans/2026-10-30-m2-engine.md`. Rulings made during the build are marked **Amended (2026-10-30)** where they change a section, and INTENT §23 #66 lists them by ID. The status is **Built** (2026-10-30), the final review's fix wave, the idle run's regression fix (ES-F2) and the cancel fix (ES-F3) done and marked below; the programme manager accepts the final report |
 | **Milestone** | M2 Giga (INTENT §20, §23 #64), sub-project 3 of 7; wave 2, merged first (sub-projects 2 and 4 rebase on this one) |
 | **Spec authority** | `INTENT.md`, then `docs/superpowers/specs/2026-10-29-m2-programme-design.md` (its §6.3, §7 and §12 are this sub-project's charter: realized here, not reopened). This document records how this sub-project implements them |
 | **Builds on** | M2 sub-project 1 as merged (`ab9f4e2`, PR #15; INTENT §23 #65): four layers each with its own `gg::Engine` and pool of 4,096, the Source kind, the mod matrix, render tasks, the patch at version 2, the mip-level accessor (`levelCount()`, `level(n)`) on `PreparedSource` and `LiveSource`, and the reserved index block `0x..50`–`0x..5F` in every scope |
@@ -513,6 +513,7 @@ AU order follows from the IDs. Nothing is frozen before M5.
 
 Report-only beside X, in the default case list so CI's legs time them and the close's
 `--make-baseline --merge` adds their entries:
+(**Amended (2026-10-30):** their M5 Max figures are in §10, from the idle run at `ab0bbe5`.)
 
 - **`engine-sample-hq`:** `engine-sample` at HQ (2,000 sinc grains over the stereo noise in RAM,
   reading level 0 at `s` = 1): the HQ figure for INTENT §16, and the source of HQ's weight.
@@ -783,8 +784,39 @@ Engineering choices, each with its reason.
   every CI model (a full-length run via `gh workflow run ci.yml --ref m2-engine`), and its M5 Max
   figures within 3% of the headline run's (the ruling R3 bar); `engine-sample-hq`,
   `engine-sample-hq-up` and `engine-overload` measured on the M5 Max from `release` with the
-  load average recorded, and reported here and in INTENT §16 as this sub-project's figures (the
-  close republishes idle).
+  load average recorded, and reported here and in INTENT §16 as this sub-project's figures.
+  **Amended (2026-10-30, ES-F2):** measured at `ab0bbe5` (load average 3.4 before, 1.8 after;
+  blocks 32 / 64 / 256): `engine-sample` 2.470 / 2.228 / 2.061 ns, **+1.4% / +0.8% / +1.3%**
+  against the headline's 2.44 / 2.21 / 2.03, within 3%; `engine-sample-hq` 16.87 / 16.47 / 16.04
+  ns (162.0% / 158.2% / 154.0% of one core); `engine-sample-hq-up` 17.07 / 16.57 / 16.14 ns
+  (163.9% / 159.1% / 155.0%); `engine-overload` 2.41 / 2.19 / 2.04 ns (23.4% / 21.2% / 19.7%);
+  `engine-sample-sse` 2.44 / 2.21 / 2.04 ns. HQ is 6.8 / 7.4 / 7.8 times X in that run, against
+  the weight's 6.79 (provisional, §6.4). They are report-only figures, published beside X in
+  INTENT §16.
+
+  **Amended (2026-10-30, ES-F2): the first idle run failed the bar, and the fix.** The idle run
+  at `dd27cd4` found `engine-sample` at 2.589 / 2.331 / 2.111 ns, **+6.3% / +5.5% / +3.8%**, with
+  `reference` unchanged (the ratio 1.154 to 1.232 at block 32). The bisect pinned the step to
+  `17a8dec`: each renderer read a mip level at `(startPos + rate × e) × invDec`, `invDec =
+  1.0 / double(decimation)` a run-time value, exactly 1.0 at level 0, so the bits stayed and each
+  4-sample step paid two extra multiplies on the position-to-tap chain, each call one more divide.
+  `ab0bbe5` renders level 0 through a compile-time `detail::UnitDecimation` (`invDecimation`
+  returns an empty `UnitScale`, a multiply by which is its operand): the hot loop is instruction
+  for instruction `2f8d9ac`'s, **bit-identical (all 43 WAV SHA-256s unchanged)**. The confirming
+  A/B (mean of two passes, load 5.4 to 2.5) put X's ratio to `reference` at **1.153 / 1.061 /
+  1.012** for the fix, against main's 1.158 / 1.109 / 1.026 and `dd27cd4`'s 1.254 / 1.153 / 1.060.
+  Builds without `GG_KERNELS_AVX2` now call the 4-wide kernels directly rather than through the
+  table (closing Task 12's deferred minor), and the engine's constructor asserts that table. The
+  renderers' `decimation` is constrained to `uint32_t` or `UnitDecimation` (`DecimationLike`), and
+  the kernel tests check the unit decimation's runs against the integer ones at d = 1.
+
+  **Amended (2026-10-30, ES-F3): the cancel flag.** CI on `dd27cd4` failed the mac-universal leg's
+  "deactivate and destruction cancel a load under way at once" (run 41131723144; deactivate 452
+  ms, destruction 402 ms, against a bound of 308 ms): the loader's `media::prepare` built the
+  pyramid (§6.3) without its cancel flag, so a cancel waited for the whole build. `5f1f9b5` passes
+  the flag to `PreparedSource::make` (one line in sub-project 2's `media/src/Sample.cpp`, by
+  addition; a cancelled `make` returns nullptr, which the loader treats as cancelled, not an
+  error). Not reproduced locally (deactivate 23 ms of 1,510 ms), so CI confirms it.
 - **The AVX2 verdict** with its three runs per leg and the spread (§6.12).
 - **The gate:** `scripts/check.sh` over `dev,asan,rtsan` passes (summary pasted in the PR); CI
   green on the head commit via the draft PR; the validators on `release` unchanged (no bundle
@@ -831,6 +863,10 @@ Row 51 is **Closed** by `dc9bc91` and `613fec6`. Three rows are added, 300, 301 
 findings of the sweep harness (§6.11, ES-T11a): the sample-end cut (300), the morph law's hand-over
 off the pad's center (301) and the reverb's start from an empty room (302). Minors the final
 review raises are fixed or deferred at the controller's judgment and logged in the file.
+**Amended (2026-10-30, the close):** rows 303 to 310 are added for the deferred minors that still
+name a defect and the items blocked outside this sub-project (`LiveSource::kGuardFrames`, the two
+Windows baseline entries, non-finite samples in decoded files, HQ's weight, the listening pack's
+open items, the sweep driver's latent gaps and the cancel fix's CI confirmation).
 
 ## 13. INTENT changes (Part II, with one §23 row in the same change)
 
