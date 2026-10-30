@@ -458,8 +458,9 @@ void Engine::admit(const GrainSpec &draw, float *const dst[2], int64_t blockStar
     if (!admitted)
     {
         // Rung 3: the oldest unstolen sounding grain, once it is half-way, and only if its
-        // weight makes room. Its weight stays in the ledger until its new end; the draw is
-        // admitted on its credit. The room test leaves out the grains already fading (ruling
+        // weight makes room. Its weight stays in the ledger until its end (moved by a steal that
+        // fades it, kept by one that doesn't: ruling ES-T6a); the draw is admitted on its
+        // credit. The room test leaves out the grains already fading (ruling
         // ES-T2a), each of which made room for a grain it is yielding to, so under a spent quota
         // every draw may steal one grain and the stream refreshes at its onset rate.
         const GrainRows &rows = pool_.rows();

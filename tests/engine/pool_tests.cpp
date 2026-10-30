@@ -358,8 +358,10 @@ TEST_CASE("a steal moves the end and keeps the heap and earliestEnd correct", "[
 {
     // 300 grains with onsets 0 to 299 and lengths 2,000 to 5,999 samples. From onset 1,000 on,
     // in steps of 7 samples, a grain chosen at random among those still sounding is stolen: its
-    // end moves to onset + min(256, end - onset), its fade's start and scale are latched, and
-    // the heap's sum and count must still match a scanned model with the moved ends. Retiring at
+    // fade's start is latched, and with more than 256 samples left its end moves to onset + 256
+    // and its scale is latched, while with at most 256 left its end and scale stay (ruling
+    // ES-T6a). The heap's sum and count, and the fading sum of the faded grains alone, must
+    // still match a scanned model with the moved ends. Retiring at
     // each step must remove exactly the grains whose (moved) end has passed, keeping spawn
     // order; oldestSounding must return the first unstolen sounding grain.
     constexpr uint32_t kGrains = 300;
@@ -370,6 +372,7 @@ TEST_CASE("a steal moves the end and keeps the heap and earliestEnd correct", "[
         int64_t end;
         uint8_t weight;
         bool stolen;
+        bool faded;
     };
     std::vector<Model> model;
     for (uint64_t k = 0; k < kGrains; ++k)
@@ -378,7 +381,7 @@ TEST_CASE("a steal moves the end and keeps the heap and earliestEnd correct", "[
         const gg::GrainSpec g = weighted(k, static_cast<int64_t>(k),
                                          2000.0 + static_cast<double>(draw(5, k) % 4000), weight);
         REQUIRE(pool.spawn(g));
-        model.push_back({k, gg::grainEndSample(g), weight, false});
+        model.push_back({k, gg::grainEndSample(g), weight, false, false});
     }
     uint32_t steals = 0;
     uint32_t shortSteals = 0;
@@ -395,7 +398,7 @@ TEST_CASE("a steal moves the end and keeps the heap and earliestEnd correct", "[
             if (model[m].end > onset)
             {
                 sum += model[m].weight;
-                fading += model[m].stolen ? model[m].weight : 0;
+                fading += model[m].faded ? model[m].weight : 0;
                 ++count;
                 sounding.push_back(m);
                 if (!model[m].stolen && oldest == model.size())
@@ -414,7 +417,7 @@ TEST_CASE("a steal moves the end and keeps the heap and earliestEnd correct", "[
         if (found)
         {
             REQUIRE(pool.rows().index[row] == model[oldest].index);
-            REQUIRE(pool.rows().fadeStart[row] == std::numeric_limits<int64_t>::max());
+            REQUIRE(pool.rows().fadeStart[row] == gg::kNeverStolen);
         }
 
         // Steal a random sounding grain not stolen before.
@@ -436,15 +439,17 @@ TEST_CASE("a steal moves the end and keeps the heap and earliestEnd correct", "[
                 ++r;
             }
             const int64_t left = model[m].end - onset;
-            const int64_t fade = std::min<int64_t>(gg::kStealFade, left);
+            const bool fades = left > gg::kStealFade;
             pool.steal(r, onset);
-            model[m].end = onset + fade;
+            model[m].end = fades ? onset + gg::kStealFade : model[m].end;
             model[m].stolen = true;
-            REQUIRE(pool.rows().endSample[r] == onset + fade);
+            model[m].faded = fades;
+            REQUIRE(pool.rows().endSample[r] == model[m].end);
             REQUIRE(pool.rows().fadeStart[r] == onset);
-            REQUIRE(pool.rows().invFade[r] == 1.0f / static_cast<float>(fade));
+            REQUIRE(pool.rows().invFade[r] ==
+                    (fades ? 1.0f / static_cast<float>(gg::kStealFade) : 0.0f));
             ++steals;
-            shortSteals += left < gg::kStealFade ? 1 : 0;
+            shortSteals += fades ? 0 : 1;
         }
 
         // Retire at the next onset, as the engine does at a block's end before it: exactly the
@@ -466,49 +471,65 @@ TEST_CASE("a steal moves the end and keeps the heap and earliestEnd correct", "[
             const Model &g = model[rows.index[i]];
             REQUIRE(rows.endSample[i] == g.end);
             REQUIRE(rows.weight[i] == g.weight);
-            REQUIRE((rows.fadeStart[i] != std::numeric_limits<int64_t>::max()) == g.stolen);
-            REQUIRE((rows.invFade[i] != 0.0f) == g.stolen);
+            REQUIRE((rows.fadeStart[i] != gg::kNeverStolen) == g.stolen);
+            REQUIRE((rows.invFade[i] != 0.0f) == g.faded);
         }
     }
     REQUIRE(pool.size() == 0);
     REQUIRE(steals > 200);
-    REQUIRE(shortSteals > 0); // some grains had less than the fade left
+    REQUIRE(shortSteals > 0); // some grains had at most the fade left
 }
 
-TEST_CASE("a steal of a grain with less than the fade left fades over what remains", "[pool]")
+TEST_CASE("a steal of a grain with less than the fade left keeps its end and does not fade",
+          "[pool]")
 {
+    // Ruling ES-T6a: a grain with at most kStealFade samples left already ends no later than a
+    // fade would, so a steal only marks it stolen (fadeStart, so it is never stolen again): its
+    // end, its scale (invFade 0) and its ledger entry stay, and its weight stays in the ordinary
+    // ledger, not the fading one, until its end. With one sample more it fades over kStealFade.
     gg::GrainPool pool(4);
-    // Ends at 1,000 + 498 + 2 = 1,500.
+    // Ends at 1,000 + 498 + 2 = 1,500, at 1,001 + 4,000 + 2 = 5,003 and at 5,004.
     REQUIRE(pool.spawn(weighted(0, 1000, 498.0, 4)));
     REQUIRE(pool.spawn(weighted(1, 1001, 4000.0, 3)));
-    REQUIRE(pool.rows().fadeStart[0] == std::numeric_limits<int64_t>::max());
+    REQUIRE(pool.spawn(weighted(2, 1002, 4000.0, 2)));
+    REQUIRE(pool.rows().fadeStart[0] == gg::kNeverStolen);
     REQUIRE(pool.rows().invFade[0] == 0.0f);
-    REQUIRE(pool.soundingWeight(1400) == 7);
+    REQUIRE(pool.soundingWeight(1400) == 9);
 
-    // 100 samples left, fewer than kStealFade: the fade covers them, so the end stays.
+    // 100 samples left, fewer than kStealFade.
     uint32_t row = 9;
     REQUIRE(pool.oldestSounding(1400, row));
     REQUIRE(row == 0);
     pool.steal(row, 1400);
     REQUIRE(pool.rows().endSample[0] == 1500);
     REQUIRE(pool.rows().fadeStart[0] == 1400);
-    REQUIRE(pool.rows().invFade[0] == 1.0f / 100.0f);
-    // Its weight stays in the ledger until its end (spec §6.5), as fading weight.
-    REQUIRE(pool.soundingWeight(1499) == 7);
-    REQUIRE(pool.fadingWeight(1499) == 4);
-    REQUIRE(pool.soundingWeight(1500) == 3);
+    REQUIRE(pool.rows().invFade[0] == 0.0f);
+    REQUIRE(pool.soundingWeight(1499) == 9);
+    REQUIRE(pool.fadingWeight(1499) == 0);
+    REQUIRE(pool.soundingWeight(1500) == 5);
     REQUIRE(pool.fadingWeight(1500) == 0);
 
     // A stolen grain is never the oldest again; the next one is.
-    REQUIRE(pool.oldestSounding(1400, row));
+    REQUIRE(pool.oldestSounding(1500, row));
     REQUIRE(row == 1);
-    // One sample left: F is 1.
-    pool.steal(1, 5002);
+    // Exactly kStealFade left: still no fade, the end stays.
+    pool.steal(1, 5003 - gg::kStealFade);
     REQUIRE(pool.rows().endSample[1] == 5003);
-    REQUIRE(pool.rows().invFade[1] == 1.0f);
-    REQUIRE(pool.fadingWeight(5002) == 3);
+    REQUIRE(pool.rows().fadeStart[1] == 5003 - gg::kStealFade);
+    REQUIRE(pool.rows().invFade[1] == 0.0f);
+    REQUIRE(pool.fadingWeight(5003 - gg::kStealFade) == 0);
+    // One more, kStealFade + 1 left: it fades, its end one sample earlier, at 5,003.
+    REQUIRE(pool.oldestSounding(5003 - gg::kStealFade, row));
+    REQUIRE(row == 2);
+    pool.steal(2, 5003 - gg::kStealFade);
+    REQUIRE(pool.rows().endSample[2] == 5003);
+    REQUIRE(pool.rows().fadeStart[2] == 5003 - gg::kStealFade);
+    REQUIRE(pool.rows().invFade[2] == 1.0f / 256.0f);
+    REQUIRE(static_cast<float>(gg::kStealFade) * pool.rows().invFade[2] == 1.0f);
+    REQUIRE(pool.soundingWeight(5002) == 5);
+    REQUIRE(pool.fadingWeight(5002) == 2);
     REQUIRE_FALSE(pool.oldestSounding(5002, row));
-    REQUIRE(pool.soundingCount(5002) == 1);
+    REQUIRE(pool.soundingCount(5002) == 2);
     pool.retireFinished(5003);
     REQUIRE(pool.size() == 0);
     REQUIRE(pool.soundingWeight(5003) == 0);

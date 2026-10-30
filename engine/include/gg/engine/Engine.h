@@ -114,10 +114,11 @@ using GrainStealSink = void (*)(void *ctx, uint32_t layer, uint64_t index, int64
 ///    has sounded at least kStealThreshold of its window, (o − onsetSample) − onsetFrac >=
 ///    0.5 × durationSamples, and (W(o) − W_fading(o)) − w(old) + w(t) <= quota for some
 ///    t <= q, W_fading the weight of the grains already stolen and fading (ruling ES-T2a;
-///    GrainPool::fadingWeight): it ends at
-///    o + min(kStealFade, what it had left) (GrainPool::steal), keeping its weight until then;
-///    the draw is admitted at the highest such t and the steal counted in stolenGrains() and
-///    reported to the steal sink. Otherwise the draw is dropped and counted in droppedGrains().
+///    GrainPool::fadingWeight): with more than kStealFade samples left it ends at o + kStealFade,
+///    fading, and with at most that left it keeps its end and doesn't fade (ruling ES-T6a;
+///    GrainPool::steal), keeping its weight until its end either way; the draw is admitted at the
+///    highest such t and the steal counted in stolenGrains() and reported to the steal sink.
+///    Otherwise the draw is dropped and counted in droppedGrains().
 /// At most one grain is stolen per draw, and a stolen grain is never stolen again. The grain
 /// latches the tier and weight chosen (GrainSpec::tier, GrainSpec::weight).
 ///

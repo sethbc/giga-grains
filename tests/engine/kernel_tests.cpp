@@ -2349,16 +2349,34 @@ TEST_CASE("hq live reads nothing beyond the window", "[kernel]")
 
 namespace
 {
-// The steal fade's factor at output sample t (spec §6.5) of a grain stolen at `fadeStart`, which
-// then ends at `end`, its fade F = end − fadeStart samples long, written out in float:
-// min(1, float(end − t) × (1 / F)) from the steal on, and 1 before it.
+// What a steal at `stolenAt` (kNeverStolen for none) does to grain g, as spec §6.5 and ruling
+// ES-T6a state it: with more than kStealFade samples left the grain fades, ending at stolenAt +
+// kStealFade; with at most that left, or unstolen, it keeps its own end and doesn't fade.
+struct SpecSteal
+{
+    bool fades;
+    int64_t end;
+};
+SpecSteal specSteal(const gg::GrainSpec &g, int64_t stolenAt)
+{
+    const int64_t end = gg::grainEndSample(g);
+    if (stolenAt != gg::kNeverStolen && end - stolenAt > gg::kStealFade)
+    {
+        return {true, stolenAt + gg::kStealFade};
+    }
+    return {false, end};
+}
+
+// The steal fade's factor at output sample t (spec §6.5) of a grain that fades from
+// `fadeStart` to `end` = fadeStart + 256, written out in float: min(1, float(end − t) ×
+// float(1 / 256)) from the steal on, and 1 before it.
 float specFade(int64_t fadeStart, int64_t end, int64_t t)
 {
     if (t < fadeStart)
     {
         return 1.0f;
     }
-    const float invFade = 1.0f / static_cast<float>(end - fadeStart);
+    const float invFade = 1.0f / 256.0f;
     return std::min(1.0f, static_cast<float>(end - t) * invFade);
 }
 
@@ -2379,10 +2397,12 @@ template <> float specRead<Sinc>(const float *data, int64_t frames, double pos, 
     return specSinc(data, frames, pos, stretch);
 }
 
-// One steal per grain, by its index: none for k % 4 == 0; for 1, somewhere in its life at least
-// kStealFade before its end, so F is the full 256; for 2, within 255 samples of its end, so F is
-// what it has left, 1 to 255; for 3, at its onset or up to 3 samples after, where its window is
-// still near 0. A grain shorter than kStealFade gets the third kind's steal.
+// One steal per grain, by its index: none for k % 4 == 0; for 1, somewhere in its life more than
+// kStealFade before its end, so it fades over 256 samples (k % 8 == 5: exactly kStealFade + 1
+// before it, the shortest steal that fades); for 2, with at most kStealFade left, so it keeps its
+// end and doesn't fade (k % 8 == 2: exactly kStealFade left, the longest such; k % 8 == 6: 1 to
+// 255 left); for 3, at its onset or up to 3 samples after, where its window is still near 0. A
+// grain shorter than kStealFade + 1 gets the third kind's steal.
 std::vector<Steal> stealsFor(const std::vector<gg::GrainSpec> &specs, uint64_t seed)
 {
     std::vector<Steal> steals;
@@ -2398,14 +2418,17 @@ std::vector<Steal> stealsFor(const std::vector<gg::GrainSpec> &specs, uint64_t s
         case 0:
             continue;
         case 1:
-            if (life > gg::kStealFade)
+            if (life > gg::kStealFade + 1)
             {
-                onset = g.onsetSample +
-                        static_cast<int64_t>(u * static_cast<double>(life - gg::kStealFade));
+                onset = k % 8 == 5 ? end - (gg::kStealFade + 1)
+                                   : g.onsetSample +
+                                         static_cast<int64_t>(
+                                             u * static_cast<double>(life - (gg::kStealFade + 1)));
             }
             break;
         case 2:
-            onset = std::max(g.onsetSample, end - 1 - static_cast<int64_t>(u * 255.0));
+            onset = std::max(g.onsetSample, k % 8 == 2 ? end - gg::kStealFade
+                                                       : end - 1 - static_cast<int64_t>(u * 255.0));
             break;
         default:
             break;
@@ -2415,10 +2438,10 @@ std::vector<Steal> stealsFor(const std::vector<gg::GrainSpec> &specs, uint64_t s
     return steals;
 }
 
-// Requires each stolen grain's rows to hold the steal as spec §6.5 states it: F = min(kStealFade,
-// end − onset) with the grain's own end, the new end onset + F, fadeStart the onset and invFade
-// 1 / F; and every other grain's rows the unstolen grain's (kNeverStolen, invFade 0, its own end).
-// Requires some fades of the full 256 samples and some shorter, down to 1.
+// Requires each stolen grain's rows to hold the steal as specSteal states it: fadeStart the onset,
+// and either the end onset + 256 with invFade 1 / 256, whose first factor 256 × invFade is
+// exactly 1 (ruling ES-T6b), or its own end with invFade 0; and every other grain's rows the
+// unstolen grain's (kNeverStolen, invFade 0, its own end). Requires some steals of each kind.
 void requireStolenRows(const Pool &pool, const std::vector<gg::GrainSpec> &specs,
                        const std::vector<Steal> &steals)
 {
@@ -2428,8 +2451,9 @@ void requireStolenRows(const Pool &pool, const std::vector<gg::GrainSpec> &specs
     {
         stolenAt[s.row] = s.onset;
     }
-    int64_t full = 0;
-    int64_t shorter = 0;
+    int64_t faded = 0;
+    int64_t unfaded = 0;
+    int64_t edges = 0; // steals with exactly kStealFade or kStealFade + 1 left
     for (uint32_t i = 0; i < specs.size(); ++i)
     {
         INFO("grain " << i);
@@ -2441,25 +2465,37 @@ void requireStolenRows(const Pool &pool, const std::vector<gg::GrainSpec> &specs
             REQUIRE(rows.endSample[i] == end);
             continue;
         }
-        const int64_t f = std::min(gg::kStealFade, end - stolenAt[i]);
+        const SpecSteal steal = specSteal(specs[i], stolenAt[i]);
         REQUIRE(rows.fadeStart[i] == stolenAt[i]);
-        REQUIRE(rows.endSample[i] == stolenAt[i] + f);
-        REQUIRE(sameBits(rows.invFade[i], 1.0f / static_cast<float>(f)));
-        full += f == gg::kStealFade;
-        shorter += f < gg::kStealFade;
+        REQUIRE(rows.endSample[i] == steal.end);
+        if (steal.fades)
+        {
+            REQUIRE(sameBits(rows.invFade[i], 1.0f / 256.0f));
+            REQUIRE(specFade(stolenAt[i], steal.end, stolenAt[i]) == 1.0f);
+            REQUIRE(static_cast<float>(steal.end - stolenAt[i]) * rows.invFade[i] == 1.0f);
+        }
+        else
+        {
+            REQUIRE(sameBits(rows.invFade[i], 0.0f));
+        }
+        faded += steal.fades;
+        unfaded += !steal.fades;
+        edges += end - stolenAt[i] == gg::kStealFade || end - stolenAt[i] == gg::kStealFade + 1;
     }
-    REQUIRE(full > 10);
-    REQUIRE(shorter > 10);
+    REQUIRE(faded > 10);
+    REQUIRE(unfaded > 10);
+    REQUIRE(edges > 4);
 }
 } // namespace
 
 TEMPLATE_TEST_CASE("a stolen grain fades through the reference and the simd kernels alike",
                    "[kernel]", Hermite, Linear, Sinc)
 {
-    // Spec §6.5. A pool of grains, three in four stolen (stealsFor): in the window's rise, in
-    // its body and near its end. Over a sample source, every sample of every grain, the fading
-    // ones and the rest, is the spec's loop with the fade written out (specFade), bit for bit,
-    // and the SIMD kernel's output is the reference's, in one call and in 200 random ones, its
+    // Spec §6.5. A pool of grains, three in four stolen (stealsFor): in the window's rise and in
+    // its body, which fade over 256 samples, and with at most 256 samples left, which keep their
+    // end and don't fade (ruling ES-T6a). Over a sample source, every sample of every grain, the
+    // fading ones and the rest, is the spec's loop with the fade written out (specFade), bit for
+    // bit, and the SIMD kernel's output is the reference's, in one call and in 200 random ones, its
     // runs ending at each fade's start. Then the same over the live ring, frozen and released,
     // where the fade multiplies the window before the head-proximity fade does.
     const Tables &tables = kernelTables();
@@ -2532,11 +2568,7 @@ TEMPLATE_TEST_CASE("a stolen grain fades through the reference and the simd kern
             for (uint32_t i = 0; i < pool.size(); ++i)
             {
                 const gg::GrainSpec &g = specs[i];
-                const bool stolen = rows.fadeStart[i] != gg::kNeverStolen;
-                const int64_t end =
-                    stolen ? rows.fadeStart[i] +
-                                 std::min(gg::kStealFade, gg::grainEndSample(g) - rows.fadeStart[i])
-                           : gg::grainEndSample(g);
+                const auto [fades, end] = specSteal(g, rows.fadeStart[i]);
                 const double invDuration = 1.0 / g.durationSamples;
                 const gg::EnvelopeShape env = gg::envelopeShape(g.texture, g.durationSamples);
                 const ChannelGains gains = channelGains(g, shape.outputs);
@@ -2549,7 +2581,7 @@ TEMPLATE_TEST_CASE("a stolen grain fades through the reference and the simd kern
                     {
                         continue;
                     }
-                    if (stolen && t >= rows.fadeStart[i])
+                    if (fades && t >= rows.fadeStart[i])
                     {
                         const float factor = specFade(rows.fadeStart[i], end, t);
                         nonPositive += !(factor > 0.0f);
@@ -2657,7 +2689,7 @@ TEMPLATE_TEST_CASE("a stolen grain fades through the reference and the simd kern
                         // steal on, pos, f = float(fade(pos, R(t))) (skip unless > 0 and the
                         // read succeeds), dst[c][t] += read_c × ((w × f) × gain_c).
                         const gg::GrainSpec &g = specs[i];
-                        const bool stolen = rows.fadeStart[i] != gg::kNeverStolen;
+                        const SpecSteal steal = specSteal(g, rows.fadeStart[i]);
                         const double invDuration = 1.0 / g.durationSamples;
                         const gg::EnvelopeShape env =
                             gg::envelopeShape(g.texture, g.durationSamples);
@@ -2673,10 +2705,10 @@ TEMPLATE_TEST_CASE("a stolen grain fades through the reference and the simd kern
                             {
                                 continue;
                             }
-                            const bool fading = stolen && t >= rows.fadeStart[i];
+                            const bool fading = steal.fades && t >= rows.fadeStart[i];
                             if (fading)
                             {
-                                w = w * specFade(rows.fadeStart[i], rows.endSample[i], t);
+                                w = w * specFade(rows.fadeStart[i], steal.end, t);
                             }
                             const double pos = g.startPos + g.rate * e;
                             const int64_t head = ring.headAt(t);

@@ -44,13 +44,16 @@
 /// the unwarped phase, are unchanged.
 ///
 /// Only samples with w > 0 contribute; elsewhere nothing is read and nothing is added. A grain the
-/// overload ladder stole (GrainPool::steal; spec §6.5) fades from its steal on: after w > 0,
+/// overload ladder stole with a fade (GrainPool::steal; spec §6.5) fades from its steal on: after
+/// w > 0,
 ///
 ///     w = w × min(1, float(endSample − t) × invFade)   (float)   where t >= fadeStart
 ///
-/// with endSample its moved end and invFade 1 / F, its fade's length F: 1 at the steal and 1 / F
-/// at its last sample. An unstolen grain (invFade 0, fadeStart kNeverStolen) skips the multiply,
-/// so its bits are M1's. With two outputs, dst[c][t] += read_c(posL) × (w × gain_c), with gain_c
+/// with endSample its moved end, fadeStart + kStealFade, and invFade 1 / kStealFade: exactly 1 at
+/// the steal (256 × float(1 / 256) is 1) and 1 / 256 at its last sample. Every other grain has
+/// invFade 0 and skips the multiply: an unstolen grain (fadeStart kNeverStolen), whose bits are
+/// M1's, and one stolen with at most kStealFade left, which keeps its end and window (ruling
+/// ES-T6a). With two outputs, dst[c][t] += read_c(posL) × (w × gain_c), with gain_c
 /// the latched gainL or gainR. One output carries source channel 0 with gain alone: dst[0][t] +=
 /// read_0(posL) × (w × gain).
 ///
@@ -515,7 +518,8 @@ struct Sinc
 namespace detail
 {
 /// The steal fade (spec §6.5; the file comment): w × min(1, float(end − t) × invFade) at a sample
-/// t >= fadeStart of a stolen grain (invFade != 0), and w itself otherwise, unmultiplied.
+/// t >= fadeStart of a grain stolen with a fade (invFade != 0), and w itself otherwise,
+/// unmultiplied.
 inline float stealFaded(float w, int64_t t, int64_t fadeStart, int64_t end,
                         float invFade) noexcept SST_CPPUTILS_NONBLOCKING
 {
@@ -653,11 +657,11 @@ struct Run
 };
 
 /// The run of grain i's samples in [first, last) that the SIMD sample kernel renders, reading a
-/// level of `frames` frames at `decimation`: exactly the samples t before the grain's steal fade
-/// starts (t < fadeStart, so every fading sample goes through the reference: spec §6.5, at most
-/// kStealFade per stolen grain per call) whose window phase e × invDuration is in [0, 1] and whose
-/// read position posL(t) in the level's frames has every tap inside [0, frames), so kBefore <=
-/// posL < frames − kAfter. Requires first < last.
+/// level of `frames` frames at `decimation`: exactly the samples t before the grain's steal
+/// (t < fadeStart, so every fading sample goes through the reference, spec §6.5, and so does the
+/// rest of a grain stolen without a fade: at most kStealFade per stolen grain) whose window phase e
+/// × invDuration is in [0, 1] and whose read position posL(t) in the level's frames has every tap
+/// inside [0, frames), so kBefore <= posL < frames − kAfter. Requires first < last.
 ///
 /// Folding the phase range into the run (accepted ruling, Task 6) keeps HannTable::at's range
 /// check out of the interior's lanes: a grain's first sample (e = −onsetFrac, phase < 0 unless
@@ -1074,8 +1078,9 @@ namespace detail
 /// slope 1 or 0, satisfies the interior's conditions, reading at `decimation`. Requires lo < hi,
 /// live.enabled(), and a finite rate > 0 and invDuration > 0.
 ///
-/// The part ends at the grain's steal fade, if it starts before hi: hi becomes min(hi,
-/// fadeStart), so every fading sample goes through the reference (spec §6.5). On what is left, the
+/// The part ends at the grain's steal, if it comes before hi: hi becomes min(hi, fadeStart), so
+/// every fading sample goes through the reference (spec §6.5), as does the rest of a grain
+/// stolen without a fade (at most kStealFade samples). On what is left, the
 /// conditions, with e, pos (posL) and the phase as the reference computes them, and b and a the
 /// reach Reader::fade is for (Reader::kFadeBefore and kFadeAfter: 1 and 2 for Hermite and
 /// Linear, 7 and 8 for Sinc):
@@ -1233,8 +1238,8 @@ template <class Reader> struct RingTaps : InterleavedTaps
 
 /// The live interior of grain i over [from, to), which must lie in the ring's last write()
 /// block: [max(from, onset), min(to, endSample)) split at blockKink(), and on each side the
-/// samples detail::liveRun<Reader> admits. On every sample there the grain isn't fading from a
-/// steal, the window's phase is in [0, 1], every tap is a frame >= 0 inside the window at R(t),
+/// samples detail::liveRun<Reader> admits. On every sample there the grain hasn't been stolen,
+/// the window's phase is in [0, 1], every tap is a frame >= 0 inside the window at R(t),
 /// and the reference's fade is exactly 1, so renderLiveRef's amplitude is (w × 1) × gain_c = w ×
 /// gain_c, the sample kernel's. Empty when there is no ring, or the grain's rate isn't finite and
 /// positive. Reads at `decimation`, as renderLiveRef.

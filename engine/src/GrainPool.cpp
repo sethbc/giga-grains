@@ -102,7 +102,8 @@ void GrainPool::forgetEnds(int64_t t) noexcept
     while (heapSize_ > 0 && heap_[0].end <= t)
     {
         heapWeight_ -= heap_[0].weight;
-        if (fadeStart_[heap_[0].row] != kNeverStolen)
+        // Only a steal that faded the grain put its weight in fadingWeight_ (steal()).
+        if (invFade_[heap_[0].row] != 0.0f)
         {
             fadingWeight_ -= heap_[0].weight;
         }
@@ -156,12 +157,17 @@ void GrainPool::steal(uint32_t row, int64_t onset) noexcept
     // A grain that sounds at the onset still has its heap entry: only ends <= an onset or a
     // retirement time, never later than this onset, have been forgotten.
     assert(heapPos_[row] != kNotInHeap);
-    const int64_t fade = std::min(kStealFade, endSample_[row] - onset);
-    const int64_t end = onset + fade;
+    fadeStart_[row] = onset; // stolen, so never the oldest again
+    if (endSample_[row] - onset <= kStealFade)
+    {
+        // Ruling ES-T6a: it ends no later than a fade would, so it keeps its end and its window
+        // and isn't fading; its weight stays in the ordinary ledger until that end.
+        return;
+    }
+    const int64_t end = onset + kStealFade;
     endSample_[row] = end;
-    fadeStart_[row] = onset;
-    invFade_[row] = 1.0f / static_cast<float>(fade);
-    // The key only decreases (or stays), so the entry can only move up.
+    invFade_[row] = 1.0f / static_cast<float>(kStealFade);
+    // The key only decreases, so the entry can only move up.
     const uint32_t pos = heapPos_[row];
     fadingWeight_ += heap_[pos].weight;
     heap_[pos].end = end;

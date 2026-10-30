@@ -112,10 +112,11 @@ struct GrainRows
     const double *envReleaseScale;
     const uint8_t *weight; ///< GrainSpec::weight
     const uint8_t *level;  ///< GrainSpec::level
-    /// The output sample at which the grain was stolen, so its fade starts (spec §6.5), or
-    /// kNeverStolen while it hasn't been: GrainPool::steal.
+    /// The output sample at which the grain was stolen (spec §6.5), where its fade starts if it
+    /// has one, or kNeverStolen while it hasn't been: GrainPool::steal.
     const int64_t *fadeStart;
-    /// 1 / F, the stolen grain's fade length F in samples; 0 while it hasn't been stolen.
+    /// 1 / kStealFade for a grain stolen with a fade; 0 for every other grain, the unstolen and
+    /// those stolen with at most kStealFade samples left, which don't fade (ruling ES-T6a).
     const float *invFade;
 };
 
@@ -172,9 +173,11 @@ class GrainPool
     uint64_t soundingWeight(int64_t onset) noexcept SST_CPPUTILS_NONBLOCKING;
 
     /// The part of soundingWeight(onset) that belongs to stolen grains still fading: the summed
-    /// weight of the grains whose fadeStart isn't kNeverStolen and whose end is after the onset
-    /// (ruling ES-T2a; the overload ladder's rung 3 leaves it out of its room test). First
-    /// forgets every end <= onset, with soundingWeight's requirement.
+    /// weight of the grains stolen with a fade (invFade isn't 0) whose end is after the onset
+    /// (ruling ES-T2a; the overload ladder's rung 3 leaves it out of its room test). A grain
+    /// stolen with at most kStealFade left doesn't fade, so its weight isn't here: it stays in
+    /// the ordinary ledger until its end (ruling ES-T6a). First forgets every end <= onset, with
+    /// soundingWeight's requirement.
     uint64_t fadingWeight(int64_t onset) noexcept SST_CPPUTILS_NONBLOCKING;
 
     /// How many of the grains spawned since the last clear() have an end after the onset. First
@@ -194,10 +197,14 @@ class GrainPool
     /// at each, so the work is bounded by the rows stored.
     bool oldestSounding(int64_t onset, uint32_t &row) noexcept SST_CPPUTILS_NONBLOCKING;
 
-    /// Steals the grain in `row`, which must sound at the onset and not have been stolen: with
-    /// F = min(kStealFade, endSample − onset), its end moves to onset + F, its fade starts at
-    /// the onset with invFade 1 / F, its heap key decreases to the new end and earliestEnd_
-    /// follows. Its weight stays in the ledger until the new end, counted in fadingWeight().
+    /// Steals the grain in `row`, which must sound at the onset and not have been stolen. Its
+    /// fadeStart becomes the onset, so it is never stolen again. With more than kStealFade
+    /// samples left, it fades: its end moves to onset + kStealFade, invFade becomes
+    /// 1 / kStealFade, its heap key decreases to the new end and earliestEnd_ follows, and its
+    /// weight stays in the ledger until the new end, counted in fadingWeight(). With at most
+    /// kStealFade left it already ends no later than a fade would (ruling ES-T6a): its end, its
+    /// window (invFade stays 0) and its ledger entry are left alone, and its weight stays in the
+    /// ordinary ledger, not fadingWeight(), until that end.
     void steal(uint32_t row, int64_t onset) noexcept SST_CPPUTILS_NONBLOCKING;
 
     /// Whether all 2 × capacity() slots are in use, so spawn() would fail.
@@ -287,7 +294,8 @@ class GrainPool
     // A min-heap by end in heap_[0, heapSize_) of the grains soundingWeight() still counts: one
     // entry per stored grain whose end hasn't been forgotten, so it never holds more than slots_.
     // heapWeight_ is the sum of the entries' weights, exactly, and fadingWeight_ the sum of the
-    // stolen ones' (an entry joins it at its steal and leaves it when its end is forgotten).
+    // fading ones' (an entry joins it at a steal that fades it and leaves it when its end is
+    // forgotten).
     std::vector<HeapEntry> heap_;
     uint32_t heapSize_{0};
     uint64_t heapWeight_{0};

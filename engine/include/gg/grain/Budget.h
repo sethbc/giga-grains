@@ -29,8 +29,9 @@ inline constexpr uint32_t kNormalStereoWeight = 4;
 /// weight (Engine::setQuota).
 inline constexpr uint64_t kUnlimitedQuota = std::numeric_limits<uint64_t>::max();
 
-/// The longest fade a stolen grain is given, in output samples (spec §6.5): it ends at
-/// onset + min(kStealFade, what it had left).
+/// The fade a stolen grain is given, in output samples (spec §6.5): with more than this left it
+/// ends at onset + kStealFade, fading; with at most this left it keeps its end and doesn't fade
+/// (ruling ES-T6a; GrainPool::steal).
 inline constexpr int64_t kStealFade = 256;
 
 /// A grain may be stolen once it has sounded this fraction of its durationSamples (spec §6.5,
