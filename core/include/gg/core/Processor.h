@@ -189,8 +189,9 @@ struct ControlEvent
 /// [b − 32, b) (non-finite samples as 0; the first cell's is 0), scanned before any output is
 /// written over it; the transport's values for the cell are taken, then it advances one cell
 /// while the host plays. A source's value after stepping at b is its value for the cell
-/// [b, b + 32). Construction and reset() reset them all (the transport keeps the host's last
-/// set, with its position) and set the next boundary to step to 0.
+/// [b, b + 32). Construction and reset() reset them all, the transport to none given (the host
+/// gives it again with its next call), and set the next boundary to step to 0, so a reset
+/// Processor renders as a fresh one.
 ///
 /// **Time-varying routes.** While some route has a source that moves with time alone
 /// (isTimeVarying: the per-layer modulators, the Env Follower, the transport's Beat and Bar), a
@@ -508,7 +509,8 @@ class Processor
     /// ones included: heldKeys() is empty and the engines get no keys. Freeze disengages and waits
     /// for an off→on transition (the class comment). The sources restart: the modulators and the
     /// follower reset, the MIDI sources return to their initial values (MidiSources), and the
-    /// transport keeps the last setTransport(). Real-time safe; call it between process() calls.
+    /// transport is forgotten, as before any setTransport(): the next one applies as a fresh
+    /// Processor's first does. Real-time safe; call it between process() calls.
     void reset() noexcept;
 
     /// The grain-event sink (gg-render's event log, tests): called on the audio thread once per

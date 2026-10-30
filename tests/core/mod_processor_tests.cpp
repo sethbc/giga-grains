@@ -880,6 +880,90 @@ TEST_CASE("modulation is block-size invariant", "[core][mod][determinism]")
     }
 }
 
+TEST_CASE("reset() then rendering equals a fresh Processor for every source", "[core][mod]")
+{
+    // A Processor with one route per source kind and a playing transport, rendered 1 s, then
+    // reset() and given its transport again as a host does, renders the next second as a fresh
+    // Processor set up the same renders its first: the same bits, grains, sources and effective
+    // values. With only event-driven routes (Transport Playing among them, not time-varying), the
+    // transport's playing flag must reach the effective values at the first boundary after the
+    // reset, as it does in a fresh Processor.
+    constexpr int64_t kFrames = 48000;
+    const Stereo input = noise(kFrames, 0.5f, 31);
+    const Transport transport{true, 3.25, 132.0, true, 3};
+    for (const auto &[mode, timeVarying] :
+         {std::pair{Mode::Fx, true}, std::pair{Mode::Instrument, true}, std::pair{Mode::Fx, false},
+          std::pair{Mode::Instrument, false}})
+    {
+        INFO((mode == Mode::Fx ? "FX" : "instrument")
+             << (timeVarying ? ", every source routed" : ", event-driven routes only"));
+        const std::vector<TimedNote> notes =
+            mode == Mode::Instrument ? someNotes() : std::vector<TimedNote>{};
+        const std::vector<TimedControl> controls = someControls();
+        struct Run
+        {
+            Stereo audio;
+            Log log;
+            std::array<std::array<float, static_cast<size_t>(ModSource::Count)>, 4> sources{};
+            ParamValues effective{};
+        };
+        const auto setUp = [&](Processor &p) {
+            const std::array<double, 4> hz{196.0, 293.66, 440.0, 659.25};
+            for (uint8_t L = 0; L < 4; ++L)
+            {
+                p.setBase(gg::core::layerOnSlot(L), 1.0f);
+                p.setSourceNow(L, sine(hz[L]));
+            }
+            varyModulators(p);
+            p.setRoutes(timeVarying ? allSourceRoutes(mode) : eventSourceRoutes(mode));
+            p.setTransport(transport);
+        };
+        const auto renderSecond = [&](Processor &p, Run &r) {
+            p.setEventSink(&Log::record, &r.log);
+            r.audio = silence(kFrames);
+            render(p, &input, 0, kFrames, {300}, {}, r.audio, nullptr, {}, notes, controls);
+            for (uint8_t L = 0; L < 4; ++L)
+            {
+                for (size_t i = 0; i < r.sources[L].size(); ++i)
+                {
+                    r.sources[L][i] = p.sourceValue(static_cast<ModSource>(i), L);
+                }
+            }
+            r.effective = effectiveValues(p);
+        };
+
+        Processor fresh({kRate, 512, 33, mode});
+        setUp(fresh);
+        Run first;
+        renderSecond(fresh, first);
+
+        Processor again({kRate, 512, 33, mode});
+        setUp(again);
+        Run before;
+        renderSecond(again, before);
+        again.reset();
+        again.setTransport(transport); // as the host gives it with every call
+        Run second;
+        renderSecond(again, second);
+
+        REQUIRE(peak(first.audio.left) > 0.05f);
+        REQUIRE(first.sources[0][static_cast<size_t>(ModSource::TransportPlaying)] == 1.0f);
+        for (uint32_t L = 0; L < 4; ++L)
+        {
+            INFO("layer " << L);
+            REQUIRE(second.log.layer(L) == first.log.layer(L));
+        }
+        REQUIRE(second.sources == first.sources);
+        for (size_t s = 0; s < kParamCount; ++s)
+        {
+            INFO("slot " << s);
+            REQUIRE(bitsOf(second.effective[s]) == bitsOf(first.effective[s]));
+        }
+        REQUIRE(sameBits(second.audio.left, first.audio.left));
+        REQUIRE(sameBits(second.audio.right, first.audio.right));
+    }
+}
+
 TEST_CASE("time-varying routes split rendering at cells", "[core][mod]")
 {
     const Stereo input = noise(48000, 0.5f, 21);

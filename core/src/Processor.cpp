@@ -714,7 +714,9 @@ void Processor::reset() noexcept
     // Every note released (spec §6.1), and the engines told: Engine::reset keeps their keys.
     held_.fill(0);
     updateKeys();
-    // The sources restart with the clock (the class comment); the transport is the host's.
+    // The sources restart with the clock (the class comment), the transport as never given: the
+    // host's next setTransport() is then a change, as a fresh Processor's first is, and applies
+    // at the next call's first boundary.
     midi_ = {};
     pendingMidi_ = {};
     for (const auto &l : layers_)
@@ -728,6 +730,8 @@ void Processor::reset() noexcept
     transportBeat_ = 0.0f;
     transportBar_ = 0.0f;
     transportPlaying_ = 0.0f;
+    transport_ = {};
+    transportChanged_ = false;
     lastStepped_ = -static_cast<int64_t>(kControlGrid);
     inputScanned_ = 0;
     cellPeak_ = 0.0f;
