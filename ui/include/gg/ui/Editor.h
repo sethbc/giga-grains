@@ -141,6 +141,20 @@ struct EditorContext
     /// call every frame; empty in the FX and with no sample.
     std::function<SampleWaveform()> sampleWaveform;
 
+    /// Per layer (M2 sub-project 6's spec §6.3; layer 0 to 3, A to D), for the canvas's four
+    /// lanes. Main thread. May be empty (a bare context: the lanes show no peaks and no sample).
+    /// livePeaksFor: the layer's live-ring peak strip; null while the plugin is inactive.
+    std::function<const gg::core::LivePeaks *(uint8_t layer)> livePeaksFor;
+    /// The layer's sample outline, as sampleWaveform. PR 1: layer 0's sampleWaveform; empty for
+    /// the others, which can't hold a sample until the session format's next version.
+    std::function<SampleWaveform(uint8_t layer)> sampleWaveformFor;
+    /// Loads a file the user dropped on a layer's lane. True if the layer takes it. PR 1: layer 0
+    /// calls loadSample and returns true; the others return false, and the canvas says so.
+    std::function<bool(uint8_t layer, const std::string &utf8Path)> loadSampleFor;
+    /// A transient message for the user (a refused drop); the header shows it (Task 15). May be
+    /// empty.
+    std::function<void(const std::string &utf8)> notice;
+
     /// The editor's destructor calls publishing(false): the plugin stops publishing (the shim
     /// has no destroy hook). The plugin turned it on when it created the editor. May be empty.
     /// Copied when the editor is made, so each editor calls the one it was given.

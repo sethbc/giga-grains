@@ -693,18 +693,27 @@ juce::MouseEvent mouseAt(juce::Component &c, float x, float y, juce::Point<float
         juce::MouseInputSource::defaultTiltY, &c, &c, now, down, now, 1, dragged);
 }
 
-/// The canvas's lane geometry as the canvas lays it out before its first paint (one physical
-/// pixel per logical one).
-gg::ui::LaneGeometry laneOf(const juce::Component &canvas, bool fx, double sampleRate,
-                            int64_t sourceFrames)
+/// Layer `layer`'s lane geometry as the canvas lays it out before its first paint (one physical
+/// pixel per logical one). x runs across the lane, from the canvas's x laneBounds().getX(); y
+/// is the canvas's own, since the lane's `top` is its place in the stacked canvas.
+gg::ui::LaneGeometry laneOf(const gg::ui::GrainCanvas &canvas, uint8_t layer, bool fx,
+                            double sampleRate, int64_t sourceFrames)
 {
-    return {.width = static_cast<float>(canvas.getWidth()),
-            .height = static_cast<float>(canvas.getHeight()),
+    const juce::Rectangle<int> b = canvas.laneBounds(layer);
+    return {.width = static_cast<float>(b.getWidth()),
+            .height = static_cast<float>(b.getHeight()),
             .pixelScale = 1.0f,
             .fxLane = fx,
             .sampleRate = sampleRate,
             .ringSeconds = 16.0,
-            .sourceFrames = sourceFrames};
+            .sourceFrames = sourceFrames,
+            .top = static_cast<float>(b.getY())};
+}
+
+/// The editor's canvas.
+gg::ui::GrainCanvas *canvasOf(const juce::Component &editor)
+{
+    return dynamic_cast<gg::ui::GrainCanvas *>(findDeep(editor, "canvas"));
 }
 
 /// One second of a 48 kHz instrument sample, for the instrument's lane.
@@ -712,6 +721,16 @@ gg::ui::SampleWaveform oneSecondSample()
 {
     return {std::make_shared<const std::vector<float>>(94, 0.5f), 48000, 1.0};
 }
+
+/// Gives layer A the one-second sample (PR 1: only layer A can hold one; the other lanes have
+/// none).
+void giveLayerASample(gg::ui::EditorContext &context)
+{
+    context.sampleWaveformFor = [](uint8_t layer) {
+        return layer == 0 ? oneSecondSample() : gg::ui::SampleWaveform{};
+    };
+}
+
 /// One sample status, every field given.
 gg::ui::SampleStatusView statusView(gg::ui::SampleStatusView::State state,
                                     std::string fileName = {}, std::string message = {},
@@ -909,28 +928,30 @@ TEST_CASE("a canvas drag emits begin, values, end once", "[plugin]")
     // Review Focus 5: a drag that ends outside the window, or with the editor closing, ends its
     // gesture exactly once, and the last value sent is the last drag position.
     const juce::ScopedJuceInitialiser_GUI juceGui;
+    constexpr float kTol = gg::ui::GrainCanvas::kEdgeTolerancePx;
 
     SECTION("the instrument's window body sets Position, released outside the canvas")
     {
         RecordingContext recording(gg::core::Mode::Instrument);
         recording.values[static_cast<std::size_t>(ParamSlot::Position)] = 0.5f;
         recording.values[static_cast<std::size_t>(ParamSlot::Spray)] = 0.4f;
-        recording.context.sampleWaveform = [] { return oneSecondSample(); };
+        giveLayerASample(recording.context);
         recording.context.sampleRate = 48000.0;
         auto editor = gg::ui::makeEditor(recording.context);
-        juce::Component *canvas = findDeep(*editor, "canvas");
+        auto *canvas = canvasOf(*editor);
         REQUIRE(canvas != nullptr);
-        const auto lane = laneOf(*canvas, false, 48000.0, 48000);
-        const auto window = gg::ui::scanWindow(0.5f, 0.4f, lane);
-        const float centre = 0.5f * (window.x0 + window.x1);
-        const float y = 0.5f * static_cast<float>(canvas->getHeight());
-        REQUIRE(gg::ui::hitTest(centre, window, 6.0f, lane) == gg::ui::DragTarget::Body);
+        const auto lane = laneOf(*canvas, 0, false, 48000.0, 48000);
+        const float off = static_cast<float>(canvas->laneBounds(0).getX());
+        const auto rect = gg::ui::scanRect({0.5f, 0.4f, 0.0f, 0.0f}, lane);
+        const float centre = 0.5f * (rect.x0 + rect.x1);
+        const float y = rect.y0;
+        REQUIRE(gg::ui::hitTestRect(centre, y, rect, kTol, lane) == gg::ui::DragTarget::Body);
 
-        const juce::Point<float> down{centre, y};
-        canvas->mouseDown(mouseAt(*canvas, centre, y, down, false));
+        const juce::Point<float> down{off + centre, y};
+        canvas->mouseDown(mouseAt(*canvas, off + centre, y, down, false));
         for (float dx : {10.0f, 20.0f, 30.0f})
         {
-            canvas->mouseDrag(mouseAt(*canvas, centre - dx, y, down, true));
+            canvas->mouseDrag(mouseAt(*canvas, off + centre - dx, y, down, true));
         }
         // Released well outside the canvas, to the left of the editor.
         canvas->mouseUp(mouseAt(*canvas, -200.0f, y, down, true));
@@ -960,17 +981,18 @@ TEST_CASE("a canvas drag emits begin, values, end once", "[plugin]")
         recording.values[static_cast<std::size_t>(ParamSlot::Spray)] = 0.8f;
         recording.context.sampleRate = 48000.0;
         const auto editor = gg::ui::makeEditor(recording.context);
-        juce::Component *canvas = findDeep(*editor, "canvas");
+        auto *canvas = canvasOf(*editor);
         REQUIRE(canvas != nullptr);
-        const auto lane = laneOf(*canvas, true, 48000.0, 0);
-        const auto window = gg::ui::scanWindow(0.5f, 0.8f, lane);
-        const float y = 10.0f;
-        REQUIRE(gg::ui::hitTest(window.x0, window, 6.0f, lane) == gg::ui::DragTarget::LeftEdge);
+        const auto lane = laneOf(*canvas, 0, true, 48000.0, 0);
+        const float off = static_cast<float>(canvas->laneBounds(0).getX());
+        const auto rect = gg::ui::scanRect({0.5f, 0.8f, 0.0f, 0.0f}, lane);
+        const float y = rect.y0;
+        REQUIRE(gg::ui::hitTestRect(rect.x0, y, rect, kTol, lane) == gg::ui::DragTarget::LeftEdge);
 
-        const juce::Point<float> down{window.x0, y};
-        canvas->mouseDown(mouseAt(*canvas, window.x0, y, down, false));
-        canvas->mouseDrag(mouseAt(*canvas, window.x0 - 40.0f, y, down, true));
-        canvas->mouseUp(mouseAt(*canvas, window.x0 - 40.0f, y, down, true));
+        const juce::Point<float> down{off + rect.x0, y};
+        canvas->mouseDown(mouseAt(*canvas, off + rect.x0, y, down, false));
+        canvas->mouseDrag(mouseAt(*canvas, off + rect.x0 - 40.0f, y, down, true));
+        canvas->mouseUp(mouseAt(*canvas, off + rect.x0 - 40.0f, y, down, true));
         REQUIRE(recording.kinds() == "bve");
         for (const GestureCall &c : recording.calls)
         {
@@ -978,7 +1000,7 @@ TEST_CASE("a canvas drag emits begin, values, end once", "[plugin]")
         }
         CHECK(recording.calls[1].value > 0.8); // wider
         CHECK(recording.calls[1].value ==
-              gg::ui::sprayValueForExtent(window.x1 - (window.x0 - 40.0f), lane));
+              gg::ui::sprayValueForExtent(rect.x1 - (rect.x0 - 40.0f), lane));
     }
     SECTION("the fx window's body moves Position further back as it moves left")
     {
@@ -986,34 +1008,40 @@ TEST_CASE("a canvas drag emits begin, values, end once", "[plugin]")
         recording.values[static_cast<std::size_t>(ParamSlot::Position)] = 0.5f;
         recording.values[static_cast<std::size_t>(ParamSlot::Spray)] = 0.8f;
         const auto editor = gg::ui::makeEditor(recording.context); // inactive: no sample rate
-        juce::Component *canvas = findDeep(*editor, "canvas");
+        auto *canvas = canvasOf(*editor);
         REQUIRE(canvas != nullptr);
-        const auto lane = laneOf(*canvas, true, 48000.0, 0);
-        const auto window = gg::ui::scanWindow(0.5f, 0.8f, lane);
-        const float x = window.x1 - 2.0f; // Position's own edge is the body (ruling PU-T8a)
-        const juce::Point<float> down{x, 10.0f};
-        canvas->mouseDown(mouseAt(*canvas, x, 10.0f, down, false));
-        canvas->mouseDrag(mouseAt(*canvas, x - 50.0f, 10.0f, down, true));
-        canvas->mouseUp(mouseAt(*canvas, x - 50.0f, 10.0f, down, true));
+        const auto lane = laneOf(*canvas, 0, true, 48000.0, 0);
+        const float off = static_cast<float>(canvas->laneBounds(0).getX());
+        const auto rect = gg::ui::scanRect({0.5f, 0.8f, 0.0f, 0.0f}, lane);
+        const float x = off + rect.x1 - 2.0f; // Position's own edge is the body (ruling PU-T8a)
+        const float y = rect.y0;
+        const juce::Point<float> down{x, y};
+        canvas->mouseDown(mouseAt(*canvas, x, y, down, false));
+        canvas->mouseDrag(mouseAt(*canvas, x - 50.0f, y, down, true));
+        canvas->mouseUp(mouseAt(*canvas, x - 50.0f, y, down, true));
         REQUIRE(recording.kinds() == "bve");
         CHECK(recording.calls[1].slot == ParamSlot::Position);
         CHECK(recording.calls[1].value > 0.5);
         CHECK_THAT(
             recording.calls[1].value,
-            Catch::Matchers::WithinAbs(gg::ui::positionValueAtX(window.x1 - 50.0f, lane), 1e-6));
+            Catch::Matchers::WithinAbs(gg::ui::positionValueAtX(rect.x1 - 50.0f, lane), 1e-6));
     }
     SECTION("a drag still live when the editor closes ends there")
     {
         RecordingContext recording(gg::core::Mode::Instrument);
-        recording.context.sampleWaveform = [] { return oneSecondSample(); };
+        giveLayerASample(recording.context);
         recording.values[static_cast<std::size_t>(ParamSlot::Position)] = 0.5f;
+        recording.values[static_cast<std::size_t>(ParamSlot::Spray)] = 0.4f;
         auto editor = gg::ui::makeEditor(recording.context);
-        juce::Component *canvas = findDeep(*editor, "canvas");
+        auto *canvas = canvasOf(*editor);
         REQUIRE(canvas != nullptr);
-        const float x = 0.5f * static_cast<float>(canvas->getWidth());
-        const juce::Point<float> down{x, 10.0f};
-        canvas->mouseDown(mouseAt(*canvas, x, 10.0f, down, false));
-        canvas->mouseDrag(mouseAt(*canvas, x + 5.0f, 10.0f, down, true));
+        const juce::Rectangle<int> bounds = canvas->laneBounds(0);
+        const float x =
+            static_cast<float>(bounds.getX()) + 0.5f * static_cast<float>(bounds.getWidth());
+        const float y = static_cast<float>(bounds.getCentreY());
+        const juce::Point<float> down{x, y};
+        canvas->mouseDown(mouseAt(*canvas, x, y, down, false));
+        canvas->mouseDrag(mouseAt(*canvas, x + 5.0f, y, down, true));
         editor.reset();
         CHECK(recording.kinds() == "bve");
     }
@@ -1022,16 +1050,23 @@ TEST_CASE("a canvas drag emits begin, values, end once", "[plugin]")
         RecordingContext recording(gg::core::Mode::Instrument);
         recording.values[static_cast<std::size_t>(ParamSlot::Position)] = 0.5f;
         const auto editor = gg::ui::makeEditor(recording.context); // no sample: no window
-        juce::Component *canvas = findDeep(*editor, "canvas");
+        auto *canvas = canvasOf(*editor);
         REQUIRE(canvas != nullptr);
-        const float x = 0.5f * static_cast<float>(canvas->getWidth());
-        canvas->mouseDown(mouseAt(*canvas, x, 10.0f, {x, 10.0f}, false));
-        canvas->mouseDrag(mouseAt(*canvas, x + 5.0f, 10.0f, {x, 10.0f}, true));
-        canvas->mouseUp(mouseAt(*canvas, x + 5.0f, 10.0f, {x, 10.0f}, true));
+        const juce::Rectangle<int> bounds = canvas->laneBounds(0);
+        const float x =
+            static_cast<float>(bounds.getX()) + 0.5f * static_cast<float>(bounds.getWidth());
+        const float y = static_cast<float>(bounds.getCentreY());
+        canvas->mouseDown(mouseAt(*canvas, x, y, {x, y}, false));
+        canvas->mouseDrag(mouseAt(*canvas, x + 5.0f, y, {x, y}, true));
+        canvas->mouseUp(mouseAt(*canvas, x + 5.0f, y, {x, y}, true));
 
-        recording.context.sampleWaveform = [] { return oneSecondSample(); };
-        canvas->mouseDown(mouseAt(*canvas, 2.0f, 10.0f, {2.0f, 10.0f}, false));
-        canvas->mouseUp(mouseAt(*canvas, 2.0f, 10.0f, {2.0f, 10.0f}, false));
+        giveLayerASample(recording.context);
+        const float edge = static_cast<float>(bounds.getX()) + 2.0f;
+        canvas->mouseDown(mouseAt(*canvas, edge, y, {edge, y}, false));
+        canvas->mouseUp(mouseAt(*canvas, edge, y, {edge, y}, false));
+        // And in the header strip left of the lanes.
+        canvas->mouseDown(mouseAt(*canvas, 10.0f, y, {10.0f, y}, false));
+        canvas->mouseUp(mouseAt(*canvas, 10.0f, y, {10.0f, y}, false));
         CHECK(recording.calls.empty());
     }
     SECTION("a right-button press on the window grabs nothing")
@@ -1039,23 +1074,24 @@ TEST_CASE("a canvas drag emits begin, values, end once", "[plugin]")
         RecordingContext recording(gg::core::Mode::Instrument);
         recording.values[static_cast<std::size_t>(ParamSlot::Position)] = 0.5f;
         recording.values[static_cast<std::size_t>(ParamSlot::Spray)] = 0.4f;
-        recording.context.sampleWaveform = [] { return oneSecondSample(); };
+        giveLayerASample(recording.context);
         recording.context.sampleRate = 48000.0;
         const auto editor = gg::ui::makeEditor(recording.context);
-        juce::Component *canvas = findDeep(*editor, "canvas");
+        auto *canvas = canvasOf(*editor);
         REQUIRE(canvas != nullptr);
-        const auto lane = laneOf(*canvas, false, 48000.0, 48000);
-        const auto window = gg::ui::scanWindow(0.5f, 0.4f, lane);
-        const float y = 10.0f;
+        const auto lane = laneOf(*canvas, 0, false, 48000.0, 48000);
+        const float off = static_cast<float>(canvas->laneBounds(0).getX());
+        const auto rect = gg::ui::scanRect({0.5f, 0.4f, 0.0f, 0.0f}, lane);
+        const float y = rect.y0;
         constexpr int kRight = juce::ModifierKeys::rightButtonModifier;
         // The body and an edge, each of which the left button grabs.
-        for (const float x : {0.5f * (window.x0 + window.x1), window.x0})
+        for (const float x : {0.5f * (rect.x0 + rect.x1), rect.x0})
         {
-            REQUIRE(gg::ui::hitTest(x, window, 6.0f, lane) != gg::ui::DragTarget::None);
-            const juce::Point<float> down{x, y};
-            canvas->mouseDown(mouseAt(*canvas, x, y, down, false, kRight));
-            canvas->mouseDrag(mouseAt(*canvas, x + 20.0f, y, down, true, kRight));
-            canvas->mouseUp(mouseAt(*canvas, x + 20.0f, y, down, true, kRight));
+            REQUIRE(gg::ui::hitTestRect(x, y, rect, kTol, lane) != gg::ui::DragTarget::None);
+            const juce::Point<float> down{off + x, y};
+            canvas->mouseDown(mouseAt(*canvas, off + x, y, down, false, kRight));
+            canvas->mouseDrag(mouseAt(*canvas, off + x + 20.0f, y, down, true, kRight));
+            canvas->mouseUp(mouseAt(*canvas, off + x + 20.0f, y, down, true, kRight));
         }
         CHECK(recording.calls.empty());
     }
@@ -1076,10 +1112,10 @@ TEST_CASE("the canvas draws the grains the queue holds", "[plugin]")
     recording.context.sampleRate = kRate;
 
     const auto editor = gg::ui::makeEditor(recording.context);
-    auto *canvas = dynamic_cast<gg::ui::GrainCanvas *>(findDeep(*editor, "canvas"));
+    auto *canvas = canvasOf(*editor);
     REQUIRE(canvas != nullptr);
-    const float width = static_cast<float>(canvas->getWidth());
-    const float height = static_cast<float>(canvas->getHeight());
+    const float width = static_cast<float>(canvas->laneBounds(0).getWidth());
+    const float height = static_cast<float>(canvas->laneBounds(0).getHeight()); // lane A's top is 0
 
     // The lane's vertical axis is pitch (M2 Views' D1): rate 4, two octaves up, lies half the
     // reach above the centre, and rate 1/2, an octave down, a quarter of the reach below it.
@@ -1106,6 +1142,8 @@ TEST_CASE("the canvas draws the grains the queue holds", "[plugin]")
     gg::core::UiSnapshot snapshot;
     snapshot.clock = kNow;
     snapshot.writeHead = kNow;
+    snapshot.lanes[0].writeHead = kNow;
+    snapshot.lanes[0].builtKind = 1; // Live
     snapshots.push(snapshot);
     canvas->renderFrame();
     REQUIRE(queue.push(grain(kNow - 100, 4.0, 4.0f)));
@@ -1138,6 +1176,8 @@ TEST_CASE("the canvas draws the grains the queue holds", "[plugin]")
     gg::core::UiSnapshot fresh;
     fresh.clock = 64;
     fresh.writeHead = 64;
+    fresh.lanes[0].writeHead = 64;
+    fresh.lanes[0].builtKind = 1;
     snapshots2.push(fresh);
     canvas->renderFrame(); // a new queue: cleared first
     REQUIRE(queue2.push(gg::core::GrainVis{0, 64.0 - 4.0 * kRate, 4.0f, 4800.0f, 1.0f, 0.0f}));
@@ -1172,16 +1212,16 @@ TEST_CASE("the canvas drops a stale backlog and waits for a snapshot", "[plugin]
     recording.context.clock = &clock;
     recording.context.sampleRate = kRate;
     const auto editor = gg::ui::makeEditor(recording.context);
-    auto *canvas = dynamic_cast<gg::ui::GrainCanvas *>(findDeep(*editor, "canvas"));
+    auto *canvas = canvasOf(*editor);
     REQUIRE(canvas != nullptr);
-    const float width = static_cast<float>(canvas->getWidth());
-    const float height = static_cast<float>(canvas->getHeight());
+    const float width = static_cast<float>(canvas->laneBounds(0).getWidth());
+    const float height = static_cast<float>(canvas->laneBounds(0).getHeight());
     // A grain reading 4.5 s .. 4 s behind a write head at 0 (the head the lane would take
     // without a snapshot), slowly, for 10 s: so low that it lies on the lane's bottom edge (the
     // vertical axis is pitch, M2 Views' D1).
     const gg::core::GrainVis grain{
         kNow - 100, -4.5 * kRate, 0.05f, static_cast<float>(10.0 * kRate), 1.0f, 0.0f};
-    const float y = gg::ui::pitchY(0.05f, laneOf(*canvas, true, kRate, 0), 3.0f);
+    const float y = gg::ui::pitchY(0.05f, laneOf(*canvas, 0, true, kRate, 0), 3.0f);
     REQUIRE(y == height - 3.0f);
     const auto lit = [&] {
         return canvas->accumAt(static_cast<uint32_t>(std::lround(width * (1.0f - 4.4f / 16.0f))),
@@ -1203,10 +1243,375 @@ TEST_CASE("the canvas drops a stale backlog and waits for a snapshot", "[plugin]
     gg::core::UiSnapshot snapshot;
     snapshot.clock = kNow;
     snapshot.writeHead = 0;
+    snapshot.lanes[0].writeHead = 0;
+    snapshot.lanes[0].builtKind = 1;
     snapshots.push(snapshot);
     canvas->renderFrame();
     CHECK(canvas->liveGrainCount() == 1);
     CHECK(lit());
+}
+
+TEST_CASE("the canvas draws each layer's grains in its lane", "[plugin]")
+{
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    constexpr double kRate = 48000.0;
+    constexpr int64_t kNow = 480000;
+    gg::core::GrainQueue queue;
+    gg::core::SnapshotBuffer snapshots;
+    std::atomic<int64_t> clock{kNow};
+    RecordingContext recording(gg::core::Mode::Fx);
+    recording.context.grains = &queue;
+    recording.context.snapshot = &snapshots;
+    recording.context.clock = &clock;
+    recording.context.sampleRate = kRate;
+    const auto editor = gg::ui::makeEditor(recording.context);
+    auto *canvas = canvasOf(*editor);
+    REQUIRE(canvas != nullptr);
+
+    gg::core::UiSnapshot snapshot;
+    snapshot.clock = kNow;
+    snapshot.writeHead = kNow;
+    for (auto &lane : snapshot.lanes)
+    {
+        lane.writeHead = kNow;
+        lane.builtKind = 1; // Live
+    }
+    snapshots.push(snapshot);
+    canvas->renderFrame(); // clears the queue: what follows is the first to be read
+
+    // One grain per layer, at rate 1 (the lane's centre), each 4 s back, the same x.
+    for (uint8_t layer = 0; layer < gg::core::kLayers; ++layer)
+    {
+        REQUIRE(
+            queue.push(gg::core::GrainVis{kNow - 100, static_cast<double>(kNow) - 4.0 * kRate, 1.0f,
+                                          static_cast<float>(0.1 * kRate), 1.0f, 0.0f, layer}));
+    }
+    canvas->renderFrame();
+    CHECK(canvas->liveGrainCount() == 4);
+    const auto x = static_cast<uint32_t>(
+        std::lround(static_cast<float>(canvas->laneBounds(0).getWidth()) * (1.0f - 3.95f / 16.0f)));
+    const auto centreOf = [canvas](uint8_t layer) {
+        return static_cast<uint32_t>(canvas->laneBounds(layer).getCentreY());
+    };
+    for (uint8_t layer = 0; layer < gg::core::kLayers; ++layer)
+    {
+        INFO("lane " << int(layer));
+        CHECK(canvas->accumAt(x, centreOf(layer)) > 0.0f);
+    }
+    // One layer's grain lights its own lane alone: the clock moves on past all four, then layer
+    // C plays one (4 s behind the head, which has moved on with the clock).
+    constexpr int64_t kLater = kNow + 48000;
+    clock.store(kLater);
+    canvas->renderFrame();
+    for (uint8_t layer = 0; layer < gg::core::kLayers; ++layer)
+    {
+        CHECK(canvas->accumAt(x, centreOf(layer)) == 0.0f);
+    }
+    REQUIRE(queue.push(gg::core::GrainVis{kLater - 100, static_cast<double>(kLater) - 4.0 * kRate,
+                                          1.0f, static_cast<float>(0.1 * kRate), 1.0f, 0.0f, 2}));
+    canvas->renderFrame();
+    for (uint8_t layer = 0; layer < gg::core::kLayers; ++layer)
+    {
+        INFO("lane " << int(layer));
+        CHECK((canvas->accumAt(x, centreOf(layer)) > 0.0f) == (layer == 2));
+    }
+}
+
+TEST_CASE("a rectangle drag on lane B sets layer B's parameters", "[plugin]")
+{
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    using gg::core::LayerParam;
+    using gg::core::layerSlot;
+    constexpr float kTol = gg::ui::GrainCanvas::kEdgeTolerancePx;
+    RecordingContext recording(gg::core::Mode::Fx);
+    const auto set = [&](LayerParam p, float v) {
+        recording.values[static_cast<std::size_t>(layerSlot(p, 1))] = v;
+    };
+    set(LayerParam::Position, 0.5f);
+    set(LayerParam::Spray, 0.8f);
+    set(LayerParam::Pitch, 0.0f);
+    set(LayerParam::PitchSpread, 12.0f);
+    recording.context.sampleRate = 48000.0;
+    const auto editor = gg::ui::makeEditor(recording.context);
+    auto *canvas = canvasOf(*editor);
+    REQUIRE(canvas != nullptr);
+    const auto lane = laneOf(*canvas, 1, true, 48000.0, 0);
+    const float off = static_cast<float>(canvas->laneBounds(1).getX());
+    const auto rect = [&] {
+        const auto v = [&](LayerParam p) {
+            return recording.values[static_cast<std::size_t>(layerSlot(p, 1))];
+        };
+        return gg::ui::scanRect({v(LayerParam::Position), v(LayerParam::Spray),
+                                 v(LayerParam::Pitch), v(LayerParam::PitchSpread)},
+                                lane);
+    };
+    const auto drag = [&](float x, float y, float dx, float dy) {
+        const juce::Point<float> down{off + x, y};
+        canvas->mouseDown(mouseAt(*canvas, off + x, y, down, false));
+        canvas->mouseDrag(mouseAt(*canvas, off + x + dx, y + dy, down, true));
+        canvas->mouseUp(mouseAt(*canvas, off + x + dx, y + dy, down, true));
+    };
+    const auto lastSlot = [&] { return recording.calls.back().slot; };
+
+    // The body, dragged along: Position.
+    {
+        const auto r = rect();
+        const float x = 0.5f * (r.x0 + r.x1);
+        const float y = 0.5f * (r.y0 + r.y1);
+        REQUIRE(gg::ui::hitTestRect(x, y, r, kTol, lane) == gg::ui::DragTarget::Body);
+        drag(x, y, -20.0f, 1.0f);
+        REQUIRE(recording.kinds() == "bve");
+        CHECK(recording.calls[0].slot == layerSlot(LayerParam::Position, 1));
+        CHECK(recording.calls[1].slot == layerSlot(LayerParam::Position, 1));
+        CHECK(lastSlot() == layerSlot(LayerParam::Position, 1));
+        CHECK(recording.calls[1].value > 0.5); // left is further back on the FX lane
+    }
+    // The body, dragged up: Pitch, and Position stays where the last drag left it.
+    {
+        recording.calls.clear();
+        const auto r = rect();
+        const float x = 0.5f * (r.x0 + r.x1);
+        const float y = 0.5f * (r.y0 + r.y1);
+        drag(x, y, 1.0f, -20.0f);
+        REQUIRE(recording.kinds() == "bve");
+        CHECK(recording.calls[0].slot == layerSlot(LayerParam::Pitch, 1));
+        CHECK(recording.calls[1].value == gg::ui::pitchValueAtY(y - 20.0f, lane));
+        CHECK(recording.calls[1].value > 0.0); // higher on the lane is higher in pitch
+    }
+    // The top edge: Pitch Spread.
+    {
+        recording.calls.clear();
+        const auto r = rect();
+        const float x = 0.5f * (r.x0 + r.x1);
+        const float y = r.y0 - 1.0f;
+        REQUIRE(gg::ui::hitTestRect(x, y, r, kTol, lane) == gg::ui::DragTarget::TopEdge);
+        drag(x, y, 0.0f, -10.0f);
+        REQUIRE(recording.kinds() == "bve");
+        CHECK(recording.calls[0].slot == layerSlot(LayerParam::PitchSpread, 1));
+        CHECK(recording.calls[1].value > 12.0); // wider
+    }
+    // The left edge: Spray.
+    {
+        recording.calls.clear();
+        const auto r = rect();
+        const float y = 0.5f * (r.y0 + r.y1);
+        REQUIRE(gg::ui::hitTestRect(r.x0, y, r, kTol, lane) == gg::ui::DragTarget::LeftEdge);
+        drag(r.x0, y, -10.0f, 0.0f);
+        REQUIRE(recording.kinds() == "bve");
+        CHECK(recording.calls[0].slot == layerSlot(LayerParam::Spray, 1));
+    }
+    // Nothing in this test touched another layer's parameters.
+    for (const GestureCall &c : recording.calls)
+    {
+        const auto ref = gg::core::layerOf(c.slot);
+        REQUIRE(ref.has_value());
+        CHECK(ref->layer == 1);
+    }
+}
+
+TEST_CASE("a press on the row two lanes share goes to one lane", "[plugin]")
+{
+    // Lane A's bottom row is lane B's top row. Both rectangles reach it (A at Pitch -24 with a
+    // spread of 24, B at Pitch +24 with a spread of 24), so both would grab a press there: the
+    // lane below, whose half-open range [top, bottom) holds the row, takes it.
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    using gg::core::LayerParam;
+    using gg::core::layerSlot;
+    RecordingContext recording(gg::core::Mode::Fx);
+    const auto set = [&](uint8_t layer, LayerParam p, float v) {
+        recording.values[static_cast<std::size_t>(layerSlot(p, layer))] = v;
+    };
+    set(0, LayerParam::Pitch, -24.0f);
+    set(0, LayerParam::PitchSpread, 24.0f);
+    set(1, LayerParam::Pitch, 24.0f);
+    set(1, LayerParam::PitchSpread, 24.0f);
+    recording.context.sampleRate = 48000.0;
+    const auto editor = gg::ui::makeEditor(recording.context);
+    auto *canvas = canvasOf(*editor);
+    REQUIRE(canvas != nullptr);
+    const juce::Rectangle<int> a = canvas->laneBounds(0);
+    const juce::Rectangle<int> b = canvas->laneBounds(1);
+    REQUIRE(a.getBottom() == b.getY()); // the lanes tile the canvas: they share the row
+    const auto laneA = laneOf(*canvas, 0, true, 48000.0, 0);
+    const auto laneB = laneOf(*canvas, 1, true, 48000.0, 0);
+    const auto rectOf = [&](uint8_t layer, const gg::ui::LaneGeometry &g) {
+        const auto v = [&](LayerParam p) {
+            return recording.values[static_cast<std::size_t>(layerSlot(p, layer))];
+        };
+        return gg::ui::scanRect({v(LayerParam::Position), v(LayerParam::Spray),
+                                 v(LayerParam::Pitch), v(LayerParam::PitchSpread)},
+                                g);
+    };
+    const auto ra = rectOf(0, laneA);
+    const auto rb = rectOf(1, laneB);
+    const float x = std::max(ra.x0, rb.x0) + 4.0f;
+    const auto row = static_cast<float>(b.getY());
+    constexpr float kTol = gg::ui::GrainCanvas::kEdgeTolerancePx;
+    REQUIRE(gg::ui::hitTestRect(x, row, ra, kTol, laneA) != gg::ui::DragTarget::None);
+    REQUIRE(gg::ui::hitTestRect(x, row, rb, kTol, laneB) != gg::ui::DragTarget::None);
+
+    const float off = static_cast<float>(b.getX());
+    const juce::Point<float> down{off + x, row};
+    canvas->mouseDown(mouseAt(*canvas, off + x, row, down, false));
+    canvas->mouseDrag(mouseAt(*canvas, off + x, row - 8.0f, down, true));
+    canvas->mouseUp(mouseAt(*canvas, off + x, row - 8.0f, down, true));
+    REQUIRE(recording.kinds() == "bve");
+    CHECK(recording.calls[0].slot == layerSlot(LayerParam::PitchSpread, 1));
+}
+
+TEST_CASE("a drag on a lane without a sample is no gesture", "[plugin]")
+{
+    // The instrument's layer B reads a Sample and has none (PR 1: only layer A can hold one):
+    // nothing in its lane can be grabbed, but the press still selects the lane.
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    RecordingContext recording(gg::core::Mode::Instrument);
+    giveLayerASample(recording.context);
+    const auto editor = gg::ui::makeEditor(recording.context);
+    auto *canvas = canvasOf(*editor);
+    REQUIRE(canvas != nullptr);
+    std::vector<int> selected;
+    canvas->onSelectLayer = [&selected](uint8_t layer) { selected.push_back(layer); };
+    const juce::Rectangle<int> b = canvas->laneBounds(1);
+    const float y = static_cast<float>(b.getCentreY());
+    for (const float f : {0.1f, 0.5f, 0.9f})
+    {
+        const float x = static_cast<float>(b.getX()) + f * static_cast<float>(b.getWidth());
+        canvas->mouseDown(mouseAt(*canvas, x, y, {x, y}, false));
+        canvas->mouseDrag(mouseAt(*canvas, x + 30.0f, y + 1.0f, {x, y}, true));
+        canvas->mouseUp(mouseAt(*canvas, x + 30.0f, y + 1.0f, {x, y}, true));
+        canvas->mouseDoubleClick(mouseAt(*canvas, x, y, {x, y}, false));
+    }
+    CHECK(recording.calls.empty());
+    CHECK(selected == std::vector<int>{1, 1, 1});
+}
+
+TEST_CASE("double-click freezes one lane", "[plugin]")
+{
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    using gg::core::LayerParam;
+    using gg::core::layerSlot;
+    RecordingContext recording(gg::core::Mode::Fx);
+    recording.context.sampleRate = 48000.0;
+    const auto editor = gg::ui::makeEditor(recording.context);
+    auto *canvas = canvasOf(*editor);
+    REQUIRE(canvas != nullptr);
+    const auto lane = laneOf(*canvas, 2, true, 48000.0, 0);
+    const float off = static_cast<float>(canvas->laneBounds(2).getX());
+    const auto v = [&](LayerParam p) {
+        return recording.values[static_cast<std::size_t>(layerSlot(p, 2))];
+    };
+    const auto r = gg::ui::scanRect({v(LayerParam::Position), v(LayerParam::Spray),
+                                     v(LayerParam::Pitch), v(LayerParam::PitchSpread)},
+                                    lane);
+    const float x = 0.5f * (r.x0 + r.x1);
+    const float y = 0.5f * (r.y0 + r.y1);
+    REQUIRE(gg::ui::hitTestRect(x, y, r, gg::ui::GrainCanvas::kEdgeTolerancePx, lane) ==
+            gg::ui::DragTarget::Body);
+    const juce::Point<float> at{off + x, y};
+    canvas->mouseDoubleClick(mouseAt(*canvas, off + x, y, at, false));
+    REQUIRE(recording.kinds() == "bve");
+    const ParamSlot freeze = layerSlot(LayerParam::Freeze, 2);
+    CHECK(recording.calls[0].slot == freeze);
+    CHECK(recording.calls[1].slot == freeze);
+    CHECK(recording.calls[1].value == 1.0);
+    CHECK(recording.calls[2].slot == freeze);
+    // Again: off.
+    canvas->mouseDoubleClick(mouseAt(*canvas, off + x, y, at, false));
+    REQUIRE(recording.kinds() == "bvebve");
+    CHECK(recording.calls[4].value == 0.0);
+    // Not on an edge, nor outside the rectangle.
+    const juce::Point<float> edge{off + r.x0, y};
+    canvas->mouseDoubleClick(mouseAt(*canvas, off + r.x0, y, edge, false));
+    canvas->mouseDoubleClick(mouseAt(*canvas, off + 2.0f, y, {off + 2.0f, y}, false));
+    CHECK(recording.kinds() == "bvebve");
+}
+
+TEST_CASE("a drop onto lane A loads, onto lane B is refused", "[plugin]")
+{
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    RecordingContext recording(gg::core::Mode::Instrument);
+    giveLayerASample(recording.context);
+    std::vector<std::pair<int, std::string>> loads;
+    std::vector<std::string> notices;
+    recording.context.loadSampleFor = [&loads](uint8_t layer, const std::string &path) {
+        loads.emplace_back(layer, path);
+        return layer == 0;
+    };
+    recording.context.notice = [&notices](const std::string &text) { notices.push_back(text); };
+    const auto editor = gg::ui::makeEditor(recording.context);
+    auto *canvas = canvasOf(*editor);
+    REQUIRE(canvas != nullptr);
+    const juce::StringArray any{"/tmp/anything.txt"};
+    CHECK(canvas->isInterestedInFileDrag(any));
+
+    const auto dropOn = [&](uint8_t layer, const char *path) {
+        const juce::Rectangle<int> b = canvas->laneBounds(layer);
+        canvas->filesDropped(juce::StringArray{path}, b.getX() + 20, b.getCentreY());
+    };
+    dropOn(0, "/tmp/a.wav");
+    REQUIRE(loads.size() == 1);
+    CHECK(loads[0] == std::pair<int, std::string>{0, "/tmp/a.wav"});
+    CHECK(notices.empty());
+    dropOn(1, "/tmp/b.wav");
+    REQUIRE(loads.size() == 2);
+    CHECK(loads[1] == std::pair<int, std::string>{1, "/tmp/b.wav"});
+    REQUIRE(notices.size() == 1);
+    CHECK(notices[0] == "layer B takes a sample after the session format's next version");
+    // A drop left of the lanes is no lane's.
+    canvas->filesDropped(juce::StringArray{"/tmp/c.wav"}, 10, canvas->laneBounds(1).getCentreY());
+    CHECK(loads.size() == 2);
+}
+
+TEST_CASE("the stress seam draws four lanes", "[plugin]")
+{
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    struct EnvGuard
+    {
+        EnvGuard()
+        {
+#if defined(_WIN32)
+            _putenv_s("GG_STRESS_GRAINS", "512");
+#else
+            setenv("GG_STRESS_GRAINS", "512", 1);
+#endif
+        }
+        ~EnvGuard()
+        {
+#if defined(_WIN32)
+            _putenv_s("GG_STRESS_GRAINS", "");
+#else
+            unsetenv("GG_STRESS_GRAINS");
+#endif
+        }
+    };
+    RecordingContext recording(gg::core::Mode::Fx);
+    {
+        const EnvGuard env;
+        const auto editor = gg::ui::makeEditor(recording.context);
+        auto *canvas = canvasOf(*editor);
+        REQUIRE(canvas != nullptr);
+        CHECK(canvas->stressMode());
+        canvas->renderFrame();
+        for (uint8_t layer = 0; layer < gg::core::kLayers; ++layer)
+        {
+            INFO("lane " << int(layer));
+            const juce::Rectangle<int> b = canvas->laneBounds(layer);
+            double energy = 0.0;
+            for (int y = b.getY(); y < b.getBottom(); ++y)
+            {
+                for (int x = 0; x < b.getWidth(); ++x)
+                {
+                    energy += canvas->accumAt(static_cast<uint32_t>(x), static_cast<uint32_t>(y));
+                }
+            }
+            CHECK(energy > 0.0);
+        }
+    }
+    // Without the variable the canvas draws the queue, which an inactive plugin lacks.
+    const auto editor = gg::ui::makeEditor(recording.context);
+    auto *canvas = canvasOf(*editor);
+    REQUIRE(canvas != nullptr);
+    CHECK_FALSE(canvas->stressMode());
 }
 
 TEST_CASE("the folder button reports a failed save", "[plugin]")

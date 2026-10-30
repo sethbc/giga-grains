@@ -195,11 +195,45 @@ std::unique_ptr<juce::Component> EditorPlugin::createEditor()
             const SampleWaveform w = loader->waveform();
             return gg::ui::SampleWaveform{w.peaks, w.frames, w.seconds};
         };
+        // PR 1 of the Views: only layer A holds a sample, the one the loader loads. A drop on
+        // another lane is refused (the canvas says so).
+        context.sampleWaveformFor = [loader](uint8_t layer) {
+            if (layer != 0)
+            {
+                return gg::ui::SampleWaveform{};
+            }
+            const SampleWaveform w = loader->waveform();
+            return gg::ui::SampleWaveform{w.peaks, w.frames, w.seconds};
+        };
+        context.loadSampleFor = [loader](uint8_t layer, const std::string &path) {
+            if (layer != 0)
+            {
+                return false;
+            }
+            try
+            {
+                loader->requestLoad(pathOf(path));
+            }
+            catch (...)
+            {
+                // As loadSample: the status stays as the loader set it.
+            }
+            return true;
+        };
     }
     else
     {
         context.sampleWaveform = [] { return gg::ui::SampleWaveform{}; };
+        context.sampleWaveformFor = [](uint8_t) { return gg::ui::SampleWaveform{}; };
+        context.loadSampleFor = [](uint8_t, const std::string &) { return false; };
     }
+    // Every layer's live ring peaks, while there is a Processor.
+    context.livePeaksFor = [this](uint8_t layer) -> const gg::core::LivePeaks * {
+        gg::core::Processor *p = processor();
+        return p != nullptr && layer < gg::core::kLayers ? &p->livePeaks(layer) : nullptr;
+    };
+    // Nothing shows a notice yet: the header will (M2 sub-project 6, Task 15).
+    context.notice = [](const std::string &) {};
 
     // The base values and the editor's gestures (sub-project 5's spec §6.3), through the
     // plugin's UI queue (GigaGrainsPlugin::uiBeginGesture).
