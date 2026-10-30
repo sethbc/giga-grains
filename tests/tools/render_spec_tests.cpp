@@ -160,7 +160,7 @@ struct Grains
         std::vector<std::string> out;
         for (const auto &g : spawned)
         {
-            out.push_back(gg::render::formatEventLine(g));
+            out.push_back(gg::render::formatEventLine(0, g)); // the engine is layer A's
         }
         return out;
     }
@@ -518,9 +518,9 @@ TEST_CASE("event lines use the documented format", "[render]")
         .gain = 0.8f,
         .pan = 0.0f,
     };
-    CHECK(gg::render::formatEventLine(g) ==
-          R"({"i":3,"onset":18000,"frac":0.5,"pos":95999.5,"rate":0.5,"dur":2880,"tex":0,)"
-          R"("gain":0.8,"pan":0})");
+    CHECK(gg::render::formatEventLine(0, g) ==
+          R"({"i":3,"layer":0,"onset":18000,"frac":0.5,"pos":95999.5,"rate":0.5,"dur":2880,)"
+          R"("tex":0,"gain":0.8,"pan":0})");
 
     // Doubles are written shortest-round-trip, so they read back exactly.
     const gg::GrainSpec h{
@@ -534,11 +534,13 @@ TEST_CASE("event lines use the documented format", "[render]")
         .gain = 1.0f / 3.0f,
         .pan = -0.1f,
     };
-    const std::string line = gg::render::formatEventLine(h);
-    CHECK(line == R"({"i":1099511627776,"onset":1099511627776,"frac":0.1,)"
+    // M2 sub-project 1's spec §6.7: "layer" follows "i".
+    const std::string line = gg::render::formatEventLine(3, h);
+    CHECK(line == R"({"i":1099511627776,"layer":3,"onset":1099511627776,"frac":0.1,)"
                   R"("pos":0.30000000000000004,"rate":1e-07,"dur":16,"tex":0.7,)"
                   R"("gain":0.33333334,"pan":-0.1})");
     const auto parsed = nlohmann::json::parse(line);
+    CHECK(parsed["layer"].get<uint32_t>() == 3);
     CHECK(parsed["frac"].get<double>() == h.onsetFrac);
     CHECK(parsed["pos"].get<double>() == h.startPos);
     CHECK(parsed["rate"].get<double>() == h.rate);
@@ -990,7 +992,7 @@ TEST_CASE("fx render matches the processor", "[render]")
     std::vector<std::string> expectedEvents;
     for (const auto &g : grains.spawned)
     {
-        expectedEvents.push_back(gg::render::formatEventLine(g));
+        expectedEvents.push_back(gg::render::formatEventLine(0, g)); // layer A alone is on
     }
 
     // Exactly durationSeconds, stereo, with no release tail.

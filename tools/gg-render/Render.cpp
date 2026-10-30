@@ -111,7 +111,7 @@ void takeEventLines(GrainCollector &grains, std::vector<std::string> *eventLines
     {
         for (const GrainCollector::Event &e : grains.pending)
         {
-            eventLines->push_back(formatEventLine(e.grain));
+            eventLines->push_back(formatEventLine(e.layer, e.grain));
         }
     }
     grains.pending.clear();
@@ -340,12 +340,12 @@ gg::metrics::AudioData renderProcessor(const RenderSpec &spec, std::vector<std::
 }
 } // namespace
 
-std::string formatEventLine(const GrainSpec &g)
+std::string formatEventLine(uint32_t layer, const GrainSpec &g)
 {
     return fmt::format(
-        R"({{"i":{},"onset":{},"frac":{},"pos":{},"rate":{},"dur":{},"tex":{},"gain":{},"pan":{}}})",
-        g.index, g.onsetSample, g.onsetFrac, g.startPos, g.rate, g.durationSamples, g.texture,
-        g.gain, g.pan);
+        R"({{"i":{},"layer":{},"onset":{},"frac":{},"pos":{},"rate":{},"dur":{},"tex":{},"gain":{},"pan":{}}})",
+        g.index, layer, g.onsetSample, g.onsetFrac, g.startPos, g.rate, g.durationSamples,
+        g.texture, g.gain, g.pan);
 }
 
 gg::metrics::AudioData render(const RenderSpec &spec, std::vector<std::string> *eventLines)

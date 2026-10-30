@@ -19,13 +19,14 @@
 namespace gg::render
 {
 /// One line of the grain-event log, without the newline:
-/// `{"i":<index>,"onset":<onsetSample>,"frac":<d>,"pos":<d>,"rate":<d>,"dur":<d>,"tex":<d>,`
-/// `"gain":<f>,"pan":<f>}`, "tex" being the grain's Texture (spec §4). Each <d> is fmt's shortest
+/// `{"i":<index>,"layer":<layer>,"onset":<onsetSample>,"frac":<d>,"pos":<d>,"rate":<d>,"dur":<d>,`
+/// `"tex":<d>,"gain":<f>,"pan":<f>}`, "layer" being the layer that spawned it (0 to 3, A to D; M2
+/// sub-project 1's spec §6.7) and "tex" the grain's Texture (spec §4). Each <d> is fmt's shortest
 /// round-trip form of the double and each <f> that of the float, so the line reads back exactly and
 /// is byte-identical on every platform. The golden event logs are compared exactly per line (a CR
 /// before a newline, and the final newline, are ignored), which makes them the cross-platform
 /// determinism gate (INTENT §14, §19).
-std::string formatEventLine(const GrainSpec &g);
+std::string formatEventLine(uint32_t layer, const GrainSpec &g);
 
 /// Renders the spec in its mode, in process() calls of blockSize frames (a part's last call may
 /// be shorter). The output is stereo, and bit-identical for any blockSize.
