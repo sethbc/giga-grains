@@ -3,8 +3,8 @@
 // Copyright 2026, the Giga Grains authors (see git history)
 
 // The mod matrix (M2 sub-project 1's spec §6.8): its routes, curves, factory routes and
-// evaluation. The factory routes are pinned against M1's macroOffsets bit for bit over random
-// macro vectors, so the matrix can replace it without moving a golden.
+// evaluation. The factory routes are pinned against M1's macroOffsets, frozen here, bit for bit
+// over random macro vectors, so the matrix replaces it without moving a golden.
 
 #include <algorithm>
 #include <array>
@@ -96,15 +96,67 @@ constexpr std::array<float, 8> kRest{0.5f, 0.5f, 0.5f, 0.5f, 0.0f, 0.0f, 0.0f, 0
 
 // The 28 M1 slots: everything before layer A's new parameters.
 constexpr size_t kM1Slots = idx(ParamSlot::Source);
+
+// M1's macroOffsets (sub-project 5's spec §3.2), frozen here verbatim from gg/core/ParamMap.cpp
+// as it was when the matrix replaced it (M2 sub-project 1's spec §6.8): the factory routes must
+// keep its values bit for bit.
+ParamValues m1MacroOffsets(const ParamValues &effectiveMacros, Mode mode) noexcept
+{
+    // Every entry starts at +0.0f, and each recipe's term is exactly 0 at rest: 2 × 0.5f − 1 is
+    // exactly 0, so are max(0, 0), 0/0.75, smoothstep below its edge and 0 × 0. +0 plus or minus
+    // (±0) is +0, so a resting entry stays +0.0f.
+    ParamValues o{};
+    const auto macro = [&effectiveMacros](ParamSlot slot) {
+        return effectiveMacros[static_cast<size_t>(slot)];
+    };
+    const auto offset = [&o](ParamSlot slot) -> float & { return o[static_cast<size_t>(slot)]; };
+    const auto bipolar = [](float v) { return 2.0f * v - 1.0f; };
+
+    const float b1 = bipolar(macro(ParamSlot::Macro1));
+    offset(ParamSlot::Size) += 3.0f * b1;
+    offset(ParamSlot::Density) -= 1.5f * b1;
+
+    const float b2 = bipolar(macro(ParamSlot::Macro2));
+    offset(ParamSlot::Density) += 4.0f * b2;
+    offset(ParamSlot::Distribution) += 0.25f * std::max(b2, 0.0f);
+
+    offset(ParamSlot::Pitch) += 24.0f * bipolar(macro(ParamSlot::Macro3));
+
+    const float b4 = bipolar(macro(ParamSlot::Macro4));
+    offset(ParamSlot::Spray) += 0.5f * b4;
+    offset(ParamSlot::Stereo) += 0.3f * std::max(b4, 0.0f);
+
+    const float u5 = macro(ParamSlot::Macro5);
+    offset(ParamSlot::Texture) += std::min(u5 / 0.75f, 1.0f);
+    offset(ParamSlot::Diffusion) += gg::core::smoothstep(0.75f, 1.0f, u5);
+
+    offset(ParamSlot::Freeze) += macro(ParamSlot::Macro6);
+
+    // Macro 7 is Macro Feedback in both products (M2 sub-project 1's spec §6.9, §6.10); Feedback
+    // acts on a layer that reads its live ring (toWetParams).
+    const float v7 = macro(ParamSlot::Macro7);
+    offset(ParamSlot::Feedback) += 0.9f * (v7 * v7);
+
+    const float v8 = macro(ParamSlot::Macro8);
+    if (mode == Mode::Instrument)
+    {
+        offset(ParamSlot::Level) += 12.0f * bipolar(v8);
+    }
+    else
+    {
+        offset(ParamSlot::Mix) += 0.5f * bipolar(v8);
+    }
+    return o;
+}
 } // namespace
 
-TEST_CASE("the factory routes equal macroOffsets bit for bit", "[core][mod]")
+TEST_CASE("the factory routes equal M1's macroOffsets bit for bit", "[core][mod]")
 {
     for (const Mode mode : {Mode::Fx, Mode::Instrument})
     {
         const ModRoutes routes = factoryRoutes(mode);
         const auto check = [&](const std::array<float, 8> &macros) {
-            const ParamValues expected = gg::core::macroOffsets(macroValues(macros), mode);
+            const ParamValues expected = m1MacroOffsets(macroValues(macros), mode);
             const ParamValues got = evaluate(routes, macroSources(macros));
             for (size_t s = 0; s < kM1Slots; ++s)
             {

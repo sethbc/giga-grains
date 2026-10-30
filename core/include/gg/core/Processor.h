@@ -18,6 +18,8 @@
 #include "gg/core/Diffuser.h"
 #include "gg/core/GrainQueue.h"
 #include "gg/core/LivePeaks.h"
+#include "gg/core/ModMatrix.h"
+#include "gg/core/ModSources.h"
 #include "gg/core/ParamIds.h"
 #include "gg/core/ParamMap.h"
 #include "gg/core/SourceExchange.h"
@@ -54,7 +56,8 @@ enum class NoteEventType : uint8_t
             ///< releases everything. The key is ignored.
 };
 
-/// A note event inside one process() call (spec §6.1). Velocity is ignored (D6), so it has none.
+/// A note event inside one process() call (spec §6.1). The grains ignore velocity (D6); an On's
+/// velocity is the mod matrix's Velocity source (M2 sub-project 1's spec §6.8).
 struct NoteEvent
 {
     uint32_t offset; ///< Frames from the start of the call. A call's notes are sorted by it.
@@ -62,6 +65,27 @@ struct NoteEvent
     int16_t channel; ///< 0..15; −1 = any (Off and AllOff only). Other values make it ignored.
     int16_t key;     ///< 0..127; −1 = any (Off only; AllOff ignores it). Other values make the
                      ///< event ignored.
+    /// On only: 0..1. Clamped to it; NaN counts as 0.
+    float velocity{1.0f};
+};
+
+/// Which MIDI control a ControlEvent carries (M2 sub-project 1's spec §6.8): CC 1, channel
+/// pressure or pitch bend.
+enum class ControlKind : uint8_t
+{
+    ModWheel,
+    Aftertouch,
+    PitchBend,
+};
+
+/// A MIDI control inside one process() call: the mod matrix's Mod Wheel, Aftertouch and Pitch
+/// Bend sources (spec §6.8). It joins the control grid as a note event does.
+struct ControlEvent
+{
+    uint32_t offset;  ///< Frames from the start of the call. A call's controls are sorted by it.
+    ControlKind kind; ///< Out of range: the event is ignored.
+    int16_t channel;  ///< 0..15 or −1 (any); other values make it ignored. Not otherwise read yet.
+    float value;      ///< 0..1, clamped to it (pitch bend's centre is 0.5); NaN or ±∞ ignored.
 };
 
 /// What both plugins and gg-render run: the instance, real-time safe (spec §5, §6.1–§6.4; M2
@@ -137,22 +161,58 @@ struct NoteEvent
 /// it within one piece.
 ///
 /// **Parameters.** Each slot has a base value and a modulation offset; the effective value,
-/// clamp(base + modulation + macro offset) to the slot's range, is what reaches the engine
-/// (toCloudParams) and the wet chain (toWetParams). The macro offset is the slot's entry of
-/// macroOffsets (sub-project 5's spec §3), from the eight macros' own effective values,
-/// clamp(base + modulation); a macro's own offset is 0, and every offset is exactly 0 while the
-/// macros rest. One clamp takes the whole sum. Values are floats: event values are converted on
-/// receipt.
+/// clamp(base + modulation + route offset) to the slot's range, is what reaches the engine
+/// (toCloudParams) and the wet chain (toWetParams). One clamp takes the whole sum. Values are
+/// floats: event values are converted on receipt.
+///
+/// **The mod matrix** (M2 sub-project 1's spec §6.8). The route offset is the slot's sum of the
+/// routes' contributions (applyRoutes over routes(), factoryRoutes(mode) at construction, which
+/// are M1's macro recipes bit for bit, so every offset is exactly +0 while the macros rest). Each
+/// time the effective values are computed (updateEffective):
+/// 1. the eight macros' own effective values, clamp(base + modulation): no route targets a macro;
+/// 2. every source's value, per layer (sourceValue): the macros (the same in every layer), each
+///    layer's own modulators (two LFOs, two envelopes, two random sources and the step
+///    sequencer) as of the last stepped boundary, the MIDI sources as of the last applied
+///    boundary (Mod Wheel, Aftertouch and Pitch Bend from the control events, Velocity and Key
+///    from the last note-on), the Env Follower and the transport's Beat, Bar and Playing;
+/// 3. the route offsets, then every slot's clamp(base + modulation + offset);
+/// 4. each layer's engine gets setCloudParams only when its CloudParams changed, bit for bit
+///    (the scheduler takes the same values twice as once).
+///
+/// **The sources' clock.** Every source is stepped exactly once per grid boundary b, in order,
+/// as rendering reaches b (after b's group of events is committed, before b's effective values
+/// are computed), however the host splits blocks, so they are block-size invariant. At b each
+/// layer's modulators step with their controls from the effective values in effect (lfoParams,
+/// envParams, randomParams, stepParams; no route targets them), the envelopes' gate being the
+/// held set's non-emptiness as of b, the random sources keyed by (seed, layer, 0, ModRandom1 or
+/// ModRandom2, step); the Env Follower takes the peak |x| of the instance's input over the cell
+/// [b − 32, b) (non-finite samples as 0; the first cell's is 0), scanned before any output is
+/// written over it; the transport's values for the cell are taken, then it advances one cell
+/// while the host plays. A source's value after stepping at b is its value for the cell
+/// [b, b + 32). Construction and reset() reset them all (the transport keeps the host's last
+/// set, with its position) and set the next boundary to step to 0.
+///
+/// **Time-varying routes.** While some route has a source that moves with time alone
+/// (isTimeVarying: the per-layer modulators, the Env Follower, the transport's Beat and Bar), a
+/// non-zero depth and a valid target (timeVarying(), recomputed by setRoutes), process() applies
+/// every grid boundary of the call as a group, an empty one where no event pends: the effective
+/// values, the engines' parameters and the ramps' targets follow the sources cell by cell, and
+/// pieces end at every cell. Otherwise only the boundaries with pending events are applied, as
+/// before; the sources still step at every boundary, so they keep time, and their values reach
+/// the effective values at the next applied boundary. No golden has a time-varying route, so the
+/// pieces, and the bits, are M1's.
 ///
 /// **The control grid** (spec §6.1; INTENT §14). An event, a parameter or a note event, at
 /// absolute sample a = clock + offset takes effect at the grid boundary b = ceil(a / 32) × 32,
 /// aligned to the stream's absolute sample count, not to block starts, so the output doesn't
-/// depend on how the host splits blocks. A call's parameter and note events are merged by offset
-/// into one sequence, so both kinds join the same boundary groups. Until b an event is pending:
-/// per slot, base and modulation apart, the latest parameter event wins, and the note events
-/// queue in order. process() renders up to each boundary that has a pending change, then:
-/// - the effective values become clamp(base + modulation + macro offset);
-/// - the group's note events apply in order to the held set (below);
+/// depend on how the host splits blocks. A call's parameter, note and control events are merged by
+/// offset into one sequence, so every kind joins the same boundary groups. Until b an event is
+/// pending: per slot, base and modulation apart, the latest parameter event wins, and the note
+/// events queue in order. process() renders up to each boundary that has a pending change, then:
+/// - the group's note events apply in order to the held set (below), and its control events and
+///   note-ons to the MIDI sources;
+/// - the sources step (above), and the effective values become clamp(base + modulation +
+///   route offset);
 /// - every layer's engine gets setCloudParams(toCloudParams(..., layer)), its source kind (when it
 ///   changed), setHeldKeys with the distinct held keys (when the group had notes) and its freeze
 ///   setting (below), which apply from b;
@@ -183,8 +243,8 @@ struct NoteEvent
 /// by being seen off after the construction (an activation) or the last reset(): until then an
 /// effective Freeze that is on leaves the engine live, though base() and effective() still read
 /// it on. Freeze is seen at the points where it reaches the engine: each call's first sample,
-/// each applied boundary, and a setBase() of a layer's Freeze or of Macro 6 (Macro Freeze, which
-/// adds to layer A's; params.flush or a state load).
+/// each applied boundary, and a setBase() of a layer's Freeze or of Macro 6 (Macro Freeze, whose
+/// factory route adds to every layer's; params.flush or a state load).
 /// Construction and reset() disarm it, and the reset itself doesn't arm: after a reset (a VST3
 /// suspend, say), a Freeze turned on before audio flows stays live until it is toggled, while one
 /// that is off at the next call's first sample arms. Modulation that takes the effective Freeze
@@ -321,9 +381,10 @@ class Processor
     /// base change to the same slot is dropped, so this, the latest value, wins. The ramped
     /// values (Mix, Reverb Amount, Dry to Reverb, Morph X and Morph Y, and each layer's Level,
     /// Diffusion, Feedback and Layer On) jump to the new value without a ramp; a macro makes each
-    /// ramped value whose effective value it moved jump (Macro 5 Diffusion, Macro 7 Feedback, the
-    /// FX's Macro 8 Mix, the instrument's Macro 8 Level), and so does a layer's Source for its
-    /// Feedback (0 on a Sample layer). The engines get the new parameters, and a new source kind,
+    /// ramped value whose effective value it moved through its routes jump (with the factory
+    /// routes Macro 5 Diffusion, Macro 7 Feedback, the FX's Macro 8 Mix, the instrument's Macro 8
+    /// Level, on every layer), and so does a layer's Source for its Feedback (0 on a Sample
+    /// layer). The engines get the new parameters, and a new source kind,
     /// from the next process() call's first sample. Space's latched values (Decay, Size, Damping,
     /// Pre-delay and Modulation), and whether Reverb Amount keeps the reverb active, take effect
     /// at the next reverb chunk's first sample, the next grid boundary. Real-time safe; call it
@@ -341,12 +402,35 @@ class Processor
     /// The slot's base value in effect: the last setBase() or applied event. `slot` must be a
     /// parameter: ParamSlot::Count asserts (and in release builds reads the last parameter).
     float base(ParamSlot slot) const noexcept;
-    /// The slot's effective value in effect: clamp(base + modulation + macro offset), as the
+    /// The slot's effective value in effect: clamp(base + modulation + route offset), as the
     /// class comment describes. `slot` as for base().
     float effective(ParamSlot slot) const noexcept;
 
-    /// Renders numFrames frames into out, applying `events` and `notes` on the control grid as
-    /// the class comment describes.
+    /// Replaces the mod matrix's routes with a copy of `routes` (the class comment), and
+    /// recomputes timeVarying(). They apply at once, as a loaded state does: the effective values
+    /// are recomputed, and each ramped value whose target they moved jumps (as setBase() of a
+    /// macro makes it). Real-time safe; call it between process() calls.
+    void setRoutes(const ModRoutes &routes) noexcept;
+    /// The routes in effect: factoryRoutes(mode) from construction, or the last setRoutes().
+    const ModRoutes &routes() const noexcept { return routes_; }
+    /// Whether a route moves with time alone (the class comment's Time-varying routes).
+    bool timeVarying() const noexcept { return timeVarying_; }
+
+    /// The host's transport, given before a process() call (the transport sources: the class
+    /// comment), held until the next one; the transport sources read 0 before any. A change of
+    /// the playing flag applies at the call's first boundary, as an event at offset 0 would.
+    /// Real-time safe; call it between process() calls.
+    void setTransport(const Transport &transport) noexcept;
+
+    /// Source `s`'s value on layer `layer` (below kLayers; a larger one reads the last layer), in
+    /// [0, 1] (the class comment): a modulator's, the follower's and the transport's as of the
+    /// last stepped boundary, the MIDI sources' as of the last applied one, a macro's its effective
+    /// value. A global source has the same value on every layer; None and Count are 0. For tests
+    /// and the editor's Mod view.
+    float sourceValue(ModSource s, uint8_t layer) const noexcept;
+
+    /// Renders numFrames frames into out, applying `events`, `notes` and `controls` on the
+    /// control grid as the class comment describes.
     ///
     /// - Input: in[c] is channel c's numFrames samples. A mono input (numInChannels 1) feeds
     ///   both channels; in == nullptr, numInChannels 0 or a null channel pointer is silence. It
@@ -360,7 +444,8 @@ class Processor
     /// - An event whose offset is past numFrames counts as at numFrames. An out-of-order event
     ///   (an offset below the one before it in its span) joins the pending boundary, or the last
     ///   one already applied, rather than going back in time. A parameter event with a NaN value
-    ///   is ignored, as is a note event with a field out of range (NoteEvent).
+    ///   is ignored, as is a note or control event with a field out of range (NoteEvent,
+    ///   ControlEvent).
     /// - Bounded work: each event is read once, and a call applies at most
     ///   numFrames / kControlGrid + 2 boundaries, each a fixed amount of work.
     ///
@@ -368,7 +453,8 @@ class Processor
     /// denormals flushed (ScopedDenormalsOff) and restores the caller's floating-point mode.
     void process(const float *const *in, uint32_t numInChannels, float *const *out,
                  uint32_t numOutChannels, uint32_t numFrames, std::span<const ParamEvent> events,
-                 std::span<const NoteEvent> notes = {}) noexcept SST_CPPUTILS_NONBLOCKING;
+                 std::span<const NoteEvent> notes = {},
+                 std::span<const ControlEvent> controls = {}) noexcept SST_CPPUTILS_NONBLOCKING;
 
     /// The runner the layer tasks go to (the class comment's Threads), from the next process()
     /// call; nullptr selects the built-in SerialRunner, the default. Used only inside process(), so
@@ -420,8 +506,9 @@ class Processor
     /// histories are cleared: a fresh ring has no wet signal behind it to take back; the live
     /// peaks are silenced with the rings (LivePeaks::reset). Every note is released, the pending
     /// ones included: heldKeys() is empty and the engines get no keys. Freeze disengages and waits
-    /// for an off→on transition (the class comment). Real-time safe; call it between process()
-    /// calls.
+    /// for an off→on transition (the class comment). The sources restart: the modulators and the
+    /// follower reset, the MIDI sources return to their initial values (MidiSources), and the
+    /// transport keeps the last setTransport(). Real-time safe; call it between process() calls.
     void reset() noexcept;
 
     /// The grain-event sink (gg-render's event log, tests): called on the audio thread once per
@@ -480,6 +567,10 @@ class Processor
     bool reverbActive() const noexcept { return reverb_->chunkActive(); }
 
   private:
+    /// The per-layer sources, Lfo1 to Step (isPerLayerSource).
+    static constexpr size_t kModulatorSources =
+        static_cast<size_t>(ModSource::Step) - static_cast<size_t>(ModSource::Lfo1) + 1;
+
     /// A linear ramp from `from` at sample `start` to `to` at start + length, held there.
     struct Ramp
     {
@@ -530,6 +621,14 @@ class Processor
         // The enable gate last given to the engine (Engine::setEnabled), and the kind.
         bool enabledGiven{true};
         SourceMode kind{SourceMode::Sample};
+        // The cloud parameters last given to the engine, if cloudGiven (updateEffective).
+        CloudParams cloud{};
+        bool cloudGiven{false};
+        // The layer's modulators (spec §6.8), stepped on the audio thread between pieces, never
+        // in a task, and their values for the cell of the last stepped boundary, in ModSource
+        // order from Lfo1 to Step.
+        LayerModulators modulators;
+        std::array<float, kModulatorSources> modulatorValues{};
     };
 
     /// One process() call's buffers.
@@ -576,9 +675,22 @@ class Processor
     /// rendering[K] and 0 elsewhere.
     void weightsAt(int64_t t, const std::array<bool, kLayers> &rendering,
                    std::array<float, kLayers> &weights) const noexcept;
-    /// Moves the pending changes into the base and modulation values, and the pending notes'
-    /// held set into effect.
+    /// Moves the pending changes into the base and modulation values, the pending notes' held set
+    /// and the pending MIDI sources into effect.
     void commitPending() noexcept;
+    /// Steps every source once per grid boundary c with lastStepped_ < c ≤ upTo, in order (the
+    /// class comment's sources' clock), scanning the input up to each c first for the follower;
+    /// then scans the input up to scanTo (≥ upTo, within the call). Every boundary it steps and
+    /// every sample it scans is in the call b describes, and not yet rendered.
+    void stepSources(const Buffers &b, int64_t upTo,
+                     int64_t scanTo) noexcept SST_CPPUTILS_NONBLOCKING;
+    /// Adds the input's peak |x| over [inputScanned_, to) to cellPeak_ (non-finite samples as 0).
+    void scanInput(const Buffers &b, int64_t to) noexcept SST_CPPUTILS_NONBLOCKING;
+    /// Steps every source at the boundary c (stepSources).
+    void stepSourcesAt(int64_t c) noexcept SST_CPPUTILS_NONBLOCKING;
+    /// Makes each ramped value whose target the effective values moved jump to it (setBase() of a
+    /// macro, setRoutes()).
+    void jumpMovedRamps() noexcept;
     /// Recomputes the effective values, gives each engine its cloud parameters and source kind,
     /// and keeps Space's.
     void updateEffective() noexcept;
@@ -589,7 +701,8 @@ class Processor
     /// Gives each engine its freeze setting: its layer's effective Freeze, once armed, or in the
     /// FX any held key. An effective Freeze that is off arms it.
     void syncFreeze() noexcept;
-    /// Applies one note event, whose fields are in range, to held_.
+    /// Applies one note event, whose fields are in range, to held_, and an On's velocity and key to
+    /// the pending MIDI sources.
     void applyNote(const NoteEvent &n) noexcept SST_CPPUTILS_NONBLOCKING;
     /// Makes held_ the held set in effect: rebuilds keys_ and gives every engine its keys.
     void updateKeys() noexcept SST_CPPUTILS_NONBLOCKING;
@@ -638,6 +751,30 @@ class Processor
     bool hasPendingNotes_{false};
     std::array<uint8_t, 128> keys_{};
     size_t keyCount_{0};
+
+    // The mod matrix (the class comment): its routes, whether one moves with time alone, and the
+    // sources' values per layer, filled by updateEffective. The global sources: the MIDI ones in
+    // effect and pending (equal when nothing pends), the follower and the transport, with the
+    // follower's and the transport's values for the cell of the last stepped boundary
+    // (lastStepped_, −32 before boundary 0), and the input's peak over the cell being scanned,
+    // up to the absolute sample inputScanned_. setTransport's change of the playing flag waits
+    // for the next call's first boundary (transportChanged_).
+    ModRoutes routes_{};
+    bool timeVarying_{false};
+    std::array<ModSourceValues, kLayers> sources_{};
+    MidiSources midi_{};
+    MidiSources pendingMidi_{};
+    EnvFollower follower_;
+    float followerValue_{0.0f};
+    TransportSource transport_{};
+    float transportBeat_{0.0f};
+    float transportBar_{0.0f};
+    float transportPlaying_{0.0f};
+    bool transportChanged_{false};
+    int64_t lastStepped_{-static_cast<int64_t>(kControlGrid)};
+    int64_t inputScanned_{0};
+    float cellPeak_{0.0f};
+    double cellSeconds_;
 
     Ramp mix_;
     Ramp amount_;

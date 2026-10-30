@@ -34,7 +34,7 @@ float sourceValue(const std::array<ModSourceValues, kLayers> &sources, ModSource
 
 float applyCurve(ModCurve c, float v) noexcept
 {
-    // macroOffsets' expressions, term for term (gg/core/ParamMap.cpp).
+    // M1's macroOffsets' expressions, term for term (frozen in tests/core/mod_matrix_tests.cpp).
     switch (c)
     {
     case ModCurve::Unipolar:
@@ -100,8 +100,8 @@ ModRoutes factoryRoutes(Mode mode) noexcept
     const auto route = [](ModSource source, ParamSlot target, float depth, ModCurve curve) {
         return ModRoute{source, kSameLayer, target, kAllLayers, depth, curve};
     };
-    // Spec §6.8's table, in slot order. Each target's contributions arrive in macroOffsets' order
-    // (Density: Macro 1's, then Macro 2's), so the sums match it bit for bit.
+    // Spec §6.8's table, in slot order. Each target's contributions arrive in M1's macroOffsets'
+    // order (Density: Macro 1's, then Macro 2's), so the sums match it bit for bit.
     ModRoutes r{};
     r[0] = route(ModSource::Macro1, ParamSlot::Size, 3.0f, ModCurve::Bipolar);
     r[1] = route(ModSource::Macro1, ParamSlot::Density, -1.5f, ModCurve::Bipolar);

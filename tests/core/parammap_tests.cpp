@@ -24,6 +24,7 @@
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 #include "gg/core/MathDet.h"
+#include "gg/core/ModMatrix.h"
 #include "gg/core/ParamIds.h"
 #include "gg/core/ParamMap.h"
 #include "sst/basic-blocks/params/ParamMetadata.h"
@@ -322,7 +323,7 @@ TEST_CASE("param map follows the taper table", "[core]")
             case ParamSlot::Macro8:
             default:
             {
-                // The macros act through macroOffsets before these functions: none of them moves
+                // The macros act through the mod matrix before these functions: none of them moves
                 // a field here. Nor does any other of M2's new slots for layer A (M2 sub-project
                 // 1's spec §6.9: its modulators, layers B to D and the layers' globals; the
                 // layer-aware functions read those, "the layer-aware maps read each layer's
@@ -872,15 +873,44 @@ TEST_CASE("soft limiter is continuous and bounded", "[core]")
 
 namespace
 {
+// The macros' offsets as the Processor computes them since the matrix replaced macroOffsets (M2
+// sub-project 1's spec §6.8): the factory routes over the macros' values in `m`.
+ParamValues factoryOffsets(const ParamValues &m, Mode mode)
+{
+    std::array<gg::core::ModSourceValues, gg::core::kLayers> sources{};
+    for (auto &layer : sources)
+    {
+        for (size_t i = 0; i < gg::core::kMacroSlots.size(); ++i)
+        {
+            layer.v[static_cast<size_t>(gg::core::ModSource::Macro1) + i] =
+                m[static_cast<size_t>(gg::core::kMacroSlots[i])];
+        }
+    }
+    ParamValues o{};
+    gg::core::applyRoutes(gg::core::factoryRoutes(mode), sources, o);
+    return o;
+}
+
 // The recipes' expected offsets (sub-project 5's spec §3.2), written out in double from the
-// table: one macro at `value`, the other macros at rest.
+// table: one macro at `value`, the other macros at rest. A layer parameter's or Level's offset
+// reaches every layer (M2 sub-project 1's spec §6.8: the factory routes target every layer).
 ParamValues expectedOffsets(ParamSlot macro, double value, Mode mode)
 {
     std::array<double, kParamCount> o{};
     const double b = 2.0 * value - 1.0;
     const double bPlus = std::max(b, 0.0);
     const double u = value;
-    const auto add = [&o](ParamSlot slot, double x) { o[static_cast<size_t>(slot)] += x; };
+    const auto add = [&o](ParamSlot slot, double x) {
+        if (!gg::core::isLayerTarget(slot))
+        {
+            o[static_cast<size_t>(slot)] += x;
+            return;
+        }
+        for (uint8_t layer = 0; layer < gg::core::kLayers; ++layer)
+        {
+            o[static_cast<size_t>(gg::core::routeTargetSlot(slot, layer))] += x;
+        }
+    };
     switch (macro)
     {
     case ParamSlot::Macro1:
@@ -933,7 +963,7 @@ ParamValues expectedOffsets(ParamSlot macro, double value, Mode mode)
 }
 } // namespace
 
-TEST_CASE("macro offsets follow the recipes", "[core]")
+TEST_CASE("the factory routes' offsets follow the macro recipes", "[core]")
 {
     for (const Mode mode : {Mode::Fx, Mode::Instrument})
     {
@@ -946,7 +976,7 @@ TEST_CASE("macro offsets follow the recipes", "[core]")
                 // Every macro rests but this one; the other slots' values are ignored.
                 ParamValues m = defaults(mode);
                 m[static_cast<size_t>(macro)] = v;
-                const ParamValues offsets = gg::core::macroOffsets(m, mode);
+                const ParamValues offsets = factoryOffsets(m, mode);
                 const ParamValues expected = expectedOffsets(macro, d(v), mode);
                 for (size_t s = 0; s < kParamCount; ++s)
                 {
@@ -966,7 +996,7 @@ TEST_CASE("macro offsets follow the recipes", "[core]")
         m[static_cast<size_t>(ParamSlot::Macro2)] = 0.75f;
         m[static_cast<size_t>(ParamSlot::Macro4)] = 1.0f;
         m[static_cast<size_t>(ParamSlot::Macro7)] = 0.25f;
-        const ParamValues o = gg::core::macroOffsets(m, Mode::Instrument);
+        const ParamValues o = factoryOffsets(m, Mode::Instrument);
         REQUIRE_THAT(d(o[static_cast<size_t>(ParamSlot::Density)]), WithinAbs(-1.5 + 2.0, 1e-6));
         REQUIRE_THAT(d(o[static_cast<size_t>(ParamSlot::Stereo)]), WithinAbs(0.3, 1e-6));
         REQUIRE_THAT(d(o[static_cast<size_t>(ParamSlot::Feedback)]),
@@ -980,7 +1010,7 @@ TEST_CASE("macro offsets follow the recipes", "[core]")
         {
             ParamValues m{};
             m.fill(1.0f);
-            const ParamValues o = gg::core::macroOffsets(m, mode);
+            const ParamValues o = factoryOffsets(m, mode);
             for (const ParamSlot macro : gg::core::kMacroSlots)
             {
                 REQUIRE(o[static_cast<size_t>(macro)] == 0.0f);
@@ -989,14 +1019,14 @@ TEST_CASE("macro offsets follow the recipes", "[core]")
     }
 }
 
-TEST_CASE("resting macros offset nothing", "[core]")
+TEST_CASE("resting macros offset nothing through the factory routes", "[core]")
 {
     // Spec §3.1: a bipolar macro at 0.5 and a unipolar one at 0 contribute exactly 0, so a
     // resting preset is bit-identical to its base values. Every entry is +0.0f, the sign
     // included: base + (+0.0f) is base, bit for bit, for every base but −0.
     for (const Mode mode : {Mode::Fx, Mode::Instrument})
     {
-        const ParamValues o = gg::core::macroOffsets(defaults(mode), mode);
+        const ParamValues o = factoryOffsets(defaults(mode), mode);
         for (size_t s = 0; s < kParamCount; ++s)
         {
             INFO("mode " << static_cast<int>(mode) << ", slot " << s);

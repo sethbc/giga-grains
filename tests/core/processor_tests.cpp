@@ -27,6 +27,7 @@
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 #include "gg/core/DenormalGuard.h"
+#include "gg/core/ModMatrix.h"
 #include "gg/core/ParamIds.h"
 #include "gg/core/ParamMap.h"
 #include "gg/core/Processor.h"
@@ -1070,14 +1071,21 @@ TEST_CASE("processor survives an automation storm", "[core][rt]")
     // (the storm sets Reverb Amount too): the output is never louder than the input plus 2.
     REQUIRE(peak(left) < peak(input.left) + 2.0f);
     REQUIRE(peak(right) < peak(input.right) + 2.0f);
-    // The effective values: the macros' clamp(base + mod), their offsets (the storm moves the
-    // macros too), then one clamp of base + mod + offset.
-    gg::core::ParamValues macros{};
-    for (const ParamSlot macro : gg::core::kMacroSlots)
+    // The effective values: the macros' clamp(base + mod), the factory routes' offsets from them
+    // (the storm moves the macros too), then one clamp of base + mod + offset.
+    std::array<gg::core::ModSourceValues, gg::core::kLayers> sources{};
+    for (size_t m = 0; m < gg::core::kMacroSlots.size(); ++m)
     {
-        macros[at(macro)] = clampTo(macro, lastBase[at(macro)] + lastMod[at(macro)]);
+        const ParamSlot macro = gg::core::kMacroSlots[m];
+        for (auto &layer : sources)
+        {
+            layer.v[static_cast<size_t>(gg::core::ModSource::Macro1) + m] =
+                clampTo(macro, lastBase[at(macro)] + lastMod[at(macro)]);
+        }
     }
-    const gg::core::ParamValues offsets = gg::core::macroOffsets(macros, Mode::Fx);
+    gg::core::ParamValues offsets{};
+    gg::core::applyRoutes(p.routes(), sources, offsets);
+    REQUIRE(p.routes() == gg::core::factoryRoutes(Mode::Fx));
     for (size_t s = 0; s < kParamCount; ++s)
     {
         const auto slot = static_cast<ParamSlot>(s);

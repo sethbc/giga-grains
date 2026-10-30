@@ -6,9 +6,11 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cassert>
 #include <cmath>
 #include <cstddef>
+#include <limits>
 #include <optional>
 #include <stdexcept>
 
@@ -91,6 +93,62 @@ bool validNote(const NoteEvent &n) noexcept
     }
     return false;
 }
+
+/// Whether a control event's fields are in range (ControlEvent): a known kind, a channel 0..15 or
+/// −1, a finite value.
+bool validControl(const ControlEvent &c) noexcept
+{
+    return c.kind <= ControlKind::PitchBend && c.channel >= -1 && c.channel <= 15 &&
+           std::isfinite(c.value);
+}
+
+/// v clamped to [0, 1], NaN as 0.
+float unitClamped(float v) noexcept { return v >= 0.0f ? (v <= 1.0f ? v : 1.0f) : 0.0f; }
+
+/// Whether some route moves its target with time alone (the class comment's Time-varying
+/// routes): a time-varying source, a non-zero depth and a target it reaches.
+bool anyTimeVarying(const ModRoutes &routes) noexcept
+{
+    for (const ModRoute &r : routes)
+    {
+        const bool reaches =
+            !isLayerTarget(r.target) || r.targetLayer == kAllLayers || r.targetLayer < kLayers;
+        if (isTimeVarying(r.source) && r.depth != 0.0f && isValidTarget(r.target) && reaches)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+// sameCloud compares every field of CloudParams: a field added there must be added there too.
+static_assert(sizeof(CloudParams) == 96, "CloudParams changed: update sameCloud");
+
+/// Whether two CloudParams are the same, bit for bit (+0 and −0 differ, so the engine is never
+/// spared a value that would change a bit).
+bool sameCloud(const CloudParams &a, const CloudParams &b) noexcept
+{
+    const auto same = [](double x, double y) {
+        return std::bit_cast<uint64_t>(x) == std::bit_cast<uint64_t>(y);
+    };
+    return same(a.densityHz, b.densityHz) && same(a.distribution, b.distribution) &&
+           same(a.grainDurationSec, b.grainDurationSec) && same(a.position, b.position) &&
+           same(a.spray, b.spray) && same(a.pitchSemitones, b.pitchSemitones) &&
+           same(a.stereo, b.stereo) &&
+           std::bit_cast<uint32_t>(a.gain) == std::bit_cast<uint32_t>(b.gain) &&
+           same(a.texture, b.texture) && a.quality == b.quality &&
+           a.sprayInSeconds == b.sprayInSeconds &&
+           same(a.pitchSpreadSemitones, b.pitchSpreadSemitones) &&
+           same(a.sizeSpreadOctaves, b.sizeSpreadOctaves);
+}
+
+/// Whether `s` is a modulator's control (LFO 1 Rate to Step 16, in any layer): no route targets
+/// one, so its effective value is clamp(base + modulation).
+bool isModulatorControl(ParamSlot s) noexcept
+{
+    const std::optional<LayerRef> ref = layerOf(s);
+    return ref && ref->param >= LayerParam::Lfo1Rate;
+}
 } // namespace
 
 float Processor::Ramp::at(int64_t t, int64_t length) const noexcept
@@ -127,7 +185,9 @@ Processor::Layer::Layer(const EngineConfig &config) : engine(config) {}
 
 Processor::Processor(const ProcessorConfig &config)
     : config_(validated(config)), rampSamples_(rampLength(config.sampleRate)),
-      pieceMax_(std::min(config.maxBlockSize, kFeedbackDelay)),
+      pieceMax_(std::min(config.maxBlockSize, kFeedbackDelay)), routes_(factoryRoutes(config.mode)),
+      timeVarying_(anyTimeVarying(routes_)), follower_(config.sampleRate),
+      cellSeconds_(static_cast<double>(kControlGrid) / config.sampleRate),
       reverb_(std::make_unique<SpaceReverb>(config.sampleRate))
 {
     // The first paramMeta() call builds its tables, which allocates; make every call here, off
@@ -248,6 +308,14 @@ void Processor::setBase(ParamSlot slot, float value) noexcept
     {
         syncFreeze(); // Freeze set off is a transition's first half, even between calls
     }
+    if (isMacro(slot))
+    {
+        // A macro moves its routes' targets' effective values (sub-project 5's spec §3.1; M2
+        // sub-project 1's spec §6.8): each ramped value whose target it changed jumps, as a
+        // setBase of the target itself makes it; the others keep their ramps.
+        jumpMovedRamps();
+        return;
+    }
     const auto jumpIfMoved = [](Ramp &ramp, float target) {
         if (target != ramp.to)
         {
@@ -255,29 +323,6 @@ void Processor::setBase(ParamSlot slot, float value) noexcept
         }
     };
     const MorphParams morph = toMorphParams(effective_);
-    if (isMacro(slot))
-    {
-        // A macro moves its targets' effective values (sub-project 5's spec §3.1): each ramped
-        // value whose target it changed jumps, as a setBase of the target itself makes it; the
-        // others keep their ramps. Generic on purpose: every ramped value is checked, not only
-        // today's macro targets (Mix, Level, Diffusion, Feedback), so the others never fire now
-        // but follow a recipe that comes to move them.
-        jumpIfMoved(mix_, toWetParams(effective_, config_.mode, 0).mix);
-        jumpIfMoved(amount_, space_.amount);
-        jumpIfMoved(drySend_, space_.drySend);
-        jumpIfMoved(morphX_, morph.x);
-        jumpIfMoved(morphY_, morph.y);
-        for (uint8_t L = 0; L < kLayers; ++L)
-        {
-            Layer &l = *layers_[L];
-            const WetParams w = toWetParams(effective_, config_.mode, L);
-            jumpIfMoved(l.level, w.levelGain);
-            jumpIfMoved(l.diffusion, layerDiffusion(effective_, L));
-            jumpIfMoved(l.feedback, w.feedback);
-            jumpIfMoved(l.on, layerOn(effective_, L) ? 1.0f : 0.0f);
-        }
-        return;
-    }
     switch (slot)
     {
     case ParamSlot::Mix:
@@ -334,6 +379,86 @@ void Processor::setBase(ParamSlot slot, float value) noexcept
     }
 }
 
+void Processor::jumpMovedRamps() noexcept
+{
+    // Generic on purpose: every ramped value is checked, whatever routes move it.
+    const auto jumpIfMoved = [](Ramp &ramp, float target) {
+        if (target != ramp.to)
+        {
+            ramp.jump(target);
+        }
+    };
+    const MorphParams morph = toMorphParams(effective_);
+    jumpIfMoved(mix_, toWetParams(effective_, config_.mode, 0).mix);
+    jumpIfMoved(amount_, space_.amount);
+    jumpIfMoved(drySend_, space_.drySend);
+    jumpIfMoved(morphX_, morph.x);
+    jumpIfMoved(morphY_, morph.y);
+    for (uint8_t L = 0; L < kLayers; ++L)
+    {
+        Layer &l = *layers_[L];
+        const WetParams w = toWetParams(effective_, config_.mode, L);
+        jumpIfMoved(l.level, w.levelGain);
+        jumpIfMoved(l.diffusion, layerDiffusion(effective_, L));
+        jumpIfMoved(l.feedback, w.feedback);
+        jumpIfMoved(l.on, layerOn(effective_, L) ? 1.0f : 0.0f);
+    }
+}
+
+void Processor::setRoutes(const ModRoutes &routes) noexcept
+{
+    routes_ = routes;
+    timeVarying_ = anyTimeVarying(routes_);
+    updateEffective();
+    jumpMovedRamps(); // as a loaded state's values do
+}
+
+void Processor::setTransport(const Transport &transport) noexcept
+{
+    if ((transport_.playing() != 0.0f) != transport.playing)
+    {
+        transportChanged_ = true; // Transport Playing changes at the next call's first boundary
+    }
+    transport_.set(transport);
+}
+
+float Processor::sourceValue(ModSource s, uint8_t layer) const noexcept
+{
+    const auto i = static_cast<size_t>(s);
+    if (s >= ModSource::Macro1 && s <= ModSource::Macro8)
+    {
+        return effective_[static_cast<size_t>(
+            kMacroSlots[i - static_cast<size_t>(ModSource::Macro1)])];
+    }
+    if (isPerLayerSource(s))
+    {
+        return layerAt(layer).modulatorValues[i - static_cast<size_t>(ModSource::Lfo1)];
+    }
+    switch (s)
+    {
+    case ModSource::ModWheel:
+        return midi_.modWheel;
+    case ModSource::Aftertouch:
+        return midi_.aftertouch;
+    case ModSource::PitchBend:
+        return midi_.pitchBend;
+    case ModSource::Velocity:
+        return midi_.velocity;
+    case ModSource::Key:
+        return midi_.key;
+    case ModSource::EnvFollower:
+        return followerValue_;
+    case ModSource::TransportBeat:
+        return transportBeat_;
+    case ModSource::TransportBar:
+        return transportBar_;
+    case ModSource::TransportPlaying:
+        return transportPlaying_;
+    default:
+        return 0.0f; // None, Count and beyond
+    }
+}
+
 // ParamSlot::Count asserts; in release builds it reads the last slot rather than out of bounds,
 // as paramMeta does.
 float Processor::base(ParamSlot slot) const noexcept
@@ -362,6 +487,14 @@ void Processor::commitPending() noexcept
         {
             mod_[s] = pendingMod_[s];
         }
+        // A modulator's control is in effect for the cell its boundary starts, as the sources
+        // step there before the effective values are recomputed: no route targets it, so its
+        // effective value is already known.
+        if ((hasPendingBase_[s] || hasPendingMod_[s]) &&
+            isModulatorControl(static_cast<ParamSlot>(s)))
+        {
+            effective_[s] = clampToRange(s, base_[s] + mod_[s]);
+        }
     }
     hasPendingBase_.fill(false);
     hasPendingMod_.fill(false);
@@ -370,7 +503,77 @@ void Processor::commitPending() noexcept
         hasPendingNotes_ = false;
         updateKeys();
     }
+    midi_ = pendingMidi_;
     hasPending_ = false;
+}
+
+void Processor::scanInput(const Buffers &b, int64_t to) noexcept
+{
+    // A mono input feeds both channels: its one channel is the whole input.
+    const uint32_t channels = std::min(b.numInChannels, 2u);
+    float peak = cellPeak_;
+    for (int64_t t = std::max(inputScanned_, b.callStart); t < to; ++t)
+    {
+        const auto i = static_cast<size_t>(t - b.callStart);
+        for (uint32_t c = 0; c < channels; ++c)
+        {
+            if (b.in[c] == nullptr)
+            {
+                continue;
+            }
+            const float a = std::fabs(b.in[c][i]);
+            // NaN fails both comparisons and infinity the second: each counts as 0.
+            if (a > peak && a <= std::numeric_limits<float>::max())
+            {
+                peak = a;
+            }
+        }
+    }
+    cellPeak_ = peak;
+    inputScanned_ = std::max(inputScanned_, to);
+}
+
+void Processor::stepSourcesAt(int64_t c) noexcept
+{
+    // The held set as of c: c's notes are committed before c steps.
+    const bool gate = keyCount_ > 0;
+    for (uint8_t L = 0; L < kLayers; ++L)
+    {
+        Layer &l = *layers_[L];
+        LayerModulators &m = l.modulators;
+        auto &v = l.modulatorValues; // Lfo1, Lfo2, Env1, Env2, Random1, Random2, Step
+        v[0] = m.lfo[0].step(lfoParams(effective_, L, 0), cellSeconds_);
+        v[1] = m.lfo[1].step(lfoParams(effective_, L, 1), cellSeconds_);
+        v[2] = m.env[0].step(envParams(effective_, L, 0), gate, cellSeconds_);
+        v[3] = m.env[1].step(envParams(effective_, L, 1), gate, cellSeconds_);
+        v[4] = m.random[0].step(randomParams(effective_, L, 0), cellSeconds_, config_.seed, L,
+                                rng::Field::ModRandom1);
+        v[5] = m.random[1].step(randomParams(effective_, L, 1), cellSeconds_, config_.seed, L,
+                                rng::Field::ModRandom2);
+        v[6] = m.stepSeq.step(stepParams(effective_, L), cellSeconds_);
+    }
+    // The previous cell's input peak, [c − 32, c).
+    const float peak = cellPeak_;
+    const float *peakChannel = &peak;
+    followerValue_ = follower_.step(&peakChannel, 1, 1);
+    cellPeak_ = 0.0f;
+    // The transport's values for the cell, then one cell on.
+    transportBeat_ = transport_.beatPhase();
+    transportBar_ = transport_.barPhase();
+    transportPlaying_ = transport_.playing();
+    transport_.step(cellSeconds_);
+    lastStepped_ = c;
+}
+
+void Processor::stepSources(const Buffers &b, int64_t upTo, int64_t scanTo) noexcept
+{
+    constexpr auto grid = static_cast<int64_t>(kControlGrid);
+    for (int64_t c = lastStepped_ + grid; c <= upTo; c += grid)
+    {
+        scanInput(b, c);
+        stepSourcesAt(c);
+    }
+    scanInput(b, scanTo);
 }
 
 void Processor::applyNote(const NoteEvent &n) noexcept
@@ -379,6 +582,9 @@ void Processor::applyNote(const NoteEvent &n) noexcept
     {
     case NoteEventType::On:
         held_[static_cast<size_t>(n.key)] |= static_cast<uint16_t>(1u << n.channel);
+        // Spec §6.8: the last note-on's velocity and key / 127, from its boundary.
+        pendingMidi_.velocity = unitClamped(n.velocity);
+        pendingMidi_.key = static_cast<float>(n.key) / 127.0f;
         break;
     case NoteEventType::Off:
     {
@@ -428,28 +634,46 @@ void Processor::updateKeys() noexcept
 
 void Processor::updateEffective() noexcept
 {
-    // Sub-project 5's spec §3.1: the macros' own effective values first, clamp(base + mod) as
-    // any slot's, then every slot's clamp(base + mod + offset), one clamp of the whole sum. A
-    // macro's own offset is 0, so its effective value is the one its curves read. At rest every
-    // offset is +0.0f and the sum is base + mod, bit for bit, but for a −0 sum (a −0 base and a
-    // −0 modulation, which only a host can send), which becomes +0.
-    // base is finite and in range, mod is never NaN, and every offset is finite (the macros are
-    // clamped to 0..1), so the sum is never NaN; an infinite mod clamps to an end of the range.
-    ParamValues macros{};
+    // Sub-project 5's spec §3.1, M2 sub-project 1's spec §6.8: the macros' own effective values
+    // first, clamp(base + mod) as any slot's (no route targets a macro, so this is their final
+    // value), then every source's value, the routes' offsets, and every slot's
+    // clamp(base + mod + offset), one clamp of the whole sum. At rest the factory routes' offsets
+    // are all +0.0f and the sum is base + mod, bit for bit, but for a −0 sum (a −0 base and a −0
+    // modulation, which only a host can send), which becomes +0.
+    // base is finite and in range and mod is never NaN; the routes' depths are finite, but two
+    // huge ones can sum to ±∞ − ∞: a NaN sum takes no offset. An infinite one clamps to an end of
+    // the range.
     for (const ParamSlot slot : kMacroSlots)
     {
         const auto s = static_cast<size_t>(slot);
-        macros[s] = clampToRange(s, base_[s] + mod_[s]);
+        effective_[s] = clampToRange(s, base_[s] + mod_[s]);
     }
-    const ParamValues offsets = macroOffsets(macros, config_.mode);
+    for (uint8_t L = 0; L < kLayers; ++L)
+    {
+        for (size_t i = 0; i < sources_[L].v.size(); ++i)
+        {
+            sources_[L].v[i] = sourceValue(static_cast<ModSource>(i), L);
+        }
+    }
+    ParamValues offsets{};
+    applyRoutes(routes_, sources_, offsets);
     for (size_t s = 0; s < kParamCount; ++s)
     {
-        effective_[s] = clampToRange(s, base_[s] + mod_[s] + offsets[s]);
+        const float sum = base_[s] + mod_[s] + offsets[s];
+        effective_[s] = clampToRange(s, std::isnan(sum) ? base_[s] + mod_[s] : sum);
     }
     for (uint8_t L = 0; L < kLayers; ++L)
     {
         Layer &l = *layers_[L];
-        l.engine.setCloudParams(toCloudParams(effective_, config_.mode, L));
+        // The scheduler takes the same values twice as once, so an unchanged layer is spared the
+        // call: the per-cell path of a time-varying route stays cheap.
+        const CloudParams cloud = toCloudParams(effective_, config_.mode, L);
+        if (!l.cloudGiven || !sameCloud(cloud, l.cloud))
+        {
+            l.engine.setCloudParams(cloud);
+            l.cloud = cloud;
+            l.cloudGiven = true;
+        }
         // Spec §6.4: a kind switch applies from the engine's next call, the grains sounding
         // finishing on their own source.
         const SourceMode kind = builtKind(sourceKindOf(effective_, L), config_.mode);
@@ -490,6 +714,23 @@ void Processor::reset() noexcept
     // Every note released (spec §6.1), and the engines told: Engine::reset keeps their keys.
     held_.fill(0);
     updateKeys();
+    // The sources restart with the clock (the class comment); the transport is the host's.
+    midi_ = {};
+    pendingMidi_ = {};
+    for (const auto &l : layers_)
+    {
+        l->modulators.reset();
+        l->modulatorValues.fill(0.0f);
+        l->cloudGiven = false; // the engine is told again, as before
+    }
+    follower_.reset();
+    followerValue_ = 0.0f;
+    transportBeat_ = 0.0f;
+    transportBar_ = 0.0f;
+    transportPlaying_ = 0.0f;
+    lastStepped_ = -static_cast<int64_t>(kControlGrid);
+    inputScanned_ = 0;
+    cellPeak_ = 0.0f;
     updateEffective();
     // Fresh rings: Freeze waits for an off→on transition, as after construction.
     for (const auto &l : layers_)
@@ -718,8 +959,8 @@ float Processor::morphWeightAt(uint8_t layer, int64_t t) const noexcept
 
 void Processor::process(const float *const *in, uint32_t numInChannels, float *const *out,
                         uint32_t numOutChannels, uint32_t numFrames,
-                        std::span<const ParamEvent> events,
-                        std::span<const NoteEvent> notes) noexcept
+                        std::span<const ParamEvent> events, std::span<const NoteEvent> notes,
+                        std::span<const ControlEvent> controls) noexcept
 {
     // One guard for the whole call, the dry/wet sum included (spec §6.4).
     ScopedDenormalsOff denormalsOff;
@@ -751,9 +992,42 @@ void Processor::process(const float *const *in, uint32_t numInChannels, float *c
         render(buffers, rendered, pendingAt_);
         rendered = pendingAt_;
         commitPending();
+        stepSources(buffers, rendered, rendered); // the sources' values for the cell from here
         updateEffective();
         syncFreeze();
         retargetRamps(rendered);
+    };
+
+    // While a route moves with time alone, every grid boundary below `limit` (and below end) is
+    // applied, as an empty group where none pends (the class comment's Time-varying routes). The
+    // next boundary to step is the next to apply: every one before it was applied, and a pending
+    // group is never past it (its events' joins applied the cells before them). One before it
+    // (events joining the boundary already applied, at `rendered`) applies there first.
+    const auto applyCellsBelow = [&](int64_t limit) {
+        if (!timeVarying_)
+        {
+            return;
+        }
+        for (;;)
+        {
+            const int64_t c = lastStepped_ + static_cast<int64_t>(kControlGrid);
+            if (c >= limit || c >= end)
+            {
+                return;
+            }
+            assert(!hasPending_ || pendingAt_ <= c);
+            if (hasPending_ && pendingAt_ < c)
+            {
+                applyPending();
+                continue;
+            }
+            if (!hasPending_)
+            {
+                pendingAt_ = c;
+                hasPending_ = true;
+            }
+            applyPending();
+        }
     };
 
     // Puts an event at `offset` into its boundary's group, applying the pending group first if
@@ -763,6 +1037,7 @@ void Processor::process(const float *const *in, uint32_t numInChannels, float *c
         // max: an out-of-order event can't land before what is already rendered. rendered is
         // either the call's start, which a is at or after, or a boundary.
         const int64_t b = std::max(gridCeil(a), rendered);
+        applyCellsBelow(b);
         // Sorted events have non-decreasing boundaries, so a later one ends the pending group.
         // Every boundary but the last is at most end − 32, before this call's end.
         if (hasPending_ && b > pendingAt_)
@@ -776,15 +1051,31 @@ void Processor::process(const float *const *in, uint32_t numInChannels, float *c
         }
     };
 
-    // The two spans merged by offset into one sequence, a parameter event first at a tie. The
-    // order between the kinds doesn't matter: a group's parameter changes and notes are
-    // independent, and each kind keeps its own order.
+    // A change of the host's playing flag applies at the call's first boundary (setTransport).
+    if (transportChanged_)
+    {
+        transportChanged_ = false;
+        join(0);
+    }
+
+    // The three spans merged by offset into one sequence, at a tie a parameter event first, then a
+    // note, then a control. The order between the kinds doesn't matter: a group's parameter
+    // changes, notes and controls are independent, and each kind keeps its own order.
     size_t nextEvent = 0;
     size_t nextNote = 0;
-    while (nextEvent < events.size() || nextNote < notes.size())
+    size_t nextControl = 0;
+    constexpr uint64_t kNone = std::numeric_limits<uint64_t>::max();
+    for (;;)
     {
-        if (nextNote == notes.size() ||
-            (nextEvent < events.size() && events[nextEvent].offset <= notes[nextNote].offset))
+        const uint64_t eventAt = nextEvent < events.size() ? events[nextEvent].offset : kNone;
+        const uint64_t noteAt = nextNote < notes.size() ? notes[nextNote].offset : kNone;
+        const uint64_t controlAt =
+            nextControl < controls.size() ? controls[nextControl].offset : kNone;
+        if (eventAt == kNone && noteAt == kNone && controlAt == kNone)
+        {
+            break;
+        }
+        if (eventAt <= noteAt && eventAt <= controlAt)
         {
             const ParamEvent &e = events[nextEvent++];
             const auto s = static_cast<size_t>(e.slot);
@@ -805,7 +1096,7 @@ void Processor::process(const float *const *in, uint32_t numInChannels, float *c
                 hasPendingBase_[s] = true;
             }
         }
-        else
+        else if (noteAt <= controlAt)
         {
             const NoteEvent &n = notes[nextNote++];
             if (!validNote(n))
@@ -816,7 +1107,30 @@ void Processor::process(const float *const *in, uint32_t numInChannels, float *c
             applyNote(n);
             hasPendingNotes_ = true;
         }
+        else
+        {
+            const ControlEvent &c = controls[nextControl++];
+            if (!validControl(c))
+            {
+                continue;
+            }
+            join(c.offset);
+            const float v = unitClamped(c.value);
+            switch (c.kind)
+            {
+            case ControlKind::ModWheel:
+                pendingMidi_.modWheel = v;
+                break;
+            case ControlKind::Aftertouch:
+                pendingMidi_.aftertouch = v;
+                break;
+            case ControlKind::PitchBend:
+                pendingMidi_.pitchBend = v;
+                break;
+            }
+        }
     }
+    applyCellsBelow(end);
     // A boundary at end carries over, like one past it: the next call's events at offset 0
     // belong to the same group, which a single call spanning both would apply once.
     if (hasPending_ && pendingAt_ < end)
@@ -963,6 +1277,12 @@ void Processor::render(const Buffers &b, int64_t from, int64_t to) noexcept
     // hear what they would have, and the next call continues the same render.
     const uint32_t channels = std::min(b.numOutChannels, 2u);
     const uint32_t rendering = channels == 0 ? 2u : channels;
+    // The sources step at every boundary the range covers (none of them has a group pending: those
+    // end a range), and the follower's input is scanned, before any output is written over it.
+    if (from < to)
+    {
+        stepSources(b, to - 1, to);
+    }
     while (from < to)
     {
         // Pieces are at most kFeedbackDelay samples in both products (sub-project 5's spec §5;

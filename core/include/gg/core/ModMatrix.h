@@ -16,7 +16,8 @@
 /// The mod matrix (M2 sub-project 1's spec §6.8): 48 routes, each a source's value through a curve,
 /// scaled by a depth and added to a target parameter's offset in its CLAP value domain. The routes
 /// live in the patch, never in parameters. The twelve factory routes reproduce M1's macro recipes
-/// (macroOffsets) bit for bit.
+/// (M1's macroOffsets, which they replaced; tests/core/mod_matrix_tests.cpp keeps a copy) bit for
+/// bit.
 ///
 /// Evaluation is plain float arithmetic, no libm and no allocation, so the Processor can run it on
 /// the audio thread and its result is the same on every platform (INTENT §14).
@@ -153,7 +154,7 @@ constexpr ParamSlot routeTargetSlot(ParamSlot target, uint8_t layer) noexcept
     return target;
 }
 
-/// The curve `c` of `v`, as ModCurve documents: macroOffsets' exact float expressions. +0 for
+/// The curve `c` of `v`, as ModCurve documents: M1's macroOffsets' exact float expressions. +0 for
 /// ModCurve::Count or beyond.
 float applyCurve(ModCurve c, float v) noexcept;
 
@@ -172,7 +173,7 @@ struct ModSourceValues
 /// the sourceLayer's, or for kSameLayer the target's layer (layer 0 for a global target), and layer
 /// 0's for a sourceLayer out of range.
 ///
-/// Starting from an array of +0.0f, the factory routes give macroOffsets' values bit for bit.
+/// Starting from an array of +0.0f, the factory routes give M1's macroOffsets' values bit for bit.
 void applyRoutes(const ModRoutes &routes, const std::array<ModSourceValues, kLayers> &sources,
                  ParamValues &offsets) noexcept;
 

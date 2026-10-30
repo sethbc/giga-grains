@@ -14,8 +14,9 @@
 
 /// The patch's values to the engine's, the wet chain's and Space's parameters: the only place the
 /// tapers of Global Constraints' parameter table are applied (spec §5; sub-project 4's spec §6.5).
-/// Each function takes the effective values, clamp(base + modulation + macro offsets), as the
-/// Processor holds them; macroOffsets gives the macros' share (sub-project 5's spec §3).
+/// Each function takes the effective values, clamp(base + modulation + route offsets), as the
+/// Processor holds them; the mod matrix (gg/core/ModMatrix.h) gives the routes' share, the macros'
+/// included (sub-project 5's spec §3; M2 sub-project 1's spec §6.8).
 ///
 /// **The layer argument.** Every layer-aware function takes `layer` below kLayers. A larger one
 /// asserts, and a release build reads the last parameter's slot rather than out of bounds (the
@@ -151,25 +152,6 @@ RandomParams randomParams(const ParamValues &effective, uint8_t layer, int which
 /// Layer `layer`'s step sequencer: the rate exp2Det(Step Rate) Hz, Step Length rounded to the
 /// nearest integer (halves up) and clamped to 1..16, and Step 1 to Step 16 as they are.
 StepParams stepParams(const ParamValues &effective, uint8_t layer) noexcept;
-
-/// Each parameter's total macro offset, in its CLAP value domain (spec §3.2), from the macros'
-/// effective values (each in 0..1). Only the eight macro slots of `effectiveMacros` are read.
-/// With v a macro's value, b = 2v − 1 (bipolar), b⁺ = max(b, 0) and u = v (unipolar):
-/// - Macro 1 (Size): Size +3b, Density −1.5b;
-/// - Macro 2 (Density): Density +4b, Distribution +0.25·b⁺;
-/// - Macro 3 (Pitch): Pitch +24b;
-/// - Macro 4 (Spray): Spray +0.5b, Stereo +0.3·b⁺;
-/// - Macro 5 (Texture): Texture +min(u/0.75, 1), Diffusion +smoothstep(0.75, 1, u);
-/// - Macro 6 (Freeze): Freeze +u;
-/// - Macro 7 (Feedback): Feedback +0.9u², in both products (M2 sub-project 1's spec §6.9; it acts
-///   on layer A when that layer reads its live ring, toWetParams);
-/// - Macro 8: the FX's Mix +0.5b; the instrument's Level +12b dB.
-///
-/// A target's offsets add in macro order. Every entry, the macros' own included, is exactly
-/// +0.0f when every macro rests (the bipolar ones at 0.5, the unipolar ones, 5, 6 and 7, at 0), so
-/// base + mod + offset is then base + mod, bit for bit (but for a −0 sum, which becomes +0). Plain
-/// float arithmetic, no libm.
-ParamValues macroOffsets(const ParamValues &effectiveMacros, Mode mode) noexcept;
 } // namespace gg::core
 
 #endif // GG_CORE_PARAMMAP_H
