@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | **Spec written 2026-10-29; awaiting the programme manager's approval and the director's answers to §8.** Not yet planned or built |
+| **Status** | **Approved by the programme manager 2026-10-29** against the programme design and INTENT, with one amendment accepted (rows 118 and 119 move from sub-project 2 to this one, §12). **The director's decisions D1–D5, 2026-10-29,** are recorded in §8 and applied in place: D1 option 1, D2 option 1, D3 option 3, D4 option 1, D5 option 2. Not yet built: Phase B (the plan, then the build) starts from this version |
 | **Milestone** | M2 Giga (INTENT §20, §23 #64), sub-project 1 of 7; wave 1, alone |
 | **Spec authority** | `INTENT.md`, then `docs/superpowers/specs/2026-10-29-m2-programme-design.md` (its §6.1, §7 and §12 are this sub-project's charter: realized here, not reopened). This document records how this sub-project implements them |
 | **Builds on** | M1 as closed (§23 #60): the `Processor` and its wet chain, the Cloud engine, Sources, Space, the Perform UI's macros, Texture and Feedback; the release pipeline (§23 #61) |
@@ -76,7 +76,8 @@ and `gg-render` until sub-project 6.
   here locks to it.
 - Chunking a layer's grains into further render tasks (§22).
 - Mod routes that target a modulator's own controls, or a macro (§9).
-- Per-grain spread for fields other than pitch, unless the director chooses otherwise in §8.
+- Per-grain spread for fields other than pitch and size (D5), and the distribution selector of
+  INTENT §14's spread model: both go to §22.
 
 **Anti-goals (a failure even if everything works):**
 - A render whose bytes depend on whether the host offered a thread pool, on how many workers it
@@ -139,7 +140,8 @@ alternative, grains only in the task and the chain serial after the join, halves
 parallel for no gain in simplicity: the chain is per layer anyway, and the ring input of piece
 *n* needs the layer's own limited output of piece *n − 1*, which the task has.
 
-**The morph law** is a director's choice (§8, D1); each option is stated with its cost there.
+**The morph law** was the director's choice (§8, D1, 2026-10-29): the sum-normalized vector law
+with the pad resting at the centre; the two alternatives are stated with their costs there.
 
 **The matrix's home.** Routes live in the patch (`PTCH`), as §7.5 decided, never as CLAP
 parameters; the modulators' own controls are ordinary parameters per layer. The alternative, routes
@@ -187,7 +189,7 @@ these additions:
   adds streams).
 - **A source kind per layer** (§6.4): Sample or Live, switchable on the audio thread; the grains
   sounding at a switch finish on the source they started on.
-- **Pitch Spread** (§6.6) in `CloudParams`.
+- **Pitch Spread and Size Spread** (§6.6) in `CloudParams`.
 - **An enable gate** (`setEnabled`): off, the scheduler emits nothing, as the note gate holds it;
   on again, the pending onset is forced to that boundary, as a note-on forces it (§9). The ring is
   written and the clock advances whether or not the layer is enabled, so a layer switched on after
@@ -213,8 +215,10 @@ loader hands samples to layer A alone until sub-project 2's `MEDI` version 2, an
 any layer (§6.11).
 
 **Both products have four rings.** Each layer's ring is `kLiveSeconds` = 16 s (the ring-length
-parameter is sub-project 2's), fed from the instance's input: the FX's input, and the instrument's
-if D2 (§8) gives it one, else silence. A layer's ring is written on every piece while the layer is
+parameter is sub-project 2's), fed from the instance's input: the FX's main input, and the
+instrument's sidechain input (D2, decided 2026-10-29: a non-main stereo CLAP port, an aux bus in
+VST3 and an input bus on the AU, added in this wave; if auval or pluginval reject it within the
+task, the port is dropped, the instrument's rings take silence, and sub-project 2 solves it). A layer's ring is written on every piece while the layer is
 on, whatever its kind, as M1's engine always recorded in either mode; off, it is written too (the
 enable gate above), so nothing about the ring depends on the layer's history except its frozen
 state. Memory per instance at 48 kHz: four rings about 25 MB, four pools about 5 MB, the reverb
@@ -262,8 +266,8 @@ instance, after the tasks join:
   With `x`, `y` their ramped values per sample and `r_L` each layer's on/off ramp, the bilinear
   corner weights are `b_A = (1 − x)(1 − y)`, `b_B = x(1 − y)`, `b_C = (1 − x)y`, `b_D = xy` (A top
   left, B top right, C bottom left, D bottom right, the pad's corners in 6), and the layer weight
-  follows the director's law (D1):
-  - **D1 option 1 (recommended):** `weight_L = r_L·b_L / Σ_K r_K·b_K` over the on layers, the
+  follows the director's law (D1, option 1 chosen 2026-10-29):
+  - **D1 option 1 (chosen):** `weight_L = r_L·b_L / Σ_K r_K·b_K` over the on layers, the
     sum-normalized vector law: at the centre every on layer weighs `1/n`, at a corner that layer
     alone, and the amplitude sum is 1 wherever the pad is. One layer on gives `0.25/0.25 = 1.0`
     exactly, whatever the pad does.
@@ -285,7 +289,7 @@ instance, after the tasks join:
   parameter ever changes range.
 - **Built kinds in wave 1: Sample and Live,** in both products. An FX layer set to Sample reads the
   sample `gg-render` gives it, or nothing (silence) in the plugin until sub-project 2's `MEDI` v2;
-  an instrument layer set to Live reads its ring, fed from the instrument's input (D2) or silence.
+  an instrument layer set to Live reads its ring, fed from the instrument's sidechain input (D2).
 - **Unbuilt kinds fall back to the product's default kind** (Resample, Spectral and Oscillator
   render as Live in the FX and Sample in the instrument), the parameter keeping its value, so a
   state saved with Resample selected plays as Resample the day sub-project 2 lands. The fallback is
@@ -317,15 +321,22 @@ instance, after the tasks join:
   behind the same accessor, and 2 builds the ring's levels incrementally.
 - The read contract is otherwise M1's (`read(position, rate)`, batched by the kernels).
 
-### 6.6 Pitch spread (I6)
+### 6.6 Pitch spread and size spread (I6; D4, D5)
 
-- `Pitch Spread`, per layer (`0x..0D`), in semitones, default 0. Each grain's pitch becomes
+- `Pitch Spread`, per layer (`0x..0D`), **0–24 semitones, uniform bipolar** (D4, option 1,
+  2026-10-29), default 0. Each grain's pitch becomes
   `clamp(Pitch + (key − 60) + spread × bipolar(u), −48, 48)`, with `u` keyed by (seed, layer,
   stream, `Field::PitchSpread` = 5, k), a new field appended to `rng::Field`, so no existing draw
   changes. At spread 0 the added term is ±0 and the pitch is bit for bit M1's; the renderer may
   skip the hash then, since a stateless draw has no side effect.
-- The range and shape are the director's (D4): 0–24 st uniform is recommended.
-- The grain-event line's `rate` carries it, so the event-log gate sees it on every platform.
+- `Size Spread`, per layer (`0x..0E`), **0–2 octaves, uniform bipolar** (D5, option 2,
+  2026-10-29), default 0. Each grain's duration becomes
+  `exp2Det(clamp(Size + sizeSpread × bipolar(u), log2 0.005, log2 2))` seconds, Size in its log2
+  domain, `u` keyed with `Field::SizeSpread` = 6; at 0 the term is ±0 and the duration is M1's
+  bit for bit. The latched gain normalization `1/√max(1, Density × Size)` keeps the layer's Size,
+  not the grain's, so a spread doesn't pump the level (the expected overlap is unchanged).
+- The grain-event line's `rate` and `dur` carry both, so the event-log gate sees them on every
+  platform.
 - The canvas's y axis stays pan until sub-project 6 frees it for pitch (INTENT §17).
 
 ### 6.7 Threads: the tasks and the pool (I3, I4; programme design §7.4)
@@ -376,9 +387,9 @@ instance, after the tasks join:
 |---|---|---|---|
 | Macro 1–8 | global | the macro's own effective value `clamp(base + mod)` | as M1 |
 | LFO 1, LFO 2 | per layer | shape at the phase; shapes Sine, Triangle, Saw Up, Saw Down, Square, each 0–1 centred on 0.5 (a sine via a deterministic polynomial, no libm) | the phase accumulates `rate × 32 / sr` per grid cell from 0 at activation or reset, so a rate change doesn't jump it; a function of the clock and the parameter history |
-| Envelope | per layer | an ADSR (Attack, Decay, Sustain, Release) gated by the instance's held set: on while any key is held | stepped per grid cell with plain float arithmetic; the gate changes at boundaries |
-| Random | per layer | a new uniform value every `1/rate` s (a step counter advanced per cell), slewed toward it by Smooth | `uniform01(hash(seed, layer, 0, Field::ModRandom = 6, step))` |
-| Step | per layer | Step 1–8's values at `rate` steps per second, Length of them, cycling | the step counter from the clock |
+| Env 1, Env 2 | per layer | an ADSR (Attack, Decay, Sustain, Release) gated by the instance's held set: on while any key is held | stepped per grid cell with plain float arithmetic; the gate changes at boundaries |
+| Random 1, Random 2 | per layer | a new uniform value every `1/rate` s (a step counter advanced per cell), slewed toward it by Smooth | `uniform01(hash(seed, layer, 0, Field::ModRandom1 = 7 or ModRandom2 = 8, step))` |
+| Step | per layer | Step 1–16's values at `rate` steps per second, Length of them, cycling | the step counter from the clock |
 | Mod Wheel, Aftertouch, Pitch Bend | global | the last MIDI CC 1, channel pressure and pitch bend (centre 0.5) on the note port's MIDI dialect | events on the grid like notes |
 | Velocity, Key | global | the last note-on's velocity and key / 127 | ditto (CLAP and MIDI note-ons) |
 | Env Follower | global | a peak follower of the instance input, fixed 5 ms attack and 200 ms release, clamped to 1 | updated per cell from the previous cell's input, before the tasks run |
@@ -435,8 +446,9 @@ Freeze for arming, per layer.
 The scheme is unchanged: `id = (scope << 16) | index`, scope 0 global, scopes 1 to 4 layers A to
 D; every ID below `0xB00000`; append-only. **Layer parameters keep scope 1's indices in scopes 2 to
 4,** so `slotForId` is arithmetic, and the slot space is flat: the 28 M1 slots first (their order
-kept), then layer A's new parameters, then layers B, C and D in full, then the new globals, 158 in
-all (`kParamCount`). Every (name, ID) is pinned by `tests/core/patch_tests.cpp`, as M1's were.
+kept), then layer A's 37 new parameters, then layers B, C and D in full (48 each), then the 9 new
+globals: **218 in all** (`kParamCount`; D3 option 3 and D5 option 2, 2026-10-29). Every (name, ID)
+is pinned by `tests/core/patch_tests.cpp`, as M1's were.
 
 **Layer scope (index, in scopes 1–4):** `01` Position, `02` Size, `03` Density, `04` Distribution,
 `05` Pitch, `06` Spray, `07` Stereo, `08` Freeze, `09` Texture, `0A` Feedback, `0B` Diffusion (M1),
@@ -446,22 +458,29 @@ then this sub-project's, each `AUTOMATABLE | MODULATABLE`, stepped ones also `ST
 |---|---|---|---|
 | `0C` | Source | stepped: Sample, Live, Resample, Spectral, Oscillator | FX Live; instrument Sample |
 | `0D` | Pitch Spread | 0–24 st (D4) | 0 |
-| `0E` | LFO 1 Rate | 0.01–50 Hz, log | 1 Hz |
-| `0F` | LFO 1 Shape | stepped: Sine, Triangle, Saw Up, Saw Down, Square | Sine |
-| `10` | LFO 2 Rate | as LFO 1 | 0.25 Hz |
-| `11` | LFO 2 Shape | as LFO 1 | Triangle |
-| `12` | Env Attack | 1 ms – 10 s, log | 10 ms |
-| `13` | Env Decay | 1 ms – 10 s, log | 200 ms |
-| `14` | Env Sustain | 0–100% | 100% |
-| `15` | Env Release | 1 ms – 10 s, log | 200 ms |
-| `16` | Random Rate | 0.01–50 Hz, log | 2 Hz |
-| `17` | Random Smooth | 0–100% | 0% |
-| `18` | Step Rate | 0.01–50 Hz, log | 4 Hz |
-| `19` | Step Length | stepped 1–8 | 8 |
-| `1A`–`21` | Step 1 … Step 8 | 0–100% | 0% |
+| `0E` | Size Spread | 0–2 octaves (D5) | 0 |
+| `0F` | LFO 1 Rate | 0.01–50 Hz, log | 1 Hz |
+| `10` | LFO 1 Shape | stepped: Sine, Triangle, Saw Up, Saw Down, Square | Sine |
+| `11` | LFO 2 Rate | as LFO 1 | 0.25 Hz |
+| `12` | LFO 2 Shape | as LFO 1 | Triangle |
+| `13` | Env 1 Attack | 1 ms – 10 s, log | 10 ms |
+| `14` | Env 1 Decay | 1 ms – 10 s, log | 200 ms |
+| `15` | Env 1 Sustain | 0–100% | 100% |
+| `16` | Env 1 Release | 1 ms – 10 s, log | 200 ms |
+| `17` | Env 2 Attack | as Env 1 | 500 ms |
+| `18` | Env 2 Decay | as Env 1 | 1 s |
+| `19` | Env 2 Sustain | as Env 1 | 50% |
+| `1A` | Env 2 Release | as Env 1 | 1 s |
+| `1B` | Random 1 Rate | 0.01–50 Hz, log | 2 Hz |
+| `1C` | Random 1 Smooth | 0–100% | 0% |
+| `1D` | Random 2 Rate | as Random 1 | 0.5 Hz |
+| `1E` | Random 2 Smooth | as Random 1 | 50% |
+| `1F` | Step Rate | 0.01–50 Hz, log | 4 Hz |
+| `20` | Step Length | stepped 1–16 | 16 |
+| `21`–`30` | Step 1 … Step 16 | 0–100% | 0% |
 
-**Next free layer index: `0x22`.** The counts per layer are D3's; the table shows the recommended
-option, and another choice shifts only the rows from `0E` on.
+**Next free layer index: `0x31`,** below the `0x40` reservation (D3 option 3: two LFOs, two
+envelopes, two randoms and one 16-step sequencer, 2026-10-29).
 
 **Scope 0 (global):** `01` Mix, `02` Level, `03`–`09` the reverb's and Dry to Reverb, `11`–`18`
 Macros 1–8 (M1; `0A`–`10` were never used and stay unused), then:
@@ -502,9 +521,10 @@ Level). Eight pages.
 
 ### 6.10 The patch at version 2 and the migration (programme design §7.3, §7.5)
 
-- `kPatchVersion` becomes **2**. The container stays version 1; `PTCH`'s XML gains a `<mod>`
+- `kPatchVersion` becomes **2**. The container stays version 1; `PTCH`'s XML gains the 218
+  parameters' `<p>` entries (190 new, absent → default in any older state) and a `<mod>`
   element holding the 48 slots (`<route slot source sourceLayer target targetLayer depth curve/>`,
-  empty slots omitted), and the layer parameters' `<p>` entries like any other. This is M2's one
+  empty slots omitted). This is M2's one
   patch version bump: wave 2 adds parameters absent → default with no bump, and sub-project 2 alone
   adds chunks.
 - **Migration from version 1** (an M1 state): every new parameter takes its default (layer A's
@@ -562,7 +582,8 @@ and `Kernels.h` are untouched.
 ## 7. Determinism and real-time safety
 
 - **The RNG key's `layer` is the layer's index**, 0 for A, so every M1 draw is unchanged; the new
-  fields `PitchSpread` (5) and `ModRandom` (6) are appended to `rng::Field`.
+  fields `PitchSpread` (5), `SizeSpread` (6), `ModRandom1` (7) and `ModRandom2` (8) are appended
+  to `rng::Field`.
 - **Every modulation source is a function of the sample clock, the parameter history and the host's
   events,** never of time, CPU or thread: LFO phases and step counters advance per grid cell;
   random values are counter-keyed; the follower reads the previous cell's input; MIDI and transport
@@ -585,7 +606,11 @@ and `Kernels.h` are untouched.
 Each a forced choice; the recommended option is first, with one line on what each costs. Nothing
 engineering-only is here (that is §9).
 
-**D1. The morph law** (§6.3).
+**The director's answers, 2026-10-29, relayed by the programme manager:** D1 option 1, D2
+option 1 (with the fallback), D3 option 3, D4 option 1, D5 option 2. Each is marked below and
+applied in §6.
+
+**D1. The morph law** (§6.3). **Decided: option 1.**
 1. **Sum-normalized vector morph, pad resting at the centre:** the on layers' weights are their
    bilinear corner weights divided by their sum, so the amplitude sum is always 1 and the pad
    crossfades. *Cost:* switching a second layer on lowers the first by 6 dB at the centre; the
@@ -597,7 +622,8 @@ engineering-only is here (that is §9).
    layers B to D are silent until the pad moves, and the resting pad is in a corner.
 
 **D2. An audio input on the instrument** (§6.2, §6.4). The programme design says both products
-expose every source kind; a Live layer in the instrument needs input.
+expose every source kind; a Live layer in the instrument needs input. **Decided: option 1, with
+its fallback.**
 1. **Add a sidechain input port to the instrument in wave 1** (a non-main stereo CLAP port, an
    aux bus in VST3, an input bus on the AU), feeding every layer's ring. *Cost:* the instrument
    shows a sidechain in hosts from now on; auval and pluginval must accept an `aumu` with an input
@@ -606,7 +632,9 @@ expose every source kind; a Live layer in the instrument needs input.
 2. *Defer the input to sub-project 2* (which owns the sources and the "live-input instrument").
    *Cost:* in wave 1 an instrument layer set to Live hears silence, and 2 does the port.
 
-**D3. The modulators per layer** (§6.8, §6.9).
+**D3. The modulators per layer** (§6.8, §6.9). **Decided: option 3.** (The counts below are
+without D5's Size Spread, which adds one per layer: with it, option 3 is 37 new per layer and 218
+in all, §6.9.)
 1. **Two LFOs, one envelope, one random, one 8-step sequencer per layer** (22 parameters per
    layer, 158 in all). *Cost:* 88 modulator parameters across the four layers in the hosts' lists
    and in sub-project 6's Edit view.
@@ -615,7 +643,7 @@ expose every source kind; a Live layer in the instrument needs input.
 3. *Two LFOs, two envelopes, two randoms and one 16-step sequencer* (36 per layer, 214 in all).
    *Cost:* the longest parameter list; a denser Edit view.
 
-**D4. Pitch Spread's range and shape** (§6.6).
+**D4. Pitch Spread's range and shape** (§6.6). **Decided: option 1.**
 1. **0–24 semitones, uniform bipolar** around the grain's pitch. *Cost:* clusters wider than two
    octaves need the Pitch macro too.
 2. *0–48 semitones, uniform.* *Cost:* most of the knob's travel is beyond musical use.
@@ -624,7 +652,7 @@ expose every source kind; a Live layer in the instrument needs input.
 
 **D5. Which per-grain spreads M2 has** (§6.6; wave 3 adds no parameters, so a spread not added
 in wave 1 or 2 isn't in M2). INTENT §14's model gives every field base + modulation + spread with
-a distribution; the inventory names pitch alone.
+a distribution; the inventory names pitch alone. **Decided: option 2.**
 1. **Pitch Spread alone now;** Position (Spray), pan (Stereo) and onset (Distribution) already
    have theirs; Size and Texture spread, and the distribution selector, go to INTENT §22 as a
    post-M2 question. *Cost:* the Edit view shows spread for four fields, not every one.
@@ -688,7 +716,8 @@ Engineering choices, each with its reason.
   draws M1's); the enable gate (no spawn off; the forced onset on; the pool cleared at the ramp's
   end); the kind switch both ways with grains finishing on their source; the level accessor returns
   level 0 for every `n`; Pitch Spread at 0 leaves every rate bit for bit, and at 24 stays within
-  [−48, 48].
+  [−48, 48]; Size Spread at 0 leaves every duration bit for bit, and at 2 octaves stays within
+  Size's range with the gain normalization unchanged.
 - `[core][layers]`: four layers summed in order (a permutation of the layers' spawns changes the
   bytes; the fixed order doesn't); B–D off renders bit for bit the one-layer `Processor` (a direct
   comparison, not just the goldens); the weight is exactly 1.0 with one layer on under D1's law; the
@@ -696,7 +725,8 @@ Engineering choices, each with its reason.
   on a Sample layer does nothing; both products' pieces.
 - `[core][mod]`: each source's value function (LFO shapes at known phases; the envelope's segments;
   Random's keyed values and Smooth; Step's cycle and Length; MIDI and velocity/key events on the
-  grid; the follower's attack and release; transport held and advancing); the factory routes equal
+  grid; the follower's attack and release; transport held and advancing; the two LFOs, envelopes
+  and randoms of a layer are independent); the factory routes equal
   M1's `macroOffsets` bit for bit over 10,000 random macro vectors in both products; the one
   clamp; routes to one layer and to every layer; slot order; a route to a macro or a control is
   refused by the parser.
@@ -709,9 +739,10 @@ Engineering choices, each with its reason.
   FX and instrument renders with every source active and routes to every layer; the thread-pool
   invariance test (§6.7) across `SerialRunner` and the stub pool of 1, 2 and 8 workers.
 - `[rt]` and `[rtsan]`: §7's list under the tripwire and RTSan.
-- `[plugin]`: 158 parameters with the pinned IDs; eight remote pages; the thread-pool extension
+- `[plugin]`: 218 parameters with the pinned IDs; eight remote pages; the thread-pool extension
   with the fake host pool (count = on layers; identical bytes with the pool, a declining pool and
-  none); the instrument's input port if D2 option 1; `process` and `params.flush` under the
+  none); the instrument's sidechain input port (D2) and its audio reaching every layer's ring;
+  `process` and `params.flush` under the
   tripwire with four layers; a version-1 state loaded through the CLAP state extension migrates;
   `CLAP_PARAM_RESCAN_TEXT` requested on a kind change.
 - `[render]`: the new keys parse and reject as §6.11 says; bare names are layer A's; the event
@@ -721,7 +752,7 @@ Engineering choices, each with its reason.
 - `[build]`: a `static_assert(__cplusplus >= 202302L)` in the tests; the configure's floor message
   checked by a scratch-project test (`asio_guard_*`'s pattern).
 
-**Goldens** (13 new; every WAV of the 22 M1 cases keeps its SHA-256, stated per commit; each new
+**Goldens** (14 new; every WAV of the 22 M1 cases keeps its SHA-256, stated per commit; each new
 case catches all sixteen injected clicks or is added to the table with its reason):
 
 | Case | Mode | What |
@@ -729,12 +760,13 @@ case catches all sixteen injected clicks or is added to the table with its reaso
 | `fx-layers` | fx | stereo noise; four Live layers on (B Pitch +7, C Size 40 ms, D Pitch −12); the pad at rest |
 | `inst-layers-morph` | instrument | four Sample layers (sweep, sine, noise, a sweep an octave down) and one held note; Morph X/Y automated around the square and back to the centre |
 | `inst-pitch-spread` | instrument | one held note over a sine; Pitch Spread stepped 0, 2, 7, 12, 24 at 1 s intervals |
+| `inst-size-spread` | instrument | one held note over noise, Size 100 ms; Size Spread stepped 0, 0.5, 1, 2 octaves at 1 s intervals |
 | `fx-layer-switch` | fx | layer B on at 1 s, off at 2.5 s, on at 3 s: the ramps and the forced onset |
 | `fx-source-switch` | fx | layer A Live → Sample (a generated file) at 1 s → Live at 2.5 s: the sounding grains finish on their source |
 | `fx-mod-lfo` | fx | LFO 1 sine 0.5 Hz → Position; LFO 2 square 2 Hz → Pitch ±12 |
-| `inst-mod-env` | instrument | the envelope (500 ms, 1 s, 30%, 1 s) → Size and Level; two notes with a gap |
-| `fx-mod-random` | fx | Random 4 Hz → Pitch; a second route with Smooth 50% → Stereo |
-| `fx-mod-step` | fx | Step 4 Hz, 8 steps → Pitch ±12: a sequence |
+| `inst-mod-env` | instrument | Env 1 (500 ms, 1 s, 30%, 1 s) → Size and Level, Env 2 (slow) → Diffusion; two notes with a gap |
+| `fx-mod-random` | fx | Random 1 at 4 Hz, Smooth 0 → Pitch; Random 2 at 1 Hz, Smooth 50% → Stereo |
+| `fx-mod-step` | fx | Step 4 Hz, 16 steps, Length 12 → Pitch ±12: a sequence |
 | `inst-mod-midi` | instrument | mod wheel ramp → Size; aftertouch → Density; pitch bend → Pitch; velocity → Level; key → Texture, over three notes |
 | `fx-mod-follower` | fx | input bursts; the follower → Density |
 | `fx-mod-transport` | fx | transport at 120 BPM playing; beat phase → Position; bar phase → Pitch |
@@ -745,8 +777,8 @@ the report; `engine-sample` shows no `regressed` ratio against `tools/gg-bench/b
 CI model at the sub-project's end (a regression is fixed here, programme design §7.6).
 
 **Validators:** clap-validator, pluginval, auval (all three identities) and Steinberg's validator
-on `release`, on every CI leg, with 158 parameters, eight pages, the thread-pool extension and
-(D2) the instrument's input.
+on `release`, on every CI leg, with 218 parameters, eight pages, the thread-pool extension and
+the instrument's sidechain input (D2).
 
 **Gate:** `scripts/check.sh` over `dev,asan,rtsan` passes; CI green on the head commit through the
 draft PR; a fresh reviewer's final review and its fix wave done.
@@ -772,18 +804,19 @@ for; a host checklist for the close) and `specs/`:
 | `01-four-layers.wav` | the FX over a drum-like loop, four Live layers at distinct pitches and sizes, pad at the centre | four textures as one instrument; nothing louder than one layer was in M1 (D1) |
 | `02-morph-square.wav` | the instrument, four Sample layers, the pad swept around the square over 8 s | smooth crossfades, no step at any corner or edge |
 | `03-pitch-spread-ladder.wav` | one note, Pitch Spread 0, 2, 7, 12, 24 | from a line to a cluster; no clicks between steps |
-| `04-layer-on-off.wav` | layer B switched on and off twice under layer A | the layer speaks at once when switched on; no click either way |
-| `05-source-switch.wav` | the FX's layer A Live → Sample → Live over a loop | the switch itself is inaudible; the old grains finish |
-| `06-lfo-position.wav` | LFO 1 → Position over a sweep, LFO 2 → Pitch | the scan moves smoothly; the pitch steps on the square |
-| `07-envelope-notes.wav` | the envelope → Size and Level, three notes | each note swells and releases with Size and Level |
-| `08-random-pitch.wav` | Random → Pitch at 4 Hz, Smooth 0 then 50% | stepped then slewed pitches, repeatable |
-| `09-step-sequence.wav` | Step → Pitch, an 8-step figure at 4 Hz | the sequence, in time with itself |
-| `10-wheel-and-bend.wav` | mod wheel → Size, pitch bend → Pitch over held notes | the wheel widens the grains; the bend bends |
-| `11-follower-density.wav` | input bursts; the follower → Density | denser grains on each burst, thinning after |
-| `12-transport-beat.wav` | 120 BPM; beat phase → Position | the scan locks to the beat |
-| `13-macro-size-all-layers.wav` | Macro Size swept with one layer on, then with four | the macro moves every layer as one (decision 7) |
+| `04-size-spread-ladder.wav` | one note over noise, Size Spread 0, 0.5, 1, 2 octaves | grains from one length to a scatter of lengths; the level holds |
+| `05-layer-on-off.wav` | layer B switched on and off twice under layer A | the layer speaks at once when switched on; no click either way |
+| `06-source-switch.wav` | the FX's layer A Live → Sample → Live over a loop | the switch itself is inaudible; the old grains finish |
+| `07-lfo-position.wav` | LFO 1 → Position over a sweep, LFO 2 → Pitch | the scan moves smoothly; the pitch steps on the square |
+| `08-envelope-notes.wav` | Env 1 → Size and Level, Env 2 → Diffusion, three notes | each note swells and releases with Size and Level; the room opens slowly |
+| `09-random-pitch.wav` | Random 1 → Pitch at 4 Hz, Random 2 (Smooth 50%) → Stereo | stepped pitches, a slewed width, repeatable |
+| `10-step-sequence.wav` | Step → Pitch, a 12-step figure at 4 Hz | the sequence, in time with itself |
+| `11-wheel-and-bend.wav` | mod wheel → Size, pitch bend → Pitch over held notes | the wheel widens the grains; the bend bends |
+| `12-follower-density.wav` | input bursts; the follower → Density | denser grains on each burst, thinning after |
+| `13-transport-beat.wav` | 120 BPM; beat phase → Position | the scan locks to the beat |
+| `14-macro-size-all-layers.wav` | Macro Size swept with one layer on, then with four | the macro moves every layer as one (decision 7) |
 
-Thirteen specs; every render is deterministic, so the same commit gives the same bytes on one
+Fourteen specs; every render is deterministic, so the same commit gives the same bytes on one
 platform. The README's host checklist (for the close's sitting in Live and Bitwig) covers: layers
 B to D from the generic editor and the remote pages; a Bitwig project with four layers on,
 `request_exec` seen under load (I4); the instrument's sidechain (D2) routed from a track; a
@@ -797,7 +830,8 @@ version-1 session opened in M2 sounding as it did; the migrated instrument's Mac
 **Closed here:** **118** (the source-mode switch under the RT tripwire, both ways) and **119** (the
 switch's hard cut; the grains now finish on their source), both by §6.4, since the Source-kind
 parameter makes the switch reachable in both products in this wave. The programme design's §8
-placed them in sub-project 2; this spec takes them, and the report says so.
+placed them in sub-project 2; the programme manager accepted the move on 2026-10-29 and tells
+sub-project 2's brief.
 
 **Touched files with open rows:** `engine/src/Engine.cpp` (118, 119: closed above),
 `engine/include/gg/grain/GrainPool.h` (51: "with the overload ladder", sub-project 3's feature,
@@ -812,7 +846,8 @@ the fix wave unless blocked outside our control or genuinely large (the policy).
 - **§14:** the layer (each with its pool, ring, diffuser, Level, Feedback and soft limiter; four
   pools of 4,096); the chain of §6.3 as built, with the morph law chosen in D1 and the on/off
   rule; the Source-kind parameter, its enumeration, fallback and kind-based Position, Spray and
-  Feedback; Pitch Spread (D4) and the `PitchSpread` field; the mod matrix (sources, their
+  Feedback; Pitch Spread (D4) and Size Spread (D5) with their fields; the instrument's sidechain
+  input (D2); the mod matrix (sources, their
   determinism, targets, curves, the factory routes, slot order, the one clamp); Macro 7 as Feedback
   in both products and the fold; the enable gate's forced onset; notes acting on every layer.
 - **§15:** C++23 and the GCC 13 floor (or the revert, with §22's reason); "Threading" marked as
@@ -822,9 +857,10 @@ the fix wave unless blocked outside our control or genuinely large (the policy).
 - **§18:** the ID table (§6.9) with the reserved blocks and the next-free indices; the patch at
   version 2, the `<mod>` element and the migration; the eight remote-controls pages; Feedback no
   longer hidden in the instrument; the three remaining product differences in metadata.
-- **§19:** the thirteen goldens; the thread-pool invariance test; the event line's `"layer"`.
+- **§19:** the fourteen goldens; the thread-pool invariance test; the event line's `"layer"`.
 - **§22:** the C++23 row resolved (or its reason); the thread-pool row's in-host half pointed at
-  the close; a new row for the per-field spread model if D5 keeps Pitch Spread alone.
+  the close; a new row for the rest of §14's spread model (Texture spread and the distribution
+  selector), post-M2.
 - **§23 #65:** this sub-project's director decisions (D1–D5, with their dates), its rulings made
   during the build, and the §9 calls that amend Part II (the kind-based Position/Spray/Feedback,
   rows 118 and 119's move).
@@ -842,7 +878,7 @@ Part I is unchanged.
 | A pool thread's floating-point mode differs from the audio thread's | Each task sets `ScopedDenormalsOff`; the thread-pool invariance test renders every golden-shaped case |
 | The grain-event buffer overflows in a pathological piece | Sized at the pool's storage bound (2 × capacity), which bounds spawns per block; an assert in debug, a counted drop in release |
 | Memory: four rings and four pools in every instance | About 45 MB at 48 kHz, recorded in §6.2 and INTENT §14; the cap is sub-project 2's |
-| The parameter list (158) slows a host's scan or clutters its lists | Modules per layer; the remote pages; sub-project 6's views are the real surface |
+| The parameter list (218) slows a host's scan or clutters its lists | Modules per layer; the remote pages; sub-project 6's views are the real surface |
 
 ## 15. Left to the builder
 
