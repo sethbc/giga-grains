@@ -288,18 +288,18 @@ Channels renderLiveReference(const std::vector<gg::GrainSpec> &grains,
             {
                 if (rows.tier[i] == gg::Tier::Eco)
                 {
-                    gg::kernels::renderLiveRef<gg::kernels::Linear>(rows, i, ring, out, blockStart,
-                                                                    blockEnd, tables);
+                    gg::kernels::renderLiveRef<gg::kernels::Linear>(rows, i, ring, 1, out,
+                                                                    blockStart, blockEnd, tables);
                 }
                 else if (rows.tier[i] == gg::Tier::HQ)
                 {
-                    gg::kernels::renderLiveRef<gg::kernels::Sinc>(rows, i, ring, out, blockStart,
+                    gg::kernels::renderLiveRef<gg::kernels::Sinc>(rows, i, ring, 1, out, blockStart,
                                                                   blockEnd, tables);
                 }
                 else
                 {
-                    gg::kernels::renderLiveRef<gg::kernels::Hermite>(rows, i, ring, out, blockStart,
-                                                                     blockEnd, tables);
+                    gg::kernels::renderLiveRef<gg::kernels::Hermite>(rows, i, ring, 1, out,
+                                                                     blockStart, blockEnd, tables);
                 }
             }
         }

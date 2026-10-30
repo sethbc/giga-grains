@@ -61,17 +61,23 @@ Engine::SourceSlot Engine::slotFor(const PreparedSource *source) noexcept
     slot.source = source;
     if (source != nullptr)
     {
-        // Level 0, the full-rate source, is the one the kernels read (spec §6.3). A source
+        // Each level the kernels may read (spec §6.3), level 0 the full-rate source. A source
         // without channels has frames 0 there, so the interpolators never touch its (null) data;
         // interleaved is the SIMD sample kernel's stereo reads (§16 lever 2), null for a mono
-        // source or when PreparedSource::make couldn't allocate the copy.
-        const PreparedSource::Level &level = source->level(0);
+        // source or when PreparedSource::make couldn't allocate the copy. Past levelCount() the
+        // views are level 0's, as level(n) is; renderPool reads the top level instead.
         slot.rate = source->buffer().sampleRate();
-        slot.data[0] = level.data[0];
-        slot.data[1] = level.data[1];
-        slot.frames = level.frames;
-        slot.mono = level.mono;
-        slot.interleaved = level.interleaved;
+        slot.levelCount = source->levelCount();
+        for (uint32_t n = 0; n < kMaxMipLevels; ++n)
+        {
+            const PreparedSource::Level &level = source->level(n);
+            slot.views[n] = {{level.data[0], level.data[1]},
+                             level.frames,
+                             level.mono,
+                             level.interleaved,
+                             level.stride,
+                             level.decimation};
+        }
     }
     return slot;
 }
@@ -351,20 +357,25 @@ GrainSpec Engine::sampleGrain(const GrainDraw &d) const noexcept
     // so the start is M0's value. The one difference is the sign of a zero: a −0 start (from a
     // −0 position, which setParams passes through its clamp) becomes +0, the same frame. The
     // grain reads the source current at its onset to its end.
+    // An HQ draw latches the level of its rate, in level-0 frames per output sample (spec §6.3);
+    // admit() lowers it to 0 with the tier if the ladder lowers the tier.
     const SourceSlot &source = slots_[current_];
-    const double span = source.frames > 1 ? static_cast<double>(source.frames - 1) : 0.0;
+    const int64_t frames = source.views[0].frames;
+    const double span = frames > 1 ? static_cast<double>(frames - 1) : 0.0;
+    const double rate = d.rate * source.rate / config_.sampleRate;
     return {
         .index = d.index,
         .onsetSample = d.onsetSample,
         .onsetFrac = d.onsetFrac,
         .startPos = std::clamp(d.positionDraw * span + d.sprayOffsetSec * source.rate, 0.0, span),
-        .rate = d.rate * source.rate / config_.sampleRate,
+        .rate = rate,
         .durationSamples = d.durationSamples,
         .texture = d.texture,
         .gain = d.gain,
         .pan = d.pan,
         .tier = d.tier,
         .sourceSlot = current_,
+        .level = d.tier == Tier::HQ ? mipLevelFor(rate, source.levelCount) : uint8_t{0},
     };
 }
 
@@ -402,6 +413,7 @@ bool Engine::liveGrain(const GrainDraw &d, GrainSpec &g) const noexcept
         .pan = d.pan,
         .tier = d.tier,
         .sourceSlot = kLiveSlot,
+        .level = d.tier == Tier::HQ ? mipLevelFor(rate, live_.levelCount()) : uint8_t{0},
     };
     return true;
 }
@@ -432,7 +444,7 @@ void Engine::admit(const GrainSpec &draw, float *const dst[2], int64_t blockStar
     // at the onset, by their latched ends and weights, so admission doesn't depend on where the
     // block boundaries fall (the pool may still store grains that finished earlier in the block,
     // because retirement normally waits for the block's end; carry-over row 51).
-    const bool stereo = draw.sourceSlot == kLiveSlot || !slots_[draw.sourceSlot].mono;
+    const bool stereo = draw.sourceSlot == kLiveSlot || !slots_[draw.sourceSlot].views[0].mono;
     const uint64_t load = pool_.soundingWeight(onset);
     // The highest tier t <= the draw's with base + w(t) <= quota_, into `tier`.
     const auto fits = [this, &draw, stereo](uint64_t base, Tier &tier) {
@@ -482,6 +494,8 @@ void Engine::admit(const GrainSpec &draw, float *const dst[2], int64_t blockStar
     GrainSpec g = draw;
     g.tier = tier;
     g.weight = static_cast<uint8_t>(grainWeight(tier, stereo));
+    // Only an HQ grain reads above level 0 (spec §6.3, D5): one the ladder lowered reads level 0.
+    g.level = tier == Tier::HQ ? draw.level : uint8_t{0};
     // Can't fail: storage isn't full (above), and a steal stores nothing.
     [[maybe_unused]] const bool spawned = pool_.spawn(g);
     assert(spawned);
@@ -507,34 +521,37 @@ void Engine::renderPool(float *const dst[2], int64_t blockStart, int64_t from, i
     // next grain starts, so each sample sums its grains in spawn order. With one output (dst[1]
     // null) the kernels carry source channel 0, unpanned. Each grain reads with its own latched
     // tier (ruling 2) from the source it latched at its onset (spec §6.4): the ring for
-    // kLiveSlot, otherwise that sample slot's source, whatever the mode now in effect.
+    // kLiveSlot, otherwise that sample slot's source, whatever the mode now in effect. It reads
+    // its latched level (spec §6.3), or the top level of a slot whose source has fewer.
     const kernels::Output output{{dst[0], dst[1]}, blockStart};
     const kernels::Tables tables{hann_, sinc_};
     const GrainRows &rows = pool_.rows();
     const uint32_t n = pool_.size();
-    const auto view = [](const SourceSlot &s) {
-        return kernels::SampleSource{{s.data[0], s.data[1]}, s.frames, s.mono, s.interleaved};
-    };
-    const kernels::SampleSource sources[2] = {view(slots_[0]), view(slots_[1])};
     for (uint32_t i = 0; i < n; ++i)
     {
         if (rows.sourceSlot[i] == kLiveSlot)
         {
+            const uint32_t decimation = live_.level(rows.level[i]).decimation;
             if (rows.tier[i] == Tier::Eco)
             {
-                kernels::renderLiveSimd<kernels::Linear>(rows, i, live_, output, from, to, tables);
+                kernels::renderLiveSimd<kernels::Linear>(rows, i, live_, decimation, output, from,
+                                                         to, tables);
             }
             else if (rows.tier[i] == Tier::HQ)
             {
-                kernels::renderLiveSimd<kernels::Sinc>(rows, i, live_, output, from, to, tables);
+                kernels::renderLiveSimd<kernels::Sinc>(rows, i, live_, decimation, output, from, to,
+                                                       tables);
             }
             else
             {
-                kernels::renderLiveSimd<kernels::Hermite>(rows, i, live_, output, from, to, tables);
+                kernels::renderLiveSimd<kernels::Hermite>(rows, i, live_, decimation, output, from,
+                                                          to, tables);
             }
             continue;
         }
-        const kernels::SampleSource &source = sources[rows.sourceSlot[i]];
+        const SourceSlot &slot = slots_[rows.sourceSlot[i]];
+        const kernels::SampleSource &source =
+            slot.views[std::min<uint32_t>(rows.level[i], slot.levelCount - 1)];
         if (rows.tier[i] == Tier::Eco)
         {
             kernels::renderSampleSimd<kernels::Linear>(rows, i, source, output, from, to, tables);

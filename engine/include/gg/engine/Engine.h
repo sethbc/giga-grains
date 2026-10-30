@@ -15,9 +15,11 @@
 #include "gg/core/Window.h"
 #include "gg/grain/Budget.h"
 #include "gg/grain/CloudScheduler.h"
+#include "gg/grain/GrainKernels.h"
 #include "gg/grain/GrainPool.h"
 #include "gg/grain/SincTable.h"
 #include "gg/source/LiveSource.h"
+#include "gg/source/Mipmap.h"
 #include "gg/source/PreparedSource.h"
 #include "gg/source/SampleBuffer.h"
 #include "gg/source/SourceMode.h"
@@ -119,6 +121,13 @@ using GrainStealSink = void (*)(void *ctx, uint32_t layer, uint64_t index, int64
 ///    reported to the steal sink. Otherwise the draw is dropped and counted in droppedGrains().
 /// At most one grain is stolen per draw, and a stolen grain is never stolen again. The grain
 /// latches the tier and weight chosen (GrainSpec::tier, GrainSpec::weight).
+///
+/// **The level per grain** (M2 engine spec §6.3). A grain admitted at HQ latches the mip level
+/// of its rate, mipLevelFor(rate, the source's levelCount()), its rate in level-0 frames per
+/// output sample; a grain admitted at Normal or Eco, an HQ draw the ladder lowered among them,
+/// latches level 0 (GrainSpec::level). It reads that level of the source its slot holds, or the
+/// slot's top level when the source there now has fewer (replaceSource), at the level's
+/// decimation, its positions and rate scaled by that exact power of two (GrainKernels.h).
 class Engine
 {
   public:
@@ -348,11 +357,12 @@ class Engine
     struct SourceSlot
     {
         const PreparedSource *source{nullptr};
-        const float *data[2]{nullptr, nullptr};
-        int64_t frames{0};
-        bool mono{true};
-        const float *interleaved{nullptr}; // a stereo source's pairs; null if mono or none
-        double rate{0.0};                  // the source's sample rate; unused without one
+        // The kernels' view of each level (spec §6.3): views[n] is source->level(n) for n below
+        // levelCount, and a copy of level 0 above it. Level 0's interleaved is a stereo
+        // source's pairs, null if mono, none or not allocated.
+        kernels::SampleSource views[kMaxMipLevels]{};
+        uint32_t levelCount{1};
+        double rate{0.0}; // the source's sample rate; unused without one
         // The latest grainEndSample of the grains admitted to this slot (never a ring grain);
         // INT64_MIN when none has been since the last clear.
         int64_t lastEnd{std::numeric_limits<int64_t>::min()};

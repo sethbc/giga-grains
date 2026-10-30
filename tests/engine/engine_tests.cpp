@@ -1363,6 +1363,290 @@ TEST_CASE("the level accessor returns level 0 for any index past the count", "[e
 
 namespace
 {
+// The kernels' view of one level of a prepared source, as Engine::slotFor makes it.
+gg::kernels::SampleSource viewOf(const gg::PreparedSource::Level &level)
+{
+    return {{level.data[0], level.data[1]},
+            level.frames,
+            level.mono,
+            level.interleaved,
+            level.stride,
+            level.decimation};
+}
+
+// The scalar reference's render of `grains`, every one HQ, over [0, frames) of both outputs, each
+// grain read through renderSampleRef<Sinc> from viewOf(grain, false) over [0, split) and from
+// viewOf(grain, true) over [split, frames). Each grain adds to every sample before the next
+// starts, as the engine sums them.
+template <class ViewOf>
+Render hqReference(const std::vector<gg::GrainSpec> &grains, int64_t frames, int64_t split,
+                   ViewOf viewOf)
+{
+    Render r{std::vector<float>(static_cast<std::size_t>(frames), 0.0f),
+             std::vector<float>(static_cast<std::size_t>(frames), 0.0f)};
+    gg::GrainPool pool(static_cast<uint32_t>(std::max<std::size_t>(1, grains.size())));
+    for (const gg::GrainSpec &g : grains)
+    {
+        REQUIRE(g.tier == gg::Tier::HQ);
+        REQUIRE(pool.spawn(g));
+    }
+    const gg::HannTable hann;
+    const gg::SincTable sinc;
+    const gg::kernels::Output out{{r.left.data(), r.right.data()}, 0};
+    for (uint32_t i = 0; i < pool.size(); ++i)
+    {
+        gg::kernels::renderSampleRef<gg::kernels::Sinc>(pool.rows(), i, viewOf(grains[i], false),
+                                                        out, 0, split, {hann, sinc});
+        gg::kernels::renderSampleRef<gg::kernels::Sinc>(pool.rows(), i, viewOf(grains[i], true),
+                                                        out, split, frames, {hann, sinc});
+    }
+    return r;
+}
+} // namespace
+
+TEST_CASE("HQ grains latch the level of their rate and Normal grains level 0", "[engine][mip]")
+{
+    // Spec §6.3: level floor(log2 rate), clamped to the source's levels, at HQ alone (D5).
+    struct Case
+    {
+        double rate;
+        uint8_t level;
+    };
+    constexpr Case kCases[] = {{0.5, 0}, {1.0, 0}, {1.9, 0},  {2.0, 1},
+                               {3.0, 1}, {4.0, 2}, {16.0, 4}, {40.0, 4}};
+    for (const Case &c : kCases)
+    {
+        INFO("rate " << c.rate);
+        REQUIRE(gg::mipLevelFor(c.rate, 5) == c.level);
+    }
+    // The boundaries are exact, and the clamps hold.
+    REQUIRE(gg::mipLevelFor(std::nextafter(2.0, 0.0), 5) == 0);
+    REQUIRE(gg::mipLevelFor(std::nextafter(16.0, 0.0), 5) == 3);
+    REQUIRE(gg::mipLevelFor(8.0, 2) == 1);
+    REQUIRE(gg::mipLevelFor(8.0, 1) == 0);
+    REQUIRE(gg::mipLevelFor(8.0, 0) == 0);
+    REQUIRE(gg::mipLevelFor(0x1.0p100, 5) == 4);
+    REQUIRE(gg::mipLevelFor(0x1.0p100, 200) == 4); // never past kMaxMipLevels − 1
+    REQUIRE(gg::mipLevelFor(0.0, 5) == 0);
+    REQUIRE(gg::mipLevelFor(-4.0, 5) == 0);
+    REQUIRE(gg::mipLevelFor(std::numeric_limits<double>::quiet_NaN(), 5) == 0);
+    REQUIRE(gg::mipLevelFor(std::numeric_limits<double>::infinity(), 5) == 4);
+    REQUIRE(gg::mipLevelFor(std::numeric_limits<double>::infinity(), 3) == 2);
+
+    // Through the engine: a stereo source of 5 levels whose sample rate makes every grain's rate
+    // exactly c.rate at pitch 0 (the pitch ratio 1, times the source's rate over 48 kHz).
+    for (const Case &c : kCases)
+    {
+        for (const gg::Tier tier : {gg::Tier::HQ, gg::Tier::Normal})
+        {
+            INFO("rate " << c.rate << ", tier " << static_cast<int>(tier));
+            const auto source = gg::PreparedSource::make(makeSine(2, 4800, 48000.0 * c.rate));
+            REQUIRE(source->levelCount() == 5);
+            gg::Engine engine(gg::EngineConfig{});
+            engine.setPreparedSource(source);
+            gg::CloudParams p = params(100.0, 0.02, 0.0, 0.0, 0.0, 0.5f);
+            p.quality = tier;
+            engine.setCloudParams(p);
+            SinkLog log;
+            engine.setEventSink(&SinkLog::record, &log);
+            const Render r = render(engine, 4800, 256);
+            REQUIRE(allFinite(r.left));
+            REQUIRE(allFinite(r.right));
+            REQUIRE(peak(r.left) > 0.0f);
+            REQUIRE_FALSE(log.overflowed);
+            REQUIRE(log.grains.size() == 10);
+            for (const gg::GrainSpec &g : log.grains)
+            {
+                REQUIRE(g.rate == c.rate);
+                REQUIRE(g.tier == tier);
+                REQUIRE(g.level == (tier == gg::Tier::HQ ? c.level : 0));
+            }
+        }
+    }
+
+    SECTION("an HQ draw the ladder lowers latches level 0")
+    {
+        // The quota test's 16 Hz of 0.1 s grains, at rate 2: 11 units fit two Normal stereo
+        // grains but no HQ one, so every draw is lowered to Normal, and reads level 0.
+        const auto source = gg::PreparedSource::make(makeSine(2, 96000, 96000.0));
+        gg::CloudParams p = params(16.0, 0.1, 0.0, 0.0, 0.0, 0.5f);
+        p.quality = gg::Tier::HQ;
+        for (const uint64_t quota : {gg::kUnlimitedQuota, uint64_t{11}})
+        {
+            INFO("quota " << quota);
+            gg::Engine engine(gg::EngineConfig{});
+            engine.setPreparedSource(source);
+            engine.setCloudParams(p);
+            engine.setQuota(quota);
+            SinkLog log;
+            engine.setEventSink(&SinkLog::record, &log);
+            const Render r = render(engine, 48000, 256);
+            REQUIRE(allFinite(r.left));
+            REQUIRE(log.grains.size() == 16);
+            const bool lowered = quota != gg::kUnlimitedQuota;
+            REQUIRE(engine.loweredGrains() == (lowered ? 16 : 0));
+            for (const gg::GrainSpec &g : log.grains)
+            {
+                REQUIRE(g.rate == 2.0);
+                REQUIRE(g.tier == (lowered ? gg::Tier::Normal : gg::Tier::HQ));
+                REQUIRE(g.level == (lowered ? 0 : 1));
+            }
+        }
+    }
+}
+
+TEST_CASE("an HQ grain at rate 2 reads level 1 at its half positions", "[engine][mip]")
+{
+    // Spec §6.3: an HQ grain at rate 2 latches level 1 and reads it at posL = pos / 2, residual
+    // rate 1, unstretched. A 96 kHz source at pitch 0 into 48 kHz gives rate 2 exactly. The
+    // engine's render is the reference's over level 1, bit for bit, and not its level-0 render.
+    for (const uint32_t channels : {1u, 2u})
+    {
+        INFO("channels = " << channels);
+        const auto source =
+            gg::PreparedSource::make(makeSine(channels, 48000, 96000.0, 3000.0, 0.8));
+        REQUIRE(source->levelCount() == 5);
+        const gg::PreparedSource::Level &level1 = source->level(1);
+        REQUIRE(level1.decimation == 2);
+        REQUIRE(level1.frames == 24000);
+        REQUIRE(level1.stride == (channels == 2 ? 2 : 1));
+        gg::Engine engine(gg::EngineConfig{});
+        engine.setPreparedSource(source);
+        gg::CloudParams p = params(50.0, 0.05, 0.4, 0.3, 0.0, 0.5f);
+        p.quality = gg::Tier::HQ;
+        p.stereo = 0.7;
+        engine.setCloudParams(p);
+        SinkLog log;
+        engine.setEventSink(&SinkLog::record, &log);
+        constexpr int64_t kFrames = 24000;
+        const Render r = render(engine, kFrames, 256);
+        REQUIRE(allFinite(r.left));
+        REQUIRE(allFinite(r.right));
+        REQUIRE(peak(r.left) > 0.05f);
+        REQUIRE_FALSE(log.overflowed);
+        REQUIRE(log.grains.size() == 25);
+        for (const gg::GrainSpec &g : log.grains)
+        {
+            REQUIRE(g.rate == 2.0);
+            REQUIRE(g.level == 1);
+        }
+        // The spec's arithmetic, written out over level 1's floats: pos / 2, the sinc unstretched.
+        Render expected{std::vector<float>(static_cast<std::size_t>(kFrames), 0.0f),
+                        std::vector<float>(static_cast<std::size_t>(kFrames), 0.0f)};
+        gg::GrainPool pool(64);
+        const gg::HannTable hann;
+        const gg::SincTable sinc;
+        const gg::kernels::ReadParams unstretched{&sinc, 1.0f};
+        const auto read = [&](const float *data, double pos) {
+            return level1.stride == 2
+                       ? gg::kernels::Sinc::read<2>(data, level1.frames, pos, unstretched)
+                       : gg::kernels::Sinc::read<1>(data, level1.frames, pos, unstretched);
+        };
+        for (const gg::GrainSpec &g : log.grains)
+        {
+            REQUIRE(pool.spawn(g));
+        }
+        const gg::GrainRows &rows = pool.rows();
+        for (uint32_t i = 0; i < pool.size(); ++i)
+        {
+            for (int64_t t = rows.onsetSample[i]; t < std::min(kFrames, rows.endSample[i]); ++t)
+            {
+                const double e = static_cast<double>(t - rows.onsetSample[i]) - rows.onsetFrac[i];
+                const float w = hann.at(e * rows.invDuration[i]); // texture 0: the plain Hann
+                if (!(w > 0.0f))
+                {
+                    continue;
+                }
+                const double half = (rows.startPos[i] + rows.rate[i] * e) / 2.0;
+                const float s0 = read(level1.data[0], half);
+                const float s1 = level1.mono ? s0 : read(level1.data[1], half);
+                const auto j = static_cast<std::size_t>(t);
+                expected.left[j] += s0 * (w * rows.gainL[i]);
+                expected.right[j] += s1 * (w * rows.gainR[i]);
+            }
+        }
+        REQUIRE(sameBits(r.left, expected.left));
+        REQUIRE(sameBits(r.right, expected.right));
+        const Render atLevel0 =
+            hqReference(log.grains, kFrames, kFrames,
+                        [&](const gg::GrainSpec &, bool) { return viewOf(source->level(0)); });
+        REQUIRE_FALSE(sameBits(r.left, atLevel0.left));
+    }
+}
+
+TEST_CASE("a swap to a source with fewer levels reads its top level", "[engine][mip]")
+{
+    // Review Focus 2 (spec §6.3: the sounding grains keep their level index through a swap). HQ
+    // grains at rate 8 latch level 3 of a 5-level source A (a 384 kHz source at pitch 0).
+    // Mid-grain, replaceSource hands every sounding grain B, 200 frames and so 2 levels: a grain
+    // latched at level 3 then reads B's top level, level 1 (100 frames at decimation 2), at pos
+    // / 2. The swap falls 12 samples after an onset, so that grain's posL is still inside B's level
+    // 1 (pos 96, posL 48, rising by 4 a sample). The grains from the swap on latch B's own level
+    // (rate 1: level 0).
+    const auto a = gg::PreparedSource::make(makeSine(2, 4096, 384000.0, 4000.0, 0.8));
+    const auto b = gg::PreparedSource::make(makeSine(2, 200, 48000.0, 1000.0, 0.8));
+    REQUIRE(a->levelCount() == 5);
+    REQUIRE(b->levelCount() == 2);
+    gg::CloudParams p = params(200.0, 0.004, 0.0, 0.0, 0.0, 0.5f);
+    p.quality = gg::Tier::HQ;
+    constexpr int64_t kFrames = 4800;
+
+    // Where the onsets fall: a run on A alone.
+    SinkLog dry;
+    {
+        gg::Engine engine(gg::EngineConfig{});
+        engine.setPreparedSource(a);
+        engine.setCloudParams(p);
+        engine.setEventSink(&SinkLog::record, &dry);
+        render(engine, kFrames, 64);
+    }
+    const auto onset = std::find_if(dry.grains.begin(), dry.grains.end(),
+                                    [](const gg::GrainSpec &g) { return g.onsetSample >= 2000; });
+    REQUIRE(onset != dry.grains.end());
+    const int64_t swap = onset->onsetSample + 12;
+
+    gg::Engine engine(gg::EngineConfig{});
+    engine.setPreparedSource(a);
+    engine.setCloudParams(p);
+    SinkLog log;
+    engine.setEventSink(&SinkLog::record, &log);
+    Render r = render(engine, swap, 64);
+    engine.replaceSource(b.get());
+    append(r, render(engine, kFrames - swap, 64));
+    REQUIRE(allFinite(r.left));
+    REQUIRE(allFinite(r.right));
+    REQUIRE_FALSE(log.overflowed);
+
+    bool spansSwap = false;
+    for (const gg::GrainSpec &g : log.grains)
+    {
+        const bool before = g.onsetSample < swap;
+        REQUIRE(g.rate == (before ? 8.0 : 1.0));
+        REQUIRE(g.level == (before ? 3 : 0));
+        spansSwap = spansSwap || (before && gg::grainEndSample(g) > swap);
+    }
+    REQUIRE(spansSwap);
+
+    // Before the swap each grain reads its level of A; from it on, its level of B, or B's top.
+    const Render expected =
+        hqReference(log.grains, kFrames, swap, [&](const gg::GrainSpec &g, bool after) {
+            return after ? viewOf(b->level(std::min<uint32_t>(g.level, b->levelCount() - 1)))
+                         : viewOf(a->level(g.level));
+        });
+    REQUIRE(sameBits(r.left, expected.left));
+    REQUIRE(sameBits(r.right, expected.right));
+    // The old grain reads B's level 1 audibly in the samples after the swap: not silence, and
+    // not what reading B's level 0 at decimation 1 would give.
+    REQUIRE(peak(std::vector<float>(r.left.begin() + swap, r.left.begin() + swap + 12)) > 0.01f);
+    const Render atLevel0 =
+        hqReference(log.grains, kFrames, swap, [&](const gg::GrainSpec &g, bool after) {
+            return after ? viewOf(b->level(0)) : viewOf(a->level(g.level));
+        });
+    REQUIRE_FALSE(sameBits(r.left, atLevel0.left));
+}
+
+namespace
+{
 // The steals and spawns in the order the engine reports them, recorded without allocating.
 struct OrderLog
 {

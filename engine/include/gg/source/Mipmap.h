@@ -5,8 +5,11 @@
 #ifndef GG_SOURCE_MIPMAP_H
 #define GG_SOURCE_MIPMAP_H
 
+#include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdint>
+#include <limits>
 
 /// The file pyramid's arithmetic (spec §6.3): how many levels a source of a given length gets,
 /// how long each is, and the half-band filter that makes each level from the one above.
@@ -59,6 +62,27 @@ inline constexpr uint32_t mipLevelCount(int64_t frames) noexcept
         ++count;
     }
     return count;
+}
+
+/// The level a grain reads (spec §6.3) at `rate`, its rate in level-0 frames per output sample,
+/// from a source of levelCount levels: floor(log2(rate)) clamped to [0, levelCount − 1] (and to
+/// kMaxMipLevels − 1), so a rate in [2ᵏ, 2ᵏ⁺¹) reads level k. Exact: std::frexp gives rate's
+/// binary exponent e, rate in [2ᵉ⁻¹, 2ᵉ), with no rounding. 0 for a rate below 1, NaN included,
+/// or a source of one level; the top level for +∞. Real-time safe.
+inline uint8_t mipLevelFor(double rate, uint32_t levelCount) noexcept
+{
+    if (!(rate >= 1.0) || levelCount <= 1)
+    {
+        return 0;
+    }
+    const auto top = static_cast<int>(std::min(levelCount, kMaxMipLevels) - 1);
+    if (!(rate <= std::numeric_limits<double>::max()))
+    {
+        return static_cast<uint8_t>(top); // +∞, whose frexp exponent is unspecified
+    }
+    int e = 0;
+    static_cast<void>(std::frexp(rate, &e));
+    return static_cast<uint8_t>(std::clamp(e - 1, 0, top));
 }
 
 /// One channel lowpassed by kHalfband and decimated by 2: for m in [0, outFrames),

@@ -654,6 +654,82 @@ std::size_t peakStoredWithoutEarlyRetirement(const std::vector<gg::GrainSpec> &g
 }
 } // namespace
 
+namespace
+{
+// A stereo exponential sweep from 40 Hz to 8 kHz over kSourceFrames at 48 kHz, amplitude 0.8; the
+// right channel a quarter turn ahead.
+std::shared_ptr<const gg::SampleBuffer> sweepSource()
+{
+    auto buf = std::make_shared<gg::SampleBuffer>(2, kSourceFrames, kSampleRate);
+    const double seconds = static_cast<double>(kSourceFrames) / kSampleRate;
+    const double k = std::log(8000.0 / 40.0) / seconds;
+    for (uint32_t c = 0; c < 2; ++c)
+    {
+        for (int64_t i = 0; i < kSourceFrames; ++i)
+        {
+            const double t = static_cast<double>(i) / kSampleRate;
+            const double turns = 40.0 * (std::exp(k * t) - 1.0) / k + 0.25 * c;
+            buf->channel(c)[i] = static_cast<float>(0.8 * std::sin(2.0 * std::numbers::pi * turns));
+        }
+    }
+    return buf;
+}
+} // namespace
+
+TEST_CASE("hq renders are identical across block sizes", "[determinism][mip]")
+{
+    // The HQ tier (spec §6.2) at pitch +19, rate 2^(19/12) (about 3.0), over a stereo sweep: every
+    // grain latches mip level 1 (spec §6.3) and reads it at half its positions, stretched by the
+    // residual rate's 1 / 1.5.
+    const auto source = gg::PreparedSource::make(sweepSource());
+    REQUIRE(source->levelCount() == 5);
+    const auto run = [&](const std::vector<uint32_t> &blockSizes, GrainLog &log) {
+        gg::Engine engine(config(42));
+        engine.setPreparedSource(source);
+        gg::CloudParams p = kParams;
+        p.pitchSemitones = 19.0;
+        p.quality = gg::Tier::HQ;
+        engine.setCloudParams(p);
+        engine.setEventSink(&GrainLog::record, &log);
+        constexpr float kUnwritten = std::numeric_limits<float>::quiet_NaN();
+        Render r{std::vector<float>(static_cast<std::size_t>(kFrames), kUnwritten),
+                 std::vector<float>(static_cast<std::size_t>(kFrames), kUnwritten)};
+        int64_t done = 0;
+        for (std::size_t next = 0; done < kFrames; ++next)
+        {
+            const uint32_t want = blockSizes[next % blockSizes.size()];
+            const auto n = static_cast<uint32_t>(std::min<int64_t>(want, kFrames - done));
+            float *out[2] = {r.left.data() + done, r.right.data() + done};
+            engine.process(out, 2, n);
+            done += n;
+        }
+        return r;
+    };
+    GrainLog refLog;
+    const Render ref = run({kMaxBlock}, refLog);
+    REQUIRE(allFinite(ref.left));
+    REQUIRE(allFinite(ref.right));
+    REQUIRE(peak(ref.left) > 0.05f);
+    REQUIRE_FALSE(sameBits(ref.left, ref.right));
+    REQUIRE_FALSE(refLog.overflowed);
+    REQUIRE(refLog.grains.size() > 100);
+    REQUIRE(std::all_of(refLog.grains.begin(), refLog.grains.end(), [](const gg::GrainSpec &g) {
+        return g.tier == gg::Tier::HQ && g.level == 1 && g.rate > 2.9 && g.rate < 3.1;
+    }));
+
+    const auto random = randomSplit();
+    for (const std::vector<uint32_t> &blockSizes :
+         {std::vector<uint32_t>{1}, {32}, {64}, {511}, {4096}, random})
+    {
+        INFO("first block size = " << blockSizes.front() << " of " << blockSizes.size());
+        GrainLog log;
+        const Render r = run(blockSizes, log);
+        REQUIRE(log.grains == refLog.grains);
+        REQUIRE(sameBits(ref.left, r.left));
+        REQUIRE(sameBits(ref.right, r.right));
+    }
+}
+
 TEST_CASE("saturated pool is block-size invariant", "[determinism]")
 {
     const auto source = sineSource();
