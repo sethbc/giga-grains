@@ -239,3 +239,49 @@ TEST_CASE("a filed ring restores from its file, and a bad one gives an error", "
     restored = restoreRing(entryOf(*window, {}), encoded.wavBytes, 48000.0, 300, kBlock, 16);
     REQUIRE_FALSE(restored.error.empty());
 }
+
+TEST_CASE("a ring saved at a higher rate restores converted down", "[media]")
+{
+    constexpr int64_t kCapacity = 4800 + kBlock;
+    const auto slots = ringSlots(kCapacity, 0, 4800);
+    const auto window = ringToBuffer(slots.data(), kCapacity, 0, 4800, 48000.0);
+    const auto encoded = encodeRing(*window);
+    const RingEntry entry = entryOf(*window, {2400, 4799});
+
+    const auto restored = restoreRing(entry, encoded.wavBytes, 44100.0, 44100, kBlock, kBound);
+    INFO(restored.error);
+    REQUIRE(restored.error.empty());
+    REQUIRE(restored.frames == std::llround(4800.0 * 44100.0 / 48000.0));
+    REQUIRE(restored.splices.size() == 2);
+    REQUIRE(restored.splices[0] == std::llround(2400.0 * 44100.0 / 48000.0));
+    REQUIRE(restored.splices[1] == std::llround(4799.0 * 44100.0 / 48000.0));
+    REQUIRE(restored.splices[1] < restored.frames);
+}
+
+TEST_CASE("a mark that rounds onto the frame count is dropped", "[media]")
+{
+    // Converting 44.1 kHz down to 32 kHz, the last mark (frames - 1) rounds to the new frame
+    // count for some counts: it would sit past the end, so the ring leaves it out. Find one.
+    constexpr double kRate = 32000.0;
+    for (int64_t frames = 2; frames < 200; ++frames)
+    {
+        const int64_t scaledFrames = std::llround(double(frames) * kRate / 44100.0);
+        const int64_t scaledMark = std::llround(double(frames - 1) * kRate / 44100.0);
+        if (scaledMark < scaledFrames)
+        {
+            continue;
+        }
+        INFO("frames " << frames);
+        const int64_t capacity = frames + kBlock;
+        const auto slots = ringSlots(capacity, 0, frames);
+        const auto window = ringToBuffer(slots.data(), capacity, 0, frames, 44100.0);
+        const auto encoded = encodeRing(*window);
+        const RingEntry entry = entryOf(*window, {0, frames - 1});
+        const auto restored = restoreRing(entry, encoded.wavBytes, kRate, 1000, kBlock, kBound);
+        REQUIRE(restored.error.empty());
+        REQUIRE(restored.frames == scaledFrames);
+        REQUIRE(restored.splices == std::vector<int64_t>{0});
+        return;
+    }
+    FAIL("no frame count whose last mark rounds onto the count");
+}

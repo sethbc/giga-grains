@@ -18,6 +18,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include "TestHooks.h"
 #include "gg/core/MachineSettings.h"
 #include "gg/core/SessionState.h"
 #include "gg/media/Collect.h"
@@ -219,4 +220,28 @@ TEST_CASE("collectMedia finds a sample through a content root", "[media]")
     REQUIRE(result.missing.empty());
     REQUIRE(slurp(out / "kick.wav") == "pack kick");
     REQUIRE(result.state.samples[0]->contentPath == "packs/kick.wav");
+}
+
+TEST_CASE("collectMedia verifies each copy's hash and drops one that fails", "[media]")
+{
+    const auto dir = freshDir("collect-verify");
+    const auto out = dir / "out";
+    put(dir / "a" / "kick.wav", "kick bytes");
+
+    SessionState state;
+    state.samples[0] = sampleEntry(dir / "a" / "kick.wav", "kick bytes", 0);
+    // The same file in a second layer: its failure is listed once.
+    state.samples[1] = sampleEntry(dir / "a" / "kick.wav", "kick bytes", 1);
+    const SessionState before = state;
+
+    // A disk that writes other bytes than it was given.
+    gg::media::detail::setCollectHook([](const fs::path &copy) { put(copy, "kick bytez"); });
+    const auto result = gg::media::collectMedia(state, out, MachineSettings{}, {});
+    gg::media::detail::setCollectHook(nullptr);
+
+    REQUIRE(result.copied.empty());
+    REQUIRE(result.missing == std::vector<std::string>{utf8(dir / "a" / "kick.wav")});
+    REQUIRE_FALSE(fs::exists(out / "kick.wav"));
+    REQUIRE(result.state.samples == before.samples);
+    REQUIRE(state.samples == before.samples);
 }

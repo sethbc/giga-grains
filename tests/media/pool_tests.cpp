@@ -6,9 +6,9 @@
 // (fingerprint, size, rate) and held weakly. Each test case runs in its own process, so the pool
 // starts empty; each clears it anyway.
 
+#include <atomic>
 #include <cmath>
 #include <cstdint>
-#include <atomic>
 #include <memory>
 #include <string>
 #include <thread>

@@ -4,10 +4,14 @@
 
 #include "gg/media/Collect.h"
 
+#include <atomic>
 #include <optional>
+#include <set>
+#include <string>
 #include <system_error>
 #include <utility>
 
+#include "TestHooks.h"
 #include "gg/media/Search.h"
 #include "gg/media/Sha256.h"
 #include "gg/media/Utf8Path.h"
@@ -18,6 +22,9 @@ namespace fs = std::filesystem;
 
 namespace
 {
+/// The collect hook (TestHooks.h); nullptr unless a test sets one.
+std::atomic<detail::CollectHook> collectHook{nullptr};
+
 /// One file to collect: the fingerprint to match, and where it was saved.
 struct Wanted
 {
@@ -74,6 +81,10 @@ std::optional<fs::path> collectOne(const fs::path &from, const fs::path &folder,
     {
         return std::nullopt;
     }
+    if (const auto hook = collectHook.load(std::memory_order_relaxed))
+    {
+        hook(target);
+    }
     if (!hasContent(target, wanted))
     {
         fs::remove(target, error);
@@ -95,6 +106,8 @@ CollectResult collectMedia(const core::SessionState &state, const fs::path &fold
     fs::create_directories(folder, error);
     const bool folderReady = fs::is_directory(folder, error);
 
+    std::set<std::string> listed; // the saved paths already in `missing`
+
     // Collects one entry's file: the copy's path (UTF-8), or nullopt, with the entry listed.
     const auto collect = [&](const SearchResult &found,
                              const Wanted &wanted) -> std::optional<std::string> {
@@ -113,7 +126,10 @@ CollectResult collectMedia(const core::SessionState &state, const fs::path &fold
                 }
             }
         }
-        result.missing.push_back(wanted.savedPath);
+        if (listed.insert(wanted.savedPath).second)
+        {
+            result.missing.push_back(wanted.savedPath);
+        }
         return std::nullopt;
     };
 
@@ -151,4 +167,9 @@ CollectResult collectMedia(const core::SessionState &state, const fs::path &fold
     }
     return result;
 }
+
+namespace detail
+{
+void setCollectHook(CollectHook hook) { collectHook.store(hook); }
+} // namespace detail
 } // namespace gg::media

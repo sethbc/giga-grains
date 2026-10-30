@@ -355,7 +355,8 @@ std::optional<fs::path> inCapturesFolder(Candidates &candidates, const std::stri
     {
         return std::nullopt;
     }
-    const std::string ours = toUtf8(folder).has_value() ? lastComponent(*toUtf8(folder)) : "";
+    const auto folderText = toUtf8(folder);
+    const std::string ours = folderText ? lastComponent(*folderText) : std::string();
     if (savedFolder != "Captures" && (ours.empty() || savedFolder != ours))
     {
         return std::nullopt;
