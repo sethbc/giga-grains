@@ -40,8 +40,9 @@ struct EngineConfig
 };
 
 /// Called on the audio thread, from inside process(), once for every grain that spawns, in
-/// spawn order. It must be real-time safe.
-using GrainEventSink = void (*)(void *ctx, const GrainSpec &);
+/// spawn order, with the engine's EngineConfig::layer (M2 sub-project 1's spec §6.7). It must be
+/// real-time safe.
+using GrainEventSink = void (*)(void *ctx, uint32_t layer, const GrainSpec &);
 
 /// The grain engine, one layer's (spec §6.2): one Cloud grain stream (layer EngineConfig::layer,
 /// stream 0) whose new grains read one source kind, a sample (SourceMode::Sample, the default)

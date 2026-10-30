@@ -108,7 +108,7 @@ struct SinkLog
 
     SinkLog() { grains.reserve(kCapacity); }
 
-    static void record(void *ctx, const gg::GrainSpec &g)
+    static void record(void *ctx, uint32_t, const gg::GrainSpec &g)
     {
         auto *log = static_cast<SinkLog *>(ctx);
         if (log->grains.size() < kCapacity)

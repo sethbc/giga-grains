@@ -681,8 +681,9 @@ TEST_CASE("plugin reset does not allocate and a restored Freeze plays live", "[p
     }
     else
     {
-        // The instrument has no ring and, in this slice, no source: silence throughout.
-        CHECK(engine->liveFrames() == 0);
+        // The instrument's layer A reads a sample (its ring goes unread, M2 sub-project 1's spec
+        // §6.4) and, in this slice, has no source: silence throughout.
+        CHECK(engine->sourceMode() == gg::SourceMode::Sample);
         CHECK(activated == 0.0f);
         CHECK(afterReset == 0.0f);
         CHECK(afterToggle == 0.0f);

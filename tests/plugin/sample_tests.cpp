@@ -218,7 +218,7 @@ struct RateLog
     std::vector<Grain> grains = std::vector<Grain>(kCapacity);
     std::size_t count{0};
 
-    static void record(void *ctx, const gg::GrainSpec &g)
+    static void record(void *ctx, uint32_t, const gg::GrainSpec &g)
     {
         auto &self = *static_cast<RateLog *>(ctx);
         if (self.count < kCapacity)

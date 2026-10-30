@@ -434,7 +434,7 @@ void Engine::admit(const GrainSpec &g, float *const dst[2], int64_t blockStart,
     }
     if (sink_ != nullptr)
     {
-        sink_(sinkCtx_, g);
+        sink_(sinkCtx_, config_.layer, g);
     }
 }
 

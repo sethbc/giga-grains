@@ -27,15 +27,22 @@ namespace
 /// that keeps RTSan builds of the tests clean. The lines are formatted between process() calls.
 struct GrainCollector
 {
+    /// A grain, with the layer that spawned it.
+    struct Event
+    {
+        uint32_t layer;
+        GrainSpec grain;
+    };
+
     explicit GrainCollector(std::size_t capacity) { pending.reserve(capacity); }
 
-    static void sink(void *ctx, const GrainSpec &g)
+    static void sink(void *ctx, uint32_t layer, const GrainSpec &g)
     {
         auto &self = *static_cast<GrainCollector *>(ctx);
         self.latestEnd = std::max(self.latestEnd, grainEndSample(g));
         if (self.pending.size() < self.pending.capacity())
         {
-            self.pending.push_back(g);
+            self.pending.push_back({layer, g});
         }
         else
         {
@@ -43,7 +50,7 @@ struct GrainCollector
         }
     }
 
-    std::vector<GrainSpec> pending;
+    std::vector<Event> pending;
     int64_t latestEnd{-1}; ///< -1 until a grain spawns
     bool overflowed{false};
 };
@@ -102,9 +109,9 @@ void takeEventLines(GrainCollector &grains, std::vector<std::string> *eventLines
 {
     if (eventLines != nullptr)
     {
-        for (const GrainSpec &g : grains.pending)
+        for (const GrainCollector::Event &e : grains.pending)
         {
-            eventLines->push_back(formatEventLine(g));
+            eventLines->push_back(formatEventLine(e.grain));
         }
     }
     grains.pending.clear();
@@ -283,7 +290,8 @@ gg::metrics::AudioData renderProcessor(const RenderSpec &spec, std::vector<std::
     const std::vector<TimedNote> notes =
         timedNotes(fx ? spec.fx.notes : spec.instrument.notes, spec.sampleRate, frames);
 
-    GrainCollector grains(maxGrainsPerCall(spec.blockSize));
+    // Each layer's engine spawns within the bound on its own (M2 sub-project 1's spec §6.2).
+    GrainCollector grains(gg::core::Processor::kLayers * maxGrainsPerCall(spec.blockSize));
     processor.setEventSink(&GrainCollector::sink, &grains);
     if (eventLines != nullptr)
     {

@@ -9,6 +9,7 @@ add_executable(gg-tests
         smoke_tests.cpp
         core/diffuser_tests.cpp
         core/exchange_tests.cpp
+        core/layers_tests.cpp
         core/mod_matrix_tests.cpp
         core/mod_sources_tests.cpp
         core/note_tests.cpp

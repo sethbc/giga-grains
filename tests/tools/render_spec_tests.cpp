@@ -143,7 +143,7 @@ struct Grains
 {
     std::vector<gg::GrainSpec> spawned;
     bool overflowed{false};
-    static void record(void *ctx, const gg::GrainSpec &g)
+    static void record(void *ctx, uint32_t, const gg::GrainSpec &g)
     {
         auto &self = *static_cast<Grains *>(ctx);
         if (self.spawned.size() < self.spawned.capacity())
@@ -964,7 +964,7 @@ TEST_CASE("fx render matches the processor", "[render]")
     {
         std::vector<gg::GrainSpec> spawned;
         bool overflowed{false};
-        static void record(void *ctx, const gg::GrainSpec &g)
+        static void record(void *ctx, uint32_t, const gg::GrainSpec &g)
         {
             auto &self = *static_cast<Grains *>(ctx);
             if (self.spawned.size() < self.spawned.capacity())

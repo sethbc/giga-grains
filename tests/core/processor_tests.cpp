@@ -66,7 +66,7 @@ struct GrainLog
 
     GrainLog() { grains.reserve(kCapacity); }
 
-    static void record(void *ctx, const gg::GrainSpec &g)
+    static void record(void *ctx, uint32_t, const gg::GrainSpec &g)
     {
         auto *log = static_cast<GrainLog *>(ctx);
         if (log->grains.size() < kCapacity)
@@ -1094,7 +1094,7 @@ struct SpawnCounter
 {
     uint64_t spawns{0};
 
-    static void record(void *ctx, const gg::GrainSpec &)
+    static void record(void *ctx, uint32_t, const gg::GrainSpec &)
     {
         ++static_cast<SpawnCounter *>(ctx)->spawns;
     }
@@ -1134,8 +1134,14 @@ TEST_CASE("processor does not allocate", "[core][rt]")
     {
         const auto slot = static_cast<ParamSlot>(s);
         const auto offset = static_cast<uint32_t>(s * 97);
-        const double value =
-            slot == ParamSlot::Density ? 8.0 : (slot == ParamSlot::Size ? -4.0 : 0.4);
+        // Every layer switched on, so the call ends with grains sounding (M2 sub-project 1's spec
+        // §6.3).
+        const bool layerOn = gg::core::perLayerGlobalLayer(slot) &&
+                             slot == gg::core::layerOnSlot(*gg::core::perLayerGlobalLayer(slot));
+        const double value = slot == ParamSlot::Density ? 8.0
+                             : slot == ParamSlot::Size  ? -4.0
+                             : layerOn                  ? 1.0
+                                                        : 0.4;
         events.push_back({offset, slot, false, value});
         events.push_back({offset + 3, slot, true, 0.1});
     }
@@ -1389,10 +1395,11 @@ TEST_CASE("processor configures the engine for its mode", "[core]")
     }
     SECTION("instrument")
     {
-        // No ring and no source in this slice: the wet signal alone, which is silence, whatever
-        // the input.
+        // No source in this slice: the wet signal alone, which is silence, whatever the input.
+        // The input feeds the 16 s rings (M2 sub-project 1's spec §6.2), which layer A, reading
+        // a sample, doesn't read.
         Processor p({kSampleRate, 512, 1, Mode::Instrument});
-        REQUIRE(p.engine().liveFrames() == 0);
+        REQUIRE(p.engine().liveFrames() == 16 * 48000);
         // The instrument's defaults: Position at the start of the file (spec §6.8).
         for (size_t s = 0; s < kParamCount; ++s)
         {

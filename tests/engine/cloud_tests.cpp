@@ -1245,7 +1245,7 @@ namespace
 struct StartLog
 {
     std::vector<gg::GrainSpec> grains;
-    static void record(void *ctx, const gg::GrainSpec &g)
+    static void record(void *ctx, uint32_t, const gg::GrainSpec &g)
     {
         static_cast<StartLog *>(ctx)->grains.push_back(g);
     }

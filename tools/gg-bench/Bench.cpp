@@ -439,7 +439,7 @@ class EngineConfiguration final : public Configuration
         for (const auto &engine : engines_)
         {
             engine->setEventSink(
-                [](void *ctx, const gg::GrainSpec &g) {
+                [](void *ctx, uint32_t, const gg::GrainSpec &g) {
                     TierCounts &c = *static_cast<TierCounts *>(ctx);
                     ++(g.tier == gg::Tier::Eco ? c.eco : c.normal);
                 },
