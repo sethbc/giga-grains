@@ -534,9 +534,9 @@ TEST_CASE("the committed baselines are well formed", "[bench]")
         for (const nlohmann::json &m : baseline.at("machines"))
         {
             INFO(m.at("machine").get<std::string>());
-            // Exactly M1's 4 engine cases x 3 block sizes (a duplicate or a stray case would
-            // pass a count of 12). engine-layers and engine-layers-full have no entries yet:
-            // report-only until three full runs are merged in.
+            // The 4 gated engine cases x 3 block sizes must all be there (a stray case, a
+            // duplicate or a missing block size fails). An entry made from three merged runs
+            // also carries the report-only cases below, once each; an older entry may not.
             std::set<std::pair<std::string, uint32_t>> found;
             for (const nlohmann::json &r : m.at("ratios"))
             {
@@ -551,7 +551,20 @@ TEST_CASE("the committed baselines are well formed", "[bench]")
                     expected.emplace(name, block);
                 }
             }
-            CHECK(m.at("ratios").size() == 12);
+            const bool withReportOnly = m.at("ratios").size() > expected.size();
+            if (withReportOnly)
+            {
+                for (const char *name :
+                     {"engine-layers", "engine-layers-full", "engine-sample-hq",
+                      "engine-sample-hq-up", "engine-overload", "engine-sample-sse"})
+                {
+                    for (const uint32_t block : {32u, 64u, 256u})
+                    {
+                        expected.emplace(name, block);
+                    }
+                }
+            }
+            CHECK(m.at("ratios").size() == expected.size());
             CHECK(found == expected);
         }
     }
