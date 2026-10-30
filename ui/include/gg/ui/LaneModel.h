@@ -10,14 +10,18 @@
 
 namespace gg::ui
 {
-/// The canvas's lane geometry (spec §6.2–6.3): where each playing grain's capsule lies, where
-/// the scan window lies, and the inverse mappings a drag needs. Pure functions, framework-free,
-/// for the UI thread only: they may use libm (std::log2, std::exp2), since nothing here reaches
-/// the audio or the grain-event log.
+/// The canvas's lane geometry (spec §6.2–6.3; M2 Views' spec §6.3): where each playing grain's
+/// capsule lies, where the scan rectangle lies, and the inverse mappings a drag needs. Pure
+/// functions, framework-free, for the UI thread only: they may use libm (std::log2, std::exp2),
+/// since nothing here reaches the audio or the grain-event log.
 ///
 /// Coordinates are in physical pixels, as SplatRenderer's: x runs 0 .. width left to right and
-/// y 0 .. height top to bottom.
+/// y top .. top + height top to bottom. The canvas stacks its four lanes (one per layer) in one
+/// accumulator, each at its own top; M1's one lane is the lane at top 0.
 ///
+/// - **The vertical axis is pitch** (D1): a grain at rate r lies 12·log2(r) semitones from the
+///   lane's centre, ±kLaneSemitones across its height less the capsule's radius, higher pitches
+///   higher up (pitchY).
 /// - **FX lane:** the live ring, with the write head fixed at the right edge as "now". A ring
 ///   frame `pos` with the head at `head` lies at x = width × (1 − behind / ringSeconds), with
 ///   behind = (head − pos) / sampleRate seconds: history scrolls left as the head moves on.
@@ -31,7 +35,19 @@ struct LaneGeometry
     double sampleRate;    ///< The engine's sample rate, Hz.
     double ringSeconds;   ///< FX: the seconds the lane spans (the live ring's 16).
     int64_t sourceFrames; ///< Instrument: the loaded sample's length in frames.
+    float top{0.0f};      ///< The lane's top in pixels: where it sits in the stacked canvas.
 };
+
+/// The semitones either side of a lane's centre that its height spans (D1): Pitch's ±24 plus
+/// Pitch Spread's ±24.
+inline constexpr float kLaneSemitones = 48.0f;
+
+/// The y of a grain at rate `rate` (frames read per output sample) on `g`'s lane, for a capsule
+/// of radius `radius`: top + height/2 − 12·log2(rate) × (height/2 − radius) / kLaneSemitones,
+/// clamped to [top + radius, top + height − radius], so the capsule stays on its lane. A rate
+/// that isn't positive and finite (a reverse grain, 0, NaN or infinity) draws centred, as does
+/// any rate on a lane shorter than two radii. A top or height that isn't finite gives 0.
+float pitchY(float rate, const LaneGeometry &g, float radius) noexcept;
 
 /// One grain as the lane needs it: the six fields of the engine's spawn event (gg-core's
 /// GrainVis), copied in by the canvas so this header depends on nothing but the standard
@@ -43,7 +59,7 @@ struct LaneGrain
     float rate;            ///< Frames read per output sample (negative reads backwards).
     float durationSamples; ///< Its length in output samples.
     float gain;            ///< Its gain; the capsule's brightness, clamped to 0..1.
-    float pan;             ///< Its pan, −1 (left) .. 1 (right); the capsule's height.
+    float pan;             ///< Its pan, −1 (left) .. 1 (right); no longer drawn (D1).
 };
 
 /// The arguments of SplatRenderer::addCapsule, with x0 <= x1.
@@ -58,9 +74,9 @@ struct Capsule
 /// the geometry can't be placed (a non-finite field, a duration or a lane that isn't positive).
 ///
 /// - x0 .. x1 span the grain's read extent, startPos .. startPos + rate × durationSamples.
-/// - y = height/2 + pan × (height/2 − radius), so pan +1 is the bottom edge and the capsule
-///   stays on the lane; pan is clamped to −1 .. 1 (NaN draws centred), and a lane shorter than
-///   the capsule draws it centred.
+/// - y = pitchY(rate, geometry, radius): its pitch, clamped to [top + radius, top + height −
+///   radius], so the capsule stays on its own lane; a reverse grain draws centred. Pan is no
+///   longer drawn (D1).
 /// - radius = max(1.5, 3 × pixelScale).
 /// - intensity = clamp(gain, 0, 1) (NaN draws dark).
 std::optional<Capsule> grainCapsule(const LaneGrain &grain, int64_t nowSample, int64_t headAtNow,
@@ -117,13 +133,16 @@ float positionValueAtX(float x, const LaneGeometry &geometry) noexcept;
 /// 0..1; a NaN or negative extent, or a degenerate lane, gives 0.
 float sprayValueForExtent(float extentPx, const LaneGeometry &geometry) noexcept;
 
-/// What a press at x grabs.
+/// What a press grabs: at x for hitTest, at (x, y) for hitTestRect.
 enum class DragTarget
 {
     None,
-    Body,      ///< Sets Position (on the FX lane, the right edge too: it is Position).
-    LeftEdge,  ///< Sets Spray (the FX window's older edge, or either instrument edge).
-    RightEdge, ///< Sets Spray. Instrument lane only: the FX window's right edge is the Body.
+    Body,       ///< Sets Position (on the FX lane, the right edge too: it is Position), or Pitch
+                ///< on the rectangle when the drag is vertical (decideAxis).
+    LeftEdge,   ///< Sets Spray (the FX window's older edge, or either instrument edge).
+    RightEdge,  ///< Sets Spray. Instrument lane only: the FX window's right edge is the Body.
+    TopEdge,    ///< The rectangle's higher-pitch edge: sets Pitch Spread.
+    BottomEdge, ///< The rectangle's lower-pitch edge: sets Pitch Spread.
 };
 
 /// Hit-tests x against the window on geometry's lane. The left edge grabs within
@@ -139,6 +158,81 @@ enum class DragTarget
 /// A non-finite x grabs nothing.
 DragTarget hitTest(float x, const Window &window, float edgeTolerancePx,
                    const LaneGeometry &geometry) noexcept;
+
+/// One layer's four scan values as CLAP values, as a UiSnapshot gives them (base or effective):
+/// Position and Spray 0..1 (scanWindow's), Pitch in semitones (−24..24) and Pitch Spread in
+/// semitones (0..24).
+struct ScanRectValues
+{
+    float position, spray, pitch, pitchSpread;
+};
+
+/// The scan rectangle, in pixels: x0 <= x1, y0 <= y1, so y0 is the higher pitch.
+struct WindowRect
+{
+    float x0, x1, y0, y1;
+};
+
+/// The scan rectangle (D2): where a layer's grains read and at what pitch. x0 .. x1 is
+/// scanWindow(position, spray): one-sided on a Live (FX) lane, ±Spray on a Sample lane. y0 .. y1
+/// is Pitch ± Pitch Spread semitones on the lane's pitch axis, placed as pitchY places a grain
+/// at that pitch (with the capsules' radius, max(1.5, 3 × pixelScale)), so a grain at Pitch's
+/// rate lies on the rectangle's middle. Pitch is clamped to −24..24 and the spread to 0..24 first
+/// (NaN to 0), so Pitch 0 with no spread is a band of no height at the lane's centre and the
+/// rectangle never leaves the lane. A lane that can't place anything gives all zeros, as
+/// scanWindow does.
+WindowRect scanRect(const ScanRectValues &v, const LaneGeometry &g) noexcept;
+
+/// The ghost rectangle (spec §6.3): the scan rectangle at the effective values, when any of the
+/// four differs from its base value by more than kGhostThreshold in its own 0..1 domain (Position
+/// and Spray as they are, Pitch over its 48 semitones, Pitch Spread over its 24); nullopt when
+/// none does, and whenever any of the eight values isn't finite (Review Focus 3: a bad host
+/// event's NaN shows no ghost).
+std::optional<WindowRect> ghostRect(const ScanRectValues &base, const ScanRectValues &effective,
+                                    const LaneGeometry &g) noexcept;
+
+/// What a press at (x, y) grabs on `g`'s lane, for the rectangle w (D2): the left and right edges
+/// set Spray, the top and bottom edges Pitch Spread, the body Position or Pitch (decideAxis).
+///
+/// - x by M1's rules (hitTest, both lanes' kinds included): the FX's right side is the body.
+/// - y by the same tolerance rule: the top edge grabs within edgeTolerancePx above w.y0 and
+///   within min(edgeTolerancePx, height / 3) below it, the bottom edge mirrored, the rest between
+///   them is the body. A band of no height is the body only at its own y, an edge either side.
+/// - A corner, within the tolerance of a left or right edge and of the top or bottom edge, takes
+///   the horizontal edge: the one whose drag is horizontal (LeftEdge or RightEdge), as M1's
+///   window did. On the FX lane the right side is the body, so there the top and bottom edges
+///   run to it.
+///
+/// A press outside the lane (x outside 0 .. width, y outside top .. top + height, both
+/// inclusive), a non-finite coordinate or a lane that can't place anything grabs nothing.
+DragTarget hitTestRect(float x, float y, const WindowRect &w, float edgeTolerancePx,
+                       const LaneGeometry &g) noexcept;
+
+/// The Pitch value, in semitones, whose rectangle is centred at y: scanRect's inverse for a
+/// vertical body drag. Clamped to −24..24, so a drag past the lane's edges pins Pitch to its
+/// range. A NaN y, or a lane that can't place a pitch (one shorter than two radii included),
+/// gives 0.
+float pitchValueAtY(float y, const LaneGeometry &g) noexcept;
+
+/// The Pitch Spread, in semitones, whose rectangle reaches extentPx from its centre: scanRect's
+/// inverse for a top or bottom edge drag (the dragged edge's distance from the centre; the
+/// spread is symmetric). Clamped to 0..24; a NaN or negative extent, or a lane that can't place
+/// a pitch, gives 0.
+float pitchSpreadForExtent(float extentPx, const LaneGeometry &g) noexcept;
+
+/// Which parameter a body drag moves: Position (Horizontal) or Pitch (Vertical).
+enum class DragAxis
+{
+    Undecided, ///< Not yet moved far enough to tell.
+    Horizontal,
+    Vertical,
+};
+
+/// The axis lock (D2): a body drag that has moved (dx, dy) pixels from its press is Undecided
+/// until max(|dx|, |dy|) reaches thresholdPx; then the larger movement wins, a tie going
+/// Horizontal. The caller decides once and keeps the answer until release. A NaN movement counts
+/// as no movement; a NaN threshold never decides.
+DragAxis decideAxis(float dx, float dy, float thresholdPx) noexcept;
 } // namespace gg::ui
 
 #endif // GG_UI_LANEMODEL_H

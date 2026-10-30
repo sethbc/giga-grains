@@ -1073,10 +1073,12 @@ TEST_CASE("the canvas draws the grains the queue holds", "[plugin]")
     const float width = static_cast<float>(canvas->getWidth());
     const float height = static_cast<float>(canvas->getHeight());
 
-    const auto grain = [](int64_t onset, double behindSeconds, float pan) {
+    // The lane's vertical axis is pitch (M2 Views' D1): rate 4, two octaves up, lies half the
+    // reach above the centre, and rate 1/4 half the reach below it.
+    const auto grain = [](int64_t onset, double behindSeconds, float rate) {
         return gg::core::GrainVis{onset, static_cast<double>(kNow) - behindSeconds * kRate,
-                                  1.0f,  static_cast<float>(0.1 * kRate),
-                                  1.0f,  pan};
+                                  rate,  static_cast<float>(0.1 * kRate),
+                                  1.0f,  0.0f};
     };
     const float radius = 3.0f;
     const float reach = 0.5f * height - radius;
@@ -1084,11 +1086,12 @@ TEST_CASE("the canvas draws the grains the queue holds", "[plugin]")
         return canvas->accumAt(static_cast<uint32_t>(std::lround(x)),
                                static_cast<uint32_t>(std::lround(y)));
     };
-    // Each grain's capsule spans its 100 ms read, from 4 s (8 s) back to 3.9 s (7.9 s) back.
-    const float x4 = width * (1.0f - 3.95f / 16.0f);
-    const float x8 = width * (1.0f - 7.95f / 16.0f);
+    // Each grain's capsule spans its 100 ms read, at its rate: from 4 s back to 3.6 s back (rate
+    // 4), and from 8 s back to 7.975 s back (rate 1/4); x4 and x8 are the reads' middles.
+    const float x4 = width * (1.0f - 3.8f / 16.0f);
+    const float x8 = width * (1.0f - 7.9875f / 16.0f);
 
-    // Two grains of 100 ms that started just now, 4 s and 8 s behind the head, one panned up
+    // Two grains of 100 ms that started just now, 4 s and 8 s behind the head, one pitched up
     // and one down; one that has already ended. Queued after the canvas's first frame, which
     // clears the queue (the next test).
     gg::core::UiSnapshot snapshot;
@@ -1096,9 +1099,9 @@ TEST_CASE("the canvas draws the grains the queue holds", "[plugin]")
     snapshot.writeHead = kNow;
     snapshots.push(snapshot);
     canvas->renderFrame();
-    REQUIRE(queue.push(grain(kNow - 100, 4.0, -0.5f)));
-    REQUIRE(queue.push(grain(kNow - 100, 8.0, 0.5f)));
-    REQUIRE(queue.push(grain(kNow - 20000, 12.0, 0.0f))); // ended at kNow - 15200
+    REQUIRE(queue.push(grain(kNow - 100, 4.0, 4.0f)));
+    REQUIRE(queue.push(grain(kNow - 100, 8.0, 0.25f)));
+    REQUIRE(queue.push(grain(kNow - 20000, 12.0, 1.0f))); // ended at kNow - 15200
 
     canvas->renderFrame();
     CHECK(canvas->liveGrainCount() == 2);
@@ -1128,7 +1131,7 @@ TEST_CASE("the canvas draws the grains the queue holds", "[plugin]")
     fresh.writeHead = 64;
     snapshots2.push(fresh);
     canvas->renderFrame(); // a new queue: cleared first
-    REQUIRE(queue2.push(gg::core::GrainVis{0, 64.0 - 4.0 * kRate, 1.0f, 4800.0f, 1.0f, -0.5f}));
+    REQUIRE(queue2.push(gg::core::GrainVis{0, 64.0 - 4.0 * kRate, 4.0f, 4800.0f, 1.0f, 0.0f}));
     canvas->renderFrame();
     CHECK(canvas->liveGrainCount() == 1);
     CHECK(accum(x4, 0.5f * height - 0.5f * reach) > 0.0f);
@@ -1164,13 +1167,16 @@ TEST_CASE("the canvas drops a stale backlog and waits for a snapshot", "[plugin]
     REQUIRE(canvas != nullptr);
     const float width = static_cast<float>(canvas->getWidth());
     const float height = static_cast<float>(canvas->getHeight());
-    // A centred grain reading 4.5 s .. 4 s behind a write head at 0 (the head the lane would
-    // take without a snapshot), slowly, for 10 s.
+    // A grain reading 4.5 s .. 4 s behind a write head at 0 (the head the lane would take
+    // without a snapshot), slowly, for 10 s: so low that it lies on the lane's bottom edge (the
+    // vertical axis is pitch, M2 Views' D1).
     const gg::core::GrainVis grain{
         kNow - 100, -4.5 * kRate, 0.05f, static_cast<float>(10.0 * kRate), 1.0f, 0.0f};
+    const float y = gg::ui::pitchY(0.05f, laneOf(*canvas, true, kRate, 0), 3.0f);
+    REQUIRE(y == height - 3.0f);
     const auto lit = [&] {
         return canvas->accumAt(static_cast<uint32_t>(std::lround(width * (1.0f - 4.4f / 16.0f))),
-                               static_cast<uint32_t>(std::lround(0.5f * height))) > 0.0f;
+                               static_cast<uint32_t>(std::lround(y))) > 0.0f;
     };
 
     REQUIRE(queue.push(grain));

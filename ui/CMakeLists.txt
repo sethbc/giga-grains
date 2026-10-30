@@ -2,10 +2,10 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright 2026, the Giga Grains authors (see git history)
 #
-# gg-ui-core: the framework-free editor code (the splat renderer, the lane geometry, the lane's
-# UI clock and grain list, the canvas stress workload, the undo stack, the layers' colours and the
-# views' placement table). It builds without plugins or JUCE, so its tests and `gg-bench --canvas`
-# also run in the sanitizer builds.
+# gg-ui-core: the framework-free editor code (the splat renderer, the lane geometry, the morph
+# pad's geometry and weights, the lane's UI clock and grain list, the canvas stress workload, the
+# undo stack, the layers' colours and the views' placement table). It builds without plugins or
+# JUCE, so its tests and `gg-bench --canvas` also run in the sanitizer builds.
 #
 # gg-ui: the JUCE editor (the Perform view: header, loader strip, grain canvas, macros; the
 # palette and the parameter control the views build on), attached to the plugins through
@@ -16,6 +16,7 @@ add_library(gg-ui-core STATIC
         src/EditLayout.cpp
         src/LaneModel.cpp
         src/LaneState.cpp
+        src/PadModel.cpp
         src/SplatRenderer.cpp
         src/StressGrains.cpp
         src/UndoStack.cpp
@@ -23,8 +24,9 @@ add_library(gg-ui-core STATIC
 add_library(gg::ui-core ALIAS gg-ui-core)
 
 target_include_directories(gg-ui-core PUBLIC include)
-# gg::core is PUBLIC: gg/ui/UndoStack.h includes its parameter slots and mod routes, and
-# gg/ui/EditLayout.h its parameter slots. The engine only for gg::rng's header-only mixer.
+# gg::core is PUBLIC: gg/ui/UndoStack.h includes its parameter slots and mod routes,
+# gg/ui/EditLayout.h its parameter slots, and gg/ui/PadModel.h's signatures use gg::core::kLayers
+# (gg-core is JUCE-free too). The engine only for gg::rng's header-only mixer.
 target_link_libraries(gg-ui-core PUBLIC gg::core PRIVATE gg::engine gg::compiler-options)
 
 if (GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)

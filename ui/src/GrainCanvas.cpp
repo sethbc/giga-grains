@@ -415,6 +415,10 @@ void GrainCanvas::mouseMove(const juce::MouseEvent &e)
     case DragTarget::RightEdge:
         setMouseCursor(juce::MouseCursor::LeftRightResizeCursor);
         break;
+    case DragTarget::TopEdge: // hitTestRect's alone; M1's hitTest never names them
+    case DragTarget::BottomEdge:
+        setMouseCursor(juce::MouseCursor::UpDownResizeCursor);
+        break;
     case DragTarget::None:
         setMouseCursor(juce::MouseCursor::NormalCursor);
         break;
@@ -480,6 +484,8 @@ void GrainCanvas::mouseDrag(const juce::MouseEvent &e)
     case DragTarget::RightEdge:
         value = sprayValueForExtent(x - fixedX_, lane);
         break;
+    case DragTarget::TopEdge: // hitTestRect's alone; mouseDown takes M1's hitTest
+    case DragTarget::BottomEdge:
     case DragTarget::None:
         return;
     }

@@ -35,7 +35,7 @@ double clamp01(double v) { return v >= 0.0 ? (v <= 1.0 ? v : 1.0) : 0.0; }
 bool usable(const LaneGeometry &g)
 {
     if (!(std::isfinite(g.width) && g.width > 0.0f) ||
-        !(std::isfinite(g.height) && g.height > 0.0f) ||
+        !(std::isfinite(g.height) && g.height > 0.0f) || !std::isfinite(g.top) ||
         !(std::isfinite(g.sampleRate) && g.sampleRate > 0.0))
     {
         return false;
@@ -66,7 +66,50 @@ double laneX(double pos, int64_t head, const LaneGeometry &g)
 constexpr double kMaxPixels = 1.0e9;
 
 float toPixel(double x) { return static_cast<float>(std::clamp(x, -kMaxPixels, kMaxPixels)); }
+
+/// A capsule's radius on the lane: 3 logical pixels, at least 1.5 physical ones.
+float capsuleRadius(const LaneGeometry &g)
+{
+    const float scaled = 3.0f * g.pixelScale;
+    return scaled > 1.5f ? scaled : 1.5f; // NaN gives 1.5
+}
+
+/// The y of the lane's centre, where a pitch of 0 semitones lies.
+double laneCentre(const LaneGeometry &g) { return g.top + 0.5 * g.height; }
+
+/// How far a pitch may move from the lane's centre, kLaneSemitones' worth (the half-height less
+/// the capsules' radius); not positive when the lane can't place a pitch.
+double pitchReach(const LaneGeometry &g) { return 0.5 * g.height - capsuleRadius(g); }
+
+/// v clamped to lo..hi, with NaN mapped to 0 (inside both ranges used here).
+double clampOrZero(double v, double lo, double hi)
+{
+    return std::isnan(v) ? 0.0 : std::clamp(v, lo, hi);
+}
+
+/// Pitch's range in semitones and Pitch Spread's (ParamIds' metadata).
+constexpr double kPitchMax = 24.0;
+constexpr double kPitchSpreadMax = 24.0;
 } // namespace
+
+float pitchY(float rate, const LaneGeometry &g, float radius) noexcept
+{
+    if (!std::isfinite(g.top) || !std::isfinite(g.height))
+    {
+        return 0.0f;
+    }
+    const double centre = laneCentre(g);
+    const double reach = 0.5 * g.height - radius; // NaN for a NaN radius: centred below
+    if (!(rate > 0.0f) || !std::isfinite(rate) || !(reach > 0.0))
+    {
+        return static_cast<float>(centre);
+    }
+    const double semitones = 12.0 * std::log2(static_cast<double>(rate));
+    const double y = centre - semitones * reach / kLaneSemitones;
+    // reach > 0, so the bounds are in order.
+    return static_cast<float>(std::clamp(y, g.top + static_cast<double>(radius),
+                                         g.top + static_cast<double>(g.height) - radius));
+}
 
 std::optional<Capsule> grainCapsule(const LaneGrain &grain, int64_t nowSample, int64_t headAtNow,
                                     const LaneGeometry &geometry) noexcept
@@ -93,16 +136,11 @@ std::optional<Capsule> grainCapsule(const LaneGrain &grain, int64_t nowSample, i
         return std::nullopt;
     }
 
-    const float scaled = 3.0f * geometry.pixelScale;
-    const float radius = scaled > 1.5f ? scaled : 1.5f; // NaN gives 1.5
-    const double pan = std::isnan(grain.pan) ? 0.0 : std::clamp<double>(grain.pan, -1.0, 1.0);
-    const double halfHeight = 0.5 * geometry.height;
-    const double reach = halfHeight - radius; // how far the centre may move from the middle
-    const double y = reach > 0.0 ? halfHeight + pan * reach : halfHeight;
-
+    // The vertical axis is pitch (D1); pan is no longer drawn.
+    const float radius = capsuleRadius(geometry);
     return Capsule{.x0 = toPixel(std::min(xa, xb)),
                    .x1 = toPixel(std::max(xa, xb)),
-                   .y = static_cast<float>(y),
+                   .y = pitchY(grain.rate, geometry, radius),
                    .radius = radius,
                    .intensity = static_cast<float>(clamp01(grain.gain))};
 }
@@ -194,5 +232,120 @@ DragTarget hitTest(float x, const Window &window, float edgeTolerancePx,
         return DragTarget::RightEdge;
     }
     return DragTarget::None;
+}
+
+WindowRect scanRect(const ScanRectValues &v, const LaneGeometry &g) noexcept
+{
+    if (!usable(g))
+    {
+        return {0.0f, 0.0f, 0.0f, 0.0f};
+    }
+    const Window w = scanWindow(v.position, v.spray, g);
+    const double pitch = clampOrZero(v.pitch, -kPitchMax, kPitchMax);
+    const double spread = clampOrZero(v.pitchSpread, 0.0, kPitchSpreadMax);
+    const double centre = laneCentre(g);
+    // pitchY's mapping, without its clamp: |pitch| + spread <= kLaneSemitones keeps it on the
+    // lane. A lane too short to place a pitch gives a band at its centre.
+    const double reach = std::max(pitchReach(g), 0.0);
+    return {w.x0, w.x1, static_cast<float>(centre - (pitch + spread) * reach / kLaneSemitones),
+            static_cast<float>(centre - (pitch - spread) * reach / kLaneSemitones)};
+}
+
+std::optional<WindowRect> ghostRect(const ScanRectValues &base, const ScanRectValues &effective,
+                                    const LaneGeometry &g) noexcept
+{
+    const auto finite = [](const ScanRectValues &v) {
+        return std::isfinite(v.position) && std::isfinite(v.spray) && std::isfinite(v.pitch) &&
+               std::isfinite(v.pitchSpread);
+    };
+    if (!finite(base) || !finite(effective))
+    {
+        return std::nullopt;
+    }
+    // Each difference in its own 0..1 domain: Pitch spans 48 semitones, Pitch Spread 24.
+    const auto differs = [](float a, float b, double span) {
+        return std::abs(static_cast<double>(a) - static_cast<double>(b)) / span > kGhostThreshold;
+    };
+    if (differs(effective.position, base.position, 1.0) ||
+        differs(effective.spray, base.spray, 1.0) ||
+        differs(effective.pitch, base.pitch, 2.0 * kPitchMax) ||
+        differs(effective.pitchSpread, base.pitchSpread, kPitchSpreadMax))
+    {
+        return scanRect(effective, g);
+    }
+    return std::nullopt;
+}
+
+DragTarget hitTestRect(float x, float y, const WindowRect &w, float edgeTolerancePx,
+                       const LaneGeometry &g) noexcept
+{
+    if (!std::isfinite(x) || !std::isfinite(y) || !usable(g) || x < 0.0f || x > g.width ||
+        y < g.top || y > g.top + g.height)
+    {
+        return DragTarget::None;
+    }
+    // Across: M1's rules, the FX's right side as the body included.
+    const DragTarget across = hitTest(x, Window{w.x0, w.x1}, edgeTolerancePx, g);
+    if (across == DragTarget::None)
+    {
+        return DragTarget::None;
+    }
+    // Down: the same tolerance rule, with both edges, as the instrument's x.
+    const float lo = std::min(w.y0, w.y1);
+    const float hi = std::max(w.y0, w.y1);
+    const float tolerance = edgeTolerancePx > 0.0f ? edgeTolerancePx : 0.0f; // NaN gives 0
+    const float inside = std::min(tolerance, (hi - lo) / 3.0f);
+    DragTarget down = DragTarget::None;
+    if (y >= lo - tolerance && y < lo + inside)
+    {
+        down = DragTarget::TopEdge;
+    }
+    else if (y >= lo + inside && y <= hi - inside)
+    {
+        down = DragTarget::Body;
+    }
+    else if (y > hi - inside && y <= hi + tolerance)
+    {
+        down = DragTarget::BottomEdge;
+    }
+    else
+    {
+        return DragTarget::None;
+    }
+    // A corner takes the horizontal edge (spec §6.3): a left or right edge wins.
+    return across == DragTarget::Body ? down : across;
+}
+
+float pitchValueAtY(float y, const LaneGeometry &g) noexcept
+{
+    const double reach = pitchReach(g);
+    if (std::isnan(y) || !usable(g) || !(reach > 0.0))
+    {
+        return 0.0f;
+    }
+    const double semitones = (laneCentre(g) - y) * kLaneSemitones / reach; // ±inf for ∓inf y
+    return static_cast<float>(std::clamp(semitones, -kPitchMax, kPitchMax));
+}
+
+float pitchSpreadForExtent(float extentPx, const LaneGeometry &g) noexcept
+{
+    const double reach = pitchReach(g);
+    if (!(extentPx >= 0.0f) || !usable(g) || !(reach > 0.0))
+    {
+        return 0.0f;
+    }
+    const double semitones = static_cast<double>(extentPx) * kLaneSemitones / reach;
+    return static_cast<float>(std::min(semitones, kPitchSpreadMax));
+}
+
+DragAxis decideAxis(float dx, float dy, float thresholdPx) noexcept
+{
+    const float ax = std::isnan(dx) ? 0.0f : std::abs(dx);
+    const float ay = std::isnan(dy) ? 0.0f : std::abs(dy);
+    if (!(std::max(ax, ay) >= thresholdPx)) // a NaN threshold never decides
+    {
+        return DragAxis::Undecided;
+    }
+    return ax >= ay ? DragAxis::Horizontal : DragAxis::Vertical;
 }
 } // namespace gg::ui

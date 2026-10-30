@@ -57,6 +57,7 @@ add_executable(gg-tests
         ui/lane_model_tests.cpp
         ui/edit_layout_tests.cpp
         ui/undo_stack_tests.cpp
+        ui/pad_model_tests.cpp
         ui/splat_tests.cpp
         support/AllocTripwire.cpp
         )
