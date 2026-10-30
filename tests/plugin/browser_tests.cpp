@@ -620,22 +620,27 @@ TEST_CASE("Content folder saves the settings' folder and refuses a NUL byte", "[
     CHECK_FALSE(context.setContentFolder(std::string("a\0b", 3)).empty());
     CHECK_FALSE(fs::exists(machine.settingsFile()));
 
-    // The chooser's answer is saved.
+    // The chooser's answer is saved as the chooser gives it: juce::File's full path, which on
+    // Windows has native separators even where the scratch path (GG_TEST_OUTPUT_DIR) has '/'.
     const fs::path chosen = machine.root() / "My Pack";
     fs::create_directories(chosen);
+    const juce::File answer(juce::String::fromUTF8(gg::test::utf8(chosen).c_str()));
+    const std::string saved = answer.getFullPathName().toStdString();
+#if defined(_WIN32)
+    CHECK(saved.find('/') == std::string::npos);
+#endif
+    CHECK(gg::media::fromUtf8(saved) == chosen); // the same folder, compared as paths
     f.browser().browse = [&](const gg::ui::PresetBrowser::Browse &,
-                             std::function<void(const juce::File &)> done) {
-        done(juce::File(juce::String::fromUTF8(gg::test::utf8(chosen).c_str())));
-    };
+                             std::function<void(const juce::File &)> done) { done(answer); };
     click(f.button("preset.folder"));
-    CHECK(gg::media::loadSettings(machine.settingsFile()).contentFolder == gg::test::utf8(chosen));
+    CHECK(gg::media::loadSettings(machine.settingsFile()).contentFolder == saved);
     CHECK(need<juce::Label>(*f.editor, "preset.status").getText().contains("My Pack"));
 
     // One the chooser didn't give leaves it as it was.
     f.browser().browse = [](const gg::ui::PresetBrowser::Browse &,
                             std::function<void(const juce::File &)> done) { done(juce::File()); };
     click(f.button("preset.folder"));
-    CHECK(gg::media::loadSettings(machine.settingsFile()).contentFolder == gg::test::utf8(chosen));
+    CHECK(gg::media::loadSettings(machine.settingsFile()).contentFolder == saved);
 }
 
 // ---- The Mutate panel (spec §6.9) ----
