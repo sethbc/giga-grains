@@ -36,6 +36,12 @@ struct EditView::Impl
                     owner.onSourceDrop(slot, source);
                 }
             };
+            panels.back()->onRingClick = [this](uint8_t slot) {
+                if (owner.onRingClick)
+                {
+                    owner.onRingClick(slot);
+                }
+            };
             content.addChildComponent(*panels.back()); // layout() shows those with controls
         }
         layout();

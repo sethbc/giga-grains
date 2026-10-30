@@ -62,7 +62,8 @@ DropResult addRouteForDrop(gg::core::ModRoutes &routes, ModSource source, ParamS
             }
         }
         else if (r.source == source && r.target == target &&
-                 (!layered || r.targetLayer == targetLayer))
+                 (!layered || r.targetLayer == targetLayer ||
+                  r.targetLayer == gg::core::kAllLayers))
         {
             return {false, static_cast<uint8_t>(i + 1), {}};
         }

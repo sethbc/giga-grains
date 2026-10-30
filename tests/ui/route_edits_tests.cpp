@@ -89,9 +89,13 @@ TEST_CASE("a second drop of the same route selects it", "[ui]")
     // Another layer, or another source, is a new route.
     CHECK(gg::ui::addRouteForDrop(routes, ModSource::Lfo1, ParamSlot::Size, 2, meta).added);
     CHECK(gg::ui::addRouteForDrop(routes, ModSource::Lfo2, ParamSlot::Size, 1, meta).added);
-    // The factory route Macro 1 to Size on every layer: a drop of Macro 1 on layer B's Size is
-    // a different route (its layer is B alone).
-    CHECK(gg::ui::addRouteForDrop(routes, ModSource::Macro1, ParamSlot::Size, 1, meta).added);
+    // The factory route Macro 1 to Size reaches every layer: a drop of Macro 1 on layer B's Size
+    // selects it instead of doubling it.
+    const auto factoryHit =
+        gg::ui::addRouteForDrop(routes, ModSource::Macro1, ParamSlot::Size, 1, meta);
+    CHECK_FALSE(factoryHit.added);
+    CHECK(factoryHit.slot == 1);
+    CHECK(factoryHit.notice.empty());
 }
 
 TEST_CASE("a macro target is refused", "[ui]")

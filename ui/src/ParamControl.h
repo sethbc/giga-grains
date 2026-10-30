@@ -95,6 +95,8 @@ class ParamControl final : public juce::Component, public juce::DragAndDropTarge
     const std::vector<Ring> &rings() const noexcept;
     /// Mod mode: a vertical drag on a ring, with the ring's matrix slot and its new depth.
     std::function<void(uint8_t slot, float depth01)> onRingDrag;
+    /// Mod mode: a press on a ring that let go without moving, with the ring's matrix slot.
+    std::function<void(uint8_t slot)> onRingClick;
     /// Mod mode: the mouse went up after a ring drag (or any press): the drag's gesture is over.
     std::function<void()> onRingRelease;
     /// A chip is dragged over the control.

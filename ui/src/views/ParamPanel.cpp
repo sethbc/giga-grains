@@ -123,6 +123,8 @@ struct ParamPanel::Impl
         std::optional<std::pair<float, float>> band;
     };
 
+    ~Impl() { endRingDrag(); }
+
     Impl(ParamPanel &p, const EditorContext &c, Panel pn, uint8_t l)
         : owner(p), context(c), panel(pn), layer(l)
     {
@@ -171,6 +173,12 @@ struct ParamPanel::Impl
                     dragRing(controlSlot, routeSlot, depth01);
                 };
                 c->onRingRelease = [this] { endRingDrag(); };
+                c->onRingClick = [this](uint8_t routeSlot) {
+                    if (owner.onRingClick)
+                    {
+                        owner.onRingClick(routeSlot);
+                    }
+                };
                 c->onSourceDrop = [this, controlSlot = c->slot()](gg::core::ModSource source) {
                     if (owner.onSourceDrop)
                     {
@@ -372,6 +380,7 @@ void ParamPanel::refresh() { impl_->refresh(); }
 
 void ParamPanel::setModMode(bool on)
 {
+    impl_->endRingDrag(); // a drag under way ends with the mode
     impl_->modMode = on;
     for (const auto &e : impl_->entries)
     {

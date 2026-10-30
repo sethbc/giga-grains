@@ -45,6 +45,8 @@ class ParamPanel final : public sst::jucegui::components::NamedPanel
     void setLayer(uint8_t layer);
     /// A source chip was dropped on the control of this slot (mod mode).
     std::function<void(gg::core::ParamSlot, gg::core::ModSource)> onSourceDrop;
+    /// A ring was clicked without a drag, with its route's matrix slot (mod mode).
+    std::function<void(uint8_t)> onRingClick;
     /// Follows the base values and the routes.
     void refresh();
     void setModMode(bool on);

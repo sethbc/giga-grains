@@ -31,7 +31,8 @@ std::pair<gg::core::ParamSlot, uint8_t> routeTargetOf(gg::core::ParamSlot contro
 /// (positive), curve Bipolar, or Unipolar for a stepped or on/off target.
 ///
 /// - A route of the same source to the same target (and, for a layer target, layer) already
-///   there: nothing is added, `slot` is its slot and the notice is empty.
+///   there (a layer target's route to every layer counts for each layer): nothing is added, `slot`
+///   is its slot and the notice is empty.
 /// - A full matrix: nothing changes, notice "the matrix is full: 48 routes".
 /// - A macro or other invalid target (isValidTarget) or no source: nothing changes, with the
 ///   reason as the notice.

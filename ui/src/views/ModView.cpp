@@ -33,6 +33,8 @@ struct ModView::Impl
         owner.addAndMakeVisible(edit);
         owner.addAndMakeVisible(list);
         edit.setModMode(true);
+        edit.onRingClick = [this](uint8_t slot) { list.select(slot); };
+        sources.setLayer(0);
         edit.onSourceDrop = [this](gg::core::ParamSlot slot, gg::core::ModSource source) {
             owner.dropSource(slot, source);
         };

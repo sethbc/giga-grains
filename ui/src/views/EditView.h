@@ -43,6 +43,8 @@ class EditView final : public juce::Component
     void setModMode(bool on);
     /// A source chip was dropped on the control of this slot (mod mode).
     std::function<void(gg::core::ParamSlot, gg::core::ModSource)> onSourceDrop;
+    /// A ring was clicked without a drag, with its route's matrix slot (mod mode).
+    std::function<void(uint8_t)> onRingClick;
     std::vector<ParamPanel *> panels();
 
     void resized() override;

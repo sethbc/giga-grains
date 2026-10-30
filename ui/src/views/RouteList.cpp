@@ -160,7 +160,16 @@ struct RouteList::Impl
 
         row.source.onChange = [this, slot, &row] {
             const auto source = static_cast<gg::core::ModSource>(row.source.getSelectedId() - 1);
-            edit(slot, [slot, source](ModRoutes &r) { r[slot - 1u].source = source; });
+            edit(slot, [slot, source](ModRoutes &r) {
+                if (source == gg::core::ModSource::None)
+                {
+                    clearSlot(r, slot); // as the clear button does
+                }
+                else
+                {
+                    r[slot - 1u].source = source;
+                }
+            });
         };
         row.sourceLayer.onChange = [this, slot, &row] {
             const int sel = row.sourceLayer.getSelectedId();

@@ -478,12 +478,17 @@ void ParamControl::mouseDrag(const juce::MouseEvent &e)
     repaint();
 }
 
-void ParamControl::mouseUp(const juce::MouseEvent &)
+void ParamControl::mouseUp(const juce::MouseEvent &e)
 {
     if (impl_->dragRing)
     {
+        const std::size_t held = *impl_->dragRing;
         impl_->dragRing.reset();
         repaint();
+        if (!e.mouseWasDraggedSinceMouseDown() && onRingClick && held < impl_->rings.size())
+        {
+            onRingClick(impl_->rings[held].slot);
+        }
     }
     if (impl_->modMode && onRingRelease)
     {

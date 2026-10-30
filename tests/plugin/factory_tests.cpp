@@ -48,6 +48,7 @@
 #include "views/EditView.h"
 #include "views/FxView.h"
 #include "views/ModView.h"
+#include "views/RouteList.h"
 #include "views/SourceStrip.h"
 #include "editor/EditorPlugin.h"
 #include "editor/UiSettings.h"
@@ -2949,6 +2950,77 @@ TEST_CASE("a ring drag in the Mod view sets the depth in one undo entry", "[plug
     size->mouseUp(mouseAt(*size, 5, 5, {5, 5}, false));
     CHECK(h.undo.size() == 1);
     CHECK(h.recording.calls.empty());
+}
+
+TEST_CASE("a ring drag that the mode or the layer ends mid-drag is still one undo entry",
+          "[plugin]")
+{
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    ModHarness h(gg::core::Mode::Fx);
+    gg::ui::EditView view(h.recording.context);
+    view.setSize(900, 500);
+    view.setModMode(true);
+    view.refresh();
+    auto *size = dynamic_cast<gg::ui::ParamControl *>(
+        findDeep(view, controlId(ParamSlot::Size).toRawUTF8()));
+    REQUIRE(size != nullptr);
+    size->onRingDrag(1, 0.4f);
+    view.setModMode(false);
+    CHECK(h.undo.size() == 1);
+
+    view.setModMode(true);
+    view.refresh();
+    size = dynamic_cast<gg::ui::ParamControl *>(
+        findDeep(view, controlId(ParamSlot::Size).toRawUTF8()));
+    REQUIRE(size != nullptr);
+    size->onRingDrag(1, 0.5f);
+    view.setLayer(1);
+    CHECK(h.undo.size() == 2);
+}
+
+TEST_CASE("a fresh Mod view shows the layer letter and a ring click selects its row", "[plugin]")
+{
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    ModHarness h(gg::core::Mode::Fx);
+    gg::ui::ModView view(h.recording.context);
+    view.setSize(900, 500);
+    view.refresh();
+    auto *lfo = dynamic_cast<gg::ui::SourceChip *>(findDeep(view, "source.9"));
+    REQUIRE(lfo != nullptr);
+    CHECK(lfo->getButtonText().endsWith(" A"));
+
+    auto *routes = dynamic_cast<gg::ui::RouteList *>(findDeep(view, "routes"));
+    REQUIRE(routes != nullptr);
+    CHECK(routes->selected() == 0);
+    auto *size = dynamic_cast<gg::ui::ParamControl *>(
+        findDeep(view, controlId(ParamSlot::Size).toRawUTF8()));
+    REQUIRE(size != nullptr);
+    REQUIRE(size->rings().size() == 1);
+    auto *knob = childOfType<sst::jucegui::components::Knob>(*size);
+    REQUIRE(knob != nullptr);
+    // Ring 0's radius: the knob's, 2 px of gap and half the 3 px spacing.
+    const auto circle = knob->getBounds().toFloat();
+    const float r = circle.getWidth() * 0.5f;
+    const auto centre = circle.withHeight(circle.getWidth()).getCentre();
+    const float y = centre.y - (r + 3.5f);
+    size->mouseDown(mouseAt(*size, centre.x, y, {centre.x, y}, false));
+    size->mouseUp(mouseAt(*size, centre.x, y, {centre.x, y}, false));
+    CHECK(routes->selected() == size->rings()[0].slot);
+    CHECK(h.undo.size() == 0);
+}
+
+TEST_CASE("choosing no source in the route list clears the row", "[plugin]")
+{
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    ModHarness h(gg::core::Mode::Fx);
+    gg::ui::ModView view(h.recording.context);
+    view.setSize(900, 500);
+    view.refresh();
+    auto *source = dynamic_cast<juce::ComboBox *>(findDeep(view, "route.3.source"));
+    REQUIRE(source != nullptr);
+    source->setSelectedId(1, juce::sendNotificationSync);
+    CHECK(h.routes[2] == gg::core::ModRoute{});
+    CHECK(h.undo.size() == 1);
 }
 
 TEST_CASE("the route list edits and clears a slot", "[plugin]")
