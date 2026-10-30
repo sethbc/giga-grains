@@ -360,12 +360,13 @@ jobs:
       # macOS, when the run signs (plan's sign: a kind other than none, and the secrets exist):
       # the Developer ID certificates go into a throwaway keychain (scripts/release/mac-keychain.sh)
       # before Configure names the identity, so the build signs every bundle with it, and the
-      # notary key is decoded for the installer step. Each identity secret must name one of the
-      # keychain's valid identities, by its name (inside find-identity's quotes) or its SHA-1 hash
-      # (before them), or the step fails here, naming the secret, rather than at the first
-      # codesign or pkgbuild. GG_SIGN=1 tells the later steps. Each secret reaches the step through
-      # env and is decoded into $RUNNER_TEMP, never echoed; the keychain and both files are deleted
-      # in an always() step at the end of the job.
+      # notary key is decoded (or taken as-is, if the secret is the PEM itself) for the installer
+      # step. Each identity secret must name one of the keychain's valid identities, by its name
+      # (inside find-identity's quotes) or its SHA-1 hash (before them), and the key must be a
+      # private key (openssl pkey), or the step fails here, naming the secret, rather than at the
+      # first codesign, pkgbuild or notarytool submit. GG_SIGN=1 tells the later steps. Each
+      # secret reaches the step through env and is decoded into $RUNNER_TEMP, never echoed; the
+      # keychain and both files are deleted in an always() step at the end of the job.
       - name: Import the signing certificates (macOS)
         id: keychain
         if: ${{ needs.plan.outputs.release_kind != 'none' && needs.plan.outputs.sign == 'true' && runner.os == 'macOS' }}
@@ -411,7 +412,18 @@ jobs:
             echo "::error title=signing::pkgbuild can't sign with MAC_INSTALLER_IDENTITY from the throwaway keychain (the probe's output is above)"
             exit 1
           }
-          printf '%s' "$NOTARY_KEY_P8" | base64 --decode > "$RUNNER_TEMP/AuthKey.p8"
+          # The notary key: the base64 of AuthKey_<id>.p8, or the PEM itself, written as-is. macOS's
+          # base64 --decode can turn a PEM's text into garbage without an error, so openssl checks
+          # the file is a private key here, not 15 minutes later at notarytool submit. Neither the
+          # secret nor the file is printed.
+          case "$NOTARY_KEY_P8" in
+            -----BEGIN*) printf '%s\n' "$NOTARY_KEY_P8" > "$RUNNER_TEMP/AuthKey.p8" ;;
+            *) printf '%s' "$NOTARY_KEY_P8" | base64 --decode > "$RUNNER_TEMP/AuthKey.p8" 2>/dev/null || true ;;
+          esac
+          openssl pkey -in "$RUNNER_TEMP/AuthKey.p8" -noout 2>/dev/null || {
+            echo "::error title=signing::NOTARY_KEY_P8 does not decode to a valid private key: set it to the base64 of the AuthKey_<ID>.p8 file (base64 -i AuthKey_<ID>.p8 | gh secret set NOTARY_KEY_P8)"
+            exit 1
+          }
           echo "GG_SIGN=1" >> "$GITHUB_ENV"
 
       # A nightly passes its pre-release suffix (dev.<yyyymmdd>.g<sha7>, from plan); a release's

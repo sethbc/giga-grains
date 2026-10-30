@@ -55,7 +55,7 @@ is needed for Windows or Linux.
 | `MAC_CERTS_P12_PASSWORD` | The export password | |
 | `MAC_SIGNING_IDENTITY` | The Application certificate's full name, `Developer ID Application: <name> (<team>)` | `security find-identity -v -p codesigning` |
 | `MAC_INSTALLER_IDENTITY` | The Installer certificate's full name | |
-| `NOTARY_KEY_P8` | Base64 of the App Store Connect API key (`AuthKey_<id>.p8`), Developer role | App Store Connect → Users and Access → Integrations → Team keys |
+| `NOTARY_KEY_P8` | Base64 of the App Store Connect API key (`AuthKey_<id>.p8`), Developer role | App Store Connect → Users and Access → Integrations → Team keys; `base64 -i AuthKey_<ID>.p8 \| gh secret set NOTARY_KEY_P8` |
 | `NOTARY_KEY_ID` | Its key ID | |
 | `NOTARY_ISSUER_ID` | The issuer ID | |
 
@@ -106,6 +106,12 @@ app-specific password, so it can be revoked on its own):
 
 `gh secret list --repo sethbc/giga-grains` should then name all seven.
 
+Set `NOTARY_KEY_P8` exactly so, `base64 -i AuthKey_<ID>.p8 | gh secret set NOTARY_KEY_P8`: the
+base64 of the whole file, once. (A secret holding the PEM text itself, starting `-----BEGIN`, is
+also taken, as-is.) The macOS leg's *Import the signing certificates* step checks the result
+with `openssl pkey` and fails at once, naming the secret (never its value), if it isn't a private
+key, rather than at `notarytool submit` after the build.
+
 ### The dry run that proves them
 
 ```sh
@@ -139,7 +145,8 @@ is how it ran before the secrets existed (run 40951179569, PR #13). With only so
 certificates* step also checks that `MAC_SIGNING_IDENTITY` and `MAC_INSTALLER_IDENTITY` each name
 a valid identity in the `.p12`, by its name or its SHA-1 hash, and fails naming the secret (never
 its value) if not: the `.p12` lacks that certificate, its key or the G2 intermediate, or the
-name is mistyped.
+name is mistyped. It also checks that `NOTARY_KEY_P8` decodes to a private key (`openssl pkey`),
+and fails naming that secret if not.
 
 ### Rotation and expiry
 
@@ -395,6 +402,13 @@ identity` (configure so, delete `gg_assets/` and rebuild, as the signed build ab
 failure before a submission ID was assigned (an upload or network error, or a bad key) says so;
 check the three `NOTARY_*` values. A submission still in progress after 25 minutes stops the wait
 (`--timeout 25m`) and fails the same way, with its ID (next entry).
+
+**`Error: invalidPEMDocument`, or "NOTARY_KEY_P8 does not decode to a valid private key".**
+`NOTARY_KEY_P8` doesn't hold the base64 of the `.p8`: the raw text pasted wrongly, a double
+encoding, or the wrong file. The import step catches it with `openssl pkey` and fails with the
+second message; `invalidPEMDocument` is `notarytool submit`'s own error for the same fault, from
+a run before that check. Re-set the secret from the downloaded key, `base64 -i AuthKey_<ID>.p8 |
+gh secret set NOTARY_KEY_P8 --repo sethbc/giga-grains`, and re-run the dispatch.
 
 **A slow notarization.** CI's *Build the installer* step streams make-installer.sh's output as it
 runs (`USES_TERMINAL`), so its log shows how far the script got. A first notarization from a new
