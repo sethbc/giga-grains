@@ -1598,7 +1598,7 @@ TEMPLATE_TEST_CASE("simd sample kernel matches the reference for every output sh
             SampleSource source;
         };
         const SampleSource empty{{nullptr, nullptr}, 0, true, nullptr, d == 1 ? 1 : 2, d};
-        for (const Shape shape :
+        for (const Shape &shape :
              {Shape{"two outputs, stereo source", 2, src.stereo(d)},
               Shape{"two outputs, planar stereo source", 2, src.stereoPlanar(d)},
               Shape{"two outputs, mono source", 2, src.mono(d)},
