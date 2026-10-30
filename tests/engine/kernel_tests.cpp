@@ -294,7 +294,7 @@ void requireSampleArithmetic(Read read, double texture = 0.0, double rate = 1.5)
 
 TEST_CASE("sample reference follows the spec's arithmetic", "[kernel]")
 {
-    requireSampleArithmetic<Hermite>(&gg::interp::hermite4);
+    requireSampleArithmetic<Hermite>(&gg::interp::hermite4<>);
 }
 
 TEST_CASE("textured grains match the spec loop", "[kernel]")
@@ -304,8 +304,8 @@ TEST_CASE("textured grains match the spec loop", "[kernel]")
     for (const double texture : {0.25, 0.5, 0.75, 1.0})
     {
         INFO("texture " << texture);
-        requireSampleArithmetic<Hermite>(&gg::interp::hermite4, texture);
-        requireSampleArithmetic<Linear>(&gg::interp::linear, texture);
+        requireSampleArithmetic<Hermite>(&gg::interp::hermite4<>, texture);
+        requireSampleArithmetic<Linear>(&gg::interp::linear<>, texture);
     }
     // The latched shape is the one envelopeShape gives the spec's texture and duration.
     gg::GrainSpec g = testGrain(10, 200.25);
@@ -523,7 +523,7 @@ TEST_CASE("eco reference reads linearly", "[kernel]")
 
     SECTION("sample source")
     {
-        requireSampleArithmetic<Linear>(&gg::interp::linear);
+        requireSampleArithmetic<Linear>(&gg::interp::linear<>);
 
         // Not vacuous: the two tiers' renders of the same grain differ.
         constexpr int64_t kFrames = 2000;
