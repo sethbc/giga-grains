@@ -23,6 +23,7 @@ add_library(gg-core STATIC
         src/ParamMap.cpp
         src/Patch.cpp
         src/PatchState.cpp
+        src/Preset.cpp
         src/Processor.cpp
         src/SessionState.cpp
         src/SourceExchange.cpp

@@ -13,13 +13,16 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <optional>
 #include <string>
+#include <string_view>
 
 #include "sst/plugininfra/patch-support/patch_base.h"
 
 #include "gg/core/ModMatrix.h"
 #include "gg/core/ParamIds.h"
 #include "gg/core/PatchState.h"
+#include "gg/core/PresetInfo.h"
 
 namespace gg::core
 {
@@ -29,10 +32,23 @@ struct Param : sst::plugininfra::patch_support::ParamBase
     using ParamBase::ParamBase;
 };
 
-/// The patch: every parameter's value, the engine seed, the mod matrix's routes and a name, and
-/// their versioned XML state (sst-plugininfra's PatchBase, plus the `bits` attribute and the
-/// <engine seed> and <mod> elements described in gg/core/PatchState.h). Main thread only:
-/// constructing, saving and loading allocate.
+/// The most bytes of a patch's name its `name` buffer keeps, its NUL aside.
+inline constexpr size_t kMaxPatchNameBytes = 255;
+
+/// The longest prefix of `name` that holds no NUL, is at most kMaxPatchNameBytes long and doesn't
+/// end inside a UTF-8 character: a cut backs up over at most three continuation bytes (0x80 to
+/// 0xbf) to the character's lead byte.
+std::string patchName(std::string_view name);
+
+/// The metadata of `root`'s <preset> element, its name `name`, into `out`: false, and `out`
+/// untouched, when there is none or its `product` isn't modeNamed's. A missing attribute reads
+/// empty; `tags` is split on spaces, and a word that isn't isPresetTag is dropped.
+bool readPresetElement(const TiXmlElement &root, std::string_view name, PresetInfo &out);
+
+/// The patch: every parameter's value, the engine seed, the mod matrix's routes, a name and, for
+/// a preset, its metadata, and their versioned XML state (sst-plugininfra's PatchBase, plus the
+/// `bits` attribute and the <engine seed>, <mod> and <preset> elements described in
+/// gg/core/PatchState.h). Main thread only: constructing, saving and loading allocate.
 ///
 /// The patch holds pointers to its own members (PatchBase's params and paramMap, and the state
 /// hooks), so it can't be copied or moved.
@@ -41,6 +57,9 @@ struct Patch : sst::plugininfra::patch_support::PatchBase<Patch, Param>
     static constexpr uint32_t patchVersion = kPatchVersion;
     static constexpr const char id[] = "org.sethbc.giga-grains.patch";
 
+    /// PatchBase's root `name` attribute, NUL-terminated. The additionalToState hook writes it
+    /// with every `&` escaped (escapeAmpersands), and additionalFromState reads the attribute's
+    /// first kMaxPatchNameBytes bytes back to a whole UTF-8 character (patchName).
     char name[256]{};
     /// Written as <engine seed="…"/> by the additionalToState hook. Missing or malformed, it loads
     /// as 0.
@@ -52,6 +71,11 @@ struct Patch : sst::plugininfra::patch_support::PatchBase<Patch, Param>
     /// The version the last successful fromState migrated from: 0 when the state was already at
     /// patchVersion.
     uint32_t migratedFromVersion{0};
+    /// Written as <preset> by the additionalToState hook, after <mod>, when set (its `name` isn't
+    /// written: the root's is the preset's). Read back by additionalFromState at any version,
+    /// with `name` set to the patch's; empty when the state has no <preset>, or one whose
+    /// `product` isn't a known word (gg/core/PatchState.h).
+    std::optional<PresetInfo> preset;
 
     /// The params are pushed in ParamSlot order, with `mode`'s metadata (paramMeta) and at its
     /// defaults; the name is "Init".

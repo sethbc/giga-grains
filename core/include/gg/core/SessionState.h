@@ -13,6 +13,7 @@
 
 #include "gg/core/ModMatrix.h"
 #include "gg/core/ParamIds.h"
+#include "gg/core/PresetInfo.h"
 
 /// The session state both products save (INTENT §18, spec §6.6): a versioned container of
 /// chunks, holding the patch (gg/core/PatchState.h) and the media manifest. Like the patch, the
@@ -29,8 +30,9 @@
 ///       payload
 ///
 /// encodeState writes two chunks, in this order:
-/// - `PTCH`: the patch, toStateXml's bytes unchanged: the values, the seed and, since patch
-///   version 2, the mod matrix's routes in its `<mod>` element (gg/core/PatchState.h);
+/// - `PTCH`: the patch, toStateXml's bytes unchanged: the values, the seed, since patch version 2
+///   the mod matrix's routes in its `<mod>` element, the name and, for a preset, its `<preset>`
+///   element (gg/core/PatchState.h);
 /// - `MEDI`: the media manifest, on one line (broken here for reading), with zero or one
 ///   <sample> (one per loaded sample; M1 loads at most one):
 ///
@@ -84,6 +86,12 @@ struct SessionState
     /// The mod matrix's routes (gg/core/ModMatrix.h), every slot empty by default. A state of
     /// patch version 1 (M1's) decodes with factoryRoutes(mode) (gg/core/PatchState.h).
     ModRoutes routes{};
+    /// The patch's name, PTCH's root `name` (gg/core/PatchState.h): at most 255 bytes kept. A
+    /// state without one decodes as "Init".
+    std::string name{"Init"};
+    /// A preset's metadata, PTCH's <preset> element (gg/core/Preset.h), its `name` the state's;
+    /// empty for a session state. encodeState writes `name`, not `preset->name`.
+    std::optional<PresetInfo> preset;
 };
 
 /// Whether encodeState writes `entry` (its precondition): `sha256Hex` is 64 lowercase hex
@@ -114,7 +122,8 @@ std::string encodeState(const SessionState &state);
 ///   parse:
 ///   - PTCH loads as fromStateXml loads it (gg/core/PatchState.h): its version migrates (a
 ///     version-1 state takes the factory routes), a param it doesn't mention takes `mode`'s
-///     default, values are clamped, and the routes are its `<mod>`'s;
+///     default, values are clamped, the routes are its `<mod>`'s, and the name and the preset
+///     are its root's `name` and its `<preset>`'s;
 ///   - MEDI must be well-formed XML whose only top-level node is a <media> root, with an
 ///     integer `version` from 1. At this build's version (1) it has at most one <sample>, with
 ///     every attribute above present and well-formed (`sha256` 64 lowercase hex digits, `rate` 16

@@ -1188,7 +1188,8 @@ bool GigaGrainsPlugin::stateSave(const clap_ostream *stream) noexcept
         // routes are those in effect (routes_).
         const std::string bytes = gg::core::encodeState(
             {values, seed_, loader_ != nullptr ? loader_->entry() : std::nullopt,
-             loader_ != nullptr ? loader_->newerMedia() : std::nullopt, routes_});
+             loader_ != nullptr ? loader_->newerMedia() : std::nullopt, routes_, "Init",
+             std::nullopt});
 
         // A stream may take fewer bytes than offered: write until all are in.
         const char *data = bytes.data();
