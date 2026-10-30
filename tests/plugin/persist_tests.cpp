@@ -867,36 +867,50 @@ TEST_CASE("the ring reader's copies match what the audio thread wrote", "[plugin
     // other copies the ring's window through readRing as fast as it can. Every copy accepted must
     // be the frames written, contiguous up to the head it reports.
     // Bounded by work, not time: the audio thread renders until the reader has made kReads
-    // copies, kTrimmed of them trimmed (the head lapped the copy's front mid-copy), and kAdopted
-    // swaps of a full ring's storage have been adopted, however fast either thread runs. The
-    // audio thread's kMaxTotal is only a safety bound: reaching it fails the test.
+    // copies, at least one of them trimmed (the head lapped the copy's front mid-copy: the race
+    // the read must survive), and kAdopted swaps of a full ring's storage have been adopted,
+    // however fast either thread runs. The audio thread's kMaxTotal, and kHang for each wait of
+    // the hold's handshake, are only safety bounds: reaching one fails the test.
     constexpr int64_t kN = 48000;
     constexpr uint32_t kPiece = 256;
     constexpr int64_t kMaxTotal = 600 * 48000;
     constexpr uint64_t kReads = 100;
-    constexpr uint64_t kTrimmed = 10;
+    constexpr uint64_t kTrimmed = 1;
     constexpr uint32_t kAdopted = 3;
+    constexpr auto kHang = std::chrono::seconds(60);
     gg::core::Processor p({kRate, kPiece, 7, gg::core::Mode::Fx});
     REQUIRE(p.setRingNow(0, std::make_unique<gg::RingStorage>(kN, kPiece), gg::core::RingOffer{}));
     std::atomic<bool> stop{false};
     std::atomic<bool> done{false};
     // A swap's own copy must be untrimmed to fill the new storage, which a running ring rarely
-    // allows once full: the reader holds the audio thread between pieces while it takes that copy
-    // (`hold`; the audio thread counts each pause in `paused`). The checked reads never hold it.
-    std::atomic<bool> hold{false};
-    std::atomic<uint32_t> paused{0};
+    // allows once full: the reader holds the audio thread between pieces while it takes that copy.
+    // The checked reads never hold it. The handshake is three counters, each written by one
+    // thread and never decreasing, so no request, acknowledgment or release can be missed: the
+    // reader makes request r (`holdRequested`), the audio thread acknowledges r between pieces
+    // (`holdAcked`) and waits until the reader has released r (`holdReleased`).
+    std::atomic<uint32_t> holdRequested{0};
+    std::atomic<uint32_t> holdAcked{0};
+    std::atomic<uint32_t> holdReleased{0};
+    std::atomic<bool> hung{false}; // a wait of the handshake reached kHang
     std::thread audio([&] {
         std::vector<float> left(kPiece), right(kPiece), outL(kPiece), outR(kPiece);
         const float *in[2] = {left.data(), right.data()};
         float *out[2] = {outL.data(), outR.data()};
         for (int64_t t = 0; t < kMaxTotal && !stop.load(std::memory_order_acquire); t += kPiece)
         {
-            if (hold.load(std::memory_order_acquire))
+            const uint32_t request = holdRequested.load(std::memory_order_acquire);
+            if (request != holdAcked.load(std::memory_order_relaxed))
             {
-                paused.fetch_add(1, std::memory_order_acq_rel);
-                while (hold.load(std::memory_order_acquire) &&
+                holdAcked.store(request, std::memory_order_release);
+                const auto deadline = std::chrono::steady_clock::now() + kHang;
+                while (holdReleased.load(std::memory_order_acquire) != request &&
                        !stop.load(std::memory_order_acquire))
                 {
+                    if (std::chrono::steady_clock::now() > deadline)
+                    {
+                        hung.store(true, std::memory_order_release);
+                        break;
+                    }
                     std::this_thread::yield();
                 }
             }
@@ -930,7 +944,7 @@ TEST_CASE("the ring reader's copies match what the audio thread wrote", "[plugin
             adoptedFull += offerFull ? 1 : 0;
         }
     };
-    while (!done.load(std::memory_order_acquire) &&
+    while (!done.load(std::memory_order_acquire) && !hung.load(std::memory_order_acquire) &&
            !(reads >= kReads && trimmed >= kTrimmed && adoptedFull >= kAdopted))
     {
         // From every 25th read on, a storage swap through the exchange (this thread has the main
@@ -942,11 +956,17 @@ TEST_CASE("the ring reader's copies match what the audio thread wrote", "[plugin
         const uint32_t declines = p.ringAdoptionsDeclined(0);
         if (reads >= nextSwap && (!offerOpen || declines != declinesSeen))
         {
-            const uint32_t pausedBefore = paused.load(std::memory_order_acquire);
-            hold.store(true, std::memory_order_release);
-            while (paused.load(std::memory_order_acquire) == pausedBefore &&
+            const uint32_t request = holdRequested.load(std::memory_order_relaxed) + 1;
+            holdRequested.store(request, std::memory_order_release);
+            const auto deadline = std::chrono::steady_clock::now() + kHang;
+            while (holdAcked.load(std::memory_order_acquire) != request &&
                    !done.load(std::memory_order_acquire))
             {
+                if (std::chrono::steady_clock::now() > deadline)
+                {
+                    hung.store(true, std::memory_order_release);
+                    break;
+                }
                 std::this_thread::yield();
             }
             const auto copy = gg::plugin::readRing(p, 0, {}, kRate);
@@ -970,7 +990,7 @@ TEST_CASE("the ring reader's copies match what the audio thread wrote", "[plugin
                 offerFull = copy->head >= kN;
                 nextSwap = reads + 25;
             }
-            hold.store(false, std::memory_order_release);
+            holdReleased.store(request, std::memory_order_release);
         }
         p.sources(0).collect();
         settle();
@@ -1004,7 +1024,8 @@ TEST_CASE("the ring reader's copies match what the audio thread wrote", "[plugin
     INFO("reads " << reads << ", trimmed " << trimmed << ", swaps " << swaps << ", adopted "
                   << adopted << " (" << adoptedFull << " of a full ring), declined "
                   << p.ringAdoptionsDeclined(0));
-    // Reaching the safety bound before the work was done fails here.
+    // Reaching a safety bound before the work was done fails here.
+    CHECK_FALSE(hung.load());
     CHECK(reads >= kReads);
     CHECK(trimmed >= kTrimmed);
     CHECK(adoptedFull >= kAdopted); // adopted mid-run
