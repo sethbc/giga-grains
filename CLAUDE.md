@@ -23,7 +23,7 @@ AGPL-3.0-or-later.
 - **Where we are** (INTENT §20, §23 #61, #64): M0 and M1 are done, and so are the installers and
   release pipeline (`docs/superpowers/specs/2026-10-29-release-pipeline-design.md`; the runbook
   is `docs/releasing.md`). **M2 is in progress** as seven sub-projects in four waves, run by one
-  agent session each (`docs/superpowers/specs/2026-10-29-m2-programme-design.md`: read its §6
+  agent session each (`docs/superpowers/specs/2026-10-29-m2-program-design.md`: read its §6
   for your sub-project's scope and what it owns, and its §7 for the rules every sub-project
   builds on). Sub-project 1, Layers and structure, is built (INTENT §23 #65): four layers, the
   morph, the Source kind, the mod matrix, render tasks and the patch at version 2, which wave 2

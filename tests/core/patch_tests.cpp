@@ -508,7 +508,7 @@ TEST_CASE("the id table has the next free indices and the reserved blocks", "[co
 TEST_CASE("a layer index no row has is no parameter, and a gap in the index column is kept",
           "[core]")
 {
-    // M2 programme design §7.1: wave 2 appends layer rows inside its reserved blocks, so the index
+    // M2 program design §7.1: wave 2 appends layer rows inside its reserved blocks, so the index
     // column has gaps (0x31 to 0x3F, and each block's unused indices). The index is read from the
     // column, never from a row's position. The mechanism, on a column with gaps:
     using gg::core::detail::rowsByIndex;

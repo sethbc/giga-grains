@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright 2026, the Giga Grains authors (see git history)
 
-// The layer tasks on the TaskRunner (M2 sub-project 1's spec §6.7; programme design §7.4): the
+// The layer tasks on the TaskRunner (M2 sub-project 1's spec §6.7; program design §7.4): the
 // Processor renders each rendering layer's piece as one task, so the four-layer renders must be
 // the same bytes on the serial runner and on any pool, one that declines included; one rendering
 // layer runs inline without a request; each task flushes denormals on its own thread; and the

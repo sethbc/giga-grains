@@ -1,8 +1,8 @@
-# M2 Giga: the programme design
+# M2 Giga: the program design
 
 | | |
 |---|---|
-| **Status** | **Approved by the director 2026-10-29** (brainstorming; builder check and decisions 5 to 8 the same day; INTENT §23 #64). Not yet built: wave 1 starts with the programme plan |
+| **Status** | **Approved by the director 2026-10-29** (brainstorming; builder check and decisions 5 to 8 the same day; INTENT §23 #64). Not yet built: wave 1 starts with the program plan |
 | **Milestone** | M2 (Giga), tagged 0.2.0 as an unpublished draft release at its close (INTENT §20, §23 #62) |
 | **Depends on** | M1 closed (§23 #60); the installers and release pipeline merged (PR #13, §23 #61) |
 | **Authority** | INTENT.md. This document places every M2 deliverable in a sub-project. Each sub-project then gets its own spec, plan, build and review, as M1's did (§23 #35). Part II changes below each add a dated §23 row |
@@ -15,7 +15,7 @@ and extreme-stretch tools, a modulation matrix, presets and content, and the res
 close both products are the instrument INTENT describes, short of M3's voices, M4's sync and M5's
 oscillators.
 
-**Why a programme design.** M2's deliverables are scattered: §20's M2 row names eleven, and twenty
+**Why a program design.** M2's deliverables are scattered: §20's M2 row names eleven, and twenty
 more "until M2" promises sit in §14, §15, §17, §18, §19, §22 and the carry-over. The director asked
 (2026-10-29) that everything be planned up front, so nothing is dropped and no sub-project discovers
 late that another should have left room for it. This document is that plan: the inventory (§5), its
@@ -42,7 +42,7 @@ each and of the milestone (§6, §9).
 
 **Director decisions after the builder check** (2026-10-29, forced choices):
 
-5. **The programme manager approves each sub-project spec** against this document and INTENT; the
+5. **The program manager approves each sub-project spec** against this document and INTENT; the
    director sees each spec's forced choices in one message and answers what they wish (§12).
 6. **The live buffer's operations are M2's:** overdub, loop length, Morphagene-style splices and a
    record/capture gesture (INTENT §4, §5, §14, §17), which no milestone had dated. Sub-project 2
@@ -205,7 +205,7 @@ INTENT Part II change it makes adds a §23 row in the same change.
   the Mod view, the About box, themes, keyboard navigation, the GPU spike) proceed at once; the
   work that needs wave 2's parameters (voicing the presets; the Edit panels for wave-2
   parameters, the FX view, the memory readout) waits in their plans until wave 2 has merged,
-  and they merge after it, rebased. The wave-1 worker likewise starts while the programme's own
+  and they merge after it, rebased. The wave-1 worker likewise starts while the program's own
   PR is in CI, branched from that PR's commits.
 - The sub-projects of a wave branch from that `main`. Each **owns** the directories and files its
   entry names and may edit the shared files (`core/include/gg/core/Processor.h` and its sources,
@@ -482,7 +482,7 @@ content-relative reference** beside `path` and `relative`, so a factory preset n
 its place in the content folder (§7.8) and sub-project 5 needs nothing from 2 after 2 merges. **The
 `AUDI` codec is sub-project 2's choice** between FLAC at 24 bits (small, not bit-exact for the
 ring's floats) and uncompressed float32 (exact, two to three times larger under the 32 MB cap), and
-the programme's criterion is worded for either: every machine that restores a session renders it
+the program's criterion is worded for either: every machine that restores a session renders it
 identically, and the restore matches the saved session's own render within the goldens' metric
 tolerances; INTENT §18's "as FLAC" is amended if float32 wins. The memory cap is a setting, per
 instance, saved with the state; its default and ceiling are sub-project 2's.
@@ -564,13 +564,13 @@ sub-project 7, whose checklist names each. A failure there is fixed in the close
 
 New rows number from 300. (The former target of 8 open rows and the no-net-growth rule are retired.)
 
-## 9. Verification across the programme
+## 9. Verification across the program
 
 - Every sub-project: `scripts/check.sh` over `dev,asan,rtsan`, CI green on all legs via a draft
   PR, `scripts/update-goldens.sh` before and after with the hash list in the commit, the
   determinism tests, the validators on `release`, `ctest -L au` and the identity tests on any
   clap-wrapper change.
-- New per-programme tests: the thread-pool invariance test (§7.4), the overload ladder's block-size
+- New per-program tests: the thread-pool invariance test (§7.4), the overload ladder's block-size
   invariance, the state migration from an M1 state and a pre-container state, the preset round
   trip, the sweep harness.
 - Benchmarks: new cases report-only; `engine-sample` watched for regression at every sub-project's
@@ -587,9 +587,9 @@ New rows number from 300. (The former target of 8 open rows and the no-net-growt
 | clap-wrapper's preset bridges or the selector parameter break identities or AU state | Identity and AU tests run on every bump; the bump is sub-project 5's and re-checks rows 87, 88, 218 |
 | The CC0 set's provenance | Each sample's source and license recorded in the content repository; nothing without a CC0 statement |
 | UI sub-project too large for one review | Two PRs under one sub-project (§6.6) |
-| Three parallel engine sub-projects collide in `Processor` and `Engine` | Ownership per entry (§6), fixed merge order with rebase and re-verification, reserved ID blocks (§7.1), one state-change owner (§7.5); the programme manager resolves what remains |
+| Three parallel engine sub-projects collide in `Processor` and `Engine` | Ownership per entry (§6), fixed merge order with rebase and re-verification, reserved ID blocks (§7.1), one state-change owner (§7.5); the program manager resolves what remains |
 | Sub-project 2 grows (persistence, the memory cap, the ring's operations) | Its spec may split into two PRs under one sub-project, as §6.6 allows the views |
-| A worker's spec drifts from this document or INTENT | The programme manager approves each spec against both before the plan; the director sees its forced choices (§12) |
+| A worker's spec drifts from this document or INTENT | The program manager approves each spec against both before the plan; the director sees its forced choices (§12) |
 | The gate finds a sound problem six sub-projects deep | Every sub-project's pack exists from its own merge; fixes go through the close's fix wave, carried only if genuinely large |
 
 ## 11. Left to the sub-project specs
@@ -605,7 +605,7 @@ layout; the GPU spike's candidate order; each sub-project's golden and benchmark
 Decision 4 of §1. Three tiers, each on the model tier the project's practice assigns (reviews and
 decisions on the top tier; implementation on the tier below).
 
-- **The programme manager** is one session (this one's successor), driving the others as the
+- **The program manager** is one session (this one's successor), driving the others as the
   `claude-session-driver` skill describes: it launches a worker session per sub-project when its
   wave opens, hands it this document and the sub-project's entry, reviews its spec, watches its
   progress, reviews its PR, resolves merge order, and keeps the carry-over count. It writes no
@@ -618,7 +618,7 @@ decisions on the top tier; implementation on the tier below).
 - **Task subagents** implement and review single plan tasks, as in M1.
 
 **Approval of the sub-project specs.** M1's specs were each approved by the director in
-brainstorming. With seven specs, three at a time, that gate moves: the programme manager approves a
+brainstorming. With seven specs, three at a time, that gate moves: the program manager approves a
 spec against this document, and the director sees each spec's decision list (its forced choices) in
 one message before the build starts, answering what they wish and letting the rest stand as the
 worker's calls (decision 5).
