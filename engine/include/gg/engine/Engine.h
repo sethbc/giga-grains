@@ -35,7 +35,8 @@ struct Dispatch;
 enum class KernelChoice : uint8_t
 {
     /// kernels::dispatch(): the 8-wide AVX2 kernels where the build has them and the CPU runs
-    /// them, unless GG_FORCE_SSE was set when the table was resolved; the 4-wide ones otherwise.
+    /// them, unless GG_FORCE_SSE was set (and not empty) when the first Engine resolved the
+    /// table, or forceSse() has been called; the 4-wide ones otherwise.
     Auto,
     /// kernels::sseKernels(), the 4-wide kernels, always: gg-bench's engine-sample-sse.
     Sse,
