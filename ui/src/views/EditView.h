@@ -23,17 +23,21 @@ namespace gg::ui
 /// view's bounds. Task 12's Mod view reuses it with setModMode.
 ///
 /// The layer is set from outside (setLayer), or follows `selectedLayer` when one is given, which
-/// refresh() polls: Task 15 connects the layer strip's selection.
+/// refresh() polls. With `withStrip` (the editor's Edit view, spec §6.2) the compact layer strip
+/// sits at the top, and its letters select the layer (onSelectLayer); the Mod view, which has its
+/// own, builds the view without.
 ///
 /// Message thread only. The context is the editor's (see EditorContext): read at each use.
 class EditView final : public juce::Component
 {
   public:
-    explicit EditView(const EditorContext &context);
+    explicit EditView(const EditorContext &context, bool withStrip = false);
     ~EditView() override;
 
     void setLayer(uint8_t layer);
     uint8_t layer() const noexcept;
+    /// The strip's letter selected `layer` (the view shows it already). The strip only.
+    std::function<void(uint8_t)> onSelectLayer;
     /// The layer to show, polled by refresh(); empty (the default) leaves the layer to setLayer.
     void setSelectedLayer(std::function<uint8_t()> selectedLayer);
 

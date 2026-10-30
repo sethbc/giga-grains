@@ -24,8 +24,7 @@ using gg::core::LayerParam;
 using gg::core::ParamSlot;
 namespace jcmp = sst::jucegui::components;
 
-constexpr int kRowHeight = 22; // the letter, Source and the toggles
-constexpr int kLabelHeight = 20;
+constexpr int kRowHeight = 22; // the letter, the toggles, Source and Level
 
 /// The layer's letter in its colour: a filled button, the letter dark on it.
 struct LetterButton final : jcmp::TextPushButton
@@ -110,7 +109,10 @@ LayerStrip::LayerStrip(const EditorContext &context, Layout layout)
             return control;
         };
         cell.on = make(gg::core::layerOnSlot(layer));
-        cell.level = make(gg::core::levelSlot(layer));
+        // A horizontal slider (spec §6.3), which fits a lane's height where a knob wouldn't.
+        cell.level = std::make_unique<ParamControl>(context, gg::core::levelSlot(layer),
+                                                    ParamControl::Kind::HSlider);
+        addAndMakeVisible(*cell.level);
         cell.source = make(gg::core::layerSlot(LayerParam::Source, layer));
         cell.freeze = make(gg::core::layerSlot(LayerParam::Freeze, layer));
     }
@@ -147,22 +149,51 @@ void LayerStrip::refresh()
     }
 }
 
+void LayerStrip::setSourceDropHandler(
+    std::function<void(gg::core::ParamSlot, gg::core::ModSource)> handler)
+{
+    for (Impl::Cell &cell : impl_->cells)
+    {
+        for (ParamControl *control :
+             {cell.on.get(), cell.level.get(), cell.source.get(), cell.freeze.get()})
+        {
+            control->setSourceDropEnabled(handler != nullptr);
+            control->onSourceDrop = [control, handler](gg::core::ModSource source) {
+                if (handler)
+                {
+                    handler(control->slot(), source);
+                }
+            };
+        }
+    }
+}
+
 void LayerStrip::resized()
 {
     for (std::size_t layer = 0; layer < impl_->cells.size(); ++layer)
     {
         Impl::Cell &cell = impl_->cells[layer];
         auto area = impl_->cellBounds(getLocalBounds(), layer).reduced(3);
-        // The first row: the letter, On and Freeze; the second, Source; the rest, the Level knob.
-        auto header = area.removeFromTop(std::min(kRowHeight, area.getHeight()));
+        // Three rows when they fit: the letter, On and Freeze; Source; Level. In a shorter cell
+        // (a lane at the editor's smallest), two: Source and Level share the second, halved.
+        const bool threeRows = area.getHeight() >= 3 * kRowHeight;
+        const int row = std::min(kRowHeight, area.getHeight() / (threeRows ? 3 : 2));
+        auto header = area.removeFromTop(row);
         cell.letter->setBounds(header.removeFromLeft(std::min(kRowHeight, header.getWidth())));
         const int half = header.getWidth() / 2;
         cell.on->setBounds(header.removeFromLeft(half));
         cell.freeze->setBounds(header);
-        cell.source->setBounds(area.removeFromTop(std::min(kRowHeight, area.getHeight())));
-        // The knob draws a circle as wide as its bounds at their top, its label below.
-        const int side = std::max(0, std::min(area.getWidth(), area.getHeight() - kLabelHeight));
-        cell.level->setBounds(area.withSizeKeepingCentre(side, area.getHeight()));
+        auto rest = area.removeFromTop(threeRows ? 2 * row : row);
+        if (threeRows)
+        {
+            cell.source->setBounds(rest.removeFromTop(row));
+            cell.level->setBounds(rest);
+        }
+        else
+        {
+            cell.source->setBounds(rest.removeFromLeft(rest.getWidth() / 2));
+            cell.level->setBounds(rest);
+        }
     }
 }
 

@@ -5,6 +5,7 @@
 #include "MacroRow.h"
 
 #include <algorithm>
+#include <functional>
 #include <cstddef>
 #include <string>
 #include <string_view>
@@ -14,6 +15,7 @@
 #include <sst/jucegui/data/Continuous.h>
 #include <sst/jucegui/data/Discrete.h>
 
+#include "ParamControl.h"
 #include "ParamValue.h"
 
 namespace gg::ui
@@ -74,14 +76,39 @@ struct ToggleSource final : jdata::Discrete
     ParamValue macro;
 };
 
+/// A drop target for a Mod view source chip (spec §6.6): with a handler, a chip dropped on the
+/// macro calls it with the macro's slot, which refuses it (a macro can't be a target).
+struct ChipTarget : juce::DragAndDropTarget
+{
+    ParamSlot slot{ParamSlot::Count};
+    std::function<void(ParamSlot, gg::core::ModSource)> onDrop;
+
+    bool isInterestedInDragSource(const SourceDetails &details) override
+    {
+        return onDrop && ParamControl::sourceOfDrag(details.description).has_value();
+    }
+    void itemDropped(const SourceDetails &details) override
+    {
+        if (const auto source = ParamControl::sourceOfDrag(details.description); source && onDrop)
+        {
+            onDrop(slot, *source);
+        }
+    }
+};
+
 /// A knob whose arrow keys step it by 1/100 of its range (1/1000 with Shift), where
 /// sst-jucegui's step by 1/40 and know no Left or Right.
-struct MacroKnob final : jcmp::Knob
+struct MacroKnob final : jcmp::Knob, ChipTarget
 {
     bool keyPressed(const juce::KeyPress &key) override
     {
         return stepByArrowKey(*this, key) || jcmp::Knob::keyPressed(key);
     }
+};
+
+/// The Freeze macro's toggle.
+struct MacroToggle final : jcmp::ToggleButton, ChipTarget
+{
 };
 } // namespace
 
@@ -91,7 +118,7 @@ struct MacroRow::Impl
     std::array<std::unique_ptr<KnobSource>, 8> knobSources;
     std::unique_ptr<ToggleSource> toggleSource;
     std::array<std::unique_ptr<MacroKnob>, 8> knobs; // index 5 (Freeze) unused
-    std::unique_ptr<jcmp::ToggleButton> toggle;
+    std::unique_ptr<MacroToggle> toggle;
 };
 
 namespace
@@ -111,7 +138,8 @@ MacroRow::MacroRow(const EditorContext &context) : impl_(std::make_unique<Impl>(
         if (i == kFreezeIndex)
         {
             impl_->toggleSource = std::make_unique<ToggleSource>(context, slot);
-            auto toggle = std::make_unique<jcmp::ToggleButton>();
+            auto toggle = std::make_unique<MacroToggle>();
+            toggle->slot = slot;
             ToggleSource *source = impl_->toggleSource.get();
             toggle->setSource(source);
             toggle->setLabel(source->getLabel());
@@ -125,6 +153,7 @@ MacroRow::MacroRow(const EditorContext &context) : impl_(std::make_unique<Impl>(
         }
         impl_->knobSources[i] = std::make_unique<KnobSource>(context, slot);
         auto knob = std::make_unique<MacroKnob>();
+        knob->slot = slot;
         KnobSource *source = impl_->knobSources[i].get();
         knob->setSource(source);
         knob->onBeginEdit = [source] { source->macro.begin(); };
@@ -148,6 +177,19 @@ MacroRow::~MacroRow()
     impl_->toggleSource->macro.end();
     impl_->knobs = {};
     impl_->toggle.reset();
+}
+
+void MacroRow::setSourceDropHandler(
+    std::function<void(gg::core::ParamSlot, gg::core::ModSource)> handler)
+{
+    for (const auto &knob : impl_->knobs)
+    {
+        if (knob)
+        {
+            knob->onDrop = handler;
+        }
+    }
+    impl_->toggle->onDrop = std::move(handler);
 }
 
 void MacroRow::refresh()

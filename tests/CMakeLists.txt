@@ -143,9 +143,10 @@ if (GG_BUILD_PLUGINS)
     target_include_directories(gg-tests PRIVATE ${CMAKE_SOURCE_DIR}/plugin/src)
 endif ()
 # The editor's tests reach its components' private headers too (ui/src: GrainCanvas, LoaderStrip).
-# notices_tests.cpp checks the texts embedded into gg-ui, which only the editor builds.
+# notices_tests.cpp checks the texts embedded into gg-ui, which only the editor builds;
+# editor_frame_tests.cpp the editor's frame (its views, header, undo, themes and keys).
 if (GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
-    target_sources(gg-tests PRIVATE ui/notices_tests.cpp)
+    target_sources(gg-tests PRIVATE ui/notices_tests.cpp plugin/editor_frame_tests.cpp)
     target_include_directories(gg-tests PRIVATE ${CMAKE_SOURCE_DIR}/ui/src)
 endif ()
 

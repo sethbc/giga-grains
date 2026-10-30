@@ -36,6 +36,7 @@ struct MorphPad::Impl
     ParamValue x, y;
     std::optional<PadPoint> ghost;
     bool dragging{false};
+    bool grouped{false}; ///< begin opened an undo group that end hasn't closed
     std::array<bool, gg::core::kLayers> lastOn{};
 
     /// The largest centred square in the component, in its coordinates.
@@ -59,7 +60,9 @@ struct MorphPad::Impl
         return on;
     }
 
-    /// Opens the gesture on both parameters, and the undo group.
+    /// Opens the gesture on both parameters, and the undo group. The pad opens the two undo
+    /// gestures itself, before the values do, so the entry is labelled "Morph"; the values close
+    /// them (ParamValue).
     void begin()
     {
         if (UndoStack *undo = context.undo)
@@ -68,6 +71,7 @@ struct MorphPad::Impl
             undo->beginGesture(ParamSlot::MorphX, x.value(), kUndoLabel);
             undo->beginGesture(ParamSlot::MorphY, y.value(), kUndoLabel);
         }
+        grouped = context.undo != nullptr;
         x.begin();
         y.begin();
     }
@@ -78,16 +82,16 @@ struct MorphPad::Impl
         y.set(p.y);
     }
 
+    /// Closes both gestures and, if begin opened one, the undo group: one entry.
     void end()
     {
         x.end();
         y.end();
-        if (UndoStack *undo = context.undo)
+        if (grouped && context.undo != nullptr)
         {
-            undo->endGesture(ParamSlot::MorphX, x.value());
-            undo->endGesture(ParamSlot::MorphY, y.value());
-            undo->endGroup();
+            context.undo->endGroup();
         }
+        grouped = false;
     }
 
     /// One whole gesture to `p`.
@@ -109,9 +113,9 @@ MorphPad::MorphPad(const EditorContext &context) : impl_(std::make_unique<Impl>(
 
 MorphPad::~MorphPad()
 {
-    // The undo stack is the editor's and may be gone already: only the values end here.
-    impl_->x.end();
-    impl_->y.end();
+    // A drag the release never ended (the editor closed under the mouse): its gestures and its
+    // undo group close here, as one entry. The undo stack outlives the editor (EditorContext).
+    impl_->end();
 }
 
 void MorphPad::refresh()

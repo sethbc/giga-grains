@@ -104,6 +104,10 @@ class ParamControl final : public juce::Component, public juce::DragAndDropTarge
     /// A chip was dropped on the control.
     std::function<void(gg::core::ModSource)> onSourceDrop;
 
+    /// The source a Mod view chip's drag description ("modsource:<ModSource index>") names;
+    /// nothing for any other description.
+    static std::optional<gg::core::ModSource> sourceOfDrag(const juce::var &description);
+
     /// Whether a source chip may be dropped on the control: off by default.
     void setSourceDropEnabled(bool on);
     bool isInterestedInDragSource(const SourceDetails &details) override;

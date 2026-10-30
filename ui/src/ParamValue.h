@@ -19,6 +19,7 @@
 #include "HeldValue.h"
 #include "gg/core/ParamIds.h"
 #include "gg/ui/Editor.h"
+#include "gg/ui/UndoStack.h"
 
 namespace gg::ui
 {
@@ -32,6 +33,10 @@ namespace gg::ui
 /// With commit on release (M2 sub-project 6's spec §6.7, D10) a gesture's values are shown but
 /// not sent: one setValue, the gesture's last value, goes just before its endGesture, and a
 /// gesture that set nothing sends none.
+///
+/// **Undo** (spec §6.8): with the context's undo stack, each gesture is recorded in it, labelled
+/// with the parameter's name ("A Size"): begin opens it at the value shown then, end closes it at
+/// the value shown, so a gesture that ends where it began makes no entry.
 ///
 /// Message thread only. The context is the editor's (see EditorContext): read at each use.
 class ParamValue
@@ -58,6 +63,10 @@ class ParamValue
             return;
         }
         editing_ = true;
+        if (context_.undo != nullptr)
+        {
+            context_.undo->beginGesture(slot_, value_, meta_.name);
+        }
         held_.begin();
         if (context_.beginGesture)
         {
@@ -109,6 +118,10 @@ class ParamValue
         if (context_.endGesture)
         {
             context_.endGesture(slot_);
+        }
+        if (context_.undo != nullptr)
+        {
+            context_.undo->endGesture(slot_, value_);
         }
     }
 

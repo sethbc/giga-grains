@@ -10,6 +10,8 @@
 
 #include <juce_gui_basics/juce_gui_basics.h>
 
+#include "gg/ui/Editor.h" // ThemeChoice
+
 namespace gg::ui
 {
 /// The colours the editor draws itself (M2 sub-project 6's spec §6.9), in two instances: dark()
@@ -47,13 +49,6 @@ struct Palette
 
     static const Palette &dark();
     static const Palette &light();
-};
-
-/// The theme an editor shows (spec §6.9): the per-machine setting's value.
-enum class ThemeChoice : uint8_t
-{
-    Dark,
-    Light
 };
 
 /// What the editor's root implements, so that every component below it reads the current

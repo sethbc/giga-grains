@@ -11,9 +11,13 @@
 #include <cstdlib>
 #include <string>
 
+#include <sst/basic-blocks/params/ParamMetadata.h>
+
+#include "NoticeSink.h"
 #include "gg/core/GrainQueue.h"
 #include "gg/core/LivePeaks.h"
 #include "gg/source/SourceMode.h"
+#include "gg/ui/UndoStack.h"
 
 namespace gg::ui
 {
@@ -71,7 +75,10 @@ GrainCanvas::GrainCanvas(const EditorContext &context) : context_(context)
     setTitle("Grains");
     setDescription("The four layers' lanes, each with its grains and its scan rectangle. Drag a "
                    "rectangle to set Position or Pitch, its sides to set Spray, its top or "
-                   "bottom to set Pitch Spread; double-click it to freeze the layer.");
+                   "bottom to set Pitch Spread; double-click it to freeze the layer. With the "
+                   "keyboard, the arrows move the selected lane's rectangle, with Shift its "
+                   "spreads.");
+    setWantsKeyboardFocus(true);
     stressCount_ = stressCountFromEnvironment();
     if (stressCount_ > 0)
     {
@@ -488,7 +495,19 @@ void GrainCanvas::drawLane(juce::Graphics &g, uint8_t layer, const Palette &pal)
     {
         drawPeaks(g, layer, lane, pal);
         const juce::Colour colour = pal.layers[layer];
-        drawRect(g, scanRect(shownValues(layer, now), lane), false, lane.fxLane, colour);
+        const WindowRect rect = scanRect(shownValues(layer, now), lane);
+        drawRect(g, rect, false, lane.fxLane, colour);
+        if (layer == selected_ && hasKeyboardFocus(false))
+        {
+            // The keyboard's lane (spec §6.9): its window outlined in the focus color.
+            const float cy = 0.5f * (rect.y0 + rect.y1);
+            const float half = std::max(0.5f * (rect.y1 - rect.y0), 1.0f);
+            g.setColour(pal.accent);
+            g.drawRect(juce::Rectangle<float>(rect.x0, cy - half, std::max(rect.x1 - rect.x0, 1.0f),
+                                              2.0f * half)
+                           .expanded(3.0f),
+                       1.5f);
+        }
         // The ghost: where the grains read once macros and modulation are added (spec §6.2),
         // shown when that differs from the base values of the same block.
         if (live)
@@ -798,11 +817,52 @@ void GrainCanvas::beginDragGesture(Held which)
 {
     dragHeld_ = which;
     began_ = true;
+    dragBefore_ = shown(dragLayer_, which, wallSeconds());
+    recordBegin(slotOf(dragLayer_, which), dragBefore_);
     held_[dragLayer_][which].begin();
     if (context_.beginGesture)
     {
         context_.beginGesture(slotOf(dragLayer_, which));
     }
+}
+
+void GrainCanvas::recordBegin(ParamSlot slot, float before)
+{
+    if (context_.undo != nullptr)
+    {
+        context_.undo->beginGesture(slot, before, gg::core::paramMeta(slot, context_.mode).name);
+    }
+}
+
+void GrainCanvas::recordEnd(ParamSlot slot, float after)
+{
+    if (context_.undo != nullptr)
+    {
+        context_.undo->endGesture(slot, after);
+    }
+}
+
+void GrainCanvas::gestureTo(uint8_t layer, Held which, float before, float value, double now)
+{
+    const ParamSlot slot = slotOf(layer, which);
+    HeldValue &held = held_[layer][which];
+    recordBegin(slot, before);
+    held.begin();
+    if (context_.beginGesture)
+    {
+        context_.beginGesture(slot);
+    }
+    held.set(value);
+    if (context_.setValue)
+    {
+        context_.setValue(slot, static_cast<double>(value));
+    }
+    held.end(baseValue(layer, which), now);
+    if (context_.endGesture)
+    {
+        context_.endGesture(slot);
+    }
+    recordEnd(slot, value);
 }
 
 void GrainCanvas::mouseDrag(const juce::MouseEvent &e)
@@ -885,7 +945,54 @@ void GrainCanvas::endDrag()
     {
         context_.endGesture(slotOf(layer, which));
     }
+    recordEnd(slotOf(layer, which), sentAny_ ? lastSent_ : dragBefore_);
 }
+
+bool GrainCanvas::endDragIfAny()
+{
+    if (drag_ == DragTarget::None)
+    {
+        return false;
+    }
+    endDrag();
+    repaint();
+    return true;
+}
+
+bool GrainCanvas::keyPressed(const juce::KeyPress &key)
+{
+    const int code = key.getKeyCode();
+    if (code == juce::KeyPress::escapeKey)
+    {
+        return endDragIfAny();
+    }
+    const bool horizontal = code == juce::KeyPress::leftKey || code == juce::KeyPress::rightKey;
+    const bool vertical = code == juce::KeyPress::upKey || code == juce::KeyPress::downKey;
+    if ((!horizontal && !vertical) || key.getModifiers().isCommandDown() ||
+        drag_ != DragTarget::None || !usable(geometry(selected_, 1.0f)))
+    {
+        return false;
+    }
+    // The selected lane's rectangle (spec §6.9): Left and Right move Position, Up and Down Pitch,
+    // by 1/100 of the range; with Shift, Spray and Pitch Spread. Each press is one gesture.
+    const bool shift = key.getModifiers().isShiftDown();
+    const Held which =
+        horizontal ? (shift ? kHeldSpray : kHeldPosition) : (shift ? kHeldPitchSpread : kHeldPitch);
+    const float sign =
+        code == juce::KeyPress::rightKey || code == juce::KeyPress::upKey ? 1.0f : -1.0f;
+    const auto &meta = gg::core::paramMeta(slotOf(selected_, which), context_.mode);
+    const double now = wallSeconds();
+    const float before = shown(selected_, which, now);
+    const float value = std::clamp(before + sign * ((meta.maxVal - meta.minVal) / 100.0f),
+                                   meta.minVal, meta.maxVal);
+    gestureTo(selected_, which, before, value, now);
+    repaint();
+    return true;
+}
+
+void GrainCanvas::focusGained(FocusChangeType) { repaint(); }
+
+void GrainCanvas::focusLost(FocusChangeType) { repaint(); }
 
 void GrainCanvas::mouseDoubleClick(const juce::MouseEvent &e)
 {
@@ -912,24 +1019,8 @@ void GrainCanvas::mouseDoubleClick(const juce::MouseEvent &e)
         return;
     }
     // One gesture: the layer's Freeze flipped from what the lane shows.
-    const ParamSlot slot = slotOf(layer, kHeldFreeze);
-    HeldValue &held = held_[layer][kHeldFreeze];
-    const float next = shown(layer, kHeldFreeze, now) >= 0.5f ? 0.0f : 1.0f;
-    held.begin();
-    if (context_.beginGesture)
-    {
-        context_.beginGesture(slot);
-    }
-    held.set(next);
-    if (context_.setValue)
-    {
-        context_.setValue(slot, static_cast<double>(next));
-    }
-    held.end(baseValue(layer, kHeldFreeze), now);
-    if (context_.endGesture)
-    {
-        context_.endGesture(slot);
-    }
+    const float freeze = shown(layer, kHeldFreeze, now);
+    gestureTo(layer, kHeldFreeze, freeze, freeze >= 0.5f ? 0.0f : 1.0f, now);
     repaint();
 }
 
@@ -971,10 +1062,8 @@ void GrainCanvas::filesDropped(const juce::StringArray &files, int x, int y)
     {
         return;
     }
-    if (context_.notice)
-    {
-        context_.notice(std::string("layer ") + kLayerLetters[layer] +
-                        " takes a sample after the session format's next version");
-    }
+    postNotice(*this, context_,
+               std::string("layer ") + kLayerLetters[layer] +
+                   " takes a sample after the session format's next version");
 }
 } // namespace gg::ui

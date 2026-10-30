@@ -8,7 +8,7 @@
 #include <string>
 #include <utility>
 
-#include "Theme.h"
+#include "Palette.h"
 
 namespace gg::ui
 {
@@ -97,9 +97,8 @@ LoaderStrip::LoaderStrip(const EditorContext &context) : context_(context)
         addAndMakeVisible(*label);
     }
     name_.setComponentID("sampleName");
-    name_.setColour(juce::Label::textColourId, theme::kText);
     status_.setComponentID("sampleStatus");
-    status_.setColour(juce::Label::textColourId, theme::kDimText);
+    applyPalette();
 
     browse = [this](const Browse &b, std::function<void(const juce::File &)> done) {
         chooser_ =
@@ -115,6 +114,17 @@ LoaderStrip::LoaderStrip(const EditorContext &context) : context_(context)
 }
 
 LoaderStrip::~LoaderStrip() = default;
+
+void LoaderStrip::applyPalette()
+{
+    const Palette &palette = paletteOf(*this);
+    name_.setColour(juce::Label::textColourId, palette.text);
+    status_.setColour(juce::Label::textColourId, palette.dimText);
+}
+
+void LoaderStrip::parentHierarchyChanged() { applyPalette(); }
+
+void LoaderStrip::lookAndFeelChanged() { applyPalette(); }
 
 juce::File LoaderStrip::startFolder() const
 {

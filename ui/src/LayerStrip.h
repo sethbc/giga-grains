@@ -12,14 +12,16 @@
 
 #include <juce_gui_basics/juce_gui_basics.h>
 
+#include "gg/core/ModMatrix.h"
+#include "gg/core/ParamIds.h"
 #include "gg/ui/Editor.h"
 
 namespace gg::ui
 {
 /// The layers' header controls (M2 sub-project 6's spec §6.3, §6.5), component ID "strip": per
 /// layer L (0 to 3, A to D) a letter button in the layer's colour ("strip.<L>.letter"), which
-/// selects the layer, and the ParamControls of its On switch, Level, Source and Freeze (IDs
-/// "param.<id>").
+/// selects the layer, and the ParamControls of its On switch, Level (a horizontal slider), Source
+/// and Freeze (IDs "param.<id>"). The letters take keyboard focus.
 ///
 /// **Layout.** Column (the Perform view): the four layers' cells run down the strip, each
 /// spanning its lane's rows, so a layer's controls sit beside its lane (setLaneBounds). Row (the
@@ -51,6 +53,12 @@ class LayerStrip final : public juce::Component
 
     /// Shows the base values as they are now.
     void refresh();
+
+    /// Makes every control a drop target for the Mod view's source chips (spec §6.6): a chip
+    /// dropped on one calls `handler` with the control's slot and the chip's source. Null turns
+    /// the targets off (the default).
+    void
+    setSourceDropHandler(std::function<void(gg::core::ParamSlot, gg::core::ModSource)> handler);
 
     void resized() override;
     void paintOverChildren(juce::Graphics &g) override;

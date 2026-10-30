@@ -7,8 +7,8 @@
 # undo stack, the layers' colours and the views' placement table). It builds without plugins or
 # JUCE, so its tests and `gg-bench --canvas` also run in the sanitizer builds.
 #
-# gg-ui: the JUCE editor (the Perform view: header, loader strip, grain canvas, macros; the
-# palette and the parameter control the views build on), attached to the plugins through
+# gg-ui: the JUCE editor (the header over the Perform, Edit, Mod and FX views, the About box;
+# the palette and the parameter control the views build on), attached to the plugins through
 # sst-clap-helpers' clap_juce_shim. Only built with the plugins' editor (GG_BUILD_PLUGINS and
 # GG_BUILD_EDITOR).
 
@@ -48,6 +48,7 @@ if (GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
             src/views/SourceStrip.cpp
             src/views/RouteList.cpp
             src/views/ModView.cpp
+            src/views/PerformView.cpp
             )
     add_library(gg::ui ALIAS gg-ui)
 

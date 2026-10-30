@@ -218,6 +218,25 @@ void AboutBox::applyPalette()
 
 void AboutBox::parentHierarchyChanged() { applyPalette(); }
 
+void AboutBox::lookAndFeelChanged() { applyPalette(); }
+
+void AboutBox::visibilityChanged()
+{
+    setWantsKeyboardFocus(processKeys);
+    if (processKeys && isShowing())
+    {
+        grabKeyboardFocus();
+    }
+}
+
+void AboutBox::mouseDown(const juce::MouseEvent &e)
+{
+    if (!getContentArea().contains(e.getPosition()))
+    {
+        close();
+    }
+}
+
 juce::Point<int> AboutBox::innerContentSize() { return {760, 520}; }
 
 void AboutBox::close()

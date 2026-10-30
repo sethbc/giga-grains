@@ -63,7 +63,13 @@ namespace gg::ui
 /// rectangle keeps the dragged value until the base value catches up (HeldValue). A double-click
 /// on a rectangle's body toggles that layer's Freeze as one gesture. A press in a lane selects
 /// it (onSelectLayer). A file dropped on a lane goes to the context's loadSampleFor; a refusal
-/// is reported through its notice.
+/// is posted as a notice (postNotice). With the context's undo stack, each gesture is an entry,
+/// labelled with its parameter's name.
+///
+/// **The keyboard** (spec §6.9): the canvas takes focus, and its focused lane is the selected
+/// one, its rectangle outlined: Left and Right move its Position, Up and Down its Pitch, by 1/100
+/// of the range, Shift its Spray and Pitch Spread instead, each press a gesture. Escape ends a
+/// drag under way, as its release would.
 ///
 /// With GG_STRESS_GRAINS=N (N > 0) in the environment when the canvas is made, it draws
 /// stressGrains(frame, N, ...) instead of the queue, four lanes (stressMode).
@@ -108,6 +114,13 @@ class GrainCanvas final : public juce::Component, public juce::FileDragAndDropTa
     juce::Rectangle<int> laneBounds(uint8_t layer) const;
     /// Whether GG_STRESS_GRAINS asked for the synthetic workload.
     bool stressMode() const noexcept { return stressCount_ > 0; }
+    /// The snapshot the last frame took, or null before one (the plugin inactive).
+    const gg::core::UiSnapshot *latestSnapshot() const noexcept
+    {
+        return haveSnapshot_ ? &snapshot_ : nullptr;
+    }
+    /// Ends a drag under way, as its release would; false if there is none.
+    bool endDragIfAny();
 
     void paint(juce::Graphics &g) override;
     void mouseMove(const juce::MouseEvent &e) override;
@@ -115,6 +128,9 @@ class GrainCanvas final : public juce::Component, public juce::FileDragAndDropTa
     void mouseDrag(const juce::MouseEvent &e) override;
     void mouseUp(const juce::MouseEvent &e) override;
     void mouseDoubleClick(const juce::MouseEvent &e) override;
+    bool keyPressed(const juce::KeyPress &key) override;
+    void focusGained(FocusChangeType cause) override;
+    void focusLost(FocusChangeType cause) override;
 
     // juce::FileDragAndDropTarget: a drop on a lane loads into its layer.
     bool isInterestedInFileDrag(const juce::StringArray &files) override;
@@ -162,6 +178,12 @@ class GrainCanvas final : public juce::Component, public juce::FileDragAndDropTa
                   juce::Colour colour) const;
     void beginDragGesture(Held which);
     void endDrag();
+    /// One whole gesture on layer `layer`'s `which`, from `before` (what the lane showed) to
+    /// `value`.
+    void gestureTo(uint8_t layer, Held which, float before, float value, double now);
+    /// The undo stack's side of a gesture, when the context has one.
+    void recordBegin(gg::core::ParamSlot slot, float before);
+    void recordEnd(gg::core::ParamSlot slot, float after);
 
     const EditorContext &context_;
 
@@ -218,6 +240,7 @@ class GrainCanvas final : public juce::Component, public juce::FileDragAndDropTa
     float fixedY_{0.0f};  // what a Pitch Spread drag measures from: the rectangle's centre
     bool sentAny_{false};
     float lastSent_{0.0f};
+    float dragBefore_{0.0f}; // the dragged value as the lane showed it when the gesture began
     std::array<std::array<HeldValue, kHeldCount>, kLaneCount> held_;
 
     // The frame time, as the M0 stress panel averaged it.

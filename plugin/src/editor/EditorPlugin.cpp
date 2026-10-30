@@ -23,7 +23,9 @@
 
 #include "gg/core/Processor.h"
 #include "gg/media/Utf8Path.h"
+#include "UiSettings.h"
 #include "gg/ui/Editor.h"
+#include "gg/ui/UndoStack.h"
 
 namespace gg::plugin
 {
@@ -99,10 +101,30 @@ std::string formatOf(const clap_host *host)
     }
     return {};
 }
+
+gg::ui::ThemeChoice choiceOf(ThemeName theme)
+{
+    return theme == ThemeName::Light ? gg::ui::ThemeChoice::Light : gg::ui::ThemeChoice::Dark;
+}
+
+ThemeName nameOf(gg::ui::ThemeChoice theme)
+{
+    return theme == gg::ui::ThemeChoice::Light ? ThemeName::Light : ThemeName::Dark;
+}
 } // namespace
 
 EditorPlugin::EditorPlugin(const clap_host *host, Product product)
-    : GigaGrainsPlugin(host, product), editorContext_(std::make_unique<gg::ui::EditorContext>())
+    : GigaGrainsPlugin(host, product),
+      // Each undo or redo of a value is one gesture of its own, so hosts record it.
+      undo_(std::make_unique<gg::ui::UndoStack>(gg::ui::UndoCallbacks{
+          .setValue =
+              [this](gg::core::ParamSlot slot, float value) {
+                  uiBeginGesture(slot);
+                  uiSetValue(slot, static_cast<double>(value));
+                  uiEndGesture(slot);
+              },
+          .setRoutes = [this](const gg::core::ModRoutes &routes) { uiSetRoutes(routes); }})),
+      editorContext_(std::make_unique<gg::ui::EditorContext>())
 {
     // As Shortcircuit XT does. Creating the shim needs no window and no message loop: the shim
     // starts JUCE's GUI in guiCreate, so a plugin that never shows its editor (or a headless
@@ -232,8 +254,12 @@ std::unique_ptr<juce::Component> EditorPlugin::createEditor()
         gg::core::Processor *p = processor();
         return p != nullptr && layer < gg::core::kLayers ? &p->livePeaks(layer) : nullptr;
     };
-    // Nothing shows a notice yet: the header will (M2 sub-project 6, Task 15).
-    context.notice = [](const std::string &) {};
+    // The header shows the notices (gg::ui's NoticeSink); the plugin needs none of them.
+    // The per-machine theme, on the main thread (UiSettings.h).
+    context.theme = [] { return choiceOf(readTheme()); };
+    context.setTheme = [](gg::ui::ThemeChoice theme) { return writeTheme(nameOf(theme)); };
+    // The history outlives the editor (the class comment).
+    context.undo = undo_.get();
 
     // The base values and the editor's gestures (sub-project 5's spec §6.3), through the
     // plugin's UI queue (GigaGrainsPlugin::uiBeginGesture).
@@ -328,7 +354,6 @@ void EditorPlugin::updatePublished() noexcept
     gg::core::Processor *p = processor();
     context.grains = p != nullptr ? &p->grainQueue() : nullptr;
     context.snapshot = p != nullptr ? &p->snapshot() : nullptr;
-    context.livePeaks = p != nullptr ? &p->livePeaks() : nullptr;
     context.clock = p != nullptr ? &p->publishedClock() : nullptr;
     context.sampleRate = activeSampleRate();
 }

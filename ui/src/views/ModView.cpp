@@ -8,6 +8,7 @@
 #include <string>
 
 #include "../LayerStrip.h"
+#include "../NoticeSink.h"
 #include "EditView.h"
 #include "RouteList.h"
 #include "SourceStrip.h"
@@ -39,7 +40,16 @@ struct ModView::Impl
             owner.dropSource(slot, source);
         };
         layers.setSelectedLayer(0);
-        layers.onSelectLayer = [this](uint8_t layer) { owner.setLayer(layer); };
+        layers.onSelectLayer = [this](uint8_t layer) {
+            owner.setLayer(layer);
+            if (owner.onSelectLayer)
+            {
+                owner.onSelectLayer(layer);
+            }
+        };
+        layers.setSourceDropHandler([this](gg::core::ParamSlot slot, gg::core::ModSource source) {
+            owner.dropSource(slot, source);
+        });
     }
 
     ModView &owner;
@@ -69,19 +79,18 @@ void ModView::setLayer(uint8_t layer)
 
 uint8_t ModView::layer() const noexcept { return impl_->layer; }
 
-void ModView::dropSource(gg::core::ParamSlot controlSlot, gg::core::ModSource source)
+DropResult dropSourceOn(juce::Component &target, const EditorContext &context,
+                        gg::core::ParamSlot controlSlot, gg::core::ModSource source)
 {
-    Impl &m = *impl_;
-    const EditorContext &context = m.context;
     if (!context.routes || !context.setRoutes)
     {
-        return;
+        return {false, 0, {}};
     }
-    const auto [target, controlLayer] = routeTargetOf(controlSlot);
+    const auto [routeTarget, controlLayer] = routeTargetOf(controlSlot);
     const gg::core::ModRoutes before = context.routes();
     gg::core::ModRoutes after = before;
-    const DropResult result = addRouteForDrop(after, source, target, controlLayer,
-                                              gg::core::paramMeta(controlSlot, context.mode));
+    DropResult result = addRouteForDrop(after, source, routeTarget, controlLayer,
+                                        gg::core::paramMeta(controlSlot, context.mode));
     if (result.added)
     {
         context.setRoutes(after);
@@ -89,12 +98,22 @@ void ModView::dropSource(gg::core::ParamSlot controlSlot, gg::core::ModSource so
         {
             context.undo->pushRoutes(before, after, "route " + std::to_string(result.slot));
         }
+    }
+    else if (!result.notice.empty())
+    {
+        postNotice(target, context, result.notice);
+    }
+    return result;
+}
+
+void ModView::dropSource(gg::core::ParamSlot controlSlot, gg::core::ModSource source)
+{
+    Impl &m = *impl_;
+    const DropResult result = dropSourceOn(*this, m.context, controlSlot, source);
+    if (result.added)
+    {
         m.list.refresh();
         m.edit.refresh();
-    }
-    else if (!result.notice.empty() && context.notice)
-    {
-        context.notice(result.notice);
     }
     m.list.select(result.slot);
 }

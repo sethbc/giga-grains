@@ -542,7 +542,8 @@ TEST_CASE("the editor context carries the publish structures and the gestures", 
         // Inactive: no Processor, so nothing to read.
         CHECK(context.grains == nullptr);
         CHECK(context.snapshot == nullptr);
-        CHECK(context.livePeaks == nullptr);
+        REQUIRE(context.livePeaksFor);
+        CHECK(context.livePeaksFor(0) == nullptr);
         CHECK(context.clock == nullptr);
         REQUIRE(context.baseValue);
         CHECK(context.baseValue(ParamSlot::Mix) == 0.5f);
@@ -554,7 +555,10 @@ TEST_CASE("the editor context carries the publish structures and the gestures", 
         REQUIRE(processor != nullptr);
         CHECK(context.grains == &processor->grainQueue());
         CHECK(context.snapshot == &processor->snapshot());
-        CHECK(context.livePeaks == &processor->livePeaks());
+        for (uint8_t layer = 0; layer < gg::core::kLayers; ++layer)
+        {
+            CHECK(context.livePeaksFor(layer) == &processor->livePeaks(layer));
+        }
         CHECK(context.clock == &processor->publishedClock());
         CHECK(context.sampleRate == 44100.0);
         // The editor opened before activate(): the new Processor publishes all the same.
@@ -797,9 +801,14 @@ TEST_CASE("the perform view has a header, a canvas and eight macros", "[plugin]"
         REQUIRE(perform != nullptr);
         CHECK(perform->getToggleState());
         CHECK(perform->isEnabled());
-        const auto *edit = findDeep(*editor, "header.edit");
-        REQUIRE(edit != nullptr);
-        CHECK_FALSE(edit->isEnabled()); // until M2
+        for (const char *view : {"header.edit", "header.mod", "header.fx"})
+        {
+            INFO(view);
+            const auto *button = dynamic_cast<const juce::Button *>(findDeep(*editor, view));
+            REQUIRE(button != nullptr);
+            CHECK(button->isEnabled());
+            CHECK_FALSE(button->getToggleState());
+        }
 
         for (std::size_t i = 0; i < 8; ++i)
         {
@@ -3134,10 +3143,12 @@ TEST_CASE("headless build exposes no gui extension", "[plugin]")
 }
 #endif
 
+// The editor's own again: built only with it (the sanitizer presets build none).
+#if GG_BUILD_EDITOR
 TEST_CASE("the canvas paints four lanes, and again after a resize", "[plugin]")
 {
     // Paints into an image so drawLane, the peak strips' cache, the off lane's transparency layer
-    // and the Sample lane's hint run (and so run under the sanitizers).
+    // and the Sample lane's hint run.
     const juce::ScopedJuceInitialiser_GUI juceGui;
     constexpr double kRate = 48000.0;
     constexpr int64_t kFrames = 16 * 48000;
@@ -3232,3 +3243,4 @@ TEST_CASE("the lanes' overlay colours are the same in both themes", "[plugin]")
     CHECK(light.feedback == dark.feedback);
     CHECK(light.layers == dark.layers);
 }
+#endif

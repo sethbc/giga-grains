@@ -21,10 +21,10 @@ namespace gg::ui
 /// The Markdown ones render as Markdown; "Plain text" shows them raw, and the others are always
 /// plain, in a monospaced font. Only a notice's name is ever shown, never its source path.
 ///
-/// A modal over its parent: size it to cover the editor and make it visible. Escape and Close
-/// hide it and call onClose. Component IDs: about.product, about.version, about.format,
-/// about.license, about.repository, about.source, about.list, about.text (the viewer's holder),
-/// about.plain, about.close.
+/// A modal over its parent: size it to cover the editor and make it visible. Escape, Close and a
+/// press outside the panel hide it and call onClose. Component IDs: about.product, about.version,
+/// about.format, about.license, about.repository, about.source, about.list, about.text (the
+/// viewer's holder), about.plain, about.close.
 class AboutBox final : public sst::jucegui::screens::ModalBase
 {
   public:
@@ -48,6 +48,13 @@ class AboutBox final : public sst::jucegui::screens::ModalBase
     void onEscape() override;
     void resized() override;
     void parentHierarchyChanged() override;
+    /// The editor's theme changed: the palette again.
+    void lookAndFeelChanged() override;
+    /// A press outside the panel closes the box, as Escape does.
+    void mouseDown(const juce::MouseEvent &e) override;
+    /// As ModalBase's, but the focus is taken only once the box is on screen (JUCE asserts
+    /// otherwise; an editor built headless, as the tests build it, never is).
+    void visibilityChanged() override;
 
   private:
     class NoticeList;

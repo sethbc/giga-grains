@@ -509,9 +509,9 @@ void ParamControl::setSourceDropEnabled(bool on)
 namespace
 {
 constexpr const char *kSourcePrefix = "modsource:";
+} // namespace
 
-/// The ModSource a chip's drag description names; nothing for any other description.
-std::optional<gg::core::ModSource> sourceOf(const juce::var &description)
+std::optional<gg::core::ModSource> ParamControl::sourceOfDrag(const juce::var &description)
 {
     const juce::String text = description.toString();
     if (!text.startsWith(kSourcePrefix))
@@ -525,11 +525,10 @@ std::optional<gg::core::ModSource> sourceOf(const juce::var &description)
     }
     return static_cast<gg::core::ModSource>(index);
 }
-} // namespace
 
 bool ParamControl::isInterestedInDragSource(const SourceDetails &details)
 {
-    return impl_->dropEnabled && sourceOf(details.description).has_value();
+    return impl_->dropEnabled && sourceOfDrag(details.description).has_value();
 }
 
 void ParamControl::itemDragEnter(const SourceDetails &)
@@ -552,7 +551,7 @@ void ParamControl::itemDropped(const SourceDetails &details)
 {
     impl_->dropHover = false;
     repaint();
-    if (const auto source = sourceOf(details.description); source && impl_->dropEnabled)
+    if (const auto source = sourceOfDrag(details.description); source && impl_->dropEnabled)
     {
         if (onSourceDrop)
         {
