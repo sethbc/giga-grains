@@ -872,3 +872,94 @@ TEST_CASE("setSeed changes the next grains only", "[determinism]")
         REQUIRE(sameBits(ref.audio.right, r.audio.right));
     }
 }
+
+namespace
+{
+// A source-kind switch (spec §6.4): Sample to Live at 0.5 s and back at 1 s, between the
+// process() calls at those frames, over liveNoise() into the 16 s ring. 0.3 s grains, so grains
+// of the old kind sound across each switch.
+constexpr int64_t kToLive = 24000;
+constexpr int64_t kToSample = 48000;
+
+struct KindRender
+{
+    Render audio;
+    GrainLog log;
+};
+
+void renderKindSwitch(const LiveInput &input, const std::shared_ptr<const gg::SampleBuffer> &source,
+                      const std::vector<uint32_t> &blockSizes, KindRender &r)
+{
+    gg::EngineConfig c = config(42);
+    c.liveSeconds = 16.0;
+    gg::Engine engine(c);
+    engine.setSource(source);
+    gg::CloudParams p = kParams;
+    p.grainDurationSec = 0.3;
+    engine.setCloudParams(p);
+    engine.setEventSink(&GrainLog::record, &r.log);
+    constexpr float kUnwritten = std::numeric_limits<float>::quiet_NaN();
+    r.audio.left.assign(static_cast<std::size_t>(kLiveFrames), kUnwritten);
+    r.audio.right.assign(static_cast<std::size_t>(kLiveFrames), kUnwritten);
+    int64_t done = 0;
+    std::size_t next = 0;
+    for (const int64_t end : {kToLive, kToSample, kLiveFrames})
+    {
+        while (done < end)
+        {
+            const uint32_t want = blockSizes[next++ % blockSizes.size()];
+            const auto n = static_cast<uint32_t>(std::min<int64_t>(want, end - done));
+            const float *in[2] = {input.left.data() + done, input.right.data() + done};
+            float *out[2] = {r.audio.left.data() + done, r.audio.right.data() + done};
+            engine.process(in, 2, out, 2, n);
+            done += n;
+        }
+        engine.setSourceMode(end == kToLive ? gg::SourceMode::Live : gg::SourceMode::Sample);
+    }
+}
+} // namespace
+
+TEST_CASE("a source kind switch is block-size invariant", "[determinism]")
+{
+    const auto input = liveNoise();
+    const auto source = sineSource();
+    KindRender ref;
+    renderKindSwitch(input, source, {kMaxBlock}, ref);
+    REQUIRE_FALSE(ref.log.overflowed);
+    REQUIRE(allFinite(ref.audio.left));
+    REQUIRE(allFinite(ref.audio.right));
+    REQUIRE(peak(ref.audio.left) > 0.05f);
+    // Not vacuous: each kind's grains in its span, and the old kind's sounding past each switch.
+    const auto any = [&](auto &&pred) {
+        return std::any_of(ref.log.grains.begin(), ref.log.grains.end(), pred);
+    };
+    const auto isLive = [](const gg::GrainSpec &g) {
+        return g.sourceSlot == gg::Engine::kLiveSlot;
+    };
+    REQUIRE(any([&](const gg::GrainSpec &g) {
+        return !isLive(g) && g.onsetSample < kToLive && gg::grainEndSample(g) > kToLive + 4800;
+    }));
+    REQUIRE(any([&](const gg::GrainSpec &g) {
+        return isLive(g) && g.onsetSample < kToSample && gg::grainEndSample(g) > kToSample + 4800;
+    }));
+    bool kinds = true;
+    for (const gg::GrainSpec &g : ref.log.grains)
+    {
+        kinds = kinds && isLive(g) == (g.onsetSample >= kToLive && g.onsetSample < kToSample);
+    }
+    REQUIRE(kinds);
+    REQUIRE(any([&](const gg::GrainSpec &g) { return g.onsetSample >= kToSample; }));
+
+    const auto random = randomSplit();
+    for (const std::vector<uint32_t> &blockSizes :
+         {std::vector<uint32_t>{1}, {32}, {64}, {511}, {4096}, random})
+    {
+        INFO("first block size = " << blockSizes.front() << " of " << blockSizes.size());
+        KindRender r;
+        renderKindSwitch(input, source, blockSizes, r);
+        REQUIRE_FALSE(r.log.overflowed);
+        REQUIRE(r.log.grains == ref.log.grains);
+        REQUIRE(sameBits(ref.audio.left, r.audio.left));
+        REQUIRE(sameBits(ref.audio.right, r.audio.right));
+    }
+}

@@ -12,6 +12,7 @@
 #include <limits>
 #include <memory>
 #include <numbers>
+#include <stdexcept>
 #include <vector>
 
 #include <catch2/catch_test_macros.hpp>
@@ -1059,4 +1060,294 @@ TEST_CASE("setSource renders as adopting its prepared source", "[engine]")
         REQUIRE(same);
     }
     REQUIRE(gg::PreparedSource::make(nullptr) == nullptr);
+}
+
+namespace
+{
+// `frames` frames of mono noise at half scale, from gg::rng (seed `seed`).
+std::vector<float> noiseInput(int64_t frames, uint64_t seed)
+{
+    std::vector<float> in(static_cast<std::size_t>(frames));
+    for (int64_t i = 0; i < frames; ++i)
+    {
+        const auto k = static_cast<uint64_t>(i);
+        in[static_cast<std::size_t>(i)] =
+            0.5f * static_cast<float>(gg::rng::bipolar(
+                       gg::rng::hash({seed, 0, 0, gg::rng::Field::SignalNoise, k})));
+    }
+    return in;
+}
+
+// Renders input[from, from + frames) through the engine as a mono input, in blocks of
+// blockSize; the outputs start as NaN, as render()'s do.
+Render renderInput(gg::Engine &engine, const std::vector<float> &input, int64_t from,
+                   int64_t frames, uint32_t blockSize)
+{
+    Render r{std::vector<float>(static_cast<std::size_t>(frames), kUnwritten),
+             std::vector<float>(static_cast<std::size_t>(frames), kUnwritten)};
+    for (int64_t done = 0; done < frames;)
+    {
+        const auto n = static_cast<uint32_t>(std::min<int64_t>(blockSize, frames - done));
+        const float *in[1] = {input.data() + from + done};
+        float *out[2] = {r.left.data() + done, r.right.data() + done};
+        engine.process(in, 1, out, 2, n);
+        done += n;
+    }
+    return r;
+}
+
+gg::EngineConfig liveConfig()
+{
+    gg::EngineConfig config;
+    config.liveSeconds = 16.0;
+    return config;
+}
+} // namespace
+
+TEST_CASE("the layer field keys the draws", "[engine][layers]")
+{
+    // Spec §6.2: EngineConfig::layer is the layer field of every draw's key, and layer 0 (the
+    // default) keys them as M1 did. Poisson onsets, spray and stereo spread put every draw in
+    // the output.
+    REQUIRE(gg::EngineConfig{}.layer == 0);
+    const auto source = makeSine(2, 96000, 48000.0, 330.0);
+    const gg::CloudParams p{.densityHz = 40.0,
+                            .distribution = 1.0,
+                            .grainDurationSec = 0.08,
+                            .position = 0.5,
+                            .spray = 0.4,
+                            .stereo = 0.8,
+                            .gain = 0.5f};
+    const auto run = [&](uint32_t layer, bool setLayer, SinkLog &log) {
+        gg::EngineConfig config;
+        config.seed = 7;
+        if (setLayer)
+        {
+            config.layer = layer;
+        }
+        gg::Engine engine(config);
+        engine.setSource(source);
+        engine.setCloudParams(p);
+        engine.setEventSink(&SinkLog::record, &log);
+        return render(engine, 48000, 256);
+    };
+    SinkLog defaultLog;
+    const Render byDefault = run(0, false, defaultLog);
+    REQUIRE_FALSE(defaultLog.overflowed);
+    REQUIRE(defaultLog.grains.size() > 20);
+    REQUIRE(peak(byDefault.left) > 0.05f);
+
+    SinkLog log0;
+    const Render layer0 = run(0, true, log0);
+    REQUIRE(log0.grains == defaultLog.grains);
+    REQUIRE(sameBits(layer0.left, byDefault.left));
+    REQUIRE(sameBits(layer0.right, byDefault.right));
+
+    for (const uint32_t layer : {1u, 2u, 3u})
+    {
+        INFO("layer " << layer);
+        SinkLog log;
+        const Render other = run(layer, true, log);
+        REQUIRE_FALSE(log.overflowed);
+        REQUIRE(log.grains != defaultLog.grains);
+        REQUIRE_FALSE(sameBits(other.left, byDefault.left));
+        REQUIRE_FALSE(sameBits(other.right, byDefault.right));
+    }
+}
+
+TEST_CASE("a layer above 3 is refused", "[engine][layers]")
+{
+    REQUIRE_THROWS_AS(gg::Engine(gg::EngineConfig{.layer = 4}), std::invalid_argument);
+    REQUIRE_THROWS_AS(gg::Engine(gg::EngineConfig{.layer = 0xFFFFFFFFu}), std::invalid_argument);
+    REQUIRE_NOTHROW(gg::Engine(gg::EngineConfig{.layer = 3}));
+}
+
+TEST_CASE("disabled, the engine spawns nothing but writes its ring", "[engine][layers]")
+{
+    // Spec §6.2: off, the scheduler emits nothing, but the ring is written and the clock
+    // advances, so a layer switched on later reads recent audio.
+    gg::Engine engine(liveConfig());
+    engine.setSourceMode(gg::SourceMode::Live);
+    engine.setCloudParams(params(100.0, 0.1, 0.1, 0.0, 0.0, 0.5f));
+    SinkLog log;
+    engine.setEventSink(&SinkLog::record, &log);
+    REQUIRE(engine.enabled());
+    engine.setEnabled(false);
+    REQUIRE(engine.enabled()); // applied at the next process() call
+
+    const auto input = noiseInput(48000, 3);
+    const Render r = renderInput(engine, input, 0, 48000, 512);
+    REQUIRE_FALSE(engine.enabled());
+    REQUIRE(engine.sourceMode() == gg::SourceMode::Live);
+    REQUIRE(log.grains.empty());
+    REQUIRE(engine.activeGrains() == 0);
+    REQUIRE(engine.droppedGrains() == 0);
+    REQUIRE(engine.sampleClock() == 48000);
+    REQUIRE(engine.liveWriteHead() == 48000);
+    REQUIRE(allFinite(r.left));
+    REQUIRE(peak(r.left) == 0.0f);
+    REQUIRE(peak(r.right) == 0.0f);
+    // The ring holds the input: its newest frame, in both channels.
+    const gg::LiveSource::RingView view = engine.live().view();
+    const int64_t slot = 47999 % view.capacity;
+    REQUIRE(input[47999] != 0.0f);
+    REQUIRE(view.slots[2 * slot] == input[47999]);
+    REQUIRE(view.slots[2 * slot + 1] == input[47999]);
+}
+
+TEST_CASE("enabling forces an onset at that frame", "[engine][layers]")
+{
+    // 0.25 Hz, periodic: grain 0 at 0, and the next pending at 4 s (192,000). Disabled from
+    // 0.5 s to 2 s; enabled again at 96,000, the pending onset moves to that frame, as a first
+    // held key moves it (spec §6.2, §9). Disabling ends the 1 s grain still sounding.
+    const auto source = makeSine(1, 96000, 48000.0);
+    const gg::CloudParams p = params(0.25, 1.0, 0.5, 0.0, 0.0, 0.5f);
+    gg::Engine engine(gg::EngineConfig{});
+    engine.setSource(source);
+    engine.setCloudParams(p);
+    SinkLog log;
+    engine.setEventSink(&SinkLog::record, &log);
+    render(engine, 24000, 512);
+    REQUIRE(log.grains.size() == 1);
+    REQUIRE(engine.activeGrains() == 1);
+
+    engine.setEnabled(false);
+    const Render off = render(engine, 72000, 512);
+    REQUIRE(engine.activeGrains() == 0);
+    REQUIRE(peak(off.left) == 0.0f);
+    REQUIRE(log.grains.size() == 1);
+
+    engine.setEnabled(true);
+    const Render on = render(engine, 48000, 512);
+    REQUIRE(engine.enabled());
+    REQUIRE(log.grains.size() == 2);
+    CHECK(log.grains[1].index == 1);
+    CHECK(log.grains[1].onsetSample == 96000);
+    CHECK(log.grains[1].onsetFrac == 0.0);
+    CHECK(peak(on.left) > 0.05f);
+
+    // Not vacuous: never disabled, grain 1 waits for 4 s.
+    gg::Engine always(gg::EngineConfig{});
+    always.setSource(source);
+    always.setCloudParams(p);
+    SinkLog alwaysLog;
+    always.setEventSink(&SinkLog::record, &alwaysLog);
+    render(always, 144000, 512);
+    REQUIRE(alwaysLog.grains.size() == 1);
+}
+
+TEST_CASE("a source kind switch lets sounding grains finish", "[engine][layers]")
+{
+    // Spec §6.4 (carry-over row 119): at a switch from Sample to Live the scheduler draws for
+    // the ring from that frame, and the grains still sounding finish on the sample. The
+    // expectation is an engine that never switches but turns its stream off at the switch frame
+    // (density 0, ruling M1-a): what it renders from there is exactly the old grains finishing.
+    // The ring takes silence, so the new grains add nothing.
+    constexpr int64_t kSwitch = 24000;
+    constexpr int64_t kAfter = 48000; // the old grains, 1 s long, end within it
+    const auto source = makeSine(1, 96000, 48000.0);
+    const gg::CloudParams p = params(10.0, 1.0, 0.5, 0.0, 0.0, 0.25f);
+    gg::Engine switched(liveConfig());
+    gg::Engine reference(liveConfig());
+    for (gg::Engine *e : {&switched, &reference})
+    {
+        e->setSource(source);
+        e->setCloudParams(p);
+    }
+    SinkLog log;
+    switched.setEventSink(&SinkLog::record, &log);
+    const Render before = render(switched, kSwitch, 256);
+    const Render referenceBefore = render(reference, kSwitch, 256);
+    REQUIRE(sameBits(before.left, referenceBefore.left));
+    REQUIRE(switched.activeGrains() == 5); // onsets 0, 4800, ..., 19200
+    const std::size_t spawnedBefore = log.grains.size();
+
+    switched.setSourceMode(gg::SourceMode::Live);
+    gg::CloudParams off = p;
+    off.densityHz = 0.0;
+    reference.setCloudParams(off);
+    const Render after = render(switched, kAfter, 256);
+    const Render expected = render(reference, kAfter, 256);
+    REQUIRE(switched.sourceMode() == gg::SourceMode::Live);
+    REQUIRE(peak(expected.left) > 0.05f);
+    REQUIRE(sameBits(after.left, expected.left));
+    REQUIRE(sameBits(after.right, expected.right));
+
+    // The grains before the switch read sample slots; every one after it reads the ring.
+    REQUIRE_FALSE(log.overflowed);
+    REQUIRE(log.grains.size() > spawnedBefore);
+    bool slots = true;
+    for (std::size_t k = 0; k < log.grains.size(); ++k)
+    {
+        const gg::GrainSpec &g = log.grains[k];
+        slots = slots && (k < spawnedBefore
+                              ? g.sourceSlot < gg::Engine::kLiveSlot && g.onsetSample < kSwitch
+                              : g.sourceSlot == gg::Engine::kLiveSlot && g.onsetSample >= kSwitch);
+    }
+    REQUIRE(slots);
+}
+
+TEST_CASE("a sample replaced while ring grains sound leaves them on the ring", "[engine][layers]")
+{
+    // Replacing the sample moves the sample grains still sounding onto it (setSource), never a
+    // grain reading the ring. Sample grains of 0.1 s until 0.5 s, then Live with 1 s grains over
+    // noise; at 0.8 s, with only ring grains sounding, back to Sample with the stream off, and
+    // one engine replaces its sample. The ring grains then render the same in both.
+    const auto input = noiseInput(96000, 11);
+    const auto first = makeSine(1, 96000, 48000.0);
+    const auto second = makeConstant(96000, 0.5f);
+    gg::Engine replaced(liveConfig());
+    gg::Engine kept(liveConfig());
+    for (gg::Engine *e : {&replaced, &kept})
+    {
+        e->setSource(first);
+        e->setCloudParams(params(20.0, 0.1, 0.5, 0.0, 0.0, 0.5f));
+        renderInput(*e, input, 0, 24000, 256);
+        e->setSourceMode(gg::SourceMode::Live);
+        e->setCloudParams(params(20.0, 1.0, 0.2, 0.0, 0.0, 0.5f));
+        renderInput(*e, input, 24000, 14400, 256);
+        REQUIRE(e->activeGrains() > 0);
+        e->setSourceMode(gg::SourceMode::Sample);
+        e->setCloudParams(params(0.0, 1.0, 0.2, 0.0, 0.0, 0.5f));
+    }
+    replaced.setSource(second);
+    const Render a = renderInput(replaced, input, 38400, 57600, 256);
+    const Render b = renderInput(kept, input, 38400, 57600, 256);
+    REQUIRE(peak(b.left) > 0.05f);
+    REQUIRE(sameBits(a.left, b.left));
+    REQUIRE(sameBits(a.right, b.right));
+}
+
+TEST_CASE("the level accessor returns level 0 for any index", "[engine][layers]")
+{
+    // Spec §6.5: one level in wave 1, and any index past the last reads level 0.
+    for (const uint32_t channels : {1u, 2u})
+    {
+        INFO("channels = " << channels);
+        const auto source = gg::PreparedSource::make(makeSine(channels, 4800, 48000.0));
+        REQUIRE(source->levelCount() == 1);
+        const gg::PreparedSource::Level &level0 = source->level(0);
+        REQUIRE(level0.buffer == &source->buffer());
+        REQUIRE(level0.pairs == &source->pairs());
+        REQUIRE(level0.decimation == 1);
+        for (const uint32_t n : {1u, 7u, 0xFFFFFFFFu})
+        {
+            REQUIRE(&source->level(n) == &level0);
+        }
+        REQUIRE(source->level(7).buffer == source->level(0).buffer);
+    }
+
+    gg::LiveSource live;
+    live.prepare(48000.0, 1.0, 256);
+    REQUIRE(live.levelCount() == 1);
+    const gg::LiveSource::RingView view = live.view();
+    for (const uint32_t n : {0u, 7u, 0xFFFFFFFFu})
+    {
+        INFO("level " << n);
+        const gg::LiveSource::Level level = live.level(n);
+        REQUIRE(level.view.slots == view.slots);
+        REQUIRE(level.view.capacity == view.capacity);
+        REQUIRE(level.view.frames == view.frames);
+        REQUIRE(level.decimation == 1);
+    }
 }

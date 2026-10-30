@@ -172,6 +172,11 @@ class CloudScheduler
     /// (the FX).
     void setNoteGate(bool gate) noexcept { noteGate_ = gate; }
 
+    /// Forces an onset at the next schedule() call that runs the stream, at its blockStart: the
+    /// same path the first key held after none takes (setHeldKeys; the class comment's
+    /// **Notes**). Engine::setEnabled calls it when a layer is switched on (spec §6.2).
+    void forceNextOnset() noexcept { onsetForced_ = true; }
+
     /// Restarts the schedule: the next onset is t = 0 with k = 0. Keeps the sample rate, the
     /// controls, the held keys and the note gate.
     void reset() noexcept;
@@ -318,8 +323,10 @@ class CloudScheduler
     // The held keys, ascending: the first keyCount_ entries (spec §6.1).
     std::array<uint8_t, 128> keys_{};
     uint32_t keyCount_{0};
-    bool noteGate_{false};    // no grain while no key is held (the instrument)
-    bool onsetForced_{false}; // the held set went from empty to non-empty since the last run
+    bool noteGate_{false}; // no grain while no key is held (the instrument)
+    // The held set went from empty to non-empty, or forceNextOnset() was called, since the
+    // last run.
+    bool onsetForced_{false};
 };
 } // namespace gg
 

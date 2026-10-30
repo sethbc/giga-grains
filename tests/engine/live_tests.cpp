@@ -1259,8 +1259,10 @@ TEST_CASE("live input wiring and source mode", "[live]")
         REQUIRE(sameBits(asked.right, plain.right));
     }
 
-    SECTION("a mode change applies from the next process call and silences old grains")
+    SECTION("a mode change applies from the next process call and old grains finish")
     {
+        // Spec §6.4 (carry-over row 119): the sample grains sounding at the switch finish on
+        // the sample; the grains after it read the ring.
         gg::Engine engine(liveConfig());
         auto source = std::make_shared<gg::SampleBuffer>(1, 48000, kSampleRate);
         std::fill_n(source->channel(0), 48000, 0.25f);
@@ -1275,10 +1277,13 @@ TEST_CASE("live input wiring and source mode", "[live]")
         REQUIRE(engine.sourceMode() == gg::SourceMode::Sample); // not until process()
         engine.process(o, 2, 0);
         REQUIRE(engine.sourceMode() == gg::SourceMode::Live);
-        REQUIRE(engine.activeGrains() == 0);
-        // The ring holds only silence (the M0 overload), so the live grains are silent.
+        REQUIRE(engine.activeGrains() > 0); // kept
+        // The old grains, which started before 4,800, end by 4,799 + 3,840 + 2 (grainEndSample):
+        // 3,841 samples into this call. The ring holds only silence (the M0 overload), so the
+        // live grains are silent and nothing sounds after that.
         engine.process(o, 2, 4800);
-        REQUIRE(peak(left) == 0.0f);
+        REQUIRE(peak(left) > 0.05f);
+        REQUIRE(peak(std::vector<float>(left.begin() + 3841, left.end())) == 0.0f);
         REQUIRE(engine.activeGrains() > 0);
     }
 }

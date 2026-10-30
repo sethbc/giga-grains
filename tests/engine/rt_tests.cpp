@@ -25,17 +25,20 @@ using gg::test::AllocTripwire;
 
 namespace
 {
-// Counts spawns, and the Eco ones, without allocating: the sink runs inside process().
+// Counts spawns, the Eco ones and the ones reading the ring, without allocating: the sink runs
+// inside process().
 struct SpawnCounter
 {
     uint64_t spawns{0};
     uint64_t eco{0};
+    uint64_t live{0};
 
     static void record(void *ctx, const gg::GrainSpec &g)
     {
         auto *counter = static_cast<SpawnCounter *>(ctx);
         ++counter->spawns;
         counter->eco += g.tier == gg::Tier::Eco ? 1 : 0;
+        counter->live += g.sourceSlot == gg::Engine::kLiveSlot ? 1 : 0;
     }
 };
 
@@ -449,6 +452,68 @@ TEST_CASE("engine adopts and hands back sources without allocating", "[engine][r
     REQUIRE(adoptedAAgain);
     REQUIRE(retiredB == b.get());
     REQUIRE(counter.spawns > spawnsBefore);   // grains spawned and rendered while armed
+    if (gg::test::AllocTripwire::available()) // off under ASan; RTSan covers this
+    {
+        REQUIRE(allocations == 0);
+    }
+}
+
+TEST_CASE("engine source kind switch does not allocate", "[engine][rt]")
+{
+    // Carry-over row 118: the source-kind switch, both ways, with the tripwire armed (spec
+    // §6.4). 0.2 s grains at 200 Hz and a switch every 501 frames, so grains of both kinds sound
+    // across every switch and the renderer dispatches sample and ring grains in one pool.
+    gg::EngineConfig config{48000.0, 256, 4096, 5};
+    config.liveSeconds = 1.0;
+    gg::Engine engine(config);
+    engine.setSource(stereoSine(330.0));
+    engine.setCloudParams({.densityHz = 200.0,
+                           .distribution = 1.0,
+                           .grainDurationSec = 0.2,
+                           .position = 0.05,
+                           .spray = 0.02,
+                           .pitchSemitones = 3.0,
+                           .stereo = 1.0,
+                           .gain = 0.5f});
+    SpawnCounter counter;
+    engine.setEventSink(&SpawnCounter::record, &counter);
+
+    std::vector<float> inLeft(500), inRight(500);
+    for (std::size_t i = 0; i < inLeft.size(); ++i)
+    {
+        inLeft[i] = static_cast<float>(std::sin(2.0 * std::numbers::pi * 220.0 * i / 48000.0));
+        inRight[i] = -inLeft[i];
+    }
+    const float *in[2] = {inLeft.data(), inRight.data()};
+    std::vector<float> left(500), right(500);
+    float *out[2] = {left.data(), right.data()};
+    for (int i = 0; i < 20; ++i) // warm up until sample grains are sounding
+    {
+        engine.process(in, 2, out, 2, 500);
+    }
+    REQUIRE(engine.activeGrains() > 0);
+    const uint64_t spawnsBefore = counter.spawns;
+    const uint64_t liveBefore = counter.live;
+
+    bool alternated = true;
+    AllocTripwire::resetCount();
+    {
+        AllocTripwire::Scope armed;
+        for (int i = 0; i < 20; ++i)
+        {
+            const gg::SourceMode mode = i % 2 == 0 ? gg::SourceMode::Live : gg::SourceMode::Sample;
+            engine.setSourceMode(mode);
+            engine.process(in, 2, out, 2, 1);
+            alternated = alternated && engine.sourceMode() == mode;
+            engine.process(in, 2, out, 2, 500);
+        }
+    }
+    const uint64_t allocations = AllocTripwire::count();
+
+    REQUIRE(alternated);
+    REQUIRE(counter.live > liveBefore);                                 // ring grains spawned
+    REQUIRE(counter.spawns - counter.live > spawnsBefore - liveBefore); // and sample grains
+    REQUIRE(engine.activeGrains() > 0);
     if (gg::test::AllocTripwire::available()) // off under ASan; RTSan covers this
     {
         REQUIRE(allocations == 0);

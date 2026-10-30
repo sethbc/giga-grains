@@ -10,7 +10,7 @@
 namespace gg
 {
 PreparedSource::PreparedSource(std::shared_ptr<const SampleBuffer> buffer) noexcept
-    : buffer_(std::move(buffer))
+    : buffer_(std::move(buffer)), level0_{buffer_.get(), &pairs_, 1}
 {
 }
 
