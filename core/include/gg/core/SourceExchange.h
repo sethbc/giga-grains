@@ -159,6 +159,11 @@ class SourceExchange
     /// Either thread. How many ring offers the audio side has declined since construction.
     uint32_t ringsDeclined() const noexcept;
 
+    /// Main thread, while the audio side is stopped (Processor::setRingNow): every ring offered
+    /// so far is settled, adopted or not, so ringAdoptionPending() is false until the next
+    /// offerRing().
+    void settleRingOffers() noexcept;
+
     /// Main thread. The sources the exchange holds: offered or held, and not yet freed, whether
     /// the audio side has them or not. For tests and diagnostics.
     std::size_t held() const noexcept { return owned_.size(); }

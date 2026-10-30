@@ -401,7 +401,7 @@ TEST_CASE("ring parameters apply on the grid", "[core][source]")
     }
 }
 
-TEST_CASE("overdub 0 renders the M1 bytes", "[core][source]")
+TEST_CASE("the ring parameters at their defaults render the same bytes", "[core][source]")
 {
     // Spec §6.1: a piece whose Overdub ramp is 0 throughout writes the input alone by M1's path,
     // so fx-feedback's spec with every ring parameter set to its default, explicitly and by
@@ -481,6 +481,26 @@ TEST_CASE("a splice command marks the ring", "[core][source]")
     meta = p.ringMeta(0);
     CHECK(meta.spliceCount == 0);
     CHECK(meta.windowFrames == kRing); // no mark: the whole window
+}
+
+TEST_CASE("a group keeps its first 64 commands", "[core][source]")
+{
+    // CommandEvent: a group applies at most kMaxGroupCommands commands; later ones are ignored.
+    // 64 AddSplice commands make one mark (the rest land on it); a ClearSplices after them is the
+    // 65th, and ignored, while one in 64th place clears.
+    static_assert(Processor::kMaxGroupCommands == 64);
+    const Stereo input = noise(2048, 0.5f, 139);
+    for (const uint32_t adds : {63u, 64u})
+    {
+        INFO(adds << " AddSplice commands first");
+        Processor p({kRate, 512, 41, Mode::Fx});
+        Stereo out = silence(2048);
+        renderCmd(p, &input, 0, 1024, {512}, {}, {}, out);
+        std::vector<TimedCommand> commands(adds, {1030, CommandKind::AddSplice, 0, 0.01f});
+        commands.push_back({1030, CommandKind::ClearSplices, 0, 0.0f});
+        renderCmd(p, &input, 1024, 2048, {1024}, {}, commands, out);
+        CHECK(p.engine(0).live().spliceCount() == (adds == 64 ? 1u : 0u));
+    }
 }
 
 TEST_CASE("a ring restore arms Freeze", "[core][source]")
@@ -659,6 +679,20 @@ TEST_CASE("setRingNow adopts a ring while inactive", "[core][source]")
     CHECK(p.engine(1).liveWriteHead() == 1000);
     CHECK(p.sources(1).ringsHeld() == 1); // the 5 s one, replaced, is freed
 
+    // A declined offer stays pending until setRingNow supersedes it.
+    Stereo out = silence(10000);
+    const Stereo input = noise(10000, 0.5f, 137);
+    renderCmd(p, &input, 0, 9600, {512}, {}, {}, out);
+    p.sources(1).offerRing(std::make_unique<RingStorage>(48000, 512), RingOffer{}); // gap 9600
+    renderCmd(p, &input, 9600, 10000, {400}, {}, {}, out);
+    CHECK(p.ringAdoptionsDeclined(1) == 1);
+    CHECK(p.sources(1).ringAdoptionPending());
+    RingOffer now;
+    now.copiedTo = p.engine(1).liveWriteHead();
+    REQUIRE(p.setRingNow(1, std::make_unique<RingStorage>(2 * 48000, 512), now));
+    CHECK_FALSE(p.sources(1).ringAdoptionPending());
+    CHECK(p.sources(1).ringsHeld() == 1);
+
     // Ring Length's seconds, for the plugin's watcher: the base value's.
     CHECK(p.ringSecondsRequested(1) == 16.0);
     p.setBase(slotOf(LayerParam::RingLength, 1), static_cast<float>(std::log2(20.0)));
@@ -685,16 +719,19 @@ TEST_CASE("ringRead's wrap check", "[core][source]")
         done += frames;
     };
 
-    // Copies the newest `w` frames in two halves with `between` frames rendered in the middle;
-    // returns whether the check accepts it, and whether the copy is the window as of R0.
+    // Copies the newest `w` frames (RingRead's steps, with W given) in two halves with `between`
+    // frames rendered in the middle; returns whether the check accepts it, and whether the copy
+    // is the window as of R0.
     const auto copy = [&](int64_t w, int64_t between) {
         const std::atomic<uint32_t> *epoch = p.ringRead(0).storageEpoch;
         const uint32_t e0 = epoch->load(std::memory_order_acquire);
         const gg::core::RingRead r = p.ringRead(0);
-        const int64_t r0 = r.head->load(std::memory_order_acquire);
-        const std::vector<float> truth = windowOf(p, 0, r0 - w, r0);
-        std::vector<float> copied;
         const RingStorage &s = *r.storage;
+        w = std::min(w, s.frames());
+        const int64_t r0 = r.head->load(std::memory_order_acquire);
+        const int64_t oldest = std::max<int64_t>(0, r0 - w);
+        const std::vector<float> truth = windowOf(p, 0, oldest, r0);
+        std::vector<float> copied;
         const auto copyRange = [&](int64_t from, int64_t to) {
             for (int64_t f = from; f < to; ++f)
             {
@@ -703,13 +740,14 @@ TEST_CASE("ringRead's wrap check", "[core][source]")
                 copied.push_back(s.slots()[2 * slot + 1]);
             }
         };
-        copyRange(r0 - w, r0 - w / 2);
+        copyRange(oldest, r0 - w / 2);
         renderFor(between);
         copyRange(r0 - w / 2, r0);
-        const int64_t r1 = r.head->load(std::memory_order_acquire);
+        // The fence before the closing reads: no frame load completes after R1 is sampled.
         std::atomic_thread_fence(std::memory_order_acquire);
+        const int64_t r1 = r.head->load(std::memory_order_relaxed);
         const uint32_t e1 = epoch->load(std::memory_order_relaxed);
-        const bool accepted = e0 == e1 && e0 % 2 == 0 && r1 - r0 + w <= s.frames();
+        const bool accepted = e0 == e1 && e0 % 2 == 0 && r1 - oldest <= s.frames();
         return std::pair{accepted, copied == truth};
     };
 

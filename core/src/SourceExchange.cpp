@@ -57,6 +57,12 @@ uint32_t SourceExchange::ringsDeclined() const noexcept
     return ringsDeclined_.load(std::memory_order_acquire);
 }
 
+void SourceExchange::settleRingOffers() noexcept
+{
+    // The audio side is stopped, so the main thread may write its half too.
+    ringAdopted_.store(ringSerial_, std::memory_order_release);
+}
+
 void SourceExchange::publish(const PreparedSource *raw, bool keep, const ParamValues *values,
                              const RingOffer *ring, uint32_t serial)
 {

@@ -251,10 +251,12 @@ Processor::Processor(const ProcessorConfig &config)
     }
     // The kinds (the FX's layers read their rings), the cloud parameters and the rings' values.
     updateEffective();
-    // The ring read sees each ring's own storage from the start (M2 sub-project 2's spec §6.4).
-    for (const auto &l : layers_)
+    // The ring read sees each ring's own storage from the start (M2 sub-project 2's spec §6.4),
+    // and the watcher the Ring Lengths.
+    for (uint8_t L = 0; L < kLayers; ++L)
     {
-        publishStorage(*l);
+        publishStorage(*layers_[L]);
+        storeRingSeconds(L);
     }
     // A layer off by default (B to D) starts with its engine disabled, so it spawns nothing
     // before it is switched on; layer A's is never told, as M1's engine wasn't.
@@ -334,6 +336,10 @@ void Processor::setBase(ParamSlot slot, float value) noexcept
     hasPendingBase_[s] = false;
     updateEffective();
     const std::optional<LayerRef> ref = layerOf(slot);
+    if (ref && ref->param == LayerParam::RingLength)
+    {
+        storeRingSeconds(ref->layer);
+    }
     if (slot == ParamSlot::Macro6 || (ref && ref->param == LayerParam::Freeze))
     {
         syncFreeze(); // Freeze set off is a transition's first half, even between calls
@@ -440,6 +446,10 @@ void Processor::setBases(const ParamValues &values) noexcept
         base_[s] = clampToRange(s, values[s]);
     }
     hasPendingBase_.fill(false);
+    for (uint8_t L = 0; L < kLayers; ++L)
+    {
+        storeRingSeconds(L);
+    }
     // The engines take their parameters and kind as values, the last given winning, so one
     // update gives what the calls' last one gave. (A period the calls move and move back flags
     // the scheduler's rescale where one update doesn't, and that rescale recomputes the pending
@@ -573,6 +583,13 @@ void Processor::commitPending() noexcept
             isModulatorControl(static_cast<ParamSlot>(s)))
         {
             effective_[s] = clampToRange(s, base_[s] + mod_[s]);
+        }
+    }
+    for (uint8_t L = 0; L < kLayers; ++L)
+    {
+        if (hasPendingBase_[static_cast<size_t>(layerSlot(LayerParam::RingLength, L))])
+        {
+            storeRingSeconds(L);
         }
     }
     hasPendingBase_.fill(false);
@@ -769,7 +786,6 @@ void Processor::updateEffective() noexcept
         l.engine.live().setLoop(ring.loop, std::max<int64_t>(1, std::llround(loopFrames)));
         l.engine.live().selectSplice(ring.splice);
         l.resample = sourceKindOf(effective_, L) == SourceKind::Resample;
-        l.ringSeconds.store(toRingParams(base_, L).ringSeconds, std::memory_order_relaxed);
     }
     // The tap's history starts from silence whenever it becomes live (spec §6.2).
     const bool anyResample =
@@ -999,6 +1015,7 @@ bool Processor::setRingNow(uint8_t layer, std::unique_ptr<RingStorage> storage,
     RingOffer offer = how;
     offer.storage = l.sources.holdRing(std::move(storage));
     const bool adopted = adoptRing(l, offer);
+    l.sources.settleRingOffers(); // superseded, a declined one included
     l.sources.collect();
     return adopted;
 }
@@ -1014,6 +1031,11 @@ RingMeta Processor::ringMeta(uint8_t layer) const noexcept
     const Layer &l = layerAt(layer);
     l.meta.take(l.metaTaken); // unchanged when nothing newer was published
     return l.metaTaken;
+}
+
+void Processor::storeRingSeconds(uint8_t L) noexcept
+{
+    layers_[L]->ringSeconds.store(toRingParams(base_, L).ringSeconds, std::memory_order_relaxed);
 }
 
 double Processor::ringSecondsRequested(uint8_t layer) const noexcept

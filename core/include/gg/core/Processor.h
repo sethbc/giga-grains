@@ -103,7 +103,8 @@ enum class CommandKind : uint8_t
 /// splice's end), clamped into the window [max(0, its oldest frame), anchorAt(b)]; a mark on an
 /// existing one, or a 33rd, is ignored (LiveSource::addSplice). ClearSplices empties the layer's
 /// marks. A command on a layer that reads a sample, on a layer past kLayers, of an unknown kind,
-/// or an AddSplice whose value isn't finite is ignored.
+/// an AddSplice whose value isn't finite, and every command after a group's
+/// Processor::kMaxGroupCommands-th are ignored.
 struct CommandEvent
 {
     uint32_t offset; ///< Frames from the start of the call. A call's commands are sorted by it.
@@ -113,13 +114,21 @@ struct CommandEvent
 };
 
 /// What the main thread needs to read a layer's ring without stopping the audio thread (spec
-/// §6.4). A read: e0 = *storageEpoch (acquire; even: no adoption under way), then storage (call
-/// ringRead again: the storage as of e0 or later), R0 = *head (acquire), copy frames
-/// [R0 − W, R0) from their slots (frame f in slot f mod storage->capacity()), R1 = *head
-/// (acquire), an acquire fence, e1 = *storageEpoch; the copy is the window as of R0 when e1 == e0
-/// and R1 − R0 + W <= storage->frames(): the frames written meanwhile, and the at most one
-/// block's worth (capacity − frames) in flight past R1, then share no slot with a frame read.
-/// Otherwise copy again. A frozen ring passes at once.
+/// §6.4), a seqlock's reader:
+/// 1. W, the window's length, from ringMeta(layer).windowFrames (with the marks, for a splice);
+/// 2. e0 = *storageEpoch (acquire): odd means an adoption is under way, so start again;
+/// 3. storage = ringRead(layer).storage (the storage as of e0 or later), and W clamped to
+///    storage->frames();
+/// 4. R0 = *head (acquire), and the oldest frame to copy, F = max(0, R0 − W) (a young ring holds
+///    fewer than W frames; a splice copies its own span inside [F, R0));
+/// 5. the copy: frame f from slot f mod storage->capacity(), both channels side by side;
+/// 6. std::atomic_thread_fence(std::memory_order_acquire), so no frame load completes after
+///    what follows;
+/// 7. R1 = *head and e1 = *storageEpoch (both may be relaxed after the fence).
+///
+/// The copy is the window as of R0 when e1 == e0 and R1 − F <= storage->frames(): the frames
+/// written meanwhile, and the at most one block's worth (capacity − frames) in flight past R1,
+/// then share no slot with a frame read. Otherwise copy again. A frozen ring passes at once.
 struct RingRead
 {
     /// The storage in effect: it changes only at a call's start, after an adoption.
@@ -593,16 +602,22 @@ class Processor
     /// slots hold the frames below how.copiedTo, or a restore; RingOffer), on the calling thread,
     /// after taking the layer's offers (takeOffers' work for that layer), as an offer taken by
     /// process() would be. The storage replaced is freed here. Returns false, freeing `storage`
-    /// and changing nothing, when the ring refuses it. `layer` is below kLayers.
+    /// and changing nothing, when the ring refuses it. Either way it supersedes every ring offered
+    /// to that layer so far: ringAdoptionPending() is then false (a declined offer included) until
+    /// the next offerRing(). `layer` is below kLayers.
     bool setRingNow(uint8_t layer, std::unique_ptr<RingStorage> storage, const RingOffer &how);
 
-    /// Layer `layer`'s ring for the main thread's read (RingRead; spec §6.4). Any thread.
+    /// Layer `layer`'s ring for the main thread's read (RingRead; spec §6.4). Any thread may call
+    /// it, but its storage may be dereferenced only on the thread that calls
+    /// sources(layer).collect() (the main thread), which alone frees a storage the audio thread
+    /// retired.
     RingRead ringRead(uint8_t layer) const noexcept;
     /// Layer `layer`'s RingMeta as of the last piece rendered (or adoption, or construction):
     /// the latest the audio thread published. The main thread's, its one consumer.
     RingMeta ringMeta(uint8_t layer) const noexcept;
     /// Layer `layer`'s Ring Length base value in seconds, as of the last setBase(), setBases()
-    /// or applied boundary (an atomic): the ring the plugin's watcher should make. Any thread.
+    /// or applied boundary that set it (an atomic): the ring the plugin's watcher should make.
+    /// Any thread.
     double ringSecondsRequested(uint8_t layer) const noexcept;
     /// How many of layer `layer`'s ring offers were declined (SourceExchange::ringsDeclined).
     uint32_t ringAdoptionsDeclined(uint8_t layer) const noexcept
@@ -859,6 +874,8 @@ class Processor
     /// Publishes layer l's storage and head inside an odd storage epoch (RingRead), then its
     /// RingMeta: after an adoption or a reset().
     static void publishStorage(Layer &l) noexcept SST_CPPUTILS_NONBLOCKING;
+    /// Stores layer L's Ring Length base value's seconds for ringSecondsRequested().
+    void storeRingSeconds(uint8_t L) noexcept;
     float clampToRange(size_t slot, float value) const noexcept;
 
     ProcessorConfig config_;
