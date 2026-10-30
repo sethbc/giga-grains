@@ -1,0 +1,19 @@
+{
+  "mode": "fx",
+  "sampleRate": 48000,
+  "durationSeconds": 9.5,
+  "blockSize": 128,
+  "seed": 1,
+  "input": {"kind": "sweep", "startHz": 2000, "endHz": 16000, "seconds": 9.5, "amplitude": 0.5},
+  "channels": 2,
+  "samples": {"B": {"kind": "file", "path": "loop-48k.wav"}},
+  "params": {"Mix": 1.0, "Level": -6.0, "Level B": -6.0, "Layer B On": 1, "B Source": 0,
+             "Pitch": 7, "Size": -3.643856189774725, "Density": 5.584962500721156, "Quality": 0,
+             "B Pitch": 7, "B Size": -3.643856189774725, "B Density": 5.584962500721156, "B Position": 0.25, "B Spray": 1.0, "B Quality": 0},
+  "automation": [
+    {"time": 3.0, "param": "Quality", "value": 1},
+    {"time": 3.0, "param": "B Quality", "value": 1},
+    {"time": 6.0, "param": "Quality", "value": 2},
+    {"time": 6.0, "param": "B Quality", "value": 2}
+  ]
+}

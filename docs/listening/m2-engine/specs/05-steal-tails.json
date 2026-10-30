@@ -1,0 +1,13 @@
+{
+  "mode": "instrument",
+  "sampleRate": 48000,
+  "durationSeconds": 10.0,
+  "blockSize": 128,
+  "seed": 1,
+  "sample": {"kind": "file", "path": "tone-44k1.wav"},
+  "params": {"Position": 0.3, "Quality": 2, "Density": 7.643856189774724, "Size": 0.0, "Level": -6.0, "Budget": 256},
+  "notes": [
+    {"time": 0.25, "key": 60, "duration": 5.0},
+    {"time": 3.0, "key": 67, "duration": 5.5}
+  ]
+}
