@@ -33,7 +33,9 @@
 #include "Signals.h"
 #include "gg/core/ParamIds.h"
 #include "gg/core/Processor.h"
+#include "gg/core/SessionState.h"
 #include "gg/grain/Tier.h"
+#include "gg/metrics/WavIO.h"
 #include "gg/source/PreparedSource.h"
 #include "gg/source/SampleBuffer.h"
 #include "sst/basic-blocks/params/ParamMetadata.h"
@@ -2148,4 +2150,512 @@ TEST_CASE("layer samples, routes, controls, transport and velocity render as the
     loud["notes"][0].erase("velocity");
     CHECK_FALSE(bitIdentical(gg::render::render(parseJson(loud), nullptr).channels[0],
                              rendered.channels[0]));
+}
+
+namespace
+{
+/// An FX spec of its own for the ring tests: a mono 220 Hz sine, `seconds` long.
+nlohmann::json ringFxJson(double seconds = 2.0)
+{
+    return nlohmann::json{
+        {"mode", "fx"},
+        {"sampleRate", 48000},
+        {"durationSeconds", seconds},
+        {"blockSize", 128},
+        {"seed", 1},
+        {"input",
+         {{"kind", "sine"}, {"frequencyHz", 220}, {"seconds", seconds}, {"amplitude", 0.5}}},
+        {"channels", 1}};
+}
+
+/// A fresh directory of this name under GG_TEST_OUTPUT_DIR, as UTF-8.
+std::string freshDirectory(const std::string &name)
+{
+    const auto dir = std::filesystem::path{GG_TEST_OUTPUT_DIR} / name;
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+    return utf8(dir);
+}
+
+std::string readBytes(const std::string &path)
+{
+    std::ifstream in(std::filesystem::path{gg::render::pathFromUtf8(path)}, std::ios::binary);
+    REQUIRE(in.good());
+    return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+}
+
+gg::core::SessionState decodeFile(const std::string &path, Mode mode)
+{
+    gg::core::SessionState state;
+    const bool ok = gg::core::decodeState(readBytes(path), mode, state);
+    REQUIRE(ok);
+    return state;
+}
+} // namespace
+
+TEST_CASE("specs take state, operations and memoryCapMiB in both processor modes", "[render]")
+{
+    auto j = ringFxJson();
+    j["state"] = "frozen-ring.ggst";
+    j["memoryCapMiB"] = 256;
+    j["params"] = {{"A Ring Length", 3.0},
+                   {"A Loop", 1},
+                   {"A Loop Length", -1.0},
+                   {"A Overdub", 0.5},
+                   {"A Splice", 2}};
+    j["operations"] = nlohmann::json::parse(R"([
+        {"time": 0.5, "layer": "A", "op": "splice", "behind": 1.5},
+        {"time": 0.5, "layer": "B", "op": "splice"},
+        {"time": 1.0, "layer": "A", "op": "clearSplices"},
+        {"time": 1.5, "layer": "C", "op": "capture", "splice": 3, "into": "D", "file": "c.wav"},
+        {"time": 1.6, "layer": "A", "op": "capture", "file": "all.wav"},
+        {"time": 1.7, "layer": "A", "op": "capture", "into": "B"}])");
+    const RenderSpec spec = parseJson(j);
+    CHECK(spec.fx.statePath == "frozen-ring.ggst");
+    REQUIRE(spec.fx.memoryCapMiB.has_value());
+    CHECK(*spec.fx.memoryCapMiB == 256);
+    REQUIRE(spec.fx.operations.size() == 6);
+    const auto &ops = spec.fx.operations;
+    CHECK(ops[0].op == "splice");
+    CHECK(ops[0].timeSeconds == 0.5);
+    CHECK(ops[0].layer == 0);
+    CHECK(ops[0].behind == 1.5);
+    CHECK(ops[1].behind == 0.0);
+    CHECK(ops[1].layer == 1);
+    CHECK(ops[2].op == "clearSplices");
+    CHECK(ops[3].op == "capture");
+    CHECK(ops[3].layer == 2);
+    CHECK(ops[3].splice == 3);
+    CHECK(ops[3].into == std::optional<uint8_t>{3});
+    CHECK(ops[3].file == "c.wav");
+    CHECK(ops[4].splice == 0);
+    CHECK_FALSE(ops[4].into.has_value());
+    CHECK(ops[5].file.empty());
+
+    // The same keys in instrument mode; there "sample" may be left out beside a state.
+    auto inst = instrumentJson();
+    inst["state"] = "four-samples.ggst";
+    inst["operations"] = {{{"time", 1.0}, {"layer", "A"}, {"op", "clearSplices"}}};
+    inst["memoryCapMiB"] = 64;
+    const RenderSpec withSample = parseJson(inst);
+    CHECK(withSample.instrument.statePath == "four-samples.ggst");
+    CHECK(withSample.instrument.operations.size() == 1);
+    CHECK(*withSample.instrument.memoryCapMiB == 64);
+    CHECK_FALSE(withSample.instrument.noSample);
+    inst.erase("sample");
+    const RenderSpec noSample = parseJson(inst);
+    CHECK(noSample.instrument.noSample);
+
+    // Without a state "sample" stays required, and none of the new keys is required.
+    auto bare = instrumentJson();
+    bare.erase("sample");
+    CHECK_THAT(rejection(bare), ContainsSubstring("sample is missing"));
+    const RenderSpec plain = parseJson(ringFxJson());
+    CHECK(plain.fx.statePath.empty());
+    CHECK(plain.fx.operations.empty());
+    CHECK_FALSE(plain.fx.memoryCapMiB.has_value());
+}
+
+TEST_CASE("bad operations, state and memoryCapMiB are rejected", "[render]")
+{
+    const auto withOps = [](const char *ops) {
+        auto j = ringFxJson();
+        j["operations"] = nlohmann::json::parse(ops);
+        return j;
+    };
+    CHECK_THAT(rejection(withOps(R"([
+                  {"time": 1.0, "layer": "A", "op": "clearSplices"},
+                  {"time": 0.5, "layer": "A", "op": "clearSplices"}])")),
+               ContainsSubstring("operations[1].time is before operations[0].time"));
+    CHECK_THAT(rejection(withOps(R"([{"time": 1.0, "layer": "A", "op": "rewind"}])")),
+               ContainsSubstring("operations[0].op must be"));
+    CHECK_THAT(rejection(withOps(R"([{"time": 1.0, "layer": "E", "op": "clearSplices"}])")),
+               ContainsSubstring("operations[0].layer must be"));
+    CHECK_THAT(rejection(withOps(R"([{"time": 2.5, "layer": "A", "op": "clearSplices"}])")),
+               ContainsSubstring("operations[0].time must be"));
+    // The keys of capture on another op.
+    CHECK_THAT(rejection(withOps(R"([{"time": 1, "layer": "A", "op": "splice", "splice": 1}])")),
+               ContainsSubstring("operations[0].splice doesn't apply to op \"splice\""));
+    CHECK_THAT(rejection(withOps(R"([{"time": 1, "layer": "A", "op": "splice", "into": "B"}])")),
+               ContainsSubstring("operations[0].into doesn't apply"));
+    CHECK_THAT(
+        rejection(withOps(R"([{"time": 1, "layer": "A", "op": "clearSplices", "file": "x"}])")),
+        ContainsSubstring("operations[0].file doesn't apply"));
+    CHECK_THAT(rejection(withOps(
+                   R"([{"time": 1, "layer": "A", "op": "capture", "into": "B", "behind": 1}])")),
+               ContainsSubstring("operations[0].behind doesn't apply"));
+    // A capture needs somewhere to go.
+    CHECK_THAT(rejection(withOps(R"([{"time": 1, "layer": "A", "op": "capture"}])")),
+               ContainsSubstring("operations[0] needs into or file"));
+    CHECK_THAT(rejection(withOps(R"([{"time": 1, "layer": "A", "op": "capture", "file": ""}])")),
+               ContainsSubstring("operations[0].file must not be empty"));
+    CHECK_THAT(rejection(withOps(R"([{"time": 1, "layer": "A", "op": "capture", "into": "Z"}])")),
+               ContainsSubstring("operations[0].into must be"));
+    CHECK_THAT(rejection(withOps(
+                   R"([{"time": 1, "layer": "A", "op": "capture", "into": "B", "splice": 33}])")),
+               ContainsSubstring("operations[0].splice must be an integer from 0 to 32"));
+    CHECK_THAT(rejection(withOps(R"([{"time": 1, "layer": "A", "op": "splice", "behind": -1}])")),
+               ContainsSubstring("operations[0].behind must be from 0 to 300"));
+    CHECK_THAT(rejection(withOps(R"([{"time": 1, "layer": "A", "op": "splice", "extra": 1}])")),
+               ContainsSubstring("unknown key operations[0].extra"));
+    CHECK_THAT(rejection(withOps(R"({"time": 1})")), ContainsSubstring("operations must be"));
+
+    // memoryCapMiB: an integer from 64 to 16384.
+    for (const auto &cap : {nlohmann::json(63), nlohmann::json(16385), nlohmann::json(100.5),
+                            nlohmann::json("big"), nlohmann::json(-1)})
+    {
+        auto j = ringFxJson();
+        j["memoryCapMiB"] = cap;
+        INFO(cap.dump());
+        CHECK_THAT(rejection(j), ContainsSubstring("memoryCapMiB must be"));
+    }
+    for (const auto cap : {64, 16384})
+    {
+        auto j = ringFxJson();
+        j["memoryCapMiB"] = cap;
+        CHECK(*parseJson(j).fx.memoryCapMiB == static_cast<uint32_t>(cap));
+    }
+    auto emptyState = ringFxJson();
+    emptyState["state"] = "";
+    CHECK_THAT(rejection(emptyState), ContainsSubstring("state must not be empty"));
+
+    // Ring Length is set in params; it can't be automated.
+    auto automated = ringFxJson();
+    automated["automation"] = {{{"time", 1.0}, {"param", "B Ring Length"}, {"value", 3.0}}};
+    CHECK_THAT(rejection(automated), ContainsSubstring("Ring Length can't be automated"));
+    // Its range is the parameter's: 1 s to 300 s, log2.
+    auto tooLong = ringFxJson();
+    tooLong["params"] = {{"A Ring Length", 9.0}};
+    CHECK_THAT(rejection(tooLong), ContainsSubstring("params.A Ring Length must be in"));
+    // The other four are automatable.
+    auto fine = ringFxJson();
+    fine["automation"] = {{{"time", 1.0}, {"param", "C Overdub"}, {"value", 0.5}},
+                          {{"time", 1.0}, {"param", "A Loop"}, {"value", 1}}};
+    parseJson(fine);
+}
+
+TEST_CASE("sample mode takes none of the state, operations or memoryCapMiB keys", "[render]")
+{
+    const nlohmann::json values = nlohmann::json::parse(R"({
+        "state": "x.ggst",
+        "operations": [{"time": 0.5, "layer": "A", "op": "clearSplices"}],
+        "memoryCapMiB": 256})");
+    for (const auto &item : values.items())
+    {
+        auto j = nlohmann::json::parse(readCase("sparse-sine"));
+        j[item.key()] = item.value();
+        INFO(item.key());
+        CHECK(rejection(j) == "unknown key " + item.key());
+    }
+}
+
+TEST_CASE("resolvePaths makes the state path relative to the base directory", "[render]")
+{
+    auto j = ringFxJson();
+    j["state"] = "frozen-ring.ggst";
+    RenderSpec spec = parseJson(j);
+    gg::render::resolvePaths(spec, "/media");
+    CHECK(spec.fx.statePath == (std::filesystem::path("/media") / "frozen-ring.ggst").string());
+    auto abs = ringFxJson();
+    abs["state"] = (std::filesystem::path(GG_TEST_OUTPUT_DIR) / "s.ggst").string();
+    RenderSpec absSpec = parseJson(abs);
+    const std::string before = absSpec.fx.statePath;
+    gg::render::resolvePaths(absSpec, "/media");
+    CHECK(absSpec.fx.statePath == before);
+}
+
+TEST_CASE("a ring operation render matches for any block size, capture included", "[render]")
+{
+    const std::string dir = freshDirectory("ring-ops-blocks");
+    auto j = ringFxJson(2.0);
+    j["params"] = {{"B Source", 0}, {"Layer B On", 1}, {"A Ring Length", 3.0}};
+    j["operations"] = nlohmann::json::parse(R"([
+        {"time": 0.3, "layer": "A", "op": "splice", "behind": 0.1},
+        {"time": 0.7, "layer": "A", "op": "splice"},
+        {"time": 1.0, "layer": "A", "op": "capture", "splice": 1, "into": "B"}])");
+    j["operations"][2]["file"] = dir + "/cap-" + "N" + ".wav";
+    std::vector<float> reference;
+    std::vector<float> capture;
+    for (const uint32_t blockSize : {128u, 1u, 77u, 1000u, 4096u})
+    {
+        auto k = j;
+        k["blockSize"] = blockSize;
+        k["operations"][2]["file"] = dir + "/cap-" + std::to_string(blockSize) + ".wav";
+        const auto out = gg::render::render(parseJson(k), nullptr);
+        const auto cap = gg::metrics::readAudioFile(k["operations"][2]["file"].get<std::string>());
+        REQUIRE(cap.has_value());
+        INFO("block size " << blockSize);
+        if (reference.empty())
+        {
+            reference = out.channels[0];
+            capture = cap->channels[0];
+            CHECK(capture.size() > 0);
+        }
+        CHECK(bitIdentical(out.channels[0], reference));
+        CHECK(bitIdentical(cap->channels[0], capture));
+    }
+    // The capture reached layer B: without it layer B is silent and the render differs.
+    auto without = j;
+    without["operations"] = nlohmann::json::array();
+    CHECK_FALSE(
+        bitIdentical(gg::render::render(parseJson(without), nullptr).channels[0], reference));
+}
+
+TEST_CASE("a capture is the ring's newest frames, or a splice's span", "[render]")
+{
+    const std::string dir = freshDirectory("ring-capture-content");
+    constexpr uint32_t sr = 48000;
+    auto j = ringFxJson(2.0);
+    j["params"] = {{"A Ring Length", 3.0}};
+    // Marks on the grid at 0.3 s and 0.6 s (14400 and 28800 are multiples of 32), the whole ring
+    // at 1.0 s and the span of splice 1 after them.
+    j["operations"] = nlohmann::json::parse(R"([
+        {"time": 0.3, "layer": "A", "op": "splice"},
+        {"time": 0.6, "layer": "A", "op": "splice"},
+        {"time": 1.0, "layer": "A", "op": "capture", "splice": 0},
+        {"time": 1.0, "layer": "A", "op": "capture", "splice": 1},
+        {"time": 1.0, "layer": "A", "op": "capture", "splice": 2}])");
+    j["operations"][2]["file"] = dir + "/whole.wav";
+    j["operations"][3]["file"] = dir + "/first.wav";
+    j["operations"][4]["file"] = dir + "/last.wav";
+    const RenderSpec spec = parseJson(j);
+    (void)gg::render::render(spec, nullptr);
+    const auto input = gg::render::makeInput(spec.fx.input, 1, 48000.0, 1);
+    const auto expect = [&](const std::string &name, std::size_t from, std::size_t count) {
+        const auto cap = gg::metrics::readAudioFile(dir + "/" + name);
+        REQUIRE(cap.has_value());
+        INFO(name);
+        CHECK(cap->sampleRate == 48000.0);
+        REQUIRE(cap->channels.size() == 2);
+        REQUIRE(cap->channels[0].size() == count);
+        const std::vector<float> want(input.channels[0].begin() + static_cast<long>(from),
+                                      input.channels[0].begin() + static_cast<long>(from + count));
+        CHECK(bitIdentical(cap->channels[0], want));
+        CHECK(bitIdentical(cap->channels[1], want)); // a mono input fills both channels
+    };
+    expect("whole.wav", 0, sr);            // 1.0 s of ring, from the first frame
+    expect("first.wav", 14400, 14400);     // [0.3 s, 0.6 s)
+    expect("last.wav", 28800, sr - 28800); // [0.6 s, the head)
+}
+
+TEST_CASE("clearSplices removes the marks a save would keep", "[render]")
+{
+    const std::string dir = freshDirectory("ring-clear-splices");
+    auto j = ringFxJson(2.0);
+    j["params"] = {{"A Ring Length", 3.0}};
+    j["automation"] = {{{"time", 1.0}, {"param", "A Freeze"}, {"value", 1}}};
+    j["operations"] = nlohmann::json::parse(R"([
+        {"time": 0.5, "layer": "A", "op": "splice"},
+        {"time": 0.6, "layer": "A", "op": "splice", "behind": 0.1},
+        {"time": 0.9, "layer": "A", "op": "clearSplices"},
+        {"time": 1.5, "layer": "A", "op": "splice", "behind": 0.2}])");
+    gg::render::RenderOptions options;
+    options.saveStatePath = dir + "/s.ggst";
+    (void)gg::render::render(parseJson(j), nullptr, options);
+    const auto state = decodeFile(options.saveStatePath, Mode::Fx);
+    REQUIRE(state.rings[0].has_value());
+    CHECK(state.rings[0]->splices.size() == 1);
+}
+
+TEST_CASE("a state saves the rings whose Freeze or Loop is on, and a render restores it",
+          "[render]")
+{
+    const std::string dir = freshDirectory("ring-save-restore");
+    auto j = ringFxJson(2.0);
+    j["params"] = {{"A Ring Length", 3.0}, {"Layer B On", 1}, {"Layer C On", 1}};
+    // A frozen, B looping, C neither (D is off).
+    j["automation"] = {{{"time", 1.0}, {"param", "A Freeze"}, {"value", 1}}};
+    j["params"]["B Loop"] = 1;
+    j["params"]["B Loop Length"] = -1.0;
+    j["operations"] =
+        nlohmann::json::parse(R"([{"time": 1.5, "layer": "A", "op": "splice", "behind": 0.25}])");
+    gg::render::RenderOptions options;
+    options.saveStatePath = dir + "/session.ggst";
+    options.mediaDir = dir;
+    const auto saved = gg::render::render(parseJson(j), nullptr, options);
+    const auto state = decodeFile(options.saveStatePath, Mode::Fx);
+    REQUIRE(state.rings[0].has_value());
+    REQUIRE(state.rings[1].has_value());
+    CHECK_FALSE(state.rings[2].has_value());
+    CHECK_FALSE(state.rings[3].has_value());
+    CHECK(state.rings[0]->embed);
+    CHECK(state.rings[0]->sampleRate == 48000.0);
+    CHECK(state.rings[0]->channels == 2);
+    CHECK(state.rings[0]->splices.size() == 1);
+    CHECK(state.rings[1]->splices.empty());
+    // A ring that never filled saves what it holds: layer B ran for the whole 2 s of the render.
+    CHECK(state.rings[1]->frames == 96000);
+    CHECK(state.rings[0]->frames > 48000);
+    CHECK(state.rings[0]->frames < 96000);
+    CHECK(state.values[static_cast<std::size_t>(ParamSlot::LayerBOn)] == 1.0f);
+    CHECK(state.memoryCapMiB == gg::core::kMemoryCapDefaultMiB);
+    CHECK(state.seed == 1);
+
+    // The restore: the same ring lengths, Freeze on from the state, over a silent input; the
+    // frozen ring is heard from the first sample.
+    auto restore = ringFxJson(0.5);
+    restore["input"] = {{"kind", "noise"}, {"seconds", 0.5}, {"amplitude", 0.0}};
+    restore["state"] = options.saveStatePath;
+    restore["params"] = {{"Mix", 1.0}};
+    gg::render::RenderOptions restoreOptions;
+    restoreOptions.mediaDir = dir;
+    const auto out = gg::render::render(parseJson(restore), nullptr, restoreOptions);
+    float peak = 0.0f;
+    for (const float x : out.channels[0])
+    {
+        peak = std::max(peak, std::abs(x));
+    }
+    CHECK(peak > 0.01f);
+    // Twice, the same bits.
+    const auto again = gg::render::render(parseJson(restore), nullptr, restoreOptions);
+    CHECK(bitIdentical(out.channels[0], again.channels[0]));
+    // Without the state the same spec is silent.
+    auto nothing = restore;
+    nothing.erase("state");
+    const auto silent = gg::render::render(parseJson(nothing), nullptr);
+    float silentPeak = 0.0f;
+    for (const float x : silent.channels[0])
+    {
+        silentPeak = std::max(silentPeak, std::abs(x));
+    }
+    CHECK(silentPeak == 0.0f);
+}
+
+TEST_CASE("a state restored into a smaller ring keeps the newest frames", "[render]")
+{
+    const std::string dir = freshDirectory("ring-restore-smaller");
+    auto j = ringFxJson(2.0);
+    j["params"] = {{"A Ring Length", 3.0}};
+    j["automation"] = {{{"time", 1.5}, {"param", "A Freeze"}, {"value", 1}}};
+    gg::render::RenderOptions options;
+    options.saveStatePath = dir + "/s.ggst";
+    options.mediaDir = dir;
+    (void)gg::render::render(parseJson(j), nullptr, options);
+    auto restore = ringFxJson(0.25);
+    restore["state"] = options.saveStatePath;
+    restore["params"] = {{"A Ring Length", 0.0}}; // 1 s, below the saved 1.5 s
+    gg::render::RenderOptions restoreOptions;
+    restoreOptions.mediaDir = dir;
+    CHECK_NOTHROW(gg::render::render(parseJson(restore), nullptr, restoreOptions));
+}
+
+TEST_CASE("a state that names a sample gg-render can't find is bad input", "[render]")
+{
+    const std::string media = writeMedia("ring-missing-sample-media");
+    const std::string elsewhere = freshDirectory("ring-missing-sample-elsewhere");
+    std::filesystem::copy_file(std::filesystem::path{media} / "four-samples.ggst",
+                               std::filesystem::path{elsewhere} / "four-samples.ggst");
+    auto j = instrumentJson();
+    j.erase("sample");
+    j["params"] = nlohmann::json::object();
+    j["state"] = elsewhere + "/four-samples.ggst";
+    j["notes"] = nlohmann::json::array();
+    gg::render::RenderOptions options;
+    options.mediaDir = elsewhere;
+    try
+    {
+        (void)gg::render::render(parseJson(j), nullptr, options);
+        FAIL("a missing sample must be bad input");
+    }
+    catch (const gg::render::BadInput &e)
+    {
+        CHECK_THAT(std::string(e.what()), ContainsSubstring("tone-44k1.wav"));
+    }
+    // Found through the media directory, or through --content-dir.
+    options.mediaDir = media;
+    CHECK_NOTHROW(gg::render::render(parseJson(j), nullptr, options));
+    options.mediaDir = elsewhere;
+    options.contentDir = media;
+    CHECK_NOTHROW(gg::render::render(parseJson(j), nullptr, options));
+}
+
+TEST_CASE("a state file that isn't a state is bad input", "[render]")
+{
+    const std::string dir = freshDirectory("ring-bad-state");
+    {
+        std::ofstream(dir + "/junk.ggst") << "this is not a state";
+    }
+    auto j = ringFxJson(0.25);
+    j["state"] = dir + "/junk.ggst";
+    CHECK_THROWS_AS(gg::render::render(parseJson(j), nullptr), gg::render::BadInput);
+    j["state"] = dir + "/none.ggst";
+    CHECK_THROWS_AS(gg::render::render(parseJson(j), nullptr), gg::render::BadInput);
+}
+
+TEST_CASE("the memory cap refuses a ring or a sample that would go past it", "[render]")
+{
+    // A 250 s ring is 96 MB of storage; the cap's floor is 64 MiB.
+    auto j = ringFxJson(0.25);
+    j["params"] = {{"A Ring Length", std::log2(250.0)}};
+    j["memoryCapMiB"] = 64;
+    try
+    {
+        (void)gg::render::render(parseJson(j), nullptr);
+        FAIL("a ring past the cap must be bad input");
+    }
+    catch (const gg::render::BadInput &e)
+    {
+        CHECK_THAT(std::string(e.what()), ContainsSubstring("over the memory cap"));
+    }
+    j["memoryCapMiB"] = 256;
+    CHECK_NOTHROW(gg::render::render(parseJson(j), nullptr));
+}
+
+TEST_CASE(
+    "saving a state needs an instrument or FX spec, and the captures folder past the embed cap",
+    "[render][slow]")
+{
+    const std::string dir = freshDirectory("ring-embed-cap");
+    // Sample mode has no session.
+    gg::render::RenderOptions options;
+    options.saveStatePath = dir + "/s.ggst";
+    CHECK_THROWS_AS(gg::render::render(parseJson(nlohmann::json::parse(readCase("sparse-sine"))),
+                                       nullptr, options),
+                    gg::render::BadInput);
+
+    // Four frozen rings of 24 s are 9.2 MB each as WAV: the first three embed (27.6 MB), the
+    // fourth would pass the 32 MiB cap and is filed.
+    auto j = ringFxJson(24.0);
+    j["sampleRate"] = 48000;
+    j["params"] = {{"A Ring Length", std::log2(24.0)},
+                   {"B Ring Length", std::log2(24.0)},
+                   {"C Ring Length", std::log2(24.0)},
+                   {"D Ring Length", std::log2(24.0)},
+                   {"Layer B On", 1},
+                   {"Layer C On", 1},
+                   {"Layer D On", 1}};
+    j["automation"] = {{{"time", 23.5}, {"param", "A Freeze"}, {"value", 1}},
+                       {{"time", 23.5}, {"param", "B Freeze"}, {"value", 1}},
+                       {{"time", 23.5}, {"param", "C Freeze"}, {"value", 1}},
+                       {{"time", 23.5}, {"param", "D Freeze"}, {"value", 1}}};
+    const RenderSpec spec = parseJson(j);
+    try
+    {
+        (void)gg::render::render(spec, nullptr, options);
+        FAIL("a ring past the embed cap needs a captures folder");
+    }
+    catch (const gg::render::BadInput &e)
+    {
+        CHECK_THAT(std::string(e.what()), ContainsSubstring("captures"));
+    }
+    options.capturesDir = dir + "/captures";
+    (void)gg::render::render(spec, nullptr, options);
+    const auto state = decodeFile(options.saveStatePath, Mode::Fx);
+    for (std::size_t k = 0; k < 3; ++k)
+    {
+        REQUIRE(state.rings[k].has_value());
+        CHECK(state.rings[k]->embed);
+    }
+    REQUIRE(state.rings[3].has_value());
+    CHECK_FALSE(state.rings[3]->embed);
+    const std::filesystem::path filed = std::filesystem::path{GG_TEST_OUTPUT_DIR} /
+                                        "ring-embed-cap" / "captures" /
+                                        (state.rings[3]->sha256Hex + ".wav");
+    CHECK(std::filesystem::file_size(filed) == state.rings[3]->fileSize);
+    std::size_t embedded = 0;
+    for (const auto &payload : state.audio)
+    {
+        embedded += payload.bytes.size();
+    }
+    CHECK(embedded <= gg::core::kEmbedCapBytes);
 }

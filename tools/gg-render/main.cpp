@@ -12,11 +12,15 @@
 //   gg-render <spec.json> [-o out.wav] [--metrics out.json] [--events out.jsonl]
 //             [--spectrogram out.png] [--compare golden.metrics.json]
 //             [--compare-events golden.events.jsonl] [--block-size N] [--media-dir DIR]
+//             [--content-dir DIR] [--captures-dir DIR] [--save-state out.ggst]
 //   gg-render --write-media DIR
 //
 // --media-dir resolves the spec's relative file paths against DIR instead of the spec's
-// directory. --write-media writes the test media the golden cases read (writeTestMedia in
-// Signals.h) into DIR, and does nothing else.
+// directory. --content-dir names a content root, --captures-dir the folder audio past the embed
+// limit is filed in, and --save-state writes the session state at the render's end (RenderOptions
+// in Render.h; instrument and FX specs only). --write-media writes the test media the golden
+// cases read and the two state fixtures (writeTestMedia in Signals.h) into DIR, and does nothing
+// else.
 //
 // Exit status: 0 = pass (every requested comparison matched, or the media were written),
 // 1 = a comparison failed, 2 = bad input (arguments, spec, source, sample, input or golden files)
@@ -177,6 +181,9 @@ int run(int argc, char **argv)
     std::string goldenEventsPath;
     uint32_t blockSize = 0;
     std::string mediaDir;
+    std::string contentDir;
+    std::string capturesDir;
+    std::string saveStatePath;
     std::string writeMediaDir;
     // Every option but --write-media, which takes none of them.
     std::vector<CLI::Option *> renderOptions;
@@ -204,6 +211,18 @@ int run(int argc, char **argv)
         app.add_option("--media-dir", mediaDir,
                        "Resolve the spec's relative file paths against this directory instead "
                        "of the spec's"));
+    renderOptions.push_back(app.add_option(
+        "--content-dir", contentDir,
+        "A content root: where a restored state's samples are found by their content path "
+        "(besides the spec's directory or --media-dir)"));
+    renderOptions.push_back(app.add_option(
+        "--captures-dir", capturesDir,
+        "Where --save-state files audio past the 32 MiB embed limit, and where a state's filed "
+        "rings are found"));
+    renderOptions.push_back(app.add_option(
+        "--save-state", saveStatePath,
+        "Write the session state (rings, samples, values) at the render's end; instrument and "
+        "FX specs only"));
     auto *const writeMediaOption = app.add_option(
         "--write-media", writeMediaDir,
         "Write the test media the golden cases read into this directory, and exit; it takes no "
@@ -229,8 +248,9 @@ int run(int argc, char **argv)
         {
             return fail(error);
         }
-        fmt::print("wrote {} and {} in {}\n", gg::render::kToneMedium, gg::render::kLoopMedium,
-                   writeMediaDir);
+        fmt::print("wrote {}, {}, {}, {}, {} and {} in {}\n", gg::render::kToneMedium,
+                   gg::render::kLoopMedium, gg::render::kSineMedium, gg::render::kNoiseMedium,
+                   gg::render::kFrozenRingState, gg::render::kFourSamplesState, writeMediaDir);
         return kExitPass;
     }
     if (specPath.empty())
@@ -249,9 +269,10 @@ int run(int argc, char **argv)
     {
         return fail(fmt::format("{}: {}", specPath, error));
     }
-    gg::render::resolvePaths(
-        *spec, mediaDir.empty() ? gg::render::utf8FromPath(pathFromUtf8(specPath).parent_path())
-                                : mediaDir);
+    const std::string baseDir = mediaDir.empty()
+                                    ? gg::render::utf8FromPath(pathFromUtf8(specPath).parent_path())
+                                    : mediaDir;
+    gg::render::resolvePaths(*spec, baseDir);
     if (blockSizeOption->count() > 0)
     {
         spec->blockSize = blockSize;
@@ -288,7 +309,11 @@ int run(int argc, char **argv)
     std::vector<std::string> events;
     try
     {
-        audio = gg::render::render(*spec, &events);
+        audio = gg::render::render(*spec, &events,
+                                   {.contentDir = contentDir,
+                                    .capturesDir = capturesDir,
+                                    .saveStatePath = saveStatePath,
+                                    .mediaDir = baseDir.empty() ? "." : baseDir});
     }
     catch (const gg::render::BadInput &e)
     {

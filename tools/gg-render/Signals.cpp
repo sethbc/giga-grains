@@ -7,14 +7,19 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <exception>
 #include <filesystem>
 #include <initializer_list>
 #include <numbers>
 #include <stdexcept>
+#include <string>
 #include <system_error>
 #include <utility>
 #include <vector>
 
+#include <nlohmann/json.hpp>
+
+#include "Render.h"
 #include "gg/core/MachineSettings.h"
 #include "gg/core/Rng.h"
 #include "gg/media/Sample.h"
@@ -217,6 +222,68 @@ gg::metrics::AudioData makeInput(const SourceSpec &input, uint32_t channels, dou
     return audio;
 }
 
+namespace
+{
+/// Renders a spec given as JSON, which parseRenderSpec must accept, with --save-state's machinery:
+/// the session it ends with goes to `statePath`. Throws if the spec doesn't parse (a bug here).
+void renderToState(const nlohmann::json &json, const std::string &statePath,
+                   const std::string &mediaDir)
+{
+    std::string error;
+    const auto spec = parseRenderSpec(json.dump(), error);
+    if (!spec)
+    {
+        throw std::logic_error("a built-in fixture spec is invalid: " + error);
+    }
+    RenderOptions options;
+    options.saveStatePath = statePath;
+    options.mediaDir = mediaDir;
+    (void)render(*spec, nullptr, options);
+}
+
+/// frozen-ring.ggst and four-samples.ggst (Signals.h).
+void writeStateFixtures(const std::string &dir, const std::filesystem::path &folder)
+{
+    // An FX with a 20 s ring over a 20 s sweep, frozen at 18 s; splices 12 s and 6 s behind the
+    // head at 19 s (the head has stopped at 18 s), so the marks are at 6 s and 12 s of the ring.
+    nlohmann::json frozen = {
+        {"mode", "fx"},
+        {"sampleRate", 48000},
+        {"durationSeconds", 20.0},
+        {"blockSize", 128},
+        {"seed", 1},
+        {"input",
+         {{"kind", "sweep"},
+          {"startHz", 80.0},
+          {"endHz", 2000.0},
+          {"seconds", 20.0},
+          {"amplitude", 0.5}}},
+        {"channels", 1},
+        {"params", {{"A Ring Length", std::log2(20.0)}}},
+        {"automation", {{{"time", 18.0}, {"param", "A Freeze"}, {"value", 1}}}},
+        {"operations",
+         {{{"time", 19.0}, {"layer", "A"}, {"op", "splice"}, {"behind", 12.0}},
+          {{"time", 19.0}, {"layer", "A"}, {"op", "splice"}, {"behind", 6.0}}}}};
+    renderToState(frozen, utf8FromPath(folder / kFrozenRingState), dir);
+
+    // An instrument whose four layers read the four files, by content path.
+    const auto file = [&](const char *name) {
+        return nlohmann::json{{"kind", "file"}, {"path", utf8FromPath(folder / name)}};
+    };
+    nlohmann::json four = {
+        {"mode", "instrument"},
+        {"sampleRate", 48000},
+        {"durationSeconds", 0.1},
+        {"blockSize", 128},
+        {"seed", 1},
+        {"sample", file(kToneMedium)},
+        {"samples",
+         {{"B", file(kLoopMedium)}, {"C", file(kSineMedium)}, {"D", file(kNoiseMedium)}}},
+        {"params", {{"Layer B On", 1}, {"Layer C On", 1}, {"Layer D On", 1}}}};
+    renderToState(four, utf8FromPath(folder / kFourSamplesState), dir);
+}
+} // namespace
+
 bool writeTestMedia(const std::string &dir, std::string &error)
 {
     error.clear();
@@ -280,8 +347,18 @@ bool writeTestMedia(const std::string &dir, std::string &error)
     }
     const gg::metrics::AudioData loop{loopRate, {std::move(noise)}};
 
-    const std::pair<const char *, const gg::metrics::AudioData *> media[] = {{kToneMedium, &tone},
-                                                                             {kLoopMedium, &loop}};
+    // sine-330.wav and noise-2s.wav: mono, 48 kHz, 2 s.
+    const gg::metrics::AudioData sine330 = makeSignal(
+        {.kind = SourceKind::Sine, .frequencyHz = 330.0, .seconds = 2.0, .amplitude = 0.5}, 48000.0,
+        0);
+    const gg::metrics::AudioData noise2s =
+        makeSignal({.kind = SourceKind::Noise, .seconds = 2.0, .amplitude = 0.5}, 48000.0, 3);
+
+    const std::pair<const char *, const gg::metrics::AudioData *> media[] = {
+        {kToneMedium, &tone},
+        {kLoopMedium, &loop},
+        {kSineMedium, &sine330},
+        {kNoiseMedium, &noise2s}};
     for (const auto &[name, audio] : media)
     {
         const std::string path = utf8FromPath(folder / name);
@@ -290,6 +367,17 @@ bool writeTestMedia(const std::string &dir, std::string &error)
             error = "can't write " + path;
             return false;
         }
+    }
+
+    // The two state fixtures, rendered from the media just written.
+    try
+    {
+        writeStateFixtures(dir, folder);
+    }
+    catch (const std::exception &e)
+    {
+        error = std::string("can't write the state fixtures: ") + e.what();
+        return false;
     }
     return true;
 }

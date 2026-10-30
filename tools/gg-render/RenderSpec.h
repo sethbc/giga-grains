@@ -82,6 +82,31 @@
 ///   "params", "automation" and "notes" are optional.
 /// - Instrument and FX mode both take "samples", "mod", "controls" and "transport", optional;
 ///   sample mode takes none of them.
+/// - Instrument and FX mode also take M2 sub-project 2's keys (its spec §6.10), each optional: a
+///   saved session to restore, timed ring operations and the memory cap (see OperationSpec and
+///   the members of InstrumentSpec and FxSpec):
+///
+/// ```json
+/// {"mode":"fx", ...,
+///  "state":"frozen-ring.ggst",
+///  "params":{"A Ring Length":4.321928094887363,"A Loop":1,"A Loop Length":-1.0,
+///            "A Overdub":0.5,"A Splice":1},
+///  "operations":[{"time":2.0,"layer":"A","op":"splice","behind":1.5},
+///                {"time":3.0,"layer":"A","op":"clearSplices"},
+///                {"time":4.0,"layer":"A","op":"capture","splice":0,"into":"B","file":"cap.wav"}],
+///  "memoryCapMiB":256}
+/// ```
+///
+///   "state" is a GGST file (a session state, relative paths as a file source's), restored
+///   before the render as a plugin's stateLoad would (its values, mod routes, samples, rings and
+///   memory cap); "params" and "mod" then override it. The samples it names are found only
+///   through --content-dir and the spec's directory (or --media-dir), never searched by name. In
+///   instrument mode "sample" may be left out beside "state", and then layer A's sample is the
+///   state's. The spec's own seed is the render's, not the state's. "memoryCapMiB" (a whole
+///   number from 64 to 16384; the state's, or 1024, without it) is the per-instance memory cap;
+///   a ring or sample that would go past it is bad input (exit 2). A layer's Ring Length is set
+///   before the render ("A Ring Length" in "params"; it can't be automated). "operations" are in
+///   time order; see OperationSpec. Sample mode takes none of these.
 /// - Parameters (in "params", "automation" and a route's "target") are named as the product
 ///   displays them, so "B Size" is layer B's; a bare M1 name ("Size") is layer A's.
 /// - Any other key, including another mode's, is an error, so a misspelt key never silently
@@ -255,6 +280,37 @@ struct ControlSpec
     friend bool operator==(const ControlSpec &, const ControlSpec &) = default;
 };
 
+/// One ring operation (M2 sub-project 2's spec §6.10), at frame round(timeSeconds × sampleRate),
+/// on a layer's live ring. gg-render cuts its process() calls at a capture's frame, so a capture
+/// lands on that sample whatever the block size; a splice or clearSplices is a
+/// gg::core::CommandEvent at its offset in the call that holds its frame, applied at the next
+/// control-grid boundary as a plugin's command is.
+/// - "splice": a mark `behind` seconds behind the ring's head (gg::core::CommandKind::AddSplice);
+///   takes "behind" (>= 0, at most kRingMaxSeconds; 0 by default) and no other optional key.
+/// - "clearSplices": removes every mark; takes no optional key.
+/// - "capture": reads the ring on the calling thread (the thread is the audio thread between
+///   calls, so there is no race): the whole ring ("splice" 0, the default: its newest frames,
+///   all of them once the ring has filled) or the span of splice `splice` (1 to 32, numbered as
+///   the Splice parameter numbers them), as a stereo buffer at the render's rate. "into", a layer
+///   letter, makes it that layer's sample (a layer reads it with its Source set to Sample); "file"
+///   writes it as a 32-bit float WAV (parent directories are made; the path is used as written,
+///   relative to the working directory). At least one of "into" and "file" is required. A capture
+///   of an empty ring is bad input.
+/// "layer" is a letter "A" to "D". "splice", "into" and "file" belong to "capture" alone and
+/// "behind" to "splice" alone, so a key that would go unread is an error.
+struct OperationSpec
+{
+    double timeSeconds{0.0};     ///< >= 0, rounding to a frame before the render's end.
+    uint8_t layer{0};            ///< 0..3.
+    std::string op;              ///< "splice", "clearSplices" or "capture".
+    double behind{0.0};          ///< splice: seconds behind the head.
+    uint32_t splice{0};          ///< capture: 0 for the whole ring, else a splice 1..32.
+    std::optional<uint8_t> into; ///< capture: the layer whose sample it becomes.
+    std::string file;            ///< capture: where to write it; "" for none.
+
+    friend bool operator==(const OperationSpec &, const OperationSpec &) = default;
+};
+
 /// A steady host transport, set once before the render (gg::core::Processor::setTransport, with
 /// hasBeats and 4 beats to the bar); the Processor advances it itself while it plays. Without
 /// one the transport sources hold at 0.
@@ -292,6 +348,17 @@ struct InstrumentSpec
     std::vector<ControlSpec> controls;
     /// "transport": the steady transport, or none.
     std::optional<TransportSpec> transport;
+    /// "state": a GGST session state to restore before the render, or "" for none. gg-render
+    /// resolves a relative path as a file source's (resolvePaths).
+    std::string statePath;
+    /// "operations": in time order (equal times allowed, run in list order).
+    std::vector<OperationSpec> operations;
+    /// "memoryCapMiB": the per-instance memory cap, kMemoryCapMinMiB to kMemoryCapMaxMiB, or
+    /// nothing for the state's (kMemoryCapDefaultMiB without a state).
+    std::optional<uint32_t> memoryCapMiB;
+    /// True when "sample" was left out, which is allowed beside "state" alone: layer A's sample
+    /// is then the state's, and `sample` is unused.
+    bool noSample{false};
 
     friend bool operator==(const InstrumentSpec &, const InstrumentSpec &) = default;
 };
@@ -328,6 +395,14 @@ struct FxSpec
     std::vector<ControlSpec> controls;
     /// "transport": the steady transport, or none.
     std::optional<TransportSpec> transport;
+    /// "state": a GGST session state to restore before the render, or "" for none. gg-render
+    /// resolves a relative path as a file source's (resolvePaths).
+    std::string statePath;
+    /// "operations": in time order (equal times allowed, run in list order).
+    std::vector<OperationSpec> operations;
+    /// "memoryCapMiB": the per-instance memory cap, kMemoryCapMinMiB to kMemoryCapMaxMiB, or
+    /// nothing for the state's (kMemoryCapDefaultMiB without a state).
+    std::optional<uint32_t> memoryCapMiB;
 
     friend bool operator==(const FxSpec &, const FxSpec &) = default;
 };
@@ -365,7 +440,8 @@ std::optional<gg::core::ParamSlot> paramSlotNamed(std::string_view name);
 /// `notes[0].key must be an integer from 0 to 127`). File paths are left as written.
 std::optional<RenderSpec> parseRenderSpec(const std::string &json, std::string &error);
 
-/// Makes the spec's relative file paths (a file source, sample, layer sample or input) relative to
+/// Makes the spec's relative file paths (a file source, sample, layer sample, input or state)
+/// relative to
 /// `baseDir`: baseDir / path, joined as std::filesystem paths. Absolute paths, and the empty path
 /// of a built-in signal, are kept. Every path is UTF-8. gg-render passes the spec's directory, or
 /// the
