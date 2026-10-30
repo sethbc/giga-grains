@@ -39,6 +39,10 @@ struct UndoCallbacks
 /// - **Re-entrancy:** while undo() or redo() applies an entry, the callbacks may come back to the
 ///   stack (a control that records the value it was given): every call they make, a gesture, a
 ///   group, a push, an undo or a redo, is ignored, so an apply never records itself or nests.
+/// - **Not mid-gesture:** while a gesture or a group is open (busy()), undo() and redo() do
+///   nothing. Applying an entry then would send a gesture of its own, perhaps on the slot whose
+///   gesture is open, so the host would see a nested begin and an early end; and the drag would
+///   overwrite what the undo set. The gesture's own entry, once it ends, is the one to undo.
 class UndoStack
 {
   public:
@@ -79,14 +83,19 @@ class UndoStack
     std::string redoLabel() const;
 
     /// Applies the last entry's before through the callbacks and moves the cursor back. A group's
-    /// gestures are undone in reverse order. Does nothing, calling no callback, when !canUndo().
+    /// gestures are undone in reverse order. Does nothing, calling no callback, when !canUndo() or
+    /// busy().
     void undo();
     /// Applies the next entry's after through the callbacks and moves the cursor on. A group's
-    /// gestures are redone in order. Does nothing, calling no callback, when !canRedo().
+    /// gestures are redone in order. Does nothing, calling no callback, when !canRedo() or
+    /// busy().
     void redo();
 
     /// The entries kept, undoable and redoable together; at most kDepth.
     std::size_t size() const noexcept { return entries_.size(); }
+    /// Whether a gesture or a group is open (a drag under way): undo() and redo() wait for it to
+    /// close.
+    bool busy() const noexcept { return !open_.empty() || groupDepth_ > 0; }
     /// Whether undo() or redo() is applying an entry now (the callbacks are running).
     bool applying() const noexcept { return applying_; }
 

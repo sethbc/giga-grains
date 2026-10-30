@@ -353,3 +353,42 @@ TEST_CASE("a callback that edits the stack while it applies is ignored", "[ui]")
     CHECK(s.size() == 3);
     CHECK(s.undoLabel() == "A Spray");
 }
+
+TEST_CASE("undo and redo wait while a gesture or a group is open", "[ui]")
+{
+    // An undo mid-drag (Command Z with a knob held) would send its own gesture on a slot whose
+    // gesture is still open, so the host would see a nested begin and an early end: while any
+    // gesture or group is open, undo and redo apply nothing.
+    Model m;
+    UndoStack s{m.callbacks()};
+    s.beginGesture(ParamSlot::Size, 0.2f, "A Size");
+    s.endGesture(ParamSlot::Size, 0.7f);
+    REQUIRE(s.canUndo());
+    CHECK_FALSE(s.busy());
+
+    s.beginGesture(ParamSlot::Size, 0.7f, "A Size");
+    CHECK(s.busy());
+    s.undo();
+    CHECK(m.valueCalls.empty());
+    CHECK(s.undoLabel() == "A Size");
+    CHECK_FALSE(s.canRedo());
+    s.endGesture(ParamSlot::Size, 0.7f); // ended where it began: no entry
+    CHECK_FALSE(s.busy());
+
+    s.beginGroup();
+    CHECK(s.busy());
+    s.undo();
+    CHECK(m.valueCalls.empty());
+    s.endGroup();
+
+    s.undo();
+    REQUIRE(m.valueCalls.size() == 1);
+    CHECK(m.valueCalls[0] == std::pair{ParamSlot::Size, 0.2f});
+    s.beginGesture(ParamSlot::Pitch, 0.5f, "A Pitch");
+    s.redo();
+    CHECK(m.valueCalls.size() == 1);
+    CHECK(s.canRedo());
+    s.endGesture(ParamSlot::Pitch, 0.5f);
+    s.redo();
+    CHECK(m.valueCalls.size() == 2);
+}

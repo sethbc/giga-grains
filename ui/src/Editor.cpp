@@ -119,20 +119,34 @@ struct HistoryButton final : jcmp::GlyphButton, juce::SettableTooltipClient
 /// then goes round, the last back to the first.
 struct EditorTraverser final : sst::jucegui::accessibility::KeyboardTraverser
 {
-    explicit EditorTraverser(juce::Component &root) : root_(root) {}
+    /// `modal`, while visible, takes the focus from everything behind it: it is a focus container
+    /// of its own, whose traverser keeps Tab inside it.
+    EditorTraverser(juce::Component &root, juce::Component &modal) : root_(root), modal_(modal) {}
 
     juce::Component *getDefaultComponent(juce::Component *parent) override
     {
+        if (modal_.isVisible())
+        {
+            return &modal_;
+        }
         number();
         return KeyboardTraverser::getDefaultComponent(parent);
     }
     juce::Component *getNextComponent(juce::Component *current) override
     {
+        if (modal_.isVisible())
+        {
+            return &modal_;
+        }
         number();
         return KeyboardTraverser::getNextComponent(current);
     }
     juce::Component *getPreviousComponent(juce::Component *current) override
     {
+        if (modal_.isVisible())
+        {
+            return &modal_;
+        }
         number();
         return KeyboardTraverser::getPreviousComponent(current);
     }
@@ -151,6 +165,7 @@ struct EditorTraverser final : sst::jucegui::accessibility::KeyboardTraverser
     }
 
     juce::Component &root_;
+    juce::Component &modal_;
 };
 
 constexpr std::array<const char *, 4> kViewNames{"Perform", "Edit", "Mod", "FX"};
@@ -166,14 +181,15 @@ constexpr std::array<const char *, 4> kViewIds{"header.perform", "header.edit", 
 /// view buttons (a radio group), the notice (a refused drop, a setting not saved: 4 s), the frame
 /// time, and at the right undo and redo (tooltips naming the entry) and the theme switch.
 ///
-/// **Its state** is the view shown, the selected layer (one value, pushed to the canvas, the
-/// strips and the Edit and Mod views) and the theme; none is saved. The undo history is the
-/// context's, the plugin's.
+/// **Its state** is the view shown (opened on, and kept in, the context's view: the plugin
+/// instance's), the selected layer (one value, pushed to the canvas, the strips and the Edit and
+/// Mod views) and the theme; none is saved. The undo history is the context's, the plugin's.
 ///
 /// **Keys**, wherever the focus is when the focused component doesn't take them: Command 1 to 4
 /// (Ctrl off macOS) the views, Command Shift A to D the layers, Command Z undo, Command Shift Z
 /// and Command Y redo, Command I the About box, Escape closes it or ends a canvas drag. Tab
-/// moves through every control shown (EditorTraverser).
+/// moves through every control shown (EditorTraverser). While the About box is open it is
+/// modal: Escape closes it, every other key is consumed, and Tab stays inside it.
 ///
 /// **The theme** is the context's per-machine setting: read when the editor is made, polled
 /// every 30th timer tick so a change in another editor is followed, written by the switch. A
@@ -258,7 +274,7 @@ class Editor final : public juce::Component,
         };
         addChildComponent(about_);
 
-        selectView(View::Perform);
+        selectView(context.view ? context.view() : View::Perform);
         lastSetting_ = context.theme ? context.theme() : ThemeChoice::Dark;
         applyTheme(lastSetting_);
 
@@ -291,6 +307,10 @@ class Editor final : public juce::Component,
                                            juce::dontSendNotification);
         }
         refreshShownView();
+        if (context_.setView)
+        {
+            context_.setView(view);
+        }
     }
 
     View currentView() const noexcept { return views_.shown(); }
@@ -391,13 +411,18 @@ class Editor final : public juce::Component,
     {
         const auto mods = key.getModifiers();
         const int code = key.getKeyCode();
-        if (code == juce::KeyPress::escapeKey)
+        if (about_.isVisible())
         {
-            if (about_.isVisible())
+            // The box is modal: Escape closes it, and every other key, Command I included, is
+            // its own, so nothing changes behind it (the undo history, the view, the layer).
+            if (code == juce::KeyPress::escapeKey)
             {
                 about_.onEscape();
-                return true;
             }
+            return true;
+        }
+        if (code == juce::KeyPress::escapeKey)
+        {
             return perform_.canvas().endDragIfAny();
         }
         if (!mods.isCommandDown() || mods.isAltDown())
@@ -443,7 +468,7 @@ class Editor final : public juce::Component,
 
     std::unique_ptr<juce::ComponentTraverser> createKeyboardFocusTraverser() override
     {
-        return std::make_unique<EditorTraverser>(*this);
+        return std::make_unique<EditorTraverser>(*this, about_);
     }
 
     // ---- juce::FileDragAndDropTarget: the loader strip's drop target, the whole editor ----
@@ -572,8 +597,9 @@ class Editor final : public juce::Component,
     void refreshHistory()
     {
         const UndoStack *stack = context_.undo;
-        const bool canUndo = stack != nullptr && stack->canUndo();
-        const bool canRedo = stack != nullptr && stack->canRedo();
+        // Mid-gesture they wait (UndoStack::busy), so the buttons are off then.
+        const bool canUndo = stack != nullptr && stack->canUndo() && !stack->busy();
+        const bool canRedo = stack != nullptr && stack->canRedo() && !stack->busy();
         undo_.setEnabled(canUndo);
         redo_.setEnabled(canRedo);
         undo_.setTooltip(canUndo ? "Undo " + fromUtf8(stack->undoLabel())

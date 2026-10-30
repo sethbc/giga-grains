@@ -260,6 +260,9 @@ std::unique_ptr<juce::Component> EditorPlugin::createEditor()
     context.setTheme = [](gg::ui::ThemeChoice theme) { return writeTheme(nameOf(theme)); };
     // The history outlives the editor (the class comment).
     context.undo = undo_.get();
+    // The view chosen, kept while the instance lives (spec §6.2); never saved.
+    context.view = [this] { return lastView_; };
+    context.setView = [this](gg::ui::View view) { lastView_ = view; };
 
     // The base values and the editor's gestures (sub-project 5's spec §6.3), through the
     // plugin's UI queue (GigaGrainsPlugin::uiBeginGesture).

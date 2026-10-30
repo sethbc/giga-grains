@@ -69,6 +69,8 @@ AboutBox::AboutBox(const std::string &productName, const std::string &formatName
     processKeys = true;
     consumesAllKeys = true; // the host's key bindings stay out from under the modal
     setComponentID("about");
+    // Tab stays among the box's own controls (the editor's traverser sends what is behind to it).
+    setFocusContainerType(FocusContainerType::keyboardFocusContainer);
     setTitle("About");
 
     const auto setUpLabel = [this](juce::Label &label, const char *id, const juce::String &text,

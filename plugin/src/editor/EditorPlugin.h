@@ -13,6 +13,7 @@
 #include <sst/clap_juce_shim/clap_juce_shim.h>
 
 #include "GigaGrainsPlugin.h"
+#include "gg/ui/EditLayout.h" // gg::ui::View, JUCE-free
 
 namespace gg::ui
 {
@@ -35,6 +36,9 @@ namespace gg::plugin
 /// one per instance from construction to destruction, so closing and reopening the editor keeps
 /// it. An undo or redo replays through the UI's gesture path (uiBeginGesture, uiSetValue,
 /// uiEndGesture: hosts record it as automation) or uiSetRoutes.
+///
+/// **The view** an editor shows is remembered here while the instance lives (spec §6.2), and
+/// the next editor opens on it; it is not saved and is no parameter.
 ///
 /// **The theme** (spec §6.9) is the per-machine setting (UiSettings.h), mapped between the UI's
 /// gg::ui::ThemeChoice and the plugin's ThemeName, the two sides of the JUCE-free line.
@@ -111,6 +115,9 @@ class EditorPlugin : public GigaGrainsPlugin, public sst::clap_juce_shim::Editor
     std::unique_ptr<gg::ui::UndoStack> undo_;
     std::unique_ptr<gg::ui::EditorContext> editorContext_;
     uint32_t openEditors_{0}; // main thread
+    // The view the editor last showed, which the next one opens on (spec §6.2): the instance's,
+    // not its state's. Main thread.
+    gg::ui::View lastView_{gg::ui::View::Perform};
     // Each editor's "still counted open" flag, which its publishing callback and guiDestroy
     // share, so an editor is counted closed once: the last createEditor()'s, and the one the
     // shim holds (from guiCreate to guiDestroy). Main thread.

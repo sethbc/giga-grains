@@ -184,13 +184,23 @@ template <typename T> void collect(const juce::Component &root, std::vector<T *>
     }
 }
 
-/// Every parameter control shown in `view` lies inside it, with room, unless it scrolls (D11).
+/// Every parameter's control shown in `view` (param.<id>, macro.<n> and the pad) lies inside it,
+/// with room, unless it scrolls (D11).
 void checkControlsFit(const juce::Component &view)
 {
-    std::vector<gg::ui::ParamControl *> controls;
-    collect(view, controls);
+    std::vector<juce::Component *> all;
+    collect(view, all);
+    std::vector<const juce::Component *> controls;
+    for (const juce::Component *c : all)
+    {
+        const juce::String id = c->getComponentID();
+        if (id.startsWith("param.") || id.startsWith("macro.") || id == "pad")
+        {
+            controls.push_back(c);
+        }
+    }
     REQUIRE_FALSE(controls.empty());
-    for (const gg::ui::ParamControl *c : controls)
+    for (const juce::Component *c : controls)
     {
         if (!visibleIn(*c, view) || scrolledIn(*c, view))
         {
@@ -861,4 +871,141 @@ TEST_CASE("the window opens at 960 by 600 and the minimum is kept", "[plugin]")
     CHECK(editorPluginOf(fx)->guiAdjustSize(&width, &height));
     CHECK(width == 640);
     CHECK(height == 360);
+}
+
+TEST_CASE("the view chosen is remembered per plugin instance", "[plugin]")
+{
+    // Spec §6.2: while the instance lives, its editor reopens on the view last chosen; it is not
+    // saved, and another instance opens on Perform.
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    gg::test::PluginUnderTest fx("org.sethbc.giga-grains-fx");
+    REQUIRE(fx.valid());
+    auto *plugin = editorPluginOf(fx);
+    {
+        const auto editor = plugin->createEditor();
+        CHECK(gg::ui::currentView(*editor) == View::Perform);
+        REQUIRE(gg::ui::selectView(*editor, View::Mod));
+    }
+    {
+        const auto editor = plugin->createEditor();
+        CHECK(gg::ui::currentView(*editor) == View::Mod);
+        CHECK(viewOf(*editor, View::Mod)->isVisible());
+        CHECK_FALSE(viewOf(*editor, View::Perform)->isVisible());
+        const auto *mod = dynamic_cast<const juce::Button *>(findDeep(*editor, "header.mod"));
+        REQUIRE(mod != nullptr);
+        CHECK(mod->getToggleState());
+        CHECK(editor->keyPressed(commandKey('4')));
+    }
+    CHECK(gg::ui::currentView(*plugin->createEditor()) == View::Fx);
+
+    gg::test::PluginUnderTest other("org.sethbc.giga-grains-fx");
+    REQUIRE(other.valid());
+    CHECK(gg::ui::currentView(*editorPluginOf(other)->createEditor()) == View::Perform);
+}
+
+TEST_CASE("the About box keeps the keys and the focus to itself", "[plugin]")
+{
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    gg::test::PluginUnderTest fx("org.sethbc.giga-grains-fx");
+    REQUIRE(fx.valid());
+    auto *plugin = editorPluginOf(fx);
+    const auto editor = plugin->createEditor();
+    editor->setVisible(true);
+    gg::ui::UndoStack *stack = plugin->editorContext().undo;
+    REQUIRE(stack != nullptr);
+    juce::Component *pad = findDeep(*viewOf(*editor, View::Perform), "pad");
+    REQUIRE(pad->keyPressed(juce::KeyPress(juce::KeyPress::upKey)));
+    REQUIRE(stack->canUndo());
+
+    juce::Component *about = findDeep(*editor, "about");
+    REQUIRE(about != nullptr);
+    REQUIRE(editor->keyPressed(commandKey('I')));
+    REQUIRE(about->isVisible());
+    const juce::Component *bSize = nullptr;
+    const auto layerBShown = [&] {
+        bSize = findDeep(*viewOf(*editor, View::Edit),
+                         controlId(gg::core::layerSlot(gg::core::LayerParam::Size, 1)));
+        return bSize != nullptr;
+    };
+    REQUIRE_FALSE(layerBShown());
+
+    // Behind the box nothing changes: every key is the box's, Escape and Command I aside.
+    for (const juce::KeyPress &key :
+         {commandKey('Z'), commandKey('Z', true), commandKey('Y'), commandKey('2'),
+          commandKey('B', true), juce::KeyPress(juce::KeyPress::upKey), juce::KeyPress('x')})
+    {
+        INFO(key.getTextDescription());
+        CHECK(editor->keyPressed(key));
+        CHECK(stack->canUndo());
+        CHECK_FALSE(stack->canRedo());
+        CHECK(gg::ui::currentView(*editor) == View::Perform);
+        CHECK_FALSE(layerBShown());
+        CHECK(about->isVisible());
+    }
+    CHECK(editor->keyPressed(commandKey('I'))); // already open: it stays
+    CHECK(about->isVisible());
+
+    // Tab stays in the box: it is a focus container of its own, and the editor's traverser
+    // sends whatever is behind it to the box.
+    CHECK(about->isKeyboardFocusContainer());
+    const auto traverser = editor->createKeyboardFocusTraverser();
+    CHECK(traverser->getDefaultComponent(editor.get()) == about);
+    CHECK(traverser->getNextComponent(pad) == about);
+    CHECK(traverser->getPreviousComponent(pad) == about);
+    const auto inner = about->createKeyboardFocusTraverser();
+    const auto inside = inner->getAllComponents(about);
+    REQUIRE_FALSE(inside.empty());
+    for (juce::Component *c : inside)
+    {
+        INFO(c->getComponentID());
+        CHECK(about->isParentOf(c));
+        juce::Component *next = inner->getNextComponent(c);
+        CHECK((next == nullptr || about->isParentOf(next)));
+    }
+
+    CHECK(editor->keyPressed(juce::KeyPress(juce::KeyPress::escapeKey)));
+    CHECK_FALSE(about->isVisible());
+    CHECK(traverser->getNextComponent(pad) != about);
+    CHECK(editor->keyPressed(commandKey('Z')));
+    CHECK(stack->canRedo());
+}
+
+TEST_CASE("an undo while a gesture is open does nothing", "[plugin]")
+{
+    // Command Z with a knob held: the undo would send a gesture of its own on the slot whose
+    // gesture is open, so the host would see a nested begin and an early end. It waits instead.
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    gg::test::PluginUnderTest fx("org.sethbc.giga-grains-fx");
+    REQUIRE(fx.valid());
+    auto *plugin = editorPluginOf(fx);
+    REQUIRE(fx.activate(48000.0, 512));
+    const auto editor = plugin->createEditor();
+    REQUIRE(gg::ui::selectView(*editor, View::Edit));
+    gg::ui::UndoStack *stack = plugin->editorContext().undo;
+    REQUIRE(stack != nullptr);
+    auto *knob = knobOf(findDeep(*viewOf(*editor, View::Edit), controlId(ParamSlot::Size)));
+
+    knob->onBeginEdit();
+    knob->continuous()->setValueFromGUI(0.25f);
+    knob->onEndEdit();
+    REQUIRE(stack->size() == 1);
+    processBlock(fx, true); // that gesture reaches the host
+
+    gg::test::OutputEvents events;
+    knob->onBeginEdit();
+    knob->continuous()->setValueFromGUI(0.75f);
+    tick(*editor);
+    CHECK_FALSE(findDeep(*editor, "header.undo")->isEnabled()); // nothing to do mid-gesture
+    CHECK(editor->keyPressed(commandKey('Z')));
+    processBlock(fx, true, events.list());
+    CHECK(stack->size() == 1);
+    CHECK_FALSE(stack->canRedo());
+    // The host saw the open gesture's begin and value alone.
+    REQUIRE(events.events().size() == 2);
+    CHECK(events.events()[0].header.type == CLAP_EVENT_PARAM_GESTURE_BEGIN);
+    CHECK(events.events()[1].value == 0.75);
+    knob->onEndEdit();
+    CHECK(stack->size() == 2);
+    tick(*editor);
+    CHECK(findDeep(*editor, "header.undo")->isEnabled());
 }

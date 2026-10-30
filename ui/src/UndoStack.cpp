@@ -145,7 +145,7 @@ std::string UndoStack::redoLabel() const
 
 void UndoStack::undo()
 {
-    if (applying_ || !canUndo())
+    if (applying_ || busy() || !canUndo())
     {
         return;
     }
@@ -172,7 +172,7 @@ void UndoStack::undo()
 
 void UndoStack::redo()
 {
-    if (applying_ || !canRedo())
+    if (applying_ || busy() || !canRedo())
     {
         return;
     }

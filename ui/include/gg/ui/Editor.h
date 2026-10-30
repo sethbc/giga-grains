@@ -168,6 +168,12 @@ struct EditorContext
     std::function<ThemeChoice()> theme;
     std::function<bool(ThemeChoice)> setTheme;
 
+    /// The view the plugin instance's editor last showed (spec §6.2), main thread: an editor
+    /// opens on view() and calls setView at each switch, so the choice is kept for the instance's
+    /// life (it is not saved, and is no parameter). Either may be empty: Perform, kept nowhere.
+    std::function<View()> view;
+    std::function<void(View)> setView;
+
     /// The editor's destructor calls publishing(false): the plugin stops publishing (the shim
     /// has no destroy hook). The plugin turned it on when it created the editor. May be empty.
     /// Copied when the editor is made, so each editor calls the one it was given.
