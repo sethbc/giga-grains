@@ -15,7 +15,7 @@
 - CLAUDE.md's non-negotiables and the design's §3 bind every worker; the PM checks, it does not re-derive.
 - INTENT Part I changes only with the director's explicit sign-off; Part II changes carry a dated §23 row in the same change.
 - Nothing is published: no beta, no nightly flag, drafts stay drafts (INTENT §23 #62).
-- Wave rules (design §6): a wave starts when the one before is fully merged and `main` is green; merge order within a wave is 3, 2, 4 and 5, 6; each later PR rebases on the merged result and re-verifies.
+- Wave rules (design §6): a wave starts when the one before is fully merged and `main` is green, except that 5 and 6 start with wave 2 and hold their wave-2-dependent tasks; merge order is 3, 2, 4, then 5, 6; each later PR rebases on the merged result and re-verifies.
 - One owner per state change (design §7.5): sub-project 1 alone bumps the patch version; sub-project 2 alone adds chunks. Wave-2 parameters append inside their reserved index blocks (§7.1): `0x..40`–`0x..4F` for 2, `0x..50`–`0x..5F` for 3, `0x..60`–`0x..7F` for 4.
 - The 22 M1 goldens keep their WAV SHA-256s unless a commit names the case and the reason (§7.6).
 - The carry-over: no sub-project ends with more open rows than it started with; M2 ends at or below 8 (§8).
@@ -39,7 +39,7 @@ Every wave task below runs this procedure for each of its sub-projects, with N t
 
 ### Phase 0: worktree and launch
 
-- [ ] **0.1** From the main checkout on `main`, up to date (`git pull --ff-only`), create the worktree and branch:
+- [ ] **0.1** From the main checkout on `main`, up to date (`git pull --ff-only`), create the worktree and branch (wave 1 branches from `m2-programme` instead; Task 2):
   ```bash
   git worktree add .claude/worktrees/m2-NAME -b m2-NAME main
   ```
@@ -206,6 +206,10 @@ additions, run everything above again and report `BUILD READY` again.
   your report; do not copy its code.
 - Never edit a submodule. Never add a dependency that isn't pinned and AGPLv3-compatible.
 - INTENT Part I is never yours to change; Part II changes carry a dated §23 row.
+- Parallelize inside your own work too: your plan groups independent tasks into waves, and each
+  wave's tasks run in parallel worktrees (`git worktree add`, then that tree's
+  `scripts/worktree-setup.sh`), fast-forward merged into your branch in task order, as M1's plans
+  did.
 ````
 
 ---
@@ -244,34 +248,35 @@ additions, run everything above again and report `BUILD READY` again.
 **Interfaces:**
 - Produces, for wave 2: `ParamIds.h` with the next free index per scope recorded and the three reserved blocks as comments and a pinned test; the source interface with its mip-level accessor (one level); the Source-kind parameter with its whole enumeration; the patch version bump and migration; the layer chain of design §7.2; `gg-render` specs that address layers.
 
-- [ ] **Step 1:** Run the procedure for N = 1, NAME = `layers`, first and only in its wave (C1 and C3 do not apply).
+- [ ] **Step 1:** Run the procedure for N = 1, NAME = `layers`, first and only in its wave (C1 and C3 do not apply). Its worktree branches from `m2-programme`'s head while Task 1's PR is in CI, so the worker has the design and this plan; once that PR merges with a merge commit, `m2-layers` already contains its commits and needs no rebase.
 - [ ] **Step 2:** At A3, also check: C++23 is the spec's first task with its revert path (design §7.9); the thread-pool determinism test (§7.4) is named; the Macro 7 switch and its migration are in (§7.3); the three reserved blocks are in the spec's ID table (§7.1).
 - [ ] **Step 3:** At B2, also require in the evidence: `gg-bench`'s new `engine-layers` and `engine-layers-full` cases run from `release` with their figures; the four-layer block-size and thread-pool invariance tests listed in the test output.
 - [ ] **Step 4:** After C5, run `scripts/update-goldens.sh` on `main` once and keep its hash list as the wave-2 baseline the B5 checks compare against. Update the PM memory: `wave 2 ready`.
 
-## Task 3: Wave 2, sub-projects 3, 2 and 4 in parallel
+## Task 3: Waves 2 and 3 launched together: sub-projects 3, 2, 4, 5 and 6 in parallel
 
 **Interfaces:**
 - Consumes: Task 2's products.
-- Produces, for wave 3: the complete parameter list (every M2 parameter exists after this wave; wave 3 adds none); `MEDI` v2 with the content-relative reference (sub-project 2); the preset-independent engine every preset will voice.
+- Produces, for the close: the complete parameter list (every M2 parameter exists after 3, 2 and 4 merge; 5 and 6 add none); `MEDI` v2 with the content-relative reference (sub-project 2); the presets, content pipeline and views.
 
-- [ ] **Step 1:** Run Phase 0 for N = 3 `engine`, N = 2 `sources`, N = 4 `extremes`, all branched from the same `main` (record its SHA in the PM memory).
-- [ ] **Step 2:** Run Phase A for all three. Collect their forced choices and ask the director in as few messages as possible (A4): wait for all three `SPEC READY` lines before asking, unless one lags more than a day.
+- [ ] **Step 0:** Before launching N = 5: ask the director to create the public `giga-grains-content` repository under their account (design decision 8) and to tell the PM its URL; record it in the PM memory. Sub-project 5's spec names it. Do not hold the other launches for it.
+- [ ] **Step 1:** Run Phase 0 for N = 3 `engine`, N = 2 `sources`, N = 4 `extremes`, N = 5 `presets` and N = 6 `views`, all branched from the same `main` (record its SHA in the PM memory). The briefs of 5 and 6 add: "Your plan separates the tasks that need only wave 1 from those that need wave 2's parameters (design §6, wave rules); build the first group now, and the second after the programme manager tells you wave 2 has merged and you have rebased."
+- [ ] **Step 2:** Run Phase A for all five. Collect their forced choices and ask the director in as few messages as possible (A4): batch the `SPEC READY` specs that arrive within a day of each other.
 - [ ] **Step 3:** At A3 for N = 3, also check: the HQ kernel's scalar reference and bit-match test, the budget's weight table as a named constant, the overload tests at block sizes 1, 32, 64, 511 and 4096, the AVX2 task's timebox and keep rule (§7.10), the mipmap accessor's use. For N = 2: the `AUDI` codec choice with its exactness criterion (§7.5), the ring-length parameter (§7.2), the incremental pyramids as the last tasks (after 3 merges), I38's four operations. For N = 4: the Spectral Smear kernels instantiated for every tier after rebasing on 3, the limiter's default law equal to M1's soft limiter, delay and filters at rest.
 - [ ] **Step 4:** Run Phase B for all three concurrently; poll each worker in turn.
-- [ ] **Step 5:** Merge in order. N = 3 first: Phase C without C1/C3. Then N = 2: C1 (rebase onto the merged 3), B1–B9 again, C2–C6. Then N = 4 the same onto the merged 2.
-- [ ] **Step 6:** After the last merge, `scripts/update-goldens.sh` on `main`; every M1 hash unchanged against Task 2's list, or the explaining commits found. Run `gg-bench --cases reference,engine-sample --quick` from `release` as a smoke check. Update the PM memory: `wave 3 ready`.
+- [ ] **Step 5:** Merge wave 2 in order. N = 3 first: Phase C without C1/C3. Then N = 2: C1 (rebase onto the merged 3), B1–B9 again, C2–C6. Then N = 4 the same onto the merged 2.
+- [ ] **Step 6:** After wave 2's last merge, `scripts/update-goldens.sh` on `main`; every M1 hash unchanged against Task 2's list, or the explaining commits found. Run `gg-bench --cases reference,engine-sample --quick` from `release` as a smoke check. Tell the workers of 5 and 6 that wave 2 has merged: rebase (C1's prompt) and build the second group of their tasks. Update the PM memory: `wave 2 merged; 5 and 6 building their second group`.
 
-## Task 4: Wave 3, sub-projects 5 and 6 in parallel
+## Task 4: Wave 3's merges, sub-projects 5 and 6
 
 **Interfaces:**
 - Consumes: Task 3's parameter list and `MEDI` v2.
 - Produces, for the close: the factory presets with their goldens; the content pipeline; every view; the packs of 1 to 6.
 
-- [ ] **Step 1:** Before launching N = 5: ask the director to create the public `giga-grains-content` repository under their account (design decision 8) and to tell the PM its URL; record it in the PM memory. Sub-project 5's spec names it.
-- [ ] **Step 2:** Run Phase 0 and Phase A for N = 5 `presets` and N = 6 `views`; one director message for both specs' forced choices where timing allows.
-- [ ] **Step 3:** At A3 for N = 5, also check: the preset is a `GGST` container (§7.5), the floor of 40 presets and 8 MIDI-driven FX presets, the provenance record per sample (§7.8), the installers' Content component filled and tested (`ctest -L installer`), `gg-render --preset`, the identity and AU tests run on any clap-wrapper bump with rows 87, 88, 218 re-checked. For N = 6: the two-PR split named if the plan exceeds M1's Perform UI, the GPU spike timeboxed to one task ending in `docs/spikes/m2-gpu-canvas.md` and a §23 row, `gg-bench --canvas` at 8,192 grains with four lanes under 3 ms, rows 217 and 221 closed, I38's gestures.
-- [ ] **Step 4:** Run Phase B for both; merge N = 5 first, then N = 6 with C1 and C3.
+- [ ] **Step 1:** (Launch and spec are Task 3's.) When each reports `BUILD READY` for its whole plan, run Phase B's checks.
+- [ ] **Step 2:** For both, the C1 rebase has happened at wave 2's merge; a further rebase is needed only if `main` moved since.
+- [ ] **Step 3:** At A3 (in Task 3) for N = 5, also check: the preset is a `GGST` container (§7.5), the floor of 40 presets and 8 MIDI-driven FX presets, the provenance record per sample (§7.8), the installers' Content component filled and tested (`ctest -L installer`), `gg-render --preset`, the identity and AU tests run on any clap-wrapper bump with rows 87, 88, 218 re-checked. For N = 6: the two-PR split named if the plan exceeds M1's Perform UI, the GPU spike timeboxed to one task ending in `docs/spikes/m2-gpu-canvas.md` and a §23 row, `gg-bench --canvas` at 8,192 grains with four lanes under 3 ms, rows 217 and 221 closed, I38's gestures.
+- [ ] **Step 4:** Merge N = 5 first, then N = 6 with C1 and C3.
 - [ ] **Step 5:** Update the PM memory: `wave 4 ready`, with the list of the six packs' paths.
 
 ## Task 5: Wave 4, sub-project 7 (Close)

@@ -195,10 +195,19 @@ INTENT Part II change it makes adds a §23 row in the same change.
  1 Layers  ─► 3 Engine scale & quality  ─┐
    &       ─► 2 Sources & persistence   ─┼─► 5 Presets & content ─┐
  structure ─► 4 Extremes & FX chain     ─┘   6 Views             ─┴─► 7 Close
+           ─► 5 and 6 start here too, and hold their wave-2-dependent tasks until wave 2 merges
 ```
 
 **Wave rules.**
-- A wave starts when every sub-project of the one before is merged and `main` is green.
+- A wave starts when every sub-project of the one before is merged and `main` is green, **except
+  that sub-projects 5 and 6 start with wave 2** (the director, 2026-10-29: "parallelize as much as
+  possible"): their specs and the work that depends on wave 1 alone (preset discovery, the preset
+  container, the browser, the content pipeline, Mutate; the Perform view's lanes, strip and pad,
+  the Mod view, the About box, themes, keyboard navigation, the GPU spike) proceed at once; the
+  work that needs wave 2's parameters (voicing the presets; the Edit panels for wave-2
+  parameters, the FX view, the memory readout) waits in their plans until wave 2 has merged,
+  and they merge after it, rebased. The wave-1 worker likewise starts while the programme's own
+  PR is in CI, branched from that PR's commits.
 - The sub-projects of a wave branch from that `main`. Each **owns** the directories and files its
   entry names and may edit the shared files (`core/include/gg/core/Processor.h` and its sources,
   `ParamIds.h`, `tests/CMakeLists.txt`, the golden hash list, INTENT) only within its own additions.
