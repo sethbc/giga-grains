@@ -94,22 +94,12 @@ resource, so machines must catch everything they can catch.
   statistics or spectrograms.
 - Each milestone ends with a listening gate: render A/B files plus a short checklist for the
   director.
-- **The carry-over** (`docs/m2-carry-over.md`) must not grow. The director's policy
-  (2026-10-28):
-  - **Fix, don't carry.** A sub-project's final fix wave fixes every minor a reviewer raised,
-    unless it is blocked on something outside our control (upstream, the director's ears, a
-    later feature) or is genuinely large.
-  - **Touch it, close it.** A sub-project that edits a file closes every open "when touched" row
-    for that file.
-  - **No net growth.** A sub-project ends with no more open rows than it started with. Count
-    them at its start and at its end.
-  - **Sub-project 6 burned the carry-over down** to 13 open rows, each naming what it waits on
-    (upstream bumps, M2/M3 features, the About box or 1.0.0; INTENT §23 #60). On 2026-10-29
-    those 13 moved, with their numbers, to `docs/m2-carry-over.md`, and `docs/m1-carry-over.md`
-    became M1's frozen record, no longer edited. The count no work may raise is the M2 file's
-    open rows: 13 at the split.
-  - **No external reports or upstream filings.** A row blocked on upstream stays open, noted
-    with its reason, until upstream changes.
+- **Deferred items** (`docs/m2-carry-over.md`) are handled as superpowers' subagent-driven development
+  handles them (the director, 2026-10-30, retiring the 2026-10-28 carry-over policy): a reviewer's
+  minor is fixed or deferred at the controller's judgment; deferred minors and items blocked outside
+  our control (upstream, the director's ears, a later feature) are listed in the sub-project's final
+  report and recorded in that file as a plain log, with no count rules. A row stays until the thing
+  it names is done; nothing is filed upstream.
 - Reference templates for the CLAP-first build, CI and installers, all three GitHub-hosted under
   surge-synthesizer. A session may read their local clones, when they're present:
   - shortcircuit-xt, https://github.com/surge-synthesizer/shortcircuit-xt (local clone

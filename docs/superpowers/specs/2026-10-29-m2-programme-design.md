@@ -61,8 +61,8 @@ each and of the milestone (§6, §9).
   their WAV SHA-256s through the whole milestone, except where a commit says why one moved (§7.6).
 - No CPU regression on the §16 headline case: `engine-sample`'s ratios against M1's baselines show
   no `regressed` verdict on any CI model at the close (§20's exit criterion, §23 #41).
-- The carry-over ends M2 with no more open rows than the 13 it starts with, and every open row
-  names what it waits on (CLAUDE.md, "Working style"). §8 counts where M2 should land.
+- Deferred items are logged in `docs/m2-carry-over.md` and listed in each sub-project's final
+  report (the carry-over count rules were retired by the director on 2026-10-30; §8 is history).
 - Listening gate #2 passed by the director on the packs the sub-projects rendered.
 - 0.2.0 tagged, its draft release made by CI and kept unpublished.
 
@@ -81,7 +81,6 @@ each and of the milestone (§6, §9).
 - A state that an M1 session can't load into, or an M2 session an older build can't skip past
   (§7.5).
 - A benchmark headline quietly redefined to hide a regression.
-- A sub-project that ships its minors into the carry-over.
 
 ## 3. Constraints
 
@@ -547,6 +546,11 @@ sub-project 7, whose checklist names each. A failure there is fixed in the close
 
 ## 8. The carry-over
 
+> **Retired 2026-10-30** (the director): the count rules below no longer bind. Deferred items are
+> handled as superpowers' subagent-driven development handles them and logged in
+> `docs/m2-carry-over.md`. The placement table stays as a map of where each inherited row is expected
+> to close.
+
 13 open rows at M2's start. Placement:
 
 | Rows | Where | Expected at the close |
@@ -558,8 +562,7 @@ sub-project 7, whose checklist names each. A failure there is fixed in the close
 | 144, 148 | 1.0.0 | Open |
 | 184 | M3 | Open |
 
-So M2 should close with **8 open rows**, each naming what it waits on, and no sub-project may end
-with more open rows than it started with. New rows number from 300.
+New rows number from 300. (The former target of 8 open rows and the no-net-growth rule are retired.)
 
 ## 9. Verification across the programme
 

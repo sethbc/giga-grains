@@ -18,7 +18,7 @@
 - Wave rules (design §6): a wave starts when the one before is fully merged and `main` is green, except that 5 and 6 start with wave 2 and hold their wave-2-dependent tasks; merge order is 3, 2, 4, then 5, 6; each later PR rebases on the merged result and re-verifies.
 - One owner per state change (design §7.5): sub-project 1 alone bumps the patch version; sub-project 2 alone adds chunks. Wave-2 parameters append inside their reserved index blocks (§7.1): `0x..40`–`0x..4F` for 2, `0x..50`–`0x..5F` for 3, `0x..60`–`0x..7F` for 4.
 - The 22 M1 goldens keep their WAV SHA-256s unless a commit names the case and the reason (§7.6).
-- The carry-over: no sub-project ends with more open rows than it started with; M2 ends at or below 8 (§8).
+- Deferred items: a reviewer's minor is fixed or deferred at the worker's judgment; deferred and blocked items are listed in the final report and logged in `docs/m2-carry-over.md` (the count rules were retired 2026-10-30).
 - Model tiers (the project's practice): workers and reviewers on the top tier (the default model), task implementers on Opus.
 - The worker's memory directory is not the main checkout's (Claude Code keys memory by path), so every brief carries the practice the main checkout's memory holds; the brief template below does.
 - CI runs through a draft PR, never a bare branch with a dispatch.
@@ -68,7 +68,7 @@ Every wave task below runs this procedure for each of its sub-projects, with N t
   - its exit criteria are §6.N's, each with the test, golden or benchmark that proves it;
   - its INTENT changes are listed, each with its §23 row, none in Part I;
   - it has a **Decisions for the director** section: every behaviour or sound choice as a forced choice with a recommended option, nothing engineering-only in it; and a **My calls** section for the rest;
-  - it records the carry-over's open-row count at its start, and names the rows it closes;
+  - it names the carry-over rows it closes;
   - it names its listening pack's contents under `docs/listening/m2-NAME/`.
 - [ ] **A4** Put the spec's forced choices to the director in one message (`AskUserQuestion`, up to four per call, the recommended option first), together with any other spec that is at A4 in the same wave so the director answers once per wave where possible. Relay the answers verbatim:
   ```bash
@@ -83,11 +83,7 @@ Every wave task below runs this procedure for each of its sub-projects, with N t
 - [ ] **B3** Verify on disk: `ls .claude/worktrees/m2-NAME/build/*/check/` shows `configure.log build.log test.log` for `dev`, `asan` and `rtsan`, and `build/check/format.log`; the last line of the worker's pasted summary is `PASS`.
 - [ ] **B4** Verify in CI: `gh pr checks <PR>` shows every check passed on the PR's head commit (`gh pr view <PR> --json headRefOid`).
 - [ ] **B5** Verify the goldens: `cat .claude/worktrees/m2-NAME/build/dev/golden/wav-sha256.txt` against the main checkout's last list (`build/dev/golden/wav-sha256.txt` after `scripts/update-goldens.sh` on `main`); every M1 case's hash equal, or the commit that moved it found with `git log -S<hash>`.
-- [ ] **B6** Verify the carry-over, on the branch and on `main`; the branch's open count is not larger:
-  ```bash
-  f=docs/m2-carry-over.md; echo "open: $(( $(grep -c '^| \*\*[0-9]' $f) - $(grep -c '^| \*\*[0-9].*\*\*Closed\*\*' $f) ))"
-  ```
-  Every row the spec said it closes is marked **Closed** with its commits.
+- [ ] **B6** Verify the deferred items: the PR's final report lists every deferred minor and blocked item, and `docs/m2-carry-over.md` logs them; every row the spec said it closes is marked **Closed** with its commits. (No count rule since 2026-10-30.)
 - [ ] **B7** Verify the spec's status table reads Built, with amendments marked, and the INTENT §23 row exists (`grep -n '^| 6[5-9] \|^| 7[0-9] ' INTENT.md` on the branch).
 - [ ] **B8** Verify the pack: `ls docs/listening/m2-NAME/` holds a README and WAVs or the spec files that render them.
 - [ ] **B9** Read the final review's findings and the fix wave in the PR's description; every minor fixed or carried with a stated external blocker (the carry-over policy).
@@ -155,8 +151,9 @@ reached only through it. Nothing you do is public.
   - subagents: reviewers and decision-makers on the default model, implementers on Opus (`model:
     "opus"`); never haiku or sonnet;
   - CI runs through a draft PR (`gh pr create --draft`), never a bare branch;
-  - the carry-over policy: fix minors, don't carry; touch a file, close its "when touched" rows;
-    no net growth; count open rows at your start and your end;
+  - deferred items: a reviewer's minor is fixed or deferred at your judgment, as superpowers'
+    subagent-driven development does; list deferred and blocked items in your final report and log
+    them in `docs/m2-carry-over.md`;
   - the director decides behaviour and sound by forced choice; you decide engineering;
   - a golden WAV SHA-256 claim ("every M1 hash unchanged") is evidence; make it with
     `scripts/update-goldens.sh` before and after each DSP change.
@@ -170,8 +167,8 @@ Two sections are mandatory:
 - **Decisions for the director:** every behaviour or sound choice, as a forced choice with the
   option you recommend first and one line on what each costs. Nothing engineering-only here.
 - **My calls:** the engineering choices you made, each with its reason.
-Record the carry-over's open-row count at your start and the rows you will close. Name your
-goldens, benchmark cases and the contents of `docs/listening/m2-NAME/`.
+Name the carry-over rows you will close, your goldens, benchmark cases and the contents of
+`docs/listening/m2-NAME/`.
 Commit the spec. End your turn with the line `SPEC READY` and the spec's path. Do not plan or
 build until the programme manager tells you the director's answers.
 
@@ -189,7 +186,7 @@ Before you report:
 - your benchmark cases run from `release`; `engine-sample` has no regressed ratio;
 - the pack rendered into `docs/listening/m2-NAME/` with a README;
 - the spec's status reads Built, amendments marked; INTENT's §23 row is in;
-- the carry-over count at your end is at or below your start, closed rows marked with commits;
+- deferred and blocked items listed in your report and logged in `docs/m2-carry-over.md`; closed rows marked with commits;
 - a final review by a fresh reviewer subagent and its fix wave are done.
 End your turn with `BUILD READY`, the PR number, and each item above as evidence.
 
