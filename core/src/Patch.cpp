@@ -44,37 +44,43 @@ std::array<char, 9> bitsToHex(float v)
     return out;
 }
 
-// The float written by bitsToHex: exactly 8 hex digits, or nothing.
-std::optional<float> hexToBits(const char *s)
+// These parsers return whether they read a value into `out` (left alone otherwise), rather than
+// a std::optional: GCC 13's -Wmaybe-uninitialized at -O3 misreads an optional's payload as
+// uninitialized once it is inlined into a longer condition (CI's Linux leg).
+
+// The float written by bitsToHex: exactly 8 hex digits.
+bool hexToBits(const char *s, float &out)
 {
     if (s == nullptr || std::strlen(s) != 8)
     {
-        return std::nullopt;
+        return false;
     }
     uint32_t u{0};
     const auto [end, ec] = std::from_chars(s, s + 8, u, 16);
     if (ec != std::errc{} || end != s + 8)
     {
-        return std::nullopt;
+        return false;
     }
-    return std::bit_cast<float>(u);
+    out = std::bit_cast<float>(u);
+    return true;
 }
 
-// A whole decimal unsigned integer that fits a T, or nothing.
-template <typename T> std::optional<T> parseDecimal(const char *s)
+// A whole decimal unsigned integer that fits a T.
+template <typename T> bool parseDecimal(const char *s, T &out)
 {
     if (s == nullptr)
     {
-        return std::nullopt;
+        return false;
     }
     const auto len = std::strlen(s);
     T n{0};
     const auto [end, ec] = std::from_chars(s, s + len, n, 10);
     if (len == 0 || ec != std::errc{} || end != s + len)
     {
-        return std::nullopt;
+        return false;
     }
-    return n;
+    out = n;
+    return true;
 }
 
 // The decimal text of an unsigned integer, NUL-terminated. Never locale-dependent.
@@ -102,11 +108,17 @@ const char *layerName(uint8_t layer, uint8_t special, const char *specialName)
     return layer < kLayers ? kLayerNames[layer] : "";
 }
 
-std::optional<uint8_t> layerNamed(const char *s, uint8_t special, const char *specialName)
+// Neither a layer (0 to 3) nor kSameLayer or kAllLayers: what layerNamed returns for any other
+// text.
+constexpr uint8_t kNoLayer = 0xFD;
+static_assert(kNoLayer >= kLayers && kNoLayer != kSameLayer && kNoLayer != kAllLayers);
+
+// The layer `s` names: A to D, or `special` for `specialName`; kNoLayer for anything else.
+uint8_t layerNamed(const char *s, uint8_t special, const char *specialName)
 {
     if (s == nullptr)
     {
-        return std::nullopt;
+        return kNoLayer;
     }
     const std::string_view text(s);
     if (text == specialName)
@@ -120,28 +132,26 @@ std::optional<uint8_t> layerNamed(const char *s, uint8_t special, const char *sp
             return layer;
         }
     }
-    return std::nullopt;
+    return kNoLayer;
 }
 
-// The float a `bits` attribute holds, when it agrees with its value's text (`v`, `depth`); nothing
-// otherwise, and the text stands.
-std::optional<float> exactBits(const char *bits, double text)
+// The float a `bits` attribute holds, into `out`, when it agrees with its value's text (`v`,
+// `depth`); false otherwise, and the text stands.
+bool exactBits(const char *bits, double text, float &out)
 {
-    const auto exact = hexToBits(bits);
-    if (!exact || !(std::fabs(static_cast<double>(*exact) - text) <= kTextTolerance))
+    float exact{0.0f};
+    if (!hexToBits(bits, exact) ||
+        !(std::fabs(static_cast<double>(exact) - text) <= kTextTolerance))
     {
-        return std::nullopt;
+        return false;
     }
-    return exact;
+    out = exact;
+    return true;
 }
 
-// One <route>, written as gg/core/PatchState.h describes; nothing when isSavableRoute refuses it.
-std::optional<TiXmlElement> routeElement(size_t slot, const ModRoute &r)
+// One <route>, written as gg/core/PatchState.h describes. `r` must be isSavableRoute.
+TiXmlElement routeElement(size_t slot, const ModRoute &r)
 {
-    if (!isSavableRoute(r))
-    {
-        return std::nullopt;
-    }
     TiXmlElement e("route");
     e.SetAttribute("slot", decimal(slot + 1).data());
     e.SetAttribute("source", modSourceName(r.source));
@@ -154,31 +164,52 @@ std::optional<TiXmlElement> routeElement(size_t slot, const ModRoute &r)
     return e;
 }
 
-// The route a <route> element holds, or nothing when any attribute is missing or malformed
-// (gg/core/PatchState.h). Its `slot` is the caller's.
-std::optional<ModRoute> parseRoute(const TiXmlElement &e)
+// The route a <route> element holds, or an empty slot (ModRoute{}) when any attribute is missing
+// or malformed (gg/core/PatchState.h). Its `slot` is the caller's. Every field is held as a plain
+// value, its enumeration's Count (or kNoLayer) when unread, never as a std::optional (GCC 13's
+// -Wmaybe-uninitialized, above).
+ModRoute parseRoute(const TiXmlElement &e)
 {
-    const auto source =
-        e.Attribute("source") != nullptr ? modSourceNamed(e.Attribute("source")) : std::nullopt;
-    const auto sourceLayer = layerNamed(e.Attribute("sourceLayer"), kSameLayer, kSameLayerName);
-    const auto targetId = parseDecimal<clap_id>(e.Attribute("target"));
-    const auto target = targetId ? slotForId(*targetId) : std::nullopt;
-    const auto targetLayer = layerNamed(e.Attribute("targetLayer"), kAllLayers, kAllLayersName);
-    const auto curve =
-        e.Attribute("curve") != nullptr ? modCurveNamed(e.Attribute("curve")) : std::nullopt;
+    ModSource source = ModSource::Count;
+    if (const char *name = e.Attribute("source"))
+    {
+        if (const auto named = modSourceNamed(name))
+        {
+            source = *named;
+        }
+    }
+    ModCurve curve = ModCurve::Count;
+    if (const char *name = e.Attribute("curve"))
+    {
+        if (const auto named = modCurveNamed(name))
+        {
+            curve = *named;
+        }
+    }
+    ParamSlot target = ParamSlot::Count;
+    if (clap_id id{0}; parseDecimal(e.Attribute("target"), id))
+    {
+        if (const auto slot = slotForId(id))
+        {
+            target = *slot;
+        }
+    }
+    const uint8_t sourceLayer = layerNamed(e.Attribute("sourceLayer"), kSameLayer, kSameLayerName);
+    const uint8_t targetLayer = layerNamed(e.Attribute("targetLayer"), kAllLayers, kAllLayersName);
     double text{0};
-    if (!source || !sourceLayer || !target || !isValidTarget(*target) || !targetLayer || !curve ||
+    if (source == ModSource::Count || curve == ModCurve::Count || target == ParamSlot::Count ||
+        !isValidTarget(target) || sourceLayer == kNoLayer || targetLayer == kNoLayer ||
         e.QueryDoubleAttribute("depth", &text) != TIXML_SUCCESS || !std::isfinite(text))
     {
-        return std::nullopt;
+        return ModRoute{};
     }
-    const float depth =
-        exactBits(e.Attribute(kBitsAttribute), text).value_or(static_cast<float>(text));
+    float depth = static_cast<float>(text);
+    exactBits(e.Attribute(kBitsAttribute), text, depth); // the exact float, when it agrees
     if (!std::isfinite(depth))
     {
-        return std::nullopt; // finite as a double, beyond a float's range
+        return ModRoute{}; // finite as a double, beyond a float's range
     }
-    return ModRoute{*source, *sourceLayer, *target, *targetLayer, depth, *curve};
+    return ModRoute{source, sourceLayer, target, targetLayer, depth, curve};
 }
 
 // The routes of a <mod> element: each <route> with a `slot` of 1 to kModSlots sets that slot,
@@ -194,10 +225,10 @@ ModRoutes parseMod(const TiXmlElement *mod)
     for (const auto *e = mod->FirstChildElement("route"); e != nullptr;
          e = e->NextSiblingElement("route"))
     {
-        const auto slot = parseDecimal<uint32_t>(e->Attribute("slot"));
-        if (slot && *slot >= 1 && *slot <= kModSlots)
+        uint32_t slot{0};
+        if (parseDecimal(e->Attribute("slot"), slot) && slot >= 1 && slot <= kModSlots)
         {
-            routes[*slot - 1] = parseRoute(*e).value_or(ModRoute{});
+            routes[slot - 1] = parseRoute(*e);
         }
     }
     return routes;
@@ -292,9 +323,9 @@ Patch::Patch(Mode mode) : mode_(mode), values(defaultValues(mode))
         {
             return;
         }
-        if (const auto exact = exactBits(e->Attribute(kBitsAttribute), text))
+        if (float exact{0.0f}; exactBits(e->Attribute(kBitsAttribute), text, exact))
         {
-            p.value = migrateParamValueFromVersion(&p, *exact, version);
+            p.value = migrateParamValueFromVersion(&p, exact, version);
         }
     };
 
@@ -306,9 +337,9 @@ Patch::Patch(Mode mode) : mode_(mode), values(defaultValues(mode))
         TiXmlElement mod("mod");
         for (size_t k = 0; k < kModSlots; ++k)
         {
-            if (const auto route = routeElement(k, routes[k]))
+            if (isSavableRoute(routes[k]))
             {
-                mod.InsertEndChild(*route);
+                mod.InsertEndChild(routeElement(k, routes[k]));
             }
         }
         root.InsertEndChild(mod);
@@ -317,7 +348,7 @@ Patch::Patch(Mode mode) : mode_(mode), values(defaultValues(mode))
         seed = 0;
         if (const auto *engine = root->FirstChildElement("engine"))
         {
-            seed = parseDecimal<uint64_t>(engine->Attribute("seed")).value_or(0);
+            parseDecimal(engine->Attribute("seed"), seed); // left 0 when malformed
         }
         // Version 1 has no <mod>: its routes are the migration's, so any <mod> it holds is
         // ignored.
