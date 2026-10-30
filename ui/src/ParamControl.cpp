@@ -112,7 +112,7 @@ struct DiscreteSource final : jdata::Discrete
 };
 
 /// Whether the control takes edits: off in mod mode.
-struct Inertia
+struct Inertia : juce::SettableTooltipClient
 {
     bool inert{false};
 };
@@ -303,6 +303,25 @@ void ParamControl::refresh()
 }
 
 void ParamControl::setCommitOnRelease(bool on) { impl_->value.setCommitOnRelease(on); }
+
+void ParamControl::setTooltip(const juce::String &text)
+{
+    if (impl_->inertia != nullptr)
+    {
+        impl_->inertia->setTooltip(text);
+    }
+}
+
+juce::String ParamControl::tooltip() const
+{
+    return impl_->inertia != nullptr ? impl_->inertia->getTooltip() : juce::String();
+}
+
+juce::String ParamControl::shownText() const
+{
+    const auto text = impl_->value.meta().valueToString(impl_->value.value());
+    return juce::String::fromUTF8(text ? text->c_str() : "");
+}
 
 void ParamControl::setModMode(bool on)
 {

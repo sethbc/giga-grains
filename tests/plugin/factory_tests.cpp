@@ -46,6 +46,7 @@
 #include "Palette.h"
 #include "ParamControl.h"
 #include "views/EditView.h"
+#include "views/FxView.h"
 #include "editor/EditorPlugin.h"
 #include "editor/UiSettings.h"
 #include "gg/core/GrainQueue.h"
@@ -2700,6 +2701,82 @@ TEST_CASE("mod mode drags the Edit view's rings and nothing else", "[plugin]")
     view.setModMode(false);
     handler->getValueInterface()->setValue(0.5);
     CHECK(recording.kinds() == "bve");
+}
+TEST_CASE("the FX view shows the reverb and the output", "[plugin]")
+{
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    const ParamSlot reverb[] = {ParamSlot::ReverbAmount,   ParamSlot::ReverbDecay,
+                                ParamSlot::ReverbSize,     ParamSlot::ReverbDamping,
+                                ParamSlot::ReverbPredelay, ParamSlot::ReverbModulation,
+                                ParamSlot::DryToReverb};
+    {
+        RecordingContext recording(gg::core::Mode::Fx);
+        gg::ui::FxView view(recording.context);
+        view.setSize(900, 400);
+        CHECK(view.getComponentID() == "view.fx");
+        for (const ParamSlot slot : reverb)
+        {
+            INFO(gg::core::paramMeta(slot, gg::core::Mode::Fx).name);
+            CHECK(findDeep(view, controlId(slot).toRawUTF8()) != nullptr);
+        }
+        CHECK(findDeep(view, controlId(ParamSlot::Mix).toRawUTF8()) != nullptr);
+    }
+    {
+        RecordingContext recording(gg::core::Mode::Instrument);
+        gg::ui::FxView view(recording.context);
+        view.setSize(900, 400);
+        CHECK(findDeep(view, controlId(ParamSlot::Mix).toRawUTF8()) == nullptr);
+        CHECK(findDeep(view, controlId(ParamSlot::DryToReverb).toRawUTF8()) == nullptr);
+        CHECK(findDeep(view, controlId(ParamSlot::ReverbSize).toRawUTF8()) != nullptr);
+    }
+}
+
+TEST_CASE("Reverb Size sets on release", "[plugin]")
+{
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    RecordingContext recording(gg::core::Mode::Fx);
+    gg::ui::FxView view(recording.context);
+    view.setSize(900, 400);
+    auto *size = dynamic_cast<gg::ui::ParamControl *>(
+        findDeep(view, controlId(ParamSlot::ReverbSize).toRawUTF8()));
+    REQUIRE(size != nullptr);
+    CHECK(size->tooltip() == "Sets on release: the room's size changes in one step");
+    auto *knob = childOfType<sst::jucegui::components::Knob>(*size);
+    REQUIRE(knob != nullptr);
+    knob->onBeginEdit();
+    knob->continuous()->setValueFromGUI(0.2f);
+    knob->continuous()->setValueFromGUI(0.4f);
+    knob->continuous()->setValueFromGUI(0.6f);
+    CHECK(recording.kinds() == "b");
+    knob->onEndEdit();
+    CHECK(recording.kinds() == "bve");
+
+    // Another reverb control sets as it moves.
+    recording.calls.clear();
+    auto *damping = dynamic_cast<gg::ui::ParamControl *>(
+        findDeep(view, controlId(ParamSlot::ReverbDamping).toRawUTF8()));
+    REQUIRE(damping != nullptr);
+    auto *dknob = childOfType<sst::jucegui::components::Knob>(*damping);
+    REQUIRE(dknob != nullptr);
+    dknob->onBeginEdit();
+    dknob->continuous()->setValueFromGUI(0.2f);
+    dknob->continuous()->setValueFromGUI(0.4f);
+    dknob->onEndEdit();
+    CHECK(recording.kinds() == "bvve");
+}
+
+TEST_CASE("Decay reads infinity at the top", "[plugin]")
+{
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    RecordingContext recording(gg::core::Mode::Fx);
+    recording.values[static_cast<std::size_t>(ParamSlot::ReverbDecay)] = gg::core::kDecayMax;
+    gg::ui::FxView view(recording.context);
+    view.setSize(900, 400);
+    view.refresh();
+    auto *decay = dynamic_cast<gg::ui::ParamControl *>(
+        findDeep(view, controlId(ParamSlot::ReverbDecay).toRawUTF8()));
+    REQUIRE(decay != nullptr);
+    CHECK(decay->shownText() == "\xE2\x88\x9E");
 }
 #else
 TEST_CASE("headless build exposes no gui extension", "[plugin]")

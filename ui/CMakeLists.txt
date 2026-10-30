@@ -43,6 +43,7 @@ if (GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
             src/AboutBox.cpp
             src/views/EditView.cpp
             src/views/ParamPanel.cpp
+            src/views/FxView.cpp
             )
     add_library(gg::ui ALIAS gg-ui)
 

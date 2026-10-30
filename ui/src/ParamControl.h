@@ -67,6 +67,12 @@ class ParamControl final : public juce::Component
     /// D10: a gesture's values are shown but only its last is sent, as it ends.
     void setCommitOnRelease(bool on);
 
+    /// The hover text, shown over the control itself.
+    void setTooltip(const juce::String &text);
+    juce::String tooltip() const;
+    /// The shown value as the host's text ("∞" at Reverb Decay's top).
+    juce::String shownText() const;
+
     /// The control's own value is inert; its rings are draggable.
     void setModMode(bool on);
 
