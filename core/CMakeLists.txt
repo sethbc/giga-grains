@@ -16,6 +16,7 @@ add_library(gg-core STATIC
         src/Diffuser.cpp
         src/LivePeaks.cpp
         src/MachineSettings.cpp
+        src/ModMatrix.cpp
         src/ParamIds.cpp
         src/ParamMap.cpp
         src/Patch.cpp
