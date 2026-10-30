@@ -264,8 +264,15 @@ inline clap_event_transport transportEvent(double tempo, bool playing, double be
     e.header.time = 0;
     e.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
     e.header.type = CLAP_EVENT_TRANSPORT;
-    e.flags = CLAP_TRANSPORT_HAS_TEMPO | CLAP_TRANSPORT_HAS_BEATS_TIMELINE |
-              CLAP_TRANSPORT_HAS_TIME_SIGNATURE | (playing ? CLAP_TRANSPORT_IS_PLAYING : 0u);
+    // One integer type throughout: GCC's -Wextra rejects a conditional whose arms mix an
+    // enumerator and an unsigned.
+    uint32_t flags = CLAP_TRANSPORT_HAS_TEMPO | CLAP_TRANSPORT_HAS_BEATS_TIMELINE |
+                     CLAP_TRANSPORT_HAS_TIME_SIGNATURE;
+    if (playing)
+    {
+        flags |= CLAP_TRANSPORT_IS_PLAYING;
+    }
+    e.flags = flags;
     e.song_pos_beats = static_cast<clap_beattime>(std::llround(beats * CLAP_BEATTIME_FACTOR));
     e.tempo = tempo;
     e.tsig_num = tsigNum;
