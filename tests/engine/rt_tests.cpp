@@ -577,6 +577,7 @@ TEST_CASE("the ring's window, splices, adoption and overdub do not allocate", "[
     const int64_t marks[] = {1000, 20000};
     const uint64_t spawnsBefore = counter.spawns;
     bool adopted = false;
+    bool restoredOk = false;
     gg::RingStorage *previous = nullptr;
     gg::RingStorage *handedBack = &restored;
 
@@ -601,12 +602,13 @@ TEST_CASE("the ring's window, splices, adoption and overdub do not allocate", "[
                 live.clearSplices();
             }
         }
-        live.restoreStorage(&restored, 48000, marks, handedBack);
+        restoredOk = live.restoreStorage(&restored, 48000, marks, true, handedBack);
         engine.process(in, 2, out, 2, 4096, gains.data());
     }
     const uint64_t allocations = AllocTripwire::count();
 
     REQUIRE(adopted);
+    REQUIRE(restoredOk);
     REQUIRE(previous == nullptr); // the engine's ring owned its first storage
     REQUIRE(handedBack == &bigger);
     REQUIRE(engine.liveFrames() == 48000);

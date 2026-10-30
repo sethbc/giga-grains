@@ -13,6 +13,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <numbers>
@@ -1698,29 +1699,107 @@ TEST_CASE("splices are kept ascending and age out", "[engine][live]")
     REQUIRE(ring.addSplice(100));
     REQUIRE(ring.addSplice(200));
     ring.selectSplice(2); // [200, 300)
+    writeRamp(ring, 1088, 64);
+    REQUIRE(ring.anchorAt(1087) == 300);
+    REQUIRE(ring.windowFrames() == 100);
+    // Frame 100 leaves storage once R − N > 100: at R = 1101, sample 1100. From that sample on the
+    // numbering shifts under the selection (D6), and splice 2 is the last, [300, head), though
+    // the block that writes past it began before.
     writeRamp(ring, 1152, 64);
-    // Frame 100 left the ring at head 1101; 200 is still in it.
+    for (int64_t t = 1088; t < 1100; ++t)
+    {
+        REQUIRE(ring.anchorAt(t) == 300);
+        REQUIRE(ring.windowOldestAt(t) == 200);
+    }
+    for (int64_t t = 1100; t < 1152; ++t)
+    {
+        REQUIRE(ring.anchorAt(t) == t + 1);
+        REQUIRE(ring.windowOldestAt(t) == 300);
+    }
     REQUIRE(ring.spliceCount() == 2);
     REQUIRE(std::vector<int64_t>(ring.splices().begin(), ring.splices().end()) ==
             std::vector<int64_t>{200, 300});
-    // The selection followed its span, now splice 1.
-    REQUIRE(ring.anchorAt(1151) == 300);
-    REQUIRE(ring.windowFrames() == 100);
+    REQUIRE(ring.windowFrames() == 1152 - 300);
 
-    // A selection past the count clamps to the last splice, [300, head).
+    // A selection past the count is the last splice, and stays the caller's index: a later mark
+    // makes a new last splice, which it then selects.
     ring.selectSplice(5);
     ring.write(nullptr, 0, 0, 1152, 0);
     REQUIRE(ring.anchorAt(1152) == 1152);
     REQUIRE(ring.windowFrames() == 1152 - 300);
-
-    // A selection whose first mark leaves the ring falls back to the whole window.
-    ring.selectSplice(1); // [200, 300)
+    REQUIRE(ring.addSplice(1100));
     ring.write(nullptr, 0, 0, 1152, 0);
-    REQUIRE(ring.windowFrames() == 100);
-    writeRamp(ring, 1216, 64);
-    REQUIRE(ring.spliceCount() == 1);
+    REQUIRE(ring.windowFrames() == 1152 - 1100);
+    writeRamp(ring, 1216, 64); // 200 leaves at R = 1201
+    REQUIRE(ring.spliceCount() == 2);
+    REQUIRE(ring.windowFrames() == 1216 - 1100);
+
+    // Only with no mark left in storage is the window the whole ring again.
+    ring.selectSplice(1);
+    writeRamp(ring, 2176, 64); // 300 leaves at R = 1301, 1100 at R = 2101
+    REQUIRE(ring.spliceCount() == 0);
     REQUIRE(ring.windowFrames() == 1000);
-    REQUIRE(ring.anchorAt(1215) == 1216);
+    REQUIRE(ring.anchorAt(2175) == 2176);
+    REQUIRE(ring.anchorAt(2099) == 2100); // [1100, head) until 1100 left
+    REQUIRE(ring.windowOldestAt(2099) == 1100);
+    REQUIRE(ring.windowOldestAt(2100) == 2101 - 1000);
+}
+
+TEST_CASE("a splice leaves storage at the same sample at any block size", "[engine][live]")
+{
+    // Review finding 1: whether a selected splice is in effect, and which, is decided per sample
+    // from R(t). A 1000-frame ring at 1 kHz, marks at 200, 300 and 650, splice 1 selected: the
+    // window's ends and the admission's run at every sample are the same in blocks of 1, 64 and
+    // 511 as marks age out under it, with a freeze stopping the head on the way.
+    struct Sample
+    {
+        int64_t end;
+        int64_t oldest;
+        double run;
+        double fade;
+        bool operator==(const Sample &) const = default;
+    };
+    const auto trace = [](int64_t block) {
+        gg::LiveSource ring;
+        ring.prepare(1000.0, 1.0, 511);
+        writeRamp(ring, 640, 64);
+        REQUIRE(ring.addSplice(200));
+        REQUIRE(ring.addSplice(300));
+        REQUIRE(ring.addSplice(640));
+        ring.selectSplice(1);
+        std::vector<Sample> samples;
+        std::vector<float> in(static_cast<std::size_t>(block), 0.5f);
+        const float *mono[1] = {in.data()};
+        for (int64_t start = 640; start < 2400;)
+        {
+            // Frozen over [1500, 1800): the setting changes between write() calls there.
+            const int64_t change = start < 1500 ? 1500 : start < 1800 ? 1800 : 2400;
+            const int64_t end = std::min(start + block, change);
+            ring.setFrozen(start >= 1500 && start < 1800);
+            ring.write(mono, 1, 0, start, static_cast<uint32_t>(end - start));
+            for (int64_t t = start; t < end; ++t)
+            {
+                const int64_t anchor = ring.anchorAt(t);
+                samples.push_back({anchor, ring.windowOldestAt(t), ring.anchorRunAfter(t),
+                                   ring.fade(static_cast<double>(anchor - 300), ring.headAt(t))});
+            }
+            start = end;
+        }
+        return samples;
+    };
+    const auto one = trace(1);
+    REQUIRE(one.size() == 2400 - 640);
+    // Not vacuous: the window starts at splice 1 = [200, 300), and is the last splice, [640,
+    // head), before every mark has gone (640 leaves at R = 1641, after the freeze's resume).
+    REQUIRE(one.front() == Sample{300, 200, 0.0, one.front().fade});
+    REQUIRE(std::any_of(one.begin(), one.end(),
+                        [](const Sample &s) { return s.oldest == 640 && s.end > 640; }));
+    REQUIRE(std::isinf(one.back().run)); // no mark left: the whole window, not frozen
+    for (const int64_t block : {64, 511})
+    {
+        INFO("blocks of " << block);
+        REQUIRE(trace(block) == one);
+    }
 }
 
 TEST_CASE("a selected splice anchors the window", "[engine][live]")
@@ -1861,41 +1940,214 @@ TEST_CASE("adopting storage keeps the window", "[engine][live]")
 TEST_CASE("restoring storage restarts ring time", "[engine][live]")
 {
     // A restore (spec §6.6): the storage arrives filled with frames [0, frames), the head at the
-    // frame count, not frozen, the marks with it.
-    gg::LiveSource ring;
-    ring.prepare(kSampleRate, 512);
-    REQUIRE_FALSE(ring.enabled());
-    ring.setFrozen(true);
-    gg::RingStorage next(48000, 512);
-    for (int64_t f = 0; f < 48000; ++f)
-    {
-        next.slots()[2 * f] = rampValue(f);
-        next.slots()[2 * f + 1] = -rampValue(f);
-    }
-    gg::RingStorage *previous = &next; // overwritten
+    // frame count, the marks with it; not frozen, or held from the first sample.
+    const auto filled = [](gg::RingStorage &next) {
+        for (int64_t f = 0; f < 48000; ++f)
+        {
+            next.slots()[2 * f] = rampValue(f);
+            next.slots()[2 * f + 1] = -rampValue(f);
+        }
+    };
     const int64_t marks[] = {12000, 24000};
-    ring.restoreStorage(&next, 48000, marks, previous);
-    REQUIRE(previous == nullptr); // there was no storage
-    REQUIRE(ring.enabled());
-    REQUIRE(ring.head() == 48000);
-    REQUIRE(ring.frames() == 48000);
-    REQUIRE(std::vector<int64_t>(ring.splices().begin(), ring.splices().end()) ==
-            std::vector<int64_t>{12000, 24000});
-    REQUIRE(std::isinf(ring.headRunAfter(0))); // not frozen
-    gg::LiveSource::Cursor c;
-    bool same = true;
-    for (int64_t f = 1; f <= 47996; ++f)
-    {
-        float l = 0.0f;
-        float r = 0.0f;
-        same = same && ring.read(static_cast<double>(f), 48000, c, l, r) && l == rampValue(f) &&
-               r == -rampValue(f);
-    }
-    REQUIRE(same);
-    // The write gain is 1 and ring time goes on from the head.
     const std::vector<float> ones(512, 1.0f);
     const float *mono[1] = {ones.data()};
-    ring.write(mono, 1, 0, 0, 512);
-    REQUIRE(ring.head() == 48512);
-    REQUIRE(storedFrame(ring.view(), 48000).first == 1.0f);
+    for (const bool frozen : {false, true})
+    {
+        INFO((frozen ? "frozen" : "not frozen"));
+        gg::LiveSource ring;
+        ring.prepare(kSampleRate, 512);
+        REQUIRE_FALSE(ring.enabled());
+        ring.setFrozen(!frozen); // the restore sets it
+        gg::RingStorage next(48000, 512);
+        filled(next);
+        gg::RingStorage *previous = &next; // overwritten
+        REQUIRE(ring.restoreStorage(&next, 48000, marks, frozen, previous));
+        REQUIRE(previous == nullptr); // there was no storage
+        REQUIRE(ring.enabled());
+        REQUIRE(ring.head() == 48000);
+        REQUIRE(ring.frames() == 48000);
+        REQUIRE(std::vector<int64_t>(ring.splices().begin(), ring.splices().end()) ==
+                std::vector<int64_t>{12000, 24000});
+        gg::LiveSource::Cursor c;
+        bool same = true;
+        for (int64_t f = 1; f <= 47996; ++f)
+        {
+            float l = 0.0f;
+            float r = 0.0f;
+            same = same && ring.read(static_cast<double>(f), 48000, c, l, r) && l == rampValue(f) &&
+                   r == -rampValue(f);
+        }
+        REQUIRE(same);
+        if (frozen)
+        {
+            // Held from the first sample: the head never moves and no frame is written, so the
+            // restored window renders as the saved session did.
+            REQUIRE(ring.headRunAfter(0) == 0.0);
+            ring.write(mono, 1, 0, 0, 512);
+            REQUIRE(ring.head() == 48000);
+            REQUIRE(ring.headRunAfter(511) == 0.0);
+            REQUIRE(storedFrame(ring.view(), 47999).first == rampValue(47999));
+            REQUIRE(storedFrame(ring.view(), 48000).first == 0.0f); // nothing written
+            ring.setFrozen(false); // released, the head resumes, ramping up from 0
+            ring.write(mono, 1, 0, 512, 512);
+            REQUIRE(ring.head() == 48512);
+            REQUIRE(storedFrame(ring.view(), 48000).first == 1.0f / 960.0f);
+        }
+        else
+        {
+            // The write gain is 1 and ring time goes on from the head.
+            REQUIRE(std::isinf(ring.headRunAfter(0)));
+            ring.write(mono, 1, 0, 0, 512);
+            REQUIRE(ring.head() == 48512);
+            REQUIRE(storedFrame(ring.view(), 48000).first == 1.0f);
+        }
+    }
+
+    // Refused, changing nothing: a frame count past the capacity or below 0, more marks than
+    // kMaxSplices, a storage without a block's slack.
+    gg::LiveSource ring;
+    ring.prepare(kSampleRate, 512);
+    gg::RingStorage next(48000, 512);
+    gg::RingStorage *previous = &next;
+    REQUIRE_FALSE(ring.restoreStorage(&next, next.capacity() + 1, marks, false, previous));
+    REQUIRE(previous == nullptr);
+    REQUIRE_FALSE(ring.restoreStorage(&next, -1, marks, false, previous));
+    std::vector<int64_t> many(gg::LiveSource::kMaxSplices + 1);
+    for (std::size_t k = 0; k < many.size(); ++k)
+    {
+        many[k] = 1000 + static_cast<int64_t>(k) * 100;
+    }
+    REQUIRE_FALSE(ring.restoreStorage(&next, 48000, many, false, previous));
+    gg::RingStorage narrow(48000, 256);
+    REQUIRE_FALSE(ring.restoreStorage(&narrow, 48000, marks, false, previous));
+    REQUIRE_FALSE(ring.enabled());
+    REQUIRE(ring.head() == 0);
+    many.pop_back(); // exactly kMaxSplices
+    REQUIRE(ring.restoreStorage(&next, next.capacity(), many, false, previous));
+    REQUIRE(ring.head() == next.capacity());
+    REQUIRE(ring.spliceCount() == gg::LiveSource::kMaxSplices);
+}
+
+namespace
+{
+// A change made between process() calls at output sample `at`.
+struct WindowChange
+{
+    int64_t at;
+    std::function<void(gg::Engine &)> apply;
+};
+
+struct LiveRender
+{
+    Stereo out;
+    std::vector<gg::GrainSpec> grains;
+};
+
+// A 1 s ring in Live mode over `input`, with `gains` as the overdub gains (one per sample), in
+// process() calls of `block` frames cut short at each change, made at its sample.
+LiveRender renderWindowed(const Stereo &input, const std::vector<float> &gains, uint32_t block,
+                          const std::vector<WindowChange> &changes)
+{
+    gg::Engine engine(liveConfig(kSampleRate, 511, 1.0));
+    engine.setSourceMode(gg::SourceMode::Live);
+    engine.setCloudParams(windowParams(0.3));
+    SinkLog log;
+    engine.setEventSink(&SinkLog::record, &log);
+    const auto frames = static_cast<int64_t>(input.left.size());
+    LiveRender r{{std::vector<float>(input.left.size()), std::vector<float>(input.left.size())},
+                 {}};
+    std::size_t next = 0;
+    for (int64_t done = 0; done < frames;)
+    {
+        while (next < changes.size() && changes[next].at == done)
+        {
+            changes[next++].apply(engine);
+        }
+        int64_t end = std::min<int64_t>(done + block, frames);
+        if (next < changes.size())
+        {
+            end = std::min(end, changes[next].at);
+        }
+        const float *in[2] = {input.left.data() + done, input.right.data() + done};
+        float *o[2] = {r.out.left.data() + done, r.out.right.data() + done};
+        engine.process(in, 2, o, 2, static_cast<uint32_t>(end - done), gains.data() + done);
+        done = end;
+    }
+    REQUIRE_FALSE(log.overflowed);
+    r.grains = log.grains;
+    return r;
+}
+} // namespace
+
+TEST_CASE("a loop with overdub and a splice across ageing are block-size invariant",
+          "[engine][live][determinism]")
+{
+    // Spec §7: the window, the overdub and the marks are functions of the sample clock and the
+    // changes' samples, so output and grain events are identical in blocks of 1, 32, 64 and 511.
+    const int64_t frames = 2 * 48000;
+    const auto input = noiseInput(frames, 31);
+    std::vector<float> gains(static_cast<std::size_t>(frames));
+    for (std::size_t i = 0; i < gains.size(); ++i)
+    {
+        gains[i] = i % 9000 < 1500 ? 0.0f : 0.25f + 0.5f * static_cast<float>(i % 13) / 13.0f;
+    }
+    const std::vector<float> none(static_cast<std::size_t>(frames), 0.0f);
+
+    SECTION("a loop with overdub")
+    {
+        const std::vector<WindowChange> changes = {
+            {20000, [](gg::Engine &e) { e.live().setLoop(true, 9000); }},
+            {50000, [](gg::Engine &e) { e.setFreeze(true); }},
+            {60000, [](gg::Engine &e) { e.setFreeze(false); }},
+            {70000, [](gg::Engine &e) { e.live().setLoop(true, 30000); }},
+        };
+        const LiveRender first = renderWindowed(input, gains, 1, changes);
+        REQUIRE(peak(first.out.left) > 0.05f);
+        REQUIRE(first.grains.size() > 100);
+        for (const uint32_t block : {32u, 64u, 511u})
+        {
+            INFO("blocks of " << block);
+            const LiveRender r = renderWindowed(input, gains, block, changes);
+            REQUIRE(sameBits(r.out.left, first.out.left));
+            REQUIRE(sameBits(r.out.right, first.out.right));
+            REQUIRE(r.grains == first.grains);
+        }
+    }
+
+    SECTION("a selected splice as its marks age out")
+    {
+        // Marks at ring times 20000, 30000 and 40000 (R = t + 1, not frozen), splice 1 from sample
+        // 60000: [20000, 30000) until R = 68001, [30000, 40000) until 78001, then [40000, head)
+        // until 88001, then the whole ring.
+        const std::vector<WindowChange> changes = {
+            {60000,
+             [](gg::Engine &e) {
+                 REQUIRE(e.live().addSplice(20000));
+                 REQUIRE(e.live().addSplice(30000));
+                 REQUIRE(e.live().addSplice(40000));
+                 e.live().selectSplice(1);
+             }},
+        };
+        const LiveRender first = renderWindowed(input, none, 1, changes);
+        REQUIRE(peak(first.out.left) > 0.05f);
+        // Not vacuous: grains admitted in each splice in turn, and after the last mark left.
+        const auto admittedIn = [&](int64_t from, int64_t to, double lo, double hi) {
+            return std::count_if(first.grains.begin(), first.grains.end(), [&](const auto &g) {
+                return g.onsetSample >= from && g.onsetSample < to && g.startPos >= lo &&
+                       g.startPos < hi;
+            });
+        };
+        REQUIRE(admittedIn(60000, 68000, 20000.0, 30000.0) > 5);
+        REQUIRE(admittedIn(68001, 78000, 30000.0, 40000.0) > 5);
+        REQUIRE(admittedIn(78001, 88000, 40000.0, 88001.0) > 5);
+        REQUIRE(admittedIn(60000, 68000, 30000.0, 1e9) == 0);
+        for (const uint32_t block : {32u, 64u, 511u})
+        {
+            INFO("blocks of " << block);
+            const LiveRender r = renderWindowed(input, none, block, changes);
+            REQUIRE(sameBits(r.out.left, first.out.left));
+            REQUIRE(sameBits(r.out.right, first.out.right));
+            REQUIRE(r.grains == first.grains);
+        }
+    }
 }

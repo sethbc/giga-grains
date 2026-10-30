@@ -89,8 +89,8 @@ using GrainEventSink = void (*)(void *ctx, uint32_t layer, const GrainSpec &);
 /// **The window** (M2 sub-project 2's spec §6.1). Where N appears above, the clamp uses the
 /// ring's window length W at the onset (LiveSource::windowFramesAt: N, a loop's length or a
 /// splice's span), ρ is taken at the window's end (LiveSource::anchorAt: the head, or a selected
-/// splice's later mark), and the head's run is LiveSource::anchorRunAfter (0 while a splice is
-/// selected, whose window holds still). With Loop off and no splice it is the clamp above, bit for
+/// splice's later mark), and the head's run is LiveSource::anchorRunAfter (0 while a splice is in
+/// effect, whose window holds still). With Loop off and no splice it is the clamp above, bit for
 /// bit.
 ///
 /// What admission can't foresee, a freeze that stops the head under a grain or an unfreeze

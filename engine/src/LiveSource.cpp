@@ -16,9 +16,8 @@ namespace gg
 {
 namespace
 {
-// Keeps every ring-time and slot computation far from int64 overflow; 2^40 frames is 265 days
-// at 48 kHz, and far more memory than any ring would get.
-constexpr double kMaxRingFrames = 0x1.0p40;
+// RingStorage's bound on a ring, as a double for the checks below.
+constexpr auto kMaxRingFramesD = static_cast<double>(kMaxRingFrames);
 
 // Non-finite input is stored as 0 (Review Focus 2); finite input is clamped.
 float sanitize(float x) noexcept
@@ -47,7 +46,7 @@ void mirrorGuards(RingStorage &storage) noexcept
 int64_t LiveSource::freezeRampSamples(double sampleRate) noexcept
 {
     // llround is exact; the min keeps its argument in range for any finite rate.
-    const double samples = std::min(kFreezeRampSeconds * sampleRate, kMaxRingFrames);
+    const double samples = std::min(kFreezeRampSeconds * sampleRate, kMaxRingFramesD);
     return std::max<int64_t>(1, std::llround(samples));
 }
 
@@ -69,7 +68,7 @@ void LiveSource::prepare(double sampleRate, double seconds, uint32_t maxBlockSiz
     }
     const double frames = std::ceil(seconds * sampleRate);
     const auto block = static_cast<double>(std::max<uint32_t>(1, maxBlockSize));
-    if (!(frames + block <= kMaxRingFrames))
+    if (!(frames + block <= kMaxRingFramesD))
     {
         throw std::invalid_argument("LiveSource: the ring would exceed 2^40 frames");
     }
@@ -125,7 +124,8 @@ void LiveSource::reset() noexcept
     blockRamp_ = ramp_;
     markCount_ = 0; // ring time restarts, so the old marks name nothing
     window_ = loopWindow();
-    splice_ = 0;
+    blockRequest_ = 0;
+    blockMarkCount_ = 0;
 }
 
 bool LiveSource::addSplice(int64_t ringTime) noexcept
@@ -164,28 +164,40 @@ void LiveSource::dropMarksBefore(int64_t oldest) noexcept
     {
         return;
     }
-    // The selection in effect follows its span to its new index; a span whose first mark left
-    // storage is gone, and the selection falls back to the whole window.
-    const uint32_t selected = std::min(spliceRequest_, markCount_);
+    // The selection stays the caller's index (D6): the numbering shifts under it.
     for (uint32_t i = dropped; i < markCount_; ++i)
     {
         marks_[i - dropped] = marks_[i];
     }
     markCount_ -= dropped;
-    if (selected > 0)
-    {
-        spliceRequest_ = selected <= dropped ? 0 : selected - dropped;
-    }
 }
 
-void LiveSource::selectWindow() noexcept
+void LiveSource::captureWindow() noexcept
 {
-    splice_ = std::min(spliceRequest_, markCount_);
-    if (splice_ > 0)
+    blockRequest_ = spliceRequest_;
+    blockMarkCount_ = markCount_;
+    std::copy_n(marks_.begin(), markCount_, blockMarks_.begin());
+}
+
+int64_t LiveSource::windowSteadyUntil(int64_t t) const noexcept
+{
+    constexpr int64_t kNever = std::numeric_limits<int64_t>::max();
+    const int64_t kink = blockKink();
+    if (blockRequest_ == 0 || t >= kink)
     {
-        spliceStart_ = marks_[splice_ - 1];
-        spliceEnd_ = splice_ < markCount_ ? marks_[splice_] : std::numeric_limits<int64_t>::max();
+        return kNever; // no splice selected, or the head still: nothing leaves storage
     }
+    const int64_t head = headAt(t);
+    const uint32_t first = firstInStorage(head);
+    if (first == blockMarkCount_)
+    {
+        return kNever; // no mark in storage, and none comes back
+    }
+    // The oldest mark m leaves once R > m + N; before the kink R rises by one per sample, to
+    // head() at kink − 1.
+    const int64_t leaves = blockMarks_[first] + frames_ + 1;
+    const int64_t at = t + (leaves - head);
+    return at < kink ? at : kNever;
 }
 
 bool LiveSource::adoptStorage(RingStorage *next, int64_t copiedTo, RingStorage *&previous) noexcept
@@ -224,25 +236,27 @@ bool LiveSource::adoptStorage(RingStorage *next, int64_t copiedTo, RingStorage *
     attach(next);
     writeSlot_ = head_ % capacity_;
     window_ = loopWindow();
+    // The block's captured marks are filtered by the new N as they are read (spliceAt).
     dropMarksBefore(head_ - frames_);
-    selectWindow();
     return true;
 }
 
-void LiveSource::restoreStorage(RingStorage *next, int64_t frames, std::span<const int64_t> marks,
-                                RingStorage *&previous) noexcept
+bool LiveSource::restoreStorage(RingStorage *next, int64_t frames, std::span<const int64_t> marks,
+                                bool frozen, RingStorage *&previous) noexcept
 {
     previous = nullptr;
-    if (next == nullptr || next == storage_ || next->capacity() - next->frames() < maxBlock_)
+    if (next == nullptr || next == storage_ || next->capacity() - next->frames() < maxBlock_ ||
+        frames < 0 || frames > next->capacity() || marks.size() > kMaxSplices)
     {
-        return;
+        return false;
     }
     mirrorGuards(*next);
     release(previous);
     attach(next);
-    frozen_ = false;
-    ramp_ = rampLength_;
-    head_ = std::max<int64_t>(0, frames);
+    // Frozen, the head stands still from the first sample: the gain already 0, nothing to ramp.
+    frozen_ = frozen;
+    ramp_ = frozen ? 0 : rampLength_;
+    head_ = frames;
     writeSlot_ = head_ % capacity_;
     // Until the next write(), R(t) is the head.
     blockHead_ = head_;
@@ -250,19 +264,16 @@ void LiveSource::restoreStorage(RingStorage *next, int64_t frames, std::span<con
     blockRamp_ = ramp_;
     markCount_ = 0;
     const int64_t oldest = std::max<int64_t>(0, head_ - frames_);
-    for (const int64_t m : marks)
+    for (const int64_t m : marks) // at most kMaxSplices
     {
-        if (markCount_ == kMaxSplices)
-        {
-            break;
-        }
         if (m >= oldest && m < head_ && (markCount_ == 0 || m > marks_[markCount_ - 1]))
         {
             marks_[markCount_++] = m;
         }
     }
     window_ = loopWindow();
-    selectWindow();
+    captureWindow(); // until the next write(), the window is the restored ring's
+    return true;
 }
 
 void LiveSource::write(const float *const *in, uint32_t numInChannels, uint32_t offset,
@@ -275,9 +286,13 @@ void LiveSource::write(const float *const *in, uint32_t numInChannels, uint32_t 
     window_ = loopWindow(); // this block's W, and overdub's period P
     if (frames_ == 0)
     {
-        splice_ = 0;
+        blockRequest_ = 0;
+        blockMarkCount_ = 0;
         return; // no ring
     }
+    // The selection and the marks for this block. Which marks are in storage is decided per
+    // sample (spliceAt), so where a mark leaves never depends on where blocks fall.
+    captureWindow();
 
     // A mono input fills both channels; a missing input or channel is silence.
     const float *src[2] = {nullptr, nullptr};
@@ -351,10 +366,9 @@ void LiveSource::write(const float *const *in, uint32_t numInChannels, uint32_t 
     }
     head_ += written;
     blockAdvance_ = written;
-    // The marks that left storage go (spec §6.1), then the block's window is captured. The
-    // oldest mark kept is at or after R(t) − N for every sample t of the block.
+    // The marks that left storage by the block's end go (spec §6.1). The block's own captured
+    // marks stay: they leave sample by sample.
     dropMarksBefore(head_ - frames_);
-    selectWindow();
 }
 
 template <int kTaps>
@@ -387,9 +401,9 @@ bool LiveSource::readTaps(double pos, int64_t head, Cursor &cursor, float &left,
     if (first < 0)
     {
         // Taps before frame 0 are silence. Here head − N <= the window's oldest <= first < 0, so
-        // head < N. The block has
-        // written at most maxBlockSize − 1 frames past head − 1, so no frame yet written is at or
-        // past C = N + maxBlockSize: none has wrapped, and frame i is in slot i.
+        // head < N. The block has written at most maxBlockSize − 1 frames past head − 1, so no
+        // frame yet written is at or past C = N + maxBlockSize: none has wrapped, and frame i is
+        // in slot i.
         for (int64_t k = 0; k < kTaps; ++k)
         {
             const int64_t index = first + k;

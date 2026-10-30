@@ -696,16 +696,20 @@ namespace detail
 /// slope 1 or 0, satisfies the interior's conditions. Requires lo < hi, live.enabled(), and a
 /// finite rate > 0 and invDuration > 0.
 ///
-/// The conditions, with e, pos and the phase as the reference computes them:
+/// The conditions, with e, pos and the phase as the reference computes them, and the ring's
+/// window [O, E − 1] at t (E = LiveSource::anchorAt, O = LiveSource::windowOldestAt: R and R − N
+/// with Loop off and no splice; M2 sub-project 2's spec §6.1):
 /// - the window's phase e × invDuration is in [0, 1];
 /// - pos >= 1, so the Hermite's first tap, floor(pos) − 1, is a frame >= 0 (not the silence
 ///   before frame 0, which read() supplies itself);
-/// - R − 1 − (pos + 2) >= M + 1 and (pos − 1) − (R − N) >= M + 1: every Hermite tap one frame
+/// - E − 1 − (pos + 2) >= M + 1 and (pos − 1) − O >= M + 1: every Hermite tap one frame
 ///   beyond the fade's margin M at both ends of the window;
 /// - and, at the run's two ends, fade(pos, R) == 1.0 exactly and read()'s window bounds hold.
 ///
-/// The phase and pos are monotone in t (as in sampleSimdRun), so they hold between two samples
-/// where they hold. On [lo, hi) R and pos are linear in t, so each margin is too, up to rounding
+/// The part stops at LiveSource::windowSteadyUntil(lo), where a selected splice's numbering
+/// shifts; before it E and O each stay constant or move with the head. The phase and pos are
+/// monotone in t (as in sampleSimdRun), so they hold between two samples where they hold. On
+/// [lo, hi) E, O and pos are linear in t, so each margin is too, up to rounding
 /// of order 2^−12 frames at ring times up to 2^40 frames (over 260 days at 48 kHz): where a margin
 /// is >= M + 1 at both ends of a run it is above M + 1 − 2^−11 everywhere between, so the fade's
 /// two factors are both clamped to 1 there and every tap is inside the window. Hence f == 1 and the
@@ -726,8 +730,9 @@ inline Run liveRun(const GrainRows &rows, uint32_t i, const LiveSource &live, in
     const double startPos = rows.startPos[i];
     const double rate = rows.rate[i];
     const double invDuration = rows.invDuration[i];
-    const int64_t frames = live.frames();
-    const auto window = static_cast<double>(frames); // N
+    // A selected splice's window changes its lines where a mark leaves storage: the part ends
+    // there, and the reference renders the rest.
+    hi = std::min(hi, live.windowSteadyUntil(lo));
     // The exact test at t, in the reference's expressions.
     const auto inside = [&](int64_t t) noexcept {
         GG_FP_CONTRACT_OFF
@@ -739,43 +744,64 @@ inline Run liveRun(const GrainRows &rows, uint32_t i, const LiveSource &live, in
             return false;
         }
         const int64_t head = live.headAt(t);
-        const auto r = static_cast<double>(head);
-        if (!(r - 1.0 - (pos + 2.0) >= kM + 1.0 && (pos - 1.0) - (r - window) >= kM + 1.0))
+        const int64_t end = live.anchorAt(t);
+        const int64_t oldest = live.windowOldestAt(t);
+        const auto r = static_cast<double>(end);
+        if (!(r - 1.0 - (pos + 2.0) >= kM + 1.0 &&
+              (pos - 1.0) - static_cast<double>(oldest) >= kM + 1.0))
         {
             return false;
         }
         const auto base = static_cast<int64_t>(std::floor(pos));
-        return live.fade(pos, head) == 1.0 && base - 1 >= head - frames && base + 2 <= head - 1;
+        return live.fade(pos, head) == 1.0 && base - 1 >= oldest && base + 2 <= end - 1;
     };
 
-    // With R = rho0 + s × n (n = t − onsetSample, rho0 = r0 − s × (lo − onsetSample)) and pos =
-    // startPos + rate × (n − onsetFrac), in exact arithmetic:
-    // - toward the head:  (s − rate) × n >= M + 4 + startPos − rate × onsetFrac − rho0 =: kHead
-    // - from the tail:    (rate − s) × n >= M + 2 − N + rho0 − startPos + rate × onsetFrac =: kTail
+    // With E = rho0 + sE × n and O = W0 + tail0 + sO × n (n = t − onsetSample; sE, sO the ends'
+    // slopes on the part, each the head's s or 0; W0 = O(lo) − E(lo), which is −N, or −W, with no
+    // splice, where sE = sO = s and tail0 = rho0) and pos = startPos + rate × (n − onsetFrac), in
+    // exact arithmetic:
+    // - toward the end:   (sE − rate) × n >= M + 4 + startPos − rate × onsetFrac − rho0 =: kHead
+    // - from the oldest:  (rate − sO) × n >= M + 2 + W0 + tail0 − startPos + rate × onsetFrac
+    //                     =: kTail
     // - pos >= 1:         n >= onsetFrac + (1 − startPos) / rate
     // - the phase:        onsetFrac <= n <= onsetFrac + duration
+    static_cast<void>(r0); // E(lo) is LiveSource::anchorAt(lo), the head r0 without a splice
     const auto s = static_cast<double>(slope);
     const double nLo = static_cast<double>(lo - onsetSample);
     const double nHi = static_cast<double>(hi - onsetSample); // exclusive
-    const double rho0 = static_cast<double>(r0) - s * nLo;
-    const double c = s - rate;
+    const int64_t endLo = live.anchorAt(lo);
+    const int64_t oldestLo = live.windowOldestAt(lo);
+    const bool steps = hi - lo > 1; // one sample has no slope to measure
+    const double sE = steps ? static_cast<double>(live.anchorAt(lo + 1) - endLo) : s;
+    const double sO = steps ? static_cast<double>(live.windowOldestAt(lo + 1) - oldestLo) : s;
+    const double rho0 = static_cast<double>(endLo) - sE * nLo;
+    const double tail0 = static_cast<double>(endLo) - sO * nLo;
+    const auto w0 = static_cast<double>(oldestLo - endLo);
+    const double cHead = sE - rate;
+    const double cTail = rate - sO;
     const double kHead = kM + 4.0 + startPos - rate * onsetFrac - rho0;
-    const double kTail = kM + 2.0 - window + rho0 - startPos + rate * onsetFrac;
+    const double kTail = kM + 2.0 + w0 + tail0 - startPos + rate * onsetFrac;
     double nFirst = std::max(onsetFrac, onsetFrac + (1.0 - startPos) / rate);
     double nLast = onsetFrac + rows.durationSamples[i];
-    if (c > 0.0)
+    // c × n >= k narrows [nFirst, nLast]; false for a margin that doesn't move and doesn't hold.
+    const auto bound = [&](double c, double k) noexcept {
+        if (c > 0.0)
+        {
+            nFirst = std::max(nFirst, k / c);
+        }
+        else if (c < 0.0)
+        {
+            nLast = std::min(nLast, k / c);
+        }
+        else
+        {
+            return k <= 0.0;
+        }
+        return true;
+    };
+    if (!bound(cHead, kHead) || !bound(cTail, kTail))
     {
-        nFirst = std::max(nFirst, kHead / c);
-        nLast = std::min(nLast, -kTail / c);
-    }
-    else if (c < 0.0)
-    {
-        nFirst = std::max(nFirst, kTail / -c);
-        nLast = std::min(nLast, kHead / c);
-    }
-    else if (!(kHead <= 0.0 && kTail <= 0.0))
-    {
-        return {lo, lo}; // a margin that doesn't move and doesn't hold
+        return {lo, lo};
     }
     if (!(std::isfinite(nFirst) && std::isfinite(nLast)))
     {

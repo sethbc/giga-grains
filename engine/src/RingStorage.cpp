@@ -9,12 +9,6 @@
 
 namespace gg
 {
-namespace
-{
-// LiveSource's bound: every ring-time and slot computation stays far from int64 overflow.
-constexpr int64_t kMaxRingFrames = int64_t{1} << 40;
-} // namespace
-
 RingStorage::RingStorage(int64_t frames, uint32_t maxBlockSize)
 {
     const auto block = static_cast<int64_t>(std::max<uint32_t>(1, maxBlockSize));

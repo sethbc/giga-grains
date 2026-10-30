@@ -52,11 +52,15 @@ namespace gg
 /// **The window** (M2 sub-project 2's spec §6.1). What a sample may read is [E − W, E − 1]:
 /// - with no splice selected, E = R(t) and W = N, or min(L, N) while Loop is on with length L
 ///   (setLoop), so a loop is the newest L frames;
-/// - while splice k is selected (selectSplice), the span between marks k and k + 1 (the last
-///   mark's to the head): E is the later mark, or R(t) for the last splice, and E − W the earlier.
-/// The window's oldest frame is never below R(t) − N, so every frame in it is the one written for
-/// it (see Storage). At the defaults (Loop off, no splice) it is M1's [R(t) − N, R(t) − 1], bit
-/// for bit. The settings apply from the next write(), which captures them for its block.
+/// - while splice k is selected (selectSplice), the span from the k-th mark still in storage at
+///   R(t), oldest first, to the next (the last mark's to the head): E is the later mark, or R(t)
+///   for the last splice, and E − W the earlier. A k past the marks in storage is the last
+///   splice; with none in storage the window is the first case's.
+/// Which marks are in storage is decided per sample, from R(t) alone, so the window never depends
+/// on where blocks fall. The window's oldest frame is never below R(t) − N, so every frame in it
+/// is the one written for it (see Storage). At the defaults (Loop off, no splice) it is M1's
+/// [R(t) − N, R(t) − 1], bit for bit. The settings and the marks apply from the next write(),
+/// which captures them for its block.
 ///
 /// **Overdub.** write() may take a gain o per frame: the frame written at R is then
 /// sanitize(sanitize(in) + o × frame(R − P)) before the freeze gain, with the period P = min(L, N)
@@ -65,7 +69,8 @@ namespace gg
 /// is the input alone, by M1's path, so Overdub 0 keeps every bit (the sign of zero included).
 ///
 /// **Splice marks:** at most kMaxSplices ring-time positions, ascending, in a fixed array. A
-/// mark older than R − N has left storage and is dropped at the next write().
+/// mark m has left storage once R − N > m, and from that sample on it no longer counts (D6: the
+/// splices' numbering shifts as marks age out); write() then drops it.
 ///
 /// **Storage** lives in a RingStorage: the one prepare() allocates, which the source owns, or one
 /// the caller owns, swapped in by adoptStorage() (a resize, ring time going on) or
@@ -126,14 +131,19 @@ class LiveSource
                       RingStorage *&previous) noexcept SST_CPPUTILS_NONBLOCKING;
 
     /// A restore (spec §6.6): `next` holds frames [0, frames) at their slots. Ring time restarts
-    /// with the head at `frames`, not frozen, the write gain 1, and `marks` replace the current
-    /// ones: those ascending, in the new window and below `frames`, the first kMaxSplices of them.
-    /// `previous` gets the storage replaced, as adoptStorage() hands it back. Nothing happens
-    /// (previous is set to nullptr) when next is null or already this ring's, or its capacity
-    /// leaves less than a block's slack. Refreshes next's guard slots; copies no frame. Real-time
-    /// safe, with the threading rule of the setters.
-    void restoreStorage(RingStorage *next, int64_t frames, std::span<const int64_t> marks,
-                        RingStorage *&previous) noexcept SST_CPPUTILS_NONBLOCKING;
+    /// with the head at `frames`, and `marks` replace the current ones: those ascending, in the
+    /// new window and below `frames`. Not frozen, the write gain is 1. Frozen, the ring is held
+    /// from the first sample, as the saved session rendered it: the freeze on, the write gain 0
+    /// and the head stopped, so no ramp moves it (keep the freeze setting on after it). `previous`
+    /// gets the storage replaced, as adoptStorage() hands it back. Refreshes next's guard slots;
+    /// copies no frame.
+    ///
+    /// Returns false, changing nothing (previous is set to nullptr), when next is null or already
+    /// this ring's, when its capacity leaves less than a block's slack, when frames is below 0 or
+    /// past next->capacity(), or when there are more than kMaxSplices marks. Real-time safe, with
+    /// the threading rule of the setters.
+    bool restoreStorage(RingStorage *next, int64_t frames, std::span<const int64_t> marks,
+                        bool frozen, RingStorage *&previous) noexcept SST_CPPUTILS_NONBLOCKING;
 
     /// N, the ring length in frames; 0 when there is no ring.
     int64_t frames() const noexcept { return frames_; }
@@ -157,22 +167,25 @@ class LiveSource
         loopLength_ = lengthFrames;
     }
 
-    /// Selects splice k: 0 none (the whole window, the loop's if Loop is on), k >= 1 the span from
-    /// the k-th mark, oldest first, to the next or, for the last mark, to the head. A k past the
-    /// mark count selects the last splice. When the marks that write() drops include the selected
-    /// span's first, the selection falls back to 0; when they are all older, it follows its span.
+    /// Selects splice k (D6): 0 none (the whole window, the loop's if Loop is on), k >= 1 the
+    /// span from the k-th mark in storage, oldest first, to the next or, for the last mark, to
+    /// the head. The selection is an index, kept as given: as marks age out the numbering shifts
+    /// under it, a k past the marks in storage selects the last splice, and with no mark in
+    /// storage the window is the whole one.
     void selectSplice(uint32_t k) noexcept { spliceRequest_ = k; }
 
     /// Adds a mark at ring time `ringTime`, keeping them ascending. False, changing nothing, when
     /// kMaxSplices are kept, a mark is there already, or ringTime is outside [head − N, head] or
-    /// below 0. The selection keeps its index (Splice counts from the oldest mark).
+    /// below 0.
     bool addSplice(int64_t ringTime) noexcept SST_CPPUTILS_NONBLOCKING;
 
-    /// Removes every mark; the selection then falls to 0 at the next write() (none to select).
+    /// Removes every mark; with none, a selection is the whole window from the next write().
     void clearSplices() noexcept { markCount_ = 0; }
 
-    /// The marks, ascending.
+    /// How many marks there are: those still in storage as of the last write() (and those added
+    /// since), for a splice count shown to the user.
     uint32_t spliceCount() const noexcept { return markCount_; }
+    /// The marks spliceCount() counts, ascending.
     std::span<const int64_t> splices() const noexcept { return {marks_.data(), markCount_}; }
 
     /// Writes the input for output samples [blockStart, blockStart + numFrames), where
@@ -200,13 +213,30 @@ class LiveSource
     }
 
     /// The window's end E at output sample t of the last write() block: headAt(t), or while a
-    /// splice is selected its later mark (at most the head), or headAt(t) for the last splice.
+    /// splice is in effect its later mark (at most the head), or headAt(t) for the last splice.
     /// Position and Spray read seconds behind it (Engine's admission clamp).
     int64_t anchorAt(int64_t t) const noexcept { return windowEnd(headAt(t)); }
 
-    /// headRunAfter(t), or 0 while a splice is selected: a splice's window doesn't move with the
-    /// head (the last splice's end does, which admission then treats as still, conservatively).
-    double anchorRunAfter(int64_t t) const noexcept { return splice_ == 0 ? headRunAfter(t) : 0.0; }
+    /// The window's oldest frame E − W at output sample t of the last write() block: never below
+    /// R(t) − N, and R(t) − N itself with Loop off and no splice.
+    int64_t windowOldestAt(int64_t t) const noexcept { return windowOldest(headAt(t)); }
+
+    /// headRunAfter(t), or 0 while a splice is in effect at t: a splice's window doesn't move
+    /// with the head (the last splice's end does, which admission then treats as still,
+    /// conservatively).
+    double anchorRunAfter(int64_t t) const noexcept
+    {
+        int64_t start = 0;
+        int64_t end = 0;
+        return spliceAt(headAt(t), start, end) ? 0.0 : headRunAfter(t);
+    }
+
+    /// The first output sample after t of the last write() block from which the window's ends
+    /// may follow other lines in t, or INT64_MAX: the sample where a mark leaves storage while a
+    /// splice is selected, shifting the splices' numbering. Before it, from t on, anchorAt() and
+    /// windowOldestAt() each stay constant or move with the head, so the SIMD live kernel's runs
+    /// (kernels::detail::liveRun) end there.
+    int64_t windowSteadyUntil(int64_t t) const noexcept SST_CPPUTILS_NONBLOCKING;
 
     /// W at output sample t of the last write() block: the window's length, anchorAt(t) less its
     /// oldest frame. N or the loop's length with no splice selected, a splice's span while one is.
@@ -339,15 +369,52 @@ class LiveSource
     // clamp(x, 0, 1), with NaN read as 0.
     static double unit(double x) noexcept { return x > 0.0 ? (x < 1.0 ? x : 1.0) : 0.0; }
 
+    // The splice in effect at head R(t) for the last write() block: false when none is (no
+    // selection, or no mark of the block in storage at R(t)), else its first mark and its later
+    // one (INT64_MAX for the last splice, which runs to the head). A mark m is in storage while
+    // m >= R(t) − N, so its first is too; the marks that left are a prefix (they are ascending),
+    // all but the few that leave during the block already dropped at write().
+    bool spliceAt(int64_t head, int64_t &start, int64_t &end) const noexcept
+    {
+        if (blockRequest_ == 0)
+        {
+            return false;
+        }
+        const uint32_t first = firstInStorage(head);
+        const uint32_t kept = blockMarkCount_ - first;
+        if (kept == 0)
+        {
+            return false;
+        }
+        const uint32_t k = std::min(blockRequest_, kept);
+        start = blockMarks_[first + k - 1];
+        end = k < kept ? blockMarks_[first + k] : std::numeric_limits<int64_t>::max();
+        return true;
+    }
+    // The first of the block's marks still in storage at head R(t).
+    uint32_t firstInStorage(int64_t head) const noexcept
+    {
+        uint32_t first = 0;
+        while (first < blockMarkCount_ && blockMarks_[first] < head - frames_)
+        {
+            ++first;
+        }
+        return first;
+    }
+
     // The last write() block's window at head R(t): its end E, and its oldest frame E − W, never
     // below R(t) − N.
     int64_t windowEnd(int64_t head) const noexcept
     {
-        return splice_ == 0 ? head : std::min(head, spliceEnd_);
+        int64_t start = 0;
+        int64_t end = 0;
+        return spliceAt(head, start, end) ? std::min(head, end) : head;
     }
     int64_t windowOldest(int64_t head) const noexcept
     {
-        return splice_ == 0 ? head - window_ : std::max(spliceStart_, head - frames_);
+        int64_t start = 0;
+        int64_t end = 0;
+        return spliceAt(head, start, end) ? start : head - window_;
     }
 
     // Points the source at `storage` (nullptr: none), for prepare(), adoptStorage() and
@@ -359,10 +426,10 @@ class LiveSource
     void release(RingStorage *&previous) noexcept;
     // W without a splice, from the loop setting and N.
     int64_t loopWindow() const noexcept;
-    // Drops the marks before `oldest` (they have left storage) and moves the selection with them.
+    // Drops the marks before `oldest`: they have left storage.
     void dropMarksBefore(int64_t oldest) noexcept SST_CPPUTILS_NONBLOCKING;
-    // The selection in effect, from the request and the marks, for the block just written.
-    void selectWindow() noexcept;
+    // Captures the selection and the marks for the block about to be written (or a restore's).
+    void captureWindow() noexcept;
 
     RingStorage *storage_{nullptr};        // the slots' storage, owned_ or the caller's
     std::unique_ptr<RingStorage> owned_;   // the storage prepare(rate, seconds, block) allocated
@@ -387,13 +454,13 @@ class LiveSource
 
     // The last write() block.
     int64_t blockStart_{0};
-    int64_t blockHead_{0};    // R before the block
-    int64_t blockAdvance_{0}; // frames written in the block, on its first blockAdvance_ samples
-    int64_t blockRamp_{0};    // ramp_ before the block
-    int64_t window_{0};       // W with no splice (the loop's or N), and overdub's period P
-    uint32_t splice_{0};      // the splice selected, 0 for none
-    int64_t spliceStart_{0};  // its first mark
-    int64_t spliceEnd_{0};    // its later mark, or INT64_MAX for the last splice (to the head)
+    int64_t blockHead_{0};     // R before the block
+    int64_t blockAdvance_{0};  // frames written in the block, on its first blockAdvance_ samples
+    int64_t blockRamp_{0};     // ramp_ before the block
+    int64_t window_{0};        // W with no splice (the loop's or N), and overdub's period P
+    uint32_t blockRequest_{0}; // the splice selected for the block, 0 for none
+    std::array<int64_t, kMaxSplices> blockMarks_{}; // the marks as the block began
+    uint32_t blockMarkCount_{0};
 };
 } // namespace gg
 
