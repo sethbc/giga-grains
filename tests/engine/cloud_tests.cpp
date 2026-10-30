@@ -23,6 +23,7 @@
 #include "gg/grain/CloudScheduler.h"
 #include "gg/grain/Tier.h"
 #include "gg/source/SourceMode.h"
+#include "gg/spectral/SpectralSource.h"
 
 namespace
 {
@@ -2028,5 +2029,92 @@ TEST_CASE("smear and bus are sanitized", "[cloud]")
                                       12.0);
         }
         REQUIRE(clamped);
+    }
+}
+
+TEST_CASE("spectral mode draws the spray alone behind the smear's head", "[cloud]")
+{
+    // The extremes spec §6.2: a Spectral grain is Live's draw with Position 0, so positionDraw =
+    // spray × uniform01(u), the same u. Position stays in params() for the smear, bounded by
+    // max(1, ring seconds) (a sample's fraction or the live ring's seconds), and Spray by the
+    // smear's ring, SpectralSource::kRingSeconds. Every other field is the Live draw.
+    gg::CloudParams p;
+    p.densityHz = 200.0;
+    p.distribution = 0.5;
+    p.position = 12.5;
+    p.spray = 0.05;
+    p.stereo = 0.8;
+    const auto jitter = [](uint64_t k) {
+        return gg::rng::uniform01(gg::rng::hash({kSeed, 0, 0, gg::rng::Field::PositionJitter, k}));
+    };
+    gg::CloudScheduler spectral;
+    spectral.prepare(48000.0);
+    spectral.setSourceMode(gg::SourceMode::Spectral, 16.0);
+    spectral.setParams(p);
+    REQUIRE(spectral.params().position == 12.5);
+    REQUIRE(spectral.params().spray == 0.05);
+    const auto drawn = collect(spectral, 0, 48000, 256);
+    REQUIRE(drawn.size() > 100);
+    bool keyed = true;
+    for (const auto &g : drawn)
+    {
+        keyed = keyed && g.positionDraw == 0.05 * jitter(g.index) && g.sprayOffsetSec == 0.0;
+    }
+    REQUIRE(keyed);
+
+    gg::CloudScheduler live;
+    live.prepare(48000.0);
+    live.setSourceMode(gg::SourceMode::Live, 16.0);
+    live.setParams(p);
+    const auto liveDrawn = collect(live, 0, 48000, 256);
+    REQUIRE(liveDrawn.size() == drawn.size());
+    bool sameOtherwise = true;
+    for (std::size_t i = 0; i < drawn.size(); ++i)
+    {
+        auto g = drawn[i];
+        g.positionDraw = liveDrawn[i].positionDraw;
+        sameOtherwise = sameOtherwise && g == liveDrawn[i];
+    }
+    REQUIRE(sameOtherwise);
+
+    SECTION("the bounds")
+    {
+        p.position = 40.0;
+        p.spray = 99.0;
+        spectral.setParams(p);
+        REQUIRE(spectral.params().position == 16.0);
+        REQUIRE(spectral.params().spray == gg::SpectralSource::kRingSeconds);
+        // Without a live ring the material is a sample: a fraction.
+        spectral.setSourceMode(gg::SourceMode::Spectral, 0.0);
+        REQUIRE(spectral.params().position == 1.0);
+        REQUIRE(spectral.params().spray == gg::SpectralSource::kRingSeconds);
+        p.position = -3.0;
+        p.spray = std::numeric_limits<double>::quiet_NaN();
+        spectral.setParams(p);
+        REQUIRE(spectral.params().position == 0.0);
+        REQUIRE(spectral.params().spray == 0.0); // the default
+    }
+
+    SECTION("smear's jitter adds to the seconds behind the head")
+    {
+        p.smearJitterSec = 0.02;
+        spectral.reset();
+        spectral.setParams(p);
+        live.reset();
+        live.setParams(p);
+        const auto smeared = collect(spectral, 0, 4800, 256);
+        const auto liveSmeared = collect(live, 0, 4800, 256);
+        REQUIRE(smeared.size() == liveSmeared.size());
+        REQUIRE_FALSE(smeared.empty());
+        bool added = true;
+        for (std::size_t i = 0; i < smeared.size(); ++i)
+        {
+            // Live's draw is (12.5 + spray u) + j; Spectral's is spray u + j, the same j.
+            const double j = liveSmeared[i].positionDraw - (12.5 + 0.05 * jitter(smeared[i].index));
+            added =
+                added && smeared[i].sprayOffsetSec == 0.0 &&
+                std::abs(smeared[i].positionDraw - (0.05 * jitter(smeared[i].index) + j)) < 1e-12;
+        }
+        REQUIRE(added);
     }
 }

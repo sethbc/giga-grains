@@ -12,6 +12,10 @@ enum class SourceMode
 {
     Sample, ///< A loaded SampleBuffer (the instrument; M0's source). Position is a fraction of it.
     Live,   ///< The live ring the FX writes its input into. Position is seconds behind the head.
+    /// The Spectral Smear's ring (the extremes spec §6.2): grains read it as Live grains read the
+    /// live ring, Spray seconds behind its head, while Position addresses the smear's material in
+    /// the material's units (a fraction of the sample, or seconds behind the live ring's head).
+    Spectral,
 };
 } // namespace gg
 

@@ -31,11 +31,14 @@ struct CloudParams
     double distribution{0.0};     ///< 0 = periodic onsets, 1 = Poisson; [0, 1].
     double grainDurationSec{0.1}; ///< At least 16 samples (the minimum window length).
     /// Where grains read. Sample mode: a fraction of the source, [0, 1]. Live mode: seconds
-    /// behind the write head, [0, ring seconds].
+    /// behind the write head, [0, ring seconds]. Spectral mode (the extremes spec §6.2): where the
+    /// smear reads its material, in the material's units, a fraction of the sample or seconds
+    /// behind the live ring's head, [0, max(1, ring seconds)]; its grains never read it.
     double position{0.5};
     /// Random spread of position. Sample mode: bipolar, as a fraction of the source (M0's
     /// positionJitter), [0, 1], or with sprayInSeconds, bipolar in seconds, [0, +inf). Live
-    /// mode: seconds, further behind the head only, [0, ring seconds].
+    /// mode: seconds, further behind the head only, [0, ring seconds]. Spectral mode: seconds
+    /// behind the spectral ring's head only, [0, SpectralSource::kRingSeconds].
     double spray{0.0};
     double pitchSemitones{0.0}; ///< [-48, 48].
     double stereo{0.0};         ///< Random pan spread: 0 = every grain centred; [0, 1].
@@ -81,12 +84,14 @@ struct GrainDraw
     /// Sample mode: clamp(position + spray × bipolar(u), 0, 1), a fraction of the source, or
     /// with CloudParams::sprayInSeconds, the position alone. Live mode: position + spray ×
     /// uniform01(u), in seconds behind the write head; the live source's admission clamp then
-    /// applies (spec §6.3). u is keyed by (seed, layer, stream, PositionJitter, k) in all three.
+    /// applies (spec §6.3). Spectral mode: spray × uniform01(u), Live's draw with Position 0, in
+    /// seconds behind the spectral ring's head, under the same clamp (the extremes spec §6.2).
+    /// u is keyed by (seed, layer, stream, PositionJitter, k) in every mode.
     double positionDraw;
     /// Sample mode with CloudParams::sprayInSeconds: spray × bipolar(u), in seconds, which the
     /// source adds to positionDraw at its own rate (Engine::sampleGrain). Otherwise +0. With a
     /// Smear jitter j, Sample mode adds j × bipolar(u') seconds here, u' keyed by SmearJitter,
-    /// and Live mode adds it to positionDraw instead (extremes spec §6.1).
+    /// and Live and Spectral mode add it to positionDraw instead (extremes spec §6.1).
     double sprayOffsetSec;
     /// The pitch ratio: exp2Det(clamp(pitchSemitones + (key − 60), −48, 48) / 12) with a key,
     /// exp2Det(pitchSemitones / 12) without. With a pitch spread s,
@@ -201,9 +206,14 @@ class CloudScheduler
 
     /// Sets how position and spray are drawn (ruling M1-k; see CloudParams and GrainDraw), and
     /// re-sanitizes the controls last given to setParams for the new mode. ringSeconds is the live
-    /// ring's length, which bounds both in Live mode; a non-finite or negative value means 0. The
-    /// default is Sample. Neither the schedule nor any other draw changes.
+    /// ring's length, which bounds both in Live mode; a non-finite or negative value means 0. In
+    /// Spectral mode it bounds Position with 1 (the material's units, a sample's fraction or the
+    /// live ring's seconds), and SpectralSource::kRingSeconds bounds Spray (the extremes spec
+    /// §6.2). The default is Sample. Neither the schedule nor any other draw changes.
     void setSourceMode(SourceMode mode, double ringSeconds) noexcept;
+
+    /// The controls in effect: the last setParams() sanitized for the source mode.
+    const CloudParams &params() const noexcept { return params_; }
 
     /// The held keys (spec §6.1): distinct MIDI keys 0..127, ascending, at most 128. Copied;
     /// no allocation. They apply to every grain emitted after this call. When the set goes from
@@ -326,12 +336,18 @@ class CloudScheduler
                 durationSamples = std::clamp(exp2Det(log2Seconds) * sampleRate_,
                                              kMinDurationSamples, kMaxDurationSamples);
             }
-            // Live mode: seconds behind the head, further back only. Sample mode: a fraction of
-            // the source, with the spray folded in, or with sprayInSeconds the position alone and
-            // the spray carried in seconds for the source to convert.
+            // Live mode: seconds behind the head, further back only. Spectral mode: the same with
+            // Position replaced by 0, since Position addresses the smear's material, not its ring
+            // (the extremes spec §6.2). Sample mode: a fraction of the source, with the spray
+            // folded in, or with sprayInSeconds the position alone and the spray carried in
+            // seconds for the source to convert.
             const bool inSeconds = mode_ == SourceMode::Sample && params_.sprayInSeconds;
             double positionDraw = params_.position;
-            if (mode_ == SourceMode::Live)
+            if (mode_ == SourceMode::Spectral)
+            {
+                positionDraw = params_.spray * rng::uniform01(jitter);
+            }
+            else if (mode_ == SourceMode::Live)
             {
                 positionDraw += params_.spray * rng::uniform01(jitter);
             }
@@ -343,12 +359,13 @@ class CloudScheduler
             double sprayOffsetSec = inSeconds ? params_.spray * rng::bipolar(jitter) : 0.0;
             if (params_.smearJitterSec != 0.0)
             {
-                // The extremes spec §6.1: seconds behind the head in Live mode (the admission
-                // clamp then applies, as to the spray); in Sample mode carried in seconds, for
-                // the source to convert at its own rate and clamp, as the spray in seconds is.
+                // The extremes spec §6.1: seconds behind the head in Live and Spectral mode (the
+                // admission clamp then applies, as to the spray); in Sample mode carried in
+                // seconds, for the source to convert at its own rate and clamp, as the spray in
+                // seconds is.
                 const double smear =
                     params_.smearJitterSec * rng::bipolar(key(rng::Field::SmearJitter));
-                if (mode_ == SourceMode::Live)
+                if (mode_ != SourceMode::Sample)
                 {
                     positionDraw += smear;
                 }

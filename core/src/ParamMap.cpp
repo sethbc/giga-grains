@@ -58,10 +58,12 @@ SourceMode positionUnits(SourceMode kind, SourceMode material) noexcept
     case SourceMode::Sample:
     case SourceMode::Live:
         return kind;
-        // The Spectral kind (the extremes spec §6.2) plugs in here, `case SourceMode::Spectral:
-        // return material;`: its Position addresses its material, a sample's fraction or the
-        // ring's seconds behind the head, while the scheduler's Spectral mode draws its spray
+    case SourceMode::Spectral:
+        // The extremes spec §6.2: its Position addresses its material, a sample's fraction or
+        // the ring's seconds behind the head, while the scheduler's Spectral mode draws its spray
         // one-sided, as Live's (sprayInSeconds is a Sample-mode flag, which it ignores).
+        // builtKind doesn't return Spectral yet, so this changes nothing until it does.
+        return material;
     }
     return material;
 }

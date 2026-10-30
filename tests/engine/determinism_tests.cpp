@@ -963,3 +963,155 @@ TEST_CASE("a source kind switch is block-size invariant", "[determinism]")
         REQUIRE(sameBits(ref.audio.right, r.audio.right));
     }
 }
+
+namespace
+{
+// The Spectral kind (the extremes spec §6.2) over liveNoise() and the 16 s ring, or over a
+// sample. Live (no sample) or Sample until kToSpectral, a frame inside a hop, then Spectral; its
+// Position moves twice, at kMove1 (inside a hop) and at kMove2 (a hop boundary at 48 kHz), and
+// the ring is frozen from kFreeze to kThaw, so the smear reads a ring whose head stops. Every
+// change is made between the process() calls at its frame, so each block split sees it at the
+// same absolute sample.
+constexpr int64_t kToSpectral = 12000;
+constexpr int64_t kMove1 = 48000;
+constexpr int64_t kFreeze = 60000;
+constexpr int64_t kThaw = 90000;
+constexpr int64_t kMove2 = 100352; // 98 hops of 1,024
+
+// liveNoise() as a stereo sample.
+std::shared_ptr<const gg::SampleBuffer> noiseSource(const LiveInput &input)
+{
+    auto buf = std::make_shared<gg::SampleBuffer>(2, kLiveFrames, kSampleRate);
+    std::copy(input.left.begin(), input.left.end(), buf->channel(0));
+    std::copy(input.right.begin(), input.right.end(), buf->channel(1));
+    return buf;
+}
+
+struct SpectralRender
+{
+    Render audio;
+    GrainLog log;
+};
+
+void renderSpectral(const LiveInput &input, const std::shared_ptr<const gg::SampleBuffer> &source,
+                    uint32_t maxBlock, const std::vector<uint32_t> &blockSizes, bool move,
+                    SpectralRender &r)
+{
+    gg::EngineConfig c{kSampleRate, maxBlock, 4096, 42};
+    c.liveSeconds = 16.0;
+    c.spectral = true;
+    c.layer = 1;
+    gg::Engine engine(c);
+    // Position in the material's units: seconds behind the head, or a fraction of the sample.
+    const bool sample = source != nullptr;
+    const double positions[3] = {sample ? 0.2 : 0.1, sample ? 0.6 : 0.5, sample ? 0.9 : 1.2};
+    if (sample)
+    {
+        engine.setSource(source);
+    }
+    else
+    {
+        engine.setSourceMode(gg::SourceMode::Live);
+    }
+    gg::CloudParams p = kParams;
+    p.position = positions[0];
+    p.spray = 0.2;
+    engine.setCloudParams(p);
+    engine.setEventSink(&GrainLog::record, &r.log);
+    constexpr float kUnwritten = std::numeric_limits<float>::quiet_NaN();
+    r.audio.left.assign(static_cast<std::size_t>(kLiveFrames), kUnwritten);
+    r.audio.right.assign(static_cast<std::size_t>(kLiveFrames), kUnwritten);
+    int64_t done = 0;
+    std::size_t next = 0;
+    for (const int64_t end : {kToSpectral, kMove1, kFreeze, kThaw, kMove2, kLiveFrames})
+    {
+        while (done < end)
+        {
+            const uint32_t want = blockSizes[next++ % blockSizes.size()];
+            const auto n = static_cast<uint32_t>(std::min<int64_t>(want, end - done));
+            const float *in[2] = {input.left.data() + done, input.right.data() + done};
+            float *out[2] = {r.audio.left.data() + done, r.audio.right.data() + done};
+            engine.process(in, 2, out, 2, n);
+            done += n;
+        }
+        if (end == kToSpectral)
+        {
+            engine.setSourceMode(gg::SourceMode::Spectral);
+        }
+        if (move && (end == kMove1 || end == kMove2))
+        {
+            p.position = positions[end == kMove1 ? 1 : 2];
+            engine.setCloudParams(p);
+        }
+        if (end == kFreeze || end == kThaw)
+        {
+            engine.setFreeze(end == kFreeze);
+        }
+    }
+}
+} // namespace
+
+TEST_CASE("a spectral render is block-size invariant", "[determinism]")
+{
+    const auto input = liveNoise();
+    for (const bool sample : {false, true})
+    {
+        INFO((sample ? "over a sample" : "over the ring"));
+        // A noise sample, not sineSource(): the sine's windows at the three Positions start a
+        // whole number of its periods apart, so their smears would be the same bits.
+        const std::shared_ptr<const gg::SampleBuffer> source =
+            sample ? noiseSource(input) : nullptr;
+        SpectralRender ref;
+        renderSpectral(input, source, kMaxBlock, {kMaxBlock}, true, ref);
+        REQUIRE_FALSE(ref.log.overflowed);
+        REQUIRE(allFinite(ref.audio.left));
+        REQUIRE(allFinite(ref.audio.right));
+        REQUIRE_FALSE(sameBits(ref.audio.left, ref.audio.right));
+        // Not vacuous: the smear sounds after each move, every grain from the switch on reads
+        // it, and moving Position changes what it reads.
+        for (const int64_t from : {kMove1, kMove2})
+        {
+            REQUIRE(peak(std::vector<float>(ref.audio.left.begin() + from + 12000,
+                                            ref.audio.left.begin() + from + 24000)) > 0.05f);
+        }
+        bool slots = true;
+        bool spectral = false;
+        for (const gg::GrainSpec &g : ref.log.grains)
+        {
+            const bool isSpectral = g.sourceSlot == gg::Engine::kSpectralSlot;
+            slots = slots && isSpectral == (g.onsetSample >= kToSpectral);
+            spectral = spectral || isSpectral;
+        }
+        REQUIRE(slots);
+        REQUIRE(spectral);
+        SpectralRender held;
+        renderSpectral(input, source, kMaxBlock, {kMaxBlock}, false, held);
+        REQUIRE(held.log.grains.size() == ref.log.grains.size());
+        REQUIRE(
+            sameBits(std::vector<float>(held.audio.left.begin(), held.audio.left.begin() + kMove1),
+                     std::vector<float>(ref.audio.left.begin(), ref.audio.left.begin() + kMove1)));
+        REQUIRE_FALSE(sameBits(held.audio.left, ref.audio.left));
+
+        struct Split
+        {
+            uint32_t maxBlock;
+            std::vector<uint32_t> blockSizes;
+        };
+        const auto random = randomSplit();
+        for (const Split &split :
+             {Split{kMaxBlock, {1}}, Split{kMaxBlock, {7}}, Split{kMaxBlock, {32}},
+              Split{kMaxBlock, {511}}, Split{kMaxBlock, {1024}}, Split{64, {4096}},
+              Split{kMaxBlock, random}})
+        {
+            INFO("maxBlockSize = " << split.maxBlock
+                                   << ", first block size = " << split.blockSizes.front() << " of "
+                                   << split.blockSizes.size());
+            SpectralRender r;
+            renderSpectral(input, source, split.maxBlock, split.blockSizes, true, r);
+            REQUIRE_FALSE(r.log.overflowed);
+            REQUIRE(r.log.grains == ref.log.grains);
+            REQUIRE(sameBits(ref.audio.left, r.audio.left));
+            REQUIRE(sameBits(ref.audio.right, r.audio.right));
+        }
+    }
+}

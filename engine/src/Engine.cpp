@@ -53,6 +53,10 @@ Engine::Engine(const EngineConfig &config) : config_(validated(config)), pool_(c
     cloud_.prepare(config_.sampleRate);
     // process() writes into the ring in blocks of at most maxBlockSize frames (ruling M1-o).
     live_.prepare(config_.sampleRate, config_.liveSeconds, config_.maxBlockSize);
+    if (config_.spectral)
+    {
+        spectral_ = std::make_unique<SpectralSource>(config_.sampleRate, config_.maxBlockSize);
+    }
 }
 
 Engine::SourceSlot Engine::slotFor(const PreparedSource *source) noexcept
@@ -111,7 +115,7 @@ void Engine::replaceCurrent(const PreparedSource *source) noexcept
         return;
     }
     // Every sample grain still sounding now reads the new source, in the current slot; the
-    // ring's grains (kLiveSlot) keep reading the ring.
+    // rings' grains (kLiveSlot and kSpectralSlot) keep reading their rings.
     const int64_t lastEnd = std::max(slots_[0].lastEnd, slots_[1].lastEnd);
     currentSlot() = slotFor(source);
     currentSlot().lastEnd = lastEnd;
@@ -208,7 +212,8 @@ void Engine::setNoteGate(bool gate) noexcept { cloud_.setNoteGate(gate); }
 
 void Engine::setSourceMode(SourceMode mode) noexcept
 {
-    if (mode == SourceMode::Live && !live_.enabled())
+    if ((mode == SourceMode::Live && !live_.enabled()) ||
+        (mode == SourceMode::Spectral && spectral_ == nullptr))
     {
         return; // no ring to read
     }
@@ -228,6 +233,10 @@ void Engine::reset() noexcept
     clearGrains();
     cloud_.reset();
     live_.reset();
+    if (spectral_ != nullptr)
+    {
+        spectral_->reset();
+    }
     clock_ = 0;
     dropped_ = 0;
     bus2Used_ = false;
@@ -327,16 +336,42 @@ void Engine::processBlock(const float *const *in, uint32_t numInChannels, float 
     {
         live_.write(in, numInChannels, offset, blockStart, numFrames);
     }
+    // Then the Spectral Smear writes the block into its ring, before any grain reads it (the
+    // extremes spec §6.2): silence unless the kind is Spectral, else the smear of the current
+    // sample, or without one of the live ring just written, whose head it reads at each hop.
+    // Position is the one in effect for the block, so each hop takes its own block's.
+    if (spectral_ != nullptr)
+    {
+        spectral_->setActive(mode_ == SourceMode::Spectral);
+        SpectralMaterial material;
+        const SourceSlot &current = currentSlot();
+        if (current.source != nullptr)
+        {
+            material.sample[0] = current.data[0];
+            material.sample[1] = current.data[1];
+            material.sampleFrames = current.frames;
+            material.sampleMono = current.mono;
+            material.sampleRate = current.rate;
+        }
+        else
+        {
+            material.ring = &live_;
+        }
+        spectral_->process(material, cloud_.params().position, config_.seed, config_.layer,
+                           blockStart, numFrames);
+    }
 
     // Spawn this block's grains, then render, then retire. renderedTo is the sample up to
     // which the pool has already been rendered; admit() moves it forward when it has to
     // retire grains early to make room. Disabled, nothing spawns (and the pool is empty).
     int64_t renderedTo = blockStart;
     const auto spawn = [&](const GrainDraw &d) {
-        if (mode_ == SourceMode::Live)
+        if (mode_ == SourceMode::Live || mode_ == SourceMode::Spectral)
         {
+            // setSourceMode admits Spectral only with the smear.
+            const bool live = mode_ == SourceMode::Live;
             GrainSpec g;
-            if (liveGrain(d, g))
+            if (liveGrain(d, g, live ? live_ : spectral_->ring(), live ? kLiveSlot : kSpectralSlot))
             {
                 admit(g, outputs, blockStart, renderedTo);
             }
@@ -388,7 +423,8 @@ GrainSpec Engine::sampleGrain(const GrainDraw &d) const noexcept
     };
 }
 
-bool Engine::liveGrain(const GrainDraw &d, GrainSpec &g) const noexcept
+bool Engine::liveGrain(const GrainDraw &d, GrainSpec &g, const LiveSource &ring,
+                       uint8_t slot) const noexcept
 {
     // The admission clamp (spec §6.3; the class comment has the derivation). Between output
     // samples the head moves linearly while it advances, so at the real onset T = t0 + frac it
@@ -396,16 +432,16 @@ bool Engine::liveGrain(const GrainDraw &d, GrainSpec &g) const noexcept
     // in e samples.
     constexpr double kM = static_cast<double>(LiveSource::kHeadMargin);
     const int64_t t0 = d.onsetSample;
-    const double run = live_.headRunAfter(t0); // +inf when not frozen
+    const double run = ring.headRunAfter(t0); // +inf when not frozen
     const double step = std::min(d.onsetFrac, run);
-    const double rho = static_cast<double>(live_.headAt(t0)) + step;
+    const double rho = static_cast<double>(ring.headAt(t0)) + step;
     const double dur = d.durationSamples;
     const double rate = d.rate;
     // The frames the head advances during the grain's life.
     const double span = std::min(dur, run - step);
     const double hi = rho - 3.0 - kM - std::max(0.0, dur * rate - span);
     const double lo =
-        rho - static_cast<double>(live_.frames()) + 1.0 + kM + std::max(0.0, span * (1.0 - rate));
+        rho - static_cast<double>(ring.frames()) + 1.0 + kM + std::max(0.0, span * (1.0 - rate));
     if (lo > hi)
     {
         return false; // the grain's read span doesn't fit the ring
@@ -421,7 +457,7 @@ bool Engine::liveGrain(const GrainDraw &d, GrainSpec &g) const noexcept
         .gain = d.gain,
         .pan = d.pan,
         .tier = d.tier,
-        .sourceSlot = kLiveSlot,
+        .sourceSlot = slot,
         .bus = d.bus,
     };
     return true;
@@ -451,9 +487,10 @@ void Engine::admit(const GrainSpec &g, const BlockOutputs &outputs, int64_t bloc
     // grains still sounding at the onset, fewer than capacity by canAdmit.
     [[maybe_unused]] const bool spawned = pool_.spawn(g);
     assert(spawned);
-    if (g.sourceSlot != kLiveSlot)
+    if (g.sourceSlot < kLiveSlot)
     {
-        // A sample slot's source retires only once its last grain has ended (retirePrevious).
+        // A sample slot's source retires only once its last grain has ended (retirePrevious); a
+        // ring grain (kLiveSlot or kSpectralSlot) holds no source.
         int64_t &lastEnd = slots_[g.sourceSlot].lastEnd;
         lastEnd = std::max(lastEnd, grainEndSample(g));
     }
@@ -477,8 +514,9 @@ void Engine::renderPool(const BlockOutputs &outputs, int64_t blockStart, int64_t
     // Grain-major, in spawn order: every grain adds to every sample of [from, to) before the
     // next grain starts, so each sample sums its grains in spawn order. With one output (a bus's
     // second channel null) the kernels carry source channel 0, unpanned. Each grain reads with its
-    // own latched tier (ruling 2) from the source it latched at its onset (spec §6.4): the ring for
-    // kLiveSlot, otherwise that sample slot's source, whatever the mode now in effect. Each
+    // own latched tier (ruling 2) from the source it latched at its onset (spec §6.4): the live
+    // ring for kLiveSlot, the smear's ring for kSpectralSlot, otherwise that sample slot's source,
+    // whatever the mode now in effect. Each
     // grain adds into its row's bus (extremes spec §6.3), so each bus sums in spawn order; a bus
     // whose first channel is null (out's, or a null bus2 channel) takes nothing.
     const kernels::Output busOutputs[2] = {
@@ -498,15 +536,17 @@ void Engine::renderPool(const BlockOutputs &outputs, int64_t blockStart, int64_t
         {
             continue;
         }
-        if (rows.sourceSlot[i] == kLiveSlot)
+        if (rows.sourceSlot[i] >= kLiveSlot)
         {
+            // A kSpectralSlot grain exists only with the smear (setSourceMode).
+            const LiveSource &ring = rows.sourceSlot[i] == kLiveSlot ? live_ : spectral_->ring();
             if (rows.tier[i] == Tier::Eco)
             {
-                kernels::renderLiveSimd<kernels::Linear>(rows, i, live_, output, from, to, hann_);
+                kernels::renderLiveSimd<kernels::Linear>(rows, i, ring, output, from, to, hann_);
             }
             else
             {
-                kernels::renderLiveSimd<kernels::Hermite>(rows, i, live_, output, from, to, hann_);
+                kernels::renderLiveSimd<kernels::Hermite>(rows, i, ring, output, from, to, hann_);
             }
             continue;
         }

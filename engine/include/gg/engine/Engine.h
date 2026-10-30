@@ -19,6 +19,7 @@
 #include "gg/source/PreparedSource.h"
 #include "gg/source/SampleBuffer.h"
 #include "gg/source/SourceMode.h"
+#include "gg/spectral/SpectralSource.h"
 
 namespace gg
 {
@@ -37,6 +38,10 @@ struct EngineConfig
     /// The layer this engine plays (spec §6.2): the `layer` field of every random draw's key.
     /// Below 4. Layer A is 0, which keys every draw as M1's one-layer engine did.
     uint32_t layer{0};
+    /// true allocates the Spectral Smear (the extremes spec §6.2): a SpectralSource and its
+    /// SpectralSource::kRingSeconds ring, which SourceMode::Spectral reads. false (the default)
+    /// means none: setSourceMode(Spectral) is ignored, and nothing else changes.
+    bool spectral{false};
 };
 
 /// Called on the audio thread, from inside process(), once for every grain that spawns, in
@@ -45,11 +50,12 @@ struct EngineConfig
 using GrainEventSink = void (*)(void *ctx, uint32_t layer, const GrainSpec &);
 
 /// The grain engine, one layer's (spec §6.2): one Cloud grain stream (layer EngineConfig::layer,
-/// stream 0) whose new grains read one source kind, a sample (SourceMode::Sample, the default)
-/// or the live ring (SourceMode::Live). Each grain keeps reading the source it started on: when a
-/// new sample source is adopted, the grains already sounding finish on the old one
-/// (adoptSource), and when the source mode changes they finish on their sample or on the ring
-/// (setSourceMode). Its pool row says which (GrainSpec::sourceSlot: a sample slot, or kLiveSlot).
+/// stream 0) whose new grains read one source kind, a sample (SourceMode::Sample, the default),
+/// the live ring (SourceMode::Live) or, with EngineConfig::spectral, the Spectral Smear's ring
+/// (SourceMode::Spectral). Each grain keeps reading the source it started on: when a new sample
+/// source is adopted, the grains already sounding finish on the old one (adoptSource), and when
+/// the source mode changes they finish on their sample or on their ring (setSourceMode). Its pool
+/// row says which (GrainSpec::sourceSlot: a sample slot, kLiveSlot or kSpectralSlot).
 /// The enable gate (setEnabled) holds the stream off while the ring and the clock run on.
 ///
 /// With the same configuration, source, input and parameter changes (at the same sample
@@ -90,17 +96,28 @@ using GrainEventSink = void (*)(void *ctx, uint32_t layer, const GrainSpec &);
 /// that moves the oldest frame onto it, the head-proximity fade (LiveSource::fade) covers: each
 /// output sample multiplies the grain by the fade at its read position, and where the fade is
 /// 0 nothing is read, so neither stale data nor NaN can reach the output.
+///
+/// **Spectral mode** (the extremes spec §6.2). Each block, after the live ring's write and
+/// before any grain spawns, the SpectralSource writes the block into its own ring: silence
+/// unless the mode in effect is Spectral, else the smear of the material, the current sample
+/// slot when it holds a source, else the live ring (read at each hop's own head), at the
+/// Position in effect (CloudParams, in the material's units). A Spectral grain is a ring grain
+/// over the smear's ring, on kSpectralSlot: it starts positionDraw seconds behind that ring's
+/// head under the admission clamp above, with N the smear's ring frames, and the live kernels
+/// render it. That ring never freezes: setFreeze reaches the live ring alone.
 class Engine
 {
   public:
     /// GrainSpec::sourceSlot of a grain reading the live ring; 0 and 1 are the sample slots.
     static constexpr uint8_t kLiveSlot = 2;
+    /// GrainSpec::sourceSlot of a grain reading the Spectral Smear's ring (the extremes spec §6.2).
+    static constexpr uint8_t kSpectralSlot = 3;
 
-    /// Allocates everything process() needs, the live ring included. Throws
+    /// Allocates everything process() needs, the live ring and the Spectral Smear included. Throws
     /// std::invalid_argument if sampleRate is not finite and positive, maxBlockSize is 0,
     /// liveSeconds is not finite and >= 0, grainCapacity is 2^31 or more, or layer is 4 or more
     /// (all checked before anything is allocated), or if the ring's storage, N + maxBlockSize
-    /// frames, would exceed 2^40.
+    /// frames, would exceed 2^40, and std::bad_alloc if the Spectral Smear can't be allocated.
     explicit Engine(const EngineConfig &config);
 
     /// Not real-time safe: call only while process() is not running. PreparedSource::make, then
@@ -181,11 +198,15 @@ class Engine
     /// setCloudParams.
     void setNoteGate(bool gate) noexcept;
 
-    /// Which source new grains read (spec §6.4). Live needs a ring (liveSeconds > 0); without
-    /// one the call is ignored. Takes effect from the next process() call's first frame: the
-    /// scheduler draws position and spray for the new kind from that frame, and the grains still
-    /// sounding finish on the source they started on (their sample slot or the ring), so a switch
-    /// doesn't click. Real-time safe, with the same threading rule as setCloudParams.
+    /// Which source new grains read (spec §6.4). Live needs a ring (liveSeconds > 0) and Spectral
+    /// the Spectral Smear (EngineConfig::spectral); without it the call is ignored. Takes effect
+    /// from the next process() call's first frame: the scheduler draws position and spray for the
+    /// new kind from that frame, and the grains still sounding finish on the source they started
+    /// on (their sample slot or their ring), so a switch doesn't click. Switching to Spectral
+    /// starts the smear at the next hop boundary; switching away stops it, and its ring takes
+    /// silence from that frame (SpectralSource::setActive), which the Spectral grains still
+    /// sounding read once they reach it. Real-time safe, with the same threading rule as
+    /// setCloudParams.
     void setSourceMode(SourceMode mode) noexcept;
 
     /// The enable gate (spec §6.2). Takes effect from the next process() call's first frame. Off:
@@ -212,12 +233,12 @@ class Engine
     void setEventSink(GrainEventSink sink, void *ctx) noexcept;
 
     /// Silences every grain, lowers bus2Used() and restarts the clock, the schedule and ring time
-    /// at 0. Keeps the current source (the previous one retires, see takeRetiredSource), the source
-    /// mode, the enable gate, the Cloud parameters, the held keys, the note gate, the freeze
-    /// setting and the sink: the next process() continues as a new engine with those settings
-    /// would, a freeze ramping down from its first frame. The ring's old frames can't be read
-    /// again. Real-time safe, but not synchronized with process(): call it on the audio thread
-    /// between process() calls, or while process() is not running.
+    /// at 0, the Spectral Smear's included. Keeps the current source (the previous one retires, see
+    /// takeRetiredSource), the source mode, the enable gate, the Cloud parameters, the held keys,
+    /// the note gate, the freeze setting and the sink: the next process() continues as a new engine
+    /// with those settings would, a freeze ramping down from its first frame. The ring's old frames
+    /// can't be read again. Real-time safe, but not synchronized with process(): call it on the
+    /// audio thread between process() calls, or while process() is not running.
     void reset() noexcept;
 
     /// Renders numFrames frames, overwriting out[0 .. numChannels). Before rendering, if there is
@@ -290,6 +311,11 @@ class Engine
     int64_t liveWriteHead() const noexcept { return live_.head(); }
     /// The live ring itself, read-only: read it with liveWriteHead() as the head.
     const LiveSource &live() const noexcept { return live_; }
+    /// Whether the current sample slot holds a source: the Spectral Smear's material is then the
+    /// sample, else the live ring (the extremes spec §6.2).
+    bool hasSampleSource() const noexcept { return slots_[current_].source != nullptr; }
+    /// The Spectral Smear, read-only; null without EngineConfig::spectral.
+    const SpectralSource *spectral() const noexcept { return spectral_.get(); }
 
   private:
     void processBlock(const float *const *in, uint32_t numInChannels, float *const *out,
@@ -297,8 +323,10 @@ class Engine
                       uint32_t numFrames) noexcept SST_CPPUTILS_NONBLOCKING;
     /// The grain a draw makes from the current sample source.
     GrainSpec sampleGrain(const GrainDraw &d) const noexcept;
-    /// The grain a draw makes from the live ring, admission-clamped; false when it can't fit.
-    bool liveGrain(const GrainDraw &d, GrainSpec &g) const noexcept;
+    /// The grain a draw makes from `ring` (the live ring, or the smear's), admission-clamped, on
+    /// source slot `slot`; false when it can't fit.
+    bool liveGrain(const GrainDraw &d, GrainSpec &g, const LiveSource &ring,
+                   uint8_t slot) const noexcept;
     /// Where a block's grains go: bus[b] are the two channel pointers bus b's grains are added
     /// into, at the block's first frame. Without bus2, bus[1] is bus[0], so every grain goes to
     /// out.
@@ -310,8 +338,9 @@ class Engine
                int64_t &renderedTo) noexcept SST_CPPUTILS_NONBLOCKING;
     /// Adds every pool grain into its row's bus over [from, to), in spawn order, through
     /// gg/grain/GrainKernels.h with each grain's latched tier and source, whatever the mode in
-    /// effect: the SIMD live kernel for a grain of kLiveSlot, otherwise the SIMD sample kernel
-    /// reading the grain's sample slot.
+    /// effect: the SIMD live kernel for a grain of kLiveSlot over the live ring, and for one of
+    /// kSpectralSlot over the smear's ring, otherwise the SIMD sample kernel reading the grain's
+    /// sample slot.
     void renderPool(const BlockOutputs &outputs, int64_t blockStart, int64_t from,
                     int64_t to) noexcept SST_CPPUTILS_NONBLOCKING;
 
@@ -320,6 +349,8 @@ class Engine
     GrainPool pool_;
     CloudScheduler cloud_;
     LiveSource live_;
+    // The Spectral Smear (EngineConfig::spectral), or null.
+    std::unique_ptr<SpectralSource> spectral_;
 
     // One source grains may read, with what process() reads of it cached, so it never touches
     // a reference count. No source (or one without channels) reads nothing: frames 0.

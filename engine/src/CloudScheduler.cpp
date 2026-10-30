@@ -4,6 +4,8 @@
 
 #include "gg/grain/CloudScheduler.h"
 
+#include "gg/spectral/SpectralSource.h"
+
 namespace gg
 {
 namespace
@@ -34,14 +36,31 @@ void CloudScheduler::setParams(const CloudParams &in) noexcept
     p.grainDurationSec = finiteOr(in.grainDurationSec, d.grainDurationSec);
     // Ruling M1-k: a fraction of the source in Sample mode, seconds behind the head in Live mode.
     // With sprayInSeconds, Sample mode's spray is seconds, which the source bounds when it
-    // clamps the read position to its frames: here it is only kept non-negative.
-    const double maxPosition = mode_ == SourceMode::Live ? ringSeconds_ : 1.0;
+    // clamps the read position to its frames: here it is only kept non-negative. Spectral mode
+    // (the extremes spec §6.2): Position is in the material's units, a sample's fraction or the
+    // live ring's seconds, which the smear clamps to its material; Spray is seconds behind the
+    // spectral ring's head, bounded by its length.
+    double maxPosition = 1.0;
+    double maxSpray = 1.0;
+    switch (mode_)
+    {
+    case SourceMode::Sample:
+        break;
+    case SourceMode::Live:
+        maxPosition = ringSeconds_;
+        maxSpray = ringSeconds_;
+        break;
+    case SourceMode::Spectral:
+        maxPosition = std::max(1.0, ringSeconds_);
+        maxSpray = SpectralSource::kRingSeconds;
+        break;
+    }
     const bool sprayInSeconds = mode_ == SourceMode::Sample && in.sprayInSeconds;
     p.position = std::clamp(finiteOr(in.position, d.position), 0.0, maxPosition);
     p.spray = std::max(finiteOr(in.spray, d.spray), 0.0);
     if (!sprayInSeconds)
     {
-        p.spray = std::min(p.spray, maxPosition);
+        p.spray = std::min(p.spray, maxSpray);
     }
     p.pitchSemitones = std::clamp(finiteOr(in.pitchSemitones, d.pitchSemitones),
                                   -kMaxPitchSemitones, kMaxPitchSemitones);

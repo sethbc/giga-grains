@@ -29,6 +29,7 @@
 #include "gg/grain/GrainPool.h"
 #include "gg/source/InterleavedStereo.h"
 #include "gg/source/LiveSource.h"
+#include "gg/spectral/SpectralSource.h"
 
 namespace
 {
@@ -1559,6 +1560,90 @@ LiveRenders renderLiveBoth(const Pool &pool, const LiveInput &input,
     r.finalHead = ring.head();
     return r;
 }
+
+// The Spectral kind's ring (the extremes spec §6.2): a SpectralSource smearing a stereo noise
+// sample of 2 s at its middle, at the live tests' rate and maxBlockSize. Its ring is 5 s long and
+// never frozen, so its head trajectory is R(t) = t + 1.
+struct SpectralInput
+{
+    explicit SpectralInput(int64_t length)
+        : length(length), left(noise(96000, 81, 0)), right(noise(96000, 81, 1))
+    {
+    }
+    gg::SpectralMaterial material() const
+    {
+        gg::SpectralMaterial m;
+        m.sample[0] = left.data();
+        m.sample[1] = right.data();
+        m.sampleFrames = 96000;
+        m.sampleMono = false;
+        m.sampleRate = kLiveRate;
+        return m;
+    }
+    int64_t length;
+    std::vector<float> left;
+    std::vector<float> right;
+};
+
+// The spectral ring's frames and its head trajectory.
+int64_t spectralRingFrames()
+{
+    const gg::SpectralSource probe(kLiveRate, kLiveMaxBlock);
+    return probe.ring().frames();
+}
+
+std::vector<int64_t> spectralHeads(int64_t length)
+{
+    std::vector<int64_t> heads(static_cast<std::size_t>(length));
+    for (int64_t t = 0; t < length; ++t)
+    {
+        heads[static_cast<std::size_t>(t)] = t + 1;
+    }
+    return heads;
+}
+
+// renderLiveBoth over the spectral ring: drives a fresh, active SpectralSource over the input in
+// `lengths`, each piece's smear written whole before the pool's grains render it.
+template <class R>
+LiveRenders renderSpectralBoth(const Pool &pool, const SpectralInput &input,
+                               const std::vector<int64_t> &lengths, int outputs,
+                               const gg::HannTable &hann)
+{
+    LiveRenders r{Buffers(0, input.length, outputs), Buffers(0, input.length, outputs), {}, 0};
+    const gg::kernels::Output refOut = r.ref.output();
+    const gg::kernels::Output simdOut = r.simd.output();
+    const gg::GrainRows &rows = pool.rows();
+    ActiveGrains active(pool);
+    gg::SpectralSource smear(kLiveRate, kLiveMaxBlock);
+    smear.setActive(true);
+    const gg::SpectralMaterial material = input.material();
+    const gg::LiveSource &ring = smear.ring();
+    std::size_t block = 0;
+    for (int64_t from = 0; from < input.length;)
+    {
+        const int64_t to = std::min(input.length, from + lengths[block++ % lengths.size()]);
+        smear.process(material, 0.5, 83, 0, from, static_cast<uint32_t>(to - from));
+        REQUIRE(ring.headAt(to - 1) == to);
+        active.each(from, to, [&](uint32_t i) {
+            gg::kernels::renderLiveRef<R>(rows, i, ring, refOut, from, to, hann);
+            gg::kernels::renderLiveSimd<R>(rows, i, ring, simdOut, from, to, hann);
+            if (std::max(from, rows.onsetSample[i]) >= std::min(to, rows.endSample[i]))
+            {
+                return;
+            }
+            const gg::kernels::LiveInterior in = gg::kernels::liveInterior(rows, i, ring, from, to);
+            const int64_t moving = (in.end[0] - in.begin[0]) / 4 * 4;
+            const int64_t still = (in.end[1] - in.begin[1]) / 4 * 4;
+            r.stats.simdSamples += moving + still;
+            r.stats.stillSimdCalls += still > 0;
+            r.stats.bothPartsCalls += in.end[0] > in.begin[0] && in.end[1] > in.begin[1];
+            r.stats.emptyCalls += in.end[0] == in.begin[0] && in.end[1] == in.begin[1];
+        });
+        from = to;
+    }
+    r.finalHead = ring.head();
+    return r;
+}
 } // namespace
 
 // The interior's conditions at sample t of grain i, each on its own, computed afresh from the
@@ -1707,25 +1792,53 @@ TEMPLATE_TEST_CASE("live interior is exactly where the fade is one", "[kernel]",
 
 TEMPLATE_TEST_CASE("simd live kernel matches the reference", "[kernel]", Hermite, Linear)
 {
-    // 300 grains at rates 0.25–4 over a ring that is never frozen, in ragged blocks and in
-    // blocks of 511, into two outputs and into one.
     const gg::HannTable hann;
-    const LiveInput input(100000, 61, {});
-    const std::vector<int64_t> heads = headTrajectory(input);
-    const Pool pool(liveGrains(63, spreadOnsets(input.length, 300), heads, 24000));
-    const std::vector<int64_t> ragged = {61, 64, 1, 128, 3, 250, 2, 37, 511};
-    for (const std::vector<int64_t> &lengths : {ragged, std::vector<int64_t>{511}})
+    SECTION("a live ring")
     {
-        for (const int outputs : {2, 1})
+        // 300 grains at rates 0.25–4 over a ring that is never frozen, in ragged blocks and in
+        // blocks of 511, into two outputs and into one.
+        const LiveInput input(100000, 61, {});
+        const std::vector<int64_t> heads = headTrajectory(input);
+        const Pool pool(liveGrains(63, spreadOnsets(input.length, 300), heads, 24000));
+        const std::vector<int64_t> ragged = {61, 64, 1, 128, 3, 250, 2, 37, 511};
+        for (const std::vector<int64_t> &lengths : {ragged, std::vector<int64_t>{511}})
         {
-            INFO(outputs << " outputs, first block " << lengths[0]);
-            const LiveRenders r = renderLiveBoth<TestType>(pool, input, lengths, outputs, hann);
-            REQUIRE(anyNonZero(r.ref.ch[0]));
-            REQUIRE(anyNonZero(r.ref.ch[1]) == (outputs == 2));
-            REQUIRE(r.stats.simdSamples > 200000);
-            REQUIRE(r.stats.emptyCalls > 0);
-            REQUIRE(sameBits(r.simd.ch[0], r.ref.ch[0]));
-            REQUIRE(sameBits(r.simd.ch[1], r.ref.ch[1]));
+            for (const int outputs : {2, 1})
+            {
+                INFO(outputs << " outputs, first block " << lengths[0]);
+                const LiveRenders r = renderLiveBoth<TestType>(pool, input, lengths, outputs, hann);
+                REQUIRE(anyNonZero(r.ref.ch[0]));
+                REQUIRE(anyNonZero(r.ref.ch[1]) == (outputs == 2));
+                REQUIRE(r.stats.simdSamples > 200000);
+                REQUIRE(r.stats.emptyCalls > 0);
+                REQUIRE(sameBits(r.simd.ch[0], r.ref.ch[0]));
+                REQUIRE(sameBits(r.simd.ch[1], r.ref.ch[1]));
+            }
+        }
+    }
+    SECTION("a spectral ring")
+    {
+        // The Spectral kind's grains are ring grains (the extremes spec §6.2): 300 grains over a
+        // SpectralSource's ring, in ragged blocks and in blocks of 511, into two outputs and one.
+        const int64_t frames = spectralRingFrames();
+        const SpectralInput input(frames + 60000);
+        const std::vector<int64_t> heads = spectralHeads(input.length);
+        const Pool pool(liveGrains(85, spreadOnsets(input.length, 300), heads, frames));
+        const std::vector<int64_t> ragged = {61, 64, 1, 128, 3, 250, 2, 37, 511};
+        for (const std::vector<int64_t> &lengths : {ragged, std::vector<int64_t>{511}})
+        {
+            for (const int outputs : {2, 1})
+            {
+                INFO(outputs << " outputs, first block " << lengths[0]);
+                const LiveRenders r =
+                    renderSpectralBoth<TestType>(pool, input, lengths, outputs, hann);
+                REQUIRE(anyNonZero(r.ref.ch[0]));
+                REQUIRE(anyNonZero(r.ref.ch[1]) == (outputs == 2));
+                REQUIRE(r.stats.simdSamples > 200000);
+                REQUIRE(r.stats.emptyCalls > 0);
+                REQUIRE(sameBits(r.simd.ch[0], r.ref.ch[0]));
+                REQUIRE(sameBits(r.simd.ch[1], r.ref.ch[1]));
+            }
         }
     }
 }
@@ -1740,84 +1853,123 @@ TEMPLATE_TEST_CASE("simd live kernel matches the reference through freeze and wr
     // an interior has a part before the kink and a part after it, with the edges and the fade
     // through the reference. Every block size must also give the same output.
     const gg::HannTable hann;
-    const std::vector<int64_t> toggles = freezeToggles(71, 30, 28000.0);
-    int64_t frozenTotal = 0;
-    for (std::size_t k = 0; k + 1 < toggles.size(); k += 2)
+    SECTION("a live ring")
     {
-        frozenTotal += toggles[k + 1] - toggles[k];
-    }
-    gg::LiveSource probe;
-    prepareRing(probe);
-    const int64_t capacity = probe.view().capacity;
-    REQUIRE(capacity == 24000 + kLiveMaxBlock);
-    // The head advances on every sample that isn't frozen.
-    const int64_t length = std::max(toggles.back() + 20000, 20 * capacity + frozenTotal + 2000);
-    const LiveInput input(length, 73, toggles);
-    const std::vector<int64_t> heads = headTrajectory(input);
-
-    std::vector<int64_t> onsets = spreadOnsets(length - 10000, 150);
-    for (uint32_t k = 0; k < 150; ++k)
-    {
-        const int64_t toggle = toggles[k % toggles.size()];
-        onsets.push_back(
-            std::max<int64_t>(0, toggle - 12000 + static_cast<int64_t>(u01(75, 0, k) * 16000.0)));
-    }
-    std::sort(onsets.begin(), onsets.end());
-    std::vector<gg::GrainSpec> specs = liveGrains(77, onsets, heads, 24000);
-    // At each freeze, a grain from 200 samples on, through the head's stop 960 samples later.
-    for (std::size_t k = 0; k < toggles.size(); k += 2)
-    {
-        const int64_t onset = toggles[k] + 200;
-        specs.push_back({
-            .index = 0,
-            .onsetSample = onset,
-            .onsetFrac = 0.375,
-            .startPos = static_cast<double>(heads[static_cast<std::size_t>(onset)]) - 12000.0,
-            .rate = 0.5 + 0.1 * static_cast<double>(k),
-            .durationSamples = 3000.0,
-            .gain = 0.75f,
-            .pan = 0.25f,
-        });
-    }
-    std::stable_sort(specs.begin(), specs.end(),
-                     [](const gg::GrainSpec &a, const gg::GrainSpec &b) {
-                         return a.onsetSample < b.onsetSample;
-                     });
-    for (std::size_t k = 0; k < specs.size(); ++k)
-    {
-        specs[k].index = k;
-    }
-    const Pool pool(specs);
-
-    std::vector<float> first[2];
-    for (const int64_t block : {511, 64, 7, 1})
-    {
-        INFO("blocks of " << block);
-        const LiveRenders r = renderLiveBoth<TestType>(pool, input, {block}, 2, hann);
-        REQUIRE(r.finalHead >= 20 * capacity);
-        REQUIRE(anyNonZero(r.ref.ch[0]));
-        REQUIRE(anyNonZero(r.ref.ch[1]));
-        REQUIRE(r.stats.emptyCalls > 0);
-        if (block >= 64)
+        const std::vector<int64_t> toggles = freezeToggles(71, 30, 28000.0);
+        int64_t frozenTotal = 0;
+        for (std::size_t k = 0; k + 1 < toggles.size(); k += 2)
         {
-            REQUIRE(r.stats.simdSamples > 500000);
-            REQUIRE(r.stats.stillSimdCalls > 0);
-            REQUIRE(r.stats.bothPartsCalls > 0);
+            frozenTotal += toggles[k + 1] - toggles[k];
         }
-        REQUIRE(sameBits(r.simd.ch[0], r.ref.ch[0]));
-        REQUIRE(sameBits(r.simd.ch[1], r.ref.ch[1]));
-        if (block == 511)
+        gg::LiveSource probe;
+        prepareRing(probe);
+        const int64_t capacity = probe.view().capacity;
+        REQUIRE(capacity == 24000 + kLiveMaxBlock);
+        // The head advances on every sample that isn't frozen.
+        const int64_t length = std::max(toggles.back() + 20000, 20 * capacity + frozenTotal + 2000);
+        const LiveInput input(length, 73, toggles);
+        const std::vector<int64_t> heads = headTrajectory(input);
+
+        std::vector<int64_t> onsets = spreadOnsets(length - 10000, 150);
+        for (uint32_t k = 0; k < 150; ++k)
         {
-            first[0] = r.simd.ch[0];
-            first[1] = r.simd.ch[1];
+            const int64_t toggle = toggles[k % toggles.size()];
+            onsets.push_back(std::max<int64_t>(
+                0, toggle - 12000 + static_cast<int64_t>(u01(75, 0, k) * 16000.0)));
         }
-        REQUIRE(sameBits(r.simd.ch[0], first[0]));
-        REQUIRE(sameBits(r.simd.ch[1], first[1]));
+        std::sort(onsets.begin(), onsets.end());
+        std::vector<gg::GrainSpec> specs = liveGrains(77, onsets, heads, 24000);
+        // At each freeze, a grain from 200 samples on, through the head's stop 960 samples later.
+        for (std::size_t k = 0; k < toggles.size(); k += 2)
+        {
+            const int64_t onset = toggles[k] + 200;
+            specs.push_back({
+                .index = 0,
+                .onsetSample = onset,
+                .onsetFrac = 0.375,
+                .startPos = static_cast<double>(heads[static_cast<std::size_t>(onset)]) - 12000.0,
+                .rate = 0.5 + 0.1 * static_cast<double>(k),
+                .durationSamples = 3000.0,
+                .gain = 0.75f,
+                .pan = 0.25f,
+            });
+        }
+        std::stable_sort(specs.begin(), specs.end(),
+                         [](const gg::GrainSpec &a, const gg::GrainSpec &b) {
+                             return a.onsetSample < b.onsetSample;
+                         });
+        for (std::size_t k = 0; k < specs.size(); ++k)
+        {
+            specs[k].index = k;
+        }
+        const Pool pool(specs);
+
+        std::vector<float> first[2];
+        for (const int64_t block : {511, 64, 7, 1})
+        {
+            INFO("blocks of " << block);
+            const LiveRenders r = renderLiveBoth<TestType>(pool, input, {block}, 2, hann);
+            REQUIRE(r.finalHead >= 20 * capacity);
+            REQUIRE(anyNonZero(r.ref.ch[0]));
+            REQUIRE(anyNonZero(r.ref.ch[1]));
+            REQUIRE(r.stats.emptyCalls > 0);
+            if (block >= 64)
+            {
+                REQUIRE(r.stats.simdSamples > 500000);
+                REQUIRE(r.stats.stillSimdCalls > 0);
+                REQUIRE(r.stats.bothPartsCalls > 0);
+            }
+            REQUIRE(sameBits(r.simd.ch[0], r.ref.ch[0]));
+            REQUIRE(sameBits(r.simd.ch[1], r.ref.ch[1]));
+            if (block == 511)
+            {
+                first[0] = r.simd.ch[0];
+                first[1] = r.simd.ch[1];
+            }
+            REQUIRE(sameBits(r.simd.ch[0], first[0]));
+            REQUIRE(sameBits(r.simd.ch[1], first[1]));
+        }
+        {
+            INFO("one output, blocks of 64");
+            const LiveRenders r = renderLiveBoth<TestType>(pool, input, {64}, 1, hann);
+            REQUIRE(sameBits(r.simd.ch[0], r.ref.ch[0]));
+            REQUIRE(!anyNonZero(r.simd.ch[1]));
+        }
     }
+    SECTION("a spectral ring, wrapped")
     {
-        INFO("one output, blocks of 64");
-        const LiveRenders r = renderLiveBoth<TestType>(pool, input, {64}, 1, hann);
-        REQUIRE(sameBits(r.simd.ch[0], r.ref.ch[0]));
-        REQUIRE(!anyNonZero(r.simd.ch[1]));
+        // The spectral ring never freezes, but it wraps: written until it has wrapped twice, in
+        // blocks of 511, 64 and 1, and every block size must also give the same output.
+        gg::SpectralSource probe(kLiveRate, kLiveMaxBlock);
+        const int64_t capacity = probe.ring().view().capacity;
+        const int64_t frames = probe.ring().frames();
+        REQUIRE(capacity == frames + kLiveMaxBlock);
+        const SpectralInput input(2 * capacity + 60000);
+        const std::vector<int64_t> heads = spectralHeads(input.length);
+        const Pool pool(liveGrains(87, spreadOnsets(input.length, 300), heads, frames));
+        std::vector<float> first[2];
+        for (const int64_t block : {511, 64, 1})
+        {
+            INFO("blocks of " << block);
+            const LiveRenders r = renderSpectralBoth<TestType>(pool, input, {block}, 2, hann);
+            REQUIRE(r.finalHead == input.length);
+            REQUIRE(r.finalHead >= 2 * capacity);
+            REQUIRE(anyNonZero(r.ref.ch[0]));
+            REQUIRE(anyNonZero(r.ref.ch[1]));
+            REQUIRE(r.stats.emptyCalls > 0);
+            if (block >= 64)
+            {
+                REQUIRE(r.stats.simdSamples > 500000);
+            }
+            REQUIRE(sameBits(r.simd.ch[0], r.ref.ch[0]));
+            REQUIRE(sameBits(r.simd.ch[1], r.ref.ch[1]));
+            if (block == 511)
+            {
+                first[0] = r.simd.ch[0];
+                first[1] = r.simd.ch[1];
+            }
+            REQUIRE(sameBits(r.simd.ch[0], first[0]));
+            REQUIRE(sameBits(r.simd.ch[1], first[1]));
+        }
     }
 }

@@ -100,7 +100,7 @@ CloudParams toCloudParams(const ParamValues &effective, Mode mode, uint8_t layer
 /// Live (seconds behind the head), while its grains draw their spray one-sided, as Live's (the
 /// scheduler's Spectral mode). A Sample or Live layer ignores `material` and takes its own units.
 /// The three-argument form passes the kind's own units (Sample's for Sample, Live's otherwise).
-/// Until SourceMode has Spectral every built kind is Sample or Live, so `material` changes
+/// Until builtKind returns Spectral every built kind is Sample or Live, so `material` changes
 /// nothing yet.
 CloudParams toCloudParams(const ParamValues &effective, Mode mode, uint8_t layer,
                           SourceMode material) noexcept;
