@@ -388,6 +388,8 @@ TEST_CASE("saveSettings creates the folder, and loadSettings reads it back", "[m
     // A NUL can't be written, and the old settings stay.
     REQUIRE_FALSE(gg::media::saveSettings(file, {std::string("/a\0b", 4), ""}));
     REQUIRE(gg::media::loadSettings(file) == other);
+    REQUIRE_FALSE(gg::media::saveSettings(file, {"/S", "/L", std::string("li\0ght", 6)}));
+    REQUIRE(gg::media::loadSettings(file) == other);
 
     // A folder that can't be made: a file is in the way.
     REQUIRE_FALSE(gg::media::saveSettings(file / "settings.xml", kSome));
