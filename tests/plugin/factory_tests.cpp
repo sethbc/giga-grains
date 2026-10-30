@@ -37,8 +37,10 @@
 #include <sst/jucegui/style/StyleSheet.h>
 
 #include "GrainCanvas.h" // ui/src: the editor's own components
+#include "LayerStrip.h"
 #include "LoaderStrip.h"
 #include "MacroRow.h"
+#include "MorphPad.h"
 #include "Palette.h"
 #include "ParamControl.h"
 #include "editor/EditorPlugin.h"
@@ -49,6 +51,7 @@
 #include "gg/media/SettingsFile.h"
 #include "gg/ui/Editor.h"
 #include "gg/ui/LaneModel.h"
+#include "gg/ui/UndoStack.h"
 #include "support/Utf8.h"
 #endif
 
@@ -1692,6 +1695,185 @@ TEST_CASE("the macro row is unchanged", "[plugin]")
         CHECK(macro->getTitle() == names[i]);
     }
 }
+
+TEST_CASE("the strip's controls are the layer's parameters", "[plugin]")
+{
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    RecordingContext recording(gg::core::Mode::Fx);
+    gg::ui::LayerStrip strip(recording.context, gg::ui::LayerStrip::Layout::Row);
+    strip.setSize(800, 80);
+    CHECK(strip.getComponentID() == "strip");
+    const auto id = [](ParamSlot s) { return "param." + std::to_string(gg::core::paramId(s)); };
+    for (uint8_t layer = 0; layer < gg::core::kLayers; ++layer)
+    {
+        const auto letter = "strip." + std::to_string(layer) + ".letter";
+        CHECK(findDeep(strip, letter.c_str()) != nullptr);
+        for (const ParamSlot slot : {gg::core::layerOnSlot(layer), gg::core::levelSlot(layer),
+                                     gg::core::layerSlot(gg::core::LayerParam::Source, layer),
+                                     gg::core::layerSlot(gg::core::LayerParam::Freeze, layer)})
+        {
+            auto *control = findDeep(strip, id(slot).c_str());
+            REQUIRE(control != nullptr);
+            CHECK_FALSE(control->getBounds().isEmpty());
+        }
+    }
+    CHECK(findDeep(strip, id(ParamSlot::LayerBOn).c_str()) != nullptr);
+    CHECK(findDeep(strip, id(ParamSlot::LevelB).c_str()) != nullptr);
+    CHECK(findDeep(strip, id(ParamSlot::B_Source).c_str()) != nullptr);
+    CHECK(findDeep(strip, id(ParamSlot::B_Freeze).c_str()) != nullptr);
+
+    // The column places each layer's cell where its lane's rows are.
+    gg::ui::LayerStrip column(recording.context, gg::ui::LayerStrip::Layout::Column);
+    column.setSize(120, 400);
+    column.setLaneBounds({juce::Rectangle<int>(0, 0, 120, 100),
+                          {0, 100, 120, 100},
+                          {0, 200, 120, 100},
+                          {0, 300, 120, 100}});
+    CHECK(column.getLocalBounds().contains(findDeep(column, "strip.3.letter")->getBounds()));
+    CHECK(findDeep(column, "strip.3.letter")->getY() >= 300);
+}
+
+TEST_CASE("selecting a layer in the strip", "[plugin]")
+{
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    RecordingContext recording(gg::core::Mode::Fx);
+    gg::ui::LayerStrip strip(recording.context, gg::ui::LayerStrip::Layout::Row);
+    strip.setSize(800, 80);
+    std::vector<int> selected;
+    strip.onSelectLayer = [&selected](uint8_t layer) { selected.push_back(layer); };
+    CHECK(strip.selectedLayer() == 0);
+
+    juce::Component *letter = findDeep(strip, "strip.2.letter");
+    REQUIRE(letter != nullptr);
+    letter->mouseDown(mouseAt(*letter, 4.0f, 4.0f, {4.0f, 4.0f}, false));
+    letter->mouseUp(mouseAt(*letter, 4.0f, 4.0f, {4.0f, 4.0f}, false));
+    REQUIRE(selected.size() == 1);
+    CHECK(selected[0] == 2);
+    CHECK(strip.selectedLayer() == 2);
+    CHECK(recording.calls.empty()); // selecting is no parameter's edit
+}
+
+namespace
+{
+/// A pad of 200 x 200 in a context with an undo stack that records what it applies.
+struct PadFixture
+{
+    RecordingContext recording{gg::core::Mode::Fx};
+    std::vector<std::pair<ParamSlot, float>> undone;
+    gg::ui::UndoStack undo{{[this](ParamSlot s, float v) { undone.emplace_back(s, v); },
+                            [](const gg::core::ModRoutes &) {}}};
+    std::unique_ptr<gg::ui::MorphPad> pad;
+
+    PadFixture()
+    {
+        recording.context.undo = &undo;
+        pad = std::make_unique<gg::ui::MorphPad>(recording.context);
+        pad->setSize(200, 200);
+    }
+
+    float value(ParamSlot s) const { return recording.values[static_cast<std::size_t>(s)]; }
+};
+} // namespace
+
+TEST_CASE("the pad's drag is one gesture on both morphs", "[plugin]")
+{
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    PadFixture f;
+    gg::ui::MorphPad &pad = *f.pad;
+    CHECK(pad.getComponentID() == "pad");
+    REQUIRE(f.value(ParamSlot::MorphX) == 0.5f);
+    REQUIRE(f.value(ParamSlot::MorphY) == 0.5f);
+
+    const juce::Point<float> centre{100.0f, 100.0f};
+    pad.mouseDown(mouseAt(pad, 100.0f, 100.0f, centre, false));
+    pad.mouseDrag(mouseAt(pad, 150.0f, 50.0f, centre, true));
+    pad.mouseDrag(mouseAt(pad, 260.0f, -40.0f, centre, true)); // past the corner: pinned
+    pad.mouseUp(mouseAt(pad, 260.0f, -40.0f, centre, true));
+
+    const auto &calls = f.recording.calls;
+    REQUIRE(calls.size() >= 6);
+    CHECK(calls[0].kind == 'b');
+    CHECK(calls[0].slot == ParamSlot::MorphX);
+    CHECK(calls[1].kind == 'b');
+    CHECK(calls[1].slot == ParamSlot::MorphY);
+    CHECK(calls[calls.size() - 2].kind == 'e');
+    CHECK(calls[calls.size() - 2].slot == ParamSlot::MorphX);
+    CHECK(calls.back().kind == 'e');
+    CHECK(calls.back().slot == ParamSlot::MorphY);
+    int begins = 0;
+    for (std::size_t i = 2; i + 2 < calls.size(); ++i)
+    {
+        CHECK(calls[i].kind == 'v');
+        begins += calls[i].kind == 'b';
+    }
+    CHECK(begins == 0);
+    CHECK_THAT(f.value(ParamSlot::MorphX), Catch::Matchers::WithinAbs(1.0, 1e-3));
+    CHECK_THAT(f.value(ParamSlot::MorphY), Catch::Matchers::WithinAbs(1.0, 1e-3));
+
+    // One undo group: a single entry, labelled "Morph", whose undo restores both.
+    CHECK(f.undo.size() == 1);
+    CHECK(f.undo.undoLabel() == "Morph");
+    f.undo.undo();
+    REQUIRE(f.undone.size() == 2);
+    for (const auto &[slot, v] : f.undone)
+    {
+        CHECK((slot == ParamSlot::MorphX || slot == ParamSlot::MorphY));
+        CHECK(v == 0.5f);
+    }
+}
+
+TEST_CASE("the pad works without an undo stack", "[plugin]")
+{
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    RecordingContext recording(gg::core::Mode::Fx);
+    gg::ui::MorphPad pad(recording.context);
+    pad.setSize(200, 100); // the square is the 100 x 100 in the middle
+    const juce::Point<float> centre{100.0f, 50.0f};
+    pad.mouseDown(mouseAt(pad, 100.0f, 50.0f, centre, false));
+    pad.mouseDrag(mouseAt(pad, 50.0f, 100.0f, centre, true)); // the square's bottom-left corner
+    pad.mouseUp(mouseAt(pad, 50.0f, 100.0f, centre, true));
+    CHECK(recording.kinds() == "bbvvvvee");
+    CHECK_THAT(recording.values[static_cast<std::size_t>(ParamSlot::MorphX)],
+               Catch::Matchers::WithinAbs(0.0, 1e-3));
+    CHECK_THAT(recording.values[static_cast<std::size_t>(ParamSlot::MorphY)],
+               Catch::Matchers::WithinAbs(0.0, 1e-3));
+}
+
+TEST_CASE("double-click centres the pad", "[plugin]")
+{
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    PadFixture f;
+    f.recording.values[static_cast<std::size_t>(ParamSlot::MorphX)] = 0.9f;
+    f.recording.values[static_cast<std::size_t>(ParamSlot::MorphY)] = 0.1f;
+    f.pad->refresh();
+    f.pad->mouseDoubleClick(mouseAt(*f.pad, 20.0f, 20.0f, {20.0f, 20.0f}, false));
+    CHECK(f.recording.kinds() == "bbvvee");
+    CHECK(f.value(ParamSlot::MorphX) == 0.5f);
+    CHECK(f.value(ParamSlot::MorphY) == 0.5f);
+    CHECK(f.undo.size() == 1);
+}
+
+TEST_CASE("arrows move the pad", "[plugin]")
+{
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    PadFixture f;
+    gg::ui::MorphPad &pad = *f.pad;
+    CHECK(pad.keyPressed(juce::KeyPress(juce::KeyPress::rightKey)));
+    CHECK_THAT(f.value(ParamSlot::MorphX), Catch::Matchers::WithinAbs(0.51, 1e-6));
+    CHECK(f.value(ParamSlot::MorphY) == 0.5f);
+    CHECK(f.recording.kinds() == "bbvvee");
+
+    CHECK(pad.keyPressed(juce::KeyPress(juce::KeyPress::upKey)));
+    CHECK_THAT(f.value(ParamSlot::MorphY), Catch::Matchers::WithinAbs(0.51, 1e-6));
+    CHECK(pad.keyPressed(
+        juce::KeyPress(juce::KeyPress::leftKey, juce::ModifierKeys::shiftModifier, 0)));
+    CHECK_THAT(f.value(ParamSlot::MorphX), Catch::Matchers::WithinAbs(0.509, 1e-6));
+    CHECK(pad.keyPressed(juce::KeyPress(juce::KeyPress::downKey)));
+    CHECK_THAT(f.value(ParamSlot::MorphY), Catch::Matchers::WithinAbs(0.50, 1e-6));
+    CHECK_FALSE(pad.keyPressed(juce::KeyPress('x')));
+    CHECK(f.undo.size() == 4);
+}
+
 #else
 TEST_CASE("headless build exposes no gui extension", "[plugin]")
 {

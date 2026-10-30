@@ -37,6 +37,8 @@ if (GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
             src/MacroRow.cpp
             src/Palette.cpp
             src/ParamControl.cpp
+            src/LayerStrip.cpp
+            src/MorphPad.cpp
             )
     add_library(gg::ui ALIAS gg-ui)
 

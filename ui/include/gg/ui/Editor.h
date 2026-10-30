@@ -27,6 +27,8 @@ class Component;
 
 namespace gg::ui
 {
+class UndoStack; // gg-ui-core's undo history (UndoStack.h)
+
 /// What the instrument's sample is doing (spec §6.5): gg::plugin::SampleStatus, mirrored here
 /// because the UI doesn't include plugin headers.
 struct SampleStatusView
@@ -133,6 +135,10 @@ struct EditorContext
     /// has no destroy hook). The plugin turned it on when it created the editor. May be empty.
     /// Copied when the editor is made, so each editor calls the one it was given.
     std::function<void(bool)> publishing;
+
+    /// The editor's undo history (M2 sub-project 6's spec §6.8), owned by the editor; the views
+    /// record their edits in it. Null until the editor sets it: every use is null-safe.
+    UndoStack *undo{nullptr};
 };
 
 /// The editor's initial size, in logical pixels. It is resizable, and lays out at any size the
