@@ -865,19 +865,41 @@ TEST_CASE("the ring reader's copies match what the audio thread wrote", "[plugin
     // Spec §6.4's race-free read, under a running audio thread: one thread renders a Processor
     // whose 1 s ring takes a ramp (frame t holds t mod 1,000,000, the right channel negated), the
     // other copies the ring's window through readRing as fast as it can. Every copy accepted must
-    // be the frames written, contiguous up to the head it reports. Bounded: 10 s of audio.
+    // be the frames written, contiguous up to the head it reports.
+    // Bounded by work, not time: the audio thread renders until the reader has made kReads
+    // copies, kTrimmed of them trimmed (the head lapped the copy's front mid-copy), and kAdopted
+    // swaps of a full ring's storage have been adopted, however fast either thread runs. The
+    // audio thread's kMaxTotal is only a safety bound: reaching it fails the test.
     constexpr int64_t kN = 48000;
     constexpr uint32_t kPiece = 256;
-    constexpr int64_t kTotal = 10 * 48000;
+    constexpr int64_t kMaxTotal = 600 * 48000;
+    constexpr uint64_t kReads = 100;
+    constexpr uint64_t kTrimmed = 10;
+    constexpr uint32_t kAdopted = 3;
     gg::core::Processor p({kRate, kPiece, 7, gg::core::Mode::Fx});
     REQUIRE(p.setRingNow(0, std::make_unique<gg::RingStorage>(kN, kPiece), gg::core::RingOffer{}));
+    std::atomic<bool> stop{false};
     std::atomic<bool> done{false};
+    // A swap's own copy must be untrimmed to fill the new storage, which a running ring rarely
+    // allows once full: the reader holds the audio thread between pieces while it takes that copy
+    // (`hold`; the audio thread counts each pause in `paused`). The checked reads never hold it.
+    std::atomic<bool> hold{false};
+    std::atomic<uint32_t> paused{0};
     std::thread audio([&] {
         std::vector<float> left(kPiece), right(kPiece), outL(kPiece), outR(kPiece);
         const float *in[2] = {left.data(), right.data()};
         float *out[2] = {outL.data(), outR.data()};
-        for (int64_t t = 0; t < kTotal; t += kPiece)
+        for (int64_t t = 0; t < kMaxTotal && !stop.load(std::memory_order_acquire); t += kPiece)
         {
+            if (hold.load(std::memory_order_acquire))
+            {
+                paused.fetch_add(1, std::memory_order_acq_rel);
+                while (hold.load(std::memory_order_acquire) &&
+                       !stop.load(std::memory_order_acquire))
+                {
+                    std::this_thread::yield();
+                }
+            }
             for (uint32_t i = 0; i < kPiece; ++i)
             {
                 const auto v = static_cast<float>((t + i) % 1000000);
@@ -893,16 +915,40 @@ TEST_CASE("the ring reader's copies match what the audio thread wrote", "[plugin
     uint64_t bad = 0;
     uint32_t swaps = 0;
     uint32_t declinesSeen = 0;
-    while (!done.load(std::memory_order_acquire))
-    {
-        // Every 25 reads, a storage swap through the exchange (this thread has the main thread's
-        // role: it offers, collects and alone dereferences storage): a new 1 s storage holding
-        // the stable part of a whole-window read, so reads under way meet a changed epoch. A
-        // declined one is offered again.
-        const uint32_t declines = p.ringAdoptionsDeclined(0);
-        if (reads % 25 == 24 && (!p.sources(0).ringAdoptionPending() || declines != declinesSeen))
+    uint64_t nextSwap = 24;
+    // The latest offer is adopted once none is pending (a declined one stays pending until it is
+    // made again and adopted). Only a swap of a full ring's storage counts toward kAdopted.
+    bool offerOpen = false;
+    bool offerFull = false;
+    uint32_t adopted = 0;
+    uint32_t adoptedFull = 0;
+    const auto settle = [&] {
+        if (offerOpen && !p.sources(0).ringAdoptionPending())
         {
-            declinesSeen = declines;
+            offerOpen = false;
+            ++adopted;
+            adoptedFull += offerFull ? 1 : 0;
+        }
+    };
+    while (!done.load(std::memory_order_acquire) &&
+           !(reads >= kReads && trimmed >= kTrimmed && adoptedFull >= kAdopted))
+    {
+        // From every 25th read on, a storage swap through the exchange (this thread has the main
+        // thread's role: it offers, collects and alone dereferences storage): a new 1 s storage
+        // holding a whole-window read, taken with the audio thread held, so reads under way meet
+        // a changed epoch once it runs again. A copy that is trimmed all the same is retried at
+        // the next read; a declined offer is made again.
+        settle(); // so a new offer never hides an adoption not yet counted
+        const uint32_t declines = p.ringAdoptionsDeclined(0);
+        if (reads >= nextSwap && (!offerOpen || declines != declinesSeen))
+        {
+            const uint32_t pausedBefore = paused.load(std::memory_order_acquire);
+            hold.store(true, std::memory_order_release);
+            while (paused.load(std::memory_order_acquire) == pausedBefore &&
+                   !done.load(std::memory_order_acquire))
+            {
+                std::this_thread::yield();
+            }
             const auto copy = gg::plugin::readRing(p, 0, {}, kRate);
             if (copy.has_value() && copy->oldest == std::max<int64_t>(0, copy->head - kN))
             {
@@ -918,10 +964,16 @@ TEST_CASE("the ring reader's copies match what the audio thread wrote", "[plugin
                 gg::core::RingOffer how;
                 how.copiedTo = copy->head;
                 p.sources(0).offerRing(std::move(next), how);
+                declinesSeen = declines; // only an offer made answers a decline
                 ++swaps;
+                offerOpen = true;
+                offerFull = copy->head >= kN;
+                nextSwap = reads + 25;
             }
+            hold.store(false, std::memory_order_release);
         }
         p.sources(0).collect();
+        settle();
         const auto copy = gg::plugin::readRing(p, 0, {}, kRate);
         if (!copy.has_value())
         {
@@ -945,13 +997,17 @@ TEST_CASE("the ring reader's copies match what the audio thread wrote", "[plugin
             }
         }
     }
+    stop.store(true, std::memory_order_release);
     audio.join();
     p.sources(0).collect();
+    settle();
     INFO("reads " << reads << ", trimmed " << trimmed << ", swaps " << swaps << ", adopted "
-                  << swaps - p.ringAdoptionsDeclined(0));
-    CHECK(reads > 10);
-    CHECK(swaps >= 3);
-    CHECK(swaps > p.ringAdoptionsDeclined(0)); // some adopted mid-run
+                  << adopted << " (" << adoptedFull << " of a full ring), declined "
+                  << p.ringAdoptionsDeclined(0));
+    // Reaching the safety bound before the work was done fails here.
+    CHECK(reads >= kReads);
+    CHECK(trimmed >= kTrimmed);
+    CHECK(adoptedFull >= kAdopted); // adopted mid-run
     CHECK(bad == 0);
 }
 
@@ -961,11 +1017,15 @@ TEST_CASE("a save of a running ring keeps the window's length", "[plugin][thread
     // frames and writes silence over that front, so the loop's period and the marks' offsets
     // survive. One thread renders a Processor whose 1 s ring takes a ramp (as the reader test's);
     // the other saves it (D1: Freeze on in the values saved) as fast as it can. Every saved ring
-    // is N frames once the ring is full, silence then the ramp, contiguous. Bounded: 10 s of audio.
+    // is N frames once the ring is full, silence then the ramp, contiguous.
+    // Bounded by work, not time: the audio thread renders until the saver has made kSaves saves,
+    // at least one of them lapped (the case the ruling is about), however fast either thread
+    // runs. The audio thread's kMaxTotal is only a safety bound: reaching it fails the test.
     const fs::path dir = gg::test::useMediaScratch("ring-save-running");
     constexpr int64_t kN = 48000;
     constexpr uint32_t kPiece = 256;
-    constexpr int64_t kTotal = 10 * 48000;
+    constexpr int64_t kMaxTotal = 600 * 48000;
+    constexpr uint64_t kSaves = 6;
     gg::core::Processor p({kRate, kPiece, 7, gg::core::Mode::Fx});
     p.setBase(layerSlot(LayerParam::RingLength, 0), 0.0f); // 1 s
     gg::plugin::MediaSession media(gg::core::Mode::Fx, dir / "settings.xml", {}, {});
@@ -974,13 +1034,14 @@ TEST_CASE("a save of a running ring keeps the window's length", "[plugin][thread
     gg::core::ParamValues values = fxDefaults().values;
     values[slotIndex(LayerParam::Freeze, 0)] = 1.0f;
     values[slotIndex(LayerParam::RingLength, 0)] = 0.0f;
+    std::atomic<bool> stop{false};
     std::atomic<bool> done{false};
     std::atomic<bool> full{false};
     std::thread audio([&] {
         std::vector<float> left(kPiece), right(kPiece), outL(kPiece), outR(kPiece);
         const float *in[2] = {left.data(), right.data()};
         float *out[2] = {outL.data(), outR.data()};
-        for (int64_t t = 0; t < kTotal; t += kPiece)
+        for (int64_t t = 0; t < kMaxTotal && !stop.load(std::memory_order_acquire); t += kPiece)
         {
             for (uint32_t i = 0; i < kPiece; ++i)
             {
@@ -999,7 +1060,7 @@ TEST_CASE("a save of a running ring keeps the window's length", "[plugin][thread
     uint64_t saves = 0;
     uint64_t lapped = 0;
     uint64_t bad = 0;
-    while (!done.load(std::memory_order_acquire))
+    while (!done.load(std::memory_order_acquire) && !(saves >= kSaves && lapped > 0))
     {
         if (!full.load(std::memory_order_acquire))
         {
@@ -1038,9 +1099,12 @@ TEST_CASE("a save of a running ring keeps the window's length", "[plugin][thread
             }
         }
     }
+    stop.store(true, std::memory_order_release);
     audio.join();
     INFO("saves " << saves << ", lapped " << lapped);
-    CHECK(saves > 5);
+    // Reaching the safety bound before the work was done fails here.
+    CHECK(saves >= kSaves);
+    CHECK(lapped > 0);
     CHECK(bad == 0);
     media.deactivate(nullptr, values);
 }

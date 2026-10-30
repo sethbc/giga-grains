@@ -35,7 +35,9 @@ struct CollectResult
 ///   two layers, or a second collect, copies nothing.
 /// - Each copy's hash is checked against the entry's; a copy that fails is removed and counts as
 ///   missing.
-/// - A collected entry's `absolutePath` is the copy's path; a sample's `relativePath` is the
+/// - A collected entry's `absolutePath` is the copy's path in its normal form, as the loader saves
+///   a path (lexically_normal: no `.` or `..` components, and on Windows `\` separators however
+///   `folder` was spelled), as is each path in `copied`; a sample's `relativePath` is the
 ///   copy's name (relative to `folder`, with `/` separators), and its `contentPath` is as it was.
 /// - An embedded entry needs no file and is left alone, as is the AUDI payloads; so is an entry
 ///   that couldn't be collected, which is listed in `missing` by its saved path.

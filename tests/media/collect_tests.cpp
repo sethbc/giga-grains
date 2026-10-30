@@ -61,6 +61,10 @@ std::string hashOf(std::string_view text)
     return gg::media::sha256Hex(std::as_bytes(std::span(text.data(), text.size())));
 }
 
+/// A collected entry's path as collectMedia saves it: the copy's path in its normal form, as the
+/// loader saves a path (so with `\` separators on Windows, wherever the folder's path had `/`).
+std::string savedPath(const fs::path &path) { return utf8(path.lexically_normal()); }
+
 MediaEntry sampleEntry(const fs::path &path, std::string_view content, uint8_t layer)
 {
     MediaEntry e;
@@ -118,13 +122,13 @@ TEST_CASE("collectMedia copies the files it finds and points the entries at them
     REQUIRE(slurp(out / "snare.wav") == "snare bytes, a different size");
     REQUIRE(slurp(out / "ring-file.wav") == "ring wav bytes");
 
-    REQUIRE(result.state.samples[0]->absolutePath == utf8(out / "kick.wav"));
+    REQUIRE(result.state.samples[0]->absolutePath == savedPath(out / "kick.wav"));
     REQUIRE(result.state.samples[0]->relativePath == "kick.wav");
-    REQUIRE(result.state.samples[1]->absolutePath == utf8(out / "snare.wav"));
-    REQUIRE(result.state.rings[2]->absolutePath == utf8(out / "ring-file.wav"));
+    REQUIRE(result.state.samples[1]->absolutePath == savedPath(out / "snare.wav"));
+    REQUIRE(result.state.rings[2]->absolutePath == savedPath(out / "ring-file.wav"));
     // Everything else about the entries is as it was.
     auto expected = *state.samples[0];
-    expected.absolutePath = utf8(out / "kick.wav");
+    expected.absolutePath = savedPath(out / "kick.wav");
     expected.relativePath = "kick.wav";
     REQUIRE(*result.state.samples[0] == expected);
 
@@ -155,17 +159,40 @@ TEST_CASE("collectMedia renames a file whose name clashes with other content", "
     const auto result = gg::media::collectMedia(state, out, MachineSettings{}, {});
     REQUIRE(result.missing.empty());
     REQUIRE(result.copied.size() == 3);
-    REQUIRE(result.state.samples[0]->absolutePath == utf8(out / "kick.wav"));
-    REQUIRE(result.state.samples[3]->absolutePath == utf8(out / "kick.wav"));
+    REQUIRE(result.state.samples[0]->absolutePath == savedPath(out / "kick.wav"));
+    REQUIRE(result.state.samples[3]->absolutePath == savedPath(out / "kick.wav"));
     const auto second = hashOf("second kick, longer").substr(0, 8);
     const auto snare = hashOf("my snare").substr(0, 8);
-    REQUIRE(result.state.samples[1]->absolutePath == utf8(out / ("kick-" + second + ".wav")));
-    REQUIRE(result.state.samples[2]->absolutePath == utf8(out / ("snare-" + snare + ".wav")));
+    REQUIRE(result.state.samples[1]->absolutePath == savedPath(out / ("kick-" + second + ".wav")));
+    REQUIRE(result.state.samples[2]->absolutePath == savedPath(out / ("snare-" + snare + ".wav")));
     REQUIRE(slurp(out / "kick.wav") == "first kick");
     REQUIRE(slurp(out / ("kick-" + second + ".wav")) == "second kick, longer");
     REQUIRE(slurp(out / "snare.wav") == "somebody else's snare"); // never overwritten
     REQUIRE(slurp(out / ("snare-" + snare + ".wav")) == "my snare");
     REQUIRE(result.state.samples[1]->relativePath == "kick-" + second + ".wav");
+}
+
+TEST_CASE("collectMedia saves the copy's path in its normal form", "[media]")
+{
+    // The folder is named with "." and ".." components, and the file has a non-ASCII name: the
+    // saved path is the copy's path normalized, as the loader saves one, on every platform (on
+    // Windows that also makes its separators `\`), and it names the copy.
+    const auto dir = freshDir("collect-normal");
+    const auto out = dir / "x" / ".." / "." / "out";
+    const fs::path name(u8"café été.wav");
+    put(dir / "a" / name, "kick bytes");
+
+    SessionState state;
+    state.samples[0] = sampleEntry(dir / "a" / name, "kick bytes", 0);
+    const auto result = gg::media::collectMedia(state, out, MachineSettings{}, {});
+    REQUIRE(result.missing.empty());
+    REQUIRE(result.copied == std::vector<std::string>{savedPath(dir / "out" / name)});
+    const std::string saved = result.state.samples[0]->absolutePath;
+    REQUIRE(saved == savedPath(dir / "out" / name));
+    REQUIRE(saved != utf8(out / name)); // not the folder's path as given
+    REQUIRE(gg::test::pathOf(saved) == (dir / "out" / name).lexically_normal());
+    REQUIRE(result.state.samples[0]->relativePath == utf8(name));
+    REQUIRE(slurp(gg::test::pathOf(saved)) == "kick bytes");
 }
 
 TEST_CASE("collectMedia lists what it can't find and leaves embedded entries alone", "[media]")
