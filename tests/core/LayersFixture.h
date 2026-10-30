@@ -167,21 +167,35 @@ struct TimedNote
     gg::core::NoteEventType type;
     int16_t channel;
     int16_t key;
+    float velocity{1.0f};
+};
+
+// A MIDI control (the mod matrix's Mod Wheel, Aftertouch and Pitch Bend sources).
+struct TimedControl
+{
+    int64_t time; // absolute sample
+    gg::core::ControlKind kind;
+    int16_t channel;
+    float value;
 };
 
 // Renders the absolute samples [from, to) of `input` (null: no input) through p in process()
-// calls of blockSizes in turn (cycling), each given the events and notes that fall inside it (a
-// 0-frame call at `done` takes those stamped `done`), into out[from, to), which must be that
-// long. Each call bumps log->call, if a log is given. `after`, if given, runs after each call.
+// calls of blockSizes in turn (cycling), each given the events, notes and controls that fall
+// inside it (a 0-frame call at `done` takes those stamped `done`), into out[from, to), which must
+// be that long. Each call bumps log->call, if a log is given. `after`, if given, runs after each
+// call.
 inline void render(gg::core::Processor &p, const Stereo *input, int64_t from, int64_t to,
                    const std::vector<uint32_t> &blockSizes, const std::vector<TimedEvent> &events,
                    Stereo &out, Log *log = nullptr, const std::function<void(int64_t)> &after = {},
-                   const std::vector<TimedNote> &notes = {})
+                   const std::vector<TimedNote> &notes = {},
+                   const std::vector<TimedControl> &controls = {})
 {
     std::vector<gg::core::ParamEvent> blockEvents;
     blockEvents.reserve(events.size());
     std::vector<gg::core::NoteEvent> blockNotes;
     blockNotes.reserve(notes.size());
+    std::vector<gg::core::ControlEvent> blockControls;
+    blockControls.reserve(controls.size());
     std::size_t nextEvent = 0;
     while (nextEvent < events.size() && events[nextEvent].time < from)
     {
@@ -191,6 +205,11 @@ inline void render(gg::core::Processor &p, const Stereo *input, int64_t from, in
     while (nextNote < notes.size() && notes[nextNote].time < from)
     {
         ++nextNote;
+    }
+    std::size_t nextControl = 0;
+    while (nextControl < controls.size() && controls[nextControl].time < from)
+    {
+        ++nextControl;
     }
     int64_t done = from;
     for (std::size_t next = 0; done < to; ++next)
@@ -209,14 +228,22 @@ inline void render(gg::core::Processor &p, const Stereo *input, int64_t from, in
         for (; nextNote < notes.size() && notes[nextNote].time < limit; ++nextNote)
         {
             const TimedNote &e = notes[nextNote];
-            blockNotes.push_back({static_cast<uint32_t>(e.time - done), e.type, e.channel, e.key});
+            blockNotes.push_back(
+                {static_cast<uint32_t>(e.time - done), e.type, e.channel, e.key, e.velocity});
+        }
+        blockControls.clear();
+        for (; nextControl < controls.size() && controls[nextControl].time < limit; ++nextControl)
+        {
+            const TimedControl &c = controls[nextControl];
+            blockControls.push_back(
+                {static_cast<uint32_t>(c.time - done), c.kind, c.channel, c.value});
         }
         const auto j = static_cast<std::size_t>(done);
         const float *in[2] = {input != nullptr ? input->left.data() + j : nullptr,
                               input != nullptr ? input->right.data() + j : nullptr};
         float *o[2] = {out.left.data() + j, out.right.data() + j};
         p.process(input != nullptr ? in : nullptr, input != nullptr ? 2 : 0, o, 2, n, blockEvents,
-                  blockNotes);
+                  blockNotes, blockControls);
         done += n;
         if (log != nullptr)
         {
@@ -345,17 +372,21 @@ struct LayersRender
     Stereo audio;
     Log log;
     std::array<int64_t, 4> heads{};
+    // Every mod source's value on every layer after the render (Processor::sourceValue).
+    std::array<std::array<float, static_cast<std::size_t>(gg::core::ModSource::Count)>, 4>
+        sources{};
 };
 
 // How renderLayers sets its Processor up beyond the invariance test's defaults: the product, the
-// task runner (nullptr: the built-in serial one), the notes, and anything else, before the first
-// call.
+// task runner (nullptr: the built-in serial one), the notes, the MIDI controls, and anything else
+// (routes, a transport), before the first call.
 struct LayersSetup
 {
     gg::core::Mode mode{gg::core::Mode::Fx};
     gg::TaskRunner *runner{nullptr};
     std::vector<TimedNote> notes;
     std::function<void(gg::core::Processor &)> configure;
+    std::vector<TimedControl> controls;
 };
 
 // The four-layer render of the block-size invariance test: every layer on, each with a sine
@@ -379,10 +410,15 @@ inline void renderLayers(const Stereo &input, const std::vector<TimedEvent> &eve
         setup.configure(p);
     }
     r.audio = silence(kInvarianceFrames);
-    render(p, &input, 0, kInvarianceFrames, blockSizes, events, r.audio, nullptr, {}, setup.notes);
+    render(p, &input, 0, kInvarianceFrames, blockSizes, events, r.audio, nullptr, {}, setup.notes,
+           setup.controls);
     for (uint8_t L = 0; L < 4; ++L)
     {
         r.heads[L] = p.engine(L).liveWriteHead();
+        for (std::size_t s = 0; s < r.sources[L].size(); ++s)
+        {
+            r.sources[L][s] = p.sourceValue(static_cast<gg::core::ModSource>(s), L);
+        }
     }
 }
 } // namespace gg::test::layers
