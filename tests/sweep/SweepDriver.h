@@ -17,18 +17,22 @@
 // - the input's fade-in, the first 10 ms and the score's ±5 ms beyond;
 // - the pre-delay and kReverbSizeExempt after every Reverb Size move: carry-over row 217,
 //   accepted (S8);
-// - and, pending a decision, the three click sources this harness found (the task 11 report),
+// - and, pending a decision, the click sources this harness found (the task 11 report),
 //   each where the driver sees it happen:
 //   1. kSampleEnd: a grain reading a sample is cut where it runs past the sample's end (its taps
 //      read 0 there), whatever its window's value;
 //   2. kReverbOnset: when the reverb goes from idle to active (Reverb Amount rising from exactly
 //      0) under a sounding input, it starts from an empty room and hears its input cut in at the
 //      first active chunk, and that step comes back through the pre-delay and the network;
-//   3. kLayerSwitch: switching layers on and off at once with the pad off its centre: the morph
-//      law's normalization (r_L·b_L / Σ r_K·b_K) packs the crossfade into the last samples of
-//      the ramp of the layer going off. The same normalization packs a pad move's crossfade into
-//      its ramp's first samples when the rendering layers' base weights are all near 0 (the pad
-//      near an edge they don't own); no case here meets that, and nothing exempts it.
+//   The morph law's normalization (r_L·b_L / Σ r_K·b_K) also packs a crossfade into a few samples
+//   of a layer's ramp when the pad is off its centre and the rendering layers' base weights are
+//   nearly 0 (a layer switch with the pad in a corner; a pad move near an edge). Nothing here
+//   exempts it: no committed case meets it, and the Layer On sweeps are scored.
+//   Reverb Size moves are exempt only when the Size in effect (its base or its modulation)
+//   changes.
+//
+// Each case pins a floor under the share of the render the click check scores
+// (Checks::minScored), so an exemption that widens past what the case needs fails there.
 
 #include <algorithm>
 #include <array>
@@ -79,6 +83,10 @@ struct Checks
     double clickLimit = 15;
     /// Skips the click check altogether.
     bool clicksExempt = false;
+    /// The least share of the render the click check must score (Verdict::scoredFraction): each
+    /// case pins one a little under what it measures, so an exemption that widens past what the
+    /// case needs fails here instead of blinding the check.
+    double minScored = 0.0;
 };
 
 struct Verdict
@@ -87,6 +95,9 @@ struct Verdict
     float peak;
     /// computeMetrics' click score: the largest over the stretches the check doesn't exempt.
     double clickScore;
+    /// The share of the render's samples in the stretches the click score covers, 0 to 1: what
+    /// the exemptions (and the stretches too short to score) leave.
+    double scoredFraction;
     /// The last second's RMS minus the loudest earlier second's (from the second second on,
     /// once the input is steady), in dB; 0 when the render is shorter than 3 s.
     double runawayDb;
@@ -104,8 +115,9 @@ class SweepDriver
     static constexpr int64_t kFade = 480;
     static constexpr double kInputHz = 220.0;
     static constexpr float kInputAmp = 0.5f;
-    /// The sine sample's length (gg::test::layers::sine).
-    static constexpr int64_t kSampleFrames = 48000;
+    /// LiveSource's mirrored guard frames after its ring (its kGuardFrames, private there): the
+    /// live-ring check covers them.
+    static constexpr int64_t kLiveGuardFrames = 15;
     static constexpr int16_t kNoteKey = 60;
     /// How long after a Reverb Size move, beyond the pre-delay then in effect, the click check
     /// looks away (row 217): Reverb 2's lines jump to their new lengths at the next chunk, and the
@@ -115,18 +127,17 @@ class SweepDriver
     /// How long after the reverb goes active, beyond its pre-delay, the check looks away
     /// (kReverbOnset): the onset's echoes through the network, as long as a Size move's.
     static constexpr int64_t kReverbOnsetExempt = 28800;
-    /// How long after a Layer On event the check looks away (kLayerSwitch): the 10 ms ramp, and
-    /// the score's ±5 ms.
-    static constexpr int64_t kLayerSwitchExempt = 480 + 256;
 
     /// `fixedBlock` > 0 renders every call at that size instead of the drawn ones.
     SweepDriver(gg::core::Mode mode, uint64_t seed, uint32_t fixedBlock = 0)
         : mode_(mode), seed_(seed), fixedBlock_(fixedBlock),
           processor_(gg::core::ProcessorConfig{kRate, kMaxBlock, seed, mode})
     {
+        const auto sample = gg::test::layers::sine(kInputHz);
+        sampleFrames_ = sample->level(0).frames; // the fixture's length, not a copy of it
         for (uint8_t L = 0; L < gg::core::kLayers; ++L)
         {
-            processor_.setSourceNow(L, gg::test::layers::sine(kInputHz));
+            processor_.setSourceNow(L, sample);
         }
         processor_.setPublishing(true);
         processor_.setEventSink(&SweepDriver::onGrain, this);
@@ -140,6 +151,7 @@ class SweepDriver
         callEvents_.reserve(1 << 14);
         sampleEnds_.reserve(kSampleEndCapacity);
         exempt_.push_back({0, kFade + 256}); // the input's fade-in
+        sizeBase_ = meta(gg::core::ParamSlot::ReverbSize).defaultVal;
         label("the start");
     }
 
@@ -161,6 +173,10 @@ class SweepDriver
     {
         return meta(slot, mode_);
     }
+
+    /// Takes the snapshot and drains the grain queue as every call does (a planted fault's way
+    /// in: the Processor's own publishing supersedes what a test pushes before a call).
+    void inspectExposed() { inspect(); }
 
     /// Renders `seconds` of `m`, applying what is queued.
     void play(double seconds, Material m)
@@ -254,7 +270,6 @@ class SweepDriver
             const bool isMod = u() < 0.25;
             const double v = isMod ? (2.0 * u() - 1.0) * span / 4.0 : m.minVal + u() * span;
             params.push_back({offset(), slot, isMod, v});
-            noteExempt(clock_ + params.back().offset, slot);
         }
         std::vector<gg::core::NoteEvent> notes;
         for (int i = 0; i < 32; ++i)
@@ -274,6 +289,10 @@ class SweepDriver
         }
         const auto byOffset = [](const auto &a, const auto &b) { return a.offset < b.offset; };
         std::stable_sort(params.begin(), params.end(), byOffset);
+        for (const auto &e : params)
+        {
+            noteExempt(clock_ + e.offset, e.slot, e.isModulation, e.value);
+        }
         std::stable_sort(notes.begin(), notes.end(), byOffset);
         std::stable_sort(controls.begin(), controls.end(), byOffset);
         label("burst " + std::to_string(seed) + ", " + std::to_string(events) + " events in " +
@@ -284,7 +303,7 @@ class SweepDriver
     /// The whole render's verdict against `c` (the comment at the top of the file).
     Verdict check(const Checks &c) const
     {
-        Verdict v{true, 0.0f, 0.0, 0.0, {}};
+        Verdict v{true, 0.0f, 0.0, 0.0, 0.0, {}};
         std::ostringstream where;
         const auto frames = static_cast<int64_t>(out_[0].size());
 
@@ -323,7 +342,8 @@ class SweepDriver
         {
             // Every slot of the ring's storage, the mirrored ones included (LiveSource::view).
             const auto ring = processor_.engine(L).live().view();
-            const std::size_t floats = 2 * static_cast<std::size_t>(ring.capacity + 15);
+            const std::size_t floats =
+                2 * static_cast<std::size_t>(ring.capacity + kLiveGuardFrames);
             for (std::size_t i = 0; ring.slots != nullptr && i < floats; ++i)
             {
                 if (!std::isfinite(ring.slots[i]))
@@ -383,8 +403,10 @@ class SweepDriver
         // The click score, over every stretch the check doesn't exempt.
         int64_t worstFrom = 0;
         int64_t worstTo = 0;
+        int64_t scored = 0;
         for (const auto &[a, b] : unexempt(frames))
         {
+            scored += b - a;
             const double s = clickScore(a, b);
             if (s > v.clickScore)
             {
@@ -404,6 +426,13 @@ class SweepDriver
             const int64_t at = locateClick(worstFrom, worstTo);
             where << "click score " << v.clickScore << " above " << c.clickLimit << " at sample "
                   << at << " (" << labelAt(at) << "); ";
+        }
+        v.scoredFraction =
+            frames > 0 ? static_cast<double>(scored) / static_cast<double>(frames) : 0.0;
+        if (!c.clicksExempt && !(v.scoredFraction >= c.minScored))
+        {
+            where << "the click check scored " << v.scoredFraction << " of the render, below "
+                  << c.minScored << "; ";
         }
         v.where = where.str();
         return v;
@@ -459,19 +488,22 @@ class SweepDriver
     void queue(int64_t time, gg::core::ParamSlot slot, bool isMod, double value)
     {
         events_.push_back({time, {0, slot, isMod, value}});
-        noteExempt(time, slot);
+        noteExempt(time, slot, isMod, value);
     }
-    /// The exemptions an event at `time` on `slot` brings: a Reverb Size move, a Layer On switch.
-    void noteExempt(int64_t time, gg::core::ParamSlot slot)
+    /// The exemption an event at `time` brings: a Reverb Size event that changes the Size in
+    /// force (events must arrive in the order they apply).
+    void noteExempt(int64_t time, gg::core::ParamSlot slot, bool isMod, double value)
     {
-        const int64_t boundary = (time + 31) / 32 * 32;
-        if (slot == gg::core::ParamSlot::ReverbSize)
+        if (slot != gg::core::ParamSlot::ReverbSize)
         {
-            sizeMoves_.push_back(boundary); // exempt once applied, with its pre-delay (call())
+            return;
         }
-        if (slot >= gg::core::ParamSlot::LayerAOn && slot <= gg::core::ParamSlot::LayerDOn)
+        double &held = isMod ? sizeMod_ : sizeBase_;
+        if (value != held)
         {
-            exempt_.push_back({boundary - 64, boundary + kLayerSwitchExempt}); // kLayerSwitch
+            held = value;
+            sizeMoves_.push_back((time + 31) / 32 *
+                                 32); // exempt once applied, with its pre-delay (call())
         }
     }
 
@@ -481,7 +513,7 @@ class SweepDriver
     static void onGrain(void *ctx, uint32_t, const gg::GrainSpec &g)
     {
         auto *d = static_cast<SweepDriver *>(ctx);
-        constexpr double kLast = static_cast<double>(kSampleFrames - 1) - 16.0;
+        const double kLast = static_cast<double>(d->sampleFrames_ - 1) - 16.0;
         if (g.sourceSlot == gg::Engine::kLiveSlot || !(g.rate > 0.0) ||
             g.startPos + g.rate * g.durationSamples <= kLast)
         {
@@ -759,6 +791,11 @@ class SweepDriver
     uint32_t sinceTiny_{0};
     float inputPeak_{0.0f};
     bool reverbWasActive_{false};
+    int64_t sampleFrames_{0};
+    // The Reverb Size in force as queued (base, modulation): a move is exempt only if it changes
+    // it.
+    double sizeBase_{0.0};
+    double sizeMod_{0.0};
     std::array<std::vector<float>, 2> out_;
     std::array<std::vector<float>, 2> in_;
     std::vector<Queued> events_;
@@ -778,8 +815,8 @@ class SweepDriver
 inline void requireClean(const SweepDriver &d, const Checks &c)
 {
     const Verdict v = d.check(c);
-    INFO("peak " << v.peak << ", click score " << v.clickScore << ", runaway " << v.runawayDb
-                 << " dB, over " << d.clock() << " samples");
+    INFO("peak " << v.peak << ", click score " << v.clickScore << ", scored " << v.scoredFraction
+                 << ", runaway " << v.runawayDb << " dB, over " << d.clock() << " samples");
     INFO(v.where);
     CHECK(v.finite);
     CHECK(v.peak <= c.peakBound);
@@ -787,11 +824,18 @@ inline void requireClean(const SweepDriver &d, const Checks &c)
     if (!c.clicksExempt)
     {
         CHECK(v.clickScore <= c.clickLimit);
+        CHECK(v.scoredFraction >= c.minScored);
     }
 }
 
-/// The chain's bound for the driver's render: 2 + the input's peak.
-inline Checks chainBound(const SweepDriver &d) { return Checks{2.0 + d.inputPeak()}; }
+/// The chain's bound for the driver's render, 2 + the input's peak, and the click check's pinned
+/// floor on the share it scores.
+inline Checks chainBound(const SweepDriver &d, double minScored)
+{
+    Checks c{2.0 + d.inputPeak()};
+    c.minScored = minScored;
+    return c;
+}
 } // namespace gg::test
 
 #endif // GG_TESTS_SWEEP_SWEEPDRIVER_H

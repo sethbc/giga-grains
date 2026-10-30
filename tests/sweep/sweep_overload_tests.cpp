@@ -55,7 +55,7 @@ TEST_CASE("overload: Budget swept under four HQ layers", "[sweep]")
     INFO("lowered " << d.processor().loweredGrains() << ", stolen "
                     << d.processor().stolenGrains());
     CHECK(d.processor().stolenGrains() > 0);
-    gg::test::requireClean(d, gg::test::chainBound(d));
+    gg::test::requireClean(d, gg::test::chainBound(d, 0.99));
 }
 
 TEST_CASE("overload: Quality swept under a small Budget", "[sweep]")
@@ -74,5 +74,5 @@ TEST_CASE("overload: Quality swept under a small Budget", "[sweep]")
     INFO("lowered " << d.processor().loweredGrains() << ", stolen "
                     << d.processor().stolenGrains());
     CHECK(d.processor().stolenGrains() > 0);
-    gg::test::requireClean(d, gg::test::chainBound(d));
+    gg::test::requireClean(d, gg::test::chainBound(d, 0.75));
 }

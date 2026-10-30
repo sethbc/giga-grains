@@ -45,7 +45,10 @@ void setAll(SweepDriver &d, int state, uint64_t seed)
                : "corner " + std::to_string(state - 1) + " of " + std::to_string(kCorners));
 }
 
-void extremes(Mode mode, uint64_t seed)
+/// `minScored`: the share of the render the click check scores, pinned a little under what the
+/// case measures (0.495 in the FX, 0.312 in the instrument): Reverb Size moves are exempt (row 217)
+/// and in the instrument a grain running past the sample's end is (F1).
+void extremes(Mode mode, uint64_t seed, double minScored)
 {
     SweepDriver d(mode, seed);
     const Material m = mode == Mode::Fx ? Material::SineLive : Material::NoteOverSine;
@@ -64,13 +67,16 @@ void extremes(Mode mode, uint64_t seed)
     }
     d.setDefaults();
     d.play(1.0, m);
-    gg::test::requireClean(d, gg::test::chainBound(d));
+    gg::test::requireClean(d, gg::test::chainBound(d, minScored));
 }
 } // namespace
 
-TEST_CASE("extremes: minima, maxima and 32 corners, fx", "[sweep]") { extremes(Mode::Fx, 2101); }
+TEST_CASE("extremes: minima, maxima and 32 corners, fx", "[sweep]")
+{
+    extremes(Mode::Fx, 2101, 0.48);
+}
 
 TEST_CASE("extremes: minima, maxima and 32 corners, instrument", "[sweep]")
 {
-    extremes(Mode::Instrument, 2102);
+    extremes(Mode::Instrument, 2102, 0.30);
 }

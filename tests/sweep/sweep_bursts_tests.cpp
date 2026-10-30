@@ -26,7 +26,10 @@ namespace
 constexpr int kBursts = 16;
 constexpr int kEvents = 1024;
 
-void bursts(Mode mode, uint64_t seed, uint32_t fixedBlock = 0)
+/// `minScored`: the share of the render the click check scores, pinned a little under what the
+/// case measures (0.469, 0.366 and 0.484): Reverb Size is among the random slots, and each of its
+/// real moves is exempt (row 217).
+void bursts(Mode mode, uint64_t seed, double minScored, uint32_t fixedBlock = 0)
 {
     SweepDriver d(mode, seed, fixedBlock);
     d.processor().setRoutes(gg::test::layers::allSourceRoutes(mode));
@@ -43,12 +46,15 @@ void bursts(Mode mode, uint64_t seed, uint32_t fixedBlock = 0)
     d.note(gg::core::NoteEventType::AllOff, -1, 1.0f, -1);
     d.play(0.05, m);
     d.play(1.0, m); // the instrument holds its note again
-    gg::test::requireClean(d, gg::test::chainBound(d));
+    gg::test::requireClean(d, gg::test::chainBound(d, minScored));
 }
 } // namespace
 
-TEST_CASE("bursts: 16 x 1024 events, fx", "[sweep]") { bursts(Mode::Fx, 3101); }
+TEST_CASE("bursts: 16 x 1024 events, fx", "[sweep]") { bursts(Mode::Fx, 3101, 0.45); }
 
-TEST_CASE("bursts: 16 x 1024 events, instrument", "[sweep]") { bursts(Mode::Instrument, 3102); }
+TEST_CASE("bursts: 16 x 1024 events, instrument", "[sweep]")
+{
+    bursts(Mode::Instrument, 3102, 0.35);
+}
 
-TEST_CASE("bursts at block size 1", "[sweep]") { bursts(Mode::Fx, 3103, 1); }
+TEST_CASE("bursts at block size 1", "[sweep]") { bursts(Mode::Fx, 3103, 0.47, 1); }

@@ -8,7 +8,10 @@
 // modulators' controls in two), the globals in two, and layers B, C and D one each with the
 // layer on.
 
+#include <atomic>
+#include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <limits>
 #include <string>
 #include <vector>
@@ -16,7 +19,10 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include "core/LayersFixture.h"
+#include "gg/core/GrainQueue.h"
+#include "gg/core/LivePeaks.h"
 #include "gg/core/ParamIds.h"
+#include "gg/core/UiSnapshot.h"
 #include "sweep/SweepDriver.h"
 
 using gg::core::LayerParam;
@@ -83,14 +89,14 @@ TEST_CASE("sweep: layer A grain params, fx", "[sweep]")
 {
     SweepDriver d(Mode::Fx, 1101);
     sweepGroup(d, grainSlots(0), Material::SineLive);
-    gg::test::requireClean(d, gg::test::chainBound(d));
+    gg::test::requireClean(d, gg::test::chainBound(d, 0.99));
 }
 
 TEST_CASE("sweep: layer A grain params, instrument", "[sweep]")
 {
     SweepDriver d(Mode::Instrument, 1102);
     sweepGroup(d, grainSlots(0), Material::NoteOverSine);
-    gg::test::requireClean(d, gg::test::chainBound(d));
+    gg::test::requireClean(d, gg::test::chainBound(d, 0.98));
 }
 
 TEST_CASE("sweep: layer A modulators, LFOs and envelopes", "[sweep]")
@@ -113,7 +119,7 @@ TEST_CASE("sweep: layer A modulators, LFOs and envelopes", "[sweep]")
         d.play(0.25, Material::NoteOverSine);
     }
     d.play(1.0, Material::NoteOverSine);
-    gg::test::requireClean(d, gg::test::chainBound(d));
+    gg::test::requireClean(d, gg::test::chainBound(d, 0.99));
 }
 
 TEST_CASE("sweep: layer A modulators, random and step", "[sweep]")
@@ -121,7 +127,7 @@ TEST_CASE("sweep: layer A modulators, random and step", "[sweep]")
     SweepDriver d(Mode::Fx, 1104);
     withLayerAndRoutes(d, 0);
     sweepGroup(d, layerSlots(LayerParam::Random1Rate, LayerParam::Step16, 0), Material::SineLive);
-    gg::test::requireClean(d, gg::test::chainBound(d));
+    gg::test::requireClean(d, gg::test::chainBound(d, 0.99));
 }
 
 TEST_CASE("sweep: globals, space", "[sweep]")
@@ -135,7 +141,7 @@ TEST_CASE("sweep: globals, space", "[sweep]")
                 ParamSlot::ReverbDamping, ParamSlot::ReverbPredelay, ParamSlot::ReverbModulation,
                 ParamSlot::DryToReverb},
                Material::SineLive);
-    gg::test::requireClean(d, gg::test::chainBound(d));
+    gg::test::requireClean(d, gg::test::chainBound(d, 0.78));
 }
 
 TEST_CASE("sweep: globals, macros and morph", "[sweep]")
@@ -156,7 +162,7 @@ TEST_CASE("sweep: globals, macros and morph", "[sweep]")
     }
     slots.push_back(ParamSlot::Budget);
     sweepGroup(d, slots, Material::SineLive);
-    gg::test::requireClean(d, gg::test::chainBound(d));
+    gg::test::requireClean(d, gg::test::chainBound(d, 0.99));
 }
 
 TEST_CASE("sweep: layer B", "[sweep]")
@@ -164,7 +170,7 @@ TEST_CASE("sweep: layer B", "[sweep]")
     SweepDriver d(Mode::Fx, 1107);
     withLayerAndRoutes(d, 1);
     sweepGroup(d, layerSlots(LayerParam::Position, LayerParam::Quality, 1), materialOf(d.mode()));
-    gg::test::requireClean(d, gg::test::chainBound(d));
+    gg::test::requireClean(d, gg::test::chainBound(d, 0.99));
 }
 
 TEST_CASE("sweep: layer C", "[sweep]")
@@ -172,7 +178,7 @@ TEST_CASE("sweep: layer C", "[sweep]")
     SweepDriver d(Mode::Instrument, 1108);
     withLayerAndRoutes(d, 2);
     sweepGroup(d, layerSlots(LayerParam::Position, LayerParam::Quality, 2), materialOf(d.mode()));
-    gg::test::requireClean(d, gg::test::chainBound(d));
+    gg::test::requireClean(d, gg::test::chainBound(d, 0.99));
 }
 
 TEST_CASE("sweep: layer D", "[sweep]")
@@ -180,7 +186,7 @@ TEST_CASE("sweep: layer D", "[sweep]")
     SweepDriver d(Mode::Fx, 1109);
     withLayerAndRoutes(d, 3);
     sweepGroup(d, layerSlots(LayerParam::Position, LayerParam::Quality, 3), materialOf(d.mode()));
-    gg::test::requireClean(d, gg::test::chainBound(d));
+    gg::test::requireClean(d, gg::test::chainBound(d, 0.99));
 }
 
 TEST_CASE("sweep: the checks catch a planted NaN, peak, runaway and click", "[sweep]")
@@ -189,7 +195,7 @@ TEST_CASE("sweep: the checks catch a planted NaN, peak, runaway and click", "[sw
     // the one check it should, naming the sample.
     SweepDriver d(Mode::Fx, 1110);
     d.play(4.0, Material::SineLive);
-    const gg::test::Checks c = gg::test::chainBound(d);
+    const gg::test::Checks c = gg::test::chainBound(d, 0.0);
     const auto clean = d.check(c);
     INFO(clean.where);
     REQUIRE(clean.finite);
@@ -234,4 +240,177 @@ TEST_CASE("sweep: the checks catch a planted NaN, peak, runaway and click", "[sw
             }
         },
         [&](const auto &v) { return v.clickScore > c.clickLimit; }, "at sample 120000 ");
+}
+
+namespace
+{
+/// Whether `where` names the planted step's sample, or one of the two after it (the score's
+/// second difference peaks at the step or just past it).
+bool namesSample(const std::string &where, std::size_t at)
+{
+    for (std::size_t k = 0; k < 3; ++k)
+    {
+        if (where.find("at sample " + std::to_string(at + k) + " ") != std::string::npos)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+} // namespace
+
+TEST_CASE("sweep: a click planted beside an exemption is caught", "[sweep]")
+{
+    // The click check must score right up to an exemption's edge: a step planted in the stretch
+    // between two Layer On events (an old exemption left it unscored), and one planted just
+    // past a Reverb Size move's exemption, each fails with its sample named.
+    const auto plantStep = [](SweepDriver &d, std::size_t from) {
+        for (auto &ch : d.output())
+        {
+            for (std::size_t i = from; i < ch.size(); ++i)
+            {
+                ch[i] += 0.1f; // a -20 dBFS step, as the goldens' click injection adds
+            }
+        }
+    };
+    SECTION("between Layer On events")
+    {
+        SweepDriver d(Mode::Fx, 1111);
+        d.play(1.0, Material::SineLive);
+        const int64_t start = d.clock();
+        // 64 steps over 2 s: an event every 1500 samples; Layer D stays off for the first 31.
+        d.sweep(gg::core::layerOnSlot(3), 0.0, 1.0, 64, 2.0);
+        d.play(1.0, Material::SineLive);
+        const gg::test::Checks c = gg::test::chainBound(d, 0.0);
+        REQUIRE(d.check(c).where.empty());
+        const auto at = static_cast<std::size_t>(start + 1500 * 20 + 1000);
+        plantStep(d, at);
+        const auto v = d.check(c);
+        INFO(v.where);
+        CHECK(v.clickScore > c.clickLimit);
+        CHECK(namesSample(v.where, at));
+    }
+    SECTION("beside a Reverb Size event that changes nothing")
+    {
+        SweepDriver d(Mode::Fx, 1115);
+        d.processor().setBase(ParamSlot::ReverbAmount, 0.5f);
+        d.play(1.0, Material::SineLive);
+        const int64_t at = d.clock();
+        d.set(ParamSlot::ReverbSize, SweepDriver::meta(ParamSlot::ReverbSize, Mode::Fx).defaultVal);
+        d.play(1.0, Material::SineLive);
+        const gg::test::Checks c = gg::test::chainBound(d, 0.0);
+        REQUIRE(d.check(c).where.empty());
+        const auto plant = static_cast<std::size_t>(at + 400);
+        plantStep(d, plant);
+        const auto v = d.check(c);
+        INFO(v.where);
+        CHECK(v.clickScore > c.clickLimit);
+        CHECK(namesSample(v.where, plant));
+    }
+    SECTION("just past a Reverb Size move's exemption")
+    {
+        SweepDriver d(Mode::Fx, 1112);
+        d.processor().setBase(ParamSlot::ReverbAmount, 0.5f);
+        d.play(1.0, Material::SineLive);
+        const int64_t moveAt = d.clock();
+        d.set(ParamSlot::ReverbSize, 0.9);
+        d.play(3.0, Material::SineLive);
+        const gg::test::Checks c = gg::test::chainBound(d, 0.0);
+        REQUIRE(d.check(c).where.empty());
+        const int64_t predelay = static_cast<int64_t>(
+            std::llround(d.processor().effective(ParamSlot::ReverbPredelay) * SweepDriver::kRate));
+        const auto at =
+            static_cast<std::size_t>(moveAt + predelay + SweepDriver::kReverbSizeExempt + 2000);
+        plantStep(d, at);
+        const auto v = d.check(c);
+        INFO(v.where);
+        CHECK(v.clickScore > c.clickLimit);
+        CHECK(namesSample(v.where, at));
+    }
+}
+
+TEST_CASE("sweep: a floor on the scored share fails when an exemption widens", "[sweep]")
+{
+    SweepDriver d(Mode::Fx, 1118);
+    d.processor().setBase(ParamSlot::ReverbAmount, 0.5f);
+    d.play(1.0, Material::SineLive);
+    d.set(ParamSlot::ReverbSize, 0.9); // exempts about 0.6 s of the 3 s
+    d.play(2.0, Material::SineLive);
+    const auto ok = d.check(gg::test::chainBound(d, 0.5));
+    INFO(ok.where);
+    CHECK(ok.where.empty());
+    CHECK(ok.scoredFraction < 0.9);
+    const auto v = d.check(gg::test::chainBound(d, 0.9));
+    INFO(v.where);
+    CHECK(v.where.find("the click check scored") != std::string::npos);
+}
+
+TEST_CASE("sweep: the checks catch non-finite values the Processor exposes", "[sweep]")
+{
+    SECTION("a NaN in a live ring's mirrored guard slots")
+    {
+        SweepDriver d(Mode::Fx, 1113);
+        d.play(2.0, Material::SineLive);
+        const gg::test::Checks c = gg::test::chainBound(d, 0.0);
+        REQUIRE(d.check(c).where.empty());
+        const auto ring = d.processor().engine(2).live().view();
+        REQUIRE(ring.slots != nullptr);
+        // The last mirrored slot: a check that stopped short of the guard frames would miss it.
+        const_cast<float *>(
+            ring.slots)[2 * static_cast<std::size_t>(ring.capacity + SweepDriver::kLiveGuardFrames -
+                                                     1)] = std::numeric_limits<float>::quiet_NaN();
+        const auto v = d.check(c);
+        INFO(v.where);
+        CHECK(!v.finite);
+        CHECK(v.where.find("non-finite live ring of layer 2") != std::string::npos);
+    }
+    SECTION("a NaN in a peak strip bucket")
+    {
+        SweepDriver d(Mode::Fx, 1116);
+        d.play(1.0, Material::SineLive);
+        const gg::test::Checks c = gg::test::chainBound(d, 0.0);
+        REQUIRE(d.check(c).where.empty());
+        // LivePeaks::write() stores a non-finite sample as 0, so a NaN reaches a bucket only by
+        // a poke: its first member is the bucket array (confirmed below by reading a written
+        // bucket through it, before anything is written).
+        const auto &peaks = d.processor().livePeaks(1);
+        auto *buckets = *reinterpret_cast<std::atomic<float> *const *>(&peaks);
+        constexpr int64_t kFrame = 100 * gg::core::LivePeaks::kBucket;
+        REQUIRE(peaks.at(kFrame) > 0.0f);
+        REQUIRE(buckets[100].load() == peaks.at(kFrame));
+        buckets[100].store(std::numeric_limits<float>::quiet_NaN());
+        const auto v = d.check(c);
+        INFO(v.where);
+        CHECK(!v.finite);
+        CHECK(v.where.find("non-finite peak strip of layer 1 at frame " + std::to_string(kFrame)) !=
+              std::string::npos);
+    }
+    SECTION("a NaN in the UI snapshot")
+    {
+        SweepDriver d(Mode::Fx, 1117);
+        d.play(1.0, Material::SineLive);
+        gg::core::UiSnapshot snap;
+        snap.feedback = std::numeric_limits<float>::quiet_NaN();
+        d.processor().snapshot().push(snap);
+        d.inspectExposed();
+        const gg::test::Checks c = gg::test::chainBound(d, 0.0);
+        const auto v = d.check(c);
+        INFO(v.where);
+        CHECK(!v.finite);
+        CHECK(v.where.find("non-finite snapshot") != std::string::npos);
+    }
+    SECTION("a NaN in a grain the queue holds")
+    {
+        SweepDriver d(Mode::Fx, 1114);
+        d.play(1.0, Material::SineLive);
+        gg::core::GrainVis g;
+        g.pan = std::numeric_limits<float>::quiet_NaN();
+        REQUIRE(d.processor().grainQueue().push(g));
+        d.play(0.05, Material::SineLive); // inspect() drains the queue after each call
+        const gg::test::Checks c = gg::test::chainBound(d, 0.0);
+        const auto v = d.check(c);
+        INFO(v.where);
+        CHECK(!v.finite);
+        CHECK(v.where.find("non-finite grain in the grain queue") != std::string::npos);
+    }
 }
