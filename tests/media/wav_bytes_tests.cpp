@@ -85,7 +85,7 @@ TEST_CASE("encodeFloat32Wav decodes to the same floats", "[media]")
         const std::string bytes = encodeFloat32Wav(in);
         const auto path = writeScratch("round-trip-" + std::to_string(channels) + ".wav", bytes);
 
-        const auto result = gg::media::decodeAudioFile(path);
+        const auto result = gg::media::decodeAudioFile(path, gg::media::kDefaultDecodeBound);
         INFO(result.error);
         REQUIRE(result.audio.has_value());
         CHECK(result.audio->format == "wav");
