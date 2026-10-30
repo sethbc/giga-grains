@@ -51,6 +51,12 @@ if (GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
             PRIVATE clap_juce_shim clap_juce_shim_headers gg::juce-headers sst-jucegui gg::engine
             gg::compiler-options gg::juce-opengl-impl
             )
+    # The GPU canvas spike's Metal candidate (spike/gpu-canvas only, macOS only).
+    if (APPLE)
+        target_sources(gg-ui PRIVATE src/MetalGrainCanvas.mm)
+        set_source_files_properties(src/MetalGrainCanvas.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+        target_link_libraries(gg-ui PRIVATE "-framework Metal" "-framework QuartzCore")
+    endif ()
     # Its embedded notices (gg/ui/Notices.h's noticeTexts(), the About box's texts) are a
     # generated source that cmake/products.cmake attaches with gg_add_notices: the license set
     # names AudioUnitSDK's checkout, which is known only after clients/clap-first, processed

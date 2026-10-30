@@ -21,6 +21,7 @@
 
 #include "GlGrainCanvas.h"
 #include "GrainCanvas.h"
+#include "MetalGrainCanvas.h"
 #include "LoaderStrip.h"
 #include "MacroRow.h"
 #include "Theme.h"
@@ -84,16 +85,24 @@ class Editor final : public juce::Component,
         // Spike: GG_GPU_CANVAS=gl puts the OpenGL candidate where the canvas is, and hides the
         // CPU canvas (its VBlank repaint then paints nothing).
         if (const char *gpu = std::getenv("GG_GPU_CANVAS");
-            gpu != nullptr && std::string(gpu) == "gl")
+            gpu != nullptr && (std::string(gpu) == "gl" || std::string(gpu) == "metal"))
         {
             uint32_t n = 0;
             if (const char *sg = std::getenv("GG_STRESS_GRAINS"); sg != nullptr)
             {
                 n = static_cast<uint32_t>(std::max(0L, std::atol(sg)));
             }
-            gl_ = std::make_unique<GlGrainCanvas>(n);
             canvas_.setVisible(false);
-            addAndMakeVisible(*gl_);
+            if (std::string(gpu) == "gl")
+            {
+                gl_ = std::make_unique<GlGrainCanvas>(n);
+                addAndMakeVisible(*gl_);
+            }
+            else
+            {
+                metal_ = std::make_unique<MetalGrainCanvas>(n);
+                addAndMakeVisible(*metal_);
+            }
         }
         mainThreadCpuAtStart_ = mainThreadCpuSeconds();
         processCpuAtStart_ = processCpuSeconds();
@@ -170,6 +179,10 @@ class Editor final : public juce::Component,
         {
             gl_->setBounds(area);
         }
+        if (metal_)
+        {
+            metal_->setBounds(area);
+        }
     }
 
     // ---- juce::FileDragAndDropTarget: the strip's drop target, the whole editor ----
@@ -222,6 +235,19 @@ class Editor final : public juce::Component,
                                  getWidth(), getHeight(), gl_->pixelScale(),
                                  static_cast<unsigned>(gl_->frames() > 0 ? 1 : 0), mainCpu, procCpu,
                                  elapsed);
+                }
+                else if (metal_)
+                {
+                    std::fprintf(
+                        stderr,
+                        "gg-frame renderer=metal ui_ms=%.3f wait_ms=%.3f gpu_ms=%.3f "
+                        "frames=%llu skipped=%llu ready=%d fb=%ux%u canvas=%dx%d editor=%dx%d "
+                        "scale=%.2f main_cpu_s=%.3f proc_cpu_s=%.3f elapsed=%.1f\n",
+                        metal_->averageUiMs(), metal_->averageWaitMs(), metal_->averageGpuMs(),
+                        static_cast<unsigned long long>(metal_->frames()),
+                        static_cast<unsigned long long>(metal_->skipped()), metal_->ready() ? 1 : 0,
+                        metal_->fbWidth(), metal_->fbHeight(), b.getWidth(), b.getHeight(),
+                        getWidth(), getHeight(), metal_->pixelScale(), mainCpu, procCpu, elapsed);
                 }
                 else
                 {
@@ -306,6 +332,7 @@ class Editor final : public juce::Component,
                static_cast<double>(ru.ru_utime.tv_usec + ru.ru_stime.tv_usec) * 1e-6;
     }
     std::unique_ptr<GlGrainCanvas> gl_;
+    std::unique_ptr<MetalGrainCanvas> metal_;
     double logAfterSeconds_{0.0};
     double mainThreadCpuAtStart_{0.0}, processCpuAtStart_{0.0};
     std::chrono::steady_clock::time_point constructed_{std::chrono::steady_clock::now()};
