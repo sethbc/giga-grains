@@ -290,6 +290,12 @@ class Engine
     /// selectSplice, addSplice, adoptStorage, …), made between process() calls on the audio
     /// thread, as setCloudParams is: each applies from the next process() call's first frame.
     LiveSource &live() noexcept { return live_; }
+    /// After live()'s adoptStorage() or restoreStorage() changed the ring's length (M2
+    /// sub-project 2's spec §6.3, §6.5): Live mode's Position and Spray are bounded by the new
+    /// length, N / sampleRate seconds, instead of liveSeconds, for every grain drawn from the next
+    /// process() call on (CloudScheduler::setSourceMode; no onset moves). Real-time safe, with the
+    /// threading rule of live().
+    void ringResized() noexcept;
 
   private:
     void processBlock(const float *const *in, uint32_t numInChannels, float *const *out,

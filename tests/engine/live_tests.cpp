@@ -2151,3 +2151,40 @@ TEST_CASE("a loop with overdub and a splice across ageing are block-size invaria
         }
     }
 }
+
+TEST_CASE("a restore's window holds for every sample until the next write", "[engine][live]")
+{
+    // Between a restore and the next write() the head is the restored frame count at every output
+    // sample, so a query made then (the Processor's AddSplice at a call's first boundary, the
+    // admission clamp, a capture) reads the restored window: the last write's block bounds are
+    // forgotten with the old ring time.
+    const std::vector<float> ones(512, 1.0f);
+    const float *mono[1] = {ones.data()};
+    const int64_t marks[] = {1000, 9000};
+    for (const bool frozen : {false, true})
+    {
+        INFO((frozen ? "frozen" : "not frozen"));
+        gg::LiveSource ring;
+        ring.prepare(kSampleRate, kRingSeconds, 512);
+        for (int64_t t = 0; t < 100352; t += 512)
+        {
+            ring.write(mono, 1, 0, t, 512); // the last block starts at 99840
+        }
+        ring.selectSplice(1);
+        gg::RingStorage next(48000, 512);
+        gg::RingStorage *previous = &next;
+        REQUIRE(ring.restoreStorage(&next, 30000, marks, frozen, previous));
+        REQUIRE(ring.windowFrames() == 8000); // splice 1: [1000, 9000)
+        for (const int64_t t : {int64_t{0}, int64_t{50}, int64_t{99839}, int64_t{99840},
+                                int64_t{100351}, int64_t{200000}})
+        {
+            INFO("t = " << t);
+            CHECK(ring.headAt(t) == 30000);
+            CHECK(ring.anchorAt(t) == 9000);
+            CHECK(ring.windowOldestAt(t) == 1000);
+            CHECK(ring.windowFramesAt(t) == ring.windowFrames());
+            CHECK(ring.windowSteadyUntil(t) == std::numeric_limits<int64_t>::max());
+            CHECK(ring.headRunAfter(t) == (frozen ? 0.0 : std::numeric_limits<double>::infinity()));
+        }
+    }
+}

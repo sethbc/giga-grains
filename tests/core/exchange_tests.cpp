@@ -13,10 +13,13 @@
 
 #include "gg/core/SourceExchange.h"
 #include "gg/source/PreparedSource.h"
+#include "gg/source/RingStorage.h"
 #include "gg/source/SampleBuffer.h"
 #include "support/AllocTripwire.h"
 
 using gg::PreparedSource;
+using gg::RingStorage;
+using gg::core::RingOffer;
 using gg::core::SourceExchange;
 using gg::core::SourceOffer;
 using gg::test::AllocTripwire;
@@ -27,6 +30,8 @@ std::shared_ptr<const PreparedSource> makeSource(uint32_t channels = 2)
 {
     return PreparedSource::make(std::make_shared<gg::SampleBuffer>(channels, 64, 48000.0));
 }
+
+std::unique_ptr<RingStorage> makeRing() { return std::make_unique<RingStorage>(4800, 256); }
 } // namespace
 
 TEST_CASE("exchange hands an offer to the audio side once", "[core]")
@@ -321,4 +326,177 @@ TEST_CASE("exchange reserve grows its storage geometrically", "[core]")
     }
     CHECK(exchange.held() == 256);
     CHECK(allocations <= 16);
+}
+
+TEST_CASE("exchange hands a ring over and frees the one never taken", "[core][source]")
+{
+    // M2 sub-project 2's spec §6.5: the ring exchange is one more thing an offer carries. A ring
+    // offer changes no source (keepSource) and brings no values; one replaced before the audio
+    // side took it never reached it, so the main thread frees it at once.
+    SourceExchange exchange;
+    RingOffer how;
+    how.copiedTo = 1234;
+    how.spliceCount = 1;
+    how.splices[0] = 77;
+    exchange.offerRing(makeRing(), how);
+    CHECK(exchange.ringsHeld() == 1);
+    CHECK(exchange.ringAdoptionPending());
+    auto b = makeRing();
+    RingStorage *rawB = b.get();
+    how.copiedTo = 5678;
+    exchange.offerRing(std::move(b), how);
+    CHECK(exchange.ringsHeld() == 1); // the first, never taken, is freed
+
+    SourceOffer polled;
+    REQUIRE(exchange.poll(polled));
+    CHECK(polled.hasRing);
+    CHECK(polled.ring.storage == rawB);
+    CHECK(polled.ring.copiedTo == 5678);
+    CHECK_FALSE(polled.ring.restore);
+    CHECK(polled.ring.spliceCount == 1);
+    CHECK(polled.ring.splices[0] == 77);
+    CHECK(polled.keepSource);
+    CHECK(polled.source == nullptr);
+    CHECK_FALSE(polled.hasValues);
+    CHECK_FALSE(exchange.poll(polled));    // once
+    CHECK(exchange.ringAdoptionPending()); // until the audio side adopts it
+    exchange.markRingAdopted(polled.ringSerial);
+    CHECK_FALSE(exchange.ringAdoptionPending());
+    CHECK(exchange.ringsHeld() == 1); // the engine reads it now
+}
+
+TEST_CASE("exchange lands a ring, a source and values in one offer", "[core][source]")
+{
+    // A restore's ring, sample and values reach the audio side together (spec §6.5): an untaken
+    // ring is carried forward into a newer offer of a source or values, and a ring offer takes
+    // over an untaken offer's source and values, as a keep-source offer does (R19).
+    gg::core::ParamValues values{};
+    values[3] = 0.25f;
+
+    SECTION("a ring, then a source with values")
+    {
+        SourceExchange exchange;
+        auto ring = makeRing();
+        RingStorage *rawRing = ring.get();
+        exchange.offerRing(std::move(ring), RingOffer{});
+        auto s = makeSource();
+        const PreparedSource *rawSource = s.get();
+        exchange.offer(std::move(s), &values);
+        SourceOffer polled;
+        REQUIRE(exchange.poll(polled));
+        CHECK(polled.hasRing);
+        CHECK(polled.ring.storage == rawRing);
+        CHECK(polled.source == rawSource);
+        CHECK_FALSE(polled.keepSource);
+        CHECK(polled.hasValues);
+        CHECK(polled.values[3] == 0.25f);
+        CHECK(exchange.ringsHeld() == 1);
+        CHECK(exchange.held() == 1);
+    }
+    SECTION("a source with values, then a ring")
+    {
+        SourceExchange exchange;
+        auto s = makeSource();
+        const PreparedSource *rawSource = s.get();
+        exchange.offer(std::move(s), &values);
+        auto ring = makeRing();
+        RingStorage *rawRing = ring.get();
+        RingOffer how;
+        how.restore = true;
+        how.frames = 4000;
+        how.frozen = true;
+        exchange.offerRing(std::move(ring), how);
+        SourceOffer polled;
+        REQUIRE(exchange.poll(polled));
+        CHECK(polled.hasRing);
+        CHECK(polled.ring.storage == rawRing);
+        CHECK(polled.ring.restore);
+        CHECK(polled.ring.frames == 4000);
+        CHECK(polled.ring.frozen);
+        CHECK(polled.source == rawSource);
+        CHECK_FALSE(polled.keepSource);
+        CHECK(polled.hasValues);
+        CHECK(polled.values[3] == 0.25f);
+        CHECK(exchange.held() == 1); // the source was taken over, not freed
+    }
+    SECTION("a ring, then values that keep the source")
+    {
+        SourceExchange exchange;
+        auto ring = makeRing();
+        RingStorage *rawRing = ring.get();
+        exchange.offerRing(std::move(ring), RingOffer{});
+        exchange.offerValues(values);
+        SourceOffer polled;
+        REQUIRE(exchange.poll(polled));
+        CHECK(polled.hasRing);
+        CHECK(polled.ring.storage == rawRing);
+        CHECK(polled.keepSource);
+        CHECK(polled.hasValues);
+    }
+    SECTION("a ring taken is not carried into the next offer")
+    {
+        SourceExchange exchange;
+        exchange.offerRing(makeRing(), RingOffer{});
+        SourceOffer polled;
+        REQUIRE(exchange.poll(polled));
+        exchange.offer(makeSource());
+        REQUIRE(exchange.poll(polled));
+        CHECK_FALSE(polled.hasRing);
+        CHECK(polled.ring.storage == nullptr);
+    }
+}
+
+TEST_CASE("exchange frees a retired ring on collect and keeps a declined one pending",
+          "[core][source]")
+{
+    // A declined ring goes back to the main thread to be freed and remade (spec §6.5): the offer
+    // stays pending, and the decline is counted, until a remade one is adopted. A storage the
+    // audio side retires is freed only by the main thread's collect().
+    SourceExchange exchange;
+    exchange.offerRing(makeRing(), RingOffer{});
+    SourceOffer first;
+    REQUIRE(exchange.poll(first));
+    CHECK(exchange.ringsDeclined() == 0);
+    exchange.markRingDeclined();
+    exchange.retireRing(first.ring.storage);
+    CHECK(exchange.ringsDeclined() == 1);
+    CHECK(exchange.ringAdoptionPending());
+    CHECK(exchange.awaitingCollect());
+    CHECK(exchange.ringsHeld() == 1);
+    exchange.collect();
+    CHECK(exchange.ringsHeld() == 0);
+    CHECK_FALSE(exchange.awaitingCollect());
+
+    // Remade: offered again and adopted, but a newer offer made in between keeps it pending.
+    exchange.offerRing(makeRing(), RingOffer{});
+    SourceOffer second;
+    REQUIRE(exchange.poll(second));
+    exchange.offerRing(makeRing(), RingOffer{});
+    exchange.markRingAdopted(second.ringSerial);
+    CHECK(exchange.ringAdoptionPending()); // the third is still to come
+    SourceOffer third;
+    REQUIRE(exchange.poll(third));
+    exchange.markRingAdopted(third.ringSerial);
+    CHECK_FALSE(exchange.ringAdoptionPending());
+    exchange.retireRing(second.ring.storage); // replaced by the third
+    exchange.collect();
+    CHECK(exchange.ringsHeld() == 1);
+    exchange.retireRing(nullptr); // ignored
+    exchange.collect();
+    CHECK(exchange.ringsHeld() == 1);
+}
+
+TEST_CASE("exchange holds a ring given to the engine directly until it is retired",
+          "[core][source]")
+{
+    SourceExchange exchange;
+    RingStorage *raw = exchange.holdRing(makeRing());
+    CHECK(raw != nullptr);
+    CHECK(exchange.ringsHeld() == 1);
+    CHECK_FALSE(exchange.ringAdoptionPending()); // held, not offered
+    SourceOffer polled;
+    CHECK_FALSE(exchange.poll(polled));
+    exchange.retireRing(raw);
+    exchange.collect();
+    CHECK(exchange.ringsHeld() == 0);
 }

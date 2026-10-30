@@ -27,6 +27,13 @@ static_assert(SpaceReverb::kChunk == Processor::kControlGrid);
 // every grain at least that far behind the write head, so a piece of at most D samples never
 // reads a frame whose feedback it hasn't rendered yet.
 static_assert(Processor::kFeedbackDelay == gg::LiveSource::kHeadMargin);
+// The parameter's Splice range, RingMeta's and RingOffer's marks are the ring's (M2 sub-project
+// 2's pre-flight ruling).
+static_assert(gg::core::kMaxSplices == gg::LiveSource::kMaxSplices);
+// The ring read's atomics (RingRead) and Ring Length's seconds never take a lock.
+static_assert(std::atomic<const RingStorage *>::is_always_lock_free);
+static_assert(std::atomic<uint32_t>::is_always_lock_free);
+static_assert(std::atomic<double>::is_always_lock_free);
 
 namespace
 {
@@ -100,6 +107,21 @@ bool validControl(const ControlEvent &c) noexcept
 {
     return c.kind <= ControlKind::PitchBend && c.channel >= -1 && c.channel <= 15 &&
            std::isfinite(c.value);
+}
+
+/// Whether a command's fields are in range (CommandEvent): a known kind, a layer, and for
+/// AddSplice a finite value.
+bool validCommand(const CommandEvent &c) noexcept
+{
+    return c.kind <= CommandKind::ClearSplices && c.layer < Processor::kLayers &&
+           (c.kind != CommandKind::AddSplice || std::isfinite(c.value));
+}
+
+/// Whether two RingMetas are the same: the marks past spliceCount are 0 in both.
+bool sameMeta(const RingMeta &a, const RingMeta &b) noexcept
+{
+    return a.head == b.head && a.windowFrames == b.windowFrames && a.spliceCount == b.spliceCount &&
+           a.splices == b.splices && a.frozen == b.frozen;
 }
 
 /// v clamped to [0, 1], NaN as 0.
@@ -217,6 +239,7 @@ Processor::Processor(const ProcessorConfig &config)
         {
             channel.assign(pieceMax_, 0.0f);
         }
+        l.overdubGain.assign(pieceMax_, 0.0f);
         l.peaks.prepare(l.engine.liveFrames());
         // The pool's storage bound on the spawns of one block (spec §6.7).
         l.events.reserve(2 * static_cast<size_t>(engine.grainCapacity));
@@ -226,8 +249,13 @@ Processor::Processor(const ProcessorConfig &config)
         }
         l.engine.setEventSink(&Processor::onGrain, this);
     }
-    // The kinds (the FX's layers read their rings) and the cloud parameters.
+    // The kinds (the FX's layers read their rings), the cloud parameters and the rings' values.
     updateEffective();
+    // The ring read sees each ring's own storage from the start (M2 sub-project 2's spec §6.4).
+    for (const auto &l : layers_)
+    {
+        publishStorage(*l);
+    }
     // A layer off by default (B to D) starts with its engine disabled, so it spawns nothing
     // before it is switched on; layer A's is never told, as M1's engine wasn't.
     for (uint8_t L = 0; L < kLayers; ++L)
@@ -266,6 +294,7 @@ void Processor::jumpRamps() noexcept
         l.diffusion.jump(layerDiffusion(effective_, L));
         l.feedback.jump(w.feedback);
         l.on.jump(layerOn(effective_, L) ? 1.0f : 0.0f);
+        l.overdub.jump(toRingParams(effective_, L).overdub);
     }
 }
 
@@ -285,6 +314,7 @@ void Processor::retargetRamps(int64_t t) noexcept
         l.diffusion.retarget(layerDiffusion(effective_, L), t, rampSamples_);
         l.feedback.retarget(w.feedback, t, rampSamples_);
         l.on.retarget(layerOn(effective_, L) ? 1.0f : 0.0f, t, rampSamples_);
+        l.overdub.retarget(toRingParams(effective_, L).overdub, t, rampSamples_);
     }
 }
 
@@ -368,6 +398,9 @@ void Processor::setBase(ParamSlot slot, float value) noexcept
         case LayerParam::Feedback:
             l.feedback.jump(w.feedback);
             break;
+        case LayerParam::Overdub:
+            l.overdub.jump(toRingParams(effective_, ref->layer).overdub);
+            break;
         case LayerParam::Source:
             // Feedback follows the kind (spec §6.4): a kind that moved its target makes it jump,
             // as a macro's move does.
@@ -447,6 +480,7 @@ void Processor::jumpMovedRamps() noexcept
         jumpIfMoved(l.diffusion, layerDiffusion(effective_, L));
         jumpIfMoved(l.feedback, w.feedback);
         jumpIfMoved(l.on, layerOn(effective_, L) ? 1.0f : 0.0f);
+        jumpIfMoved(l.overdub, toRingParams(effective_, L).overdub);
     }
 }
 
@@ -727,7 +761,27 @@ void Processor::updateEffective() noexcept
             l.engine.setSourceMode(kind);
             l.kind = kind;
         }
+        // M2 sub-project 2's spec §6.1–§6.3: the ring's window and the tap. Its setters apply
+        // from the ring's next write, the boundary's piece. Ring Length is the main thread's to
+        // apply (the plugin's watcher), from its base value.
+        const RingParams ring = toRingParams(effective_, L);
+        const double loopFrames = std::min(ring.loopSeconds * config_.sampleRate, 0x1.0p40);
+        l.engine.live().setLoop(ring.loop, std::max<int64_t>(1, std::llround(loopFrames)));
+        l.engine.live().selectSplice(ring.splice);
+        l.resample = sourceKindOf(effective_, L) == SourceKind::Resample;
+        l.ringSeconds.store(toRingParams(base_, L).ringSeconds, std::memory_order_relaxed);
     }
+    // The tap's history starts from silence whenever it becomes live (spec §6.2).
+    const bool anyResample =
+        std::any_of(layers_.begin(), layers_.end(), [](const auto &l) { return l->resample; });
+    if (anyResample && !anyResample_)
+    {
+        for (auto &channel : tapHistory_)
+        {
+            channel.fill(0.0f);
+        }
+    }
+    anyResample_ = anyResample;
     space_ = toSpaceParams(effective_, config_.mode);
 }
 
@@ -780,6 +834,13 @@ void Processor::reset() noexcept
     lastStepped_ = -static_cast<int64_t>(kControlGrid);
     inputScanned_ = 0;
     cellPeak_ = 0.0f;
+    // The rings restart with the clock, and with them the marks the commands would make and the
+    // tap's history (M2 sub-project 2's spec §6.2, §6.4).
+    pendingCommandCount_ = 0;
+    for (auto &channel : tapHistory_)
+    {
+        channel.fill(0.0f);
+    }
     updateEffective();
     // Fresh rings: Freeze waits for an off→on transition, as after construction.
     for (const auto &l : layers_)
@@ -802,6 +863,7 @@ void Processor::reset() noexcept
         l->peaks.reset();
         l->events.clear();
         l->droppedEvents = 0;
+        publishStorage(*l); // ring time restarted: a read spanning it is retried
     }
     reverb_->reset();
 }
@@ -873,7 +935,150 @@ bool Processor::takeLayerOffers(Layer &l) noexcept
     {
         l.hasPendingSource = false;
     }
+    // The ring last (M2 sub-project 2's spec §6.5): after the values, so a restore's Freeze arms
+    // over what they set.
+    if (offered && offer.hasRing)
+    {
+        if (adoptRing(l, offer.ring))
+        {
+            l.sources.markRingAdopted(offer.ringSerial);
+        }
+        else
+        {
+            l.sources.markRingDeclined();
+        }
+    }
     return offered && offer.hasValues;
+}
+
+bool Processor::adoptRing(Layer &l, const RingOffer &offer) noexcept
+{
+    LiveSource &live = l.engine.live();
+    const int64_t framesBefore = live.frames();
+    RingStorage *previous = nullptr;
+    bool adopted = false;
+    if (offer.restore)
+    {
+        const std::span<const int64_t> marks(offer.splices.data(),
+                                             std::min<uint32_t>(offer.spliceCount, kMaxSplices));
+        adopted = live.restoreStorage(offer.storage, offer.frames, marks, offer.frozen, previous);
+    }
+    else
+    {
+        adopted = live.adoptStorage(offer.storage, offer.copiedTo, previous);
+    }
+    if (!adopted)
+    {
+        l.sources.retireRing(offer.storage); // the main thread frees it, and remakes the offer
+        return false;
+    }
+    l.sources.retireRing(previous); // nullptr when the ring owned it
+    if (offer.restore)
+    {
+        // Ruling R1-3 (spec §6.6, INTENT §23 #40 amended): a restored ring arms its Freeze, so a
+        // Freeze that is on holds it from the first sample, as restoreStorage left it.
+        l.freezeArmed = true;
+        l.engineFrozen = offer.frozen;
+        l.engine.setFreeze(offer.frozen);
+    }
+    if (live.frames() != framesBefore)
+    {
+        l.engine.ringResized(); // Position and Spray reach the new length
+    }
+    publishStorage(l);
+    return true;
+}
+
+bool Processor::setRingNow(uint8_t layer, std::unique_ptr<RingStorage> storage,
+                           const RingOffer &how)
+{
+    // process() isn't running, so this thread may take the audio side's role in the layer's
+    // sources, as setSourceNow does: an offer not yet taken is taken first, and superseded.
+    Layer &l = layerAt(layer);
+    takeLayerOffers(l);
+    RingOffer offer = how;
+    offer.storage = l.sources.holdRing(std::move(storage));
+    const bool adopted = adoptRing(l, offer);
+    l.sources.collect();
+    return adopted;
+}
+
+RingRead Processor::ringRead(uint8_t layer) const noexcept
+{
+    const Layer &l = layerAt(layer);
+    return {l.ringStorage.load(std::memory_order_acquire), &l.ringHead, &l.ringEpoch};
+}
+
+RingMeta Processor::ringMeta(uint8_t layer) const noexcept
+{
+    const Layer &l = layerAt(layer);
+    l.meta.take(l.metaTaken); // unchanged when nothing newer was published
+    return l.metaTaken;
+}
+
+double Processor::ringSecondsRequested(uint8_t layer) const noexcept
+{
+    return layerAt(layer).ringSeconds.load(std::memory_order_relaxed);
+}
+
+void Processor::publishRing(Layer &l) noexcept
+{
+    const LiveSource &live = l.engine.live();
+    // Release: a main thread that reads this head with acquire finds the frames below it written.
+    l.ringHead.store(live.head(), std::memory_order_release);
+    // As of this piece's write: captures, the loop and the selection apply from the next one.
+    RingMeta m;
+    m.head = live.head();
+    m.windowFrames = live.windowFrames();
+    const std::span<const int64_t> marks = live.splices();
+    m.spliceCount = static_cast<uint32_t>(marks.size());
+    std::copy(marks.begin(), marks.end(), m.splices.begin());
+    m.frozen = l.engineFrozen;
+    if (!sameMeta(m, l.metaPushed))
+    {
+        l.meta.push(m);
+        l.metaPushed = m;
+    }
+}
+
+void Processor::publishStorage(Layer &l) noexcept
+{
+    // A seqlock's writer (RingRead): odd while the storage and the head change.
+    const uint32_t epoch = l.ringEpoch.load(std::memory_order_relaxed);
+    l.ringEpoch.store(epoch + 1, std::memory_order_relaxed);
+    std::atomic_thread_fence(std::memory_order_release);
+    l.ringStorage.store(l.engine.live().storage(), std::memory_order_relaxed);
+    l.ringHead.store(l.engine.live().head(), std::memory_order_relaxed);
+    l.ringEpoch.store(epoch + 2, std::memory_order_release);
+    publishRing(l);
+}
+
+void Processor::applyCommands(int64_t b) noexcept
+{
+    for (uint32_t k = 0; k < pendingCommandCount_; ++k)
+    {
+        const CommandEvent &c = pendingCommands_[k];
+        Layer &l = *layers_[c.layer]; // validCommand: below kLayers
+        LiveSource &live = l.engine.live();
+        // Spec §6.4: a layer that reads a sample ignores them.
+        if (l.kind != SourceMode::Live || !live.enabled())
+        {
+            continue;
+        }
+        if (c.kind == CommandKind::ClearSplices)
+        {
+            live.clearSplices();
+            continue;
+        }
+        // The window as the last write left it, which b, the next sample, still reads.
+        const int64_t anchor = live.anchorAt(b);
+        const int64_t oldest = std::max<int64_t>(0, live.windowOldestAt(b));
+        const double room = static_cast<double>(std::max<int64_t>(0, anchor - oldest));
+        const double behind =
+            std::clamp(static_cast<double>(c.value) * config_.sampleRate, 0.0, room);
+        live.addSplice(anchor - std::llround(behind)); // a duplicate or a 33rd is ignored
+    }
+    pendingCommandCount_ = 0;
 }
 
 uint64_t Processor::droppedGrainEvents() const noexcept
@@ -1006,7 +1211,8 @@ float Processor::morphWeightAt(uint8_t layer, int64_t t) const noexcept
 void Processor::process(const float *const *in, uint32_t numInChannels, float *const *out,
                         uint32_t numOutChannels, uint32_t numFrames,
                         std::span<const ParamEvent> events, std::span<const NoteEvent> notes,
-                        std::span<const ControlEvent> controls) noexcept
+                        std::span<const ControlEvent> controls,
+                        std::span<const CommandEvent> commands) noexcept
 {
     // One guard for the whole call, the dry/wet sum included (spec §6.4).
     ScopedDenormalsOff denormalsOff;
@@ -1042,6 +1248,7 @@ void Processor::process(const float *const *in, uint32_t numInChannels, float *c
         updateEffective();
         syncFreeze();
         retargetRamps(rendered);
+        applyCommands(rendered); // after the group's parameters, on the rings as rendered to b
     };
 
     // While a route moves with time alone, every grid boundary below `limit` (and below end) is
@@ -1104,12 +1311,14 @@ void Processor::process(const float *const *in, uint32_t numInChannels, float *c
         join(0);
     }
 
-    // The three spans merged by offset into one sequence, at a tie a parameter event first, then a
-    // note, then a control. The order between the kinds doesn't matter: a group's parameter
-    // changes, notes and controls are independent, and each kind keeps its own order.
+    // The four spans merged by offset into one sequence, at a tie a parameter event first, then a
+    // note, then a control, then a command. The order between the kinds doesn't matter: a group's
+    // parameter changes, notes and controls are independent, its commands apply after them, and
+    // each kind keeps its own order.
     size_t nextEvent = 0;
     size_t nextNote = 0;
     size_t nextControl = 0;
+    size_t nextCommand = 0;
     constexpr uint64_t kNone = std::numeric_limits<uint64_t>::max();
     for (;;)
     {
@@ -1117,9 +1326,27 @@ void Processor::process(const float *const *in, uint32_t numInChannels, float *c
         const uint64_t noteAt = nextNote < notes.size() ? notes[nextNote].offset : kNone;
         const uint64_t controlAt =
             nextControl < controls.size() ? controls[nextControl].offset : kNone;
-        if (eventAt == kNone && noteAt == kNone && controlAt == kNone)
+        const uint64_t commandAt =
+            nextCommand < commands.size() ? commands[nextCommand].offset : kNone;
+        if (eventAt == kNone && noteAt == kNone && controlAt == kNone && commandAt == kNone)
         {
             break;
+        }
+        if (commandAt < eventAt && commandAt < noteAt && commandAt < controlAt)
+        {
+            // M2 sub-project 2's spec §6.4: a command joins its boundary's group, applied there
+            // after its parameters (applyCommands).
+            const CommandEvent &c = commands[nextCommand++];
+            if (!validCommand(c))
+            {
+                continue;
+            }
+            join(c.offset);
+            if (pendingCommandCount_ < kMaxGroupCommands)
+            {
+                pendingCommands_[pendingCommandCount_++] = c;
+            }
+            continue;
         }
         if (eventAt <= noteAt && eventAt <= controlAt)
         {
@@ -1249,7 +1476,22 @@ void Processor::renderLayerPiece(uint8_t L, int64_t from, uint32_t n, const floa
     // clamps any input (the class comment). The ramp changes only at boundaries, between render()
     // calls, so it is 0 throughout a piece whose target and first value are 0: such a piece hands
     // the engine its input as it is (the sign of zero included), as before Feedback.
-    const float *ringIn[2] = {dry[0], dry[1]};
+    // M2 sub-project 2's spec §6.2: a Resample layer's ring takes the tap, the output of sample
+    // t − D (already rendered: pieces are at most D samples), in place of the input.
+    const float *src[2] = {dry[0], dry[1]};
+    if (l.resample)
+    {
+        for (uint32_t i = 0; i < n; ++i)
+        {
+            const auto h = static_cast<size_t>((from + i) % kFeedbackDelay);
+            l.ringIn[0][i] = tapHistory_[0][h];
+            l.ringIn[1][i] = tapHistory_[1][h];
+        }
+        src[0] = l.ringIn[0].data();
+        src[1] = l.ringIn[1].data();
+        hasInput = true;
+    }
+    const float *ringIn[2] = {src[0], src[1]};
     uint32_t ringChannels = hasInput ? 2 : 0;
     if (l.feedback.to != 0.0f || l.feedback.at(from, rampSamples_) != 0.0f)
     {
@@ -1260,7 +1502,8 @@ void Processor::renderLayerPiece(uint8_t L, int64_t from, uint32_t n, const floa
             const auto h = static_cast<size_t>(t % kFeedbackDelay);
             for (size_t c = 0; c < 2; ++c)
             {
-                const float d = dry[c] != nullptr ? finiteOrZero(dry[c][i]) : 0.0f;
+                // src may be ringIn itself (Resample): each sample is read before it is written.
+                const float d = src[c] != nullptr ? finiteOrZero(src[c][i]) : 0.0f;
                 // A sample where the ramp is 0 writes the input alone, as a piece without
                 // feedback does, so where a piece starts never changes the ring.
                 l.ringIn[c][i] = fb != 0.0f ? d + fb * l.wetHistory[c][h] : d;
@@ -1270,16 +1513,27 @@ void Processor::renderLayerPiece(uint8_t L, int64_t from, uint32_t n, const floa
         ringIn[1] = l.ringIn[1].data();
         ringChannels = 2;
     }
+    // Overdub (spec §6.1): the ramp's gain per frame, or none when it is 0 throughout the piece
+    // (its target and first value 0; it changes only at boundaries), M1's write bit for bit.
+    const float *overdub = nullptr;
+    if (l.overdub.to != 0.0f || l.overdub.at(from, rampSamples_) != 0.0f)
+    {
+        for (uint32_t i = 0; i < n; ++i)
+        {
+            l.overdubGain[i] = l.overdub.at(from + i, rampSamples_);
+        }
+        overdub = l.overdubGain.data();
+    }
     const int64_t headBefore = l.engine.liveWriteHead();
     float *const wet[2] = {l.wet[0].data(), l.wet[1].data()};
     if (renders)
     {
-        l.engine.process(ringIn, ringChannels, wet, rendering, n);
+        l.engine.process(ringIn, ringChannels, wet, rendering, n, overdub);
     }
     else
     {
         // Off: the ring is written and the clock advances (Engine::setEnabled), nothing else.
-        l.engine.process(ringIn, ringChannels, nullptr, 0, n);
+        l.engine.process(ringIn, ringChannels, nullptr, 0, n, overdub);
     }
     // The peaks of what the ring took (spec §6.4), publishing or not (ruling PU-T9b), so the
     // strip never holds an older pass's peaks when the editor opens: the buffers the engine was
@@ -1407,8 +1661,13 @@ void Processor::render(const Buffers &b, int64_t from, int64_t to) noexcept
         {
             runner_->run(taskCount_, &layerTask, this);
         }
-        // The piece's grain events, in layer order A to D (spec §6.7), after the join.
+        // The piece's grain events, in layer order A to D (spec §6.7), after the join, and each
+        // ring's head and meta, for the main thread's ring read (M2 sub-project 2's spec §6.4).
         drainEvents();
+        for (const auto &l : layers_)
+        {
+            publishRing(*l);
+        }
         // No task outside a request: a host that calls thread_pool.exec now (a CLAP violation)
         // runs nothing (execTask checks i < taskCount_).
         taskCount_ = 0;
@@ -1474,6 +1733,14 @@ void Processor::render(const Buffers &b, int64_t from, int64_t to) noexcept
                 // Only here: an idle chunk adds nothing, not even a +0 that would turn a −0 to +0.
                 o[0] += softLimit(a * r[0]);
                 o[1] += softLimit(a * r[1]);
+            }
+            if (anyResample_)
+            {
+                // The tap (M2 sub-project 2's spec §6.2): out as the host hears it, read by a
+                // Resample layer's ring D samples from now; one output channel feeds both sides.
+                const auto h = static_cast<size_t>(t % kFeedbackDelay);
+                tapHistory_[0][h] = o[0];
+                tapHistory_[1][h] = channels == 1 ? o[0] : o[1];
             }
             for (uint32_t c = 0; c < channels; ++c)
             {

@@ -258,7 +258,10 @@ bool LiveSource::restoreStorage(RingStorage *next, int64_t frames, std::span<con
     ramp_ = frozen ? 0 : rampLength_;
     head_ = frames;
     writeSlot_ = head_ % capacity_;
-    // Until the next write(), R(t) is the head.
+    // Until the next write(), R(t) is the head at every sample: with no frame written, headAt(t)
+    // is blockHead_ for every t >= blockStart_ − 1, so a block start of 0 covers any t >= 0, as
+    // reset() leaves it (the old ring time's block start would read below the head before it).
+    blockStart_ = 0;
     blockHead_ = head_;
     blockAdvance_ = 0;
     blockRamp_ = ramp_;

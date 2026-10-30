@@ -217,6 +217,13 @@ void Engine::setSourceMode(SourceMode mode) noexcept
 
 void Engine::setFreeze(bool freeze) noexcept { freeze_ = freeze; }
 
+void Engine::ringResized() noexcept
+{
+    // The bound a later kind switch to Live takes too (process()).
+    config_.liveSeconds = static_cast<double>(live_.frames()) / config_.sampleRate;
+    cloud_.setSourceMode(mode_, config_.liveSeconds);
+}
+
 void Engine::setEventSink(GrainEventSink sink, void *ctx) noexcept
 {
     sink_ = sink;

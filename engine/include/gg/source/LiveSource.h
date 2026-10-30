@@ -136,7 +136,9 @@ class LiveSource
     /// from the first sample, as the saved session rendered it: the freeze on, the write gain 0
     /// and the head stopped, so no ramp moves it (keep the freeze setting on after it). `previous`
     /// gets the storage replaced, as adoptStorage() hands it back. Refreshes next's guard slots;
-    /// copies no frame.
+    /// copies no frame. Until the next write(), R(t) is the restored head at every output sample
+    /// t, and the window is the restored ring's (the last write's block is forgotten with the old
+    /// ring time).
     ///
     /// Returns false, changing nothing (previous is set to nullptr), when next is null or already
     /// this ring's, when its capacity leaves less than a block's slack, when frames is below 0 or
@@ -147,6 +149,10 @@ class LiveSource
 
     /// N, the ring length in frames; 0 when there is no ring.
     int64_t frames() const noexcept { return frames_; }
+    /// The storage in effect (prepare()'s own, or the one last adopted or restored), or nullptr
+    /// without a ring: for a main thread's copy of the window (spec §6.4), whose slots are laid out
+    /// as RingStorage documents.
+    const RingStorage *storage() const noexcept { return storage_; }
     bool enabled() const noexcept { return frames_ > 0; }
 
     /// Restarts ring time at 0: the head at 0, not frozen, write gain 1. The old frames stay in

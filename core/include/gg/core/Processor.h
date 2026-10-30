@@ -17,6 +17,7 @@
 
 #include "gg/core/Diffuser.h"
 #include "gg/core/GrainQueue.h"
+#include "gg/core/LatestValue.h"
 #include "gg/core/LivePeaks.h"
 #include "gg/core/ModMatrix.h"
 #include "gg/core/ModSources.h"
@@ -27,6 +28,7 @@
 #include "gg/core/UiSnapshot.h"
 #include "gg/engine/Engine.h"
 #include "gg/engine/TaskRunner.h"
+#include "gg/source/RingStorage.h"
 
 namespace gg::core
 {
@@ -86,6 +88,59 @@ struct ControlEvent
     ControlKind kind; ///< Out of range: the event is ignored.
     int16_t channel;  ///< 0..15 or −1 (any); other values make it ignored. Not otherwise read yet.
     float value;      ///< 0..1, clamped to it (pitch bend's centre is 0.5); NaN or ±∞ ignored.
+};
+
+/// What a CommandEvent does to its layer's ring (M2 sub-project 2's spec §6.4).
+enum class CommandKind : uint8_t
+{
+    AddSplice,    ///< Marks the ring `value` seconds behind the window's end.
+    ClearSplices, ///< Removes every mark.
+};
+
+/// A ring command inside one process() call (spec §6.4): what a parameter can't carry. It joins
+/// the control grid as a parameter event does, and applies at its boundary b: AddSplice marks
+/// ring time anchorAt(b) − value × sampleRate (LiveSource::anchorAt: the head, or a selected
+/// splice's end), clamped into the window [max(0, its oldest frame), anchorAt(b)]; a mark on an
+/// existing one, or a 33rd, is ignored (LiveSource::addSplice). ClearSplices empties the layer's
+/// marks. A command on a layer that reads a sample, on a layer past kLayers, of an unknown kind,
+/// or an AddSplice whose value isn't finite is ignored.
+struct CommandEvent
+{
+    uint32_t offset; ///< Frames from the start of the call. A call's commands are sorted by it.
+    CommandKind kind;
+    uint8_t layer; ///< 0..3, A to D.
+    float value;   ///< AddSplice: seconds behind the anchor (negative counts as 0).
+};
+
+/// What the main thread needs to read a layer's ring without stopping the audio thread (spec
+/// §6.4). A read: e0 = *storageEpoch (acquire; even: no adoption under way), then storage (call
+/// ringRead again: the storage as of e0 or later), R0 = *head (acquire), copy frames
+/// [R0 − W, R0) from their slots (frame f in slot f mod storage->capacity()), R1 = *head
+/// (acquire), an acquire fence, e1 = *storageEpoch; the copy is the window as of R0 when e1 == e0
+/// and R1 − R0 + W <= storage->frames(): the frames written meanwhile, and the at most one
+/// block's worth (capacity − frames) in flight past R1, then share no slot with a frame read.
+/// Otherwise copy again. A frozen ring passes at once.
+struct RingRead
+{
+    /// The storage in effect: it changes only at a call's start, after an adoption.
+    const RingStorage *storage;
+    /// The head R, stored with release order after every piece's write.
+    const std::atomic<int64_t> *head;
+    /// Odd while an adoption (or a reset()) swaps the storage or restarts ring time, and 2 more
+    /// after it: a read spanning a change is retried.
+    const std::atomic<uint32_t> *storageEpoch;
+};
+
+/// A layer's ring as of the last piece (spec §6.4, §6.6), for a save or a capture: its head, the
+/// window's length (LiveSource::windowFrames), the marks, ascending, and whether the engine was
+/// given its freeze.
+struct RingMeta
+{
+    int64_t head{0};
+    int64_t windowFrames{0};
+    uint32_t spliceCount{0};
+    std::array<int64_t, kMaxSplices> splices{};
+    bool frozen{false};
 };
 
 /// What both plugins and gg-render run: the instance, real-time safe (spec §5, §6.1–§6.4; M2
@@ -348,6 +403,41 @@ struct ControlEvent
 ///   the ring's clamp. reset() silences it with the ring.
 /// process() reads the flag once, at its start, and holds it for the whole call. With it off
 /// nothing is queued or snapshotted, and with it on or off the audio is the same, bit for bit.
+///
+/// **The Resample tap** (M2 sub-project 2's spec §6.2). A layer whose Source is Resample is a
+/// Live-mode engine (builtKind) whose ring input is the instance's output, out as the host hears
+/// it (the mix, the dry signal and the reverb's return; one output channel feeds both sides),
+/// 256 samples late: ring_L[t] = tap[t − 256] in place of in[t], with Feedback added as for a Live
+/// layer. The last 256 output samples per channel are kept by absolute time, written after each
+/// piece's output while some layer is Resample, and cleared when the first one becomes Resample,
+/// so its first 256 samples read silence. Pieces are at most 256 samples, so a piece's tap is
+/// already rendered. While no layer is Resample nothing is kept, and the tap adds no latency.
+///
+/// **The ring parameters and commands** (spec §6.1, §6.4). At every applied boundary (and at
+/// setBase()), each layer's ring takes its Loop, Loop Length (round(seconds × sampleRate) frames,
+/// clamped to the ring by LiveSource) and Splice (LiveSource::setLoop, selectSplice), and its
+/// Overdub ramps to its target over kRampSeconds as Feedback does: a piece where the ramp is 0
+/// throughout writes the ring by M1's path (no gains), so Overdub 0 keeps every bit. The ring
+/// parameters act whatever the layer's kind (a Sample layer's ring records for a later switch);
+/// the commands (CommandEvent) apply in their boundary's group, after its parameters, in order,
+/// and only on a layer that reads its ring.
+///
+/// **The ring exchange** (spec §6.5, §6.6). Each layer's sources() also carries rings: takeOffers()
+/// adopts a ring offer at once, after the offer's values and source: a resize through
+/// LiveSource::adoptStorage, ring time going on, or a restore through restoreStorage, ring time
+/// restarting at its head and, ruling R1-3, its Freeze armed with the engine frozen from the first
+/// sample when the offer is `frozen`. One the ring refuses (a resize whose gap since copiedTo is
+/// past kAdoptCopyFrames, or a bad offer) is declined and counted (ringAdoptionsDeclined), its
+/// offer pending for the main thread to remake. The storage replaced, or the declined one, goes
+/// back to sources() to be freed. After a change of length the engine's Position and Spray reach
+/// the new ring (Engine::ringResized). An adoption lands at a call's start, so only a ring given
+/// before the first call (setRingNow, or an offer before it) is part of a block-size-invariant
+/// render.
+///
+/// **The ring read** (spec §6.4). After every piece, each layer's head is stored with release
+/// order (ringRead) and, when it changed, its RingMeta published (ringMeta, latest wins); an
+/// adoption or a reset() bumps the storage epoch around its change. ringSecondsRequested() is the
+/// Ring Length base value's seconds, for the plugin's resize watcher.
 class Processor
 {
   public:
@@ -366,6 +456,9 @@ class Processor
     /// D samples, so each piece's feedback is already rendered when an engine writes the piece's
     /// input into its ring, before any grain reads it.
     static constexpr uint32_t kFeedbackDelay = 256;
+    /// The most commands one boundary's group applies (CommandEvent): later ones in the group
+    /// are ignored. Twice a ring's marks, so a full set of marks and a clear always fit.
+    static constexpr uint32_t kMaxGroupCommands = 2 * kMaxSplices;
 
     /// Allocates the four layers (each an engine with a kLiveSeconds live ring, in both products,
     /// reading the kind its Source gives: Live in the FX and Sample, with no source, in the
@@ -440,8 +533,8 @@ class Processor
     /// and the editor's Mod view.
     float sourceValue(ModSource s, uint8_t layer) const noexcept;
 
-    /// Renders numFrames frames into out, applying `events`, `notes` and `controls` on the
-    /// control grid as the class comment describes.
+    /// Renders numFrames frames into out, applying `events`, `notes`, `controls` and `commands`
+    /// on the control grid as the class comment describes.
     ///
     /// - Input: in[c] is channel c's numFrames samples. A mono input (numInChannels 1) feeds
     ///   both channels; in == nullptr, numInChannels 0 or a null channel pointer is silence. It
@@ -464,8 +557,8 @@ class Processor
     /// denormals flushed (ScopedDenormalsOff) and restores the caller's floating-point mode.
     void process(const float *const *in, uint32_t numInChannels, float *const *out,
                  uint32_t numOutChannels, uint32_t numFrames, std::span<const ParamEvent> events,
-                 std::span<const NoteEvent> notes = {},
-                 std::span<const ControlEvent> controls = {}) noexcept SST_CPPUTILS_NONBLOCKING;
+                 std::span<const NoteEvent> notes = {}, std::span<const ControlEvent> controls = {},
+                 std::span<const CommandEvent> commands = {}) noexcept SST_CPPUTILS_NONBLOCKING;
 
     /// The runner the layer tasks go to (the class comment's Threads), from the next process()
     /// call; nullptr selects the built-in SerialRunner, the default. Used only inside process(), so
@@ -495,10 +588,33 @@ class Processor
     /// Layer A's: setSourceNow(0, s).
     void setSourceNow(std::shared_ptr<const PreparedSource> s) { setSourceNow(0, std::move(s)); }
 
+    /// Not real-time safe: while process() isn't running, for an inactive plugin and gg-render's
+    /// pre-render resize. Layer `layer`'s ring adopts `storage` as `how` says (a resize, whose
+    /// slots hold the frames below how.copiedTo, or a restore; RingOffer), on the calling thread,
+    /// after taking the layer's offers (takeOffers' work for that layer), as an offer taken by
+    /// process() would be. The storage replaced is freed here. Returns false, freeing `storage`
+    /// and changing nothing, when the ring refuses it. `layer` is below kLayers.
+    bool setRingNow(uint8_t layer, std::unique_ptr<RingStorage> storage, const RingOffer &how);
+
+    /// Layer `layer`'s ring for the main thread's read (RingRead; spec §6.4). Any thread.
+    RingRead ringRead(uint8_t layer) const noexcept;
+    /// Layer `layer`'s RingMeta as of the last piece rendered (or adoption, or construction):
+    /// the latest the audio thread published. The main thread's, its one consumer.
+    RingMeta ringMeta(uint8_t layer) const noexcept;
+    /// Layer `layer`'s Ring Length base value in seconds, as of the last setBase(), setBases()
+    /// or applied boundary (an atomic): the ring the plugin's watcher should make. Any thread.
+    double ringSecondsRequested(uint8_t layer) const noexcept;
+    /// How many of layer `layer`'s ring offers were declined (SourceExchange::ringsDeclined).
+    uint32_t ringAdoptionsDeclined(uint8_t layer) const noexcept
+    {
+        return layerAt(layer).sources.ringsDeclined();
+    }
+
     /// Real-time safe; the start of every process() call, and for the plugin's params.flush: for
     /// each layer in turn, hands its engine's retired sources back to its sources(), takes a new
-    /// offer from it, applies the offer's values (setBases), and has the engine adopt the
-    /// source waiting, if it can. Returns whether an offer's values were applied. Call it on the
+    /// offer from it, applies the offer's values (setBases), has the engine adopt the
+    /// source waiting, if it can, and adopts or declines the offer's ring (the class comment's
+    /// ring exchange). Returns whether an offer's values were applied. Call it on the
     /// audio thread between process() calls, or on another while process() isn't running.
     bool takeOffers() noexcept SST_CPPUTILS_NONBLOCKING;
 
@@ -614,10 +730,25 @@ class Processor
         Ramp diffusion;
         Ramp feedback; // 0 unless the layer reads its ring
         Ramp on;       // r_L: 1 on, 0 off
+        Ramp overdub;  // the ring's overdub gain o (M2 sub-project 2's spec §6.1)
         // The engine's output, then wet_L in place: pieceMax frames each.
         std::array<std::vector<float>, 2> wet;
-        // The ring input while Feedback acts: pieceMax frames each.
+        // The ring input while Feedback acts, or the tap's while Resample: pieceMax frames each.
         std::array<std::vector<float>, 2> ringIn;
+        // The overdub gains of a piece where the Overdub ramp isn't 0 throughout: pieceMax.
+        std::vector<float> overdubGain;
+        // The Source is Resample: the ring takes the tap (the class comment).
+        bool resample{false};
+        // The ring read (the class comment): the storage in effect, the head after each piece,
+        // the storage epoch, the RingMeta published (and as last pushed, and last taken by the
+        // main thread), and Ring Length's base seconds.
+        std::atomic<const RingStorage *> ringStorage{nullptr};
+        std::atomic<int64_t> ringHead{0};
+        std::atomic<uint32_t> ringEpoch{0};
+        mutable LatestValue<RingMeta> meta;
+        RingMeta metaPushed{};
+        mutable RingMeta metaTaken{};
+        std::atomic<double> ringSeconds{0.0};
         // The limited wet signal of the last kFeedbackDelay samples: sample t at t % D.
         std::array<std::array<float, kFeedbackDelay>, 2> wetHistory{};
         LivePeaks peaks;
@@ -718,6 +849,16 @@ class Processor
     void applyNote(const NoteEvent &n) noexcept SST_CPPUTILS_NONBLOCKING;
     /// Makes held_ the held set in effect: rebuilds keys_ and gives every engine its keys.
     void updateKeys() noexcept SST_CPPUTILS_NONBLOCKING;
+    /// Applies the pending commands at the boundary b (CommandEvent), in order, and empties them.
+    void applyCommands(int64_t b) noexcept SST_CPPUTILS_NONBLOCKING;
+    /// Has layer l's ring adopt `offer`'s storage (the class comment's ring exchange), handing
+    /// the storage replaced, or the one refused, back to l.sources. Returns whether it adopted.
+    bool adoptRing(Layer &l, const RingOffer &offer) noexcept SST_CPPUTILS_NONBLOCKING;
+    /// Stores layer l's head (release) and pushes its RingMeta when it changed.
+    static void publishRing(Layer &l) noexcept SST_CPPUTILS_NONBLOCKING;
+    /// Publishes layer l's storage and head inside an odd storage epoch (RingRead), then its
+    /// RingMeta: after an adoption or a reset().
+    static void publishStorage(Layer &l) noexcept SST_CPPUTILS_NONBLOCKING;
     float clampToRange(size_t slot, float value) const noexcept;
 
     ProcessorConfig config_;
@@ -738,6 +879,10 @@ class Processor
     uint32_t pieceRendering_{2};
     std::array<uint8_t, kLayers> taskLayers_{};
     uint32_t taskCount_{0};
+    // The Resample tap (the class comment): out of sample t at t % kFeedbackDelay, kept while
+    // anyResample_.
+    std::array<std::array<float, kFeedbackDelay>, 2> tapHistory_{};
+    bool anyResample_{false};
     // setTaskRunner's runner, or serialRunner_.
     SerialRunner serialRunner_;
     TaskRunner *runner_{&serialRunner_};
@@ -755,6 +900,9 @@ class Processor
     std::array<bool, kParamCount> hasPendingMod_{};
     int64_t pendingAt_{0};
     bool hasPending_{false};
+    // The commands waiting for that boundary, in order (at most kMaxGroupCommands).
+    std::array<CommandEvent, kMaxGroupCommands> pendingCommands_{};
+    uint32_t pendingCommandCount_{0};
 
     // The held set: one channel bit per key. Pending notes apply to it as they arrive, in
     // order; hasPendingNotes_ says some have since the last applied boundary. keys_ is the set

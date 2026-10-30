@@ -20,6 +20,7 @@ add_executable(gg-tests
         core/publish_tests.cpp
         core/session_state_tests.cpp
         core/settings_tests.cpp
+        core/source_tests.cpp
         core/space_processor_tests.cpp
         core/space_reverb_tests.cpp
         core/threads_tests.cpp

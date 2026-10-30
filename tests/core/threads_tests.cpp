@@ -199,6 +199,51 @@ TEST_CASE("a declining pool renders the same bytes", "[core][threads][determinis
     }
 }
 
+TEST_CASE("a Resample layer, a loop and overdub render the same bytes on any pool",
+          "[core][threads][determinism]")
+{
+    // M2 sub-project 2's spec §6.2, §7: a Resample layer's task reads the instance's tap, written
+    // after the join, and a looping, overdubbing layer writes only its own ring, so the serial
+    // runner and pools of 1, 2 and 8 workers render the same bytes and the same ring heads.
+    const Stereo input = noise(kInvarianceFrames, 0.5f, 49);
+    for (const Mode mode : {Mode::Fx, Mode::Instrument})
+    {
+        INFO(nameOf(mode));
+        LayersSetup setup = poolSetup(mode, nullptr);
+        setup.configure = [](Processor &p) {
+            p.setBase(layerSlot(LayerParam::Source, 0), 1.0f); // Live
+            p.setBase(layerSlot(LayerParam::Loop, 0), 1.0f);
+            p.setBase(layerSlot(LayerParam::LoopLength, 0), -2.0f);
+            p.setBase(layerSlot(LayerParam::Overdub, 0), 0.6f);
+            p.setBase(layerSlot(LayerParam::Source, 1), 2.0f); // Resample, fed back
+            p.setBase(layerSlot(LayerParam::Feedback, 1), 0.4f);
+            p.setBase(layerSlot(LayerParam::Source, 3), 2.0f); // Resample
+            p.setBase(layerSlot(LayerParam::Overdub, 3), 0.3f);
+        };
+        for (const uint32_t block : {64u, 511u})
+        {
+            INFO("block size " << block);
+            LayersRender serial;
+            renderLayers(input, {}, 4096, {block}, serial, setup);
+            REQUIRE(allFinite(serial.audio.left));
+            REQUIRE(peak(serial.audio.left) > 0.05f);
+            for (const unsigned workers : {1u, 2u, 8u})
+            {
+                INFO(workers << " workers");
+                StubPool pool(workers);
+                LayersSetup pooled = setup;
+                pooled.runner = &pool;
+                LayersRender r;
+                renderLayers(input, {}, 4096, {block}, r, pooled);
+                REQUIRE(sameBits(serial.audio.left, r.audio.left));
+                REQUIRE(sameBits(serial.audio.right, r.audio.right));
+                REQUIRE(r.heads == serial.heads);
+                REQUIRE(r.log.events.size() == serial.log.events.size());
+            }
+        }
+    }
+}
+
 TEST_CASE("one rendering layer makes no request", "[core][threads]")
 {
     // A piece with one rendering layer runs it inline; with two or more, one run() per piece,
