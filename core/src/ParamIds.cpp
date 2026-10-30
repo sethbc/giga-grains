@@ -29,11 +29,217 @@ constexpr float kDecayInfiniteLabelTolerance = 0.02000007f;
 // Every entry starts here. ParamMetaData's quanta-only mode, a thread-local that a
 // default-constructed ParamMetaData copies, would drop the names and display text; this table
 // always carries them, whichever thread builds it.
-md_t base(ParamSlot slot)
+md_t fresh()
 {
     md_t m;
     m.quantaOnly = false;
-    return m.withID(paramId(slot)).withFlags(kAutomatableModulatable);
+    return m.withFlags(kAutomatableModulatable);
+}
+
+md_t base(ParamSlot slot) { return fresh().withID(paramId(slot)); }
+
+// The layers' displayed names: "A Position" ... "D Step 16" (spec §6.9).
+#define GG_LAYER_NAME_A(name, index, display) "A " display,
+#define GG_LAYER_NAME_B(name, index, display) "B " display,
+#define GG_LAYER_NAME_C(name, index, display) "C " display,
+#define GG_LAYER_NAME_D(name, index, display) "D " display,
+constexpr std::array<std::array<const char *, kLayerParamCount>, kLayers> kLayerNames{{
+    {GG_LAYER_PARAMS(GG_LAYER_NAME_A)},
+    {GG_LAYER_PARAMS(GG_LAYER_NAME_B)},
+    {GG_LAYER_PARAMS(GG_LAYER_NAME_C)},
+    {GG_LAYER_PARAMS(GG_LAYER_NAME_D)},
+}};
+#undef GG_LAYER_NAME_A
+#undef GG_LAYER_NAME_B
+#undef GG_LAYER_NAME_C
+#undef GG_LAYER_NAME_D
+
+constexpr std::array<const char *, kLayers> kLayerModules{"Layer A", "Layer B", "Layer C",
+                                                          "Layer D"};
+
+// log2 Hz: 0.01 Hz (log2 0.01 = -6.643856...) to 50 Hz (5.643856...), shown in Hz as Density is:
+// the modulators' rates (spec §6.9).
+md_t rateHz(float defaultLog2Hz)
+{
+    return fresh()
+        .asFloat()
+        .withRange(-6.643856189774724f, 5.643856189774724f)
+        .withDefault(defaultLog2Hz)
+        .withATwoToTheBFormatting(1.f, 1.f, "Hz");
+}
+
+// log2 seconds: 1 ms (-9.965784...) to 10 s (3.321928...), shown in ms below 1 s: the envelopes'
+// times (spec §6.9).
+md_t envelopeTime(float defaultLog2Seconds)
+{
+    return fresh()
+        .asLog2SecondsRange(-9.965784284662087f, 3.321928094887362f, defaultLog2Seconds)
+        .withMilisecondsBelowOneSecond();
+}
+
+// An LFO's shape, stepped 0..4 (LfoShape).
+md_t lfoShape(LfoShape defaultShape)
+{
+    return fresh()
+        .asInt()
+        .withRange(0.f, 4.f)
+        .withDefault(static_cast<float>(defaultShape))
+        .withUnorderedMapFormatting(
+            {{0, "Sine"}, {1, "Triangle"}, {2, "Saw Up"}, {3, "Saw Down"}, {4, "Square"}})
+        .withFlags(kAutomatableModulatable | CLAP_PARAM_IS_STEPPED);
+}
+
+// A layer parameter's metadata in `mode`'s product, the same in every layer, but for its ID and
+// name. The bounds and defaults are literals: none is computed with libm (INTENT §14).
+md_t layerMeta(LayerParam p, Mode mode)
+{
+    if (p >= LayerParam::Step1 && p <= LayerParam::Step16)
+    {
+        // the sequencer's steps, 0..1.
+        return fresh().asPercent().withDefault(0.0f);
+    }
+    switch (p)
+    {
+    case LayerParam::Position:
+        // The instrument's (sub-project 3's spec §6.8): 0..1, the fraction of the loaded file,
+        // shown as 0–100%; 0% by default.
+        // The FX's: 0..1; seconds behind the write head = (16/255)(2^(8v) - 1), 0 to 16 s; 0.25 s
+        // by default. Global Constraints names withATwoToTheBPlusCFormatting(16/255, 8, -16/255),
+        // but at our sst-basic-blocks pin that puts C in the exponent (A 2^(Bv + C)); the
+        // A 2^(Bv + C) + D form with C = 0 and D = -A displays the mapping above.
+        return mode == Mode::Instrument ? fresh().asPercent().withDefault(0.0f)
+                                        : fresh()
+                                              .asFloat()
+                                              .withRange(0.f, 1.f)
+                                              .withDefault(0.28967658f)
+                                              .withATwoToTheBPlusCPlusDFormatting(
+                                                  16.f / 255.f, 8.f, 0.f, -16.f / 255.f, "s");
+
+    case LayerParam::Size:
+        // log2 seconds: 5 ms (-7.643856...) to 2 s (1), 150 ms by default.
+        return fresh()
+            .asLog2SecondsRange(-7.643856189774724f, 1.f, -2.736965594166206f)
+            .withMilisecondsBelowOneSecond();
+
+    case LayerParam::Density:
+        // log2 grains per second: 0.25 Hz (-2) to 400 Hz (8.643856...), 16 Hz by default.
+        return fresh()
+            .asFloat()
+            .withRange(-2.f, 8.643856189774725f)
+            .withDefault(4.0f)
+            .withATwoToTheBFormatting(1.f, 1.f, "Hz");
+
+    case LayerParam::Distribution:
+        // regular (0) to random (1).
+        return fresh().asPercent().withDefault(0.5f);
+
+    case LayerParam::Pitch:
+        // semitones.
+        return fresh().asSemitoneRange(-24.f, 24.f).withDefault(0.0f);
+
+    case LayerParam::Spray:
+        // 0..1; read-position spread in seconds = (2/255)(2^(8v) - 1), 0 to 2 s; 50 ms by
+        // default. The D form for the reason given at Position.
+        return fresh()
+            .asFloat()
+            .withRange(0.f, 1.f)
+            .withDefault(0.36033038f)
+            .withATwoToTheBPlusCPlusDFormatting(2.f / 255.f, 8.f, 0.f, -2.f / 255.f, "s");
+
+    case LayerParam::Stereo:
+        // per-grain pan spread, 0..1.
+        return fresh().asPercent().withDefault(0.5f);
+
+    case LayerParam::Freeze:
+        // off (0) / on (1): frozen when v > 0.5.
+        return fresh().asOnOffBool().withDefault(0.0f).withFlags(kAutomatableModulatable |
+                                                                 CLAP_PARAM_IS_STEPPED);
+
+    case LayerParam::Texture:
+        // The Perform UI (sub-project 5's spec §3.3, §4, §5): the grain envelope's shape, 0..1;
+        // 0 is the Hann window.
+        return fresh().asPercent().withDefault(0.0f);
+
+    case LayerParam::Feedback:
+        // the limited wet signal fed back into the live ring, 0..kFeedbackMax, shown as %.
+        return fresh().asPercent().withRange(0.f, kFeedbackMax).withDefault(0.0f);
+
+    case LayerParam::Diffusion:
+        // Space (sub-project 4's spec §6.5): the diffuser's crossfade, 0..1.
+        return fresh().asPercent().withDefault(0.0f);
+
+    // M2 sub-project 1's spec §6.9.
+    case LayerParam::Source:
+        // what the grains read, stepped 0..4 (SourceKind): Live in the FX, Sample in the
+        // instrument.
+        return fresh()
+            .asInt()
+            .withRange(0.f, 4.f)
+            .withDefault(mode == Mode::Instrument ? 0.0f : 1.0f)
+            .withUnorderedMapFormatting(
+                {{0, "Sample"}, {1, "Live"}, {2, "Resample"}, {3, "Spectral"}, {4, "Oscillator"}})
+            .withFlags(kAutomatableModulatable | CLAP_PARAM_IS_STEPPED);
+
+    case LayerParam::PitchSpread:
+        // each grain's pitch spread, 0 to 24 semitones (D4).
+        return fresh().asFloat().withRange(0.f, 24.f).withDefault(0.0f).withLinearScaleFormatting(
+            "st");
+
+    case LayerParam::SizeSpread:
+        // each grain's size spread, 0 to 2 octaves (D5).
+        return fresh().asFloat().withRange(0.f, 2.f).withDefault(0.0f).withLinearScaleFormatting(
+            "oct");
+
+    case LayerParam::Lfo1Rate:
+        return rateHz(0.0f); // 1 Hz
+    case LayerParam::Lfo1Shape:
+        return lfoShape(LfoShape::Sine);
+    case LayerParam::Lfo2Rate:
+        return rateHz(-2.0f); // 0.25 Hz
+    case LayerParam::Lfo2Shape:
+        return lfoShape(LfoShape::Triangle);
+
+    case LayerParam::Env1Attack:
+        return envelopeTime(-6.643856189774724f); // 10 ms
+    case LayerParam::Env1Decay:
+        return envelopeTime(-2.321928094887362f); // 200 ms
+    case LayerParam::Env1Sustain:
+        return fresh().asPercent().withDefault(1.0f);
+    case LayerParam::Env1Release:
+        return envelopeTime(-2.321928094887362f); // 200 ms
+    case LayerParam::Env2Attack:
+        return envelopeTime(-1.0f); // 500 ms
+    case LayerParam::Env2Decay:
+        return envelopeTime(0.0f); // 1 s
+    case LayerParam::Env2Sustain:
+        return fresh().asPercent().withDefault(0.5f);
+    case LayerParam::Env2Release:
+        return envelopeTime(0.0f); // 1 s
+
+    case LayerParam::Random1Rate:
+        return rateHz(1.0f); // 2 Hz
+    case LayerParam::Random1Smooth:
+        return fresh().asPercent().withDefault(0.0f);
+    case LayerParam::Random2Rate:
+        return rateHz(-1.0f); // 0.5 Hz
+    case LayerParam::Random2Smooth:
+        return fresh().asPercent().withDefault(0.5f);
+
+    case LayerParam::StepRate:
+        return rateHz(2.0f); // 4 Hz
+    case LayerParam::StepLength:
+        // the sequencer's length, stepped 1..16.
+        return fresh()
+            .asInt()
+            .withRange(1.f, 16.f)
+            .withDefault(16.0f)
+            .withDimensionlessFormatting()
+            .withFlags(kAutomatableModulatable | CLAP_PARAM_IS_STEPPED);
+
+    default:
+        break; // the steps, above; LayerParam::Count isn't a parameter
+    }
+    return fresh();
 }
 
 // Global Constraints' parameter table, for `mode`'s product. The bounds and defaults are
@@ -43,81 +249,34 @@ std::array<md_t, kParamCount> buildTable(Mode mode)
     std::array<md_t, kParamCount> t{};
     auto at = [&t](ParamSlot s) -> md_t & { return t[static_cast<size_t>(s)]; };
 
+    // The layer parameters, the same in every layer but for the letter in their names.
+    for (uint8_t layer = 0; layer < kLayers; ++layer)
+    {
+        for (size_t i = 0; i < kLayerParamCount; ++i)
+        {
+            const auto p = static_cast<LayerParam>(i);
+            const ParamSlot slot = layerSlot(p, layer);
+            at(slot) = layerMeta(p, mode).withID(paramId(slot)).withName(kLayerNames[layer][i]);
+        }
+    }
+
     // dry/wet, 0..1.
     at(ParamSlot::Mix) = base(ParamSlot::Mix).withName("Mix").asPercent().withDefault(0.5f);
 
-    // wet gain in dB.
+    // wet gain in dB: layer A's, and layers B to D's (spec §6.9).
     at(ParamSlot::Level) =
         base(ParamSlot::Level).withName("Level").asDecibelWithRange(-60.f, 12.f, 0.f);
-
-    // The instrument's (sub-project 3's spec §6.8): 0..1, the fraction of the loaded file, shown
-    // as 0–100%; 0% by default.
-    // The FX's: 0..1; seconds behind the write head = (16/255)(2^(8v) - 1), 0 to 16 s; 0.25 s by
-    // default. Global Constraints names withATwoToTheBPlusCFormatting(16/255, 8, -16/255), but at
-    // our sst-basic-blocks pin that puts C in the exponent (A 2^(Bv + C)); the A 2^(Bv + C) + D
-    // form with C = 0 and D = -A displays the mapping above.
-    at(ParamSlot::Position) =
-        mode == Mode::Instrument
-            ? base(ParamSlot::Position).withName("Position").asPercent().withDefault(0.0f)
-            : base(ParamSlot::Position)
-                  .withName("Position")
-                  .asFloat()
-                  .withRange(0.f, 1.f)
-                  .withDefault(0.28967658f)
-                  .withATwoToTheBPlusCPlusDFormatting(16.f / 255.f, 8.f, 0.f, -16.f / 255.f, "s");
-
-    // log2 seconds: 5 ms (-7.643856...) to 2 s (1), 150 ms by default.
-    at(ParamSlot::Size) = base(ParamSlot::Size)
-                              .withName("Size")
-                              .asLog2SecondsRange(-7.643856189774724f, 1.f, -2.736965594166206f)
-                              .withMilisecondsBelowOneSecond();
-
-    // log2 grains per second: 0.25 Hz (-2) to 400 Hz (8.643856...), 16 Hz by default.
-    at(ParamSlot::Density) = base(ParamSlot::Density)
-                                 .withName("Density")
-                                 .asFloat()
-                                 .withRange(-2.f, 8.643856189774725f)
-                                 .withDefault(4.0f)
-                                 .withATwoToTheBFormatting(1.f, 1.f, "Hz");
-
-    // regular (0) to random (1).
-    at(ParamSlot::Distribution) =
-        base(ParamSlot::Distribution).withName("Distribution").asPercent().withDefault(0.5f);
-
-    // semitones.
-    at(ParamSlot::Pitch) =
-        base(ParamSlot::Pitch).withName("Pitch").asSemitoneRange(-24.f, 24.f).withDefault(0.0f);
-
-    // 0..1; read-position spread in seconds = (2/255)(2^(8v) - 1), 0 to 2 s; 50 ms by default.
-    // The D form for the reason given at Position.
-    at(ParamSlot::Spray) =
-        base(ParamSlot::Spray)
-            .withName("Spray")
-            .asFloat()
-            .withRange(0.f, 1.f)
-            .withDefault(0.36033038f)
-            .withATwoToTheBPlusCPlusDFormatting(2.f / 255.f, 8.f, 0.f, -2.f / 255.f, "s");
-
-    // per-grain pan spread, 0..1.
-    at(ParamSlot::Stereo) =
-        base(ParamSlot::Stereo).withName("Stereo").asPercent().withDefault(0.5f);
-
-    // off (0) / on (1): frozen when v > 0.5.
-    at(ParamSlot::Freeze) = base(ParamSlot::Freeze)
-                                .withName("Freeze")
-                                .asOnOffBool()
-                                .withDefault(0.0f)
-                                .withFlags(kAutomatableModulatable | CLAP_PARAM_IS_STEPPED);
+    at(ParamSlot::LevelB) =
+        base(ParamSlot::LevelB).withName("Level B").asDecibelWithRange(-60.f, 12.f, 0.f);
+    at(ParamSlot::LevelC) =
+        base(ParamSlot::LevelC).withName("Level C").asDecibelWithRange(-60.f, 12.f, 0.f);
+    at(ParamSlot::LevelD) =
+        base(ParamSlot::LevelD).withName("Level D").asDecibelWithRange(-60.f, 12.f, 0.f);
 
     // Space (sub-project 4's spec §6.5).
-    // the diffuser's crossfade, 0..1.
-    at(ParamSlot::Diffusion) =
-        base(ParamSlot::Diffusion).withName("Diffusion").asPercent().withDefault(0.0f);
-
     // the reverb return's gain, 0..1.
     at(ParamSlot::ReverbAmount) =
         base(ParamSlot::ReverbAmount).withName("Reverb Amount").asPercent().withDefault(0.0f);
-
     // log2 seconds: 0.25 s (-2) to 60 s (kDecayInfinite), then ∞ up to kDecayMax; 2 s by
     // default. Values below 1 s show in ms, but a bare number typed in is seconds ("500 ms"
     // still parses).
@@ -157,22 +316,9 @@ std::array<md_t, kParamCount> buildTable(Mode mode)
     at(ParamSlot::DryToReverb) =
         base(ParamSlot::DryToReverb).withName("Dry to Reverb").asPercent().withDefault(0.0f);
 
-    // The Perform UI (sub-project 5's spec §3.3, §4, §5).
-    // the grain envelope's shape, 0..1: 0 is today's Hann window.
-    at(ParamSlot::Texture) =
-        base(ParamSlot::Texture).withName("Texture").asPercent().withDefault(0.0f);
-
-    // the limited wet signal fed back into the live ring, 0..kFeedbackMax, shown as %. The
-    // instrument keeps it, hidden and with no effect, as it does Mix.
-    at(ParamSlot::Feedback) = base(ParamSlot::Feedback)
-                                  .withName("Feedback")
-                                  .asPercent()
-                                  .withRange(0.f, kFeedbackMax)
-                                  .withDefault(0.0f);
-
     // The eight macros, 0..1 each: at rest (0.5 for a bipolar one, 0 for a unipolar one) a macro
-    // adds nothing to its targets. Macro 6 is a switch, like Freeze; Macros 7 and 8 differ by
-    // product.
+    // adds nothing to its targets. Macro 6 is a switch, like Freeze; Macro 8 differs by product
+    // (spec §6.9).
     at(ParamSlot::Macro1) =
         base(ParamSlot::Macro1).withName("Macro Size").asPercent().withDefault(0.5f);
     at(ParamSlot::Macro2) =
@@ -189,16 +335,39 @@ std::array<md_t, kParamCount> buildTable(Mode mode)
                                 .withDefault(0.0f)
                                 .withFlags(kAutomatableModulatable | CLAP_PARAM_IS_STEPPED);
     at(ParamSlot::Macro7) =
-        mode == Mode::Instrument
-            ? base(ParamSlot::Macro7).withName("Macro Stereo").asPercent().withDefault(0.5f)
-            : base(ParamSlot::Macro7).withName("Macro Feedback").asPercent().withDefault(0.0f);
+        base(ParamSlot::Macro7).withName("Macro Feedback").asPercent().withDefault(0.0f);
     at(ParamSlot::Macro8) = base(ParamSlot::Macro8)
                                 .withName(mode == Mode::Instrument ? "Macro Level" : "Macro Mix")
                                 .asPercent()
                                 .withDefault(0.5f);
+
+    // The layers' globals (spec §6.9).
+    // the morph pad's position, 0..1 each: (0.5, 0.5) weighs the rendering layers equally.
+    at(ParamSlot::MorphX) =
+        base(ParamSlot::MorphX).withName("Morph X").asPercent().withDefault(0.5f);
+    at(ParamSlot::MorphY) =
+        base(ParamSlot::MorphY).withName("Morph Y").asPercent().withDefault(0.5f);
+    // the layers' switches: layer A on, B to D off.
+    for (uint8_t layer = 0; layer < kLayers; ++layer)
+    {
+        static constexpr std::array<const char *, kLayers> kNames{"Layer A On", "Layer B On",
+                                                                  "Layer C On", "Layer D On"};
+        const ParamSlot slot = layerOnSlot(layer);
+        at(slot) = base(slot)
+                       .withName(kNames[layer])
+                       .asOnOffBool()
+                       .withDefault(layer == 0 ? 1.0f : 0.0f)
+                       .withFlags(kAutomatableModulatable | CLAP_PARAM_IS_STEPPED);
+    }
     return t;
 }
 } // namespace
+
+const char *paramModule(ParamSlot slot) noexcept
+{
+    const auto ref = layerOf(slot);
+    return ref ? kLayerModules[ref->layer] : "";
+}
 
 const sst::basic_blocks::params::ParamMetaData &paramMeta(ParamSlot slot, Mode mode)
 {

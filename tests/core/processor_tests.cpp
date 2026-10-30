@@ -322,11 +322,16 @@ struct TimedEvent
     double value;
 };
 
-// 40 events on every slot over 3 s: base values across a range that keeps the render light, and
-// every fourth event a modulation offset of up to an eighth of that range. Every slot has a
-// range: Space's, Texture, Feedback and the macros (which move the cloud and Space through their
-// recipes) are automated too. Some events land exactly on grid points, and some share a sample
-// with the previous slot's. Times and values come from gg::rng.
+// The 28 M1 slots, which automation() covers. M2's new slots (M2 sub-project 1's spec §6.9) move
+// nothing yet, so automating them would add events and test nothing.
+constexpr size_t kM1Slots = static_cast<size_t>(ParamSlot::Source);
+static_assert(kM1Slots == 28);
+
+// 40 events on every M1 slot over 3 s: base values across a range that keeps the render light,
+// and every fourth event a modulation offset of up to an eighth of that range. Every M1 slot has
+// a range: Space's, Texture, Feedback and the macros (which move the cloud and Space through
+// their recipes) are automated too. Some events land exactly on grid points, and some share a
+// sample with the previous slot's. Times and values come from gg::rng.
 std::vector<TimedEvent> automation()
 {
     struct Range
@@ -362,7 +367,7 @@ std::vector<TimedEvent> automation()
     ranges[at(ParamSlot::Macro6)] = {0.0f, 1.0f};
     ranges[at(ParamSlot::Macro7)] = {0.0f, 1.0f};
     ranges[at(ParamSlot::Macro8)] = {0.0f, 1.0f};
-    for (size_t s = 0; s < kParamCount; ++s)
+    for (size_t s = 0; s < kM1Slots; ++s)
     {
         REQUIRE(ranges[s].hi > ranges[s].lo); // every slot covered
     }
@@ -370,7 +375,7 @@ std::vector<TimedEvent> automation()
     constexpr int kPerSlot = 40;
     std::vector<TimedEvent> events;
     std::array<int64_t, kPerSlot> previousSlotTimes{};
-    for (size_t s = 0; s < kParamCount; ++s)
+    for (size_t s = 0; s < kM1Slots; ++s)
     {
         const auto slot = static_cast<ParamSlot>(s);
         const Range r = ranges[s];
@@ -511,7 +516,7 @@ TEST_CASE("processor is block-size invariant with automation", "[core][determini
 {
     const Stereo input = noise(kAutomationFrames, 0.5f, 21);
     const auto events = automation();
-    REQUIRE(events.size() == 40 * kParamCount);
+    REQUIRE(events.size() == 40 * kM1Slots);
 
     AutomationRender ref;
     renderAutomation(input, events, 4096, {4096}, ref);
@@ -627,7 +632,7 @@ TEST_CASE("the perform parameters are block-size invariant together", "[core][de
     // render the same bits, grains, head and ring at any host block size and maxBlockSize.
     const Stereo input = noise(kAutomationFrames, 0.5f, 31);
     const auto events = performAutomation();
-    REQUIRE(events.size() == 40 * kParamCount + 300);
+    REQUIRE(events.size() == 40 * kM1Slots + 300);
 
     AutomationRender ref;
     renderAutomation(input, events, 4096, {4096}, ref);
@@ -1518,17 +1523,16 @@ TEST_CASE("macro offsets add to base and modulation before one clamp", "[core]")
 
 namespace
 {
-// Every macro at its rest value (spec §3.1: 0.5 for a bipolar macro, 0 for a unipolar one; the
-// instrument's Macro Stereo is bipolar, FX's Macro Feedback unipolar), each event at its own
-// sample after 0.5 s, off the grid.
+// Every macro at its rest value (spec §3.1: 0.5 for a bipolar macro, 0 for a unipolar one; Macro
+// Feedback is unipolar in both products), each event at its own sample after 0.5 s, off the grid.
 std::vector<TimedEvent> macrosAtRest(Mode mode)
 {
     std::vector<TimedEvent> events;
     int64_t time = 24000 + 3;
     for (const ParamSlot slot : gg::core::kMacroSlots)
     {
-        const bool unipolar = slot == ParamSlot::Macro5 || slot == ParamSlot::Macro6 ||
-                              (slot == ParamSlot::Macro7 && mode == Mode::Fx);
+        const bool unipolar =
+            slot == ParamSlot::Macro5 || slot == ParamSlot::Macro6 || slot == ParamSlot::Macro7;
         const double rest = unipolar ? 0.0 : 0.5;
         REQUIRE(gg::core::paramMeta(slot, mode).defaultVal == static_cast<float>(rest));
         events.push_back({time, slot, false, rest});
@@ -1698,18 +1702,21 @@ TEST_CASE("macro freeze engages freeze", "[core]")
     }
 }
 
-TEST_CASE("instrument macros 7 and 8 drive Stereo and Level", "[core]")
+TEST_CASE("instrument macros 7 and 8 drive Feedback and Level", "[core]")
 {
     std::vector<float> left(64), right(64);
     float *out[2] = {left.data(), right.data()};
     const std::array<ParamEvent, 2> events{
         {{0, ParamSlot::Macro7, false, 1.0}, {0, ParamSlot::Macro8, false, 1.0}}};
 
+    // Macro 7 is Macro Feedback in both products (M2 sub-project 1's spec §6.9): in the
+    // instrument it moves Feedback, which does nothing there yet, and Stereo stays at its base.
     Processor inst({kSampleRate, 512, 3, Mode::Instrument});
     inst.process(nullptr, 0, out, 2, 64, events);
-    CHECK(inst.effective(ParamSlot::Stereo) == 0.5f + 0.5f);
+    CHECK(inst.effective(ParamSlot::Stereo) == 0.5f);
     CHECK(inst.effective(ParamSlot::Level) == 0.0f + 12.0f);
-    CHECK(inst.effective(ParamSlot::Feedback) == 0.0f);
+    CHECK(inst.effective(ParamSlot::Feedback) == 0.9f);
+    CHECK(inst.feedbackAt(64) == 0.0f); // the instrument's Feedback is 0 (toWetParams)
     CHECK(inst.effective(ParamSlot::Mix) == 0.5f);
 
     // The FX's are Feedback (+0.9u²) and Mix (+0.5b).

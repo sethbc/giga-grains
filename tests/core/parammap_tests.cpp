@@ -291,9 +291,11 @@ TEST_CASE("param map follows the taper table", "[core]")
             case ParamSlot::Macro6:
             case ParamSlot::Macro7:
             case ParamSlot::Macro8:
+            default:
             {
                 // The macros act through macroOffsets before these functions: none of them moves
-                // a field here.
+                // a field here. Nor does any of M2's new slots yet (M2 sub-project 1's spec §6.9:
+                // layer A's new parameters, layers B to D and the layers' globals).
                 const ParamValues base = defaults(Mode::Fx);
                 const auto c0 = toCloudParams(base, Mode::Fx);
                 const auto w0 = toWetParams(base, Mode::Fx);
@@ -708,14 +710,7 @@ ParamValues expectedOffsets(ParamSlot macro, double value, Mode mode)
         add(ParamSlot::Freeze, u);
         break;
     case ParamSlot::Macro7:
-        if (mode == Mode::Fx)
-        {
-            add(ParamSlot::Feedback, 0.9 * u * u);
-        }
-        else
-        {
-            add(ParamSlot::Stereo, 0.5 * b);
-        }
+        add(ParamSlot::Feedback, 0.9 * u * u); // both products (M2 sub-project 1's spec §6.9)
         break;
     case ParamSlot::Macro8:
         if (mode == Mode::Fx)
@@ -765,7 +760,8 @@ TEST_CASE("macro offsets follow the recipes", "[core]")
 
     SECTION("the offsets of several macros add up")
     {
-        // Macro 4 and the instrument's Macro 7 both move Stereo; Macros 1 and 2 both Density.
+        // Macros 1 and 2 both move Density; Macro 4 moves Stereo, which the instrument's Macro 7
+        // no longer does (it is Macro Feedback in both products since M2 sub-project 1).
         ParamValues m = defaults(Mode::Instrument);
         m[static_cast<size_t>(ParamSlot::Macro1)] = 1.0f;
         m[static_cast<size_t>(ParamSlot::Macro2)] = 0.75f;
@@ -773,7 +769,9 @@ TEST_CASE("macro offsets follow the recipes", "[core]")
         m[static_cast<size_t>(ParamSlot::Macro7)] = 0.25f;
         const ParamValues o = gg::core::macroOffsets(m, Mode::Instrument);
         REQUIRE_THAT(d(o[static_cast<size_t>(ParamSlot::Density)]), WithinAbs(-1.5 + 2.0, 1e-6));
-        REQUIRE_THAT(d(o[static_cast<size_t>(ParamSlot::Stereo)]), WithinAbs(0.3 - 0.25, 1e-6));
+        REQUIRE_THAT(d(o[static_cast<size_t>(ParamSlot::Stereo)]), WithinAbs(0.3, 1e-6));
+        REQUIRE_THAT(d(o[static_cast<size_t>(ParamSlot::Feedback)]),
+                     WithinAbs(0.9 * 0.25 * 0.25, 1e-6));
         REQUIRE_THAT(d(o[static_cast<size_t>(ParamSlot::Size)]), WithinAbs(3.0, 1e-6));
     }
 

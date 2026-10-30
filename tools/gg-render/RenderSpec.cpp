@@ -5,6 +5,7 @@
 #include "RenderSpec.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <initializer_list>
@@ -256,7 +257,27 @@ StreamSpec readStream(const json &j)
     return s;
 }
 
-/// `mode`'s product's parameter names, for error messages: "Mix, Level, ..., Macro Mix".
+/// Layer A's slot of the layer parameter whose M1 name, before layers named their parameters with
+/// their letter ("Size" for "A Size"; M2 sub-project 1's spec §6.9), is `name`, so that every M1
+/// spec still parses; nothing for any other name.
+std::optional<gg::core::ParamSlot> m1LayerAlias(std::string_view name)
+{
+    static constexpr std::array<std::string_view, 11> kM1Names{
+#define GG_M1_NAME(enumName, index, display) display,
+        GG_LAYER_PARAMS_M1(GG_M1_NAME)
+#undef GG_M1_NAME
+    };
+    for (std::size_t i = 0; i < kM1Names.size(); ++i)
+    {
+        if (kM1Names[i] == name)
+        {
+            return gg::core::layerSlot(static_cast<gg::core::LayerParam>(i), 0);
+        }
+    }
+    return std::nullopt;
+}
+
+/// `mode`'s product's parameter names, for error messages: "Mix, Level, A Position, ..., Level D".
 std::string parameterNames(gg::core::Mode mode)
 {
     std::string names;
@@ -269,9 +290,14 @@ std::string parameterNames(gg::core::Mode mode)
 }
 
 /// The parameter named `name` in `mode`'s product: paramSlotNamed's, unless that name is the other
-/// product's alone ("Macro Level" in an FX spec, say).
+/// product's alone ("Macro Level" in an FX spec, say). A bare M1 name ("Size") is layer A's in
+/// either product.
 std::optional<gg::core::ParamSlot> paramSlotNamedIn(std::string_view name, gg::core::Mode mode)
 {
+    if (const auto alias = m1LayerAlias(name))
+    {
+        return alias;
+    }
     const auto slot = paramSlotNamed(name);
     if (slot && gg::core::paramMeta(*slot, mode).name == name)
     {
@@ -567,8 +593,13 @@ RenderSpec readSpec(const json &j)
 
 std::optional<gg::core::ParamSlot> paramSlotNamed(std::string_view name)
 {
-    // Either product's names: the FX's first, then the instrument's, which differ only for Macros
-    // 7 and 8. No name is one slot's in one product and another's in the other.
+    // A bare M1 name is layer A's (spec §6.9). Then either product's names: the FX's first, then
+    // the instrument's, which differ only for Macro 8. No name is one slot's in one product and
+    // another's in the other.
+    if (const auto alias = m1LayerAlias(name))
+    {
+        return alias;
+    }
     for (const auto mode : {gg::core::Mode::Fx, gg::core::Mode::Instrument})
     {
         for (std::size_t s = 0; s < gg::core::kParamCount; ++s)

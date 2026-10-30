@@ -87,15 +87,15 @@ const clap_plugin_descriptor kFxDescriptor{
     kFxFeatures,
 };
 
-/// Whether `slot` is hidden in `product`: the instrument has no dry signal and no live ring, so
-/// Mix, Dry to Reverb and Feedback do nothing there. It keeps the parameters, hidden, so both
-/// products share one parameter list and one state format (spec §4; sub-project 4's spec §6.5;
-/// sub-project 5's spec §5). paramsInfo flags them, and their remote controls stay empty.
+/// Whether `slot` is hidden in `product`: the instrument has no dry signal, so Mix and Dry to
+/// Reverb do nothing there. It keeps the parameters, hidden, so both products share one parameter
+/// list and one state format (spec §4; sub-project 4's spec §6.5). Feedback is shown in both
+/// products (M2 sub-project 1's spec §6.4, §6.9). paramsInfo flags them, and their remote
+/// controls stay empty.
 constexpr bool hiddenIn(Product product, ParamSlot slot) noexcept
 {
     return product == Product::Instrument &&
-           (slot == ParamSlot::Mix || slot == ParamSlot::DryToReverb ||
-            slot == ParamSlot::Feedback);
+           (slot == ParamSlot::Mix || slot == ParamSlot::DryToReverb);
 }
 
 void copyName(char (&dst)[CLAP_NAME_SIZE], const char *src) noexcept
@@ -884,6 +884,8 @@ bool GigaGrainsPlugin::paramsInfo(uint32_t paramIndex, clap_param_info *info) co
     const auto slot = static_cast<ParamSlot>(paramIndex);
     *info = clap_param_info{};
     gg::core::paramMeta(slot, mode()).toClapParamInfo<CLAP_NAME_SIZE>(info);
+    // "Layer A" to "Layer D" for a layer parameter, "" for a global (spec §6.9).
+    std::snprintf(info->module, sizeof(info->module), "%s", gg::core::paramModule(slot));
     info->cookie = nullptr;
     if (hiddenIn(product_, slot))
     {

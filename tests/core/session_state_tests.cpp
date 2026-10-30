@@ -64,11 +64,21 @@ constexpr std::string_view kSubProject1State =
 
 // The values kSubProject1State loads as in the FX, slot by slot: the ten it holds, then Space's
 // eight (sub-project 4) and the Perform UI's ten (sub-project 5) at their defaults, which it
-// doesn't mention.
-constexpr ParamValues kSubProject1Values{
-    0.8f, -6.0f, 0.1f, -4.25f, 6.7f, 0.25f, 7.0f,  1.23e-5f, 0.0f, 1.0f,  // sub-projects 1 to 3
-    0.0f, 0.0f,  1.0f, 0.5f,   0.3f, 0.0f,  0.25f, 0.0f,                  // Space
-    0.0f, 0.0f,  0.5f, 0.5f,   0.5f, 0.5f,  0.0f,  0.0f,     0.0f, 0.5f}; // the Perform UI
+// doesn't mention; then M2's 190 new slots (M2 sub-project 1's spec §6.9) at the FX's defaults,
+// which patch_tests.cpp pins literally.
+const ParamValues kSubProject1Values = [] {
+    constexpr std::array<float, 28> kM1{
+        0.8f, -6.0f, 0.1f, -4.25f, 6.7f, 0.25f, 7.0f,  1.23e-5f, 0.0f, 1.0f,  // sub-projects 1-3
+        0.0f, 0.0f,  1.0f, 0.5f,   0.3f, 0.0f,  0.25f, 0.0f,                  // Space
+        0.0f, 0.0f,  0.5f, 0.5f,   0.5f, 0.5f,  0.0f,  0.0f,     0.0f, 0.5f}; // the Perform UI
+    ParamValues v{};
+    for (std::size_t i = 0; i < kParamCount; ++i)
+    {
+        v[i] = i < kM1.size() ? kM1[i]
+                              : gg::core::paramMeta(static_cast<ParamSlot>(i), Mode::Fx).defaultVal;
+    }
+    return v;
+}();
 
 std::size_t at(ParamSlot s) { return static_cast<std::size_t>(s); }
 

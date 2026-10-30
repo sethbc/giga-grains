@@ -110,16 +110,18 @@ ParamValues macroOffsets(const ParamValues &effectiveMacros, Mode mode) noexcept
 
     offset(ParamSlot::Freeze) += macro(ParamSlot::Macro6);
 
+    // Macro 7 is Macro Feedback in both products (M2 sub-project 1's spec §6.9, §6.10); the
+    // instrument's Feedback does nothing yet (toWetParams).
     const float v7 = macro(ParamSlot::Macro7);
+    offset(ParamSlot::Feedback) += 0.9f * (v7 * v7);
+
     const float v8 = macro(ParamSlot::Macro8);
     if (mode == Mode::Instrument)
     {
-        offset(ParamSlot::Stereo) += 0.5f * bipolar(v7);
         offset(ParamSlot::Level) += 12.0f * bipolar(v8);
     }
     else
     {
-        offset(ParamSlot::Feedback) += 0.9f * (v7 * v7);
         offset(ParamSlot::Mix) += 0.5f * bipolar(v8);
     }
     return o;

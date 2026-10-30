@@ -734,7 +734,7 @@ TEST_CASE("instrument notes are block-size invariant", "[core][determinism]")
 {
     // The chord and releases, a note inside one group that straddles a call's end at kB, a
     // second onset after the set empties, Density and Pitch automation, and Texture and all
-    // eight macros (the instrument's: Macro Stereo and Macro Level as 7 and 8) automated off the
+    // eight macros (the instrument's: Macro Feedback and Macro Level as 7 and 8) automated off the
     // grid, values and modulation. Macro Size stays at or below rest and Macro Texture below
     // its top quarter (no Diffusion) around the release at 41000, so the silence after it holds.
     constexpr int64_t kB = 32 * 700;

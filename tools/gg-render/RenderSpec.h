@@ -247,6 +247,8 @@ struct RenderSpec
 };
 
 /// The parameter whose name in either product (paramMeta's, matched exactly) is `name`, or nothing.
+/// The bare M1 names of layer A's eleven M1 parameters ("Position" ... "Diffusion", displayed "A
+/// Position" ... since M2 sub-project 1's spec §6.9) are layer A's too, so every M1 spec parses.
 /// A spec's params and automation take only its own product's names: parseRenderSpec rejects the
 /// other's ("Macro Level" in an FX spec) as an unknown parameter.
 std::optional<gg::core::ParamSlot> paramSlotNamed(std::string_view name);

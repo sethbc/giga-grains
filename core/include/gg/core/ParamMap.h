@@ -96,13 +96,14 @@ constexpr float smoothstep(float e0, float e1, float x) noexcept
 /// - Macro 4 (Spray): Spray +0.5b, Stereo +0.3·b⁺;
 /// - Macro 5 (Texture): Texture +min(u/0.75, 1), Diffusion +smoothstep(0.75, 1, u);
 /// - Macro 6 (Freeze): Freeze +u;
-/// - Macro 7: the FX's Feedback +0.9u²; the instrument's Stereo +0.5b;
+/// - Macro 7 (Feedback): Feedback +0.9u², in both products (M2 sub-project 1's spec §6.9; the
+///   instrument's Feedback does nothing yet);
 /// - Macro 8: the FX's Mix +0.5b; the instrument's Level +12b dB.
 ///
 /// A target's offsets add in macro order. Every entry, the macros' own included, is exactly
-/// +0.0f when every macro rests (the bipolar ones at 0.5, the unipolar ones, 5, 6 and the FX's 7,
-/// at 0), so base + mod + offset is then base + mod, bit for bit (but for a −0 sum, which becomes
-/// +0). Plain float arithmetic, no libm.
+/// +0.0f when every macro rests (the bipolar ones at 0.5, the unipolar ones, 5, 6 and 7, at 0), so
+/// base + mod + offset is then base + mod, bit for bit (but for a −0 sum, which becomes +0). Plain
+/// float arithmetic, no libm.
 ParamValues macroOffsets(const ParamValues &effectiveMacros, Mode mode) noexcept;
 } // namespace gg::core
 

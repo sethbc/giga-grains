@@ -3,6 +3,7 @@
 // Copyright 2026, the Giga Grains authors (see git history)
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -17,6 +18,8 @@
 #include <set>
 #include <stdexcept>
 #include <string>
+#include <string_view>
+#include <utility>
 #include <vector>
 
 #include <catch2/catch_test_macros.hpp>
@@ -802,11 +805,12 @@ TEST_CASE("fx spec rejects bad input", "[render]")
 
 TEST_CASE("instrument specs name the instrument's macros", "[render]")
 {
-    // Macros 7 and 8 have a name per product (sub-project 5's spec §3.3): a spec names them as
-    // its own product does, and the other product's name is an unknown key.
+    // Macro 8 has a name per product (sub-project 5's spec §3.3): a spec names it as its own
+    // product does, and the other product's name is an unknown key. Macro 7 is Macro Feedback in
+    // both (M2 sub-project 1's spec §6.9), so "Macro Stereo" names nothing.
     CHECK(gg::render::paramSlotNamed("Macro Level") == ParamSlot::Macro8);
     CHECK(gg::render::paramSlotNamed("Macro Mix") == ParamSlot::Macro8);
-    CHECK(gg::render::paramSlotNamed("Macro Stereo") == ParamSlot::Macro7);
+    CHECK_FALSE(gg::render::paramSlotNamed("Macro Stereo").has_value());
     CHECK(gg::render::paramSlotNamed("Macro Feedback") == ParamSlot::Macro7);
     CHECK(gg::render::paramSlotNamed("Texture") == ParamSlot::Texture);
     CHECK(gg::render::paramSlotNamed("Feedback") == ParamSlot::Feedback);
@@ -837,21 +841,78 @@ TEST_CASE("instrument specs name the instrument's macros", "[render]")
     CHECK(mix.fx.params == std::vector<std::pair<std::string, double>>{{"Macro Mix", 1.0}});
 
     // The instrument's name in an FX spec, and the FX's in an instrument spec, as params and as
-    // automation.
+    // automation; and "Macro Stereo" in either.
     fx["params"] = {{"Macro Level", 1.0}};
-    // The message lists the spec's own product's names.
+    // The message lists the spec's own product's names, the layers' globals last.
     CHECK_THAT(rejection(fx), StartsWith("unknown key params.Macro Level: the parameters are "));
-    CHECK_THAT(rejection(fx), EndsWith("Macro Feedback, Macro Mix"));
+    CHECK_THAT(rejection(fx), ContainsSubstring("Macro Feedback, Macro Mix, A Source"));
+    CHECK_THAT(rejection(fx), EndsWith("Level B, Level C, Level D"));
     instrument["params"] = {{"Macro Mix", 1.0}};
     CHECK_THAT(rejection(instrument),
                StartsWith("unknown key params.Macro Mix: the parameters are "));
-    CHECK_THAT(rejection(instrument), EndsWith("Macro Stereo, Macro Level"));
+    CHECK_THAT(rejection(instrument), ContainsSubstring("Macro Feedback, Macro Level, A Source"));
+    instrument["params"] = {{"Macro Stereo", 1.0}};
+    CHECK_THAT(rejection(instrument),
+               StartsWith("unknown key params.Macro Stereo: the parameters are "));
+    instrument.erase("params");
+    instrument["automation"] = {{{"time", 1.0}, {"param", "Macro Feedback"}, {"value", 1.0}}};
+    CHECK(parseJson(instrument).instrument.automation ==
+          std::vector<AutomationPoint>{{1.0, "Macro Feedback", 1.0}});
     fx.erase("params");
     fx["automation"] = {{{"time", 1.0}, {"param", "Macro Stereo"}, {"value", 1.0}}};
     CHECK_THAT(rejection(fx), StartsWith("automation[0].param must be one of "));
     fx["automation"][0]["param"] = "Macro Feedback";
     const RenderSpec automated = parseJson(fx);
     CHECK(automated.fx.automation == std::vector<AutomationPoint>{{1.0, "Macro Feedback", 1.0}});
+}
+
+TEST_CASE("specs name layer parameters by their letter or by their M1 names", "[render]")
+{
+    // M2 sub-project 1's spec §6.9: a layer parameter is displayed with its layer's letter, and
+    // the bare M1 names of layer A's eleven M1 parameters are layer A's, in either product, so
+    // every M1 spec still parses.
+    CHECK(gg::render::paramSlotNamed("Size") == ParamSlot::Size);
+    CHECK(gg::render::paramSlotNamed("A Size") == ParamSlot::Size);
+    CHECK(gg::render::paramSlotNamed("B Size") == ParamSlot::B_Size);
+    CHECK(gg::render::paramSlotNamed("D Step 16") == ParamSlot::D_Step16);
+    CHECK(gg::render::paramSlotNamed("C LFO 1 Rate") == ParamSlot::C_Lfo1Rate);
+    CHECK(gg::render::paramSlotNamed("A Source") == ParamSlot::Source);
+    CHECK(gg::render::paramSlotNamed("Morph X") == ParamSlot::MorphX);
+    CHECK(gg::render::paramSlotNamed("Level B") == ParamSlot::LevelB);
+    const std::array<std::pair<std::string_view, ParamSlot>, 11> m1{{
+        {"Position", ParamSlot::Position},
+        {"Size", ParamSlot::Size},
+        {"Density", ParamSlot::Density},
+        {"Distribution", ParamSlot::Distribution},
+        {"Pitch", ParamSlot::Pitch},
+        {"Spray", ParamSlot::Spray},
+        {"Stereo", ParamSlot::Stereo},
+        {"Freeze", ParamSlot::Freeze},
+        {"Texture", ParamSlot::Texture},
+        {"Feedback", ParamSlot::Feedback},
+        {"Diffusion", ParamSlot::Diffusion},
+    }};
+    for (const auto &[name, slot] : m1)
+    {
+        INFO("param " << name);
+        CHECK(gg::render::paramSlotNamed(name) == slot);
+        CHECK(gg::core::paramMeta(slot, Mode::Fx).name == "A " + std::string(name));
+    }
+    // A bare new name is not an alias: only M1's names had no letter.
+    CHECK_FALSE(gg::render::paramSlotNamed("Source").has_value());
+    CHECK_FALSE(gg::render::paramSlotNamed("B Level").has_value());
+
+    // In a spec, as params and as automation, in either product: the bare and the lettered name
+    // set the same slot.
+    for (auto j : {nlohmann::json::parse(readCase("fx-sine")), instrumentJson()})
+    {
+        j["params"] = {{"Size", -3.0}, {"B Size", -4.0}, {"A Density", 5.0}};
+        j["automation"] = {{{"time", 0.5}, {"param", "A Size"}, {"value", -2.0}},
+                           {{"time", 0.6}, {"param", "Stereo"}, {"value", 1.0}}};
+        const RenderSpec spec = parseJson(j);
+        const auto &params = spec.mode == RenderMode::Fx ? spec.fx.params : spec.instrument.params;
+        CHECK(params.size() == 3);
+    }
 }
 
 TEST_CASE("fx render matches the processor", "[render]")
@@ -1548,6 +1609,12 @@ TEST_CASE("every committed render spec parses", "[render]")
     std::erase_if(specs, [](const auto &p) { return p.extension() != ".json"; });
     // 19 golden cases and the M1 packs' 23 specs when this was written; more is fine.
     CHECK(specs.size() >= 42);
+    // The one spec that no longer parses, kept unchanged as the record of M1's listening pack: it
+    // automates the instrument's "Macro Stereo", which M2 sub-project 1 made Macro Feedback in
+    // both products (spec §6.9). It must fail for that reason alone.
+    const std::filesystem::path retired =
+        listening / "m1-perform" / "specs" / "07b-macro-stereo.json";
+    size_t retiredSeen = 0;
     for (const auto &path : specs)
     {
         std::ifstream in(path, std::ios::binary);
@@ -1556,6 +1623,14 @@ TEST_CASE("every committed render spec parses", "[render]")
         std::string error;
         const bool parsed = gg::render::parseRenderSpec(text, error).has_value();
         INFO(gg::test::utf8(path) << ": " << error);
+        if (std::filesystem::equivalent(path, retired))
+        {
+            ++retiredSeen;
+            CHECK_FALSE(parsed);
+            CHECK(error.ends_with(R"(not "Macro Stereo")"));
+            continue;
+        }
         CHECK(parsed);
     }
+    CHECK(retiredSeen == 1);
 }

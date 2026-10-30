@@ -17,6 +17,7 @@
 #include <filesystem>
 #include <initializer_list>
 #include <limits>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -58,47 +59,189 @@ std::size_t at(ParamSlot s) { return static_cast<std::size_t>(s); }
 struct ExpectedParam
 {
     clap_id id;
+    std::string name;
+    float min;
+    float max;
+    float def;
+    bool stepped;
+};
+struct Row
+{
+    clap_id id;
     const char *name;
     float min;
     float max;
     float def;
+    bool stepped;
 };
-constexpr std::array<ExpectedParam, kParamCount> kExpected{{
-    {0x000001, "Mix", 0.0f, 1.0f, 0.5f},
-    {0x000002, "Level", -60.0f, 12.0f, 0.0f},
-    {0x010001, "Position", 0.0f, 1.0f, 0.28967658f},
-    {0x010002, "Size", -7.643856189774724f, 1.0f, -2.736965594166206f},
-    {0x010003, "Density", -2.0f, 8.643856189774725f, 4.0f},
-    {0x010004, "Distribution", 0.0f, 1.0f, 0.5f},
-    {0x010005, "Pitch", -24.0f, 24.0f, 0.0f},
-    {0x010006, "Spray", 0.0f, 1.0f, 0.36033038f},
-    {0x010007, "Stereo", 0.0f, 1.0f, 0.5f},
-    {0x010008, "Freeze", 0.0f, 1.0f, 0.0f},
-    {0x01000B, "Diffusion", 0.0f, 1.0f, 0.0f},
-    {0x000003, "Reverb Amount", 0.0f, 1.0f, 0.0f},
-    {0x000004, "Reverb Decay", -2.0f, 6.068255709804611f, 1.0f},
-    {0x000005, "Reverb Size", 0.0f, 1.0f, 0.5f},
-    {0x000006, "Reverb Damping", 0.0f, 1.0f, 0.3f},
-    {0x000007, "Reverb Pre-delay", 0.0f, 0.5f, 0.0f},
-    {0x000008, "Reverb Modulation", 0.0f, 1.0f, 0.25f},
-    {0x000009, "Dry to Reverb", 0.0f, 1.0f, 0.0f},
+// The 28 M1 slots in slot order, layer A's eleven M1 parameters named with their letter since M2
+// sub-project 1 (spec §6.9).
+constexpr std::array<Row, 28> kM1Rows{{
+    {0x000001, "Mix", 0.0f, 1.0f, 0.5f, false},
+    {0x000002, "Level", -60.0f, 12.0f, 0.0f, false},
+    {0x010001, "A Position", 0.0f, 1.0f, 0.28967658f, false},
+    {0x010002, "A Size", -7.643856189774724f, 1.0f, -2.736965594166206f, false},
+    {0x010003, "A Density", -2.0f, 8.643856189774725f, 4.0f, false},
+    {0x010004, "A Distribution", 0.0f, 1.0f, 0.5f, false},
+    {0x010005, "A Pitch", -24.0f, 24.0f, 0.0f, false},
+    {0x010006, "A Spray", 0.0f, 1.0f, 0.36033038f, false},
+    {0x010007, "A Stereo", 0.0f, 1.0f, 0.5f, false},
+    {0x010008, "A Freeze", 0.0f, 1.0f, 0.0f, true},
+    {0x01000B, "A Diffusion", 0.0f, 1.0f, 0.0f, false},
+    {0x000003, "Reverb Amount", 0.0f, 1.0f, 0.0f, false},
+    {0x000004, "Reverb Decay", -2.0f, 6.068255709804611f, 1.0f, false},
+    {0x000005, "Reverb Size", 0.0f, 1.0f, 0.5f, false},
+    {0x000006, "Reverb Damping", 0.0f, 1.0f, 0.3f, false},
+    {0x000007, "Reverb Pre-delay", 0.0f, 0.5f, 0.0f, false},
+    {0x000008, "Reverb Modulation", 0.0f, 1.0f, 0.25f, false},
+    {0x000009, "Dry to Reverb", 0.0f, 1.0f, 0.0f, false},
     // The Perform UI (sub-project 5's spec §3.3, §4, §5).
-    {0x010009, "Texture", 0.0f, 1.0f, 0.0f},
-    {0x01000A, "Feedback", 0.0f, 0.95f, 0.0f},
-    {0x000011, "Macro Size", 0.0f, 1.0f, 0.5f},
-    {0x000012, "Macro Density", 0.0f, 1.0f, 0.5f},
-    {0x000013, "Macro Pitch", 0.0f, 1.0f, 0.5f},
-    {0x000014, "Macro Spray", 0.0f, 1.0f, 0.5f},
-    {0x000015, "Macro Texture", 0.0f, 1.0f, 0.0f},
-    {0x000016, "Macro Freeze", 0.0f, 1.0f, 0.0f},
-    {0x000017, "Macro Feedback", 0.0f, 1.0f, 0.0f},
-    {0x000018, "Macro Mix", 0.0f, 1.0f, 0.5f},
+    {0x010009, "A Texture", 0.0f, 1.0f, 0.0f, false},
+    {0x01000A, "A Feedback", 0.0f, 0.95f, 0.0f, false},
+    {0x000011, "Macro Size", 0.0f, 1.0f, 0.5f, false},
+    {0x000012, "Macro Density", 0.0f, 1.0f, 0.5f, false},
+    {0x000013, "Macro Pitch", 0.0f, 1.0f, 0.5f, false},
+    {0x000014, "Macro Spray", 0.0f, 1.0f, 0.5f, false},
+    {0x000015, "Macro Texture", 0.0f, 1.0f, 0.0f, false},
+    {0x000016, "Macro Freeze", 0.0f, 1.0f, 0.0f, true},
+    {0x000017, "Macro Feedback", 0.0f, 1.0f, 0.0f, false},
+    {0x000018, "Macro Mix", 0.0f, 1.0f, 0.5f, false},
 }};
-// The instrument's Position is 0–100% of the loaded file, 0% by default (spec §6.8); its last
-// two macros are Macro Stereo, 0.5 by default, and Macro Level (sub-project 5's spec §3.3). The
-// rest of its table is the FX's above.
+// Layer A's 37 new parameters (M2 sub-project 1's spec §6.9) in index order: rates in log2 Hz
+// (0.01 to 50 Hz), envelope times in log2 seconds (1 ms to 10 s).
+constexpr float kRateMin = -6.643856189774724f, kRateMax = 5.643856189774724f;
+constexpr float kTimeMin = -9.965784284662087f, kTimeMax = 3.321928094887362f;
+constexpr std::array<Row, 37> kLayerANewRows{{
+    {0x01000C, "A Source", 0.0f, 4.0f, 1.0f, true},
+    {0x01000D, "A Pitch Spread", 0.0f, 24.0f, 0.0f, false},
+    {0x01000E, "A Size Spread", 0.0f, 2.0f, 0.0f, false},
+    {0x01000F, "A LFO 1 Rate", kRateMin, kRateMax, 0.0f, false},
+    {0x010010, "A LFO 1 Shape", 0.0f, 4.0f, 0.0f, true},
+    {0x010011, "A LFO 2 Rate", kRateMin, kRateMax, -2.0f, false},
+    {0x010012, "A LFO 2 Shape", 0.0f, 4.0f, 1.0f, true},
+    {0x010013, "A Env 1 Attack", kTimeMin, kTimeMax, -6.643856189774724f, false},
+    {0x010014, "A Env 1 Decay", kTimeMin, kTimeMax, -2.321928094887362f, false},
+    {0x010015, "A Env 1 Sustain", 0.0f, 1.0f, 1.0f, false},
+    {0x010016, "A Env 1 Release", kTimeMin, kTimeMax, -2.321928094887362f, false},
+    {0x010017, "A Env 2 Attack", kTimeMin, kTimeMax, -1.0f, false},
+    {0x010018, "A Env 2 Decay", kTimeMin, kTimeMax, 0.0f, false},
+    {0x010019, "A Env 2 Sustain", 0.0f, 1.0f, 0.5f, false},
+    {0x01001A, "A Env 2 Release", kTimeMin, kTimeMax, 0.0f, false},
+    {0x01001B, "A Random 1 Rate", kRateMin, kRateMax, 1.0f, false},
+    {0x01001C, "A Random 1 Smooth", 0.0f, 1.0f, 0.0f, false},
+    {0x01001D, "A Random 2 Rate", kRateMin, kRateMax, -1.0f, false},
+    {0x01001E, "A Random 2 Smooth", 0.0f, 1.0f, 0.5f, false},
+    {0x01001F, "A Step Rate", kRateMin, kRateMax, 2.0f, false},
+    {0x010020, "A Step Length", 1.0f, 16.0f, 16.0f, true},
+    {0x010021, "A Step 1", 0.0f, 1.0f, 0.0f, false},
+    {0x010022, "A Step 2", 0.0f, 1.0f, 0.0f, false},
+    {0x010023, "A Step 3", 0.0f, 1.0f, 0.0f, false},
+    {0x010024, "A Step 4", 0.0f, 1.0f, 0.0f, false},
+    {0x010025, "A Step 5", 0.0f, 1.0f, 0.0f, false},
+    {0x010026, "A Step 6", 0.0f, 1.0f, 0.0f, false},
+    {0x010027, "A Step 7", 0.0f, 1.0f, 0.0f, false},
+    {0x010028, "A Step 8", 0.0f, 1.0f, 0.0f, false},
+    {0x010029, "A Step 9", 0.0f, 1.0f, 0.0f, false},
+    {0x01002A, "A Step 10", 0.0f, 1.0f, 0.0f, false},
+    {0x01002B, "A Step 11", 0.0f, 1.0f, 0.0f, false},
+    {0x01002C, "A Step 12", 0.0f, 1.0f, 0.0f, false},
+    {0x01002D, "A Step 13", 0.0f, 1.0f, 0.0f, false},
+    {0x01002E, "A Step 14", 0.0f, 1.0f, 0.0f, false},
+    {0x01002F, "A Step 15", 0.0f, 1.0f, 0.0f, false},
+    {0x010030, "A Step 16", 0.0f, 1.0f, 0.0f, false},
+}};
+// The nine new globals, the last slots.
+constexpr std::array<Row, 9> kNewGlobalRows{{
+    {0x000019, "Morph X", 0.0f, 1.0f, 0.5f, false},
+    {0x00001A, "Morph Y", 0.0f, 1.0f, 0.5f, false},
+    {0x00001B, "Layer A On", 0.0f, 1.0f, 1.0f, true},
+    {0x00001C, "Layer B On", 0.0f, 1.0f, 0.0f, true},
+    {0x00001D, "Layer C On", 0.0f, 1.0f, 0.0f, true},
+    {0x00001E, "Layer D On", 0.0f, 1.0f, 0.0f, true},
+    {0x00001F, "Level B", -60.0f, 12.0f, 0.0f, false},
+    {0x000020, "Level C", -60.0f, 12.0f, 0.0f, false},
+    {0x000021, "Level D", -60.0f, 12.0f, 0.0f, false},
+}};
+
+// All 218 in slot order; layers B to D are layer A's 48 rows in index order with their letter and
+// scope.
+std::array<ExpectedParam, kParamCount> buildExpected()
+{
+    // Plain checks, not Catch2's: this runs before any test case, at static initialization.
+    const auto expect = [](bool ok) {
+        if (!ok)
+        {
+            throw std::logic_error("the expected parameter table is malformed");
+        }
+    };
+    std::array<ExpectedParam, kParamCount> t{};
+    std::size_t slot = 0;
+    const auto push = [&t, &slot, &expect](clap_id id, std::string name, const Row &r) {
+        expect(slot < kParamCount);
+        t[slot++] = {id, std::move(name), r.min, r.max, r.def, r.stepped};
+    };
+    for (const Row &r : kM1Rows)
+    {
+        push(r.id, r.name, r);
+    }
+    for (const Row &r : kLayerANewRows)
+    {
+        push(r.id, r.name, r);
+    }
+    std::vector<Row> layerA;
+    for (clap_id index = 0x01; index <= 0x0B; ++index)
+    {
+        const auto row = std::find_if(kM1Rows.begin(), kM1Rows.end(), [index](const Row &r) {
+            return r.id == (0x010000u | index);
+        });
+        expect(row != kM1Rows.end());
+        layerA.push_back(*row);
+    }
+    layerA.insert(layerA.end(), kLayerANewRows.begin(), kLayerANewRows.end());
+    for (const char letter : {'B', 'C', 'D'})
+    {
+        const auto scope = static_cast<clap_id>(letter - 'A' + 1);
+        for (const Row &r : layerA)
+        {
+            push((scope << 16) | (r.id & 0xFFFFu), std::string(1, letter) + (r.name + 1), r);
+        }
+    }
+    for (const Row &r : kNewGlobalRows)
+    {
+        push(r.id, r.name, r);
+    }
+    expect(slot == kParamCount);
+    return t;
+}
+const std::array<ExpectedParam, kParamCount> kExpected = buildExpected();
+
+// The instrument's Position is 0–100% of the loaded file, 0% by default (spec §6.8), and its Source
+// is Sample, in every layer; its Macro 8 is Macro Level (sub-project 5's spec §3.3). The rest of
+// its table is the FX's above (Macro 7 is Macro Feedback, 0, in both; M2 sub-project 1's spec
+// §6.9).
 constexpr float kInstrumentPositionDefault = 0.0f;
-constexpr float kInstrumentMacro7Default = 0.5f;
+constexpr float kInstrumentSourceDefault = 0.0f;
+
+/// A layer parameter's index in its scope, or 0 for a global.
+clap_id layerIndexOf(const ExpectedParam &e)
+{
+    const clap_id scope = e.id >> 16;
+    return scope >= 1 && scope <= 4 ? (e.id & 0xFFFFu) : 0u;
+}
+
+/// e's default in the product.
+float defaultIn(const ExpectedParam &e, bool isFx)
+{
+    if (!isFx && layerIndexOf(e) == 0x01)
+    {
+        return kInstrumentPositionDefault;
+    }
+    if (!isFx && layerIndexOf(e) == 0x0C)
+    {
+        return kInstrumentSourceDefault;
+    }
+    return e.def;
+}
 
 ParamValues defaults()
 {
@@ -309,6 +452,7 @@ TEST_CASE("plugin exposes every param", "[plugin]")
     const auto *params = plugin.params();
     REQUIRE(params != nullptr);
     REQUIRE(params->count(plugin.clap()) == kParamCount);
+    REQUIRE(params->count(plugin.clap()) == 218);
 
     for (uint32_t i = 0; i < kParamCount; ++i)
     {
@@ -319,41 +463,31 @@ TEST_CASE("plugin exposes every param", "[plugin]")
         const auto &expected = kExpected[i];
         CHECK(info.id == expected.id);
         std::string_view name = expected.name;
-        if (!isFx && i == at(ParamSlot::Macro7))
-        {
-            name = "Macro Stereo";
-        }
         if (!isFx && i == at(ParamSlot::Macro8))
         {
             name = "Macro Level";
         }
         CHECK(std::string_view(info.name) == name);
-        CHECK(std::string_view(info.module).empty());
+        // A layer parameter's module names its layer (spec §6.9); a global's is empty.
+        const clap_id scope = expected.id >> 16;
+        const std::string module =
+            scope == 0 ? "" : std::string("Layer ") + static_cast<char>('A' + scope - 1);
+        CHECK(std::string_view(info.module) == module);
         CHECK(info.cookie == nullptr);
         CHECK(info.min_value == static_cast<double>(expected.min));
         CHECK(info.max_value == static_cast<double>(expected.max));
-        float def = expected.def;
-        if (!isFx && i == at(ParamSlot::Position))
-        {
-            def = kInstrumentPositionDefault;
-        }
-        if (!isFx && i == at(ParamSlot::Macro7))
-        {
-            def = kInstrumentMacro7Default;
-        }
+        const float def = defaultIn(expected, isFx);
         CHECK(info.default_value == static_cast<double>(def));
 
-        // Global Constraints' CLAP flags: every parameter is automatable and modulatable,
-        // Freeze and Macro Freeze are stepped, and the instrument hides Mix, Dry to Reverb and
-        // Feedback, which have no dry signal or live ring to act on.
+        // Global Constraints' CLAP flags: every parameter is automatable and modulatable, the
+        // switches and choices are stepped, and the instrument hides Mix and Dry to Reverb, which
+        // have no dry signal to act on. Feedback is shown in both (M2 sub-project 1's spec §6.4).
         clap_param_info_flags flags = CLAP_PARAM_IS_AUTOMATABLE | CLAP_PARAM_IS_MODULATABLE;
-        if (i == at(ParamSlot::Freeze) || i == at(ParamSlot::Macro6))
+        if (expected.stepped)
         {
             flags |= CLAP_PARAM_IS_STEPPED;
         }
-        if ((i == at(ParamSlot::Mix) || i == at(ParamSlot::DryToReverb) ||
-             i == at(ParamSlot::Feedback)) &&
-            !isFx)
+        if ((i == at(ParamSlot::Mix) || i == at(ParamSlot::DryToReverb)) && !isFx)
         {
             flags |= CLAP_PARAM_IS_HIDDEN;
         }
@@ -362,6 +496,19 @@ TEST_CASE("plugin exposes every param", "[plugin]")
         // A new instance holds the defaults.
         CHECK(plugin.value(expected.id) == static_cast<double>(def));
     }
+
+    // The ones the spec names (spec §6.9).
+    clap_param_info info{};
+    REQUIRE(params->get_info(plugin.clap(), static_cast<uint32_t>(at(ParamSlot::B_Size)), &info));
+    CHECK(std::string_view(info.module) == "Layer B");
+    CHECK(std::string_view(info.name) == "B Size");
+    REQUIRE(params->get_info(plugin.clap(), static_cast<uint32_t>(at(ParamSlot::Feedback)), &info));
+    CHECK((info.flags & CLAP_PARAM_IS_HIDDEN) == 0);
+    REQUIRE(params->get_info(plugin.clap(), static_cast<uint32_t>(at(ParamSlot::Macro7)), &info));
+    CHECK(std::string_view(info.name) == "Macro Feedback");
+    CHECK(info.default_value == 0.0);
+    REQUIRE(params->get_info(plugin.clap(), static_cast<uint32_t>(at(ParamSlot::LevelD)), &info));
+    CHECK(std::string_view(info.module).empty());
 }
 
 TEST_CASE("value and text round trip through clap", "[plugin]")
@@ -395,9 +542,9 @@ TEST_CASE("value and text round trip through clap", "[plugin]")
                 // The text has the display's precision, so the value comes back within a
                 // display step (Spray shows 10 ms steps, 1.6% of its range near 30 ms), and
                 // gives the same text.
-                if (s == at(ParamSlot::Freeze) || s == at(ParamSlot::Macro6))
+                if (p.stepped)
                 {
-                    CHECK(back == (v > 0.5 ? 1.0 : 0.0));
+                    CHECK(back == std::round(v)); // a switch's or a choice's nearest step
                 }
                 else
                 {

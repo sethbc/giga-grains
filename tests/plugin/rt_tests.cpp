@@ -289,16 +289,16 @@ TEST_CASE("plugin process with the perform parameters automated does not allocat
     float *outputs[2] = {outLeft.data(), outRight.data()};
     const auto clapOn = noteOn(60, 0);
     constexpr std::size_t kSlots = gg::core::kParamCount;
-    static_assert(kSlots == 28);
+    static_assert(kSlots == 218);
     const auto metaOf = [mode](std::size_t s) -> const auto & {
         return gg::core::paramMeta(static_cast<ParamSlot>(s), mode);
     };
-    const auto stepped = [](std::size_t s) {
-        return static_cast<ParamSlot>(s) == ParamSlot::Freeze ||
-               static_cast<ParamSlot>(s) == ParamSlot::Macro6;
+    const auto stepped = [&metaOf](std::size_t s) {
+        return (metaOf(s).flags & CLAP_PARAM_IS_STEPPED) != 0;
     };
-    // On: each slot at 70% of its range (stepped ones on), then a modulation of a tenth of its
-    // range; values at sample 0 and modulation at sample 1, sorted by time as CLAP requires.
+    // On: each slot at 70% of its range (stepped ones at their top: the switches on), then a
+    // modulation of a tenth of its range; values at sample 0 and modulation at sample 1, sorted by
+    // time as CLAP requires.
     std::array<clap_event_param_value, kSlots> onValues{};
     std::array<clap_event_param_mod, kSlots> onMods{};
     // Off: each slot back to its default (every macro to rest, Texture and Feedback to 0, Freeze
@@ -310,7 +310,7 @@ TEST_CASE("plugin process with the perform parameters automated does not allocat
         const auto slot = static_cast<ParamSlot>(s);
         const auto &meta = metaOf(s);
         const double range = static_cast<double>(meta.maxVal) - meta.minVal;
-        const double on = stepped(s) ? 1.0 : meta.minVal + 0.7 * range;
+        const double on = stepped(s) ? meta.maxVal : meta.minVal + 0.7 * range;
         onValues[s] = gg::test::paramValue(paramId(slot), on, 0);
         onMods[s] = gg::test::paramMod(paramId(slot), stepped(s) ? 0.0 : 0.1 * range, 1);
         offValues[s] = gg::test::paramValue(paramId(slot), meta.defaultVal, 0);

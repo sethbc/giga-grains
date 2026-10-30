@@ -392,13 +392,18 @@ gg-render --write-media DIR
     runs, over an `input`: a built-in `sine`, `sweep` or `noise`, or a `file` loaded and
     converted to the render's rate with `gg-media` (ruling M1-aa). The top-level `channels` key
     (1 or 2) sets a built-in input's channel count; a file keeps its own, and takes no
-    `channels`. Optional `params` sets base values by parameter name (`"Size"`, `"Density"`, …;
-    Space's are `"Diffusion"`, `"Reverb Amount"`, `"Reverb Decay"`, `"Reverb Size"`,
-    `"Reverb Damping"`, `"Reverb Pre-delay"`, `"Reverb Modulation"` and `"Dry to Reverb"`;
-    the Perform UI's (sub-project 5) are `"Texture"`, `"Feedback"` and the macros,
-    `"Macro Size"`, `"Macro Density"`, `"Macro Pitch"`, `"Macro Spray"`, `"Macro Texture"`,
-    `"Macro Freeze"`, `"Macro Feedback"` and `"Macro Mix"`), optional `automation` is a
-    time-ordered list of `{"time", "param", "value"}` points in
+    `channels`. Optional `params` sets base values by parameter name, the name the plugin
+    displays: a layer parameter's carries its layer's letter (`"A Size"`, `"B Size"`, …,
+    `"D Step 16"`; M2 sub-project 1's spec §6.9), and the bare M1 names of layer A's eleven
+    (`"Position"`, `"Size"`, `"Density"`, `"Distribution"`, `"Pitch"`, `"Spray"`, `"Stereo"`,
+    `"Freeze"`, `"Texture"`, `"Feedback"`, `"Diffusion"`) mean layer A's, so every M1 spec
+    still parses. The globals keep their names: Space's are `"Reverb Amount"`,
+    `"Reverb Decay"`, `"Reverb Size"`, `"Reverb Damping"`, `"Reverb Pre-delay"`,
+    `"Reverb Modulation"` and `"Dry to Reverb"`; the macros are `"Macro Size"`,
+    `"Macro Density"`, `"Macro Pitch"`, `"Macro Spray"`, `"Macro Texture"`, `"Macro Freeze"`,
+    `"Macro Feedback"` (Macro 7 in both products) and `"Macro Mix"`; the layers' are
+    `"Morph X"`, `"Morph Y"`, `"Layer A On"` … `"Layer D On"` and `"Level B"` … `"Level D"`.
+    Optional `automation` is a time-ordered list of `{"time", "param", "value"}` points in
     seconds, and optional `notes` a time-ordered list of `{"time", "key", "duration",
     "channel"}` (channel optional). A note whose Off would fall on its On's frame is bad input
     (ruling R17). Values are in each parameter's CLAP value domain (Density 6.0 is 64 Hz; Reverb
@@ -408,8 +413,9 @@ gg-render --write-media DIR
   - **Instrument mode** (`"mode": "instrument"`) runs Giga Grains' `Processor` the same way over
     a `sample` (a built-in signal or a `file`, loaded and converted with `gg-media`), with no
     `channels`. Its Position is the fraction of the sample, 0–1, and it is silent until a note.
-    It takes Dry to Reverb and Feedback, which do nothing there. Its Macros 7 and 8 are
-    `"Macro Stereo"` and `"Macro Level"`: a spec takes only its own product's names, so
+    It takes Dry to Reverb and Feedback, which do nothing there. Its Macro 8 is
+    `"Macro Level"` (Macro 7 is `"Macro Feedback"`, as in the FX; `"Macro Stereo"` names
+    nothing since M2 sub-project 1): a spec takes only its own product's names, so
     `"Macro Level"` in an FX spec, or `"Macro Mix"` in an instrument spec, is an unknown key.
   - **FX inputs are faded** in at their start and out at their end over 10 ms, with a raised
     cosine (sin²), so the input's own edges don't click (ruling M1-v). Sample-mode sources and

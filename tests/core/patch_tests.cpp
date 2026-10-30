@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright 2026, the Giga Grains authors (see git history)
 
-// The patch: the slice's ten parameters (spec §4), Space's eight (sub-project 4's spec §6.5) and
-// the Perform UI's ten (sub-project 5's spec §3.3, §4, §5), and their versioned XML state, through
+// The patch: the slice's ten parameters (spec §4), Space's eight (sub-project 4's spec §6.5), the
+// Perform UI's ten (sub-project 5's spec §3.3, §4, §5) and M2's layers (M2 sub-project 1's spec
+// §6.9: 48 per layer, A to D, and nine globals; 218 in all), and their versioned XML state, through
 // gg-core's public API (gg/core/ParamIds.h, gg/core/PatchState.h) and its tinyxml-free internal
 // core/src/PatchXml.h, for each product's patch XML. This file never includes
 // sst-plugininfra or tinyxml (ruling M1-l). The IDs, names, ranges and defaults are spelled out
@@ -20,6 +21,7 @@
 #include <cstdio>
 #include <cstring>
 #include <limits>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -53,66 +55,206 @@ struct Expected
 {
     ParamSlot slot;
     clap_id id;
-    std::string_view name;
+    std::string name;
     float minVal, maxVal, defaultVal;
     uint32_t flags;
 };
 
+/// One row of Global Constraints' parameter table, as the plan spells it.
+struct Row
+{
+    clap_id id;
+    std::string_view name;
+    float minVal, maxVal, defaultVal;
+    uint32_t flags;
+};
+constexpr uint32_t kStepped = kAutoMod | CLAP_PARAM_IS_STEPPED;
+
 // Global Constraints' parameter table, copied literally: the FX's. The instrument's differs only
-// in Position's default (kInstrumentPositionDefault) and display, and in Macro 7's and Macro 8's
-// names and Macro 7's default (kInstrumentMacros).
-constexpr std::array<Expected, kParamCount> kTable{{
-    {ParamSlot::Mix, 0x000001, "Mix", 0.f, 1.f, 0.5f, kAutoMod},
-    {ParamSlot::Level, 0x000002, "Level", -60.f, 12.f, 0.0f, kAutoMod},
-    {ParamSlot::Position, 0x010001, "Position", 0.f, 1.f, 0.28967658f, kAutoMod},
-    {ParamSlot::Size, 0x010002, "Size", -7.643856189774724f, 1.f, -2.736965594166206f, kAutoMod},
-    {ParamSlot::Density, 0x010003, "Density", -2.f, 8.643856189774725f, 4.0f, kAutoMod},
-    {ParamSlot::Distribution, 0x010004, "Distribution", 0.f, 1.f, 0.5f, kAutoMod},
-    {ParamSlot::Pitch, 0x010005, "Pitch", -24.f, 24.f, 0.0f, kAutoMod},
-    {ParamSlot::Spray, 0x010006, "Spray", 0.f, 1.f, 0.36033038f, kAutoMod},
-    {ParamSlot::Stereo, 0x010007, "Stereo", 0.f, 1.f, 0.5f, kAutoMod},
-    {ParamSlot::Freeze, 0x010008, "Freeze", 0.f, 1.f, 0.0f, kAutoMod | CLAP_PARAM_IS_STEPPED},
-    {ParamSlot::Diffusion, 0x01000B, "Diffusion", 0.f, 1.f, 0.0f, kAutoMod},
-    {ParamSlot::ReverbAmount, 0x000003, "Reverb Amount", 0.f, 1.f, 0.0f, kAutoMod},
-    {ParamSlot::ReverbDecay, 0x000004, "Reverb Decay", -2.f, 6.068255709804611f, 1.0f, kAutoMod},
-    {ParamSlot::ReverbSize, 0x000005, "Reverb Size", 0.f, 1.f, 0.5f, kAutoMod},
-    {ParamSlot::ReverbDamping, 0x000006, "Reverb Damping", 0.f, 1.f, 0.3f, kAutoMod},
-    {ParamSlot::ReverbPredelay, 0x000007, "Reverb Pre-delay", 0.f, 0.5f, 0.0f, kAutoMod},
-    {ParamSlot::ReverbModulation, 0x000008, "Reverb Modulation", 0.f, 1.f, 0.25f, kAutoMod},
-    {ParamSlot::DryToReverb, 0x000009, "Dry to Reverb", 0.f, 1.f, 0.0f, kAutoMod},
+// in every layer's Position default (kInstrumentPositionDefault) and display and Source default
+// (kInstrumentSourceDefault), and in Macro 8's name (kInstrumentMacros).
+//
+// The 28 M1 slots, in slot order: layer A's eleven M1 parameters among them, named with their
+// layer's letter since M2 sub-project 1 (spec §6.9).
+constexpr std::array<Row, 28> kM1Rows{{
+    {0x000001, "Mix", 0.f, 1.f, 0.5f, kAutoMod},
+    {0x000002, "Level", -60.f, 12.f, 0.0f, kAutoMod},
+    {0x010001, "A Position", 0.f, 1.f, 0.28967658f, kAutoMod},
+    {0x010002, "A Size", -7.643856189774724f, 1.f, -2.736965594166206f, kAutoMod},
+    {0x010003, "A Density", -2.f, 8.643856189774725f, 4.0f, kAutoMod},
+    {0x010004, "A Distribution", 0.f, 1.f, 0.5f, kAutoMod},
+    {0x010005, "A Pitch", -24.f, 24.f, 0.0f, kAutoMod},
+    {0x010006, "A Spray", 0.f, 1.f, 0.36033038f, kAutoMod},
+    {0x010007, "A Stereo", 0.f, 1.f, 0.5f, kAutoMod},
+    {0x010008, "A Freeze", 0.f, 1.f, 0.0f, kStepped},
+    {0x01000B, "A Diffusion", 0.f, 1.f, 0.0f, kAutoMod},
+    {0x000003, "Reverb Amount", 0.f, 1.f, 0.0f, kAutoMod},
+    {0x000004, "Reverb Decay", -2.f, 6.068255709804611f, 1.0f, kAutoMod},
+    {0x000005, "Reverb Size", 0.f, 1.f, 0.5f, kAutoMod},
+    {0x000006, "Reverb Damping", 0.f, 1.f, 0.3f, kAutoMod},
+    {0x000007, "Reverb Pre-delay", 0.f, 0.5f, 0.0f, kAutoMod},
+    {0x000008, "Reverb Modulation", 0.f, 1.f, 0.25f, kAutoMod},
+    {0x000009, "Dry to Reverb", 0.f, 1.f, 0.0f, kAutoMod},
     // The Perform UI (sub-project 5's spec §3.3, §4, §5).
-    {ParamSlot::Texture, 0x010009, "Texture", 0.f, 1.f, 0.0f, kAutoMod},
-    {ParamSlot::Feedback, 0x01000A, "Feedback", 0.f, 0.95f, 0.0f, kAutoMod},
-    {ParamSlot::Macro1, 0x000011, "Macro Size", 0.f, 1.f, 0.5f, kAutoMod},
-    {ParamSlot::Macro2, 0x000012, "Macro Density", 0.f, 1.f, 0.5f, kAutoMod},
-    {ParamSlot::Macro3, 0x000013, "Macro Pitch", 0.f, 1.f, 0.5f, kAutoMod},
-    {ParamSlot::Macro4, 0x000014, "Macro Spray", 0.f, 1.f, 0.5f, kAutoMod},
-    {ParamSlot::Macro5, 0x000015, "Macro Texture", 0.f, 1.f, 0.0f, kAutoMod},
-    {ParamSlot::Macro6, 0x000016, "Macro Freeze", 0.f, 1.f, 0.0f, kAutoMod | CLAP_PARAM_IS_STEPPED},
-    {ParamSlot::Macro7, 0x000017, "Macro Feedback", 0.f, 1.f, 0.0f, kAutoMod},
-    {ParamSlot::Macro8, 0x000018, "Macro Mix", 0.f, 1.f, 0.5f, kAutoMod},
+    {0x010009, "A Texture", 0.f, 1.f, 0.0f, kAutoMod},
+    {0x01000A, "A Feedback", 0.f, 0.95f, 0.0f, kAutoMod},
+    {0x000011, "Macro Size", 0.f, 1.f, 0.5f, kAutoMod},
+    {0x000012, "Macro Density", 0.f, 1.f, 0.5f, kAutoMod},
+    {0x000013, "Macro Pitch", 0.f, 1.f, 0.5f, kAutoMod},
+    {0x000014, "Macro Spray", 0.f, 1.f, 0.5f, kAutoMod},
+    {0x000015, "Macro Texture", 0.f, 1.f, 0.0f, kAutoMod},
+    {0x000016, "Macro Freeze", 0.f, 1.f, 0.0f, kStepped},
+    {0x000017, "Macro Feedback", 0.f, 1.f, 0.0f, kAutoMod},
+    {0x000018, "Macro Mix", 0.f, 1.f, 0.5f, kAutoMod},
 }};
 
-/// Where the instrument's table differs from kTable but for Position: the last two macros' names,
-/// and Macro 7's default (Global Constraints).
+// Layer A's 37 new parameters (M2 sub-project 1's spec §6.9), slots 28 to 64, in index order.
+// Rates are log2 Hz (0.01 Hz to 50 Hz), envelope times log2 seconds (1 ms to 10 s).
+constexpr float kRateMin = -6.643856189774724f, kRateMax = 5.643856189774724f;
+constexpr float kTimeMin = -9.965784284662087f, kTimeMax = 3.321928094887362f;
+constexpr std::array<Row, 37> kLayerANewRows{{
+    {0x01000C, "A Source", 0.f, 4.f, 1.0f, kStepped},
+    {0x01000D, "A Pitch Spread", 0.f, 24.f, 0.0f, kAutoMod},
+    {0x01000E, "A Size Spread", 0.f, 2.f, 0.0f, kAutoMod},
+    {0x01000F, "A LFO 1 Rate", kRateMin, kRateMax, 0.0f, kAutoMod},
+    {0x010010, "A LFO 1 Shape", 0.f, 4.f, 0.0f, kStepped},
+    {0x010011, "A LFO 2 Rate", kRateMin, kRateMax, -2.0f, kAutoMod},
+    {0x010012, "A LFO 2 Shape", 0.f, 4.f, 1.0f, kStepped},
+    {0x010013, "A Env 1 Attack", kTimeMin, kTimeMax, -6.643856189774724f, kAutoMod},
+    {0x010014, "A Env 1 Decay", kTimeMin, kTimeMax, -2.321928094887362f, kAutoMod},
+    {0x010015, "A Env 1 Sustain", 0.f, 1.f, 1.0f, kAutoMod},
+    {0x010016, "A Env 1 Release", kTimeMin, kTimeMax, -2.321928094887362f, kAutoMod},
+    {0x010017, "A Env 2 Attack", kTimeMin, kTimeMax, -1.0f, kAutoMod},
+    {0x010018, "A Env 2 Decay", kTimeMin, kTimeMax, 0.0f, kAutoMod},
+    {0x010019, "A Env 2 Sustain", 0.f, 1.f, 0.5f, kAutoMod},
+    {0x01001A, "A Env 2 Release", kTimeMin, kTimeMax, 0.0f, kAutoMod},
+    {0x01001B, "A Random 1 Rate", kRateMin, kRateMax, 1.0f, kAutoMod},
+    {0x01001C, "A Random 1 Smooth", 0.f, 1.f, 0.0f, kAutoMod},
+    {0x01001D, "A Random 2 Rate", kRateMin, kRateMax, -1.0f, kAutoMod},
+    {0x01001E, "A Random 2 Smooth", 0.f, 1.f, 0.5f, kAutoMod},
+    {0x01001F, "A Step Rate", kRateMin, kRateMax, 2.0f, kAutoMod},
+    {0x010020, "A Step Length", 1.f, 16.f, 16.0f, kStepped},
+    {0x010021, "A Step 1", 0.f, 1.f, 0.0f, kAutoMod},
+    {0x010022, "A Step 2", 0.f, 1.f, 0.0f, kAutoMod},
+    {0x010023, "A Step 3", 0.f, 1.f, 0.0f, kAutoMod},
+    {0x010024, "A Step 4", 0.f, 1.f, 0.0f, kAutoMod},
+    {0x010025, "A Step 5", 0.f, 1.f, 0.0f, kAutoMod},
+    {0x010026, "A Step 6", 0.f, 1.f, 0.0f, kAutoMod},
+    {0x010027, "A Step 7", 0.f, 1.f, 0.0f, kAutoMod},
+    {0x010028, "A Step 8", 0.f, 1.f, 0.0f, kAutoMod},
+    {0x010029, "A Step 9", 0.f, 1.f, 0.0f, kAutoMod},
+    {0x01002A, "A Step 10", 0.f, 1.f, 0.0f, kAutoMod},
+    {0x01002B, "A Step 11", 0.f, 1.f, 0.0f, kAutoMod},
+    {0x01002C, "A Step 12", 0.f, 1.f, 0.0f, kAutoMod},
+    {0x01002D, "A Step 13", 0.f, 1.f, 0.0f, kAutoMod},
+    {0x01002E, "A Step 14", 0.f, 1.f, 0.0f, kAutoMod},
+    {0x01002F, "A Step 15", 0.f, 1.f, 0.0f, kAutoMod},
+    {0x010030, "A Step 16", 0.f, 1.f, 0.0f, kAutoMod},
+}};
+
+// The nine new globals (spec §6.9), the last slots.
+constexpr std::array<Row, 9> kNewGlobalRows{{
+    {0x000019, "Morph X", 0.f, 1.f, 0.5f, kAutoMod},
+    {0x00001A, "Morph Y", 0.f, 1.f, 0.5f, kAutoMod},
+    {0x00001B, "Layer A On", 0.f, 1.f, 1.0f, kStepped},
+    {0x00001C, "Layer B On", 0.f, 1.f, 0.0f, kStepped},
+    {0x00001D, "Layer C On", 0.f, 1.f, 0.0f, kStepped},
+    {0x00001E, "Layer D On", 0.f, 1.f, 0.0f, kStepped},
+    {0x00001F, "Level B", -60.f, 12.f, 0.0f, kAutoMod},
+    {0x000020, "Level C", -60.f, 12.f, 0.0f, kAutoMod},
+    {0x000021, "Level D", -60.f, 12.f, 0.0f, kAutoMod},
+}};
+
+// All 218, in slot order: the rows above, with layers B to D generated from layer A's 48 rows in
+// index order (the M1 ones found by ID), each with its letter for "A" and its scope for 1.
+std::array<Expected, kParamCount> buildExpected()
+{
+    // Plain checks, not Catch2's: this runs before any test case, at static initialization.
+    const auto expect = [](bool ok) {
+        if (!ok)
+        {
+            throw std::logic_error("the expected parameter table is malformed");
+        }
+    };
+    std::array<Expected, kParamCount> t{};
+    size_t slot = 0;
+    const auto push = [&t, &slot, &expect](clap_id id, std::string name, const Row &r) {
+        expect(slot < kParamCount);
+        t[slot] = {static_cast<ParamSlot>(slot),
+                   id,
+                   std::move(name),
+                   r.minVal,
+                   r.maxVal,
+                   r.defaultVal,
+                   r.flags};
+        ++slot;
+    };
+    for (const Row &r : kM1Rows)
+    {
+        push(r.id, std::string(r.name), r);
+    }
+    for (const Row &r : kLayerANewRows)
+    {
+        push(r.id, std::string(r.name), r);
+    }
+    std::vector<Row> layerA;
+    for (clap_id index = 0x01; index <= 0x0B; ++index)
+    {
+        const auto at = std::find_if(kM1Rows.begin(), kM1Rows.end(),
+                                     [index](const Row &r) { return r.id == (0x010000u | index); });
+        expect(at != kM1Rows.end());
+        layerA.push_back(*at);
+    }
+    layerA.insert(layerA.end(), kLayerANewRows.begin(), kLayerANewRows.end());
+    expect(layerA.size() == 48);
+    for (const char letter : {'B', 'C', 'D'})
+    {
+        const auto scope = static_cast<clap_id>(letter - 'A' + 1);
+        for (const Row &r : layerA)
+        {
+            expect(r.name.starts_with("A "));
+            push((scope << 16) | (r.id & 0xFFFFu),
+                 std::string(1, letter) + std::string(r.name.substr(1)), r);
+        }
+    }
+    for (const Row &r : kNewGlobalRows)
+    {
+        push(r.id, std::string(r.name), r);
+    }
+    expect(slot == kParamCount);
+    return t;
+}
+const std::array<Expected, kParamCount> kTable = buildExpected();
+
+/// Where the instrument's table differs from kTable but for Position and Source: Macro 8's name
+/// (Global Constraints). Macro 7 is "Macro Feedback", 0, in both products.
 struct InstrumentDifference
 {
     ParamSlot slot;
     std::string_view name;
     float defaultVal;
 };
-constexpr std::array<InstrumentDifference, 2> kInstrumentMacros{{
-    {ParamSlot::Macro7, "Macro Stereo", 0.5f},
+constexpr std::array<InstrumentDifference, 1> kInstrumentMacros{{
     {ParamSlot::Macro8, "Macro Level", 0.5f},
 }};
+
+/// A layer parameter's index in its scope, or 0 for a global.
+clap_id layerIndexOf(const Expected &e)
+{
+    const clap_id scope = e.id >> 16;
+    return scope >= 1 && scope <= 4 ? (e.id & 0xFFFFu) : 0u;
+}
 
 /// Decay's ∞ region starts at log2 60 and its top is 2% of its travel above that (Global
 /// Constraints).
 constexpr float kDecayInfinite = 5.906890595608519f;
 constexpr float kDecayMax = 6.068255709804611f;
 
-/// The instrument's Position: 0–100% of the loaded file, 0% by default (spec §6.8).
+/// The instrument's Position: 0–100% of the loaded file, 0% by default (spec §6.8), in every layer.
 constexpr float kInstrumentPositionDefault = 0.0f;
+
+/// The instrument's Source: Sample, in every layer (M2 sub-project 1's spec §6.9).
+constexpr float kInstrumentSourceDefault = 0.0f;
 
 uint32_t bitsOf(float f) { return std::bit_cast<uint32_t>(f); }
 
@@ -135,9 +277,13 @@ float defaultIn(const Expected &e, Mode mode)
 {
     if (mode == Mode::Instrument)
     {
-        if (e.slot == ParamSlot::Position)
+        if (layerIndexOf(e) == 0x01)
         {
             return kInstrumentPositionDefault;
+        }
+        if (layerIndexOf(e) == 0x0C)
+        {
+            return kInstrumentSourceDefault;
         }
         for (const auto &d : kInstrumentMacros)
         {
@@ -251,8 +397,9 @@ std::string handState(std::string_view params, std::string_view version = "1",
 
 TEST_CASE("param ids, names, ranges and defaults are pinned", "[core]")
 {
-    STATIC_REQUIRE(kParamCount == 28);
-    STATIC_REQUIRE(std::is_same_v<ParamValues, std::array<float, 28>>);
+    STATIC_REQUIRE(kParamCount == 218);
+    STATIC_REQUIRE(std::is_same_v<ParamValues, std::array<float, 218>>);
+    STATIC_REQUIRE(std::is_same_v<std::underlying_type_t<ParamSlot>, uint16_t>);
     STATIC_REQUIRE(std::is_same_v<decltype(gg::core::kFeedbackMax), const float>);
     STATIC_REQUIRE(gg::core::kFeedbackMax == 0.95f);
     STATIC_REQUIRE(std::is_same_v<decltype(gg::core::kDecayInfinite), const float>);
@@ -284,8 +431,8 @@ TEST_CASE("param ids, names, ranges and defaults are pinned", "[core]")
     }
     CHECK(gg::core::paramId(ParamSlot::Count) == CLAP_INVALID_ID);
 
-    // The instrument's table is the FX's but for Position's default (spec §6.8) and the last two
-    // macros' names and Macro 7's default (sub-project 5's spec §3.3): the same IDs, ranges and
+    // The instrument's table is the FX's but for every layer's Position default (spec §6.8) and
+    // Source default, and Macro 8's name (M2 sub-project 1's spec §6.9): the same IDs, ranges and
     // flags, so both products share one state format.
     for (size_t i = 0; i < kParamCount; ++i)
     {
@@ -302,17 +449,32 @@ TEST_CASE("param ids, names, ranges and defaults are pinned", "[core]")
         CHECK(&gg::core::paramMeta(e.slot, Mode::Instrument) == &m);
     }
 
-    // Freeze and Macro Freeze are the only stepped parameters; they're on/off switches.
+    // The stepped parameters, and only they, are integers: the switches (each layer's Freeze,
+    // Macro Freeze, the Layer On switches) and the choices (each layer's Source, LFO shapes and
+    // Step Length).
     for (const Mode mode : {Mode::Fx, Mode::Instrument})
     {
+        size_t steppedCount = 0;
         for (size_t i = 0; i < kParamCount; ++i)
         {
             const auto slot = static_cast<ParamSlot>(i);
-            const bool stepped = slot == ParamSlot::Freeze || slot == ParamSlot::Macro6;
+            const bool stepped = (kTable[i].flags & CLAP_PARAM_IS_STEPPED) != 0;
+            steppedCount += stepped ? 1 : 0;
             INFO("param " << kTable[i].name);
             CHECK((gg::core::paramMeta(slot, mode).type ==
                    sst::basic_blocks::params::ParamMetaData::INT) == stepped);
         }
+        CHECK(steppedCount == 4 * 5 + 1 + 4);
+    }
+
+    // Each layer parameter's CLAP module names its layer; a global's is empty.
+    for (size_t i = 0; i < kParamCount; ++i)
+    {
+        const auto &e = kTable[i];
+        INFO("param " << e.name);
+        const auto scope = e.id >> 16;
+        const std::string want = scope == 0 ? "" : std::string("Layer ") + e.name.substr(0, 1);
+        CHECK(std::string_view(gg::core::paramModule(e.slot)) == want);
     }
 
     // The macros, in order.
@@ -338,13 +500,108 @@ TEST_CASE("param ids, names, ranges and defaults are pinned", "[core]")
         CHECK(gg::core::slotForId(id).has_value());
     }
 
-    // IDs that aren't ours: the reserved index 0, scopes and indices one past the table, and the
-    // "unknown id" of the bad-state test.
-    for (clap_id unknown : {0x000000u, 0x00000Au, 0x000010u, 0x000019u, 0x010000u, 0x01000Cu,
-                            0x020001u, 0x777777u, CLAP_INVALID_ID})
+    // IDs that aren't ours: the reserved index 0, the never-used 0x0A to 0x10 of scope 0, scopes
+    // and indices one past the table, the reserved blocks, and the "unknown id" of the bad-state
+    // test.
+    for (clap_id unknown : {0x000000u, 0x00000Au, 0x000010u, 0x000022u, 0x010000u, 0x010031u,
+                            0x020000u, 0x020031u, 0x040031u, 0x050001u, 0x000040u, 0x01004Fu,
+                            0x030060u, 0x04007Fu, 0x777777u, CLAP_INVALID_ID})
     {
         INFO("id " << unknown);
         CHECK_FALSE(gg::core::slotForId(unknown).has_value());
+    }
+}
+
+TEST_CASE("the id table has the next free indices and the reserved blocks", "[core]")
+{
+    // M2 sub-project 1's spec §6.9: no index of any scope falls in 0x40 to 0x7F (wave 2's), and
+    // the recorded next-free indices are the table's largest plus one, in the layer scopes and
+    // in scope 0.
+    STATIC_REQUIRE(gg::core::kReservedIndexBegin == 0x40u);
+    STATIC_REQUIRE(gg::core::kReservedIndexEnd == 0x7Fu);
+    STATIC_REQUIRE(gg::core::kNextFreeLayerIndex == 0x31u);
+    STATIC_REQUIRE(gg::core::kNextFreeGlobalIndex == 0x22u);
+    uint32_t maxLayerIndex = 0;
+    uint32_t maxGlobalIndex = 0;
+    for (size_t i = 0; i < kParamCount; ++i)
+    {
+        const auto slot = static_cast<ParamSlot>(i);
+        const clap_id id = gg::core::paramId(slot);
+        const uint32_t index = id & 0xFFFFu;
+        INFO("param " << kTable[i].name << ", id " << id);
+        CHECK((index < gg::core::kReservedIndexBegin || index > gg::core::kReservedIndexEnd));
+        CHECK((id >> 16) <= 4u);
+        uint32_t &maxIndex = (id >> 16) == 0 ? maxGlobalIndex : maxLayerIndex;
+        maxIndex = std::max(maxIndex, index);
+    }
+    CHECK(maxLayerIndex + 1 == gg::core::kNextFreeLayerIndex);
+    CHECK(maxGlobalIndex + 1 == gg::core::kNextFreeGlobalIndex);
+
+    // The helpers between a flat slot and (layer parameter, layer).
+    using gg::core::LayerParam;
+    using gg::core::LayerRef;
+    STATIC_REQUIRE(gg::core::kLayers == 4);
+    STATIC_REQUIRE(gg::core::kLayerParamCount == 48);
+    STATIC_REQUIRE(gg::core::layerParamIndex(LayerParam::Position) == 0x01u);
+    STATIC_REQUIRE(gg::core::layerParamIndex(LayerParam::Diffusion) == 0x0Bu);
+    STATIC_REQUIRE(gg::core::layerParamIndex(LayerParam::Source) == 0x0Cu);
+    STATIC_REQUIRE(gg::core::layerParamIndex(LayerParam::Step16) == 0x30u);
+    STATIC_REQUIRE(gg::core::slotForId(0x020001) == ParamSlot::B_Position);
+    STATIC_REQUIRE(gg::core::layerOf(ParamSlot::D_Step16) == LayerRef{LayerParam::Step16, 3});
+    STATIC_REQUIRE(gg::core::layerOf(ParamSlot::Feedback) == LayerRef{LayerParam::Feedback, 0});
+    STATIC_REQUIRE(gg::core::layerOf(ParamSlot::Source) == LayerRef{LayerParam::Source, 0});
+    STATIC_REQUIRE(gg::core::layerOf(ParamSlot::B_Position) == LayerRef{LayerParam::Position, 1});
+    STATIC_REQUIRE(gg::core::layerOf(ParamSlot::Mix) == std::nullopt);
+    STATIC_REQUIRE(gg::core::layerOf(ParamSlot::LevelB) == std::nullopt);
+    STATIC_REQUIRE(gg::core::layerOf(ParamSlot::LayerAOn) == std::nullopt);
+    STATIC_REQUIRE(gg::core::layerOf(ParamSlot::Count) == std::nullopt);
+    STATIC_REQUIRE(gg::core::layerSlot(LayerParam::Diffusion, 0) == ParamSlot::Diffusion);
+    STATIC_REQUIRE(gg::core::layerSlot(LayerParam::Texture, 0) == ParamSlot::Texture);
+    STATIC_REQUIRE(gg::core::layerSlot(LayerParam::Step16, 0) == ParamSlot::Step16);
+    STATIC_REQUIRE(gg::core::layerSlot(LayerParam::Size, 2) == ParamSlot::C_Size);
+    STATIC_REQUIRE(gg::core::layerSlot(LayerParam::Size, 4) == ParamSlot::Count);
+    STATIC_REQUIRE(gg::core::layerSlot(LayerParam::Count, 0) == ParamSlot::Count);
+    STATIC_REQUIRE(gg::core::levelSlot(0) == ParamSlot::Level);
+    STATIC_REQUIRE(gg::core::levelSlot(2) == ParamSlot::LevelC);
+    STATIC_REQUIRE(gg::core::levelSlot(4) == ParamSlot::Count);
+    STATIC_REQUIRE(gg::core::layerOnSlot(0) == ParamSlot::LayerAOn);
+    STATIC_REQUIRE(gg::core::layerOnSlot(3) == ParamSlot::LayerDOn);
+    STATIC_REQUIRE(gg::core::layerOnSlot(4) == ParamSlot::Count);
+    STATIC_REQUIRE(gg::core::perLayerGlobalLayer(ParamSlot::LayerDOn) == 3);
+    STATIC_REQUIRE(gg::core::perLayerGlobalLayer(ParamSlot::Level) == 0);
+    STATIC_REQUIRE(gg::core::perLayerGlobalLayer(ParamSlot::LevelB) == 1);
+    STATIC_REQUIRE(gg::core::perLayerGlobalLayer(ParamSlot::Mix) == std::nullopt);
+    STATIC_REQUIRE(gg::core::perLayerGlobalLayer(ParamSlot::Size) == std::nullopt);
+
+    // Every layer slot is (parameter, layer) with ID (layer + 1) << 16 | index, both ways; each
+    // (parameter, layer) is one slot.
+    std::vector<bool> seen(kParamCount, false);
+    for (uint8_t layer = 0; layer < gg::core::kLayers; ++layer)
+    {
+        for (size_t p = 0; p < gg::core::kLayerParamCount; ++p)
+        {
+            const auto param = static_cast<LayerParam>(p);
+            const ParamSlot slot = gg::core::layerSlot(param, layer);
+            INFO("layer " << int{layer} << ", param " << p);
+            REQUIRE(slot != ParamSlot::Count);
+            const auto s = static_cast<size_t>(slot);
+            CHECK_FALSE(seen[s]);
+            seen[s] = true;
+            CHECK(gg::core::paramId(slot) == ((layer + 1u) << 16 | (p + 1)));
+            CHECK(gg::core::layerOf(slot) == LayerRef{param, layer});
+            CHECK(kTable[s].name.starts_with(std::string(1, static_cast<char>('A' + layer)) + " "));
+        }
+    }
+    for (size_t s = 0; s < kParamCount; ++s)
+    {
+        const auto slot = static_cast<ParamSlot>(s);
+        INFO("param " << kTable[s].name);
+        CHECK(gg::core::layerOf(slot).has_value() == seen[s]);
+        CHECK(gg::core::perLayerGlobalLayer(slot).has_value() ==
+              (slot == ParamSlot::Level || slot == ParamSlot::LevelB || slot == ParamSlot::LevelC ||
+               slot == ParamSlot::LevelD || slot == ParamSlot::LayerAOn ||
+               slot == ParamSlot::LayerBOn || slot == ParamSlot::LayerCOn ||
+               slot == ParamSlot::LayerDOn));
     }
 }
 
@@ -490,19 +747,19 @@ TEST_CASE("a state saved before the Perform UI loads at the defaults", "[core]")
         R"(</params><engine seed="0" /></patch>)";
 
     // The eighteen come back as written; Texture and Feedback load at 0 and the macros at rest,
-    // {0.5, 0.5, 0.5, 0.5, 0, 0, 0, 0.5} in the FX, Macro Stereo at 0.5 in the instrument.
+    // {0.5, 0.5, 0.5, 0.5, 0, 0, 0, 0.5}, in either product, and the rest at the product's
+    // defaults.
     constexpr std::array<float, 10> kFxNew{0.f, 0.f, 0.5f, 0.5f, 0.5f, 0.5f, 0.f, 0.f, 0.f, 0.5f};
     for (const Mode mode : {Mode::Fx, Mode::Instrument})
     {
         INFO((mode == Mode::Fx ? "fx" : "instrument"));
-        ParamValues want = defaults(); // the FX's eighteen, as the state names them
+        ParamValues want = defaults(mode);
+        // The FX's eighteen, as the state names them.
+        want[static_cast<size_t>(ParamSlot::Position)] =
+            kTable[static_cast<size_t>(ParamSlot::Position)].defaultVal;
         for (size_t k = 0; k < kFxNew.size(); ++k)
         {
             want[static_cast<size_t>(ParamSlot::Texture) + k] = kFxNew[k];
-        }
-        if (mode == Mode::Instrument)
-        {
-            want[static_cast<size_t>(ParamSlot::Macro7)] = 0.5f;
         }
 
         Loaded l = distinct();
@@ -592,6 +849,31 @@ TEST_CASE("display text follows the engine mapping", "[core]")
     CHECK(text(ParamSlot::Macro6, 1.f) == "On");
     CHECK(text(ParamSlot::Macro7, 0.f) == "0.00 %");
     CHECK(text(ParamSlot::Macro8, 1.f) == "100.00 %");
+    // The layers' (M2 sub-project 1's spec §6.9): stepped choices by name, rates in Hz, envelope
+    // times in ms below 1 s, the spreads in semitones and octaves; every layer alike.
+    CHECK(text(ParamSlot::Source, 0.f) == "Sample");
+    CHECK(text(ParamSlot::Source, 1.f) == "Live");
+    CHECK(text(ParamSlot::D_Source, 4.f) == "Oscillator");
+    CHECK(text(ParamSlot::Lfo1Shape, 2.f) == "Saw Up");
+    CHECK(text(ParamSlot::B_Lfo2Shape, 4.f) == "Square");
+    CHECK(text(ParamSlot::Lfo1Rate, 0.f) == "1.00 Hz");
+    CHECK(text(ParamSlot::Lfo2Rate, -2.f) == "0.25 Hz");
+    CHECK(text(ParamSlot::StepRate, 5.643856189774724f) == "50.00 Hz");
+    CHECK(text(ParamSlot::Random1Rate, -6.643856189774724f) == "0.01 Hz");
+    CHECK(text(ParamSlot::Env1Attack, -6.643856189774724f) == "10.0 ms");
+    CHECK(text(ParamSlot::Env1Attack, -9.965784284662087f) == "1.0 ms");
+    CHECK(text(ParamSlot::Env2Decay, 0.f) == "1.00 s");
+    CHECK(text(ParamSlot::C_Env2Release, 3.321928094887362f) == "10.00 s");
+    CHECK(text(ParamSlot::Env1Sustain, 1.f) == "100.00 %");
+    CHECK(text(ParamSlot::StepLength, 16.f) == "16");
+    CHECK(text(ParamSlot::PitchSpread, 12.f) == "12.00 st");
+    CHECK(text(ParamSlot::SizeSpread, 1.f) == "1.00 oct");
+    CHECK(text(ParamSlot::B_Size, -2.736965594166206f) == "150.0 ms");
+    CHECK(text(ParamSlot::B_Position, 0.28967658f) == "0.25 s");
+    CHECK(text(ParamSlot::MorphX, 0.5f) == "50.00 %");
+    CHECK(text(ParamSlot::LayerBOn, 0.f) == "Off");
+    CHECK(text(ParamSlot::LayerAOn, 1.f) == "On");
+    CHECK(text(ParamSlot::LevelD, 0.f) == "0.00 dB");
 }
 
 TEST_CASE("Decay shows infinity over exactly the infinite region", "[core][space]")
