@@ -7,6 +7,7 @@
 
 #include <algorithm>
 
+#include "gg/core/ModSources.h"
 #include "gg/core/ParamIds.h"
 #include "gg/grain/CloudScheduler.h"
 #include "gg/source/SourceMode.h"
@@ -132,6 +133,24 @@ constexpr float smoothstep(float e0, float e1, float x) noexcept
     const float s = std::clamp((x - e0) / (e1 - e0), 0.0f, 1.0f);
     return s * s * (3.0f - 2.0f * s);
 }
+
+/// Layer `layer`'s LFO `which` (0 for LFO 1, 1 for LFO 2; asserted) as its modulator takes it
+/// (M2 sub-project 1's spec §6.8, §6.9): the rate exp2Det(LFO Rate) Hz, its slot being log2 Hz,
+/// and the shape LFO Shape rounded to the nearest integer (halves up, as sourceKindOf rounds),
+/// 0 to 4. `layer` is below kLayers (asserted; the namespace's note).
+LfoParams lfoParams(const ParamValues &effective, uint8_t layer, int which) noexcept;
+
+/// Layer `layer`'s envelope `which` (0 for Env 1, 1 for Env 2; asserted): Attack, Decay and
+/// Release as exp2Det(slot) seconds, their slots being log2 seconds, and Sustain as it is.
+AdsrParams envParams(const ParamValues &effective, uint8_t layer, int which) noexcept;
+
+/// Layer `layer`'s random source `which` (0 for Random 1, 1 for Random 2; asserted): the rate
+/// exp2Det(Random Rate) Hz and Smooth as it is.
+RandomParams randomParams(const ParamValues &effective, uint8_t layer, int which) noexcept;
+
+/// Layer `layer`'s step sequencer: the rate exp2Det(Step Rate) Hz, Step Length rounded to the
+/// nearest integer (halves up) and clamped to 1..16, and Step 1 to Step 16 as they are.
+StepParams stepParams(const ParamValues &effective, uint8_t layer) noexcept;
 
 /// Each parameter's total macro offset, in its CLAP value domain (spec §3.2), from the macros'
 /// effective values (each in 0..1). Only the eight macro slots of `effectiveMacros` are read.

@@ -197,6 +197,80 @@ ParamValues macroOffsets(const ParamValues &effectiveMacros, Mode mode) noexcept
     return o;
 }
 
+namespace
+{
+/// x rounded to the nearest integer, halves up, after clamping to [lo, hi]: floor(x + 0.5) is
+/// exact for these small values (sourceKindOf's rounding).
+float roundedIn(float x, float lo, float hi) noexcept
+{
+    return std::floor(std::clamp(x, lo, hi) + 0.5f);
+}
+
+float exp2Of(const ParamValues &v, ParamSlot slot) noexcept
+{
+    return static_cast<float>(exp2Det(value(v, slot)));
+}
+} // namespace
+
+LfoParams lfoParams(const ParamValues &effective, uint8_t layer, int which) noexcept
+{
+    assert(layer < kLayers);
+    assert(which == 0 || which == 1);
+    const bool first = which == 0;
+    const ParamSlot rate = layerSlot(first ? LayerParam::Lfo1Rate : LayerParam::Lfo2Rate, layer);
+    const ParamSlot shape = layerSlot(first ? LayerParam::Lfo1Shape : LayerParam::Lfo2Shape, layer);
+    return {
+        .rateHz = exp2Of(effective, rate),
+        .shape = static_cast<LfoShape>(
+            static_cast<uint8_t>(roundedIn(read(effective, shape), 0.0f, 4.0f))),
+    };
+}
+
+AdsrParams envParams(const ParamValues &effective, uint8_t layer, int which) noexcept
+{
+    assert(layer < kLayers);
+    assert(which == 0 || which == 1);
+    const bool first = which == 0;
+    const auto slot = [layer](LayerParam p) { return layerSlot(p, layer); };
+    return {
+        .attackSec =
+            exp2Of(effective, slot(first ? LayerParam::Env1Attack : LayerParam::Env2Attack)),
+        .decaySec = exp2Of(effective, slot(first ? LayerParam::Env1Decay : LayerParam::Env2Decay)),
+        .sustain = read(effective, slot(first ? LayerParam::Env1Sustain : LayerParam::Env2Sustain)),
+        .releaseSec =
+            exp2Of(effective, slot(first ? LayerParam::Env1Release : LayerParam::Env2Release)),
+    };
+}
+
+RandomParams randomParams(const ParamValues &effective, uint8_t layer, int which) noexcept
+{
+    assert(layer < kLayers);
+    assert(which == 0 || which == 1);
+    const bool first = which == 0;
+    return {
+        .rateHz = exp2Of(
+            effective, layerSlot(first ? LayerParam::Random1Rate : LayerParam::Random2Rate, layer)),
+        .smooth =
+            read(effective,
+                 layerSlot(first ? LayerParam::Random1Smooth : LayerParam::Random2Smooth, layer)),
+    };
+}
+
+StepParams stepParams(const ParamValues &effective, uint8_t layer) noexcept
+{
+    assert(layer < kLayers);
+    StepParams p{};
+    p.rateHz = exp2Of(effective, layerSlot(LayerParam::StepRate, layer));
+    p.length = static_cast<uint8_t>(
+        roundedIn(read(effective, layerSlot(LayerParam::StepLength, layer)), 1.0f, 16.0f));
+    for (size_t i = 0; i < p.steps.size(); ++i)
+    {
+        const auto step = static_cast<LayerParam>(static_cast<size_t>(LayerParam::Step1) + i);
+        p.steps[i] = read(effective, layerSlot(step, layer));
+    }
+    return p;
+}
+
 float softLimit(float x) noexcept
 {
     const float a = std::abs(x);
