@@ -17,6 +17,7 @@ add_library(gg-plugin-core STATIC
         src/Factory.cpp
         src/GigaGrainsPlugin.cpp
         src/HelpersConfig.cpp
+        src/PresetDiscovery.cpp
         src/SampleLoader.cpp
         src/SearchCache.cpp
         )
