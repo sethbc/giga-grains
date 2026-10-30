@@ -1858,3 +1858,81 @@ TEST_CASE("reset restarts the smear", "[engine]")
     REQUIRE(sameBits(a.left, b.left));
     REQUIRE(sameBits(a.right, b.right));
 }
+
+namespace
+{
+// The largest |second difference| of v over [from, to).
+float maxSecondDifference(const std::vector<float> &v, std::size_t from, std::size_t to)
+{
+    float m = 0.0f;
+    for (std::size_t i = std::max<std::size_t>(from, 2); i < to; ++i)
+    {
+        m = std::max(m, std::abs(v[i] - 2.0f * v[i - 1] + v[i - 2]));
+    }
+    return m;
+}
+} // namespace
+
+TEST_CASE("a kind switch away from spectral, and back during the drain, doesn't click",
+          "[engine][spectral]")
+{
+    // The extremes spec §3's anti-goal. Spectral grains read the smear only Spray seconds behind
+    // its head (here none: 259 frames), so a smear that stopped dead at a switch away would cut
+    // every one of them within 6 ms. It drains instead (SpectralSource::setActive), and the
+    // grains fade out with it. Over a 220 Hz sine, whose smear's steady second difference is
+    // small, the largest second difference after the switch must stay within twice the largest
+    // in the 100 ms before it: a stopped smear scored over 1000 times it. The new Live grains
+    // read a silent ring. In the second case the layer turns back to Spectral halfway through the
+    // drain, where the new frames add onto what is pending, and that mustn't click either. Two
+    // host block sizes, which must give the same bytes.
+    constexpr int64_t kSwitch = 48000;
+    constexpr int64_t kAfter = 14400;
+    for (const bool back : {false, true})
+    {
+        std::vector<float> first;
+        for (const uint32_t block : {256u, 1u})
+        {
+            INFO((back ? "away and back" : "away") << ", blocks of " << block);
+            gg::Engine engine(spectralConfig());
+            engine.setSource(makeSine(1, 96000, 48000.0, 220.0, 0.5));
+            engine.setSourceMode(gg::SourceMode::Spectral);
+            gg::CloudParams p = spectralParams(0.5);
+            p.stereo = 0.0;
+            p.spray = 0.0;
+            p.grainDurationSec = 0.1;
+            engine.setCloudParams(p);
+            const Render before = render(engine, kSwitch, block);
+            const float steady =
+                maxSecondDifference(before.left, kSwitch - 4800, static_cast<std::size_t>(kSwitch));
+            REQUIRE(steady > 0.0f);
+            REQUIRE(peak(std::vector<float>(before.left.end() - 4800, before.left.end())) > 0.5f);
+
+            engine.setSourceMode(gg::SourceMode::Live);
+            const auto half = static_cast<int64_t>(engine.spectral()->fftSize() / 2);
+            Render after = render(engine, back ? half : kAfter, block);
+            if (back)
+            {
+                engine.setSourceMode(gg::SourceMode::Spectral);
+                const Render rest = render(engine, kAfter - half, block);
+                after.left.insert(after.left.end(), rest.left.begin(), rest.left.end());
+                after.right.insert(after.right.end(), rest.right.begin(), rest.right.end());
+            }
+            REQUIRE(allFinite(after.left));
+            const float worst = maxSecondDifference(after.left, 0, after.left.size());
+            INFO("steady " << steady << ", after the switch " << worst);
+            REQUIRE(worst <= 2.0f * steady);
+            // Not vacuous: the old grains sound on past the point a stopped smear cut them.
+            REQUIRE(peak(std::vector<float>(after.left.begin() + 480, after.left.begin() + 960)) >
+                    0.1f);
+            // Every sample, before and after the switch, joined: across the switch itself too.
+            std::vector<float> all = before.left;
+            all.insert(all.end(), after.left.begin(), after.left.end());
+            REQUIRE(maxSecondDifference(all, kSwitch - 2, kSwitch + 2) <= 2.0f * steady);
+            if (block == 256)
+            {
+                first = all;
+            }
+            REQUIRE(sameBits(all, first));
+        }
+    }
+}

@@ -290,12 +290,117 @@ TEST_CASE("inactive writes silence, active starts under the margin", "[engine][s
     REQUIRE(firstHop + n >= kT0 + n);
     REQUIRE(peak(out, 2 * static_cast<std::size_t>(firstHop + n)) > 0.01f);
 
-    // Switching away writes silence again at once.
+    // Switching away drains the frames already computed: the last, at the last hop boundary
+    // before the switch, comes out until 2N after its boundary, and from there on the ring takes
+    // silence.
     source.setActive(false);
-    const int64_t silentEnd = activeEnd + 2000;
-    source.process(m, 0.5, 4, 0, activeEnd, 2000);
+    const int64_t lastHop = (activeEnd - 1) / h * h;
+    const int64_t drainEnd = lastHop + 2 * n;
+    const int64_t silentEnd = drainEnd + 2000;
+    for (int64_t t = activeEnd; t < silentEnd;)
+    {
+        const auto len = static_cast<uint32_t>(std::min<int64_t>(700, silentEnd - t));
+        source.process(m, 0.5, 4, 0, t, len);
+        t += len;
+    }
     out = ringFrames(source, silentEnd);
-    REQUIRE(peak(out, 2 * static_cast<std::size_t>(activeEnd)) == 0.0f);
+    const std::vector<float> tail(out.begin() + 2 * activeEnd, out.begin() + 2 * drainEnd);
+    REQUIRE(peak(tail) > 0.01f);
+    // The last hop's frames still sound in the drain's last hop.
+    REQUIRE(peak(out, 2 * static_cast<std::size_t>(drainEnd - h)) > 0.0f);
+    REQUIRE(peak(out, 2 * static_cast<std::size_t>(drainEnd)) == 0.0f);
+}
+
+namespace
+{
+// Runs source over [0, total) in blocks of the sizes given (cycled), split at the toggles, where
+// it switches active on (toggles[0]), off, on again, and so on.
+void renderToggled(SpectralSource &source, const SpectralMaterial &m, int64_t total,
+                   const std::vector<uint32_t> &sizes, const std::vector<int64_t> &toggles)
+{
+    int64_t t = 0;
+    std::size_t i = 0;
+    std::size_t next = 0;
+    while (t < total)
+    {
+        while (next < toggles.size() && toggles[next] <= t)
+        {
+            source.setActive(next % 2 == 0);
+            ++next;
+        }
+        int64_t end = next < toggles.size() ? std::min(total, toggles[next]) : total;
+        end = std::min<int64_t>(end, t + sizes[i++ % sizes.size()]);
+        source.process(m, 0.5, 6, 2, t, static_cast<uint32_t>(end - t));
+        t = end;
+    }
+}
+} // namespace
+
+TEST_CASE("the drain is the same bytes at any block split", "[engine][spectral]")
+{
+    // Switched off, the pending frames drain out: a function of the switch frames alone. On at
+    // 0, off at kOff (inside a hop), and in the second case on again halfway through the drain,
+    // adding new frames onto it, and off once more. Every split gives the same ring.
+    const Stereo s = noiseSample(96000);
+    const SpectralMaterial m = sampleMaterial(s);
+    SpectralSource probe(kSampleRate, kMaxBlock);
+    const int64_t n = probe.fftSize();
+    const int64_t h = probe.hop();
+    constexpr int64_t kOff = 30000;
+    const int64_t drainEnd = (kOff - 1) / h * h + 2 * n;
+    for (const bool back : {false, true})
+    {
+        INFO((back ? "on again during the drain" : "off"));
+        std::vector<int64_t> toggles{0, kOff};
+        if (back)
+        {
+            toggles.push_back(kOff + n / 2);
+            toggles.push_back(kOff + 3 * n);
+        }
+        const int64_t total = toggles.back() + 3 * n;
+        SpectralSource reference(kSampleRate, kMaxBlock);
+        renderToggled(reference, m, total, {kMaxBlock}, toggles);
+        const std::vector<float> ref = ringFrames(reference, total);
+        REQUIRE(allFinite(ref));
+        REQUIRE(peak(std::vector<float>(ref.begin() + 2 * kOff, ref.begin() + 2 * drainEnd)) >
+                0.01f);
+        if (!back)
+        {
+            REQUIRE(peak(ref, 2 * static_cast<std::size_t>(drainEnd)) == 0.0f);
+        }
+        else
+        {
+            // The new frames sound again, and the last switch off drains too.
+            REQUIRE(peak(std::vector<float>(ref.begin() + 2 * drainEnd,
+                                            ref.begin() + 2 * (toggles[3] - 1))) > 0.01f);
+            const int64_t lastEnd = (toggles[3] - 1) / h * h + 2 * n;
+            REQUIRE(peak(std::vector<float>(ref.begin() + 2 * toggles[3],
+                                            ref.begin() + 2 * lastEnd)) > 0.01f);
+            REQUIRE(peak(ref, 2 * static_cast<std::size_t>(lastEnd)) == 0.0f);
+        }
+        for (const std::vector<uint32_t> &sizes :
+             {std::vector<uint32_t>{1}, {7}, {1024}, {333}, randomSizes(19)})
+        {
+            INFO("first block " << sizes.front() << " of " << sizes.size());
+            SpectralSource split(kSampleRate, kMaxBlock);
+            renderToggled(split, m, total, sizes, toggles);
+            const std::vector<float> got = ringFrames(split, total);
+            REQUIRE(std::memcmp(got.data(), ref.data(), ref.size() * sizeof(float)) == 0);
+        }
+    }
+}
+
+TEST_CASE("reset clears the drain at once", "[engine][spectral]")
+{
+    const Stereo s = noiseSample(48000);
+    const SpectralMaterial m = sampleMaterial(s);
+    SpectralSource source(kSampleRate, kMaxBlock);
+    source.setActive(true);
+    renderSplit(source, m, 0.5, 4, 0, 20000, {512});
+    source.setActive(false);
+    source.reset();
+    renderSplit(source, m, 0.5, 4, 0, 20000, {512});
+    REQUIRE(peak(ringFrames(source, 20000)) == 0.0f);
 }
 
 TEST_CASE("the window clamps at the sample's ends", "[engine][spectral]")

@@ -36,10 +36,14 @@ void CloudScheduler::setParams(const CloudParams &in) noexcept
     p.grainDurationSec = finiteOr(in.grainDurationSec, d.grainDurationSec);
     // Ruling M1-k: a fraction of the source in Sample mode, seconds behind the head in Live mode.
     // With sprayInSeconds, Sample mode's spray is seconds, which the source bounds when it
-    // clamps the read position to its frames: here it is only kept non-negative. Spectral mode
-    // (the extremes spec §6.2): Position is in the material's units, a sample's fraction or the
-    // live ring's seconds, which the smear clamps to its material; Spray is seconds behind the
-    // spectral ring's head, bounded by its length.
+    // clamps the read position to its frames: here it is only kept non-negative.
+    //
+    // Spectral mode (the extremes spec §6.2): Position addresses the smear's material as the
+    // layer would read it as Live or Sample, so its bound is liveBound, the Live path's own, with
+    // 1 as a floor for a sample's fraction when the live ring is shorter than 1 s (the smear
+    // clamps a fraction to [0, 1] itself). Spray is seconds behind the spectral ring's head,
+    // bounded by that ring's length.
+    const double liveBound = ringSeconds_; // Live's bound on Position and Spray
     double maxPosition = 1.0;
     double maxSpray = 1.0;
     switch (mode_)
@@ -47,11 +51,11 @@ void CloudScheduler::setParams(const CloudParams &in) noexcept
     case SourceMode::Sample:
         break;
     case SourceMode::Live:
-        maxPosition = ringSeconds_;
-        maxSpray = ringSeconds_;
+        maxPosition = liveBound;
+        maxSpray = liveBound;
         break;
     case SourceMode::Spectral:
-        maxPosition = std::max(1.0, ringSeconds_);
+        maxPosition = std::max(1.0, liveBound);
         maxSpray = SpectralSource::kRingSeconds;
         break;
     }

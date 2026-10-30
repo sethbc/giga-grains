@@ -2084,6 +2084,18 @@ TEST_CASE("spectral mode draws the spray alone behind the smear's head", "[cloud
         spectral.setParams(p);
         REQUIRE(spectral.params().position == 16.0);
         REQUIRE(spectral.params().spray == gg::SpectralSource::kRingSeconds);
+        // Position's bound is the Live path's own, at any ring of 1 s or more.
+        for (const double ring : {1.0, 3.5, 16.0, 30.0})
+        {
+            INFO("a ring of " << ring << " s");
+            gg::CloudScheduler liveBound;
+            liveBound.prepare(48000.0);
+            liveBound.setSourceMode(gg::SourceMode::Live, ring);
+            liveBound.setParams(p);
+            spectral.setSourceMode(gg::SourceMode::Spectral, ring);
+            REQUIRE(spectral.params().position == liveBound.params().position);
+            REQUIRE(spectral.params().position == ring);
+        }
         // Without a live ring the material is a sample: a fraction.
         spectral.setSourceMode(gg::SourceMode::Spectral, 0.0);
         REQUIRE(spectral.params().position == 1.0);

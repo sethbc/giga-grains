@@ -121,18 +121,14 @@ void SpectralSource::reset() noexcept
     {
         std::fill(a.begin(), a.end(), 0.0f);
     }
+    pendingUntil_ = 0;
 }
 
 void SpectralSource::setActive(bool active) noexcept
 {
-    if (active && !active_)
-    {
-        // Whatever an earlier active stretch left pending is never heard.
-        for (auto &a : accumulation_)
-        {
-            std::fill(a.begin(), a.end(), 0.0f);
-        }
-    }
+    // Nothing is cleared: switched off, the frames already overlap-added drain out, and switched
+    // back on during the drain, the new frames add onto what is still pending, so neither switch
+    // cuts the stream. Once a drain is spent, every slot of the accumulation is 0 again.
     active_ = active;
 }
 
@@ -153,18 +149,22 @@ void SpectralSource::process(const SpectralMaterial &m, double position, uint64_
     do
     {
         const uint32_t piece = std::min(numFrames, maxBlockSize_);
-        if (!active_)
+        if (!active_ && blockStart >= pendingUntil_)
         {
             ring_.write(nullptr, 0, 0, blockStart, piece); // silence, and no STFT
         }
         else
         {
+            // Active, or draining: the accumulation's samples go out, and only while active are
+            // new frames added. Past pendingUntil_ every slot read is +0, as silence is, so where a
+            // piece ends never changes the ring.
             for (uint32_t j = 0; j < piece; ++j)
             {
                 const int64_t t = blockStart + j;
-                if ((t & (hopSize - 1)) == 0)
+                if (active_ && (t & (hopSize - 1)) == 0)
                 {
                     computeFrame(m, position, seed, layer, t / hopSize);
+                    pendingUntil_ = t + 2 * n; // frame t / H comes out over [t + N, t + 2N)
                 }
                 // The output at t is the accumulation at spectral time t − N, complete since
                 // frame floor((t − N)/H) and every frame before it have been added.

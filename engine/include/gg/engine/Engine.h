@@ -98,9 +98,9 @@ using GrainEventSink = void (*)(void *ctx, uint32_t layer, const GrainSpec &);
 /// 0 nothing is read, so neither stale data nor NaN can reach the output.
 ///
 /// **Spectral mode** (the extremes spec §6.2). Each block, after the live ring's write and
-/// before any grain spawns, the SpectralSource writes the block into its own ring: silence
-/// unless the mode in effect is Spectral, else the smear of the material, the current sample
-/// slot when it holds a source, else the live ring (read at each hop's own head), at the
+/// before any grain spawns, the SpectralSource writes the block into its own ring: its drain,
+/// then silence, unless the mode in effect is Spectral, else the smear of the material, the current
+/// sample slot when it holds a source, else the live ring (read at each hop's own head), at the
 /// Position in effect (CloudParams, in the material's units). A Spectral grain is a ring grain
 /// over the smear's ring, on kSpectralSlot: it starts positionDraw seconds behind that ring's
 /// head under the admission clamp above, with N the smear's ring frames, and the live kernels
@@ -203,10 +203,10 @@ class Engine
     /// from the next process() call's first frame: the scheduler draws position and spray for the
     /// new kind from that frame, and the grains still sounding finish on the source they started
     /// on (their sample slot or their ring), so a switch doesn't click. Switching to Spectral
-    /// starts the smear at the next hop boundary; switching away stops it, and its ring takes
-    /// silence from that frame (SpectralSource::setActive), which the Spectral grains still
-    /// sounding read once they reach it. Real-time safe, with the same threading rule as
-    /// setCloudParams.
+    /// starts the smear at the next hop boundary; switching away stops its new frames, and its
+    /// ring drains what is pending and then takes silence (SpectralSource::setActive), so the
+    /// Spectral grains still sounding fade out with it. Real-time safe, with the same threading
+    /// rule as setCloudParams.
     void setSourceMode(SourceMode mode) noexcept;
 
     /// The enable gate (spec §6.2). Takes effect from the next process() call's first frame. Off:

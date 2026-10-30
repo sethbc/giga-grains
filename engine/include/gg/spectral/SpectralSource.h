@@ -56,10 +56,16 @@ struct SpectralMaterial
 /// So the stream is a function of the sample clock, the seed, the layer, the material and the
 /// position at each hop, never of where blocks fall.
 ///
-/// **The output ring** is a LiveSource of kRingSeconds, written on every process() call: silence
-/// while inactive (no STFT runs), the smear while active. It is never frozen. Activation clears
-/// the accumulation, so the stream starts at the next hop boundary, N or more frames after the
-/// switch, fading in over the first frames' overlap-add.
+/// **The output ring** is a LiveSource of kRingSeconds, written on every process() call: the smear
+/// while active; while inactive, first the drain, then silence (no STFT runs). It is never frozen.
+/// Switching on from silence, the stream starts at the next hop boundary, N or more frames after
+/// the switch, fading in over the first frames' overlap-add. Switching off, no new frame is
+/// computed, but the frames already overlap-added keep coming out until they are spent, at
+/// output time kH + 2N for the last frame k: the stream fades out over the synthesis windows'
+/// tails, so the grains still reading it don't click (the extremes spec §3's anti-goal). From
+/// there on the ring takes silence. Switching back on during the drain adds the new frames onto
+/// what is still pending. The drain depends only on the frames computed, so on the switch frames
+/// and never on where blocks fall.
 ///
 /// Everything, pffft's setup and work buffer included, is allocated at construction.
 class SpectralSource
@@ -93,15 +99,18 @@ class SpectralSource
     uint32_t fftSize() const noexcept { return fftSize_; }
     uint32_t hop() const noexcept { return fftSize_ / 4; }
 
-    /// Ring time 0, frame 0, the accumulation cleared. Keeps the active setting.
+    /// Ring time 0, frame 0, the accumulation cleared at once (no drain). Keeps the active setting.
     void reset() noexcept;
 
-    /// Whether the layer's kind is Spectral. Turning it on clears the accumulation.
+    /// Whether the layer's kind is Spectral, from the next process() call. Turning it off starts
+    /// the drain (see the class comment); turning it on computes frames again from the next hop
+    /// boundary, adding onto any drain still pending.
     void setActive(bool active) noexcept;
     bool active() const noexcept { return active_; }
 
-    /// Writes numFrames samples at output clock blockStart into the ring: silence while
-    /// inactive, else the smear, computing every frame whose hop boundary falls in the block.
+    /// Writes numFrames samples at output clock blockStart into the ring: the smear while active,
+    /// computing every frame whose hop boundary falls in the block; while inactive, what is still
+    /// pending of the frames already computed, then silence.
     /// position is in the material's units: a fraction of the sample, or seconds behind the
     /// ring's head. Blocks must be contiguous from reset(), and numFrames at most maxBlockSize,
     /// as LiveSource::write requires (a longer block is written in pieces, so headAt() then
@@ -151,6 +160,9 @@ class SpectralSource
     std::vector<float> out_[2]; // maxBlockSize: one block's output, before it goes into the ring
     LiveSource ring_;
     bool active_{false};
+    // The output time from which the accumulation is all 0: kH + 2N for the last frame k
+    // computed, 0 before any. Inactive from it on, process() writes silence without reading it.
+    int64_t pendingUntil_{0};
 };
 } // namespace gg
 

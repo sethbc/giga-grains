@@ -337,9 +337,9 @@ void Engine::processBlock(const float *const *in, uint32_t numInChannels, float 
         live_.write(in, numInChannels, offset, blockStart, numFrames);
     }
     // Then the Spectral Smear writes the block into its ring, before any grain reads it (the
-    // extremes spec §6.2): silence unless the kind is Spectral, else the smear of the current
-    // sample, or without one of the live ring just written, whose head it reads at each hop.
-    // Position is the one in effect for the block, so each hop takes its own block's.
+    // extremes spec §6.2): its drain, then silence, unless the kind is Spectral, else the smear of
+    // the current sample, or without one of the live ring just written, whose head it reads at each
+    // hop. Position is the one in effect for the block, so each hop takes its own block's.
     if (spectral_ != nullptr)
     {
         spectral_->setActive(mode_ == SourceMode::Spectral);
