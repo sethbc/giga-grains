@@ -16,6 +16,7 @@
 
 #include "gg/core/DenormalGuard.h"
 #include "gg/core/ParamMap.h"
+#include "fx/BusFilter.h"
 #include "sst/basic-blocks/params/ParamMetadata.h"
 
 namespace gg::core
@@ -144,13 +145,6 @@ bool sameCloud(const CloudParams &a, const CloudParams &b) noexcept
            same(a.smearDetuneSemitones, b.smearDetuneSemitones) && same(a.busSplit, b.busSplit);
 }
 
-/// Whether `s` is a modulator's control (LFO 1 Rate to Step 16, in any layer): no route targets
-/// one, so its effective value is clamp(base + modulation).
-bool isModulatorControl(ParamSlot s) noexcept
-{
-    const std::optional<LayerRef> ref = layerOf(s);
-    return ref && ref->param >= LayerParam::Lfo1Rate;
-}
 } // namespace
 
 float Processor::Ramp::at(int64_t t, int64_t length) const noexcept
@@ -185,6 +179,8 @@ void Processor::Ramp::jump(float target) noexcept
 
 Processor::Layer::Layer(const EngineConfig &config) : engine(config) {}
 
+Processor::Layer::~Layer() = default;
+
 Processor::Processor(const ProcessorConfig &config)
     : config_(validated(config)), rampSamples_(rampLength(config.sampleRate)),
       pieceMax_(std::min(config.maxBlockSize, kFeedbackDelay)), routes_(factoryRoutes(config.mode)),
@@ -211,7 +207,16 @@ Processor::Processor(const ProcessorConfig &config)
         layers_[L] = std::make_unique<Layer>(engine);
         Layer &l = *layers_[L];
         l.diffuser.prepare(config_.sampleRate);
+        for (auto &filter : l.filter)
+        {
+            filter = std::make_unique<fx::BusFilter>();
+            filter->prepare(config_.sampleRate, static_cast<uint32_t>(rampSamples_));
+        }
         for (auto &channel : l.wet)
+        {
+            channel.assign(pieceMax_, 0.0f);
+        }
+        for (auto &channel : l.bus2)
         {
             channel.assign(pieceMax_, 0.0f);
         }
@@ -538,7 +543,7 @@ void Processor::commitPending() noexcept
         // step there before the effective values are recomputed: no route targets it, so its
         // effective value is already known.
         if ((hasPendingBase_[s] || hasPendingMod_[s]) &&
-            isModulatorControl(static_cast<ParamSlot>(s)))
+            isModulatorControlSlot(static_cast<ParamSlot>(s)))
         {
             effective_[s] = clampToRange(s, base_[s] + mod_[s]);
         }
@@ -801,6 +806,9 @@ void Processor::reset() noexcept
             channel.fill(0.0f);
         }
         l->diffuser.reset();
+        l->filter[0]->reset();
+        l->filter[1]->reset();
+        l->busGiven = false;
         l->peaks.reset();
         l->events.clear();
         l->droppedEvents = 0;
@@ -1239,6 +1247,9 @@ void Processor::renderLayerPiece(uint8_t L, int64_t from, uint32_t n, const floa
             // comes back: the diffuser's lines and the limited history start from silence then,
             // as the pool does.
             l.diffuser.reset();
+            l.filter[0]->reset();
+            l.filter[1]->reset();
+            l.busGiven = false;
             for (auto &channel : l.wetHistory)
             {
                 channel.fill(0.0f);
@@ -1274,9 +1285,10 @@ void Processor::renderLayerPiece(uint8_t L, int64_t from, uint32_t n, const floa
     }
     const int64_t headBefore = l.engine.liveWriteHead();
     float *const wet[2] = {l.wet[0].data(), l.wet[1].data()};
+    float *const bus2[2] = {l.bus2[0].data(), l.bus2[1].data()};
     if (renders)
     {
-        l.engine.process(ringIn, ringChannels, wet, rendering, n);
+        l.engine.process(ringIn, ringChannels, wet, rendering, bus2, n);
     }
     else
     {
@@ -1306,6 +1318,31 @@ void Processor::renderLayerPiece(uint8_t L, int64_t from, uint32_t n, const floa
         const float delta = std::clamp(l.diffusion.at(t, rampSamples_), 0.0f, 1.0f);
         // One channel: its mono render is diffused as both sides.
         float w[2] = {wet[0][i], rendering > 1 ? wet[1][i] : wet[0][i]};
+        // The two buses (sub-project 4's spec §6.3): each through its filter, set at every grid
+        // boundary from the effective values in force, then summed once a grain has been on bus 2.
+        if (!l.busGiven || t % kControlGrid == 0)
+        {
+            const BusParams bp = busParams(effective_, L);
+            for (size_t b = 0; b < 2; ++b)
+            {
+                l.filter[b]->setCell(bp.type[b], bp.cutoffHz[b], bp.resonance[b]);
+            }
+            l.busGiven = true;
+        }
+        l.filter[0]->process(w[0], w[1]);
+        if (l.engine.bus2Used())
+        {
+            float w2[2] = {bus2[0][i], rendering > 1 ? bus2[1][i] : bus2[0][i]};
+            l.filter[1]->process(w2[0], w2[1]);
+            w[0] += w2[0];
+            w[1] += w2[1];
+        }
+        else
+        {
+            // Nothing on bus 2 yet: its filter hears silence, which leaves it silent.
+            float silent[2] = {0.0f, 0.0f};
+            l.filter[1]->process(silent[0], silent[1]);
+        }
         l.diffuser.process(w[0], w[1], delta);
         for (size_t c = 0; c < 2; ++c)
         {

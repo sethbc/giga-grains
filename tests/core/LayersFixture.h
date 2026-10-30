@@ -263,8 +263,9 @@ constexpr int64_t kInvarianceFrames = 2 * 48000;
 // Every layer's built parameters automated (spec §6.2–§6.4), each with 12 events off the grid,
 // every third a modulation offset of up to a quarter of the range: the M1 layer parameters,
 // Source (Sample, Live and the unbuilt Resample), the spreads, each layer's Level and Layer On
-// (on 70% of the time, so layers go off for longer than the ramp and come back), and Morph X and
-// Y swept. Times and values come from gg::rng.
+// (on 70% of the time, so layers go off for longer than the ramp and come back), Morph X and
+// Y swept, and each layer's Bus Split with both buses' filter type, cutoff and resonance. Times and
+// values come from gg::rng.
 inline std::vector<TimedEvent> layerAutomation()
 {
     using gg::core::LayerParam;
@@ -308,6 +309,24 @@ inline std::vector<TimedEvent> layerAutomation()
     targets.push_back({ParamSlot::MorphX, 0.0f, 1.0f, false});
     targets.push_back({ParamSlot::MorphY, 0.0f, 1.0f, false});
     targets.push_back({ParamSlot::Mix, 0.5f, 1.0f, false});
+    // The grain buses (extremes spec §6.3), after the rest so that the older targets keep their
+    // events: each layer's Bus Split, and each bus's filter type (stepped), cutoff and resonance.
+    for (uint8_t L = 0; L < 4; ++L)
+    {
+        targets.push_back({gg::core::layerSlot(LayerParam::BusSplit, L), 0.0f, 1.0f, false});
+        for (const LayerParam f : {LayerParam::Bus1Filter, LayerParam::Bus2Filter})
+        {
+            targets.push_back({gg::core::layerSlot(f, L), 0.0f, 4.0f, true});
+        }
+        for (const LayerParam c : {LayerParam::Bus1Cutoff, LayerParam::Bus2Cutoff})
+        {
+            targets.push_back({gg::core::layerSlot(c, L), 5.0f, 13.0f, false});
+        }
+        for (const LayerParam r : {LayerParam::Bus1Resonance, LayerParam::Bus2Resonance})
+        {
+            targets.push_back({gg::core::layerSlot(r, L), 0.0f, 1.0f, false});
+        }
+    }
 
     std::vector<TimedEvent> events;
     for (std::size_t t = 0; t < targets.size(); ++t)

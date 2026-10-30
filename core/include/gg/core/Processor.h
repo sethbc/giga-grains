@@ -30,6 +30,11 @@
 
 namespace gg::core
 {
+namespace fx
+{
+class BusFilter;
+}
+
 struct ProcessorConfig
 {
     double sampleRate;     ///< Finite and > 0.
@@ -600,6 +605,7 @@ class Processor
     struct Layer
     {
         explicit Layer(const EngineConfig &config);
+        ~Layer();
 
         // Before engine, so destroyed after it: it frees the sources the engine may still point
         // to.
@@ -616,6 +622,13 @@ class Processor
         Ramp on;       // r_L: 1 on, 0 off
         // The engine's output, then wet_L in place: pieceMax frames each.
         std::array<std::vector<float>, 2> wet;
+        // Bus 2 of the engine's output (spec §6.3 of sub-project 4): pieceMax frames each, summed
+        // into wet once the engine has put a grain on it.
+        std::array<std::vector<float>, 2> bus2;
+        // The two buses' filters, index 0 for bus 1; busGiven is false until setCell has run since
+        // the construction, a reset or the layer's gate clearing it.
+        std::unique_ptr<fx::BusFilter> filter[2];
+        bool busGiven{false};
         // The ring input while Feedback acts: pieceMax frames each.
         std::array<std::vector<float>, 2> ringIn;
         // The limited wet signal of the last kFeedbackDelay samples: sample t at t % D.

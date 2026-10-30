@@ -9,6 +9,7 @@
 #include <cassert>
 #include <cmath>
 #include <cstddef>
+#include <optional>
 
 #include "gg/core/MathDet.h"
 
@@ -285,6 +286,12 @@ float layerBusSplit(const ParamValues &effective, uint8_t layer) noexcept
 {
     assert(layer < kLayers);
     return read(effective, layerSlot(LayerParam::BusSplit, layer));
+}
+
+bool isModulatorControlSlot(ParamSlot s) noexcept
+{
+    const std::optional<LayerRef> ref = layerOf(s);
+    return ref && ref->param >= LayerParam::Lfo1Rate && ref->param <= LayerParam::Step16;
 }
 
 BusParams busParams(const ParamValues &effective, uint8_t layer) noexcept

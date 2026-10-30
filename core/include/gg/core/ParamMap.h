@@ -182,6 +182,11 @@ float layerSmear(const ParamValues &effective, uint8_t layer) noexcept;
 /// (`layer` below kLayers, asserted).
 float layerBusSplit(const ParamValues &effective, uint8_t layer) noexcept;
 
+/// Whether `s` is a modulator's control: LFO 1 Rate to Step 16, in any layer. No route targets
+/// one, so its effective value is clamp(base + modulation). The layer parameters after Step 16
+/// (Smear, the buses) are not.
+bool isModulatorControlSlot(ParamSlot s) noexcept;
+
 /// A layer's two bus filters (spec §6.3), index 0 for bus 1 and 1 for bus 2.
 struct BusParams
 {

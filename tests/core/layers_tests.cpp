@@ -659,6 +659,9 @@ TEST_CASE("four layers are block-size invariant", "[core][layers][determinism]")
         INFO("layer " << L);
         REQUIRE(ref.log.layer(L).size() > 10);
     }
+    // Not vacuous: grains went to bus 2 (the automation moves Bus Split).
+    REQUIRE(std::count_if(ref.log.events.begin(), ref.log.events.end(),
+                          [](const Log::Event &e) { return e.grain.bus == 1; }) > 10);
     // Not vacuous: some layer went off for longer than its ramp and came back, so its engine was
     // re-enabled with a forced onset on a grid boundary.
     bool forcedOnset = false;

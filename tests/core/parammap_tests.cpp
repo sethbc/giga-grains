@@ -1415,6 +1415,35 @@ TEST_CASE("resting macros offset nothing through the factory routes", "[core]")
     }
 }
 
+TEST_CASE("only LFO 1 Rate to Step 16 are modulator controls", "[core]")
+{
+    // The Processor writes a modulator control's effective value as base + modulation (no route
+    // targets one), so a parameter past Step 16 must not be taken for one (the bus filters and
+    // Smear have routable targets).
+    using gg::core::isModulatorControlSlot;
+    using gg::core::kLayers;
+    using gg::core::LayerParam;
+    for (uint8_t L = 0; L < kLayers; ++L)
+    {
+        for (uint32_t i = 0; i < static_cast<uint32_t>(LayerParam::Count); ++i)
+        {
+            const auto p = static_cast<LayerParam>(i);
+            const bool expected = p >= LayerParam::Lfo1Rate && p <= LayerParam::Step16;
+            INFO("layer " << int(L) << ", parameter " << i);
+            CHECK(isModulatorControlSlot(gg::core::layerSlot(p, L)) == expected);
+        }
+    }
+    for (const LayerParam p :
+         {LayerParam::Smear, LayerParam::BusSplit, LayerParam::Bus1Filter, LayerParam::Bus1Cutoff,
+          LayerParam::Bus1Resonance, LayerParam::Bus2Filter, LayerParam::Bus2Cutoff,
+          LayerParam::Bus2Resonance})
+    {
+        CHECK_FALSE(isModulatorControlSlot(gg::core::layerSlot(p, 2)));
+    }
+    CHECK_FALSE(isModulatorControlSlot(gg::core::ParamSlot::Mix));
+    CHECK(isModulatorControlSlot(gg::core::ParamSlot::Lfo1Rate));
+}
+
 TEST_CASE("smoothstep", "[core]")
 {
     using gg::core::smoothstep;
