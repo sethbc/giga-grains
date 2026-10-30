@@ -5,6 +5,7 @@
 #include "gg/core/ParamMap.h"
 
 #include <algorithm>
+#include <cassert>
 #include <cmath>
 #include <cstddef>
 
@@ -26,39 +27,101 @@ constexpr double kLog2Of10 = 3.321928094887362;
 constexpr float kBelowOne = 0x1.fffffep-1f;
 } // namespace
 
-CloudParams toCloudParams(const ParamValues &effective, Mode mode) noexcept
+SourceKind sourceKindOf(const ParamValues &effective, uint8_t layer) noexcept
 {
-    CloudParams p;
-    p.densityHz = exp2Det(value(effective, ParamSlot::Density));
-    p.distribution = value(effective, ParamSlot::Distribution);
-    p.grainDurationSec = exp2Det(value(effective, ParamSlot::Size));
-    if (mode == Mode::Instrument)
+    assert(layer < kLayers);
+    const float v = effective[static_cast<size_t>(layerSlot(LayerParam::Source, layer))];
+    // In range already (the Processor clamps every effective value); the clamp keeps a caller's
+    // stray value an enumerator. floor(v + 0.5) is exact: the nearest integer, halves up.
+    const float rounded = std::floor(std::clamp(v, 0.0f, 4.0f) + 0.5f);
+    return static_cast<SourceKind>(static_cast<uint8_t>(rounded));
+}
+
+SourceMode builtKind(SourceKind kind, Mode mode) noexcept
+{
+    switch (kind)
     {
-        p.position = value(effective, ParamSlot::Position);
+    case SourceKind::Sample:
+        return SourceMode::Sample;
+    case SourceKind::Live:
+        return SourceMode::Live;
+    case SourceKind::Resample:
+    case SourceKind::Spectral:
+    case SourceKind::Oscillator:
+        break;
+    }
+    return mode == Mode::Fx ? SourceMode::Live : SourceMode::Sample;
+}
+
+CloudParams toCloudParams(const ParamValues &effective, Mode mode, uint8_t layer) noexcept
+{
+    assert(layer < kLayers);
+    const auto param = [&effective, layer](LayerParam p) {
+        return value(effective, layerSlot(p, layer));
+    };
+    CloudParams p;
+    p.densityHz = exp2Det(param(LayerParam::Density));
+    p.distribution = param(LayerParam::Distribution);
+    p.grainDurationSec = exp2Det(param(LayerParam::Size));
+    if (builtKind(sourceKindOf(effective, layer), mode) == SourceMode::Sample)
+    {
+        p.position = param(LayerParam::Position);
         p.sprayInSeconds = true;
     }
     else
     {
-        p.position = 16.0 / 255.0 * (exp2Det(8.0 * value(effective, ParamSlot::Position)) - 1.0);
+        p.position = 16.0 / 255.0 * (exp2Det(8.0 * param(LayerParam::Position)) - 1.0);
     }
-    p.spray = 2.0 / 255.0 * (exp2Det(8.0 * value(effective, ParamSlot::Spray)) - 1.0);
-    p.pitchSemitones = value(effective, ParamSlot::Pitch);
-    p.stereo = value(effective, ParamSlot::Stereo);
-    p.texture = value(effective, ParamSlot::Texture);
+    p.spray = 2.0 / 255.0 * (exp2Det(8.0 * param(LayerParam::Spray)) - 1.0);
+    p.pitchSemitones = param(LayerParam::Pitch);
+    p.stereo = param(LayerParam::Stereo);
+    p.texture = param(LayerParam::Texture);
+    p.pitchSpreadSemitones = param(LayerParam::PitchSpread);
+    p.sizeSpreadOctaves = param(LayerParam::SizeSpread);
     p.gain = static_cast<float>(1.0 / std::sqrt(std::max(1.0, p.densityHz * p.grainDurationSec)));
     return p;
 }
 
-WetParams toWetParams(const ParamValues &effective, Mode mode) noexcept
+CloudParams toCloudParams(const ParamValues &effective, Mode mode) noexcept
 {
+    return toCloudParams(effective, mode, 0);
+}
+
+WetParams toWetParams(const ParamValues &effective, Mode mode, uint8_t layer) noexcept
+{
+    assert(layer < kLayers);
+    const auto at = [&effective](ParamSlot slot) { return effective[static_cast<size_t>(slot)]; };
+    const bool live = builtKind(sourceKindOf(effective, layer), mode) == SourceMode::Live;
     return {
         .levelGain =
-            static_cast<float>(exp2Det(value(effective, ParamSlot::Level) * kLog2Of10 / 20.0)),
-        .mix = effective[static_cast<size_t>(ParamSlot::Mix)],
-        .freeze = effective[static_cast<size_t>(ParamSlot::Freeze)] > 0.5f,
-        .feedback =
-            mode == Mode::Instrument ? 0.0f : effective[static_cast<size_t>(ParamSlot::Feedback)],
+            static_cast<float>(exp2Det(value(effective, levelSlot(layer)) * kLog2Of10 / 20.0)),
+        .mix = at(ParamSlot::Mix),
+        .freeze = at(layerSlot(LayerParam::Freeze, layer)) > 0.5f,
+        .feedback = live ? at(layerSlot(LayerParam::Feedback, layer)) : 0.0f,
     };
+}
+
+WetParams toWetParams(const ParamValues &effective, Mode mode) noexcept
+{
+    return toWetParams(effective, mode, 0);
+}
+
+float layerDiffusion(const ParamValues &effective, uint8_t layer) noexcept
+{
+    assert(layer < kLayers);
+    return effective[static_cast<size_t>(layerSlot(LayerParam::Diffusion, layer))];
+}
+
+bool layerOn(const ParamValues &effective, uint8_t layer) noexcept
+{
+    assert(layer < kLayers);
+    return effective[static_cast<size_t>(layerOnSlot(layer))] > 0.5f;
+}
+
+MorphParams toMorphParams(const ParamValues &effective) noexcept
+{
+    return {.x = effective[static_cast<size_t>(ParamSlot::MorphX)],
+            .y = effective[static_cast<size_t>(ParamSlot::MorphY)]};
 }
 
 SpaceParams toSpaceParams(const ParamValues &effective, Mode mode) noexcept
@@ -110,8 +173,8 @@ ParamValues macroOffsets(const ParamValues &effectiveMacros, Mode mode) noexcept
 
     offset(ParamSlot::Freeze) += macro(ParamSlot::Macro6);
 
-    // Macro 7 is Macro Feedback in both products (M2 sub-project 1's spec §6.9, §6.10); the
-    // instrument's Feedback does nothing yet (toWetParams).
+    // Macro 7 is Macro Feedback in both products (M2 sub-project 1's spec §6.9, §6.10); Feedback
+    // acts on a layer that reads its live ring (toWetParams).
     const float v7 = macro(ParamSlot::Macro7);
     offset(ParamSlot::Feedback) += 0.9f * (v7 * v7);
 

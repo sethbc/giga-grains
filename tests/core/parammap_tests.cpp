@@ -271,15 +271,44 @@ TEST_CASE("param map follows the taper table", "[core]")
                 }
             case ParamSlot::Feedback:
             {
-                // Read as it is in the FX, and 0 in the instrument, which has no ring to feed
-                // (sub-project 5's spec §5); every other wet field is the defaults'.
+                // Read as it is on a layer that reads its ring, in either product, and 0 on a
+                // Sample layer, which has no ring to feed (sub-project 5's spec §5; M2
+                // sub-project 1's spec §6.4); every other wet field is the defaults'. `values`
+                // has the FX's default Source, Live.
                 REQUIRE(wet.feedback == v);
-                REQUIRE(toWetParams(values, Mode::Instrument).feedback == 0.0f);
+                REQUIRE(toWetParams(values, Mode::Instrument).feedback == v);
+                auto sampleLayer = values;
+                sampleLayer[static_cast<size_t>(ParamSlot::Source)] = 0.0f; // Sample
+                REQUIRE(toWetParams(sampleLayer, Mode::Fx).feedback == 0.0f);
+                REQUIRE(toWetParams(sampleLayer, Mode::Instrument).feedback == 0.0f);
                 const auto w0 = toWetParams(defaults(Mode::Fx), Mode::Fx);
                 REQUIRE(w0.feedback == 0.0f);
                 REQUIRE(wet.levelGain == w0.levelGain);
                 REQUIRE(wet.mix == w0.mix);
                 REQUIRE(wet.freeze == w0.freeze);
+                REQUIRE(sameBits(cloud, toCloudParams(defaults(Mode::Fx), Mode::Fx)));
+                break;
+            }
+            case ParamSlot::Source:
+            {
+                // M2 sub-project 1's spec §6.4: layer A's kind picks Position's mapping and
+                // Spray's sprayInSeconds (Sample: the fraction; Live and, in the FX, the unbuilt
+                // kinds: seconds behind the head), and whether Feedback reaches the ring.
+                const auto c0 = toCloudParams(defaults(Mode::Fx), Mode::Fx);
+                const bool sample = v == 0.0f;
+                REQUIRE(sameApartFromPosition(cloud, c0));
+                REQUIRE(cloud.sprayInSeconds == sample);
+                REQUIRE(cloud.position == (sample ? at(values, ParamSlot::Position) : c0.position));
+                REQUIRE(bitsOf(wet.levelGain) ==
+                        bitsOf(toWetParams(defaults(), Mode::Fx).levelGain));
+                break;
+            }
+            case ParamSlot::PitchSpread:
+            case ParamSlot::SizeSpread:
+            {
+                // Read as they are (spec §6.6); every other field is the defaults'.
+                REQUIRE((slot == ParamSlot::PitchSpread ? cloud.pitchSpreadSemitones
+                                                        : cloud.sizeSpreadOctaves) == d(v));
                 REQUIRE(sameBits(cloud, toCloudParams(defaults(Mode::Fx), Mode::Fx)));
                 break;
             }
@@ -294,8 +323,10 @@ TEST_CASE("param map follows the taper table", "[core]")
             default:
             {
                 // The macros act through macroOffsets before these functions: none of them moves
-                // a field here. Nor does any of M2's new slots yet (M2 sub-project 1's spec §6.9:
-                // layer A's new parameters, layers B to D and the layers' globals).
+                // a field here. Nor does any other of M2's new slots for layer A (M2 sub-project
+                // 1's spec §6.9: its modulators, layers B to D and the layers' globals; the
+                // layer-aware functions read those, "the layer-aware maps read each layer's
+                // slots").
                 const ParamValues base = defaults(Mode::Fx);
                 const auto c0 = toCloudParams(base, Mode::Fx);
                 const auto w0 = toWetParams(base, Mode::Fx);
@@ -494,6 +525,13 @@ TEST_CASE("space params follow the table", "[core][space]")
                 {
                     continue; // the grains' envelope, a cloud field (the taper table test)
                 }
+                if (slot == ParamSlot::Source || slot == ParamSlot::PitchSpread ||
+                    slot == ParamSlot::SizeSpread)
+                {
+                    // Layer A's cloud fields of M2 sub-project 1 (spec §6.4, §6.6): Source picks
+                    // Position's mapping, the spreads are read as they are ("layer-aware" below).
+                    continue;
+                }
                 const auto &meta = gg::core::paramMeta(slot, mode);
                 for (const float v : {meta.minVal, meta.maxVal})
                 {
@@ -558,8 +596,10 @@ TEST_CASE("the instrument's Position is a fraction and its Spray is seconds", "[
 
     SECTION("the FX's mapping is unchanged, bit for bit")
     {
-        for (const auto &v : samplePoints(Mode::Fx))
+        // On a layer that reads its ring, the FX's default kind (M2 sub-project 1's spec §6.4).
+        for (auto v : samplePoints(Mode::Fx))
         {
+            v[static_cast<size_t>(ParamSlot::Source)] = 1.0f; // Live
             REQUIRE(sameBits(toCloudParams(v, Mode::Fx), fxReference(v)));
         }
     }
@@ -573,6 +613,165 @@ TEST_CASE("the instrument's Position is a fraction and its Spray is seconds", "[
         // The FX's still shows seconds behind the write head.
         REQUIRE(gg::core::paramMeta(ParamSlot::Position, Mode::Fx).valueToString(0.28967658f) ==
                 std::optional<std::string>("0.25 s"));
+    }
+}
+
+TEST_CASE("the layer-aware maps read each layer's slots", "[core][layers]")
+{
+    using gg::SourceMode;
+    using gg::core::builtKind;
+    using gg::core::LayerParam;
+    using gg::core::layerSlot;
+    using gg::core::SourceKind;
+    const auto slotOf = [](LayerParam p, uint8_t layer) {
+        return static_cast<size_t>(layerSlot(p, layer));
+    };
+
+    SECTION("the built kinds, and the unbuilt ones' fallback")
+    {
+        // M2 sub-project 1's spec §6.4: Sample and Live are built in both products; Resample,
+        // Spectral and Oscillator render as the product's default kind.
+        for (const Mode mode : {Mode::Fx, Mode::Instrument})
+        {
+            CHECK(builtKind(SourceKind::Sample, mode) == SourceMode::Sample);
+            CHECK(builtKind(SourceKind::Live, mode) == SourceMode::Live);
+        }
+        CHECK(builtKind(SourceKind::Resample, Mode::Fx) == SourceMode::Live);
+        CHECK(builtKind(SourceKind::Spectral, Mode::Fx) == SourceMode::Live);
+        CHECK(builtKind(SourceKind::Oscillator, Mode::Fx) == SourceMode::Live);
+        CHECK(builtKind(SourceKind::Resample, Mode::Instrument) == SourceMode::Sample);
+        CHECK(builtKind(SourceKind::Spectral, Mode::Instrument) == SourceMode::Sample);
+        CHECK(builtKind(SourceKind::Oscillator, Mode::Instrument) == SourceMode::Sample);
+    }
+
+    SECTION("Source rounds to the nearest kind")
+    {
+        for (uint8_t layer = 0; layer < gg::core::kLayers; ++layer)
+        {
+            INFO("layer " << int{layer});
+            ParamValues v = defaults();
+            const auto at = [&](float x) {
+                v[slotOf(LayerParam::Source, layer)] = x;
+                return gg::core::sourceKindOf(v, layer);
+            };
+            CHECK(at(0.0f) == SourceKind::Sample);
+            CHECK(at(0.49f) == SourceKind::Sample);
+            CHECK(at(0.5f) == SourceKind::Live);
+            CHECK(at(1.0f) == SourceKind::Live);
+            CHECK(at(2.0f) == SourceKind::Resample);
+            CHECK(at(2.6f) == SourceKind::Spectral);
+            CHECK(at(4.0f) == SourceKind::Oscillator);
+        }
+    }
+
+    SECTION("each layer's cloud comes from its own slots")
+    {
+        // The instrument's layer B reads B Position as the fraction of its sample, with its own
+        // Density, Size, Pitch, Spray, Stereo, Texture and spreads; layer A's slots don't move it.
+        ParamValues v = defaults(Mode::Instrument);
+        v[slotOf(LayerParam::Position, 1)] = 0.75f;
+        v[slotOf(LayerParam::Density, 1)] = 2.0f;
+        v[slotOf(LayerParam::Size, 1)] = -1.0f;
+        v[slotOf(LayerParam::Pitch, 1)] = 7.0f;
+        v[slotOf(LayerParam::Stereo, 1)] = 0.25f;
+        v[slotOf(LayerParam::Texture, 1)] = 0.5f;
+        v[slotOf(LayerParam::PitchSpread, 1)] = 3.0f;
+        v[slotOf(LayerParam::SizeSpread, 1)] = 0.5f;
+        v[static_cast<size_t>(ParamSlot::Position)] = 0.125f; // layer A's
+        const gg::CloudParams b = toCloudParams(v, Mode::Instrument, 1);
+        CHECK(b.position == 0.75);
+        CHECK(b.sprayInSeconds);
+        CHECK(b.densityHz == 4.0);
+        CHECK(b.grainDurationSec == 0.5);
+        CHECK(b.pitchSemitones == 7.0);
+        CHECK(b.stereo == 0.25);
+        CHECK(b.texture == 0.5);
+        CHECK(b.pitchSpreadSemitones == 3.0);
+        CHECK(b.sizeSpreadOctaves == 0.5);
+        CHECK(b.gain == static_cast<float>(1.0 / std::sqrt(2.0)));
+        CHECK(toCloudParams(v, Mode::Instrument, 0).position == 0.125);
+        // Every layer at the defaults maps as layer A does, bit for bit.
+        for (const Mode mode : {Mode::Fx, Mode::Instrument})
+        {
+            for (uint8_t layer = 1; layer < gg::core::kLayers; ++layer)
+            {
+                INFO("layer " << int{layer});
+                CHECK(sameBits(toCloudParams(defaults(mode), mode, layer),
+                               toCloudParams(defaults(mode), mode)));
+            }
+        }
+    }
+
+    SECTION("Position and Spray follow the layer's kind, not the product")
+    {
+        // An FX layer set to Sample reads the fraction; an instrument layer set to Live reads
+        // seconds behind the head, as the FX's do (fxReference).
+        ParamValues fx = defaults(Mode::Fx);
+        fx[slotOf(LayerParam::Source, 2)] = 0.0f;
+        fx[slotOf(LayerParam::Position, 2)] = 0.4f;
+        const gg::CloudParams c = toCloudParams(fx, Mode::Fx, 2);
+        CHECK(c.position == d(0.4f));
+        CHECK(c.sprayInSeconds);
+        ParamValues inst = defaults(Mode::Instrument);
+        inst[static_cast<size_t>(ParamSlot::Source)] = 1.0f;
+        inst[static_cast<size_t>(ParamSlot::Position)] = 0.28967658f;
+        const gg::CloudParams live = toCloudParams(inst, Mode::Instrument);
+        CHECK_FALSE(live.sprayInSeconds);
+        CHECK(sameBits(live, fxReference(inst)));
+        CHECK_THAT(live.position, WithinAbs(0.25, 1e-7));
+    }
+
+    SECTION("each layer's wet values: its Level, its Freeze, its Feedback by kind")
+    {
+        ParamValues v = defaults(Mode::Fx);
+        v[static_cast<size_t>(ParamSlot::LevelC)] = -6.0f;
+        v[slotOf(LayerParam::Freeze, 2)] = 1.0f;
+        v[slotOf(LayerParam::Feedback, 2)] = 0.5f;
+        v[static_cast<size_t>(ParamSlot::Mix)] = 0.75f;
+        const auto c = toWetParams(v, Mode::Fx, 2);
+        CHECK(c.levelGain == static_cast<float>(gg::exp2Det(-6.0 * 3.321928094887362 / 20.0)));
+        CHECK(c.mix == 0.75f);
+        CHECK(c.freeze);
+        CHECK(c.feedback == 0.5f);
+        // Layer A's are untouched by layer C's.
+        const auto a = toWetParams(v, Mode::Fx, 0);
+        CHECK(a.levelGain == 1.0f);
+        CHECK_FALSE(a.freeze);
+        CHECK(a.feedback == 0.0f);
+        // A Sample layer feeds nothing back, in either product; a Live one does in either.
+        v[slotOf(LayerParam::Source, 2)] = 0.0f;
+        CHECK(toWetParams(v, Mode::Fx, 2).feedback == 0.0f);
+        v[slotOf(LayerParam::Source, 2)] = 1.0f;
+        CHECK(toWetParams(v, Mode::Instrument, 2).feedback == 0.5f);
+        // The unbuilt kinds feed back as the product's default kind does.
+        v[slotOf(LayerParam::Source, 2)] = 3.0f;
+        CHECK(toWetParams(v, Mode::Fx, 2).feedback == 0.5f);
+        CHECK(toWetParams(v, Mode::Instrument, 2).feedback == 0.0f);
+    }
+
+    SECTION("Diffusion, Layer On and the morph")
+    {
+        ParamValues v = defaults(Mode::Fx);
+        v[slotOf(LayerParam::Diffusion, 3)] = 0.6f;
+        CHECK(gg::core::layerDiffusion(v, 3) == 0.6f);
+        CHECK(gg::core::layerDiffusion(v, 0) == 0.0f);
+        // A on, B to D off by default (spec §6.9); on above 0.5.
+        CHECK(gg::core::layerOn(v, 0));
+        CHECK_FALSE(gg::core::layerOn(v, 1));
+        CHECK_FALSE(gg::core::layerOn(v, 2));
+        CHECK_FALSE(gg::core::layerOn(v, 3));
+        v[static_cast<size_t>(ParamSlot::LayerCOn)] = 0.5f;
+        CHECK_FALSE(gg::core::layerOn(v, 2));
+        v[static_cast<size_t>(ParamSlot::LayerCOn)] = 1.0f;
+        CHECK(gg::core::layerOn(v, 2));
+        const auto rest = gg::core::toMorphParams(v);
+        CHECK(rest.x == 0.5f);
+        CHECK(rest.y == 0.5f);
+        v[static_cast<size_t>(ParamSlot::MorphX)] = 0.2f;
+        v[static_cast<size_t>(ParamSlot::MorphY)] = 0.9f;
+        const auto moved = gg::core::toMorphParams(v);
+        CHECK(moved.x == 0.2f);
+        CHECK(moved.y == 0.9f);
     }
 }
 

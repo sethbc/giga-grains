@@ -9,6 +9,7 @@
 
 #include "gg/core/ParamIds.h"
 #include "gg/grain/CloudScheduler.h"
+#include "gg/source/SourceMode.h"
 
 /// The patch's values to the engine's, the wet chain's and Space's parameters: the only place the
 /// tapers of Global Constraints' parameter table are applied (spec §5; sub-project 4's spec §6.5).
@@ -26,8 +27,9 @@ struct WetParams
     float levelGain; ///< Level as a linear gain: exp2Det(dB × log2(10) / 20).
     float mix;       ///< Mix, the dry/wet crossfade m in [0, 1].
     bool freeze;     ///< Freeze is on above 0.5.
-    /// Feedback, fb in [0, kFeedbackMax]: the share of the limited wet signal the FX writes back
-    /// into its live ring (sub-project 5's spec §5). Always 0 in the instrument, which has no ring.
+    /// Feedback, fb in [0, kFeedbackMax]: the share of the layer's limited wet signal written back
+    /// into its live ring (sub-project 5's spec §5). 0 unless the layer's built kind is
+    /// SourceMode::Live (M2 sub-project 1's spec §6.4): a Sample layer has no ring to feed.
     float feedback;
 };
 
@@ -47,25 +49,63 @@ struct SpaceParams
     float predelaySeconds; ///< Reverb Pre-delay, in seconds, 0 to 0.5.
 };
 
-/// The Cloud stream's controls in `mode`'s product:
+/// Layer `layer`'s Source kind (M2 sub-project 1's spec §6.4): its Source value rounded to the
+/// nearest integer (halves up), 0 to 4. `layer` is below kLayers.
+SourceKind sourceKindOf(const ParamValues &effective, uint8_t layer) noexcept;
+
+/// The source kind a layer of `kind` reads in `mode`'s product (spec §6.4): Sample and Live are
+/// built in wave 1, in both products; the unbuilt kinds (Resample, Spectral, Oscillator) fall back
+/// to the product's default kind, Live in the FX and Sample in the instrument. The one function
+/// sub-projects 2 and 4 edit when their kinds arrive.
+SourceMode builtKind(SourceKind kind, Mode mode) noexcept;
+
+/// Layer `layer`'s Cloud stream controls (`layer` below kLayers), from its own slots
+/// (layerSlot):
 /// - densityHz = exp2Det(Density);
 /// - distribution = Distribution;
 /// - grainDurationSec = exp2Det(Size);
-/// - spray = (2/255)(exp2Det(8 × Spray) − 1) seconds, in both products;
-/// - position:
-///   - FX: (16/255)(exp2Det(8 × Position) − 1) seconds behind the write head, the live ring's
+/// - spray = (2/255)(exp2Det(8 × Spray) − 1) seconds, whatever the kind;
+/// - position, by the layer's built kind (builtKind(sourceKindOf(...), mode); spec §6.4), not by
+///   the product:
+///   - Live: (16/255)(exp2Det(8 × Position) − 1) seconds behind the write head, the live ring's
 ///     units (ruling M1-k);
-///   - instrument: Position itself, the fraction of the loaded file (sub-project 3's spec
-///     §6.8), with sprayInSeconds set, so the engine spreads the spray's seconds around it at
-///     the source's rate;
+///   - Sample: Position itself, the fraction of the loaded file (sub-project 3's spec §6.8),
+///     with sprayInSeconds set, so the engine spreads the spray's seconds around it at the
+///     source's rate;
 /// - pitchSemitones = Pitch; stereo = Stereo; texture = Texture (sub-project 5's spec §4);
+/// - pitchSpreadSemitones = Pitch Spread; sizeSpreadOctaves = Size Spread (spec §6.6);
 /// - gain = 1/sqrt(max(1, densityHz × grainDurationSec)), the expected overlap's power
 ///   normalization (spec §6.4), which each grain latches at its onset.
+CloudParams toCloudParams(const ParamValues &effective, Mode mode, uint8_t layer) noexcept;
+
+/// Layer A's: toCloudParams(effective, mode, 0). At the products' default Source (Live in the FX,
+/// Sample in the instrument) it is M1's mapping, bit for bit.
 CloudParams toCloudParams(const ParamValues &effective, Mode mode) noexcept;
 
-/// Level, Mix, Freeze and Feedback, as WetParams documents. Feedback is 0 in the instrument,
-/// whatever its value: it has no live ring.
+/// Layer `layer`'s wet chain values, as WetParams documents (`layer` below kLayers): its Level
+/// (levelSlot: Level for layer A, Level B to D for the others), the global Mix, its Freeze and its
+/// Feedback, which is 0 unless the layer's built kind is Live.
+WetParams toWetParams(const ParamValues &effective, Mode mode, uint8_t layer) noexcept;
+
+/// Layer A's: toWetParams(effective, mode, 0). At the products' default Source it is M1's: the
+/// instrument's Feedback is 0, as its layer A reads a sample.
 WetParams toWetParams(const ParamValues &effective, Mode mode) noexcept;
+
+/// Layer `layer`'s Diffusion, the diffuser's crossfade δ in [0, 1] (`layer` below kLayers).
+float layerDiffusion(const ParamValues &effective, uint8_t layer) noexcept;
+
+/// Whether layer `layer`'s Layer On switch is on: its value above 0.5 (`layer` below kLayers).
+bool layerOn(const ParamValues &effective, uint8_t layer) noexcept;
+
+/// The morph pad's position (spec §6.3), Morph X and Morph Y, each in [0, 1].
+struct MorphParams
+{
+    float x;
+    float y;
+};
+
+/// Morph X and Morph Y, as they are.
+MorphParams toMorphParams(const ParamValues &effective) noexcept;
 
 /// Space's eight parameters, as SpaceParams documents. Dry to Reverb is 0 in the instrument,
 /// whatever its value: it has no dry input.
@@ -96,8 +136,8 @@ constexpr float smoothstep(float e0, float e1, float x) noexcept
 /// - Macro 4 (Spray): Spray +0.5b, Stereo +0.3·b⁺;
 /// - Macro 5 (Texture): Texture +min(u/0.75, 1), Diffusion +smoothstep(0.75, 1, u);
 /// - Macro 6 (Freeze): Freeze +u;
-/// - Macro 7 (Feedback): Feedback +0.9u², in both products (M2 sub-project 1's spec §6.9; the
-///   instrument's Feedback does nothing yet);
+/// - Macro 7 (Feedback): Feedback +0.9u², in both products (M2 sub-project 1's spec §6.9; it acts
+///   on layer A when that layer reads its live ring, toWetParams);
 /// - Macro 8: the FX's Mix +0.5b; the instrument's Level +12b dB.
 ///
 /// A target's offsets add in macro order. Every entry, the macros' own included, is exactly
