@@ -493,8 +493,9 @@ TEST_CASE("a save name is made safe", "[plugin][catalog]")
         REQUIRE(entry.kind == PresetKind::User);
         REQUIRE(entry.file == machine.user() / file);
     }
-    // Nothing was written anywhere else: every file under the scratch root is the library's,
-    // the user folder's or the settings folder's.
+    // Nothing was written anywhere else: every file under the scratch root is in the user
+    // folder (the saves) or the factory folder (the fixture's presets). This test writes no
+    // favorites and no settings.
     for (const auto &file : filesUnder(machine.root()))
     {
         INFO(utf8(file));

@@ -21,38 +21,13 @@
 #include "gg/media/Utf8Path.h"
 
 #include "Favorites.h"
+#include "PresetDiscovery.h"
 
 namespace gg::plugin
 {
 namespace
 {
 namespace fs = std::filesystem;
-
-// Task 7's presetLocations replaces this at the merge
-struct PresetLocation
-{
-    fs::path folder;
-    bool factory;
-    fs::path root;
-};
-
-// Task 7's presetLocations replaces this at the merge
-std::vector<PresetLocation> presetLocations(const core::MachineSettings &settings,
-                                            const fs::path &settingsFile)
-{
-    std::vector<PresetLocation> locations;
-    for (const auto &root : media::contentRoots(settings))
-    {
-        fs::path folder = media::factoryPresetsFolder(root);
-        std::error_code error;
-        if (fs::is_directory(folder, error))
-        {
-            locations.push_back({std::move(folder), true, root});
-        }
-    }
-    locations.push_back({media::userPresetsFolder(settingsFile), false, {}});
-    return locations;
-}
 
 /// `path` as UTF-8; empty if it can't be converted (a wide path that isn't valid UTF-16).
 std::string utf8(const fs::path &path) { return media::toUtf8(path).value_or(std::string()); }
@@ -305,6 +280,10 @@ bool PresetCatalog::setFavorite(std::size_t index, bool on)
     }
     const fs::path file = media::favoritesFile(settingsFile_);
     const std::string key = presetKey(entries_[index]);
+    if (key == "file:")
+    {
+        return false; // a path with no UTF-8 form: its key would match every such entry
+    }
     auto keys = loadFavorites(file);
     const bool had = std::find(keys.begin(), keys.end(), key) != keys.end();
     if (on && !had)
@@ -349,7 +328,12 @@ std::string PresetCatalog::save(const core::PresetInfo &info, const std::string 
     {
         return failed + "can't create the folder " + utf8(folder) + ": " + error.message();
     }
-    if (!overwrite && fs::exists(file, error))
+    const bool exists = fs::exists(file, error);
+    if (error)
+    {
+        return failed + "can't check for " + utf8(file) + ": " + error.message();
+    }
+    if (!overwrite && exists)
     {
         return "a preset named " + info.name + " exists";
     }

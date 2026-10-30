@@ -82,7 +82,8 @@ class PresetCatalog
 
     /// Stars (or unstars) entry `index` and saves the favorites file, keeping the keys it holds
     /// for other entries and products. False, and nothing changed, for an index out of range or
-    /// a save that fails.
+    /// a save that fails, or an entry whose path has no UTF-8 form (its key would match every
+    /// such entry).
     bool setFavorite(std::size_t index, bool on);
 
     /// Save as…: writes `stateBytes` (the preset file, gg::core::encodePreset of `info`) to the
