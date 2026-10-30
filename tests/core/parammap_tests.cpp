@@ -20,6 +20,7 @@
 #include <string>
 #include <vector>
 
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
@@ -144,6 +145,72 @@ std::vector<ParamValues> samplePoints(Mode mode)
     }
     return points;
 }
+
+// toCloudParams as it was before Smear (M2 sub-project 1's mapping), copied, for any layer: at
+// Smear 0 the mapping must not move by a bit. busSplit is the one field Smear's task adds that
+// doesn't depend on Smear: it is Bus Split, as it is.
+gg::CloudParams preSmearReference(const ParamValues &v, Mode mode, uint8_t layer)
+{
+    using gg::core::LayerParam;
+    const auto param = [&v, layer](LayerParam p) { return at(v, gg::core::layerSlot(p, layer)); };
+    gg::CloudParams p;
+    p.densityHz = gg::exp2Det(param(LayerParam::Density));
+    p.distribution = param(LayerParam::Distribution);
+    p.grainDurationSec = gg::exp2Det(param(LayerParam::Size));
+    if (gg::core::builtKind(gg::core::sourceKindOf(v, layer), mode) == gg::SourceMode::Sample)
+    {
+        p.position = param(LayerParam::Position);
+        p.sprayInSeconds = true;
+    }
+    else
+    {
+        p.position = 16.0 / 255.0 * (gg::exp2Det(8.0 * param(LayerParam::Position)) - 1.0);
+    }
+    p.spray = 2.0 / 255.0 * (gg::exp2Det(8.0 * param(LayerParam::Spray)) - 1.0);
+    p.pitchSemitones = param(LayerParam::Pitch);
+    p.stereo = param(LayerParam::Stereo);
+    p.texture = param(LayerParam::Texture);
+    p.pitchSpreadSemitones = param(LayerParam::PitchSpread);
+    p.sizeSpreadOctaves = param(LayerParam::SizeSpread);
+    p.busSplit = param(LayerParam::BusSplit);
+    p.gain = static_cast<float>(1.0 / std::sqrt(std::max(1.0, p.densityHz * p.grainDurationSec)));
+    return p;
+}
+
+// Every field, bit for bit (+0 and -0 differ).
+bool sameCloudBits(const gg::CloudParams &a, const gg::CloudParams &b)
+{
+    return sameBits(a, b) && bitsOf(a.pitchSpreadSemitones) == bitsOf(b.pitchSpreadSemitones) &&
+           bitsOf(a.sizeSpreadOctaves) == bitsOf(b.sizeSpreadOctaves) &&
+           bitsOf(a.smearJitterSec) == bitsOf(b.smearJitterSec) &&
+           bitsOf(a.smearDetuneSemitones) == bitsOf(b.smearDetuneSemitones) &&
+           bitsOf(a.busSplit) == bitsOf(b.busSplit);
+}
+
+// The plan's Smear law (M2 sub-project 4's Global Constraints; its spec §6.1), written out: the
+// effective density for D Hz, S seconds and Smear s.
+double smearDensity(double D, double S, double s)
+{
+    const double T = 8.0 + 24.0 * s;
+    return D + s * (std::min(400.0, std::max(D, T / S)) - D);
+}
+
+// v with layer `layer`'s Smear, Density and Size set (Density log2 Hz, Size log2 seconds).
+ParamValues smeared(ParamValues v, uint8_t layer, float smear, float density, float size)
+{
+    using gg::core::LayerParam;
+    using gg::core::layerSlot;
+    v[static_cast<size_t>(layerSlot(LayerParam::Smear, layer))] = smear;
+    v[static_cast<size_t>(layerSlot(LayerParam::Density, layer))] = density;
+    v[static_cast<size_t>(layerSlot(LayerParam::Size, layer))] = size;
+    return v;
+}
+
+// log2 of the defaults' 16 Hz and 150 ms, and of the slots' ends: 400 Hz and 5 ms.
+constexpr float kLog2Of16Hz = 4.0f;
+constexpr float kLog2Of150Ms = -2.736965594166206f;
+constexpr float kLog2Of400Hz = 8.643856189774725f;
+constexpr float kLog2Of5Ms = -7.643856189774724f;
 } // namespace
 
 TEST_CASE("param map follows the taper table", "[core]")
@@ -310,6 +377,27 @@ TEST_CASE("param map follows the taper table", "[core]")
                 // Read as they are (spec §6.6); every other field is the defaults'.
                 REQUIRE((slot == ParamSlot::PitchSpread ? cloud.pitchSpreadSemitones
                                                         : cloud.sizeSpreadOctaves) == d(v));
+                REQUIRE(sameBits(cloud, toCloudParams(defaults(Mode::Fx), Mode::Fx)));
+                break;
+            }
+            case ParamSlot::Smear:
+            {
+                // M2 sub-project 4's spec §6.1: Smear raises the density by its law and sets the
+                // jitter and the detune; the gain follows the raised density (checked after the
+                // switch); every other field is the defaults'.
+                auto c0 = toCloudParams(defaults(Mode::Fx), Mode::Fx);
+                REQUIRE(cloud.densityHz == smearDensity(16.0, c0.grainDurationSec, d(v)));
+                REQUIRE(cloud.smearJitterSec == 0.5 * d(v) * c0.grainDurationSec);
+                REQUIRE(cloud.smearDetuneSemitones == 0.5 * d(v));
+                c0.densityHz = cloud.densityHz;
+                c0.gain = cloud.gain;
+                REQUIRE(sameBits(cloud, c0));
+                break;
+            }
+            case ParamSlot::BusSplit:
+            {
+                // The extremes spec §6.3: read as it is; every other field is the defaults'.
+                REQUIRE(cloud.busSplit == d(v));
                 REQUIRE(sameBits(cloud, toCloudParams(defaults(Mode::Fx), Mode::Fx)));
                 break;
             }
@@ -527,10 +615,13 @@ TEST_CASE("space params follow the table", "[core][space]")
                     continue; // the grains' envelope, a cloud field (the taper table test)
                 }
                 if (slot == ParamSlot::Source || slot == ParamSlot::PitchSpread ||
-                    slot == ParamSlot::SizeSpread)
+                    slot == ParamSlot::SizeSpread || slot == ParamSlot::Smear ||
+                    slot == ParamSlot::BusSplit)
                 {
                     // Layer A's cloud fields of M2 sub-project 1 (spec §6.4, §6.6): Source picks
-                    // Position's mapping, the spreads are read as they are ("layer-aware" below).
+                    // Position's mapping, the spreads are read as they are ("layer-aware" below);
+                    // and of sub-project 4 (its spec §6.1, §6.3): Smear and Bus Split (the taper
+                    // table test and the smear tests).
                     continue;
                 }
                 const auto &meta = gg::core::paramMeta(slot, mode);
@@ -597,10 +688,12 @@ TEST_CASE("the instrument's Position is a fraction and its Spray is seconds", "[
 
     SECTION("the FX's mapping is unchanged, bit for bit")
     {
-        // On a layer that reads its ring, the FX's default kind (M2 sub-project 1's spec §6.4).
+        // On a layer that reads its ring, the FX's default kind (M2 sub-project 1's spec §6.4),
+        // at Smear 0, M1's (Smear's own law: "smear's amplitudes and gain follow the law").
         for (auto v : samplePoints(Mode::Fx))
         {
             v[static_cast<size_t>(ParamSlot::Source)] = 1.0f; // Live
+            v[static_cast<size_t>(ParamSlot::Smear)] = 0.0f;
             REQUIRE(sameBits(toCloudParams(v, Mode::Fx), fxReference(v)));
         }
     }
@@ -901,6 +994,166 @@ TEST_CASE("bus, delay and limiter readers map their slots", "[core]")
         v[static_cast<size_t>(ParamSlot::LimiterCeiling)] = 0.0f;
         CHECK(gg::core::limiterParams(v).ceilingGain == 1.0f);
     }
+}
+
+TEST_CASE("smear 0 is M1's cloud params bit for bit", "[core]")
+{
+    // M2 sub-project 4's spec §6.1: at Smear 0 nothing changes, so every M1 and wave-1 grain is
+    // bit for bit. Over every slot's range at once (samplePoints, every Source kind among them),
+    // with each layer's Smear set to 0, every layer maps as before, the jitter and the detune are
+    // +0 (so the scheduler draws neither), and the material changes nothing for a Sample or a
+    // Live layer.
+    for (const Mode mode : {Mode::Fx, Mode::Instrument})
+    {
+        INFO("mode " << (mode == Mode::Fx ? "fx" : "instrument"));
+        const std::vector<ParamValues> points = samplePoints(mode);
+        for (size_t i = 0; i < points.size(); ++i)
+        {
+            ParamValues v = points[i];
+            for (uint8_t layer = 0; layer < gg::core::kLayers; ++layer)
+            {
+                v[static_cast<size_t>(gg::core::layerSlot(gg::core::LayerParam::Smear, layer))] =
+                    0.0f;
+            }
+            for (uint8_t layer = 0; layer < gg::core::kLayers; ++layer)
+            {
+                INFO("point " << i << ", layer " << int{layer});
+                const gg::CloudParams p = toCloudParams(v, mode, layer);
+                REQUIRE(sameCloudBits(p, preSmearReference(v, mode, layer)));
+                REQUIRE(bitsOf(p.smearJitterSec) == bitsOf(0.0));
+                REQUIRE(bitsOf(p.smearDetuneSemitones) == bitsOf(0.0));
+                for (const gg::SourceMode material : {gg::SourceMode::Sample, gg::SourceMode::Live})
+                {
+                    REQUIRE(sameCloudBits(toCloudParams(v, mode, layer, material), p));
+                }
+            }
+        }
+        // Layer A's two-argument form is the same mapping.
+        REQUIRE(sameCloudBits(toCloudParams(defaults(mode), mode),
+                              preSmearReference(defaults(mode), mode, 0)));
+    }
+}
+
+TEST_CASE("smear raises the density toward the overlap target", "[core]")
+{
+    // D 16 Hz, S 0.15 s (the defaults): at Smear 1 the target overlap is 32, so D_eff = 32 / S;
+    // at 0.5 it is 20, and D_eff is half-way from D to 20 / S.
+    using Catch::Approx;
+    for (const Mode mode : {Mode::Fx, Mode::Instrument})
+    {
+        for (uint8_t layer = 0; layer < gg::core::kLayers; ++layer)
+        {
+            INFO("layer " << int{layer});
+            const ParamValues base = defaults(mode);
+            const auto density = [&](float smear, float d) {
+                return toCloudParams(smeared(base, layer, smear, d, kLog2Of150Ms), mode, layer)
+                    .densityHz;
+            };
+            CHECK(density(1.0f, kLog2Of16Hz) == Approx(32.0 / 0.15));
+            CHECK(density(0.5f, kLog2Of16Hz) == Approx(16.0 + 0.5 * (20.0 / 0.15 - 16.0)));
+            CHECK(density(0.0f, kLog2Of16Hz) == 16.0);
+            // A density already above the target (about 294 Hz against 213 Hz at Smear 1, and
+            // 133 Hz at 0.5) is left alone, bit for bit.
+            const double D = gg::exp2Det(d(8.2f));
+            CHECK(density(1.0f, 8.2f) == D);
+            CHECK(density(0.5f, 8.2f) == D);
+            // Never below D, and rising with Smear.
+            double last = 16.0;
+            for (int k = 1; k <= 10; ++k)
+            {
+                const double now = density(static_cast<float>(k) / 10.0f, kLog2Of16Hz);
+                CHECK(now > last);
+                last = now;
+            }
+        }
+    }
+}
+
+TEST_CASE("smear's density cap binds at tiny sizes", "[core]")
+{
+    // At S 5 ms the target 32 / S is 6400 Hz: the Density parameter's 400 Hz ceiling caps it, so
+    // the floor isn't reached, and the gain stays finite (the plan's Review Focus 5).
+    for (const Mode mode : {Mode::Fx, Mode::Instrument})
+    {
+        const ParamValues base = defaults(mode);
+        const auto at = [&](float smear, float density) {
+            return toCloudParams(smeared(base, 1, smear, density, kLog2Of5Ms), mode, 1);
+        };
+        const gg::CloudParams top = at(1.0f, kLog2Of400Hz);
+        CHECK(top.densityHz == 400.0);
+        CHECK(std::isfinite(top.gain));
+        CHECK(top.gain > 0.0f);
+        CHECK(top.gain == static_cast<float>(1.0 / std::sqrt(400.0 * top.grainDurationSec)));
+        CHECK_THAT(top.gain, WithinRel(static_cast<float>(1.0 / std::sqrt(2.0)), 1e-5f));
+        // From 16 Hz the cap binds too: D_eff runs to 400 Hz at Smear 1, half-way at 0.5.
+        const gg::CloudParams low = at(1.0f, kLog2Of16Hz);
+        CHECK(low.densityHz == 400.0);
+        CHECK(std::isfinite(low.gain));
+        CHECK(at(0.5f, kLog2Of16Hz).densityHz == 208.0);
+    }
+}
+
+TEST_CASE("smear's amplitudes and gain follow the law", "[core]")
+{
+    // jitter 0.5 × s × S seconds, detune 0.5 × s semitones, D_eff by the law and the latched
+    // gain 1 / sqrt(max(1, D_eff × S)), bit for bit, over Smear, Density and Size, in every layer
+    // of both products; the material changes none of it for a Sample or a Live layer.
+    for (const Mode mode : {Mode::Fx, Mode::Instrument})
+    {
+        const ParamValues base = defaults(mode);
+        for (uint8_t layer = 0; layer < gg::core::kLayers; ++layer)
+        {
+            for (const float smear : {0.1f, 0.25f, 0.5f, 0.75f, 1.0f})
+            {
+                for (const float density : {-2.0f, 0.0f, kLog2Of16Hz, 6.5f, kLog2Of400Hz})
+                {
+                    for (const float size : {kLog2Of5Ms, -4.0f, kLog2Of150Ms, 0.0f, 1.0f})
+                    {
+                        INFO("layer " << int{layer} << ", smear " << smear << ", density "
+                                      << density << ", size " << size);
+                        const ParamValues v = smeared(base, layer, smear, density, size);
+                        const gg::CloudParams p = toCloudParams(v, mode, layer);
+                        const double s = d(smear);
+                        const double D = gg::exp2Det(d(density));
+                        const double S = gg::exp2Det(d(size));
+                        const double Deff = smearDensity(D, S, s);
+                        REQUIRE(bitsOf(p.grainDurationSec) == bitsOf(S));
+                        REQUIRE(bitsOf(p.densityHz) == bitsOf(Deff));
+                        REQUIRE(bitsOf(p.smearJitterSec) == bitsOf(0.5 * s * S));
+                        REQUIRE(bitsOf(p.smearDetuneSemitones) == bitsOf(0.5 * s));
+                        REQUIRE(bitsOf(p.gain) == bitsOf(static_cast<float>(
+                                                      1.0 / std::sqrt(std::max(1.0, Deff * S)))));
+                        // D_eff stays between D and the 400 Hz ceiling.
+                        REQUIRE(p.densityHz >= std::min(D, 400.0));
+                        REQUIRE(p.densityHz <= std::max(D, 400.0));
+                        // Smear moves no other field.
+                        gg::CloudParams expected = preSmearReference(v, mode, layer);
+                        expected.densityHz = Deff;
+                        expected.smearJitterSec = 0.5 * s * S;
+                        expected.smearDetuneSemitones = 0.5 * s;
+                        expected.gain =
+                            static_cast<float>(1.0 / std::sqrt(std::max(1.0, Deff * S)));
+                        REQUIRE(sameCloudBits(p, expected));
+                        for (const gg::SourceMode material :
+                             {gg::SourceMode::Sample, gg::SourceMode::Live})
+                        {
+                            REQUIRE(sameCloudBits(toCloudParams(v, mode, layer, material), p));
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+TEST_CASE("the cloud's bus split is Bus Split", "[core]")
+{
+    // The extremes spec §6.3: busSplit is each layer's Bus Split, as it is.
+    ParamValues v = defaults();
+    v[static_cast<size_t>(gg::core::layerSlot(gg::core::LayerParam::BusSplit, 2))] = 0.7f;
+    CHECK(toCloudParams(v, Mode::Fx, 2).busSplit == d(0.7f));
+    CHECK(toCloudParams(v, Mode::Fx, 0).busSplit == 0.0);
+    CHECK(toCloudParams(defaults(Mode::Instrument), Mode::Instrument, 3).busSplit == 0.0);
 }
 
 TEST_CASE("soft limiter is continuous and bounded", "[core]")

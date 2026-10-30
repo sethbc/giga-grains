@@ -67,10 +67,13 @@ SourceKind sourceKindOf(const ParamValues &effective, uint8_t layer) noexcept;
 SourceMode builtKind(SourceKind kind, Mode mode) noexcept;
 
 /// Layer `layer`'s Cloud stream controls (`layer` below kLayers, asserted), from its own slots
-/// (layerSlot):
-/// - densityHz = exp2Det(Density);
+/// (layerSlot), with D = exp2Det(Density) Hz, S = exp2Det(Size) seconds and s = Smear in [0, 1]
+/// (layerSmear; M2 sub-project 4's spec §6.1):
+/// - densityHz = D_eff = D + s × (min(400, max(D, T / S)) − D), T = 8 + 24s the target overlap:
+///   Smear raises the density toward the one that gives the overlap T, never past the Density
+///   parameter's 400 Hz ceiling; at s = 0 it is D, bit for bit;
 /// - distribution = Distribution;
-/// - grainDurationSec = exp2Det(Size);
+/// - grainDurationSec = S;
 /// - spray = (2/255)(exp2Det(8 × Spray) − 1) seconds, whatever the kind;
 /// - position, by the layer's built kind (builtKind(sourceKindOf(...), mode); spec §6.4), not by
 ///   the product:
@@ -81,9 +84,26 @@ SourceMode builtKind(SourceKind kind, Mode mode) noexcept;
 ///     source's rate;
 /// - pitchSemitones = Pitch; stereo = Stereo; texture = Texture (sub-project 5's spec §4);
 /// - pitchSpreadSemitones = Pitch Spread; sizeSpreadOctaves = Size Spread (spec §6.6);
+/// - smearJitterSec = 0.5 × s × S; smearDetuneSemitones = 0.5 × s (both 0 at s = 0, so the
+///   scheduler draws neither);
+/// - busSplit = Bus Split (layerBusSplit; the extremes spec §6.3);
 /// - gain = 1/sqrt(max(1, densityHz × grainDurationSec)), the expected overlap's power
-///   normalization (spec §6.4), which each grain latches at its onset.
+///   normalization (spec §6.4), which each grain latches at its onset: it follows D_eff, so
+///   Smear doesn't pump the level.
+///
+/// At Smear 0 every field but busSplit is M1's and wave 1's, bit for bit.
 CloudParams toCloudParams(const ParamValues &effective, Mode mode, uint8_t layer) noexcept;
+
+/// As the three-argument form, with `material` the units of Position for a layer whose built
+/// kind reads its material through a stream of its own: the Spectral kind (the extremes spec
+/// §6.2), whose Position addresses its material, Sample (the fraction, with sprayInSeconds) or
+/// Live (seconds behind the head), while its grains draw their spray one-sided, as Live's (the
+/// scheduler's Spectral mode). A Sample or Live layer ignores `material` and takes its own units.
+/// The three-argument form passes the kind's own units (Sample's for Sample, Live's otherwise).
+/// Until SourceMode has Spectral every built kind is Sample or Live, so `material` changes
+/// nothing yet.
+CloudParams toCloudParams(const ParamValues &effective, Mode mode, uint8_t layer,
+                          SourceMode material) noexcept;
 
 /// Layer A's: toCloudParams(effective, mode, 0). At the products' default Source (Live in the FX,
 /// Sample in the instrument) it is M1's mapping, bit for bit.
