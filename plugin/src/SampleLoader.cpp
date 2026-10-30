@@ -11,7 +11,11 @@
 #include <new>
 #include <utility>
 
+#include "gg/media/Convert.h"
+#include "gg/media/Decode.h"
+#include "gg/media/MemoryBudget.h"
 #include "gg/media/Sample.h"
+#include "gg/media/SamplePool.h"
 #include "gg/media/Search.h"
 #include "gg/media/SettingsFile.h"
 #include "gg/media/Utf8Path.h"
@@ -38,6 +42,20 @@ std::string utf8(const fs::path &path) { return media::toUtf8(path).value_or(std
 /// The path UTF-8 `text` names; empty if it can't be converted (text that isn't valid UTF-8, on
 /// Windows).
 fs::path pathOf(const std::string &text) { return media::fromUtf8(text).value_or(fs::path()); }
+
+/// The bytes a decoded buffer holds (planar floats); 0 for none.
+uint64_t planarBytes(const SampleBuffer *buffer) noexcept
+{
+    return buffer != nullptr ? media::sampleBytes(buffer->frames(), buffer->channels(), false, 1)
+                             : 0;
+}
+
+/// The decoder's bound for a budget of `capBytes` with `usedBytes` held: what it leaves free, and
+/// never above the decoder's absolute bound (spec §6.5).
+uint64_t decodeBound(uint64_t capBytes, uint64_t usedBytes) noexcept
+{
+    return std::min(capBytes > usedBytes ? capBytes - usedBytes : 0, media::kDefaultDecodeBound);
+}
 
 /// An exception as a message for the user.
 std::string describe(const std::exception_ptr &error, const std::string &fileName)
@@ -66,12 +84,16 @@ constexpr const char *kMissing = "not found";
 constexpr const char *kUnreadable = "the file at the saved path can't be read";
 constexpr const char *kChanged = "the file at the saved path has changed";
 constexpr const char *kNewerVersion = "sample from a newer version";
+// An embedded sample (a capture) whose AUDI payload the state lacks (spec §6.6).
+constexpr const char *kEmbeddedMissing = "embedded audio missing";
 // Short enough to fit any std::string's own buffer, so assigning it never allocates.
 constexpr const char *kCantLoad = "can't load";
 } // namespace
 
-SampleLoader::SampleLoader(std::filesystem::path settingsFile, Callbacks callbacks)
-    : settingsFile_(std::move(settingsFile)), callbacks_(std::move(callbacks))
+SampleLoader::SampleLoader(std::filesystem::path settingsFile, Callbacks callbacks, uint8_t layer,
+                           media::MemoryBudget *budget)
+    : settingsFile_(std::move(settingsFile)), callbacks_(std::move(callbacks)), layer_(layer),
+      budget_(budget)
 {
 }
 
@@ -83,7 +105,9 @@ void SampleLoader::requestLoad(std::filesystem::path file) noexcept
     try
     {
         fileName = utf8(file.filename());
-        submit({0, JobKind::Load, std::move(file), readSettings(), {}});
+        Job job{0, JobKind::Load, std::move(file), readSettings(), {}};
+        budgetNow(0, job.capBytes, job.usedBytes); // the sample it replaces counts until the swap
+        submit(std::move(job));
         status_ = {SampleState::Loading, fileName, {}, 0.0, 0, 0.0};
     }
     catch (...)
@@ -99,7 +123,9 @@ void SampleLoader::requestRelink(std::filesystem::path file) noexcept
     {
         fileName = utf8(file.filename());
         std::string expected = entry_.has_value() ? entry_->sha256Hex : std::string();
-        submit({0, JobKind::Relink, std::move(file), readSettings(), std::move(expected)});
+        Job job{0, JobKind::Relink, std::move(file), readSettings(), std::move(expected)};
+        budgetNow(0, job.capBytes, job.usedBytes);
+        submit(std::move(job));
         status_ = {SampleState::Loading, fileName, {}, 0.0, 0, 0.0};
     }
     catch (...)
@@ -129,7 +155,8 @@ std::string SampleLoader::lastLoadFolder() const
 }
 
 SampleLoader::Restored SampleLoader::restore(const std::optional<core::MediaEntry> &entry,
-                                             std::optional<std::string> newerMedia) noexcept
+                                             std::optional<std::string> newerMedia,
+                                             std::shared_ptr<const std::string> payload) noexcept
 {
     std::shared_ptr<const PreparedSource> source;
     std::optional<Result> stale;
@@ -152,6 +179,7 @@ SampleLoader::Restored SampleLoader::restore(const std::optional<core::MediaEntr
             pending_.reset();
             restorePending_ = false;
             source_.reset();
+            embedded_.reset();
             entry_.reset();
             entryUnavailable_ = false;
             status_ = {SampleState::Newer, {}, kNewerVersion, 0.0, 0, 0.0};
@@ -166,16 +194,29 @@ SampleLoader::Restored SampleLoader::restore(const std::optional<core::MediaEntr
             setLoadedStatus({});
             return {nullptr, true};
         }
+        // The sample it replaces is let go of first: the restore is checked against the cap
+        // without it.
+        const uint64_t release = heldBytes();
         pending_.reset();
         restorePending_ = false;
         source_.reset();
+        embedded_.reset();
         fileName = entry.has_value() ? nameOf(entry->absolutePath) : std::string();
         entry_ = entry;
         entryUnavailable_ = false;
         status_ = {};
         if (entry.has_value())
         {
-            source = findAndLoad(activeRate_);
+            entry_->layer = layer_;
+            if (entry->embed)
+            {
+                embedded_ = std::move(payload);
+                source = loadEmbedded(activeRate_, release);
+            }
+            else
+            {
+                source = findAndLoad(activeRate_, release);
+            }
         }
     }
     catch (...)
@@ -209,9 +250,15 @@ std::shared_ptr<const PreparedSource> SampleLoader::activate(double sampleRate) 
         }
         if (restorePending_)
         {
-            // D8: converted here, so the first block after activate() has it.
+            // D8: converted here, so the first block after activate() has it, if the cap allows
+            // the source it makes (the buffer it consumes no longer counts).
             restorePending_ = false;
-            source_ = prepare(std::move(pending_), sampleRate);
+            const uint64_t release = planarBytes(pending_.get());
+            std::shared_ptr<const PreparedSource> source;
+            if (takeDecoded(std::move(pending_), sampleRate, fileName, release, source))
+            {
+                source_ = std::move(source);
+            }
         }
         else if (source_ != nullptr && source_->buffer().sampleRate() != sampleRate)
         {
@@ -268,6 +315,12 @@ void SampleLoader::convertNow(double rate) noexcept
     try
     {
         fileName = nameOf(entry_->absolutePath);
+        if (entry_->embed)
+        {
+            // A capture: its audio is the WAV bytes the loader keeps, never a file.
+            convertEmbedded(rate);
+            return;
+        }
         const fs::path file = pathOf(entry_->absolutePath);
         // Another size is other content, without reading it all to hash (a size the file system
         // can't give goes on to the hash, which says why).
@@ -287,14 +340,23 @@ void SampleLoader::convertNow(double rate) noexcept
         }
         if (source_->buffer().sampleRate() != rate)
         {
+            // The old source plays on until the new one replaces it: both count.
+            uint64_t cap = 0;
+            uint64_t used = 0;
+            budgetNow(0, cap, used);
             media::LoadedSample loaded =
-                media::loadSample(file, readSettings(), media::kDefaultDecodeBound, *hash);
+                media::loadSample(file, readSettings(), decodeBound(cap, used), *hash);
             if (!loaded.error.empty())
             {
                 setError(fileName, std::move(loaded.error));
                 return;
             }
-            source_ = prepare(std::move(loaded.decoded), rate);
+            std::shared_ptr<const PreparedSource> source;
+            if (!takeDecoded(std::move(loaded.decoded), rate, fileName, 0, source))
+            {
+                return; // over the cap: the old source stays, and the status says why
+            }
+            source_ = std::move(source);
         }
         if (fileUnavailable())
         {
@@ -308,7 +370,7 @@ void SampleLoader::convertNow(double rate) noexcept
     }
 }
 
-std::shared_ptr<const PreparedSource> SampleLoader::findAndLoad(double rate)
+std::shared_ptr<const PreparedSource> SampleLoader::findAndLoad(double rate, uint64_t release)
 {
     const std::string fileName = nameOf(entry_->absolutePath);
     const fs::path saved = pathOf(entry_->absolutePath);
@@ -324,8 +386,11 @@ std::shared_ptr<const PreparedSource> SampleLoader::findAndLoad(double rate)
     }
     // findSample hashed the file: its fingerprint is the entry's, so loadSample needn't read it a
     // third time.
+    uint64_t cap = 0;
+    uint64_t used = 0;
+    budgetNow(release, cap, used);
     media::LoadedSample loaded =
-        media::loadSample(found.path, settings, media::kDefaultDecodeBound,
+        media::loadSample(found.path, settings, decodeBound(cap, used),
                           media::FileHash{entry_->sha256Hex, entry_->fileSize});
     if (!loaded.error.empty())
     {
@@ -334,7 +399,10 @@ std::shared_ptr<const PreparedSource> SampleLoader::findAndLoad(double rate)
     }
     if (found.moved)
     {
-        // The next save records where it is now (spec §6.7).
+        // The next save records where it is now (spec §6.7), with its layer and its content
+        // reference as they were.
+        loaded.entry.layer = layer_;
+        loaded.entry.contentPath = entry_->contentPath;
         entry_ = std::move(loaded.entry);
         if (callbacks_.markDirty)
         {
@@ -342,17 +410,213 @@ std::shared_ptr<const PreparedSource> SampleLoader::findAndLoad(double rate)
         }
     }
     std::shared_ptr<const PreparedSource> source;
-    if (rate > 0.0)
+    if (!takeDecoded(std::move(loaded.decoded), rate, fileName, release, source))
     {
-        source = prepare(std::move(loaded.decoded), rate);
-    }
-    else
-    {
-        pending_ = std::move(loaded.decoded);
-        restorePending_ = true;
+        return nullptr;
     }
     setLoadedStatus({});
     return source;
+}
+
+std::shared_ptr<const PreparedSource> SampleLoader::loadEmbedded(double rate, uint64_t release)
+{
+    const std::string fileName = nameOf(entry_->absolutePath);
+    if (embedded_ == nullptr)
+    {
+        // The state named an AUDI payload it doesn't hold (an older build re-saved it): silent,
+        // the entry kept, nothing to relink.
+        status_ = {SampleState::Missing, fileName, kEmbeddedMissing, 0.0, 0, 0.0};
+        return nullptr;
+    }
+    uint64_t cap = 0;
+    uint64_t used = 0;
+    budgetNow(release, cap, used);
+    media::DecodeResult decoded = media::decodeAudioBytes(*embedded_, decodeBound(cap, used));
+    if (!decoded.audio.has_value())
+    {
+        setError(fileName, std::move(decoded.error));
+        return nullptr;
+    }
+    std::shared_ptr<const PreparedSource> source;
+    if (!takeDecoded(std::move(decoded.audio->buffer), rate, fileName, release, source))
+    {
+        return nullptr;
+    }
+    setLoadedStatus({});
+    return source;
+}
+
+void SampleLoader::convertEmbedded(double rate)
+{
+    if (embedded_ == nullptr || source_->buffer().sampleRate() == rate)
+    {
+        return;
+    }
+    const std::string fileName = nameOf(entry_->absolutePath);
+    uint64_t cap = 0;
+    uint64_t used = 0;
+    budgetNow(0, cap, used);
+    media::DecodeResult decoded = media::decodeAudioBytes(*embedded_, decodeBound(cap, used));
+    if (!decoded.audio.has_value())
+    {
+        setError(fileName, std::move(decoded.error));
+        return;
+    }
+    std::shared_ptr<const PreparedSource> source;
+    if (takeDecoded(std::move(decoded.audio->buffer), rate, fileName, 0, source))
+    {
+        source_ = std::move(source);
+    }
+}
+
+bool SampleLoader::takeDecoded(std::shared_ptr<SampleBuffer> decoded, double rate,
+                               const std::string &fileName, uint64_t release,
+                               std::shared_ptr<const PreparedSource> &source)
+{
+    uint64_t cap = 0;
+    uint64_t used = 0;
+    budgetNow(release, cap, used);
+    std::string refusal;
+    if (!fitsPrepared(*decoded, rate, cap, used, refusal))
+    {
+        setError(fileName, fileName.empty() ? std::move(refusal) : fileName + ": " + refusal);
+        return false;
+    }
+    if (rate > 0.0)
+    {
+        source = prepare(std::move(decoded), rate, *entry_);
+    }
+    else
+    {
+        pending_ = std::move(decoded);
+        restorePending_ = true;
+    }
+    return true;
+}
+
+bool SampleLoader::fitsPrepared(const SampleBuffer &decoded, double rate, uint64_t capBytes,
+                                uint64_t usedBytes, std::string &refusal)
+{
+    // The source prepare() would make: the buffer at `rate`, as convertRate sizes it (rounded
+    // up), with a stereo buffer's interleaved copy. One level until the source's pyramid.
+    int64_t frames = decoded.frames();
+    if (rate > 0.0 && rate != decoded.sampleRate())
+    {
+        frames = static_cast<int64_t>(
+            std::ceil(static_cast<double>(frames) * rate / decoded.sampleRate()));
+    }
+    const uint64_t need =
+        media::sampleBytes(frames, decoded.channels(), decoded.channels() == 2, 1);
+    const media::MemoryBudget budget{capBytes, usedBytes};
+    if (budget.fits(need))
+    {
+        return true;
+    }
+    refusal = budget.refusal(need);
+    return false;
+}
+
+void SampleLoader::budgetNow(uint64_t release, uint64_t &capBytes,
+                             uint64_t &usedBytes) const noexcept
+{
+    if (budget_ == nullptr)
+    {
+        capBytes = media::kDefaultDecodeBound;
+        usedBytes = 0;
+        return;
+    }
+    capBytes = budget_->capBytes;
+    usedBytes = budget_->usedBytes > release ? budget_->usedBytes - release : 0;
+}
+
+uint64_t SampleLoader::heldBytes() const noexcept
+{
+    uint64_t bytes = planarBytes(pending_.get());
+    if (source_ != nullptr)
+    {
+        bytes += media::sourceBytes(*source_);
+    }
+    if (embedded_ != nullptr)
+    {
+        bytes += embedded_->size();
+    }
+    return bytes;
+}
+
+void SampleLoader::relocate(const core::MediaEntry &moved)
+{
+    if (entry_.has_value() && entry_->sha256Hex == moved.sha256Hex &&
+        entry_->fileSize == moved.fileSize)
+    {
+        entry_ = moved;
+        entry_->layer = layer_;
+    }
+}
+
+bool SampleLoader::loadInMemory(std::shared_ptr<SampleBuffer> audio, core::MediaEntry entry,
+                                std::shared_ptr<const std::string> wavBytes) noexcept
+{
+    try
+    {
+        if (audio == nullptr || wavBytes == nullptr)
+        {
+            return false;
+        }
+        // The sample it replaces counts until the swap, and so do the bytes it keeps.
+        uint64_t cap = 0;
+        uint64_t used = 0;
+        budgetNow(0, cap, used);
+        used += wavBytes->size();
+        std::string refusal;
+        if (!fitsPrepared(*audio, activeRate_, cap, used, refusal))
+        {
+            setRequestError({}, std::move(refusal));
+            return false;
+        }
+        entry.layer = layer_;
+        std::shared_ptr<const PreparedSource> prepared;
+        if (activeRate_ > 0.0)
+        {
+            prepared = prepare(audio, activeRate_, entry);
+        }
+        // Every request so far is superseded, as by a restore; a result the worker finished is
+        // dropped after the lock is released.
+        std::optional<Result> stale;
+        {
+            std::lock_guard lock(mutex_);
+            job_.reset();
+            stale.swap(result_);
+            latestRequest_ = ++lastRequest_;
+        }
+        entry_ = std::move(entry);
+        newerMedia_.reset();
+        embedded_ = std::move(wavBytes);
+        entryUnavailable_ = false;
+        if (prepared != nullptr)
+        {
+            pending_.reset();
+            restorePending_ = false;
+            setSource(std::move(prepared));
+        }
+        else
+        {
+            source_.reset();
+            pending_ = std::move(audio);
+            restorePending_ = true; // inactive: activate() prepares it
+        }
+        setLoadedStatus({});
+        ++resultsApplied_;
+        if (callbacks_.markDirty)
+        {
+            callbacks_.markDirty();
+        }
+        return true;
+    }
+    catch (...)
+    {
+        setRequestErrorNoThrow(std::current_exception(), {});
+        return false;
+    }
 }
 
 void SampleLoader::deactivate() noexcept
@@ -544,7 +808,7 @@ SampleLoader::Result SampleLoader::run(const Job &job, double rate)
     result.id = job.id;
     result.fileName = utf8(job.file.filename());
     media::LoadedSample loaded = media::loadSample(
-        job.file, job.settings, media::kDefaultDecodeBound, std::nullopt, &cancel_);
+        job.file, job.settings, decodeBound(job.capBytes, job.usedBytes), std::nullopt, &cancel_);
     if (cancel_.load(std::memory_order_relaxed))
     {
         result.cancelled = true;
@@ -558,6 +822,7 @@ SampleLoader::Result SampleLoader::run(const Job &job, double rate)
     result.differentAudio = job.kind == JobKind::Relink && !job.expectedSha256.empty() &&
                             loaded.entry.sha256Hex != job.expectedSha256;
     result.entry = std::move(loaded.entry);
+    result.entry.layer = layer_;
     {
         // Superseded while decoding: abandoned before the conversion (spec §6.4).
         std::lock_guard lock(mutex_);
@@ -566,9 +831,17 @@ SampleLoader::Result SampleLoader::run(const Job &job, double rate)
             return result;
         }
     }
+    // The source it would make must fit the cap too (inactive: at the file's rate; activate()
+    // checks it again at the active one).
+    std::string refusal;
+    if (!fitsPrepared(*loaded.decoded, rate, job.capBytes, job.usedBytes, refusal))
+    {
+        result.error = result.fileName + ": " + refusal;
+        return result;
+    }
     if (rate > 0.0)
     {
-        result.prepared = prepare(std::move(loaded.decoded), rate, &cancel_);
+        result.prepared = prepare(std::move(loaded.decoded), rate, result.entry, &cancel_);
         result.cancelled = result.prepared == nullptr;
     }
     else
@@ -612,6 +885,7 @@ void SampleLoader::apply(Result &result)
     }
     entry_ = std::move(result.entry);
     newerMedia_.reset(); // the sample loaded replaces a newer build's manifest
+    embedded_.reset();   // and a capture
     setLoadedStatus(result.differentAudio ? kDifferentAudio : "");
     // A file loaded may be one another instance's restore found missing (carry-over [192]).
     SearchCache::process().clear();
@@ -643,7 +917,7 @@ void SampleLoader::apply(Result &result)
         // call without applying it, which activate() rules out; converted here all the same.
         if (activeRate_ > 0.0)
         {
-            setSource(prepare(std::move(result.decoded), activeRate_));
+            setSource(prepare(std::move(result.decoded), activeRate_, *entry_));
         }
         else
         {
@@ -665,9 +939,12 @@ void SampleLoader::setSource(std::shared_ptr<const PreparedSource> source)
 
 std::shared_ptr<const PreparedSource> SampleLoader::prepare(std::shared_ptr<SampleBuffer> decoded,
                                                             double rate,
+                                                            const core::MediaEntry &entry,
                                                             const std::atomic<bool> *cancel) const
 {
-    auto source = media::prepare(std::move(decoded), rate, cancel);
+    // Shared with every instance that holds the same file at the same rate (spec §6.5).
+    const media::PoolKey key{entry.sha256Hex, entry.fileSize, rate};
+    auto source = media::prepare(std::move(decoded), rate, cancel, &key);
     if (source != nullptr && preparedObserver_)
     {
         preparedObserver_(source);

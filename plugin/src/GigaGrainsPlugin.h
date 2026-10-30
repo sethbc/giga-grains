@@ -16,6 +16,7 @@
 #include <sst/cpputils/rtsan_support.h>
 
 #include "HelpersConfig.h"
+#include "MediaSession.h"
 #include "SampleLoader.h"
 #include "gg/core/GrainQueue.h"
 #include "gg/core/LatestValue.h"
@@ -105,17 +106,26 @@ const clap_plugin_descriptor *descriptorFor(Product product) noexcept;
 /// **The seed** (sub-project 5's spec §7). A new instance draws its own engine seed, on the main
 /// thread at construction, from std::random_device; a state brings its own.
 ///
-/// **The sample** (the instrument; spec §6.4–§6.7). The SampleLoader keeps the manifest entry
-/// and the source on the main thread, and loads on its own worker thread. Sources reach the
-/// audio thread through the Processor's SourceExchange (Processor::sources()): the main thread
-/// offers, process() adopts at the start of a call and hands back what no grain reads, asking
-/// for on_main_thread (requestCollect), where the main thread frees it. A session restore is
-/// synchronous (D8): stateLoad finds and decodes the sample before it returns; while active, it
-/// offers the source and the loaded values as one hand-off (SourceOffer), so the process() that
-/// takes them applies both (the source may wait up to Size more if two are already in play);
-/// while inactive, activate() converts it at the new rate before it returns, as it does the
-/// sample it has at any new rate (ruling R18). The FX takes a state's values through
-/// loadedState_. The per-machine
+/// **The media** (spec §6.4–§6.7; M2 sub-project 2's spec §6.3–§6.8), in both products: a
+/// MediaSession, with one SampleLoader per layer, each keeping its manifest entry and source on
+/// the main thread and loading on its own worker thread, the rings saved and restored with the
+/// state (D1), the memory cap (INST), the Ring Length watcher, capture and collect. Sources and
+/// rings reach the audio thread through each layer's SourceExchange (Processor::sources(layer)):
+/// the main thread offers, process() adopts at the start of a call and hands back what no grain
+/// reads, asking for on_main_thread (requestCollect), where the main thread frees it. A session
+/// restore is synchronous (D8): stateLoad finds and decodes every sample and ring before it
+/// returns; while active, it offers layer A's source (or its keep) with the loaded values as one
+/// hand-off (SourceOffer), each other layer's source on its own exchange, then each restored
+/// ring, back to back, so the process() that takes them usually applies them all (a ring offered
+/// after a process() polled its layer lands one call later; the values never come after their
+/// ring); while inactive, activate() converts them at the new rate before it returns, as it does
+/// the samples it has at any new rate (ruling R18), and sets every ring at its Ring Length. The
+/// audio thread asks for on_main_thread when a layer's Ring Length base changes
+/// (checkRingLengths), where the watcher resizes the ring (MediaSession::pollRingLengths). A
+/// ring adoption's bounded copy (at most LiveSource::kAdoptCopyFrames frames of each channel) may
+/// run in params.flush, which takes the offers as process() does: it is the same bounded,
+/// allocation-free copy, so params.flush stays real-time safe (the [rt] tests cover it). The
+/// per-machine
 /// settings file is $GG_SETTINGS_FILE when that is set and not empty (read once, at
 /// construction: the tests' way to keep away from the user's file), and
 /// gg::media::defaultSettingsPath() otherwise.
@@ -151,9 +161,14 @@ class GigaGrainsPlugin : public plugHelper_t
     const gg::core::Processor *processor() const noexcept { return processor_.get(); }
     gg::core::Processor *processor() noexcept { return processor_.get(); }
 
-    /// The instrument's sample loader, for the editor and tests; nullptr in the FX, which loads
-    /// no samples. Main thread.
-    SampleLoader *sampleLoader() noexcept { return loader_.get(); }
+    /// The instance's media: the four layers' loaders, the rings, the cap. Main thread.
+    MediaSession &media() noexcept { return *media_; }
+    /// The instrument's layer-A loader, for the editor's loader strip and tests
+    /// (media().loader(0)); nullptr in the FX, whose editor has no strip. Main thread.
+    SampleLoader *sampleLoader() noexcept
+    {
+        return product_ == Product::Instrument ? &media_->loader(0) : nullptr;
+    }
     /// The processor's engine; nullptr while the plugin is inactive. As processor().
     const gg::Engine *engine() const noexcept
     {
@@ -170,6 +185,10 @@ class GigaGrainsPlugin : public plugHelper_t
     /// The editor's changes that can wait for the audio thread at once (uiQueue_). A change
     /// made while it is full is dropped.
     static constexpr uint32_t kUiQueueCapacity = 1024;
+    /// The editor's ring commands that can wait for the audio thread at once (commandQueue_); one
+    /// process() call hands at most this many to the Processor. A command made while it is full
+    /// is dropped.
+    static constexpr uint32_t kUiCommandCapacity = 256;
     /// The most parameter events one process() call hands to the Processor in one go (its
     /// event span): the host's, after every value the editor queued (at most kUiQueueCapacity),
     /// so the editor's never overflow. The host's events beyond it apply at the block's end
@@ -219,6 +238,13 @@ class GigaGrainsPlugin : public plugHelper_t
     {
         return uiEventsDropped_.load(std::memory_order_relaxed);
     }
+
+    /// A ring command of the editor's (M2 sub-project 2's spec §6.4: add a splice mark, clear
+    /// them), main thread → the editor's command queue → the audio thread, which applies it from
+    /// the next process() call's first boundary (offset 0, whatever `command.offset` says).
+    /// Dropped while inactive, or when kUiCommandCapacity commands wait. The next process()
+    /// takes them; a params.flush leaves them queued.
+    void uiCommand(gg::core::CommandEvent command) noexcept;
 
     /// Whether the editor is open: the Processor publishes its grains and snapshots for it
     /// (Processor::setPublishing), from now while active, and from the next activate()
@@ -390,6 +416,9 @@ class GigaGrainsPlugin : public plugHelper_t
     /// active, the main thread while not. Its real-time safety is the host's, as requestCollect's
     /// is.
     void checkKinds() noexcept SST_CPPUTILS_NONBLOCKING;
+    /// As checkKinds, for each layer's Ring Length base in values_ (shownRingLengths_): a change
+    /// asks for on_main_thread, once until that call comes, where the resize watcher runs.
+    void checkRingLengths() noexcept SST_CPPUTILS_NONBLOCKING;
     /// Audio thread. When a source the audio thread handed back awaits the main thread's
     /// collect, asks the host for on_main_thread (clap_host.request_callback, thread-safe), once
     /// until that call comes, so every retired source is freed soon after it retires. Its
@@ -431,6 +460,10 @@ class GigaGrainsPlugin : public plugHelper_t
     // Set by checkKinds when a layer's kind changed, cleared by on_main_thread, which then asks
     // the host to rescan the parameters' text.
     std::atomic<bool> kindsChanged_{false};
+    // Each layer's Ring Length base as last noted by checkRingLengths, whose caller owns it (as
+    // shownKinds_), and its flag, cleared by on_main_thread.
+    std::array<float, gg::core::kLayers> shownRingLengths_{};
+    std::atomic<bool> ringLengthsChanged_{false};
 
     // The Processor's runner (see the class comment): the host's pool, or a loop on the calling
     // thread. Its run() is only ever called by Processor::process, so only inside our process(),
@@ -456,9 +489,9 @@ class GigaGrainsPlugin : public plugHelper_t
     // the audio thread's.
     std::unique_ptr<gg::core::Processor> processor_;
     uint32_t engineBlockSize_{0}; // main thread
-    // The instrument's sample loader; null in the FX. Main thread. After processor_, so it is
-    // destroyed first: its callbacks use processor_.
-    std::unique_ptr<SampleLoader> loader_;
+    // The media, in both products. Main thread. After processor_, so it is destroyed first: its
+    // loaders' callbacks use processor_.
+    std::unique_ptr<MediaSession> media_;
     // Set by the audio thread when it asks for on_main_thread to collect retired sources,
     // cleared by on_main_thread (requestCollect).
     std::atomic<bool> collectRequested_{false};
@@ -473,7 +506,10 @@ class GigaGrainsPlugin : public plugHelper_t
     // before it drains: one request outstanding at a time (queueUiChange).
     std::atomic<bool> uiFlushRequested_{false};
     std::atomic<uint64_t> uiEventsDropped_{0}; // the consumer's
-    bool publishing_{false};                   // main thread: the editor is open
+    // The editor's ring commands, main thread → audio thread (uiCommand), and one call's worth.
+    gg::core::SpscQueue<gg::core::CommandEvent, kUiCommandCapacity> commandQueue_;
+    std::array<gg::core::CommandEvent, kUiCommandCapacity> commands_{};
+    bool publishing_{false}; // main thread: the editor is open
     // The parameter, note and control events of one process() call. Audio thread.
     std::array<gg::core::ParamEvent, kMaxParamEvents> events_{};
     std::array<gg::core::NoteEvent, kMaxNoteEvents> notes_{};

@@ -472,14 +472,16 @@ TEST_CASE("a newer version's manifest loads the values, silent, and saves back u
     }
 }
 
-TEST_CASE("the fx ignores a newer version's manifest, as it does a sample", "[plugin]")
+TEST_CASE("the fx keeps a newer version's manifest, as the instrument does", "[plugin]")
 {
-    // The FX has no sample, and writes an empty manifest whatever it loaded.
+    // M2 sub-project 2's spec §6.8: the FX has loaders too, so a newer build's manifest is kept
+    // and saved back unchanged.
     setUp("newer-fx");
     PluginUnderTest fx(kFxId);
     REQUIRE(fx.valid());
     REQUIRE(fx.load(gg::test::withNewerMedia(fx.save())));
-    CHECK(savedManifest(fx) == R"(<media version="2" />)");
+    CHECK(fx.impl().media().loader(0).status().state == SampleState::Newer);
+    CHECK(savedManifest(fx) == gg::test::kNewerMedia);
 }
 
 TEST_CASE("a sample moved into the sample folder is found, and the state marked dirty", "[plugin]")
@@ -1156,19 +1158,38 @@ TEST_CASE("a session without a sample clears the one loaded", "[plugin]")
     CHECK(peak(out.left) == 0.0f);
 }
 
-TEST_CASE("the FX has no loader and saves an empty manifest", "[plugin]")
+TEST_CASE("four loaders in both products, and the FX saves its samples", "[plugin]")
 {
+    // M2 sub-project 2's spec §6.8: one loader per layer in both products, each recording its
+    // layer; the FX's editor has no loader strip (sampleLoader() is the instrument's layer A).
     setUp("fx");
     const fs::path file = gg::test::sineSampleFile("fx");
-    PluginUnderTest fx(kFxId);
-    REQUIRE(fx.valid());
-    CHECK(fx.impl().sampleLoader() == nullptr);
-    // A state carrying a sample (from the instrument, say) loads; the FX ignores the sample.
-    gg::core::SessionState s;
-    REQUIRE(gg::core::decodeState(fx.save(), gg::core::Mode::Fx, s));
-    s.samples[0] = gg::test::entryOf(file);
-    REQUIRE(fx.load(gg::core::encodeState(s)));
-    CHECK(savedManifest(fx) == "<media version=\"2\" />");
+    for (const char *id : {kInstrumentId, kFxId})
+    {
+        CAPTURE(id);
+        PluginUnderTest plugin(id);
+        REQUIRE(plugin.valid());
+        const bool isFx = std::string_view(id) == kFxId;
+        CHECK((plugin.impl().sampleLoader() == nullptr) == isFx);
+        auto &media = plugin.impl().media();
+        for (uint8_t layer = 0; layer < gg::core::kLayers; ++layer)
+        {
+            CHECK(media.loader(layer).layer() == layer);
+        }
+        const auto mode = isFx ? gg::core::Mode::Fx : gg::core::Mode::Instrument;
+        // With no sample, an empty manifest.
+        CHECK(savedManifest(plugin) == "<media version=\"2\" />");
+        gg::core::SessionState s;
+        REQUIRE(gg::core::decodeState(plugin.save(), mode, s));
+        s.samples[3] = gg::test::entryOf(file);
+        s.samples[3]->layer = 3;
+        REQUIRE(plugin.load(gg::core::encodeState(s)));
+        CHECK(media.loader(3).status().state == SampleState::Loaded);
+        gg::core::SessionState saved;
+        REQUIRE(gg::core::decodeState(plugin.save(), mode, saved));
+        CHECK(saved.samples[3] == s.samples[3]);
+        CHECK_FALSE(saved.samples[0].has_value());
+    }
 }
 
 TEST_CASE("the sample folder is saved in the settings file", "[plugin]")
@@ -1310,6 +1331,52 @@ TEST_CASE("the search cache remembers a search that found nothing for its lifeti
     gg::test::writeSineWav(library / "rel" / "search-cache.wav");
     CHECK(cache.find(inFolder, settings, t0).outcome == SearchOutcome::Found);
     CHECK(cache.searches() == 12);
+}
+
+TEST_CASE("the search cache keys a miss by its content roots and captures folder", "[plugin]")
+{
+    // M2 sub-project 2's spec §6.7: the content roots and the captures folder are candidates, so
+    // a miss remembered with one set isn't another set's, and a file put back at either candidate
+    // is seen at once.
+    const fs::path dir = setUp("search-cache-roots");
+    const fs::path file = gg::test::sineSampleFile("search-cache-roots");
+    gg::core::MediaEntry entry = gg::test::entryOf(file);
+    entry.contentPath = "Pads/pad.wav";
+    entry.absolutePath = gg::test::utf8(dir / "gone" / "Captures" / "pad.wav");
+    const fs::path rootA = dir / "rootA";
+    const fs::path rootB = dir / "rootB";
+    const fs::path captures = dir / "captures";
+    fs::remove_all(rootA);
+    fs::remove_all(rootB);
+    fs::remove_all(captures);
+    gg::core::MachineSettings settings;
+    settings.capturesFolder = gg::test::utf8(captures);
+    SearchCache cache;
+    const auto t0 = SearchCache::Clock::time_point{} + std::chrono::hours(1);
+    using gg::media::SearchOutcome;
+    const std::vector<fs::path> rootsA{rootA};
+    const std::vector<fs::path> rootsB{rootB};
+
+    CHECK(cache.find(entry, settings, t0, rootsA).outcome == SearchOutcome::Missing);
+    CHECK(cache.find(entry, settings, t0, rootsA).outcome == SearchOutcome::Missing);
+    CHECK(cache.searches() == 1);
+    CHECK(cache.find(entry, settings, t0, rootsB).outcome == SearchOutcome::Missing);
+    CHECK(cache.searches() == 2); // other roots: another search
+    // A file put back under a root is seen at once.
+    fs::create_directories(rootA / "Pads");
+    fs::copy_file(file, rootA / "Pads" / "pad.wav");
+    CHECK(cache.find(entry, settings, t0, rootsA).outcome == SearchOutcome::Found);
+    CHECK(cache.searches() == 3);
+    // Another captures folder is another search, and a file put back there is seen at once.
+    gg::core::MachineSettings elsewhere = settings;
+    elsewhere.capturesFolder = gg::test::utf8(dir / "other-captures");
+    CHECK(cache.find(entry, settings, t0, rootsB).outcome == SearchOutcome::Missing);
+    CHECK(cache.find(entry, elsewhere, t0, rootsB).outcome == SearchOutcome::Missing);
+    CHECK(cache.searches() == 4);
+    fs::create_directories(captures);
+    fs::copy_file(file, captures / "pad.wav");
+    CHECK(cache.find(entry, settings, t0, rootsB).outcome == SearchOutcome::Found);
+    CHECK(cache.searches() == 5);
 }
 
 TEST_CASE("a missing sample that comes back is loaded at the next activation", "[plugin]")

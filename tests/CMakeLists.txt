@@ -136,6 +136,7 @@ if (GG_BUILD_PLUGINS)
             plugin/factory_tests.cpp
             plugin/identity_tests.cpp
             plugin/params_tests.cpp
+            plugin/persist_tests.cpp
             plugin/process_tests.cpp
             plugin/rt_tests.cpp
             plugin/sample_tests.cpp

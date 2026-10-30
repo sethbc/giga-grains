@@ -1213,3 +1213,100 @@ TEST_CASE("plugin process with four layers, controls and the pool does not alloc
         REQUIRE(allocations == 0);
     }
 }
+
+TEST_CASE("plugin process and flush adopt rings and apply commands without allocating",
+          "[plugin][rt]")
+{
+    // M2 sub-project 2's spec §7: a ring resize's offer (the bounded copy of the frames written
+    // since the main thread's), a restored ring's offer and a ring command, taken by process()
+    // and by params.flush, neither of which allocates or frees.
+    const char *id = GENERATE(kInstrumentId, kFxId);
+    CAPTURE(id);
+    const bool isFx = std::string_view(id) == kFxId;
+    gg::test::useMediaScratch("rt-rings");
+    gg::test::PluginUnderTest plugin(id);
+    REQUIRE(plugin.valid());
+    REQUIRE(plugin.activate(48000.0, 512));
+    const auto *params = paramsOf(plugin);
+    const auto *processor = plugin.impl().processor();
+    std::vector<float> inLeft(512, 0.25f), inRight(512, -0.25f), outLeft(512), outRight(512);
+    float *inputs[2] = {inLeft.data(), inRight.data()};
+    float *outputs[2] = {outLeft.data(), outRight.data()};
+    gg::test::InputEvents none;
+    const auto ringLength = [&](double log2Seconds) {
+        const auto e = gg::test::paramValue(
+            paramId(gg::core::layerSlot(gg::core::LayerParam::RingLength, 0)), log2Seconds);
+        gg::test::InputEvents events;
+        events.add(&e.header);
+        REQUIRE(plugin.process(512, inputs, outputs, events.list()) == CLAP_PROCESS_CONTINUE);
+        plugin.onMainThread(); // the watcher offers the new ring
+        REQUIRE(processor->sources(0).ringAdoptionPending());
+    };
+    for (int i = 0; i < 4; ++i)
+    {
+        REQUIRE(plugin.process(512, inputs, outputs, none.list()) == CLAP_PROCESS_CONTINUE);
+    }
+
+    // A resize, adopted by process(), then one adopted by params.flush.
+    ringLength(2.0);
+    AllocTripwire::resetCount();
+    {
+        AllocTripwire::Scope armed;
+        plugin.process(512, inputs, outputs, none.list());
+    }
+    REQUIRE_NO_ALLOCATIONS(AllocTripwire::count());
+    CHECK(processor->ringRead(0).storage->frames() == 4 * 48000);
+    ringLength(3.0);
+    AllocTripwire::resetCount();
+    {
+        AllocTripwire::Scope armed;
+        params->flush(plugin.clap(), none.list(), gg::test::discardingOutputEvents());
+    }
+    REQUIRE_NO_ALLOCATIONS(AllocTripwire::count());
+    CHECK(processor->ringRead(0).storage->frames() == 8 * 48000);
+    plugin.onMainThread(); // frees the storages replaced
+
+    // A restored ring (layer A's Freeze on: D1 saves it), taken by process(), then by a flush.
+    const auto freeze = gg::test::paramValue(paramId(ParamSlot::Freeze), 1.0);
+    gg::test::InputEvents freezeOn;
+    freezeOn.add(&freeze.header);
+    params->flush(plugin.clap(), freezeOn.list(), gg::test::discardingOutputEvents());
+    for (int i = 0; i < 4; ++i)
+    {
+        plugin.process(512, inputs, outputs, none.list());
+    }
+    const std::string state = plugin.save();
+    REQUIRE(plugin.load(state));
+    REQUIRE(processor->sources(0).ringAdoptionPending());
+    AllocTripwire::resetCount();
+    {
+        AllocTripwire::Scope armed;
+        plugin.process(512, inputs, outputs, none.list());
+    }
+    REQUIRE_NO_ALLOCATIONS(AllocTripwire::count());
+    CHECK_FALSE(processor->sources(0).ringAdoptionPending());
+    REQUIRE(plugin.load(state));
+    AllocTripwire::resetCount();
+    {
+        AllocTripwire::Scope armed;
+        params->flush(plugin.clap(), none.list(), gg::test::discardingOutputEvents());
+    }
+    REQUIRE_NO_ALLOCATIONS(AllocTripwire::count());
+    CHECK_FALSE(processor->sources(0).ringAdoptionPending());
+    plugin.onMainThread();
+
+    // A command (the FX's layer A reads its ring; the instrument's is a Sample layer, which
+    // ignores it), unfrozen first.
+    const auto thaw = gg::test::paramValue(paramId(ParamSlot::Freeze), 0.0);
+    gg::test::InputEvents freezeOff;
+    freezeOff.add(&thaw.header);
+    params->flush(plugin.clap(), freezeOff.list(), gg::test::discardingOutputEvents());
+    plugin.impl().uiCommand({0, gg::core::CommandKind::AddSplice, 0, 0.01f});
+    AllocTripwire::resetCount();
+    {
+        AllocTripwire::Scope armed;
+        plugin.process(512, inputs, outputs, none.list());
+    }
+    REQUIRE_NO_ALLOCATIONS(AllocTripwire::count());
+    CHECK(processor->engine(0).live().spliceCount() == (isFx ? 1u : 0u));
+}
