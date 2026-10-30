@@ -55,6 +55,7 @@ add_executable(gg-tests
         tools/render_spec_tests.cpp
         tools/signals_tests.cpp
         ui/lane_model_tests.cpp
+        ui/edit_layout_tests.cpp
         ui/undo_stack_tests.cpp
         ui/splat_tests.cpp
         support/AllocTripwire.cpp

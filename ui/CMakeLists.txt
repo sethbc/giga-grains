@@ -2,15 +2,18 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright 2026, the Giga Grains authors (see git history)
 #
-# gg-ui-core: the framework-free UI code (the splat renderer, the lane geometry, the lane's UI
-# clock and grain list, the canvas stress workload and the undo stack). It builds without plugins
-# or JUCE, so its tests and `gg-bench --canvas` also run in the sanitizer builds.
+# gg-ui-core: the framework-free editor code (the splat renderer, the lane geometry, the lane's
+# UI clock and grain list, the canvas stress workload, the undo stack, the layers' colours and the
+# views' placement table). It builds without plugins or JUCE, so its tests and `gg-bench --canvas`
+# also run in the sanitizer builds.
 #
-# gg-ui: the JUCE editor (the Perform view: header, loader strip, grain canvas, macros), attached
-# to the plugins through sst-clap-helpers' clap_juce_shim. Only built with the plugins' editor
-# (GG_BUILD_PLUGINS and GG_BUILD_EDITOR).
+# gg-ui: the JUCE editor (the Perform view: header, loader strip, grain canvas, macros; the
+# palette and the parameter control the views build on), attached to the plugins through
+# sst-clap-helpers' clap_juce_shim. Only built with the plugins' editor (GG_BUILD_PLUGINS and
+# GG_BUILD_EDITOR).
 
 add_library(gg-ui-core STATIC
+        src/EditLayout.cpp
         src/LaneModel.cpp
         src/LaneState.cpp
         src/SplatRenderer.cpp
@@ -20,8 +23,8 @@ add_library(gg-ui-core STATIC
 add_library(gg::ui-core ALIAS gg-ui-core)
 
 target_include_directories(gg-ui-core PUBLIC include)
-# gg::core is PUBLIC: gg/ui/UndoStack.h includes its parameter slots and mod routes. The engine
-# only for gg::rng's header-only mixer.
+# gg::core is PUBLIC: gg/ui/UndoStack.h includes its parameter slots and mod routes, and
+# gg/ui/EditLayout.h its parameter slots. The engine only for gg::rng's header-only mixer.
 target_link_libraries(gg-ui-core PUBLIC gg::core PRIVATE gg::engine gg::compiler-options)
 
 if (GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
@@ -30,6 +33,8 @@ if (GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
             src/GrainCanvas.cpp
             src/LoaderStrip.cpp
             src/MacroRow.cpp
+            src/Palette.cpp
+            src/ParamControl.cpp
             )
     add_library(gg::ui ALIAS gg-ui)
 

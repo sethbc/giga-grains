@@ -10,11 +10,14 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <sst/jucegui/style/StyleSheet.h>
 
+#include "Palette.h"
+
 namespace gg::ui::theme
 {
-/// The one dark theme (sub-project 5's spec §6.5): sst-jucegui's built-in dark style sheet for
-/// its controls, and these colours for what the editor draws itself. The style sheets are set up
-/// on the first call; UI thread only.
+/// The dark theme (sub-project 5's spec §6.5): sst-jucegui's built-in dark style sheet for its
+/// controls, and these colours, Palette::dark()'s (M2 sub-project 6's spec §6.9), for what the
+/// editor draws itself: a thin alias kept while the editor's components move to paletteOf. The
+/// style sheets are set up on the first call; UI thread only.
 inline sst::jucegui::style::StyleSheet::ptr_t darkStyle()
 {
     // initializeStyleSheets is idempotent (it registers the classes once per process), but the
@@ -25,22 +28,23 @@ inline sst::jucegui::style::StyleSheet::ptr_t darkStyle()
         sst::jucegui::style::StyleSheet::DARK);
 }
 
-// The editor's own surfaces and text.
-inline const juce::Colour kBackground{0xff15171c};
-inline const juce::Colour kHeader{0xff1c1f26};
-inline const juce::Colour kLane{0xff0b0c0f}; ///< the canvas behind the grains
-inline const juce::Colour kText{0xffe8e8ec};
-inline const juce::Colour kDimText{0xff9aa0ab};
-inline const juce::Colour kOutline{0xff2c313b};
-inline const juce::Colour kAccent{0xff6fc3df}; ///< Perform, selected
+// Palette::dark()'s colours (see Palette for each), until every consumer reads its editor's
+// palette (paletteOf) instead.
+inline const juce::Colour kBackground{Palette::dark().background};
+inline const juce::Colour kHeader{Palette::dark().header};
+inline const juce::Colour kLane{Palette::dark().lane};
+inline const juce::Colour kText{Palette::dark().text};
+inline const juce::Colour kDimText{Palette::dark().dimText};
+inline const juce::Colour kOutline{Palette::dark().outline};
+inline const juce::Colour kAccent{Palette::dark().accent};
+inline const juce::Colour kPeaks{Palette::dark().peaks};
+inline const juce::Colour kWindow{Palette::dark().window};
+inline const juce::Colour kGhost{Palette::dark().ghost};
+inline const juce::Colour kFreeze{Palette::dark().freeze};
+inline const juce::Colour kFeedback{Palette::dark().feedback};
 
-// The canvas.
-inline constexpr uint32_t kGrainTint = 0xFFC46B; ///< the splats' 0xRRGGBB (amber)
-inline const juce::Colour kPeaks{0xff3b4150};    ///< the live ring's or the sample's outline
-inline const juce::Colour kWindow{0xff6fc3df};   ///< the scan window at the base values
-inline const juce::Colour kGhost{0xffe8e8ec};    ///< where the effective values have it
-inline const juce::Colour kFreeze{0xff7fb4ff};   ///< the frozen lane's tint
-inline const juce::Colour kFeedback{0xffff6b8b}; ///< the regeneration marker at the head
+/// The splats' 0xRRGGBB (amber, M1's), until the canvas tints each lane by its layer's colour.
+inline constexpr uint32_t kGrainTint = 0xFFC46B;
 } // namespace gg::ui::theme
 
 #endif // GG_UI_THEME_H

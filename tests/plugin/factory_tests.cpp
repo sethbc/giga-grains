@@ -31,12 +31,15 @@
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <sst/jucegui/components/Knob.h>
+#include <sst/jucegui/components/MenuButton.h>
 #include <sst/jucegui/components/ToggleButton.h>
 #include <sst/jucegui/data/Continuous.h>
 #include <sst/jucegui/style/StyleSheet.h>
 
 #include "GrainCanvas.h" // ui/src: the editor's own components
 #include "LoaderStrip.h"
+#include "MacroRow.h"
+#include "ParamControl.h"
 #include "editor/EditorPlugin.h"
 #include "editor/UiSettings.h"
 #include "gg/core/GrainQueue.h"
@@ -1472,6 +1475,204 @@ TEST_CASE("a theme write into an unwritable folder fails cleanly", "[plugin]")
     CHECK_FALSE(written);
     CHECK(gg::plugin::readTheme() == gg::plugin::ThemeName::Dark);
     CHECK(std::filesystem::is_regular_file(blocker));
+}
+
+// The parameter control (M2 sub-project 6's spec §6.5): M1's macro adaptor generalized, which
+// every view builds its controls from. Built headless, as the Perform view's tests are.
+namespace
+{
+/// The first child of `parent` that is a T, or null.
+template <typename T> T *childOfType(const juce::Component &parent)
+{
+    for (juce::Component *child : parent.getChildren())
+    {
+        if (auto *t = dynamic_cast<T *>(child))
+        {
+            return t;
+        }
+    }
+    return nullptr;
+}
+} // namespace
+
+TEST_CASE("a ParamControl edits its parameter as a gesture", "[plugin]")
+{
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    using Catch::Matchers::WithinAbs;
+    using gg::ui::ParamControl;
+    RecordingContext recording(gg::core::Mode::Fx);
+
+    CHECK(ParamControl::kindFor(gg::core::paramMeta(ParamSlot::Size, gg::core::Mode::Fx)) ==
+          ParamControl::Kind::Knob);
+    CHECK(ParamControl::kindFor(gg::core::paramMeta(ParamSlot::Source, gg::core::Mode::Fx)) ==
+          ParamControl::Kind::Menu);
+    CHECK(ParamControl::kindFor(gg::core::paramMeta(ParamSlot::B_Freeze, gg::core::Mode::Fx)) ==
+          ParamControl::Kind::Toggle);
+    CHECK(ParamControl::kindFor(gg::core::paramMeta(ParamSlot::StepLength, gg::core::Mode::Fx)) ==
+          ParamControl::Kind::Menu);
+
+    // A knob for layer B's Size: its ID is the CLAP ID's, its label the name less the letter.
+    ParamControl size(recording.context, ParamSlot::B_Size, ParamControl::Kind::Knob);
+    CHECK(size.getComponentID() ==
+          juce::String("param.") + juce::String(gg::core::paramId(ParamSlot::B_Size)));
+    CHECK(size.slot() == ParamSlot::B_Size);
+    auto *knob = childOfType<sst::jucegui::components::Knob>(size);
+    REQUIRE(knob != nullptr);
+    REQUIRE(knob->continuous() != nullptr);
+    CHECK(knob->continuous()->getLabel() == "Size");
+    const float sizeDefault = gg::core::paramMeta(ParamSlot::B_Size, gg::core::Mode::Fx).defaultVal;
+    CHECK(size.shownValue() == sizeDefault);
+
+    knob->onBeginEdit();
+    knob->continuous()->setValueFromGUI(0.3f);
+    knob->onEndEdit();
+    REQUIRE(recording.kinds() == "bve");
+    for (const GestureCall &c : recording.calls)
+    {
+        CHECK(c.slot == ParamSlot::B_Size);
+    }
+    CHECK_THAT(recording.calls[1].value, WithinAbs(0.3, 1e-6));
+    CHECK_THAT(size.shownValue(), WithinAbs(0.3, 1e-6));
+
+    // Up: 1/100 of the range, one gesture; a double-click returns to the default, one gesture.
+    recording.calls.clear();
+    const auto &meta = gg::core::paramMeta(ParamSlot::B_Size, gg::core::Mode::Fx);
+    CHECK(knob->keyPressed(juce::KeyPress(juce::KeyPress::upKey)));
+    REQUIRE(recording.kinds() == "bve");
+    CHECK_THAT(recording.calls[1].value, WithinAbs(0.3 + 0.01 * (meta.maxVal - meta.minVal), 1e-5));
+    recording.calls.clear();
+    const juce::Point<float> centre = knob->getLocalBounds().getCentre().toFloat();
+    knob->mouseDoubleClick(mouseAt(*knob, centre.x, centre.y, centre, false));
+    REQUIRE(recording.kinds() == "bve");
+    CHECK(recording.calls[1].value == static_cast<double>(sizeDefault));
+
+    // The control follows a base value the host changed, at refresh.
+    recording.values[static_cast<std::size_t>(ParamSlot::B_Size)] = -1.0f;
+    size.refresh();
+    CHECK(size.shownValue() == -1.0f);
+
+    // A menu for Source shows the five kinds' names, and a choice is one gesture.
+    recording.calls.clear();
+    ParamControl source(recording.context, ParamSlot::Source, ParamControl::Kind::Menu);
+    auto *menu = childOfType<sst::jucegui::components::MenuButtonDiscreteEditor>(source);
+    REQUIRE(menu != nullptr);
+    REQUIRE(menu->data != nullptr);
+    CHECK(menu->data->getLabel() == "Source");
+    CHECK(menu->data->getMin() == 0);
+    CHECK(menu->data->getMax() == 4);
+    const std::array<const char *, 5> kinds{"Sample", "Live", "Resample", "Spectral", "Oscillator"};
+    for (int i = 0; i < 5; ++i)
+    {
+        CHECK(menu->data->getValueAsStringFor(i) == kinds[static_cast<std::size_t>(i)]);
+    }
+    CHECK(menu->data->getValue() == 1); // Live, the FX's default
+    menu->onBeginEdit();
+    menu->data->setValueFromGUI(0);
+    menu->onEndEdit();
+    REQUIRE(recording.kinds() == "bve");
+    CHECK(recording.calls[1].slot == ParamSlot::Source);
+    CHECK(recording.calls[1].value == 0.0);
+
+    // A global keeps its name.
+    ParamControl decay(recording.context, ParamSlot::ReverbDecay, ParamControl::Kind::Knob);
+    auto *decayKnob = childOfType<sst::jucegui::components::Knob>(decay);
+    REQUIRE(decayKnob != nullptr);
+    CHECK(decayKnob->continuous()->getLabel() == "Reverb Decay");
+}
+
+TEST_CASE("commit on release sends one value", "[plugin]")
+{
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    using gg::ui::ParamControl;
+    RecordingContext recording(gg::core::Mode::Fx);
+    ParamControl size(recording.context, ParamSlot::ReverbSize, ParamControl::Kind::Knob);
+    size.setCommitOnRelease(true);
+    auto *knob = childOfType<sst::jucegui::components::Knob>(size);
+    REQUIRE(knob != nullptr);
+
+    knob->onBeginEdit();
+    knob->continuous()->setValueFromGUI(0.2f);
+    knob->continuous()->setValueFromGUI(0.4f);
+    knob->continuous()->setValueFromGUI(0.6f);
+    CHECK(size.shownValue() == 0.6f); // the target, while dragged
+    CHECK(recording.kinds() == "b");
+    knob->onEndEdit();
+    REQUIRE(recording.kinds() == "bve");
+    CHECK(recording.calls[1].slot == ParamSlot::ReverbSize);
+    CHECK(recording.calls[1].value == static_cast<double>(0.6f));
+
+    // A gesture that moved nothing sends no value.
+    recording.calls.clear();
+    knob->onBeginEdit();
+    knob->onEndEdit();
+    CHECK(recording.kinds() == "be");
+}
+
+TEST_CASE("a ParamControl in mod mode drags its rings and not its value", "[plugin]")
+{
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    using gg::ui::ParamControl;
+    RecordingContext recording(gg::core::Mode::Fx);
+    ParamControl size(recording.context, ParamSlot::Size, ParamControl::Kind::Knob);
+    size.setBounds(0, 0, 72, 92);
+    size.setModMode(true);
+    size.setRings({{13, 0.25f, true, juce::Colours::yellow}});
+    std::vector<std::pair<uint8_t, float>> drags;
+    size.onRingDrag = [&drags](uint8_t slot, float depth) { drags.emplace_back(slot, depth); };
+
+    auto *knob = childOfType<sst::jucegui::components::Knob>(size);
+    REQUIRE(knob != nullptr);
+    bool knobClicks = true, knobChildClicks = true;
+    knob->getInterceptsMouseClicks(knobClicks, knobChildClicks);
+    CHECK_FALSE(knobClicks);
+    CHECK_FALSE(knob->keyPressed(juce::KeyPress(juce::KeyPress::upKey)));
+
+    // A press on the knob's centre grabs no ring; one on the ring drags its depth.
+    const juce::Point<float> centre =
+        knob->getBounds().toFloat().withHeight(static_cast<float>(knob->getWidth())).getCentre();
+    size.mouseDown(mouseAt(size, centre.x, centre.y, centre, false));
+    size.mouseDrag(mouseAt(size, centre.x, centre.y - 30.0f, centre, true));
+    size.mouseUp(mouseAt(size, centre.x, centre.y - 30.0f, centre, true));
+    CHECK(drags.empty());
+    const juce::Point<float> onRing{centre.x, knob->getBounds().toFloat().getY() - 2.0f};
+    size.mouseDown(mouseAt(size, onRing.x, onRing.y, onRing, false));
+    size.mouseDrag(mouseAt(size, onRing.x, onRing.y - 15.0f, onRing, true));
+    size.mouseUp(mouseAt(size, onRing.x, onRing.y - 15.0f, onRing, true));
+    REQUIRE_FALSE(drags.empty());
+    CHECK(drags.back().first == 13);
+    CHECK(drags.back().second > 0.25f);
+    CHECK(recording.calls.empty()); // the parameter itself never moved
+
+    // The ring paints around the knob, in its colour.
+    sst::jucegui::style::StyleSheet::initializeStyleSheets([] {});
+    knob->setStyle(sst::jucegui::style::StyleSheet::getBuiltInStyleSheet(
+        sst::jucegui::style::StyleSheet::DARK));
+    juce::Image image(juce::Image::ARGB, size.getWidth(), size.getHeight(), true);
+    {
+        juce::Graphics g(image);
+        size.paintEntireComponent(g, false);
+    }
+    const juce::Colour atRing =
+        image.getPixelAt(juce::roundToInt(onRing.x), juce::roundToInt(onRing.y - 1.0f));
+    CHECK(atRing.getAlpha() > 0);
+    CHECK(atRing.getRed() > atRing.getBlue());
+}
+
+TEST_CASE("the macro row is unchanged", "[plugin]")
+{
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    RecordingContext recording(gg::core::Mode::Fx);
+    gg::ui::MacroRow row(recording.context);
+    const std::array<const char *, 8> names{"Size",    "Density", "Pitch",    "Spray",
+                                            "Texture", "Freeze",  "Feedback", "Mix"};
+    for (std::size_t i = 0; i < 8; ++i)
+    {
+        const std::string id = "macro." + std::to_string(i + 1);
+        INFO(id);
+        juce::Component *macro = findDeep(row, id.c_str());
+        REQUIRE(macro != nullptr);
+        CHECK(macro->getTitle() == names[i]);
+    }
 }
 #else
 TEST_CASE("headless build exposes no gui extension", "[plugin]")
