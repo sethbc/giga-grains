@@ -405,11 +405,27 @@ gg-render --write-media DIR
     `"Morph X"`, `"Morph Y"`, `"Layer A On"` … `"Layer D On"` and `"Level B"` … `"Level D"`.
     Optional `automation` is a time-ordered list of `{"time", "param", "value"}` points in
     seconds, and optional `notes` a time-ordered list of `{"time", "key", "duration",
-    "channel"}` (channel optional). A note whose Off would fall on its On's frame is bad input
-    (ruling R17). Values are in each parameter's CLAP value domain (Density 6.0 is 64 Hz; Reverb
+    "channel", "velocity"}` (channel optional; velocity optional, 0–127, default 100, reaching
+    only the mod matrix's Velocity source). A note whose Off would fall on its On's frame is bad
+    input (ruling R17). Values are in each parameter's CLAP value domain (Density 6.0 is 64 Hz; Reverb
     Decay is log2 seconds, so 1.0 is 2 s, and 6.068255709804611, `kDecayMax`, is ∞; Reverb
     Pre-delay is seconds, 0–0.5; Texture and the macros are 0–1, Macro Freeze 0 or 1, Feedback
     0–0.95). The render is exactly `durationSeconds` long.
+  - **Layers, routes, controls and the transport** (M2 sub-project 1's spec §6.11), each
+    optional in FX and instrument mode, and unknown keys in sample mode
+    (`tools/gg-render/RenderSpec.h` documents each):
+    - `samples` maps layer letters to source specs (`{"B": {"kind": "file", "path": …}}`),
+      each handed to that layer before the render; the instrument's `sample` is layer A's, so
+      `samples.A` beside it is an error, and an FX layer reads its sample only with its Source
+      set to Sample (`"B Source": 0`).
+    - `mod` is a list of routes `{"slot", "source", "sourceLayer", "target", "targetLayer",
+      "depth", "curve"}` (slot 1–48, source and curve by their saved names, a target by its
+      layer-A or global name with `targetLayer` `"A"`–`"D"` or `"all"`), set on top of the
+      factory routes; a slot named twice is an error, and `"source": "None"` clears one.
+    - `controls` is a time-ordered list of `{"time", "kind", "value", "channel"}`, kinds
+      `modWheel`, `aftertouch` and `pitchBend`, values 0–1, sent as MIDI control events.
+    - `transport` is `{"tempoBpm", "playing", "startBeat"}`, a steady transport set once before
+      the render (playing by default, from beat 0); without it the transport sources hold at 0.
   - **Instrument mode** (`"mode": "instrument"`) runs Giga Grains' `Processor` the same way over
     a `sample` (a built-in signal or a `file`, loaded and converted with `gg-media`), with no
     `channels`. Its Position is the fraction of the sample, 0–1, and it is silent until a note.
@@ -471,7 +487,8 @@ gg-render --write-media DIR
   - They compare the metrics within tolerances.
   - They compare the grain-event log exactly per line (CR and final newline ignored). That
     comparison is the cross-platform determinism gate. Each `.events.jsonl` line is one grain:
-    `i`, `onset`, `frac`, `pos`, `rate`, `dur`, `tex` (its Texture, since sub-project 5),
+    `i`, `layer` (0–3, since M2 sub-project 1), `onset`, `frac`, `pos`, `rate`, `dur`, `tex`
+    (its Texture, since sub-project 5),
     `gain` and `pan` (`formatEventLine` in `tools/gg-render/Render.h`).
   - The click score (metricsVersion 2) is normalized by the level within ±5 ms. The
     `[golden][metrics]` tests in `tests/metrics/click_injection_tests.cpp` render every case in

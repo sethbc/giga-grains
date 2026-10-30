@@ -50,6 +50,24 @@
 ///  "notes":[{"time":1.0,"key":67,"duration":0.5}]}
 /// ```
 ///
+/// Both also take M2 sub-project 1's keys (its spec §6.11), each optional: samples for any layer,
+/// mod routes, MIDI controls, a steady transport, and a velocity per note (see InstrumentSpec,
+/// FxSpec, RouteSpec, ControlSpec, TransportSpec and NoteSpec):
+///
+/// ```json
+/// {"mode":"fx", ...,
+///  "samples":{"B":{"kind":"file","path":"loop-48k.wav"},
+///             "C":{"kind":"sine","frequencyHz":330,"seconds":2.0,"amplitude":0.5}},
+///  "params":{"Layer B On":1,"B Source":0,"Layer C On":1,"C Source":0},
+///  "mod":[{"slot":13,"source":"LFO 1","sourceLayer":"same","target":"Pitch","targetLayer":"B",
+///          "depth":12,"curve":"Bipolar"},
+///         {"slot":14,"source":"Mod Wheel","target":"Mix","depth":0.5},
+///         {"slot":1,"source":"None"}],
+///  "controls":[{"time":0.5,"kind":"modWheel","value":1.0,"channel":0}],
+///  "transport":{"tempoBpm":120,"playing":true,"startBeat":0},
+///  "notes":[{"time":1.0,"key":67,"duration":0.5,"velocity":100}]}
+/// ```
+///
 /// - "mode" is optional. In every mode sampleRate, durationSeconds, blockSize and seed are
 ///   required, and durationSeconds must round to at least one frame at sampleRate.
 /// - Sample mode requires "source" and "stream", and every "stream" key but "distribution",
@@ -62,6 +80,10 @@
 /// - FX mode requires "input", read as a source but without "sampleRate", and "channels",
 ///   except with a file input, which has the file's own channels and so takes no "channels";
 ///   "params", "automation" and "notes" are optional.
+/// - Instrument and FX mode both take "samples", "mod", "controls" and "transport", optional;
+///   sample mode takes none of them.
+/// - Parameters (in "params", "automation" and a route's "target") are named as the product
+///   displays them, so "B Size" is layer B's; a bare M1 name ("Size") is layer A's.
 /// - Any other key, including another mode's, is an error, so a misspelt key never silently
 ///   falls back to a default.
 /// - A file's "path" is UTF-8. gg-render resolves a relative one against the spec's directory,
@@ -171,15 +193,79 @@ struct AutomationPoint
 /// - An Off at or after the render's end is never sent: the note is still held when it ends.
 /// - Like an automation point, a note in the render's last samples, after its last grid
 ///   boundary, never applies.
-/// - The Processor ignores velocity (D6), so a note has none.
+/// - The grains ignore velocity (D6); an On's velocity is the mod matrix's Velocity source (M2
+///   sub-project 1's spec §6.8), velocity / 127.
 struct NoteSpec
 {
     double timeSeconds{0.0};     ///< >= 0, rounding to a frame before the render's end.
     uint8_t key{60};             ///< 0..127; 60 plays at the sample's own pitch.
     double durationSeconds{1.0}; ///< > 0, at most kMaxSeconds; the Off rounds past the On (R17).
     uint8_t channel{0};          ///< 0..15; optional in the spec, 0 by default.
+    uint8_t velocity{100};       ///< 0..127; optional in the spec, 100 by default.
 
     friend bool operator==(const NoteSpec &, const NoteSpec &) = default;
+};
+
+/// One route of the mod matrix (gg::core::ModRoute; M2 sub-project 1's spec §6.8), by name, set in
+/// its slot before the render on top of the product's factory routes (gg::core::factoryRoutes),
+/// which fill slots 1 to 12. A route naming source "None" clears its slot, and takes no key but
+/// "slot" and "source". Otherwise "source", "target" and "depth" are required, and the others
+/// default as below. No slot may be named twice in a spec.
+struct RouteSpec
+{
+    uint8_t slot{1}; ///< 1..48, as people number them (the Processor's index + 1).
+    /// The source's stable name (gg::core::modSourceName): "LFO 1", "Mod Wheel", "Transport Beat",
+    /// "None" and so on.
+    std::string source{"None"};
+    /// A per-layer source's layer (the LFOs, envelopes, randoms and Step): "A" to "D", or "same",
+    /// the target's own layer (the default). A global source accepts and ignores it.
+    std::string sourceLayer{"same"};
+    /// A parameter name of the spec's product: a global ("Mix", "Morph X"), or a layer kind by its
+    /// layer-A name ("A Pitch" or the bare M1 "Pitch"; "Level" and "Layer A On" for the per-layer
+    /// globals), with targetLayer picking the layers. Layers B to D's names ("B Pitch", "Level B")
+    /// are refused: targetLayer reaches them. It must be a modulation target
+    /// (gg::core::isValidTarget: not a macro, nor a modulator's own control). "" for "None".
+    std::string target{};
+    /// A layer target's layers: "A" to "D", or "all" (the default). Not allowed with a global
+    /// target.
+    std::string targetLayer{"all"};
+    /// In the target's CLAP value domain per unit of the curve's output; finite, within float's
+    /// range (static_cast<float> when it reaches the Processor).
+    double depth{0.0};
+    /// The curve's stable name (gg::core::modCurveName): "Bipolar" (the default), "Unipolar",
+    /// "BipolarPositive", "UnipolarSquared", "RampThreeQuarters" or "TopQuarter".
+    std::string curve{"Bipolar"};
+
+    friend bool operator==(const RouteSpec &, const RouteSpec &) = default;
+};
+
+/// One MIDI control, as a host's event would send it (gg::core::ControlEvent): at frame
+/// round(timeSeconds × sampleRate), merged with the automation and the notes in each process()
+/// call. The times follow the automation's rules (a control after the render's last grid
+/// boundary never applies), and in time order (equal times allowed; on one frame, list order).
+struct ControlSpec
+{
+    double timeSeconds{0.0}; ///< >= 0, rounding to a frame before the render's end.
+    /// "modWheel" (CC 1), "aftertouch" (channel pressure) or "pitchBend": the mod matrix's Mod
+    /// Wheel, Aftertouch and Pitch Bend sources.
+    std::string kind;
+    double value{0.0};  ///< 0..1; pitch bend's centre is 0.5.
+    uint8_t channel{0}; ///< 0..15; optional in the spec, 0 by default.
+
+    friend bool operator==(const ControlSpec &, const ControlSpec &) = default;
+};
+
+/// A steady host transport, set once before the render (gg::core::Processor::setTransport, with
+/// hasBeats and 4 beats to the bar); the Processor advances it itself while it plays. Without
+/// one the transport sources hold at 0.
+struct TransportSpec
+{
+    double tempoBpm{120.0}; ///< > 0, finite; required in the spec.
+    bool playing{true};     ///< Optional in the spec, true by default.
+    double startBeat{0.0};  ///< The beat position at the render's first frame: >= 0, finite;
+                            ///< optional in the spec, 0 by default.
+
+    friend bool operator==(const TransportSpec &, const TransportSpec &) = default;
 };
 
 /// An instrument render: what the plugin's host would feed Giga Grains, with `sample` loaded.
@@ -196,6 +282,16 @@ struct InstrumentSpec
     std::vector<AutomationPoint> automation;
     /// In time order of their starts (equal times allowed).
     std::vector<NoteSpec> notes;
+    /// "samples": layers' samples by layer (0..3 for "A" to "D"), in layer order, each read as
+    /// `sample` is and handed to that layer before the render (Processor::setSourceNow(layer,
+    /// ...)). Layer A's is `sample`: "samples" can't name "A".
+    std::vector<std::pair<uint8_t, SourceSpec>> layerSamples;
+    /// "mod": routes set before the render, in the spec's order, on top of the factory routes.
+    std::vector<RouteSpec> mod;
+    /// "controls": in time order (equal times allowed).
+    std::vector<ControlSpec> controls;
+    /// "transport": the steady transport, or none.
+    std::optional<TransportSpec> transport;
 
     friend bool operator==(const InstrumentSpec &, const InstrumentSpec &) = default;
 };
@@ -221,6 +317,17 @@ struct FxSpec
     /// In time order of their starts (equal times allowed). A held note freezes the live ring
     /// and repitches the grains (spec §6.3).
     std::vector<NoteSpec> notes;
+    /// "samples": layers' samples by layer (0..3 for "A" to "D"), in layer order, each read and
+    /// made as an instrument's sample is and handed to that layer before the render
+    /// (Processor::setSourceNow(layer, ...)). A layer reads its sample only when its Source is
+    /// Sample (0), set through "params" ("B Source": 0): an FX layer's Source is Live by default.
+    std::vector<std::pair<uint8_t, SourceSpec>> layerSamples;
+    /// "mod": routes set before the render, in the spec's order, on top of the factory routes.
+    std::vector<RouteSpec> mod;
+    /// "controls": in time order (equal times allowed).
+    std::vector<ControlSpec> controls;
+    /// "transport": the steady transport, or none.
+    std::optional<TransportSpec> transport;
 
     friend bool operator==(const FxSpec &, const FxSpec &) = default;
 };
@@ -258,9 +365,10 @@ std::optional<gg::core::ParamSlot> paramSlotNamed(std::string_view name);
 /// `notes[0].key must be an integer from 0 to 127`). File paths are left as written.
 std::optional<RenderSpec> parseRenderSpec(const std::string &json, std::string &error);
 
-/// Makes the spec's relative file paths (a file source, sample or input) relative to `baseDir`:
-/// baseDir / path, joined as std::filesystem paths. Absolute paths, and the empty path of a
-/// built-in signal, are kept. Every path is UTF-8. gg-render passes the spec's directory, or the
+/// Makes the spec's relative file paths (a file source, sample, layer sample or input) relative to
+/// `baseDir`: baseDir / path, joined as std::filesystem paths. Absolute paths, and the empty path
+/// of a built-in signal, are kept. Every path is UTF-8. gg-render passes the spec's directory, or
+/// the
 /// --media-dir directory when it is given.
 /// Throws BadInput for a path that isn't valid UTF-8 (on Windows).
 void resolvePaths(RenderSpec &spec, const std::string &baseDir);

@@ -13,6 +13,8 @@
 #include <fmt/format.h>
 
 #include "Signals.h"
+#include "gg/core/ModMatrix.h"
+#include "gg/core/ModSources.h"
 #include "gg/core/Processor.h"
 #include "gg/engine/Engine.h"
 #include "gg/source/SampleBuffer.h"
@@ -224,13 +226,14 @@ std::vector<TimedNote> timedNotes(const std::vector<NoteSpec> &notes, double sam
     {
         const auto channel = static_cast<int16_t>(n.channel);
         const auto key = static_cast<int16_t>(n.key);
+        const float velocity = static_cast<float>(n.velocity) / 127.0f;
         timed.push_back({static_cast<std::size_t>(framesFor(n.timeSeconds, sampleRate)),
-                         {0, NoteEventType::On, channel, key}});
+                         {0, NoteEventType::On, channel, key, velocity}});
         const auto off =
             static_cast<std::size_t>(framesFor(n.timeSeconds + n.durationSeconds, sampleRate));
         if (off < frames)
         {
-            timed.push_back({off, {0, NoteEventType::Off, channel, key}});
+            timed.push_back({off, {0, NoteEventType::Off, channel, key, velocity}});
         }
     }
     std::stable_sort(timed.begin(), timed.end(), [](const TimedNote &a, const TimedNote &b) {
@@ -241,12 +244,76 @@ std::vector<TimedNote> timedNotes(const std::vector<NoteSpec> &notes, double sam
     return timed;
 }
 
+/// The layer (0 to 3) a letter "A" to "D" names, or `otherwise` for any other text (the parser has
+/// already checked it: "same" or "all").
+uint8_t layerOrElse(const std::string &letter, uint8_t otherwise)
+{
+    return letter.size() == 1 && letter[0] >= 'A' && letter[0] < 'A' + gg::core::kLayers
+               ? static_cast<uint8_t>(letter[0] - 'A')
+               : otherwise;
+}
+
+/// The routes in effect for the render: `routes` (the factory routes) with each of the spec's
+/// routes set in its slot.
+gg::core::ModRoutes routesWith(gg::core::ModRoutes routes, const std::vector<RouteSpec> &mod)
+{
+    for (const RouteSpec &r : mod)
+    {
+        gg::core::ModRoute route; // source None: an empty slot
+        const auto source = gg::core::modSourceNamed(r.source);
+        const auto curve = gg::core::modCurveNamed(r.curve);
+        if (!source || !curve)
+        {
+            throw std::invalid_argument("no source or curve is named " + r.source + ", " + r.curve);
+        }
+        if (*source != gg::core::ModSource::None)
+        {
+            route = {
+                .source = *source,
+                .sourceLayer = layerOrElse(r.sourceLayer, gg::core::kSameLayer),
+                .target = slotNamed(r.target),
+                .targetLayer = layerOrElse(r.targetLayer, gg::core::kAllLayers),
+                .depth = static_cast<float>(r.depth),
+                .curve = *curve,
+            };
+        }
+        routes.at(r.slot - 1u) = route;
+    }
+    return routes;
+}
+
+/// The controls as control events at absolute frames, in the spec's (time) order.
+struct TimedControl
+{
+    std::size_t frame;
+    gg::core::ControlEvent event; ///< Its offset is set per call.
+};
+
+std::vector<TimedControl> timedControls(const std::vector<ControlSpec> &controls, double sampleRate)
+{
+    using gg::core::ControlKind;
+    std::vector<TimedControl> timed;
+    timed.reserve(controls.size());
+    for (const ControlSpec &c : controls)
+    {
+        const ControlKind kind = c.kind == "modWheel"     ? ControlKind::ModWheel
+                                 : c.kind == "aftertouch" ? ControlKind::Aftertouch
+                                                          : ControlKind::PitchBend;
+        timed.push_back({static_cast<std::size_t>(framesFor(c.timeSeconds, sampleRate)),
+                         {0, kind, static_cast<int16_t>(c.channel), static_cast<float>(c.value)}});
+    }
+    return timed;
+}
+
 /// Instrument and FX mode: the plugin's Processor, fed as a host feeds it.
 gg::metrics::AudioData renderProcessor(const RenderSpec &spec, std::vector<std::string> *eventLines)
 {
     const bool fx = spec.mode == RenderMode::Fx;
     const auto &params = fx ? spec.fx.params : spec.instrument.params;
     const auto &automationPoints = fx ? spec.fx.automation : spec.instrument.automation;
+    const auto &layerSamples = fx ? spec.fx.layerSamples : spec.instrument.layerSamples;
+    const auto &mod = fx ? spec.fx.mod : spec.instrument.mod;
+    const auto &transport = fx ? spec.fx.transport : spec.instrument.transport;
     const auto frames = static_cast<std::size_t>(framesFor(spec.durationSeconds, spec.sampleRate));
 
     // The FX's input, silent after its own length (and cut at the render's end); the instrument
@@ -268,9 +335,25 @@ gg::metrics::AudioData renderProcessor(const RenderSpec &spec, std::vector<std::
     {
         processor.setSourceNow(makeSample(spec.instrument.sample, spec.sampleRate, spec.seed));
     }
+    for (const auto &[layer, sample] : layerSamples)
+    {
+        processor.setSourceNow(layer, makeSample(sample, spec.sampleRate, spec.seed));
+    }
     for (const auto &[name, value] : params)
     {
         processor.setBase(slotNamed(name), static_cast<float>(value));
+    }
+    if (!mod.empty())
+    {
+        processor.setRoutes(routesWith(processor.routes(), mod));
+    }
+    if (transport)
+    {
+        processor.setTransport({.hasBeats = true,
+                                .beatPosition = transport->startBeat,
+                                .tempoBpm = transport->tempoBpm,
+                                .playing = transport->playing,
+                                .beatsPerBar = 4});
     }
 
     // The automation as events at absolute frames, in time order.
@@ -289,6 +372,8 @@ gg::metrics::AudioData renderProcessor(const RenderSpec &spec, std::vector<std::
     }
     const std::vector<TimedNote> notes =
         timedNotes(fx ? spec.fx.notes : spec.instrument.notes, spec.sampleRate, frames);
+    const std::vector<TimedControl> controls =
+        timedControls(fx ? spec.fx.controls : spec.instrument.controls, spec.sampleRate);
 
     // Each layer's engine spawns within the bound on its own (M2 sub-project 1's spec §6.2).
     GrainCollector grains(gg::core::Processor::kLayers * maxGrainsPerCall(spec.blockSize));
@@ -304,13 +389,16 @@ gg::metrics::AudioData renderProcessor(const RenderSpec &spec, std::vector<std::
     events.reserve(automation.size());
     std::vector<gg::core::NoteEvent> noteEvents;
     noteEvents.reserve(notes.size());
-    std::size_t next = 0;     // the first automation event not yet handed to the processor
-    std::size_t nextNote = 0; // the first note event not yet handed to it
+    std::vector<gg::core::ControlEvent> controlEvents;
+    controlEvents.reserve(controls.size());
+    std::size_t next = 0;        // the first automation event not yet handed to the processor
+    std::size_t nextNote = 0;    // the first note event not yet handed to it
+    std::size_t nextControl = 0; // the first control event not yet handed to it
     for (std::size_t done = 0; done < frames;)
     {
         const auto n = static_cast<uint32_t>(std::min<std::size_t>(spec.blockSize, frames - done));
         // This call's events, at their offsets from its first frame. The Processor merges the
-        // two kinds by offset.
+        // three kinds by offset.
         events.clear();
         for (; next < automation.size() && automation[next].frame < done + n; ++next)
         {
@@ -324,10 +412,18 @@ gg::metrics::AudioData renderProcessor(const RenderSpec &spec, std::vector<std::
             e.offset = static_cast<uint32_t>(notes[nextNote].frame - done);
             noteEvents.push_back(e);
         }
+        controlEvents.clear();
+        for (; nextControl < controls.size() && controls[nextControl].frame < done + n;
+             ++nextControl)
+        {
+            gg::core::ControlEvent e = controls[nextControl].event;
+            e.offset = static_cast<uint32_t>(controls[nextControl].frame - done);
+            controlEvents.push_back(e);
+        }
         const float *const in[2] = {inputChannels > 0 ? input.channels[0].data() + done : nullptr,
                                     inputChannels > 1 ? input.channels[1].data() + done : nullptr};
         float *const block[2] = {out.channels[0].data() + done, out.channels[1].data() + done};
-        processor.process(in, inputChannels, block, 2, n, events, noteEvents);
+        processor.process(in, inputChannels, block, 2, n, events, noteEvents, controlEvents);
         done += n;
         takeEventLines(grains, eventLines);
     }
