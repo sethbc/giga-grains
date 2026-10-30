@@ -38,7 +38,7 @@ enum class Mode
 /// the same index in each of the scopes 1 to 4, and it is displayed with its layer's letter ("A
 /// Size" ... "D Size"). The enum LayerParam, layers B to D's ParamSlot entries and their IDs are
 /// generated from it, so no name is typed four times. Append-only, as the IDs are. A wave-2
-/// sub-project (M2 programme design §7.1) appends `X(Name, 0x4N, "Name")`, its index inside its
+/// sub-project (M2 program design §7.1) appends `X(Name, 0x4N, "Name")`, its index inside its
 /// reserved block, at the end of GG_LAYER_PARAMS_M2, or adds a list GG_LAYER_PARAMS_M2_<n> to
 /// GG_LAYER_PARAMS. Rows stay in index order, and an index left unused stays unused: an index is
 /// read from this column (layerParamIndex, slotForId), never from a row's position. The

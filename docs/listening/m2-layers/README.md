@@ -1,6 +1,6 @@
 # Listening pack: M2 sub-project 1 (Layers and structure)
 
-This pack is rendered for the record now and heard at M2's close (sub-project 7; the programme
+This pack is rendered for the record now and heard at M2's close (sub-project 7; the program
 design's decision 1). It has two parts:
 
 - renders from `gg-render`, to hear offline, one per item of the spec's table (§11);

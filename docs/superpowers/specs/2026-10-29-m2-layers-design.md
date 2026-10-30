@@ -2,22 +2,22 @@
 
 | | |
 |---|---|
-| **Status** | **Approved by the programme manager 2026-10-29** against the programme design and INTENT, with one amendment accepted (rows 118 and 119 move from sub-project 2 to this one, §12). **The director's decisions D1–D5, 2026-10-29,** are recorded in §8 and applied in place: D1 option 1, D2 option 1, D3 option 3, D4 option 1, D5 option 2. **Built** 2026-10-30 (PR #15; INTENT §23 #65), amended in place, each marked **Amended**: §6.1 (the smoke test's bound and the PPA step, ruling LS-T1a; no C++23 library feature used yet), §6.3 (the `min(1, Σ r_K)` factor, ruling LS-T10a), §6.7 (the event order, ruling LS-T10b; the per-layer dropped-event counts and the stub pool's RTSan exemption, rulings LS-T11a and LS-T11b), §6.8 (Level and Layer A On as layer targets), §6.9 (the 07b listening spec, ruling LS-T5a), §6.10 (the `<route>` target as a CLAP ID, ruling LS-P1), §6.11 (`tempoBpm`, ruling LS-T13a), §12 (rows 118 and 119 accepted by the programme manager, and closed) |
+| **Status** | **Approved by the program manager 2026-10-29** against the program design and INTENT, with one amendment accepted (rows 118 and 119 move from sub-project 2 to this one, §12). **The director's decisions D1–D5, 2026-10-29,** are recorded in §8 and applied in place: D1 option 1, D2 option 1, D3 option 3, D4 option 1, D5 option 2. **Built** 2026-10-30 (PR #15; INTENT §23 #65), amended in place, each marked **Amended**: §6.1 (the smoke test's bound and the PPA step, ruling LS-T1a; no C++23 library feature used yet), §6.3 (the `min(1, Σ r_K)` factor, ruling LS-T10a), §6.7 (the event order, ruling LS-T10b; the per-layer dropped-event counts and the stub pool's RTSan exemption, rulings LS-T11a and LS-T11b), §6.8 (Level and Layer A On as layer targets), §6.9 (the 07b listening spec, ruling LS-T5a), §6.10 (the `<route>` target as a CLAP ID, ruling LS-P1), §6.11 (`tempoBpm`, ruling LS-T13a), §12 (rows 118 and 119 accepted by the program manager, and closed) |
 | **Milestone** | M2 Giga (INTENT §20, §23 #64), sub-project 1 of 7; wave 1, alone |
-| **Spec authority** | `INTENT.md`, then `docs/superpowers/specs/2026-10-29-m2-programme-design.md` (its §6.1, §7 and §12 are this sub-project's charter: realized here, not reopened). This document records how this sub-project implements them |
+| **Spec authority** | `INTENT.md`, then `docs/superpowers/specs/2026-10-29-m2-program-design.md` (its §6.1, §7 and §12 are this sub-project's charter: realized here, not reopened). This document records how this sub-project implements them |
 | **Builds on** | M1 as closed (§23 #60): the `Processor` and its wet chain, the Cloud engine, Sources, Space, the Perform UI's macros, Texture and Feedback; the release pipeline (§23 #61) |
 | **Feeds** | Every wave-2 sub-project: 3 (Engine scale and quality) takes the mip-level accessor and the per-layer pools; 2 (Sources and persistence) takes the Source-kind parameter, the per-layer rings and the chain's tap point; 4 (Extremes and the FX chain) takes the chain after the grain sum and the source interface; 5 and 6 take the parameter list, the mod matrix and the layer structure |
-| **Starts from** | `m2-programme` at `1f8cb33` (the programme PR #14, in CI), and `docs/m2-carry-over.md` with **13 open rows** |
+| **Starts from** | `m2-program` at `1f8cb33` (the program PR #14, in CI), and `docs/m2-carry-over.md` with **13 open rows** |
 
 ## 1. Why this sub-project
 
 INTENT §5 promises many layers: four per instance, each with its own source and settings, mixed or
 morphed. M1 built one. Everything else M2 owes writes into the layer structure (persistence saves
 per-layer media, the budget divides across layers, presets voice every layer and route, the views
-draw them), so the programme design's decision 2 puts this sub-project first and alone: wave 2
+draw them), so the program design's decision 2 puts this sub-project first and alone: wave 2
 branches from its merged result.
 
-It delivers the programme design's inventory items I1 to I7:
+It delivers the program design's inventory items I1 to I7:
 
 - **I1** four layers A to D in the engine and the `Processor`, each owning a source, a scheduler, a
   grain stream and its own pool and ring, summed in a fixed order;
@@ -31,12 +31,12 @@ It delivers the programme design's inventory items I1 to I7:
 - **I6** pitch spread as a per-grain field;
 - **I7** C++23 with a toolchain floor raise, as the first task, with its revert path.
 
-With them come the parameter structure wave 2 appends into (§7.1 of the programme design), the
+With them come the parameter structure wave 2 appends into (§7.1 of the program design), the
 Source-kind parameter with its whole enumeration, the patch version bump and its migration (the
 instrument's Macro 7 becomes Feedback), the signal chain of §7.2 as code, the remote-controls pages
 for layers B to D, and `gg-render` specs that address layers, routes and the new sources.
 
-**Headless by choice** (the programme design, §6.1): the Perform view keeps showing layer A alone.
+**Headless by choice** (the program design, §6.1): the Perform view keeps showing layer A alone.
 Layers B to D are reachable through the host's generic editor, automation, the remote-controls pages
 and `gg-render` until sub-project 6.
 
@@ -99,7 +99,7 @@ and `gg-render` until sub-project 6.
   order; block-size invariance; 64-bit positions; the overload ladder's order; licensing.
 - INTENT §8.2 (one engine, many faces), §8.3 (uniform source interface), §8.6 (deterministic) and
   §8.9 (machines verify) shape the design; §8 breaks ties.
-- The programme design's §7: IDs `(scope << 16) | index`, globals from `0x000019`, layer scopes
+- The program design's §7: IDs `(scope << 16) | index`, globals from `0x000019`, layer scopes
   mirroring scope 1, the reservations `0x..40`–`0x..4F`, `0x..50`–`0x..5F` and `0x..60`–`0x..7F`
   (§7.1); the chain and the per-layer ring (§7.2); the matrix's rules, the macros as factory routes
   targeting every layer, Macro 7's switch here (§7.3); tasks are the layers, no plugin-owned thread
@@ -145,7 +145,7 @@ with the pad resting at the centre; the two alternatives are stated with their c
 
 **The matrix's home.** Routes live in the patch (`PTCH`), as §7.5 decided, never as CLAP
 parameters; the modulators' own controls are ordinary parameters per layer. The alternative, routes
-as parameters, was closed by the programme design (it burns IDs and lets hosts automate routes).
+as parameters, was closed by the program design (it burns IDs and lets hosts automate routes).
 
 **C++23's Linux leg.** gcc-13 on ubuntu-22.04 from the `ubuntu-toolchain-r/test` PPA (chosen):
 INTENT §15's glibc baseline stays. The alternative, ubuntu-24.04 with its native gcc-13, moves the
@@ -154,7 +154,7 @@ task reverts (§6.1).
 
 ## 6. Design
 
-### 6.1 C++23, the first task (I7; programme design §7.9)
+### 6.1 C++23, the first task (I7; program design §7.9)
 
 - `CMAKE_CXX_STANDARD 23`, `CMAKE_CXX_STANDARD_REQUIRED ON`, extensions off, for every first-party
   target (through `gg::compiler-options` and the top-level `CMakeLists.txt`). Third-party targets
@@ -232,7 +232,7 @@ task, the port is dropped, the instrument's rings take silence, and sub-project 
 on, whatever its kind, as M1's engine always recorded in either mode; off, it is written too (the
 enable gate above), so nothing about the ring depends on the layer's history except its frozen
 state. Memory per instance at 48 kHz: four rings about 25 MB, four pools about 5 MB, the reverb
-14.5 MB, the event buffers about 2.4 MB; the memory cap is sub-project 2's business (programme
+14.5 MB, the event buffers about 2.4 MB; the memory cap is sub-project 2's business (program
 design §7.2).
 
 **Pieces.** Both products render in pieces of at most `kFeedbackDelay` = 256 samples (M1's FX did;
@@ -240,9 +240,9 @@ its instrument rendered whole blocks). Piece size changes no bit: block-size inv
 it, and the hash list proves it in the task that makes the change. Each piece runs the active
 layers' tasks (§6.7), then the serial tail: the morph sum, the reverb, the mix.
 
-### 6.3 The chain (programme design §7.2) and the morph (I2)
+### 6.3 The chain (program design §7.2) and the morph (I2)
 
-Per piece, with the programme design's diagram made exact:
+Per piece, with the program design's diagram made exact:
 
 ```
 per layer L (A..D), as one task:
@@ -264,7 +264,7 @@ instance, after the tasks join:
   survive. The global delay and limiter (sub-project 4) rest as the identity when they arrive;
   the resample tap (2) reads after the mix.
 - **Level per layer.** Layer A's Level is M1's global `Level` (`0x000002`); layers B to D get
-  `Level B`, `C`, `D` in scope 0 (§6.9), as the programme design placed them. Each ramps its
+  `Level B`, `C`, `D` in scope 0 (§6.9), as the program design placed them. Each ramps its
   linear gain over 10 ms like M1's.
 - **On/off per layer** (`Layer A On` … `Layer D On`, stepped; A on by default, the others off).
   Turning off ramps the layer's weight to 0 over 10 ms; when the ramp reaches 0 the layer is *off*:
@@ -301,7 +301,7 @@ instance, after the tasks join:
 - Every weight is plain float arithmetic per sample, no libm; a −0 weight can't arise since the
   ramps and bilinears are products of non-negative values.
 
-### 6.4 The Source-kind parameter (programme design §7.2)
+### 6.4 The Source-kind parameter (program design §7.2)
 
 - `Source`, a per-layer stepped parameter (`0x..0C`), whose enumeration is complete from wave 1:
   **0 Sample, 1 Live, 2 Resample, 3 Spectral, 4 Oscillator.** Its default differs by product, as
@@ -330,7 +330,7 @@ instance, after the tasks join:
   cleared on a switch. This closes carry-over rows 118 and 119 (§12), which the switch's reach in
   both products makes this sub-project's.
 
-### 6.5 The source interface and the mip-level accessor (programme design §6.1 "Owns")
+### 6.5 The source interface and the mip-level accessor (program design §6.1 "Owns")
 
 - The engine's sources (`PreparedSource` over a `SampleBuffer`, and `LiveSource`) gain a
   **level accessor:** `levelCount()`, 1 in wave 1, and `level(n)`, the view of level `n`, which for
@@ -359,7 +359,7 @@ instance, after the tasks join:
   platform.
 - The canvas's y axis stays pan until sub-project 6 frees it for pitch (INTENT §17).
 
-### 6.7 Threads: the tasks and the pool (I3, I4; programme design §7.4)
+### 6.7 Threads: the tasks and the pool (I3, I4; program design §7.4)
 
 - **`gg/engine/TaskRunner.h`** (framework-free): `run(count, fn, ctx)` runs `fn(ctx, i)` for every
   `i` below `count` and returns when all have finished. `SerialRunner` loops on the calling thread.
@@ -396,7 +396,7 @@ instance, after the tasks join:
 - **The grain-event line gains `"layer"`** after `"i"` (`{"i":…,"layer":0,"onset":…}`), which
   rewrites every expected `.events.jsonl` once with every WAV unchanged, as `"tex"` did
   (§23 #58). `GrainVis` gains `layer` too, for 6's lanes.
-- **The thread-pool invariance test** (programme design §7.4): a stub pool in the tests
+- **The thread-pool invariance test** (program design §7.4): a stub pool in the tests
   (`std::thread` workers and a barrier, off the audio path) with 1, 2 and 8 workers, and
   `SerialRunner`, render the four-layer specs at block sizes 1, 32, 64, 511 and 4096; every
   render is byte-identical, and the RTSan build runs the tasks on the stub's threads too.
@@ -404,9 +404,9 @@ instance, after the tasks join:
   `clap_host_thread_pool` whose `request_exec` runs the tasks on its own threads, and the `[plugin]`
   tests check that the plugin asks for exactly the on-layer count and renders the same bytes with
   the fake pool, with a declining pool and with none. Which DAWs besides Bitwig accept the request
-  under load is the close's checklist item (§22), as the programme design says.
+  under load is the close's checklist item (§22), as the program design says.
 
-### 6.8 The mod matrix (I5; programme design §7.3)
+### 6.8 The mod matrix (I5; program design §7.3)
 
 **Slots.** 48, each `{source, sourceLayer, target, targetLayer, depth, curve}`, stored in the patch
 (`PTCH`, §6.10), never as parameters. The INIT patch fills slots 1 to 12 with the factory routes
@@ -430,7 +430,7 @@ The per-layer sources' controls are parameters in the layer's scope (§6.9); the
 none. A per-layer source's `sourceLayer` is A to D or *Same* (the target's layer), the default.
 
 **Targets:** any parameter but the eight macros and the modulators' own controls (§9), on one
-layer or on **every layer** (the programme design's target model, decision 7). "Every layer" for
+layer or on **every layer** (the program design's target model, decision 7). "Every layer" for
 Level means the four Levels (A's global and B–D's). Globals without a layer (Mix, the reverb's,
 Morph X and Y, the Ons) take no layer.
 
@@ -478,7 +478,7 @@ fast LFO on a ramped target therefore lags by the 10 ms ramp, M1's semantics. A 
 macro, a state load and `reset()` jump the ramps as ruling PU-T2a says; Macro 6 is still seen as
 Freeze for arming, per layer.
 
-### 6.9 Parameters: the ID table (programme design §7.1)
+### 6.9 Parameters: the ID table (program design §7.1)
 
 The scheme is unchanged: `id = (scope << 16) | index`, scope 0 global, scopes 1 to 4 layers A to
 D; every ID below `0xB00000`; append-only. **Layer parameters keep scope 1's indices in scopes 2 to
@@ -567,7 +567,7 @@ Level, Level B, C, D), **"Morph"** (Morph X, Morph Y, then six empty slots), and
 **"Cloud C"**, **"Cloud D"** (that layer's Position, Size, Density, Pitch, Spray, Stereo, Freeze,
 Level). Eight pages.
 
-### 6.10 The patch at version 2 and the migration (programme design §7.3, §7.5)
+### 6.10 The patch at version 2 and the migration (program design §7.3, §7.5)
 
 - `kPatchVersion` becomes **2**. The container stays version 1; `PTCH`'s XML gains the 218
   parameters' `<p>` entries (190 new, absent → default in any older state) and a `<mod>`
@@ -601,7 +601,7 @@ Level). Eight pages.
   isn't available to the tests).
 - A pre-container state (bare XML, version 1) migrates the same way.
 
-### 6.11 `gg-render` (programme design §6.1)
+### 6.11 `gg-render` (program design §6.1)
 
 The spec format gains, in both `fx` and `instrument` modes, every key as an addition (unknown keys
 stay errors):
@@ -628,7 +628,7 @@ stay errors):
 Sample mode is untouched, so the M0 and Eco goldens don't move. The event line gains `"layer"`
 (§6.7).
 
-### 6.12 `gg-bench` (programme design §6.1, §7.6)
+### 6.12 `gg-bench` (program design §6.1, §7.6)
 
 Two engine cases, report-only beside X, both in the default case list so CI's legs time them and
 the close's `--make-baseline --merge` can add their entries after three full runs:
@@ -671,7 +671,7 @@ and `Kernels.h` are untouched.
 Each a forced choice; the recommended option is first, with one line on what each costs. Nothing
 engineering-only is here (that is §9).
 
-**The director's answers, 2026-10-29, relayed by the programme manager:** D1 option 1, D2
+**The director's answers, 2026-10-29, relayed by the program manager:** D1 option 1, D2
 option 1 (with the fallback), D3 option 3, D4 option 1, D5 option 2. Each is marked below and
 applied in §6.
 
@@ -686,7 +686,7 @@ applied in §6.
 3. *Plain bilinear, pad resting at corner A:* M1's exact weights with no normalization. *Cost:*
    layers B to D are silent until the pad moves, and the resting pad is in a corner.
 
-**D2. An audio input on the instrument** (§6.2, §6.4). The programme design says both products
+**D2. An audio input on the instrument** (§6.2, §6.4). The program design says both products
 expose every source kind; a Live layer in the instrument needs input. **Decided: option 1, with
 its fallback.**
 1. **Add a sidechain input port to the instrument in wave 1** (a non-main stereo CLAP port, an
@@ -749,7 +749,7 @@ Engineering choices, each with its reason.
 - **Rows 118 and 119 close here, not in sub-project 2** (§6.4, §12): the Source-kind parameter
   makes the switch reachable in both products in wave 1, so the hard cut would ship; the fix,
   grains finishing on their source, is the sample swap's existing rule applied to the ring.
-  Sub-project 2's scope shrinks by that item; the programme manager is told in the report.
+  Sub-project 2's scope shrinks by that item; the program manager is told in the report.
 - **Position, Spray and Feedback follow the layer's kind,** not the product (§6.4): the engine's
   modes already define them that way, and the product was only a proxy for the kind.
 - **Notes act on every layer:** the held set is the instance's; the FX's note freeze holds every
@@ -763,7 +763,7 @@ Engineering choices, each with its reason.
 - **Six curves, M1's recipe shapes:** so the factory routes are bit for bit `macroOffsets`.
 - **The LFO and step counters accumulate per grid cell** rather than reading `t × rate`, so a rate
   change doesn't jump the phase; both are still functions of the clock and the parameter history.
-- **The follower's coefficients are fixed** (5 ms, 200 ms), as the programme design says, with no
+- **The follower's coefficients are fixed** (5 ms, 200 ms), as the program design says, with no
   parameters.
 - **Display names carry the layer letter, with bare names as A's aliases in `gg-render`:** hosts
   that flatten names can tell "B Size" from "A Size", and no M1 spec changes.
@@ -839,7 +839,7 @@ case catches all sixteen injected clicks or is added to the table with its reaso
 
 **Benchmarks:** `engine-layers` and `engine-layers-full` run from `release` with their figures in
 the report; `engine-sample` shows no `regressed` ratio against `tools/gg-bench/baselines/` on any
-CI model at the sub-project's end (a regression is fixed here, programme design §7.6).
+CI model at the sub-project's end (a regression is fixed here, program design §7.6).
 
 **Validators:** clap-validator, pluginval, auval (all three identities) and Steinberg's validator
 on `release`, on every CI leg, with 218 parameters, eight pages, the thread-pool extension and
@@ -848,7 +848,7 @@ the instrument's sidechain input (D2).
 **Gate:** `scripts/check.sh` over `dev,asan,rtsan` passes; CI green on the head commit through the
 draft PR; a fresh reviewer's final review and its fix wave done.
 
-**Exit criteria** (the programme design's §6.1, each with its proof): both plugins expose four
+**Exit criteria** (the program design's §6.1, each with its proof): both plugins expose four
 layers and pass every validator (CI's validator steps); a four-layer render is bit-identical at
 every block size and with the pool on or off (`[determinism]`); the 22 M1 goldens' hashes are
 unchanged with layers B to D off (`scripts/update-goldens.sh`'s list in each commit); new goldens
@@ -860,7 +860,7 @@ Bitwig thread-pool check is recorded as the stand-in (`[plugin]`) with the in-ho
 
 ## 11. The listening pack: `docs/listening/m2-layers/`
 
-Rendered for the record, listened to at sub-project 7 (programme design decision 1). A `README.md`
+Rendered for the record, listened to at sub-project 7 (program design decision 1). A `README.md`
 in the M1 packs' form (how to render; a table of files with length, what it is and what to listen
 for; a host checklist for the close) and `specs/`:
 
@@ -894,8 +894,8 @@ version-1 session opened in M2 sounding as it did; the migrated instrument's Mac
 
 **Closed here:** **118** (the source-mode switch under the RT tripwire, both ways) and **119** (the
 switch's hard cut; the grains now finish on their source), both by §6.4, since the Source-kind
-parameter makes the switch reachable in both products in this wave. The programme design's §8
-placed them in sub-project 2; the programme manager accepted the move on 2026-10-29 and tells
+parameter makes the switch reachable in both products in this wave. The program design's §8
+placed them in sub-project 2; the program manager accepted the move on 2026-10-29 and tells
 sub-project 2's brief.
 
 **Touched files with open rows:** `engine/src/Engine.cpp` (118, 119: closed above),
@@ -906,7 +906,7 @@ open row names a file this sub-project edits.
 **Expected at the end: 11 open rows,** no new rows. Every minor the final review raises is fixed in
 the fix wave unless blocked outside our control or genuinely large (the policy).
 
-> **Amended (2026-10-30), as built:** rows 118 and 119, moved here with the programme manager's
+> **Amended (2026-10-30), as built:** rows 118 and 119, moved here with the program manager's
 > acceptance of 2026-10-29, are closed by Task 2's `263696d` (118: "engine source kind switch does
 > not allocate" switches 20 times, both ways, under the tripwire with sample and ring grains
 > sounding; 119: "a source kind switch lets sounding grains finish", bit for bit against an
@@ -943,7 +943,7 @@ Part I is unchanged.
 
 | Risk | Mitigation |
 |---|---|
-| The sub-project grows into half of M2 (programme design §10) | The plan groups the work in waves of parallel worktrees; the matrix's non-macro sources may split into a second PR under this sub-project if the plan exceeds M1's Perform UI |
+| The sub-project grows into half of M2 (program design §10) | The plan groups the work in waves of parallel worktrees; the matrix's non-macro sources may split into a second PR under this sub-project if the plan exceeds M1's Perform UI |
 | C++23 fails on a leg | The task's revert path (§6.1); nothing else depends on it |
 | An `aumu` with an input bus fails auval or a host (D2) | The fallback inside the task: drop the port, option 2 holds |
 | The factory routes differ from `macroOffsets` by a bit | The 10,000-vector equality test and the `fx-macros` hash, before `macroOffsets` is removed |

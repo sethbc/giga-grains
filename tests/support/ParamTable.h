@@ -14,7 +14,7 @@
 // the AUv2 parameter order. Nothing here is computed from gg/core/ParamIds.h, so a change there
 // fails the tests.
 //
-// Wave-2 sub-projects (M2 programme design §7.1) append their rows here, inside their block.
+// Wave-2 sub-projects (M2 program design §7.1) append their rows here, inside their block.
 
 #include <algorithm>
 #include <array>
