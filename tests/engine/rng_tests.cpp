@@ -92,19 +92,26 @@ TEST_CASE("Field values are pinned", "[rng]")
 
 TEST_CASE("the rng fields are append-only", "[rng]")
 {
-    // M2's fields (spec §6.6, §6.8) are appended after M1's; none of M1's moves.
+    // M2's fields (spec §6.6, §6.8; the extremes spec §6.1–§6.3) are appended after M1's; none
+    // of M1's moves.
     using gg::rng::Field;
     STATIC_REQUIRE(static_cast<uint32_t>(Field::PitchSpread) == 5);
     STATIC_REQUIRE(static_cast<uint32_t>(Field::SizeSpread) == 6);
     STATIC_REQUIRE(static_cast<uint32_t>(Field::ModRandom1) == 7);
     STATIC_REQUIRE(static_cast<uint32_t>(Field::ModRandom2) == 8);
+    STATIC_REQUIRE(static_cast<uint32_t>(Field::SmearJitter) == 9);
+    STATIC_REQUIRE(static_cast<uint32_t>(Field::SmearDetune) == 10);
+    STATIC_REQUIRE(static_cast<uint32_t>(Field::Bus) == 11);
+    STATIC_REQUIRE(static_cast<uint32_t>(Field::SpectralPhase) == 12);
     STATIC_REQUIRE(static_cast<uint32_t>(Field::SignalNoise) == 100);
 
     // Every field keys its own draw.
     using gg::rng::hash;
     const Field fields[] = {Field::PositionJitter, Field::Onset,       Field::Pan,
                             Field::Note,           Field::PitchSpread, Field::SizeSpread,
-                            Field::ModRandom1,     Field::ModRandom2,  Field::SignalNoise};
+                            Field::ModRandom1,     Field::ModRandom2,  Field::SmearJitter,
+                            Field::SmearDetune,    Field::Bus,         Field::SpectralPhase,
+                            Field::SignalNoise};
     for (const Field a : fields)
     {
         for (const Field b : fields)

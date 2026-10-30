@@ -361,6 +361,7 @@ GrainSpec Engine::sampleGrain(const GrainDraw &d) const noexcept
         .pan = d.pan,
         .tier = d.tier,
         .sourceSlot = current_,
+        .bus = d.bus,
     };
 }
 
@@ -398,6 +399,7 @@ bool Engine::liveGrain(const GrainDraw &d, GrainSpec &g) const noexcept
         .pan = d.pan,
         .tier = d.tier,
         .sourceSlot = kLiveSlot,
+        .bus = d.bus,
     };
     return true;
 }

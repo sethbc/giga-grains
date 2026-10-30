@@ -54,6 +54,11 @@ void CloudScheduler::setParams(const CloudParams &in) noexcept
                                         0.0, kMaxPitchSpreadSemitones);
     p.sizeSpreadOctaves =
         std::clamp(finiteOr(in.sizeSpreadOctaves, d.sizeSpreadOctaves), 0.0, kMaxSizeSpreadOctaves);
+    p.smearJitterSec =
+        std::clamp(finiteOr(in.smearJitterSec, d.smearJitterSec), 0.0, kMaxSmearJitterSec);
+    p.smearDetuneSemitones = std::clamp(finiteOr(in.smearDetuneSemitones, d.smearDetuneSemitones),
+                                        0.0, kMaxSmearDetuneSemitones);
+    p.busSplit = std::clamp(finiteOr(in.busSplit, d.busSplit), 0.0, 1.0);
 
     const double oldPeriod = period_;
     const double oldDistribution = params_.distribution;

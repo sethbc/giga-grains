@@ -122,7 +122,7 @@ bool anyTimeVarying(const ModRoutes &routes) noexcept
 }
 
 // sameCloud compares every field of CloudParams: a field added there must be added there too.
-static_assert(sizeof(CloudParams) == 96, "CloudParams changed: update sameCloud");
+static_assert(sizeof(CloudParams) == 120, "CloudParams changed: update sameCloud");
 
 /// Whether two CloudParams are the same, bit for bit (+0 and −0 differ, so the engine is never
 /// spared a value that would change a bit).
@@ -139,7 +139,9 @@ bool sameCloud(const CloudParams &a, const CloudParams &b) noexcept
            same(a.texture, b.texture) && a.quality == b.quality &&
            a.sprayInSeconds == b.sprayInSeconds &&
            same(a.pitchSpreadSemitones, b.pitchSpreadSemitones) &&
-           same(a.sizeSpreadOctaves, b.sizeSpreadOctaves);
+           same(a.sizeSpreadOctaves, b.sizeSpreadOctaves) &&
+           same(a.smearJitterSec, b.smearJitterSec) &&
+           same(a.smearDetuneSemitones, b.smearDetuneSemitones) && same(a.busSplit, b.busSplit);
 }
 
 /// Whether `s` is a modulator's control (LFO 1 Rate to Step 16, in any layer): no route targets
