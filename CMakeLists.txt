@@ -72,6 +72,9 @@ if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_
 endif ()
 
 include(cmake/compiler-options.cmake)
+# The license set's one list, which cmake/products.cmake reads for gg-products and for the
+# editor's embedded notices (gg_license_files, gg_add_notices).
+include(cmake/licenses.cmake)
 
 add_subdirectory(libs)
 

@@ -43,4 +43,8 @@ if (GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
             PRIVATE clap_juce_shim clap_juce_shim_headers gg::juce-headers sst-jucegui gg::engine
             gg::compiler-options
             )
+    # Its embedded notices (gg/ui/Notices.h's noticeTexts(), the About box's texts) are a
+    # generated source that cmake/products.cmake attaches with gg_add_notices: the license set
+    # names AudioUnitSDK's checkout, which is known only after clients/clap-first, processed
+    # after this directory.
 endif ()

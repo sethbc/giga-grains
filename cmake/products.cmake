@@ -71,42 +71,11 @@ endif ()
 
 # The license set (spec §6.3, carry-over row 221): every installer carries THIRD_PARTY_NOTICES.md
 # and the license texts it points to, which gg-products writes into GG_LICENSE_DIR
-# (build/<preset>/gg-products/licenses/) under these published names:
-#   THIRD_PARTY_NOTICES.md, LICENSE (the AGPL), GPL-3.0.txt (sst-basic-blocks' LICENSE.md is the
-#   GPLv3 text), CMakeRC-LICENSE.txt and flowbite-icons-LICENSE.txt (MIT texts no checkout holds,
-#   kept in installer/licenses/), AudioUnitSDK-LICENSE.txt (macOS, the Apache 2.0 text of the SDK
-#   checkout clap-wrapper builds the AU from) and ASIO-SDK-LICENSE.txt (Windows, the ASIO SDK's).
-# GG_LICENSE_FILES is the list of their source paths, each checked here at configure time.
+# (build/<preset>/gg-products/licenses/) under their published names. GG_LICENSE_FILES and
+# gg_license_names, their source paths and those names, come from cmake/licenses.cmake, the one
+# list the editor's About box embeds too (gg_add_notices, below), so the two can't drift.
 set(GG_LICENSE_DIR ${GG_PRODUCT_DIR}/licenses)
-set(GG_LICENSE_FILES
-        ${CMAKE_SOURCE_DIR}/THIRD_PARTY_NOTICES.md
-        ${CMAKE_SOURCE_DIR}/LICENSE
-        ${CMAKE_SOURCE_DIR}/libs/sst/sst-basic-blocks/LICENSE.md
-        ${CMAKE_SOURCE_DIR}/installer/licenses/CMakeRC-LICENSE.txt
-        ${CMAKE_SOURCE_DIR}/installer/licenses/flowbite-icons-LICENSE.txt)
-set(gg_license_names THIRD_PARTY_NOTICES.md LICENSE GPL-3.0.txt CMakeRC-LICENSE.txt
-        flowbite-icons-LICENSE.txt)
-if (APPLE)
-    # CI passes AUDIOUNIT_SDK_ROOT (scripts/fetch-sdks.sh); a local tree has CPM's checkout,
-    # recorded in the cache when clients/clap-first was processed, before this file.
-    if (NOT "${AUDIOUNIT_SDK_ROOT}" STREQUAL "")
-        set(gg_au_license "${AUDIOUNIT_SDK_ROOT}/LICENSE.txt")
-    else ()
-        set(gg_au_license "${CPM_PACKAGE_AudioUnitSDK_SOURCE_DIR}/LICENSE.txt")
-    endif ()
-    if (NOT EXISTS "${gg_au_license}")
-        message(FATAL_ERROR "gg-products: no AudioUnitSDK LICENSE.txt at '${gg_au_license}'; "
-                "neither AUDIOUNIT_SDK_ROOT ('${AUDIOUNIT_SDK_ROOT}') nor "
-                "CPM_PACKAGE_AudioUnitSDK_SOURCE_DIR ('${CPM_PACKAGE_AudioUnitSDK_SOURCE_DIR}') "
-                "names an SDK checkout that has one")
-    endif ()
-    list(APPEND GG_LICENSE_FILES "${gg_au_license}")
-    list(APPEND gg_license_names AudioUnitSDK-LICENSE.txt)
-elseif (WIN32)
-    list(APPEND GG_LICENSE_FILES
-            ${CMAKE_SOURCE_DIR}/libs/sst/sst-plugininfra/libs/asiosdk/LICENSE.txt)
-    list(APPEND gg_license_names ASIO-SDK-LICENSE.txt)
-endif ()
+gg_license_files(GG_LICENSE_FILES gg_license_names)
 
 add_custom_command(TARGET gg-products POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E echo "gg-products: licenses"
@@ -114,23 +83,18 @@ add_custom_command(TARGET gg-products POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E make_directory "${GG_LICENSE_DIR}"
         VERBATIM
         )
-# ZIP_LISTS pads the shorter list with empty items, so a name without its file (or a file
-# without its name) would slip through as an empty one: the two lists must pair up exactly.
-list(LENGTH GG_LICENSE_FILES gg_license_file_count)
-list(LENGTH gg_license_names gg_license_name_count)
-if (NOT gg_license_file_count EQUAL gg_license_name_count)
-    message(FATAL_ERROR "gg-products: GG_LICENSE_FILES has ${gg_license_file_count} entries but "
-            "gg_license_names has ${gg_license_name_count}; each license text needs one name")
-endif ()
+# gg_license_files has checked that the lists pair up and that every text exists.
 foreach (source name IN ZIP_LISTS GG_LICENSE_FILES gg_license_names)
-    if (NOT EXISTS "${source}")
-        message(FATAL_ERROR "gg-products: the license text '${source}' (${name}) doesn't exist")
-    endif ()
     add_custom_command(TARGET gg-products POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy "${source}" "${GG_LICENSE_DIR}/${name}"
             VERBATIM
             )
 endforeach ()
+
+# The editor's About box shows the same texts (spec §6.10). gg-ui is declared in ui/, before
+# clients/clap-first has found AudioUnitSDK, so its notices are attached here, once the list is
+# complete. This file is included only when the editor is built, as gg-ui is.
+gg_add_notices(gg-ui)
 
 # gg-installer (spec §6.3): builds gg-products, then runs the platform's installer script on them,
 # writing into GG_INSTALLER_DIR (build/<preset>/gg-installer/). The script reads the signing
