@@ -63,18 +63,21 @@ constexpr std::size_t kMaxVersionBytes = 1024;
 const clap_preset_discovery_provider_descriptor kDescriptor{CLAP_VERSION_INIT, kProviderId,
                                                             "Giga Grains presets", kVendor};
 
-/// The first line of `file`, without its line ending; empty when the file can't be read.
+/// The first line of `file`, without its line ending and at most kMaxVersionBytes long; empty
+/// when the file can't be read. It reads no more than the cap, whatever the file holds.
 std::string firstLine(const fs::path &file)
 {
     std::ifstream in(file, std::ios::binary);
-    std::string line;
-    if (!in || !std::getline(in, line))
+    if (!in)
     {
         return {};
     }
-    if (line.size() > kMaxVersionBytes)
+    std::string line(kMaxVersionBytes, '\0');
+    in.read(line.data(), static_cast<std::streamsize>(line.size()));
+    line.resize(static_cast<std::size_t>(in.gcount()));
+    if (const auto newline = line.find('\n'); newline != std::string::npos)
     {
-        line.resize(kMaxVersionBytes);
+        line.resize(newline);
     }
     if (!line.empty() && line.back() == '\r')
     {
@@ -230,12 +233,12 @@ class Provider
         paths_.reserve(locations_.size());
         for (const auto &location : locations_)
         {
-            // Only a folder that exists: the user's isn't there before the first save, and an
-            // indexer may treat a missing location as an error (clap-validator's crawl does).
-            std::error_code error;
-            if (!fs::is_directory(location.folder, error))
+            // The user's folder is made here, so a host that caches the declarations sees the
+            // first save; an error is ignored (the folder is declared all the same).
+            if (!location.factory)
             {
-                continue;
+                std::error_code error;
+                fs::create_directories(location.folder, error);
             }
             const auto path = media::toUtf8(location.folder);
             if (!path)

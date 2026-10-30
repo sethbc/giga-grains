@@ -634,27 +634,38 @@ TEST_CASE("without a content root there is no factory location and the rest is d
     }
 }
 
-TEST_CASE("a folder that doesn't exist yet is not declared", "[plugin][discovery]")
+TEST_CASE("init creates the user folder and declares it", "[plugin][discovery]")
 {
-    // The user presets folder is created on the first save; before it, declaring it would send
-    // an indexer (clap-validator's crawl, for one) to a folder that isn't there. presetLocations
-    // still lists it, for the browser's "Save as...".
+    // A host that caches the declarations must see the first save, so init makes the folder.
     const Scratch scratch("no-user-folder");
     const Environment env(scratch, true);
+    const auto user = scratch.settingsFile.parent_path() / "Presets";
+    REQUIRE_FALSE(fs::exists(user));
     const Provider p;
 
+    CHECK(fs::is_directory(user));
     const auto files = p.declared.locationsOfKind(CLAP_PRESET_DISCOVERY_LOCATION_FILE);
     REQUIRE(!files.empty());
     CHECK(files.front().location == utf8(scratch.content / "Presets"));
-    for (const auto &l : files)
-    {
-        CHECK_FALSE(isUnder(*l.location, scratch.settingsFile.parent_path()));
-    }
+    CHECK(files.back().location == utf8(user));
+    CHECK(files.back().flags == CLAP_PRESET_DISCOVERY_IS_USER_CONTENT);
     const auto listed = gg::plugin::presetLocations(gg::media::loadSettings(scratch.settingsFile),
                                                     scratch.settingsFile);
     REQUIRE(!listed.empty());
-    CHECK(listed.back().folder == scratch.settingsFile.parent_path() / "Presets");
+    CHECK(listed.back().folder == user);
     CHECK_FALSE(listed.back().factory);
+}
+
+TEST_CASE("a content-version.txt line longer than the cap is cut", "[plugin][discovery]")
+{
+    const Scratch scratch("long-version");
+    const Environment env(scratch, true);
+    writeFile(scratch.content / "content-version.txt", std::string(5000, 'v'));
+    const Provider p;
+
+    REQUIRE(p.declared.soundpacks.size() == 1);
+    const auto &description = p.declared.soundpacks[0].description;
+    CHECK(description == std::string(1024, 'v'));
 }
 
 TEST_CASE("presetLocations lists each content root's Presets, then the user's",
