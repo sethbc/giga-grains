@@ -290,7 +290,7 @@ TEST_CASE("plugin process with the perform parameters automated does not allocat
     float *outputs[2] = {outLeft.data(), outRight.data()};
     const auto clapOn = noteOn(60, 0);
     constexpr std::size_t kSlots = gg::core::kParamCount;
-    static_assert(kSlots == 218);
+    static_assert(kSlots == 238);
     const auto metaOf = [mode](std::size_t s) -> const auto & {
         return gg::core::paramMeta(static_cast<ParamSlot>(s), mode);
     };

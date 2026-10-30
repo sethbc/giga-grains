@@ -303,7 +303,7 @@ TEST_CASE("plugin exposes every param", "[plugin]")
     const auto *params = plugin.params();
     REQUIRE(params != nullptr);
     REQUIRE(params->count(plugin.clap()) == kParamCount);
-    REQUIRE(params->count(plugin.clap()) == 218);
+    REQUIRE(params->count(plugin.clap()) == 238);
 
     for (uint32_t i = 0; i < kParamCount; ++i)
     {
@@ -330,10 +330,12 @@ TEST_CASE("plugin exposes every param", "[plugin]")
         const float def = defaultIn(expected, isFx);
         CHECK(info.default_value == static_cast<double>(def));
 
-        // Global Constraints' CLAP flags: every parameter is automatable and modulatable, the
-        // switches and choices are stepped, and the instrument hides Mix and Dry to Reverb, which
-        // have no dry signal to act on. Feedback is shown in both (M2 sub-project 1's spec §6.4).
-        clap_param_info_flags flags = CLAP_PARAM_IS_AUTOMATABLE | CLAP_PARAM_IS_MODULATABLE;
+        // Global Constraints' CLAP flags: every parameter but each layer's Ring Length (M2
+        // sub-project 2's spec §6.3) is automatable and modulatable, the switches and choices are
+        // stepped, and the instrument hides Mix and Dry to Reverb, which have no dry signal to act
+        // on. Feedback is shown in both (M2 sub-project 1's spec §6.4).
+        clap_param_info_flags flags =
+            expected.automatable ? CLAP_PARAM_IS_AUTOMATABLE | CLAP_PARAM_IS_MODULATABLE : 0u;
         if (expected.stepped)
         {
             flags |= CLAP_PARAM_IS_STEPPED;
@@ -360,6 +362,32 @@ TEST_CASE("plugin exposes every param", "[plugin]")
     CHECK(info.default_value == 0.0);
     REQUIRE(params->get_info(plugin.clap(), static_cast<uint32_t>(at(ParamSlot::LevelD)), &info));
     CHECK(std::string_view(info.module).empty());
+
+    // The ring's (M2 sub-project 2's spec §6.3): Ring Length is neither automatable nor
+    // modulatable, as the main thread resizes the ring, and Position reaches the longest ring.
+    for (const ParamSlot slot : {ParamSlot::RingLength, ParamSlot::B_RingLength,
+                                 ParamSlot::C_RingLength, ParamSlot::D_RingLength})
+    {
+        REQUIRE(params->get_info(plugin.clap(), static_cast<uint32_t>(at(slot)), &info));
+        CAPTURE(info.name);
+        CHECK((info.flags & CLAP_PARAM_IS_AUTOMATABLE) == 0);
+        CHECK((info.flags & CLAP_PARAM_IS_MODULATABLE) == 0);
+    }
+    REQUIRE(
+        params->get_info(plugin.clap(), static_cast<uint32_t>(at(ParamSlot::LoopLength)), &info));
+    CHECK((info.flags & CLAP_PARAM_IS_AUTOMATABLE) != 0);
+    CHECK((info.flags & CLAP_PARAM_IS_MODULATABLE) != 0);
+    REQUIRE(params->get_info(plugin.clap(), static_cast<uint32_t>(at(ParamSlot::D_Splice)), &info));
+    CHECK(std::string_view(info.name) == "D Splice");
+    CHECK(info.id == 0x040044u);
+    CHECK((info.flags & CLAP_PARAM_IS_STEPPED) != 0);
+    for (const ParamSlot slot : {ParamSlot::Position, ParamSlot::D_Position})
+    {
+        REQUIRE(params->get_info(plugin.clap(), static_cast<uint32_t>(at(slot)), &info));
+        CAPTURE(info.name);
+        CHECK(info.max_value == static_cast<double>(gg::core::kPositionMax));
+        CHECK(info.min_value == 0.0);
+    }
 }
 
 TEST_CASE("value and text round trip through clap", "[plugin]")
@@ -467,7 +495,8 @@ TEST_CASE("position is per product", "[plugin]")
         REQUIRE(plugin.params()->get_info(plugin.clap(), kPositionIndex, &info));
         CHECK(info.default_value == 0.0);
         CHECK(info.min_value == 0.0);
-        CHECK(info.max_value == 1.0);
+        // The longest ring's top, in both products (M2 sub-project 2's spec §6.3).
+        CHECK(info.max_value == static_cast<double>(gg::core::kPositionMax));
         CHECK(plugin.value(position) == 0.0);
 
         const std::string text = valueToText(plugin, position, 0.25);
@@ -1400,8 +1429,8 @@ TEST_CASE("a kind change asks for a text rescan", "[plugin]")
         CHECK(host.textRescans() == 1);
         plugin.onMainThread();
         CHECK(host.textRescans() == 1);
-        // Resample falls back to the product's default kind: back to the first display.
-        flushValues(plugin, {{source, 2.0}});
+        // Spectral falls back to the product's default kind: back to the first display.
+        flushValues(plugin, {{source, 3.0}});
         plugin.onMainThread();
         CHECK(host.textRescans() == 2);
         CHECK(showsSeconds(position) == isFx);
@@ -1424,8 +1453,8 @@ TEST_CASE("a kind change asks for a text rescan", "[plugin]")
         plugin.onMainThread();
         CHECK(host.textRescans() == 1); // once per change
 
-        // Resample in the FX is Live, in the instrument Sample: each product's default kind.
-        const auto toDefault = gg::test::paramValue(paramId(source), 2.0);
+        // Spectral in the FX is Live, in the instrument Sample: each product's default kind.
+        const auto toDefault = gg::test::paramValue(paramId(source), 3.0);
         InputEvents back;
         back.add(&toDefault.header);
         REQUIRE(plugin.process(64, in.data(), out.data(), back.list()) == CLAP_PROCESS_CONTINUE);

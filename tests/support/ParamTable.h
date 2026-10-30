@@ -7,12 +7,12 @@
 
 // Global Constraints' parameter table, spelled out literally once for the tests that pin it
 // (tests/core/patch_tests.cpp through gg-core, tests/plugin/params_tests.cpp through the
-// plugins): every parameter's CLAP ID, name, range, default and whether it's stepped, in slot
-// order, the FX's. The instrument's differs only in every layer's Position default and display,
-// every layer's Source default and Macro 8's name; each test carries those differences itself.
-// The IDs are frozen at the first public release and append-only (INTENT §18), and the order is
-// the AUv2 parameter order. Nothing here is computed from gg/core/ParamIds.h, so a change there
-// fails the tests.
+// plugins): every parameter's CLAP ID, name, range, default, whether it's stepped and whether it's
+// automatable, in slot order, the FX's. The instrument's differs only in every layer's Position
+// default and display, every layer's Source default and Macro 8's name; each test carries those
+// differences itself. The IDs are frozen at the first public release and append-only (INTENT §18),
+// and the order is the AUv2 parameter order. Nothing here is computed from gg/core/ParamIds.h, so a
+// change there fails the tests.
 //
 // Wave-2 sub-projects (M2 programme design §7.1) append their rows here, inside their block.
 
@@ -41,7 +41,8 @@ struct ParamRow
     bool stepped;
 };
 
-/// One parameter's expected metadata, at its slot in paramTable().
+/// One parameter's expected metadata, at its slot in paramTable(). `automatable`: its CLAP flags
+/// carry AUTOMATABLE and MODULATABLE, as every parameter's do but kFixedIds'.
 struct ExpectedParamRow
 {
     clap_id id;
@@ -50,14 +51,19 @@ struct ExpectedParamRow
     float max;
     float def;
     bool stepped;
+    bool automatable;
 };
+
+/// The top of every layer's Position (M2 sub-project 2's spec §6.3): log2(300 × 255 / 16 + 1) / 8,
+/// where the Live mapping (16/255)(2^(8v) − 1) gives the longest ring, 300 s.
+inline constexpr float kPositionMax = 1.5279342f;
 
 // The 28 M1 slots in slot order, layer A's eleven M1 parameters named with their letter since M2
 // sub-project 1 (spec §6.9).
 inline constexpr std::array<ParamRow, 28> kM1Rows{{
     {0x000001, "Mix", 0.0f, 1.0f, 0.5f, false},
     {0x000002, "Level", -60.0f, 12.0f, 0.0f, false},
-    {0x010001, "A Position", 0.0f, 1.0f, 0.28967658f, false},
+    {0x010001, "A Position", 0.0f, kPositionMax, 0.28967658f, false},
     {0x010002, "A Size", -7.643856189774724f, 1.0f, -2.736965594166206f, false},
     {0x010003, "A Density", -2.0f, 8.643856189774725f, 4.0f, false},
     {0x010004, "A Distribution", 0.0f, 1.0f, 0.5f, false},
@@ -128,6 +134,21 @@ inline constexpr std::array<ParamRow, 37> kLayerANewRows{{
     {0x01002F, "A Step 15", 0.0f, 1.0f, 0.0f, false},
     {0x010030, "A Step 16", 0.0f, 1.0f, 0.0f, false},
 }};
+// Layer A's five ring parameters (M2 sub-project 2's spec §6.3) in index order, in its reserved
+// block (0x40 to 0x4F; 0x45 to 0x4F unused): Ring Length and Loop Length in log2 seconds (1 s and
+// 50 ms to 300 s), Overdub 0..1 and Splice stepped 0..32.
+inline constexpr float kRingLengthMax = 8.228818690495881f;  // log2 300
+inline constexpr float kLoopLengthMin = -4.321928094887363f; // log2 0.05
+inline constexpr std::array<ParamRow, 5> kLayerASourcesRows{{
+    {0x010040, "A Ring Length", 0.0f, kRingLengthMax, 4.0f, false},
+    {0x010041, "A Loop", 0.0f, 1.0f, 0.0f, true},
+    {0x010042, "A Loop Length", kLoopLengthMin, kRingLengthMax, 0.0f, false},
+    {0x010043, "A Overdub", 0.0f, 1.0f, 0.0f, false},
+    {0x010044, "A Splice", 0.0f, 32.0f, 0.0f, true},
+}};
+// The parameters that are neither automatable nor modulatable: every layer's Ring Length, which the
+// main thread resizes (M2 sub-project 2's spec §5, §6.3).
+inline constexpr std::array<clap_id, 4> kFixedIds{0x010040, 0x020040, 0x030040, 0x040040};
 // The nine new globals, the last slots.
 inline constexpr std::array<ParamRow, 9> kNewGlobalRows{{
     {0x000019, "Morph X", 0.0f, 1.0f, 0.5f, false},
@@ -141,7 +162,7 @@ inline constexpr std::array<ParamRow, 9> kNewGlobalRows{{
     {0x000021, "Level D", -60.0f, 12.0f, 0.0f, false},
 }};
 
-// All 218 in slot order: the rows above, with layers B to D generated from layer A's rows in index
+// All 238 in slot order: the rows above, with layers B to D generated from layer A's rows in index
 // order (the M1 ones found by ID), each with its letter for "A" and its scope for 1. Built on the
 // first call.
 inline const std::array<ExpectedParamRow, gg::core::kParamCount> &paramTable()
@@ -159,13 +180,19 @@ inline const std::array<ExpectedParamRow, gg::core::kParamCount> &paramTable()
         std::size_t slot = 0;
         const auto push = [&t, &slot, &expect](clap_id id, std::string name, const ParamRow &r) {
             expect(slot < gg::core::kParamCount);
-            t[slot++] = {id, std::move(name), r.min, r.max, r.def, r.stepped};
+            const bool automatable =
+                std::find(kFixedIds.begin(), kFixedIds.end(), id) == kFixedIds.end();
+            t[slot++] = {id, std::move(name), r.min, r.max, r.def, r.stepped, automatable};
         };
         for (const ParamRow &r : kM1Rows)
         {
             push(r.id, r.name, r);
         }
         for (const ParamRow &r : kLayerANewRows)
+        {
+            push(r.id, r.name, r);
+        }
+        for (const ParamRow &r : kLayerASourcesRows)
         {
             push(r.id, r.name, r);
         }
@@ -179,6 +206,7 @@ inline const std::array<ExpectedParamRow, gg::core::kParamCount> &paramTable()
             layerA.push_back(*row);
         }
         layerA.insert(layerA.end(), kLayerANewRows.begin(), kLayerANewRows.end());
+        layerA.insert(layerA.end(), kLayerASourcesRows.begin(), kLayerASourcesRows.end());
         expect(layerA.size() == gg::core::kLayerParamCount);
         for (const char letter : {'B', 'C', 'D'})
         {

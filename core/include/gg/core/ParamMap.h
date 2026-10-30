@@ -6,6 +6,7 @@
 #define GG_CORE_PARAMMAP_H
 
 #include <algorithm>
+#include <cstdint>
 
 #include "gg/core/ModSources.h"
 #include "gg/core/ParamIds.h"
@@ -60,10 +61,30 @@ struct SpaceParams
 SourceKind sourceKindOf(const ParamValues &effective, uint8_t layer) noexcept;
 
 /// The source kind a layer of `kind` reads in `mode`'s product (spec §6.4): Sample and Live are
-/// built in wave 1, in both products; the unbuilt kinds (Resample, Spectral, Oscillator) fall back
-/// to the product's default kind, Live in the FX and Sample in the instrument. The one function
-/// sub-projects 2 and 4 edit when their kinds arrive.
+/// built in wave 1, in both products, and Resample, a Live-mode engine whose ring the instance's
+/// output feeds, since M2 sub-project 2 (its spec §6.2), in both products too; the unbuilt kinds
+/// (Spectral, Oscillator) fall back to the product's default kind, Live in the FX and Sample in
+/// the instrument. The one function sub-project 4 edits when its kinds arrive.
 SourceMode builtKind(SourceKind kind, Mode mode) noexcept;
+
+/// What a layer's ring takes from its parameters (M2 sub-project 2's spec §6.3): the values as
+/// the parameters give them. The engine clamps Loop Length to the ring's length in effect, and the
+/// plugin's main thread sizes the ring from ringSeconds (Ring Length is neither automatable nor
+/// modulatable), so the ring in effect may lag it.
+struct RingParams
+{
+    double ringSeconds; ///< Ring Length: exp2Det(its log2 seconds), 1 to kRingMaxSeconds.
+    bool loop;          ///< Loop is on above 0.5.
+    double loopSeconds; ///< Loop Length: exp2Det(its log2 seconds), kLoopMinSeconds and up.
+    float overdub;      ///< Overdub, the gain o in [0, 1], as it is.
+    /// Splice, rounded to the nearest integer (halves up) and clamped to 0..kMaxSplices: 0 is the
+    /// whole window.
+    uint32_t splice;
+};
+
+/// Layer `layer`'s ring values, as RingParams documents, from its own slots (layerSlot). `layer`
+/// is below kLayers (asserted; the namespace's note).
+RingParams toRingParams(const ParamValues &effective, uint8_t layer) noexcept;
 
 /// Layer `layer`'s Cloud stream controls (`layer` below kLayers, asserted), from its own slots
 /// (layerSlot):
@@ -74,10 +95,10 @@ SourceMode builtKind(SourceKind kind, Mode mode) noexcept;
 /// - position, by the layer's built kind (builtKind(sourceKindOf(...), mode); spec §6.4), not by
 ///   the product:
 ///   - Live: (16/255)(exp2Det(8 × Position) − 1) seconds behind the write head, the live ring's
-///     units (ruling M1-k);
-///   - Sample: Position itself, the fraction of the loaded file (sub-project 3's spec §6.8),
-///     with sprayInSeconds set, so the engine spreads the spray's seconds around it at the
-///     source's rate;
+///     units (ruling M1-k), up to kRingMaxSeconds at kPositionMax (M2 sub-project 2's spec §6.3);
+///   - Sample: Position itself, clamped to 1, the fraction of the loaded file (sub-project 3's
+///     spec §6.8), with sprayInSeconds set, so the engine spreads the spray's seconds around it
+///     at the source's rate;
 /// - pitchSemitones = Pitch; stereo = Stereo; texture = Texture (sub-project 5's spec §4);
 /// - pitchSpreadSemitones = Pitch Spread; sizeSpreadOctaves = Size Spread (spec §6.6);
 /// - gain = 1/sqrt(max(1, densityHz × grainDurationSec)), the expected overlap's power

@@ -4,9 +4,10 @@
 
 // The patch: the slice's ten parameters (spec §4), Space's eight (sub-project 4's spec §6.5), the
 // Perform UI's ten (sub-project 5's spec §3.3, §4, §5) and M2's layers (M2 sub-project 1's spec
-// §6.9: 48 per layer, A to D, and nine globals; 218 in all), and their versioned XML state, through
-// gg-core's public API (gg/core/ParamIds.h, gg/core/PatchState.h) and its tinyxml-free internal
-// core/src/PatchXml.h, for each product's patch XML. This file never includes
+// §6.9: 48 per layer, A to D, and nine globals; 218 in all), M2 sub-project 2's five ring
+// parameters per layer (its spec §6.3; 53 per layer, 238 in all), and their versioned XML state,
+// through gg-core's public API (gg/core/ParamIds.h, gg/core/PatchState.h) and its tinyxml-free
+// internal core/src/PatchXml.h, for each product's patch XML. This file never includes
 // sst-plugininfra or tinyxml (ruling M1-l). The IDs, names, ranges and defaults are spelled out
 // literally, from Global Constraints' parameter table, so a change to gg/core/ParamIds.h or
 // ParamIds.cpp fails these tests. CLAP parameter IDs are frozen at the first public release and
@@ -77,7 +78,8 @@ struct Expected
 constexpr uint32_t kStepped = kAutoMod | CLAP_PARAM_IS_STEPPED;
 
 // Global Constraints' parameter table, spelled out literally in tests/support/ParamTable.h (the
-// FX's), with each slot and its CLAP flags. The instrument's differs only in every layer's
+// FX's), with each slot and its CLAP flags (no AUTOMATABLE or MODULATABLE on kFixedIds', every
+// layer's Ring Length). The instrument's differs only in every layer's
 // Position default (kInstrumentPositionDefault) and display and Source default
 // (kInstrumentSourceDefault), and in Macro 8's name (kInstrumentMacros).
 std::array<Expected, kParamCount> buildExpected()
@@ -87,8 +89,14 @@ std::array<Expected, kParamCount> buildExpected()
     for (size_t i = 0; i < kParamCount; ++i)
     {
         const auto &r = rows[i];
-        t[i] = {static_cast<ParamSlot>(i),      r.id, r.name, r.min, r.max, r.def,
-                r.stepped ? kStepped : kAutoMod};
+        const uint32_t autoMod = r.automatable ? kAutoMod : 0u;
+        t[i] = {static_cast<ParamSlot>(i),
+                r.id,
+                r.name,
+                r.min,
+                r.max,
+                r.def,
+                r.stepped ? autoMod | CLAP_PARAM_IS_STEPPED : autoMod};
     }
     return t;
 }
@@ -289,8 +297,8 @@ std::string handState(std::string_view params, std::string_view version = "2",
 
 TEST_CASE("param ids, names, ranges and defaults are pinned", "[core]")
 {
-    STATIC_REQUIRE(kParamCount == 218);
-    STATIC_REQUIRE(std::is_same_v<ParamValues, std::array<float, 218>>);
+    STATIC_REQUIRE(kParamCount == 238);
+    STATIC_REQUIRE(std::is_same_v<ParamValues, std::array<float, 238>>);
     STATIC_REQUIRE(std::is_same_v<std::underlying_type_t<ParamSlot>, uint16_t>);
     STATIC_REQUIRE(std::is_same_v<decltype(gg::core::kFeedbackMax), const float>);
     STATIC_REQUIRE(gg::core::kFeedbackMax == 0.95f);
@@ -341,9 +349,9 @@ TEST_CASE("param ids, names, ranges and defaults are pinned", "[core]")
         CHECK(&gg::core::paramMeta(e.slot, Mode::Instrument) == &m);
     }
 
-    // The stepped parameters, and only they, are integers: the switches (each layer's Freeze,
-    // Macro Freeze, the Layer On switches) and the choices (each layer's Source, LFO shapes and
-    // Step Length).
+    // The stepped parameters, and only they, are integers: the switches (each layer's Freeze and
+    // Loop, Macro Freeze, the Layer On switches) and the choices (each layer's Source, LFO shapes,
+    // Step Length and Splice).
     for (const Mode mode : {Mode::Fx, Mode::Instrument})
     {
         size_t steppedCount = 0;
@@ -356,7 +364,7 @@ TEST_CASE("param ids, names, ranges and defaults are pinned", "[core]")
             CHECK((gg::core::paramMeta(slot, mode).type ==
                    sst::basic_blocks::params::ParamMetaData::INT) == stepped);
         }
-        CHECK(steppedCount == 4 * 5 + 1 + 4);
+        CHECK(steppedCount == 4 * 7 + 1 + 4);
     }
 
     // Each layer parameter's CLAP module names its layer; a global's is empty.
@@ -395,9 +403,10 @@ TEST_CASE("param ids, names, ranges and defaults are pinned", "[core]")
     // IDs that aren't ours: the reserved index 0, the never-used 0x0A to 0x10 of scope 0, scopes
     // and indices one past the table, the reserved blocks, and the "unknown id" of the bad-state
     // test.
-    for (clap_id unknown : {0x000000u, 0x00000Au, 0x000010u, 0x000022u, 0x010000u, 0x010031u,
-                            0x020000u, 0x020031u, 0x040031u, 0x050001u, 0x000040u, 0x01004Fu,
-                            0x030060u, 0x04007Fu, 0x777777u, CLAP_INVALID_ID})
+    for (clap_id unknown :
+         {0x000000u, 0x00000Au, 0x000010u, 0x000022u, 0x010000u, 0x010031u, 0x020000u, 0x020031u,
+          0x040031u, 0x050001u, 0x000040u, 0x01004Fu, 0x010045u, 0x040045u, 0x000041u, 0x030060u,
+          0x04007Fu, 0x777777u, CLAP_INVALID_ID})
     {
         INFO("id " << unknown);
         CHECK_FALSE(gg::core::slotForId(unknown).has_value());
@@ -439,11 +448,16 @@ TEST_CASE("the id table has the next free indices and the reserved blocks", "[co
     using gg::core::LayerParam;
     using gg::core::LayerRef;
     STATIC_REQUIRE(gg::core::kLayers == 4);
-    STATIC_REQUIRE(gg::core::kLayerParamCount == 48);
+    STATIC_REQUIRE(gg::core::kLayerParamCount == 53);
     STATIC_REQUIRE(gg::core::layerParamIndex(LayerParam::Position) == 0x01u);
     STATIC_REQUIRE(gg::core::layerParamIndex(LayerParam::Diffusion) == 0x0Bu);
     STATIC_REQUIRE(gg::core::layerParamIndex(LayerParam::Source) == 0x0Cu);
     STATIC_REQUIRE(gg::core::layerParamIndex(LayerParam::Step16) == 0x30u);
+    STATIC_REQUIRE(gg::core::layerParamIndex(LayerParam::RingLength) == 0x40u);
+    STATIC_REQUIRE(gg::core::layerParamIndex(LayerParam::Splice) == 0x44u);
+    STATIC_REQUIRE(gg::core::slotForId(0x040044) == ParamSlot::D_Splice);
+    STATIC_REQUIRE(gg::core::layerOf(ParamSlot::RingLength) == LayerRef{LayerParam::RingLength, 0});
+    STATIC_REQUIRE(gg::core::layerSlot(LayerParam::Splice, 1) == ParamSlot::B_Splice);
     STATIC_REQUIRE(gg::core::slotForId(0x020001) == ParamSlot::B_Position);
     STATIC_REQUIRE(gg::core::layerOf(ParamSlot::D_Step16) == LayerRef{LayerParam::Step16, 3});
     STATIC_REQUIRE(gg::core::layerOf(ParamSlot::Feedback) == LayerRef{LayerParam::Feedback, 0});
@@ -561,6 +575,124 @@ TEST_CASE("a layer index no row has is no parameter, and a gap in the index colu
         }
     }
     CHECK(unused == 5 * 0x80 - kParamCount);
+}
+
+TEST_CASE("the ring parameters are pinned by name and ID", "[core]")
+{
+    // M2 sub-project 2's spec §6.3: five per layer at 0x40 to 0x44 of each layer's scope.
+    struct Pin
+    {
+        const char *name;
+        clap_id id;
+    };
+    constexpr std::array<Pin, 20> kPins{{
+        {"A Ring Length", 0x010040}, {"A Loop", 0x010041},        {"A Loop Length", 0x010042},
+        {"A Overdub", 0x010043},     {"A Splice", 0x010044},      {"B Ring Length", 0x020040},
+        {"B Loop", 0x020041},        {"B Loop Length", 0x020042}, {"B Overdub", 0x020043},
+        {"B Splice", 0x020044},      {"C Ring Length", 0x030040}, {"C Loop", 0x030041},
+        {"C Loop Length", 0x030042}, {"C Overdub", 0x030043},     {"C Splice", 0x030044},
+        {"D Ring Length", 0x040040}, {"D Loop", 0x040041},        {"D Loop Length", 0x040042},
+        {"D Overdub", 0x040043},     {"D Splice", 0x040044},
+    }};
+    for (const Pin &pin : kPins)
+    {
+        INFO("param " << pin.name);
+        const auto row = std::find_if(kTable.begin(), kTable.end(),
+                                      [&pin](const Expected &e) { return e.name == pin.name; });
+        REQUIRE(row != kTable.end());
+        CHECK(row->id == pin.id);
+        REQUIRE(gg::core::slotForId(pin.id).has_value());
+        CHECK(*gg::core::slotForId(pin.id) == row->slot);
+        for (const Mode mode : {Mode::Fx, Mode::Instrument})
+        {
+            const auto &m = gg::core::paramMeta(row->slot, mode);
+            CHECK(m.id == pin.id);
+            CHECK(m.name == pin.name);
+        }
+    }
+    STATIC_REQUIRE(gg::core::paramId(ParamSlot::RingLength) == 0x010040u);
+    STATIC_REQUIRE(gg::core::paramId(ParamSlot::Splice) == 0x010044u);
+    STATIC_REQUIRE(gg::core::paramId(ParamSlot::B_RingLength) == 0x020040u);
+    STATIC_REQUIRE(gg::core::paramId(ParamSlot::D_Splice) == 0x040044u);
+    // Ring Length is neither automatable nor modulatable (spec §5: the main thread resizes the
+    // ring); the other four are both, and Loop and Splice are stepped.
+    for (uint8_t layer = 0; layer < gg::core::kLayers; ++layer)
+    {
+        using gg::core::LayerParam;
+        INFO("layer " << int{layer});
+        const auto flags = [layer](LayerParam p) {
+            return gg::core::paramMeta(gg::core::layerSlot(p, layer), Mode::Fx).flags;
+        };
+        CHECK(flags(LayerParam::RingLength) == 0u);
+        CHECK(flags(LayerParam::Loop) == kStepped);
+        CHECK(flags(LayerParam::LoopLength) == kAutoMod);
+        CHECK(flags(LayerParam::Overdub) == kAutoMod);
+        CHECK(flags(LayerParam::Splice) == kStepped);
+    }
+}
+
+TEST_CASE("the next free indices are unchanged", "[core]")
+{
+    // M2 sub-project 2's rows sit in its reserved block (programme design §7.1), so the next free
+    // indices below the blocks don't move, 0x45 to 0x4F stay unused, the other sub-projects'
+    // blocks (0x50 to 0x7F) stay empty, and scope 0's block takes nothing.
+    STATIC_REQUIRE(gg::core::kNextFreeLayerIndex == 0x31u);
+    STATIC_REQUIRE(gg::core::kNextFreeGlobalIndex == 0x22u);
+    STATIC_REQUIRE(gg::core::kReservedIndexBegin == 0x40u);
+    STATIC_REQUIRE(gg::core::kReservedIndexEnd == 0x7Fu);
+    for (clap_id scope = 0; scope <= 4; ++scope)
+    {
+        for (clap_id index = 0x40; index <= 0x7F; ++index)
+        {
+            const clap_id id = scope << 16 | index;
+            INFO("id " << id);
+            const bool ours = scope >= 1 && index <= 0x44;
+            CHECK(gg::core::slotForId(id).has_value() == ours);
+        }
+    }
+}
+
+TEST_CASE("a version 2 state without the ring parameters loads them at their defaults", "[core]")
+{
+    // A state saved before M2 sub-project 2 (spec §6.3: no version bump) has no ring parameters:
+    // they load at their defaults, A Ring Length 4.0 (16 s) among them, in either product, and
+    // every other value as saved.
+    using gg::core::LayerParam;
+    constexpr std::array<LayerParam, 5> kRing{LayerParam::RingLength, LayerParam::Loop,
+                                              LayerParam::LoopLength, LayerParam::Overdub,
+                                              LayerParam::Splice};
+    ParamValues saved = defaults();
+    saved[static_cast<size_t>(ParamSlot::Size)] = -1.0f;
+    saved[static_cast<size_t>(ParamSlot::B_Pitch)] = 7.0f;
+    std::string state = toStateXml(saved, 3, kFxRoutes);
+    for (uint8_t layer = 0; layer < gg::core::kLayers; ++layer)
+    {
+        for (const LayerParam p : kRing)
+        {
+            const auto tag = R"(<p id=")" +
+                             std::to_string(gg::core::paramId(gg::core::layerSlot(p, layer))) +
+                             R"(" )";
+            const auto from = state.find(tag);
+            REQUIRE(from != std::string::npos);
+            const auto to = state.find("/>", from);
+            REQUIRE(to != std::string::npos);
+            state.erase(from, to + 2 - from);
+            REQUIRE(state.find(tag) == std::string::npos);
+        }
+    }
+    REQUIRE(state.find(R"(version="2")") != std::string::npos);
+    for (const Mode mode : {Mode::Fx, Mode::Instrument})
+    {
+        INFO((mode == Mode::Fx ? "FX" : "instrument"));
+        // The ring parameters' defaults are the same in both products, and `saved` holds them.
+        Loaded l = distinct();
+        REQUIRE(l.load(state, mode));
+        CHECK(l.valueBits() == Loaded{saved, 3, 0}.valueBits());
+        CHECK(bitsOf(l[ParamSlot::RingLength]) == bitsOf(4.0f));
+        CHECK(bitsOf(l[ParamSlot::D_RingLength]) == bitsOf(4.0f));
+        CHECK(bitsOf(l[ParamSlot::LoopLength]) == bitsOf(0.0f));
+        CHECK(l.migratedFromVersion == 0u);
+    }
 }
 
 TEST_CASE("the state lists every param in slot order", "[core]")
@@ -847,6 +979,19 @@ TEST_CASE("display text follows the engine mapping", "[core]")
     CHECK(text(ParamSlot::LayerBOn, 0.f) == "Off");
     CHECK(text(ParamSlot::LayerAOn, 1.f) == "On");
     CHECK(text(ParamSlot::LevelD, 0.f) == "0.00 dB");
+    // The ring's (M2 sub-project 2's spec §6.3): the lengths in log2 seconds, Overdub a
+    // percentage, Loop a switch and Splice a count; Position reaches the longest ring.
+    CHECK(text(ParamSlot::RingLength, 0.f) == "1.00 s");
+    CHECK(text(ParamSlot::RingLength, 4.f) == "16.00 s");
+    CHECK(text(ParamSlot::B_RingLength, 8.228818690495881f) == "300.00 s");
+    CHECK(text(ParamSlot::LoopLength, -4.321928094887363f) == "50.0 ms");
+    CHECK(text(ParamSlot::C_LoopLength, 0.f) == "1.00 s");
+    CHECK(text(ParamSlot::Loop, 0.f) == "Off");
+    CHECK(text(ParamSlot::Loop, 1.f) == "On");
+    CHECK(text(ParamSlot::Overdub, 0.5f) == "50.00 %");
+    CHECK(text(ParamSlot::Splice, 0.f) == "0");
+    CHECK(text(ParamSlot::D_Splice, 32.f) == "32");
+    CHECK(text(ParamSlot::Position, gg::core::kPositionMax) == "300.00 s");
 }
 
 TEST_CASE("Decay shows infinity over exactly the infinite region", "[core][space]")

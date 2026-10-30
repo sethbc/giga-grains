@@ -54,8 +54,8 @@ SourceMode builtKind(SourceKind kind, Mode mode) noexcept
     case SourceKind::Sample:
         return SourceMode::Sample;
     case SourceKind::Live:
+    case SourceKind::Resample: // a Live-mode engine (M2 sub-project 2's spec §6.2)
         return SourceMode::Live;
-    case SourceKind::Resample:
     case SourceKind::Spectral:
     case SourceKind::Oscillator:
         break;
@@ -75,7 +75,9 @@ CloudParams toCloudParams(const ParamValues &effective, Mode mode, uint8_t layer
     p.grainDurationSec = exp2Det(param(LayerParam::Size));
     if (builtKind(sourceKindOf(effective, layer), mode) == SourceMode::Sample)
     {
-        p.position = param(LayerParam::Position);
+        // The fraction stops at the file's end: Position's range reaches past 1 for the Live
+        // kinds' longest ring (M2 sub-project 2's spec §6.3). Below 1 it is M1's value.
+        p.position = std::min(param(LayerParam::Position), 1.0);
         p.sprayInSeconds = true;
     }
     else
@@ -164,6 +166,20 @@ float exp2Of(const ParamValues &v, ParamSlot slot) noexcept
     return static_cast<float>(exp2Det(value(v, slot)));
 }
 } // namespace
+
+RingParams toRingParams(const ParamValues &effective, uint8_t layer) noexcept
+{
+    assert(layer < kLayers);
+    const auto slot = [layer](LayerParam p) { return layerSlot(p, layer); };
+    return {
+        .ringSeconds = exp2Det(value(effective, slot(LayerParam::RingLength))),
+        .loop = read(effective, slot(LayerParam::Loop)) > 0.5f,
+        .loopSeconds = exp2Det(value(effective, slot(LayerParam::LoopLength))),
+        .overdub = read(effective, slot(LayerParam::Overdub)),
+        .splice = static_cast<uint32_t>(roundedIn(read(effective, slot(LayerParam::Splice)), 0.0f,
+                                                  static_cast<float>(kMaxSplices))),
+    };
+}
 
 LfoParams lfoParams(const ParamValues &effective, uint8_t layer, int which) noexcept
 {

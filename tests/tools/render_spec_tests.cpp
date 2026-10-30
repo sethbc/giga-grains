@@ -1185,7 +1185,8 @@ TEST_CASE("instrument spec rejects bad input", "[render]")
     SECTION("a value outside the instrument's range")
     {
         auto j = good;
-        j["params"]["Position"] = 1.5;
+        // Above kPositionMax, the longest ring's top (M2 sub-project 2's spec §6.3).
+        j["params"]["Position"] = 1.6;
         CHECK_THAT(rejection(j), ContainsSubstring("params.Position"));
     }
     SECTION("unknown mode")

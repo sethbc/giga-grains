@@ -113,7 +113,7 @@ TEST_CASE("renders are identical with no pool and pools of 1, 2 and 8 workers",
           "[core][threads][determinism]")
 {
     // The four-layer render of "four layers are block-size invariant", every source kind in play
-    // (the automation switches each layer between Sample, Live and the unbuilt Resample) and
+    // (the automation switches each layer between Sample, Live and Resample, a Live engine) and
     // Feedback on layers B and D, in both products: at every block size, the serial runner and
     // stub pools of 1, 2 and 8 workers render the same bytes, the same grains in the same order
     // and the same ring heads; and every block size renders what the first did.
