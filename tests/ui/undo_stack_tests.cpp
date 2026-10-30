@@ -303,3 +303,53 @@ TEST_CASE("a snapshot entry applies only what differs", "[ui]")
         CHECK(m.routeCalls.empty());
     }
 }
+
+TEST_CASE("a callback that edits the stack while it applies is ignored", "[ui]")
+{
+    // Undo and redo apply through the plugin, whose path may come back to the stack (a control
+    // that records the value it was given, a nested undo): what it asks while an entry applies is
+    // ignored, so the history is the same as before the apply, and the apply runs once.
+    Model m;
+    UndoStack *stack = nullptr;
+    int nested = 0;
+    gg::ui::UndoCallbacks callbacks = m.callbacks();
+    const auto setValue = callbacks.setValue;
+    callbacks.setValue = [&](ParamSlot slot, float v) {
+        setValue(slot, v);
+        ++nested;
+        stack->beginGesture(ParamSlot::Texture, 0.0f, "Texture");
+        stack->endGesture(ParamSlot::Texture, 1.0f);
+        stack->beginGroup();
+        stack->pushRoutes(ModRoutes{}, routesWith(2, 0.5f), "route 3");
+        stack->pushSnapshot("Mutate", ParamValues{}, ModRoutes{}, ParamValues{1.0f}, ModRoutes{});
+        stack->undo();
+        stack->redo();
+    };
+    UndoStack s{callbacks};
+    stack = &s;
+    s.beginGesture(ParamSlot::Size, 0.2f, "A Size");
+    s.endGesture(ParamSlot::Size, 0.7f);
+    s.beginGesture(ParamSlot::Pitch, 0.5f, "A Pitch");
+    s.endGesture(ParamSlot::Pitch, 0.6f);
+    REQUIRE(s.size() == 2);
+
+    s.undo();
+    CHECK(nested == 1);
+    CHECK(m.valueCalls.size() == 1); // the nested undo and redo applied nothing
+    CHECK(s.size() == 2);
+    CHECK(s.undoLabel() == "A Size");
+    CHECK(s.redoLabel() == "A Pitch");
+
+    s.redo();
+    CHECK(nested == 2);
+    CHECK(m.valueCalls.size() == 2);
+    CHECK(s.size() == 2);
+    CHECK(s.undoLabel() == "A Pitch");
+    CHECK_FALSE(s.canRedo());
+
+    // The group the callback opened was ignored too: a gesture after the apply is its own entry.
+    s.beginGesture(ParamSlot::Spray, 0.0f, "A Spray");
+    s.endGesture(ParamSlot::Spray, 0.3f);
+    CHECK(s.size() == 3);
+    CHECK(s.undoLabel() == "A Spray");
+}

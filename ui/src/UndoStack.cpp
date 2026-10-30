@@ -15,12 +15,28 @@ template <class... F> struct Overloaded : F...
 {
     using F::operator()...;
 };
+
+/// Sets a flag for its lifetime: the stack is applying an entry.
+struct Applying
+{
+    explicit Applying(bool &flag) noexcept : flag_(flag) { flag_ = true; }
+    ~Applying() { flag_ = false; }
+    Applying(const Applying &) = delete;
+    Applying &operator=(const Applying &) = delete;
+
+  private:
+    bool &flag_;
+};
 } // namespace
 
 UndoStack::UndoStack(UndoCallbacks callbacks) : callbacks_(std::move(callbacks)) {}
 
 void UndoStack::beginGesture(gg::core::ParamSlot slot, float before, std::string label)
 {
+    if (applying_)
+    {
+        return;
+    }
     const bool open =
         std::ranges::any_of(open_, [slot](const OpenGesture &g) { return g.slot == slot; });
     if (!open)
@@ -31,6 +47,10 @@ void UndoStack::beginGesture(gg::core::ParamSlot slot, float before, std::string
 
 void UndoStack::endGesture(gg::core::ParamSlot slot, float after)
 {
+    if (applying_)
+    {
+        return;
+    }
     const auto it =
         std::ranges::find_if(open_, [slot](const OpenGesture &g) { return g.slot == slot; });
     if (it == open_.end())
@@ -56,11 +76,17 @@ void UndoStack::endGesture(gg::core::ParamSlot slot, float after)
     push({std::move(gesture.label), change});
 }
 
-void UndoStack::beginGroup() { ++groupDepth_; }
+void UndoStack::beginGroup()
+{
+    if (!applying_)
+    {
+        ++groupDepth_;
+    }
+}
 
 void UndoStack::endGroup()
 {
-    if (groupDepth_ == 0 || --groupDepth_ > 0)
+    if (applying_ || groupDepth_ == 0 || --groupDepth_ > 0)
     {
         return;
     }
@@ -75,7 +101,7 @@ void UndoStack::endGroup()
 void UndoStack::pushRoutes(const gg::core::ModRoutes &before, const gg::core::ModRoutes &after,
                            std::string label)
 {
-    if (before != after)
+    if (!applying_ && before != after)
     {
         push({std::move(label), RoutesChange{before, after}});
     }
@@ -85,6 +111,10 @@ void UndoStack::pushSnapshot(std::string label, const gg::core::ParamValues &vBe
                              const gg::core::ModRoutes &rBefore,
                              const gg::core::ParamValues &vAfter, const gg::core::ModRoutes &rAfter)
 {
+    if (applying_)
+    {
+        return;
+    }
     Snapshot snapshot;
     for (std::size_t i = 0; i < gg::core::kParamCount; ++i)
     {
@@ -115,10 +145,11 @@ std::string UndoStack::redoLabel() const
 
 void UndoStack::undo()
 {
-    if (!canUndo())
+    if (applying_ || !canUndo())
     {
         return;
     }
+    const Applying applying(applying_);
     --cursor_;
     const auto undoValues = [this](const ParamChanges &changes) {
         for (auto it = changes.rbegin(); it != changes.rend(); ++it)
@@ -141,10 +172,11 @@ void UndoStack::undo()
 
 void UndoStack::redo()
 {
-    if (!canRedo())
+    if (applying_ || !canRedo())
     {
         return;
     }
+    const Applying applying(applying_);
     const auto redoValues = [this](const ParamChanges &changes) {
         for (const ParamChange &c : changes)
         {

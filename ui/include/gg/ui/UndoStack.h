@@ -36,6 +36,9 @@ struct UndoCallbacks
 ///   gestures (the XY pad's two parameters as one step), a routes edit and a whole-state snapshot.
 /// - **Undo applies the entry's before, redo its after,** whatever the values are now.
 /// - **At most kDepth entries,** the oldest dropped. A new entry clears what could be redone.
+/// - **Re-entrancy:** while undo() or redo() applies an entry, the callbacks may come back to the
+///   stack (a control that records the value it was given): every call they make, a gesture, a
+///   group, a push, an undo or a redo, is ignored, so an apply never records itself or nests.
 class UndoStack
 {
   public:
@@ -84,6 +87,8 @@ class UndoStack
 
     /// The entries kept, undoable and redoable together; at most kDepth.
     std::size_t size() const noexcept { return entries_.size(); }
+    /// Whether undo() or redo() is applying an entry now (the callbacks are running).
+    bool applying() const noexcept { return applying_; }
 
   private:
     struct ParamChange
@@ -122,6 +127,7 @@ class UndoStack
     std::deque<Entry> entries_;
     std::size_t cursor_{0}; // the entries applied: undo() applies entries_[cursor_ - 1]
     std::vector<OpenGesture> open_;
+    bool applying_{false}; // undo() or redo() is in its callbacks
     int groupDepth_{0};
     std::string groupLabel_;
     ParamChanges group_;
