@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | **Draft, 2026-10-30: awaiting the programme manager's approval and the director's answers to §8.** Nothing is built. |
+| **Status** | **Approved by the programme manager 2026-10-30** against the programme design and INTENT, with two notes: the FX view's Reverb section in PR 1 is accepted (§6.1), and the INTENT §23 row takes the next free number at merge, after sub-projects 3, 2, 4 and 5 (§13). **The director's decisions D1–D11, 2026-10-30,** relayed by the programme manager, are recorded in §8 and applied in place: every recommended option (D1 to D11, option 1 each). Sub-project 5 replaces the contents of the header label `header.preset` with its preset strip and browser button; this sub-project keeps that ID and bounds slot and moves nothing else in the header's left group (§4). **PR 1 in progress** (the plan: `docs/superpowers/plans/2026-10-30-m2-views.md`); PR 2 waits for the programme manager's word that wave 2 and sub-project 5 have merged. |
 | **Milestone** | M2 Giga (INTENT §20, §23 #64), sub-project 6 of 7; wave 3, merged second, after sub-project 5. Started with wave 2 (programme design §6, "Wave rules"): the work that needs only wave 1 is built now; the work that needs wave 2's parameters waits until wave 2 has merged and this branch is rebased. |
 | **Spec authority** | `INTENT.md`, then `docs/superpowers/specs/2026-10-29-m2-programme-design.md` (its §6.6, §7 and §12 are this sub-project's charter: realized here, not reopened). This document records how this sub-project implements them. |
 | **Builds on** | M2 sub-project 1 as built (§23 #65): four layers, the morph law (D1), the Source kind, Pitch and Size Spread, the 48-slot mod matrix and its sources, the 218 parameters, the patch at version 2, the per-layer grain events and live peaks; M1's Perform view (§23 #58): the canvas, `LaneModel`, `LaneState`, `SplatRenderer`, `MacroRow`, `LoaderStrip`, the UI → host gesture path and the audio → UI publish path; sst-jucegui at `22a89ca`. |
@@ -576,14 +576,22 @@ run the same snapshot code (without writing files) to cover each view's open, dr
 Each a forced choice; the recommended option is first, with one line on what each costs. Nothing
 engineering-only is here (that is §9).
 
-**D1. The lane's vertical axis** (§6.3). INTENT §17 freed it from pan for M2's pitch spread.
+**The director's answers, 2026-10-30, relayed by the programme manager:** every recommended
+option: D1 option 1 (the pitch axis), D2 option 1 (the rectangle with its four drags and the axis
+lock), D3 option 1 (four lanes always), D4 option 1 (Okabe–Ito), D5 option 1 (one layer at a
+time), D6 option 1 (the Edit panels under source chips with the route list), D7 option 1 (editor
+edits plus whole-state entries), D8 option 1 (dark by default), D9 option 1 (the lanes stay
+dark), D10 option 1 (Reverb Size sets on release), D11 option 1 (960 × 600). Each is marked
+below and applied in §6.
+
+**D1. The lane's vertical axis** (§6.3). **Decided: option 1.** INTENT §17 freed it from pan for M2's pitch spread.
 1. **Pitch:** a grain's height is its pitch, ±48 semitones across the lane; pan is no longer
    drawn. *Cost:* Stereo's effect is heard, not seen.
 2. *Pitch by default, pan on a per-lane switch* saved per machine. *Cost:* two mappings to learn,
    and a lane whose axis means something different from its neighbour's.
 3. *Keep pan.* *Cost:* Pitch Spread and the Pitch macro stay invisible, against INTENT §17.
 
-**D2. The scan window and its drags** (§6.3).
+**D2. The scan window and its drags** (§6.3). **Decided: option 1.**
 1. **A rectangle:** x is Position and Spray as M1, y is Pitch ± Pitch Spread; the left and right
    edges set Spray, the top and bottom edges set Pitch Spread, and the body sets Position
    horizontally or Pitch vertically, axis-locked after 4 px. *Cost:* a vertical body drag moves
@@ -594,7 +602,7 @@ engineering-only is here (that is §9).
 3. *Horizontal only, as M1:* Pitch and both spreads by knob. *Cost:* the lane's new axis shows
    pitch but can't be grabbed.
 
-**D3. The lanes** (§6.3).
+**D3. The lanes** (§6.3). **Decided: option 1.**
 1. **Four lanes always,** equal height, an off layer's lane dimmed with its peaks still drawn;
    the window grows to 960 × 600 (D11). *Cost:* each lane is a quarter of the canvas, about
    80 px at the default size and 45 px at the minimum.
@@ -602,7 +610,7 @@ engineering-only is here (that is §9).
    when a layer switches on or off, under a performer's hand.
 3. *One lane at a time,* the selected layer's. *Cost:* the canvas no longer shows the instrument.
 
-**D4. The layer palette** (§6.9).
+**D4. The layer palette** (§6.9). **Decided: option 1.**
 1. **Okabe–Ito:** A orange `#E69F00`, B sky blue `#56B4E9`, C bluish green `#009E73`, D
    reddish purple `#CC79A7`, with the letter on every lane, cell and chip. *Cost:* layer A's
    grain tint moves from M1's amber `#FFC46B` to this orange.
@@ -611,14 +619,14 @@ engineering-only is here (that is §9).
    for a deuteranope.
 3. *One hue in four lightnesses.* *Cost:* lightness already means gain on the canvas.
 
-**D5. The Edit view's layer scope** (§6.5).
+**D5. The Edit view's layer scope** (§6.5). **Decided: option 1.**
 1. **One layer at a time,** chosen in the shared strip; the panels fill the width. *Cost:*
    comparing two layers means switching.
 2. *Four columns,* every layer at once. *Cost:* 192 controls in 960 px; tiny, and scrolling.
 3. *One layer with a "link" switch* that applies an edit to all four. *Cost:* a hidden
    multiplier on every gesture; four entries per undo.
 
-**D6. The Mod view's shape** (§6.6).
+**D6. The Mod view's shape** (§6.6). **Decided: option 1.**
 1. **The selected layer's Edit panels under a strip of source chips, with the route list
    beside them:** drop a chip on a control to route; rings on the controls, draggable for depth;
    the list for curve, layers and clearing. *Cost:* the view is dense; the list is narrow.
@@ -626,7 +634,7 @@ engineering-only is here (that is §9).
    *Cost:* INTENT §17's drag-onto-a-control lives in another view than the one named Mod.
 3. *A source × target grid.* *Cost:* 24 by 218 cells; unreadable.
 
-**D7. What undo covers** (§6.8).
+**D7. What undo covers** (§6.8). **Decided: option 1.**
 1. **The editor's own edits** (every gesture from any view, the pad, the strip, the lanes, route
    edits), coalesced per gesture, 200 deep, kept while the instance lives, **plus a whole-state
    entry API** for sub-project 5's Mutate and preset recall. *Cost:* a host's own undo and ours
@@ -636,7 +644,7 @@ engineering-only is here (that is §9).
 3. *No plugin undo;* the host's. *Cost:* most hosts don't undo a plugin's internal gestures, and
    §17 promises it.
 
-**D8. The theme's default** (§6.9).
+**D8. The theme's default** (§6.9). **Decided: option 1.**
 1. **Dark by default** (M1's look, what every host screenshot so far shows), light by the
    header's switch, saved per machine. *Cost:* a light-OS user picks it by hand once.
 2. *Follow the OS's light or dark,* with the same switch to override. *Cost:* the FX and the
@@ -644,14 +652,14 @@ engineering-only is here (that is §9).
    overridden; the switch gains a third state, System.
 3. *Follow the OS, no switch.* *Cost:* no way to disagree with the OS on purpose.
 
-**D9. The canvas in the light theme** (§6.9).
+**D9. The canvas in the light theme** (§6.9). **Decided: option 1.**
 1. **The lanes stay dark in both themes:** the canvas is a screen of additive light; the grain
    tints and peaks are the same in both. *Cost:* a dark rectangle in a light window.
 2. *Light lanes,* the resolve inverted (grains darken a light ground). *Cost:* a second resolve
    and a second set of tints to keep legible; overlaps saturate to black instead of white, a
    different picture of density.
 
-**D10. Row 217, Reverb Size in the FX view** (§6.7).
+**D10. Row 217, Reverb Size in the FX view** (§6.7). **Decided: option 1.**
 1. **Set on release:** the knob shows its target while dragged and sends one value at the
    gesture's end; the tooltip says so; automation is as it is. The row closes as decided, with
    the DSP route recorded. *Cost:* Size can't be swept from the UI; a host's automation still
@@ -662,7 +670,7 @@ engineering-only is here (that is §9).
 3. *Accept the click* and sweep the knob live. *Cost:* a click when Size moves, in a view built to
    invite moving it.
 
-**D11. The default window size** (§6.2).
+**D11. The default window size** (§6.2). **Decided: option 1.**
 1. **960 × 600** (the minimum stays 640 × 360). *Cost:* 60 px wider and 100 px taller than M1;
    a host window that remembered 900 × 500 keeps it, since the editor lays out at any size.
 2. *Keep 900 × 500.* *Cost:* lanes of 60 px at the default.
