@@ -26,7 +26,11 @@
 // - `reference`: renderHermiteSimd on that workload, frozen as the CPU gate's yardstick;
 // - the engine cases, each a gg::Engine at 48 kHz rendering one Cloud stream through
 //   Engine::process: engine-sample (X, the headline), engine-sample-eco (X at the Eco tier),
-//   engine-live and engine-full-pool.
+//   engine-live and engine-full-pool;
+// - the four-layer engine cases (M2 layers spec §6.12), report-only beside X: engine-layers,
+//   four such engines (layers 0 to 3) sharing X's grains, 500 each, rendered through a
+//   SerialRunner and summed in layer order; and engine-layers-full, the same with all of the
+//   grains in every layer (8,000 in all by default).
 // Every engine case's ratio, ns per grain-sample over reference's in the same round, cancels the
 // machine's speed (ruling 3), though not its microarchitecture: on CI the same code's ratios
 // differ by up to ~20% between the CPU models GitHub assigns a leg. A baseline file therefore
@@ -216,14 +220,18 @@ struct TierCounts
 {
     uint64_t eco{0};
     uint64_t normal{0};
+    /// Each layer's engine's activeGrains() after the warm-up, in layer order: one entry for a
+    /// one-layer case, four for engine-layers and engine-layers-full.
+    std::vector<uint32_t> activeGrains{};
 };
 
 /// Builds engine case `engineCase` at `blockSize` with `grains` grains exactly as run() does,
 /// warms it up as run() does, and counts the tier of every grain it admitted meanwhile, through
-/// its engine's event sink: each admitted grain's spec carries the tier the pool latches for it.
-/// It proves which tier a case runs at (engine-sample-eco: Eco; the others: Normal) without
-/// timing anything. Throws std::invalid_argument for a name that isn't an engine case, a block
-/// size run() doesn't use (32, 64 and 256) or 0 grains.
+/// its engines' event sinks (every layer's, for a four-layer case): each admitted grain's spec
+/// carries the tier the pool latches for it. It proves which tier a case runs at
+/// (engine-sample-eco: Eco; the others: Normal), and how a layered case's grains are spread over
+/// its layers (TierCounts::activeGrains), without timing anything. Throws std::invalid_argument for
+/// a name that isn't an engine case, a block size run() doesn't use (32, 64 and 256) or 0 grains.
 TierCounts admittedTiers(const std::string &engineCase, uint32_t grains, uint32_t blockSize);
 
 /// The order round `round` (r) runs `configurations` (n) configurations in. Even rounds run

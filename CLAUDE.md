@@ -524,6 +524,12 @@ $b --space [--quick | --seconds S] [--rounds N] [--commit SHA] [--json out.json]
     - `engine-live`: the same stream over a 16 s live ring, the FX's figure, published beside X;
     - `engine-full-pool`: admission when the pool is saturated (1 s grains ask for 10× its
       capacity);
+    - `engine-layers`: four `engine-sample` engines (layers 0 to 3) sharing its 2,000 grains, 500
+      each, rendered through `SerialRunner` and summed in layer order, as a host without a thread
+      pool pays for four layers; report-only beside X, with no baseline entry yet (M2 layers
+      spec §6.12);
+    - `engine-layers-full`: the same with 2,000 grains in every layer, 8,000 in all; report-only
+      beside X, with no baseline entry yet;
   - `reference`: M0's 4-wide Hermite kernel, frozen (`renderHermiteSimd` in
     `tools/gg-bench/Kernels.h`). It is the CPU gate's yardstick. `Kernels.h` includes no engine
     header: it holds its own frozen copies of the Hann table and the readers, so no engine
@@ -541,8 +547,8 @@ $b --space [--quick | --seconds S] [--rounds N] [--commit SHA] [--json out.json]
   `reference` for any ratio to be printed.
 - **Other options:** `--grains N` changes the grain count; `--cases a,b` runs only those cases
   (the default is all; `--help` lists them).
-- **Run length:** the full default run is 30 configurations × 5 rounds × 2 s, about 5 minutes of
-  timing; a CI leg's benchmark step takes about 6 minutes. `--canvas` times 240 frames after a
+- **Run length:** the full default run is 36 configurations × 5 rounds × 2 s, about 6 minutes of
+  timing; a CI leg's benchmark step took about 6 minutes before the two layer cases added one. `--canvas` times 240 frames after a
   20-frame warm-up, or 30 with `--quick`.
 - **`--space`** times Space's per-sample stage, the diffuser then the reverb, on stereo noise at
   48 kHz, active, with Diffusion and Amount at 100% (`tools/gg-bench/Bench.h` lists every

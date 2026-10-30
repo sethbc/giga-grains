@@ -193,6 +193,32 @@ TEST_CASE("engine cases report their grain counts", "[bench]")
         }
     }
     CHECK(report.ratios.empty()); // no reference case, so no ratios
+
+    // The four-layer cases. engine-layers shares the grains out among its layers (13, 13, 12
+    // and 12 of these 50; 500 each of the default 2,000, so its count matches X's), and
+    // engine-layers-full gives each layer all of them (4 x 50). A layered case's count is the
+    // total over its layers. 50 grains, not the default: at 2,000 the Debug build's warm-ups
+    // take over a minute (the default's spread is checked by "engine-layers admits its grains
+    // across four layers").
+    const gg::bench::Report layers =
+        gg::bench::run({.runSeconds = 0.002,
+                        .rounds = 1,
+                        .grains = 50,
+                        .cases = {"engine-layers", "engine-layers-full"}});
+    REQUIRE(layers.results.size() == 6);
+    for (const gg::bench::CaseResult &r : layers.results)
+    {
+        INFO(r.name << " at block " << r.blockSize << ": " << r.grains << " grains");
+        CHECK(r.kind == "engine");
+        REQUIRE(r.nsPerGrainSample.size() == 1);
+        CHECK(r.nsPerGrainSample[0] > 0.0);
+        CHECK(r.cpuPctOneCoreAt48k > 0.0);
+        CHECK((r.name == "engine-layers" || r.name == "engine-layers-full"));
+        const double total = r.name == "engine-layers" ? 50.0 : 200.0;
+        CHECK(r.grains >= total - 2.0);
+        CHECK(r.grains <= total + 2.0);
+    }
+    CHECK(layers.ratios.empty());
 }
 
 namespace
@@ -451,8 +477,9 @@ TEST_CASE("the committed baselines are well formed", "[bench]")
         for (const nlohmann::json &m : baseline.at("machines"))
         {
             INFO(m.at("machine").get<std::string>());
-            // Exactly the 4 engine cases x 3 block sizes (a duplicate or a stray case would
-            // pass a count of 12).
+            // Exactly M1's 4 engine cases x 3 block sizes (a duplicate or a stray case would
+            // pass a count of 12). engine-layers and engine-layers-full have no entries yet:
+            // report-only until three full runs are merged in.
             std::set<std::pair<std::string, uint32_t>> found;
             for (const nlohmann::json &r : m.at("ratios"))
             {
@@ -799,4 +826,40 @@ TEST_CASE("engine-sample-eco runs at the Eco tier", "[bench]")
     CHECK_THROWS_AS(gg::bench::admittedTiers("reference", 50, 32), std::invalid_argument);
     CHECK_THROWS_AS(gg::bench::admittedTiers("no-such-case", 50, 32), std::invalid_argument);
     CHECK_THROWS_AS(gg::bench::admittedTiers("engine-sample", 50, 48), std::invalid_argument);
+}
+
+TEST_CASE("engine-layers admits its grains across four layers", "[bench]")
+{
+    // Spec §6.12: four engines, layers 0 to 3, each engine-sample's setup with 500 of the 2,000
+    // grains, rendered through a SerialRunner and summed in layer order. After the warm-up (two
+    // grain durations) each layer's engine sounds its share, all Normal, and every layer has
+    // admitted at least one grain duration's worth.
+    const gg::bench::TierCounts tiers = gg::bench::admittedTiers("engine-layers", 2000, 256);
+    CHECK(tiers.normal >= 2000);
+    CHECK(tiers.eco == 0);
+    REQUIRE(tiers.activeGrains.size() == 4);
+    uint32_t total = 0;
+    for (std::size_t layer = 0; layer < tiers.activeGrains.size(); ++layer)
+    {
+        INFO("layer " << layer << ": " << tiers.activeGrains[layer] << " grains");
+        CHECK(tiers.activeGrains[layer] >= 450);
+        CHECK(tiers.activeGrains[layer] <= 550);
+        total += tiers.activeGrains[layer];
+    }
+    CHECK(total >= 1996);
+    CHECK(total <= 2004);
+
+    // engine-layers-full: every layer gets all of the grains, so 4 x 50 here.
+    const gg::bench::TierCounts full = gg::bench::admittedTiers("engine-layers-full", 50, 64);
+    CHECK(full.normal >= 200);
+    CHECK(full.eco == 0);
+    REQUIRE(full.activeGrains.size() == 4);
+    for (const uint32_t active : full.activeGrains)
+    {
+        CHECK(active >= 45);
+        CHECK(active <= 55);
+    }
+
+    // A one-layer case reports its one engine.
+    CHECK(gg::bench::admittedTiers("engine-sample", 50, 64).activeGrains.size() == 1);
 }
