@@ -102,7 +102,7 @@ void GrainPool::forgetEnds(int64_t t) noexcept
     while (heapSize_ > 0 && heap_[0].end <= t)
     {
         heapWeight_ -= heap_[0].weight;
-        if (fadeStart_[heap_[0].row] != std::numeric_limits<int64_t>::max())
+        if (fadeStart_[heap_[0].row] != kNeverStolen)
         {
             fadingWeight_ -= heap_[0].weight;
         }
@@ -137,8 +137,7 @@ bool GrainPool::oldestSounding(int64_t onset, uint32_t &row) noexcept
 {
     // A row passed here has ended by this onset, so by every later one, or been stolen, which
     // it stays: neither is the answer again before retirement restarts the scan.
-    constexpr int64_t kUnstolen = std::numeric_limits<int64_t>::max();
-    while (cursor_ < size_ && (endSample_[cursor_] <= onset || fadeStart_[cursor_] != kUnstolen))
+    while (cursor_ < size_ && (endSample_[cursor_] <= onset || fadeStart_[cursor_] != kNeverStolen))
     {
         ++cursor_;
     }
@@ -153,7 +152,7 @@ bool GrainPool::oldestSounding(int64_t onset, uint32_t &row) noexcept
 void GrainPool::steal(uint32_t row, int64_t onset) noexcept
 {
     assert(row < size_ && endSample_[row] > onset);
-    assert(fadeStart_[row] == std::numeric_limits<int64_t>::max());
+    assert(fadeStart_[row] == kNeverStolen);
     // A grain that sounds at the onset still has its heap entry: only ends <= an onset or a
     // retirement time, never later than this onset, have been forgotten.
     assert(heapPos_[row] != kNotInHeap);
@@ -192,7 +191,7 @@ bool GrainPool::spawn(const GrainSpec &g) noexcept
     texture_[i] = g.texture;
     weight_[i] = g.weight;
     level_[i] = g.level;
-    fadeStart_[i] = std::numeric_limits<int64_t>::max(); // not stolen
+    fadeStart_[i] = kNeverStolen;
     invFade_[i] = 0.0f;
     // The renderers' latched values (spec §3): one division and one channel gain per grain, and
     // the Texture envelope's shape (spec §4).

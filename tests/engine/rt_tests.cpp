@@ -547,6 +547,79 @@ TEST_CASE("engine process does not allocate on every rung", "[rt]")
     }
 }
 
+TEST_CASE("engine process does not allocate while grains fade", "[rt]")
+{
+    // The steal fade (spec §6.5) with the tripwire armed: 400 Hz of 0.1 s Normal grains into a
+    // quota of 10 stereo grains, so from the oldest grain's half-way point every admission steals
+    // one, and each stolen grain fades over the next 256 samples, through the references, across
+    // calls of 1, 7, 64 and 1,000 samples. Sample and live sources, both outputs and one.
+    gg::CloudParams params{.densityHz = 400.0,
+                           .grainDurationSec = 0.1,
+                           .position = 0.5,
+                           .spray = 0.5,
+                           .pitchSemitones = 3.0,
+                           .stereo = 1.0,
+                           .gain = 0.5f};
+    std::vector<float> inLeft(1000), inRight(1000);
+    for (std::size_t i = 0; i < inLeft.size(); ++i)
+    {
+        inLeft[i] = static_cast<float>(std::sin(2.0 * std::numbers::pi * 220.0 * i / 48000.0));
+        inRight[i] = -inLeft[i];
+    }
+    const float *in[2] = {inLeft.data(), inRight.data()};
+    std::vector<float> left(1000), right(1000);
+    float *out[2] = {left.data(), right.data()};
+
+    gg::EngineConfig config{48000.0, 256, 4096, 17};
+    config.liveSeconds = 1.0;
+    gg::Engine engine(config);
+    engine.setSource(stereoSine(330.0));
+    SECTION("sample source") {}
+    SECTION("live ring")
+    {
+        engine.setSourceMode(gg::SourceMode::Live);
+        params.position = 0.2;
+        params.spray = 0.1;
+    }
+    engine.setCloudParams(params);
+    engine.setQuota(40);
+    SpawnCounter counter;
+    engine.setEventSink(&SpawnCounter::record, &counter);
+    engine.setStealSink(&SpawnCounter::steal, &counter);
+    engine.process(in, 2, out, 2, 1000); // the ring fills, and the mode applies
+    engine.process(in, 2, out, 2, 1000);
+    engine.process(in, 2, out, 2, 1000); // the oldest grain is past half-way: steals begin
+
+    AllocTripwire::resetCount();
+    const uint64_t stolenBefore = engine.stolenGrains();
+    {
+        AllocTripwire::Scope armed;
+        for (int i = 0; i < 10; ++i)
+        {
+            for (int k = 0; k < 40; ++k)
+            {
+                engine.process(in, 2, out, 2, 1);
+            }
+            for (int k = 0; k < 10; ++k)
+            {
+                engine.process(in, 2, out, 2, 7);
+            }
+            engine.process(in, 2, out, 2, 64);
+            engine.process(in, 2, out, 1, 64);
+            engine.process(in, 2, out, 2, 1000);
+        }
+    }
+    const uint64_t allocations = AllocTripwire::count();
+
+    REQUIRE(engine.stolenGrains() > stolenBefore + 20);
+    REQUIRE(counter.steals == engine.stolenGrains());
+    REQUIRE(std::isfinite(left[0]));
+    if (gg::test::AllocTripwire::available()) // off under ASan; RTSan covers this
+    {
+        REQUIRE(allocations == 0);
+    }
+}
+
 TEST_CASE("engine adopts and hands back sources without allocating", "[engine][rt]")
 {
     // Prepared off the audio thread; adopted, rendered and handed back with the tripwire armed.

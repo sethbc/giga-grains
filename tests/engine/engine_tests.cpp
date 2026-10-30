@@ -23,9 +23,12 @@
 #include "gg/core/Window.h"
 #include "gg/engine/Engine.h"
 #include "gg/grain/Budget.h"
+#include "gg/grain/Envelope.h"
 #include "gg/grain/GrainKernels.h"
 #include "gg/grain/GrainPool.h"
 #include "gg/grain/SincTable.h"
+#include "gg/metrics/AudioData.h"
+#include "gg/metrics/Metrics.h"
 #include "gg/source/Mipmap.h"
 #include "gg/source/PreparedSource.h"
 
@@ -1996,4 +1999,292 @@ TEST_CASE("an unlimited quota admits as M1", "[engine][budget]")
             REQUIRE(unlimited.lowered == 0);
         }
     }
+}
+
+namespace
+{
+// The goldens' click limit (gg::metrics::Tolerances::maxClickScore, metricsVersion 2).
+constexpr double kClickLimit = 15.0;
+
+// The goldens' click detector over a stereo render at 48 kHz.
+double clickScore(const Render &r)
+{
+    const gg::metrics::AudioData audio{48000.0, {r.left, r.right}};
+    return gg::metrics::computeMetrics(audio).clickScore;
+}
+
+// The lowest RMS, in dBFS, of any whole window of `window` samples of v from its start.
+double minWindowRmsDb(const std::vector<float> &v, int64_t window)
+{
+    double lowest = std::numeric_limits<double>::infinity();
+    for (int64_t w = 0; w + window <= static_cast<int64_t>(v.size()); w += window)
+    {
+        double sum = 0.0;
+        for (int64_t t = w; t < w + window; ++t)
+        {
+            const double x = v[static_cast<std::size_t>(t)];
+            sum += x * x;
+        }
+        lowest = std::min(lowest, 10.0 * std::log10(sum / static_cast<double>(window)));
+    }
+    return lowest;
+}
+
+// The overload ladder's exit case (spec §6.5) at a size: `densityHz` periodic onsets of
+// `sizeSec` grains into one engine of capacity `capacity` at a quota of `quotaGrains` Normal
+// stereo grains, over a full-scale 220 Hz stereo sine of 4 s, for `frames` samples, its RMS
+// floor taken over windows of `window` samples. The grains read from 0.3 to 0.7 of the source
+// (spray 0.2), so their sine phases differ and their sum doesn't cancel; at rate 1 none reads
+// past its end.
+struct ExitCase
+{
+    uint32_t capacity;
+    uint64_t quotaGrains;
+    double densityHz;
+    double sizeSec;
+    int64_t frames;
+    int64_t window;
+};
+
+struct ExitRender
+{
+    Render audio;
+    uint64_t dropped{0};
+    uint64_t lowered{0};
+    uint64_t stolen{0};
+};
+
+ExitRender renderExit(const ExitCase &c, const std::shared_ptr<gg::SampleBuffer> &source,
+                      uint32_t blockSize)
+{
+    gg::EngineConfig config;
+    config.grainCapacity = c.capacity;
+    gg::Engine engine(config);
+    engine.setSource(source);
+    engine.setCloudParams(params(c.densityHz, c.sizeSec, 0.5, 0.2, 0.0, 0.05f));
+    engine.setQuota(c.quotaGrains * gg::grainWeight(gg::Tier::Normal, true));
+    ExitRender r;
+    r.audio = render(engine, c.frames, blockSize);
+    r.dropped = engine.droppedGrains();
+    r.lowered = engine.loweredGrains();
+    r.stolen = engine.stolenGrains();
+    return r;
+}
+
+// Every sample finite, every window's RMS above −60 dBFS, the click score below the goldens'
+// limit, and the same bytes and counts at block sizes 1, 32, 64, 511 and 4096.
+void checkExitCase(const ExitCase &c)
+{
+    const auto source = makeSine(2, 4 * 48000, 48000.0, 220.0, 1.0);
+    const ExitRender ref = renderExit(c, source, 4096);
+    REQUIRE(allFinite(ref.audio.left));
+    REQUIRE(allFinite(ref.audio.right));
+    REQUIRE(ref.stolen > 0);
+    const double floorDb = std::min(minWindowRmsDb(ref.audio.left, c.window),
+                                    minWindowRmsDb(ref.audio.right, c.window));
+    const double click = clickScore(ref.audio);
+    INFO("window RMS floor " << floorDb << " dBFS, click score " << click << ", stolen "
+                             << ref.stolen << ", dropped " << ref.dropped);
+    REQUIRE(floorDb > -60.0);
+    REQUIRE(click < kClickLimit);
+    for (const uint32_t blockSize : {1u, 32u, 64u, 511u})
+    {
+        INFO("blocks of " << blockSize);
+        const ExitRender r = renderExit(c, source, blockSize);
+        REQUIRE(sameBits(r.audio.left, ref.audio.left));
+        REQUIRE(sameBits(r.audio.right, ref.audio.right));
+        REQUIRE(r.dropped == ref.dropped);
+        REQUIRE(r.lowered == ref.lowered);
+        REQUIRE(r.stolen == ref.stolen);
+    }
+}
+
+// The steals the engine reports, recorded without allocating.
+struct StealLog
+{
+    struct Steal
+    {
+        uint64_t index;
+        int64_t onset;
+    };
+    std::vector<Steal> steals;
+    bool overflowed{false};
+
+    StealLog() { steals.reserve(4096); }
+
+    static void record(void *ctx, uint32_t, uint64_t index, int64_t onset)
+    {
+        auto *log = static_cast<StealLog *>(ctx);
+        if (log->steals.size() < log->steals.capacity())
+        {
+            log->steals.push_back({index, onset});
+        }
+        else
+        {
+            log->overflowed = true;
+        }
+    }
+};
+} // namespace
+
+// The exit case at full size (spec §6.5): 16,384 one-second grains a second into capacity 16,384
+// at a quota of 1,024 grains, for 2 s, its floor over 100 ms windows. Five renders of over a
+// thousand grains each take a minute or two in Debug, so it is slow; its small sibling below
+// always runs.
+TEST_CASE("the exit case never clicks or drops out", "[engine][budget][slow]")
+{
+    checkExitCase({gg::kMaxGrainCapacity, 1024, 16384.0, 1.0, 96000, 4800});
+}
+
+TEST_CASE("the exit case never clicks or drops out at a small size", "[engine][budget]")
+{
+    // 4,096 grains of 100 ms a second into capacity 4,096 at a quota of 256 grains, for 0.5 s,
+    // its floor over 50 ms windows.
+    checkExitCase({4096, 256, 4096.0, 0.1, 24000, 2400});
+}
+
+TEST_CASE("stealing a short grain fades over what remains", "[engine][budget]")
+{
+    // Review Focus 4. 375 Hz of 5 ms grains (240 samples, each sounding 242) at a quota of one
+    // Normal stereo grain: an onset every 128 samples, past the sounding grain's half-way (120),
+    // so each grain after the first steals the one before, which has 242 − 128 = 114 samples
+    // left. That is shorter than kStealFade, so its fade runs over what remains: F = 114, from 1
+    // at the steal (114 × float(1 / 114) is exactly 1) down to 1 / F at its last sample, never
+    // negative. The grains read from 0.3 to 0.7 of a full-scale 220 Hz sine (spray 0.2), so the
+    // steals fall on many phases.
+    constexpr float kGain = 0.5f;
+    constexpr int64_t kFrames = 24000;
+    const auto source = makeSine(2, 96000, 48000.0, 220.0, 1.0);
+    gg::Engine engine(gg::EngineConfig{});
+    engine.setSource(source);
+    engine.setCloudParams(params(375.0, 0.005, 0.5, 0.2, 0.0, kGain));
+    engine.setQuota(gg::grainWeight(gg::Tier::Normal, true));
+    SinkLog spawns;
+    StealLog log;
+    engine.setEventSink(&SinkLog::record, &spawns);
+    engine.setStealSink(&StealLog::record, &log);
+    const Render r = render(engine, kFrames, 64);
+    REQUIRE(allFinite(r.left));
+    REQUIRE(allFinite(r.right));
+    REQUIRE_FALSE(spawns.overflowed);
+    REQUIRE_FALSE(log.overflowed);
+    REQUIRE(spawns.grains.size() == static_cast<std::size_t>((kFrames + 127) / 128));
+    REQUIRE(engine.droppedGrains() == 0);
+    REQUIRE(engine.stolenGrains() == spawns.grains.size() - 1);
+    REQUIRE(log.steals.size() == engine.stolenGrains());
+
+    // Through the event log: each steal's grain, its fade, and the fade's factor at every sample,
+    // written out as the references compute it, min(1, float(end − t) × float(1 / F)). The
+    // faded window w × factor never moves by more than the grain's own slope bound per sample,
+    // π / D for the Hann over D samples plus 1 / F for the fade, and its last sample is at most
+    // 1 / F, so the grain's end is no step either.
+    const gg::HannTable hann;
+    int64_t fadeLength = 0;
+    for (std::size_t s = 0; s < log.steals.size(); ++s)
+    {
+        INFO("steal " << s);
+        const StealLog::Steal &steal = log.steals[s];
+        REQUIRE(steal.index == s);
+        const gg::GrainSpec &g = spawns.grains[s];
+        REQUIRE(g.index == s);
+        REQUIRE(spawns.grains[s + 1].onsetSample == steal.onset);
+        const int64_t left = gg::grainEndSample(g) - steal.onset;
+        REQUIRE(left < gg::kStealFade);
+        const int64_t f = std::min(gg::kStealFade, left);
+        REQUIRE(f == 114);
+        fadeLength = f;
+        const float invFade = 1.0f / static_cast<float>(f);
+        const int64_t end = steal.onset + f;
+        const double bound = std::numbers::pi / g.durationSamples + static_cast<double>(invFade);
+        float previous = 0.0f;
+        for (int64_t t = steal.onset - 1; t <= end; ++t)
+        {
+            const double e = static_cast<double>(t - g.onsetSample) - g.onsetFrac;
+            float factor = t < steal.onset ? 1.0f : 0.0f;
+            if (t >= steal.onset && t < end)
+            {
+                factor = std::min(1.0f, static_cast<float>(end - t) * invFade);
+                REQUIRE(factor > 0.0f);
+                if (t == steal.onset)
+                {
+                    REQUIRE(factor == 1.0f);
+                }
+                if (t == end - 1)
+                {
+                    REQUIRE(factor == invFade);
+                }
+            }
+            const float faded = hann.at(e / g.durationSamples) * factor;
+            if (t >= steal.onset)
+            {
+                REQUIRE(std::abs(static_cast<double>(faded) - previous) <= bound + 1e-6);
+            }
+            previous = faded;
+        }
+    }
+
+    // Through the event log, the whole render written out: every logged grain in spawn order,
+    // e, w = hann(e × (1 / D)) (skip unless > 0), w × the factor from its steal on, up to its
+    // moved end, pos = startPos + rate × e, then dst[c][t] += hermite4(channel c, pos) × (w ×
+    // gain_c). The engine's output is that, bit for bit.
+    Render expected{std::vector<float>(static_cast<std::size_t>(kFrames), 0.0f),
+                    std::vector<float>(static_cast<std::size_t>(kFrames), 0.0f)};
+    for (std::size_t k = 0; k < spawns.grains.size(); ++k)
+    {
+        const gg::GrainSpec &g = spawns.grains[k];
+        const bool stolen = k < log.steals.size();
+        const int64_t fadeStart = stolen ? log.steals[k].onset : gg::kNeverStolen;
+        const int64_t end =
+            stolen ? fadeStart + std::min(gg::kStealFade, gg::grainEndSample(g) - fadeStart)
+                   : gg::grainEndSample(g);
+        const float invFade = stolen ? 1.0f / static_cast<float>(end - fadeStart) : 0.0f;
+        const gg::PanGains pan = gg::panGains(g.pan);
+        const float gains[2] = {g.gain * pan.left, g.gain * pan.right};
+        const double invDuration = 1.0 / g.durationSamples;
+        const gg::EnvelopeShape envelope = gg::envelopeShape(g.texture, g.durationSamples);
+        for (int64_t t = g.onsetSample; t < std::min(end, kFrames); ++t)
+        {
+            const double e = static_cast<double>(t - g.onsetSample) - g.onsetFrac;
+            float w = hann.at(gg::warpPhase(e * invDuration, envelope));
+            if (!(w > 0.0f))
+            {
+                continue;
+            }
+            if (t >= fadeStart)
+            {
+                w = w * std::min(1.0f, static_cast<float>(end - t) * invFade);
+            }
+            const double pos = g.startPos + g.rate * e;
+            const auto j = static_cast<std::size_t>(t);
+            expected.left[j] +=
+                gg::interp::hermite4<>(source->channel(0), source->frames(), pos) * (w * gains[0]);
+            expected.right[j] +=
+                gg::interp::hermite4<>(source->channel(1), source->frames(), pos) * (w * gains[1]);
+        }
+    }
+    REQUIRE(sameBits(r.left, expected.left));
+    REQUIRE(sameBits(r.right, expected.right));
+
+    // The output: at most two grains sound at once, each of gain kGain at the centre, reading a
+    // sine whose own step per sample is at most ω = 2π × 220 / 48,000. So no output sample can
+    // move by more than 2 × kGain × (π / D + 1 / F + ω) without a step in a grain, which a hard
+    // cut at the steal would be (its window is near 1 there).
+    const double omega = 2.0 * std::numbers::pi * 220.0 / 48000.0;
+    const double stepBound =
+        2.0 * kGain * (std::numbers::pi / 240.0 + 1.0 / static_cast<double>(fadeLength) + omega) *
+        1.01;
+    double largest = 0.0;
+    for (const std::vector<float> *channel : {&r.left, &r.right})
+    {
+        for (std::size_t t = 1; t < channel->size(); ++t)
+        {
+            largest = std::max(largest, std::abs(static_cast<double>((*channel)[t]) -
+                                                 static_cast<double>((*channel)[t - 1])));
+        }
+    }
+    INFO("largest step " << largest << ", bound " << stepBound);
+    REQUIRE(largest <= stepBound);
+    const double click = clickScore(r);
+    INFO("click score " << click);
+    REQUIRE(click < kClickLimit);
 }

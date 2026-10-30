@@ -24,6 +24,7 @@
 #include "gg/core/Interpolate.h"
 #include "gg/core/Rng.h"
 #include "gg/core/Window.h"
+#include "gg/grain/Budget.h"
 #include "gg/grain/Envelope.h"
 #include "gg/grain/GrainKernels.h"
 #include "gg/grain/GrainPool.h"
@@ -944,6 +945,14 @@ double u01(uint64_t seed, uint32_t stream, uint64_t index)
     return gg::rng::uniform01(gg::rng::hash({seed, 1, stream, gg::rng::Field::SignalNoise, index}));
 }
 
+// The overload ladder's steal of the grain in `row` at output sample `onset` (GrainPool::steal,
+// spec §6.5).
+struct Steal
+{
+    uint32_t row;
+    int64_t onset;
+};
+
 // Grains spawned in order into a pool large enough to admit all of them, so its rows are
 // latched as the engine's are. The specs must be in non-decreasing onset order.
 struct Pool
@@ -955,6 +964,26 @@ struct Pool
         {
             REQUIRE(pool.canAdmit(g.onsetSample));
             REQUIRE(pool.spawn(g));
+        }
+    }
+    // The specs spawned in order without asking canAdmit, so no grain's end is ever forgotten,
+    // then each steal applied: its grain must sound at its onset and not have been stolen. With
+    // every heap entry still there, the steals may come in any order. The kernels read only the
+    // rows, which hold each stolen grain's moved end, fadeStart and invFade.
+    Pool(const std::vector<gg::GrainSpec> &specs, const std::vector<Steal> &steals)
+        : pool(static_cast<uint32_t>(specs.size()) + 1)
+    {
+        for (const gg::GrainSpec &g : specs)
+        {
+            REQUIRE(pool.spawn(g));
+        }
+        for (const Steal &s : steals)
+        {
+            REQUIRE(s.row < pool.size());
+            REQUIRE(pool.rows().onsetSample[s.row] <= s.onset);
+            REQUIRE(s.onset < pool.rows().endSample[s.row]);
+            REQUIRE(pool.rows().fadeStart[s.row] == gg::kNeverStolen);
+            pool.steal(s.row, s.onset);
         }
     }
     const gg::GrainRows &rows() const { return pool.rows(); }
@@ -1155,10 +1184,11 @@ bool simdable(const gg::GrainRows &rows, uint32_t i, int64_t frames, uint32_t d,
 }
 
 // Requires the SIMD run of every grain over [from, to) to be exactly the samples simdable()
-// accepts, so the kernel falls back to the bounds-checked reads for exactly the others. It reaches
-// into gg::kernels::detail on purpose (accepted ruling, Task 6): std::memcmp alone can miss an
-// out-of-bounds read, since the memory just past a large buffer is often zero-filled, which reads
-// the same as the reference's zero taps.
+// accepts before the grain's steal fade starts (every fading sample goes through the reference;
+// spec §6.5), so the kernel falls back to the bounds-checked reads for exactly the others. It
+// reaches into gg::kernels::detail on purpose (accepted ruling, Task 6): std::memcmp alone can miss
+// an out-of-bounds read, since the memory just past a large buffer is often zero-filled, which
+// reads the same as the reference's zero taps.
 template <class R>
 void requireExactRuns(const Pool &pool, int64_t frames, uint32_t d, int64_t from, int64_t to)
 {
@@ -1181,10 +1211,11 @@ void requireExactRuns(const Pool &pool, int64_t frames, uint32_t d, int64_t from
         for (int64_t t = first; t < last; ++t)
         {
             const bool inRun = t >= run.begin && t < run.end;
-            if (inRun != simdable<R>(rows, i, frames, d, t))
+            const bool want = simdable<R>(rows, i, frames, d, t) && t < rows.fadeStart[i];
+            if (inRun != want)
             {
                 INFO("t " << t);
-                REQUIRE(inRun == simdable<R>(rows, i, frames, d, t));
+                REQUIRE(inRun == want);
             }
         }
     }
@@ -2313,5 +2344,369 @@ TEST_CASE("hq live reads nothing beyond the window", "[kernel]")
         }
         REQUIRE(beyond > 2000);
         REQUIRE(sounding > 2000);
+    }
+}
+
+namespace
+{
+// The steal fade's factor at output sample t (spec §6.5) of a grain stolen at `fadeStart`, which
+// then ends at `end`, its fade F = end − fadeStart samples long, written out in float:
+// min(1, float(end − t) × (1 / F)) from the steal on, and 1 before it.
+float specFade(int64_t fadeStart, int64_t end, int64_t t)
+{
+    if (t < fadeStart)
+    {
+        return 1.0f;
+    }
+    const float invFade = 1.0f / static_cast<float>(end - fadeStart);
+    return std::min(1.0f, static_cast<float>(end - t) * invFade);
+}
+
+// Each reader's read at pos from a planar channel, as the spec writes it (specSample's `read`):
+// the Hermite and the line through interp, and the sinc written out at the grain's stretch.
+template <class R> float specRead(const float *data, int64_t frames, double pos, float stretch);
+template <>
+float specRead<Hermite>(const float *data, int64_t frames, double pos, float /*stretch*/)
+{
+    return gg::interp::hermite4<>(data, frames, pos);
+}
+template <> float specRead<Linear>(const float *data, int64_t frames, double pos, float /*stretch*/)
+{
+    return gg::interp::linear<>(data, frames, pos);
+}
+template <> float specRead<Sinc>(const float *data, int64_t frames, double pos, float stretch)
+{
+    return specSinc(data, frames, pos, stretch);
+}
+
+// One steal per grain, by its index: none for k % 4 == 0; for 1, somewhere in its life at least
+// kStealFade before its end, so F is the full 256; for 2, within 255 samples of its end, so F is
+// what it has left, 1 to 255; for 3, at its onset or up to 3 samples after, where its window is
+// still near 0. A grain shorter than kStealFade gets the third kind's steal.
+std::vector<Steal> stealsFor(const std::vector<gg::GrainSpec> &specs, uint64_t seed)
+{
+    std::vector<Steal> steals;
+    for (uint32_t k = 0; k < specs.size(); ++k)
+    {
+        const gg::GrainSpec &g = specs[k];
+        const int64_t end = gg::grainEndSample(g);
+        const int64_t life = end - g.onsetSample;
+        const double u = u01(seed, 0, k);
+        int64_t onset = g.onsetSample + static_cast<int64_t>(u * 4.0);
+        switch (k % 4)
+        {
+        case 0:
+            continue;
+        case 1:
+            if (life > gg::kStealFade)
+            {
+                onset = g.onsetSample +
+                        static_cast<int64_t>(u * static_cast<double>(life - gg::kStealFade));
+            }
+            break;
+        case 2:
+            onset = std::max(g.onsetSample, end - 1 - static_cast<int64_t>(u * 255.0));
+            break;
+        default:
+            break;
+        }
+        steals.push_back({k, std::min(onset, end - 1)});
+    }
+    return steals;
+}
+
+// Requires each stolen grain's rows to hold the steal as spec §6.5 states it: F = min(kStealFade,
+// end − onset) with the grain's own end, the new end onset + F, fadeStart the onset and invFade
+// 1 / F; and every other grain's rows the unstolen grain's (kNeverStolen, invFade 0, its own end).
+// Requires some fades of the full 256 samples and some shorter, down to 1.
+void requireStolenRows(const Pool &pool, const std::vector<gg::GrainSpec> &specs,
+                       const std::vector<Steal> &steals)
+{
+    const gg::GrainRows &rows = pool.rows();
+    std::vector<int64_t> stolenAt(specs.size(), gg::kNeverStolen);
+    for (const Steal &s : steals)
+    {
+        stolenAt[s.row] = s.onset;
+    }
+    int64_t full = 0;
+    int64_t shorter = 0;
+    for (uint32_t i = 0; i < specs.size(); ++i)
+    {
+        INFO("grain " << i);
+        const int64_t end = gg::grainEndSample(specs[i]);
+        if (stolenAt[i] == gg::kNeverStolen)
+        {
+            REQUIRE(rows.fadeStart[i] == gg::kNeverStolen);
+            REQUIRE(sameBits(rows.invFade[i], 0.0f));
+            REQUIRE(rows.endSample[i] == end);
+            continue;
+        }
+        const int64_t f = std::min(gg::kStealFade, end - stolenAt[i]);
+        REQUIRE(rows.fadeStart[i] == stolenAt[i]);
+        REQUIRE(rows.endSample[i] == stolenAt[i] + f);
+        REQUIRE(sameBits(rows.invFade[i], 1.0f / static_cast<float>(f)));
+        full += f == gg::kStealFade;
+        shorter += f < gg::kStealFade;
+    }
+    REQUIRE(full > 10);
+    REQUIRE(shorter > 10);
+}
+} // namespace
+
+TEMPLATE_TEST_CASE("a stolen grain fades through the reference and the simd kernels alike",
+                   "[kernel]", Hermite, Linear, Sinc)
+{
+    // Spec §6.5. A pool of grains, three in four stolen (stealsFor): in the window's rise, in
+    // its body and near its end. Over a sample source, every sample of every grain, the fading
+    // ones and the rest, is the spec's loop with the fade written out (specFade), bit for bit,
+    // and the SIMD kernel's output is the reference's, in one call and in 200 random ones, its
+    // runs ending at each fade's start. Then the same over the live ring, frozen and released,
+    // where the fade multiplies the window before the head-proximity fade does.
+    const Tables &tables = kernelTables();
+    constexpr int64_t kLength = 12500;
+
+    SECTION("sample source")
+    {
+        const Noise src(kNoiseFrames, 91);
+        // 120 grains, an onset every 50 samples, 1,000 to 6,000 samples long, at rates 2^[−2, 2],
+        // reading inside the source except every tenth, which reads across its end.
+        std::vector<gg::GrainSpec> specs;
+        for (uint32_t k = 0; k < 120; ++k)
+        {
+            const double rate = std::exp2(-2.0 + 4.0 * u01(93, 0, k));
+            const double duration = 1000.0 + u01(93, 3, k) * 5000.0;
+            const double start = k % 10 == 9 ? static_cast<double>(kNoiseFrames) - 500.0 -
+                                                   u01(93, 2, k) * duration * rate
+                                             : 300.0 + u01(93, 2, k) * 48000.0;
+            specs.push_back({
+                .index = k,
+                .onsetSample = 50 * static_cast<int64_t>(k),
+                .onsetFrac = u01(93, 1, k),
+                .startPos = start,
+                .rate = rate,
+                .durationSamples = duration,
+                .texture = k % 3 == 0 ? 0.0 : u01(93, 6, k),
+                .gain = 0.25f + 0.75f * static_cast<float>(u01(93, 4, k)),
+                .pan = static_cast<float>(2.0 * u01(93, 5, k) - 1.0),
+            });
+            REQUIRE(gg::grainEndSample(specs.back()) <= kLength);
+        }
+        const std::vector<Steal> steals = stealsFor(specs, 95);
+        const Pool pool(specs, steals);
+        const gg::GrainRows &rows = pool.rows();
+        requireStolenRows(pool, specs, steals);
+        requireBothStretches(rows, pool.size());
+
+        // The fading samples the SIMD interior would take but for the fade: the run's bound bites.
+        int64_t fadingSimdable = 0;
+        for (uint32_t i = 0; i < pool.size(); ++i)
+        {
+            for (int64_t t = std::max(rows.onsetSample[i], rows.fadeStart[i]);
+                 t < rows.endSample[i]; ++t)
+            {
+                fadingSimdable += simdable<TestType>(rows, i, kNoiseFrames, 1, t);
+            }
+        }
+        REQUIRE(fadingSimdable > 5000);
+
+        struct Shape
+        {
+            const char *name;
+            int outputs;
+            bool mono;
+        };
+        for (const Shape shape : {Shape{"two outputs, stereo source", 2, false},
+                                  Shape{"two outputs, mono source", 2, true},
+                                  Shape{"one output, stereo source", 1, false}})
+        {
+            INFO(shape.name);
+            const float *const channels[2] = {src.left.data(),
+                                              shape.mono ? src.left.data() : src.right.data()};
+            const SampleSource source = shape.mono ? src.mono() : src.stereoPlanar();
+            // The spec's loop, grain by grain in spawn order: e, w (skip unless > 0), w × the
+            // fade from the steal on, pos, then dst[c][t] += read_c(pos) × (w × gain_c), up to
+            // the moved end.
+            Buffers expected(0, kLength, shape.outputs);
+            int64_t partial = 0;     // fading samples with a factor strictly between 0 and 1
+            int64_t nonPositive = 0; // and with a factor <= 0, which a fade never has
+            for (uint32_t i = 0; i < pool.size(); ++i)
+            {
+                const gg::GrainSpec &g = specs[i];
+                const bool stolen = rows.fadeStart[i] != gg::kNeverStolen;
+                const int64_t end =
+                    stolen ? rows.fadeStart[i] +
+                                 std::min(gg::kStealFade, gg::grainEndSample(g) - rows.fadeStart[i])
+                           : gg::grainEndSample(g);
+                const double invDuration = 1.0 / g.durationSamples;
+                const gg::EnvelopeShape env = gg::envelopeShape(g.texture, g.durationSamples);
+                const ChannelGains gains = channelGains(g, shape.outputs);
+                const float stretch = specStretch(g.rate);
+                for (int64_t t = g.onsetSample; t < end; ++t)
+                {
+                    const double e = static_cast<double>(t - g.onsetSample) - g.onsetFrac;
+                    float w = tables.hann.at(gg::warpPhase(e * invDuration, env));
+                    if (!(w > 0.0f))
+                    {
+                        continue;
+                    }
+                    if (stolen && t >= rows.fadeStart[i])
+                    {
+                        const float factor = specFade(rows.fadeStart[i], end, t);
+                        nonPositive += !(factor > 0.0f);
+                        partial += factor > 0.0f && factor < 1.0f;
+                        w = w * factor;
+                    }
+                    const double pos = g.startPos + g.rate * e;
+                    for (int c = 0; c < shape.outputs; ++c)
+                    {
+                        expected.ch[c][static_cast<std::size_t>(t)] +=
+                            specRead<TestType>(channels[c], kNoiseFrames, pos, stretch) *
+                            (w * gains.c[c]);
+                    }
+                }
+            }
+            REQUIRE(partial > 5000);
+            REQUIRE(nonPositive == 0);
+            Buffers ref(0, kLength, shape.outputs);
+            renderAll<TestType>(Kernel::Ref, pool, source, ref, 0, kLength, tables);
+            REQUIRE(anyNonZero(expected.ch[0]));
+            REQUIRE(sameBits(ref.ch[0], expected.ch[0]));
+            REQUIRE(sameBits(ref.ch[1], expected.ch[1]));
+        }
+
+        for (const uint32_t d : decimationsOf<TestType>())
+        {
+            INFO("decimation " << d);
+            const Pool scaled(atDecimation(specs, d), steals);
+            for (const int outputs : {2, 1})
+            {
+                INFO(outputs << " outputs");
+                for (const SampleSource &source : {src.stereo(d), src.stereoPlanar(d), src.mono(d)})
+                {
+                    auto [ref, simd] =
+                        renderBoth<TestType>(scaled, source, outputs, 0, kLength, tables);
+                    REQUIRE(anyNonZero(ref.ch[0]));
+                    REQUIRE(sameBits(simd.ch[0], ref.ch[0]));
+                    REQUIRE(sameBits(simd.ch[1], ref.ch[1]));
+                }
+            }
+            requireExactRuns<TestType>(scaled, kNoiseFrames, d, 0, kLength);
+            for (uint64_t k = 0; k < 200; ++k)
+            {
+                const int64_t from = static_cast<int64_t>(u01(97, 0, k) * 12000.0);
+                const int64_t to = from + static_cast<int64_t>(u01(97, 1, k) * 512.0);
+                INFO("call " << k << ", [" << from << ", " << to << ")");
+                auto [ref, simd] = renderBoth<TestType>(scaled, src.stereo(d), 2, from, to, tables);
+                REQUIRE(sameBits(simd.ch[0], ref.ch[0]));
+                REQUIRE(sameBits(simd.ch[1], ref.ch[1]));
+                requireExactRuns<TestType>(scaled, kNoiseFrames, d, from, to);
+            }
+        }
+    }
+
+    SECTION("live ring")
+    {
+        const LiveInput input(100000, 101, freezeToggles(103, 8, 8000.0));
+        const std::vector<int64_t> heads = headTrajectory(input);
+        const std::vector<gg::GrainSpec> specs =
+            liveGrains(105, spreadOnsets(input.length - 10000, 300), heads, 24000);
+        const std::vector<Steal> steals = stealsFor(specs, 107);
+        const Pool pool(specs, steals);
+        const gg::GrainRows &rows = pool.rows();
+        requireStolenRows(pool, specs, steals);
+        requireBothStretches(rows, pool.size());
+
+        const std::vector<int64_t> ragged = {61, 64, 1, 128, 3, 250, 2, 37, 511};
+        for (const std::vector<int64_t> &lengths : {ragged, std::vector<int64_t>{511}})
+        {
+            for (const int outputs : {2, 1})
+            {
+                INFO(outputs << " outputs, first block " << lengths[0]);
+                Buffers expected(0, input.length, outputs);
+                Buffers ref(0, input.length, outputs);
+                Buffers simd(0, input.length, outputs);
+                const gg::kernels::Output refOut = ref.output();
+                const gg::kernels::Output simdOut = simd.output();
+                int64_t fadingInside = 0;   // fading samples where the interior's conditions hold
+                int64_t interiorFading = 0; // interior samples at or after a fade's start
+                int64_t simdSamples = 0;
+                ActiveGrains active(pool);
+                gg::LiveSource ring;
+                prepareRing(ring);
+                driveRing(ring, input, lengths, [&](int64_t from, int64_t to) {
+                    active.each(from, to, [&](uint32_t i) {
+                        gg::kernels::renderLiveRef<TestType>(rows, i, ring, 1, refOut, from, to,
+                                                             tables);
+                        gg::kernels::renderLiveSimd<TestType>(rows, i, ring, 1, simdOut, from, to,
+                                                              tables);
+                        const int64_t first = std::max(from, rows.onsetSample[i]);
+                        const int64_t last = std::min(to, rows.endSample[i]);
+                        if (first >= last)
+                        {
+                            return;
+                        }
+                        const gg::kernels::LiveInterior in =
+                            gg::kernels::liveInterior<TestType>(rows, i, ring, 1, from, to);
+                        for (int p = 0; p < 2; ++p)
+                        {
+                            simdSamples += in.end[p] - in.begin[p];
+                            interiorFading += std::max<int64_t>(
+                                0, in.end[p] - std::max(in.begin[p], rows.fadeStart[i]));
+                        }
+                        // The spec's loop: e, w (skip unless > 0), w × the steal fade from the
+                        // steal on, pos, f = float(fade(pos, R(t))) (skip unless > 0 and the
+                        // read succeeds), dst[c][t] += read_c × ((w × f) × gain_c).
+                        const gg::GrainSpec &g = specs[i];
+                        const bool stolen = rows.fadeStart[i] != gg::kNeverStolen;
+                        const double invDuration = 1.0 / g.durationSamples;
+                        const gg::EnvelopeShape env =
+                            gg::envelopeShape(g.texture, g.durationSamples);
+                        const ChannelGains gains = channelGains(g, outputs);
+                        const gg::kernels::ReadParams params = readParams(stretchOfGrain(rows, i));
+                        gg::LiveSource::Cursor cursor;
+                        for (int64_t t = first; t < last; ++t)
+                        {
+                            const double e = static_cast<double>(t - g.onsetSample) - g.onsetFrac;
+                            const double phase = e * invDuration;
+                            float w = tables.hann.at(gg::warpPhase(phase, env));
+                            if (!(w > 0.0f))
+                            {
+                                continue;
+                            }
+                            const bool fading = stolen && t >= rows.fadeStart[i];
+                            if (fading)
+                            {
+                                w = w * specFade(rows.fadeStart[i], rows.endSample[i], t);
+                            }
+                            const double pos = g.startPos + g.rate * e;
+                            const int64_t head = ring.headAt(t);
+                            const auto f = static_cast<float>(TestType::fade(ring, pos, head));
+                            float read[2] = {0.0f, 0.0f};
+                            if (!(f > 0.0f) || !TestType::readLive(ring, pos, head, cursor, params,
+                                                                   read[0], read[1]))
+                            {
+                                continue;
+                            }
+                            fadingInside += fading && phase >= 0.0 && phase <= 1.0 &&
+                                            std::floor(pos) - Reach<TestType>::before >= 0.0 &&
+                                            TestType::fade(ring, pos, head) == 1.0;
+                            for (int c = 0; c < outputs; ++c)
+                            {
+                                expected.ch[c][static_cast<std::size_t>(t)] +=
+                                    read[c] * ((w * f) * gains.c[c]);
+                            }
+                        }
+                    });
+                });
+                REQUIRE(fadingInside > 5000);
+                REQUIRE(interiorFading == 0);
+                REQUIRE(simdSamples > 100000);
+                REQUIRE(anyNonZero(expected.ch[0]));
+                REQUIRE(sameBits(ref.ch[0], expected.ch[0]));
+                REQUIRE(sameBits(ref.ch[1], expected.ch[1]));
+                REQUIRE(sameBits(simd.ch[0], ref.ch[0]));
+                REQUIRE(sameBits(simd.ch[1], ref.ch[1]));
+            }
+        }
     }
 }

@@ -16,6 +16,10 @@
 
 namespace gg
 {
+/// GrainRows::fadeStart of a grain that hasn't been stolen (spec §6.5): no output sample is at
+/// or after it, so its steal fade never starts.
+inline constexpr int64_t kNeverStolen = std::numeric_limits<int64_t>::max();
+
 /// One grain's parameters, latched at its onset (INTENT §14). Times and positions are 64-bit.
 struct GrainSpec
 {
@@ -109,7 +113,7 @@ struct GrainRows
     const uint8_t *weight; ///< GrainSpec::weight
     const uint8_t *level;  ///< GrainSpec::level
     /// The output sample at which the grain was stolen, so its fade starts (spec §6.5), or
-    /// INT64_MAX while it hasn't been: GrainPool::steal.
+    /// kNeverStolen while it hasn't been: GrainPool::steal.
     const int64_t *fadeStart;
     /// 1 / F, the stolen grain's fade length F in samples; 0 while it hasn't been stolen.
     const float *invFade;
@@ -168,7 +172,7 @@ class GrainPool
     uint64_t soundingWeight(int64_t onset) noexcept SST_CPPUTILS_NONBLOCKING;
 
     /// The part of soundingWeight(onset) that belongs to stolen grains still fading: the summed
-    /// weight of the grains whose fadeStart isn't INT64_MAX and whose end is after the onset
+    /// weight of the grains whose fadeStart isn't kNeverStolen and whose end is after the onset
     /// (ruling ES-T2a; the overload ladder's rung 3 leaves it out of its room test). First
     /// forgets every end <= onset, with soundingWeight's requirement.
     uint64_t fadingWeight(int64_t onset) noexcept SST_CPPUTILS_NONBLOCKING;

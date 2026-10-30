@@ -43,9 +43,16 @@
 /// e × invDuration is outside [0, 1], as without it, so the SIMD kernels' runs, which test
 /// the unwarped phase, are unchanged.
 ///
-/// Only samples with w > 0 contribute; elsewhere nothing is read and nothing is added. With two
-/// outputs, dst[c][t] += read_c(posL) × (w × gain_c), with gain_c the latched gainL or gainR. One
-/// output carries source channel 0 with gain alone: dst[0][t] += read_0(posL) × (w × gain).
+/// Only samples with w > 0 contribute; elsewhere nothing is read and nothing is added. A grain the
+/// overload ladder stole (GrainPool::steal; spec §6.5) fades from its steal on: after w > 0,
+///
+///     w = w × min(1, float(endSample − t) × invFade)   (float)   where t >= fadeStart
+///
+/// with endSample its moved end and invFade 1 / F, its fade's length F: 1 at the steal and 1 / F
+/// at its last sample. An unstolen grain (invFade 0, fadeStart kNeverStolen) skips the multiply,
+/// so its bits are M1's. With two outputs, dst[c][t] += read_c(posL) × (w × gain_c), with gain_c
+/// the latched gainL or gainR. One output carries source channel 0 with gain alone: dst[0][t] +=
+/// read_0(posL) × (w × gain).
 ///
 /// Every sample depends only on t and the grain, never on which call renders it, so splitting
 /// [from, to) anywhere gives the same bits.
@@ -507,6 +514,19 @@ struct Sinc
 
 namespace detail
 {
+/// The steal fade (spec §6.5; the file comment): w × min(1, float(end − t) × invFade) at a sample
+/// t >= fadeStart of a stolen grain (invFade != 0), and w itself otherwise, unmultiplied.
+inline float stealFaded(float w, int64_t t, int64_t fadeStart, int64_t end,
+                        float invFade) noexcept SST_CPPUTILS_NONBLOCKING
+{
+    GG_FP_CONTRACT_OFF
+    if (invFade != 0.0f && t >= fadeStart)
+    {
+        return w * std::min(1.0f, static_cast<float>(end - t) * invFade);
+    }
+    return w;
+}
+
 /// Grain i's latched Texture envelope (GrainRows' env* arrays), read once per grain or call.
 inline EnvelopeShape envelopeOf(const GrainRows &rows, uint32_t i) noexcept SST_CPPUTILS_NONBLOCKING
 {
@@ -552,6 +572,9 @@ void renderSampleRefAt(const GrainRows &rows, uint32_t i, const SampleSource &sr
     const double invDec = invDecimation(src.decimation);
     const EnvelopeShape envelope = envelopeOf(rows, i);
     const ReadParams params = paramsOf(rows, i, tables, src.decimation);
+    const int64_t fadeStart = rows.fadeStart[i];
+    const int64_t end = rows.endSample[i];
+    const float invFade = rows.invFade[i];
     const HannTable &hann = tables.hann;
     float *const dst0 = out.dst[0];
     float *const dst1 = out.dst[1];
@@ -561,11 +584,12 @@ void renderSampleRefAt(const GrainRows &rows, uint32_t i, const SampleSource &sr
         for (int64_t t = first; t < last; ++t)
         {
             const double e = static_cast<double>(t - onsetSample) - onsetFrac;
-            const float w = hann.at(warpPhase(e * invDuration, envelope));
+            float w = hann.at(warpPhase(e * invDuration, envelope));
             if (!(w > 0.0f))
             {
                 continue;
             }
+            w = stealFaded(w, t, fadeStart, end, invFade);
             const double pos = (startPos + rate * e) * invDec;
             const auto j = static_cast<std::size_t>(t - out.blockStart);
             dst0[j] +=
@@ -578,11 +602,12 @@ void renderSampleRefAt(const GrainRows &rows, uint32_t i, const SampleSource &sr
     for (int64_t t = first; t < last; ++t)
     {
         const double e = static_cast<double>(t - onsetSample) - onsetFrac;
-        const float w = hann.at(warpPhase(e * invDuration, envelope));
+        float w = hann.at(warpPhase(e * invDuration, envelope));
         if (!(w > 0.0f))
         {
             continue;
         }
+        w = stealFaded(w, t, fadeStart, end, invFade);
         const double pos = (startPos + rate * e) * invDec;
         const auto j = static_cast<std::size_t>(t - out.blockStart);
         const float s0 = Reader::template read<kStride>(src.data[0], src.frames, pos, params);
@@ -628,9 +653,11 @@ struct Run
 };
 
 /// The run of grain i's samples in [first, last) that the SIMD sample kernel renders, reading a
-/// level of `frames` frames at `decimation`: exactly the samples t whose window phase e ×
-/// invDuration is in [0, 1] and whose read position posL(t) in the level's frames has every tap
-/// inside [0, frames), so kBefore <= posL < frames − kAfter. Requires first < last.
+/// level of `frames` frames at `decimation`: exactly the samples t before the grain's steal fade
+/// starts (t < fadeStart, so every fading sample goes through the reference: spec §6.5, at most
+/// kStealFade per stolen grain per call) whose window phase e × invDuration is in [0, 1] and whose
+/// read position posL(t) in the level's frames has every tap inside [0, frames), so kBefore <=
+/// posL < frames − kAfter. Requires first < last.
 ///
 /// Folding the phase range into the run (accepted ruling, Task 6) keeps HannTable::at's range
 /// check out of the interior's lanes: a grain's first sample (e = −onsetFrac, phase < 0 unless
@@ -654,6 +681,11 @@ Run sampleSimdRun(const GrainRows &rows, uint32_t i, int64_t frames, uint32_t de
                   int64_t first, int64_t last) noexcept SST_CPPUTILS_NONBLOCKING
 {
     GG_FP_CONTRACT_OFF
+    last = std::min(last, rows.fadeStart[i]);
+    if (last <= first)
+    {
+        return {first, first}; // fading from first on, or before it
+    }
     const int64_t onsetSample = rows.onsetSample[i];
     const double onsetFrac = rows.onsetFrac[i];
     const double startPos = rows.startPos[i];
@@ -920,7 +952,8 @@ void renderSampleInterior(const GrainRows &rows, uint32_t i, const SampleSource 
 /// The 4-wide grain-major SIMD kernel over a sample source: renderSampleRef<Reader>'s output, bit
 /// for bit. The samples in detail::sampleSimdRun, 4 at a time, go through the SIMD interior;
 /// those before the run, and those after its last whole step of 4 (reads near or past the
-/// level's ends, the window's edges, and the remainder), go through renderSampleRef itself.
+/// level's ends, the window's edges, a stolen grain's fade, and the remainder), go through
+/// renderSampleRef itself.
 /// Every sample depends only on t, so the pieces give the reference's bits. A stereo source into
 /// two outputs reads src.interleaved when it is set, and the channels at src.stride otherwise;
 /// the interior's taps are all inside the level's [0, frames), where both hold the same floats
@@ -955,7 +988,8 @@ void renderSampleSimd(const GrainRows &rows, uint32_t i, const SampleSource &src
 /// Reader::readLive and the grain's ReadParams, at posL for a ring level at `decimation`
 /// (LiveSource::level; 1, the ring itself, until the ring has levels, whose head and window a
 /// level above 1 must then give in its own frames). [from, to) must lie in the ring's last write()
-/// block, whose R(t) the head-proximity fade and the read use. Per sample, after w > 0:
+/// block, whose R(t) the head-proximity fade and the read use. Per sample, after w > 0 and the
+/// steal fade (the file comment), which multiplies w where the grain was stolen:
 ///
 ///     f = float(Reader::fade(posL, R(t)))
 ///
@@ -983,6 +1017,9 @@ void renderLiveRef(const GrainRows &rows, uint32_t i, const LiveSource &live, ui
     }
     const EnvelopeShape envelope = detail::envelopeOf(rows, i);
     const ReadParams params = detail::paramsOf(rows, i, tables, decimation);
+    const int64_t fadeStart = rows.fadeStart[i];
+    const int64_t end = rows.endSample[i];
+    const float invFade = rows.invFade[i];
     const HannTable &hann = tables.hann;
     float *const dst0 = out.dst[0];
     float *const dst1 = out.dst[1];
@@ -995,11 +1032,12 @@ void renderLiveRef(const GrainRows &rows, uint32_t i, const LiveSource &live, ui
     for (int64_t t = first; t < last; ++t)
     {
         const double e = static_cast<double>(t - onsetSample) - onsetFrac;
-        const float w = hann.at(warpPhase(e * invDuration, envelope));
+        float w = hann.at(warpPhase(e * invDuration, envelope));
         if (!(w > 0.0f))
         {
             continue;
         }
+        w = detail::stealFaded(w, t, fadeStart, end, invFade);
         // The read position is in ring time; the head is R(t), from this block's write.
         const double pos = (startPos + rate * e) * invDec;
         const int64_t head = live.headAt(t);
@@ -1036,8 +1074,10 @@ namespace detail
 /// slope 1 or 0, satisfies the interior's conditions, reading at `decimation`. Requires lo < hi,
 /// live.enabled(), and a finite rate > 0 and invDuration > 0.
 ///
-/// The conditions, with e, pos (posL) and the phase as the reference computes them, and b and a
-/// the reach Reader::fade is for (Reader::kFadeBefore and kFadeAfter: 1 and 2 for Hermite and
+/// The part ends at the grain's steal fade, if it starts before hi: hi becomes min(hi,
+/// fadeStart), so every fading sample goes through the reference (spec §6.5). On what is left, the
+/// conditions, with e, pos (posL) and the phase as the reference computes them, and b and a the
+/// reach Reader::fade is for (Reader::kFadeBefore and kFadeAfter: 1 and 2 for Hermite and
 /// Linear, 7 and 8 for Sinc):
 /// - the window's phase e × invDuration is in [0, 1];
 /// - pos >= b, so the reach's first tap, floor(pos) − b, is a frame >= 0 (not the silence
@@ -1064,6 +1104,11 @@ Run liveRun(const GrainRows &rows, uint32_t i, const LiveSource &live, uint32_t 
             int64_t lo, int64_t hi, int64_t r0, int64_t slope) noexcept SST_CPPUTILS_NONBLOCKING
 {
     GG_FP_CONTRACT_OFF
+    hi = std::min(hi, rows.fadeStart[i]);
+    if (hi <= lo)
+    {
+        return {lo, lo}; // fading from lo on, or before it
+    }
     constexpr double kM = static_cast<double>(LiveSource::kHeadMargin);
     constexpr int64_t kBefore = Reader::kFadeBefore;
     constexpr int64_t kAfter = Reader::kFadeAfter;
@@ -1188,11 +1233,11 @@ template <class Reader> struct RingTaps : InterleavedTaps
 
 /// The live interior of grain i over [from, to), which must lie in the ring's last write()
 /// block: [max(from, onset), min(to, endSample)) split at blockKink(), and on each side the
-/// samples detail::liveRun<Reader> admits. On every sample there the window's phase is in [0, 1],
-/// every tap is a frame >= 0 inside the window at R(t), and the reference's fade is exactly 1, so
-/// renderLiveRef's amplitude is (w × 1) × gain_c = w × gain_c, the sample kernel's. Empty when
-/// there is no ring, or the grain's rate isn't finite and > 0. Reads at `decimation`, as
-/// renderLiveRef.
+/// samples detail::liveRun<Reader> admits. On every sample there the grain isn't fading from a
+/// steal, the window's phase is in [0, 1], every tap is a frame >= 0 inside the window at R(t),
+/// and the reference's fade is exactly 1, so renderLiveRef's amplitude is (w × 1) × gain_c = w ×
+/// gain_c, the sample kernel's. Empty when there is no ring, or the grain's rate isn't finite and
+/// positive. Reads at `decimation`, as renderLiveRef.
 template <class Reader>
 LiveInterior liveInterior(const GrainRows &rows, uint32_t i, const LiveSource &live,
                           uint32_t decimation, int64_t from,
@@ -1231,9 +1276,10 @@ LiveInterior liveInterior(const GrainRows &rows, uint32_t i, const LiveSource &l
 /// The 4-wide grain-major SIMD kernel over the live ring: renderLiveRef<Reader>'s output, bit for
 /// bit, with the same requirements. Each part of liveInterior, 4 samples at a time, goes through
 /// the SIMD interior, reading the ring's interleaved slots from view(); every other sample (the
-/// fades near either end of the window, reads outside it or before frame 0, the window's edges, and
-/// each part's remainder) goes through renderLiveRef itself. Every sample depends only on t, so the
-/// pieces give the reference's bits. Reads at `decimation`, as renderLiveRef.
+/// fades near either end of the window, reads outside it or before frame 0, the window's edges, a
+/// stolen grain's fade, and each part's remainder) goes through renderLiveRef itself. Every sample
+/// depends only on t, so the pieces give the reference's bits. Reads at `decimation`, as
+/// renderLiveRef.
 template <class Reader>
 void renderLiveSimd(const GrainRows &rows, uint32_t i, const LiveSource &live, uint32_t decimation,
                     const Output &out, int64_t from, int64_t to,
