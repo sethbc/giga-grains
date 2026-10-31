@@ -204,6 +204,13 @@ struct ParamPanel::Impl
                 }
                 c->setModMode(modMode);
                 c->setSourceDropEnabled(modMode);
+                if (const auto ref = gg::core::layerOf(c->slot());
+                    ref && ref->param == LayerParam::RingLength)
+                {
+                    // SP-M9: a Ring Length change is a ring resize, so it is sent once, on release.
+                    c->setCommitOnRelease(true);
+                    c->setTooltip("Sets on release: the ring resizes once, when you let go");
+                }
                 c->onRingDrag = [this, controlSlot = c->slot()](uint8_t routeSlot, float depth01) {
                     dragRing(controlSlot, routeSlot, depth01);
                 };
