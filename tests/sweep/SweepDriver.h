@@ -12,6 +12,11 @@
 // render, labels every stretch of it (the parameter, the step, the value), and checks it: finite
 // (the output, and the rings, peak strips, snapshots and grain queue the Processor exposes), the
 // chain's peak bound, no runaway and the goldens' click score, outside the stretches it exempts.
+// Each sample outside them is scored as the goldens score the whole render, against its ±5 ms
+// of the render whatever is exempt there: scoring a stretch as a render of its own would judge
+// its first and last samples against half a window, so a grain's release cut by an
+// exemption's end read as a click (the instrument extremes' corner 13 under the sources
+// branch's slot layout: 36.6 for samples the whole render scores 2.8).
 //
 // The click check looks away from (exempt()):
 // - the input's fade-in, the first 10 ms and the score's ±5 ms beyond;
@@ -56,8 +61,6 @@
 #include "gg/core/Processor.h"
 #include "gg/core/Rng.h"
 #include "gg/engine/Engine.h"
-#include "gg/metrics/AudioData.h"
-#include "gg/metrics/Metrics.h"
 #include "sst/basic-blocks/params/ParamMetadata.h"
 
 namespace gg::test
@@ -93,7 +96,8 @@ struct Verdict
 {
     bool finite;
     float peak;
-    /// computeMetrics' click score: the largest over the stretches the check doesn't exempt.
+    /// computeMetrics' click score of the whole render, but only its samples in the stretches the
+    /// check doesn't exempt (each against the whole render's ±5 ms around it): their largest.
     double clickScore;
     /// The share of the render's samples in the stretches the click score covers, 0 to 1: what
     /// the exemptions (and the stretches too short to score) leave.
@@ -401,18 +405,17 @@ class SweepDriver
         }
 
         // The click score, over every stretch the check doesn't exempt.
-        int64_t worstFrom = 0;
-        int64_t worstTo = 0;
+        const ClickTerms terms = clickTerms();
+        int64_t worstAt = 0;
         int64_t scored = 0;
         for (const auto &[a, b] : unexempt(frames))
         {
             scored += b - a;
-            const double s = clickScore(a, b);
+            const auto [s, at] = clickScore(terms, a, b);
             if (s > v.clickScore)
             {
                 v.clickScore = s;
-                worstFrom = a;
-                worstTo = b;
+                worstAt = at;
             }
         }
         if (sampleEndsOverflowed_)
@@ -423,9 +426,8 @@ class SweepDriver
         }
         else if (!c.clicksExempt && !(v.clickScore <= c.clickLimit))
         {
-            const int64_t at = locateClick(worstFrom, worstTo);
             where << "click score " << v.clickScore << " above " << c.clickLimit << " at sample "
-                  << at << " (" << labelAt(at) << "); ";
+                  << worstAt << " (" << labelAt(worstAt) << "); ";
         }
         v.scoredFraction =
             frames > 0 ? static_cast<double>(scored) / static_cast<double>(frames) : 0.0;
@@ -720,65 +722,72 @@ class SweepDriver
         {
             out.emplace_back(at, frames);
         }
-        // A stretch much shorter than the score's ±5 ms window would score its few samples
-        // against too little context (none, for the shortest): leave it out with its neighbours.
+        // A stretch much shorter than the score's ±5 ms window lies mostly within that reach of
+        // the exempt audio on either side, which its samples' windows hold: leave it out with its
+        // neighbours (the floors on the scored share are pinned with this rule).
         std::erase_if(out, [](const auto &s) { return s.second - s.first < kMinStretch; });
         return out;
     }
 
-    double clickScore(int64_t from, int64_t to) const
+    /// The goldens' click score's terms over the whole render (Metrics.h; computeMetrics scores
+    /// the mono mix so): d[n] = |m[n] − 2m[n − 1] + m[n − 2]| from n = 2, and prefix[n] the sum of
+    /// d[j]² for j < n.
+    struct ClickTerms
     {
-        gg::metrics::AudioData audio{kRate, {}};
-        for (const auto &ch : out_)
-        {
-            audio.channels.emplace_back(ch.begin() + from, ch.begin() + to);
-        }
-        return gg::metrics::computeMetrics(audio).clickScore;
-    }
-
-    /// Where in [from, to) the click scores highest, for the report: the n maximizing
-    /// d[n] / max(L[n], 1e-6) over d[n] > 1e-3, as computeMetrics defines the score (Metrics.h),
-    /// recomputed here because the score alone doesn't say where.
-    int64_t locateClick(int64_t from, int64_t to) const
+        std::vector<double> d;
+        std::vector<double> prefix;
+    };
+    ClickTerms clickTerms() const
     {
-        const auto n = static_cast<std::size_t>(to - from);
-        std::vector<double> d(n, 0.0);
-        std::vector<double> prefix(n + 1, 0.0);
-        const auto mono = [&](std::size_t k) {
-            const auto j = static_cast<std::size_t>(from) + k;
+        const std::size_t n = out_[0].size();
+        ClickTerms t{std::vector<double>(n, 0.0), std::vector<double>(n + 1, 0.0)};
+        const auto mono = [&](std::size_t j) {
             return 0.5 * (finiteOr0(out_[0][j]) + finiteOr0(out_[1][j]));
         };
         for (std::size_t k = 2; k < n; ++k)
         {
-            d[k] = std::abs(mono(k) - 2.0 * mono(k - 1) + mono(k - 2));
-            prefix[k + 1] = prefix[k] + d[k] * d[k];
+            t.d[k] = std::abs(mono(k) - 2.0 * mono(k - 1) + mono(k - 2));
+            t.prefix[k + 1] = t.prefix[k] + t.d[k] * t.d[k];
         }
+        return t;
+    }
+
+    /// The click score over the samples in [from, to), and the sample where it peaks: the most of
+    /// d[n] / max(L[n], 1e-6) over d[n] > 1e-3, where L[n] is the RMS of d over n ± 5 ms of the
+    /// whole render less n ± 2 (computeMetrics' definition, Metrics.h). Over [0, frames) it is
+    /// computeMetrics' score of the whole render.
+    std::pair<double, int64_t> clickScore(const ClickTerms &t, int64_t from, int64_t to) const
+    {
+        const std::size_t n = t.d.size();
         constexpr std::size_t kWindow = 240; // ±5 ms at 48 kHz
         constexpr std::size_t kGuard = 2;
-        double best = -1.0;
-        std::size_t at = 0;
-        for (std::size_t k = 2; k < n; ++k)
+        const std::size_t window = std::min(kWindow, n);
+        double best = 0.0;
+        int64_t at = from;
+        for (auto k = static_cast<std::size_t>(std::max<int64_t>(from, 2));
+             k < static_cast<std::size_t>(to); ++k)
         {
-            if (!(d[k] > 1e-3))
+            if (!(t.d[k] > 1e-3))
             {
                 continue;
             }
-            const std::size_t lo = k - std::min(k - 2, kWindow);
-            const std::size_t hi = k + std::min(n - 1 - k, kWindow);
+            const std::size_t lo = k - std::min(k - 2, window);
+            const std::size_t hi = k + std::min(n - 1 - k, window);
             const std::size_t glo = k - std::min(k - lo, kGuard);
             const std::size_t ghi = k + std::min(hi - k, kGuard);
             const std::size_t count = (hi - lo + 1) - (ghi - glo + 1);
-            const double sum = (prefix[hi + 1] - prefix[lo]) - (prefix[ghi + 1] - prefix[glo]);
+            const double sum =
+                (t.prefix[hi + 1] - t.prefix[lo]) - (t.prefix[ghi + 1] - t.prefix[glo]);
             const double level =
                 count > 0 ? std::sqrt(std::max(sum, 0.0) / static_cast<double>(count)) : 0.0;
-            const double score = d[k] / std::max(level, 1e-6);
+            const double score = t.d[k] / std::max(level, 1e-6);
             if (score > best)
             {
                 best = score;
-                at = k;
+                at = static_cast<int64_t>(k);
             }
         }
-        return from + static_cast<int64_t>(at);
+        return {best, at};
     }
 
     gg::core::Mode mode_;
