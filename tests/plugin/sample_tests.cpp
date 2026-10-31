@@ -653,14 +653,24 @@ TEST_CASE("deactivate and destruction cancel a load under way at once", "[plugin
     // Each job is a different file of the same length: a file already loaded would be found in
     // the process's sample pool (M2 sub-project 2) and skip the conversion and the pyramid (M2
     // sub-project 3), finishing before a fifth of the whole job.
+    //
+    // Each of the two gets up to kTries tries, each with a job of its own, and passes on the
+    // first under a quarter of the whole job. One that waited for the job would take the rest
+    // of it, about four fifths, in every try; a cancel takes well under a millisecond here
+    // (Release, M5 Max). CI's 3-vCPU macOS VM once stalled one deactivate() for 256 ms against
+    // a 618 ms job, where the destructor's try in the same run passed.
+    constexpr int kTries = 3;
     using Clock = std::chrono::steady_clock;
     const auto ms = [](Clock::duration d) {
         return std::chrono::duration<double, std::milli>(d).count();
     };
     const fs::path dir = setUp("cancel");
-    const fs::path file = gg::test::writeSineWav(dir / "long.wav", 44100, 60.0, 220.0);
-    const fs::path second = gg::test::writeSineWav(dir / "long-2.wav", 44100, 60.0, 330.0);
-    const fs::path third = gg::test::writeSineWav(dir / "long-3.wav", 44100, 60.0, 440.0);
+    int files = 0;
+    const auto freshFile = [&dir, &files] {
+        ++files;
+        return gg::test::writeSineWav(dir / ("long-" + std::to_string(files) + ".wav"), 44100, 60.0,
+                                      110.0 * (files + 1));
+    };
     SourceLog sources;
     LoaderHost host;
     Clock::time_point start;
@@ -674,22 +684,33 @@ TEST_CASE("deactivate and destruction cancel a load under way at once", "[plugin
         sources.attach(loader);
 
         // The whole job: decoded, hashed, converted to 48 kHz.
+        const fs::path file = freshFile();
         start = Clock::now();
         loader.requestLoad(file);
         REQUIRE(settle(instrument).state == SampleState::Loaded);
         whole = ms(Clock::now() - start);
         UNSCOPED_INFO("the whole job: " << whole << " ms");
 
-        // A fifth of the way in, deactivate().
-        loader.requestLoad(second);
-        std::this_thread::sleep_for(std::chrono::duration<double, std::milli>(whole / 5.0));
-        start = Clock::now();
-        instrument.deactivate();
-        const double deactivating = ms(Clock::now() - start);
-        UNSCOPED_INFO("deactivate: " << deactivating << " ms");
+        // A fifth of the way into another, deactivate(). A try after the first activates again
+        // (the job cancelled runs again) and asks for a new file, which supersedes it.
+        double deactivating = whole;
+        for (int t = 0; t < kTries && !(deactivating < whole / 4.0); ++t)
+        {
+            if (t > 0)
+            {
+                REQUIRE(instrument.activate(48000.0, 512));
+            }
+            const fs::path next = freshFile();
+            loader.requestLoad(next);
+            std::this_thread::sleep_for(std::chrono::duration<double, std::milli>(whole / 5.0));
+            start = Clock::now();
+            instrument.deactivate();
+            deactivating = ms(Clock::now() - start);
+            UNSCOPED_INFO("deactivate, try " << t + 1 << ": " << deactivating << " ms");
+            CHECK(loader.status().state == SampleState::Loading); // queued again
+            CHECK(loader.resultsApplied() == 1);
+        }
         CHECK(deactivating < whole / 4.0);
-        CHECK(loader.status().state == SampleState::Loading); // queued again
-        CHECK(loader.resultsApplied() == 1);
 
         // The next activation runs it.
         REQUIRE(instrument.activate(48000.0, 512));
@@ -698,14 +719,28 @@ TEST_CASE("deactivate and destruction cancel a load under way at once", "[plugin
         Stereo out(512);
         renderNote(instrument, out, 512);
         CHECK(peak(out.left) > 0.01f);
-
-        // A fifth of the way into another, the destructor (after the harness's deactivate).
-        loader.requestLoad(third);
-        std::this_thread::sleep_for(std::chrono::duration<double, std::milli>(whole / 5.0));
-        start = Clock::now();
     }
-    const double destroying = ms(Clock::now() - start);
-    UNSCOPED_INFO("destruction: " << destroying << " ms");
+
+    // A fifth of the way into another, the destructor (after the harness's deactivate), each try
+    // an instrument of its own.
+    double destroying = whole;
+    for (int t = 0; t < kTries && !(destroying < whole / 4.0); ++t)
+    {
+        {
+            PluginUnderTest instrument(kInstrumentId, host.clap());
+            REQUIRE(instrument.valid());
+            REQUIRE(instrument.loadDefaultsWithSeed(0));
+            REQUIRE(instrument.activate(48000.0, 512));
+            auto &loader = loaderOf(instrument);
+            sources.attach(loader);
+            const fs::path next = freshFile();
+            loader.requestLoad(next);
+            std::this_thread::sleep_for(std::chrono::duration<double, std::milli>(whole / 5.0));
+            start = Clock::now();
+        }
+        destroying = ms(Clock::now() - start);
+        UNSCOPED_INFO("destruction, try " << t + 1 << ": " << destroying << " ms");
+    }
     CHECK(destroying < whole / 4.0);
     CHECK(sources.alive() == 0);
 }
