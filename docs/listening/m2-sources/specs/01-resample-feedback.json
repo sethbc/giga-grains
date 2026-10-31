@@ -1,0 +1,26 @@
+{
+  "mode": "instrument",
+  "sampleRate": 48000,
+  "durationSeconds": 13.0,
+  "blockSize": 128,
+  "seed": 1,
+  "sample": {"kind": "sine", "frequencyHz": 220, "seconds": 4.0, "amplitude": 0.5},
+  "params": {"Position": 0.25, "Level": -6.0, "Layer B On": 1, "B Source": 2, "B Pitch": 12, "B Feedback": 0.0},
+  "automation": [
+    {"time": 1.0, "param": "B Feedback", "value": 0.0667},
+    {"time": 2.0, "param": "B Feedback", "value": 0.1333},
+    {"time": 3.0, "param": "B Feedback", "value": 0.2},
+    {"time": 4.0, "param": "B Feedback", "value": 0.2667},
+    {"time": 5.0, "param": "B Feedback", "value": 0.3333},
+    {"time": 6.0, "param": "B Feedback", "value": 0.4},
+    {"time": 7.0, "param": "B Feedback", "value": 0.4667},
+    {"time": 8.0, "param": "B Feedback", "value": 0.5333},
+    {"time": 9.0, "param": "B Feedback", "value": 0.6},
+    {"time": 10.0, "param": "B Feedback", "value": 0.6667},
+    {"time": 11.0, "param": "B Feedback", "value": 0.7333},
+    {"time": 12.0, "param": "B Feedback", "value": 0.8}
+  ],
+  "notes": [
+    {"time": 0.25, "key": 60, "duration": 12.0}
+  ]
+}

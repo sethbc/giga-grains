@@ -8,8 +8,10 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <memory>
 #include <numbers>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -19,8 +21,10 @@
 
 #include "RenderSpec.h"
 #include "Signals.h"
+#include "gg/core/SessionState.h"
 #include "gg/media/Convert.h"
 #include "gg/media/Decode.h"
+#include "gg/media/Sha256.h"
 #include "gg/metrics/AudioData.h"
 #include "gg/metrics/WavIO.h"
 #include "gg/source/PreparedSource.h"
@@ -136,7 +140,7 @@ std::string freshDirectory(const std::string &name)
 /// What gg-media decodes `path` to, converted to `rate`.
 std::shared_ptr<gg::SampleBuffer> decodeAt(const std::string &path, double rate)
 {
-    auto decoded = gg::media::decodeAudioFile(pathOf(path));
+    auto decoded = gg::media::decodeAudioFile(pathOf(path), gg::media::kDefaultDecodeBound);
     INFO(decoded.error);
     REQUIRE(decoded.audio.has_value());
     return gg::media::convertRate(decoded.audio->buffer, rate);
@@ -492,4 +496,92 @@ TEST_CASE("write-media writes the test media", "[render]")
     }
     CHECK_FALSE(gg::render::writeTestMedia(blocked + "/media", error));
     CHECK_FALSE(error.empty());
+}
+
+TEST_CASE("write-media writes the two state fixtures and two more samples, the same each time",
+          "[render]")
+{
+    const std::string first = freshDirectory("signals-fixtures-a");
+    const std::string second = freshDirectory("signals-fixtures-b");
+    std::string error;
+    REQUIRE(gg::render::writeTestMedia(first, error));
+    REQUIRE(gg::render::writeTestMedia(second, error));
+
+    // sine-330.wav and noise-2s.wav: mono, 48 kHz, 2 s.
+    const auto sine = gg::metrics::readAudioFile(first + "/sine-330.wav");
+    REQUIRE(sine.has_value());
+    CHECK(sine->sampleRate == 48000.0);
+    REQUIRE(sine->channels.size() == 1);
+    CHECK(sine->channels[0].size() == 96000);
+    CHECK(sine->channels[0] ==
+          makeSignal(
+              {.kind = SourceKind::Sine, .frequencyHz = 330.0, .seconds = 2.0, .amplitude = 0.5},
+              48000.0, 0)
+              .channels[0]);
+    const auto noise = gg::metrics::readAudioFile(first + "/noise-2s.wav");
+    REQUIRE(noise.has_value());
+    REQUIRE(noise->channels.size() == 1);
+    CHECK(noise->channels[0].size() == 96000);
+    CHECK(peak(noise->channels[0]) > 0.4f);
+
+    // The states: byte for byte the same on a second run, and loadable.
+    for (const char *name : {"frozen-ring.ggst", "four-samples.ggst"})
+    {
+        INFO(name);
+        const auto read = [&](const std::string &dir) {
+            std::ifstream in(std::filesystem::path{pathOf(dir)} / name, std::ios::binary);
+            REQUIRE(in.good());
+            return std::string(std::istreambuf_iterator<char>(in),
+                               std::istreambuf_iterator<char>());
+        };
+        const std::string a = read(first);
+        const std::string b = read(second);
+        CHECK(a.size() > 100);
+        CHECK(a == b);
+        CHECK(gg::media::sha256Hex(std::as_bytes(std::span(a))) ==
+              gg::media::sha256Hex(std::as_bytes(std::span(b))));
+        gg::core::SessionState state;
+        CHECK(gg::core::decodeState(a,
+                                    name == std::string("frozen-ring.ggst")
+                                        ? gg::core::Mode::Fx
+                                        : gg::core::Mode::Instrument,
+                                    state));
+    }
+
+    // four-samples.ggst names the four files by content path and keeps no machine path.
+    std::ifstream in(std::filesystem::path{pathOf(first)} / "four-samples.ggst", std::ios::binary);
+    const std::string bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    gg::core::SessionState four;
+    REQUIRE(gg::core::decodeState(bytes, gg::core::Mode::Instrument, four));
+    const char *const names[4] = {"tone-44k1.wav", "loop-48k.wav", "sine-330.wav", "noise-2s.wav"};
+    for (std::size_t k = 0; k < 4; ++k)
+    {
+        REQUIRE(four.samples[k].has_value());
+        CHECK(four.samples[k]->contentPath == names[k]);
+        CHECK(four.samples[k]->absolutePath.empty());
+        CHECK_FALSE(four.samples[k]->embed);
+    }
+    CHECK(bytes.find(first) == std::string::npos);
+
+    // frozen-ring.ggst: a 20 s FX ring frozen at 18 s with two marks, 6 s apart.
+    std::ifstream frozenIn(std::filesystem::path{pathOf(first)} / "frozen-ring.ggst",
+                           std::ios::binary);
+    const std::string frozenBytes((std::istreambuf_iterator<char>(frozenIn)),
+                                  std::istreambuf_iterator<char>());
+    gg::core::SessionState frozen;
+    REQUIRE(gg::core::decodeState(frozenBytes, gg::core::Mode::Fx, frozen));
+    REQUIRE(frozen.rings[0].has_value());
+    const auto &ring = *frozen.rings[0];
+    CHECK(ring.embed);
+    CHECK(ring.sampleRate == 48000.0);
+    CHECK(ring.frames > 18 * 48000);
+    CHECK(ring.frames < 19 * 48000);
+    REQUIRE(ring.splices.size() == 2);
+    CHECK(ring.splices[1] - ring.splices[0] == 6 * 48000);
+    CHECK(ring.frames - ring.splices[1] == 6 * 48000);
+    CHECK(frozen.values[static_cast<std::size_t>(gg::core::ParamSlot::Freeze)] == 1.0f);
+    for (std::size_t k = 1; k < 4; ++k)
+    {
+        CHECK_FALSE(frozen.rings[k].has_value());
+    }
 }

@@ -197,7 +197,7 @@ TEST_CASE("convertRate of a 1 Hz file to 192 kHz and 768 kHz keeps its memory bo
           "[media][serial]")
 {
     // r8brain's buffers grow with its MaxInLen × the rate ratio. At a fixed MaxInLen of 4096 a
-    // 1 Hz file (600 frames: 600 s, the longest allowed) needed 6.7 GB to reach 192 kHz, and at
+    // 1 Hz file (600 frames: 600 s, M1's longest file) needed 6.7 GB to reach 192 kHz, and at
     // 768 kHz the lengths overflowed int. The output alone is what it must cost, and a margin.
     const double to = GENERATE(192000.0, 768000.0);
     const int64_t frames = 600;

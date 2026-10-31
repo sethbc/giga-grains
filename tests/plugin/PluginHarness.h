@@ -30,14 +30,18 @@
 
 #include "Factory.h"
 #include "GigaGrainsPlugin.h"
+#include "gg/core/MachineSettings.h"
 #include "gg/core/ParamIds.h"
 #include "gg/core/Preset.h"
+#include "gg/core/Processor.h"
 #include "gg/core/Rng.h"
 #include "gg/core/SessionState.h"
 #include "gg/media/Sample.h"
+#include "gg/media/SettingsFile.h"
 #include "media/AudioFixtures.h"
 #include "sst/basic-blocks/params/ParamMetadata.h"
 #include "support/StubPool.h"
+#include "support/Utf8.h"
 
 namespace gg::test
 {
@@ -492,11 +496,11 @@ inline std::filesystem::path sineSampleFile(const std::string &name)
 /// folder. Empty if the file doesn't load.
 inline gg::core::MediaEntry entryOf(const std::filesystem::path &file)
 {
-    return gg::media::loadSample(file, {}).entry;
+    return gg::media::loadSample(file, {}, gg::media::kDefaultDecodeBound).entry;
 }
 
-/// `state`, a state the instrument saved, with `entry` (or none) as its sample, and this build's
-/// manifest.
+/// `state`, a state the instrument saved, with `entry` (or none) as its sample (layer A's), and
+/// this build's manifest.
 inline std::string withSample(const std::string &state,
                               const std::optional<gg::core::MediaEntry> &entry)
 {
@@ -505,14 +509,14 @@ inline std::string withSample(const std::string &state,
     {
         return {};
     }
-    s.sample = entry;
+    s.samples[0] = entry;
     s.newerMedia.reset();
     return gg::core::encodeState(s);
 }
 
-/// The MEDI payload of a newer build's manifest (version 2), as this build can't read it: an
+/// The MEDI payload of a newer build's manifest (version 3), as this build can't read it: an
 /// element and attributes it doesn't know.
-inline const std::string kNewerMedia = R"(<media version="2"><layer id="0"><sample )"
+inline const std::string kNewerMedia = R"(<media version="3"><layer id="0"><sample )"
                                        R"(sha256="00" path="/Future/pad.wav" /></layer></media>)";
 
 /// `state`, a state the instrument saved, with `media`, a newer build's manifest, as its MEDI
@@ -524,7 +528,7 @@ inline std::string withNewerMedia(const std::string &state, const std::string &m
     {
         return {};
     }
-    s.sample.reset();
+    s.samples[0].reset();
     s.newerMedia = media;
     return gg::core::encodeState(s);
 }
@@ -630,6 +634,43 @@ inline void fillNoise(Stereo &s, uint64_t seed)
 inline bool sameBits(const std::vector<float> &a, const std::vector<float> &b)
 {
     return a.size() == b.size() && std::memcmp(a.data(), b.data(), a.size() * sizeof(float)) == 0;
+}
+
+/// Layer `layer`'s ring window as `processor` holds it, read between process() calls on the
+/// calling thread (no race to check): frames [max(0, R − N), R) interleaved, R the head and N the
+/// storage's window. Empty without a ring.
+inline std::vector<float> ringWindow(const gg::core::Processor &processor, uint8_t layer)
+{
+    const gg::core::RingRead read = processor.ringRead(layer);
+    std::vector<float> window;
+    if (read.storage == nullptr)
+    {
+        return window;
+    }
+    const int64_t head = read.head->load(std::memory_order_acquire);
+    const int64_t n = read.storage->frames();
+    const int64_t c = read.storage->capacity();
+    for (int64_t f = std::max<int64_t>(0, head - n); f < head; ++f)
+    {
+        window.push_back(read.storage->slots()[2 * (f % c)]);
+        window.push_back(read.storage->slots()[2 * (f % c) + 1]);
+    }
+    return window;
+}
+
+/// The settings file of the persistence test `name`, in its scratch folder, with the captures
+/// folder there too (`<dir>/captures`), so no test writes to the user's Music folder; the
+/// instances created from now on use it. Returns the folder.
+inline std::filesystem::path useMediaScratch(const std::string &name)
+{
+    const auto dir = sampleDir(name);
+    const auto settings = dir / "settings.xml";
+    std::filesystem::remove(settings);
+    gg::core::MachineSettings folders;
+    folders.capturesFolder = utf8(dir / "captures");
+    gg::media::saveSettings(settings, folders);
+    useSettingsFile(settings);
+    return dir;
 }
 
 /// One plugin instance, created through the factory and initialized. The destructor stops

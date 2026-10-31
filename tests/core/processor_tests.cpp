@@ -347,8 +347,8 @@ struct TimedEvent
     double value;
 };
 
-// The 28 M1 slots, which automation() covers. The other 190 (M2 sub-project 1's spec §6.9) are
-// covered by everySlotAutomation(), with the layers they act on switched on.
+// The 28 M1 slots, which automation() covers. The other 215 (M2 sub-projects 1 to 3) are covered
+// by everySlotAutomation(), with the layers they act on switched on.
 constexpr size_t kM1Slots = static_cast<size_t>(ParamSlot::Source);
 static_assert(kM1Slots == 28);
 
@@ -672,13 +672,13 @@ std::vector<TimedEvent> performAutomation()
 }
 
 // performAutomation(), with every slot past the 28 M1 ones automated too (M2 sub-project 1's spec
-// §6.9, and sub-project 3's Quality and Budget): layer A's 38 new parameters, layers B to D's 49
-// each, the nine layer globals and Budget, 10 events each across the slot's whole range in the
-// FX's paramMeta, none on a grid point, every third a modulation offset of up to a quarter of the
-// range, except on a stepped parameter (Freeze, Source, the LFO shapes, Step Length, Quality, the
-// Layer On switches, Budget), whose values are whole. The Layer On
-// switches are on three times in four, so layers go off for longer than the ramp and come back.
-// Times and values come from gg::rng, keyed apart from the others'.
+// §6.9; M2 sub-project 2's spec §6.3; M2 sub-project 3's Quality and Budget): layer A's 43 new
+// parameters, layers B to D's 54 each, the nine layer globals and Budget, 10 events each across
+// the slot's whole range in the FX's paramMeta, none on a grid point, every third a modulation
+// offset of up to a quarter of the range, except on a stepped parameter (Freeze, Source, the LFO
+// shapes, Step Length, Loop, Splice, Quality, the Layer On switches, Budget), whose values are
+// whole. The Layer On switches are on three times in four, so layers go off for longer than the
+// ramp and come back. Times and values come from gg::rng, keyed apart from the others'.
 std::vector<TimedEvent> everySlotAutomation()
 {
     constexpr int kPerSlot = 10;
@@ -777,7 +777,7 @@ std::vector<gg::test::layers::TimedControl> everyLayerControls()
 
 TEST_CASE("the perform parameters are block-size invariant together", "[core][determinism]")
 {
-    // Every one of the 223 slots automated (automation() for the M1 slots, everySlotAutomation()
+    // Every one of the 243 slots automated (automation() for the M1 slots, everySlotAutomation()
     // for the rest), Texture, Feedback and the macros densely, with modulation, layers B to D on,
     // a route from every mod source, a transport, notes and MIDI controls: the macro curves,
     // Texture's latched envelope, Feedback's ring write, the layers' switches, sources, spreads

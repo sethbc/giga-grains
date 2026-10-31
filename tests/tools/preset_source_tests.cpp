@@ -251,7 +251,7 @@ TEST_CASE("a packed preset reads back as its source", "[render]")
         CHECK(info == source.info);
         CHECK(state.name == source.info.name);
         CHECK(state.seed == 0u);
-        CHECK_FALSE(state.sample.has_value());
+        CHECK_FALSE(state.samples[0].has_value());
 
         // Every value its default but the source's.
         gg::core::SessionState expected = gg::core::initState(mode);
@@ -378,17 +378,20 @@ TEST_CASE("a preset for the other product, or that isn't one, is bad input", "[r
     fx["preset"] = utf8(junk);
     CHECK_THAT(badInput(fx), ContainsSubstring("isn't a preset file"));
 
-    // A preset naming a sample: gg-render reads none before MEDI version 2.
+    // A preset naming a sample: gg-render reads none yet (presets' group 2 resolves them).
     gg::core::SessionState withSample = gg::core::initState(Mode::Fx);
-    withSample.sample = gg::core::MediaEntry{.sha256Hex = std::string(64, 'a'),
-                                             .fileSize = 4,
-                                             .absolutePath = "/nowhere/a.wav",
-                                             .relativePath = "a.wav",
-                                             .format = "wav",
-                                             .channels = 1,
-                                             .sampleRate = 48000.0,
-                                             .frames = 1,
-                                             .embed = false};
+    withSample.samples[0] = gg::core::MediaEntry{.sha256Hex = std::string(64, 'a'),
+                                                 .fileSize = 4,
+                                                 .absolutePath = "/nowhere/a.wav",
+                                                 .relativePath = "a.wav",
+                                                 .format = "wav",
+                                                 .channels = 1,
+                                                 .sampleRate = 48000.0,
+                                                 .frames = 1,
+                                                 .embed = false,
+                                                 .layer = 0,
+                                                 .contentPath = "",
+                                                 .audioId = 0};
     const auto sampled = dir / "sampled.ggpreset";
     writeBytes(sampled, gg::core::encodePreset(parseFixture("fx-test.json").info, withSample));
     fx["preset"] = utf8(sampled);

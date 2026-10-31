@@ -55,6 +55,13 @@ void setSaveHook(SaveHook hook);
 /// An error saveSettings takes as transient, and retries a rename after: on Windows a sharing
 /// violation, as another program holding the settings file open gives; elsewhere EBUSY.
 std::error_code transientRenameError();
+
+/// Called by collectMedia with each copy it has just written, before it checks the copy's hash:
+/// a test changes the copy's bytes, as a failing disk could.
+using CollectHook = void (*)(const std::filesystem::path &copy);
+
+/// Sets collect's hook (nullptr: none). Not to be called while a collect runs.
+void setCollectHook(CollectHook hook);
 } // namespace gg::media::detail
 
 #endif // GG_MEDIA_TESTHOOKS_H

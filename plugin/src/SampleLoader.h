@@ -23,6 +23,11 @@
 #include "gg/source/PreparedSource.h"
 #include "gg/source/SampleBuffer.h"
 
+namespace gg::media
+{
+struct MemoryBudget;
+}
+
 namespace gg::plugin
 {
 /// What the instrument's sample is doing, for the editor (spec §6.5).
@@ -64,9 +69,23 @@ struct SampleWaveform
     double seconds{0.0}; ///< frames at the sample's rate
 };
 
-/// The instrument's sample loader (spec §6.4–§6.7): the manifest entry, the source the engine
-/// plays, the user's loads and relinks on a background thread, and the synchronous session
-/// restore (D8). Owned by GigaGrainsPlugin, the instrument's only; the FX has none.
+/// One layer's sample loader (spec §6.4–§6.7; M2 sub-project 2's spec §6.8): the manifest entry,
+/// the source the layer's engine plays, the user's loads and relinks on a background thread, the
+/// synchronous session restore (D8) and the in-memory load of a capture. Four per instance, one
+/// per layer, in both products, owned by the instance's MediaSession.
+///
+/// **The memory cap** (M2 sub-project 2's spec §6.5). The instance's loaders share one
+/// gg::media::MemoryBudget, which the MediaSession keeps up to date on the main thread: what
+/// every loader holds (heldBytes) and every layer's ring. A load, a relink, a restore and a
+/// conversion at activate() are checked against it before anything is allocated: the decode is
+/// bounded by the bytes the cap leaves free (gg::media::loadSample's bound), then the source the
+/// decoded audio would make, at the rate it would be converted to with its interleaved copy and
+/// its pyramid's levels (gg::media::sampleBytes), must fit. A load or relink is checked against the
+/// budget as it stood when it was asked for (the worker reads a copy), with the sample it replaces
+/// still counted, since both live until the swap; a restore lets go of the sample it replaces
+/// first. A refusal is an Error whose message is the decoder's ("needs N MB, the memory cap allows
+/// M MB") or the budget's ("over the memory cap: needs N MB, F MB free of C MB"), after the file's
+/// name. Without a budget nothing is refused but by the decoder's own bound.
 ///
 /// **Threads.** Every public function is main thread only. One worker std::thread per instance
 /// decodes, hashes, converts and prepares a load (gg::media::loadSample, then prepare); it waits
@@ -129,14 +148,17 @@ class SampleLoader
         std::function<void()> requestCallback;
         /// Marks the session state dirty (clap_host_state.mark_dirty). Main thread.
         std::function<void()> markDirty;
-        /// Offers a loaded or relinked source to the active Processor (SourceExchange::offer).
-        /// Main thread, only while active.
+        /// Offers a loaded or relinked source to the active Processor's exchange of this loader's
+        /// layer (SourceExchange::offer). Main thread, only while active.
         std::function<void(std::shared_ptr<const PreparedSource>)> offer;
     };
 
     /// `settingsFile` is the per-machine settings file (spec §6.7) this instance reads, and
-    /// updates after a load. Nothing is read until a request or a restore needs it.
-    SampleLoader(std::filesystem::path settingsFile, Callbacks callbacks);
+    /// updates after a load. Nothing is read until a request or a restore needs it. `layer` (0 to
+    /// 3) is the layer whose sample this is, recorded in its manifest entry. `budget`, which must
+    /// outlive the loader, is the instance's memory budget (the class comment); nullptr for none.
+    SampleLoader(std::filesystem::path settingsFile, Callbacks callbacks, uint8_t layer = 0,
+                 media::MemoryBudget *budget = nullptr);
     /// Stops the worker, cancelling a job in progress (see Threads).
     ~SampleLoader();
     SampleLoader(const SampleLoader &) = delete;
@@ -179,6 +201,9 @@ class SampleLoader
     };
 
     /// The session restore (D8), inside stateLoad: supersedes every request, then:
+    /// - An embedded entry (`embed`: a capture, spec §6.6) is decoded from `payload`, its AUDI
+    ///   bytes, instead of a file; with no `payload` the status is Missing, with the message
+    ///   "embedded audio missing", and the entry is kept (a session saved then leaves it out).
     /// - When `entry` has the current manifest entry's fingerprint (SHA-256 and size) and its
     ///   sample is in memory, as a source or a decoded buffer waiting for activate() (ruling
     ///   R19: undo, A/B compare and preset recall restore the sample they already have): keeps
@@ -193,7 +218,31 @@ class SampleLoader
     ///   the message "sample from a newer version".
     /// Never throws.
     Restored restore(const std::optional<core::MediaEntry> &entry,
-                     std::optional<std::string> newerMedia = std::nullopt) noexcept;
+                     std::optional<std::string> newerMedia = std::nullopt,
+                     std::shared_ptr<const std::string> payload = nullptr) noexcept;
+
+    /// An in-memory load (M2 sub-project 2's spec §6.4: a capture loaded into this layer):
+    /// `audio`, at the active rate, becomes the sample in effect, as a load would make it,
+    /// synchronously, superseding every request: its manifest entry is `entry` (embedded: its
+    /// fingerprint and size are `wavBytes`', the float32 WAV the session saves in AUDI or the
+    /// captures folder), and `wavBytes` is kept for the session's save (embeddedBytes()).
+    /// Active, the source is offered at once; inactive, activate() prepares it. Marks the state
+    /// dirty. False, changing nothing, when the memory cap refuses it (status Error with the
+    /// budget's message) or it can't be prepared. Main thread.
+    bool loadInMemory(std::shared_ptr<SampleBuffer> audio, core::MediaEntry entry,
+                      std::shared_ptr<const std::string> wavBytes) noexcept;
+    /// The WAV bytes of an embedded entry's sample (a capture, loaded or restored), for the
+    /// session's AUDI; nullptr for a sample loaded from a file.
+    const std::shared_ptr<const std::string> &embeddedBytes() const noexcept { return embedded_; }
+    /// Points the manifest entry at a copy of its file elsewhere (collect and save, spec §6.7):
+    /// `moved` replaces the entry when its fingerprint is the entry's. Main thread.
+    void relocate(const core::MediaEntry &moved);
+    /// The bytes this loader's sample holds against the memory cap: the source in effect
+    /// (gg::media::sourceBytes), a decoded buffer waiting for activate(), and an embedded
+    /// sample's WAV bytes. Main thread.
+    uint64_t heldBytes() const noexcept;
+    /// The layer whose sample this is.
+    uint8_t layer() const noexcept { return layer_; }
 
     /// The plugin's activate(), before it returns: waits for a job under way, applies what the
     /// worker finished, converts the sample at `sampleRate` here, or looks again for a file that
@@ -244,6 +293,8 @@ class SampleLoader
         std::filesystem::path file;
         core::MachineSettings settings; ///< read on the main thread (ruling R16)
         std::string expectedSha256;     ///< Relink: the entry's fingerprint
+        uint64_t capBytes{0};           ///< the memory budget as the request found it
+        uint64_t usedBytes{0};
     };
 
     struct Result
@@ -272,10 +323,31 @@ class SampleLoader
     void apply(Result &result);
     /// Makes `source` the one in effect, offering it while active.
     void setSource(std::shared_ptr<const PreparedSource> source);
-    /// gg::media::prepare, then the observer. nullptr only if `cancel` was set part way.
+    /// gg::media::prepare, shared through the process's pool under `entry`'s fingerprint at
+    /// `rate`, then the observer. nullptr only if `cancel` was set part way.
     std::shared_ptr<const PreparedSource> prepare(std::shared_ptr<SampleBuffer> decoded,
-                                                  double rate,
+                                                  double rate, const core::MediaEntry &entry,
                                                   const std::atomic<bool> *cancel = nullptr) const;
+    /// The budget as it stands, less `release` bytes this loader is about to let go of: a copy,
+    /// for a check made now. Unlimited (kDefaultDecodeBound) without a budget.
+    void budgetNow(uint64_t release, uint64_t &capBytes, uint64_t &usedBytes) const noexcept;
+    /// Whether the source `decoded` would make at `rate` fits the budget (capBytes, usedBytes);
+    /// when not, `refusal` is the budget's message. `rate` 0 is the buffer's own rate.
+    static bool fitsPrepared(const SampleBuffer &decoded, double rate, uint64_t capBytes,
+                             uint64_t usedBytes, std::string &refusal);
+    /// findAndLoad for an embedded entry: its WAV bytes (embedded_) decoded, within the budget,
+    /// and the status set: Loaded, or Error. The same result shapes as findAndLoad's.
+    std::shared_ptr<const PreparedSource> loadEmbedded(double rate, uint64_t release);
+    /// convertNow for an embedded entry: its WAV bytes decoded again and converted at `rate`,
+    /// within the budget; the old source kept, and the status Error, if that fails.
+    void convertEmbedded(double rate);
+    /// Checks the source `decoded` would make at `rate` against the budget less `release` bytes,
+    /// then makes it: `source` at `rate`, or at `rate` 0 (inactive) pending_ for activate(). The
+    /// status is the caller's to set, but for a refusal: false, with the status Error, its
+    /// message the budget's after `fileName`.
+    bool takeDecoded(std::shared_ptr<SampleBuffer> decoded, double rate,
+                     const std::string &fileName, uint64_t release,
+                     std::shared_ptr<const PreparedSource> &source);
     /// activate()'s conversion of the current sample at `rate`, when its source is at another:
     /// the file at the saved path decoded again and converted, or, if it has gone, changed or
     /// can't be read, the old source kept and the status Missing, Changed or Error. When the
@@ -286,7 +358,8 @@ class SampleLoader
     /// set: Loaded, Missing, Changed or Error. At `rate` 0 (inactive) the decoded buffer waits
     /// for activate() (restorePending_) and the result is nullptr; otherwise, the source at
     /// `rate`. A file found away from the saved path updates the entry and marks the state dirty.
-    std::shared_ptr<const PreparedSource> findAndLoad(double rate);
+    /// Checked against the budget less `release` bytes, which the caller has let go of.
+    std::shared_ptr<const PreparedSource> findAndLoad(double rate, uint64_t release = 0);
     /// The status for the manifest's file not at hand, relinkable: Changed when `read` (the file
     /// at `file`, the saved path, was read and isn't the sample's); otherwise Error when a file
     /// is there (it couldn't be read), and Missing when none is.
@@ -308,6 +381,8 @@ class SampleLoader
 
     const std::filesystem::path settingsFile_;
     const Callbacks callbacks_;
+    const uint8_t layer_;
+    media::MemoryBudget *const budget_; // the instance's, or nullptr
     std::function<void(const std::shared_ptr<const PreparedSource> &)> preparedObserver_;
 
     // Main thread.
@@ -317,6 +392,7 @@ class SampleLoader
     bool entryUnavailable_{false}; // entry_'s file wasn't at hand at the last restore or relink
     std::shared_ptr<const PreparedSource> source_; // the source in effect, at its own rate
     std::shared_ptr<SampleBuffer> pending_;        // decoded, for activate() (restorePending)
+    std::shared_ptr<const std::string> embedded_;  // an embedded entry's WAV bytes
     bool restorePending_{false};
     double activeRate_{0.0}; // 0 while inactive
     uint64_t lastRequest_{0};

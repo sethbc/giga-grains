@@ -7,7 +7,7 @@
 
 // Builds and takes apart the session-state container (gg/core/SessionState.h) byte by byte, so
 // the tests can write states encodeState never would: unknown chunks, missing ones, other
-// versions and magics, edited payloads.
+// versions and magics, edited payloads, AUDI's binary payload lists and INST's settings.
 
 #include <cstddef>
 #include <cstdint>
@@ -15,6 +15,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 
 namespace gg::test
 {
@@ -49,6 +50,28 @@ inline std::string stateContainer(std::initializer_list<std::string> chunks, uin
         out += c;
     }
     return out;
+}
+
+/// An AUDI payload: the little-endian u32 `count` (the payloads' number unless given), then each
+/// payload's little-endian u32 id, u64 length and bytes.
+inline std::string
+audioChunkPayload(std::initializer_list<std::pair<uint32_t, std::string>> payloads,
+                  std::optional<uint32_t> count = std::nullopt)
+{
+    std::string out = littleEndian(count.value_or(static_cast<uint32_t>(payloads.size())), 4);
+    for (const auto &[id, bytes] : payloads)
+    {
+        out += littleEndian(id, 4);
+        out += littleEndian(bytes.size(), 8);
+        out += bytes;
+    }
+    return out;
+}
+
+/// An INST payload as encodeState writes it, with `memoryCapMiB` as its attribute's text.
+inline std::string instanceChunkPayload(std::string_view memoryCapMiB = "1024")
+{
+    return R"(<instance version="1" memoryCapMiB=")" + std::string(memoryCapMiB) + R"(" />)";
 }
 
 /// The payload of the first chunk `id` in a well-formed container, or nothing.

@@ -18,6 +18,7 @@
 #include <limits>
 #include <optional>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 #include <catch2/catch_test_macros.hpp>
@@ -402,7 +403,8 @@ TEST_CASE("param map follows the taper table", "[core]")
     });
     REQUIRE_THAT(position[0], WithinAbs(0.0, 1e-12));
     REQUIRE_THAT(position[1], WithinRel(0.25, 1e-6));
-    REQUIRE_THAT(position[2], WithinRel(16.0, 1e-12));
+    // The top is the longest ring (M2 sub-project 2's spec §6.3).
+    REQUIRE_THAT(position[2], WithinAbs(300.0, 1e-3));
     const auto size = ends(ParamSlot::Size, [](const ParamValues &v) {
         return toCloudParams(v, Mode::Fx).grainDurationSec;
     });
@@ -620,6 +622,45 @@ TEST_CASE("the instrument's Position is a fraction and its Spray is seconds", "[
     }
 }
 
+TEST_CASE("a ring is saved on a Live or Resample layer whose Freeze or Loop is on", "[core]")
+{
+    // M2 sub-project 2's D1, the one rule the plugin and gg-render share (ringSaved), and the
+    // Freeze switch's threshold (freezeOn): above 0.5, as WetParams::freeze reads it.
+    using gg::core::freezeOn;
+    using gg::core::LayerParam;
+    using gg::core::layerSlot;
+    using gg::core::ringSaved;
+    for (const Mode mode : {Mode::Fx, Mode::Instrument})
+    {
+        for (uint8_t layer = 0; layer < gg::core::kLayers; ++layer)
+        {
+            INFO("layer " << int{layer} << (mode == Mode::Fx ? " fx" : " instrument"));
+            const auto at = [layer](LayerParam p) {
+                return static_cast<size_t>(layerSlot(p, layer));
+            };
+            ParamValues v = defaults(mode);
+            CHECK_FALSE(ringSaved(v, mode, layer)); // neither held
+            v[at(LayerParam::Freeze)] = 0.5f;
+            CHECK_FALSE(freezeOn(v, layer)); // the threshold itself is off
+            v[at(LayerParam::Freeze)] = 1.0f;
+            CHECK(freezeOn(v, layer));
+            for (const float kind : {0.0f, 1.0f, 2.0f, 3.0f, 4.0f})
+            {
+                v[at(LayerParam::Source)] = kind;
+                const bool live = gg::core::builtKind(gg::core::sourceKindOf(v, layer), mode) ==
+                                  gg::SourceMode::Live;
+                CHECK(ringSaved(v, mode, layer) == live); // frozen
+                v[at(LayerParam::Freeze)] = 0.0f;
+                v[at(LayerParam::Loop)] = 1.0f;
+                CHECK(ringSaved(v, mode, layer) == live); // looping
+                v[at(LayerParam::Loop)] = 0.0f;
+                CHECK_FALSE(ringSaved(v, mode, layer)); // neither
+                v[at(LayerParam::Freeze)] = 1.0f;
+            }
+        }
+    }
+}
+
 TEST_CASE("the layer-aware maps read each layer's slots", "[core][layers]")
 {
     using gg::SourceMode;
@@ -633,17 +674,17 @@ TEST_CASE("the layer-aware maps read each layer's slots", "[core][layers]")
 
     SECTION("the built kinds, and the unbuilt ones' fallback")
     {
-        // M2 sub-project 1's spec §6.4: Sample and Live are built in both products; Resample,
-        // Spectral and Oscillator render as the product's default kind.
+        // M2 sub-project 1's spec §6.4: Sample and Live are built in both products, and Resample
+        // since M2 sub-project 2 ("Resample is a built Live kind"); Spectral and Oscillator
+        // render as the product's default kind.
         for (const Mode mode : {Mode::Fx, Mode::Instrument})
         {
             CHECK(builtKind(SourceKind::Sample, mode) == SourceMode::Sample);
             CHECK(builtKind(SourceKind::Live, mode) == SourceMode::Live);
+            CHECK(builtKind(SourceKind::Resample, mode) == SourceMode::Live);
         }
-        CHECK(builtKind(SourceKind::Resample, Mode::Fx) == SourceMode::Live);
         CHECK(builtKind(SourceKind::Spectral, Mode::Fx) == SourceMode::Live);
         CHECK(builtKind(SourceKind::Oscillator, Mode::Fx) == SourceMode::Live);
-        CHECK(builtKind(SourceKind::Resample, Mode::Instrument) == SourceMode::Sample);
         CHECK(builtKind(SourceKind::Spectral, Mode::Instrument) == SourceMode::Sample);
         CHECK(builtKind(SourceKind::Oscillator, Mode::Instrument) == SourceMode::Sample);
     }
@@ -777,6 +818,158 @@ TEST_CASE("the layer-aware maps read each layer's slots", "[core][layers]")
         CHECK(moved.x == 0.2f);
         CHECK(moved.y == 0.9f);
     }
+}
+
+TEST_CASE("toRingParams maps the ring values", "[core]")
+{
+    // M2 sub-project 2's spec §6.3: Ring Length and Loop Length are log2 seconds (exp2Det), Loop
+    // is on above 0.5, Overdub is read as it is and Splice is rounded and clamped to 0..32. Each
+    // layer reads its own slots.
+    using gg::core::LayerParam;
+    using gg::core::layerSlot;
+    using gg::core::toRingParams;
+    STATIC_REQUIRE(gg::core::kRingMaxSeconds == 300.0);
+    STATIC_REQUIRE(gg::core::kRingMinSeconds == 1.0);
+    STATIC_REQUIRE(gg::core::kLoopMinSeconds == 0.05);
+    STATIC_REQUIRE(gg::core::kMaxSplices == 32u);
+    for (const Mode mode : {Mode::Fx, Mode::Instrument})
+    {
+        for (uint8_t layer = 0; layer < gg::core::kLayers; ++layer)
+        {
+            INFO("layer " << int{layer});
+            const auto slot = [layer](LayerParam p) {
+                return static_cast<size_t>(layerSlot(p, layer));
+            };
+            // The defaults: a 16 s ring, no loop, a 1 s loop, no overdub, the whole window.
+            const auto r0 = toRingParams(defaults(mode), layer);
+            CHECK(r0.ringSeconds == 16.0);
+            CHECK_FALSE(r0.loop);
+            CHECK(r0.loopSeconds == 1.0);
+            CHECK(r0.overdub == 0.0f);
+            CHECK(r0.splice == 0u);
+
+            ParamValues v = defaults(mode);
+            v[slot(LayerParam::RingLength)] = 8.228818690495881f; // log2 300
+            v[slot(LayerParam::Loop)] = 1.0f;
+            v[slot(LayerParam::LoopLength)] = -4.321928094887363f; // its min, log2 0.05
+            v[slot(LayerParam::Overdub)] = 0.75f;
+            v[slot(LayerParam::Splice)] = 32.4f;
+            const auto r = toRingParams(v, layer);
+            CHECK(r.ringSeconds == gg::exp2Det(d(8.228818690495881f)));
+            CHECK_THAT(r.ringSeconds, WithinRel(300.0, 1e-6));
+            CHECK(r.loop);
+            CHECK(r.loopSeconds == gg::exp2Det(d(-4.321928094887363f)));
+            CHECK_THAT(r.loopSeconds, WithinRel(0.05, 1e-6));
+            CHECK(r.overdub == 0.75f);
+            CHECK(r.splice == 32u);
+            // Another layer's slots don't move this one's.
+            const uint8_t other = static_cast<uint8_t>((layer + 1) % gg::core::kLayers);
+            const auto o = toRingParams(v, other);
+            CHECK(o.ringSeconds == 16.0);
+            CHECK_FALSE(o.loop);
+            CHECK(o.splice == 0u);
+            // Loop is on above 0.5; Splice rounds halves up and clamps.
+            const auto spliceAt = [&](float x) {
+                ParamValues w = defaults(mode);
+                w[slot(LayerParam::Splice)] = x;
+                return toRingParams(w, layer).splice;
+            };
+            CHECK(spliceAt(2.49f) == 2u);
+            CHECK(spliceAt(2.5f) == 3u);
+            CHECK(spliceAt(31.6f) == 32u);
+            CHECK(spliceAt(40.0f) == 32u);
+            CHECK(spliceAt(-1.0f) == 0u);
+            ParamValues w = defaults(mode);
+            w[slot(LayerParam::Loop)] = 0.5f;
+            CHECK_FALSE(toRingParams(w, layer).loop);
+            w[slot(LayerParam::Loop)] = std::nextafter(0.5f, 1.0f);
+            CHECK(toRingParams(w, layer).loop);
+        }
+    }
+}
+
+TEST_CASE("Resample is a built Live kind", "[core]")
+{
+    // M2 sub-project 2's spec §6.2: a Resample layer is a Live-mode engine in both products, so
+    // its Position is seconds behind the head and its Feedback writes its ring.
+    using gg::SourceMode;
+    using gg::core::SourceKind;
+    for (const Mode mode : {Mode::Fx, Mode::Instrument})
+    {
+        INFO((mode == Mode::Fx ? "FX" : "instrument"));
+        CHECK(gg::core::builtKind(SourceKind::Resample, mode) == SourceMode::Live);
+        ParamValues v = defaults(mode);
+        v[static_cast<size_t>(ParamSlot::Source)] = 2.0f; // Resample
+        v[static_cast<size_t>(ParamSlot::Position)] = 0.28967658f;
+        v[static_cast<size_t>(ParamSlot::Feedback)] = 0.5f;
+        const auto c = toCloudParams(v, mode);
+        CHECK_FALSE(c.sprayInSeconds);
+        CHECK(sameBits(c, fxReference(v)));
+        CHECK(toWetParams(v, mode).feedback == 0.5f);
+    }
+}
+
+TEST_CASE("Position reaches the longest ring", "[core]")
+{
+    // M2 sub-project 2's spec §6.3: Position's top is kPositionMax in both products, where the
+    // Live mapping gives kRingMaxSeconds; below 1 every M1 value maps as before, bit for bit; a
+    // Sample layer's fraction is clamped to 1, and the instrument's text above 1 reads "100%".
+    STATIC_REQUIRE(std::is_same_v<decltype(gg::core::kPositionMax), const float>);
+    const float vmax = gg::core::kPositionMax;
+    for (const Mode mode : {Mode::Fx, Mode::Instrument})
+    {
+        INFO((mode == Mode::Fx ? "FX" : "instrument"));
+        const auto &meta = gg::core::paramMeta(ParamSlot::Position, mode);
+        CHECK(meta.minVal == 0.0f);
+        CHECK(meta.maxVal == vmax);
+        CHECK(gg::core::paramMeta(ParamSlot::D_Position, mode).maxVal == vmax);
+        ParamValues live = defaults(mode);
+        live[static_cast<size_t>(ParamSlot::Source)] = 1.0f; // Live
+        const auto livePosition = [&](float x) {
+            live[static_cast<size_t>(ParamSlot::Position)] = x;
+            return toCloudParams(live, mode).position;
+        };
+        CHECK_THAT(livePosition(vmax), WithinAbs(gg::core::kRingMaxSeconds, 1e-3));
+        CHECK(livePosition(vmax) <= gg::core::kRingMaxSeconds);
+        CHECK(livePosition(1.0f) == 16.0);
+        // M1's value at 0.25, as M1 computed it.
+        CHECK(livePosition(0.25f) == 16.0 / 255.0 * (gg::exp2Det(8.0 * d(0.25f)) - 1.0));
+        CHECK(bitsOf(livePosition(0.25f)) == bitsOf(16.0 / 255.0 * (gg::exp2Det(2.0) - 1.0)));
+
+        ParamValues sample = defaults(mode);
+        sample[static_cast<size_t>(ParamSlot::Source)] = 0.0f; // Sample
+        const auto samplePosition = [&](float x) {
+            sample[static_cast<size_t>(ParamSlot::Position)] = x;
+            return toCloudParams(sample, mode).position;
+        };
+        CHECK(samplePosition(1.2f) == 1.0);
+        CHECK(samplePosition(vmax) == 1.0);
+        CHECK(samplePosition(1.0f) == 1.0);
+        CHECK(samplePosition(0.25f) == 0.25);
+    }
+
+    // The instrument's text: a percentage up to 1, then "100%", the file's end.
+    const auto &inst = gg::core::paramMeta(ParamSlot::Position, Mode::Instrument);
+    const auto text = [&inst](float v) { return inst.valueToString(v).value_or("<none>"); };
+    CHECK(text(0.25f) == "25.00 %");
+    CHECK(text(1.0f) == "100.00 %");
+    CHECK(text(std::nextafter(1.0f, 2.0f)) == "100%");
+    CHECK(text(1.2f) == "100%");
+    CHECK(text(vmax) == "100%");
+    CHECK(gg::core::paramMeta(ParamSlot::C_Position, Mode::Instrument).valueToString(1.2f) ==
+          std::optional<std::string>("100%"));
+    for (int i = 0; i <= 1000; ++i)
+    {
+        const float v = vmax * static_cast<float>(i) / 1000.0f;
+        if ((text(v) == "100%") != (v > 1.0f))
+        {
+            INFO("Position " << v << " shows '" << text(v) << "'");
+            FAIL_CHECK("100% shown off the region above 1");
+        }
+    }
+    // The FX's shows the seconds, to the longest ring.
+    CHECK(gg::core::paramMeta(ParamSlot::Position, Mode::Fx).valueToString(vmax) ==
+          std::optional<std::string>("300.00 s"));
 }
 
 TEST_CASE("Quality maps to the layer's tier and Budget to units", "[core][layers]")

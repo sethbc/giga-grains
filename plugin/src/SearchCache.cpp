@@ -5,7 +5,10 @@
 #include "SearchCache.h"
 
 #include <algorithm>
+#include <optional>
+#include <string>
 
+#include "gg/media/SettingsFile.h"
 #include "gg/media/Utf8Path.h"
 
 namespace gg::plugin
@@ -36,7 +39,8 @@ SearchCache::Stamp SearchCache::stampOf(const std::filesystem::path &path) noexc
 }
 
 SearchCache::Stamps SearchCache::stampsOf(const core::MediaEntry &entry,
-                                          const core::MachineSettings &settings)
+                                          const core::MachineSettings &settings,
+                                          std::span<const std::filesystem::path> contentRoots)
 {
     // As findSample makes them (gg/media/Search.h): a candidate it can't make, or one that isn't
     // absolute, stamps as no file.
@@ -44,6 +48,14 @@ SearchCache::Stamps SearchCache::stampsOf(const core::MediaEntry &entry,
     if (const auto saved = media::fromUtf8(entry.absolutePath))
     {
         stamps.saved = stampOf(*saved);
+    }
+    if (!entry.contentPath.empty())
+    {
+        const auto content = media::fromUtf8(entry.contentPath);
+        for (const auto &root : contentRoots)
+        {
+            stamps.inRoots.push_back(content ? stampOf(root / *content) : Stamp{});
+        }
     }
     if (!settings.sampleFolder.empty() && !entry.relativePath.empty())
     {
@@ -54,18 +66,55 @@ SearchCache::Stamps SearchCache::stampsOf(const core::MediaEntry &entry,
             stamps.inFolder = stampOf(*folder / *relative);
         }
     }
+    // The captures folder and the saved path's name, after either separator, as findSample
+    // takes them (its step 4), for an entry saved in a captures folder: one named "Captures", or
+    // as the setting's folder is. The default folder is looked up only for such an entry.
+    const auto separator = entry.absolutePath.find_last_of("/\\");
+    if (separator == std::string::npos || separator == 0)
+    {
+        return stamps;
+    }
+    const std::string name = entry.absolutePath.substr(separator + 1);
+    const std::string savedFolder = entry.absolutePath.substr(0, separator);
+    const auto parent = savedFolder.find_last_of("/\\");
+    const std::string folderName =
+        parent == std::string::npos ? savedFolder : savedFolder.substr(parent + 1);
+    // Plain values, not an optional built in a ternary (GCC 13's -Wmaybe-uninitialized).
+    std::filesystem::path captures;
+    if (!settings.capturesFolder.empty())
+    {
+        captures = media::fromUtf8(settings.capturesFolder).value_or(std::filesystem::path());
+    }
+    const bool inCaptures =
+        folderName == "Captures" ||
+        (!captures.empty() && media::toUtf8(captures.filename()).value_or("") == folderName);
+    if (!inCaptures || name.empty())
+    {
+        return stamps;
+    }
+    if (captures.empty())
+    {
+        captures = media::defaultCapturesFolder();
+    }
+    const auto fileName = media::fromUtf8(name);
+    if (fileName && !captures.empty())
+    {
+        stamps.inCaptures = stampOf(captures / *fileName);
+    }
     return stamps;
 }
 
 media::SearchResult SearchCache::find(const core::MediaEntry &entry,
-                                      const core::MachineSettings &settings, Clock::time_point now)
+                                      const core::MachineSettings &settings, Clock::time_point now,
+                                      std::span<const std::filesystem::path> contentRoots)
 {
-    const Stamps stamps = stampsOf(entry, settings);
+    const Stamps stamps = stampsOf(entry, settings, contentRoots);
     std::lock_guard lock(mutex_);
     // Expired searches go first, so the list holds only the samples missing just now.
     std::erase_if(misses_, [now](const Miss &m) { return now - m.when >= kLifetime; });
     const auto known = std::find_if(misses_.begin(), misses_.end(), [&](const Miss &m) {
-        return m.entry == entry && m.settings == settings;
+        return m.entry == entry && m.settings == settings &&
+               std::equal(m.roots.begin(), m.roots.end(), contentRoots.begin(), contentRoots.end());
     });
     if (known != misses_.end())
     {
@@ -76,10 +125,11 @@ media::SearchResult SearchCache::find(const core::MediaEntry &entry,
         misses_.erase(known); // a candidate holds something else now: searched again
     }
     ++searches_;
-    media::SearchResult result = media::findSample(entry, settings);
+    media::SearchResult result = media::findSample(entry, settings, contentRoots);
     if (result.outcome != media::SearchOutcome::Found)
     {
-        misses_.push_back({entry, settings, stamps, result, now});
+        misses_.push_back(
+            {entry, settings, {contentRoots.begin(), contentRoots.end()}, stamps, result, now});
     }
     return result;
 }

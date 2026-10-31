@@ -157,7 +157,7 @@ std::optional<gg::core::MediaEntry> savedEntry(const PluginUnderTest &plugin)
 {
     gg::core::SessionState s;
     REQUIRE(gg::core::decodeState(plugin.save(), gg::core::Mode::Instrument, s));
-    return s.sample;
+    return s.samples[0];
 }
 
 float peak(const std::vector<float> &v, std::size_t from = 0,
@@ -468,18 +468,20 @@ TEST_CASE("a newer version's manifest loads the values, silent, and saves back u
         REQUIRE(instrument.load(gg::test::withSample(state, std::nullopt)));
         CHECK(loaderOf(instrument).status().state == SampleState::None);
         CHECK_FALSE(loaderOf(instrument).newerMedia().has_value());
-        CHECK(savedManifest(instrument) == R"(<media version="1" />)");
+        CHECK(savedManifest(instrument) == R"(<media version="2" />)");
     }
 }
 
-TEST_CASE("the fx ignores a newer version's manifest, as it does a sample", "[plugin]")
+TEST_CASE("the fx keeps a newer version's manifest, as the instrument does", "[plugin]")
 {
-    // The FX has no sample, and writes an empty manifest whatever it loaded.
+    // M2 sub-project 2's spec §6.8: the FX has loaders too, so a newer build's manifest is kept
+    // and saved back unchanged.
     setUp("newer-fx");
     PluginUnderTest fx(kFxId);
     REQUIRE(fx.valid());
     REQUIRE(fx.load(gg::test::withNewerMedia(fx.save())));
-    CHECK(savedManifest(fx) == R"(<media version="1" />)");
+    CHECK(fx.impl().media().loader(0).status().state == SampleState::Newer);
+    CHECK(savedManifest(fx) == gg::test::kNewerMedia);
 }
 
 TEST_CASE("a sample moved into the sample folder is found, and the state marked dirty", "[plugin]")
@@ -648,12 +650,27 @@ TEST_CASE("deactivate and destruction cancel a load under way at once", "[plugin
     // conversion of a job under way (seconds, for a long file). They cancel it between chunks
     // now: deactivate() keeps the job queued for the next activation, and the destructor drops
     // it. Timed against the same job left to finish, on this machine ([serial]: nothing beside).
+    // Each job is a different file of the same length: a file already loaded would be found in
+    // the process's sample pool (M2 sub-project 2) and skip the conversion and the pyramid (M2
+    // sub-project 3), finishing before a fifth of the whole job.
+    //
+    // Each of the two gets up to kTries tries, each with a job of its own, and passes on the
+    // first under a quarter of the whole job. One that waited for the job would take the rest
+    // of it, about four fifths, in every try; a cancel takes well under a millisecond here
+    // (Release, M5 Max). CI's 3-vCPU macOS VM once stalled one deactivate() for 256 ms against
+    // a 618 ms job, where the destructor's try in the same run passed.
+    constexpr int kTries = 3;
     using Clock = std::chrono::steady_clock;
     const auto ms = [](Clock::duration d) {
         return std::chrono::duration<double, std::milli>(d).count();
     };
     const fs::path dir = setUp("cancel");
-    const fs::path file = gg::test::writeSineWav(dir / "long.wav", 44100, 60.0, 220.0);
+    int files = 0;
+    const auto freshFile = [&dir, &files] {
+        ++files;
+        return gg::test::writeSineWav(dir / ("long-" + std::to_string(files) + ".wav"), 44100, 60.0,
+                                      110.0 * (files + 1));
+    };
     SourceLog sources;
     LoaderHost host;
     Clock::time_point start;
@@ -667,22 +684,33 @@ TEST_CASE("deactivate and destruction cancel a load under way at once", "[plugin
         sources.attach(loader);
 
         // The whole job: decoded, hashed, converted to 48 kHz.
+        const fs::path file = freshFile();
         start = Clock::now();
         loader.requestLoad(file);
         REQUIRE(settle(instrument).state == SampleState::Loaded);
         whole = ms(Clock::now() - start);
         UNSCOPED_INFO("the whole job: " << whole << " ms");
 
-        // A fifth of the way in, deactivate().
-        loader.requestLoad(file);
-        std::this_thread::sleep_for(std::chrono::duration<double, std::milli>(whole / 5.0));
-        start = Clock::now();
-        instrument.deactivate();
-        const double deactivating = ms(Clock::now() - start);
-        UNSCOPED_INFO("deactivate: " << deactivating << " ms");
+        // A fifth of the way into another, deactivate(). A try after the first activates again
+        // (the job cancelled runs again) and asks for a new file, which supersedes it.
+        double deactivating = whole;
+        for (int t = 0; t < kTries && !(deactivating < whole / 4.0); ++t)
+        {
+            if (t > 0)
+            {
+                REQUIRE(instrument.activate(48000.0, 512));
+            }
+            const fs::path next = freshFile();
+            loader.requestLoad(next);
+            std::this_thread::sleep_for(std::chrono::duration<double, std::milli>(whole / 5.0));
+            start = Clock::now();
+            instrument.deactivate();
+            deactivating = ms(Clock::now() - start);
+            UNSCOPED_INFO("deactivate, try " << t + 1 << ": " << deactivating << " ms");
+            CHECK(loader.status().state == SampleState::Loading); // queued again
+            CHECK(loader.resultsApplied() == 1);
+        }
         CHECK(deactivating < whole / 4.0);
-        CHECK(loader.status().state == SampleState::Loading); // queued again
-        CHECK(loader.resultsApplied() == 1);
 
         // The next activation runs it.
         REQUIRE(instrument.activate(48000.0, 512));
@@ -691,14 +719,28 @@ TEST_CASE("deactivate and destruction cancel a load under way at once", "[plugin
         Stereo out(512);
         renderNote(instrument, out, 512);
         CHECK(peak(out.left) > 0.01f);
-
-        // A fifth of the way into another, the destructor (after the harness's deactivate).
-        loader.requestLoad(file);
-        std::this_thread::sleep_for(std::chrono::duration<double, std::milli>(whole / 5.0));
-        start = Clock::now();
     }
-    const double destroying = ms(Clock::now() - start);
-    UNSCOPED_INFO("destruction: " << destroying << " ms");
+
+    // A fifth of the way into another, the destructor (after the harness's deactivate), each try
+    // an instrument of its own.
+    double destroying = whole;
+    for (int t = 0; t < kTries && !(destroying < whole / 4.0); ++t)
+    {
+        {
+            PluginUnderTest instrument(kInstrumentId, host.clap());
+            REQUIRE(instrument.valid());
+            REQUIRE(instrument.loadDefaultsWithSeed(0));
+            REQUIRE(instrument.activate(48000.0, 512));
+            auto &loader = loaderOf(instrument);
+            sources.attach(loader);
+            const fs::path next = freshFile();
+            loader.requestLoad(next);
+            std::this_thread::sleep_for(std::chrono::duration<double, std::milli>(whole / 5.0));
+            start = Clock::now();
+        }
+        destroying = ms(Clock::now() - start);
+        UNSCOPED_INFO("destruction, try " << t + 1 << ": " << destroying << " ms");
+    }
     CHECK(destroying < whole / 4.0);
     CHECK(sources.alive() == 0);
 }
@@ -835,7 +877,7 @@ TEST_CASE("a load before the audio thread takes a restore keeps the restore's va
     REQUIRE(gg::core::decodeState(instrument.save(), gg::core::Mode::Instrument, s));
     const auto density = static_cast<std::size_t>(gg::core::ParamSlot::Density);
     s.values[density] = 3.0f;
-    s.sample = gg::test::entryOf(first);
+    s.samples[0] = gg::test::entryOf(first);
     REQUIRE(instrument.load(gg::core::encodeState(s)));
     loaderOf(instrument).requestLoad(second);
     REQUIRE(settle(instrument).state == SampleState::Loaded);
@@ -1083,7 +1125,7 @@ TEST_CASE("a restore of the sample already loaded keeps it, reading no file (R19
     REQUIRE(instrument.activate(48000.0, 512));
     gg::core::SessionState s;
     REQUIRE(gg::core::decodeState(instrument.save(), gg::core::Mode::Instrument, s));
-    s.sample = gg::test::entryOf(file);
+    s.samples[0] = gg::test::entryOf(file);
     REQUIRE(instrument.load(gg::core::encodeState(s)));
     REQUIRE(loader.status().state == SampleState::Loaded);
     REQUIRE(sources.count() == 1);
@@ -1156,19 +1198,38 @@ TEST_CASE("a session without a sample clears the one loaded", "[plugin]")
     CHECK(peak(out.left) == 0.0f);
 }
 
-TEST_CASE("the FX has no loader and saves an empty manifest", "[plugin]")
+TEST_CASE("four loaders in both products, and the FX saves its samples", "[plugin]")
 {
+    // M2 sub-project 2's spec §6.8: one loader per layer in both products, each recording its
+    // layer; the FX's editor has no loader strip (sampleLoader() is the instrument's layer A).
     setUp("fx");
     const fs::path file = gg::test::sineSampleFile("fx");
-    PluginUnderTest fx(kFxId);
-    REQUIRE(fx.valid());
-    CHECK(fx.impl().sampleLoader() == nullptr);
-    // A state carrying a sample (from the instrument, say) loads; the FX ignores the sample.
-    gg::core::SessionState s;
-    REQUIRE(gg::core::decodeState(fx.save(), gg::core::Mode::Fx, s));
-    s.sample = gg::test::entryOf(file);
-    REQUIRE(fx.load(gg::core::encodeState(s)));
-    CHECK(savedManifest(fx) == "<media version=\"1\" />");
+    for (const char *id : {kInstrumentId, kFxId})
+    {
+        CAPTURE(id);
+        PluginUnderTest plugin(id);
+        REQUIRE(plugin.valid());
+        const bool isFx = std::string_view(id) == kFxId;
+        CHECK((plugin.impl().sampleLoader() == nullptr) == isFx);
+        auto &media = plugin.impl().media();
+        for (uint8_t layer = 0; layer < gg::core::kLayers; ++layer)
+        {
+            CHECK(media.loader(layer).layer() == layer);
+        }
+        const auto mode = isFx ? gg::core::Mode::Fx : gg::core::Mode::Instrument;
+        // With no sample, an empty manifest.
+        CHECK(savedManifest(plugin) == "<media version=\"2\" />");
+        gg::core::SessionState s;
+        REQUIRE(gg::core::decodeState(plugin.save(), mode, s));
+        s.samples[3] = gg::test::entryOf(file);
+        s.samples[3]->layer = 3;
+        REQUIRE(plugin.load(gg::core::encodeState(s)));
+        CHECK(media.loader(3).status().state == SampleState::Loaded);
+        gg::core::SessionState saved;
+        REQUIRE(gg::core::decodeState(plugin.save(), mode, saved));
+        CHECK(saved.samples[3] == s.samples[3]);
+        CHECK_FALSE(saved.samples[0].has_value());
+    }
 }
 
 TEST_CASE("the sample folder is saved in the settings file", "[plugin]")
@@ -1310,6 +1371,52 @@ TEST_CASE("the search cache remembers a search that found nothing for its lifeti
     gg::test::writeSineWav(library / "rel" / "search-cache.wav");
     CHECK(cache.find(inFolder, settings, t0).outcome == SearchOutcome::Found);
     CHECK(cache.searches() == 12);
+}
+
+TEST_CASE("the search cache keys a miss by its content roots and captures folder", "[plugin]")
+{
+    // M2 sub-project 2's spec §6.7: the content roots and the captures folder are candidates, so
+    // a miss remembered with one set isn't another set's, and a file put back at either candidate
+    // is seen at once.
+    const fs::path dir = setUp("search-cache-roots");
+    const fs::path file = gg::test::sineSampleFile("search-cache-roots");
+    gg::core::MediaEntry entry = gg::test::entryOf(file);
+    entry.contentPath = "Pads/pad.wav";
+    entry.absolutePath = gg::test::utf8(dir / "gone" / "Captures" / "pad.wav");
+    const fs::path rootA = dir / "rootA";
+    const fs::path rootB = dir / "rootB";
+    const fs::path captures = dir / "captures";
+    fs::remove_all(rootA);
+    fs::remove_all(rootB);
+    fs::remove_all(captures);
+    gg::core::MachineSettings settings;
+    settings.capturesFolder = gg::test::utf8(captures);
+    SearchCache cache;
+    const auto t0 = SearchCache::Clock::time_point{} + std::chrono::hours(1);
+    using gg::media::SearchOutcome;
+    const std::vector<fs::path> rootsA{rootA};
+    const std::vector<fs::path> rootsB{rootB};
+
+    CHECK(cache.find(entry, settings, t0, rootsA).outcome == SearchOutcome::Missing);
+    CHECK(cache.find(entry, settings, t0, rootsA).outcome == SearchOutcome::Missing);
+    CHECK(cache.searches() == 1);
+    CHECK(cache.find(entry, settings, t0, rootsB).outcome == SearchOutcome::Missing);
+    CHECK(cache.searches() == 2); // other roots: another search
+    // A file put back under a root is seen at once.
+    fs::create_directories(rootA / "Pads");
+    fs::copy_file(file, rootA / "Pads" / "pad.wav");
+    CHECK(cache.find(entry, settings, t0, rootsA).outcome == SearchOutcome::Found);
+    CHECK(cache.searches() == 3);
+    // Another captures folder is another search, and a file put back there is seen at once.
+    gg::core::MachineSettings elsewhere = settings;
+    elsewhere.capturesFolder = gg::test::utf8(dir / "other-captures");
+    CHECK(cache.find(entry, settings, t0, rootsB).outcome == SearchOutcome::Missing);
+    CHECK(cache.find(entry, elsewhere, t0, rootsB).outcome == SearchOutcome::Missing);
+    CHECK(cache.searches() == 4);
+    fs::create_directories(captures);
+    fs::copy_file(file, captures / "pad.wav");
+    CHECK(cache.find(entry, settings, t0, rootsB).outcome == SearchOutcome::Found);
+    CHECK(cache.searches() == 5);
 }
 
 TEST_CASE("a missing sample that comes back is loaded at the next activation", "[plugin]")

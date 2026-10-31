@@ -12,15 +12,19 @@
 //   gg-render <spec.json> [-o out.wav] [--metrics out.json] [--events out.jsonl]
 //             [--spectrogram out.png] [--compare golden.metrics.json]
 //             [--compare-events golden.events.jsonl] [--block-size N] [--media-dir DIR]
-//             [--preset file.ggpreset] [--content-dir DIR]
+//             [--preset file.ggpreset] [--content-dir DIR] [--captures-dir DIR]
+//             [--save-state out.ggst]
 //   gg-render --write-media DIR
 //   gg-render --pack-preset <source.json> -o <out.ggpreset> [--content-dir DIR]
 //
 // --media-dir resolves the spec's relative file paths against DIR instead of the spec's
 // directory. --preset sets the spec's "preset" key, or overrides it, and is resolved like it
-// (RenderSpec::preset). --content-dir is the content folder a preset's content-relative samples
-// are taken from; until MEDI version 2 (after sub-project 2 merges) no preset names a sample, and
-// it is accepted and unused. --write-media writes the test media the golden cases read
+// (RenderSpec::preset). --content-dir names a content root: where a restored state's samples are
+// found by their content path, and the content folder a preset's content-relative samples will be
+// taken from (no preset names a sample yet, so for a preset it is accepted and unused).
+// --captures-dir is the folder audio past the embed limit is filed in, and --save-state writes the
+// session state at the render's end (RenderOptions in Render.h; instrument and FX specs only).
+// --write-media writes the test media the golden cases read and the two state fixtures
 // (writeTestMedia in Signals.h) into DIR, and does nothing else. --pack-preset compiles a preset
 // source (PresetSource.h) into the preset file -o names, and takes no other option but
 // --content-dir.
@@ -188,6 +192,8 @@ int run(int argc, char **argv)
     std::string mediaDir;
     std::string presetPath;
     std::string contentDir;
+    std::string capturesDir;
+    std::string saveStatePath;
     std::string writeMediaDir;
     std::string packSourcePath;
     // Every option but --write-media, which takes none of them, and --pack-preset, which takes
@@ -218,14 +224,25 @@ int run(int argc, char **argv)
         app.add_option("--media-dir", mediaDir,
                        "Resolve the spec's relative file paths against this directory instead "
                        "of the spec's"));
+    renderOptions.push_back(app.add_option(
+        "--captures-dir", capturesDir,
+        "Where --save-state files audio past the 32 MiB embed limit, and where a state's filed "
+        "rings are found"));
+    renderOptions.push_back(app.add_option(
+        "--save-state", saveStatePath,
+        "Write the session state (rings, samples, values) at the render's end; instrument and "
+        "FX specs only. Built-in signal samples (sine, sweep, noise) are not saved, only file "
+        "samples and captures"));
     auto *const presetOption = app.add_option(
         "--preset", presetPath,
         "Apply this preset file before the spec's own params and mod: sets the spec's \"preset\" "
         "key, or overrides it, resolved like it (against the spec's directory or --media-dir)");
     renderOptions.push_back(presetOption);
-    auto *const contentDirOption =
-        app.add_option("--content-dir", contentDir,
-                       "The content folder a preset's content-relative samples are taken from");
+    auto *const contentDirOption = app.add_option(
+        "--content-dir", contentDir,
+        "A content root: where a restored state's samples are found by their content path "
+        "(besides the spec's directory or --media-dir), and the content folder a preset's "
+        "content-relative samples are taken from");
     auto *const writeMediaOption = app.add_option(
         "--write-media", writeMediaDir,
         "Write the test media the golden cases read into this directory, and exit; it takes no "
@@ -259,8 +276,9 @@ int run(int argc, char **argv)
         {
             return fail(error);
         }
-        fmt::print("wrote {} and {} in {}\n", gg::render::kToneMedium, gg::render::kLoopMedium,
-                   writeMediaDir);
+        fmt::print("wrote {}, {}, {}, {}, {} and {} in {}\n", gg::render::kToneMedium,
+                   gg::render::kLoopMedium, gg::render::kSineMedium, gg::render::kNoiseMedium,
+                   gg::render::kFrozenRingState, gg::render::kFourSamplesState, writeMediaDir);
         return kExitPass;
     }
     if (!packSourcePath.empty())
@@ -325,11 +343,19 @@ int run(int argc, char **argv)
         {
             return fail(fmt::format("{}: --preset needs an instrument or FX spec", specPath));
         }
+        const bool hasState = spec->mode == gg::render::RenderMode::Fx
+                                  ? !spec->fx.statePath.empty()
+                                  : !spec->instrument.statePath.empty();
+        if (hasState)
+        {
+            return fail(fmt::format("{}: preset and state can't both be given", specPath));
+        }
         spec->preset = presetPath;
     }
-    gg::render::resolvePaths(
-        *spec, mediaDir.empty() ? gg::render::utf8FromPath(pathFromUtf8(specPath).parent_path())
-                                : mediaDir);
+    const std::string baseDir = mediaDir.empty()
+                                    ? gg::render::utf8FromPath(pathFromUtf8(specPath).parent_path())
+                                    : mediaDir;
+    gg::render::resolvePaths(*spec, baseDir);
     if (blockSizeOption->count() > 0)
     {
         spec->blockSize = blockSize;
@@ -366,7 +392,11 @@ int run(int argc, char **argv)
     std::vector<std::string> events;
     try
     {
-        audio = gg::render::render(*spec, &events);
+        audio = gg::render::render(*spec, &events,
+                                   {.contentDir = contentDir,
+                                    .capturesDir = capturesDir,
+                                    .saveStatePath = saveStatePath,
+                                    .mediaDir = baseDir.empty() ? "." : baseDir});
     }
     catch (const gg::render::BadInput &e)
     {

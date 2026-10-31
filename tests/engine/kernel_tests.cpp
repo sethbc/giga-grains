@@ -12,8 +12,10 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <limits>
 #include <memory>
+#include <ios>
 #include <sstream>
 #include <string>
 #include <type_traits>
@@ -1354,21 +1356,100 @@ void requireExactRuns(const Pool &pool, int64_t frames, uint32_t d, int64_t from
     }
 }
 
-// liveInterior at decimation 1, which also requires UnitDecimation (level 0's compile-time
-// decimation) to give the same parts.
+// liveInterior at decimation 1, checked against UnitDecimation (level 0's compile-time
+// decimation, the path renderLiveSimd takes). The two run the same IEEE arithmetic (a multiply by
+// 1.0 against none) on the same unchanging ring, so their bounds can't differ on a sound machine,
+// yet CI's mac-universal leg found them one sample apart three times, each only on the x86_64
+// slice under Rosetta ("loop, frozen", blocks of 1: 35,269 against 35,270 at f6e6b0d, 35,298
+// against 35,297 at 0871920), never on Windows' real x86 nor in 89 local Rosetta runs (carry-over
+// row 356). Bit identity needs the output alone, so on a bound difference (the programme's ruling
+// at the final merge) the grain is rendered over [from, to) through both paths' SIMD kernel and
+// each is required to match the reference by memcmp; the difference itself is a WARN carrying the
+// diagnostic (each path recomputed twice, whether it repeats, and the grain's rows and the ring's
+// head and kink in hexfloat), so a translation difference can't fail CI while any difference in
+// the output still does. (8029599's UNSCOPED_INFO never reached the log: Catch2 drops unscoped
+// messages at the next assertion, and the next one, the begin's, passed.)
 template <class R, class Ring>
 gg::kernels::LiveInterior liveInteriorAtOne(const gg::GrainRows &rows, uint32_t i, const Ring &ring,
                                             int64_t from, int64_t to)
 {
-    const gg::kernels::LiveInterior in = gg::kernels::liveInterior<R>(rows, i, ring, 1u, from, to);
-    const gg::kernels::LiveInterior unit = gg::kernels::liveInterior<R>(
-        rows, i, ring, gg::kernels::detail::UnitDecimation{}, from, to);
-    for (int p = 0; p < 2; ++p)
+    const auto atOne = [&] { return gg::kernels::liveInterior<R>(rows, i, ring, 1u, from, to); };
+    const auto atUnit = [&] {
+        return gg::kernels::liveInterior<R>(rows, i, ring, gg::kernels::detail::UnitDecimation{},
+                                            from, to);
+    };
+    const auto same = [](const gg::kernels::LiveInterior &a, const gg::kernels::LiveInterior &b) {
+        return a.begin[0] == b.begin[0] && a.end[0] == b.end[0] && a.begin[1] == b.begin[1] &&
+               a.end[1] == b.end[1];
+    };
+    const gg::kernels::LiveInterior in = atOne();
+    const gg::kernels::LiveInterior unit = atUnit();
+    if (same(in, unit))
     {
-        REQUIRE(unit.begin[p] == in.begin[p]);
-        REQUIRE(unit.end[p] == in.end[p]);
+        return in;
     }
-    return in;
+    std::ostringstream diag;
+    diag << "liveInterior's bounds differ between decimation 1 and UnitDecimation: grain " << i
+         << " over [" << from << ", " << to << "), at 1 [" << in.begin[0] << ", " << in.end[0]
+         << ") [" << in.begin[1] << ", " << in.end[1] << "), unit [" << unit.begin[0] << ", "
+         << unit.end[0] << ") [" << unit.begin[1] << ", " << unit.end[1] << ")";
+    for (int pass = 1; pass <= 2; ++pass)
+    {
+        const gg::kernels::LiveInterior a = atOne();
+        const gg::kernels::LiveInterior b = atUnit();
+        diag << "; recomputed " << pass << ": at 1 [" << a.begin[0] << ", " << a.end[0] << ") ["
+             << a.begin[1] << ", " << a.end[1] << "), unit [" << b.begin[0] << ", " << b.end[0]
+             << ") [" << b.begin[1] << ", " << b.end[1] << ")"
+             << (same(a, in) && same(b, unit) ? " (repeats)" : " (does not repeat)");
+    }
+    diag << std::hexfloat << "; startPos " << rows.startPos[i] << ", rate " << rows.rate[i]
+         << ", onsetSample " << rows.onsetSample[i] << ", onsetFrac " << rows.onsetFrac[i]
+         << ", invDuration " << rows.invDuration[i] << std::defaultfloat << "; ring head "
+         << ring.head() << ", kink " << ring.blockKink();
+    WARN(diag.str());
+    // What bit identity requires: through either path's bounds, the grain's output is the
+    // reference's.
+    const Tables &tables = kernelTables();
+    Buffers ref(from, to, 2);
+    Buffers one(from, to, 2);
+    Buffers unitOut(from, to, 2);
+    gg::kernels::renderLiveRef<R>(rows, i, ring, 1u, ref.output(), from, to, tables);
+    gg::kernels::detail::renderLiveSimdAt<R>(rows, i, ring, 1u, one.output(), from, to, tables);
+    gg::kernels::detail::renderLiveSimdAt<R>(rows, i, ring, gg::kernels::detail::UnitDecimation{},
+                                             unitOut.output(), from, to, tables);
+    INFO(diag.str());
+    for (int c = 0; c < 2; ++c)
+    {
+        REQUIRE(sameBits(one.ch[c], ref.ch[c]));
+        REQUIRE(sameBits(unitOut.ch[c], ref.ch[c]));
+    }
+    return unit; // the bounds renderLiveSimd takes
+}
+
+// The reference over the ring's level of `decimation`: renderLiveRef for level 0, and
+// renderLiveLevelRef for a level above it (M2 sub-project 2's spec §6.9).
+template <class R, class Ring>
+void renderLiveRefAt(const gg::GrainRows &rows, uint32_t i, const Ring &ring, uint32_t decimation,
+                     const gg::kernels::Output &out, int64_t from, int64_t to, const Tables &tables)
+{
+    if (decimation == 1)
+    {
+        gg::kernels::renderLiveRef<R>(rows, i, ring, 1u, out, from, to, tables);
+    }
+    else
+    {
+        gg::kernels::renderLiveLevelRef<R>(rows, i, ring, decimation, out, from, to, tables);
+    }
+}
+
+// The interior the SIMD kernel renders at `decimation`: liveInteriorAtOne for level 0, and
+// liveLevelInterior for a level above it.
+template <class R, class Ring>
+gg::kernels::LiveInterior liveInteriorAt(const gg::GrainRows &rows, uint32_t i, const Ring &ring,
+                                         uint32_t decimation, int64_t from, int64_t to)
+{
+    return decimation == 1 ? liveInteriorAtOne<R>(rows, i, ring, from, to)
+                           : gg::kernels::liveLevelInterior<R>(rows, i, ring, decimation, from, to);
 }
 
 // A stereo noise source. stereo() carries the interleaved copy the engine builds (§16 lever 2),
@@ -2106,7 +2187,8 @@ struct LiveRenders
 // to holds for the 8-wide output too.
 template <class R>
 LiveRenders renderLiveBoth(const Pool &pool, const LiveInput &input,
-                           const std::vector<int64_t> &lengths, int outputs, const Tables &tables)
+                           const std::vector<int64_t> &lengths, int outputs, const Tables &tables,
+                           uint32_t decimation = 1u)
 {
     LiveRenders r{Buffers(0, input.length, outputs), Buffers(0, input.length, outputs), {}, 0};
     const gg::kernels::Output refOut = r.ref.output();
@@ -2120,17 +2202,18 @@ LiveRenders renderLiveBoth(const Pool &pool, const LiveInput &input,
     prepareRing(ring);
     driveRing(ring, input, lengths, [&](int64_t from, int64_t to) {
         active.each(from, to, [&](uint32_t i) {
-            gg::kernels::renderLiveRef<R>(rows, i, ring, 1u, refOut, from, to, tables);
-            gg::kernels::renderLiveSimd<R>(rows, i, ring, 1u, simdOut, from, to, tables);
+            renderLiveRefAt<R>(rows, i, ring, decimation, refOut, from, to, tables);
+            gg::kernels::renderLiveSimd<R>(rows, i, ring, decimation, simdOut, from, to, tables);
             if (avx2 != nullptr)
             {
-                liveKernel<R> (*avx2)(rows, i, ring, 1u, wideOut, from, to, tables);
+                liveKernel<R> (*avx2)(rows, i, ring, decimation, wideOut, from, to, tables);
             }
             if (std::max(from, rows.onsetSample[i]) >= std::min(to, rows.endSample[i]))
             {
                 return;
             }
-            const gg::kernels::LiveInterior in = liveInteriorAtOne<R>(rows, i, ring, from, to);
+            const gg::kernels::LiveInterior in =
+                liveInteriorAt<R>(rows, i, ring, decimation, from, to);
             const int64_t moving = (in.end[0] - in.begin[0]) / 4 * 4;
             const int64_t still = (in.end[1] - in.begin[1]) / 4 * 4;
             r.stats.simdSamples += moving + still;
@@ -2419,6 +2502,518 @@ TEMPLATE_TEST_CASE("simd live kernel matches the reference through freeze and wr
     }
 }
 
+// ---------------------------------------------------------------------------------------------
+// The SIMD live kernel under a narrowed window (M2 sub-project 2's spec §6.1): a loop, a frozen
+// loop and splices, whose ends liveRun takes from the ring with the same M + 1 slack it keeps
+// against N and the head.
+
+namespace
+{
+// A change to the ring's window made before the piece that starts at output sample `at`.
+struct RingChange
+{
+    int64_t at;
+    std::function<void(gg::LiveSource &)> apply;
+};
+
+// driveRing, with the pieces also split at the changes, each applied before its piece is written.
+template <class Render>
+void driveRingWindowed(gg::LiveSource &ring, const LiveInput &input,
+                       const std::vector<int64_t> &lengths, const std::vector<RingChange> &changes,
+                       Render &&render)
+{
+    ring.reset();
+    ring.setLoop(false, 0);
+    ring.selectSplice(0);
+    std::size_t toggle = 0;
+    std::size_t change = 0;
+    std::size_t block = 0;
+    bool frozen = false;
+    int64_t hostEnd = 0;
+    for (int64_t from = 0; from < input.length;)
+    {
+        if (from == hostEnd)
+        {
+            hostEnd += lengths[block++ % lengths.size()];
+        }
+        while (toggle < input.toggles.size() && input.toggles[toggle] <= from)
+        {
+            frozen = !frozen;
+            ++toggle;
+        }
+        while (change < changes.size() && changes[change].at <= from)
+        {
+            changes[change++].apply(ring);
+        }
+        int64_t to = std::min(hostEnd, input.length);
+        if (toggle < input.toggles.size())
+        {
+            to = std::min(to, input.toggles[toggle]);
+        }
+        if (change < changes.size())
+        {
+            to = std::min(to, changes[change].at);
+        }
+        ring.setFrozen(frozen);
+        const float *in[2] = {input.left.data() + from, input.right.data() + from};
+        ring.write(in, 2, 0, from, static_cast<uint32_t>(to - from));
+        render(from, to);
+        from = to;
+    }
+}
+
+// The window [oldest, end − 1] at every output sample: like R(t), it depends only on the
+// schedule of freezes and changes, not on the blocks.
+struct WindowTrajectory
+{
+    std::vector<int64_t> head;
+    std::vector<int64_t> end;
+    std::vector<int64_t> oldest;
+};
+WindowTrajectory windowTrajectory(const LiveInput &input, const std::vector<RingChange> &changes)
+{
+    gg::LiveSource ring;
+    prepareRing(ring);
+    const auto n = static_cast<std::size_t>(input.length);
+    WindowTrajectory w{std::vector<int64_t>(n), std::vector<int64_t>(n), std::vector<int64_t>(n)};
+    driveRingWindowed(ring, input, {kLiveMaxBlock}, changes, [&](int64_t from, int64_t to) {
+        for (int64_t t = from; t < to; ++t)
+        {
+            const auto at = static_cast<std::size_t>(t);
+            w.head[at] = ring.headAt(t);
+            w.end[at] = ring.anchorAt(t);
+            w.oldest[at] = ring.windowOldestAt(t);
+        }
+    });
+    return w;
+}
+
+// Grains placed against the window in effect at their onset sample: anywhere inside it at rates
+// 2^[−2, 2]; at rate 1 within a few frames of M + 1 inside its oldest frame, where a loop's margin
+// stays constant while the head advances and the admission clamp puts grains (lo); and the same
+// against its end (hi). The window may narrow or move under them later, so many straddle it.
+std::vector<gg::GrainSpec> windowGrains(uint64_t seed, const std::vector<int64_t> &onsets,
+                                        const WindowTrajectory &w)
+{
+    std::vector<gg::GrainSpec> specs;
+    for (std::size_t k = 0; k < onsets.size(); ++k)
+    {
+        const auto uk = static_cast<uint64_t>(k);
+        const auto at = static_cast<std::size_t>(onsets[k]);
+        const auto end = static_cast<double>(w.end[at]);
+        const auto oldest = static_cast<double>(w.oldest[at]);
+        const double frac = u01(seed, 1, uk);
+        const double u = u01(seed, 2, uk);
+        double rate = std::exp2(-2.0 + 4.0 * u01(seed, 0, uk));
+        double start = oldest + u * (end - oldest);
+        switch (k % 4)
+        {
+        case 1: // at the oldest frame's margin: (pos − 1) − oldest = M + [−2, 2]
+            rate = 1.0;
+            start = oldest + 1.0 + kM + (4.0 * u - 2.0) + frac;
+            break;
+        case 2: // at the end's margin, (end − 1) − (pos + 2) = M + [−2, 2], reading slower
+            rate = 0.5 + 0.5 * u;
+            start = end - 3.0 - kM - (4.0 * u - 2.0) - frac;
+            break;
+        default:
+            break;
+        }
+        specs.push_back({
+            .index = uk,
+            .onsetSample = onsets[k],
+            .onsetFrac = frac,
+            .startPos = start,
+            .rate = rate,
+            .durationSamples = 16.0 + u01(seed, 3, uk) * (6000.0 - 16.0),
+            .texture = k % 3 == 0 ? 0.0 : u01(seed, 6, uk),
+            .gain = 0.25f + 0.75f * static_cast<float>(u01(seed, 4, uk)),
+            .pan = static_cast<float>(2.0 * u01(seed, 5, uk) - 1.0),
+        });
+    }
+    return specs;
+}
+
+// renderLiveBoth, over a ring whose window the changes set (the AVX2 table's output held to the
+// SIMD kernel's too, where there is one).
+template <class R>
+LiveRenders renderLiveBothWindowed(const Pool &pool, const LiveInput &input,
+                                   const std::vector<int64_t> &lengths,
+                                   const std::vector<RingChange> &changes, const Tables &tables,
+                                   uint32_t decimation = 1u)
+{
+    LiveRenders r{Buffers(0, input.length, 2), Buffers(0, input.length, 2), {}, 0};
+    const gg::kernels::Output refOut = r.ref.output();
+    const gg::kernels::Output simdOut = r.simd.output();
+    const Dispatch *avx2 = gg::kernels::avx2Kernels();
+    Buffers wide(0, avx2 != nullptr ? input.length : 0, 2);
+    const gg::kernels::Output wideOut = wide.output();
+    const gg::GrainRows &rows = pool.rows();
+    ActiveGrains active(pool);
+    gg::LiveSource ring;
+    prepareRing(ring);
+    driveRingWindowed(ring, input, lengths, changes, [&](int64_t from, int64_t to) {
+        active.each(from, to, [&](uint32_t i) {
+            renderLiveRefAt<R>(rows, i, ring, decimation, refOut, from, to, tables);
+            gg::kernels::renderLiveSimd<R>(rows, i, ring, decimation, simdOut, from, to, tables);
+            if (avx2 != nullptr)
+            {
+                liveKernel<R> (*avx2)(rows, i, ring, decimation, wideOut, from, to, tables);
+            }
+            if (std::max(from, rows.onsetSample[i]) >= std::min(to, rows.endSample[i]))
+            {
+                return;
+            }
+            const gg::kernels::LiveInterior in =
+                liveInteriorAt<R>(rows, i, ring, decimation, from, to);
+            r.stats.simdSamples +=
+                (in.end[0] - in.begin[0]) / 4 * 4 + (in.end[1] - in.begin[1]) / 4 * 4;
+            r.stats.emptyCalls += in.end[0] == in.begin[0] && in.end[1] == in.begin[1];
+        });
+    });
+    r.finalHead = ring.head();
+    if (avx2 != nullptr)
+    {
+        INFO("the AVX2 table");
+        REQUIRE(sameOrBothNaN(wide.ch[0], r.simd.ch[0]));
+        REQUIRE(sameOrBothNaN(wide.ch[1], r.simd.ch[1]));
+    }
+    return r;
+}
+} // namespace
+
+TEMPLATE_TEST_CASE("simd live kernel matches the reference under a narrowed window", "[kernel]",
+                   Hermite, Linear, Sinc)
+{
+    // Review finding 4. Five schedules over a 0.5 s ring (N = 24,000), each in blocks of 511, 7
+    // and 1 (the long run, SIMD steps at every phase, and every sample a call of its own; 64 adds
+    // nothing those three don't check and cost a sixth of the case under ASan), the SIMD kernel
+    // held to the reference with std::memcmp, and every block size to the first:
+    // - a loop on an unfrozen ring, narrowing from N to 6,000 frames and widening again;
+    // - a frozen loop: Loop on at 5,000 frames under 12 freezes;
+    // - splices: four marks and splice 2 selected on an unfrozen ring, so the marks age out
+    //   under it and the selection moves from one non-last splice to the next and then to the
+    //   last, held through a freeze in the middle;
+    // - splice selections on a frozen ring: 1, 4 (the last), 2, then the whole ring and a loop
+    //   (ruling SP-T12aa: the grains sounding at each change keep reading their old span);
+    // - a shrink's limits (ruling SP-T12ad): the admission limit, then the read limit, a splice
+    //   the limit comes to bind, then both lifted.
+    // Grains sit inside the window at its onset, a quarter at the oldest frame's margin and a
+    // quarter at the end's, and many straddle a narrowing.
+    struct Schedule
+    {
+        const char *name;
+        LiveInput input;
+        std::vector<RingChange> changes;
+    };
+    std::vector<Schedule> schedules;
+    schedules.push_back({"loop, unfrozen",
+                         LiveInput(100000, 81, {}),
+                         {{30000, [](gg::LiveSource &r) { r.setLoop(true, 6000); }},
+                          {55000, [](gg::LiveSource &r) { r.setLoop(true, 15000); }},
+                          {80000, [](gg::LiveSource &r) { r.setLoop(false, 15000); }}}});
+    schedules.push_back({"loop, frozen",
+                         LiveInput(100000, 83, freezeToggles(85, 12, 6000.0)),
+                         {{0, [](gg::LiveSource &r) { r.setLoop(true, 5000); }}}});
+    schedules.push_back(
+        {"splices", LiveInput(100000, 87, {36000, 70000}), {{30000, [](gg::LiveSource &r) {
+                                                                 for (const int64_t m :
+                                                                      {10000, 14000, 20000, 26000})
+                                                                 {
+                                                                     REQUIRE(r.addSplice(m));
+                                                                 }
+                                                                 r.selectSplice(2);
+                                                             }}}});
+    // Ruling SP-T12aa: the selection moved under sounding grains on a ring frozen at 28,000, so
+    // the window jumps from one span to another and back to the whole ring.
+    schedules.push_back({"splice selections, frozen",
+                         LiveInput(100000, 97, {28000}),
+                         {{30000,
+                           [](gg::LiveSource &r) {
+                               for (const int64_t m : {10000, 14000, 20000, 26000})
+                               {
+                                   REQUIRE(r.addSplice(m));
+                               }
+                               r.selectSplice(1);
+                           }},
+                          {45000, [](gg::LiveSource &r) { r.selectSplice(4); }},
+                          {60000, [](gg::LiveSource &r) { r.selectSplice(2); }},
+                          {75000, [](gg::LiveSource &r) { r.selectSplice(0); }},
+                          {85000, [](gg::LiveSource &r) { r.setLoop(true, 3000); }}}});
+    // Ruling SP-T12ad: a shrink's admission limit, then its read limit, on an unfrozen ring, then
+    // a splice whose start the limit comes to bind as the head moves on (the window's oldest frame
+    // turns from the mark to R − N′ + kCapSlack within a run), then both limits lifted.
+    schedules.push_back({"a shrink's limits",
+                         LiveInput(100000, 99, {}),
+                         {{30000, [](gg::LiveSource &r) { r.setAdmitLimit(9000, true); }},
+                          {45000, [](gg::LiveSource &r) { r.setReadLimit(9000, 45000); }},
+                          {60000,
+                           [](gg::LiveSource &r) {
+                               for (const int64_t m : {52000, 56000, 59000})
+                               {
+                                   REQUIRE(r.addSplice(m));
+                               }
+                               r.selectSplice(1);
+                           }},
+                          {75000, [](gg::LiveSource &r) {
+                               r.selectSplice(0);
+                               r.setAdmitLimit(0, false);
+                               r.setReadLimit(0, 75000);
+                           }}}});
+    const Tables &tables = kernelTables();
+    for (const Schedule &schedule : schedules)
+    {
+        INFO(schedule.name);
+        const WindowTrajectory w = windowTrajectory(schedule.input, schedule.changes);
+        // Not vacuous: the window is narrower than N somewhere.
+        int64_t narrowed = 0;
+        for (std::size_t t = 0; t < w.end.size(); ++t)
+        {
+            narrowed += w.end[t] - w.oldest[t] < 24000 && w.head[t] >= 24000;
+        }
+        REQUIRE(narrowed > 30000);
+        const Pool pool(windowGrains(89, spreadOnsets(schedule.input.length, 600), w));
+        std::vector<float> first[2];
+        for (const int64_t block : {511, 7, 1})
+        {
+            INFO("blocks of " << block);
+            const LiveRenders r = renderLiveBothWindowed<TestType>(pool, schedule.input, {block},
+                                                                   schedule.changes, tables);
+            REQUIRE(anyNonZero(r.ref.ch[0]));
+            REQUIRE(anyNonZero(r.ref.ch[1]));
+            if (block == 511)
+            {
+                REQUIRE(r.stats.simdSamples > 100000);
+            }
+            REQUIRE(sameBits(r.simd.ch[0], r.ref.ch[0]));
+            REQUIRE(sameBits(r.simd.ch[1], r.ref.ch[1]));
+            if (block == 511)
+            {
+                first[0] = r.simd.ch[0];
+                first[1] = r.simd.ch[1];
+            }
+            REQUIRE(sameBits(r.simd.ch[0], first[0]));
+            REQUIRE(sameBits(r.simd.ch[1], first[1]));
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// The SIMD live kernel at the ring's levels (M2 sub-project 2's spec §6.9): a grain that latched
+// level n >= 1 reads its taps from the ring's level n, the head, window and fade in ring frames.
+// renderLiveSimd (and the AVX2 table's live kernel) at decimation 2ⁿ held to renderLiveLevelRef
+// with std::memcmp, for every tier and every level, through freeze and wrap, and under a loop, a
+// frozen loop and splices.
+
+namespace
+{
+// The grains with their rates scaled by d: a level-n grain reads at 2ⁿ times a level-0 one's.
+std::vector<gg::GrainSpec> scaledRates(std::vector<gg::GrainSpec> specs, uint32_t d)
+{
+    for (gg::GrainSpec &g : specs)
+    {
+        g.rate *= static_cast<double>(d);
+    }
+    return specs;
+}
+} // namespace
+
+TEMPLATE_TEST_CASE("simd live kernel matches the reference at every ring level", "[kernel]",
+                   Hermite, Linear, Sinc)
+{
+    // Levels 1 to 3 (decimations 2, 4 and 8) of a 0.5 s ring written until it has wrapped 4
+    // times, never frozen and then frozen and released at 12 samples; 300 grains at rates
+    // 2ⁿ × 2^[−2, 2], in ragged blocks and blocks of 511, into two outputs and one.
+    const Tables &tables = kernelTables();
+    {
+        gg::LiveSource ring;
+        prepareRing(ring);
+        REQUIRE(ring.levelCount() == 4);
+    }
+    for (const uint32_t d : {2u, 4u, 8u})
+    {
+        for (const bool frozen : {false, true})
+        {
+            INFO("decimation " << d << (frozen ? ", frozen and released" : ", never frozen"));
+            const LiveInput input(100000, 61 + d,
+                                  frozen ? freezeToggles(67 + d, 12, 3000.0)
+                                         : std::vector<int64_t>{});
+            const std::vector<int64_t> heads = headTrajectory(input);
+            const Pool pool(
+                scaledRates(liveGrains(63 + d, spreadOnsets(input.length, 300), heads, 24000), d));
+            const std::vector<int64_t> ragged = {61, 64, 1, 128, 3, 250, 2, 37, 511};
+            for (const std::vector<int64_t> &lengths : {ragged, std::vector<int64_t>{511}})
+            {
+                for (const int outputs : {2, 1})
+                {
+                    INFO(outputs << " outputs, first block " << lengths[0]);
+                    const LiveRenders r =
+                        renderLiveBoth<TestType>(pool, input, lengths, outputs, tables, d);
+                    REQUIRE(anyNonZero(r.ref.ch[0]));
+                    REQUIRE(anyNonZero(r.ref.ch[1]) == (outputs == 2));
+                    REQUIRE(r.stats.simdSamples > 100000);
+                    REQUIRE(r.stats.emptyCalls > 0);
+                    REQUIRE(sameBits(r.simd.ch[0], r.ref.ch[0]));
+                    REQUIRE(sameBits(r.simd.ch[1], r.ref.ch[1]));
+                }
+            }
+        }
+    }
+}
+
+TEMPLATE_TEST_CASE("simd live kernel matches the reference at every ring level under a narrowed "
+                   "window",
+                   "[kernel]", Hermite, Linear, Sinc)
+{
+    // The narrowed-window schedules (a loop on an unfrozen ring, a frozen loop, splices aging
+    // out under a selection, splice selections on a frozen ring, a shrink's limits) at levels 1 to
+    // 3, in blocks of 511 and 7 (64 adds nothing those two don't check): the SIMD kernel held to
+    // the reference with std::memcmp, and blocks of 7 to blocks of 511.
+    struct Schedule
+    {
+        const char *name;
+        LiveInput input;
+        std::vector<RingChange> changes;
+    };
+    std::vector<Schedule> schedules;
+    schedules.push_back({"loop, unfrozen",
+                         LiveInput(100000, 81, {}),
+                         {{30000, [](gg::LiveSource &r) { r.setLoop(true, 6000); }},
+                          {55000, [](gg::LiveSource &r) { r.setLoop(true, 15000); }},
+                          {80000, [](gg::LiveSource &r) { r.setLoop(false, 15000); }}}});
+    schedules.push_back({"loop, frozen",
+                         LiveInput(100000, 83, freezeToggles(85, 12, 6000.0)),
+                         {{0, [](gg::LiveSource &r) { r.setLoop(true, 5000); }}}});
+    schedules.push_back(
+        {"splices", LiveInput(100000, 87, {36000, 70000}), {{30000, [](gg::LiveSource &r) {
+                                                                 for (const int64_t m :
+                                                                      {10000, 14000, 20000, 26000})
+                                                                 {
+                                                                     REQUIRE(r.addSplice(m));
+                                                                 }
+                                                                 r.selectSplice(2);
+                                                             }}}});
+    // Ruling SP-T12aa: the selection moved under sounding grains on a ring frozen at 28,000, so
+    // the window jumps from one span to another and back to the whole ring.
+    schedules.push_back({"splice selections, frozen",
+                         LiveInput(100000, 97, {28000}),
+                         {{30000,
+                           [](gg::LiveSource &r) {
+                               for (const int64_t m : {10000, 14000, 20000, 26000})
+                               {
+                                   REQUIRE(r.addSplice(m));
+                               }
+                               r.selectSplice(1);
+                           }},
+                          {45000, [](gg::LiveSource &r) { r.selectSplice(4); }},
+                          {60000, [](gg::LiveSource &r) { r.selectSplice(2); }},
+                          {75000, [](gg::LiveSource &r) { r.selectSplice(0); }},
+                          {85000, [](gg::LiveSource &r) { r.setLoop(true, 3000); }}}});
+    // Ruling SP-T12ad: a shrink's admission limit, then its read limit, on an unfrozen ring, then
+    // a splice whose start the limit comes to bind as the head moves on (the window's oldest frame
+    // turns from the mark to R − N′ + kCapSlack within a run), then both limits lifted.
+    schedules.push_back({"a shrink's limits",
+                         LiveInput(100000, 99, {}),
+                         {{30000, [](gg::LiveSource &r) { r.setAdmitLimit(9000, true); }},
+                          {45000, [](gg::LiveSource &r) { r.setReadLimit(9000, 45000); }},
+                          {60000,
+                           [](gg::LiveSource &r) {
+                               for (const int64_t m : {52000, 56000, 59000})
+                               {
+                                   REQUIRE(r.addSplice(m));
+                               }
+                               r.selectSplice(1);
+                           }},
+                          {75000, [](gg::LiveSource &r) {
+                               r.selectSplice(0);
+                               r.setAdmitLimit(0, false);
+                               r.setReadLimit(0, 75000);
+                           }}}});
+    const Tables &tables = kernelTables();
+    for (const Schedule &schedule : schedules)
+    {
+        const WindowTrajectory w = windowTrajectory(schedule.input, schedule.changes);
+        for (const uint32_t d : {2u, 4u, 8u})
+        {
+            INFO(schedule.name << ", decimation " << d);
+            const Pool pool(
+                scaledRates(windowGrains(89 + d, spreadOnsets(schedule.input.length, 400), w), d));
+            std::vector<float> first[2];
+            for (const int64_t block : {511, 7})
+            {
+                INFO("blocks of " << block);
+                const LiveRenders r = renderLiveBothWindowed<TestType>(
+                    pool, schedule.input, {block}, schedule.changes, tables, d);
+                REQUIRE(anyNonZero(r.ref.ch[0]));
+                REQUIRE(anyNonZero(r.ref.ch[1]));
+                if (block == 511)
+                {
+                    REQUIRE(r.stats.simdSamples > 100000);
+                }
+                REQUIRE(sameBits(r.simd.ch[0], r.ref.ch[0]));
+                REQUIRE(sameBits(r.simd.ch[1], r.ref.ch[1]));
+                if (block == 511)
+                {
+                    first[0] = r.simd.ch[0];
+                    first[1] = r.simd.ch[1];
+                }
+                REQUIRE(sameBits(r.simd.ch[0], first[0]));
+                REQUIRE(sameBits(r.simd.ch[1], first[1]));
+            }
+        }
+    }
+}
+
+TEST_CASE("live interior keeps M + 1 inside a loop's oldest frame", "[kernel]")
+{
+    // The interior's margins against the window, not just N: on a loop over an unfrozen ring, at
+    // every sample of every interior, both Hermite margins against the loop's ends are at least
+    // M + 1 − 2^−10 frames, and some reach M + 1 (the admission clamp's grains, at rate 1, whose
+    // margin is constant).
+    const LiveInput input(100000, 91, {});
+    const std::vector<RingChange> changes = {
+        {20000, [](gg::LiveSource &r) { r.setLoop(true, 6000); }}};
+    const WindowTrajectory w = windowTrajectory(input, changes);
+    const Pool pool(windowGrains(93, spreadOnsets(input.length, 800), w));
+    const gg::GrainRows &rows = pool.rows();
+    ActiveGrains active(pool);
+    gg::LiveSource ring;
+    prepareRing(ring);
+    double minMargin = std::numeric_limits<double>::infinity();
+    int64_t interior = 0;
+    int64_t bad = 0;
+    driveRingWindowed(ring, input, {64}, changes, [&](int64_t from, int64_t to) {
+        active.each(from, to, [&](uint32_t i) {
+            if (std::max(from, rows.onsetSample[i]) >= std::min(to, rows.endSample[i]))
+            {
+                return;
+            }
+            const gg::kernels::LiveInterior in =
+                liveInteriorAtOne<Hermite>(rows, i, ring, from, to);
+            for (int part = 0; part < 2; ++part)
+            {
+                for (int64_t t = in.begin[part]; t < in.end[part]; ++t)
+                {
+                    const double e =
+                        static_cast<double>(t - rows.onsetSample[i]) - rows.onsetFrac[i];
+                    const double pos = rows.startPos[i] + rows.rate[i] * e;
+                    const auto end = static_cast<double>(ring.anchorAt(t));
+                    const auto oldest = static_cast<double>(ring.windowOldestAt(t));
+                    const double margin = std::min(end - 1.0 - (pos + 2.0), (pos - 1.0) - oldest);
+                    minMargin = std::min(minMargin, margin);
+                    bad +=
+                        !(margin >= kM + 1.0 - 0x1.0p-10) || ring.fade(pos, ring.headAt(t)) != 1.0;
+                    ++interior;
+                }
+            }
+        });
+    });
+    INFO("smallest margin " << minMargin - kM << " frames past M");
+    REQUIRE(interior > 100000);
+    REQUIRE(bad == 0);
+    REQUIRE(minMargin < kM + 1.0 + 0x1.0p-6);
+}
+
 namespace
 {
 // Sinc, but it counts its live reads and those any of whose 16 taps, floor(pos) − 7 ..
@@ -2523,6 +3118,65 @@ TEST_CASE("hq live reads nothing beyond the window", "[kernel]")
         REQUIRE(beyond > 2000);
         REQUIRE(sounding > 2000);
     }
+}
+
+TEST_CASE("the hq fade follows the storage, not a loop's window", "[kernel]")
+{
+    // Ruling SP-T12aa under sub-project 3's sinc: with Loop on, the window [E − W, E − 1] steers
+    // admission alone, and Sinc::fade is LiveSource::fadeFor<7, 8> over the storage's
+    // [R − N, R − 1]. Across the loop's oldest frame, at every eighth of a frame, the fade stays
+    // 1; across the storage's two ends it is above 0 only where all 16 taps are inside
+    // [R − N, R − 1], is 1 exactly where every tap is at least M + 1 frames inside it, and is the
+    // Hermite's expression with the sinc's reach.
+    gg::LiveSource ring;
+    ring.prepare(kLiveRate, 0.5, kLiveMaxBlock); // N = 24,000
+    ring.setLoop(true, 6000);
+    const LiveInput input(40000, 95, {});
+    for (int64_t from = 0; from < input.length; from += kLiveMaxBlock)
+    {
+        const int64_t to = std::min<int64_t>(from + kLiveMaxBlock, input.length);
+        const float *in[2] = {input.left.data() + from, input.right.data() + from};
+        ring.write(in, 2, 0, from, static_cast<uint32_t>(to - from));
+    }
+    const int64_t t = input.length - 1;
+    const int64_t head = ring.headAt(t);
+    const int64_t loopOldest = ring.windowOldestAt(t);
+    REQUIRE(ring.anchorAt(t) == head);
+    REQUIRE(loopOldest > head - ring.frames() + 1000); // the loop narrows the window
+    for (double pos = static_cast<double>(loopOldest) - kM - 44.0;
+         pos < static_cast<double>(loopOldest) + kM + 44.0; pos += 0.125)
+    {
+        INFO("pos " << pos);
+        REQUIRE(Sinc::fade(ring, pos, head) == 1.0);
+    }
+    const int64_t oldest = head - ring.frames();
+    int64_t inside = 0;
+    int64_t one = 0;
+    for (const int64_t edge : {oldest, head})
+    {
+        // M + 44 frames each side: the fade's ramp, the taps' reach and a little more.
+        for (double pos = static_cast<double>(edge) - kM - 44.0;
+             pos < static_cast<double>(edge) + kM + 44.0; pos += 0.125)
+        {
+            const double f = Sinc::fade(ring, pos, head);
+            const double base = std::floor(pos);
+            const bool tapsInside = base - 7.0 >= static_cast<double>(oldest) &&
+                                    base + 8.0 <= static_cast<double>(head - 1);
+            INFO("pos " << pos);
+            REQUIRE((f > 0.0) <= tapsInside);
+            REQUIRE(f == (ring.fadeFor<7, 8>(pos, head)));
+            const bool deep = (pos - 7.0) - static_cast<double>(oldest) >= kM + 1.0 &&
+                              static_cast<double>(head) - 1.0 - (pos + 8.0) >= kM + 1.0;
+            if (deep)
+            {
+                REQUIRE(f == 1.0);
+            }
+            inside += tapsInside;
+            one += f == 1.0;
+        }
+    }
+    REQUIRE(inside > 0);
+    REQUIRE(one > 0);
 }
 
 namespace

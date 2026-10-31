@@ -22,6 +22,7 @@ add_executable(gg-tests
         core/publish_tests.cpp
         core/session_state_tests.cpp
         core/settings_tests.cpp
+        core/source_tests.cpp
         core/space_processor_tests.cpp
         core/space_reverb_tests.cpp
         core/threads_tests.cpp
@@ -44,14 +45,19 @@ add_executable(gg-tests
         engine/sinc_table_tests.cpp
         engine/task_runner_tests.cpp
         engine/window_tests.cpp
+        media/budget_tests.cpp
+        media/collect_tests.cpp
         media/content_paths_tests.cpp
         media/convert_tests.cpp
         media/decode_memory_tests.cpp
         media/decode_tests.cpp
+        media/pool_tests.cpp
+        media/ring_audio_tests.cpp
         media/sample_tests.cpp
         media/search_tests.cpp
         media/sha256_tests.cpp
         media/utf8_path_tests.cpp
+        media/wav_bytes_tests.cpp
         metrics/click_injection_tests.cpp
         metrics/metrics_tests.cpp
         metrics/spectrogram_tests.cpp
@@ -151,6 +157,7 @@ if (GG_BUILD_PLUGINS)
             plugin/identity_tests.cpp
             plugin/mutate_plugin_tests.cpp
             plugin/params_tests.cpp
+            plugin/persist_tests.cpp
             plugin/preset_tests.cpp
             plugin/process_tests.cpp
             plugin/rt_tests.cpp
@@ -444,6 +451,27 @@ add_test(NAME render_spectrogram_utf8_path
         --spectrogram "${CMAKE_CURRENT_BINARY_DIR}/render-utf8/spëctrogram ✓ 音.png")
 set_tests_properties(render_spectrogram_utf8_path PROPERTIES LABELS render
         FIXTURES_REQUIRED golden_media)
+# --write-media also writes the two state fixtures (M2 sub-project 2's spec §6.10), so the
+# restore goldens need no committed binary. golden_media has run: cmake -E sha256sum fails on a
+# file that isn't there.
+add_test(NAME render_write_media_fixtures
+        COMMAND ${CMAKE_COMMAND} -E sha256sum ${GG_GOLDEN_MEDIA_DIR}/frozen-ring.ggst
+        ${GG_GOLDEN_MEDIA_DIR}/four-samples.ggst ${GG_GOLDEN_MEDIA_DIR}/sine-330.wav
+        ${GG_GOLDEN_MEDIA_DIR}/noise-2s.wav)
+set_tests_properties(render_write_media_fixtures PROPERTIES LABELS render
+        FIXTURES_REQUIRED golden_media)
+# gg-render --write-media names everything it wrote.
+add_test(NAME render_write_media_lists_fixtures
+        COMMAND gg-render --write-media ${CMAKE_CURRENT_BINARY_DIR}/write-media-lists)
+set_tests_properties(render_write_media_lists_fixtures PROPERTIES LABELS render
+        PASS_REGULAR_EXPRESSION "frozen-ring.ggst.*four-samples.ggst")
+# --save-state, then a spec with "state"; a state whose sample can't be found exits 2.
+add_test(NAME render_state_roundtrip
+        COMMAND ${CMAKE_COMMAND} -DGG_RENDER=$<TARGET_FILE:gg-render>
+        -DWORK=${CMAKE_CURRENT_BINARY_DIR}/render-state-roundtrip -DMEDIA=${GG_GOLDEN_MEDIA_DIR}
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/tools/render_state_roundtrip.cmake)
+set_tests_properties(render_state_roundtrip PROPERTIES LABELS render
+        FIXTURES_REQUIRED golden_media)
 file(GLOB GG_GOLDEN_CASE_SPECS CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/golden/cases/*.json)
 if (NOT GG_GOLDEN_CASE_SPECS)
     message(FATAL_ERROR "No golden cases in ${CMAKE_CURRENT_SOURCE_DIR}/golden/cases")
@@ -453,6 +481,7 @@ foreach (spec IN LISTS GG_GOLDEN_CASE_SPECS)
     add_test(NAME golden_${case}
             COMMAND gg-render ${spec}
             --media-dir ${GG_GOLDEN_MEDIA_DIR}
+            --content-dir ${GG_GOLDEN_MEDIA_DIR}
             -o ${CMAKE_BINARY_DIR}/golden/${case}.wav
             --spectrogram ${CMAKE_BINARY_DIR}/golden/${case}.png
             --compare ${CMAKE_CURRENT_SOURCE_DIR}/golden/expected/${case}.metrics.json

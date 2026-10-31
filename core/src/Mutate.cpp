@@ -8,6 +8,8 @@
 #include <bit>
 #include <cstdint>
 
+#include <clap/ext/params.h>
+
 #include "gg/core/Rng.h"
 
 #include "sst/basic-blocks/params/ParamMetadata.h"
@@ -99,6 +101,15 @@ void mutate(const ParamValues &in, const LockSet &locks, float amount, uint64_t 
             continue;
         }
         const md_t &meta = paramMeta(static_cast<ParamSlot>(s), mode);
+        // A press is host gestures, recorded as automation: a parameter no host may automate
+        // (Ring Length, which the main thread resizes the ring for) is never moved (ruling
+        // SP-M8). Its draw is skipped too; every other slot's draws are keyed by its own index,
+        // so they are unchanged.
+        if ((meta.flags & CLAP_PARAM_IS_AUTOMATABLE) == 0)
+        {
+            out[s] = v;
+            continue;
+        }
         const double u = draw(seed, kMutateStream, counter, s);
         if (meta.type == md_t::FLOAT)
         {

@@ -186,31 +186,34 @@ GigaGrainsPlugin::GigaGrainsPlugin(const clap_host *host, Product product)
     {
         shownKinds_[layer] = kindOf(layer); // the defaults' kinds: nothing to rescan yet
     }
-    if (product_ == Product::Instrument)
-    {
-        SampleLoader::Callbacks callbacks;
-        // From the loader's worker: clap_host.request_callback is thread-safe.
-        callbacks.requestCallback = [this] { _host.requestCallback(); };
-        callbacks.markDirty = [this] {
-            if (_host.canUseState())
-            {
-                _host.stateMarkDirty();
-            }
-        };
-        callbacks.offer = [this](std::shared_ptr<const gg::PreparedSource> source) {
-            if (processor_ != nullptr)
-            {
-                processor_->sources().offer(std::move(source));
-            }
-        };
-        loader_ = std::make_unique<SampleLoader>(settingsFile(), std::move(callbacks));
-    }
+    // Four loaders, one per layer, in both products (M2 sub-project 2's spec §6.8).
+    media_ = std::make_unique<MediaSession>(
+        mode(), settingsFile(),
+        [this](uint8_t layer) {
+            SampleLoader::Callbacks callbacks;
+            // From the loader's worker: clap_host.request_callback is thread-safe.
+            callbacks.requestCallback = [this] { _host.requestCallback(); };
+            callbacks.markDirty = [this] {
+                if (_host.canUseState())
+                {
+                    _host.stateMarkDirty();
+                }
+            };
+            callbacks.offer = [this, layer](std::shared_ptr<const gg::PreparedSource> source) {
+                if (processor_ != nullptr)
+                {
+                    processor_->sources(layer).offer(std::move(source));
+                }
+            };
+            return callbacks;
+        },
+        [this](ParamSlot slot) { return uiBaseValue(slot); });
 }
 
 GigaGrainsPlugin::~GigaGrainsPlugin()
 {
-    // The worker first: it calls back into this object.
-    loader_.reset();
+    // The loaders' workers first: they call back into this object.
+    media_.reset();
 }
 
 bool GigaGrainsPlugin::activate(double sampleRate, uint32_t /*minFrameCount*/,
@@ -218,7 +221,7 @@ bool GigaGrainsPlugin::activate(double sampleRate, uint32_t /*minFrameCount*/,
 {
     // Main thread, never concurrent with process(): everything process() needs is allocated
     // here. The Processor throws on an invalid configuration; that fails the activation.
-    bool loaderActive = false;
+    bool mediaActive = false;
     try
     {
         // The engine renders in blocks of at most kMaxEngineBlock frames, so its buffers stay
@@ -244,26 +247,34 @@ bool GigaGrainsPlugin::activate(double sampleRate, uint32_t /*minFrameCount*/,
         processor->setRoutes(routes_);
         // The host's pool, when it offers one, renders the layers (spec §6.7).
         processor->setTaskRunner(&poolRunner_);
-        // The sample, at this rate before the first block (D8): a restored one converted here,
-        // and one loaded at another rate converted again here (ruling R18).
-        if (loader_ != nullptr)
+        // Every layer's sample, at this rate before the first block (D8): a restored one
+        // converted here, and one loaded at another rate converted again here (ruling R18); and
+        // every layer's ring at its Ring Length, a restored one in place (M2 sub-project 2).
+        mediaActive = true;
+        media_->activate(*processor, sampleRate, config.maxBlockSize);
+        for (uint8_t layer = 0; layer < gg::core::kLayers; ++layer)
         {
-            loaderActive = true;
-            processor->setSourceNow(loader_->activate(sampleRate));
+            shownRingSeconds_[layer] = processor->ringSecondsRequested(layer); // sized already
         }
         processor->setPublishing(publishing_); // an editor opened before this activation
         processor_ = std::move(processor);
         engineBlockSize_ = config.maxBlockSize;
         noteIds_.fill(NoteIdSlot{}); // a new session holds no notes
+        gg::core::CommandEvent stale{};
+        while (commandQueue_.pop(stale))
+        {
+            // Commands for the processor before this one: its ring is gone.
+        }
         collectRequested_.store(false, std::memory_order_relaxed);
         sampleRate_.store(sampleRate, std::memory_order_relaxed); // the tail's (tailGet)
         return true;
     }
     catch (...)
     {
-        if (loaderActive)
+        if (mediaActive)
         {
-            loader_->deactivate();
+            gg::core::ParamValues values{};
+            media_->deactivate(nullptr, values);
         }
         return false;
     }
@@ -302,12 +313,16 @@ void GigaGrainsPlugin::deactivate() noexcept
     }
     // The main thread owns values_ from here: a kind those values changed asks for its rescan.
     checkKinds();
-    // The loader's worker stops (a job under way is cancelled and queued again), and what it
-    // finished applies with nothing offered: the next activate() gives it to the new processor.
-    if (loader_ != nullptr)
+    checkRingLengths();
+    // The rings D1 saves are kept for the next activation; the loaders' workers stop (a job under
+    // way is cancelled and queued again), and what they finished applies with nothing offered:
+    // the next activate() gives it to the new processor.
+    gg::core::ParamValues values{};
+    for (std::size_t s = 0; s < kParamCount; ++s)
     {
-        loader_->deactivate();
+        values[s] = values_[s].load(std::memory_order_relaxed);
     }
+    media_->deactivate(processor_.get(), values);
     // A main-thread callback asked for may be dropped with the session (M5): ask afresh.
     mutateCallbackRequested_ = false;
     mutateCallbackIdle_ = false;
@@ -318,10 +333,6 @@ void GigaGrainsPlugin::deactivate() noexcept
 
 void GigaGrainsPlugin::onMainThread() noexcept
 {
-    if (loader_ != nullptr)
-    {
-        loader_->onMainThread();
-    }
     if (processor_ != nullptr)
     {
         // Cleared first: a source handed back after the collect asks for another call. The
@@ -334,13 +345,19 @@ void GigaGrainsPlugin::onMainThread() noexcept
         std::atomic_thread_fence(std::memory_order_seq_cst);
         try
         {
-            processor_->sources().collect();
+            for (uint8_t layer = 0; layer < gg::core::kLayers; ++layer)
+            {
+                processor_->sources(layer).collect();
+            }
         }
         catch (...)
         {
             // collect() only frees; nothing it calls throws.
         }
     }
+    // The loaders' finished work, then the Ring Length watcher (cleared first, as below).
+    ringLengthsChanged_.store(false, std::memory_order_relaxed);
+    media_->onMainThread(processor_.get());
     // The next batch of a Mutate press, once the host has drained the last one. Cleared first:
     // slots still waiting after it ask for another call (flushMutate), but only once a drain has
     // been seen since this one was asked for (M5): a host that calls back without draining isn't
@@ -425,6 +442,12 @@ clap_process_status GigaGrainsPlugin::processNonblocking(const clap_process *pro
     // in the host's order (by time), up to the first that finds its array (events_ or notes_)
     // full. The editor's take at most kUiQueueCapacity of events_.
     std::size_t count = takeUiChanges(process->out_events, events_.data(), 0);
+    // The editor's ring commands, at the call's first boundary (spec §6.4).
+    std::size_t commandCount = 0;
+    while (commandCount < kUiCommandCapacity && commandQueue_.pop(commands_[commandCount]))
+    {
+        commands_[commandCount++].offset = 0;
+    }
     const clap_input_events *in = process->in_events;
     const uint32_t numEvents = in != nullptr ? in->size(in) : 0;
     std::size_t noteCount = 0;
@@ -497,7 +520,8 @@ clap_process_status GigaGrainsPlugin::processNonblocking(const clap_process *pro
         output != nullptr ? output->data32 : nullptr, output != nullptr ? output->channel_count : 0,
         process->frames_count, std::span<const ParamEvent>(events_.data(), count),
         std::span<const NoteEvent>(notes_.data(), noteCount),
-        std::span<const ControlEvent>(controls_.data(), controlCount));
+        std::span<const ControlEvent>(controls_.data(), controlCount),
+        std::span<const gg::core::CommandEvent>(commands_.data(), commandCount));
 
     // The values just handed over, for the host to read. Not the Processor's base(): an event
     // waits there for its grid boundary, which may come in the next call (ruling M1-u).
@@ -517,10 +541,11 @@ clap_process_status GigaGrainsPlugin::processNonblocking(const clap_process *pro
     }
     requestCollect();
     checkKinds();
+    checkRingLengths();
     return CLAP_PROCESS_CONTINUE;
 }
 
-void GigaGrainsPlugin::takeHandOffs() noexcept
+void GigaGrainsPlugin::takeHandOffs(bool adoptRings) noexcept
 {
     // The loaded state first, as before the epoch rule: its routes then its values (the
     // instrument's, in the offer), so Freeze arms under the new routes (FR-8). applyState pushes
@@ -528,13 +553,13 @@ void GigaGrainsPlugin::takeHandOffs() noexcept
     // already; a load the first take missed is taken by the second, before takeUiChanges, so the
     // editor's values queued before it are dropped in this call too (I1).
     applyLoadedState();
-    takeOffers();
+    takeOffers(adoptRings);
     applyLoadedState();
 }
 
-void GigaGrainsPlugin::takeOffers() noexcept
+void GigaGrainsPlugin::takeOffers(bool adoptRings) noexcept
 {
-    if (processor_->takeOffers())
+    if (processor_->takeOffers(adoptRings))
     {
         storeBases();
         requestValueRescan();
@@ -592,6 +617,33 @@ void GigaGrainsPlugin::checkKinds() noexcept
     }
 }
 
+void GigaGrainsPlugin::checkRingLengths() noexcept
+{
+    // The Processor's request, not values_: a base value applies at its grid boundary, which for
+    // an event in a call's last grid step is the next call's start, after values_ has it, so
+    // values_ would ask for the watcher before the request it reads has changed, and never again.
+    if (processor_ == nullptr)
+    {
+        return; // inactive: activate() sizes the rings
+    }
+    bool changed = false;
+    for (uint8_t layer = 0; layer < gg::core::kLayers; ++layer)
+    {
+        const double seconds = processor_->ringSecondsRequested(layer);
+        if (seconds != shownRingSeconds_[layer])
+        {
+            shownRingSeconds_[layer] = seconds;
+            changed = true;
+        }
+    }
+    // At most one request outstanding: on_main_thread clears the flag before the watcher runs.
+    if (changed && !ringLengthsChanged_.exchange(true, std::memory_order_acq_rel))
+    {
+        // clap_host.request_callback, as in requestCollect (see there): once per change.
+        _host.requestCallback();
+    }
+}
+
 void GigaGrainsPlugin::storeBases() noexcept
 {
     for (std::size_t s = 0; s < kParamCount; ++s)
@@ -607,8 +659,12 @@ void GigaGrainsPlugin::requestCollect() noexcept
     // it, the flag's exchange after.
     std::atomic_thread_fence(std::memory_order_seq_cst);
     // At most one request outstanding: on_main_thread clears the flag before it collects.
-    if (processor_->sources().awaitingCollect() &&
-        !collectRequested_.exchange(true, std::memory_order_acq_rel))
+    bool awaiting = false;
+    for (uint8_t layer = 0; layer < gg::core::kLayers; ++layer)
+    {
+        awaiting = awaiting || processor_->sources(layer).awaitingCollect();
+    }
+    if (awaiting && !collectRequested_.exchange(true, std::memory_order_acq_rel))
     {
         // clap_host.request_callback from the audio thread. CLAP marks it thread-safe, not
         // real-time safe, so this depends on the host: every clap-wrapper format (VST3, AU,
@@ -989,6 +1045,16 @@ void GigaGrainsPlugin::uiEndGesture(ParamSlot slot) noexcept
     queueUiChange({gg::core::paramId(slot), 0.0, UiParamChange::kEnd, 0});
 }
 
+void GigaGrainsPlugin::uiCommand(gg::core::CommandEvent command) noexcept
+{
+    // Main thread: while inactive there is no ring to mark. The queue is lossless up to its
+    // capacity; past it, push() drops and counts.
+    if (processor_ != nullptr)
+    {
+        commandQueue_.push(command);
+    }
+}
+
 float GigaGrainsPlugin::uiBaseValue(ParamSlot slot) const noexcept
 {
     const auto s = static_cast<std::size_t>(slot);
@@ -1139,11 +1205,12 @@ void GigaGrainsPlugin::paramsFlush(const clap_input_events *in,
             }
         }
         checkKinds();
-        return;
+        return; // inactive: activate() sizes the rings
     }
     // Active, so on the audio thread, between process() calls: notes and controls, like
-    // modulation, join the next grid boundary.
-    takeHandOffs(); // as in process()
+    // modulation, join the next grid boundary. An offer carrying a ring waits, whole, for the next
+    // process() call's start (the class comment), so a flush copies no ring frame.
+    takeHandOffs(false); // as in process(), leaving the rings
     takeUiChanges(out, nullptr, 0);
     if (in != nullptr)
     {
@@ -1151,6 +1218,7 @@ void GigaGrainsPlugin::paramsFlush(const clap_input_events *in,
     }
     requestCollect();
     checkKinds();
+    checkRingLengths();
 }
 
 bool GigaGrainsPlugin::paramsInfo(uint32_t paramIndex, clap_param_info *info) const noexcept
@@ -1249,15 +1317,14 @@ bool GigaGrainsPlugin::stateSave(const clap_ostream *stream) noexcept
         {
             values[s] = values_[s].load(std::memory_order_relaxed);
         }
-        // The session container (gg/core/SessionState.h), with the instrument's manifest entry
-        // as it stands, whether the sample is loaded, loading, missing or failed (spec §6.6), or
-        // a newer build's manifest as it came. The FX has no sample: an empty manifest. The
+        // The session container (gg/core/SessionState.h): every layer's manifest entry as it
+        // stands, whether the sample is loaded, loading, missing or failed (spec §6.6), or a
+        // newer build's manifest as it came; the rings D1 saves, embedded or filed; the cap. The
         // routes are those in effect (routes_).
-        const std::string bytes = gg::core::encodeState(
-            {values, seed_, loader_ != nullptr ? loader_->entry() : std::nullopt,
-             loader_ != nullptr ? loader_->newerMedia() : std::nullopt, routes_, presetName_,
-             std::nullopt,     // the preset's name, but a session: no <preset>
-             presetEdited()}); // its edited mark (D-Q2): written only when edited
+        gg::core::SessionState state = media_->save(values, seed_, routes_, processor_.get());
+        state.name = presetName_;      // the preset's name, but a session: no <preset>
+        state.edited = presetEdited(); // its edited mark (D-Q2): written only when edited
+        const std::string bytes = gg::core::encodeState(state);
 
         // A stream may take fewer bytes than offered: write until all are in.
         const char *data = bytes.data();
@@ -1329,28 +1396,33 @@ bool GigaGrainsPlugin::stateLoad(const clap_istream *stream) noexcept
 
 void GigaGrainsPlugin::applyState(gg::core::SessionState &&state, LoadKind kind)
 {
-    // The one allocation left before the state takes effect, made before anything changes:
-    // room in the exchange for the offer below, which then can't throw, so a bad_alloc here
-    // still changes nothing (all or nothing).
-    if (loader_ != nullptr && processor_ != nullptr)
+    // The allocations left before the state takes effect, made before anything changes: room in
+    // each exchange for the offers below, a source's and a ring's (SourceExchange::reserve),
+    // which then can't throw, so a bad_alloc here still changes nothing (all or nothing).
+    if (processor_ != nullptr)
     {
-        processor_->sources().reserve();
+        for (uint8_t layer = 0; layer < gg::core::kLayers; ++layer)
+        {
+            processor_->sources(layer).reserve();
+        }
     }
-    // The instrument's sample, found and decoded before this returns (D8); while active,
-    // offered to the audio thread below in one hand-off with the values, so the process() that
-    // takes them applies both. The sample already in memory, when it is the session's, is kept
-    // and only the values are offered (ruling R19). A preset that names no sample keeps the one
-    // loaded, entry and source, and reads nothing (D5): its values are offered alone, as R19's
-    // are. The FX ignores a sample (a state from the instrument).
-    // restore() never throws: a sample it can't load leaves its status saying why.
-    const bool keepSample = kind == LoadKind::Preset && !state.sample.has_value();
-    SampleLoader::Restored restored;
-    if (loader_ != nullptr && !keepSample)
-    {
-        // content-relative references resolve here (Task 14)
-        restored = loader_->restore(state.sample, std::move(state.newerMedia));
-    }
-    const auto &values = state.values;
+    // What the state sets beside its media, taken before restore() takes the state.
+    const gg::core::ParamValues values = state.values;
+    const uint64_t seed = state.seed;
+    gg::core::ModRoutes routes = state.routes;
+    std::string name = std::move(state.name);
+    const bool edited = state.edited;
+    // Every layer's sample and ring, found and decoded before this returns (D8); while active,
+    // offered to the audio thread below. The sample already in memory, when it is the session's,
+    // is kept and only the values are offered (ruling R19). A preset carries no ring and no cap:
+    // each layer it names no sample for keeps the one loaded, entry and source, and reads
+    // nothing (D5), and the rings stay (MediaSession::restorePreset). restore() never throws:
+    // what it can't load leaves its layer's status saying why.
+    const double activeRate =
+        processor_ != nullptr ? sampleRate_.load(std::memory_order_relaxed) : 0.0;
+    MediaSession::Restored restored = kind == LoadKind::Preset
+                                          ? media_->restorePreset(std::move(state))
+                                          : media_->restore(std::move(state), activeRate);
     // The editor's values queued before this load, Mutate's batches among them, are stale (I1):
     // a new epoch, which the consumer takes with the load (loadedState_ while active, at once
     // below while inactive) and drops them by.
@@ -1369,23 +1441,25 @@ void GigaGrainsPlugin::applyState(gg::core::SessionState &&state, LoadKind kind)
     // use, and the name. A preset keeps the instance's seed (D6): its own is ignored.
     if (kind == LoadKind::Session)
     {
-        seed_ = state.seed;
+        seed_ = seed;
     }
-    routes_ = state.routes;
-    presetName_ = std::move(state.name); // a move: nothing left to throw
+    routes_ = routes;
+    presetName_ = std::move(name); // a move: nothing left to throw
     // A session saved while its preset was edited reopens edited (D-Q2): the mark stays until a
     // preset load or a save. A preset carries none.
-    presetEditedMark_ = kind == LoadKind::Session && state.edited;
+    presetEditedMark_ = kind == LoadKind::Session && edited;
     // A session names its preset but no file: it is matched by name (I4). A preset's caller
     // (loadPresetFile, loadInit) sets its key after this returns.
     presetKey_.clear();
     presetKeyByName_ = kind == LoadKind::Session;
     ++presetLoads_;
-    // Inactive, activate() applies the values, the seed and the routes. Active, the audio thread
-    // applies them at the start of its next process() or params.flush (carry-over row 115): the
-    // seed and the routes through loadedState_ in both products, the values with them in the FX
-    // and with the sample in the instrument (D8). The instrument's two hand-offs are separate,
-    // so its seed and routes may apply a block before or after its values.
+    // Inactive, activate() applies the values, the seed and the routes, with the samples and
+    // rings. Active, the audio thread applies them at the start of its next process() or
+    // params.flush (carry-over row 115): the seed and the routes through loadedState_, the values
+    // with layer A's sample (or its keep, ruling R19 and D5) in one hand-off (D8), the other
+    // layers' samples on their own exchanges, then each restored ring, back to back (the class
+    // comment). The two hand-offs are separate, so the seed and routes may apply a block before
+    // or after the values.
     if (processor_ != nullptr)
     {
         // The routes on the editor's channel too, first, so an edit made before this load and
@@ -1394,17 +1468,37 @@ void GigaGrainsPlugin::applyState(gg::core::SessionState &&state, LoadKind kind)
         // since the next block applies the rest.
         uiRoutesPending_.push(routes_);
         // loadedState_ before the offers: takeHandOffs takes the loaded state again after the
-        // offers, so the call that applies the instrument's values sees this load's epoch too (I1).
-        loadedState_.push({values, routes_, seed_, uiEpoch_, loader_ == nullptr});
-        if (loader_ != nullptr && (keepSample || restored.keep))
+        // offers, so the call that applies the values sees this load's epoch too (I1).
+        loadedState_.push({values, routes_, seed_, uiEpoch_, false});
+        for (uint8_t layer = 0; layer < gg::core::kLayers; ++layer)
         {
-            // The sample in memory stays (R19, D5): the values alone.
-            processor_->sources().offerValues(values); // never allocates
+            auto &exchange = processor_->sources(layer);
+            const SampleLoader::Restored &sample = restored.samples[layer];
+            if (layer == 0)
+            {
+                if (sample.keep)
+                {
+                    exchange.offerValues(values); // never allocates
+                }
+                else
+                {
+                    exchange.offer(sample.source, &values); // reserved
+                }
+            }
+            else if (!sample.keep)
+            {
+                exchange.offer(sample.source); // reserved
+            }
         }
-        else if (loader_ != nullptr)
+        for (uint8_t layer = 0; layer < gg::core::kLayers; ++layer)
         {
-            processor_->sources().offer(std::move(restored.source), &values); // reserved
+            if (restored.rings[layer].has_value())
+            {
+                processor_->sources(layer).offerRing(std::move(restored.storages[layer]),
+                                                     *restored.rings[layer]); // reserved
+            }
         }
+        media_->pollRingLengths(*processor_);
     }
     else
     {
@@ -1794,10 +1888,24 @@ SaveResult GigaGrainsPlugin::savePreset(const std::string &name,
         {
             values[s] = values_[s].load(std::memory_order_relaxed);
         }
-        const std::string bytes = gg::core::encodePreset(
-            info, {values, 0, loader_ != nullptr ? loader_->entry() : std::nullopt,
-                   loader_ != nullptr ? loader_->newerMedia() : std::nullopt, routes_, info.name,
-                   std::nullopt, false});
+        // The preset names each layer's sample file (D5: a layer it names none for keeps its own
+        // on load). An embedded sample (a capture) has no file to name and is left out, as are
+        // the rings, which belong to the session; INST carries the default cap, ignored on load
+        // (restorePreset). A newer build's manifest stays with the session too: a preset never
+        // carries one.
+        gg::core::SessionState state;
+        state.values = values;
+        state.routes = routes_;
+        state.name = info.name;
+        for (uint8_t layer = 0; layer < gg::core::kLayers; ++layer)
+        {
+            const auto &entry = media_->loader(layer).entry();
+            if (entry.has_value() && !entry->embed)
+            {
+                state.samples[layer] = entry;
+            }
+        }
+        const std::string bytes = gg::core::encodePreset(info, state);
         // The name as the file holds it (the patch's 255-byte cut; I4), read back before the
         // save so nothing after it can throw.
         gg::core::PresetInfo kept;

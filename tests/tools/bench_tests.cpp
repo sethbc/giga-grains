@@ -934,6 +934,66 @@ TEST_CASE("engine-layers admits its grains across four layers", "[bench]")
     CHECK(gg::bench::admittedTiers("engine-sample", 50, 64).activeGrains.size() == 1);
 }
 
+TEST_CASE("engine-live-long builds and admits its grains", "[bench]")
+{
+    // Under --quick, so its warm-up is capped (the next test checks the cap). 50 grains, as
+    // engine-live's test does.
+    const gg::bench::Report report = gg::bench::run({.runSeconds = 0.2,
+                                                     .quick = true,
+                                                     .rounds = 1,
+                                                     .grains = 50,
+                                                     .cases = {"reference", "engine-live-long"}});
+    std::vector<uint32_t> blockSizes;
+    for (const gg::bench::CaseResult &r : report.results)
+    {
+        if (r.name != "engine-live-long")
+        {
+            continue;
+        }
+        INFO("block " << r.blockSize << ": " << r.grains << " grains");
+        CHECK(r.kind == "engine");
+        REQUIRE(r.nsPerGrainSample.size() == 1);
+        CHECK(r.nsPerGrainSample[0] > 0.0);
+        CHECK(r.grains > 45.0);
+        blockSizes.push_back(r.blockSize);
+    }
+    CHECK(blockSizes == std::vector<uint32_t>{32, 64, 256});
+}
+
+TEST_CASE("engine-live-long's ring is 300 s, and --quick caps only the warm-ups", "[bench]")
+{
+    // The settings run() builds, without timing anything. A 300 s ring reading 150 s behind the
+    // head with a 300 s spray, warmed up for 300 s to fill it; --quick caps that warm-up at
+    // engine-live's 16 s, the longest of the other engine cases.
+    const gg::bench::EngineCaseSettings full =
+        gg::bench::engineCaseSettings("engine-live-long", 2000, false);
+    CHECK(full.liveSeconds == 300.0);
+    CHECK(full.live);
+    CHECK(full.position == 150.0);
+    CHECK(full.spray == 300.0);
+    CHECK(full.warmUpSeconds == 300.0);
+    CHECK(gg::bench::engineCaseSettings("engine-live-long", 2000, true).warmUpSeconds == 16.0);
+
+    // Every other engine case is unchanged by --quick: the same settings with and without it.
+    for (const char *name : {"engine-sample", "engine-sample-eco", "engine-live",
+                             "engine-full-pool", "engine-layers", "engine-layers-full"})
+    {
+        INFO(name);
+        const gg::bench::EngineCaseSettings a = gg::bench::engineCaseSettings(name, 2000, false);
+        const gg::bench::EngineCaseSettings b = gg::bench::engineCaseSettings(name, 2000, true);
+        CHECK(a.warmUpSeconds == b.warmUpSeconds);
+        CHECK(a.liveSeconds == b.liveSeconds);
+        CHECK(a.live == b.live);
+    }
+    CHECK(gg::bench::engineCaseSettings("engine-live", 2000, false).liveSeconds == 16.0);
+    CHECK(gg::bench::engineCaseSettings("engine-live", 2000, true).warmUpSeconds == 16.0);
+    CHECK(!gg::bench::engineCaseSettings("engine-sample", 2000, false).live);
+
+    CHECK_THROWS_AS(gg::bench::engineCaseSettings("reference", 2000, false), std::invalid_argument);
+    CHECK_THROWS_AS(gg::bench::engineCaseSettings("engine-live-long", 0, false),
+                    std::invalid_argument);
+}
+
 TEST_CASE("engine-sample-hq runs at the HQ tier", "[bench]")
 {
     // M2 engine spec §6.10: engine-sample at HQ, so every grain it admits is HQ (its quota is

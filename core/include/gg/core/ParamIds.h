@@ -20,8 +20,9 @@ struct ParamMetaData;
 /// The parameters: the slice's ten (spec §4), Space's eight (sub-project 4's spec §6.5), the
 /// Perform UI's ten (Texture, Feedback and eight macros; sub-project 5's spec §3.3, §4, §5),
 /// M2's layers (M2 sub-project 1's spec §6.9): 48 parameters per layer, A to D, and nine new
-/// globals, and M2 sub-project 3's Quality, per layer, and Budget (its spec §6.8): 49 per layer
-/// and 223 in all. Their slots, CLAP IDs and metadata. Both products expose the same list, so
+/// globals, M2 sub-project 2's five ring parameters per layer (its spec §6.3), and M2 sub-project
+/// 3's Quality, per layer, and Budget (its spec §6.8): 54 per layer and 243 in all. Their slots,
+/// CLAP IDs and metadata. Both products expose the same list, so
 /// they share one state format (INTENT §2); only Position's metadata (sub-project 3's spec §6.8),
 /// Source's default and Macro 8's name differ between them, and the instrument's plugin hides Mix
 /// and Dry to Reverb, which have no dry signal to act on there.
@@ -34,15 +35,17 @@ enum class Mode
     Fx,         ///< The input feeds the live ring and the dry side of the Mix.
 };
 
-/// The 49 parameters of a layer (M2 sub-project 1's spec §6.9, and M2 sub-project 3's Quality in
-/// its reserved block, its spec §6.8), one row each, in index order:
+/// The 54 parameters of a layer (M2 sub-project 1's spec §6.9, M2 sub-project 2's five ring
+/// parameters in its reserved block, its spec §6.3, and M2 sub-project 3's Quality in its reserved
+/// block, its spec §6.8), one row each, in index order:
 /// `X(name, index, "Display Name")`. A layer parameter's CLAP ID is `(layer + 1) << 16 | index`,
 /// the same index in each of the scopes 1 to 4, and it is displayed with its layer's letter ("A
 /// Size" ... "D Size"). The enum LayerParam, layers B to D's ParamSlot entries and their IDs are
 /// generated from it, so no name is typed four times. Append-only, as the IDs are. A wave-2
 /// sub-project (M2 programme design §7.1) appends `X(Name, 0x4N, "Name")`, its index inside its
-/// reserved block, at the end of GG_LAYER_PARAMS_M2, or adds a list GG_LAYER_PARAMS_M2_<n> to
-/// GG_LAYER_PARAMS and GG_LAYER_PARAMS_SINCE_M1, as sub-project 3's GG_LAYER_PARAMS_M2_ENGINE is,
+/// reserved block, at the end of GG_LAYER_PARAMS_M2, or adds a list GG_LAYER_PARAMS_M2_<name> to
+/// GG_LAYER_PARAMS and GG_LAYER_PARAMS_SINCE_M1, as sub-project 2's GG_LAYER_PARAMS_M2_SOURCES and
+/// sub-project 3's GG_LAYER_PARAMS_M2_ENGINE are,
 /// and its index to the reserved-block static_assert below. The index column must stay strictly
 /// ascending (validIndexColumn): a list whose block lies below 0x50 goes between
 /// GG_LAYER_PARAMS_M2 and GG_LAYER_PARAMS_M2_ENGINE in both macros, not after the latter. Rows stay
@@ -99,12 +102,23 @@ enum class Mode
     X(Step14, 0x2E, "Step 14")                                                                     \
     X(Step15, 0x2F, "Step 15")                                                                     \
     X(Step16, 0x30, "Step 16")
+/// M2 sub-project 2's (Sources and persistence; its spec §6.3), in its reserved block 0x40-0x4F;
+/// 0x45-0x4F stay unused.
+#define GG_LAYER_PARAMS_M2_SOURCES(X)                                                              \
+    X(RingLength, 0x40, "Ring Length")                                                             \
+    X(Loop, 0x41, "Loop")                                                                          \
+    X(LoopLength, 0x42, "Loop Length")                                                             \
+    X(Overdub, 0x43, "Overdub")                                                                    \
+    X(Splice, 0x44, "Splice")
 /// M2 sub-project 3's (Engine scale and quality; its spec §6.1, §6.8), in its block 0x50-0x5F: a
 /// layer's interpolation tier, stepped 0 Eco, 1 Normal, 2 HQ (gg::Tier).
 #define GG_LAYER_PARAMS_M2_ENGINE(X) X(Quality, 0x50, "Quality")
-#define GG_LAYER_PARAMS(X) GG_LAYER_PARAMS_M1(X) GG_LAYER_PARAMS_M2(X) GG_LAYER_PARAMS_M2_ENGINE(X)
+#define GG_LAYER_PARAMS(X)                                                                         \
+    GG_LAYER_PARAMS_M1(X)                                                                          \
+    GG_LAYER_PARAMS_M2(X) GG_LAYER_PARAMS_M2_SOURCES(X) GG_LAYER_PARAMS_M2_ENGINE(X)
 /// The rows after layer A's eleven M1 ones: layer A's new slots, in order.
-#define GG_LAYER_PARAMS_SINCE_M1(X) GG_LAYER_PARAMS_M2(X) GG_LAYER_PARAMS_M2_ENGINE(X)
+#define GG_LAYER_PARAMS_SINCE_M1(X)                                                                \
+    GG_LAYER_PARAMS_M2(X) GG_LAYER_PARAMS_M2_SOURCES(X) GG_LAYER_PARAMS_M2_ENGINE(X)
 
 /// One layer's parameter, whichever layer: its value is its row's position in GG_LAYER_PARAMS, and
 /// its index in the layer's scope is the row's index column (layerParamIndex).
@@ -120,7 +134,7 @@ enum class LayerParam : uint8_t
 inline constexpr uint8_t kLayers = 4;
 
 /// The parameters per layer.
-inline constexpr size_t kLayerParamCount = 49;
+inline constexpr size_t kLayerParamCount = 54;
 static_assert(static_cast<size_t>(LayerParam::Count) == kLayerParamCount);
 
 /// The indices a scope can hold: 0x00 (reserved) to 0x7F, the top of wave 2's reserved blocks
@@ -194,10 +208,11 @@ GG_LAYER_PARAMS(GG_LAYER_PARAM_INDEX_CHECK)
 /// appended with new IDs.
 ///
 /// The 28 M1 slots come first, in their order (layer A's eleven M1 parameters among them, under
-/// their M1 names), then layer A's 38 new parameters (M2 sub-project 1's 37 and sub-project 3's
-/// Quality), then layers B, C and D in full (`B_Position` ... `D_Quality`, 49 each), then the nine
-/// new globals (M2 sub-project 1's spec §6.9) and Budget (M2 sub-project 3's spec §6.8). A layer
-/// row appended to GG_LAYER_PARAMS moves the later layers' slots, never an ID.
+/// their M1 names), then layer A's 43 new parameters (M2 sub-project 1's 37, sub-project 2's five
+/// and sub-project 3's Quality), then layers B, C and D in full (`B_Position` ... `D_Quality`, 54
+/// each, in row order), then the nine new globals (M2 sub-project 1's spec §6.9) and Budget (M2
+/// sub-project 3's spec §6.8). A layer row appended to GG_LAYER_PARAMS moves the later layers'
+/// slots, never an ID.
 enum class ParamSlot : uint16_t
 {
     Mix,
@@ -275,6 +290,22 @@ inline constexpr float kDecayMax = 6.068255709804611f;
 /// (sub-project 5's spec §5).
 inline constexpr float kFeedbackMax = 0.95f;
 
+/// The ring's lengths, in seconds (M2 sub-project 2's spec §6.3, D3): Ring Length runs from
+/// kRingMinSeconds to kRingMaxSeconds, Loop Length from kLoopMinSeconds to kRingMaxSeconds, each
+/// in log2 seconds, and kRingMaxSeconds is also where Position's range ends (kPositionMax).
+inline constexpr double kRingMaxSeconds = 300.0, kRingMinSeconds = 1.0, kLoopMinSeconds = 0.05;
+
+/// The most splice marks a ring holds, and the top of Splice's range (spec §6.3): Splice 0 is the
+/// whole window, 1 to kMaxSplices a span between marks. The engine's LiveSource::kMaxSplices is
+/// the same number.
+inline constexpr uint32_t kMaxSplices = 32;
+
+/// The top of every layer's Position, in both products (spec §6.3): log2(kRingMaxSeconds × 255 /
+/// 16 + 1) / 8, rounded to the nearest float, where the Live mapping (16/255)(2^(8v) − 1) gives
+/// kRingMaxSeconds (299.99994 s). Its values from 0 to 1 map as in M1; a Sample layer's fraction
+/// stops at 1.
+inline constexpr float kPositionMax = 1.5279342f;
+
 /// The eight macros, in order (sub-project 5's spec §3.2, §3.3).
 inline constexpr std::array<ParamSlot, 8> kMacroSlots{
     ParamSlot::Macro1, ParamSlot::Macro2, ParamSlot::Macro3, ParamSlot::Macro4,
@@ -294,7 +325,8 @@ inline constexpr uint32_t kNextFreeLayerIndex = 0x31, kNextFreeGlobalIndex = 0x2
 
 /// The indices reserved in every scope for M2's wave 2 (spec §6.9): 0x40-0x4F for sub-project 2,
 /// 0x50-0x5F for sub-project 3 and 0x60-0x7F for sub-project 4. No parameter of sub-project 1
-/// takes one; sub-project 3's Quality and Budget take 0x50 (a static_assert below pins it).
+/// takes one; sub-project 2's five take 0x40-0x44 of each layer scope (its spec §6.3), and
+/// sub-project 3's Quality and Budget take 0x50 (a static_assert below pins them).
 inline constexpr uint32_t kReservedIndexBegin = 0x40, kReservedIndexEnd = 0x7F;
 
 /// A layer's Source kind: what its grains read (M2 sub-project 1's spec §6.9). Layer A's
@@ -320,7 +352,7 @@ enum class LfoShape : uint8_t
 
 namespace detail
 {
-/// The first slot of layer A's new parameters, and of layer B's 49.
+/// The first slot of layer A's new parameters, and of layer B's 54.
 inline constexpr size_t kLayerANewFirst = static_cast<size_t>(ParamSlot::Source);
 inline constexpr size_t kLayerBFirst = static_cast<size_t>(ParamSlot::B_Position);
 inline constexpr size_t kLayersEnd = static_cast<size_t>(ParamSlot::MorphX);
@@ -411,27 +443,38 @@ inline constexpr auto kGlobalSlots = [] {
     return t;
 }();
 
-// The reserved blocks' one index in use: 0x50, M2 sub-project 3's, in every scope (Quality in
-// the layer scopes, Budget in scope 0). A wave-2 row adds its index here.
+// The reserved blocks' indices in use: 0x40-0x44, M2 sub-project 2's, in the layer scopes (Ring
+// Length, Loop, Loop Length, Overdub, Splice), and 0x50, M2 sub-project 3's, in every scope
+// (Quality in the layer scopes, Budget in scope 0). A wave-2 row adds its index here.
 static_assert([] {
     for (const clap_id id : kParamIds)
     {
+        const clap_id scope = id >> 16;
         const uint32_t index = id & 0xFFFFu;
-        if (index >= kReservedIndexBegin && index <= kReservedIndexEnd && index != 0x50u)
+        const bool sources = scope >= 1 && index >= 0x40u && index <= 0x44u;
+        if (index >= kReservedIndexBegin && index <= kReservedIndexEnd && index != 0x50u &&
+            !sources)
         {
             return false;
         }
     }
     for (clap_id scope = 0; scope <= kLayers; ++scope)
     {
-        bool used = false;
-        for (const clap_id id : kParamIds)
+        for (uint32_t index = 0x40u; index <= 0x50u; ++index)
         {
-            used = used || id == (scope << 16 | 0x50u);
-        }
-        if (!used)
-        {
-            return false;
+            if ((index > 0x44u && index < 0x50u) || (scope == 0 && index != 0x50u))
+            {
+                continue;
+            }
+            bool used = false;
+            for (const clap_id id : kParamIds)
+            {
+                used = used || id == (scope << 16 | index);
+            }
+            if (!used)
+            {
+                return false;
+            }
         }
     }
     return true;
@@ -587,9 +630,10 @@ static_assert([] {
 const char *paramModule(ParamSlot slot) noexcept;
 
 /// The slot's metadata in `mode`'s product: ID, name, range, default, CLAP flags (AUTOMATABLE and
-/// MODULATABLE on all, STEPPED on the switches, the stepped choices and the count: Freeze, Macro
-/// 6, Source, the LFO shapes, Step Length, the Layer On switches, Quality and Budget), and the
-/// display text and text parsing.
+/// MODULATABLE on all but every layer's Ring Length, which has neither: the main thread resizes the
+/// ring, M2 sub-project 2's spec §6.3; STEPPED on the switches, the stepped choices and the count:
+/// Freeze, Macro 6, Source, the LFO shapes, Step Length, Loop, Splice, the Layer On switches,
+/// Quality and Budget), and the display text and text parsing.
 /// A layer parameter's name carries its layer's letter ("A Size"). The ranges and defaults are
 /// literal constants (INTENT §14), never computed at run time. Reverb Decay shows "∞" from
 /// kDecayInfinite up, and "∞" parses to kDecayMax. The plugin adds the HIDDEN flag itself (see the
@@ -597,9 +641,9 @@ const char *paramModule(ParamSlot slot) noexcept;
 ///
 /// Three parameters differ between the products, never in ID or range, so the state format is
 /// shared (spec §6.9):
-/// - Position, in its default and display, in every layer: the FX's is 0–16 s behind the write
-///   head, 0.25 s by default; the instrument's is 0–100% of the loaded file, 0% by default. Both
-///   are CLAP values 0–1.
+/// - Position, in its default and display, in every layer: the FX's is 0–300 s behind the write
+///   head, 0.25 s by default; the instrument's is 0–100% of the loaded file, 0% by default, and
+///   "100%" above 1. Both are CLAP values 0 to kPositionMax (M2 sub-project 2's spec §6.3).
 /// - Source, in its default, in every layer: Live in the FX, Sample in the instrument.
 /// - Macro 8: "Macro Mix" in the FX, "Macro Level" in the instrument; 0.5 in both.
 /// Macro 7 is "Macro Feedback", 0 by default, in both.

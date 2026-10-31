@@ -10,5 +10,5 @@ add_executable(gg-snap main.cpp)
 # The same libraries and private include directories the editor's tests use
 # (tests/CMakeLists.txt): the plugin's own headers (Factory.h, editor/EditorPlugin.h) are private.
 target_include_directories(gg-snap PRIVATE ${CMAKE_SOURCE_DIR}/plugin/src)
-target_link_libraries(gg-snap PRIVATE gg::plugin-impl gg-plugin-core gg::ui sst-jucegui
+target_link_libraries(gg-snap PRIVATE gg::plugin-impl gg-plugin-core gg::ui gg::media sst-jucegui
         gg::juce-headers gg::compiler-options)

@@ -1677,3 +1677,38 @@ TEST_CASE("reactivate at a new rate mid-tail", "[plugin][rt][space]")
     CHECK(silent(rendered.right));
     REQUIRE_NO_ALLOCATIONS(allocations);
 }
+
+TEST_CASE("ui ring commands apply at the next process call", "[plugin]")
+{
+    // M2 sub-project 2's spec §6.4: the editor's commands go through their queue to the audio
+    // thread, which applies them at the next call's first boundary; while inactive they are
+    // dropped, and a Sample layer ignores them.
+    using gg::core::CommandKind;
+    gg::test::PluginUnderTest fx(kFxId);
+    REQUIRE(fx.valid());
+    fx.impl().uiCommand({0, CommandKind::AddSplice, 0, 0.0f}); // inactive: dropped
+    REQUIRE(fx.activate(48000.0, 512));
+    Stereo in(512);
+    Stereo out(512);
+    const auto block = [&](uint64_t seed) {
+        fillNoise(in, seed);
+        REQUIRE(fx.process(512, in.data(), out.data()) == CLAP_PROCESS_CONTINUE);
+    };
+    for (uint64_t i = 0; i < 20; ++i)
+    {
+        block(i);
+    }
+    const auto &live = fx.impl().processor()->engine(0).live();
+    CHECK(live.spliceCount() == 0);
+    const int64_t head = live.head();
+    fx.impl().uiCommand({123, CommandKind::AddSplice, 0, 0.1f}); // the offset is ignored
+    fx.impl().uiCommand({0, CommandKind::AddSplice, 0, 0.0f});
+    CHECK(live.spliceCount() == 0); // not before the next call
+    block(30);
+    REQUIRE(live.spliceCount() == 2);
+    CHECK(live.splices()[0] == head - 4800); // 0.1 s behind the head at the call's start
+    CHECK(live.splices()[1] == head);
+    fx.impl().uiCommand({0, CommandKind::ClearSplices, 0, 0.0f});
+    block(31);
+    CHECK(live.spliceCount() == 0);
+}

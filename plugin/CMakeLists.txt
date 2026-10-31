@@ -18,6 +18,7 @@ add_library(gg-plugin-core STATIC
         src/Favorites.cpp
         src/GigaGrainsPlugin.cpp
         src/HelpersConfig.cpp
+        src/MediaSession.cpp
         src/PresetCatalog.cpp
         src/PresetDiscovery.cpp
         src/SampleLoader.cpp
@@ -31,12 +32,11 @@ target_include_directories(gg-plugin-core PUBLIC include PRIVATE src)
 # (sst-cpputils carries MSVC flags: /utf-8 /bigobj /permissive-). GigaGrainsPlugin.h includes
 # gg-core's headers (the Processor, the parameter IDs) and needs sst-cpputils for
 # SST_CPPUTILS_NONBLOCKING, so whatever includes it links gg::core and sst-cpputils itself: the
-# editor layer below, and the tests. gg::media (the sample loader's decoding, conversion, search
-# and settings file, and the content search path) is PRIVATE too: its headers appear only in
-# SampleLoader.cpp, SearchCache.cpp, GigaGrainsPlugin.cpp, PresetCatalog.cpp,
-# PresetDiscovery.cpp, editor/UiSettings.cpp (the theme's settings file) and, for the UTF-8 path
-# helper (gg/media/Utf8Path.h), EditorPlugin.cpp; SearchCache.h and SettingsPath.h include them
-# too.
+# editor layer below, and the tests. gg::media (the sample loaders' decoding, conversion, search
+# and settings file, the media session's rings, budget and collect, the content search path and,
+# in editor/UiSettings.cpp, the theme's settings file) is PRIVATE too: its headers reach
+# GigaGrainsPlugin.h through MediaSession.h (and SearchCache.h and SettingsPath.h include them),
+# so whatever includes it (the editor layer and the tests) links gg::media itself, as both do.
 target_link_libraries(gg-plugin-core
         PUBLIC clap clap-helpers gg::clap-wrapper-extensions
         PRIVATE gg::media gg::core sst-cpputils gg::compiler-options

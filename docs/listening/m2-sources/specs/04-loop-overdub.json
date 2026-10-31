@@ -1,0 +1,15 @@
+{
+  "mode": "fx",
+  "sampleRate": 48000,
+  "durationSeconds": 24.0,
+  "blockSize": 128,
+  "seed": 1,
+  "input": {"kind": "sweep", "startHz": 110, "endHz": 1760, "seconds": 24.0, "amplitude": 0.5},
+  "channels": 1,
+  "params": {"Mix": 1.0, "A Loop": 1, "A Loop Length": 1.0, "A Overdub": 0.0, "Position": 0.3, "Density": 3.0},
+  "automation": [
+    {"time": 6.0, "param": "A Overdub", "value": 0.5},
+    {"time": 12.0, "param": "A Overdub", "value": 0.8},
+    {"time": 18.0, "param": "A Overdub", "value": 1.0}
+  ]
+}

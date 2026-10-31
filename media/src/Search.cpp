@@ -8,6 +8,7 @@
 #include <atomic>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -17,6 +18,7 @@
 #include <utf8proc.h>
 
 #include "TestHooks.h"
+#include "gg/media/SettingsFile.h"
 #include "gg/media/Sha256.h"
 #include "gg/media/Utf8Path.h"
 
@@ -200,7 +202,7 @@ class Candidates
 /// The index of the saved path's last separator, `/` or `\` (a path saved on Windows), or npos.
 std::size_t lastSeparator(const std::string &path) { return path.find_last_of("/\\"); }
 
-/// Step 3c: the first file under `root` whose name `name` matches and whose content matches, or
+/// Step 5c: the first file under `root` whose name `name` matches and whose content matches, or
 /// nothing. Walked by hand, depth first (each folder's contents right after its entry), with a
 /// listing per open folder: a folder that can't be opened, or fails partway through its listing,
 /// is skipped and the scan goes on, where std::filesystem::recursive_directory_iterator would end
@@ -259,9 +261,112 @@ std::optional<fs::path> scan(const fs::path &root, const NameMatcher &name, Cand
     }
     return std::nullopt;
 }
+
+/// The first spelling of UTF-8 `text` under `folder` that matches (as saved, NFC, then NFD).
+std::optional<fs::path> anySpelling(Candidates &candidates, const fs::path &folder,
+                                    const std::string &text)
+{
+    for (const auto &spelling : spellings(text))
+    {
+        if (const auto tail = fromUtf8(spelling))
+        {
+            const fs::path candidate = folder / *tail;
+            if (candidates.check(candidate) == Check::Matches)
+            {
+                return candidate;
+            }
+        }
+    }
+    return std::nullopt;
+}
+
+/// What step 1 found at the saved path.
+struct AtSaved
+{
+    std::optional<fs::path> match;   // a spelling holding the entry's file
+    std::optional<fs::path> changed; // otherwise, the first spelling holding other content
+};
+
+/// Step 1: the saved path, in each spelling.
+AtSaved atSavedPath(Candidates &candidates, const std::string &absolutePath)
+{
+    AtSaved out;
+    const auto saved = fromUtf8(absolutePath);
+    if (!saved || saved->empty())
+    {
+        return out;
+    }
+    for (const auto &spelling : spellings(absolutePath))
+    {
+        if (const auto candidate = fromUtf8(spelling))
+        {
+            const Check atSaved = candidates.check(*candidate);
+            if (atSaved == Check::Matches)
+            {
+                out.match = *candidate;
+                return out;
+            }
+            if (atSaved == Check::Differs && !out.changed)
+            {
+                out.changed = *candidate;
+            }
+        }
+    }
+    return out;
+}
+
+/// The last component of a folder given as text, after either separator, ignoring trailing ones.
+std::string lastComponent(const std::string &folder)
+{
+    std::size_t end = folder.size();
+    while (end > 0 && (folder[end - 1] == '/' || folder[end - 1] == '\\'))
+    {
+        --end;
+    }
+    const std::size_t start = folder.find_last_of("/\\", end == 0 ? 0 : end - 1);
+    const std::size_t from = start == std::string::npos || start >= end ? 0 : start + 1;
+    return folder.substr(from, end - from);
+}
+
+/// The captures folder (the setting, or the default), as a path; empty if neither is known.
+fs::path capturesFolderOf(const core::MachineSettings &settings)
+{
+    if (!settings.capturesFolder.empty())
+    {
+        return fromUtf8(settings.capturesFolder).value_or(fs::path());
+    }
+    return defaultCapturesFolder();
+}
+
+/// Step 4: the captures folder plus the name of the saved path, when the saved path's folder is
+/// a captures folder: named "Captures" (the default's name, on any machine) or as the setting's
+/// folder is.
+std::optional<fs::path> inCapturesFolder(Candidates &candidates, const std::string &absolutePath,
+                                         const core::MachineSettings &settings)
+{
+    const std::size_t separator = lastSeparator(absolutePath);
+    if (separator == std::string::npos || separator + 1 >= absolutePath.size())
+    {
+        return std::nullopt;
+    }
+    const std::string savedFolder = lastComponent(absolutePath.substr(0, separator + 1));
+    const fs::path folder = capturesFolderOf(settings);
+    if (folder.empty())
+    {
+        return std::nullopt;
+    }
+    const auto folderText = toUtf8(folder);
+    const std::string ours = folderText ? lastComponent(*folderText) : std::string();
+    if (savedFolder != "Captures" && (ours.empty() || savedFolder != ours))
+    {
+        return std::nullopt;
+    }
+    return anySpelling(candidates, folder, absolutePath.substr(separator + 1));
+}
 } // namespace
 
-SearchResult findSample(const core::MediaEntry &entry, const core::MachineSettings &settings)
+SearchResult findSample(const core::MediaEntry &entry, const core::MachineSettings &settings,
+                        std::span<const fs::path> contentRoots)
 {
     Candidates candidates(entry);
     const fs::path saved = fromUtf8(entry.absolutePath).value_or(fs::path());
@@ -269,57 +374,46 @@ SearchResult findSample(const core::MediaEntry &entry, const core::MachineSettin
         const fs::path where = candidate.lexically_normal();
         return SearchResult{SearchOutcome::Found, where, where != saved.lexically_normal()};
     };
-    // The first spelling of `text` under `folder` that matches.
-    const auto anySpelling = [&](const fs::path &folder,
-                                 const std::string &text) -> std::optional<fs::path> {
-        for (const auto &spelling : spellings(text))
-        {
-            if (const auto tail = fromUtf8(spelling))
-            {
-                const fs::path candidate = folder / *tail;
-                if (candidates.check(candidate) == Check::Matches)
-                {
-                    return candidate;
-                }
-            }
-        }
-        return std::nullopt;
-    };
 
     // 1. The saved path, in each spelling. The first spelling that holds other content is where
     // the file changed.
-    std::optional<fs::path> changed;
-    if (!saved.empty())
+    const AtSaved atSaved = atSavedPath(candidates, entry.absolutePath);
+    if (atSaved.match)
     {
-        for (const auto &spelling : spellings(entry.absolutePath))
+        return found(*atSaved.match);
+    }
+    const std::optional<fs::path> &changed = atSaved.changed;
+
+    // 2. Each content root plus the content-relative path, in the roots' order.
+    if (!entry.contentPath.empty())
+    {
+        for (const fs::path &root : contentRoots)
         {
-            if (const auto candidate = fromUtf8(spelling))
+            if (const auto match = anySpelling(candidates, root, entry.contentPath))
             {
-                const Check atSaved = candidates.check(*candidate);
-                if (atSaved == Check::Matches)
-                {
-                    return found(*candidate);
-                }
-                if (atSaved == Check::Differs && !changed)
-                {
-                    changed = *candidate;
-                }
+                return found(*match);
             }
         }
     }
 
-    // 2. The sample folder and the relative path.
+    // 3. The sample folder and the relative path.
     const auto sampleFolder =
         settings.sampleFolder.empty() ? std::nullopt : fromUtf8(settings.sampleFolder);
     if (sampleFolder && !entry.relativePath.empty())
     {
-        if (const auto match = anySpelling(*sampleFolder, entry.relativePath))
+        if (const auto match = anySpelling(candidates, *sampleFolder, entry.relativePath))
         {
             return found(*match);
         }
     }
 
-    // 3. By name: in the saved path's folder, the last folder loaded from, then the scan.
+    // 4. The captures folder, for a file saved in one.
+    if (const auto match = inCapturesFolder(candidates, entry.absolutePath, settings))
+    {
+        return found(*match);
+    }
+
+    // 5. By name: in the saved path's folder, the last folder loaded from, then the scan.
     const std::size_t separator = lastSeparator(entry.absolutePath);
     const std::string name = separator == std::string::npos
                                  ? entry.absolutePath
@@ -330,7 +424,7 @@ SearchResult findSample(const core::MediaEntry &entry, const core::MachineSettin
         {
             if (const auto folder = fromUtf8(entry.absolutePath.substr(0, separator + 1)))
             {
-                if (const auto match = anySpelling(*folder, name))
+                if (const auto match = anySpelling(candidates, *folder, name))
                 {
                     return found(*match);
                 }
@@ -340,7 +434,7 @@ SearchResult findSample(const core::MediaEntry &entry, const core::MachineSettin
         {
             if (const auto folder = fromUtf8(settings.lastLoadFolder))
             {
-                if (const auto match = anySpelling(*folder, name))
+                if (const auto match = anySpelling(candidates, *folder, name))
                 {
                     return found(*match);
                 }
@@ -358,6 +452,46 @@ SearchResult findSample(const core::MediaEntry &entry, const core::MachineSettin
     if (changed)
     {
         return {SearchOutcome::Changed, changed->lexically_normal(), false};
+    }
+    return {SearchOutcome::Missing, {}, false};
+}
+
+SearchResult findFiledAudio(std::string_view sha256Hex, uint64_t size,
+                            std::string_view absolutePath, const core::MachineSettings &settings)
+{
+    core::MediaEntry entry;
+    entry.sha256Hex = std::string(sha256Hex);
+    entry.fileSize = size;
+    entry.absolutePath = std::string(absolutePath);
+    Candidates candidates(entry);
+    const fs::path saved = fromUtf8(entry.absolutePath).value_or(fs::path());
+    const auto found = [&](const fs::path &candidate) {
+        const fs::path where = candidate.lexically_normal();
+        return SearchResult{SearchOutcome::Found, where, where != saved.lexically_normal()};
+    };
+
+    const AtSaved atSaved = atSavedPath(candidates, entry.absolutePath);
+    if (atSaved.match)
+    {
+        return found(*atSaved.match);
+    }
+    // Moved with its captures folder, whatever the folder is called on this machine.
+    const std::size_t separator = lastSeparator(entry.absolutePath);
+    if (separator != std::string::npos && separator + 1 < entry.absolutePath.size())
+    {
+        const fs::path folder = capturesFolderOf(settings);
+        if (!folder.empty())
+        {
+            if (const auto match =
+                    anySpelling(candidates, folder, entry.absolutePath.substr(separator + 1)))
+            {
+                return found(*match);
+            }
+        }
+    }
+    if (atSaved.changed)
+    {
+        return {SearchOutcome::Changed, atSaved.changed->lexically_normal(), false};
     }
     return {SearchOutcome::Missing, {}, false};
 }

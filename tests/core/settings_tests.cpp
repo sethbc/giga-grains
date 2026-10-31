@@ -58,7 +58,8 @@ void writeText(const fs::path &file, std::string_view text)
 }
 
 /// Settings that differ from the defaults and from each other.
-const MachineSettings kSome{"/Users/me/Samples & Loops/é", "/Volumes/Drum <Disk>/\"kits\""};
+const MachineSettings kSome{"/Users/me/Samples & Loops/é", "/Volumes/Drum <Disk>/\"kits\"",
+                            "/Users/me/Music/Caps & <Takes>"};
 } // namespace
 
 TEST_CASE("settings XML round trips, whatever bytes the folders hold", "[core]")
@@ -92,6 +93,26 @@ TEST_CASE("settings XML round trips, whatever bytes the folders hold", "[core]")
         REQUIRE(fromSettingsXml(xml, back));
         REQUIRE(back == cases[i]);
     }
+}
+
+TEST_CASE("settings XML round trips the captures folder, and an old file reads it empty", "[core]")
+{
+    MachineSettings some = kSome;
+    some.capturesFolder = "/Users/me/Music/Giga Grains/Captures & <more>";
+    const std::string xml = toSettingsXml(some);
+    REQUIRE(xml.find("capturesFolder=\"") != std::string::npos);
+    MachineSettings back;
+    REQUIRE(fromSettingsXml(xml, back));
+    REQUIRE(back == some);
+
+    // A file from before the captures folder: the other folders, and the captures folder empty.
+    MachineSettings old{"x", "y"};
+    old.capturesFolder = "untouched";
+    REQUIRE(
+        fromSettingsXml(R"(<settings version="1" sampleFolder="/S" lastLoadFolder="/L" />)", old));
+    REQUIRE(old.sampleFolder == "/S");
+    REQUIRE(old.lastLoadFolder == "/L");
+    REQUIRE(old.capturesFolder.empty());
 }
 
 TEST_CASE("settings XML is one <settings> element with a version", "[core]")
@@ -165,7 +186,8 @@ TEST_CASE("the theme attribute round trips", "[core]")
     REQUIRE(toSettingsXml(kSome).find("theme") == std::string::npos);
 
     // XML without it reads the theme as empty, whatever `out` held.
-    MachineSettings out{"x", "y", "light"};
+    MachineSettings out{"x", "y"};
+    out.theme = "light"; // the third positional field is the captures folder
     REQUIRE(fromSettingsXml(R"(<settings version="1" sampleFolder="/S" />)", out));
     REQUIRE(out == MachineSettings{"/S", ""});
     REQUIRE(out.theme.empty());
@@ -406,9 +428,21 @@ TEST_CASE("saveSettings creates the folder, and loadSettings reads it back", "[m
     REQUIRE(files == 1);
 
     // A NUL can't be written, and the old settings stay.
+    // Each of the five strings by name (views' carry-over row 317: lastLoadFolder had none).
     REQUIRE_FALSE(gg::media::saveSettings(file, {std::string("/a\0b", 4), ""}));
+    REQUIRE_FALSE(gg::media::saveSettings(file, {"/S", std::string("/L\0x", 4)}));
     REQUIRE(gg::media::loadSettings(file) == other);
-    REQUIRE_FALSE(gg::media::saveSettings(file, {"/S", "/L", std::string("li\0ght", 6)}));
+    {
+        MachineSettings captures{"/S", "/L"};
+        captures.capturesFolder = std::string("/c\0d", 4);
+        REQUIRE_FALSE(gg::media::saveSettings(file, captures));
+        MachineSettings theme{"/S", "/L"};
+        theme.theme = std::string("li\0ght", 6);
+        REQUIRE_FALSE(gg::media::saveSettings(file, theme));
+        MachineSettings content{"/S", "/L"};
+        content.contentFolder = std::string("/p\0q", 4);
+        REQUIRE_FALSE(gg::media::saveSettings(file, content));
+    }
     REQUIRE(gg::media::loadSettings(file) == other);
 
     // A folder that can't be made: a file is in the way.
@@ -721,6 +755,37 @@ TEST_CASE("defaultSettingsPath is in the user's configuration folder", "[media]"
 #endif
 }
 
+TEST_CASE("defaultCapturesFolder is in the user's Music folder", "[media]")
+{
+    const fs::path path = gg::media::defaultCapturesFolder();
+    INFO(gg::test::utf8(path));
+    REQUIRE(path.is_absolute());
+    REQUIRE(path.filename() == "Captures");
+    REQUIRE(path.parent_path().filename() == "Giga Grains");
+    // It is a name: nothing is created.
+#if defined(_WIN32)
+    const wchar_t *profile = _wgetenv(L"USERPROFILE");
+    REQUIRE(profile != nullptr);
+    REQUIRE(path.parent_path().parent_path() == fs::path(profile) / L"Music");
+#elif defined(__APPLE__)
+    const char *home = std::getenv("HOME");
+    REQUIRE(home != nullptr);
+    REQUIRE(path.parent_path().parent_path() == fs::path(home) / "Music");
+#else
+    const char *music = std::getenv("XDG_MUSIC_DIR");
+    const char *home = std::getenv("HOME");
+    if (music != nullptr && fs::path(music).is_absolute())
+    {
+        REQUIRE(path.parent_path().parent_path() == fs::path(music));
+    }
+    else
+    {
+        REQUIRE(home != nullptr);
+        REQUIRE(path.parent_path().parent_path() == fs::path(home) / "Music");
+    }
+#endif
+}
+
 #if !defined(_WIN32)
 namespace
 {
@@ -776,5 +841,26 @@ TEST_CASE("defaultSettingsPath follows HOME and XDG_CONFIG_HOME", "[media]")
                 fs::path("/home/gg-test/.config/giga-grains/settings.xml"));
     }
 #endif
+}
+
+TEST_CASE("defaultCapturesFolder follows HOME and XDG_MUSIC_DIR, and creates nothing", "[media]")
+{
+    const fs::path home = fs::path(GG_TEST_OUTPUT_DIR) / "captures-home";
+    fs::remove_all(home);
+    const ScopedEnv homeEnv("HOME", gg::test::utf8(home).c_str());
+#if defined(__APPLE__)
+    REQUIRE(gg::media::defaultCapturesFolder() == home / "Music/Giga Grains/Captures");
+#else
+    {
+        const ScopedEnv music("XDG_MUSIC_DIR", "/xdg/music");
+        REQUIRE(gg::media::defaultCapturesFolder() == fs::path("/xdg/music/Giga Grains/Captures"));
+    }
+    for (const char *ignored : {static_cast<const char *>(nullptr), "", "relative/music"})
+    {
+        const ScopedEnv music("XDG_MUSIC_DIR", ignored);
+        REQUIRE(gg::media::defaultCapturesFolder() == home / "Music/Giga Grains/Captures");
+    }
+#endif
+    REQUIRE_FALSE(fs::exists(home));
 }
 #endif

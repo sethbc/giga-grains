@@ -180,7 +180,7 @@ TEST_CASE("a preset round trips through encodePreset and readPreset", "[core][pr
     CHECK(bitsOf(out.values) == bitsOf(state.values));
     CHECK(sameRoutes(out.routes, state.routes));
     CHECK(out.seed == 0u);
-    CHECK_FALSE(out.sample.has_value());
+    CHECK_FALSE(out.samples[0].has_value());
 
     // Saving what was read writes the same bytes again.
     CHECK(encodePreset(readInfo, out) == bytes);
@@ -236,13 +236,17 @@ TEST_CASE("a session state's bytes are pinned", "[core][preset]")
     // is written only for an edited preset, so these unedited bytes are unchanged by it. Retaken
     // at the merge of sub-project 3, whose five parameters (A to D Quality, Budget) add five
     // <p> elements, 258 bytes: without them the bytes are the group 1 fix wave's (11,755,
-    // c3d26f4e...; 11,808, ed5e43d5...).
+    // c3d26f4e...; 11,808, ed5e43d5...). Retaken again at the merge of sub-project 2, whose twenty
+    // ring parameters (A to D Ring Length, Loop, Loop Length, Overdub and Splice) add twenty <p>
+    // elements to PTCH, 1,035 bytes, and whose container writes MEDI version 2 and an INST chunk,
+    // 56 bytes more: before it the bytes were sub-project 3's merge's (12,013, 875d7ac8...;
+    // 12,066, 37dd926d...).
     const std::string session = encodeState(someState());
     const std::string ptch = *stateChunkPayload(session, "PTCH");
-    CHECK(ptch.size() == 12013);
-    CHECK(sha256Of(ptch) == "875d7ac845ef4d1dcf4219bb9ed7a68d3ee9c5092b6c99a5c2d4de40f7a3fc8f");
-    CHECK(session.size() == 12066);
-    CHECK(sha256Of(session) == "37dd926d25cdb5688726b4a522ef761040343abe54cb438490ca9c4809795eb6");
+    CHECK(ptch.size() == 13048);
+    CHECK(sha256Of(ptch) == "6e2115f158c37ba657bc37653727a46881157ede2c749f818fd259eabe32ee0a");
+    CHECK(session.size() == 13157);
+    CHECK(sha256Of(session) == "5573ae15a04b72186f0d63aef7f9a65943c392a6afb46a8964e60f30579b6a6b");
 }
 
 TEST_CASE("a name read back is cut at 255 bytes and at a NUL", "[core][preset]")
@@ -498,7 +502,10 @@ TEST_CASE("initState is every default and the factory routes", "[core][preset]")
     // Not compared with a state built the way initState builds it (T1): a few defaults by value,
     // and both products' INIT bytes by size and SHA-256 (taken at the group 1 fix wave, and
     // retaken at the merge of sub-project 3: its five parameters add 258 bytes, without which
-    // they are the fix wave's, 13,123 f5bebe3b... and 13,124 4b56d092...).
+    // they are the fix wave's, 13,123 f5bebe3b... and 13,124 4b56d092...; retaken again at the
+    // merge of sub-project 2: its twenty ring parameters and its container's MEDI version 2 and
+    // INST add 1,091 bytes, without which they are sub-project 3's merge's, 13,381 d3fce75c...
+    // and 13,382 ffdb8cc2...).
     const SessionState fx = initState(Mode::Fx);
     CHECK(fx.values[at(ParamSlot::Size)] ==
           gg::core::paramMeta(ParamSlot::Size, Mode::Fx).defaultVal);
@@ -506,15 +513,15 @@ TEST_CASE("initState is every default and the factory routes", "[core][preset]")
     CHECK(fx.values[at(ParamSlot::LayerBOn)] == 0.0f);
     CHECK(fx.routes == factoryRoutes(Mode::Fx));
     const std::string fxBytes = encodeState(fx);
-    CHECK(fxBytes.size() == 13381);
-    CHECK(sha256Of(fxBytes) == "d3fce75c748bfbbedab80c37036622052f668320177458e22caf45586f347370");
+    CHECK(fxBytes.size() == 14472);
+    CHECK(sha256Of(fxBytes) == "5c5c3e204a19c36b7fe64b9190e066af8583bbd8043275c0c0b949cf92418960");
     const std::string instBytes = encodeState(initState(Mode::Instrument));
-    CHECK(instBytes.size() == 13382);
+    CHECK(instBytes.size() == 14473);
     CHECK(sha256Of(instBytes) ==
-          "ffdb8cc2fc12ecc27c7bbbe360ccb0879c0aea841dc17ee8ead3d167d8e045fb");
+          "58a43b60c8d4f7c15a98f092a561f5de2dc957557993f65da3ffc1f65fe453ac");
     CHECK(fx.name == "Init");
     CHECK_FALSE(fx.preset.has_value());
-    CHECK_FALSE(fx.sample.has_value());
+    CHECK_FALSE(fx.samples[0].has_value());
     CHECK(fx.seed == 0u);
 
     // The instrument's differs in each layer's Position (0% of the sample, where the FX's is

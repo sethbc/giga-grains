@@ -20,6 +20,7 @@
 #include "Signals.h"
 #include "SpecReaders.h"
 #include "gg/core/ModMatrix.h"
+#include "gg/core/SessionState.h"
 #include "gg/media/Utf8Path.h"
 #include "sst/basic-blocks/params/ParamMetadata.h"
 
@@ -231,6 +232,14 @@ std::vector<AutomationPoint> readAutomation(const json &j, gg::core::Mode mode, 
         {
             throw SpecError(fmt::format(R"({}.param must be one of {}, not "{}")", name,
                                         parameterNames(mode), p.param));
+        }
+        // Ring Length is sized before the render and is neither automatable nor modulatable.
+        if (const auto ref = gg::core::layerOf(*slot);
+            ref && ref->param == gg::core::LayerParam::RingLength)
+        {
+            throw SpecError(fmt::format("{}.param: Ring Length can't be automated; set it in "
+                                        "params",
+                                        name));
         }
         p.value = parameterValue(o.member("value"), *slot, mode, name + ".value");
         points.push_back(std::move(p));
@@ -494,8 +503,113 @@ TransportSpec readTransport(const json &j)
     return t;
 }
 
+/// "operations": ring operations in time order (OperationSpec).
+std::vector<OperationSpec> readOperations(const json &j, double sampleRate, double durationSeconds)
+{
+    if (!j.is_array())
+    {
+        throw SpecError("operations must be a JSON array");
+    }
+    const int64_t end = framesFor(durationSeconds, sampleRate);
+    std::vector<OperationSpec> operations;
+    for (std::size_t i = 0; i < j.size(); ++i)
+    {
+        const std::string name = fmt::format("operations[{}]", i);
+        const Object o(j[i], name, name + ".",
+                       {"time", "layer", "op", "behind", "splice", "into", "file"});
+        OperationSpec op;
+        op.timeSeconds = o.number("time");
+        if (!beforeEnd(op.timeSeconds, durationSeconds, sampleRate, end))
+        {
+            throw SpecError(timeError(name));
+        }
+        if (!operations.empty() && op.timeSeconds < operations.back().timeSeconds)
+        {
+            throw SpecError(fmt::format("{}.time is before operations[{}].time: list the "
+                                        "operations in time order",
+                                        name, i - 1));
+        }
+        const auto layer = layerOfLetter(o.string("layer"));
+        if (!layer)
+        {
+            throw SpecError(fmt::format(R"({}.layer must be "A", "B", "C" or "D")", name));
+        }
+        op.layer = *layer;
+        op.op = o.string("op");
+        if (op.op != "splice" && op.op != "clearSplices" && op.op != "capture")
+        {
+            throw SpecError(fmt::format(
+                R"({}.op must be "splice", "clearSplices" or "capture", not "{}")", name, op.op));
+        }
+        // A key only another op reads would go unread.
+        const auto only = [&](std::string_view key, std::string_view owner) {
+            if (o.has(key) && op.op != owner)
+            {
+                throw SpecError(fmt::format(R"({}.{} doesn't apply to op "{}")", name, key, op.op));
+            }
+        };
+        only("behind", "splice");
+        only("splice", "capture");
+        only("into", "capture");
+        only("file", "capture");
+        if (o.has("behind"))
+        {
+            op.behind = o.number("behind");
+            if (!(op.behind >= 0.0 && op.behind <= gg::core::kRingMaxSeconds))
+            {
+                throw SpecError(
+                    fmt::format("{}.behind must be from 0 to {}", name, gg::core::kRingMaxSeconds));
+            }
+        }
+        if (op.op == "capture")
+        {
+            if (o.has("splice"))
+            {
+                op.splice = static_cast<uint32_t>(o.integerUpTo("splice", gg::core::kMaxSplices));
+            }
+            if (o.has("into"))
+            {
+                const auto into = layerOfLetter(o.string("into"));
+                if (!into)
+                {
+                    throw SpecError(fmt::format(R"({}.into must be "A", "B", "C" or "D")", name));
+                }
+                op.into = *into;
+            }
+            if (o.has("file"))
+            {
+                op.file = o.string("file");
+                if (op.file.empty())
+                {
+                    throw SpecError(fmt::format("{}.file must not be empty", name));
+                }
+            }
+            if (!op.into && op.file.empty())
+            {
+                throw SpecError(
+                    fmt::format("{} needs into or file: a capture that goes nowhere", name));
+            }
+        }
+        operations.push_back(std::move(op));
+    }
+    return operations;
+}
+
+/// "memoryCapMiB": a whole number of MiB, kMemoryCapMinMiB to kMemoryCapMaxMiB.
+uint32_t readMemoryCap(const Object &o)
+{
+    const uint64_t cap = o.unsignedInteger("memoryCapMiB");
+    if (cap < gg::core::kMemoryCapMinMiB || cap > gg::core::kMemoryCapMaxMiB)
+    {
+        throw SpecError(fmt::format("memoryCapMiB must be an integer from {} to {}",
+                                    gg::core::kMemoryCapMinMiB, gg::core::kMemoryCapMaxMiB));
+    }
+    return static_cast<uint32_t>(cap);
+}
+
 /// The keys instrument and FX mode share, all optional: "params", "automation", "notes",
-/// "samples", "mod", "controls" and "transport". `Spec` is InstrumentSpec or FxSpec.
+/// "samples", "mod", "controls", "transport", "state", "operations" and "memoryCapMiB". `Spec` is
+/// InstrumentSpec or FxSpec.
 template <typename Spec>
 void readProcessorKeys(const Object &o, const RenderSpec &spec, gg::core::Mode mode, Spec &out)
 {
@@ -531,16 +645,42 @@ void readProcessorKeys(const Object &o, const RenderSpec &spec, gg::core::Mode m
     {
         out.transport = readTransport(o.member("transport"));
     }
+    if (o.has("state"))
+    {
+        out.statePath = o.string("state");
+        if (out.statePath.empty())
+        {
+            throw SpecError("state must not be empty");
+        }
+    }
+    if (o.has("operations"))
+    {
+        out.operations =
+            readOperations(o.member("operations"), spec.sampleRate, spec.durationSeconds);
+    }
+    if (o.has("memoryCapMiB"))
+    {
+        out.memoryCapMiB = readMemoryCap(o);
+    }
 }
 
 /// The instrument keys of a spec whose sampleRate and durationSeconds are already read.
 InstrumentSpec readInstrument(const Object &o, const RenderSpec &spec)
 {
     InstrumentSpec instrument;
-    instrument.sample = readSource(o.member("sample"), SignalRole::Sample);
+    // "sample" may be left out beside a "state", whose layer A sample is then used.
+    if (o.has("sample") || !o.has("state"))
+    {
+        instrument.sample = readSource(o.member("sample"), SignalRole::Sample);
+    }
+    else
+    {
+        instrument.noSample = true;
+    }
     readProcessorKeys(o, spec, gg::core::Mode::Instrument, instrument);
     // "sample" is layer A's.
-    if (!instrument.layerSamples.empty() && instrument.layerSamples.front().first == 0)
+    if (!instrument.noSample && !instrument.layerSamples.empty() &&
+        instrument.layerSamples.front().first == 0)
     {
         throw SpecError("samples.A duplicates sample");
     }
@@ -610,14 +750,15 @@ Object topLevel(const json &j, RenderMode mode)
                 "the spec",
                 "",
                 {"mode", "sampleRate", "durationSeconds", "blockSize", "seed", "sample", "preset",
-                 "params", "automation", "notes", "samples", "mod", "controls", "transport"}};
+                 "params", "automation", "notes", "samples", "mod", "controls", "transport",
+                 "state", "operations", "memoryCapMiB"}};
     case RenderMode::Fx:
         return {j,
                 "the spec",
                 "",
                 {"mode", "sampleRate", "durationSeconds", "blockSize", "seed", "input", "channels",
                  "preset", "params", "automation", "notes", "samples", "mod", "controls",
-                 "transport"}};
+                 "transport", "state", "operations", "memoryCapMiB"}};
     case RenderMode::Sample:
         break;
     }
@@ -671,6 +812,11 @@ RenderSpec readSpec(const json &j)
         if (spec.preset.empty())
         {
             throw SpecError("preset must not be empty");
+        }
+        // A state holds a whole patch of its own: the two would set the same values and routes.
+        if (o.has("state"))
+        {
+            throw SpecError("preset and state can't both be given");
         }
     }
     return spec;
@@ -861,6 +1007,8 @@ void resolvePaths(RenderSpec &spec, const std::string &baseDir)
         }
     }
     paths.push_back(&spec.preset);
+    paths.push_back(&spec.instrument.statePath);
+    paths.push_back(&spec.fx.statePath);
     for (std::string *text : paths)
     {
         if (text->empty())

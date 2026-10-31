@@ -4,6 +4,7 @@
 
 #include "gg/media/Sample.h"
 
+#include <bit>
 #include <cmath>
 #include <optional>
 #include <stdexcept>
@@ -12,6 +13,7 @@
 
 #include "gg/media/Convert.h"
 #include "gg/media/Decode.h"
+#include "gg/media/SamplePool.h"
 #include "gg/media/Sha256.h"
 #include "gg/media/Utf8Path.h"
 
@@ -63,9 +65,10 @@ std::string relativeTo(const fs::path &file, const std::string &sampleFolder)
 } // namespace
 
 LoadedSample loadSample(const fs::path &file, const core::MachineSettings &settings,
-                        std::optional<FileHash> knownHash, const std::atomic<bool> *cancel)
+                        uint64_t maxDecodedBytes, std::optional<FileHash> knownHash,
+                        const std::atomic<bool> *cancel)
 {
-    DecodeResult decoded = decodeAudioFile(file, cancel);
+    DecodeResult decoded = decodeAudioFile(file, maxDecodedBytes, cancel);
     if (!decoded.audio)
     {
         LoadedSample out;
@@ -108,7 +111,7 @@ LoadedSample loadSample(const fs::path &file, const core::MachineSettings &setti
 }
 
 std::shared_ptr<const PreparedSource> prepare(std::shared_ptr<SampleBuffer> decoded, double rate,
-                                              const std::atomic<bool> *cancel)
+                                              const std::atomic<bool> *cancel, const PoolKey *share)
 {
     if (decoded == nullptr)
     {
@@ -118,7 +121,34 @@ std::shared_ptr<const PreparedSource> prepare(std::shared_ptr<SampleBuffer> deco
     {
         throw std::invalid_argument("prepare: the rate must be finite and positive");
     }
+    if (share != nullptr)
+    {
+        if (std::bit_cast<uint64_t>(share->rate) != std::bit_cast<uint64_t>(rate))
+        {
+            throw std::invalid_argument("prepare: the key's rate must be the rate converted to");
+        }
+        if (auto live = SamplePool::process().find(*share))
+        {
+            return live;
+        }
+    }
     auto converted = convertRate(std::move(decoded), rate, cancel);
-    return converted != nullptr ? PreparedSource::make(std::move(converted), cancel) : nullptr;
+    if (converted == nullptr)
+    {
+        return nullptr;
+    }
+    auto source = PreparedSource::make(std::move(converted), cancel);
+    if (source == nullptr)
+    {
+        // Cancelled while building the pyramid: nothing to share.
+        return nullptr;
+    }
+    if (share != nullptr)
+    {
+        // Another loader may have built the same key meanwhile: the pool's source wins, ours is
+        // dropped, so every instance shares one.
+        return SamplePool::process().insert(*share, source);
+    }
+    return source;
 }
 } // namespace gg::media

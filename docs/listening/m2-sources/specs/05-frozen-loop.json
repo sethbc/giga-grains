@@ -1,0 +1,21 @@
+{
+  "mode": "fx",
+  "sampleRate": 48000,
+  "durationSeconds": 12.0,
+  "blockSize": 128,
+  "seed": 1,
+  "input": {"kind": "sweep", "startHz": 110, "endHz": 1760, "seconds": 4.0, "amplitude": 0.5},
+  "channels": 1,
+  "params": {"Mix": 1.0, "A Loop": 1, "A Loop Length": 0.0, "Position": 0.3, "Density": 4.0, "Spray": 0.0},
+  "automation": [
+    {"time": 4.0, "param": "Freeze", "value": 1},
+    {"time": 6.0, "param": "Spray", "value": 0.1},
+    {"time": 6.75, "param": "Spray", "value": 0.2},
+    {"time": 7.5, "param": "Spray", "value": 0.3},
+    {"time": 8.25, "param": "Spray", "value": 0.4},
+    {"time": 9.0, "param": "Spray", "value": 0.5},
+    {"time": 9.75, "param": "Spray", "value": 0.6},
+    {"time": 10.5, "param": "Spray", "value": 0.7},
+    {"time": 11.25, "param": "Spray", "value": 0.8}
+  ]
+}
