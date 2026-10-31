@@ -2757,6 +2757,27 @@ TEST_CASE("a state saves the rings whose Freeze or Loop is on, and a render rest
     CHECK(silentPeak == 0.0f);
 }
 
+TEST_CASE("a state saves no ring of a layer whose Source is Sample", "[render]")
+{
+    // D1 (the final review's I2): a held ring is saved only when the layer's base Source builds
+    // to Live, Live or Resample, the kinds whose grains read it. A frozen Sample layer's ring
+    // records the input for a later switch, but no grain reads it, so it isn't saved.
+    const std::string dir = freshDirectory("ring-save-kinds");
+    auto j = ringFxJson(1.0);
+    j["params"] = {{"A Source", 0},   {"A Freeze", 1}, {"Layer B On", 1}, {"B Freeze", 1},
+                   {"Layer C On", 1}, {"C Source", 2}, {"C Loop", 1},     {"Layer D On", 1},
+                   {"D Source", 0},   {"D Loop", 1}};
+    gg::render::RenderOptions options;
+    options.saveStatePath = dir + "/s.ggst";
+    options.mediaDir = dir;
+    gg::render::render(parseJson(j), nullptr, options);
+    const auto state = decodeFile(options.saveStatePath, Mode::Fx);
+    CHECK_FALSE(state.rings[0].has_value()); // Sample, frozen
+    CHECK(state.rings[1].has_value());       // Live, frozen
+    CHECK(state.rings[2].has_value());       // Resample, looping
+    CHECK_FALSE(state.rings[3].has_value()); // Sample, looping
+}
+
 TEST_CASE("a state restored into a smaller ring keeps the newest frames", "[render]")
 {
     const std::string dir = freshDirectory("ring-restore-smaller");

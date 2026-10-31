@@ -1380,10 +1380,13 @@ TEST_CASE("plugin process and flush adopt rings and apply commands without alloc
     CHECK_FALSE(processor->sources(0).ringAdoptionPending());
     plugin.onMainThread(); // frees the storage replaced
 
-    // A restored ring (layer A's Freeze on: D1 saves it), taken by process(), then by a flush.
+    // A restored ring (layer A Live and frozen: D1 saves it), taken by process(), then by a flush.
+    const clap_id sourceA = paramId(gg::core::layerSlot(gg::core::LayerParam::Source, 0));
     const auto freeze = gg::test::paramValue(paramId(ParamSlot::Freeze), 1.0);
+    const auto live = gg::test::paramValue(sourceA, 1.0); // the instrument's is a Sample layer
     gg::test::InputEvents freezeOn;
     freezeOn.add(&freeze.header);
+    freezeOn.add(&live.header);
     params->flush(plugin.clap(), freezeOn.list(), gg::test::discardingOutputEvents());
     for (int i = 0; i < 4; ++i)
     {
@@ -1417,11 +1420,13 @@ TEST_CASE("plugin process and flush adopt rings and apply commands without alloc
     CHECK_FALSE(processor->sources(0).ringAdoptionPending());
     plugin.onMainThread();
 
-    // A command (the FX's layer A reads its ring; the instrument's is a Sample layer, which
-    // ignores it), unfrozen first.
+    // A command (the FX's layer A reads its ring; the instrument's, a Sample layer again, ignores
+    // it), unfrozen first.
     const auto thaw = gg::test::paramValue(paramId(ParamSlot::Freeze), 0.0);
+    const auto kind = gg::test::paramValue(sourceA, isFx ? 1.0 : 0.0);
     gg::test::InputEvents freezeOff;
     freezeOff.add(&thaw.header);
+    freezeOff.add(&kind.header);
     params->flush(plugin.clap(), freezeOff.list(), gg::test::discardingOutputEvents());
     plugin.impl().uiCommand({0, gg::core::CommandKind::AddSplice, 0, 0.01f});
     AllocTripwire::resetCount();

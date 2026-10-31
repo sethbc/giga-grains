@@ -195,6 +195,19 @@ RingParams toRingParams(const ParamValues &effective, uint8_t layer) noexcept
     };
 }
 
+bool freezeOn(const ParamValues &values, uint8_t layer) noexcept
+{
+    assert(layer < kLayers);
+    return read(values, layerSlot(LayerParam::Freeze, layer)) > 0.5f;
+}
+
+bool ringSaved(const ParamValues &base, Mode mode, uint8_t layer) noexcept
+{
+    assert(layer < kLayers);
+    return builtKind(sourceKindOf(base, layer), mode) == SourceMode::Live &&
+           (freezeOn(base, layer) || read(base, layerSlot(LayerParam::Loop, layer)) > 0.5f);
+}
+
 LfoParams lfoParams(const ParamValues &effective, uint8_t layer, int which) noexcept
 {
     assert(layer < kLayers);

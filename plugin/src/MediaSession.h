@@ -85,15 +85,16 @@ std::optional<RingCopy> readRing(const core::Processor &processor, uint8_t layer
 /// length is checked with the ring it replaces still counted (both live until the swap); so is a
 /// restored ring.
 ///
-/// **Rings saved** (D1): a layer's ring is saved when its Freeze or Loop base value is on, as its
-/// window (RingSpanRequest: the loop's when Loop is on), read with readRing's protocol (the save
-/// retries rather than waiting for a gap between process() calls, which the main thread can't
-/// see; a front the head lapped on the last try is saved as silence, so the window keeps its
-/// length W and the marks their offsets), its marks inside it. A frozen ring's WAV bytes and hash
-/// are cached by (storage epoch, head, window start); a live ring's every write moves its head.
-/// Rings and embedded captures then take the embed rule (spec §6.6) in layer order, rings before
-/// captures: embedded in AUDI while the payloads stay within core::kEmbedCapBytes, else filed in
-/// the captures folder as `<sha256>.wav`.
+/// **Rings saved** (D1): a layer's ring is saved when its base Source builds to Live (Live or
+/// Resample) and its Freeze or Loop base value is on (core::ringSaved), as its window
+/// (RingSpanRequest: the loop's when Loop is on), read with readRing's protocol (the save retries
+/// rather than waiting for a gap between process() calls, which the main thread can't see; a front
+/// the head lapped on the last try is saved as silence, so the window keeps its length W and the
+/// marks their offsets), its marks inside it. A frozen ring's WAV bytes and hash are cached by
+/// (storage epoch, head, window start); a live ring's every write moves its head. Rings and
+/// embedded captures then take the embed rule (spec §6.6) in layer order, rings before captures:
+/// embedded in AUDI while the payloads stay within core::kEmbedCapBytes, else filed in the captures
+/// folder as `<sha256>.wav`.
 ///
 /// **Status texts** (status()): "resizing" while a resize is in flight or a shrink waits for its
 /// grains; "over the memory cap: needs N MB, F MB free of C MB"
@@ -114,7 +115,7 @@ class MediaSession
 
     /// `settingsFile` is the per-machine settings file the loaders read (and the captures folder
     /// comes from). The budget starts at core::kMemoryCapDefaultMiB. Both products' media are
-    /// alike, so `mode` changes nothing yet.
+    /// alike; `mode` names the product whose Source kinds decide which rings are saved (D1).
     MediaSession(core::Mode mode, std::filesystem::path settingsFile, CallbacksFor perLayer,
                  BaseValue baseValue = {});
     MediaSession(const MediaSession &) = delete;
@@ -135,12 +136,12 @@ class MediaSession
 
     /// The session to save: the values, seed and routes given, every loader's entry, the rings
     /// of D1 read from `active` (or, inactive, those held for the next activation; active, a
-    /// ring a restore offered that the audio thread hasn't adopted yet, as restored), the embed rule
-    /// (the class comment), the cap. Filed audio is written to the captures folder unless a file
-    /// of its name and size is there. A ring's WAV bytes and hash are cached by (layer, storage
-    /// epoch, head, window start), so a host saving every few seconds hashes an unchanged frozen
-    /// ring once. Never throws: a write that fails leaves the entry out and sets that layer's
-    /// status message; the rest saves.
+    /// ring a restore offered that the audio thread hasn't adopted yet, as restored), the embed
+    /// rule (the class comment), the cap. Filed audio is written to the captures folder unless a
+    /// file of its name and size is there. A ring's WAV bytes and hash are cached by (layer,
+    /// storage epoch, head, window start), so a host saving every few seconds hashes an unchanged
+    /// frozen ring once. Never throws: a write that fails leaves the entry out and sets that
+    /// layer's status message; the rest saves.
     core::SessionState save(const core::ParamValues &values, uint64_t seed,
                             const core::ModRoutes &routes, const core::Processor *active) noexcept;
 
@@ -261,6 +262,7 @@ class MediaSession
     /// Restores the held ring of `layer` into `processor` (activate()).
     void restoreHeld(core::Processor &processor, uint8_t layer);
 
+    const core::Mode mode_; // for the Source kinds' rule (core::ringSaved)
     const std::filesystem::path settingsFile_;
     BaseValue baseValue_;
     std::function<void()> markDirty_;

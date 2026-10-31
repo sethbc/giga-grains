@@ -622,6 +622,45 @@ TEST_CASE("the instrument's Position is a fraction and its Spray is seconds", "[
     }
 }
 
+TEST_CASE("a ring is saved on a Live or Resample layer whose Freeze or Loop is on", "[core]")
+{
+    // M2 sub-project 2's D1, the one rule the plugin and gg-render share (ringSaved), and the
+    // Freeze switch's threshold (freezeOn): above 0.5, as WetParams::freeze reads it.
+    using gg::core::freezeOn;
+    using gg::core::LayerParam;
+    using gg::core::layerSlot;
+    using gg::core::ringSaved;
+    for (const Mode mode : {Mode::Fx, Mode::Instrument})
+    {
+        for (uint8_t layer = 0; layer < gg::core::kLayers; ++layer)
+        {
+            INFO("layer " << int{layer} << (mode == Mode::Fx ? " fx" : " instrument"));
+            const auto at = [layer](LayerParam p) {
+                return static_cast<size_t>(layerSlot(p, layer));
+            };
+            ParamValues v = defaults(mode);
+            CHECK_FALSE(ringSaved(v, mode, layer)); // neither held
+            v[at(LayerParam::Freeze)] = 0.5f;
+            CHECK_FALSE(freezeOn(v, layer)); // the threshold itself is off
+            v[at(LayerParam::Freeze)] = 1.0f;
+            CHECK(freezeOn(v, layer));
+            for (const float kind : {0.0f, 1.0f, 2.0f, 3.0f, 4.0f})
+            {
+                v[at(LayerParam::Source)] = kind;
+                const bool live = gg::core::builtKind(gg::core::sourceKindOf(v, layer), mode) ==
+                                  gg::SourceMode::Live;
+                CHECK(ringSaved(v, mode, layer) == live); // frozen
+                v[at(LayerParam::Freeze)] = 0.0f;
+                v[at(LayerParam::Loop)] = 1.0f;
+                CHECK(ringSaved(v, mode, layer) == live); // looping
+                v[at(LayerParam::Loop)] = 0.0f;
+                CHECK_FALSE(ringSaved(v, mode, layer)); // neither
+                v[at(LayerParam::Freeze)] = 1.0f;
+            }
+        }
+    }
+}
+
 TEST_CASE("the layer-aware maps read each layer's slots", "[core][layers]")
 {
     using gg::SourceMode;

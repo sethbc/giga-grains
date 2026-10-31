@@ -1694,3 +1694,32 @@ TEST_CASE("a save before the audio thread takes a restored ring writes the resto
     REQUIRE_FALSE(b.impl().processor()->sources(0).ringAdoptionPending());
     sameRing(decoded(b.save(), gg::core::Mode::Fx));
 }
+
+TEST_CASE("a session saves no ring of a layer whose Source is Sample", "[plugin]")
+{
+    // D1 (the final review's I2): a held ring is saved only when the layer's base Source builds
+    // to Live (Live or Resample). The instrument's layer A is a Sample layer by default: Freeze
+    // on it holds a ring of the instrument's input that no grain reads, saved neither by a save
+    // nor kept at a deactivation. Set to Live, the same layer's ring is saved.
+    gg::test::useMediaScratch("ring-save-kinds");
+    PluginUnderTest inst(kInstrumentId);
+    REQUIRE(inst.valid());
+    REQUIRE(inst.activate(kRate, kBlock));
+    render(inst, 20, 31);
+    setParam(inst, paramId(ParamSlot::Freeze), 1.0);
+    render(inst, 4, 32);
+    CHECK_FALSE(decoded(inst.save(), gg::core::Mode::Instrument).rings[0].has_value());
+    inst.deactivate();
+    CHECK_FALSE(decoded(inst.save(), gg::core::Mode::Instrument).rings[0].has_value());
+    REQUIRE(inst.activate(kRate, kBlock));
+    setParam(inst, idOf(LayerParam::Source, 0), 1.0); // Live
+    render(inst, 4, 33);
+    CHECK(decoded(inst.save(), gg::core::Mode::Instrument).rings[0].has_value());
+
+    // The FX's Live layer A set to Sample, frozen: not saved either.
+    PluginUnderTest fx(kFxId);
+    frozenFx(fx);
+    REQUIRE(decoded(fx.save(), gg::core::Mode::Fx).rings[0].has_value());
+    setParam(fx, idOf(LayerParam::Source, 0), 0.0); // Sample
+    CHECK_FALSE(decoded(fx.save(), gg::core::Mode::Fx).rings[0].has_value());
+}

@@ -461,8 +461,9 @@ std::shared_ptr<gg::SampleBuffer> ringBuffer(const gg::core::Processor &processo
                                    w.frames, sampleRate);
 }
 
-/// Writes the session at the render's end (RenderOptions::saveStatePath; the spec's D1 rule: a
-/// layer's ring is kept when its Freeze or Loop base is on).
+/// Writes the session at the render's end (RenderOptions::saveStatePath; the spec's D1 rule,
+/// gg::core::ringSaved: a layer's ring is kept when its base Source builds to Live and its Freeze
+/// or Loop base is on).
 void saveSession(const gg::core::Processor &processor, const RenderSpec &spec, uint32_t capMiB,
                  const std::array<std::optional<gg::core::MediaEntry>, gg::core::kLayers> &entries,
                  const std::array<std::shared_ptr<gg::SampleBuffer>, gg::core::kLayers> &captured,
@@ -514,12 +515,11 @@ void saveSession(const gg::core::Processor &processor, const RenderSpec &spec, u
         return {false, 0, utf8FromPath(file)};
     };
 
+    const gg::core::Mode mode =
+        spec.mode == RenderMode::Fx ? gg::core::Mode::Fx : gg::core::Mode::Instrument;
     for (uint8_t layer = 0; layer < gg::core::kLayers; ++layer)
     {
-        const auto base = [&](gg::core::LayerParam p) {
-            return processor.base(gg::core::layerSlot(p, layer));
-        };
-        if (base(gg::core::LayerParam::Freeze) >= 0.5f || base(gg::core::LayerParam::Loop) >= 0.5f)
+        if (gg::core::ringSaved(state.values, mode, layer))
         {
             const RingWindow w = ringWindow(processor, layer, 0, spec.sampleRate);
             if (w.frames >= 1)
@@ -841,8 +841,7 @@ gg::metrics::AudioData renderProcessor(const RenderSpec &spec, std::vector<std::
                 gg::core::RingOffer offer;
                 offer.restore = true;
                 offer.frames = restored.frames;
-                offer.frozen = bases[static_cast<std::size_t>(gg::core::layerSlot(
-                                   gg::core::LayerParam::Freeze, layer))] >= 0.5f;
+                offer.frozen = gg::core::freezeOn(bases, layer); // the plugin's rule
                 offer.spliceCount = static_cast<uint32_t>(restored.splices.size());
                 std::copy(restored.splices.begin(), restored.splices.end(), offer.splices.begin());
                 if (!processor.setRingNow(layer, std::move(restored.storage), offer))

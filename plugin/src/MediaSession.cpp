@@ -53,19 +53,6 @@ int64_t framesFor(double seconds, double rate) noexcept
     return core::Processor::ringFramesFor(seconds, rate); // the engines' ring limit's frames
 }
 
-/// Whether layer `layer`'s ring is saved (D1): its Freeze or Loop base is on.
-bool held(const core::ParamValues &values, uint8_t layer) noexcept
-{
-    const auto freeze = static_cast<std::size_t>(core::layerSlot(core::LayerParam::Freeze, layer));
-    return values[freeze] > 0.5f || core::toRingParams(values, layer).loop;
-}
-
-bool frozenIn(const core::ParamValues &values, uint8_t layer) noexcept
-{
-    return values[static_cast<std::size_t>(core::layerSlot(core::LayerParam::Freeze, layer))] >
-           0.5f;
-}
-
 /// The bytes a ring of `frames` frames holds (RingStorage::bytes), with its levels (spec §6.9).
 uint64_t ringBytesOf(int64_t frames, uint32_t maxBlock) noexcept
 {
@@ -321,9 +308,9 @@ std::optional<RingCopy> readRing(const core::Processor &processor, uint8_t layer
     return out;
 }
 
-MediaSession::MediaSession(core::Mode /*mode*/, std::filesystem::path settingsFile,
+MediaSession::MediaSession(core::Mode mode, std::filesystem::path settingsFile,
                            CallbacksFor perLayer, BaseValue baseValue)
-    : settingsFile_(std::move(settingsFile)), baseValue_(std::move(baseValue)),
+    : mode_(mode), settingsFile_(std::move(settingsFile)), baseValue_(std::move(baseValue)),
       budget_{uint64_t{core::kMemoryCapDefaultMiB} << 20}
 {
     for (uint8_t l = 0; l < kLayers; ++l)
@@ -538,7 +525,7 @@ core::SessionState MediaSession::save(const core::ParamValues &values, uint64_t 
         {
             RingSlot &slot = rings_[l];
             // The ring (D1). A layer no longer held has nothing to say about its ring.
-            if (!held(values, l))
+            if (!core::ringSaved(values, mode_, l))
             {
                 slot.persistStatus.clear();
             }
@@ -737,7 +724,7 @@ MediaSession::Restored MediaSession::restore(core::SessionState state, double ac
             core::RingOffer how;
             how.restore = true;
             how.frames = ring.frames;
-            how.frozen = frozenIn(state.values, l);
+            how.frozen = core::freezeOn(state.values, l);
             how.spliceCount = static_cast<uint32_t>(
                 std::min<std::size_t>(ring.splices.size(), core::kMaxSplices));
             std::copy_n(ring.splices.begin(), how.spliceCount, how.splices.begin());
@@ -875,7 +862,7 @@ void MediaSession::deactivate(const core::Processor *processor,
     for (uint8_t l = 0; l < kLayers; ++l)
     {
         RingSlot &slot = rings_[l];
-        if (processor == nullptr || !held(values, l))
+        if (processor == nullptr || !core::ringSaved(values, mode_, l))
         {
             continue;
         }

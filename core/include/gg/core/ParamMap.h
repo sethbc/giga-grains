@@ -86,6 +86,18 @@ struct RingParams
 /// is below kLayers (asserted; the namespace's note).
 RingParams toRingParams(const ParamValues &effective, uint8_t layer) noexcept;
 
+/// Whether layer `layer`'s Freeze is on in `values`: above 0.5, the stepped switch's threshold
+/// (WetParams::freeze's). `layer` is below kLayers (asserted).
+bool freezeOn(const ParamValues &values, uint8_t layer) noexcept;
+
+/// Whether a session saves layer `layer`'s ring (M2 sub-project 2's spec D1), from its base
+/// values: the layer's Source builds to SourceMode::Live in `mode`'s product (builtKind: Live or
+/// Resample, the kinds whose grains read the ring), and its Freeze or its Loop is on (each above
+/// 0.5: freezeOn, RingParams::loop). A Sample layer's ring, which records for a later switch but
+/// which no grain reads, isn't saved. The plugin's MediaSession and gg-render's --save-state both
+/// decide by it. `layer` is below kLayers (asserted).
+bool ringSaved(const ParamValues &base, Mode mode, uint8_t layer) noexcept;
+
 /// Layer `layer`'s Cloud stream controls (`layer` below kLayers, asserted), from its own slots
 /// (layerSlot):
 /// - densityHz = exp2Det(Density);
