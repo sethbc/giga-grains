@@ -162,7 +162,7 @@ class RingStorage
 /// arithmetic in the same order as LiveSource::write(), so a ring restored or resized holds the
 /// levels its frames would have got as they were written (spec §6.9). For the main thread's copy
 /// of a resize's stable part and a restore's frames, and adoptStorage()'s bounded newest part.
-/// Real-time safe, but its cost is the frames': (to − from) × about 49 multiplies. A level frame
+/// Real-time safe, but its cost is the frames': (to − from) × about 51 multiplies. A level frame
 /// whose reach (its ring frame ± levelLag(n)) crosses `from` reads whatever the slots before it
 /// hold, as written: a restore's frames before 0 are silence, so its levels near the oldest frame
 /// are the ones a ring that started there would have.

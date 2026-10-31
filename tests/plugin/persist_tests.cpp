@@ -591,21 +591,24 @@ TEST_CASE("a Ring Length change resizes while processing", "[plugin]")
     CHECK(processor->engine(0).live().frames() == 4 * 48000);
 }
 
-TEST_CASE("a long ring resizes while the audio thread runs", "[plugin][threads]")
+TEST_CASE("a long ring resizes while the audio thread runs", "[plugin][threads][serial]")
 {
     // Task 12's review (M2 sub-project 2's spec §6.5, §6.9): the main thread's copy of a resize's
     // stable part, the ring's levels included, must finish while the audio thread, running in
     // real time, writes fewer than kAdoptCopyFrames frames, or every offer is declined. A 300 s
     // ring takes 160 s of input as fast as it can be rendered; then the audio thread renders in
     // real time on its own thread while this one, the main thread, resizes it to 200 s (a stable
-    // part of 160 s) and back to 300 s (160 s and more again). Each resize must land within
-    // kPolls of the watcher's calls. Bounded by work, not time: each poll waits for the audio
-    // thread to render kPollBlocks blocks; the deadlines and kMaxBlocks are safety bounds only,
-    // and reaching one fails.
-    constexpr int kPolls = 8;
+    // part of 160 s) and back to 300 s (160 s and more again). Each resize must land, within
+    // kPolls of the watcher's calls: the fault this pins (the levels computed on the main thread)
+    // declined every offer, so a generous bound still catches it, while a stall of the runner
+    // can't fail a correct build. The polls and declines are reported, not asserted; the exact
+    // bound is the next test's. Each poll waits for the audio thread to render kPollBlocks blocks;
+    // the deadlines and kMaxBlocks are safety bounds only, and reaching one fails. [serial]: its
+    // audio thread keeps real time (CLAUDE.md, a test that measures time).
+    constexpr int kPolls = 64;
     constexpr int64_t kPollBlocks = 3;
     constexpr int64_t kFillBlocks = int64_t{160} * 48000 / kBlock;
-    constexpr int64_t kMaxBlocks = 20000; // about 213 s of real time: a safety bound
+    constexpr int64_t kMaxBlocks = 60000; // about 640 s of real time: a safety bound
     constexpr auto kHang = std::chrono::seconds(60);
     gg::test::useMediaScratch("ring-resize-long");
     PluginUnderTest fx(kFxId);
@@ -702,6 +705,87 @@ TEST_CASE("a long ring resizes while the audio thread runs", "[plugin][threads]"
     CHECK_FALSE(hung.load());
     CHECK(shrunk > 0);
     CHECK(grown > 0);
+}
+
+namespace
+{
+// The adoption-bound test's audio thread, run from inside the main thread's ring read (the read
+// hook, after the copy and before the offer), so it renders exactly `frames` frames there.
+PluginUnderTest *boundPlugin = nullptr;
+int64_t boundFrames = 0;
+int boundHooked = 0;
+
+void boundHook(uint8_t layer, int /*attempt*/)
+{
+    if (layer != 0 || boundHooked++ != 0)
+    {
+        return; // layer A's first read alone
+    }
+    Stereo in(kBlock);
+    Stereo out(kBlock);
+    for (int64_t done = 0; done < boundFrames; done += kBlock)
+    {
+        REQUIRE(boundPlugin->process(kBlock, in.data(), out.data()) == CLAP_PROCESS_CONTINUE);
+    }
+}
+} // namespace
+
+TEST_CASE("a resize lands with kAdoptCopyFrames written since its copy and not a block more",
+          "[plugin]")
+{
+    // Spec §6.5, the adoption bound itself, with no time in it: the main thread copies the stable
+    // part as of the head R0 and offers it; the audio thread, held until the copy is done, then
+    // renders exactly kAdoptCopyFrames frames before the next call adopts at its start, which
+    // lands; one block more, and the adoption is declined, the old ring kept and the status left
+    // at "resizing". The read hook renders those frames between the copy and the offer, as an
+    // audio thread released there would (single-threaded, so the count is exact).
+    constexpr int64_t kBound = gg::LiveSource::kAdoptCopyFrames;
+    STATIC_REQUIRE(kBound % kBlock == 0);
+    for (const int64_t extra : {int64_t{0}, int64_t{kBlock}})
+    {
+        INFO("frames written between the copy and the adoption: " << kBound + extra);
+        gg::test::useMediaScratch("adopt-bound");
+        PluginUnderTest fx(kFxId);
+        REQUIRE(fx.valid());
+        REQUIRE(fx.activate(kRate, kBlock));
+        render(fx, 40, 3);
+        const auto ringLength = gg::test::paramValue(idOf(LayerParam::RingLength, 0), 2.0);
+        gg::test::InputEvents events;
+        events.add(&ringLength.header);
+        Stereo in(kBlock);
+        Stereo out(kBlock);
+        REQUIRE(fx.process(kBlock, in.data(), out.data(), events.list()) == CLAP_PROCESS_CONTINUE);
+        const auto &p = *fx.impl().processor();
+        const int64_t r0 = p.engine(0).live().head();
+
+        boundPlugin = &fx;
+        boundFrames = kBound + extra;
+        boundHooked = 0;
+        gg::plugin::detail::setRingReadHook(boundHook);
+        fx.onMainThread(); // copies as of R0, the hook renders, then the offer
+        gg::plugin::detail::setRingReadHook(nullptr);
+        boundPlugin = nullptr;
+        REQUIRE(boundHooked >= 1);
+        auto &media = fx.impl().media();
+        CHECK(media.status(0) == "resizing");
+        REQUIRE(p.engine(0).live().head() == r0 + kBound + extra);
+        const uint32_t declined = p.ringAdoptionsDeclined(0);
+
+        render(fx, 1, 5); // adopts at its start, or declines
+        fx.onMainThread();
+        if (extra == 0)
+        {
+            CHECK(p.ringRead(0).storage->frames() == 4 * 48000);
+            CHECK(p.ringAdoptionsDeclined(0) == declined);
+            CHECK(media.status(0).empty());
+        }
+        else
+        {
+            CHECK(p.ringRead(0).storage->frames() == 16 * 48000);
+            CHECK(p.ringAdoptionsDeclined(0) == declined + 1);
+            CHECK(media.status(0) == "resizing");
+        }
+    }
 }
 
 TEST_CASE("params.flush adopts no ring: the offer waits whole for the next process call",
