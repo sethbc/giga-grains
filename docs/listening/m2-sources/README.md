@@ -40,7 +40,7 @@ same commit gives the same bytes. `03` is 130 s long and takes the longest to re
 
 The FX files run at Mix 100%. Most read a sweep at amplitude 0.5, 110 Hz to 1760 Hz, as long as
 the input they name, so a grain from further back sits lower on the spectrogram. The peaks and RMS
-levels below were measured on the `release` renders, over both channels and the whole file. No
+levels below were measured on the `release` renders at `489d85e` (Task 13), over both channels and the whole file. No
 file peaks above -0.7 dBFS.
 
 | File | Length | What it is | Listen for |
