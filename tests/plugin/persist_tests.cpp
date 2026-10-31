@@ -1384,13 +1384,23 @@ TEST_CASE("a replaced ring stays published until its storage can be collected", 
     // offer declined because this thread was descheduled is made again, and its swap not
     // counted). Rare on an idle machine; run beside a loaded machine's other tests, it caught the
     // fault in about one run in two under Rosetta and one in sixteen natively.
-    // Bounded by work: kSwaps adoptions, each waited for over at most kPollsPerSwap collects;
-    // the audio thread's kMaxTotal and the deadline are safety bounds, and reaching one fails.
+    // Every grain reads within the newest few hundred frames (Position 0, Spray 0, 10 ms grains
+    // at Pitch 0), so the audio thread never declines the shorter ring for a grain reading past
+    // it (Engine::liveRingFits, ruling SP-T12ad): with the defaults' grains it could, offer after
+    // offer, for as long as one sounded there (the CI failure at 983df95 under RTSan, stuck at
+    // the first shrink); the plugin's watcher never offers such a shrink, which waits for its
+    // ring limit first.
+    // Bounded by work: kSwaps adoptions, each waited for over at most kFramesPerSwap frames the
+    // audio thread renders (each piece polls the offer), however long this thread is descheduled
+    // or polls; the audio thread's kMaxTotal is a safety bound, and reaching it fails.
     constexpr uint32_t kPiece = 64;
     constexpr int kSwaps = 200;
     constexpr int64_t kMaxTotal = int64_t{48000} * 600;
-    constexpr int64_t kPollsPerSwap = int64_t{1} << 26;
+    constexpr int64_t kFramesPerSwap = int64_t{48000} * 5;
     gg::core::Processor p({kRate, kPiece, 7, gg::core::Mode::Fx});
+    p.setBase(ParamSlot::Position, 0.0f);
+    p.setBase(ParamSlot::Spray, 0.0f);
+    p.setBase(ParamSlot::Size, static_cast<float>(std::log2(0.01)));
     REQUIRE(
         p.setRingNow(0, std::make_unique<gg::RingStorage>(4800, kPiece), gg::core::RingOffer{}));
     std::atomic<bool> stop{false};
@@ -1423,10 +1433,17 @@ TEST_CASE("a replaced ring stays published until its storage can be collected", 
         const uint32_t declinedAtStart = p.ringAdoptionsDeclined(0);
         uint32_t declinesSeen = declinedAtStart;
         int suspect = 0;
+        const int64_t headAtStart = p.ringRead(0).head->load(std::memory_order_acquire);
         offer(k);
-        int64_t polls = 0;
-        for (; polls < kPollsPerSwap; ++polls)
+        for (;;)
         {
+            if (p.ringRead(0).head->load(std::memory_order_acquire) - headAtStart >
+                    kFramesPerSwap ||
+                ranOut.load(std::memory_order_acquire))
+            {
+                stuck = true; // the audio thread rendered kFramesPerSwap and never adopted it
+                break;
+            }
             const std::size_t before = p.sources(0).ringsHeld();
             p.sources(0).collect();
             if (p.sources(0).ringsHeld() < before)
@@ -1447,7 +1464,6 @@ TEST_CASE("a replaced ring stays published until its storage can be collected", 
                 break;
             }
         }
-        stuck = polls == kPollsPerSwap;
         adopted += stuck ? 0 : 1;
         // A ring freed in a swap with a decline may be the declined one, which was never
         // published: only a swap without one counts.
