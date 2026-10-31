@@ -591,6 +591,119 @@ TEST_CASE("a Ring Length change resizes while processing", "[plugin]")
     CHECK(processor->engine(0).live().frames() == 4 * 48000);
 }
 
+TEST_CASE("a long ring resizes while the audio thread runs", "[plugin][threads]")
+{
+    // Task 12's review (M2 sub-project 2's spec §6.5, §6.9): the main thread's copy of a resize's
+    // stable part, the ring's levels included, must finish while the audio thread, running in
+    // real time, writes fewer than kAdoptCopyFrames frames, or every offer is declined. A 300 s
+    // ring takes 160 s of input as fast as it can be rendered; then the audio thread renders in
+    // real time on its own thread while this one, the main thread, resizes it to 200 s (a stable
+    // part of 160 s) and back to 300 s (160 s and more again). Each resize must land within
+    // kPolls of the watcher's calls. Bounded by work, not time: each poll waits for the audio
+    // thread to render kPollBlocks blocks; the deadlines and kMaxBlocks are safety bounds only,
+    // and reaching one fails.
+    constexpr int kPolls = 8;
+    constexpr int64_t kPollBlocks = 3;
+    constexpr int64_t kFillBlocks = int64_t{160} * 48000 / kBlock;
+    constexpr int64_t kMaxBlocks = 20000; // about 213 s of real time: a safety bound
+    constexpr auto kHang = std::chrono::seconds(60);
+    gg::test::useMediaScratch("ring-resize-long");
+    PluginUnderTest fx(kFxId);
+    REQUIRE(fx.valid());
+    setParam(fx, idOf(LayerParam::RingLength, 0), std::log2(300.0));
+    setParam(fx, idOf(LayerParam::Density, 0), -2.0); // 0.25 Hz: the fill is the ring's work
+    REQUIRE(fx.activate(kRate, kBlock));
+    const auto &p = *fx.impl().processor();
+    auto &media = fx.impl().media();
+    // A Ring Length's seconds come from a float base: a few frames over the round number.
+    const auto near = [](int64_t frames, double seconds) {
+        const auto want = static_cast<int64_t>(seconds * 48000.0);
+        return frames >= want && frames < want + 64;
+    };
+    REQUIRE(near(p.ringRead(0).storage->frames(), 300.0));
+    render(fx, static_cast<int>(kFillBlocks), 0, nullptr, true);
+
+    std::atomic<bool> stop{false};
+    std::atomic<bool> hung{false};
+    std::atomic<int64_t> rendered{0};
+    std::atomic<double> requested{std::log2(300.0)};
+    std::thread audio([&] {
+        Stereo in(kBlock);
+        Stereo out(kBlock);
+        double sent = std::log2(300.0); // the length the ring has: what activate() built
+        const auto start = std::chrono::steady_clock::now();
+        for (int64_t k = 0; k < kMaxBlocks && !stop.load(std::memory_order_acquire); ++k)
+        {
+            // Real time: block k starts k × kBlock / kRate seconds in.
+            std::this_thread::sleep_until(
+                start +
+                std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                    std::chrono::duration<double>(static_cast<double>(k * kBlock) / kRate)));
+            const double want = requested.load(std::memory_order_acquire);
+            const auto event = gg::test::paramValue(idOf(LayerParam::RingLength, 0), want);
+            gg::test::InputEvents events;
+            if (want != sent)
+            {
+                events.add(&event.header);
+                sent = want;
+            }
+            if (fx.process(kBlock, in.data(), out.data(), events.list()) != CLAP_PROCESS_CONTINUE)
+            {
+                hung.store(true, std::memory_order_release);
+            }
+            rendered.store(k + 1, std::memory_order_release);
+        }
+        if (!stop.load(std::memory_order_acquire))
+        {
+            hung.store(true, std::memory_order_release); // kMaxBlocks before the work was done
+        }
+    });
+    // Waits until the audio thread has rendered n more blocks.
+    const auto waitBlocks = [&](int64_t n) {
+        const int64_t target = rendered.load(std::memory_order_acquire) + n;
+        const auto deadline = std::chrono::steady_clock::now() + kHang;
+        while (rendered.load(std::memory_order_acquire) < target && !hung.load())
+        {
+            if (std::chrono::steady_clock::now() > deadline)
+            {
+                hung.store(true);
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+    };
+    // The watcher's call at which the resize to `seconds` landed, or 0.
+    const auto resizeTo = [&](double seconds) {
+        const double before = p.ringSecondsRequested(0);
+        requested.store(std::log2(seconds), std::memory_order_release);
+        for (int k = 0; k < 64 && p.ringSecondsRequested(0) == before && !hung.load(); ++k)
+        {
+            waitBlocks(1); // the request applies at a call's start
+        }
+        for (int poll = 1; poll <= kPolls && !hung.load(); ++poll)
+        {
+            fx.onMainThread();
+            waitBlocks(kPollBlocks);
+            fx.onMainThread(); // collects the replaced storage, settles the status
+            if (media.status(0).empty() && near(p.ringRead(0).storage->frames(), seconds))
+            {
+                return poll;
+            }
+        }
+        return 0;
+    };
+    const int shrunk = resizeTo(200.0);
+    const int grown = shrunk > 0 ? resizeTo(300.0) : 0;
+    stop.store(true, std::memory_order_release);
+    audio.join();
+    INFO("resized to 200 s at poll " << shrunk << ", to 300 s at poll " << grown << ", declined "
+                                     << p.ringAdoptionsDeclined(0) << ", " << rendered.load()
+                                     << " real-time blocks");
+    CHECK_FALSE(hung.load());
+    CHECK(shrunk > 0);
+    CHECK(grown > 0);
+}
+
 TEST_CASE("params.flush adopts no ring: the offer waits whole for the next process call",
           "[plugin]")
 {

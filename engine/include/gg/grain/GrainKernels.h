@@ -1055,8 +1055,9 @@ void renderSampleSimd(const GrainRows &rows, uint32_t i, const SampleSource &src
 
 /// The scalar reference over the live ring: grain i of rows, over [from, to), read with
 /// Reader::readLive and the grain's ReadParams, at posL for a ring level at `decimation` (a
-/// uint32_t, or detail::UnitDecimation for 1: level 0, the ring itself; a level above 0 renders
-/// through renderLiveLevelRef, which keeps the head, the window and the fade in ring frames).
+/// uint32_t, or detail::UnitDecimation for 1). **Level 0 only:** `decimation` must be 1, the ring
+/// itself; a level above 0 renders through renderLiveLevelRef, which keeps the head, the window and
+/// the fade in ring frames (renderLiveSimd sends a decimation above 1 there).
 /// [from, to) must lie in the ring's last write() block, whose R(t) the head-proximity fade and the
 /// read use. Per sample, after w > 0 and the steal fade (the file comment), which multiplies w
 /// where the grain was stolen:

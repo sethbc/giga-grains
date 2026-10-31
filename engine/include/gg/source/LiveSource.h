@@ -78,10 +78,11 @@ namespace gg
 ///
 /// **The levels** (spec §6.9): the storage's pyramid (RingStorage), which write() advances as each
 /// frame arrives, so level n's frames are complete to RingStorage::levelLag(n) frames behind the
-/// head, at most 189 for level 3, inside M; frozen, they freeze with level 0. adoptStorage() fills
-/// the levels of the frames it copies; a restore's storage arrives with its levels filled
-/// (fillLevels). level(n) gives them to the kernels, which keep the head, the window and the fade
-/// in ring frames and read only their taps from a level (levelFadeFor, gatherLevelTaps).
+/// head, at most 189 for level 3, inside M; frozen, they freeze with level 0. A resize's storage
+/// arrives with the levels of its stable part copied (copyLevels) and adoptStorage() copies those
+/// of the frames it copies; a restore's storage arrives with its levels filled (fillLevels).
+/// level(n) gives them to the kernels, which keep the head, the window and the fade in ring frames
+/// and read only their taps from a level (levelFadeFor, gatherLevelTaps).
 ///
 /// **Reads** never touch a frame outside the window; see fade() and read().
 class LiveSource
@@ -122,13 +123,13 @@ class LiveSource
     /// The ring exchange's audio-thread half (spec §6.5), for a resize: swaps in `next`, whose
     /// slots already hold the window's frames below `copiedTo` at their slots (frame f at f mod
     /// next->capacity()), copied by the main thread from the frames it found stable, and their
-    /// levels (fillLevels; spec §6.9). Copies [copiedTo, head()) itself, the frames written since,
-    /// as far as both windows reach, fills their levels by the same function, and refreshes
-    /// next's guard slots. Ring time continues: the head, the freeze state and the write
-    /// gain stay. `previous` gets the storage replaced, for the main thread to free: nullptr when
-    /// the source owned it (it keeps that one until the next prepare() or its destruction, so
-    /// nothing is freed here) or had none. Marks older than the new window are dropped (as
-    /// write() drops them). The loop's W follows the new N.
+    /// levels (copyLevels; spec §6.9). Copies [copiedTo, head()) itself, the frames written since,
+    /// as far as both windows reach, and their level frames (copyLevels, from the storage it
+    /// replaces), and refreshes next's guard slots, every level's. Ring time continues: the head,
+    /// the freeze state and the write gain stay. `previous` gets the storage replaced, for the main
+    /// thread to free: nullptr when the source owned it (it keeps that one until the next prepare()
+    /// or its destruction, so nothing is freed here) or had none. Marks older than the new window
+    /// are dropped (as write() drops them). The loop's W follows the new N.
     ///
     /// Returns false, changing nothing (previous is set to nullptr), when next is null or already
     /// this ring's, when its capacity leaves less than a block's slack past its frames, when

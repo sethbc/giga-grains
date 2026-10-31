@@ -227,7 +227,6 @@ bool LiveSource::adoptStorage(RingStorage *next, int64_t copiedTo, RingStorage *
     const int64_t from = std::max({copiedTo, head_ - next->frames(), head_ - frames_, int64_t{0}});
     if (from < head_)
     {
-        // The levels of the frames copied here follow them (spec §6.9), below.
         int64_t s = from % capacity_;
         int64_t d = from % nextCapacity;
         for (int64_t f = from; f < head_; ++f)
@@ -243,9 +242,10 @@ bool LiveSource::adoptStorage(RingStorage *next, int64_t copiedTo, RingStorage *
                 d = 0;
             }
         }
+        // Their level frames, copied from the old storage, where write() made them complete
+        // (spec §6.9): the frames fillLevels would make, at the cost of a copy.
+        copyLevels(*storage_, *next, from, head_);
     }
-    // The levels of the copied frames, as write() made them: at most kAdoptCopyFrames frames'.
-    fillLevels(*next, from, head_);
     mirrorGuards(*next);
     release(previous);
     attach(next);

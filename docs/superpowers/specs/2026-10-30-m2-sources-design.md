@@ -571,6 +571,15 @@ empty by construction (an FX with no sample still writes an empty one).
   its spec names, and renamed `fx-hq-live` in the same commit. Capture takes level 0 alone; a
   captured sample gets 3's file pyramid when it is loaded.
 
+> **Amended by Task 12 and its review (2026-10-30, as built):** a resize **copies** the level
+> frames of the frames it places (`copyLevels`, main thread for the stable part, audio thread for
+> the newest), bit for bit what computing them gives, because computing a long stable part
+> outlasted the adoption's 8,192-frame window; a restore computes them (`fillLevels`) from the
+> restored frames with ring time restarting at 0, so its levels equal the saved ring's bit for bit
+> when the saved window began at frame 0, and otherwise hold the same audio away from the oldest
+> ±lag frames, on the restored frame 0's decimation grid. The ring builds levels 1 to 3 with the
+> 55-tap half-band (SP-T12b; the figures above are the 31-tap design's).
+
 ### 6.10 `gg-render` (programme design §6.2: "`gg-render` loads `AUDI` from a spec")
 
 - **Parameters by name:** `"A Ring Length"` (log2 seconds) and the four others, in `params` and

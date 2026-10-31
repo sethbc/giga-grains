@@ -1026,6 +1026,58 @@ TEST_CASE("live mode is block-size invariant after the ring wraps", "[live][dete
     }
 }
 
+TEST_CASE("hq live grains at levels 2 and 3 are block-size invariant", "[live][determinism]")
+{
+    // M2 sub-project 2's spec §6.9, end to end: a Live HQ layer at Pitch +24 (rate 4, level 2)
+    // and +36 (rate 8, level 3) over a 2 s ring that wraps and freezes: admission, the level each
+    // grain latches and the level kernels give the same grains and the same bits in blocks of 1,
+    // 64 and 511.
+    constexpr double kRing = 2.0;
+    const auto input = noiseInput(kWrapFrames * 2, 14);
+    const std::vector<FreezeAt> freeze{{200000, true}, {260000, false}};
+    for (const double pitch : {24.0, 36.0})
+    {
+        const uint8_t level = pitch == 24.0 ? 2 : 3;
+        INFO("pitch +" << pitch << ", level " << int(level));
+        const auto render = [&](uint32_t block, SinkLog &log) {
+            gg::Engine engine(liveConfig(kSampleRate, 4096, kRing));
+            engine.setSourceMode(gg::SourceMode::Live);
+            engine.setCloudParams({.densityHz = 40.0,
+                                   .distribution = 0.5,
+                                   .grainDurationSec = 0.04,
+                                   .position = 1.5,
+                                   .spray = 0.2,
+                                   .pitchSemitones = pitch,
+                                   .stereo = 0.5,
+                                   .gain = 0.5f,
+                                   .quality = gg::Tier::HQ});
+            engine.setEventSink(&SinkLog::record, &log);
+            return runSplit(engine, input, {block}, freeze);
+        };
+        SinkLog refLog;
+        const auto ref = render(1, refLog);
+        REQUIRE_FALSE(refLog.overflowed);
+        REQUIRE(refLog.grains.size() > 200);
+        bool latched = true;
+        for (const gg::GrainSpec &g : refLog.grains)
+        {
+            latched = latched && g.tier == gg::Tier::HQ && g.level == level;
+        }
+        REQUIRE(latched);
+        REQUIRE(allFinite(ref.left));
+        REQUIRE(peak(ref.left, 48000, ref.left.size()) > 0.05f);
+        for (const uint32_t block : {64u, 511u})
+        {
+            INFO("blocks of " << block);
+            SinkLog log;
+            const auto out = render(block, log);
+            REQUIRE(log.grains == refLog.grains);
+            REQUIRE(sameBits(out.left, ref.left));
+            REQUIRE(sameBits(out.right, ref.right));
+        }
+    }
+}
+
 TEST_CASE("live mode never depends on later input after the ring wraps", "[live]")
 {
     // 4096-frame blocks put up to 4095 frames of later input into the ring before a sample is
@@ -2434,15 +2486,17 @@ bool levelMatchesFile(const gg::LiveSource &ring, const gg::PreparedSource &file
 }
 
 // Every level-n frame m (n in 1 .. 3) of `a` whose ring frames m × 2ⁿ ± levelLag(n) lie in
-// [from, to) equals b's, bit for bit; counts the frames compared.
+// [from, to) equals b's, bit for bit; counts the frames compared. With `crossing`, also those
+// whose reach crosses `from` (m × 2ⁿ >= from alone).
 bool levelsAgree(const gg::LiveSource &a, const gg::LiveSource &b, int64_t from, int64_t to,
-                 int64_t &compared)
+                 int64_t &compared, bool crossing = false)
 {
     for (uint32_t n = 1; n < 4; ++n)
     {
         const int64_t lag = gg::RingStorage::levelLag(n);
         const int64_t d = int64_t{1} << n;
-        for (int64_t m = std::max<int64_t>(0, (from + lag + d - 1) / d); m * d + lag < to; ++m)
+        const int64_t low = from + (crossing ? 0 : lag);
+        for (int64_t m = std::max<int64_t>(0, (low + d - 1) / d); m * d + lag < to; ++m)
         {
             const auto [al, ar] = levelFrame(a, n, m);
             const auto [bl, br] = levelFrame(b, n, m);
@@ -2659,11 +2713,12 @@ TEST_CASE("a restored ring's levels match the saved ring's", "[engine][live]")
 TEST_CASE("a resize keeps the levels", "[engine][live]")
 {
     // A 2 s ring written past a wrap is resized to 4 s and then to 1 s: the main thread copies
-    // the window as of R0 and fills its levels (fillLevels), the audio thread writes 4096 more
-    // frames and adoptStorage copies them and fills theirs. Every level frame whose ring frames
-    // (m × 2ⁿ ± the level's lag) are in the copied part of the window then equals a 4 s ring's
-    // that took the same input and was never resized, bit for bit, and they stay equal as both go
-    // on.
+    // the window as of R0 and its level frames (copyLevels, as MediaSession does), the audio
+    // thread writes 4096 more frames and adoptStorage copies them and theirs. Every level frame
+    // at a ring frame in the copied part of the window, those whose reach crosses its oldest
+    // frame included, then equals a 4 s ring's that took the same input and was never resized,
+    // bit for bit, and they stay equal as both go on. The copy is what fillLevels would make
+    // wherever a level frame's reach is inside the copied frames.
     constexpr int64_t kN = 2 * 48000;
     const Stereo input = noiseInput(8 * 48000, 99);
     gg::LiveSource reference;
@@ -2675,7 +2730,24 @@ TEST_CASE("a resize keeps the levels", "[engine][live]")
 
     gg::RingStorage bigger(4 * 48000, 512);
     copyFrames(ring, bigger, r0 - kN, r0);
-    gg::fillLevels(bigger, r0 - kN, r0);
+    gg::copyLevels(*ring.storage(), bigger, r0 - kN, r0);
+    // fillLevels makes the same frames from the copied ones wherever their reach is inside them.
+    gg::RingStorage filled(4 * 48000, 512);
+    copyFrames(ring, filled, r0 - kN, r0);
+    gg::fillLevels(filled, r0 - kN, r0);
+    bool same = true;
+    for (uint32_t n = 1; n < 4; ++n)
+    {
+        const int64_t d = int64_t{1} << n;
+        const int64_t lag = gg::RingStorage::levelLag(n);
+        for (int64_t m = (r0 - kN + lag + d - 1) / d; m * d + lag < r0; ++m)
+        {
+            const int64_t s = m % bigger.levelCapacity(n);
+            same = same && sameBits(bigger.levelSlots(n)[2 * s], filled.levelSlots(n)[2 * s]) &&
+                   sameBits(bigger.levelSlots(n)[2 * s + 1], filled.levelSlots(n)[2 * s + 1]);
+        }
+    }
+    CHECK(same);
     writeInput(ring, input, r0 + 4096, {512});
     gg::RingStorage *previous = nullptr;
     REQUIRE(ring.adoptStorage(&bigger, r0, previous));
@@ -2683,26 +2755,26 @@ TEST_CASE("a resize keeps the levels", "[engine][live]")
     REQUIRE(ring.level(3).view.slots == bigger.levelSlots(3));
     writeInput(reference, input, ring.head(), {512});
     int64_t compared = 0;
-    CHECK(levelsAgree(ring, reference, r0 - kN, ring.head(), compared));
+    CHECK(levelsAgree(ring, reference, r0 - kN, ring.head(), compared, true));
     CHECK(compared > 80000);
 
     writeInput(ring, input, 6 * 48000, {300});
     writeInput(reference, input, 6 * 48000, {512});
     compared = 0;
-    CHECK(levelsAgree(ring, reference, r0 - kN, ring.head(), compared));
+    CHECK(levelsAgree(ring, reference, r0 - kN, ring.head(), compared, true));
     CHECK(compared > 200000);
 
     // Smaller: the newest second.
     const int64_t r1 = ring.head();
     gg::RingStorage smaller(48000, 512);
     copyFrames(ring, smaller, r1 - 48000, r1);
-    gg::fillLevels(smaller, r1 - 48000, r1);
+    gg::copyLevels(*ring.storage(), smaller, r1 - 48000, r1);
     writeInput(ring, input, r1 + 1000, {512});
     REQUIRE(ring.adoptStorage(&smaller, r1, previous));
     REQUIRE(previous == &bigger);
     writeInput(reference, input, ring.head(), {512});
     compared = 0;
     // The window is the newest second as of the head now: older level frames have been reused.
-    CHECK(levelsAgree(ring, reference, ring.head() - 48000, ring.head(), compared));
+    CHECK(levelsAgree(ring, reference, ring.head() - 48000, ring.head(), compared, true));
     CHECK(compared > 40000);
 }

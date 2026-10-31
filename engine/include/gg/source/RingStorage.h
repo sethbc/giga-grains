@@ -162,8 +162,26 @@ class RingStorage
 /// arithmetic in the same order as LiveSource::write(), so a ring restored or resized holds the
 /// levels its frames would have got as they were written (spec §6.9). For the main thread's copy
 /// of a resize's stable part and a restore's frames, and adoptStorage()'s bounded newest part.
-/// Real-time safe, but its cost is the frames': (to − from) × about 49 multiplies.
+/// Real-time safe, but its cost is the frames': (to − from) × about 49 multiplies. A level frame
+/// whose reach (its ring frame ± levelLag(n)) crosses `from` reads whatever the slots before it
+/// hold, as written: a restore's frames before 0 are silence, so its levels near the oldest frame
+/// are the ones a ring that started there would have.
 void fillLevels(RingStorage &storage, int64_t from, int64_t to) noexcept;
+
+/// Copies frames [from, to) (each >= 0) of one level between two storages' layouts: frame f from
+/// src's slot f mod srcCapacity to dst's slot f mod dstCapacity, both channels, in contiguous runs.
+/// The guard slots are not written (mirrored when the storage is adopted). Real-time safe.
+void copyRingFrames(const float *src, int64_t srcCapacity, float *dst, int64_t dstCapacity,
+                    int64_t from, int64_t to) noexcept;
+
+/// fillLevels' twin for a resize (spec §6.9): copies from `src` into `dst`, level by level, the
+/// level frames that fillLevels(dst, from, to) would make, those whose completing ring frame
+/// (m × 2ⁿ + levelLag(n)) is in [from, to). `src` must hold them complete (its head at `to` or
+/// later, none of them overwritten since), so the copy is bit for bit what fillLevels would make
+/// from the same frames, and those whose reach crosses `from` hold the old ring's values, not
+/// values computed from what the new storage lacks. When dst has a level src lacks (a ring too
+/// short for it), it is fillLevels(dst, from, to) instead. Real-time safe; its cost is the copy's.
+void copyLevels(const RingStorage &src, RingStorage &dst, int64_t from, int64_t to) noexcept;
 } // namespace gg
 
 #endif // GG_SOURCE_RINGSTORAGE_H

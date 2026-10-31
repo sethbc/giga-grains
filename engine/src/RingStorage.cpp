@@ -5,6 +5,7 @@
 #include "gg/source/RingStorage.h"
 
 #include <algorithm>
+#include <cstring>
 #include <stdexcept>
 
 #include "gg/core/FpContract.h"
@@ -53,27 +54,30 @@ void RingStorage::cascade(int64_t m) noexcept
         // stored: the level above holds at least 2 × kMinLevelFrames of them.
         const float *const src = levelSlots_[n - 1];
         const int64_t srcCapacity = levelCapacity_[n - 1];
-        const int64_t first = 2 * m - kCentre; // the frame tap 0 reads
-        const int64_t k0 = first < 0 ? -first : 0;
-        int64_t s = (first + k0) % srcCapacity;
+        // decimateHalfband's sum, in its order: the taps at even k ascending, the centre tap
+        // (k = 27, the frame 2m itself) between k = 26 and k = 28, every other tap zero and
+        // skipped, as are the frames before 0 (k below 27 − 2m); added from +0.
+        const int64_t centreSlot = (2 * m) % srcCapacity;
         float sumL = 0.0f;
         float sumR = 0.0f;
-        // decimateHalfband's sum: the zero taps (odd offsets from the centre) and the frames
-        // before 0 are skipped, the rest added in k order from +0.
-        for (int64_t k = k0; k < kHalfbandTaps; ++k)
+        const auto add = [&](int64_t k) noexcept {
+            int64_t s = centreSlot + (k - kCentre);
+            s += s < 0 ? srcCapacity : (s >= srcCapacity ? -srcCapacity : 0);
+            const float h = kHalfband[static_cast<std::size_t>(k)];
+            const float productL = h * src[2 * s];
+            const float productR = h * src[2 * s + 1];
+            sumL = sumL + productL;
+            sumR = sumR + productR;
+        };
+        const int64_t firstEven = std::max<int64_t>(0, kCentre - 2 * m + 1); // even, frame >= 0
+        for (int64_t k = firstEven; k < kCentre; k += 2)
         {
-            if ((k & 1) == 0 || k == kCentre)
-            {
-                const float h = kHalfband[static_cast<std::size_t>(k)];
-                const float productL = h * src[2 * s];
-                const float productR = h * src[2 * s + 1];
-                sumL = sumL + productL;
-                sumR = sumR + productR;
-            }
-            if (++s == srcCapacity)
-            {
-                s = 0;
-            }
+            add(k);
+        }
+        add(kCentre);
+        for (int64_t k = kCentre + 1; k < kHalfbandTaps; k += 2)
+        {
+            add(k);
         }
         float *const dst = levelSlots_[n];
         const int64_t capacity = levelCapacity_[n];
@@ -99,6 +103,35 @@ void fillLevels(RingStorage &storage, int64_t from, int64_t to) noexcept
     for (int64_t f = std::max<int64_t>(0, from); f < to; ++f)
     {
         storage.levelsAfter(f);
+    }
+}
+void copyRingFrames(const float *src, int64_t srcCapacity, float *dst, int64_t dstCapacity,
+                    int64_t from, int64_t to) noexcept
+{
+    for (int64_t f = std::max<int64_t>(0, from); f < to;)
+    {
+        const int64_t s = f % srcCapacity;
+        const int64_t d = f % dstCapacity;
+        const int64_t run = std::min({to - f, srcCapacity - s, dstCapacity - d});
+        std::memcpy(dst + 2 * d, src + 2 * s, static_cast<std::size_t>(run) * 2 * sizeof(float));
+        f += run;
+    }
+}
+
+void copyLevels(const RingStorage &src, RingStorage &dst, int64_t from, int64_t to) noexcept
+{
+    if (dst.levelCount() > src.levelCount())
+    {
+        fillLevels(dst, from, to);
+        return;
+    }
+    const int64_t start = std::max<int64_t>(0, from);
+    for (uint32_t n = 1; n < dst.levelCount(); ++n)
+    {
+        // The level frames completing at ring frames [start, to).
+        copyRingFrames(src.levelSlots(n), src.levelCapacity(n), dst.levelSlots(n),
+                       dst.levelCapacity(n), RingStorage::completeLevelFrames(n, start),
+                       RingStorage::completeLevelFrames(n, to));
     }
 }
 } // namespace gg

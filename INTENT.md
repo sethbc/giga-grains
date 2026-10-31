@@ -692,12 +692,26 @@ like Mix.
     the head, the window and the fade in ring frames and take only their taps from the level
     (`renderLiveLevelRef`, beside the level-0 path); a level read's fade covers its reach in ring
     frames, `(kBefore + 1) × 2ⁿ − 1` before and `kAfter × 2ⁿ` plus the level's lag after, so it
-    reaches 0 before any of its taps leaves the window or is incomplete. Frozen, the levels
-    freeze with level 0; a resize or a restore fills the levels of the frames it copies by the
-    same function (`fillLevels`), on the thread that copies them (the main thread for the
-    stable part and a restore, the audio thread for the at most 8,192 newest frames of an
-    adoption). The SIMD and AVX2 live kernels match the scalar reference bit for bit at every
-    level and tier. Writing the levels costs about 49 multiplies per frame; the levels add
+    reaches 0 before any of its taps leaves the window or is incomplete. **The head taper:** a
+    level grain's fade toward the head therefore ends at the level's completeness edge, up to
+    253 ring frames short of level 0's at level 3, so a grain running at the admission clamp's
+    limit tapers over at most about 35 output samples of its approach to the head (it closes
+    on the head at rate − 1 ≥ 7 frames a sample there), where its window is already closing:
+    smooth, never a click, and level 0's fade is unchanged. Frozen, the levels freeze with
+    level 0. **A resize copies the levels** as it copies the frames (`copyLevels`, by contiguous
+    runs: the main thread's stable part, then the audio thread's at most 8,192 newest frames),
+    which is bit for bit what computing them would give, and the copied level frames whose
+    reach crosses the copy's oldest frame keep the old ring's values; computing the stable part
+    instead (73 ms for 60 s, 368 ms for 300 s) outlasted the 170 ms in which the audio thread
+    writes the 8,192 frames an adoption copies, so every offer of a long ring was declined (the
+    review of Task 12; the plugin test that resizes 300 s to 200 s and back while the audio
+    thread runs in real time pins it). **A restore computes them** (`fillLevels`, main thread)
+    from the restored frames, ring time restarting at 0: they are a file's levels of those
+    frames, so they equal the saved ring's bit for bit when the saved window began at frame 0,
+    and otherwise hold the same audio away from the oldest ±lag frames, on the decimation grid
+    of the restored frame 0. The SIMD and AVX2 live kernels match the scalar reference bit for
+    bit at every level and tier. Writing the levels costs about 49 multiplies per frame (the
+    half-band's 28 nonzero taps, both channels, at 7/8 of a level frame per ring frame); the levels add
     seven-eighths again to a ring's memory, which the cap counts. Only HQ grains read them, so the
     one golden that moves is `fx-hq-live` (until then `fx-hq-live-level0`), whose fold-back
     above Nyquist the level removes.

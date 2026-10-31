@@ -955,13 +955,14 @@ void MediaSession::pollRingLengths(core::Processor &processor) noexcept
             const auto done =
                 readWith(processor, l, RingSpanRequest{}, target,
                          [&into](const RingStorage &from, int64_t first, int64_t end) {
-                             for (int64_t f = first; f < end; ++f)
-                             {
-                                 const int64_t s = f % from.capacity();
-                                 const int64_t d = f % into.capacity();
-                                 into.slots()[2 * d] = from.slots()[2 * s];
-                                 into.slots()[2 * d + 1] = from.slots()[2 * s + 1];
-                             }
+                             // In runs, and the levels copied as the frames are, not computed
+                             // (spec §6.9): the copy must end before the audio thread writes
+                             // kAdoptCopyFrames more frames, or the offer is declined.
+                             copyRingFrames(from.slots(), from.capacity(), into.slots(),
+                                            into.capacity(), first, end);
+                             // The level frames complete before the head R0 (end); the audio
+                             // thread copies those completing from copiedTo = R0 on.
+                             copyLevels(from, into, first, end);
                          });
             core::RingOffer how;
             if (done.has_value())
@@ -972,9 +973,9 @@ void MediaSession::pollRingLengths(core::Processor &processor) noexcept
                     into.slots()[2 * d] = 0.0f;
                     into.slots()[2 * d + 1] = 0.0f;
                 }
-                // The copied frames' levels (spec §6.9): the audio thread fills those of the
-                // frames it copies from copiedTo on, by the same function.
-                fillLevels(into, done->from, done->head);
+                // The lapped front's level frames, which may hold newer frames' values, are
+                // made again from what is there (spec §6.9), as a restore's are: a few frames.
+                fillLevels(into, done->from, done->valid);
                 how.copiedTo = done->head;
             }
             else
