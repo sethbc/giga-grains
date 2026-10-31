@@ -1890,7 +1890,9 @@ SaveResult GigaGrainsPlugin::savePreset(const std::string &name,
         }
         // The preset names each layer's sample file (D5: a layer it names none for keeps its own
         // on load). An embedded sample (a capture) has no file to name and is left out, as are
-        // the rings and the cap, which belong to the session.
+        // the rings, which belong to the session; INST carries the default cap, ignored on load
+        // (restorePreset). A newer build's manifest stays with the session too: a preset never
+        // carries one.
         gg::core::SessionState state;
         state.values = values;
         state.routes = routes_;
@@ -1903,7 +1905,6 @@ SaveResult GigaGrainsPlugin::savePreset(const std::string &name,
                 state.samples[layer] = entry;
             }
         }
-        state.newerMedia = media_->loader(0).newerMedia();
         const std::string bytes = gg::core::encodePreset(info, state);
         // The name as the file holds it (the patch's 255-byte cut; I4), read back before the
         // save so nothing after it can throw.

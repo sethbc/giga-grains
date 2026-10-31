@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cstdlib>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
@@ -32,6 +33,7 @@
 #include "PluginHarness.h"
 #include "PluginTestHooks.h"
 #include "gg/core/ParamIds.h"
+#include "gg/core/Preset.h"
 #include "gg/core/Processor.h"
 #include "gg/core/SessionState.h"
 #include "gg/media/Decode.h"
@@ -235,6 +237,38 @@ std::vector<float> renderRestored(const std::string &state, int blocks,
     std::vector<float> out;
     render(fx, blocks, 0, &out, true);
     return out;
+}
+
+// Points the content roots at empty folders under `dir` (GG_CONTENT_DIR and the install roots'
+// seam GG_SYSTEM_CONTENT_DIR), so a preset save's catalog sees no installed content. Each test
+// case runs in its own process.
+void useScratchContent(const fs::path &dir)
+{
+    const fs::path content = dir / "content";
+    const fs::path system = dir / "system";
+    fs::create_directories(content);
+    fs::create_directories(system);
+#if defined(_WIN32)
+    _wputenv_s(L"GG_CONTENT_DIR", content.c_str());
+    _wputenv_s(L"GG_SYSTEM_CONTENT_DIR", system.c_str());
+#else
+    setenv("GG_CONTENT_DIR", content.c_str(), 1);
+    setenv("GG_SYSTEM_CONTENT_DIR", system.c_str(), 1);
+#endif
+}
+
+std::string fileBytes(const fs::path &file)
+{
+    std::ifstream in(file, std::ios::binary);
+    return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+}
+
+gg::core::PresetInfo presetInfo(gg::core::Mode mode, const std::string &name)
+{
+    gg::core::PresetInfo info;
+    info.name = name;
+    info.product = mode;
+    return info;
 }
 } // namespace
 
@@ -1934,4 +1968,128 @@ TEST_CASE("a deactivation with four 60 s rings copies them and encodes none", "[
         REQUIRE(saved.rings[l].has_value());
         CHECK(saved.rings[l]->sha256Hex == encoded.sha256Hex);
     }
+}
+
+TEST_CASE("a preset leaves the cap, a restored ring and its status as they were",
+          "[plugin][preset]")
+{
+    // Ruling SP-M2 (the merge with presets group 1): a preset carries no ring and no cap, so a
+    // preset load keeps the instance's cap, its rings and their statuses, and never applies the
+    // preset's INST (here the default cap). The preset's PTCH still applies whole, the ring
+    // parameters among its values: this preset is the session's own values, so Freeze stays on
+    // and Ring Length is unchanged; a preset with another Ring Length would resize the ring, and
+    // one with Freeze off would let it run again.
+    const fs::path dir = gg::test::useMediaScratch("preset-keeps-ring");
+    PluginUnderTest a(kFxId);
+    frozenFx(a);
+    a.impl().media().setMemoryCapMiB(2048);
+    const std::string state = a.save();
+    const gg::core::SessionState s = decoded(state, gg::core::Mode::Fx);
+    REQUIRE(s.rings[0].has_value());
+    REQUIRE(s.memoryCapMiB == 2048);
+
+    PluginUnderTest b(kFxId);
+    REQUIRE(b.valid());
+    REQUIRE(b.activate(kRate, kBlock));
+    REQUIRE(b.load(state));
+    render(b, 4, 0, nullptr, true);
+    const std::vector<float> window = gg::test::ringWindow(*b.impl().processor(), 0);
+    REQUIRE(window == gg::test::ringWindow(*a.impl().processor(), 0));
+    REQUIRE(b.impl().media().memoryCapMiB() == 2048);
+    const std::string status = b.impl().media().status(0);
+
+    gg::core::SessionState preset = s;
+    preset.rings = {};
+    preset.audio.clear();
+    preset.memoryCapMiB = gg::core::kMemoryCapDefaultMiB;
+    const std::string path = gg::test::utf8(gg::test::writePresetFile(
+        "keeps-ring", presetInfo(gg::core::Mode::Fx, "Keeps Ring"), preset));
+    REQUIRE(*gg::test::stateChunkPayload(fileBytes(path), "INST") ==
+            R"(<instance version="1" memoryCapMiB="1024" />)");
+    REQUIRE(b.loadPreset(CLAP_PRESET_DISCOVERY_LOCATION_FILE, path.c_str(), nullptr));
+    render(b, 4, 0, nullptr, true);
+    CHECK(b.impl().media().memoryCapMiB() == 2048);
+    CHECK(gg::test::ringWindow(*b.impl().processor(), 0) == window);
+    CHECK(b.impl().media().status(0) == status);
+    const gg::core::SessionState after = decoded(b.save(), gg::core::Mode::Fx);
+    REQUIRE(after.rings[0].has_value());
+    CHECK(after.rings[0]->sha256Hex == s.rings[0]->sha256Hex);
+    CHECK(after.rings[0]->frames == s.rings[0]->frames);
+    CHECK(after.memoryCapMiB == 2048);
+}
+
+TEST_CASE("a saved preset names the layers' files and carries no capture or ring",
+          "[plugin][preset]")
+{
+    // Ruling SP-M3: "save as" names each layer's sample file; a capture embedded on one layer
+    // and a frozen ring on another stay with the session: no AUDI and no <ring> in the preset.
+    const fs::path dir = gg::test::useMediaScratch("preset-save-media");
+    useScratchContent(dir);
+    const fs::path bFile = gg::test::writeSineWav(dir / "b.wav", 48000, 1.0, 330.0);
+    const fs::path dFile = gg::test::writeSineWav(dir / "d.wav", 48000, 1.0, 550.0);
+    gg::core::SessionState s = fxDefaults();
+    for (const uint8_t layer : {uint8_t{1}, uint8_t{2}, uint8_t{3}})
+    {
+        s.values[slotIndex(LayerParam::Source, layer)] = 0.0f; // Sample
+    }
+    s.samples[1] = gg::test::entryOf(bFile);
+    s.samples[1]->layer = 1;
+    s.samples[3] = gg::test::entryOf(dFile);
+    s.samples[3]->layer = 3;
+    PluginUnderTest fx(kFxId);
+    REQUIRE(fx.valid());
+    REQUIRE(fx.load(gg::core::encodeState(s)));
+    REQUIRE(fx.activate(kRate, kBlock));
+    render(fx, 94, 11);
+    setParam(fx, paramId(ParamSlot::Freeze), 1.0); // layer A's ring, frozen
+    render(fx, 47, 12);
+    auto &media = fx.impl().media();
+    const auto capture = media.captureRing(0, 0, *fx.impl().processor());
+    REQUIRE(capture != nullptr);
+    REQUIRE(media.loadCapture(2, capture)); // layer C's sample, embedded
+
+    // The session has both.
+    const gg::core::SessionState session = decoded(fx.save(), gg::core::Mode::Fx);
+    REQUIRE(session.rings[0].has_value());
+    REQUIRE(session.samples[2].has_value());
+    REQUIRE(session.samples[2]->embed);
+    REQUIRE_FALSE(session.audio.empty());
+
+    const auto result = fx.impl().savePreset("Media Test", {}, "", false);
+    REQUIRE(result.saved());
+    const std::string bytes = fileBytes(result.file);
+    CHECK_FALSE(gg::test::stateChunkPayload(bytes, "AUDI").has_value());
+    const auto medi = gg::test::stateChunkPayload(bytes, "MEDI");
+    REQUIRE(medi.has_value());
+    CHECK(medi->find("<ring") == std::string::npos);
+    gg::core::PresetInfo info;
+    gg::core::SessionState preset;
+    REQUIRE(gg::core::readPreset(bytes, gg::core::Mode::Fx, info, preset));
+    CHECK_FALSE(preset.samples[0].has_value());
+    REQUIRE(preset.samples[1].has_value());
+    CHECK(preset.samples[1]->sha256Hex == s.samples[1]->sha256Hex);
+    CHECK_FALSE(preset.samples[2].has_value()); // the capture: no file to name
+    REQUIRE(preset.samples[3].has_value());
+    CHECK(preset.samples[3]->sha256Hex == s.samples[3]->sha256Hex);
+    for (const auto &ring : preset.rings)
+    {
+        CHECK_FALSE(ring.has_value());
+    }
+    CHECK(preset.audio.empty());
+}
+
+TEST_CASE("a saved preset carries no newer build's manifest", "[plugin][preset]")
+{
+    // A session that loaded a newer build's MEDI keeps it for its own save; a preset made from
+    // it writes this build's empty manifest instead.
+    const fs::path dir = gg::test::useMediaScratch("preset-save-newer");
+    useScratchContent(dir);
+    PluginUnderTest instrument(kInstrumentId);
+    REQUIRE(instrument.valid());
+    REQUIRE(instrument.load(gg::test::withNewerMedia(instrument.save())));
+    REQUIRE(*gg::test::stateChunkPayload(instrument.save(), "MEDI") == gg::test::kNewerMedia);
+    const auto result = instrument.impl().savePreset("No Newer", {}, "", false);
+    REQUIRE(result.saved());
+    CHECK(*gg::test::stateChunkPayload(fileBytes(result.file), "MEDI") ==
+          R"(<media version="2" />)");
 }
