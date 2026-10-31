@@ -344,7 +344,7 @@ TEST_CASE("reset keeps the mode and ends the fade", "[core][fx]")
     CHECK(r == 0.25f);
 }
 
-TEST_CASE("jump snaps the mode with no fade", "[core][limiter]")
+TEST_CASE("jump snaps the mode with no fade", "[core][fx]")
 {
     // A fade from Off would pass 10 ms of the first samples unlimited; jump makes the first
     // sample the mode's law alone.

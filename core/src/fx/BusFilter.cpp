@@ -35,6 +35,17 @@ void BusFilter::reset() noexcept
     res_ = 0.0f;
 }
 
+void BusFilter::jump(BusFilterType type) noexcept
+{
+    Svf &f = filter_[active_];
+    f.init();
+    f.firstBlock = true;
+    type_ = type;
+    nextType_ = type;
+    fading_ = false;
+    fadePos_ = 0;
+}
+
 BusFilter::Svf::Mode BusFilter::modeOf(BusFilterType type) noexcept
 {
     switch (type)

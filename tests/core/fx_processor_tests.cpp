@@ -20,7 +20,9 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include "core/LayersFixture.h"
+#include "fx/BusFilter.h"
 #include "gg/core/Delay.h"
+#include "gg/core/Limiter.h"
 #include "gg/core/MathDet.h"
 #include "gg/core/ParamIds.h"
 #include "gg/core/ParamMap.h"
@@ -186,13 +188,13 @@ TEST_CASE("delay time automated every cell stays bounded", "[core][fx]")
     delay.prepare(kRate);
     delay.setTimeSamples(48.0);
     float l = 0.0f, r = 0.0f;
-    delay.process(l, r, 0.0f, 0.0f, 1.0f, false);
+    delay.process(l, r, 0.0f, 0.0f, 1.0f, 0.0f);
     double last = delay.timeSamples();
     for (int64_t i = 0; i < 4000; ++i)
     {
         delay.setTimeSamples(i / 32 % 2 == 0 ? 48.0 : 96000.0);
         l = r = 0.25f;
-        delay.process(l, r, 1.0f, 0.5f, 0.5f, false);
+        delay.process(l, r, 1.0f, 0.5f, 0.5f, 0.0f);
         const double now = delay.timeSamples();
         REQUIRE(std::abs(now - last) <= 0.5);
         last = now;
@@ -219,13 +221,71 @@ TEST_CASE("the delay's fractional read moves without a step", "[core][fx]")
         const float x = 0.5f * static_cast<float>(std::sin(2.0 * std::numbers::pi * 440.0 *
                                                            static_cast<double>(i) / kRate));
         float l = x, r = x;
-        delay.process(l, r, 1.0f, 0.0f, 1.0f, false);
+        delay.process(l, r, 1.0f, 0.0f, 1.0f, 0.0f);
         echo[static_cast<size_t>(i)] = l - x;
     }
     CHECK(delay.timeSamples() == 400.0);
     const double slope = 0.5 * 2.0 * std::numbers::pi * 440.0 / kRate;
     CHECK(largestStep(echo, 500, kFrames) < static_cast<float>(1.5 * slope * 1.05));
     CHECK(peakIn(echo, 1000, kFrames) > 0.4f);
+}
+
+TEST_CASE("a ping-pong switch does not click", "[core][fx]")
+{
+    // Four layers over sines at Stereo 1, so the wet sum's two channels differ, into a 250 ms
+    // delay at feedback 0.5 and Damping 0.3. Ping-pong goes on, then off: the damper's input
+    // crosses between the channels' reads over the 10 ms ramp, so the echo of each switch (one
+    // Delay Time later, where the line plays what the damper wrote) is no rougher than the
+    // steady sound around it. A hard switch (delay_tests' negative control) steps there.
+    constexpr int64_t kFrames = 144000, kTime = 12000, kRamp = 480;
+    const auto renderWith = [&](bool toggle) {
+        Processor p({kRate, 4096, 31, Mode::Fx});
+        hotLayers(p);
+        for (uint8_t L = 0; L < 4; ++L)
+        {
+            p.setBase(gg::core::levelSlot(L), 0.0f);
+            p.setBase(gg::core::layerSlot(gg::core::LayerParam::Stereo, L), 1.0f);
+        }
+        p.setBase(ParamSlot::DelayAmount, 0.5f);
+        p.setBase(ParamSlot::DelayTime, -2.0f); // 250 ms
+        p.setBase(ParamSlot::DelayFeedback, 0.5f);
+        p.setBase(ParamSlot::DelayDamping, 0.3f);
+        std::vector<TimedEvent> events;
+        if (toggle)
+        {
+            events = {{48001, ParamSlot::DelayPingPong, false, 1.0},
+                      {96001, ParamSlot::DelayPingPong, false, 0.0}};
+        }
+        Stereo out = silence(kFrames);
+        render(p, nullptr, 0, kFrames, {512}, events, out);
+        return out;
+    };
+    const auto roughest = [](const Stereo &s, int64_t from, int64_t to) {
+        float worst = 0.0f;
+        for (const std::vector<float> *v : {&s.left, &s.right})
+        {
+            for (int64_t i = from + 2; i < to; ++i)
+            {
+                const auto j = static_cast<size_t>(i);
+                worst = std::max(worst, std::abs((*v)[j] - 2.0f * (*v)[j - 1] + (*v)[j - 2]));
+            }
+        }
+        return worst;
+    };
+    const Stereo out = renderWith(true);
+    const Stereo still = renderWith(false);
+    REQUIRE(peak(out.left) > 0.1f);
+    REQUIRE_FALSE(sameBits(out.left, still.left)); // not vacuous: the switch moved the echoes
+    for (const int64_t t : {int64_t{48001}, int64_t{96001}})
+    {
+        const int64_t echo = t + kTime;
+        const float around = roughest(out, echo - 64, echo + kRamp + 64);
+        const float before = roughest(out, echo - 4800, echo - 64);
+        const float after = roughest(out, echo + 2 * kRamp, echo + 4800);
+        INFO("switch at " << t);
+        CAPTURE(around, before, after);
+        CHECK(around <= 1.5f * std::max(before, after));
+    }
 }
 
 TEST_CASE("soft limits four hot layers below the ceiling", "[core][fx]")
@@ -303,6 +363,180 @@ TEST_CASE("a loaded Peak state is limited from its first sample", "[core][fx]")
     CHECK(firstTenMs(true) <= c);
     // The same state reached by an event fades in, and passes the ceiling meanwhile.
     CHECK(firstTenMs(false) > c);
+}
+
+TEST_CASE("a loaded state's filter, ping-pong and limiter apply from its first sample",
+          "[core][fx][buses]")
+{
+    // The rule that every new unit snaps where the ramps jump (the extremes' final review): a
+    // fresh instance given a state (setBases) with layer A's Bus 1 Filter a 300 Hz low-pass,
+    // Delay Ping-pong on (a 2 ms delay at feedback 0.5, so its echoes fall inside the first
+    // 10 ms) and the limiter in Peak at -30 dB renders, from its first sample, the three units
+    // settled. The reference applies the units themselves, settled from the start, to the same
+    // render with the three at rest (filter Off, Amount 0, Mode Off: the identity, so it is the
+    // layer's own wet). The same values reached through process()'s events, which fade and ramp,
+    // don't (the negative control; the filter's own fade is the snap's RED run).
+    constexpr int64_t kFrames = 2400;
+    constexpr int64_t kTen = 480;
+    constexpr float kCutoffLog2 = 8.2288187f; // 300 Hz
+    constexpr float kTimeLog2 = -8.9657843f;  // 2 ms
+    const auto setUp = [](Processor &p) {
+        p.setBase(ParamSlot::Mix, 1.0f);
+        p.setBase(ParamSlot::Source, 0.0f);
+        p.setBase(ParamSlot::Position, 0.5f);
+        p.setBase(ParamSlot::Density, 6.0f);
+        p.setBase(ParamSlot::Size, -4.0f);
+        p.setBase(ParamSlot::Stereo, 1.0f); // the channels differ, so ping-pong shows
+        p.setBase(gg::core::layerSlot(gg::core::LayerParam::Bus1Cutoff, 0), kCutoffLog2);
+        p.setBase(ParamSlot::DelayTime, kTimeLog2);
+        p.setBase(ParamSlot::DelayFeedback, 0.5f);
+        p.setBase(ParamSlot::DelayDamping, 0.3f);
+        p.setBase(ParamSlot::LimiterCeiling, -30.0f);
+        p.setSourceNow(0, sine(659.25));
+    };
+    const auto withState = [](Processor &p) {
+        ParamValues v{};
+        for (size_t s = 0; s < gg::core::kParamCount; ++s)
+        {
+            v[s] = p.base(static_cast<ParamSlot>(s));
+        }
+        v[static_cast<size_t>(gg::core::layerSlot(gg::core::LayerParam::Bus1Filter, 0))] = 1.0f;
+        v[static_cast<size_t>(ParamSlot::DelayAmount)] = 1.0f;
+        v[static_cast<size_t>(ParamSlot::DelayPingPong)] = 1.0f;
+        v[static_cast<size_t>(ParamSlot::LimiterMode)] = 2.0f;
+        return v;
+    };
+
+    Stereo raw = silence(kFrames);
+    {
+        Processor p({kRate, 4096, 33, Mode::Fx});
+        setUp(p);
+        render(p, nullptr, 0, kFrames, {256}, {}, raw);
+    }
+    REQUIRE(peakIn(raw.left, 0, kTen) > 0.05f);
+    REQUIRE_FALSE(sameBits(raw.left, raw.right));
+
+    // The three units settled from the start, over the raw render, in the Processor's order.
+    Stereo expected = raw;
+    {
+        Processor p({kRate, 4096, 33, Mode::Fx});
+        setUp(p);
+        const ParamValues v = withState(p);
+        const gg::core::BusParams bp = gg::core::busParams(v, 0);
+        const gg::core::DelayParams dp = gg::core::delayParams(v);
+        const gg::core::LimiterParams lp = gg::core::limiterParams(v);
+        gg::core::fx::BusFilter filter;
+        filter.prepare(kRate, static_cast<uint32_t>(kTen));
+        filter.jump(bp.type[0]);
+        gg::core::Delay delay;
+        delay.prepare(kRate);
+        delay.setTimeSamples(static_cast<double>(dp.timeSeconds) * kRate);
+        gg::core::Limiter limiter;
+        limiter.prepare(kRate, static_cast<uint32_t>(kTen));
+        limiter.jump(lp.mode);
+        const float damp = gg::core::dampCoefficient(dp.damping, kRate);
+        const float release = gg::core::releaseCoefficient(lp.releaseSeconds, kRate);
+        for (int64_t i = 0; i < kFrames; ++i)
+        {
+            const auto j = static_cast<size_t>(i);
+            if (i % 32 == 0)
+            {
+                filter.setCell(bp.type[0], bp.cutoffHz[0], bp.resonance[0]);
+            }
+            float l = expected.left[j], r = expected.right[j];
+            filter.process(l, r);
+            delay.process(l, r, dp.amount, dp.feedback, damp, 1.0f);
+            limiter.process(l, r, lp.mode, lp.ceilingGain, release);
+            expected.left[j] = l;
+            expected.right[j] = r;
+        }
+    }
+
+    const auto largestDifference = [&](const Stereo &a) {
+        float worst = 0.0f;
+        for (size_t j = 0; j < static_cast<size_t>(kTen); ++j)
+        {
+            worst = std::max({worst, std::abs(a.left[j] - expected.left[j]),
+                              std::abs(a.right[j] - expected.right[j])});
+        }
+        return worst;
+    };
+    const float c = ceilingGain(-30.0f);
+
+    Stereo loaded = silence(kFrames);
+    {
+        Processor p({kRate, 4096, 33, Mode::Fx});
+        setUp(p);
+        p.setBases(withState(p));
+        render(p, nullptr, 0, kFrames, {256}, {}, loaded);
+    }
+    Stereo evented = silence(kFrames);
+    {
+        Processor p({kRate, 4096, 33, Mode::Fx});
+        setUp(p);
+        p.setBase(ParamSlot::DelayAmount, 1.0f);
+        const std::vector<TimedEvent> events{{0, ParamSlot::DelayPingPong, false, 1.0},
+                                             {0, ParamSlot::LimiterMode, false, 2.0}};
+        render(p, nullptr, 0, kFrames, {256}, events, evented);
+    }
+    const float loadedError = largestDifference(loaded);
+    const float eventedError = largestDifference(evented);
+    CAPTURE(loadedError, eventedError);
+    CHECK(loadedError <= 1e-6f);
+    CHECK(std::max(peakIn(loaded.left, 0, kTen), peakIn(loaded.right, 0, kTen)) <= c);
+    CHECK(eventedError > 100.0f * std::max(loadedError, 1e-7f));
+}
+
+TEST_CASE("a route that moves the limiter's mode snaps it", "[core][fx]")
+{
+    // setRoutes (a loaded state's matrix) and a macro's setBase jump every ramped value they
+    // move, and the limiter's mode with them: a route from Macro 1 to Limiter Mode, given while
+    // the sound is hot, limits the very first sample. The same mode change through process()'s
+    // events fades in over 10 ms (the negative control).
+    constexpr int64_t kWarm = 24000;
+    constexpr int64_t kRampFrames = 480;
+    const float c = ceilingGain(-24.0f);
+    enum class How
+    {
+        Routes,
+        Macro,
+        Event
+    };
+    const auto firstTenMs = [&](How how) {
+        Processor p({kRate, 4096, 34, Mode::Fx});
+        hotLayers(p);
+        p.setBase(ParamSlot::LimiterCeiling, -24.0f);
+        gg::core::ModRoutes routes = gg::core::factoryRoutes(Mode::Fx);
+        routes[12] = route(gg::core::ModSource::Macro1, ParamSlot::LimiterMode,
+                           gg::core::kAllLayers, 2.0f, gg::core::ModCurve::Unipolar);
+        if (how == How::Macro)
+        {
+            p.setBase(ParamSlot::Macro1, 0.0f); // its default is 0.5, which would be Soft
+            p.setRoutes(routes);                // Macro 1 at 0: the mode stays Off
+        }
+        Stereo out = silence(kWarm + kRampFrames);
+        render(p, nullptr, 0, kWarm, {256}, {}, out);
+        std::vector<TimedEvent> events;
+        switch (how)
+        {
+        case How::Routes:
+            p.setBase(ParamSlot::Macro1, 1.0f); // no route yet: moves nothing
+            p.setRoutes(routes);
+            break;
+        case How::Macro:
+            p.setBase(ParamSlot::Macro1, 1.0f);
+            break;
+        case How::Event:
+            events.push_back({kWarm, ParamSlot::LimiterMode, false, 2.0});
+            break;
+        }
+        render(p, nullptr, kWarm, kWarm + kRampFrames, {256}, events, out);
+        return std::max(peakIn(out.left, kWarm, kWarm + kRampFrames),
+                        peakIn(out.right, kWarm, kWarm + kRampFrames));
+    };
+    CHECK(firstTenMs(How::Routes) <= c);
+    CHECK(firstTenMs(How::Macro) <= c);
+    CHECK(firstTenMs(How::Event) > c);
 }
 
 TEST_CASE("reset leaves a Peak instance limited from the first sample", "[core][fx]")

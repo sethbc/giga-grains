@@ -222,9 +222,9 @@ struct ControlEvent
 ///   note-ons to the MIDI sources;
 /// - the sources step (above), and the effective values become clamp(base + modulation +
 ///   route offset);
-/// - every layer's engine gets setCloudParams(toCloudParams(..., layer)), its source kind (when it
-///   changed), setHeldKeys with the distinct held keys (when the group had notes) and its freeze
-///   setting (below), which apply from b;
+/// - every layer's engine gets setCloudParams(toCloudParams(..., layer, layerMaterial(layer))),
+///   its source kind (when it changed), setHeldKeys with the distinct held keys (when the group
+///   had notes) and its freeze setting (below), which apply from b;
 /// - Mix, Reverb Amount, Dry to Reverb, Morph X and Morph Y, and each layer's Level, Diffusion,
 ///   Feedback and on/off ramp from their current values to their new ones.
 ///
@@ -514,13 +514,13 @@ class Processor
     /// back to sources(layer) and is freed there (SourceExchange::collect), on the calling thread.
     /// `layer` is below kLayers.
     void setSourceNow(uint8_t layer, std::shared_ptr<const PreparedSource> s);
+    /// Layer A's: setSourceNow(0, s).
+    void setSourceNow(std::shared_ptr<const PreparedSource> s) { setSourceNow(0, std::move(s)); }
     /// What layer `layer`'s Spectral kind smears and the units its Position takes (the extremes
     /// spec §6.2): Sample when its engine holds a sample, else Live (its ring). A change, from
     /// setSourceNow or a source adopted at a process() call's start, re-sends the layer's cloud
     /// parameters (toCloudParams) before the call renders. `layer` is below kLayers.
     SourceMode layerMaterial(uint8_t layer) const noexcept;
-    /// Layer A's: setSourceNow(0, s).
-    void setSourceNow(std::shared_ptr<const PreparedSource> s) { setSourceNow(0, std::move(s)); }
 
     /// Real-time safe; the start of every process() call, and for the plugin's params.flush: for
     /// each layer in turn, hands its engine's retired sources back to its sources(), takes a new
@@ -737,8 +737,8 @@ class Processor
     void scanInput(const Buffers &b, int64_t to) noexcept SST_CPPUTILS_NONBLOCKING;
     /// Steps every source at the boundary c (stepSources).
     void stepSourcesAt(int64_t c) noexcept SST_CPPUTILS_NONBLOCKING;
-    /// Makes each ramped value whose target the effective values moved jump to it (setBase() of a
-    /// macro, setRoutes()).
+    /// Makes each ramped value whose target the effective values moved jump to it, and the
+    /// limiter snap to a mode they moved (setBase() of a macro, setRoutes()).
     void jumpMovedRamps() noexcept;
     /// Gives layer L's engine its cloud parameters (from the effective values and its material),
     /// unless they are what it has.
@@ -748,7 +748,7 @@ class Processor
     /// Recomputes the effective values, gives each engine its cloud parameters and source kind,
     /// and keeps Space's.
     void updateEffective() noexcept;
-    /// Jumps every ramped value to its target.
+    /// Jumps every ramped value to its target, and snaps the limiter to its mode.
     void jumpRamps() noexcept;
     /// Ramps every ramped value from its value at t to its target.
     void retargetRamps(int64_t t) noexcept;
@@ -854,10 +854,11 @@ class Processor
     std::unique_ptr<SpaceReverb> reverb_;
 
     // The delay and the limiter (sub-project 4's spec §6.4–§6.6), the serial tail after the
-    // layers' sum. The parameters below are the effective values at the last boundary; the five
-    // ramps move the delay's amount, feedback and damper coefficient and the limiter's ceiling
-    // and release coefficient as Mix does. The limiter's mode and the ping-pong switch are
-    // stepped: the limiter crossfades its own mode changes.
+    // layers' sum. The parameters below are the effective values at the last boundary; the six
+    // ramps move the delay's amount, feedback, damper coefficient and ping-pong weight (0 or 1,
+    // so a switch crosses over 10 ms and never clicks) and the limiter's ceiling and release
+    // coefficient as Mix does. The limiter's mode is stepped: the limiter crossfades its own
+    // mode changes, and snaps where the ramps jump.
     Delay delay_;
     Limiter limiter_;
     DelayParams delayParams_{};
@@ -867,6 +868,7 @@ class Processor
     Ramp delayAmount_;
     Ramp delayFeedback_;
     Ramp delayDamp_;
+    Ramp delayPingPong_; // the damper's cross weight: 1 with Delay Ping-pong on
     Ramp limiterCeiling_;
     Ramp limiterRelease_;
 };

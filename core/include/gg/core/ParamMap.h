@@ -212,6 +212,11 @@ struct DelayParams
 /// The delay's five parameters, as DelayParams documents.
 DelayParams delayParams(const ParamValues &effective) noexcept;
 
+/// The delay damper's one-pole coefficient for Delay Damping (0–1) at sampleRate (spec §6.4):
+/// the cutoff runs exponentially from 20 kHz at 0 to 500 Hz at 1, so Damping 0 is about 0.927 at
+/// 48 kHz, never 1.
+float dampCoefficient(float damping, double sampleRate) noexcept;
+
 /// What the global limiter takes from the parameters (spec §6.5).
 struct LimiterParams
 {
@@ -225,6 +230,10 @@ struct LimiterParams
 
 /// The limiter's three parameters, as LimiterParams documents.
 LimiterParams limiterParams(const ParamValues &effective) noexcept;
+
+/// Peak's per-sample release coefficient for a release time constant in seconds at sampleRate
+/// (spec §6.5).
+float releaseCoefficient(float releaseSeconds, double sampleRate) noexcept;
 } // namespace gg::core
 
 #endif // GG_CORE_PARAMMAP_H

@@ -147,27 +147,8 @@ bool sameCloud(const CloudParams &a, const CloudParams &b) noexcept
            same(a.smearDetuneSemitones, b.smearDetuneSemitones) && same(a.busSplit, b.busSplit);
 }
 
-/// The delay damper's one-pole coefficient for Delay Damping (spec §6.4): the cutoff runs from
-/// 20 kHz at 0 to 500 Hz at 1, exponentially, f_c = exp2Det(log2(20000) + damping × (log2(500) −
-/// log2(20000))), and coeff = 1 − exp2Det(−f_c × 2π / ln 2 / sampleRate). No libm.
-float dampCoefficient(float damping, double sampleRate) noexcept
-{
-    constexpr double kLog2Of20k = 14.287712379549449;
-    constexpr double kLog2Of500 = 8.965784284662087;
-    constexpr double kTwoPiOverLn2 = 9.064720283654388;
-    const double cutoff =
-        exp2Det(kLog2Of20k + static_cast<double>(damping) * (kLog2Of500 - kLog2Of20k));
-    return static_cast<float>(1.0 - exp2Det(-cutoff * kTwoPiOverLn2 / sampleRate));
-}
-
-/// Peak's per-sample release coefficient for a release time constant in seconds (spec §6.5):
-/// 1 − exp2Det(−(1/ln 2) / (release × sampleRate)). No libm.
-float releaseCoefficient(float releaseSeconds, double sampleRate) noexcept
-{
-    constexpr double kInvLn2 = 1.4426950408889634;
-    return static_cast<float>(
-        1.0 - exp2Det(-kInvLn2 / (static_cast<double>(releaseSeconds) * sampleRate)));
-}
+/// The delay damper's cross weight for the ping-pong switch: 1 on, 0 off (Delay's law).
+float pingPongWeight(const DelayParams &d) noexcept { return d.pingPong ? 1.0f : 0.0f; }
 } // namespace
 
 float Processor::Ramp::at(int64_t t, int64_t length) const noexcept
@@ -291,6 +272,7 @@ void Processor::jumpRamps() noexcept
     delayAmount_.jump(delayParams_.amount);
     delayFeedback_.jump(delayParams_.feedback);
     delayDamp_.jump(delayDampCoeff_);
+    delayPingPong_.jump(pingPongWeight(delayParams_));
     limiterCeiling_.jump(limiterParams_.ceilingGain);
     limiterRelease_.jump(limiterReleaseCoeff_);
     // The limiter's mode snaps too: its own 10 ms fade would let a new Processor's, or a loaded
@@ -318,6 +300,7 @@ void Processor::retargetRamps(int64_t t) noexcept
     delayAmount_.retarget(delayParams_.amount, t, rampSamples_);
     delayFeedback_.retarget(delayParams_.feedback, t, rampSamples_);
     delayDamp_.retarget(delayDampCoeff_, t, rampSamples_);
+    delayPingPong_.retarget(pingPongWeight(delayParams_), t, rampSamples_);
     limiterCeiling_.retarget(limiterParams_.ceilingGain, t, rampSamples_);
     limiterRelease_.retarget(limiterReleaseCoeff_, t, rampSamples_);
     const MorphParams morph = toMorphParams(effective_);
@@ -388,6 +371,9 @@ void Processor::setBase(ParamSlot slot, float value) noexcept
         break;
     case ParamSlot::DelayDamping:
         delayDamp_.jump(delayDampCoeff_);
+        break;
+    case ParamSlot::DelayPingPong:
+        delayPingPong_.jump(pingPongWeight(delayParams_));
         break;
     case ParamSlot::LimiterMode:
         // As a ramped value's setBase jumps it: only process()'s events and the matrix fade.
@@ -505,8 +491,15 @@ void Processor::jumpMovedRamps() noexcept
     jumpIfMoved(delayAmount_, delayParams_.amount);
     jumpIfMoved(delayFeedback_, delayParams_.feedback);
     jumpIfMoved(delayDamp_, delayDampCoeff_);
+    jumpIfMoved(delayPingPong_, pingPongWeight(delayParams_));
     jumpIfMoved(limiterCeiling_, limiterParams_.ceilingGain);
     jumpIfMoved(limiterRelease_, limiterReleaseCoeff_);
+    // The limiter's mode snaps as the ramps do: a route or macro that moved it in a loaded state
+    // would otherwise fade from the old mode for 10 ms.
+    if (limiterParams_.mode != limiter_.mode())
+    {
+        limiter_.jump(limiterParams_.mode);
+    }
     jumpIfMoved(morphX_, morph.x);
     jumpIfMoved(morphY_, morph.y);
     for (uint8_t L = 0; L < kLayers; ++L)
@@ -1429,6 +1422,12 @@ void Processor::renderLayerPiece(uint8_t L, int64_t from, uint32_t n, const floa
             const BusParams bp = busParams(effective_, L);
             for (size_t b = 0; b < 2; ++b)
             {
+                if (!l.busGiven)
+                {
+                    // The first cell after a clear snaps the type, as the ramps jump there: a
+                    // loaded or re-enabled filter is in force from its first sample.
+                    l.filter[b]->jump(bp.type[b]);
+                }
                 l.filter[b]->setCell(bp.type[b], bp.cutoffHz[b], bp.resonance[b]);
             }
             l.busGiven = true;
@@ -1600,7 +1599,7 @@ void Processor::render(const Buffers &b, int64_t from, int64_t to) noexcept
             }
             delay_.process(wet[0], wet[1], delayAmount_.at(t, rampSamples_),
                            delayFeedback_.at(t, rampSamples_), delayDamp_.at(t, rampSamples_),
-                           delayParams_.pingPong);
+                           delayPingPong_.at(t, rampSamples_));
             float o[2];
             float rIn[2];
             for (uint32_t c = 0; c < 2; ++c)

@@ -8,7 +8,6 @@
 #include <algorithm>
 #include <cassert>
 #include <cstddef>
-#include <cstdint>
 #include <vector>
 
 #include <sst/cpputils/rtsan_support.h>
@@ -25,10 +24,14 @@ namespace gg::core
 /// **The law,** per channel c, each sample:
 /// 1. the read's delay moves toward its target by at most kGlideMaxRate (see setTimeSamples);
 /// 2. `y_c` is the line read that many samples back, linearly interpolated at the fraction;
-/// 3. the damper `d_c = d_c + dampCoeff × (y_src − d_c)`, where `y_src` is `y_c`, or the other
-///    channel's read with ping-pong on; dampCoeff 1 passes its input, 0 holds;
+/// 3. the damper `d_c = d_c + dampCoeff × (y_src − d_c)`, where `y_src` mixes the channel's own
+///    read and the other channel's by the ping-pong weight p (0–1): `y_c` at p = 0, the other
+///    channel's read at p = 1, exactly, and `y_c + p × (y_other − y_c)` between, so a switch
+///    ramped over the Processor's 10 ms never steps; dampCoeff 1 passes its input, 0 holds;
 /// 4. the line is written `line_c = in_c + feedback × softLimit(d_c)`, so with feedback ≤ 1 the
-///    loop stays below 1 in magnitude, and at feedback 1 with no damping holds a repeat forever;
+///    loop stays below 1 in magnitude. At feedback 1 a repeat holds its level only as far as the
+///    damper passes it: Damping 0 is a 20 kHz one-pole (coefficient about 0.927 at 48 kHz, not
+///    1), so a sine holds within 0.1 dB while bright material slowly darkens (D7a);
 /// 5. the output is `in_c + amount × y_c`, **added only when amount != 0**: at 0 the frame
 ///    passes untouched, bit for bit (the sign of zero included).
 ///
@@ -72,10 +75,10 @@ class Delay
     /// The read's current delay, in samples. For tests.
     double timeSamples() const noexcept { return delay_; }
 
-    /// Delays one frame in place, per the law above. amount, feedback and dampCoeff are 0–1.
-    /// prepare() must have been called.
+    /// Delays one frame in place, per the law above. amount, feedback, dampCoeff and the
+    /// ping-pong weight are 0–1. prepare() must have been called.
     void process(float &l, float &r, float amount, float feedback, float dampCoeff,
-                 bool pingPong) noexcept SST_CPPUTILS_NONBLOCKING
+                 float pingPong) noexcept SST_CPPUTILS_NONBLOCKING
     {
         GG_FP_CONTRACT_OFF
         assert(!lineL_.empty() && "prepare() must be called first");
@@ -92,8 +95,8 @@ class Delay
         const float yl = lineL_[a] + frac * (lineL_[b] - lineL_[a]);
         const float yr = lineR_[a] + frac * (lineR_[b] - lineR_[a]);
 
-        dampL_ = dampL_ + dampCoeff * ((pingPong ? yr : yl) - dampL_);
-        dampR_ = dampR_ + dampCoeff * ((pingPong ? yl : yr) - dampR_);
+        dampL_ = dampL_ + dampCoeff * (cross(yl, yr, pingPong) - dampL_);
+        dampR_ = dampR_ + dampCoeff * (cross(yr, yl, pingPong) - dampR_);
         lineL_[pos_] = l + feedback * softLimit(dampL_);
         lineR_[pos_] = r + feedback * softLimit(dampR_);
         if (++pos_ == size)
@@ -107,6 +110,18 @@ class Delay
     }
 
   private:
+    /// The damper's input: own at p = 0 and other at p = 1, exactly (the law's switch), and the
+    /// linear mix between.
+    static float cross(float own, float other, float p) noexcept
+    {
+        GG_FP_CONTRACT_OFF
+        if (p == 0.0f)
+            return own;
+        if (p == 1.0f)
+            return other;
+        return own + p * (other - own);
+    }
+
     std::vector<float> lineL_, lineR_;
     size_t pos_{0};        ///< Where this call writes; the oldest frame until it does.
     double maxDelay_{1.0}; ///< kMaxSeconds × the sample rate, in samples.

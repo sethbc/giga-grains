@@ -69,6 +69,9 @@ class Limiter
     /// is running. The Processor skips the wet side's split then.
     bool isOff() const noexcept { return mode_ == LimiterMode::Off && !fading_; }
 
+    /// The mode the weights stand at or move toward: the last process() call's, or jump()'s.
+    LimiterMode mode() const noexcept { return mode_; }
+
     /// Limits one frame in place, per the laws above. ceiling is the linear ceiling (> 0);
     /// releaseCoeff, 0–1, is Peak's per-sample one-pole release coefficient.
     void process(float &l, float &r, LimiterMode mode, float ceiling,
@@ -80,18 +83,7 @@ class Limiter
             beginFade(mode);
         if (!fading_)
         {
-            if (mode_ == LimiterMode::Off)
-                return;
-            assert(ceiling > 0.0f);
-            if (mode_ == LimiterMode::Soft)
-            {
-                l = soft(l, ceiling);
-                r = soft(r, ceiling);
-            }
-            else
-            {
-                peak(l, r, ceiling, releaseCoeff);
-            }
+            steady(l, r, ceiling, releaseCoeff);
             return;
         }
 
@@ -100,15 +92,7 @@ class Limiter
         {
             // The fade's last call: the new mode's law alone.
             settle();
-            if (mode_ == LimiterMode::Soft)
-            {
-                l = soft(l, ceiling);
-                r = soft(r, ceiling);
-            }
-            else if (mode_ == LimiterMode::Peak)
-            {
-                peak(l, r, ceiling, releaseCoeff);
-            }
+            steady(l, r, ceiling, releaseCoeff);
             return;
         }
 
@@ -166,6 +150,24 @@ class Limiter
             p > c ? std::min(released, static_cast<double>(c) / static_cast<double>(p)) : released;
         l = static_cast<float>(gain_ * static_cast<double>(l));
         r = static_cast<float>(gain_ * static_cast<double>(r));
+    }
+
+    /// The mode's own law, with no fade: Soft's or Peak's, and the identity otherwise (Off, or a
+    /// stray value), so a settled call and a fade's last call agree on every mode.
+    void steady(float &l, float &r, float ceiling, float releaseCoeff) noexcept
+    {
+        GG_FP_CONTRACT_OFF
+        if (mode_ == LimiterMode::Soft)
+        {
+            assert(ceiling > 0.0f);
+            l = soft(l, ceiling);
+            r = soft(r, ceiling);
+        }
+        else if (mode_ == LimiterMode::Peak)
+        {
+            assert(ceiling > 0.0f);
+            peak(l, r, ceiling, releaseCoeff);
+        }
     }
 
     /// Starts the fade to mode from the weights of the moment, or applies it at once with no ramp.

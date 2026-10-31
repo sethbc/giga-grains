@@ -33,6 +33,12 @@ class BusFilter
     /// Back to Off, silent, with no fade in progress.
     void reset() noexcept;
 
+    /// Snaps to `type` with no fade: any fade ends, and the active filter, silent, runs `type`
+    /// from the next setCell, its coefficients snapped. For the owner's first setCell after a
+    /// clear (construction, reset, a layer switched back on), where a fade from Off would let the
+    /// first 10 ms through unfiltered.
+    void jump(BusFilterType type) noexcept;
+
     /// The bus's parameters for the next cell (32 samples): the cutoff is clamped to [20,
     /// min(20000, 0.45 × sample rate)] Hz and the filter's resonance is 0.95 × `resonance` (0 to
     /// 1).

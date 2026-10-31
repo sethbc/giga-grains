@@ -17,6 +17,8 @@
 #include <vector>
 
 #include <catch2/catch_test_macros.hpp>
+#include <sst/basic-blocks/simd/setup.h>
+#include <sst/filters/CytomicSVF.h>
 
 #include "core/LayersFixture.h"
 #include "gg/core/ParamIds.h"
@@ -286,6 +288,39 @@ TEST_CASE("cutoff and resonance move without a zipper", "[core][buses]")
     REQUIRE(allFinite(out.left));
     REQUIRE(peak(out.left) > 0.05f);
     CHECK(clickScore(out) < kClickLimit);
+
+    // A sweep zippers too little to score either way, so the check that can fail is a hard
+    // one: the cutoff jumping between 200 Hz and 4 kHz every 512 samples. Glided across a cell,
+    // the jumps score under the limit; the negative control makes the same jumps at once (a
+    // Cytomic filter with its coefficients set, not glided, over the unfiltered render), and
+    // scores far above it.
+    constexpr int64_t kEvery = 512;
+    const auto hzAt = [](int64_t t) { return (t / kEvery) % 2 == 0 ? 200.0 : 4000.0; };
+    Rig jumps(sine(440.0));
+    jumps.bus(1, BusFilterType::LowPass, 200.0, 0.0f);
+    std::vector<TimedEvent> moves;
+    for (int64_t t = kEvery; t < kFrames; t += kEvery)
+    {
+        moves.push_back({t, A(LayerParam::Bus1Cutoff), false, std::log2(hzAt(t))});
+    }
+    const Stereo glided = jumps.run(kFrames, moves);
+    REQUIRE(peak(glided.left) > 0.05f);
+    CHECK(clickScore(glided) < kClickLimit);
+    Rig plainRig(sine(440.0));
+    Stereo hard = plainRig.run(kFrames);
+    sst::filters::CytomicSVF svf;
+    svf.init();
+    for (int64_t i = 0; i < kFrames; ++i)
+    {
+        if (i % kEvery == 0)
+        {
+            svf.setCoeff(sst::filters::CytomicSVF::Mode::Lowpass, static_cast<float>(hzAt(i)), 0.0f,
+                         static_cast<float>(1.0 / kRate));
+        }
+        const auto j = static_cast<std::size_t>(i);
+        sst::filters::CytomicSVF::step(svf, hard.left[j], hard.right[j]);
+    }
+    CHECK(clickScore(hard) > 2.0f * kClickLimit);
 }
 
 TEST_CASE("a type change crossfades", "[core][buses]")
@@ -313,6 +348,20 @@ TEST_CASE("a type change crossfades", "[core][buses]")
     Rig off(sine(440.0));
     const Stereo plain = off.run(kFrames);
     CHECK(peakIn(filtered.left, 12000, 24000) < 0.8f * peakIn(plain.left, 12000, 24000));
+
+    // The negative control: the same switches made at once (the three settled renders spliced
+    // at the switch times; the grains are the same in each) score far above the limit.
+    Rig band(sine(440.0));
+    band.bus(1, BusFilterType::BandPass, 300.0, 0.5f);
+    const Stereo bandPassed = band.run(kFrames);
+    Stereo hard = plain;
+    for (std::size_t i = 24017; i < 72041; ++i)
+    {
+        const Stereo &from = i < 48029 ? filtered : bandPassed;
+        hard.left[i] = from.left[i];
+        hard.right[i] = from.right[i];
+    }
+    CHECK(clickScore(hard) > 2.0f * kClickLimit);
 }
 
 TEST_CASE("resonance 100 percent is stable", "[core][buses]")

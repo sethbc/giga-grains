@@ -338,6 +338,28 @@ LimiterParams limiterParams(const ParamValues &effective) noexcept
     };
 }
 
+/// The delay damper's one-pole coefficient for Delay Damping (spec §6.4): the cutoff runs from
+/// 20 kHz at 0 to 500 Hz at 1, exponentially, f_c = exp2Det(log2(20000) + damping × (log2(500) −
+/// log2(20000))), and coeff = 1 − exp2Det(−f_c × 2π / ln 2 / sampleRate). No libm.
+float dampCoefficient(float damping, double sampleRate) noexcept
+{
+    constexpr double kLog2Of20k = 14.287712379549449;
+    constexpr double kLog2Of500 = 8.965784284662087;
+    constexpr double kTwoPiOverLn2 = 9.064720283654388;
+    const double cutoff =
+        exp2Det(kLog2Of20k + static_cast<double>(damping) * (kLog2Of500 - kLog2Of20k));
+    return static_cast<float>(1.0 - exp2Det(-cutoff * kTwoPiOverLn2 / sampleRate));
+}
+
+/// Peak's per-sample release coefficient for a release time constant in seconds (spec §6.5):
+/// 1 − exp2Det(−(1/ln 2) / (release × sampleRate)). No libm.
+float releaseCoefficient(float releaseSeconds, double sampleRate) noexcept
+{
+    constexpr double kInvLn2 = 1.4426950408889634;
+    return static_cast<float>(
+        1.0 - exp2Det(-kInvLn2 / (static_cast<double>(releaseSeconds) * sampleRate)));
+}
+
 float softLimit(float x) noexcept
 {
     const float a = std::abs(x);
