@@ -211,6 +211,14 @@ Both plugins implement `clap.preset-load/2`. `from_location(kind, location, load
   > nothing more is stored for it: a session saved after editing a preset reopens with the
   > preset's name and **no** edited mark, since the loaded values are then the saved ones. The
   > brief mandates this; it is noted, not a defect.
+
+  > **Amended 2026-10-30 (the director's decision, D-Q2):** the edited mark **is saved**. A
+  > state saved while the loaded preset is edited carries `edited="1"` on the PTCH root (a
+  > session has no `<preset>` element, and one would make it a preset); a state saved unedited
+  > carries nothing, so its bytes are as before (pinned in `tests/core/preset_tests.cpp`). No new
+  > chunk, no container or patch version change: a reader that doesn't know the attribute ignores
+  > it. A reopened session shows the preset's name **with** the mark until the next preset load
+  > or save; a preset file never carries it. This replaces the amendment above.
 - `CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN` with `load_key` `init`: **INIT**, the product's defaults
   (every parameter's default, the factory routes, the sample kept per D5), built in memory, so INIT
   exists with no content installed. The browser's INIT is this. (D8, recommended: INIT is a fresh
@@ -259,7 +267,16 @@ Both plugins implement `clap.preset-load/2`. `from_location(kind, location, load
     > **Amended (2026-10-30):** INIT is **one** discovered preset, `begin_preset("Init", "init")`
     > carrying both products' plugin ids through two `add_plugin_id` calls, at one PLUGIN location.
     > A second `begin_preset` for the other product deadlocks clap-validator's crawl. The content
-    > release's version rides in the soundpack's description as well as its version field.
+    > release's version rides in the soundpack's description (CLAP's soundpack struct has no
+    > version field).
+
+    > **Amended (2026-10-30), the group 1 fix wave:** the user's content folder ("Content
+    > folder…", §6.4's root 2) is declared as **user** content, "Content folder presets", with no
+    > soundpack: only `GG_CONTENT_DIR` and the installs are factory content (M6). The provider
+    > reads the favorites file at `init` and ORs `IS_FAVORITE` into a favorite file preset's flags
+    > and INIT's (§6.4, I3). Its metadata and the browser's catalog agree on what a host's crawl
+    > lists: every `.ggpreset` under a declared folder, its subfolders included, the extension
+    > matched in any case (I2).
 - **`get_metadata`** for a file reads `presetInfoOf` and reports: `begin_preset(name, load_key
   null)`, `add_plugin_id(clap, <the product's id>)`, `set_soundpack_id` when the file sits under a
   factory folder, `set_flags` (factory or user content), `add_creator(author)`, `set_description`,
@@ -298,6 +315,13 @@ Both plugins implement `clap.preset-load/2`. `from_location(kind, location, load
   4. the system install: macOS `/Library/Application Support/sethbc/Giga Grains/` (the PKG's),
      Windows `%ProgramData%\sethbc\Giga Grains\` (the installer's `{commonappdata}`), Linux each
      of `$XDG_DATA_DIRS` (default `/usr/local/share:/usr/share`) plus `sethbc/Giga Grains/`.
+
+  > **Amended (2026-10-30), the group 1 fix wave:** roots 1, 3 and 4 are factory content; root 2,
+  > the user's content folder, holds a pack of the user's own, which the browser lists as such
+  > (never deletable there) and the provider declares as user content (M6). **The tests' seam**
+  > (§10's "environment overrides for the system folders"): `GG_SYSTEM_CONTENT_DIR`, read only
+  > when set and not empty, replaces roots 3 and 4 with that one folder, so a test never sees
+  > the machine's installed content (I5). Nothing ships setting it.
 - **The user presets folder:** beside the settings file, `<settings folder>/Presets/` (macOS
   `~/Library/Application Support/Giga Grains/Presets/`, Windows `%APPDATA%\Giga Grains\Presets\`,
   Linux `$XDG_DATA_HOME/giga-grains/presets/`): where "Save as…" writes and the provider's user
@@ -469,6 +493,25 @@ only if sub-project 6 widens the slot.
   > **Amended (2026-10-30):** the **Mutate button** (`preset.mutate`) lives in the browser beside
   > "Save as…", not in the header strip, which keeps its 90 px `header.preset` slot and nothing
   > else (§6.9).
+  >
+  > **Amended (2026-10-30), the group 1 fix wave:**
+  > - The catalog walks each folder's subfolders and matches `.ggpreset` in any case, sorted by
+  >   the path relative to the folder in byte order, the 5,000 cap per folder applied before any
+  >   read, as the hosts' crawl lists them (I2).
+  > - The loaded row is the loaded **entry** (its catalog key), set by every load path and a
+  >   save; a session, which names a preset but no file, is matched by name (I4).
+  > - `‹`/`›` step through the list as it stands; the list is rescanned on opening, after a
+  >   save, a delete and a content folder chosen, and when the 30 Hz poll sees a modification
+  >   time change (a stat of the settings and favorites files and each watched folder; a change
+  >   inside a subfolder alone shows at the next rescan). The strip's Left and Right arrow keys
+  >   step when it has the focus, and the focus returns to it when the browser closes (M3, M4,
+  >   T5).
+  > - "Replace?" names the preset the existing file holds (two names can make one file), and
+  >   Save as… returns a result (saved, exists, failed) rather than a message to parse (M2, T5).
+  > - The status line names a content folder as "Content folder: <folder>", apart from the
+  >   factory content's line (M6).
+  > - The browser and the Mutate panel are **opaque** over the canvas and the macro row: nothing
+  >   of the Perform view shows through (the director's screenshots, UI-1).
 - **The editor's context** gains the calls the browser needs (`presetCatalog`, `loadPreset`,
   `savePreset`, `deletePreset`, `setFavorite`, `setContentFolder`, `presetName`, `presetEdited`,
   `mutate`), each a `std::function` the plugin fills, main thread, as the loader strip's are.
@@ -534,6 +577,20 @@ only if sub-project 6 widens the slot.
 >   thread changes. The same sender is exposed as `GigaGrainsPlugin::sendValues` and
 >   `EditorContext::sendValues`, for any caller restoring many values at once; sub-project 6's
 >   whole-state undo adopts it after both merge.
+
+> **Amended 2026-10-30 (the director's decision, D-Q3):** **Mutate never moves Reverb Decay into
+> infinity.** If Decay is below `kDecayInfinite` (the start of the ∞ zone), a press's new Decay
+> is capped at the float just below it; if Decay is already in the zone, the press moves it by
+> its usual law, into or out of the zone. The cap follows the existing draw (no new draw, no new
+> `rng::Field`), in `gg/core/Mutate.h`, so `gg-render` and the plugin agree.
+>
+> **Amended (2026-10-30), the group 1 fix wave:** a preset or state load also drops the editor's
+> values already queued (Mutate's sent batches, `sendValues`', the user's own): each queued
+> change carries a load epoch, and the audio thread drops a value queued before the last load it
+> applied, an integer compare (I1); gesture begins and ends still go to the host. A host that
+> calls `on_main_thread` without draining is asked again only after a drain (M5). In the panel,
+> each layer's "Lock all" and "Unlock all" have a row of their own under its heading, clear of
+> the scroll bar (UI-2).
 
 ### 6.10 `gg-render --preset` (INTENT §19; I27)
 
@@ -617,9 +674,9 @@ content root), this sub-project stops at that boundary and says so in its report
   `process` and `params.flush` after a `preset-load` as after a `stateLoad`.
 - Mutate is main-thread arithmetic on a copy of the values; its randomness is the counter RNG
   keyed by the instance's seed, so a session's seed and a count of presses reproduce it.
-- Discovery, the catalog scan, favorites and the settings are main thread (or the catalog's worker
-  for a huge user folder, which touches no audio state), with the file writes through the
-  temporary-file-and-rename path (R16).
+- Discovery, the catalog scan, favorites and the settings are main thread, with the file writes
+  through the temporary-file-and-rename path (R16). (*Amended 2026-10-30:* there is no catalog
+  worker; §6.8's per-folder cap bounds a scan.)
 - `gg-render --preset` changes no render path: it fills the same `setBases`, `setRoutes` and
   `setSourceNow` the spec's keys fill, so block-size invariance and the event logs hold as before.
 - Every existing golden renders bit-identically: no DSP file is touched. `scripts/update-goldens.sh`
@@ -752,7 +809,8 @@ Engineering choices, each with its reason.
 - **No new `gg-bench` case** (programme design §7.6 asks each spec to name its cases): nothing here
   runs on the audio thread that didn't; the preset scan and Mutate are main-thread and bounded by
   tests (a 48-file scan under 50 ms in the `dev` build), not benchmarked. `engine-sample` is run
-  from `release` at the end for the regression check the brief asks for.
+  from `release` at the end for the regression check the brief asks for. (*Amended 2026-10-30:*
+  the 48-file scan test arrives with Task 17, the factory presets, which are its 48 files.)
 - **The VST3 selector is pinned by a raw-vtable test**, as `gg-vst3-class-ids` pins the class IDs:
   no SDK headers, no hosting module, and it fails the day a wrapper bump moves the selector.
 
@@ -782,7 +840,8 @@ Engineering choices, each with its reason.
   user folder; the catalog's list (INIT first, factory by `NN`, user after; search, tag and favorite
   filters); the discovery factory's provider declares the filetype, the locations and the soundpack
   under a stub indexer, and `get_metadata` reports each fixture preset's fields; a crawl of 48
-  fixtures under 50 ms in `dev`.
+  fixtures under 50 ms in `dev` (*amended 2026-10-30:* with Task 17, whose 48 factory presets are
+  the fixtures).
 - `[plugin][rt]`: the tripwire on `process` and `params.flush` after a `preset-load` while active.
 - `[render]`: `--preset` and the `"preset"` key (one wins as specified), `--content-dir` required
   when the preset names content, the product check, the override order; `--pack-preset`'s

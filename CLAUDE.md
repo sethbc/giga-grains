@@ -432,10 +432,15 @@ code page, so the name matches nothing and the test fails with "No tests ran". S
 - **Keep new tests parallel-safe:**
   - never write a path that another test writes: unit tests' scratch files go in
     `GG_TEST_OUTPUT_DIR` under a name of their own, and each golden case writes its own files;
-  - never touch the user's per-machine settings file. The instrument (the FX reads none) reads
-    the file `GG_SETTINGS_FILE` names, when it is set and not empty, instead of the user's;
+  - never touch the user's per-machine settings file. Both products read it (the instrument's
+    loader; both products' preset catalog, which also writes its `contentFolder`) from the file
+    `GG_SETTINGS_FILE` names, when it is set and not empty, instead of the user's;
     `tests/plugin/PluginHarness.h` points it at a scratch file, and a test that reads the
     settings points it at its own (`useSettingsFile`) before it creates the instance;
+  - never see the machine's installed content: a test that lists presets or content roots sets
+    `GG_SYSTEM_CONTENT_DIR`, the test seam in `media/include/gg/media/ContentPaths.h` that
+    replaces the per-user and system install roots with one folder (a scratch one), as the
+    catalog, browser, discovery and AU tests do;
   - a test that has to share a file, or that measures time, must not run beside the others. For
     an `add_test` in `tests/CMakeLists.txt`, set its `RESOURCE_LOCK` or `RUN_SERIAL` property.
     Catch2 cases are discovered after the build, so `set_tests_properties` can't reach them.

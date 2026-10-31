@@ -45,8 +45,9 @@ sanitizers passed. The release files, with `<v>` the full version:
 
 ### The content
 
-Every installer carries the factory content (the Content component): the CC0 samples, packed
-into the presets' folders with the factory presets. The samples are not in this repository: they
+Every installer carries the factory content (the Content component): the factory presets in
+`Presets/` and the CC0 samples they load in `Samples/`, with the provenance, the CC0 text and
+`content-version.txt`. The samples are not in this repository: they
 are a zip released in https://github.com/sethbc/giga-grains-content, pinned by
 `content/pin.txt` (tag, URL, SHA-256). To ship different samples, release a new tag there (never
 move one), change `pin.txt` to it in a commit of its own, and let CI's content cache re-key
