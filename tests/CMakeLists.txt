@@ -521,6 +521,39 @@ if (APPLE AND GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
     set_tests_properties(identity_standalone identity_standalone_fx identity_auv2 identity_vst3
             PROPERTIES LABELS plugin)
 
+    # The VST3 preset selector (M2 sub-project 5's spec §6.3), label `plugin`: clap-wrapper's
+    # controller adds a program-change parameter at 0xC00000 that lists the plugin's presets
+    # (its preset-discovery crawl). gg-vst3-preset-selector creates each class and reads it back
+    # through the raw vtables; the content root GG_CONTENT_DIR names holds the two packed test
+    # presets, so each list has at least INIT and its own test preset (2). The settings file is a
+    # scratch one, so the user's presets folder is never read or made. Each test has a root of
+    # its own beside the other tests' (parallel-safe).
+    set(GG_VST3_SELECTOR_ROOT ${CMAKE_CURRENT_BINARY_DIR}/test-output/vst3-selector-content)
+    add_test(NAME identity_vst3_preset_content
+            COMMAND ${CMAKE_COMMAND} -DOUT=${GG_VST3_SELECTOR_ROOT}/Presets
+            -DGG_RENDER=$<TARGET_FILE:gg-render>
+            -DSOURCES=${CMAKE_CURRENT_SOURCE_DIR}/fixtures/presets
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/plugin/pack-selector-content.cmake)
+    set_tests_properties(identity_vst3_preset_content PROPERTIES LABELS plugin
+            FIXTURES_SETUP vst3_selector_content)
+    add_executable(gg-vst3-preset-selector plugin/vst3_preset_selector.cpp)
+    target_link_libraries(gg-vst3-preset-selector PRIVATE gg::compiler-options
+            "-framework CoreFoundation")
+    add_dependencies(gg-tests gg-vst3-preset-selector gg-render)
+    foreach (case IN ITEMS "Giga Grains|56E869BFEDD75019BD0C3105FA80B835|inst"
+            "Giga Grains FX|DBAF5C12EA095FEFB3A5CBBBB254442A|fx")
+        string(REPLACE "|" ";" case_parts "${case}")
+        list(GET case_parts 0 class_name)
+        list(GET case_parts 1 class_id)
+        list(GET case_parts 2 short_name)
+        add_test(NAME identity_vst3_preset_selector_${short_name}
+                COMMAND gg-vst3-preset-selector $<TARGET_BUNDLE_DIR:gg_clapfirst_vst3>
+                $<TARGET_FILE:gg_clapfirst_vst3> "${class_name}" ${class_id} 2)
+        set_tests_properties(identity_vst3_preset_selector_${short_name} PROPERTIES
+                LABELS plugin FIXTURES_REQUIRED vst3_selector_content
+                ENVIRONMENT "GG_CONTENT_DIR=${GG_VST3_SELECTOR_ROOT};GG_SETTINGS_FILE=${CMAKE_CURRENT_BINARY_DIR}/test-output/vst3-selector-settings-${short_name}/settings.xml")
+    endforeach ()
+
     # Bundle versions (spec §6.1), label `installer`: each bundle's CFBundleShortVersionString and
     # CFBundleVersion are the version's numeric part alone, which Apple requires; the pre-release
     # suffix appears only in GG_VERSION_STRING.
@@ -540,10 +573,11 @@ if (APPLE AND GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
     # links the plugin's code itself, and the bundle brings a second copy.
     add_executable(gg-au-state-tests plugin/au_state_tests.cpp)
     target_include_directories(gg-au-state-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-    target_link_libraries(gg-au-state-tests PRIVATE gg::media gg::core gg::compiler-options
+    target_link_libraries(gg-au-state-tests PRIVATE gg::render gg::media gg::core gg::compiler-options
             Catch2::Catch2WithMain "-framework AudioToolbox" "-framework CoreFoundation")
     target_compile_definitions(gg-au-state-tests PRIVATE
             GG_TEST_OUTPUT_DIR="${CMAKE_CURRENT_BINARY_DIR}/test-output"
+            GG_PRESET_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/presets"
             GG_AU_BUNDLE="$<TARGET_BUNDLE_DIR:gg_clapfirst_auv2>"
             GG_CLAP_WRAPPER_SOURCE_DIR="${CMAKE_SOURCE_DIR}/libs/clap/clap-wrapper")
     add_dependencies(gg-au-state-tests gg_clapfirst_auv2)

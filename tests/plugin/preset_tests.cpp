@@ -14,7 +14,11 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -25,7 +29,11 @@
 #include <clap/clap.h>
 
 #include "PluginHarness.h"
+#include "PresetSource.h"
+#include "Render.h"
+#include "RenderSpec.h"
 #include "SampleLoader.h"
+#include "Signals.h"
 #include "gg/core/ModMatrix.h"
 #include "gg/core/ParamIds.h"
 #include "gg/core/Preset.h"
@@ -572,4 +580,91 @@ TEST_CASE("a preset file longer than kMaxStateBytes is refused", "[plugin][prese
     CHECK_FALSE(host.calls()[0].loaded);
     CHECK(host.calls()[0].message == "the preset is larger than 64 MiB");
     CHECK(host.calls()[0].osError == 0);
+}
+
+TEST_CASE("a preset loaded in the FX renders the bytes gg-render renders with it",
+          "[plugin][preset][render]")
+{
+    // M2 sub-project 5's spec §10: the FX's test preset (tests/fixtures/presets/fx-test.json,
+    // packed as gg-render --pack-preset packs it), loaded through preset-load and fed 4 s of the
+    // faded sweep makeInput makes, in blocks of 256 at 48 kHz, gives the stereo output render()
+    // gives a spec whose "preset" is the same file, over the same input and seed: every sample
+    // equal, memcmp. The plugin's seed is the spec's (a preset keeps the instance's, D6), set
+    // through a state first.
+    constexpr uint64_t kSeed = 5;
+    constexpr uint32_t kBlock = 256;
+    constexpr double kRate = 48000.0;
+    constexpr double kSeconds = 4.0;
+    constexpr std::size_t kFrames = 192000;
+
+    std::ifstream in(fs::path(GG_PRESET_FIXTURE_DIR) / "fx-test.json", std::ios::binary);
+    const std::string json{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+    std::string error;
+    const auto source = gg::render::parsePresetSource(json, error);
+    INFO(error);
+    REQUIRE(source.has_value());
+    const std::string bytes = gg::render::packPreset(*source, std::nullopt, error);
+    INFO(error);
+    REQUIRE_FALSE(bytes.empty());
+    const fs::path file = fs::path(GG_TEST_OUTPUT_DIR) / "presets" / "bit-identity-fx.ggpreset";
+    fs::create_directories(file.parent_path());
+    gg::test::writeBytes(file, bytes);
+    const std::string location = utf8(file);
+
+    gg::render::RenderSpec spec;
+    spec.mode = gg::render::RenderMode::Fx;
+    spec.sampleRate = kRate;
+    spec.durationSeconds = kSeconds;
+    spec.blockSize = kBlock;
+    spec.seed = kSeed;
+    spec.fx.input.kind = gg::render::SourceKind::Sweep;
+    spec.fx.input.seconds = kSeconds;
+    spec.fx.channels = 2;
+    spec.preset = location;
+    const gg::metrics::AudioData expected = gg::render::render(spec, nullptr);
+    REQUIRE(expected.channels.size() == 2);
+    REQUIRE(expected.channels[0].size() == kFrames);
+    float level = 0.0f;
+    for (const float v : expected.channels[0])
+    {
+        level = std::max(level, std::abs(v));
+    }
+    REQUIRE(level > 0.01f); // the comparison is of sound, not of two silences
+
+    const gg::metrics::AudioData input =
+        gg::render::makeInput(spec.fx.input, spec.fx.channels, kRate, kSeed);
+    REQUIRE(input.channels.size() == 2);
+    REQUIRE(input.channels[0].size() == kFrames);
+
+    // The preset is loaded either before the plugin is activated (activate() takes it) or after.
+    const bool loadActive = GENERATE(false, true);
+    CAPTURE(loadActive);
+    setUpSamples("bit-identity");
+    PresetHost host;
+    PluginUnderTest plugin(kFxId, host.clap());
+    REQUIRE(plugin.valid());
+    REQUIRE(plugin.loadDefaultsWithSeed(kSeed));
+    if (!loadActive)
+    {
+        REQUIRE(plugin.loadPreset(CLAP_PRESET_DISCOVERY_LOCATION_FILE, location.c_str(), nullptr));
+    }
+    REQUIRE(plugin.activate(kRate, kBlock));
+    if (loadActive)
+    {
+        REQUIRE(plugin.loadPreset(CLAP_PRESET_DISCOVERY_LOCATION_FILE, location.c_str(), nullptr));
+    }
+    CHECK(plugin.impl().presetName() == "FX Test");
+
+    std::vector<float> left(kFrames);
+    std::vector<float> right(kFrames);
+    std::vector<float> inLeft = input.channels[0];
+    std::vector<float> inRight = input.channels[1];
+    for (std::size_t done = 0; done < kFrames; done += kBlock)
+    {
+        float *inputs[2] = {inLeft.data() + done, inRight.data() + done};
+        float *outputs[2] = {left.data() + done, right.data() + done};
+        REQUIRE(plugin.process(kBlock, inputs, outputs) == CLAP_PROCESS_CONTINUE);
+    }
+    CHECK(std::memcmp(left.data(), expected.channels[0].data(), kFrames * sizeof(float)) == 0);
+    CHECK(std::memcmp(right.data(), expected.channels[1].data(), kFrames * sizeof(float)) == 0);
 }
