@@ -16,8 +16,8 @@
 # zip is then removed. A <dir> whose .gg-pin already matches costs no network and prints
 # `content: <tag> already at <dir>/content`. A download whose hash differs is deleted and the
 # script fails naming both hashes, so no bad zip stays behind. (file(DOWNLOAD)'s EXPECTED_HASH
-# would also fail, but it leaves the bad file in place, so the hash is checked here instead.) A
-# failed fetch leaves any older <dir>/content without a matching .gg-pin, so the next run fetches
+# would also fail, but it leaves the bad file in place, so the hash is checked here instead.) The
+# download gives up after 600 s in all, or 60 s with nothing received. A failed fetch leaves any older <dir>/content without a matching .gg-pin, so the next run fetches
 # again.
 #
 # Checking (CMake's gg-content target, when GG_CONTENT_DIR names a folder fetched elsewhere, as
@@ -93,7 +93,10 @@ set(zip "${dest}/giga-grains-content-${pin_tag}.zip")
 file(REMOVE "${zip}")
 file(MAKE_DIRECTORY "${dest}")
 message(STATUS "content: fetching ${pin_tag} from ${pin_url}")
-file(DOWNLOAD "${pin_url}" "${zip}" STATUS download_status TLS_VERIFY ON)
+# Bounded (T3): ten minutes in all, and a minute without a byte, so a stalled server fails the
+# fetch rather than hanging the build.
+file(DOWNLOAD "${pin_url}" "${zip}" STATUS download_status TLS_VERIFY ON TIMEOUT 600
+        INACTIVITY_TIMEOUT 60)
 list(GET download_status 0 download_code)
 if (NOT download_code EQUAL 0)
     file(REMOVE "${zip}")

@@ -24,8 +24,9 @@
 # update-goldens.sh runs in the same fake tree with a stub gg-render: its per-case WAV SHA-256s,
 # and the cases changed, new or gone since the previous run.
 # fetch-content.cmake fetches a scratch zip with the content release's layout by a file:// URL:
-# it extracts it and writes .gg-pin, a second run is "already at" the pin, and a pin with the
-# wrong hash fails and leaves no zip.
+# it extracts it and writes .gg-pin, a second run is "already at" the pin, a pin with the wrong
+# hash fails and leaves no zip, a stale .gg-pin is fetched over, and -DCHECK passes a matching
+# folder and fails any other.
 # worktree-setup.sh runs in real scratch git repositories: a linked worktree whose submodule pin
 # the main checkout's copy has (the local path), and one whose pin it lacks and whose upstream
 # doesn't advertise as a ref (the fetch path); and a name that isn't a preset, refused before
@@ -337,6 +338,33 @@ printf 'tag v1\nsha256 %s\n' "$content_hash" >"$work/pin-no-url.txt"
 fetch_content "$work/content-cache-no-url" "$work/pin-no-url.txt"
 check "fetch-content, a pin without a url: fails" "$((status != 0 ? 0 : 1))"
 expect_in "fetch-content, a pin without a url: says so" "$out" "no url line"
+
+# A stale .gg-pin (an older release's) is fetched over, and the stamp is then the pin's.
+printf 'v0 %s\n' "$(printf 'f%.0s' {1..64})" >"$dest/content/.gg-pin"
+fetch_content "$dest" "$work/pin-good.txt"
+check "fetch-content, a stale pin: exit 0" "$status"
+expect_in "fetch-content, a stale pin: fetches again" "$out" "content: fetching v1"
+check "fetch-content, a stale pin: the stamp is the pin's" \
+    "$([[ "$(cat "$dest/content/.gg-pin" 2>/dev/null)" == "v1 $content_hash" ]] && echo 0 ||
+        echo 1)"
+
+# Check mode (-DCHECK): a folder whose .gg-pin matches passes, offline; any other fails naming
+# both.
+check_content() { # <content dir> <pin>; sets $out and $status
+    status=0
+    out="$("$real_cmake" -DCHECK="$1" -DPIN="$2" -P "$src/scripts/fetch-content.cmake" 2>&1)" ||
+        status=$?
+}
+check_content "$dest/content" "$work/pin-good.txt"
+check "fetch-content -DCHECK, a match: exit 0" "$status"
+expect_in "fetch-content -DCHECK, a match: says so" "$out" "content: v1 checked at $dest/content"
+check_content "$dest/content" "$work/pin-bad.txt"
+check "fetch-content -DCHECK, another pin: fails" "$((status != 0 ? 0 : 1))"
+expect_in "fetch-content -DCHECK, another pin: names what it holds" "$out" "$content_hash"
+mkdir -p "$work/content-unstamped"
+check_content "$work/content-unstamped" "$work/pin-good.txt"
+check "fetch-content -DCHECK, no stamp: fails" "$((status != 0 ? 0 : 1))"
+expect_in "fetch-content -DCHECK, no stamp: says so" "$out" "(no .gg-pin)"
 
 # --- worktree-setup.sh, in scratch git repositories -----------------------------------------
 
