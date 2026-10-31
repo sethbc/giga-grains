@@ -9,6 +9,7 @@
 // GG_TEST_OUTPUT_DIR/plugin-sample-<name>/, with a settings file and a captures folder of its own.
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -17,6 +18,7 @@
 #include <filesystem>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <thread>
 #include <vector>
@@ -27,6 +29,7 @@
 
 #include "MediaSession.h"
 #include "PluginHarness.h"
+#include "PluginTestHooks.h"
 #include "gg/core/ParamIds.h"
 #include "gg/core/Processor.h"
 #include "gg/core/SessionState.h"
@@ -860,6 +863,188 @@ TEST_CASE("an embedded sample whose payload is missing says so", "[plugin]")
     CHECK(fx.value(paramId(ParamSlot::Density)) == 4.0);
 }
 
+namespace
+{
+// The forced laps' Processor: an FX one whose layer A ring is 1 s, fed a ramp from the main
+// thread alone (frame t holds 1 + t mod 1,000,000, never 0, the right channel negated). The ring
+// reader's hook (PluginTestHooks.h) renders kLap frames more after each try's copy, so the head
+// laps the copy's front by exactly kLap frames: every try is lapped, and the last is kept.
+constexpr int64_t kLapRing = 48000;
+constexpr uint32_t kLapPiece = 256;
+constexpr int64_t kLap = 4 * kLapPiece;
+
+struct LapRig
+{
+    gg::core::Processor processor{{kRate, kLapPiece, 7, gg::core::Mode::Fx}};
+    int64_t t = 0;   // the next frame the ramp feeds
+    int hooked = 0;  // the hook's calls for layer A
+    bool lap = true; // false: the hook renders nothing (the RED check of the forced-lap tests)
+
+    float ramp(int64_t f) const { return static_cast<float>(1 + f % 1000000); }
+
+    void render(int64_t frames, std::span<const gg::core::CommandEvent> commands = {})
+    {
+        std::vector<float> left(kLapPiece), right(kLapPiece), outL(kLapPiece), outR(kLapPiece);
+        const float *in[2] = {left.data(), right.data()};
+        float *out[2] = {outL.data(), outR.data()};
+        for (int64_t end = t + frames; t < end; t += kLapPiece)
+        {
+            for (uint32_t i = 0; i < kLapPiece; ++i)
+            {
+                left[i] = ramp(t + i);
+                right[i] = -left[i];
+            }
+            processor.process(in, 2, out, 2, kLapPiece, {}, {}, {}, commands);
+            commands = {};
+        }
+    }
+};
+
+LapRig *lapRig = nullptr;
+
+void lapHook(uint8_t layer, int /*attempt*/)
+{
+    if (layer != 0)
+    {
+        return; // only layer A's ring is read here
+    }
+    ++lapRig->hooked;
+    if (lapRig->lap)
+    {
+        lapRig->render(kLap);
+    }
+}
+
+/// Sets the hook to lap `rig`'s ring for the scope's reads; unsets it on leaving.
+struct ScopedLap
+{
+    explicit ScopedLap(LapRig &rig)
+    {
+        lapRig = &rig;
+        gg::plugin::detail::setRingReadHook(lapHook);
+    }
+    ~ScopedLap()
+    {
+        gg::plugin::detail::setRingReadHook(nullptr);
+        lapRig = nullptr;
+    }
+    ScopedLap(const ScopedLap &) = delete;
+    ScopedLap &operator=(const ScopedLap &) = delete;
+};
+
+/// Fills `rig`'s 1 s ring twice over, then marks it 0.5 s and 0.835 s behind the head: after the
+/// reader's eight lapped tries, the older mark falls in the last try's lapped front, the newer
+/// after it. Returns the marks, ascending.
+std::vector<int64_t> fillAndMark(LapRig &rig)
+{
+    rig.render(2 * kLapRing);
+    const std::array<gg::core::CommandEvent, 2> marks{{
+        {0, gg::core::CommandKind::AddSplice, 0, 0.5f},
+        {0, gg::core::CommandKind::AddSplice, 0, 0.835f},
+    }};
+    rig.render(kLapPiece, marks);
+    const auto splices = rig.processor.engine(0).live().splices();
+    return {splices.begin(), splices.end()};
+}
+} // namespace
+
+TEST_CASE("a save whose copy the head laps keeps the window's length", "[plugin]")
+{
+    // The controller's ruling, deterministically (the threaded test can only hope for a lap):
+    // when the head laps the front of a save's copy, the save keeps W frames and writes silence
+    // over that front, so the loop's period and the marks' offsets survive. The hook laps every
+    // try by kLap frames; the last try is kept, of the head r0 its copy started at.
+    const fs::path dir = gg::test::useMediaScratch("ring-save-lapped");
+    LapRig rig;
+    rig.processor.setBase(layerSlot(LayerParam::RingLength, 0), 0.0f); // 1 s
+    gg::plugin::MediaSession media(gg::core::Mode::Fx, dir / "settings.xml", {}, {});
+    media.activate(rig.processor, kRate, kLapPiece);
+    REQUIRE(rig.processor.ringRead(0).storage->frames() == kLapRing);
+    const std::vector<int64_t> marks = fillAndMark(rig);
+    REQUIRE(marks.size() == 2);
+    gg::core::ParamValues values = fxDefaults().values;
+    values[slotIndex(LayerParam::Freeze, 0)] = 1.0f; // D1: a ring is saved with Freeze on
+    values[slotIndex(LayerParam::RingLength, 0)] = 0.0f;
+
+    const int64_t before = rig.t;
+    gg::core::SessionState s;
+    {
+        ScopedLap lap(rig);
+        s = media.save(values, 0, {}, &rig.processor);
+    }
+    REQUIRE(rig.hooked > 0);
+    const int64_t r0 = before + (rig.hooked - 1) * kLap; // the kept try's head
+    CHECK(rig.t == r0 + kLap);                           // R1: lapped by kLap during its copy
+    const int64_t from = r0 - kLapRing;                  // the window's first frame
+
+    REQUIRE(s.rings[0].has_value());
+    REQUIRE(s.audio.size() == 1);
+    CHECK(s.rings[0]->frames == kLapRing); // W frames, lapped or not
+    std::vector<int64_t> offsets;
+    for (const int64_t m : marks)
+    {
+        if (m >= from && m < r0)
+        {
+            offsets.push_back(m - from);
+        }
+    }
+    REQUIRE(offsets.size() == 2);
+    CHECK(offsets[0] < kLap);  // a mark in the lapped front keeps its offset
+    CHECK(offsets[1] >= kLap); // and one after it
+    CHECK(s.rings[0]->splices == offsets);
+    const gg::media::DecodeResult wav =
+        gg::media::decodeAudioBytes(s.audio[0].bytes, gg::media::kDefaultDecodeBound);
+    REQUIRE(wav.audio.has_value());
+    const gg::SampleBuffer &w = *wav.audio->buffer;
+    REQUIRE(w.frames() == kLapRing);
+    int64_t wrong = 0;
+    for (int64_t i = 0; i < kLapRing; ++i)
+    {
+        const float expected = i < kLap ? 0.0f : rig.ramp(from + i); // silence, then the ramp
+        wrong += w.channel(0)[i] != expected || w.channel(1)[i] != -expected ? 1 : 0;
+    }
+    CHECK(wrong == 0);
+    media.deactivate(nullptr, values);
+}
+
+TEST_CASE("a read whose copy the head laps keeps the frames still good", "[plugin]")
+{
+    // Spec §6.4's reader, deterministically: a whole-window read (a capture's) whose front the
+    // head lapped on its last try is trimmed to the frames no write shared a slot with, from
+    // R1 − N to R0, and keeps only the marks among them. The hook laps every try by kLap frames.
+    LapRig rig;
+    REQUIRE(rig.processor.setRingNow(0, std::make_unique<gg::RingStorage>(kLapRing, kLapPiece),
+                                     gg::core::RingOffer{}));
+    const std::vector<int64_t> marks = fillAndMark(rig);
+    REQUIRE(marks.size() == 2);
+
+    const int64_t before = rig.t;
+    std::optional<gg::plugin::RingCopy> copy;
+    {
+        ScopedLap lap(rig);
+        copy = gg::plugin::readRing(rig.processor, 0, {}, kRate);
+    }
+    REQUIRE(copy.has_value());
+    REQUIRE(rig.hooked > 0);
+    const int64_t r0 = before + (rig.hooked - 1) * kLap;
+    CHECK(rig.t == r0 + kLap);
+    CHECK(copy->head == r0);
+    CHECK(copy->oldest == r0 + kLap - kLapRing); // R1 − N: the lapped front dropped
+    const gg::SampleBuffer &w = *copy->window;
+    REQUIRE(w.frames() == r0 - copy->oldest);
+    int64_t wrong = 0;
+    for (int64_t i = 0; i < w.frames(); ++i)
+    {
+        const float expected = rig.ramp(copy->oldest + i);
+        wrong += w.channel(0)[i] != expected || w.channel(1)[i] != -expected ? 1 : 0;
+    }
+    CHECK(wrong == 0);
+    // The mark in the lapped front is gone with it; the other stays, as a ring time.
+    REQUIRE(marks[0] >= r0 - kLapRing);
+    CHECK(marks[0] < r0 + kLap - kLapRing);
+    CHECK(copy->marks == std::vector<int64_t>{marks[1]});
+}
+
 TEST_CASE("the ring reader's copies match what the audio thread wrote", "[plugin][threads]")
 {
     // Spec §6.4's race-free read, under a running audio thread: one thread renders a Processor
@@ -867,15 +1052,15 @@ TEST_CASE("the ring reader's copies match what the audio thread wrote", "[plugin
     // other copies the ring's window through readRing as fast as it can. Every copy accepted must
     // be the frames written, contiguous up to the head it reports.
     // Bounded by work, not time: the audio thread renders until the reader has made kReads
-    // copies, at least one of them trimmed (the head lapped the copy's front mid-copy: the race
-    // the read must survive), and kAdopted swaps of a full ring's storage have been adopted,
-    // however fast either thread runs. The audio thread's kMaxTotal, and kHang for each wait of
-    // the hold's handshake, are only safety bounds: reaching one fails the test.
+    // copies and kAdopted swaps of a full ring's storage have been adopted, however fast either
+    // thread runs. The audio thread's kMaxTotal, and kHang for each wait of the hold's handshake,
+    // are only safety bounds: reaching one fails the test. Whether the head laps a copy here is up
+    // to the scheduler, so the test counts the trimmed copies but needs none; "a read whose copy
+    // the head laps keeps the frames still good" forces one.
     constexpr int64_t kN = 48000;
     constexpr uint32_t kPiece = 256;
     constexpr int64_t kMaxTotal = 600 * 48000;
     constexpr uint64_t kReads = 100;
-    constexpr uint64_t kTrimmed = 1;
     constexpr uint32_t kAdopted = 3;
     constexpr auto kHang = std::chrono::seconds(60);
     gg::core::Processor p({kRate, kPiece, 7, gg::core::Mode::Fx});
@@ -945,7 +1130,7 @@ TEST_CASE("the ring reader's copies match what the audio thread wrote", "[plugin
         }
     };
     while (!done.load(std::memory_order_acquire) && !hung.load(std::memory_order_acquire) &&
-           !(reads >= kReads && trimmed >= kTrimmed && adoptedFull >= kAdopted))
+           !(reads >= kReads && adoptedFull >= kAdopted))
     {
         // From every 25th read on, a storage swap through the exchange (this thread has the main
         // thread's role: it offers, collects and alone dereferences storage): a new 1 s storage
@@ -1027,7 +1212,6 @@ TEST_CASE("the ring reader's copies match what the audio thread wrote", "[plugin
     // Reaching a safety bound before the work was done fails here.
     CHECK_FALSE(hung.load());
     CHECK(reads >= kReads);
-    CHECK(trimmed >= kTrimmed);
     CHECK(adoptedFull >= kAdopted); // adopted mid-run
     CHECK(bad == 0);
 }
@@ -1038,15 +1222,17 @@ TEST_CASE("a save of a running ring keeps the window's length", "[plugin][thread
     // frames and writes silence over that front, so the loop's period and the marks' offsets
     // survive. One thread renders a Processor whose 1 s ring takes a ramp (as the reader test's);
     // the other saves it (D1: Freeze on in the values saved) as fast as it can. Every saved ring
-    // is N frames once the ring is full, silence then the ramp, contiguous.
+    // is N frames once the ring is full, silence (when lapped) then the ramp, contiguous.
     // Bounded by work, not time: the audio thread renders until the saver has made kSaves saves,
-    // at least one of them lapped (the case the ruling is about), however fast either thread
-    // runs. The audio thread's kMaxTotal is only a safety bound: reaching it fails the test.
+    // however fast either thread runs; its kMaxTotal is only a safety bound, and reaching it fails
+    // the test. Whether the head laps a save's copy here is up to the scheduler (a fast machine
+    // may never), so the test counts the lapped saves but needs none; "a save whose copy the head
+    // laps keeps the window's length" forces one.
     const fs::path dir = gg::test::useMediaScratch("ring-save-running");
     constexpr int64_t kN = 48000;
     constexpr uint32_t kPiece = 256;
     constexpr int64_t kMaxTotal = 600 * 48000;
-    constexpr uint64_t kSaves = 6;
+    constexpr uint64_t kSaves = 20;
     gg::core::Processor p({kRate, kPiece, 7, gg::core::Mode::Fx});
     p.setBase(layerSlot(LayerParam::RingLength, 0), 0.0f); // 1 s
     gg::plugin::MediaSession media(gg::core::Mode::Fx, dir / "settings.xml", {}, {});
@@ -1081,7 +1267,7 @@ TEST_CASE("a save of a running ring keeps the window's length", "[plugin][thread
     uint64_t saves = 0;
     uint64_t lapped = 0;
     uint64_t bad = 0;
-    while (!done.load(std::memory_order_acquire) && !(saves >= kSaves && lapped > 0))
+    while (!done.load(std::memory_order_acquire) && saves < kSaves)
     {
         if (!full.load(std::memory_order_acquire))
         {
@@ -1125,7 +1311,6 @@ TEST_CASE("a save of a running ring keeps the window's length", "[plugin][thread
     INFO("saves " << saves << ", lapped " << lapped);
     // Reaching the safety bound before the work was done fails here.
     CHECK(saves >= kSaves);
-    CHECK(lapped > 0);
     CHECK(bad == 0);
     media.deactivate(nullptr, values);
 }

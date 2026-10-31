@@ -26,6 +26,7 @@
 #include "gg/media/SettingsFile.h"
 #include "gg/media/Utf8Path.h"
 #include "gg/media/WavBytes.h"
+#include "PluginTestHooks.h"
 
 namespace gg::plugin
 {
@@ -35,6 +36,9 @@ namespace fs = std::filesystem;
 using core::kLayers;
 
 constexpr int kRingReadTries = 8;
+
+/// The ring reader's hook (PluginTestHooks.h); nullptr unless a test sets one.
+std::atomic<detail::RingReadHook> ringReadHook{nullptr};
 
 constexpr const char *kResizing = "resizing";
 constexpr const char *kCapturesUnwritable = "not saved: captures folder unwritable";
@@ -228,6 +232,10 @@ std::optional<ReadDone> readWith(const core::Processor &processor, uint8_t layer
         }
         // 5. The copy.
         copy(*read.storage, span.from, span.to);
+        if (const auto hook = ringReadHook.load(std::memory_order_relaxed))
+        {
+            hook(layer, attempt);
+        }
         // 6. No frame load completes after what follows.
         std::atomic_thread_fence(std::memory_order_acquire);
         // 7. R1 and the epoch again.
@@ -1138,4 +1146,9 @@ std::string MediaSession::status(uint8_t layer) const
     }
     return loaders_[layer]->status().message;
 }
+
+namespace detail
+{
+void setRingReadHook(RingReadHook hook) { ringReadHook.store(hook); }
+} // namespace detail
 } // namespace gg::plugin
