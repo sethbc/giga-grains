@@ -24,7 +24,8 @@ namespace gg::core
 /// write the same bytes: a test holds the two to that (carry-over "toStateXml builds a
 /// Patch(Mode::Fx)"), so the day their XML differs, toStateXml must take the mode.
 std::string patchXml(const ParamValues &values, uint64_t seed, const ModRoutes &routes, Mode mode,
-                     std::string_view name = "Init", const PresetInfo *preset = nullptr);
+                     std::string_view name = "Init", const PresetInfo *preset = nullptr,
+                     bool edited = false);
 
 /// The preset metadata of a patch's XML, its root's `name` and its <preset> element, into `info`,
 /// without building its values (presetInfoOf in gg/core/Preset.h): false, and `info` untouched,

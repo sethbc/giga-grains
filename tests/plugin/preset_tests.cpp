@@ -29,6 +29,7 @@
 #include <clap/clap.h>
 
 #include "PluginHarness.h"
+#include "support/StateContainer.h"
 #include "PresetSource.h"
 #include "Render.h"
 #include "RenderSpec.h"
@@ -401,6 +402,43 @@ TEST_CASE("INIT by load key restores every default and the factory routes", "[pl
     }
     CHECK(bitsOf(bases) == bitsOf(init.values));
     CHECK(valueBits(plugin) == bitsOf(init.values));
+}
+
+TEST_CASE("a session saved with its preset edited reopens with the edited mark", "[plugin][preset]")
+{
+    // The director's decision D-Q2 (2026-10-30), replacing the earlier amendment to §6.2.
+    const char *id = GENERATE(kInstrumentId, kFxId);
+    CAPTURE(id);
+    const Mode mode = modeOf(id);
+    PluginUnderTest plugin(id);
+    REQUIRE(plugin.valid());
+    const std::string path = utf8(fixtureFile("edited-mark", mode));
+    REQUIRE(plugin.loadPreset(CLAP_PRESET_DISCOVERY_LOCATION_FILE, path.c_str(), nullptr));
+
+    // Unedited: the saved state carries no mark, and reopens unedited.
+    const std::string plain = plugin.save();
+    CHECK(gg::test::stateChunkPayload(plain, "PTCH")->find("edited") == std::string::npos);
+    {
+        PluginUnderTest reopened(id);
+        REQUIRE(reopened.load(plain));
+        CHECK_FALSE(reopened.impl().presetEdited());
+    }
+
+    // Edited: the mark is saved, and the reopened session shows the name with it.
+    plugin.impl().uiSetValue(ParamSlot::Size, quarterOf(ParamSlot::Size, mode) + 0.5);
+    gg::test::InputEvents none;
+    plugin.flush(none.list());
+    REQUIRE(plugin.impl().presetEdited());
+    const std::string marked = plugin.save();
+    CHECK(decoded(marked, mode).edited);
+    PluginUnderTest reopened(id);
+    REQUIRE(reopened.load(marked));
+    CHECK(reopened.impl().presetName() == "Glass Hold");
+    CHECK(reopened.impl().presetEdited());
+    // Saved again, it stays edited; a preset load clears it.
+    CHECK(decoded(reopened.save(), mode).edited);
+    REQUIRE(reopened.loadPreset(CLAP_PRESET_DISCOVERY_LOCATION_FILE, path.c_str(), nullptr));
+    CHECK_FALSE(reopened.impl().presetEdited());
 }
 
 TEST_CASE("presetName follows the load and presetEdited turns true after one ui change",

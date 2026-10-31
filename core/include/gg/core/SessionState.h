@@ -92,6 +92,10 @@ struct SessionState
     /// A preset's metadata, PTCH's <preset> element (gg/core/Preset.h), its `name` the state's;
     /// empty for a session state. encodeState writes `name`, not `preset->name`.
     std::optional<PresetInfo> preset;
+    /// A session's edited mark (the director's D-Q2): the preset `name` names was edited when the
+    /// session was saved. PTCH's root `edited="1"`, written only when true (gg/core/PatchState.h),
+    /// so an unedited state's bytes are as before. A preset never carries it (encodePreset).
+    bool edited{false};
 };
 
 /// Whether encodeState writes `entry` (its precondition): `sha256Hex` is 64 lowercase hex

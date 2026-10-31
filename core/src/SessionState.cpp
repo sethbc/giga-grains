@@ -275,7 +275,7 @@ std::string encodeState(const SessionState &state)
     assert(!state.sample || isValidMediaEntry(*state.sample));
     const bool writeSample = state.sample && isValidMediaEntry(*state.sample);
     const std::string patch = toStateXml(state.values, state.seed, state.routes, state.name,
-                                         state.preset ? &*state.preset : nullptr);
+                                         state.preset ? &*state.preset : nullptr, state.edited);
     // With no sample, a newer build's manifest goes back as it came (INTENT §18).
     const bool writeNewer = !state.sample && state.newerMedia && isNewerMedia(*state.newerMedia);
     const std::string media =
@@ -348,7 +348,7 @@ bool decodeState(std::string_view bytes, Mode mode, SessionState &out,
         // A pre-container state: PTCH alone, read exactly as before the container, so every
         // state that loaded then loads now (XML followed by a NUL included).
         if (!fromStateXml(bytes, loaded.values, loaded.seed, loaded.routes, mode, &migrated,
-                          &loaded.name, &loaded.preset))
+                          &loaded.name, &loaded.preset, &loaded.edited))
         {
             return false;
         }
@@ -361,7 +361,7 @@ bool decodeState(std::string_view bytes, Mode mode, SessionState &out,
         if (!findStateChunks(bytes, patch, media) || patch.find('\0') != std::string_view::npos ||
             !parseMedia(media, loaded.sample, newer) ||
             !fromStateXml(patch, loaded.values, loaded.seed, loaded.routes, mode, &migrated,
-                          &loaded.name, &loaded.preset))
+                          &loaded.name, &loaded.preset, &loaded.edited))
         {
             return false;
         }

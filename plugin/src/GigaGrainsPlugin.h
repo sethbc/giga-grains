@@ -311,7 +311,9 @@ class GigaGrainsPlugin : public plugHelper_t
     /// "Init" in a new instance. stateSave writes it as the state's name.
     std::string presetName() const { return presetName_; }
     /// Whether any base value (values_) differs from the loaded preset's, bit for bit, over every
-    /// parameter: the header's edited mark. False in a new instance and right after a load.
+    /// parameter, or the session restored was saved edited (its state's edited mark, the
+    /// director's D-Q2), until the next preset load or save: the header's edited mark, which
+    /// stateSave writes. False in a new instance and right after a preset load.
     bool presetEdited() const noexcept;
 
     // ---- The preset browser (spec §6.8): main thread ----
@@ -574,7 +576,8 @@ class GigaGrainsPlugin : public plugHelper_t
     // after a session load, which presetKeyByName_ then says to match by presetName_. Main thread.
     std::string presetKey_{"plugin:init"};
     bool presetKeyByName_{false};
-    uint64_t presetLoads_{0}; // presetLoads()
+    uint64_t presetLoads_{0};      // presetLoads()
+    bool presetEditedMark_{false}; // a session restored edited (D-Q2): presetEdited()
     // The browser's catalog (presetCatalog()), made on first use, and the settings file it reads.
     std::filesystem::path catalogSettingsFile_;
     std::unique_ptr<PresetCatalog> catalog_;

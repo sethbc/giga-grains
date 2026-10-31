@@ -76,6 +76,9 @@ struct Patch : sst::plugininfra::patch_support::PatchBase<Patch, Param>
     /// with `name` set to the patch's; empty when the state has no <preset>, or one whose
     /// `product` isn't a known word (gg/core/PatchState.h).
     std::optional<PresetInfo> preset;
+    /// A session's edited mark (the director's D-Q2): written as the root's `edited="1"` when
+    /// set, and nothing otherwise; read back at any version.
+    bool edited{false};
 
     /// The params are pushed in ParamSlot order, with `mode`'s metadata (paramMeta) and at its
     /// defaults; the name is "Init".

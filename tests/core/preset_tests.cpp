@@ -544,3 +544,56 @@ TEST_CASE("initState is every default and the factory routes", "[core][preset]")
     CHECK(fx.routes[11].source == gg::core::ModSource::Macro8);
     CHECK(inst.routes[11].source == gg::core::ModSource::Macro8);
 }
+
+// ---- The director's decision D-Q2 (2026-10-30): a session saves the edited mark ----
+
+TEST_CASE("a session saved while its preset is edited carries the mark back", "[core][preset]")
+{
+    SessionState s = someState();
+    s.name = "Glass Hold";
+    s.edited = true;
+    const std::string bytes = encodeState(s);
+    const std::string ptch = *stateChunkPayload(bytes, "PTCH");
+    CHECK(ptch.find(" edited=\"1\"") != std::string::npos); // on the PTCH root
+    CHECK(ptch.find("<preset") == std::string::npos);       // still a session, not a preset
+    SessionState out = untouchedState();
+    REQUIRE(decodeState(bytes, Mode::Fx, out));
+    CHECK(out.edited);
+    CHECK(out.name == "Glass Hold");
+    CHECK_FALSE(out.preset.has_value());
+
+    // Unedited, nothing is written: the bytes are a session's as before (pinned above).
+    s.edited = false;
+    const std::string plain = encodeState(s);
+    CHECK(plain.find("edited") == std::string::npos);
+    REQUIRE(decodeState(plain, Mode::Fx, out));
+    CHECK_FALSE(out.edited);
+    // A preset file never carries it, whatever the state it is made from says.
+    SessionState edited = someState();
+    edited.edited = true;
+    CHECK(encodePreset(someInfo(), edited).find("edited") == std::string::npos);
+}
+
+TEST_CASE("a reader that doesn't know the edited mark reads the state unchanged", "[core][preset]")
+{
+    // An older build reads the PTCH through fromStateXml with no edited output: the values, seed,
+    // routes and name are what it reads of the unmarked state.
+    SessionState s = someState();
+    s.name = "Glass Hold";
+    const std::string plainPtch = *stateChunkPayload(encodeState(s), "PTCH");
+    s.edited = true;
+    const std::string markedPtch = *stateChunkPayload(encodeState(s), "PTCH");
+    REQUIRE(markedPtch != plainPtch);
+    ParamValues plainValues{}, markedValues{};
+    uint64_t plainSeed = 0, markedSeed = 0;
+    ModRoutes plainRoutes{}, markedRoutes{};
+    std::string plainName, markedName;
+    REQUIRE(gg::core::fromStateXml(plainPtch, plainValues, plainSeed, plainRoutes, Mode::Fx,
+                                   nullptr, &plainName));
+    REQUIRE(gg::core::fromStateXml(markedPtch, markedValues, markedSeed, markedRoutes, Mode::Fx,
+                                   nullptr, &markedName));
+    CHECK(bitsOf(markedValues) == bitsOf(plainValues));
+    CHECK(markedSeed == plainSeed);
+    CHECK(sameRoutes(markedRoutes, plainRoutes));
+    CHECK(markedName == plainName);
+}

@@ -52,7 +52,8 @@ std::string encodePreset(const PresetInfo &info, const SessionState &state)
     SessionState preset = state;
     preset.name = info.name;
     preset.preset = info;
-    preset.seed = 0; // ignored on load: the instance keeps its own (spec §6.1, D6)
+    preset.seed = 0;       // ignored on load: the instance keeps its own (spec §6.1, D6)
+    preset.edited = false; // a session's mark alone (D-Q2)
     return encodeState(preset);
 }
 

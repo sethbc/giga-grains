@@ -59,6 +59,10 @@
 ///   - `tags`: the tags in their order, separated by single spaces; read back split on spaces,
 ///     dropping every word that isn't isPresetTag (never a failure).
 ///   A missing attribute reads empty. The preset's name is the root's.
+/// - `edited="1"` on the root (the director's D-Q2, 2026-10-30): a session saved while the
+///   preset it names was edited. Written only then, so an unedited state's bytes are as before;
+///   any other value, or none, reads unedited; a reader that doesn't know it ignores it. No
+///   version change: it is read at any version.
 ///
 /// The root's `name` is PatchBase's: at most 255 bytes, a longer one cut on write and on read to
 /// its first 255 bytes, backed up to a whole UTF-8 character; written with every `&` as `&#x26;`
@@ -81,10 +85,11 @@ bool isSavableRoute(const ModRoute &route) noexcept;
 
 /// The state of these values, this seed, these routes and this name (patchName's cut of it, as
 /// above), with `preset`'s <preset> element when it is given (its `name` aside: the root's is
-/// the preset's). Both products write the same format: only the IDs and values are saved, never
-/// the metadata.
+/// the preset's), and the root's `edited="1"` when `edited`. Both products write the same format:
+/// only the IDs and values are saved, never the metadata.
 std::string toStateXml(const ParamValues &values, uint64_t seed, const ModRoutes &routes,
-                       std::string_view name = "Init", const PresetInfo *preset = nullptr);
+                       std::string_view name = "Init", const PresetInfo *preset = nullptr,
+                       bool edited = false);
 
 /// Loads a state into `mode`'s product, all or nothing.
 /// - Returns false, and writes nothing, unless the state is well-formed XML with a <patch> root,
@@ -115,9 +120,10 @@ std::string toStateXml(const ParamValues &values, uint64_t seed, const ModRoutes
 /// - `name` and `preset`, if given, are written on success only: the root's name ("Init" when it
 ///   has none), and the <preset> element's metadata with that name, or nothing when there is no
 ///   <preset> or its `product` isn't known. Neither changes how the rest loads.
+/// - `edited`, if given, is written on success only: whether the root carries `edited="1"`.
 bool fromStateXml(std::string_view xml, ParamValues &values, uint64_t &seed, ModRoutes &routes,
                   Mode mode, uint32_t *migratedFromVersion = nullptr, std::string *name = nullptr,
-                  std::optional<PresetInfo> *preset = nullptr);
+                  std::optional<PresetInfo> *preset = nullptr, bool *edited = nullptr);
 } // namespace gg::core
 
 #endif // GG_CORE_PATCHSTATE_H

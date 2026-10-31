@@ -1011,9 +1011,9 @@ TEST_CASE("state load rejects bad state and keeps the values", "[plugin]")
     other[at(ParamSlot::Density)] = 1.0f;
     const std::string otherXml =
         gg::core::toStateXml(other, 3, gg::core::factoryRoutes(gg::core::Mode::Fx));
-    const std::string otherState =
-        gg::core::encodeState({other, 3, std::nullopt, std::nullopt,
-                               gg::core::factoryRoutes(gg::core::Mode::Fx), "Init", std::nullopt});
+    const std::string otherState = gg::core::encodeState(
+        {other, 3, std::nullopt, std::nullopt, gg::core::factoryRoutes(gg::core::Mode::Fx), "Init",
+         std::nullopt, false});
 
     SECTION("not a state")
     {
@@ -1083,10 +1083,10 @@ TEST_CASE("state is a container, and save, load, save gives the same bytes", "[p
         gg::core::ModCurve::Unipolar};
     REQUIRE(routes != gg::core::factoryRoutes(mode));
     REQUIRE(a.load(gg::core::encodeState(
-        {values, 11, std::nullopt, std::nullopt, routes, "Init", std::nullopt})));
+        {values, 11, std::nullopt, std::nullopt, routes, "Init", std::nullopt, false})));
     const std::string saved = a.save();
-    CHECK(saved == gg::core::encodeState(
-                       {values, 11, std::nullopt, std::nullopt, routes, "Init", std::nullopt}));
+    CHECK(saved == gg::core::encodeState({values, 11, std::nullopt, std::nullopt, routes, "Init",
+                                          std::nullopt, false}));
     CHECK(gg::test::stateChunkPayload(saved, "PTCH") == gg::core::toStateXml(values, 11, routes));
     CHECK(decoded(saved, mode).routes == routes);
     CHECK(gg::test::stateChunkPayload(saved, "MEDI") == std::string(R"(<media version="1" />)"));

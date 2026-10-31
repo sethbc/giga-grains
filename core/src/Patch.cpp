@@ -410,6 +410,10 @@ Patch::Patch(Mode mode) : mode_(mode), values(defaultValues(mode))
     additionalToState = [this](TiXmlElement &root) {
         // PatchBase wrote `name` as it is; escaped, any text comes back unchanged.
         root.SetAttribute("name", escapeAmpersands(name));
+        if (edited)
+        {
+            root.SetAttribute("edited", "1"); // D-Q2; an unedited state's bytes are unchanged
+        }
 
         TiXmlElement engine("engine");
         engine.SetAttribute("seed", decimal(seed).data());
@@ -448,6 +452,8 @@ Patch::Patch(Mode mode) : mode_(mode), values(defaultValues(mode))
             std::memset(name, 0, sizeof(name));
             std::memcpy(name, kept.data(), kept.size());
         }
+        const char *mark = root->Attribute("edited");
+        edited = mark != nullptr && std::strcmp(mark, "1") == 0;
         preset.reset();
         if (PresetInfo info; readPresetElement(*root, name, info))
         {
@@ -508,6 +514,7 @@ bool Patch::fromState(const std::string &xml)
     seed = loaded.seed;
     routes = loaded.routes;
     preset = std::move(loaded.preset);
+    edited = loaded.edited;
     migratedFromVersion = loaded.migratedFromVersion;
     dirty = false;
     return true;

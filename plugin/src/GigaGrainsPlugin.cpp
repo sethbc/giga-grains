@@ -1221,7 +1221,8 @@ bool GigaGrainsPlugin::stateSave(const clap_ostream *stream) noexcept
         const std::string bytes = gg::core::encodeState(
             {values, seed_, loader_ != nullptr ? loader_->entry() : std::nullopt,
              loader_ != nullptr ? loader_->newerMedia() : std::nullopt, routes_, presetName_,
-             std::nullopt}); // the preset's name, but a session: no <preset>
+             std::nullopt,     // the preset's name, but a session: no <preset>
+             presetEdited()}); // its edited mark (D-Q2): written only when edited
 
         // A stream may take fewer bytes than offered: write until all are in.
         const char *data = bytes.data();
@@ -1337,6 +1338,9 @@ void GigaGrainsPlugin::applyState(gg::core::SessionState &&state, LoadKind kind)
     }
     routes_ = state.routes;
     presetName_ = std::move(state.name); // a move: nothing left to throw
+    // A session saved while its preset was edited reopens edited (D-Q2): the mark stays until a
+    // preset load or a save. A preset carries none.
+    presetEditedMark_ = kind == LoadKind::Session && state.edited;
     // A session names its preset but no file: it is matched by name (I4). A preset's caller
     // (loadPresetFile, loadInit) sets its key after this returns.
     presetKey_.clear();
@@ -1557,6 +1561,10 @@ void GigaGrainsPlugin::resetMutateLocks() noexcept
 
 bool GigaGrainsPlugin::presetEdited() const noexcept
 {
+    if (presetEditedMark_)
+    {
+        return true;
+    }
     for (std::size_t s = 0; s < kParamCount; ++s)
     {
         if (std::bit_cast<uint32_t>(values_[s].load(std::memory_order_relaxed)) !=
@@ -1749,7 +1757,7 @@ SaveResult GigaGrainsPlugin::savePreset(const std::string &name,
         const std::string bytes = gg::core::encodePreset(
             info, {values, 0, loader_ != nullptr ? loader_->entry() : std::nullopt,
                    loader_ != nullptr ? loader_->newerMedia() : std::nullopt, routes_, info.name,
-                   std::nullopt});
+                   std::nullopt, false});
         // The name as the file holds it (the patch's 255-byte cut; I4), read back before the
         // save so nothing after it can throw.
         gg::core::PresetInfo kept;
@@ -1763,6 +1771,7 @@ SaveResult GigaGrainsPlugin::savePreset(const std::string &name,
         presetKey_ = presetFileKey(result.file);
         presetKeyByName_ = false;
         ++presetLoads_;
+        presetEditedMark_ = false;
         presetValues_ = values; // the saved sound is the loaded preset: not edited
         if (_host.canUseState())
         {

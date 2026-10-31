@@ -13,7 +13,7 @@
 namespace gg::core
 {
 std::string patchXml(const ParamValues &values, uint64_t seed, const ModRoutes &routes, Mode mode,
-                     std::string_view name, const PresetInfo *preset)
+                     std::string_view name, const PresetInfo *preset, bool edited)
 {
     Patch patch(mode);
     const std::string kept = patchName(name);
@@ -29,20 +29,21 @@ std::string patchXml(const ParamValues &values, uint64_t seed, const ModRoutes &
     }
     patch.seed = seed;
     patch.routes = routes;
+    patch.edited = edited;
     return patch.toState();
 }
 
 std::string toStateXml(const ParamValues &values, uint64_t seed, const ModRoutes &routes,
-                       std::string_view name, const PresetInfo *preset)
+                       std::string_view name, const PresetInfo *preset, bool edited)
 {
     // The metadata never reaches the XML (only each param's ID and value, and the routes, do), so
     // either product's patch writes the same state (patchXml's test holds them to it).
-    return patchXml(values, seed, routes, Mode::Fx, name, preset);
+    return patchXml(values, seed, routes, Mode::Fx, name, preset, edited);
 }
 
 bool fromStateXml(std::string_view xml, ParamValues &values, uint64_t &seed, ModRoutes &routes,
                   Mode mode, uint32_t *migratedFromVersion, std::string *name,
-                  std::optional<PresetInfo> *preset)
+                  std::optional<PresetInfo> *preset, bool *edited)
 {
     // Patch::fromState is itself all or nothing, and clamps; on false, `patch` is untouched and
     // nothing here is written. A param the state doesn't mention keeps the patch's default,
@@ -69,6 +70,10 @@ bool fromStateXml(std::string_view xml, ParamValues &values, uint64_t &seed, Mod
     if (preset != nullptr)
     {
         *preset = std::move(patch.preset);
+    }
+    if (edited != nullptr)
+    {
+        *edited = patch.edited;
     }
     return true;
 }
