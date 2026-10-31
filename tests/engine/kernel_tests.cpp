@@ -15,6 +15,7 @@
 #include <functional>
 #include <limits>
 #include <memory>
+#include <ios>
 #include <sstream>
 #include <string>
 #include <type_traits>
@@ -1355,13 +1356,19 @@ void requireExactRuns(const Pool &pool, int64_t frames, uint32_t d, int64_t from
     }
 }
 
-// liveInterior at decimation 1, which also requires UnitDecimation (level 0's compile-time
-// decimation) to give the same parts: the two run the same IEEE arithmetic (a multiply by 1.0
-// against none), on the same unchanging ring, so they can't differ on a sound machine. On a
-// difference, both are computed twice more and the failure says whether either repeats it: CI's
-// run of f6e6b0d failed once here under Rosetta (35,269 against 35,270, "loop, frozen", blocks of
-// 1), which 89 runs under Rosetta here, 48 of them on a loaded machine, and a run of the whole
-// suite under it never repeated, as with describeBadSample's two transient faults.
+// liveInterior at decimation 1, checked against UnitDecimation (level 0's compile-time
+// decimation, the path renderLiveSimd takes). The two run the same IEEE arithmetic (a multiply by
+// 1.0 against none) on the same unchanging ring, so their bounds can't differ on a sound machine,
+// yet CI's mac-universal leg found them one sample apart three times, each only on the x86_64
+// slice under Rosetta ("loop, frozen", blocks of 1: 35,269 against 35,270 at f6e6b0d, 35,298
+// against 35,297 at 0871920), never on Windows' real x86 nor in 89 local Rosetta runs (carry-over
+// row 356). Bit identity needs the output alone, so on a bound difference (the programme's ruling
+// at the final merge) the grain is rendered over [from, to) through both paths' SIMD kernel and
+// each is required to match the reference by memcmp; the difference itself is a WARN carrying the
+// diagnostic (each path recomputed twice, whether it repeats, and the grain's rows and the ring's
+// head and kink in hexfloat), so a translation difference can't fail CI while any difference in
+// the output still does. (8029599's UNSCOPED_INFO never reached the log: Catch2 drops unscoped
+// messages at the next assertion, and the next one, the begin's, passed.)
 template <class R, class Ring>
 gg::kernels::LiveInterior liveInteriorAtOne(const gg::GrainRows &rows, uint32_t i, const Ring &ring,
                                             int64_t from, int64_t to)
@@ -1377,26 +1384,46 @@ gg::kernels::LiveInterior liveInteriorAtOne(const gg::GrainRows &rows, uint32_t 
     };
     const gg::kernels::LiveInterior in = atOne();
     const gg::kernels::LiveInterior unit = atUnit();
-    if (!same(in, unit))
+    if (same(in, unit))
     {
-        std::ostringstream again;
-        for (int pass = 1; pass <= 2; ++pass)
-        {
-            const gg::kernels::LiveInterior a = atOne();
-            const gg::kernels::LiveInterior b = atUnit();
-            again << "; recomputed " << pass << ": at 1 [" << a.begin[0] << ", " << a.end[0]
-                  << ") [" << a.begin[1] << ", " << a.end[1] << "), unit [" << b.begin[0] << ", "
-                  << b.end[0] << ") [" << b.begin[1] << ", " << b.end[1] << ")"
-                  << (same(a, in) && same(b, unit) ? " (repeats)" : " (does not repeat)");
-        }
-        UNSCOPED_INFO("grain " << i << " over [" << from << ", " << to << ")" << again.str());
+        return in;
     }
-    for (int p = 0; p < 2; ++p)
+    std::ostringstream diag;
+    diag << "liveInterior's bounds differ between decimation 1 and UnitDecimation: grain " << i
+         << " over [" << from << ", " << to << "), at 1 [" << in.begin[0] << ", " << in.end[0]
+         << ") [" << in.begin[1] << ", " << in.end[1] << "), unit [" << unit.begin[0] << ", "
+         << unit.end[0] << ") [" << unit.begin[1] << ", " << unit.end[1] << ")";
+    for (int pass = 1; pass <= 2; ++pass)
     {
-        REQUIRE(unit.begin[p] == in.begin[p]);
-        REQUIRE(unit.end[p] == in.end[p]);
+        const gg::kernels::LiveInterior a = atOne();
+        const gg::kernels::LiveInterior b = atUnit();
+        diag << "; recomputed " << pass << ": at 1 [" << a.begin[0] << ", " << a.end[0] << ") ["
+             << a.begin[1] << ", " << a.end[1] << "), unit [" << b.begin[0] << ", " << b.end[0]
+             << ") [" << b.begin[1] << ", " << b.end[1] << ")"
+             << (same(a, in) && same(b, unit) ? " (repeats)" : " (does not repeat)");
     }
-    return in;
+    diag << std::hexfloat << "; startPos " << rows.startPos[i] << ", rate " << rows.rate[i]
+         << ", onsetSample " << rows.onsetSample[i] << ", onsetFrac " << rows.onsetFrac[i]
+         << ", invDuration " << rows.invDuration[i] << std::defaultfloat << "; ring head "
+         << ring.head() << ", kink " << ring.blockKink();
+    WARN(diag.str());
+    // What bit identity requires: through either path's bounds, the grain's output is the
+    // reference's.
+    const Tables &tables = kernelTables();
+    Buffers ref(from, to, 2);
+    Buffers one(from, to, 2);
+    Buffers unitOut(from, to, 2);
+    gg::kernels::renderLiveRef<R>(rows, i, ring, 1u, ref.output(), from, to, tables);
+    gg::kernels::detail::renderLiveSimdAt<R>(rows, i, ring, 1u, one.output(), from, to, tables);
+    gg::kernels::detail::renderLiveSimdAt<R>(rows, i, ring, gg::kernels::detail::UnitDecimation{},
+                                             unitOut.output(), from, to, tables);
+    INFO(diag.str());
+    for (int c = 0; c < 2; ++c)
+    {
+        REQUIRE(sameBits(one.ch[c], ref.ch[c]));
+        REQUIRE(sameBits(unitOut.ch[c], ref.ch[c]));
+    }
+    return unit; // the bounds renderLiveSimd takes
 }
 
 // The reference over the ring's level of `decimation`: renderLiveRef for level 0, and
