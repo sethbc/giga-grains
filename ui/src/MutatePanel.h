@@ -20,8 +20,10 @@ namespace gg::ui
 /// view: the sections Global, Space, Macros and Layer A to D, each parameter a toggle
 /// ("mutate.lock.<slot>", <slot> the parameter's ParamSlot number) that is on while Mutate leaves
 /// it alone. Each layer's 16 Step values are one toggle, named for its Step 1 slot, locking and
-/// unlocking all 16 together. Each layer's heading has "Lock all" ("mutate.lockall.<letter>")
-/// and "Unlock all" ("mutate.unlockall.<letter>").
+/// unlocking all 16 together. Under each layer's heading ("mutate.heading.<letter>"), a row of
+/// its own holds "Lock all" ("mutate.lockall.<letter>") and "Unlock all"
+/// ("mutate.unlockall.<letter>"). The panel is opaque, and the list is laid out clear of its
+/// scroll bar ("mutate.viewport").
 ///
 /// The locks are the user's, the plugin's (EditorContext::mutateLocked); the toggles follow them
 /// at each refresh. An off layer's rows are dimmed and its heading says so: a press leaves an off
