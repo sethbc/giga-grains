@@ -650,12 +650,17 @@ TEST_CASE("deactivate and destruction cancel a load under way at once", "[plugin
     // conversion of a job under way (seconds, for a long file). They cancel it between chunks
     // now: deactivate() keeps the job queued for the next activation, and the destructor drops
     // it. Timed against the same job left to finish, on this machine ([serial]: nothing beside).
+    // Each job is a different file of the same length: a file already loaded would be found in
+    // the process's sample pool (M2 sub-project 2) and skip the conversion and the pyramid (M2
+    // sub-project 3), finishing before a fifth of the whole job.
     using Clock = std::chrono::steady_clock;
     const auto ms = [](Clock::duration d) {
         return std::chrono::duration<double, std::milli>(d).count();
     };
     const fs::path dir = setUp("cancel");
     const fs::path file = gg::test::writeSineWav(dir / "long.wav", 44100, 60.0, 220.0);
+    const fs::path second = gg::test::writeSineWav(dir / "long-2.wav", 44100, 60.0, 330.0);
+    const fs::path third = gg::test::writeSineWav(dir / "long-3.wav", 44100, 60.0, 440.0);
     SourceLog sources;
     LoaderHost host;
     Clock::time_point start;
@@ -676,7 +681,7 @@ TEST_CASE("deactivate and destruction cancel a load under way at once", "[plugin
         UNSCOPED_INFO("the whole job: " << whole << " ms");
 
         // A fifth of the way in, deactivate().
-        loader.requestLoad(file);
+        loader.requestLoad(second);
         std::this_thread::sleep_for(std::chrono::duration<double, std::milli>(whole / 5.0));
         start = Clock::now();
         instrument.deactivate();
@@ -695,7 +700,7 @@ TEST_CASE("deactivate and destruction cancel a load under way at once", "[plugin
         CHECK(peak(out.left) > 0.01f);
 
         // A fifth of the way into another, the destructor (after the harness's deactivate).
-        loader.requestLoad(file);
+        loader.requestLoad(third);
         std::this_thread::sleep_for(std::chrono::duration<double, std::milli>(whole / 5.0));
         start = Clock::now();
     }
