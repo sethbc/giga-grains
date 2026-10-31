@@ -381,6 +381,91 @@ TEST_CASE("a switch to and from Resample under sounding grains doesn't click",
     }
 }
 
+TEST_CASE("a switch to Resample reversed mid-crossfade ramps back from where it was",
+          "[core][source]")
+{
+    // Ruling SP-T12ab, the 12a review's pin: layer B turns Resample at the boundary 24032 and Live
+    // again at 24096, 64 samples into the 480-sample crossfade. The ramp m rises to 64/480, then
+    // falls from there to 0 over kRampSeconds (Ramp::retarget), and the ring takes
+    // (1 − m)·input + m·tap throughout: no frame jumps, and from 24096 + 480 on the input alone,
+    // bit for bit.
+    constexpr int64_t kFrames = 30000;
+    constexpr int64_t kOn = 24032;
+    constexpr int64_t kOff = 24096;
+    const auto ramp = static_cast<int64_t>(std::llround(Processor::kRampSeconds * kRate));
+    const Stereo input = noise(kFrames, 0.5f, 63);
+    Processor p({kRate, 512, 7, Mode::Fx});
+    p.setBase(ParamSlot::Mix, 0.5f);
+    p.setBase(layerOnSlot(1), 1.0f);
+    Stereo out = silence(kFrames);
+    renderCmd(p, &input, 0, kFrames, {512},
+              {{24005, slotOf(LayerParam::Source, 1), false, 2.0},
+               {24070, slotOf(LayerParam::Source, 1), false, 1.0}},
+              {}, out);
+    const auto inputAt = [&input](int64_t t) {
+        const auto i = static_cast<std::size_t>(t);
+        return std::pair{input.left[i], input.right[i]};
+    };
+    const auto tapAt = [&out](int64_t t) {
+        const auto i = static_cast<std::size_t>(t - 256);
+        return std::pair{out.left[i], out.right[i]};
+    };
+    CHECK(ringMismatches(p, 1, 0, kOn, inputAt) == 0);
+    CHECK(ringMismatches(p, 1, kOff + ramp, kFrames, inputAt) == 0);
+    const double top = static_cast<double>(
+        static_cast<float>(static_cast<double>(kOff - kOn) / static_cast<double>(ramp)));
+    int64_t bad = 0;
+    double peakM = 0.0;
+    for (int64_t t = kOn; t < kOff + ramp; ++t)
+    {
+        const double m =
+            t < kOff ? static_cast<double>(t - kOn) / static_cast<double>(ramp)
+                     : top * (1.0 - static_cast<double>(t - kOff) / static_cast<double>(ramp));
+        peakM = std::max(peakM, m);
+        const auto [l, r] = ringFrame(p, 1, t);
+        const auto [il, ir] = inputAt(t);
+        const auto [tl, tr] = tapAt(t);
+        bad += std::abs(l - ((1.0 - m) * il + m * tl)) > 1e-6 ||
+               std::abs(r - ((1.0 - m) * ir + m * tr)) > 1e-6;
+    }
+    CHECK(bad == 0);
+    CHECK(peakM == top);
+    CHECK(top < 0.2);
+}
+
+TEST_CASE("a Resample switch renders the same bytes in 1-sample calls",
+          "[core][source][determinism]")
+{
+    // Ruling SP-T12ab, the 12a review's pin: layer B over noise turns Resample at 9605 and Live
+    // at 14410, under its grains; calls of 1 sample, of 7 and of 512 give the same bytes and the
+    // same ring.
+    constexpr int64_t kFrames = 24000;
+    const Stereo input = noise(kFrames, 0.5f, 65);
+    const std::vector<TimedEvent> events = {
+        {9605, slotOf(LayerParam::Source, 1), false, 2.0},
+        {14410, slotOf(LayerParam::Source, 1), false, 1.0},
+    };
+    const auto renderIn = [&](uint32_t block, Stereo &out) {
+        Processor p({kRate, 512, 9, Mode::Fx});
+        p.setBase(ParamSlot::Mix, 0.7f);
+        p.setBase(layerOnSlot(1), 1.0f);
+        p.setBase(slotOf(LayerParam::Density, 1), 5.0f);
+        renderCmd(p, &input, 0, kFrames, {block}, events, {}, out);
+        return windowOf(p, 1, 0, kFrames);
+    };
+    Stereo whole = silence(kFrames);
+    const std::vector<float> ring = renderIn(512, whole);
+    REQUIRE(peak(whole.left) > 0.05f);
+    for (const uint32_t block : {1u, 7u})
+    {
+        INFO("calls of " << block);
+        Stereo out = silence(kFrames);
+        CHECK(renderIn(block, out) == ring);
+        CHECK(sameBits(out.left, whole.left));
+        CHECK(sameBits(out.right, whole.right));
+    }
+}
+
 TEST_CASE("one output channel feeds both tap channels", "[core][source]")
 {
     // Spec §6.2: with one output channel, the mono output the host hears feeds both sides of a
