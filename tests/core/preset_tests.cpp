@@ -15,6 +15,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -27,6 +28,7 @@
 #include "gg/core/Preset.h"
 #include "gg/core/PresetInfo.h"
 #include "gg/core/SessionState.h"
+#include "gg/media/Sha256.h"
 #include "sst/basic-blocks/params/ParamMetadata.h"
 #include "support/StateContainer.h"
 
@@ -214,8 +216,48 @@ TEST_CASE("a session state carries its name and its preset element", "[core][pre
     CHECK(out.name == "Init");
     CHECK_FALSE(out.preset.has_value());
 
-    // The default state writes exactly the bytes it wrote before presets.
+    // The session's PTCH is toStateXml's; its bytes are pinned below (T1).
     CHECK(ptch == gg::core::toStateXml(someState().values, 1234, someState().routes));
+}
+
+namespace
+{
+std::string sha256Of(std::string_view bytes)
+{
+    return gg::media::sha256Hex(std::as_bytes(std::span(bytes.data(), bytes.size())));
+}
+} // namespace
+
+TEST_CASE("a session state's bytes are pinned", "[core][preset]")
+{
+    // T1: the bytes a session state writes, PTCH and whole container, as literals (their size
+    // and SHA-256, taken at the group 1 fix wave), so a change to how a session is written fails
+    // here rather than passing a comparison with the code's own output. The edited mark (D-Q2)
+    // is written only for an edited preset, so these unedited bytes are unchanged by it.
+    const std::string session = encodeState(someState());
+    const std::string ptch = *stateChunkPayload(session, "PTCH");
+    CHECK(ptch.size() == 11755);
+    CHECK(sha256Of(ptch) == "c3d26f4ebaee7d3d252656912fbe76d367e5b686c30bd1dcdd20a3758c9252fa");
+    CHECK(session.size() == 11808);
+    CHECK(sha256Of(session) == "ed5e43d5f3b4c581ca45e9c238a4002de7d2d794ddbe6035e86f66cb390f7a25");
+}
+
+TEST_CASE("a name read back is cut at 255 bytes and at a NUL", "[core][preset]")
+{
+    // T1: the read side's cut, from a PTCH written with a longer name than any writer writes.
+    const std::string bytes = encodeState(someState());
+    const std::string ptch = *stateChunkPayload(bytes, "PTCH");
+    const std::string longName = std::string(254, 'n') + "\xe2\x9c\x93" + "tail";
+    SessionState out = untouchedState();
+    REQUIRE(decodeState(
+        withPatch(bytes, replaced(ptch, " name=\"Init\"", " name=\"" + longName + "\"")), Mode::Fx,
+        out));
+    CHECK(out.name == std::string(254, 'n')); // the straddling character is dropped whole
+    // The write side cuts a name at its first NUL.
+    SessionState named = someState();
+    named.name = std::string("ab\0cd", 5);
+    REQUIRE(decodeState(encodeState(named), Mode::Fx, out));
+    CHECK(out.name == "ab");
 }
 
 TEST_CASE("a name past 255 bytes is cut at a UTF-8 boundary", "[core][preset]")
@@ -450,14 +492,21 @@ TEST_CASE("a tag outside the vocabulary is dropped on read", "[core][preset]")
 TEST_CASE("initState is every default and the factory routes", "[core][preset]")
 {
     // What a new plugin instance holds: paramMeta's defaults, factoryRoutes, seed 0, no sample.
-    SessionState plugin;
-    for (std::size_t i = 0; i < kParamCount; ++i)
-    {
-        plugin.values[i] = gg::core::paramMeta(static_cast<ParamSlot>(i), Mode::Fx).defaultVal;
-    }
-    plugin.routes = factoryRoutes(Mode::Fx);
+    // Not compared with a state built the way initState builds it (T1): a few defaults by value,
+    // and both products' INIT bytes by size and SHA-256 (taken at the group 1 fix wave).
     const SessionState fx = initState(Mode::Fx);
-    CHECK(encodeState(fx) == encodeState(plugin));
+    CHECK(fx.values[at(ParamSlot::Size)] ==
+          gg::core::paramMeta(ParamSlot::Size, Mode::Fx).defaultVal);
+    CHECK(fx.values[at(ParamSlot::LayerAOn)] == 1.0f);
+    CHECK(fx.values[at(ParamSlot::LayerBOn)] == 0.0f);
+    CHECK(fx.routes == factoryRoutes(Mode::Fx));
+    const std::string fxBytes = encodeState(fx);
+    CHECK(fxBytes.size() == 13123);
+    CHECK(sha256Of(fxBytes) == "f5bebe3b1fbdb39ef5fea0303664a59a2c90f5af44e566ce94c8b7ffe98d5527");
+    const std::string instBytes = encodeState(initState(Mode::Instrument));
+    CHECK(instBytes.size() == 13124);
+    CHECK(sha256Of(instBytes) ==
+          "4b56d0923e3be77bf7c61038907b41bd762b447275cf176cde1ff766aa7d9105");
     CHECK(fx.name == "Init");
     CHECK_FALSE(fx.preset.has_value());
     CHECK_FALSE(fx.sample.has_value());

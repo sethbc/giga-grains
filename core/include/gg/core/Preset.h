@@ -35,7 +35,8 @@ bool readPreset(std::string_view bytes, Mode mode, PresetInfo &info, SessionStat
 /// pre-scan, and only its root's `name` and its <preset> element read; no values are built, so
 /// values that wouldn't load don't stop it. False, and `info` untouched, when the container or
 /// PTCH isn't readable, its root isn't this format's <patch>, or there is no <preset> element
-/// with a known product.
+/// with a known product. The MEDI chunk isn't read: a preset whose MEDI is malformed is listed
+/// all the same, and fails only when it is loaded (readPreset).
 bool presetInfoOf(std::string_view bytes, PresetInfo &info);
 
 /// The INIT state of `mode`'s product: every parameter at its default (paramMeta),
