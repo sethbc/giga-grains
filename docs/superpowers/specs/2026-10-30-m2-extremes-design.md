@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | **Approved by the programme manager 2026-10-30** against the programme design and INTENT, with three notes applied in place (§4, §6.3, §13): the named edits inside sub-projects 3's and 2's files are accepted as described, resolved at this sub-project's rebase with the `Field` numbers assigned then; the `isValidTarget` layer rule is sub-project 3's, found done after the rebase and only tested here; the §23 row takes the next free number at merge. **The director's decisions D1–D8, 2026-10-30,** relayed by the programme manager, are recorded in §8 and applied in §6: every recommended option (D1–D8 option 1). Written by the sub-project's worker session from the programme design's §6.4 and §7, which it realizes and does not reopen. Not yet built |
+| **Status** | **Approved by the programme manager 2026-10-30** against the programme design and INTENT, with three notes applied in place (§4, §6.3, §13): the named edits inside sub-projects 3's and 2's files are accepted as described, resolved at this sub-project's rebase with the `Field` numbers assigned then; the `isValidTarget` layer rule is sub-project 3's, found done after the rebase and only tested here; the §23 row takes the next free number at merge. **The director's decisions D1–D8, 2026-10-30,** relayed by the programme manager, are recorded in §8 and applied in §6: every recommended option (D1–D8 option 1). Written by the sub-project's worker session from the programme design's §6.4 and §7, which it realizes and does not reopen. **Built 2026-10-30** (Tasks 1 to 16 on `m2-extremes`; INTENT §23 #NN records it). Sections changed by the build are marked **Amended**; the director's later decision D7a (2026-10-30) is in §8 and §6.4 |
 | **Milestone** | M2 Giga (INTENT §20, §23 #64), sub-project 4 of 7; wave 2, with sub-projects 3 and 2, **merged third** |
 | **Spec authority** | `INTENT.md`, then `docs/superpowers/specs/2026-10-29-m2-programme-design.md` (its §6.4, §7 and §12 are this sub-project's charter). This document records how this sub-project implements them |
 | **Builds on** | M2 sub-project 1 as merged (`ab9f4e2`, PR #15; INTENT §23 #65): the four layers, the per-layer chain of §7.2, the Source-kind parameter with its enumeration (Spectral = 3 exists and falls back), the mod matrix, the reserved index block `0x..60`–`0x..7F`, the render tasks; M1's Space (`core/src/space/`, the diffuser, the soft limiter, the 32-sample grid) |
@@ -255,7 +255,10 @@ the material with no transients and no comb; grains read it as they read the liv
   48 kHz, 8192 at 88.2 and 96 kHz, 16384 above), hop H = N/4 (a multiple of 32, so every hop
   boundary is a grid boundary). Analysis and synthesis windows are both Hann, whose product at a
   quarter hop sums to the constant 1.5, which the synthesis divides out, so a steady material
-  keeps its RMS within 1 dB (a test). Frame k is computed when the output clock reaches
+  keeps its RMS within 1 dB (a test). **Amended:** the synthesis divides by 0.75
+  (`kOverlapGain`), not 1.5. The phases are redrawn every frame, so the overlapping frames add in
+  power, not in amplitude, and the 1.5 derivation was wrong; the stated behavior stands (measured
+  −0.144 dB). Frame k is computed when the output clock reaches
   absolute sample kH, from the material at the layer's Position in effect at that boundary, and
   its N output samples are accumulated for spectral time [kH, kH + N); the stream's sample at
   output time t is the accumulation at spectral time t − N, so every sample written is complete.
@@ -263,7 +266,9 @@ the material with no transients and no comb; grains read it as they read the liv
   forward and inverse transforms; its setup and every buffer are allocated at construction, the
   work buffer included (pffft takes it from the stack when none is given).
 - **The phases.** Bin b of frame k takes the phase `2π × uniform01(hash(seed, layer, 0,
-  Field::SpectralPhase, k × (N/2 + 1) + b))`, DC and Nyquist left real; the magnitude is the
+  Field::SpectralPhase, k × (N/2 + 1) + b))`, DC and Nyquist left real; **Amended:** the stream
+  in the key is the channel, not 0, so the channels' phases are independent and the smear fully
+  decorrelates them (centre content comes out wide); the magnitude is the
   analysis frame's. `sineDet`'s quarter-wave polynomial gives cos and sin, libm-free. So the smear
   of a given seed, layer, Position history and material is a function of the sample clock alone,
   at any block size.
@@ -277,9 +282,17 @@ the material with no transients and no comb; grains read it as they read the liv
   STFT at the next hop boundary: the stream fades in over one window (the first frames'
   overlap-add), under the ring's 256-frame margin, so the switch doesn't click; switching away
   stops the STFT and writes silence, and the last Spectral grains read what is there.
+  **Amended:** switching away first drains the pending overlap-add (the frames already begun
+  finish into the ring), then writes silence. Writing silence at once clicked (a second
+  difference 1,000 times a steady signal's), against the §3 anti-goal, which binds.
 - **Grains over the smear.** A Spectral grain's start is `Spray × u` seconds behind the spectral
   head, one-sided as a Live grain's (`Field::PositionJitter`, the same draw), under the same
-  admission clamp and head-proximity fade; Position never addresses the spectral ring. Pitch,
+  admission clamp and head-proximity fade; Position never addresses the spectral ring.
+  **Amended:** Position on ring material is bounded as on a Live layer, `max(1, liveBound)`
+  seconds behind the head (the floor of 1 keeps a sample-material Spectral layer usable when the
+  live ring is under 1 s or absent; at the products' 16 s the bound equals the Live case's, and
+  a test pins that). The build's first brief had a 5 s bound, which confused the live ring with
+  the spectral one. Pitch,
   Size, Texture and the spreads act as on any layer; Smear's jitter adds to the seconds behind
   the head.
 - **Freeze** on a Spectral layer (D2). Under option 1: it freezes the layer's live ring exactly as
@@ -294,7 +307,10 @@ the material with no transients and no comb; grains read it as they read the liv
   per instance, recorded in INTENT §14 beside wave 1's 45 MB (the cap is sub-project 2's).
 - **CPU.** Two real FFTs of N per hop per channel: about 50 Mflop/s per Spectral layer at 48 kHz,
   under 1% of a core, measured by `engine-spectral` (§6.10).
-- **The material is decided where a sample is offered.** The `Processor` owns each layer's
+- **The material is decided where a sample is offered.** **Amended:** it is decided where the
+  engine *adopts* a sample (`takeOffers` and `setSourceNow`, which call `syncMaterial()`), since
+  an offer not yet taken, or a source taken but not adopted, is superseded and must not change
+  the units. The `Processor` owns each layer's
   `SourceExchange` and hands its samples to the engine, so it knows whether a layer holds one;
   a Spectral layer's `CloudParams` are computed with the material's units (Position a fraction, or
   seconds behind the head) through a `toCloudParams` overload that takes the material, and are
@@ -336,7 +352,12 @@ octave, SIMD stereo.
 - **Exact bypass.** A bus whose type is Off is not filtered: its buffer passes bit for bit. Bus 2
   is **provably empty** while no grain has been admitted to it since the last `reset()` or since
   the layer turned on: a sticky flag the engine raises at the first bus-2 admission and the layer
-  clears where it clears its diffuser and Feedback history. While the flag is down the layer's
+  clears where it clears its diffuser and Feedback history. **Amended, as built:** the engine
+  owns the flag, `bus2Used()`, raised at the first admission of a bus-2 grain (either
+  `process()` form) and lowered only by `Engine::reset()` and by the enable gate turning off, the
+  two places the layer clears its diffuser and Feedback history. While it is down, bus 2's
+  filter is still stepped, on silence, so it stays silent and its state is rest when the flag
+  rises. While the flag is down the layer's
   sum is bus 1 alone, with no `+ 0`, so a layer with Bus Split 0 and both filters Off is M1's
   grain sum bit for bit, the sign of zero included. Once the flag is up the sum is
   `bus1 + bus2`, each after its filter, for the rest of the layer's run: a live count would drop
@@ -373,7 +394,11 @@ D7's), `Delay Damping` (0–100%, default 30%: a one-pole low-pass in the loop, 
   channel's output, or the other channel's with ping-pong on; the output is
   `wet'_c = in_c + Amount × y_c`. The loop runs through M1's `softLimit`, so with `f` ≤ 1 it is
   bounded below 1 and, at `f` = 1 and Damping 0, holds a repeat forever like Decay ∞ (D7
-  option 1).
+  option 1). **Amended (D7a, the director, 2026-10-30, option 2):** the hold slowly darkens
+  bright material. Damping 0 maps to a 20 kHz one-pole (coefficient 0.927), not to no damper, so
+  at Feedback 100% a noise burst loses about 2 dB in the 2–4 kHz band over 20 s, and a sine burst
+  holds within 0.1 dB. The alternative, Damping 0 bypassing the damper for an exact hold, was
+  declined.
 - **Exact identity at rest:** the line is written every sample (cheap, and raising Amount reveals
   what was already playing, as the diffuser does), and the return is added only on samples where
   Amount's per-sample ramp isn't exactly 0: no `+ 0`, so `wet' == wet` bit for bit, the sign of
@@ -456,7 +481,9 @@ arranged. The layer rows are one list, `GG_LAYER_PARAMS_M2_EXTREMES`, expanded w
 so the index column stays ascending (`validIndexColumn`); `kLayerParamCount` and its
 static_asserts follow the lists. **The forty (name, ID)s are what is pinned** (in
 `tests/support/ParamTable.h`), not a total: the count after the rebase includes sub-projects 3's
-and 2's parameters (on this branch alone it is 258, `kParamCount`).
+and 2's parameters (on this branch alone it is 258, `kParamCount`). **Amended, as built:** 258 is 218 (sub-project
+1's) plus these forty, as `tests/plugin/params_tests.cpp` checks; the pinned table is the forty,
+and the total changes with each later sub-project's parameters.
 
 **Layer scope** (index, in scopes 1–4; displayed with the layer's letter, "A Smear" … "D Bus 2
 Resonance"):
@@ -643,6 +670,9 @@ recommended options; the alternatives' text in §6.1, §6.2 and §6.3 is now moo
    move, as Size's accepted artefact (row 217).
 
 **D7. Delay Feedback's top, and the instrument's tail** (§6.4, §6.5). **Decided: option 1 (2026-10-30).**
+**Amended by D7a (the director, 2026-10-30, option 2):** the hold slowly darkens, because Damping 0
+keeps a 20 kHz one-pole damper in the loop (a noise burst loses about 2 dB in the 2–4 kHz band
+over 20 s; a sine burst holds within 0.1 dB); the bypass option was declined.
 1. **100%, the loop soft-clipped,** so the delay can hold a repeat forever, as Decay ∞ does; the
    instrument's reported tail stays its constant 122.5 s (R-T7a). *Cost:* a host that suspends an
    instrument after its reported tail cuts a held delay 122.5 s after the last note; the FX, whose
@@ -780,7 +810,7 @@ commit; each new case's spectrogram looked at before it is committed):
 | `inst-spectral` | instrument | layer A Spectral over the generated sweep sample, one held note; Position stepped 0.1, 0.4, 0.7 at 2 s intervals |
 | `fx-spectral-freeze` | fx | layer A Spectral over `loop-48k.wav` as input (the ring is the material); Freeze on at 2 s, off at 4 s |
 | `fx-bus-filters` | fx | stereo noise, Bus Split 50%; bus 1 Low-pass 300 Hz, Resonance 30%, bus 2 High-pass 3 kHz; bus 1's cutoff automated to 3 kHz at 2 s, bus 2's type to Band-pass at 4 s |
-| `inst-filter-lfo` | instrument | one held note over a sweep; bus 1 Low-pass with LFO 1 (0.5 Hz, sine) routed to Bus 1 Cutoff ±2 octaves: a route to a new target |
+| `inst-filter-lfo` | instrument | **Amended:** one held note over noise (a sweep at a fixed Position is one tone, which hid the filter); bus 1 Low-pass with LFO 1 (0.5 Hz, sine) routed to Bus 1 Cutoff ±2 octaves: a route to a new target |
 | `fx-delay` | fx | `loop-48k.wav`; Delay Amount 50%, Time 375 ms, Feedback 50%, Damping 50%, ping-pong on |
 | `fx-delay-automate` | fx | a stereo 330 Hz sine; Time 100 ms → 500 ms at 2 s (the glide), Feedback 0 → 90% at 4 s, Amount to 0 at 6 s |
 | `fx-limiter` | fx | four Live layers over stereo noise at Level +6 dB each; Limiter Ceiling −6 dB; Mode Off, then Soft at 2 s, Peak at 4 s |
@@ -788,7 +818,12 @@ commit; each new case's spectrogram looked at before it is committed):
 The noise-bed cases (`inst-smear`, `fx-bus-filters`, `fx-limiter`, and `fx-spectral-freeze` where
 the smear is dense) will hide some injected steps and are pinned in the click table with their
 counts and reasons; `inst-stretch-smear`, `inst-spectral`, `inst-filter-lfo`, `fx-delay` and
-`fx-delay-automate` are expected to catch all sixteen.
+`fx-delay-automate` are expected to catch all sixteen. **Amended, as built:** seven cases are
+pinned (`inst-smear` 0, `fx-limiter` 0, `fx-bus-filters` 1, `inst-filter-lfo` 13, `fx-delay` 12,
+`inst-stretch-smear` 9 and `fx-spectral-freeze` 9); only `inst-spectral` and `fx-delay-automate`
+catch all sixteen. `fx-spectral-freeze` also departs: its Position is 0.28, since at 0.4 the
+frozen window fell between the loop's bursts. Peak did not click in `fx-limiter` (clean score
+4.31), so no table entry is owed to it.
 
 **Benchmarks:** the three engine cases and `--chain` run from `release` with their figures and
 the §22 figure in the report; `engine-sample` shows no `regressed` ratio against
@@ -828,11 +863,11 @@ and RMS, and what to listen for; a host checklist for the close) and `specs/`:
 | `08-filter-lfo.wav` | one note, LFO 1 to Bus 1 Cutoff, Resonance 60% | a smooth sweep, no zipper |
 | `09-delay-pingpong.wav` | the loop, Time 375 ms, Feedback 60%, ping-pong | echoes alternating sides, darkening with Damping |
 | `10-delay-time-glide.wav` | a sine cloud, Time stepped 100 → 500 → 50 ms | the tape bend on each move (D6), no click |
-| `11-delay-hold.wav` | a short burst, Feedback 100%, Damping 0 | the repeat holds for 20 s without growing or fading (D7) |
+| `11-delay-hold.wav` | a short burst, Feedback 100%, Damping 0 | the repeat holds for 20 s without growing; **Amended (D7a):** a sine burst holds within 0.1 dB, and a noise burst darkens, about 2 dB in 2–4 kHz over 20 s, so the pack uses a sine burst |
 | `12-limiter-modes.wav` | four hot layers of noise, Mode Off, Soft, Peak at −6 dB | Off clips nothing and sums hot; Soft rounds it; Peak holds the ceiling with its release |
 | `13-all-together.wav` | a Spectral layer and a Smear 0.7 layer, split buses filtered, the delay and Peak | the chain as a whole; does it still sound like one instrument? |
 
-Fourteen renders from thirteen specs (`02` has two or three). The README's host checklist covers:
+Fourteen renders from thirteen specs (`02` has two or three). **Amended:** `02c` is Smear 0.5, as its README says, because D8's option 2 was a build constant that was never built. The README's host checklist covers:
 the "FX" and "Filter A" pages in Bitwig; the Spectral kind in Live with the sidechain feeding an
 instrument layer; automating Delay Time and Bus 1 Cutoff in Live; the Peak limiter on a hot
 four-layer patch; a Smear 1 patch's CPU against Smear 0 in the host's meter.

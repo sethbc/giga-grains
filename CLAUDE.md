@@ -27,8 +27,10 @@ AGPL-3.0-or-later.
   for your sub-project's scope and what it owns, and its §7 for the rules every sub-project
   builds on). Sub-project 1, Layers and structure, is built (INTENT §23 #65): four layers, the
   morph, the Source kind, the mod matrix, render tasks and the patch at version 2, which wave 2
-  builds on. M2, M3 and M4 are tagged 0.2.0, 0.3.0 and 0.4.0 as
-  unpublished draft releases; nothing is public and there are no betas before M5, whose
+  builds on. Sub-project 4, Extremes and the FX chain, is built too (INTENT §23 #NN): Smear,
+  the Spectral kind, two filtered grain buses per layer, a global delay and limiter, forty
+  parameters (258 in all) and thirteen remote-controls pages. M2, M3 and M4 are tagged 0.2.0,
+  0.3.0 and 0.4.0 as unpublished draft releases; nothing is public and there are no betas before M5, whose
   `0.5.0-beta.N` are the first public releases (§23 #62); v1.0.0 follows M5.
 - **The records:** each sub-project's spec in `docs/superpowers/specs/`, the published benchmark
   JSON in `docs/benchmarks/`, the listening packs in `docs/listening/`, the M0 and M1 spikes in
@@ -310,6 +312,14 @@ runs the tests labelled either. The labels are:
   - `threads`: `TaskRunner`, `SerialRunner` and the tests' `StubPool` (`engine`), and the
     `Processor`'s render tasks (`core`): the same bytes with no pool and pools of 1, 2 and 8
     workers, a declining pool, and the tasks' denormal mode and allocations;
+  - `spectral` (M2 sub-project 4): the Spectral Smear source in the engine (the hop on the clock,
+    the keyed phases, the RMS, the kind switches, Freeze) and in the `Processor` (the material,
+    its units, Position, Feedback 0, the switch-away drain);
+  - `buses` (M2 sub-project 4): the two grain buses and their filters in the `Processor` (bus 2
+    empty until a grain takes it, each filter type, the per-sample ramps, the declicked type
+    change, Resonance 100% stable);
+  - `fx` (M2 sub-project 4): the global delay and limiter units and their `Processor` chain (the
+    identity at rest, the echoes, the hold, ping-pong, Time's glide, the limiter's modes);
   - `publish`: the audio-to-UI structures (the grain queue, the UI snapshot, the live peaks) and
     the `Processor`'s publishing;
 - `media`: `gg-media`, the JUCE-free sample-file library (`media/`) that the plugin's loader and
@@ -437,7 +447,14 @@ gg-render --write-media DIR
     `"Reverb Decay"`, `"Reverb Size"`, `"Reverb Damping"`, `"Reverb Pre-delay"`,
     `"Reverb Modulation"` and `"Dry to Reverb"`; the macros are `"Macro Size"`,
     `"Macro Density"`, `"Macro Pitch"`, `"Macro Spray"`, `"Macro Texture"`, `"Macro Freeze"`,
-    `"Macro Feedback"` (Macro 7 in both products) and `"Macro Mix"`; the layers' are
+    `"Macro Feedback"` (Macro 7 in both products) and `"Macro Mix"`; the extremes' (M2
+    sub-project 4) are a layer's `"A Smear"`, `"A Bus Split"`, `"A Bus 1 Filter"` (0 Off, 1
+    Low-pass, 2 High-pass, 3 Band-pass, 4 Notch), `"A Bus 1 Cutoff"` (log2 Hz), `"A Bus 1
+    Resonance"` and bus 2's three (`"D Bus 2 Resonance"` last), and the globals `"Delay Amount"`,
+    `"Delay Time"`, `"Delay Feedback"`, `"Delay Damping"`, `"Delay Ping-pong"`, `"Limiter Mode"`,
+    `"Limiter Ceiling"` and `"Limiter Release"`; `"A Source": 3` selects the Spectral kind, which
+    smears the layer's `samples` entry when it has one and the render's input ring otherwise;
+    the layers' are
     `"Morph X"`, `"Morph Y"`, `"Layer A On"` … `"Layer D On"` and `"Level B"` … `"Level D"`.
     Optional `automation` is a time-ordered list of `{"time", "param", "value"}` points in
     seconds, and optional `notes` a time-ordered list of `{"time", "key", "duration",
@@ -560,7 +577,7 @@ gg-render --write-media DIR
       at 2 s, Peak at 4 s, Ceiling -6 dB).
     - `fx-limiter`, `inst-smear` and `fx-bus-filters` (a noise bed) hide most injected steps,
       and four more hide some, pinned in the click-injection table: `inst-filter-lfo` 13,
-      `inst-stretch-smear` 9, `fx-delay` 12 and `fx-spectral-freeze` 9. The other three catch
+      `inst-stretch-smear` 9, `fx-delay` 12 and `fx-spectral-freeze` 9. The other two catch
       all 16. `tests/metrics/comb_tests.cpp` renders Smear 0 and 1 over noise, static and at
       1000x, and requires Smear 1's cepstral comb score well below Smear 0's.
     - Every one of the 36 earlier cases renders bit-identically with Smear 0, Bus Split 0, the
