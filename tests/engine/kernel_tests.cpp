@@ -2631,7 +2631,9 @@ TEMPLATE_TEST_CASE("simd live kernel matches the reference under a narrowed wind
     // - a frozen loop: Loop on at 5,000 frames under 12 freezes;
     // - splices: four marks and splice 2 selected on an unfrozen ring, so the marks age out
     //   under it and the selection moves from one non-last splice to the next and then to the
-    //   last, held through a freeze in the middle.
+    //   last, held through a freeze in the middle;
+    // - splice selections on a frozen ring: 1, 4 (the last), 2, then the whole ring and a loop
+    //   (ruling SP-T12aa: the grains sounding at each change keep reading their old span).
     // Grains sit inside the window at its onset, a quarter at the oldest frame's margin and a
     // quarter at the end's, and many straddle a narrowing.
     struct Schedule
@@ -2658,6 +2660,22 @@ TEMPLATE_TEST_CASE("simd live kernel matches the reference under a narrowed wind
                                                                  }
                                                                  r.selectSplice(2);
                                                              }}}});
+    // Ruling SP-T12aa: the selection moved under sounding grains on a ring frozen at 28,000, so
+    // the window jumps from one span to another and back to the whole ring.
+    schedules.push_back({"splice selections, frozen",
+                         LiveInput(100000, 97, {28000}),
+                         {{30000,
+                           [](gg::LiveSource &r) {
+                               for (const int64_t m : {10000, 14000, 20000, 26000})
+                               {
+                                   REQUIRE(r.addSplice(m));
+                               }
+                               r.selectSplice(1);
+                           }},
+                          {45000, [](gg::LiveSource &r) { r.selectSplice(4); }},
+                          {60000, [](gg::LiveSource &r) { r.selectSplice(2); }},
+                          {75000, [](gg::LiveSource &r) { r.selectSplice(0); }},
+                          {85000, [](gg::LiveSource &r) { r.setLoop(true, 3000); }}}});
     const Tables &tables = kernelTables();
     for (const Schedule &schedule : schedules)
     {
@@ -2764,8 +2782,9 @@ TEMPLATE_TEST_CASE("simd live kernel matches the reference at every ring level u
                    "[kernel]", Hermite, Linear, Sinc)
 {
     // The narrowed-window schedules (a loop on an unfrozen ring, a frozen loop, splices aging
-    // out under a selection) at levels 1 to 3, in blocks of 511, 64 and 7: the SIMD kernel held
-    // to the reference with std::memcmp, and every block size to the first.
+    // out under a selection, splice selections on a frozen ring) at levels 1 to 3, in blocks of
+    // 511, 64 and 7: the SIMD kernel held to the reference with std::memcmp, and every block size
+    // to the first.
     struct Schedule
     {
         const char *name;
@@ -2790,6 +2809,22 @@ TEMPLATE_TEST_CASE("simd live kernel matches the reference at every ring level u
                                                                  }
                                                                  r.selectSplice(2);
                                                              }}}});
+    // Ruling SP-T12aa: the selection moved under sounding grains on a ring frozen at 28,000, so
+    // the window jumps from one span to another and back to the whole ring.
+    schedules.push_back({"splice selections, frozen",
+                         LiveInput(100000, 97, {28000}),
+                         {{30000,
+                           [](gg::LiveSource &r) {
+                               for (const int64_t m : {10000, 14000, 20000, 26000})
+                               {
+                                   REQUIRE(r.addSplice(m));
+                               }
+                               r.selectSplice(1);
+                           }},
+                          {45000, [](gg::LiveSource &r) { r.selectSplice(4); }},
+                          {60000, [](gg::LiveSource &r) { r.selectSplice(2); }},
+                          {75000, [](gg::LiveSource &r) { r.selectSplice(0); }},
+                          {85000, [](gg::LiveSource &r) { r.setLoop(true, 3000); }}}});
     const Tables &tables = kernelTables();
     for (const Schedule &schedule : schedules)
     {
@@ -2981,13 +3016,14 @@ TEST_CASE("hq live reads nothing beyond the window", "[kernel]")
     }
 }
 
-TEST_CASE("the hq fade follows a loop's window", "[kernel]")
+TEST_CASE("the hq fade follows the storage, not a loop's window", "[kernel]")
 {
-    // M2 sub-project 2's window under sub-project 3's sinc: with Loop on, the window is
-    // [E − W, E − 1], not [R − N, R − 1], and Sinc::fade is LiveSource::fadeFor<7, 8> over it.
-    // Across the loop's two ends, at every eighth of a frame, the fade is above 0 only where all
-    // 16 taps are inside the loop's window, is 1 exactly where every tap is at least M + 1 frames
-    // inside it, and is the Hermite's expression with the sinc's reach.
+    // Ruling SP-T12aa under sub-project 3's sinc: with Loop on, the window [E − W, E − 1] steers
+    // admission alone, and Sinc::fade is LiveSource::fadeFor<7, 8> over the storage's
+    // [R − N, R − 1]. Across the loop's oldest frame, at every eighth of a frame, the fade stays
+    // 1; across the storage's two ends it is above 0 only where all 16 taps are inside
+    // [R − N, R − 1], is 1 exactly where every tap is at least M + 1 frames inside it, and is the
+    // Hermite's expression with the sinc's reach.
     gg::LiveSource ring;
     ring.prepare(kLiveRate, 0.5, kLiveMaxBlock); // N = 24,000
     ring.setLoop(true, 6000);
@@ -3000,12 +3036,19 @@ TEST_CASE("the hq fade follows a loop's window", "[kernel]")
     }
     const int64_t t = input.length - 1;
     const int64_t head = ring.headAt(t);
-    const int64_t end = ring.anchorAt(t);
-    const int64_t oldest = ring.windowOldestAt(t);
-    REQUIRE(oldest > head - ring.frames() + 1000); // the loop narrows the window
+    const int64_t loopOldest = ring.windowOldestAt(t);
+    REQUIRE(ring.anchorAt(t) == head);
+    REQUIRE(loopOldest > head - ring.frames() + 1000); // the loop narrows the window
+    for (double pos = static_cast<double>(loopOldest) - kM - 44.0;
+         pos < static_cast<double>(loopOldest) + kM + 44.0; pos += 0.125)
+    {
+        INFO("pos " << pos);
+        REQUIRE(Sinc::fade(ring, pos, head) == 1.0);
+    }
+    const int64_t oldest = head - ring.frames();
     int64_t inside = 0;
     int64_t one = 0;
-    for (const int64_t edge : {oldest, end})
+    for (const int64_t edge : {oldest, head})
     {
         // M + 44 frames each side: the fade's ramp, the taps' reach and a little more.
         for (double pos = static_cast<double>(edge) - kM - 44.0;
@@ -3014,12 +3057,12 @@ TEST_CASE("the hq fade follows a loop's window", "[kernel]")
             const double f = Sinc::fade(ring, pos, head);
             const double base = std::floor(pos);
             const bool tapsInside = base - 7.0 >= static_cast<double>(oldest) &&
-                                    base + 8.0 <= static_cast<double>(end - 1);
+                                    base + 8.0 <= static_cast<double>(head - 1);
             INFO("pos " << pos);
             REQUIRE((f > 0.0) <= tapsInside);
             REQUIRE(f == (ring.fadeFor<7, 8>(pos, head)));
             const bool deep = (pos - 7.0) - static_cast<double>(oldest) >= kM + 1.0 &&
-                              static_cast<double>(end) - 1.0 - (pos + 8.0) >= kM + 1.0;
+                              static_cast<double>(head) - 1.0 - (pos + 8.0) >= kM + 1.0;
             if (deep)
             {
                 REQUIRE(f == 1.0);

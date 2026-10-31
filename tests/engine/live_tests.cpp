@@ -26,6 +26,8 @@
 #include "gg/core/Interpolate.h"
 #include "gg/core/Rng.h"
 #include "gg/engine/Engine.h"
+#include "gg/metrics/AudioData.h"
+#include "gg/metrics/Metrics.h"
 #include "gg/source/PreparedSource.h"
 #include "gg/source/RingStorage.h"
 #include "gg/source/SampleBuffer.h"
@@ -1723,7 +1725,9 @@ TEST_CASE("a loop narrows the window", "[engine][live]")
     CHECK(worstHead >= -1e-6);
     CHECK(worstTail < 1.0); // not vacuous: Position 2 s puts grains against the loop's start
 
-    // The fade crossfades the loop's two ends: 0 at the oldest frame's tap, 1 M frames inside.
+    // The fade and the reads follow the storage, not the loop (ruling SP-T12aa): across the
+    // loop's oldest frame the fade stays 1 and the reads succeed, so a grain the loop's start
+    // passes keeps reading its frames; only the storage's ends fade, as in M1.
     gg::LiveSource ring;
     ring.prepare(1000.0, 4.0, 64); // N = 4000
     ring.setLoop(true, 1000);
@@ -1731,22 +1735,22 @@ TEST_CASE("a loop narrows the window", "[engine][live]")
     const int64_t end = ring.head();
     REQUIRE(ring.windowFrames() == 1000);
     REQUIRE(ring.anchorAt(5999) == end);
+    REQUIRE(ring.windowOldestAt(5999) == end - 1000);
     const auto oldest = static_cast<double>(end - 1000);
-    REQUIRE(ring.fade(oldest - 1.0, end) == 0.0);
-    REQUIRE(ring.fade(oldest + 1.0, end) == 0.0);
-    REQUIRE(ring.fade(oldest + 1.0 + kM / 2.0, end) == 0.5);
-    REQUIRE(ring.fade(oldest + 1.0 + kM, end) == 1.0);
+    REQUIRE(ring.fade(oldest - 1.0, end) == 1.0);
+    REQUIRE(ring.fade(oldest + 1.0, end) == 1.0);
+    const auto stored = static_cast<double>(end - 4000);
+    REQUIRE(ring.fade(stored + 1.0, end) == 0.0);
+    REQUIRE(ring.fade(stored + 1.0 + kM / 2.0, end) == 0.5);
+    REQUIRE(ring.fade(stored + 1.0 + kM, end) == 1.0);
     gg::LiveSource::Cursor c;
     float l = 0.0f;
     float r = 0.0f;
-    REQUIRE_FALSE(ring.read(oldest, end, c, l, r)); // its first tap is the frame before W
-    REQUIRE(ring.read(oldest + 1.0, end, c, l, r));
-    REQUIRE(l == rampValue(end - 1000 + 1));
-    // Without the loop the same position is inside the ring's window again.
-    ring.setLoop(false, 1000);
-    ring.write(nullptr, 0, 0, 6000, 0);
-    REQUIRE(ring.windowFrames() == 4000);
-    REQUIRE(ring.read(oldest, end, c, l, r));
+    REQUIRE(ring.read(oldest, end, c, l, r)); // its first tap is the frame before W
+    REQUIRE(l == rampValue(end - 1000));
+    REQUIRE_FALSE(ring.read(stored, end, c, l, r)); // its first tap is the frame before N
+    REQUIRE(ring.read(stored + 1.0, end, c, l, r));
+    REQUIRE(l == rampValue(end - 4000 + 1));
 }
 
 TEST_CASE("overdub 0 is the M1 write", "[engine][live]")
@@ -2051,15 +2055,18 @@ TEST_CASE("a selected splice anchors the window", "[engine][live]")
     REQUIRE(ring.read(96000.0 - 3.0, head, c, l, r)); // taps 95996 .. 95999
     REQUIRE(l == rampValue(95997));
     REQUIRE(r == -rampValue(95997));
-    REQUIRE_FALSE(ring.read(96000.0 - 2.0, head, c, l, r)); // tap 96000 is past the span
-    REQUIRE_FALSE(ring.read(96000.0 + 1.0, head, c, l, r));
-    REQUIRE(ring.read(48000.0 + 1.0, head, c, l, r)); // taps 48000 .. 48003
-    REQUIRE(l == rampValue(48001));
-    REQUIRE_FALSE(ring.read(48000.0, head, c, l, r)); // tap 47999 is before it
-    REQUIRE(ring.fade(48001.0, head) == 0.0);
-    REQUIRE(ring.fade(48001.0 + kM, head) == 1.0);
-    REQUIRE(ring.fade(96000.0 - 3.0 - kM, head) == 1.0);
-    REQUIRE(ring.fade(96000.0 - 3.0, head) == 0.0);
+    // The reads and the fade follow the storage, not the span (ruling SP-T12aa): a grain the
+    // window leaves behind keeps reading its frames, and only the storage's ends fade.
+    REQUIRE(ring.read(96000.0 + 1.0, head, c, l, r)); // past the span
+    REQUIRE(l == rampValue(96001));
+    REQUIRE(ring.read(48000.0, head, c, l, r)); // tap 47999 is before it
+    REQUIRE(l == rampValue(48000));
+    REQUIRE(ring.fade(48001.0, head) == 1.0);
+    REQUIRE(ring.fade(96000.0 - 3.0, head) == 1.0);
+    const auto newest = static_cast<double>(head);
+    REQUIRE(ring.fade(newest - 3.0, head) == 0.0);
+    REQUIRE(ring.fade(newest - 3.0 - kM, head) == 1.0);
+    REQUIRE_FALSE(ring.read(newest - 2.0, head, c, l, r)); // tap R is past the newest frame
 
     // Through the engine: once splice 1 is selected, every grain admitted reads inside it.
     gg::Engine engine(liveConfig(kSampleRate, 512, 4.0));
@@ -2374,6 +2381,189 @@ TEST_CASE("a loop with overdub and a splice across ageing are block-size invaria
             REQUIRE(sameBits(r.out.left, first.out.left));
             REQUIRE(sameBits(r.out.right, first.out.right));
             REQUIRE(r.grains == first.grains);
+        }
+    }
+}
+
+namespace
+{
+// The goldens' click limit (gg::metrics::Tolerances::maxClickScore, metricsVersion 2).
+constexpr double kClickLimit = 15.0;
+
+// The goldens' click score of out[from, to), both channels, at 48 kHz.
+double clickScoreIn(const Stereo &out, int64_t from, int64_t to)
+{
+    const auto a = static_cast<std::ptrdiff_t>(std::max<int64_t>(0, from));
+    const auto b =
+        static_cast<std::ptrdiff_t>(std::min<int64_t>(to, static_cast<int64_t>(out.left.size())));
+    const gg::metrics::AudioData audio{
+        kSampleRate,
+        {std::vector<float>(out.left.begin() + a, out.left.begin() + b),
+         std::vector<float>(out.right.begin() + a, out.right.begin() + b)}};
+    return gg::metrics::computeMetrics(audio).clickScore;
+}
+
+// Dense live grains (32 Hz of 50 ms, nearly periodic: about 1.6 sounding at once, and never a
+// gap) at a tier and a pitch, `position`
+// seconds behind the window's end with `spray` more, over a 2 s ring of `input`, in process()
+// calls of `block` frames cut short at each change, made at its sample.
+LiveRender renderDense(const Stereo &input, uint64_t seed, gg::Tier tier, double pitch,
+                       double position, double spray, uint32_t block,
+                       const std::vector<WindowChange> &changes)
+{
+    gg::EngineConfig config = liveConfig(kSampleRate, 511, 2.0);
+    config.seed = seed;
+    gg::Engine engine(config);
+    engine.setSourceMode(gg::SourceMode::Live);
+    engine.setCloudParams({.densityHz = 32.0,
+                           .distribution = 0.1,
+                           .grainDurationSec = 0.05,
+                           .position = position,
+                           .spray = spray,
+                           .pitchSemitones = pitch,
+                           .stereo = 0.5,
+                           .gain = 0.5f,
+                           .quality = tier});
+    SinkLog log;
+    engine.setEventSink(&SinkLog::record, &log);
+    const auto frames = static_cast<int64_t>(input.left.size());
+    LiveRender r{{std::vector<float>(input.left.size()), std::vector<float>(input.left.size())},
+                 {}};
+    std::size_t next = 0;
+    for (int64_t done = 0; done < frames;)
+    {
+        while (next < changes.size() && changes[next].at == done)
+        {
+            changes[next++].apply(engine);
+        }
+        int64_t end = std::min<int64_t>(done + block, frames);
+        if (next < changes.size())
+        {
+            end = std::min(end, changes[next].at);
+        }
+        const float *in[2] = {input.left.data() + done, input.right.data() + done};
+        float *o[2] = {r.out.left.data() + done, r.out.right.data() + done};
+        engine.process(in, 2, o, 2, static_cast<uint32_t>(end - done));
+        done = end;
+    }
+    REQUIRE_FALSE(log.overflowed);
+    r.grains = log.grains;
+    return r;
+}
+
+// How many of the grains are sounding at output sample t.
+std::size_t soundingAt(const std::vector<gg::GrainSpec> &grains, int64_t t)
+{
+    return static_cast<std::size_t>(std::count_if(grains.begin(), grains.end(), [t](const auto &g) {
+        const double onset = static_cast<double>(g.onsetSample) + g.onsetFrac;
+        const auto at = static_cast<double>(t);
+        return onset < at && at < onset + g.durationSamples;
+    }));
+}
+} // namespace
+
+TEST_CASE("a window change under sounding grains doesn't click", "[engine][live][determinism]")
+{
+    // M2 sub-project 2's spec §3 (no click at a splice change) and ruling SP-T12aa: a grain
+    // admitted under one window finishes in its old span when the window narrows, moves or widens,
+    // while the grains after it are admitted into the new one. Dense grains over a 220 Hz sine, so
+    // every change falls under sounding grains; each change's click score (the goldens', over
+    // 0.1 s before it to 0.15 s after) and the whole render's stay below the limit, at every tier
+    // and at ring levels 0 to 2, for six seeds (before the fix each render scored 84 to 2,955).
+    // Output and grain events are the same in blocks of 1, 64 and 511.
+    struct Schedule
+    {
+        const char *name;
+        double position;
+        double spray;
+        std::vector<WindowChange> changes;
+        std::vector<int64_t> windowChanges; // the samples where the window changes
+    };
+    // Splices on a ring frozen at 1.5 s (its head stops 960 samples later): marks 1.2, 0.8 and
+    // 0.4 s behind the head, so three spans of 0.4 s; splice 1, 3, 2, then the whole ring.
+    constexpr int64_t kStopped = 72000 + 960;
+    const std::vector<WindowChange> splices = {
+        {72000, [](gg::Engine &e) { e.setFreeze(true); }},
+        {76800,
+         [](gg::Engine &e) {
+             REQUIRE(e.liveWriteHead() == kStopped);
+             for (const int64_t behind : {57600, 38400, 19200})
+             {
+                 REQUIRE(e.live().addSplice(kStopped - behind));
+             }
+         }},
+        {86400, [](gg::Engine &e) { e.live().selectSplice(1); }},
+        {110400, [](gg::Engine &e) { e.live().selectSplice(3); }},
+        {134400, [](gg::Engine &e) { e.live().selectSplice(2); }},
+        {158400, [](gg::Engine &e) { e.live().selectSplice(0); }},
+    };
+    // A loop on an unfrozen ring, Position 0.4 s behind: on at 0.4 s, narrowed to 0.2 s (as short
+    // as level 2's grains, reading 0.2 s, allow), widened to 1 s, then off.
+    const std::vector<WindowChange> loops = {
+        {48000, [](gg::Engine &e) { e.live().setLoop(true, 19200); }},
+        {76800, [](gg::Engine &e) { e.live().setLoop(true, 9600); }},
+        {105600, [](gg::Engine &e) { e.live().setLoop(true, 48000); }},
+        {134400, [](gg::Engine &e) { e.live().setLoop(false, 48000); }},
+    };
+    const std::vector<Schedule> schedules = {
+        {"splices, frozen", 0.1, 0.05, splices, {86400, 110400, 134400, 158400}},
+        {"a loop, unfrozen", 0.4, 0.2, loops, {48000, 76800, 105600, 134400}},
+    };
+    struct Tier
+    {
+        const char *name;
+        gg::Tier tier;
+        double pitch;
+    };
+    const std::vector<Tier> tiers = {
+        {"Eco", gg::Tier::Eco, 0.0},         {"Normal", gg::Tier::Normal, 0.0},
+        {"HQ, level 0", gg::Tier::HQ, 0.0},  {"HQ, level 1", gg::Tier::HQ, 12.0},
+        {"HQ, level 2", gg::Tier::HQ, 24.0},
+    };
+    // Faded in over 10 ms with a raised cosine, as gg-render fades an FX input (ruling M1-v), so
+    // the sine's own start doesn't click when the grains reach frame 0.
+    Stereo input = sineInput(182400, kSampleRate, 220.0, 0.5f);
+    for (int64_t i = 0; i < 480; ++i)
+    {
+        const double s = std::sin(0.5 * std::numbers::pi * static_cast<double>(i) / 480.0);
+        input.left[static_cast<std::size_t>(i)] *= static_cast<float>(s * s);
+        input.right[static_cast<std::size_t>(i)] *= static_cast<float>(s * s);
+    }
+    for (const Schedule &schedule : schedules)
+    {
+        for (const Tier &tier : tiers)
+        {
+            INFO(schedule.name << ", " << tier.name);
+            for (const uint64_t seed : {2u, 3u, 4u, 5u, 6u, 7u})
+            {
+                INFO("seed " << seed);
+                const LiveRender r =
+                    renderDense(input, seed, tier.tier, tier.pitch, schedule.position,
+                                schedule.spray, 511, schedule.changes);
+                REQUIRE(allFinite(r.out.left));
+                REQUIRE(peak(r.out.left) > 0.05f);
+                for (const int64_t at : schedule.windowChanges)
+                {
+                    INFO("the change at " << at);
+                    REQUIRE(soundingAt(r.grains, at) > 0); // not vacuous
+                    const double score = clickScoreIn(r.out, at - 4800, at + 7200);
+                    CHECK(score <= kClickLimit);
+                }
+                CHECK(clickScoreIn(r.out, 0, 182400) <= kClickLimit);
+                if (seed == 3)
+                {
+                    for (const uint32_t block : {1u, 64u})
+                    {
+                        INFO("blocks of " << block);
+                        const LiveRender b =
+                            renderDense(input, seed, tier.tier, tier.pitch, schedule.position,
+                                        schedule.spray, block, schedule.changes);
+                        REQUIRE(sameBits(b.out.left, r.out.left));
+                        REQUIRE(sameBits(b.out.right, r.out.right));
+                        REQUIRE(b.grains == r.grains);
+                    }
+                }
+            }
         }
     }
 }

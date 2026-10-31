@@ -409,20 +409,19 @@ bool LiveSource::gatherTaps(double pos, int64_t head, Cursor &cursor, float *lef
     const double base = std::floor(pos);
     const auto i = static_cast<int64_t>(base);
     const int64_t first = i - kBefore;
-    // Exact integer bounds on the window, so no rounding in fade() can let a stale or unwritten
-    // tap through. Inside it every slot holds its own frame, even with the rest of the block
-    // already written (ruling M1-o; see Storage in LiveSource.h): its oldest frame is never below
-    // head − N.
-    if (first < windowOldest(head) || first + (kTaps - 1) > windowEnd(head) - 1)
+    // Exact integer bounds on the storage's [head − N, head − 1], whatever the window (ruling
+    // SP-T12aa), so no rounding in fade() can let a stale or unwritten tap through. Inside it every
+    // slot holds its own frame, even with the rest of the block already written (ruling M1-o; see
+    // Storage in LiveSource.h).
+    if (first < head - frames_ || first + (kTaps - 1) > head - 1)
     {
         return false;
     }
     if (first < 0)
     {
-        // Taps before frame 0 are silence. Here head − N <= the window's oldest <= first < 0, so
-        // head < N. The block has written at most maxBlockSize − 1 frames past head − 1, so no
-        // frame yet written is at or past C = N + maxBlockSize: none has wrapped, and frame i is
-        // in slot i.
+        // Taps before frame 0 are silence. Here head − N <= first < 0, so head < N. The block has
+        // written at most maxBlockSize − 1 frames past head − 1, so no frame yet written is at or
+        // past C = N + maxBlockSize: none has wrapped, and frame i is in slot i.
         for (int64_t k = 0; k < kTaps; ++k)
         {
             const int64_t index = first + k;
@@ -510,13 +509,13 @@ bool LiveSource::gatherLevelTaps(uint32_t n, double pos, int64_t head, Cursor &c
     const auto i = static_cast<int64_t>(std::floor(pos));
     const int64_t first = i - kBefore;
     const int64_t last = first + (kTaps - 1);
-    // Exact integer bounds in ring frames: the first tap inside the window, the last complete at
-    // head (its frame plus the level's lag at most the window's end, which is at most the head).
-    // Then every tap is the one written for it: its ring frame is at or after the window's oldest,
-    // never below head − N, and a level's slot is overwritten only once the head passes its ring
-    // frame + C + the level's lag (RingStorage), as level 0's.
+    // Exact integer bounds in ring frames, on the storage's [head − N, head − 1] whatever the
+    // window (ruling SP-T12aa): the first tap at or after head − N, the last complete at head (its
+    // frame plus the level's lag at most head − 1). Then every tap is the one written for it: a
+    // level's slot is overwritten only once the head passes its ring frame + C + the level's lag
+    // (RingStorage), as level 0's.
     const int64_t d = int64_t{1} << n;
-    if (first * d < windowOldest(head) || last * d + RingStorage::levelLag(n) > windowEnd(head) - 1)
+    if (first * d < head - frames_ || last * d + RingStorage::levelLag(n) > head - 1)
     {
         return false;
     }

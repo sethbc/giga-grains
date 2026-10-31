@@ -49,7 +49,8 @@ namespace gg
 /// ±kMaxInputMagnitude. A mono input fills both channels; a missing input, or a missing channel
 /// of a stereo one, is silence.
 ///
-/// **The window** (M2 sub-project 2's spec §6.1). What a sample may read is [E − W, E − 1]:
+/// **The window** (M2 sub-project 2's spec §6.1). Where a grain may start reading, at its onset,
+/// is the window [E − W, E − 1]:
 /// - with no splice selected, E = R(t) and W = N, or min(L, N) while Loop is on with length L
 ///   (setLoop), so a loop is the newest L frames;
 /// - while splice k is selected (selectSplice), the span from the k-th mark still in storage at
@@ -57,10 +58,16 @@ namespace gg
 ///   for the last splice, and E − W the earlier. A k past the marks in storage is the last
 ///   splice; with none in storage the window is the first case's.
 /// Which marks are in storage is decided per sample, from R(t) alone, so the window never depends
-/// on where blocks fall. The window's oldest frame is never below R(t) − N, so every frame in it
-/// is the one written for it (see Storage). At the defaults (Loop off, no splice) it is M1's
-/// [R(t) − N, R(t) − 1], bit for bit. The settings and the marks apply from the next write(),
-/// which captures them for its block.
+/// on where blocks fall. The window's oldest frame is never below R(t) − N. At the defaults (Loop
+/// off, no splice) it is M1's [R(t) − N, R(t) − 1], bit for bit. The settings and the marks apply
+/// from the next write(), which captures them for its block.
+///
+/// The window steers admission alone (Engine's admission clamp: anchorAt(), windowFramesAt(),
+/// anchorRunAfter()). **Reads are bounded by the storage**, [R(t) − N, R(t) − 1], at every
+/// setting (ruling SP-T12aa): fade(), fadeFor(), levelFadeFor() and the reads take M1's bounds,
+/// so a grain admitted under one window finishes in its old span when the window narrows, moves
+/// or widens under it, while the grains after it are admitted into the new one. A window change
+/// never steps a sounding grain, and a grain never reads a frame the head has overwritten.
 ///
 /// **Overdub.** write() may take a gain o per frame: the frame written at R is then
 /// sanitize(sanitize(in) + o × frame(R − P)) before the freeze gain, with the period P = min(L, N)
@@ -309,12 +316,12 @@ class LiveSource
 
     /// The head-proximity fade of a read of level n (spec §6.9) whose taps reach kBefore level
     /// frames before floor(pos / 2ⁿ) and kAfter after it, at pos in ring frames, while the head
-    /// is at R: fadeFor's expression over the same window, with the level's reach in ring frames,
+    /// is at R: fadeFor's expression over the same bounds, with the level's reach in ring frames,
     ///
     ///     before = (kBefore + 1) × 2ⁿ − 1,  after = kAfter × 2ⁿ + RingStorage::levelLag(n),
     ///
-    /// so it is 0 before any of the read's level frames leaves the window [E − W, E − 1] or is
-    /// incomplete at R (its last tap's ring frame plus the level's lag past E − 1). Level 0's is
+    /// so it is 0 before any of the read's level frames leaves the storage's [R − N, R − 1] or is
+    /// incomplete at R (its last tap's ring frame plus the level's lag past R − 1). Level 0's is
     /// fadeFor<kBefore, kAfter> itself, bit for bit. A level n >= levelCount() reads nothing: 0.
     template <int64_t kBefore, int64_t kAfter>
     double levelFadeFor(uint32_t n, double pos, int64_t head) const noexcept
@@ -326,10 +333,9 @@ class LiveSource
         const int64_t d = int64_t{1} << n;
         const auto before = static_cast<double>((kBefore + 1) * d - 1);
         const auto after = static_cast<double>(kAfter * d + RingStorage::levelLag(n));
-        const auto end = static_cast<double>(windowEnd(head));
+        const auto end = static_cast<double>(head);
         const double toHead = (end - 1.0 - (pos + after)) / kMargin;
-        const double fromTail =
-            ((pos - before) - static_cast<double>(windowOldest(head))) / kMargin;
+        const double fromTail = ((pos - before) - static_cast<double>(head - frames_)) / kMargin;
         return unit(toHead) * unit(fromTail);
     }
 
@@ -346,36 +352,34 @@ class LiveSource
     }
 
     /// The head-proximity fade for a read at pos (ring time) while the head is at R (spec §6.3),
-    /// over the window [E − W, E − 1] of the last write() block (E and E − W from R; see The
-    /// window in the class comment):
+    /// over the storage's [R − N, R − 1], whatever the window (ruling SP-T12aa; see The window in
+    /// the class comment):
     ///
-    ///     g = clamp((E − 1 − (pos + 2)) / M, 0, 1) × clamp(((pos − 1) − (E − W)) / M, 0, 1)
+    ///     g = clamp((R − 1 − (pos + 2)) / M, 0, 1) × clamp(((pos − 1) − (R − N)) / M, 0, 1)
     ///
-    /// With no splice and no loop, E = R and W = N: M1's fade, bit for bit. It is 1 while every
-    /// tap is at least M frames inside both ends of the window, and falls linearly to 0 over M
-    /// frames as a tap nears either end: the newest frame, or the oldest one, which the next frame
-    /// written moves out of the window. (The slot it overwrites holds frame R − N − B, already
-    /// outside the window; see Storage.) Frozen, those two ends are the seam where the ring's
-    /// newest and oldest frames meet, so this is the head-crossing crossfade; a loop's or a
-    /// splice's two ends are crossfaded the same way, and a grain admitted under a wider window
-    /// that now reads outside a narrower one is taken out by it.
+    /// M1's fade, bit for bit. It is 1 while every tap is at least M frames inside both ends, and
+    /// falls linearly to 0 over M frames as a tap nears either end: the newest frame, or the
+    /// oldest one, which the next frame written moves out. (The slot it overwrites holds frame
+    /// R − N − B, already outside; see Storage.) Frozen, those two ends are the seam where the
+    /// ring's newest and oldest frames meet, so this is the head-crossing crossfade. A loop's or a
+    /// splice's ends need none: admission puts every grain at least M frames inside them for as
+    /// long as the window holds, and a grain the window leaves behind keeps reading its frames.
     double fade(double pos, int64_t head) const noexcept { return fadeFor<1, 2>(pos, head); }
 
     /// fade() for a read whose taps reach kBefore frames before floor(pos) and kAfter after it:
     ///
-    ///     g = clamp((E − 1 − (pos + kAfter)) / M, 0, 1)
-    ///       × clamp(((pos − kBefore) − (E − W)) / M, 0, 1)
+    ///     g = clamp((R − 1 − (pos + kAfter)) / M, 0, 1)
+    ///       × clamp(((pos − kBefore) − (R − N)) / M, 0, 1)
     ///
     /// fade() is fadeFor<1, 2>, the Hermite's reach; the HQ tier's sinc uses fadeFor<7, 8>
     /// (Sinc::fade in GrainKernels.h), so it too fades out before a tap leaves the window.
     template <int64_t kBefore, int64_t kAfter>
     double fadeFor(double pos, int64_t head) const noexcept
     {
-        const auto end = static_cast<double>(windowEnd(head));
+        const auto end = static_cast<double>(head);
         const double toHead = (end - 1.0 - (pos + static_cast<double>(kAfter))) / kMargin;
         const double fromTail =
-            ((pos - static_cast<double>(kBefore)) - static_cast<double>(windowOldest(head))) /
-            kMargin;
+            ((pos - static_cast<double>(kBefore)) - static_cast<double>(head - frames_)) / kMargin;
         return unit(toHead) * unit(fromTail);
     }
 
@@ -390,15 +394,15 @@ class LiveSource
 
     /// Reads both channels at pos (ring time) with interp::catmullRom, the 4-point Hermite of
     /// interp::hermite4, over taps floor(pos) − 1 .. floor(pos) + 2. Returns false and reads
-    /// nothing unless every tap is in the window [E − W, E − 1] at head, where head is R(t) of a
-    /// sample t of the last write() block (see fade()); every frame there is the one written for
-    /// it (see Storage in the class comment). Taps before frame 0 read as 0.
+    /// nothing unless every tap is in [head − N, head − 1], where head is R(t) of a sample t of the
+    /// last write() block (see fade()), whatever the window; every frame there is the one written
+    /// for it (see Storage in the class comment). Taps before frame 0 read as 0.
     bool read(double pos, int64_t head, Cursor &cursor, float &left,
               float &right) const noexcept SST_CPPUTILS_NONBLOCKING;
 
     /// The Eco tier's read: both channels at pos with interp::lerp, the line of interp::linear,
     /// over taps floor(pos) and floor(pos) + 1. Returns false and reads nothing unless both taps
-    /// are in the window [E − W, E − 1] at head, as read() requires of its four. Taps before frame
+    /// are in [head − N, head − 1], as read() requires of its four. Taps before frame
     /// 0 read as 0. The check is for this read's own reach; the renderer's fade() stays the
     /// one for the Hermite's reach, floor(pos) − 1 .. floor(pos) + 2, which is a frame wider at
     /// each end, so for a linear read it is conservative: wherever fade() is above 0, both taps
@@ -417,9 +421,9 @@ class LiveSource
 
     /// gatherTaps<kTaps> from level n, at pos in level n's frames (the ring frame pos × 2ⁿ):
     /// level frames floor(pos) − kBefore .. floor(pos) − kBefore + kTaps − 1, kBefore =
-    /// kTaps / 2 − 1. False, writing nothing, unless the first tap's ring frame is at or after the
-    /// window's oldest at head and the last's plus RingStorage::levelLag(n) at or before its end
-    /// E − 1 (so every tap is complete and the one written for it), or when n >= levelCount();
+    /// kTaps / 2 − 1. False, writing nothing, unless the first tap's ring frame is at or after
+    /// head − N and the last's plus RingStorage::levelLag(n) at or before head − 1 (so every tap
+    /// is complete and the one written for it), or when n >= levelCount();
     /// level frames before 0 read as 0. Level 0's is gatherTaps<kTaps>. levelFadeFor > 0 implies
     /// the bounds hold.
     template <int kTaps>

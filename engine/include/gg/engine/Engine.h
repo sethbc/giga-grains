@@ -122,7 +122,9 @@ using GrainStealSink = void (*)(void *ctx, uint32_t layer, uint64_t index, int64
 /// splice's span), ρ is taken at the window's end (LiveSource::anchorAt: the head, or a selected
 /// splice's later mark), and the head's run is LiveSource::anchorRunAfter (0 while a splice is in
 /// effect, whose window holds still). With Loop off and no splice it is the clamp above, bit for
-/// bit.
+/// bit. The window steers admission alone: a grain reads, and fades, against the ring's storage
+/// [R(t) − N, R(t) − 1] (LiveSource::fade), so a grain admitted under one window finishes in its
+/// old span when a loop or a splice change narrows, moves or widens it (ruling SP-T12aa).
 ///
 /// What admission can't foresee, a freeze that stops the head under a grain or an unfreeze
 /// that moves the oldest frame onto it, the head-proximity fade (LiveSource::fade) covers: each

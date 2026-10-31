@@ -508,12 +508,12 @@ struct Sinc
     }
 
     /// The HQ head-proximity fade (spec §6.2): LiveSource::fade's expression with the sinc's
-    /// reach (LiveSource::fadeFor<7, 8>), over the ring's window [E − W, E − 1] (M2 sub-project
-    /// 2's spec §6.1; E = R and W = N with Loop off and no splice),
+    /// reach (LiveSource::fadeFor<7, 8>), over the storage's [R − N, R − 1] whatever the window
+    /// (M2 sub-project 2's ruling SP-T12aa),
     ///
-    ///     g = clamp((E − 1 − (pos + 8)) / M, 0, 1) × clamp(((pos − 7) − (E − W)) / M, 0, 1)
+    ///     g = clamp((R − 1 − (pos + 8)) / M, 0, 1) × clamp(((pos − 7) − (R − N)) / M, 0, 1)
     ///
-    /// so g is 0 before any of the 16 taps leaves the window.
+    /// so g is 0 before any of the 16 taps leaves the storage's frames.
     static double fade(const LiveSource &live, double pos,
                        int64_t head) noexcept SST_CPPUTILS_NONBLOCKING
     {
