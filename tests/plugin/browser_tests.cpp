@@ -10,6 +10,7 @@
 // ends; each case runs in a process of its own. A preset load calls state.mark_dirty, and a
 // browser load tells the host with preset_load.loaded: both pinned here with a stub host.
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -903,7 +904,11 @@ TEST_CASE("the arrows step through the list without rescanning, the poll rescans
     // Open, it rescans; then the 30 Hz poll sees a file added while it is open.
     f.openBrowser();
     REQUIRE(f.rows() == 4);
+    const auto before = fs::last_write_time(machine.user());
     putPreset(machine.user(), "Zz Late", {}, 0.5f);
+    // Two writes milliseconds apart can share one tick of a coarse file system clock (NTFS's
+    // 15.6 ms, ext4's few): move the folder's time on, so this test doesn't depend on the clock.
+    fs::last_write_time(machine.user(), before + std::chrono::seconds(2));
     f.tick();
     CHECK(f.rows() == 5);
     // The rescan took the change in: the poll sees nothing more until the folders change again.

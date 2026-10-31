@@ -60,10 +60,17 @@ bool hasPresetExtension(std::string_view name)
     return name.size() > ext.size() && lowered(name.substr(name.size() - ext.size())) == ext;
 }
 
-/// The preset files under `folder`, its subfolders included, sorted by their paths relative to
-/// it (UTF-8, `/` separators) in byte order, at most PresetCatalog::kMaxFilesPerFolder of them;
-/// the rest are added to `unlisted`. Only names are read, never a file. Nothing when the folder
-/// is empty or can't be listed; a subfolder that can't be entered is skipped.
+/// How deep the walk goes below a folder, as clap-wrapper's crawl does (kMaxCrawlDepth in its
+/// preset_discovery.cpp): a file directly in the folder is at depth 0, and none below depth 8 is
+/// listed.
+constexpr int kMaxCrawlDepth = 8;
+
+/// The preset files under `folder`, its subfolders included down to kMaxCrawlDepth, sorted by
+/// their full paths (UTF-8, the platform's separators) in byte order, as the wrapper sorts the
+/// locations it indexes, at most PresetCatalog::kMaxFilesPerFolder of them; the rest are added to
+/// `unlisted`. Only names are read, never a file. Nothing when the folder is empty or can't be
+/// listed; a subfolder that can't be entered is skipped, and an entry that can't be stepped to
+/// goes on to the next.
 std::vector<fs::path> presetFiles(const fs::path &folder, std::size_t &unlisted)
 {
     std::vector<std::pair<std::string, fs::path>> files;
@@ -74,8 +81,18 @@ std::vector<fs::path> presetFiles(const fs::path &folder, std::size_t &unlisted)
     std::error_code error;
     for (fs::recursive_directory_iterator it(folder, fs::directory_options::skip_permission_denied,
                                              error);
-         !error && it != fs::recursive_directory_iterator(); it.increment(error))
+         it != fs::recursive_directory_iterator(); it.increment(error))
     {
+        if (error)
+        {
+            error.clear(); // as the wrapper's crawl: go on
+            continue;
+        }
+        if (it.depth() > kMaxCrawlDepth)
+        {
+            it.disable_recursion_pending();
+            continue;
+        }
         std::error_code typeError;
         if (!it->is_regular_file(typeError))
         {
@@ -86,12 +103,12 @@ std::vector<fs::path> presetFiles(const fs::path &folder, std::size_t &unlisted)
         {
             continue;
         }
-        auto relative = media::toGenericUtf8(it->path().lexically_relative(folder));
-        if (!relative)
+        auto key = media::toUtf8(it->path());
+        if (!key)
         {
             continue;
         }
-        files.emplace_back(std::move(*relative), it->path());
+        files.emplace_back(std::move(*key), it->path());
     }
     // std::string compares its chars as unsigned char: byte order.
     std::sort(files.begin(), files.end(),
@@ -156,6 +173,21 @@ fs::file_time_type modified(const fs::path &path)
         return fs::file_time_type::min();
     }
     return time;
+}
+
+/// The number of entries directly in the folder `path` (files and subfolders; names only); 0 for
+/// a path that isn't a readable folder. A change in the count is a change in the folder that a
+/// modification time too coarse to tell two writes apart (NTFS's ticks, ext4's) can miss.
+std::size_t entryCount(const fs::path &path)
+{
+    std::error_code error;
+    std::size_t n = 0;
+    for (fs::directory_iterator it(path, fs::directory_options::skip_permission_denied, error);
+         !error && it != fs::directory_iterator(); it.increment(error))
+    {
+        ++n;
+    }
+    return n;
 }
 
 /// Removes every copy of `key` from the favorites file `file`; false if the save fails.
@@ -270,12 +302,15 @@ void PresetCatalog::rescan()
     }
 
     // What changedOnDisk watches (M4): the settings and favorites files, every content root's
-    // Presets folder (one installed later included) and the user folder, by modification time.
+    // Presets folder (one installed later included) and the user folder, by modification time and,
+    // for a folder, entry count.
     watched_.clear();
     const auto watch = [this](fs::path path) {
         if (!path.empty())
         {
-            watched_.emplace_back(path, modified(path));
+            std::error_code error;
+            const bool folder = fs::is_directory(path, error);
+            watched_.push_back({path, modified(path), folder ? entryCount(path) : 0});
         }
     };
     watch(settingsFile_);
@@ -320,8 +355,16 @@ void PresetCatalog::rescan()
 
 bool PresetCatalog::changedOnDisk() const
 {
-    return std::any_of(watched_.begin(), watched_.end(),
-                       [](const auto &w) { return modified(w.first) != w.second; });
+    // The time first (one stat), then, for a folder, its entry count: the time alone misses two
+    // changes within one tick of the file system's clock.
+    return std::any_of(watched_.begin(), watched_.end(), [](const Watched &w) {
+        if (modified(w.path) != w.time)
+        {
+            return true;
+        }
+        std::error_code error;
+        return fs::is_directory(w.path, error) && entryCount(w.path) != w.entries;
+    });
 }
 
 std::vector<std::size_t> PresetCatalog::filtered(std::string_view search,

@@ -671,3 +671,37 @@ TEST_CASE("a folder of 5001 files lists 5000 and the status says so", "[plugin][
     REQUIRE(fx.contentStatus() ==
             "Factory content in " + utf8(machine.content()) + " (1 more file not listed)");
 }
+
+TEST_CASE("changedOnDisk sees a file added to a folder whose time did not move",
+          "[plugin][catalog]")
+{
+    // R3: a file system whose clock ticks coarsely (NTFS, ext4) gives two writes milliseconds
+    // apart one time; the folder's entry count still moves.
+    const Machine machine("poll-count");
+    putPreset(machine.user() / "one.ggpreset", infoOf("One", Mode::Fx));
+    const PresetCatalog catalog(Mode::Fx, machine.settingsFile());
+    REQUIRE_FALSE(catalog.changedOnDisk());
+    const auto before = fs::last_write_time(machine.user());
+    putPreset(machine.user() / "two.ggpreset", infoOf("Two", Mode::Fx));
+    fs::last_write_time(machine.user(), before); // the same tick
+    CHECK(catalog.changedOnDisk());
+}
+
+TEST_CASE("the walk stops at the depth clap-wrapper's crawl stops at", "[plugin][catalog]")
+{
+    // R5: a file directly in the folder is at depth 0; depth 8 is listed, depth 9 is not.
+    const Machine machine("depth");
+    fs::path folder = machine.user();
+    putPreset(folder / "d0.ggpreset", infoOf("Depth 0", Mode::Fx));
+    for (int depth = 1; depth <= 10; ++depth)
+    {
+        folder /= "d" + std::to_string(depth);
+        putPreset(folder / "p.ggpreset", infoOf("Depth " + std::to_string(depth), Mode::Fx));
+    }
+    const PresetCatalog catalog(Mode::Fx, machine.settingsFile());
+    const auto names = namesOf(catalog);
+    CHECK(std::count(names.begin(), names.end(), "Depth 8") == 1);
+    CHECK(std::count(names.begin(), names.end(), "Depth 9") == 0);
+    CHECK(std::count(names.begin(), names.end(), "Depth 10") == 0);
+    CHECK(names.size() == 1 + 9); // INIT and depths 0 to 8
+}
