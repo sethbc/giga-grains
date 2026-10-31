@@ -12,13 +12,18 @@
 
 #include <sst/cpputils/rtsan_support.h>
 
+#include "gg/core/FpContract.h"
 #include "gg/grain/Tier.h"
 
 namespace gg
 {
-/// GrainRows::fadeStart of a grain that hasn't been stolen (spec §6.5): no output sample is at
-/// or after it, so its steal fade never starts.
+/// GrainRows::fadeStart of a grain that never fades: neither stolen (spec §6.5) nor cut at its
+/// source's edge (carry-over row 300). No output sample is at or after it, so no fade starts.
 inline constexpr int64_t kNeverStolen = std::numeric_limits<int64_t>::max();
+
+/// grainEdgeSample of a grain that never reads past its source's last frame while it sounds, and
+/// GrainPool::spawn's `edge` for a grain that isn't cut: no output sample is at or after it.
+inline constexpr int64_t kNoEdge = std::numeric_limits<int64_t>::max();
 
 /// One grain's parameters, latched at its onset (INTENT §14). Times and positions are 64-bit.
 struct GrainSpec
@@ -80,6 +85,67 @@ constexpr int64_t grainEndSample(const GrainSpec &g) noexcept
     return g.onsetSample + static_cast<int64_t>(g.durationSamples) + 2;
 }
 
+/// Where grain g, reading a sample source whose level 0 has `frames` frames, reaches the source's
+/// edge (carry-over row 300; the director, 2026-10-30: fade the tail): the first output sample t
+/// at which its read position, startPos + rate × e with e = (t − onsetSample) − onsetFrac in
+/// level-0 frames, as the scalar reference computes it, is past the last frame, frames − 1, while
+/// its window may still be open (e × (1 / durationSamples) < 1) and before grainEndSample(g).
+/// kNoEdge when there is none: the grain ends inside the source, frames is 0 (nothing is read),
+/// or rate isn't > 0. The engine passes it to GrainPool::spawn, which ends the grain there.
+///
+/// The edge is the last frame itself, the span Engine::sampleGrain clamps the start into, for
+/// every tier and level: the same end whatever tier the ladder admits the grain at, and the
+/// interpolators' zero taps past it are read only in the fade's last few samples. The start is
+/// at or before the last frame and the rate positive, so the read only moves toward this edge: no
+/// grain reads before frame 0 while its window is open (a start of 0 reads before it only at
+/// e < 0, where the window is 0), so the start needs no edge.
+///
+/// e and the position are monotone in t, so the answer is the first n = t − onsetSample past
+/// onsetFrac + (frames − 1 − startPos) / rate; the division's estimate is stepped (at most four
+/// samples each way, which rounding never needs) to the exact test.
+inline int64_t grainEdgeSample(const GrainSpec &g, int64_t frames) noexcept
+{
+    GG_FP_CONTRACT_OFF
+    if (frames <= 0 || !(g.rate > 0.0))
+    {
+        return kNoEdge;
+    }
+    const auto last = static_cast<double>(frames - 1);
+    const int64_t natural = grainEndSample(g);
+    const auto past = [&g, last](int64_t t) noexcept {
+        GG_FP_CONTRACT_OFF
+        const double e = static_cast<double>(t - g.onsetSample) - g.onsetFrac;
+        return g.startPos + g.rate * e > last;
+    };
+    // The first integer n > onsetFrac + (last − startPos) / rate, clamped into [0, natural −
+    // onsetSample] (NaN to 0) before converting.
+    const auto nMax = static_cast<double>(natural - g.onsetSample);
+    double n = std::floor(g.onsetFrac + (last - g.startPos) / g.rate) + 1.0;
+    if (!(n > 0.0))
+    {
+        n = 0.0;
+    }
+    if (!(n < nMax))
+    {
+        n = nMax;
+    }
+    int64_t t = g.onsetSample + static_cast<int64_t>(n);
+    for (int k = 0; k < 4 && t > g.onsetSample && past(t - 1); ++k)
+    {
+        --t;
+    }
+    for (int k = 0; k < 4 && t < natural && !past(t); ++k)
+    {
+        ++t;
+    }
+    if (t >= natural || !past(t))
+    {
+        return kNoEdge;
+    }
+    const double e = static_cast<double>(t - g.onsetSample) - g.onsetFrac;
+    return e * (1.0 / g.durationSamples) < 1.0 ? t : kNoEdge;
+}
+
 /// Pointers to the pool's arrays, one per field (INTENT §14). Entries [0, GrainPool::size()) are
 /// the stored grains in spawn order; row i of every array belongs to the same grain. The pointers
 /// are fixed for the pool's life, but the entries move whenever the pool spawns, retires or
@@ -112,12 +178,21 @@ struct GrainRows
     const double *envReleaseScale;
     const uint8_t *weight; ///< GrainSpec::weight
     const uint8_t *level;  ///< GrainSpec::level
-    /// The output sample at which the grain was stolen (spec §6.5), where its fade starts if it
-    /// has one, or kNeverStolen while it hasn't been: GrainPool::steal.
+    /// The first output sample any fade of the grain applies at, where the SIMD runs end: the
+    /// earlier of the output sample at which it was stolen (spec §6.5; GrainPool::steal) and,
+    /// for a grain cut at its source's edge (carry-over row 300; GrainPool::spawn's `edge`), its
+    /// edge curve's start, edgeEnd − L with L = min(kEdgeFade, edgeEnd − onsetSample).
+    /// kNeverStolen for a grain neither stolen nor cut.
     const int64_t *fadeStart;
-    /// 1 / kStealFade for a grain stolen with a fade; 0 for every other grain, the unstolen and
-    /// those stolen with at most kStealFade samples left, which don't fade (ruling ES-T6a).
+    /// The steal fade's 1 / kStealFade for a grain stolen with a fade; 0 for every other grain,
+    /// those never stolen or stolen with at most kStealFade samples left, which don't fade
+    /// (ruling ES-T6a).
     const float *invFade;
+    /// A grain cut at its source's edge: the edge, the sample its curve ends at (its end, unless
+    /// a steal ended it sooner), and the curve's 0.5 / L, its phase per sample (ruling EF-6). For
+    /// every other grain kNoEdge and 0.
+    const int64_t *edgeEnd;
+    const double *edgeScale;
 };
 
 /// The grain pool: a structure of arrays (INTENT §14), one array per GrainSpec field plus each
@@ -176,8 +251,9 @@ class GrainPool
     /// weight of the grains stolen with a fade (invFade isn't 0) whose end is after the onset
     /// (ruling ES-T2a; the overload ladder's rung 3 leaves it out of its room test). A grain
     /// stolen with at most kStealFade left doesn't fade, so its weight isn't here: it stays in
-    /// the ordinary ledger until its end (ruling ES-T6a). First forgets every end <= onset, with
-    /// soundingWeight's requirement.
+    /// the ordinary ledger until its end (ruling ES-T6a). Nor is a grain cut at its source's edge
+    /// that wasn't stolen with a fade: it yields to nothing. First forgets every end <= onset,
+    /// with soundingWeight's requirement.
     uint64_t fadingWeight(int64_t onset) noexcept SST_CPPUTILS_NONBLOCKING;
 
     /// How many of the grains spawned since the last clear() have an end after the onset. First
@@ -191,19 +267,23 @@ class GrainPool
     }
 
     /// The oldest grain that may be stolen at the onset (spec §6.5): the first stored row, in
-    /// spawn order, whose end is after the onset and that hasn't been stolen. False when there
+    /// spawn order, whose end is after the onset and that hasn't been stolen (a grain cut at its
+    /// source's edge may be, once, as any other). False when there
     /// is none. Its scan starts from a cursor that only advances between retireFinished() calls
     /// (a row it passes has ended or been stolen, so it is never the answer again) and restarts
     /// at each, so the work is bounded by the rows stored.
     bool oldestSounding(int64_t onset, uint32_t &row) noexcept SST_CPPUTILS_NONBLOCKING;
 
-    /// Steals the grain in `row`, which must sound at the onset and not have been stolen. Its
-    /// fadeStart becomes the onset, so it is never stolen again. With more than kStealFade
-    /// samples left, it fades: its end moves to onset + kStealFade, invFade becomes
-    /// 1 / kStealFade, its heap key decreases to the new end and earliestEnd_ follows, and its
-    /// weight stays in the ledger until the new end, counted in fadingWeight(). With at most
-    /// kStealFade left it already ends no later than a fade would (ruling ES-T6a): its end, its
-    /// window (invFade stays 0) and its ledger entry are left alone, and its weight stays in the
+    /// Steals the grain in `row`, which must sound at the onset and not have been stolen; it is
+    /// never stolen again. fadeStart becomes min(fadeStart, onset): the onset, or a cut grain's
+    /// edge curve start if that comes first. With more than kStealFade samples left, it fades:
+    /// its end moves to onset + kStealFade, invFade becomes 1 / kStealFade, its heap key
+    /// decreases to the new end and earliestEnd_ follows, and its weight stays in the ledger
+    /// until the new end, counted in fadingWeight(). A cut grain keeps its edge curve, which the
+    /// steal fade multiplies, so its gain starts from the curve's level at the onset and both
+    /// reach 0 by the new end, before the edge. With at most kStealFade left it already ends no
+    /// later than a fade would (ruling ES-T6a): its end, its window (invFade stays 0, and a cut
+    /// grain's curve stays) and its ledger entry are left alone, and its weight stays in the
     /// ordinary ledger, not fadingWeight(), until that end.
     void steal(uint32_t row, int64_t onset) noexcept SST_CPPUTILS_NONBLOCKING;
 
@@ -212,7 +292,16 @@ class GrainPool
 
     /// Appends g after every stored grain. Returns false, and changes nothing, when storageFull().
     /// Doesn't check canAdmit(): the caller does.
-    bool spawn(const GrainSpec &g) noexcept SST_CPPUTILS_NONBLOCKING;
+    ///
+    /// `edge` is where g reads past its source's last frame (grainEdgeSample; carry-over row
+    /// 300), or kNoEdge. An edge before grainEndSample(g) cuts the grain there (ruling EF-6): its
+    /// end and edgeEnd become max(edge, onsetSample + 1), and it fades out with a raised cosine
+    /// over the L = min(kEdgeFade, end − onsetSample) samples before it: edgeScale 0.5 / L, and
+    /// fadeStart end − L, where the SIMD runs end, so every fading sample goes through the scalar
+    /// reference and every sample before the fade is the uncut grain's. Its weight stays in the
+    /// ledger until that end, not as fading weight. An edge at or after the natural end changes
+    /// nothing.
+    bool spawn(const GrainSpec &g, int64_t edge = kNoEdge) noexcept SST_CPPUTILS_NONBLOCKING;
 
     /// Removes every grain whose endSample is <= nowSample, keeping the rest in spawn order, and
     /// forgets their ends. nowSample must not exceed any onset later passed to soundingWeight()
@@ -283,6 +372,15 @@ class GrainPool
     std::vector<uint8_t> level_;
     std::vector<int64_t> fadeStart_;
     std::vector<float> invFade_;
+    std::vector<int64_t> edgeEnd_;
+    std::vector<double> edgeScale_;
+    // Each row's steal: kUnstolen, kStolen (without a fade) or kStolenFading (with one, so its
+    // weight is in fadingWeight_). Not in GrainRows: the renderers don't read it. A cut grain has
+    // a fadeStart from its spawn, so fadeStart alone doesn't say whether it was stolen.
+    static constexpr uint8_t kUnstolen = 0;
+    static constexpr uint8_t kStolen = 1;
+    static constexpr uint8_t kStolenFading = 2;
+    std::vector<uint8_t> stolen_;
     // Each row's position in heap_, or kNotInHeap. Not in GrainRows: the renderers don't read it.
     std::vector<uint32_t> heapPos_;
     GrainRows rows_;

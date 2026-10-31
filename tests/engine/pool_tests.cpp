@@ -3,6 +3,7 @@
 // Copyright 2026, the Giga Grains authors (see git history)
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -533,4 +534,207 @@ TEST_CASE("a steal of a grain with at most the fade left keeps its end and does 
     REQUIRE(pool.size() == 0);
     REQUIRE(pool.soundingWeight(5003) == 0);
     REQUIRE(pool.fadingWeight(5003) == 0);
+}
+
+// Carry-over row 300 (the director: fade the tail; ruling EF-6). A grain reading a sample past
+// its last frame ends at the edge, spawn's `edge`, fading with a raised cosine over the kEdgeFade
+// samples before it or over all it has when that is fewer: edgeEnd and edgeScale (0.5 / L) say
+// so, and fadeStart is where the curve starts. invFade stays the steal fade's.
+
+TEST_CASE("a grain cut at its source's edge ends there, fading", "[pool]")
+{
+    gg::GrainPool pool(8);
+    // Natural ends at 1,000 + 4,800 + 2 = 5,802 and so on.
+    REQUIRE(pool.spawn(weighted(0, 1000, 4800.0, 4), 3000));
+    // A remaining span shorter than the fade: it fades over all 100 samples it has.
+    REQUIRE(pool.spawn(weighted(1, 1001, 4800.0, 3), 1101));
+    // An edge at or after the natural end changes nothing: the grain ends inside the source.
+    REQUIRE(pool.spawn(weighted(2, 1002, 4800.0, 2), 5804));
+    REQUIRE(pool.spawn(weighted(3, 1003, 4800.0, 1), 5805));
+    REQUIRE(pool.spawn(weighted(4, 1004, 4800.0, 1)));
+    // An edge at or before the onset still leaves one sample: a fade of 1.
+    REQUIRE(pool.spawn(weighted(5, 1005, 4800.0, 1), 1005));
+    const gg::GrainRows &rows = pool.rows();
+
+    REQUIRE(rows.endSample[0] == 3000);
+    REQUIRE(rows.fadeStart[0] == 3000 - gg::kEdgeFade);
+    REQUIRE(rows.edgeEnd[0] == 3000);
+    REQUIRE(rows.edgeScale[0] == 0.5 / static_cast<double>(gg::kEdgeFade));
+    REQUIRE(rows.endSample[1] == 1101);
+    REQUIRE(rows.fadeStart[1] == 1001);
+    REQUIRE(rows.edgeEnd[1] == 1101);
+    REQUIRE(rows.edgeScale[1] == 0.5 / 100.0);
+    for (uint32_t r = 2; r <= 4; ++r)
+    {
+        INFO("row " << r);
+        REQUIRE(rows.endSample[r] == gg::grainEndSample(pool.spec(r)));
+        REQUIRE(rows.fadeStart[r] == gg::kNeverStolen);
+        REQUIRE(rows.edgeEnd[r] == gg::kNoEdge);
+        REQUIRE(rows.edgeScale[r] == 0.0);
+    }
+    REQUIRE(rows.endSample[5] == 1006);
+    REQUIRE(rows.fadeStart[5] == 1005);
+    REQUIRE(rows.edgeEnd[5] == 1006);
+    REQUIRE(rows.edgeScale[5] == 0.5);
+    for (uint32_t r = 0; r <= 5; ++r)
+    {
+        INFO("row " << r);
+        REQUIRE(rows.invFade[r] == 0.0f); // no steal fade
+    }
+    // The rest of each row is latched as without an edge.
+    REQUIRE(pool.spec(0) == weighted(0, 1000, 4800.0, 4));
+    REQUIRE(pool.spec(1) == weighted(1, 1001, 4800.0, 3));
+
+    // The ledger holds each weight until the grain's own end, the edge for a cut one, and none of
+    // it is fading weight: a cut grain isn't yielding to anyone.
+    REQUIRE(pool.soundingWeight(1005) == 12);
+    REQUIRE(pool.soundingWeight(1006) == 11);
+    REQUIRE(pool.soundingWeight(1100) == 11);
+    REQUIRE(pool.soundingWeight(1101) == 8);
+    REQUIRE(pool.fadingWeight(1101) == 0);
+    REQUIRE(pool.soundingWeight(2999) == 8);
+    REQUIRE(pool.fadingWeight(2999) == 0);
+    REQUIRE(pool.soundingWeight(3000) == 4);
+    REQUIRE(pool.soundingCount(3000) == 3);
+    // Retirement follows the cut ends.
+    pool.retireFinished(3000);
+    REQUIRE(pool.size() == 3);
+    REQUIRE(pool.spec(0).index == 2);
+}
+
+TEST_CASE("a steal of a grain cut at its source's edge takes the earlier end", "[pool]")
+{
+    // A cut grain may still be stolen, once, as the oldest sounding grain: with more than
+    // kStealFade left its end moves to the steal's (the earlier end) and the steal fade
+    // multiplies its edge curve, which it keeps; fadeStart is the earlier start. With at most
+    // kStealFade left it keeps the edge's end and curve (ruling ES-T6a) and its weight stays in
+    // the ordinary ledger.
+    gg::GrainPool pool(8);
+    REQUIRE(pool.spawn(weighted(0, 1000, 4800.0, 4), 3000)); // fades from 2,744
+    REQUIRE(pool.spawn(weighted(1, 1001, 4800.0, 3), 3001)); // fades from 2,745
+    REQUIRE(pool.spawn(weighted(2, 1002, 4800.0, 2), 1102)); // fades from 1,002 to 1,102
+    const gg::GrainRows &rows = pool.rows();
+    uint32_t row = 9;
+
+    // 1,000 samples left before the edge: the steal fades, ending at 2,256.
+    REQUIRE(pool.oldestSounding(2000, row));
+    REQUIRE(row == 0);
+    pool.steal(row, 2000);
+    REQUIRE(rows.endSample[0] == 2000 + gg::kStealFade);
+    REQUIRE(rows.fadeStart[0] == 2000);
+    REQUIRE(rows.invFade[0] == 1.0f / 256.0f);
+    REQUIRE(rows.edgeEnd[0] == 3000); // the curve, which the steal ended before it began
+    REQUIRE(pool.fadingWeight(2000) == 4);
+    REQUIRE(pool.soundingWeight(2000) == 7);
+    REQUIRE(pool.soundingWeight(2255) == 7);
+    REQUIRE(pool.fadingWeight(2256) == 0);
+    REQUIRE(pool.soundingWeight(2256) == 3);
+
+    // In the edge's fade, 201 samples left: the edge's end and fade stay, and nothing fades
+    // in the ledger.
+    REQUIRE(pool.oldestSounding(2800, row));
+    REQUIRE(row == 1);
+    pool.steal(row, 2800);
+    REQUIRE(rows.endSample[1] == 3001);
+    REQUIRE(rows.fadeStart[1] == 3001 - gg::kEdgeFade);
+    REQUIRE(rows.invFade[1] == 0.0f);
+    REQUIRE(rows.edgeEnd[1] == 3001);
+    REQUIRE(rows.edgeScale[1] == 0.5 / static_cast<double>(gg::kEdgeFade));
+    REQUIRE(pool.fadingWeight(2800) == 0);
+    REQUIRE(pool.soundingWeight(3000) == 3);
+    REQUIRE(pool.soundingWeight(3001) == 0);
+    // Stolen, so never the oldest again, though its fadeStart was latched at its spawn.
+    REQUIRE_FALSE(pool.oldestSounding(2800, row));
+}
+
+TEST_CASE("a steal of a short-span grain cut at its edge keeps its fade", "[pool]")
+{
+    // The edge 100 samples after the onset: the grain fades from its onset, so a steal finds it
+    // with at most 100 left and changes neither its end nor its fade.
+    gg::GrainPool pool(4);
+    REQUIRE(pool.spawn(weighted(0, 1000, 4800.0, 4), 1100));
+    REQUIRE(pool.spawn(weighted(1, 1001, 4800.0, 4)));
+    uint32_t row = 9;
+    REQUIRE(pool.oldestSounding(1050, row));
+    REQUIRE(row == 0);
+    pool.steal(row, 1050);
+    REQUIRE(pool.rows().endSample[0] == 1100);
+    REQUIRE(pool.rows().fadeStart[0] == 1000);
+    REQUIRE(pool.rows().invFade[0] == 0.0f);
+    REQUIRE(pool.rows().edgeEnd[0] == 1100);
+    REQUIRE(pool.rows().edgeScale[0] == 0.5 / 100.0);
+    REQUIRE(pool.fadingWeight(1050) == 0);
+    REQUIRE(pool.oldestSounding(1050, row));
+    REQUIRE(row == 1);
+}
+
+namespace
+{
+// The edge of grain g over a source of `frames` frames, by walking its samples as the
+// renderer computes them: the first output sample t whose read position startPos + rate × e
+// is past the last frame while the window's phase e × (1 / duration) is below 1, before the
+// natural end; kNoEdge if none.
+int64_t walkEdge(const gg::GrainSpec &g, int64_t frames)
+{
+    const double last = static_cast<double>(frames - 1);
+    const double invDuration = 1.0 / g.durationSamples;
+    for (int64_t t = g.onsetSample; t < gg::grainEndSample(g); ++t)
+    {
+        const double e = static_cast<double>(t - g.onsetSample) - g.onsetFrac;
+        if (!(e * invDuration < 1.0))
+        {
+            return gg::kNoEdge;
+        }
+        if (g.startPos + g.rate * e > last)
+        {
+            return t;
+        }
+    }
+    return gg::kNoEdge;
+}
+} // namespace
+
+TEST_CASE("grainEdgeSample finds the first sample read past the source's last frame", "[pool]")
+{
+    // 5,000 grains: rates 2^[-4, 4] (and exactly 1, 0.5 and 2 one in eight each), durations 16
+    // to 20,000 samples, starts anywhere in a source of 1 to 100,000 frames (a few exactly at its
+    // last frame or at 0), onsets up to 2^40 samples. The latched edge is the walked one.
+    uint32_t cut = 0;
+    uint32_t uncut = 0;
+    uint32_t short_ = 0;
+    for (uint64_t k = 0; k < 5000; ++k)
+    {
+        const double u = gg::rng::uniform01(draw(10, k));
+        const int64_t frames = 1 + static_cast<int64_t>(draw(11, k) % 100000);
+        const double last = static_cast<double>(frames - 1);
+        const double rates[] = {1.0, 0.5, 2.0};
+        const double rate = k % 8 < 3 ? rates[k % 8] : std::exp2(-4.0 + 8.0 * u);
+        gg::GrainSpec g = grain(k, static_cast<int64_t>(draw(12, k) % (uint64_t{1} << 40)),
+                                16.0 + gg::rng::uniform01(draw(13, k)) * 19984.0);
+        g.rate = rate;
+        g.onsetFrac = k % 16 == 0 ? 0.0 : gg::rng::uniform01(draw(14, k));
+        g.startPos = k % 32 == 1   ? last
+                     : k % 32 == 2 ? 0.0
+                                   : gg::rng::uniform01(draw(15, k)) * last;
+        INFO("grain " << k << ", frames " << frames << ", start " << g.startPos << ", rate "
+                      << g.rate << ", duration " << g.durationSamples);
+        const int64_t edge = gg::grainEdgeSample(g, frames);
+        REQUIRE(edge == walkEdge(g, frames));
+        if (edge != gg::kNoEdge)
+        {
+            REQUIRE(edge > g.onsetSample);
+            REQUIRE(edge < gg::grainEndSample(g));
+            ++cut;
+            short_ += edge - g.onsetSample < gg::kEdgeFade;
+        }
+        else
+        {
+            ++uncut;
+        }
+    }
+    REQUIRE(cut > 500);
+    REQUIRE(uncut > 500);
+    REQUIRE(short_ > 25);
+    // No source (0 frames): nothing to cut.
+    REQUIRE(gg::grainEdgeSample(grain(0, 0, 100.0), 0) == gg::kNoEdge);
 }
