@@ -523,8 +523,8 @@ gg-render --write-media DIR
       (log2 seconds), `"A Overdub"` (0–1) and `"A Splice"` (0–32), and B to D's; a Resample
       layer is `"B Source": 2`.
     - `--save-state out.ggst` writes the session at the render's end: the values, routes, cap,
-      file samples by reference, captures, and the rings of layers whose Freeze or Loop is on
-      (their loop window, with the marks inside it), embedded up to 32 MiB and filed past it as
+      file samples by reference, captures, and the rings of Live or Resample layers whose Freeze
+      or Loop is on (their loop window, with the marks inside it), embedded up to 32 MiB and filed past it as
       `<sha256>.wav` in `--captures-dir` (which it then needs). A built-in signal sample has no
       file, so it isn't saved. Sample mode with `--save-state` is bad input.
   - **Instrument mode** (`"mode": "instrument"`) runs Giga Grains' `Processor` the same way over
@@ -668,11 +668,12 @@ gg-render --write-media DIR
     - `fx-splice-capture`'s two Splice changes fall under sounding grains (Density 32 Hz of
       50 ms grains), so it gates Task 12a's window fix (ruling SP-T12aa): a window change never
       clicks.
-    - Every one of the 44 earlier cases (the 36 before sub-project 3, its seven and its
-      follow-up's one) renders bit-identically with Ring Length 16 s, Loop off, Overdub 0, no
-      splice, no Resample layer, nothing embedded and the cap at its default: a sources change
-      that moves one is a regression. The ring pyramid's task names any case its level selection
-      moves (`fx-hq-live` among them).
+    - 43 of the 44 earlier cases (the 36 before sub-project 3, its seven and its follow-up's
+      one) render bit-identically with Ring Length 16 s, Loop off, Overdub 0, no splice, no
+      Resample layer, nothing embedded and the cap at its default: a sources change that moves
+      one is a regression. The 44th, `fx-hq-live`, moved with the ring pyramids (Task 12, which
+      regenerated it from `fx-hq-live-level0`); a later level-selection change names any case it
+      moves.
     - The event log sees neither the tap's audio nor a restored ring's frames, only the grains
       that read them, so across platforms the metrics compare those.
   - **The event-log comparison never sees the reverb or the diffuser:** the log records grains,
@@ -743,8 +744,8 @@ $b --space [--quick | --seconds S] [--rounds N] [--commit SHA] [--json out.json]
     - `engine-live-long`: `engine-live`'s stream over a 300 s ring, Position 150 s and Spray
       300 s so the reads span it, warmed up for 300 s of audio so the ring is full: a
       minutes-long buffer's cache cost; report-only beside X, with no baseline entry yet (M2
-      sources spec §6.11). Each of its three configurations holds a ~115 MB ring, about 345 MB
-      in all, and gg-bench builds every configuration before warming any up;
+      sources spec §6.11). Each of its three configurations holds a ~216 MB ring with its levels,
+      about 650 MB in all, and gg-bench builds every configuration before warming any up;
     - `engine-full-pool`: admission when the pool is saturated (1 s grains ask for 10× its
       capacity);
     - `engine-layers`: four `engine-sample` engines (layers 0 to 3) sharing its 2,000 grains, 500

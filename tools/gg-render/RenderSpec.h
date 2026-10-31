@@ -109,7 +109,8 @@
 ///   time order; see OperationSpec. Sample mode takes none of these. gg-render's --save-state
 ///   writes the session at the end: a built-in signal sample ("sine", "sweep", "noise") is not in
 ///   it (there is no file to name), a file sample, a capture made into a layer and the rings of
-///   layers whose Freeze or Loop is on (their loop window, with the marks inside it) are.
+///   Live or Resample layers whose Freeze or Loop is on (gg::core::ringSaved: their loop window,
+///   with the marks inside it) are.
 /// - Parameters (in "params", "automation" and a route's "target") are named as the product
 ///   displays them, so "B Size" is layer B's; a bare M1 name ("Size"), or "Quality", is layer
 ///   A's.

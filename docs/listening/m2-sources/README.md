@@ -23,10 +23,10 @@ L=build/release/listening/m2-sources
 $r --write-media "$L/media"   # the test media and the two state fixtures, frozen-ring.ggst among them
 for s in docs/listening/m2-sources/specs/*.json; do
   n=$(basename "$s" .json)
-  extra=""
-  [ "$n" = 08a-ring-restore-a ] && extra="--save-state $L/media/08-saved.ggst"
+  set --   # the extra arguments, quoted, so the loop runs alike in bash and zsh
+  [ "$n" = 08a-ring-restore-a ] && set -- --save-state "$L/media/08-saved.ggst"
   $r "$s" --media-dir "$L/media" --captures-dir "$L/captures" -o "$L/$n.wav" \
-     --spectrogram "$L/$n.png" --metrics "$L/$n.metrics.json" --events "$L/$n.events.jsonl" $extra
+     --spectrogram "$L/$n.png" --metrics "$L/$n.metrics.json" --events "$L/$n.events.jsonl" "$@"
 done
 shasum -a 256 "$L"/08*.wav        # the two must be identical
 ```

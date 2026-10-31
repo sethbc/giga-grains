@@ -367,6 +367,14 @@ Two things a parameter can't carry: adding a splice mark, and capturing the ring
   `saveCapture(buffer, path)`; each main thread, none touching the audio thread beyond the
   exchange. In `gg-render`, `operations` of kind `capture` do all three in one step (§6.10).
 
+> **Amended** (2026-10-31, the final review's fix wave): a read whose span is longer than
+> N − (R₁ − R₀), what the copy's own writes leave of the window, is lapped by every try at that
+> write rate, so the reader keeps that try at once (its epoch held), its lapped front trimmed for
+> a capture or written as silence for a save, as it kept the last of eight before: a running
+> ring's whole-window read now copies once, not eight times. The audio thread's head store is
+> followed by a release fence (`Processor::publishRing`), so the frames the next piece writes
+> are ordered after it whatever the meta's push does.
+
 ### 6.5 Memory: the cap, the ring exchange and the pool (I10, I11; INTENT §14 "Memory management", §21)
 
 - **The cap** is a per-instance setting, `memoryCapMiB`, saved with the state in a new chunk
@@ -459,9 +467,13 @@ Two things a parameter can't carry: adding a splice mark, and capturing the ring
   a shared sample's planar buffer, interleaved copy and levels. The pool holds nothing alive: the
   last instance to let go frees the entry. It follows `SearchCache`'s precedent (a process
   singleton, cleared by tests). The ring storages are per instance and never pooled.
-- **Memory at 48 kHz, by example:** a 16 s stereo ring is 3 MB plus 3 MB of levels; 300 s,
-  115 MB plus 115; a 10-minute stereo file 690 MB with sub-project 3's pyramid. Four 300 s rings
-  with levels are 920 MB: above D2's recommended default, which is the point of the cap.
+- **Memory at 48 kHz, by example:** a 16 s stereo ring is 6.1 MB plus 5.4 MB of levels (§6.9's
+  three); a minute 23 MB plus 20; 300 s, 115 MB plus 101; a 10-minute stereo file 690 MB with
+  sub-project 3's pyramid. Four 300 s rings with levels are about 864 MB, under D2's default of
+  1 GiB, so a long sample beside them is what the cap refuses.
+
+  > **Amended** (2026-10-31, the final review): the figures as built. The first draft halved the
+  > rings' bytes (3 MB for 16 s) and put four 300 s rings at 920 MB, above the default.
 
 ### 6.6 Persistence: `MEDI` version 2, `AUDI`, `INST`, the captures folder (I12; INTENT §18)
 
@@ -577,6 +589,19 @@ sub-project 1's states unchanged (a `MEDI` version 1 entry is layer A's).
   until toggled", ruling FR-8 unchanged. So a reopened frozen pad is held, which #40 deferred to
   this sub-project.
 
+> **Amended** (2026-10-31, the final review's fix wave; INTENT §23 #68):
+> - **Which rings are saved:** a held ring only on a layer whose base Source builds to Live (Live
+>   or Resample), in the plugin and in `gg-render` alike (`gg::core::ringSaved`), since no grain
+>   of a Sample layer reads its ring (D1's amendment). Freeze is on above 0.5 everywhere
+>   (`gg::core::freezeOn`); `gg-render`'s restore read it at 0.5 and up.
+> - **A save while a restore is in flight:** a state loaded while active offers each restored
+>   ring to the audio thread, which adopts it at its next `process()`; a save before then writes
+>   the restored entry and its bytes, not the ring the Processor still plays.
+> - **A deactivation encodes nothing:** it keeps each held ring's copied frames; the next save
+>   encodes and hashes them once, and the next activation restores the frames directly, with no
+>   decode, converted at a new rate as a restore's are. Four 60 s rings' deactivation took 2.2 s
+>   in a Debug build before, 0.18 s after.
+
 ### 6.7 Finding media (INTENT §18 "Finding a missing sample"; I13)
 
 - **The candidates,** in order, each matched by size then SHA-256 as today: 1 the absolute path;
@@ -683,7 +708,8 @@ here.
 > (`kQuickMaxWarmUpSeconds`), the longest any other case uses, so every other case's quick run
 > is unchanged and the full-length run keeps the 300 s fill; a quick `engine-live-long` reads a
 > partly filled ring, and its quick ratios don't compare with a full run's. Each of its three
-> configurations holds a 115 MB ring.
+> configurations holds a 115 MB ring, about 216 MB with its levels (Task 12), so about 650 MB in
+> all.
 
 ## 7. Determinism and real-time safety
 
@@ -724,25 +750,31 @@ that isn't held). **Decided: option 1.**
    input and isn't saved. *Cost:* a project reopened with an unfrozen Live layer starts with an
    empty ring, as today, so Position reads silence until it refills (16 s by default); Freeze on
    such a layer stays live until toggled.
+
+   > **Amended** (2026-10-31, the final review): option 2's figures corrected, 6.1 MB and 23 MB
+   > of WAV, not 3 MB and 11 MB as first written; the decision stands. A held ring is saved only
+   > on a layer whose base Source builds to Live (Live or Resample: option 2's "every Live and
+   > Resample layer's ring" bounds option 1 too), since no grain of a Sample layer reads its ring.
 2. *Every Live and Resample layer's ring is saved.* *Cost:* up to four rings of audio per
-   instance in every save, most of it transient; a 16 s stereo ring is 3 MB, a minute 11 MB, so
-   projects grow and the 32 MB embed cap is reached by rings alone, after which saves write files.
+   instance in every save, most of it transient; a 16 s stereo ring is 6.1 MB, a minute 23 MB,
+   so projects grow and the 32 MB embed cap is reached by rings alone, after which saves write files.
 3. *No ring is saved; only captures persist.* *Cost:* a reopened frozen pad is not held, which is
    what §23 #40 deferred to this sub-project to fix; the exit criterion "a frozen minutes-long
    ring reopens" isn't met.
 
 **D2. The memory cap's default and ceiling** (§6.5; shown by sub-project 6). **Decided: option 1.**
 1. **Default 1 GiB, ceiling 16 GiB, floor 64 MiB.** *Cost:* four 300 s rings with levels (about
-   0.9 GB) plus any sample exceed the default, so a user who wants four maximal rings raises the
+   0.86 GB) plus a long sample exceed the default, so a user who wants four maximal rings raises the
    cap once per instance.
 2. *Default 2 GiB, ceiling 16 GiB.* *Cost:* a project of ten instances may claim 20 GB before any
    cap bites; laptops swap.
-3. *Default 512 MiB, ceiling 8 GiB.* *Cost:* one 300 s ring with its levels (230 MB) and a
+3. *Default 512 MiB, ceiling 8 GiB.* *Cost:* one 300 s ring with its levels (216 MB) and a
    5-minute stereo sample with its pyramid (345 MB) already exceed it; the cap is raised often.
 
 **D3. The longest ring** (`kRingMaxSeconds`, §6.3; also the top of Loop Length and of Position's
 widened range). **Decided: option 1.**
-1. **300 s (5 minutes).** *Cost:* 115 MB plus 115 of levels per stereo ring at 48 kHz; Position's
+1. **300 s (5 minutes).** *Cost:* 115 MB plus 101 of levels per stereo ring at 48 kHz (**amended** 2026-10-31: 115 as
+   first written); Position's
    CLAP range tops at 1.528.
 2. *600 s (10 minutes), M1's sample cap.* *Cost:* 460 MB per ring with levels; four of them don't
    fit D2's recommended default twice over; Position's log mapping gives the last minutes a sliver
