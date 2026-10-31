@@ -218,10 +218,11 @@ int run(int argc, char **argv)
         app.add_option("--media-dir", mediaDir,
                        "Resolve the spec's relative file paths against this directory instead "
                        "of the spec's"));
-    renderOptions.push_back(app.add_option(
+    auto *const presetOption = app.add_option(
         "--preset", presetPath,
         "Apply this preset file before the spec's own params and mod: sets the spec's \"preset\" "
-        "key, or overrides it, resolved like it (against the spec's directory or --media-dir)"));
+        "key, or overrides it, resolved like it (against the spec's directory or --media-dir)");
+    renderOptions.push_back(presetOption);
     auto *const contentDirOption =
         app.add_option("--content-dir", contentDir,
                        "The content folder a preset's content-relative samples are taken from");
@@ -313,8 +314,13 @@ int run(int argc, char **argv)
     {
         return fail(fmt::format("{}: {}", specPath, error));
     }
-    if (!presetPath.empty())
+    // Given at all, even empty (T4): an empty one is refused as the spec's empty key is.
+    if (presetOption->count() > 0)
     {
+        if (presetPath.empty())
+        {
+            return fail(fmt::format("{}: --preset must not be empty", specPath));
+        }
         if (spec->mode == gg::render::RenderMode::Sample)
         {
             return fail(fmt::format("{}: --preset needs an instrument or FX spec", specPath));

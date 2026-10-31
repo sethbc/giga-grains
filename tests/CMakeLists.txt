@@ -112,6 +112,7 @@ target_compile_definitions(gg-tests PRIVATE GG_TEST_OUTPUT_DIR="${CMAKE_CURRENT_
         GG_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/golden"
         GG_AUDIO_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/audio"
         GG_PRESET_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/presets"
+        GG_RENDER_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/render"
         GG_BENCH_BASELINE_DIR="${CMAKE_SOURCE_DIR}/tools/gg-bench/baselines")
 # 0 or 1, so tests can use #if GG_USE_RTSAN for checks that only hold in the RTSan build.
 target_compile_definitions(gg-tests PRIVATE GG_USE_RTSAN=$<BOOL:${GG_USE_RTSAN}>)
@@ -337,13 +338,13 @@ add_test(NAME render_pack_preset
 set_tests_properties(render_pack_preset PROPERTIES LABELS render
         FIXTURES_SETUP packed_presets)
 add_test(NAME render_preset_option
-        COMMAND gg-render ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/presets/render-fx-preset.json
+        COMMAND gg-render ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/render/render-fx-preset.json
         --preset ${GG_PACKED_PRESETS}/fx-test.ggpreset
         -o ${GG_PACKED_PRESETS}/render-fx-preset.wav)
 set_tests_properties(render_preset_option PROPERTIES LABELS render
         FIXTURES_REQUIRED packed_presets)
 set(render_preset_wrong_product_args
-        ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/presets/render-inst-preset.json
+        ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/render/render-inst-preset.json
         --preset ${GG_PACKED_PRESETS}/fx-test.ggpreset)
 add_test(NAME render_preset_wrong_product
         COMMAND ${CMAKE_COMMAND} -DPROGRAM=$<TARGET_FILE:gg-render>
@@ -353,6 +354,28 @@ add_test(NAME render_preset_wrong_product
         -P ${CMAKE_CURRENT_SOURCE_DIR}/tools/check-exit-code.cmake)
 set_tests_properties(render_preset_wrong_product PROPERTIES LABELS render
         FIXTURES_REQUIRED packed_presets)
+# --preset "" is refused as the spec's empty "preset" key is (exit 2), and --preset on a
+# sample-mode spec, which has no preset to apply (fix wave T4).
+# (The empty value goes last, TRAILING_EMPTY_ARG: a list can't carry an empty element.)
+set(render_preset_empty_args ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/render/render-fx-preset.json
+        --preset)
+add_test(NAME render_preset_empty
+        COMMAND ${CMAKE_COMMAND} -DPROGRAM=$<TARGET_FILE:gg-render>
+        "-DARGS=${render_preset_empty_args}" -DTRAILING_EMPTY_ARG=1 -DEXPECTED_CODE=2
+        "-DEXPECTED_STDERR=gg-render: "
+        "-DEXPECTED_STDERR2=--preset must not be empty"
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/tools/check-exit-code.cmake)
+set_tests_properties(render_preset_empty PROPERTIES LABELS render)
+set(render_preset_sample_mode_args ${CMAKE_CURRENT_SOURCE_DIR}/golden/cases/sparse-sine.json
+        --preset ${GG_PACKED_PRESETS}/fx-test.ggpreset)
+add_test(NAME render_preset_sample_mode
+        COMMAND ${CMAKE_COMMAND} -DPROGRAM=$<TARGET_FILE:gg-render>
+        "-DARGS=${render_preset_sample_mode_args}" -DEXPECTED_CODE=2
+        "-DEXPECTED_STDERR=gg-render: "
+        "-DEXPECTED_STDERR2=--preset needs an instrument or FX spec"
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/tools/check-exit-code.cmake)
+set_tests_properties(render_preset_sample_mode PROPERTIES LABELS render
+        FIXTURES_REQUIRED packed_presets)
 # --pack-preset takes only -o and --content-dir: another option is refused (exit 2); and a source
 # that doesn't parse (here a render spec) is bad input, with the parser's message.
 add_test(NAME render_pack_preset_alone
@@ -361,7 +384,7 @@ add_test(NAME render_pack_preset_alone
 set_tests_properties(render_pack_preset_alone PROPERTIES LABELS render
         PASS_REGULAR_EXPRESSION "excludes --pack-preset|--pack-preset excludes")
 set(render_pack_preset_bad_source_args
-        --pack-preset ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/presets/render-fx-preset.json
+        --pack-preset ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/render/render-fx-preset.json
         -o ${CMAKE_CURRENT_BINARY_DIR}/pack-preset-bad-source.ggpreset)
 add_test(NAME render_pack_preset_bad_source
         COMMAND ${CMAKE_COMMAND} -DPROGRAM=$<TARGET_FILE:gg-render>

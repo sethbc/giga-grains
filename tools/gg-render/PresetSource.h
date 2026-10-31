@@ -61,7 +61,8 @@ struct PresetSource
 /// or a value's as the render spec's parser words it).
 std::optional<PresetSource> parsePresetSource(const std::string &json, std::string &error);
 
-/// The preset file of `source`: encodePreset(source.info, state), state being
+/// The preset file of `source`, which parsePresetSource made (so every param name is its
+/// product's): encodePreset(source.info, state), state being
 /// initState(source.info.product) with each of the source's params set (as float, as the Processor
 /// takes it) and its routes set on the factory twelve (routesWith in Render.h). `contentDir`, the
 /// folder the samples' content-relative paths are taken from, is for the samples alone. On

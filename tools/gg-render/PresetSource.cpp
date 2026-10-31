@@ -4,6 +4,7 @@
 
 #include "PresetSource.h"
 
+#include <cassert>
 #include <cstddef>
 #include <exception>
 #include <string_view>
@@ -159,13 +160,12 @@ std::string packPreset(const PresetSource &source,
     gg::core::SessionState state = gg::core::initState(mode);
     for (const auto &[name, value] : source.params)
     {
+        // parsePresetSource refused any name that isn't the product's (packPreset's precondition),
+        // so this finds every one.
         const auto slot = paramSlotNamedIn(name, mode);
-        if (!slot)
-        {
-            error = fmt::format("params.{} is not a parameter of {}", name, productName(mode));
-            return {};
-        }
-        state.values[static_cast<std::size_t>(*slot)] = static_cast<float>(value);
+        assert(slot.has_value());
+        state.values[static_cast<std::size_t>(slot.value_or(gg::core::ParamSlot{}))] =
+            static_cast<float>(value);
     }
     try
     {

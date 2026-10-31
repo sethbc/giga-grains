@@ -107,10 +107,16 @@ gg::render::RenderSpec parseSpec(const nlohmann::json &j)
     return std::move(*spec);
 }
 
-/// The 1 s FX render over a sine of tests/fixtures/presets/render-fx-preset.json.
+/// A render spec of tests/fixtures/render/, apart from the preset sources (T4).
+std::filesystem::path renderFixture(const std::string &name)
+{
+    return std::filesystem::path{GG_RENDER_FIXTURE_DIR} / name;
+}
+
+/// The 1 s FX render over a sine of tests/fixtures/render/render-fx-preset.json.
 nlohmann::json fxSpecJson()
 {
-    return nlohmann::json::parse(readText(fixture("render-fx-preset.json")));
+    return nlohmann::json::parse(readText(renderFixture("render-fx-preset.json")));
 }
 
 bool bitIdentical(const std::vector<float> &a, const std::vector<float> &b)
@@ -352,7 +358,7 @@ TEST_CASE("a preset for the other product, or that isn't one, is bad input", "[r
     CHECK_THAT(badInput(fx),
                ContainsSubstring("the preset is for Giga Grains, not Giga Grains FX"));
 
-    auto inst = nlohmann::json::parse(readText(fixture("render-inst-preset.json")));
+    auto inst = nlohmann::json::parse(readText(renderFixture("render-inst-preset.json")));
     inst["preset"] = utf8(fxPreset);
     CHECK_THAT(badInput(inst),
                ContainsSubstring("the preset is for Giga Grains FX, not Giga Grains"));
