@@ -301,7 +301,7 @@ runs the tests labelled either. The labels are:
   - `sweep` (M2 sub-project 3): the sweep harness, 20 cases in `tests/sweep/` over the
     `Processor` in both products (parameter sweeps, extremes, automation bursts and the overload
     sweeps), each checking finiteness, the peak bound, no runaway and the goldens' click score
-    outside named exemptions (`SweepDriver.h`; carry-over rows 300 to 302), and pinning a floor
+    outside named exemptions (`SweepDriver.h`; carry-over rows 217 and 302), and pinning a floor
     under the share of its render that it scores. About 26.5 s in `dev` (eight at a time) and
     about 194 s under ASan; none is `slow`;
   - `layers` (M2 sub-project 1): the four layers, in the engine (the layer's RNG key, the enable
@@ -496,7 +496,7 @@ gg-render --write-media DIR
   internal error.
 - **The cases:** each case's spec is in `tests/golden/cases/`, and its expected metrics and event
   log are in `tests/golden/expected/`. Every `*.json` there is a case; a new one gets a test the
-  next time CMake runs. There are 43.
+  next time CMake runs. There are 44.
   - **M0's four,** in sample mode: `sparse-sine` (8 grains a second over a 220 Hz sine),
     `sparse-sine-44k1` (the same source converted to 44.1 kHz), `dense-noise` (400 grains a
     second over noise, up a fifth) and `sweep-stretch` (long grains over a sweep, down an
@@ -579,6 +579,13 @@ gg-render --write-media DIR
     - Every one of the 36 earlier cases' WAV SHA-256 was unchanged through every task; their event
       logs were rewritten once, by inserting `"tier"` and `"lvl"`. A change that moves one WAV is
       a regression.
+  - **Its follow-up's one** (carry-over row 300; INTENT §23 #66, amended): `inst-sample-end`, the
+    instrument over a 2 s 660 Hz sine at Position 0.97, 200 ms grains at 8 Hz, notes at rates
+    0.5, 1, 1.5 and 2. Every grain reaches the sample's end inside its window and fades out with
+    the raised cosine (1.94; 36.03 with the old hard cut). It catches all 16 injected steps.
+    - The follow-up made the steal fade a raised cosine too (EF-7), which moved `fx-overload` and
+      `inst-overload` (WAVs and metrics; their event logs hold no fade shape). Every other case,
+      none of which steals or reaches its sample's end, kept its WAV SHA-256.
   - **The event-log comparison never sees the reverb or the diffuser:** the log records grains,
     and Space runs after them. Across platforms, Space's five cases are checked by their metrics
     alone, within tolerances.
