@@ -1061,10 +1061,8 @@ restated in PR 2's report.
 release, §6.7) and row **221** by `2ad02b2` and `2116004` (the embedded texts and the About
 box, §6.10); `docs/m2-carry-over.md` marks
 both. `THIRD_PARTY_NOTICES.md`'s sentence that the About box doesn't show the texts yet now says
-it does. **Amended:** the director retired the carry-over's count rules on 2026-10-30 (relayed
-by the program manager; the controller's ruling keeps this statement here and in INTENT's
-§23 row, while the policy text in CLAUDE.md and the carry-over file is the program manager's to
-reword), so the
+it does. **Amended:** the director retired the carry-over's count rules on 2026-10-30 (INTENT
+§23 #67), so the
 count above is no longer a target; a minor deferred from a review is fixed or deferred as the
 review cycle decides, and the sub-project's final report lists the deferred ones.
 
