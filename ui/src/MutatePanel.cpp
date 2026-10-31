@@ -33,6 +33,7 @@ constexpr int kRowHeight = 24;
 constexpr int kRowWidth = 150;
 constexpr int kGap = 4;
 constexpr int kHeadingHeight = 26;
+constexpr int kAllWidth = 90; ///< a layer's Lock all and Unlock all
 constexpr int kBarHeight = 64;
 constexpr float kDefaultAmount = 0.15f;
 constexpr float kOffAlpha = 0.4f; // an off layer's rows
@@ -119,15 +120,16 @@ struct MutatePanel::Impl
             int y = 4;
             for (auto &section : owner.sections)
             {
-                auto head = juce::Rectangle<int>(4, y, width - 8, kHeadingHeight);
+                section->heading.setBounds(4, y, width - 8, kHeadingHeight);
+                y += kHeadingHeight + kGap;
                 if (section->isLayer)
                 {
-                    section->unlockAll.setBounds(head.removeFromRight(90));
-                    head.removeFromRight(kGap);
-                    section->lockAll.setBounds(head.removeFromRight(90));
+                    // A row of their own under the heading, from the left (UI-2): on the heading's
+                    // line they crowded it and ran under the scroll bar.
+                    section->lockAll.setBounds(4, y, kAllWidth, kRowHeight);
+                    section->unlockAll.setBounds(4 + kAllWidth + kGap, y, kAllWidth, kRowHeight);
+                    y += kRowHeight + kGap;
                 }
-                section->heading.setBounds(head);
-                y += kHeadingHeight + kGap;
                 const int perLine = std::max(1, (width - 8 + kGap) / (kRowWidth + kGap));
                 int i = 0;
                 for (auto &row : section->rows)
@@ -158,6 +160,7 @@ struct MutatePanel::Impl
         content.addAndMakeVisible(section->heading);
         if (isLayer)
         {
+            section->heading.setComponentID("mutate.heading." + idLetter);
             Section *raw = section.get();
             styleButton(section->lockAll, "mutate.lockall." + idLetter, "Lock all");
             styleButton(section->unlockAll, "mutate.unlockall." + idLetter, "Unlock all");
@@ -371,6 +374,7 @@ MutatePanel::MutatePanel(const EditorContext &context) : impl_(std::make_unique<
     m.close.onClick = [this] { setVisible(false); };
 
     m.build();
+    m.viewport.setComponentID("mutate.viewport");
     m.viewport.setViewedComponent(&m.content, false);
     m.viewport.setScrollBarsShown(true, false);
     for (juce::Component *c : std::initializer_list<juce::Component *>{
@@ -397,7 +401,7 @@ void MutatePanel::refresh()
 
 void MutatePanel::paint(juce::Graphics &g)
 {
-    g.fillAll(theme::kBackground.withAlpha(0.97f));
+    g.fillAll(theme::kBackground); // opaque: nothing of the Perform view shows through (UI-1)
     g.setColour(theme::kOutline);
     g.drawRect(getLocalBounds());
 }
@@ -419,7 +423,9 @@ void MutatePanel::resized()
     m.legend.setBounds(bar.withSizeKeepingCentre(bar.getWidth(), 36));
     area.removeFromTop(kGap);
     m.viewport.setBounds(area);
-    m.content.layoutFor(std::max(kRowWidth + 8, m.viewport.getMaximumVisibleWidth()));
+    // Clear of the vertical scroll bar whether or not it shows (UI-2).
+    m.content.layoutFor(
+        std::max(kRowWidth + 8, m.viewport.getWidth() - m.viewport.getScrollBarThickness()));
 }
 
 void MutatePanel::visibilityChanged()

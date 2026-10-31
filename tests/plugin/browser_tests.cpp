@@ -977,3 +977,130 @@ TEST_CASE("Content folder lists the chosen pack's presets as content", "[plugin]
     CHECK(f.impl->presetName() == "Theirs");
     CHECK_FALSE(f.button("preset.delete").isEnabled()); // the user's pack, not deletable here
 }
+
+// ---- The director's screenshots (UI-1, UI-2) ----
+
+namespace
+{
+/// The editor drawn offscreen, at 1x.
+juce::Image snapshot(Fixture &f)
+{
+    return f.editor->createComponentSnapshot(f.editor->getLocalBounds(), true, 1.0f);
+}
+
+/// Where the last macro knob draws its label (the bottom 20 px of its bounds, MacroRow), in the
+/// editor's coordinates, 2 px in from each side.
+juce::Rectangle<int> lastMacroLabel(Fixture &f)
+{
+    auto &knob = *find(*f.editor, "macro.8");
+    const auto bounds = f.editor->getLocalArea(&knob, knob.getLocalBounds());
+    return bounds.withTop(bounds.getBottom() - 20).reduced(2);
+}
+
+/// The pixels of `area` in `image` that aren't `colour`.
+int pixelsNot(const juce::Image &image, juce::Rectangle<int> area, juce::Colour colour)
+{
+    int n = 0;
+    for (int y = area.getY(); y < area.getBottom(); ++y)
+    {
+        for (int x = area.getX(); x < area.getRight(); ++x)
+        {
+            n += image.getPixelAt(x, y).getARGB() != colour.getARGB() ? 1 : 0;
+        }
+    }
+    return n;
+}
+
+bool sameArea(const juce::Image &a, const juce::Image &b, juce::Rectangle<int> area)
+{
+    for (int y = area.getY(); y < area.getBottom(); ++y)
+    {
+        for (int x = area.getX(); x < area.getRight(); ++x)
+        {
+            if (a.getPixelAt(x, y).getARGB() != b.getPixelAt(x, y).getARGB())
+            {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+void checkOverlayHides(Fixture &f, const std::function<void()> &open)
+{
+    const juce::Colour background{0xff15171c}; // theme::kBackground
+    const juce::Image perform = snapshot(f);
+    const auto label = lastMacroLabel(f);
+    REQUIRE(pixelsNot(perform, label, background) > 0); // the label's ink, with nothing over it
+    open();
+    const juce::Image covered = snapshot(f);
+    CHECK(pixelsNot(covered, label, background) == 0); // none of it shows through
+    // The header is untouched, so its strip stays usable.
+    CHECK(sameArea(perform, covered, f.editor->getLocalBounds().removeFromTop(40)));
+}
+} // namespace
+
+TEST_CASE("the browser hides the Perform view beneath it", "[plugin][ui]")
+{
+    // UI-1: the overlay is opaque over the canvas and the macro row.
+    const Machine machine("overlay-browser");
+    Fixture f;
+    checkOverlayHides(f, [&] { f.openBrowser(); });
+}
+
+TEST_CASE("the Mutate panel hides the Perform view beneath it", "[plugin][ui][mutate]")
+{
+    const Machine machine("overlay-mutate");
+    Fixture f;
+    checkOverlayHides(f, [&] { openPanel(f); });
+}
+
+TEST_CASE("each layer's Lock all and Unlock all have a row of their own, in view",
+          "[plugin][ui][mutate]")
+{
+    // UI-2: under the heading, inside the viewport's width (clear of its scroll bar), touching
+    // neither the heading nor any lock row.
+    const Machine machine("lockall-row");
+    Fixture f;
+    openPanel(f);
+    auto &viewport = need<juce::Viewport>(panel(f), "mutate.viewport");
+    auto &list = *find(panel(f), "mutate.lockList");
+    const int usable = viewport.getWidth() - viewport.getScrollBarThickness();
+    std::vector<juce::Rectangle<int>> rows;
+    for (std::size_t s = 0; s < gg::core::kParamCount; ++s)
+    {
+        if (auto *row = find(list, lockId(static_cast<ParamSlot>(s)).c_str()))
+        {
+            rows.push_back(row->getBounds());
+        }
+    }
+    REQUIRE(rows.size() > 50);
+    for (const char *letter : {"A", "B", "C", "D"})
+    {
+        CAPTURE(letter);
+        const auto heading =
+            need<juce::Label>(list, (std::string("mutate.heading.") + letter).c_str()).getBounds();
+        for (const char *kind : {"mutate.lockall.", "mutate.unlockall."})
+        {
+            const auto button =
+                need<juce::TextButton>(list, (std::string(kind) + letter).c_str()).getBounds();
+            CAPTURE(kind);
+            CHECK(button.getX() >= 0);
+            CHECK(button.getRight() <= usable);
+            CHECK(button.getY() >= heading.getBottom()); // under its heading
+            CHECK_FALSE(button.intersects(heading));
+            for (const auto &row : rows)
+            {
+                CHECK_FALSE(button.intersects(row));
+            }
+        }
+    }
+    // No two lock rows overlap either.
+    for (std::size_t i = 0; i < rows.size(); ++i)
+    {
+        for (std::size_t j = i + 1; j < rows.size(); ++j)
+        {
+            CHECK_FALSE(rows[i].intersects(rows[j]));
+        }
+    }
+}

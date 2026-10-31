@@ -382,7 +382,7 @@ PresetBrowser::~PresetBrowser()
 
 void PresetBrowser::paint(juce::Graphics &g)
 {
-    g.fillAll(theme::kBackground.withAlpha(0.96f));
+    g.fillAll(theme::kBackground); // opaque: nothing of the Perform view shows through (UI-1)
     g.setColour(theme::kOutline);
     g.drawRect(getLocalBounds());
 }
