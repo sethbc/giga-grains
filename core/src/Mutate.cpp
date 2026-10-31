@@ -5,6 +5,8 @@
 #include "gg/core/Mutate.h"
 
 #include <algorithm>
+#include <bit>
+#include <cstdint>
 
 #include "gg/core/Rng.h"
 
@@ -40,6 +42,10 @@ LockSet buildStructuralLocks() noexcept
     }
     return l;
 }
+
+constexpr size_t kDecaySlot = static_cast<size_t>(ParamSlot::ReverbDecay);
+/// The largest float below kDecayInfinite (a positive float's bits, one less).
+constexpr float kBelowInfinite = std::bit_cast<float>(std::bit_cast<uint32_t>(kDecayInfinite) - 1u);
 
 /// Slot `s`'s draw for press `counter` of `seed`, on `stream`.
 double draw(uint64_t seed, uint32_t stream, uint32_t counter, size_t s) noexcept
@@ -100,6 +106,13 @@ void mutate(const ParamValues &in, const LockSet &locks, float amount, uint64_t 
             const float range = meta.maxVal - meta.minVal;
             const float jitter = static_cast<float>(2.0 * u - 1.0);
             out[s] = std::clamp(v + a * range * jitter, meta.minVal, meta.maxVal);
+            // The director's D-Q3: a press never moves a finite Decay into the infinite zone; it
+            // stops at the float just below it. No new draw: the cap follows the law's result.
+            // From the zone itself the law applies as it is, in or out.
+            if (s == kDecaySlot && v < kDecayInfinite && out[s] >= kDecayInfinite)
+            {
+                out[s] = kBelowInfinite;
+            }
         }
         else if (u < static_cast<double>(a))
         {

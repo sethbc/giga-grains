@@ -22,7 +22,8 @@
 namespace gg::core
 {
 /// One lock per slot: a set bit keeps that parameter where it is. The plugin keeps the set for its
-/// life; it isn't state.
+/// life; it isn't state. The Mutate panel shows a layer's 16 Step values as one row, so they lock
+/// and unlock together there, though the set itself is per slot.
 using LockSet = std::bitset<kParamCount>;
 
 /// The counter RNG's layer and stream for Mutate's draws: a layer no engine uses, so Mutate needs
@@ -51,7 +52,9 @@ LockSet defaultMutateLocks(const ParamValues &values, Mode mode) noexcept;
 /// `out` = `in` mutated by `amount` (clamped to [0, 1]; NaN is 0), press `counter` of `seed`. For
 /// each unlocked slot s, with u the first draw (above):
 /// - a continuous parameter (ParamMetaData::FLOAT): out = clamp(in + amount × (max − min) × (2u −
-///   1), min, max);
+///   1), min, max); Reverb Decay below kDecayInfinite then stops at the float just below it, so
+///   a press never makes a finite reverb infinite (the director's D-Q3), while from the infinite
+///   zone the law applies as it is;
 /// - a stepped one (INT or BOOL, max − min + 1 steps, a BOOL's 2): if u < amount, the step min +
 ///   floor(u' × steps), u' the second draw, clamped to max (it may be the step it was on); else
 ///   unchanged.

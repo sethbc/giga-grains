@@ -390,3 +390,64 @@ TEST_CASE("mutate is allocation-free", "[core][mutate][rt]")
         REQUIRE(allocations == 0);
     }
 }
+
+// ---- The director's decision D-Q3 (2026-10-30): Mutate never moves Decay into infinity ----
+
+namespace
+{
+/// The FX's defaults with Reverb Decay at `decay` and nothing locked.
+ParamValues withDecay(float decay)
+{
+    ParamValues v{};
+    for (std::size_t s = 0; s < kParamCount; ++s)
+    {
+        v[s] = paramMeta(static_cast<ParamSlot>(s), Mode::Fx).defaultVal;
+    }
+    v[static_cast<std::size_t>(ParamSlot::ReverbDecay)] = decay;
+    return v;
+}
+} // namespace
+
+TEST_CASE("a press from a finite Decay never reaches the infinite zone", "[core][mutate]")
+{
+    const auto decay = static_cast<std::size_t>(ParamSlot::ReverbDecay);
+    // From just below the zone, at full amount: a draw past it is likely, and must be capped.
+    for (const float start : {gg::core::kDecayInfinite - 0.001f, 5.0f, 1.0f})
+    {
+        CAPTURE(start);
+        const ParamValues in = withDecay(start);
+        std::size_t capped = 0;
+        for (uint32_t counter = 0; counter < 1000; ++counter)
+        {
+            ParamValues out{};
+            mutate(in, LockSet{}, 1.0f, 99, counter, Mode::Fx, out);
+            REQUIRE(out[decay] < gg::core::kDecayInfinite);
+            capped += out[decay] == std::nextafter(gg::core::kDecayInfinite, 0.0f) ? 1 : 0;
+        }
+        if (start > 5.5f)
+        {
+            CHECK(capped > 0); // the cap was needed, and is the float just below the zone
+        }
+    }
+}
+
+TEST_CASE("a press from an infinite Decay may still move it, by its usual law", "[core][mutate]")
+{
+    const auto decay = static_cast<std::size_t>(ParamSlot::ReverbDecay);
+    const ParamValues in = withDecay(gg::core::kDecayMax);
+    std::size_t moved = 0;
+    std::size_t left = 0;
+    for (uint32_t counter = 0; counter < 1000; ++counter)
+    {
+        ParamValues out{};
+        mutate(in, LockSet{}, 1.0f, 99, counter, Mode::Fx, out);
+        moved += out[decay] != in[decay] ? 1 : 0;
+        left += out[decay] < gg::core::kDecayInfinite ? 1 : 0;
+        // The usual law: within amount x range of where it was, clamped.
+        const auto &meta = paramMeta(ParamSlot::ReverbDecay, Mode::Fx);
+        CHECK(out[decay] >= meta.minVal);
+        CHECK(out[decay] <= meta.maxVal);
+    }
+    CHECK(moved > 0);
+    CHECK(left > 0);
+}
