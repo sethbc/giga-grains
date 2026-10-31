@@ -32,8 +32,10 @@ TEST_CASE("sweep draws are stable when parameters are appended", "[sweep]")
     CHECK(sd::byId(2101, 0, 0x000004) == Catch::Approx(0.05558309666093175).margin(1e-12));
     CHECK(sd::byId(2101, 5, 0x000004) == Catch::Approx(0.93484181712987657).margin(1e-12));
     CHECK(sd::byId(2101, 5, 0x10000a) == Catch::Approx(0.4058076046218031).margin(1e-12));
-    CHECK(sd::pickById(3101, 0, old) == 187u);
-    CHECK(sd::pickById(3101, 1023, old) == 85u);
+    // The picks pinned by CLAP ID, not by index: a layer row appended to GG_LAYER_PARAMS moves the
+    // later layers' slots, never an ID (ParamIds.h), so an index would move with every new row.
+    CHECK(old[sd::pickById(3101, 0, old)] == 0x040018u);
+    CHECK(old[sd::pickById(3101, 1023, old)] == 0x020014u);
     CHECK(sd::eventField(3101, 7, 2) == Catch::Approx(0.22751742639552208).margin(1e-12));
 
     // A burst's pick: appending IDs changes an event's parameter only to an appended one, and
