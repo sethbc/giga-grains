@@ -137,10 +137,12 @@ struct ControlEvent
 ///   ```
 ///   over the non-empty S. Dividing r_L·b_L by Σ r_K·b_K, as first built, let a ramp near 0 on
 ///   a dominant corner outweigh the rest, and handed over within a few samples (row 301).
-/// A resting pad moving at full speed (each Morph ramp crossing the whole pad) moves no weight by
-/// more than 0.0097 a sample (ε's choice), and a handover with the pad still by no more than about
-/// 0.0042 (four layers ramping at once). With the layers at rest one P_S is 1, so layer A alone
-/// weighs exactly 1.0f wherever the pad is and renders M1's chain bit for bit.
+/// The largest per-sample weight step, at 48 and 44.1 kHz: a resting pad crossing in both axes at
+/// full speed (staggered Morph ramps), 0.0073 and 0.0079; a handover with the pad still, 0.0062
+/// and 0.0068 (B off while A, C and D come on at (0, 1)); both at once, 0.0105 and 0.0116. At the
+/// center the ramp's crossfade is linear in the ramp (A on, B ramping in: 1 − r/2 and r/2).
+/// With the layers at rest one P_S is 1, so layer A alone weighs exactly 1.0f wherever the pad
+/// is and renders M1's chain bit for bit.
 ///
 /// A layer's Layer On switch ramps r_L over kRampSeconds. A layer renders while its ramp's
 /// target or value is non-zero (layerRendering). Once the ramp is down at 0 the layer is off: its

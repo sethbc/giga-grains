@@ -1134,11 +1134,14 @@ bool Processor::layerRendering(uint8_t layer) const noexcept
 
 namespace
 {
-// The morph law's floor (spec §6.3, as amended for carry-over row 301): an on-set whose corner
-// weights sum to less than this shares the shortfall equally. 0.35 is the smallest round value at
-// which a resting pad moving at full speed in both axes (each Morph ramp crossing the whole pad in
-// 10 ms) moves no weight by more than 0.01 a sample: the steepest point is three layers on just
-// outside the floor, where the old law's own slope is 4.65 per pad unit (0.25 gave 6.56).
+// The morph law's floor (spec §6.3, as amended for carry-over row 301): a diagonal pair or a
+// triple whose corner weights sum to less than this shares the shortfall equally (17.1% and 7.1%
+// of the pad). The largest per-sample weight step, at 48 and 44.1 kHz, on the control grid: a
+// resting pad crossing in both axes at full speed, 0.0073 and 0.0079; a handover with the pad
+// still, 0.0062 and 0.0068 at any floor; both at once, 0.0105 and 0.0116. At 0.25 the pad alone
+// is 0.0094 and 0.0102 and both at once 0.0125 and 0.0136; at 0.30, 0.0082 and 0.0089, 0.0114 and
+// 0.0124. Above 0.35 the floor covers more of D1's pad (0.40: 24.1% and 9.5%), and none up to 0.45
+// (33.6% and 12.2%) brings both at once within 0.01 at 44.1 kHz.
 constexpr float kMorphFloor = 0.35f;
 
 // The layers A to D as the bits 0 to 3 of an on-set.

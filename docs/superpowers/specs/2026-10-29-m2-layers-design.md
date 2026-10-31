@@ -328,13 +328,40 @@ instance, after the tasks join:
   >
   > D1's statements hold: the amplitude sum is 1 with a whole layer's worth of ramps on, every
   > on layer weighs `1/n` at the center (`s ≥ 0.5` there, so no floor), and a corner's layer, on,
-  > sounds alone at its corner. Inside a ramp the crossfade's shape changes: at the center, A on
-  > and B ramping in weigh `1 − r/2` and `r/2`, where the law above gave `1/(1 + r)` and
-  > `r/(1 + r)` (at most 0.086 apart). ε is the smallest round value that keeps a resting pad
-  > moving at full speed in both axes within 0.01 a sample (0.0097; the steepest point is three
-  > layers just outside the floor, where the law above is 4.65 per pad unit); 0.25 gave 0.0137.
-  > A handover with the pad still moves a weight by at most about 0.0042 a sample (four layers
-  > ramping at once). Commit `a603fd9`, after review fix round 1: the first fix, `6335d91`,
+  > sounds alone at its corner.
+  >
+  > **The ramp's shape at the center is linear in the ramp.** A on and B ramping in weigh
+  > `1 − r/2` and `r/2`, where the law above gave `1/(1 + r)` and `r/(1 + r)` (at most 0.086
+  > apart, at `r = √2 − 1`). Weighting each set by its size (`|S|·P_S`) would restore the
+  > hyperbolic shape exactly at the center, but it doubles the worst handover with the pad still,
+  > from 0.0062 to 0.0124 a sample, past the 0.01 the tests hold it to, so the linear shape stays
+  > (review fix round 2's ruling). The two moved goldens, `fx-layer-switch` and `fx-overload`,
+  > differ from the law above inside their 10 ms ramps alone.
+  >
+  > **The steps and ε.** The largest per-sample weight step, at 48 and 44.1 kHz (ramps of 480
+  > and 441 samples), on the 32-sample control grid where the Processor applies events (the
+  > layers tests pin them; a model of the law over every set, pair of sets, direction and
+  > stagger found them):
+  > - a resting pad crossing in both axes at full speed (staggered Morph ramps reach that
+  >   anywhere): 0.0073 and 0.0079, A, B and C on just outside the floor;
+  > - a handover with the pad still: 0.0062 and 0.0068, whatever ε is (B off while A, C and D come
+  >   on, at (0, 1));
+  > - both at once: 0.0105 and 0.0116 (B and D swapping with A and C held while the pad crosses).
+  >
+  > | ε | pad alone | both at once | floor binds (diagonal pair, triple) |
+  > |---|---|---|---|
+  > | 0.25 | 0.0094, 0.0102 | 0.0125, 0.0136 | 7.8%, 3.5% |
+  > | 0.30 | 0.0082, 0.0089 | 0.0114, 0.0124 | 11.9%, 5.1% |
+  > | **0.35** | **0.0073, 0.0079** | **0.0105, 0.0116** | **17.1%, 7.1%** |
+  > | 0.40 | 0.0066, 0.0070 | 0.0098, 0.0102 | 24.1%, 9.5% |
+  > | 0.45 | 0.0058, 0.0064 | 0.0088, 0.0097 | 33.6%, 12.2% |
+  >
+  > ε = 0.35 (review fix round 2's ruling): 0.25 lets the pad alone pass 0.01 at 44.1 kHz and
+  > every smaller ε makes both motions together steeper; each larger one moves D1's resting
+  > weights on more of the pad, and the combined case stays over 0.01 at 44.1 kHz up to about
+  > 0.45. (Round 1 gave 0.0097 for the pad alone and 0.0137 at 0.25, from finite differences that
+  > straddled the floor's kink, and about 0.0042 for the handover; the figures above replace
+  > them.) Commit `a603fd9`, after review fix round 1: the first fix, `6335d91`,
   > shared every off corner's weight equally among the rendering layers, which moved the resting
   > weights by more than 0.01 on 85% to 98% of the pad for every pair and triple, adjacent pairs
   > included, and was replaced.
