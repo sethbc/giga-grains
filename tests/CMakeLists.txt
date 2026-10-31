@@ -526,7 +526,8 @@ if (APPLE AND GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
     # (its preset-discovery crawl). gg-vst3-preset-selector creates each class and reads it back
     # through the raw vtables; the content root GG_CONTENT_DIR names holds the two packed test
     # presets, so each list has at least INIT and its own test preset (2). The settings file is a
-    # scratch one, so the user's presets folder is never read or made. Both tests read the
+    # scratch one, so the user's presets folder is never read or made, and the install roots are
+    # a scratch folder (GG_SYSTEM_CONTENT_DIR, the tests' seam), so installed content never joins. Both tests read the
     # one root, which the setup test writes before either starts and nothing writes after, and
     # each has a settings file of its own (parallel-safe).
     set(GG_VST3_SELECTOR_ROOT ${CMAKE_CURRENT_BINARY_DIR}/test-output/vst3-selector-content)
@@ -552,7 +553,7 @@ if (APPLE AND GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
                 $<TARGET_FILE:gg_clapfirst_vst3> "${class_name}" ${class_id} 2)
         set_tests_properties(identity_vst3_preset_selector_${short_name} PROPERTIES
                 LABELS plugin FIXTURES_REQUIRED vst3_selector_content
-                ENVIRONMENT "GG_CONTENT_DIR=${GG_VST3_SELECTOR_ROOT};GG_SETTINGS_FILE=${CMAKE_CURRENT_BINARY_DIR}/test-output/vst3-selector-settings-${short_name}/settings.xml")
+                ENVIRONMENT "GG_CONTENT_DIR=${GG_VST3_SELECTOR_ROOT};GG_SETTINGS_FILE=${CMAKE_CURRENT_BINARY_DIR}/test-output/vst3-selector-settings-${short_name}/settings.xml;GG_SYSTEM_CONTENT_DIR=${CMAKE_CURRENT_BINARY_DIR}/test-output/vst3-selector-system")
     endforeach ()
 
     # Bundle versions (spec §6.1), label `installer`: each bundle's CFBundleShortVersionString and

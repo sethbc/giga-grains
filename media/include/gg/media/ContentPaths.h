@@ -84,6 +84,25 @@ inline std::optional<std::filesystem::path> xdgDataHome()
 #endif
 } // namespace detail
 
+/// What a content root is (the presets spec §6.4, fix wave M6): factory content is the
+/// developer's tree (GG_CONTENT_DIR) and the installs; the folder the user chose ("Content
+/// folder…", the settings' contentFolder) holds a pack of the user's own, which the browser and the
+/// preset-discovery provider label as such, never as the factory's.
+enum class ContentRootKind
+{
+    Developer, ///< $GG_CONTENT_DIR
+    Folder,    ///< the user's content folder
+    Install,   ///< the per-user or the system install
+};
+
+struct ContentRoot
+{
+    std::filesystem::path path;
+    ContentRootKind kind;
+    /// Factory content: the developer's tree or an install.
+    bool factory() const noexcept { return kind != ContentRootKind::Folder; }
+};
+
 /// The content roots, in the order a content-relative reference is resolved against them, each
 /// only when known and not empty:
 /// 1. $GG_CONTENT_DIR (tests, gg-render, a developer tree);
@@ -98,44 +117,61 @@ inline std::optional<std::filesystem::path> xdgDataHome()
 /// `~` is $HOME. As the XDG base directory spec says, a relative XDG_DATA_HOME, or a relative or
 /// empty entry of XDG_DATA_DIRS, is ignored; on Windows a relative LOCALAPPDATA or ProgramData is
 /// too. Each root is returned as built, with no check that it exists.
-inline std::vector<std::filesystem::path> contentRoots(const core::MachineSettings &settings)
+///
+/// **The tests' seam** (the presets spec §10's "environment overrides for the system folders"):
+/// $GG_SYSTEM_CONTENT_DIR, when set and not empty, replaces roots 3 and 4, the installs, with
+/// that one folder. Only the tests set it: macOS's system root is fixed, so without it factory
+/// content installed on the machine would join every test's list. Nothing ships setting it.
+inline std::vector<ContentRoot> contentRootList(const core::MachineSettings &settings)
 {
     namespace fs = std::filesystem;
-    std::vector<fs::path> roots;
+    std::vector<ContentRoot> roots;
+    const auto install = [&roots](fs::path path) {
+        roots.push_back({std::move(path), ContentRootKind::Install});
+    };
 #if defined(_WIN32)
     if (auto dev = detail::environmentPath(L"GG_CONTENT_DIR"))
 #else
     if (auto dev = detail::environmentPath("GG_CONTENT_DIR"))
 #endif
     {
-        roots.push_back(std::move(*dev));
+        roots.push_back({std::move(*dev), ContentRootKind::Developer});
     }
     if (!settings.contentFolder.empty())
     {
         if (auto folder = fromUtf8(settings.contentFolder))
         {
-            roots.push_back(std::move(*folder));
+            roots.push_back({std::move(*folder), ContentRootKind::Folder});
         }
+    }
+#if defined(_WIN32)
+    if (auto seam = detail::environmentPath(L"GG_SYSTEM_CONTENT_DIR"))
+#else
+    if (auto seam = detail::environmentPath("GG_SYSTEM_CONTENT_DIR"))
+#endif
+    {
+        install(std::move(*seam));
+        return roots;
     }
 #if defined(_WIN32)
     if (auto local = detail::absoluteEnvironmentPath(L"LOCALAPPDATA"))
     {
-        roots.push_back(*local / L"sethbc" / L"Giga Grains");
+        install(*local / L"sethbc" / L"Giga Grains");
     }
     if (auto common = detail::absoluteEnvironmentPath(L"ProgramData"))
     {
-        roots.push_back(*common / L"sethbc" / L"Giga Grains");
+        install(*common / L"sethbc" / L"Giga Grains");
     }
 #elif defined(__APPLE__)
     if (auto home = detail::environmentPath("HOME"))
     {
-        roots.push_back(*home / "Library" / "Application Support" / "sethbc" / "Giga Grains");
+        install(*home / "Library" / "Application Support" / "sethbc" / "Giga Grains");
     }
-    roots.emplace_back("/Library/Application Support/sethbc/Giga Grains");
+    install("/Library/Application Support/sethbc/Giga Grains");
 #else
     if (auto data = detail::xdgDataHome())
     {
-        roots.push_back(*data / "sethbc" / "Giga Grains");
+        install(*data / "sethbc" / "Giga Grains");
     }
     std::string dirs = "/usr/local/share:/usr/share";
     if (const char *value = std::getenv("XDG_DATA_DIRS"); value != nullptr && *value != 0)
@@ -148,12 +184,23 @@ inline std::vector<std::filesystem::path> contentRoots(const core::MachineSettin
         const fs::path dir(dirs.substr(start, end - start));
         if (!dir.empty() && dir.is_absolute())
         {
-            roots.push_back(dir / "sethbc" / "Giga Grains");
+            install(dir / "sethbc" / "Giga Grains");
         }
         start = end + 1;
     }
 #endif
     return roots;
+}
+
+/// The content roots' paths alone, in contentRootList's order.
+inline std::vector<std::filesystem::path> contentRoots(const core::MachineSettings &settings)
+{
+    std::vector<std::filesystem::path> paths;
+    for (auto &root : contentRootList(settings))
+    {
+        paths.push_back(std::move(root.path));
+    }
+    return paths;
 }
 
 /// The first `root / contentRelative` of `roots`, in order, that is a regular file (a link to

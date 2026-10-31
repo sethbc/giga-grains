@@ -140,6 +140,7 @@ const std::vector<std::string> kInstallRoots{
 /// Sets the environment kInstallRoots names.
 struct InstallEnv
 {
+    ScopedEnv seam{"GG_SYSTEM_CONTENT_DIR", nullptr}; // the tests' seam unset: the real roots
 #if defined(_WIN32)
     ScopedEnv local{"LOCALAPPDATA", kLocalAppData};
     ScopedEnv program{"ProgramData", kProgramData};
@@ -189,6 +190,44 @@ TEST_CASE("the content roots leave out an unset or empty GG_CONTENT_DIR and cont
         auto expected = kInstallRoots;
         expected.insert(expected.begin(), "/pack");
         REQUIRE(generic(contentRoots(settings)) == expected);
+    }
+}
+
+TEST_CASE("GG_SYSTEM_CONTENT_DIR replaces the install roots, for the tests", "[media][content]")
+{
+    const InstallEnv install;
+    const ScopedEnv dev("GG_CONTENT_DIR", "/dev/content");
+    MachineSettings settings;
+    settings.contentFolder = "/pack";
+    {
+        const ScopedEnv seam("GG_SYSTEM_CONTENT_DIR", "/scratch/system");
+        REQUIRE(generic(contentRoots(settings)) ==
+                std::vector<std::string>{"/dev/content", "/pack", "/scratch/system"});
+    }
+    {
+        const ScopedEnv seam("GG_SYSTEM_CONTENT_DIR", ""); // empty: unset
+        std::vector<std::string> expected{"/dev/content", "/pack"};
+        expected.insert(expected.end(), kInstallRoots.begin(), kInstallRoots.end());
+        REQUIRE(generic(contentRoots(settings)) == expected);
+    }
+}
+
+TEST_CASE("each content root says whether it is factory content", "[media][content]")
+{
+    const InstallEnv install;
+    const ScopedEnv dev("GG_CONTENT_DIR", "/dev/content");
+    MachineSettings settings;
+    settings.contentFolder = "/pack";
+    const auto roots = gg::media::contentRootList(settings);
+    REQUIRE(roots.size() == 2 + kInstallRoots.size());
+    CHECK(roots[0].kind == gg::media::ContentRootKind::Developer);
+    CHECK(roots[0].factory());
+    CHECK(roots[1].kind == gg::media::ContentRootKind::Folder);
+    CHECK_FALSE(roots[1].factory()); // the user's own pack
+    for (std::size_t i = 2; i < roots.size(); ++i)
+    {
+        CHECK(roots[i].kind == gg::media::ContentRootKind::Install);
+        CHECK(roots[i].factory());
     }
 }
 
