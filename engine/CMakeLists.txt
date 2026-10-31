@@ -39,3 +39,7 @@ target_compile_definitions(gg-engine PUBLIC
 # sst-cpputils is PUBLIC: Engine.h uses its SST_CPPUTILS_NONBLOCKING annotation. sst-basic-blocks
 # and simde are PUBLIC: GrainKernels.h's SIMD kernels include <sst/basic-blocks/simd/setup.h>.
 target_link_libraries(gg-engine PUBLIC gg::compiler-options sst-cpputils sst-basic-blocks simde)
+# The ring pyramid's per-frame cascade at -O0 dominates the sanitizer job (60-minute timeout).
+if(NOT MSVC)
+    set_source_files_properties(src/RingStorage.cpp PROPERTIES COMPILE_OPTIONS "$<$<CONFIG:Debug>:-O2>")
+endif()
