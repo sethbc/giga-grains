@@ -2388,9 +2388,9 @@ input, which every validator accepts, so D2's fallback was not needed; §14, §1
   then Position stepped to 10, 18 and 22 s behind: history past 16 s), `fx-loop-overdub` (Loop
   1 s, Overdub 0.7 over `loop-48k.wav`'s noise bursts, Freeze at 4 s, Overdub to 0 at 6 s),
   `fx-splice-capture` (a sweep, Freeze at 2 s, two splices, Splice 1 then 2, splice 2 captured
-  into layer B at 4 s and played at Pitch +7, Size 50 ms, Density 8 Hz; its Splice changes fall
-  between grains on purpose until a later task fixes the click a window change makes under
-  sounding grains), `fx-ring-restore` (the generated `frozen-ring.ggst`, a
+  into layer B at 4 s and played at Pitch +7, Size 50 ms, Density 32 Hz, so both Splice changes
+  fall under sounding grains: the window fix's gate, ruling SP-T12aa), `fx-ring-restore` (the
+  generated `frozen-ring.ggst`, a
   20 s ring frozen with two splices and embedded, restored with Freeze on and scanned for 4 s:
   the restore gate) and `inst-four-samples` (the generated `four-samples.ggst`, four Sample
   layers found by content-relative reference under `--content-dir`, one held note: `MEDI`

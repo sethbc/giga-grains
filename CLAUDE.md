@@ -653,19 +653,20 @@ gg-render --write-media DIR
       22 s), `fx-loop-overdub` (`loop-48k.wav`, Loop on, Loop Length 1 s, Overdub 0.7, Freeze at
       4 s, Overdub to 0 at 6 s), `fx-splice-capture` (a sweep, Freeze at 2 s, two splices 1.5 and
       0.5 s behind, Splice 1 at 2.5 s and 2 at 3.5 s, splice 2 captured into layer B at 4 s,
-      layer B Sample at Pitch +7; Size 50 ms, Density 8 Hz), `fx-ring-restore` (`state:
+      layer B Sample at Pitch +7; Size 50 ms, Density 32 Hz), `fx-ring-restore` (`state:
       frozen-ring.ggst`, a 20 s ring frozen with two splices, embedded; restored with Freeze on
       and scanned for 4 s: the restore gate) and `inst-four-samples` (`state: four-samples.ggst`,
       four Sample layers by content path under `--content-dir`, one held note).
     - Five hide some injected click steps, pinned in the click-injection table: `fx-loop-overdub`
       12 (the bursts' own edges), `fx-long-ring` 4 (an 8 s noise burst held in the ring, a noise
-      bed everywhere but the silence from 8 to 12 s), `fx-splice-capture` 14 (the sweep's top
-      octaves, to 2 kHz and +7 semitones), `inst-four-samples` 3 (one layer is noise: a noise
+      bed everywhere but the silence from 8 to 12 s), `fx-splice-capture` 12 (the sweep's top
+      octaves, to 2 kHz and +7 semitones, under layer A's dense cloud hide the four steps after
+      4 s), `inst-four-samples` 3 (one layer is noise: a noise
       bed under the note) and `inst-resample-feedback` 6 (the cascade of octaves fills the
       spectrum). `fx-resample` and `fx-ring-restore` catch all 16.
-    - `fx-splice-capture`'s two Splice changes fall between grains on purpose, until a later task
-      (12a) fixes the click a window change makes under sounding grains; 12a regenerates the
-      case and recounts its entry.
+    - `fx-splice-capture`'s two Splice changes fall under sounding grains (Density 32 Hz of
+      50 ms grains), so it gates Task 12a's window fix (ruling SP-T12aa): a window change never
+      clicks.
     - Every one of the 44 earlier cases (the 36 before sub-project 3, its seven and its
       follow-up's one) renders bit-identically with Ring Length 16 s, Loop off, Overdub 0, no
       splice, no Resample layer, nothing embedded and the cap at its default: a sources change
