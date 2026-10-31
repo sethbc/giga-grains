@@ -402,6 +402,7 @@ D7's), `Delay Damping` (0–100%, default 30%: a one-pole low-pass in the loop, 
   to no damper, so at Feedback 100% a noise burst loses about 2 dB in the 2–4 kHz band over 20 s,
   and a sine burst holds within 0.1 dB. The alternative, Damping 0 bypassing the damper for an
   exact hold, was declined.
+- **Amended (D-bound, the director, 2026-10-31, option 1): the output bound with the delay.** INTENT §14's bound is 2 + the input's peak, Space's. With the delay engaged (Amount above 0) it is 3 + the input's peak: the return `Amount × y`, capped near 1 by the loop's soft limiter, adds to the wet signal beside the reverb's. The limiter's Soft and Peak modes keep the output under their ceiling.
 - **Exact identity at rest:** the line is written every sample (cheap, and raising Amount reveals
   what was already playing, as the diffuser does), and the return is added only on samples where
   Amount's per-sample ramp isn't exactly 0: no `+ 0`, so `wet' == wet` bit for bit, the sign of
@@ -477,6 +478,8 @@ instance, after the tasks join:
      FX:        out = d·(1 − m) + limit(wet'·m [+ softLimit(a·r)])  instrument: out = limit(wet' [+ softLimit(a·r)])
                                              └─► the resample tap (2) reads out, as §7.2 says
 ```
+
+**Amended (D-bound, 2026-10-31, option 1):** the chain's output bound is 2 + the input's peak, and 3 + the input's peak with the delay engaged (§6.4); the limiter's Soft and Peak keep the output under their ceiling.
 
 With Smear 0, Bus Split 0, both filters Off, the kind not Spectral, Amount 0 and the limiter Off,
 every marked line is the identity on the same bits, and the chain is wave 1's.
