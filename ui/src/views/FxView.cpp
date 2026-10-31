@@ -33,8 +33,8 @@ struct FxView::Impl
         owner.addChildComponent(output);
     }
 
-    /// The panels side by side, wrapping to a second row when the width is short; the Output
-    /// panel is hidden while it has no controls.
+    /// The panels side by side, wrapping to a second row when the width is short; a panel is
+    /// hidden while it has no controls.
     void layout()
     {
         const int width = std::max(1, owner.getWidth());

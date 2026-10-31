@@ -15,8 +15,9 @@ namespace gg::ui
 {
 /// The FX view (M2 sub-project 6's spec §6.7; component ID "view.fx"): the Reverb panel (Amount,
 /// Decay, Size, Damping, Pre-delay, Modulation and, in the FX, Dry to Reverb) and the Output panel
-/// (Mix in the FX; hidden in the instrument, which shows neither Mix nor Dry to Reverb). Both are
-/// global, so the layer doesn't matter. Reverb Size sets on release (D10, row 217): its control
+/// (Mix, in the FX, then Budget, in both products: ruling VW-T19a; the instrument shows neither Mix
+/// nor Dry to Reverb, so its Output panel holds Budget alone). Both are global, so the layer
+/// doesn't matter. Reverb Size sets on release (D10, row 217): its control
 /// shows the value as it is dragged and sends one value as the gesture ends, with a tooltip that
 /// says so.
 ///

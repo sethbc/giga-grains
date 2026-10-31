@@ -1564,7 +1564,9 @@ the FX's loader strip, drops onto lanes B to D, and record, capture and splice o
   (which refuses) take a chip dragged there by switching views mid-drag; the pad takes none. The
   factory routes are ordinary rows.
 - **FX:** Reverb (Amount, Decay, Size, Damping, Pre-delay, Modulation, and Dry to Reverb in the
-  FX) and Output (Mix, in the FX). **Reverb Size sets on release** (D10): the knob shows its
+  FX) and Output (Mix, in the FX, then the engine's Budget, in both products; ruling VW-T19a,
+  which also puts each layer's Quality in the Grain panel after Texture, until PR 2's panel
+  design). **Reverb Size sets on release** (D10): the knob shows its
   target while dragged and sends one value at the gesture's end, so moving it from the UI is one
   step, never a sweep. Automation and a host's gestures are unchanged and still click (row 217,
   closed as decided).
@@ -2187,9 +2189,9 @@ input, which every validator accepts, so D2's fallback was not needed; §14, §1
     every control must lie inside its view; the gestures, the drops, undo through the gesture
     path, the theme setting, the keyboard and the About box each have theirs.
   - **Every parameter is reachable from the UI,** by two machine checks: a `[ui]` test walks the
-    218 slots through the layout table, each placed exactly once, and a `[plugin]` test walks
-    the built editor's views for each slot's control. A parameter a later wave adds fails both,
-    naming it, until it is placed.
+    223 slots (with sub-project 3's Quality and Budget) through the layout table, each placed
+    exactly once, and a `[plugin]` test walks the built editor's views for each slot's control.
+    A parameter a later wave adds fails both, naming it, until it is placed.
   - **`gg-snap`** draws every view as PNGs, headless (two products, four views, two themes, two
     sizes: 32 files). `snap_cli` runs it on macOS; CI's macOS leg uploads its output as the
     `gg-snapshots` artifact on every run, so the director and the reviewers can see the views

@@ -131,7 +131,12 @@ TEST_CASE("the panel order is the spec's", "[ui]")
 {
     CHECK(gg::ui::slotsIn(Panel::Grain, 0) ==
           std::vector<ParamSlot>{ParamSlot::Size, ParamSlot::SizeSpread, ParamSlot::Position,
-                                 ParamSlot::Spray, ParamSlot::Texture});
+                                 ParamSlot::Spray, ParamSlot::Texture, ParamSlot::Quality});
+    // The engine's Budget follows Mix in the Output panel (ruling VW-T19a).
+    CHECK(gg::ui::slotsIn(Panel::Output, 0) ==
+          std::vector<ParamSlot>{ParamSlot::Mix, ParamSlot::Budget});
+    CHECK(gg::ui::placementOf(ParamSlot::C_Quality)->panel == Panel::Grain);
+    CHECK(gg::ui::placementOf(ParamSlot::Budget)->view == gg::ui::View::Fx);
     std::vector<ParamSlot> step{ParamSlot::StepRate, ParamSlot::StepLength};
     for (std::size_t i = 0; i < 16; ++i)
     {

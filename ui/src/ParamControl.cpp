@@ -59,7 +59,12 @@ struct ContinuousSource final : jdata::Continuous
     {
         if (!inert)
         {
-            value.set(f);
+            // A stepped parameter on a knob (kindFor: more steps than a menu holds) takes whole
+            // steps.
+            const ParamMetaData &meta = value.meta();
+            const bool stepped =
+                (meta.flags & CLAP_PARAM_IS_STEPPED) != 0 || meta.type != ParamMetaData::FLOAT;
+            value.set(stepped ? std::round(f) : f);
         }
     }
     void setValueFromModel(const float &) override {} // the model is the plugin's base value
@@ -250,6 +255,10 @@ ParamControl::Kind ParamControl::kindFor(const ParamMetaData &meta) noexcept
     }
     const long values =
         meta.type == ParamMetaData::BOOL ? 2 : std::lround(meta.maxVal - meta.minVal) + 1;
+    if (values > kMenuMaxValues)
+    {
+        return Kind::Knob; // too many steps for a menu: a knob that rounds (ContinuousSource)
+    }
     return values > 2 ? Kind::Menu : values == 2 ? Kind::Toggle : Kind::Knob;
 }
 

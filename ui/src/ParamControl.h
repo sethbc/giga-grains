@@ -58,8 +58,10 @@ class ParamControl final : public juce::Component, public juce::DragAndDropTarge
         Menu
     };
 
-    /// The kind for a parameter's metadata: a stepped one with more than two values is a Menu,
-    /// with two a Toggle; anything else is a Knob.
+    /// The kind for a parameter's metadata: a stepped one with more than two values, up to
+    /// kMenuMaxValues, is a Menu, with two a Toggle; anything else is a Knob, which rounds a
+    /// stepped parameter's value to its step (Budget's 16,129 counts; ruling VW-T19a).
+    static constexpr long kMenuMaxValues = 32;
     static Kind kindFor(const sst::basic_blocks::params::ParamMetaData &meta) noexcept;
 
     ParamControl(const EditorContext &context, gg::core::ParamSlot slot, Kind kind);

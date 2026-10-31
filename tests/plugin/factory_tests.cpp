@@ -1973,6 +1973,11 @@ TEST_CASE("a ParamControl edits its parameter as a gesture", "[plugin]")
           ParamControl::Kind::Toggle);
     CHECK(ParamControl::kindFor(gg::core::paramMeta(ParamSlot::StepLength, gg::core::Mode::Fx)) ==
           ParamControl::Kind::Menu);
+    CHECK(ParamControl::kindFor(gg::core::paramMeta(ParamSlot::D_Quality, gg::core::Mode::Fx)) ==
+          ParamControl::Kind::Menu);
+    // Budget's 16,129 steps are too many for a menu: a knob, which takes whole steps.
+    CHECK(ParamControl::kindFor(gg::core::paramMeta(ParamSlot::Budget, gg::core::Mode::Fx)) ==
+          ParamControl::Kind::Knob);
 
     // A knob for layer B's Size: its ID is the CLAP ID's, its label the name less the letter.
     ParamControl size(recording.context, ParamSlot::B_Size, ParamControl::Kind::Knob);
@@ -2812,6 +2817,34 @@ TEST_CASE("the FX view shows the reverb and the output", "[plugin]")
         CHECK(findDeep(view, controlId(ParamSlot::Mix).toRawUTF8()) == nullptr);
         CHECK(findDeep(view, controlId(ParamSlot::DryToReverb).toRawUTF8()) == nullptr);
         CHECK(findDeep(view, controlId(ParamSlot::ReverbSize).toRawUTF8()) != nullptr);
+    }
+}
+
+TEST_CASE("Budget in the Output panel in both products", "[plugin]")
+{
+    // Ruling VW-T19a: the engine's global Budget follows Mix in the Output panel; the instrument,
+    // which hides Mix, shows the panel with Budget alone.
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    for (const gg::core::Mode mode : {gg::core::Mode::Fx, gg::core::Mode::Instrument})
+    {
+        INFO((mode == gg::core::Mode::Fx ? "fx" : "instrument"));
+        RecordingContext recording(mode);
+        gg::ui::FxView view(recording.context);
+        view.setSize(900, 400);
+        auto *budget = dynamic_cast<gg::ui::ParamControl *>(
+            findDeep(view, controlId(ParamSlot::Budget).toRawUTF8()));
+        REQUIRE(budget != nullptr);
+        juce::Component *panel = budget->getParentComponent();
+        while (panel != nullptr && panel->getParentComponent() != &view)
+        {
+            panel = panel->getParentComponent();
+        }
+        REQUIRE(panel != nullptr);
+        CHECK(panel->isVisible());
+        CHECK(view.getLocalBounds().contains(panel->getBounds()));
+        CHECK(childOfType<sst::jucegui::components::Knob>(*budget) != nullptr);
+        CHECK((findDeep(view, controlId(ParamSlot::Mix).toRawUTF8()) != nullptr) ==
+              (mode == gg::core::Mode::Fx));
     }
 }
 

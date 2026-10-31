@@ -396,7 +396,11 @@ INTENT §17 with the modulators added (every parameter must be reachable):
 
 The globals: Morph X/Y, the four On switches and the four Levels are the strip's and the pad's
 (Perform); Mix, Reverb and Dry to Reverb are the FX view's (§6.7); the macros are the macro
-row's. **Amended** (VW-T3c): the table places each slot once, and a layer's Level is placed in
+row's. **Amended** (VW-T19a): merging the engine (M2 sub-project 3) into PR 1 brought its
+Quality (per layer) and Budget (global), so PR 1 places them now as the smallest change that
+keeps every slot reachable: Quality in the Grain panel after Texture, a menu (Eco, Normal, HQ),
+and Budget in the FX view's Output panel after Mix (§6.7); PR 2 revisits both with its own panel
+design. **Amended** (VW-T3c): the table places each slot once, and a layer's Level is placed in
 its Space panel, as the table above lists it; the On switches are the strip panel's. The strip
 (the lane headers and the compact row) also shows On, Level, Source and Freeze, as second
 controls with the same `param.<id>`. A parameter may have a control in more than one view, so a
@@ -506,7 +510,9 @@ tripwire.
 **Shape:** sections across the width, each a `NamedPanel` of `ParamControl`s from the same
 table: **Reverb** (Reverb Amount, Decay, Size, Damping, Pre-delay, Modulation, Dry to Reverb in
 the FX), **Output** (Mix in the FX; the master Level is layer A's `Level`, shown in its lane; the
-FX view names no Level), and in PR 2 **Delay** and **Limiter** as sub-project 4 defines them, and
+FX view names no Level; **Amended** (VW-T19a): then the engine's Budget, in both products, a knob
+taking whole steps (its 16,129 values are too many for a menu), so the instrument, which hides
+Mix, shows the Output panel with Budget alone), and in PR 2 **Delay** and **Limiter** as sub-project 4 defines them, and
 Space's panel for the per-layer diffuser stays in Edit (INTENT §14: the diffuser is per layer).
 Decay's text reads "∞" from `kDecayInfinite` up, as the host's does.
 
@@ -1162,3 +1168,4 @@ ledger, not here. The director's decisions are D1–D12 (§8).
 | VW-T15g | §6.6 | In Perform only the strip and the macro row take a chip (reached by ⌘1 mid-drag); the pad takes none. |
 | VW-T17a | §6.11 | The GPU spike's decision: the CPU renderer stays, on the ratios and the risk clause. |
 | VW-T17b | §6.11 | Decided (D12, §8): the canvas repaints at the display's rate, no cap; the director's choice, 2026-10-30. |
+| VW-T19a | §6.5, §6.7 | The controller's ruling at the merge of the engine (PR #16) into PR 1: its new parameters take the smallest placement that keeps every slot reachable now. Quality (A–D) goes in the Grain panel after Texture, a menu; Budget (global) in the FX view's Output panel after Mix, in both products, a knob that rounds to whole steps, since `kindFor` makes a stepped parameter with more than 32 values a knob. The instrument's Output panel, empty before, shows Budget alone. PR 2 revisits both with its own panel design. |
