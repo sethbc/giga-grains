@@ -155,10 +155,11 @@ const std::map<std::string, int> &partlyHidden()
         // loop-48k.wav's burst at 3.5 s, re-grained densely 20 ms behind the head, hides the step
         // at 3.53 s; the bursts' gaps and the silence after 4 s catch the rest.
         {"fx-mod-follower", 15},
-        // A frozen sweep's spans, re-grained, and layer B's pitched capture of one: the sweep's
-        // top octaves, up to 2 kHz and +7 semitones, hide two of the steps.
-        // Its Splice changes fall between grains; regenerate the case and recount at task 12a.
-        {"fx-splice-capture", 14},
+        // A frozen sweep's spans, re-grained densely (32 Hz of 50 ms, so both Splice changes fall
+        // under sounding grains: ruling SP-T12aa), and layer B's pitched capture of one from 4 s:
+        // the sweep's top octaves, up to 2 kHz and +7 semitones, under layer A's dense cloud,
+        // hide the four steps after 4 s (4.24, 4.59, 4.94 and 5.65 s; two at 8 Hz).
+        {"fx-splice-capture", 12},
         {"fx-noise-stereo", 3}, // a noise bed until the input ends at 3 s
         {"fx-note-freeze", 10}, // loop-48k.wav's bursts, live and frozen
         {"fx-space", 6},        // noise and its reverb, until the tail decays

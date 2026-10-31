@@ -6,7 +6,7 @@
   "seed": 1,
   "input": {"kind": "sweep", "startHz": 80, "endHz": 2000, "seconds": 2.0, "amplitude": 0.5},
   "channels": 1,
-  "params": {"Mix": 1.0, "Position": 0.3, "Size": -4.321928094887363, "Density": 3.0, "Layer B On": 1, "B Source": 0, "B Pitch": 7, "B Position": 0.2},
+  "params": {"Mix": 1.0, "Position": 0.3, "Size": -4.321928094887363, "Density": 5.0, "Layer B On": 1, "B Source": 0, "B Pitch": 7, "B Position": 0.2},
   "automation": [
     {"time": 2.0, "param": "Freeze", "value": 1},
     {"time": 2.5, "param": "A Splice", "value": 1},
