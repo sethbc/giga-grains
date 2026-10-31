@@ -1,0 +1,31 @@
+{
+  "mode": "instrument",
+  "sampleRate": 48000,
+  "durationSeconds": 20.5,
+  "blockSize": 128,
+  "seed": 1,
+  "sample": {"kind": "sweep", "startHz": 20000, "endHz": 50, "seconds": 4.0, "amplitude": 0.5},
+  "samples": {"B": {"kind": "sweep", "startHz": 20000, "endHz": 50, "seconds": 4.0, "amplitude": 0.5}},
+  "params": {"Layer B On": 1, "Morph X": 0.0, "Morph Y": 0.0, "Level": -6.0, "Level B": -6.0, "Quality": 2, "B Quality": 1, "Position": 0.4, "B Position": 0.4, "Spray": 0.96, "B Spray": 0.96, "Size": -4.321928094887363, "B Size": -4.321928094887363, "Density": 5.0, "B Density": 5.0},
+  "automation": [
+    {"time": 2.0, "param": "Morph X", "value": 1.0},
+    {"time": 4.0, "param": "Morph X", "value": 0.0},
+    {"time": 4.0, "param": "Pitch", "value": 12},
+    {"time": 4.0, "param": "B Pitch", "value": 12},
+    {"time": 6.0, "param": "Morph X", "value": 1.0},
+    {"time": 8.0, "param": "Morph X", "value": 0.0},
+    {"time": 8.0, "param": "Pitch", "value": 19},
+    {"time": 8.0, "param": "B Pitch", "value": 19},
+    {"time": 10.0, "param": "Morph X", "value": 1.0},
+    {"time": 12.0, "param": "Morph X", "value": 0.0},
+    {"time": 12.0, "param": "Pitch", "value": 24},
+    {"time": 12.0, "param": "B Pitch", "value": 24},
+    {"time": 14.0, "param": "Morph X", "value": 1.0},
+    {"time": 16.0, "param": "Morph X", "value": 0.0},
+    {"time": 18.0, "param": "Morph X", "value": 1.0}
+  ],
+  "notes": [
+    {"time": 0.0, "key": 60, "duration": 16.0},
+    {"time": 16.0, "key": 72, "duration": 4.25}
+  ]
+}

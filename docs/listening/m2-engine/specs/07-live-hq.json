@@ -1,0 +1,10 @@
+{
+  "mode": "fx",
+  "sampleRate": 48000,
+  "durationSeconds": 8.5,
+  "blockSize": 128,
+  "seed": 1,
+  "input": {"kind": "sweep", "startHz": 50, "endHz": 20000, "seconds": 8.0, "amplitude": 0.4},
+  "channels": 2,
+  "params": {"Mix": 1.0, "Level": -6.0, "Quality": 2, "Pitch": 12}
+}

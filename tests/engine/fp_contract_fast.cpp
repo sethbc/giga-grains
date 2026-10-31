@@ -27,9 +27,9 @@ double ggFastExp2(double x);
 double ggFastLog(double x);
 float ggFastHann(double phase01);
 int ggFastCloud(const gg::CloudParams &params, int64_t frames, gg::GrainDraw *out, int capacity);
-void ggFastSampleSimd(bool eco, const gg::GrainRows &rows, uint32_t count,
+void ggFastSampleSimd(gg::Tier tier, const gg::GrainRows &rows, uint32_t count,
                       const gg::kernels::SampleSource &src, const gg::kernels::Output &out,
-                      int64_t from, int64_t to, const gg::HannTable &hann);
+                      int64_t from, int64_t to, const gg::kernels::Tables &tables);
 float ggFastCanary(float a, float b, float c);
 
 [[gnu::flatten]] float ggFastLinear(const float *data, int64_t frames, double pos)
@@ -86,24 +86,31 @@ struct FastTuHermite : gg::kernels::Hermite
 struct FastTuLinear : gg::kernels::Linear
 {
 };
+struct FastTuSinc : gg::kernels::Sinc
+{
+};
 } // namespace
 
-/// Grains [0, count) of rows through the SIMD sample kernel, Linear if eco and Hermite otherwise,
-/// over [from, to).
-[[gnu::flatten]] void ggFastSampleSimd(bool eco, const gg::GrainRows &rows, uint32_t count,
+/// Grains [0, count) of rows through the SIMD sample kernel with the tier's reader (Linear, Hermite
+/// or Sinc), over [from, to).
+[[gnu::flatten]] void ggFastSampleSimd(gg::Tier tier, const gg::GrainRows &rows, uint32_t count,
                                        const gg::kernels::SampleSource &src,
                                        const gg::kernels::Output &out, int64_t from, int64_t to,
-                                       const gg::HannTable &hann)
+                                       const gg::kernels::Tables &tables)
 {
     for (uint32_t i = 0; i < count; ++i)
     {
-        if (eco)
+        if (tier == gg::Tier::Eco)
         {
-            gg::kernels::renderSampleSimd<FastTuLinear>(rows, i, src, out, from, to, hann);
+            gg::kernels::renderSampleSimd<FastTuLinear>(rows, i, src, out, from, to, tables);
+        }
+        else if (tier == gg::Tier::HQ)
+        {
+            gg::kernels::renderSampleSimd<FastTuSinc>(rows, i, src, out, from, to, tables);
         }
         else
         {
-            gg::kernels::renderSampleSimd<FastTuHermite>(rows, i, src, out, from, to, hann);
+            gg::kernels::renderSampleSimd<FastTuHermite>(rows, i, src, out, from, to, tables);
         }
     }
 }

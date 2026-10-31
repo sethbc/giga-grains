@@ -133,6 +133,11 @@ CloudParams toCloudParams(const ParamValues &effective, Mode mode, uint8_t layer
     p.smearJitterSec = kSmearJitter * smear * size;
     p.smearDetuneSemitones = kSmearDetune * smear;
     p.busSplit = static_cast<double>(layerBusSplit(effective, layer));
+    // The nearest step (lround: halves away from zero, so halves up here), clamped first so that
+    // lround's argument is finite; NaN, which the Processor never holds, is Normal.
+    const double quality = param(LayerParam::Quality);
+    p.quality = std::isnan(quality) ? Tier::Normal
+                                    : static_cast<Tier>(std::lround(std::clamp(quality, 0.0, 2.0)));
     p.gain = static_cast<float>(1.0 / std::sqrt(std::max(1.0, p.densityHz * p.grainDurationSec)));
     return p;
 }
@@ -168,6 +173,15 @@ WetParams toWetParams(const ParamValues &effective, Mode mode, uint8_t layer) no
 WetParams toWetParams(const ParamValues &effective, Mode mode) noexcept
 {
     return toWetParams(effective, mode, 0);
+}
+
+uint64_t budgetUnits(const ParamValues &effective) noexcept
+{
+    const float v = read(effective, ParamSlot::Budget);
+    // Clamped before rounding, which is the same for every finite count (the bounds are
+    // integers) and keeps lround's argument finite; NaN fails both comparisons.
+    const float count = std::isnan(v) ? 4096.0f : std::clamp(v, 256.0f, 16384.0f);
+    return static_cast<uint64_t>(std::lround(count)) * kBudgetUnitsPerGrain;
 }
 
 float layerDiffusion(const ParamValues &effective, uint8_t layer) noexcept

@@ -17,16 +17,22 @@
 #include <limits>
 #include <memory>
 #include <span>
+#include <stdexcept>
+#include <string>
 #include <vector>
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
+#include <catch2/matchers/catch_matchers_string.hpp>
 
+#include "gg/core/ModMatrix.h"
 #include "gg/core/ParamIds.h"
 #include "gg/core/ParamMap.h"
+#include "gg/core/PatchState.h"
 #include "gg/core/Processor.h"
 #include "core/LayersFixture.h"
 #include "gg/engine/Engine.h"
+#include "gg/grain/Budget.h"
 #include "gg/metrics/Metrics.h"
 #include "gg/source/PreparedSource.h"
 #include "gg/source/SampleBuffer.h"
@@ -995,7 +1001,7 @@ void requireSetBasesMatchesSetBase(Mode mode, const gg::core::ParamValues &value
 TEST_CASE("setBases is setBase on every slot in slot order", "[core][layers]")
 {
     // Ruling FR-3: a state load (an offer's values, the plugin's activation and loaded state)
-    // recomputes the effective values once. For a load with no Freeze on, its result is the 258
+    // recomputes the effective values once. For a load with no Freeze on, its result is the 263
     // calls' bit for bit: on fresh Processors, after a pre-roll with a ramp running, and back to
     // the defaults again. (A load with Freeze on arms by ruling FR-8: the next test.)
     for (const Mode mode : {Mode::Fx, Mode::Instrument})
@@ -1139,4 +1145,357 @@ TEST_CASE("a state load arms Freeze from its loaded values alone, every layer al
         REQUIRE(frozenAfter(p, input, clock, {{0, NoteEventType::On, 0, 60}}) ==
                 Frozen{true, true, true, true});
     }
+}
+
+namespace
+{
+constexpr float kDensity400Hz = 8.643856189774725f; // Density's top, log2 400
+constexpr float kHq = 2.0f;                         // Quality: HQ
+
+// Layer L at HQ, Density 400 Hz and Size 2^size2 s: an HQ cloud that spends a small Budget.
+void hqCloud(Processor &p, uint8_t L, float size2)
+{
+    p.setBase(gg::core::layerOnSlot(L), 1.0f);
+    p.setBase(slotOf(LayerParam::Quality, L), kHq);
+    p.setBase(slotOf(LayerParam::Density, L), kDensity400Hz);
+    p.setBase(slotOf(LayerParam::Size, L), size2);
+}
+
+// A stereo noise sample of `seconds` at 48 kHz, amplitude 0.5, the channels independent.
+std::shared_ptr<const gg::PreparedSource> noiseSample(double seconds, uint64_t seed)
+{
+    const auto frames = static_cast<int64_t>(seconds * kRate);
+    const Stereo n = noise(frames, 0.5f, seed);
+    auto buf = std::make_shared<gg::SampleBuffer>(2, frames, kRate);
+    std::copy(n.left.begin(), n.left.end(), buf->channel(0));
+    std::copy(n.right.begin(), n.right.end(), buf->channel(1));
+    return gg::PreparedSource::make(std::move(buf));
+}
+
+// Each steal came right before the spawn it made room for: the same layer's, at its onset.
+bool stealsPrecedeTheirSpawns(const Log &log)
+{
+    for (const Log::Steal &s : log.steals)
+    {
+        if (s.next >= log.events.size() || log.events[s.next].layer != s.layer ||
+            log.events[s.next].grain.onsetSample != s.onset)
+        {
+            return false;
+        }
+    }
+    return true;
+}
+} // namespace
+
+TEST_CASE("quotas split the budget equally among rendering layers", "[core][layers][budget]")
+{
+    // M2 engine spec §6.4: each rendering layer's engine gets floor(4 × Budget / n) weight units.
+    // Budget 512 (2,048 units) under one HQ cloud of 400 Hz and 2 s grains (800 grains asked
+    // for, each an HQ stereo grain's weight, 27 units): layer A alone keeps about 2,048 / 27
+    // grains sounding; with B on from
+    // the start, each keeps about half that. From 1 s the ladder steals the oldest grains, one per
+    // draw, until each grain that filled the quota has been stolen (the new ones are young), so
+    // each layer steals about as many grains as its quota holds.
+    constexpr int64_t kFrames = 2 * 48000;
+    struct Run
+    {
+        uint32_t activeA{0};
+        uint32_t activeB{0};
+        uint64_t stolenA{0};
+        uint64_t stolenB{0};
+    };
+    const auto run = [](bool withB) {
+        Processor p({kRate, 512, 81, Mode::Fx});
+        p.setBase(ParamSlot::Mix, 1.0f);
+        p.setBase(ParamSlot::Budget, 512.0f);
+        hqCloud(p, 0, 1.0f);
+        if (withB)
+        {
+            hqCloud(p, 1, 1.0f);
+        }
+        Stereo out = silence(kFrames);
+        render(p, nullptr, 0, kFrames, {512}, {}, out);
+        REQUIRE(p.stolenGrains() == p.engine(0).stolenGrains() + p.engine(1).stolenGrains());
+        return Run{p.layerActiveGrains(0), p.layerActiveGrains(1), p.engine(0).stolenGrains(),
+                   p.engine(1).stolenGrains()};
+    };
+    const Run alone = run(false);
+    const Run both = run(true);
+    INFO("A alone: " << alone.activeA << " sounding, " << alone.stolenA << " stolen; with B: A "
+                     << both.activeA << " and " << both.stolenA << ", B " << both.activeB << " and "
+                     << both.stolenB);
+    // Overloaded: the ladder stole, and A's grains fill its quota (2,048 / 27 = 75, with the
+    // few still fading).
+    const double fit = 2048.0 / gg::grainWeight(gg::Tier::HQ, true);
+    REQUIRE(alone.stolenA > 0);
+    CHECK(alone.activeB == 0);
+    CHECK(alone.stolenB == 0);
+    CHECK(alone.activeA >= 0.95 * fit);
+    CHECK(alone.activeA <= 1.1 * fit);
+    // With B, A's share halves, and B's is the same: the grains sounding and the steals alike.
+    const double half = alone.activeA / 2.0;
+    CHECK(std::abs(both.activeA - half) <= 0.1 * half);
+    CHECK(std::abs(static_cast<double>(both.activeB) - both.activeA) <= 0.1 * both.activeA);
+    const double halfStolen = static_cast<double>(alone.stolenA) / 2.0;
+    CHECK(std::abs(static_cast<double>(both.stolenA) - halfStolen) <= 0.1 * halfStolen);
+    CHECK(std::abs(static_cast<double>(both.stolenB) - halfStolen) <= 0.1 * halfStolen);
+}
+
+TEST_CASE("a layer switching on takes its share at the boundary", "[core][layers][budget]")
+{
+    // M2 engine spec §6.4: the quotas change at the boundary where the set of rendering layers
+    // does. Layer A, an HQ cloud under Budget 512, sees B switched on at 0.5 s (an event off
+    // the grid, so at the boundary 24,032) and off at 1 s (the boundary 48,032; B stops
+    // rendering when its ramp reaches 0, 480 samples later): A's quota halves at 24,032 and
+    // returns at 48,512. So A's grains and steals are exactly those of A alone with Budget
+    // stepped to 256 at 24,032 and back to 512 at 48,512, at any block size.
+    constexpr int64_t kFrames = 72000;
+    const auto run = [](const std::vector<TimedEvent> &events, uint32_t block, Log &log) {
+        Processor p({kRate, 4096, 83, Mode::Fx});
+        p.setBase(ParamSlot::Mix, 1.0f);
+        p.setBase(ParamSlot::Budget, 512.0f);
+        hqCloud(p, 0, -1.0f); // 500 ms grains: they are stealable from 250 ms on
+        p.setBase(slotOf(LayerParam::Quality, 1), kHq);
+        p.setBase(slotOf(LayerParam::Density, 1), kDensity400Hz);
+        p.setEventSink(&Log::record, &log);
+        p.setStealSink(&Log::recordSteal, &log);
+        Stereo out = silence(kFrames);
+        render(p, nullptr, 0, kFrames, {block}, events, out);
+        REQUIRE_FALSE(log.overflowed);
+    };
+    const std::vector<TimedEvent> switchB{{24007, gg::core::layerOnSlot(1), false, 1.0},
+                                          {48011, gg::core::layerOnSlot(1), false, 0.0}};
+    const std::vector<TimedEvent> stepBudget{{24007, ParamSlot::Budget, false, 256.0},
+                                             {48512, ParamSlot::Budget, false, 512.0}};
+    Log stepped;
+    run(stepBudget, 512, stepped);
+    Log plain;
+    run({}, 512, plain);
+    // Not vacuous: the halved quota changes A's grains, and A steals.
+    REQUIRE(stepped.layer(0) != plain.layer(0));
+    REQUIRE_FALSE(stepped.layerSteals(0).empty());
+    REQUIRE(stepped.layer(1).empty());
+    for (const uint32_t block : {1u, 37u, 512u, 4096u})
+    {
+        INFO("block size " << block);
+        Log switched;
+        run(switchB, block, switched);
+        REQUIRE_FALSE(switched.layer(1).empty()); // B rendered while on
+        CHECK(switched.layer(0) == stepped.layer(0));
+        CHECK(switched.layerSteals(0) == stepped.layerSteals(0));
+        CHECK(stealsPrecedeTheirSpawns(switched));
+    }
+}
+
+TEST_CASE("lowering Budget under a cloud cuts nothing at once", "[core][layers][budget]")
+{
+    // Review Focus 1 (M2 engine spec §6.4, §6.5): a quota applies to the draws from its boundary
+    // on; the grains sounding are not cut. The instrument's layer A, an HQ cloud of 1 s grains
+    // at 400 Hz under the default Budget, has about 160 grains (4,320 units) sounding at 0.4 s
+    // (19,200, a boundary), when Budget drops to 256 (1,024 units). From there:
+    // - every draw is dropped until the grains end and the load falls under the quota: the
+    //   output over the next 256 samples is exactly that of the same render with the note
+    //   released at 19,200 (the grains sounding then, uncut, and no new ones), and the
+    //   unchanged render's until the first grain the unchanged render admits after it;
+    // - later the ladder steals, one grain per admission, each steal right before its spawn.
+    constexpr int64_t kT = 19200;
+    constexpr int64_t kFrames = 76800;
+    const auto source = noiseSample(3.0, 87);
+    struct Run
+    {
+        Stereo audio;
+        Log log;
+        uint64_t stolen{0};
+    };
+    const auto run = [&](const std::vector<TimedEvent> &events, const std::vector<TimedNote> &notes,
+                         Run &r) {
+        Processor p({kRate, 512, 89, Mode::Instrument});
+        p.setSourceNow(0, source);
+        hqCloud(p, 0, 0.0f); // 1 s grains
+        p.setEventSink(&Log::record, &r.log);
+        p.setStealSink(&Log::recordSteal, &r.log);
+        r.audio = silence(kFrames);
+        render(p, nullptr, 0, kFrames, {512}, events, r.audio, nullptr, {}, notes);
+        r.stolen = p.stolenGrains();
+        REQUIRE_FALSE(r.log.overflowed);
+    };
+    const TimedNote on{0, NoteEventType::On, 0, 60};
+    Run unchanged;
+    run({}, {on}, unchanged);
+    Run lowered;
+    run({{kT, ParamSlot::Budget, false, 256.0}}, {on}, lowered);
+    Run released;
+    run({}, {on, {kT, NoteEventType::Off, 0, 60}}, released);
+
+    const auto spawnsIn = [](const Log &log, int64_t from, int64_t to) {
+        std::vector<gg::GrainSpec> out;
+        for (const gg::GrainSpec &g : log.layer(0))
+        {
+            if (g.onsetSample >= from && g.onsetSample < to)
+            {
+                out.push_back(g);
+            }
+        }
+        return out;
+    };
+    const auto slice = [](const std::vector<float> &v, int64_t from, int64_t to) {
+        return std::vector<float>(v.begin() + from, v.begin() + to);
+    };
+    // The three agree before the boundary.
+    REQUIRE(sameBits(slice(unchanged.audio.left, 0, kT), slice(lowered.audio.left, 0, kT)));
+    REQUIRE(sameBits(slice(unchanged.audio.left, 0, kT), slice(released.audio.left, 0, kT)));
+    REQUIRE(spawnsIn(lowered.log, 0, kT).size() > 150);
+    REQUIRE(spawnsIn(lowered.log, 0, kT) == spawnsIn(unchanged.log, 0, kT));
+
+    // The next 256 samples: no draw admitted, nothing stolen, nothing cut.
+    CHECK(spawnsIn(lowered.log, kT, kT + 256).empty());
+    CHECK(std::none_of(lowered.log.steals.begin(), lowered.log.steals.end(),
+                       [](const Log::Steal &s) { return s.onset < kT + 256; }));
+    CHECK(sameBits(slice(lowered.audio.left, kT, kT + 256),
+                   slice(released.audio.left, kT, kT + 256)));
+    CHECK(sameBits(slice(lowered.audio.right, kT, kT + 256),
+                   slice(released.audio.right, kT, kT + 256)));
+    // The unchanged render differs only from the first grain it admits after the boundary.
+    const auto admitted = spawnsIn(unchanged.log, kT, kT + 256);
+    REQUIRE_FALSE(admitted.empty());
+    const int64_t first = admitted.front().onsetSample;
+    CHECK(sameBits(slice(unchanged.audio.left, kT, first), slice(lowered.audio.left, kT, first)));
+    CHECK_FALSE(sameBits(slice(unchanged.audio.left, kT, kT + 256),
+                         slice(lowered.audio.left, kT, kT + 256)));
+
+    // Later, steals, each right before the spawn it made room for, and only after the boundary.
+    CHECK(lowered.stolen > 0);
+    CHECK(lowered.stolen == lowered.log.steals.size());
+    CHECK(stealsPrecedeTheirSpawns(lowered.log));
+    CHECK(lowered.log.steals.size() <= spawnsIn(lowered.log, kT, kFrames).size());
+    CHECK(unchanged.stolen == 0);
+}
+
+TEST_CASE("a state without Budget loads at 4096 grains", "[core][layers][budget]")
+{
+    // M2 engine spec §6.8: a state saved before Budget loads it at its default, 4,096 grains
+    // (16,384 units), whatever the instance had: an HQ cloud of 1 s grains at 400 Hz (240
+    // grains, 6,480 units, at 0.6 s) is lowered under Budget 512 and untouched once such a state
+    // is loaded, rendering as an instance that never had Budget set.
+    constexpr int64_t kFrames = 28800;
+    gg::core::ParamValues saved{};
+    for (size_t s = 0; s < gg::core::kParamCount; ++s)
+    {
+        saved[s] = gg::core::paramMeta(static_cast<ParamSlot>(s), Mode::Fx).defaultVal;
+    }
+    saved[static_cast<size_t>(ParamSlot::Mix)] = 1.0f;
+    saved[static_cast<size_t>(ParamSlot::Quality)] = kHq;
+    saved[static_cast<size_t>(ParamSlot::Density)] = kDensity400Hz;
+    saved[static_cast<size_t>(ParamSlot::Size)] = 0.0f;
+    saved[static_cast<size_t>(ParamSlot::Budget)] = 512.0f;
+    const gg::core::ModRoutes routes = gg::core::factoryRoutes(Mode::Fx);
+    const std::string full = gg::core::toStateXml(saved, 91, routes);
+    const auto tag = R"(<p id=")" + std::to_string(gg::core::paramId(ParamSlot::Budget)) + R"(" )";
+    const auto from = full.find(tag);
+    REQUIRE(from != std::string::npos);
+    const auto to = full.find("/>", from);
+    REQUIRE(to != std::string::npos);
+    const std::string withoutBudget = full.substr(0, from) + full.substr(to + 2);
+
+    const auto load = [&](const std::string &state) {
+        gg::core::ParamValues v{};
+        uint64_t seed = 0;
+        gg::core::ModRoutes r{};
+        REQUIRE(gg::core::fromStateXml(state, v, seed, r, Mode::Fx));
+        return v;
+    };
+    const gg::core::ParamValues loaded = load(withoutBudget);
+    REQUIRE(loaded[static_cast<size_t>(ParamSlot::Budget)] == 4096.0f);
+    REQUIRE(loaded[static_cast<size_t>(ParamSlot::Quality)] == kHq);
+
+    struct Run
+    {
+        Stereo audio;
+        Log log;
+        uint64_t lowered{0};
+        uint64_t stolen{0};
+        uint64_t dropped{0};
+    };
+    const auto run = [&](const gg::core::ParamValues &values, bool budgetFirst, Run &r) {
+        Processor p({kRate, 512, 91, Mode::Fx});
+        if (budgetFirst)
+        {
+            p.setBase(ParamSlot::Budget, 512.0f);
+        }
+        p.setBases(values);
+        p.setEventSink(&Log::record, &r.log);
+        r.audio = silence(kFrames);
+        render(p, nullptr, 0, kFrames, {512}, {}, r.audio);
+        r.lowered = p.loweredGrains();
+        r.stolen = p.stolenGrains();
+        r.dropped = p.engine(0).droppedGrains();
+    };
+    Run reloaded;
+    run(loaded, true, reloaded);
+    CHECK(reloaded.lowered == 0);
+    CHECK(reloaded.stolen == 0);
+    CHECK(reloaded.dropped == 0);
+    Run fresh;
+    run(loaded, false, fresh);
+    CHECK(reloaded.log.layer(0) == fresh.log.layer(0));
+    CHECK(sameBits(reloaded.audio.left, fresh.audio.left));
+    CHECK(sameBits(reloaded.audio.right, fresh.audio.right));
+    // Not vacuous: the state with its Budget of 512 lowers the same cloud.
+    Run kept;
+    run(load(full), false, kept);
+    CHECK(kept.lowered > 0);
+}
+
+TEST_CASE("the pool size is ProcessorConfig::grainCapacity", "[core][layers][budget]")
+{
+    // M2 engine spec §6.6: each layer's engine holds ProcessorConfig::grainCapacity grains, 4,096
+    // by default, at most kMaxGrainCapacity; the Processor refuses a larger one itself, naming
+    // its own field.
+    gg::core::ProcessorConfig config{kRate, 512, 93, Mode::Fx};
+    CHECK(config.grainCapacity == 4096u);
+    config.grainCapacity = gg::kMaxGrainCapacity + 1;
+    CHECK_THROWS_AS(Processor(config), std::invalid_argument);
+    CHECK_THROWS_WITH(Processor(config),
+                      Catch::Matchers::ContainsSubstring("ProcessorConfig::grainCapacity"));
+    config.grainCapacity = gg::kMaxGrainCapacity;
+    CHECK_NOTHROW(Processor(config));
+
+    // A pool of 8 a layer under the default Budget (16,384 units, far above it): a 400 Hz cloud
+    // of 2 s grains on layers A and B keeps at most 8 grains each sounding, with the few still
+    // fading after a steal, and their events all reach the sinks; the grain queue gets the
+    // spawns alone.
+    config.grainCapacity = 8;
+    Processor p(config);
+    p.setPublishing(true);
+    p.setBase(ParamSlot::Mix, 1.0f);
+    Log log;
+    p.setEventSink(&Log::record, &log);
+    p.setStealSink(&Log::recordSteal, &log);
+    for (uint8_t L = 0; L < 2; ++L)
+    {
+        p.setBase(gg::core::layerOnSlot(L), 1.0f);
+        p.setBase(slotOf(LayerParam::Density, L), kDensity400Hz);
+        p.setBase(slotOf(LayerParam::Size, L), 1.0f);
+    }
+    constexpr int64_t kFrames = 2 * 48000;
+    Stereo out = silence(kFrames);
+    uint32_t most = 0;
+    uint64_t queued = 0;
+    render(p, nullptr, 0, kFrames, {512}, {}, out, nullptr, [&](int64_t) {
+        most = std::max({most, p.layerActiveGrains(0), p.layerActiveGrains(1)});
+        gg::core::GrainVis g;
+        while (p.grainQueue().pop(g))
+        {
+            ++queued;
+        }
+    });
+    CHECK(queued == log.events.size());
+    CHECK(most >= 8);
+    CHECK(most <= 8 + 4);
+    CHECK(p.layerActiveGrains(2) == 0);
+    CHECK(p.stolenGrains() > 0);
+    CHECK(p.stolenGrains() == log.steals.size());
+    CHECK(p.loweredGrains() == 0);
+    CHECK(p.droppedGrainEvents() == 0);
+    CHECK(stealsPrecedeTheirSpawns(log));
 }

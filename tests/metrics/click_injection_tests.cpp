@@ -134,6 +134,16 @@ const std::map<std::string, int> &partlyHidden()
         // noise-like wash that hides the steps at 2.1 s to 4.1 s, and a burst's smear hides the
         // one at 1.2 s; the silence after the input ends catches the last six.
         {"fx-spectral-freeze", 9},
+        // M2 sub-project 3's spec §6.9: the live ring's sweep read an octave up (50 Hz to 20 kHz,
+        // doubled, then folded back), whose top hides the steps from about 2.1 s to the input's
+        // end at 3.5 s; the steps below about 3 kHz and the one in the ring's last echo are caught.
+        {"fx-hq-live-level0", 9},
+        // M2 sub-project 3's spec §6.9: every grain reads part of a 20 kHz to 50 Hz sweep, from
+        // 165 Hz to 20 kHz, and the ladder transposes it up to 3.9 octaves, so content near
+        // Nyquist sounds at every step; caught only at 0.32 s (two grains reading the sweep's
+        // low end, 300 to 520 Hz), at 0.97 s (a gap between grains) and at 4.21 s (one grain, its
+        // window nearly closed).
+        {"fx-hq-pitch-ladder", 3},
         // Four layers' noise bed throughout (M2 sub-project 1's spec §10: stereo noise, the four
         // layers at their own pitch and size), as in dense-noise.
         {"fx-layers", 0},

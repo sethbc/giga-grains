@@ -156,9 +156,9 @@ std::vector<ParamValues> samplePoints(Mode mode)
     return points;
 }
 
-// toCloudParams as it was before Smear (M2 sub-project 1's mapping), copied, for any layer: at
-// Smear 0 the mapping must not move by a bit. busSplit is the one field Smear's task adds that
-// doesn't depend on Smear: it is Bus Split, as it is.
+// toCloudParams as it was before Smear (M2 sub-project 1's mapping, with sub-project 3's Quality),
+// copied, for any layer: at Smear 0 the mapping must not move by a bit. busSplit is the one field
+// Smear's task adds that doesn't depend on Smear: it is Bus Split, as it is.
 gg::CloudParams preSmearReference(const ParamValues &v, Mode mode, uint8_t layer)
 {
     using gg::core::LayerParam;
@@ -183,6 +183,11 @@ gg::CloudParams preSmearReference(const ParamValues &v, Mode mode, uint8_t layer
     p.pitchSpreadSemitones = param(LayerParam::PitchSpread);
     p.sizeSpreadOctaves = param(LayerParam::SizeSpread);
     p.busSplit = param(LayerParam::BusSplit);
+    // M2 sub-project 3's Quality: the nearest step, clamped to 0..2 (a NaN is Normal).
+    const double quality = param(LayerParam::Quality);
+    p.quality = std::isnan(quality)
+                    ? gg::Tier::Normal
+                    : static_cast<gg::Tier>(std::lround(std::clamp(quality, 0.0, 2.0)));
     p.gain = static_cast<float>(1.0 / std::sqrt(std::max(1.0, p.densityHz * p.grainDurationSec)));
     return p;
 }
@@ -622,13 +627,14 @@ TEST_CASE("space params follow the table", "[core][space]")
                     continue; // the grains' envelope, a cloud field (the taper table test)
                 }
                 if (slot == ParamSlot::Source || slot == ParamSlot::PitchSpread ||
-                    slot == ParamSlot::SizeSpread || slot == ParamSlot::Smear ||
-                    slot == ParamSlot::BusSplit)
+                    slot == ParamSlot::SizeSpread || slot == ParamSlot::Quality ||
+                    slot == ParamSlot::Smear || slot == ParamSlot::BusSplit)
                 {
                     // Layer A's cloud fields of M2 sub-project 1 (spec §6.4, §6.6): Source picks
                     // Position's mapping, the spreads are read as they are ("layer-aware" below);
-                    // and of sub-project 4 (its spec §6.1, §6.3): Smear and Bus Split (the taper
-                    // table test and the smear tests).
+                    // sub-project 3's Quality, the tier ("Quality maps ..." below); and
+                    // sub-project 4's (its spec §6.1, §6.3): Smear and Bus Split (the taper table
+                    // test and the smear tests).
                     continue;
                 }
                 const auto &meta = gg::core::paramMeta(slot, mode);
@@ -696,10 +702,12 @@ TEST_CASE("the instrument's Position is a fraction and its Spray is seconds", "[
     SECTION("the FX's mapping is unchanged, bit for bit")
     {
         // On a layer that reads its ring, the FX's default kind (M2 sub-project 1's spec §6.4),
-        // at Smear 0, M1's (Smear's own law: "smear's amplitudes and gain follow the law").
+        // at M1's tier, Normal (M2 sub-project 3's Quality at its default), and at Smear 0, M1's
+        // (Smear's own law: "smear's amplitudes and gain follow the law").
         for (auto v : samplePoints(Mode::Fx))
         {
-            v[static_cast<size_t>(ParamSlot::Source)] = 1.0f; // Live
+            v[static_cast<size_t>(ParamSlot::Source)] = 1.0f;  // Live
+            v[static_cast<size_t>(ParamSlot::Quality)] = 1.0f; // Normal
             v[static_cast<size_t>(ParamSlot::Smear)] = 0.0f;
             // The fields after M1's are read as they are (M2's spreads, Bus Split); Smear 0
             // leaves its two amplitudes at 0.
@@ -1176,6 +1184,78 @@ TEST_CASE("the cloud's bus split is Bus Split", "[core]")
     CHECK(toCloudParams(v, Mode::Fx, 2).busSplit == d(0.7f));
     CHECK(toCloudParams(v, Mode::Fx, 0).busSplit == 0.0);
     CHECK(toCloudParams(defaults(Mode::Instrument), Mode::Instrument, 3).busSplit == 0.0);
+}
+
+TEST_CASE("Quality maps to the layer's tier and Budget to units", "[core][layers]")
+{
+    // M2 sub-project 3's spec §6.1, §6.4: each layer's Quality, rounded to the nearest step, is
+    // its CloudParams::quality (0 Eco, 1 Normal, 2 HQ); Budget, a count of Normal stereo grains
+    // rounded and clamped to 256..16,384, is that many times kBudgetUnitsPerGrain weight units.
+    using gg::Tier;
+    using gg::core::budgetUnits;
+    using gg::core::kBudgetUnitsPerGrain;
+    using gg::core::LayerParam;
+    using gg::core::layerSlot;
+    STATIC_REQUIRE(kBudgetUnitsPerGrain == 4u);
+    STATIC_REQUIRE(static_cast<int>(Tier::Eco) == 0);
+    STATIC_REQUIRE(static_cast<int>(Tier::Normal) == 1);
+    STATIC_REQUIRE(static_cast<int>(Tier::HQ) == 2);
+
+    for (const Mode mode : {Mode::Fx, Mode::Instrument})
+    {
+        INFO((mode == Mode::Fx ? "fx" : "instrument"));
+        // The default is Normal on every layer, as M1's.
+        for (uint8_t layer = 0; layer < gg::core::kLayers; ++layer)
+        {
+            CHECK(toCloudParams(defaults(mode), mode, layer).quality == Tier::Normal);
+        }
+        for (uint8_t layer = 0; layer < gg::core::kLayers; ++layer)
+        {
+            INFO("layer " << int{layer});
+            const auto quality = [&](float x) {
+                ParamValues v = defaults(mode);
+                // Clamped: GCC 13's -Warray-bounds sees layerSlot's Count sentinel otherwise
+                // (CLAUDE.md, "GCC 13's own diagnostics").
+                const size_t slot = std::min<size_t>(
+                    static_cast<size_t>(layerSlot(LayerParam::Quality, layer)), kParamCount - 1);
+                v[slot] = x;
+                // Only this layer's tier moves.
+                for (uint8_t other = 0; other < gg::core::kLayers; ++other)
+                {
+                    if (other != layer)
+                    {
+                        CHECK(toCloudParams(v, mode, other).quality == Tier::Normal);
+                    }
+                }
+                return toCloudParams(v, mode, layer).quality;
+            };
+            CHECK(quality(0.0f) == Tier::Eco);
+            CHECK(quality(0.4f) == Tier::Eco);
+            CHECK(quality(0.5f) == Tier::Normal);
+            CHECK(quality(1.0f) == Tier::Normal);
+            CHECK(quality(1.49f) == Tier::Normal);
+            CHECK(quality(1.5f) == Tier::HQ);
+            CHECK(quality(2.0f) == Tier::HQ);
+            // Out of range (the Processor clamps first): the nearest end.
+            CHECK(quality(-3.0f) == Tier::Eco);
+            CHECK(quality(7.0f) == Tier::HQ);
+        }
+    }
+
+    const auto budget = [](float x) { return budgetUnits(with(ParamSlot::Budget, x)); };
+    CHECK(budgetUnits(defaults()) == 4096u * 4u);
+    CHECK(budgetUnits(defaults(Mode::Instrument)) == 4096u * 4u);
+    CHECK(budget(4096.0f) == 16384u);
+    CHECK(budget(256.0f) == 256u * 4u);
+    CHECK(budget(16384.0f) == 16384u * 4u);
+    CHECK(budget(1000.4f) == 1000u * 4u);
+    CHECK(budget(1000.5f) == 1001u * 4u);
+    CHECK(budget(100.0f) == 256u * 4u);
+    CHECK(budget(1e9f) == 16384u * 4u);
+    CHECK(budget(-1e9f) == 256u * 4u);
+    CHECK(budget(std::numeric_limits<float>::infinity()) == 16384u * 4u);
+    CHECK(budget(-std::numeric_limits<float>::infinity()) == 256u * 4u);
+    CHECK(budget(std::numeric_limits<float>::quiet_NaN()) == 4096u * 4u);
 }
 
 TEST_CASE("soft limiter is continuous and bounded", "[core]")

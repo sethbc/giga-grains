@@ -146,12 +146,13 @@ void LiveSource::write(const float *const *in, uint32_t numInChannels, uint32_t 
 }
 
 template <int kTaps>
-bool LiveSource::readTaps(double pos, int64_t head, Cursor &cursor, float &left,
-                          float &right) const noexcept
+bool LiveSource::gatherTaps(double pos, int64_t head, Cursor &cursor, float *left,
+                            float *right) const noexcept
 {
-    static_assert(kTaps == 2 || kTaps == 4);
-    // The Hermite's taps start one frame before floor(pos); the line's at floor(pos).
-    constexpr int64_t kBefore = kTaps == 4 ? 1 : 0;
+    static_assert(kTaps == 2 || kTaps == 4 || kTaps == 16);
+    // The sinc's taps start seven frames before floor(pos), the Hermite's one, the line's at
+    // floor(pos).
+    constexpr int64_t kBefore = kTaps / 2 - 1;
     // Ring time stays far below 2^62; the check also rejects NaN and ±inf before the integer
     // conversion.
     if (!(pos > -0x1.0p62 && pos < 0x1.0p62))
@@ -168,9 +169,6 @@ bool LiveSource::readTaps(double pos, int64_t head, Cursor &cursor, float &left,
     {
         return false;
     }
-    const auto t = static_cast<float>(pos - base);
-    float l[kTaps];
-    float r[kTaps];
     if (first < 0)
     {
         // Taps before frame 0 are silence. Here head − N <= first < 0, so head < N. The block has
@@ -179,8 +177,8 @@ bool LiveSource::readTaps(double pos, int64_t head, Cursor &cursor, float &left,
         for (int64_t k = 0; k < kTaps; ++k)
         {
             const int64_t index = first + k;
-            l[k] = index >= 0 ? slots_[2 * index] : 0.0f;
-            r[k] = index >= 0 ? slots_[2 * index + 1] : 0.0f;
+            left[k] = index >= 0 ? slots_[2 * index] : 0.0f;
+            right[k] = index >= 0 ? slots_[2 * index + 1] : 0.0f;
         }
         cursor.valid = false;
     }
@@ -190,10 +188,32 @@ bool LiveSource::readTaps(double pos, int64_t head, Cursor &cursor, float &left,
         const float *p = slots_ + 2 * slotOf(first, cursor);
         for (int64_t k = 0; k < kTaps; ++k)
         {
-            l[k] = p[2 * k];
-            r[k] = p[2 * k + 1];
+            left[k] = p[2 * k];
+            right[k] = p[2 * k + 1];
         }
     }
+    return true;
+}
+
+template bool LiveSource::gatherTaps<2>(double, int64_t, Cursor &, float *, float *) const noexcept;
+template bool LiveSource::gatherTaps<4>(double, int64_t, Cursor &, float *, float *) const noexcept;
+template bool LiveSource::gatherTaps<16>(double, int64_t, Cursor &, float *,
+                                         float *) const noexcept;
+
+template <int kTaps>
+bool LiveSource::readTaps(double pos, int64_t head, Cursor &cursor, float &left,
+                          float &right) const noexcept
+{
+    static_assert(kTaps == 2 || kTaps == 4);
+    float l[kTaps];
+    float r[kTaps];
+    if (!gatherTaps<kTaps>(pos, head, cursor, l, r))
+    {
+        return false;
+    }
+    // gatherTaps accepted pos, so it is finite and far inside int64's range.
+    const double base = std::floor(pos);
+    const auto t = static_cast<float>(pos - base);
     if constexpr (kTaps == 4)
     {
         left = interp::catmullRom(l[0], l[1], l[2], l[3], t);

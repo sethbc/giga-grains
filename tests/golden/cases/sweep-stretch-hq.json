@@ -1,0 +1,9 @@
+{
+  "sampleRate": 48000,
+  "durationSeconds": 3.0,
+  "blockSize": 128,
+  "seed": 1,
+  "source": {"kind": "sweep", "startHz": 50, "endHz": 8000, "seconds": 4.0, "amplitude": 0.5},
+  "stream": {"grainRateHz": 30, "grainDurationMs": 200, "position": 0.75, "positionJitter": 0.01,
+             "pitchSemitones": -12, "gain": 0.4, "quality": "hq"}
+}

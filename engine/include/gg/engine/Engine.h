@@ -13,9 +13,12 @@
 #include <sst/cpputils/rtsan_support.h>
 
 #include "gg/core/Window.h"
+#include "gg/grain/Budget.h"
 #include "gg/grain/CloudScheduler.h"
 #include "gg/grain/GrainPool.h"
+#include "gg/grain/SincTable.h"
 #include "gg/source/LiveSource.h"
+#include "gg/source/Mipmap.h"
 #include "gg/source/PreparedSource.h"
 #include "gg/source/SampleBuffer.h"
 #include "gg/source/SourceMode.h"
@@ -23,11 +26,30 @@
 
 namespace gg
 {
+namespace kernels
+{
+struct Dispatch;
+} // namespace kernels
+
+/// Which kernel table an Engine renders with (gg/grain/KernelDispatch.h, M2 engine spec §6.12).
+/// Both render the same bits; only the speed differs.
+enum class KernelChoice : uint8_t
+{
+    /// kernels::dispatch(): the 8-wide AVX2 kernels where the build has them and the CPU runs
+    /// them, unless GG_FORCE_SSE was set (and not empty) when the first Engine resolved the
+    /// table, or forceSse() has been called; the 4-wide ones otherwise.
+    Auto,
+    /// kernels::sseKernels(), the 4-wide kernels, always: gg-bench's engine-sample-sse.
+    Sse,
+};
+
 struct EngineConfig
 {
     double sampleRate{48000.0};  ///< Output sample rate; finite and > 0.
     uint32_t maxBlockSize{4096}; ///< process() works in blocks of at most this many frames; > 0.
-    /// The most grains that may sound at once; below 2^31, since the pool stores twice as many.
+    /// The most grains that may be admitted to sound at once, at most kMaxGrainCapacity (spec
+    /// §6.6); the pool stores twice as many. A stolen grain fading out still sounds, so up to
+    /// one more per steal in flight may sound beside them.
     uint32_t grainCapacity{4096};
     uint64_t seed{0};
     /// > 0 allocates a stereo live ring, which SourceMode::Live reads (spec §6.3); 0 means no
@@ -42,12 +64,20 @@ struct EngineConfig
     /// SpectralSource::kRingSeconds ring, which SourceMode::Spectral reads. false (the default)
     /// means none: setSourceMode(Spectral) is ignored, and nothing else changes.
     bool spectral{false};
+    /// The kernel table this engine renders with, chosen once, at construction.
+    KernelChoice kernels{KernelChoice::Auto};
 };
 
 /// Called on the audio thread, from inside process(), once for every grain that spawns, in
 /// spawn order, with the engine's EngineConfig::layer (M2 sub-project 1's spec §6.7). It must be
 /// real-time safe.
 using GrainEventSink = void (*)(void *ctx, uint32_t layer, const GrainSpec &);
+
+/// Called on the audio thread, from inside process(), once for every grain the overload ladder
+/// steals (M2 engine spec §6.5), with the engine's EngineConfig::layer, the stolen grain's index
+/// and the onset of the grain it makes room for, immediately before that grain's GrainEventSink
+/// call. It must be real-time safe.
+using GrainStealSink = void (*)(void *ctx, uint32_t layer, uint64_t index, int64_t onset);
 
 /// The grain engine, one layer's (spec §6.2): one Cloud grain stream (layer EngineConfig::layer,
 /// stream 0) whose new grains read one source kind, a sample (SourceMode::Sample, the default),
@@ -64,8 +94,9 @@ using GrainEventSink = void (*)(void *ctx, uint32_t layer, const GrainSpec &);
 /// - each grain's read position and window phase come from its elapsed time since its onset,
 ///   never from state accumulated across blocks;
 /// - grains are summed in spawn order;
-/// - a grain is admitted when fewer than grainCapacity grains are still sounding at its onset,
-///   and otherwise dropped. That depends only on the schedule, not on block boundaries;
+/// - a grain is admitted, lowered, admitted by stealing or dropped by the overload ladder
+///   (below) from the grains still sounding at its onset, their latched ends and weights, and
+///   the quota in effect. That depends only on the schedule, not on block boundaries;
 /// - live mode writes each block's input into the ring before any grain reads it. At output
 ///   sample t a grain reads only the window [R(t) − N, R(t) − 1]: frames written at or before
 ///   t, and at least M = 256 frames before it unless a freeze has stopped the head and the fade
@@ -73,6 +104,15 @@ using GrainEventSink = void (*)(void *ctx, uint32_t layer, const GrainSpec &);
 ///   frames the block writes after t never overwrite t's window, however far the ring has
 ///   wrapped. What a sample reads therefore depends neither on where the block ends nor on
 ///   maxBlockSize.
+///
+/// **The sample's edge** (carry-over row 300; the director, 2026-10-30: fade the tail). A grain
+/// reading a sample whose read position would pass the sample's last frame while its window is
+/// open ends there instead: admit() latches grainEdgeSample(grain, the slot's level-0 frames)
+/// and GrainPool::spawn ends the grain at that sample, faded out with a raised cosine over the
+/// kEdgeFade samples before it (or over all it has, when that is fewer; ruling EF-6). Every
+/// sample before the fade is the uncut grain's, and a grain that ends inside the sample is
+/// unchanged. The edge is latched from the source at the grain's onset: a grain that setSource
+/// or replaceSource moves onto a different source keeps it. Grains reading the ring have none.
 ///
 /// **Live mode** (spec §6.3). Ring time: R(t) is the number of frames written through output
 /// sample t (LiveSource). Each grain's GrainSpec::startPos is a ring-time position, and its rate
@@ -108,6 +148,33 @@ using GrainEventSink = void (*)(void *ctx, uint32_t layer, const GrainSpec &);
 /// positionDraw seconds behind that ring's head under the admission clamp above, with N the
 /// smear's ring frames, and the live kernels render it. That ring never freezes: setFreeze
 /// reaches the live ring alone.
+/// **The overload ladder** (M2 engine spec §6.4, §6.5; INTENT §14). Each sounding grain weighs
+/// w(t) = grainWeight(t, stereo) (Budget.h), stereo when it reads a source of two or more
+/// channels or the ring, and the pool's ledger keeps W(o), the summed weight of the grains
+/// whose end is after o. A draw at onset o with tier q is:
+/// 1. admitted at q if W(o) + w(q) <= quota and fewer than grainCapacity grains sound;
+/// 2. otherwise, with that room, admitted at the highest lower tier t (Normal, then Eco) with
+///    W(o) + w(t) <= quota, and counted in loweredGrains();
+/// 3. otherwise the oldest unstolen sounding grain (GrainPool::oldestSounding) is stolen if it
+///    has sounded at least kStealThreshold of its window, (o − onsetSample) − onsetFrac >=
+///    0.5 × durationSamples, and (W(o) − W_fading(o)) − w(old) + w(t) <= quota for some
+///    t <= q, W_fading the weight of the grains already stolen and fading (ruling ES-T2a;
+///    GrainPool::fadingWeight): with more than kStealFade samples left it ends at o + kStealFade,
+///    fading with a raised cosine (ruling EF-8), and with at most that left it keeps its end and
+///    doesn't fade (ruling ES-T6a; GrainPool::steal), keeping its weight until its end either way
+///    (a grain cut at the sample's edge counts from its cut end, and a steal of it takes the
+///    earlier end); the draw is admitted at the highest such t and the steal counted in
+///    stolenGrains() and reported to the steal sink. Otherwise the draw is dropped and counted in
+///    droppedGrains().
+/// At most one grain is stolen per draw, and a stolen grain is never stolen again. The grain
+/// latches the tier and weight chosen (GrainSpec::tier, GrainSpec::weight).
+///
+/// **The level per grain** (M2 engine spec §6.3). A grain admitted at HQ latches the mip level
+/// of its rate, mipLevelFor(rate, the source's levelCount()), its rate in level-0 frames per
+/// output sample; a grain admitted at Normal or Eco, an HQ draw the ladder lowered among them,
+/// latches level 0 (GrainSpec::level). It reads that level of the source its slot holds, or the
+/// slot's top level when the source there now has fewer (replaceSource), at the level's
+/// decimation, its positions and rate scaled by that exact power of two (GrainKernels.h).
 class Engine
 {
   public:
@@ -118,7 +185,8 @@ class Engine
 
     /// Allocates everything process() needs, the live ring and the Spectral Smear included. Throws
     /// std::invalid_argument if sampleRate is not finite and positive, maxBlockSize is 0,
-    /// liveSeconds is not finite and >= 0, grainCapacity is 2^31 or more, or layer is 4 or more
+    /// liveSeconds is not finite and >= 0, grainCapacity is above kMaxGrainCapacity, or layer is
+    /// 4 or more
     /// (all checked before anything is allocated), or if the ring's storage, N + maxBlockSize
     /// frames, would exceed 2^40, and std::bad_alloc if the Spectral Smear can't be allocated.
     explicit Engine(const EngineConfig &config);
@@ -235,13 +303,24 @@ class Engine
     /// while process() is not running.
     void setEventSink(GrainEventSink sink, void *ctx) noexcept;
 
+    /// The steal sink (see GrainStealSink), with setEventSink's rules; nullptr removes it.
+    void setStealSink(GrainStealSink sink, void *ctx) noexcept;
+
+    /// This engine's share of the Budget, in weight units (M2 engine spec §6.4): the overload
+    /// ladder admits grains while their summed weight fits it. The default, kUnlimitedQuota,
+    /// never binds, so only grainCapacity can. Applies from the next process() call's first
+    /// frame, to every draw from then on; the grains already sounding are not cut. Real-time
+    /// safe, with the same threading rule as setCloudParams. Kept by reset().
+    void setQuota(uint64_t units) noexcept { requestedQuota_ = units; }
+
     /// Silences every grain, lowers bus2Used() and restarts the clock, the schedule and ring time
     /// at 0, the Spectral Smear's included. Keeps the current source (the previous one retires, see
     /// takeRetiredSource), the source mode, the enable gate, the Cloud parameters, the held keys,
-    /// the note gate, the freeze setting and the sink: the next process() continues as a new engine
-    /// with those settings would, a freeze ramping down from its first frame. The ring's old frames
-    /// can't be read again. Real-time safe, but not synchronized with process(): call it on the
-    /// audio thread between process() calls, or while process() is not running.
+    /// the note gate, the freeze setting, the quota and the sinks, and zeroes the dropped, lowered
+    /// and stolen counts: the next process() continues as a new engine with those settings would, a
+    /// freeze ramping down from its first frame. The ring's old frames can't be read again.
+    /// Real-time safe, but not synchronized with process(): call it on the audio thread between
+    /// process() calls, or while process() is not running.
     void reset() noexcept;
 
     /// Renders numFrames frames, overwriting out[0 .. numChannels). Before rendering, if there is
@@ -297,7 +376,8 @@ class Engine
     /// The grains still sounding after the last process() call: the pool retires the finished
     /// ones at the end of every block.
     uint32_t activeGrains() const noexcept { return pool_.size(); }
-    /// Grains the schedule asked for that found the pool full or, in Live mode, whose read span
+    /// Grains the schedule asked for that the overload ladder dropped (no room by quota or
+    /// capacity, and the oldest grain not yet stealable) or, in Live mode, whose read span
     /// doesn't fit the ring, since construction or reset().
     uint64_t droppedGrains() const noexcept { return dropped_; }
     /// True from the first admission of a bus-1 grain (whichever process() form runs) until
@@ -305,6 +385,11 @@ class Engine
     /// It stays raised while no grain is on bus 1 any more, so a layer that sums bus2 after its
     /// filter keeps the filter's tail (extremes spec §6.3).
     bool bus2Used() const noexcept { return bus2Used_; }
+    /// Grains admitted at a lower tier than their draw's, by the overload ladder's rung 2 or by
+    /// a steal, since construction or reset().
+    uint64_t loweredGrains() const noexcept { return lowered_; }
+    /// Grains the overload ladder stole to admit another, since construction or reset().
+    uint64_t stolenGrains() const noexcept { return stolen_; }
     /// The source mode in effect: set by the last process() call (see setSourceMode).
     SourceMode sourceMode() const noexcept { return mode_; }
     /// N, the live ring's length in frames; 0 without a ring.
@@ -321,6 +406,9 @@ class Engine
     const CloudParams &cloudParams() const noexcept { return cloud_.params(); }
     /// The Spectral Smear, read-only; null without EngineConfig::spectral.
     const SpectralSource *spectral() const noexcept { return spectral_.get(); }
+    /// The kernel table this engine renders with (EngineConfig::kernels), chosen at
+    /// construction.
+    const kernels::Dispatch &kernelTable() const noexcept { return *kernels_; }
 
   private:
     void processBlock(const float *const *in, uint32_t numInChannels, float *const *out,
@@ -341,16 +429,20 @@ class Engine
     };
     void admit(const GrainSpec &g, const BlockOutputs &outputs, int64_t blockStart,
                int64_t &renderedTo) noexcept SST_CPPUTILS_NONBLOCKING;
-    /// Adds every pool grain into its row's bus over [from, to), in spawn order, through
-    /// gg/grain/GrainKernels.h with each grain's latched tier and source, whatever the mode in
-    /// effect: the SIMD live kernel for a grain of kLiveSlot over the live ring, and for one of
-    /// kSpectralSlot over the smear's ring, otherwise the SIMD sample kernel reading the grain's
-    /// sample slot.
+    /// Adds every pool grain into its row's bus over [from, to), in spawn order, with each grain's
+    /// latched tier and source, whatever the mode in effect: the SIMD live kernel for a grain of
+    /// kLiveSlot over the live ring, and for one of kSpectralSlot over the smear's ring, otherwise
+    /// the SIMD sample kernel reading the grain's sample slot. With GG_KERNELS_AVX2 it calls
+    /// through the engine's kernel table (kernelTable()); without it every table is the SSE one,
+    /// and it calls the 4-wide kernels directly.
     void renderPool(const BlockOutputs &outputs, int64_t blockStart, int64_t from,
                     int64_t to) noexcept SST_CPPUTILS_NONBLOCKING;
 
     EngineConfig config_;
+    const kernels::Dispatch *kernels_; // kernelTable()'s table, set at construction; renderPool
+                                       // calls it only with GG_KERNELS_AVX2
     HannTable hann_;
+    SincTable sinc_; // the HQ tier's windowed sinc, built here, off the audio thread
     GrainPool pool_;
     CloudScheduler cloud_;
     LiveSource live_;
@@ -362,11 +454,12 @@ class Engine
     struct SourceSlot
     {
         const PreparedSource *source{nullptr};
-        const float *data[2]{nullptr, nullptr};
-        int64_t frames{0};
-        bool mono{true};
-        const float *interleaved{nullptr}; // a stereo source's pairs; null if mono or none
-        double rate{0.0};                  // the source's sample rate; unused without one
+        // Each level the kernels may read (spec §6.3): levels[n] is source->level(n) for n below
+        // levelCount, and a copy of level 0 above it; renderPool makes the kernels' views of them.
+        // Level 0's interleaved is a stereo source's pairs, null if mono, none or not allocated.
+        PreparedSource::Level levels[kMaxMipLevels]{};
+        uint32_t levelCount{1};
+        double rate{0.0}; // the source's sample rate; unused without one
         // The latest grainEndSample of the grains admitted to this slot (never a ring grain);
         // INT64_MIN when none has been since the last clear.
         int64_t lastEnd{std::numeric_limits<int64_t>::min()};
@@ -411,9 +504,18 @@ class Engine
 
     GrainEventSink sink_{nullptr};
     void *sinkCtx_{nullptr};
+    GrainStealSink stealSink_{nullptr};
+    void *stealCtx_{nullptr};
+
+    // The quota in effect, and as last requested (setQuota); process() applies it at its first
+    // frame.
+    uint64_t quota_{kUnlimitedQuota};
+    uint64_t requestedQuota_{kUnlimitedQuota};
 
     int64_t clock_{0};
     uint64_t dropped_{0};
+    uint64_t lowered_{0};
+    uint64_t stolen_{0};
 };
 } // namespace gg
 

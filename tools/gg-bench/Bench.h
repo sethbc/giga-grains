@@ -33,6 +33,13 @@
 //   four such engines (layers 0 to 3) sharing X's grains, 500 each, rendered through a
 //   SerialRunner and summed in layer order; and engine-layers-full, the same with all of the
 //   grains in every layer (8,000 in all by default);
+// - the engine-scale cases (M2 engine spec §6.10), report-only beside X: engine-sample-hq (X at
+//   the HQ tier), engine-sample-hq-up (the same at Pitch +19, reading mip level 1) and
+//   engine-overload (one engine at capacity 16,384 and a quota of Options::grains Normal grains,
+//   asked for 1 s grains at four times that rate, so the overload ladder drops and steals);
+// - engine-sample-sse (the AVX2 spike, M2 engine spec §6.12), report-only beside X: X on the
+//   4-wide kernels (EngineConfig::kernels), so that where engine-sample dispatches to the 8-wide
+//   AVX2 kernels the two ratios compare the paths in the same rounds;
 // - three cases of the extremes sub-project (spec §6.10), each engine-sample with a change:
 //   engine-sample-smear (Smear's jitter and detune), engine-buses (half the grains on the second
 //   bus, through the two-bus process) and engine-spectral (Spectral grains over the smear ring).
@@ -89,6 +96,9 @@ struct Report
     std::string machine, compiler;
     std::vector<CaseResult> results;
     std::vector<Ratio> ratios; // computeRatios(results)
+    /// kernelLanes() when the report was made: which kernel table the engine cases' Auto
+    /// engines rendered with (engine-sample-sse's are always 4-wide).
+    uint32_t kernelLanes{0};
 };
 
 /// One ratio checked against a baseline: regressed when ratio > limit = the baseline's ratio
@@ -168,7 +178,8 @@ std::vector<std::string> caseNames();
 using Progress = std::function<void(int round, int rounds)>;
 
 /// Throws std::invalid_argument for an unknown case, a run length that isn't in (0, 3600]
-/// seconds, fewer than 1 round or 0 grains.
+/// seconds, fewer than 1 round, 0 grains or more than kMaxGrainCapacity − 48 (16,336), the most
+/// whose engine-full-pool capacity, grains + 48, the engine accepts.
 void validate(const Options &options);
 
 /// Times the cases options.cases names (all of them when it's empty), each at block sizes 32, 64
@@ -181,7 +192,8 @@ Report run(const Options &options, const Progress &progress = {});
 /// median and IQR. Throws std::invalid_argument if the two have different run counts.
 std::vector<Ratio> computeRatios(const Report &report);
 
-/// The report as JSON schema 2: schemaVersion, machine, compiler, commit, runSeconds, rounds,
+/// The report as JSON schema 2: schemaVersion, machine, kernelLanes, compiler, commit, runSeconds,
+/// rounds,
 /// results (each CaseResult's fields, with nsPerGrainSample as "runs") and ratios (each Ratio's
 /// fields). Invalid UTF-8 in a string (the commit, say) is replaced, never an error.
 std::string toJson(const Report &report);
@@ -220,13 +232,20 @@ nlohmann::json makeBaseline(const std::string &leg, const std::vector<nlohmann::
 /// if either fails checkBaseline() or their legs differ.
 nlohmann::json mergeBaseline(const nlohmann::json &old, const nlohmann::json &made);
 
-/// How many grains an engine case admitted at each interpolation tier (ruling 2), and what the
-/// extremes' cases exercise: how many went to bus 2, read the Spectral ring, or play at a rate
-/// other than the first grain's (Smear's micro-detune, at a fixed pitch).
+/// How many grains an engine case admitted at each interpolation tier (ruling 2), what its
+/// overload ladder did meanwhile (M2 engine spec §6.10), and what the extremes' cases exercise:
+/// how many went to bus 2, read the Spectral ring, or play at a rate other than the first grain's
+/// (Smear's micro-detune, at a fixed pitch).
 struct TierCounts
 {
     uint64_t eco{0};
     uint64_t normal{0};
+    uint64_t hq{0};
+    /// The engines' loweredGrains(), stolenGrains() and droppedGrains() after the warm-up,
+    /// summed over the layers.
+    uint64_t lowered{0};
+    uint64_t stolen{0};
+    uint64_t dropped{0};
     uint64_t bus2{0};
     uint64_t spectral{0};
     uint64_t detuned{0};
@@ -234,15 +253,21 @@ struct TierCounts
     /// Each layer's engine's activeGrains() after the warm-up, in layer order: one entry for a
     /// one-layer case, four for engine-layers and engine-layers-full.
     std::vector<uint32_t> activeGrains{};
+    /// Each layer's engine's kernel width, kernelTable().lanes, in layer order: 4 for the SSE (or
+    /// NEON) kernels, 8 for the AVX2 ones (engine-sample-sse: always 4).
+    std::vector<uint32_t> kernelLanes{};
 };
 
 /// Builds engine case `engineCase` at `blockSize` with `grains` grains exactly as run() does,
 /// warms it up as run() does, and counts the tier of every grain it admitted meanwhile, through
 /// its engines' event sinks (every layer's, for a four-layer case): each admitted grain's spec
 /// carries the tier the pool latches for it. It proves which tier a case runs at
-/// (engine-sample-eco: Eco; the others: Normal), and how a layered case's grains are spread over
-/// its layers (TierCounts::activeGrains), without timing anything. Throws std::invalid_argument for
-/// a name that isn't an engine case, a block size run() doesn't use (32, 64 and 256) or 0 grains.
+/// (engine-sample-eco: Eco; engine-sample-hq and engine-sample-hq-up: HQ; the others: Normal),
+/// how a layered case's grains are spread over its layers (TierCounts::activeGrains), and what
+/// engine-overload's ladder did (TierCounts::lowered, stolen, dropped), and which kernels its
+/// engines render with (TierCounts::kernelLanes), without timing anything.
+/// Throws std::invalid_argument for a name that isn't an engine case, a block size run() doesn't
+/// use (32, 64 and 256) or 0 grains.
 TierCounts admittedTiers(const std::string &engineCase, uint32_t grains, uint32_t blockSize);
 
 /// The order round `round` (r) runs `configurations` (n) configurations in. Even rounds run
@@ -261,6 +286,13 @@ std::string machine();
 
 /// The compiler gg-bench was built with.
 std::string compiler();
+
+/// The width of the kernel table gg::kernels::dispatch() resolved to in this process: 8 for the
+/// AVX2 kernels, 4 for the SSE (or NEON) ones (M2 engine spec §6.12).
+uint32_t kernelLanes();
+
+/// kernelLanes() for people: "8-wide (AVX2)" or "4-wide".
+std::string kernelsName(uint32_t lanes);
 
 // ---- gg-bench --space: Space's cost (sub-project 4, report-only) ----
 //

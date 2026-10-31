@@ -105,9 +105,9 @@ class LiveSource
     int64_t blockKink() const noexcept { return blockStart_ + blockAdvance_; }
 
     /// The ring's storage, for kernels that gather taps themselves: frame f >= 0 is in slot
-    /// s = f mod capacity, whose channel c is slots[2s + c]. Slots 0 .. capacity + 2 are
-    /// readable, with capacity .. capacity + 2 mirroring slots 0 .. 2, so taps starting at any
-    /// slot s < capacity are contiguous for 4 frames. capacity is C = N + maxBlockSize and frames
+    /// s = f mod capacity, whose channel c is slots[2s + c]. Slots 0 .. capacity + 14 are
+    /// readable, with capacity .. capacity + 14 mirroring slots 0 .. 14, so taps starting at any
+    /// slot s < capacity are contiguous for 16 frames. capacity is C = N + maxBlockSize and frames
     /// is N (both 0, with null slots, when there is no ring). Only a frame inside a sample's
     /// window [R(t) − N, R(t) − 1] is the one written for it (see Storage).
     struct RingView
@@ -191,11 +191,20 @@ class LiveSource
     bool readLinear(double pos, int64_t head, Cursor &cursor, float &left,
                     float &right) const noexcept SST_CPPUTILS_NONBLOCKING;
 
+    /// The raw taps of a kTaps-point read at pos (kTaps 2, 4 or 16): taps floor(pos) − kBefore ..
+    /// floor(pos) − kBefore + kTaps − 1, kBefore = kTaps / 2 − 1 (0, 1 or 7), written in order to
+    /// left[0 .. kTaps) and right[0 .. kTaps). Returns false and writes nothing unless every tap
+    /// is in the window [head − N, head − 1], as read() requires of its four; taps before frame 0
+    /// read as 0. read() and readLinear() are gatherTaps<4> and <2> with their curves applied.
+    template <int kTaps>
+    bool gatherTaps(double pos, int64_t head, Cursor &cursor, float *left,
+                    float *right) const noexcept SST_CPPUTILS_NONBLOCKING;
+
   private:
     static constexpr double kMargin = static_cast<double>(kHeadMargin);
-    // Taps i − 1 .. i + 2 read slots s .. s + 3 (readLinear's taps i, i + 1 read s, s + 1).
-    // Slots C .. C + 2 mirror slots 0 .. 2, so the taps are contiguous wherever s falls.
-    static constexpr int64_t kGuardFrames = 3;
+    // A read's kTaps taps read slots s .. s + kTaps − 1, at most 16 (the sinc's). Slots
+    // C .. C + 14 mirror slots 0 .. 14, so the taps are contiguous wherever s falls.
+    static constexpr int64_t kGuardFrames = 15;
 
     // The slot of ring-time frame first >= 0, found from the cursor when reads move forward, and
     // recorded in it.

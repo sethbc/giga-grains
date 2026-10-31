@@ -1,0 +1,19 @@
+{
+  "mode": "fx",
+  "sampleRate": 48000,
+  "durationSeconds": 5.5,
+  "blockSize": 128,
+  "seed": 1,
+  "input": {"kind": "sweep", "startHz": 50, "endHz": 20000, "seconds": 5.0, "amplitude": 0.5},
+  "channels": 2,
+  "samples": {"A": {"kind": "sweep", "startHz": 20000, "endHz": 50, "seconds": 4.0, "amplitude": 0.25}},
+  "params": {"Mix": 1.0, "A Source": 0, "Quality": 2, "Position": 0.4, "Spray": 0.96, "Density": 5.0, "Size": -4.321928094887362, "Pitch": 0},
+  "automation": [
+    {"time": 1.0, "param": "Pitch", "value": 12},
+    {"time": 2.0, "param": "Pitch", "value": 24}
+  ],
+  "notes": [
+    {"time": 3.0, "key": 72, "duration": 1.0},
+    {"time": 4.0, "key": 83, "duration": 1.5}
+  ]
+}

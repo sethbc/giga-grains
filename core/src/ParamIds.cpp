@@ -38,7 +38,7 @@ md_t fresh()
 
 md_t base(ParamSlot slot) { return fresh().withID(paramId(slot)); }
 
-// The layers' displayed names: "A Position" ... "D Step 16" (spec §6.9).
+// The layers' displayed names: "A Position" ... "D Quality" (spec §6.9).
 #define GG_LAYER_NAME_A(name, index, display) "A " display,
 #define GG_LAYER_NAME_B(name, index, display) "B " display,
 #define GG_LAYER_NAME_C(name, index, display) "C " display,
@@ -260,6 +260,16 @@ md_t layerMeta(LayerParam p, Mode mode)
             .withDimensionlessFormatting()
             .withFlags(kAutomatableModulatable | CLAP_PARAM_IS_STEPPED);
 
+    // M2 sub-project 3's spec §6.1, §6.8.
+    case LayerParam::Quality:
+        // the grains' interpolation tier, stepped 0..2 (gg::Tier): Normal, M1's, by default.
+        return fresh()
+            .asInt()
+            .withRange(0.f, 2.f)
+            .withDefault(1.0f)
+            .withUnorderedMapFormatting({{0, "Eco"}, {1, "Normal"}, {2, "HQ"}})
+            .withFlags(kAutomatableModulatable | CLAP_PARAM_IS_STEPPED);
+
     // M2 sub-project 4's spec §6.7: Smear, the bus split and the buses' filters, 0..1 each but for
     // the types and the cutoffs.
     case LayerParam::Smear:
@@ -401,6 +411,14 @@ std::array<md_t, kParamCount> buildTable(Mode mode)
                        .withFlags(kAutomatableModulatable | CLAP_PARAM_IS_STEPPED);
     }
 
+    // M2 sub-project 3's spec §6.4, §6.8: the count of Normal stereo grains the rendering layers
+    // share, stepped 256..16,384; 4,096 by default, in both products.
+    at(ParamSlot::Budget) = base(ParamSlot::Budget)
+                                .withName("Budget")
+                                .asInt()
+                                .withRange(256.f, 16384.f)
+                                .withDefault(4096.0f)
+                                .withFlags(kAutomatableModulatable | CLAP_PARAM_IS_STEPPED);
     // The Extremes' globals (M2 sub-project 4's spec §6.7), the same in both products.
     // The delay: its return's gain, 0..1.
     at(ParamSlot::DelayAmount) =

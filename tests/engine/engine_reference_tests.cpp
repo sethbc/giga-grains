@@ -26,6 +26,7 @@
 #include "gg/engine/Engine.h"
 #include "gg/grain/GrainKernels.h"
 #include "gg/grain/GrainPool.h"
+#include "gg/grain/SincTable.h"
 #include "gg/source/LiveSource.h"
 
 namespace
@@ -165,14 +166,17 @@ Channels renderEngine(gg::Engine &engine, const gg::CloudParams &base,
 }
 
 // The grains, in spawn order, in a pool of their own: the rows the reference reads, latched by
-// GrainPool::spawn as the engine's were.
-std::unique_ptr<gg::GrainPool> poolOf(const std::vector<gg::GrainSpec> &grains)
+// GrainPool::spawn as the engine's were, each with its edge (carry-over row 300; kNoEdge for
+// all when `edges` is empty).
+std::unique_ptr<gg::GrainPool> poolOf(const std::vector<gg::GrainSpec> &grains,
+                                      const std::vector<int64_t> &edges = {})
 {
     auto pool = std::make_unique<gg::GrainPool>(
         static_cast<uint32_t>(std::max<std::size_t>(1, grains.size())));
-    for (const gg::GrainSpec &g : grains)
+    for (std::size_t k = 0; k < grains.size(); ++k)
     {
-        REQUIRE(pool->spawn(g));
+        const bool spawned = pool->spawn(grains[k], edges.empty() ? gg::kNoEdge : edges[k]);
+        REQUIRE(spawned);
     }
     REQUIRE(pool->size() == grains.size());
     return pool;
@@ -182,7 +186,7 @@ std::unique_ptr<gg::GrainPool> poolOf(const std::vector<gg::GrainSpec> &grains)
 // each grain's tier names.
 void referenceSample(const gg::GrainPool &pool, const gg::SampleBuffer &source,
                      const gg::kernels::Output &out, int64_t from, int64_t to,
-                     const gg::HannTable &hann)
+                     const gg::kernels::Tables &tables)
 {
     const bool mono = source.channels() == 1;
     const gg::kernels::SampleSource src{{source.channel(0), source.channel(mono ? 0 : 1)},
@@ -194,12 +198,17 @@ void referenceSample(const gg::GrainPool &pool, const gg::SampleBuffer &source,
         if (pool.rows().tier[i] == gg::Tier::Eco)
         {
             gg::kernels::renderSampleRef<gg::kernels::Linear>(pool.rows(), i, src, out, from, to,
-                                                              hann);
+                                                              tables);
+        }
+        else if (pool.rows().tier[i] == gg::Tier::HQ)
+        {
+            gg::kernels::renderSampleRef<gg::kernels::Sinc>(pool.rows(), i, src, out, from, to,
+                                                            tables);
         }
         else
         {
             gg::kernels::renderSampleRef<gg::kernels::Hermite>(pool.rows(), i, src, out, from, to,
-                                                               hann);
+                                                               tables);
         }
     }
 }
@@ -214,9 +223,6 @@ Channels renderSampleReference(const std::vector<gg::GrainSpec> &grains,
     {
         c.assign(static_cast<std::size_t>(frames), 0.0f);
     }
-    const auto pool = poolOf(grains);
-    const gg::HannTable hann;
-    const gg::kernels::Output out{{ref.ch[0].data(), outputs == 2 ? ref.ch[1].data() : nullptr}, 0};
     std::vector<const Change *> sources;
     for (const Change &c : changes)
     {
@@ -227,10 +233,27 @@ Channels renderSampleReference(const std::vector<gg::GrainSpec> &grains,
     }
     REQUIRE(!sources.empty());
     REQUIRE(sources.front()->at == 0);
+    // Each grain's edge, from the source installed at its onset (the engine latches it at
+    // admission), whichever source it reads later.
+    std::vector<int64_t> edges;
+    for (const gg::GrainSpec &g : grains)
+    {
+        const Change *at = sources.front();
+        for (const Change *c : sources)
+        {
+            at = c->at <= g.onsetSample ? c : at;
+        }
+        edges.push_back(gg::grainEdgeSample(g, at->source->frames()));
+    }
+    const auto pool = poolOf(grains, edges);
+    const gg::HannTable hann;
+    const gg::SincTable sinc;
+    const gg::kernels::Tables tables{hann, sinc};
+    const gg::kernels::Output out{{ref.ch[0].data(), outputs == 2 ? ref.ch[1].data() : nullptr}, 0};
     for (std::size_t k = 0; k < sources.size(); ++k)
     {
         const int64_t to = k + 1 < sources.size() ? sources[k + 1]->at : frames;
-        referenceSample(*pool, *sources[k]->source, out, sources[k]->at, to, hann);
+        referenceSample(*pool, *sources[k]->source, out, sources[k]->at, to, tables);
     }
     return ref;
 }
@@ -251,6 +274,8 @@ Channels renderLiveReference(const std::vector<gg::GrainSpec> &grains,
     const auto pool = poolOf(grains);
     const gg::GrainRows &rows = pool->rows();
     const gg::HannTable hann;
+    const gg::SincTable sinc;
+    const gg::kernels::Tables tables{hann, sinc};
     const gg::kernels::Output out{{ref.ch[0].data(), outputs == 2 ? ref.ch[1].data() : nullptr}, 0};
     gg::LiveSource ring;
     ring.prepare(kSampleRate, liveSeconds, kMaxBlock);
@@ -278,13 +303,18 @@ Channels renderLiveReference(const std::vector<gg::GrainSpec> &grains,
             {
                 if (rows.tier[i] == gg::Tier::Eco)
                 {
-                    gg::kernels::renderLiveRef<gg::kernels::Linear>(rows, i, ring, out, blockStart,
-                                                                    blockEnd, hann);
+                    gg::kernels::renderLiveRef<gg::kernels::Linear>(rows, i, ring, 1u, out,
+                                                                    blockStart, blockEnd, tables);
+                }
+                else if (rows.tier[i] == gg::Tier::HQ)
+                {
+                    gg::kernels::renderLiveRef<gg::kernels::Sinc>(rows, i, ring, 1u, out,
+                                                                  blockStart, blockEnd, tables);
                 }
                 else
                 {
-                    gg::kernels::renderLiveRef<gg::kernels::Hermite>(rows, i, ring, out, blockStart,
-                                                                     blockEnd, hann);
+                    gg::kernels::renderLiveRef<gg::kernels::Hermite>(rows, i, ring, 1u, out,
+                                                                     blockStart, blockEnd, tables);
                 }
             }
         }

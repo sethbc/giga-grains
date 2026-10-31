@@ -85,11 +85,12 @@ inline constexpr std::array<ParamRow, 28> kM1Rows{{
     {0x000017, "Macro Feedback", 0.0f, 1.0f, 0.0f, false},
     {0x000018, "Macro Mix", 0.0f, 1.0f, 0.5f, false},
 }};
-// Layer A's 37 new parameters (M2 sub-project 1's spec §6.9) in index order: rates in log2 Hz
-// (0.01 to 50 Hz), envelope times in log2 seconds (1 ms to 10 s).
+// Layer A's 38 new parameters in index order: M2 sub-project 1's 37 (its spec §6.9; rates in log2
+// Hz, 0.01 to 50 Hz, envelope times in log2 seconds, 1 ms to 10 s), then sub-project 3's Quality,
+// in its reserved block (its spec §6.8).
 inline constexpr float kRateMin = -6.643856189774724f, kRateMax = 5.643856189774724f;
 inline constexpr float kTimeMin = -9.965784284662087f, kTimeMax = 3.321928094887362f;
-inline constexpr std::array<ParamRow, 37> kLayerANewRows{{
+inline constexpr std::array<ParamRow, 38> kLayerANewRows{{
     {0x01000C, "A Source", 0.0f, 4.0f, 1.0f, true},
     {0x01000D, "A Pitch Spread", 0.0f, 24.0f, 0.0f, false},
     {0x01000E, "A Size Spread", 0.0f, 2.0f, 0.0f, false},
@@ -127,9 +128,11 @@ inline constexpr std::array<ParamRow, 37> kLayerANewRows{{
     {0x01002E, "A Step 14", 0.0f, 1.0f, 0.0f, false},
     {0x01002F, "A Step 15", 0.0f, 1.0f, 0.0f, false},
     {0x010030, "A Step 16", 0.0f, 1.0f, 0.0f, false},
+    // M2 sub-project 3 (Engine scale and quality; its spec §6.8): 0 Eco, 1 Normal, 2 HQ.
+    {0x010050, "A Quality", 0.0f, 2.0f, 1.0f, true},
 }};
 // Layer A's eight Extremes parameters (M2 sub-project 4's spec §6.7), in its reserved block at
-// 0x60 to 0x67, after layer A's Step 16: the cutoffs in log2 Hz, 20 Hz to 20 kHz, 1 kHz by
+// 0x60 to 0x67, after layer A's Quality: the cutoffs in log2 Hz, 20 Hz to 20 kHz, 1 kHz by
 // default.
 inline constexpr float kCutoffMin = 4.321928094887363f, kCutoffMax = 14.287712379549449f;
 inline constexpr float kCutoffDefault = 9.965784284662087f;
@@ -143,8 +146,10 @@ inline constexpr std::array<ParamRow, 8> kLayerAExtremesRows{{
     {0x010066, "A Bus 2 Cutoff", kCutoffMin, kCutoffMax, kCutoffDefault, false},
     {0x010067, "A Bus 2 Resonance", 0.0f, 1.0f, 0.0f, false},
 }};
-// The nine new globals, the last slots.
-inline constexpr std::array<ParamRow, 9> kNewGlobalRows{{
+// The new globals, the last slots but the Extremes' eight: M2 sub-project 1's nine, then
+// sub-project 3's Budget, in its reserved block (its spec §6.4, §6.8), a count of Normal stereo
+// grains.
+inline constexpr std::array<ParamRow, 10> kNewGlobalRows{{
     {0x000019, "Morph X", 0.0f, 1.0f, 0.5f, false},
     {0x00001A, "Morph Y", 0.0f, 1.0f, 0.5f, false},
     {0x00001B, "Layer A On", 0.0f, 1.0f, 1.0f, true},
@@ -154,6 +159,7 @@ inline constexpr std::array<ParamRow, 9> kNewGlobalRows{{
     {0x00001F, "Level B", -60.0f, 12.0f, 0.0f, false},
     {0x000020, "Level C", -60.0f, 12.0f, 0.0f, false},
     {0x000021, "Level D", -60.0f, 12.0f, 0.0f, false},
+    {0x000050, "Budget", 256.0f, 16384.0f, 4096.0f, true},
 }};
 // The Extremes' eight globals (M2 sub-project 4's spec §6.7), in scope 0's reserved block at 0x60
 // to 0x67, after Level D: Delay Time in log2 seconds, 1 ms to 2 s, 375 ms by default; Limiter
@@ -169,7 +175,7 @@ inline constexpr std::array<ParamRow, 8> kExtremesGlobalRows{{
     {0x000067, "Limiter Release", -6.643856189774724f, 0.0f, -3.321928094887362f, false},
 }};
 
-// All 258 in slot order: the rows above, with layers B to D generated from layer A's rows in index
+// All 263 in slot order: the rows above, with layers B to D generated from layer A's rows in index
 // order (the M1 ones found by ID), each with its letter for "A" and its scope for 1. Built on the
 // first call.
 inline const std::array<ExpectedParamRow, gg::core::kParamCount> &paramTable()

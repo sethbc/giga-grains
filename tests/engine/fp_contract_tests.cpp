@@ -21,6 +21,7 @@
 #include "gg/grain/CloudScheduler.h"
 #include "gg/grain/GrainKernels.h"
 #include "gg/grain/GrainPool.h"
+#include "gg/grain/SincTable.h"
 #include "gg/source/InterleavedStereo.h"
 
 // Defined in fp_contract_fast.cpp, which is compiled with flags that allow FP contraction and
@@ -33,9 +34,9 @@ double ggFastExp2(double x);
 double ggFastLog(double x);
 float ggFastHann(double phase01);
 int ggFastCloud(const gg::CloudParams &params, int64_t frames, gg::GrainDraw *out, int capacity);
-void ggFastSampleSimd(bool eco, const gg::GrainRows &rows, uint32_t count,
+void ggFastSampleSimd(gg::Tier tier, const gg::GrainRows &rows, uint32_t count,
                       const gg::kernels::SampleSource &src, const gg::kernels::Output &out,
-                      int64_t from, int64_t to, const gg::HannTable &hann);
+                      int64_t from, int64_t to, const gg::kernels::Tables &tables);
 float ggFastCanary(float a, float b, float c);
 
 namespace
@@ -202,7 +203,7 @@ TEST_CASE("the Cloud scheduler is not contracted by an includer's flags", "[math
 TEST_CASE("the simd sample kernel is not contracted by an includer's flags", "[math][kernel]")
 {
     // 200 stereo grains over a 2^20-frame noise source, rendered over [0, 8192) through
-    // renderSampleSimd at both tiers, so its scalar e, phase and pos and its 4-wide window lerp and
+    // renderSampleSimd at every tier, so its scalar e, phase and pos and its 4-wide window lerp and
     // reads are all compiled with the fast TU's flags. The one expression there that can
     // contract, pos = startPos + rate × e, changes the output only when it moves the read's float
     // fraction. That is likeliest where e and pos are large, so the grains started up to a
@@ -245,30 +246,41 @@ TEST_CASE("the simd sample kernel is not contracted by an includer's flags", "[m
     gg::InterleavedStereo pairs;
     pairs.assign(left.data(), right.data(), kFrames);
     const gg::HannTable hann;
-    // Both stereo layouts: the planar channels, and the interleaved copy the engine reads.
-    for (const int pass : {0, 1, 2, 3})
+    const gg::SincTable sinc;
+    const gg::kernels::Tables tables{hann, sinc};
+    // Every tier, and both stereo layouts: the planar channels, and the interleaved copy the
+    // engine reads.
+    for (const int pass : {0, 1, 2, 3, 4, 5})
     {
-        const bool eco = (pass & 1) != 0;
-        const bool interleaved = (pass & 2) != 0;
-        INFO((eco ? "Linear" : "Hermite") << (interleaved ? ", interleaved" : ", planar"));
+        const auto tier = static_cast<gg::Tier>(pass % 3);
+        const bool interleaved = pass >= 3;
+        INFO((tier == gg::Tier::Eco  ? "Linear"
+              : tier == gg::Tier::HQ ? "Sinc"
+                                     : "Hermite")
+             << (interleaved ? ", interleaved" : ", planar"));
         const gg::kernels::SampleSource src{
             {left.data(), right.data()}, kFrames, false, interleaved ? pairs.data() : nullptr};
         std::vector<float> fast[2] = {std::vector<float>(kLength), std::vector<float>(kLength)};
         std::vector<float> ref[2] = {std::vector<float>(kLength), std::vector<float>(kLength)};
-        ggFastSampleSimd(eco, pool.rows(), kGrains, src, {{fast[0].data(), fast[1].data()}, 0}, 0,
-                         kLength, hann);
+        ggFastSampleSimd(tier, pool.rows(), kGrains, src, {{fast[0].data(), fast[1].data()}, 0}, 0,
+                         kLength, tables);
         const gg::kernels::Output refOut{{ref[0].data(), ref[1].data()}, 0};
         for (uint32_t i = 0; i < kGrains; ++i)
         {
-            if (eco)
+            if (tier == gg::Tier::Eco)
             {
                 gg::kernels::renderSampleSimd<gg::kernels::Linear>(pool.rows(), i, src, refOut, 0,
-                                                                   kLength, hann);
+                                                                   kLength, tables);
+            }
+            else if (tier == gg::Tier::HQ)
+            {
+                gg::kernels::renderSampleSimd<gg::kernels::Sinc>(pool.rows(), i, src, refOut, 0,
+                                                                 kLength, tables);
             }
             else
             {
                 gg::kernels::renderSampleSimd<gg::kernels::Hermite>(pool.rows(), i, src, refOut, 0,
-                                                                    kLength, hann);
+                                                                    kLength, tables);
             }
         }
 

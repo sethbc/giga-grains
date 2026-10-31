@@ -117,10 +117,19 @@ constexpr bool isLayerTarget(ParamSlot target) noexcept
     return (ref && ref->layer == 0) || target == ParamSlot::Level || target == ParamSlot::LayerAOn;
 }
 
+/// Whether `p` is one of the modulators' own controls: the LFO, Env, Random and Step parameters,
+/// LFO 1 Rate to Step 16 (rows 0x0F to 0x30). No route targets one (isValidTarget).
+constexpr bool isModulatorControl(LayerParam p) noexcept
+{
+    return p >= LayerParam::Lfo1Rate && p <= LayerParam::Step16;
+}
+
 /// Whether `target` may be a route's target (spec §6.8): any parameter but the macros and the
-/// modulators' own controls (LFO 1 Rate to Step 16, in every layer). A per-layer kind is named by
-/// layer A's slot (Level and Layer A On for the per-layer globals), so layers B to D's slots, Level
-/// B to D and Layer B to D On are refused: a route reaches them through its targetLayer.
+/// modulators' own controls (isModulatorControl, in every layer). Every other layer parameter is
+/// one, wave 2's included (the programme manager's ruling PM-1, 2026-10-30; M2 sub-project 3's
+/// spec §6.1). A per-layer kind is named by layer A's slot (Level and Layer A On for the per-layer
+/// globals), so layers B to D's slots, Level B to D and Layer B to D On are refused: a route
+/// reaches them through its targetLayer.
 constexpr bool isValidTarget(ParamSlot target) noexcept
 {
     if (static_cast<size_t>(target) >= kParamCount || isMacro(target))
@@ -129,8 +138,7 @@ constexpr bool isValidTarget(ParamSlot target) noexcept
     }
     if (const auto ref = layerOf(target))
     {
-        return ref->layer == 0 &&
-               !(ref->param >= LayerParam::Lfo1Rate && ref->param <= LayerParam::Step16);
+        return ref->layer == 0 && !isModulatorControl(ref->param);
     }
     return !perLayerGlobalLayer(target) || target == ParamSlot::Level ||
            target == ParamSlot::LayerAOn;
