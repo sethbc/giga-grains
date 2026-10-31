@@ -675,7 +675,15 @@ jobs:
       - name: clap-validator
         if: ${{ !cancelled() && steps.validators.outcome == 'success' }}
         timeout-minutes: 10
-        run: tools-bin/clap-validator${{ matrix.exe }} validate "$GG_CLAP"
+        run: |
+          exclude=()
+          # clap-validator 0.4.1-127 rejects every Windows FILE preset location: it asks for
+          # '/C:\...', which no Windows file function opens (CLAP's preset-discovery.h asks for
+          # an OS path). macOS and Linux still run these three tests (docs/m2-carry-over.md).
+          if [ "$RUNNER_OS" = Windows ]; then
+            exclude=(--exclude 'preset-discovery-(crawl|descriptor-consistency|load)')
+          fi
+          tools-bin/clap-validator${{ matrix.exe }} validate "${exclude[@]}" "$GG_CLAP"
 
       - name: pluginval (VST3, strictness 10)
         if: ${{ !cancelled() && steps.validators.outcome == 'success' && runner.os != 'Linux' }}
