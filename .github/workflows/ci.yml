@@ -844,7 +844,10 @@ jobs:
   sanitizers:
     name: sanitizers (asan, rtsan)
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    # 90, not 60 (INTENT §23 #68, 2026-10-31): main's run took 48 minutes at 1d62946 and M2
+    # sub-project 2's branch about 66, its ring tests under ASan and RTSan. Splitting the job in
+    # two is a carry-over row.
+    timeout-minutes: 90
     env:
       # LLVM's official 20.1.8 release for Linux x64, checked against its SHA-256 (the digest
       # GitHub publishes for the release asset). RTSan needs upstream clang 20 or newer.
