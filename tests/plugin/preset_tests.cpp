@@ -582,6 +582,33 @@ TEST_CASE("a preset file longer than kMaxStateBytes is refused", "[plugin][prese
     CHECK(host.calls()[0].osError == 0);
 }
 
+#if !defined(_WIN32)
+TEST_CASE("an oversize preset file is refused by its size before it is read", "[plugin][preset]")
+{
+    // M8: the size is checked first, so a file past the cap is never read: an unreadable one
+    // that is too long says it is too long, not that it can't be read. Sparse: nothing is written.
+    PresetHost host;
+    PluginUnderTest plugin(kFxId, host.clap());
+    REQUIRE(plugin.valid());
+    const fs::path file = fs::path(GG_TEST_OUTPUT_DIR) / "presets" / "too-long-unreadable.ggpreset";
+    fs::create_directories(file.parent_path());
+    fs::remove(file);
+    gg::test::writeBytes(file, "");
+    fs::resize_file(file, gg::core::kMaxStateBytes + 1);
+    fs::permissions(file, fs::perms::none);
+    if (std::ifstream(file).good())
+    {
+        fs::remove(file);
+        SKIP("the file stays readable: running as root?");
+    }
+    std::string error;
+    CHECK_FALSE(plugin.impl().loadPresetFile(file, error));
+    CHECK(error == "the preset is larger than 64 MiB");
+    fs::permissions(file, fs::perms::owner_all);
+    fs::remove(file);
+}
+#endif
+
 TEST_CASE("a preset loaded in the FX renders the bytes gg-render renders with it",
           "[plugin][preset][render]")
 {

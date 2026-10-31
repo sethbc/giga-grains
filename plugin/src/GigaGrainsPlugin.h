@@ -639,7 +639,8 @@ class GigaGrainsPlugin : public plugHelper_t
     /// none was outstanding, asks for one: as queueUiChange does after a push, and on a host
     /// without clap.params too, where only the drains clear the flag. Main thread.
     void mutateArm() noexcept;
-    /// Asks the host for on_main_thread while slots wait unsent, once until it comes. Main thread.
+    /// Asks the host for on_main_thread while slots wait unsent, once until it comes, and not again
+    /// after it came until a drain has been seen (M5). Main thread.
     void requestMutateCallback() noexcept;
     /// Forgets a value waiting unsent for `slot` (the editor's own gesture on it begins or sets
     /// it: the user's latest move wins). flushMutate's own sends reach it too, harmlessly: it
@@ -663,6 +664,7 @@ class GigaGrainsPlugin : public plugHelper_t
     uint32_t mutateAppliedGen_{0}; // and up to this one, a drain end: applied, in values_
     bool mutateArmed_{false};      // armed, and no drain seen since
     bool mutateCallbackRequested_{false}; // on_main_thread asked for, not yet come
+    bool mutateCallbackIdle_{false};      // it came, and no drain has been seen since (M5)
     bool mutateBatchArmed_{false};        // a batch went out since the last drain seen
     // The editor's changes, main thread → audio thread (or the main thread's own flush while
     // inactive): see uiBeginGesture.

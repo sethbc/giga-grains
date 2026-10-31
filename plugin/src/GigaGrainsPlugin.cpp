@@ -18,6 +18,7 @@
 #include <random>
 #include <span>
 #include <string>
+#include <system_error>
 
 #include "gg/core/ModMatrix.h"
 #include "gg/core/ParamMap.h"
@@ -302,6 +303,9 @@ void GigaGrainsPlugin::deactivate() noexcept
     {
         loader_->deactivate();
     }
+    // A main-thread callback asked for may be dropped with the session (M5): ask afresh.
+    mutateCallbackRequested_ = false;
+    mutateCallbackIdle_ = false;
     // The next activate() may bring a new sample rate: the processor doesn't survive into it.
     // Its SourceExchange frees the sources it still holds, here on the main thread.
     processor_.reset();
@@ -333,8 +337,14 @@ void GigaGrainsPlugin::onMainThread() noexcept
         }
     }
     // The next batch of a Mutate press, once the host has drained the last one. Cleared first:
-    // slots still waiting after it ask for another call (flushMutate).
-    mutateCallbackRequested_ = false;
+    // slots still waiting after it ask for another call (flushMutate), but only once a drain has
+    // been seen since this one was asked for (M5): a host that calls back without draining isn't
+    // asked again at every call. The editor's tick, or the next press, goes on from there.
+    if (mutateCallbackRequested_)
+    {
+        mutateCallbackRequested_ = false;
+        mutateCallbackIdle_ = true;
+    }
     flushMutate();
     // A state's values the audio thread has applied, and stored in values_ after the load's own
     // rescan: the host reads them again (carry-over row 123). Cleared first, so values applied
@@ -1393,6 +1403,7 @@ void GigaGrainsPlugin::mutateDrainSeen() noexcept
     mutateAppliedGen_ = mutateStartedGen_;
     mutateStartedGen_ = mutateArmedGen_;
     mutateBatchArmed_ = false;
+    mutateCallbackIdle_ = false; // a drain seen: a callback may be asked for again (M5)
 }
 
 void GigaGrainsPlugin::mutateArm() noexcept
@@ -1517,7 +1528,7 @@ void GigaGrainsPlugin::requestMutateCallback() noexcept
     // Slots wait for a drain. With the editor closed nothing else ticks, and a host without
     // clap.params flushes only inside process: ask for on_main_thread, once until it comes, so
     // the rest is sent as the drains are seen (T10-R2b).
-    if (mutatePending_.any() && !mutateCallbackRequested_)
+    if (mutatePending_.any() && !mutateCallbackRequested_ && !mutateCallbackIdle_)
     {
         mutateCallbackRequested_ = true;
         _host.requestCallback(); // [thread-safe]; this is the main thread
@@ -1565,6 +1576,17 @@ bool GigaGrainsPlugin::loadPresetFile(const std::filesystem::path &file, std::st
         *osError = 0;
     }
     const std::string name = gg::media::displayName(file);
+    // The size first (M8): a file past the cap is refused without reading 64 MiB of it. The read
+    // below still stops one byte past the cap, for a file that grows meanwhile.
+    {
+        std::error_code sizeError;
+        const auto size = std::filesystem::file_size(file, sizeError);
+        if (!sizeError && size > gg::core::kMaxStateBytes)
+        {
+            error = "the preset is larger than 64 MiB";
+            return false;
+        }
+    }
     errno = 0;
     std::ifstream in(file, std::ios::binary);
     if (!in)

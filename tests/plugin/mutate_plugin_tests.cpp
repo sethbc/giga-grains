@@ -911,3 +911,44 @@ TEST_CASE("the editor's own gesture queued before a load is dropped, its gesture
     CHECK(h.at(pitch).values == 1);
     CHECK(impl.uiBaseValue(ParamSlot::Pitch) == 7.0f);
 }
+
+TEST_CASE("a host that never drains is asked for one main-thread callback, not one per callback",
+          "[plugin][mutate]")
+{
+    // M5: on_main_thread re-asks only once a drain has been seen since the last request.
+    FlushHost host;
+    gg::test::PluginUnderTest plugin(kFx, host.clap());
+    REQUIRE(plugin.valid());
+    REQUIRE(plugin.loadDefaultsWithSeed(6));
+    GigaGrainsPlugin &impl = plugin.impl();
+    everythingMoves(plugin);
+    const uint32_t before = host.callbackRequests();
+    impl.mutate(1.0f); // more than one batch: the rest waits for a drain
+    CHECK(host.callbackRequests() == before + 1);
+    for (int i = 0; i < 10; ++i)
+    {
+        plugin.onMainThread(); // the host calls back, but never drains
+    }
+    CHECK(host.callbackRequests() == before + 1);
+    // A drain, then the callback: the next batch goes, and the rest asks again.
+    drain(plugin);
+    plugin.onMainThread();
+    CHECK(host.callbackRequests() == before + 2);
+}
+
+TEST_CASE("deactivate forgets a callback request the host may swallow", "[plugin][mutate]")
+{
+    FlushHost host;
+    gg::test::PluginUnderTest plugin(kFx, host.clap());
+    REQUIRE(plugin.valid());
+    REQUIRE(plugin.loadDefaultsWithSeed(6));
+    GigaGrainsPlugin &impl = plugin.impl();
+    everythingMoves(plugin);
+    REQUIRE(plugin.activate(48000.0, 64));
+    const uint32_t before = host.callbackRequests();
+    impl.mutate(1.0f);
+    CHECK(host.callbackRequests() == before + 1);
+    plugin.deactivate(); // the host drops the outstanding callback with the session
+    impl.flushMutate();  // the editor's tick: slots still wait, so it asks again
+    CHECK(host.callbackRequests() == before + 2);
+}
