@@ -1568,32 +1568,39 @@ TEST_CASE("a drop onto lane A loads, onto lane B is refused", "[plugin]")
     const auto editor = gg::ui::makeEditor(recording.context);
     auto *canvas = canvasOf(*editor);
     REQUIRE(canvas != nullptr);
-    const juce::StringArray any{"/tmp/anything.txt"};
+    // Platform-absolute paths: juce::File on Windows takes "/tmp/x" as relative, so its file
+    // name would be the whole string. The files need not exist; the drop only parses the path.
+    const juce::File dir = juce::File::getSpecialLocation(juce::File::tempDirectory);
+    const auto pathOf = [&dir](const char *name) {
+        return dir.getChildFile(name).getFullPathName();
+    };
+    const juce::StringArray any{pathOf("anything.txt")};
     CHECK(canvas->isInterestedInFileDrag(any));
 
-    const auto dropOn = [&](uint8_t layer, const char *path) {
+    const auto dropOn = [&](uint8_t layer, const juce::String &path) {
         const juce::Rectangle<int> b = canvas->laneBounds(layer);
         canvas->filesDropped(juce::StringArray{path}, b.getX() + 20, b.getCentreY());
     };
-    dropOn(0, "/tmp/a.wav");
+    dropOn(0, pathOf("a.wav"));
     REQUIRE(loads.size() == 1);
-    CHECK(loads[0] == std::pair<int, std::string>{0, "/tmp/a.wav"});
+    CHECK(loads[0] == std::pair<int, std::string>{0, pathOf("a.wav").toStdString()});
     CHECK(notices.empty());
-    dropOn(1, "/tmp/b.wav");
+    dropOn(1, pathOf("b.wav"));
     REQUIRE(loads.size() == 2);
-    CHECK(loads[1] == std::pair<int, std::string>{1, "/tmp/b.wav"});
+    CHECK(loads[1] == std::pair<int, std::string>{1, pathOf("b.wav").toStdString()});
     REQUIRE(notices.size() == 1);
     CHECK(notices[0] == "layer B takes a sample after the session format's next version");
     // A file the decoder can't read is refused as the loader strip refuses it, on any lane, and
     // never reaches the loader.
-    dropOn(0, "/tmp/notes.txt");
-    dropOn(1, "/tmp/noextension");
+    dropOn(0, pathOf("notes.txt"));
+    dropOn(1, pathOf("noextension"));
     CHECK(loads.size() == 2);
     REQUIRE(notices.size() == 3);
     CHECK(notices[1] == "can't load notes.txt: not a WAV, AIFF, FLAC or MP3 file");
     CHECK(notices[2] == "can't load noextension: not a WAV, AIFF, FLAC or MP3 file");
     // A drop left of the lanes is no lane's.
-    canvas->filesDropped(juce::StringArray{"/tmp/c.wav"}, 10, canvas->laneBounds(1).getCentreY());
+    canvas->filesDropped(juce::StringArray{pathOf("c.wav")}, 10,
+                         canvas->laneBounds(1).getCentreY());
     CHECK(loads.size() == 2);
 }
 
