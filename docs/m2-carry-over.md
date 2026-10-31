@@ -1,16 +1,11 @@
 # M2 carry-over: what M1 leaves open
 
-**The policy** (the director, 2026-10-28; also in CLAUDE.md, "Working style"). The carry-over
-must not grow:
-- **Fix, don't carry.** A sub-project's final fix wave fixes every minor a reviewer raised, unless
-  it is blocked on something outside our control (upstream, the director's ears, a later feature)
-  or is genuinely large.
-- **Touch it, close it.** A sub-project that edits a file closes every open "when touched" row for
-  that file.
-- **No net growth.** A sub-project ends with no more open rows than it started with.
-- **Each milestone's close burns down every open row.**
-- **No external reports or upstream filings.** A row blocked on upstream stays open, noted with its
-  reason ("noted; waiting on upstream"), until upstream changes.
+**The policy was retired on 2026-10-30** (the director): deferred items are handled as superpowers'
+subagent-driven development handles them. A reviewer's minor is fixed or deferred at the controller's
+judgment; deferred minors and items blocked outside our control are listed in the sub-project's final
+report and recorded here as a plain log. There is no count rule and no "touch it, close it" rule. A row
+stays until the thing it names is done, and nothing is filed upstream. The M1 policy's text is kept in
+`docs/m1-carry-over.md` as history.
 
 *Made on 2026-10-29, when the carry-over was split for M2 (the director, during the
 release-pipeline work): the 13 rows `docs/m1-carry-over.md` still held open moved here, and that
