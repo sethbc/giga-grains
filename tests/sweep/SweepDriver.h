@@ -33,9 +33,6 @@
 //   exempts it: no committed case meets it, and the Layer On sweeps are scored.
 //   Reverb Size moves are exempt only when the Size in effect (its base or its modulation)
 //   changes.
-// - and kReverbModulationDrop, after a Reverb Modulation decrease from 1 while Reverb Decay is
-//   infinite (its base kDecayMax exactly): a reverb click that carry-over row 311 owns (sub-project
-//   4); deleted with its fix.
 //
 // Each case pins a floor under the share of the render the click check scores
 // (Checks::minScored), so an exemption that widens past what the case needs fails there.
@@ -183,11 +180,6 @@ class SweepDriver
     /// How long after the reverb goes active, beyond its pre-delay, the check looks away
     /// (kReverbOnset): the onset's echoes through the network, as long as a Size move's.
     static constexpr int64_t kReverbOnsetExempt = 28800;
-    /// How long after a Reverb Modulation decrease from 1, at infinite Decay, the check looks away
-    /// (kReverbModulationDrop; carry-over row 311, sub-project 4's: delete it with the reverb fix).
-    /// The click is one sample, 1,488 after the boundary in the FX extremes' corner 24 (29.2);
-    /// exempting 1,489 samples passes and 1,488 fails, so this is that plus 47.
-    static constexpr int64_t kReverbModulationDropExempt = 1536;
 
     /// `fixedBlock` > 0 renders every call at that size instead of the drawn ones.
     SweepDriver(gg::core::Mode mode, uint64_t seed, uint32_t fixedBlock = 0)
@@ -210,8 +202,6 @@ class SweepDriver
         callEvents_.reserve(1 << 14);
         exempt_.push_back({0, kFade + 256}); // the input's fade-in
         sizeBase_ = meta(gg::core::ParamSlot::ReverbSize).defaultVal;
-        modBase_ = meta(gg::core::ParamSlot::ReverbModulation).defaultVal;
-        decayBase_ = meta(gg::core::ParamSlot::ReverbDecay).defaultVal;
         label("the start");
     }
 
@@ -562,24 +552,6 @@ class SweepDriver
     /// force (events must arrive in the order they apply).
     void noteExempt(int64_t time, gg::core::ParamSlot slot, bool isMod, double value)
     {
-        if (slot == gg::core::ParamSlot::ReverbModulation && !isMod)
-        {
-            // kReverbModulationDrop's trigger: the base falls from its top (1) while the Decay
-            // BASE, as queued before this event, is at its top (kDecayMax) exactly: latched here,
-            // so a Decay that is infinite only through modulation, or becomes so later, doesn't
-            // count. (Modulation drops by isMod are out of scope: nothing tracks them, so one
-            // that clicks fails the harness, it is never hidden.)
-            if (value < modBase_ && modBase_ >= meta(slot).maxVal &&
-                decayBase_ == static_cast<double>(meta(gg::core::ParamSlot::ReverbDecay).maxVal))
-            {
-                modDrops_.push_back((time + 31) / 32 * 32);
-            }
-            modBase_ = value;
-        }
-        if (slot == gg::core::ParamSlot::ReverbDecay && !isMod)
-        {
-            decayBase_ = value;
-        }
         if (slot != gg::core::ParamSlot::ReverbSize)
         {
             return;
@@ -692,16 +664,6 @@ class SweepDriver
                 return false; // not applied yet
             }
             exempt_.push_back({b - 64, b + predelay + kReverbSizeExempt});
-            return true;
-        });
-        // kReverbModulationDrop (row 311): a drop from 1 at Decay's base kDecayMax (latched when
-        // noted), applied in this call.
-        std::erase_if(modDrops_, [&](int64_t b) {
-            if (b >= clock_)
-            {
-                return false; // not applied yet
-            }
-            exempt_.push_back({b - 64, b + kReverbModulationDropExempt});
             return true;
         });
         const bool active = processor_.reverbActive();
@@ -870,10 +832,6 @@ class SweepDriver
     std::vector<gg::test::layers::TimedNote> notes_;
     std::vector<std::pair<int64_t, std::string>> labels_;
     std::vector<Stretch> exempt_;
-    /// Reverb Modulation base drops from 1 at Decay's base kDecayMax: boundaries, until applied.
-    std::vector<int64_t> modDrops_;
-    double decayBase_{0.0};          // the Reverb Decay base as queued
-    double modBase_{0.0};            // the Reverb Modulation base as queued
     std::vector<int64_t> sizeMoves_; // Reverb Size moves' boundaries, until applied
     int64_t firstBadExposed_{-1};
     const char *badExposedWhat_{""};

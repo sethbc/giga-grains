@@ -300,7 +300,7 @@ runs the tests labelled either. The labels are:
   session state container (`GGST`) and the settings' XML, the parameter mapping, and the
   `Processor` with its layers, notes, source hand-off, Feedback and render tasks. `slow` marks
   one of them, Feedback 0.95 for 60 s (over a minute in `dev`);
-  - `sweep` (M2 sub-project 3): the sweep harness, 20 cases in `tests/sweep/` over the
+  - `sweep` (M2 sub-project 3): the sweep harness, 24 cases in `tests/sweep/` over the
     `Processor` in both products (parameter sweeps, extremes, automation bursts and the overload
     sweeps), each checking finiteness, the peak bound, no runaway and the goldens' click score
     outside named exemptions (`SweepDriver.h`; carry-over rows 217 and 302), and pinning a floor
