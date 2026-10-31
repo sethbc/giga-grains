@@ -59,9 +59,11 @@ struct RingSpanRequest
 /// written for it when the epoch held and R1 − f <= N (the documented check, frame by frame): so a
 /// copy whose oldest frames the head lapped while it copied is still good from max(from, R1 − N)
 /// on. A read is tried up to 8 times for the whole span (a frozen ring passes at once, a running
-/// one whose head moved during the copy fails the whole-span check), and the last try, if its
-/// epoch held, is kept with its lapped front trimmed (a capture's; a save keeps the window's
-/// length and writes silence over that front instead, MediaSession::save). nullopt with no ring, an
+/// one whose head moved during the copy fails the whole-span check), and a try whose epoch held is
+/// kept with its lapped front trimmed (a capture's; a save keeps the window's length and writes
+/// silence over that front instead, MediaSession::save) when it is the last, or when its span is
+/// longer than N − (R1 − R0), so that at that write rate every try would lap it (a whole window of
+/// a running ring: its first try). nullopt with no ring, an
 /// empty span, or the storage replaced under every try. Main thread only: the storage may be read
 /// only on the thread that frees it (Processor::ringRead). Consumes the layer's RingMeta
 /// (Processor::ringMeta, which has one consumer), for the marks.
@@ -89,7 +91,7 @@ std::optional<RingCopy> readRing(const core::Processor &processor, uint8_t layer
 /// Resample) and its Freeze or Loop base value is on (core::ringSaved), as its window
 /// (RingSpanRequest: the loop's when Loop is on), read with readRing's protocol (the save retries
 /// rather than waiting for a gap between process() calls, which the main thread can't see; a front
-/// the head lapped on the last try is saved as silence, so the window keeps its length W and the
+/// the head lapped on the try kept is saved as silence, so the window keeps its length W and the
 /// marks their offsets), its marks inside it. A frozen ring's WAV bytes and hash are cached by
 /// (storage epoch, head, window start); a live ring's every write moves its head. Rings and
 /// embedded captures then take the embed rule (spec §6.6) in layer order, rings before captures:

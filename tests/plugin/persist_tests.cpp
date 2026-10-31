@@ -1111,7 +1111,8 @@ namespace
 // The forced laps' Processor: an FX one whose layer A ring is 1 s, fed a ramp from the main
 // thread alone (frame t holds 1 + t mod 1,000,000, never 0, the right channel negated). The ring
 // reader's hook (PluginTestHooks.h) renders kLap frames more after each try's copy, so the head
-// laps the copy's front by exactly kLap frames: every try is lapped, and the last is kept.
+// laps the copy's front by exactly kLap frames: every try is lapped, so a whole-window read keeps
+// its first (readRing: its span is longer than N − (R1 − R0)).
 constexpr int64_t kLapRing = 48000;
 constexpr uint32_t kLapPiece = 256;
 constexpr int64_t kLap = 4 * kLapPiece;
@@ -1175,15 +1176,15 @@ struct ScopedLap
     ScopedLap &operator=(const ScopedLap &) = delete;
 };
 
-/// Fills `rig`'s 1 s ring twice over, then marks it 0.5 s and 0.835 s behind the head: after the
-/// reader's eight lapped tries, the older mark falls in the last try's lapped front, the newer
-/// after it. Returns the marks, ascending.
+/// Fills `rig`'s 1 s ring twice over, then marks it 0.5 s and 0.99 s behind the head: the older
+/// mark falls in the lapped front of the reader's first try, the one a whole-window read keeps,
+/// the newer after it. Returns the marks, ascending.
 std::vector<int64_t> fillAndMark(LapRig &rig)
 {
     rig.render(2 * kLapRing);
     const std::array<gg::core::CommandEvent, 2> marks{{
         {0, gg::core::CommandKind::AddSplice, 0, 0.5f},
-        {0, gg::core::CommandKind::AddSplice, 0, 0.835f},
+        {0, gg::core::CommandKind::AddSplice, 0, 0.99f},
     }};
     rig.render(kLapPiece, marks);
     const auto splices = rig.processor.engine(0).live().splices();
@@ -1196,7 +1197,8 @@ TEST_CASE("a save whose copy the head laps keeps the window's length", "[plugin]
     // The controller's ruling, deterministically (the threaded test can only hope for a lap):
     // when the head laps the front of a save's copy, the save keeps W frames and writes silence
     // over that front, so the loop's period and the marks' offsets survive. The hook laps every
-    // try by kLap frames; the last try is kept, of the head r0 its copy started at.
+    // try by kLap frames; the try kept, the first (a whole window), is of the head r0 its copy
+    // started at.
     const fs::path dir = gg::test::useMediaScratch("ring-save-lapped");
     LapRig rig;
     rig.processor.setBase(layerSlot(LayerParam::RingLength, 0), 0.0f); // 1 s
@@ -1253,7 +1255,7 @@ TEST_CASE("a save whose copy the head laps keeps the window's length", "[plugin]
 TEST_CASE("a read whose copy the head laps keeps the frames still good", "[plugin]")
 {
     // Spec §6.4's reader, deterministically: a whole-window read (a capture's) whose front the
-    // head lapped on its last try is trimmed to the frames no write shared a slot with, from
+    // head lapped on the try it keeps is trimmed to the frames no write shared a slot with, from
     // R1 − N to R0, and keeps only the marks among them. The hook laps every try by kLap frames.
     LapRig rig;
     REQUIRE(rig.processor.setRingNow(0, std::make_unique<gg::RingStorage>(kLapRing, kLapPiece),
@@ -1286,6 +1288,87 @@ TEST_CASE("a read whose copy the head laps keeps the frames still good", "[plugi
     REQUIRE(marks[0] >= r0 - kLapRing);
     CHECK(marks[0] < r0 + kLap - kLapRing);
     CHECK(copy->marks == std::vector<int64_t>{marks[1]});
+}
+
+TEST_CASE("a whole-window read the head laps is kept at its first try", "[plugin]")
+{
+    // The final review's minor 5: a span longer than N - (R1 - R0), the part of the window the
+    // copy's own writes leave alone, laps on every try at that write rate (a running 300 s ring:
+    // eight copies of 115 MB, and their allocations, for nothing). The reader keeps the first
+    // try whose epoch held, its lapped front dropped (a capture's) or silenced (a save's). The
+    // hook laps every try here, so before this rule the reader made all eight.
+    LapRig rig;
+    REQUIRE(rig.processor.setRingNow(0, std::make_unique<gg::RingStorage>(kLapRing, kLapPiece),
+                                     gg::core::RingOffer{}));
+    rig.render(2 * kLapRing);
+    const int64_t r0 = rig.t;
+    std::optional<gg::plugin::RingCopy> copy;
+    {
+        ScopedLap lap(rig);
+        copy = gg::plugin::readRing(rig.processor, 0, {}, kRate);
+    }
+    REQUIRE(copy.has_value());
+    CHECK(rig.hooked == 1);
+    CHECK(copy->head == r0);
+    CHECK(copy->oldest == r0 + kLap - kLapRing);
+    CHECK(copy->window->frames() == kLapRing - kLap);
+}
+
+namespace
+{
+LapRig *swapRig = nullptr;
+
+// On the first try's hook, a new storage of the same length is offered and the audio side
+// renders one piece, which adopts it: the storage epoch moves between the copy and the closing
+// reads, so the reader must try again.
+void swapHook(uint8_t layer, int attempt)
+{
+    if (layer != 0)
+    {
+        return;
+    }
+    ++swapRig->hooked;
+    if (attempt == 0)
+    {
+        gg::core::RingOffer how;
+        how.copiedTo = swapRig->t; // nothing to copy: the new ring starts empty here
+        swapRig->processor.sources(0).offerRing(
+            std::make_unique<gg::RingStorage>(kLapRing, kLapPiece), how);
+        swapRig->render(kLapPiece);
+    }
+}
+} // namespace
+
+TEST_CASE("a read across a storage swap tries again on the new storage", "[plugin]")
+{
+    // Spec §6.4's protocol, deterministically: e1 != e0 (an adoption between the copy and the
+    // closing reads) discards the copy, and the next try reads the storage now published.
+    LapRig rig;
+    REQUIRE(rig.processor.setRingNow(0, std::make_unique<gg::RingStorage>(kLapRing, kLapPiece),
+                                     gg::core::RingOffer{}));
+    rig.render(2 * kLapRing);
+    const uint32_t e0 = rig.processor.ringRead(0).storageEpoch->load();
+    std::optional<gg::plugin::RingCopy> copy;
+    swapRig = &rig;
+    gg::plugin::detail::setRingReadHook(swapHook);
+    copy = gg::plugin::readRing(rig.processor, 0, {}, kRate);
+    gg::plugin::detail::setRingReadHook(nullptr);
+    swapRig = nullptr;
+    CHECK(rig.processor.ringRead(0).storageEpoch->load() != e0); // the swap happened
+    CHECK(rig.hooked == 2);                                      // and the read tried again
+    REQUIRE(copy.has_value());
+    CHECK(copy->head == rig.t);
+    const gg::SampleBuffer &w = *copy->window;
+    REQUIRE(w.frames() == kLapRing);
+    // The new storage: silence up to the swap, then the piece rendered after it.
+    int64_t wrong = 0;
+    for (int64_t i = 0; i < w.frames(); ++i)
+    {
+        const int64_t f = copy->oldest + i;
+        const float expected = f < rig.t - kLapPiece ? 0.0f : rig.ramp(f);
+        wrong += w.channel(0)[i] != expected || w.channel(1)[i] != -expected ? 1 : 0;
+    }
+    CHECK(wrong == 0);
 }
 
 TEST_CASE("a replaced ring stays published until its storage can be collected", "[plugin][threads]")

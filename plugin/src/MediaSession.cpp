@@ -234,7 +234,12 @@ std::optional<ReadDone> readWith(const core::Processor &processor, uint8_t layer
         }
         // Frame f is good when R1 − f <= N: none written meanwhile shares its slot.
         const int64_t valid = std::max(span.from, r1 - n);
-        if (valid == span.from || last)
+        // A span longer than N − (R1 − R0), what the copy's own writes leave of the window,
+        // would be lapped by every try at this write rate: a try again would copy (and
+        // allocate) it once more for nothing (eight times 115 MB for a running 300 s ring), so
+        // this try is kept as the last one is.
+        const bool lapsEveryTry = span.to - span.from > n - (r1 - r0);
+        if (valid == span.from || last || lapsEveryTry)
         {
             if (valid >= span.to)
             {
