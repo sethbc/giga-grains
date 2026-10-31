@@ -145,12 +145,17 @@ std::string contentVersion(const fs::path &root)
     return tag;
 }
 
-/// `path`'s modification time; nullopt when it doesn't exist or can't be read. One stat call.
-std::optional<fs::file_time_type> modified(const fs::path &path)
+/// `path`'s modification time; file_time_type::min() when it doesn't exist or can't be read (a
+/// plain value with a sentinel, not an optional: GCC 13's -Wmaybe-uninitialized). One stat call.
+fs::file_time_type modified(const fs::path &path)
 {
     std::error_code error;
     const auto time = fs::last_write_time(path, error);
-    return error ? std::nullopt : std::optional<fs::file_time_type>(time);
+    if (error)
+    {
+        return fs::file_time_type::min();
+    }
+    return time;
 }
 
 /// Removes every copy of `key` from the favorites file `file`; false if the save fails.

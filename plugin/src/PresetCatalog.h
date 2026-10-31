@@ -7,7 +7,6 @@
 
 #include <cstddef>
 #include <filesystem>
-#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -153,8 +152,8 @@ class PresetCatalog
     std::filesystem::path settingsFile_;
     std::vector<PresetEntry> entries_;
     std::string status_;
-    std::vector<std::pair<std::filesystem::path, std::optional<std::filesystem::file_time_type>>>
-        watched_; // changedOnDisk's paths and their times at the last rescan
+    // changedOnDisk's paths and their times at the last rescan (file_time_type::min(): missing).
+    std::vector<std::pair<std::filesystem::path, std::filesystem::file_time_type>> watched_;
 };
 } // namespace gg::plugin
 
