@@ -1,0 +1,450 @@
+// Giga Grains — granular instrument and effect
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright 2026, the Giga Grains authors (see git history)
+
+// UndoStack: the editor's framework-free undo and redo history (spec §6.8). Each test drives the
+// stack against a model of the plugin's values and routes, which the callbacks write and log, so
+// these need no editor or JUCE and also run in the sanitizer builds.
+
+#include <cstddef>
+#include <string>
+#include <utility>
+#include <vector>
+
+#include <catch2/catch_test_macros.hpp>
+
+#include "gg/core/ModMatrix.h"
+#include "gg/core/ParamIds.h"
+#include "gg/ui/UndoStack.h"
+
+using gg::core::ModRoutes;
+using gg::core::ParamSlot;
+using gg::core::ParamValues;
+using gg::ui::UndoStack;
+
+namespace
+{
+/// The plugin as the stack sees it: the values and routes the callbacks set, and a log of every
+/// call in order.
+struct Model
+{
+    ParamValues values{};
+    ModRoutes routes{};
+    std::vector<std::pair<ParamSlot, float>> valueCalls;
+    std::vector<ModRoutes> routeCalls;
+
+    gg::ui::UndoCallbacks callbacks()
+    {
+        return {.setValue =
+                    [this](ParamSlot slot, float v) {
+                        values[static_cast<std::size_t>(slot)] = v;
+                        valueCalls.emplace_back(slot, v);
+                    },
+                .setRoutes =
+                    [this](const ModRoutes &r) {
+                        routes = r;
+                        routeCalls.push_back(r);
+                    }};
+    }
+    void clearCalls()
+    {
+        valueCalls.clear();
+        routeCalls.clear();
+    }
+};
+
+/// Routes with slot `slot` sending LFO 1 to Size at `depth`.
+ModRoutes routesWith(std::size_t slot, float depth)
+{
+    ModRoutes r{};
+    r[slot].source = gg::core::ModSource::Lfo1;
+    r[slot].target = ParamSlot::Size;
+    r[slot].depth = depth;
+    return r;
+}
+} // namespace
+
+TEST_CASE("a gesture makes one entry", "[ui]")
+{
+    Model m;
+    UndoStack s{m.callbacks()};
+    s.beginGesture(ParamSlot::Size, 0.2f, "A Size");
+    s.endGesture(ParamSlot::Size, 0.7f);
+    CHECK(s.size() == 1);
+    CHECK(s.canUndo());
+    CHECK_FALSE(s.canRedo());
+    CHECK(s.undoLabel() == "A Size");
+    CHECK(s.redoLabel().empty());
+
+    s.undo();
+    REQUIRE(m.valueCalls.size() == 1);
+    CHECK(m.valueCalls[0] == std::pair{ParamSlot::Size, 0.2f});
+    CHECK(m.routeCalls.empty());
+    CHECK_FALSE(s.canUndo());
+    CHECK(s.canRedo());
+    CHECK(s.redoLabel() == "A Size");
+    CHECK(s.undoLabel().empty());
+
+    m.clearCalls();
+    s.redo();
+    REQUIRE(m.valueCalls.size() == 1);
+    CHECK(m.valueCalls[0] == std::pair{ParamSlot::Size, 0.7f});
+    CHECK(s.canUndo());
+    CHECK_FALSE(s.canRedo());
+    CHECK(s.size() == 1);
+}
+
+TEST_CASE("an unchanged gesture makes none", "[ui]")
+{
+    Model m;
+    UndoStack s{m.callbacks()};
+    s.beginGesture(ParamSlot::Size, 0.4f, "A Size");
+    s.endGesture(ParamSlot::Size, 0.4f);
+    CHECK(s.size() == 0);
+    CHECK_FALSE(s.canUndo());
+
+    SECTION("an end with no begin makes none")
+    {
+        s.endGesture(ParamSlot::Pitch, 0.9f);
+        CHECK(s.size() == 0);
+    }
+    SECTION("a nested begin of the same slot keeps the first before")
+    {
+        s.beginGesture(ParamSlot::Pitch, 0.1f, "A Pitch");
+        s.beginGesture(ParamSlot::Pitch, 0.5f, "ignored");
+        s.endGesture(ParamSlot::Pitch, 0.5f);
+        REQUIRE(s.size() == 1);
+        CHECK(s.undoLabel() == "A Pitch");
+        s.undo();
+        REQUIRE(m.valueCalls.size() == 1);
+        CHECK(m.valueCalls[0] == std::pair{ParamSlot::Pitch, 0.1f});
+    }
+}
+
+TEST_CASE("a group makes one entry of two gestures", "[ui]")
+{
+    Model m;
+    UndoStack s{m.callbacks()};
+    s.beginGroup();
+    s.beginGesture(ParamSlot::MorphX, 0.5f, "Morph X");
+    s.beginGesture(ParamSlot::MorphY, 0.5f, "Morph Y");
+    s.endGesture(ParamSlot::MorphX, 0.1f);
+    s.endGesture(ParamSlot::MorphY, 0.9f);
+    s.endGroup();
+    REQUIRE(s.size() == 1);
+    CHECK(s.undoLabel() == "Morph X");
+
+    s.undo();
+    REQUIRE(m.valueCalls.size() == 2);
+    CHECK(m.valueCalls[0] == std::pair{ParamSlot::MorphY, 0.5f});
+    CHECK(m.valueCalls[1] == std::pair{ParamSlot::MorphX, 0.5f});
+    CHECK_FALSE(s.canUndo());
+
+    m.clearCalls();
+    s.redo();
+    REQUIRE(m.valueCalls.size() == 2);
+    CHECK(m.valueCalls[0] == std::pair{ParamSlot::MorphX, 0.1f});
+    CHECK(m.valueCalls[1] == std::pair{ParamSlot::MorphY, 0.9f});
+
+    SECTION("a group whose gestures changed nothing makes none")
+    {
+        s.beginGroup();
+        s.beginGesture(ParamSlot::MorphX, 0.1f, "Morph X");
+        s.endGesture(ParamSlot::MorphX, 0.1f);
+        s.endGroup();
+        CHECK(s.size() == 1);
+    }
+}
+
+TEST_CASE("a new entry clears redo", "[ui]")
+{
+    Model m;
+    UndoStack s{m.callbacks()};
+    s.beginGesture(ParamSlot::Size, 0.2f, "A Size");
+    s.endGesture(ParamSlot::Size, 0.7f);
+    s.beginGesture(ParamSlot::Pitch, 0.5f, "A Pitch");
+    s.endGesture(ParamSlot::Pitch, 0.6f);
+    s.undo();
+    REQUIRE(s.canRedo());
+    CHECK(s.redoLabel() == "A Pitch");
+
+    s.beginGesture(ParamSlot::Density, 0.3f, "A Density");
+    s.endGesture(ParamSlot::Density, 0.8f);
+    CHECK_FALSE(s.canRedo());
+    CHECK(s.redoLabel().empty());
+    CHECK(s.size() == 2);
+    CHECK(s.undoLabel() == "A Density");
+
+    m.clearCalls();
+    s.redo();
+    CHECK(m.valueCalls.empty());
+    s.undo();
+    s.undo();
+    REQUIRE(m.valueCalls.size() == 2);
+    CHECK(m.valueCalls[0] == std::pair{ParamSlot::Density, 0.3f});
+    CHECK(m.valueCalls[1] == std::pair{ParamSlot::Size, 0.2f});
+}
+
+TEST_CASE("the depth is 200", "[ui]")
+{
+    STATIC_REQUIRE(UndoStack::kDepth == 200);
+    Model m;
+    UndoStack s{m.callbacks()};
+    for (int i = 0; i < 201; ++i)
+    {
+        s.beginGesture(ParamSlot::Size, static_cast<float>(i), "edit " + std::to_string(i));
+        s.endGesture(ParamSlot::Size, static_cast<float>(i + 1));
+    }
+    CHECK(s.size() == 200);
+    CHECK(s.undoLabel() == "edit 200");
+
+    std::size_t undone = 0;
+    while (s.canUndo())
+    {
+        s.undo();
+        ++undone;
+    }
+    CHECK(undone == 200);
+    // The oldest, "edit 0" (0 to 1), is gone: the last undo is "edit 1"'s.
+    REQUIRE(m.valueCalls.size() == 200);
+    CHECK(m.valueCalls.back() == std::pair{ParamSlot::Size, 1.0f});
+    CHECK(s.redoLabel() == "edit 1");
+}
+
+TEST_CASE("undo on an empty stack does nothing", "[ui]")
+{
+    Model m;
+    UndoStack s{m.callbacks()};
+    CHECK_FALSE(s.canUndo());
+    CHECK_FALSE(s.canRedo());
+    CHECK(s.undoLabel().empty());
+    CHECK(s.redoLabel().empty());
+    s.undo();
+    s.redo();
+    CHECK(m.valueCalls.empty());
+    CHECK(m.routeCalls.empty());
+    CHECK(s.size() == 0);
+}
+
+TEST_CASE("undo applies its before whatever the value is now", "[ui]")
+{
+    Model m;
+    UndoStack s{m.callbacks()};
+    s.beginGesture(ParamSlot::Size, 0.2f, "A Size");
+    s.endGesture(ParamSlot::Size, 0.7f);
+    // Host automation moves the value; it pushes nothing.
+    m.values[static_cast<std::size_t>(ParamSlot::Size)] = 0.95f;
+
+    s.undo();
+    REQUIRE(m.valueCalls.size() == 1);
+    CHECK(m.valueCalls[0] == std::pair{ParamSlot::Size, 0.2f});
+    CHECK(m.values[static_cast<std::size_t>(ParamSlot::Size)] == 0.2f);
+}
+
+TEST_CASE("a routes entry round-trips", "[ui]")
+{
+    Model m;
+    UndoStack s{m.callbacks()};
+    const ModRoutes before = routesWith(12, 0.25f);
+    const ModRoutes after = routesWith(12, 0.75f);
+    s.pushRoutes(before, after, "route 13");
+    REQUIRE(s.size() == 1);
+    CHECK(s.undoLabel() == "route 13");
+
+    s.undo();
+    REQUIRE(m.routeCalls.size() == 1);
+    CHECK(m.routeCalls[0] == before);
+    CHECK(m.valueCalls.empty());
+
+    s.redo();
+    REQUIRE(m.routeCalls.size() == 2);
+    CHECK(m.routeCalls[1] == after);
+
+    SECTION("equal routes make no entry")
+    {
+        s.pushRoutes(after, after, "route 13");
+        CHECK(s.size() == 1);
+    }
+}
+
+TEST_CASE("a snapshot entry applies only what differs", "[ui]")
+{
+    Model m;
+    UndoStack s{m.callbacks()};
+    ParamValues vBefore{};
+    vBefore.fill(0.5f);
+    ParamValues vAfter = vBefore;
+    vAfter[static_cast<std::size_t>(ParamSlot::Texture)] = 0.9f;
+    const ModRoutes rBefore{};
+    const ModRoutes rAfter = routesWith(3, -0.5f);
+    s.pushSnapshot("Mutate", vBefore, rBefore, vAfter, rAfter);
+    REQUIRE(s.size() == 1);
+    CHECK(s.undoLabel() == "Mutate");
+
+    s.undo();
+    REQUIRE(m.valueCalls.size() == 1);
+    CHECK(m.valueCalls[0] == std::pair{ParamSlot::Texture, 0.5f});
+    REQUIRE(m.routeCalls.size() == 1);
+    CHECK(m.routeCalls[0] == rBefore);
+
+    m.clearCalls();
+    s.redo();
+    REQUIRE(m.valueCalls.size() == 1);
+    CHECK(m.valueCalls[0] == std::pair{ParamSlot::Texture, 0.9f});
+    REQUIRE(m.routeCalls.size() == 1);
+    CHECK(m.routeCalls[0] == rAfter);
+
+    SECTION("unchanged routes are not set")
+    {
+        m.clearCalls();
+        s.pushSnapshot("Recall", vAfter, rAfter, vBefore, rAfter);
+        s.undo();
+        CHECK(m.valueCalls.size() == 1);
+        CHECK(m.routeCalls.empty());
+    }
+}
+
+TEST_CASE("a callback that edits the stack while it applies is ignored", "[ui]")
+{
+    // Undo and redo apply through the plugin, whose path may come back to the stack (a control
+    // that records the value it was given, a nested undo): what it asks while an entry applies is
+    // ignored, so the history is the same as before the apply, and the apply runs once.
+    Model m;
+    UndoStack *stack = nullptr;
+    int nested = 0;
+    gg::ui::UndoCallbacks callbacks = m.callbacks();
+    const auto setValue = callbacks.setValue;
+    callbacks.setValue = [&](ParamSlot slot, float v) {
+        setValue(slot, v);
+        ++nested;
+        stack->beginGesture(ParamSlot::Texture, 0.0f, "Texture");
+        stack->endGesture(ParamSlot::Texture, 1.0f);
+        stack->beginGroup();
+        stack->pushRoutes(ModRoutes{}, routesWith(2, 0.5f), "route 3");
+        stack->pushSnapshot("Mutate", ParamValues{}, ModRoutes{}, ParamValues{1.0f}, ModRoutes{});
+        stack->undo();
+        stack->redo();
+    };
+    UndoStack s{callbacks};
+    stack = &s;
+    s.beginGesture(ParamSlot::Size, 0.2f, "A Size");
+    s.endGesture(ParamSlot::Size, 0.7f);
+    s.beginGesture(ParamSlot::Pitch, 0.5f, "A Pitch");
+    s.endGesture(ParamSlot::Pitch, 0.6f);
+    REQUIRE(s.size() == 2);
+
+    s.undo();
+    CHECK(nested == 1);
+    CHECK(m.valueCalls.size() == 1); // the nested undo and redo applied nothing
+    CHECK(s.size() == 2);
+    CHECK(s.undoLabel() == "A Size");
+    CHECK(s.redoLabel() == "A Pitch");
+
+    s.redo();
+    CHECK(nested == 2);
+    CHECK(m.valueCalls.size() == 2);
+    CHECK(s.size() == 2);
+    CHECK(s.undoLabel() == "A Pitch");
+    CHECK_FALSE(s.canRedo());
+
+    // The group the callback opened was ignored too: a gesture after the apply is its own entry.
+    s.beginGesture(ParamSlot::Spray, 0.0f, "A Spray");
+    s.endGesture(ParamSlot::Spray, 0.3f);
+    CHECK(s.size() == 3);
+    CHECK(s.undoLabel() == "A Spray");
+}
+
+TEST_CASE("undo and redo wait while a gesture or a group is open", "[ui]")
+{
+    // An undo mid-drag (Command Z with a knob held) would send its own gesture on a slot whose
+    // gesture is still open, so the host would see a nested begin and an early end: while any
+    // gesture or group is open, undo and redo apply nothing.
+    Model m;
+    UndoStack s{m.callbacks()};
+    s.beginGesture(ParamSlot::Size, 0.2f, "A Size");
+    s.endGesture(ParamSlot::Size, 0.7f);
+    REQUIRE(s.canUndo());
+    CHECK_FALSE(s.busy());
+
+    s.beginGesture(ParamSlot::Size, 0.7f, "A Size");
+    CHECK(s.busy());
+    s.undo();
+    CHECK(m.valueCalls.empty());
+    CHECK(s.undoLabel() == "A Size");
+    CHECK_FALSE(s.canRedo());
+    s.endGesture(ParamSlot::Size, 0.7f); // ended where it began: no entry
+    CHECK_FALSE(s.busy());
+
+    s.beginGroup();
+    CHECK(s.busy());
+    s.undo();
+    CHECK(m.valueCalls.empty());
+    s.endGroup();
+
+    s.undo();
+    REQUIRE(m.valueCalls.size() == 1);
+    CHECK(m.valueCalls[0] == std::pair{ParamSlot::Size, 0.2f});
+    s.beginGesture(ParamSlot::Pitch, 0.5f, "A Pitch");
+    s.redo();
+    CHECK(m.valueCalls.size() == 1);
+    CHECK(s.canRedo());
+    s.endGesture(ParamSlot::Pitch, 0.5f);
+    s.redo();
+    CHECK(m.valueCalls.size() == 2);
+}
+
+TEST_CASE("nested groups make one entry, closed by the outermost", "[ui]")
+{
+    Model m;
+    UndoStack s{m.callbacks()};
+    s.beginGroup();
+    s.beginGesture(ParamSlot::MorphX, 0.5f, "Morph X");
+    s.endGesture(ParamSlot::MorphX, 0.1f);
+    s.beginGroup(); // nested
+    s.beginGesture(ParamSlot::MorphY, 0.5f, "Morph Y");
+    s.endGesture(ParamSlot::MorphY, 0.9f);
+    s.endGroup(); // the inner one closes nothing
+    CHECK(s.busy());
+    CHECK(s.size() == 0);
+    s.endGroup();
+    CHECK_FALSE(s.busy());
+    REQUIRE(s.size() == 1);
+    CHECK(s.undoLabel() == "Morph X");
+    s.undo();
+    REQUIRE(m.valueCalls.size() == 2);
+    CHECK(m.valueCalls[0] == std::pair{ParamSlot::MorphY, 0.5f});
+    CHECK(m.valueCalls[1] == std::pair{ParamSlot::MorphX, 0.5f});
+
+    // An extra endGroup is harmless.
+    s.endGroup();
+    CHECK_FALSE(s.busy());
+}
+
+TEST_CASE("a snapshot entry undoes its routes before its values", "[ui]")
+{
+    // Routes first on undo, values first on redo: the order of the two callbacks is part of the
+    // API sub-project 5's Mutate and recall rely on.
+    std::vector<char> order;
+    ParamValues values{};
+    ModRoutes routes{};
+    UndoStack s{{.setValue =
+                     [&](ParamSlot slot, float v) {
+                         values[static_cast<std::size_t>(slot)] = v;
+                         order.push_back('v');
+                     },
+                 .setRoutes =
+                     [&](const ModRoutes &r) {
+                         routes = r;
+                         order.push_back('r');
+                     }}};
+    ParamValues vBefore{};
+    ParamValues vAfter = vBefore;
+    vAfter[static_cast<std::size_t>(ParamSlot::Texture)] = 0.9f;
+    vAfter[static_cast<std::size_t>(ParamSlot::Size)] = 0.4f;
+    s.pushSnapshot("Mutate", vBefore, ModRoutes{}, vAfter, routesWith(2, 0.5f));
+    s.undo();
+    CHECK(std::string(order.begin(), order.end()) == "rvv");
+    order.clear();
+    s.redo();
+    CHECK(std::string(order.begin(), order.end()) == "vvr");
+}

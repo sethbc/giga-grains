@@ -1,0 +1,16 @@
+{
+  "mode": "fx",
+  "sampleRate": 48000,
+  "durationSeconds": 8.0,
+  "blockSize": 128,
+  "seed": 1,
+  "input": {"kind": "sweep", "startHz": 110, "endHz": 1760, "seconds": 8.0, "amplitude": 0.5},
+  "channels": 2,
+  "params": {"Mix": 1.0, "Level": -6.0, "Level B": -6.0, "Density": 5.0, "Size": -3.321928094887362, "Position": 0.45, "Layer B On": 1, "B Pitch": 7, "B Size": -4.058893689053568, "B Density": 5.0, "B Position": 0.45},
+  "automation": [
+    {"time": 2.0, "param": "B Freeze", "value": 1},
+    {"time": 4.0, "param": "B Freeze", "value": 0},
+    {"time": 5.0, "param": "A Freeze", "value": 1},
+    {"time": 7.0, "param": "A Freeze", "value": 0}
+  ]
+}

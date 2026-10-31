@@ -66,6 +66,11 @@ add_executable(gg-tests
         tools/render_spec_tests.cpp
         tools/signals_tests.cpp
         ui/lane_model_tests.cpp
+        ui/rings_tests.cpp
+        ui/route_edits_tests.cpp
+        ui/edit_layout_tests.cpp
+        ui/undo_stack_tests.cpp
+        ui/pad_model_tests.cpp
         ui/splat_tests.cpp
         support/AllocTripwire.cpp
         )
@@ -149,12 +154,16 @@ if (GG_BUILD_PLUGINS)
             plugin/preset_tests.cpp
             plugin/process_tests.cpp
             plugin/rt_tests.cpp
+            plugin/routes_tests.cpp
             plugin/sample_tests.cpp
             )
     target_include_directories(gg-tests PRIVATE ${CMAKE_SOURCE_DIR}/plugin/src)
 endif ()
 # The editor's tests reach its components' private headers too (ui/src: GrainCanvas, LoaderStrip).
+# notices_tests.cpp checks the texts embedded into gg-ui, which only the editor builds;
+# editor_frame_tests.cpp the editor's frame (its views, header, undo, themes and keys).
 if (GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
+    target_sources(gg-tests PRIVATE ui/notices_tests.cpp plugin/editor_frame_tests.cpp)
     target_include_directories(gg-tests PRIVATE ${CMAKE_SOURCE_DIR}/ui/src)
     # The preset strip and browser (M2 sub-project 5's spec §6.8), through the editor.
     target_sources(gg-tests PRIVATE plugin/browser_tests.cpp)
@@ -641,6 +650,17 @@ if (APPLE AND GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
     add_dependencies(gg-au-state-tests gg_clapfirst_auv2)
     add_dependencies(gg-tests gg-au-state-tests)
     catch_discover_tests(gg-au-state-tests ADD_TAGS_AS_LABELS)
+endif ()
+
+# gg-snap (M2 sub-project 6): the views as PNGs. snap_cli runs it into a scratch directory and
+# checks the 32 files (label `plugin`). It points the settings at a scratch file itself.
+if (APPLE AND GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
+    add_test(NAME snap_cli
+            COMMAND ${CMAKE_COMMAND} -DTOOL=$<TARGET_FILE:gg-snap>
+            -DOUT=${CMAKE_CURRENT_BINARY_DIR}/test-output/snap_cli
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/plugin/check-snap.cmake)
+    # About 66 s in Debug: `slow`, so -LE slow leaves it out.
+    set_tests_properties(snap_cli PROPERTIES LABELS "plugin;slow" TIMEOUT 300)
 endif ()
 
 # The installers (spec §6), label `installer`. installer_build_products builds gg-products (not

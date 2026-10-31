@@ -240,8 +240,8 @@ ctest --preset dev --output-on-failure
   - only `gg-plugin-core`, the JUCE-free audio side and CLAP factory, with no gui extension;
   - the `plugin` tests drive it through the factory, so `process` and `params.flush` run under
     the sanitizers;
-  - the GUI test, the bundles and the `codesign_*`/`identity_*` tests need the editor, so they
-    aren't built.
+  - the GUI tests, `gg-snap`, the bundles and the `codesign_*`/`identity_*` tests need the
+    editor, so they aren't built.
 - **RTSan:** set `GG_LLVM` when configuring:
   - `GG_LLVM=/opt/homebrew/opt/llvm cmake --preset rtsan` with Homebrew LLVM on macOS;
   - CI uses LLVM's 20.1.8 release for Linux, checked against its SHA-256, in `/opt/llvm-20.1.8`.
@@ -326,7 +326,8 @@ runs the tests labelled either. The labels are:
     gate, the kind switch, the spreads) and in the `Processor` (the sum in order, the morph law,
     on and off, the kinds, the instrument's input into the rings, the event order);
   - `mod`: the mod matrix: its routes, curves and factory routes (M1's `macroOffsets` bit for
-    bit), the modulation sources, and the `Processor`'s per-cell application;
+    bit), the modulation sources, and the `Processor`'s per-cell application; also the editor's
+    rings (`tests/ui/rings_tests.cpp`, tagged `[ui][mod]`);
   - `threads`: `TaskRunner`, `SerialRunner` and the tests' `StubPool` (`engine`), and the
     `Processor`'s render tasks (`core`): the same bytes with no pool and pools of 1, 2 and 8
     workers, a declining pool, and the tasks' denormal mode and allocations;
@@ -358,10 +359,11 @@ runs the tests labelled either. The labels are:
   `Processor`'s Space chain, and the plugins' tail and "Space" remote-controls page. `slow` also
   marks four of them: the hour-long renders at infinite Decay (about 50 s each in `dev`, 2.5
   minutes under ASan), the block-size invariance render and the 60 s render at extreme settings
-  (about 8 s and 13 s in `dev`); `-LE slow` leaves all eight slow tests out (media's one, these
+  (about 8 s and 13 s in `dev`); `-LE slow` leaves all nine slow tests out (media's one, these
   four, core's Feedback one, and since M2 sub-project 3 two in `engine`: `the overload ladder is
   block-size invariant`, 125 s in `dev`, which has a fast sibling that always runs, and the
-  budget's exit case, `the exit case never clicks or drops out`).
+  budget's exit case, `the exit case never clicks or drops out`; and `snap_cli`, below, about 66 s
+  in `dev`).
 - `kernel`: the renderers' scalar references and the SIMD sample and live kernels (4-wide, and
   since M2 sub-project 3 the 8-wide AVX2 ones beside them, chosen at load), which must match them
   bit for bit (`std::memcmp`); every case runs through both tables, and the AVX2-against-SSE case
@@ -381,8 +383,15 @@ runs the tests labelled either. The labels are:
   sources, `tests/tools/preset_source_tests.cpp`), `metrics`, `bench` (gg-bench's command line: the
   `bench_rejects_*`, `bench_make_baseline_*`, `bench_baseline_*` and `bench_space_cli` tests);
 - `golden`: the golden renders;
-- `ui`: the splat renderer, the lane geometry (`LaneModel`), and the lane's clock and live-grain
-  list (`LaneState`);
+- `ui`: `gg-ui-core`, the editor's framework-free math, so it runs on every leg and under the
+  sanitizers: the splat renderer and its banded resolve (one tint per lane; the one-band case is
+  M1's resolve bit for bit), the lane geometry (`LaneModel`: the pitch axis, the scan rectangle,
+  its hit test with every region and the corner rule, and the axis lock), the lane's clock and
+  live-grain list (`LaneState`), and since M2 sub-project 6 the pad's law (`PadModel`, equal to
+  the `Processor`'s morph weights), the views' layout table (`EditLayout`: every parameter slot
+  placed exactly once), the rings (`[ui][mod]`), the Mod view's route edits and the undo stack.
+  With the editor only, `notices_tests.cpp` checks the texts embedded into the editor against
+  the license set, byte for byte;
 - `smoke`;
 - `build`: checks of the build system itself: the `asio_guard_*` tests, run on scratch CMake
   projects (`cmake/AsioGuard.cmake`), and `gg-tests`' "the build is C++23" (also `smoke`);
@@ -407,8 +416,28 @@ runs the tests labelled either. The labels are:
 - `serial`: the Catch2 cases tagged `[serial]`, which measure time or memory and run with
   `RUN_SERIAL` (see "Tests run in parallel");
 - `plugin`: the plugins, driven through their CLAP factory. Tests labelled both `plugin` and
-  `rt` put the allocation tripwire on `process` and `params.flush`. On macOS this label also
-  covers checks of the built bundles (with the editor only):
+  `rt` put the allocation tripwire on `process` and `params.flush`. `routes_tests.cpp` checks
+  the editor's route path (`uiSetRoutes`: the render, the saved state, a load and an edit in one
+  block in both orders, an inactive edit, the tripwire).
+  - **The GUI tests** (with the editor only, on every leg that builds it; the sanitizer presets
+    build none) make the real editor headless and drive its components:
+    `tests/plugin/factory_tests.cpp` the parts (the canvas's lanes and drags, the strip, the
+    pad, the panels, the Mod and FX views, the About box, the theme setting) and
+    `tests/plugin/editor_frame_tests.cpp` the frame (since M2 sub-project 6): every view opens
+    and closes in both products and both themes at 960 × 600 and 640 × 360, with every control
+    inside its view; "every parameter is reachable from the UI" walks the views for each slot's
+    control; undo replays through the gesture path and survives the editor; the theme switch
+    persists and a second editor follows; the keyboard reaches every control; the view is kept
+    per instance; no label is elided or collides at 960 × 600 (the strip's toggle reads "On" and
+    its Level slider has no label); the light theme reads at 4.5:1, the strip's column following
+    the theme while the lanes stay dark; a route added in slot 13 scrolls into the Mod view's
+    list. A GUI test that wants one control searches below its view's ID
+    (`view.perform`, `view.edit`, `view.mod`, `view.fx`): the strip's controls share their
+    `param.<id>` with the Edit panels'.
+  - `snap_cli` (macOS, with the editor; also `slow`) runs `gg-snap` ("The views as PNGs"
+    below).
+
+  On macOS this label also covers checks of the built bundles (with the editor only):
   - `codesign_*`: strict signature checks, which Ableton Live's scanner needs to pass;
   - `identity_*`: the frozen identities (INTENT §18), read back from the bundles: both
     standalone bundle IDs, the AU's three components and the VST3 class IDs. Run them before
@@ -448,10 +477,13 @@ code page, so the name matches nothing and the test fails with "No tests ran". S
   - never write a path that another test writes: unit tests' scratch files go in
     `GG_TEST_OUTPUT_DIR` under a name of their own, and each golden case writes its own files;
   - never touch the user's per-machine settings file. Both products read it (the instrument's
-    loader; both products' preset catalog, which also writes its `contentFolder`) from the file
-    `GG_SETTINGS_FILE` names, when it is set and not empty, instead of the user's;
-    `tests/plugin/PluginHarness.h` points it at a scratch file, and a test that reads the
-    settings points it at its own (`useSettingsFile`) before it creates the instance;
+    loader; both products' preset catalog, which also writes its `contentFolder`; and since M2
+    sub-project 6 both products' editor, for its theme: the `theme` attribute,
+    `plugin/src/editor/UiSettings.cpp`, which reads the variable at each call, so a test may
+    switch files between cases) from the file `GG_SETTINGS_FILE` names, when it is set and not
+    empty, instead of the user's; `tests/plugin/PluginHarness.h` points it at a scratch file, and
+    a test that reads or writes the settings points it at its own (`useSettingsFile`) before it
+    creates the instance or the editor;
   - never see the machine's installed content: a test that lists presets or content roots sets
     `GG_SYSTEM_CONTENT_DIR`, the test seam in `media/include/gg/media/ContentPaths.h` that
     replaces the per-user and system install roots with one folder (a scratch one), as the
@@ -766,6 +798,15 @@ $b --space [--quick | --seconds S] [--rounds N] [--commit SHA] [--json out.json]
   timing (36 and about 6 minutes before the four cases of M2 sub-project 3 joined); a CI leg's
   benchmark step took about 6 minutes before the layer cases added one.
   `--canvas` times 240 frames after a 20-frame warm-up, or 30 with `--quick`.
+- **`--canvas`** times the canvas's CPU renderer headless: a 3200 × 1200 canvas (1600 × 600 at
+  2×) of four lanes, M0's stress workload at 4,096, 8,192 and 16,384 grains, each frame's
+  generate, clear, splat and resolve. Since M2 sub-project 6 it times the shipped path, the
+  banded resolve with the four layers' tints, and its JSON says so: `"lanes": 4` and
+  `"resolve": "banded"` beside the M1 keys, so its figures aren't read as M0's or M1's one-tint
+  resolve. The 8,192-grain figure is INTENT §16's UI budget check (at most 3 ms, idle, on the
+  reference core). The `[bench]` case "the canvas bench reports four banded lanes" runs it at
+  `--quick`'s length (about 15 s in `dev`). The live editor's own readout includes `drawImage`
+  and the overlays, which the benchmark leaves out.
 - **`--space`** times Space's per-sample stage, the diffuser then the reverb, on stereo noise at
   48 kHz, active, with Diffusion and Amount at 100% (`tools/gg-bench/Bench.h` lists every
   setting). After a warm-up of 2 s of audio, each of 5 rounds times one run of at least 2 s
@@ -850,6 +891,42 @@ $b --space [--quick | --seconds S] [--rounds N] [--commit SHA] [--json out.json]
 
   A baseline is valid only against the frozen `reference` kernel: if that kernel, or anything it
   calls, changes, make every baseline again. Its pinned hashes fail first.
+
+**The views as PNGs (`gg-snap`).** Since M2 sub-project 6, `gg-snap` draws the editor's views
+without a window or a host:
+
+```
+gg-snap <out-dir> [--sizes 960x600,640x360]
+```
+
+- It's built with the editor (it's in `gg-all`), at `build/<preset>/tools/gg-snap/gg-snap`.
+- **What it does,** for each product: it creates the plugin through its CLAP factory, activates
+  it and creates the editor; it loads a generated 2 s sine into the instrument, turns layers B
+  and C on, adds one route (LFO 1 to layer A's Pitch) and runs 200 blocks. Then, for each theme,
+  view and size, it draws the editor with `createComponentSnapshot`.
+- **What it writes:** `<product>-<view>-<theme>-<w>x<h>.png`, the product `fx` or `inst`, the
+  view `perform`, `edit`, `mod` or `fx`, the theme `dark` or `light`: 32 files at the default
+  sizes.
+- **It never touches your settings:** it sets `GG_STRESS_GRAINS=2048` (below) and points
+  `GG_SETTINGS_FILE` at a scratch file in the system's temporary folder, removed afterwards.
+- **Exit status:** 0, 1 with a message on stderr, 2 for bad usage.
+- **`snap_cli`** (labels `plugin` and `slow`, a 300 s timeout; macOS, with the editor) runs it
+  into `build/<preset>/tests/test-output/snap_cli` and requires exactly the 32 names, each a PNG
+  of at least 1,000 bytes. It takes about 66 s in `dev`, so `-LE slow` leaves it out.
+- **CI's macOS leg** runs it after the tests and uploads the files as the `gg-snapshots`
+  artifact. Only a tool failure, or no files at all, fails the job: the pictures are looked at,
+  not compared.
+- **The listening pack** commits the 960 × 600 set, 16 PNGs, in
+  `docs/listening/m2-views/snapshots/`; its `README.md` says how to remake them. Regenerate them
+  when a view changes, and look at every one before committing.
+
+**The canvas's stress seam (`GG_STRESS_GRAINS`).** With `GG_STRESS_GRAINS=N` in the environment
+when a canvas is made, it draws M0's synthetic workload of N grains over its four lanes
+(`gg::ui::stressGrains`) in place of the grain queue. The canvas reads the variable once, at
+construction; unset, empty, not a number or not positive means off, and N is capped at 2^20. Use
+it to read the live frame readout at a known load in a standalone app or a host
+(`GG_STRESS_GRAINS=8192`, as the GPU spike did, `docs/spikes/m2-gpu-canvas.md`); `gg-snap`
+sets it, and the test "the stress seam draws four lanes" covers it.
 
 **Validators.** CI runs them on every build leg; auval runs on macOS only.
 

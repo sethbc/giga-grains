@@ -91,6 +91,8 @@ const clap_plugin_descriptor *descriptorFor(Product product) noexcept;
 ///   stored them in values_, it sets valuesApplied_ and asks for on_main_thread, which asks the
 ///   host to rescan the values (carry-over row 123, ruling M1-x): the host's first rescan, at the
 ///   load, may read a value a block in flight then overwrote.
+/// - uiRoutesPending_, the editor's routes (uiSetRoutes: M2 sub-project 6's spec §6.6), main
+///   thread → audio thread while active, applied by applyLoadedState after a loaded state's.
 /// - uiQueue_, the editor's changes (uiBeginGesture, uiSetValue, uiEndGesture: spec §6.3), main
 ///   thread → audio thread. process() and an active params.flush take them before the host's
 ///   events and apply the values as the host's are applied, then send each change on to the
@@ -227,6 +229,21 @@ class GigaGrainsPlugin : public plugHelper_t
     /// `slot`'s base value, as params.get_value reads it (values_): a change of the editor's
     /// shows here once the audio thread has taken it.
     float uiBaseValue(gg::core::ParamSlot slot) const noexcept;
+
+    // ---- The editor's routes (M2 sub-project 6's spec §6.6): main thread ----
+    // Routes aren't parameters: an edit sends no gesture or value event, and the host learns of
+    // it through state.mark_dirty alone.
+
+    /// The mod matrix's routes in effect (routes_): the factory routes in a new instance, then a
+    /// loaded state's or the editor's last uiSetRoutes, whichever came later.
+    const gg::core::ModRoutes &uiRoutes() const noexcept { return routes_; }
+    /// Replaces the routes with `routes`: routes_ at once, so the next state save carries them,
+    /// and state.mark_dirty when the host offers clap.state. Active, they go to the audio thread
+    /// through uiRoutesPending_ and apply at the start of its next process() or params.flush,
+    /// after any state loaded before then, so a load made after this edit wins; inactive, the
+    /// next activate() gives them to the processor with routes_.
+    void uiSetRoutes(const gg::core::ModRoutes &routes) noexcept;
+
     /// The output events of the editor's changes that the host's list refused (try_push false):
     /// each counted, never retried. Any thread.
     uint64_t uiEventsDropped() const noexcept
@@ -495,7 +512,8 @@ class GigaGrainsPlugin : public plugHelper_t
     void applyBetweenBlocks(const clap_input_events *in,
                             uint32_t first) noexcept SST_CPPUTILS_NONBLOCKING;
     /// Applies a state loaded since the last call, if there is one: its seed and its routes, and
-    /// its values when it carries them (the FX). Audio thread.
+    /// its values when it carries them (the FX); then the newest routes on uiRoutesPending_, if
+    /// any came since the last call. Audio thread.
     void applyLoadedState() noexcept SST_CPPUTILS_NONBLOCKING;
     /// Audio thread, after a state's values went into values_: sets valuesApplied_ and asks
     /// the host for on_main_thread (clap_host.request_callback, thread-safe), once until that
@@ -564,13 +582,18 @@ class GigaGrainsPlugin : public plugHelper_t
     };
     // Main thread → audio thread.
     gg::core::LatestValue<LoadedState> loadedState_;
+    // The routes on their way to the audio thread while active, main thread → audio thread: each
+    // uiSetRoutes's, and each state load's (pushed before loadedState_), so it holds the newest
+    // routes_. Its own channel, so an edit never replaces a state load that waits in
+    // loadedState_. applyLoadedState takes it after loadedState_; deactivate() drops one left.
+    gg::core::LatestValue<gg::core::ModRoutes> uiRoutesPending_;
     // The engine seed: drawn at construction, saved and loaded with the state, given to the
     // processor at activate() and, loaded while active, through loadedState_. Main thread.
     uint64_t seed_;
     // The mod matrix's routes in effect (M2 sub-project 1's spec §6.10): the product's factory
-    // routes in a new instance, a loaded state's from its load on; saved with the state, given to
-    // the processor at activate() and, loaded while active, through loadedState_. Routes have no
-    // other way to change yet. Main thread.
+    // routes in a new instance, then a loaded state's or the editor's (uiSetRoutes), whichever
+    // came later; saved with the state, given to the processor at activate() and, set while
+    // active, through loadedState_ and uiRoutesPending_. Main thread.
     gg::core::ModRoutes routes_;
     // The loaded preset's name and base values (applyState; "Init" and the defaults in a new
     // instance): presetName(), presetEdited(). Main thread.

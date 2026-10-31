@@ -2,25 +2,34 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright 2026, the Giga Grains authors (see git history)
 #
-# gg-ui-core: the framework-free canvas code (the splat renderer, the lane geometry, the lane's
-# UI clock and grain list, and the canvas stress workload). It builds without plugins or JUCE,
-# so its tests and `gg-bench --canvas` also run in the sanitizer builds.
+# gg-ui-core: the framework-free editor code (the splat renderer, the lane geometry, the morph
+# pad's geometry and weights, the lane's UI clock and grain list, the canvas stress workload, the
+# undo stack, the layers' colours and the views' placement table). It builds without plugins or
+# JUCE, so its tests and `gg-bench --canvas` also run in the sanitizer builds.
 #
-# gg-ui: the JUCE editor (the Perform view: header, loader strip, grain canvas, macros), attached
-# to the plugins through sst-clap-helpers' clap_juce_shim. Only built with the plugins' editor
-# (GG_BUILD_PLUGINS and GG_BUILD_EDITOR).
+# gg-ui: the JUCE editor (the header over the Perform, Edit, Mod and FX views, the About box;
+# the palette and the parameter control the views build on), attached to the plugins through
+# sst-clap-helpers' clap_juce_shim. Only built with the plugins' editor (GG_BUILD_PLUGINS and
+# GG_BUILD_EDITOR).
 
 add_library(gg-ui-core STATIC
+        src/EditLayout.cpp
         src/LaneModel.cpp
         src/LaneState.cpp
+        src/PadModel.cpp
         src/SplatRenderer.cpp
         src/StressGrains.cpp
+        src/RouteEdits.cpp
+        src/UndoStack.cpp
+        src/views/Rings.cpp
         )
 add_library(gg::ui-core ALIAS gg-ui-core)
 
 target_include_directories(gg-ui-core PUBLIC include)
-# The engine only for gg::rng's header-only mixer.
-target_link_libraries(gg-ui-core PRIVATE gg::engine gg::compiler-options)
+# gg::core is PUBLIC: gg/ui/UndoStack.h includes its parameter slots and mod routes,
+# gg/ui/EditLayout.h its parameter slots, and gg/ui/PadModel.h's signatures use gg::core::kLayers
+# (gg-core is JUCE-free too). The engine only for gg::rng's header-only mixer.
+target_link_libraries(gg-ui-core PUBLIC gg::core PRIVATE gg::engine gg::compiler-options)
 
 if (GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
     add_library(gg-ui STATIC
@@ -28,6 +37,18 @@ if (GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
             src/GrainCanvas.cpp
             src/LoaderStrip.cpp
             src/MacroRow.cpp
+            src/Palette.cpp
+            src/ParamControl.cpp
+            src/LayerStrip.cpp
+            src/MorphPad.cpp
+            src/AboutBox.cpp
+            src/views/EditView.cpp
+            src/views/ParamPanel.cpp
+            src/views/FxView.cpp
+            src/views/SourceStrip.cpp
+            src/views/RouteList.cpp
+            src/views/ModView.cpp
+            src/views/PerformView.cpp
             src/MutatePanel.cpp
             src/PresetBrowser.cpp
             src/PresetStrip.cpp
@@ -44,4 +65,8 @@ if (GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
             PRIVATE clap_juce_shim clap_juce_shim_headers gg::juce-headers sst-jucegui gg::engine
             gg::compiler-options
             )
+    # Its embedded notices (gg/ui/Notices.h's noticeTexts(), the About box's texts) are a
+    # generated source that cmake/products.cmake attaches with gg_add_notices: the license set
+    # names AudioUnitSDK's checkout, which is known only after clients/clap-first, processed
+    # after this directory.
 endif ()

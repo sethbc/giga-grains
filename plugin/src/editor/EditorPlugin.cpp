@@ -19,10 +19,16 @@
 // translation unit that includes JUCE.
 #include <juce_gui_basics/juce_gui_basics.h>
 
+#include <cstring>
+
+#include <clapwrapper/wrapper_host.h>
+
 #include "gg/core/PresetInfo.h"
 #include "gg/core/Processor.h"
 #include "gg/media/Utf8Path.h"
+#include "UiSettings.h"
 #include "gg/ui/Editor.h"
+#include "gg/ui/UndoStack.h"
 
 namespace gg::plugin
 {
@@ -64,10 +70,64 @@ gg::ui::SampleStatusView viewOf(const SampleStatus &status)
     return {state,           status.fileName, status.message,   status.seconds,
             status.channels, status.fileRate, status.relinkable};
 }
+
+/// The format clap-wrapper loaded the plugin as, from its host-information extension: "VST3",
+/// "AU" (v2 or v3) or "Standalone". A host that doesn't offer it has loaded the CLAP itself, so
+/// "CLAP"; a flavor not named here (AAX isn't a format of ours) gives "".
+std::string formatOf(const clap_host *host)
+{
+    if (host == nullptr)
+    {
+        return {};
+    }
+    const auto *info = static_cast<const clap_wrapper_host_information_t *>(
+        host->get_extension(host, CLAP_WRAPPER_HOST_INFORMATION));
+    const char *flavor = info != nullptr && info->get_wrapper_flavor != nullptr
+                             ? info->get_wrapper_flavor(host)
+                             : nullptr;
+    if (flavor == nullptr)
+    {
+        return "CLAP";
+    }
+    if (std::strcmp(flavor, CLAP_WRAPPER_HOST_FLAVOR_VST3) == 0)
+    {
+        return "VST3";
+    }
+    if (std::strcmp(flavor, CLAP_WRAPPER_HOST_FLAVOR_AUV2) == 0 ||
+        std::strcmp(flavor, CLAP_WRAPPER_HOST_FLAVOR_AUV3) == 0)
+    {
+        return "AU";
+    }
+    if (std::strcmp(flavor, CLAP_WRAPPER_HOST_FLAVOR_STANDALONE) == 0)
+    {
+        return "Standalone";
+    }
+    return {};
+}
+
+gg::ui::ThemeChoice choiceOf(ThemeName theme)
+{
+    return theme == ThemeName::Light ? gg::ui::ThemeChoice::Light : gg::ui::ThemeChoice::Dark;
+}
+
+ThemeName nameOf(gg::ui::ThemeChoice theme)
+{
+    return theme == gg::ui::ThemeChoice::Light ? ThemeName::Light : ThemeName::Dark;
+}
 } // namespace
 
 EditorPlugin::EditorPlugin(const clap_host *host, Product product)
-    : GigaGrainsPlugin(host, product), editorContext_(std::make_unique<gg::ui::EditorContext>())
+    : GigaGrainsPlugin(host, product),
+      // Each undo or redo of a value is one gesture of its own, so hosts record it.
+      undo_(std::make_unique<gg::ui::UndoStack>(gg::ui::UndoCallbacks{
+          .setValue =
+              [this](gg::core::ParamSlot slot, float value) {
+                  uiBeginGesture(slot);
+                  uiSetValue(slot, static_cast<double>(value));
+                  uiEndGesture(slot);
+              },
+          .setRoutes = [this](const gg::core::ModRoutes &routes) { uiSetRoutes(routes); }})),
+      editorContext_(std::make_unique<gg::ui::EditorContext>())
 {
     // As Shortcircuit XT does. Creating the shim needs no window and no message loop: the shim
     // starts JUCE's GUI in guiCreate, so a plugin that never shows its editor (or a headless
@@ -213,6 +273,7 @@ std::unique_ptr<juce::Component> EditorPlugin::createEditor()
     gg::ui::EditorContext &context = *editorContext_;
     context = gg::ui::EditorContext{};
     context.productName = descriptorFor(product())->name;
+    context.formatName = formatOf(_host.host());
     // The instrument's loader strip (spec §6.5), on the main thread, as the loader requires. The
     // loader is GigaGrainsPlugin's, so it outlives the editor, which the shim holds.
     if (SampleLoader *loader = sampleLoader(); loader != nullptr)
@@ -287,11 +348,54 @@ std::unique_ptr<juce::Component> EditorPlugin::createEditor()
             const SampleWaveform w = loader->waveform();
             return gg::ui::SampleWaveform{w.peaks, w.frames, w.seconds};
         };
+        // PR 1 of the Views: only layer A holds a sample, the one the loader loads. A drop on
+        // another lane is refused (the canvas says so).
+        context.sampleWaveformFor = [loader](uint8_t layer) {
+            if (layer != 0)
+            {
+                return gg::ui::SampleWaveform{};
+            }
+            const SampleWaveform w = loader->waveform();
+            return gg::ui::SampleWaveform{w.peaks, w.frames, w.seconds};
+        };
+        context.loadSampleFor = [loader](uint8_t layer, const std::string &path) {
+            if (layer != 0)
+            {
+                return false;
+            }
+            try
+            {
+                loader->requestLoad(pathOf(path));
+            }
+            catch (...)
+            {
+                // As loadSample: the status stays as the loader set it.
+            }
+            return true;
+        };
     }
     else
     {
         context.sampleWaveform = [] { return gg::ui::SampleWaveform{}; };
+        context.sampleWaveformFor = [](uint8_t) { return gg::ui::SampleWaveform{}; };
+        context.loadSampleFor = [](uint8_t, const std::string &) { return false; };
     }
+    // Every layer's live ring peaks, while there is a Processor.
+    context.livePeaksFor = [this](uint8_t layer) -> const gg::core::LivePeaks * {
+        gg::core::Processor *p = processor();
+        return p != nullptr && layer < gg::core::kLayers ? &p->livePeaks(layer) : nullptr;
+    };
+    // The header shows the notices (gg::ui's NoticeSink); the plugin needs none of them.
+    // The per-machine theme, on the main thread (UiSettings.h).
+    context.theme = [] { return choiceOf(readTheme()); };
+    context.setTheme = [](gg::ui::ThemeChoice theme) { return writeTheme(nameOf(theme)); };
+    // The history outlives the editor (the class comment).
+    context.undo = undo_.get();
+    // The view chosen, kept while the instance lives (spec §6.2); never saved.
+    context.view = [this] { return lastView_; };
+    context.setView = [this](gg::ui::View view) { lastView_ = view; };
+    context.layer = [this] { return lastLayer_; };
+    context.setLayer = [this](uint8_t layer) { lastLayer_ = layer; };
 
     // The base values and the editor's gestures (sub-project 5's spec §6.3), through the
     // plugin's UI queue (GigaGrainsPlugin::uiBeginGesture).
@@ -300,6 +404,8 @@ std::unique_ptr<juce::Component> EditorPlugin::createEditor()
     context.beginGesture = [this](gg::core::ParamSlot slot) { uiBeginGesture(slot); };
     context.setValue = [this](gg::core::ParamSlot slot, double value) { uiSetValue(slot, value); };
     context.endGesture = [this](gg::core::ParamSlot slot) { uiEndGesture(slot); };
+    context.routes = [this] { return uiRoutes(); };
+    context.setRoutes = [this](const gg::core::ModRoutes &routes) { uiSetRoutes(routes); };
 
     fillPresetContext(context);
 
@@ -386,7 +492,6 @@ void EditorPlugin::updatePublished() noexcept
     gg::core::Processor *p = processor();
     context.grains = p != nullptr ? &p->grainQueue() : nullptr;
     context.snapshot = p != nullptr ? &p->snapshot() : nullptr;
-    context.livePeaks = p != nullptr ? &p->livePeaks() : nullptr;
     context.clock = p != nullptr ? &p->publishedClock() : nullptr;
     context.sampleRate = activeSampleRate();
 }

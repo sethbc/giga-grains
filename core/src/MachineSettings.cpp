@@ -37,6 +37,10 @@ std::string toSettingsXml(const MachineSettings &settings)
     root.SetAttribute("version", kMachineSettingsVersion);
     root.SetAttribute("sampleFolder", escapeAmpersands(upToNul(settings.sampleFolder)));
     root.SetAttribute("lastLoadFolder", escapeAmpersands(upToNul(settings.lastLoadFolder)));
+    if (!settings.theme.empty()) // unset, the file reads as M1 wrote it
+    {
+        root.SetAttribute("theme", escapeAmpersands(upToNul(settings.theme)));
+    }
     root.SetAttribute("contentFolder", escapeAmpersands(upToNul(settings.contentFolder)));
     doc.InsertEndChild(root);
     std::ostringstream oss;
@@ -83,6 +87,7 @@ bool fromSettingsXml(std::string_view xml, MachineSettings &out)
     }
     out.sampleFolder = attribute(*root, "sampleFolder");
     out.lastLoadFolder = attribute(*root, "lastLoadFolder");
+    out.theme = attribute(*root, "theme");
     out.contentFolder = attribute(*root, "contentFolder");
     return true;
 }

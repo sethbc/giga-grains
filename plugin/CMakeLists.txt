@@ -34,8 +34,9 @@ target_include_directories(gg-plugin-core PUBLIC include PRIVATE src)
 # editor layer below, and the tests. gg::media (the sample loader's decoding, conversion, search
 # and settings file, and the content search path) is PRIVATE too: its headers appear only in
 # SampleLoader.cpp, SearchCache.cpp, GigaGrainsPlugin.cpp, PresetCatalog.cpp,
-# PresetDiscovery.cpp and, for the UTF-8 path helper (gg/media/Utf8Path.h), EditorPlugin.cpp;
-# SearchCache.h and SettingsPath.h include them too.
+# PresetDiscovery.cpp, editor/UiSettings.cpp (the theme's settings file) and, for the UTF-8 path
+# helper (gg/media/Utf8Path.h), EditorPlugin.cpp; SearchCache.h and SettingsPath.h include them
+# too.
 target_link_libraries(gg-plugin-core
         PUBLIC clap clap-helpers gg::clap-wrapper-extensions
         PRIVATE gg::media gg::core sst-cpputils gg::compiler-options
@@ -53,6 +54,7 @@ else ()
     add_library(gg-plugin-editor OBJECT
             src/editor/EditorPlugin.cpp
             src/editor/MakePlugin.cpp
+            src/editor/UiSettings.cpp
             )
     add_library(gg::plugin-impl ALIAS gg-plugin-editor)
     target_include_directories(gg-plugin-editor PRIVATE src)

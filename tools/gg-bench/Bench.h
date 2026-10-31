@@ -325,6 +325,41 @@ std::string toJson(const SpaceReport &report);
 /// couldn't write the JSON. Throws std::invalid_argument for options validate() rejects.
 int spaceMain(const SpaceOptions &options, const std::string &jsonPath, std::string &out,
               const Progress &progress = {});
+
+// ---- gg-bench --canvas: the canvas renderer (report-only) ----
+//
+// Times gg-ui-core's splat renderer, headless, at 3200 x 1200 (a 1600 x 600 canvas on a 2x
+// display). Each frame generates the editor's stress workload, clears the canvas, splats the
+// grains and resolves them to ARGB as four lanes (M2 Views' spec §6.3): the canvas's height in
+// quarters, each in its layer's tint (kLayerTints), through the banded resolve.
+
+inline constexpr int kCanvasFrames = 240; // timed frames; --quick is kCanvasQuickFrames
+inline constexpr int kCanvasQuickFrames = 30;
+
+struct CanvasResult
+{
+    uint32_t grains;
+    double generateMs; // median; not part of the total
+    double clearMs;    // median
+    double splatMs;    // median
+    double resolveMs;  // median
+    double totalMs;    // median of clear + splat + resolve
+    double totalMsMean;
+    double totalMsP95;
+};
+
+struct CanvasReport
+{
+    int frames{0};
+    std::vector<CanvasResult> results; // 4,096, 8,192 and 16,384 grains
+};
+
+/// Times `frames` frames (after a 20-frame warm-up) at each of the three grain counts.
+CanvasReport runCanvas(int frames);
+
+/// The report as JSON: {"benchmark": "canvas", machine, compiler, width, height, pixelScale,
+/// "lanes": 4, "resolve": "banded", frames, budgetMs, "results": [...]}.
+std::string toJson(const CanvasReport &report);
 } // namespace gg::bench
 
 #endif // GG_BENCH_BENCH_H

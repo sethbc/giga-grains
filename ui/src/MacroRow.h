@@ -6,10 +6,12 @@
 #define GG_UI_MACROROW_H
 
 #include <array>
+#include <functional>
 #include <memory>
 
 #include <juce_gui_basics/juce_gui_basics.h>
 
+#include "gg/core/ModMatrix.h"
 #include "gg/core/ParamIds.h"
 #include "gg/ui/Editor.h"
 
@@ -35,6 +37,12 @@ class MacroRow final : public juce::Component
 
     /// Shows the base values as they are now.
     void refresh();
+
+    /// Makes the macros drop targets for the Mod view's source chips (spec §6.6): a chip dropped
+    /// on one calls `handler` with its slot, which refuses it with a notice. Null (the default)
+    /// takes no drops.
+    void
+    setSourceDropHandler(std::function<void(gg::core::ParamSlot, gg::core::ModSource)> handler);
 
     void resized() override;
 

@@ -13,11 +13,13 @@
 #include <sst/clap_juce_shim/clap_juce_shim.h>
 
 #include "GigaGrainsPlugin.h"
+#include "gg/ui/EditLayout.h" // gg::ui::View, JUCE-free
 
 namespace gg::ui
 {
 struct EditorContext; // gg/ui/Editor.h, kept out of this header's includers
-}
+class UndoStack;      // gg/ui/UndoStack.h
+} // namespace gg::ui
 
 namespace gg::plugin
 {
@@ -29,6 +31,17 @@ namespace gg::plugin
 /// editor keeps a reference to it and reads the active Processor's publish structures through
 /// it, and activate() and deactivate() update them there, on the main thread (see
 /// EditorContext).
+///
+/// **The undo history** (gg::ui::UndoStack, M2 sub-project 6's spec §6.8) is this object's too,
+/// one per instance from construction to destruction, so closing and reopening the editor keeps
+/// it. An undo or redo replays through the UI's gesture path (uiBeginGesture, uiSetValue,
+/// uiEndGesture: hosts record it as automation) or uiSetRoutes.
+///
+/// **The view** an editor shows is remembered here while the instance lives (spec §6.2), and
+/// the next editor opens on it; it is not saved and is no parameter.
+///
+/// **The theme** (spec §6.9) is the per-machine setting (UiSettings.h), mapped between the UI's
+/// gg::ui::ThemeChoice and the plugin's ThemeName, the two sides of the JUCE-free line.
 ///
 /// **Publishing** is on while any editor createEditor() made is open: each turns it on when
 /// created and off, through its own `publishing`, when destroyed (the shim has no destroy hook
@@ -98,9 +111,17 @@ class EditorPlugin : public GigaGrainsPlugin, public sst::clap_juce_shim::Editor
     void editorOpened(bool open) noexcept;
 
     // Before clapJuceShim, so destroyed after it: an editor the shim still holds reads the
-    // context, and its destructor calls editorOpened(false), which reads the rest.
+    // context, and its destructor calls editorOpened(false), which reads the rest. The undo
+    // stack must outlive every editor too: their components close their open gestures and
+    // groups in it as they are destroyed (EditorContext::undo).
+    std::unique_ptr<gg::ui::UndoStack> undo_;
     std::unique_ptr<gg::ui::EditorContext> editorContext_;
     uint32_t openEditors_{0}; // main thread
+    // The view the editor last showed, which the next one opens on (spec §6.2): the instance's,
+    // not its state's. Main thread.
+    gg::ui::View lastView_{gg::ui::View::Perform};
+    // The layer the editor last had selected, kept beside the view the same way. Main thread.
+    uint8_t lastLayer_{0};
     // Each editor's "still counted open" flag, which its publishing callback and guiDestroy
     // share, so an editor is counted closed once: the last createEditor()'s, and the one the
     // shim holds (from guiCreate to guiDestroy). Main thread.
