@@ -2658,16 +2658,19 @@ LiveRenders renderLiveBothWindowed(const Pool &pool, const LiveInput &input,
 TEMPLATE_TEST_CASE("simd live kernel matches the reference under a narrowed window", "[kernel]",
                    Hermite, Linear, Sinc)
 {
-    // Review finding 4. Three schedules over a 0.5 s ring (N = 24,000), each in blocks of 511,
-    // 64, 7 and 1, the SIMD kernel held to the reference with std::memcmp, and every block size
-    // to the first:
+    // Review finding 4. Five schedules over a 0.5 s ring (N = 24,000), each in blocks of 511, 7
+    // and 1 (the long run, SIMD steps at every phase, and every sample a call of its own; 64 adds
+    // nothing those three don't check and cost a sixth of the case under ASan), the SIMD kernel
+    // held to the reference with std::memcmp, and every block size to the first:
     // - a loop on an unfrozen ring, narrowing from N to 6,000 frames and widening again;
     // - a frozen loop: Loop on at 5,000 frames under 12 freezes;
     // - splices: four marks and splice 2 selected on an unfrozen ring, so the marks age out
     //   under it and the selection moves from one non-last splice to the next and then to the
     //   last, held through a freeze in the middle;
     // - splice selections on a frozen ring: 1, 4 (the last), 2, then the whole ring and a loop
-    //   (ruling SP-T12aa: the grains sounding at each change keep reading their old span).
+    //   (ruling SP-T12aa: the grains sounding at each change keep reading their old span);
+    // - a shrink's limits (ruling SP-T12ad): the admission limit, then the read limit, a splice
+    //   the limit comes to bind, then both lifted.
     // Grains sit inside the window at its onset, a quarter at the oldest frame's margin and a
     // quarter at the end's, and many straddle a narrowing.
     struct Schedule
@@ -2744,14 +2747,14 @@ TEMPLATE_TEST_CASE("simd live kernel matches the reference under a narrowed wind
         REQUIRE(narrowed > 30000);
         const Pool pool(windowGrains(89, spreadOnsets(schedule.input.length, 600), w));
         std::vector<float> first[2];
-        for (const int64_t block : {511, 64, 7, 1})
+        for (const int64_t block : {511, 7, 1})
         {
             INFO("blocks of " << block);
             const LiveRenders r = renderLiveBothWindowed<TestType>(pool, schedule.input, {block},
                                                                    schedule.changes, tables);
             REQUIRE(anyNonZero(r.ref.ch[0]));
             REQUIRE(anyNonZero(r.ref.ch[1]));
-            if (block >= 64)
+            if (block == 511)
             {
                 REQUIRE(r.stats.simdSamples > 100000);
             }
@@ -2836,9 +2839,9 @@ TEMPLATE_TEST_CASE("simd live kernel matches the reference at every ring level u
                    "[kernel]", Hermite, Linear, Sinc)
 {
     // The narrowed-window schedules (a loop on an unfrozen ring, a frozen loop, splices aging
-    // out under a selection, splice selections on a frozen ring) at levels 1 to 3, in blocks of
-    // 511, 64 and 7: the SIMD kernel held to the reference with std::memcmp, and every block size
-    // to the first.
+    // out under a selection, splice selections on a frozen ring, a shrink's limits) at levels 1 to
+    // 3, in blocks of 511 and 7 (64 adds nothing those two don't check): the SIMD kernel held to
+    // the reference with std::memcmp, and blocks of 7 to blocks of 511.
     struct Schedule
     {
         const char *name;
@@ -2909,14 +2912,14 @@ TEMPLATE_TEST_CASE("simd live kernel matches the reference at every ring level u
             const Pool pool(
                 scaledRates(windowGrains(89 + d, spreadOnsets(schedule.input.length, 400), w), d));
             std::vector<float> first[2];
-            for (const int64_t block : {511, 64, 7})
+            for (const int64_t block : {511, 7})
             {
                 INFO("blocks of " << block);
                 const LiveRenders r = renderLiveBothWindowed<TestType>(
                     pool, schedule.input, {block}, schedule.changes, tables, d);
                 REQUIRE(anyNonZero(r.ref.ch[0]));
                 REQUIRE(anyNonZero(r.ref.ch[1]));
-                if (block >= 64)
+                if (block == 511)
                 {
                     REQUIRE(r.stats.simdSamples > 100000);
                 }

@@ -941,7 +941,8 @@ TEST_CASE("a ring shrink under sounding grains waits for them", "[core][source][
     // boundary on is the same bytes whenever the watcher offers it: at the next call, a few calls
     // later, 0.5 s and 1.5 s later. The click score stays below the limit over the second and a
     // half after the boundary, and over the whole render, for two seeds; a grow from 16 s to
-    // 60 s keeps the same bytes whenever it lands too, since no grain reads past 16 s.
+    // 60 s keeps the same bytes whenever it lands too, since no grain reads past 16 s (at one
+    // seed: nothing waits on a grow, so only the offer time varies).
     constexpr int64_t kT = 12 * 48000;      // the Ring Length event, on the grid
     constexpr int64_t kFrames = 14 * 48000; // 2 s after it
     constexpr uint32_t kCall = 512;
@@ -951,15 +952,16 @@ TEST_CASE("a ring shrink under sounding grains waits for them", "[core][source][
         const char *name;
         double ringLength; // log2 seconds
         int64_t frames;    // the ring adopted at the end
+        std::vector<uint64_t> seeds;
     };
     const std::vector<Case> cases = {
-        {"16 s to 4 s", 2.0, 4 * 48000},
-        {"16 s to 60 s", std::log2(60.0), 60 * 48000},
+        {"16 s to 4 s", 2.0, 4 * 48000, {2, 3}},
+        {"16 s to 60 s", std::log2(60.0), 60 * 48000, {2}},
     };
     for (const Case &c : cases)
     {
         INFO(c.name);
-        for (const uint64_t seed : {2u, 3u})
+        for (const uint64_t seed : c.seeds)
         {
             INFO("seed " << seed);
             std::vector<Stereo> outs;

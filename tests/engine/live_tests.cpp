@@ -2469,7 +2469,8 @@ TEST_CASE("a window change under sounding grains doesn't click", "[engine][live]
     // while the grains after it are admitted into the new one. Dense grains over a 220 Hz sine, so
     // every change falls under sounding grains; each change's click score (the goldens', over
     // 0.1 s before it to 0.15 s after) and the whole render's stay below the limit, at every tier
-    // and at ring levels 0 to 2, for six seeds (before the fix each render scored 84 to 2,955).
+    // and at ring levels 0 to 2, for three seeds (before the fix each render scored 84 to 2,955:
+    // every seed caught it, so three prove what the six this ran with did).
     // Output and grain events are the same in blocks of 1, 64 and 511.
     struct Schedule
     {
@@ -2534,7 +2535,7 @@ TEST_CASE("a window change under sounding grains doesn't click", "[engine][live]
         for (const Tier &tier : tiers)
         {
             INFO(schedule.name << ", " << tier.name);
-            for (const uint64_t seed : {2u, 3u, 4u, 5u, 6u, 7u})
+            for (const uint64_t seed : {2u, 3u, 4u})
             {
                 INFO("seed " << seed);
                 const LiveRender r =
@@ -2761,7 +2762,8 @@ TEST_CASE("a ring shrink waits for its grains and lands inaudibly whenever it is
     // later: the output is the same bytes either way, and with the watcher's calls of 64 frames,
     // and its click score stays below the limit from 0.1 s before the limit to 1.5 s after, and
     // over the whole render (before the ruling, an adoption under such grains scored 275 to
-    // 2,754), at Eco, Normal and HQ at ring levels 0 and 1, for two seeds.
+    // 2,754), at Eco, Normal and HQ at ring levels 0 and 1, for two seeds (the 60 s ring and the
+    // grow, already only at Normal and HQ level 1, for one).
     struct Case
     {
         const char *name;
@@ -2798,7 +2800,8 @@ TEST_CASE("a ring shrink waits for its grains and lands inaudibly whenever it is
                 continue; // the long cases at Normal and at HQ level 1
             }
             INFO(c.name << ", " << tier.name);
-            for (const uint64_t seed : {2u, 3u})
+            for (const uint64_t seed :
+                 c.allTiers ? std::vector<uint64_t>{2, 3} : std::vector<uint64_t>{2})
             {
                 INFO("seed " << seed);
                 const ShrinkRun first =
