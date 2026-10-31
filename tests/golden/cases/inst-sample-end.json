@@ -1,0 +1,15 @@
+{
+  "mode": "instrument",
+  "sampleRate": 48000,
+  "durationSeconds": 5.5,
+  "blockSize": 128,
+  "seed": 1,
+  "sample": {"kind": "sine", "frequencyHz": 660, "seconds": 2.0, "amplitude": 0.5},
+  "params": {"Position": 0.97, "Size": -2.321928094887362, "Density": 3.0, "Level": 0.0},
+  "notes": [
+    {"time": 0.25, "key": 48, "duration": 1.0},
+    {"time": 1.5, "key": 60, "duration": 1.0},
+    {"time": 2.75, "key": 67, "duration": 1.0},
+    {"time": 4.0, "key": 72, "duration": 1.0}
+  ]
+}

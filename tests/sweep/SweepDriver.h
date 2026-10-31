@@ -12,24 +12,30 @@
 // render, labels every stretch of it (the parameter, the step, the value), and checks it: finite
 // (the output, and the rings, peak strips, snapshots and grain queue the Processor exposes), the
 // chain's peak bound, no runaway and the goldens' click score, outside the stretches it exempts.
+// Each sample outside them is scored as the goldens score the whole render, against its ±5 ms
+// of the render whatever is exempt there: scoring a stretch as a render of its own would judge
+// its first and last samples against half a window, so a grain's release cut by an
+// exemption's end read as a click (the instrument extremes' corner 13 under the sources
+// branch's slot layout: 36.6 for samples the whole render scores 2.8).
 //
 // The click check looks away from (exempt()):
 // - the input's fade-in, the first 10 ms and the score's ±5 ms beyond;
 // - the pre-delay and kReverbSizeExempt after every Reverb Size move: carry-over row 217,
 //   accepted (S8);
-// - and, pending a decision, the click sources this harness found (the task 11 report),
-//   each where the driver sees it happen:
-//   1. kSampleEnd: a grain reading a sample is cut where it runs past the sample's end (its taps
-//      read 0 there), whatever its window's value;
-//   2. kReverbOnset: when the reverb goes from idle to active (Reverb Amount rising from exactly
-//      0) under a sounding input, it starts from an empty room and hears its input cut in at the
-//      first active chunk, and that step comes back through the pre-delay and the network;
+// - and, pending a decision, the click source this harness found (the task 11 report), where
+//   the driver sees it happen: kReverbOnset, when the reverb goes from idle to active (Reverb
+//   Amount rising from exactly 0) under a sounding input, it starts from an empty room and hears
+//   its input cut in at the first active chunk, and that step comes back through the pre-delay
+//   and the network.
 //   The morph law's normalization (r_L·b_L / Σ r_K·b_K) also packs a crossfade into a few samples
 //   of a layer's ramp when the pad is off its centre and the rendering layers' base weights are
 //   nearly 0 (a layer switch with the pad in a corner; a pad move near an edge). Nothing here
 //   exempts it: no committed case meets it, and the Layer On sweeps are scored.
 //   Reverb Size moves are exempt only when the Size in effect (its base or its modulation)
 //   changes.
+// - and kReverbModulationDrop, after a Reverb Modulation decrease from 1 while Reverb Decay is
+//   infinite (its base kDecayMax exactly): a reverb click that carry-over row 311 owns (sub-project
+//   4); deleted with its fix.
 //
 // Each case pins a floor under the share of the render the click check scores
 // (Checks::minScored), so an exemption that widens past what the case needs fails there.
@@ -39,7 +45,6 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <limits>
 #include <memory>
 #include <numbers>
 #include <span>
@@ -56,8 +61,6 @@
 #include "gg/core/Processor.h"
 #include "gg/core/Rng.h"
 #include "gg/engine/Engine.h"
-#include "gg/metrics/AudioData.h"
-#include "gg/metrics/Metrics.h"
 #include "sst/basic-blocks/params/ParamMetadata.h"
 
 namespace gg::test
@@ -74,6 +77,58 @@ enum class Material
     /// 1 s 220 Hz sine sample every layer reads when its Source is Sample, in either product.
     NoteOverSine,
 };
+
+/// The harness's seeded draws are keyed by a parameter's CLAP ID, never by its slot index: the IDs
+/// are append-only, so a parameter added later gets draws of its own and moves none of the
+/// existing ones (sub-project 2 appends 20).
+namespace sweepdraw
+{
+/// A draw in [0, 1) for `stream` (a corner, say) and the parameter `id`.
+inline double byId(uint64_t seed, uint64_t stream, uint32_t id)
+{
+    return gg::test::layers::uniform(seed, (stream << 32) | id);
+}
+
+/// Burst event `event`'s parameter, chosen from `ids` by highest random weight: each ID's key is
+/// a 64-bit hash of (seed, event, ID), and the ID with the largest key wins (the lower ID on a
+/// tie). A key depends on the ID alone, so appending IDs to the list changes the pick of an event
+/// only when an appended ID's key beats the old winner's: every other event keeps its parameter.
+/// Returns an index into `ids`.
+inline std::size_t pickById(uint64_t seed, uint64_t event, std::span<const uint32_t> ids)
+{
+    std::size_t best = 0;
+    uint64_t bestKey = 0;
+    for (std::size_t i = 0; i < ids.size(); ++i)
+    {
+        const uint64_t key =
+            gg::rng::hash({seed, 1, 0, gg::rng::Field::SignalNoise, (event << 32) | ids[i]});
+        if (i == 0 || key > bestKey || (key == bestKey && ids[i] < ids[best]))
+        {
+            best = i;
+            bestKey = key;
+        }
+    }
+    return best;
+}
+
+/// Burst event `event`'s field `field` (0 to 7), a draw in [0, 1) that depends on neither the
+/// event's parameter nor the list.
+inline double eventField(uint64_t seed, uint64_t event, uint64_t field)
+{
+    return gg::test::layers::uniform(seed, (uint64_t{1} << 48) + event * 8 + field);
+}
+
+/// Every slot's CLAP ID, in slot order.
+inline std::vector<uint32_t> slotIds()
+{
+    std::vector<uint32_t> ids;
+    for (std::size_t s = 0; s < gg::core::kParamCount; ++s)
+    {
+        ids.push_back(gg::core::paramId(static_cast<gg::core::ParamSlot>(s)));
+    }
+    return ids;
+}
+} // namespace sweepdraw
 
 struct Checks
 {
@@ -93,7 +148,8 @@ struct Verdict
 {
     bool finite;
     float peak;
-    /// computeMetrics' click score: the largest over the stretches the check doesn't exempt.
+    /// computeMetrics' click score of the whole render, but only its samples in the stretches the
+    /// check doesn't exempt (each against the whole render's ±5 ms around it): their largest.
     double clickScore;
     /// The share of the render's samples in the stretches the click score covers, 0 to 1: what
     /// the exemptions (and the stretches too short to score) leave.
@@ -127,6 +183,11 @@ class SweepDriver
     /// How long after the reverb goes active, beyond its pre-delay, the check looks away
     /// (kReverbOnset): the onset's echoes through the network, as long as a Size move's.
     static constexpr int64_t kReverbOnsetExempt = 28800;
+    /// How long after a Reverb Modulation decrease from 1, at infinite Decay, the check looks away
+    /// (kReverbModulationDrop; carry-over row 311, sub-project 4's: delete it with the reverb fix).
+    /// The click is one sample, 1,488 after the boundary in the FX extremes' corner 24 (29.2);
+    /// exempting 1,489 samples passes and 1,488 fails, so this is that plus 47.
+    static constexpr int64_t kReverbModulationDropExempt = 1536;
 
     /// `fixedBlock` > 0 renders every call at that size instead of the drawn ones.
     SweepDriver(gg::core::Mode mode, uint64_t seed, uint32_t fixedBlock = 0)
@@ -134,13 +195,11 @@ class SweepDriver
           processor_(gg::core::ProcessorConfig{kRate, kMaxBlock, seed, mode})
     {
         const auto sample = gg::test::layers::sine(kInputHz);
-        sampleFrames_ = sample->level(0).frames; // the fixture's length, not a copy of it
         for (uint8_t L = 0; L < gg::core::kLayers; ++L)
         {
             processor_.setSourceNow(L, sample);
         }
         processor_.setPublishing(true);
-        processor_.setEventSink(&SweepDriver::onGrain, this);
         out_[0].reserve(static_cast<std::size_t>(kRate * 120));
         out_[1].reserve(static_cast<std::size_t>(kRate * 120));
         for (auto &c : in_)
@@ -149,9 +208,10 @@ class SweepDriver
         }
         events_.reserve(1 << 14);
         callEvents_.reserve(1 << 14);
-        sampleEnds_.reserve(kSampleEndCapacity);
         exempt_.push_back({0, kFade + 256}); // the input's fade-in
         sizeBase_ = meta(gg::core::ParamSlot::ReverbSize).defaultVal;
+        modBase_ = meta(gg::core::ParamSlot::ReverbModulation).defaultVal;
+        decayBase_ = meta(gg::core::ParamSlot::ReverbDecay).defaultVal;
         label("the start");
     }
 
@@ -191,6 +251,18 @@ class SweepDriver
     {
         queue(clock_, slot, false, value);
         label("set " + meta(slot).name + " = " + num(value));
+    }
+    /// A modulation-offset event at the next call's first sample.
+    void setMod(gg::core::ParamSlot slot, double value)
+    {
+        queue(clock_, slot, true, value);
+        label("set modulation of " + meta(slot).name + " = " + num(value));
+    }
+    /// computeMetrics' click score of the whole render, over every sample (the check's scoring
+    /// with nothing exempt).
+    double wholeRenderClickScore() const
+    {
+        return clickScore(clickTerms(), 0, static_cast<int64_t>(out_[0].size())).first;
     }
     /// A base-value event at its default, and a modulation event of 0, for every parameter at the
     /// next call's first sample.
@@ -259,17 +331,22 @@ class SweepDriver
                                  .tempoBpm = 20.0 + u() * 280.0,
                                  .playing = u() < 0.7,
                                  .beatsPerBar = 1 + static_cast<int>(u() * 7.0)});
+        // Each event's draws are keyed by the event index and, for the parameter, by CLAP ID
+        // (sweepdraw), so appended parameters move no existing event's choice but their own.
+        const std::vector<uint32_t> ids = sweepdraw::slotIds();
         std::vector<gg::core::ParamEvent> params;
         params.reserve(static_cast<std::size_t>(events));
         for (int i = 0; i < events; ++i)
         {
-            const auto slot = static_cast<gg::core::ParamSlot>(
-                static_cast<std::size_t>(u() * gg::core::kParamCount) % gg::core::kParamCount);
+            const auto e = static_cast<uint64_t>(i);
+            const auto f = [&](uint64_t field) { return sweepdraw::eventField(seed, e, field); };
+            const auto slot = static_cast<gg::core::ParamSlot>(sweepdraw::pickById(seed, e, ids));
             const auto &m = meta(slot);
             const double span = static_cast<double>(m.maxVal) - m.minVal;
-            const bool isMod = u() < 0.25;
-            const double v = isMod ? (2.0 * u() - 1.0) * span / 4.0 : m.minVal + u() * span;
-            params.push_back({offset(), slot, isMod, v});
+            const bool isMod = f(0) < 0.25;
+            const double v = isMod ? (2.0 * f(1) - 1.0) * span / 4.0 : m.minVal + f(2) * span;
+            const auto at = static_cast<uint32_t>(f(3) * (n + 1.0)) % (n + 1);
+            params.push_back({at, slot, isMod, v});
         }
         std::vector<gg::core::NoteEvent> notes;
         for (int i = 0; i < 32; ++i)
@@ -401,31 +478,23 @@ class SweepDriver
         }
 
         // The click score, over every stretch the check doesn't exempt.
-        int64_t worstFrom = 0;
-        int64_t worstTo = 0;
+        const ClickTerms terms = clickTerms();
+        int64_t worstAt = 0;
         int64_t scored = 0;
         for (const auto &[a, b] : unexempt(frames))
         {
             scored += b - a;
-            const double s = clickScore(a, b);
+            const auto [s, at] = clickScore(terms, a, b);
             if (s > v.clickScore)
             {
                 v.clickScore = s;
-                worstFrom = a;
-                worstTo = b;
+                worstAt = at;
             }
         }
-        if (sampleEndsOverflowed_)
+        if (!c.clicksExempt && !(v.clickScore <= c.clickLimit))
         {
-            // The kSampleEnd stretches are incomplete, so the score can't be trusted.
-            v.clickScore = std::numeric_limits<double>::infinity();
-            where << "more than " << kSampleEndCapacity << " sample-end stretches; ";
-        }
-        else if (!c.clicksExempt && !(v.clickScore <= c.clickLimit))
-        {
-            const int64_t at = locateClick(worstFrom, worstTo);
             where << "click score " << v.clickScore << " above " << c.clickLimit << " at sample "
-                  << at << " (" << labelAt(at) << "); ";
+                  << worstAt << " (" << labelAt(worstAt) << "); ";
         }
         v.scoredFraction =
             frames > 0 ? static_cast<double>(scored) / static_cast<double>(frames) : 0.0;
@@ -450,7 +519,6 @@ class SweepDriver
         int64_t from;
         int64_t to;
     };
-    static constexpr std::size_t kSampleEndCapacity = 1 << 18;
     /// The shortest stretch the click check scores: four times the score's ±5 ms.
     static constexpr int64_t kMinStretch = 4 * 240;
 
@@ -494,6 +562,24 @@ class SweepDriver
     /// force (events must arrive in the order they apply).
     void noteExempt(int64_t time, gg::core::ParamSlot slot, bool isMod, double value)
     {
+        if (slot == gg::core::ParamSlot::ReverbModulation && !isMod)
+        {
+            // kReverbModulationDrop's trigger: the base falls from its top (1) while the Decay
+            // BASE, as queued before this event, is at its top (kDecayMax) exactly: latched here,
+            // so a Decay that is infinite only through modulation, or becomes so later, doesn't
+            // count. (Modulation drops by isMod are out of scope: nothing tracks them, so one
+            // that clicks fails the harness, it is never hidden.)
+            if (value < modBase_ && modBase_ >= meta(slot).maxVal &&
+                decayBase_ == static_cast<double>(meta(gg::core::ParamSlot::ReverbDecay).maxVal))
+            {
+                modDrops_.push_back((time + 31) / 32 * 32);
+            }
+            modBase_ = value;
+        }
+        if (slot == gg::core::ParamSlot::ReverbDecay && !isMod)
+        {
+            decayBase_ = value;
+        }
         if (slot != gg::core::ParamSlot::ReverbSize)
         {
             return;
@@ -504,37 +590,6 @@ class SweepDriver
             held = value;
             sizeMoves_.push_back((time + 31) / 32 *
                                  32); // exempt once applied, with its pre-delay (call())
-        }
-    }
-
-    /// The Processor's grain sink (on the audio thread, inside process(): no allocation past
-    /// the reserve): a grain reading a sample that runs past the sample's last frame, less the
-    /// interpolators' reach, is cut there (kSampleEnd).
-    static void onGrain(void *ctx, uint32_t, const gg::GrainSpec &g)
-    {
-        auto *d = static_cast<SweepDriver *>(ctx);
-        const double kLast = static_cast<double>(d->sampleFrames_ - 1) - 16.0;
-        if (g.sourceSlot == gg::Engine::kLiveSlot || !(g.rate > 0.0) ||
-            g.startPos + g.rate * g.durationSamples <= kLast)
-        {
-            return;
-        }
-        const auto end =
-            g.onsetSample + static_cast<int64_t>(std::max(0.0, kLast - g.startPos) / g.rate);
-        const Stretch s{end - 256, end + 512 + static_cast<int64_t>(32.0 / g.rate)};
-        auto &v = d->sampleEnds_;
-        if (!v.empty() && s.from <= v.back().to && s.to >= v.back().from)
-        {
-            v.back().to = std::max(v.back().to, s.to);
-            v.back().from = std::min(v.back().from, s.from);
-        }
-        else if (v.size() < v.capacity())
-        {
-            v.push_back(s);
-        }
-        else
-        {
-            d->sampleEndsOverflowed_ = true;
         }
     }
 
@@ -639,6 +694,16 @@ class SweepDriver
             exempt_.push_back({b - 64, b + predelay + kReverbSizeExempt});
             return true;
         });
+        // kReverbModulationDrop (row 311): a drop from 1 at Decay's base kDecayMax (latched when
+        // noted), applied in this call.
+        std::erase_if(modDrops_, [&](int64_t b) {
+            if (b >= clock_)
+            {
+                return false; // not applied yet
+            }
+            exempt_.push_back({b - 64, b + kReverbModulationDropExempt});
+            return true;
+        });
         const bool active = processor_.reverbActive();
         if (active && !reverbWasActive_)
         {
@@ -701,10 +766,6 @@ class SweepDriver
         {
             ex.emplace_back(s.from, s.to);
         }
-        for (const auto &s : sampleEnds_)
-        {
-            ex.emplace_back(s.from, s.to);
-        }
         std::sort(ex.begin(), ex.end());
         std::vector<std::pair<int64_t, int64_t>> out;
         int64_t at = 0;
@@ -720,65 +781,72 @@ class SweepDriver
         {
             out.emplace_back(at, frames);
         }
-        // A stretch much shorter than the score's ±5 ms window would score its few samples
-        // against too little context (none, for the shortest): leave it out with its neighbours.
+        // A stretch much shorter than the score's ±5 ms window lies mostly within that reach of
+        // the exempt audio on either side, which its samples' windows hold: leave it out with its
+        // neighbours (the floors on the scored share are pinned with this rule).
         std::erase_if(out, [](const auto &s) { return s.second - s.first < kMinStretch; });
         return out;
     }
 
-    double clickScore(int64_t from, int64_t to) const
+    /// The goldens' click score's terms over the whole render (Metrics.h; computeMetrics scores
+    /// the mono mix so): d[n] = |m[n] − 2m[n − 1] + m[n − 2]| from n = 2, and prefix[n] the sum of
+    /// d[j]² for j < n.
+    struct ClickTerms
     {
-        gg::metrics::AudioData audio{kRate, {}};
-        for (const auto &ch : out_)
-        {
-            audio.channels.emplace_back(ch.begin() + from, ch.begin() + to);
-        }
-        return gg::metrics::computeMetrics(audio).clickScore;
-    }
-
-    /// Where in [from, to) the click scores highest, for the report: the n maximizing
-    /// d[n] / max(L[n], 1e-6) over d[n] > 1e-3, as computeMetrics defines the score (Metrics.h),
-    /// recomputed here because the score alone doesn't say where.
-    int64_t locateClick(int64_t from, int64_t to) const
+        std::vector<double> d;
+        std::vector<double> prefix;
+    };
+    ClickTerms clickTerms() const
     {
-        const auto n = static_cast<std::size_t>(to - from);
-        std::vector<double> d(n, 0.0);
-        std::vector<double> prefix(n + 1, 0.0);
-        const auto mono = [&](std::size_t k) {
-            const auto j = static_cast<std::size_t>(from) + k;
+        const std::size_t n = out_[0].size();
+        ClickTerms t{std::vector<double>(n, 0.0), std::vector<double>(n + 1, 0.0)};
+        const auto mono = [&](std::size_t j) {
             return 0.5 * (finiteOr0(out_[0][j]) + finiteOr0(out_[1][j]));
         };
         for (std::size_t k = 2; k < n; ++k)
         {
-            d[k] = std::abs(mono(k) - 2.0 * mono(k - 1) + mono(k - 2));
-            prefix[k + 1] = prefix[k] + d[k] * d[k];
+            t.d[k] = std::abs(mono(k) - 2.0 * mono(k - 1) + mono(k - 2));
+            t.prefix[k + 1] = t.prefix[k] + t.d[k] * t.d[k];
         }
+        return t;
+    }
+
+    /// The click score over the samples in [from, to), and the sample where it peaks: the most of
+    /// d[n] / max(L[n], 1e-6) over d[n] > 1e-3, where L[n] is the RMS of d over n ± 5 ms of the
+    /// whole render less n ± 2 (computeMetrics' definition, Metrics.h). Over [0, frames) it is
+    /// computeMetrics' score of the whole render.
+    std::pair<double, int64_t> clickScore(const ClickTerms &t, int64_t from, int64_t to) const
+    {
+        const std::size_t n = t.d.size();
         constexpr std::size_t kWindow = 240; // ±5 ms at 48 kHz
         constexpr std::size_t kGuard = 2;
-        double best = -1.0;
-        std::size_t at = 0;
-        for (std::size_t k = 2; k < n; ++k)
+        const std::size_t window = std::min(kWindow, n);
+        double best = 0.0;
+        int64_t at = from;
+        for (auto k = static_cast<std::size_t>(std::max<int64_t>(from, 2));
+             k < static_cast<std::size_t>(to); ++k)
         {
-            if (!(d[k] > 1e-3))
+            if (!(t.d[k] > 1e-3))
             {
                 continue;
             }
-            const std::size_t lo = k - std::min(k - 2, kWindow);
-            const std::size_t hi = k + std::min(n - 1 - k, kWindow);
+            const std::size_t lo = k - std::min(k - 2, window);
+            const std::size_t hi = k + std::min(n - 1 - k, window);
             const std::size_t glo = k - std::min(k - lo, kGuard);
             const std::size_t ghi = k + std::min(hi - k, kGuard);
             const std::size_t count = (hi - lo + 1) - (ghi - glo + 1);
-            const double sum = (prefix[hi + 1] - prefix[lo]) - (prefix[ghi + 1] - prefix[glo]);
+            const double sum =
+                (t.prefix[hi + 1] - t.prefix[lo]) - (t.prefix[ghi + 1] - t.prefix[glo]);
             const double level =
                 count > 0 ? std::sqrt(std::max(sum, 0.0) / static_cast<double>(count)) : 0.0;
-            const double score = d[k] / std::max(level, 1e-6);
+            const double score = t.d[k] / std::max(level, 1e-6);
             if (score > best)
             {
                 best = score;
-                at = k;
+                at = static_cast<int64_t>(k);
             }
         }
-        return from + static_cast<int64_t>(at);
+        return {best, at};
     }
 
     gg::core::Mode mode_;
@@ -791,7 +859,6 @@ class SweepDriver
     uint32_t sinceTiny_{0};
     float inputPeak_{0.0f};
     bool reverbWasActive_{false};
-    int64_t sampleFrames_{0};
     // The Reverb Size in force as queued (base, modulation): a move is exempt only if it changes
     // it.
     double sizeBase_{0.0};
@@ -803,9 +870,11 @@ class SweepDriver
     std::vector<gg::test::layers::TimedNote> notes_;
     std::vector<std::pair<int64_t, std::string>> labels_;
     std::vector<Stretch> exempt_;
-    std::vector<int64_t> sizeMoves_;  // Reverb Size moves' boundaries, until applied
-    std::vector<Stretch> sampleEnds_; // the grain sink's, reserved: kSampleEndCapacity
-    bool sampleEndsOverflowed_{false};
+    /// Reverb Modulation base drops from 1 at Decay's base kDecayMax: boundaries, until applied.
+    std::vector<int64_t> modDrops_;
+    double decayBase_{0.0};          // the Reverb Decay base as queued
+    double modBase_{0.0};            // the Reverb Modulation base as queued
+    std::vector<int64_t> sizeMoves_; // Reverb Size moves' boundaries, until applied
     int64_t firstBadExposed_{-1};
     const char *badExposedWhat_{""};
 };

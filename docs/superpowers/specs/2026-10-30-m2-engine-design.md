@@ -375,9 +375,13 @@ channel count `c`, with `w(t) = kGrainWeights[t][c]`:
    `W(o) − W_fading(o) − w(old) + w(t) ≤ quota`, so steals compound at the onset rate as the
    overshoot bound below says; rungs 1 and 2 keep the full ledger. **Amended (2026-10-30,
    ES-T6a):** a grain with at most `kStealFade` samples left keeps its natural end and applies no
-   fade (`fadeStart` marks it stolen, `invFade` stays 0): it ends within the fade's length anyway,
+   fade (`stolen_` marks it stolen, `invFade` stays 0): it ends within the fade's length anyway,
    and the fade's corner alone scored 13.86 on a sparse sine (0 after). So `F` is "256 samples
-   when more than 256 remain, else the grain is left to its end". Otherwise the new grain is
+   when more than 256 remain, else the grain is left to its end". **Amended (2026-10-30, EF-8,
+   row 300's follow-up):** the fade is a raised cosine, the Hann table's rising half at phase
+   `(end − t) / 512`, not a line: the line's end corner scored up to 50 on the click detector at
+   rate 0.5 (sample and live grains alike), the curve at most 3.07; `fx-overload` and
+   `inst-overload` moved with it. Otherwise the new grain is
    **dropped** and counted, and nothing is stolen. At most one grain is stolen per admission, so
    the ladder's work per draw is O(log capacity) plus a bounded scan for the oldest sounding
    grain (the engine keeps a cursor that only advances within a block; finished grains are
@@ -388,10 +392,12 @@ oldest grains are still young, the new ones are dropped; under sustained overloa
 grains yield with fades, one per new grain, so the stream keeps refreshing at its onset rate
 rather than freezing on whatever got in first. Each rung is reachable and the order is §14's.
 
-**The fade.** A stolen grain's window is multiplied by `clamp((end − t) / F, 0, 1)` from the
-steal on, with `end` its new end: 1 at the steal (the grain is at least half-way through, so its
-window is already falling) and 0 at `end`, a linear fade over F samples, shorter only when the
-grain would have ended sooner. The pool stores the fade's start and 1/F per grain (`INT64_MAX`
+**The fade.** A stolen grain's window is multiplied by a raised cosine from the steal on, with
+`end` its new end: the Hann table's rising half at phase `(end − t) / (2F)`, so sin² of a quarter
+turn: 1 at the steal (the grain is at least half-way through, so its window is already falling)
+and 0 at `end`, over F samples, shorter only when the grain would have ended sooner. **Amended
+(2026-10-30, EF-8):** this replaces the first design's `clamp((end − t) / F, 0, 1)`, a line whose
+end corner scored up to 50 on the click detector. The pool stores the fade's start and 1/F per grain (`INT64_MAX`
 and 0 for an unstolen grain, whose factor is exactly 1 and is skipped). The fade's first factor
 is 1 within one ulp (**Amended (2026-10-30), ES-T6b:** `F × float(1/F)` rounds to 0.99999994 for
 38 of the 255 lengths; accepted). The scalar references
@@ -572,6 +578,19 @@ call (0, 1 and up to 4,096 among them):
     0.25), 56.4 with a Morph X wrap): **row 301**, outside this sub-project. The fix round dropped
     its exemption (`kLayerSwitch`, 750 samples after a Layer On event) because no committed case
     meets the form and the Layer On sweeps are scored.
+  - **Amended (2026-10-30), row 300 closed:** the director chose to fade the tail. A sample
+    grain whose read position would pass its sample's last frame while its window is open ends
+    there: `Engine::admit` latches the edge (`grainEdgeSample`, the first output sample whose
+    `startPos + rate × e` exceeds `frames − 1`, in level-0 frames for every tier and level), and
+    `GrainPool::spawn` ends the grain at it, faded with a raised cosine over the `kEdgeFade` = 256
+    samples before it or all it has (rulings EF-2 and EF-6: the Hann table's rising half, read by
+    the scalar reference, which every fading sample goes through, so the 4-wide and AVX2 kernels
+    didn't change). The start needs no edge (it is clamped into the sample and the rate is
+    positive); the ring's grains have none. A cut grain keeps its weight until its cut end, not as
+    fading weight, and a steal of it takes the earlier end, its fade multiplying the edge curve.
+    `kSampleEnd` is deleted and the floors it lowered are raised. The worst click score measured
+    over rates 0.5 to 4, every tier, 16 edge phases, short spans and gains 1 and 4 is 2.81
+    (`65292dc`, `0d23734`; INTENT §23 #66, amended).
   - **Task 11's fix round:** every case pins a floor under the share of its render that is scored
     (`Checks::minScored`), so an exemption that widens past what a case needs fails there; the
     Reverb Size exemption applies only when the Size in effect changes, not on every event; and
@@ -863,6 +882,8 @@ Row 51 is **Closed** by `dc9bc91` and `613fec6`. Three rows are added, 300, 301 
 findings of the sweep harness (§6.11, ES-T11a): the sample-end cut (300), the morph law's hand-over
 off the pad's center (301) and the reverb's start from an empty room (302). Minors the final
 review raises are fixed or deferred at the controller's judgment and logged in the file.
+**Amended (2026-10-30, the follow-up):** row 300 is **Closed** by `65292dc` and `0d23734` (the
+director: fade the tail; §6.11's ES-T11a note).
 **Amended (2026-10-30, the close):** rows 303 to 310 are added for the deferred minors that still
 name a defect and the items blocked outside this sub-project (`LiveSource::kGuardFrames`, the two
 Windows baseline entries, non-finite samples in decoded files, HQ's weight, the listening pack's

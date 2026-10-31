@@ -57,6 +57,7 @@ add_executable(gg-tests
         metrics/spectrogram_tests.cpp
         sweep/sweep_bursts_tests.cpp
         sweep/sweep_extremes_tests.cpp
+        sweep/sweep_keying_tests.cpp
         sweep/sweep_overload_tests.cpp
         sweep/sweep_params_tests.cpp
         tools/bench_kernel_tests.cpp
