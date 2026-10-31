@@ -308,6 +308,7 @@ void Processor::jumpRamps() noexcept
         l.feedback.jump(w.feedback);
         l.on.jump(layerOn(effective_, L) ? 1.0f : 0.0f);
         l.overdub.jump(toRingParams(effective_, L).overdub);
+        l.resampleIn.jump(resampleTarget(L));
     }
 }
 
@@ -328,7 +329,13 @@ void Processor::retargetRamps(int64_t t) noexcept
         l.feedback.retarget(w.feedback, t, rampSamples_);
         l.on.retarget(layerOn(effective_, L) ? 1.0f : 0.0f, t, rampSamples_);
         l.overdub.retarget(toRingParams(effective_, L).overdub, t, rampSamples_);
+        l.resampleIn.retarget(resampleTarget(L), t, rampSamples_);
     }
+}
+
+float Processor::resampleTarget(uint8_t layer) const noexcept
+{
+    return sourceKindOf(effective_, layer) == SourceKind::Resample ? 1.0f : 0.0f;
 }
 
 float Processor::clampToRange(size_t slot, float value) const noexcept
@@ -420,8 +427,9 @@ void Processor::setBase(ParamSlot slot, float value) noexcept
             break;
         case LayerParam::Source:
             // Feedback follows the kind (spec §6.4): a kind that moved its target makes it jump,
-            // as a macro's move does.
+            // as a macro's move does. So does the ring input's crossfade to the tap.
             jumpIfMoved(l.feedback, w.feedback);
+            jumpIfMoved(l.resampleIn, resampleTarget(ref->layer));
             break;
         default:
             break;
@@ -502,6 +510,7 @@ void Processor::jumpMovedRamps() noexcept
         jumpIfMoved(l.feedback, w.feedback);
         jumpIfMoved(l.on, layerOn(effective_, L) ? 1.0f : 0.0f);
         jumpIfMoved(l.overdub, toRingParams(effective_, L).overdub);
+        jumpIfMoved(l.resampleIn, resampleTarget(L));
     }
 }
 
@@ -796,19 +805,7 @@ void Processor::updateEffective() noexcept
         const double loopFrames = std::min(ring.loopSeconds * config_.sampleRate, 0x1.0p40);
         l.engine.live().setLoop(ring.loop, std::max<int64_t>(1, std::llround(loopFrames)));
         l.engine.live().selectSplice(ring.splice);
-        l.resample = sourceKindOf(effective_, L) == SourceKind::Resample;
     }
-    // The tap's history starts from silence whenever it becomes live (spec §6.2).
-    const bool anyResample =
-        std::any_of(layers_.begin(), layers_.end(), [](const auto &l) { return l->resample; });
-    if (anyResample && !anyResample_)
-    {
-        for (auto &channel : tapHistory_)
-        {
-            channel.fill(0.0f);
-        }
-    }
-    anyResample_ = anyResample;
     // M2 engine spec §6.4: the rendering layers' shared budget, split into their quotas per piece.
     budgetUnits_ = budgetUnits(effective_);
     space_ = toSpaceParams(effective_, config_.mode);
@@ -1599,15 +1596,35 @@ void Processor::renderLayerPiece(uint8_t L, int64_t from, uint32_t n, const floa
     // calls, so it is 0 throughout a piece whose target and first value are 0: such a piece hands
     // the engine its input as it is (the sign of zero included), as before Feedback.
     // M2 sub-project 2's spec §6.2: a Resample layer's ring takes the tap, the output of sample
-    // t − D (already rendered: pieces are at most D samples), in place of the input.
+    // t − D (already rendered: pieces are at most D samples), in place of the input; a switch
+    // crossfades the two over the ramp m (ruling SP-T12ab). It changes only at boundaries, so a
+    // piece where it is 0 throughout hands the engine its input as it is, and where it is 1 a
+    // frame takes the tap alone, bit for bit.
     const float *src[2] = {dry[0], dry[1]};
-    if (l.resample)
+    if (l.resampleIn.to != 0.0f || l.resampleIn.at(from, rampSamples_) != 0.0f)
     {
         for (uint32_t i = 0; i < n; ++i)
         {
-            const auto h = static_cast<size_t>((from + i) % kFeedbackDelay);
-            l.ringIn[0][i] = tapHistory_[0][h];
-            l.ringIn[1][i] = tapHistory_[1][h];
+            const int64_t t = from + i;
+            const float m = l.resampleIn.at(t, rampSamples_);
+            const auto h = static_cast<size_t>(t % kFeedbackDelay);
+            for (size_t c = 0; c < 2; ++c)
+            {
+                const float tap = tapHistory_[c][h];
+                if (m == 1.0f)
+                {
+                    l.ringIn[c][i] = tap;
+                }
+                else if (m == 0.0f)
+                {
+                    l.ringIn[c][i] = dry[c] != nullptr ? dry[c][i] : 0.0f;
+                }
+                else
+                {
+                    const float d = dry[c] != nullptr ? finiteOrZero(dry[c][i]) : 0.0f;
+                    l.ringIn[c][i] = d * (1.0f - m) + tap * m;
+                }
+            }
         }
         src[0] = l.ringIn[0].data();
         src[1] = l.ringIn[1].data();
@@ -1874,10 +1891,10 @@ void Processor::render(const Buffers &b, int64_t from, int64_t to) noexcept
                 o[0] += softLimit(a * r[0]);
                 o[1] += softLimit(a * r[1]);
             }
-            if (anyResample_)
             {
                 // The tap (M2 sub-project 2's spec §6.2): out as the host hears it, read by a
                 // Resample layer's ring D samples from now; one output channel feeds both sides.
+                // Kept whatever the kinds (ruling SP-T12ac), so a switch reads it at once.
                 const auto h = static_cast<size_t>(t % kFeedbackDelay);
                 tapHistory_[0][h] = o[0];
                 tapHistory_[1][h] = channels == 1 ? o[0] : o[1];

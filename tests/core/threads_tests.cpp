@@ -205,7 +205,14 @@ TEST_CASE("a Resample layer, a loop and overdub render the same bytes on any poo
     // M2 sub-project 2's spec §6.2, §7: a Resample layer's task reads the instance's tap, written
     // after the join, and a looping, overdubbing layer writes only its own ring, so the serial
     // runner and pools of 1, 2 and 8 workers render the same bytes and the same ring heads.
+    // Layer C switches to Resample and back (ruling SP-T12ab: its ring input crossfades), and layer
+    // A's loop narrows under its grains.
     const Stereo input = noise(kInvarianceFrames, 0.5f, 49);
+    const std::vector<TimedEvent> events = {
+        {kInvarianceFrames / 4, layerSlot(LayerParam::Source, 2), false, 2.0},
+        {kInvarianceFrames / 3, layerSlot(LayerParam::LoopLength, 0), false, -3.0},
+        {kInvarianceFrames / 2, layerSlot(LayerParam::Source, 2), false, 1.0},
+    };
     for (const Mode mode : {Mode::Fx, Mode::Instrument})
     {
         INFO(nameOf(mode));
@@ -224,7 +231,7 @@ TEST_CASE("a Resample layer, a loop and overdub render the same bytes on any poo
         {
             INFO("block size " << block);
             LayersRender serial;
-            renderLayers(input, {}, 4096, {block}, serial, setup);
+            renderLayers(input, events, 4096, {block}, serial, setup);
             REQUIRE(allFinite(serial.audio.left));
             REQUIRE(peak(serial.audio.left) > 0.05f);
             for (const unsigned workers : {1u, 2u, 8u})
@@ -234,7 +241,7 @@ TEST_CASE("a Resample layer, a loop and overdub render the same bytes on any poo
                 LayersSetup pooled = setup;
                 pooled.runner = &pool;
                 LayersRender r;
-                renderLayers(input, {}, 4096, {block}, r, pooled);
+                renderLayers(input, events, 4096, {block}, r, pooled);
                 REQUIRE(sameBits(serial.audio.left, r.audio.left));
                 REQUIRE(sameBits(serial.audio.right, r.audio.right));
                 REQUIRE(r.heads == serial.heads);

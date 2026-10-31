@@ -20,6 +20,7 @@
 #include <iterator>
 #include <limits>
 #include <memory>
+#include <numbers>
 #include <string>
 #include <utility>
 #include <vector>
@@ -34,6 +35,8 @@
 #include "gg/core/ParamMap.h"
 #include "gg/core/Processor.h"
 #include "gg/core/SourceExchange.h"
+#include "gg/metrics/AudioData.h"
+#include "gg/metrics/Metrics.h"
 #include "gg/source/RingStorage.h"
 #include "support/AllocTripwire.h"
 
@@ -255,32 +258,127 @@ TEST_CASE("the tap is 256 samples late", "[core][source]")
     REQUIRE(ringMismatches(p, 1, 0, kFrames, delayed) == 0);
 }
 
-TEST_CASE("the tap is silent before a Resample layer exists", "[core][source]")
+TEST_CASE("a switch to or from Resample crossfades the ring's input", "[core][source]")
 {
-    // Spec §6.2: the tap's history is written only while some layer is Resample, so the first
-    // 256 samples after layer B turns Resample at the boundary 24032 read silence, though the
-    // output before it was not silent; before it, B's ring took the input.
+    // Spec §6.2, amended by rulings SP-T12ab and SP-T12ac: the tap is kept whatever the kinds, so a
+    // layer that turns Resample at the boundary 24032 (of the event at 24005) reads the output 256
+    // samples late at once, and its ring's input crossfades from the instance input to the tap over
+    // kRampSeconds; back to Live at 36032 (of 36010) it crossfades back. Before, after and
+    // between the crossfades the ring holds the one input alone, bit for bit.
     constexpr int64_t kFrames = 48000;
-    constexpr int64_t kSwitch = 24032; // the grid boundary of the event at 24005
+    constexpr int64_t kOn = 24032;
+    constexpr int64_t kOff = 36032;
+    const auto ramp = static_cast<int64_t>(std::llround(Processor::kRampSeconds * kRate));
     const Stereo input = noise(kFrames, 0.5f, 61);
     Processor p({kRate, 512, 7, Mode::Fx});
     p.setBase(ParamSlot::Mix, 0.5f);
     p.setBase(layerOnSlot(1), 1.0f); // B Live, the FX's default
     Stereo out = silence(kFrames);
-    renderCmd(p, &input, 0, kFrames, {512}, {{24005, slotOf(LayerParam::Source, 1), false, 2.0}},
+    renderCmd(p, &input, 0, kFrames, {512},
+              {{24005, slotOf(LayerParam::Source, 1), false, 2.0},
+               {36010, slotOf(LayerParam::Source, 1), false, 1.0}},
               {}, out);
-    REQUIRE(peakIn(out.left, kSwitch - 256, kSwitch) > 0.05f);
+    REQUIRE(peakIn(out.left, kOn - 256, kOn) > 0.05f);
     const auto inputAt = [&input](int64_t t) {
         const auto i = static_cast<std::size_t>(t);
         return std::pair{input.left[i], input.right[i]};
     };
-    CHECK(ringMismatches(p, 1, 0, kSwitch, inputAt) == 0);
-    CHECK(ringMismatches(p, 1, kSwitch, kSwitch + 256,
-                         [](int64_t) { return std::pair{0.0f, 0.0f}; }) == 0);
-    CHECK(ringMismatches(p, 1, kSwitch + 256, kFrames, [&out](int64_t t) {
-              const auto i = static_cast<std::size_t>(t - 256);
-              return std::pair{out.left[i], out.right[i]};
-          }) == 0);
+    const auto tapAt = [&out](int64_t t) {
+        const auto i = static_cast<std::size_t>(t - 256);
+        return std::pair{out.left[i], out.right[i]};
+    };
+    CHECK(ringMismatches(p, 1, 0, kOn, inputAt) == 0);
+    CHECK(ringMismatches(p, 1, kOn + ramp, kOff, tapAt) == 0);
+    CHECK(ringMismatches(p, 1, kOff + ramp, kFrames, inputAt) == 0);
+    // In each crossfade the frame is (1 − m)·input + m·tap, m rising (falling) by 1/ramp a sample.
+    for (const auto [from, rising] : {std::pair{kOn, true}, std::pair{kOff, false}})
+    {
+        INFO("the crossfade from " << from);
+        int64_t bad = 0;
+        for (int64_t t = from; t < from + ramp; ++t)
+        {
+            const double x = static_cast<double>(t - from) / static_cast<double>(ramp);
+            const double m = rising ? x : 1.0 - x;
+            const auto [l, r] = ringFrame(p, 1, t);
+            const auto [il, ir] = inputAt(t);
+            const auto [tl, tr] = tapAt(t);
+            bad += std::abs(l - ((1.0 - m) * il + m * tl)) > 1e-6 ||
+                   std::abs(r - ((1.0 - m) * ir + m * tr)) > 1e-6;
+        }
+        CHECK(bad == 0);
+        CHECK(ringMismatches(p, 1, from + 1, from + ramp, inputAt) == ramp - 1);
+        CHECK(ringMismatches(p, 1, from + 1, from + ramp, tapAt) == ramp - 1);
+    }
+}
+
+TEST_CASE("a switch to and from Resample under sounding grains doesn't click",
+          "[core][source][determinism]")
+{
+    // Ruling SP-T12ab: layer A, Live over a 220 Hz sine, turns Resample at 1.5 s and Live again at
+    // 2.5 s, under dense grains (32 Hz of 50 ms, Position 0.27 s), Mix 100%. The goldens' click
+    // score stays below the limit over each switch, from 0.1 s before it to 0.6 s after (the
+    // grains reach the frames written at the switch about 0.27 s later), and over the whole
+    // render, for four seeds; the bytes are the same in blocks of 512, 64 and 7.
+    constexpr int64_t kFrames = 168000;
+    constexpr double kLimit = 15.0;
+    // Faded in over 10 ms with a raised cosine, as gg-render fades an FX input (ruling M1-v).
+    Stereo input = silence(kFrames);
+    for (int64_t i = 0; i < kFrames; ++i)
+    {
+        const double x = static_cast<double>(i);
+        const double fade =
+            i < 480 ? std::pow(std::sin(0.5 * std::numbers::pi * x / 480.0), 2) : 1.0;
+        const auto v =
+            static_cast<float>(fade * 0.5 * std::sin(2.0 * std::numbers::pi * 220.0 * x / kRate));
+        input.left[static_cast<std::size_t>(i)] = v;
+        input.right[static_cast<std::size_t>(i)] = v;
+    }
+    const std::vector<TimedEvent> events = {
+        {72000, slotOf(LayerParam::Source, 0), false, 2.0},
+        {120000, slotOf(LayerParam::Source, 0), false, 1.0},
+    };
+    const auto renderSeed = [&](uint64_t seed, const std::vector<uint32_t> &blocks) {
+        Processor p({kRate, 512, seed, Mode::Fx});
+        p.setBase(ParamSlot::Mix, 1.0f);
+        p.setBase(slotOf(LayerParam::Density, 0), 5.0f);             // 32 Hz
+        p.setBase(slotOf(LayerParam::Size, 0), -4.321928094887363f); // 50 ms
+        p.setBase(slotOf(LayerParam::Position, 0), 0.3f);            // 0.27 s behind
+        Stereo out = silence(kFrames);
+        renderCmd(p, &input, 0, kFrames, blocks, events, {}, out);
+        return out;
+    };
+    const auto score = [](const Stereo &out, int64_t from, int64_t to) {
+        const auto a = static_cast<std::ptrdiff_t>(from);
+        const auto b = static_cast<std::ptrdiff_t>(to);
+        const gg::metrics::AudioData audio{
+            kRate,
+            {std::vector<float>(out.left.begin() + a, out.left.begin() + b),
+             std::vector<float>(out.right.begin() + a, out.right.begin() + b)}};
+        return gg::metrics::computeMetrics(audio).clickScore;
+    };
+    for (const uint64_t seed : {2u, 3u, 4u, 5u})
+    {
+        INFO("seed " << seed);
+        const Stereo out = renderSeed(seed, {512});
+        REQUIRE(allFinite(out.left));
+        REQUIRE(peakIn(out.left, 96000, 120000) > 0.05f); // the Resample layer sounds
+        for (const int64_t at : {72000, 120000})
+        {
+            INFO("the switch at " << at);
+            CHECK(score(out, at - 4800, at + 28800) <= kLimit);
+        }
+        CHECK(score(out, 0, kFrames) <= kLimit);
+        if (seed == 3)
+        {
+            for (const uint32_t block : {64u, 7u})
+            {
+                INFO("blocks of " << block);
+                const Stereo b = renderSeed(seed, {block});
+                REQUIRE(sameBits(b.left, out.left));
+                REQUIRE(sameBits(b.right, out.right));
+            }
+        }
+    }
 }
 
 TEST_CASE("one output channel feeds both tap channels", "[core][source]")

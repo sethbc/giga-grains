@@ -433,9 +433,14 @@ struct RingMeta
 /// it (the mix, the dry signal and the reverb's return; one output channel feeds both sides),
 /// 256 samples late: ring_L[t] = tap[t − 256] in place of in[t], with Feedback added as for a Live
 /// layer. The last 256 output samples per channel are kept by absolute time, written after each
-/// piece's output while some layer is Resample, and cleared when the first one becomes Resample,
-/// so its first 256 samples read silence. Pieces are at most 256 samples, so a piece's tap is
-/// already rendered. While no layer is Resample nothing is kept, and the tap adds no latency.
+/// piece's output whatever the kinds (ruling SP-T12ac: two stores a sample), and silence before
+/// the first sample after reset(). Pieces are at most 256 samples, so a piece's tap is already
+/// rendered, and the tap adds no latency. A switch to or from Resample crossfades the ring's input
+/// (ruling SP-T12ab): the layer's ramp m, 1 while its kind is Resample and 0 otherwise, ramps to
+/// each new target over kRampSeconds from the boundary, as Feedback does, and the ring takes
+/// (1 − m)·in[t] + m·tap[t − 256] (in sanitized as for Feedback). Where m is 1 the ring takes the
+/// tap alone and where it is 0 the input alone, bit for bit, so a layer that is Resample from the
+/// start, or never, renders as before. setBase() and a loaded state jump m, as they jump Feedback.
 ///
 /// **The ring parameters and commands** (spec §6.1, §6.4). At every applied boundary (and at
 /// setBase()), each layer's ring takes its Loop, Loop Length (round(seconds × sampleRate) frames,
@@ -808,12 +813,14 @@ class Processor
         Ramp overdub;  // the ring's overdub gain o (M2 sub-project 2's spec §6.1)
         // The engine's output, then wet_L in place: pieceMax frames each.
         std::array<std::vector<float>, 2> wet;
-        // The ring input while Feedback acts, or the tap's while Resample: pieceMax frames each.
+        // The ring input while Feedback acts, or while the Resample ramp isn't 0: pieceMax frames
+        // each.
         std::array<std::vector<float>, 2> ringIn;
         // The overdub gains of a piece where the Overdub ramp isn't 0 throughout: pieceMax.
         std::vector<float> overdubGain;
-        // The Source is Resample: the ring takes the tap (the class comment).
-        bool resample{false};
+        // m, the ring input's crossfade to the tap: 1 while the Source is Resample (the class
+        // comment).
+        Ramp resampleIn;
         // The ring read (the class comment): the storage in effect, the head after each piece,
         // the storage epoch, the RingMeta published (and as last pushed, and last taken by the
         // main thread), and Ring Length's base seconds.
@@ -928,6 +935,9 @@ class Processor
     void jumpRamps() noexcept;
     /// Ramps every ramped value from its value at t to its target.
     void retargetRamps(int64_t t) noexcept;
+    /// The target of layer L's ring-input crossfade to the tap: 1 while its effective Source is
+    /// Resample, else 0 (the class comment's Resample tap).
+    float resampleTarget(uint8_t layer) const noexcept;
     /// Gives each engine its freeze setting: its layer's effective Freeze, once armed, or in the
     /// FX any held key. An effective Freeze that is off arms it.
     void syncFreeze() noexcept;
@@ -971,10 +981,8 @@ class Processor
     uint32_t pieceRendering_{2};
     std::array<uint8_t, kLayers> taskLayers_{};
     uint32_t taskCount_{0};
-    // The Resample tap (the class comment): out of sample t at t % kFeedbackDelay, kept while
-    // anyResample_.
+    // The Resample tap (the class comment): out of sample t at t % kFeedbackDelay.
     std::array<std::array<float, kFeedbackDelay>, 2> tapHistory_{};
-    bool anyResample_{false};
     // setTaskRunner's runner, or serialRunner_.
     SerialRunner serialRunner_;
     TaskRunner *runner_{&serialRunner_};
