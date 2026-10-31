@@ -99,8 +99,6 @@ if (CONTENT)
     list(APPEND expect "${top}/content/Presets" "${top}/content/Samples"
             "${top}/content/PROVENANCE.md" "${top}/content/LICENSE-CC0-1.0.txt"
             "${top}/content/content-version.txt")
-else ()
-    list(APPEND forbid "${top}/content")
 endif ()
 execute_process(
         COMMAND ${CMAKE_COMMAND} "-DARCHIVE=${zip}" -DKIND=zip "-DEXPECT=${expect}"

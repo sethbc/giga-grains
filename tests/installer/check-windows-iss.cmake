@@ -3,7 +3,8 @@
 # Copyright 2026, the Giga Grains authors (see git history)
 #
 # Checks that the Inno Setup script declares the Content component (spec §6.5): a line
-# `Name: "content";` in its [Components] section, and a [Files] line with `Components: content`.
+# `Name: "content";` in its [Components] section, and a [Files] entry, a line starting `Source:`
+# (so not a comment, T6), with `Components: content`.
 # It only reads the script, so it runs on every OS, without Inno Setup or the products:
 #
 #   cmake -DISS=<giga-grains.iss> -P <this file>
@@ -31,7 +32,7 @@ foreach (line IN LISTS lines)
         set(section "${CMAKE_MATCH_1}")
     elseif (section STREQUAL "Components" AND line MATCHES "^Name: \"content\";")
         set(found_component TRUE)
-    elseif (section STREQUAL "Files" AND line MATCHES "Components: content(;|$)")
+    elseif (section STREQUAL "Files" AND line MATCHES "^Source: .*; Components: content(;|$)")
         set(found_file TRUE)
     endif ()
 endforeach ()
@@ -41,7 +42,7 @@ if (NOT found_component)
     string(APPEND failures "\n  [Components] has no Name: \"content\" line")
 endif ()
 if (NOT found_file)
-    string(APPEND failures "\n  [Files] has no line with Components: content")
+    string(APPEND failures "\n  [Files] has no Source: line with Components: content")
 endif ()
 if (NOT failures STREQUAL "")
     message(FATAL_ERROR "FAIL: ${ISS} doesn't declare the Content component:${failures}")

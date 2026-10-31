@@ -318,6 +318,12 @@ endif ()
 add_test(NAME content_fixture
         COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --config $<CONFIG> --target gg-content)
 set_tests_properties(content_fixture PROPERTIES LABELS golden FIXTURES_SETUP content)
+# The CC0 text the installers carry is the content release's LICENSE, byte for byte (T6).
+add_test(NAME installer_cc0_text
+        COMMAND ${CMAKE_COMMAND} -DOURS=${PROJECT_SOURCE_DIR}/installer/licenses/CC0-1.0.txt
+        -DCONTENT=${GG_CONTENT_ROOT}
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/installer/check-cc0-text.cmake)
+set_tests_properties(installer_cc0_text PROPERTIES LABELS installer FIXTURES_REQUIRED content)
 set(GG_GOLDEN_MEDIA_DIR ${CMAKE_BINARY_DIR}/golden-media)
 add_test(NAME golden_media COMMAND gg-render --write-media ${GG_GOLDEN_MEDIA_DIR})
 set_tests_properties(golden_media PROPERTIES LABELS golden FIXTURES_SETUP golden_media)
@@ -639,6 +645,13 @@ if (GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
             COMMAND ${CMAKE_COMMAND} -DISS=${PROJECT_SOURCE_DIR}/installer/windows/giga-grains.iss
             -P ${CMAKE_CURRENT_SOURCE_DIR}/installer/check-windows-iss.cmake)
     set_tests_properties(installer_windows_iss_content PROPERTIES LABELS installer)
+    # A commented-out [Files] line doesn't count (T6): only a Source: line does.
+    add_test(NAME installer_windows_iss_commented
+            COMMAND ${CMAKE_COMMAND}
+            -DISS=${CMAKE_CURRENT_SOURCE_DIR}/installer/fixtures/content-commented.iss
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/installer/check-windows-iss.cmake)
+    set_tests_properties(installer_windows_iss_commented PROPERTIES LABELS installer
+            PASS_REGULAR_EXPRESSION "has no Source: line with Components: content")
 
     # The license set (spec §6.3, carry-over row 221): gg-products/licenses/ holds exactly the
     # platform's notices and license texts, none of them a stub.
