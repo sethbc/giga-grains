@@ -514,3 +514,233 @@ TEST_CASE("sweep: the click score over the whole render is the goldens' metric e
     CHECK(goldens > 5.0);
     CHECK(d.wholeRenderClickScore() == goldens);
 }
+
+namespace
+{
+/// A step of `height` from sample `from` to the render's end; the default, -20 dBFS, is what the
+/// goldens' click injection adds.
+void plantStepFrom(SweepDriver &d, int64_t from, float height = 0.1f)
+{
+    for (auto &ch : d.output())
+    {
+        for (auto i = static_cast<std::size_t>(from); i < ch.size(); ++i)
+        {
+            ch[i] += height;
+        }
+    }
+}
+
+/// One past the last sample of [from, the render's end) the click check looks away from.
+int64_t firstUnexemptAfterAll(const SweepDriver &d, int64_t from)
+{
+    int64_t end = d.clock();
+    while (end > from && !d.exemptAt(end - 1))
+    {
+        --end;
+    }
+    return end;
+}
+
+/// Layer A's wet side at full Mix, so the limiter sees the cloud (the explored scenarios'
+/// setup).
+void limiterBed(SweepDriver &d) { d.processor().setBase(ParamSlot::Mix, 1.0f); }
+} // namespace
+
+TEST_CASE("sweep: kLimiterDrive covers Peak driven under -6 dB, and the call's 10 ms after",
+          "[sweep]")
+{
+    // The director's D5b, option 1 (2026-10-31; row 333). Peak entering at a -24 dB ceiling
+    // over the cloud has no attack, and scores 28 over the whole render; every call in which its
+    // gain falls under -6 dB is exempt, so the check scores none of it.
+    SECTION("the case it covers passes")
+    {
+        SweepDriver d(Mode::Fx, 1201);
+        limiterBed(d);
+        d.processor().setBase(ParamSlot::LimiterRelease, 0.0f); // 1 s
+        d.play(1.0, Material::SineLive);
+        d.set(ParamSlot::LimiterCeiling, -24.0);
+        d.set(ParamSlot::LimiterMode, 2.0);
+        d.play(3.0, Material::SineLive);
+        CHECK(d.wholeRenderClickScore() > 15.0);
+        const auto v = d.check(gg::test::chainBound(d, 0.2));
+        INFO(v.where);
+        CHECK(v.where.empty());
+        CHECK(v.scoredFraction < 0.3); // the floor below fails when the exemption widens
+        const auto widened = d.check(gg::test::chainBound(d, 0.4));
+        CHECK(widened.where.find("the click check scored") != std::string::npos);
+    }
+    SECTION("a step 10 ms past the last driven call fails, and the tail is no wider")
+    {
+        for (const double mode : {1.0, 2.0})
+        {
+            INFO("mode " << mode);
+            SweepDriver d(Mode::Fx, 1204, 64);
+            limiterBed(d);
+            d.processor().setBase(ParamSlot::LimiterRelease, 0.0f);
+            d.play(1.0, Material::SineLive);
+            d.set(ParamSlot::LimiterCeiling, -24.0);
+            d.set(ParamSlot::LimiterMode, mode);
+            d.play(1.0, Material::SineLive);
+            const int64_t offAt = d.clock();
+            d.set(ParamSlot::LimiterMode, 0.0);
+            d.play(2.0, Material::SineLive);
+            const gg::test::Checks c = gg::test::chainBound(d, 0.0);
+            REQUIRE(d.check(c).where.empty());
+            // Soft stops being driven at the Off event; Peak's gain holds until its fade ends,
+            // 480 samples later. The last driven call ends by then (64-sample calls), and the
+            // exemption runs 480 more.
+            const int64_t end = firstUnexemptAfterAll(d, offAt);
+            CHECK(end >= offAt + 480);
+            CHECK(end <= offAt + 480 + 64 + 480);
+            plantStepFrom(d, end);
+            const auto v = d.check(c);
+            INFO(v.where);
+            CHECK(v.clickScore > c.clickLimit);
+            CHECK(namesSample(v.where, static_cast<std::size_t>(end)));
+        }
+    }
+}
+
+TEST_CASE("sweep: kLimiterDrive looks away only where the limiter is driven", "[sweep]")
+{
+    // Soft at -24 dB has the cloud at about eight times its ceiling: exempt. At -9 dB the input
+    // stays under twice it, and Peak at -9 dB holds its gain above -6 dB: nothing is exempt, so
+    // a planted step fails there and the scored share is the unlimited render's.
+    const auto render = [](double mode, double ceiling) {
+        auto d = std::make_unique<SweepDriver>(Mode::Fx, 1205);
+        limiterBed(*d);
+        d->set(ParamSlot::LimiterCeiling, ceiling);
+        d->set(ParamSlot::LimiterMode, mode);
+        d->play(3.0, Material::SineLive);
+        return d;
+    };
+    const auto off = render(0.0, -9.0);
+    const double unlimited = off->check(gg::test::chainBound(*off, 0.0)).scoredFraction;
+    SECTION("Soft past twice the ceiling")
+    {
+        const auto d = render(1.0, -24.0);
+        CHECK(d->processor().limiterDrive().softDriven);
+        const gg::test::Checks c = gg::test::chainBound(*d, 0.0);
+        const auto v = d->check(c);
+        CHECK(v.scoredFraction < 0.2);
+        CHECK(d->exemptAt(d->clock() - 1000));
+        plantStepFrom(*d, d->clock() - 20000);
+        INFO(d->check(c).where);
+        CHECK(d->check(c).clickScore <= c.clickLimit);
+    }
+    SECTION("Soft under twice the ceiling")
+    {
+        const auto d = render(1.0, -9.0);
+        CHECK(!d->processor().limiterDrive().softDriven);
+        const gg::test::Checks c = gg::test::chainBound(*d, 0.0);
+        CHECK(d->check(c).scoredFraction == unlimited);
+        plantStepFrom(*d, d->clock() - 20000);
+        const auto v = d->check(c);
+        INFO(v.where);
+        CHECK(v.clickScore > c.clickLimit);
+    }
+    SECTION("Peak above -6 dB")
+    {
+        const auto d = render(2.0, -9.0);
+        CHECK(d->processor().limiterDrive().leastGain > SweepDriver::kPeakDriveGain);
+        const gg::test::Checks c = gg::test::chainBound(*d, 0.0);
+        CHECK(d->check(c).scoredFraction == unlimited);
+        plantStepFrom(*d, d->clock() - 20000);
+        const auto v = d->check(c);
+        INFO(v.where);
+        CHECK(v.clickScore > c.clickLimit);
+    }
+    SECTION("Peak under -6 dB")
+    {
+        const auto d = render(2.0, -24.0);
+        CHECK(d->processor().limiterDrive().leastGain < SweepDriver::kPeakDriveGain);
+    }
+    SECTION("an empty call resets the tap")
+    {
+        const auto d = render(2.0, -24.0);
+        d->processor().process(nullptr, 0, nullptr, 0, 0, {}, {}, {});
+        CHECK(d->processor().limiterDrive().leastGain == 1.0f);
+        CHECK(!d->processor().limiterDrive().softDriven);
+    }
+}
+
+TEST_CASE("sweep: kDelayGlideHold covers the glide at Feedback 95% and up, and nothing else",
+          "[sweep]")
+{
+    // The director's D-glide, option 1 (2026-10-31; row 334): Delay Time glides at 0.5 samples a
+    // sample, so 2 s to 1 ms takes 191,904 samples (4 s); inside a Feedback 100% loop each pass
+    // is re-read a fifth higher. The check looks away over the samples with Amount above 0,
+    // Feedback at 0.95 or more and the read still gliding.
+    constexpr int64_t kGlide = 191904;
+    const auto render = [](double amount, double feedback) {
+        auto d = std::make_unique<SweepDriver>(Mode::Fx, 1206);
+        d->processor().setBase(ParamSlot::DelayAmount, static_cast<float>(amount));
+        d->processor().setBase(ParamSlot::DelayFeedback, static_cast<float>(feedback));
+        d->processor().setBase(ParamSlot::DelayDamping, 0.0f);
+        d->processor().setBase(ParamSlot::DelayTime, 1.0f); // 2 s
+        d->play(1.0, Material::SineLive);
+        d->set(ParamSlot::DelayTime, -9.9657842846620870); // 1 ms
+        d->play(6.0, Material::SineLive);
+        return d;
+    };
+    SECTION("a step inside the glide passes; one after it fails")
+    {
+        const auto d = render(1.0, 1.0);
+        const int64_t glideFrom = 48000;
+        CHECK(d->exemptAt(glideFrom + 100));
+        CHECK(d->exemptAt(glideFrom + kGlide - 100));
+        CHECK(!d->exemptAt(glideFrom + kGlide + 100));
+        CHECK(!d->exemptAt(glideFrom - 100));
+        const gg::test::Checks c = gg::test::chainBound(*d, 0.0);
+        REQUIRE(d->check(c).where.empty());
+        const auto scored = d->check(c).scoredFraction;
+        CHECK(scored < 0.45);
+        CHECK(d->check(gg::test::chainBound(*d, 0.5)).where.find("the click check scored") !=
+              std::string::npos);
+        plantStepFrom(*d, glideFrom + 100000);
+        CHECK(d->check(c).where.empty()); // the step is inside the glide
+        const int64_t after = glideFrom + kGlide + 2000;
+        plantStepFrom(*d, after, 0.5f); // the loop is loud: a step of -6 dBFS
+        const auto v = d->check(c);
+        INFO(v.where);
+        CHECK(v.clickScore > c.clickLimit);
+        CHECK(namesSample(v.where, static_cast<std::size_t>(after)));
+    }
+    SECTION("Feedback just under 95% exempts nothing")
+    {
+        const auto d = render(1.0, 0.94);
+        const gg::test::Checks c = gg::test::chainBound(*d, 0.0);
+        CHECK(!d->exemptAt(48000 + 100000));
+        plantStepFrom(*d, 48000 + 100000);
+        const auto v = d->check(c);
+        INFO(v.where);
+        CHECK(v.clickScore > c.clickLimit);
+    }
+    SECTION("Feedback at 95% is covered")
+    {
+        const auto d = render(1.0, 0.95);
+        CHECK(d->exemptAt(48000 + 100000));
+    }
+    SECTION("Amount 0 exempts nothing, and Amount rising from 0 exempts from there")
+    {
+        SweepDriver d(Mode::Fx, 1207);
+        d.processor().setBase(ParamSlot::DelayAmount, 0.0f);
+        d.processor().setBase(ParamSlot::DelayFeedback, 1.0f);
+        d.processor().setBase(ParamSlot::DelayDamping, 0.0f);
+        d.processor().setBase(ParamSlot::DelayTime, 1.0f);
+        d.play(1.0, Material::SineLive);
+        d.set(ParamSlot::DelayTime, -9.9657842846620870);
+        d.play(2.0, Material::SineLive);
+        d.set(ParamSlot::DelayAmount, 1.0);
+        d.play(2.0, Material::SineLive);
+        CHECK(!d.exemptAt(48000 + 48000));
+        CHECK(!d.exemptAt(3 * 48000 - 100));
+        CHECK(d.exemptAt(3 * 48000 + 960));
+        CHECK(d.exemptAt(5 * 48000 - 100));
+        const gg::test::Checks c = gg::test::chainBound(d, 0.0);
+        plantStepFrom(d, 2 * 48000);
+        const auto v = d.check(c);
+        INFO(v.where);
+        CHECK(v.clickScore > c.clickLimit);
+    }
+}

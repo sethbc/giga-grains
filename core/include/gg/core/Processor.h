@@ -639,6 +639,28 @@ class Processor
     /// sample is active (the class comment). False after construction and reset().
     bool reverbActive() const noexcept { return reverb_->chunkActive(); }
 
+    /// What the limiter did over the last process() call, for the sweep harness's kLimiterDrive
+    /// exemption (tests only, not the plugins' API): Peak's least gain (1 when Peak wasn't in
+    /// use, or the call was empty) and whether Soft's input passed twice the ceiling. Reset at
+    /// the start of every call; a const read of two fields the audio loop keeps.
+    struct LimiterDrive
+    {
+        float leastGain{1.0f};
+        bool softDriven{false};
+    };
+    LimiterDrive limiterDrive() const noexcept { return {tapLeastGain_, tapSoftDriven_}; }
+
+    /// The span of the last process() call, as sample offsets into it, in which the delay's
+    /// Amount was above 0 and its effective Feedback at least 0.95 while its read time was still
+    /// gliding: [first, last], or first = -1 when there was none. For the sweep harness's
+    /// kDelayGlideHold exemption (tests only, not the plugins' API); reset every call.
+    struct DelayGlideSpan
+    {
+        int64_t first{-1};
+        int64_t last{-1};
+    };
+    DelayGlideSpan delayGlideSpan() const noexcept { return {tapGlideFirst_, tapGlideLast_}; }
+
   private:
     /// The per-layer sources, Lfo1 to Step (isPerLayerSource).
     static constexpr size_t kModulatorSources =
@@ -923,6 +945,12 @@ class Processor
     // mode changes, and snaps where the ramps jump.
     Delay delay_;
     Limiter limiter_;
+    // The sweep harness's taps (limiterDrive(), delayGlideSpan()): written by the audio loop,
+    // reset at the start of each process() call.
+    float tapLeastGain_{1.0f};
+    bool tapSoftDriven_{false};
+    int64_t tapGlideFirst_{-1};
+    int64_t tapGlideLast_{-1};
     DelayParams delayParams_{};
     LimiterParams limiterParams_{};
     float delayDampCoeff_{1.0f};      ///< The damper's one-pole coefficient for Delay Damping.

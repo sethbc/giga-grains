@@ -1183,6 +1183,10 @@ void Processor::process(const float *const *in, uint32_t numInChannels, float *c
     ScopedDenormalsOff denormalsOff;
     // Read once: the whole call publishes, or none of it does (sub-project 5's spec §6.4).
     publishingThisCall_ = publishing_.load(std::memory_order_relaxed);
+    tapLeastGain_ = 1.0f;
+    tapSoftDriven_ = false;
+    tapGlideFirst_ = -1;
+    tapGlideLast_ = -1;
     takeOffers();
     // The input feeds the rings in both products (M2 sub-project 1's spec §6.2), and the mix in
     // the FX alone (render).
@@ -1679,8 +1683,15 @@ void Processor::render(const Buffers &b, int64_t from, int64_t to) noexcept
             {
                 wet[1] = wet[0];
             }
-            delay_.process(wet[0], wet[1], delayAmount_.at(t, rampSamples_),
-                           delayFeedback_.at(t, rampSamples_), delayDamp_.at(t, rampSamples_),
+            const float delayAmt = delayAmount_.at(t, rampSamples_);
+            const float delayFb = delayFeedback_.at(t, rampSamples_);
+            if (delayAmt > 0.0f && delayFb >= 0.95f && delay_.gliding())
+            {
+                const int64_t at = t - b.callStart;
+                tapGlideFirst_ = tapGlideFirst_ < 0 ? at : tapGlideFirst_;
+                tapGlideLast_ = at;
+            }
+            delay_.process(wet[0], wet[1], delayAmt, delayFb, delayDamp_.at(t, rampSamples_),
                            delayPingPong_.at(t, rampSamples_));
             float o[2];
             float rIn[2];
@@ -1724,9 +1735,15 @@ void Processor::render(const Buffers &b, int64_t from, int64_t to) noexcept
             }
             if (limiting)
             {
-                limiter_.process(side[0], side[1], limiterParams_.mode,
-                                 limiterCeiling_.at(t, rampSamples_),
+                const float ceiling = limiterCeiling_.at(t, rampSamples_);
+                if (limiterParams_.mode == LimiterMode::Soft &&
+                    std::max(std::abs(side[0]), std::abs(side[1])) > 2.0f * ceiling)
+                {
+                    tapSoftDriven_ = true;
+                }
+                limiter_.process(side[0], side[1], limiterParams_.mode, ceiling,
                                  limiterRelease_.at(t, rampSamples_));
+                tapLeastGain_ = std::min(tapLeastGain_, limiter_.gain());
                 for (uint32_t c = 0; c < 2; ++c)
                 {
                     o[c] = fx ? d[c] * (1.0f - m) + side[c] : side[c];

@@ -50,8 +50,9 @@ void setAll(SweepDriver &d, int state, uint64_t seed)
 }
 
 /// `minScored`: the share of the render the click check scores, pinned a little under what the
-/// case measures (0.525 in the FX, 0.486 in the instrument, with the draws keyed by CLAP ID):
-/// Reverb Size moves are exempt (row 217).
+/// case measures (0.413 in the FX, 0.300 in the instrument, with the draws keyed by CLAP ID):
+/// Reverb Size moves are exempt (row 217), and so are kLimiterDrive's and kDelayGlideHold's
+/// stretches (SweepDriver.h; the delay's glide, at 0.5 samples a sample, runs for up to 4 s).
 void extremes(Mode mode, uint64_t seed, double minScored)
 {
     SweepDriver d(mode, seed);
@@ -77,12 +78,12 @@ void extremes(Mode mode, uint64_t seed, double minScored)
 
 TEST_CASE("extremes: minima, maxima and 32 corners, fx", "[sweep]")
 {
-    extremes(Mode::Fx, 2101, 0.51);
+    extremes(Mode::Fx, 2101, 0.41);
 }
 
 TEST_CASE("extremes: minima, maxima and 32 corners, instrument", "[sweep]")
 {
-    extremes(Mode::Instrument, 2102, 0.47);
+    extremes(Mode::Instrument, 2102, 0.295);
 }
 
 namespace

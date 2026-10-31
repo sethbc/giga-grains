@@ -27,8 +27,10 @@ constexpr int kBursts = 16;
 constexpr int kEvents = 1024;
 
 /// `minScored`: the share of the render the click check scores, pinned a little under what the
-/// case measures (0.511, 0.424 and 0.461, with the draws keyed by CLAP ID): Reverb Size is among
-/// the random slots, and each of its real moves is exempt (row 217).
+/// case measures (0.425, 0.409 and 0.380 for the FX, the instrument and block size 1, with the
+/// draws keyed by CLAP ID): Reverb Size is among the random slots, and each of its real moves is
+/// exempt (row 217), and so are kLimiterDrive's and kDelayGlideHold's stretches (SweepDriver.h;
+/// they cost the cases 0.09, 0.015 and 0.08 of it).
 void bursts(Mode mode, uint64_t seed, double minScored, uint32_t fixedBlock = 0)
 {
     SweepDriver d(mode, seed, fixedBlock);
@@ -50,11 +52,11 @@ void bursts(Mode mode, uint64_t seed, double minScored, uint32_t fixedBlock = 0)
 }
 } // namespace
 
-TEST_CASE("bursts: 16 x 1024 events, fx", "[sweep]") { bursts(Mode::Fx, 3101, 0.50); }
+TEST_CASE("bursts: 16 x 1024 events, fx", "[sweep]") { bursts(Mode::Fx, 3101, 0.42); }
 
 TEST_CASE("bursts: 16 x 1024 events, instrument", "[sweep]")
 {
-    bursts(Mode::Instrument, 3102, 0.41);
+    bursts(Mode::Instrument, 3102, 0.405);
 }
 
-TEST_CASE("bursts at block size 1", "[sweep]") { bursts(Mode::Fx, 3103, 0.445, 1); }
+TEST_CASE("bursts at block size 1", "[sweep]") { bursts(Mode::Fx, 3103, 0.375, 1); }

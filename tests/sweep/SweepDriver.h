@@ -33,6 +33,14 @@
 //   exempts it: no committed case meets it, and the Layer On sweeps are scored.
 //   Reverb Size moves are exempt only when the Size in effect (its base or its modulation)
 //   changes.
+// - kLimiterDrive (the director's D5b, option 1, 2026-10-31; carry-over row 333): the limiter's
+//   laws stand (zero lookahead, no attack), so a ceiling far under the material is a law
+//   consequence, not a defect. The check looks away over every call in which Peak's gain fell
+//   below -6 dB, or Soft's input passed twice the ceiling, and 10 ms after it.
+// - kDelayGlideHold (D-glide, option 1, 2026-10-31; row 334): the delay's Time glide is
+//   tape-like by design, and inside a Feedback 100% loop it re-reads each pass a fifth higher.
+//   The check looks away over the samples where Delay Amount is above 0, the delay's Feedback is
+//   at least 0.95 and its read time is still gliding.
 //
 // Each case pins a floor under the share of the render the click check scores
 // (Checks::minScored), so an exemption that widens past what the case needs fails there.
@@ -181,6 +189,11 @@ class SweepDriver
     /// How long after the reverb goes active, beyond its pre-delay, the check looks away
     /// (kReverbOnset): the onset's echoes through the network, as long as a Size move's.
     static constexpr int64_t kReverbOnsetExempt = 28800;
+    /// kLimiterDrive: Peak's gain below this (-6 dB) over a call, or Soft's input past twice the
+    /// ceiling (Processor::limiterDrive reads that one), exempts the call...
+    static constexpr float kPeakDriveGain = 0.5011872336f; // 10^(-6/20)
+    /// ...and this many samples after it (10 ms).
+    static constexpr int64_t kLimiterDriveTail = 480;
 
     /// `fixedBlock` > 0 renders every call at that size instead of the drawn ones.
     SweepDriver(gg::core::Mode mode, uint64_t seed, uint32_t fixedBlock = 0)
@@ -219,6 +232,13 @@ class SweepDriver
     /// sample, so a whole-render flag is exact for that check where a per-window one would need
     /// the ramp's and the loop's edges. Amount 0 throughout never sets it.
     bool delayEngaged() const noexcept { return delayEngaged_; }
+    /// Whether the click check looks away from `sample`: it lies in a stretch an exemption
+    /// brought (the narrowness tests' way to see an exemption's edges).
+    bool exemptAt(int64_t sample) const
+    {
+        return std::any_of(exempt_.begin(), exempt_.end(),
+                           [&](const Stretch &s) { return s.from <= sample && sample < s.to; });
+    }
     /// The render so far, channel by channel (a planted fault's way in).
     std::array<std::vector<float>, 2> &output() noexcept { return out_; }
 
@@ -691,6 +711,18 @@ class SweepDriver
             exempt_.push_back({callStart - 64, clock_ + predelay + kReverbOnsetExempt});
         }
         reverbWasActive_ = active;
+        // kLimiterDrive: the call, and 10 ms after it.
+        const auto drive = processor_.limiterDrive();
+        if (drive.leastGain < kPeakDriveGain || drive.softDriven)
+        {
+            exempt_.push_back({callStart, clock_ + kLimiterDriveTail});
+        }
+        // kDelayGlideHold: the samples of the call between the first and the last that met it.
+        const auto glide = processor_.delayGlideSpan();
+        if (glide.first >= 0)
+        {
+            exempt_.push_back({callStart + glide.first, callStart + glide.last + 1});
+        }
         inspect();
     }
 

@@ -75,6 +75,10 @@ class Delay
     /// The read's current delay, in samples. For tests.
     double timeSamples() const noexcept { return delay_; }
 
+    /// Whether the read's delay is still short of its target, so the next sample moves it. For
+    /// tests.
+    bool gliding() const noexcept { return delay_ != target_; }
+
     /// Delays one frame in place, per the law above. amount, feedback, dampCoeff and the
     /// ping-pong weight are 0–1. prepare() must have been called.
     void process(float &l, float &r, float amount, float feedback, float dampCoeff,
