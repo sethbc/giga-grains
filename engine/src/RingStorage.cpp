@@ -60,26 +60,58 @@ void RingStorage::cascade(int64_t m) noexcept
         // (k = 27, the frame 2m itself) between k = 26 and k = 28, every other tap zero and
         // skipped, as are the frames before 0 (k below 27 − 2m); added from +0.
         const int64_t centreSlot = (2 * m) % srcCapacity;
+        const int64_t firstEven = std::max<int64_t>(0, kCentre - 2 * m + 1); // even, frame >= 0
         float sumL = 0.0f;
         float sumR = 0.0f;
-        const auto add = [&](int64_t k) noexcept {
-            int64_t s = centreSlot + (k - kCentre);
-            s += s < 0 ? srcCapacity : (s >= srcCapacity ? -srcCapacity : 0);
-            const float h = kHalfband[static_cast<std::size_t>(k)];
-            const float productL = h * src[2 * s];
-            const float productR = h * src[2 * s + 1];
-            sumL = sumL + productL;
-            sumR = sumR + productR;
-        };
-        const int64_t firstEven = std::max<int64_t>(0, kCentre - 2 * m + 1); // even, frame >= 0
-        for (int64_t k = firstEven; k < kCentre; k += 2)
+        const int64_t first = centreSlot - kCentre; // tap 0's slot, unwrapped
+        if (first >= 0 && first + kHalfbandTaps <= srcCapacity)
         {
-            add(k);
+            // Every tap's slot is first + k, none wrapped: the same products and sums, in the same
+            // order, read through one pointer (a lambda and a wrap per tap cost the Debug and
+            // sanitizer builds, where every live-ring test pays this per frame written, most).
+            const float *const at = src + 2 * first;
+            const float *const h = kHalfband.data();
+            for (int64_t k = firstEven; k < kCentre; k += 2)
+            {
+                const float productL = h[k] * at[2 * k];
+                const float productR = h[k] * at[2 * k + 1];
+                sumL = sumL + productL;
+                sumR = sumR + productR;
+            }
+            {
+                const float productL = h[kCentre] * at[2 * kCentre];
+                const float productR = h[kCentre] * at[2 * kCentre + 1];
+                sumL = sumL + productL;
+                sumR = sumR + productR;
+            }
+            for (int64_t k = kCentre + 1; k < kHalfbandTaps; k += 2)
+            {
+                const float productL = h[k] * at[2 * k];
+                const float productR = h[k] * at[2 * k + 1];
+                sumL = sumL + productL;
+                sumR = sumR + productR;
+            }
         }
-        add(kCentre);
-        for (int64_t k = kCentre + 1; k < kHalfbandTaps; k += 2)
+        else
         {
-            add(k);
+            const auto add = [&](int64_t k) noexcept {
+                int64_t s = centreSlot + (k - kCentre);
+                s += s < 0 ? srcCapacity : (s >= srcCapacity ? -srcCapacity : 0);
+                const float h = kHalfband[static_cast<std::size_t>(k)];
+                const float productL = h * src[2 * s];
+                const float productR = h * src[2 * s + 1];
+                sumL = sumL + productL;
+                sumR = sumR + productR;
+            };
+            for (int64_t k = firstEven; k < kCentre; k += 2)
+            {
+                add(k);
+            }
+            add(kCentre);
+            for (int64_t k = kCentre + 1; k < kHalfbandTaps; k += 2)
+            {
+                add(k);
+            }
         }
         float *const dst = levelSlots_[n];
         const int64_t capacity = levelCapacity_[n];
