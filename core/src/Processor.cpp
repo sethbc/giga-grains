@@ -130,7 +130,7 @@ bool validCommand(const CommandEvent &c) noexcept
 bool sameMeta(const RingMeta &a, const RingMeta &b) noexcept
 {
     return a.head == b.head && a.windowFrames == b.windowFrames && a.spliceCount == b.spliceCount &&
-           a.splices == b.splices && a.frozen == b.frozen;
+           a.splices == b.splices && a.frozen == b.frozen && a.readFrames == b.readFrames;
 }
 
 /// v clamped to [0, 1], NaN as 0.
@@ -1022,6 +1022,12 @@ bool Processor::adoptRing(Layer &l, const RingOffer &offer) noexcept
                                              std::min<uint32_t>(offer.spliceCount, kMaxSplices));
         adopted = live.restoreStorage(offer.storage, offer.frames, marks, offer.frozen, previous);
     }
+    else if (offer.storage != nullptr && !l.engine.liveRingFits(offer.storage->frames()))
+    {
+        // Ruling SP-T12ad: a shorter ring than the grains read waits for them (the offer stays
+        // pending, declined, for the main thread to make again).
+        adopted = false;
+    }
     else
     {
         adopted = live.adoptStorage(offer.storage, offer.copiedTo, previous);
@@ -1081,7 +1087,10 @@ RingMeta Processor::ringMeta(uint8_t layer) const noexcept
 
 void Processor::storeRingSeconds(uint8_t L) noexcept
 {
-    layers_[L]->ringSeconds.store(toRingParams(base_, L).ringSeconds, std::memory_order_relaxed);
+    const double seconds = toRingParams(base_, L).ringSeconds;
+    layers_[L]->ringSeconds.store(seconds, std::memory_order_relaxed);
+    // Ruling SP-T12ad: a shrink's first phase, from the engine's next call.
+    layers_[L]->engine.setRingLimit(ringFramesFor(seconds, config_.sampleRate));
 }
 
 double Processor::ringSecondsRequested(uint8_t layer) const noexcept
@@ -1102,6 +1111,7 @@ void Processor::publishRing(Layer &l) noexcept
     m.spliceCount = static_cast<uint32_t>(marks.size());
     std::copy(marks.begin(), marks.end(), m.splices.begin());
     m.frozen = l.engineFrozen;
+    m.readFrames = live.readFrames();
     if (!sameMeta(m, l.metaPushed))
     {
         l.meta.push(m);

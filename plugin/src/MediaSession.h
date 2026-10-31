@@ -95,8 +95,9 @@ std::optional<RingCopy> readRing(const core::Processor &processor, uint8_t layer
 /// captures: embedded in AUDI while the payloads stay within core::kEmbedCapBytes, else filed in
 /// the captures folder as `<sha256>.wav`.
 ///
-/// **Status texts** (status()): "resizing" while a resize is in flight; "over the memory cap:
-/// needs N MB, F MB free of C MB" (gg::media::MemoryBudget::refusal) for a ring the cap refused;
+/// **Status texts** (status()): "resizing" while a resize is in flight or a shrink waits for its
+/// grains; "over the memory cap: needs N MB, F MB free of C MB"
+/// (gg::media::MemoryBudget::refusal) for a ring the cap refused;
 /// "not saved: captures folder unwritable" and "not saved: the ring was being replaced" for a
 /// save (cleared by the next save that writes the ring, at activation, or when the layer is no
 /// longer held); "ring not found", "embedded audio missing" and "ring not restored: <why>" for a
@@ -179,8 +180,10 @@ class MediaSession
     /// requested ring (Processor::ringSecondsRequested) differs from its ring of record and has no
     /// offer in flight, a new storage (the cap permitting), the stable part of the current window
     /// copied into it (readRing's protocol), offered with that head (SourceExchange::offerRing);
-    /// a declined offer is made again from the current head. "resizing" meanwhile; "over the
-    /// memory cap: …" when refused, until the request changes. Never throws.
+    /// a declined offer is made again from the current head. A shorter ring is offered only once
+    /// the layer's reads fit it (RingMeta::readFrames; ruling SP-T12ad: the audio thread narrows
+    /// them once no grain reads farther back). "resizing" meanwhile; "over the memory cap: …"
+    /// when refused, until the request changes. Never throws.
     void pollRingLengths(core::Processor &processor) noexcept;
 
     /// The layer's ring window, or splice `splice` of it (RingSpanRequest, with the layer's Loop

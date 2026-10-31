@@ -50,7 +50,7 @@ constexpr const char *kNoRing = "no ring to capture";
 /// A ring of `seconds` at `rate`, in frames, as LiveSource::prepare sizes it.
 int64_t framesFor(double seconds, double rate) noexcept
 {
-    return static_cast<int64_t>(std::ceil(seconds * rate));
+    return core::Processor::ringFramesFor(seconds, rate); // the engines' ring limit's frames
 }
 
 /// Whether layer `layer`'s ring is saved (D1): its Freeze or Loop base is on.
@@ -938,6 +938,13 @@ void MediaSession::pollRingLengths(core::Processor &processor) noexcept
             if (target == slot.refusedFrames)
             {
                 continue; // refused: not tried again until the request changes
+            }
+            if (target < slot.frames && processor.ringMeta(l).readFrames > target)
+            {
+                // Ruling SP-T12ad: a shrink waits until no grain reads past the newest `target`
+                // frames (the audio thread narrows the reads once the grains allow).
+                slot.resizeStatus = kResizing;
+                continue;
             }
             refreshBudget();
             const uint64_t need = ringBytesOf(target, maxBlock_);

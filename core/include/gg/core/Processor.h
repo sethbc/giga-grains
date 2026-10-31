@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <atomic>
 #include <cstdint>
 #include <memory>
@@ -146,7 +147,8 @@ struct RingRead
 
 /// A layer's ring as of the last piece (spec §6.4, §6.6), for a save or a capture: its head, the
 /// window's length (LiveSource::windowFrames), the marks, ascending, and whether the engine was
-/// given its freeze.
+/// given its freeze; and, for the Ring Length watcher, the frames its reads may reach
+/// (LiveSource::readFrames, ruling SP-T12ad): a shorter ring is offered once they fit in it.
 struct RingMeta
 {
     int64_t head{0};
@@ -154,6 +156,7 @@ struct RingMeta
     uint32_t spliceCount{0};
     std::array<int64_t, kMaxSplices> splices{};
     bool frozen{false};
+    int64_t readFrames{0};
 };
 
 /// What both plugins and gg-render run: the instance, real-time safe (spec §5, §6.1–§6.4; M2
@@ -464,6 +467,15 @@ struct RingMeta
 /// adoption lands at a call's start, so only a ring given before the first call (setRingNow, or an
 /// offer before it) is part of a block-size-invariant render.
 ///
+/// **A shrink waits for its grains** (ruling SP-T12ad). Each layer's Ring Length, as frames
+/// (ringFramesFor), is its engine's ring limit (Engine::setRingLimit) from the boundary that sets
+/// it (or setBase(), setBases()): below the ring's length, the grains admitted from there read
+/// only the newest frames of the new length, and the reads narrow to it once the grains admitted
+/// before have stopped reaching farther (RingMeta::readFrames). A resize to a shorter ring than
+/// the reads reach is declined until then (Engine::liveRingFits), so whenever it lands it steps
+/// no grain, and after the reads narrow the render no longer depends on when it lands. The plugin's
+/// watcher offers it only once RingMeta::readFrames fits.
+///
 /// **The ring read** (spec §6.4). After every piece, each layer's head is stored with release
 /// order (ringRead) and, when it changed, its RingMeta published (ringMeta, latest wins); an
 /// adoption or a reset() bumps the storage epoch around its change. ringSecondsRequested() is the
@@ -641,6 +653,12 @@ class Processor
     /// or applied boundary that set it (an atomic): the ring the plugin's watcher should make.
     /// Any thread.
     double ringSecondsRequested(uint8_t layer) const noexcept;
+    /// A Ring Length's frames at `sampleRate`: ceil(seconds × sampleRate), as the watcher sizes
+    /// the ring it offers and as each engine's ring limit takes it (ruling SP-T12ad).
+    static int64_t ringFramesFor(double seconds, double sampleRate) noexcept
+    {
+        return static_cast<int64_t>(std::ceil(seconds * sampleRate));
+    }
     /// How many of layer `layer`'s ring offers were declined (SourceExchange::ringsDeclined).
     uint32_t ringAdoptionsDeclined(uint8_t layer) const noexcept
     {

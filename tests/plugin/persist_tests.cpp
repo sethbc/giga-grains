@@ -591,6 +591,48 @@ TEST_CASE("a Ring Length change resizes while processing", "[plugin]")
     CHECK(processor->engine(0).live().frames() == 4 * 48000);
 }
 
+TEST_CASE("a Ring Length shrink waits for the grains reading past it", "[plugin]")
+{
+    // Ruling SP-T12ad: with grains reading 2 s behind the head, Ring Length 16 s to 1 s. The
+    // watcher offers nothing while those grains sound, the status reading "resizing" all the
+    // while; once the reads fit the second it offers, the next call adopts it and the status
+    // clears. Bounded by work: the drain takes one grain's length (50 ms, five calls), so the
+    // shrink must land within 40 polls.
+    gg::test::useMediaScratch("ring-shrink-drain");
+    PluginUnderTest fx(kFxId);
+    REQUIRE(fx.valid());
+    setParam(fx, idOf(LayerParam::Density, 0), 6.0); // 64 Hz
+    setParam(fx, idOf(LayerParam::Size, 0), -4.321928094887363);
+    setParam(fx, idOf(LayerParam::Position, 0), std::log2(1.0 + 2.0 * 255.0 / 16.0) / 8.0);
+    REQUIRE(fx.activate(kRate, kBlock));
+    render(fx, 3 * 48000 / kBlock, 7);
+    const auto *processor = fx.impl().processor();
+    auto &media = fx.impl().media();
+    const auto ringLength = gg::test::paramValue(idOf(LayerParam::RingLength, 0), 0.0); // 1 s
+    gg::test::InputEvents events;
+    events.add(&ringLength.header);
+    Stereo in(kBlock);
+    Stereo out(kBlock);
+    gg::test::fillNoise(in, 8);
+    REQUIRE(fx.process(kBlock, in.data(), out.data(), events.list()) == CLAP_PROCESS_CONTINUE);
+    fx.onMainThread();
+    CHECK(media.status(0) == "resizing");
+    CHECK_FALSE(processor->sources(0).ringAdoptionPending()); // nothing offered yet
+    int polls = 0;
+    while (polls < 40 && processor->ringRead(0).storage->frames() != 48000)
+    {
+        render(fx, 1, 9 + static_cast<uint64_t>(polls));
+        fx.onMainThread();
+        ++polls;
+    }
+    INFO("landed after " << polls << " polls");
+    CHECK(polls > 1); // the drain took more than the call after the change
+    CHECK(processor->ringRead(0).storage->frames() == 48000);
+    CHECK(processor->ringAdoptionsDeclined(0) == 0); // never offered before the reads fit
+    fx.onMainThread();
+    CHECK(media.status(0).empty());
+}
+
 TEST_CASE("a long ring resizes while the audio thread runs", "[plugin][threads][serial]")
 {
     // Task 12's review (M2 sub-project 2's spec §6.5, §6.9): the main thread's copy of a resize's

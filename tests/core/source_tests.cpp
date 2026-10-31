@@ -732,9 +732,12 @@ TEST_CASE("Position reaches the whole of a longer ring", "[core][source]")
 {
     // Spec §6.3: Position's seconds reach to the ring in effect, not to the 16 s the engine was
     // built with: over a restored 20 s ring holding 19 s, Position 18 s reads 18 s behind the head.
+    // Its Ring Length is 20 s, as a session restores it (a ring longer than its Ring Length would
+    // be limited to it: ruling SP-T12ad).
     const double v = std::log2(18.0 * 255.0 / 16.0 + 1.0) / 8.0; // (16/255)(2^(8v) − 1) = 18
     constexpr int64_t kSaved = 19 * 48000;
     Processor p({kRate, 512, 23, Mode::Fx});
+    p.setBase(slotOf(LayerParam::RingLength, 0), static_cast<float>(std::log2(20.0)));
     p.setBase(slotOf(LayerParam::Position, 0), static_cast<float>(v));
     p.setBase(slotOf(LayerParam::Spray, 0), 0.0f);
     p.setBase(slotOf(LayerParam::Density, 0), 5.0f);
@@ -754,6 +757,163 @@ TEST_CASE("Position reaches the whole of a longer ring", "[core][source]")
     {
         const double head = static_cast<double>(kSaved + g.onsetSample + 1);
         CHECK(head - g.startPos == Catch::Approx(18.0 * 48000).margin(2.0));
+    }
+}
+
+namespace
+{
+// The plugin's Ring Length watcher (MediaSession::pollRingLengths), played between calls on one
+// thread: once the request differs from the ring and nothing is in flight, from `offerFrom` on,
+// a new storage with the stable part of the window and its levels copied, offered with that
+// head; a declined offer is made again at the next call.
+struct Watcher
+{
+    int64_t offerFrom{0};
+    bool pending{false};
+    uint32_t declinesAtOffer{0};
+    int offers{0};
+
+    void poll(Processor &p, uint8_t L, int64_t now)
+    {
+        p.sources(L).collect();
+        if (pending)
+        {
+            if (p.sources(L).ringAdoptionPending() && p.ringAdoptionsDeclined(L) == declinesAtOffer)
+            {
+                return; // in flight
+            }
+            pending = false;
+        }
+        const auto target = static_cast<int64_t>(std::ceil(p.ringSecondsRequested(L) * kRate));
+        const RingStorage &from = *p.ringRead(L).storage;
+        if (now < offerFrom || target == from.frames())
+        {
+            return;
+        }
+        auto next = std::make_unique<RingStorage>(target, 512);
+        const int64_t head = p.ringRead(L).head->load(std::memory_order_acquire);
+        const int64_t first = std::max<int64_t>(0, head - std::min(target, from.frames()));
+        for (int64_t f = first; f < head; ++f)
+        {
+            const int64_t s = f % from.capacity();
+            const int64_t d = f % next->capacity();
+            next->slots()[2 * d] = from.slots()[2 * s];
+            next->slots()[2 * d + 1] = from.slots()[2 * s + 1];
+        }
+        gg::copyLevels(from, *next, first, head);
+        RingOffer how;
+        how.copiedTo = head;
+        declinesAtOffer = p.ringAdoptionsDeclined(L);
+        p.sources(L).offerRing(std::move(next), how);
+        pending = true;
+        ++offers;
+    }
+};
+
+// A 220 Hz sine, faded in over 10 ms with a raised cosine as gg-render fades an FX input.
+Stereo fadedSine(int64_t frames)
+{
+    Stereo s = silence(frames);
+    for (int64_t i = 0; i < frames; ++i)
+    {
+        const double x = static_cast<double>(i);
+        const double fade =
+            i < 480 ? std::pow(std::sin(0.5 * std::numbers::pi * x / 480.0), 2) : 1.0;
+        const auto v =
+            static_cast<float>(fade * 0.5 * std::sin(2.0 * std::numbers::pi * 220.0 * x / kRate));
+        s.left[static_cast<std::size_t>(i)] = v;
+        s.right[static_cast<std::size_t>(i)] = v;
+    }
+    return s;
+}
+
+// The goldens' click score of out[from, to).
+double clickScoreOf(const Stereo &out, int64_t from, int64_t to)
+{
+    const auto a = static_cast<std::ptrdiff_t>(std::max<int64_t>(0, from));
+    const auto b =
+        static_cast<std::ptrdiff_t>(std::min<int64_t>(to, static_cast<int64_t>(out.left.size())));
+    const gg::metrics::AudioData audio{
+        kRate,
+        {std::vector<float>(out.left.begin() + a, out.left.begin() + b),
+         std::vector<float>(out.right.begin() + a, out.right.begin() + b)}};
+    return gg::metrics::computeMetrics(audio).clickScore;
+}
+
+// Layer A's Live Position parameter for `seconds` behind the head (ParamMap's Live mapping).
+float livePosition(double seconds)
+{
+    return static_cast<float>(std::log2(1.0 + seconds * 255.0 / 16.0) / 8.0);
+}
+} // namespace
+
+TEST_CASE("a ring shrink under sounding grains waits for them", "[core][source][determinism]")
+{
+    // Ruling SP-T12ad: layer A's ring shrinks from 16 s to 4 s at 12 s, under dense grains
+    // (32 Hz of 50 ms) reading 6 to 8 s behind the head over a faded 220 Hz sine. From the
+    // boundary the new grains are admitted inside the newest 4 s; the shorter storage is adopted
+    // only once no grain reads outside it, so the swap is inaudible and the output from the
+    // boundary on is the same bytes whenever the watcher offers it: at the next call, a few calls
+    // later, 0.5 s and 1.5 s later. The click score stays below the limit over the second and a
+    // half after the boundary, and over the whole render, for two seeds; a grow from 16 s to
+    // 60 s keeps the same bytes whenever it lands too, since no grain reads past 16 s.
+    constexpr int64_t kT = 12 * 48000;      // the Ring Length event, on the grid
+    constexpr int64_t kFrames = 14 * 48000; // 2 s after it
+    constexpr uint32_t kCall = 512;
+    const Stereo input = fadedSine(kFrames);
+    struct Case
+    {
+        const char *name;
+        double ringLength; // log2 seconds
+        int64_t frames;    // the ring adopted at the end
+    };
+    const std::vector<Case> cases = {
+        {"16 s to 4 s", 2.0, 4 * 48000},
+        {"16 s to 60 s", std::log2(60.0), 60 * 48000},
+    };
+    for (const Case &c : cases)
+    {
+        INFO(c.name);
+        for (const uint64_t seed : {2u, 3u})
+        {
+            INFO("seed " << seed);
+            std::vector<Stereo> outs;
+            for (const int64_t offerAfter :
+                 {int64_t{kCall}, int64_t{12 * kCall}, int64_t{24064}, int64_t{72192}})
+            {
+                INFO("offered from " << offerAfter << " samples after the boundary");
+                Processor p({kRate, 512, seed, Mode::Fx});
+                p.setBase(ParamSlot::Mix, 1.0f);
+                p.setBase(slotOf(LayerParam::Density, 0), 5.0f);             // 32 Hz
+                p.setBase(slotOf(LayerParam::Size, 0), -4.321928094887363f); // 50 ms
+                p.setBase(slotOf(LayerParam::Position, 0), livePosition(6.0));
+                p.setBase(slotOf(LayerParam::Spray, 0), 1.0f); // 2 s further back
+                const std::vector<TimedEvent> events = {
+                    {kT, slotOf(LayerParam::RingLength, 0), false, c.ringLength}};
+                Watcher watcher{kT + offerAfter};
+                Stereo out = silence(kFrames);
+                for (int64_t done = 0; done < kFrames; done += kCall)
+                {
+                    watcher.poll(p, 0, done);
+                    renderCmd(p, &input, done, std::min<int64_t>(done + kCall, kFrames), {kCall},
+                              events, {}, out);
+                }
+                p.sources(0).collect();
+                REQUIRE(watcher.offers > 0);
+                CHECK(p.ringRead(0).storage->frames() == c.frames);
+                REQUIRE(allFinite(out.left));
+                REQUIRE(peakIn(out.left, kT - 48000, kT) > 0.05f);
+                CHECK(clickScoreOf(out, kT - 4800, kT + 72000) <= 15.0);
+                CHECK(clickScoreOf(out, 0, kFrames) <= 15.0);
+                outs.push_back(out);
+            }
+            for (std::size_t k = 1; k < outs.size(); ++k)
+            {
+                INFO("offer time " << k << " against the first");
+                CHECK(sameBits(outs[k].left, outs[0].left));
+                CHECK(sameBits(outs[k].right, outs[0].right));
+            }
+        }
     }
 }
 
@@ -1041,6 +1201,73 @@ TEST_CASE("the tap, overdub, commands and ring adoptions do not allocate", "[cor
     });
     CHECK(p.engine(2).liveWriteHead() > 30000);
     CHECK(allFinite(o0));
+    if (AllocTripwire::available()) // off under ASan; RTSan covers this
+    {
+        REQUIRE(allocations == 0);
+    }
+}
+
+TEST_CASE("a ring shrink's limit, its drain and its adoption do not allocate", "[core][source][rt]")
+{
+    // Ruling SP-T12ad, armed: the Ring Length event that limits the ring under grains reading
+    // 2 s behind, the calls whose read limit waits for them (each a check of the pool and a split
+    // block), an early offer the engine declines, and the adoption once the reads fit.
+    Processor p({kRate, 256, 53, Mode::Fx});
+    p.setBase(ParamSlot::Mix, 1.0f);
+    p.setBase(slotOf(LayerParam::Density, 0), 6.0f); // 64 Hz
+    p.setBase(slotOf(LayerParam::Size, 0), -4.321928094887363f);
+    p.setBase(slotOf(LayerParam::Position, 0), livePosition(2.0));
+    constexpr uint32_t kCall = 256;
+    const Stereo input = fadedSine(3 * 48000 + 64 * kCall);
+    Stereo out = silence(static_cast<int64_t>(input.left.size()));
+    int64_t done = 0;
+    renderCmd(p, &input, 0, 3 * 48000, {kCall}, {}, {}, out);
+    done = 3 * 48000;
+
+    uint64_t allocations = 0;
+    const auto armed = [&](const auto &body) {
+        AllocTripwire::resetCount();
+        {
+            AllocTripwire::Scope scope;
+            body();
+        }
+        allocations += AllocTripwire::count();
+    };
+    // One call of kCall frames, armed: the buffers and events are made before it.
+    const auto call = [&](std::span<const ParamEvent> events) {
+        const auto j = static_cast<std::size_t>(done);
+        const float *in[2] = {input.left.data() + j, input.right.data() + j};
+        float *o[2] = {out.left.data() + j, out.right.data() + j};
+        armed([&] { p.process(in, 2, o, 2, kCall, events, {}, {}, {}); });
+        done += kCall;
+    };
+    // A 1 s ring with the stable part copied, offered with that head.
+    const auto offer = [&] {
+        auto next = std::make_unique<RingStorage>(48000, kCall);
+        RingOffer how;
+        how.copiedTo = copyStable(p, 0, *next);
+        p.sources(0).offerRing(std::move(next), how);
+    };
+    const std::vector<ParamEvent> limit{{0, slotOf(LayerParam::RingLength, 0), false, 0.0}}; // 1 s
+    call(limit);
+    REQUIRE(p.ringSecondsRequested(0) == 1.0);
+    REQUIRE(p.engine(0).liveReadLimitPending());
+    CHECK(p.ringMeta(0).readFrames == kRing);
+    offer();
+    call({});
+    CHECK(p.ringAdoptionsDeclined(0) == 1);
+    CHECK(p.engine(0).liveFrames() == kRing);
+    for (int k = 0; k < 40 && p.engine(0).liveReadLimitPending(); ++k)
+    {
+        call({});
+    }
+    REQUIRE_FALSE(p.engine(0).liveReadLimitPending());
+    CHECK(p.ringMeta(0).readFrames == 48000);
+    p.sources(0).collect();
+    offer();
+    call({});
+    CHECK(p.engine(0).liveFrames() == 48000);
+    CHECK(allFinite(out.left));
     if (AllocTripwire::available()) // off under ASan; RTSan covers this
     {
         REQUIRE(allocations == 0);
