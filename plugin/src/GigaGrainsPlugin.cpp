@@ -412,11 +412,8 @@ clap_process_status GigaGrainsPlugin::processNonblocking(const clap_process *pro
         return CLAP_PROCESS_CONTINUE; // clap-helpers lets process() through only while active
     }
     // The values of a state loaded while active, and the instrument's offers (a restored
-    // session's values and sample together, D8): both apply from this call's first frame. The
-    // offers first: applyState pushes loadedState_ before it offers, so an offer seen here means
-    // its load's epoch is seen too, and the editor's values queued before it are dropped (I1).
-    takeOffers();
-    applyLoadedState();
+    // session's values and sample together, D8): both apply from this call's first frame.
+    takeHandOffs();
 
     // The editor's values first, at the call's first frame, so the host's events (automation
     // of the same parameter, say) come after them; then the call's parameter and note events,
@@ -516,6 +513,18 @@ clap_process_status GigaGrainsPlugin::processNonblocking(const clap_process *pro
     requestCollect();
     checkKinds();
     return CLAP_PROCESS_CONTINUE;
+}
+
+void GigaGrainsPlugin::takeHandOffs() noexcept
+{
+    // The loaded state first, as before the epoch rule: its routes then its values (the
+    // instrument's, in the offer), so Freeze arms under the new routes (FR-8). applyState pushes
+    // loadedState_ before it offers, so an offer seen by takeOffers means its load was pushed
+    // already; a load the first take missed is taken by the second, before takeUiChanges, so the
+    // editor's values queued before it are dropped in this call too (I1).
+    applyLoadedState();
+    takeOffers();
+    applyLoadedState();
 }
 
 void GigaGrainsPlugin::takeOffers() noexcept
@@ -1107,8 +1116,7 @@ void GigaGrainsPlugin::paramsFlush(const clap_input_events *in,
     }
     // Active, so on the audio thread, between process() calls: notes and controls, like
     // modulation, join the next grid boundary.
-    takeOffers(); // first, as in process()
-    applyLoadedState();
+    takeHandOffs(); // as in process()
     takeUiChanges(out, nullptr, 0);
     if (in != nullptr)
     {
@@ -1353,8 +1361,8 @@ void GigaGrainsPlugin::applyState(gg::core::SessionState &&state, LoadKind kind)
     // so its seed and routes may apply a block before or after its values.
     if (processor_ != nullptr)
     {
-        // loadedState_ before the offers: process() takes the offers first, so the call that
-        // applies the instrument's values sees this load's epoch too (I1).
+        // loadedState_ before the offers: takeHandOffs takes the loaded state again after the
+        // offers, so the call that applies the instrument's values sees this load's epoch too (I1).
         loadedState_.push({values, routes_, seed_, uiEpoch_, loader_ == nullptr});
         if (loader_ != nullptr && (keepSample || restored.keep))
         {

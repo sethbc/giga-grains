@@ -733,3 +733,59 @@ TEST_CASE("a preset loaded in the FX renders the bytes gg-render renders with it
     CHECK(std::memcmp(left.data(), expected.channels[0].data(), kFrames * sizeof(float)) == 0);
     CHECK(std::memcmp(right.data(), expected.channels[1].data(), kFrames * sizeof(float)) == 0);
 }
+
+// R4 (the fix wave's residuals): an active load applies its routes before its values, as at
+// 9837c17, so FR-8's Freeze arming sees the new routes. The instrument, layer A Live, a fresh
+// ring (reset) and a load whose Macro 6 route to Freeze is what turns Freeze on while its base is
+// off: with the routes first, the layer never sees Freeze off and stays live until toggled (the
+// head keeps advancing); with the values first under the outgoing routes, it arms and freezes.
+TEST_CASE("an instrument active load arms Freeze under its own routes, as an inactive one does",
+          "[plugin][preset]")
+{
+    constexpr Mode mode = Mode::Instrument;
+    const auto at = [](ParamSlot s) { return static_cast<std::size_t>(s); };
+    SessionState without = gg::core::initState(mode);
+    without.values[at(ParamSlot::Source)] = static_cast<float>(gg::core::SourceKind::Live);
+    without.routes[9] = gg::core::ModRoute{}; // no Macro 6 to Freeze
+    SessionState with = without;
+    with.routes = gg::core::factoryRoutes(mode); // Macro 6 to Freeze
+    with.values[at(ParamSlot::Macro6)] = 1.0f;
+    const fs::path fileWithout = gg::test::writePresetFile("arm-without", infoFor(mode), without);
+    const fs::path fileWith = gg::test::writePresetFile("arm-with", infoFor(mode), with);
+    const std::string locationWithout = utf8(fileWithout);
+    const std::string locationWith = utf8(fileWith);
+
+    constexpr uint32_t kBlock = 512;
+    constexpr int kBlocks = 40; // far beyond the freeze ramp
+    const auto headAfter = [&](bool activeLoad) {
+        PresetHost host;
+        PluginUnderTest plugin(kInstrumentId, host.clap());
+        REQUIRE(plugin.valid());
+        if (activeLoad)
+        {
+            REQUIRE(plugin.activate(48000.0, kBlock));
+            REQUIRE(plugin.loadPreset(CLAP_PRESET_DISCOVERY_LOCATION_FILE, locationWithout.c_str(),
+                                      nullptr));
+            processBlock(plugin, mode, kBlock); // the outgoing routes are in
+            plugin.impl().processor()->reset(); // a fresh ring: nothing armed
+            REQUIRE(plugin.loadPreset(CLAP_PRESET_DISCOVERY_LOCATION_FILE, locationWith.c_str(),
+                                      nullptr));
+        }
+        else
+        {
+            REQUIRE(plugin.loadPreset(CLAP_PRESET_DISCOVERY_LOCATION_FILE, locationWith.c_str(),
+                                      nullptr));
+            REQUIRE(plugin.activate(48000.0, kBlock));
+        }
+        for (int i = 0; i < kBlocks; ++i)
+        {
+            processBlock(plugin, mode, kBlock);
+        }
+        return plugin.impl().engine()->live().head();
+    };
+    const int64_t active = headAfter(true);
+    const int64_t inactive = headAfter(false);
+    CAPTURE(active, inactive);
+    // The active one ran its 40 blocks after the reset, the inactive one after activation.
+    CHECK(active == inactive);
+}

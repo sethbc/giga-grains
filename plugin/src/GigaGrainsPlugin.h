@@ -508,6 +508,9 @@ class GigaGrainsPlugin : public plugHelper_t
     /// Takes the Processor's offers (Processor::takeOffers) and, when one brought values, puts
     /// them in values_. Audio thread, or the main thread with the audio thread stopped.
     void takeOffers() noexcept SST_CPPUTILS_NONBLOCKING;
+    /// What process() and the active flush take first: applyLoadedState, takeOffers, then
+    /// applyLoadedState again (a load pushed between the first and the offers).
+    void takeHandOffs() noexcept SST_CPPUTILS_NONBLOCKING;
     /// Takes the editor's changes queued so far (at most kUiQueueCapacity, so a main thread
     /// still pushing can't keep it here) and sends each on to `out` (try_push; a refusal is
     /// counted in uiEventsDropped_). Values: with `values`, appended to it from `count` on as
