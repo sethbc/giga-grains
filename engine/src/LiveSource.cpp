@@ -97,7 +97,8 @@ void LiveSource::attach(RingStorage *storage) noexcept
     slots_ = storage != nullptr ? storage->slots() : nullptr;
     frames_ = storage != nullptr ? storage->frames() : 0;
     capacity_ = storage != nullptr ? storage->capacity() : 0;
-    levelCount_ = storage != nullptr ? storage->levelCount() : 1;
+    // At most the array's size, which levelCount() never passes: bounded so GCC 13 can see it.
+    levelCount_ = storage != nullptr ? std::min(storage->levelCount(), RingStorage::kMaxLevels) : 1;
     levels_ = {};
     levels_[0] = {slots_, capacity_, frames_};
     for (uint32_t n = 1; n < levelCount_; ++n)
@@ -519,7 +520,7 @@ bool LiveSource::gatherLevelTaps(uint32_t n, double pos, int64_t head, Cursor &c
     {
         return false;
     }
-    const RingView &level = levels_[n];
+    const RingView &level = levelView(n);
     if (first < 0)
     {
         // Level frames before 0 are silence. Here head < N (as in gatherTaps), so no level frame

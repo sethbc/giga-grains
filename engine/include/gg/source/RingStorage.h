@@ -125,11 +125,11 @@ class RingStorage
     /// The levels held, level 0 included: levelCountFor(frames()).
     uint32_t levelCount() const noexcept { return levelCount_; }
     /// Level n's slot count Cₙ: C for level 0, ceil(C / 2ⁿ) for a level n in 1 .. levelCount() − 1.
-    int64_t levelCapacity(uint32_t n) const noexcept { return levelCapacity_[n]; }
+    int64_t levelCapacity(uint32_t n) const noexcept { return levelCapacity_[bounded(n)]; }
     /// Level n's slots (slots() for level 0): slot s's channel c at 2s + c, s in 0 .. Cₙ + 14,
     /// Cₙ .. Cₙ + 14 mirroring 0 .. 14. n < levelCount().
-    float *levelSlots(uint32_t n) noexcept { return levelSlots_[n]; }
-    const float *levelSlots(uint32_t n) const noexcept { return levelSlots_[n]; }
+    float *levelSlots(uint32_t n) noexcept { return levelSlots_[bounded(n)]; }
+    const float *levelSlots(uint32_t n) const noexcept { return levelSlots_[bounded(n)]; }
 
     /// After ring frame f (>= 0) is written at its slot: the level frames f completes, level by
     /// level from 1, each from the level above as the class comment's sum (and its guard slot
@@ -145,6 +145,11 @@ class RingStorage
     }
 
   private:
+    // n clamped to the arrays (GCC 13's -Warray-bounds can't see a caller's check).
+    static constexpr uint32_t bounded(uint32_t n) noexcept
+    {
+        return n < kMaxLevels ? n : kMaxLevels - 1;
+    }
     // Level 1's frame m, then level n + 1's frame m' wherever level n's frame m completes one.
     void cascade(int64_t m) noexcept;
 

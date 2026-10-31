@@ -26,7 +26,8 @@ RingStorage::RingStorage(int64_t frames, uint32_t maxBlockSize)
     frames_ = frames;
     capacity_ = frames + block;
     slots_.assign(2 * static_cast<std::size_t>(capacity_ + kGuardFrames), 0.0f);
-    levelCount_ = levelCountFor(frames);
+    // levelCountFor never passes kMaxLevels; the min lets GCC 13 see the arrays' bound.
+    levelCount_ = std::min(levelCountFor(frames), kMaxLevels);
     std::size_t floats = 0;
     for (uint32_t n = 1; n < levelCount_; ++n)
     {
@@ -48,7 +49,8 @@ void RingStorage::cascade(int64_t m) noexcept
 {
     GG_FP_CONTRACT_OFF
     constexpr int64_t kCentre = kHalfbandHalf;
-    for (uint32_t n = 1; n < levelCount_; ++n)
+    const uint32_t count = std::min(levelCount_, kMaxLevels); // the arrays' bound, for GCC 13
+    for (uint32_t n = 1; n < count; ++n)
     {
         // Level n's frame m from level n − 1's frames 2m − 27 .. 2m + 27, all complete and still
         // stored: the level above holds at least 2 × kMinLevelFrames of them.

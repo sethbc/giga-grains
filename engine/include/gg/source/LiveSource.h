@@ -304,7 +304,7 @@ class LiveSource
     /// Level n, or level 0 when n >= levelCount(). Real-time safe.
     Level level(uint32_t n) const noexcept
     {
-        return n < levelCount_ ? Level{levels_[n], 1u << n} : Level{view(), 1};
+        return n < levelCount_ ? Level{levelView(n), 1u << n} : Level{view(), 1};
     }
 
     /// The head-proximity fade of a read of level n (spec §6.9) whose taps reach kBefore level
@@ -531,6 +531,12 @@ class LiveSource
     int64_t frames_{0};                    // N, the storage's window
     int64_t capacity_{0};                  // C = N + maxBlockSize slots (ruling M1-o)
     int64_t maxBlock_{1};                  // B, the largest block write() takes
+    // levels_[n], its index clamped to the array: a caller's check against levelCount_ comes first,
+    // but GCC 13 can't see it and warns (-Warray-bounds) on a constant index past the array.
+    const RingView &levelView(uint32_t n) const noexcept
+    {
+        return levels_[std::min<uint32_t>(n, RingStorage::kMaxLevels - 1)];
+    }
     // The storage's levels as the kernels read them (level(n)), levels_[0] the ring itself.
     std::array<RingView, RingStorage::kMaxLevels> levels_{};
     uint32_t levelCount_{1};
