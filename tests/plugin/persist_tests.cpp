@@ -2055,7 +2055,8 @@ TEST_CASE("a saved preset names the layers' files and carries no capture or ring
     REQUIRE(session.samples[2]->embed);
     REQUIRE_FALSE(session.audio.empty());
 
-    const auto result = fx.impl().savePreset("Media Test", {}, "", false);
+    const auto result = fx.impl().savePreset("Media Test", {}, "", true); // over an earlier run's
+    INFO(result.error);
     REQUIRE(result.saved());
     const std::string bytes = fileBytes(result.file);
     CHECK_FALSE(gg::test::stateChunkPayload(bytes, "AUDI").has_value());
@@ -2088,7 +2089,9 @@ TEST_CASE("a saved preset carries no newer build's manifest", "[plugin][preset]"
     REQUIRE(instrument.valid());
     REQUIRE(instrument.load(gg::test::withNewerMedia(instrument.save())));
     REQUIRE(*gg::test::stateChunkPayload(instrument.save(), "MEDI") == gg::test::kNewerMedia);
-    const auto result = instrument.impl().savePreset("No Newer", {}, "", false);
+    const auto result =
+        instrument.impl().savePreset("No Newer", {}, "", true); // over an earlier run's
+    INFO(result.error);
     REQUIRE(result.saved());
     CHECK(*gg::test::stateChunkPayload(fileBytes(result.file), "MEDI") ==
           R"(<media version="2" />)");
