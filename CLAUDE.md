@@ -365,7 +365,9 @@ runs the tests labelled either. The labels are:
   check that RTSan is active: one checks the build flag, and `rtsan_negative_control` passes
   only if RTSan reports an allocation made inside a nonblocking function.
 - tools: `render` (gg-render's CLI, `render_write_media_alone`, `render_spectrogram_utf8_path`
-  and the presets' `render_pack_preset*` and `render_preset_*` among them; and its preset
+  and the presets' `render_pack_preset*` and `render_preset_*` among them, `render_preset_empty`
+  (an empty `--preset` argument) and `render_preset_sample_mode` (a preset in a sample-mode spec)
+  refusals included; and its preset
   sources, `tests/tools/preset_source_tests.cpp`), `metrics`, `bench` (gg-bench's command line: the
   `bench_rejects_*`, `bench_make_baseline_*`, `bench_baseline_*` and `bench_space_cli` tests);
 - `golden`: the golden renders;
@@ -388,7 +390,10 @@ runs the tests labelled either. The labels are:
   Linux tarball (`installer_linux_*`); the Windows zip and, where `ISCC.exe` was found, the Inno
   Setup compile (`installer_windows_*`); and the Content component: `installer_content_staged`
   (the staged `content/`: presets, samples against `PROVENANCE.md`, the version file) and
-  `installer_windows_iss_content` (the `.iss` declares the component; it runs on every OS);
+  `installer_windows_iss_content` (the `.iss` declares the component; it runs on every OS) and
+  `installer_windows_iss_commented` (a commented-out `[Files]` line doesn't count, checked over a
+  fixture); `installer_cc0_text` (the CC0 text the installers carry is the content release's
+  LICENSE, byte for byte) sits outside the editor guard, so it runs without the editor too;
 - `serial`: the Catch2 cases tagged `[serial]`, which measure time or memory and run with
   `RUN_SERIAL` (see "Tests run in parallel");
 - `plugin`: the plugins, driven through their CLAP factory. Tests labelled both `plugin` and

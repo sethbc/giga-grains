@@ -17,8 +17,8 @@
 # `content: <tag> already at <dir>/content`. A download whose hash differs is deleted and the
 # script fails naming both hashes, so no bad zip stays behind. (file(DOWNLOAD)'s EXPECTED_HASH
 # would also fail, but it leaves the bad file in place, so the hash is checked here instead.) The
-# download gives up after 600 s in all, or 60 s with nothing received. A failed fetch leaves any older <dir>/content without a matching .gg-pin, so the next run fetches
-# again.
+# download gives up after 600 s in all, or 60 s with nothing received. A failed fetch leaves any
+# older <dir>/content without a matching .gg-pin, so the next run fetches again.
 #
 # Checking (CMake's gg-content target, when GG_CONTENT_DIR names a folder fetched elsewhere, as
 # CI's cache is) fails unless <content dir>/.gg-pin matches the pin, naming both.
