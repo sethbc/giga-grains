@@ -1400,9 +1400,32 @@ void GigaGrainsPlugin::mutate(float amount) noexcept
         if (out[s] != in[s])
         {
             // One value a slot: a slot still waiting from an earlier press takes this one's.
-            mutatePending_.set(s);
-            mutatePendingValue_[s] = out[s];
+            queuePending(s, out[s]);
         }
+    }
+    flushMutate();
+}
+
+void GigaGrainsPlugin::queuePending(std::size_t slot, float value) noexcept
+{
+    mutatePending_.set(slot);
+    mutatePendingValue_[slot] = value;
+}
+
+void GigaGrainsPlugin::sendValues(
+    std::span<const std::pair<gg::core::ParamSlot, double>> values) noexcept
+{
+    mutateDrainSeen();
+    for (const auto &[slot, value] : values)
+    {
+        const auto s = static_cast<std::size_t>(slot);
+        if (s >= kParamCount || std::isnan(value))
+        {
+            continue;
+        }
+        // Clamped and made a float here, as uiSetValue would, so a mutate press that starts from
+        // this value reads what the audio thread will hold.
+        queuePending(s, std::clamp(static_cast<float>(value), minValues_[s], maxValues_[s]));
     }
     flushMutate();
 }

@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <cstring>
 #include <map>
+#include <utility>
 #include <vector>
 
 #include <catch2/catch_test_macros.hpp>
@@ -617,4 +618,159 @@ TEST_CASE("the same seed and press give the same sound", "[plugin][mutate]")
     };
     CHECK(press(7) == press(7));
     CHECK(press(7) != press(8));
+}
+
+// ---- sendValues (Task 10b): the safe main-thread entry for many values at once ----
+
+namespace
+{
+using ValueList = std::vector<std::pair<ParamSlot, double>>;
+
+/// Every slot, each at a distinct value inside its range: `phase` shifts the pattern so two sets
+/// differ in every slot.
+ValueList wholeSet(Mode mode, int phase)
+{
+    ValueList list;
+    for (std::size_t s = 0; s < kParamCount; ++s)
+    {
+        const auto slot = static_cast<ParamSlot>(s);
+        const auto &meta = gg::core::paramMeta(slot, mode);
+        const double frac =
+            static_cast<double>((s * 7 + static_cast<std::size_t>(phase) * 3) % 17) / 17.0;
+        const float value = static_cast<float>(
+            meta.minVal + frac * (static_cast<double>(meta.maxVal) - meta.minVal));
+        list.emplace_back(slot, static_cast<double>(value));
+    }
+    return list;
+}
+
+/// The values of `list` as the queue holds them: a float each.
+void checkEnds(const gg::test::PluginUnderTest &plugin, const ValueList &list)
+{
+    for (const auto &[slot, value] : list)
+    {
+        CHECK(plugin.value(gg::core::paramId(slot)) ==
+              static_cast<double>(static_cast<float>(value)));
+    }
+}
+
+void twoSetsBeforeAnyDrain(const gg::test::PluginUnderTest &plugin)
+{
+    GigaGrainsPlugin &impl = plugin.impl();
+    const ValueList first = wholeSet(impl.mode(), 1);
+    const ValueList second = wholeSet(impl.mode(), 2);
+    impl.sendValues(first);
+    impl.sendValues(second); // before anything drained
+    for (int tick = 0; tick < 40; ++tick)
+    {
+        plugin.onMainThread();
+    }
+    CHECK(impl.uiQueueDropped() == 0);
+    const auto all = drainAll(plugin, 32);
+    CHECK(impl.uiQueueDropped() == 0);
+    for (const auto &[id, one] : all)
+    {
+        CHECK(one.begins == one.values);
+        CHECK(one.ends == one.values);
+    }
+    checkEnds(plugin, second);
+}
+} // namespace
+
+TEST_CASE("pushing a whole state through the gesture calls overflows the queue (the hazard)",
+          "[plugin][queue]")
+{
+    gg::test::PluginUnderTest plugin(kFx);
+    REQUIRE(plugin.valid());
+    GigaGrainsPlugin &impl = plugin.impl();
+    for (const ValueList &set : {wholeSet(impl.mode(), 1), wholeSet(impl.mode(), 2)})
+    {
+        for (const auto &[slot, value] : set)
+        {
+            impl.uiBeginGesture(slot);
+            impl.uiSetValue(slot, value);
+            impl.uiEndGesture(slot);
+        }
+    }
+    CHECK(impl.uiQueueDropped() > 0); // 2 x 218 x 3 entries into 1,024
+}
+
+TEST_CASE("two whole-state sets before any drain drop nothing, with clap.params", "[plugin][queue]")
+{
+    FlushHost host;
+    gg::test::PluginUnderTest plugin(kFx, host.clap());
+    REQUIRE(plugin.valid());
+    twoSetsBeforeAnyDrain(plugin);
+}
+
+TEST_CASE("two whole-state sets before any drain drop nothing on a host without clap.params",
+          "[plugin][queue]")
+{
+    gg::test::PluginUnderTest plugin(kFx);
+    REQUIRE(plugin.valid());
+    twoSetsBeforeAnyDrain(plugin);
+}
+
+TEST_CASE("a whole-state set and a Mutate press interleaved give one deterministic end state",
+          "[plugin][queue][mutate]")
+{
+    struct Result
+    {
+        std::vector<float> values;
+        HeardMap heard;
+    };
+    const auto run = [](bool drainBetween) {
+        gg::test::PluginUnderTest plugin(kFx);
+        REQUIRE(plugin.valid());
+        REQUIRE(plugin.loadDefaultsWithSeed(4));
+        GigaGrainsPlugin &impl = plugin.impl();
+        unlockAll(impl);
+        impl.sendValues(wholeSet(impl.mode(), 1));
+        HeardMap all;
+        if (drainBetween)
+        {
+            accumulate(all, drain(plugin)); // the first batch only
+            plugin.onMainThread();
+        }
+        impl.mutate(0.5f);
+        accumulate(all, drainAll(plugin, 32));
+        CHECK(impl.uiQueueDropped() == 0);
+        return Result{bases(impl), all};
+    };
+    const Result with = run(true);
+    const Result without = run(false);
+    CHECK(with.values == without.values);
+    // Without a drain between, a slot goes out once per batch it is pending for, ending at its
+    // latest value: the first batch left with the set, so only its slots can go out again (with
+    // the press's value); the rest go out once.
+    std::size_t sentTwice = 0;
+    for (const auto &[id, one] : without.heard)
+    {
+        CHECK(one.values >= 1);
+        CHECK(one.values <= 2);
+        sentTwice += one.values == 2 ? 1 : 0;
+        const auto s = static_cast<std::size_t>(*gg::core::slotForId(id));
+        CHECK(static_cast<float>(one.value) == without.values[s]);
+    }
+    CHECK(sentTwice <= GigaGrainsPlugin::kMutateBatch);
+    CHECK(without.heard.size() == kParamCount);
+}
+
+TEST_CASE("a preset load while a set is half sent discards the rest", "[plugin][queue]")
+{
+    gg::test::PluginUnderTest plugin(kFx);
+    REQUIRE(plugin.valid());
+    GigaGrainsPlugin &impl = plugin.impl();
+    impl.sendValues(wholeSet(impl.mode(), 1));
+    const auto first = drain(plugin);
+    CHECK(first.size() == GigaGrainsPlugin::kMutateBatch);
+    impl.loadInit(); // slots still wait
+    const auto rest = drainAll(plugin);
+    CHECK(rest.empty());
+    for (std::size_t s = 0; s < kParamCount; ++s)
+    {
+        CHECK(same(impl.uiBaseValue(static_cast<ParamSlot>(s)),
+                   gg::core::paramMeta(static_cast<ParamSlot>(s), impl.mode()).defaultVal));
+    }
+    CHECK(impl.uiQueueDropped() == 0);
 }

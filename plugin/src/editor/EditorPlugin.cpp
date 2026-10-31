@@ -164,6 +164,9 @@ void EditorPlugin::fillPresetContext(gg::ui::EditorContext &context)
         setMutateLock(slot, locked);
     };
     context.resetMutateLocks = [this] { resetMutateLocks(); };
+    context.sendValues = [this](const std::vector<std::pair<gg::core::ParamSlot, double>> &values) {
+        sendValues(values);
+    };
     context.contentStatus = [this] {
         try
         {

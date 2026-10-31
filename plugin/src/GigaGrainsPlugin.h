@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -256,6 +257,16 @@ class GigaGrainsPlugin : public plugHelper_t
     /// latest value. Deterministic: the same seed, locks, values and presses give the same sound.
     /// May leave the values unchanged (amount 0, or all locked).
     void mutate(float amount) noexcept;
+    /// The safe way to set many parameters at once from the main thread (a preset-sized restore,
+    /// an undo): each slot is sent as the editor's gesture, begin, value and end, like Mutate's,
+    /// through the same pending set, batches and drain witness (flushMutate), so however many
+    /// slots and however often it is called between the host's drains, nothing is dropped.
+    /// Pushing the gestures straight through uiBeginGesture and the rest would overflow the
+    /// queue past about 340 slots. A slot waiting unsent takes the latest value, whoever queued
+    /// it (a later set, or a Mutate press); a Mutate press starts from these values like from its
+    /// own. An out-of-range slot or a NaN value is ignored; the value is clamped and made a
+    /// float as uiSetValue does. A preset load discards the slots not yet sent. Main thread.
+    void sendValues(std::span<const std::pair<gg::core::ParamSlot, double>> values) noexcept;
     /// Sends the next batch of the slots a press left, when the queue has room for it: never a
     /// batch while an earlier one has not been seen to start draining (see mutateDrainSeen), so
     /// at most two batches wait in the queue, and nothing of Mutate's is ever dropped whenever
@@ -609,6 +620,8 @@ class GigaGrainsPlugin : public plugHelper_t
     void mutateArm() noexcept;
     /// Asks the host for on_main_thread while slots wait unsent, once until it comes. Main thread.
     void requestMutateCallback() noexcept;
+    /// Marks `slot` waiting to be sent at `value`, replacing a value already waiting. Main thread.
+    void queuePending(std::size_t slot, float value) noexcept;
     // Mutate: the user's locks, the press counter, the slots waiting to be sent (one value each,
     // a later press's replacing an earlier's), and the record of the values sent, by batch
     // generation. Main thread only; none of it reaches the audio thread but as uiQueue_'s

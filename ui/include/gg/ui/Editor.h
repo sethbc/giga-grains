@@ -11,6 +11,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "gg/core/GrainQueue.h"
@@ -176,6 +177,13 @@ struct EditorContext
     std::function<bool(gg::core::ParamSlot)> mutateLocked;
     std::function<void(gg::core::ParamSlot, bool locked)> setMutateLock;
     std::function<void()> resetMutateLocks;
+
+    /// The way to restore many values at once from the main thread (an undo, a whole state):
+    /// sets every listed slot, each sent as a begin/value/end gesture in batches the host's
+    /// drains pace, so nothing overflows the queue however many are listed or how often it is
+    /// called; the latest value per slot wins. Never push many gestures one by one instead. May
+    /// be empty.
+    std::function<void(const std::vector<std::pair<gg::core::ParamSlot, double>> &)> sendValues;
 
     /// The editor's destructor calls publishing(false): the plugin stops publishing (the shim
     /// has no destroy hook). The plugin turned it on when it created the editor. May be empty.
