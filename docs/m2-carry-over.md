@@ -21,13 +21,13 @@ two rows. A closed row stays in place, marked **Closed** in the "When" column wi
 that closed it, as in the M1 file.
 
 **The count.** 13 open rows at the split; 11 after M2 sub-project 1 (rows 118 and 119). M2
-sub-project 3 closed row 51 and added rows 300 to 310; its follow-up closed row 300 and added
-row 311. M2 sub-project 5 added rows 233 and 234, numbered before the rule above (no M1 row has
-either number). M2 sub-project 6's PR 1 added rows 312 to 338 (numbered 311 to 337 before the
-merge with sub-project 5, renumbered past row 311). M2 sub-project 2's final review added rows 339
-to 352 (2026-10-31; numbered 312 to 325 before its merge with sub-project 6's PR 1, renumbered past
-row 338), and its final merge rows 353 to 355. The count rules are retired (the policy above, INTENT §23 #67), so nothing here is
-counted against anything.
+sub-project 3 closed row 51 and added rows 300 to 310; its follow-up closed row 300 and added row
+311. M2 sub-project 5 added rows 233 and 234, numbered before the rule above (no M1 row has either
+number). M2 sub-project 6's PR 1 added rows 312 to 338 (numbered 311 to 337 before the merge with
+sub-project 5, renumbered past row 311). M2 sub-project 2's final review added rows 339 to 352
+(2026-10-31; numbered 312 to 325 before its merge with sub-project 6's PR 1, renumbered past row
+338), and its final merge rows 353 to 355. The count rules are retired (the policy above, INTENT §23
+#67), so nothing here is counted against anything.
 
 | Row | What | Source | When |
 |---|---|---|---|
@@ -63,7 +63,7 @@ counted against anything.
 | **314** | Processor.cpp:1299's "above 0" comment beside a != 0 predicate. | M2 sub-project 6 (views), PR 1 | The next touch of the publish block (PR 2). |
 | **315** | tests/CMakeLists.txt's ui/ and routes entries out of alphabetical order. | M2 sub-project 6 (views), PR 1 | The next edit of the list. |
 | **316** | uiSetRoutes could skip an unchanged routes array (redundant mark_dirty from ring drags). | M2 sub-project 6 (views), PR 1 | PR 2. |
-| **317** | No test of SettingsFile's NUL guard on lastLoadFolder (media/, sub-project 2's file). | M2 sub-project 6 (views), PR 1 | Sub-project 2. |
+| **317** | No test of SettingsFile's NUL guard on lastLoadFolder (media/, sub-project 2's file). | M2 sub-project 6 (views), PR 1 | **Closed** by M2 sub-project 2's merge fixes: `a2365f5` ("saveSettings creates the folder, and loadSettings reads it back" refuses a NUL in each of the five strings by name, lastLoadFolder among them) |
 | **318** | settingsFile() duplicated in GigaGrainsPlugin.cpp and UiSettings.cpp (factor into plugin/src/SettingsPath.h). | M2 sub-project 6 (views), PR 1 | The next change to either copy. |
 | **319** | The license/notice embed scripts' test ergonomics (an escaper fixture, a mismatch reporting the first differing offset instead of two 35 KB blobs, starts_with("# "), the duplicated pair-up check). | M2 sub-project 6 (views), PR 1 | The next touch. |
 | **320** | ParamControl/ParamValue polish: stale pending_ if setCommitOnRelease(false) mid-gesture (unreachable today), slotsIn's doc for layer >= 4, ParamValue.h's include of ContinuousParamEditor.h, no tests of the palette's surfaces. | M2 sub-project 6 (views), PR 1 | PR 2, when panels are added. |

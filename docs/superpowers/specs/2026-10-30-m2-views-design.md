@@ -400,7 +400,10 @@ row's. **Amended** (VW-T19a): merging the engine (M2 sub-project 3) into PR 1 br
 Quality (per layer) and Budget (global), so PR 1 places them now as the smallest change that
 keeps every slot reachable: Quality in the Grain panel after Texture, a menu (Eco, Normal, HQ),
 and Budget in the FX view's Output panel after Mix (§6.7); PR 2 revisits both with its own panel
-design. **Amended** (VW-T3c): the table places each slot once, and a layer's Level is placed in
+design. **Amended** (SP-M7, 2026-10-31): sources' final merge (M2 sub-project 2, INTENT §23 #68)
+brought its five ring parameters, so they take the same smallest placement: Ring Length, Loop,
+Loop Length, Overdub and Splice in the Source panel after Source, rows 1 to 5; PR 2 revisits
+them with the ring's gestures and the memory readout. **Amended** (VW-T3c): the table places each slot once, and a layer's Level is placed in
 its Space panel, as the table above lists it; the On switches are the strip panel's. The strip
 (the lane headers and the compact row) also shows On, Level, Source and Freeze, as second
 controls with the same `param.<id>`. A parameter may have a control in more than one view, so a
@@ -1172,3 +1175,4 @@ ledger, not here. The director's decisions are D1–D12 (§8).
 | VW-T17a | §6.11 | The GPU spike's decision: the CPU renderer stays, on the ratios and the risk clause. |
 | VW-T17b | §6.11 | Decided (D12, §8): the canvas repaints at the display's rate, no cap; the director's choice, 2026-10-30. |
 | VW-T19a | §6.5, §6.7 | The controller's ruling at the merge of the engine (PR #16) into PR 1: its new parameters take the smallest placement that keeps every slot reachable now. Quality (A–D) goes in the Grain panel after Texture, a menu; Budget (global) in the FX view's Output panel after Mix, in both products, a knob that rounds to whole steps, since `kindFor` makes a stepped parameter with more than 32 values a knob. The instrument's Output panel, empty before, shows Budget alone. PR 2 revisits both with its own panel design. |
+| SP-M7 | §6.5 | Sources' ruling at its final merge (M2 sub-project 2, INTENT §23 #68), in VW-T19a's form: the five ring parameters take the smallest placement that keeps every slot reachable now, Ring Length, Loop, Loop Length, Overdub and Splice in the Source panel after Source. PR 2 revisits them with its own panel design. |
