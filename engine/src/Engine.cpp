@@ -312,6 +312,15 @@ bool Engine::liveReadsWithin(int64_t frames, int64_t &latestEnd) const noexcept
 
 void Engine::checkReadLimit() noexcept
 {
+    if (live_.periodFadeEnd() > clock_)
+    {
+        // Fix round 2: the overdub period's crossfade from the last landing still runs; a landing
+        // now would restart it from the old length, a step in the frames written. The request is
+        // looked at afresh where it ends (a drag lands its latest value), admission held at the
+        // reads meanwhile.
+        readLimitCheckAt_ = live_.periodFadeEnd();
+        return;
+    }
     const int64_t target = targetReadLimit_ > 0 ? targetReadLimit_ : live_.frames();
     int64_t latestEnd = clock_ + 1;
     if (!liveReadsWithin(std::min(live_.readFrames(), target), latestEnd))

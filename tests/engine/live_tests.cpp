@@ -3142,6 +3142,100 @@ TEST_CASE("a shorter ring offered after the limit is raised again is declined", 
     CHECK(engine.live().readFrames() == 16 * 48000);
 }
 
+TEST_CASE("a ring limit changed again during the period's crossfade lands after it",
+          "[engine][live][determinism]")
+{
+    // Fix round 2: a 4 s ring under Overdub 1 with Loop off (the period P is the reads' length),
+    // 64 Hz of 50 ms grains 0.3 to 0.7 s behind, over two sines with a swell. A limit that lands
+    // while the overdub period's 10 ms crossfade from the last landing runs waits for it to end,
+    // so the frames written never step: a shrink to 2 s then a grow back 3 ms later, a shrink then
+    // a shrink to 1 s 3 ms later, a shrink then to 1.9 s 8.3 ms later, and a drag from 3.8 s to
+    // 2.0 s in steps of 8.3 ms. The ring's click score around the changes and the output's for
+    // 1.5 s after them stay below the limit (before the fix: 2,386 and 2,214, 2,045 and 1,944,
+    // 183 and 86, 337 and 136), and calls of 512 and of 37 give the same bytes. A grow back held
+    // so keeps admission at the reads.
+    constexpr int64_t kT0 = 6 * 48000;
+    constexpr int64_t kN = 4 * 48000;
+    constexpr int64_t kFrames = 9 * 48000;
+    Stereo input{std::vector<float>(kFrames), std::vector<float>(kFrames)};
+    for (int64_t i = 0; i < kFrames; ++i)
+    {
+        const auto x = static_cast<double>(i);
+        const double swell =
+            0.2 * (0.6 + 0.4 * std::sin(2.0 * std::numbers::pi * x / (3.3 * kSampleRate)));
+        input.left[static_cast<std::size_t>(i)] =
+            static_cast<float>(swell * std::sin(2.0 * std::numbers::pi * 233.3 * x / kSampleRate));
+        input.right[static_cast<std::size_t>(i)] =
+            static_cast<float>(swell * std::sin(2.0 * std::numbers::pi * 311.7 * x / kSampleRate));
+    }
+    struct Case
+    {
+        const char *name;
+        std::vector<std::pair<int64_t, int64_t>> limits; // (sample, frames)
+    };
+    std::vector<std::pair<int64_t, int64_t>> drag;
+    for (int k = 0; k < 10; ++k)
+    {
+        drag.emplace_back(kT0 + 400 * k,
+                          static_cast<int64_t>(static_cast<double>(kN) * (0.95 - 0.05 * k)));
+    }
+    const std::vector<Case> cases = {
+        {"4 s to 2 s, back to 4 s 3 ms later", {{kT0, kN / 2}, {kT0 + 144, kN}}},
+        {"4 s to 2 s, to 1 s 3 ms later", {{kT0, kN / 2}, {kT0 + 144, kN / 4}}},
+        {"4 s to 2 s, to 1.9 s 8.3 ms later", {{kT0, kN / 2}, {kT0 + 400, kN * 19 / 40}}},
+        {"a drag from 3.8 s to 2.0 s, a step every 8.3 ms", drag},
+    };
+    for (const Case &c : cases)
+    {
+        INFO(c.name);
+        std::vector<WindowChange> changes;
+        for (const auto &[at, frames] : c.limits)
+        {
+            changes.push_back({at, [frames](gg::Engine &e) { e.setRingLimit(frames); }});
+        }
+        if (c.limits.size() == 2 && c.limits[1].second == kN)
+        {
+            // The grow back, held until the crossfade ends at kT0 + 480, keeps admission and the
+            // reads at 2 s meanwhile (fix round 1's Critical rule).
+            changes.push_back({kT0 + 300, [](gg::Engine &e) {
+                                   REQUIRE(e.liveReadLimitPending());
+                                   REQUIRE(e.live().readFrames() == kN / 2);
+                                   REQUIRE(e.live().windowFrames() <= kN / 2);
+                               }});
+            changes.push_back({kT0 + 1024, [](gg::Engine &e) {
+                                   REQUIRE_FALSE(e.liveReadLimitPending());
+                                   REQUIRE(e.live().readFrames() == kN);
+                               }});
+        }
+        const auto render = [&](uint32_t block, Stereo &ring) {
+            gg::Engine engine(engineFor(4.0, 5));
+            engine.setSourceMode(gg::SourceMode::Live);
+            engine.setCloudParams(cloudOf(64.0, 0.05, 0.3, 0.4, 0.0));
+            DrivenRun run = driveEngine(engine, input, block, changes, 1.0f);
+            // The frames written from 0.1 s before the first change to 0.1 s after it, still
+            // stored: the ring is 4 s long and was never swapped.
+            const gg::LiveSource::RingView view = engine.live().view();
+            ring = {std::vector<float>(9600), std::vector<float>(9600)};
+            for (int64_t f = kT0 - 4800; f < kT0 + 4800; ++f)
+            {
+                const auto j = static_cast<std::size_t>(f - (kT0 - 4800));
+                ring.left[j] = view.slots[2 * (f % view.capacity)];
+                ring.right[j] = view.slots[2 * (f % view.capacity) + 1];
+            }
+            return run;
+        };
+        Stereo ring;
+        Stereo ring37;
+        const DrivenRun a = render(512, ring);
+        const DrivenRun b = render(37, ring37);
+        CHECK(clickScoreIn(ring, 0, 9600) <= kClickLimit);
+        CHECK(clickScoreIn(a.out, kT0 - 4800, kT0 + 72000) <= kClickLimit);
+        CHECK(sameBits(a.out.left, b.out.left));
+        CHECK(sameBits(a.out.right, b.out.right));
+        CHECK(sameBits(ring.left, ring37.left));
+    }
+}
+
 TEST_CASE("a restore's window holds for every sample until the next write", "[engine][live]")
 {
     // Between a restore and the next write() the head is the restored frame count at every output

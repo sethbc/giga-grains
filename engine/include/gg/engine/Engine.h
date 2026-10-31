@@ -379,8 +379,10 @@ class Engine
     /// process() call's first frame. The read limit wanted is the request below N, none at or
     /// above it. It lands at the first sample from which no sounding ring grain, over its whole
     /// remaining life, reaches farther back than the shorter of the old reads and the new (its
-    /// farthest tap at least M frames inside them): at once when none does, else at the end of
-    /// the latest that does, checked again there (liveReadLimitPending() until then). There the
+    /// farthest tap at least M frames inside them), and no overdub period's crossfade from the
+    /// last landing still runs: at once when so, else at the end of the latest grain that does
+    /// reach farther, or of that crossfade, checked again there with the request then in force
+    /// (liveReadLimitPending() until then). There the
     /// reads take the new length, and overdub's period follows over kPeriodFadeSeconds.
     /// Admission and Live mode's Position and Spray never reach past the reads: they take the
     /// shorter of the request's length and the reads', at once for a shorter request (every

@@ -450,7 +450,9 @@ Two things a parameter can't carry: adding a splice mark, and capturing the ring
   > main thread offers it; with the slack gone at the landing, the shrunk ring admits as a fresh
   > ring of its length. Growing is unchanged. (Fix round 1 of Task 12b, 2026-10-30: the life-long
   > check, the reads gating a raise, the period's crossfade, the slack's end at the landing and
-  > the stale offer, each found by the review.)
+  > the stale offer, each found by the review; fix round 2: a landing waits for the period's
+  > crossfade in flight to end, then takes the request in force there, so two changes a few
+  > milliseconds apart, or a knob's drag, never step the frames written.)
 - **The process-wide sample pool** (`gg::media::SamplePool`, main and loader threads, one mutex):
   prepared sources by key `(sha256, size, rate)`, held weakly; `prepare()` consults it before
   converting and building, and shares a live entry. Ten instances of one project hold one copy of

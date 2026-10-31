@@ -249,6 +249,10 @@ class LiveSource
         return periodFadeEnd_ > writtenTo_ ? std::max(readFrames_, std::min(window_, periodFrom_))
                                            : readFrames_;
     }
+    /// The output sample at which the overdub period's crossfade from the last change of the read
+    /// limit ends (INT64_MIN when none has run since reset()): a further change waits for it
+    /// (Engine::setRingLimit), so the frames written never step.
+    int64_t periodFadeEnd() const noexcept { return periodFadeEnd_; }
     /// How many more frames the head advances from the next write() on if the freeze setting
     /// doesn't change: INT64_MAX when not frozen; frozen, the frames left in the ramp.
     int64_t headAdvanceLeft() const noexcept
