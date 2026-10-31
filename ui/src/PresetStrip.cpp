@@ -87,6 +87,7 @@ PresetStrip::PresetStrip(const EditorContext &context) : context_(context)
     addAndMakeVisible(prev_);
     addAndMakeVisible(name_);
     addAndMakeVisible(next_);
+    setWantsKeyboardFocus(true);
     refresh();
 }
 
@@ -115,6 +116,35 @@ void PresetStrip::refresh()
 void PresetStrip::setBrowserOpen(bool open)
 {
     name_.setToggleState(open, juce::dontSendNotification);
+}
+
+void PresetStrip::focusName()
+{
+    if (name_.isShowing())
+    {
+        name_.grabKeyboardFocus();
+    }
+}
+
+bool PresetStrip::keyPressed(const juce::KeyPress &key)
+{
+    // A focused button passes the arrows up to here (TextButton takes Return and Space alone).
+    const auto call = [](const std::function<void()> &f) {
+        if (f)
+        {
+            f();
+        }
+        return true;
+    };
+    if (key == juce::KeyPress::leftKey)
+    {
+        return call(onPrev);
+    }
+    if (key == juce::KeyPress::rightKey)
+    {
+        return call(onNext);
+    }
+    return false;
 }
 
 void PresetStrip::resized()

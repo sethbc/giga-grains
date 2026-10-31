@@ -319,8 +319,8 @@ PresetInfo instrumentInfo()
 }
 
 /// One test's scratch tree: a content root with its Presets (two presets and a junk file) and its
-/// content-version.txt, a settings file's folder, and HOME and the platform's install roots
-/// pointed inside it so that no per-user install of the machine's is found.
+/// content-version.txt, a settings file's folder, and HOME and the install roots (the tests'
+/// seam, GG_SYSTEM_CONTENT_DIR) pointed inside it, so that no install of the machine's is found.
 struct Scratch
 {
     fs::path dir, content, settingsFile, fxPreset, instrumentPreset, junk;
@@ -348,7 +348,7 @@ struct Scratch
 /// the install roots, all inside the scratch tree.
 struct Environment
 {
-    ScopedEnv content, settings;
+    ScopedEnv content, settings, system;
 #if defined(_WIN32)
     ScopedEnv local, common;
 #else
@@ -358,6 +358,7 @@ struct Environment
     Environment(const Scratch &s, bool withContent)
         : content(GG_ENV("GG_CONTENT_DIR"), withContent ? s.content : fs::path()),
           settings(GG_ENV("GG_SETTINGS_FILE"), s.settingsFile),
+          system(GG_ENV("GG_SYSTEM_CONTENT_DIR"), s.dir / "home"),
 #if defined(_WIN32)
           local(GG_ENV("LOCALAPPDATA"), s.dir / "home"),
           common(GG_ENV("ProgramData"), s.dir / "home")
@@ -452,19 +453,12 @@ TEST_CASE("the provider's init declares the filetype, the locations and the soun
     CHECK(d.filetypes[0].description == "A Giga Grains or Giga Grains FX preset");
     CHECK(d.filetypes[0].extension == "ggpreset");
 
-    // The content root's Presets first (a machine-wide install, which the test can't move, may
-    // follow it), then the user presets folder beside the settings file, then Init.
+    // The content root's Presets first, then the user presets folder beside the settings file,
+    // then Init: exactly, since the install roots are the scratch tree's (GG_SYSTEM_CONTENT_DIR).
     const auto files = d.locationsOfKind(CLAP_PRESET_DISCOVERY_LOCATION_FILE);
-    REQUIRE(files.size() >= 2);
+    REQUIRE(files.size() == 2);
     CHECK(files.front().location == utf8(scratch.content / "Presets"));
     CHECK(files.front().flags == CLAP_PRESET_DISCOVERY_IS_FACTORY_CONTENT);
-    std::size_t underScratch = 0;
-    for (std::size_t i = 0; i + 1 < files.size(); ++i)
-    {
-        CHECK(files[i].flags == CLAP_PRESET_DISCOVERY_IS_FACTORY_CONTENT);
-        underScratch += isUnder(*files[i].location, scratch.dir) ? 1 : 0;
-    }
-    CHECK(underScratch == 1);
     CHECK(files.back().location == utf8(scratch.settingsFile.parent_path() / "Presets"));
     CHECK(files.back().flags == CLAP_PRESET_DISCOVERY_IS_USER_CONTENT);
 
@@ -617,21 +611,18 @@ TEST_CASE("without a content root there is no factory location and the rest is d
     CHECK(d.filetypes.size() == 1);
     const auto files = d.locationsOfKind(CLAP_PRESET_DISCOVERY_LOCATION_FILE);
     REQUIRE(!files.empty());
-    bool anyFactory = false;
+    REQUIRE(files.size() == 1); // the user's alone
     for (const auto &l : files)
     {
         CHECK_FALSE(isUnder(*l.location, scratch.content));
-        anyFactory = anyFactory || l.flags == CLAP_PRESET_DISCOVERY_IS_FACTORY_CONTENT;
+        CHECK(l.flags != CLAP_PRESET_DISCOVERY_IS_FACTORY_CONTENT);
     }
     CHECK(files.back().location == utf8(scratch.settingsFile.parent_path() / "Presets"));
     CHECK(files.back().flags == CLAP_PRESET_DISCOVERY_IS_USER_CONTENT);
     CHECK(d.locationsOfKind(CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN).size() == 1);
     REQUIRE(d.soundpacks.size() == 1);
     CHECK(d.soundpacks[0].id == "org.sethbc.giga-grains.factory");
-    if (!anyFactory) // a machine-wide install, which the test can't move, would give its version
-    {
-        CHECK(d.soundpacks[0].description.empty());
-    }
+    CHECK(d.soundpacks[0].description.empty());
 }
 
 TEST_CASE("init creates the user folder and declares it", "[plugin][discovery]")
@@ -666,7 +657,7 @@ TEST_CASE("every FILE location is an absolute path in the OS's own form", "[plug
     const Environment env(scratch, true);
     const Provider p;
     const auto files = p.declared.locationsOfKind(CLAP_PRESET_DISCOVERY_LOCATION_FILE);
-    REQUIRE(files.size() >= 2);
+    REQUIRE(files.size() == 2);
     for (const auto &l : files)
     {
         REQUIRE(l.location.has_value());
@@ -728,7 +719,7 @@ TEST_CASE("presetLocations lists each content root's Presets, then the user's",
     gg::core::MachineSettings settings;
     settings.contentFolder = utf8(empty);
     auto locations = gg::plugin::presetLocations(settings, scratch.settingsFile);
-    REQUIRE(locations.size() >= 2);
+    REQUIRE(locations.size() == 2);
     CHECK(locations.front().folder == scratch.content / "Presets");
     CHECK(locations.front().root == scratch.content);
     CHECK(locations.front().factory);
@@ -738,9 +729,96 @@ TEST_CASE("presetLocations lists each content root's Presets, then the user's",
 
     settings.contentFolder = utf8(pack);
     locations = gg::plugin::presetLocations(settings, scratch.settingsFile);
-    REQUIRE(locations.size() >= 3);
+    REQUIRE(locations.size() == 3);
     CHECK(locations[0].folder == scratch.content / "Presets");
     CHECK(locations[1].folder == pack / "Presets");
     CHECK(locations[1].root == pack);
-    CHECK(locations[1].factory);
+    // The user's chosen pack is a Content folder, not factory content (M6).
+    CHECK_FALSE(locations[1].factory);
+    CHECK(locations[1].contentFolder);
+    CHECK_FALSE(locations[0].contentFolder);
+}
+
+// ---- The fix wave's discovery cases (I2, I3, M6) ----
+
+TEST_CASE("the provider reports the favorites as IS_FAVORITE", "[plugin][discovery]")
+{
+    // I3: hosts that show favorites agree with the browser (spec §6.4).
+    const Scratch scratch("favorites");
+    const Environment env(scratch, true);
+    writeFile(gg::media::favoritesFile(scratch.settingsFile),
+              "plugin:init\n" + gg::plugin::presetFileKey(scratch.fxPreset) + "\n");
+    const Provider p;
+
+    Received glass;
+    REQUIRE(p.metadataOf(scratch.fxPreset, glass));
+    REQUIRE(glass.presets.size() == 1);
+    CHECK(glass.presets[0].flags ==
+          (CLAP_PRESET_DISCOVERY_IS_FACTORY_CONTENT | CLAP_PRESET_DISCOVERY_IS_FAVORITE));
+
+    Received bowed;
+    REQUIRE(p.metadataOf(scratch.instrumentPreset, bowed));
+    REQUIRE(bowed.presets.size() == 1);
+    CHECK(bowed.presets[0].flags == CLAP_PRESET_DISCOVERY_IS_FACTORY_CONTENT);
+
+    Received init;
+    REQUIRE(p.provider->get_metadata(p.provider, CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN, nullptr,
+                                     &init.receiver));
+    REQUIRE(init.presets.size() == 1);
+    CHECK(init.presets[0].flags ==
+          (CLAP_PRESET_DISCOVERY_IS_FACTORY_CONTENT | CLAP_PRESET_DISCOVERY_IS_FAVORITE));
+}
+
+TEST_CASE("a factory preset in a subfolder, its extension in capitals, is factory content",
+          "[plugin][discovery]")
+{
+    // I2: the hosts' crawl walks subfolders and matches the extension in any case; the
+    // provider's metadata agrees with the browser's catalog for such a file.
+    const Scratch scratch("subfolder");
+    const Environment env(scratch, true);
+    const auto deep = scratch.content / "Presets" / "Sub" / "Deep.GGPRESET";
+    writeFile(deep, gg::core::encodePreset(fxInfo(), gg::core::initState(Mode::Fx)));
+    const Provider p;
+    Received received;
+    REQUIRE(p.metadataOf(deep, received));
+    REQUIRE(received.presets.size() == 1);
+    CHECK(received.presets[0].flags == CLAP_PRESET_DISCOVERY_IS_FACTORY_CONTENT);
+    CHECK(received.presets[0].soundpack == "org.sethbc.giga-grains.factory");
+    const gg::plugin::PresetCatalog catalog(Mode::Fx, scratch.settingsFile);
+    bool listed = false;
+    for (const auto &entry : catalog.entries())
+    {
+        listed = listed || entry.file == deep;
+    }
+    CHECK(listed);
+}
+
+TEST_CASE("the user's content folder is declared and reported as user content",
+          "[plugin][discovery]")
+{
+    // M6: a pack the user chose is not the factory's: no factory flag, no soundpack, and its
+    // content-version.txt doesn't name the factory soundpack.
+    const Scratch scratch("content-folder");
+    const Environment env(scratch, false);
+    const auto pack = scratch.dir / "pack";
+    const auto theirs = pack / "Presets" / "Theirs.ggpreset";
+    writeFile(theirs, gg::core::encodePreset(fxInfo(), gg::core::initState(Mode::Fx)));
+    writeFile(pack / "content-version.txt", "their-pack v7 00\n");
+    gg::core::MachineSettings settings;
+    settings.contentFolder = utf8(pack);
+    REQUIRE(gg::media::saveSettings(scratch.settingsFile, settings));
+    const Provider p;
+    const auto files = p.declared.locationsOfKind(CLAP_PRESET_DISCOVERY_LOCATION_FILE);
+    REQUIRE(files.size() == 2);
+    CHECK(files[0].location == utf8(pack / "Presets"));
+    CHECK(files[0].flags == CLAP_PRESET_DISCOVERY_IS_USER_CONTENT);
+    CHECK(files[0].name == "Content folder presets");
+    REQUIRE(p.declared.soundpacks.size() == 1);
+    CHECK(p.declared.soundpacks[0].description.empty());
+
+    Received received;
+    REQUIRE(p.metadataOf(theirs, received));
+    REQUIRE(received.presets.size() == 1);
+    CHECK(received.presets[0].flags == CLAP_PRESET_DISCOVERY_IS_USER_CONTENT);
+    CHECK_FALSE(received.presets[0].soundpack.has_value());
 }

@@ -22,14 +22,18 @@ struct PresetLocation
 {
     /// The folder, which may not exist yet (the user's is created on the first save).
     std::filesystem::path folder;
-    /// Factory content (a content root's Presets), or the user's presets.
+    /// Factory content: the Presets of GG_CONTENT_DIR or an install (gg::media::ContentRoot's
+    /// factory()).
     bool factory;
-    /// The content root a factory folder is in; empty for the user's.
+    /// The Presets of the user's content folder ("Content folder…"): a pack of the user's own,
+    /// neither factory content nor the user presets folder (fix wave M6).
+    bool contentFolder;
+    /// The content root the folder is in; empty for the user presets folder.
     std::filesystem::path root;
 };
 
-/// The preset folders, in order: for each content root (gg::media::contentRoots(settings)) whose
-/// Presets folder exists, a factory location; then the user presets folder
+/// The preset folders, in order: for each content root (gg::media::contentRootList(settings))
+/// whose Presets folder exists, a factory or content-folder location; then the user presets folder
 /// (gg::media::userPresetsFolder(settingsFile)), whether or not it exists, unless settingsFile is
 /// empty. Reads the environment and the filesystem, and allocates: main thread or a worker.
 std::vector<PresetLocation> presetLocations(const core::MachineSettings &settings,
@@ -39,15 +43,18 @@ std::vector<PresetLocation> presetLocations(const core::MachineSettings &setting
 /// presets", vendor `sethbc`, serving both products. Static storage, never null.
 ///
 /// The provider's init (on the indexer's thread; it has no plugin instance) reads the settings
-/// file (settingsFile(), so GG_SETTINGS_FILE is honoured) and declares the `ggpreset` filetype,
-/// a FILE location per presetLocations entry whose folder exists (IS_FACTORY_CONTENT or
-/// IS_USER_CONTENT; the user's is created on the first save, and an indexer may count a missing
-/// location as an error, as clap-validator's crawl does), one
+/// file (settingsFile(), so GG_SETTINGS_FILE is honoured) and the favorites file beside it, and
+/// declares the `ggpreset` filetype, a FILE location per presetLocations entry (IS_FACTORY_CONTENT
+/// for factory content, "Factory presets"; IS_USER_CONTENT for the user's content folder,
+/// "Content folder presets", and for the user presets folder, "User presets", which init creates,
+/// since an indexer may count a missing location as an error, as clap-validator's crawl does), one
 /// PLUGIN location, "Init", and the soundpack `org.sethbc.giga-grains.factory`, whose
 /// description is the first line of the first factory location's root's content-version.txt
 /// (the soundpack struct has no version field), empty when there is none. get_metadata reports a
 /// preset file's metadata (gg::core::presetInfoOf), or for the PLUGIN location the INIT preset
-/// (load key gg::core::kInitLoadKey), one preset naming both products' ids.
+/// (load key gg::core::kInitLoadKey), one preset naming both products' ids; a factory file
+/// carries the soundpack and IS_FACTORY_CONTENT, any other IS_USER_CONTENT, and a preset whose
+/// key (presetKey) init read in the favorites file IS_FAVORITE as well (spec §6.4).
 const clap_preset_discovery_factory *presetDiscoveryFactory() noexcept;
 } // namespace gg::plugin
 

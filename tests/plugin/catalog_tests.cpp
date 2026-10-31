@@ -7,10 +7,9 @@
 // and favorites filters, favorites kept across catalogs, Save as… (the file name made safe, an
 // overwrite refused unless asked), Delete, the content status line and the per-folder cap. Each
 // test case works in a folder of its own under GG_TEST_OUTPUT_DIR, with GG_CONTENT_DIR,
-// GG_SETTINGS_FILE and the install roots' environment pointed into it (restored when it ends),
-// so no installed content or user preset is ever seen (on macOS, whose system install root is
-// fixed, the cases are skipped when factory content is installed there); each case runs in a
-// process of its own.
+// GG_SETTINGS_FILE and the install roots (GG_SYSTEM_CONTENT_DIR, ContentPaths.h's test seam)
+// pointed into it (restored when it ends), so no installed content or user preset is ever seen;
+// each case runs in a process of its own.
 
 #include <algorithm>
 #include <cstddef>
@@ -109,32 +108,16 @@ class ScopedEnv
 
 /// A scratch machine of the test's own: `<root>/content` is GG_CONTENT_DIR (its `Presets`
 /// folder made only when a test asks), `<root>/settings/settings.xml` the settings file
-/// (GG_SETTINGS_FILE, so the user presets folder is `<root>/settings/Presets`), and the per-user
-/// and system install roots point under `<root>/home`, which holds nothing.
+/// (GG_SETTINGS_FILE, so the user presets folder is `<root>/settings/Presets`), and the install
+/// roots are `<root>/home/system` (GG_SYSTEM_CONTENT_DIR), which holds nothing.
 class Machine
 {
   public:
     explicit Machine(const char *name)
         : root_(fresh(name)), contentEnv_("GG_CONTENT_DIR", utf8(content()).c_str()),
           settingsEnv_("GG_SETTINGS_FILE", utf8(settingsFile()).c_str()),
-#if defined(_WIN32)
-          localEnv_("LOCALAPPDATA", utf8(root_ / "home" / "local").c_str()),
-          systemEnv_("ProgramData", utf8(root_ / "home" / "system").c_str())
-#else
-          homeEnv_("HOME", utf8(root_ / "home").c_str()),
-          dataEnv_("XDG_DATA_HOME", utf8(root_ / "home" / "data").c_str()),
-          systemEnv_("XDG_DATA_DIRS", utf8(root_ / "home" / "system").c_str())
-#endif
+          systemEnv_("GG_SYSTEM_CONTENT_DIR", utf8(root_ / "home" / "system").c_str())
     {
-#if defined(__APPLE__)
-        // macOS's system install root is fixed (gg::media::contentRoots): factory content
-        // installed there joins every list, so these tests can't run beside it.
-        std::error_code error;
-        if (fs::exists(kSystemPresets, error))
-        {
-            SKIP("factory content is installed in /Library/Application Support/sethbc/Giga Grains");
-        }
-#endif
     }
 
     fs::path root() const { return root_; }
@@ -145,11 +128,6 @@ class Machine
     fs::path favorites() const { return gg::media::favoritesFile(settingsFile()); }
 
   private:
-#if defined(__APPLE__)
-    static constexpr const char *kSystemPresets =
-        "/Library/Application Support/sethbc/Giga Grains/Presets";
-#endif
-
     static fs::path fresh(const char *name)
     {
         const auto dir = fs::path(GG_TEST_OUTPUT_DIR) / "catalog" / name;
@@ -161,14 +139,7 @@ class Machine
     fs::path root_;
     ScopedEnv contentEnv_;
     ScopedEnv settingsEnv_;
-#if defined(_WIN32)
-    ScopedEnv localEnv_;
-    ScopedEnv systemEnv_;
-#else
-    ScopedEnv homeEnv_;
-    ScopedEnv dataEnv_;
-    ScopedEnv systemEnv_;
-#endif
+    ScopedEnv systemEnv_; // the install roots (the tests' seam, ContentPaths.h)
 };
 
 PresetInfo infoOf(std::string name, Mode product, std::vector<std::string> tags = {},
@@ -253,9 +224,10 @@ std::vector<fs::path> filesUnder(const fs::path &folder)
     return files;
 }
 
-/// The FX and instrument presets the order and filter tests share: three FX and one instrument
+/// The FX and instrument presets the order and filter tests share: four FX and one instrument
 /// preset in the factory folder (with a file that isn't a preset, one in another case of the
-/// extension and a text file), two FX and one instrument preset in the user folder.
+/// extension, one in a subfolder and a text file), three FX (one in a subfolder) and one
+/// instrument preset in the user folder.
 void putLibrary(const Machine &machine)
 {
     putPreset(machine.factory() / "02 Shimmer.ggpreset",
@@ -273,6 +245,10 @@ void putLibrary(const Machine &machine)
               infoOf("Mine", Mode::Fx, {"dark", "texture"}, "My own SHIMMER"));
     putPreset(machine.user() / "a drone.ggpreset", infoOf("Drone", Mode::Fx, {"drone"}));
     putPreset(machine.user() / "c lead.ggpreset", infoOf("Lead", Mode::Instrument, {"playable"}));
+    // A subfolder's presets are listed too, by their path relative to the folder (I2), as the
+    // hosts' crawl lists them.
+    putPreset(machine.factory() / "Sub" / "07 Deep.ggpreset", infoOf("Deep", Mode::Fx));
+    putPreset(machine.user() / "d folder" / "nested.ggpreset", infoOf("Nested", Mode::Fx));
 }
 } // namespace
 
@@ -283,8 +259,10 @@ TEST_CASE("the catalog lists Init, the factory presets by file name, then the us
     putLibrary(machine);
 
     const PresetCatalog fx(Mode::Fx, machine.settingsFile());
-    REQUIRE(namesOf(fx) ==
-            std::vector<std::string>{"Init", "Smear Pad", "Shimmer", "Stutter", "Drone", "Mine"});
+    // The extension matched in any case (05 Upper.GGPRESET), the subfolders walked, and each
+    // folder's files in the byte order of their relative paths.
+    REQUIRE(namesOf(fx) == std::vector<std::string>{"Init", "Smear Pad", "Shimmer", "Stutter",
+                                                    "Upper", "Deep", "Drone", "Mine", "Nested"});
     const auto &entries = fx.entries();
     REQUIRE(entries[0].kind == PresetKind::Init);
     REQUIRE(entries[0].file.empty());
@@ -296,9 +274,13 @@ TEST_CASE("the catalog lists Init, the factory presets by file name, then the us
     REQUIRE(entries[1].info.description == "Slow and wide");
     REQUIRE(entries[1].info.tags == std::vector<std::string>{"texture", "pad", "smear"});
     REQUIRE(entries[3].kind == PresetKind::Factory);
-    REQUIRE(entries[4].kind == PresetKind::User);
-    REQUIRE(entries[4].file == machine.user() / "a drone.ggpreset");
-    REQUIRE(entries[5].kind == PresetKind::User);
+    REQUIRE(entries[4].file == machine.factory() / "05 Upper.GGPRESET");
+    REQUIRE(entries[5].kind == PresetKind::Factory);
+    REQUIRE(entries[5].file == machine.factory() / "Sub" / "07 Deep.ggpreset");
+    REQUIRE(entries[6].kind == PresetKind::User);
+    REQUIRE(entries[6].file == machine.user() / "a drone.ggpreset");
+    REQUIRE(entries[7].kind == PresetKind::User);
+    REQUIRE(entries[8].file == machine.user() / "d folder" / "nested.ggpreset");
 
     // The instrument lists its own presets alone (D9, option 1).
     const PresetCatalog instrument(Mode::Instrument, machine.settingsFile());
@@ -452,10 +434,26 @@ TEST_CASE("a save name is made safe", "[plugin][catalog]")
     REQUIRE(safeFileName("\\*?\"<>|") == "_______");
     REQUIRE(safeFileName("tab\there\x7f") == "tab_here_");
     REQUIRE(safeFileName(".hidden") == "_hidden");
-    REQUIRE(safeFileName("..") == "_.");
+    REQUIRE(safeFileName("..") == "__"); // a leading and a trailing dot
     REQUIRE(safeFileName("a.b") == "a.b");
     REQUIRE(safeFileName("Grüße") == "Grüße");
     REQUIRE(safeFileName("").empty());
+    // Windows' reserved device names, in any case, by the part before the first dot (M1), and
+    // a trailing dot or space, which Windows drops.
+    for (const char *reserved : {"CON", "con", "Prn", "AUX", "NUL", "COM1", "com9", "LPT1", "lpt9",
+                                 "nul.txt", "CON.my pad"})
+    {
+        INFO(reserved);
+        REQUIRE(safeFileName(reserved) == std::string("_") + reserved);
+    }
+    for (const char *fine : {"CONSOLE", "COM10", "COM0", "LPT", "Null", "a CON", "COM"})
+    {
+        INFO(fine);
+        REQUIRE(safeFileName(fine) == fine);
+    }
+    REQUIRE(safeFileName("Pad.") == "Pad_");
+    REQUIRE(safeFileName("Pad. .") == "Pad___");
+    REQUIRE(safeFileName("Pad ") == "Pad_");
     REQUIRE(safeFileName(std::string(200, 'x')) == std::string(100, 'x'));
     // Cut on a UTF-8 boundary: "x" then two-byte "é"s, so byte 100 is inside one.
     std::string accented = "x";
@@ -475,10 +473,11 @@ TEST_CASE("a save name is made safe", "[plugin][catalog]")
     {
         INFO(name);
         REQUIRE(
-            fx.save(infoOf(name, Mode::Fx), presetBytes(infoOf(name, Mode::Fx)), false).empty());
+            fx.save(infoOf(name, Mode::Fx), presetBytes(infoOf(name, Mode::Fx)), false).saved());
     }
-    REQUIRE(fx.save(infoOf("", Mode::Fx), presetBytes(infoOf("", Mode::Fx)), false) ==
-            "the name is empty");
+    const auto empty = fx.save(infoOf("", Mode::Fx), presetBytes(infoOf("", Mode::Fx)), false);
+    REQUIRE(empty.status == gg::plugin::SaveResult::Status::Failed);
+    REQUIRE(empty.error == "the name is empty");
 
     // Each save is in the user folder, under its safe name, and listed (by its own name).
     for (const auto &[name, file] : std::vector<std::pair<std::string, std::string>>{
@@ -499,9 +498,13 @@ TEST_CASE("a save name is made safe", "[plugin][catalog]")
     for (const auto &file : filesUnder(machine.root()))
     {
         INFO(utf8(file));
-        REQUIRE((file.parent_path() == machine.user() || file.parent_path() == machine.factory()));
+        const auto inside = [&](const fs::path &folder) {
+            const auto relative = file.lexically_relative(folder);
+            return !relative.empty() && *relative.begin() != "..";
+        };
+        REQUIRE((inside(machine.user()) || inside(machine.factory())));
     }
-    REQUIRE(filesUnder(machine.user()).size() == 3 + 4);
+    REQUIRE(filesUnder(machine.user()).size() == 4 + 4);
 }
 
 TEST_CASE("save refuses to overwrite a preset unless asked", "[plugin][catalog]")
@@ -511,21 +514,87 @@ TEST_CASE("save refuses to overwrite a preset unless asked", "[plugin][catalog]"
     REQUIRE(!fs::exists(machine.user()));
 
     const auto first = infoOf("Pad", Mode::Fx, {"pad"}, "first");
-    REQUIRE(fx.save(first, presetBytes(first), false).empty());
+    REQUIRE(fx.save(first, presetBytes(first), false).saved());
     REQUIRE(namesOf(fx) == std::vector<std::string>{"Init", "Pad"});
     REQUIRE(fx.entries()[1].info.description == "first");
     const fs::path file = machine.user() / "Pad.ggpreset";
     REQUIRE(readText(file) == presetBytes(first));
 
     const auto second = infoOf("Pad", Mode::Fx, {"pad", "dark"}, "second");
-    REQUIRE(fx.save(second, presetBytes(second), false) == "a preset named Pad exists");
+    const auto refused = fx.save(second, presetBytes(second), false);
+    REQUIRE(refused.status == gg::plugin::SaveResult::Status::Exists);
+    REQUIRE(refused.existingName == "Pad");
+    REQUIRE(refused.error == "a preset named Pad exists");
     REQUIRE(readText(file) == presetBytes(first));
-    REQUIRE(fx.save(second, presetBytes(second), true).empty());
+    REQUIRE(fx.save(second, presetBytes(second), true).saved());
     REQUIRE(readText(file) == presetBytes(second));
     REQUIRE(namesOf(fx) == std::vector<std::string>{"Init", "Pad"});
     REQUIRE(fx.entries()[1].info.description == "second");
     // No temporary file is left beside it.
     REQUIRE(filesUnder(machine.user()) == std::vector<fs::path>{file});
+}
+
+TEST_CASE("an existing file under another name is named by the name it holds", "[plugin][catalog]")
+{
+    // "a/b" and "a:b" both make a_b.ggpreset (M2): the refusal names the preset the file holds,
+    // so the "Replace?" prompt names what would be lost.
+    const Machine machine("save-other-name");
+    PresetCatalog fx(Mode::Fx, machine.settingsFile());
+    const auto first = infoOf("a/b", Mode::Fx);
+    REQUIRE(fx.save(first, presetBytes(first), false).saved());
+    const auto second = infoOf("a:b", Mode::Fx);
+    const auto refused = fx.save(second, presetBytes(second), false);
+    REQUIRE(refused.status == gg::plugin::SaveResult::Status::Exists);
+    REQUIRE(refused.existingName == "a/b");
+    REQUIRE(refused.error == "a preset named a/b exists");
+    // A file there that isn't a preset is named by its file name.
+    putBytes(machine.user() / "junk.ggpreset", "not a preset");
+    const auto junk = infoOf("junk", Mode::Fx);
+    const auto overJunk = fx.save(junk, presetBytes(junk), false);
+    REQUIRE(overJunk.status == gg::plugin::SaveResult::Status::Exists);
+    REQUIRE(overJunk.existingName == "junk.ggpreset");
+}
+
+TEST_CASE("a content folder's presets are listed as the user's pack, not the factory's",
+          "[plugin][catalog]")
+{
+    // M6: the folder chosen with "Content folder..." holds a pack of the user's own.
+    const Machine machine("content-folder");
+    const fs::path pack = machine.root() / "pack";
+    putPreset(gg::media::factoryPresetsFolder(pack) / "Theirs.ggpreset",
+              infoOf("Theirs", Mode::Fx));
+    putPreset(machine.factory() / "Ours.ggpreset", infoOf("Ours", Mode::Fx));
+    {
+        gg::core::MachineSettings settings;
+        settings.contentFolder = utf8(pack);
+        REQUIRE(gg::media::saveSettings(machine.settingsFile(), settings));
+    }
+    PresetCatalog fx(Mode::Fx, machine.settingsFile());
+    REQUIRE(namesOf(fx) == std::vector<std::string>{"Init", "Ours", "Theirs"});
+    CHECK(fx.entries()[1].kind == PresetKind::Factory);
+    CHECK(fx.entries()[2].kind == PresetKind::Content);
+    CHECK(!fx.remove(2)); // not the user's own presets folder: never deleted
+    CHECK(fx.contentStatus() ==
+          "Factory content in " + utf8(machine.content()) + "; Content folder: " + utf8(pack));
+}
+
+TEST_CASE("with a content folder alone the status line names it and no factory content",
+          "[plugin][catalog]")
+{
+    const Machine machine("content-folder-alone");
+    const ScopedEnv noDev("GG_CONTENT_DIR", nullptr); // after the Machine sets it
+    const fs::path pack = machine.root() / "pack";
+    putPreset(gg::media::factoryPresetsFolder(pack) / "Theirs.ggpreset",
+              infoOf("Theirs", Mode::Fx));
+    putBytes(gg::media::contentVersionFile(pack), "giga-grains-content v9 00\n");
+    {
+        gg::core::MachineSettings settings;
+        settings.contentFolder = utf8(pack);
+        REQUIRE(gg::media::saveSettings(machine.settingsFile(), settings));
+    }
+    const PresetCatalog fx(Mode::Fx, machine.settingsFile());
+    REQUIRE(namesOf(fx) == std::vector<std::string>{"Init", "Theirs"});
+    CHECK(fx.contentStatus() == "No factory content found; Content folder: " + utf8(pack));
 }
 
 TEST_CASE("remove deletes a user preset and refuses Init and a factory preset", "[plugin][catalog]")
@@ -542,8 +611,8 @@ TEST_CASE("remove deletes a user preset and refuses Init and a factory preset", 
 
     REQUIRE(fx.remove(indexOf(fx, "Mine")));
     REQUIRE(!fs::exists(machine.user() / "b mine.ggpreset"));
-    REQUIRE(namesOf(fx) ==
-            std::vector<std::string>{"Init", "Smear Pad", "Shimmer", "Stutter", "Drone"});
+    REQUIRE(namesOf(fx) == std::vector<std::string>{"Init", "Smear Pad", "Shimmer", "Stutter",
+                                                    "Upper", "Deep", "Drone", "Nested"});
     // Its favorite goes with it.
     REQUIRE(gg::plugin::loadFavorites(machine.favorites()).empty());
 }
@@ -562,7 +631,7 @@ TEST_CASE("an empty machine lists INIT alone", "[plugin][catalog]")
     PresetCatalog nowhere(Mode::Instrument, {});
     REQUIRE(namesOf(nowhere) == std::vector<std::string>{"Init"});
     REQUIRE(nowhere.entries()[0].info.product == Mode::Instrument);
-    REQUIRE(!nowhere.save(infoOf("X", Mode::Instrument), "bytes", false).empty());
+    REQUIRE(!nowhere.save(infoOf("X", Mode::Instrument), "bytes", false).saved());
     REQUIRE(!nowhere.setFavorite(0, true));
 }
 

@@ -52,9 +52,18 @@ bool contains(std::string_view text, const std::string &needle)
     return lowered(text).find(needle) != std::string::npos;
 }
 
-/// The `*.ggpreset` files of `folder` sorted by UTF-8 name in byte order, at most
-/// PresetCatalog::kMaxFilesPerFolder of them; the rest are added to `unlisted`. Nothing when the
-/// folder is empty or can't be listed.
+/// Whether `name` ends in the preset extension, in any ASCII case (the hosts' crawl matches it
+/// so), with something before it.
+bool hasPresetExtension(std::string_view name)
+{
+    const auto ext = core::kPresetExtension;
+    return name.size() > ext.size() && lowered(name.substr(name.size() - ext.size())) == ext;
+}
+
+/// The preset files under `folder`, its subfolders included, sorted by their paths relative to
+/// it (UTF-8, `/` separators) in byte order, at most PresetCatalog::kMaxFilesPerFolder of them;
+/// the rest are added to `unlisted`. Only names are read, never a file. Nothing when the folder
+/// is empty or can't be listed; a subfolder that can't be entered is skipped.
 std::vector<fs::path> presetFiles(const fs::path &folder, std::size_t &unlisted)
 {
     std::vector<std::pair<std::string, fs::path>> files;
@@ -63,21 +72,26 @@ std::vector<fs::path> presetFiles(const fs::path &folder, std::size_t &unlisted)
         return {};
     }
     std::error_code error;
-    for (fs::directory_iterator it(folder, error); !error && it != fs::directory_iterator();
-         it.increment(error))
+    for (fs::recursive_directory_iterator it(folder, fs::directory_options::skip_permission_denied,
+                                             error);
+         !error && it != fs::recursive_directory_iterator(); it.increment(error))
     {
         std::error_code typeError;
         if (!it->is_regular_file(typeError))
         {
             continue;
         }
-        auto name = media::toGenericUtf8(it->path().filename());
-        if (!name || name->size() <= core::kPresetExtension.size() ||
-            !name->ends_with(core::kPresetExtension))
+        const auto name = media::toGenericUtf8(it->path().filename());
+        if (!name || !hasPresetExtension(*name))
         {
             continue;
         }
-        files.emplace_back(std::move(*name), it->path());
+        auto relative = media::toGenericUtf8(it->path().lexically_relative(folder));
+        if (!relative)
+        {
+            continue;
+        }
+        files.emplace_back(std::move(*relative), it->path());
     }
     // std::string compares its chars as unsigned char: byte order.
     std::sort(files.begin(), files.end(),
@@ -131,6 +145,14 @@ std::string contentVersion(const fs::path &root)
     return tag;
 }
 
+/// `path`'s modification time; nullopt when it doesn't exist or can't be read. One stat call.
+std::optional<fs::file_time_type> modified(const fs::path &path)
+{
+    std::error_code error;
+    const auto time = fs::last_write_time(path, error);
+    return error ? std::nullopt : std::optional<fs::file_time_type>(time);
+}
+
 /// Removes every copy of `key` from the favorites file `file`; false if the save fails.
 bool unfavorite(const fs::path &file, const std::string &key)
 {
@@ -146,7 +168,12 @@ std::string presetKey(const PresetEntry &entry)
     {
         return "plugin:" + std::string(core::kInitLoadKey);
     }
-    return "file:" + media::toGenericUtf8(entry.file).value_or(std::string());
+    return presetFileKey(entry.file);
+}
+
+std::string presetFileKey(const fs::path &file)
+{
+    return "file:" + media::toGenericUtf8(file.lexically_normal()).value_or(std::string());
 }
 
 std::string safeFileName(std::string_view name)
@@ -166,6 +193,19 @@ std::string safeFileName(std::string_view name)
     {
         out.front() = '_';
     }
+    // Windows' device names, by the part before the first dot, in any case (M1): CON.ggpreset
+    // would open the console there.
+    {
+        const std::string stem = lowered(std::string_view(out).substr(0, out.find('.')));
+        const bool device =
+            stem == "con" || stem == "prn" || stem == "aux" || stem == "nul" ||
+            (stem.size() == 4 && (stem.starts_with("com") || stem.starts_with("lpt")) &&
+             stem[3] >= '1' && stem[3] <= '9');
+        if (device)
+        {
+            out.insert(out.begin(), '_');
+        }
+    }
     if (out.size() > kMaxBytes)
     {
         // Back up over continuation bytes (10xxxxxx) so the cut falls before a character.
@@ -175,6 +215,11 @@ std::string safeFileName(std::string_view name)
             --cut;
         }
         out.resize(cut);
+    }
+    // Windows drops a trailing dot or space from a name: keep them as `_`.
+    for (auto it = out.rbegin(); it != out.rend() && (*it == '.' || *it == ' '); ++it)
+    {
+        *it = '_';
     }
     return out;
 }
@@ -204,17 +249,37 @@ void PresetCatalog::rescan()
         {
             factoryRoot = location.root;
         }
+        const PresetKind kind = location.factory         ? PresetKind::Factory
+                                : location.contentFolder ? PresetKind::Content
+                                                         : PresetKind::User;
         for (auto &file : presetFiles(location.folder, unlisted))
         {
             PresetEntry entry;
             if (readInfo(file, entry.info) && entry.info.product == mode_)
             {
-                entry.kind = location.factory ? PresetKind::Factory : PresetKind::User;
+                entry.kind = kind;
                 entry.file = std::move(file);
                 entries_.push_back(std::move(entry));
             }
         }
     }
+
+    // What changedOnDisk watches (M4): the settings and favorites files, every content root's
+    // Presets folder (one installed later included) and the user folder, by modification time.
+    watched_.clear();
+    const auto watch = [this](fs::path path) {
+        if (!path.empty())
+        {
+            watched_.emplace_back(path, modified(path));
+        }
+    };
+    watch(settingsFile_);
+    watch(media::favoritesFile(settingsFile_));
+    for (const auto &root : media::contentRoots(settings))
+    {
+        watch(media::factoryPresetsFolder(root));
+    }
+    watch(media::userPresetsFolder(settingsFile_));
 
     const auto keys = loadFavorites(media::favoritesFile(settingsFile_));
     const std::unordered_set<std::string> favorites(keys.begin(), keys.end());
@@ -229,15 +294,29 @@ void PresetCatalog::rescan()
         status_ = "Factory content " + (version.empty() ? std::string() : version + " ") + "in " +
                   utf8(*factoryRoot);
     }
+    else if (!settings.contentFolder.empty())
+    {
+        status_ = "No factory content found";
+    }
     else
     {
         status_ = "No factory content found: install it, or choose a Content folder";
+    }
+    if (!settings.contentFolder.empty())
+    {
+        status_ += "; Content folder: " + settings.contentFolder; // UTF-8 already
     }
     if (unlisted > 0)
     {
         status_ += " (" + std::to_string(unlisted) +
                    (unlisted == 1 ? " more file not listed)" : " more files not listed)");
     }
+}
+
+bool PresetCatalog::changedOnDisk() const
+{
+    return std::any_of(watched_.begin(), watched_.end(),
+                       [](const auto &w) { return modified(w.first) != w.second; });
 }
 
 std::vector<std::size_t> PresetCatalog::filtered(std::string_view search,
@@ -302,47 +381,56 @@ bool PresetCatalog::setFavorite(std::size_t index, bool on)
     return true;
 }
 
-std::string PresetCatalog::save(const core::PresetInfo &info, const std::string &stateBytes,
-                                bool overwrite)
+SaveResult PresetCatalog::save(const core::PresetInfo &info, const std::string &stateBytes,
+                               bool overwrite)
 {
+    const auto fail = [](std::string error) {
+        return SaveResult{SaveResult::Status::Failed, std::move(error), {}, {}};
+    };
     const std::string base = safeFileName(info.name);
     if (base.empty())
     {
-        return "the name is empty";
+        return fail("the name is empty");
     }
     const std::string failed = "can't save " + info.name + ": ";
     const fs::path folder = media::userPresetsFolder(settingsFile_);
     if (folder.empty())
     {
-        return failed + "there is no user presets folder";
+        return fail(failed + "there is no user presets folder");
     }
     const auto name = media::fromUtf8(base + std::string(core::kPresetExtension));
     if (!name)
     {
-        return failed + "the name isn't valid UTF-8";
+        return fail(failed + "the name isn't valid UTF-8");
     }
     const fs::path file = folder / *name;
     std::error_code error;
     fs::create_directories(folder, error);
     if (error)
     {
-        return failed + "can't create the folder " + utf8(folder) + ": " + error.message();
+        return fail(failed + "can't create the folder " + utf8(folder) + ": " + error.message());
     }
     const bool exists = fs::exists(file, error);
     if (error)
     {
-        return failed + "can't check for " + utf8(file) + ": " + error.message();
+        return fail(failed + "can't check for " + utf8(file) + ": " + error.message());
     }
     if (!overwrite && exists)
     {
-        return "a preset named " + info.name + " exists";
+        // Named by what the file holds (M2): "a/b" and "a:b" make one file.
+        core::PresetInfo there;
+        std::string existing = readInfo(file, there) ? there.name : media::displayName(file);
+        return SaveResult{SaveResult::Status::Exists,
+                          "a preset named " + existing + " exists",
+                          std::move(existing),
+                          {}};
     }
     if (const auto written = writeReplacing(file, stateBytes))
     {
-        return failed + written.message();
+        return fail(failed + written.message());
     }
     rescan();
-    return {};
+    return SaveResult{SaveResult::Status::Saved, {}, {}, file};
 }
 
 bool PresetCatalog::remove(std::size_t index)

@@ -1327,6 +1327,11 @@ void GigaGrainsPlugin::applyState(gg::core::SessionState &&state, LoadKind kind)
     }
     routes_ = state.routes;
     presetName_ = std::move(state.name); // a move: nothing left to throw
+    // A session names its preset but no file: it is matched by name (I4). A preset's caller
+    // (loadPresetFile, loadInit) sets its key after this returns.
+    presetKey_.clear();
+    presetKeyByName_ = kind == LoadKind::Session;
+    ++presetLoads_;
     // Inactive, activate() applies the values, the seed and the routes. Active, the audio thread
     // applies them at the start of its next process() or params.flush (carry-over row 115): the
     // seed and the routes through loadedState_ in both products, the values with them in the FX
@@ -1614,11 +1619,34 @@ bool GigaGrainsPlugin::loadPresetFile(const std::filesystem::path &file, std::st
         }
         return false;
     }
+    std::string key = presetFileKey(file); // before the load: nothing throws after it
     applyState(std::move(state), LoadKind::Preset);
+    presetKey_ = std::move(key);
     return true;
 }
 
-void GigaGrainsPlugin::loadInit() { applyState(gg::core::initState(mode()), LoadKind::Preset); }
+void GigaGrainsPlugin::loadInit()
+{
+    std::string key = "plugin:" + std::string(gg::core::kInitLoadKey);
+    applyState(gg::core::initState(mode()), LoadKind::Preset);
+    presetKey_ = std::move(key);
+}
+
+std::optional<std::size_t> GigaGrainsPlugin::loadedCatalogIndex()
+{
+    const auto &entries = presetCatalog().entries();
+    for (std::size_t i = 0; i < entries.size(); ++i)
+    {
+        const PresetEntry &entry = entries[i];
+        if (presetKeyByName_ ? entry.info.name == presetName_ &&
+                                   (entry.kind == PresetKind::Init) == (presetName_ == "Init")
+                             : !presetKey_.empty() && presetKey(entry) == presetKey_)
+        {
+            return i;
+        }
+    }
+    return std::nullopt;
+}
 
 PresetCatalog &GigaGrainsPlugin::presetCatalog()
 {
@@ -1673,9 +1701,9 @@ std::string GigaGrainsPlugin::loadCatalogPreset(std::size_t index) noexcept
     }
 }
 
-std::string GigaGrainsPlugin::savePreset(const std::string &name,
-                                         const std::vector<std::string> &tags,
-                                         const std::string &description, bool overwrite) noexcept
+SaveResult GigaGrainsPlugin::savePreset(const std::string &name,
+                                        const std::vector<std::string> &tags,
+                                        const std::string &description, bool overwrite) noexcept
 {
     try
     {
@@ -1700,22 +1728,29 @@ std::string GigaGrainsPlugin::savePreset(const std::string &name,
             info, {values, 0, loader_ != nullptr ? loader_->entry() : std::nullopt,
                    loader_ != nullptr ? loader_->newerMedia() : std::nullopt, routes_, info.name,
                    std::nullopt});
-        std::string error = presetCatalog().save(info, bytes, overwrite);
-        if (!error.empty())
+        // The name as the file holds it (the patch's 255-byte cut; I4), read back before the
+        // save so nothing after it can throw.
+        gg::core::PresetInfo kept;
+        std::string savedName = gg::core::presetInfoOf(bytes, kept) ? kept.name : info.name;
+        SaveResult result = presetCatalog().save(info, bytes, overwrite);
+        if (!result.saved())
         {
-            return error;
+            return result;
         }
-        presetName_ = info.name;
+        presetName_ = std::move(savedName);
+        presetKey_ = presetFileKey(result.file);
+        presetKeyByName_ = false;
+        ++presetLoads_;
         presetValues_ = values; // the saved sound is the loaded preset: not edited
         if (_host.canUseState())
         {
             _host.stateMarkDirty();
         }
-        return {};
+        return result;
     }
     catch (...)
     {
-        return "out of memory";
+        return SaveResult{SaveResult::Status::Failed, "out of memory", {}, {}};
     }
 }
 

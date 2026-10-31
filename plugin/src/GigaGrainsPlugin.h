@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <utility>
@@ -326,10 +327,19 @@ class GigaGrainsPlugin : public plugHelper_t
     /// Save as…: the current sound (the base values, the routes, and the instrument's sample
     /// entry as stateSave writes them) as the user preset `name`, with `tags` (only the
     /// vocabulary's words are kept) and `description`, through PresetCatalog::save. On success it
-    /// is the loaded preset (presetName() is `name`, and presetEdited() false) and the host's
-    /// state is marked dirty. "" or the error for the user.
-    std::string savePreset(const std::string &name, const std::vector<std::string> &tags,
-                           const std::string &description, bool overwrite) noexcept;
+    /// is the loaded preset (presetName() is `name` as the file holds it, cut to 255 bytes, its
+    /// file the loaded entry, and presetEdited() false) and the host's state is marked dirty.
+    /// Otherwise PresetCatalog::save's Exists or Failed ("out of memory" too), changing nothing.
+    SaveResult savePreset(const std::string &name, const std::vector<std::string> &tags,
+                          const std::string &description, bool overwrite) noexcept;
+    /// The catalog entry the loaded preset is (fix wave I4), in presetCatalog().entries(): the
+    /// one whose key (presetKey) is the loaded preset's, after a load from the browser, a host's
+    /// preset-load, INIT or a save; after a session load, whose state names a preset but no file,
+    /// the first entry of its name (INIT's name for INIT alone). None when no entry matches.
+    std::optional<std::size_t> loadedCatalogIndex();
+    /// How many loads and saves have changed the loaded preset: the browser lists again when it
+    /// moves (a host's load of another preset of the same name included).
+    uint64_t presetLoads() const noexcept { return presetLoads_; }
     /// Saves the per-machine settings' content folder (UTF-8; empty clears it). "" on success,
     /// else why not: a path with a NUL byte (the settings writer would cut it there), or a
     /// settings file that can't be written.
@@ -560,6 +570,11 @@ class GigaGrainsPlugin : public plugHelper_t
     // The loaded preset's name and base values (applyState; "Init" and the defaults in a new
     // instance): presetName(), presetEdited(). Main thread.
     std::string presetName_{"Init"};
+    // The loaded preset's catalog key (presetKey: "plugin:init", "file:<path>"; I4), or empty
+    // after a session load, which presetKeyByName_ then says to match by presetName_. Main thread.
+    std::string presetKey_{"plugin:init"};
+    bool presetKeyByName_{false};
+    uint64_t presetLoads_{0}; // presetLoads()
     // The browser's catalog (presetCatalog()), made on first use, and the settings file it reads.
     std::filesystem::path catalogSettingsFile_;
     std::unique_ptr<PresetCatalog> catalog_;

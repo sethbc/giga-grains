@@ -69,6 +69,8 @@ class Editor final : public juce::Component,
             browser_.setVisible(false);
             mutatePanel_.setVisible(true);
         };
+        // The browser closed: the keyboard focus goes back to the strip (T5).
+        browser_.onClosed = [this] { preset_.focusName(); };
         preset_.onPrev = [this] { browser_.step(-1); };
         preset_.onNext = [this] { browser_.step(1); };
         setUpLabel(frameMs_, "header.frameMs", {}, juce::FontOptions(12.0f), theme::kDimText);

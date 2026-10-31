@@ -86,14 +86,16 @@ void EditorPlugin::fillPresetContext(gg::ui::EditorContext &context)
     {
         context.tagVocabulary.emplace_back(tag);
     }
-    context.presetRows = [this] {
+    context.presetRows = [this](bool rescan) {
         std::vector<gg::ui::PresetRow> rows;
         try
         {
             PresetCatalog &catalog = presetCatalog();
-            catalog.rescan();
-            const std::string loaded = presetName();
-            bool marked = false;
+            if (rescan)
+            {
+                catalog.rescan();
+            }
+            const auto loaded = loadedCatalogIndex(); // by identity, not by name (I4)
             const auto &entries = catalog.entries();
             rows.reserve(entries.size());
             for (std::size_t i = 0; i < entries.size(); ++i)
@@ -106,13 +108,9 @@ void EditorPlugin::fillPresetContext(gg::ui::EditorContext &context)
                 row.tags = entry.info.tags;
                 row.isInit = entry.kind == PresetKind::Init;
                 row.factory = entry.kind == PresetKind::Factory;
+                row.content = entry.kind == PresetKind::Content;
                 row.favorite = entry.favorite;
-                // The first entry of the loaded name; INIT's name belongs to INIT alone.
-                if (!marked && entry.info.name == loaded &&
-                    (entry.kind == PresetKind::Init) == (loaded == "Init"))
-                {
-                    row.loaded = marked = true;
-                }
+                row.loaded = loaded == i;
                 rows.push_back(std::move(row));
             }
         }
@@ -134,6 +132,17 @@ void EditorPlugin::fillPresetContext(gg::ui::EditorContext &context)
         }
     };
     context.presetEdited = [this] { return presetEdited(); };
+    context.presetLoads = [this] { return presetLoads(); };
+    context.presetFoldersChanged = [this] {
+        try
+        {
+            return presetCatalog().changedOnDisk();
+        }
+        catch (...)
+        {
+            return false;
+        }
+    };
     context.setFavorite = [this](std::size_t index, bool on) {
         try
         {
@@ -145,7 +154,22 @@ void EditorPlugin::fillPresetContext(gg::ui::EditorContext &context)
     };
     context.savePreset = [this](const std::string &name, const std::vector<std::string> &tags,
                                 const std::string &description, bool overwrite) {
-        return savePreset(name, tags, description, overwrite);
+        const SaveResult saved = savePreset(name, tags, description, overwrite);
+        using Status = gg::ui::PresetSaveResult::Status;
+        gg::ui::PresetSaveResult result;
+        try
+        {
+            result.status = saved.status == SaveResult::Status::Saved    ? Status::Saved
+                            : saved.status == SaveResult::Status::Exists ? Status::Exists
+                                                                         : Status::Failed;
+            result.error = saved.error;
+            result.existingName = saved.existingName;
+        }
+        catch (...)
+        {
+            result.status = saved.saved() ? Status::Saved : Status::Failed;
+        }
+        return result;
     };
     context.deletePreset = [this](std::size_t index) {
         try

@@ -11,11 +11,14 @@
 #include <optional>
 #include <string>
 #include <system_error>
+#include <unordered_set>
 #include <utility>
 
 #include <clap/clap.h>
 
+#include "Favorites.h"
 #include "GigaGrainsPlugin.h"
+#include "PresetCatalog.h"
 #include "SettingsPath.h"
 #include "gg/core/Preset.h"
 #include "gg/core/PresetInfo.h"
@@ -32,18 +35,19 @@ std::vector<PresetLocation> presetLocations(const core::MachineSettings &setting
                                             const fs::path &settingsFile)
 {
     std::vector<PresetLocation> locations;
-    for (auto &root : media::contentRoots(settings))
+    for (auto &root : media::contentRootList(settings))
     {
-        auto folder = media::factoryPresetsFolder(root);
+        auto folder = media::factoryPresetsFolder(root.path);
         std::error_code error;
         if (fs::is_directory(folder, error))
         {
-            locations.push_back({std::move(folder), true, std::move(root)});
+            const bool factory = root.factory();
+            locations.push_back({std::move(folder), factory, !factory, std::move(root.path)});
         }
     }
     if (auto user = media::userPresetsFolder(settingsFile); !user.empty())
     {
-        locations.push_back({std::move(user), false, {}});
+        locations.push_back({std::move(user), false, false, {}});
     }
     return locations;
 }
@@ -200,7 +204,7 @@ class Provider
         {
             if (kind == CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN)
             {
-                return location == nullptr && reportInit(r);
+                return location == nullptr && self(p).reportInit(r);
             }
             if (kind == CLAP_PRESET_DISCOVERY_LOCATION_FILE && location != nullptr)
             {
@@ -224,6 +228,9 @@ class Provider
     {
         const auto file = settingsFile();
         locations_ = presetLocations(media::loadSettings(file), file);
+        // The favorites, so hosts that show them agree with the browser (spec §6.4).
+        const auto keys = loadFavorites(media::favoritesFile(file));
+        favorites_ = std::unordered_set<std::string>(keys.begin(), keys.end());
 
         const clap_preset_discovery_filetype filetype{
             "Giga Grains preset", "A Giga Grains or Giga Grains FX preset", extension_.c_str()};
@@ -246,10 +253,13 @@ class Provider
                 continue; // a folder the indexer couldn't be given (Windows: not valid UTF-16)
             }
             paths_.push_back(*path);
+            // The user's content folder is the user's own pack (M6): user content, not factory.
             const clap_preset_discovery_location declared{
                 location.factory ? uint32_t{CLAP_PRESET_DISCOVERY_IS_FACTORY_CONTENT}
                                  : uint32_t{CLAP_PRESET_DISCOVERY_IS_USER_CONTENT},
-                location.factory ? "Factory presets" : "User presets",
+                location.factory         ? "Factory presets"
+                : location.contentFolder ? "Content folder presets"
+                                         : "User presets",
                 CLAP_PRESET_DISCOVERY_LOCATION_FILE, paths_.back().c_str()};
             indexer_->declare_location(indexer_, &declared);
         }
@@ -283,7 +293,7 @@ class Provider
     /// product's list holds one INIT. (Not one preset per product: two begin_preset calls in one
     /// get_metadata deadlock clap-validator 0.4.1's receiver, and the two would share one
     /// discovery identity, kind, location and load key.)
-    static bool reportInit(const clap_preset_discovery_metadata_receiver *r)
+    bool reportInit(const clap_preset_discovery_metadata_receiver *r) const
     {
         const std::string loadKey(core::kInitLoadKey);
         if (!r->begin_preset(r, "Init", loadKey.c_str()))
@@ -295,8 +305,15 @@ class Provider
             const clap_universal_plugin_id id{kPluginAbi, descriptorFor(product)->id};
             r->add_plugin_id(r, &id);
         }
-        r->set_flags(r, CLAP_PRESET_DISCOVERY_IS_FACTORY_CONTENT);
+        r->set_flags(r, CLAP_PRESET_DISCOVERY_IS_FACTORY_CONTENT |
+                            favoriteFlag("plugin:" + std::string(core::kInitLoadKey)));
         return true;
+    }
+
+    /// IS_FAVORITE when `key` is in the favorites file init read, else nothing.
+    uint32_t favoriteFlag(const std::string &key) const
+    {
+        return favorites_.contains(key) ? uint32_t{CLAP_PRESET_DISCOVERY_IS_FAVORITE} : 0u;
     }
 
     bool reportFile(const char *location, const clap_preset_discovery_metadata_receiver *r) const
@@ -339,8 +356,9 @@ class Provider
         {
             r->set_soundpack_id(r, kSoundpackId);
         }
-        r->set_flags(r, factory ? CLAP_PRESET_DISCOVERY_IS_FACTORY_CONTENT
-                                : CLAP_PRESET_DISCOVERY_IS_USER_CONTENT);
+        const uint32_t content = factory ? uint32_t{CLAP_PRESET_DISCOVERY_IS_FACTORY_CONTENT}
+                                         : uint32_t{CLAP_PRESET_DISCOVERY_IS_USER_CONTENT};
+        r->set_flags(r, content | favoriteFlag(presetFileKey(*path)));
         if (!info.author.empty())
         {
             r->add_creator(r, info.author.c_str());
@@ -359,6 +377,7 @@ class Provider
     /// The filetype's extension: kPresetExtension without its dot.
     const std::string extension_{core::kPresetExtension.substr(1)};
     std::vector<PresetLocation> locations_;
+    std::unordered_set<std::string> favorites_; // the favorites file's keys, as init read them
     std::vector<std::string> paths_;
     std::string contentVersion_;
 };

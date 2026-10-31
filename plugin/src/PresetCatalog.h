@@ -7,9 +7,11 @@
 
 #include <cstddef>
 #include <filesystem>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "gg/core/ParamIds.h"
@@ -25,10 +27,15 @@ enum class PresetKind
 {
     /// The plugin's defaults (gg::core::initState), which have no file.
     Init,
-    /// A preset in a content root's Presets folder (gg::media::factoryPresetsFolder).
+    /// A preset of factory content: the Presets folder of GG_CONTENT_DIR or an install
+    /// (gg::media::factoryPresetsFolder).
     Factory,
-    /// A preset in the user presets folder (gg::media::userPresetsFolder).
-    User
+    /// A preset in the user presets folder (gg::media::userPresetsFolder): the only kind Delete
+    /// removes.
+    User,
+    /// A preset in the Presets folder of the user's content folder ("Content folder…"): a pack of
+    /// the user's own, neither factory content nor deletable here (fix wave M6).
+    Content
 };
 
 struct PresetEntry
@@ -42,23 +49,49 @@ struct PresetEntry
     bool favorite{false};
 };
 
-/// The entry's favorites key (Favorites.h): "plugin:init" for INIT, else "file:" and the file's
-/// path as UTF-8 with `/` separators (empty after "file:" if the path can't be converted).
+/// The entry's favorites key (Favorites.h): "plugin:init" for INIT, else presetFileKey(file).
 std::string presetKey(const PresetEntry &entry);
+/// A preset file's favorites key: "file:" and its path as UTF-8 with `/` separators (empty after
+/// "file:" if the path can't be converted). The discovery provider reports IS_FAVORITE by it.
+std::string presetFileKey(const std::filesystem::path &file);
+
+/// What PresetCatalog::save did.
+struct SaveResult
+{
+    enum class Status
+    {
+        Saved,
+        Exists, ///< a file of that name is there, and overwrite was false
+        Failed,
+    };
+    Status status{Status::Failed};
+    /// For the user: Exists's "a preset named <existingName> exists", or why the save failed.
+    std::string error;
+    /// Exists: the name the file there holds (presetInfoOf), or its file name when it can't be
+    /// read, so a prompt names what an overwrite would replace (two names can make one file).
+    std::string existingName;
+    /// Saved: the file written.
+    std::filesystem::path file;
+    bool saved() const noexcept { return status == Status::Saved; }
+};
 
 /// `name` made a file name that stays in its folder on every platform: each of `/ \ : * ? " < >
 /// |` and each control character (below U+0020, and U+007F) becomes `_`, as does a leading `.`
-/// (no hidden file, no `.` or `..`); the result is cut to at most 100 bytes on a UTF-8
-/// boundary. Empty only when `name` is.
+/// (no hidden file, no `.` or `..`); a name whose part before its first dot is one of Windows'
+/// device names (CON, PRN, AUX, NUL, COM1 to COM9, LPT1 to LPT9, in any case) gets a `_` in
+/// front; the result is cut to at most 100 bytes on a UTF-8 boundary, and then each trailing `.`
+/// or space (which Windows drops) becomes `_`. Empty only when `name` is.
 std::string safeFileName(std::string_view name);
 
 /// The presets one product's browser lists (D9, option 1: its own product's alone), in order:
-/// INIT; then each factory location's presets, each folder's by file name; then the user
-/// folder's, likewise. A folder's `*.ggpreset` files (the extension in that case) are sorted by
-/// their UTF-8 names in byte order and at most kMaxFilesPerFolder of them are listed, before any
-/// is read (the rest are counted into contentStatus); a listed file is kept when presetInfoOf
-/// reads it (within kMaxStateBytes) and its product is the catalog's. A folder that can't be
-/// listed, and a file that can't be read, are left out.
+/// INIT; then each content location's presets (presetLocations' order), then the user folder's.
+/// A folder is walked with its subfolders, as the hosts' crawl walks a declared location
+/// (clap-wrapper's preset_discovery.cpp); its files whose extension is `.ggpreset` in any case are
+/// sorted by their paths relative to the folder, UTF-8 with `/` separators, in byte order, and at
+/// most kMaxFilesPerFolder of them are listed, before any is read (the rest are counted into
+/// contentStatus); a listed file is kept when presetInfoOf reads it (within kMaxStateBytes) and
+/// its product is the catalog's. A folder that can't be listed, a subfolder that can't be
+/// entered, and a file that can't be read, are left out.
 class PresetCatalog
 {
   public:
@@ -71,6 +104,12 @@ class PresetCatalog
 
     /// Reads the settings, the folders and the favorites again.
     void rescan();
+    /// Whether anything the last rescan read may have changed on disk (M4, the browser's 30 Hz
+    /// poll): the modification time, or the existence, of the settings file, the favorites file,
+    /// each content root's Presets folder or the user presets folder. Only stats them, reading no
+    /// file. A change inside a subfolder alone doesn't move its folder's time: it shows at the next
+    /// rescan (the browser's opening, a save, a delete).
+    bool changedOnDisk() const;
 
     const std::vector<PresetEntry> &entries() const { return entries_; }
 
@@ -88,10 +127,10 @@ class PresetCatalog
 
     /// Save as…: writes `stateBytes` (the preset file, gg::core::encodePreset of `info`) to the
     /// user presets folder as `safeFileName(info.name)` + ".ggpreset", through a temporary file
-    /// renamed over it, the folder created first, then rescans. Returns "" on success, else the
-    /// error for the user: "the name is empty", "a preset named <info.name> exists" when the file
-    /// exists and `overwrite` is false, or why the write failed.
-    std::string save(const core::PresetInfo &info, const std::string &stateBytes, bool overwrite);
+    /// renamed over it, the folder created first, then rescans. Exists when the file is there and
+    /// `overwrite` is false (see SaveResult); Failed with the error for the user ("the name is
+    /// empty", or why the write failed).
+    SaveResult save(const core::PresetInfo &info, const std::string &stateBytes, bool overwrite);
 
     /// Delete: removes a User entry's file (and its favorite), then rescans. False, and nothing
     /// changed, for INIT, a factory preset, an index out of range, or a file that can't be removed.
@@ -99,9 +138,11 @@ class PresetCatalog
 
     /// The browser's bottom line: "Factory content <tag> in <root>" for the first factory
     /// location (the tag the second word of the first line of the root's content-version.txt),
-    /// "Factory content in <root>" when that file has none, or "No factory content found:
-    /// install it, or choose a Content folder"; followed by " (N more files not listed)" (" (1
-    /// more file not listed)") when folders held more than kMaxFilesPerFolder.
+    /// "Factory content in <root>" when that file has none, or, without one, "No factory content
+    /// found: install it, or choose a Content folder" ("No factory content found" when a content
+    /// folder is set); then "; Content folder: <folder>" when the settings name one (M6); then
+    /// " (N more files not listed)" (" (1 more file not listed)") when folders held more than
+    /// kMaxFilesPerFolder.
     std::string contentStatus() const { return status_; }
 
     /// The tags the listed presets carry, in the vocabulary's order (presetTagVocabulary).
@@ -112,6 +153,8 @@ class PresetCatalog
     std::filesystem::path settingsFile_;
     std::vector<PresetEntry> entries_;
     std::string status_;
+    std::vector<std::pair<std::filesystem::path, std::optional<std::filesystem::file_time_type>>>
+        watched_; // changedOnDisk's paths and their times at the last rescan
 };
 } // namespace gg::plugin
 

@@ -85,29 +85,15 @@ class ScopedEnv
 
 /// A scratch machine: `<root>/content` is GG_CONTENT_DIR, `<root>/settings/settings.xml` the
 /// settings file (GG_SETTINGS_FILE; the user presets folder is `<root>/settings/Presets`), and
-/// the install roots point under `<root>/home`, which holds nothing.
+/// the install roots are `<root>/home/system` (GG_SYSTEM_CONTENT_DIR), which holds nothing.
 class Machine
 {
   public:
     explicit Machine(const char *name)
         : root_(fresh(name)), contentEnv_("GG_CONTENT_DIR", gg::test::utf8(content()).c_str()),
           settingsEnv_("GG_SETTINGS_FILE", gg::test::utf8(settingsFile()).c_str()),
-#if defined(_WIN32)
-          localEnv_("LOCALAPPDATA", gg::test::utf8(root_ / "home" / "local").c_str()),
-          systemEnv_("ProgramData", gg::test::utf8(root_ / "home" / "system").c_str())
-#else
-          homeEnv_("HOME", gg::test::utf8(root_ / "home").c_str()),
-          dataEnv_("XDG_DATA_HOME", gg::test::utf8(root_ / "home" / "data").c_str()),
-          systemEnv_("XDG_DATA_DIRS", gg::test::utf8(root_ / "home" / "system").c_str())
-#endif
+          systemEnv_("GG_SYSTEM_CONTENT_DIR", gg::test::utf8(root_ / "home" / "system").c_str())
     {
-#if defined(__APPLE__)
-        std::error_code error;
-        if (fs::exists("/Library/Application Support/sethbc/Giga Grains/Presets", error))
-        {
-            SKIP("factory content is installed in /Library/Application Support/sethbc/Giga Grains");
-        }
-#endif
     }
 
     fs::path root() const { return root_; }
@@ -128,14 +114,7 @@ class Machine
     fs::path root_;
     ScopedEnv contentEnv_;
     ScopedEnv settingsEnv_;
-#if defined(_WIN32)
-    ScopedEnv localEnv_;
-    ScopedEnv systemEnv_;
-#else
-    ScopedEnv homeEnv_;
-    ScopedEnv dataEnv_;
-    ScopedEnv systemEnv_;
-#endif
+    ScopedEnv systemEnv_; // the install roots (the tests' seam, ContentPaths.h)
 };
 
 /// Writes the preset `name` for FX, with `tags` and the Size macro's value `size`.
@@ -450,13 +429,13 @@ TEST_CASE("the star keeps a favorite and the Favorites filter shows it", "[plugi
     click(f.button("preset.favorites"));
     REQUIRE(f.rows() == 1);
     CHECK(f.rowName(0) == "My Pad");
-    // Saved: a new catalog (a new editor) sees it.
+    // Saved: a new catalog, made from the settings file as a new editor's would be, sees it.
     click(f.button("preset.favorites"));
     REQUIRE(f.rows() == 3);
-    const auto rows = f.impl->editorContext().presetRows();
-    REQUIRE(rows.size() == 3);
-    CHECK(rows[2].favorite);
-    CHECK_FALSE(rows[1].favorite);
+    const gg::plugin::PresetCatalog fresh(Mode::Fx, machine.settingsFile());
+    REQUIRE(fresh.entries().size() == 3);
+    CHECK(fresh.entries()[2].favorite);
+    CHECK_FALSE(fresh.entries()[1].favorite);
 }
 
 TEST_CASE("Save as writes a user preset and lists it, asking before it replaces", "[plugin][ui]")
@@ -837,4 +816,164 @@ TEST_CASE("EditorContext::sendValues is filled and its values arrive after a dra
     f.plugin.flush(none.list());
     CHECK(f.plugin.value(gg::core::paramId(ParamSlot::Size)) == size);
     CHECK(f.plugin.value(gg::core::paramId(ParamSlot::Pitch)) == pitch);
+}
+
+// ---- The fix wave's browser cases (I4, M2, M3, M4, T5) ----
+
+TEST_CASE("a user preset named like a factory one is the loaded row after its save", "[plugin][ui]")
+{
+    // I4: the loaded row is the loaded entry, not the first of its name.
+    const Machine machine("same-name");
+    putPresets(machine);
+    Fixture f;
+    f.openBrowser();
+    auto &panel = *find(*f.editor, "preset.savepanel");
+    click(f.button("preset.save"));
+    type(need<juce::TextEditor>(panel, "preset.save.name"), "FX Test");
+    click(f.button("preset.save.ok"));
+    REQUIRE_FALSE(panel.isVisible());
+    REQUIRE(f.rows() == 4); // Init, FX Test (factory), FX Test (user), My Pad
+    CHECK(f.list().getSelectedRow() == 2);
+    CHECK(f.button("preset.delete").isEnabled());
+    const auto index = f.impl->loadedCatalogIndex();
+    REQUIRE(index.has_value());
+    CHECK(f.impl->presetCatalog().entries()[*index].kind == gg::plugin::PresetKind::User);
+    // The arrows step from it: next is My Pad, not the user's FX Test again.
+    click(f.button("preset.next"));
+    CHECK(f.impl->presetName() == "My Pad");
+    click(f.button("preset.prev"));
+    f.tick();
+    CHECK(f.list().getSelectedRow() == 2);
+    // A host's load of the factory file moves the mark to it, though the name is the same.
+    const auto location = gg::test::utf8(file(machine.factory(), "FX Test"));
+    REQUIRE(f.plugin.loadPreset(CLAP_PRESET_DISCOVERY_LOCATION_FILE, location.c_str(), nullptr));
+    f.tick();
+    CHECK(f.list().getSelectedRow() == 1);
+    CHECK_FALSE(f.button("preset.delete").isEnabled());
+}
+
+TEST_CASE("a session's preset is found by its name", "[plugin][ui]")
+{
+    const Machine machine("session-name");
+    putPresets(machine);
+    Fixture f;
+    const auto location = gg::test::utf8(file(machine.user(), "My Pad"));
+    REQUIRE(f.plugin.loadPreset(CLAP_PRESET_DISCOVERY_LOCATION_FILE, location.c_str(), nullptr));
+    const std::string state = f.plugin.save();
+    Fixture g;
+    REQUIRE(g.plugin.load(state));
+    g.openBrowser();
+    CHECK(g.list().getSelectedRow() == 2);
+}
+
+TEST_CASE("the Replace prompt names the preset the file holds", "[plugin][ui]")
+{
+    // M2: "a/b" and "a:b" make one file, a_b.ggpreset.
+    const Machine machine("replace-name");
+    Fixture f;
+    f.openBrowser();
+    auto &panel = *find(*f.editor, "preset.savepanel");
+    click(f.button("preset.save"));
+    type(need<juce::TextEditor>(panel, "preset.save.name"), "a/b");
+    click(f.button("preset.save.ok"));
+    REQUIRE_FALSE(panel.isVisible());
+    click(f.button("preset.save"));
+    type(need<juce::TextEditor>(panel, "preset.save.name"), "a:b");
+    click(f.button("preset.save.ok"));
+    CHECK(panel.isVisible());
+    CHECK(need<juce::Label>(panel, "preset.save.message").getText() ==
+          "Replace the preset named a/b?");
+}
+
+TEST_CASE("the arrows step through the list without rescanning, the poll rescans", "[plugin][ui]")
+{
+    // M3 and M4.
+    const Machine machine("poll");
+    putPresets(machine);
+    Fixture f;
+    f.openBrowser();
+    REQUIRE(f.rows() == 3);
+    click(f.button("preset.name")); // closed
+    putPreset(machine.user(), "Zed", {}, 0.5f);
+    for (int i = 0; i < 4; ++i)
+    {
+        click(f.button("preset.next"));
+        CHECK(f.impl->presetName() != "Zed"); // the list as it stood
+    }
+    // Open, it rescans; then the 30 Hz poll sees a file added while it is open.
+    f.openBrowser();
+    REQUIRE(f.rows() == 4);
+    putPreset(machine.user(), "Zz Late", {}, 0.5f);
+    f.tick();
+    CHECK(f.rows() == 5);
+    // The rescan took the change in: the poll sees nothing more until the folders change again.
+    CHECK_FALSE(f.impl->editorContext().presetFoldersChanged());
+}
+
+TEST_CASE("the strip's Left and Right keys load the neighbours", "[plugin][ui]")
+{
+    const Machine machine("strip-keys");
+    putPresets(machine);
+    Fixture f;
+    auto &strip = *find(*f.editor, "header.preset");
+    CHECK(strip.getWantsKeyboardFocus());
+    CHECK(strip.keyPressed(juce::KeyPress(juce::KeyPress::rightKey)));
+    CHECK(f.impl->presetName() == "FX Test");
+    CHECK(strip.keyPressed(juce::KeyPress(juce::KeyPress::leftKey)));
+    CHECK(f.impl->presetName() == "Init");
+    CHECK_FALSE(strip.keyPressed(juce::KeyPress('a')));
+}
+
+TEST_CASE("the browser's INIT marks the state dirty and tells the host", "[plugin][ui]")
+{
+    const Machine machine("init-dirty");
+    putPresets(machine);
+    BrowserHost host;
+    Fixture f("org.sethbc.giga-grains-fx", host.clap());
+    f.openBrowser();
+    f.list().selectRow(1);
+    const int before = host.dirtyMarks();
+    host.clear();
+    f.list().selectRow(0);
+    CHECK(f.impl->presetName() == "Init");
+    CHECK(host.dirtyMarks() == before + 1);
+    REQUIRE(host.calls().size() == 1);
+    CHECK(host.calls()[0].loadKey == "init");
+}
+
+TEST_CASE("a failed browser load tells the host nothing and shows why", "[plugin][ui]")
+{
+    const Machine machine("load-fails");
+    putPresets(machine);
+    BrowserHost host;
+    Fixture f("org.sethbc.giga-grains-fx", host.clap());
+    f.openBrowser();
+    REQUIRE(f.rows() == 3);
+    fs::remove(file(machine.user(), "My Pad")); // gone since the list was made
+    host.clear();
+    f.list().selectRow(2);
+    CHECK(host.calls().empty());
+    CHECK(f.impl->presetName() == "Init");
+    CHECK(need<juce::Label>(*f.editor, "preset.status").getText().startsWith("can't load My Pad"));
+    CHECK(f.list().getSelectedRow() == 0); // back on the loaded row
+}
+
+TEST_CASE("Content folder lists the chosen pack's presets as content", "[plugin][ui]")
+{
+    const Machine machine("folder-list");
+    putPresets(machine);
+    Fixture f;
+    f.openBrowser();
+    REQUIRE(f.rows() == 3);
+    const fs::path pack = machine.root() / "Pack";
+    putPreset(gg::media::factoryPresetsFolder(pack), "Theirs", {}, 0.5f);
+    const juce::File answer(juce::String::fromUTF8(gg::test::utf8(pack).c_str()));
+    f.browser().browse = [&](const gg::ui::PresetBrowser::Browse &,
+                             std::function<void(const juce::File &)> done) { done(answer); };
+    click(f.button("preset.folder"));
+    REQUIRE(f.rows() == 4);
+    CHECK(f.rowName(2) == "Theirs"); // after the factory's, before the user's
+    f.list().selectRow(2);
+    CHECK(f.impl->presetName() == "Theirs");
+    CHECK_FALSE(f.button("preset.delete").isEnabled()); // the user's pack, not deletable here
 }

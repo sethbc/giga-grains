@@ -17,7 +17,8 @@ namespace gg::ui
 /// ("preset.prev"), the preset's name ("preset.name") and `›` ("preset.next"). The name is cut in
 /// the middle to fit, with " •" after it while the preset is edited; clicking it calls onName
 /// (the editor shows or hides the browser); `‹` and `›` call onPrev and onNext (the browser moves
-/// through its filtered list and loads).
+/// through its filtered list and loads), and so do the Left and Right arrow keys while the strip
+/// or one of its buttons has the keyboard focus (spec §6.8).
 ///
 /// Message thread only. The context is the editor's (see EditorContext): read at each use.
 class PresetStrip final : public juce::Component, public juce::SettableTooltipClient
@@ -31,8 +32,11 @@ class PresetStrip final : public juce::Component, public juce::SettableTooltipCl
     void refresh();
     /// Whether the name button shows the browser as open.
     void setBrowserOpen(bool open);
+    /// Gives the keyboard focus to the name button (the browser closed: T5), when showing.
+    void focusName();
 
     void resized() override;
+    bool keyPressed(const juce::KeyPress &key) override;
 
   private:
     const EditorContext &context_;

@@ -6,6 +6,7 @@
 #define GG_UI_PRESETBROWSER_H
 
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <set>
@@ -55,15 +56,20 @@ class PresetBrowser final : public juce::Component,
     std::function<void(const Browse &, std::function<void(const juce::File &)>)> browse;
     /// The Mutate button: the editor closes the browser and opens the Mutate panel. May be empty.
     std::function<void()> onMutate;
+    /// Called when the browser is hidden (Escape, its button, Mutate): the editor gives the
+    /// keyboard focus back to the preset strip. May be empty.
+    std::function<void()> onClosed;
 
     explicit PresetBrowser(const EditorContext &context);
     ~PresetBrowser() override;
 
-    /// The editor's 30 Hz timer: when the loaded preset's name changed (the host loaded one),
-    /// lists again.
+    /// The editor's 30 Hz timer, while the browser is open: when the folders changed on disk
+    /// (presetFoldersChanged, a stat per folder), rescans and lists again; else when a load moved
+    /// presetLoads (the host loaded a preset), lists again without a rescan.
     void refresh();
-    /// Loads the neighbour of the loaded preset in the filtered list (`direction` +1 or -1,
-    /// wrapping; the first or last when the loaded one isn't listed), listing again first.
+    /// Loads the neighbour of the loaded preset in the filtered list as it stands (`direction` +1
+    /// or -1, wrapping; the first or last when the loaded one isn't listed). No rescan (M3): the
+    /// list is made once if it never was, and marked again if a load since moved presetLoads.
     /// False if the list is empty or the load failed.
     bool step(int direction);
 
@@ -85,8 +91,10 @@ class PresetBrowser final : public juce::Component,
     // juce::KeyListener: the arrow keys in the search field
     bool keyPressed(const juce::KeyPress &key, juce::Component *origin) override;
 
-    /// Lists again from the context (the catalog rescans), rebuilds the tag toggles and filters.
-    void reload();
+    /// Lists again from the context (the catalog rescans first when `rescan`: on opening, after a
+    /// save, a delete or a content folder chosen, and when the poll sees a change), rebuilds the
+    /// tag toggles and filters.
+    void reload(bool rescan);
     void rebuildTags();
     void applyFilter();
     bool matches(const PresetRow &row) const;
@@ -98,9 +106,9 @@ class PresetBrowser final : public juce::Component,
     void toggleFavorite(int row);
     void deleteSelected();
     void chooseContentFolder();
-    /// Save as…: "" or the error, for the panel.
-    std::string save(const std::string &name, const std::vector<std::string> &tags,
-                     const std::string &description, bool overwrite);
+    /// Save as…: what the context's savePreset did, for the panel.
+    PresetSaveResult save(const std::string &name, const std::vector<std::string> &tags,
+                          const std::string &description, bool overwrite);
     void close();
     void setNotice(const juce::String &text);
     void updateStatus();
@@ -119,7 +127,8 @@ class PresetBrowser final : public juce::Component,
     std::unique_ptr<SavePanel> savePanel_;
     std::unique_ptr<juce::FileChooser> chooser_; // the folder dialog, if any
     juce::String notice_;
-    std::string lastName_; ///< presetName() when the list was last made
+    uint64_t lastLoads_{0}; ///< presetLoads() when the list was last made or marked
+    bool listed_{false};    ///< a list was made
     bool settingSelection_{false};
     bool deleteArmed_{false};
 };

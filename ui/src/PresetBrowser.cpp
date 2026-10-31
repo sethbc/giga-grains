@@ -127,9 +127,10 @@ struct PresetBrowser::Row final : juce::Component
         {
             tags << (tags.isEmpty() ? "" : "  ") << fromUtf8(tag);
         }
-        if (r.factory)
+        if (r.factory || r.content)
         {
-            tags = juce::String("factory") + (tags.isEmpty() ? "" : "  ") + tags;
+            tags = juce::String(r.factory ? "factory" : "content") + (tags.isEmpty() ? "" : "  ") +
+                   tags;
         }
         g.setColour(theme::kDimText);
         g.setFont(juce::FontOptions(12.0f));
@@ -279,17 +280,19 @@ class PresetBrowser::SavePanel final : public juce::Component
             }
         }
         const std::string name = name_.getText().trim().toStdString();
-        const std::string error =
+        const PresetSaveResult result =
             owner_.save(name, tags, description_.getText().toStdString(), confirming_);
-        if (error.empty())
+        using Status = PresetSaveResult::Status;
+        if (result.status == Status::Saved)
         {
             close();
         }
-        else if (!confirming_ && error.rfind("a preset named", 0) == 0)
+        else if (result.status == Status::Exists && !confirming_)
         {
+            // Named by the preset the file holds (M2): two names can make one file, so this is
+            // what an overwrite would replace.
             confirming_ = true;
-            message_.setText("Replace the preset named " + juce::String::fromUTF8(name.c_str()) +
-                                 "?",
+            message_.setText("Replace the preset named " + fromUtf8(result.existingName) + "?",
                              juce::dontSendNotification);
             ok_.setButtonText("Replace");
         }
@@ -297,7 +300,7 @@ class PresetBrowser::SavePanel final : public juce::Component
         {
             confirming_ = false;
             ok_.setButtonText("OK");
-            message_.setText(fromUtf8(error), juce::dontSendNotification);
+            message_.setText(fromUtf8(result.error), juce::dontSendNotification);
         }
     }
 
@@ -415,11 +418,15 @@ void PresetBrowser::visibilityChanged()
     {
         notice_.clear();
         deleteArmed_ = false;
-        reload();
+        reload(true);
         if (isShowing())
         {
             search_.grabKeyboardFocus();
         }
+    }
+    else if (onClosed)
+    {
+        onClosed(); // the editor gives the focus back to the strip (T5)
     }
 }
 
@@ -523,6 +530,8 @@ bool PresetBrowser::loadRow(int row)
     if (!error.empty())
     {
         setNotice("can't load " + fromUtf8(chosen.name) + ": " + fromUtf8(error));
+        selectRow(loadedRow()); // the selection shows what is loaded, still (T5)
+        updateButtons();
         return false;
     }
     // Only this entry is loaded now: no new listing (a click would then rescan the folders).
@@ -531,7 +540,7 @@ bool PresetBrowser::loadRow(int row)
     {
         r.loaded = r.index == index;
     }
-    lastName_ = context_.presetName ? context_.presetName() : std::string();
+    lastLoads_ = context_.presetLoads ? context_.presetLoads() : 0;
     setNotice({});
     list_.repaint();
     updateButtons();
@@ -540,7 +549,16 @@ bool PresetBrowser::loadRow(int row)
 
 bool PresetBrowser::step(int direction)
 {
-    reload();
+    // Through the list as it stands (M3): no rescan of the folders for a step. A list never made
+    // (the browser not yet opened) is made once; one whose loaded mark is stale is marked again.
+    if (!listed_)
+    {
+        reload(true);
+    }
+    else if (context_.presetLoads && context_.presetLoads() != lastLoads_)
+    {
+        reload(false);
+    }
     const int count = getNumRows();
     if (count == 0)
     {
@@ -568,13 +586,13 @@ void PresetBrowser::toggleFavorite(int row)
         juce::MessageManager::callAsync([safe = juce::Component::SafePointer<PresetBrowser>(this)] {
             if (safe != nullptr)
             {
-                safe->reload();
+                safe->reload(false);
             }
         });
     }
     else
     {
-        reload();
+        reload(false); // the catalog keeps the star itself: no rescan
     }
 }
 
@@ -586,7 +604,7 @@ void PresetBrowser::deleteSelected()
         return;
     }
     const PresetRow &r = rows_[visible_[static_cast<std::size_t>(row)]];
-    if (r.isInit || r.factory)
+    if (r.isInit || r.factory || r.content)
     {
         return;
     }
@@ -602,23 +620,23 @@ void PresetBrowser::deleteSelected()
     deleteArmed_ = false;
     deleteButton_.setButtonText("Delete");
     setNotice(removed ? "deleted " + name : "can't delete " + name);
-    reload();
+    reload(true);
 }
 
-std::string PresetBrowser::save(const std::string &name, const std::vector<std::string> &tags,
-                                const std::string &description, bool overwrite)
+PresetSaveResult PresetBrowser::save(const std::string &name, const std::vector<std::string> &tags,
+                                     const std::string &description, bool overwrite)
 {
     if (!context_.savePreset)
     {
-        return "can't save";
+        return {PresetSaveResult::Status::Failed, "can't save", {}};
     }
-    const std::string error = context_.savePreset(name, tags, description, overwrite);
-    if (error.empty())
+    PresetSaveResult result = context_.savePreset(name, tags, description, overwrite);
+    if (result.status == PresetSaveResult::Status::Saved)
     {
         setNotice("saved " + fromUtf8(name));
-        reload();
+        reload(true);
     }
-    return error;
+    return result;
 }
 
 void PresetBrowser::chooseContentFolder()
@@ -630,16 +648,17 @@ void PresetBrowser::chooseContentFolder()
         }
         const std::string error = context_.setContentFolder(folder.getFullPathName().toStdString());
         setNotice(error.empty() ? "content folder: " + folder.getFullPathName() : fromUtf8(error));
-        reload();
+        reload(true);
     });
 }
 
 // ---- the filtered list ----
 
-void PresetBrowser::reload()
+void PresetBrowser::reload(bool rescan)
 {
-    rows_ = context_.presetRows ? context_.presetRows() : std::vector<PresetRow>();
-    lastName_ = context_.presetName ? context_.presetName() : std::string();
+    rows_ = context_.presetRows ? context_.presetRows(rescan) : std::vector<PresetRow>();
+    lastLoads_ = context_.presetLoads ? context_.presetLoads() : 0;
+    listed_ = true;
     rebuildTags();
     applyFilter();
     updateStatus();
@@ -738,13 +757,19 @@ void PresetBrowser::applyFilter()
 
 void PresetBrowser::refresh()
 {
-    if (!isVisible() || !context_.presetName)
+    if (!isVisible())
     {
         return;
     }
-    if (context_.presetName() != lastName_)
+    // The folders' poll (spec §6.8, M4): a stat of each watched folder per tick, a rescan only
+    // when one changed.
+    if (context_.presetFoldersChanged && context_.presetFoldersChanged())
     {
-        reload(); // the host loaded a preset, or a save changed the name
+        reload(true);
+    }
+    else if (context_.presetLoads && context_.presetLoads() != lastLoads_)
+    {
+        reload(false); // the host loaded a preset: mark it, without a rescan
     }
 }
 
@@ -776,7 +801,7 @@ void PresetBrowser::updateButtons()
     if (row >= 0 && row < getNumRows())
     {
         const PresetRow &r = rows_[visible_[static_cast<std::size_t>(row)]];
-        deletable = !r.isInit && !r.factory;
+        deletable = !r.isInit && !r.factory && !r.content;
     }
     deleteButton_.setEnabled(deletable);
 }

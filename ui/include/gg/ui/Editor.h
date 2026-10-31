@@ -80,9 +80,24 @@ struct PresetRow
     std::string name, description; ///< UTF-8
     std::vector<std::string> tags; ///< words of EditorContext::tagVocabulary
     bool isInit{false};            ///< INIT, the plugin's defaults, which has no file
-    bool factory{false};           ///< a preset of the factory content (else a user preset)
+    bool factory{false};           ///< a preset of the factory content
+    bool content{false}; ///< a preset of the user's content folder (neither factory nor deletable)
     bool favorite{false};
-    bool loaded{false}; ///< the entry whose name is presetName(), INIT's kind matching
+    bool loaded{false}; ///< the loaded preset's entry (GigaGrainsPlugin::loadedCatalogIndex)
+};
+
+/// What the browser's Save as… did (EditorContext::savePreset).
+struct PresetSaveResult
+{
+    enum class Status
+    {
+        Saved,
+        Exists, ///< a preset file of that name is there; nothing was written
+        Failed,
+    };
+    Status status{Status::Failed};
+    std::string error;        ///< UTF-8, for the user (Exists's or Failed's)
+    std::string existingName; ///< Exists: the name of the preset an overwrite would replace
 };
 
 /// What the editor shows of the plugin that owns it.
@@ -146,20 +161,25 @@ struct EditorContext
     std::function<SampleWaveform()> sampleWaveform;
 
     /// The preset strip and browser (spec §6.8), main thread; any may be empty. `presetRows`
-    /// rescans the preset folders, then lists the entries in the catalog's order. `loadPreset`
-    /// loads entry `index` and returns "" or an error for the user; the plugin announces the load
-    /// to the host. `presetName` is the loaded preset's name, `presetEdited` whether a value
-    /// differs from it. `savePreset` writes the current sound to the user's presets folder
-    /// ("" or an error; with `overwrite` false an existing name is an error beginning "a preset
-    /// named"). `setContentFolder` saves the settings' content folder ("" or an error).
-    /// `tagVocabulary` is the tags' words, the four focus tags first.
-    std::function<std::vector<PresetRow>()> presetRows;
+    /// lists the entries in the catalog's order, after rescanning the preset folders when
+    /// `rescan` is true. `loadPreset` loads entry `index` and returns "" or an error for the user;
+    /// the plugin announces the load to the host. `presetName` is the loaded preset's name,
+    /// `presetEdited` whether a value differs from it, `presetLoads` a count that moves at every
+    /// load or save (the list marks the loaded row again), `presetFoldersChanged` whether the
+    /// folders changed on disk since the last rescan (polled at 30 Hz while the browser is open;
+    /// it only stats them). `savePreset` writes the current sound to the user's presets folder;
+    /// with `overwrite` false an existing file is Exists, nothing written. `setContentFolder`
+    /// saves the settings' content folder ("" or an error). `tagVocabulary` is the tags' words,
+    /// the four focus tags first.
+    std::function<std::vector<PresetRow>(bool rescan)> presetRows;
     std::function<std::string(std::size_t index)> loadPreset;
     std::function<std::string()> presetName;
     std::function<bool()> presetEdited;
+    std::function<uint64_t()> presetLoads;
+    std::function<bool()> presetFoldersChanged;
     std::function<void(std::size_t index, bool on)> setFavorite;
-    std::function<std::string(const std::string &name, const std::vector<std::string> &tags,
-                              const std::string &description, bool overwrite)>
+    std::function<PresetSaveResult(const std::string &name, const std::vector<std::string> &tags,
+                                   const std::string &description, bool overwrite)>
         savePreset;
     std::function<bool(std::size_t index)> deletePreset;
     std::function<std::string()> contentStatus;
