@@ -1070,6 +1070,33 @@ and tuning-library) are planned, for M2 and M3; they are pinned when they are ad
   - With none of the additions used, it renders bit-identically to upstream `Reverb2`; a test
     pins it.
   - The patch stays ours. It isn't offered upstream (the director's policy, §23 #50).
+- **Factory content** (M2 sub-project 5; the spec is `docs/superpowers/specs/2026-10-30-m2-presets-design.md`).
+  The CC0 samples live outside this repository, in https://github.com/sethbc/giga-grains-content,
+  and ship as a release asset, which meets §12's "kept out of git history". Release `v1` is
+  `giga-grains-content-v1.zip` (37 FLAC files in six categories, `PROVENANCE.md`, the CC0
+  `LICENSE`, a `README.md`; about 32 MiB). `content/pin.txt` pins its tag, URL and SHA-256.
+  - `scripts/fetch-content.sh <dir>` downloads it, checks the SHA-256 (a mismatch is deleted),
+    unpacks it to `<dir>/content/` and writes `.gg-pin` last; a folder already at the pin costs no
+    network. Configure downloads nothing: the `gg-content` target runs the fetch, from the
+    `content_fixture` test or `gg-products`, into `build/<preset>/content-cache/`, unless
+    `-DGG_CONTENT_DIR` names a folder.
+  - CI caches the fetched folder, keyed by `content/pin.txt` and the fetch script alone (the
+    content is the same on every leg), restored on every run and saved on `main` only, like the
+    SDK cache.
+  - `gg-presets` packs the preset sources under `content/presets/` with `gg-render
+    --pack-preset`; `gg-products` stages them with the samples as the installers' Content
+    component (macOS, Windows and Linux; the PKG's is deselectable). `CC0-1.0.txt` joins every
+    platform's license set, and `THIRD_PARTY_NOTICES.md` has a "Factory content" section naming
+    the pinned tag and pointing at `PROVENANCE.md`.
+  - **clap-wrapper's preset bridges** are used as pinned (`4e7afc3`, `v0.17.0-15`), unchanged:
+    `Clap::PresetIndex` crawls the provider's locations once per library and plugin id on a
+    background thread, sorted by (location kind, location, load key); the VST3 wrapper publishes
+    the index as a program list on the root unit, with a `kIsProgramChange` selector parameter;
+    the AU wrapper publishes it as `kAudioUnitProperty_FactoryPresets` (waiting up to 1 s for the
+    crawl) and loads one through `NewFactoryPresetSet`. Both use `preset-load`. The consequences
+    accepted: file locations sort before plugin locations, so INIT is last in a host's list (the
+    browser lists it first); within the factory folder the order is the file names'; the
+    standalone has no host list and uses the browser.
 - **Study, don't depend on:**
   - Beads (MIT; Mutable Instruments published the source on 2026-10-12) and Clouds;
   - Shortcircuit XT's MIT sample-reading kernels and missing-sample model;
@@ -1279,6 +1306,26 @@ and tuning-library) are planned, for M2 and M3; they are pinned when they are ad
 **Presets and editing**
 - Tags, favorites, an INIT preset, undo/redo.
 - **Mutate:** randomize with per-parameter locks and an amount control.
+- **As built** (M2 sub-project 5, group 1; the spec §6.8, §6.9), in both products' editors:
+  - **The strip** replaces the header's "Init" label, in the same `header.preset` slot (90 px):
+    previous and next, and the preset name, with a trailing dot (`Glass Hold •`) when a base
+    value differs from the loaded preset's, which opens the browser.
+  - **The browser** is an overlay on the canvas, closed by its button, Escape or a pick: a search
+    field (name, description and tags), the four focus tags as toggles and the other tags as a
+    list, a Favorites toggle with a star on each row, and the list (INIT first, the factory
+    presets in file-name order, then the user's). A pick loads the preset and keeps the browser
+    open, so the arrow keys audition down the list. "Save as…" (name, tags, description; a name
+    that would overwrite asks first), "Delete" on a user preset, "Content folder…" (the
+    settings' `contentFolder`), a status line ("Factory content v1 in …" or "No factory content
+    found…"). A listing is capped at 5,000 files per folder, and the status line says so.
+  - **Mutate** opens from a button in the browser. Its law is relative jitter in each
+    parameter's CLAP domain (a stepped one draws a new step with probability Amount); the
+    structural locks (Mix, Level, layer on-switches, Sources, Freeze, the macros, Morph, Reverb
+    Amount and Dry to Reverb, Step Length) and every parameter of a layer that is off are locked by
+    default; Amount defaults to 15%. Each press is deterministic from the instance's seed and a
+    press counter (not saved), and reaches the host as begin/value/end gestures through the UI
+    queue, in batches, so a host records automation.
+  - Undo and redo stay with sub-project 6.
 
 **Basics**
 - Resizable and HiDPI-ready.
@@ -1307,7 +1354,8 @@ for both products, on sst-jucegui's controls and its built-in dark style sheet. 
 is headless by choice: the view still shows layer A alone, and layers B to D are reached through
 the host's generic editor, automation, the remote-controls pages and `gg-render` until
 sub-project 6 (§23 #65):
-- **The layout:** a header (the product's name, the preset name, "Init" until M2's browser,
+- **The layout:** a header (the product's name, the preset name (since M2 sub-project 5 the
+  preset strip below; "Init" before it),
   Perform selected, Edit greyed out until M2, and the editor's frame time averaged over 60
   frames); in the instrument, the loader strip (§18); the canvas across the full width; and one
   macro row below it, the eight macros in remote-control order, Macro Freeze a toggle and the
@@ -1461,7 +1509,35 @@ sub-project 6 (§23 #65):
     says so. "Collect and save" comes in M2.
 
 **Presets.** There is one preset system: CLAP preset discovery. clap-wrapper bridges it to VST3
-program lists and AU factory presets.
+program lists and AU factory presets. As built (M2 sub-project 5, group 1):
+- **The file.** A `.ggpreset` is a `GGST` container like a session, with a `<preset product
+  author description tags>` element inside `PTCH` and no `AUDI`; `MEDI` is empty until a preset
+  names a sample, which M2 sub-project 2's content-relative reference will do. Older readers
+  ignore the element. A preset is for one product: loading an FX preset into the instrument, or
+  the reverse, fails with "not a Giga Grains FX preset" (D9). Tags come from a fixed vocabulary of
+  lowercase words (`core/include/gg/core/PresetInfo.h`), which the packer enforces.
+- **What a load keeps.** The instance's seed (D6), and, when the preset's `MEDI` names no sample,
+  the sample already loaded (D5), so a settings-only preset plays on the user's own material. The
+  live rings are not state. Every load goes through the one path a state load uses, so the audio
+  thread sees what a restore shows it.
+- **INIT** (D8) is the product's defaults and factory routes, built in memory, so it exists with
+  no content installed. It is one discovered preset, load key `init`, at a plugin location
+  carrying both products' ids.
+- **Discovery.** The factory (`CLAP_PRESET_DISCOVERY_FACTORY_ID` and its `_COMPAT`) is in
+  `gg-plugin-core`, with one provider. It declares the `ggpreset` filetype; each content root's
+  `Presets` folder that exists, flagged factory content; the user presets folder, always (created
+  at `init`); and one soundpack, `org.sethbc.giga-grains.factory`. A FILE location is a native OS
+  path on every platform.
+- **The content roots,** in order, where a content-relative reference will resolve (the first
+  root that holds the file): `GG_CONTENT_DIR`; the settings' `contentFolder` (new, empty by
+  default, set from the browser); the per-user install (macOS `~/Library/Application
+  Support/sethbc/Giga Grains/`, Windows `%LOCALAPPDATA%\sethbc\Giga Grains\`, Linux
+  `$XDG_DATA_HOME/sethbc/Giga Grains/`); and the system install (macOS `/Library/Application
+  Support/sethbc/Giga Grains/`, Windows `%ProgramData%\sethbc\Giga Grains\`, Linux each of
+  `$XDG_DATA_DIRS` plus `sethbc/Giga Grains/`). A reference with a root or a `..` is refused.
+- **The user presets folder** is beside the settings file (`Presets/`; on Linux
+  `$XDG_DATA_HOME/giga-grains/presets/` for the default settings file). **Favorites** are per
+  machine, `favorites.txt` beside the settings file, one preset key per line.
 
 **Frozen from the first public release** (0.5.0's first beta, M5's; §23 #61, #62). Changing any
 of these breaks users' saved sessions:
@@ -1469,7 +1545,9 @@ of these breaks users' saved sessions:
 - the AUv2 parameter order that follows from them (ascending parameter ID; §23 #60);
 - plugin identities and AU codes.
 
-**Frozen from 1.0.0:** factory preset order, which may move through the 0.5.x releases.
+**Frozen from 1.0.0:** factory preset order, which may move through the 0.5.x releases. The
+order is the factory files' names, so the two-digit `NN` prefix of each (`NN Name.ggpreset`) is
+part of it.
 
 **Identities**
 
@@ -1516,6 +1594,11 @@ they are frozen along with them.
 - **Once a plugin has a preset-discovery factory (M2), the VST3 wrapper adds one more
   parameter:** a preset selector for the VST3 program list, at `0xC00000` or the first free ID
   above it. Hosts can save that ID too. Keeping our IDs below `0xB00000` keeps them clear of it.
+  - **As observed and pinned** (M2 sub-project 5; clap-wrapper `4e7afc3`, unchanged): the selector
+    is at `0xC00000` with `kIsProgramChange`, and no other ID lies in its block. macOS tests
+    `identity_vst3_preset_selector_inst` and `_fx` read it from the built VST3. The wrapper
+    publishes the list from a background crawl, in `onIdle`, so a first instance may show it
+    empty; the AU lists the factory presets and loads one (tested in `gg-au-state-tests`).
 
 **Parameter IDs** (M1 sub-project 1; §23 #37):
 - **The scheme is `id = (scope << 16) | index`.**
@@ -1800,6 +1883,19 @@ input, which every validator accepts, so D2's fallback was not needed; §14, §1
   values, automation and notes; a preset from M2) and writes a WAV, metrics, a grain-event log
   and a spectrogram deterministically. It's the backbone of audio testing and how Claude
   "listens".
+  - **Presets** (M2 sub-project 5, group 1): `--preset FILE` (or the spec's `"preset"` key)
+    renders with a `.ggpreset` applied first, so the spec's `params`, `mod` and `samples` go on
+    top and the spec's seed is the render's; a preset for the other product is bad input (exit
+    2). `--pack-preset <source.json> -o <out.ggpreset>` compiles a preset source in the spec's
+    vocabulary, and a name the product doesn't display or a tag outside the vocabulary fails it.
+    `--content-dir DIR` is the folder content-relative samples resolve against.
+  - **Tests of the preset system:** a bit-identity test (`std::memcmp`) of the headless FX
+    after `preset-load` of a fixture preset against `gg-render --preset` of the same spec, in
+    both orders of loading and activating; the `content_fixture` test, which fetches the pinned
+    content into the build tree for the cases that read it (offline once fetched); the
+    discovery provider through the entry point, and the catalog; the VST3 selector and the AU
+    factory presets (§18). The preset goldens (one per factory preset) come with group 2; the 36
+    existing goldens' WAV hashes stay unchanged through group 1.
 - **Golden renders compared by metrics:**
   - spectral distance
   - RMS envelope

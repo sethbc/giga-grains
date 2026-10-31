@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Milestone** | M2 Giga (INTENT §20), sub-project 5 of 7, wave 3 (merged first in its wave) |
-| **Status** | **Approved by the programme manager 2026-10-30** against the programme design and INTENT, with two notes applied in place: this sub-project's INTENT §23 row takes the next free number at merge (sub-project 3 merges first), and under `media/` it adds the new header `gg/media/ContentPaths.h` alone, header-only, editing nothing else there until sub-project 2 merges and this branch rebases (§6.4). **The director's decisions D1–D9, 2026-10-30, by forced choice, relayed by the programme manager: every recommended option** (option 1 of each), recorded in §8 and applied in place. Coordination with sub-project 6 (§6.8): it keeps the header label's component ID `header.preset` and its bounds slot for this sub-project, which replaces that label's contents and moves nothing else in the header. Not yet built |
+| **Status** | **Approved by the programme manager 2026-10-30** against the programme design and INTENT, with two notes applied in place: this sub-project's INTENT §23 row takes the next free number at merge (sub-project 3 merges first), and under `media/` it adds the new header `gg/media/ContentPaths.h` alone, header-only, editing nothing else there until sub-project 2 merges and this branch rebases (§6.4). **The director's decisions D1–D9, 2026-10-30, by forced choice, relayed by the programme manager: every recommended option** (option 1 of each), recorded in §8 and applied in place. Coordination with sub-project 6 (§6.8): it keeps the header label's component ID `header.preset` and its bounds slot for this sub-project, which replaces that label's contents and moves nothing else in the header. **Group 1 built 2026-10-30** (Tasks 1 to 13 plus 10b, on `m2-presets`; PR #17, draft), **group 2 pending** (§6.12: wave 2's merge, then the voicing of the 48 presets). Amended in place, each marked **Amended**: §6.2, §6.3, §6.4, §6.5, §6.8, §6.9, §6.11, §10 and §12 |
 | **Spec authority** | `INTENT.md`; the programme design (`docs/superpowers/specs/2026-10-29-m2-programme-design.md`), whose §6.5, §7.5 and §7.8 this document realizes and does not reopen |
 | **Builds on** | Sub-project 1 (layers, the mod matrix, the patch at version 2, `gg-render`'s layer keys; INTENT §23 #65); the release pipeline's reserved Content component (release-pipeline spec §6.9); M1's state container (INTENT §18) and Perform view (§17) |
 | **Starts from** | `main` at `ab9f4e2` (PR #15 merged) on branch `m2-presets`; `docs/m2-carry-over.md` with **11 open rows** |
@@ -204,6 +204,13 @@ Both plugins implement `clap.preset-load/2`. `from_location(kind, location, load
   active, offered to the audio thread in the same hand-offs a restore uses (the values with the
   routes in the FX, with the sample in the instrument; the `loadedState_` snapshot); inactive, taken
   by `activate()`; then `CLAP_PARAM_RESCAN_VALUES`. Nothing about the audio thread changes.
+
+  > **Amended (2026-10-30):** every preset load (the browser's, the host's `preset-load` and INIT)
+  > calls the host's `state.mark_dirty`, and a browser load announces itself through
+  > `preset_load.loaded`. The edited mark compares the base values with the loaded preset's and
+  > nothing more is stored for it: a session saved after editing a preset reopens with the
+  > preset's name and **no** edited mark, since the loaded values are then the saved ones. The
+  > brief mandates this; it is noted, not a defect.
 - `CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN` with `load_key` `init`: **INIT**, the product's defaults
   (every parameter's default, the factory routes, the sample kept per D5), built in memory, so INIT
   exists with no content installed. The browser's INIT is this. (D8, recommended: INIT is a fresh
@@ -236,6 +243,11 @@ Both plugins implement `clap.preset-load/2`. `from_location(kind, location, load
   - the factory presets folder, `<Content>/Presets`, flagged `IS_FACTORY_CONTENT`, for every
     content root of §6.4 that exists;
   - the user presets folder (§6.4), flagged `IS_USER_CONTENT`, created on the first save;
+
+    > **Amended (2026-10-30), Task 7 ruling:** the provider's `init` creates the user presets
+    > folder (its errors ignored) and **always declares it**, so a host that caches the
+    > declarations sees the first save; "created on the first save" gave a host nothing to cache.
+    > A content root's `Presets` folder is declared only when it exists.
   - one soundpack, `org.sethbc.giga-grains.factory`, "Giga Grains Factory", with the content
     release's version from `content-version.txt`;
   - one plugin location per product for INIT: `CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN`, location
@@ -243,6 +255,11 @@ Both plugins implement `clap.preset-load/2`. `from_location(kind, location, load
   The provider has no instance: it reads the settings file (the user content folder) on its
   `init`, main thread, through `GG_SETTINGS_FILE` as the plugins do, so the tests point it at a
   scratch file.
+
+    > **Amended (2026-10-30):** INIT is **one** discovered preset, `begin_preset("Init", "init")`
+    > carrying both products' plugin ids through two `add_plugin_id` calls, at one PLUGIN location.
+    > A second `begin_preset` for the other product deadlocks clap-validator's crawl. The content
+    > release's version rides in the soundpack's description as well as its version field.
 - **`get_metadata`** for a file reads `presetInfoOf` and reports: `begin_preset(name, load_key
   null)`, `add_plugin_id(clap, <the product's id>)`, `set_soundpack_id` when the file sits under a
   factory folder, `set_flags` (factory or user content), `add_creator(author)`, `set_description`,
@@ -289,6 +306,11 @@ Both plugins implement `clap.preset-load/2`. `from_location(kind, location, load
   its discovery identity (kind, location, load key), read and written on the main thread through
   the settings file's temporary-file-and-rename (ruling R16). The provider reports `IS_FAVORITE`
   for them, so hosts that show favorites agree with the browser.
+
+  > **Amended (2026-10-30):** the file is `<settings folder>/favorites.txt`, **one key per line**
+  > (the preset's identity as `presetKey` writes it), not XML. It is read and written on the main
+  > thread through `writeReplacing`, the temporary-file-and-rename the catalog's save shares, and
+  > a key holding a line break is refused.
 - **The loader's candidates** (INTENT §18, "Finding a missing sample") gain, after sub-project 2
   merges, one entry: when the entry carries a content-relative reference, the content roots in
   order, after the absolute path and before the same-name search. Match by size then SHA-256 as the
@@ -333,6 +355,12 @@ tools/                      the gg-render specs and the shell script that make t
 - **The release:** a tag `v1` with the asset `giga-grains-content-v1.zip` whose top level is the
   layout above (`Samples/`, `PROVENANCE.md`, `LICENSE`, `README.md`). A later release is `v2`,
   never a moved tag.
+
+  > **Pending the director (2026-10-30):** the content v1 as released has **no Voices category**
+  > (VCSL has none): its 37 files are Strings, Winds, Mallets, Plucked, Textures and the nine
+  > generated. §11's "voice-and-strings phrase" therefore has no voice to play. The proposal is
+  > option 1: a strings-and-mallets phrase from v1, and the `voice` tag goes unused until a
+  > content release has a voice. Not decided; group 2 waits on the answer.
 - **The pin** in this repository, `content/pin.txt`: the tag, the asset URL and the zip's SHA-256.
   `scripts/fetch-content.sh <dir>` downloads the asset to `<dir>/giga-grains-content-<tag>.zip`,
   checks the SHA-256 (refusing a mismatch), unpacks it to `<dir>/content/` and writes
@@ -432,6 +460,15 @@ only if sub-project 6 widens the slot.
   clap-wrapper's index. With 48 factory files a scan is a few milliseconds; a user folder of
   thousands is scanned on a background thread with the list filling in, the same shape as the
   loader's worker.
+
+  > **Amended (2026-10-30):** there is no background worker. The catalog **caps a listing at 5,000
+  > files per folder, applied before any file is read**, and the status line says how many more
+  > were left out ("(N more files not listed)"). A folder past the cap is a limit the user is told
+  > of, not a stall; a worker returns only if a real library needs more.
+  >
+  > **Amended (2026-10-30):** the **Mutate button** (`preset.mutate`) lives in the browser beside
+  > "Save as…", not in the header strip, which keeps its 90 px `header.preset` slot and nothing
+  > else (§6.9).
 - **The editor's context** gains the calls the browser needs (`presetCatalog`, `loadPreset`,
   `savePreset`, `deletePreset`, `setFavorite`, `setContentFolder`, `presetName`, `presetEdited`,
   `mutate`), each a `std::function` the plugin fills, main thread, as the loader strip's are.
@@ -478,6 +515,26 @@ only if sub-project 6 widens the slot.
   with the same presses reproduces the same walk; the counter isn't saved.
 - Mutate never touches the mod routes, the sample, the seed or the locks; it is a parameter move.
 
+> **Amended (2026-10-30), Mutate as built (Tasks 2, 10 and 10b):**
+> - **The RNG key** is layer and stream `0xFFFFFFFF` with `Field::PositionJitter` and index
+>   `counter × kParamCount + slot`; the stepped parameters' second draw (which step) uses stream
+>   `0xFFFFFFFE`. No new `rng::Field`: this replaces `Field::Mutate` with (seed, 0, 0, …).
+> - **Locks:** "Reset locks" restores the **structural** locks only (33 slots). The off-layer
+>   locks are computed at each press from the values, so a layer switched on later is mutable at
+>   once. In the panel a layer's 16 Step values are one row, locked together; the model's
+>   `LockSet` stays per slot.
+> - **The button** (`preset.mutate`) lives in the preset browser beside "Save as…", not beside the
+>   strip: the strip keeps the 90 px `header.preset` slot (sub-project 6 owns the header). The
+>   panel (`preset.mutatePanel`) opens from it.
+> - **Sending the values.** The changed slots go to the host as begin/value/end gestures through
+>   the UI queue in batches of at most 100 slots (300 entries, whole triplets), coalesced per
+>   slot, each batch sent only after a host drain has begun since the previous one (the drain
+>   witness; at most 600 of the queue's 1,024 entries wait at once). Any state or preset load
+>   discards what waits, and a user's gesture on a slot still waiting wins. Nothing on the audio
+>   thread changes. The same sender is exposed as `GigaGrainsPlugin::sendValues` and
+>   `EditorContext::sendValues`, for any caller restoring many values at once; sub-project 6's
+>   whole-state undo adopts it after both merge.
+
 ### 6.10 `gg-render --preset` (INTENT §19; I27)
 
 - **Two spellings of one thing:** a spec key `"preset": "<path>"` (instrument and FX modes;
@@ -523,6 +580,14 @@ only if sub-project 6 widens the slot.
   file, every sample's SHA-256 matching `PROVENANCE.md`, the version file); the existing PKG, zip
   and tarball checks extended with the component's entries; `installer_license_set` with the CC0
   text.
+
+> **Amended (2026-10-30), as built:** `gg-presets` names a preset by its whole file stem (`NN
+> Name`, CMake's `NAME_WLE`), so a dotted name keeps its dot. `THIRD_PARTY_NOTICES.md`'s
+> "Factory content" names the tag `content/pin.txt` pins rather than a version written in the
+> notice. The checks are `installer_content_staged` (minimums of 0 presets and 0 `midi` in group
+> 1, raised to 24 per product and 8 with group 2) and `installer_windows_iss_content` (it reads
+> the `.iss`, so it runs on every OS), beside the extended PKG, zip and tarball tests and
+> `installer_license_set`.
 
 ### 6.12 The two groups of work and the boundary with wave 2 (the brief; programme design §6)
 
@@ -761,6 +826,13 @@ plugin offers them), pluginval, auval and Steinberg's validator on `release`; CI
 through the draft PR, with the content cache step added to `ci.yml` beside the SDK cache; the
 `gg-bench --quick` smoke unchanged, and a full `engine-sample` run from `release` at the end.
 
+> **Amended (2026-10-30):** CI's Windows leg runs clap-validator with `--exclude
+> 'preset-discovery-(crawl|descriptor-consistency|load)'`. clap-validator 0.4.1-127 demands
+> `/C:\...` for a FILE location, a form no Windows file function opens, while CLAP's
+> `preset-discovery.h` asks for a native path; so a FILE location is a **native OS path on every
+> platform**, and the three checks are excluded on Windows alone (carry-over row 233). macOS and
+> Linux run all of them.
+
 **The pre-commit gate:** `scripts/check.sh` over `dev,asan,rtsan`, its summary in the PR.
 
 ## 11. The listening pack: `docs/listening/m2-presets/`
@@ -801,6 +873,13 @@ touch). No "when touched" row names a file this sub-project edits.
 
 **Expected at the end: 11 open rows,** no new rows. Every minor the final review raises is fixed in
 the fix wave unless blocked outside our control or genuinely large (the policy).
+
+> **Amended (2026-10-30):** group 1 closed with **row 87's pins unmoved** (Task 12 re-ran them:
+> the name after `PresentPreset` is still "Program", and the saved ClassInfo state carries the
+> preset's values), so row 87 is not narrowed. Two rows were added during the build, both
+> blocked outside this sub-project's work: **233** (clap-validator and Windows preset locations,
+> §10) and **234** (a one-off extra grain on an off layer, x86_64 under Rosetta). The final
+> count is for the close.
 
 ## 13. INTENT changes (Part II, with one §23 row in the same change)
 

@@ -258,6 +258,10 @@ ctest --preset dev --output-on-failure
   - `cmake --build --preset <p> --target gg-products` gathers them into
     `build/<preset>/gg-products/` for validation.
   - CI builds `--target gg-all gg-products`.
+  - `gg-products` also stages `content/` (the factory presets `gg-presets` packs with
+    `gg-render --pack-preset` from `content/presets/`, the fetched samples, `PROVENANCE.md`, the
+    CC0 text and `content-version.txt`): the installers' Content component. It depends on
+    `gg-content`, so a tree needs the fetched release (or `GG_CONTENT_DIR`).
   - `cmake --build --preset <p> --target gg-installer` builds `gg-products`, then packs it into
     `build/<preset>/gg-installer/`: the macOS PKG and DMG, the Windows zip and, when Inno Setup
     6's `ISCC.exe` is found at configure, its installer, or the Linux tarball. Unsigned unless
@@ -326,6 +330,20 @@ runs the tests labelled either. The labels are:
     workers, a declining pool, and the tasks' denormal mode and allocations;
   - `publish`: the audio-to-UI structures (the grain queue, the UI snapshot, the live peaks) and
     the `Processor`'s publishing;
+  - `preset` (M2 sub-project 5): the preset element in `PTCH` (`encodePreset`, `readPreset`,
+    `presetInfoOf`, INIT) in `core`, and in the plugins a preset load (`preset-load`, INIT, what
+    a load keeps, the preset's name and the edited mark);
+  - `mutate`: Mutate's model (`core/Mutate.h`: the law, the locks, determinism) and the plugin's
+    (the press, the batched sender, the drain witness, the panel's lock list);
+- `discovery`, `catalog` and `queue` (with `plugin`; M2 sub-project 5): `discovery` is the CLAP
+  preset-discovery provider driven through the entry point (its locations, soundpack and
+  `get_metadata`); `catalog` is the browser's model (`PresetCatalog`: the list, search and tag
+  filters, favorites, save as and delete, the 5,000-file cap); `queue` is the UI queue's batched
+  sender, `sendValues`, which never overflows it;
+- `content`: the content roots and paths in `gg-media` (`ContentPaths.h`: the roots in order,
+  a reference resolving to the first that holds it, the user presets and favorites files),
+  with `media`; the fetched release itself is the `content_fixture` test (below, under
+  "Golden renders");
 - `media`: `gg-media`, the JUCE-free sample-file library (`media/`) that the plugin's loader and
   `gg-render` share: decoding, rate conversion, SHA-256, loading a sample, the search for a
   missing one and the settings file. `slow` marks one of them, the search's 50,000-entry scan.
@@ -368,7 +386,9 @@ runs the tests labelled either. The labels are:
   `_partial_env`), each bundle's numeric version (`version_bundle_*`) and, when a real identity
   is configured, the hardened runtime and the apps' entitlement (`codesign_hardened_*`); the
   Linux tarball (`installer_linux_*`); the Windows zip and, where `ISCC.exe` was found, the Inno
-  Setup compile (`installer_windows_*`);
+  Setup compile (`installer_windows_*`); and the Content component: `installer_content_staged`
+  (the staged `content/`: presets, samples against `PROVENANCE.md`, the version file) and
+  `installer_windows_iss_content` (the `.iss` declares the component; it runs on every OS);
 - `serial`: the Catch2 cases tagged `[serial]`, which measure time or memory and run with
   `RUN_SERIAL` (see "Tests run in parallel");
 - `plugin`: the plugins, driven through their CLAP factory. Tests labelled both `plugin` and
@@ -377,12 +397,19 @@ runs the tests labelled either. The labels are:
   - `codesign_*`: strict signature checks, which Ableton Live's scanner needs to pass;
   - `identity_*`: the frozen identities (INTENT §18), read back from the bundles: both
     standalone bundle IDs, the AU's three components and the VST3 class IDs. Run them before
-    accepting any clap-wrapper update.
+    accepting any clap-wrapper update. `identity_vst3_preset_selector_inst` and `_fx` (with
+    their setup test `identity_vst3_preset_content`, which packs the two fixture presets into a
+    scratch content root) read the built VST3's program-change parameter through the raw
+    vtables: present, with at least INIT and the product's own preset in its list (min steps 2).
+    The wrapper publishes the list from a background crawl, so the executable makes new instances
+    every 0.5 s (20 s cap) until the count suffices.
   - `gg-au-state-tests` (labels `plugin` and `au`): loads the built `.component` into its own
     process (registered with `AudioComponentRegister`; nothing is installed) and checks that
     ClassInfo carries the CLAP state (GGST) and round-trips it for all three AU identities. It
     also pins clap-wrapper's known AU state faults (T7 223). Run it (`ctest --preset dev -L au`)
-    before accepting any clap-wrapper update too.
+    before accepting any clap-wrapper update too. Its "the au lists the factory presets and loads
+    one" case checks `kAudioUnitProperty_FactoryPresets` against a content root of its own and
+    loads one preset by `PresentPreset`.
     - It runs on the native slice only: on CI's mac-universal leg it loads the AU natively
       (arm64), never under Rosetta like the x86_64 slice's `gg-tests`. Keep it so when the macOS
       leg changes, or the AU state goes unchecked there.
@@ -506,14 +533,14 @@ gg-render --pack-preset <source.json> -o <out.ggpreset> [--content-dir DIR]
   and factory routes under the source's. It takes no other option but `--content-dir`, and a
   bad source exits 2 with the parser's message. `tests/fixtures/presets/` holds the test sources
   (`fx-test.json`, `inst-test.json`).
+- Its exit status is 0 for a pass, 1 when a comparison fails, 2 for bad input and 3 for an
+  internal error.
 - A relative file path is taken from the spec's directory, or from `--media-dir`. The golden
   cases' media are generated, never committed: `--write-media DIR` writes them, and the
   `golden_media` test does so into `build/<preset>/golden-media` as a fixture every golden test
   requires.
 - The `content_fixture` test (label `golden`, fixture `content`) fetches the pinned CC0 content
   into the build tree (see "Setup"), for the cases and tests that read it.
-- Its exit status is 0 for a pass, 1 when a comparison fails, 2 for bad input and 3 for an
-  internal error.
 - **The cases:** each case's spec is in `tests/golden/cases/`, and its expected metrics and event
   log are in `tests/golden/expected/`. Every `*.json` there is a case; a new one gets a test the
   next time CMake runs. There are 36.
@@ -764,6 +791,9 @@ $b --space [--quick | --seconds S] [--rounds N] [--commit SHA] [--json out.json]
   ```
 
 - **On Linux,** CI runs pluginval under `xvfb-run -a` with `--skip-gui-tests`.
+- **On Windows,** CI runs clap-validator without `preset-discovery-crawl`,
+  `-descriptor-consistency` and `-load`: 0.4.1-127 demands `/C:\...` for a FILE location, which
+  no Windows file function opens (carry-over row 233). Run all three on macOS and Linux.
 - **auval (macOS)** needs the AU installed for your user:
 
   ```sh
