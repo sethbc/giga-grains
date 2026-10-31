@@ -6,7 +6,7 @@
   "seed": 1,
   "input": {"kind": "sweep", "startHz": 110, "endHz": 1760, "seconds": 8.0, "amplitude": 0.5},
   "channels": 1,
-  "params": {"Mix": 1.0, "A Ring Length": 3.0, "Position": 0.25826114880722156, "Size": -4.321928094887363, "Density": 2.0, "Layer B On": 1, "B Source": 0, "B Pitch": 7, "B Position": 0.25826114880722156},
+  "params": {"Mix": 1.0, "A Ring Length": 3.0, "Position": 0.25826114880722156, "Size": -4.321928094887363, "Density": 3.0, "Layer B On": 1, "B Source": 0, "B Pitch": 7, "B Position": 0.25826114880722156},
   "automation": [
     {"time": 8.0, "param": "Freeze", "value": 1},
     {"time": 9.0, "param": "A Splice", "value": 1},

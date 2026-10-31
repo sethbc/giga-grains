@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | **Approved by the programme manager 2026-10-30** against the programme design and INTENT, with the `AUDI` amendment confirmed (float32 WAV payloads, no libFLAC; INTENT §15 and §18 amended as §13 says) and three notes applied in place: this sub-project's §23 row takes the next free number at merge (sub-project 3 merges first; §13); the mod matrix's target rule for wave 2's layer parameters (refuse the modulators' controls by name, admit every other layer parameter) is sub-project 3's, so after the rebase Loop Length, Overdub and Splice are admitted and this sub-project tests that rather than implementing it (§6.3, §10); sub-project 5 adds `gg/media/ContentPaths.h` under `media/` as a new file only and passes the content roots to `findSample` (§6.7). **The director's decisions D1–D7, 2026-10-30, by forced choice, relayed by the programme manager: every recommended option** (option 1 of each), recorded in §8 and applied in place. **Built in part** 2026-10-30 (PR #19; INTENT §23 #68; the plan is `docs/superpowers/plans/2026-10-30-m2-sources.md`): everything in §6 but the ring pyramids (§6.9, Task 12, after sub-project 3 merges and this branch rebases onto it), with the goldens and listening pack (Task 10) in parallel with the documentation; then the final review and its fix wave. Amended in place, each marked **Amended**, by the build's rulings (INTENT §23 #68 names them SP-…): §6.1 (the splices' numbering and per-sample aging, SP-T1a and SP-T1b; the ring parameters on every kind, SP-T5c), §6.3 (`kPositionMax` and typing 100% on a Sample layer, SP-T2a and SP-T2b), §6.4 (the `AddSplice` anchor and the commands per group, SP-T5d; the ring read's check and order, SP-T5a; a capture's window, SP-T8a), §6.5 (draining sources not counted, SP-T7b; no ring adoption in `params.flush`, SP-T7a; `Engine::ringResized`, SP-T5b), §6.6 (the `<ring>` attributes, SP-T3d; the WAV header, SP-T3c; a missing payload and a newer `MEDI`, SP-T3a and SP-T3b; the saved ring's window, SP-T8a, SP-T8b and SP-T7c; the fingerprint cache, SP-T7d; the restore, SP-T6a, SP-T6b, SP-T7e and SP-T7g), §6.10 (`gg-render`'s state keys, SP-T8c), §6.11 (the `--quick` warm-up cap, SP-T9a), §12 (the count rules retired) and §13 (as made) |
+| **Status** | **Approved by the programme manager 2026-10-30** against the programme design and INTENT, with the `AUDI` amendment confirmed (float32 WAV payloads, no libFLAC; INTENT §15 and §18 amended as §13 says) and three notes applied in place: this sub-project's §23 row takes the next free number at merge (sub-project 3 merges first; §13); the mod matrix's target rule for wave 2's layer parameters (refuse the modulators' controls by name, admit every other layer parameter) is sub-project 3's, so after the rebase Loop Length, Overdub and Splice are admitted and this sub-project tests that rather than implementing it (§6.3, §10); sub-project 5 adds `gg/media/ContentPaths.h` under `media/` as a new file only and passes the content roots to `findSample` (§6.7). **The director's decisions D1–D7, 2026-10-30, by forced choice, relayed by the programme manager: every recommended option** (option 1 of each), recorded in §8 and applied in place. **Built in part** 2026-10-30 (PR #19; INTENT §23 #68; the plan is `docs/superpowers/plans/2026-10-30-m2-sources.md`): everything in §6 but the ring pyramids (§6.9, Task 12, after sub-project 3 merges and this branch rebases onto it), with the goldens and listening pack (Task 10) in parallel with the documentation; then the final review and its fix wave. Amended in place, each marked **Amended**, by the build's rulings (INTENT §23 #68 names them SP-…): §6.1 (the splices' numbering and per-sample aging, SP-T1a and SP-T1b; the ring parameters on every kind, SP-T5c), §6.3 (`kPositionMax` and typing 100% on a Sample layer, SP-T2a and SP-T2b), §6.4 (the `AddSplice` anchor and the commands per group, SP-T5d; the ring read's check and order, SP-T5a; a capture's window, SP-T8a), §6.5 (draining sources not counted, SP-T7b; no ring adoption in `params.flush`, SP-T7a; `Engine::ringResized`, SP-T5b), §6.6 (the `<ring>` attributes, SP-T3d; the WAV header, SP-T3c; a missing payload and a newer `MEDI`, SP-T3a and SP-T3b; the saved ring's window, SP-T8a, SP-T8b and SP-T7c; the fingerprint cache, SP-T7d; the restore, SP-T6a, SP-T6b, SP-T7e and SP-T7g), §6.10 (`gg-render`'s state keys, SP-T8c), §6.11 (the `--quick` warm-up cap, SP-T9a), §12 (the count rules retired) and §13 (as made); and by Task 12a, §6.1, §6.2 and §9 (no click at a window change or a Resample switch, SP-T12aa to SP-T12ac) |
 | **Milestone** | M2 Giga (INTENT §20, §23 #64), sub-project 2 of 7; wave 2, merged second (after 3, before 4) |
 | **Spec authority** | `INTENT.md`, then `docs/superpowers/specs/2026-10-29-m2-programme-design.md` (its §6.2, §7 and §12 are this sub-project's charter: realized here, not reopened). This document records how this sub-project implements them |
 | **Builds on** | M2 sub-project 1 as merged (`ab9f4e2`, PR #15; INTENT §23 #65): four layers each with a 16 s ring and two sample slots, the Source-kind parameter with `builtKind`, the per-layer `SourceExchange`, the 256-sample pieces and Feedback, the patch at version 2, the reserved index block `0x..40`–`0x..4F`; M1's `gg-media`, the `GGST` container, the loader and the search (§23 #48, #49, #53) |
@@ -222,6 +222,18 @@ control grid, and at its default is the identity on M1's bits.
 > on the audio thread; the cost, an Overdub left up on a Sample layer surprises on a switch to
 > Live, is listed for the director.
 
+> **Amended by ruling SP-T12aa (2026-10-30, Task 12a; the program manager's condition):** the
+> window steers admission alone. The head-proximity fade and the reads keep M1's bounds, the
+> storage's `[R − N, R − 1]`, at every setting, so a grain admitted under one window finishes in
+> its old span when a loop or a splice change narrows, moves or widens the window, while the
+> grains after it are admitted into the new one; the fade against the head stays, so no grain
+> reads a frame the head has overwritten. The per-sample fade against the narrower window that
+> this bullet's last sentence describes stepped the output (a dense cloud scored 84 to 2,955
+> against the click limit of 15); the window's ends need no crossfade, since admission puts every
+> grain at least M frames inside them for as long as the window holds. Chosen over moving the
+> window's ends over a ramp of the fade's length, which still steps a grain the ramp outruns (a
+> jump of D frames over M samples fades a grain in M²/D samples) and delays the new window.
+
 ### 6.2 The Resample source (I8; programme design §7.2)
 
 - **The tap.** The `Processor` keeps the instance output, `out` as the host hears it (the mix with
@@ -246,6 +258,19 @@ control grid, and at its default is the identity on M1's bits.
   256 samples behind and Overdub 1 is a comb that can grow by the layer's Level per pass; the
   `[slow]` test of §10 renders the worst case for 60 s and requires it finite and bounded, as
   Feedback's does.
+
+> **Amended by rulings SP-T12ab and SP-T12ac (2026-10-30, Task 12a; the program manager's
+> condition):** a switch of a layer's kind to or from Resample changed its ring's input at once,
+> so the frames written at the switch jumped from one signal to the other and the grains reading
+> across them stepped (the `[sweep]` harness: 990.7). **SP-T12ab:** each layer's ring input
+> crossfades: a ramp m, 1 while the kind is Resample and 0 otherwise, ramps to each new target
+> over `kRampSeconds` (10 ms) from the boundary, as Feedback does, and the ring takes
+> `(1 − m)·in[t] + m·tap[t − 256]`; where m is 1 the tap alone and where it is 0 the input alone,
+> bit for bit, and `setBase()` or a loaded state jumps m. **SP-T12ac:** the tap's history is
+> written whatever the kinds (two stores a sample) and is silence before the first sample after
+> a reset, so a switch reads the output 256 samples late at once; "the first 256 samples after
+> the first layer turns Resample read as silence" and "while no layer is Resample the tap costs
+> nothing" no longer hold. A layer Resample from the start, or never, renders as before.
 
 ### 6.3 Parameters: the reserved block (programme design §7.1, §7.2)
 
@@ -743,8 +768,13 @@ Engineering choices, each with its reason.
   audio-thread part, so a resize is inaudible rather than a restart.
 - **Resample is a Live-mode engine fed by the tap** (§6.2): one ring code path; the tap's history
   is kept only while a Resample layer exists, so the claim "costs nothing otherwise" is exact.
+  **Amended** (SP-T12ab, SP-T12ac, 2026-10-30): the history is kept whatever the kinds, two stores
+  a sample, so a switch can crossfade the ring's input to the tap at once (§6.2).
 - **The window length `W` generalizes `N`** (§6.1): loop and splice are one mechanism, and the
   existing fade and admission clamp give the seams and the no-click property for free.
+  **Amended** (SP-T12aa, 2026-10-30): not for a window that narrows or moves under a sounding
+  grain, which the per-sample fade stepped; the window now steers the admission clamp alone, and
+  the fade and the reads keep the storage's bounds (§6.1).
 - **Overdub's period is the window with Loop on, else the ring** (§6.1): Overdub without Loop is
   then a 16 s (or longer) sound-on-sound, consistent rather than a dead control.
 - **Splices are 32 fixed marks in ring time, added by grid commands** (§6.1, §6.4): no allocation,
