@@ -1652,3 +1652,45 @@ TEST_CASE("a save of a running ring keeps the window's length", "[plugin][thread
     CHECK(bad == 0);
     media.deactivate(nullptr, values);
 }
+
+TEST_CASE("a save before the audio thread takes a restored ring writes the restored one",
+          "[plugin]")
+{
+    // The final review's I1: a state loaded while active offers its ring to the audio thread,
+    // which adopts it at its next process() call (never in params.flush). A save meanwhile, on a
+    // track that gets flushes but no process(), say, saves the ring restored, not the one the
+    // Processor still plays, under the restored values.
+    gg::test::useMediaScratch("ring-load-then-save");
+    std::string state;
+    {
+        PluginUnderTest a(kFxId);
+        frozenFx(a);
+        state = a.save();
+    }
+    const gg::core::SessionState loaded = decoded(state, gg::core::Mode::Fx);
+    REQUIRE(loaded.rings[0].has_value());
+
+    PluginUnderTest b(kFxId);
+    REQUIRE(b.valid());
+    REQUIRE(b.loadDefaultsWithSeed(4));
+    REQUIRE(b.activate(kRate, kBlock));
+    render(b, 40, 99); // b's own ring holds other noise
+    REQUIRE(b.load(state));
+    const auto sameRing = [&](const gg::core::SessionState &s) {
+        REQUIRE(s.rings[0].has_value());
+        CHECK(s.rings[0]->sha256Hex == loaded.rings[0]->sha256Hex);
+        CHECK(s.rings[0]->frames == loaded.rings[0]->frames);
+        CHECK(s.rings[0]->splices == loaded.rings[0]->splices);
+        REQUIRE(s.audio.size() == 1);
+        const bool sameBytes = s.audio[0].bytes == loaded.audio[0].bytes; // no dump on failure
+        CHECK(sameBytes);
+    };
+    sameRing(decoded(b.save(), gg::core::Mode::Fx)); // offered, not adopted
+    gg::test::InputEvents none;
+    b.flush(none.list()); // a flush leaves the ring to the next process()
+    REQUIRE(b.impl().processor()->sources(0).ringAdoptionPending());
+    sameRing(decoded(b.save(), gg::core::Mode::Fx));
+    render(b, 1, 0, nullptr, true); // adopted: the Processor's ring is the restored one
+    REQUIRE_FALSE(b.impl().processor()->sources(0).ringAdoptionPending());
+    sameRing(decoded(b.save(), gg::core::Mode::Fx));
+}

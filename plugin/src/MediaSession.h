@@ -134,7 +134,8 @@ class MediaSession
     uint64_t memoryUsedBytes() const noexcept;
 
     /// The session to save: the values, seed and routes given, every loader's entry, the rings
-    /// of D1 read from `active` (or, inactive, those held for the next activation), the embed rule
+    /// of D1 read from `active` (or, inactive, those held for the next activation; active, a
+    /// ring a restore offered that the audio thread hasn't adopted yet, as restored), the embed rule
     /// (the class comment), the cap. Filed audio is written to the captures folder unless a file
     /// of its name and size is there. A ring's WAV bytes and hash are cached by (layer, storage
     /// epoch, head, window start), so a host saving every few seconds hashes an unchanged frozen
@@ -226,6 +227,11 @@ class MediaSession
         // Held for the next activation: a ring restored while inactive, or kept at deactivate.
         std::optional<core::RingEntry> pendingEntry;
         std::shared_ptr<const std::string> pendingBytes; // null: filed, read from its path
+        // A ring restored while active, from its offer until the audio thread adopts it or
+        // declines it (restoreInFlight): what a save writes for the layer meanwhile, since the
+        // Processor still plays the ring before it.
+        std::optional<core::RingEntry> offeredEntry;
+        std::shared_ptr<const std::string> offeredBytes; // null: filed, read from its path
         // The save's cache (the class comment).
         bool cached{false};
         uint32_t cacheEpoch{0};
@@ -246,6 +252,9 @@ class MediaSession
                                          const core::ParamValues &values, bool &failed);
     /// The window request of layer `layer` with `values` (Loop, Loop Length) at rate_.
     RingSpanRequest windowOf(const core::ParamValues &values, uint8_t layer, uint32_t splice) const;
+    /// Whether layer `layer`'s restored ring is offered to `processor` and not yet adopted or
+    /// declined (RingSlot::offeredEntry).
+    bool restoreInFlight(const core::Processor &processor, uint8_t layer) const noexcept;
     void refreshBudget() noexcept;
     /// The captures folder: the settings', or gg::media::defaultCapturesFolder().
     std::filesystem::path capturesFolder() const;

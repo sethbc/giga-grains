@@ -107,28 +107,33 @@ const clap_plugin_descriptor *descriptorFor(Product product) noexcept;
 /// thread at construction, from std::random_device; a state brings its own.
 ///
 /// **The media** (spec §6.4–§6.7; M2 sub-project 2's spec §6.3–§6.8), in both products: a
-/// MediaSession, with one SampleLoader per layer, each keeping its manifest entry and source on
-/// the main thread and loading on its own worker thread, the rings saved and restored with the
-/// state (D1), the memory cap (INST), the Ring Length watcher, capture and collect. Sources and
-/// rings reach the audio thread through each layer's SourceExchange (Processor::sources(layer)):
-/// the main thread offers, process() adopts at the start of a call and hands back what no grain
-/// reads, asking for on_main_thread (requestCollect), where the main thread frees it. A session
-/// restore is synchronous (D8): stateLoad finds and decodes every sample and ring before it
-/// returns; while active, it offers layer A's source (or its keep) with the loaded values as one
-/// hand-off (SourceOffer), each other layer's source on its own exchange, then each restored
-/// ring, back to back, so the process() that takes them usually applies them all (a ring offered
-/// after a process() polled its layer lands one call later; the values never come after their
-/// ring); while inactive, activate() converts them at the new rate before it returns, as it does
-/// the samples it has at any new rate (ruling R18), and sets every ring at its Ring Length. The
-/// audio thread asks for on_main_thread when a layer's requested ring changes
-/// (checkRingLengths), where the watcher resizes the ring (MediaSession::pollRingLengths). A
-/// ring is never adopted in params.flush, which stays trivial (CLAUDE.md): a flush takes an offer
-/// carrying a ring whole and leaves it, values, source and ring, to the next process() call's
-/// start (Processor::takeOffers), so a restored frozen ring is still held from its first processed
-/// sample. The per-machine
-/// settings file is $GG_SETTINGS_FILE when that is set and not empty (read once, at
-/// construction: the tests' way to keep away from the user's file), and
-/// gg::media::defaultSettingsPath() otherwise.
+/// MediaSession, with one SampleLoader per layer, each keeping its manifest entry and source on the
+/// main thread and loading on its own worker thread, the rings saved and restored with the state
+/// (D1), the memory cap (INST), the Ring Length watcher, capture and collect. Sources and rings
+/// reach the audio thread through each layer's SourceExchange (Processor::sources(layer)): the main
+/// thread offers, process() adopts at the start of a call and hands back what no grain reads,
+/// asking for on_main_thread (requestCollect), where the main thread frees it. A session restore is
+/// synchronous (D8): stateLoad finds and decodes every sample and ring before it returns; while
+/// active, it offers layer A's source (or its keep) with the loaded values as one hand-off
+/// (SourceOffer), each other layer's source on its own exchange, then each restored ring, back to
+/// back, so the process() that takes them usually applies them all (a ring offered after a
+/// process() polled its layer lands one call later; layer A's ring never comes before the values,
+/// which ride its exchange, but layers B to D's rings ride their own, so with a process() running
+/// during the load one of theirs may land a call before the values); while inactive, activate()
+/// converts them at the new rate before it returns, as it does the samples it has at any new rate
+/// (ruling R18), and sets every ring at its Ring Length. The audio thread asks for on_main_thread
+/// when a layer's requested ring changes (checkRingLengths), where the watcher resizes the ring
+/// (MediaSession::pollRingLengths). A ring is never adopted in params.flush, which stays trivial
+/// (CLAUDE.md): a flush takes an offer carrying a ring whole and leaves it, values, source and
+/// ring, to the next process() call's start (Processor::takeOffers), so a restored frozen ring is
+/// still held from its first processed sample. Two costs of that deferral: a change the editor or
+/// the host makes in a params.flush after the restore and before that process() is overwritten
+/// there by the restore's values (the offer applies whole); and a suspended track, flushed but
+/// never processed, holds the restore, values, source and ring, until process() resumes. A save
+/// meanwhile writes the restored values and the restored ring, not the one the Processor still
+/// plays (MediaSession::save). The per-machine settings file is $GG_SETTINGS_FILE when that is set
+/// and not empty (read once, at construction: the tests' way to keep away from the user's file),
+/// and gg::media::defaultSettingsPath() otherwise.
 ///
 /// **The tail** (sub-project 4's spec §6.7; ruling R-T7a) is a constant per product: the FX's is
 /// infinite, the instrument's kInstrumentTailSeconds at the active rate. Nothing calls

@@ -361,8 +361,20 @@ uint64_t MediaSession::memoryUsedBytes() const noexcept
         {
             used += slot.pendingBytes->size();
         }
+        if (slot.offeredBytes != nullptr)
+        {
+            used += slot.offeredBytes->size();
+        }
     }
     return used;
+}
+
+bool MediaSession::restoreInFlight(const core::Processor &processor, uint8_t layer) const noexcept
+{
+    const RingSlot &slot = rings_[layer];
+    return slot.offeredEntry.has_value() && slot.offerPending && slot.offeredRestore &&
+           processor.sources(layer).ringAdoptionPending() &&
+           processor.ringAdoptionsDeclined(layer) == slot.declinesAtOffer;
 }
 
 void MediaSession::refreshBudget() noexcept { budget_.usedBytes = memoryUsedBytes(); }
@@ -534,7 +546,13 @@ core::SessionState MediaSession::save(const core::ParamValues &values, uint64_t 
             {
                 std::optional<SavedRing> ring;
                 bool failed = false;
-                if (active != nullptr)
+                if (active != nullptr && restoreInFlight(*active, l))
+                {
+                    // Restored, offered and not yet adopted: the Processor still plays the ring
+                    // before it, which the restored values no longer describe.
+                    ring = SavedRing{*slot.offeredEntry, slot.offeredBytes};
+                }
+                else if (active != nullptr)
                 {
                     ring = readForSave(*active, l, values, failed);
                 }
@@ -625,6 +643,8 @@ MediaSession::Restored MediaSession::restore(core::SessionState state, double ac
         slot.captureStatus.clear();
         slot.pendingEntry.reset();
         slot.pendingBytes.reset();
+        slot.offeredEntry.reset();
+        slot.offeredBytes.reset();
         slot.cached = false;
         slot.encoded.reset();
     }
@@ -723,7 +743,10 @@ MediaSession::Restored MediaSession::restore(core::SessionState state, double ac
             std::copy_n(ring.splices.begin(), how.spliceCount, how.splices.begin());
             out.storages[l] = std::move(ring.storage);
             out.rings[l] = how;
-            // The plugin offers it now: in flight until the audio thread adopts it.
+            // The plugin offers it now: in flight until the audio thread adopts it, and saved as
+            // restored meanwhile.
+            slot.offeredEntry = std::move(entry);
+            slot.offeredBytes = std::move(bytes);
             slot.frames = frames;
             slot.offerPending = true;
             slot.offeredRestore = true;
@@ -765,6 +788,8 @@ void MediaSession::activate(core::Processor &processor, double sampleRate, uint3
         slot.frames = storage != nullptr ? storage->frames() : 0;
         slot.offerPending = false;
         slot.offeredRestore = false;
+        slot.offeredEntry.reset();
+        slot.offeredBytes.reset();
         slot.refusedFrames = -1;
         slot.resizeStatus.clear();
         slot.cached = false;
@@ -881,6 +906,8 @@ void MediaSession::deactivate(const core::Processor *processor,
         slot.frames = 0;
         slot.offerPending = false;
         slot.offeredRestore = false;
+        slot.offeredEntry.reset();
+        slot.offeredBytes.reset();
         slot.refusedFrames = -1;
         slot.resizeStatus.clear();
         slot.cached = false;
@@ -927,6 +954,8 @@ void MediaSession::pollRingLengths(core::Processor &processor) noexcept
                 }
                 slot.offerPending = false;
                 slot.offeredRestore = false;
+                slot.offeredEntry.reset();
+                slot.offeredBytes.reset();
             }
             const int64_t target = framesFor(processor.ringSecondsRequested(l), rate_);
             if (target == slot.frames)
@@ -996,6 +1025,8 @@ void MediaSession::pollRingLengths(core::Processor &processor) noexcept
             processor.sources(l).offerRing(std::move(next), how);
             slot.offerPending = true;
             slot.offeredRestore = false;
+            slot.offeredEntry.reset();
+            slot.offeredBytes.reset();
             slot.frames = target;
             slot.resizeStatus.clear();
             slot.refusedFrames = -1;
