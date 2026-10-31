@@ -7,6 +7,7 @@
 // their other checks, and the tripwire's own test SKIPs. The RTSan build also aborts on any
 // allocation, lock or blocking call made inside the SST_CPPUTILS_NONBLOCKING process().
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <memory>
@@ -26,20 +27,27 @@ using gg::test::AllocTripwire;
 
 namespace
 {
-// Counts spawns, the Eco ones and the ones reading the ring, without allocating: the sink runs
-// inside process().
+// Counts spawns, the Eco ones, the HQ ones and the ones reading the ring, without allocating: the
+// sink runs inside process().
 struct SpawnCounter
 {
     uint64_t spawns{0};
     uint64_t eco{0};
+    uint64_t hq{0};
     uint64_t live{0};
+    uint64_t steals{0};
 
     static void record(void *ctx, uint32_t, const gg::GrainSpec &g)
     {
         auto *counter = static_cast<SpawnCounter *>(ctx);
         ++counter->spawns;
         counter->eco += g.tier == gg::Tier::Eco ? 1 : 0;
+        counter->hq += g.tier == gg::Tier::HQ ? 1 : 0;
         counter->live += g.sourceSlot == gg::Engine::kLiveSlot ? 1 : 0;
+    }
+    static void steal(void *ctx, uint32_t, uint64_t, int64_t)
+    {
+        ++static_cast<SpawnCounter *>(ctx)->steals;
     }
 };
 
@@ -390,6 +398,223 @@ TEST_CASE("engine process does not allocate at the Eco tier", "[rt]")
     REQUIRE(counter.eco > ecoBefore);                     // Eco grains spawned while armed
     REQUIRE(counter.spawns - counter.eco > normalBefore); // and Normal ones
     REQUIRE(engine.activeGrains() > 0);
+    if (gg::test::AllocTripwire::available()) // off under ASan; RTSan covers this
+    {
+        REQUIRE(allocations == 0);
+    }
+}
+
+TEST_CASE("engine process does not allocate at the HQ tier", "[rt]")
+{
+    // The HQ grains read through the 16-tap sinc kernels (spec §6.2), up a fifth so they are
+    // stretched, alongside Normal grains still sounding: both outputs and one, sample and live
+    // sources, calls of 0, 1, 300 and 1,000 samples, and a quality change to Normal and back to
+    // HQ inside the armed span.
+    gg::CloudParams params{.densityHz = 200.0,
+                           .distribution = 1.0,
+                           .grainDurationSec = 0.05,
+                           .position = 0.5,
+                           .spray = 0.5,
+                           .pitchSemitones = 7.0,
+                           .stereo = 1.0,
+                           .gain = 0.5f};
+    std::vector<float> inLeft(1000), inRight(1000);
+    for (std::size_t i = 0; i < inLeft.size(); ++i)
+    {
+        inLeft[i] = static_cast<float>(std::sin(2.0 * std::numbers::pi * 220.0 * i / 48000.0));
+        inRight[i] = -inLeft[i];
+    }
+    const float *in[2] = {inLeft.data(), inRight.data()};
+    std::vector<float> left(1000), right(1000);
+    float *out[2] = {left.data(), right.data()};
+
+    gg::EngineConfig config{48000.0, 256, 4096, 9};
+    config.liveSeconds = 1.0;
+    gg::Engine engine(config);
+    engine.setSource(stereoSine(330.0));
+    SECTION("sample source") {}
+    SECTION("live ring")
+    {
+        engine.setSourceMode(gg::SourceMode::Live);
+        params.position = 0.01;
+        params.spray = 0.02;
+    }
+    engine.setCloudParams(params); // Normal: these grains are still sounding when HQ starts
+    SpawnCounter counter;
+    engine.setEventSink(&SpawnCounter::record, &counter);
+    for (int i = 0; i < 4; ++i) // warm up until grains are sounding
+    {
+        engine.process(in, 2, out, 2, 1000);
+    }
+    gg::CloudParams hq = params;
+    hq.quality = gg::Tier::HQ;
+    engine.setCloudParams(hq);
+    engine.process(in, 2, out, 2, 1); // the next armed call renders both tiers' grains
+    const uint64_t hqBefore = counter.hq;
+    const uint64_t normalBefore = counter.spawns - counter.hq;
+
+    AllocTripwire::resetCount();
+    {
+        AllocTripwire::Scope armed;
+        for (int i = 0; i < 20; ++i)
+        {
+            engine.setCloudParams(i == 10 || i == 11 ? params : hq);
+            engine.process(in, 2, out, 2, 0);
+            engine.process(in, 2, out, 2, 1);
+            engine.process(in, 2, out, 2, 1000);
+            engine.process(in, 2, out, 1, 300);
+        }
+    }
+    const uint64_t allocations = AllocTripwire::count();
+
+    REQUIRE(counter.hq > hqBefore);                      // HQ grains spawned while armed
+    REQUIRE(counter.spawns - counter.hq > normalBefore); // and Normal ones
+    REQUIRE(engine.activeGrains() > 0);
+    REQUIRE(
+        std::all_of(left.begin(), left.begin() + 300, [](float x) { return std::isfinite(x); }));
+    if (gg::test::AllocTripwire::available()) // off under ASan; RTSan covers this
+    {
+        REQUIRE(allocations == 0);
+    }
+}
+
+TEST_CASE("engine process does not allocate on every rung", "[rt]")
+{
+    // The overload ladder (spec §6.5) with the tripwire armed from a reset: HQ draws of 0.1 s at
+    // 400 Hz into a quota of 40 units. Grains 0 to 2 are admitted at HQ (36 units), grain 3 is
+    // lowered to Normal (40), the next ones drop while grain 0 is young, and from its half-way
+    // point each admission steals one. The quota is set inside the armed span too, sample and
+    // live sources, both outputs and one, odd block sizes.
+    gg::CloudParams params{.densityHz = 400.0,
+                           .grainDurationSec = 0.1,
+                           .position = 0.5,
+                           .spray = 0.5,
+                           .pitchSemitones = 3.0,
+                           .stereo = 1.0,
+                           .gain = 0.5f,
+                           .quality = gg::Tier::HQ};
+    std::vector<float> inLeft(1000), inRight(1000);
+    for (std::size_t i = 0; i < inLeft.size(); ++i)
+    {
+        inLeft[i] = static_cast<float>(std::sin(2.0 * std::numbers::pi * 220.0 * i / 48000.0));
+        inRight[i] = -inLeft[i];
+    }
+    const float *in[2] = {inLeft.data(), inRight.data()};
+    std::vector<float> left(1000), right(1000);
+    float *out[2] = {left.data(), right.data()};
+
+    gg::EngineConfig config{48000.0, 256, 4096, 13};
+    config.liveSeconds = 1.0;
+    gg::Engine engine(config);
+    engine.setSource(stereoSine(330.0));
+    SECTION("sample source") {}
+    SECTION("live ring")
+    {
+        engine.setSourceMode(gg::SourceMode::Live);
+        params.position = 0.2;
+        params.spray = 0.1;
+    }
+    engine.setCloudParams(params);
+    SpawnCounter counter;
+    engine.setEventSink(&SpawnCounter::record, &counter);
+    engine.setStealSink(&SpawnCounter::steal, &counter);
+    engine.process(in, 2, out, 2, 1000); // the ring fills, and the mode applies
+    const uint64_t hqBefore = counter.hq;
+
+    AllocTripwire::resetCount();
+    {
+        AllocTripwire::Scope armed;
+        engine.reset();
+        engine.setQuota(40);
+        for (int i = 0; i < 20; ++i)
+        {
+            engine.process(in, 2, out, 2, 0);
+            engine.process(in, 2, out, 2, 1);
+            engine.process(in, 2, out, 2, 1000);
+            engine.process(in, 2, out, 1, 300);
+        }
+    }
+    const uint64_t allocations = AllocTripwire::count();
+
+    // reset() zeroed the counters, so each counts the armed span alone.
+    REQUIRE(counter.hq > hqBefore);      // rung 1 at the draw's tier
+    REQUIRE(engine.loweredGrains() > 0); // rung 2
+    REQUIRE(engine.droppedGrains() > 0); // rung 3's drop
+    REQUIRE(engine.stolenGrains() > 0);  // and its steal
+    REQUIRE(counter.steals == engine.stolenGrains());
+    if (gg::test::AllocTripwire::available()) // off under ASan; RTSan covers this
+    {
+        REQUIRE(allocations == 0);
+    }
+}
+
+TEST_CASE("engine process does not allocate while grains fade", "[rt]")
+{
+    // The steal fade (spec §6.5) with the tripwire armed: 400 Hz of 0.1 s Normal grains into a
+    // quota of 10 stereo grains, so from the oldest grain's half-way point every admission steals
+    // one, and each stolen grain fades over the next 256 samples, through the references, across
+    // calls of 1, 7, 64 and 1,000 samples. Sample and live sources, both outputs and one.
+    gg::CloudParams params{.densityHz = 400.0,
+                           .grainDurationSec = 0.1,
+                           .position = 0.5,
+                           .spray = 0.5,
+                           .pitchSemitones = 3.0,
+                           .stereo = 1.0,
+                           .gain = 0.5f};
+    std::vector<float> inLeft(1000), inRight(1000);
+    for (std::size_t i = 0; i < inLeft.size(); ++i)
+    {
+        inLeft[i] = static_cast<float>(std::sin(2.0 * std::numbers::pi * 220.0 * i / 48000.0));
+        inRight[i] = -inLeft[i];
+    }
+    const float *in[2] = {inLeft.data(), inRight.data()};
+    std::vector<float> left(1000), right(1000);
+    float *out[2] = {left.data(), right.data()};
+
+    gg::EngineConfig config{48000.0, 256, 4096, 17};
+    config.liveSeconds = 1.0;
+    gg::Engine engine(config);
+    engine.setSource(stereoSine(330.0));
+    SECTION("sample source") {}
+    SECTION("live ring")
+    {
+        engine.setSourceMode(gg::SourceMode::Live);
+        params.position = 0.2;
+        params.spray = 0.1;
+    }
+    engine.setCloudParams(params);
+    engine.setQuota(40);
+    SpawnCounter counter;
+    engine.setEventSink(&SpawnCounter::record, &counter);
+    engine.setStealSink(&SpawnCounter::steal, &counter);
+    engine.process(in, 2, out, 2, 1000); // the ring fills, and the mode applies
+    engine.process(in, 2, out, 2, 1000);
+    engine.process(in, 2, out, 2, 1000); // the oldest grain is past half-way: steals begin
+
+    AllocTripwire::resetCount();
+    const uint64_t stolenBefore = engine.stolenGrains();
+    {
+        AllocTripwire::Scope armed;
+        for (int i = 0; i < 10; ++i)
+        {
+            for (int k = 0; k < 40; ++k)
+            {
+                engine.process(in, 2, out, 2, 1);
+            }
+            for (int k = 0; k < 10; ++k)
+            {
+                engine.process(in, 2, out, 2, 7);
+            }
+            engine.process(in, 2, out, 2, 64);
+            engine.process(in, 2, out, 1, 64);
+            engine.process(in, 2, out, 2, 1000);
+        }
+    }
+    const uint64_t allocations = AllocTripwire::count();
+
+    REQUIRE(engine.stolenGrains() > stolenBefore + 20);
+    REQUIRE(counter.steals == engine.stolenGrains());
+    REQUIRE(std::isfinite(left[0]));
     if (gg::test::AllocTripwire::available()) // off under ASan; RTSan covers this
     {
         REQUIRE(allocations == 0);

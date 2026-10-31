@@ -46,11 +46,12 @@ fs::path freshDir(const char *name)
     return dir;
 }
 
-/// A ring's slots: capacity + 3 slots of 2 floats, frame f (absolute) at slot f mod capacity,
-/// holding value(f, c). The window is `frames` frames from `oldest`.
+/// A ring's slots: capacity + kGuardFrames slots of 2 floats, frame f (absolute) at slot f mod
+/// capacity, holding value(f, c). The window is `frames` frames from `oldest`.
 std::vector<float> ringSlots(int64_t capacity, int64_t oldest, int64_t frames, double offset = 0.0)
 {
-    std::vector<float> slots(static_cast<std::size_t>(2 * (capacity + 3)), 0.0f);
+    std::vector<float> slots(
+        static_cast<std::size_t>(2 * (capacity + gg::RingStorage::kGuardFrames)), 0.0f);
     for (int64_t k = 0; k < frames; ++k)
     {
         const int64_t slot = (oldest + k) % capacity;
@@ -118,7 +119,7 @@ TEST_CASE("a ring round-trips through WAV bytes", "[media]")
         REQUIRE(out[2 * s] == 0.0f);
         REQUIRE(out[2 * s + 1] == 0.0f);
     }
-    // The guard slots equal slots 0 .. 2.
+    // The guard slots equal slots 0 .. 14.
     const int64_t c = restored.storage->capacity();
     for (int64_t g = 0; g < gg::RingStorage::kGuardFrames; ++g)
     {

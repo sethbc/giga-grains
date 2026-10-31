@@ -20,6 +20,7 @@
 #include <functional>
 #include <memory>
 #include <numbers>
+#include <utility>
 #include <vector>
 
 #include "gg/core/ModMatrix.h"
@@ -110,8 +111,9 @@ inline float peak(const std::vector<float> &v)
     return peakIn(v, 0, static_cast<int64_t>(v.size()));
 }
 
-// Every spawned grain with its layer and the process() call it came from, into storage
-// reserved up front: the sink runs inside process().
+// Every spawned grain with its layer and the process() call it came from, and every steal
+// (Processor::setStealSink, recordSteal), into storage reserved up front: the sinks run inside
+// process().
 struct Log
 {
     struct Event
@@ -120,12 +122,55 @@ struct Log
         uint64_t call;
         gg::GrainSpec grain;
     };
+    // A steal: the stolen grain's index and the onset of the grain it made room for, and `next`,
+    // the number of spawns logged before it, so events[next] is the spawn that came after it.
+    struct Steal
+    {
+        uint32_t layer;
+        uint64_t call;
+        uint64_t index;
+        int64_t onset;
+        std::size_t next;
+    };
     static constexpr std::size_t kCapacity = 1 << 17;
+    static constexpr std::size_t kStealCapacity = 1 << 16;
     std::vector<Event> events;
+    std::vector<Steal> steals;
     uint64_t call{0};
     bool overflowed{false};
 
-    Log() { events.reserve(kCapacity); }
+    Log()
+    {
+        events.reserve(kCapacity);
+        steals.reserve(kStealCapacity);
+    }
+
+    static void recordSteal(void *ctx, uint32_t layer, uint64_t index, int64_t onset)
+    {
+        auto *log = static_cast<Log *>(ctx);
+        if (log->steals.size() < kStealCapacity)
+        {
+            log->steals.push_back({layer, log->call, index, onset, log->events.size()});
+        }
+        else
+        {
+            log->overflowed = true;
+        }
+    }
+
+    // One layer's steals, (index, onset) in the order the sink saw them.
+    std::vector<std::pair<uint64_t, int64_t>> layerSteals(uint32_t l) const
+    {
+        std::vector<std::pair<uint64_t, int64_t>> out;
+        for (const Steal &s : steals)
+        {
+            if (s.layer == l)
+            {
+                out.emplace_back(s.index, s.onset);
+            }
+        }
+        return out;
+    }
 
     static void record(void *ctx, uint32_t layer, const gg::GrainSpec &g)
     {
@@ -414,14 +459,19 @@ struct LayersRender
     Stereo audio;
     Log log;
     std::array<int64_t, 4> heads{};
+    // The overload ladder's counters after the render: the Processor's sums of lowered and stolen
+    // grains, and each layer's engine's dropped ones.
+    uint64_t lowered{0};
+    uint64_t stolen{0};
+    std::array<uint64_t, 4> dropped{};
     // Every mod source's value on every layer after the render (Processor::sourceValue).
     std::array<std::array<float, static_cast<std::size_t>(gg::core::ModSource::Count)>, 4>
         sources{};
 };
 
 // How renderLayers sets its Processor up beyond the invariance test's defaults: the product, the
-// task runner (nullptr: the built-in serial one), the notes, the MIDI controls, and anything else
-// (routes, a transport), before the first call.
+// task runner (nullptr: the built-in serial one), the notes, the MIDI controls, anything else
+// (routes, a transport) before the first call, and the render's length (at most the input's).
 struct LayersSetup
 {
     gg::core::Mode mode{gg::core::Mode::Fx};
@@ -429,11 +479,12 @@ struct LayersSetup
     std::vector<TimedNote> notes;
     std::function<void(gg::core::Processor &)> configure;
     std::vector<TimedControl> controls;
+    int64_t frames{kInvarianceFrames};
 };
 
 // The four-layer render of the block-size invariance test: every layer on, each with a sine
 // sample for the times it reads one, `input` into the rings (and the FX's dry side), `events`
-// applied, in calls of blockSizes.
+// applied, in calls of blockSizes, for setup.frames.
 inline void renderLayers(const Stereo &input, const std::vector<TimedEvent> &events,
                          uint32_t maxBlock, const std::vector<uint32_t> &blockSizes,
                          LayersRender &r, const LayersSetup &setup = {})
@@ -441,6 +492,7 @@ inline void renderLayers(const Stereo &input, const std::vector<TimedEvent> &eve
     gg::core::Processor p({kRate, maxBlock, 47, setup.mode});
     p.setTaskRunner(setup.runner);
     p.setEventSink(&Log::record, &r.log);
+    p.setStealSink(&Log::recordSteal, &r.log);
     const std::array<double, 4> hz{196.0, 293.66, 440.0, 659.25};
     for (uint8_t L = 0; L < 4; ++L)
     {
@@ -451,12 +503,15 @@ inline void renderLayers(const Stereo &input, const std::vector<TimedEvent> &eve
     {
         setup.configure(p);
     }
-    r.audio = silence(kInvarianceFrames);
-    render(p, &input, 0, kInvarianceFrames, blockSizes, events, r.audio, nullptr, {}, setup.notes,
+    r.audio = silence(setup.frames);
+    render(p, &input, 0, setup.frames, blockSizes, events, r.audio, nullptr, {}, setup.notes,
            setup.controls);
+    r.lowered = p.loweredGrains();
+    r.stolen = p.stolenGrains();
     for (uint8_t L = 0; L < 4; ++L)
     {
         r.heads[L] = p.engine(L).liveWriteHead();
+        r.dropped[L] = p.engine(L).droppedGrains();
         for (std::size_t s = 0; s < r.sources[L].size(); ++s)
         {
             r.sources[L][s] = p.sourceValue(static_cast<gg::core::ModSource>(s), L);

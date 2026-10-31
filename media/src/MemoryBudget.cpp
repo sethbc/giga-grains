@@ -6,14 +6,16 @@
 
 #include <algorithm>
 
+#include "gg/source/RingStorage.h"
+
 namespace gg::media
 {
 namespace
 {
 constexpr uint64_t kMiB = uint64_t{1} << 20;
 constexpr uint64_t kFloat = sizeof(float);
-/// A ring's guard slots past each level's end (LiveSource::kGuardFrames).
-constexpr uint64_t kRingGuard = 3;
+/// A ring's guard slots past each level's end (RingStorage::kGuardFrames, LiveSource's).
+constexpr auto kRingGuard = static_cast<uint64_t>(RingStorage::kGuardFrames);
 
 uint64_t ceilShift(uint64_t frames, uint32_t n) noexcept
 {

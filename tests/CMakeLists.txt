@@ -35,10 +35,12 @@ add_executable(gg-tests
         engine/kernel_tests.cpp
         engine/live_tests.cpp
         engine/mathdet_tests.cpp
+        engine/mipmap_tests.cpp
         engine/pool_tests.cpp
         engine/rng_tests.cpp
         engine/rt_tests.cpp
         engine/sample_buffer_tests.cpp
+        engine/sinc_table_tests.cpp
         engine/task_runner_tests.cpp
         engine/window_tests.cpp
         media/budget_tests.cpp
@@ -56,6 +58,10 @@ add_executable(gg-tests
         metrics/click_injection_tests.cpp
         metrics/metrics_tests.cpp
         metrics/spectrogram_tests.cpp
+        sweep/sweep_bursts_tests.cpp
+        sweep/sweep_extremes_tests.cpp
+        sweep/sweep_overload_tests.cpp
+        sweep/sweep_params_tests.cpp
         tools/bench_kernel_tests.cpp
         tools/bench_tests.cpp
         tools/render_spec_tests.cpp
@@ -156,6 +162,21 @@ catch_discover_tests(gg-tests TEST_SPEC "~[serial]" ADD_TAGS_AS_LABELS)
 catch_discover_tests(gg-tests TEST_SPEC "[serial]" ADD_TAGS_AS_LABELS
         PROPERTIES RUN_SERIAL TRUE)
 
+# GG_FORCE_SSE (M2 engine spec §6.12): the hidden case "GG_FORCE_SSE in the environment forces the
+# 4-wide table", alone in a process whose environment sets the variable, so dispatch() resolves
+# with it. Label kernel.
+add_test(NAME kernel_force_sse_env
+        COMMAND gg-tests "GG_FORCE_SSE in the environment forces the 4-wide table")
+set_tests_properties(kernel_force_sse_env PROPERTIES LABELS kernel ENVIRONMENT GG_FORCE_SSE=1)
+
+# GG_REQUIRE_AVX2 (final review I1): the hidden case "GG_REQUIRE_AVX2 requires the 8-wide table"
+# fails when the variable is set in the CTest environment and avx2Kernels() is null. CI's Linux and
+# Windows test steps set it, so those legs can't fall back to the 4-wide table unnoticed; unset (a
+# local run, arm64, the mac-universal leg) it passes and requires nothing. Label kernel.
+add_test(NAME kernel_require_avx2
+        COMMAND gg-tests "GG_REQUIRE_AVX2 requires the 8-wide table")
+set_tests_properties(kernel_require_avx2 PROPERTIES LABELS kernel)
+
 # gg-bench's command line, label `bench`. The bench tests check the timings' shape, never their
 # values, so they run beside the others.
 # - bench_cli: a tiny run of a kernel, the reference and an engine case must exit 0 and write its
@@ -191,8 +212,10 @@ add_test(NAME bench_space_cli
         COMMAND gg-bench --space --quick --json ${CMAKE_BINARY_DIR}/bench_space_cli.json)
 set_tests_properties(bench_space_cli PROPERTIES LABELS bench)
 # - bench_rejects_*: an option the mode doesn't take is bad usage (carry-over [151]), and so is a
-#   value --space's validation rejects. Each passes only on gg-bench's error line, then its
-#   usage (both on stderr, before anything is timed), with exit code 2 (check-exit-code.cmake).
+#   value --space's or the grain cases' validation rejects (bench_rejects_grains_too_many:
+#   engine-full-pool's capacity, grains + 48, must stay at or below kMaxGrainCapacity, 16,384).
+#   Each passes only on gg-bench's error line, then its usage (both on stderr, before anything
+#   is timed), with exit code 2 (check-exit-code.cmake).
 set(bench_rejects_space_cases_args --space --cases reference)
 set(bench_rejects_space_cases_error "--cases doesn't apply with --space")
 set(bench_rejects_canvas_seconds_args --canvas --seconds 1)
@@ -201,8 +224,11 @@ set(bench_rejects_make_baseline_quick_args --quick --make-baseline test out.json
 set(bench_rejects_make_baseline_quick_error "--quick doesn't apply with --make-baseline")
 set(bench_rejects_space_seconds_args --space --seconds 0)
 set(bench_rejects_space_seconds_error "the run length must be more than 0")
+set(bench_rejects_grains_too_many_args --grains 16337)
+set(bench_rejects_grains_too_many_error "there must be at most 16336 grains")
 foreach (test IN ITEMS bench_rejects_space_cases bench_rejects_canvas_seconds
-        bench_rejects_make_baseline_quick bench_rejects_space_seconds)
+        bench_rejects_make_baseline_quick bench_rejects_space_seconds
+        bench_rejects_grains_too_many)
     add_test(NAME ${test}
             COMMAND ${CMAKE_COMMAND} -DPROGRAM=$<TARGET_FILE:gg-bench>
             "-DARGS=${${test}_args}" -DEXPECTED_CODE=2

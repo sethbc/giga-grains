@@ -16,12 +16,14 @@ namespace gg
 ///
 /// Eco is the zero value, so a value-initialized Tier{} is Eco, not the default tier: write
 /// Tier::Normal where Normal is meant, as GrainSpec::tier and CloudParams::quality do. The
-/// renderer tests for Eco alone (Engine::renderPool), so a value outside the enum, which nothing
-/// makes, would render as Normal.
+/// renderer tests for Eco and HQ alone (Engine::renderPool), so a value outside the enum, which
+/// nothing makes, would render as Normal.
 enum class Tier : uint8_t
 {
     Eco,    ///< Linear interpolation over taps floor(pos) and floor(pos) + 1.
     Normal, ///< The 4-point Hermite (Catmull-Rom) over taps floor(pos) − 1 .. floor(pos) + 2.
+    HQ,     ///< The 16-tap windowed sinc (SincTable) over taps floor(pos) − 7 .. floor(pos) + 8,
+            ///< stretched by the residual rate.
 };
 } // namespace gg
 

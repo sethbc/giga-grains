@@ -23,8 +23,9 @@ inline constexpr int64_t kMaxRingFrames = int64_t{1} << 40;
 ///
 /// The layout is LiveSource's (ruling M1-o): frame f >= 0 of a window of N = frames() frames lives
 /// in slot f mod C, with C = capacity() = N + maxBlockSize, and a slot holds its two channels side
-/// by side, slot s's channel c at slots()[2s + c]. Three guard slots follow, C .. C + 2, which the
-/// ring keeps equal to slots 0 .. 2 so that four taps from any slot are contiguous.
+/// by side, slot s's channel c at slots()[2s + c]. Fifteen guard slots follow, C .. C + 14, which
+/// the ring keeps equal to slots 0 .. 14 so that sixteen taps (the sinc's) from any slot are
+/// contiguous.
 ///
 /// Neither copied nor moved: a copy would allocate a whole ring, and a ring points at its storage,
 /// which lives behind a pointer (std::unique_ptr) for as long as it does. Only the constructor
@@ -32,7 +33,7 @@ inline constexpr int64_t kMaxRingFrames = int64_t{1} << 40;
 class RingStorage
 {
   public:
-    /// N + maxBlockSize + 3 slots of 2 floats, every one zeroed, so a frame no one wrote reads as
+    /// N + maxBlockSize + 15 slots of 2 floats, every one zeroed, so a frame no one wrote reads as
     /// silence. maxBlockSize 0 counts as 1. Throws std::invalid_argument when frames < 1 or when
     /// the storage, N + maxBlockSize frames, would exceed kMaxRingFrames.
     RingStorage(int64_t frames, uint32_t maxBlockSize);
@@ -47,14 +48,14 @@ class RingStorage
     int64_t frames() const noexcept { return frames_; }
     /// C = N + maxBlockSize, the slots a frame index wraps at (the guard slots come after them).
     int64_t capacity() const noexcept { return capacity_; }
-    /// The slots: slot s's channel c at 2s + c, for s in 0 .. C + 2.
+    /// The slots: slot s's channel c at 2s + c, for s in 0 .. C + 14.
     float *slots() noexcept { return slots_.data(); }
     const float *slots() const noexcept { return slots_.data(); }
     /// The bytes the slots hold, guard slots included, for the memory budget (spec §6.5).
     std::size_t bytes() const noexcept { return slots_.size() * sizeof(float); }
 
-    /// The guard slots past the capacity, C .. C + 2 (LiveSource's kGuardFrames).
-    static constexpr int64_t kGuardFrames = 3;
+    /// The guard slots past the capacity, C .. C + 14 (LiveSource's kGuardFrames).
+    static constexpr int64_t kGuardFrames = 15;
 
   private:
     std::vector<float> slots_;

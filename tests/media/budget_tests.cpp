@@ -49,29 +49,33 @@ TEST_CASE("sourceBytes derives a source's bytes from its buffer, pairs and level
     const auto stereo = gg::PreparedSource::make(std::make_shared<gg::SampleBuffer>(2, 4800, 48e3));
     REQUIRE(gg::media::sourceBytes(*stereo) ==
             gg::media::sampleBytes(4800, 2, true, stereo->levelCount()));
-    REQUIRE(gg::media::sourceBytes(*stereo) == uint64_t{4800} * 2 * 4 * 2);
+    // Since M2 sub-project 3 a source carries its pyramid: levels 1 to 4 of 2,400, 1,200, 600
+    // and 300 frames, each one copy of the channels.
+    REQUIRE(stereo->levelCount() == 5);
+    REQUIRE(gg::media::sourceBytes(*stereo) ==
+            uint64_t{4800} * 2 * 4 * 2 + uint64_t{2400 + 1200 + 600 + 300} * 2 * 4);
 
     const auto mono = gg::PreparedSource::make(std::make_shared<gg::SampleBuffer>(1, 4800, 48e3));
-    REQUIRE(gg::media::sourceBytes(*mono) == uint64_t{4800} * 4);
+    REQUIRE(gg::media::sourceBytes(*mono) == uint64_t{4800 + 2400 + 1200 + 600 + 300} * 4);
 }
 
 TEST_CASE("ringBytes is the ring storage's bytes", "[media]")
 {
-    // The ring's storage shape (LiveSource.h, RingStorage): C = N + maxBlockSize slots and 3
-    // guard slots, 2 floats each.
+    // The ring's storage shape (LiveSource.h, RingStorage): C = N + maxBlockSize slots and 15
+    // guard slots (the sinc's 16 taps, M2 sub-project 3), 2 floats each.
     const int64_t frames = 16 * 48000;
     gg::LiveSource ring;
     ring.prepare(48000.0, 16.0, 4096);
     REQUIRE(ring.frames() == frames);
-    const uint64_t storage = uint64_t(ring.view().capacity + 3) * 2 * sizeof(float);
+    const uint64_t storage = uint64_t(ring.view().capacity + 15) * 2 * sizeof(float);
     REQUIRE(gg::media::ringBytes(frames, 4096, 1) == storage);
-    REQUIRE(gg::media::ringBytes(frames, 4096, 1) == uint64_t(frames + 4096 + 3) * 8);
+    REQUIRE(gg::media::ringBytes(frames, 4096, 1) == uint64_t(frames + 4096 + 15) * 8);
 
-    // Each level n adds ceil(C / 2^n) + 3 slots.
+    // Each level n adds ceil(C / 2^n) + 15 slots.
     uint64_t levels = 0;
     for (uint32_t n = 1; n < 5; ++n)
     {
-        levels += (ceilDiv(uint64_t(frames + 4096), uint64_t{1} << n) + 3) * 8;
+        levels += (ceilDiv(uint64_t(frames + 4096), uint64_t{1} << n) + 15) * 8;
     }
     REQUIRE(gg::media::ringBytes(frames, 4096, 5) == storage + levels);
     REQUIRE(gg::media::ringBytes(0, 4096, 1) == 0);

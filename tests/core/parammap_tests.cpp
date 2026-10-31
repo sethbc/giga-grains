@@ -529,10 +529,11 @@ TEST_CASE("space params follow the table", "[core][space]")
                     continue; // the grains' envelope, a cloud field (the taper table test)
                 }
                 if (slot == ParamSlot::Source || slot == ParamSlot::PitchSpread ||
-                    slot == ParamSlot::SizeSpread)
+                    slot == ParamSlot::SizeSpread || slot == ParamSlot::Quality)
                 {
                     // Layer A's cloud fields of M2 sub-project 1 (spec §6.4, §6.6): Source picks
-                    // Position's mapping, the spreads are read as they are ("layer-aware" below).
+                    // Position's mapping, the spreads are read as they are ("layer-aware" below);
+                    // and sub-project 3's Quality, the tier ("Quality maps ..." below).
                     continue;
                 }
                 const auto &meta = gg::core::paramMeta(slot, mode);
@@ -599,10 +600,12 @@ TEST_CASE("the instrument's Position is a fraction and its Spray is seconds", "[
 
     SECTION("the FX's mapping is unchanged, bit for bit")
     {
-        // On a layer that reads its ring, the FX's default kind (M2 sub-project 1's spec §6.4).
+        // On a layer that reads its ring, the FX's default kind (M2 sub-project 1's spec §6.4), at
+        // M1's tier, Normal (M2 sub-project 3's Quality at its default).
         for (auto v : samplePoints(Mode::Fx))
         {
-            v[static_cast<size_t>(ParamSlot::Source)] = 1.0f; // Live
+            v[static_cast<size_t>(ParamSlot::Source)] = 1.0f;  // Live
+            v[static_cast<size_t>(ParamSlot::Quality)] = 1.0f; // Normal
             REQUIRE(sameBits(toCloudParams(v, Mode::Fx), fxReference(v)));
         }
     }
@@ -928,6 +931,78 @@ TEST_CASE("Position reaches the longest ring", "[core]")
     // The FX's shows the seconds, to the longest ring.
     CHECK(gg::core::paramMeta(ParamSlot::Position, Mode::Fx).valueToString(vmax) ==
           std::optional<std::string>("300.00 s"));
+}
+
+TEST_CASE("Quality maps to the layer's tier and Budget to units", "[core][layers]")
+{
+    // M2 sub-project 3's spec §6.1, §6.4: each layer's Quality, rounded to the nearest step, is
+    // its CloudParams::quality (0 Eco, 1 Normal, 2 HQ); Budget, a count of Normal stereo grains
+    // rounded and clamped to 256..16,384, is that many times kBudgetUnitsPerGrain weight units.
+    using gg::Tier;
+    using gg::core::budgetUnits;
+    using gg::core::kBudgetUnitsPerGrain;
+    using gg::core::LayerParam;
+    using gg::core::layerSlot;
+    STATIC_REQUIRE(kBudgetUnitsPerGrain == 4u);
+    STATIC_REQUIRE(static_cast<int>(Tier::Eco) == 0);
+    STATIC_REQUIRE(static_cast<int>(Tier::Normal) == 1);
+    STATIC_REQUIRE(static_cast<int>(Tier::HQ) == 2);
+
+    for (const Mode mode : {Mode::Fx, Mode::Instrument})
+    {
+        INFO((mode == Mode::Fx ? "fx" : "instrument"));
+        // The default is Normal on every layer, as M1's.
+        for (uint8_t layer = 0; layer < gg::core::kLayers; ++layer)
+        {
+            CHECK(toCloudParams(defaults(mode), mode, layer).quality == Tier::Normal);
+        }
+        for (uint8_t layer = 0; layer < gg::core::kLayers; ++layer)
+        {
+            INFO("layer " << int{layer});
+            const auto quality = [&](float x) {
+                ParamValues v = defaults(mode);
+                // Clamped: GCC 13's -Warray-bounds sees layerSlot's Count sentinel otherwise
+                // (CLAUDE.md, "GCC 13's own diagnostics").
+                const size_t slot = std::min<size_t>(
+                    static_cast<size_t>(layerSlot(LayerParam::Quality, layer)), kParamCount - 1);
+                v[slot] = x;
+                // Only this layer's tier moves.
+                for (uint8_t other = 0; other < gg::core::kLayers; ++other)
+                {
+                    if (other != layer)
+                    {
+                        CHECK(toCloudParams(v, mode, other).quality == Tier::Normal);
+                    }
+                }
+                return toCloudParams(v, mode, layer).quality;
+            };
+            CHECK(quality(0.0f) == Tier::Eco);
+            CHECK(quality(0.4f) == Tier::Eco);
+            CHECK(quality(0.5f) == Tier::Normal);
+            CHECK(quality(1.0f) == Tier::Normal);
+            CHECK(quality(1.49f) == Tier::Normal);
+            CHECK(quality(1.5f) == Tier::HQ);
+            CHECK(quality(2.0f) == Tier::HQ);
+            // Out of range (the Processor clamps first): the nearest end.
+            CHECK(quality(-3.0f) == Tier::Eco);
+            CHECK(quality(7.0f) == Tier::HQ);
+        }
+    }
+
+    const auto budget = [](float x) { return budgetUnits(with(ParamSlot::Budget, x)); };
+    CHECK(budgetUnits(defaults()) == 4096u * 4u);
+    CHECK(budgetUnits(defaults(Mode::Instrument)) == 4096u * 4u);
+    CHECK(budget(4096.0f) == 16384u);
+    CHECK(budget(256.0f) == 256u * 4u);
+    CHECK(budget(16384.0f) == 16384u * 4u);
+    CHECK(budget(1000.4f) == 1000u * 4u);
+    CHECK(budget(1000.5f) == 1001u * 4u);
+    CHECK(budget(100.0f) == 256u * 4u);
+    CHECK(budget(1e9f) == 16384u * 4u);
+    CHECK(budget(-1e9f) == 256u * 4u);
+    CHECK(budget(std::numeric_limits<float>::infinity()) == 16384u * 4u);
+    CHECK(budget(-std::numeric_limits<float>::infinity()) == 256u * 4u);
+    CHECK(budget(std::numeric_limits<float>::quiet_NaN()) == 4096u * 4u);
 }
 
 TEST_CASE("soft limiter is continuous and bounded", "[core]")

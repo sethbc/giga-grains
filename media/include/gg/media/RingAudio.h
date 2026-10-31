@@ -58,7 +58,7 @@ struct RestoredRing
 /// - A window longer than `ringFrames` keeps its newest `ringFrames` frames, and the marks move
 ///   with them: those before the kept part go. The kept frames are at slots 0 .. frames - 1
 ///   (slot s's channels at 2s, 2s + 1) and everything after is silence; the guard slots equal
-///   slots 0 .. 2, as a running ring keeps them.
+///   slots 0 .. 14, as a running ring keeps them.
 /// - `splices` is ascending, without repeats, and every mark is below `frames`.
 /// - On any failure `error` says why and `storage` is null. Mono audio is kept on both channels.
 RestoredRing restoreRing(const core::RingEntry &entry, std::string_view wavBytes, double rate,

@@ -26,7 +26,7 @@
 ///  "source":{"kind":"sine|sweep|noise|file","frequencyHz":220,"startHz":50,"endHz":8000,
 ///            "seconds":4.0,"amplitude":0.5,"sampleRate":48000,"path":"relative/to/spec.wav"},
 ///  "stream":{"grainRateHz":8,"grainDurationMs":60,"position":0.5,"positionJitter":0.2,
-///            "pitchSemitones":0,"gain":0.8,"distribution":0,"quality":"eco|normal"}}
+///            "pitchSemitones":0,"gain":0.8,"distribution":0,"quality":"eco|normal|hq"}}
 /// ```
 ///
 /// An instrument render ("mode": "instrument") runs Giga Grains' gg::core::Processor over a
@@ -111,7 +111,8 @@
 ///   it (there is no file to name), a file sample, a capture made into a layer and the rings of
 ///   layers whose Freeze or Loop is on (their loop window, with the marks inside it) are.
 /// - Parameters (in "params", "automation" and a route's "target") are named as the product
-///   displays them, so "B Size" is layer B's; a bare M1 name ("Size") is layer A's.
+///   displays them, so "B Size" is layer B's; a bare M1 name ("Size"), or "Quality", is layer
+///   A's.
 /// - Any other key, including another mode's, is an error, so a misspelt key never silently
 ///   falls back to a default.
 /// - A file's "path" is UTF-8. gg-render resolves a relative one against the spec's directory,
@@ -179,8 +180,9 @@ struct StreamSpec
     double pitchSemitones{0.0};
     double gain{0.5};
     double distribution{0.0}; ///< Optional in the spec.
-    /// The engine's CloudParams::quality (ruling 2): "eco" or "normal". Optional in the spec. The
-    /// grain-event lines don't print it, so an Eco render's event log is the Normal one's.
+    /// The engine's CloudParams::quality (ruling 2): "eco", "normal" or "hq" (M2 sub-project 3's
+    /// spec §6.1). Optional in the spec. The grain-event lines don't print it, so an Eco render's
+    /// event log is the Normal one's.
     Tier quality{Tier::Normal};
 
     friend bool operator==(const StreamSpec &, const StreamSpec &) = default;
@@ -435,7 +437,8 @@ struct RenderSpec
 
 /// The parameter whose name in either product (paramMeta's, matched exactly) is `name`, or nothing.
 /// The bare M1 names of layer A's eleven M1 parameters ("Position" ... "Diffusion", displayed "A
-/// Position" ... since M2 sub-project 1's spec §6.9) are layer A's too, so every M1 spec parses.
+/// Position" ... since M2 sub-project 1's spec §6.9) are layer A's too, so every M1 spec parses,
+/// and so is "Quality" (M2 sub-project 3's spec §6.9).
 /// A spec's params and automation take only its own product's names: parseRenderSpec rejects the
 /// other's ("Macro Level" in an FX spec) as an unknown parameter.
 std::optional<gg::core::ParamSlot> paramSlotNamed(std::string_view name);

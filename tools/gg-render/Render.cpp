@@ -39,17 +39,28 @@ namespace gg::render
 {
 namespace
 {
-/// Collects the grains spawned during one process() call, and the latest grainEndSample of all
-/// grains so far. The engine calls the sink from inside process(), which is annotated
-/// non-blocking, so the sink only copies into storage reserved up front and never allocates;
-/// that keeps RTSan builds of the tests clean. The lines are formatted between process() calls.
+/// Collects the grain events of one process() call, the spawns and the steals in one list in the
+/// order they are reported (each steal right before the spawn it made room for), and the latest
+/// grainEndSample of all grains spawned so far. The engine calls the sinks from inside process(),
+/// which is annotated non-blocking, so they only copy into storage reserved up front and never
+/// allocate; that keeps RTSan builds of the tests clean. The lines are formatted between
+/// process() calls.
 struct GrainCollector
 {
-    /// A grain, with the layer that spawned it.
+    /// A spawn (the grain, with the layer that spawned it) or a steal (the layer, the stolen
+    /// grain's index and the onset of the grain it made room for).
     struct Event
     {
+        enum class Kind : uint8_t
+        {
+            Spawn,
+            Steal,
+        };
+        Kind kind;
         uint32_t layer;
-        GrainSpec grain;
+        GrainSpec grain;    ///< A spawn's.
+        uint64_t stolen;    ///< A steal's: the stolen grain's index.
+        int64_t stealOnset; ///< A steal's: the onset it made room at.
     };
 
     explicit GrainCollector(std::size_t capacity) { pending.reserve(capacity); }
@@ -58,13 +69,23 @@ struct GrainCollector
     {
         auto &self = *static_cast<GrainCollector *>(ctx);
         self.latestEnd = std::max(self.latestEnd, grainEndSample(g));
-        if (self.pending.size() < self.pending.capacity())
+        self.add({Event::Kind::Spawn, layer, g, 0, 0});
+    }
+
+    static void stealSink(void *ctx, uint32_t layer, uint64_t index, int64_t onset)
+    {
+        static_cast<GrainCollector *>(ctx)->add({Event::Kind::Steal, layer, {}, index, onset});
+    }
+
+    void add(const Event &e)
+    {
+        if (pending.size() < pending.capacity())
         {
-            self.pending.push_back({layer, g});
+            pending.push_back(e);
         }
         else
         {
-            self.overflowed = true;
+            overflowed = true;
         }
     }
 
@@ -122,14 +143,22 @@ std::size_t maxGrainsPerCall(uint32_t frames)
     return perFrame * frames + frames / gg::core::Processor::kControlGrid + 16;
 }
 
-/// Moves the grains collected during one process() call into eventLines, if it isn't null.
+/// The most grain events one process() call of `frames` frames can report: each spawn
+/// (maxGrainsPerCall) with at most one steal before it (the overload ladder steals at most one
+/// grain per draw).
+std::size_t maxEventsPerCall(uint32_t frames) { return 2 * maxGrainsPerCall(frames); }
+
+/// Moves the events collected during one process() call into eventLines, in order, if it isn't
+/// null.
 void takeEventLines(GrainCollector &grains, std::vector<std::string> *eventLines)
 {
     if (eventLines != nullptr)
     {
         for (const GrainCollector::Event &e : grains.pending)
         {
-            eventLines->push_back(formatEventLine(e.layer, e.grain));
+            eventLines->push_back(e.kind == GrainCollector::Event::Kind::Spawn
+                                      ? formatEventLine(e.layer, e.grain)
+                                      : formatStealLine(e.layer, e.stolen, e.stealOnset));
         }
     }
     grains.pending.clear();
@@ -147,8 +176,9 @@ gg::metrics::AudioData renderSample(const RenderSpec &spec, std::vector<std::str
     engine.setSource(source);
     engine.setCloudParams(toCloudParams(spec.stream));
 
-    GrainCollector grains(maxGrainsPerCall(spec.blockSize));
+    GrainCollector grains(maxEventsPerCall(spec.blockSize));
     engine.setEventSink(&GrainCollector::sink, &grains);
+    engine.setStealSink(&GrainCollector::stealSink, &grains);
     if (eventLines != nullptr)
     {
         eventLines->clear();
@@ -208,7 +238,7 @@ gg::metrics::AudioData renderSample(const RenderSpec &spec, std::vector<std::str
     }
     if (grains.overflowed)
     {
-        throw std::logic_error("more grains spawned in one block than the scheduler allows");
+        throw std::logic_error("more grain events in one block than the scheduler allows");
     }
     return out;
 }
@@ -877,8 +907,9 @@ gg::metrics::AudioData renderProcessor(const RenderSpec &spec, std::vector<std::
     }
 
     // Each layer's engine spawns within the bound on its own (M2 sub-project 1's spec §6.2).
-    GrainCollector grains(gg::core::Processor::kLayers * maxGrainsPerCall(spec.blockSize));
+    GrainCollector grains(gg::core::Processor::kLayers * maxEventsPerCall(spec.blockSize));
     processor.setEventSink(&GrainCollector::sink, &grains);
+    processor.setStealSink(&GrainCollector::stealSink, &grains);
     if (eventLines != nullptr)
     {
         eventLines->clear();
@@ -988,7 +1019,7 @@ gg::metrics::AudioData renderProcessor(const RenderSpec &spec, std::vector<std::
 
     if (grains.overflowed)
     {
-        throw std::logic_error("more grains spawned in one block than the scheduler allows");
+        throw std::logic_error("more grain events in one block than the scheduler allows");
     }
     if (saving)
     {
@@ -1001,9 +1032,14 @@ gg::metrics::AudioData renderProcessor(const RenderSpec &spec, std::vector<std::
 std::string formatEventLine(uint32_t layer, const GrainSpec &g)
 {
     return fmt::format(
-        R"({{"i":{},"layer":{},"onset":{},"frac":{},"pos":{},"rate":{},"dur":{},"tex":{},"gain":{},"pan":{}}})",
+        R"({{"i":{},"layer":{},"onset":{},"frac":{},"pos":{},"rate":{},"dur":{},"tex":{},"tier":{},"lvl":{},"gain":{},"pan":{}}})",
         g.index, layer, g.onsetSample, g.onsetFrac, g.startPos, g.rate, g.durationSamples,
-        g.texture, g.gain, g.pan);
+        g.texture, static_cast<int>(g.tier), static_cast<int>(g.level), g.gain, g.pan);
+}
+
+std::string formatStealLine(uint32_t layer, uint64_t index, int64_t onset)
+{
+    return fmt::format(R"({{"i":{},"layer":{},"steal":{}}})", index, layer, onset);
 }
 
 gg::metrics::AudioData render(const RenderSpec &spec, std::vector<std::string> *eventLines,

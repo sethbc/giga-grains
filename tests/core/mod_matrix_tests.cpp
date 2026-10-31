@@ -491,7 +491,8 @@ TEST_CASE("invalid targets are refused", "[core][mod]")
     {
         const auto slot = static_cast<ParamSlot>(i);
         const auto ref = gg::core::layerOf(slot);
-        const bool control = ref && ref->param >= LayerParam::Lfo1Rate;
+        const bool control =
+            ref && ref->param >= LayerParam::Lfo1Rate && ref->param <= LayerParam::Step16;
         const bool expected = !gg::core::isMacro(slot) && !control &&
                               (ref ? ref->layer == 0
                                    : !gg::core::perLayerGlobalLayer(slot) ||
@@ -500,8 +501,19 @@ TEST_CASE("invalid targets are refused", "[core][mod]")
         CHECK(isValidTarget(slot) == expected);
         valid += isValidTarget(slot) ? 1 : 0;
     }
-    // 14 layer parameters, Level and Layer A On, Mix, Space's seven but Diffusion, Morph X and Y.
-    CHECK(valid == 14 + 2 + 1 + 7 + 2);
+    // 14 layer parameters, M2 sub-project 2's five ring parameters and sub-project 3's Quality,
+    // Level and Layer A On, Mix, Space's seven but Diffusion, Morph X and Y, and Budget.
+    CHECK(valid == 14 + 5 + 1 + 2 + 1 + 7 + 2 + 1);
+    // M2 sub-project 2's spec §6.3: Loop Length, Overdub and Splice are targets under sub-project
+    // 3's rule (any layer parameter but a modulator's control), and so are Loop and Ring Length.
+    // A route to Ring Length moves only its effective value, which nothing reads: the ring's
+    // length is applied from the base value, on the main thread.
+    CHECK(isValidTarget(ParamSlot::LoopLength));
+    CHECK(isValidTarget(ParamSlot::Overdub));
+    CHECK(isValidTarget(ParamSlot::Splice));
+    CHECK(isValidTarget(ParamSlot::Loop));
+    CHECK(isValidTarget(ParamSlot::RingLength));
+    CHECK_FALSE(isValidTarget(ParamSlot::B_LoopLength));
 
     CHECK(isLayerTarget(ParamSlot::Position));
     CHECK(isLayerTarget(ParamSlot::SizeSpread));
@@ -519,6 +531,63 @@ TEST_CASE("invalid targets are refused", "[core][mod]")
     CHECK(routeTargetSlot(ParamSlot::Level, 2) == ParamSlot::LevelC);
     CHECK(routeTargetSlot(ParamSlot::LayerAOn, 1) == ParamSlot::LayerBOn);
     CHECK(routeTargetSlot(ParamSlot::Mix, 2) == ParamSlot::Mix);
+}
+
+TEST_CASE("a route to Quality is accepted and a route to LFO 1 Rate refused", "[core][mod]")
+{
+    // The programme manager's ruling PM-1 (M2 sub-project 3's spec §6.1): the layer rule refuses
+    // the modulators' own controls by name (LFO, Env, Random and Step, rows 0x0F to 0x30) and
+    // admits every other layer parameter, wave 2's included; Budget is a global target.
+    using gg::core::isModulatorControl;
+    STATIC_REQUIRE(isValidTarget(ParamSlot::Quality));
+    STATIC_REQUIRE(isValidTarget(ParamSlot::Budget));
+    STATIC_REQUIRE_FALSE(isValidTarget(ParamSlot::Lfo1Rate));
+    STATIC_REQUIRE_FALSE(isValidTarget(ParamSlot::B_Quality));
+    STATIC_REQUIRE(isModulatorControl(LayerParam::Lfo1Rate));
+    STATIC_REQUIRE(isModulatorControl(LayerParam::Step16));
+    STATIC_REQUIRE_FALSE(isModulatorControl(LayerParam::SizeSpread));
+    STATIC_REQUIRE_FALSE(isModulatorControl(LayerParam::Quality));
+
+    // Every layer-A row: 0x0F to 0x30 refused, every other row a target.
+    size_t controls = 0;
+    for (size_t p = 0; p < gg::core::kLayerParamCount; ++p)
+    {
+        const auto param = static_cast<LayerParam>(p);
+        const uint32_t index = gg::core::layerParamIndex(param);
+        const bool control = index >= 0x0Fu && index <= 0x30u;
+        INFO("index " << index);
+        CHECK(isModulatorControl(param) == control);
+        CHECK(isValidTarget(layerSlot(param, 0)) == !control);
+        for (uint8_t layer = 1; layer < kLayers; ++layer)
+        {
+            CHECK_FALSE(isValidTarget(layerSlot(param, layer)));
+        }
+        controls += control ? 1 : 0;
+    }
+    CHECK(controls == 0x30 - 0x0F + 1);
+
+    // A route to Quality on every layer moves all four Quality slots, and nothing else.
+    Sources s{};
+    for (auto &layer : s)
+    {
+        layer.v[idx(ModSource::Velocity)] = 1.0f;
+    }
+    ModRoutes routes{};
+    routes[0] = {ModSource::Velocity, kSameLayer, ParamSlot::Quality,
+                 kAllLayers,          1.0f,       ModCurve::Unipolar};
+    routes[1] = {ModSource::Velocity, kSameLayer, ParamSlot::Lfo1Rate,
+                 kAllLayers,          1.0f,       ModCurve::Unipolar};
+    routes[2] = {ModSource::Velocity, kSameLayer, ParamSlot::Budget, 0, -512.0f,
+                 ModCurve::Unipolar};
+    const ParamValues o = evaluate(routes, s);
+    for (size_t i = 0; i < kParamCount; ++i)
+    {
+        const auto slot = static_cast<ParamSlot>(i);
+        INFO("slot " << i);
+        const bool quality = slot == ParamSlot::Quality || slot == ParamSlot::B_Quality ||
+                             slot == ParamSlot::C_Quality || slot == ParamSlot::D_Quality;
+        CHECK(o[i] == (quality ? 1.0f : slot == ParamSlot::Budget ? -512.0f : 0.0f));
+    }
 }
 
 TEST_CASE("source kinds", "[core][mod]")

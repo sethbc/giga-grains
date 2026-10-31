@@ -137,7 +137,12 @@ std::shared_ptr<const PreparedSource> prepare(std::shared_ptr<SampleBuffer> deco
     {
         return nullptr;
     }
-    auto source = PreparedSource::make(std::move(converted));
+    auto source = PreparedSource::make(std::move(converted), cancel);
+    if (source == nullptr)
+    {
+        // Cancelled while building the pyramid: nothing to share.
+        return nullptr;
+    }
     if (share != nullptr)
     {
         // Another loader may have built the same key meanwhile: the pool's source wins, ours is

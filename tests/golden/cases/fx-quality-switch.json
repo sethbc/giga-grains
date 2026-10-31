@@ -1,0 +1,15 @@
+{
+  "mode": "fx",
+  "sampleRate": 48000,
+  "durationSeconds": 4.5,
+  "blockSize": 128,
+  "seed": 1,
+  "input": {"kind": "sine", "frequencyHz": 330, "seconds": 4.5, "amplitude": 0.3},
+  "channels": 1,
+  "params": {"Mix": 1.0, "Pitch": 7, "Quality": 0},
+  "automation": [
+    {"time": 1.0, "param": "Quality", "value": 1},
+    {"time": 2.0, "param": "Quality", "value": 2},
+    {"time": 3.0, "param": "Quality", "value": 1}
+  ]
+}

@@ -27,10 +27,14 @@ AGPL-3.0-or-later.
   for your sub-project's scope and what it owns, and its §7 for the rules every sub-project
   builds on). Sub-project 1, Layers and structure, is built (INTENT §23 #65): four layers, the
   morph, the Source kind, the mod matrix, render tasks and the patch at version 2, which wave 2
-  builds on. Sub-project 2, Sources and persistence, is built in part (INTENT §23 #66): the
-  Resample source, rings of 1 to 300 s with loop, overdub, splices and capture, the memory cap,
-  the sample pool, `MEDI` v2, `AUDI`, `INST` and rings saved with the session; its ring
-  pyramids wait for sub-project 3. M2, M3 and M4 are tagged 0.2.0, 0.3.0 and 0.4.0 as
+  builds on. Sub-project 3, Engine scale and quality, is built (INTENT §23 #66; PR #16): the HQ
+  sinc tier and each layer's Quality, file mipmaps, the deterministic CPU budget (Budget, the
+  quotas and the overload ladder), the pool to 16,384, the `[sweep]` harness and AVX2 kernels
+  chosen at load (kept). Sub-project 2, Sources and persistence, is built in part (INTENT §23
+  #68; PR #19): the Resample source, rings of 1 to 300 s with loop, overdub, splices and capture,
+  the memory cap, the sample pool, `MEDI` v2, `AUDI`, `INST` and rings saved with the session;
+  its ring pyramids, which build on sub-project 3's, are still to come. M2, M3 and M4 are tagged
+  0.2.0, 0.3.0 and 0.4.0 as
   unpublished draft releases; nothing is public and there are no betas before M5, whose
   `0.5.0-beta.N` are the first public releases (§23 #62); v1.0.0 follows M5.
 - **The records:** each sub-project's spec in `docs/superpowers/specs/`, the published benchmark
@@ -290,7 +294,10 @@ area, use `ctest --preset dev -L <label>`. `-L` takes a regular expression, and 
 options must all match: `-L core -L rt` runs only the tests labelled both, and `-L 'core|rt'`
 runs the tests labelled either. The labels are:
 - engine: `engine`, `cloud` (the Cloud scheduler), `live` (the live ring), `pool`, `source`,
-  `rng`, `math`, `interp`, `window`, `denormal`;
+  `rng`, `math`, `interp`, `window`, `denormal`, and since M2 sub-project 3 `budget` (the
+  weights, the ledger, the quotas, the ladder's three rungs, the steal fade, the exit case and the
+  ladder's block-size invariance) and `mip` (the file pyramid's half-band, level count, level per
+  rate and the accessor's fallback);
 - `core`: `gg-core`'s patch (with its `<mod>` routes and the migration from version 1), the
   session state container (`GGST`, with `MEDI` v2, `AUDI` and `INST`) and the settings' XML,
   the parameter mapping, and the `Processor` with its layers, notes, source hand-off, Feedback
@@ -300,6 +307,12 @@ runs the tests labelled either. The labels are:
     Resample tap, ring parameters, commands, ring exchange (resize and restore) and ring read,
     with their determinism and tripwire cases (among them `tests/core/source_tests.cpp` and the
     ring-exchange cases of `tests/core/exchange_tests.cpp`);
+  - `sweep` (M2 sub-project 3): the sweep harness, 20 cases in `tests/sweep/` over the
+    `Processor` in both products (parameter sweeps, extremes, automation bursts and the overload
+    sweeps), each checking finiteness, the peak bound, no runaway and the goldens' click score
+    outside named exemptions (`SweepDriver.h`; carry-over rows 300 to 302), and pinning a floor
+    under the share of its render that it scores. About 26.5 s in `dev` (eight at a time) and
+    about 194 s under ASan; none is `slow`;
   - `layers` (M2 sub-project 1): the four layers, in the engine (the layer's RNG key, the enable
     gate, the kind switch, the spreads) and in the `Processor` (the sum in order, the morph law,
     on and off, the kinds, the instrument's input into the rings, the event order);
@@ -325,10 +338,19 @@ runs the tests labelled either. The labels are:
   `Processor`'s Space chain, and the plugins' tail and "Space" remote-controls page. `slow` also
   marks four of them: the hour-long renders at infinite Decay (about 50 s each in `dev`, 2.5
   minutes under ASan), the block-size invariance render and the 60 s render at extreme settings
-  (about 8 s and 13 s in `dev`); `-LE slow` leaves all eight slow tests out (media's one, these
-  four, core's two and render's embed-cap save, about 8 s).
-- `kernel`: the renderers' scalar references and the 4-wide SIMD sample and live kernels, which
-  must match them bit for bit (`std::memcmp`);
+  (about 8 s and 13 s in `dev`); `-LE slow` leaves all ten slow tests out (media's one, these
+  four, core's two (Feedback and the Resample loop), render's embed-cap save, about 8 s, and
+  since M2 sub-project 3 two in `engine`: `the overload ladder is block-size invariant`, 125 s in
+  `dev`, which has a fast sibling that always runs, and the budget's exit case, `the exit case
+  never clicks or drops out`).
+- `kernel`: the renderers' scalar references and the SIMD sample and live kernels (4-wide, and
+  since M2 sub-project 3 the 8-wide AVX2 ones beside them, chosen at load), which must match them
+  bit for bit (`std::memcmp`); every case runs through both tables, and the AVX2-against-SSE case
+  skips in a build or on a CPU with no AVX2 kernels (Rosetta's x86_64 slice tests the fallback).
+  CI's Linux and Windows test steps set `GG_REQUIRE_AVX2=1`, and then `kernel_require_avx2` fails
+  if there is no 8-wide table, so those legs can't fall back unnoticed; a ClangCL below 19 builds
+  the 4-wide table alone. Set `GG_FORCE_SSE` (set and not empty) to make a process, or a ctest,
+  use the 4-wide table; `kernel_force_sse_env` checks it;
 - `determinism`: block-size invariance;
 - `rt`: the allocation tripwire. In the `rtsan` build, two tests labelled both `rt` and `rtsan`
   check that RTSan is active: one checks the build flag, and `rtsan_negative_control` passes
@@ -451,6 +473,10 @@ gg-render --write-media DIR
     `"Macro Density"`, `"Macro Pitch"`, `"Macro Spray"`, `"Macro Texture"`, `"Macro Freeze"`,
     `"Macro Feedback"` (Macro 7 in both products) and `"Macro Mix"`; the layers' are
     `"Morph X"`, `"Morph Y"`, `"Layer A On"` … `"Layer D On"` and `"Level B"` … `"Level D"`.
+    Since M2 sub-project 3 each layer has `"A Quality"` … `"D Quality"` (0 Eco, 1 Normal, 2 HQ;
+    bare `"Quality"` means layer A's) and there is a global `"Budget"` (a count of Normal grains,
+    256 to 16,384, default 4,096): 223 parameters in all. Sample mode takes `"quality": "hq"`
+    beside `"eco"` and `"normal"`, and sets no quota.
     Optional `automation` is a time-ordered list of `{"time", "param", "value"}` points in
     seconds, and optional `notes` a time-ordered list of `{"time", "key", "duration",
     "channel", "velocity"}` (channel optional; velocity optional, 0–127, default 100, reaching
@@ -525,7 +551,7 @@ gg-render --write-media DIR
   internal error.
 - **The cases:** each case's spec is in `tests/golden/cases/`, and its expected metrics and event
   log are in `tests/golden/expected/`. Every `*.json` there is a case; a new one gets a test the
-  next time CMake runs. There are 43.
+  next time CMake runs. There are 50.
   - **M0's four,** in sample mode: `sparse-sine` (8 grains a second over a 220 Hz sine),
     `sparse-sine-44k1` (the same source converted to 44.1 kHz), `dense-noise` (400 grains a
     second over noise, up a fifth) and `sweep-stretch` (long grains over a sweep, down an
@@ -588,6 +614,26 @@ gg-render --write-media DIR
       octaves that hide steps.
     - Every one of the 22 M1 cases renders bit-identically with layers B to D off and the
       factory routes: a layers or matrix change that moves one is a regression.
+  - **M2 sub-project 3's seven** (the engine; spec §6.9), 3 to 8 s each:
+    - `sparse-sine-hq` and `sweep-stretch-hq`: M0's `sparse-sine` and `sweep-stretch` at HQ
+      (sample mode, `"quality": "hq"`);
+    - `fx-hq-pitch-ladder`: layer A at HQ reading a 20 kHz to 50 Hz sweep as its Sample, Pitch
+      stepped 0, +12 and +24, then two notes for +36 and +47 (mip levels 0 to 3, stretched at the
+      top). The FX's own 5 s input is never heard: layer A reads its Sample at Mix 1;
+    - `fx-quality-switch`: Quality stepped Eco, Normal, HQ, Normal at 1 s intervals over a 330 Hz
+      sine at Pitch +7;
+    - `fx-overload`: four layers over a 330 Hz sine, A and B at HQ, C Normal, D Eco, Budget 4,096,
+      1,024, 256 and 4,096, layer D off at 5 s and on at 5.5 s. Its event log is 1.6 MB;
+    - `inst-overload`: two notes, one HQ layer of 1 s grains at Density 400 Hz, Budget 256
+      (sustained stealing);
+    - `fx-hq-live-level0`: layer A Live at HQ, Pitch +12, over a sweep; the ring has one level, so
+      every line reads `"lvl":0` (sub-project 2 regenerates it).
+    - Two hide some injected click steps, pinned in the click-injection table: `fx-hq-live-level0`
+      catches 9 (the ring's sweep read an octave up hides the steps from about 2.1 s) and
+      `fx-hq-pitch-ladder` 3 (content near Nyquist at every step). The other five catch all 16.
+    - Every one of the 36 earlier cases' WAV SHA-256 was unchanged through every task; their event
+      logs were rewritten once, by inserting `"tier"` and `"lvl"`. A change that moves one WAV is
+      a regression.
   - **M2 sub-project 2's seven** (sources and persistence; its spec §10), 4 to 24 s:
     - `inst-resample-feedback` (the instrument: layer A Sample over a 220 Hz sine, one held
       note, layer B a Resample layer at Pitch +12 with Feedback 0.6), `fx-resample` (a stereo
@@ -609,10 +655,11 @@ gg-render --write-media DIR
     - `fx-splice-capture`'s two Splice changes fall between grains on purpose, until a later task
       (12a) fixes the click a window change makes under sounding grains; 12a regenerates the
       case and recounts its entry.
-    - Every one of the 36 earlier cases renders bit-identically with Ring Length 16 s, Loop off,
-      Overdub 0, no splice, no Resample layer, nothing embedded and the cap at its default: a
-      sources change that moves one is a regression. The ring pyramid's task (after sub-project
-      3) names any case its level selection moves.
+    - Every one of the 43 earlier cases (the 36 before sub-project 3 and its seven) renders
+      bit-identically with Ring Length 16 s, Loop off, Overdub 0, no splice, no Resample layer,
+      nothing embedded and the cap at its default: a sources change that moves one is a
+      regression. The ring pyramid's task names any case its level selection moves
+      (`fx-hq-live-level0` among them).
     - The event log sees neither the tap's audio nor a restored ring's frames, only the grains
       that read them, so across platforms the metrics compare those.
   - **The event-log comparison never sees the reverb or the diffuser:** the log records grains,
@@ -623,11 +670,14 @@ gg-render --write-media DIR
   - They compare the grain-event log exactly per line (CR and final newline ignored). That
     comparison is the cross-platform determinism gate. Each `.events.jsonl` line is one grain:
     `i`, `layer` (0–3, since M2 sub-project 1), `onset`, `frac`, `pos`, `rate`, `dur`, `tex`
-    (its Texture, since sub-project 5), `gain` and `pan` (`formatEventLine` in
-    `tools/gg-render/Render.h`). Across layers the lines are in piece, layer, spawn order, so how
-    two layers' grains interleave depends on the block size (INTENT §19, ruling LS-T10b): each
-    layer's own lines, and the audio, are block-size invariant, and each golden renders at its
-    spec's block size. Compare logs across block sizes per layer.
+    (its Texture, since sub-project 5), `tier` (0 Eco, 1 Normal, 2 HQ, after the ladder), `lvl`
+    (its latched mip level; both since M2 sub-project 3), `gain` and `pan` (`formatEventLine` in
+    `tools/gg-render/Render.h`). A grain the overload ladder stole also has a line,
+    `{"i":k,"layer":L,"steal":o}` (`formatStealLine`), right before the line of the grain it made
+    room for, `o` that grain's onset sample. Across layers the lines are in piece, layer, spawn
+    order, so how two layers' grains interleave depends on the block size (INTENT §19, ruling
+    LS-T10b): each layer's own lines, and the audio, are block-size invariant, and each golden
+    renders at its spec's block size. Compare logs across block sizes per layer.
   - The click score (metricsVersion 2) is normalized by the level within ±5 ms. The
     `[golden][metrics]` tests in `tests/metrics/click_injection_tests.cpp` render every case in
     process, add a -20 dBFS step at sixteen positions in turn and require each to score above
@@ -686,10 +736,21 @@ $b --space [--quick | --seconds S] [--rounds N] [--commit SHA] [--json out.json]
       capacity);
     - `engine-layers`: four `engine-sample` engines (layers 0 to 3) sharing its 2,000 grains, 500
       each, rendered through `SerialRunner` and summed in layer order, as a host without a thread
-      pool pays for four layers; report-only beside X, with no baseline entry yet (M2 layers
-      spec §6.12);
+      pool pays for four layers; report-only beside X (M2 layers spec §6.12);
     - `engine-layers-full`: the same with 2,000 grains in every layer, 8,000 in all; report-only
-      beside X, with no baseline entry yet;
+      beside X;
+    - `engine-sample-hq`: `engine-sample` at the HQ tier (the 16-tap sinc, reading level 0), the
+      HQ figure and the source of HQ's weight; `engine-sample-hq-up`: the same at Pitch +19,
+      each grain reading mip level 1 at residual 1.5 (the `[bench]` cases check the tier and the
+      level they admit); `engine-overload`: one engine at capacity 16,384 and a quota of 2,000
+      Normal grains' worth, 1 s grains asked for at four times that rate, so the drop and steal
+      rungs run steadily (ns per rendered grain-sample; a test pins `lowered == 0` beside
+      `dropped > 0` and `stolen > 0`); all three report-only beside X (M2 engine spec §6.10);
+    - `engine-sample-sse`: `engine-sample` with `EngineConfig::kernels` = `Sse` (the 4-wide
+      kernels), run beside `engine-sample` (dispatched) in the same process and rounds, the
+      fallback's report-only case. `gg-bench` prints a `kernels:` line (`8-wide (AVX2)` or
+      `4-wide`) and its JSON records `kernelLanes` (8 or 4); `GG_FORCE_SSE` makes `engine-sample`
+      run 4-wide too. `--grains` is bounded by `kMaxGrainCapacity` − 48 (16,336);
   - `reference`: M0's 4-wide Hermite kernel, frozen (`renderHermiteSimd` in
     `tools/gg-bench/Kernels.h`). It is the CPU gate's yardstick. `Kernels.h` includes no engine
     header: it holds its own frozen copies of the Hann table and the readers, so no engine
@@ -711,10 +772,11 @@ $b --space [--quick | --seconds S] [--rounds N] [--commit SHA] [--json out.json]
   `reference` for any ratio to be printed.
 - **Other options:** `--grains N` changes the grain count; `--cases a,b` runs only those cases
   (the default is all; `--help` lists them).
-- **Run length:** the full default run is 39 configurations × 5 rounds × 2 s, about 6.5 minutes
-  of timing, plus `engine-live-long`'s three 300 s warm-ups, a few minutes more of wall time; a
-  CI leg's benchmark step took about 6 minutes before the two layer cases and
-  `engine-live-long` were added.
+- **Run length:** the full default run is 51 configurations × 5 rounds × 2 s, about 8.5 minutes
+  of timing (36 and about 6 minutes before the four cases of M2 sub-project 3 and M2 sub-project
+  2's `engine-live-long` joined), plus `engine-live-long`'s three 300 s warm-ups, a few minutes
+  more of wall time; a CI leg's benchmark step took about 6 minutes before the layer cases added
+  one.
   `--canvas` times 240 frames after a 20-frame warm-up, or 30 with `--quick`.
 - **`--space`** times Space's per-sample stage, the diffuser then the reverb, on stereo noise at
   48 kHz, active, with Diffusion and Amount at 100% (`tools/gg-bench/Bench.h` lists every
@@ -754,9 +816,14 @@ $b --space [--quick | --seconds S] [--rounds N] [--commit SHA] [--json out.json]
     7763, 9V45 and 9V74). For unchanged code, ratios differ by up to ~20% between models and ~6%
     on one model. So a leg's baseline has one entry per model, keyed by gg-bench's `machine`
     string, and a run is checked only against its own model's entry. The committed baselines
-    have entries for the mac leg's Apple M1 VM, Windows' EPYC 7763 and 9V74, and Linux's EPYC
-    7763 and 9V45. A model with no entry gets no verdict (the summary says so) until later runs
-    on it are added to the baseline.
+    have entries for the mac leg's Apple M1 VM, Windows' EPYC 7763, EPYC 9V45, Xeon 8370C and
+    EPYC 9V74 (the last from the SSE-era code, stale until a run lands on that model), and
+    Linux's EPYC 7763 and 9V45. The x86 entries were remade at the AVX2 task from three
+    full-length runs (INTENT §23 #66), and the six report-only cases (`engine-layers`,
+    `engine-layers-full`, `engine-sample-hq`, `engine-sample-hq-up`, `engine-overload`,
+    `engine-sample-sse`) now have entries beside the four gated ones there (30 ratios an entry),
+    none on `mac-universal`; they stay report-only, as the whole gate does. A model with no
+    entry gets no verdict (the summary says so) until later runs on it are added to the baseline.
   - **The gate is report-only until 1.0.0** (INTENT §19, §23 #44, #60, #61): exit 3 becomes a
     `::warning` and the step exits 0. A crash, exit 1 or 2, or the timeout still fails the job.
     The `bench_baseline_*` tests pin exit 3 (a regression or a missing entry), exit 0, the
