@@ -2241,7 +2241,7 @@ TEST_CASE("stealing a short grain keeps its end and does not fade", "[engine][bu
 
 // Carry-over row 300 (the director, 2026-10-30: fade the tail). A grain whose read would leave
 // its sample before its window closes ends where it reaches the sample's last frame, faded out
-// over the kStealFade samples before it, or over all it has when that is fewer.
+// over the kEdgeFade samples before it, or over all it has when that is fewer.
 namespace
 {
 // The edge of grain g over a source of `frames` frames, by walking its samples as the
@@ -2308,8 +2308,8 @@ std::vector<EdgeCase> edgeCases()
     return cases;
 }
 
-// An engine over `source` playing 4 grains a second of the case, centred, periodic, at gain 0.5,
-// each read starting `cross` samples (at the nominal rate) before the sample's last frame.
+// An engine over `source` playing 4 grains a second of the case, centred, periodic, at the case's
+// gain, each read starting `cross` samples (at the nominal rate) before the sample's last frame.
 std::unique_ptr<gg::Engine>
 edgeEngine(const EdgeCase &c, const std::shared_ptr<const gg::PreparedSource> &source, SinkLog *log)
 {
@@ -2478,7 +2478,7 @@ TEST_CASE("a grain cut at its sample's end is the uncut grain up to its fade", "
         for (std::size_t k = 0; k < log.grains.size(); ++k)
         {
             const gg::GrainSpec &g = log.grains[k];
-            const int64_t fadeStart = edges[k] - std::min(gg::kStealFade, edges[k] - g.onsetSample);
+            const int64_t fadeStart = edges[k] - std::min(gg::kEdgeFade, edges[k] - g.onsetSample);
             const int64_t next =
                 k + 1 < log.grains.size() ? log.grains[k + 1].onsetSample : kFrames;
             int64_t differ = 0;
@@ -2555,7 +2555,7 @@ double stealRender(bool live, gg::Tier tier, double pitch, double density, doubl
 
 TEST_CASE("a stolen grain fades out without a click", "[engine][budget]")
 {
-    // The steal fade is a raised cosine over kStealFade samples (ruling EF-7): it leaves 1 and
+    // The steal fade is a raised cosine over kStealFade samples (ruling EF-8): it leaves 1 and
     // reaches 0 with zero slope, so a steal scores at most 12 on the goldens' detector (limit 15),
     // for sample grains and the ring's alike, at every tier, rates 0.5 to 4 and gains 1 and 4.
     // The linear fade it replaced scored up to 50.4 (sample) and 49.7 (live) at rate 0.5, its end

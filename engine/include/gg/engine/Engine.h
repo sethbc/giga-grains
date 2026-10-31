@@ -143,7 +143,7 @@ using GrainStealSink = void (*)(void *ctx, uint32_t layer, uint64_t index, int64
 ///    0.5 × durationSamples, and (W(o) − W_fading(o)) − w(old) + w(t) <= quota for some
 ///    t <= q, W_fading the weight of the grains already stolen and fading (ruling ES-T2a;
 ///    GrainPool::fadingWeight): with more than kStealFade samples left it ends at o + kStealFade,
-///    fading with a raised cosine (ruling EF-7), and with at most that left it keeps its end and
+///    fading with a raised cosine (ruling EF-8), and with at most that left it keeps its end and
 ///    doesn't fade (ruling ES-T6a; GrainPool::steal), keeping its weight until its end either way
 ///    (a grain cut at the sample's edge counts from its cut end, and a steal of it takes the
 ///    earlier end); the draw is admitted at the highest such t and the steal counted in

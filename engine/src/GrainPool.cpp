@@ -171,12 +171,12 @@ void GrainPool::steal(uint32_t row, int64_t onset) noexcept
         fadeStart_[row] = std::min(fadeStart_[row], onset);
         return;
     }
-    // More than kStealFade left: the steal fade from here (D4; a raised cosine, ruling EF-7), its
+    // More than kStealFade left: the steal fade from here (D4; a raised cosine, ruling EF-8), its
     // rows as for any grain. A grain cut at its source's edge keeps its edge curve, which the steal
     // fade multiplies: its gain starts from the curve's level at the onset, continuously, and falls
     // with both to 0 by onset + kStealFade, before the edge. fadeStart is the earlier of the two
-    // fades' starts, so the SIMD runs end at whichever comes first (the steal fade's factor is
-    // exactly 1 before the onset: float(end − t) × (1 / 256) >= 1 there).
+    // fades' starts, so the SIMD runs end at whichever comes first (the steal fade's raised
+    // cosine is exactly 1 before the onset, where its ramp float(end − t) × (1 / 256) is >= 1).
     stolen_[row] = kStolenFading;
     fadeStart_[row] = std::min(fadeStart_[row], onset);
     const int64_t end = onset + kStealFade;

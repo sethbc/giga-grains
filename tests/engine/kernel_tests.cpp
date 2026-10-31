@@ -2544,7 +2544,7 @@ SpecSteal specSteal(const gg::GrainSpec &g, int64_t stolenAt)
     return {false, end};
 }
 
-// The steal fade's factor at output sample t (spec §6.5; ruling EF-7) of a grain that fades from
+// The steal fade's factor at output sample t (spec §6.5; ruling EF-8) of a grain that fades from
 // `fadeStart` to `end` = fadeStart + 256, written out: the Hann table (the window's, the only
 // table) at phase (end − t) / 512, its rising half sin²(π/2 × (end − t) / 256), wherever that
 // phase is below 0.5, and 1 elsewhere (before the steal, and at it, where the phase is 0.5).
@@ -2971,7 +2971,7 @@ TEMPLATE_TEST_CASE("a grain cut at its source's edge fades through the reference
                    "kernels alike",
                    "[kernel]", Hermite, Linear, Sinc)
 {
-    // Carry-over row 300 (the director: fade the tail; rulings EF-6, EF-7). 120 grains, an onset
+    // Carry-over row 300 (the director: fade the tail; rulings EF-6, EF-8). 120 grains, an onset
     // every 50 samples, 300 to 5,300 samples long at rates 2^[-2, 2], each reading across the
     // source's last frame inside its window and cut there (grainEdgeSample): one in three with
     // fewer than kEdgeFade samples between its onset and its edge, so its curve fades it over

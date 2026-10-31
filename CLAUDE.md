@@ -582,8 +582,12 @@ gg-render --write-media DIR
   - **Its follow-up's one** (carry-over row 300; INTENT §23 #66, amended): `inst-sample-end`, the
     instrument over a 2 s 660 Hz sine at Position 0.97, 200 ms grains at 8 Hz, notes at rates
     0.5, 1, 1.5 and 2. Every grain reaches the sample's end inside its window and fades out with
-    the raised cosine (1.94; 36.03 with the old hard cut). It catches all 16 injected steps.
-    - The follow-up made the steal fade a raised cosine too (EF-7), which moved `fx-overload` and
+    the raised cosine (1.94; 36.03 with the old hard cut). It catches all 16 injected steps. The cut grains' window
+    phases at the sample's end run from 0.027 to 0.97. Its grains are all Normal-tier with no
+    short spans (none has fewer than 256 samples to its cut), and the cut is invisible to its event
+    log (`dur` is unchanged), so its cross-platform check is its metrics alone: Eco, HQ and short
+    spans rest on the kernel and engine tests.
+    - The follow-up made the steal fade a raised cosine too (EF-8), which moved `fx-overload` and
       `inst-overload` (WAVs and metrics; their event logs hold no fade shape). Every other case,
       none of which steals or reaches its sample's end, kept its WAV SHA-256.
   - **The event-log comparison never sees the reverb or the diffuser:** the log records grains,

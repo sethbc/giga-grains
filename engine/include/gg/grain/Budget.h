@@ -33,7 +33,7 @@ inline constexpr uint32_t kNormalStereoWeight = 4;
 inline constexpr uint64_t kUnlimitedQuota = std::numeric_limits<uint64_t>::max();
 
 /// The fade a stolen grain is given, in output samples (spec §6.5): with more than this left it
-/// ends at onset + kStealFade, fading with the raised cosine (ruling EF-7; GrainKernels.h's
+/// ends at onset + kStealFade, fading with the raised cosine (ruling EF-8; GrainKernels.h's
 /// stealFaded); with at most this left it keeps its end and doesn't fade (ruling ES-T6a;
 /// GrainPool::steal).
 inline constexpr int64_t kStealFade = 256;

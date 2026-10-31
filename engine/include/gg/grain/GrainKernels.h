@@ -50,7 +50,7 @@
 /// Only samples with w > 0 contribute; elsewhere nothing is read and nothing is added. The fades
 /// are raised cosines read from the same Hann table, its rising half (H(p), p in [0, 0.5], is
 /// sin²(πp)), with zero slope where they leave 1 and where they reach their last sample (rulings
-/// EF-6 and EF-7). A grain the overload ladder stole with a fade (GrainPool::steal; spec §6.5)
+/// EF-6 and EF-8). A grain the overload ladder stole with a fade (GrainPool::steal; spec §6.5)
 /// fades from its steal on: after w > 0,
 ///
 ///     p = float64(endSample − t) × (0.5 × float64(invFade))    (double)
@@ -69,9 +69,8 @@
 /// scalar reference. Every other grain has invFade 0 and edgeScale 0 and skips both multiplies:
 /// an uncut grain never stolen (fadeStart kNeverStolen), whose bits are M1's, and an uncut one
 /// stolen with at most kStealFade left, which keeps its end and window (ruling ES-T6a). With two
-/// outputs, dst[c][t] += read_c(posL) × (w ×
-/// gain_c), with gain_c the latched gainL or gainR. One output carries source channel 0 with gain
-/// alone: dst[0][t] += read_0(posL) × (w × gain).
+/// outputs, dst[c][t] += read_c(posL) × (w × gain_c), with gain_c the latched gainL or gainR. One
+/// output carries source channel 0 with gain alone: dst[0][t] += read_0(posL) × (w × gain).
 ///
 /// Every sample depends only on t and the grain, never on which call renders it, so splitting
 /// [from, to) anywhere gives the same bits.
@@ -541,7 +540,7 @@ struct Sinc
 
 namespace detail
 {
-/// The steal fade (spec §6.5; the file comment; ruling EF-7): a raised cosine, w × the Hann table
+/// The steal fade (spec §6.5; the file comment; ruling EF-8): a raised cosine, w × the Hann table
 /// at phase float64(end − t) × (0.5 × float64(invFade)) wherever t >= fadeStart and that phase is
 /// below 0.5, for a grain stolen with a fade (invFade = 1 / kStealFade, so the phase's scale is
 /// exactly 1 / 512), and w itself otherwise, unmultiplied. The table's rising half is

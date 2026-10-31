@@ -725,7 +725,7 @@ TEST_CASE("grainEdgeSample finds the first sample read past the source's last fr
             REQUIRE(edge > g.onsetSample);
             REQUIRE(edge < gg::grainEndSample(g));
             ++cut;
-            short_ += edge - g.onsetSample < gg::kStealFade;
+            short_ += edge - g.onsetSample < gg::kEdgeFade;
         }
         else
         {

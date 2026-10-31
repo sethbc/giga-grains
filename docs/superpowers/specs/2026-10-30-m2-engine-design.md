@@ -375,9 +375,9 @@ channel count `c`, with `w(t) = kGrainWeights[t][c]`:
    `W(o) − W_fading(o) − w(old) + w(t) ≤ quota`, so steals compound at the onset rate as the
    overshoot bound below says; rungs 1 and 2 keep the full ledger. **Amended (2026-10-30,
    ES-T6a):** a grain with at most `kStealFade` samples left keeps its natural end and applies no
-   fade (`fadeStart` marks it stolen, `invFade` stays 0): it ends within the fade's length anyway,
+   fade (`stolen_` marks it stolen, `invFade` stays 0): it ends within the fade's length anyway,
    and the fade's corner alone scored 13.86 on a sparse sine (0 after). So `F` is "256 samples
-   when more than 256 remain, else the grain is left to its end". **Amended (2026-10-30, EF-7,
+   when more than 256 remain, else the grain is left to its end". **Amended (2026-10-30, EF-8,
    row 300's follow-up):** the fade is a raised cosine, the Hann table's rising half at phase
    `(end − t) / 512`, not a line: the line's end corner scored up to 50 on the click detector at
    rate 0.5 (sample and live grains alike), the curve at most 3.07; `fx-overload` and
@@ -392,10 +392,12 @@ oldest grains are still young, the new ones are dropped; under sustained overloa
 grains yield with fades, one per new grain, so the stream keeps refreshing at its onset rate
 rather than freezing on whatever got in first. Each rung is reachable and the order is §14's.
 
-**The fade.** A stolen grain's window is multiplied by `clamp((end − t) / F, 0, 1)` from the
-steal on, with `end` its new end: 1 at the steal (the grain is at least half-way through, so its
-window is already falling) and 0 at `end`, a linear fade over F samples, shorter only when the
-grain would have ended sooner. The pool stores the fade's start and 1/F per grain (`INT64_MAX`
+**The fade.** A stolen grain's window is multiplied by a raised cosine from the steal on, with
+`end` its new end: the Hann table's rising half at phase `(end − t) / (2F)`, so sin² of a quarter
+turn: 1 at the steal (the grain is at least half-way through, so its window is already falling)
+and 0 at `end`, over F samples, shorter only when the grain would have ended sooner. **Amended
+(2026-10-30, EF-8):** this replaces the first design's `clamp((end − t) / F, 0, 1)`, a line whose
+end corner scored up to 50 on the click detector. The pool stores the fade's start and 1/F per grain (`INT64_MAX`
 and 0 for an unstolen grain, whose factor is exactly 1 and is skipped). The fade's first factor
 is 1 within one ulp (**Amended (2026-10-30), ES-T6b:** `F × float(1/F)` rounds to 0.99999994 for
 38 of the 255 lengths; accepted). The scalar references
