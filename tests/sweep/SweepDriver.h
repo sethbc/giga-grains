@@ -34,7 +34,8 @@
 //   Reverb Size moves are exempt only when the Size in effect (its base or its modulation)
 //   changes.
 // - and kReverbModulationDrop, after a Reverb Modulation decrease from 1 while Reverb Decay is
-//   infinite: a reverb click that carry-over row 311 owns (sub-project 4); deleted with its fix.
+//   infinite (its base kDecayMax exactly): a reverb click that carry-over row 311 owns (sub-project
+//   4); deleted with its fix.
 //
 // Each case pins a floor under the share of the render the click check scores
 // (Checks::minScored), so an exemption that widens past what the case needs fails there.
@@ -210,6 +211,7 @@ class SweepDriver
         exempt_.push_back({0, kFade + 256}); // the input's fade-in
         sizeBase_ = meta(gg::core::ParamSlot::ReverbSize).defaultVal;
         modBase_ = meta(gg::core::ParamSlot::ReverbModulation).defaultVal;
+        decayBase_ = meta(gg::core::ParamSlot::ReverbDecay).defaultVal;
         label("the start");
     }
 
@@ -249,6 +251,18 @@ class SweepDriver
     {
         queue(clock_, slot, false, value);
         label("set " + meta(slot).name + " = " + num(value));
+    }
+    /// A modulation-offset event at the next call's first sample.
+    void setMod(gg::core::ParamSlot slot, double value)
+    {
+        queue(clock_, slot, true, value);
+        label("set modulation of " + meta(slot).name + " = " + num(value));
+    }
+    /// computeMetrics' click score of the whole render, over every sample (the check's scoring
+    /// with nothing exempt).
+    double wholeRenderClickScore() const
+    {
+        return clickScore(clickTerms(), 0, static_cast<int64_t>(out_[0].size())).first;
     }
     /// A base-value event at its default, and a modulation event of 0, for every parameter at the
     /// next call's first sample.
@@ -550,12 +564,21 @@ class SweepDriver
     {
         if (slot == gg::core::ParamSlot::ReverbModulation && !isMod)
         {
-            // kReverbModulationDrop's trigger: the base falls from its top (1).
-            if (value < modBase_ && modBase_ >= meta(slot).maxVal)
+            // kReverbModulationDrop's trigger: the base falls from its top (1) while the Decay
+            // BASE, as queued before this event, is at its top (kDecayMax) exactly: latched here,
+            // so a Decay that is infinite only through modulation, or becomes so later, doesn't
+            // count. (Modulation drops by isMod are out of scope: nothing tracks them, so one
+            // that clicks fails the harness, it is never hidden.)
+            if (value < modBase_ && modBase_ >= meta(slot).maxVal &&
+                decayBase_ == static_cast<double>(meta(gg::core::ParamSlot::ReverbDecay).maxVal))
             {
                 modDrops_.push_back((time + 31) / 32 * 32);
             }
             modBase_ = value;
+        }
+        if (slot == gg::core::ParamSlot::ReverbDecay && !isMod)
+        {
+            decayBase_ = value;
         }
         if (slot != gg::core::ParamSlot::ReverbSize)
         {
@@ -671,18 +694,14 @@ class SweepDriver
             exempt_.push_back({b - 64, b + predelay + kReverbSizeExempt});
             return true;
         });
-        // kReverbModulationDrop (row 311): a drop from 1 applied in this call, at infinite Decay.
-        const bool infinite = processor_.effective(gg::core::ParamSlot::ReverbDecay) >=
-                              meta(gg::core::ParamSlot::ReverbDecay).maxVal;
+        // kReverbModulationDrop (row 311): a drop from 1 at Decay's base kDecayMax (latched when
+        // noted), applied in this call.
         std::erase_if(modDrops_, [&](int64_t b) {
             if (b >= clock_)
             {
                 return false; // not applied yet
             }
-            if (infinite)
-            {
-                exempt_.push_back({b - 64, b + kReverbModulationDropExempt});
-            }
+            exempt_.push_back({b - 64, b + kReverbModulationDropExempt});
             return true;
         });
         const bool active = processor_.reverbActive();
@@ -851,7 +870,9 @@ class SweepDriver
     std::vector<gg::test::layers::TimedNote> notes_;
     std::vector<std::pair<int64_t, std::string>> labels_;
     std::vector<Stretch> exempt_;
-    std::vector<int64_t> modDrops_;  // Reverb Modulation drops from 1: boundaries, until applied
+    /// Reverb Modulation base drops from 1 at Decay's base kDecayMax: boundaries, until applied.
+    std::vector<int64_t> modDrops_;
+    double decayBase_{0.0};          // the Reverb Decay base as queued
     double modBase_{0.0};            // the Reverb Modulation base as queued
     std::vector<int64_t> sizeMoves_; // Reverb Size moves' boundaries, until applied
     int64_t firstBadExposed_{-1};

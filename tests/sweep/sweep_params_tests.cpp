@@ -13,6 +13,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -23,6 +24,7 @@
 #include "gg/core/LivePeaks.h"
 #include "gg/core/ParamIds.h"
 #include "gg/core/UiSnapshot.h"
+#include "gg/metrics/Metrics.h"
 #include "sweep/SweepDriver.h"
 
 using gg::core::LayerParam;
@@ -309,43 +311,92 @@ TEST_CASE("sweep: a click planted beside an exemption is caught", "[sweep]")
     }
     SECTION("just past a Reverb Modulation drop's exemption")
     {
-        // kReverbModulationDrop (row 311) covers a drop from 1 at infinite Decay and its
-        // kReverbModulationDropExempt samples only: a step planted just past them is caught, and
-        // the same drop at a finite Decay exempts nothing.
-        const auto render = [](double decay) {
+        // kReverbModulationDrop (row 311) covers a drop from 1 while Decay's base is kDecayMax,
+        // for kReverbModulationDropExempt samples only. The scored share depends on the events
+        // alone, so each case is compared with the same render that has no drop.
+        struct Scenario
+        {
+            double decay = gg::core::kDecayMax; // Decay's base
+            double decayMod = 0.0;              // a modulation offset on Decay (0: none)
+            double from = 1.0;                  // Modulation's base before the drop
+            double to = 0.0;                    // and after
+            double decayLater = -1.0;           // Decay's base set 0.5 s after the drop (< 0: no)
+        };
+        const auto render = [](const Scenario &sc) {
             auto d = std::make_unique<SweepDriver>(Mode::Fx, 1113);
             d->processor().setBase(ParamSlot::ReverbAmount, 0.5f);
-            d->processor().setBase(ParamSlot::ReverbDecay, static_cast<float>(decay));
-            d->set(ParamSlot::ReverbModulation, 1.0); // as an event, so the driver sees the drop
+            d->set(ParamSlot::ReverbDecay, sc.decay); // events, so the driver sees them
+            if (sc.decayMod != 0.0)
+            {
+                d->setMod(ParamSlot::ReverbDecay, sc.decayMod);
+            }
+            d->set(ParamSlot::ReverbModulation, sc.from);
             d->play(1.0, Material::SineLive);
-            d->set(ParamSlot::ReverbModulation, 0.0);
-            d->play(2.0, Material::SineLive);
+            d->set(ParamSlot::ReverbModulation, sc.to);
+            d->play(0.5, Material::SineLive);
+            if (sc.decayLater >= 0.0)
+            {
+                d->set(ParamSlot::ReverbDecay, sc.decayLater);
+            }
+            d->play(1.5, Material::SineLive);
             return d;
         };
-        const auto inf = render(gg::core::kDecayMax);
-        const auto finite = render(1.0);
-        const gg::test::Checks c = gg::test::chainBound(*inf, 0.0);
-        REQUIRE(inf->check(c).where.empty());
-        const int64_t dropAt = SweepDriver::kRate; // the 1 s call boundary
-        const auto lost = static_cast<int64_t>(
-            std::llround((finite->check(c).scoredFraction - inf->check(c).scoredFraction) *
-                         static_cast<double>(inf->clock())));
-        INFO("samples the exemption removes: " << lost);
-        CHECK(lost > 0);
-        CHECK(lost <= 64 + SweepDriver::kReverbModulationDropExempt + 1);
-        const auto at =
-            static_cast<std::size_t>(dropAt + SweepDriver::kReverbModulationDropExempt + 600);
-        for (auto &ch : inf->output())
+        const auto lostBy = [&](Scenario sc) {
+            const auto with = render(sc);
+            sc.to = sc.from; // no drop
+            const auto without = render(sc);
+            const gg::test::Checks c = gg::test::chainBound(*with, 0.0);
+            return static_cast<int64_t>(
+                std::llround((without->check(c).scoredFraction - with->check(c).scoredFraction) *
+                             static_cast<double>(with->clock())));
+        };
+        SECTION(
+            "a drop from 1 at infinite Decay is exempt, narrowly, and a click past it is caught")
         {
-            for (std::size_t i = at; i < ch.size(); ++i)
-            {
-                ch[i] += 0.1f;
-            }
+            const auto inf = render({});
+            const gg::test::Checks c = gg::test::chainBound(*inf, 0.0);
+            REQUIRE(inf->check(c).where.empty());
+            const int64_t end = SweepDriver::kRate + SweepDriver::kReverbModulationDropExempt;
+            const int64_t lost = lostBy({});
+            INFO("samples the exemption removes: " << lost);
+            CHECK(lost > 0);
+            CHECK(lost <= 64 + SweepDriver::kReverbModulationDropExempt + 1);
+            const auto plant = [&](int64_t at) {
+                auto d = render({});
+                for (auto &ch : d->output())
+                {
+                    for (auto i = static_cast<std::size_t>(at); i < ch.size(); ++i)
+                    {
+                        ch[i] += 0.1f;
+                    }
+                }
+                return d->check(c);
+            };
+            // A step at n moves d at n and n + 1: planted 1 past the end it is caught, planted 2
+            // before it both of its samples are exempt.
+            const auto caught = plant(end + 1);
+            INFO(caught.where);
+            CHECK(caught.clickScore > c.clickLimit);
+            CHECK(namesSample(caught.where, static_cast<std::size_t>(end + 1)));
+            CHECK(plant(end - 2).clickScore <= c.clickLimit);
         }
-        const auto v = inf->check(c);
-        INFO(v.where);
-        CHECK(v.clickScore > c.clickLimit);
-        CHECK(namesSample(v.where, at));
+        SECTION("a drop at a finite Decay exempts nothing") { CHECK(lostBy({.decay = 1.0}) == 0); }
+        SECTION("a drop from below 1 (0.5 to 0) exempts nothing")
+        {
+            CHECK(lostBy({.from = 0.5}) == 0);
+        }
+        SECTION("a Decay that is infinite only through modulation exempts nothing")
+        {
+            const Scenario sc{.decay = 3.0, .decayMod = gg::core::kDecayMax - 3.0};
+            const auto d = render(sc);
+            REQUIRE(d->processor().effective(ParamSlot::ReverbDecay) >=
+                    SweepDriver::meta(ParamSlot::ReverbDecay, Mode::Fx).maxVal);
+            CHECK(lostBy(sc) == 0);
+        }
+        SECTION("a Decay that becomes infinite after the drop exempts nothing")
+        {
+            CHECK(lostBy({.decay = 3.0, .decayLater = gg::core::kDecayMax}) == 0);
+        }
     }
     SECTION("just past a Reverb Size move's exemption")
     {
@@ -453,4 +504,30 @@ TEST_CASE("sweep: the checks catch non-finite values the Processor exposes", "[s
         CHECK(!v.finite);
         CHECK(v.where.find("non-finite grain in the grain queue") != std::string::npos);
     }
+}
+
+TEST_CASE("sweep: the click score over the whole render is the goldens' metric exactly", "[sweep]")
+{
+    // The check scores each sample against the whole render's ±5 ms, as computeMetrics does;
+    // over every sample the two must be one number, with a click in the render so that it isn't
+    // the trivial one.
+    SweepDriver d(Mode::Fx, 1121);
+    d.processor().setBase(ParamSlot::ReverbAmount, 0.5f);
+    d.play(1.0, Material::SineLive);
+    d.set(ParamSlot::Pitch, 7.0);
+    d.play(1.0, Material::SineLive);
+    for (auto &ch : d.output())
+    {
+        for (std::size_t i = 60000; i < ch.size(); ++i)
+        {
+            ch[i] += 0.1f;
+        }
+    }
+    gg::metrics::AudioData audio;
+    audio.sampleRate = SweepDriver::kRate;
+    audio.channels = {d.output()[0], d.output()[1]};
+    const double goldens = gg::metrics::computeMetrics(audio).clickScore;
+    INFO("the goldens' score " << goldens);
+    CHECK(goldens > 5.0);
+    CHECK(d.wholeRenderClickScore() == goldens);
 }

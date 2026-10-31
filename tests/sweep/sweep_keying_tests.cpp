@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <vector>
 
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
 #include "gg/core/ParamIds.h"
@@ -26,16 +27,14 @@ TEST_CASE("sweep draws are stable when parameters are appended", "[sweep]")
         grown.push_back(0x00900000u + k);
     }
 
-    // A corner's draw for an ID depends on the ID alone.
-    for (uint64_t corner = 0; corner < 32; ++corner)
-    {
-        for (const uint32_t id : old)
-        {
-            CHECK(sd::byId(2101, corner, id) == sd::byId(2101, corner, id));
-        }
-    }
-    CHECK(sd::byId(2101, 0, old[0]) != sd::byId(2101, 0, old[1]));
-    CHECK(sd::byId(2101, 0, old[0]) != sd::byId(2101, 1, old[0]));
+    // Literal draws, so a change to the hash or the key layout fails visibly (a change moves
+    // every case's draws: re-pin the floors then).
+    CHECK(sd::byId(2101, 0, 0x000004) == Catch::Approx(0.05558309666093175).margin(1e-12));
+    CHECK(sd::byId(2101, 5, 0x000004) == Catch::Approx(0.93484181712987657).margin(1e-12));
+    CHECK(sd::byId(2101, 5, 0x10000a) == Catch::Approx(0.4058076046218031).margin(1e-12));
+    CHECK(sd::pickById(3101, 0, old) == 187u);
+    CHECK(sd::pickById(3101, 1023, old) == 85u);
+    CHECK(sd::eventField(3101, 7, 2) == Catch::Approx(0.22751742639552208).margin(1e-12));
 
     // A burst's pick: appending IDs changes an event's parameter only to an appended one, and
     // only when its key beats the old winner's; the rest of the event's draws never move.
@@ -50,10 +49,6 @@ TEST_CASE("sweep draws are stable when parameters are appended", "[sweep]")
             ++moved;
             INFO("event " << e);
             REQUIRE(b >= old.size()); // taken over by an appended ID, never reshuffled
-        }
-        for (uint64_t f = 0; f < 4; ++f)
-        {
-            REQUIRE(sd::eventField(3101, e, f) == sd::eventField(3101, e, f));
         }
     }
     // About 20 / (N + 20) of the events go to the new IDs, and the others keep their choice.
