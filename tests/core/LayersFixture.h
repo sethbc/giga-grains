@@ -9,7 +9,8 @@
 // processor_tests.cpp): the signals, the grain log, the block-split renderer, the four-layer
 // render of the block-size invariance test (M2 sub-project 1's spec §6.2–§6.4), which the
 // thread-pool invariance test (§6.7) renders through each runner, and a route from every mod
-// source (§6.8). The automation covers the delay and the limiter too (sub-project 4).
+// source (§6.8). The automation covers sub-project 4's units too: the buses, the delay, the
+// limiter and Smear, and a variant renders four Spectral layers over their rings.
 
 #include <algorithm>
 #include <array>
@@ -264,8 +265,9 @@ constexpr int64_t kInvarianceFrames = 2 * 48000;
 // every third a modulation offset of up to a quarter of the range: the M1 layer parameters,
 // Source (Sample, Live, the unbuilt Resample and Spectral), the spreads, each layer's Level and
 // Layer On (on 70% of the time, so layers go off for longer than the ramp and come back), Morph X
-// and Y swept, and each layer's Bus Split with both buses' filter type, cutoff and resonance. Times
-// and values come from gg::rng.
+// and Y swept, each layer's Bus Split with both buses' filter type, cutoff and resonance, the
+// delay's and the limiter's parameters, and each layer's Smear. Times and values come from
+// gg::rng.
 inline std::vector<TimedEvent> layerAutomation()
 {
     using gg::core::LayerParam;
@@ -339,6 +341,12 @@ inline std::vector<TimedEvent> layerAutomation()
     targets.push_back({ParamSlot::LimiterMode, 0.0f, 2.0f, true});
     targets.push_back({ParamSlot::LimiterCeiling, -24.0f, 0.0f, false});
     targets.push_back({ParamSlot::LimiterRelease, -6.6438562f, 0.0f, false});
+    // Smear (extremes spec §6.1), last of all for the same reason: it moves each layer's density,
+    // jitter and detune at every boundary its effective value changes.
+    for (uint8_t L = 0; L < 4; ++L)
+    {
+        targets.push_back({gg::core::layerSlot(LayerParam::Smear, L), 0.0f, 1.0f, false});
+    }
 
     std::vector<TimedEvent> events;
     for (std::size_t t = 0; t < targets.size(); ++t)
@@ -378,6 +386,23 @@ inline std::vector<TimedEvent> layerAutomation()
     }
     std::stable_sort(events.begin(), events.end(),
                      [](const TimedEvent &a, const TimedEvent &b) { return a.time < b.time; });
+    return events;
+}
+
+// layerAutomation() without its Source events: for the renders whose layers stay one kind.
+inline std::vector<TimedEvent> layerAutomationKeepingKinds()
+{
+    std::vector<TimedEvent> events = layerAutomation();
+    std::erase_if(events, [](const TimedEvent &e) {
+        for (uint8_t L = 0; L < 4; ++L)
+        {
+            if (e.slot == gg::core::layerSlot(gg::core::LayerParam::Source, L))
+            {
+                return true;
+            }
+        }
+        return false;
+    });
     return events;
 }
 
@@ -451,8 +476,9 @@ struct LayersRender
 };
 
 // How renderLayers sets its Processor up beyond the invariance test's defaults: the product, the
-// task runner (nullptr: the built-in serial one), the notes, the MIDI controls, and anything else
-// (routes, a transport), before the first call.
+// task runner (nullptr: the built-in serial one), the notes, the MIDI controls, anything else
+// (routes, a transport) before the first call, and whether the layers are given their sines
+// (without, an FX layer's Sample or Spectral material is its own ring).
 struct LayersSetup
 {
     gg::core::Mode mode{gg::core::Mode::Fx};
@@ -460,7 +486,26 @@ struct LayersSetup
     std::vector<TimedNote> notes;
     std::function<void(gg::core::Processor &)> configure;
     std::vector<TimedControl> controls;
+    bool samples{true};
 };
+
+// The Spectral variant's setup (the extremes' final review): FX layers with no sample, all four
+// Spectral, so each smears its own live ring, the FX's default material. Render it with
+// layerAutomationKeepingKinds(), which leaves Source alone.
+inline LayersSetup spectralRingSetup(gg::TaskRunner *runner = nullptr)
+{
+    LayersSetup s;
+    s.runner = runner;
+    s.samples = false;
+    s.configure = [](gg::core::Processor &p) {
+        for (uint8_t L = 0; L < 4; ++L)
+        {
+            p.setBase(gg::core::layerSlot(gg::core::LayerParam::Source, L), 3.0f);
+            p.setBase(gg::core::layerSlot(gg::core::LayerParam::Smear, L), 0.5f);
+        }
+    };
+    return s;
+}
 
 // The four-layer render of the block-size invariance test: every layer on, each with a sine
 // sample for the times it reads one, `input` into the rings (and the FX's dry side), `events`
@@ -476,7 +521,10 @@ inline void renderLayers(const Stereo &input, const std::vector<TimedEvent> &eve
     for (uint8_t L = 0; L < 4; ++L)
     {
         p.setBase(gg::core::layerOnSlot(L), 1.0f);
-        p.setSourceNow(L, sine(hz[L])); // for the layers that switch to Sample
+        if (setup.samples)
+        {
+            p.setSourceNow(L, sine(hz[L])); // for the layers that switch to Sample
+        }
     }
     if (setup.configure)
     {

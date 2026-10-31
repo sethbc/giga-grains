@@ -24,6 +24,7 @@
 #include "gg/core/ParamMap.h"
 #include "gg/core/Processor.h"
 #include "gg/core/Rng.h"
+#include "gg/engine/Engine.h"
 #include "gg/metrics/Metrics.h"
 #include "gg/source/PreparedSource.h"
 #include "gg/source/SampleBuffer.h"
@@ -242,10 +243,20 @@ TEST_CASE("switching a layer to spectral and back does not click", "[core][spect
     }
     const std::vector<TimedEvent> events{{48000, A(LayerParam::Source), false, 3.0},
                                          {2 * 48000, A(LayerParam::Source), false, 1.0}};
+    Log log;
+    rig.p.setEventSink(&Log::record, &log);
     const Stereo out = rig.run(&input, kFrames, events);
     CHECK(allFinite(out.left));
     CHECK(clickScore(out) < kClickLimit);
-    CHECK(peakIn(out.left, 48000, 2 * 48000) > 1.0e-3f);
+    // It sounded as Spectral, not only as the Live grains draining past the switch: Spectral
+    // grains spawned between the switches, and the second half of that span, long after the
+    // last Live grain ended, is not silent.
+    REQUIRE_FALSE(log.overflowed);
+    CHECK(std::count_if(log.events.begin(), log.events.end(), [](const Log::Event &e) {
+              return e.grain.sourceSlot == gg::Engine::kSpectralSlot &&
+                     e.grain.onsetSample >= 48000 && e.grain.onsetSample < 2 * 48000;
+          }) > 10);
+    CHECK(peakIn(out.left, 72000, 2 * 48000) > 1.0e-3f);
 }
 
 TEST_CASE("a spectral layer alongside the others does not allocate", "[core][spectral][rt]")

@@ -8,6 +8,7 @@
 // layer runs inline without a request; each task flushes denormals on its own thread; and the
 // tasks allocate nothing.
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -20,6 +21,7 @@
 #include "core/LayersFixture.h"
 #include "gg/core/ParamIds.h"
 #include "gg/core/Processor.h"
+#include "gg/engine/Engine.h"
 #include "gg/engine/TaskRunner.h"
 #include "support/AllocTripwire.h"
 #include "support/StubPool.h"
@@ -174,6 +176,47 @@ TEST_CASE("renders are identical with no pool and pools of 1, 2 and 8 workers",
                 }
                 REQUIRE(sameOrder);
             }
+        }
+    }
+}
+
+TEST_CASE("four Spectral layers over their rings render the same bytes on every pool",
+          "[core][threads][spectral][determinism]")
+{
+    // The FX's default Spectral case (the extremes' final review): four layers with no sample,
+    // each smearing its own ring, every other parameter automated, Smear among them. The serial
+    // runner and stub pools of 1, 2 and 8 workers render the same bytes, grains in the same order
+    // and ring heads.
+    const Stereo input = noise(kInvarianceFrames, 0.5f, 49);
+    const auto events = layerAutomationKeepingKinds();
+    for (const uint32_t block : {32u, 511u})
+    {
+        INFO("block size " << block);
+        LayersRender serial;
+        renderLayers(input, events, 4096, {block}, serial, spectralRingSetup());
+        REQUIRE_FALSE(serial.log.overflowed);
+        REQUIRE(peak(serial.audio.left) > 0.05f);
+        REQUIRE(std::all_of(
+            serial.log.events.begin(), serial.log.events.end(),
+            [](const Log::Event &e) { return e.grain.sourceSlot == gg::Engine::kSpectralSlot; }));
+        for (const unsigned workers : {1u, 2u, 8u})
+        {
+            INFO(workers << " workers");
+            StubPool pool(workers);
+            LayersRender r;
+            renderLayers(input, events, 4096, {block}, r, spectralRingSetup(&pool));
+            REQUIRE_FALSE(r.log.overflowed);
+            REQUIRE(sameBits(serial.audio.left, r.audio.left));
+            REQUIRE(sameBits(serial.audio.right, r.audio.right));
+            REQUIRE(r.heads == serial.heads);
+            REQUIRE(r.log.events.size() == serial.log.events.size());
+            bool sameOrder = true;
+            for (std::size_t i = 0; i < r.log.events.size(); ++i)
+            {
+                sameOrder = sameOrder && r.log.events[i].layer == serial.log.events[i].layer &&
+                            r.log.events[i].grain == serial.log.events[i].grain;
+            }
+            REQUIRE(sameOrder);
         }
     }
 }

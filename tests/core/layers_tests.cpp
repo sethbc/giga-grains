@@ -26,6 +26,7 @@
 #include "gg/core/ParamMap.h"
 #include "gg/core/Processor.h"
 #include "core/LayersFixture.h"
+#include "gg/engine/Engine.h"
 #include "gg/metrics/Metrics.h"
 #include "gg/source/PreparedSource.h"
 #include "gg/source/SampleBuffer.h"
@@ -691,6 +692,62 @@ TEST_CASE("four layers are block-size invariant", "[core][layers][determinism]")
                                << split.blockSizes.front() << " of " << split.blockSizes.size());
         LayersRender r;
         renderLayers(input, events, split.maxBlock, split.blockSizes, r);
+        REQUIRE_FALSE(r.log.overflowed);
+        for (uint32_t L = 0; L < 4; ++L)
+        {
+            INFO("layer " << L);
+            REQUIRE(r.log.layer(L) == ref.log.layer(L));
+            REQUIRE(r.heads[L] == ref.heads[L]);
+        }
+        REQUIRE(sameBits(ref.audio.left, r.audio.left));
+        REQUIRE(sameBits(ref.audio.right, r.audio.right));
+    }
+}
+
+TEST_CASE("four Spectral layers over their rings are block-size invariant",
+          "[core][layers][spectral][determinism]")
+{
+    // The FX's default Spectral case (the extremes spec §10; its final review): four layers with
+    // no sample, each smearing its own live ring, with every other parameter of the fixture
+    // automated, Smear among them. The same bits, the same grains per layer and the same ring
+    // heads at any host block size and maxBlockSize.
+    const Stereo input = noise(kInvarianceFrames, 0.5f, 49);
+    const auto events = layerAutomationKeepingKinds();
+    REQUIRE(std::any_of(events.begin(), events.end(), [](const TimedEvent &e) {
+        return e.slot == slotOf(LayerParam::Smear, 2);
+    }));
+
+    LayersRender ref;
+    renderLayers(input, events, 4096, {4096}, ref, spectralRingSetup());
+    REQUIRE(allFinite(ref.audio.left));
+    REQUIRE(allFinite(ref.audio.right));
+    REQUIRE(peak(ref.audio.left) > 0.05f);
+    REQUIRE_FALSE(ref.log.overflowed);
+    for (uint32_t L = 0; L < 4; ++L)
+    {
+        INFO("layer " << L);
+        REQUIRE(ref.log.layer(L).size() > 10);
+    }
+    // Not vacuous: every grain reads the smear's ring, and some went to bus 2.
+    REQUIRE(std::all_of(ref.log.events.begin(), ref.log.events.end(), [](const Log::Event &e) {
+        return e.grain.sourceSlot == gg::Engine::kSpectralSlot;
+    }));
+    REQUIRE(std::count_if(ref.log.events.begin(), ref.log.events.end(),
+                          [](const Log::Event &e) { return e.grain.bus == 1; }) > 10);
+
+    struct Split
+    {
+        uint32_t maxBlock;
+        std::vector<uint32_t> blockSizes;
+    };
+    std::vector<Split> splits{{4096, {1}}, {4096, {32}}, {4096, {511}}, {64, {4096}}};
+    splits.push_back({4096, randomSplit(403)});
+    for (const Split &split : splits)
+    {
+        INFO("maxBlockSize = " << split.maxBlock << ", first block size = "
+                               << split.blockSizes.front() << " of " << split.blockSizes.size());
+        LayersRender r;
+        renderLayers(input, events, split.maxBlock, split.blockSizes, r, spectralRingSetup());
         REQUIRE_FALSE(r.log.overflowed);
         for (uint32_t L = 0; L < 4; ++L)
         {

@@ -118,6 +118,16 @@ bool sameBits(const gg::CloudParams &a, const gg::CloudParams &b)
            a.sprayInSeconds == b.sprayInSeconds;
 }
 
+// Every field, bit for bit (+0 and -0 differ).
+bool sameCloudBits(const gg::CloudParams &a, const gg::CloudParams &b)
+{
+    return sameBits(a, b) && bitsOf(a.pitchSpreadSemitones) == bitsOf(b.pitchSpreadSemitones) &&
+           bitsOf(a.sizeSpreadOctaves) == bitsOf(b.sizeSpreadOctaves) &&
+           bitsOf(a.smearJitterSec) == bitsOf(b.smearJitterSec) &&
+           bitsOf(a.smearDetuneSemitones) == bitsOf(b.smearDetuneSemitones) &&
+           bitsOf(a.busSplit) == bitsOf(b.busSplit);
+}
+
 // Points spread over every slot's range at once: the ends, mode's defaults and 200 mixtures.
 std::vector<ParamValues> samplePoints(Mode mode)
 {
@@ -175,16 +185,6 @@ gg::CloudParams preSmearReference(const ParamValues &v, Mode mode, uint8_t layer
     p.busSplit = param(LayerParam::BusSplit);
     p.gain = static_cast<float>(1.0 / std::sqrt(std::max(1.0, p.densityHz * p.grainDurationSec)));
     return p;
-}
-
-// Every field, bit for bit (+0 and -0 differ).
-bool sameCloudBits(const gg::CloudParams &a, const gg::CloudParams &b)
-{
-    return sameBits(a, b) && bitsOf(a.pitchSpreadSemitones) == bitsOf(b.pitchSpreadSemitones) &&
-           bitsOf(a.sizeSpreadOctaves) == bitsOf(b.sizeSpreadOctaves) &&
-           bitsOf(a.smearJitterSec) == bitsOf(b.smearJitterSec) &&
-           bitsOf(a.smearDetuneSemitones) == bitsOf(b.smearDetuneSemitones) &&
-           bitsOf(a.busSplit) == bitsOf(b.busSplit);
 }
 
 // The plan's Smear law (M2 sub-project 4's Global Constraints; its spec §6.1), written out: the
@@ -334,7 +334,7 @@ TEST_CASE("param map follows the taper table", "[core]")
                     REQUIRE(cloud.texture == d(v));
                     auto others = cloud;
                     others.texture = 0.0;
-                    REQUIRE(sameBits(others, toCloudParams(defaults(Mode::Fx), Mode::Fx)));
+                    REQUIRE(sameCloudBits(others, toCloudParams(defaults(Mode::Fx), Mode::Fx)));
                     break;
                 }
             case ParamSlot::Feedback:
@@ -354,7 +354,7 @@ TEST_CASE("param map follows the taper table", "[core]")
                 REQUIRE(wet.levelGain == w0.levelGain);
                 REQUIRE(wet.mix == w0.mix);
                 REQUIRE(wet.freeze == w0.freeze);
-                REQUIRE(sameBits(cloud, toCloudParams(defaults(Mode::Fx), Mode::Fx)));
+                REQUIRE(sameCloudBits(cloud, toCloudParams(defaults(Mode::Fx), Mode::Fx)));
                 break;
             }
             case ParamSlot::Source:
@@ -377,7 +377,10 @@ TEST_CASE("param map follows the taper table", "[core]")
                 // Read as they are (spec §6.6); every other field is the defaults'.
                 REQUIRE((slot == ParamSlot::PitchSpread ? cloud.pitchSpreadSemitones
                                                         : cloud.sizeSpreadOctaves) == d(v));
-                REQUIRE(sameBits(cloud, toCloudParams(defaults(Mode::Fx), Mode::Fx)));
+                auto c0 = toCloudParams(defaults(Mode::Fx), Mode::Fx);
+                c0.pitchSpreadSemitones = cloud.pitchSpreadSemitones;
+                c0.sizeSpreadOctaves = cloud.sizeSpreadOctaves;
+                REQUIRE(sameCloudBits(cloud, c0));
                 break;
             }
             case ParamSlot::Smear:
@@ -391,14 +394,18 @@ TEST_CASE("param map follows the taper table", "[core]")
                 REQUIRE(cloud.smearDetuneSemitones == 0.5 * d(v));
                 c0.densityHz = cloud.densityHz;
                 c0.gain = cloud.gain;
-                REQUIRE(sameBits(cloud, c0));
+                c0.smearJitterSec = cloud.smearJitterSec;
+                c0.smearDetuneSemitones = cloud.smearDetuneSemitones;
+                REQUIRE(sameCloudBits(cloud, c0));
                 break;
             }
             case ParamSlot::BusSplit:
             {
                 // The extremes spec §6.3: read as it is; every other field is the defaults'.
                 REQUIRE(cloud.busSplit == d(v));
-                REQUIRE(sameBits(cloud, toCloudParams(defaults(Mode::Fx), Mode::Fx)));
+                auto c0 = toCloudParams(defaults(Mode::Fx), Mode::Fx);
+                c0.busSplit = cloud.busSplit;
+                REQUIRE(sameCloudBits(cloud, c0));
                 break;
             }
             case ParamSlot::Macro1:
@@ -629,7 +636,7 @@ TEST_CASE("space params follow the table", "[core][space]")
                 {
                     INFO("slot " << s << " at " << v);
                     const auto values = with(slot, v, mode);
-                    CHECK(sameBits(toCloudParams(values, mode), cloud));
+                    CHECK(sameCloudBits(toCloudParams(values, mode), cloud));
                     const auto w = toWetParams(values, mode);
                     CHECK(bitsOf(w.levelGain) == bitsOf(wet.levelGain));
                     CHECK(bitsOf(w.mix) == bitsOf(wet.mix));
@@ -694,7 +701,13 @@ TEST_CASE("the instrument's Position is a fraction and its Spray is seconds", "[
         {
             v[static_cast<size_t>(ParamSlot::Source)] = 1.0f; // Live
             v[static_cast<size_t>(ParamSlot::Smear)] = 0.0f;
-            REQUIRE(sameBits(toCloudParams(v, Mode::Fx), fxReference(v)));
+            // The fields after M1's are read as they are (M2's spreads, Bus Split); Smear 0
+            // leaves its two amplitudes at 0.
+            auto expected = fxReference(v);
+            expected.pitchSpreadSemitones = at(v, ParamSlot::PitchSpread);
+            expected.sizeSpreadOctaves = at(v, ParamSlot::SizeSpread);
+            expected.busSplit = at(v, ParamSlot::BusSplit);
+            REQUIRE(sameCloudBits(toCloudParams(v, Mode::Fx), expected));
         }
     }
 

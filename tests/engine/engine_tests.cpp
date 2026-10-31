@@ -1484,6 +1484,8 @@ TEST_CASE("two buses share the grains", "[engine]")
         REQUIRE(onBus1 > 0);
         REQUIRE(static_cast<std::size_t>(onBus1) < log.grains.size());
         REQUIRE(allFinite(got.out.left));
+        REQUIRE(allFinite(got.out.right));
+        REQUIRE(allFinite(got.bus2.left));
         REQUIRE(allFinite(got.bus2.right));
         REQUIRE(peak(got.out.left) > 0.05f);
         REQUIRE(peak(got.out.right) > 0.05f);
@@ -1782,10 +1784,11 @@ TEST_CASE("a kind switch to and from spectral lets sounding grains finish", "[en
     }
     SECTION("from Spectral")
     {
-        // Spectral to Live, over a silent ring, so the Live grains add nothing. The smear's ring
-        // writes silence from the switch on (SpectralSource::setActive), which the old grains
-        // read, so the expectation is an engine making the same switch with its stream off: what
-        // it renders from there is exactly the old Spectral grains finishing on their ring.
+        // Spectral to Live, over a silent ring, so the Live grains add nothing. From the switch
+        // on the smear's ring computes no new frame: it drains the frames already overlap-added,
+        // then takes silence (SpectralSource::setActive), and the old grains read it. So the
+        // expectation is an engine making the same switch with its stream off: what it renders
+        // from there is exactly the old Spectral grains finishing on their draining ring.
         const auto source = makeNoise(96000, 3);
         const gg::CloudParams p = spectralParams(0.5);
         gg::Engine switched(spectralConfig());

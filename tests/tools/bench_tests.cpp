@@ -1017,7 +1017,20 @@ TEST_CASE("engine-sample-smear, engine-buses and engine-spectral run", "[bench]"
         CHECK(tiers.eco == 0);
         REQUIRE(tiers.activeGrains.size() == 1);
         CHECK(tiers.activeGrains[0] > 0);
+        // Each exercises what it is named for, and only that: the smear's detune moves the
+        // rates, half the buses' grains go to bus 2, and every Spectral grain reads its ring.
+        const std::string n = name;
+        const uint64_t admitted = tiers.normal + tiers.eco;
+        CHECK((tiers.detuned > admitted / 2) == (n == "engine-sample-smear"));
+        CHECK((tiers.bus2 > admitted / 4) == (n == "engine-buses"));
+        CHECK(tiers.bus2 < admitted);
+        CHECK(tiers.spectral == (n == "engine-spectral" ? admitted : 0));
     }
+    // The control: engine-sample's grains share one rate, one bus and the sample slots.
+    const gg::bench::TierCounts plain = gg::bench::admittedTiers("engine-sample", 50, 256);
+    CHECK(plain.detuned == 0);
+    CHECK(plain.bus2 == 0);
+    CHECK(plain.spectral == 0);
 }
 
 TEST_CASE("the chain benchmark runs and writes its json", "[bench]")

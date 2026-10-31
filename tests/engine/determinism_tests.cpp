@@ -968,7 +968,8 @@ namespace
 {
 // The Spectral kind (the extremes spec §6.2) over liveNoise() and the 16 s ring, or over a
 // sample. Live (no sample) or Sample until kToSpectral, a frame inside a hop, then Spectral; its
-// Position moves twice, at kMove1 (inside a hop) and at kMove2 (a hop boundary at 48 kHz), and
+// Position moves twice, at kMove1 (inside a hop) and at kMove2 (a hop boundary at 48 kHz), Smear's
+// jitter and detune with it (set from the start, moved at kMove1 and cleared at kMove2), and
 // the ring is frozen from kFreeze to kThaw, so the smear reads a ring whose head stops. Every
 // change is made between the process() calls at its frame, so each block split sees it at the
 // same absolute sample.
@@ -1016,6 +1017,8 @@ void renderSpectral(const LiveInput &input, const std::shared_ptr<const gg::Samp
     gg::CloudParams p = kParams;
     p.position = positions[0];
     p.spray = 0.2;
+    p.smearJitterSec = 0.02;
+    p.smearDetuneSemitones = 0.25;
     engine.setCloudParams(p);
     engine.setEventSink(&GrainLog::record, &r.log);
     constexpr float kUnwritten = std::numeric_limits<float>::quiet_NaN();
@@ -1041,6 +1044,8 @@ void renderSpectral(const LiveInput &input, const std::shared_ptr<const gg::Samp
         if (move && (end == kMove1 || end == kMove2))
         {
             p.position = positions[end == kMove1 ? 1 : 2];
+            p.smearJitterSec = end == kMove1 ? 0.05 : 0.0;
+            p.smearDetuneSemitones = end == kMove1 ? 0.5 : 0.0;
             engine.setCloudParams(p);
         }
         if (end == kFreeze || end == kThaw)

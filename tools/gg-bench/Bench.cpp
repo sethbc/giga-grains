@@ -73,14 +73,14 @@
 
 #include "GrainFilterKernel.h"
 #include "Kernels.h"
-#include "gg/core/DenormalGuard.h"
+#include "fx/BusFilter.h"
 #include "gg/core/Delay.h"
+#include "gg/core/DenormalGuard.h"
 #include "gg/core/Diffuser.h"
 #include "gg/core/Limiter.h"
 #include "gg/core/ParamMap.h"
 #include "gg/core/Rng.h"
 #include "gg/core/SpaceReverb.h"
-#include "fx/BusFilter.h"
 #include "gg/engine/Engine.h"
 #include "gg/engine/TaskRunner.h"
 #include "gg/grain/GrainPool.h"
@@ -521,6 +521,13 @@ class EngineConfiguration final : public Configuration
                 [](void *ctx, uint32_t, const gg::GrainSpec &g) {
                     TierCounts &c = *static_cast<TierCounts *>(ctx);
                     ++(g.tier == gg::Tier::Eco ? c.eco : c.normal);
+                    c.bus2 += g.bus != 0 ? 1 : 0;
+                    c.spectral += g.sourceSlot == gg::Engine::kSpectralSlot ? 1 : 0;
+                    if (c.firstRate == 0.0)
+                    {
+                        c.firstRate = g.rate;
+                    }
+                    c.detuned += g.rate != c.firstRate ? 1 : 0;
                 },
                 &counts);
         }
@@ -1566,8 +1573,9 @@ class ChainStage
   public:
     ChainStage()
         : releaseCoeff_(
-              static_cast<float>(1.0 - std::exp(-1.0 / (kChainReleaseSeconds * kSampleRate)))),
-          dampCoeff_(1.0f - kChainDamping), left_(kSpaceNoiseFrames), right_(kSpaceNoiseFrames)
+              gg::core::releaseCoefficient(static_cast<float>(kChainReleaseSeconds), kSampleRate)),
+          dampCoeff_(gg::core::dampCoefficient(kChainDamping, kSampleRate)),
+          left_(kSpaceNoiseFrames), right_(kSpaceNoiseFrames)
     {
         for (gg::core::fx::BusFilter &f : filter_)
         {
@@ -1636,7 +1644,7 @@ class ChainStage
             filter_[1].process(bL, bR);
             float l = aL + bL;
             float r = aR + bR;
-            delay_.process(l, r, kChainAmount, kChainFeedback, dampCoeff_, true);
+            delay_.process(l, r, kChainAmount, kChainFeedback, dampCoeff_, 1.0f);
             limiter_.process(l, r, gg::core::LimiterMode::Peak, kChainCeiling, releaseCoeff_);
             sum += l + r;
             at_ = at_ + 1 == kSpaceNoiseFrames ? 0 : at_ + 1;

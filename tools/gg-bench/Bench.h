@@ -220,11 +220,17 @@ nlohmann::json makeBaseline(const std::string &leg, const std::vector<nlohmann::
 /// if either fails checkBaseline() or their legs differ.
 nlohmann::json mergeBaseline(const nlohmann::json &old, const nlohmann::json &made);
 
-/// How many grains an engine case admitted at each interpolation tier (ruling 2).
+/// How many grains an engine case admitted at each interpolation tier (ruling 2), and what the
+/// extremes' cases exercise: how many went to bus 2, read the Spectral ring, or play at a rate
+/// other than the first grain's (Smear's micro-detune, at a fixed pitch).
 struct TierCounts
 {
     uint64_t eco{0};
     uint64_t normal{0};
+    uint64_t bus2{0};
+    uint64_t spectral{0};
+    uint64_t detuned{0};
+    double firstRate{0.0}; ///< The first admitted grain's rate, 0 before one.
     /// Each layer's engine's activeGrains() after the warm-up, in layer order: one entry for a
     /// one-layer case, four for engine-layers and engine-layers-full.
     std::vector<uint32_t> activeGrains{};
