@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | **Approved by the programme manager 2026-10-29** against the programme design and INTENT, with one amendment accepted (rows 118 and 119 move from sub-project 2 to this one, §12). **The director's decisions D1–D5, 2026-10-29,** are recorded in §8 and applied in place: D1 option 1, D2 option 1, D3 option 3, D4 option 1, D5 option 2. **Built** 2026-10-30 (PR #15; INTENT §23 #65), amended in place, each marked **Amended**: §6.1 (the smoke test's bound and the PPA step, ruling LS-T1a; no C++23 library feature used yet), §6.3 (the `min(1, Σ r_K)` factor, ruling LS-T10a), §6.7 (the event order, ruling LS-T10b; the per-layer dropped-event counts and the stub pool's RTSan exemption, rulings LS-T11a and LS-T11b), §6.8 (Level and Layer A On as layer targets), §6.9 (the 07b listening spec, ruling LS-T5a), §6.10 (the `<route>` target as a CLAP ID, ruling LS-P1), §6.11 (`tempoBpm`, ruling LS-T13a), §12 (rows 118 and 119 accepted by the programme manager, and closed) |
+| **Status** | **Approved by the programme manager 2026-10-29** against the programme design and INTENT, with one amendment accepted (rows 118 and 119 move from sub-project 2 to this one, §12). **The director's decisions D1–D5, 2026-10-29,** are recorded in §8 and applied in place: D1 option 1, D2 option 1, D3 option 3, D4 option 1, D5 option 2. **Built** 2026-10-30 (PR #15; INTENT §23 #65), amended in place, each marked **Amended**: §6.1 (the smoke test's bound and the PPA step, ruling LS-T1a; no C++23 library feature used yet), §6.3 (the `min(1, Σ r_K)` factor, ruling LS-T10a; the unheld corner weight shared by the ramps, carry-over row 301, 2026-10-31), §6.7 (the event order, ruling LS-T10b; the per-layer dropped-event counts and the stub pool's RTSan exemption, rulings LS-T11a and LS-T11b), §6.8 (Level and Layer A On as layer targets), §6.9 (the 07b listening spec, ruling LS-T5a), §6.10 (the `<route>` target as a CLAP ID, ruling LS-P1), §6.11 (`tempoBpm`, ruling LS-T13a), §12 (rows 118 and 119 accepted by the programme manager, and closed) |
 | **Milestone** | M2 Giga (INTENT §20, §23 #64), sub-project 1 of 7; wave 1, alone |
 | **Spec authority** | `INTENT.md`, then `docs/superpowers/specs/2026-10-29-m2-programme-design.md` (its §6.1, §7 and §12 are this sub-project's charter: realized here, not reopened). This document records how this sub-project implements them |
 | **Builds on** | M1 as closed (§23 #60): the `Processor` and its wet chain, the Cloud engine, Sources, Space, the Perform UI's macros, Texture and Feedback; the release pipeline (§23 #61) |
@@ -298,6 +298,31 @@ instance, after the tasks join:
   > on it is 1 and the law is D1's; one layer at `r = 1` still weighs exactly 1.0 (`(b/b) × 1`),
   > so layer A alone is M1's bit for bit (`1235944`). It is the stated behaviour, not the
   > formula, that is the intent: an engineering ruling, not a director's choice.
+
+  > **Amended (2026-10-31, carry-over row 301, assigned to M2 sub-project 4 by the director):**
+  > the law is now `weight_L = R > 0 ? (r_L·b_L + (r_L / R)·m) / (s + m) × min(1, R) : 0`, with
+  > `R = Σ_K r_K`, `s = Σ_K r_K·b_K` and `m = Σ_K (1 − r_K)·b_K`, the corner weight no rendering
+  > layer holds (for `R < 1` computed as `r_L·(b_L·R + m) / (s + m)`). Dividing by `s` alone
+  > shared an off corner's weight in proportion to the rendering layers' corner weights, and off
+  > the center those can all be near 0 (a ramp near 0 on a corner it dominates; the pad near a
+  > corner no rendering layer holds): the weights were ratios of near-zero values and handed over
+  > within a sample or a few (0.9995 in one sample at the pad's (0, 0), a click of 547 over
+  > sines; 52.2 in the FX extremes sweep through the delay). Each rendering layer now keeps its
+  > own `r_L·b_L` and takes its ramp's share of `m`, so every weight is a polynomial in the
+  > ramps and the pad over a denominator of about 1 and moves at their pace (at most 0.0042 a
+  > sample in the layers tests). D1's stated behaviour holds: the amplitude sum is 1 with a
+  > whole layer's worth of ramps on, every on layer weighs `1/n` at the center (where the new
+  > law and the old agree algebraically, ramps included), a corner's layer, on, holds at least
+  > its corner weight there, one layer at `r = 1` weighs `(b + m) / (b + m)`, exactly 1.0, and
+  > four at `r = 1` have `m = 0` and weigh `b_L / s`, bit for bit. What the statement changes is
+  > how an off corner's weight is shared: by the rendering layers' ramps, equally, not in
+  > proportion to their corner weights. Two or three layers on off the center therefore weigh
+  > differently at rest (A and D on at (0.25, 0.25): 0.75 and 0.25, where the first law gave
+  > 0.9 and 0.1; A and B on at C's corner: about 0.5 each, where it gave A alone). The
+  > alternatives weighed: keeping proportional sharing can't be smooth, since that law itself
+  > jumps near a corner no rendering layer holds (its limit there depends on the direction the
+  > pad comes from); slewing the weights per sample adds state and cuts a layer whose ramp
+  > reaches 0 before its slewed weight does. Commit `6335d91`.
 - Every weight is plain float arithmetic per sample, no libm; a −0 weight can't arise since the
   ramps and bilinears are products of non-negative values.
 
