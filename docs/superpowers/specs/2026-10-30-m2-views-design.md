@@ -705,7 +705,7 @@ on the column (6.6× for GL and 12.5× for Metal on whole-process CPU). Neither 
 platform risk": OpenGL is deprecated on macOS and was unmeasured in the hosts, under Rosetta, on
 Linux and on Windows; Metal is macOS-only, so it would be a second renderer. If the budget ever
 breaks, Metal is the macOS lever. The 4.10 ms is contended and is no budget figure; the live
-readout idle is TBD (idle run, Task 18b).
+readout idle is below (report-only): The live readout, a separate, report-only figure (the FX standalone's header frame readout, `GG_STRESS_GRAINS=8192`, a 1600 × 600 canvas in a 1624 × 762 editor at 2×, five 20 s runs, built at `25c7707` plus Task 17's readout hook in a scratch tree, not merged): ui_ms 3.616, 3.457, 3.557, 3.499 and 3.503, median 3.50 ms, with 2,943 to 3,330 frames per 20 s (about 147 to 167 a second); it includes `drawImage` and the overlays, which the headless bench doesn't.
 
 **Amended** (VW-T17b): **the repaint rate, decided (D12, §8).** The CPU canvas repaints on every
 VBlank it can make: on the spike's 240 Hz display it painted about 156 frames a second, about 65%
@@ -727,7 +727,7 @@ The figure is measured idle on the reference core at the sub-project's end (the 
 (`gg::bench::runCanvas`), so the test reaches it; `gg-bench-lib` links `gg::ui-core`. The
 resolve takes four `TintBand`s, the canvas's height in quarters, tinted with `kLayerTints`. The
 `[bench]` case is "the canvas bench reports four banded lanes". The figures published before
-it are the one-tint resolve's. **The idle figure at 8,192 grains:** TBD (idle run, Task 18b).
+it are the one-tint resolve's. **The idle figure at 8,192 grains:** 2.959 ms at 8,192 grains with four lanes (mean 3.117 ms, p95 4.009 ms; splat 0.83 ms, resolve 2.071 ms), at or under the 3 ms budget by its median, the exit criterion met; the mean is just over 3 ms; 4,096 grains 2.55 ms, 16,384 grains 3.751 ms; idle window 2026-10-30 19:27-19:29 CDT, the other sessions paused, load average 3.15 falling to 2.43, Apple M5 Max, at `25c7707` (`docs/benchmarks/2026-10-30-m2-views-canvas.json`).
 
 ### 6.13 `gg-snap`, the screenshots
 
@@ -979,15 +979,14 @@ commit (`scripts/update-goldens.sh` before and after each commit that touches `c
 `plugin/`; the hash list in that commit). The event logs and metrics don't move.
 
 **Benchmarks:** `gg-bench --canvas` idle on the reference core at the sub-project's end: at or
-under 3 ms at 8,192 grains with four lanes, the JSON kept for the close (**the figure:** TBD
-(idle run, Task 18b)); `engine-sample` shows no
+under 3 ms at 8,192 grains with four lanes, the JSON kept for the close (**the figure:** 2.959 ms at 8,192 grains with four lanes (mean 3.117 ms, p95 4.009 ms; `docs/benchmarks/2026-10-30-m2-views-canvas.json`); `engine-sample` shows no
 `regressed` ratio on any CI model (programme design §7.6); the spike's table (§6.11).
 
 **Validators:** clap-validator, pluginval at strictness 10 (with GUI tests where the leg runs
 them), auval on the three identities and Steinberg's validator, on `release`, on every CI leg: the
 editor opens and closes under them.
 
-**Gate:** `scripts/check.sh` over `dev,asan,rtsan` passes; CI green on the head commit through
+**Gate:** `scripts/check.sh` over `dev,asan,rtsan` passes (met at `25c7707`: dev 906/908 passed, 2 skipped; asan 788/795, 7 skipped; rtsan 797/797; format ok, 250 files; PASS); CI green on the head commit through
 the draft PR; `scripts/format.sh --check`; a fresh reviewer's final review and its fix wave.
 
 **Exit criteria** (the programme design's §6.6, each with its proof): every parameter is reachable
@@ -1095,7 +1094,7 @@ PRs is a plan matter, flagged in §6.1).
 **As built (PR 1):** made in one change with the §23 row, which takes its number at merge.
 Besides the sections above, two stale sentences in §14 change by the same row: the mod
 matrix's slots are now edited from the Mod view too, and the canvas's y axis is pitch. The idle
-canvas figure §16 gets is TBD (idle run, Task 18b).
+canvas figure §16 gets is 2.959 ms at 8,192 grains with four lanes (`docs/benchmarks/2026-10-30-m2-views-canvas.json`).
 
 ## 14. Risks
 
