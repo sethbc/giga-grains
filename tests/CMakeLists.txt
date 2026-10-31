@@ -526,8 +526,9 @@ if (APPLE AND GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
     # (its preset-discovery crawl). gg-vst3-preset-selector creates each class and reads it back
     # through the raw vtables; the content root GG_CONTENT_DIR names holds the two packed test
     # presets, so each list has at least INIT and its own test preset (2). The settings file is a
-    # scratch one, so the user's presets folder is never read or made. Each test has a root of
-    # its own beside the other tests' (parallel-safe).
+    # scratch one, so the user's presets folder is never read or made. Both tests read the
+    # one root, which the setup test writes before either starts and nothing writes after, and
+    # each has a settings file of its own (parallel-safe).
     set(GG_VST3_SELECTOR_ROOT ${CMAKE_CURRENT_BINARY_DIR}/test-output/vst3-selector-content)
     add_test(NAME identity_vst3_preset_content
             COMMAND ${CMAKE_COMMAND} -DOUT=${GG_VST3_SELECTOR_ROOT}/Presets

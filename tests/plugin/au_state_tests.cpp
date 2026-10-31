@@ -113,11 +113,21 @@ std::filesystem::path scratch(const std::string &name)
     return dir;
 }
 
-/// The content root of these tests: <scratch>/content/Presets/<fixture>.ggpreset for the FX's and
-/// the instrument's test sources (tests/fixtures/presets), packed as gg-render --pack-preset does.
-std::filesystem::path contentRoot()
+/// The content root the factory-presets case sets before its first unit: empty for every other
+/// case, which touch no content folder. Each Catch2 case is its own process, so a case's root is
+/// the one its process's preset crawl sees; it is named for the case alone (parallel-safe).
+std::string &contentRootForCase()
 {
-    const auto root = scratch("content");
+    static std::string root;
+    return root;
+}
+
+/// <scratch>/<name>/Presets/<fixture>.ggpreset for the FX's and the instrument's test sources
+/// (tests/fixtures/presets), packed as gg-render --pack-preset does. Made by one process only:
+/// the case that names `name`.
+std::filesystem::path contentRoot(const std::string &name)
+{
+    const auto root = scratch(name);
     const auto presets = root / "Presets";
     std::filesystem::remove_all(presets);
     std::filesystem::create_directories(presets);
@@ -155,11 +165,13 @@ AudioComponent component(const Identity &id)
     // The plugins read their per-machine settings when an instance is created: a scratch file,
     // never the user's (ruling R16).
     setenv("GG_SETTINGS_FILE", (scratch("settings") / "settings.xml").c_str(), 1);
-    // The factory presets the plugins list come from the content root GG_CONTENT_DIR names (the
-    // first root, ahead of any installed content): a scratch one holding the two packed fixture
-    // presets, made before the first instance, whose preset crawl is shared by the process.
-    static const std::string content = contentRoot().string();
-    setenv("GG_CONTENT_DIR", content.c_str(), 1);
+    // The factory presets the plugins list come from the content roots: GG_CONTENT_DIR is the
+    // first, ahead of any installed content. Only the factory-presets case sets one (its own
+    // scratch root, made before the first instance; the preset crawl is shared by the process).
+    if (!contentRootForCase().empty())
+    {
+        setenv("GG_CONTENT_DIR", contentRootForCase().c_str(), 1);
+    }
 
     static CFBundleRef bundle = [] {
         const std::string path = GG_AU_BUNDLE;
@@ -591,10 +603,11 @@ std::vector<std::pair<SInt32, std::string>> factoryPresets(const Unit &unit)
 TEST_CASE("the au lists the factory presets and loads one", "[plugin][au][preset]")
 {
     // M2 sub-project 5's spec §6.3: clap-wrapper's AU crawls the plugin's preset-discovery
-    // provider. With GG_CONTENT_DIR at a scratch root holding the two packed fixture presets, the
-    // FX lists "FX Test" and "Init" (the instrument's own test preset stays out of the FX's
-    // list), and PresentPreset of "FX Test" loads it: Size reads the preset's value, -1.0, not
-    // the default.
+    // provider. With GG_CONTENT_DIR at this case's own scratch root, holding the two packed
+    // fixture presets, the FX lists "FX Test" and "Init", each once (the user and system content
+    // folders are scanned too, so a machine with Giga Grains content lists more), and
+    // PresentPreset of "FX Test" loads it: Size reads the preset's value, -1.0, not the default.
+    contentRootForCase() = contentRoot("factory-presets-content").string();
     const Identity &fx = kIdentities[1];
     Unit unit(fx);
     REQUIRE(unit.valid());
@@ -606,7 +619,6 @@ TEST_CASE("the au lists the factory presets and loads one", "[plugin][au][preset
         names.push_back(entry.second);
     }
     CAPTURE(names);
-    REQUIRE(presets.size() == 2);
     CHECK(std::count(names.begin(), names.end(), "FX Test") == 1);
     CHECK(std::count(names.begin(), names.end(), "Init") == 1);
 
