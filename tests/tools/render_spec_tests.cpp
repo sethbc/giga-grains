@@ -127,15 +127,22 @@ RenderSpec parseJson(const nlohmann::json &j)
 }
 
 /// The test media (gg-render --write-media), written into a directory of this test's own under
-/// GG_TEST_OUTPUT_DIR; returns the directory, as UTF-8.
+/// GG_TEST_OUTPUT_DIR; returns the directory, as UTF-8. Written once per process: a GENERATE'd
+/// test runs every value in one process and asks again for each, and the media include the state
+/// fixtures, whose 20 s render (M2 sub-project 2) cost seconds a call under ASan.
 std::string writeMedia(const std::string &name)
 {
+    static std::set<std::string> written;
     const auto dir = std::filesystem::path{GG_TEST_OUTPUT_DIR} / name;
-    std::filesystem::create_directories(dir);
-    std::string error;
-    const bool written = gg::render::writeTestMedia(utf8(dir), error);
-    INFO(error);
-    REQUIRE(written);
+    if (!written.contains(name))
+    {
+        std::filesystem::create_directories(dir);
+        std::string error;
+        const bool ok = gg::render::writeTestMedia(utf8(dir), error);
+        INFO(error);
+        REQUIRE(ok);
+        written.insert(name);
+    }
     return utf8(dir);
 }
 
