@@ -2718,12 +2718,12 @@ TEST_CASE("a ring limit narrows admission at once and the reads once the grains 
     CHECK_FALSE(engine.liveRingFits(kN1));
     for (int64_t done = kLimitAt; done < 4 * 48000; done += 256)
     {
-        const auto n = static_cast<uint32_t>(std::min<int64_t>(256, 4 * 48000 - done));
+        const auto count = static_cast<uint32_t>(std::min<int64_t>(256, 4 * 48000 - done));
         const float *in[2] = {input.left.data() + done, input.right.data() + done};
         std::vector<float> l(256), r(256);
         float *o[2] = {l.data(), r.data()};
-        engine.process(in, 2, o, 2, n);
-        const int64_t now = done + n;
+        engine.process(in, 2, o, 2, count);
+        const int64_t now = done + count;
         INFO("after the call ending at " << now);
         REQUIRE(engine.live().windowFrames() <= kN1 - gg::LiveSource::kCapSlack);
         if (now == lastEnd)
