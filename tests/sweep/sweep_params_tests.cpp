@@ -307,6 +307,46 @@ TEST_CASE("sweep: a click planted beside an exemption is caught", "[sweep]")
         CHECK(v.clickScore > c.clickLimit);
         CHECK(namesSample(v.where, plant));
     }
+    SECTION("just past a Reverb Modulation drop's exemption")
+    {
+        // kReverbModulationDrop (row 311) covers a drop from 1 at infinite Decay and its
+        // kReverbModulationDropExempt samples only: a step planted just past them is caught, and
+        // the same drop at a finite Decay exempts nothing.
+        const auto render = [](double decay) {
+            auto d = std::make_unique<SweepDriver>(Mode::Fx, 1113);
+            d->processor().setBase(ParamSlot::ReverbAmount, 0.5f);
+            d->processor().setBase(ParamSlot::ReverbDecay, static_cast<float>(decay));
+            d->set(ParamSlot::ReverbModulation, 1.0); // as an event, so the driver sees the drop
+            d->play(1.0, Material::SineLive);
+            d->set(ParamSlot::ReverbModulation, 0.0);
+            d->play(2.0, Material::SineLive);
+            return d;
+        };
+        const auto inf = render(gg::core::kDecayMax);
+        const auto finite = render(1.0);
+        const gg::test::Checks c = gg::test::chainBound(*inf, 0.0);
+        REQUIRE(inf->check(c).where.empty());
+        const int64_t dropAt = SweepDriver::kRate; // the 1 s call boundary
+        const auto lost = static_cast<int64_t>(
+            std::llround((finite->check(c).scoredFraction - inf->check(c).scoredFraction) *
+                         static_cast<double>(inf->clock())));
+        INFO("samples the exemption removes: " << lost);
+        CHECK(lost > 0);
+        CHECK(lost <= 64 + SweepDriver::kReverbModulationDropExempt + 1);
+        const auto at =
+            static_cast<std::size_t>(dropAt + SweepDriver::kReverbModulationDropExempt + 600);
+        for (auto &ch : inf->output())
+        {
+            for (std::size_t i = at; i < ch.size(); ++i)
+            {
+                ch[i] += 0.1f;
+            }
+        }
+        const auto v = inf->check(c);
+        INFO(v.where);
+        CHECK(v.clickScore > c.clickLimit);
+        CHECK(namesSample(v.where, at));
+    }
     SECTION("just past a Reverb Size move's exemption")
     {
         SweepDriver d(Mode::Fx, 1112);
