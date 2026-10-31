@@ -595,7 +595,10 @@ holds both, and the UI's `ThemeChoice` and the plugin's `ThemeName` are mapped i
 The editors poll every 30th tick (once a second) and follow only a change of the setting since
 their last read or write, so a failed save isn't undone by the poll. **Amended** (VW-T6a): the
 settings file's NUL guard (`saveSettings`) refuses a `theme` holding a NUL, as it does the
-folders.
+folders. **Amended** (the merge with sub-project 5, PR #17): `ui/src/Theme.h` is back as a shim
+for sub-project 5's preset strip, browser and Mutate panel alone, which set M1's fixed colors when
+made: its constants are `Palette::dark()`'s, so those three keep their colors in both themes
+until PR 2's palette pass (carry-over row 313).
 
 **The layer palette** (D4): Okabe–Ito's four most separable hues, which deuteranopes,
 protanopes and tritanopes tell apart: **A orange `#E69F00`, B sky blue `#56B4E9`, C bluish green
@@ -1095,7 +1098,7 @@ review cycle decides, and the sub-project's final report lists the deferred ones
 Part I is unchanged. The programme design's §6.6 is unchanged (the FX view's split across the
 PRs is a plan matter, flagged in §6.1).
 
-**As built (PR 1):** made in one change with the §23 row, which takes its number at merge.
+**As built (PR 1):** made in one change with the §23 row, #71 (its number at merge).
 Besides the sections above, two stale sentences in §14 change by the same row: the mod
 matrix's slots are now edited from the Mod view too, and the canvas's y axis is pitch. The idle
 canvas figure §16 gets is 2.959 ms at 8,192 grains with four lanes (`docs/benchmarks/2026-10-30-m2-views-canvas.json`).

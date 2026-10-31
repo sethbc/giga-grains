@@ -24,8 +24,11 @@
 #include "AboutBox.h"
 #include "GrainCanvas.h"
 #include "LoaderStrip.h"
+#include "MutatePanel.h"
 #include "NoticeSink.h"
 #include "Palette.h"
+#include "PresetBrowser.h"
+#include "PresetStrip.h"
 #include "gg/core/Version.h"
 #include "gg/ui/UndoStack.h"
 #include "views/EditView.h"
@@ -212,7 +215,8 @@ class Editor final : public juce::Component,
               sst::jucegui::components::base_styles::Base::styleClass),
           context_(context), publishing_(context.publishing), lookAndFeel_(this), perform_(context),
           edit_(context, true), mod_(context), fx_(context), views_(perform_, edit_, mod_, fx_),
-          undo_(false), redo_(true), about_(context.productName, context.formatName)
+          preset_(context), browser_(context), mutatePanel_(context), undo_(false), redo_(true),
+          about_(context.productName, context.formatName)
     {
         setOpaque(true);
         setWantsKeyboardFocus(true);
@@ -221,12 +225,25 @@ class Editor final : public juce::Component,
         setTitle(product);
 
         setUpLabel(product_, "header.product", product, juce::FontOptions(18.0f, juce::Font::bold));
-        setUpLabel(preset_, "header.preset", "Init", juce::FontOptions(15.0f));
         product_.setTooltip("version " + fromUtf8(std::string(gg::kVersion)) +
                             ": click for About (Command I)");
         product_.setMouseCursor(juce::MouseCursor::PointingHandCursor);
         product_.onClick = [this] { openAbout(); };
-        preset_.setTooltip("The preset");
+        // The preset strip (M2 sub-project 5's) in the header's preset slot, "header.preset".
+        addAndMakeVisible(preset_);
+        preset_.onName = [this] {
+            mutatePanel_.setVisible(false);
+            browser_.setVisible(!browser_.isVisible());
+        };
+        // The browser's Mutate button: the browser closes and the panel opens in its place.
+        browser_.onMutate = [this] {
+            browser_.setVisible(false);
+            mutatePanel_.setVisible(true);
+        };
+        // The browser closed: the keyboard focus goes back to the strip (T5).
+        browser_.onClosed = [this] { preset_.focusName(); };
+        preset_.onPrev = [this] { browser_.step(-1); };
+        preset_.onNext = [this] { browser_.step(1); };
         setUpLabel(frameMs_, "header.frameMs", {}, juce::FontOptions(12.0f));
         frameMs_.setJustificationType(juce::Justification::centredRight);
         frameMs_.setTooltip("The canvas's frame time, the mean of the last 60 frames");
@@ -265,6 +282,8 @@ class Editor final : public juce::Component,
         edit_.onSelectLayer = [this](uint8_t layer) { selectLayer(layer); };
         mod_.onSelectLayer = [this](uint8_t layer) { selectLayer(layer); };
         addAndMakeVisible(views_);
+        addChildComponent(browser_);     // over the view shown while shown
+        addChildComponent(mutatePanel_); // likewise; one of the two at a time
 
         about_.onClose = [this] {
             if (isShowing())
@@ -409,6 +428,9 @@ class Editor final : public juce::Component,
 
         area = area.reduced(kMargin, kGap);
         views_.setBounds(area);
+        // The preset overlays cover everything below the header, over the view shown.
+        browser_.setBounds(area);
+        mutatePanel_.setBounds(area);
         about_.setBounds(getLocalBounds());
     }
 
@@ -503,6 +525,10 @@ class Editor final : public juce::Component,
         {
             refreshShownView();
         }
+        preset_.refresh();
+        preset_.setBrowserOpen(browser_.isVisible());
+        browser_.refresh();
+        mutatePanel_.refresh();
         refreshHistory();
         if (noticeTicks_ > 0 && --noticeTicks_ == 0)
         {
@@ -642,7 +668,6 @@ class Editor final : public juce::Component,
     {
         const Palette &pal = palette();
         product_.setColour(juce::Label::textColourId, pal.text);
-        preset_.setColour(juce::Label::textColourId, pal.dimText);
         frameMs_.setColour(juce::Label::textColourId, pal.dimText);
         notice_.setColour(juce::Label::textColourId, pal.notice);
         notice_.setColour(juce::Label::backgroundColourId, pal.header);
@@ -673,7 +698,10 @@ class Editor final : public juce::Component,
     ViewStack views_;
 
     ProductLabel product_;
-    juce::Label preset_, notice_, frameMs_;
+    PresetStrip preset_;
+    PresetBrowser browser_;
+    MutatePanel mutatePanel_;
+    juce::Label notice_, frameMs_;
     std::array<juce::TextButton, 4> viewButtons_;
     HistoryButton undo_, redo_;
     struct ThemeButton final : jcmp::TextPushButton, juce::SettableTooltipClient

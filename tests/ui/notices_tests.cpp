@@ -31,8 +31,10 @@ std::string readFile(std::string_view path)
 
 TEST_CASE("the embedded notices are the license set, byte for byte", "[ui]")
 {
-    std::vector<std::string_view> expected{"THIRD_PARTY_NOTICES.md", "LICENSE", "GPL-3.0.txt",
-                                           "CMakeRC-LICENSE.txt", "flowbite-icons-LICENSE.txt"};
+    // CC0-1.0.txt, the factory content's (M2 sub-project 5), joined the set on every platform.
+    std::vector<std::string_view> expected{
+        "THIRD_PARTY_NOTICES.md",     "LICENSE",    "GPL-3.0.txt", "CMakeRC-LICENSE.txt",
+        "flowbite-icons-LICENSE.txt", "CC0-1.0.txt"};
 #if defined(__APPLE__)
     expected.push_back("AudioUnitSDK-LICENSE.txt");
 #elif defined(_WIN32)

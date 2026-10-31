@@ -10,7 +10,9 @@
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <utility>
+#include <vector>
 
 // createEditor() returns a std::unique_ptr<juce::Component>, whose destructor the return
 // statement may invoke, so juce::Component must be complete here. This is the only plugin
@@ -21,6 +23,7 @@
 
 #include <clapwrapper/wrapper_host.h>
 
+#include "gg/core/PresetInfo.h"
 #include "gg/core/Processor.h"
 #include "gg/media/Utf8Path.h"
 #include "UiSettings.h"
@@ -134,6 +137,134 @@ EditorPlugin::EditorPlugin(const clap_host *host, Product product)
 }
 
 EditorPlugin::~EditorPlugin() = default;
+
+void EditorPlugin::fillPresetContext(gg::ui::EditorContext &context)
+{
+    // The preset strip and browser (spec §6.8), main thread. Nothing may throw into JUCE's
+    // callbacks; one that can't finish gives the user "out of memory" or nothing.
+    for (const std::string_view tag : gg::core::presetTagVocabulary())
+    {
+        context.tagVocabulary.emplace_back(tag);
+    }
+    context.presetRows = [this](bool rescan) {
+        std::vector<gg::ui::PresetRow> rows;
+        try
+        {
+            PresetCatalog &catalog = presetCatalog();
+            if (rescan)
+            {
+                catalog.rescan();
+            }
+            const auto loaded = loadedCatalogIndex(); // by identity, not by name (I4)
+            const auto &entries = catalog.entries();
+            rows.reserve(entries.size());
+            for (std::size_t i = 0; i < entries.size(); ++i)
+            {
+                const PresetEntry &entry = entries[i];
+                gg::ui::PresetRow row;
+                row.index = i;
+                row.name = entry.info.name;
+                row.description = entry.info.description;
+                row.tags = entry.info.tags;
+                row.isInit = entry.kind == PresetKind::Init;
+                row.factory = entry.kind == PresetKind::Factory;
+                row.content = entry.kind == PresetKind::Content;
+                row.favorite = entry.favorite;
+                row.loaded = loaded == i;
+                rows.push_back(std::move(row));
+            }
+        }
+        catch (...)
+        {
+            rows.clear();
+        }
+        return rows;
+    };
+    context.loadPreset = [this](std::size_t index) { return loadCatalogPreset(index); };
+    context.presetName = [this] {
+        try
+        {
+            return presetName();
+        }
+        catch (...)
+        {
+            return std::string();
+        }
+    };
+    context.presetEdited = [this] { return presetEdited(); };
+    context.presetLoads = [this] { return presetLoads(); };
+    context.presetFoldersChanged = [this] {
+        try
+        {
+            return presetCatalog().changedOnDisk();
+        }
+        catch (...)
+        {
+            return false;
+        }
+    };
+    context.setFavorite = [this](std::size_t index, bool on) {
+        try
+        {
+            presetCatalog().setFavorite(index, on);
+        }
+        catch (...)
+        {
+        }
+    };
+    context.savePreset = [this](const std::string &name, const std::vector<std::string> &tags,
+                                const std::string &description, bool overwrite) {
+        const SaveResult saved = savePreset(name, tags, description, overwrite);
+        using Status = gg::ui::PresetSaveResult::Status;
+        gg::ui::PresetSaveResult result;
+        try
+        {
+            result.status = saved.status == SaveResult::Status::Saved    ? Status::Saved
+                            : saved.status == SaveResult::Status::Exists ? Status::Exists
+                                                                         : Status::Failed;
+            result.error = saved.error;
+            result.existingName = saved.existingName;
+        }
+        catch (...)
+        {
+            result.status = saved.saved() ? Status::Saved : Status::Failed;
+        }
+        return result;
+    };
+    context.deletePreset = [this](std::size_t index) {
+        try
+        {
+            return presetCatalog().remove(index);
+        }
+        catch (...)
+        {
+            return false;
+        }
+    };
+    context.mutate = [this](float amount) { mutate(amount); };
+    context.flushMutate = [this] { flushMutate(); };
+    context.mutateLocked = [this](gg::core::ParamSlot slot) { return mutateLocked(slot); };
+    context.setMutateLock = [this](gg::core::ParamSlot slot, bool locked) {
+        setMutateLock(slot, locked);
+    };
+    context.resetMutateLocks = [this] { resetMutateLocks(); };
+    context.sendValues = [this](const std::vector<std::pair<gg::core::ParamSlot, double>> &values) {
+        sendValues(values);
+    };
+    context.contentStatus = [this] {
+        try
+        {
+            return presetCatalog().contentStatus();
+        }
+        catch (...)
+        {
+            return std::string();
+        }
+    };
+    context.setContentFolder = [this](const std::string &folder) {
+        return setContentFolder(folder);
+    };
+}
 
 std::unique_ptr<juce::Component> EditorPlugin::createEditor()
 {
@@ -275,6 +406,8 @@ std::unique_ptr<juce::Component> EditorPlugin::createEditor()
     context.endGesture = [this](gg::core::ParamSlot slot) { uiEndGesture(slot); };
     context.routes = [this] { return uiRoutes(); };
     context.setRoutes = [this](const gg::core::ModRoutes &routes) { uiSetRoutes(routes); };
+
+    fillPresetContext(context);
 
     // Audio to UI (spec §6.4): the active Processor's structures, and publishing on from now
     // until the editor's destructor, or guiDestroy for the shim's, turns it off. The editor

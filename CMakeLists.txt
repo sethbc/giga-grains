@@ -87,6 +87,8 @@ add_subdirectory(ui)
 add_subdirectory(tools/audiometrics)
 add_subdirectory(tools/gg-bench)
 add_subdirectory(tools/gg-render)
+# The CC0 content's pin, GG_CONTENT_ROOT and the gg-content target (spec §6.5).
+include(cmake/content.cmake)
 if (GG_BUILD_PLUGINS)
     add_subdirectory(plugin)
 endif ()

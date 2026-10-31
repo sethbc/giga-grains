@@ -7,14 +7,16 @@
 #
 #   cmake -DSCRIPT=<make-tarball.sh> -DPRODUCTS=<gg-products> -DREADME=<installer/linux/README.md>
 #         -DOUT=<scratch dir> -DFULL=<full version> -DCHECK_ARCHIVE=<check-archive.cmake>
-#         [-DMISSING=1] -P <this file>
+#         [-DCONTENT=<staged content dir>] [-DMISSING=1] -P <this file>
 #
 # Every case runs the script through /bin/bash into OUT/out, which it first deletes.
 # - By default: the script exits 0 and OUT/out holds giga-grains-<FULL>-linux-x86_64.tar.gz alone,
 #   a gzip-compressed tar whose every entry sits under giga-grains-<FULL>/, holding the CLAP, the
 #   VST3 bundle's .so, the two standalones (executable), the license set (no ASIO SDK license:
-#   that is the Windows standalone's) and README.md (check-archive.cmake checks these); extracted,
-#   its README.md is the one given and its licenses/ the products' license set, file for file.
+#   that is the Windows standalone's) and README.md (check-archive.cmake checks these); with
+#   CONTENT (passed as --content), also content/ with its Presets, Samples and PROVENANCE.md;
+#   extracted, its README.md is the one given and its licenses/ the products' license set, file
+#   for file.
 # - MISSING: run on an empty products directory, the script exits 2 naming Giga Grains.clap and
 #   writes nothing.
 
@@ -36,9 +38,14 @@ if (MISSING)
     file(MAKE_DIRECTORY "${products}")
 endif ()
 
+set(content_args "")
+if (CONTENT)
+    set(content_args --content "${CONTENT}")
+endif ()
+
 execute_process(
         COMMAND /bin/bash "${SCRIPT}" --products "${products}" --out "${out_dir}"
-        --full-version "${FULL}" --readme "${README}"
+        --full-version "${FULL}" --readme "${README}" ${content_args}
         RESULT_VARIABLE result
         OUTPUT_VARIABLE stdout
         ERROR_VARIABLE stderr)
@@ -83,6 +90,11 @@ set(expect "${top}/Giga Grains.clap" "${top}/Giga Grains.vst3/Contents/x86_64-li
         "${top}/Giga Grains" "${top}/Giga Grains FX" "${top}/licenses/THIRD_PARTY_NOTICES.md"
         "${top}/licenses/GPL-3.0.txt" "${top}/README.md")
 set(forbid "${top}/licenses/ASIO-SDK-LICENSE.txt")
+if (CONTENT)
+    list(APPEND expect "${top}/content/Presets" "${top}/content/Samples"
+            "${top}/content/PROVENANCE.md" "${top}/content/LICENSE-CC0-1.0.txt"
+            "${top}/content/content-version.txt")
+endif ()
 set(executable "${top}/Giga Grains" "${top}/Giga Grains FX")
 execute_process(
         COMMAND ${CMAKE_COMMAND} "-DARCHIVE=${tarball}" -DKIND=tar "-DEXPECT=${expect}"

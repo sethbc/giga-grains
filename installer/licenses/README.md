@@ -1,5 +1,10 @@
 # License texts no checkout holds
 
+`CC0-1.0.txt` is the CC0 1.0 Universal legal code of the factory content, byte for byte the
+`LICENSE` of the pinned content release (`content/pin.txt`; it is the text
+https://creativecommons.org/publicdomain/zero/1.0/legalcode.txt serves). It joins the set on every
+platform; the section below is about the two MIT texts.
+
 `gg-products` (`cmake/products.cmake`) writes the license set every installer carries into
 `build/<preset>/gg-products/licenses/` (spec §6.3). Most of its files come from the pinned
 checkouts. These two MIT texts don't: the code they cover is vendored in sst-jucegui without its

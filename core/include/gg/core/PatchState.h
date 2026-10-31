@@ -6,14 +6,16 @@
 #define GG_CORE_PATCHSTATE_H
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 
 #include "gg/core/ModMatrix.h"
 #include "gg/core/ParamIds.h"
+#include "gg/core/PresetInfo.h"
 
-/// The patch both products save: every parameter's value, the engine seed and the mod matrix's
-/// routes, as versioned XML.
+/// The patch both products save: every parameter's value, the engine seed, the mod matrix's
+/// routes, a name and, for a preset, its metadata, as versioned XML.
 /// It is the payload of the session state's `PTCH` chunk, byte for byte
 /// (gg/core/SessionState.h); a state saved before the container (sub-projects 1 and 2) is this
 /// XML alone. gg-core writes and reads it with sst-plugininfra's PatchBase and tinyxml, which
@@ -28,9 +30,11 @@
 ///       <p id="65537" v="0.289676576853" bits="3e94507d" /> …</params>
 ///     <engine seed="0" /><mod>
 ///       <route slot="1" source="Macro 1" sourceLayer="same" target="65538" targetLayer="all"
-///         depth="3.000000000000" bits="40400000" curve="Bipolar" /> …</mod></patch>
+///         depth="3.000000000000" bits="40400000" curve="Bipolar" /> …</mod>
+///     <preset product="fx" author="Giga Grains" description="A held, glassy freeze"
+///       tags="texture freeze midi" /></patch>
 ///
-/// with three additions to PatchBase's:
+/// with four additions to PatchBase's:
 /// - `bits`, on each `<p>`: the value's float bits as 8 hex digits. PatchBase writes `v` with 12
 ///   fixed decimals, which doesn't hold a float below about 1.5e-5 exactly; with `bits`, every
 ///   value comes back bit for bit, so a saved and reloaded state renders identically. `bits` is
@@ -47,6 +51,23 @@
 ///     (kAllLayers);
 ///   - `depth` and `bits`: the depth as `<p>`'s `v` and `bits` write a value, and read back the
 ///     same way (exact when `bits` agrees with `depth`).
+/// - `<preset>` (M2 sub-project 5's spec §6.1): a preset's metadata (gg/core/PresetInfo.h),
+///   after `<mod>`, only in a preset. What makes a state a preset; a reader that doesn't know it
+///   ignores it, and it is read at any version. Its attributes:
+///   - `product`: modeName's word, `fx` or `instrument`; any other reads as no preset;
+///   - `author` and `description`: their bytes to the first NUL, escaped as `name` is;
+///   - `tags`: the tags in their order, separated by single spaces; read back split on spaces,
+///     dropping every word that isn't isPresetTag (never a failure).
+///   A missing attribute reads empty. The preset's name is the root's.
+/// - `edited="1"` on the root (the director's D-Q2, 2026-10-30): a session saved while the
+///   preset it names was edited. Written only then, so an unedited state's bytes are as before;
+///   any other value, or none, reads unedited; a reader that doesn't know it ignores it. No
+///   version change: it is read at any version.
+///
+/// The root's `name` is PatchBase's: at most 255 bytes, a longer one cut on write and on read to
+/// its first 255 bytes, backed up to a whole UTF-8 character; written with every `&` as `&#x26;`
+/// (tinyxml would otherwise read a literal `&#x41;` back as `A`), so any text but NUL comes back
+/// unchanged. A state without it reads as "Init".
 ///
 /// Version 1 is M1's: the 28 M1 params, no `<mod>`. Version 2 adds M2's params (each absent from
 /// an older state takes its default) and `<mod>`.
@@ -62,9 +83,13 @@ inline constexpr uint32_t kPatchVersion = 2;
 /// left out, and so loads as an empty slot.
 bool isSavableRoute(const ModRoute &route) noexcept;
 
-/// The state of these values, this seed and these routes. Both products write the same format:
+/// The state of these values, this seed, these routes and this name (patchName's cut of it, as
+/// above), with `preset`'s <preset> element when it is given (its `name` aside: the root's is
+/// the preset's), and the root's `edited="1"` when `edited`. Both products write the same format:
 /// only the IDs and values are saved, never the metadata.
-std::string toStateXml(const ParamValues &values, uint64_t seed, const ModRoutes &routes);
+std::string toStateXml(const ParamValues &values, uint64_t seed, const ModRoutes &routes,
+                       std::string_view name = "Init", const PresetInfo *preset = nullptr,
+                       bool edited = false);
 
 /// Loads a state into `mode`'s product, all or nothing.
 /// - Returns false, and writes nothing, unless the state is well-formed XML with a <patch> root,
@@ -92,8 +117,13 @@ std::string toStateXml(const ParamValues &values, uint64_t seed, const ModRoutes
 ///   untouched.
 /// - `migratedFromVersion`, if given, is written on success only: the state's version when the
 ///   migration hooks ran, 0 when it was already kPatchVersion.
+/// - `name` and `preset`, if given, are written on success only: the root's name ("Init" when it
+///   has none), and the <preset> element's metadata with that name, or nothing when there is no
+///   <preset> or its `product` isn't known. Neither changes how the rest loads.
+/// - `edited`, if given, is written on success only: whether the root carries `edited="1"`.
 bool fromStateXml(std::string_view xml, ParamValues &values, uint64_t &seed, ModRoutes &routes,
-                  Mode mode, uint32_t *migratedFromVersion = nullptr);
+                  Mode mode, uint32_t *migratedFromVersion = nullptr, std::string *name = nullptr,
+                  std::optional<PresetInfo> *preset = nullptr, bool *edited = nullptr);
 } // namespace gg::core
 
 #endif // GG_CORE_PATCHSTATE_H

@@ -13,6 +13,7 @@
 #include <memory>
 #include <numbers>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 #include <catch2/catch_test_macros.hpp>
@@ -2236,4 +2237,352 @@ TEST_CASE("stealing a short grain keeps its end and does not fade", "[engine][bu
     const double click = clickScore(r);
     INFO("click score " << click);
     REQUIRE(click < kClickLimit);
+}
+
+// Carry-over row 300 (the director, 2026-10-30: fade the tail). A grain whose read would leave
+// its sample before its window closes ends where it reaches the sample's last frame, faded out
+// over the kEdgeFade samples before it, or over all it has when that is fewer.
+namespace
+{
+// The edge of grain g over a source of `frames` frames, by walking its samples as the
+// reference computes them: the first output sample t whose read position startPos + rate × e
+// is past the last frame, frames − 1, while the window's phase e × (1 / duration) is below 1;
+// -1 if there is none before its natural end.
+int64_t walkEdge(const gg::GrainSpec &g, int64_t frames)
+{
+    const double last = static_cast<double>(frames - 1);
+    const double invDuration = 1.0 / g.durationSamples;
+    for (int64_t t = g.onsetSample; t < gg::grainEndSample(g); ++t)
+    {
+        const double e = static_cast<double>(t - g.onsetSample) - g.onsetFrac;
+        if (!(e * invDuration < 1.0))
+        {
+            return -1;
+        }
+        if (g.startPos + g.rate * e > last)
+        {
+            return t;
+        }
+    }
+    return -1;
+}
+
+// A full-scale 220 Hz stereo sine of 47,837 frames, whose last frame is a crest of channel 0
+// (0.99999; channel 1, a quarter turn on, is near 0 there): a grain cut there steps by about its
+// own amplitude.
+std::shared_ptr<gg::SampleBuffer> crestSine() { return makeSine(2, 47837, 48000.0, 220.0, 1.0); }
+
+// One case of the edge tests: a tier, a pitch, the grain's length and how far into its window
+// (in output samples, roughly) its read reaches the sample's last frame.
+struct EdgeCase
+{
+    gg::Tier tier;
+    double pitch;
+    double durationSec;
+    double cross;
+    /// The grains' gain. The click score ignores second differences of at most 1e-3, so a fade's
+    /// corner (about gain / L) is measured at a gain large enough to clear that floor.
+    double gain{0.5};
+};
+
+std::vector<EdgeCase> edgeCases()
+{
+    std::vector<EdgeCase> cases;
+    // Rates 0.5, 1, 1.5, 2 and 4: at HQ, 2 and 4 read levels 1 and 2.
+    const double pitches[] = {-12.0, 0.0, 12.0 * std::log2(1.5), 12.0, 24.0};
+    for (const gg::Tier tier : {gg::Tier::Eco, gg::Tier::Normal, gg::Tier::HQ})
+    {
+        for (const double pitch : pitches)
+        {
+            // At gains 1 and 4, CloudParams' largest, so the click score's 1e-3 floor hides
+            // nothing a smaller gain would: at the window's peak, and 400 and 100 samples into a
+            // 16 ms window, short spans that fade over what they have.
+            for (const double gain : {1.0, 4.0})
+            {
+                cases.push_back({tier, pitch, 0.1, 2400.0, gain});
+                cases.push_back({tier, pitch, 0.016, 400.0, gain});
+                cases.push_back({tier, pitch, 0.016, 100.0, gain});
+            }
+        }
+    }
+    return cases;
+}
+
+// An engine over `source` playing 4 grains a second of the case, centred, periodic, at the case's
+// gain, each read starting `cross` samples (at the nominal rate) before the sample's last frame.
+std::unique_ptr<gg::Engine>
+edgeEngine(const EdgeCase &c, const std::shared_ptr<const gg::PreparedSource> &source, SinkLog *log)
+{
+    auto engine = std::make_unique<gg::Engine>(gg::EngineConfig{});
+    engine->setPreparedSource(source);
+    const double last = static_cast<double>(source->buffer().frames() - 1);
+    const double rate = std::exp2(c.pitch / 12.0);
+    gg::CloudParams p = params(4.0, c.durationSec, (last - rate * c.cross) / last, 0.0, c.pitch,
+                               static_cast<float>(c.gain));
+    p.quality = c.tier;
+    engine->setCloudParams(p);
+    if (log != nullptr)
+    {
+        engine->setEventSink(&SinkLog::record, log);
+    }
+    return engine;
+}
+
+std::string describe(const EdgeCase &c)
+{
+    return "tier " + std::to_string(static_cast<int>(c.tier)) + ", pitch " +
+           std::to_string(c.pitch) + ", " + std::to_string(c.durationSec) + " s, crossing at " +
+           std::to_string(c.cross) + ", gain " + std::to_string(c.gain);
+}
+} // namespace
+
+TEST_CASE("a sample grain running past its sample's end fades out at the edge", "[engine]")
+{
+    // Each grain reaches the sample's last frame, a crest, inside its window. Over its last
+    // L = min(kEdgeFade, edge - onset) samples it must taper to 0 along the raised cosine (|out|
+    // at most 1.25 × gain × sin²(π/2 × (edge - t) / L), the 1.25 for the readers' overshoot),
+    // and from the edge to the next onset it must be silent. The render's click score is pinned
+    // (below), and the render is the same at every block size.
+    constexpr int64_t kFrames = 24000; // grains at 0 and 12,000
+    const auto source = gg::PreparedSource::make(crestSine());
+    const int64_t frames = source->buffer().frames();
+    for (const EdgeCase &c : edgeCases())
+    {
+        INFO(describe(c));
+        SinkLog log;
+        const auto engine = edgeEngine(c, source, &log);
+        const Render r = render(*engine, kFrames, 64);
+        REQUIRE(allFinite(r.left));
+        REQUIRE(allFinite(r.right));
+        REQUIRE(log.grains.size() == 2);
+        for (std::size_t k = 0; k < log.grains.size(); ++k)
+        {
+            const gg::GrainSpec &g = log.grains[k];
+            INFO("grain " << k << ", tier " << static_cast<int>(g.tier) << ", rate " << g.rate
+                          << ", level " << int{g.level});
+            REQUIRE(g.tier == c.tier);
+            const int64_t edge = walkEdge(g, frames);
+            REQUIRE(edge > g.onsetSample);
+            REQUIRE(std::abs(static_cast<double>(edge - g.onsetSample) - c.cross) < 4.0);
+            const int64_t fade = std::min(gg::kEdgeFade, edge - g.onsetSample);
+            const int64_t next =
+                k + 1 < log.grains.size() ? log.grains[k + 1].onsetSample : kFrames;
+            for (int64_t t = edge - fade; t < next; ++t)
+            {
+                INFO("sample " << t << ", edge " << edge);
+                const auto j = static_cast<std::size_t>(t);
+                const double curve =
+                    std::sin(0.5 * std::numbers::pi * static_cast<double>(edge - t) /
+                             static_cast<double>(fade));
+                const double bound = t < edge ? 1.25 * c.gain * (curve * curve + 1e-5) : 0.0;
+                REQUIRE(std::abs(r.left[j]) <= bound);
+                REQUIRE(std::abs(r.right[j]) <= bound);
+            }
+        }
+        // At most 12, against the goldens' limit of 15 (ruling EF-2). The raised cosine leaves
+        // 1 and reaches 0 with zero slope, so it has no corner for the detector to find: the
+        // worst measured over rates 0.5 to 4, every tier, 16 edge phases and short spans was
+        // 2.81 at kEdgeFade 256 (gain 4). A linear fade scored up to 50 at its end, at any
+        // length, on a 110 Hz read, and the uncut grain 25 to 3,695.
+        const double click = clickScore(r);
+        INFO("click score " << click);
+        REQUIRE(click <= 12.0);
+        if (c.gain != 1.0)
+        {
+            continue; // block-size invariance once per shape
+        }
+        for (const uint32_t blockSize : {1u, 32u, 511u, 4096u})
+        {
+            INFO("blocks of " << blockSize);
+            const auto again = edgeEngine(c, source, nullptr);
+            const Render b = render(*again, kFrames, blockSize);
+            REQUIRE(sameBits(b.left, r.left));
+            REQUIRE(sameBits(b.right, r.right));
+        }
+    }
+}
+
+namespace
+{
+// The render of the logged grains in a pool of their own (spawned with `edges`, or without any),
+// through the scalar reference with each grain's tier's reader, from the level it latched, as
+// Engine::renderPool reads them.
+Render referenceOf(const std::vector<gg::GrainSpec> &grains, const std::vector<int64_t> &edges,
+                   const gg::PreparedSource &source, int64_t frames)
+{
+    gg::GrainPool pool(static_cast<uint32_t>(grains.size()) + 1);
+    for (std::size_t k = 0; k < grains.size(); ++k)
+    {
+        const bool spawned =
+            edges.empty() ? pool.spawn(grains[k]) : pool.spawn(grains[k], edges[k]);
+        REQUIRE(spawned);
+    }
+    Render out{std::vector<float>(static_cast<std::size_t>(frames), 0.0f),
+               std::vector<float>(static_cast<std::size_t>(frames), 0.0f)};
+    const gg::HannTable hann;
+    const gg::SincTable sinc;
+    const gg::kernels::Tables tables{hann, sinc};
+    const gg::kernels::Output o{{out.left.data(), out.right.data()}, 0};
+    for (uint32_t i = 0; i < pool.size(); ++i)
+    {
+        const gg::PreparedSource::Level &l =
+            source.level(std::min<uint32_t>(pool.rows().level[i], source.levelCount() - 1));
+        const gg::kernels::SampleSource src{{l.data[0], l.data[1]}, l.frames, l.mono,
+                                            l.interleaved,          l.stride, l.decimation};
+        switch (pool.rows().tier[i])
+        {
+        case gg::Tier::Eco:
+            gg::kernels::renderSampleRef<gg::kernels::Linear>(pool.rows(), i, src, o, 0, frames,
+                                                              tables);
+            break;
+        case gg::Tier::HQ:
+            gg::kernels::renderSampleRef<gg::kernels::Sinc>(pool.rows(), i, src, o, 0, frames,
+                                                            tables);
+            break;
+        default:
+            gg::kernels::renderSampleRef<gg::kernels::Hermite>(pool.rows(), i, src, o, 0, frames,
+                                                               tables);
+            break;
+        }
+    }
+    return out;
+}
+} // namespace
+
+TEST_CASE("a grain cut at its sample's end is the uncut grain up to its fade", "[engine]")
+{
+    // The engine latches each grain's edge at admission (grainEdgeSample, the walked edge) and
+    // renders it as a pool spawned with that edge renders it through the reference, bit for bit.
+    // Before the fade starts every sample is the uncut grain's, the engine's output before the
+    // fix: only the last L samples, and the run-off after them, change.
+    constexpr int64_t kFrames = 24000;
+    const auto source = gg::PreparedSource::make(crestSine());
+    const int64_t frames = source->buffer().frames();
+    for (const EdgeCase &c : edgeCases())
+    {
+        INFO(describe(c));
+        SinkLog log;
+        const auto engine = edgeEngine(c, source, &log);
+        const Render r = render(*engine, kFrames, 64);
+        REQUIRE(log.grains.size() == 2);
+        std::vector<int64_t> edges;
+        for (const gg::GrainSpec &g : log.grains)
+        {
+            edges.push_back(gg::grainEdgeSample(g, frames));
+            REQUIRE(edges.back() == walkEdge(g, frames));
+        }
+        const Render cut = referenceOf(log.grains, edges, *source, kFrames);
+        const Render uncut = referenceOf(log.grains, {}, *source, kFrames);
+        REQUIRE(sameBits(r.left, cut.left));
+        REQUIRE(sameBits(r.right, cut.right));
+        for (std::size_t k = 0; k < log.grains.size(); ++k)
+        {
+            const gg::GrainSpec &g = log.grains[k];
+            const int64_t fadeStart = edges[k] - std::min(gg::kEdgeFade, edges[k] - g.onsetSample);
+            const int64_t next =
+                k + 1 < log.grains.size() ? log.grains[k + 1].onsetSample : kFrames;
+            int64_t differ = 0;
+            for (int64_t t = g.onsetSample; t < next; ++t)
+            {
+                const auto j = static_cast<std::size_t>(t);
+                const bool same = std::memcmp(&r.left[j], &uncut.left[j], sizeof(float)) == 0 &&
+                                  std::memcmp(&r.right[j], &uncut.right[j], sizeof(float)) == 0;
+                if (t < fadeStart)
+                {
+                    INFO("sample " << t << ", fade from " << fadeStart);
+                    REQUIRE(same);
+                }
+                differ += !same;
+            }
+            INFO("grain " << k);
+            REQUIRE(differ > 0); // the fix changes the tail
+        }
+    }
+}
+
+namespace
+{
+// A quota of one grain at the tier, so each onset steals the grain before it once that grain is
+// past half its window, with more than kStealFade left (100 ms grains at `density` Hz: 20 Hz
+// steals at the window's peak, 12 Hz at a quarter of it). The steals fall on the sine's phase
+// `k` of 16. Sample grains read a 4 s 220 Hz sine; live grains read the ring, fed the same sine,
+// 1 s on. Returns the click score of 0.5 s after the first second.
+double stealRender(bool live, gg::Tier tier, double pitch, double density, double gain, int k)
+{
+    constexpr int64_t kWarm = 48000;
+    constexpr int64_t kFrames = 24000;
+    constexpr int64_t kBlock = 64;
+    gg::EngineConfig config;
+    config.liveSeconds = live ? 4.0 : 0.0;
+    config.maxBlockSize = 256;
+    gg::Engine engine(config);
+    static const auto source = gg::PreparedSource::make(makeSine(2, 192000, 48000.0, 220.0, 1.0));
+    if (live)
+    {
+        engine.setSourceMode(gg::SourceMode::Live);
+    }
+    else
+    {
+        engine.setPreparedSource(source);
+    }
+    const double position = live ? 0.3 + 14.0 * k / 48000.0 : 0.4 + 14.0 * k / 191999.0;
+    gg::CloudParams p = params(density, 0.1, position, 0.0, pitch, static_cast<float>(gain));
+    p.quality = tier;
+    engine.setCloudParams(p);
+    engine.setQuota(gg::grainWeight(tier, true));
+    std::vector<float> in(2 * kBlock);
+    Render r{std::vector<float>(kWarm + kFrames), std::vector<float>(kWarm + kFrames)};
+    for (int64_t done = 0; done < kWarm + kFrames; done += kBlock)
+    {
+        for (int64_t j = 0; j < kBlock; ++j)
+        {
+            const auto x = static_cast<float>(
+                std::sin(2.0 * std::numbers::pi * 220.0 * static_cast<double>(done + j) / 48000.0));
+            in[static_cast<std::size_t>(j)] = x;
+            in[static_cast<std::size_t>(kBlock + j)] = x;
+        }
+        const float *ins[2] = {in.data(), in.data() + kBlock};
+        float *outs[2] = {r.left.data() + done, r.right.data() + done};
+        engine.process(ins, 2, outs, 2, kBlock);
+    }
+    REQUIRE(engine.stolenGrains() > 0);
+    REQUIRE(allFinite(r.left));
+    REQUIRE(allFinite(r.right));
+    return clickScore(Render{std::vector<float>(r.left.begin() + kWarm, r.left.end()),
+                             std::vector<float>(r.right.begin() + kWarm, r.right.end())});
+}
+} // namespace
+
+TEST_CASE("a stolen grain fades out without a click", "[engine][budget]")
+{
+    // The steal fade is a raised cosine over kStealFade samples (ruling EF-8): it leaves 1 and
+    // reaches 0 with zero slope, so a steal scores at most 12 on the goldens' detector (limit 15),
+    // for sample grains and the ring's alike, at every tier, rates 0.5 to 4 and gains 1 and 4.
+    // The linear fade it replaced scored up to 50.4 (sample) and 49.7 (live) at rate 0.5, its end
+    // corner; measured over 16 phases and three steal points the raised cosine's worst was 2.84
+    // and 3.07.
+    for (const bool live : {false, true})
+    {
+        for (const gg::Tier tier : {gg::Tier::Eco, gg::Tier::Normal, gg::Tier::HQ})
+        {
+            for (const double pitch : {-12.0, 0.0, 12.0 * std::log2(1.5), 12.0, 24.0})
+            {
+                for (const double gain : {1.0, 4.0})
+                {
+                    for (const double density : {20.0, 12.0})
+                    {
+                        for (const int k : {5, 9})
+                        {
+                            INFO((live ? "live" : "sample")
+                                 << ", tier " << static_cast<int>(tier) << ", pitch " << pitch
+                                 << ", gain " << gain << ", " << density << " Hz, phase " << k);
+                            const double click = stealRender(live, tier, pitch, density, gain, k);
+                            INFO("click score " << click);
+                            REQUIRE(click <= 12.0);
+                        }
+                    }
+                }
+            }
+        }
+    }
 }

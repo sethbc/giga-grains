@@ -796,7 +796,11 @@ TEST_CASE("the perform view has a header, a canvas and eight macros", "[plugin]"
             return label != nullptr ? label->getText() : juce::String("<no label>");
         };
         CHECK(text("header.product") == product.name);
-        CHECK(text("header.preset") == "Init");
+        // The preset strip (M2 sub-project 5's spec §6.8) replaced the label: its name button.
+        const auto *presetName =
+            dynamic_cast<const juce::Button *>(findDeep(*editor, "preset.name"));
+        REQUIRE(presetName != nullptr);
+        CHECK(presetName->getButtonText() == "Init");
         const auto *perform =
             dynamic_cast<const juce::Button *>(findDeep(*editor, "header.perform"));
         REQUIRE(perform != nullptr);

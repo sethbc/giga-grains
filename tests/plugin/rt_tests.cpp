@@ -16,6 +16,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -29,10 +30,12 @@
 #include "gg/core/ModMatrix.h"
 #include "gg/core/ParamIds.h"
 #include "gg/core/PatchState.h"
+#include "gg/core/Preset.h"
 #include "gg/core/Processor.h"
 #include "gg/core/Rng.h"
 #include "gg/core/UiSnapshot.h"
 #include "gg/engine/Engine.h"
+#include "gg/media/Utf8Path.h"
 #include "sst/basic-blocks/params/ParamMetadata.h"
 #include "support/AllocTripwire.h"
 
@@ -630,6 +633,69 @@ TEST_CASE("plugin applies a state loaded while active without allocating", "[plu
     allocations = AllocTripwire::count();
     CHECK(plugin.impl().processor()->base(ParamSlot::Density) == 7.0f);
     CHECK(plugin.impl().processor()->seed() == 6);
+    if (gg::test::AllocTripwire::available()) // off under ASan; RTSan covers this
+    {
+        REQUIRE(allocations == 0);
+    }
+}
+
+TEST_CASE("plugin applies a preset loaded while active without allocating", "[plugin][rt][preset]")
+{
+    // preset-load (main thread, M2 sub-project 5's spec §6.2) hands a preset over as state.load
+    // does: the audio thread applies it at the start of its next process() or params.flush,
+    // which must not allocate. First a preset file, then INIT.
+    const char *id = GENERATE(kInstrumentId, kFxId);
+    CAPTURE(id);
+    const bool isFx = std::string_view(id) == kFxId;
+    const auto mode = isFx ? gg::core::Mode::Fx : gg::core::Mode::Instrument;
+    gg::test::PluginUnderTest plugin(id);
+    REQUIRE(plugin.valid());
+    REQUIRE(plugin.activate(48000.0, 512));
+
+    gg::core::SessionState state = gg::core::initState(mode);
+    state.values[static_cast<std::size_t>(ParamSlot::Density)] = 3.0f;
+    state.routes[13] = gg::core::ModRoute{gg::core::ModSource::Lfo2,
+                                          gg::core::kSameLayer,
+                                          ParamSlot::Pitch,
+                                          gg::core::kAllLayers,
+                                          0.25f,
+                                          gg::core::ModCurve::Bipolar};
+    const auto file = gg::test::writePresetFile(std::string("rt-") + (isFx ? "fx" : "instrument"),
+                                                {"Rt", mode, "gg-tests", "", {}}, state);
+    const std::string location = gg::media::toUtf8(file).value();
+
+    std::vector<float> inLeft(512), inRight(512), outLeft(512), outRight(512);
+    float *inputs[2] = {inLeft.data(), inRight.data()};
+    float *outputs[2] = {outLeft.data(), outRight.data()};
+    gg::test::InputEvents none;
+    clap_process_status status{};
+
+    REQUIRE(plugin.loadPreset(CLAP_PRESET_DISCOVERY_LOCATION_FILE, location.c_str(), nullptr));
+    AllocTripwire::resetCount();
+    {
+        AllocTripwire::Scope armed;
+        status = plugin.process(512, isFx ? inputs : nullptr, outputs, none.list());
+    }
+    uint64_t allocations = AllocTripwire::count();
+    CHECK(status == CLAP_PROCESS_CONTINUE);
+    CHECK(plugin.impl().processor()->base(ParamSlot::Density) == 3.0f);
+    CHECK(plugin.impl().processor()->routes() == state.routes);
+    if (gg::test::AllocTripwire::available()) // off under ASan; RTSan covers this
+    {
+        REQUIRE(allocations == 0);
+    }
+
+    REQUIRE(plugin.loadPreset(CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN, nullptr, "init"));
+    const auto *params = paramsOf(plugin);
+    AllocTripwire::resetCount();
+    {
+        AllocTripwire::Scope armed;
+        params->flush(plugin.clap(), none.list(), gg::test::discardingOutputEvents());
+    }
+    allocations = AllocTripwire::count();
+    CHECK(plugin.impl().processor()->base(ParamSlot::Density) ==
+          gg::core::paramMeta(ParamSlot::Density, mode).defaultVal);
+    CHECK(plugin.impl().processor()->routes() == gg::core::factoryRoutes(mode));
     if (gg::test::AllocTripwire::available()) // off under ASan; RTSan covers this
     {
         REQUIRE(allocations == 0);

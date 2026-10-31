@@ -8,7 +8,8 @@ copyright line, the license text or a precise pointer to it, and the products th
 
 A distributed build includes this file, in the installer and in its documentation or about box,
 together with `LICENSE` (the AGPL), the GPLv3 text, CMakeRC's and flowbite-icons' MIT texts, the
-AudioUnitSDK's `LICENSE.txt` in a macOS build and the ASIO SDK's `LICENSE.txt` in a Windows build.
+CC0 1.0 legal code (`CC0-1.0.txt`, of the factory content), the AudioUnitSDK's `LICENSE.txt` in a
+macOS build and the ASIO SDK's `LICENSE.txt` in a Windows build.
 Every installer carries them in its `licenses/` directory, which `gg-products` assembles
 (`cmake/products.cmake`) from the pinned checkouts and, for the two MIT texts no checkout holds,
 from `installer/licenses/`. The editor's About box shows the same set, embedded into the editor
@@ -156,6 +157,19 @@ Copyright 2020 David Reid (MIT No Attribution alternative); the author dedicates
 public domain under the other alternative, the Unlicense. We use it under either: neither
 requires a notice. The text of both is in `libs/dr_libs/LICENSE`. Used by `gg-media` to decode
 WAV, AIFF, FLAC and MP3 samples.
+
+## Factory content (both products)
+
+The factory samples and presets that every installer's Content component carries. The samples are
+the zip released as the tag that `content/pin.txt` pins, in https://github.com/sethbc/giga-grains-content.
+`content/pin.txt` holds that tag and the zip's SHA-256, and the staged `content-version.txt` names
+both. Every file in it is dedicated to the public domain under **CC0 1.0 Universal**:
+recordings taken from the Versilian Community Sample Library (VCSL, which is CC0), and audio the
+Giga Grains authors generated with `gg-render`. CC0 asks for no notice and no credit; the legal
+code is in `licenses/CC0-1.0.txt` (and in the content's `LICENSE-CC0-1.0.txt`), and the content's
+`PROVENANCE.md` lists each sample's source, license and processing, crediting its authors. The
+factory presets themselves are Giga Grains' own, under this project's license. The content is
+data: no product links it.
 
 ## tinyxml (both products)
 

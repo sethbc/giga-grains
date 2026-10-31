@@ -18,7 +18,9 @@ set(GG_EMBED_TEXT_SCRIPT ${CMAKE_CURRENT_LIST_DIR}/embed-text.cmake)
 #   THIRD_PARTY_NOTICES.md, LICENSE (the AGPL), GPL-3.0.txt (sst-basic-blocks' LICENSE.md is the
 #   GPLv3 text), CMakeRC-LICENSE.txt and flowbite-icons-LICENSE.txt (MIT texts no checkout holds,
 #   kept in installer/licenses/), AudioUnitSDK-LICENSE.txt (macOS, the Apache 2.0 text of the SDK
-#   checkout clap-wrapper builds the AU from) and ASIO-SDK-LICENSE.txt (Windows, the ASIO SDK's).
+#   checkout clap-wrapper builds the AU from) and ASIO-SDK-LICENSE.txt (Windows, the ASIO SDK's);
+#   CC0-1.0.txt (every platform; the CC0 1.0 legal code of the factory content, kept in
+#   installer/licenses/ since no checkout holds a standalone copy).
 # Every file is checked at configure time, and the two lists must pair up exactly.
 function(gg_license_files out_files out_names)
     set(files
@@ -26,9 +28,10 @@ function(gg_license_files out_files out_names)
             ${CMAKE_SOURCE_DIR}/LICENSE
             ${CMAKE_SOURCE_DIR}/libs/sst/sst-basic-blocks/LICENSE.md
             ${CMAKE_SOURCE_DIR}/installer/licenses/CMakeRC-LICENSE.txt
-            ${CMAKE_SOURCE_DIR}/installer/licenses/flowbite-icons-LICENSE.txt)
+            ${CMAKE_SOURCE_DIR}/installer/licenses/flowbite-icons-LICENSE.txt
+            ${CMAKE_SOURCE_DIR}/installer/licenses/CC0-1.0.txt)
     set(names THIRD_PARTY_NOTICES.md LICENSE GPL-3.0.txt CMakeRC-LICENSE.txt
-            flowbite-icons-LICENSE.txt)
+            flowbite-icons-LICENSE.txt CC0-1.0.txt)
     if (APPLE)
         # CI passes AUDIOUNIT_SDK_ROOT (scripts/fetch-sdks.sh); a local tree has CPM's checkout,
         # recorded in the cache when clients/clap-first was processed, before this is called.
