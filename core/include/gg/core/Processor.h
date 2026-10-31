@@ -453,10 +453,11 @@ struct RingMeta
 /// sample when the offer is `frozen`. One the ring refuses (a resize whose gap since copiedTo is
 /// past kAdoptCopyFrames, or a bad offer) is declined and counted (ringAdoptionsDeclined), its
 /// offer pending for the main thread to remake. The storage replaced, or the declined one, goes
-/// back to sources() to be freed. After a change of length the engine's Position and Spray reach
-/// the new ring (Engine::ringResized). An adoption lands at a call's start, so only a ring given
-/// before the first call (setRingNow, or an offer before it) is part of a block-size-invariant
-/// render.
+/// back to sources() to be freed; the one replaced only once the new one is published (the ring
+/// read, below), so a main-thread read that took the old pointer never copies freed memory. After a
+/// change of length the engine's Position and Spray reach the new ring (Engine::ringResized). An
+/// adoption lands at a call's start, so only a ring given before the first call (setRingNow, or an
+/// offer before it) is part of a block-size-invariant render.
 ///
 /// **The ring read** (spec §6.4). After every piece, each layer's head is stored with release
 /// order (ringRead) and, when it changed, its RingMeta published (ringMeta, latest wins); an

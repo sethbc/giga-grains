@@ -1245,6 +1245,102 @@ TEST_CASE("a read whose copy the head laps keeps the frames still good", "[plugi
     CHECK(copy->marks == std::vector<int64_t>{marks[1]});
 }
 
+TEST_CASE("a replaced ring stays published until its storage can be collected", "[plugin][threads]")
+{
+    // The ring reader's protocol (core::RingRead): the main thread reads the storage the audio
+    // side publishes, and frees retired storages in collect(), so a storage must be published
+    // away (Processor::publishStorage) before it is retired. Retired first, a collect() between
+    // the two frees the storage a read then copies from (the CI failure of "the ring reader's
+    // copies match what the audio thread wrote" on f6e6b0d, under Rosetta). The audio thread
+    // renders while this thread offers storages of two lengths in turn (so each adoption also
+    // resizes the engine, widening any gap) and, until each is adopted, collects as fast as it
+    // can: whenever a collect() frees a ring, the published storage must already be another (an
+    // offer declined because this thread was descheduled is made again, and its swap not
+    // counted). Rare on an idle machine; run beside a loaded machine's other tests, it caught the
+    // fault in about one run in two under Rosetta and one in sixteen natively.
+    // Bounded by work: kSwaps adoptions, each waited for over at most kPollsPerSwap collects;
+    // the audio thread's kMaxTotal and the deadline are safety bounds, and reaching one fails.
+    constexpr uint32_t kPiece = 64;
+    constexpr int kSwaps = 200;
+    constexpr int64_t kMaxTotal = int64_t{48000} * 600;
+    constexpr int64_t kPollsPerSwap = int64_t{1} << 26;
+    gg::core::Processor p({kRate, kPiece, 7, gg::core::Mode::Fx});
+    REQUIRE(
+        p.setRingNow(0, std::make_unique<gg::RingStorage>(4800, kPiece), gg::core::RingOffer{}));
+    std::atomic<bool> stop{false};
+    std::atomic<bool> ranOut{false};
+    std::thread audio([&] {
+        std::vector<float> left(kPiece, 0.25f), right(kPiece, -0.25f), outL(kPiece), outR(kPiece);
+        const float *in[2] = {left.data(), right.data()};
+        float *out[2] = {outL.data(), outR.data()};
+        int64_t t = 0;
+        for (; t < kMaxTotal && !stop.load(std::memory_order_acquire); t += kPiece)
+        {
+            p.process(in, 2, out, 2, kPiece, {});
+        }
+        ranOut.store(t >= kMaxTotal, std::memory_order_release);
+    });
+    int adopted = 0;
+    int freedWhilePublished = 0;
+    int freed = 0;
+    int swapsDeclined = 0;
+    bool stuck = false;
+    const auto offer = [&](int k) {
+        gg::core::RingOffer how;
+        how.copiedTo = p.ringRead(0).head->load(std::memory_order_acquire);
+        p.sources(0).offerRing(std::make_unique<gg::RingStorage>(k % 2 == 0 ? 9600 : 4800, kPiece),
+                               how);
+    };
+    for (int k = 0; k < kSwaps && !stuck && !ranOut.load(std::memory_order_acquire); ++k)
+    {
+        const gg::RingStorage *published = p.ringRead(0).storage;
+        const uint32_t declinedAtStart = p.ringAdoptionsDeclined(0);
+        uint32_t declinesSeen = declinedAtStart;
+        int suspect = 0;
+        offer(k);
+        int64_t polls = 0;
+        for (; polls < kPollsPerSwap; ++polls)
+        {
+            const std::size_t before = p.sources(0).ringsHeld();
+            p.sources(0).collect();
+            if (p.sources(0).ringsHeld() < before)
+            {
+                ++freed;
+                // Compares pointers only: a storage freed is never dereferenced here.
+                suspect += p.ringRead(0).storage == published ? 1 : 0;
+            }
+            // A declined offer (the head ran more than kAdoptCopyFrames past copiedTo while
+            // this thread was descheduled) retires its never-published storage: made again.
+            if (const uint32_t declined = p.ringAdoptionsDeclined(0); declined != declinesSeen)
+            {
+                declinesSeen = declined;
+                offer(k);
+            }
+            if (!p.sources(0).ringAdoptionPending() && p.ringRead(0).storage != published)
+            {
+                break;
+            }
+        }
+        stuck = polls == kPollsPerSwap;
+        adopted += stuck ? 0 : 1;
+        // A ring freed in a swap with a decline may be the declined one, which was never
+        // published: only a swap without one counts.
+        const bool clean = declinesSeen == declinedAtStart;
+        freedWhilePublished += clean ? suspect : 0;
+        swapsDeclined += clean ? 0 : 1;
+    }
+    stop.store(true, std::memory_order_release);
+    audio.join();
+    p.sources(0).collect();
+    INFO("adopted " << adopted << ", rings freed during the swaps " << freed
+                    << ", of them while still published " << freedWhilePublished
+                    << ", swaps with a decline " << swapsDeclined);
+    CHECK_FALSE(stuck);
+    CHECK_FALSE(ranOut.load());
+    CHECK(adopted == kSwaps);
+    CHECK(freedWhilePublished == 0);
+}
+
 TEST_CASE("the ring reader's copies match what the audio thread wrote", "[plugin][threads]")
 {
     // Spec §6.4's race-free read, under a running audio thread: one thread renders a Processor

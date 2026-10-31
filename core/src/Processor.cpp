@@ -1034,7 +1034,6 @@ bool Processor::adoptRing(Layer &l, const RingOffer &offer) noexcept
         l.sources.retireRing(offer.storage); // the main thread frees it, and remakes the offer
         return false;
     }
-    l.sources.retireRing(previous); // nullptr when the ring owned it
     if (offer.restore)
     {
         // Ruling R1-3 (spec §6.6, INTENT §23 #40 amended): a restored ring arms its Freeze, so a
@@ -1048,6 +1047,10 @@ bool Processor::adoptRing(Layer &l, const RingOffer &offer) noexcept
         l.engine.ringResized(); // Position and Spray reach the new length
     }
     publishStorage(l);
+    // Only now, with the new storage published, may the main thread free the old one: a reader
+    // that took the old pointer before the publication copies from it until it sees the epoch
+    // change, and collect() runs on the reader's thread, between reads (core::RingRead).
+    l.sources.retireRing(previous); // nullptr when the ring owned it
     return true;
 }
 
