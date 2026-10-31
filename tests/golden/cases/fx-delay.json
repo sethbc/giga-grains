@@ -1,0 +1,21 @@
+{
+  "mode": "fx",
+  "sampleRate": 48000,
+  "durationSeconds": 7.0,
+  "blockSize": 128,
+  "seed": 1,
+  "input": {
+    "kind": "file",
+    "path": "loop-48k.wav"
+  },
+  "params": {
+    "Mix": 1.0,
+    "Density": 5.0,
+    "Size": -3.321928094887362,
+    "Delay Amount": 0.5,
+    "Delay Time": -1.415037499278844,
+    "Delay Feedback": 0.5,
+    "Delay Damping": 0.5,
+    "Delay Ping-pong": 1
+  }
+}

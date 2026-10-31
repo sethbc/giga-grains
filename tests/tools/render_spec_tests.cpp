@@ -2152,3 +2152,29 @@ TEST_CASE("layer samples, routes, controls, transport and velocity render as the
     CHECK_FALSE(bitIdentical(gg::render::render(parseJson(loud), nullptr).channels[0],
                              rendered.channels[0]));
 }
+
+TEST_CASE("specs name the extremes' Spectral kind and bus targets", "[render]")
+{
+    using gg::render::RouteSpec;
+
+    // M2 sub-project 4's spec §6.7, §9: "A Source": 3 selects the Spectral kind, with or without
+    // a layer sample; a route reaches a bus's cutoff by its layer-A name.
+    auto inst = instrumentJson();
+    inst["params"] = {{"A Source", 3.0}, {"A Smear", 0.5}, {"A Bus 1 Cutoff", 9.0}};
+    inst["mod"] = {{{"slot", 13},
+                    {"source", "LFO 1"},
+                    {"target", "A Bus 1 Cutoff"},
+                    {"depth", 2.0},
+                    {"curve", "Bipolar"}}};
+    const RenderSpec spec = parseJson(inst);
+    CHECK(spec.instrument.params ==
+          std::vector<std::pair<std::string, double>>{
+              {"A Bus 1 Cutoff", 9.0}, {"A Smear", 0.5}, {"A Source", 3.0}});
+    CHECK(spec.instrument.mod ==
+          std::vector<RouteSpec>{{13, "LFO 1", "same", "A Bus 1 Cutoff", "all", 2.0, "Bipolar"}});
+
+    // An FX layer's Spectral kind with a layer sample: the sample is its material.
+    auto fx = fxLayersJson();
+    fx["params"]["B Source"] = 3.0;
+    CHECK(parseJson(fx).fx.layerSamples.size() == 1);
+}

@@ -82,6 +82,9 @@
 ///   "params", "automation" and "notes" are optional.
 /// - Instrument and FX mode both take "samples", "mod", "controls" and "transport", optional;
 ///   sample mode takes none of them.
+/// - A layer reads its "samples" entry with its Source set to Sample (0) or Spectral (3). A
+///   Spectral layer with a sample smears it (the sample is the material); a Spectral layer
+///   without one smears its own input ring, a Live layer's ring (M2 sub-project 4's spec §6.2).
 /// - Parameters (in "params", "automation" and a route's "target") are named as the product
 ///   displays them, so "B Size" is layer B's; a bare M1 name ("Size") is layer A's.
 /// - Any other key, including another mode's, is an error, so a misspelt key never silently

@@ -54,6 +54,7 @@ add_executable(gg-tests
         media/sha256_tests.cpp
         media/utf8_path_tests.cpp
         metrics/click_injection_tests.cpp
+        metrics/comb_tests.cpp
         metrics/metrics_tests.cpp
         metrics/spectrogram_tests.cpp
         tools/bench_kernel_tests.cpp

@@ -482,7 +482,7 @@ gg-render --write-media DIR
   internal error.
 - **The cases:** each case's spec is in `tests/golden/cases/`, and its expected metrics and event
   log are in `tests/golden/expected/`. Every `*.json` there is a case; a new one gets a test the
-  next time CMake runs. There are 36.
+  next time CMake runs. There are 45.
   - **M0's four,** in sample mode: `sparse-sine` (8 grains a second over a 220 Hz sine),
     `sparse-sine-44k1` (the same source converted to 44.1 kHz), `dense-noise` (400 grains a
     second over noise, up a fifth) and `sweep-stretch` (long grains over a sweep, down an
@@ -545,6 +545,27 @@ gg-render --write-media DIR
       octaves that hide steps.
     - Every one of the 22 M1 cases renders bit-identically with layers B to D off and the
       factory routes: a layers or matrix change that moves one is a regression.
+  - **M2 sub-project 4's nine** (the extremes; its spec §10), each 6 to 8 s:
+    - Smear: `inst-smear` (one note over noise at a static Position, Smear stepped 0, 0.25, 0.5,
+      1) and `inst-stretch-smear` (`loop-48k.wav` at a 1000x stretch through LFO 1 to Position,
+      Smear 0 for 4 s, then 1);
+    - the Spectral kind: `inst-spectral` (layer A Spectral over a sweep sample, Position stepped
+      0.1, 0.4, 0.7) and `fx-spectral-freeze` (layer A Spectral over `loop-48k.wav` as the input
+      ring, Freeze on from 2 s to 4 s);
+    - the buses: `fx-bus-filters` (stereo noise, Bus Split 50%, a low-pass and a high-pass, the
+      cutoff and a type automated) and `inst-filter-lfo` (a note over noise, LFO 1 to Bus 1
+      Cutoff, a route to a new target);
+    - the delay and the limiter: `fx-delay` (the loop, ping-pong), `fx-delay-automate` (Time's
+      glide, Feedback to 90%, Amount to 0) and `fx-limiter` (four layers at +6 dB, Mode Off, Soft
+      at 2 s, Peak at 4 s, Ceiling -6 dB).
+    - `fx-limiter`, `inst-smear` and `fx-bus-filters` (a noise bed) hide most injected steps,
+      and four more hide some, pinned in the click-injection table: `inst-filter-lfo` 13,
+      `inst-stretch-smear` 9, `fx-delay` 12 and `fx-spectral-freeze` 9. The other three catch
+      all 16. `tests/metrics/comb_tests.cpp` renders Smear 0 and 1 over noise, static and at
+      1000x, and requires Smear 1's cepstral comb score well below Smear 0's.
+    - Every one of the 36 earlier cases renders bit-identically with Smear 0, Bus Split 0, the
+      filters Off, the delay at Amount 0 and the limiter Off: an extremes change that moves one
+      is a regression.
   - **The event-log comparison never sees the reverb or the diffuser:** the log records grains,
     and Space runs after them. Across platforms, Space's five cases are checked by their metrics
     alone, within tolerances.

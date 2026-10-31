@@ -119,7 +119,21 @@ const std::map<std::string, int> &partlyHidden()
         // The swept input's top octaves, then their regeneration at Feedback 0.9 and the frozen
         // ring, from about 2.8 s to 6.6 s. Accepted by the director 2026-10-29 (decision D4).
         {"fx-feedback", 7},
+        // Four layers at +6 dB each over stereo noise (M2 sub-project 4's spec §10): a noise bed
+        // throughout, as in fx-layers. The limiter's own clean score is 4.31, so the Peak
+        // limiter's gain steps show nowhere in it.
+        {"fx-limiter", 0},
         {"fx-file", 14}, // loop-48k.wav's noise bursts
+        // Stereo noise split across two filtered buses (the extremes' spec §10): a noise bed
+        // throughout. The one catch is at 2.8 s.
+        {"fx-bus-filters", 1},
+        // loop-48k.wav's bursts and their echoes (375 ms, Feedback 50%, ping-pong): the steps at
+        // 1.65 s, 2.06 s and 2.88 s sit inside a burst or an echo of one, as in fx-file.
+        {"fx-delay", 12},
+        // The Spectral layer's smear of the loop: the frozen pad (2.0 s to 4.0 s) is a steady
+        // noise-like wash that hides the steps at 2.1 s to 4.1 s, and a burst's smear hides the
+        // one at 1.2 s; the silence after the input ends catches the last six.
+        {"fx-spectral-freeze", 9},
         // Four layers' noise bed throughout (M2 sub-project 1's spec §10: stereo noise, the four
         // layers at their own pitch and size), as in dense-noise.
         {"fx-layers", 0},
@@ -135,6 +149,17 @@ const std::map<std::string, int> &partlyHidden()
         // steps there are caught, the rest hidden.
         {"inst-layers-morph", 5},
         {"inst-release", 5}, // the note's noise bed, from 0.25 s to its release
+        // The note's noise bed through a low-pass whose cutoff swings 2 octaves either way of
+        // 1 kHz at 0.5 Hz: the steps at the LFO's crests (0.4 s, 2.5 s, 4.5 s), where the cutoff
+        // is at 4 kHz and the noise is brightest, are hidden; the other 13 are caught.
+        {"inst-filter-lfo", 13},
+        // The note's noise bed at a static Position, Smear 0 to 1: noise throughout (as in
+        // dense-noise), and Smear only makes it more even.
+        {"inst-smear", 0},
+        // Smear 0 for 4 s leaves the 1000x stretch's comb and its gaps, which catch nine of the
+        // steps (up to 4.2 s); from Smear 1 on the smear is a smooth, noise-like wash that hides
+        // the last seven (4.7 s on).
+        {"inst-stretch-smear", 9},
         // The note's noise bed: caught only in a gap between grains at 1.8 s and after the note's
         // last grains end, at about 5.1 s.
         {"inst-size-spread", 3},
