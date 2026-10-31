@@ -114,6 +114,26 @@ TEST_CASE("settings XML reads missing attributes as empty and ignores unknown on
     REQUIRE(out == MachineSettings{"/S", ""});
 }
 
+TEST_CASE("settings XML round trips the content folder, and an M1 file's reads as empty", "[core]")
+{
+    MachineSettings settings;
+    settings.sampleFolder = "/Samples";
+    settings.contentFolder = "/Packs & Things/\xc3\xa9 <\"x\">";
+    MachineSettings back;
+    REQUIRE(fromSettingsXml(toSettingsXml(settings), back));
+    REQUIRE(back == settings);
+    REQUIRE(back.contentFolder == "/Packs & Things/\xc3\xa9 <\"x\">");
+
+    // The line M1's build wrote, with no contentFolder.
+    MachineSettings m1;
+    m1.contentFolder = "untouched";
+    REQUIRE(
+        fromSettingsXml(R"(<settings version="1" sampleFolder="/S" lastLoadFolder="/L" />)", m1));
+    REQUIRE(m1.sampleFolder == "/S");
+    REQUIRE(m1.lastLoadFolder == "/L");
+    REQUIRE(m1.contentFolder.empty());
+}
+
 TEST_CASE("settings XML edited by hand loads, with a declaration and comments", "[core]")
 {
     const std::string body = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
@@ -128,6 +148,35 @@ TEST_CASE("settings XML edited by hand loads, with a declaration and comments", 
         REQUIRE(fromSettingsXml(xml, out));
         REQUIRE(out == MachineSettings{"/Samples/\xc3\xa9", "/Kicks"});
     }
+}
+
+TEST_CASE("the theme attribute round trips", "[core]")
+{
+    // The editor's theme (M2 sub-project 6's spec §6.9): the attribute `theme`, written only
+    // when set, at version 1 still.
+    MachineSettings light{"/S", "/L"};
+    light.theme = "light";
+    const std::string xml = toSettingsXml(light);
+    REQUIRE(xml.starts_with("<settings version=\"1\" "));
+    REQUIRE(xml.find(" theme=\"light\"") != std::string::npos);
+    MachineSettings back;
+    REQUIRE(fromSettingsXml(xml, back));
+    REQUIRE(back == light);
+    REQUIRE(toSettingsXml(kSome).find("theme") == std::string::npos);
+
+    // XML without it reads the theme as empty, whatever `out` held.
+    MachineSettings out{"x", "y", "light"};
+    REQUIRE(fromSettingsXml(R"(<settings version="1" sampleFolder="/S" />)", out));
+    REQUIRE(out == MachineSettings{"/S", ""});
+    REQUIRE(out.theme.empty());
+
+    // An M1 settings string, exactly as M1's toSettingsXml wrote it, still parses.
+    const std::string m1 = "<settings version=\"1\" sampleFolder=\"/Users/me/Samples\" "
+                           "lastLoadFolder=\"/Users/me/Kicks\" />";
+    MachineSettings fromM1;
+    REQUIRE(fromSettingsXml(m1, fromM1));
+    REQUIRE(fromM1 == MachineSettings{"/Users/me/Samples", "/Users/me/Kicks"});
+    REQUIRE(fromM1.theme.empty());
 }
 
 TEST_CASE("settings XML that isn't settings is rejected and changes nothing", "[core]")
@@ -358,6 +407,8 @@ TEST_CASE("saveSettings creates the folder, and loadSettings reads it back", "[m
 
     // A NUL can't be written, and the old settings stay.
     REQUIRE_FALSE(gg::media::saveSettings(file, {std::string("/a\0b", 4), ""}));
+    REQUIRE(gg::media::loadSettings(file) == other);
+    REQUIRE_FALSE(gg::media::saveSettings(file, {"/S", "/L", std::string("li\0ght", 6)}));
     REQUIRE(gg::media::loadSettings(file) == other);
 
     // A folder that can't be made: a file is in the way.

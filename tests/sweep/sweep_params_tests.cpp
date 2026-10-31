@@ -549,7 +549,7 @@ void limiterBed(SweepDriver &d) { d.processor().setBase(ParamSlot::Mix, 1.0f); }
 TEST_CASE("sweep: kLimiterDrive covers Peak driven under -6 dB, and the call's 10 ms after",
           "[sweep]")
 {
-    // The director's D5b, option 1 (2026-10-31; row 333). Peak entering at a -24 dB ceiling
+    // The director's D5b, option 1 (2026-10-31; row 360). Peak entering at a -24 dB ceiling
     // over the cloud has no attack, and scores 28 over the whole render; every call in which its
     // gain falls under -6 dB is exempt, so the check scores none of it.
     SECTION("the case it covers passes")
@@ -667,7 +667,7 @@ TEST_CASE("sweep: kLimiterDrive looks away only where the limiter is driven", "[
 TEST_CASE("sweep: kDelayGlideHold covers the glide at Feedback 95% and up, and nothing else",
           "[sweep]")
 {
-    // The director's D-glide, option 1 (2026-10-31; row 334): Delay Time glides at 0.5 samples a
+    // The director's D-glide, option 1 (2026-10-31; row 361): Delay Time glides at 0.5 samples a
     // sample, so 2 s to 1 ms takes 191,904 samples (4 s); inside a Feedback 100% loop each pass
     // is re-read a fifth higher. The check looks away over the samples with Amount above 0,
     // Feedback at 0.95 or more and the read still gliding.

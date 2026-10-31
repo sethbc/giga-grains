@@ -5,18 +5,18 @@
 #include "MacroRow.h"
 
 #include <algorithm>
-#include <cmath>
+#include <functional>
 #include <cstddef>
 #include <string>
 #include <string_view>
 
-#include <sst/basic-blocks/params/ParamMetadata.h>
 #include <sst/jucegui/components/Knob.h>
 #include <sst/jucegui/components/ToggleButton.h>
 #include <sst/jucegui/data/Continuous.h>
 #include <sst/jucegui/data/Discrete.h>
 
-#include "HeldValue.h"
+#include "ParamControl.h"
+#include "ParamValue.h"
 
 namespace gg::ui
 {
@@ -33,103 +33,16 @@ std::string shortName(const std::string &name)
     return name.starts_with(kPrefix) ? name.substr(kPrefix.size()) : name;
 }
 
-/// The gesture plumbing both adaptors share: one parameter's base value through the context,
-/// with the value sent held until the base value catches up. An edit that arrives outside a
-/// begin/end pair (a path of the control that sets a value without one) is made a gesture of
-/// its own, so the host never sees a value without one.
-class MacroValue
+/// A macro's value, labelled with its short name.
+ParamValue macroValue(const EditorContext &context, ParamSlot slot)
 {
-  public:
-    MacroValue(const EditorContext &context, ParamSlot slot)
-        : context_(context), slot_(slot), meta_(gg::core::paramMeta(slot, context.mode)),
-          label_(shortName(meta_.name)), value_(base())
-    {
-    }
-
-    const sst::basic_blocks::params::ParamMetaData &meta() const noexcept { return meta_; }
-    const std::string &label() const noexcept { return label_; }
-    float value() const noexcept { return value_; }
-
-    void begin()
-    {
-        if (editing_)
-        {
-            return;
-        }
-        editing_ = true;
-        held_.begin();
-        if (context_.beginGesture)
-        {
-            context_.beginGesture(slot_);
-        }
-    }
-
-    void set(float v)
-    {
-        if (std::isnan(v))
-        {
-            return; // as uiSetValue ignores one: nothing is stored, held or sent
-        }
-        v = std::clamp(v, meta_.minVal, meta_.maxVal);
-        const bool own = !editing_;
-        if (own)
-        {
-            begin();
-        }
-        value_ = v;
-        held_.set(v);
-        if (context_.setValue)
-        {
-            context_.setValue(slot_, static_cast<double>(v));
-        }
-        if (own)
-        {
-            end();
-        }
-    }
-
-    void end()
-    {
-        if (!editing_)
-        {
-            return;
-        }
-        editing_ = false;
-        held_.end(base(), wallSeconds());
-        if (context_.endGesture)
-        {
-            context_.endGesture(slot_);
-        }
-    }
-
-    /// Follows the base value; true if what the control shows changed.
-    bool refresh()
-    {
-        const float shown = held_.shown(base(), wallSeconds());
-        if (shown == value_)
-        {
-            return false;
-        }
-        value_ = shown;
-        return true;
-    }
-
-  private:
-    float base() const { return context_.baseValue ? context_.baseValue(slot_) : meta_.defaultVal; }
-
-    const EditorContext &context_;
-    const ParamSlot slot_;
-    const sst::basic_blocks::params::ParamMetaData &meta_;
-    const std::string label_;
-    float value_;
-    bool editing_{false};
-    HeldValue held_;
-};
+    return ParamValue(context, slot, shortName(gg::core::paramMeta(slot, context.mode).name));
+}
 
 /// A knob's source: a continuous macro.
 struct KnobSource final : jdata::Continuous
 {
-    KnobSource(const EditorContext &context, ParamSlot slot) : macro(context, slot) {}
+    KnobSource(const EditorContext &context, ParamSlot slot) : macro(macroValue(context, slot)) {}
 
     std::string getLabel() const override { return macro.label(); }
     float getValue() const override { return macro.value(); }
@@ -143,13 +56,13 @@ struct KnobSource final : jdata::Continuous
         return macro.meta().valueToString(f).value_or(std::string());
     }
 
-    MacroValue macro;
+    ParamValue macro;
 };
 
 /// The Freeze toggle's source: a stepped macro, off (0) or on (1).
 struct ToggleSource final : jdata::Discrete
 {
-    ToggleSource(const EditorContext &context, ParamSlot slot) : macro(context, slot) {}
+    ToggleSource(const EditorContext &context, ParamSlot slot) : macro(macroValue(context, slot)) {}
 
     std::string getLabel() const override { return macro.label(); }
     int getValue() const override { return macro.value() > 0.5f ? 1 : 0; }
@@ -160,34 +73,42 @@ struct ToggleSource final : jdata::Discrete
     int getMax() const override { return 1; }
     std::string getValueAsStringFor(int i) const override { return i != 0 ? "on" : "off"; }
 
-    MacroValue macro;
+    ParamValue macro;
+};
+
+/// A drop target for a Mod view source chip (spec §6.6): with a handler, a chip dropped on the
+/// macro calls it with the macro's slot, which refuses it (a macro can't be a target).
+struct ChipTarget : juce::DragAndDropTarget
+{
+    ParamSlot slot{ParamSlot::Count};
+    std::function<void(ParamSlot, gg::core::ModSource)> onDrop;
+
+    bool isInterestedInDragSource(const SourceDetails &details) override
+    {
+        return onDrop && ParamControl::sourceOfDrag(details.description).has_value();
+    }
+    void itemDropped(const SourceDetails &details) override
+    {
+        if (const auto source = ParamControl::sourceOfDrag(details.description); source && onDrop)
+        {
+            onDrop(slot, *source);
+        }
+    }
 };
 
 /// A knob whose arrow keys step it by 1/100 of its range (1/1000 with Shift), where
 /// sst-jucegui's step by 1/40 and know no Left or Right.
-struct MacroKnob final : jcmp::Knob
+struct MacroKnob final : jcmp::Knob, ChipTarget
 {
     bool keyPressed(const juce::KeyPress &key) override
     {
-        const int code = key.getKeyCode();
-        const bool up = code == juce::KeyPress::upKey || code == juce::KeyPress::rightKey;
-        const bool down = code == juce::KeyPress::downKey || code == juce::KeyPress::leftKey;
-        jdata::Continuous *source = continuous();
-        if ((!up && !down) || source == nullptr || key.getModifiers().isCommandDown())
-        {
-            return jcmp::Knob::keyPressed(key);
-        }
-        const float range = source->getMax() - source->getMin();
-        const float step = range * (key.getModifiers().isShiftDown() ? 0.001f : 0.01f);
-        const float v = std::clamp(source->getValue() + (up ? step : -step), source->getMin(),
-                                   source->getMax());
-        onBeginEdit();
-        source->setValueFromGUI(v);
-        onEndEdit();
-        notifyAccessibleChange();
-        repaint();
-        return true;
+        return stepByArrowKey(*this, key) || jcmp::Knob::keyPressed(key);
     }
+};
+
+/// The Freeze macro's toggle.
+struct MacroToggle final : jcmp::ToggleButton, ChipTarget
+{
 };
 } // namespace
 
@@ -197,7 +118,7 @@ struct MacroRow::Impl
     std::array<std::unique_ptr<KnobSource>, 8> knobSources;
     std::unique_ptr<ToggleSource> toggleSource;
     std::array<std::unique_ptr<MacroKnob>, 8> knobs; // index 5 (Freeze) unused
-    std::unique_ptr<jcmp::ToggleButton> toggle;
+    std::unique_ptr<MacroToggle> toggle;
 };
 
 namespace
@@ -217,7 +138,8 @@ MacroRow::MacroRow(const EditorContext &context) : impl_(std::make_unique<Impl>(
         if (i == kFreezeIndex)
         {
             impl_->toggleSource = std::make_unique<ToggleSource>(context, slot);
-            auto toggle = std::make_unique<jcmp::ToggleButton>();
+            auto toggle = std::make_unique<MacroToggle>();
+            toggle->slot = slot;
             ToggleSource *source = impl_->toggleSource.get();
             toggle->setSource(source);
             toggle->setLabel(source->getLabel());
@@ -231,6 +153,7 @@ MacroRow::MacroRow(const EditorContext &context) : impl_(std::make_unique<Impl>(
         }
         impl_->knobSources[i] = std::make_unique<KnobSource>(context, slot);
         auto knob = std::make_unique<MacroKnob>();
+        knob->slot = slot;
         KnobSource *source = impl_->knobSources[i].get();
         knob->setSource(source);
         knob->onBeginEdit = [source] { source->macro.begin(); };
@@ -254,6 +177,19 @@ MacroRow::~MacroRow()
     impl_->toggleSource->macro.end();
     impl_->knobs = {};
     impl_->toggle.reset();
+}
+
+void MacroRow::setSourceDropHandler(
+    std::function<void(gg::core::ParamSlot, gg::core::ModSource)> handler)
+{
+    for (const auto &knob : impl_->knobs)
+    {
+        if (knob)
+        {
+            knob->onDrop = handler;
+        }
+    }
+    impl_->toggle->onDrop = std::move(handler);
 }
 
 void MacroRow::refresh()

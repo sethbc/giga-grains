@@ -32,11 +32,11 @@
 //   exempted it, and the law now moves at the ramps' pace, so nothing needs to.
 //   Reverb Size moves are exempt only when the Size in effect (its base or its modulation)
 //   changes.
-// - kLimiterDrive (the director's D5b, option 1, 2026-10-31; carry-over row 333): the limiter's
+// - kLimiterDrive (the director's D5b, option 1, 2026-10-31; carry-over row 360): the limiter's
 //   laws stand (zero lookahead, no attack), so a ceiling far under the material is a law
 //   consequence, not a defect. The check looks away over every call in which Peak's gain fell
 //   below -6 dB, or Soft's input passed twice the ceiling, and 10 ms after it.
-// - kDelayGlideHold (D-glide, option 1, 2026-10-31; row 334): the delay's Time glide is
+// - kDelayGlideHold (D-glide, option 1, 2026-10-31; row 361): the delay's Time glide is
 //   tape-like by design, and inside a Feedback 100% loop it re-reads each pass a fifth higher.
 //   The check looks away over the samples where Delay Amount is above 0, the delay's Feedback is
 //   at least 0.95 and its read time is still gliding.

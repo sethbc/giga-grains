@@ -12,6 +12,7 @@ There is no install script: copy each file where you want it.
 | `Giga Grains.clap` | `~/.clap` for your user alone, or `/usr/lib/clap` for every user |
 | `Giga Grains.vst3` (a folder) | `~/.vst3` for your user alone, or `/usr/lib/vst3` for every user |
 | `Giga Grains`, `Giga Grains FX` | anywhere you like: they're the standalone apps |
+| `content` (a folder: the factory presets and CC0 samples) | `~/.local/share/sethbc/Giga Grains/` for your user alone, or `/usr/share/sethbc/Giga Grains/` for every user: copy the folder's entries (`Presets`, `Samples`, ...) into it |
 
 For example, for your user alone:
 
@@ -19,9 +20,12 @@ For example, for your user alone:
 mkdir -p ~/.clap ~/.vst3
 cp "Giga Grains.clap" ~/.clap/
 cp -R "Giga Grains.vst3" ~/.vst3/
+mkdir -p ~/.local/share/sethbc/"Giga Grains"
+cp -R content/. ~/.local/share/sethbc/"Giga Grains"/
 ```
 
-The CLAP and the VST3 each hold both plugins, Giga Grains and Giga Grains FX.
+The CLAP and the VST3 each hold both plugins, Giga Grains and Giga Grains FX. The content's
+`PROVENANCE.md` says where each sample came from and its license (`LICENSE-CC0-1.0.txt`).
 
 ## What it runs on
 

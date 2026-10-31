@@ -16,9 +16,12 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <limits>
 #include <memory>
 #include <numbers>
+#include <optional>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -28,6 +31,7 @@
 #include "Factory.h"
 #include "GigaGrainsPlugin.h"
 #include "gg/core/ParamIds.h"
+#include "gg/core/Preset.h"
 #include "gg/core/Rng.h"
 #include "gg/core/SessionState.h"
 #include "gg/media/Sample.h"
@@ -359,6 +363,94 @@ class PoolHost
     };
 };
 
+/// A host that offers clap.preset-load (M2 sub-project 5's spec §6.2) and records the plugin's
+/// loaded and on_error calls, in order, with their strings copied (a null one as nullopt).
+class PresetHost
+{
+  public:
+    struct Call
+    {
+        bool loaded{false}; ///< loaded(); on_error() otherwise
+        uint32_t kind{0};
+        std::optional<std::string> location;
+        std::optional<std::string> loadKey;
+        int32_t osError{0};  ///< on_error's
+        std::string message; ///< on_error's
+    };
+
+    PresetHost() { host_.host_data = this; }
+    PresetHost(const PresetHost &) = delete;
+    PresetHost &operator=(const PresetHost &) = delete;
+
+    const clap_host *clap() const noexcept { return &host_; }
+    const std::vector<Call> &calls() const noexcept { return calls_; }
+    void clear() noexcept { calls_.clear(); }
+
+  private:
+    static PresetHost &self(const clap_host *host) noexcept
+    {
+        return *static_cast<PresetHost *>(host->host_data);
+    }
+    static std::optional<std::string> copied(const char *text)
+    {
+        return text != nullptr ? std::optional<std::string>(text) : std::nullopt;
+    }
+    static void onError(const clap_host *host, uint32_t kind, const char *location,
+                        const char *loadKey, int32_t osError, const char *message)
+    {
+        self(host).calls_.push_back(
+            {false, kind, copied(location), copied(loadKey), osError, message});
+    }
+    static void loaded(const clap_host *host, uint32_t kind, const char *location,
+                       const char *loadKey)
+    {
+        self(host).calls_.push_back({true, kind, copied(location), copied(loadKey), 0, {}});
+    }
+    static const void *getExtension(const clap_host *, const char *id) noexcept
+    {
+        static const clap_host_preset_load kPresetLoad{&PresetHost::onError, &PresetHost::loaded};
+        return std::strcmp(id, CLAP_EXT_PRESET_LOAD) == 0 ? &kPresetLoad : nullptr;
+    }
+
+    std::vector<Call> calls_;
+    clap_host host_{
+        CLAP_VERSION_INIT,
+        nullptr,
+        "gg-tests preset host",
+        "Giga Grains",
+        "",
+        "0.0.0",
+        &PresetHost::getExtension,
+        [](const clap_host *) {}, // request_restart
+        [](const clap_host *) {}, // request_process
+        [](const clap_host *) {}, // request_callback
+    };
+};
+
+/// Writes `bytes` to `path`, replacing it. Throws if it can't.
+inline void writeBytes(const std::filesystem::path &path, const std::string &bytes)
+{
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    if (!out)
+    {
+        throw std::runtime_error("writeBytes: can't write " + path.string());
+    }
+}
+
+/// Writes `info` and `state` as a preset file (encodePreset) to
+/// GG_TEST_OUTPUT_DIR/presets/<name>.ggpreset, creating the folder, and returns its path.
+inline std::filesystem::path writePresetFile(const std::string &name,
+                                             const gg::core::PresetInfo &info,
+                                             const gg::core::SessionState &state)
+{
+    const auto dir = std::filesystem::path(GG_TEST_OUTPUT_DIR) / "presets";
+    std::filesystem::create_directories(dir);
+    const auto path = dir / (name + std::string(gg::core::kPresetExtension));
+    writeBytes(path, gg::core::encodePreset(info, state));
+    return path;
+}
+
 /// The scratch folder of the plugin test `name`: GG_TEST_OUTPUT_DIR/plugin-sample-<name>/,
 /// created if needed.
 inline std::filesystem::path sampleDir(const std::string &name)
@@ -581,6 +673,16 @@ class PluginUnderTest
     {
         return static_cast<const clap_plugin_state *>(
             plugin_->get_extension(plugin_, CLAP_EXT_STATE));
+    }
+    const clap_plugin_preset_load *presetLoad() const noexcept
+    {
+        return static_cast<const clap_plugin_preset_load *>(
+            plugin_->get_extension(plugin_, CLAP_EXT_PRESET_LOAD));
+    }
+    /// preset-load.from_location through the vtable.
+    bool loadPreset(uint32_t kind, const char *location, const char *loadKey) const
+    {
+        return presetLoad()->from_location(plugin_, kind, location, loadKey);
     }
 
     /// params.flush of `events`, through the vtable, into `out` (or a list that discards them).

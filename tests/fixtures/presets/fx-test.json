@@ -1,0 +1,11 @@
+{
+  "product": "fx",
+  "name": "FX Test",
+  "author": "Giga Grains",
+  "description": "The FX's test preset: a longer, denser cloud with layer B a fifth up",
+  "tags": ["texture", "dry"],
+  "params": {"Size": -1.0, "Density": 5.0, "Layer B On": 1, "B Pitch": 7},
+  "mod": [
+    {"slot": 13, "source": "LFO 1", "target": "Position", "targetLayer": "all", "depth": 0.1}
+  ]
+}

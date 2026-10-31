@@ -18,6 +18,7 @@
 #include <nlohmann/json.hpp>
 
 #include "Signals.h"
+#include "SpecReaders.h"
 #include "gg/core/ModMatrix.h"
 #include "gg/media/Utf8Path.h"
 #include "sst/basic-blocks/params/ParamMetadata.h"
@@ -26,117 +27,7 @@ namespace gg::render
 {
 namespace
 {
-using json = nlohmann::json;
-
-/// Thrown while reading an invalid spec; parseRenderSpec turns it into the error message.
-struct SpecError : std::runtime_error
-{
-    using std::runtime_error::runtime_error;
-};
-
-/// v as a finite number; `key` names it in the error. (JSON can't spell NaN or infinity, but a
-/// literal like 1e999 overflows.)
-double finiteNumber(const json &v, std::string_view key)
-{
-    const double d = v.is_number() ? v.get<double>() : 0.0;
-    if (!v.is_number() || !std::isfinite(d))
-    {
-        throw SpecError(fmt::format("{} must be a finite number", key));
-    }
-    return d;
-}
-
-/// One JSON object of the spec. Keys are reported with the object's prefix, e.g.
-/// "stream.gain".
-class Object
-{
-  public:
-    /// Requires j to be an object whose keys are all in `known`.
-    Object(const json &j, std::string_view name, std::string prefix,
-           std::initializer_list<std::string_view> known)
-        : j_(j), prefix_(std::move(prefix))
-    {
-        if (!j_.is_object())
-        {
-            throw SpecError(fmt::format("{} must be a JSON object", name));
-        }
-        for (const auto &item : j_.items())
-        {
-            if (std::find(known.begin(), known.end(), item.key()) == known.end())
-            {
-                throw SpecError(fmt::format("unknown key {}{}", prefix_, item.key()));
-            }
-        }
-    }
-
-    bool has(std::string_view key) const { return j_.find(key) != j_.end(); }
-
-    const json &member(std::string_view key) const
-    {
-        const auto it = j_.find(key);
-        if (it == j_.end())
-        {
-            throw SpecError(fmt::format("{}{} is missing", prefix_, key));
-        }
-        return *it;
-    }
-
-    /// A finite number.
-    double number(std::string_view key) const
-    {
-        return finiteNumber(member(key), fmt::format("{}{}", prefix_, key));
-    }
-
-    /// A number in (0, max].
-    double positive(std::string_view key, double max = std::numeric_limits<double>::max()) const
-    {
-        const double d = number(key);
-        if (!(d > 0.0 && d <= max))
-        {
-            throw SpecError(
-                max == std::numeric_limits<double>::max()
-                    ? fmt::format("{}{} must be > 0", prefix_, key)
-                    : fmt::format("{}{} must be > 0 and at most {}", prefix_, key, max));
-        }
-        return d;
-    }
-
-    /// A JSON integer >= 0 (not a float, even an integral one).
-    uint64_t unsignedInteger(std::string_view key) const
-    {
-        const json &v = member(key);
-        if (!v.is_number_unsigned())
-        {
-            throw SpecError(fmt::format("{}{} must be an integer >= 0", prefix_, key));
-        }
-        return v.get<uint64_t>();
-    }
-
-    /// A JSON integer from 0 to max (not a float, even an integral one).
-    uint64_t integerUpTo(std::string_view key, uint64_t max) const
-    {
-        const json &v = member(key);
-        if (!v.is_number_unsigned() || v.get<uint64_t>() > max)
-        {
-            throw SpecError(fmt::format("{}{} must be an integer from 0 to {}", prefix_, key, max));
-        }
-        return v.get<uint64_t>();
-    }
-
-    std::string string(std::string_view key) const
-    {
-        const json &v = member(key);
-        if (!v.is_string())
-        {
-            throw SpecError(fmt::format("{}{} must be a string", prefix_, key));
-        }
-        return v.get<std::string>();
-    }
-
-  private:
-    const json &j_;
-    std::string prefix_;
-};
+using namespace detail;
 
 /// Which signal readSource reads: a sample-mode "source", an instrument's "sample" (or a layer's,
 /// in "samples") or an FX "input". The last two are made at the render's rate, so have no
@@ -294,75 +185,6 @@ std::optional<gg::core::ParamSlot> layerAAlias(std::string_view name)
     return std::nullopt;
 }
 
-/// `mode`'s product's parameter names, for error messages: "Mix, Level, A Position, ..., Budget".
-std::string parameterNames(gg::core::Mode mode)
-{
-    std::string names;
-    for (std::size_t s = 0; s < gg::core::kParamCount; ++s)
-    {
-        names += (s == 0 ? "" : ", ") +
-                 gg::core::paramMeta(static_cast<gg::core::ParamSlot>(s), mode).name;
-    }
-    return names;
-}
-
-/// The parameter named `name` in `mode`'s product: paramSlotNamed's, unless that name is the other
-/// product's alone ("Macro Level" in an FX spec, say). A bare M1 name ("Size"), or "Quality", is
-/// layer A's in either product.
-std::optional<gg::core::ParamSlot> paramSlotNamedIn(std::string_view name, gg::core::Mode mode)
-{
-    if (const auto alias = layerAAlias(name))
-    {
-        return alias;
-    }
-    const auto slot = paramSlotNamed(name);
-    if (slot && gg::core::paramMeta(*slot, mode).name == name)
-    {
-        return slot;
-    }
-    return std::nullopt;
-}
-
-/// v as a value for the parameter in `slot` of `mode`'s product: a finite number that, converted
-/// to float as the Processor converts it, is in the parameter's range. `key` names it in the
-/// error.
-double parameterValue(const json &v, gg::core::ParamSlot slot, gg::core::Mode mode,
-                      std::string_view key)
-{
-    const double d = finiteNumber(v, key);
-    const auto &meta = gg::core::paramMeta(slot, mode);
-    // The float conversion is defined only within float's range.
-    const bool fits = std::abs(d) <= std::numeric_limits<float>::max();
-    const float f = fits ? static_cast<float>(d) : 0.0f;
-    if (!fits || !(f >= meta.minVal && f <= meta.maxVal))
-    {
-        throw SpecError(fmt::format("{} must be in {}'s range, {} to {}", key, meta.name,
-                                    meta.minVal, meta.maxVal));
-    }
-    return d;
-}
-
-std::vector<std::pair<std::string, double>> readParams(const json &j, gg::core::Mode mode)
-{
-    if (!j.is_object())
-    {
-        throw SpecError("params must be a JSON object");
-    }
-    std::vector<std::pair<std::string, double>> params;
-    for (const auto &item : j.items())
-    {
-        const std::string key = fmt::format("params.{}", item.key());
-        const auto slot = paramSlotNamedIn(item.key(), mode);
-        if (!slot)
-        {
-            throw SpecError(
-                fmt::format("unknown key {}: the parameters are {}", key, parameterNames(mode)));
-        }
-        params.emplace_back(item.key(), parameterValue(item.value(), *slot, mode, key));
-    }
-    return params;
-}
-
 /// The message for a time that isn't >= 0 or doesn't round to a frame before the render's end.
 std::string timeError(std::string_view name)
 {
@@ -460,16 +282,6 @@ std::vector<NoteSpec> readNotes(const json &j, double sampleRate, double duratio
         notes.push_back(n);
     }
     return notes;
-}
-
-/// The layer (0 to 3) that the letter `text` ("A" to "D") names; nothing for any other text.
-std::optional<uint8_t> layerOfLetter(std::string_view text)
-{
-    if (text.size() == 1 && text[0] >= 'A' && text[0] < 'A' + gg::core::kLayers)
-    {
-        return static_cast<uint8_t>(text[0] - 'A');
-    }
-    return std::nullopt;
 }
 
 /// "samples": a source per layer letter, in layer order.
@@ -612,29 +424,6 @@ RouteSpec readRoute(const json &j, const std::string &name, gg::core::Mode mode)
         }
     }
     return r;
-}
-
-/// "mod": routes, each slot named once.
-std::vector<RouteSpec> readMod(const json &j, gg::core::Mode mode)
-{
-    if (!j.is_array())
-    {
-        throw SpecError("mod must be a JSON array");
-    }
-    std::vector<RouteSpec> routes;
-    std::array<bool, gg::core::kModSlots> named{};
-    for (std::size_t i = 0; i < j.size(); ++i)
-    {
-        const std::string name = fmt::format("mod[{}]", i);
-        RouteSpec r = readRoute(j[i], name, mode);
-        if (named[r.slot - 1u])
-        {
-            throw SpecError(fmt::format("{}.slot {} is named twice", name, r.slot));
-        }
-        named[r.slot - 1u] = true;
-        routes.push_back(std::move(r));
-    }
-    return routes;
 }
 
 std::vector<ControlSpec> readControls(const json &j, double sampleRate, double durationSeconds)
@@ -820,14 +609,15 @@ Object topLevel(const json &j, RenderMode mode)
         return {j,
                 "the spec",
                 "",
-                {"mode", "sampleRate", "durationSeconds", "blockSize", "seed", "sample", "params",
-                 "automation", "notes", "samples", "mod", "controls", "transport"}};
+                {"mode", "sampleRate", "durationSeconds", "blockSize", "seed", "sample", "preset",
+                 "params", "automation", "notes", "samples", "mod", "controls", "transport"}};
     case RenderMode::Fx:
         return {j,
                 "the spec",
                 "",
                 {"mode", "sampleRate", "durationSeconds", "blockSize", "seed", "input", "channels",
-                 "params", "automation", "notes", "samples", "mod", "controls", "transport"}};
+                 "preset", "params", "automation", "notes", "samples", "mod", "controls",
+                 "transport"}};
     case RenderMode::Sample:
         break;
     }
@@ -874,9 +664,135 @@ RenderSpec readSpec(const json &j)
         spec.fx = readFx(o, spec);
         break;
     }
+    // Only instrument and FX mode list "preset" (topLevel).
+    if (o.has("preset"))
+    {
+        spec.preset = o.string("preset");
+        if (spec.preset.empty())
+        {
+            throw SpecError("preset must not be empty");
+        }
+    }
     return spec;
 }
 } // namespace
+
+namespace detail
+{
+/// v as a finite number; `key` names it in the error. (JSON can't spell NaN or infinity, but a
+/// literal like 1e999 overflows.)
+double finiteNumber(const json &v, std::string_view key)
+{
+    const double d = v.is_number() ? v.get<double>() : 0.0;
+    if (!v.is_number() || !std::isfinite(d))
+    {
+        throw SpecError(fmt::format("{} must be a finite number", key));
+    }
+    return d;
+}
+
+/// `mode`'s product's parameter names, for error messages: "Mix, Level, A Position, ..., Budget".
+std::string parameterNames(gg::core::Mode mode)
+{
+    std::string names;
+    for (std::size_t s = 0; s < gg::core::kParamCount; ++s)
+    {
+        names += (s == 0 ? "" : ", ") +
+                 gg::core::paramMeta(static_cast<gg::core::ParamSlot>(s), mode).name;
+    }
+    return names;
+}
+
+/// The parameter named `name` in `mode`'s product: paramSlotNamed's, unless that name is the other
+/// product's alone ("Macro Level" in an FX spec, say). A bare M1 name ("Size"), or "Quality", is
+/// layer A's in either product.
+std::optional<gg::core::ParamSlot> paramSlotNamedIn(std::string_view name, gg::core::Mode mode)
+{
+    if (const auto alias = layerAAlias(name))
+    {
+        return alias;
+    }
+    const auto slot = paramSlotNamed(name);
+    if (slot && gg::core::paramMeta(*slot, mode).name == name)
+    {
+        return slot;
+    }
+    return std::nullopt;
+}
+
+/// v as a value for the parameter in `slot` of `mode`'s product: a finite number that, converted
+/// to float as the Processor converts it, is in the parameter's range. `key` names it in the
+/// error.
+double parameterValue(const json &v, gg::core::ParamSlot slot, gg::core::Mode mode,
+                      std::string_view key)
+{
+    const double d = finiteNumber(v, key);
+    const auto &meta = gg::core::paramMeta(slot, mode);
+    // The float conversion is defined only within float's range.
+    const bool fits = std::abs(d) <= std::numeric_limits<float>::max();
+    const float f = fits ? static_cast<float>(d) : 0.0f;
+    if (!fits || !(f >= meta.minVal && f <= meta.maxVal))
+    {
+        throw SpecError(fmt::format("{} must be in {}'s range, {} to {}", key, meta.name,
+                                    meta.minVal, meta.maxVal));
+    }
+    return d;
+}
+
+std::vector<std::pair<std::string, double>> readParams(const json &j, gg::core::Mode mode)
+{
+    if (!j.is_object())
+    {
+        throw SpecError("params must be a JSON object");
+    }
+    std::vector<std::pair<std::string, double>> params;
+    for (const auto &item : j.items())
+    {
+        const std::string key = fmt::format("params.{}", item.key());
+        const auto slot = paramSlotNamedIn(item.key(), mode);
+        if (!slot)
+        {
+            throw SpecError(
+                fmt::format("unknown key {}: the parameters are {}", key, parameterNames(mode)));
+        }
+        params.emplace_back(item.key(), parameterValue(item.value(), *slot, mode, key));
+    }
+    return params;
+}
+
+/// The layer (0 to 3) that the letter `text` ("A" to "D") names; nothing for any other text.
+std::optional<uint8_t> layerOfLetter(std::string_view text)
+{
+    if (text.size() == 1 && text[0] >= 'A' && text[0] < 'A' + gg::core::kLayers)
+    {
+        return static_cast<uint8_t>(text[0] - 'A');
+    }
+    return std::nullopt;
+}
+
+/// "mod": routes, each slot named once.
+std::vector<RouteSpec> readMod(const json &j, gg::core::Mode mode)
+{
+    if (!j.is_array())
+    {
+        throw SpecError("mod must be a JSON array");
+    }
+    std::vector<RouteSpec> routes;
+    std::array<bool, gg::core::kModSlots> named{};
+    for (std::size_t i = 0; i < j.size(); ++i)
+    {
+        const std::string name = fmt::format("mod[{}]", i);
+        RouteSpec r = readRoute(j[i], name, mode);
+        if (named[r.slot - 1u])
+        {
+            throw SpecError(fmt::format("{}.slot {} is named twice", name, r.slot));
+        }
+        named[r.slot - 1u] = true;
+        routes.push_back(std::move(r));
+    }
+    return routes;
+}
+} // namespace detail
 
 std::optional<gg::core::ParamSlot> paramSlotNamed(std::string_view name)
 {
@@ -899,6 +815,11 @@ std::optional<gg::core::ParamSlot> paramSlotNamed(std::string_view name)
         }
     }
     return std::nullopt;
+}
+
+const char *productName(gg::core::Mode mode) noexcept
+{
+    return mode == gg::core::Mode::Fx ? "Giga Grains FX" : "Giga Grains";
 }
 
 std::filesystem::path pathFromUtf8(const std::string &text)
@@ -931,16 +852,25 @@ void resolvePaths(RenderSpec &spec, const std::string &baseDir)
             sources.push_back(&layerSample.second);
         }
     }
+    std::vector<std::string *> paths;
     for (SourceSpec *s : sources)
     {
-        if (s->kind != SourceKind::File || s->path.empty())
+        if (s->kind == SourceKind::File)
+        {
+            paths.push_back(&s->path);
+        }
+    }
+    paths.push_back(&spec.preset);
+    for (std::string *text : paths)
+    {
+        if (text->empty())
         {
             continue;
         }
-        const std::filesystem::path path = pathFromUtf8(s->path);
+        const std::filesystem::path path = pathFromUtf8(*text);
         if (path.is_relative())
         {
-            s->path = utf8FromPath(pathFromUtf8(baseDir) / path);
+            *text = utf8FromPath(pathFromUtf8(baseDir) / path);
         }
     }
 }

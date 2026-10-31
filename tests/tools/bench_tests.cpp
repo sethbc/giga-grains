@@ -1209,3 +1209,21 @@ TEST_CASE("the chain benchmark runs and writes its json", "[bench]")
     CHECK_THROWS_AS(gg::bench::runChain({.runSeconds = 0.0}), std::invalid_argument);
     CHECK_THROWS_AS(gg::bench::runChain({.rounds = 0}), std::invalid_argument);
 }
+
+TEST_CASE("the canvas bench reports four banded lanes", "[bench]")
+{
+    // --quick's frame count (gg-bench --canvas --quick).
+    const gg::bench::CanvasReport report = gg::bench::runCanvas(gg::bench::kCanvasQuickFrames);
+    const nlohmann::json j = nlohmann::json::parse(gg::bench::toJson(report));
+
+    CHECK(j.at("benchmark") == "canvas");
+    CHECK(j.at("lanes") == 4);
+    CHECK(j.at("resolve") == "banded");
+    CHECK(j.at("frames") == gg::bench::kCanvasQuickFrames);
+    REQUIRE(j.at("results").size() == 3);
+    for (const nlohmann::json &r : j.at("results"))
+    {
+        CHECK(r.at("totalMs").get<double>() > 0.0);
+        CHECK(r.at("resolveMs").get<double>() > 0.0);
+    }
+}

@@ -1142,7 +1142,7 @@ namespace
 // is 0.0094 and 0.0102 and both at once 0.0125 and 0.0136; at 0.30, 0.0082 and 0.0089, 0.0114 and
 // 0.0124. Above 0.35 the floor covers more of D1's pad (0.40: 24.1% and 9.5%), and none up to 0.45
 // (33.6% and 12.2%) brings both at once within 0.01 at 44.1 kHz.
-constexpr float kMorphFloor = 0.35f;
+constexpr float kMorphFloor = Processor::kMorphFloor;
 
 // The layers A to D as the bits 0 to 3 of an on-set.
 constexpr bool adjacentPair(uint32_t set) noexcept
@@ -1466,7 +1466,7 @@ void Processor::process(const float *const *in, uint32_t numInChannels, float *c
 
     if (publishingThisCall_)
     {
-        // Layer A's view, with every layer's grains (M2 sub-project 1's spec §6.2).
+        // M1's fields: layer A's view, with every layer's grains (M2 sub-project 1's spec §6.2).
         const Layer &a = *layers_[0];
         const int64_t clock = a.engine.sampleClock();
         uint32_t active = 0;
@@ -1474,11 +1474,45 @@ void Processor::process(const float *const *in, uint32_t numInChannels, float *c
         {
             active += l->engine.activeGrains();
         }
-        snapshot_.push({clock, a.engine.liveWriteHead(), a.engineFrozen, active,
-                        base_[static_cast<size_t>(ParamSlot::Position)],
-                        base_[static_cast<size_t>(ParamSlot::Spray)],
-                        effective_[static_cast<size_t>(ParamSlot::Position)],
-                        effective_[static_cast<size_t>(ParamSlot::Spray)], feedbackAt(0, clock)});
+        UiSnapshot s;
+        s.clock = clock;
+        s.writeHead = a.engine.liveWriteHead();
+        s.frozen = a.engineFrozen;
+        s.activeGrains = active;
+        s.basePosition = base(ParamSlot::Position);
+        s.baseSpray = base(ParamSlot::Spray);
+        s.effectivePosition = effective(ParamSlot::Position);
+        s.effectiveSpray = effective(ParamSlot::Spray);
+        s.feedback = feedbackAt(0, clock);
+        // Every layer's lane (the Views spec §6.4), from what the Processor already holds; base()
+        // and effective() are the bounded readers.
+        for (uint8_t L = 0; L < kLayers; ++L)
+        {
+            const Layer &l = *layers_[L];
+            const auto position = layerSlot(LayerParam::Position, L);
+            const auto spray = layerSlot(LayerParam::Spray, L);
+            const auto pitch = layerSlot(LayerParam::Pitch, L);
+            const auto spread = layerSlot(LayerParam::PitchSpread, L);
+            LaneSnapshot &lane = s.lanes[L];
+            lane.writeHead = l.engine.liveWriteHead();
+            lane.frozen = l.engineFrozen;
+            lane.on = layerRendering(L); // its on ramp's target or current value is above 0
+            lane.builtKind = static_cast<uint8_t>(l.kind);
+            lane.basePosition = base(position);
+            lane.baseSpray = base(spray);
+            lane.basePitch = base(pitch);
+            lane.basePitchSpread = base(spread);
+            lane.effectivePosition = effective(position);
+            lane.effectiveSpray = effective(spray);
+            lane.effectivePitch = effective(pitch);
+            lane.effectivePitchSpread = effective(spread);
+            lane.feedback = feedbackAt(L, clock);
+        }
+        s.baseMorphX = base(ParamSlot::MorphX);
+        s.baseMorphY = base(ParamSlot::MorphY);
+        s.effectiveMorphX = effective(ParamSlot::MorphX);
+        s.effectiveMorphY = effective(ParamSlot::MorphY);
+        snapshot_.push(s);
         // Release: an editor that reads this clock with acquire finds the snapshot it ends.
         publishedClock_.store(clock, std::memory_order_release);
     }

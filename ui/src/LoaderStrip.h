@@ -53,8 +53,12 @@ class LoaderStrip final : public juce::Component
     void filesDropped(const juce::StringArray &files);
 
     void resized() override;
+    /// The editor's palette, when the strip joins it and when its theme changes.
+    void parentHierarchyChanged() override;
+    void lookAndFeelChanged() override;
 
   private:
+    void applyPalette();
     void chooseFile(const juce::String &title, bool relink);
     void chooseSampleFolder();
     /// Calls `action` with `path` as UTF-8, then shows the new status at once.

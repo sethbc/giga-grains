@@ -7,3 +7,7 @@ tests/golden/**/*.jsonl text eol=lf
 *.wav binary
 *.flac binary
 *.mp3 binary
+
+# The license texts the installers carry are LF everywhere; installer_cc0_text compares the CC0 text by
+# SHA-256 with the content's LF copy, so a Windows checkout with core.autocrlf must not make it CRLF.
+installer/licenses/*.txt text eol=lf

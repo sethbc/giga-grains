@@ -6,13 +6,14 @@
 #
 #   cmake -DSCRIPT=<make-zip.cmake> -DPRODUCTS=<gg-products> -DREADME=<installer/windows/readme.txt>
 #         -DOUT=<scratch dir> -DFULL=<full version> -DCHECK_ARCHIVE=<check-archive.cmake>
-#         [-DMISSING=1] -P <this file>
+#         [-DCONTENT=<staged content dir>] [-DMISSING=1] -P <this file>
 #
 # Every case runs the script with this CMake into OUT/out, which it first deletes.
 # - By default: the script succeeds and OUT/out holds giga-grains-<FULL>-windows-x64.zip alone, a
 #   zip whose every entry sits under giga-grains-<FULL>/, holding the CLAP, the VST3 bundle's
 #   binary, the two standalones, the license set (with the ASIO SDK's license, and without the
 #   AudioUnit SDK's, which is the macOS AU's) and readme.txt (check-archive.cmake checks these);
+#   with CONTENT (passed as -DCONTENT), also content/ with its Presets, Samples and PROVENANCE.md;
 #   extracted, its readme.txt is the one given and its licenses/ the products' license set, file
 #   for file.
 # - MISSING: run on an empty products directory, the script fails naming every product and the
@@ -36,9 +37,14 @@ if (MISSING)
     file(MAKE_DIRECTORY "${products}")
 endif ()
 
+set(content_args "")
+if (CONTENT)
+    set(content_args "-DCONTENT=${CONTENT}")
+endif ()
+
 execute_process(
         COMMAND ${CMAKE_COMMAND} "-DPRODUCTS=${products}" "-DOUT=${out_dir}"
-        "-DFULL_VERSION=${FULL}" "-DREADME=${README}" -P "${SCRIPT}"
+        "-DFULL_VERSION=${FULL}" "-DREADME=${README}" ${content_args} -P "${SCRIPT}"
         RESULT_VARIABLE result
         OUTPUT_VARIABLE stdout
         ERROR_VARIABLE stderr)
@@ -89,6 +95,11 @@ set(expect "${top}/Giga Grains.clap"
         "${top}/licenses/THIRD_PARTY_NOTICES.md" "${top}/licenses/ASIO-SDK-LICENSE.txt"
         "${top}/readme.txt")
 set(forbid "${top}/licenses/AudioUnitSDK-LICENSE.txt")
+if (CONTENT)
+    list(APPEND expect "${top}/content/Presets" "${top}/content/Samples"
+            "${top}/content/PROVENANCE.md" "${top}/content/LICENSE-CC0-1.0.txt"
+            "${top}/content/content-version.txt")
+endif ()
 execute_process(
         COMMAND ${CMAKE_COMMAND} "-DARCHIVE=${zip}" -DKIND=zip "-DEXPECT=${expect}"
         "-DFORBID=${forbid}" "-DPREFIX=${top}" -P "${CHECK_ARCHIVE}"

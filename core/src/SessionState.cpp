@@ -14,6 +14,7 @@
 #include <system_error>
 #include <utility>
 
+#include "StateChunks.h"
 #include "XmlText.h"
 #include "gg/core/PatchState.h"
 #include "tinyxml/tinyxml.h"
@@ -273,7 +274,8 @@ std::string encodeState(const SessionState &state)
     // a state that fails to load and loses the whole session (ruling R9).
     assert(!state.sample || isValidMediaEntry(*state.sample));
     const bool writeSample = state.sample && isValidMediaEntry(*state.sample);
-    const std::string patch = toStateXml(state.values, state.seed, state.routes);
+    const std::string patch = toStateXml(state.values, state.seed, state.routes, state.name,
+                                         state.preset ? &*state.preset : nullptr, state.edited);
     // With no sample, a newer build's manifest goes back as it came (INTENT §18).
     const bool writeNewer = !state.sample && state.newerMedia && isNewerMedia(*state.newerMedia);
     const std::string media =
@@ -288,6 +290,52 @@ std::string encodeState(const SessionState &state)
     return out;
 }
 
+bool findStateChunks(std::string_view bytes, std::string_view &patch, std::string_view &media)
+{
+    if (bytes.size() < kHeaderBytes || bytes.substr(0, kMagic.size()) != kMagic ||
+        readLittleEndian(bytes, kMagic.size(), 4) != kStateContainerVersion)
+    {
+        return false;
+    }
+    std::optional<std::string_view> foundPatch;
+    std::optional<std::string_view> foundMedia;
+    std::size_t at = kHeaderBytes;
+    while (at < bytes.size())
+    {
+        if (bytes.size() - at < kChunkHeaderBytes)
+        {
+            return false;
+        }
+        const auto id = bytes.substr(at, 4);
+        const uint64_t length = readLittleEndian(bytes, at + 4, 8);
+        at += kChunkHeaderBytes;
+        if (length > bytes.size() - at)
+        {
+            return false;
+        }
+        const auto payload = bytes.substr(at, static_cast<std::size_t>(length));
+        at += static_cast<std::size_t>(length);
+
+        // Chunks with other IDs are skipped.
+        auto *slot = id == kPatchChunk ? &foundPatch : id == kMediaChunk ? &foundMedia : nullptr;
+        if (slot != nullptr)
+        {
+            if (slot->has_value())
+            {
+                return false; // a repeated PTCH or MEDI
+            }
+            *slot = payload;
+        }
+    }
+    if (!foundPatch || !foundMedia)
+    {
+        return false;
+    }
+    patch = *foundPatch;
+    media = *foundMedia;
+    return true;
+}
+
 bool decodeState(std::string_view bytes, Mode mode, SessionState &out,
                  uint32_t *migratedFromVersion)
 {
@@ -299,58 +347,27 @@ bool decodeState(std::string_view bytes, Mode mode, SessionState &out,
     {
         // A pre-container state: PTCH alone, read exactly as before the container, so every
         // state that loaded then loads now (XML followed by a NUL included).
-        if (!fromStateXml(bytes, loaded.values, loaded.seed, loaded.routes, mode, &migrated))
+        if (!fromStateXml(bytes, loaded.values, loaded.seed, loaded.routes, mode, &migrated,
+                          &loaded.name, &loaded.preset, &loaded.edited))
         {
             return false;
         }
     }
     else
     {
-        if (bytes.size() < kHeaderBytes || bytes.substr(0, kMagic.size()) != kMagic ||
-            readLittleEndian(bytes, kMagic.size(), 4) != kStateContainerVersion)
-        {
-            return false;
-        }
-        std::optional<std::string_view> patch;
-        std::optional<std::string_view> media;
-        std::size_t at = kHeaderBytes;
-        while (at < bytes.size())
-        {
-            if (bytes.size() - at < kChunkHeaderBytes)
-            {
-                return false;
-            }
-            const auto id = bytes.substr(at, 4);
-            const uint64_t length = readLittleEndian(bytes, at + 4, 8);
-            at += kChunkHeaderBytes;
-            if (length > bytes.size() - at)
-            {
-                return false;
-            }
-            const auto payload = bytes.substr(at, static_cast<std::size_t>(length));
-            at += static_cast<std::size_t>(length);
-
-            // Chunks with other IDs are skipped.
-            auto *slot = id == kPatchChunk ? &patch : id == kMediaChunk ? &media : nullptr;
-            if (slot != nullptr)
-            {
-                if (slot->has_value())
-                {
-                    return false; // a repeated PTCH or MEDI
-                }
-                *slot = payload;
-            }
-        }
+        std::string_view patch;
+        std::string_view media;
         bool newer{false};
-        if (!patch || !media || patch->find('\0') != std::string_view::npos ||
-            !parseMedia(*media, loaded.sample, newer) ||
-            !fromStateXml(*patch, loaded.values, loaded.seed, loaded.routes, mode, &migrated))
+        if (!findStateChunks(bytes, patch, media) || patch.find('\0') != std::string_view::npos ||
+            !parseMedia(media, loaded.sample, newer) ||
+            !fromStateXml(patch, loaded.values, loaded.seed, loaded.routes, mode, &migrated,
+                          &loaded.name, &loaded.preset, &loaded.edited))
         {
             return false;
         }
         if (newer)
         {
-            loaded.newerMedia.emplace(*media);
+            loaded.newerMedia.emplace(media);
         }
     }
 

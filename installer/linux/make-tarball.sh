@@ -6,6 +6,7 @@
 # Makes the Linux tarball (spec §6.5). The gg-installer target runs it (cmake/products.cmake).
 #
 #   make-tarball.sh --products <dir> --out <dir> --full-version <v> --readme <README.md>
+#                   [--content <dir>]
 #
 #   --products      the four products, as gg-products gathers them: Giga Grains.clap,
 #                   Giga Grains.vst3 (a folder bundle), and the standalones Giga Grains and
@@ -13,8 +14,11 @@
 #   --out           where to write giga-grains-<v>-linux-x86_64.tar.gz.
 #   --full-version  the full version string, <v> (the file name and its top-level folder).
 #   --readme        installer/linux/README.md, which goes in as README.md.
+#   --content       the staged factory content (gg-products' content/: Presets/, Samples/, ...),
+#                   which goes in as content/. Without it the tarball has no content/.
 #
-# Every entry sits under giga-grains-<v>/: the four products, licenses/ and README.md. Modes are
+# Every entry sits under giga-grains-<v>/: the four products, licenses/, README.md and, with
+# --content, content/. Modes are
 # kept, executable bits included (tar, not zip; INTENT §19), with everything made readable by
 # all and writable by its owner alone; entries are owned by root (uid and gid 0), so a copy
 # extracted as root isn't owned by the build machine's user. No install script: README.md says
@@ -37,7 +41,8 @@ usage() {
     if [ -n "${1:-}" ]; then
         echo "$me: $1" >&2
     fi
-    echo "usage: $me --products <dir> --out <dir> --full-version <v> --readme <README.md>" >&2
+    echo "usage: $me --products <dir> --out <dir> --full-version <v> --readme <README.md>" \
+        "[--content <dir>]" >&2
     exit 2
 }
 
@@ -45,17 +50,19 @@ products=""
 out=""
 full_version=""
 readme=""
+content=""
 
 parse_args() {
     while [ $# -gt 0 ]; do
         case "$1" in
-            --products | --out | --full-version | --readme)
+            --products | --out | --full-version | --readme | --content)
                 [ $# -ge 2 ] || usage "$1 needs a value"
                 case "$1" in
                     --products) products="$2" ;;
                     --out) out="$2" ;;
                     --full-version) full_version="$2" ;;
                     --readme) readme="$2" ;;
+                    --content) content="$2" ;;
                 esac
                 shift 2
                 ;;
@@ -91,6 +98,10 @@ check_inputs() {
     [ -f "$products/licenses/LICENSE" ] ||
         die "the license set '$products/licenses' has no LICENSE" 2
     [ -f "$readme" ] || die "the README '$readme' isn't a file" 2
+    if [ -n "$content" ]; then
+        [ -d "$content/Presets" ] && [ -d "$content/Samples" ] ||
+            die "the content '$content' has no Presets/ and Samples/" 2
+    fi
 }
 
 # The work folder goes on exit; on a failure, so does the tarball, so no half-written one is left
@@ -114,6 +125,9 @@ stage() {
         cp -R "$products/$name" "$folder/"
     done
     cp "$readme" "$folder/README.md"
+    if [ -n "$content" ]; then
+        cp -R "$content" "$folder/content"
+    fi
     # X keeps an execute bit only where one was (and on folders), whatever the umask.
     chmod -R u+rwX,go+rX,go-w "$folder"
 }

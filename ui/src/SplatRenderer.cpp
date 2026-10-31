@@ -163,14 +163,17 @@ void SplatRenderer::addCapsule(float x0, float x1, float y, float radius, float 
 void SplatRenderer::resolveToArgb(uint32_t *dst, uint32_t strideU32,
                                   uint32_t rgbTint) const noexcept
 {
+    const TintBand all{0, height_, rgbTint};
+    resolveToArgb(dst, strideU32, std::span<const TintBand>(&all, 1));
+}
+
+void SplatRenderer::resolveToArgb(uint32_t *dst, uint32_t strideU32,
+                                  std::span<const TintBand> bands) const noexcept
+{
     if (dst == nullptr || strideU32 < width_)
     {
         return;
     }
-    const auto tintR = static_cast<float>((rgbTint >> 16) & 0xFFu);
-    const auto tintG = static_cast<float>((rgbTint >> 8) & 0xFFu);
-    const auto tintB = static_cast<float>(rgbTint & 0xFFu);
-
     // Locals, not members: a store through out could alias width_ (both uint32_t), which would
     // make the loop's trip count unknown to the vectorizer.
     const uint32_t width = width_;
@@ -178,8 +181,26 @@ void SplatRenderer::resolveToArgb(uint32_t *dst, uint32_t strideU32,
     const float *accum = accum_.data();
     for (uint32_t y = 0; y < height; ++y)
     {
-        const float *src = accum + static_cast<std::size_t>(y) * width;
         uint32_t *out = dst + static_cast<std::size_t>(y) * strideU32;
+        // A handful of bands (a lane each), so a scan per row costs nothing beside the row.
+        const TintBand *band = nullptr;
+        for (const TintBand &b : bands)
+        {
+            if (y >= b.rowBegin && y < b.rowEnd)
+            {
+                band = &b;
+                break;
+            }
+        }
+        if (band == nullptr)
+        {
+            std::fill(out, out + width, 0xFF000000u);
+            continue;
+        }
+        const auto tintR = static_cast<float>((band->rgbTint >> 16) & 0xFFu);
+        const auto tintG = static_cast<float>((band->rgbTint >> 8) & 0xFFu);
+        const auto tintB = static_cast<float>(band->rgbTint & 0xFFu);
+        const float *src = accum + static_cast<std::size_t>(y) * width;
         for (uint32_t x = 0; x < width; ++x)
         {
             float a = src[x];

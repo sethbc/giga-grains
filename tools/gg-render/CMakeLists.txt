@@ -3,11 +3,12 @@
 # Copyright 2026, the Giga Grains authors (see git history)
 #
 # gg-render: the offline renderer the golden tests run (INTENT §19). gg-render-lib holds the
-# render-spec parser, the test signals and media, and the render loops (the engine's Cloud stream
-# in sample mode, gg-core's Processor in instrument and FX mode), so gg-tests can link them; the
-# gg-render executable adds the command line.
+# render-spec parser, the preset-source parser and packer, the test signals and media, and the
+# render loops (the engine's Cloud stream in sample mode, gg-core's Processor in instrument and FX
+# mode), so gg-tests can link them; the gg-render executable adds the command line.
 
 add_library(gg-render-lib STATIC
+        PresetSource.cpp
         Render.cpp
         RenderSpec.cpp
         Signals.cpp

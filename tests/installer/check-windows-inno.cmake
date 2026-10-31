@@ -7,11 +7,13 @@
 #
 #   cmake -DISCC=<ISCC.exe> -DISS=<giga-grains.iss> -DPRODUCTS=<gg-products>
 #         -DLICENSES=<gg-products/licenses> -DOUT=<scratch dir> -DNUMERIC=<X.Y.Z>
-#         -DFULL=<full version> -P <this file>
+#         -DFULL=<full version> [-DCONTENT=<staged content dir>] -P <this file>
 #
 # It deletes OUT, compiles the script into it, as gg-installer does, and requires ISCC to exit 0
 # and OUT to hold giga-grains-<FULL>-windows-x64.exe, larger than 1 MB (the products are tens of
-# megabytes; a script whose [Files] matched nothing would make a few hundred kilobytes).
+# megabytes; a script whose [Files] matched nothing would make a few hundred kilobytes). With
+# CONTENT it also passes /DContent=<dir>, so the Content component's [Files] line must compile
+# (a missing folder or a wrong source fails ISCC).
 
 cmake_minimum_required(VERSION 3.22)
 
@@ -26,10 +28,16 @@ file(MAKE_DIRECTORY "${OUT}")
 foreach (path IN ITEMS PRODUCTS LICENSES OUT ISS)
     file(TO_NATIVE_PATH "${${path}}" native_${path})
 endforeach ()
+set(content_args "")
+if (CONTENT)
+    file(TO_NATIVE_PATH "${CONTENT}" native_CONTENT)
+    set(content_args "/DContent=${native_CONTENT}")
+endif ()
 
 execute_process(
         COMMAND "${ISCC}" "/DStagedAssets=${native_PRODUCTS}" "/DLicenses=${native_LICENSES}"
-        "/DVersion=${NUMERIC}" "/DFullVersion=${FULL}" "/DOutDir=${native_OUT}" "${native_ISS}"
+        "/DVersion=${NUMERIC}" "/DFullVersion=${FULL}" "/DOutDir=${native_OUT}" ${content_args}
+        "${native_ISS}"
         RESULT_VARIABLE result
         OUTPUT_VARIABLE stdout
         ERROR_VARIABLE stderr)
