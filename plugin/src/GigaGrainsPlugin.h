@@ -56,6 +56,9 @@ struct UiParamChange
     clap_id id;
     double value; ///< kValue's: in range, and a float's value (uiSetValue)
     uint8_t kind; ///< a Kind
+    /// The load epoch it was queued in (GigaGrainsPlugin's uiEpoch_): a value queued before the
+    /// last state load the consumer has applied is stale, and dropped (fix wave I1).
+    uint32_t epoch;
 };
 
 /// The CLAP descriptor of each product; static storage, never null.
@@ -541,6 +544,7 @@ class GigaGrainsPlugin : public plugHelper_t
         gg::core::ParamValues values;
         gg::core::ModRoutes routes;
         uint64_t seed;
+        uint32_t epoch; // uiEpoch_ after the load: the editor's values queued before are stale
         bool hasValues;
     };
     // Main thread → audio thread.
@@ -648,6 +652,13 @@ class GigaGrainsPlugin : public plugHelper_t
     // The editor's changes, main thread → audio thread (or the main thread's own flush while
     // inactive): see uiBeginGesture.
     gg::core::SpscQueue<UiParamChange, kUiQueueCapacity> uiQueue_;
+    // The load epoch (fix wave I1): applyState bumps uiEpoch_ (main thread) and each change
+    // queued carries it. uiAppliedEpoch_ is the epoch of the last load the queue's consumer has
+    // applied (the audio thread's while active, through loadedState_; the main thread's while
+    // inactive, set by applyState itself): takeUiChanges drops a value queued in an earlier one,
+    // so a change made before a load never lands on the loaded preset, nor reaches the host.
+    uint32_t uiEpoch_{0};
+    uint32_t uiAppliedEpoch_{0};
     // Set by the main thread when it asks the host for a flush, cleared by the queue's consumer
     // before it drains: one request outstanding at a time (queueUiChange).
     std::atomic<bool> uiFlushRequested_{false};

@@ -816,3 +816,98 @@ TEST_CASE("the user's gesture on a slot still waiting unsent wins over the waiti
     CHECK(one.ends == one.values);
     CHECK(one.value == mine);
 }
+
+// ---- A load cancels the editor's changes still queued (fix wave I1) ----
+
+namespace
+{
+/// Every value heard is absent: no PARAM_VALUE reached the host.
+std::size_t valuesHeard(const gg::test::OutputEvents &out)
+{
+    std::size_t n = 0;
+    for (const Event &e : out.events())
+    {
+        n += e.header.type == CLAP_EVENT_PARAM_VALUE ? 1 : 0;
+    }
+    return n;
+}
+
+void checkDefaults(const GigaGrainsPlugin &impl)
+{
+    for (std::size_t s = 0; s < kParamCount; ++s)
+    {
+        CHECK(same(impl.uiBaseValue(static_cast<ParamSlot>(s)),
+                   gg::core::paramMeta(static_cast<ParamSlot>(s), impl.mode()).defaultVal));
+    }
+}
+} // namespace
+
+TEST_CASE("a preset load drops a sent batch still queued, inactive", "[plugin][queue]")
+{
+    gg::test::PluginUnderTest plugin(kFx);
+    REQUIRE(plugin.valid());
+    GigaGrainsPlugin &impl = plugin.impl();
+    impl.sendValues(wholeSet(impl.mode(), 1)); // the first batch is in the queue, undrained
+    impl.loadInit();
+    gg::test::InputEvents in;
+    gg::test::OutputEvents out(8192);
+    plugin.flush(in.list(), out.list());
+    CHECK(valuesHeard(out) == 0);
+    checkDefaults(impl);
+}
+
+TEST_CASE("a preset load drops a sent batch still queued, active", "[plugin][queue]")
+{
+    gg::test::PluginUnderTest plugin(kFx);
+    REQUIRE(plugin.valid());
+    REQUIRE(plugin.activate(48000.0, 64));
+    GigaGrainsPlugin &impl = plugin.impl();
+    impl.sendValues(wholeSet(impl.mode(), 1));
+    impl.loadInit();
+    gg::test::Stereo input(64);
+    gg::test::Stereo output(64);
+    gg::test::OutputEvents out(8192);
+    plugin.process(64, input.data(), output.data(), nullptr, 2, out.list());
+    CHECK(valuesHeard(out) == 0);
+    checkDefaults(impl);
+    // The flush path takes the same rule.
+    impl.sendValues(wholeSet(impl.mode(), 2));
+    impl.loadInit();
+    gg::test::InputEvents in;
+    gg::test::OutputEvents flushed(8192);
+    plugin.flush(in.list(), flushed.list());
+    CHECK(valuesHeard(flushed) == 0);
+    checkDefaults(impl);
+}
+
+TEST_CASE("the editor's own gesture queued before a load is dropped, its gesture kept balanced",
+          "[plugin][queue]")
+{
+    gg::test::PluginUnderTest plugin(kFx);
+    REQUIRE(plugin.valid());
+    REQUIRE(plugin.activate(48000.0, 64));
+    GigaGrainsPlugin &impl = plugin.impl();
+    const auto &meta = gg::core::paramMeta(ParamSlot::Size, impl.mode());
+    impl.uiBeginGesture(ParamSlot::Size);
+    impl.uiSetValue(ParamSlot::Size, static_cast<double>(meta.maxVal));
+    impl.uiEndGesture(ParamSlot::Size);
+    impl.loadInit();
+    // A change made after the load applies.
+    impl.uiBeginGesture(ParamSlot::Pitch);
+    impl.uiSetValue(ParamSlot::Pitch, 7.0);
+    impl.uiEndGesture(ParamSlot::Pitch);
+    gg::test::Stereo input(64);
+    gg::test::Stereo output(64);
+    gg::test::OutputEvents out(8192);
+    plugin.process(64, input.data(), output.data(), nullptr, 2, out.list());
+    const auto h = heard(out);
+    const auto size = gg::core::paramId(ParamSlot::Size);
+    REQUIRE(h.count(size) == 1);
+    CHECK(h.at(size).values == 0);
+    CHECK(h.at(size).begins == h.at(size).ends);
+    CHECK(same(impl.uiBaseValue(ParamSlot::Size), meta.defaultVal));
+    const auto pitch = gg::core::paramId(ParamSlot::Pitch);
+    REQUIRE(h.count(pitch) == 1);
+    CHECK(h.at(pitch).values == 1);
+    CHECK(impl.uiBaseValue(ParamSlot::Pitch) == 7.0f);
+}

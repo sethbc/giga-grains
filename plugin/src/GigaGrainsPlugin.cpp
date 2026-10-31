@@ -276,7 +276,12 @@ void GigaGrainsPlugin::deactivate() noexcept
     // applied it. Otherwise it would apply, stale, at the first block after a reactivation.
     // Its seed is seed_ already, which the next activate() builds the engine with.
     LoadedState loaded{};
-    if (loadedState_.take(loaded) && loaded.hasValues)
+    const bool tookLoad = loadedState_.take(loaded);
+    if (tookLoad)
+    {
+        uiAppliedEpoch_ = loaded.epoch; // the main thread is the queue's consumer from here
+    }
+    if (tookLoad && loaded.hasValues)
     {
         for (std::size_t s = 0; s < kParamCount; ++s)
         {
@@ -397,9 +402,11 @@ clap_process_status GigaGrainsPlugin::processNonblocking(const clap_process *pro
         return CLAP_PROCESS_CONTINUE; // clap-helpers lets process() through only while active
     }
     // The values of a state loaded while active, and the instrument's offers (a restored
-    // session's values and sample together, D8): both apply from this call's first frame.
-    applyLoadedState();
+    // session's values and sample together, D8): both apply from this call's first frame. The
+    // offers first: applyState pushes loadedState_ before it offers, so an offer seen here means
+    // its load's epoch is seen too, and the editor's values queued before it are dropped (I1).
     takeOffers();
+    applyLoadedState();
 
     // The editor's values first, at the call's first frame, so the host's events (automation
     // of the same parameter, say) come after them; then the call's parameter and note events,
@@ -898,6 +905,8 @@ void GigaGrainsPlugin::applyLoadedState() noexcept
     {
         return;
     }
+    // The editor's values queued before this load are stale from here (takeUiChanges).
+    uiAppliedEpoch_ = loaded.epoch;
     // The grains scheduled from this call's first sample on are keyed by it (Engine::setSeed).
     processor_->setSeed(loaded.seed);
     processor_->setRoutes(loaded.routes);
@@ -923,7 +932,7 @@ void GigaGrainsPlugin::storeValue(ParamSlot slot, float value) noexcept
 void GigaGrainsPlugin::uiBeginGesture(ParamSlot slot) noexcept
 {
     dropPending(slot);
-    queueUiChange({gg::core::paramId(slot), 0.0, UiParamChange::kBegin});
+    queueUiChange({gg::core::paramId(slot), 0.0, UiParamChange::kBegin, 0});
 }
 
 void GigaGrainsPlugin::uiSetValue(ParamSlot slot, double value) noexcept
@@ -939,12 +948,12 @@ void GigaGrainsPlugin::uiSetValue(ParamSlot slot, double value) noexcept
     // the plugin applies, and a reloaded automation lane renders the same.
     const auto v = static_cast<float>(
         std::clamp(value, static_cast<double>(minValues_[s]), static_cast<double>(maxValues_[s])));
-    queueUiChange({gg::core::paramId(slot), static_cast<double>(v), UiParamChange::kValue});
+    queueUiChange({gg::core::paramId(slot), static_cast<double>(v), UiParamChange::kValue, 0});
 }
 
 void GigaGrainsPlugin::uiEndGesture(ParamSlot slot) noexcept
 {
-    queueUiChange({gg::core::paramId(slot), 0.0, UiParamChange::kEnd});
+    queueUiChange({gg::core::paramId(slot), 0.0, UiParamChange::kEnd, 0});
 }
 
 float GigaGrainsPlugin::uiBaseValue(ParamSlot slot) const noexcept
@@ -955,7 +964,9 @@ float GigaGrainsPlugin::uiBaseValue(ParamSlot slot) const noexcept
 
 void GigaGrainsPlugin::queueUiChange(const UiParamChange &change) noexcept
 {
-    if (change.id == CLAP_INVALID_ID || !uiQueue_.push(change))
+    UiParamChange tagged = change;
+    tagged.epoch = uiEpoch_; // the load it follows (I1)
+    if (tagged.id == CLAP_INVALID_ID || !uiQueue_.push(tagged))
     {
         return; // not a parameter, or the queue is full (SpscQueue::dropped counts it)
     }
@@ -991,6 +1002,16 @@ std::size_t GigaGrainsPlugin::takeUiChanges(const clap_output_events *out, Param
         if (!slot.has_value())
         {
             continue; // uiBeginGesture and its siblings queue only parameters' IDs
+        }
+        // A value queued before the last load applied is stale (I1): neither applied nor sent,
+        // so it never lands on the loaded preset. Its gesture's begin and end still go to the
+        // host, so a gesture that spans a load stays balanced. Wrap-safe: epochs only grow, and
+        // a value is never queued in an epoch the consumer hasn't seen pushed. One that is newer
+        // (its load pushed, not yet taken) applies; that load then replaces it, as before.
+        if (change.kind == UiParamChange::kValue &&
+            static_cast<int32_t>(change.epoch - uiAppliedEpoch_) < 0)
+        {
+            continue;
         }
         bool sent = false;
         if (change.kind == UiParamChange::kValue)
@@ -1076,8 +1097,8 @@ void GigaGrainsPlugin::paramsFlush(const clap_input_events *in,
     }
     // Active, so on the audio thread, between process() calls: notes and controls, like
     // modulation, join the next grid boundary.
+    takeOffers(); // first, as in process()
     applyLoadedState();
-    takeOffers();
     takeUiChanges(out, nullptr, 0);
     if (in != nullptr)
     {
@@ -1284,6 +1305,10 @@ void GigaGrainsPlugin::applyState(gg::core::SessionState &&state, LoadKind kind)
         restored = loader_->restore(state.sample, std::move(state.newerMedia));
     }
     const auto &values = state.values;
+    // The editor's values queued before this load, Mutate's batches among them, are stale (I1):
+    // a new epoch, which the consumer takes with the load (loadedState_ while active, at once
+    // below while inactive) and drops them by.
+    ++uiEpoch_;
     // A Mutate press cut short by this load (T10-R2b): the slots it had not sent are dropped,
     // and every batch it did send counts as applied, so the next press starts from these values.
     mutatePending_.reset();
@@ -1309,6 +1334,9 @@ void GigaGrainsPlugin::applyState(gg::core::SessionState &&state, LoadKind kind)
     // so its seed and routes may apply a block before or after its values.
     if (processor_ != nullptr)
     {
+        // loadedState_ before the offers: process() takes the offers first, so the call that
+        // applies the instrument's values sees this load's epoch too (I1).
+        loadedState_.push({values, routes_, seed_, uiEpoch_, loader_ == nullptr});
         if (loader_ != nullptr && (keepSample || restored.keep))
         {
             // The sample in memory stays (R19, D5): the values alone.
@@ -1318,11 +1346,11 @@ void GigaGrainsPlugin::applyState(gg::core::SessionState &&state, LoadKind kind)
         {
             processor_->sources().offer(std::move(restored.source), &values); // reserved
         }
-        loadedState_.push({values, routes_, seed_, loader_ == nullptr});
     }
     else
     {
-        checkKinds(); // inactive: the main thread owns values_
+        uiAppliedEpoch_ = uiEpoch_; // inactive: the main thread is the queue's consumer
+        checkKinds();               // and owns values_
     }
     if (_host.canUseParams())
     {
