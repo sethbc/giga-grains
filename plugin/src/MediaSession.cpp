@@ -939,10 +939,11 @@ void MediaSession::pollRingLengths(core::Processor &processor) noexcept
             {
                 continue; // refused: not tried again until the request changes
             }
-            if (target < slot.frames && processor.ringMeta(l).readFrames > target)
+            if (target < slot.frames && processor.ringMeta(l).framesInUse > target)
             {
-                // Ruling SP-T12ad: a shrink waits until no grain reads past the newest `target`
-                // frames (the audio thread narrows the reads once the grains allow).
+                // Ruling SP-T12ad: a shrink waits until the ring needs no more than `target` frames
+                // (the audio thread narrows its reads once the grains allow, and the overdub's
+                // period over 10 ms after).
                 slot.resizeStatus = kResizing;
                 continue;
             }

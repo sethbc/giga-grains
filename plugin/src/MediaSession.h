@@ -181,8 +181,9 @@ class MediaSession
     /// offer in flight, a new storage (the cap permitting), the stable part of the current window
     /// copied into it (readRing's protocol), offered with that head (SourceExchange::offerRing);
     /// a declined offer is made again from the current head. A shorter ring is offered only once
-    /// the layer's reads fit it (RingMeta::readFrames; ruling SP-T12ad: the audio thread narrows
-    /// them once no grain reads farther back). "resizing" meanwhile; "over the memory cap: …"
+    /// what the layer's ring still needs fits it (RingMeta::framesInUse; ruling SP-T12ad: the
+    /// audio thread narrows its reads once no grain reaches farther back, and the overdub's
+    /// period over 10 ms after). "resizing" meanwhile; "over the memory cap: …"
     /// when refused, until the request changes. Never throws.
     void pollRingLengths(core::Processor &processor) noexcept;
 

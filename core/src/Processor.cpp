@@ -130,7 +130,7 @@ bool validCommand(const CommandEvent &c) noexcept
 bool sameMeta(const RingMeta &a, const RingMeta &b) noexcept
 {
     return a.head == b.head && a.windowFrames == b.windowFrames && a.spliceCount == b.spliceCount &&
-           a.splices == b.splices && a.frozen == b.frozen && a.readFrames == b.readFrames;
+           a.splices == b.splices && a.frozen == b.frozen && a.framesInUse == b.framesInUse;
 }
 
 /// v clamped to [0, 1], NaN as 0.
@@ -267,7 +267,7 @@ Processor::Processor(const ProcessorConfig &config)
     for (uint8_t L = 0; L < kLayers; ++L)
     {
         publishStorage(*layers_[L]);
-        storeRingSeconds(L);
+        storeRingSeconds(L, false); // the rings are built at it
     }
     // A layer off by default (B to D) starts with its engine disabled, so it spawns nothing
     // before it is switched on; layer A's is never told, as M1's engine wasn't.
@@ -1085,12 +1085,15 @@ RingMeta Processor::ringMeta(uint8_t layer) const noexcept
     return l.metaTaken;
 }
 
-void Processor::storeRingSeconds(uint8_t L) noexcept
+void Processor::storeRingSeconds(uint8_t L, bool limit) noexcept
 {
     const double seconds = toRingParams(base_, L).ringSeconds;
     layers_[L]->ringSeconds.store(seconds, std::memory_order_relaxed);
-    // Ruling SP-T12ad: a shrink's first phase, from the engine's next call.
-    layers_[L]->engine.setRingLimit(ringFramesFor(seconds, config_.sampleRate));
+    if (limit)
+    {
+        // Ruling SP-T12ad: a shrink's first phase, from the engine's next call.
+        layers_[L]->engine.setRingLimit(ringFramesFor(seconds, config_.sampleRate));
+    }
 }
 
 double Processor::ringSecondsRequested(uint8_t layer) const noexcept
@@ -1111,7 +1114,7 @@ void Processor::publishRing(Layer &l) noexcept
     m.spliceCount = static_cast<uint32_t>(marks.size());
     std::copy(marks.begin(), marks.end(), m.splices.begin());
     m.frozen = l.engineFrozen;
-    m.readFrames = live.readFrames();
+    m.framesInUse = live.framesInUse();
     if (!sameMeta(m, l.metaPushed))
     {
         l.meta.push(m);

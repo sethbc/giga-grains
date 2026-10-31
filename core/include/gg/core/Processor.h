@@ -7,8 +7,8 @@
 
 #include <algorithm>
 #include <array>
-#include <cmath>
 #include <atomic>
+#include <cmath>
 #include <cstdint>
 #include <memory>
 #include <span>
@@ -147,8 +147,9 @@ struct RingRead
 
 /// A layer's ring as of the last piece (spec §6.4, §6.6), for a save or a capture: its head, the
 /// window's length (LiveSource::windowFrames), the marks, ascending, and whether the engine was
-/// given its freeze; and, for the Ring Length watcher, the frames its reads may reach
-/// (LiveSource::readFrames, ruling SP-T12ad): a shorter ring is offered once they fit in it.
+/// given its freeze; and, for the Ring Length watcher, the frames the ring still needs for what
+/// it reads and overdubs (LiveSource::framesInUse, ruling SP-T12ad): a shorter ring is offered
+/// once they fit in it.
 struct RingMeta
 {
     int64_t head{0};
@@ -156,7 +157,7 @@ struct RingMeta
     uint32_t spliceCount{0};
     std::array<int64_t, kMaxSplices> splices{};
     bool frozen{false};
-    int64_t readFrames{0};
+    int64_t framesInUse{0};
 };
 
 /// What both plugins and gg-render run: the instance, real-time safe (spec §5, §6.1–§6.4; M2
@@ -468,13 +469,14 @@ struct RingMeta
 /// offer before it) is part of a block-size-invariant render.
 ///
 /// **A shrink waits for its grains** (ruling SP-T12ad). Each layer's Ring Length, as frames
-/// (ringFramesFor), is its engine's ring limit (Engine::setRingLimit) from the boundary that sets
-/// it (or setBase(), setBases()): below the ring's length, the grains admitted from there read
-/// only the newest frames of the new length, and the reads narrow to it once the grains admitted
-/// before have stopped reaching farther (RingMeta::readFrames). A resize to a shorter ring than
-/// the reads reach is declined until then (Engine::liveRingFits), so whenever it lands it steps
-/// no grain, and after the reads narrow the render no longer depends on when it lands. The plugin's
-/// watcher offers it only once RingMeta::readFrames fits.
+/// (ringFramesFor), is its engine's ring limit (Engine::setRingLimit) from the boundary that
+/// changes it (or setBase(), setBases()); the constructor's, whose rings are built at it, is none.
+/// Below the ring's length, the grains admitted from there read only the newest frames of the new
+/// length, the reads narrow to it once no sounding grain can reach farther for the rest of its
+/// life, and overdub's period follows over 10 ms (RingMeta::framesInUse). A resize to a ring
+/// shorter than that, or than the length asked for, is declined (Engine::liveRingFits), so
+/// whenever it lands it steps nothing, and after the period's crossfade the render no longer
+/// depends on when it lands. The plugin's watcher offers it only once RingMeta::framesInUse fits.
 ///
 /// **The ring read** (spec §6.4). After every piece, each layer's head is stored with release
 /// order (ringRead) and, when it changed, its RingMeta published (ringMeta, latest wins); an
@@ -975,7 +977,9 @@ class Processor
     /// RingMeta: after an adoption or a reset().
     static void publishStorage(Layer &l) noexcept SST_CPPUTILS_NONBLOCKING;
     /// Stores layer L's Ring Length base value's seconds for ringSecondsRequested().
-    void storeRingSeconds(uint8_t L) noexcept;
+    /// With `limit`, also its engine's ring limit (ruling SP-T12ad): every change but the
+    /// constructor's, whose rings are built at their Ring Length.
+    void storeRingSeconds(uint8_t L, bool limit = true) noexcept;
     float clampToRange(size_t slot, float value) const noexcept;
 
     ProcessorConfig config_;

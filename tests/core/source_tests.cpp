@@ -1296,7 +1296,8 @@ TEST_CASE("a ring shrink's limit, its drain and its adoption do not allocate", "
 {
     // Ruling SP-T12ad, armed: the Ring Length event that limits the ring under grains reading
     // 2 s behind, the calls whose read limit waits for them (each a check of the pool and a split
-    // block), an early offer the engine declines, and the adoption once the reads fit.
+    // block), an early offer the engine declines, the overdub period's crossfade, and the
+    // adoption once the ring fits.
     Processor p({kRate, 256, 53, Mode::Fx});
     p.setBase(ParamSlot::Mix, 1.0f);
     p.setBase(slotOf(LayerParam::Density, 0), 6.0f); // 64 Hz
@@ -1337,7 +1338,7 @@ TEST_CASE("a ring shrink's limit, its drain and its adoption do not allocate", "
     call(limit);
     REQUIRE(p.ringSecondsRequested(0) == 1.0);
     REQUIRE(p.engine(0).liveReadLimitPending());
-    CHECK(p.ringMeta(0).readFrames == kRing);
+    CHECK(p.ringMeta(0).framesInUse == kRing);
     offer();
     call({});
     CHECK(p.ringAdoptionsDeclined(0) == 1);
@@ -1347,7 +1348,11 @@ TEST_CASE("a ring shrink's limit, its drain and its adoption do not allocate", "
         call({});
     }
     REQUIRE_FALSE(p.engine(0).liveReadLimitPending());
-    CHECK(p.ringMeta(0).readFrames == 48000);
+    for (int k = 0; k < 4 && p.ringMeta(0).framesInUse != 48000; ++k)
+    {
+        call({}); // the overdub period's 10 ms crossfade
+    }
+    CHECK(p.ringMeta(0).framesInUse == 48000);
     p.sources(0).collect();
     offer();
     call({});
