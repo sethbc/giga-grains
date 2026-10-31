@@ -81,7 +81,7 @@ whole file unless a span is given. No file peaks above −3.9 dBFS.
 
 ## For the director's ears
 
-Four behaviors of the build are sound choices the reviews left to the close's sitting:
+Five behaviors of the build are sound choices the reviews left to the close's sitting:
 
 1. **Peak's own click score.** On hot material the Peak limiter scores 15 to 18 by the click
    metric, from its instant gain steps (zero lookahead, D5 option 1). Hear `12` from 8 s: is it
@@ -94,6 +94,11 @@ Four behaviors of the build are sound choices the reviews left to the close's si
    of material, and the grains read behind its head (spec §6.2). Is the gap acceptable?
 4. **A loud repeat at Feedback 100%.** The delay loop's soft limiter squashes a loud repeat
    toward 0.5 over the first passes, then holds it (D7's law). Is that squash musical?
+5. **Reverb Modulation's glide.** Modulation now glides, 0 to 1 in 30 ms, so a jump no longer
+   scrubs the reverb's lines into a click at Decay ∞ (carry-over row 311, INTENT §23 #69). The
+   cost: a full Modulation move bends a held tail by about 3 semitones for those 30 ms. No file
+   in this pack renders it; hear it in a host with Decay ∞, Damping 0 and a held pad, moving
+   Modulation from 100% to 0% at once. Is the bend acceptable?
 
 ## Host checklist
 

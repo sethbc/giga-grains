@@ -273,8 +273,8 @@ the material with no transients and no comb; grains read it as they read the liv
   of a given seed, layer, Position history and material is a function of the sample clock alone,
   at any block size.
 - **The output ring** is a `LiveSource` of `SpectralSource::kRingSeconds` = 5 s (Spray's 2 s,
-  Size's 2 s, the 256-frame margins and a block), written one sample per output sample on every piece, whatever
-  the layer's kind: silence while the kind isn't Spectral, so a layer that isn't Spectral pays a
+  Size's 2 s, the 256-frame margins and a block), written one sample per output sample on every
+  piece, whatever the layer's kind: silence while the kind isn't Spectral, so a layer that isn't Spectral pays a
   write of zeros and no STFT; the smear while it is. Its head never freezes. A grain of the
   Spectral kind is a ring grain on slot `kSpectralSlot` = 3 (`Engine::kLiveSlot` is 2): the live
   kernels render it over this ring, at the grain's tier, and the grains sounding at a kind switch
@@ -410,8 +410,8 @@ D7's), `Delay Damping` (0–100%, default 30%: a one-pole low-pass in the loop, 
   review's fix wave):** so does Ping-pong, as a weight p that moves the damper's input from the
   channel's own read to the other's, `y_c + p × (y_other − y_c)`, exactly `y_c` at p = 0 and the
   other read at p = 1, so a toggle never clicks (a hard switch stepped the echoes); like the other
-  ramps it jumps where they jump (a loaded state, a macro or route, a clear). **Time** is D6's: under
-  option 1 the read position glides toward its target at no more than 0.5 samples per sample
+  ramps it jumps where they jump (a loaded state, a macro or route, a clear). **Time** is D6's:
+  under option 1 the read position glides toward its target at no more than 0.5 samples per sample
   (Space's Pre-delay rule, P1), so a move bends the pitch like tape and never clicks; while nothing
   has run since a clear the new value applies at once (R-T2a). The ramps and the glide are
   functions of the absolute sample, so the output is block-size invariant.
@@ -489,10 +489,11 @@ arranged. The layer rows are one list, `GG_LAYER_PARAMS_M2_EXTREMES`, expanded w
 `GG_LAYER_PARAMS_M2` is (layer A's slots and IDs, `GG_LAYER_PARAMS`), after sub-project 3's list
 so the index column stays ascending (`validIndexColumn`); `kLayerParamCount` and its
 static_asserts follow the lists. **The forty (name, ID)s are what is pinned** (in
-`tests/support/ParamTable.h`), not a total: the count after the rebase includes sub-projects 3's
-and 2's parameters (on this branch alone it is 258, `kParamCount`). **Amended, as built:** 258 is 218 (sub-project
-1's) plus these forty, as `tests/plugin/params_tests.cpp` checks; the pinned table is the forty,
-and the total changes with each later sub-project's parameters.
+`tests/support/ParamTable.h`), not a total: the count after the merge of main includes
+sub-project 3's five (263, `kParamCount`) and will include sub-project 2's when it merges (this
+branch alone had 258). **Amended, as built:** 258 is 218 (sub-project 1's) plus these forty, as
+`tests/plugin/params_tests.cpp` checked before the merge (263 after it); the pinned table is the
+forty, and the total changes with each later sub-project's parameters.
 
 **Layer scope** (index, in scopes 1–4; displayed with the layer's letter, "A Smear" … "D Bus 2
 Resonance"):
@@ -678,7 +679,8 @@ recommended options; the alternatives' text in §6.1, §6.2 and §6.3 is now moo
 3. *It jumps* at the next grid cell, as Reverb Size does. *Cost:* a click or glitch on every
    move, as Size's accepted artefact (row 217).
 
-**D7. Delay Feedback's top, and the instrument's tail** (§6.4, §6.5). **Decided: option 1 (2026-10-30).**
+**D7. Delay Feedback's top, and the instrument's tail** (§6.4, §6.5). **Decided: option 1
+(2026-10-30).**
 **Amended by D7a (the director, 2026-10-30, option 2):** the hold slowly darkens, because Damping 0
 keeps a 20 kHz one-pole damper in the loop (a noise burst loses about 2 dB in the 2–4 kHz band
 over 20 s; a sine burst holds within 0.1 dB); the bypass option was declined.
@@ -798,8 +800,8 @@ Engineering choices, each with its reason.
   instrument renders with Smear, Spectral layers, split buses with automated filters, the delay
   gliding and the limiter in each mode; the thread-pool invariance test extended to them.
 - `[rt]` and `[rtsan]`: §7's list under the tripwire and RTSan.
-- `[plugin]`: the forty new parameters with their pinned IDs; the five new remote pages; `process` and
-  `params.flush` under the tripwire with every stage active; the Spectral kind through the CLAP
+- `[plugin]`: the forty new parameters with their pinned IDs; the five new remote pages; `process`
+  and `params.flush` under the tripwire with every stage active; the Spectral kind through the CLAP
   factory in both products; `CLAP_PARAM_RESCAN_TEXT` on a material change.
 - `[render]`: the Spectral kind's material rule from a spec (with and without a layer sample);
   the forty names parse in `params`, `automation` and `mod`.
@@ -876,10 +878,11 @@ and RMS, and what to listen for; a host checklist for the close) and `specs/`:
 | `12-limiter-modes.wav` | four hot layers of noise, Mode Off, Soft, Peak at −6 dB | Off clips nothing and sums hot; Soft rounds it; Peak holds the ceiling with its release |
 | `13-all-together.wav` | a Spectral layer and a Smear 0.7 layer, split buses filtered, the delay and Peak | the chain as a whole; does it still sound like one instrument? |
 
-Fourteen renders from thirteen specs (`02` has two or three). **Amended:** `02c` is Smear 0.5, as its README says, because D8's option 2 was a build constant that was never built. The README's host checklist covers:
-the "FX" and "Filter A" pages in Bitwig; the Spectral kind in Live with the sidechain feeding an
-instrument layer; automating Delay Time and Bus 1 Cutoff in Live; the Peak limiter on a hot
-four-layer patch; a Smear 1 patch's CPU against Smear 0 in the host's meter.
+Fourteen renders from thirteen specs (`02` has two or three). **Amended:** `02c` is Smear 0.5, as
+its README says, because D8's option 2 was a build constant that was never built. The README's
+host checklist covers: the "FX" and "Filter A" pages in Bitwig; the Spectral kind in Live with
+the sidechain feeding an instrument layer; automating Delay Time and Bus 1 Cutoff in Live; the
+Peak limiter on a hot four-layer patch; a Smear 1 patch's CPU against Smear 0 in the host's meter.
 
 ## 12. The carry-over
 
@@ -922,8 +925,8 @@ questions, not open defects.
   post-M2: a global DC blocker (nothing needs it yet), and Feedback into a Spectral layer's
   material.
 - **§23:** one row, taking the next free number at the merge (the programme manager's note), for
-  D1–D8 with their dates, the rulings made during the build, and the §9 calls that amend Part II (the
-  Spectral kind's Position, Spray, Freeze and Feedback rules; the limiter's Off default; the
+  D1–D8 with their dates, the rulings made during the build, and the §9 calls that amend Part II
+  (the Spectral kind's Position, Spray, Freeze and Feedback rules; the limiter's Off default; the
   spectral ring's size; the Field numbering at the rebase).
 
 Part I is unchanged.

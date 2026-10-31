@@ -931,6 +931,49 @@ TEST_CASE("SpaceReverb idle returns zeros and resumes empty", "[space]")
     }
 }
 
+TEST_CASE("SpaceReverb resumes after idle at a new Modulation at once", "[space]")
+{
+    // Modulation glides only in a reverb that holds something (the class comment). Idle chunks
+    // empty the reverb (stepwise, or at the reactivation), so a reverb that resumes at another
+    // Modulation takes it at once, with no glide from the old one: after idle it matches a fresh
+    // instance driven at the new Modulation, bit for bit, whichever way the value moved and
+    // whether the idle chunks finished the clear or the reactivation did. (The at-once rule
+    // itself doesn't show in the output here: even at the smallest Size and no Pre-delay, a 30 ms
+    // glide ends before the network's modulated reads reach the resumed input.)
+    const size_t activeChunks = chunkAt(3.0), resumeChunks = chunkAt(1.0);
+    for (const auto &[before, after] : {std::pair{0.f, 1.f}, std::pair{1.f, 0.f}})
+    {
+        auto oldParams = spaceDefaults(0.f);
+        oldParams.roomSize = -1.f;
+        oldParams.modulation = before;
+        auto newParams = oldParams;
+        newParams.modulation = after;
+        for (const size_t idleChunks : {1u, 400u})
+        {
+            INFO("Modulation " << before << " to " << after << ", idle chunks " << idleChunks);
+            const size_t resumeAt = (activeChunks + idleChunks) * SpaceReverb::kChunk;
+            const size_t n = resumeAt + resumeChunks * SpaceReverb::kChunk;
+            const auto in = stereoNoise(n, 23, 0.5f);
+
+            auto reverb = std::make_unique<SpaceReverb>(kRate);
+            const auto out = drive(
+                *reverb, in,
+                [&](int64_t t) { return size_t(t) < resumeAt ? oldParams : newParams; },
+                [&](int64_t t) {
+                    const auto c = size_t(t) / SpaceReverb::kChunk;
+                    return c < activeChunks || c >= activeChunks + idleChunks;
+                });
+            REQUIRE(allFinite(out));
+            CHECK(rms(out.left, 1.0, 3.0) > 0.01);
+
+            auto fresh = std::make_unique<SpaceReverb>(kRate);
+            const auto expected = drive(*fresh, slice(in, resumeAt, n - resumeAt), newParams);
+            CHECK(rms(expected.left, 0.1, 1.0) > 0.01);
+            CHECK(sameBits(slice(out, resumeAt, n - resumeAt), expected));
+        }
+    }
+}
+
 TEST_CASE("SpaceReverb after clear matches a fresh instance", "[space]")
 {
     // 2 s of noise at infinity, Size 100%, then reset() in the middle of the tail it holds.
