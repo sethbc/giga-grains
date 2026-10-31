@@ -72,6 +72,9 @@ if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_
 endif ()
 
 include(cmake/compiler-options.cmake)
+# The license set's one list, which cmake/products.cmake reads for gg-products and for the
+# editor's embedded notices (gg_license_files, gg_add_notices).
+include(cmake/licenses.cmake)
 
 add_subdirectory(libs)
 
@@ -92,6 +95,7 @@ endif ()
 if (GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
     add_subdirectory(clients/clap-first)
     include(cmake/products.cmake)
+    add_subdirectory(tools/gg-snap)
 endif ()
 add_subdirectory(tests)
 
@@ -110,5 +114,5 @@ if (GG_BUILD_PLUGINS)
     add_dependencies(gg-all gg-plugin-core)
 endif ()
 if (GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
-    add_dependencies(gg-all gg-plugin-editor gg_clapfirst_all)
+    add_dependencies(gg-all gg-plugin-editor gg_clapfirst_all gg-snap)
 endif ()

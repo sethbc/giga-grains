@@ -6,10 +6,13 @@
 // gg-ui-core only, so they also run in the sanitizer builds, which have no editor or JUCE.
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <limits>
+#include <span>
 #include <vector>
 
 #include <catch2/catch_test_macros.hpp>
@@ -301,7 +304,7 @@ TEST_CASE("a capsule equals a splat when its ends coincide", "[ui]")
     {
         float x, y, r, intensity;
     };
-    for (const Case c :
+    for (const Case &c :
          {Case{10, 10, 3, 0.7f}, Case{20.5f, 5.25f, 2.5f, 1.0f}, Case{0.3f, 23.6f, 4.0f, 0.4f}})
     {
         INFO("splat at " << c.x << ", " << c.y << ", radius " << c.r);
@@ -446,4 +449,134 @@ TEST_CASE("a capsule at the right edge of a canvas over 16M pixels wide stays on
     REQUIRE(capsule.accumAt(0, 1) == 0.0f);
     capsule.addCapsule(x - 16, x, 0, 4, 1);
     REQUIRE(capsule.accumAt(0, 1) == 0.0f);
+}
+
+TEST_CASE("the banded resolve tints each band", "[ui]")
+{
+    // M2's four lanes share one accumulator; the resolve tints each lane's rows with its layer's
+    // colour (spec §6.3). A 4-row canvas, one band per row, one splat per row: each row's pixel
+    // carries its band's tint, as the one-tint resolve would give it.
+    constexpr uint32_t w = 8, h = 4, stride = 10;
+    constexpr uint32_t kPad = 0xDEADBEEFu;
+    gg::ui::SplatRenderer splat(w, h);
+    for (uint32_t y = 0; y < h; ++y)
+    {
+        splat.add(3.0f, static_cast<float>(y), 0.9f, 1.0f); // pixel (3, y) alone
+    }
+    const std::array<uint32_t, 4> tints{0xE69F00u, 0x56B4E9u, 0x009E73u, 0xCC79A7u};
+    const std::array<gg::ui::TintBand, 4> bands{
+        {{0, 1, tints[0]}, {1, 2, tints[1]}, {2, 3, tints[2]}, {3, 4, tints[3]}}};
+    std::vector<uint32_t> out(stride * h, kPad);
+    splat.resolveToArgb(out.data(), stride, bands);
+    for (uint32_t y = 0; y < h; ++y)
+    {
+        INFO("row " << y);
+        std::vector<uint32_t> single(stride * h, kPad);
+        splat.resolveToArgb(single.data(), stride, tints[y]);
+        const uint32_t lit = out[y * stride + 3];
+        CHECK(lit == single[y * stride + 3]);
+        CHECK(lit != 0xFF000000u);
+        // Each channel is its tint's, scaled by 1 - exp(-1).
+        constexpr double v = 0.63212055882855767;
+        CHECK(std::abs(static_cast<double>(channel(lit, 16)) -
+                       v * static_cast<double>((tints[y] >> 16) & 0xFFu)) <= 1.0);
+        CHECK(std::abs(static_cast<double>(channel(lit, 8)) -
+                       v * static_cast<double>((tints[y] >> 8) & 0xFFu)) <= 1.0);
+        CHECK(std::abs(static_cast<double>(channel(lit, 0)) -
+                       v * static_cast<double>(tints[y] & 0xFFu)) <= 1.0);
+        for (uint32_t x = 0; x < w; ++x)
+        {
+            if (x != 3)
+            {
+                CHECK(out[y * stride + x] == 0xFF000000u);
+            }
+        }
+        // The stride's padding is left alone, as the one-tint resolve leaves it.
+        CHECK(out[y * stride + 8] == kPad);
+        CHECK(out[y * stride + 9] == kPad);
+    }
+
+    // A row no band covers resolves black, splat and all; a band past the canvas is clipped.
+    const std::array<gg::ui::TintBand, 3> gappy{
+        {{0, 2, tints[0]}, {3, 4, tints[3]}, {4, 100, 0xFFFFFFu}}};
+    std::vector<uint32_t> gap(stride * h, kPad);
+    splat.resolveToArgb(gap.data(), stride, gappy);
+    for (uint32_t x = 0; x < w; ++x)
+    {
+        INFO("pixel " << x);
+        CHECK(gap[2 * stride + x] == 0xFF000000u);
+    }
+    CHECK(gap[0 * stride + 3] == out[0 * stride + 3]);
+    CHECK(gap[3 * stride + 3] == out[3 * stride + 3]);
+    // Rows 0 and 1 share band 0's tint.
+    std::vector<uint32_t> amber(stride * h, kPad);
+    splat.resolveToArgb(amber.data(), stride, tints[0]);
+    CHECK(gap[1 * stride + 3] == amber[1 * stride + 3]);
+
+    // No bands: every row black. A null destination or a short stride writes nothing.
+    std::vector<uint32_t> none(stride * h, kPad);
+    splat.resolveToArgb(none.data(), stride, std::span<const gg::ui::TintBand>{});
+    for (uint32_t y = 0; y < h; ++y)
+    {
+        for (uint32_t x = 0; x < w; ++x)
+        {
+            CHECK(none[y * stride + x] == 0xFF000000u);
+        }
+        CHECK(none[y * stride + 8] == kPad);
+    }
+    splat.resolveToArgb(nullptr, stride, bands);
+    std::vector<uint32_t> untouched(stride * h, kPad);
+    splat.resolveToArgb(untouched.data(), w - 1, bands);
+    for (const uint32_t px : untouched)
+    {
+        CHECK(px == kPad);
+    }
+}
+
+TEST_CASE("one band equals the M1 resolve", "[ui]")
+{
+    // The one-tint resolve is the banded one's one-band case, bit for bit, over a 64 x 64
+    // canvas of random splats and capsules; and its output is M1's: the FNV-1a hash of the four
+    // tints' pixels below was computed by the one-tint resolve at ab9f4e2 (M1's, before the
+    // banded one existed), so the comparison is not the function with itself.
+    constexpr uint32_t n = 64;
+    gg::ui::SplatRenderer splat(n, n);
+    uint64_t state = 0x243F6A8885A308D3ull;
+    const auto next = [&state] {
+        state = state * 6364136223846793005ull + 1442695040888963407ull;
+        return static_cast<float>(static_cast<double>(state >> 11) * 0x1.0p-53);
+    };
+    for (int i = 0; i < 300; ++i)
+    {
+        const float x = 80.0f * next() - 8.0f;
+        const float y = 80.0f * next() - 8.0f;
+        const float r = 0.5f + 6.0f * next();
+        const float intensity = 3.0f * next();
+        if (i % 2 == 0)
+        {
+            splat.add(x, y, r, intensity);
+        }
+        else
+        {
+            splat.addCapsule(x, x + 20.0f * next(), y, r, intensity);
+        }
+    }
+    uint64_t hash = 1469598103934665603ull;
+    for (const uint32_t tint : {0xFFC46Bu, 0xE69F00u, 0xFFFFFFu, 0x000000u})
+    {
+        INFO("tint " << tint);
+        std::vector<uint32_t> m1(n * n, 0u), banded(n * n, 1u);
+        splat.resolveToArgb(m1.data(), n, tint);
+        const gg::ui::TintBand band{0, n, tint};
+        splat.resolveToArgb(banded.data(), n, std::span<const gg::ui::TintBand>(&band, 1));
+        CHECK(std::memcmp(m1.data(), banded.data(), m1.size() * sizeof(uint32_t)) == 0);
+        for (const uint32_t px : m1)
+        {
+            for (int b = 0; b < 4; ++b)
+            {
+                hash = (hash ^ ((px >> (8 * b)) & 0xFFu)) * 1099511628211ull;
+            }
+        }
+    }
+    CHECK(hash == 0x21C1E8A53A30A778ull);
 }

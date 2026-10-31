@@ -496,6 +496,7 @@ bool saveSettings(const fs::path &file, const core::MachineSettings &settings)
     if (settings.sampleFolder.find('\0') != std::string::npos ||
         settings.lastLoadFolder.find('\0') != std::string::npos ||
         settings.capturesFolder.find('\0') != std::string::npos ||
+        settings.theme.find('\0') != std::string::npos ||
         settings.contentFolder.find('\0') != std::string::npos)
     {
         return false;

@@ -6,10 +6,18 @@
 #define GG_UI_SPLATRENDERER_H
 
 #include <cstdint>
+#include <span>
 #include <vector>
 
 namespace gg::ui
 {
+/// A run of canvas rows that the banded resolve tints alike: rows rowBegin .. rowEnd − 1, the
+/// rows of one lane (M2 Views' spec §6.3), and its tint, 0xRRGGBB.
+struct TintBand
+{
+    uint32_t rowBegin, rowEnd, rgbTint;
+};
+
 /// The CPU additive "splat" renderer behind the grain canvas (INTENT §17). It is framework-free:
 /// grains are splatted into a float accumulator, then resolved to 32-bit ARGB pixels that any
 /// toolkit can draw.
@@ -47,6 +55,14 @@ class SplatRenderer
     /// the strideU32 - width words that pad each row are left alone. Writes nothing if dst is
     /// null or strideU32 is less than the width.
     void resolveToArgb(uint32_t *dst, uint32_t strideU32, uint32_t rgbTint) const noexcept;
+
+    /// The banded resolve, for the stacked lanes: each row as the one-tint resolve writes it,
+    /// with the tint of the first band in `bands` that covers it (bands past the canvas are
+    /// clipped), and every row no band covers black (0xFF000000). The stride, its padding and
+    /// the null and short-stride rules are the one-tint resolve's, whose output this equals bit
+    /// for bit with one band of all the rows (that overload is this one's one-band case).
+    void resolveToArgb(uint32_t *dst, uint32_t strideU32,
+                       std::span<const TintBand> bands) const noexcept;
 
     /// The accumulated value at pixel (x, y); 0 outside the canvas.
     float accumAt(uint32_t x, uint32_t y) const noexcept;

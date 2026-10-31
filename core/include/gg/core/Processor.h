@@ -420,8 +420,9 @@ struct RingMeta
 ///   when the editor falls behind the queue drops the newest and counts them
 ///   (GrainQueue::dropped).
 /// - snapshot(): a UiSnapshot at the end of every call (0-frame calls included), layer A's view
-///   (its ring's head, freeze, Position, Spray and Feedback) with the grains of every layer, and
-///   publishedClock(), the sample clock it carries, stored after it with release order.
+///   (its ring's head, freeze, Position, Spray and Feedback) with the grains of every layer, every
+///   layer's lane (the Views spec §6.4) and the morph pad, and publishedClock(), the sample clock
+///   it carries, stored after it with release order.
 /// - livePeaks(layer), each layer's, in both products, always, publishing or not (ruling
 ///   PU-T9b), so the strip follows the ring
 ///   itself and an editor that opens late finds the ring's recent audio there, not stale peaks:

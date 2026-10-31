@@ -23,11 +23,13 @@
 #include "gg/core/GrainQueue.h"
 #include "gg/core/LatestValue.h"
 #include "gg/core/LivePeaks.h"
+#include "gg/core/ModMatrix.h"
 #include "gg/core/ParamIds.h"
 #include "gg/core/Processor.h"
 #include "gg/core/Rng.h"
 #include "gg/core/UiSnapshot.h"
 #include "gg/source/LiveSource.h"
+#include "gg/source/SourceMode.h"
 #include "support/AllocTripwire.h"
 
 using gg::core::GrainQueue;
@@ -697,6 +699,133 @@ TEST_CASE("the instrument publishes snapshots and its rings' peaks", "[core][pub
     CHECK(s.writeHead == 512);
     CHECK(s.feedback == 0.0f);
     CHECK(p.livePeaks().at(0) == 0.0f);
+}
+
+TEST_CASE("the snapshot carries every lane", "[core][publish]")
+{
+    // The Views spec §6.4: one LaneSnapshot per layer, A to D, beside M1's layer-A fields.
+    using gg::core::layerOnSlot;
+    Processor p({kRate, 512, 3, Mode::Fx});
+    p.setPublishing(true);
+    p.setBase(layerOnSlot(1), 1.0f);
+    p.setBase(layerOnSlot(2), 0.0f);
+    p.setBase(ParamSlot::B_Pitch, 7.0f);
+    p.setBase(ParamSlot::B_PitchSpread, 3.0f);
+    p.setBase(ParamSlot::B_Position, 0.4f);
+    p.setBase(ParamSlot::B_Spray, 0.2f);
+    const Channels input = noiseInput(3000, 0.5f, 11);
+    run(p, input, 0, 1000, 1000);
+
+    UiSnapshot s;
+    REQUIRE(p.snapshot().take(s));
+    const gg::core::LaneSnapshot &b = s.lanes[1];
+    CHECK(b.basePitch == 7.0f);
+    CHECK(b.basePitchSpread == 3.0f);
+    CHECK(b.basePosition == 0.4f);
+    CHECK(b.baseSpray == 0.2f);
+    CHECK(b.on);
+    CHECK_FALSE(s.lanes[2].on);
+    CHECK(s.lanes[0].on);
+    CHECK(s.lanes[0].builtKind == static_cast<uint8_t>(gg::SourceMode::Live));
+    CHECK(b.builtKind == static_cast<uint8_t>(gg::SourceMode::Live));
+    // M1's fields and layer A's lane agree.
+    CHECK(s.lanes[0].writeHead == s.writeHead);
+    CHECK(s.lanes[0].frozen == s.frozen);
+    CHECK(s.lanes[0].basePosition == s.basePosition);
+    CHECK(s.lanes[0].baseSpray == s.baseSpray);
+    CHECK(s.lanes[0].effectivePosition == s.effectivePosition);
+    CHECK(s.lanes[0].effectiveSpray == s.effectiveSpray);
+    CHECK(s.lanes[0].feedback == s.feedback);
+    // Every lane reads its own layer.
+    for (uint8_t L = 0; L < gg::core::kLayers; ++L)
+    {
+        using gg::core::LayerParam;
+        using gg::core::layerSlot;
+        const gg::core::LaneSnapshot &lane = s.lanes[L];
+        CHECK(lane.writeHead == p.engine(L).liveWriteHead());
+        CHECK(lane.basePitch == p.base(layerSlot(LayerParam::Pitch, L)));
+        CHECK(lane.basePitchSpread == p.base(layerSlot(LayerParam::PitchSpread, L)));
+        CHECK(lane.basePosition == p.base(layerSlot(LayerParam::Position, L)));
+        CHECK(lane.baseSpray == p.base(layerSlot(LayerParam::Spray, L)));
+        CHECK(lane.effectivePitch == p.effective(layerSlot(LayerParam::Pitch, L)));
+        CHECK(lane.effectivePitchSpread == p.effective(layerSlot(LayerParam::PitchSpread, L)));
+        CHECK(lane.effectivePosition == p.effective(layerSlot(LayerParam::Position, L)));
+        CHECK(lane.effectiveSpray == p.effective(layerSlot(LayerParam::Spray, L)));
+        CHECK(lane.feedback == p.feedbackAt(L, s.clock));
+    }
+
+    // Layer B's Feedback and freeze reach its lane alone.
+    p.setBase(ParamSlot::B_Feedback, 0.25f);
+    p.setBase(ParamSlot::B_Freeze, 1.0f);
+    run(p, input, 1000, 3000, 1000);
+    REQUIRE(p.snapshot().take(s));
+    CHECK(s.lanes[1].frozen);
+    CHECK(s.lanes[1].feedback == 0.25f);
+    CHECK_FALSE(s.lanes[0].frozen);
+    CHECK(s.lanes[0].feedback == 0.0f);
+}
+
+TEST_CASE("the snapshot's effective lane values include routes", "[core][publish]")
+{
+    using gg::core::ModCurve;
+    using gg::core::ModRoute;
+    using gg::core::ModRoutes;
+    using gg::core::ModSource;
+    Processor p({kRate, 512, 3, Mode::Fx});
+    p.setPublishing(true);
+    p.setBase(gg::core::layerOnSlot(1), 1.0f);
+    p.setBase(ParamSlot::B_Pitch, -7.0f); // Pitch is ±24: -7 + 24 stays inside
+    ModRoutes routes{};
+    routes[0] = ModRoute{ModSource::Macro3, gg::core::kSameLayer, ParamSlot::Pitch, 1, 24.0f,
+                         ModCurve::Bipolar};
+    p.setRoutes(routes);
+    p.setBase(ParamSlot::Macro3, 1.0f);
+    const Channels input = noiseInput(512, 0.5f, 13);
+    run(p, input, 0, 512, 512);
+
+    UiSnapshot s;
+    REQUIRE(p.snapshot().take(s));
+    CHECK(s.lanes[1].basePitch == -7.0f);
+    CHECK_THAT(s.lanes[1].effectivePitch,
+               Catch::Matchers::WithinAbs(s.lanes[1].basePitch + 24.0f, 1e-6));
+    // The route reaches layer B alone.
+    CHECK(s.lanes[0].effectivePitch == s.lanes[0].basePitch);
+    CHECK(s.lanes[2].effectivePitch == s.lanes[2].basePitch);
+}
+
+TEST_CASE("the snapshot carries the morph", "[core][publish]")
+{
+    using gg::core::ModCurve;
+    using gg::core::ModRoute;
+    using gg::core::ModRoutes;
+    using gg::core::ModSource;
+    Processor p({kRate, 512, 3, Mode::Fx});
+    p.setPublishing(true);
+    p.setBase(ParamSlot::MorphX, 0.25f);
+    p.setBase(ParamSlot::MorphY, 0.75f);
+    const Channels input = noiseInput(1024, 0.5f, 17);
+    run(p, input, 0, 512, 512);
+
+    UiSnapshot s;
+    REQUIRE(p.snapshot().take(s));
+    CHECK(s.baseMorphX == 0.25f);
+    CHECK(s.baseMorphY == 0.75f);
+    CHECK(s.effectiveMorphX == 0.25f);
+    CHECK(s.effectiveMorphY == 0.75f);
+
+    // A route to Morph X moves its effective value alone.
+    ModRoutes routes{};
+    routes[0] = ModRoute{
+        ModSource::Macro1, gg::core::kSameLayer, ParamSlot::MorphX, gg::core::kAllLayers, 0.5f,
+        ModCurve::Unipolar};
+    p.setRoutes(routes);
+    p.setBase(ParamSlot::Macro1, 1.0f);
+    run(p, input, 512, 1024, 512);
+    REQUIRE(p.snapshot().take(s));
+    CHECK(s.baseMorphX == 0.25f);
+    CHECK_THAT(s.effectiveMorphX, Catch::Matchers::WithinAbs(0.75, 1e-6));
+    CHECK(s.baseMorphY == 0.75f);
+    CHECK(s.effectiveMorphY == 0.75f);
 }
 
 TEST_CASE("grain events reach the queue", "[core][publish]")

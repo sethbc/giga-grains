@@ -45,14 +45,15 @@
 // entries came from.
 //
 // --canvas times gg-ui-core's splat renderer, headless, at 3200 x 1200: a 1600 x 600 canvas on
-// a 2x display. Each frame generates the editor's stress workload (4,096, 8,192 or 16,384
-// grains), then clears the canvas, splats the grains and resolves them to ARGB, as the editor
-// does before drawing the image. After a warm-up it times 240 frames (30 with --quick) and
-// prints, as JSON on stdout, the median of each stage plus the median, mean and 95th percentile
-// of a frame's clear + splat + resolve. Generating the synthetic grains is reported but kept out
-// of that total: the real canvas gets its grains from the engine. INTENT §16 budgets 3 ms of
-// UI-thread time per frame with 8,000 grains; drawing the image costs extra, which only the
-// editor's own "frame ms" readout measures.
+// a 2x display (Bench.cpp has the measurement). Each frame generates the editor's stress workload
+// (4,096, 8,192 or 16,384 grains), then clears the canvas, splats the grains and resolves them to
+// ARGB as four lanes, each a quarter of the height in its layer's tint (the banded resolve, the
+// JSON's "lanes": 4 and "resolve": "banded"), as the editor does before drawing the image. After a
+// warm-up it times 240 frames (30 with --quick) and prints, as JSON on stdout, the median of each
+// stage plus the median, mean and 95th percentile of a frame's clear + splat + resolve. Generating
+// the synthetic grains is reported but kept out of that total: the real canvas gets its grains from
+// the engine. INTENT §16 budgets 3 ms of UI-thread time per frame with 8,000 grains; drawing the
+// image costs extra, which only the editor's own "frame ms" readout measures.
 //
 // --space times Space's per-sample stage, the diffuser then the grid-aligned reverb, on stereo
 // noise at 48 kHz, active, with Diffusion 1, Size 0.5 and Decay 1.0 (Bench.h has every setting).
@@ -88,158 +89,19 @@
 #endif
 
 #include "Bench.h"
-#include "gg/ui/SplatRenderer.h"
-#include "gg/ui/StressGrains.h"
 
 namespace
 {
 using gg::bench::compiler;
 using gg::bench::machine;
 
-volatile double gSink = 0.0; // the rendered output feeds this, so it can't be optimised away
-
-std::string jsonString(std::string_view s)
-{
-    std::string out = "\"";
-    for (const char c : s)
-    {
-        if (c == '"' || c == '\\')
-        {
-            out += '\\';
-            out += c;
-        }
-        else if (static_cast<unsigned char>(c) < 0x20)
-        {
-            char esc[8];
-            std::snprintf(esc, sizeof(esc), "\\u%04x", static_cast<unsigned>(c));
-            out += esc;
-        }
-        else
-        {
-            out += c;
-        }
-    }
-    return out + "\"";
-}
-
-// ---- --canvas: the canvas stress spike ----
-
-constexpr uint32_t kCanvasWidth = 3200;
-constexpr uint32_t kCanvasHeight = 1200;
-constexpr float kCanvasPixelScale = 2.0f; // a 1600 x 600 canvas on a 2x display
-constexpr std::array<uint32_t, 3> kCanvasGrains{4096, 8192, 16384};
-constexpr int kCanvasWarmupFrames = 20;
-constexpr double kCanvasBudgetMs = 3.0; // INTENT §16, at 8,000 grains
-constexpr uint32_t kCanvasTint = 0xFFC46B;
-
-struct CanvasResult
-{
-    uint32_t grains;
-    double generateMs; // median; not part of the total
-    double clearMs;    // median
-    double splatMs;    // median
-    double resolveMs;  // median
-    double totalMs;    // median of clear + splat + resolve
-    double totalMsMean;
-    double totalMsP95;
-};
-
-/// The p-th quantile (0..1) of v, nearest rank: the canvas reports a measured frame time, where
-/// gg::bench::quantile interpolates between two. v must not be empty.
-double quantile(std::vector<double> v, double p)
-{
-    std::sort(v.begin(), v.end());
-    const auto rank = static_cast<std::size_t>(p * static_cast<double>(v.size() - 1) + 0.5);
-    return v[std::min(rank, v.size() - 1)];
-}
-
-CanvasResult measureCanvas(uint32_t grains, int frames, gg::ui::SplatRenderer &canvas,
-                           std::vector<uint32_t> &pixels)
-{
-    using Clock = std::chrono::steady_clock;
-    const auto ms = [](Clock::duration d) {
-        return std::chrono::duration<double, std::milli>(d).count();
-    };
-    std::vector<gg::ui::Splat> splats(grains);
-    std::vector<double> generateMs, clearMs, splatMs, resolveMs, totalMs;
-    uint64_t sink = 0;
-    for (int f = 0; f < kCanvasWarmupFrames + frames; ++f)
-    {
-        const auto t0 = Clock::now();
-        gg::ui::stressGrains(static_cast<uint64_t>(f), grains, kCanvasWidth, kCanvasHeight,
-                             kCanvasPixelScale, splats.data());
-        const auto t1 = Clock::now();
-        canvas.clear();
-        const auto t2 = Clock::now();
-        for (const gg::ui::Splat &s : splats)
-        {
-            canvas.add(s.x, s.y, s.radius, s.intensity);
-        }
-        const auto t3 = Clock::now();
-        canvas.resolveToArgb(pixels.data(), kCanvasWidth, kCanvasTint);
-        const auto t4 = Clock::now();
-        sink += pixels[(static_cast<std::size_t>(f) * 7919u) % pixels.size()];
-        if (f >= kCanvasWarmupFrames)
-        {
-            generateMs.push_back(ms(t1 - t0));
-            clearMs.push_back(ms(t2 - t1));
-            splatMs.push_back(ms(t3 - t2));
-            resolveMs.push_back(ms(t4 - t3));
-            totalMs.push_back(ms(t4 - t1));
-        }
-    }
-    gSink = gSink + static_cast<double>(sink);
-
-    double mean = 0.0;
-    for (const double t : totalMs)
-    {
-        mean += t;
-    }
-    mean /= static_cast<double>(totalMs.size());
-    return {grains,
-            quantile(generateMs, 0.5),
-            quantile(clearMs, 0.5),
-            quantile(splatMs, 0.5),
-            quantile(resolveMs, 0.5),
-            quantile(totalMs, 0.5),
-            mean,
-            quantile(totalMs, 0.95)};
-}
-
-void writeCanvasJson(std::FILE *f, int frames, const std::vector<CanvasResult> &results)
-{
-    std::fprintf(f,
-                 "{\n  \"benchmark\": \"canvas\",\n  \"machine\": %s,\n  \"compiler\": %s,\n"
-                 "  \"width\": %u,\n  \"height\": %u,\n  \"pixelScale\": %.1f,\n"
-                 "  \"frames\": %d,\n  \"budgetMs\": %.1f,\n  \"results\": [\n",
-                 jsonString(machine()).c_str(), jsonString(compiler()).c_str(), kCanvasWidth,
-                 kCanvasHeight, static_cast<double>(kCanvasPixelScale), frames, kCanvasBudgetMs);
-    for (std::size_t i = 0; i < results.size(); ++i)
-    {
-        const CanvasResult &r = results[i];
-        std::fprintf(f,
-                     "    {\"grains\": %u, \"generateMs\": %.3f, \"clearMs\": %.3f, "
-                     "\"splatMs\": %.3f, \"resolveMs\": %.3f, \"totalMs\": %.3f, "
-                     "\"totalMsMean\": %.3f, \"totalMsP95\": %.3f}%s\n",
-                     r.grains, r.generateMs, r.clearMs, r.splatMs, r.resolveMs, r.totalMs,
-                     r.totalMsMean, r.totalMsP95, i + 1 < results.size() ? "," : "");
-    }
-    std::fprintf(f, "  ]\n}\n");
-}
+// ---- --canvas: the canvas stress spike (Bench.cpp times it) ----
 
 int runCanvas(bool quick, const std::string &jsonPath)
 {
-    const int frames = quick ? 30 : 240;
-    gg::ui::SplatRenderer canvas(kCanvasWidth, kCanvasHeight);
-    std::vector<uint32_t> pixels(static_cast<std::size_t>(kCanvasWidth) * kCanvasHeight);
-
-    std::vector<CanvasResult> results;
-    for (const uint32_t grains : kCanvasGrains)
-    {
-        results.push_back(measureCanvas(grains, frames, canvas, pixels));
-    }
-
-    writeCanvasJson(stdout, frames, results);
+    const int frames = quick ? gg::bench::kCanvasQuickFrames : gg::bench::kCanvasFrames;
+    const std::string json = gg::bench::toJson(gg::bench::runCanvas(frames));
+    std::fputs(json.c_str(), stdout);
     if (!jsonPath.empty())
     {
         std::FILE *f = std::fopen(jsonPath.c_str(), "w");
@@ -248,7 +110,7 @@ int runCanvas(bool quick, const std::string &jsonPath)
             std::fprintf(stderr, "error: couldn't write %s\n", jsonPath.c_str());
             return 1;
         }
-        writeCanvasJson(f, frames, results);
+        std::fputs(json.c_str(), f);
         if (std::fclose(f) != 0)
         {
             std::fprintf(stderr, "error: couldn't write %s\n", jsonPath.c_str());

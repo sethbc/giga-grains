@@ -569,6 +569,22 @@ jobs:
           GG_REQUIRE_AVX2: ${{ runner.os != 'macOS' && '1' || '' }}
         run: ctest --preset ${{ matrix.preset }} -C Release --output-on-failure
 
+      # The views as PNGs (M2 sub-project 6's spec §6.13): gg-snap draws each product's four views
+      # in both themes at two sizes, headless, so the director and the reviewer can see the
+      # editor without a host. The universal binary runs natively here (arm64). Not gated: the
+      # artifact is looked at, so only a tool failure or no files at all fails the job.
+      - name: Snapshot the views (macOS)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' && runner.os == 'macOS' }}
+        run: ${{ matrix.build_dir }}/tools/gg-snap/gg-snap "${{ matrix.build_dir }}/snapshots"
+
+      - name: Upload the view snapshots (macOS)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' && runner.os == 'macOS' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: gg-snapshots
+          path: ${{ matrix.build_dir }}/snapshots/
+          if-no-files-found: error
+
       # The arm64 runner otherwise never runs the universal build's x86_64 slice. Under Rosetta 2
       # it runs the whole Catch2 suite, then every golden case with the same commands as the
       # golden CTests, so the slice's grain-event logs are checked against the same goldens.

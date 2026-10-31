@@ -33,10 +33,10 @@ target_include_directories(gg-plugin-core PUBLIC include PRIVATE src)
 # gg-core's headers (the Processor, the parameter IDs) and needs sst-cpputils for
 # SST_CPPUTILS_NONBLOCKING, so whatever includes it links gg::core and sst-cpputils itself: the
 # editor layer below, and the tests. gg::media (the sample loaders' decoding, conversion, search
-# and settings file, the media session's rings, budget and collect, and the content search path)
-# is PRIVATE too: its headers reach GigaGrainsPlugin.h through MediaSession.h (and SearchCache.h
-# and SettingsPath.h include them), so whatever includes it (the editor layer and the tests) links
-# gg::media itself, as both do.
+# and settings file, the media session's rings, budget and collect, the content search path and,
+# in editor/UiSettings.cpp, the theme's settings file) is PRIVATE too: its headers reach
+# GigaGrainsPlugin.h through MediaSession.h (and SearchCache.h and SettingsPath.h include them),
+# so whatever includes it (the editor layer and the tests) links gg::media itself, as both do.
 target_link_libraries(gg-plugin-core
         PUBLIC clap clap-helpers gg::clap-wrapper-extensions
         PRIVATE gg::media gg::core sst-cpputils gg::compiler-options
@@ -54,6 +54,7 @@ else ()
     add_library(gg-plugin-editor OBJECT
             src/editor/EditorPlugin.cpp
             src/editor/MakePlugin.cpp
+            src/editor/UiSettings.cpp
             )
     add_library(gg::plugin-impl ALIAS gg-plugin-editor)
     target_include_directories(gg-plugin-editor PRIVATE src)
