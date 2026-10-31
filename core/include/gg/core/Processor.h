@@ -116,24 +116,31 @@ struct ControlEvent
 /// ```
 /// and wet = wet_A ⊕ wet_B ⊕ wet_C ⊕ wet_D: the first rendering layer in order A to D assigns,
 /// each later one adds, and with none rendering wet is +0. The weight is the morph law (D1, as
-/// amended by LS-T10a and by carry-over row 301's fix): with x and y the ramped Morph X and
-/// Morph Y clamped to [0.001, 0.999], b_A = (1 − x)(1 − y), b_B = x(1 − y), b_C = (1 − x)y,
-/// b_D = xy, r_L the layer's on/off ramp (0 for a layer not rendering), R = Σ r_K,
-/// s = Σ r_K·b_K and m = Σ (1 − r_K)·b_K, the corner weight no rendering layer holds,
-/// ```
-/// weight_L = R > 0 ? (r_L·b_L + (r_L / R)·m) / (s + m) × min(1, R) : 0
-/// ```
-/// (for R < 1 computed as r_L·(b_L·R + m) / (s + m)). Each rendering layer keeps its own corner
-/// weight and takes its ramp's share of the unheld one; s + m is Σ b_K, 1 up to rounding. With at
-/// least one whole layer's worth of ramps on the weights sum to 1, every on layer weighs 1/n at
-/// the center, and a corner's layer, on, holds at least its corner weight there. Below that (the
-/// last rendering layer switched off, or the first switched on) the factor min(1, R) makes the
-/// amplitude sum follow the ramps, so the last layer fades out over its ramp instead of being cut
-/// when the ramp reaches 0 (LS-T10a). Every weight moves at the pace of the ramps and the pad:
-/// dividing by s alone, as first built, made the weights ratios of corner weights that all near
-/// 0 off the center, and handed over within a few samples (row 301). One layer rendering with its
-/// ramp at 1 weighs exactly 1.0f wherever the pad is ((b + m) / (b + m)), so layer A alone renders
-/// M1's chain bit for bit; four at 1 have m = 0 and weigh b_L / s, as first built.
+/// amended by LS-T10a and for carry-over row 301): with x and y the ramped Morph X and Morph Y
+/// clamped to [0.001, 0.999], b_A = (1 − x)(1 − y), b_B = x(1 − y), b_C = (1 − x)y, b_D = xy,
+/// and r_L the layer's on/off ramp (0 for a layer not rendering):
+/// - **At rest** (every r at 0 or 1), with S the on layers and s = Σ_{K∈S} b_K,
+///   ```
+///   W_S,L = b_L / s                          (D1, the law as first built, bit for bit)
+///   W_S,L = (b_L + (ε − s) / |S|) / ε        (a diagonal pair or a triple with s < ε = 0.35)
+///   ```
+///   The first law is continuous on the clamped pad but steep where a diagonal pair's or a
+///   triple's corner weights all near 0 (near the corner none of them holds: up to about 200
+///   per pad unit); the floor shares the shortfall equally there, which binds on 17.1% of the pad
+///   for a diagonal pair and 7.1% for a triple. A lone layer weighs b / b, exactly 1, and an
+///   adjacent pair never floors (its weights don't depend on the axis its corners share).
+/// - **While layers ramp**, the weights interpolate multilinearly between the on-sets the ramping
+///   layers span, then fade with min(1, R), R = Σ r_K (LS-T10a: the last layer fades out over
+///   its ramp, the first in):
+///   ```
+///   weight_L = Σ_S P_S·W_S,L / Σ_S P_S × min(1, R),   P_S = Π_{K∈S} r_K · Π_{K∉S} (1 − r_K)
+///   ```
+///   over the non-empty S. Dividing r_L·b_L by Σ r_K·b_K, as first built, let a ramp near 0 on
+///   a dominant corner outweigh the rest, and handed over within a few samples (row 301).
+/// A resting pad moving at full speed (each Morph ramp crossing the whole pad) moves no weight by
+/// more than 0.0097 a sample (ε's choice), and a handover with the pad still by no more than about
+/// 0.0042 (four layers ramping at once). With the layers at rest one P_S is 1, so layer A alone
+/// weighs exactly 1.0f wherever the pad is and renders M1's chain bit for bit.
 ///
 /// A layer's Layer On switch ramps r_L over kRampSeconds. A layer renders while its ramp's
 /// target or value is non-zero (layerRendering). Once the ramp is down at 0 the layer is off: its

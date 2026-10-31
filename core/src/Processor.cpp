@@ -1132,20 +1132,65 @@ bool Processor::layerRendering(uint8_t layer) const noexcept
     return l.on.to != 0.0f || l.on.at(l.engine.sampleClock(), rampSamples_) != 0.0f;
 }
 
+namespace
+{
+// The morph law's floor (spec §6.3, as amended for carry-over row 301): an on-set whose corner
+// weights sum to less than this shares the shortfall equally. 0.35 is the smallest round value at
+// which a resting pad moving at full speed in both axes (each Morph ramp crossing the whole pad in
+// 10 ms) moves no weight by more than 0.01 a sample: the steepest point is three layers on just
+// outside the floor, where the old law's own slope is 4.65 per pad unit (0.25 gave 6.56).
+constexpr float kMorphFloor = 0.35f;
+
+// The layers A to D as the bits 0 to 3 of an on-set.
+constexpr bool adjacentPair(uint32_t set) noexcept
+{
+    return set == 0b0011 || set == 0b1100 || set == 0b0101 || set == 0b1010; // AB, CD, AC, BD
+}
+
+// D1's weights with exactly the layers of `set` on at rest: b_L / s, s = Σ_{K∈set} b_K summed in
+// order A to D, the law as first built, bit for bit; except where s < kMorphFloor for a diagonal
+// pair or a triple, whose weights would be ratios of corner weights that all near 0 there (near
+// the corner no layer of the set holds), where each takes an equal share of the shortfall:
+// (b_L + (ε − s) / n) / ε. Both forms sum to 1 and meet at s = ε. A lone layer and an adjacent
+// pair never floor: b / b is exactly 1, and an adjacent pair's weights don't depend on the axis
+// its corners share (A and B: 1 − x), so they are never steep.
+void setWeights(uint32_t set, const std::array<float, kLayers> &corner,
+                std::array<float, kLayers> &w) noexcept
+{
+    float s = 0.0f;
+    for (size_t L = 0; L < kLayers; ++L)
+    {
+        if ((set >> L & 1u) != 0)
+        {
+            s += corner[L];
+        }
+    }
+    const int n = std::popcount(set);
+    const bool floored = n > 1 && s < kMorphFloor && !adjacentPair(set);
+    const float share = floored ? (kMorphFloor - s) / static_cast<float>(n) : 0.0f;
+    for (size_t L = 0; L < kLayers; ++L)
+    {
+        w[L] = (set >> L & 1u) == 0 ? 0.0f
+               : floored            ? (corner[L] + share) / kMorphFloor
+                                    : corner[L] / s;
+    }
+}
+} // namespace
+
 void Processor::weightsAt(int64_t t, const std::array<bool, kLayers> &rendering,
                           std::array<float, kLayers> &weights) const noexcept
 {
-    // Spec §6.3, D1 as amended by LS-T10a and by carry-over row 301's fix: each layer keeps its
-    // own share of the clamped pad's bilinear corner weights, r_L·b_L, plus its ramp's share,
-    // r_L / R, of the corner weight no rendering layer holds, m = Σ (1 − r_K)·b_K; the sum is
-    // divided by s + m (Σ b_K, 1 up to rounding), then times min(1, R), R = Σ r_K, which the
-    // R < 1 branch folds in so that nothing divides by a vanishing R. Every weight is a
-    // polynomial in the ramps and the pad over a denominator of about 1 (and R ≥ 1), so it
-    // moves at their pace: dividing by s alone, as first built, made the weights ratios of
-    // corner weights that all near 0 off the pad's center, and handed over within a few samples
-    // (row 301). Every term is a product of non-negative values (r ∈ [0, 1]), so no weight is
-    // −0. One layer rendering at r = 1 gets (b + m) / (b + m), exactly 1; four at r = 1 have
-    // m = 0 and get b / s, the law as first built, bit for bit.
+    // Spec §6.3, D1 as amended by LS-T10a and for carry-over row 301. With the layers at rest
+    // (every ramp at 0 or 1) the weights are setWeights of the on layers: the law as first built,
+    // bit for bit, except where its floor binds. While some ramp, they interpolate multilinearly
+    // between the on-sets the ramping layers span: Σ P_S·W_S / Σ P_S over the non-empty sets S
+    // that hold every layer at 1 and none at 0, P_S = Π_{K∈S} r_K · Π_{K∉S} (1 − r_K) over the
+    // ramping layers, then times min(1, R), R = Σ r_K (LS-T10a: the last layer fades out with its
+    // ramp). Each weight is then a polynomial in the ramps over their own sum, so it moves at
+    // their pace; dividing r_L·b_L by Σ r_K·b_K, as first built, let a ramp near 0 on a dominant
+    // corner outweigh the rest, and handed over within a few samples (row 301). At rest there is
+    // one set, P = 1, so the weights are W bit for bit: one layer at r = 1 weighs exactly 1. No
+    // weight is −0: every term is a product or quotient of non-negative values (r ∈ [0, 1]).
     static_assert(kLayers == 4);
     const float x = std::clamp(morphX_.at(t, rampSamples_), 0.001f, 0.999f);
     const float y = std::clamp(morphY_.at(t, rampSamples_), 0.001f, 0.999f);
@@ -1153,30 +1198,55 @@ void Processor::weightsAt(int64_t t, const std::array<bool, kLayers> &rendering,
     const float iy = 1.0f - y;
     const std::array<float, kLayers> corner{ix * iy, x * iy, ix * y, x * y};
     std::array<float, kLayers> r{};
-    std::array<float, kLayers> rb{};
-    float sum = 0.0f;
-    float unheld = 0.0f;
+    uint32_t whole = 0; // layers at 1
+    uint32_t some = 0;  // layers above 0
     float ramps = 0.0f;
     for (size_t L = 0; L < kLayers; ++L)
     {
         r[L] = rendering[L] ? layers_[L]->on.at(t, rampSamples_) : 0.0f;
-        rb[L] = r[L] * corner[L];
-        sum += rb[L];
-        unheld += (1.0f - r[L]) * corner[L];
+        whole |= r[L] >= 1.0f ? 1u << L : 0u;
+        some |= r[L] > 0.0f ? 1u << L : 0u;
         ramps += r[L];
     }
-    const float total = sum + unheld;
+    weights.fill(0.0f);
+    if (some == 0)
+    {
+        return;
+    }
+    // Every subset of the ramping layers, from all of them down to none (at most 16, one at rest).
+    const uint32_t ramping = some & ~whole;
+    std::array<float, kLayers> sum{};
+    float mass = 0.0f;
+    for (uint32_t sub = ramping;; sub = (sub - 1) & ramping)
+    {
+        const uint32_t set = whole | sub;
+        if (set != 0)
+        {
+            float p = 1.0f;
+            for (size_t L = 0; L < kLayers; ++L)
+            {
+                if ((ramping >> L & 1u) != 0)
+                {
+                    p *= (set >> L & 1u) != 0 ? r[L] : 1.0f - r[L];
+                }
+            }
+            std::array<float, kLayers> w{};
+            setWeights(set, corner, w);
+            mass += p;
+            for (size_t L = 0; L < kLayers; ++L)
+            {
+                sum[L] += p * w[L];
+            }
+        }
+        if (sub == 0)
+        {
+            break;
+        }
+    }
+    const float fade = std::min(1.0f, ramps);
     for (size_t L = 0; L < kLayers; ++L)
     {
-        if (ramps >= 1.0f)
-        {
-            weights[L] = (rb[L] + r[L] * unheld / ramps) / total;
-        }
-        else
-        {
-            // (r_L·b_L + (r_L / R)·m) / (s + m) × R; 0 with no ramp up.
-            weights[L] = ramps > 0.0f ? r[L] * (corner[L] * ramps + unheld) / total : 0.0f;
-        }
+        weights[L] = sum[L] / mass * fade;
     }
 }
 

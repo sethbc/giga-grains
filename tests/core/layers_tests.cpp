@@ -144,9 +144,8 @@ TEST_CASE("layers sum in order A to D", "[core][layers]")
 
 TEST_CASE("the weight is exactly 1 with one layer on anywhere on the pad", "[core][layers]")
 {
-    // M2 sub-project 1's spec §6.3 (as amended for row 301): (b_A + m) / (b_A + m) is 1.0f
-    // exactly, wherever the pad is and while it ramps; so layer A alone renders the same bits at
-    // any Morph.
+    // M2 sub-project 1's spec §6.3: b_A / b_A is 1.0f exactly, wherever the pad is and while it
+    // ramps; so layer A alone renders the same bits at any Morph.
     constexpr int64_t kFrames = 36000;
     const Stereo input = noise(kFrames, 0.5f, 5);
     Stereo centre = silence(kFrames);
@@ -388,18 +387,29 @@ namespace
 // is smooth; the law as first built moved one by up to 0.99 in a sample off the pad's center.
 constexpr float kSmoothStep = 0.01f;
 
-// The largest |w_L(t + 1) − w_L(t)| over the four layers and every t in [from, to), read with
-// morphWeightAt, so exact once the boundary at `from` has been applied.
-float largestWeightStep(const Processor &p, int64_t from, int64_t to)
+// The four layers' weights at t, read with morphWeightAt (exact for t at or after the last
+// boundary applied).
+std::array<float, 4> weightsAt(const Processor &p, int64_t t)
+{
+    return {p.morphWeightAt(0, t), p.morphWeightAt(1, t), p.morphWeightAt(2, t),
+            p.morphWeightAt(3, t)};
+}
+
+// The largest |w_L(t + 1) − w_L(t)| over the four layers, from `before` (the weights at from − 1,
+// read before the boundary at `from` was applied) through every t in [from, to).
+float largestWeightStep(const Processor &p, const std::array<float, 4> &before, int64_t from,
+                        int64_t to)
 {
     float largest = 0.0f;
-    for (uint8_t L = 0; L < 4; ++L)
+    std::array<float, 4> prev = before;
+    for (int64_t t = from; t < to; ++t)
     {
-        for (int64_t t = from; t + 1 < to; ++t)
+        const std::array<float, 4> w = weightsAt(p, t);
+        for (size_t L = 0; L < 4; ++L)
         {
-            largest =
-                std::max(largest, std::abs(p.morphWeightAt(L, t + 1) - p.morphWeightAt(L, t)));
+            largest = std::max(largest, std::abs(w[L] - prev[L]));
         }
+        prev = w;
     }
     return largest;
 }
@@ -438,8 +448,10 @@ Handover handover(float x, float y, const std::array<bool, 4> &on,
         p.setBase(gg::core::layerOnSlot(L), on[L] ? 1.0f : 0.0f);
     }
     Stereo out = silence(kFrames);
-    render(p, nullptr, 0, kAt + 1, {4096}, changes, out);
-    const float step = largestWeightStep(p, kAt - 1, kAt + kRamp + 2);
+    render(p, nullptr, 0, kAt, {4096}, changes, out);
+    const std::array<float, 4> before = weightsAt(p, kAt - 1); // the boundary not yet applied
+    render(p, nullptr, kAt, kAt + 1, {4096}, changes, out);
+    const float step = largestWeightStep(p, before, kAt, kAt + kRamp + 2);
     render(p, nullptr, kAt + 1, kFrames, {4096}, changes, out);
     REQUIRE(peak(out.left) > 0.05f);
     const gg::metrics::AudioData audio{kRate, {out.left, out.right}};
@@ -451,27 +463,196 @@ const std::vector<TimedEvent> kAOffDOn{{24000, ParamSlot::LayerAOn, false, 0.0},
                                        {24000, ParamSlot::LayerDOn, false, 1.0}};
 } // namespace
 
-TEST_CASE("the rendering layers share the unheld corner weight by their ramps", "[core][layers]")
+namespace
 {
-    // D1 as amended for row 301: each rendering layer keeps r_L·b_L and takes r_L / Σ r_K of the
-    // corner weight no layer holds. At (0.25, 0.25) with A and D on, b_A = 0.5625, b_D = 0.0625
-    // and B's and C's 0.1875 each are shared equally: 0.75 and 0.25 (the law as first built gave
-    // 0.9 and 0.1, a ratio of corner weights that becomes 0/0 toward B's and C's corners).
+// The morph law as first built (D1, LS-T10a) at rest, with the layers of `set` (bits 0 to 3, A to
+// D) on: b_L / s in float, summed in order A to D, as Processor::weightsAt computed it.
+std::array<float, 4> firstLawAtRest(uint32_t set, float morphX, float morphY)
+{
+    const float x = std::clamp(morphX, 0.001f, 0.999f);
+    const float y = std::clamp(morphY, 0.001f, 0.999f);
+    const std::array<float, 4> b{(1.0f - x) * (1.0f - y), x * (1.0f - y), (1.0f - x) * y, x * y};
+    std::array<float, 4> rb{};
+    float s = 0.0f;
+    for (size_t L = 0; L < 4; ++L)
+    {
+        rb[L] = (set >> L & 1u) != 0 ? b[L] : 0.0f;
+        s += rb[L];
+    }
+    std::array<float, 4> w{};
+    for (size_t L = 0; L < 4; ++L)
+    {
+        w[L] = rb[L] / s * 1.0f;
+    }
+    return w;
+}
+
+// The on layers' corner weights' sum at rest: the floor (0.35) binds below it for a diagonal pair
+// or a triple.
+float onSum(uint32_t set, float morphX, float morphY)
+{
+    const float x = std::clamp(morphX, 0.001f, 0.999f);
+    const float y = std::clamp(morphY, 0.001f, 0.999f);
+    const std::array<float, 4> b{(1.0f - x) * (1.0f - y), x * (1.0f - y), (1.0f - x) * y, x * y};
+    float s = 0.0f;
+    for (size_t L = 0; L < 4; ++L)
+    {
+        s += (set >> L & 1u) != 0 ? b[L] : 0.0f;
+    }
+    return s;
+}
+
+void switchTo(Processor &p, uint32_t set)
+{
+    for (uint8_t L = 0; L < 4; ++L)
+    {
+        p.setBase(gg::core::layerOnSlot(L), (set >> L & 1u) != 0 ? 1.0f : 0.0f);
+    }
+}
+} // namespace
+
+TEST_CASE("at rest the morph keeps the first law's weights where its floor does not bind",
+          "[core][layers]")
+{
+    // D1 as amended for row 301: at rest the weights are b_L / Σ_{K on} b_K, bit for bit, except
+    // where a diagonal pair's or a triple's corner weights sum to less than 0.35. An adjacent pair
+    // never floors, so its weights are the first law's on the whole pad.
     Processor p({kRate, 512, 1, Mode::Fx});
-    p.setBase(ParamSlot::LayerDOn, 1.0f);
-    p.setBase(ParamSlot::MorphX, 0.25f);
-    p.setBase(ParamSlot::MorphY, 0.25f);
-    CHECK_THAT(p.morphWeightAt(0, 0), Catch::Matchers::WithinAbs(0.75, 1e-6));
-    CHECK(p.morphWeightAt(1, 0) == 0.0f);
-    CHECK(p.morphWeightAt(2, 0) == 0.0f);
-    CHECK_THAT(p.morphWeightAt(3, 0), Catch::Matchers::WithinAbs(0.25, 1e-6));
-    // At B's corner, which neither holds, A and D share it: half each, as at the pad's center.
-    p.setBase(ParamSlot::MorphX, 1.0f);
-    p.setBase(ParamSlot::MorphY, 0.0f);
-    CHECK_THAT(p.morphWeightAt(0, 0), Catch::Matchers::WithinAbs(0.5, 1e-6));
-    CHECK_THAT(p.morphWeightAt(3, 0), Catch::Matchers::WithinAbs(0.5, 1e-6));
-    CHECK_THAT(p.morphWeightAt(0, 0) + p.morphWeightAt(3, 0),
-               Catch::Matchers::WithinAbs(1.0, 1e-6));
+    struct Case
+    {
+        const char *name;
+        uint32_t set;
+        bool floors;
+    };
+    for (const Case &c :
+         {Case{"AB", 0b0011, false}, Case{"AC", 0b0101, false}, Case{"AD", 0b1001, true},
+          Case{"ABC", 0b0111, true}, Case{"BCD", 0b1110, true}, Case{"ABCD", 0b1111, false}})
+    {
+        INFO("layers " << c.name);
+        switchTo(p, c.set);
+        int checked = 0;
+        int floored = 0;
+        for (int i = 0; i <= 20; ++i)
+        {
+            for (int j = 0; j <= 20; ++j)
+            {
+                const float x = static_cast<float>(i) / 20.0f;
+                const float y = static_cast<float>(j) / 20.0f;
+                if (c.floors && onSum(c.set, x, y) < 0.35f)
+                {
+                    ++floored;
+                    continue;
+                }
+                p.setBase(ParamSlot::MorphX, x);
+                p.setBase(ParamSlot::MorphY, y);
+                const std::array<float, 4> expected = firstLawAtRest(c.set, x, y);
+                for (uint8_t L = 0; L < 4; ++L)
+                {
+                    INFO("(" << x << ", " << y << ") layer " << int{L});
+                    REQUIRE(bitsOf(p.morphWeightAt(L, 0)) == bitsOf(expected[L]));
+                }
+                ++checked;
+            }
+        }
+        // Every point for the adjacent pairs and four layers; most of the pad for the others.
+        CHECK(checked + floored == 441);
+        CHECK((floored == 0 || c.floors));
+        CHECK(checked > (c.floors ? 300 : 440));
+    }
+}
+
+TEST_CASE("where the floor binds the on layers share its shortfall equally", "[core][layers]")
+{
+    // D1 as amended for row 301: below s = Σ_{K on} b_K < 0.35, a diagonal pair's or a triple's
+    // weights are (b_L + (0.35 − s) / n) / 0.35. Points where the first law gives other weights.
+    Processor p({kRate, 512, 1, Mode::Fx});
+    {
+        // A and D at (0.95, 0.2): b_A = 0.04, b_D = 0.19, s = 0.23; the first law gave
+        // 0.174 and 0.826.
+        switchTo(p, 0b1001);
+        p.setBase(ParamSlot::MorphX, 0.95f);
+        p.setBase(ParamSlot::MorphY, 0.2f);
+        CHECK_THAT(p.morphWeightAt(0, 0), Catch::Matchers::WithinAbs((0.04 + 0.06) / 0.35, 1e-6));
+        CHECK_THAT(p.morphWeightAt(3, 0), Catch::Matchers::WithinAbs((0.19 + 0.06) / 0.35, 1e-6));
+        CHECK(p.morphWeightAt(1, 0) == 0.0f);
+        CHECK(p.morphWeightAt(2, 0) == 0.0f);
+    }
+    {
+        // A, B and C at (0.95, 0.95): b_D = 0.9025, s = 0.0975; the first law gave A 0.026.
+        switchTo(p, 0b0111);
+        p.setBase(ParamSlot::MorphX, 0.95f);
+        p.setBase(ParamSlot::MorphY, 0.95f);
+        const double share = (0.35 - 0.0975) / 3.0;
+        CHECK_THAT(p.morphWeightAt(0, 0),
+                   Catch::Matchers::WithinAbs((0.0025 + share) / 0.35, 1e-6));
+        CHECK_THAT(p.morphWeightAt(1, 0),
+                   Catch::Matchers::WithinAbs((0.0475 + share) / 0.35, 1e-6));
+        CHECK_THAT(p.morphWeightAt(2, 0),
+                   Catch::Matchers::WithinAbs((0.0475 + share) / 0.35, 1e-6));
+        CHECK(p.morphWeightAt(3, 0) == 0.0f);
+    }
+}
+
+TEST_CASE("off the center the ramping weights sum to min(1, sum of ramps)", "[core][layers]")
+{
+    // D1 as amended for row 301, while layers ramp: the weights are a weighted mean of the on-sets'
+    // weights (each summing to 1) times min(1, R), R = Σ r_K, so they sum to 1 once a whole
+    // layer's worth is on and to R below that; a layer whose ramp is at 0 weighs 0; none is
+    // negative. Mixed fractional ramps at off-center pads, two layers rising together from all off
+    // among them.
+    constexpr int64_t kAt = 4096;
+    struct Switch
+    {
+        uint32_t from;
+        uint32_t to;
+    };
+    for (const auto &[x, y] : std::array<std::array<float, 2>, 4>{
+             {{0.0f, 0.0f}, {0.8f, 0.15f}, {0.3f, 0.9f}, {0.97f, 0.97f}}})
+    {
+        for (const Switch sw :
+             {Switch{0b0000, 0b0110}, Switch{0b0001, 0b1110}, Switch{0b1011, 0b0101},
+              Switch{0b1111, 0b0001}, Switch{0b0110, 0b1001}})
+        {
+            INFO("pad (" << x << ", " << y << "), layers " << sw.from << " -> " << sw.to);
+            Processor p({kRate, 512, 1, Mode::Fx});
+            p.setBase(ParamSlot::MorphX, x);
+            p.setBase(ParamSlot::MorphY, y);
+            switchTo(p, sw.from);
+            std::vector<TimedEvent> events;
+            for (uint8_t L = 0; L < 4; ++L)
+            {
+                if (((sw.from ^ sw.to) >> L & 1u) != 0)
+                {
+                    events.push_back(
+                        {kAt, gg::core::layerOnSlot(L), false, (sw.to >> L & 1u) != 0 ? 1.0 : 0.0});
+                }
+            }
+            Stereo out = silence(kAt + 1);
+            render(p, nullptr, 0, kAt + 1, {512}, events, out);
+            for (const int64_t k : {int64_t{1}, int64_t{37}, int64_t{240}, int64_t{401}})
+            {
+                INFO("ramp sample " << k);
+                const double u = static_cast<double>(k) / static_cast<double>(kRamp);
+                double ramps = 0.0;
+                double sum = 0.0;
+                for (uint8_t L = 0; L < 4; ++L)
+                {
+                    const double r0 = (sw.from >> L & 1u) != 0 ? 1.0 : 0.0;
+                    const double r1 = (sw.to >> L & 1u) != 0 ? 1.0 : 0.0;
+                    const double r = r0 + (r1 - r0) * u;
+                    const float w = p.morphWeightAt(L, kAt + k);
+                    CHECK(w >= 0.0f);
+                    if (r == 0.0)
+                    {
+                        CHECK(w == 0.0f);
+                    }
+                    ramps += r;
+                    sum += w;
+                }
+                CHECK_THAT(sum, Catch::Matchers::WithinAbs(std::min(1.0, ramps), 2e-6));
+            }
+        }
+    }
 }
 
 TEST_CASE("a layer switched on at the pad's corner hands over smoothly", "[core][layers]")
