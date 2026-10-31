@@ -525,8 +525,10 @@ TEST_CASE("at rest the morph keeps the first law's weights where its floor does 
         bool floors;
     };
     for (const Case &c :
-         {Case{"AB", 0b0011, false}, Case{"AC", 0b0101, false}, Case{"AD", 0b1001, true},
-          Case{"ABC", 0b0111, true}, Case{"BCD", 0b1110, true}, Case{"ABCD", 0b1111, false}})
+         {Case{"AB", 0b0011, false}, Case{"AC", 0b0101, false}, Case{"BD", 0b1010, false},
+          Case{"CD", 0b1100, false}, Case{"AD", 0b1001, true}, Case{"BC", 0b0110, true},
+          Case{"ABC", 0b0111, true}, Case{"ABD", 0b1011, true}, Case{"ACD", 0b1101, true},
+          Case{"BCD", 0b1110, true}, Case{"ABCD", 0b1111, false}})
     {
         INFO("layers " << c.name);
         switchTo(p, c.set);
@@ -692,6 +694,134 @@ TEST_CASE("a layer's off ramp ends at its weight's own pace", "[core][layers]")
         handover(0.0f, 1.0f, {false, true, true, true}, {{24000, ParamSlot::LayerCOn, false, 0.0}});
     CHECK(h.largestStep < kSmoothStep);
     CHECK(h.clickScore < 15.0);
+}
+
+namespace
+{
+// A move of the pad across its whole width, X from `x0` to 1 − x0 from `at`, Y from `y0` to
+// 1 − y0 from `at + yDelay` (staggered ramps put the pad at full speed in both axes anywhere),
+// with the layers going from the set `from` to the set `to` (bits 0 to 3, A to D) at `at`. Both
+// boundaries are on the 32-sample control grid, where the Processor applies parameter events.
+struct PadMove
+{
+    uint32_t from;
+    uint32_t to;
+    float x0;
+    float y0;
+    int64_t yDelay;
+};
+
+// The largest per-sample weight step over `m`, rendered from `clock` by p (no input, so only the
+// weights matter); out must hold the whole run. Each window is read once the boundaries before
+// it are applied and the next is not: the sample before `at`, then [at, at + yDelay), then the
+// rest of the ramps.
+float largestPadStep(Processor &p, int64_t ramp, int64_t &clock, Stereo &out, const PadMove &m)
+{
+    switchTo(p, m.from);
+    p.setBase(ParamSlot::MorphX, m.x0);
+    p.setBase(ParamSlot::MorphY, m.y0);
+    const int64_t at = (clock + 16 + 31) / 32 * 32;
+    std::vector<TimedEvent> events{{at, ParamSlot::MorphX, false, 1.0 - m.x0}};
+    for (uint8_t L = 0; L < 4; ++L)
+    {
+        if (((m.from ^ m.to) >> L & 1u) != 0)
+        {
+            events.push_back(
+                {at, gg::core::layerOnSlot(L), false, (m.to >> L & 1u) != 0 ? 1.0 : 0.0});
+        }
+    }
+    events.push_back({at + m.yDelay, ParamSlot::MorphY, false, 1.0 - m.y0});
+    render(p, nullptr, clock, at, {512}, events, out);
+    const std::array<float, 4> before = weightsAt(p, at - 1);
+    render(p, nullptr, at, at + 1, {512}, events, out);
+    float largest = largestWeightStep(p, before, at, at + m.yDelay + 1);
+    render(p, nullptr, at + 1, at + m.yDelay + 1, {512}, events, out);
+    const std::array<float, 4> held = weightsAt(p, at + m.yDelay);
+    largest =
+        std::max(largest, largestWeightStep(p, held, at + m.yDelay + 1, at + m.yDelay + ramp + 2));
+    clock = at + m.yDelay + 1;
+    return largest;
+}
+} // namespace
+
+TEST_CASE("the pad at full speed moves each weight smoothly", "[core][layers]")
+{
+    // D1 as amended for row 301, at 48 and 44.1 kHz (a ramp of 480 and 441 samples): a resting
+    // pad crossing the pad in both axes at once, through the floor's edge, moves no weight by
+    // more than kSmoothStep a sample (0.0073 and 0.0079 at worst, A, B and C on just outside the
+    // floor, Y starting 320 and 288 samples after X); nor does a handover with the pad still
+    // (0.0062 and 0.0068 at worst: B off while A, C and D come on at (0, 1)). Every multi-layer
+    // set, every direction, four Y delays on the control grid.
+    for (const double rate : {48000.0, 44100.0})
+    {
+        INFO("rate " << rate);
+        const auto ramp = static_cast<int64_t>(std::lround(rate * 0.01));
+        Processor p({rate, 512, 3, Mode::Fx, 64});
+        Stereo out = silence(400000);
+        int64_t clock = 0;
+        float padWorst = 0.0f;
+        for (uint32_t set = 1; set < 16; ++set)
+        {
+            if (std::popcount(set) < 2)
+            {
+                continue;
+            }
+            for (const float x0 : {0.0f, 1.0f})
+            {
+                for (const float y0 : {0.0f, 1.0f})
+                {
+                    for (const int64_t delay :
+                         {int64_t{0}, int64_t{224}, int64_t{288}, int64_t{320}})
+                    {
+                        padWorst = std::max(padWorst, largestPadStep(p, ramp, clock, out,
+                                                                     {set, set, x0, y0, delay}));
+                    }
+                }
+            }
+        }
+        CHECK(padWorst < kSmoothStep);
+        // The worst handover with the pad still, of every pair of sets.
+        p.setBase(ParamSlot::MorphX, 0.0f);
+        p.setBase(ParamSlot::MorphY, 1.0f);
+        switchTo(p, 0b0010);
+        const int64_t at = (clock + 16 + 31) / 32 * 32;
+        const std::vector<TimedEvent> handover{{at, ParamSlot::LayerAOn, false, 1.0},
+                                               {at, ParamSlot::LayerBOn, false, 0.0},
+                                               {at, ParamSlot::LayerCOn, false, 1.0},
+                                               {at, ParamSlot::LayerDOn, false, 1.0}};
+        render(p, nullptr, clock, at, {512}, handover, out);
+        const std::array<float, 4> before = weightsAt(p, at - 1);
+        render(p, nullptr, at, at + 1, {512}, handover, out);
+        const float handoverStep = largestWeightStep(p, before, at, at + ramp + 2);
+        CHECK(handoverStep < kSmoothStep);
+        CHECK(handoverStep > 0.006f); // the case is the worst one, 0.0062
+        CHECK(padWorst > 0.007f);     // the sweep reaches the steepest band
+    }
+}
+
+TEST_CASE("a handover during a full-speed pad move stays near the smooth step", "[core][layers]")
+{
+    // The worst combined cases found (a model of the law over every pair of sets, direction and
+    // stagger on the control grid): B and D swapping with A and C held while the pad crosses the
+    // pad in both axes, Y starting 320 or 288 samples after X. The two motions add: 0.0105 a sample
+    // at 48 kHz and 0.0116 at 44.1 kHz, over kSmoothStep, pinned here under 0.0125. No floor up
+    // to 0.45 keeps the combined step within 0.01 at 44.1 kHz (carry-over row 301's report).
+    for (const double rate : {48000.0, 44100.0})
+    {
+        INFO("rate " << rate);
+        const auto ramp = static_cast<int64_t>(std::lround(rate * 0.01));
+        Processor p({rate, 512, 3, Mode::Fx, 64});
+        Stereo out = silence(8192);
+        int64_t clock = 0;
+        float step = 0.0f;
+        for (const PadMove m :
+             {PadMove{0b1101, 0b0111, 0.0f, 1.0f, 320}, PadMove{0b0111, 0b1101, 0.0f, 0.0f, 288}})
+        {
+            step = std::max(step, largestPadStep(p, ramp, clock, out, m));
+        }
+        CHECK(step < 0.0125f);
+        CHECK(step > kSmoothStep);
+    }
 }
 
 TEST_CASE("all layers off renders silence", "[core][layers]")
