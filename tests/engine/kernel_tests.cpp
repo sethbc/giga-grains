@@ -1322,14 +1322,41 @@ void requireExactRuns(const Pool &pool, int64_t frames, uint32_t d, int64_t from
 }
 
 // liveInterior at decimation 1, which also requires UnitDecimation (level 0's compile-time
-// decimation) to give the same parts.
+// decimation) to give the same parts: the two run the same IEEE arithmetic (a multiply by 1.0
+// against none), on the same unchanging ring, so they can't differ on a sound machine. On a
+// difference, both are computed twice more and the failure says whether either repeats it: CI's
+// run of f6e6b0d failed once here under Rosetta (35,269 against 35,270, "loop, frozen", blocks of
+// 1), which 89 runs under Rosetta here, 48 of them on a loaded machine, and a run of the whole
+// suite under it never repeated, as with describeBadSample's two transient faults.
 template <class R, class Ring>
 gg::kernels::LiveInterior liveInteriorAtOne(const gg::GrainRows &rows, uint32_t i, const Ring &ring,
                                             int64_t from, int64_t to)
 {
-    const gg::kernels::LiveInterior in = gg::kernels::liveInterior<R>(rows, i, ring, 1u, from, to);
-    const gg::kernels::LiveInterior unit = gg::kernels::liveInterior<R>(
-        rows, i, ring, gg::kernels::detail::UnitDecimation{}, from, to);
+    const auto atOne = [&] { return gg::kernels::liveInterior<R>(rows, i, ring, 1u, from, to); };
+    const auto atUnit = [&] {
+        return gg::kernels::liveInterior<R>(rows, i, ring, gg::kernels::detail::UnitDecimation{},
+                                            from, to);
+    };
+    const auto same = [](const gg::kernels::LiveInterior &a, const gg::kernels::LiveInterior &b) {
+        return a.begin[0] == b.begin[0] && a.end[0] == b.end[0] && a.begin[1] == b.begin[1] &&
+               a.end[1] == b.end[1];
+    };
+    const gg::kernels::LiveInterior in = atOne();
+    const gg::kernels::LiveInterior unit = atUnit();
+    if (!same(in, unit))
+    {
+        std::ostringstream again;
+        for (int pass = 1; pass <= 2; ++pass)
+        {
+            const gg::kernels::LiveInterior a = atOne();
+            const gg::kernels::LiveInterior b = atUnit();
+            again << "; recomputed " << pass << ": at 1 [" << a.begin[0] << ", " << a.end[0]
+                  << ") [" << a.begin[1] << ", " << a.end[1] << "), unit [" << b.begin[0] << ", "
+                  << b.end[0] << ") [" << b.begin[1] << ", " << b.end[1] << ")"
+                  << (same(a, in) && same(b, unit) ? " (repeats)" : " (does not repeat)");
+        }
+        UNSCOPED_INFO("grain " << i << " over [" << from << ", " << to << ")" << again.str());
+    }
     for (int p = 0; p < 2; ++p)
     {
         REQUIRE(unit.begin[p] == in.begin[p]);
