@@ -310,7 +310,7 @@ runs the tests labelled either. The labels are:
   - `sweep` (M2 sub-project 3): the sweep harness, 20 cases in `tests/sweep/` over the
     `Processor` in both products (parameter sweeps, extremes, automation bursts and the overload
     sweeps), each checking finiteness, the peak bound, no runaway and the goldens' click score
-    outside named exemptions (`SweepDriver.h`; carry-over rows 300 to 302), and pinning a floor
+    outside named exemptions (`SweepDriver.h`; carry-over rows 217 and 302), and pinning a floor
     under the share of its render that it scores. About 26.5 s in `dev` (eight at a time) and
     about 194 s under ASan; none is `slow`;
   - `layers` (M2 sub-project 1): the four layers, in the engine (the layer's RNG key, the enable
@@ -551,7 +551,7 @@ gg-render --write-media DIR
   internal error.
 - **The cases:** each case's spec is in `tests/golden/cases/`, and its expected metrics and event
   log are in `tests/golden/expected/`. Every `*.json` there is a case; a new one gets a test the
-  next time CMake runs. There are 50.
+  next time CMake runs. There are 51.
   - **M0's four,** in sample mode: `sparse-sine` (8 grains a second over a 220 Hz sine),
     `sparse-sine-44k1` (the same source converted to 44.1 kHz), `dense-noise` (400 grains a
     second over noise, up a fifth) and `sweep-stretch` (long grains over a sweep, down an
@@ -634,6 +634,17 @@ gg-render --write-media DIR
     - Every one of the 36 earlier cases' WAV SHA-256 was unchanged through every task; their event
       logs were rewritten once, by inserting `"tier"` and `"lvl"`. A change that moves one WAV is
       a regression.
+  - **Its follow-up's one** (carry-over row 300; INTENT §23 #66, amended): `inst-sample-end`, the
+    instrument over a 2 s 660 Hz sine at Position 0.97, 200 ms grains at 8 Hz, notes at rates
+    0.5, 1, 1.5 and 2. Every grain reaches the sample's end inside its window and fades out with
+    the raised cosine (1.94; 36.03 with the old hard cut). It catches all 16 injected steps. The cut grains' window
+    phases at the sample's end run from 0.027 to 0.97. Its grains are all Normal-tier with no
+    short spans (none has fewer than 256 samples to its cut), and the cut is invisible to its event
+    log (`dur` is unchanged), so its cross-platform check is its metrics alone: Eco, HQ and short
+    spans rest on the kernel and engine tests.
+    - The follow-up made the steal fade a raised cosine too (EF-8), which moved `fx-overload` and
+      `inst-overload` (WAVs and metrics; their event logs hold no fade shape). Every other case,
+      none of which steals or reaches its sample's end, kept its WAV SHA-256.
   - **M2 sub-project 2's seven** (sources and persistence; its spec §10), 4 to 24 s:
     - `inst-resample-feedback` (the instrument: layer A Sample over a 220 Hz sine, one held
       note, layer B a Resample layer at Pitch +12 with Feedback 0.6), `fx-resample` (a stereo
@@ -655,11 +666,11 @@ gg-render --write-media DIR
     - `fx-splice-capture`'s two Splice changes fall between grains on purpose, until a later task
       (12a) fixes the click a window change makes under sounding grains; 12a regenerates the
       case and recounts its entry.
-    - Every one of the 43 earlier cases (the 36 before sub-project 3 and its seven) renders
-      bit-identically with Ring Length 16 s, Loop off, Overdub 0, no splice, no Resample layer,
-      nothing embedded and the cap at its default: a sources change that moves one is a
-      regression. The ring pyramid's task names any case its level selection moves
-      (`fx-hq-live-level0` among them).
+    - Every one of the 44 earlier cases (the 36 before sub-project 3, its seven and its
+      follow-up's one) renders bit-identically with Ring Length 16 s, Loop off, Overdub 0, no
+      splice, no Resample layer, nothing embedded and the cap at its default: a sources change
+      that moves one is a regression. The ring pyramid's task names any case its level selection
+      moves (`fx-hq-live-level0` among them).
     - The event log sees neither the tap's audio nor a restored ring's frames, only the grains
       that read them, so across platforms the metrics compare those.
   - **The event-log comparison never sees the reverb or the diffuser:** the log records grains,

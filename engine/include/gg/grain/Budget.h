@@ -33,9 +33,18 @@ inline constexpr uint32_t kNormalStereoWeight = 4;
 inline constexpr uint64_t kUnlimitedQuota = std::numeric_limits<uint64_t>::max();
 
 /// The fade a stolen grain is given, in output samples (spec §6.5): with more than this left it
-/// ends at onset + kStealFade, fading; with at most this left it keeps its end and doesn't fade
-/// (ruling ES-T6a; GrainPool::steal).
+/// ends at onset + kStealFade, fading with the raised cosine (ruling EF-8; GrainKernels.h's
+/// stealFaded); with at most this left it keeps its end and doesn't fade (ruling ES-T6a;
+/// GrainPool::steal).
 inline constexpr int64_t kStealFade = 256;
+
+/// The fade a grain cut at its sample's edge is given, in output samples (carry-over row 300,
+/// rulings EF-2 and EF-6; GrainPool::spawn): a raised cosine over this many samples before the
+/// edge, or over all it has when that is fewer. Its own constant beside kStealFade: the shortest
+/// of 256, 512 and 1024 at which every measured case (rates 0.5 to 4, every tier, every edge
+/// phase, short spans, gains 1 and 4) scores at most 12 on the goldens' click detector; at 256
+/// the worst was 2.81.
+inline constexpr int64_t kEdgeFade = 256;
 
 /// A grain may be stolen once it has sounded this fraction of its durationSamples (spec §6.5,
 /// D4): until then a draw that finds no room drops.

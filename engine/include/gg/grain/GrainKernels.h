@@ -47,19 +47,30 @@
 /// e × invDuration is outside [0, 1], as without it, so the SIMD kernels' runs, which test
 /// the unwarped phase, are unchanged.
 ///
-/// Only samples with w > 0 contribute; elsewhere nothing is read and nothing is added. A grain the
-/// overload ladder stole with a fade (GrainPool::steal; spec §6.5) fades from its steal on: after
-/// w > 0,
+/// Only samples with w > 0 contribute; elsewhere nothing is read and nothing is added. The fades
+/// are raised cosines read from the same Hann table, its rising half (H(p), p in [0, 0.5], is
+/// sin²(πp)), with zero slope where they leave 1 and where they reach their last sample (rulings
+/// EF-6 and EF-8). A grain the overload ladder stole with a fade (GrainPool::steal; spec §6.5)
+/// fades from its steal on: after w > 0,
 ///
-///     w = w × min(1, float(endSample − t) × invFade)   (float)   where t >= fadeStart
+///     p = float64(endSample − t) × (0.5 × float64(invFade))    (double)
+///     w = w × H(p)        where t >= fadeStart and p < 0.5     (float)
 ///
-/// with endSample its moved end, fadeStart + kStealFade, and invFade 1 / kStealFade: exactly 1 at
-/// the steal (256 × float(1 / 256) is 1) and 1 / 256 at its last sample. Every other grain has
-/// invFade 0 and skips the multiply: an unstolen grain (fadeStart kNeverStolen), whose bits are
-/// M1's, and one stolen with at most kStealFade left, which keeps its end and window (ruling
-/// ES-T6a). With two outputs, dst[c][t] += read_c(posL) × (w × gain_c), with gain_c
-/// the latched gainL or gainR. One output carries source channel 0 with gain alone: dst[0][t] +=
-/// read_0(posL) × (w × gain).
+/// with endSample its moved end, the steal + kStealFade, and invFade 1 / kStealFade, so p is
+/// exactly (endSample − t) / 512: 0.5 at the steal, which is left at 1. Then, on the sample path
+/// only (detail::sampleFaded; the ring's grains have no edge), a grain cut at its sample's edge
+/// (carry-over row 300; GrainPool::spawn's `edge`) is multiplied by its edge curve:
+///
+///     p = float64(edgeEnd − t) × edgeScale                       (double)
+///     w = w × H(p)        where p < 0.5                          (float)
+///
+/// with edgeScale 0.5 / L, L = min(kEdgeFade, edgeEnd − onsetSample). fadeStart is the earlier of
+/// the two curves' starts, so the SIMD runs end there and every fading sample goes through the
+/// scalar reference. Every other grain has invFade 0 and edgeScale 0 and skips both multiplies:
+/// an uncut grain never stolen (fadeStart kNeverStolen), whose bits are M1's, and an uncut one
+/// stolen with at most kStealFade left, which keeps its end and window (ruling ES-T6a). With two
+/// outputs, dst[c][t] += read_c(posL) × (w × gain_c), with gain_c the latched gainL or gainR. One
+/// output carries source channel 0 with gain alone: dst[0][t] += read_0(posL) × (w × gain).
 ///
 /// Every sample depends only on t and the grain, never on which call renders it, so splitting
 /// [from, to) anywhere gives the same bits.
@@ -524,16 +535,48 @@ struct Sinc
 
 namespace detail
 {
-/// The steal fade (spec §6.5; the file comment): w × min(1, float(end − t) × invFade) at a sample
-/// t >= fadeStart of a grain stolen with a fade (invFade != 0), and w itself otherwise,
-/// unmultiplied.
-inline float stealFaded(float w, int64_t t, int64_t fadeStart, int64_t end,
-                        float invFade) noexcept SST_CPPUTILS_NONBLOCKING
+/// The steal fade (spec §6.5; the file comment; ruling EF-8): a raised cosine, w × the Hann table
+/// at phase float64(end − t) × (0.5 × float64(invFade)) wherever t >= fadeStart and that phase is
+/// below 0.5, for a grain stolen with a fade (invFade = 1 / kStealFade, so the phase's scale is
+/// exactly 1 / 512), and w itself otherwise, unmultiplied. The table's rising half is
+/// sin²(π/2 × (end − t) / kStealFade): at the steal, end − t = kStealFade and the phase is
+/// exactly 0.5, so the first fading sample is the next one, and the curve leaves 1 and reaches its
+/// last sample with zero slope.
+inline float stealFaded(float w, int64_t t, int64_t fadeStart, int64_t end, float invFade,
+                        const HannTable &hann) noexcept SST_CPPUTILS_NONBLOCKING
 {
     GG_FP_CONTRACT_OFF
     if (invFade != 0.0f && t >= fadeStart)
     {
-        return w * std::min(1.0f, static_cast<float>(end - t) * invFade);
+        const double phase = static_cast<double>(end - t) * (0.5 * static_cast<double>(invFade));
+        if (phase < 0.5)
+        {
+            return w * hann.at(phase);
+        }
+    }
+    return w;
+}
+
+/// The sample path's fades (renderSampleRefAt only; the live references keep stealFaded): the
+/// steal fade, then a grain cut at its sample's edge's raised-cosine curve (carry-over row 300,
+/// ruling EF-6), which multiplies it. The curve's factor at t is the Hann table at phase
+/// float64(edgeEnd − t) × edgeScale, edgeScale = 0.5 / L, wherever that phase is below 0.5: the
+/// table's rising half, sin²(π/2 × (edgeEnd − t) / L), 1 with zero slope where the curve starts
+/// (edgeEnd − L) and near 0 with zero slope at its last sample. A grain with edgeScale 0 is
+/// left unmultiplied, so its bits are as without it.
+inline float sampleFaded(float w, int64_t t, int64_t fadeStart, int64_t end, float invFade,
+                         int64_t edgeEnd, double edgeScale,
+                         const HannTable &hann) noexcept SST_CPPUTILS_NONBLOCKING
+{
+    GG_FP_CONTRACT_OFF
+    w = stealFaded(w, t, fadeStart, end, invFade, hann);
+    if (edgeScale != 0.0)
+    {
+        const double phase = static_cast<double>(edgeEnd - t) * edgeScale;
+        if (phase < 0.5)
+        {
+            w = w * hann.at(phase);
+        }
     }
     return w;
 }
@@ -616,6 +659,8 @@ void renderSampleRefAt(const GrainRows &rows, uint32_t i, const SampleSource &sr
     const int64_t fadeStart = rows.fadeStart[i];
     const int64_t end = rows.endSample[i];
     const float invFade = rows.invFade[i];
+    const int64_t edgeEnd = rows.edgeEnd[i];
+    const double edgeScale = rows.edgeScale[i];
     const HannTable &hann = tables.hann;
     float *const dst0 = out.dst[0];
     float *const dst1 = out.dst[1];
@@ -630,7 +675,7 @@ void renderSampleRefAt(const GrainRows &rows, uint32_t i, const SampleSource &sr
             {
                 continue;
             }
-            w = stealFaded(w, t, fadeStart, end, invFade);
+            w = sampleFaded(w, t, fadeStart, end, invFade, edgeEnd, edgeScale, hann);
             const double pos = (startPos + rate * e) * invDec;
             const auto j = static_cast<std::size_t>(t - out.blockStart);
             dst0[j] +=
@@ -648,7 +693,7 @@ void renderSampleRefAt(const GrainRows &rows, uint32_t i, const SampleSource &sr
         {
             continue;
         }
-        w = stealFaded(w, t, fadeStart, end, invFade);
+        w = sampleFaded(w, t, fadeStart, end, invFade, edgeEnd, edgeScale, hann);
         const double pos = (startPos + rate * e) * invDec;
         const auto j = static_cast<std::size_t>(t - out.blockStart);
         const float s0 = Reader::template read<kStride>(src.data[0], src.frames, pos, params);
@@ -1108,7 +1153,7 @@ void renderLiveRef(const GrainRows &rows, uint32_t i, const LiveSource &live, De
         {
             continue;
         }
-        w = detail::stealFaded(w, t, fadeStart, end, invFade);
+        w = detail::stealFaded(w, t, fadeStart, end, invFade, hann);
         // The read position is in ring time; the head is R(t), from this block's write.
         const double pos = (startPos + rate * e) * invDec;
         const int64_t head = live.headAt(t);
@@ -1531,7 +1576,7 @@ void renderLiveLevelRef(const GrainRows &rows, uint32_t i, const LiveSource &liv
         {
             continue;
         }
-        w = detail::stealFaded(w, t, fadeStart, end, invFade);
+        w = detail::stealFaded(w, t, fadeStart, end, invFade, hann);
         // The fade in ring frames; the read in the level's (the SIMD interior's posL).
         const double pos0 = startPos + rate * e;
         const double pos = pos0 * invDec;
