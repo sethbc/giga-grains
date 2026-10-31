@@ -19,8 +19,11 @@
 //
 // The engine cases (spec §5): engine-sample (X), engine-sample-eco (X at the Eco tier),
 // engine-live and engine-full-pool, then the four-layer cases engine-layers and
-// engine-layers-full (M2 layers spec §6.12, report-only). Each one-layer case owns a gg::Engine
-// (48 kHz, maxBlockSize 256, seeded with the bench seed) rendering one Cloud stream of
+// engine-layers-full (M2 layers spec §6.12, report-only), then engine-sample-hq,
+// engine-sample-hq-up and engine-overload (M2 engine spec §6.10, report-only; engine-overload
+// sets its engine's quota, EngineSetup::quota, before the warm-up), then engine-sample-sse (the
+// AVX2 spike, spec §6.12, report-only: X on the 4-wide kernels). Each one-layer case owns a
+// gg::Engine (48 kHz, maxBlockSize 256, seeded with the bench seed) rendering one Cloud stream of
 // Options::grains overlapping grains of 100 ms (density grains / 0.1 Hz, periodic) at +7
 // semitones, stereo 1, over the same noise: in Sample mode the noise is the source; in Live mode
 // it is the input, fed block by block. The timed block is one Engine::process call. A
@@ -76,7 +79,9 @@
 #include "gg/core/SpaceReverb.h"
 #include "gg/engine/Engine.h"
 #include "gg/engine/TaskRunner.h"
+#include "gg/grain/Budget.h"
 #include "gg/grain/GrainPool.h"
+#include "gg/grain/KernelDispatch.h"
 #include "gg/grain/Tier.h"
 #include "gg/source/SampleBuffer.h"
 #include "gg/source/SourceMode.h"
@@ -99,6 +104,9 @@ constexpr std::array<uint32_t, 3> kBlockSizes{32, 64, kMaxBlockSize};
 constexpr uint64_t kSeed = 0x67672d62656e6368ull; // "gg-bench"
 constexpr double kMaxRunSeconds = 3600.0; // beyond it, duration_cast to the clock could overflow
 constexpr const char *kReference = "reference";
+// engine-full-pool's capacity, grains + 48, must fit the engine's kMaxGrainCapacity.
+constexpr uint32_t kFullPoolSpare = 48;
+constexpr uint32_t kMaxGrains = gg::kMaxGrainCapacity - kFullPoolSpare;
 // The live case's input wraps around the noise without splitting a block.
 static_assert(kSourceFrames % kMaxBlockSize == 0 && kMaxBlockSize % 32 == 0 &&
               kMaxBlockSize % 64 == 0);
@@ -272,6 +280,8 @@ struct EngineSetup
     gg::CloudParams params;
     gg::SourceMode mode{gg::SourceMode::Sample};
     double warmUpSeconds{0.0};
+    /// The engine's quota in weight units (Engine::setQuota), set before the warm-up.
+    uint64_t quota{gg::kUnlimitedQuota};
 };
 
 /// engine-sample, X (ruling 4): the headline's Sample-mode case. Spray 0.45 keeps every read
@@ -321,7 +331,7 @@ uint32_t layerGrains(const EngineCase &engineCase, uint32_t grains, uint32_t lay
 }
 
 /// The engine cases, in report order. Each is engine-sample with its own changes.
-constexpr std::array<EngineCase, 6> kEngineCases{{
+constexpr std::array<EngineCase, 10> kEngineCases{{
     {"engine-sample", engineSample},
     // X at the Eco tier: every grain reads with linear interpolation (ruling 2).
     {"engine-sample-eco",
@@ -345,7 +355,7 @@ constexpr std::array<EngineCase, 6> kEngineCases{{
     {"engine-full-pool",
      [](uint32_t grains) {
          EngineSetup s = engineSample(grains);
-         s.config.grainCapacity = grains + 48;
+         s.config.grainCapacity = grains + kFullPoolSpare;
          s.params.grainDurationSec = 1.0;
          s.warmUpSeconds = 2.0 * s.params.grainDurationSec;
          return s;
@@ -355,6 +365,47 @@ constexpr std::array<EngineCase, 6> kEngineCases{{
     {"engine-layers", engineSample, 4, true},
     // Four layers at four times X's grain count: 2,000 grains each by default, 8,000 in all.
     {"engine-layers-full", engineSample, 4, false},
+    // M2 engine spec §6.10, report-only beside X. X at HQ: every grain a 16-tap windowed sinc,
+    // reading level 0 at s = 1. The HQ figure, and the source of HQ's weight.
+    {"engine-sample-hq",
+     [](uint32_t grains) {
+         EngineSetup s = engineSample(grains);
+         s.params.quality = gg::Tier::HQ;
+         return s;
+     }},
+    // The same at Pitch +19 (rate 2.997): each grain reads the pyramid's level 1 at residual
+    // 1.5, the mipmap path's cost.
+    {"engine-sample-hq-up",
+     [](uint32_t grains) {
+         EngineSetup s = engineSample(grains);
+         s.params.quality = gg::Tier::HQ;
+         s.params.pitchSemitones = 19.0;
+         return s;
+     }},
+    // The overload ladder: capacity 16,384 and a quota of `grains` Normal grains, asked for 1 s
+    // grains at 4 x grains a second, so the ladder drops and steals steadily (its draws are all
+    // Normal, so it lowers none: ruling ES-T8a). Its figure is ns per rendered grain-sample: the
+    // ladder's bookkeeping over engine-sample's rendering.
+    {"engine-overload",
+     [](uint32_t grains) {
+         EngineSetup s = engineSample(grains);
+         s.config.grainCapacity = gg::kMaxGrainCapacity;
+         s.params.densityHz = 4.0 * static_cast<double>(grains);
+         s.params.grainDurationSec = 1.0;
+         s.quota = uint64_t{grains} * gg::kNormalStereoWeight;
+         s.warmUpSeconds = 2.0 * s.params.grainDurationSec;
+         return s;
+     }},
+    // The AVX2 spike (M2 engine spec §6.12), report-only beside X: X on the 4-wide kernels
+    // (EngineConfig::kernels), whatever the CPU runs. Where engine-sample dispatches to the 8-wide
+    // AVX2 kernels, the two ratios in the same rounds are the spike's measurement; elsewhere both
+    // run the same kernels.
+    {"engine-sample-sse",
+     [](uint32_t grains) {
+         EngineSetup s = engineSample(grains);
+         s.config.kernels = gg::KernelChoice::Sse;
+         return s;
+     }},
 }};
 
 /// One engine case at one block size: its engines, one per layer, which keep rendering from
@@ -380,6 +431,7 @@ class EngineConfiguration final : public Configuration
             }
             engine->setCloudParams(s.params);
             engine->setSourceMode(s.mode);
+            engine->setQuota(s.quota);
             engines_.push_back(std::move(engine));
         }
         if (engineCase.layers > 1)
@@ -444,7 +496,9 @@ class EngineConfiguration final : public Configuration
             engine->setEventSink(
                 [](void *ctx, uint32_t, const gg::GrainSpec &g) {
                     TierCounts &c = *static_cast<TierCounts *>(ctx);
-                    ++(g.tier == gg::Tier::Eco ? c.eco : c.normal);
+                    ++(g.tier == gg::Tier::Eco      ? c.eco
+                       : g.tier == gg::Tier::Normal ? c.normal
+                                                    : c.hq);
                 },
                 &counts);
         }
@@ -453,6 +507,10 @@ class EngineConfiguration final : public Configuration
         {
             engine->setEventSink(nullptr, nullptr);
             counts.activeGrains.push_back(engine->activeGrains());
+            counts.lowered += engine->loweredGrains();
+            counts.stolen += engine->stolenGrains();
+            counts.dropped += engine->droppedGrains();
+            counts.kernelLanes.push_back(engine->kernelTable().lanes);
         }
         return counts;
     }
@@ -635,6 +693,11 @@ void validate(const Options &options)
     {
         throw std::invalid_argument("there must be at least 1 grain");
     }
+    if (options.grains > kMaxGrains)
+    {
+        throw std::invalid_argument("there must be at most " + std::to_string(kMaxGrains) +
+                                    " grains");
+    }
     const std::vector<std::string> names = caseNames();
     for (const std::string &c : options.cases)
     {
@@ -648,7 +711,7 @@ void validate(const Options &options)
 Report run(const Options &options, const Progress &progress)
 {
     validate(options);
-    Report report{options, machine(), compiler(), {}, {}};
+    Report report{options, machine(), compiler(), {}, {}, kernelLanes()};
 
     const gg::ScopedDenormalsOff noDenormals;
 
@@ -782,13 +845,10 @@ std::string toJson(const Report &report)
         });
     }
     const nlohmann::ordered_json j{
-        {"schemaVersion", kSchemaVersion},
-        {"machine", report.machine},
-        {"compiler", report.compiler},
-        {"commit", report.options.commit},
-        {"runSeconds", report.options.runSeconds},
-        {"rounds", report.options.rounds},
-        {"results", std::move(results)},
+        {"schemaVersion", kSchemaVersion},   {"machine", report.machine},
+        {"kernelLanes", report.kernelLanes}, {"compiler", report.compiler},
+        {"commit", report.options.commit},   {"runSeconds", report.options.runSeconds},
+        {"rounds", report.options.rounds},   {"results", std::move(results)},
         {"ratios", std::move(ratios)},
     };
     return j.dump(2, ' ', false, nlohmann::ordered_json::error_handler_t::replace) + "\n";
@@ -1197,6 +1257,10 @@ double quantile(std::vector<double> v, double q)
     const std::size_t hi = std::min(lo + 1, v.size() - 1);
     return v[lo] + (h - static_cast<double>(lo)) * (v[hi] - v[lo]);
 }
+
+uint32_t kernelLanes() { return gg::kernels::dispatch().lanes; }
+
+std::string kernelsName(uint32_t lanes) { return lanes == 8 ? "8-wide (AVX2)" : "4-wide"; }
 
 std::string machine()
 {

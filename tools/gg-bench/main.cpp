@@ -4,8 +4,11 @@
 
 // gg-bench is the CPU benchmark and CI's CPU gate (INTENT §16, §19). It times the real engine's
 // render path, the engine cases, through Engine::process: engine-sample is X, the §16
-// headline's case, beside engine-sample-eco, engine-live (the FX's figure), engine-full-pool and
-// the four-layer cases engine-layers and engine-layers-full (report-only). It times them against
+// headline's case, beside engine-sample-eco, engine-live (the FX's figure), engine-full-pool, and
+// the report-only cases: the four-layer engine-layers and engine-layers-full, then
+// engine-sample-hq and engine-sample-hq-up (X at the HQ tier, at Pitch 0 and +19) and
+// engine-overload (the overload ladder at a spent quota), and engine-sample-sse (X on the 4-wide
+// kernels, the AVX2 spike's fallback). It times them against
 // the reference kernel, M0's hermite-simd frozen in Kernels.h, and reports each engine case's ratio
 // to it, which the CI gate checks. It also still times M0's prototype kernels in Kernels.h. It
 // began as the M0 kernel benchmark spike and was made gate-grade in M1 (carry-over B-I2, [133],
@@ -177,7 +180,7 @@ void usage(std::FILE *f)
         "  --quick           runs of 0.2 s instead of 2 s (30 canvas frames, not 240)\n"
         "  --seconds S       runs of S seconds (the last of --quick and --seconds wins)\n"
         "  --rounds N        N rounds (default 5)\n"
-        "  --grains N        N grains (default 2000)\n"
+        "  --grains N        N grains, 1 to 16336 (default 2000)\n"
         "  --cases a,b       only these cases (default all):\n"
         "                    %s\n"
         "  --commit SHA      the commit to record in the JSON (default \"unknown\")\n"
@@ -267,11 +270,11 @@ bool parseCases(std::string_view s, std::vector<std::string> &out)
 void printReport(const gg::bench::Report &report)
 {
     const gg::bench::Options &o = report.options;
-    std::printf("\n%-18s %6s %9s %12s %12s %12s %12s\n", "case", "block", "grains", "median", "min",
+    std::printf("\n%-19s %6s %9s %12s %12s %12s %12s\n", "case", "block", "grains", "median", "min",
                 "IQR", "% core @48k");
     for (const gg::bench::CaseResult &r : report.results)
     {
-        std::printf("%-18s %6u %9.1f %12.4f %12.4f %12.4f %12.3f\n", r.name.c_str(), r.blockSize,
+        std::printf("%-19s %6u %9.1f %12.4f %12.4f %12.4f %12.3f\n", r.name.c_str(), r.blockSize,
                     r.grains, r.median, r.min, r.iqr, r.cpuPctOneCoreAt48k);
     }
     std::printf("\nmedian, min and IQR: ns per stereo grain-sample over %d rounds of >= %g s; "
@@ -283,10 +286,10 @@ void printReport(const gg::bench::Report &report)
     {
         return;
     }
-    std::printf("\n%-18s %6s %12s %12s\n", "ratio", "block", "median", "IQR");
+    std::printf("\n%-19s %6s %12s %12s\n", "ratio", "block", "median", "IQR");
     for (const gg::bench::Ratio &r : report.ratios)
     {
-        std::printf("%-18s %6u %12.4f %12.4f\n", r.name.c_str(), r.blockSize, r.median, r.iqr);
+        std::printf("%-19s %6u %12.4f %12.4f\n", r.name.c_str(), r.blockSize, r.median, r.iqr);
     }
     std::printf("\nratio: the case's ns per grain-sample over reference's, in the same round; "
                 "median and IQR over the rounds\n");
@@ -307,26 +310,26 @@ std::size_t printVerdicts(const gg::bench::Comparison &comparison, const std::st
     std::printf("\nbaseline: %s (leg %s, machine %s, commit %s, %u run%s)\n", path.c_str(),
                 baseline["leg"].get<std::string>().c_str(), machine.c_str(),
                 comparison.commit.c_str(), comparison.runs, comparison.runs == 1 ? "" : "s");
-    std::printf("\n%-18s %6s %12s %12s  %s\n", "case", "block", "ratio", "limit", "verdict");
+    std::printf("\n%-19s %6s %12s %12s  %s\n", "case", "block", "ratio", "limit", "verdict");
     std::size_t regressed = 0;
     for (const gg::bench::Verdict &v : verdicts)
     {
         const bool known = !std::isnan(v.limit);
         if (known)
         {
-            std::printf("%-18s %6u %12.4f %12.4f  %s\n", v.name.c_str(), v.blockSize, v.ratio,
+            std::printf("%-19s %6u %12.4f %12.4f  %s\n", v.name.c_str(), v.blockSize, v.ratio,
                         v.limit, v.regressed ? "regressed" : "pass");
         }
         else
         {
-            std::printf("%-18s %6u %12.4f %12s  %s\n", v.name.c_str(), v.blockSize, v.ratio, "-",
+            std::printf("%-19s %6u %12.4f %12s  %s\n", v.name.c_str(), v.blockSize, v.ratio, "-",
                         "not in the baseline");
         }
         regressed += v.regressed ? 1 : 0;
     }
     for (const gg::bench::Verdict &v : comparison.missing)
     {
-        std::printf("%-18s %6u %12s %12.4f  %s\n", v.name.c_str(), v.blockSize, "-", v.limit,
+        std::printf("%-19s %6u %12s %12.4f  %s\n", v.name.c_str(), v.blockSize, "-", v.limit,
                     "missing from this run");
     }
     std::string missing;
@@ -592,8 +595,9 @@ int main(int argc, char **argv)
     std::printf("gg-bench: %u grains of 100 ms, 60 s stereo noise at 48 kHz, %d interleaved "
                 "rounds of >= %g s\n",
                 options.grains, options.rounds, options.runSeconds);
-    std::printf("commit:   %s\nmachine:  %s\ncompiler: %s\n", options.commit.c_str(),
-                machine().c_str(), compiler().c_str());
+    std::printf("commit:   %s\nmachine:  %s\nkernels:  %s\ncompiler: %s\n", options.commit.c_str(),
+                machine().c_str(), gg::bench::kernelsName(gg::bench::kernelLanes()).c_str(),
+                compiler().c_str());
     std::fflush(stdout);
 
     const gg::bench::Report report = gg::bench::run(options, [](int round, int rounds) {

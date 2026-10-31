@@ -254,18 +254,23 @@ StreamSpec readStream(const json &j)
         {
             s.quality = Tier::Eco;
         }
+        else if (q == "hq")
+        {
+            s.quality = Tier::HQ;
+        }
         else if (q != "normal")
         {
-            throw SpecError(R"(stream.quality must be "eco" or "normal")");
+            throw SpecError(R"(stream.quality must be "eco", "normal" or "hq")");
         }
     }
     return s;
 }
 
-/// Layer A's slot of the layer parameter whose M1 name, before layers named their parameters with
-/// their letter ("Size" for "A Size"; M2 sub-project 1's spec §6.9), is `name`, so that every M1
-/// spec still parses; nothing for any other name.
-std::optional<gg::core::ParamSlot> m1LayerAlias(std::string_view name)
+/// Layer A's slot of the layer parameter whose bare name is `name`: an M1 name, from before layers
+/// named their parameters with their letter ("Size" for "A Size"; M2 sub-project 1's spec §6.9),
+/// so that every M1 spec still parses, or Quality's (M2 sub-project 3's spec §6.9); nothing for any
+/// other name.
+std::optional<gg::core::ParamSlot> layerAAlias(std::string_view name)
 {
     static constexpr std::array<std::string_view, 11> kM1Names{
 #define GG_M1_NAME(enumName, index, display) display,
@@ -279,10 +284,17 @@ std::optional<gg::core::ParamSlot> m1LayerAlias(std::string_view name)
             return gg::core::layerSlot(static_cast<gg::core::LayerParam>(i), 0);
         }
     }
+#define GG_ENGINE_ALIAS(enumName, index, display)                                                  \
+    if (name == (display))                                                                         \
+    {                                                                                              \
+        return gg::core::ParamSlot::enumName;                                                      \
+    }
+    GG_LAYER_PARAMS_M2_ENGINE(GG_ENGINE_ALIAS)
+#undef GG_ENGINE_ALIAS
     return std::nullopt;
 }
 
-/// `mode`'s product's parameter names, for error messages: "Mix, Level, A Position, ..., Level D".
+/// `mode`'s product's parameter names, for error messages: "Mix, Level, A Position, ..., Budget".
 std::string parameterNames(gg::core::Mode mode)
 {
     std::string names;
@@ -295,11 +307,11 @@ std::string parameterNames(gg::core::Mode mode)
 }
 
 /// The parameter named `name` in `mode`'s product: paramSlotNamed's, unless that name is the other
-/// product's alone ("Macro Level" in an FX spec, say). A bare M1 name ("Size") is layer A's in
-/// either product.
+/// product's alone ("Macro Level" in an FX spec, say). A bare M1 name ("Size"), or "Quality", is
+/// layer A's in either product.
 std::optional<gg::core::ParamSlot> paramSlotNamedIn(std::string_view name, gg::core::Mode mode)
 {
-    if (const auto alias = m1LayerAlias(name))
+    if (const auto alias = layerAAlias(name))
     {
         return alias;
     }
@@ -868,10 +880,10 @@ RenderSpec readSpec(const json &j)
 
 std::optional<gg::core::ParamSlot> paramSlotNamed(std::string_view name)
 {
-    // A bare M1 name is layer A's (spec §6.9). Then either product's names: the FX's first, then
-    // the instrument's, which differ only for Macro 8. No name is one slot's in one product and
-    // another's in the other.
-    if (const auto alias = m1LayerAlias(name))
+    // A bare M1 name, or "Quality", is layer A's (spec §6.9). Then either product's names: the FX's
+    // first, then the instrument's, which differ only for Macro 8. No name is one slot's in one
+    // product and another's in the other.
+    if (const auto alias = layerAAlias(name))
     {
         return alias;
     }

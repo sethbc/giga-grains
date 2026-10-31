@@ -5,8 +5,9 @@
 #include "gg/grain/GrainPool.h"
 
 #include <algorithm>
-#include <functional>
+#include <cassert>
 
+#include "gg/grain/Budget.h"
 #include "gg/grain/Envelope.h"
 
 namespace gg
@@ -17,7 +18,8 @@ GrainPool::GrainPool(uint32_t capacity)
       onsetFrac_(slots_), startPos_(slots_), rate_(slots_), durationSamples_(slots_), gain_(slots_),
       pan_(slots_), tier_(slots_), sourceSlot_(slots_), endSample_(slots_), invDuration_(slots_),
       gainL_(slots_), gainR_(slots_), texture_(slots_), envAttackEnd_(slots_),
-      envReleaseStart_(slots_), envAttackScale_(slots_), envReleaseScale_(slots_),
+      envReleaseStart_(slots_), envAttackScale_(slots_), envReleaseScale_(slots_), weight_(slots_),
+      level_(slots_), fadeStart_(slots_), invFade_(slots_), heapPos_(slots_, kNotInHeap),
       rows_{
           .index = index_.data(),
           .onsetSample = onsetSample_.data(),
@@ -38,21 +40,139 @@ GrainPool::GrainPool(uint32_t capacity)
           .envReleaseStart = envReleaseStart_.data(),
           .envAttackScale = envAttackScale_.data(),
           .envReleaseScale = envReleaseScale_.data(),
+          .weight = weight_.data(),
+          .level = level_.data(),
+          .fadeStart = fadeStart_.data(),
+          .invFade = invFade_.data(),
       },
       heap_(slots_)
 {
 }
 
-bool GrainPool::canAdmit(int64_t onset) noexcept
+void GrainPool::place(uint32_t pos, const HeapEntry &e) noexcept
 {
-    // The heap's top is its smallest end. Ends <= onset belong to grains that no longer sound,
-    // and since onsets don't decrease they never will again.
-    while (heapSize_ > 0 && heap_[0] <= onset)
+    heap_[pos] = e;
+    heapPos_[e.row] = pos;
+}
+
+void GrainPool::siftUp(uint32_t pos) noexcept
+{
+    const HeapEntry e = heap_[pos];
+    while (pos > 0)
     {
-        std::pop_heap(heap_.begin(), heap_.begin() + heapSize_, std::greater<>{});
-        --heapSize_;
+        const uint32_t parent = (pos - 1) / 2;
+        if (heap_[parent].end <= e.end)
+        {
+            break;
+        }
+        place(pos, heap_[parent]);
+        pos = parent;
     }
-    return heapSize_ < capacity_;
+    place(pos, e);
+}
+
+void GrainPool::siftDown(uint32_t pos) noexcept
+{
+    const HeapEntry e = heap_[pos];
+    for (;;)
+    {
+        uint32_t child = 2 * pos + 1; // below slots_ < 2^32, since heapSize_ <= slots_ <= 2^31
+        if (child >= heapSize_)
+        {
+            break;
+        }
+        if (child + 1 < heapSize_ && heap_[child + 1].end < heap_[child].end)
+        {
+            ++child;
+        }
+        if (e.end <= heap_[child].end)
+        {
+            break;
+        }
+        place(pos, heap_[child]);
+        pos = child;
+    }
+    place(pos, e);
+}
+
+void GrainPool::forgetEnds(int64_t t) noexcept
+{
+    // The heap's top is its smallest end. Ends <= t belong to grains that no longer sound, and
+    // since onsets don't decrease they never will again.
+    while (heapSize_ > 0 && heap_[0].end <= t)
+    {
+        heapWeight_ -= heap_[0].weight;
+        // Only a steal that faded the grain put its weight in fadingWeight_ (steal()).
+        if (invFade_[heap_[0].row] != 0.0f)
+        {
+            fadingWeight_ -= heap_[0].weight;
+        }
+        heapPos_[heap_[0].row] = kNotInHeap;
+        if (--heapSize_ > 0)
+        {
+            place(0, heap_[heapSize_]);
+            siftDown(0);
+        }
+    }
+}
+
+uint64_t GrainPool::soundingWeight(int64_t onset) noexcept
+{
+    forgetEnds(onset);
+    return heapWeight_;
+}
+
+uint64_t GrainPool::fadingWeight(int64_t onset) noexcept
+{
+    forgetEnds(onset);
+    return fadingWeight_;
+}
+
+uint32_t GrainPool::soundingCount(int64_t onset) noexcept
+{
+    forgetEnds(onset);
+    return heapSize_;
+}
+
+bool GrainPool::oldestSounding(int64_t onset, uint32_t &row) noexcept
+{
+    // A row passed here has ended by this onset, so by every later one, or been stolen, which
+    // it stays: neither is the answer again before retirement restarts the scan.
+    while (cursor_ < size_ && (endSample_[cursor_] <= onset || fadeStart_[cursor_] != kNeverStolen))
+    {
+        ++cursor_;
+    }
+    if (cursor_ == size_)
+    {
+        return false;
+    }
+    row = cursor_;
+    return true;
+}
+
+void GrainPool::steal(uint32_t row, int64_t onset) noexcept
+{
+    assert(row < size_ && endSample_[row] > onset);
+    assert(fadeStart_[row] == kNeverStolen);
+    // A grain that sounds at the onset still has its heap entry: only ends <= an onset or a
+    // retirement time, never later than this onset, have been forgotten.
+    assert(heapPos_[row] != kNotInHeap);
+    fadeStart_[row] = onset; // stolen, so never the oldest again
+    if (endSample_[row] - onset <= kStealFade)
+    {
+        // Ruling ES-T6a: it ends no later than a fade would, so it keeps its end and its window
+        // and isn't fading; its weight stays in the ordinary ledger until that end.
+        return;
+    }
+    const int64_t end = onset + kStealFade;
+    endSample_[row] = end;
+    invFade_[row] = 1.0f / static_cast<float>(kStealFade);
+    // The key only decreases, so the entry can only move up.
+    const uint32_t pos = heapPos_[row];
+    fadingWeight_ += heap_[pos].weight;
+    heap_[pos].end = end;
+    siftUp(pos);
+    earliestEnd_ = end < earliestEnd_ ? end : earliestEnd_;
 }
 
 bool GrainPool::spawn(const GrainSpec &g) noexcept
@@ -75,6 +195,10 @@ bool GrainPool::spawn(const GrainSpec &g) noexcept
     sourceSlot_[i] = g.sourceSlot;
     endSample_[i] = end;
     texture_[i] = g.texture;
+    weight_[i] = g.weight;
+    level_[i] = g.level;
+    fadeStart_[i] = kNeverStolen;
+    invFade_[i] = 0.0f;
     // The renderers' latched values (spec §3): one division and one channel gain per grain, and
     // the Texture envelope's shape (spec §4).
     const PanGains pan = panGains(g.pan);
@@ -87,9 +211,11 @@ bool GrainPool::spawn(const GrainSpec &g) noexcept
     envAttackScale_[i] = env.attackScale;
     envReleaseScale_[i] = env.releaseScale;
     earliestEnd_ = end < earliestEnd_ ? end : earliestEnd_;
-    // The heap holds at most the stored grains' ends (one per slot), and storage isn't full.
-    heap_[heapSize_++] = end;
-    std::push_heap(heap_.begin(), heap_.begin() + heapSize_, std::greater<>{});
+    // The heap holds at most one entry per stored grain, and storage isn't full.
+    const uint32_t pos = heapSize_++;
+    place(pos, {end, g.weight, i});
+    heapWeight_ += g.weight;
+    siftUp(pos);
     return true;
 }
 
@@ -99,13 +225,9 @@ void GrainPool::retireFinished(int64_t nowSample) noexcept
     {
         return; // nothing has finished
     }
-    // The retired grains' ends are exactly the stored ends <= nowSample, so popping those keeps
-    // the heap's entries a sub-multiset of the stored grains' ends.
-    while (heapSize_ > 0 && heap_[0] <= nowSample)
-    {
-        std::pop_heap(heap_.begin(), heap_.begin() + heapSize_, std::greater<>{});
-        --heapSize_;
-    }
+    // The retired grains' ends are exactly the stored ends <= nowSample, so forgetting those
+    // first leaves no heap entry on a retired row: every entry belongs to a row moveRows keeps.
+    forgetEnds(nowSample);
     // Stable compaction by runs: each maximal run of grains that still sound moves down as one
     // block per array (std::copy of trivially copyable values, a memmove), so a block that
     // retires a few grains of thousands copies a few long runs rather than every field of every
@@ -134,6 +256,7 @@ void GrainPool::retireFinished(int64_t nowSample) noexcept
     }
     size_ = kept;
     earliestEnd_ = earliest;
+    cursor_ = 0; // the rows moved
 }
 
 void GrainPool::moveRows(uint32_t from, uint32_t to, uint32_t n) noexcept
@@ -161,13 +284,30 @@ void GrainPool::moveRows(uint32_t from, uint32_t to, uint32_t n) noexcept
     move(envReleaseStart_);
     move(envAttackScale_);
     move(envReleaseScale_);
+    move(weight_);
+    move(level_);
+    move(fadeStart_);
+    move(invFade_);
+    move(heapPos_);
+    // Each moved row's heap entry, if it has one, now names its new row.
+    for (uint32_t r = to; r < to + n; ++r)
+    {
+        if (heapPos_[r] != kNotInHeap)
+        {
+            heap_[heapPos_[r]].row = r;
+        }
+    }
 }
 
 void GrainPool::clear() noexcept
 {
     size_ = 0;
     earliestEnd_ = std::numeric_limits<int64_t>::max();
+    // The rows' heap positions go with them: spawn() sets each anew.
     heapSize_ = 0;
+    heapWeight_ = 0;
+    fadingWeight_ = 0;
+    cursor_ = 0;
 }
 
 void GrainPool::assignSourceSlot(uint8_t slot, uint8_t below) noexcept
@@ -191,6 +331,8 @@ GrainSpec GrainPool::spec(uint32_t i) const noexcept
         .pan = pan_[i],
         .tier = tier_[i],
         .sourceSlot = sourceSlot_[i],
+        .weight = weight_[i],
+        .level = level_[i],
     };
 }
 } // namespace gg

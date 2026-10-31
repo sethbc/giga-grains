@@ -533,6 +533,11 @@ jobs:
           key: ccache-${{ runner.os }}-${{ matrix.preset }}-${{ matrix.os }}-${{ github.sha }}
 
       - name: Test (unit, plugin and golden)
+        # The x86 legs must run the 8-wide AVX2 kernels: kernel_require_avx2 fails when this is
+        # set and avx2Kernels() is null. Never set on macOS (arm64, and the universal build's
+        # x86_64 slice under Rosetta, which has no AVX2).
+        env:
+          GG_REQUIRE_AVX2: ${{ runner.os != 'macOS' && '1' || '' }}
         run: ctest --preset ${{ matrix.preset }} -C Release --output-on-failure
 
       # The views as PNGs (M2 sub-project 6's spec §6.13): gg-snap draws each product's four views

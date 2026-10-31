@@ -672,10 +672,11 @@ std::vector<TimedEvent> performAutomation()
 }
 
 // performAutomation(), with every slot past the 28 M1 ones automated too (M2 sub-project 1's spec
-// §6.9): layer A's 37 new parameters, layers B to D's 48 each and the nine layer globals, 10 events
-// each across the slot's whole range in the FX's paramMeta, none on a grid point, every third a
-// modulation offset of up to a quarter of the range, except on a stepped parameter (Freeze, Source,
-// the LFO shapes, Step Length, the Layer On switches), whose values are whole. The Layer On
+// §6.9, and sub-project 3's Quality and Budget): layer A's 38 new parameters, layers B to D's 49
+// each, the nine layer globals and Budget, 10 events each across the slot's whole range in the
+// FX's paramMeta, none on a grid point, every third a modulation offset of up to a quarter of the
+// range, except on a stepped parameter (Freeze, Source, the LFO shapes, Step Length, Quality, the
+// Layer On switches, Budget), whose values are whole. The Layer On
 // switches are on three times in four, so layers go off for longer than the ramp and come back.
 // Times and values come from gg::rng, keyed apart from the others'.
 std::vector<TimedEvent> everySlotAutomation()
@@ -776,7 +777,7 @@ std::vector<gg::test::layers::TimedControl> everyLayerControls()
 
 TEST_CASE("the perform parameters are block-size invariant together", "[core][determinism]")
 {
-    // Every one of the 218 slots automated (automation() for the M1 slots, everySlotAutomation()
+    // Every one of the 223 slots automated (automation() for the M1 slots, everySlotAutomation()
     // for the rest), Texture, Feedback and the macros densely, with modulation, layers B to D on,
     // a route from every mod source, a transport, notes and MIDI controls: the macro curves,
     // Texture's latched envelope, Feedback's ring write, the layers' switches, sources, spreads

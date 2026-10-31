@@ -12,6 +12,7 @@
 
 #include "gg/core/DenormalGuard.h"
 #include "gg/grain/GrainKernels.h"
+#include "gg/grain/KernelDispatch.h"
 
 namespace gg
 {
@@ -31,10 +32,10 @@ const EngineConfig &validated(const EngineConfig &config)
     {
         throw std::invalid_argument("Engine: liveSeconds must be finite and >= 0");
     }
-    // The pool stores 2 × grainCapacity grains, a count held in a uint32_t (GrainPool).
-    if (config.grainCapacity >= (uint32_t{1} << 31))
+    // Spec §6.6: the pool's ceiling (it stores 2 × grainCapacity grains).
+    if (config.grainCapacity > kMaxGrainCapacity)
     {
-        throw std::invalid_argument("Engine: grainCapacity must be below 2^31");
+        throw std::invalid_argument("Engine: grainCapacity must be at most 16384");
     }
     // Four layers, A to D (spec §6.2).
     if (config.layer >= 4)
@@ -48,8 +49,17 @@ const EngineConfig &validated(const EngineConfig &config)
 constexpr uint32_t kStream = 0;
 } // namespace
 
-Engine::Engine(const EngineConfig &config) : config_(validated(config)), pool_(config.grainCapacity)
+// The kernel table is chosen here, off the audio thread: the first Engine resolves dispatch()
+// (reading GG_FORCE_SSE and the CPU's features) for the whole process.
+Engine::Engine(const EngineConfig &config)
+    : config_(validated(config)),
+      kernels_(config.kernels == KernelChoice::Sse ? &kernels::sseKernels() : &kernels::dispatch()),
+      pool_(config.grainCapacity)
 {
+#if !GG_KERNELS_AVX2
+    // Without the AVX2 table every table is the SSE one, and renderPool calls its kernels directly.
+    assert(kernels_ == &kernels::sseKernels());
+#endif
     cloud_.prepare(config_.sampleRate);
     // process() writes into the ring in blocks of at most maxBlockSize frames (ruling M1-o).
     live_.prepare(config_.sampleRate, config_.liveSeconds, config_.maxBlockSize);
@@ -61,21 +71,16 @@ Engine::SourceSlot Engine::slotFor(const PreparedSource *source) noexcept
     slot.source = source;
     if (source != nullptr)
     {
-        // Level 0, the full-rate buffer, is the one the kernels read (spec §6.5).
-        const PreparedSource::Level &level = source->level(0);
-        const SampleBuffer &buffer = *level.buffer;
-        slot.rate = buffer.sampleRate();
-        // A source without channels has nothing to read; keep frames at 0 so the
-        // interpolators never touch its (null) data.
-        if (buffer.channels() > 0)
+        // Each level the kernels may read (spec §6.3), level 0 the full-rate source. A source
+        // without channels has frames 0 there, so the interpolators never touch its (null) data;
+        // interleaved is the SIMD sample kernel's stereo reads (§16 lever 2), null for a mono
+        // source or when PreparedSource::make couldn't allocate the copy. Past levelCount() the
+        // levels are level 0's, as level(n) is; renderPool reads the top level instead.
+        slot.rate = source->buffer().sampleRate();
+        slot.levelCount = source->levelCount();
+        for (uint32_t n = 0; n < kMaxMipLevels; ++n)
         {
-            slot.mono = buffer.channels() == 1;
-            slot.data[0] = buffer.channel(0);
-            slot.data[1] = slot.mono ? slot.data[0] : buffer.channel(1);
-            slot.frames = buffer.frames();
-            // The SIMD sample kernel's stereo reads (§16 lever 2); null for a mono source, or
-            // when PreparedSource::make couldn't allocate the copy.
-            slot.interleaved = level.pairs->data();
+            slot.levels[n] = source->level(n);
         }
     }
     return slot;
@@ -223,6 +228,12 @@ void Engine::setEventSink(GrainEventSink sink, void *ctx) noexcept
     sinkCtx_ = ctx;
 }
 
+void Engine::setStealSink(GrainStealSink sink, void *ctx) noexcept
+{
+    stealSink_ = sink;
+    stealCtx_ = ctx;
+}
+
 void Engine::reset() noexcept
 {
     clearGrains();
@@ -230,6 +241,8 @@ void Engine::reset() noexcept
     live_.reset();
     clock_ = 0;
     dropped_ = 0;
+    lowered_ = 0;
+    stolen_ = 0;
     retirePrevious(); // no grain reads it any more
 }
 
@@ -263,6 +276,7 @@ void Engine::process(const float *const *in, uint32_t numInChannels, float *cons
         }
     }
     live_.setFrozen(freeze_);
+    quota_ = requestedQuota_; // spec §6.4: from this call's first frame
     if (in == nullptr)
     {
         numInChannels = 0;
@@ -347,20 +361,25 @@ GrainSpec Engine::sampleGrain(const GrainDraw &d) const noexcept
     // so the start is M0's value. The one difference is the sign of a zero: a −0 start (from a
     // −0 position, which setParams passes through its clamp) becomes +0, the same frame. The
     // grain reads the source current at its onset to its end.
+    // An HQ draw latches the level of its rate, in level-0 frames per output sample (spec §6.3);
+    // admit() lowers it to 0 with the tier if the ladder lowers the tier.
     const SourceSlot &source = slots_[current_];
-    const double span = source.frames > 1 ? static_cast<double>(source.frames - 1) : 0.0;
+    const int64_t frames = source.levels[0].frames;
+    const double span = frames > 1 ? static_cast<double>(frames - 1) : 0.0;
+    const double rate = d.rate * source.rate / config_.sampleRate;
     return {
         .index = d.index,
         .onsetSample = d.onsetSample,
         .onsetFrac = d.onsetFrac,
         .startPos = std::clamp(d.positionDraw * span + d.sprayOffsetSec * source.rate, 0.0, span),
-        .rate = d.rate * source.rate / config_.sampleRate,
+        .rate = rate,
         .durationSamples = d.durationSamples,
         .texture = d.texture,
         .gain = d.gain,
         .pan = d.pan,
         .tier = d.tier,
         .sourceSlot = current_,
+        .level = d.tier == Tier::HQ ? mipLevelFor(rate, source.levelCount) : uint8_t{0},
     };
 }
 
@@ -398,32 +417,91 @@ bool Engine::liveGrain(const GrainDraw &d, GrainSpec &g) const noexcept
         .pan = d.pan,
         .tier = d.tier,
         .sourceSlot = kLiveSlot,
+        .level = d.tier == Tier::HQ ? mipLevelFor(rate, live_.levelCount()) : uint8_t{0},
     };
     return true;
 }
 
-void Engine::admit(const GrainSpec &g, float *const dst[2], int64_t blockStart,
+void Engine::admit(const GrainSpec &draw, float *const dst[2], int64_t blockStart,
                    int64_t &renderedTo) noexcept
 {
-    // Count only the grains still sounding at the onset, so admission doesn't depend on where
-    // the block boundaries fall (the pool may still store grains that finished earlier in the
-    // block, because retirement normally waits for the block's end).
-    if (!pool_.canAdmit(g.onsetSample))
+    const int64_t onset = draw.onsetSample;
+    if (pool_.storageFull())
+    {
+        // Many grains finished in this block. Finish the pool up to the onset, so the grains
+        // retired here have played all their samples, then retire them, before the ladder looks
+        // at the rows: what is left is the grains still sounding at the onset. Retiring early
+        // changes no output and no decision, which depend only on the grains still sounding.
+        renderPool(dst, blockStart, renderedTo, onset);
+        renderedTo = onset;
+        pool_.retireFinished(onset);
+        if (pool_.storageFull())
+        {
+            // Every stored grain still sounds: 2 × capacity, which only grains stolen faster
+            // than their fades end can make. Nothing can be stored, so the draw drops.
+            ++dropped_;
+            return;
+        }
+    }
+
+    // The overload ladder (spec §6.5; the class comment). Count only the grains still sounding
+    // at the onset, by their latched ends and weights, so admission doesn't depend on where the
+    // block boundaries fall (the pool may still store grains that finished earlier in the block,
+    // because retirement normally waits for the block's end; carry-over row 51).
+    const bool stereo = draw.sourceSlot == kLiveSlot || !slots_[draw.sourceSlot].levels[0].mono;
+    const uint64_t load = pool_.soundingWeight(onset);
+    // The highest tier t <= the draw's with base + w(t) <= quota_, into `tier`.
+    const auto fits = [this, &draw, stereo](uint64_t base, Tier &tier) {
+        for (int t = static_cast<int>(draw.tier); t >= 0; --t)
+        {
+            const auto candidate = static_cast<Tier>(t);
+            if (base + grainWeight(candidate, stereo) <= quota_)
+            {
+                tier = candidate;
+                return true;
+            }
+        }
+        return false;
+    };
+    Tier tier = draw.tier;
+    bool admitted = pool_.soundingCount(onset) < pool_.capacity() && fits(load, tier);
+    if (!admitted)
+    {
+        // Rung 3: the oldest unstolen sounding grain, once it is half-way, and only if its
+        // weight makes room. Its weight stays in the ledger until its end (moved by a steal that
+        // fades it, kept by one that doesn't: ruling ES-T6a); the draw is admitted on its
+        // credit. The room test leaves out the grains already fading (ruling
+        // ES-T2a), each of which made room for a grain it is yielding to, so under a spent quota
+        // every draw may steal one grain and the stream refreshes at its onset rate.
+        const GrainRows &rows = pool_.rows();
+        uint32_t row = 0;
+        if (pool_.oldestSounding(onset, row) &&
+            static_cast<double>(onset - rows.onsetSample[row]) - rows.onsetFrac[row] >=
+                kStealThreshold * rows.durationSamples[row] &&
+            fits(load - pool_.fadingWeight(onset) - rows.weight[row], tier))
+        {
+            const uint64_t index = rows.index[row];
+            pool_.steal(row, onset);
+            ++stolen_;
+            if (stealSink_ != nullptr)
+            {
+                stealSink_(stealCtx_, config_.layer, index, onset);
+            }
+            admitted = true;
+        }
+    }
+    if (!admitted)
     {
         ++dropped_;
         return;
     }
-    if (pool_.storageFull())
-    {
-        // More than capacity grains finished in this block. Finish the pool up to the onset, so
-        // the grains retired here have played all their samples, then retire them: fewer than
-        // capacity still sound, so g fits.
-        renderPool(dst, blockStart, renderedTo, g.onsetSample);
-        renderedTo = g.onsetSample;
-        pool_.retireFinished(g.onsetSample);
-    }
-    // Can't fail: storage was full only if the retirement above just ran, and it left only the
-    // grains still sounding at the onset, fewer than capacity by canAdmit.
+    lowered_ += tier != draw.tier ? 1 : 0;
+    GrainSpec g = draw;
+    g.tier = tier;
+    g.weight = static_cast<uint8_t>(grainWeight(tier, stereo));
+    // Only an HQ grain reads above level 0 (spec §6.3, D5): one the ladder lowered reads level 0.
+    g.level = tier == Tier::HQ ? draw.level : uint8_t{0};
+    // Can't fail: storage isn't full (above), and a steal stores nothing.
     [[maybe_unused]] const bool spawned = pool_.spawn(g);
     assert(spawned);
     if (g.sourceSlot != kLiveSlot)
@@ -448,37 +526,85 @@ void Engine::renderPool(float *const dst[2], int64_t blockStart, int64_t from, i
     // next grain starts, so each sample sums its grains in spawn order. With one output (dst[1]
     // null) the kernels carry source channel 0, unpanned. Each grain reads with its own latched
     // tier (ruling 2) from the source it latched at its onset (spec §6.4): the ring for
-    // kLiveSlot, otherwise that sample slot's source, whatever the mode now in effect.
+    // kLiveSlot, otherwise that sample slot's source, whatever the mode now in effect. It reads
+    // its latched level (spec §6.3), or the top level of a slot whose source has fewer.
     const kernels::Output output{{dst[0], dst[1]}, blockStart};
+    const kernels::Tables tables{hann_, sinc_};
     const GrainRows &rows = pool_.rows();
     const uint32_t n = pool_.size();
-    const auto view = [](const SourceSlot &s) {
-        return kernels::SampleSource{{s.data[0], s.data[1]}, s.frames, s.mono, s.interleaved};
-    };
-    const kernels::SampleSource sources[2] = {view(slots_[0]), view(slots_[1])};
+    // The kernels' view of every level of both slots, once per call.
+    kernels::SampleSource views[2][kMaxMipLevels];
+    for (uint32_t s = 0; s < 2; ++s)
+    {
+        for (uint32_t l = 0; l < kMaxMipLevels; ++l)
+        {
+            const PreparedSource::Level &level = slots_[s].levels[l];
+            views[s][l] = {{level.data[0], level.data[1]},
+                           level.frames,
+                           level.mono,
+                           level.interleaved,
+                           level.stride,
+                           level.decimation};
+        }
+    }
+#if GG_KERNELS_AVX2
+    // The table this engine was constructed with (EngineConfig::kernels): one indirect call per
+    // grain.
+    const kernels::Dispatch &k = *kernels_;
+#endif
     for (uint32_t i = 0; i < n; ++i)
     {
         if (rows.sourceSlot[i] == kLiveSlot)
         {
+            const uint32_t decimation = live_.level(rows.level[i]).decimation;
+#if GG_KERNELS_AVX2
+            const kernels::LiveKernel live = rows.tier[i] == Tier::Eco  ? k.liveLinear
+                                             : rows.tier[i] == Tier::HQ ? k.liveSinc
+                                                                        : k.liveHermite;
+            live(rows, i, live_, decimation, output, from, to, tables);
+#else
+            // Without the AVX2 table every engine's is sseKernels(), so its kernels are called
+            // directly (and may be inlined), with no indirect call per grain.
             if (rows.tier[i] == Tier::Eco)
             {
-                kernels::renderLiveSimd<kernels::Linear>(rows, i, live_, output, from, to, hann_);
+                kernels::renderLiveSimd<kernels::Linear>(rows, i, live_, decimation, output, from,
+                                                         to, tables);
+            }
+            else if (rows.tier[i] == Tier::HQ)
+            {
+                kernels::renderLiveSimd<kernels::Sinc>(rows, i, live_, decimation, output, from, to,
+                                                       tables);
             }
             else
             {
-                kernels::renderLiveSimd<kernels::Hermite>(rows, i, live_, output, from, to, hann_);
+                kernels::renderLiveSimd<kernels::Hermite>(rows, i, live_, decimation, output, from,
+                                                          to, tables);
             }
+#endif
             continue;
         }
-        const kernels::SampleSource &source = sources[rows.sourceSlot[i]];
+        const uint8_t s = rows.sourceSlot[i];
+        const kernels::SampleSource &source =
+            views[s][std::min<uint32_t>(rows.level[i], slots_[s].levelCount - 1)];
+#if GG_KERNELS_AVX2
+        const kernels::SampleKernel sample = rows.tier[i] == Tier::Eco  ? k.sampleLinear
+                                             : rows.tier[i] == Tier::HQ ? k.sampleSinc
+                                                                        : k.sampleHermite;
+        sample(rows, i, source, output, from, to, tables);
+#else
         if (rows.tier[i] == Tier::Eco)
         {
-            kernels::renderSampleSimd<kernels::Linear>(rows, i, source, output, from, to, hann_);
+            kernels::renderSampleSimd<kernels::Linear>(rows, i, source, output, from, to, tables);
+        }
+        else if (rows.tier[i] == Tier::HQ)
+        {
+            kernels::renderSampleSimd<kernels::Sinc>(rows, i, source, output, from, to, tables);
         }
         else
         {
-            kernels::renderSampleSimd<kernels::Hermite>(rows, i, source, output, from, to, hann_);
+            kernels::renderSampleSimd<kernels::Hermite>(rows, i, source, output, from, to, tables);
         }
+#endif
     }
 }
 } // namespace gg
