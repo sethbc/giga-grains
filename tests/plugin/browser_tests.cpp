@@ -1026,15 +1026,35 @@ bool sameArea(const juce::Image &a, const juce::Image &b, juce::Rectangle<int> a
     return true;
 }
 
-void checkOverlayHides(Fixture &f, const std::function<void()> &open)
+/// Where the instrument's loader strip draws, in the editor's coordinates, 1 px in from each side
+/// (R2: it sits below the header, beside the overlays' area).
+juce::Rectangle<int> loaderStrip(Fixture &f)
+{
+    auto &strip = *find(*f.editor, "sampleStrip");
+    return f.editor->getLocalArea(&strip, strip.getLocalBounds()).reduced(1);
+}
+
+void checkOverlayHides(Fixture &f, const std::function<void()> &open, bool strip = false)
 {
     const juce::Colour background{0xff15171c}; // theme::kBackground
     const juce::Image perform = snapshot(f);
-    const auto label = lastMacroLabel(f);
-    REQUIRE(pixelsNot(perform, label, background) > 0); // the label's ink, with nothing over it
+    const auto label = strip ? loaderStrip(f) : lastMacroLabel(f);
+    REQUIRE(pixelsNot(perform, label, background) > 0); // the ink, with nothing over it
     open();
     const juce::Image covered = snapshot(f);
-    CHECK(pixelsNot(covered, label, background) == 0); // none of it shows through
+    if (strip)
+    {
+        // The overlay draws its own content there, so none of the strip shows through when
+        // hiding the strip changes nothing in its area.
+        auto &stripComponent = *find(*f.editor, "sampleStrip");
+        stripComponent.setVisible(false);
+        CHECK(sameArea(covered, snapshot(f), label));
+        stripComponent.setVisible(true);
+    }
+    else
+    {
+        CHECK(pixelsNot(covered, label, background) == 0); // none of it shows through
+    }
     // The header is untouched, so its strip stays usable.
     CHECK(sameArea(perform, covered, f.editor->getLocalBounds().removeFromTop(40)));
 }
@@ -1053,6 +1073,22 @@ TEST_CASE("the Mutate panel hides the Perform view beneath it", "[plugin][ui][mu
     const Machine machine("overlay-mutate");
     Fixture f;
     checkOverlayHides(f, [&] { openPanel(f); });
+}
+
+TEST_CASE("the browser hides the instrument's loader strip beneath it", "[plugin][ui]")
+{
+    // R2: UI-1 for the instrument, whose strip sits below the header: everything below the header
+    // is covered.
+    const Machine machine("overlay-browser-strip");
+    Fixture f("org.sethbc.giga-grains");
+    checkOverlayHides(f, [&] { f.openBrowser(); }, true);
+}
+
+TEST_CASE("the Mutate panel hides the instrument's loader strip beneath it", "[plugin][ui][mutate]")
+{
+    const Machine machine("overlay-mutate-strip");
+    Fixture f("org.sethbc.giga-grains");
+    checkOverlayHides(f, [&] { openPanel(f); }, true);
 }
 
 TEST_CASE("each layer's Lock all and Unlock all have a row of their own, in view",

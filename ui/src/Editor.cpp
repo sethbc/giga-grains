@@ -135,13 +135,14 @@ class Editor final : public juce::Component,
         frameMs_.setBounds(header.removeFromRight(std::min(170, std::max(0, header.getWidth()))));
 
         area = area.reduced(kMargin, kGap);
+        // The overlays cover everything below the header, the instrument's loader strip too.
+        browser_.setBounds(area);
+        mutatePanel_.setBounds(area);
         if (strip_)
         {
             strip_->setBounds(area.removeFromTop(28));
             area.removeFromTop(kGap);
         }
-        browser_.setBounds(area);
-        mutatePanel_.setBounds(area);
         macros_.setBounds(area.removeFromBottom(kMacroRowHeight));
         area.removeFromBottom(kGap);
         canvas_.setBounds(area);
