@@ -30,10 +30,10 @@ AGPL-3.0-or-later.
   builds on. Sub-project 3, Engine scale and quality, is built (INTENT §23 #66; PR #16): the HQ
   sinc tier and each layer's Quality, file mipmaps, the deterministic CPU budget (Budget, the
   quotas and the overload ladder), the pool to 16,384, the `[sweep]` harness and AVX2 kernels
-  chosen at load (kept). Sub-project 2, Sources and persistence, is built in part (INTENT §23
+  chosen at load (kept). Sub-project 2, Sources and persistence, is built (INTENT §23
   #68; PR #19): the Resample source, rings of 1 to 300 s with loop, overdub, splices and capture,
-  the memory cap, the sample pool, `MEDI` v2, `AUDI`, `INST` and rings saved with the session;
-  its ring pyramids, which build on sub-project 3's, are still to come. M2, M3 and M4 are tagged
+  the memory cap, the sample pool, `MEDI` v2, `AUDI`, `INST`, rings saved with the session and
+  the rings' mip pyramids on sub-project 3's half-band. M2, M3 and M4 are tagged
   0.2.0, 0.3.0 and 0.4.0 as
   unpublished draft releases; nothing is public and there are no betas before M5, whose
   `0.5.0-beta.N` are the first public releases (§23 #62); v1.0.0 follows M5.
@@ -626,10 +626,11 @@ gg-render --write-media DIR
       1,024, 256 and 4,096, layer D off at 5 s and on at 5.5 s. Its event log is 1.6 MB;
     - `inst-overload`: two notes, one HQ layer of 1 s grains at Density 400 Hz, Budget 256
       (sustained stealing);
-    - `fx-hq-live-level0`: layer A Live at HQ, Pitch +12, over a sweep; the ring has one level, so
-      every line reads `"lvl":0` (sub-project 2 regenerates it).
-    - Two hide some injected click steps, pinned in the click-injection table: `fx-hq-live-level0`
-      catches 9 (the ring's sweep read an octave up hides the steps from about 2.1 s) and
+    - `fx-hq-live`: layer A Live at HQ, Pitch +12, over a sweep; the ring's level 1 serves the
+      grains, so every line reads `"lvl":1` (sub-project 2's Task 12 regenerated it from
+      `fx-hq-live-level0`, whose lines read level 0).
+    - Two hide some injected click steps, pinned in the click-injection table: `fx-hq-live`
+      catches 10 (the ring's sweep read an octave up hides the steps from about 2.1 s) and
       `fx-hq-pitch-ladder` 3 (content near Nyquist at every step). The other five catch all 16.
     - Every one of the 36 earlier cases' WAV SHA-256 was unchanged through every task; their event
       logs were rewritten once, by inserting `"tier"` and `"lvl"`. A change that moves one WAV is
@@ -671,7 +672,7 @@ gg-render --write-media DIR
       follow-up's one) renders bit-identically with Ring Length 16 s, Loop off, Overdub 0, no
       splice, no Resample layer, nothing embedded and the cap at its default: a sources change
       that moves one is a regression. The ring pyramid's task names any case its level selection
-      moves (`fx-hq-live-level0` among them).
+      moves (`fx-hq-live` among them).
     - The event log sees neither the tap's audio nor a restored ring's frames, only the grains
       that read them, so across platforms the metrics compare those.
   - **The event-log comparison never sees the reverb or the diffuser:** the log records grains,
