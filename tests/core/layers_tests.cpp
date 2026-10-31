@@ -566,7 +566,9 @@ TEST_CASE("at rest the morph keeps the first law's weights where its floor does 
 TEST_CASE("where the floor binds the on layers share its shortfall equally", "[core][layers]")
 {
     // D1 as amended for row 301: below s = Σ_{K on} b_K < 0.35, a diagonal pair's or a triple's
-    // weights are (b_L + (0.35 − s) / n) / 0.35. Points where the first law gives other weights.
+    // weights are (b_L + (0.35 − s) / n) / 0.35. Points where the first law gives other weights:
+    // each pins the first law's value there beside the new one, so the director's D1-rest
+    // decision (option 1, 2026-10-31) is pinned as a difference from D1 as first built.
     Processor p({kRate, 512, 1, Mode::Fx});
     {
         // A and D at (0.95, 0.2): b_A = 0.04, b_D = 0.19, s = 0.23; the first law gave
@@ -578,6 +580,11 @@ TEST_CASE("where the floor binds the on layers share its shortfall equally", "[c
         CHECK_THAT(p.morphWeightAt(3, 0), Catch::Matchers::WithinAbs((0.19 + 0.06) / 0.35, 1e-6));
         CHECK(p.morphWeightAt(1, 0) == 0.0f);
         CHECK(p.morphWeightAt(2, 0) == 0.0f);
+        const std::array<float, 4> first = firstLawAtRest(0b1001, 0.95f, 0.2f);
+        CHECK_THAT(first[0], Catch::Matchers::WithinAbs(0.04 / 0.23, 1e-6));
+        CHECK_THAT(first[3], Catch::Matchers::WithinAbs(0.19 / 0.23, 1e-6));
+        CHECK(std::abs(p.morphWeightAt(0, 0) - first[0]) > 0.1f);
+        CHECK(std::abs(p.morphWeightAt(3, 0) - first[3]) > 0.1f);
     }
     {
         // A, B and C at (0.95, 0.95): b_D = 0.9025, s = 0.0975; the first law gave A 0.026.
@@ -592,6 +599,9 @@ TEST_CASE("where the floor binds the on layers share its shortfall equally", "[c
         CHECK_THAT(p.morphWeightAt(2, 0),
                    Catch::Matchers::WithinAbs((0.0475 + share) / 0.35, 1e-6));
         CHECK(p.morphWeightAt(3, 0) == 0.0f);
+        const std::array<float, 4> first = firstLawAtRest(0b0111, 0.95f, 0.95f);
+        CHECK_THAT(first[0], Catch::Matchers::WithinAbs(0.0025 / 0.0975, 1e-6));
+        CHECK(std::abs(p.morphWeightAt(0, 0) - first[0]) > 0.1f);
     }
 }
 

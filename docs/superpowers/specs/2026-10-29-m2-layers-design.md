@@ -299,7 +299,8 @@ instance, after the tasks join:
   > so layer A alone is M1's bit for bit (`1235944`). It is the stated behaviour, not the
   > formula, that is the intent: an engineering ruling, not a director's choice.
 
-  > **Amended (2026-10-31, carry-over row 301, assigned to M2 sub-project 4 by the director):**
+  > **Amended (2026-10-31, carry-over row 301, assigned to M2 sub-project 4 by the director;
+  > decided by the director, 2026-10-31 (D1-rest option 1)):**
   > the law as built keeps D1's resting weights wherever they are not steep, and moves at the
   > ramps' and the pad's pace. Two faults of the law above handed over within a sample or a few:
   > - **A steep dependence on the ramps.** Dividing `r_L·b_L` by `Σ r_K·b_K` let a ramp near 0
@@ -361,7 +362,7 @@ instance, after the tasks join:
   > weights on more of the pad, and the combined case stays over 0.01 at 44.1 kHz up to about
   > 0.45. (Round 1 gave 0.0097 for the pad alone and 0.0137 at 0.25, from finite differences that
   > straddled the floor's kink, and about 0.0042 for the handover; the figures above replace
-  > them.) Commit `a603fd9`, after review fix round 1: the first fix, `6335d91`,
+  > them.) Commit `5693fe9`, after review fix round 1: the first fix, `eae7a36`,
   > shared every off corner's weight equally among the rendering layers, which moved the resting
   > weights by more than 0.01 on 85% to 98% of the pad for every pair and triple, adjacent pairs
   > included, and was replaced.
