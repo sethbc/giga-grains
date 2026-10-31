@@ -119,6 +119,6 @@ std::shared_ptr<const PreparedSource> prepare(std::shared_ptr<SampleBuffer> deco
         throw std::invalid_argument("prepare: the rate must be finite and positive");
     }
     auto converted = convertRate(std::move(decoded), rate, cancel);
-    return converted != nullptr ? PreparedSource::make(std::move(converted)) : nullptr;
+    return converted != nullptr ? PreparedSource::make(std::move(converted), cancel) : nullptr;
 }
 } // namespace gg::media

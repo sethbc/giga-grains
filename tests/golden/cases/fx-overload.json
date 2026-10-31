@@ -1,0 +1,20 @@
+{
+  "mode": "fx",
+  "sampleRate": 48000,
+  "durationSeconds": 7.5,
+  "blockSize": 128,
+  "seed": 1,
+  "input": {"kind": "sine", "frequencyHz": 330, "seconds": 7.5, "amplitude": 0.2},
+  "channels": 1,
+  "params": {"Mix": 1.0, "Layer B On": 1, "Layer C On": 1, "Layer D On": 1,
+             "Density": 8.643856189774724, "B Density": 8.643856189774724, "C Density": 8.643856189774724, "D Density": 8.643856189774724,
+             "Size": -1.0, "B Size": -1.0, "C Size": -1.0, "D Size": -1.0,
+             "Quality": 2, "B Quality": 2, "C Quality": 1, "D Quality": 0, "Budget": 4096},
+  "automation": [
+    {"time": 2.0, "param": "Budget", "value": 1024},
+    {"time": 4.0, "param": "Budget", "value": 256},
+    {"time": 5.0, "param": "Layer D On", "value": 0},
+    {"time": 5.5, "param": "Layer D On", "value": 1},
+    {"time": 6.0, "param": "Budget", "value": 4096}
+  ]
+}

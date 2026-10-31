@@ -22,8 +22,14 @@
 #include "gg/core/Rng.h"
 #include "gg/core/Window.h"
 #include "gg/engine/Engine.h"
+#include "gg/grain/Budget.h"
+#include "gg/grain/Envelope.h"
 #include "gg/grain/GrainKernels.h"
 #include "gg/grain/GrainPool.h"
+#include "gg/grain/SincTable.h"
+#include "gg/metrics/AudioData.h"
+#include "gg/metrics/Metrics.h"
+#include "gg/source/Mipmap.h"
 #include "gg/source/PreparedSource.h"
 
 namespace
@@ -708,6 +714,7 @@ Render referenceRender(const std::vector<gg::GrainSpec> &grains, int64_t frames,
         REQUIRE(pool.spawn(g));
     }
     const gg::HannTable hann;
+    const gg::SincTable sinc;
     const gg::kernels::Output out{{r.left.data(), r.right.data()}, 0};
     for (uint32_t i = 0; i < pool.size(); ++i)
     {
@@ -716,7 +723,7 @@ Render referenceRender(const std::vector<gg::GrainSpec> &grains, int64_t frames,
         const gg::kernels::SampleSource src{
             {buf.channel(0), buf.channel(0)}, buf.frames(), true, nullptr};
         gg::kernels::renderSampleRef<gg::kernels::Hermite>(pool.rows(), i, src, out, 0, frames,
-                                                           hann);
+                                                           {hann, sinc});
     }
     return r;
 }
@@ -1318,23 +1325,28 @@ TEST_CASE("a sample replaced while ring grains sound leaves them on the ring", "
     REQUIRE(sameBits(a.right, b.right));
 }
 
-TEST_CASE("the level accessor returns level 0 for any index", "[engine][layers]")
+TEST_CASE("the level accessor returns level 0 for any index past the count", "[engine][layers]")
 {
-    // Spec §6.5: one level in wave 1, and any index past the last reads level 0.
+    // Spec §6.3: level 0 is the source as the kernels read it, and any index past the last
+    // level reads level 0.
     for (const uint32_t channels : {1u, 2u})
     {
         INFO("channels = " << channels);
         const auto source = gg::PreparedSource::make(makeSine(channels, 4800, 48000.0));
-        REQUIRE(source->levelCount() == 1);
+        REQUIRE(source->levelCount() == gg::mipLevelCount(4800));
+        REQUIRE(source->levelCount() == 5);
         const gg::PreparedSource::Level &level0 = source->level(0);
-        REQUIRE(level0.buffer == &source->buffer());
-        REQUIRE(level0.pairs == &source->pairs());
+        REQUIRE(level0.data[0] == source->buffer().channel(0));
+        REQUIRE(level0.data[1] == source->buffer().channel(channels == 1 ? 0 : 1));
+        REQUIRE(level0.frames == 4800);
+        REQUIRE(level0.stride == 1);
+        REQUIRE(level0.interleaved == source->pairs().data());
+        REQUIRE(level0.mono == (channels == 1));
         REQUIRE(level0.decimation == 1);
-        for (const uint32_t n : {1u, 7u, 0xFFFFFFFFu})
+        for (const uint32_t n : {5u, 7u, 0xFFFFFFFFu})
         {
             REQUIRE(&source->level(n) == &level0);
         }
-        REQUIRE(source->level(7).buffer == source->level(0).buffer);
     }
 
     gg::LiveSource live;
@@ -1350,4 +1362,878 @@ TEST_CASE("the level accessor returns level 0 for any index", "[engine][layers]"
         REQUIRE(level.view.frames == view.frames);
         REQUIRE(level.decimation == 1);
     }
+}
+
+namespace
+{
+// The kernels' view of one level of a prepared source, as Engine::slotFor makes it.
+gg::kernels::SampleSource viewOf(const gg::PreparedSource::Level &level)
+{
+    return {{level.data[0], level.data[1]},
+            level.frames,
+            level.mono,
+            level.interleaved,
+            level.stride,
+            level.decimation};
+}
+
+// The scalar reference's render of `grains`, every one HQ, over [0, frames) of both outputs, each
+// grain read through renderSampleRef<Sinc> from viewOf(grain, false) over [0, split) and from
+// viewOf(grain, true) over [split, frames). Each grain adds to every sample before the next
+// starts, as the engine sums them.
+template <class ViewOf>
+Render hqReference(const std::vector<gg::GrainSpec> &grains, int64_t frames, int64_t split,
+                   ViewOf viewOf)
+{
+    Render r{std::vector<float>(static_cast<std::size_t>(frames), 0.0f),
+             std::vector<float>(static_cast<std::size_t>(frames), 0.0f)};
+    gg::GrainPool pool(static_cast<uint32_t>(std::max<std::size_t>(1, grains.size())));
+    for (const gg::GrainSpec &g : grains)
+    {
+        REQUIRE(g.tier == gg::Tier::HQ);
+        REQUIRE(pool.spawn(g));
+    }
+    const gg::HannTable hann;
+    const gg::SincTable sinc;
+    const gg::kernels::Output out{{r.left.data(), r.right.data()}, 0};
+    for (uint32_t i = 0; i < pool.size(); ++i)
+    {
+        gg::kernels::renderSampleRef<gg::kernels::Sinc>(pool.rows(), i, viewOf(grains[i], false),
+                                                        out, 0, split, {hann, sinc});
+        gg::kernels::renderSampleRef<gg::kernels::Sinc>(pool.rows(), i, viewOf(grains[i], true),
+                                                        out, split, frames, {hann, sinc});
+    }
+    return r;
+}
+} // namespace
+
+TEST_CASE("HQ grains latch the level of their rate and Normal grains level 0", "[engine][mip]")
+{
+    // Spec §6.3: level floor(log2 rate), clamped to the source's levels, at HQ alone (D5).
+    struct Case
+    {
+        double rate;
+        uint8_t level;
+    };
+    constexpr Case kCases[] = {{0.5, 0}, {1.0, 0}, {1.9, 0},  {2.0, 1},
+                               {3.0, 1}, {4.0, 2}, {16.0, 4}, {40.0, 4}};
+    for (const Case &c : kCases)
+    {
+        INFO("rate " << c.rate);
+        REQUIRE(gg::mipLevelFor(c.rate, 5) == c.level);
+    }
+    // The boundaries are exact, and the clamps hold.
+    REQUIRE(gg::mipLevelFor(std::nextafter(2.0, 0.0), 5) == 0);
+    REQUIRE(gg::mipLevelFor(std::nextafter(16.0, 0.0), 5) == 3);
+    REQUIRE(gg::mipLevelFor(8.0, 2) == 1);
+    REQUIRE(gg::mipLevelFor(8.0, 1) == 0);
+    REQUIRE(gg::mipLevelFor(8.0, 0) == 0);
+    REQUIRE(gg::mipLevelFor(0x1.0p100, 5) == 4);
+    REQUIRE(gg::mipLevelFor(0x1.0p100, 200) == 4); // never past kMaxMipLevels − 1
+    REQUIRE(gg::mipLevelFor(0.0, 5) == 0);
+    REQUIRE(gg::mipLevelFor(-4.0, 5) == 0);
+    REQUIRE(gg::mipLevelFor(std::numeric_limits<double>::quiet_NaN(), 5) == 0);
+    REQUIRE(gg::mipLevelFor(std::numeric_limits<double>::infinity(), 5) == 4);
+    REQUIRE(gg::mipLevelFor(std::numeric_limits<double>::infinity(), 3) == 2);
+
+    // Through the engine: a stereo source of 5 levels whose sample rate makes every grain's rate
+    // exactly c.rate at pitch 0 (the pitch ratio 1, times the source's rate over 48 kHz).
+    for (const Case &c : kCases)
+    {
+        for (const gg::Tier tier : {gg::Tier::HQ, gg::Tier::Normal})
+        {
+            INFO("rate " << c.rate << ", tier " << static_cast<int>(tier));
+            const auto source = gg::PreparedSource::make(makeSine(2, 4800, 48000.0 * c.rate));
+            REQUIRE(source->levelCount() == 5);
+            gg::Engine engine(gg::EngineConfig{});
+            engine.setPreparedSource(source);
+            gg::CloudParams p = params(100.0, 0.02, 0.0, 0.0, 0.0, 0.5f);
+            p.quality = tier;
+            engine.setCloudParams(p);
+            SinkLog log;
+            engine.setEventSink(&SinkLog::record, &log);
+            const Render r = render(engine, 4800, 256);
+            REQUIRE(allFinite(r.left));
+            REQUIRE(allFinite(r.right));
+            REQUIRE(peak(r.left) > 0.0f);
+            REQUIRE_FALSE(log.overflowed);
+            REQUIRE(log.grains.size() == 10);
+            for (const gg::GrainSpec &g : log.grains)
+            {
+                REQUIRE(g.rate == c.rate);
+                REQUIRE(g.tier == tier);
+                REQUIRE(g.level == (tier == gg::Tier::HQ ? c.level : 0));
+            }
+        }
+    }
+
+    SECTION("an HQ draw the ladder lowers latches level 0")
+    {
+        // The quota test's 16 Hz of 0.1 s grains, at rate 2: 11 units fit two Normal stereo
+        // grains but no HQ one, so every draw is lowered to Normal, and reads level 0.
+        const auto source = gg::PreparedSource::make(makeSine(2, 96000, 96000.0));
+        gg::CloudParams p = params(16.0, 0.1, 0.0, 0.0, 0.0, 0.5f);
+        p.quality = gg::Tier::HQ;
+        for (const uint64_t quota : {gg::kUnlimitedQuota, uint64_t{11}})
+        {
+            INFO("quota " << quota);
+            gg::Engine engine(gg::EngineConfig{});
+            engine.setPreparedSource(source);
+            engine.setCloudParams(p);
+            engine.setQuota(quota);
+            SinkLog log;
+            engine.setEventSink(&SinkLog::record, &log);
+            const Render r = render(engine, 48000, 256);
+            REQUIRE(allFinite(r.left));
+            REQUIRE(log.grains.size() == 16);
+            const bool lowered = quota != gg::kUnlimitedQuota;
+            REQUIRE(engine.loweredGrains() == (lowered ? 16 : 0));
+            for (const gg::GrainSpec &g : log.grains)
+            {
+                REQUIRE(g.rate == 2.0);
+                REQUIRE(g.tier == (lowered ? gg::Tier::Normal : gg::Tier::HQ));
+                REQUIRE(g.level == (lowered ? 0 : 1));
+            }
+        }
+    }
+}
+
+TEST_CASE("an HQ grain at rate 2 reads level 1 at its half positions", "[engine][mip]")
+{
+    // Spec §6.3: an HQ grain at rate 2 latches level 1 and reads it at posL = pos / 2, residual
+    // rate 1, unstretched. A 96 kHz source at pitch 0 into 48 kHz gives rate 2 exactly. The
+    // engine's render is the reference's over level 1, bit for bit, and not its level-0 render.
+    for (const uint32_t channels : {1u, 2u})
+    {
+        INFO("channels = " << channels);
+        const auto source =
+            gg::PreparedSource::make(makeSine(channels, 48000, 96000.0, 3000.0, 0.8));
+        REQUIRE(source->levelCount() == 5);
+        const gg::PreparedSource::Level &level1 = source->level(1);
+        REQUIRE(level1.decimation == 2);
+        REQUIRE(level1.frames == 24000);
+        REQUIRE(level1.stride == (channels == 2 ? 2 : 1));
+        gg::Engine engine(gg::EngineConfig{});
+        engine.setPreparedSource(source);
+        gg::CloudParams p = params(50.0, 0.05, 0.4, 0.3, 0.0, 0.5f);
+        p.quality = gg::Tier::HQ;
+        p.stereo = 0.7;
+        engine.setCloudParams(p);
+        SinkLog log;
+        engine.setEventSink(&SinkLog::record, &log);
+        constexpr int64_t kFrames = 24000;
+        const Render r = render(engine, kFrames, 256);
+        REQUIRE(allFinite(r.left));
+        REQUIRE(allFinite(r.right));
+        REQUIRE(peak(r.left) > 0.05f);
+        REQUIRE_FALSE(log.overflowed);
+        REQUIRE(log.grains.size() == 25);
+        for (const gg::GrainSpec &g : log.grains)
+        {
+            REQUIRE(g.rate == 2.0);
+            REQUIRE(g.level == 1);
+        }
+        // The spec's arithmetic, written out over level 1's floats: pos / 2, the sinc unstretched.
+        Render expected{std::vector<float>(static_cast<std::size_t>(kFrames), 0.0f),
+                        std::vector<float>(static_cast<std::size_t>(kFrames), 0.0f)};
+        gg::GrainPool pool(64);
+        const gg::HannTable hann;
+        const gg::SincTable sinc;
+        const gg::kernels::ReadParams unstretched{&sinc, 1.0f};
+        const auto read = [&](const float *data, double pos) {
+            return level1.stride == 2
+                       ? gg::kernels::Sinc::read<2>(data, level1.frames, pos, unstretched)
+                       : gg::kernels::Sinc::read<1>(data, level1.frames, pos, unstretched);
+        };
+        for (const gg::GrainSpec &g : log.grains)
+        {
+            REQUIRE(pool.spawn(g));
+        }
+        const gg::GrainRows &rows = pool.rows();
+        for (uint32_t i = 0; i < pool.size(); ++i)
+        {
+            for (int64_t t = rows.onsetSample[i]; t < std::min(kFrames, rows.endSample[i]); ++t)
+            {
+                const double e = static_cast<double>(t - rows.onsetSample[i]) - rows.onsetFrac[i];
+                const float w = hann.at(e * rows.invDuration[i]); // texture 0: the plain Hann
+                if (!(w > 0.0f))
+                {
+                    continue;
+                }
+                const double half = (rows.startPos[i] + rows.rate[i] * e) / 2.0;
+                const float s0 = read(level1.data[0], half);
+                const float s1 = level1.mono ? s0 : read(level1.data[1], half);
+                const auto j = static_cast<std::size_t>(t);
+                expected.left[j] += s0 * (w * rows.gainL[i]);
+                expected.right[j] += s1 * (w * rows.gainR[i]);
+            }
+        }
+        REQUIRE(sameBits(r.left, expected.left));
+        REQUIRE(sameBits(r.right, expected.right));
+        const Render atLevel0 =
+            hqReference(log.grains, kFrames, kFrames,
+                        [&](const gg::GrainSpec &, bool) { return viewOf(source->level(0)); });
+        REQUIRE_FALSE(sameBits(r.left, atLevel0.left));
+    }
+}
+
+TEST_CASE("a swap to a source with fewer levels reads its top level", "[engine][mip]")
+{
+    // Review Focus 2 (spec §6.3: the sounding grains keep their level index through a swap). HQ
+    // grains at rate 8 latch level 3 of a 5-level source A (a 384 kHz source at pitch 0).
+    // Mid-grain, replaceSource hands every sounding grain B, 200 frames and so 2 levels: a grain
+    // latched at level 3 then reads B's top level, level 1 (100 frames at decimation 2), at pos
+    // / 2. The swap falls 12 samples after an onset, so that grain's posL is still inside B's level
+    // 1 (pos 96, posL 48, rising by 4 a sample). The grains from the swap on latch B's own level
+    // (rate 1: level 0).
+    const auto a = gg::PreparedSource::make(makeSine(2, 4096, 384000.0, 4000.0, 0.8));
+    const auto b = gg::PreparedSource::make(makeSine(2, 200, 48000.0, 1000.0, 0.8));
+    REQUIRE(a->levelCount() == 5);
+    REQUIRE(b->levelCount() == 2);
+    gg::CloudParams p = params(200.0, 0.004, 0.0, 0.0, 0.0, 0.5f);
+    p.quality = gg::Tier::HQ;
+    constexpr int64_t kFrames = 4800;
+
+    // Where the onsets fall: a run on A alone.
+    SinkLog dry;
+    {
+        gg::Engine engine(gg::EngineConfig{});
+        engine.setPreparedSource(a);
+        engine.setCloudParams(p);
+        engine.setEventSink(&SinkLog::record, &dry);
+        render(engine, kFrames, 64);
+    }
+    const auto onset = std::find_if(dry.grains.begin(), dry.grains.end(),
+                                    [](const gg::GrainSpec &g) { return g.onsetSample >= 2000; });
+    REQUIRE(onset != dry.grains.end());
+    const int64_t swap = onset->onsetSample + 12;
+
+    gg::Engine engine(gg::EngineConfig{});
+    engine.setPreparedSource(a);
+    engine.setCloudParams(p);
+    SinkLog log;
+    engine.setEventSink(&SinkLog::record, &log);
+    Render r = render(engine, swap, 64);
+    engine.replaceSource(b.get());
+    append(r, render(engine, kFrames - swap, 64));
+    REQUIRE(allFinite(r.left));
+    REQUIRE(allFinite(r.right));
+    REQUIRE_FALSE(log.overflowed);
+
+    bool spansSwap = false;
+    for (const gg::GrainSpec &g : log.grains)
+    {
+        const bool before = g.onsetSample < swap;
+        REQUIRE(g.rate == (before ? 8.0 : 1.0));
+        REQUIRE(g.level == (before ? 3 : 0));
+        spansSwap = spansSwap || (before && gg::grainEndSample(g) > swap);
+    }
+    REQUIRE(spansSwap);
+
+    // Before the swap each grain reads its level of A; from it on, its level of B, or B's top.
+    const Render expected =
+        hqReference(log.grains, kFrames, swap, [&](const gg::GrainSpec &g, bool after) {
+            return after ? viewOf(b->level(std::min<uint32_t>(g.level, b->levelCount() - 1)))
+                         : viewOf(a->level(g.level));
+        });
+    REQUIRE(sameBits(r.left, expected.left));
+    REQUIRE(sameBits(r.right, expected.right));
+    // The old grain reads B's level 1 audibly in the samples after the swap: not silence, and
+    // not what reading B's level 0 at decimation 1 would give.
+    REQUIRE(peak(std::vector<float>(r.left.begin() + swap, r.left.begin() + swap + 12)) > 0.01f);
+    const Render atLevel0 =
+        hqReference(log.grains, kFrames, swap, [&](const gg::GrainSpec &g, bool after) {
+            return after ? viewOf(b->level(0)) : viewOf(a->level(g.level));
+        });
+    REQUIRE_FALSE(sameBits(r.left, atLevel0.left));
+}
+
+namespace
+{
+// The steals and spawns in the order the engine reports them, recorded without allocating.
+struct OrderLog
+{
+    struct Event
+    {
+        bool steal;
+        uint64_t index;
+        int64_t onset;
+        gg::Tier tier;
+    };
+    static constexpr std::size_t kCapacity = 4096;
+    std::vector<Event> events;
+    bool overflowed{false};
+
+    OrderLog() { events.reserve(kCapacity); }
+
+    void push(const Event &e)
+    {
+        if (events.size() < kCapacity)
+        {
+            events.push_back(e);
+        }
+        else
+        {
+            overflowed = true;
+        }
+    }
+    static void spawn(void *ctx, uint32_t, const gg::GrainSpec &g)
+    {
+        static_cast<OrderLog *>(ctx)->push({false, g.index, g.onsetSample, g.tier});
+    }
+    static void steal(void *ctx, uint32_t, uint64_t index, int64_t onset)
+    {
+        static_cast<OrderLog *>(ctx)->push({true, index, onset, gg::Tier::Normal});
+    }
+    uint64_t count(bool steals) const
+    {
+        return static_cast<uint64_t>(std::count_if(
+            events.begin(), events.end(), [steals](const Event &e) { return e.steal == steals; }));
+    }
+};
+
+// 200 Hz of one-second grains, periodic and centred: an onset every 240 samples, each grain
+// sounding 48,002 samples (durationSamples 48,000), so 200 are wanted at once.
+gg::CloudParams overload() { return params(200.0, 1.0, 0.5, 0.0, 0.0, 0.25f); }
+} // namespace
+
+TEST_CASE("the quota lowers the tier before it drops", "[engine][budget]")
+{
+    // 16 Hz of 0.1 s grains: an onset every 3,000 samples and each grain 4,802 long, so exactly
+    // one other grain sounds at every onset after the first. The draws are HQ; no quota below
+    // 27 units fits an HQ stereo grain, so each is lowered to the highest tier that fits.
+    gg::CloudParams p = params(16.0, 0.1, 0.5, 0.0, 0.0, 0.5f);
+    p.quality = gg::Tier::HQ;
+    const auto run = [&](uint32_t channels, uint64_t quota, SinkLog &log) {
+        gg::Engine engine(gg::EngineConfig{});
+        engine.setSource(makeSine(channels, 96000, 48000.0));
+        engine.setCloudParams(p);
+        engine.setQuota(quota);
+        engine.setEventSink(&SinkLog::record, &log);
+        const Render r = render(engine, 96000, 256);
+        REQUIRE(allFinite(r.left));
+        REQUIRE(peak(r.left) > 0.0f);
+        REQUIRE_FALSE(log.overflowed);
+        REQUIRE(log.grains.size() == 32);
+        REQUIRE(engine.loweredGrains() == 32);
+        REQUIRE(engine.droppedGrains() == 0);
+        REQUIRE(engine.stolenGrains() == 0);
+    };
+
+    SECTION("stereo, 11 units: two Normal grains fit, one HQ grain doesn't")
+    {
+        SinkLog log;
+        run(2, 11, log);
+        for (const gg::GrainSpec &g : log.grains)
+        {
+            REQUIRE(g.tier == gg::Tier::Normal);
+            REQUIRE(g.weight == gg::grainWeight(gg::Tier::Normal, true));
+        }
+    }
+    SECTION("stereo, 7 units: Normal, then Eco beside it, in turn")
+    {
+        // Grain 0 finds 0 units sounding (Normal, 4), grain 1 finds 4 (Normal would be 8, Eco is
+        // 7), grain 2 finds grain 1's 3 (Normal, 7), and so on.
+        SinkLog log;
+        run(2, 7, log);
+        for (std::size_t k = 0; k < log.grains.size(); ++k)
+        {
+            INFO("grain " << k);
+            const gg::Tier t = k % 2 == 0 ? gg::Tier::Normal : gg::Tier::Eco;
+            REQUIRE(log.grains[k].tier == t);
+            REQUIRE(log.grains[k].weight == gg::grainWeight(t, true));
+        }
+    }
+    SECTION("mono, 8 units: a mono HQ grain is 20, two mono Normal grains 6")
+    {
+        SinkLog log;
+        run(1, 8, log);
+        for (const gg::GrainSpec &g : log.grains)
+        {
+            REQUIRE(g.tier == gg::Tier::Normal);
+            REQUIRE(g.weight == gg::grainWeight(gg::Tier::Normal, false));
+        }
+    }
+}
+
+TEST_CASE("a spent quota drops while the oldest grain is young and steals after half",
+          "[engine][budget]")
+{
+    // A quota of 10 Normal stereo grains (40 units). Grains 0 to 9 fill it; Eco (3) doesn't fit
+    // beside them. Grains 10 to 99 find the oldest grain, grain 0, less than half-way, and drop.
+    // Grain 100, at 24,000, finds grain 0 exactly half-way and steals it: grain 0 now ends at
+    // 24,256 and keeps its weight in the ledger until then (spec §6.5), so grain 101, at 24,240,
+    // finds 44 units, more than rungs 1 and 2 allow; but rung 3 leaves the 4 fading units out
+    // (ruling ES-T2a), so it steals grain 1. So grains 100 to 109 steal grains 0 to 9, one each,
+    // at every onset; then the oldest unstolen grain is grain 100, young again, and grains 110
+    // to 199 drop.
+    gg::Engine engine(gg::EngineConfig{});
+    engine.setSource(makeSine(2, 96000, 48000.0));
+    engine.setCloudParams(overload());
+    engine.setQuota(40);
+    OrderLog log;
+    engine.setEventSink(&OrderLog::spawn, &log);
+    engine.setStealSink(&OrderLog::steal, &log);
+
+    render(engine, 24000, 100);
+    REQUIRE(log.count(false) == 10);
+    REQUIRE(engine.droppedGrains() == 90);
+    REQUIRE(engine.stolenGrains() == 0);
+
+    const Render r = render(engine, 24000, 100);
+    REQUIRE(allFinite(r.left));
+    REQUIRE_FALSE(log.overflowed);
+    REQUIRE(log.count(false) == 20);
+    REQUIRE(log.count(true) == 10);
+    REQUIRE(engine.stolenGrains() == 10);
+    REQUIRE(engine.droppedGrains() == 180);
+    REQUIRE(engine.loweredGrains() == 0);
+    // Each steal is one admission's: grain 100 + j steals grain j at its onset.
+    std::size_t j = 0;
+    for (std::size_t e = 0; e < log.events.size(); ++e)
+    {
+        if (log.events[e].steal)
+        {
+            INFO("steal " << j);
+            REQUIRE(log.events[e].index == j);
+            REQUIRE(log.events[e].onset == static_cast<int64_t>(24000 + 240 * j));
+            REQUIRE(e + 1 < log.events.size());
+            REQUIRE_FALSE(log.events[e + 1].steal);
+            REQUIRE(log.events[e + 1].index == 100 + j);
+            REQUIRE(log.events[e + 1].tier == gg::Tier::Normal);
+            ++j;
+        }
+    }
+    REQUIRE(j == 10);
+
+    engine.reset();
+    REQUIRE(engine.stolenGrains() == 0);
+    REQUIRE(engine.loweredGrains() == 0);
+    REQUIRE(engine.droppedGrains() == 0);
+}
+
+TEST_CASE("under a spent quota the steals after half run at the onset rate", "[engine][budget]")
+{
+    // A quota of 50 Normal stereo grains (200 units): grains 0 to 49 fill it by 11,760, and
+    // grains 50 to 99 drop. Over the 0.25 s from 0.5 s, each of the 50 onsets finds the oldest
+    // unstolen grain half-way and steals it, although the grains stolen in the last 256 samples
+    // still fade in the ledger (ruling ES-T2a): one steal per admission, at the onset rate, and
+    // no drop.
+    gg::Engine engine(gg::EngineConfig{});
+    engine.setSource(makeSine(2, 96000, 48000.0));
+    engine.setCloudParams(overload());
+    engine.setQuota(200);
+    render(engine, 24000, 128);
+    REQUIRE(engine.stolenGrains() == 0);
+    REQUIRE(engine.droppedGrains() == 50);
+    SinkLog log;
+    engine.setEventSink(&SinkLog::record, &log);
+    const uint64_t droppedBefore = engine.droppedGrains();
+    render(engine, 12000, 128);
+    REQUIRE_FALSE(log.overflowed);
+    REQUIRE(log.grains.size() == 50);
+    REQUIRE(engine.stolenGrains() == log.grains.size());
+    REQUIRE(engine.droppedGrains() == droppedBefore);
+    REQUIRE(engine.loweredGrains() == 0);
+}
+
+TEST_CASE("the capacity drops or steals like a spent quota", "[engine][budget]")
+{
+    // Capacity 32, quota unlimited: grains 0 to 31 fill the pool and 32 to 99 drop while grain 0
+    // is young. From grain 100 each onset steals the oldest unstolen grain: a stolen grain still
+    // sounds, but rung 3 doesn't ask for capacity, only for weight, and the quota is unlimited.
+    // So grains 100 to 131 steal grains 0 to 31, one each, and 132 to 199 drop.
+    gg::EngineConfig config;
+    config.grainCapacity = 32;
+    gg::Engine engine(config);
+    engine.setSource(makeSine(2, 96000, 48000.0));
+    engine.setCloudParams(overload());
+    OrderLog log;
+    engine.setEventSink(&OrderLog::spawn, &log);
+    engine.setStealSink(&OrderLog::steal, &log);
+
+    render(engine, 24000, 64);
+    REQUIRE(log.count(false) == 32);
+    REQUIRE(engine.droppedGrains() == 68);
+    REQUIRE(engine.stolenGrains() == 0);
+
+    render(engine, 24000, 64);
+    REQUIRE_FALSE(log.overflowed);
+    REQUIRE(log.count(false) == 64);
+    REQUIRE(engine.stolenGrains() == 32);
+    REQUIRE(engine.droppedGrains() == 136);
+    REQUIRE(engine.loweredGrains() == 0);
+}
+
+TEST_CASE("a steal sink reports each steal before the spawn", "[engine][budget]")
+{
+    // The capacity case above: every steal is reported, with the stolen grain's index and the
+    // onset of the grain it makes room for, immediately before that grain's spawn.
+    gg::EngineConfig config;
+    config.grainCapacity = 32;
+    config.layer = 2;
+    gg::Engine engine(config);
+    engine.setSource(makeSine(2, 96000, 48000.0));
+    engine.setCloudParams(overload());
+    OrderLog log;
+    engine.setEventSink(&OrderLog::spawn, &log);
+    struct Layers
+    {
+        OrderLog *log;
+        bool layerTwo{true};
+        static void steal(void *ctx, uint32_t layer, uint64_t index, int64_t onset)
+        {
+            auto *self = static_cast<Layers *>(ctx);
+            self->layerTwo = self->layerTwo && layer == 2;
+            OrderLog::steal(self->log, layer, index, onset);
+        }
+    } layers{&log};
+    engine.setStealSink(&Layers::steal, &layers);
+    render(engine, 48000, 1000);
+    REQUIRE_FALSE(log.overflowed);
+    REQUIRE(layers.layerTwo);
+
+    uint64_t steals = 0;
+    for (std::size_t e = 0; e < log.events.size(); ++e)
+    {
+        if (!log.events[e].steal)
+        {
+            continue;
+        }
+        INFO("event " << e);
+        REQUIRE(log.events[e].index == steals);
+        REQUIRE(e + 1 < log.events.size());
+        REQUIRE_FALSE(log.events[e + 1].steal);
+        REQUIRE(log.events[e + 1].onset == log.events[e].onset);
+        REQUIRE(log.events[e + 1].index == 100 + steals);
+        ++steals;
+    }
+    REQUIRE(steals == 32);
+    REQUIRE(engine.stolenGrains() == 32);
+
+    // Removing the sink stops the reports, not the steals.
+    engine.setStealSink(nullptr, nullptr);
+    engine.reset();
+    const std::size_t reported = log.events.size();
+    engine.setEventSink(nullptr, nullptr);
+    render(engine, 48000, 1000);
+    REQUIRE(log.events.size() == reported);
+    REQUIRE(engine.stolenGrains() == 32);
+}
+
+TEST_CASE("grainCapacity above 16384 is refused", "[engine][budget]")
+{
+    REQUIRE(gg::kMaxGrainCapacity == 16384);
+    for (const uint32_t bad : {gg::kMaxGrainCapacity + 1, uint32_t{1} << 20})
+    {
+        INFO("grainCapacity " << bad);
+        gg::EngineConfig config;
+        config.grainCapacity = bad;
+        REQUIRE_THROWS_AS(gg::Engine(config), std::invalid_argument);
+    }
+    gg::EngineConfig config;
+    config.grainCapacity = gg::kMaxGrainCapacity;
+    REQUIRE_NOTHROW(gg::Engine(config));
+}
+
+TEST_CASE("an unlimited quota admits as M1", "[engine][budget]")
+{
+    // The M1 saturation test's stream (400 Hz of 50 ms grains, about 20 wanted at once).
+    const auto source = makeSine(2, 48000, 48000.0);
+    const auto p = params(400.0, 0.05, 0.5, 0.5, -5.0, 0.7f);
+    struct Run
+    {
+        Render audio;
+        SinkLog log;
+        uint64_t dropped{0}, lowered{0}, stolen{0};
+    };
+    const auto run = [&](uint32_t capacity, bool setUnlimited, Run &r) {
+        gg::EngineConfig config;
+        config.grainCapacity = capacity;
+        config.seed = 11;
+        gg::Engine engine(config);
+        engine.setSource(source);
+        engine.setCloudParams(p);
+        if (setUnlimited)
+        {
+            engine.setQuota(gg::kUnlimitedQuota);
+        }
+        engine.setEventSink(&SinkLog::record, &r.log);
+        r.audio = render(engine, 24000, 333);
+        r.dropped = engine.droppedGrains();
+        r.lowered = engine.loweredGrains();
+        r.stolen = engine.stolenGrains();
+    };
+
+    SECTION("with room, every scheduled grain is admitted at its draw's tier")
+    {
+        Run r;
+        run(4096, false, r);
+        REQUIRE_FALSE(r.log.overflowed);
+        REQUIRE(r.log.grains.size() == 200); // 0.5 s at 400 Hz
+        for (std::size_t k = 0; k < r.log.grains.size(); ++k)
+        {
+            REQUIRE(r.log.grains[k].index == k);
+            REQUIRE(r.log.grains[k].tier == gg::Tier::Normal);
+            REQUIRE(r.log.grains[k].weight == gg::grainWeight(gg::Tier::Normal, true));
+        }
+        REQUIRE(r.dropped == 0);
+        REQUIRE(r.lowered == 0);
+        REQUIRE(r.stolen == 0);
+    }
+    SECTION("no quota set is the unlimited quota, at room and at capacity")
+    {
+        for (const uint32_t capacity : {4096u, 4u})
+        {
+            INFO("capacity " << capacity);
+            Run byDefault;
+            Run unlimited;
+            run(capacity, false, byDefault);
+            run(capacity, true, unlimited);
+            REQUIRE(sameBits(byDefault.audio.left, unlimited.audio.left));
+            REQUIRE(sameBits(byDefault.audio.right, unlimited.audio.right));
+            REQUIRE(byDefault.log.grains == unlimited.log.grains);
+            REQUIRE(byDefault.dropped == unlimited.dropped);
+            REQUIRE(byDefault.stolen == unlimited.stolen);
+            REQUIRE(byDefault.lowered == 0);
+            REQUIRE(unlimited.lowered == 0);
+        }
+    }
+}
+
+namespace
+{
+// The goldens' click limit (gg::metrics::Tolerances::maxClickScore, metricsVersion 2).
+constexpr double kClickLimit = 15.0;
+
+// The goldens' click detector over a stereo render at 48 kHz.
+double clickScore(const Render &r)
+{
+    const gg::metrics::AudioData audio{48000.0, {r.left, r.right}};
+    return gg::metrics::computeMetrics(audio).clickScore;
+}
+
+// The lowest RMS, in dBFS, of any whole window of `window` samples of v from its start.
+double minWindowRmsDb(const std::vector<float> &v, int64_t window)
+{
+    double lowest = std::numeric_limits<double>::infinity();
+    for (int64_t w = 0; w + window <= static_cast<int64_t>(v.size()); w += window)
+    {
+        double sum = 0.0;
+        for (int64_t t = w; t < w + window; ++t)
+        {
+            const double x = v[static_cast<std::size_t>(t)];
+            sum += x * x;
+        }
+        lowest = std::min(lowest, 10.0 * std::log10(sum / static_cast<double>(window)));
+    }
+    return lowest;
+}
+
+// The overload ladder's exit case (spec §6.5) at a size: `densityHz` periodic onsets of
+// `sizeSec` grains into one engine of capacity `capacity` at a quota of `quotaGrains` Normal
+// stereo grains, over a full-scale 220 Hz stereo sine of 4 s, for `frames` samples, its RMS
+// floor taken over windows of `window` samples. The grains read from 0.3 to 0.7 of the source
+// (spray 0.2), so their sine phases differ and their sum doesn't cancel; at rate 1 none reads
+// past its end.
+struct ExitCase
+{
+    uint32_t capacity;
+    uint64_t quotaGrains;
+    double densityHz;
+    double sizeSec;
+    int64_t frames;
+    int64_t window;
+};
+
+struct ExitRender
+{
+    Render audio;
+    uint64_t dropped{0};
+    uint64_t lowered{0};
+    uint64_t stolen{0};
+};
+
+ExitRender renderExit(const ExitCase &c, const std::shared_ptr<gg::SampleBuffer> &source,
+                      uint32_t blockSize)
+{
+    gg::EngineConfig config;
+    config.grainCapacity = c.capacity;
+    gg::Engine engine(config);
+    engine.setSource(source);
+    engine.setCloudParams(params(c.densityHz, c.sizeSec, 0.5, 0.2, 0.0, 0.05f));
+    engine.setQuota(c.quotaGrains * gg::grainWeight(gg::Tier::Normal, true));
+    ExitRender r;
+    r.audio = render(engine, c.frames, blockSize);
+    r.dropped = engine.droppedGrains();
+    r.lowered = engine.loweredGrains();
+    r.stolen = engine.stolenGrains();
+    return r;
+}
+
+// Every sample finite, every window's RMS above −60 dBFS, the click score below the goldens'
+// limit, and the same bytes and counts at block sizes 1, 32, 64, 511 and 4096.
+void checkExitCase(const ExitCase &c)
+{
+    const auto source = makeSine(2, 4 * 48000, 48000.0, 220.0, 1.0);
+    const ExitRender ref = renderExit(c, source, 4096);
+    REQUIRE(allFinite(ref.audio.left));
+    REQUIRE(allFinite(ref.audio.right));
+    REQUIRE(ref.stolen > 0);
+    const double floorDb = std::min(minWindowRmsDb(ref.audio.left, c.window),
+                                    minWindowRmsDb(ref.audio.right, c.window));
+    const double click = clickScore(ref.audio);
+    INFO("window RMS floor " << floorDb << " dBFS, click score " << click << ", stolen "
+                             << ref.stolen << ", dropped " << ref.dropped);
+    REQUIRE(floorDb > -60.0);
+    REQUIRE(click < kClickLimit);
+    for (const uint32_t blockSize : {1u, 32u, 64u, 511u})
+    {
+        INFO("blocks of " << blockSize);
+        const ExitRender r = renderExit(c, source, blockSize);
+        REQUIRE(sameBits(r.audio.left, ref.audio.left));
+        REQUIRE(sameBits(r.audio.right, ref.audio.right));
+        REQUIRE(r.dropped == ref.dropped);
+        REQUIRE(r.lowered == ref.lowered);
+        REQUIRE(r.stolen == ref.stolen);
+    }
+}
+
+// The steals the engine reports, recorded without allocating.
+struct StealLog
+{
+    struct Steal
+    {
+        uint64_t index;
+        int64_t onset;
+    };
+    std::vector<Steal> steals;
+    bool overflowed{false};
+
+    StealLog() { steals.reserve(4096); }
+
+    static void record(void *ctx, uint32_t, uint64_t index, int64_t onset)
+    {
+        auto *log = static_cast<StealLog *>(ctx);
+        if (log->steals.size() < log->steals.capacity())
+        {
+            log->steals.push_back({index, onset});
+        }
+        else
+        {
+            log->overflowed = true;
+        }
+    }
+};
+} // namespace
+
+// The exit case at full size (spec §6.5): 16,384 one-second grains a second into capacity 16,384
+// at a quota of 1,024 grains, for 2 s, its floor over 100 ms windows. Five renders of over a
+// thousand grains each take a minute or two in Debug, so it is slow; its small sibling below
+// always runs.
+TEST_CASE("the exit case never clicks or drops out", "[engine][budget][slow]")
+{
+    checkExitCase({gg::kMaxGrainCapacity, 1024, 16384.0, 1.0, 96000, 4800});
+}
+
+TEST_CASE("the exit case never clicks or drops out at a small size", "[engine][budget]")
+{
+    // 4,096 grains of 100 ms a second into capacity 4,096 at a quota of 256 grains, for 0.5 s,
+    // its floor over 50 ms windows.
+    checkExitCase({4096, 256, 4096.0, 0.1, 24000, 2400});
+}
+
+TEST_CASE("stealing a short grain keeps its end and does not fade", "[engine][budget]")
+{
+    // Review Focus 4, ruling ES-T6a. 375 Hz of 5 ms grains (240 samples, each sounding 242) at a
+    // quota of one Normal stereo grain: an onset every 128 samples, past the sounding grain's
+    // half-way (120), so each grain after the first steals the one before, which has 242 − 128 =
+    // 114 samples left. That is no more than kStealFade, so the stolen grain already ends no
+    // later than a fade would: it keeps its natural end and its window, and no fade factor is
+    // applied. The steal still counts, is reported, and the draw is admitted. The grains read
+    // from 0.3 to 0.7 of a full-scale 220 Hz sine (spray 0.2), so the steals fall on many phases.
+    constexpr float kGain = 0.5f;
+    constexpr int64_t kFrames = 24000;
+    const auto source = makeSine(2, 96000, 48000.0, 220.0, 1.0);
+    gg::Engine engine(gg::EngineConfig{});
+    engine.setSource(source);
+    engine.setCloudParams(params(375.0, 0.005, 0.5, 0.2, 0.0, kGain));
+    engine.setQuota(gg::grainWeight(gg::Tier::Normal, true));
+    SinkLog spawns;
+    StealLog log;
+    engine.setEventSink(&SinkLog::record, &spawns);
+    engine.setStealSink(&StealLog::record, &log);
+    const Render r = render(engine, kFrames, 64);
+    REQUIRE(allFinite(r.left));
+    REQUIRE(allFinite(r.right));
+    REQUIRE_FALSE(spawns.overflowed);
+    REQUIRE_FALSE(log.overflowed);
+    REQUIRE(spawns.grains.size() == static_cast<std::size_t>((kFrames + 127) / 128));
+    REQUIRE(engine.droppedGrains() == 0);
+    REQUIRE(engine.loweredGrains() == 0);
+    REQUIRE(engine.stolenGrains() == spawns.grains.size() - 1);
+    REQUIRE(log.steals.size() == engine.stolenGrains());
+
+    // Through the event log: grain s is stolen at grain s + 1's onset, with 114 samples left.
+    for (std::size_t s = 0; s < log.steals.size(); ++s)
+    {
+        INFO("steal " << s);
+        REQUIRE(log.steals[s].index == s);
+        REQUIRE(spawns.grains[s].index == s);
+        REQUIRE(spawns.grains[s + 1].onsetSample == log.steals[s].onset);
+        REQUIRE(gg::grainEndSample(spawns.grains[s]) - log.steals[s].onset == 114);
+    }
+
+    // The whole render written out from the log, every grain to its natural end with no fade
+    // factor: e, w = hann(e × (1 / D)) (skip unless > 0), pos = startPos + rate × e, then
+    // dst[c][t] += hermite4(channel c, pos) × (w × gain_c), in spawn order. The engine's output
+    // is that, bit for bit.
+    const gg::HannTable hann;
+    Render expected{std::vector<float>(static_cast<std::size_t>(kFrames), 0.0f),
+                    std::vector<float>(static_cast<std::size_t>(kFrames), 0.0f)};
+    for (const gg::GrainSpec &g : spawns.grains)
+    {
+        const gg::PanGains pan = gg::panGains(g.pan);
+        const float gains[2] = {g.gain * pan.left, g.gain * pan.right};
+        const double invDuration = 1.0 / g.durationSamples;
+        const gg::EnvelopeShape envelope = gg::envelopeShape(g.texture, g.durationSamples);
+        for (int64_t t = g.onsetSample; t < std::min(gg::grainEndSample(g), kFrames); ++t)
+        {
+            const double e = static_cast<double>(t - g.onsetSample) - g.onsetFrac;
+            const float w = hann.at(gg::warpPhase(e * invDuration, envelope));
+            if (!(w > 0.0f))
+            {
+                continue;
+            }
+            const double pos = g.startPos + g.rate * e;
+            const auto j = static_cast<std::size_t>(t);
+            expected.left[j] +=
+                gg::interp::hermite4<>(source->channel(0), source->frames(), pos) * (w * gains[0]);
+            expected.right[j] +=
+                gg::interp::hermite4<>(source->channel(1), source->frames(), pos) * (w * gains[1]);
+        }
+    }
+    REQUIRE(sameBits(r.left, expected.left));
+    REQUIRE(sameBits(r.right, expected.right));
+
+    // The output: at most two grains sound at once, each of gain kGain at the centre, with a
+    // window whose step per sample is at most π / D, reading a sine whose own step is at most
+    // ω = 2π × 220 / 48,000. So no output sample moves by more than 2 × kGain × (π / D + ω): no
+    // grain steps, at its steal or its end.
+    const double omega = 2.0 * std::numbers::pi * 220.0 / 48000.0;
+    const double stepBound = 2.0 * kGain * (std::numbers::pi / 240.0 + omega) * 1.01;
+    double largest = 0.0;
+    for (const std::vector<float> *channel : {&r.left, &r.right})
+    {
+        for (std::size_t t = 1; t < channel->size(); ++t)
+        {
+            largest = std::max(largest, std::abs(static_cast<double>((*channel)[t]) -
+                                                 static_cast<double>((*channel)[t - 1])));
+        }
+    }
+    INFO("largest step " << largest << ", bound " << stepBound);
+    REQUIRE(largest <= stepBound);
+    const double click = clickScore(r);
+    INFO("click score " << click);
+    REQUIRE(click < kClickLimit);
 }

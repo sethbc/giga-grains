@@ -513,6 +513,171 @@ TEST_CASE("the guard slots mirror both channels across the wrap", "[live]")
     REQUIRE(exact);
 }
 
+TEST_CASE("the guard mirrors fifteen slots", "[live]")
+{
+    // The sinc's 16 taps need slots C .. C + 14 to mirror slots 0 .. 14, so its taps are
+    // contiguous wherever its first tap falls. The same small ring as above (N = 64, C = 72), with
+    // frames whose channels differ, written until it has wrapped 8 times. After each block, every
+    // 16-tap gather whose first tap is in one of the last 15 slots, so whose later taps run into
+    // the guard, must give the written frames bit for bit; and the guard slots hold slots 0 .. 14.
+    constexpr int64_t kN = 64;
+    constexpr int64_t kBlock = 8;
+    constexpr int64_t kC = kN + kBlock;
+    constexpr int64_t kGuard = 15;
+    gg::LiveSource ring;
+    ring.prepare(64.0, 1.0, static_cast<uint32_t>(kBlock));
+    REQUIRE(ring.frames() == kN);
+    REQUIRE(ring.view().capacity == kC);
+    const auto left = [](int64_t f) { return 1.0f + static_cast<float>(f); };
+    const auto right = [](int64_t f) { return -0.5f - 0.75f * static_cast<float>(f); };
+    const auto same = [](float a, float b) { return std::memcmp(&a, &b, sizeof(float)) == 0; };
+    std::vector<float> inL(static_cast<std::size_t>(kBlock));
+    std::vector<float> inR(static_cast<std::size_t>(kBlock));
+    const float *in[2] = {inL.data(), inR.data()};
+    bool exact = true;
+    bool mirrored = true;
+    int64_t gathers = 0;
+    int64_t intoGuard = 0; // gathers whose first tap is in slot C − 1
+    for (int64_t blockStart = 0; blockStart < 8 * kC + kBlock; blockStart += kBlock)
+    {
+        for (int64_t j = 0; j < kBlock; ++j)
+        {
+            inL[static_cast<std::size_t>(j)] = left(blockStart + j);
+            inR[static_cast<std::size_t>(j)] = right(blockStart + j);
+        }
+        ring.write(in, 2, 0, blockStart, static_cast<uint32_t>(kBlock));
+        const int64_t head = ring.head();
+        if (head >= kC + kGuard)
+        {
+            const gg::LiveSource::RingView view = ring.view();
+            for (int64_t s = 0; s < 2 * kGuard; ++s)
+            {
+                mirrored = mirrored && same(view.slots[2 * kC + s], view.slots[s]);
+            }
+        }
+        gg::LiveSource::Cursor cursor;
+        for (int64_t f = std::max<int64_t>(0, head - kN); f + 15 <= head - 1; ++f)
+        {
+            if (f % kC < kC - kGuard)
+            {
+                continue;
+            }
+            float l[16] = {};
+            float r[16] = {};
+            // Taps f .. f + 15, at pos = f + 7.5.
+            exact = exact && ring.gatherTaps<16>(static_cast<double>(f) + 7.5, head, cursor, l, r);
+            for (int64_t k = 0; k < 16; ++k)
+            {
+                exact = exact && same(l[k], left(f + k)) && same(r[k], right(f + k));
+            }
+            ++gathers;
+            intoGuard += f % kC == kC - 1 ? 1 : 0;
+        }
+    }
+    REQUIRE(ring.head() >= 8 * kC);
+    REQUIRE(gathers > 100);
+    REQUIRE(intoGuard >= 7);
+    REQUIRE(exact);
+    REQUIRE(mirrored);
+}
+
+TEST_CASE("gatherTaps agrees with read and readLinear", "[live]")
+{
+    // read() and readLinear() are gatherTaps<4> and <2> with their curves applied: over 10,000
+    // positions in and around the window of a 10 ms ring (N = 480) through its wraps, the
+    // gathered taps through interp::catmullRom and interp::lerp give their bits, and each
+    // succeeds exactly where they do. A 16-tap gather succeeds exactly where all 16 taps,
+    // floor(pos) − 7 .. floor(pos) + 8, are in the window.
+    constexpr int64_t kBlock = 100;
+    gg::LiveSource ring;
+    ring.prepare(48000.0, 0.01, static_cast<uint32_t>(kBlock));
+    const int64_t frames = ring.frames();
+    REQUIRE(frames == 480);
+    const auto same = [](float a, float b) { return std::memcmp(&a, &b, sizeof(float)) == 0; };
+    std::vector<float> inL(static_cast<std::size_t>(kBlock));
+    std::vector<float> inR(static_cast<std::size_t>(kBlock));
+    const float *in[2] = {inL.data(), inR.data()};
+    int64_t positions = 0;
+    int64_t hermiteReads = 0;
+    int64_t linearReads = 0;
+    int64_t sincGathers = 0;
+    bool agree = true;
+    for (int64_t blockStart = 0; positions < 10000; blockStart += kBlock)
+    {
+        for (int64_t j = 0; j < kBlock; ++j)
+        {
+            using gg::rng::Field;
+            const auto n = static_cast<uint64_t>(blockStart + j);
+            inL[static_cast<std::size_t>(j)] = static_cast<float>(
+                gg::rng::bipolar(gg::rng::hash({3, 0, 0, Field::SignalNoise, n})));
+            inR[static_cast<std::size_t>(j)] = static_cast<float>(
+                gg::rng::bipolar(gg::rng::hash({3, 0, 1, Field::SignalNoise, n})));
+        }
+        ring.write(in, 2, 0, blockStart, static_cast<uint32_t>(kBlock));
+        const int64_t head = ring.head();
+        gg::LiveSource::Cursor gather4;
+        gg::LiveSource::Cursor gather2;
+        gg::LiveSource::Cursor gather16;
+        gg::LiveSource::Cursor hermite;
+        gg::LiveSource::Cursor linear;
+        // 250 positions per block, moving forward from 20 frames before the window to 5 past it.
+        for (int k = 0; k < 250; ++k, ++positions)
+        {
+            const auto u = gg::rng::uniform01(gg::rng::hash(
+                {5, 0, 0, gg::rng::Field::SignalNoise, static_cast<uint64_t>(positions)}));
+            const double pos =
+                static_cast<double>(head - frames - 20) +
+                (static_cast<double>(k) + u) * static_cast<double>(frames + 25) / 250.0;
+            const double base = std::floor(pos);
+            const auto t = static_cast<float>(pos - base);
+            float l4[4] = {};
+            float r4[4] = {};
+            float l2[2] = {};
+            float r2[2] = {};
+            float l16[16] = {};
+            float r16[16] = {};
+            float l = 0.0f;
+            float r = 0.0f;
+            const bool ok4 = ring.gatherTaps<4>(pos, head, gather4, l4, r4);
+            const bool okRead = ring.read(pos, head, hermite, l, r);
+            agree = agree && ok4 == okRead;
+            if (ok4 && okRead)
+            {
+                agree = agree && same(l, gg::interp::catmullRom(l4[0], l4[1], l4[2], l4[3], t)) &&
+                        same(r, gg::interp::catmullRom(r4[0], r4[1], r4[2], r4[3], t));
+                ++hermiteReads;
+            }
+            const bool ok2 = ring.gatherTaps<2>(pos, head, gather2, l2, r2);
+            const bool okLinear = ring.readLinear(pos, head, linear, l, r);
+            agree = agree && ok2 == okLinear;
+            if (ok2 && okLinear)
+            {
+                agree = agree && same(l, gg::interp::lerp(l2[0], l2[1], t)) &&
+                        same(r, gg::interp::lerp(r2[0], r2[1], t));
+                ++linearReads;
+            }
+            const bool ok16 = ring.gatherTaps<16>(pos, head, gather16, l16, r16);
+            const auto i = static_cast<int64_t>(base);
+            agree = agree && ok16 == (i - 7 >= head - frames && i + 8 <= head - 1);
+            sincGathers += ok16;
+        }
+    }
+    REQUIRE(ring.head() > 4 * ring.view().capacity); // through several wraps
+    REQUIRE(hermiteReads > 8000);
+    REQUIRE(linearReads > 8000);
+    REQUIRE(sincGathers > 8000);
+    REQUIRE(agree);
+    {
+        gg::LiveSource::Cursor cursor;
+        float l[16] = {};
+        float r[16] = {};
+        REQUIRE_FALSE(ring.gatherTaps<16>(std::numeric_limits<double>::quiet_NaN(), ring.head(),
+                                          cursor, l, r));
+        REQUIRE_FALSE(ring.gatherTaps<16>(std::numeric_limits<double>::infinity(), ring.head(),
+                                          cursor, l, r));
+    }
+}
+
 TEST_CASE("live grains never read the future", "[live]")
 {
     // Checked analytically from the event sink, with no hook in the engine. A grain at elapsed
