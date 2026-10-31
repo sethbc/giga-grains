@@ -818,3 +818,23 @@ TEST_CASE("the Mutate button moves the sound and marks the preset edited", "[plu
     CHECK(f.impl->presetEdited());
     CHECK(f.nameText().endsWith(juce::String::fromUTF8(" \xe2\x80\xa2")));
 }
+
+TEST_CASE("EditorContext::sendValues is filled and its values arrive after a drain",
+          "[plugin][ui][queue]")
+{
+    const Machine machine("sendvalues");
+    Fixture f;
+    const auto &context = f.impl->editorContext();
+    REQUIRE(context.sendValues);
+    const auto &sizeMeta = gg::core::paramMeta(ParamSlot::Size, f.impl->mode());
+    const auto &pitchMeta = gg::core::paramMeta(ParamSlot::Pitch, f.impl->mode());
+    const double size = static_cast<double>(
+        static_cast<float>(0.25 * double(sizeMeta.minVal) + 0.75 * double(sizeMeta.maxVal)));
+    const double pitch = static_cast<double>(
+        static_cast<float>(0.75 * double(pitchMeta.minVal) + 0.25 * double(pitchMeta.maxVal)));
+    context.sendValues({{ParamSlot::Size, size}, {ParamSlot::Pitch, pitch}});
+    gg::test::InputEvents none;
+    f.plugin.flush(none.list());
+    CHECK(f.plugin.value(gg::core::paramId(ParamSlot::Size)) == size);
+    CHECK(f.plugin.value(gg::core::paramId(ParamSlot::Pitch)) == pitch);
+}

@@ -740,6 +740,8 @@ TEST_CASE("a whole-state set and a Mutate press interleaved give one determinist
     const Result with = run(true);
     const Result without = run(false);
     CHECK(with.values == without.values);
+    checkWholeTriplets(with.heard);
+    checkWholeTriplets(without.heard);
     // Without a drain between, a slot goes out once per batch it is pending for, ending at its
     // latest value: the first batch left with the set, so only its slots can go out again (with
     // the press's value); the rest go out once.
@@ -773,4 +775,44 @@ TEST_CASE("a preset load while a set is half sent discards the rest", "[plugin][
                    gg::core::paramMeta(static_cast<ParamSlot>(s), impl.mode()).defaultVal));
     }
     CHECK(impl.uiQueueDropped() == 0);
+}
+
+TEST_CASE("sendValues clamps a value beyond float's range to the slot's limits", "[plugin][queue]")
+{
+    gg::test::PluginUnderTest plugin(kFx);
+    REQUIRE(plugin.valid());
+    GigaGrainsPlugin &impl = plugin.impl();
+    const auto &meta = gg::core::paramMeta(ParamSlot::Size, impl.mode());
+    const auto &metaPitch = gg::core::paramMeta(ParamSlot::Pitch, impl.mode());
+    impl.sendValues(ValueList{{ParamSlot::Size, 1e300}, {ParamSlot::Pitch, -1e300}});
+    drainAll(plugin);
+    CHECK(impl.uiBaseValue(ParamSlot::Size) == meta.maxVal);
+    CHECK(impl.uiBaseValue(ParamSlot::Pitch) == metaPitch.minVal);
+    CHECK(impl.uiQueueDropped() == 0);
+}
+
+TEST_CASE("the user's gesture on a slot still waiting unsent wins over the waiting value",
+          "[plugin][queue]")
+{
+    gg::test::PluginUnderTest plugin(kFx);
+    REQUIRE(plugin.valid());
+    GigaGrainsPlugin &impl = plugin.impl();
+    const ValueList set = wholeSet(impl.mode(), 1);
+    impl.sendValues(set); // the first batch leaves now; the rest waits
+    // A slot of the last batch is still pending: the user then moves it by hand.
+    const ParamSlot slot = set.back().first;
+    const auto &meta = gg::core::paramMeta(slot, impl.mode());
+    const double mine =
+        static_cast<double>(static_cast<float>(0.5 * (double(meta.minVal) + double(meta.maxVal))));
+    REQUIRE(mine != set.back().second);
+    impl.uiBeginGesture(slot);
+    impl.uiSetValue(slot, mine);
+    impl.uiEndGesture(slot);
+    const auto all = drainAll(plugin, 32);
+    CHECK(impl.uiQueueDropped() == 0);
+    CHECK(plugin.value(gg::core::paramId(slot)) == mine);
+    const Heard &one = all.at(gg::core::paramId(slot));
+    CHECK(one.begins == one.values);
+    CHECK(one.ends == one.values);
+    CHECK(one.value == mine);
 }

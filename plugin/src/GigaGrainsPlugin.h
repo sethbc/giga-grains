@@ -211,7 +211,9 @@ class GigaGrainsPlugin : public plugHelper_t
     // asks the host for a flush (clap_host_params.request_flush), when it offers clap.params and
     // none is outstanding. A change made while kUiQueueCapacity changes wait is dropped.
 
-    /// The editor's gesture on `slot` begins: CLAP_EVENT_PARAM_GESTURE_BEGIN.
+    /// The editor's gesture on `slot` begins: CLAP_EVENT_PARAM_GESTURE_BEGIN. A value for `slot`
+    /// still waiting unsent (Mutate's, or sendValues') is forgotten here and in uiSetValue: a
+    /// later batch must not overwrite what the user just did.
     void uiBeginGesture(gg::core::ParamSlot slot) noexcept;
     /// Sets `slot`'s base value to `value`, clamped to its range and made a float: applied as a
     /// host's CLAP_EVENT_PARAM_VALUE would be, and sent to the host as one. A NaN is ignored.
@@ -620,6 +622,10 @@ class GigaGrainsPlugin : public plugHelper_t
     void mutateArm() noexcept;
     /// Asks the host for on_main_thread while slots wait unsent, once until it comes. Main thread.
     void requestMutateCallback() noexcept;
+    /// Forgets a value waiting unsent for `slot` (the editor's own gesture on it begins or sets
+    /// it: the user's latest move wins). flushMutate's own sends reach it too, harmlessly: it
+    /// clears the slot itself. Main thread.
+    void dropPending(gg::core::ParamSlot slot) noexcept;
     /// Marks `slot` waiting to be sent at `value`, replacing a value already waiting. Main thread.
     void queuePending(std::size_t slot, float value) noexcept;
     // Mutate: the user's locks, the press counter, the slots waiting to be sent (one value each,

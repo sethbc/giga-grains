@@ -922,6 +922,7 @@ void GigaGrainsPlugin::storeValue(ParamSlot slot, float value) noexcept
 
 void GigaGrainsPlugin::uiBeginGesture(ParamSlot slot) noexcept
 {
+    dropPending(slot);
     queueUiChange({gg::core::paramId(slot), 0.0, UiParamChange::kBegin});
 }
 
@@ -932,6 +933,7 @@ void GigaGrainsPlugin::uiSetValue(ParamSlot slot, double value) noexcept
     {
         return;
     }
+    dropPending(slot); // the user's latest move wins over a value still waiting unsent
     // Clamped as storeValue clamps, in double first (a double beyond float's range doesn't
     // convert), then made a float, as toParamEvent makes the host's: the host is told the value
     // the plugin applies, and a reloaded automation lane renders the same.
@@ -1406,6 +1408,15 @@ void GigaGrainsPlugin::mutate(float amount) noexcept
     flushMutate();
 }
 
+void GigaGrainsPlugin::dropPending(ParamSlot slot) noexcept
+{
+    const auto s = static_cast<std::size_t>(slot);
+    if (s < kParamCount)
+    {
+        mutatePending_.reset(s);
+    }
+}
+
 void GigaGrainsPlugin::queuePending(std::size_t slot, float value) noexcept
 {
     mutatePending_.set(slot);
@@ -1415,7 +1426,6 @@ void GigaGrainsPlugin::queuePending(std::size_t slot, float value) noexcept
 void GigaGrainsPlugin::sendValues(
     std::span<const std::pair<gg::core::ParamSlot, double>> values) noexcept
 {
-    mutateDrainSeen();
     for (const auto &[slot, value] : values)
     {
         const auto s = static_cast<std::size_t>(slot);
@@ -1423,9 +1433,11 @@ void GigaGrainsPlugin::sendValues(
         {
             continue;
         }
-        // Clamped and made a float here, as uiSetValue would, so a mutate press that starts from
-        // this value reads what the audio thread will hold.
-        queuePending(s, std::clamp(static_cast<float>(value), minValues_[s], maxValues_[s]));
+        // Clamped in double first (a double beyond float's range doesn't convert), then made a
+        // float, as uiSetValue does, so a mutate press that starts from this value reads what
+        // the audio thread will hold.
+        queuePending(s, static_cast<float>(std::clamp(value, static_cast<double>(minValues_[s]),
+                                                      static_cast<double>(maxValues_[s]))));
     }
     flushMutate();
 }
