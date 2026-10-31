@@ -129,7 +129,8 @@ inline std::vector<uint32_t> slotIds()
 
 struct Checks
 {
-    /// The largest |sample| allowed: the chain's bound, 2 + the input's peak (INTENT §14).
+    /// The largest |sample| allowed: the chain's bound, 2 + the input's peak, or 3 + it with the
+    /// delay engaged (INTENT §14).
     double peakBound;
     /// The goldens' click limit (metricsVersion 2).
     double clickLimit = 15;
@@ -211,6 +212,13 @@ class SweepDriver
     int64_t clock() const noexcept { return clock_; }
     /// The input's peak so far: kInputAmp once a SineLive stretch has played.
     float inputPeak() const noexcept { return inputPeak_; }
+    /// Whether the global delay was engaged at any point of the render so far (INTENT §14's
+    /// D-bound). Engaged means Delay Amount above 0 in force, as the effective value at the end
+    /// of a call or as a value an event carried into one, and it stays set: the check bounds the
+    /// whole render's peak, and the delay's return is in the render from the first engaged
+    /// sample, so a whole-render flag is exact for that check where a per-window one would need
+    /// the ramp's and the loop's edges. Amount 0 throughout never sets it.
+    bool delayEngaged() const noexcept { return delayEngaged_; }
     /// The render so far, channel by channel (a planted fault's way in).
     std::array<std::vector<float>, 2> &output() noexcept { return out_; }
 
@@ -648,11 +656,22 @@ class SweepDriver
         {
             inputPeak_ = kInputAmp;
         }
+        for (const auto &e : events)
+        {
+            if (e.slot == gg::core::ParamSlot::DelayAmount && e.value > 0.0)
+            {
+                delayEngaged_ = true;
+            }
+        }
         const float *in[2] = {in_[0].data(), in_[1].data()};
         float *out[2] = {out_[0].data() + at, out_[1].data() + at};
         processor_.process(live ? in : nullptr, live ? 2 : 0, out, 2, n, events, notes, controls);
         const int64_t callStart = clock_;
         clock_ += n;
+        if (processor_.effective(gg::core::ParamSlot::DelayAmount) > 0.0f)
+        {
+            delayEngaged_ = true;
+        }
 
         // The Reverb Size moves applied in this call (row 217), and kReverbOnset: the reverb went
         // active in it. Each looks away for the pre-delay in effect and the echoes after it.
@@ -821,6 +840,7 @@ class SweepDriver
     uint32_t sinceTiny_{0};
     float inputPeak_{0.0f};
     bool reverbWasActive_{false};
+    bool delayEngaged_{false};
     // The Reverb Size in force as queued (base, modulation): a move is exempt only if it changes
     // it.
     double sizeBase_{0.0};
@@ -855,11 +875,12 @@ inline void requireClean(const SweepDriver &d, const Checks &c)
     }
 }
 
-/// The chain's bound for the driver's render, 2 + the input's peak, and the click check's pinned
-/// floor on the share it scores.
+/// The chain's bound for the driver's render, and the click check's pinned floor on the share it
+/// scores. The bound is 2 + the input's peak, or 3 + it once the delay was engaged (INTENT §14,
+/// the director's D-bound, 2026-10-31): the delay's return, capped near 1, adds to the wet signal.
 inline Checks chainBound(const SweepDriver &d, double minScored)
 {
-    Checks c{2.0 + d.inputPeak()};
+    Checks c{(d.delayEngaged() ? 3.0 : 2.0) + d.inputPeak()};
     c.minScored = minScored;
     return c;
 }

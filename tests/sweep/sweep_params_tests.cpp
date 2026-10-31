@@ -372,6 +372,53 @@ TEST_CASE("sweep: a floor on the scored share fails when an exemption widens", "
     CHECK(v.where.find("the click check scored") != std::string::npos);
 }
 
+TEST_CASE("sweep: the peak bound is 3 + the input's peak only with the delay engaged", "[sweep]")
+{
+    // A planted peak between the two bounds: 2.5 over the sine's input peak.
+    const auto planted = [](SweepDriver &d, float v) { d.output()[0][110000] = v; };
+    SECTION("the delay at Amount 0: 2 + the input's peak, so 2.5 + the peak fails")
+    {
+        SweepDriver d(Mode::Fx, 1119);
+        d.play(3.0, Material::SineLive);
+        REQUIRE_FALSE(d.delayEngaged());
+        const gg::test::Checks c = gg::test::chainBound(d, 0.0);
+        CHECK(c.peakBound == 2.0 + d.inputPeak());
+        planted(d, 2.5f + d.inputPeak());
+        const auto v = d.check(c);
+        INFO(v.where);
+        CHECK(v.peak > c.peakBound);
+        CHECK(v.where.find("peak") != std::string::npos);
+    }
+    SECTION("the delay engaged: the same render passes up to 3 + the input's peak, not above")
+    {
+        SweepDriver d(Mode::Fx, 1119);
+        d.set(ParamSlot::DelayAmount, 0.5);
+        d.play(3.0, Material::SineLive);
+        REQUIRE(d.delayEngaged());
+        const gg::test::Checks c = gg::test::chainBound(d, 0.0);
+        CHECK(c.peakBound == 3.0 + d.inputPeak());
+        planted(d, 2.5f + d.inputPeak());
+        const auto at = d.check(c);
+        INFO(at.where);
+        CHECK(at.peak <= c.peakBound);
+        CHECK(at.where.find("peak") == std::string::npos);
+        planted(d, 3.5f + d.inputPeak());
+        const auto over = d.check(c);
+        INFO(over.where);
+        CHECK(over.peak > c.peakBound);
+        CHECK(over.where.find("peak") != std::string::npos);
+    }
+    SECTION("the delay engaged then returned to 0 stays on the wider bound")
+    {
+        SweepDriver d(Mode::Fx, 1119);
+        d.set(ParamSlot::DelayAmount, 0.5);
+        d.play(1.0, Material::SineLive);
+        d.set(ParamSlot::DelayAmount, 0.0);
+        d.play(2.0, Material::SineLive);
+        CHECK(gg::test::chainBound(d, 0.0).peakBound == 3.0 + d.inputPeak());
+    }
+}
+
 TEST_CASE("sweep: the checks catch non-finite values the Processor exposes", "[sweep]")
 {
     SECTION("a NaN in a live ring's mirrored guard slots")
