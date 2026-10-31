@@ -291,7 +291,7 @@ TEST_CASE("a switch to or from Resample crossfades the ring's input", "[core][so
     CHECK(ringMismatches(p, 1, kOn + ramp, kOff, tapAt) == 0);
     CHECK(ringMismatches(p, 1, kOff + ramp, kFrames, inputAt) == 0);
     // In each crossfade the frame is (1 − m)·input + m·tap, m rising (falling) by 1/ramp a sample.
-    for (const auto [from, rising] : {std::pair{kOn, true}, std::pair{kOff, false}})
+    for (const auto &[from, rising] : {std::pair{kOn, true}, std::pair{kOff, false}})
     {
         INFO("the crossfade from " << from);
         int64_t bad = 0;
