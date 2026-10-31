@@ -79,12 +79,12 @@ struct SampleWaveform
 /// every loader holds (heldBytes) and every layer's ring. A load, a relink, a restore and a
 /// conversion at activate() are checked against it before anything is allocated: the decode is
 /// bounded by the bytes the cap leaves free (gg::media::loadSample's bound), then the source the
-/// decoded audio would make, at the rate it would be converted to with its interleaved copy
-/// (gg::media::sampleBytes), must fit. A load or relink is checked against the budget as it
-/// stood when it was asked for (the worker reads a copy), with the sample it replaces still
-/// counted, since both live until the swap; a restore lets go of the sample it replaces first.
-/// A refusal is an Error whose message is the decoder's ("needs N MB, the memory cap allows M
-/// MB") or the budget's ("over the memory cap: needs N MB, F MB free of C MB"), after the file's
+/// decoded audio would make, at the rate it would be converted to with its interleaved copy and
+/// its pyramid's levels (gg::media::sampleBytes), must fit. A load or relink is checked against the
+/// budget as it stood when it was asked for (the worker reads a copy), with the sample it replaces
+/// still counted, since both live until the swap; a restore lets go of the sample it replaces
+/// first. A refusal is an Error whose message is the decoder's ("needs N MB, the memory cap allows
+/// M MB") or the budget's ("over the memory cap: needs N MB, F MB free of C MB"), after the file's
 /// name. Without a budget nothing is refused but by the decoder's own bound.
 ///
 /// **Threads.** Every public function is main thread only. One worker std::thread per instance

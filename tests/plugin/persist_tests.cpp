@@ -389,7 +389,8 @@ TEST_CASE("the memory cap refuses a load with a status", "[plugin]")
 {
     // Spec §6.5: with a 64 MiB cap and four 16 s rings (23.5 MiB), 40 MiB are free. A 2-minute
     // stereo file decodes to 44 MiB: the decoder refuses it before allocating. A 90 s one decodes
-    // (33 MiB) but its source, with the interleaved copy, needs 66 MiB: refused before it is made.
+    // (33 MiB) but its source, with the interleaved copy and the pyramid's four levels (M2
+    // sub-project 3), needs 97 MiB: refused before it is made.
     // A 300 s ring needs 110 MiB: refused, with its status, until the request changes.
     const fs::path dir = gg::test::useMediaScratch("cap-refuses");
     const fs::path longFile = gg::test::writeSineWav(dir / "long.wav", 48000, 120.0);
@@ -419,7 +420,7 @@ TEST_CASE("the memory cap refuses a load with a status", "[plugin]")
     loader.requestLoad(mediumFile);
     status = settle();
     CHECK(status.state == SampleState::Error);
-    CHECK(status.message == "medium.wav: over the memory cap: needs 66 MB, 40 MB free of 64 MB");
+    CHECK(status.message == "medium.wav: over the memory cap: needs 97 MB, 40 MB free of 64 MB");
     CHECK_FALSE(loader.entry().has_value());
 
     const auto ringLength = gg::test::paramValue(idOf(LayerParam::RingLength, 0), std::log2(300.0));

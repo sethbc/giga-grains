@@ -757,8 +757,8 @@ like Mix.
     bytes past its cap for a grain's length. A load or a ring of a new length is checked with
     what it replaces still counted, since both live until the swap. A shared pool entry counts
     in full in every instance that holds it, so a refusal never depends on another instance.
-    The fixed costs (the pools, the reverb, the event buffers, about 45 MB at 48 kHz, Layers and
-    the chain, above) are documented, not counted.
+    The fixed costs (the pools, the reverb, the event buffers, about 51 MB at 48 kHz since
+    sub-project 3, Layers and the chain, above) are documented, not counted.
   - **What it refuses, deterministically, with a status:** a load or a relink whose decoded
     size (from the header, with ruling R7's 64× trust for compressed files, then checked against
     what decodes), at the active rate with its interleaved copy and levels, would take the

@@ -19,6 +19,7 @@
 #include "gg/media/Search.h"
 #include "gg/media/SettingsFile.h"
 #include "gg/media/Utf8Path.h"
+#include "gg/source/Mipmap.h"
 
 #include "SearchCache.h"
 
@@ -498,15 +499,17 @@ bool SampleLoader::fitsPrepared(const SampleBuffer &decoded, double rate, uint64
                                 uint64_t usedBytes, std::string &refusal)
 {
     // The source prepare() would make: the buffer at `rate`, as convertRate sizes it (rounded
-    // up), with a stereo buffer's interleaved copy. One level until the source's pyramid.
+    // up), with a stereo buffer's interleaved copy and the pyramid's levels (M2 sub-project 3's
+    // PreparedSource::make builds gg::mipLevelCount of them), as sourceBytes counts the source
+    // once it is made.
     int64_t frames = decoded.frames();
     if (rate > 0.0 && rate != decoded.sampleRate())
     {
         frames = static_cast<int64_t>(
             std::ceil(static_cast<double>(frames) * rate / decoded.sampleRate()));
     }
-    const uint64_t need =
-        media::sampleBytes(frames, decoded.channels(), decoded.channels() == 2, 1);
+    const uint64_t need = media::sampleBytes(frames, decoded.channels(), decoded.channels() == 2,
+                                             gg::mipLevelCount(frames));
     const media::MemoryBudget budget{capBytes, usedBytes};
     if (budget.fits(need))
     {
