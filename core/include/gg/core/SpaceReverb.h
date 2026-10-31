@@ -31,8 +31,16 @@ namespace gg::core
 /// are ignored. At that chunk's run, Reverb 2 gets (spec §6.3, the plan's global constraints):
 /// - fixed: rev2_diffusion 1.0, rev2_buildup 1.0, rev2_lf_damping 0.2, rev2_mix 1.0, width 0 dB
 ///   (full stereo), rev2_predelay at its minimum (unused: the smoothed pre-delay replaces it);
-/// - rev2_room_size = roomSize, rev2_hf_damping = hfDamping, rev2_modulation = modulation, each
-///   clamped to its range ([−1, 1], [0, 1], [0, 1]);
+/// - rev2_room_size = roomSize and rev2_hf_damping = hfDamping, each clamped to its range
+///   ([−1, 1], [0, 1]);
+/// - rev2_modulation: modulation, clamped to [0, 1], reached by a glide. Reverb 2 takes its
+///   modulation depth (up to 5 ms of each delay line's read) to a new value within one chunk, so
+///   a jump would sweep each read through up to 5 ms in 32 samples, a scrub the network echoes
+///   back as a click. Each chunk moves the value Reverb 2 gets toward the mapped one by at most
+///   kChunk / (kModulationGlideSeconds × sampleRate), so a full move takes
+///   kModulationGlideSeconds. While the reverb is empty (nothing has run since construction,
+///   reset() or a completed clear) the mapped value applies at once, as the patch's pre-delay
+///   and infinity do;
 /// - rev2_decay_time = decayLog2, clamped to Reverb 2's range [−4, 6] (finite Decay is within
 ///   it; at ∞ the value only sets Reverb 2's ring-out estimate). Reverb 2's own decay formula is
 ///   kept, so the measured T60 is about 1.45 × 2^decayLog2 s at Damping 0 (ruling R-T5c);
@@ -67,6 +75,11 @@ class SpaceReverb
 
     /// The most floats an idle chunk zeroes of a clear (64 KiB).
     static constexpr size_t kClearBudgetFloats = 16384;
+
+    /// How long Modulation's glide takes over a full move (0 to 100% or back), in seconds: as
+    /// long as the patch's glide into infinity (Rev2Patched::kInfiniteGlideSeconds). A full move
+    /// shifts each line's read by at most 5 ms over 30 ms, a passing bend of about 3 semitones.
+    static constexpr double kModulationGlideSeconds = 0.03;
 
     /// Allocates the reverb (off the audio thread) for sampleRate (finite and > 0), empty and
     /// idle.
@@ -122,6 +135,8 @@ class SpaceReverb
 
     std::unique_ptr<Reverb> reverb_;
     double sampleRate_;
+    float modulationStep_;  // the most a chunk moves modulation_: kChunk / (glide × rate)
+    float modulation_{0.f}; // the rev2_modulation the last chunk ran with
     // The chunk being filled, and before each slot is filled, the last chunk's output.
     alignas(16) std::array<float, kChunk> left_{};
     alignas(16) std::array<float, kChunk> right_{};
