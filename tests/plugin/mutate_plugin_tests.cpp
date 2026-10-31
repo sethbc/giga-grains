@@ -309,7 +309,7 @@ TEST_CASE("a press of more than one batch sends the rest at later ticks and spli
 
     const auto after = bases(impl);
     const std::size_t changed = countMoved(before, after);
-    CHECK(changed > GigaGrainsPlugin::kMutateBatch); // of 218, with every layer on, none locked
+    CHECK(changed > GigaGrainsPlugin::kMutateBatch); // of 223, with every layer on, none locked
     CHECK(all.size() == changed);
     for (std::size_t s = 0; s < kParamCount; ++s)
     {
@@ -692,7 +692,7 @@ TEST_CASE("pushing a whole state through the gesture calls overflows the queue (
             impl.uiEndGesture(slot);
         }
     }
-    CHECK(impl.uiQueueDropped() > 0); // 2 x 218 x 3 entries into 1,024
+    CHECK(impl.uiQueueDropped() > 0); // 2 x 223 x 3 entries into 1,024
 }
 
 TEST_CASE("two whole-state sets before any drain drop nothing, with clap.params", "[plugin][queue]")
@@ -922,8 +922,18 @@ TEST_CASE("a host that never drains is asked for one main-thread callback, not o
     REQUIRE(plugin.loadDefaultsWithSeed(6));
     GigaGrainsPlugin &impl = plugin.impl();
     everythingMoves(plugin);
+    // The Sources locked: a kind change asks for a callback of its own (checkKinds), which would
+    // count here. One press at 1.0 moves about 165 of the 223 slots (a slot at its range's end
+    // stays there half the time), two batches; two presses before a drain make three (100, 100
+    // and 25 slots at seed 6), so slots still wait after the second is sent.
+    for (uint8_t layer = 0; layer < gg::core::kLayers; ++layer)
+    {
+        impl.setMutateLock(gg::core::layerSlot(gg::core::LayerParam::Source, layer), true);
+    }
     const uint32_t before = host.callbackRequests();
     impl.mutate(1.0f); // more than one batch: the rest waits for a drain
+    CHECK(host.callbackRequests() == before + 1);
+    impl.mutate(1.0f); // adds to the slots waiting; the request is still outstanding
     CHECK(host.callbackRequests() == before + 1);
     for (int i = 0; i < 10; ++i)
     {

@@ -277,18 +277,20 @@ TEST_CASE("mutate's default locks are the structure and the off layers", "[core]
     };
 
     // The FX with layer B on: layers C and D (off by default) are locked whole, and A, B and
-    // Space's five voiced parameters move.
+    // Space's five voiced parameters move. So does sub-project 3's Budget, a global, and each on
+    // layer's Quality: wave 2's parameters stay unlocked until group 2 extends the default lock
+    // list to wave 2's sections (spec §6.9, §6.12).
     ParamValues values = defaults(Mode::Fx);
     values[idx(ParamSlot::LayerBOn)] = 1.0f;
     const LockSet bOn = defaultMutateLocks(values, Mode::Fx);
     CHECK(offLayerLocks(values) == (layerLocks(2) | layerLocks(3)));
     CHECK(bOn == (expectedStructural | layerLocks(2) | layerLocks(3)));
-    CHECK(bOn.count() == 123);
+    CHECK(bOn.count() == 125);
     LockSet unlocked = ~bOn;
-    CHECK(unlocked.count() == 95);
+    CHECK(unlocked.count() == 98);
     for (const ParamSlot s :
          {ParamSlot::ReverbDecay, ParamSlot::ReverbSize, ParamSlot::ReverbDamping,
-          ParamSlot::ReverbPredelay, ParamSlot::ReverbModulation})
+          ParamSlot::ReverbPredelay, ParamSlot::ReverbModulation, ParamSlot::Budget})
     {
         CHECK(unlocked.test(idx(s)));
         unlocked.reset(idx(s));
@@ -307,14 +309,14 @@ TEST_CASE("mutate's default locks are the structure and the off layers", "[core]
         }
     }
 
-    // With layer B off (the default), its 48 slots are locked too.
+    // With layer B off (the default), its 49 slots are locked too.
     values[idx(ParamSlot::LayerBOn)] = 0.0f;
     const LockSet bOff = defaultMutateLocks(values, Mode::Fx);
     CHECK(bOff == (bOn | layerLocks(1)));
-    CHECK(bOff.count() == 168);
-    CHECK((bOff & ~bOn).count() == 45);
+    CHECK(bOff.count() == 171);
+    CHECK((bOff & ~bOn).count() == 46);
 
-    // Layer A off locks its 48, the M1 slots among them; Layer On is read as "below 0.5".
+    // Layer A off locks its 49, the M1 slots among them; Layer On is read as "below 0.5".
     values[idx(ParamSlot::LayerAOn)] = 0.49f;
     CHECK(offLayerLocks(values) == (layerLocks(0) | layerLocks(1) | layerLocks(2) | layerLocks(3)));
     values[idx(ParamSlot::LayerAOn)] = 0.5f;

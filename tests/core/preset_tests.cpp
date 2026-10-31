@@ -233,13 +233,16 @@ TEST_CASE("a session state's bytes are pinned", "[core][preset]")
     // T1: the bytes a session state writes, PTCH and whole container, as literals (their size
     // and SHA-256, taken at the group 1 fix wave), so a change to how a session is written fails
     // here rather than passing a comparison with the code's own output. The edited mark (D-Q2)
-    // is written only for an edited preset, so these unedited bytes are unchanged by it.
+    // is written only for an edited preset, so these unedited bytes are unchanged by it. Retaken
+    // at the merge of sub-project 3, whose five parameters (A to D Quality, Budget) add five
+    // <p> elements, 258 bytes: without them the bytes are the group 1 fix wave's (11,755,
+    // c3d26f4e...; 11,808, ed5e43d5...).
     const std::string session = encodeState(someState());
     const std::string ptch = *stateChunkPayload(session, "PTCH");
-    CHECK(ptch.size() == 11755);
-    CHECK(sha256Of(ptch) == "c3d26f4ebaee7d3d252656912fbe76d367e5b686c30bd1dcdd20a3758c9252fa");
-    CHECK(session.size() == 11808);
-    CHECK(sha256Of(session) == "ed5e43d5f3b4c581ca45e9c238a4002de7d2d794ddbe6035e86f66cb390f7a25");
+    CHECK(ptch.size() == 12013);
+    CHECK(sha256Of(ptch) == "875d7ac845ef4d1dcf4219bb9ed7a68d3ee9c5092b6c99a5c2d4de40f7a3fc8f");
+    CHECK(session.size() == 12066);
+    CHECK(sha256Of(session) == "37dd926d25cdb5688726b4a522ef761040343abe54cb438490ca9c4809795eb6");
 }
 
 TEST_CASE("a name read back is cut at 255 bytes and at a NUL", "[core][preset]")
@@ -493,7 +496,9 @@ TEST_CASE("initState is every default and the factory routes", "[core][preset]")
 {
     // What a new plugin instance holds: paramMeta's defaults, factoryRoutes, seed 0, no sample.
     // Not compared with a state built the way initState builds it (T1): a few defaults by value,
-    // and both products' INIT bytes by size and SHA-256 (taken at the group 1 fix wave).
+    // and both products' INIT bytes by size and SHA-256 (taken at the group 1 fix wave, and
+    // retaken at the merge of sub-project 3: its five parameters add 258 bytes, without which
+    // they are the fix wave's, 13,123 f5bebe3b... and 13,124 4b56d092...).
     const SessionState fx = initState(Mode::Fx);
     CHECK(fx.values[at(ParamSlot::Size)] ==
           gg::core::paramMeta(ParamSlot::Size, Mode::Fx).defaultVal);
@@ -501,12 +506,12 @@ TEST_CASE("initState is every default and the factory routes", "[core][preset]")
     CHECK(fx.values[at(ParamSlot::LayerBOn)] == 0.0f);
     CHECK(fx.routes == factoryRoutes(Mode::Fx));
     const std::string fxBytes = encodeState(fx);
-    CHECK(fxBytes.size() == 13123);
-    CHECK(sha256Of(fxBytes) == "f5bebe3b1fbdb39ef5fea0303664a59a2c90f5af44e566ce94c8b7ffe98d5527");
+    CHECK(fxBytes.size() == 13381);
+    CHECK(sha256Of(fxBytes) == "d3fce75c748bfbbedab80c37036622052f668320177458e22caf45586f347370");
     const std::string instBytes = encodeState(initState(Mode::Instrument));
-    CHECK(instBytes.size() == 13124);
+    CHECK(instBytes.size() == 13382);
     CHECK(sha256Of(instBytes) ==
-          "4b56d0923e3be77bf7c61038907b41bd762b447275cf176cde1ff766aa7d9105");
+          "ffdb8cc2fc12ecc27c7bbbe360ccb0879c0aea841dc17ee8ead3d167d8e045fb");
     CHECK(fx.name == "Init");
     CHECK_FALSE(fx.preset.has_value());
     CHECK_FALSE(fx.sample.has_value());
