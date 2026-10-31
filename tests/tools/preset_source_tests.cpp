@@ -378,7 +378,7 @@ TEST_CASE("a preset for the other product, or that isn't one, is bad input", "[r
     fx["preset"] = utf8(junk);
     CHECK_THAT(badInput(fx), ContainsSubstring("isn't a preset file"));
 
-    // A preset naming a sample: gg-render reads none before MEDI version 2.
+    // A preset naming a sample: gg-render reads none yet (presets' group 2 resolves them).
     gg::core::SessionState withSample = gg::core::initState(Mode::Fx);
     withSample.samples[0] = gg::core::MediaEntry{.sha256Hex = std::string(64, 'a'),
                                                  .fileSize = 4,

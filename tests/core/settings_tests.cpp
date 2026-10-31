@@ -428,10 +428,21 @@ TEST_CASE("saveSettings creates the folder, and loadSettings reads it back", "[m
     REQUIRE(files == 1);
 
     // A NUL can't be written, and the old settings stay.
+    // Each of the five strings by name (views' carry-over row 317: lastLoadFolder had none).
     REQUIRE_FALSE(gg::media::saveSettings(file, {std::string("/a\0b", 4), ""}));
-    REQUIRE_FALSE(gg::media::saveSettings(file, {"", "", std::string("/c\0d", 4)}));
+    REQUIRE_FALSE(gg::media::saveSettings(file, {"/S", std::string("/L\0x", 4)}));
     REQUIRE(gg::media::loadSettings(file) == other);
-    REQUIRE_FALSE(gg::media::saveSettings(file, {"/S", "/L", std::string("li\0ght", 6)}));
+    {
+        MachineSettings captures{"/S", "/L"};
+        captures.capturesFolder = std::string("/c\0d", 4);
+        REQUIRE_FALSE(gg::media::saveSettings(file, captures));
+        MachineSettings theme{"/S", "/L"};
+        theme.theme = std::string("li\0ght", 6);
+        REQUIRE_FALSE(gg::media::saveSettings(file, theme));
+        MachineSettings content{"/S", "/L"};
+        content.contentFolder = std::string("/p\0q", 4);
+        REQUIRE_FALSE(gg::media::saveSettings(file, content));
+    }
     REQUIRE(gg::media::loadSettings(file) == other);
 
     // A folder that can't be made: a file is in the way.
