@@ -2568,6 +2568,262 @@ TEST_CASE("a window change under sounding grains doesn't click", "[engine][live]
     }
 }
 
+namespace
+{
+// A ring shrink's or grow's run (ruling SP-T12ad): dense live grains (32 Hz of 50 ms, nearly
+// periodic) at a tier and pitch, `position` seconds behind the head with `spray` more, over
+// `input` in a ring of `ringSeconds`, in process() calls of `block` frames (cut at limitAt). At
+// limitAt the engine is given the ring limit `newFrames`, as the Processor gives it a Ring
+// Length; between calls the plugin's watcher is played: from limitAt + landingAfter, once the
+// reads fit the new length (LiveSource::readFrames), the stable part of the window and its levels
+// are copied into a storage of newFrames, which the next call adopts at its start if the engine
+// lets it (Engine::liveRingFits, as Processor::adoptRing asks), then ringResized().
+struct ShrinkRun
+{
+    Stereo out;
+    std::vector<gg::GrainSpec> grains;
+    int64_t adoptedAt{-1};
+};
+ShrinkRun renderShrink(const Stereo &input, uint64_t seed, gg::Tier tier, double pitch,
+                       double position, double spray, uint32_t block, double ringSeconds,
+                       int64_t limitAt, int64_t newFrames, int64_t landingAfter)
+{
+    gg::EngineConfig config = liveConfig(kSampleRate, 512, ringSeconds);
+    config.seed = seed;
+    gg::Engine engine(config);
+    engine.setSourceMode(gg::SourceMode::Live);
+    engine.setCloudParams({.densityHz = 32.0,
+                           .distribution = 0.1,
+                           .grainDurationSec = 0.05,
+                           .position = position,
+                           .spray = spray,
+                           .pitchSemitones = pitch,
+                           .stereo = 0.5,
+                           .gain = 0.5f,
+                           .quality = tier});
+    SinkLog log;
+    engine.setEventSink(&SinkLog::record, &log);
+    const auto frames = static_cast<int64_t>(input.left.size());
+    ShrinkRun r{
+        {std::vector<float>(input.left.size()), std::vector<float>(input.left.size())}, {}, -1};
+    std::unique_ptr<gg::RingStorage> next;
+    int64_t copiedTo = 0;
+    for (int64_t done = 0; done < frames;)
+    {
+        if (done == limitAt)
+        {
+            engine.setRingLimit(newFrames);
+        }
+        gg::LiveSource &live = engine.live();
+        if (next != nullptr && engine.liveRingFits(newFrames))
+        {
+            gg::RingStorage *previous = nullptr;
+            REQUIRE(live.adoptStorage(next.get(), copiedTo, previous));
+            REQUIRE(previous == nullptr); // the engine's own, kept until it is destroyed
+            engine.ringResized();
+            r.adoptedAt = done;
+            next.release(); // the engine's from here: held below
+        }
+        else if (next == nullptr && r.adoptedAt < 0 && done >= limitAt + landingAfter &&
+                 live.readFrames() <= newFrames && live.frames() != newFrames)
+        {
+            next = std::make_unique<gg::RingStorage>(newFrames, 512);
+            copiedTo = live.head();
+            const gg::RingStorage &from = *live.storage();
+            const int64_t first =
+                std::max<int64_t>(0, copiedTo - std::min(newFrames, live.frames()));
+            for (int64_t f = first; f < copiedTo; ++f)
+            {
+                const int64_t s = f % from.capacity();
+                const int64_t d = f % next->capacity();
+                next->slots()[2 * d] = from.slots()[2 * s];
+                next->slots()[2 * d + 1] = from.slots()[2 * s + 1];
+            }
+            gg::copyLevels(from, *next, first, copiedTo);
+        }
+        int64_t end = std::min<int64_t>(done + block, frames);
+        if (done < limitAt)
+        {
+            end = std::min(end, limitAt);
+        }
+        const float *in[2] = {input.left.data() + done, input.right.data() + done};
+        float *o[2] = {r.out.left.data() + done, r.out.right.data() + done};
+        engine.process(in, 2, o, 2, static_cast<uint32_t>(end - done));
+        done = end;
+    }
+    REQUIRE_FALSE(log.overflowed);
+    r.grains = log.grains;
+    // The adopted storage, which the engine doesn't own, outlives every read: freed here, after
+    // the last call.
+    if (r.adoptedAt >= 0)
+    {
+        std::unique_ptr<gg::RingStorage> adopted(
+            const_cast<gg::RingStorage *>(engine.live().storage()));
+        engine.live().prepare(kSampleRate, 512u); // lets go of it before it is freed
+    }
+    return r;
+}
+
+// A 220 Hz sine faded in over 10 ms with a raised cosine, as gg-render fades an FX input.
+Stereo fadedSine(int64_t frames)
+{
+    Stereo input = sineInput(frames, kSampleRate, 220.0, 0.5f);
+    for (int64_t i = 0; i < 480; ++i)
+    {
+        const double s = std::sin(0.5 * std::numbers::pi * static_cast<double>(i) / 480.0);
+        input.left[static_cast<std::size_t>(i)] *= static_cast<float>(s * s);
+        input.right[static_cast<std::size_t>(i)] *= static_cast<float>(s * s);
+    }
+    return input;
+}
+} // namespace
+
+TEST_CASE("a ring limit narrows admission at once and the reads once the grains allow",
+          "[engine][live]")
+{
+    // Ruling SP-T12ad on a 4 s ring: grains 2 to 2.5 s behind the head, then a limit of 1 s at
+    // 3 s. From that call every grain is admitted at least M frames inside the newest second,
+    // less kCapSlack, and Position and Spray reach a second; the reads keep the 4 s until the
+    // last grain admitted before reaches its end, then narrow to the second, and the engine lets
+    // a 1 s ring be adopted only from there.
+    constexpr int64_t kLimitAt = 3 * 48000;
+    constexpr int64_t kN1 = 48000;
+    const Stereo input = noiseInput(4 * 48000, 41);
+    gg::Engine engine(liveConfig(kSampleRate, 512, 4.0));
+    engine.setSourceMode(gg::SourceMode::Live);
+    engine.setCloudParams({.densityHz = 64.0,
+                           .grainDurationSec = 0.05,
+                           .position = 2.0,
+                           .spray = 0.5,
+                           .stereo = 0.5,
+                           .gain = 0.5f});
+    SinkLog log;
+    engine.setEventSink(&SinkLog::record, &log);
+    const int64_t n = engine.liveFrames();
+    run(engine,
+        Stereo{std::vector<float>(input.left.begin(), input.left.begin() + kLimitAt),
+               std::vector<float>(input.right.begin(), input.right.begin() + kLimitAt)},
+        256);
+    const std::size_t before = log.grains.size();
+    REQUIRE(before > 100);
+    // The last end of the grains admitted before the limit: all read farther back than 1 s.
+    int64_t lastEnd = 0;
+    for (const gg::GrainSpec &g : log.grains)
+    {
+        lastEnd = std::max(lastEnd, gg::grainEndSample(g));
+    }
+    REQUIRE(lastEnd > kLimitAt + 256);
+    engine.setRingLimit(kN1);
+    CHECK(engine.live().readFrames() == n);
+    CHECK_FALSE(engine.liveRingFits(kN1));
+    for (int64_t done = kLimitAt; done < 4 * 48000; done += 256)
+    {
+        const auto n = static_cast<uint32_t>(std::min<int64_t>(256, 4 * 48000 - done));
+        const float *in[2] = {input.left.data() + done, input.right.data() + done};
+        std::vector<float> l(256), r(256);
+        float *o[2] = {l.data(), r.data()};
+        engine.process(in, 2, o, 2, n);
+        const int64_t now = done + n;
+        INFO("after the call ending at " << now);
+        REQUIRE(engine.live().windowFrames() <= kN1 - gg::LiveSource::kCapSlack);
+        if (now == lastEnd)
+        {
+            continue; // checked at the next call's first sample
+        }
+        REQUIRE(engine.live().readFrames() == (now < lastEnd ? n : kN1));
+        REQUIRE(engine.liveReadLimitPending() == (now < lastEnd));
+        REQUIRE(engine.liveRingFits(kN1) == (now > lastEnd));
+    }
+    REQUIRE(log.grains.size() - before > 40);
+    for (std::size_t k = before; k < log.grains.size(); ++k)
+    {
+        const gg::GrainSpec &g = log.grains[k];
+        INFO("grain " << k << " at " << g.startPos);
+        // Not frozen: R = onset + 1 at the onset, and the window's oldest frame moves with it.
+        const double rho = static_cast<double>(g.onsetSample) + g.onsetFrac + 1.0;
+        REQUIRE(g.startPos >=
+                rho - static_cast<double>(kN1 - gg::LiveSource::kCapSlack) + 1.0 + kM - 1e-6);
+    }
+}
+
+TEST_CASE("a ring shrink waits for its grains and lands inaudibly whenever it is offered",
+          "[engine][live][determinism]")
+{
+    // Ruling SP-T12ad: a 16 s ring limited to 4 s at 9 s, and a 60 s ring to 16 s at 25 s, under
+    // dense grains 6 to 8 s (20 to 24 s) behind the head, over a faded 220 Hz sine; and a 16 s
+    // ring grown to 60 s. The shorter storage is offered as soon as the reads fit it, or 0.5 s
+    // later: the output is the same bytes either way, and with the watcher's calls of 64 frames,
+    // and its click score stays below the limit from 0.1 s before the limit to 1.5 s after, and
+    // over the whole render (before the ruling, an adoption under such grains scored 275 to
+    // 2,754), at Eco, Normal and HQ at ring levels 0 and 1, for two seeds.
+    struct Case
+    {
+        const char *name;
+        double ringSeconds;
+        double position;
+        double spray;
+        int64_t limitAt;
+        int64_t newFrames;
+        int64_t frames;
+        bool allTiers;
+    };
+    const std::vector<Case> cases = {
+        {"16 s to 4 s", 16.0, 6.0, 2.0, 9 * 48000, 4 * 48000, 11 * 48000, true},
+        {"60 s to 16 s", 60.0, 20.0, 4.0, 25 * 48000, 16 * 48000, 27 * 48000, false},
+        {"16 s to 60 s", 16.0, 6.0, 2.0, 9 * 48000, 60 * 48000, 11 * 48000, false},
+    };
+    struct Tier
+    {
+        const char *name;
+        gg::Tier tier;
+        double pitch;
+    };
+    const std::vector<Tier> tiers = {{"Eco", gg::Tier::Eco, 0.0},
+                                     {"Normal", gg::Tier::Normal, 0.0},
+                                     {"HQ, level 0", gg::Tier::HQ, 0.0},
+                                     {"HQ, level 1", gg::Tier::HQ, 12.0}};
+    for (const Case &c : cases)
+    {
+        const Stereo input = fadedSine(c.frames);
+        for (const Tier &tier : tiers)
+        {
+            if (!c.allTiers && tier.tier != gg::Tier::Normal && tier.pitch == 0.0)
+            {
+                continue; // the long cases at Normal and at HQ level 1
+            }
+            INFO(c.name << ", " << tier.name);
+            for (const uint64_t seed : {2u, 3u})
+            {
+                INFO("seed " << seed);
+                const ShrinkRun first =
+                    renderShrink(input, seed, tier.tier, tier.pitch, c.position, c.spray, 512,
+                                 c.ringSeconds, c.limitAt, c.newFrames, 0);
+                REQUIRE(first.adoptedAt > c.limitAt);
+                REQUIRE(peak(first.out.left, static_cast<std::size_t>(c.limitAt - 48000),
+                             static_cast<std::size_t>(c.limitAt)) > 0.05f);
+                CHECK(clickScoreIn(first.out, c.limitAt - 4800, c.limitAt + 72000) <= kClickLimit);
+                CHECK(clickScoreIn(first.out, 0, c.frames) <= kClickLimit);
+                const ShrinkRun late =
+                    renderShrink(input, seed, tier.tier, tier.pitch, c.position, c.spray, 512,
+                                 c.ringSeconds, c.limitAt, c.newFrames, 24000);
+                REQUIRE(late.adoptedAt >= c.limitAt + 24000);
+                CHECK(sameBits(late.out.left, first.out.left));
+                CHECK(sameBits(late.out.right, first.out.right));
+                CHECK(late.grains == first.grains);
+                if (seed == 2)
+                {
+                    const ShrinkRun small =
+                        renderShrink(input, seed, tier.tier, tier.pitch, c.position, c.spray, 64,
+                                     c.ringSeconds, c.limitAt, c.newFrames, 0);
+                    CHECK(sameBits(small.out.left, first.out.left));
+                    CHECK(sameBits(small.out.right, first.out.right));
+                    CHECK(small.grains == first.grains);
+                }
+            }
+        }
+    }
+}
+
 TEST_CASE("a restore's window holds for every sample until the next write", "[engine][live]")
 {
     // Between a restore and the next write() the head is the restored frame count at every output

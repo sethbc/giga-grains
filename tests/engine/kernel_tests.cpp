@@ -2676,6 +2676,26 @@ TEMPLATE_TEST_CASE("simd live kernel matches the reference under a narrowed wind
                           {60000, [](gg::LiveSource &r) { r.selectSplice(2); }},
                           {75000, [](gg::LiveSource &r) { r.selectSplice(0); }},
                           {85000, [](gg::LiveSource &r) { r.setLoop(true, 3000); }}}});
+    // Ruling SP-T12ad: a shrink's admission limit, then its read limit, on an unfrozen ring, then
+    // a splice whose start the limit comes to bind as the head moves on (the window's oldest frame
+    // turns from the mark to R − N′ + kCapSlack within a run), then both limits lifted.
+    schedules.push_back({"a shrink's limits",
+                         LiveInput(100000, 99, {}),
+                         {{30000, [](gg::LiveSource &r) { r.setAdmitLimit(9000); }},
+                          {45000, [](gg::LiveSource &r) { r.setReadLimit(9000); }},
+                          {60000,
+                           [](gg::LiveSource &r) {
+                               for (const int64_t m : {52000, 56000, 59000})
+                               {
+                                   REQUIRE(r.addSplice(m));
+                               }
+                               r.selectSplice(1);
+                           }},
+                          {75000, [](gg::LiveSource &r) {
+                               r.selectSplice(0);
+                               r.setAdmitLimit(0);
+                               r.setReadLimit(0);
+                           }}}});
     const Tables &tables = kernelTables();
     for (const Schedule &schedule : schedules)
     {
@@ -2825,6 +2845,26 @@ TEMPLATE_TEST_CASE("simd live kernel matches the reference at every ring level u
                           {60000, [](gg::LiveSource &r) { r.selectSplice(2); }},
                           {75000, [](gg::LiveSource &r) { r.selectSplice(0); }},
                           {85000, [](gg::LiveSource &r) { r.setLoop(true, 3000); }}}});
+    // Ruling SP-T12ad: a shrink's admission limit, then its read limit, on an unfrozen ring, then
+    // a splice whose start the limit comes to bind as the head moves on (the window's oldest frame
+    // turns from the mark to R − N′ + kCapSlack within a run), then both limits lifted.
+    schedules.push_back({"a shrink's limits",
+                         LiveInput(100000, 99, {}),
+                         {{30000, [](gg::LiveSource &r) { r.setAdmitLimit(9000); }},
+                          {45000, [](gg::LiveSource &r) { r.setReadLimit(9000); }},
+                          {60000,
+                           [](gg::LiveSource &r) {
+                               for (const int64_t m : {52000, 56000, 59000})
+                               {
+                                   REQUIRE(r.addSplice(m));
+                               }
+                               r.selectSplice(1);
+                           }},
+                          {75000, [](gg::LiveSource &r) {
+                               r.selectSplice(0);
+                               r.setAdmitLimit(0);
+                               r.setReadLimit(0);
+                           }}}});
     const Tables &tables = kernelTables();
     for (const Schedule &schedule : schedules)
     {

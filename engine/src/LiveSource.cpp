@@ -57,6 +57,8 @@ void LiveSource::prepare(double sampleRate, uint32_t maxBlockSize) noexcept
 {
     rampLength_ = freezeRampSamples(sampleRate);
     maxBlock_ = static_cast<int64_t>(std::max<uint32_t>(1, maxBlockSize));
+    admitLimit_ = 0; // a fresh ring has neither of a shrink's limits (ruling SP-T12ad)
+    readLimit_ = 0;
     attach(nullptr);
     owned_.reset();
     retired_.reset();
@@ -99,6 +101,7 @@ void LiveSource::attach(RingStorage *storage) noexcept
     capacity_ = storage != nullptr ? storage->capacity() : 0;
     // At most the array's size, which levelCount() never passes: bounded so GCC 13 can see it.
     levelCount_ = storage != nullptr ? std::min(storage->levelCount(), RingStorage::kMaxLevels) : 1;
+    readFrames_ = readLimit_ > 0 ? std::min(readLimit_, frames_) : frames_;
     levels_ = {};
     levels_[0] = {slots_, capacity_, frames_};
     for (uint32_t n = 1; n < levelCount_; ++n)
@@ -137,6 +140,7 @@ void LiveSource::reset() noexcept
     blockRamp_ = ramp_;
     markCount_ = 0; // ring time restarts, so the old marks name nothing
     window_ = loopWindow();
+    blockAdmit_ = admitLimit_;
     blockRequest_ = 0;
     blockMarkCount_ = 0;
 }
@@ -291,6 +295,7 @@ bool LiveSource::restoreStorage(RingStorage *next, int64_t frames, std::span<con
         }
     }
     window_ = loopWindow();
+    blockAdmit_ = admitLimit_;
     captureWindow(); // until the next write(), the window is the restored ring's
     return true;
 }
@@ -303,6 +308,7 @@ void LiveSource::write(const float *const *in, uint32_t numInChannels, uint32_t 
     blockRamp_ = ramp_;
     blockAdvance_ = 0;
     window_ = loopWindow(); // this block's W, and overdub's period P
+    blockAdmit_ = admitLimit_;
     if (frames_ == 0)
     {
         blockRequest_ = 0;
@@ -413,7 +419,7 @@ bool LiveSource::gatherTaps(double pos, int64_t head, Cursor &cursor, float *lef
     // SP-T12aa), so no rounding in fade() can let a stale or unwritten tap through. Inside it every
     // slot holds its own frame, even with the rest of the block already written (ruling M1-o; see
     // Storage in LiveSource.h).
-    if (first < head - frames_ || first + (kTaps - 1) > head - 1)
+    if (first < head - readFrames_ || first + (kTaps - 1) > head - 1)
     {
         return false;
     }
@@ -515,7 +521,7 @@ bool LiveSource::gatherLevelTaps(uint32_t n, double pos, int64_t head, Cursor &c
     // level's slot is overwritten only once the head passes its ring frame + C + the level's lag
     // (RingStorage), as level 0's.
     const int64_t d = int64_t{1} << n;
-    if (first * d < head - frames_ || last * d + RingStorage::levelLag(n) > head - 1)
+    if (first * d < head - readFrames_ || last * d + RingStorage::levelLag(n) > head - 1)
     {
         return false;
     }

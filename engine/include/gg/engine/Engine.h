@@ -373,6 +373,28 @@ class Engine
     /// process() call on (CloudScheduler::setSourceMode; no onset moves). Real-time safe, with the
     /// threading rule of live().
     void ringResized() noexcept;
+
+    /// A ring shrink's first phase (ruling SP-T12ad; LiveSource's class comment): the ring length
+    /// the Processor's Ring Length asks for, in frames (0 for none), applied from the next
+    /// process() call's first frame. Below the ring's N it is the admission limit N′ from there on:
+    /// every grain admitted from then is drawn and clamped inside the newest N′ frames (Live
+    /// mode's Position and Spray reach N′ seconds), and the read limit follows at the first sample
+    /// from which no sounding grain would step at the change, its farthest tap at least M frames
+    /// inside the newest N′: at once when none reads farther back, else at the end of the
+    /// latest that does, checked again there (liveReadLimitPending() until then). At or above N
+    /// it lifts both limits, in the same way. The limit stays in force after a shorter ring is
+    /// adopted, until the request changes. Each limit applies at a sample fixed by the calls'
+    /// samples and the grains, never by the blocks, so the render stays block-size invariant.
+    /// Real-time safe, with the threading rule of live().
+    void setRingLimit(int64_t frames) noexcept { requestedLimit_ = std::max<int64_t>(0, frames); }
+    /// Whether a read limit is waiting for grains (setRingLimit).
+    bool liveReadLimitPending() const noexcept { return readLimitPending_; }
+    /// Whether a ring of `frames` may be adopted now, at the next call's first sample, without
+    /// stepping a sounding grain (ruling SP-T12ad): true at or above live().readFrames(); below
+    /// it, false while a read limit is pending (it lands first, at a sample of its own), else
+    /// true only when every sounding ring grain's farthest tap is at least M frames inside the
+    /// newest `frames`. Real-time safe; at most grainCapacity grains checked.
+    bool liveRingFits(int64_t frames) const noexcept SST_CPPUTILS_NONBLOCKING;
     /// The kernel table this engine renders with (EngineConfig::kernels), chosen at
     /// construction.
     const kernels::Dispatch &kernelTable() const noexcept { return *kernels_; }
@@ -385,6 +407,16 @@ class Engine
     GrainSpec sampleGrain(const GrainDraw &d) const noexcept;
     /// The grain a draw makes from the live ring, admission-clamped; false when it can't fit.
     bool liveGrain(const GrainDraw &d, GrainSpec &g) const noexcept;
+    /// Whether every sounding ring grain's farthest tap, at the next sample (clock_, the head at
+    /// most head() + 1), is at least M frames inside the newest `frames`; otherwise false, with
+    /// `latestEnd` the latest end of those that aren't (setRingLimit).
+    bool liveReadsWithin(int64_t frames,
+                         int64_t &latestEnd) const noexcept SST_CPPUTILS_NONBLOCKING;
+    /// Applies a pending read limit at clock_ if liveReadsWithin allows it, else waits for the
+    /// grains that don't fit (setRingLimit).
+    void checkReadLimit() noexcept SST_CPPUTILS_NONBLOCKING;
+    /// Live mode's Position and Spray bound: N, or the admission limit below it, in seconds.
+    void updateLiveBound() noexcept;
     void admit(const GrainSpec &g, float *const dst[2], int64_t blockStart,
                int64_t &renderedTo) noexcept SST_CPPUTILS_NONBLOCKING;
     /// Adds every pool grain into dst over [from, to), in spawn order, with each grain's latched
@@ -464,6 +496,15 @@ class Engine
     // frame.
     uint64_t quota_{kUnlimitedQuota};
     uint64_t requestedQuota_{kUnlimitedQuota};
+
+    // The ring shrink (setRingLimit): the request, and as last applied; the admission limit in
+    // force (0 for none); the read limit waiting for grains and the sample it is checked at.
+    int64_t requestedLimit_{0};
+    int64_t appliedLimit_{0};
+    int64_t capFrames_{0};
+    int64_t pendingReadLimit_{0};
+    bool readLimitPending_{false};
+    int64_t readLimitCheckAt_{0};
 
     int64_t clock_{0};
     uint64_t dropped_{0};

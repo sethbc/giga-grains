@@ -69,6 +69,14 @@ namespace gg
 /// or widens under it, while the grains after it are admitted into the new one. A window change
 /// never steps a sounding grain, and a grain never reads a frame the head has overwritten.
 ///
+/// **A shrink's two limits** (ruling SP-T12ad; Engine::setRingLimit drives them). The admission
+/// limit N′ (setAdmitLimit) narrows the window to the newest N′ frames, less kCapSlack: its oldest
+/// frame is never below R(t) − N′ + kCapSlack, so every grain admitted under it keeps its
+/// farthest tap, the sinc's at level 3, at least M frames inside the newest N′. The read limit
+/// (setReadLimit) is what the fade and the reads take for N, readFrames() = min(limit, N): a
+/// shorter storage holding the newest N′ frames then reads the same as this one. With neither set,
+/// the window and the reads are those above, bit for bit.
+///
 /// **Overdub.** write() may take a gain o per frame: the frame written at R is then
 /// sanitize(sanitize(in) + o × frame(R − P)) before the freeze gain, with the period P = min(L, N)
 /// while Loop is on, else N. Frame R − P is still in storage when R is written (the slots hold
@@ -108,6 +116,9 @@ class LiveSource
     static constexpr int64_t kAdoptCopyFrames = 8192;
     /// The most splice marks a ring keeps (spec §6.1).
     static constexpr uint32_t kMaxSplices = 32;
+    /// The admission limit's slack (ruling SP-T12ad): the farthest a read reaches back from its
+    /// position, the sinc's 7 level frames at level 3 (8 × 2³ − 1 = 63 ring frames), and one.
+    static constexpr int64_t kCapSlack = 64;
 
     /// L = round(kFreezeRampSeconds × sampleRate) samples, at least 1.
     static int64_t freezeRampSamples(double sampleRate) noexcept;
@@ -205,6 +216,23 @@ class LiveSource
     /// Removes every mark; with none, a selection is the whole window from the next write().
     void clearSplices() noexcept { markCount_ = 0; }
 
+    /// The admission limit N′ (ruling SP-T12ad; the class comment): 0 for none, else the window's
+    /// oldest frame is never below R(t) − N′ + kCapSlack (nor past its end). From the next
+    /// write(), as setLoop.
+    void setAdmitLimit(int64_t frames) noexcept { admitLimit_ = std::max<int64_t>(0, frames); }
+    /// The read limit (ruling SP-T12ad): 0 for none, else the fade and the reads take
+    /// min(frames, N) for N, now and after any adoption. Real-time safe; call it between write()
+    /// calls, at the sample from which it applies (no read of an earlier sample follows).
+    void setReadLimit(int64_t frames) noexcept
+    {
+        readLimit_ = std::max<int64_t>(0, frames);
+        readFrames_ = readLimit_ > 0 ? std::min(readLimit_, frames_) : frames_;
+    }
+    /// The read limit as set (0 for none).
+    int64_t readLimit() const noexcept { return readLimit_; }
+    /// What the fade and the reads take for N: min(read limit, N), or N with none.
+    int64_t readFrames() const noexcept { return readFrames_; }
+
     /// How many marks there are: those still in storage as of the last write() (and those added
     /// since), for a splice count shown to the user.
     uint32_t spliceCount() const noexcept { return markCount_; }
@@ -252,6 +280,21 @@ class LiveSource
         int64_t start = 0;
         int64_t end = 0;
         return spliceAt(headAt(t), start, end) ? 0.0 : headRunAfter(t);
+    }
+
+    /// How far the window's oldest frame moves with the head after t: anchorRunAfter(t), but
+    /// headRunAfter(t) while a splice's start is bound by the admission limit, whose oldest frame
+    /// follows the head (ruling SP-T12ad).
+    double oldestRunAfter(int64_t t) const noexcept
+    {
+        int64_t start = 0;
+        int64_t end = 0;
+        const int64_t head = headAt(t);
+        if (!spliceAt(head, start, end))
+        {
+            return headRunAfter(t);
+        }
+        return blockAdmit_ != 0 && head - blockAdmit_ + kCapSlack > start ? headRunAfter(t) : 0.0;
     }
 
     /// The first output sample after t of the last write() block from which the window's ends
@@ -335,7 +378,8 @@ class LiveSource
         const auto after = static_cast<double>(kAfter * d + RingStorage::levelLag(n));
         const auto end = static_cast<double>(head);
         const double toHead = (end - 1.0 - (pos + after)) / kMargin;
-        const double fromTail = ((pos - before) - static_cast<double>(head - frames_)) / kMargin;
+        const double fromTail =
+            ((pos - before) - static_cast<double>(head - readFrames_)) / kMargin;
         return unit(toHead) * unit(fromTail);
     }
 
@@ -379,7 +423,8 @@ class LiveSource
         const auto end = static_cast<double>(head);
         const double toHead = (end - 1.0 - (pos + static_cast<double>(kAfter))) / kMargin;
         const double fromTail =
-            ((pos - static_cast<double>(kBefore)) - static_cast<double>(head - frames_)) / kMargin;
+            ((pos - static_cast<double>(kBefore)) - static_cast<double>(head - readFrames_)) /
+            kMargin;
         return unit(toHead) * unit(fromTail);
     }
 
@@ -507,11 +552,25 @@ class LiveSource
         int64_t end = 0;
         return spliceAt(head, start, end) ? std::min(head, end) : head;
     }
+    // With the admission limit N′ (ruling SP-T12ad), never below R(t) − N′ + kCapSlack, nor past
+    // the window's end.
     int64_t windowOldest(int64_t head) const noexcept
     {
         int64_t start = 0;
         int64_t end = 0;
-        return spliceAt(head, start, end) ? start : head - window_;
+        if (spliceAt(head, start, end))
+        {
+            if (blockAdmit_ == 0)
+            {
+                return start;
+            }
+            return std::min(std::min(head, end), std::max(start, head - blockAdmit_ + kCapSlack));
+        }
+        if (blockAdmit_ == 0)
+        {
+            return head - window_;
+        }
+        return std::max(head - window_, head - blockAdmit_ + kCapSlack);
     }
 
     // Points the source at `storage` (nullptr: none), for prepare(), adoptStorage() and
@@ -553,6 +612,11 @@ class LiveSource
     std::array<int64_t, kMaxSplices> marks_{};
     uint32_t markCount_{0};
 
+    // The shrink's limits (ruling SP-T12ad): 0 for none; readFrames_ = min(readLimit_, N).
+    int64_t admitLimit_{0};
+    int64_t readLimit_{0};
+    int64_t readFrames_{0};
+
     bool frozen_{false};
     int64_t ramp_{1};      // the write gain is ramp_ / rampLength_, ramp_ in [0, rampLength_]
     int64_t head_{0};      // R
@@ -564,6 +628,7 @@ class LiveSource
     int64_t blockAdvance_{0};  // frames written in the block, on its first blockAdvance_ samples
     int64_t blockRamp_{0};     // ramp_ before the block
     int64_t window_{0};        // W with no splice (the loop's or N), and overdub's period P
+    int64_t blockAdmit_{0};    // the admission limit for the block, 0 for none
     uint32_t blockRequest_{0}; // the splice selected for the block, 0 for none
     std::array<int64_t, kMaxSplices> blockMarks_{}; // the marks as the block began
     uint32_t blockMarkCount_{0};

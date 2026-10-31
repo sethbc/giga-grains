@@ -222,11 +222,74 @@ void Engine::setSourceMode(SourceMode mode) noexcept
 
 void Engine::setFreeze(bool freeze) noexcept { freeze_ = freeze; }
 
-void Engine::ringResized() noexcept
+void Engine::ringResized() noexcept { updateLiveBound(); }
+
+void Engine::updateLiveBound() noexcept
 {
-    // The bound a later kind switch to Live takes too (process()).
-    config_.liveSeconds = static_cast<double>(live_.frames()) / config_.sampleRate;
+    // The bound a later kind switch to Live takes too (process()). Under an admission limit it
+    // is the limit's, before and after the shorter ring lands (ruling SP-T12ad).
+    const int64_t frames = capFrames_ != 0 ? std::min(capFrames_, live_.frames()) : live_.frames();
+    config_.liveSeconds = static_cast<double>(frames) / config_.sampleRate;
     cloud_.setSourceMode(mode_, config_.liveSeconds);
+}
+
+bool Engine::liveReadsWithin(int64_t frames, int64_t &latestEnd) const noexcept
+{
+    // A read's farthest tap back, in ring frames: the Hermite's (and the line's fade reach) one
+    // frame, the sinc's 7, at level n (8 × 2ⁿ − 1) as LiveSource::levelFadeFor takes it. Its fade
+    // against the newest `frames` is 1 when that tap is at least M frames inside them, so a
+    // change of the read limit to `frames` steps nothing there.
+    constexpr double kM = static_cast<double>(LiveSource::kHeadMargin);
+    const GrainRows &rows = pool_.rows();
+    const auto oldest = static_cast<double>(live_.head() + 1 - frames);
+    bool within = true;
+    for (uint32_t i = 0; i < pool_.size(); ++i)
+    {
+        if (rows.sourceSlot[i] != kLiveSlot || rows.endSample[i] <= clock_)
+        {
+            continue;
+        }
+        const int64_t before =
+            rows.tier[i] == Tier::HQ
+                ? 8 * static_cast<int64_t>(live_.level(rows.level[i]).decimation) - 1
+                : 1;
+        const double e = static_cast<double>(clock_ - rows.onsetSample[i]) - rows.onsetFrac[i];
+        const double pos = rows.startPos[i] + rows.rate[i] * e;
+        if (!((pos - static_cast<double>(before)) - oldest >= kM))
+        {
+            within = false;
+            latestEnd = std::max(latestEnd, rows.endSample[i]);
+        }
+    }
+    return within;
+}
+
+void Engine::checkReadLimit() noexcept
+{
+    const int64_t target =
+        pendingReadLimit_ > 0 ? std::min(pendingReadLimit_, live_.frames()) : live_.frames();
+    int64_t latestEnd = clock_ + 1;
+    if (!liveReadsWithin(std::min(live_.readFrames(), target), latestEnd))
+    {
+        readLimitCheckAt_ = latestEnd; // the latest grain that doesn't fit has ended there
+        return;
+    }
+    live_.setReadLimit(pendingReadLimit_);
+    readLimitPending_ = false;
+}
+
+bool Engine::liveRingFits(int64_t frames) const noexcept
+{
+    if (frames >= live_.readFrames())
+    {
+        return true;
+    }
+    if (readLimitPending_)
+    {
+        return false;
+    }
+    int64_t latestEnd = 0;
+    return liveReadsWithin(frames, latestEnd);
 }
 
 void Engine::setEventSink(GrainEventSink sink, void *ctx) noexcept
@@ -250,7 +313,8 @@ void Engine::reset() noexcept
     dropped_ = 0;
     lowered_ = 0;
     stolen_ = 0;
-    retirePrevious(); // no grain reads it any more
+    readLimitCheckAt_ = 0; // a pending read limit: no grain is left to wait for
+    retirePrevious();      // no grain reads it any more
 }
 
 void Engine::process(float *const *out, uint32_t numChannels, uint32_t numFrames) noexcept
@@ -290,6 +354,23 @@ void Engine::process(const float *const *in, uint32_t numInChannels, float *cons
     }
     live_.setFrozen(freeze_);
     quota_ = requestedQuota_; // spec §6.4: from this call's first frame
+    if (requestedLimit_ != appliedLimit_)
+    {
+        // Ruling SP-T12ad: a shrink's admission limit from this frame, and its read limit once the
+        // grains allow; a request at or above N lifts both.
+        appliedLimit_ = requestedLimit_;
+        const int64_t cap =
+            requestedLimit_ > 0 && requestedLimit_ < live_.frames() ? requestedLimit_ : 0;
+        if (cap != capFrames_)
+        {
+            capFrames_ = cap;
+            live_.setAdmitLimit(capFrames_);
+            updateLiveBound();
+        }
+        pendingReadLimit_ = capFrames_;
+        readLimitPending_ = pendingReadLimit_ != live_.readLimit();
+        readLimitCheckAt_ = clock_;
+    }
     if (in == nullptr)
     {
         numInChannels = 0;
@@ -300,7 +381,20 @@ void Engine::process(const float *const *in, uint32_t numInChannels, float *cons
     }
     for (uint32_t done = 0; done < numFrames;)
     {
-        const uint32_t n = std::min(numFrames - done, config_.maxBlockSize);
+        uint32_t n = std::min(numFrames - done, config_.maxBlockSize);
+        if (readLimitPending_)
+        {
+            // A pending read limit is checked at its own sample, which a block then starts at
+            // (ruling SP-T12ad): where the host's blocks fall never moves it.
+            if (clock_ >= readLimitCheckAt_)
+            {
+                checkReadLimit();
+            }
+            if (readLimitPending_ && readLimitCheckAt_ - clock_ < static_cast<int64_t>(n))
+            {
+                n = static_cast<uint32_t>(readLimitCheckAt_ - clock_);
+            }
+        }
         processBlock(in, numInChannels, out, numChannels, done, n, overdubGain);
         done += n;
     }
@@ -415,8 +509,18 @@ bool Engine::liveGrain(const GrainDraw &d, GrainSpec &g) const noexcept
     // The frames the head advances during the grain's life.
     const double span = std::min(dur, run - step);
     const double hi = rho - 3.0 - kM - std::max(0.0, dur * rate - span);
-    const double lo = rho - static_cast<double>(live_.windowFramesAt(t0)) + 1.0 + kM +
-                      std::max(0.0, span * (1.0 - rate));
+    double lo = rho - static_cast<double>(live_.windowFramesAt(t0)) + 1.0 + kM +
+                std::max(0.0, span * (1.0 - rate));
+    const double runOldest = live_.oldestRunAfter(t0);
+    if (runOldest != run)
+    {
+        // A splice whose start the admission limit binds (ruling SP-T12ad): its end holds still
+        // while its oldest frame moves with the head, so the oldest takes its own run.
+        const double stepOldest = std::min(d.onsetFrac, runOldest);
+        const double spanOldest = std::min(dur, runOldest - stepOldest);
+        lo = static_cast<double>(live_.windowOldestAt(t0)) + stepOldest + 1.0 + kM +
+             std::max(0.0, spanOldest * (1.0 - rate));
+    }
     if (lo > hi)
     {
         return false; // the grain's read span doesn't fit the ring
