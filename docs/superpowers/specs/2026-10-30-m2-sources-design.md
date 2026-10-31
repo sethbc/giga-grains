@@ -428,18 +428,29 @@ Two things a parameter can't carry: adding a splice mark, and capturing the ring
   > grain sounding at a shrink's swap that read older than the new length was not faded but cut
   > in one sample (its frames aren't in the new storage, and the fade's tail term drops to 0 at
   > once: 275 to 2,754 against the click limit of 15 for 16 s to 4 s under dense grains). A shrink
-  > is now two phases. **First,** from the Ring Length's applied boundary the audio thread limits
-  > admission to the newest N′ frames less `kCapSlack` = 64 (the sinc's reach at level 3, so
-  > every tap of a grain admitted then stays M frames inside them; Position and Spray reach N′),
-  > and narrows the reads (the fade's and the taps' N) to N′ at the first sample from which no
-  > sounding grain would step at the change, checked at its own sample so the block split never
-  > moves it (`Engine::setRingLimit`). **Second,** the watcher copies and offers the shorter
-  > storage only once `RingMeta::readFrames` fits it, showing *resizing* meanwhile, and the audio
-  > thread declines a shorter ring than the reads reach (`Engine::liveRingFits`). After the first
-  > phase no grain reads outside the newest N′ frames and they read alike from either storage,
-  > so the swap is inaudible whenever it lands and the render no longer depends on when the main
-  > thread offers it. The limit stays in force after the swap, until the request changes. Growing
-  > is unchanged.
+  > is now two phases. **First,** on the audio thread (`Engine::setRingLimit`): the read limit
+  > wanted is the Ring Length below N. It lands at the first sample from which no sounding grain,
+  > over its whole remaining life (its position rising at its rate, the head at one frame a
+  > sample until a freeze ramp stops it: linear between those samples, so checked at their ends),
+  > keeps a tap within M frames of the older end of the shorter of the old reads and the new: at
+  > once when none does, else at the end of the latest that does, checked again there, each check
+  > at its own sample with a block starting there, so the block split never moves it. There the
+  > reads (the fade's and the taps' N) take the new length, and overdub's period P, never longer
+  > than the reads, changes to it crossfaded over 10 ms (both frames still stored). Admission and
+  > Position's bound never reach past the reads: they take the shorter of the request's length and
+  > the reads', at once for a shorter request, with `kCapSlack` = 64 (the sinc's reach at level 3,
+  > so every grain admitted while the change waits keeps every tap M frames inside) until it
+  > lands, and at the landing for a longer one. A splice whose start the limit binds takes the
+  > head's run for its oldest frame. **Second,** the watcher copies and offers the shorter storage
+  > only once `RingMeta::framesInUse` (the reads, or the old period while its crossfade runs) fits
+  > it, showing *resizing* meanwhile; the audio thread declines a ring shorter than that, or than
+  > the length last asked for (a stale offer after a grow back) (`Engine::liveRingFits`). After the
+  > first phase nothing reads or overdubs outside the newest N′ frames, which both storages hold
+  > alike, so the swap is inaudible whenever it lands and the render doesn't depend on when the
+  > main thread offers it; with the slack gone at the landing, the shrunk ring admits as a fresh
+  > ring of its length. Growing is unchanged. (Fix round 1 of Task 12b, 2026-10-30: the life-long
+  > check, the reads gating a raise, the period's crossfade, the slack's end at the landing and
+  > the stale offer, each found by the review.)
 - **The process-wide sample pool** (`gg::media::SamplePool`, main and loader threads, one mutex):
   prepared sources by key `(sha256, size, rate)`, held weakly; `prepare()` consults it before
   converting and building, and shares a live entry. Ten instances of one project hold one copy of
