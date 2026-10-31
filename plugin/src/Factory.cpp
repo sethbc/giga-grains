@@ -12,6 +12,7 @@
 #include <clapwrapper/auv2.h>
 
 #include "GigaGrainsPlugin.h"
+#include "PresetDiscovery.h"
 #include "gg/plugin/Identity.h"
 
 namespace gg::plugin
@@ -134,6 +135,11 @@ const void *getFactory(const char *factoryId)
     if (std::strcmp(factoryId, CLAP_PLUGIN_FACTORY_ID) == 0)
     {
         return &kPluginFactory;
+    }
+    if (std::strcmp(factoryId, CLAP_PRESET_DISCOVERY_FACTORY_ID) == 0 ||
+        std::strcmp(factoryId, CLAP_PRESET_DISCOVERY_FACTORY_ID_COMPAT) == 0)
+    {
+        return presetDiscoveryFactory();
     }
     if (std::strcmp(factoryId, CLAP_PLUGIN_FACTORY_INFO_AUV2) == 0)
     {

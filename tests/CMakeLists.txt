@@ -13,9 +13,11 @@ add_executable(gg-tests
         core/mod_matrix_tests.cpp
         core/mod_processor_tests.cpp
         core/mod_sources_tests.cpp
+        core/mutate_tests.cpp
         core/note_tests.cpp
         core/parammap_tests.cpp
         core/patch_tests.cpp
+        core/preset_tests.cpp
         core/processor_tests.cpp
         core/publish_tests.cpp
         core/session_state_tests.cpp
@@ -42,6 +44,7 @@ add_executable(gg-tests
         engine/sinc_table_tests.cpp
         engine/task_runner_tests.cpp
         engine/window_tests.cpp
+        media/content_paths_tests.cpp
         media/convert_tests.cpp
         media/decode_memory_tests.cpp
         media/decode_tests.cpp
@@ -59,6 +62,7 @@ add_executable(gg-tests
         sweep/sweep_params_tests.cpp
         tools/bench_kernel_tests.cpp
         tools/bench_tests.cpp
+        tools/preset_source_tests.cpp
         tools/render_spec_tests.cpp
         tools/signals_tests.cpp
         ui/lane_model_tests.cpp
@@ -114,6 +118,8 @@ target_include_directories(gg-tests PRIVATE ${CMAKE_SOURCE_DIR}/media/src)
 target_compile_definitions(gg-tests PRIVATE GG_TEST_OUTPUT_DIR="${CMAKE_CURRENT_BINARY_DIR}/test-output"
         GG_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/golden"
         GG_AUDIO_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/audio"
+        GG_PRESET_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/presets"
+        GG_RENDER_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/render"
         GG_BENCH_BASELINE_DIR="${CMAKE_SOURCE_DIR}/tools/gg-bench/baselines")
 # 0 or 1, so tests can use #if GG_USE_RTSAN for checks that only hold in the RTSan build.
 target_compile_definitions(gg-tests PRIVATE GG_USE_RTSAN=$<BOOL:${GG_USE_RTSAN}>)
@@ -134,9 +140,13 @@ endif ()
 # inspect a plugin instance. gg::plugin-impl is linked above, first.
 if (GG_BUILD_PLUGINS)
     target_sources(gg-tests PRIVATE
+            plugin/catalog_tests.cpp
+            plugin/discovery_tests.cpp
             plugin/factory_tests.cpp
             plugin/identity_tests.cpp
+            plugin/mutate_plugin_tests.cpp
             plugin/params_tests.cpp
+            plugin/preset_tests.cpp
             plugin/process_tests.cpp
             plugin/rt_tests.cpp
             plugin/sample_tests.cpp
@@ -146,6 +156,8 @@ endif ()
 # The editor's tests reach its components' private headers too (ui/src: GrainCanvas, LoaderStrip).
 if (GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
     target_include_directories(gg-tests PRIVATE ${CMAKE_SOURCE_DIR}/ui/src)
+    # The preset strip and browser (M2 sub-project 5's spec §6.8), through the editor.
+    target_sources(gg-tests PRIVATE plugin/browser_tests.cpp)
 endif ()
 
 list(APPEND CMAKE_MODULE_PATH ${CMAKE_SOURCE_DIR}/libs/catch2/extras)
@@ -327,6 +339,18 @@ endif ()
 # into <build>/golden-media, a fixture every golden test requires, and the cases' relative paths
 # resolve there (--media-dir). That applies to every relative path in every case, so a future
 # case that reads a committed file must give its path some other way than relative to the spec.
+# The CC0 content (spec §6.5; cmake/content.cmake): content_fixture builds gg-content, which
+# fetches the pinned zip into <build>/content-cache once (offline afterwards), or checks
+# GG_CONTENT_DIR against the pin, as the fixture `content` for the tests that read it.
+add_test(NAME content_fixture
+        COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --config $<CONFIG> --target gg-content)
+set_tests_properties(content_fixture PROPERTIES LABELS golden FIXTURES_SETUP content)
+# The CC0 text the installers carry is the content release's LICENSE, byte for byte (T6).
+add_test(NAME installer_cc0_text
+        COMMAND ${CMAKE_COMMAND} -DOURS=${PROJECT_SOURCE_DIR}/installer/licenses/CC0-1.0.txt
+        -DCONTENT=${GG_CONTENT_ROOT}
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/installer/check-cc0-text.cmake)
+set_tests_properties(installer_cc0_text PROPERTIES LABELS installer FIXTURES_REQUIRED content)
 set(GG_GOLDEN_MEDIA_DIR ${CMAKE_BINARY_DIR}/golden-media)
 add_test(NAME golden_media COMMAND gg-render --write-media ${GG_GOLDEN_MEDIA_DIR})
 set_tests_properties(golden_media PROPERTIES LABELS golden FIXTURES_SETUP golden_media)
@@ -336,6 +360,73 @@ add_test(NAME render_write_media_alone
         --block-size 64 -o ${CMAKE_CURRENT_BINARY_DIR}/write-media-alone/x.wav)
 set_tests_properties(render_write_media_alone PROPERTIES LABELS render
         PASS_REGULAR_EXPRESSION "excludes --write-media|--write-media excludes")
+# Presets (M2 sub-project 5's spec §6.6, §6.10): render_pack_preset packs the FX's test source
+# into <build>/tests/packed-presets, the fixture packed_presets; render_preset_option renders an
+# FX spec through it with --preset, and render_preset_wrong_product refuses it for an instrument
+# spec (exit 2, with the reason).
+set(GG_PACKED_PRESETS ${CMAKE_CURRENT_BINARY_DIR}/packed-presets)
+add_test(NAME render_pack_preset
+        COMMAND gg-render --pack-preset ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/presets/fx-test.json
+        -o ${GG_PACKED_PRESETS}/fx-test.ggpreset)
+set_tests_properties(render_pack_preset PROPERTIES LABELS render
+        FIXTURES_SETUP packed_presets)
+add_test(NAME render_preset_option
+        COMMAND gg-render ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/render/render-fx-preset.json
+        --preset ${GG_PACKED_PRESETS}/fx-test.ggpreset
+        -o ${GG_PACKED_PRESETS}/render-fx-preset.wav)
+set_tests_properties(render_preset_option PROPERTIES LABELS render
+        FIXTURES_REQUIRED packed_presets)
+set(render_preset_wrong_product_args
+        ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/render/render-inst-preset.json
+        --preset ${GG_PACKED_PRESETS}/fx-test.ggpreset)
+add_test(NAME render_preset_wrong_product
+        COMMAND ${CMAKE_COMMAND} -DPROGRAM=$<TARGET_FILE:gg-render>
+        "-DARGS=${render_preset_wrong_product_args}" -DEXPECTED_CODE=2
+        "-DEXPECTED_STDERR=gg-render: "
+        "-DEXPECTED_STDERR2=the preset is for Giga Grains FX, not Giga Grains"
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/tools/check-exit-code.cmake)
+set_tests_properties(render_preset_wrong_product PROPERTIES LABELS render
+        FIXTURES_REQUIRED packed_presets)
+# --preset "" is refused as the spec's empty "preset" key is (exit 2), and --preset on a
+# sample-mode spec, which has no preset to apply (fix wave T4).
+# (The empty value goes last, TRAILING_EMPTY_ARG: a list can't carry an empty element.)
+set(render_preset_empty_args ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/render/render-fx-preset.json
+        --preset)
+add_test(NAME render_preset_empty
+        COMMAND ${CMAKE_COMMAND} -DPROGRAM=$<TARGET_FILE:gg-render>
+        "-DARGS=${render_preset_empty_args}" -DTRAILING_EMPTY_ARG=1 -DEXPECTED_CODE=2
+        "-DEXPECTED_STDERR=gg-render: "
+        "-DEXPECTED_STDERR2=--preset must not be empty"
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/tools/check-exit-code.cmake)
+set_tests_properties(render_preset_empty PROPERTIES LABELS render)
+set(render_preset_sample_mode_args ${CMAKE_CURRENT_SOURCE_DIR}/golden/cases/sparse-sine.json
+        --preset ${GG_PACKED_PRESETS}/fx-test.ggpreset)
+add_test(NAME render_preset_sample_mode
+        COMMAND ${CMAKE_COMMAND} -DPROGRAM=$<TARGET_FILE:gg-render>
+        "-DARGS=${render_preset_sample_mode_args}" -DEXPECTED_CODE=2
+        "-DEXPECTED_STDERR=gg-render: "
+        "-DEXPECTED_STDERR2=--preset needs an instrument or FX spec"
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/tools/check-exit-code.cmake)
+set_tests_properties(render_preset_sample_mode PROPERTIES LABELS render
+        FIXTURES_REQUIRED packed_presets)
+# --pack-preset takes only -o and --content-dir: another option is refused (exit 2); and a source
+# that doesn't parse (here a render spec) is bad input, with the parser's message.
+add_test(NAME render_pack_preset_alone
+        COMMAND gg-render --pack-preset ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/presets/fx-test.json
+        -o ${CMAKE_CURRENT_BINARY_DIR}/pack-preset-alone/x.ggpreset --block-size 64)
+set_tests_properties(render_pack_preset_alone PROPERTIES LABELS render
+        PASS_REGULAR_EXPRESSION "excludes --pack-preset|--pack-preset excludes")
+set(render_pack_preset_bad_source_args
+        --pack-preset ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/render/render-fx-preset.json
+        -o ${CMAKE_CURRENT_BINARY_DIR}/pack-preset-bad-source.ggpreset)
+add_test(NAME render_pack_preset_bad_source
+        COMMAND ${CMAKE_COMMAND} -DPROGRAM=$<TARGET_FILE:gg-render>
+        "-DARGS=${render_pack_preset_bad_source_args}" -DEXPECTED_CODE=2
+        "-DEXPECTED_STDERR=gg-render: "
+        "-DEXPECTED_STDERR2=unknown key blockSize"
+        -DABSENT=${CMAKE_CURRENT_BINARY_DIR}/pack-preset-bad-source.ggpreset
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/tools/check-exit-code.cmake)
+set_tests_properties(render_pack_preset_bad_source PROPERTIES LABELS render)
 # A non-ASCII --spectrogram path (carry-over [181]): gg-render exits 0 only if the PNG was
 # written, which on Windows needs the wide-path open, not stbi_write_png's narrow one.
 add_test(NAME render_spectrogram_utf8_path
@@ -486,6 +577,41 @@ if (APPLE AND GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
     set_tests_properties(identity_standalone identity_standalone_fx identity_auv2 identity_vst3
             PROPERTIES LABELS plugin)
 
+    # The VST3 preset selector (M2 sub-project 5's spec §6.3), label `plugin`: clap-wrapper's
+    # controller adds a program-change parameter at 0xC00000 that lists the plugin's presets
+    # (its preset-discovery crawl). gg-vst3-preset-selector creates each class and reads it back
+    # through the raw vtables; the content root GG_CONTENT_DIR names holds the two packed test
+    # presets, so each list has at least INIT and its own test preset (2). The settings file is a
+    # scratch one, so the user's presets folder is never read or made, and the install roots are
+    # a scratch folder (GG_SYSTEM_CONTENT_DIR, the tests' seam), so installed content never joins. Both tests read the
+    # one root, which the setup test writes before either starts and nothing writes after, and
+    # each has a settings file of its own (parallel-safe).
+    set(GG_VST3_SELECTOR_ROOT ${CMAKE_CURRENT_BINARY_DIR}/test-output/vst3-selector-content)
+    add_test(NAME identity_vst3_preset_content
+            COMMAND ${CMAKE_COMMAND} -DOUT=${GG_VST3_SELECTOR_ROOT}/Presets
+            -DGG_RENDER=$<TARGET_FILE:gg-render>
+            -DSOURCES=${CMAKE_CURRENT_SOURCE_DIR}/fixtures/presets
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/plugin/pack-selector-content.cmake)
+    set_tests_properties(identity_vst3_preset_content PROPERTIES LABELS plugin
+            FIXTURES_SETUP vst3_selector_content)
+    add_executable(gg-vst3-preset-selector plugin/vst3_preset_selector.cpp)
+    target_link_libraries(gg-vst3-preset-selector PRIVATE gg::compiler-options
+            "-framework CoreFoundation")
+    add_dependencies(gg-tests gg-vst3-preset-selector gg-render)
+    foreach (case IN ITEMS "Giga Grains|56E869BFEDD75019BD0C3105FA80B835|inst"
+            "Giga Grains FX|DBAF5C12EA095FEFB3A5CBBBB254442A|fx")
+        string(REPLACE "|" ";" case_parts "${case}")
+        list(GET case_parts 0 class_name)
+        list(GET case_parts 1 class_id)
+        list(GET case_parts 2 short_name)
+        add_test(NAME identity_vst3_preset_selector_${short_name}
+                COMMAND gg-vst3-preset-selector $<TARGET_BUNDLE_DIR:gg_clapfirst_vst3>
+                $<TARGET_FILE:gg_clapfirst_vst3> "${class_name}" ${class_id} 2)
+        set_tests_properties(identity_vst3_preset_selector_${short_name} PROPERTIES
+                LABELS plugin FIXTURES_REQUIRED vst3_selector_content
+                ENVIRONMENT "GG_CONTENT_DIR=${GG_VST3_SELECTOR_ROOT};GG_SETTINGS_FILE=${CMAKE_CURRENT_BINARY_DIR}/test-output/vst3-selector-settings-${short_name}/settings.xml;GG_SYSTEM_CONTENT_DIR=${CMAKE_CURRENT_BINARY_DIR}/test-output/vst3-selector-system")
+    endforeach ()
+
     # Bundle versions (spec §6.1), label `installer`: each bundle's CFBundleShortVersionString and
     # CFBundleVersion are the version's numeric part alone, which Apple requires; the pre-release
     # suffix appears only in GG_VERSION_STRING.
@@ -505,10 +631,11 @@ if (APPLE AND GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
     # links the plugin's code itself, and the bundle brings a second copy.
     add_executable(gg-au-state-tests plugin/au_state_tests.cpp)
     target_include_directories(gg-au-state-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-    target_link_libraries(gg-au-state-tests PRIVATE gg::media gg::core gg::compiler-options
+    target_link_libraries(gg-au-state-tests PRIVATE gg::render gg::media gg::core gg::compiler-options
             Catch2::Catch2WithMain "-framework AudioToolbox" "-framework CoreFoundation")
     target_compile_definitions(gg-au-state-tests PRIVATE
             GG_TEST_OUTPUT_DIR="${CMAKE_CURRENT_BINARY_DIR}/test-output"
+            GG_PRESET_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/presets"
             GG_AU_BUNDLE="$<TARGET_BUNDLE_DIR:gg_clapfirst_auv2>"
             GG_CLAP_WRAPPER_SOURCE_DIR="${CMAKE_SOURCE_DIR}/libs/clap/clap-wrapper")
     add_dependencies(gg-au-state-tests gg_clapfirst_auv2)
@@ -526,6 +653,32 @@ if (GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
             --target gg-products)
     set_tests_properties(installer_build_products PROPERTIES LABELS installer
             FIXTURES_SETUP gg_products RUN_SERIAL TRUE)
+
+    # The content (M2 sub-project 5's spec §6.11): gg-products/content/ holds the factory presets
+    # gg-presets packed and the fetched samples, with the provenance, the CC0 text and the version
+    # file, which the installers' Content component carries. Its minimums are 0 presets in the
+    # first group (no factory sources yet); the factory-content task raises them to 24 and 8.
+    add_test(NAME installer_content_staged
+            COMMAND ${CMAKE_COMMAND} -DDIR=${GG_PRODUCT_DIR}/content
+            -DPIN=${GG_CONTENT_PIN} -DPRODUCTS_MIN=0 -DMIDI_MIN=0
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/installer/check-content.cmake)
+    set_tests_properties(installer_content_staged PROPERTIES LABELS installer
+            FIXTURES_REQUIRED gg_products)
+
+    # The Inno script's content component (spec §6.5): installer/windows/giga-grains.iss declares
+    # the Content component and a [Files] line that installs it. It reads the script, so it runs
+    # on every OS, and needs no products.
+    add_test(NAME installer_windows_iss_content
+            COMMAND ${CMAKE_COMMAND} -DISS=${PROJECT_SOURCE_DIR}/installer/windows/giga-grains.iss
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/installer/check-windows-iss.cmake)
+    set_tests_properties(installer_windows_iss_content PROPERTIES LABELS installer)
+    # A commented-out [Files] line doesn't count (T6): only a Source: line does.
+    add_test(NAME installer_windows_iss_commented
+            COMMAND ${CMAKE_COMMAND}
+            -DISS=${CMAKE_CURRENT_SOURCE_DIR}/installer/fixtures/content-commented.iss
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/installer/check-windows-iss.cmake)
+    set_tests_properties(installer_windows_iss_commented PROPERTIES LABELS installer
+            PASS_REGULAR_EXPRESSION "has no Source: line with Components: content")
 
     # The license set (spec §6.3, carry-over row 221): gg-products/licenses/ holds exactly the
     # platform's notices and license texts, none of them a stub.
@@ -554,7 +707,8 @@ if (GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
                     -DPRODUCTS=${GG_PRODUCT_DIR} -DLICENSES=${GG_LICENSE_DIR}
                     -DRESOURCES=${PROJECT_SOURCE_DIR}/installer/macos
                     -DOUT=${CMAKE_CURRENT_BINARY_DIR}/installer-macos/${case}
-                    -DNUMERIC=${GG_VERSION_NUMERIC} -DFULL=${GG_VERSION_STRING} ${switch}
+                    -DNUMERIC=${GG_VERSION_NUMERIC} -DFULL=${GG_VERSION_STRING}
+                    -DCONTENT=${GG_PRODUCT_DIR}/content ${switch}
                     -P ${CMAKE_CURRENT_SOURCE_DIR}/installer/check-macos-pkg.cmake)
             set_tests_properties(installer_macos_${case} PROPERTIES LABELS installer
                     FIXTURES_REQUIRED gg_products)
@@ -578,7 +732,7 @@ if (GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
                     -DPRODUCTS=${GG_PRODUCT_DIR}
                     -DREADME=${PROJECT_SOURCE_DIR}/installer/linux/README.md
                     -DOUT=${CMAKE_CURRENT_BINARY_DIR}/installer-linux/${case}
-                    -DFULL=${GG_VERSION_STRING}
+                    -DFULL=${GG_VERSION_STRING} -DCONTENT=${GG_PRODUCT_DIR}/content
                     -DCHECK_ARCHIVE=${CMAKE_CURRENT_SOURCE_DIR}/installer/check-archive.cmake
                     ${switch}
                     -P ${CMAKE_CURRENT_SOURCE_DIR}/installer/check-linux-tarball.cmake)
@@ -605,7 +759,7 @@ if (GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
                     -DPRODUCTS=${GG_PRODUCT_DIR}
                     -DREADME=${PROJECT_SOURCE_DIR}/installer/windows/readme.txt
                     -DOUT=${CMAKE_CURRENT_BINARY_DIR}/installer-windows/${case}
-                    -DFULL=${GG_VERSION_STRING}
+                    -DFULL=${GG_VERSION_STRING} -DCONTENT=${GG_PRODUCT_DIR}/content
                     -DCHECK_ARCHIVE=${CMAKE_CURRENT_SOURCE_DIR}/installer/check-archive.cmake
                     ${switch}
                     -P ${CMAKE_CURRENT_SOURCE_DIR}/installer/check-windows-zip.cmake)
@@ -619,6 +773,7 @@ if (GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
                     -DPRODUCTS=${GG_PRODUCT_DIR} -DLICENSES=${GG_LICENSE_DIR}
                     -DOUT=${CMAKE_CURRENT_BINARY_DIR}/installer-windows/inno
                     -DNUMERIC=${GG_VERSION_NUMERIC} -DFULL=${GG_VERSION_STRING}
+                    -DCONTENT=${GG_PRODUCT_DIR}/content
                     -P ${CMAKE_CURRENT_SOURCE_DIR}/installer/check-windows-inno.cmake)
             set_tests_properties(installer_windows_inno PROPERTIES LABELS installer
                     FIXTURES_REQUIRED gg_products)

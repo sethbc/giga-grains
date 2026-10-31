@@ -284,10 +284,88 @@ std::array<Param, kParamCount> makeValues(Mode mode, std::index_sequence<I...>)
     return {Param{paramMeta(static_cast<ParamSlot>(I), mode)}...};
 }
 
+// The text of a <preset> attribute: its bytes to the first NUL (which an attribute can't hold),
+// every `&` escaped as MEDI's paths are (gg/core/SessionState.h).
+std::string attributeText(const std::string &s) { return escapeAmpersands(std::string(s.c_str())); }
+
+// The <preset> element of `info` (gg/core/PatchState.h). Its name is the root's.
+TiXmlElement presetElement(const PresetInfo &info)
+{
+    std::string tags;
+    for (const auto &tag : info.tags)
+    {
+        tags += tags.empty() ? "" : " ";
+        tags += tag;
+    }
+    TiXmlElement e("preset");
+    e.SetAttribute("product", modeName(info.product));
+    e.SetAttribute("author", attributeText(info.author));
+    e.SetAttribute("description", attributeText(info.description));
+    e.SetAttribute("tags", attributeText(tags));
+    return e;
+}
+
 // M1's instrument default for Macro 7 (Macro Stereo), which an M1 state without it, or with a
 // NaN, loaded at (spec §6.10).
 constexpr float kM1Macro7Default = 0.5f;
 } // namespace
+
+static_assert(sizeof(Patch::name) == kMaxPatchNameBytes + 1);
+
+std::string patchName(std::string_view name)
+{
+    name = name.substr(0, name.find('\0'));
+    if (name.size() <= kMaxPatchNameBytes)
+    {
+        return std::string(name);
+    }
+    size_t n = kMaxPatchNameBytes;
+    // name[n] is the first byte cut: a continuation byte there means the character straddles
+    // the cut.
+    for (int back = 0; back < 3 && n > 0 && (static_cast<unsigned char>(name[n]) & 0xc0u) == 0x80u;
+         ++back)
+    {
+        --n;
+    }
+    return std::string(name.substr(0, n));
+}
+
+bool readPresetElement(const TiXmlElement &root, std::string_view name, PresetInfo &out)
+{
+    const TiXmlElement *e = root.FirstChildElement("preset");
+    if (e == nullptr)
+    {
+        return false;
+    }
+    const char *product = e->Attribute("product");
+    const auto mode = modeNamed(product != nullptr ? product : "");
+    if (!mode)
+    {
+        return false;
+    }
+    const auto text = [&](const char *attribute) {
+        const char *v = e->Attribute(attribute);
+        return std::string(v != nullptr ? v : "");
+    };
+    PresetInfo info;
+    info.name = std::string(name);
+    info.product = *mode;
+    info.author = text("author");
+    info.description = text("description");
+    const std::string tags = text("tags");
+    for (size_t from = 0; from <= tags.size();)
+    {
+        const size_t space = std::min(tags.find(' ', from), tags.size());
+        const std::string_view word = std::string_view(tags).substr(from, space - from);
+        if (isPresetTag(word))
+        {
+            info.tags.emplace_back(word);
+        }
+        from = space + 1;
+    }
+    out = std::move(info);
+    return true;
+}
 
 bool isSavableRoute(const ModRoute &route) noexcept
 {
@@ -330,6 +408,13 @@ Patch::Patch(Mode mode) : mode_(mode), values(defaultValues(mode))
     };
 
     additionalToState = [this](TiXmlElement &root) {
+        // PatchBase wrote `name` as it is; escaped, any text comes back unchanged.
+        root.SetAttribute("name", escapeAmpersands(name));
+        if (edited)
+        {
+            root.SetAttribute("edited", "1"); // D-Q2; an unedited state's bytes are unchanged
+        }
+
         TiXmlElement engine("engine");
         engine.SetAttribute("seed", decimal(seed).data());
         root.InsertEndChild(engine);
@@ -343,6 +428,11 @@ Patch::Patch(Mode mode) : mode_(mode), values(defaultValues(mode))
             }
         }
         root.InsertEndChild(mod);
+
+        if (preset)
+        {
+            root.InsertEndChild(presetElement(*preset));
+        }
     };
     additionalFromState = [this](TiXmlElement *root, uint32_t version) {
         seed = 0;
@@ -353,6 +443,22 @@ Patch::Patch(Mode mode) : mode_(mode), values(defaultValues(mode))
         // Version 1 has no <mod>: its routes are the migration's, so any <mod> it holds is
         // ignored.
         routes = version >= 2 ? parseMod(root->FirstChildElement("mod")) : ModRoutes{};
+
+        // PatchBase kept the name's first 255 bytes, wherever they end; keep them to a whole
+        // character. With no `name`, it stays "Init".
+        if (const char *text = root->Attribute("name"))
+        {
+            const std::string kept = patchName(text);
+            std::memset(name, 0, sizeof(name));
+            std::memcpy(name, kept.data(), kept.size());
+        }
+        const char *mark = root->Attribute("edited");
+        edited = mark != nullptr && std::strcmp(mark, "1") == 0;
+        preset.reset();
+        if (PresetInfo info; readPresetElement(*root, name, info))
+        {
+            preset = std::move(info);
+        }
     };
 
     resetToInit();
@@ -407,8 +513,39 @@ bool Patch::fromState(const std::string &xml)
     name[sizeof(name) - 1] = '\0';
     seed = loaded.seed;
     routes = loaded.routes;
+    preset = std::move(loaded.preset);
+    edited = loaded.edited;
     migratedFromVersion = loaded.migratedFromVersion;
     dirty = false;
     return true;
+}
+
+bool presetInfoOfXml(std::string_view xml, PresetInfo &info)
+{
+    // What isLoadable checks of the document and its root, but for <params> and the version,
+    // which only the values need.
+    const std::string text(xml);
+    if (!xmlNestingWithin(text))
+    {
+        return false; // tinyxml's recursion would overflow the stack
+    }
+    TiXmlDocument doc;
+    doc.Parse(text.c_str());
+    if (doc.Error())
+    {
+        return false;
+    }
+    const auto *root = doc.FirstChildElement("patch");
+    if (root == nullptr)
+    {
+        return false;
+    }
+    const char *id = root->Attribute("id");
+    if (id == nullptr || std::strcmp(id, Patch::id) != 0)
+    {
+        return false;
+    }
+    const char *name = root->Attribute("name");
+    return readPresetElement(*root, patchName(name != nullptr ? name : "Init"), info);
 }
 } // namespace gg::core

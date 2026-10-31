@@ -92,6 +92,8 @@ class EditorPlugin : public GigaGrainsPlugin, public sst::clap_juce_shim::Editor
   private:
     /// Points the context's publish structures at the active Processor's, or null. Main thread.
     void updatePublished() noexcept;
+    /// Fills the preset strip's and browser's part of `context` (spec §6.8).
+    void fillPresetContext(gg::ui::EditorContext &context);
     /// An editor was created (true) or destroyed (false): publishing is on while any is alive.
     void editorOpened(bool open) noexcept;
 

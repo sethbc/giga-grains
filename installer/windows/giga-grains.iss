@@ -30,7 +30,7 @@
 ; target runs it (cmake/products.cmake):
 ;
 ;   ISCC.exe /DStagedAssets=<gg-products> /DLicenses=<gg-products\licenses> /DVersion=<X.Y.Z>
-;            /DFullVersion=<v> /DOutDir=<dir> giga-grains.iss
+;            /DFullVersion=<v> /DOutDir=<dir> [/DContent=<gg-products\content>] giga-grains.iss
 ;
 ;   StagedAssets  the products, as gg-products gathers them: Giga Grains.clap, Giga Grains.vst3
 ;                 (a folder bundle), Giga Grains.exe and Giga Grains FX.exe.
@@ -38,11 +38,14 @@
 ;   Version       the numeric version (the file's version resource).
 ;   FullVersion   the full version string, <v> (the version shown and the file name).
 ;   OutDir        where to write giga-grains-<v>-windows-x64.exe.
+;   Content       the staged factory content (optional): its Presets, Samples and the rest.
 ;
 ; Single-product, unlike the template: one CLAP and one VST3 bundle, each holding both plugins,
 ; the two standalone apps, and the license set, always installed. Every component is on by
-; default. No wizard images and no data component (the template's Data); M2's factory content
-; has its place reserved below (spec section 6.9). This file is ASCII only.
+; default. No wizard images and no data component (the template's Data). The factory content
+; (M2 sub-project 5's spec section 6.11) is a component too, present only when the compiler is
+; given /DContent=<the staged content folder>, which installs to the shared per-machine
+; ProgramData folder. This file is ASCII only.
 
 #ifndef StagedAssets
   #error StagedAssets is not defined: pass /DStagedAssets=<the gg-products folder>
@@ -59,6 +62,7 @@
 #ifndef OutDir
   #error OutDir is not defined: pass /DOutDir=<the output folder>
 #endif
+; Content is optional: with it the installer has the Content component.
 
 ; x64compatible needs Inno Setup 6.3 or later.
 #if VER < EncodeVer(6,3,0)
@@ -107,8 +111,9 @@ Name: "vst3"; Description: "Giga Grains VST3 (both plugins)"; Types: full custom
 Name: "app"; Description: "Giga Grains app (standalone)"; Types: full custom
 Name: "appfx"; Description: "Giga Grains FX app (standalone)"; Types: full custom
 Name: "licenses"; Description: "Licenses and notices"; Types: full custom; Flags: fixed
-; M2 (spec section 6.9): the factory content, installed only when the tree has it.
-; Name: "content"; Description: "Factory content (samples and presets)"; Types: full custom
+#ifdef Content
+Name: "content"; Description: "Factory content (samples and presets)"; Types: full custom
+#endif
 
 [InstallDelete]
 ; A bundle is a folder: an older version's files must not linger in the new one.
@@ -120,8 +125,9 @@ Source: "{#StagedAssets}\Giga Grains.vst3\*"; DestDir: "{commoncf}\VST3\Giga Gra
 Source: "{#StagedAssets}\Giga Grains.exe"; DestDir: "{app}"; Components: app; Flags: ignoreversion
 Source: "{#StagedAssets}\Giga Grains FX.exe"; DestDir: "{app}"; Components: appfx; Flags: ignoreversion
 Source: "{#Licenses}\*"; DestDir: "{app}\licenses"; Components: licenses; Flags: ignoreversion
-; M2 (spec section 6.9), with /DContent=<the content folder>:
-; Source: "{#Content}\*"; DestDir: "{commonappdata}\sethbc\Giga Grains"; Components: content; Flags: ignoreversion recursesubdirs createallsubdirs
+#ifdef Content
+Source: "{#Content}\*"; DestDir: "{commonappdata}\sethbc\Giga Grains"; Components: content; Flags: ignoreversion recursesubdirs createallsubdirs
+#endif
 
 [Icons]
 Name: "{group}\Giga Grains"; Filename: "{app}\Giga Grains.exe"; Components: app

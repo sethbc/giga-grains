@@ -13,6 +13,7 @@
 #include <fmt/format.h>
 
 #include "RenderSpec.h"
+#include "gg/core/ModMatrix.h"
 #include "gg/grain/GrainPool.h"
 #include "gg/metrics/AudioData.h"
 
@@ -56,8 +57,14 @@ std::string formatStealLine(uint32_t layer, uint64_t index, int64_t onset);
 /// **Instrument and FX mode** run the gg::core::Processor that Giga Grains (Mode::Instrument)
 /// or Giga Grains FX (Mode::Fx) runs, fed as a host feeds it, for exactly
 /// D = framesFor(durationSeconds, sampleRate) frames, with no release tail:
-/// - the Processor has the sample rate and seed from the spec and maxBlockSize = blockSize, and
-///   gets each of the mode's params with setBase(slot, static_cast<float>(value));
+/// - the Processor has the sample rate and seed from the spec and maxBlockSize = blockSize;
+/// - with a preset (RenderSpec::preset), the file is read first, at most kMaxStateBytes, with
+///   gg::core::readPreset for the mode's product, and the Processor gets its values with setBases;
+///   its seed is ignored;
+/// - each of the mode's params is set with setBase(slot, static_cast<float>(value)), on top of the
+///   preset's values;
+/// - with a preset or a "mod", the routes are routesWith(base, mod), base being the preset's
+///   routes or else the factory routes;
 /// - the instrument's source is makeSample(spec.instrument.sample, sampleRate, seed), set with
 ///   setSourceNow before the render; it has no input;
 /// - the FX's input is makeInput(spec.fx.input, spec.fx.channels, sampleRate, seed), one or two
@@ -80,7 +87,9 @@ std::string formatStealLine(uint32_t layer, uint64_t index, int64_t onset);
 ///
 /// Throws:
 /// - BadInput for a file (source, sample or input) that can't be read or decoded, or whose path
-///   isn't valid UTF-8; gg-render exits with status 2;
+///   isn't valid UTF-8, and for a preset that can't be read, is longer than kMaxStateBytes, isn't
+///   a preset file, names a sample (until MEDI version 2), or is the other product's ("the
+///   preset is for Giga Grains, not Giga Grains FX"); gg-render exits with status 2;
 /// - std::logic_error if a call reports more grain events than that storage holds, or, in
 ///   sample mode, grains outlast the release tail or the tail would pass its defensive bound;
 /// - std::invalid_argument for an unknown parameter name, and for what makeSignal, makeSample and
@@ -88,6 +97,11 @@ std::string formatStealLine(uint32_t layer, uint64_t index, int64_t onset);
 /// - std::bad_alloc if memory runs out.
 /// gg-render exits with status 3, an internal error, for all but BadInput.
 gg::metrics::AudioData render(const RenderSpec &spec, std::vector<std::string> *eventLines);
+
+/// The routes in effect for a render: `routes` (the factory routes, or a preset's) with each of
+/// the spec's routes (`mod`) set in its slot, a "None" route clearing it. Throws
+/// std::invalid_argument for a name parseRenderSpec never lets through.
+gg::core::ModRoutes routesWith(gg::core::ModRoutes routes, const std::vector<RouteSpec> &mod);
 
 /// gg-render's exit statuses (CLAUDE.md, "Golden renders").
 inline constexpr int kExitPass = 0;

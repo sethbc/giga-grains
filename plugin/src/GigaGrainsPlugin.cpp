@@ -5,22 +5,30 @@
 #include "GigaGrainsPlugin.h"
 
 #include <algorithm>
+#include <bit>
+#include <cerrno>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <optional>
 #include <random>
 #include <span>
 #include <string>
+#include <system_error>
 
 #include "gg/core/ModMatrix.h"
 #include "gg/core/ParamMap.h"
+#include "gg/core/Preset.h"
+#include "gg/core/PresetInfo.h"
 #include "gg/core/Rng.h"
 #include "gg/core/SessionState.h"
+#include "SettingsPath.h"
 #include "gg/media/SettingsFile.h"
+#include "gg/media/Utf8Path.h"
 #include "gg/plugin/Identity.h"
 #include "sst/basic-blocks/params/ParamMetadata.h"
 
@@ -151,24 +159,6 @@ uint64_t freshSeed() noexcept
             static_cast<uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count()));
     }
 }
-
-/// The per-machine settings file: $GG_SETTINGS_FILE when set and not empty, else the user's
-/// (gg::media::defaultSettingsPath). See the class comment.
-std::filesystem::path settingsFile()
-{
-#if defined(_WIN32)
-    if (const wchar_t *file = ::_wgetenv(L"GG_SETTINGS_FILE"); file != nullptr && *file != 0)
-    {
-        return std::filesystem::path(file);
-    }
-#else
-    if (const char *file = std::getenv("GG_SETTINGS_FILE"); file != nullptr && *file != 0)
-    {
-        return std::filesystem::path(file);
-    }
-#endif
-    return gg::media::defaultSettingsPath();
-}
 } // namespace
 
 const clap_plugin_descriptor *descriptorFor(Product product) noexcept
@@ -182,12 +172,15 @@ GigaGrainsPlugin::GigaGrainsPlugin(const clap_host *host, Product product)
 {
     // Main thread. The first paramMeta() call builds its tables, which allocates: it's made here,
     // never on the audio thread.
+    catalogSettingsFile_ = settingsFile(); // the browser's catalog reads this file (presetCatalog)
+    mutateLocks_ = gg::core::structuralLocks(mode());
     for (std::size_t s = 0; s < kParamCount; ++s)
     {
         const auto &meta = gg::core::paramMeta(static_cast<ParamSlot>(s), mode());
         minValues_[s] = meta.minVal;
         maxValues_[s] = meta.maxVal;
         storeValue(static_cast<ParamSlot>(s), meta.defaultVal);
+        presetValues_[s] = values_[s].load(std::memory_order_relaxed); // INIT's: not edited
     }
     for (uint8_t layer = 0; layer < gg::core::kLayers; ++layer)
     {
@@ -284,7 +277,12 @@ void GigaGrainsPlugin::deactivate() noexcept
     // applied it. Otherwise it would apply, stale, at the first block after a reactivation.
     // Its seed is seed_ already, which the next activate() builds the engine with.
     LoadedState loaded{};
-    if (loadedState_.take(loaded) && loaded.hasValues)
+    const bool tookLoad = loadedState_.take(loaded);
+    if (tookLoad)
+    {
+        uiAppliedEpoch_ = loaded.epoch; // the main thread is the queue's consumer from here
+    }
+    if (tookLoad && loaded.hasValues)
     {
         for (std::size_t s = 0; s < kParamCount; ++s)
         {
@@ -305,6 +303,9 @@ void GigaGrainsPlugin::deactivate() noexcept
     {
         loader_->deactivate();
     }
+    // A main-thread callback asked for may be dropped with the session (M5): ask afresh.
+    mutateCallbackRequested_ = false;
+    mutateCallbackIdle_ = false;
     // The next activate() may bring a new sample rate: the processor doesn't survive into it.
     // Its SourceExchange frees the sources it still holds, here on the main thread.
     processor_.reset();
@@ -335,6 +336,16 @@ void GigaGrainsPlugin::onMainThread() noexcept
             // collect() only frees; nothing it calls throws.
         }
     }
+    // The next batch of a Mutate press, once the host has drained the last one. Cleared first:
+    // slots still waiting after it ask for another call (flushMutate), but only once a drain has
+    // been seen since this one was asked for (M5): a host that calls back without draining isn't
+    // asked again at every call. The editor's tick, or the next press, goes on from there.
+    if (mutateCallbackRequested_)
+    {
+        mutateCallbackRequested_ = false;
+        mutateCallbackIdle_ = true;
+    }
+    flushMutate();
     // A state's values the audio thread has applied, and stored in values_ after the load's own
     // rescan: the host reads them again (carry-over row 123). Cleared first, so values applied
     // after this ask for another call.
@@ -402,8 +413,7 @@ clap_process_status GigaGrainsPlugin::processNonblocking(const clap_process *pro
     }
     // The values of a state loaded while active, and the instrument's offers (a restored
     // session's values and sample together, D8): both apply from this call's first frame.
-    applyLoadedState();
-    takeOffers();
+    takeHandOffs();
 
     // The editor's values first, at the call's first frame, so the host's events (automation
     // of the same parameter, say) come after them; then the call's parameter and note events,
@@ -503,6 +513,18 @@ clap_process_status GigaGrainsPlugin::processNonblocking(const clap_process *pro
     requestCollect();
     checkKinds();
     return CLAP_PROCESS_CONTINUE;
+}
+
+void GigaGrainsPlugin::takeHandOffs() noexcept
+{
+    // The loaded state first, as before the epoch rule: its routes then its values (the
+    // instrument's, in the offer), so Freeze arms under the new routes (FR-8). applyState pushes
+    // loadedState_ before it offers, so an offer seen by takeOffers means its load was pushed
+    // already; a load the first take missed is taken by the second, before takeUiChanges, so the
+    // editor's values queued before it are dropped in this call too (I1).
+    applyLoadedState();
+    takeOffers();
+    applyLoadedState();
 }
 
 void GigaGrainsPlugin::takeOffers() noexcept
@@ -902,6 +924,8 @@ void GigaGrainsPlugin::applyLoadedState() noexcept
     {
         return;
     }
+    // The editor's values queued before this load are stale from here (takeUiChanges).
+    uiAppliedEpoch_ = loaded.epoch;
     // The grains scheduled from this call's first sample on are keyed by it (Engine::setSeed).
     processor_->setSeed(loaded.seed);
     processor_->setRoutes(loaded.routes);
@@ -926,7 +950,8 @@ void GigaGrainsPlugin::storeValue(ParamSlot slot, float value) noexcept
 
 void GigaGrainsPlugin::uiBeginGesture(ParamSlot slot) noexcept
 {
-    queueUiChange({gg::core::paramId(slot), 0.0, UiParamChange::kBegin});
+    dropPending(slot);
+    queueUiChange({gg::core::paramId(slot), 0.0, UiParamChange::kBegin, 0});
 }
 
 void GigaGrainsPlugin::uiSetValue(ParamSlot slot, double value) noexcept
@@ -936,17 +961,18 @@ void GigaGrainsPlugin::uiSetValue(ParamSlot slot, double value) noexcept
     {
         return;
     }
+    dropPending(slot); // the user's latest move wins over a value still waiting unsent
     // Clamped as storeValue clamps, in double first (a double beyond float's range doesn't
     // convert), then made a float, as toParamEvent makes the host's: the host is told the value
     // the plugin applies, and a reloaded automation lane renders the same.
     const auto v = static_cast<float>(
         std::clamp(value, static_cast<double>(minValues_[s]), static_cast<double>(maxValues_[s])));
-    queueUiChange({gg::core::paramId(slot), static_cast<double>(v), UiParamChange::kValue});
+    queueUiChange({gg::core::paramId(slot), static_cast<double>(v), UiParamChange::kValue, 0});
 }
 
 void GigaGrainsPlugin::uiEndGesture(ParamSlot slot) noexcept
 {
-    queueUiChange({gg::core::paramId(slot), 0.0, UiParamChange::kEnd});
+    queueUiChange({gg::core::paramId(slot), 0.0, UiParamChange::kEnd, 0});
 }
 
 float GigaGrainsPlugin::uiBaseValue(ParamSlot slot) const noexcept
@@ -957,7 +983,9 @@ float GigaGrainsPlugin::uiBaseValue(ParamSlot slot) const noexcept
 
 void GigaGrainsPlugin::queueUiChange(const UiParamChange &change) noexcept
 {
-    if (change.id == CLAP_INVALID_ID || !uiQueue_.push(change))
+    UiParamChange tagged = change;
+    tagged.epoch = uiEpoch_; // the load it follows (I1)
+    if (tagged.id == CLAP_INVALID_ID || !uiQueue_.push(tagged))
     {
         return; // not a parameter, or the queue is full (SpscQueue::dropped counts it)
     }
@@ -979,7 +1007,10 @@ std::size_t GigaGrainsPlugin::takeUiChanges(const clap_output_events *out, Param
                                             std::size_t count) noexcept
 {
     // Cleared first: a change queued after the drain asks for another flush (queueUiChange).
-    uiFlushRequested_.store(false, std::memory_order_relaxed);
+    // Release (T10-R2a): the main thread's acquire load of the cleared flag (mutateDrainSeen)
+    // then sees everything this thread did before the clear, an earlier drain's pops and its
+    // storeValues. Nothing else on this thread changes.
+    uiFlushRequested_.store(false, std::memory_order_release);
     std::atomic_thread_fence(std::memory_order_seq_cst);
     // At most a queue's worth: the main thread may keep pushing while this runs, and the caller's
     // array holds kUiQueueCapacity values beyond the host's (kMaxParamEvents).
@@ -990,6 +1021,16 @@ std::size_t GigaGrainsPlugin::takeUiChanges(const clap_output_events *out, Param
         if (!slot.has_value())
         {
             continue; // uiBeginGesture and its siblings queue only parameters' IDs
+        }
+        // A value queued before the last load applied is stale (I1): neither applied nor sent,
+        // so it never lands on the loaded preset. Its gesture's begin and end still go to the
+        // host, so a gesture that spans a load stays balanced. Wrap-safe: epochs only grow, and
+        // a value is never queued in an epoch the consumer hasn't seen pushed. One that is newer
+        // (its load pushed, not yet taken) applies; that load then replaces it, as before.
+        if (change.kind == UiParamChange::kValue &&
+            static_cast<int32_t>(change.epoch - uiAppliedEpoch_) < 0)
+        {
+            continue;
         }
         bool sent = false;
         if (change.kind == UiParamChange::kValue)
@@ -1075,8 +1116,7 @@ void GigaGrainsPlugin::paramsFlush(const clap_input_events *in,
     }
     // Active, so on the audio thread, between process() calls: notes and controls, like
     // modulation, join the next grid boundary.
-    applyLoadedState();
-    takeOffers();
+    takeHandOffs(); // as in process()
     takeUiChanges(out, nullptr, 0);
     if (in != nullptr)
     {
@@ -1188,7 +1228,9 @@ bool GigaGrainsPlugin::stateSave(const clap_ostream *stream) noexcept
         // routes are those in effect (routes_).
         const std::string bytes = gg::core::encodeState(
             {values, seed_, loader_ != nullptr ? loader_->entry() : std::nullopt,
-             loader_ != nullptr ? loader_->newerMedia() : std::nullopt, routes_});
+             loader_ != nullptr ? loader_->newerMedia() : std::nullopt, routes_, presetName_,
+             std::nullopt,     // the preset's name, but a session: no <preset>
+             presetEdited()}); // its edited mark (D-Q2): written only when edited
 
         // A stream may take fewer bytes than offered: write until all are in.
         const char *data = bytes.data();
@@ -1249,67 +1291,585 @@ bool GigaGrainsPlugin::stateLoad(const clap_istream *stream) noexcept
         {
             return false;
         }
-        // The one allocation left before the state takes effect, made before anything changes:
-        // room in the exchange for the offer below, which then can't throw, so a bad_alloc here
-        // still changes nothing (all or nothing).
-        if (loader_ != nullptr && processor_ != nullptr)
-        {
-            processor_->sources().reserve();
-        }
-        // The instrument's sample, found and decoded before this returns (D8); while active,
-        // offered to the audio thread below in one hand-off with the values, so the process()
-        // that takes them applies both. The sample already in memory, when it is the session's,
-        // is kept and only the values are offered (ruling R19). The FX ignores a sample (a state
-        // from the instrument).
-        // restore() never throws: a sample it can't load leaves its status saying why.
-        SampleLoader::Restored restored;
-        if (loader_ != nullptr)
-        {
-            restored = loader_->restore(loaded.sample, std::move(loaded.newerMedia));
-        }
-        const auto &values = loaded.values;
-        const uint64_t seed = loaded.seed;
-        for (std::size_t s = 0; s < kParamCount; ++s)
-        {
-            storeValue(static_cast<ParamSlot>(s), values[s]);
-        }
-        // stateSave writes them from now on: the seed and the routes the audio thread is about
-        // to use.
-        seed_ = seed;
-        routes_ = loaded.routes;
-        // Inactive, activate() applies the values, the seed and the routes. Active, the audio
-        // thread applies them at the start of its next process() or params.flush (carry-over row
-        // 115): the seed and the routes through loadedState_ in both products, the values with
-        // them in the FX and with the sample in the instrument (D8). The instrument's two
-        // hand-offs are separate, so its seed and routes may apply a block before or after its
-        // values.
-        if (processor_ != nullptr)
-        {
-            if (loader_ != nullptr && restored.keep)
-            {
-                // The sample in memory is the session's (ruling R19): its values alone.
-                processor_->sources().offerValues(values); // never allocates
-            }
-            else if (loader_ != nullptr)
-            {
-                processor_->sources().offer(std::move(restored.source), &values); // reserved
-            }
-            loadedState_.push({values, routes_, seed, loader_ == nullptr});
-        }
-        else
-        {
-            checkKinds(); // inactive: the main thread owns values_
-        }
-        if (_host.canUseParams())
-        {
-            _host.paramsRescan(CLAP_PARAM_RESCAN_VALUES);
-        }
+        applyState(std::move(loaded), LoadKind::Session);
         return true;
     }
     catch (...)
     {
         return false;
     }
+}
+
+void GigaGrainsPlugin::applyState(gg::core::SessionState &&state, LoadKind kind)
+{
+    // The one allocation left before the state takes effect, made before anything changes:
+    // room in the exchange for the offer below, which then can't throw, so a bad_alloc here
+    // still changes nothing (all or nothing).
+    if (loader_ != nullptr && processor_ != nullptr)
+    {
+        processor_->sources().reserve();
+    }
+    // The instrument's sample, found and decoded before this returns (D8); while active,
+    // offered to the audio thread below in one hand-off with the values, so the process() that
+    // takes them applies both. The sample already in memory, when it is the session's, is kept
+    // and only the values are offered (ruling R19). A preset that names no sample keeps the one
+    // loaded, entry and source, and reads nothing (D5): its values are offered alone, as R19's
+    // are. The FX ignores a sample (a state from the instrument).
+    // restore() never throws: a sample it can't load leaves its status saying why.
+    const bool keepSample = kind == LoadKind::Preset && !state.sample.has_value();
+    SampleLoader::Restored restored;
+    if (loader_ != nullptr && !keepSample)
+    {
+        // content-relative references resolve here (Task 14)
+        restored = loader_->restore(state.sample, std::move(state.newerMedia));
+    }
+    const auto &values = state.values;
+    // The editor's values queued before this load, Mutate's batches among them, are stale (I1):
+    // a new epoch, which the consumer takes with the load (loadedState_ while active, at once
+    // below while inactive) and drops them by.
+    ++uiEpoch_;
+    // A Mutate press cut short by this load (T10-R2b): the slots it had not sent are dropped,
+    // and every batch it did send counts as applied, so the next press starts from these values.
+    mutatePending_.reset();
+    mutateSentGen_.fill(0);
+    for (std::size_t s = 0; s < kParamCount; ++s)
+    {
+        storeValue(static_cast<ParamSlot>(s), values[s]);
+        // As storeValue clamps it: what presetEdited compares values_ with.
+        presetValues_[s] = std::clamp(values[s], minValues_[s], maxValues_[s]);
+    }
+    // stateSave writes them from now on: the seed and the routes the audio thread is about to
+    // use, and the name. A preset keeps the instance's seed (D6): its own is ignored.
+    if (kind == LoadKind::Session)
+    {
+        seed_ = state.seed;
+    }
+    routes_ = state.routes;
+    presetName_ = std::move(state.name); // a move: nothing left to throw
+    // A session saved while its preset was edited reopens edited (D-Q2): the mark stays until a
+    // preset load or a save. A preset carries none.
+    presetEditedMark_ = kind == LoadKind::Session && state.edited;
+    // A session names its preset but no file: it is matched by name (I4). A preset's caller
+    // (loadPresetFile, loadInit) sets its key after this returns.
+    presetKey_.clear();
+    presetKeyByName_ = kind == LoadKind::Session;
+    ++presetLoads_;
+    // Inactive, activate() applies the values, the seed and the routes. Active, the audio thread
+    // applies them at the start of its next process() or params.flush (carry-over row 115): the
+    // seed and the routes through loadedState_ in both products, the values with them in the FX
+    // and with the sample in the instrument (D8). The instrument's two hand-offs are separate,
+    // so its seed and routes may apply a block before or after its values.
+    if (processor_ != nullptr)
+    {
+        // loadedState_ before the offers: takeHandOffs takes the loaded state again after the
+        // offers, so the call that applies the instrument's values sees this load's epoch too (I1).
+        loadedState_.push({values, routes_, seed_, uiEpoch_, loader_ == nullptr});
+        if (loader_ != nullptr && (keepSample || restored.keep))
+        {
+            // The sample in memory stays (R19, D5): the values alone.
+            processor_->sources().offerValues(values); // never allocates
+        }
+        else if (loader_ != nullptr)
+        {
+            processor_->sources().offer(std::move(restored.source), &values); // reserved
+        }
+    }
+    else
+    {
+        uiAppliedEpoch_ = uiEpoch_; // inactive: the main thread is the queue's consumer
+        checkKinds();               // and owns values_
+    }
+    if (_host.canUseParams())
+    {
+        _host.paramsRescan(CLAP_PARAM_RESCAN_VALUES);
+    }
+    // A preset changed the plugin's state (its values, routes and name): the host should save it.
+    if (kind == LoadKind::Preset && _host.canUseState())
+    {
+        _host.stateMarkDirty();
+    }
+}
+
+// ---- Mutate (spec §6.9) ----
+//
+// The queue's room (T10-I2). uiQueue_ holds kUiQueueCapacity (1,024) entries and its producer,
+// this thread, can't read how many wait, so Mutate bounds its own share by when it sends: a batch
+// (at most kMutateBatch slots, 300 entries) goes out only once every earlier batch has been seen
+// to start draining (mutateDrainSeen). A drain seen to begin after batch n's arm takes all of
+// batch n; batch n - 1 went out only after an earlier drain was seen, which has ended by then.
+// So at any moment at most two of Mutate's batches wait in the queue, batch n being drained and
+// batch n + 1: 600 entries, and the other 424 are the editor's other changes'. Each batch is
+// whole gestures, so no begin, value and end is ever split by the queue filling. When nothing
+// drains (a host without clap.params while inactive, or one that never flushes), Mutate waits
+// with its slots unsent: nothing is dropped.
+
+void GigaGrainsPlugin::mutateDrainSeen() noexcept
+{
+    if (!mutateArmed_ || uiFlushRequested_.load(std::memory_order_acquire))
+    {
+        return;
+    }
+    // A drain began after the arm, so after the drain seen before it (which this thread saw
+    // before it armed again) had ended: what that one took is applied, in values_.
+    mutateArmed_ = false;
+    mutateAppliedGen_ = mutateStartedGen_;
+    mutateStartedGen_ = mutateArmedGen_;
+    mutateBatchArmed_ = false;
+    mutateCallbackIdle_ = false; // a drain seen: a callback may be asked for again (M5)
+}
+
+void GigaGrainsPlugin::mutateArm() noexcept
+{
+    // Pairs with takeUiChanges' fence, as queueUiChange's does: a drain whose clearing of the
+    // flag comes after this exchange sees every entry pushed before it.
+    std::atomic_thread_fence(std::memory_order_seq_cst);
+    if (!uiFlushRequested_.exchange(true, std::memory_order_acq_rel) && _host.canUseParams())
+    {
+        _host.paramsRequestFlush(); // [thread-safe, !audio-thread]; this is the main thread
+    }
+    mutateArmed_ = true;
+    mutateArmedGen_ = mutateGen_;
+}
+
+gg::core::ParamValues GigaGrainsPlugin::mutateInput() const noexcept
+{
+    gg::core::ParamValues in{};
+    for (std::size_t s = 0; s < kParamCount; ++s)
+    {
+        in[s] = mutatePending_.test(s) ? mutatePendingValue_[s]
+                : mutateSentGen_[s] > mutateAppliedGen_
+                    ? mutateSentValue_[s]
+                    : values_[s].load(std::memory_order_relaxed);
+    }
+    return in;
+}
+
+void GigaGrainsPlugin::mutate(float amount) noexcept
+{
+    mutateDrainSeen();
+    const gg::core::ParamValues in = mutateInput();
+    // The off layers' parameters stay as they are however the locks stand: a layer that is off
+    // now is not mutated, and one that was switched on since is.
+    const gg::core::LockSet locks = mutateLocks_ | gg::core::offLayerLocks(in);
+    gg::core::ParamValues out{};
+    gg::core::mutate(in, locks, amount, seed_, mutateCounter_++, mode(), out);
+    for (std::size_t s = 0; s < kParamCount; ++s)
+    {
+        if (out[s] != in[s])
+        {
+            // One value a slot: a slot still waiting from an earlier press takes this one's.
+            queuePending(s, out[s]);
+        }
+    }
+    flushMutate();
+}
+
+void GigaGrainsPlugin::dropPending(ParamSlot slot) noexcept
+{
+    const auto s = static_cast<std::size_t>(slot);
+    if (s < kParamCount)
+    {
+        mutatePending_.reset(s);
+    }
+}
+
+void GigaGrainsPlugin::queuePending(std::size_t slot, float value) noexcept
+{
+    mutatePending_.set(slot);
+    mutatePendingValue_[slot] = value;
+}
+
+void GigaGrainsPlugin::sendValues(
+    std::span<const std::pair<gg::core::ParamSlot, double>> values) noexcept
+{
+    for (const auto &[slot, value] : values)
+    {
+        const auto s = static_cast<std::size_t>(slot);
+        if (s >= kParamCount || std::isnan(value))
+        {
+            continue;
+        }
+        // Clamped in double first (a double beyond float's range doesn't convert), then made a
+        // float, as uiSetValue does, so a mutate press that starts from this value reads what
+        // the audio thread will hold.
+        queuePending(s, static_cast<float>(std::clamp(value, static_cast<double>(minValues_[s]),
+                                                      static_cast<double>(maxValues_[s]))));
+    }
+    flushMutate();
+}
+
+void GigaGrainsPlugin::flushMutate() noexcept
+{
+    mutateDrainSeen();
+    if (mutatePending_.any() && !mutateBatchArmed_)
+    {
+        ++mutateGen_;
+        std::size_t sent = 0;
+        for (std::size_t s = 0; s < kParamCount && sent < kMutateBatch; ++s)
+        {
+            if (!mutatePending_.test(s))
+            {
+                continue;
+            }
+            const auto slot = static_cast<ParamSlot>(s);
+            const float value = mutatePendingValue_[s];
+            uiBeginGesture(slot);
+            uiSetValue(slot, static_cast<double>(value));
+            uiEndGesture(slot);
+            mutatePending_.reset(s);
+            mutateSentValue_[s] = value;
+            mutateSentGen_[s] = mutateGen_;
+            ++sent;
+        }
+        mutateBatchArmed_ = true;
+        mutateArm();
+        requestMutateCallback();
+        return;
+    }
+    // Nothing to send now: arm once more after the last batch's drain was seen, so the drain
+    // after it shows that batch applied and the next press reads values_ again.
+    if (!mutateArmed_ && mutateAppliedGen_ < mutateGen_)
+    {
+        mutateArm();
+    }
+    requestMutateCallback();
+}
+
+void GigaGrainsPlugin::requestMutateCallback() noexcept
+{
+    // Slots wait for a drain. With the editor closed nothing else ticks, and a host without
+    // clap.params flushes only inside process: ask for on_main_thread, once until it comes, so
+    // the rest is sent as the drains are seen (T10-R2b).
+    if (mutatePending_.any() && !mutateCallbackRequested_ && !mutateCallbackIdle_)
+    {
+        mutateCallbackRequested_ = true;
+        _host.requestCallback(); // [thread-safe]; this is the main thread
+    }
+}
+
+bool GigaGrainsPlugin::mutateLocked(ParamSlot slot) const noexcept
+{
+    const auto s = static_cast<std::size_t>(slot);
+    return s < kParamCount && mutateLocks_.test(s);
+}
+
+void GigaGrainsPlugin::setMutateLock(ParamSlot slot, bool locked) noexcept
+{
+    const auto s = static_cast<std::size_t>(slot);
+    if (s < kParamCount)
+    {
+        mutateLocks_.set(s, locked);
+    }
+}
+
+void GigaGrainsPlugin::resetMutateLocks() noexcept
+{
+    mutateLocks_ = gg::core::structuralLocks(mode());
+}
+
+bool GigaGrainsPlugin::presetEdited() const noexcept
+{
+    if (presetEditedMark_)
+    {
+        return true;
+    }
+    for (std::size_t s = 0; s < kParamCount; ++s)
+    {
+        if (std::bit_cast<uint32_t>(values_[s].load(std::memory_order_relaxed)) !=
+            std::bit_cast<uint32_t>(presetValues_[s]))
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool GigaGrainsPlugin::loadPresetFile(const std::filesystem::path &file, std::string &error,
+                                      int32_t *osError)
+{
+    if (osError != nullptr)
+    {
+        *osError = 0;
+    }
+    const std::string name = gg::media::displayName(file);
+    // The size first (M8): a file past the cap is refused without reading 64 MiB of it. The read
+    // below still stops one byte past the cap, for a file that grows meanwhile.
+    {
+        std::error_code sizeError;
+        const auto size = std::filesystem::file_size(file, sizeError);
+        if (!sizeError && size > gg::core::kMaxStateBytes)
+        {
+            error = "the preset is larger than 64 MiB";
+            return false;
+        }
+    }
+    errno = 0;
+    std::ifstream in(file, std::ios::binary);
+    if (!in)
+    {
+        if (osError != nullptr)
+        {
+            *osError = errno;
+        }
+        error = "can't read " + name;
+        return false;
+    }
+    // At most one byte past kMaxStateBytes, as stateLoad reads a state: a longer file fails there.
+    std::string bytes;
+    char buffer[4096];
+    for (;;)
+    {
+        const auto want =
+            std::min<std::size_t>(sizeof(buffer), gg::core::kMaxStateBytes + 1 - bytes.size());
+        in.read(buffer, static_cast<std::streamsize>(want));
+        const auto got = static_cast<std::size_t>(in.gcount());
+        bytes.append(buffer, got);
+        if (bytes.size() > gg::core::kMaxStateBytes)
+        {
+            error = "the preset is larger than 64 MiB";
+            return false;
+        }
+        if (got < want)
+        {
+            if (in.bad())
+            {
+                error = "can't read " + name;
+                return false;
+            }
+            break; // the end of the file
+        }
+    }
+
+    gg::core::PresetInfo info;
+    gg::core::SessionState state;
+    if (!gg::core::readPreset(bytes, mode(), info, state))
+    {
+        // A preset of this product that still doesn't load is damaged; anything else, a session
+        // state, the other product's preset or another file, isn't one of ours.
+        gg::core::PresetInfo found;
+        if (gg::core::presetInfoOf(bytes, found) && found.product == mode())
+        {
+            error = "can't read " + name;
+        }
+        else
+        {
+            error = std::string("not a ") + descriptorFor(product_)->name + " preset";
+        }
+        return false;
+    }
+    std::string key = presetFileKey(file); // before the load: nothing throws after it
+    applyState(std::move(state), LoadKind::Preset);
+    presetKey_ = std::move(key);
+    return true;
+}
+
+void GigaGrainsPlugin::loadInit()
+{
+    std::string key = "plugin:" + std::string(gg::core::kInitLoadKey);
+    applyState(gg::core::initState(mode()), LoadKind::Preset);
+    presetKey_ = std::move(key);
+}
+
+std::optional<std::size_t> GigaGrainsPlugin::loadedCatalogIndex()
+{
+    const auto &entries = presetCatalog().entries();
+    for (std::size_t i = 0; i < entries.size(); ++i)
+    {
+        const PresetEntry &entry = entries[i];
+        if (presetKeyByName_ ? entry.info.name == presetName_ &&
+                                   (entry.kind == PresetKind::Init) == (presetName_ == "Init")
+                             : !presetKey_.empty() && presetKey(entry) == presetKey_)
+        {
+            return i;
+        }
+    }
+    return std::nullopt;
+}
+
+PresetCatalog &GigaGrainsPlugin::presetCatalog()
+{
+    if (catalog_ == nullptr)
+    {
+        catalog_ = std::make_unique<PresetCatalog>(mode(), catalogSettingsFile_);
+    }
+    return *catalog_;
+}
+
+std::string GigaGrainsPlugin::loadCatalogPreset(std::size_t index) noexcept
+{
+    try
+    {
+        const auto &entries = presetCatalog().entries();
+        if (index >= entries.size())
+        {
+            return "no such preset";
+        }
+        const PresetEntry entry = entries[index]; // a copy: loading may not touch the catalog
+        std::string error;
+        uint32_t kind = CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN;
+        std::string location;
+        if (entry.kind == PresetKind::Init)
+        {
+            loadInit();
+        }
+        else
+        {
+            kind = CLAP_PRESET_DISCOVERY_LOCATION_FILE;
+            const auto utf8 = gg::media::toUtf8(entry.file);
+            if (!utf8 || !loadPresetFile(entry.file, error))
+            {
+                return error.empty() ? "can't read " + gg::media::displayName(entry.file) : error;
+            }
+            location = *utf8;
+        }
+        if (_host.canUsePresetLoad())
+        {
+            // The identity the host's own load would use: a file's location with no load key,
+            // INIT's load key with no location (PresetDiscovery).
+            const std::string key(gg::core::kInitLoadKey);
+            _host.presetLoadLoaded(
+                kind, kind == CLAP_PRESET_DISCOVERY_LOCATION_FILE ? location.c_str() : nullptr,
+                kind == CLAP_PRESET_DISCOVERY_LOCATION_FILE ? nullptr : key.c_str());
+        }
+        return {};
+    }
+    catch (...)
+    {
+        return "out of memory";
+    }
+}
+
+SaveResult GigaGrainsPlugin::savePreset(const std::string &name,
+                                        const std::vector<std::string> &tags,
+                                        const std::string &description, bool overwrite) noexcept
+{
+    try
+    {
+        gg::core::PresetInfo info;
+        info.name = name;
+        info.product = mode();
+        info.description = description;
+        for (const auto &tag : tags)
+        {
+            if (gg::core::isPresetTag(tag) &&
+                std::find(info.tags.begin(), info.tags.end(), tag) == info.tags.end())
+            {
+                info.tags.push_back(tag);
+            }
+        }
+        gg::core::ParamValues values{};
+        for (std::size_t s = 0; s < kParamCount; ++s)
+        {
+            values[s] = values_[s].load(std::memory_order_relaxed);
+        }
+        const std::string bytes = gg::core::encodePreset(
+            info, {values, 0, loader_ != nullptr ? loader_->entry() : std::nullopt,
+                   loader_ != nullptr ? loader_->newerMedia() : std::nullopt, routes_, info.name,
+                   std::nullopt, false});
+        // The name as the file holds it (the patch's 255-byte cut; I4), read back before the
+        // save so nothing after it can throw.
+        gg::core::PresetInfo kept;
+        std::string savedName = gg::core::presetInfoOf(bytes, kept) ? kept.name : info.name;
+        SaveResult result = presetCatalog().save(info, bytes, overwrite);
+        if (!result.saved())
+        {
+            return result;
+        }
+        presetName_ = std::move(savedName);
+        presetKey_ = presetFileKey(result.file);
+        presetKeyByName_ = false;
+        ++presetLoads_;
+        presetEditedMark_ = false;
+        presetValues_ = values; // the saved sound is the loaded preset: not edited
+        if (_host.canUseState())
+        {
+            _host.stateMarkDirty();
+        }
+        return result;
+    }
+    catch (...)
+    {
+        return SaveResult{SaveResult::Status::Failed, "out of memory", {}, {}};
+    }
+}
+
+std::string GigaGrainsPlugin::setContentFolder(const std::string &utf8Folder) noexcept
+{
+    // The settings writer cuts a string at its first NUL (gg/core/MachineSettings.h): refuse it
+    // before anything is saved.
+    if (utf8Folder.find('\0') != std::string::npos)
+    {
+        return "the content folder's path is not valid";
+    }
+    try
+    {
+        if (catalogSettingsFile_.empty())
+        {
+            return "can't save the content folder: there is no settings file";
+        }
+        auto settings = gg::media::loadSettings(catalogSettingsFile_);
+        settings.contentFolder = utf8Folder;
+        if (!gg::media::saveSettings(catalogSettingsFile_, settings))
+        {
+            return "can't save the content folder: the settings file can't be written";
+        }
+        return {};
+    }
+    catch (...)
+    {
+        return "can't save the content folder: not enough memory";
+    }
+}
+
+bool GigaGrainsPlugin::presetLoadFromLocation(uint32_t locationKind, const char *location,
+                                              const char *loadKey) noexcept
+{
+    bool loaded = false;
+    bool outOfMemory = false;
+    int32_t osError = 0;
+    std::string error;
+    try
+    {
+        if (locationKind == CLAP_PRESET_DISCOVERY_LOCATION_FILE && location != nullptr)
+        {
+            if (const auto file = gg::media::fromUtf8(location))
+            {
+                loaded = loadPresetFile(*file, error, &osError);
+            }
+            else
+            {
+                error = std::string("can't read ") + location; // not a path on this system
+            }
+        }
+        else if (locationKind == CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN && loadKey != nullptr &&
+                 loadKey == gg::core::kInitLoadKey)
+        {
+            loadInit();
+            loaded = true;
+        }
+        else
+        {
+            error = "unknown preset location";
+        }
+    }
+    catch (...)
+    {
+        loaded = false; // std::bad_alloc, before anything changed
+        outOfMemory = true;
+    }
+    if (_host.canUsePresetLoad())
+    {
+        if (loaded)
+        {
+            _host.presetLoadLoaded(locationKind, location, loadKey);
+        }
+        else
+        {
+            _host.presetLoadOnError(locationKind, location, loadKey, osError,
+                                    outOfMemory ? "out of memory" : error.c_str());
+        }
+    }
+    return loaded;
 }
 
 uint32_t GigaGrainsPlugin::remoteControlsPageCount() noexcept

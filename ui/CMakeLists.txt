@@ -28,6 +28,9 @@ if (GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
             src/GrainCanvas.cpp
             src/LoaderStrip.cpp
             src/MacroRow.cpp
+            src/MutatePanel.cpp
+            src/PresetBrowser.cpp
+            src/PresetStrip.cpp
             )
     add_library(gg::ui ALIAS gg-ui)
 
