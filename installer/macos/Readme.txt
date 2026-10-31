@@ -14,6 +14,8 @@ Every choice is on by default; turn off any you don't want with Customize.
   Giga Grains Audio Unit    /Library/Audio/Plug-Ins/Components/Giga Grains.component
   Giga Grains app           /Applications/Giga Grains.app
   Giga Grains FX app        /Applications/Giga Grains FX.app
+  Giga Grains Content       /Library/Application Support/sethbc/Giga Grains
+                            (the factory presets and the CC0 samples they use)
 
 Each plugin bundle holds both plugins, Giga Grains and Giga Grains FX. It runs on Apple silicon
 and Intel Macs, on macOS 11 or later.
@@ -35,7 +37,8 @@ Licenses and notices
 Giga Grains is free software, licensed under the GNU Affero General Public License, version 3 or
 later (AGPL-3.0-or-later); the installer shows it before installing. The disk image's Licenses
 folder holds that license, THIRD_PARTY_NOTICES.md (the notices of everything Giga Grains is built
-with) and the license texts those notices name.
+with) and the license texts those notices name, among them the CC0 1.0 legal code of the factory
+content (CC0-1.0.txt). The content's PROVENANCE.md says where each sample came from.
 
 The corresponding source
 ------------------------

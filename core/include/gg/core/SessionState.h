@@ -15,6 +15,7 @@
 
 #include "gg/core/ModMatrix.h"
 #include "gg/core/ParamIds.h"
+#include "gg/core/PresetInfo.h"
 
 /// The session state both products save (INTENT §18, M1's spec §6.6, M2 sub-project 2's spec
 /// §6.6): a versioned container of chunks, holding the patch (gg/core/PatchState.h), the media
@@ -32,8 +33,9 @@
 ///       payload
 ///
 /// encodeState writes three or four chunks, in this order:
-/// - `PTCH`: the patch, toStateXml's bytes unchanged: the values, the seed and, since patch
-///   version 2, the mod matrix's routes in its `<mod>` element (gg/core/PatchState.h);
+/// - `PTCH`: the patch, toStateXml's bytes unchanged: the values, the seed, since patch version 2
+///   the mod matrix's routes in its `<mod>` element, the name and, for a preset, its `<preset>`
+///   element (gg/core/PatchState.h);
 /// - `MEDI`: the media manifest, version 2, on one line (broken here for reading), with at most
 ///   one <sample> and at most one <ring> per layer, the samples first, each in layer order:
 ///
@@ -172,6 +174,16 @@ struct SessionState
     /// The mod matrix's routes (gg/core/ModMatrix.h), every slot empty by default. A state of
     /// patch version 1 (M1's) decodes with factoryRoutes(mode) (gg/core/PatchState.h).
     ModRoutes routes{};
+    /// The patch's name, PTCH's root `name` (gg/core/PatchState.h): at most 255 bytes kept. A
+    /// state without one decodes as "Init".
+    std::string name{"Init"};
+    /// A preset's metadata, PTCH's <preset> element (gg/core/Preset.h), its `name` the state's;
+    /// empty for a session state. encodeState writes `name`, not `preset->name`.
+    std::optional<PresetInfo> preset;
+    /// A session's edited mark (the director's D-Q2): the preset `name` names was edited when the
+    /// session was saved. PTCH's root `edited="1"`, written only when true (gg/core/PatchState.h),
+    /// so an unedited state's bytes are as before. A preset never carries it (encodePreset).
+    bool edited{false};
 };
 
 /// Whether `entry` is a sample encodeState can write: `sha256Hex` is 64 lowercase hex digits, no
@@ -220,7 +232,8 @@ std::string encodeState(const SessionState &state);
 ///   them that fails to parse:
 ///   - PTCH loads as fromStateXml loads it (gg/core/PatchState.h): its version migrates (a
 ///     version-1 state takes the factory routes), a param it doesn't mention takes `mode`'s
-///     default, values are clamped, and the routes are its `<mod>`'s;
+///     default, values are clamped, the routes are its `<mod>`'s, and the name and the preset
+///     are its root's `name` and its `<preset>`'s;
 ///   - MEDI must be well-formed XML whose only top-level node is a <media> root, with an
 ///     integer `version` from 1. Other elements and attributes inside <media> are ignored.
 ///     - Version 1 has at most one <sample>, layer A's, with every attribute of version 1

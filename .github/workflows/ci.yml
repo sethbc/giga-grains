@@ -262,6 +262,11 @@ jobs:
       # makes CPM skip it. The cache never changes what is built, only whether it is downloaded
       # (carry-over [96]).
       SDK_CACHE_DIR: ${{ github.workspace }}/.sdk-cache
+      # The CC0 content release that content/pin.txt pins (spec §6.5) is fetched by
+      # scripts/fetch-content.sh into this directory, and Configure points the build at it
+      # (-DGG_CONTENT_DIR), so the gg-content target only checks it against the pin. Like the SDK
+      # cache, it never changes what is built, only whether it is downloaded.
+      CONTENT_CACHE_DIR: ${{ github.workspace }}/.content-cache
       # ccache for the macOS and Linux legs, CI only (the local presets are unchanged): the
       # launcher is passed at configure, and the cache never changes what is built, because
       # ccache hashes the whole compile command (every flag, -ffp-contract=off among them, the
@@ -317,6 +322,29 @@ jobs:
         with:
           path: ${{ env.SDK_CACHE_DIR }}
           key: ${{ steps.sdk_cache.outputs.cache-primary-key }}
+
+      # The content, keyed by the pin and the script that fetches it, so a new release starts a
+      # fresh cache; the same on every leg. Restored and saved as the SDK checkouts are: on a hit
+      # .gg-pin matches and nothing is downloaded; on a miss the zip is fetched, checked against
+      # its SHA-256 and unpacked.
+      - name: Restore the content
+        id: content_cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ env.CONTENT_CACHE_DIR }}
+          key: content-${{ hashFiles('content/pin.txt', 'scripts/fetch-content.cmake') }}
+
+      - name: Fetch the content
+        run: |
+          scripts/fetch-content.sh "$CONTENT_CACHE_DIR"
+          echo "### Content cache (${{ matrix.preset }}): hit=${{ steps.content_cache.outputs.cache-hit || 'false' }}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Save the content
+        if: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && steps.content_cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ env.CONTENT_CACHE_DIR }}
+          key: ${{ steps.content_cache.outputs.cache-primary-key }}
 
       # gcc-13 for the C++23 build (the m2-layers spec, §6.1), on ubuntu-22.04: its image has GCC
       # 10 to 12 only and its archive no gcc-13, and prepare-for-juce installs no compiler (it only
@@ -463,7 +491,8 @@ jobs:
           if [[ "${GG_SIGN:-}" == 1 ]]; then
             release_opts+=("-DGG_MACOS_CODESIGN_IDENTITY=$MAC_SIGNING_IDENTITY")
           fi
-          cmake --preset ${{ matrix.preset }} "${sdk_roots[@]}" "${launcher[@]}" "${release_opts[@]}"
+          cmake --preset ${{ matrix.preset }} "${sdk_roots[@]}" "${launcher[@]}" "${release_opts[@]}" \
+            "-DGG_CONTENT_DIR=$CONTENT_CACHE_DIR/content"
 
       - name: Build gg-all and gg-products
         id: build
@@ -651,7 +680,15 @@ jobs:
       - name: clap-validator
         if: ${{ !cancelled() && steps.validators.outcome == 'success' }}
         timeout-minutes: 10
-        run: tools-bin/clap-validator${{ matrix.exe }} validate "$GG_CLAP"
+        run: |
+          exclude=()
+          # clap-validator 0.4.1-127 rejects every Windows FILE preset location: it asks for
+          # '/C:\...', which no Windows file function opens (CLAP's preset-discovery.h asks for
+          # an OS path). macOS and Linux still run these three tests (docs/m2-carry-over.md).
+          if [ "$RUNNER_OS" = Windows ]; then
+            exclude=(--exclude 'preset-discovery-(crawl|descriptor-consistency|load)')
+          fi
+          tools-bin/clap-validator${{ matrix.exe }} validate "${exclude[@]}" "$GG_CLAP"
 
       - name: pluginval (VST3, strictness 10)
         if: ${{ !cancelled() && steps.validators.outcome == 'success' && runner.os != 'Linux' }}
@@ -855,6 +892,8 @@ jobs:
       LLVM_SHA256: 1ead36b3dfcb774b57be530df42bec70ab2d239fbce9889447c7a29a4ddc1ae6
       # The rtsan preset takes its compilers from $GG_LLVM; the asan step uses the same clang.
       GG_LLVM: /opt/llvm-20.1.8
+      # The content, as in the build job: both configures point at it (-DGG_CONTENT_DIR).
+      CONTENT_CACHE_DIR: ${{ github.workspace }}/.content-cache
       # ccache, as in the build job (CI only; the same notes apply).
       CCACHE_DIR: ${{ github.workspace }}/.ccache
       CCACHE_BASEDIR: ${{ github.workspace }}
@@ -919,6 +958,26 @@ jobs:
           restore-keys: |
             ccache-sanitizers-llvm-${{ env.LLVM_VERSION }}-
 
+      # The content, as in the build job (the same key; saved on main alone).
+      - name: Restore the content
+        id: content_cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ env.CONTENT_CACHE_DIR }}
+          key: content-${{ hashFiles('content/pin.txt', 'scripts/fetch-content.cmake') }}
+
+      - name: Fetch the content
+        run: |
+          scripts/fetch-content.sh "$CONTENT_CACHE_DIR"
+          echo "### Content cache (sanitizers): hit=${{ steps.content_cache.outputs.cache-hit || 'false' }}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Save the content
+        if: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && steps.content_cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ env.CONTENT_CACHE_DIR }}
+          key: ${{ steps.content_cache.outputs.cache-primary-key }}
+
       - name: ASan + UBSan
         env:
           CC: ${{ env.GG_LLVM }}/bin/clang
@@ -926,7 +985,7 @@ jobs:
         run: |
           launcher=(-DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache)
           ccache --zero-stats
-          cmake --preset asan "${launcher[@]}"
+          cmake --preset asan "${launcher[@]}" "-DGG_CONTENT_DIR=$CONTENT_CACHE_DIR/content"
           cmake --build --preset asan --parallel --target gg-all
           ctest --preset asan --output-on-failure
 
@@ -934,7 +993,7 @@ jobs:
         if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
         run: |
           launcher=(-DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache)
-          cmake --preset rtsan "${launcher[@]}"
+          cmake --preset rtsan "${launcher[@]}" "-DGG_CONTENT_DIR=$CONTENT_CACHE_DIR/content"
           cmake --build --preset rtsan --parallel --target gg-all
           ctest --preset rtsan --output-on-failure
 

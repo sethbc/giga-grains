@@ -2179,6 +2179,40 @@ TEST_CASE("sample mode takes none of the layer, mod, control or transport keys",
     }
 }
 
+TEST_CASE("specs name a preset file, resolved like a file path", "[render]")
+{
+    // M2 sub-project 5's spec §6.10: "preset" in instrument and FX mode, a UTF-8 path relative to
+    // the spec's directory or --media-dir; sample mode takes no preset.
+    const std::filesystem::path base = std::filesystem::path{GG_TEST_OUTPUT_DIR} / "spec dir";
+    for (auto j : {instrumentJson(), fxFileJson()})
+    {
+        INFO(j.dump());
+        RenderSpec spec = parseJson(j);
+        CHECK(spec.preset.empty());
+        j["preset"] = "Presets/\xc3\xa9t\xc3\xa9.ggpreset";
+        spec = parseJson(j);
+        CHECK(spec.preset == "Presets/\xc3\xa9t\xc3\xa9.ggpreset");
+        gg::render::resolvePaths(spec, utf8(base));
+        CHECK(spec.preset == utf8(base / std::filesystem::path(u8"Presets/été.ggpreset")));
+        const std::string absolute = utf8(std::filesystem::absolute(base / "abs.ggpreset"));
+        spec.preset = absolute;
+        gg::render::resolvePaths(spec, utf8(base));
+        CHECK(spec.preset == absolute);
+
+        j["preset"] = "";
+        CHECK(rejection(j) == "preset must not be empty");
+        j["preset"] = 1;
+        CHECK(rejection(j) == "preset must be a string");
+        // A state holds a patch of its own (sub-project 2's merge): not both.
+        j["preset"] = "x.ggpreset";
+        j["state"] = "s.ggst";
+        CHECK(rejection(j) == "preset and state can't both be given");
+    }
+    auto sample = nlohmann::json::parse(readCase("sparse-sine"));
+    sample["preset"] = "x.ggpreset";
+    CHECK(rejection(sample) == "unknown key preset");
+}
+
 TEST_CASE("a mod route reaches layer B's grains through its sample", "[render]")
 {
     // LFO 1 (1 Hz, sine) to Pitch on layer B alone, 12 semitones deep: B's grains, reading the

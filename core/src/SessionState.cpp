@@ -16,6 +16,7 @@
 #include <utility>
 #include <vector>
 
+#include "StateChunks.h"
 #include "XmlText.h"
 #include "gg/core/PatchState.h"
 #include "tinyxml/tinyxml.h"
@@ -690,7 +691,8 @@ std::string encodeState(const SessionState &state)
             rings[k] = writable ? &*r : nullptr;
         }
     }
-    const std::string patch = toStateXml(state.values, state.seed, state.routes);
+    const std::string patch = toStateXml(state.values, state.seed, state.routes, state.name,
+                                         state.preset ? &*state.preset : nullptr, state.edited);
     // With no entry, a newer build's manifest goes back as it came (INTENT §18), and the AUDI
     // beside it, which it may embed audio from.
     const bool writeNewer = !anyEntry && state.newerMedia && isNewerMedia(*state.newerMedia);
@@ -718,6 +720,68 @@ std::string encodeState(const SessionState &state)
     return out;
 }
 
+bool findStateChunks(std::string_view bytes, std::string_view &patch, std::string_view &media,
+                     std::optional<std::string_view> *audio,
+                     std::optional<std::string_view> *instance)
+{
+    if (bytes.size() < kHeaderBytes || bytes.substr(0, kMagic.size()) != kMagic ||
+        readLittleEndian(bytes, kMagic.size(), 4) != kStateContainerVersion)
+    {
+        return false;
+    }
+    std::optional<std::string_view> foundPatch;
+    std::optional<std::string_view> foundMedia;
+    std::optional<std::string_view> foundAudio;
+    std::optional<std::string_view> foundInstance;
+    std::size_t at = kHeaderBytes;
+    while (at < bytes.size())
+    {
+        if (bytes.size() - at < kChunkHeaderBytes)
+        {
+            return false;
+        }
+        const auto id = bytes.substr(at, 4);
+        const uint64_t length = readLittleEndian(bytes, at + 4, 8);
+        at += kChunkHeaderBytes;
+        if (length > bytes.size() - at)
+        {
+            return false;
+        }
+        const auto payload = bytes.substr(at, static_cast<std::size_t>(length));
+        at += static_cast<std::size_t>(length);
+
+        // Chunks with other IDs are skipped.
+        auto *slot = id == kPatchChunk      ? &foundPatch
+                     : id == kMediaChunk    ? &foundMedia
+                     : id == kAudioChunk    ? &foundAudio
+                     : id == kInstanceChunk ? &foundInstance
+                                            : nullptr;
+        if (slot != nullptr)
+        {
+            if (slot->has_value())
+            {
+                return false; // a repeated PTCH, MEDI, AUDI or INST
+            }
+            *slot = payload;
+        }
+    }
+    if (!foundPatch || !foundMedia)
+    {
+        return false;
+    }
+    patch = *foundPatch;
+    media = *foundMedia;
+    if (audio != nullptr)
+    {
+        *audio = foundAudio;
+    }
+    if (instance != nullptr)
+    {
+        *instance = foundInstance;
+    }
+    return true;
+}
+
 bool decodeState(std::string_view bytes, Mode mode, SessionState &out,
                  uint32_t *migratedFromVersion)
 {
@@ -729,58 +793,23 @@ bool decodeState(std::string_view bytes, Mode mode, SessionState &out,
     {
         // A pre-container state: PTCH alone, read exactly as before the container, so every
         // state that loaded then loads now (XML followed by a NUL included).
-        if (!fromStateXml(bytes, loaded.values, loaded.seed, loaded.routes, mode, &migrated))
+        if (!fromStateXml(bytes, loaded.values, loaded.seed, loaded.routes, mode, &migrated,
+                          &loaded.name, &loaded.preset, &loaded.edited))
         {
             return false;
         }
     }
     else
     {
-        if (bytes.size() < kHeaderBytes || bytes.substr(0, kMagic.size()) != kMagic ||
-            readLittleEndian(bytes, kMagic.size(), 4) != kStateContainerVersion)
-        {
-            return false;
-        }
-        std::optional<std::string_view> patch;
-        std::optional<std::string_view> media;
+        std::string_view patch;
+        std::string_view media;
         std::optional<std::string_view> audio;
         std::optional<std::string_view> instance;
-        std::size_t at = kHeaderBytes;
-        while (at < bytes.size())
-        {
-            if (bytes.size() - at < kChunkHeaderBytes)
-            {
-                return false;
-            }
-            const auto id = bytes.substr(at, 4);
-            const uint64_t length = readLittleEndian(bytes, at + 4, 8);
-            at += kChunkHeaderBytes;
-            if (length > bytes.size() - at)
-            {
-                return false;
-            }
-            const auto payload = bytes.substr(at, static_cast<std::size_t>(length));
-            at += static_cast<std::size_t>(length);
-
-            // Chunks with other IDs are skipped.
-            auto *slot = id == kPatchChunk      ? &patch
-                         : id == kMediaChunk    ? &media
-                         : id == kAudioChunk    ? &audio
-                         : id == kInstanceChunk ? &instance
-                                                : nullptr;
-            if (slot != nullptr)
-            {
-                if (slot->has_value())
-                {
-                    return false; // a repeated PTCH, MEDI, AUDI or INST
-                }
-                *slot = payload;
-            }
-        }
         Manifest manifest;
-        if (!patch || !media || patch->find('\0') != std::string_view::npos ||
+        if (!findStateChunks(bytes, patch, media, &audio, &instance) ||
+            patch.find('\0') != std::string_view::npos ||
             (instance && !parseInstance(*instance, loaded.memoryCapMiB)) ||
-            !parseMedia(*media, manifest))
+            !parseMedia(media, manifest))
         {
             return false;
         }
@@ -812,7 +841,8 @@ bool decodeState(std::string_view bytes, Mode mode, SessionState &out,
                 named.push_back(r->audioId);
             }
         }
-        if (!fromStateXml(*patch, loaded.values, loaded.seed, loaded.routes, mode, &migrated))
+        if (!fromStateXml(patch, loaded.values, loaded.seed, loaded.routes, mode, &migrated,
+                          &loaded.name, &loaded.preset, &loaded.edited))
         {
             return false;
         }
@@ -827,7 +857,7 @@ bool decodeState(std::string_view bytes, Mode mode, SessionState &out,
         loaded.rings = std::move(manifest.rings);
         if (manifest.newer)
         {
-            loaded.newerMedia.emplace(*media);
+            loaded.newerMedia.emplace(media);
             if (audio)
             {
                 loaded.newerAudio.emplace(*audio);

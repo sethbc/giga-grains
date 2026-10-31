@@ -788,6 +788,49 @@ MediaSession::Restored MediaSession::restore(core::SessionState state, double ac
     return out;
 }
 
+MediaSession::Restored MediaSession::restorePreset(core::SessionState state) noexcept
+{
+    Restored out;
+    std::shared_ptr<const std::vector<core::AudioPayload>> payloads;
+    try
+    {
+        payloads = std::make_shared<const std::vector<core::AudioPayload>>(std::move(state.audio));
+    }
+    catch (...)
+    {
+        // Memory, before anything changed: every layer keeps its sample.
+        for (auto &sample : out.samples)
+        {
+            sample.keep = true;
+        }
+        return out;
+    }
+    for (uint8_t l = 0; l < kLayers; ++l)
+    {
+        const auto &entry = state.samples[l];
+        if (!entry.has_value())
+        {
+            out.samples[l].keep = true; // D5: the sample loaded stays
+            continue;
+        }
+        refreshBudget();
+        std::shared_ptr<const std::string> payload;
+        if (entry->embed)
+        {
+            for (const auto &p : *payloads)
+            {
+                if (p.id == entry->audioId)
+                {
+                    payload = std::shared_ptr<const std::string>(payloads, &p.bytes);
+                }
+            }
+        }
+        out.samples[l] = loaders_[l]->restore(entry, std::nullopt, std::move(payload));
+    }
+    refreshBudget();
+    return out;
+}
+
 void MediaSession::activate(core::Processor &processor, double sampleRate, uint32_t maxBlockSize)
 {
     active_ = &processor;
@@ -1174,7 +1217,8 @@ media::CollectResult MediaSession::collectAndSave(const std::filesystem::path &f
     state.audio.clear(); // embedded audio needs no collecting
     const core::MachineSettings settings =
         settingsFile_.empty() ? core::MachineSettings{} : media::loadSettings(settingsFile_);
-    // Sub-project 5 names the content roots (ContentPaths.h); none until then.
+    // No content roots yet: presets' group 2 (its Task 14) passes gg::media::contentRoots
+    // (ContentPaths.h) to the searches.
     media::CollectResult result = media::collectMedia(state, folder, settings, {});
     const auto remember = [this](const std::string &sha256Hex, const std::string &path) {
         if (const auto copy = media::fromUtf8(path))

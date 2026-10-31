@@ -23,6 +23,10 @@
 #     (fail), -L core -E fails (pass) and -L nosuchlabel (none).
 # update-goldens.sh runs in the same fake tree with a stub gg-render: its per-case WAV SHA-256s,
 # and the cases changed, new or gone since the previous run.
+# fetch-content.cmake fetches a scratch zip with the content release's layout by a file:// URL:
+# it extracts it and writes .gg-pin, a second run is "already at" the pin, a pin with the wrong
+# hash fails and leaves no zip, a stale .gg-pin is fetched over, and -DCHECK passes a matching
+# folder and fails any other.
 # worktree-setup.sh runs in real scratch git repositories: a linked worktree whose submodule pin
 # the main checkout's copy has (the local path), and one whose pin it lacks and whose upstream
 # doesn't advertise as a ref (the fetch path); and a name that isn't a preset, refused before
@@ -283,6 +287,84 @@ FAKE_CHANGED=b run_update
 expect_in "update-goldens: the rest unchanged" "$out" "  every case's WAV is unchanged (1 compared)"
 expect_in "update-goldens names a new case" "$out" "  new since then: c"
 expect_in "update-goldens names a gone case" "$out" "  gone since then: a"
+
+# --- fetch-content.cmake, against a local zip -----------------------------------------------
+
+# A scratch zip with the content release's layout, and a pin naming it by a file:// URL.
+content_src="$work/content-src"
+mkdir -p "$content_src/Samples/Generated"
+for f in LICENSE README.md PROVENANCE.md Samples/Generated/a.flac; do
+    echo "scratch $f" >"$content_src/$f"
+done
+(cd "$content_src" &&
+    "$real_cmake" -E tar cf giga-grains-content-v1.zip --format=zip LICENSE README.md \
+        PROVENANCE.md Samples)
+content_hash="$("$real_cmake" -E sha256sum "$content_src/giga-grains-content-v1.zip")"
+content_hash="${content_hash%% *}"
+write_pin() { # <file> <sha256>
+    printf 'tag v1\nurl file://%s/giga-grains-content-v1.zip\nsha256 %s\n' "$content_src" "$2" \
+        >"$1"
+}
+write_pin "$work/pin-good.txt" "$content_hash"
+write_pin "$work/pin-bad.txt" "$(printf '0%.0s' {1..64})"
+fetch_content() { # <dest> <pin>; sets $out and $status
+    status=0
+    out="$("$real_cmake" -DDEST="$1" -DPIN="$2" -P "$src/scripts/fetch-content.cmake" 2>&1)" ||
+        status=$?
+}
+dest="$work/content-cache"
+fetch_content "$dest" "$work/pin-good.txt"
+check "fetch-content: exit 0" "$status"
+check "fetch-content extracts the zip" \
+    "$([[ "$(cat "$dest/content/Samples/Generated/a.flac" 2>/dev/null)" == \
+        "scratch Samples/Generated/a.flac" ]] && echo 0 || echo 1)"
+check "fetch-content writes .gg-pin" \
+    "$([[ "$(cat "$dest/content/.gg-pin" 2>/dev/null)" == "v1 $content_hash" ]] && echo 0 ||
+        echo 1)"
+check "fetch-content keeps no zip" \
+    "$([[ ! -e "$dest/giga-grains-content-v1.zip" ]] && echo 0 || echo 1)"
+fetch_content "$dest" "$work/pin-good.txt"
+check "fetch-content, again: exit 0" "$status"
+expect_in "fetch-content, again: already there" "$out" "content: v1 already at $dest/content"
+dest_bad="$work/content-cache-bad"
+fetch_content "$dest_bad" "$work/pin-bad.txt"
+check "fetch-content, a wrong hash: fails" "$((status != 0 ? 0 : 1))"
+expect_in "fetch-content, a wrong hash: names it" "$out" "$content_hash"
+check "fetch-content, a wrong hash: leaves no zip" \
+    "$([[ ! -e "$dest_bad/giga-grains-content-v1.zip" ]] && echo 0 || echo 1)"
+check "fetch-content, a wrong hash: no content" \
+    "$([[ ! -e "$dest_bad/content" ]] && echo 0 || echo 1)"
+printf 'tag v1\nsha256 %s\n' "$content_hash" >"$work/pin-no-url.txt"
+fetch_content "$work/content-cache-no-url" "$work/pin-no-url.txt"
+check "fetch-content, a pin without a url: fails" "$((status != 0 ? 0 : 1))"
+expect_in "fetch-content, a pin without a url: says so" "$out" "no url line"
+
+# A stale .gg-pin (an older release's) is fetched over, and the stamp is then the pin's.
+printf 'v0 %s\n' "$(printf 'f%.0s' {1..64})" >"$dest/content/.gg-pin"
+fetch_content "$dest" "$work/pin-good.txt"
+check "fetch-content, a stale pin: exit 0" "$status"
+expect_in "fetch-content, a stale pin: fetches again" "$out" "content: fetching v1"
+check "fetch-content, a stale pin: the stamp is the pin's" \
+    "$([[ "$(cat "$dest/content/.gg-pin" 2>/dev/null)" == "v1 $content_hash" ]] && echo 0 ||
+        echo 1)"
+
+# Check mode (-DCHECK): a folder whose .gg-pin matches passes, offline; any other fails naming
+# both.
+check_content() { # <content dir> <pin>; sets $out and $status
+    status=0
+    out="$("$real_cmake" -DCHECK="$1" -DPIN="$2" -P "$src/scripts/fetch-content.cmake" 2>&1)" ||
+        status=$?
+}
+check_content "$dest/content" "$work/pin-good.txt"
+check "fetch-content -DCHECK, a match: exit 0" "$status"
+expect_in "fetch-content -DCHECK, a match: says so" "$out" "content: v1 checked at $dest/content"
+check_content "$dest/content" "$work/pin-bad.txt"
+check "fetch-content -DCHECK, another pin: fails" "$((status != 0 ? 0 : 1))"
+expect_in "fetch-content -DCHECK, another pin: names what it holds" "$out" "$content_hash"
+mkdir -p "$work/content-unstamped"
+check_content "$work/content-unstamped" "$work/pin-good.txt"
+check "fetch-content -DCHECK, no stamp: fails" "$((status != 0 ? 0 : 1))"
+expect_in "fetch-content -DCHECK, no stamp: says so" "$out" "(no .gg-pin)"
 
 # --- worktree-setup.sh, in scratch git repositories -----------------------------------------
 

@@ -6,10 +6,12 @@
 #define GG_UI_EDITOR_H
 
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "gg/core/GrainQueue.h"
@@ -67,6 +69,35 @@ struct SampleFolderResult
 {
     bool saved{false};
     std::string message; ///< UTF-8; shown in the strip when the save failed
+};
+
+/// One row of the preset browser (M2 sub-project 5's spec §6.8): a catalog entry
+/// (gg::plugin::PresetEntry), mirrored here because the UI doesn't include plugin headers.
+struct PresetRow
+{
+    std::size_t index{
+        0}; ///< the entry's index in the catalog: what loadPreset, setFavorite, deletePreset take
+    std::string name, description; ///< UTF-8
+    std::vector<std::string> tags; ///< words of EditorContext::tagVocabulary
+    bool isInit{false};            ///< INIT, the plugin's defaults, which has no file
+    bool factory{false};           ///< a preset of the factory content
+    bool content{false}; ///< a preset of the user's content folder (neither factory nor deletable)
+    bool favorite{false};
+    bool loaded{false}; ///< the loaded preset's entry (GigaGrainsPlugin::loadedCatalogIndex)
+};
+
+/// What the browser's Save as… did (EditorContext::savePreset).
+struct PresetSaveResult
+{
+    enum class Status
+    {
+        Saved,
+        Exists, ///< a preset file of that name is there; nothing was written
+        Failed,
+    };
+    Status status{Status::Failed};
+    std::string error;        ///< UTF-8, for the user (Exists's or Failed's)
+    std::string existingName; ///< Exists: the name of the preset an overwrite would replace
 };
 
 /// What the editor shows of the plugin that owns it.
@@ -128,6 +159,51 @@ struct EditorContext
     /// The instrument's sample outline, main thread: cached by the plugin, so it is cheap to
     /// call every frame; empty in the FX and with no sample.
     std::function<SampleWaveform()> sampleWaveform;
+
+    /// The preset strip and browser (spec §6.8), main thread; any may be empty. `presetRows`
+    /// lists the entries in the catalog's order, after rescanning the preset folders when
+    /// `rescan` is true. `loadPreset` loads entry `index` and returns "" or an error for the user;
+    /// the plugin announces the load to the host. `presetName` is the loaded preset's name,
+    /// `presetEdited` whether a value differs from it, `presetLoads` a count that moves at every
+    /// load or save (the list marks the loaded row again), `presetFoldersChanged` whether the
+    /// folders changed on disk since the last rescan (polled at 30 Hz while the browser is open;
+    /// it only stats them). `savePreset` writes the current sound to the user's presets folder;
+    /// with `overwrite` false an existing file is Exists, nothing written. `setContentFolder`
+    /// saves the settings' content folder ("" or an error). `tagVocabulary` is the tags' words,
+    /// the four focus tags first.
+    std::function<std::vector<PresetRow>(bool rescan)> presetRows;
+    std::function<std::string(std::size_t index)> loadPreset;
+    std::function<std::string()> presetName;
+    std::function<bool()> presetEdited;
+    std::function<uint64_t()> presetLoads;
+    std::function<bool()> presetFoldersChanged;
+    std::function<void(std::size_t index, bool on)> setFavorite;
+    std::function<PresetSaveResult(const std::string &name, const std::vector<std::string> &tags,
+                                   const std::string &description, bool overwrite)>
+        savePreset;
+    std::function<bool(std::size_t index)> deletePreset;
+    std::function<std::string()> contentStatus;
+    std::function<std::string(const std::string &utf8Folder)> setContentFolder;
+    std::vector<std::string> tagVocabulary;
+
+    /// Mutate (spec §6.9), main thread; any may be empty. `mutate(amount)` (0 to 1) moves every
+    /// parameter not locked, nor of a layer that is off, as the editor's gestures; the plugin
+    /// sends them in batches as the host drains them, and the editor's 30 Hz tick calls
+    /// `flushMutate` to send the next. `mutateLocked` and `setMutateLock` read and set a
+    /// parameter's lock (the user's: an off layer's rule is apart); `resetMutateLocks` restores
+    /// the structural locks.
+    std::function<void(float amount)> mutate;
+    std::function<void()> flushMutate;
+    std::function<bool(gg::core::ParamSlot)> mutateLocked;
+    std::function<void(gg::core::ParamSlot, bool locked)> setMutateLock;
+    std::function<void()> resetMutateLocks;
+
+    /// The way to restore many values at once from the main thread (an undo, a whole state):
+    /// sets every listed slot, each sent as a begin/value/end gesture in batches the host's
+    /// drains pace, so nothing overflows the queue however many are listed or how often it is
+    /// called; the latest value per slot wins. Never push many gestures one by one instead. May
+    /// be empty.
+    std::function<void(const std::vector<std::pair<gg::core::ParamSlot, double>> &)> sendValues;
 
     /// The editor's destructor calls publishing(false): the plugin stops publishing (the shim
     /// has no destroy hook). The plugin turned it on when it created the editor. May be empty.

@@ -8,8 +8,8 @@
 #   cmake -DDIR=<licenses dir> -DPLATFORM=<Darwin|Windows|Linux> -P <this file>
 #
 # DIR must hold exactly the platform's files, each larger than 1,000 bytes (no stub or truncated
-# text): the notices, the AGPL, the GPLv3 and the two MIT texts no checkout holds, plus the
-# AudioUnitSDK's Apache 2.0 text on macOS and the ASIO SDK's license on Windows.
+# text): the notices, the AGPL, the GPLv3, the two MIT texts and the CC0 1.0 legal code no checkout
+# holds, plus the AudioUnitSDK's Apache 2.0 text on macOS and the ASIO SDK's license on Windows.
 
 cmake_minimum_required(VERSION 3.22)
 
@@ -20,7 +20,7 @@ foreach (var IN ITEMS DIR PLATFORM)
 endforeach ()
 
 set(expected THIRD_PARTY_NOTICES.md LICENSE GPL-3.0.txt CMakeRC-LICENSE.txt
-        flowbite-icons-LICENSE.txt)
+        flowbite-icons-LICENSE.txt CC0-1.0.txt)
 if (PLATFORM STREQUAL "Darwin")
     list(APPEND expected AudioUnitSDK-LICENSE.txt)
 elseif (PLATFORM STREQUAL "Windows")

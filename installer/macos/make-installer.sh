@@ -26,7 +26,7 @@
 # holding that PKG and a Licenses folder. The gg-installer target runs it (cmake/products.cmake).
 #
 #   make-installer.sh --products <dir> --out <dir> --version <X.Y.Z> --full-version <v>
-#                     --resources <installer/macos> [--licenses <dir>]
+#                     --resources <installer/macos> [--licenses <dir>] [--content <dir>]
 #
 #   --products      the five products, as gg-products gathers them: Giga Grains.clap,
 #                   Giga Grains.vst3, Giga Grains.component, Giga Grains.app, Giga Grains FX.app.
@@ -36,6 +36,10 @@
 #   --resources     the folder holding distribution.xml.in and Readme.txt.
 #   --licenses      the license set, which must hold LICENSE (the AGPL, the license pane); the DMG's
 #                   Licenses folder is a copy of it. Default: <products>/licenses.
+#   --content       the staged factory content (gg-products' content/: Presets/, Samples/,
+#                   PROVENANCE.md, ...). Given, it makes a sixth component, the Content choice,
+#                   that installs the folder's entries into /Library/Application Support/sethbc/
+#                   Giga Grains; without it there is no Content choice.
 #
 # Signed mode needs all five of MAC_SIGNING_IDENTITY (Developer ID Application, for the DMG),
 # MAC_INSTALLER_IDENTITY (Developer ID Installer, for the packages), NOTARY_KEY_FILE,
@@ -64,7 +68,7 @@ usage() {
         echo "$me: $1" >&2
     fi
     echo "usage: $me --products <dir> --out <dir> --version <X.Y.Z> --full-version <v>" \
-        "--resources <dir> [--licenses <dir>]" >&2
+        "--resources <dir> [--licenses <dir>] [--content <dir>]" >&2
     exit 2
 }
 
@@ -74,11 +78,12 @@ version=""
 full_version=""
 resources=""
 licenses=""
+content=""
 
 parse_args() {
     while [ $# -gt 0 ]; do
         case "$1" in
-            --products | --out | --version | --full-version | --resources | --licenses)
+            --products | --out | --version | --full-version | --resources | --licenses | --content)
                 [ $# -ge 2 ] || usage "$1 needs a value"
                 case "$1" in
                     --products) products="$2" ;;
@@ -87,6 +92,7 @@ parse_args() {
                     --full-version) full_version="$2" ;;
                     --resources) resources="$2" ;;
                     --licenses) licenses="$2" ;;
+                    --content) content="$2" ;;
                 esac
                 shift 2
                 ;;
@@ -158,6 +164,10 @@ check_inputs() {
         die "'$resources' has no distribution.xml.in" 2
     [ -f "$resources/Readme.txt" ] || die "'$resources' has no Readme.txt" 2
     [ -f "$licenses/LICENSE" ] || die "the license set '$licenses' has no LICENSE" 2
+    if [ -n "$content" ]; then
+        [ -d "$content/Presets" ] && [ -d "$content/Samples" ] ||
+            die "the content '$content' has no Presets/ and Samples/" 2
+    fi
 }
 
 # The work folder goes on exit; on a failure, so do the PKG and the DMG, so no half-made
@@ -228,10 +238,46 @@ build_components() {
     done 3< <(product_table)
 }
 
-# The distribution, from distribution.xml.in, and the panes it names.
+# The Content component (--content): the staged folder's entries, at the root of the payload,
+# install into the shared Application Support folder the plugins look in. Not a bundle, so there
+# is nothing to make non-relocatable, and no signature to check.
+content_id="org.sethbc.giga-grains.content.pkg"
+content_location="/Library/Application Support/sethbc/Giga Grains"
+build_content_component() {
+    [ -n "$content" ] || return 0
+    echo "--- giga-grains-content.pkg: '$content' -> $content_location"
+    mkdir -p "$work/packages"
+    if [ "$signed" = "yes" ]; then
+        pkgbuild --quiet --root "$content" --identifier "$content_id" --version "$version" \
+            --install-location "$content_location" \
+            --sign "$MAC_INSTALLER_IDENTITY" "$work/packages/giga-grains-content.pkg"
+    else
+        pkgbuild --quiet --root "$content" --identifier "$content_id" --version "$version" \
+            --install-location "$content_location" "$work/packages/giga-grains-content.pkg"
+    fi
+}
+
+# The distribution, from distribution.xml.in, and the panes it names. The Content choice's two
+# placeholders (its outline line and its choice with its pkg-ref) become their text with --content
+# and nothing without it.
 make_distribution() {
-    sed -e "s/@GG_VERSION_NUMERIC@/$version/g" -e "s/@GG_VERSION_STRING@/$full_version/g" \
-        "$resources/distribution.xml.in" >"$work/distribution.xml"
+    local content_line="" content_choice="" xml
+    if [ -n "$content" ]; then
+        content_line='<line choice="org.sethbc.giga-grains.content.pkg"/>'
+        content_choice='<choice id="org.sethbc.giga-grains.content.pkg" visible="true" start_selected="true"
+            title="Giga Grains Content @GG_VERSION_STRING@"
+            description="The factory samples and presets, in /Library/Application Support/sethbc/Giga Grains.">
+        <pkg-ref id="org.sethbc.giga-grains.content.pkg"/>
+    </choice>
+    <pkg-ref id="org.sethbc.giga-grains.content.pkg" version="@GG_VERSION_NUMERIC@"
+             onConclusion="none">giga-grains-content.pkg</pkg-ref>'
+    fi
+    xml="$(<"$resources/distribution.xml.in")"
+    xml="${xml//@GG_CONTENT_LINE@/$content_line}"
+    xml="${xml//@GG_CONTENT_CHOICE@/$content_choice}"
+    printf '%s\n' "$xml" |
+        sed -e "s/@GG_VERSION_NUMERIC@/$version/g" -e "s/@GG_VERSION_STRING@/$full_version/g" \
+            >"$work/distribution.xml"
     if grep -q '@GG_' "$work/distribution.xml"; then
         die "distribution.xml.in has a placeholder sed doesn't fill"
     fi
@@ -344,6 +390,7 @@ main() {
     rm -f "$pkg" "$dmg"
 
     build_components
+    build_content_component
     make_distribution
     build_product "$pkg"
     if [ "$signed" = "yes" ]; then

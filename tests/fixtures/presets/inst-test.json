@@ -1,0 +1,11 @@
+{
+  "product": "instrument",
+  "name": "Inst Test",
+  "author": "Giga Grains",
+  "description": "The instrument's test preset: a quarter into the sample, Env 1 on the level",
+  "tags": ["playable", "sample"],
+  "params": {"Position": 0.25, "Reverb Amount": 0.3},
+  "mod": [
+    {"slot": 13, "source": "Env 1", "target": "Level", "targetLayer": "all", "depth": 6.0}
+  ]
+}

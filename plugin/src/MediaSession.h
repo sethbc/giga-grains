@@ -164,6 +164,12 @@ class MediaSession
     /// `state` is taken by value: its AUDI payloads are moved into shared storage that the
     /// restored samples and held rings alias, never copied.
     Restored restore(core::SessionState state, double activeRate) noexcept;
+    /// A preset's media (applyState, LoadKind::Preset; M2 sub-project 5's D5), inside the load:
+    /// each layer the preset names a sample for restores it as restore() does (an embedded one
+    /// from its AUDI payload), checked against the budget in layer order; every other layer keeps
+    /// its sample, entry and source (its `keep` set), and reads nothing. The cap, the rings and
+    /// their statuses are left as they are: a preset carries none of them. Never throws.
+    Restored restorePreset(core::SessionState state) noexcept;
 
     /// The plugin's activate(), with the new Processor before its first call: every loader's
     /// source (Processor::setSourceNow) and every layer's ring at its Ring Length

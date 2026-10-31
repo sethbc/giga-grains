@@ -82,6 +82,10 @@
 ///   "params", "automation" and "notes" are optional.
 /// - Instrument and FX mode both take "samples", "mod", "controls" and "transport", optional;
 ///   sample mode takes none of them.
+/// - Instrument and FX mode both take "preset", optional: a preset file's path, read and applied
+///   before the spec's own "params", "mod" and "samples", which go on top of it (M2 sub-project
+///   5's spec §6.10; RenderSpec::preset). Sample mode takes none. A spec with "preset" may not
+///   also have "state", which holds a patch of its own.
 /// - Instrument and FX mode also take M2 sub-project 2's keys (its spec §6.10), each optional: a
 ///   saved session to restore, timed ring operations and the memory cap (see OperationSpec and
 ///   the members of InstrumentSpec and FxSpec):
@@ -434,6 +438,11 @@ struct RenderSpec
     StreamSpec stream;         ///< Sample mode only.
     InstrumentSpec instrument; ///< Instrument mode only.
     FxSpec fx;                 ///< FX mode only.
+    /// "preset", instrument and FX mode only, optional: a preset file (.ggpreset, M2 sub-project
+    /// 5's spec §6.1) of the spec's product, UTF-8 and non-empty, resolved like a file's path
+    /// (resolvePaths); gg-render's --preset sets or overrides it. render() applies it before the
+    /// spec's own keys (see render() in Render.h). Empty for none.
+    std::string preset{};
 
     friend bool operator==(const RenderSpec &, const RenderSpec &) = default;
 };
@@ -446,15 +455,18 @@ struct RenderSpec
 /// other's ("Macro Level" in an FX spec) as an unknown parameter.
 std::optional<gg::core::ParamSlot> paramSlotNamed(std::string_view name);
 
+/// The name of `mode`'s product, as its host shows it: "Giga Grains" or "Giga Grains FX".
+const char *productName(gg::core::Mode mode) noexcept;
+
 /// Parses and validates a render spec. On failure returns nullopt and sets error to a message
 /// naming the offending key (for example `stream.grainRateHz is missing` or
 /// `notes[0].key must be an integer from 0 to 127`). File paths are left as written.
 std::optional<RenderSpec> parseRenderSpec(const std::string &json, std::string &error);
 
-/// Makes the spec's relative file paths (a file source, sample, layer sample, input or state)
-/// relative to `baseDir`: baseDir / path, joined as std::filesystem paths. Absolute paths, and
-/// the empty path of a built-in signal, are kept. Every path is UTF-8. gg-render passes the
-/// spec's directory, or the --media-dir directory when it is given.
+/// Makes the spec's relative file paths (a file source, sample, layer sample, input, state or the
+/// preset) relative to `baseDir`: baseDir / path, joined as std::filesystem paths. Absolute paths,
+/// and the empty path of a built-in signal or of no preset, are kept. Every path is UTF-8.
+/// gg-render passes the spec's directory, or the --media-dir directory when it is given.
 /// Throws BadInput for a path that isn't valid UTF-8 (on Windows).
 void resolvePaths(RenderSpec &spec, const std::string &baseDir);
 

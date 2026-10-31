@@ -135,6 +135,26 @@ TEST_CASE("settings XML reads missing attributes as empty and ignores unknown on
     REQUIRE(out == MachineSettings{"/S", ""});
 }
 
+TEST_CASE("settings XML round trips the content folder, and an M1 file's reads as empty", "[core]")
+{
+    MachineSettings settings;
+    settings.sampleFolder = "/Samples";
+    settings.contentFolder = "/Packs & Things/\xc3\xa9 <\"x\">";
+    MachineSettings back;
+    REQUIRE(fromSettingsXml(toSettingsXml(settings), back));
+    REQUIRE(back == settings);
+    REQUIRE(back.contentFolder == "/Packs & Things/\xc3\xa9 <\"x\">");
+
+    // The line M1's build wrote, with no contentFolder.
+    MachineSettings m1;
+    m1.contentFolder = "untouched";
+    REQUIRE(
+        fromSettingsXml(R"(<settings version="1" sampleFolder="/S" lastLoadFolder="/L" />)", m1));
+    REQUIRE(m1.sampleFolder == "/S");
+    REQUIRE(m1.lastLoadFolder == "/L");
+    REQUIRE(m1.contentFolder.empty());
+}
+
 TEST_CASE("settings XML edited by hand loads, with a declaration and comments", "[core]")
 {
     const std::string body = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"

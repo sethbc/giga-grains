@@ -146,6 +146,15 @@ resource, so machines must catch everything they can catch.
   fetches them itself, with `scripts/fetch-sdks.sh <dir>`, which prints the `-DVST3_SDK_ROOT=...`
   style options that make clap-wrapper use those checkouts; a local configure needs none.)
   `asan` and `rtsan` build no formats and download nothing.
+- **The content** (M2 sub-project 5's spec §6.5): the CC0 samples the factory presets load, a
+  zip released in https://github.com/sethbc/giga-grains-content and pinned by
+  `content/pin.txt` (tag, URL, SHA-256). Configure downloads nothing, in any preset. The
+  `content_fixture` test (label `golden`) builds the `gg-content` target, which fetches the zip
+  once per build tree into `build/<preset>/content-cache/content/`
+  (`scripts/fetch-content.cmake`: the SHA-256 checked, a mismatch deleted, `.gg-pin` written
+  last), so the first `ctest` of a tree needs the network and later ones are offline.
+  `-DGG_CONTENT_DIR=<dir>/content` points a tree at a folder `scripts/fetch-content.sh <dir>`
+  filled, as CI does; `gg-content` then only checks its `.gg-pin` against the pin.
 
 **Warnings.** Every first-party target builds with `-Wall -Wextra` and `-Werror` (on ClangCL
 `/clang:-Wall /clang:-Wextra /WX`), through `gg::compiler-options`. Third-party code never links
@@ -195,6 +204,11 @@ summary.
   (the sanitizer job's by the LLVM version and commit), restored by prefix.
 - **The pinned LLVM archive** (sanitizer job), keyed by version and SHA-256. The SHA-256 is checked
   on a hit too.
+- **The content** (every build leg and the sanitizer job): `scripts/fetch-content.sh` fetches
+  the zip `content/pin.txt` pins into `.content-cache`, and every configure passes
+  `-DGG_CONTENT_DIR=$CONTENT_CACHE_DIR/content`. Keyed by the hash of `content/pin.txt` and
+  `scripts/fetch-content.cmake` alone (the content is the same on every leg); a hit downloads
+  nothing.
 - **Scoping.** Every run restores all of them; only runs on `main` (a push, the nightly, a
   dispatch on `main`) save them, also after a failed build. GitHub scopes a cache to the ref that
   saved it: a pull request reads `main`'s caches, but nobody reads a pull request's, so PRs never
@@ -241,6 +255,10 @@ ctest --preset dev --output-on-failure
   - `cmake --build --preset <p> --target gg-products` gathers them into
     `build/<preset>/gg-products/` for validation.
   - CI builds `--target gg-all gg-products`.
+  - `gg-products` also stages `content/` (the factory presets `gg-presets` packs with
+    `gg-render --pack-preset` from `content/presets/`, the fetched samples, `PROVENANCE.md`, the
+    CC0 text and `content-version.txt`): the installers' Content component. It depends on
+    `gg-content`, so a tree needs the fetched release (or `GG_CONTENT_DIR`).
   - `cmake --build --preset <p> --target gg-installer` builds `gg-products`, then packs it into
     `build/<preset>/gg-installer/`: the macOS PKG and DMG, the Windows zip and, when Inno Setup
     6's `ISCC.exe` is found at configure, its installer, or the Linux tarball. Unsigned unless
@@ -323,6 +341,20 @@ runs the tests labelled either. The labels are:
     workers, a declining pool, and the tasks' denormal mode and allocations;
   - `publish`: the audio-to-UI structures (the grain queue, the UI snapshot, the live peaks) and
     the `Processor`'s publishing;
+  - `preset` (M2 sub-project 5): the preset element in `PTCH` (`encodePreset`, `readPreset`,
+    `presetInfoOf`, INIT) in `core`, and in the plugins a preset load (`preset-load`, INIT, what
+    a load keeps, the preset's name and the edited mark);
+  - `mutate`: Mutate's model (`core/Mutate.h`: the law, the locks, determinism) and the plugin's
+    (the press, the batched sender, the drain witness, the panel's lock list);
+- `discovery`, `catalog` and `queue` (with `plugin`; M2 sub-project 5): `discovery` is the CLAP
+  preset-discovery provider driven through the entry point (its locations, soundpack and
+  `get_metadata`); `catalog` is the browser's model (`PresetCatalog`: the list, search and tag
+  filters, favorites, save as and delete, the 5,000-file cap); `queue` is the UI queue's batched
+  sender, `sendValues`, which never overflows it;
+- `content`: the content roots and paths in `gg-media` (`ContentPaths.h`: the roots in order,
+  a reference resolving to the first that holds it, the user presets and favorites files),
+  with `media`; the fetched release itself is the `content_fixture` test (below, under
+  "Golden renders");
 - `media`: `gg-media`, the JUCE-free sample-file library (`media/`) that the plugin's loader and
   `gg-render` share: decoding, rate conversion, SHA-256, loading a sample, the search for a
   missing one (with the content roots and the captures folder) and the settings file, and since
@@ -355,11 +387,14 @@ runs the tests labelled either. The labels are:
 - `rt`: the allocation tripwire. In the `rtsan` build, two tests labelled both `rt` and `rtsan`
   check that RTSan is active: one checks the build flag, and `rtsan_negative_control` passes
   only if RTSan reports an allocation made inside a nonblocking function.
-- tools: `render` (gg-render's CLI, `render_write_media_alone`,
-  `render_spectrogram_utf8_path`, `render_write_media_fixtures`, `render_write_media_lists_fixtures`
-  and `render_state_roundtrip` among them), `metrics`, `bench` (gg-bench's command line: the
-  `bench_rejects_*`, `bench_make_baseline_*`, `bench_baseline_*` and `bench_space_cli` tests;
-  and the in-process cases, `engine-live-long`'s at `--quick`'s warm-up among them);
+- tools: `render` (gg-render's CLI, `render_write_media_alone`, `render_spectrogram_utf8_path`,
+  `render_write_media_fixtures`, `render_write_media_lists_fixtures` and `render_state_roundtrip`,
+  and the presets' `render_pack_preset*` and `render_preset_*` among them, `render_preset_empty`
+  (an empty `--preset` argument) and `render_preset_sample_mode` (a preset in a sample-mode spec)
+  refusals included; and its preset sources, `tests/tools/preset_source_tests.cpp`), `metrics`,
+  `bench` (gg-bench's command line: the `bench_rejects_*`, `bench_make_baseline_*`,
+  `bench_baseline_*` and `bench_space_cli` tests; and the in-process cases, `engine-live-long`'s
+  at `--quick`'s warm-up among them);
 - `golden`: the golden renders;
 - `ui`: the splat renderer, the lane geometry (`LaneModel`), and the lane's clock and live-grain
   list (`LaneState`);
@@ -378,7 +413,12 @@ runs the tests labelled either. The labels are:
   `_partial_env`), each bundle's numeric version (`version_bundle_*`) and, when a real identity
   is configured, the hardened runtime and the apps' entitlement (`codesign_hardened_*`); the
   Linux tarball (`installer_linux_*`); the Windows zip and, where `ISCC.exe` was found, the Inno
-  Setup compile (`installer_windows_*`);
+  Setup compile (`installer_windows_*`); and the Content component: `installer_content_staged`
+  (the staged `content/`: presets, samples against `PROVENANCE.md`, the version file) and
+  `installer_windows_iss_content` (the `.iss` declares the component; it runs on every OS) and
+  `installer_windows_iss_commented` (a commented-out `[Files]` line doesn't count, checked over a
+  fixture); `installer_cc0_text` (the CC0 text the installers carry is the content release's
+  LICENSE, byte for byte) sits outside the editor guard, so it runs without the editor too;
 - `serial`: the Catch2 cases tagged `[serial]`, which measure time or memory and run with
   `RUN_SERIAL` (see "Tests run in parallel");
 - `plugin`: the plugins, driven through their CLAP factory. Tests labelled both `plugin` and
@@ -390,12 +430,19 @@ runs the tests labelled either. The labels are:
   - `codesign_*`: strict signature checks, which Ableton Live's scanner needs to pass;
   - `identity_*`: the frozen identities (INTENT §18), read back from the bundles: both
     standalone bundle IDs, the AU's three components and the VST3 class IDs. Run them before
-    accepting any clap-wrapper update.
+    accepting any clap-wrapper update. `identity_vst3_preset_selector_inst` and `_fx` (with
+    their setup test `identity_vst3_preset_content`, which packs the two fixture presets into a
+    scratch content root) read the built VST3's program-change parameter through the raw
+    vtables: present, with at least INIT and the product's own preset in its list (min steps 2).
+    The wrapper publishes the list from a background crawl, so the executable makes new instances
+    every 0.5 s (20 s cap) until the count suffices.
   - `gg-au-state-tests` (labels `plugin` and `au`): loads the built `.component` into its own
     process (registered with `AudioComponentRegister`; nothing is installed) and checks that
     ClassInfo carries the CLAP state (GGST) and round-trips it for all three AU identities. It
     also pins clap-wrapper's known AU state faults (T7 223). Run it (`ctest --preset dev -L au`)
-    before accepting any clap-wrapper update too.
+    before accepting any clap-wrapper update too. Its "the au lists the factory presets and loads
+    one" case checks `kAudioUnitProperty_FactoryPresets` against a content root of its own and
+    loads one preset by `PresentPreset`.
     - It runs on the native slice only: on CI's mac-universal leg it loads the AU natively
       (arm64), never under Rosetta like the x86_64 slice's `gg-tests`. Keep it so when the macOS
       leg changes, or the AU state goes unchecked there.
@@ -418,8 +465,9 @@ code page, so the name matches nothing and the test fails with "No tests ran". S
 - **Keep new tests parallel-safe:**
   - never write a path that another test writes: unit tests' scratch files go in
     `GG_TEST_OUTPUT_DIR` under a name of their own, and each golden case writes its own files;
-  - never touch the user's per-machine settings file. Both products (since M2 sub-project 2; the
-    FX read none before) read the file `GG_SETTINGS_FILE` names, when it is set and not empty,
+  - never touch the user's per-machine settings file. Both products read it (since M2
+    sub-project 2 both products' media; both products' preset catalog, which also writes its
+    `contentFolder`) from the file `GG_SETTINGS_FILE` names, when it is set and not empty,
     instead of the user's; `tests/plugin/PluginHarness.h` points it at a scratch file, and a
     test that reads the settings points it at its own (`useSettingsFile`) before it creates the
     instance;
@@ -427,6 +475,10 @@ code page, so the name matches nothing and the test fails with "No tests ran". S
     that saves rings or captures uses `useMediaScratch(name)`, a settings file of its own whose
     captures folder is in its scratch directory, and `gg-render --save-state` files audio only
     in the `--captures-dir` it is given;
+  - never see the machine's installed content: a test that lists presets or content roots sets
+    `GG_SYSTEM_CONTENT_DIR`, the test seam in `media/include/gg/media/ContentPaths.h` that
+    replaces the per-user and system install roots with one folder (a scratch one), as the
+    catalog, browser, discovery and AU tests do;
   - a test that has to share a file, or that measures time, must not run beside the others. For
     an `add_test` in `tests/CMakeLists.txt`, set its `RESOURCE_LOCK` or `RUN_SERIAL` property.
     Catch2 cases are discovered after the build, so `set_tests_properties` can't reach them.
@@ -445,8 +497,10 @@ code page, so the name matches nothing and the test fails with "No tests ran". S
 gg-render <spec.json> [-o out.wav] [--metrics out.json] [--events out.jsonl]
           [--spectrogram out.png] [--compare golden.metrics.json]
           [--compare-events golden.events.jsonl] [--block-size N] [--media-dir DIR]
-          [--content-dir DIR] [--captures-dir DIR] [--save-state out.ggst]
+          [--preset file.ggpreset] [--content-dir DIR] [--captures-dir DIR]
+          [--save-state out.ggst]
 gg-render --write-media DIR
+gg-render --pack-preset <source.json> -o <out.ggpreset> [--content-dir DIR]
 ```
 
 - It's built at `build/<preset>/tools/gg-render/gg-render`.
@@ -500,6 +554,11 @@ gg-render --write-media DIR
       `modWheel`, `aftertouch` and `pitchBend`, values 0–1, sent as MIDI control events.
     - `transport` is `{"tempoBpm", "playing", "startBeat"}`, a steady transport set once before
       the render (playing by default, from beat 0); without it the transport sources hold at 0.
+    - `preset` (M2 sub-project 5's spec §6.10) is a `.ggpreset` file's path, resolved like a
+      file's. It is applied first: an FX preset in an instrument spec, or the reverse, is bad
+      input (exit 2: "the preset is for Giga Grains FX, not Giga Grains"); then its values and
+      routes replace the defaults and the factory routes, and the spec's `params`, `mod` and
+      `samples` go on top. Its seed is ignored: the spec's is the render's.
   - **Sessions and ring operations** (M2 sub-project 2's spec §6.10; INTENT §19), each optional
     in FX and instrument mode, and unknown keys in sample mode:
     - `state` is a `GGST` file (a relative path as a file source's), restored before the render
@@ -540,6 +599,20 @@ gg-render --write-media DIR
   - **FX inputs are faded** in at their start and out at their end over 10 ms, with a raised
     cosine (sin²), so the input's own edges don't click (ruling M1-v). Sample-mode sources and
     the M0 goldens are untouched.
+- **`--preset FILE`** sets the spec's `preset`, or overrides it, and is resolved as the key is
+  (so a relative one from the spec's directory or `--media-dir`). **`--content-dir DIR`** is a
+  content root: a restored `state`'s samples are found under it by content path, and it is the
+  content folder a preset's content-relative samples will be taken from. gg-render reads no
+  preset that names a sample yet (presets' group 2 resolves them), so for a preset it is
+  accepted and unused.
+- **`--pack-preset`** compiles a preset source (`tools/gg-render/PresetSource.h`: `product`,
+  `name`, `tags` from the vocabulary, optional `author` and `description`, and `params`, `mod`
+  and `samples` in the spec's vocabulary) into the preset file `-o` names, the product's defaults
+  and factory routes under the source's. It takes no other option but `--content-dir`, and a
+  bad source exits 2 with the parser's message. `tests/fixtures/presets/` holds the test sources
+  (`fx-test.json`, `inst-test.json`).
+- Its exit status is 0 for a pass, 1 when a comparison fails, 2 for bad input and 3 for an
+  internal error.
 - A relative file path is taken from the spec's directory, or from `--media-dir`. The golden
   cases' media are generated, never committed: `--write-media DIR` writes them, and the
   `golden_media` test does so into `build/<preset>/golden-media` as a fixture every golden test
@@ -547,8 +620,8 @@ gg-render --write-media DIR
   states rendered by `gg-render` itself, `frozen-ring.ggst` (a 20 s ring frozen with two
   splices, embedded) and `four-samples.ggst` (four Sample layers by content path, no machine
   path in it), the same bytes on every run on one machine.
-- Its exit status is 0 for a pass, 1 when a comparison fails, 2 for bad input and 3 for an
-  internal error.
+- The `content_fixture` test (label `golden`, fixture `content`) fetches the pinned CC0 content
+  into the build tree (see "Setup"), for the cases and tests that read it.
 - **The cases:** each case's spec is in `tests/golden/cases/`, and its expected metrics and event
   log are in `tests/golden/expected/`. Every `*.json` there is a case; a new one gets a test the
   next time CMake runs. There are 51.
@@ -892,6 +965,9 @@ $b --space [--quick | --seconds S] [--rounds N] [--commit SHA] [--json out.json]
   ```
 
 - **On Linux,** CI runs pluginval under `xvfb-run -a` with `--skip-gui-tests`.
+- **On Windows,** CI runs clap-validator without `preset-discovery-crawl`,
+  `-descriptor-consistency` and `-load`: 0.4.1-127 demands `/C:\...` for a FILE location, which
+  no Windows file function opens (carry-over row 233). Run all three on macOS and Linux.
 - **auval (macOS)** needs the AU installed for your user:
 
   ```sh
