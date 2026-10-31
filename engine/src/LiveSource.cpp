@@ -29,16 +29,19 @@ float sanitize(float x) noexcept
     return std::clamp(x, -LiveSource::kMaxInputMagnitude, LiveSource::kMaxInputMagnitude);
 }
 
-// Sets a storage's guard slots, C .. C + 14, to slots 0 .. 14, as write() keeps them: a main
-// thread's copy fills the slots alone.
+// Sets a storage's guard slots, C .. C + 14, to slots 0 .. 14, and each level's past its
+// capacity likewise, as write() keeps them: a main thread's copy fills the slots alone.
 void mirrorGuards(RingStorage &storage) noexcept
 {
-    float *const p = storage.slots();
-    const int64_t c = storage.capacity();
-    for (int64_t g = 0; g < RingStorage::kGuardFrames; ++g)
+    for (uint32_t n = 0; n < storage.levelCount(); ++n)
     {
-        p[2 * (c + g)] = p[2 * g];
-        p[2 * (c + g) + 1] = p[2 * g + 1];
+        float *const p = storage.levelSlots(n);
+        const int64_t c = storage.levelCapacity(n);
+        for (int64_t g = 0; g < RingStorage::kGuardFrames && g < c; ++g)
+        {
+            p[2 * (c + g)] = p[2 * g];
+            p[2 * (c + g) + 1] = p[2 * g + 1];
+        }
     }
 }
 } // namespace
@@ -89,10 +92,19 @@ void LiveSource::prepare(double sampleRate, double seconds, uint32_t maxBlockSiz
 void LiveSource::attach(RingStorage *storage) noexcept
 {
     static_assert(RingStorage::kGuardFrames == kGuardFrames);
+    static_assert(RingStorage::kRingLevelLagLimit == kHeadMargin);
     storage_ = storage;
     slots_ = storage != nullptr ? storage->slots() : nullptr;
     frames_ = storage != nullptr ? storage->frames() : 0;
     capacity_ = storage != nullptr ? storage->capacity() : 0;
+    levelCount_ = storage != nullptr ? storage->levelCount() : 1;
+    levels_ = {};
+    levels_[0] = {slots_, capacity_, frames_};
+    for (uint32_t n = 1; n < levelCount_; ++n)
+    {
+        levels_[n] = {storage->levelSlots(n), storage->levelCapacity(n),
+                      mipLevelFrames(frames_, n)};
+    }
 }
 
 void LiveSource::release(RingStorage *&previous) noexcept
@@ -215,6 +227,7 @@ bool LiveSource::adoptStorage(RingStorage *next, int64_t copiedTo, RingStorage *
     const int64_t from = std::max({copiedTo, head_ - next->frames(), head_ - frames_, int64_t{0}});
     if (from < head_)
     {
+        // The levels of the frames copied here follow them (spec §6.9), below.
         int64_t s = from % capacity_;
         int64_t d = from % nextCapacity;
         for (int64_t f = from; f < head_; ++f)
@@ -231,6 +244,8 @@ bool LiveSource::adoptStorage(RingStorage *next, int64_t copiedTo, RingStorage *
             }
         }
     }
+    // The levels of the copied frames, as write() made them: at most kAdoptCopyFrames frames'.
+    fillLevels(*next, from, head_);
     mirrorGuards(*next);
     release(previous);
     attach(next);
@@ -361,6 +376,8 @@ void LiveSource::write(const float *const *in, uint32_t numInChannels, uint32_t 
         {
             writeSlot_ = 0;
         }
+        // The level frames this frame completes (spec §6.9).
+        storage_->levelsAfter(head_ + written);
         if (++backSlot == capacity_)
         {
             backSlot = 0;
@@ -468,6 +485,128 @@ bool LiveSource::readLinear(double pos, int64_t head, Cursor &cursor, float &lef
                             float &right) const noexcept
 {
     return readTaps<2>(pos, head, cursor, left, right);
+}
+
+template <int kTaps>
+bool LiveSource::gatherLevelTaps(uint32_t n, double pos, int64_t head, Cursor &cursor, float *left,
+                                 float *right) const noexcept
+{
+    static_assert(kTaps == 2 || kTaps == 4 || kTaps == 16);
+    if (n == 0)
+    {
+        return gatherTaps<kTaps>(pos, head, cursor, left, right);
+    }
+    if (n >= levelCount_)
+    {
+        return false;
+    }
+    constexpr int64_t kBefore = kTaps / 2 - 1;
+    // Level time stays far below 2^62 (ring time does); the check also rejects NaN and ±inf.
+    if (!(pos > -0x1.0p62 && pos < 0x1.0p62))
+    {
+        return false;
+    }
+    const auto i = static_cast<int64_t>(std::floor(pos));
+    const int64_t first = i - kBefore;
+    const int64_t last = first + (kTaps - 1);
+    // Exact integer bounds in ring frames: the first tap inside the window, the last complete at
+    // head (its frame plus the level's lag at most the window's end, which is at most the head).
+    // Then every tap is the one written for it: its ring frame is at or after the window's oldest,
+    // never below head − N, and a level's slot is overwritten only once the head passes its ring
+    // frame + C + the level's lag (RingStorage), as level 0's.
+    const int64_t d = int64_t{1} << n;
+    if (first * d < windowOldest(head) || last * d + RingStorage::levelLag(n) > windowEnd(head) - 1)
+    {
+        return false;
+    }
+    const RingView &level = levels_[n];
+    if (first < 0)
+    {
+        // Level frames before 0 are silence. Here head < N (as in gatherTaps), so no level frame
+        // written yet is at or past its capacity, ceil(C / 2ⁿ): frame i is in slot i.
+        for (int64_t k = 0; k < kTaps; ++k)
+        {
+            const int64_t index = first + k;
+            left[k] = index >= 0 ? level.slots[2 * index] : 0.0f;
+            right[k] = index >= 0 ? level.slots[2 * index + 1] : 0.0f;
+        }
+        cursor.valid = false;
+    }
+    else
+    {
+        const float *p = level.slots + 2 * levelSlotOf(first, level.capacity, cursor);
+        for (int64_t k = 0; k < kTaps; ++k)
+        {
+            left[k] = p[2 * k];
+            right[k] = p[2 * k + 1];
+        }
+    }
+    return true;
+}
+
+template bool LiveSource::gatherLevelTaps<2>(uint32_t, double, int64_t, Cursor &, float *,
+                                             float *) const noexcept;
+template bool LiveSource::gatherLevelTaps<4>(uint32_t, double, int64_t, Cursor &, float *,
+                                             float *) const noexcept;
+template bool LiveSource::gatherLevelTaps<16>(uint32_t, double, int64_t, Cursor &, float *,
+                                              float *) const noexcept;
+
+template <int kTaps>
+bool LiveSource::readLevelTaps(uint32_t n, double pos, int64_t head, Cursor &cursor, float &left,
+                               float &right) const noexcept
+{
+    static_assert(kTaps == 2 || kTaps == 4);
+    float l[kTaps];
+    float r[kTaps];
+    if (!gatherLevelTaps<kTaps>(n, pos, head, cursor, l, r))
+    {
+        return false;
+    }
+    // gatherLevelTaps accepted pos, so it is finite and far inside int64's range.
+    const double base = std::floor(pos);
+    const auto t = static_cast<float>(pos - base);
+    if constexpr (kTaps == 4)
+    {
+        left = interp::catmullRom(l[0], l[1], l[2], l[3], t);
+        right = interp::catmullRom(r[0], r[1], r[2], r[3], t);
+    }
+    else
+    {
+        left = interp::lerp(l[0], l[1], t);
+        right = interp::lerp(r[0], r[1], t);
+    }
+    return true;
+}
+
+bool LiveSource::readLevel(uint32_t n, double pos, int64_t head, Cursor &cursor, float &left,
+                           float &right) const noexcept
+{
+    return readLevelTaps<4>(n, pos, head, cursor, left, right);
+}
+
+bool LiveSource::readLinearLevel(uint32_t n, double pos, int64_t head, Cursor &cursor, float &left,
+                                 float &right) const noexcept
+{
+    return readLevelTaps<2>(n, pos, head, cursor, left, right);
+}
+
+int64_t LiveSource::levelSlotOf(int64_t first, int64_t capacity, Cursor &cursor) noexcept
+{
+    if (cursor.valid && first >= cursor.index && first - cursor.index < capacity)
+    {
+        cursor.slot += first - cursor.index;
+        if (cursor.slot >= capacity)
+        {
+            cursor.slot -= capacity;
+        }
+    }
+    else
+    {
+        cursor.slot = first % capacity;
+    }
+    cursor.index = first;
+    cursor.valid = true;
+    return cursor.slot;
 }
 
 int64_t LiveSource::slotOf(int64_t first, Cursor &cursor) const noexcept

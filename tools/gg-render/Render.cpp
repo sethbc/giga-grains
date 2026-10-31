@@ -461,10 +461,6 @@ std::shared_ptr<gg::SampleBuffer> ringBuffer(const gg::core::Processor &processo
                                    w.frames, sampleRate);
 }
 
-/// The levels a ring's storage holds, for the memory cap's accounting: level 0 alone until the
-/// ring's pyramid (M2 sub-project 2's spec §6.9).
-constexpr uint32_t kRingLevels = 1;
-
 /// Writes the session at the render's end (RenderOptions::saveStatePath; the spec's D1 rule: a
 /// layer's ring is kept when its Freeze or Loop base is on).
 void saveSession(const gg::core::Processor &processor, const RenderSpec &spec, uint32_t capMiB,
@@ -802,7 +798,9 @@ gg::metrics::AudioData renderProcessor(const RenderSpec &spec, std::vector<std::
             // N = ceil(seconds × sampleRate), as the engine sizes its ring.
             const auto ringFrames = static_cast<int64_t>(
                 std::ceil(gg::core::toRingParams(bases, layer).ringSeconds * spec.sampleRate));
-            charge(gg::media::ringBytes(ringFrames, spec.blockSize, kRingLevels));
+            // The ring's storage with its pyramid (M2 sub-project 2's spec §6.9).
+            charge(gg::media::ringBytes(ringFrames, spec.blockSize,
+                                        gg::RingStorage::levelCountFor(ringFrames)));
             const bool saved = session && session->rings[layer].has_value();
             if (saved)
             {

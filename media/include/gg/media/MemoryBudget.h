@@ -29,9 +29,12 @@ uint64_t sampleBytes(int64_t frames, uint32_t channels, bool interleavedCopy,
 uint64_t sourceBytes(const PreparedSource &source) noexcept;
 
 /// The bytes a ring's storage holds (RingStorage; LiveSource's shape): level 0's
-/// (frames + maxBlockSize + 3) slots of 2 floats, the 3 being the guard that mirrors the first
-/// slots, plus, for each level n in 1 .. levels − 1, (ceil((frames + maxBlockSize) / 2ⁿ) + 3)
-/// slots of 2 floats. 0 for frames <= 0 (no ring); `levels` 0 counts as 1.
+/// (frames + maxBlockSize + 15) slots of 2 floats, the 15 being the guard that mirrors the first
+/// slots (the sinc's 16 taps), plus, for each level n in 1 .. levels − 1, (ceil((frames +
+/// maxBlockSize) / 2ⁿ) + 15) slots of 2 floats. A ring's storage holds
+/// RingStorage::levelCountFor(frames) levels, 4 for any ring of 1 s or more (spec §6.9), so
+/// RingStorage::bytes() is ringBytes(frames, maxBlockSize, levelCountFor(frames)). 0 for
+/// frames <= 0 (no ring); `levels` 0 counts as 1.
 uint64_t ringBytes(int64_t frames, uint32_t maxBlockSize, uint32_t levels) noexcept;
 
 /// An instance's cap and what it holds against it, in bytes.

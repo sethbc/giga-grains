@@ -76,6 +76,13 @@ namespace gg
 /// the caller owns, swapped in by adoptStorage() (a resize, ring time going on) or
 /// restoreStorage() (a restore, ring time restarting).
 ///
+/// **The levels** (spec §6.9): the storage's pyramid (RingStorage), which write() advances as each
+/// frame arrives, so level n's frames are complete to RingStorage::levelLag(n) frames behind the
+/// head, at most 189 for level 3, inside M; frozen, they freeze with level 0. adoptStorage() fills
+/// the levels of the frames it copies; a restore's storage arrives with its levels filled
+/// (fillLevels). level(n) gives them to the kernels, which keep the head, the window and the fade
+/// in ring frames and read only their taps from a level (levelFadeFor, gatherLevelTaps).
+///
 /// **Reads** never touch a frame outside the window; see fade() and read().
 class LiveSource
 {
@@ -114,9 +121,10 @@ class LiveSource
 
     /// The ring exchange's audio-thread half (spec §6.5), for a resize: swaps in `next`, whose
     /// slots already hold the window's frames below `copiedTo` at their slots (frame f at f mod
-    /// next->capacity()), copied by the main thread from the frames it found stable. Copies
-    /// [copiedTo, head()) itself, the frames written since, as far as both windows reach, and
-    /// refreshes next's guard slots. Ring time continues: the head, the freeze state and the write
+    /// next->capacity()), copied by the main thread from the frames it found stable, and their
+    /// levels (fillLevels; spec §6.9). Copies [copiedTo, head()) itself, the frames written since,
+    /// as far as both windows reach, fills their levels by the same function, and refreshes
+    /// next's guard slots. Ring time continues: the head, the freeze state and the write
     /// gain stay. `previous` gets the storage replaced, for the main thread to free: nullptr when
     /// the source owned it (it keeps that one until the next prepare() or its destruction, so
     /// nothing is freed here) or had none. Marks older than the new window are dropped (as
@@ -130,15 +138,16 @@ class LiveSource
     bool adoptStorage(RingStorage *next, int64_t copiedTo,
                       RingStorage *&previous) noexcept SST_CPPUTILS_NONBLOCKING;
 
-    /// A restore (spec §6.6): `next` holds frames [0, frames) at their slots. Ring time restarts
-    /// with the head at `frames`, and `marks` replace the current ones: those ascending, in the
-    /// new window and below `frames`. Not frozen, the write gain is 1. Frozen, the ring is held
-    /// from the first sample, as the saved session rendered it: the freeze on, the write gain 0
-    /// and the head stopped, so no ramp moves it (keep the freeze setting on after it). `previous`
-    /// gets the storage replaced, as adoptStorage() hands it back. Refreshes next's guard slots;
-    /// copies no frame. Until the next write(), R(t) is the restored head at every output sample
-    /// t, and the window is the restored ring's (the last write's block is forgotten with the old
-    /// ring time).
+    /// A restore (spec §6.6): `next` holds frames [0, frames) at their slots, and their levels
+    /// (fillLevels(*next, 0, frames), on the thread that filled them; spec §6.9). Ring time
+    /// restarts with the head at `frames`, and `marks` replace the current ones: those ascending,
+    /// in the new window and below `frames`. Not frozen, the write gain is 1. Frozen, the ring is
+    /// held from the first sample, as the saved session rendered it: the freeze on, the write gain
+    /// 0 and the head stopped, so no ramp moves it (keep the freeze setting on after it).
+    /// `previous` gets the storage replaced, as adoptStorage() hands it back. Refreshes next's
+    /// guard slots; copies no frame. Until the next write(), R(t) is the restored head at every
+    /// output sample t, and the window is the restored ring's (the last write's block is forgotten
+    /// with the old ring time).
     ///
     /// Returns false, changing nothing (previous is set to nullptr), when next is null or already
     /// this ring's, when its capacity leaves less than a block's slack, when frames is below 0 or
@@ -278,20 +287,49 @@ class LiveSource
     };
     RingView view() const noexcept { return {slots_, capacity_, frames_}; }
 
-    /// One level of the ring's pyramid (spec §6.5): the ring view the kernels read, at
-    /// `decimation` ring frames per level frame. Level 0 is the ring itself, decimation 1.
+    /// One level of the ring's pyramid (spec §6.5, §6.9): the ring view the kernels read, at
+    /// `decimation` ring frames per level frame. Level 0 is the ring itself, decimation 1. Level
+    /// n >= 1 is the storage's level n (RingStorage): its frame m, at ring frame m × 2ⁿ, in slot
+    /// m mod capacity, capacity ceil(C / 2ⁿ) with 15 guard slots after it as level 0's, frames
+    /// ceil(N / 2ⁿ), decimation 2ⁿ.
     struct Level
     {
         RingView view;
         uint32_t decimation;
     };
-    /// The levels there are: 1 in wave 1 (level 0 alone; sub-project 2 builds the ring's levels).
-    uint32_t levelCount() const noexcept { return 1; }
+    /// The levels there are, level 0 included: the storage's levelCount() (1 + 3 for any ring of
+    /// 1 s or more), or 1 without a ring.
+    uint32_t levelCount() const noexcept { return levelCount_; }
     /// Level n, or level 0 when n >= levelCount(). Real-time safe.
     Level level(uint32_t n) const noexcept
     {
-        static_cast<void>(n); // one level: every index reads level 0
-        return {view(), 1};
+        return n < levelCount_ ? Level{levels_[n], 1u << n} : Level{view(), 1};
+    }
+
+    /// The head-proximity fade of a read of level n (spec §6.9) whose taps reach kBefore level
+    /// frames before floor(pos / 2ⁿ) and kAfter after it, at pos in ring frames, while the head
+    /// is at R: fadeFor's expression over the same window, with the level's reach in ring frames,
+    ///
+    ///     before = (kBefore + 1) × 2ⁿ − 1,  after = kAfter × 2ⁿ + RingStorage::levelLag(n),
+    ///
+    /// so it is 0 before any of the read's level frames leaves the window [E − W, E − 1] or is
+    /// incomplete at R (its last tap's ring frame plus the level's lag past E − 1). Level 0's is
+    /// fadeFor<kBefore, kAfter> itself, bit for bit. A level n >= levelCount() reads nothing: 0.
+    template <int64_t kBefore, int64_t kAfter>
+    double levelFadeFor(uint32_t n, double pos, int64_t head) const noexcept
+    {
+        if (n >= levelCount_)
+        {
+            return 0.0;
+        }
+        const int64_t d = int64_t{1} << n;
+        const auto before = static_cast<double>((kBefore + 1) * d - 1);
+        const auto after = static_cast<double>(kAfter * d + RingStorage::levelLag(n));
+        const auto end = static_cast<double>(windowEnd(head));
+        const double toHead = (end - 1.0 - (pos + after)) / kMargin;
+        const double fromTail =
+            ((pos - before) - static_cast<double>(windowOldest(head))) / kMargin;
+        return unit(toHead) * unit(fromTail);
     }
 
     /// How many more frames the head will advance after output sample t of the last write()
@@ -376,6 +414,26 @@ class LiveSource
     bool gatherTaps(double pos, int64_t head, Cursor &cursor, float *left,
                     float *right) const noexcept SST_CPPUTILS_NONBLOCKING;
 
+    /// gatherTaps<kTaps> from level n, at pos in level n's frames (the ring frame pos × 2ⁿ):
+    /// level frames floor(pos) − kBefore .. floor(pos) − kBefore + kTaps − 1, kBefore =
+    /// kTaps / 2 − 1. False, writing nothing, unless the first tap's ring frame is at or after the
+    /// window's oldest at head and the last's plus RingStorage::levelLag(n) at or before its end
+    /// E − 1 (so every tap is complete and the one written for it), or when n >= levelCount();
+    /// level frames before 0 read as 0. Level 0's is gatherTaps<kTaps>. levelFadeFor > 0 implies
+    /// the bounds hold.
+    template <int kTaps>
+    bool gatherLevelTaps(uint32_t n, double pos, int64_t head, Cursor &cursor, float *left,
+                         float *right) const noexcept SST_CPPUTILS_NONBLOCKING;
+
+    /// read() from level n at pos in level n's frames: interp::catmullRom over
+    /// gatherLevelTaps<4>'s taps. False, reading nothing, where gatherLevelTaps<4> is.
+    bool readLevel(uint32_t n, double pos, int64_t head, Cursor &cursor, float &left,
+                   float &right) const noexcept SST_CPPUTILS_NONBLOCKING;
+    /// readLinear() from level n at pos in level n's frames: interp::lerp over
+    /// gatherLevelTaps<2>'s taps. False, reading nothing, where gatherLevelTaps<2> is.
+    bool readLinearLevel(uint32_t n, double pos, int64_t head, Cursor &cursor, float &left,
+                         float &right) const noexcept SST_CPPUTILS_NONBLOCKING;
+
   private:
     static constexpr double kMargin = static_cast<double>(kHeadMargin);
     // A read's kTaps taps read slots s .. s + kTaps − 1, at most 16 (the sinc's). Slots
@@ -385,6 +443,13 @@ class LiveSource
     // The slot of ring-time frame first >= 0, found from the cursor when reads move forward, and
     // recorded in it.
     int64_t slotOf(int64_t first, Cursor &cursor) const noexcept SST_CPPUTILS_NONBLOCKING;
+    // slotOf for frame first >= 0 of a level of `capacity` slots.
+    static int64_t levelSlotOf(int64_t first, int64_t capacity,
+                               Cursor &cursor) noexcept SST_CPPUTILS_NONBLOCKING;
+    // readLevel() (kTaps 4) and readLinearLevel() (kTaps 2), as readTaps.
+    template <int kTaps>
+    bool readLevelTaps(uint32_t n, double pos, int64_t head, Cursor &cursor, float &left,
+                       float &right) const noexcept SST_CPPUTILS_NONBLOCKING;
 
     // read() (kTaps 4: catmullRom over taps floor(pos) − 1 .. floor(pos) + 2) and readLinear()
     // (kTaps 2: lerp over floor(pos) and floor(pos) + 1), which differ only in their reach and
@@ -465,7 +530,10 @@ class LiveSource
     int64_t frames_{0};                    // N, the storage's window
     int64_t capacity_{0};                  // C = N + maxBlockSize slots (ruling M1-o)
     int64_t maxBlock_{1};                  // B, the largest block write() takes
-    int64_t rampLength_{1};                // L
+    // The storage's levels as the kernels read them (level(n)), levels_[0] the ring itself.
+    std::array<RingView, RingStorage::kMaxLevels> levels_{};
+    uint32_t levelCount_{1};
+    int64_t rampLength_{1}; // L
 
     // The window settings (setLoop, selectSplice) and the marks.
     bool loopOn_{false};

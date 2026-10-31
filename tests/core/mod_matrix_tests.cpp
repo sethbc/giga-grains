@@ -485,14 +485,16 @@ TEST_CASE("invalid targets are refused", "[core][mod]")
     CHECK(isValidTarget(ParamSlot::MorphX));
     CHECK(isValidTarget(ParamSlot::MorphY));
 
-    // Every slot: the macros, the modulators' controls and layers B to D's slots are refused.
+    // Every slot: the macros, the modulators' controls, Ring Length (neither automatable nor
+    // modulatable) and layers B to D's slots are refused.
     size_t valid = 0;
     for (size_t i = 0; i < kParamCount; ++i)
     {
         const auto slot = static_cast<ParamSlot>(i);
         const auto ref = gg::core::layerOf(slot);
         const bool control =
-            ref && ref->param >= LayerParam::Lfo1Rate && ref->param <= LayerParam::Step16;
+            ref && ((ref->param >= LayerParam::Lfo1Rate && ref->param <= LayerParam::Step16) ||
+                    ref->param == LayerParam::RingLength);
         const bool expected = !gg::core::isMacro(slot) && !control &&
                               (ref ? ref->layer == 0
                                    : !gg::core::perLayerGlobalLayer(slot) ||
@@ -501,18 +503,10 @@ TEST_CASE("invalid targets are refused", "[core][mod]")
         CHECK(isValidTarget(slot) == expected);
         valid += isValidTarget(slot) ? 1 : 0;
     }
-    // 14 layer parameters, M2 sub-project 2's five ring parameters and sub-project 3's Quality,
-    // Level and Layer A On, Mix, Space's seven but Diffusion, Morph X and Y, and Budget.
-    CHECK(valid == 14 + 5 + 1 + 2 + 1 + 7 + 2 + 1);
-    // M2 sub-project 2's spec §6.3: Loop Length, Overdub and Splice are targets under sub-project
-    // 3's rule (any layer parameter but a modulator's control), and so are Loop and Ring Length.
-    // A route to Ring Length moves only its effective value, which nothing reads: the ring's
-    // length is applied from the base value, on the main thread.
-    CHECK(isValidTarget(ParamSlot::LoopLength));
-    CHECK(isValidTarget(ParamSlot::Overdub));
-    CHECK(isValidTarget(ParamSlot::Splice));
-    CHECK(isValidTarget(ParamSlot::Loop));
-    CHECK(isValidTarget(ParamSlot::RingLength));
+    // 14 layer parameters, four of M2 sub-project 2's five ring parameters (not Ring Length) and
+    // sub-project 3's Quality, Level and Layer A On, Mix, Space's seven but Diffusion, Morph X
+    // and Y, and Budget.
+    CHECK(valid == 14 + 4 + 1 + 2 + 1 + 7 + 2 + 1);
     CHECK_FALSE(isValidTarget(ParamSlot::B_LoopLength));
 
     CHECK(isLayerTarget(ParamSlot::Position));
@@ -548,7 +542,8 @@ TEST_CASE("a route to Quality is accepted and a route to LFO 1 Rate refused", "[
     STATIC_REQUIRE_FALSE(isModulatorControl(LayerParam::SizeSpread));
     STATIC_REQUIRE_FALSE(isModulatorControl(LayerParam::Quality));
 
-    // Every layer-A row: 0x0F to 0x30 refused, every other row a target.
+    // Every layer-A row: 0x0F to 0x30 refused, and Ring Length (0x40, neither automatable nor
+    // modulatable; M2 sub-project 2's Task 12 ruling), every other row a target.
     size_t controls = 0;
     for (size_t p = 0; p < gg::core::kLayerParamCount; ++p)
     {
@@ -557,7 +552,7 @@ TEST_CASE("a route to Quality is accepted and a route to LFO 1 Rate refused", "[
         const bool control = index >= 0x0Fu && index <= 0x30u;
         INFO("index " << index);
         CHECK(isModulatorControl(param) == control);
-        CHECK(isValidTarget(layerSlot(param, 0)) == !control);
+        CHECK(isValidTarget(layerSlot(param, 0)) == (!control && param != LayerParam::RingLength));
         for (uint8_t layer = 1; layer < kLayers; ++layer)
         {
             CHECK_FALSE(isValidTarget(layerSlot(param, layer)));
@@ -642,4 +637,19 @@ TEST_CASE("source and curve names round-trip", "[core][mod]")
     }
     CHECK(gg::core::modSourceName(ModSource::Count) == std::string_view{});
     CHECK(gg::core::modCurveName(ModCurve::Count) == std::string_view{});
+}
+
+TEST_CASE("wave-2 layer targets are admitted", "[core][mod]")
+{
+    // M2 sub-project 2's spec §6.3: Loop, Loop Length, Overdub and Splice are targets under
+    // sub-project 3's rule (any layer parameter but a modulator's control). Ring Length is not:
+    // it is neither automatable nor modulatable (its flags, which patch_tests pin), applied from
+    // its base value on the main thread, so a route to it would do nothing (the controller's ruling
+    // for Task 12).
+    CHECK(isValidTarget(ParamSlot::Loop));
+    CHECK(isValidTarget(ParamSlot::LoopLength));
+    CHECK(isValidTarget(ParamSlot::Overdub));
+    CHECK(isValidTarget(ParamSlot::Splice));
+    CHECK_FALSE(isValidTarget(ParamSlot::RingLength));
+    CHECK_FALSE(isValidTarget(ParamSlot::B_RingLength)); // and B to D's slots, as every kind's
 }

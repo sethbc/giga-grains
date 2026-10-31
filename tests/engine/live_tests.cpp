@@ -26,7 +26,9 @@
 #include "gg/core/Interpolate.h"
 #include "gg/core/Rng.h"
 #include "gg/engine/Engine.h"
+#include "gg/source/PreparedSource.h"
 #include "gg/source/RingStorage.h"
+#include "gg/source/SampleBuffer.h"
 
 namespace
 {
@@ -430,11 +432,11 @@ TEST_CASE("the ring stores each frame with the freeze write gain", "[live]")
 
 TEST_CASE("the guard slots mirror both channels across the wrap", "[live]")
 {
-    // Slots C .. C + 2 mirror slots 0 .. 2, so a read's taps are contiguous wherever its first tap
-    // falls. The scalar read and the SIMD live kernel take the same taps from those slots, so the
-    // kernels' bit-identity tests can't see a wrong mirror; only the written frames can. A small
-    // ring, N = 64 frames stored in C = 72 slots (blocks of at most 8), is written with frames
-    // whose channels differ until it has wrapped 8 times. After each block, every read whose
+    // Slots C .. C + 14 mirror slots 0 .. 14, so a read's taps are contiguous wherever its first
+    // tap falls. The scalar read and the SIMD live kernel take the same taps from those slots, so
+    // the kernels' bit-identity tests can't see a wrong mirror; only the written frames can. A
+    // small ring, N = 64 frames stored in C = 72 slots (blocks of at most 8), is written with
+    // frames whose channels differ until it has wrapped 8 times. After each block, every read whose
     // first tap is in slot C − 3, C − 2 or C − 1, so whose later taps run into the guard slots,
     // must give the written frames bit for bit: at whole-number positions the frame itself, and
     // at fractions the Catmull-Rom (or line) through the frames.
@@ -2046,7 +2048,14 @@ TEST_CASE("adopting storage keeps the window", "[engine][live]")
     gg::RingStorage bigger(4 * 48000, 512);
     REQUIRE(bigger.frames() == 4 * 48000);
     REQUIRE(bigger.capacity() == 4 * 48000 + 512);
-    REQUIRE(bigger.bytes() == 2 * (4 * 48000 + 512 + 15) * sizeof(float));
+    // Level 0's slots and guard, then levels 1 to 3's, ceil(C / 2ⁿ) + 15 slots each (spec §6.9).
+    std::size_t levelSlots = 0;
+    for (uint32_t n = 1; n < 4; ++n)
+    {
+        levelSlots += ((4 * 48000 + 512 + (1u << n) - 1) >> n) + 15;
+    }
+    REQUIRE(bigger.levelCount() == 4);
+    REQUIRE(bigger.bytes() == 2 * (4 * 48000 + 512 + 15 + levelSlots) * sizeof(float));
     copyFrames(ring, bigger, r0 - kN, r0);
     writeRamp(ring, r0 + 4096, 512);
     const int64_t head = ring.head();
@@ -2352,4 +2361,348 @@ TEST_CASE("a restore's window holds for every sample until the next write", "[en
             CHECK(ring.headRunAfter(t) == (frozen ? 0.0 : std::numeric_limits<double>::infinity()));
         }
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// The ring's pyramid (M2 sub-project 2's spec §6.9): levels 1 .. 3 of sub-project 3's half-band,
+// written incrementally as level 0 is, and filled by the same function on a resize or restore.
+
+namespace
+{
+// Level n's frame m of a ring's storage: slot m mod its capacity.
+std::pair<float, float> levelFrame(const gg::LiveSource &ring, uint32_t n, int64_t m)
+{
+    const gg::LiveSource::RingView v = ring.level(n).view;
+    const int64_t s = m % v.capacity;
+    return {v.slots[2 * s], v.slots[2 * s + 1]};
+}
+
+// Two floats with the same bits (std::memcmp: +0 and −0 differ, as do two NaNs' payloads).
+bool sameBits(float a, float b) { return std::memcmp(&a, &b, sizeof(float)) == 0; }
+
+// A file of the same frames: input frames [0, frames) as a stereo source, with its pyramid.
+std::shared_ptr<const gg::PreparedSource> fileOf(const Stereo &input, int64_t frames)
+{
+    auto buffer = std::make_shared<gg::SampleBuffer>(2, frames, kSampleRate);
+    std::copy_n(input.left.begin(), frames, buffer->channel(0));
+    std::copy_n(input.right.begin(), frames, buffer->channel(1));
+    return gg::PreparedSource::make(std::move(buffer));
+}
+
+// Writes input frames [ring.head(), to) into the ring in blocks of `lengths` in turn, output
+// sample t carrying frame t (not frozen); calls after() after each block.
+template <class After>
+void writeInput(gg::LiveSource &ring, const Stereo &input, int64_t to,
+                const std::vector<int64_t> &lengths, After &&after)
+{
+    std::size_t block = 0;
+    for (int64_t start = ring.head(); start < to;)
+    {
+        const int64_t n = std::min(lengths[block++ % lengths.size()], to - start);
+        const auto at = static_cast<std::size_t>(start);
+        const float *in[2] = {input.left.data() + at, input.right.data() + at};
+        ring.write(in, 2, 0, start, static_cast<uint32_t>(n));
+        start += n;
+        after();
+    }
+}
+void writeInput(gg::LiveSource &ring, const Stereo &input, int64_t to,
+                const std::vector<int64_t> &lengths)
+{
+    writeInput(ring, input, to, lengths, [] {});
+}
+
+// Every level-n frame m in [first, end) of the ring equals the file's frame m bit for bit;
+// counts the frames compared into `compared`.
+bool levelMatchesFile(const gg::LiveSource &ring, const gg::PreparedSource &file, uint32_t n,
+                      int64_t first, int64_t end, int64_t &compared)
+{
+    const gg::PreparedSource::Level &lv = file.level(n);
+    for (int64_t m = std::max<int64_t>(0, first); m < end; ++m)
+    {
+        const auto [l, r] = levelFrame(ring, n, m);
+        if (!sameBits(l, lv.data[0][lv.stride * m]) || !sameBits(r, lv.data[1][lv.stride * m]))
+        {
+            UNSCOPED_INFO("level " << n << " frame " << m << ": " << l << ", " << r << " vs "
+                                   << lv.data[0][lv.stride * m] << ", "
+                                   << lv.data[1][lv.stride * m]);
+            return false;
+        }
+        ++compared;
+    }
+    return true;
+}
+
+// Every level-n frame m (n in 1 .. 3) of `a` whose ring frames m × 2ⁿ ± levelLag(n) lie in
+// [from, to) equals b's, bit for bit; counts the frames compared.
+bool levelsAgree(const gg::LiveSource &a, const gg::LiveSource &b, int64_t from, int64_t to,
+                 int64_t &compared)
+{
+    for (uint32_t n = 1; n < 4; ++n)
+    {
+        const int64_t lag = gg::RingStorage::levelLag(n);
+        const int64_t d = int64_t{1} << n;
+        for (int64_t m = std::max<int64_t>(0, (from + lag + d - 1) / d); m * d + lag < to; ++m)
+        {
+            const auto [al, ar] = levelFrame(a, n, m);
+            const auto [bl, br] = levelFrame(b, n, m);
+            if (!sameBits(al, bl) || !sameBits(ar, br))
+            {
+                UNSCOPED_INFO("level " << n << " frame " << m);
+                return false;
+            }
+            ++compared;
+        }
+    }
+    return true;
+}
+} // namespace
+
+TEST_CASE("a ring's level equals a file's for the same frames", "[engine][live]")
+{
+    // A 4 s ring written with 4 s of stereo noise in blocks of 1, 32 and 511 and in ragged
+    // blocks, against PreparedSource::make of the same frames: every complete frame of levels 1
+    // to 3 bit for bit. Then 2 s more, past the wrap: the levels' frames still in the window
+    // against the file of all 6 s.
+    constexpr int64_t kN = 4 * 48000;
+    STATIC_REQUIRE(gg::RingStorage::kMaxLevels == 4);
+    STATIC_REQUIRE(gg::RingStorage::levelLag(1) == 27);
+    STATIC_REQUIRE(gg::RingStorage::levelLag(2) == 81);
+    STATIC_REQUIRE(gg::RingStorage::levelLag(3) == 189);
+    STATIC_REQUIRE(gg::RingStorage::levelLag(4) == 405); // past M = 256: no level 4
+    const Stereo input = noiseInput(6 * 48000, 91);
+    const auto file4 = fileOf(input, kN);
+    const auto file6 = fileOf(input, 6 * 48000);
+    REQUIRE(file4->levelCount() == 5);
+    const std::vector<std::vector<int64_t>> splits = {{1}, {32}, {511}, {61, 1, 511, 7, 250, 32}};
+    for (const std::vector<int64_t> &lengths : splits)
+    {
+        INFO("first block " << lengths[0] << " of " << lengths.size() << " lengths");
+        gg::LiveSource ring;
+        ring.prepare(kSampleRate, 4.0, 511);
+        REQUIRE(ring.levelCount() == 4);
+        for (uint32_t n = 1; n < 4; ++n)
+        {
+            const gg::LiveSource::Level lv = ring.level(n);
+            CHECK(lv.decimation == (1u << n));
+            CHECK(lv.view.capacity == (kN + 511 + (int64_t{1} << n) - 1) >> n);
+            CHECK(lv.view.frames == kN >> n);
+        }
+        CHECK(ring.level(4).decimation == 1); // past the top: level 0
+        CHECK(ring.level(4).view.slots == ring.view().slots);
+
+        writeInput(ring, input, kN, lengths);
+        int64_t compared = 0;
+        for (uint32_t n = 1; n < 4; ++n)
+        {
+            const int64_t complete = gg::RingStorage::completeLevelFrames(n, ring.head());
+            CHECK(complete == (kN - 1 - gg::RingStorage::levelLag(n)) / (1 << n) + 1);
+            CHECK(levelMatchesFile(ring, *file4, n, 0, complete, compared));
+        }
+        CHECK(compared > 150000);
+
+        writeInput(ring, input, 6 * 48000, lengths);
+        compared = 0;
+        const int64_t head = ring.head();
+        for (uint32_t n = 1; n < 4; ++n)
+        {
+            const int64_t d = int64_t{1} << n;
+            CHECK(levelMatchesFile(ring, *file6, n, (head - kN + d - 1) / d,
+                                   gg::RingStorage::completeLevelFrames(n, head), compared));
+        }
+        CHECK(compared > 150000);
+    }
+}
+
+TEST_CASE("every level is complete to head minus M", "[engine][live]")
+{
+    // After every block, each level's frames are complete (the file's, bit for bit) through
+    // the one at ring frame head − M and beyond: the level's lag, at most 189 frames, is inside
+    // M = 256, so any read the admission clamp allows finds its level frames written.
+    const Stereo input = noiseInput(3 * 48000, 93);
+    const auto file = fileOf(input, 3 * 48000);
+    gg::LiveSource ring;
+    ring.prepare(kSampleRate, 2.0, 512);
+    int64_t compared = 0;
+    bool complete = true;
+    bool same = true;
+    writeInput(ring, input, 3 * 48000, {512, 1, 77, 300, 2}, [&] {
+        const int64_t head = ring.head();
+        for (uint32_t n = 1; n < 4; ++n)
+        {
+            const int64_t d = int64_t{1} << n;
+            const int64_t done = gg::RingStorage::completeLevelFrames(n, head);
+            // The newest level frame at or before ring frame head − M, and the window's oldest.
+            const int64_t atMargin = (head - 256) >= 0 ? (head - 256) / d : -1;
+            complete = complete && done > atMargin && done * d <= head;
+            // The newest complete frames hold the file's values (a file of more frames: the
+            // ring's complete frames never read past the head, so they are the same).
+            same = same && levelMatchesFile(ring, *file, n, done - 8, done, compared);
+        }
+    });
+    CHECK(complete);
+    CHECK(same);
+    CHECK(compared > 10000);
+}
+
+TEST_CASE("levels freeze with level 0", "[engine][live]")
+{
+    // Frozen, the head stops after the ramp and so do the levels: no level frame changes while
+    // the frozen ring takes more blocks. Released, they continue from where they stopped, as a
+    // file of the frames written would have them.
+    const Stereo input = noiseInput(2 * 48000, 95);
+    gg::LiveSource ring;
+    ring.prepare(kSampleRate, 1.0, 256);
+    writeInput(ring, input, 30000, {256});
+    ring.setFrozen(true);
+    writeInput(ring, input, 40000, {256});
+    const int64_t stopped = ring.head();
+    REQUIRE(stopped == 30000 + gg::LiveSource::freezeRampSamples(kSampleRate));
+    std::vector<std::vector<float>> snapshot;
+    for (uint32_t n = 1; n < 4; ++n)
+    {
+        const gg::LiveSource::RingView v = ring.level(n).view;
+        snapshot.emplace_back(v.slots, v.slots + 2 * (v.capacity + 15));
+    }
+    // More frozen blocks: the head stays, and so does every level slot.
+    std::vector<float> l(256, 0.75f);
+    const float *in[2] = {l.data(), l.data()};
+    for (int64_t t = 40000; t < 50000; t += 256)
+    {
+        ring.write(in, 2, 0, t, 256);
+    }
+    REQUIRE(ring.head() == stopped);
+    for (uint32_t n = 1; n < 4; ++n)
+    {
+        const gg::LiveSource::RingView v = ring.level(n).view;
+        CHECK(std::memcmp(snapshot[n - 1].data(), v.slots, snapshot[n - 1].size() * 4) == 0);
+    }
+    // Released: the levels advance again, as the frames written (ramps included) give them.
+    ring.setFrozen(false);
+    std::vector<float> left;
+    std::vector<float> right;
+    gg::LiveSource copy; // the same frames, written whole, never frozen
+    copy.prepare(kSampleRate, 1.0, 256);
+    {
+        // The frames the frozen ring holds, read back, then the new ones.
+        const gg::LiveSource::RingView v = ring.view();
+        for (int64_t f = 0; f < stopped; ++f)
+        {
+            const auto [a, b] = storedFrame(v, f);
+            left.push_back(a);
+            right.push_back(b);
+        }
+    }
+    const int64_t before = ring.head();
+    writeInput(ring, input, before + 9000, {256});
+    {
+        const gg::LiveSource::RingView v = ring.view();
+        for (int64_t f = before; f < ring.head(); ++f)
+        {
+            const auto [a, b] = storedFrame(v, f);
+            left.push_back(a);
+            right.push_back(b);
+        }
+    }
+    const Stereo frames{left, right};
+    writeInput(copy, frames, static_cast<int64_t>(left.size()), {256});
+    REQUIRE(copy.head() == ring.head());
+    int64_t compared = 0;
+    CHECK(levelsAgree(ring, copy, ring.head() - 48000, ring.head(), compared));
+    CHECK(compared > 30000);
+}
+
+TEST_CASE("a restored ring's levels match the saved ring's", "[engine][live]")
+{
+    // A 2 s ring written 1.5 s (nothing has left it) is saved as frames [0, head) and restored
+    // into a new storage whose levels the main thread fills (fillLevels, as media::restoreRing
+    // does): every level frame then equals the saved ring's, bit for bit, and stays equal as both
+    // take the same input after.
+    const Stereo input = noiseInput(3 * 48000, 97);
+    gg::LiveSource saved;
+    saved.prepare(kSampleRate, 2.0, 512);
+    writeInput(saved, input, 72000, {512, 3, 129});
+    const int64_t head = saved.head();
+
+    gg::LiveSource restored;
+    restored.prepare(kSampleRate, 512);
+    gg::RingStorage next(2 * 48000, 512);
+    REQUIRE(next.levelCount() == 4);
+    copyFrames(saved, next, 0, head);
+    gg::fillLevels(next, 0, head);
+    gg::RingStorage *previous = nullptr;
+    REQUIRE(restored.restoreStorage(&next, head, {}, false, previous));
+    REQUIRE(restored.levelCount() == 4);
+    REQUIRE(restored.level(2).view.slots == next.levelSlots(2));
+    int64_t compared = 0;
+    CHECK(levelsAgree(restored, saved, 0, head, compared));
+    CHECK(compared > 60000);
+    // The guard slots of every level mirror their first 15 slots.
+    for (uint32_t n = 1; n < 4; ++n)
+    {
+        const float *p = next.levelSlots(n);
+        const int64_t c = next.levelCapacity(n);
+        for (int64_t g = 0; g < 15; ++g)
+        {
+            CHECK(sameBits(p[2 * (c + g)], p[2 * g]));
+            CHECK(sameBits(p[2 * (c + g) + 1], p[2 * g + 1]));
+        }
+    }
+
+    writeInput(saved, input, 2 * 48000 + 40000, {512});
+    writeInput(restored, input, 2 * 48000 + 40000, {511, 1});
+    compared = 0;
+    CHECK(levelsAgree(restored, saved, saved.head() - 2 * 48000, saved.head(), compared));
+    CHECK(compared > 80000);
+}
+
+TEST_CASE("a resize keeps the levels", "[engine][live]")
+{
+    // A 2 s ring written past a wrap is resized to 4 s and then to 1 s: the main thread copies
+    // the window as of R0 and fills its levels (fillLevels), the audio thread writes 4096 more
+    // frames and adoptStorage copies them and fills theirs. Every level frame whose ring frames
+    // (m × 2ⁿ ± the level's lag) are in the copied part of the window then equals a 4 s ring's
+    // that took the same input and was never resized, bit for bit, and they stay equal as both go
+    // on.
+    constexpr int64_t kN = 2 * 48000;
+    const Stereo input = noiseInput(8 * 48000, 99);
+    gg::LiveSource reference;
+    reference.prepare(kSampleRate, 4.0, 512);
+    gg::LiveSource ring;
+    ring.prepare(kSampleRate, 2.0, 512);
+    writeInput(ring, input, 3 * 48000, {512});
+    const int64_t r0 = ring.head();
+
+    gg::RingStorage bigger(4 * 48000, 512);
+    copyFrames(ring, bigger, r0 - kN, r0);
+    gg::fillLevels(bigger, r0 - kN, r0);
+    writeInput(ring, input, r0 + 4096, {512});
+    gg::RingStorage *previous = nullptr;
+    REQUIRE(ring.adoptStorage(&bigger, r0, previous));
+    REQUIRE(ring.levelCount() == 4);
+    REQUIRE(ring.level(3).view.slots == bigger.levelSlots(3));
+    writeInput(reference, input, ring.head(), {512});
+    int64_t compared = 0;
+    CHECK(levelsAgree(ring, reference, r0 - kN, ring.head(), compared));
+    CHECK(compared > 80000);
+
+    writeInput(ring, input, 6 * 48000, {300});
+    writeInput(reference, input, 6 * 48000, {512});
+    compared = 0;
+    CHECK(levelsAgree(ring, reference, r0 - kN, ring.head(), compared));
+    CHECK(compared > 200000);
+
+    // Smaller: the newest second.
+    const int64_t r1 = ring.head();
+    gg::RingStorage smaller(48000, 512);
+    copyFrames(ring, smaller, r1 - 48000, r1);
+    gg::fillLevels(smaller, r1 - 48000, r1);
+    writeInput(ring, input, r1 + 1000, {512});
+    REQUIRE(ring.adoptStorage(&smaller, r1, previous));
+    REQUIRE(previous == &bigger);
+    writeInput(reference, input, ring.head(), {512});
+    compared = 0;
+    // The window is the newest second as of the head now: older level frames have been reused.
+    CHECK(levelsAgree(ring, reference, ring.head() - 48000, ring.head(), compared));
+    CHECK(compared > 40000);
 }

@@ -137,9 +137,12 @@ const std::map<std::string, int> &partlyHidden()
         // silence from 8 s to 12 s, where Position still reads the present, caught there (4).
         {"fx-long-ring", 4},
         // M2 sub-project 3's spec §6.9: the live ring's sweep read an octave up (50 Hz to 20 kHz,
-        // doubled, then folded back), whose top hides the steps from about 2.1 s to the input's
-        // end at 3.5 s; the steps below about 3 kHz and the one in the ring's last echo are caught.
-        {"fx-hq-live-level0", 9},
+        // doubled), whose top hides the steps from about 2.1 s to the input's end at 3.5 s; the
+        // steps below about 3 kHz and the one in the ring's last echo are caught. 9 when the ring
+        // had one level (fx-hq-live-level0, the octave folded back from Nyquist); 10 since its
+        // pyramid (M2 sub-project 2's spec §6.9): level 1's half-band removes the fold-back, which
+        // hid one more step.
+        {"fx-hq-live", 10},
         // M2 sub-project 3's spec §6.9: every grain reads part of a 20 kHz to 50 Hz sweep, from
         // 165 Hz to 20 kHz, and the ladder transposes it up to 3.9 octaves, so content near
         // Nyquist sounds at every step; caught only at 0.32 s (two grains reading the sweep's

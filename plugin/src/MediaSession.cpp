@@ -66,10 +66,10 @@ bool frozenIn(const core::ParamValues &values, uint8_t layer) noexcept
            0.5f;
 }
 
-/// The bytes a ring of `frames` frames holds (RingStorage::bytes), with its one level.
+/// The bytes a ring of `frames` frames holds (RingStorage::bytes), with its levels (spec §6.9).
 uint64_t ringBytesOf(int64_t frames, uint32_t maxBlock) noexcept
 {
-    return media::ringBytes(frames, maxBlock, 1);
+    return media::ringBytes(frames, maxBlock, RingStorage::levelCountFor(frames));
 }
 
 uint64_t decodeBound(const media::MemoryBudget &b, uint64_t also) noexcept
@@ -972,6 +972,9 @@ void MediaSession::pollRingLengths(core::Processor &processor) noexcept
                     into.slots()[2 * d] = 0.0f;
                     into.slots()[2 * d + 1] = 0.0f;
                 }
+                // The copied frames' levels (spec §6.9): the audio thread fills those of the
+                // frames it copies from copiedTo on, by the same function.
+                fillLevels(into, done->from, done->head);
                 how.copiedTo = done->head;
             }
             else

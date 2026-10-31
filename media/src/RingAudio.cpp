@@ -124,6 +124,9 @@ RestoredRing restoreRing(const core::RingEntry &entry, std::string_view wavBytes
             slots[2 * (capacity + g)] = slots[2 * g];
             slots[2 * (capacity + g) + 1] = slots[2 * g + 1];
         }
+        // The pyramid of the restored frames, as the ring's writes would have made it (spec §6.9;
+        // LiveSource::restoreStorage takes the levels filled).
+        fillLevels(*out.storage, 0, kept);
         out.frames = kept;
 
         const bool scaled = savedRate != rate;

@@ -79,6 +79,19 @@ TEST_CASE("ringBytes is the ring storage's bytes", "[media]")
     }
     REQUIRE(gg::media::ringBytes(frames, 4096, 5) == storage + levels);
     REQUIRE(gg::media::ringBytes(0, 4096, 1) == 0);
+
+    // A ring's storage holds its own levels (M2 sub-project 2's spec §6.9): levels 1 to 3 for any
+    // ring of 1 s or more, none for one too short for a level of 64 frames.
+    for (const int64_t n : {frames, int64_t{48000}, int64_t{64}, int64_t{200}})
+    {
+        INFO("frames " << n);
+        const gg::RingStorage ringStorage(n, 4096);
+        REQUIRE(ringStorage.levelCount() == gg::RingStorage::levelCountFor(n));
+        REQUIRE(ringStorage.bytes() == gg::media::ringBytes(n, 4096, ringStorage.levelCount()));
+    }
+    STATIC_REQUIRE(gg::RingStorage::levelCountFor(16 * 48000) == 4);
+    STATIC_REQUIRE(gg::RingStorage::levelCountFor(200) == 2);
+    STATIC_REQUIRE(gg::RingStorage::levelCountFor(64) == 1);
 }
 
 TEST_CASE("the memory budget fits what the cap leaves and refuses the rest", "[media]")

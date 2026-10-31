@@ -1349,11 +1349,18 @@ TEST_CASE("the level accessor returns level 0 for any index past the count", "[e
         }
     }
 
+    // The ring's levels (M2 sub-project 2's spec §6.9): 1 + 3 for a 1 s ring; any index past
+    // them reads level 0, as does a ring of one level (64 frames: no level holds 64).
     gg::LiveSource live;
     live.prepare(48000.0, 1.0, 256);
-    REQUIRE(live.levelCount() == 1);
+    REQUIRE(live.levelCount() == 4);
+    gg::LiveSource small;
+    small.prepare(64.0, 1.0, 8);
+    REQUIRE(small.levelCount() == 1);
+    REQUIRE(small.level(1).decimation == 1);
+    REQUIRE(small.level(1).view.slots == small.view().slots);
     const gg::LiveSource::RingView view = live.view();
-    for (const uint32_t n : {0u, 7u, 0xFFFFFFFFu})
+    for (const uint32_t n : {0u, 4u, 7u, 0xFFFFFFFFu})
     {
         INFO("level " << n);
         const gg::LiveSource::Level level = live.level(n);

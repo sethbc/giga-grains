@@ -387,20 +387,22 @@ TEST_CASE("the FX restores a layer B sample", "[plugin]")
 
 TEST_CASE("the memory cap refuses a load with a status", "[plugin]")
 {
-    // Spec §6.5: with a 64 MiB cap and four 16 s rings (23.5 MiB), 40 MiB are free. A 2-minute
-    // stereo file decodes to 44 MiB: the decoder refuses it before allocating. A 90 s one decodes
-    // (33 MiB) but its source, with the interleaved copy and the pyramid's four levels (M2
-    // sub-project 3), needs 97 MiB: refused before it is made.
-    // A 300 s ring needs 110 MiB: refused, with its status, until the request changes.
+    // Spec §6.5: with an 80 MiB cap and four 16 s rings with their three levels (44 MiB; M2
+    // sub-project 2's spec §6.9), 36 MiB are free. A 2-minute stereo file decodes to 44 MiB: the
+    // decoder refuses it before allocating. A 90 s one decodes (33 MiB) but its source, with the
+    // interleaved copy and the pyramid's four levels (M2 sub-project 3), needs 97 MiB: refused
+    // before it is made. A 300 s ring with its levels needs 207 MiB: refused, with its status,
+    // until the request changes.
     const fs::path dir = gg::test::useMediaScratch("cap-refuses");
     const fs::path longFile = gg::test::writeSineWav(dir / "long.wav", 48000, 120.0);
     const fs::path mediumFile = gg::test::writeSineWav(dir / "medium.wav", 48000, 90.0);
     PluginUnderTest instrument(kInstrumentId);
     REQUIRE(instrument.valid());
     auto &media = instrument.impl().media();
-    media.setMemoryCapMiB(64);
+    media.setMemoryCapMiB(80);
     REQUIRE(instrument.activate(kRate, kBlock));
-    CHECK(media.memoryUsedBytes() == 4 * gg::media::ringBytes(16 * 48000, kBlock, 1));
+    CHECK(media.memoryUsedBytes() ==
+          4 * gg::media::ringBytes(16 * 48000, kBlock, gg::RingStorage::levelCountFor(16 * 48000)));
 
     auto &loader = media.loader(0);
     const auto settle = [&] {
@@ -416,11 +418,11 @@ TEST_CASE("the memory cap refuses a load with a status", "[plugin]")
     loader.requestLoad(longFile);
     gg::plugin::SampleStatus status = settle();
     CHECK(status.state == SampleState::Error);
-    CHECK(status.message == "long.wav: needs 44 MB, the memory cap allows 40 MB");
+    CHECK(status.message == "long.wav: needs 44 MB, the memory cap allows 36 MB");
     loader.requestLoad(mediumFile);
     status = settle();
     CHECK(status.state == SampleState::Error);
-    CHECK(status.message == "medium.wav: over the memory cap: needs 97 MB, 40 MB free of 64 MB");
+    CHECK(status.message == "medium.wav: over the memory cap: needs 97 MB, 36 MB free of 80 MB");
     CHECK_FALSE(loader.entry().has_value());
 
     const auto ringLength = gg::test::paramValue(idOf(LayerParam::RingLength, 0), std::log2(300.0));
@@ -430,12 +432,12 @@ TEST_CASE("the memory cap refuses a load with a status", "[plugin]")
     REQUIRE(instrument.process(kBlock, nullptr, out.data(), events.list()) ==
             CLAP_PROCESS_CONTINUE);
     instrument.onMainThread();
-    CHECK(media.status(0) == "over the memory cap: needs 110 MB, 40 MB free of 64 MB");
+    CHECK(media.status(0) == "over the memory cap: needs 207 MB, 36 MB free of 80 MB");
     CHECK(instrument.impl().processor()->ringRead(0).storage->frames() == 16 * 48000);
     render(instrument, 2, 0, nullptr, true);
     instrument.onMainThread();
     CHECK_FALSE(instrument.impl().processor()->sources(0).ringAdoptionPending());
-    CHECK(media.status(0) == "over the memory cap: needs 110 MB, 40 MB free of 64 MB");
+    CHECK(media.status(0) == "over the memory cap: needs 207 MB, 36 MB free of 80 MB");
 }
 
 TEST_CASE("capture, load into a layer, save and restore", "[plugin]")
