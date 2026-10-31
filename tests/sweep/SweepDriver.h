@@ -75,6 +75,58 @@ enum class Material
     NoteOverSine,
 };
 
+/// The harness's seeded draws are keyed by a parameter's CLAP ID, never by its slot index: the IDs
+/// are append-only, so a parameter added later gets draws of its own and moves none of the
+/// existing ones (sub-project 2 appends 20).
+namespace sweepdraw
+{
+/// A draw in [0, 1) for `stream` (a corner, say) and the parameter `id`.
+inline double byId(uint64_t seed, uint64_t stream, uint32_t id)
+{
+    return gg::test::layers::uniform(seed, (stream << 32) | id);
+}
+
+/// Burst event `event`'s parameter, chosen from `ids` by highest random weight: each ID's key is
+/// a 64-bit hash of (seed, event, ID), and the ID with the largest key wins (the lower ID on a
+/// tie). A key depends on the ID alone, so appending IDs to the list changes the pick of an event
+/// only when an appended ID's key beats the old winner's: every other event keeps its parameter.
+/// Returns an index into `ids`.
+inline std::size_t pickById(uint64_t seed, uint64_t event, std::span<const uint32_t> ids)
+{
+    std::size_t best = 0;
+    uint64_t bestKey = 0;
+    for (std::size_t i = 0; i < ids.size(); ++i)
+    {
+        const uint64_t key =
+            gg::rng::hash({seed, 1, 0, gg::rng::Field::SignalNoise, (event << 32) | ids[i]});
+        if (i == 0 || key > bestKey || (key == bestKey && ids[i] < ids[best]))
+        {
+            best = i;
+            bestKey = key;
+        }
+    }
+    return best;
+}
+
+/// Burst event `event`'s field `field` (0 to 7), a draw in [0, 1) that depends on neither the
+/// event's parameter nor the list.
+inline double eventField(uint64_t seed, uint64_t event, uint64_t field)
+{
+    return gg::test::layers::uniform(seed, (uint64_t{1} << 48) + event * 8 + field);
+}
+
+/// Every slot's CLAP ID, in slot order.
+inline std::vector<uint32_t> slotIds()
+{
+    std::vector<uint32_t> ids;
+    for (std::size_t s = 0; s < gg::core::kParamCount; ++s)
+    {
+        ids.push_back(gg::core::paramId(static_cast<gg::core::ParamSlot>(s)));
+    }
+    return ids;
+}
+} // namespace sweepdraw
+
 struct Checks
 {
     /// The largest |sample| allowed: the chain's bound, 2 + the input's peak (INTENT §14).
@@ -257,17 +309,22 @@ class SweepDriver
                                  .tempoBpm = 20.0 + u() * 280.0,
                                  .playing = u() < 0.7,
                                  .beatsPerBar = 1 + static_cast<int>(u() * 7.0)});
+        // Each event's draws are keyed by the event index and, for the parameter, by CLAP ID
+        // (sweepdraw), so appended parameters move no existing event's choice but their own.
+        const std::vector<uint32_t> ids = sweepdraw::slotIds();
         std::vector<gg::core::ParamEvent> params;
         params.reserve(static_cast<std::size_t>(events));
         for (int i = 0; i < events; ++i)
         {
-            const auto slot = static_cast<gg::core::ParamSlot>(
-                static_cast<std::size_t>(u() * gg::core::kParamCount) % gg::core::kParamCount);
+            const auto e = static_cast<uint64_t>(i);
+            const auto f = [&](uint64_t field) { return sweepdraw::eventField(seed, e, field); };
+            const auto slot = static_cast<gg::core::ParamSlot>(sweepdraw::pickById(seed, e, ids));
             const auto &m = meta(slot);
             const double span = static_cast<double>(m.maxVal) - m.minVal;
-            const bool isMod = u() < 0.25;
-            const double v = isMod ? (2.0 * u() - 1.0) * span / 4.0 : m.minVal + u() * span;
-            params.push_back({offset(), slot, isMod, v});
+            const bool isMod = f(0) < 0.25;
+            const double v = isMod ? (2.0 * f(1) - 1.0) * span / 4.0 : m.minVal + f(2) * span;
+            const auto at = static_cast<uint32_t>(f(3) * (n + 1.0)) % (n + 1);
+            params.push_back({at, slot, isMod, v});
         }
         std::vector<gg::core::NoteEvent> notes;
         for (int i = 0; i < 32; ++i)
