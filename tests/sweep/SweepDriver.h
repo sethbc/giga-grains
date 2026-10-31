@@ -27,10 +27,9 @@
 //   Amount rising from exactly 0) under a sounding input, it starts from an empty room and hears
 //   its input cut in at the first active chunk, and that step comes back through the pre-delay
 //   and the network.
-//   The morph law's normalization (r_L·b_L / Σ r_K·b_K) also packs a crossfade into a few samples
-//   of a layer's ramp when the pad is off its centre and the rendering layers' base weights are
-//   nearly 0 (a layer switch with the pad in a corner; a pad move near an edge). Nothing here
-//   exempts it: no committed case meets it, and the Layer On sweeps are scored.
+//   The morph law's first normalization (r_L·b_L / Σ r_K·b_K) also packed a crossfade into a few
+//   samples of a layer's ramp off the pad's center (carry-over row 301, closed): nothing here
+//   exempted it, and the law now moves at the ramps' pace, so nothing needs to.
 //   Reverb Size moves are exempt only when the Size in effect (its base or its modulation)
 //   changes.
 // - kLimiterDrive (the director's D5b, option 1, 2026-10-31; carry-over row 333): the limiter's

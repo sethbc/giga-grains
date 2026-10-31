@@ -115,19 +115,25 @@ struct ControlEvent
 /// wet_L     = limited_L · weight_L(t)
 /// ```
 /// and wet = wet_A ⊕ wet_B ⊕ wet_C ⊕ wet_D: the first rendering layer in order A to D assigns,
-/// each later one adds, and with none rendering wet is +0. The weight is the morph law (D1):
-/// with x and y the ramped Morph X and Morph Y clamped to [0.001, 0.999], b_A = (1 − x)(1 − y),
-/// b_B = x(1 − y), b_C = (1 − x)y, b_D = xy, r_L the layer's on/off ramp (0 for a layer not
-/// rendering) and s = Σ r_K·b_K,
+/// each later one adds, and with none rendering wet is +0. The weight is the morph law (D1, as
+/// amended by LS-T10a and by carry-over row 301's fix): with x and y the ramped Morph X and
+/// Morph Y clamped to [0.001, 0.999], b_A = (1 − x)(1 − y), b_B = x(1 − y), b_C = (1 − x)y,
+/// b_D = xy, r_L the layer's on/off ramp (0 for a layer not rendering), R = Σ r_K,
+/// s = Σ r_K·b_K and m = Σ (1 − r_K)·b_K, the corner weight no rendering layer holds,
 /// ```
-/// weight_L = s > 0 ? (r_L·b_L / s) × min(1, Σ_K r_K) : 0
+/// weight_L = R > 0 ? (r_L·b_L + (r_L / R)·m) / (s + m) × min(1, R) : 0
 /// ```
-/// The factor min(1, Σ_K r_K) is 1 whenever at least one whole layer's worth of ramps is on, where
-/// the law is D1's sum-normalized vector law; below that (the last rendering layer switched off,
-/// or the first switched on) it makes the amplitude sum follow the ramps, so the last layer fades
-/// out over its ramp instead of being cut when the ramp reaches 0 (D1 as amended in Task 10's fix
-/// round). One layer rendering with its ramp at 1 weighs exactly 1.0f wherever the pad is
-/// ((b/b) × min(1, 1)), so layer A alone renders M1's chain bit for bit.
+/// (for R < 1 computed as r_L·(b_L·R + m) / (s + m)). Each rendering layer keeps its own corner
+/// weight and takes its ramp's share of the unheld one; s + m is Σ b_K, 1 up to rounding. With at
+/// least one whole layer's worth of ramps on the weights sum to 1, every on layer weighs 1/n at
+/// the center, and a corner's layer, on, holds at least its corner weight there. Below that (the
+/// last rendering layer switched off, or the first switched on) the factor min(1, R) makes the
+/// amplitude sum follow the ramps, so the last layer fades out over its ramp instead of being cut
+/// when the ramp reaches 0 (LS-T10a). Every weight moves at the pace of the ramps and the pad:
+/// dividing by s alone, as first built, made the weights ratios of corner weights that all near
+/// 0 off the center, and handed over within a few samples (row 301). One layer rendering with its
+/// ramp at 1 weighs exactly 1.0f wherever the pad is ((b + m) / (b + m)), so layer A alone renders
+/// M1's chain bit for bit; four at 1 have m = 0 and weigh b_L / s, as first built.
 ///
 /// A layer's Layer On switch ramps r_L over kRampSeconds. A layer renders while its ramp's
 /// target or value is non-zero (layerRendering). Once the ramp is down at 0 the layer is off: its

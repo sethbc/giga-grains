@@ -1135,32 +1135,48 @@ bool Processor::layerRendering(uint8_t layer) const noexcept
 void Processor::weightsAt(int64_t t, const std::array<bool, kLayers> &rendering,
                           std::array<float, kLayers> &weights) const noexcept
 {
-    // Spec §6.3, D1 as amended in Task 10's fix round: the bilinear corner weights of the clamped
-    // pad, each times its layer's on/off ramp, normalized by their sum, then times
-    // min(1, Σ r_K), so the amplitude sum fades with the ramps when less than one whole layer is
-    // on (the last layer switched off, the first switched on). Every term is a product of
-    // non-negative values, so no weight is −0; one layer rendering at r = 1 gets
-    // (b / b) × min(1, 1), exactly 1.
+    // Spec §6.3, D1 as amended by LS-T10a and by carry-over row 301's fix: each layer keeps its
+    // own share of the clamped pad's bilinear corner weights, r_L·b_L, plus its ramp's share,
+    // r_L / R, of the corner weight no rendering layer holds, m = Σ (1 − r_K)·b_K; the sum is
+    // divided by s + m (Σ b_K, 1 up to rounding), then times min(1, R), R = Σ r_K, which the
+    // R < 1 branch folds in so that nothing divides by a vanishing R. Every weight is a
+    // polynomial in the ramps and the pad over a denominator of about 1 (and R ≥ 1), so it
+    // moves at their pace: dividing by s alone, as first built, made the weights ratios of
+    // corner weights that all near 0 off the pad's center, and handed over within a few samples
+    // (row 301). Every term is a product of non-negative values (r ∈ [0, 1]), so no weight is
+    // −0. One layer rendering at r = 1 gets (b + m) / (b + m), exactly 1; four at r = 1 have
+    // m = 0 and get b / s, the law as first built, bit for bit.
     static_assert(kLayers == 4);
     const float x = std::clamp(morphX_.at(t, rampSamples_), 0.001f, 0.999f);
     const float y = std::clamp(morphY_.at(t, rampSamples_), 0.001f, 0.999f);
     const float ix = 1.0f - x;
     const float iy = 1.0f - y;
     const std::array<float, kLayers> corner{ix * iy, x * iy, ix * y, x * y};
+    std::array<float, kLayers> r{};
     std::array<float, kLayers> rb{};
     float sum = 0.0f;
+    float unheld = 0.0f;
     float ramps = 0.0f;
     for (size_t L = 0; L < kLayers; ++L)
     {
-        const float r = rendering[L] ? layers_[L]->on.at(t, rampSamples_) : 0.0f;
-        rb[L] = r * corner[L];
+        r[L] = rendering[L] ? layers_[L]->on.at(t, rampSamples_) : 0.0f;
+        rb[L] = r[L] * corner[L];
         sum += rb[L];
-        ramps += r;
+        unheld += (1.0f - r[L]) * corner[L];
+        ramps += r[L];
     }
-    const float fade = std::min(1.0f, ramps);
+    const float total = sum + unheld;
     for (size_t L = 0; L < kLayers; ++L)
     {
-        weights[L] = sum > 0.0f ? rb[L] / sum * fade : 0.0f;
+        if (ramps >= 1.0f)
+        {
+            weights[L] = (rb[L] + r[L] * unheld / ramps) / total;
+        }
+        else
+        {
+            // (r_L·b_L + (r_L / R)·m) / (s + m) × R; 0 with no ramp up.
+            weights[L] = ramps > 0.0f ? r[L] * (corner[L] * ramps + unheld) / total : 0.0f;
+        }
     }
 }
 

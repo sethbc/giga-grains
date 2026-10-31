@@ -144,8 +144,9 @@ TEST_CASE("layers sum in order A to D", "[core][layers]")
 
 TEST_CASE("the weight is exactly 1 with one layer on anywhere on the pad", "[core][layers]")
 {
-    // M2 sub-project 1's spec §6.3: b_A / b_A is 1.0f exactly, wherever the pad is and while it
-    // ramps; so layer A alone renders the same bits at any Morph.
+    // M2 sub-project 1's spec §6.3 (as amended for row 301): (b_A + m) / (b_A + m) is 1.0f
+    // exactly, wherever the pad is and while it ramps; so layer A alone renders the same bits at
+    // any Morph.
     constexpr int64_t kFrames = 36000;
     const Stereo input = noise(kFrames, 0.5f, 5);
     Stereo centre = silence(kFrames);
@@ -311,7 +312,7 @@ TEST_CASE("a layer switched off ramps over 10 ms then spawns nothing", "[core][l
 TEST_CASE("switching off the last layer fades over 10 ms", "[core][layers]")
 {
     // D1 as amended (Task 10's fix round): the weights are times min(1, Σ r_K), so layer A
-    // alone, switched off, fades with its ramp, (b/b) × r, rather than staying at 1 until the
+    // alone, switched off, fades with its ramp, r, rather than staying at 1 until the
     // ramp reaches 0 and being cut there. A Sample layer over a sine, with no input and Mix 1:
     // the output is the layer alone, where a cut is a click.
     constexpr int64_t kOff = 24000; // a grid boundary
@@ -378,6 +379,138 @@ TEST_CASE("a layer toggled within its ramp keeps its grains", "[core][layers]")
     const gg::metrics::Metrics m = gg::metrics::computeMetrics(audio);
     CHECK(m.clickScore < 15.0);
     CHECK(m.peakDb > -30.0);
+}
+
+namespace
+{
+// Carry-over row 301: the morph law must hand over at the ramps' own pace, wherever the pad is.
+// A weight that moves at most five times the on/off ramp's own rate (1/480 per sample) per sample
+// is smooth; the law as first built moved one by up to 0.99 in a sample off the pad's center.
+constexpr float kSmoothStep = 0.01f;
+
+// The largest |w_L(t + 1) − w_L(t)| over the four layers and every t in [from, to), read with
+// morphWeightAt, so exact once the boundary at `from` has been applied.
+float largestWeightStep(const Processor &p, int64_t from, int64_t to)
+{
+    float largest = 0.0f;
+    for (uint8_t L = 0; L < 4; ++L)
+    {
+        for (int64_t t = from; t + 1 < to; ++t)
+        {
+            largest =
+                std::max(largest, std::abs(p.morphWeightAt(L, t + 1) - p.morphWeightAt(L, t)));
+        }
+    }
+    return largest;
+}
+
+// Layer L as a Sample layer over a sine of its own, Position 0.5, Density 64 Hz: steady material
+// on which a step in the layer's weight is a click.
+void sineLayer(Processor &p, uint8_t L, double hz)
+{
+    p.setBase(slotOf(LayerParam::Source, L), 0.0f); // Sample
+    p.setBase(slotOf(LayerParam::Position, L), 0.5f);
+    p.setBase(slotOf(LayerParam::Density, L), 6.0f);
+    p.setSourceNow(L, sine(hz));
+}
+
+struct Handover
+{
+    float largestStep; // over the 10 ms ramp after kAt and a sample each side
+    double clickScore; // of the whole render
+};
+
+// The FX with Mix 1 and no input, the layers in `on` switched on as sine layers (A 440 Hz, B 330,
+// C 550, D 277), the pad at (x, y); `changes` at kAt, a grid boundary.
+Handover handover(float x, float y, const std::array<bool, 4> &on,
+                  const std::vector<TimedEvent> &changes)
+{
+    constexpr int64_t kAt = 24000;
+    constexpr int64_t kFrames = 36000;
+    constexpr std::array<double, 4> kHz{440.0, 330.0, 550.0, 277.0};
+    Processor p({kRate, 4096, 61, Mode::Fx});
+    wetOnly(p);
+    p.setBase(ParamSlot::MorphX, x);
+    p.setBase(ParamSlot::MorphY, y);
+    for (uint8_t L = 0; L < 4; ++L)
+    {
+        sineLayer(p, L, kHz[L]);
+        p.setBase(gg::core::layerOnSlot(L), on[L] ? 1.0f : 0.0f);
+    }
+    Stereo out = silence(kFrames);
+    render(p, nullptr, 0, kAt + 1, {4096}, changes, out);
+    const float step = largestWeightStep(p, kAt - 1, kAt + kRamp + 2);
+    render(p, nullptr, kAt + 1, kFrames, {4096}, changes, out);
+    REQUIRE(peak(out.left) > 0.05f);
+    const gg::metrics::AudioData audio{kRate, {out.left, out.right}};
+    return {step, gg::metrics::computeMetrics(audio).clickScore};
+}
+
+// Task 11's finding F2 (row 301): layer A on, then A off and D on at once.
+const std::vector<TimedEvent> kAOffDOn{{24000, ParamSlot::LayerAOn, false, 0.0},
+                                       {24000, ParamSlot::LayerDOn, false, 1.0}};
+} // namespace
+
+TEST_CASE("the rendering layers share the unheld corner weight by their ramps", "[core][layers]")
+{
+    // D1 as amended for row 301: each rendering layer keeps r_L·b_L and takes r_L / Σ r_K of the
+    // corner weight no layer holds. At (0.25, 0.25) with A and D on, b_A = 0.5625, b_D = 0.0625
+    // and B's and C's 0.1875 each are shared equally: 0.75 and 0.25 (the law as first built gave
+    // 0.9 and 0.1, a ratio of corner weights that becomes 0/0 toward B's and C's corners).
+    Processor p({kRate, 512, 1, Mode::Fx});
+    p.setBase(ParamSlot::LayerDOn, 1.0f);
+    p.setBase(ParamSlot::MorphX, 0.25f);
+    p.setBase(ParamSlot::MorphY, 0.25f);
+    CHECK_THAT(p.morphWeightAt(0, 0), Catch::Matchers::WithinAbs(0.75, 1e-6));
+    CHECK(p.morphWeightAt(1, 0) == 0.0f);
+    CHECK(p.morphWeightAt(2, 0) == 0.0f);
+    CHECK_THAT(p.morphWeightAt(3, 0), Catch::Matchers::WithinAbs(0.25, 1e-6));
+    // At B's corner, which neither holds, A and D share it: half each, as at the pad's center.
+    p.setBase(ParamSlot::MorphX, 1.0f);
+    p.setBase(ParamSlot::MorphY, 0.0f);
+    CHECK_THAT(p.morphWeightAt(0, 0), Catch::Matchers::WithinAbs(0.5, 1e-6));
+    CHECK_THAT(p.morphWeightAt(3, 0), Catch::Matchers::WithinAbs(0.5, 1e-6));
+    CHECK_THAT(p.morphWeightAt(0, 0) + p.morphWeightAt(3, 0),
+               Catch::Matchers::WithinAbs(1.0, 1e-6));
+}
+
+TEST_CASE("a layer switched on at the pad's corner hands over smoothly", "[core][layers]")
+{
+    // At (0, 0) b_A ≈ 0.998 and b_D = 10⁻⁶: D's share stayed near 0 until A's ramp had almost
+    // reached 0, then jumped to 1 (a click score of 1,900 in F2).
+    const Handover h = handover(0.0f, 0.0f, {true, false, false, false}, kAOffDOn);
+    CHECK(h.largestStep < kSmoothStep);
+    CHECK(h.clickScore < 15.0);
+}
+
+TEST_CASE("a layer switched on off the pad's center hands over smoothly", "[core][layers]")
+{
+    // At (0.25, 0.25) b_A = 0.5625 and b_D = 0.0625 (37.8 in F2).
+    const Handover h = handover(0.25f, 0.25f, {true, false, false, false}, kAOffDOn);
+    CHECK(h.largestStep < kSmoothStep);
+    CHECK(h.clickScore < 15.0);
+}
+
+TEST_CASE("a pad move near an edge hands over smoothly", "[core][layers]")
+{
+    // F2's instrument bursts, seed 11: a TransportBeat route wraps Morph X from 1 to 0.654 with Y
+    // at 0 and layers A and D on. Near B's corner b_A and b_D are both about 0.001, so the
+    // weights went from 0.50/0.50 to 0.96/0.04 within 32 samples of the 480-sample ramp (56.4).
+    const Handover h = handover(1.0f, 0.0f, {true, false, false, true},
+                                {{24000, ParamSlot::MorphX, false, 0.654}});
+    CHECK(h.largestStep < kSmoothStep);
+    CHECK(h.clickScore < 15.0);
+}
+
+TEST_CASE("a layer's off ramp ends at its weight's own pace", "[core][layers]")
+{
+    // The FX extremes sweep's corner 17 (row 301): the pad near C's corner (0, 1), layers B, C
+    // and D on, C switched off. On the ramp's last sample C still weighed 0.675 (r_C·b_C ≈ 0.002
+    // against b_D ≈ 0.001), then 0, and D went from 0.324 to 0.999 in that sample.
+    const Handover h =
+        handover(0.0f, 1.0f, {false, true, true, true}, {{24000, ParamSlot::LayerCOn, false, 0.0}});
+    CHECK(h.largestStep < kSmoothStep);
+    CHECK(h.clickScore < 15.0);
 }
 
 TEST_CASE("all layers off renders silence", "[core][layers]")
