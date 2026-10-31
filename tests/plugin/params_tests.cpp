@@ -303,7 +303,7 @@ TEST_CASE("plugin exposes every param", "[plugin]")
     const auto *params = plugin.params();
     REQUIRE(params != nullptr);
     REQUIRE(params->count(plugin.clap()) == kParamCount);
-    REQUIRE(params->count(plugin.clap()) == 218);
+    REQUIRE(params->count(plugin.clap()) == 223);
 
     for (uint32_t i = 0; i < kParamCount; ++i)
     {
@@ -360,6 +360,26 @@ TEST_CASE("plugin exposes every param", "[plugin]")
     CHECK(info.default_value == 0.0);
     REQUIRE(params->get_info(plugin.clap(), static_cast<uint32_t>(at(ParamSlot::LevelD)), &info));
     CHECK(std::string_view(info.module).empty());
+    // M2 sub-project 3's spec §6.8: Quality in every layer, Budget a global, the same in both
+    // products.
+    REQUIRE(
+        params->get_info(plugin.clap(), static_cast<uint32_t>(at(ParamSlot::B_Quality)), &info));
+    CHECK(info.id == 0x020050u);
+    CHECK(std::string_view(info.module) == "Layer B");
+    CHECK(std::string_view(info.name) == "B Quality");
+    CHECK(info.default_value == 1.0);
+    CHECK((info.flags & CLAP_PARAM_IS_STEPPED) != 0);
+    REQUIRE(params->get_info(plugin.clap(), static_cast<uint32_t>(at(ParamSlot::Budget)), &info));
+    CHECK(info.id == 0x000050u);
+    CHECK(std::string_view(info.module).empty());
+    CHECK(std::string_view(info.name) == "Budget");
+    CHECK(info.min_value == 256.0);
+    CHECK(info.max_value == 16384.0);
+    CHECK(info.default_value == 4096.0);
+    CHECK((info.flags & CLAP_PARAM_IS_STEPPED) != 0);
+    CHECK(valueToText(plugin, 0x010050, 0.0) == "Eco");
+    CHECK(valueToText(plugin, 0x020050, 1.0) == "Normal");
+    CHECK(valueToText(plugin, 0x040050, 2.0) == "HQ");
 }
 
 TEST_CASE("value and text round trip through clap", "[plugin]")

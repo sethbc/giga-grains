@@ -293,7 +293,7 @@ TEST_CASE("plugin process with the perform parameters automated does not allocat
     float *outputs[2] = {outLeft.data(), outRight.data()};
     const auto clapOn = noteOn(60, 0);
     constexpr std::size_t kSlots = gg::core::kParamCount;
-    static_assert(kSlots == 218);
+    static_assert(kSlots == 223);
     const auto metaOf = [mode](std::size_t s) -> const auto & {
         return gg::core::paramMeta(static_cast<ParamSlot>(s), mode);
     };
@@ -392,6 +392,117 @@ TEST_CASE("plugin process with the perform parameters automated does not allocat
     gg::core::UiSnapshot snap{};
     REQUIRE(processor->snapshot().take(snap));
     CHECK(snap.clock == plugin.impl().engine()->sampleClock());
+    CHECK(std::all_of(outLeft.begin(), outLeft.end(), [](float x) { return std::isfinite(x); }));
+    if (gg::test::AllocTripwire::available()) // off under ASan; RTSan covers this
+    {
+        REQUIRE(allocations == 0);
+    }
+}
+
+TEST_CASE("plugin process under a small Budget does not allocate", "[plugin][rt][budget]")
+{
+    // M2 engine spec §6.4, §6.5, §7: Budget at its minimum, 256 grains, under four HQ layers of
+    // 400 Hz and 100 ms grains, set and then automated through the CLAP events (Budget's value
+    // and each layer's Quality modulated), so the quotas move and the overload ladder lowers,
+    // drops and steals inside process(). No call allocates, the steal events' path included.
+    const char *id = GENERATE(kInstrumentId, kFxId);
+    CAPTURE(id);
+    gg::test::PluginUnderTest plugin(id);
+    REQUIRE(plugin.valid());
+    const bool isFx = std::string_view(id) == kFxId;
+    if (!isFx)
+    {
+        REQUIRE(plugin.loadSampleState(gg::test::sineSampleFile("rt-budget")));
+    }
+    plugin.impl().setPublishing(true);
+    REQUIRE(plugin.activate(48000.0, 512));
+
+    std::vector<float> inLeft(2048), inRight(2048), outLeft(2048), outRight(2048);
+    for (std::size_t i = 0; i < inLeft.size(); ++i)
+    {
+        inLeft[i] = static_cast<float>(gg::rng::bipolar(gg::rng::splitmix64(2 * i)));
+        inRight[i] = static_cast<float>(gg::rng::bipolar(gg::rng::splitmix64(2 * i + 1)));
+    }
+    float *inputs[2] = {inLeft.data(), inRight.data()};
+    float *outputs[2] = {outLeft.data(), outRight.data()};
+    const auto clapOn = noteOn(60, 0);
+    std::vector<clap_event_param_value> setup;
+    setup.push_back(gg::test::paramValue(paramId(ParamSlot::Budget), 256.0));
+    for (uint8_t L = 0; L < gg::core::kLayers; ++L)
+    {
+        using gg::core::LayerParam;
+        setup.push_back(gg::test::paramValue(paramId(gg::core::layerOnSlot(L)), 1.0));
+        setup.push_back(
+            gg::test::paramValue(paramId(gg::core::layerSlot(LayerParam::Quality, L)), 2.0));
+        setup.push_back(gg::test::paramValue(paramId(gg::core::layerSlot(LayerParam::Density, L)),
+                                             8.643856189774725));
+        setup.push_back(
+            gg::test::paramValue(paramId(gg::core::layerSlot(LayerParam::Size, L)), -3.3));
+    }
+    gg::test::InputEvents first;
+    first.add(&clapOn.header);
+    for (const auto &e : setup)
+    {
+        first.add(&e.header);
+    }
+    // Budget up and back, and layer A's Quality modulated down to Eco and back, mid-call.
+    const auto budgetUp = gg::test::paramValue(paramId(ParamSlot::Budget), 1024.0, 100);
+    const auto qualityDown = gg::test::paramMod(paramId(ParamSlot::Quality), -2.0, 300);
+    const auto budgetDown = gg::test::paramValue(paramId(ParamSlot::Budget), 256.0, 700);
+    const auto qualityBack = gg::test::paramMod(paramId(ParamSlot::Quality), 0.0, 900);
+    gg::test::InputEvents moves;
+    moves.add(&budgetUp.header);
+    moves.add(&qualityDown.header);
+    moves.add(&budgetDown.header);
+    moves.add(&qualityBack.header);
+    gg::test::InputEvents none;
+    struct Call
+    {
+        uint32_t frames;
+        const gg::test::InputEvents *events;
+    };
+    constexpr std::size_t kCalls = 12;
+    const std::array<Call, kCalls> calls{{{0, &first},
+                                          {1, &none},
+                                          {512, &none},
+                                          {2048, &none},
+                                          {2048, &none},
+                                          {2048, &moves},
+                                          {2048, &none},
+                                          {1, &moves},
+                                          {2048, &moves},
+                                          {2048, &none},
+                                          {2048, &none},
+                                          {2048, &none}}};
+    std::array<clap_process_status, kCalls> status{};
+    auto *processor = plugin.impl().processor();
+    REQUIRE(processor != nullptr);
+
+    // No warm-up call: a host's first process() must not allocate either.
+    AllocTripwire::resetCount();
+    {
+        AllocTripwire::Scope armed;
+        for (std::size_t i = 0; i < kCalls; ++i)
+        {
+            status[i] = plugin.process(calls[i].frames, isFx ? inputs : nullptr, outputs,
+                                       calls[i].events->list());
+            gg::core::GrainVis g;
+            while (processor->grainQueue().pop(g))
+            {
+            }
+        }
+    }
+    const uint64_t allocations = AllocTripwire::count();
+
+    for (const auto s : status)
+    {
+        CHECK(s == CLAP_PROCESS_CONTINUE);
+    }
+    CHECK(processor->base(ParamSlot::Budget) == 256.0f);
+    CHECK(processor->base(ParamSlot::D_Quality) == 2.0f);
+    // The ladder ran.
+    CHECK(processor->loweredGrains() > 0);
+    CHECK(processor->stolenGrains() > 0);
     CHECK(std::all_of(outLeft.begin(), outLeft.end(), [](float x) { return std::isfinite(x); }));
     if (gg::test::AllocTripwire::available()) // off under ASan; RTSan covers this
     {

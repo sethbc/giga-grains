@@ -133,12 +133,12 @@ class Object
     std::string prefix_;
 };
 
-/// `mode`'s product's parameter names, for error messages: "Mix, Level, A Position, ..., Level D".
+/// `mode`'s product's parameter names, for error messages: "Mix, Level, A Position, ..., Budget".
 std::string parameterNames(gg::core::Mode mode);
 
 /// The parameter named `name` in `mode`'s product: paramSlotNamed's, unless that name is the other
-/// product's alone ("Macro Level" in an FX spec, say). A bare M1 name ("Size") is layer A's in
-/// either product.
+/// product's alone ("Macro Level" in an FX spec, say). A bare M1 name ("Size"), or "Quality", is
+/// layer A's in either product.
 std::optional<gg::core::ParamSlot> paramSlotNamedIn(std::string_view name, gg::core::Mode mode);
 
 /// v as a value for the parameter in `slot` of `mode`'s product: a finite number that, converted

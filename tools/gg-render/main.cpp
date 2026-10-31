@@ -155,10 +155,10 @@ bool compareEvents(const std::vector<std::string> &golden, const std::vector<std
     }
     if (i == golden.size() && i == actual.size())
     {
-        fmt::print("event log matches {} ({} grains)\n", goldenPath, golden.size());
+        fmt::print("event log matches {} ({} lines)\n", goldenPath, golden.size());
         return true;
     }
-    fmt::print("FAIL: event log differs from {} at line {} ({} golden grains, {} rendered)\n",
+    fmt::print("FAIL: event log differs from {} at line {} ({} golden lines, {} rendered)\n",
                goldenPath, i + 1, golden.size(), actual.size());
     fmt::print("  golden:   {}\n", i < golden.size() ? golden[i] : "(end of log)");
     fmt::print("  rendered: {}\n", i < actual.size() ? actual[i] : "(end of log)");
@@ -401,7 +401,7 @@ int run(int argc, char **argv)
 
     const auto frames = static_cast<int64_t>(audio.channels[0].size());
     const int64_t duration = gg::render::framesFor(spec->durationSeconds, spec->sampleRate);
-    fmt::print("{}: {} frames at {} Hz ({} + {} release tail), {} grains, peak {:.2f} dB, "
+    fmt::print("{}: {} frames at {} Hz ({} + {} release tail), {} grain events, peak {:.2f} dB, "
                "clickScore {:.2f}, nonFinite {}, denormals {}\n",
                specPath, frames, spec->sampleRate, duration, frames - duration, events.size(),
                metrics.peakDb, metrics.clickScore, metrics.nonFinite, metrics.denormals);

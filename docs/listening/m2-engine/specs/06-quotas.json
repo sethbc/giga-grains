@@ -1,0 +1,16 @@
+{
+  "mode": "fx",
+  "sampleRate": 48000,
+  "durationSeconds": 9.0,
+  "blockSize": 128,
+  "seed": 1,
+  "input": {"kind": "sweep", "startHz": 110, "endHz": 1760, "seconds": 9.0, "amplitude": 0.5},
+  "channels": 2,
+  "params": {"Mix": 1.0, "Level": -6.0, "Level B": -6.0, "Budget": 512,
+             "Density": 8.643856189774724, "Size": 0.0,
+             "B Density": 8.643856189774724, "B Size": 0.0, "B Pitch": 7},
+  "automation": [
+    {"time": 3.0, "param": "Layer B On", "value": 1},
+    {"time": 6.0, "param": "Layer B On", "value": 0}
+  ]
+}

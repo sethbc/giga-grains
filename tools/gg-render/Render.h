@@ -19,15 +19,23 @@
 
 namespace gg::render
 {
-/// One line of the grain-event log, without the newline:
+/// One line of the grain-event log for a grain that spawned, without the newline:
 /// `{"i":<index>,"layer":<layer>,"onset":<onsetSample>,"frac":<d>,"pos":<d>,"rate":<d>,"dur":<d>,`
-/// `"tex":<d>,"gain":<f>,"pan":<f>}`, "layer" being the layer that spawned it (0 to 3, A to D; M2
-/// sub-project 1's spec §6.7) and "tex" the grain's Texture (spec §4). Each <d> is fmt's shortest
-/// round-trip form of the double and each <f> that of the float, so the line reads back exactly and
-/// is byte-identical on every platform. The golden event logs are compared exactly per line (a CR
-/// before a newline, and the final newline, are ignored), which makes them the cross-platform
-/// determinism gate (INTENT §14, §19).
+/// `"tex":<d>,"tier":<t>,"lvl":<l>,"gain":<f>,"pan":<f>}`, "layer" being the layer that spawned it
+/// (0 to 3, A to D; M2 sub-project 1's spec §6.7), "tex" the grain's Texture (spec §4), "tier" the
+/// tier it latched (0 Eco, 1 Normal, 2 HQ) and "lvl" its latched mip level (M2 engine spec §6.7).
+/// Each <d> is fmt's shortest round-trip form of the double and each <f> that of the float, so the
+/// line reads back exactly and is byte-identical on every platform. The golden event logs are
+/// compared exactly per line (a CR before a newline, and the final newline, are ignored), which
+/// makes them the cross-platform determinism gate (INTENT §14, §19): it sees every decision of the
+/// overload ladder, the tier, the level and, through formatStealLine, the steals.
 std::string formatEventLine(uint32_t layer, const GrainSpec &g);
+
+/// One line of the grain-event log for a grain the overload ladder stole, without the newline:
+/// `{"i":<index>,"layer":<layer>,"steal":<onset>}`, "i" the stolen grain's index, "layer" its
+/// layer and "steal" the onset sample of the grain it made room for, whose line follows it at
+/// once (M2 engine spec §6.7).
+std::string formatStealLine(uint32_t layer, uint64_t index, int64_t onset);
 
 /// Renders the spec in its mode, in process() calls of blockSize frames (a part's last call may
 /// be shorter). The output is stereo, and bit-identical for any blockSize.
@@ -69,17 +77,21 @@ std::string formatEventLine(uint32_t layer, const GrainSpec &g);
 ///
 /// The spec must be one parseRenderSpec accepts, with its file paths resolved (resolvePaths).
 ///
-/// Each call's grains are collected in storage sized from CloudScheduler's minimum interval
-/// between onsets. If eventLines isn't null it is cleared and receives formatEventLine of every
-/// grain that spawned, in spawn order (in sample mode, all of them during the first D frames).
+/// Each call's grain events are collected in storage sized from CloudScheduler's minimum interval
+/// between onsets, two per spawn (a steal at most before each). If eventLines isn't null it is
+/// cleared and receives formatEventLine of every grain that spawned, in spawn order (in sample
+/// mode, all of them during the first D frames), and formatStealLine of every grain the overload
+/// ladder stole, right before the line of the grain it made room for: the engine's order in sample
+/// mode, the Processor's (piece, layer, report order) in the others. gg-render sets no quota in
+/// sample mode, so there only a full pool steals; in the others Budget sets the quotas.
 ///
 /// Throws:
 /// - BadInput for a file (source, sample or input) that can't be read or decoded, or whose path
 ///   isn't valid UTF-8, and for a preset that can't be read, is longer than kMaxStateBytes, isn't
 ///   a preset file, names a sample (until MEDI version 2), or is the other product's ("the
 ///   preset is for Giga Grains, not Giga Grains FX"); gg-render exits with status 2;
-/// - std::logic_error if a call spawns more grains than that storage holds, or, in sample mode,
-///   grains outlast the release tail or the tail would pass its defensive bound;
+/// - std::logic_error if a call reports more grain events than that storage holds, or, in
+///   sample mode, grains outlast the release tail or the tail would pass its defensive bound;
 /// - std::invalid_argument for an unknown parameter name, and for what makeSignal, makeSample and
 ///   makeInput reject but parseRenderSpec never produces;
 /// - std::bad_alloc if memory runs out.

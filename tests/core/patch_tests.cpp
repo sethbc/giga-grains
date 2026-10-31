@@ -3,8 +3,9 @@
 // Copyright 2026, the Giga Grains authors (see git history)
 
 // The patch: the slice's ten parameters (spec §4), Space's eight (sub-project 4's spec §6.5), the
-// Perform UI's ten (sub-project 5's spec §3.3, §4, §5) and M2's layers (M2 sub-project 1's spec
-// §6.9: 48 per layer, A to D, and nine globals; 218 in all), and their versioned XML state, through
+// Perform UI's ten (sub-project 5's spec §3.3, §4, §5), M2's layers (M2 sub-project 1's spec
+// §6.9: 48 per layer, A to D, and nine globals) and M2 sub-project 3's Quality, per layer, and
+// Budget (its spec §6.8; 223 in all), and their versioned XML state, through
 // gg-core's public API (gg/core/ParamIds.h, gg/core/PatchState.h) and its tinyxml-free internal
 // core/src/PatchXml.h, for each product's patch XML. This file never includes
 // sst-plugininfra or tinyxml (ruling M1-l). The IDs, names, ranges and defaults are spelled out
@@ -289,8 +290,8 @@ std::string handState(std::string_view params, std::string_view version = "2",
 
 TEST_CASE("param ids, names, ranges and defaults are pinned", "[core]")
 {
-    STATIC_REQUIRE(kParamCount == 218);
-    STATIC_REQUIRE(std::is_same_v<ParamValues, std::array<float, 218>>);
+    STATIC_REQUIRE(kParamCount == 223);
+    STATIC_REQUIRE(std::is_same_v<ParamValues, std::array<float, 223>>);
     STATIC_REQUIRE(std::is_same_v<std::underlying_type_t<ParamSlot>, uint16_t>);
     STATIC_REQUIRE(std::is_same_v<decltype(gg::core::kFeedbackMax), const float>);
     STATIC_REQUIRE(gg::core::kFeedbackMax == 0.95f);
@@ -342,8 +343,8 @@ TEST_CASE("param ids, names, ranges and defaults are pinned", "[core]")
     }
 
     // The stepped parameters, and only they, are integers: the switches (each layer's Freeze,
-    // Macro Freeze, the Layer On switches) and the choices (each layer's Source, LFO shapes and
-    // Step Length).
+    // Macro Freeze, the Layer On switches), the choices (each layer's Source, LFO shapes, Step
+    // Length and Quality) and Budget, a count.
     for (const Mode mode : {Mode::Fx, Mode::Instrument})
     {
         size_t steppedCount = 0;
@@ -356,7 +357,7 @@ TEST_CASE("param ids, names, ranges and defaults are pinned", "[core]")
             CHECK((gg::core::paramMeta(slot, mode).type ==
                    sst::basic_blocks::params::ParamMetaData::INT) == stepped);
         }
-        CHECK(steppedCount == 4 * 5 + 1 + 4);
+        CHECK(steppedCount == 4 * 6 + 1 + 4 + 1);
     }
 
     // Each layer parameter's CLAP module names its layer; a global's is empty.
@@ -393,11 +394,12 @@ TEST_CASE("param ids, names, ranges and defaults are pinned", "[core]")
     }
 
     // IDs that aren't ours: the reserved index 0, the never-used 0x0A to 0x10 of scope 0, scopes
-    // and indices one past the table, the reserved blocks, and the "unknown id" of the bad-state
-    // test.
-    for (clap_id unknown : {0x000000u, 0x00000Au, 0x000010u, 0x000022u, 0x010000u, 0x010031u,
-                            0x020000u, 0x020031u, 0x040031u, 0x050001u, 0x000040u, 0x01004Fu,
-                            0x030060u, 0x04007Fu, 0x777777u, CLAP_INVALID_ID})
+    // and indices one past the table, the reserved blocks' unused indices (all but 0x50), and the
+    // "unknown id" of the bad-state test.
+    for (clap_id unknown :
+         {0x000000u, 0x00000Au, 0x000010u, 0x000022u, 0x010000u, 0x010031u,      0x020000u,
+          0x020031u, 0x040031u, 0x050001u, 0x000040u, 0x01004Fu, 0x000051u,      0x010051u,
+          0x04005Fu, 0x030060u, 0x04007Fu, 0x050050u, 0x777777u, CLAP_INVALID_ID})
     {
         INFO("id " << unknown);
         CHECK_FALSE(gg::core::slotForId(unknown).has_value());
@@ -406,10 +408,12 @@ TEST_CASE("param ids, names, ranges and defaults are pinned", "[core]")
 
 TEST_CASE("the id table has the next free indices and the reserved blocks", "[core]")
 {
-    // M2 sub-project 1's spec §6.9: no index of this sub-project's falls in 0x40 to 0x7F (wave
+    // M2 sub-project 1's spec §6.9: no index of that sub-project's falls in 0x40 to 0x7F (wave
     // 2's), and the recorded next-free indices are the next free index below the reserved blocks,
     // one past the table's largest index below them, in the layer scopes and in scope 0. Wave 2's
-    // rows, inside their blocks, are left out of both checks.
+    // rows, inside their blocks, are left out of both checks. Of the blocks, only 0x50 is used,
+    // in every scope (1 to 4 and 0): M2 sub-project 3's Quality and Budget (its spec §6.8);
+    // 0x40 to 0x4F, 0x51 to 0x5F and 0x60 to 0x7F are free.
     STATIC_REQUIRE(gg::core::kReservedIndexBegin == 0x40u);
     STATIC_REQUIRE(gg::core::kReservedIndexEnd == 0x7Fu);
     STATIC_REQUIRE(gg::core::kNextFreeLayerIndex == 0x31u);
@@ -435,15 +439,46 @@ TEST_CASE("the id table has the next free indices and the reserved blocks", "[co
     CHECK(maxLayerIndex + 1 == gg::core::kNextFreeLayerIndex);
     CHECK(maxGlobalIndex + 1 == gg::core::kNextFreeGlobalIndex);
 
+    // The reserved blocks' indices in use, per scope: 0x50 alone, in each of the five.
+    std::array<std::vector<uint32_t>, 5> reservedUsed{};
+    for (size_t i = 0; i < kParamCount; ++i)
+    {
+        const clap_id id = kTable[i].id;
+        const uint32_t index = id & 0xFFFFu;
+        if (index >= gg::core::kReservedIndexBegin && index <= gg::core::kReservedIndexEnd)
+        {
+            reservedUsed.at(id >> 16).push_back(index);
+        }
+    }
+    for (size_t scope = 0; scope < reservedUsed.size(); ++scope)
+    {
+        INFO("scope " << scope);
+        CHECK(reservedUsed[scope] == std::vector<uint32_t>{0x50u});
+    }
+    STATIC_REQUIRE(gg::core::paramId(ParamSlot::Quality) == 0x010050u);
+    STATIC_REQUIRE(gg::core::paramId(ParamSlot::B_Quality) == 0x020050u);
+    STATIC_REQUIRE(gg::core::paramId(ParamSlot::C_Quality) == 0x030050u);
+    STATIC_REQUIRE(gg::core::paramId(ParamSlot::D_Quality) == 0x040050u);
+    STATIC_REQUIRE(gg::core::paramId(ParamSlot::Budget) == 0x000050u);
+    STATIC_REQUIRE(static_cast<size_t>(ParamSlot::Budget) == kParamCount - 1);
+
     // The helpers between a flat slot and (layer parameter, layer).
     using gg::core::LayerParam;
     using gg::core::LayerRef;
     STATIC_REQUIRE(gg::core::kLayers == 4);
-    STATIC_REQUIRE(gg::core::kLayerParamCount == 48);
+    STATIC_REQUIRE(gg::core::kLayerParamCount == 49);
     STATIC_REQUIRE(gg::core::layerParamIndex(LayerParam::Position) == 0x01u);
     STATIC_REQUIRE(gg::core::layerParamIndex(LayerParam::Diffusion) == 0x0Bu);
     STATIC_REQUIRE(gg::core::layerParamIndex(LayerParam::Source) == 0x0Cu);
     STATIC_REQUIRE(gg::core::layerParamIndex(LayerParam::Step16) == 0x30u);
+    STATIC_REQUIRE(gg::core::layerParamIndex(LayerParam::Quality) == 0x50u);
+    STATIC_REQUIRE(gg::core::slotForId(0x010050) == ParamSlot::Quality);
+    STATIC_REQUIRE(gg::core::slotForId(0x040050) == ParamSlot::D_Quality);
+    STATIC_REQUIRE(gg::core::slotForId(0x000050) == ParamSlot::Budget);
+    STATIC_REQUIRE(gg::core::layerOf(ParamSlot::Quality) == LayerRef{LayerParam::Quality, 0});
+    STATIC_REQUIRE(gg::core::layerOf(ParamSlot::C_Quality) == LayerRef{LayerParam::Quality, 2});
+    STATIC_REQUIRE(gg::core::layerOf(ParamSlot::Budget) == std::nullopt);
+    STATIC_REQUIRE(gg::core::layerSlot(LayerParam::Quality, 1) == ParamSlot::B_Quality);
     STATIC_REQUIRE(gg::core::slotForId(0x020001) == ParamSlot::B_Position);
     STATIC_REQUIRE(gg::core::layerOf(ParamSlot::D_Step16) == LayerRef{LayerParam::Step16, 3});
     STATIC_REQUIRE(gg::core::layerOf(ParamSlot::Feedback) == LayerRef{LayerParam::Feedback, 0});
@@ -631,6 +666,53 @@ TEST_CASE("a param missing from a state takes the product's default", "[core]")
         Loaded l = distinct();
         REQUIRE(l.load(full, mode));
         CHECK(l.valueBits() == Loaded{saved, 4, 0}.valueBits());
+    }
+}
+
+TEST_CASE("a state without Quality or Budget loads with their defaults", "[core]")
+{
+    // M2 sub-project 3's spec §6.8: the patch stays at version 2, so a state saved before Quality
+    // and Budget (an M1 or sub-project-1 session) loads with Quality Normal on every layer and
+    // Budget 4,096 in either product, and every other value as it was saved.
+    constexpr std::array<ParamSlot, 5> kNew{ParamSlot::Quality, ParamSlot::B_Quality,
+                                            ParamSlot::C_Quality, ParamSlot::D_Quality,
+                                            ParamSlot::Budget};
+    ParamValues saved = defaults();
+    saved[static_cast<size_t>(ParamSlot::Size)] = -1.0f;
+    saved[static_cast<size_t>(ParamSlot::B_Pitch)] = 7.0f;
+    for (const ParamSlot slot : kNew)
+    {
+        saved[static_cast<size_t>(slot)] = slot == ParamSlot::Budget ? 512.0f : 2.0f;
+    }
+    std::string state = toStateXml(saved, 9, kFxRoutes);
+    for (const ParamSlot slot : kNew)
+    {
+        const auto tag = R"(<p id=")" + std::to_string(gg::core::paramId(slot)) + R"(" )";
+        const auto from = state.find(tag);
+        REQUIRE(from != std::string::npos);
+        const auto to = state.find("/>", from);
+        REQUIRE(to != std::string::npos);
+        state = state.substr(0, from) + state.substr(to + 2);
+        REQUIRE(state.find(tag) == std::string::npos);
+    }
+
+    for (const Mode mode : {Mode::Fx, Mode::Instrument})
+    {
+        INFO((mode == Mode::Fx ? "fx" : "instrument"));
+        ParamValues want = saved;
+        for (const ParamSlot slot : kNew)
+        {
+            want[static_cast<size_t>(slot)] = slot == ParamSlot::Budget ? 4096.0f : 1.0f;
+        }
+        Loaded l = distinct();
+        REQUIRE(l.load(state, mode));
+        CHECK(l.valueBits() == Loaded{want, 0, 0}.valueBits());
+        CHECK(l[ParamSlot::Quality] == 1.0f);
+        CHECK(l[ParamSlot::D_Quality] == 1.0f);
+        CHECK(l[ParamSlot::Budget] == 4096.0f);
+        CHECK(l.seed == 9u);
+        CHECK(l.migratedFromVersion == 0u);
+        CHECK(sameRoutes(l.routes, kFxRoutes));
     }
 }
 
