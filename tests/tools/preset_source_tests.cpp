@@ -388,7 +388,10 @@ TEST_CASE("a preset for the other product, or that isn't one, is bad input", "[r
                                                  .channels = 1,
                                                  .sampleRate = 48000.0,
                                                  .frames = 1,
-                                                 .embed = false};
+                                                 .embed = false,
+                                                 .layer = 0,
+                                                 .contentPath = "",
+                                                 .audioId = 0};
     const auto sampled = dir / "sampled.ggpreset";
     writeBytes(sampled, gg::core::encodePreset(parseFixture("fx-test.json").info, withSample));
     fx["preset"] = utf8(sampled);
