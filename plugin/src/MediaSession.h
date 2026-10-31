@@ -170,9 +170,11 @@ class MediaSession
     /// Processor's setters throw (std::bad_alloc); the plugin then deactivates.
     void activate(core::Processor &processor, double sampleRate, uint32_t maxBlockSize);
     /// The plugin's deactivate(), with the audio thread stopped: the rings of D1 in `processor`
-    /// (if any) are kept for the next activation, converted there if its rate differs, as a
-    /// restore's are, and the loaders deactivate. Never throws: a ring that can't be kept is lost
-    /// with its Processor, as before.
+    /// (if any) are kept for the next activation as the frames copied (no encode or hash on the
+    /// host's main thread: the next save() makes the WAV bytes, cached while inactive), restored
+    /// there with no decode and converted if its rate differs, as a restore's are; the loaders
+    /// deactivate. Never throws: a ring that can't be kept is lost with its Processor, as
+    /// before.
     void deactivate(const core::Processor *processor, const core::ParamValues &values) noexcept;
     /// clap_plugin.on_main_thread, after the plugin has collected its exchanges: the loaders'
     /// finished work, then the Ring Length watcher while active.
@@ -228,6 +230,10 @@ class MediaSession
         // Held for the next activation: a ring restored while inactive, or kept at deactivate.
         std::optional<core::RingEntry> pendingEntry;
         std::shared_ptr<const std::string> pendingBytes; // null: filed, read from its path
+        // A ring kept at deactivate, as the frames it copied: pendingEntry has no fingerprint
+        // and pendingBytes is null until the next save() encodes it (then both are set), and
+        // activate() restores these frames, never decoding.
+        std::shared_ptr<SampleBuffer> pendingWindow;
         // A ring restored while active, from its offer until the audio thread adopts it or
         // declines it (restoreInFlight): what a save writes for the layer meanwhile, since the
         // Processor still plays the ring before it.

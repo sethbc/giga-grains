@@ -16,6 +16,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <fstream>
 #include <memory>
 #include <optional>
 #include <span>
@@ -1722,4 +1723,116 @@ TEST_CASE("a session saves no ring of a layer whose Source is Sample", "[plugin]
     REQUIRE(decoded(fx.save(), gg::core::Mode::Fx).rings[0].has_value());
     setParam(fx, idOf(LayerParam::Source, 0), 0.0); // Sample
     CHECK_FALSE(decoded(fx.save(), gg::core::Mode::Fx).rings[0].has_value());
+}
+
+TEST_CASE("a ring kept at deactivation is encoded only by the next save", "[plugin]")
+{
+    // The final review's I3: deactivate() runs on the host's main thread, so it keeps a held
+    // ring as the frames it copied and leaves the WAV bytes and their hash to the next save; the
+    // next activation restores those frames directly, with no decode. The bytes a save writes
+    // are the ones an active save writes, and the ring comes back bit for bit, at the same rate
+    // or converted as a restore converts it.
+    gg::test::useMediaScratch("ring-deactivate-lazy");
+    PluginUnderTest reference(kFxId);
+    frozenFx(reference);
+    const std::string referenceState = reference.save();
+    const gg::core::SessionState expected = decoded(referenceState, gg::core::Mode::Fx);
+    REQUIRE(expected.rings[0].has_value());
+    REQUIRE(expected.audio.size() == 1);
+
+    PluginUnderTest fx(kFxId);
+    frozenFx(fx);
+    const std::vector<float> window = gg::test::ringWindow(*fx.impl().processor(), 0);
+    const auto &media = fx.impl().media();
+    const uint32_t before = media.ringsEncoded();
+    fx.deactivate();
+    CHECK(media.ringsEncoded() == before); // nothing encoded at the deactivation
+    const gg::core::SessionState inactive = decoded(fx.save(), gg::core::Mode::Fx);
+    CHECK(media.ringsEncoded() == before + 1);
+    REQUIRE(inactive.rings[0].has_value());
+    CHECK(inactive.rings[0]->sha256Hex == expected.rings[0]->sha256Hex);
+    CHECK(inactive.rings[0]->fileSize == expected.rings[0]->fileSize);
+    CHECK(inactive.rings[0]->frames == expected.rings[0]->frames);
+    CHECK(inactive.rings[0]->splices == expected.rings[0]->splices);
+    REQUIRE(inactive.audio.size() == 1);
+    const bool sameBytes = inactive.audio[0].bytes == expected.audio[0].bytes;
+    CHECK(sameBytes);
+    fx.save();
+    CHECK(media.ringsEncoded() == before + 1); // encoded once while inactive
+
+    REQUIRE(fx.activate(kRate, kBlock));
+    CHECK(gg::test::ringWindow(*fx.impl().processor(), 0) == window);
+    fx.deactivate(); // and with no save between
+    REQUIRE(fx.activate(kRate, kBlock));
+    CHECK(gg::test::ringWindow(*fx.impl().processor(), 0) == window);
+
+    // At another rate, the frames kept convert as the saved state's bytes do.
+    fx.deactivate();
+    REQUIRE(fx.activate(44100.0, kBlock));
+    PluginUnderTest restored(kFxId);
+    REQUIRE(restored.valid());
+    REQUIRE(restored.load(referenceState));
+    REQUIRE(restored.activate(44100.0, kBlock));
+    const std::vector<float> converted = gg::test::ringWindow(*fx.impl().processor(), 0);
+    CHECK(converted.size() / 2 ==
+          static_cast<std::size_t>(std::llround(window.size() / 2 * 44100.0 / kRate)));
+    CHECK(converted == gg::test::ringWindow(*restored.impl().processor(), 0));
+}
+
+TEST_CASE("a deactivation with four 60 s rings copies them and encodes none", "[plugin][serial]")
+{
+    // The final review's I3, at its size: four frozen 60 s rings (23 MB of WAV each). Encoding
+    // and hashing them on the host's main thread took the deactivation hundreds of milliseconds
+    // (seconds for four 300 s rings); copying them is what it does now.
+    const fs::path dir = gg::test::useMediaScratch("ring-deactivate-four");
+    constexpr int64_t kFrames = 60 * 48000;
+    const auto window = ramp(kFrames);
+    gg::media::EncodedRing encoded = gg::media::encodeRing(*window);
+    fs::create_directories(dir / "captures");
+    const fs::path file = dir / "captures" / (encoded.sha256Hex + ".wav");
+    {
+        std::ofstream out(file, std::ios::binary);
+        out.write(encoded.wavBytes.data(), static_cast<std::streamsize>(encoded.wavBytes.size()));
+    }
+    gg::core::SessionState s = fxDefaults();
+    for (uint8_t l = 0; l < gg::core::kLayers; ++l)
+    {
+        s.values[slotIndex(LayerParam::Freeze, l)] = 1.0f;
+        s.values[slotIndex(LayerParam::RingLength, l)] = static_cast<float>(std::log2(60.0));
+        gg::core::RingEntry entry;
+        entry.layer = l;
+        entry.frames = kFrames;
+        entry.sampleRate = kRate;
+        entry.sha256Hex = encoded.sha256Hex;
+        entry.fileSize = encoded.size;
+        entry.absolutePath = gg::test::utf8(file);
+        s.rings[l] = entry;
+    }
+    s.values[static_cast<std::size_t>(ParamSlot::LayerBOn)] = 1.0f;
+    s.values[static_cast<std::size_t>(ParamSlot::LayerCOn)] = 1.0f;
+    s.values[static_cast<std::size_t>(ParamSlot::LayerDOn)] = 1.0f;
+    PluginUnderTest fx(kFxId);
+    REQUIRE(fx.valid());
+    REQUIRE(fx.load(gg::core::encodeState(s)));
+    REQUIRE(fx.activate(kRate, kBlock));
+    for (uint8_t l = 0; l < gg::core::kLayers; ++l)
+    {
+        REQUIRE(fx.impl().processor()->ringRead(l).storage->frames() == kFrames);
+    }
+    render(fx, 2, 0, nullptr, true);
+    const auto &media = fx.impl().media();
+    const uint32_t before = media.ringsEncoded();
+    const auto start = std::chrono::steady_clock::now();
+    fx.deactivate();
+    const double seconds =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    CHECK(media.ringsEncoded() == before);
+    INFO("the deactivation took " << seconds << " s");
+    CHECK(seconds < 2.0); // a bound on the copy, under any build
+    const gg::core::SessionState saved = decoded(fx.save(), gg::core::Mode::Fx);
+    for (uint8_t l = 0; l < gg::core::kLayers; ++l)
+    {
+        REQUIRE(saved.rings[l].has_value());
+        CHECK(saved.rings[l]->sha256Hex == encoded.sha256Hex);
+    }
 }

@@ -59,6 +59,65 @@ RestoredRing failure(std::string reason)
 }
 } // namespace
 
+namespace
+{
+/// restoreRing's work once the audio is in memory: `audio` checked against `entry.frames`,
+/// converted to `rate`, its newest frames at the storage's front with their levels and marks.
+RestoredRing restoreDecoded(const core::RingEntry &entry, std::shared_ptr<SampleBuffer> audio,
+                            double rate, int64_t ringFrames, uint32_t maxBlockSize)
+{
+    if (audio->frames() != entry.frames)
+    {
+        return failure("the ring's audio holds " + std::to_string(audio->frames()) +
+                       " frames, not the " + std::to_string(entry.frames) + " saved");
+    }
+
+    const double savedRate = audio->sampleRate();
+    audio = convertRate(std::move(audio), rate);
+    if (audio == nullptr)
+    {
+        return failure("the ring's rate conversion failed");
+    }
+
+    const int64_t frames = audio->frames();
+    const int64_t kept = std::min(frames, ringFrames);
+    const int64_t dropped = frames - kept;
+
+    RestoredRing out;
+    out.storage = std::make_unique<RingStorage>(ringFrames, maxBlockSize);
+    float *slots = out.storage->slots();
+    const float *left = audio->channel(0) + dropped;
+    const float *right = audio->channel(audio->channels() > 1 ? 1 : 0) + dropped;
+    for (int64_t k = 0; k < kept; ++k)
+    {
+        slots[2 * k] = left[k];
+        slots[2 * k + 1] = right[k];
+    }
+    const int64_t capacity = out.storage->capacity();
+    for (int64_t g = 0; g < RingStorage::kGuardFrames && g < capacity; ++g)
+    {
+        slots[2 * (capacity + g)] = slots[2 * g];
+        slots[2 * (capacity + g) + 1] = slots[2 * g + 1];
+    }
+    // The pyramid of the restored frames, as the ring's writes would have made it (spec §6.9;
+    // LiveSource::restoreStorage takes the levels filled).
+    fillLevels(*out.storage, 0, kept);
+    out.frames = kept;
+
+    const bool scaled = savedRate != rate;
+    for (const int64_t mark : entry.splices)
+    {
+        const int64_t at = scaled ? std::llround(double(mark) * rate / savedRate) : mark;
+        const int64_t moved = at - dropped;
+        if (moved >= 0 && moved < kept && (out.splices.empty() || moved > out.splices.back()))
+        {
+            out.splices.push_back(moved);
+        }
+    }
+    return out;
+}
+} // namespace
+
 RestoredRing restoreRing(const core::RingEntry &entry, std::string_view wavBytes, double rate,
                          int64_t ringFrames, uint32_t maxBlockSize, uint64_t maxDecodedBytes)
 {
@@ -90,56 +149,33 @@ RestoredRing restoreRing(const core::RingEntry &entry, std::string_view wavBytes
         {
             return failure(decoded.error);
         }
-        std::shared_ptr<SampleBuffer> audio = std::move(decoded.audio->buffer);
-        if (audio->frames() != entry.frames)
-        {
-            return failure("the ring's audio holds " + std::to_string(audio->frames()) +
-                           " frames, not the " + std::to_string(entry.frames) + " saved");
-        }
+        return restoreDecoded(entry, std::move(decoded.audio->buffer), rate, ringFrames,
+                              maxBlockSize);
+    }
+    catch (const std::bad_alloc &)
+    {
+        return failure("not enough memory to restore the ring");
+    }
+    catch (const std::exception &e)
+    {
+        return failure(std::string("the ring can't be restored: ") + e.what());
+    }
+}
 
-        const double savedRate = audio->sampleRate();
-        audio = convertRate(std::move(audio), rate);
-        if (audio == nullptr)
-        {
-            return failure("the ring's rate conversion failed");
-        }
-
-        const int64_t frames = audio->frames();
-        const int64_t kept = std::min(frames, ringFrames);
-        const int64_t dropped = frames - kept;
-
-        RestoredRing out;
-        out.storage = std::make_unique<RingStorage>(ringFrames, maxBlockSize);
-        float *slots = out.storage->slots();
-        const float *left = audio->channel(0) + dropped;
-        const float *right = audio->channel(audio->channels() > 1 ? 1 : 0) + dropped;
-        for (int64_t k = 0; k < kept; ++k)
-        {
-            slots[2 * k] = left[k];
-            slots[2 * k + 1] = right[k];
-        }
-        const int64_t capacity = out.storage->capacity();
-        for (int64_t g = 0; g < RingStorage::kGuardFrames && g < capacity; ++g)
-        {
-            slots[2 * (capacity + g)] = slots[2 * g];
-            slots[2 * (capacity + g) + 1] = slots[2 * g + 1];
-        }
-        // The pyramid of the restored frames, as the ring's writes would have made it (spec §6.9;
-        // LiveSource::restoreStorage takes the levels filled).
-        fillLevels(*out.storage, 0, kept);
-        out.frames = kept;
-
-        const bool scaled = savedRate != rate;
-        for (const int64_t mark : entry.splices)
-        {
-            const int64_t at = scaled ? std::llround(double(mark) * rate / savedRate) : mark;
-            const int64_t moved = at - dropped;
-            if (moved >= 0 && moved < kept && (out.splices.empty() || moved > out.splices.back()))
-            {
-                out.splices.push_back(moved);
-            }
-        }
-        return out;
+RestoredRing restoreRingFrom(const core::RingEntry &entry, std::shared_ptr<SampleBuffer> window,
+                             double rate, int64_t ringFrames, uint32_t maxBlockSize)
+{
+    if (!std::isfinite(rate) || rate <= 0.0 || ringFrames < 1)
+    {
+        return failure("the ring can't be restored: no rate or no length to restore it at");
+    }
+    if (window == nullptr)
+    {
+        return failure("the ring's audio is missing");
+    }
+    try
+    {
+        return restoreDecoded(entry, std::move(window), rate, ringFrames, maxBlockSize);
     }
     catch (const std::bad_alloc &)
     {

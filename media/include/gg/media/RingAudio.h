@@ -63,6 +63,14 @@ struct RestoredRing
 /// - On any failure `error` says why and `storage` is null. Mono audio is kept on both channels.
 RestoredRing restoreRing(const core::RingEntry &entry, std::string_view wavBytes, double rate,
                          int64_t ringFrames, uint32_t maxBlockSize, uint64_t maxDecodedBytes);
+
+/// restoreRing for a window already in memory, never decoded (a ring the plugin kept at a
+/// deactivation, MediaSession): `window`, which must hold `entry.frames` frames, converted from its
+/// own rate to `rate` when they differ, then kept, laid out and marked as restoreRing does.
+/// `window` is read, never written (convertRate gives a new buffer). Fails as restoreRing does,
+/// and for a null `window`.
+RestoredRing restoreRingFrom(const core::RingEntry &entry, std::shared_ptr<SampleBuffer> window,
+                             double rate, int64_t ringFrames, uint32_t maxBlockSize);
 } // namespace gg::media
 
 #endif // GG_MEDIA_RINGAUDIO_H

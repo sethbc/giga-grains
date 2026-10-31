@@ -255,6 +255,25 @@ std::optional<ReadDone> readWith(const core::Processor &processor, uint8_t layer
     return std::nullopt;
 }
 
+/// The RingEntry of a D1 window `done` read of layer `layer` at `rate`, with the marks inside
+/// it as offsets from its first frame; no fingerprint yet.
+core::RingEntry windowEntry(const ReadDone &done, uint8_t layer, double rate)
+{
+    core::RingEntry entry;
+    entry.layer = layer;
+    entry.frames = done.to - done.from;
+    entry.sampleRate = rate;
+    entry.channels = 2;
+    for (const int64_t m : done.marks)
+    {
+        if (m >= done.from && m < done.to)
+        {
+            entry.splices.push_back(m - done.from);
+        }
+    }
+    return entry;
+}
+
 /// readWith with no cache to probe.
 template <class Copy>
 std::optional<ReadDone> readWith(const core::Processor &processor, uint8_t layer,
@@ -348,6 +367,11 @@ uint64_t MediaSession::memoryUsedBytes() const noexcept
         {
             used += slot.pendingBytes->size();
         }
+        if (slot.pendingWindow != nullptr)
+        {
+            used += static_cast<uint64_t>(slot.pendingWindow->frames()) *
+                    slot.pendingWindow->channels() * sizeof(float);
+        }
         if (slot.offeredBytes != nullptr)
         {
             used += slot.offeredBytes->size();
@@ -440,17 +464,7 @@ std::optional<MediaSession::SavedRing> MediaSession::readForSave(const core::Pro
         slot.cacheOldest = done->from;
     }
     SavedRing out;
-    out.entry.layer = layer;
-    out.entry.frames = done->to - done->from;
-    out.entry.sampleRate = rate_;
-    out.entry.channels = 2;
-    for (const int64_t m : done->marks)
-    {
-        if (m >= done->from && m < done->to)
-        {
-            out.entry.splices.push_back(m - done->from);
-        }
-    }
+    out.entry = windowEntry(*done, layer, rate_);
     out.entry.sha256Hex = slot.encoded->sha256Hex;
     out.entry.fileSize = slot.encoded->size;
     // The bytes are shared with the cache: aliasing the encoded ring's string.
@@ -545,6 +559,17 @@ core::SessionState MediaSession::save(const core::ParamValues &values, uint64_t 
                 }
                 else if (slot.pendingEntry.has_value())
                 {
+                    if (slot.pendingWindow != nullptr && slot.pendingBytes == nullptr)
+                    {
+                        // Kept at deactivate as frames: encoded and hashed once, here.
+                        auto encoded = std::make_shared<media::EncodedRing>(
+                            media::encodeRing(*slot.pendingWindow));
+                        ++ringsEncoded_;
+                        slot.pendingEntry->sha256Hex = encoded->sha256Hex;
+                        slot.pendingEntry->fileSize = encoded->size;
+                        slot.pendingBytes =
+                            std::shared_ptr<const std::string>(encoded, &encoded->wavBytes);
+                    }
                     ring = SavedRing{*slot.pendingEntry, slot.pendingBytes};
                 }
                 if (failed)
@@ -630,6 +655,7 @@ MediaSession::Restored MediaSession::restore(core::SessionState state, double ac
         slot.captureStatus.clear();
         slot.pendingEntry.reset();
         slot.pendingBytes.reset();
+        slot.pendingWindow.reset();
         slot.offeredEntry.reset();
         slot.offeredBytes.reset();
         slot.cached = false;
@@ -825,8 +851,10 @@ void MediaSession::restoreHeld(core::Processor &processor, uint8_t layer)
     RingSlot &slot = rings_[layer];
     const core::RingEntry entry = std::move(*slot.pendingEntry);
     const std::shared_ptr<const std::string> bytes = std::move(slot.pendingBytes);
+    std::shared_ptr<SampleBuffer> window = std::move(slot.pendingWindow);
     slot.pendingEntry.reset();
     slot.pendingBytes.reset();
+    slot.pendingWindow.reset();
     refreshBudget();
     const int64_t frames = framesFor(processor.ringSecondsRequested(layer), rate_);
     const uint64_t need = ringBytesOf(frames, maxBlock_);
@@ -835,9 +863,13 @@ void MediaSession::restoreHeld(core::Processor &processor, uint8_t layer)
         slot.persistStatus = budget_.refusal(need);
         return;
     }
+    // A ring kept at deactivate is restored from its frames; one restored while inactive from
+    // its WAV bytes or its file.
     media::RestoredRing ring =
-        media::restoreRing(entry, bytes != nullptr ? std::string_view(*bytes) : "", rate_, frames,
-                           maxBlock_, decodeBound(budget_, need));
+        window != nullptr
+            ? media::restoreRingFrom(entry, std::move(window), rate_, frames, maxBlock_)
+            : media::restoreRing(entry, bytes != nullptr ? std::string_view(*bytes) : "", rate_,
+                                 frames, maxBlock_, decodeBound(budget_, need));
     if (ring.storage == nullptr)
     {
         slot.persistStatus = "ring not restored: " + ring.error;
@@ -868,13 +900,39 @@ void MediaSession::deactivate(const core::Processor *processor,
         }
         try
         {
-            // The audio thread is stopped: the read passes at once.
-            bool failed = false;
-            std::optional<SavedRing> ring = readForSave(*processor, l, values, failed);
-            if (ring.has_value())
+            // The audio thread is stopped: the read passes at once. The frames are copied, not
+            // encoded: the host's main thread waits for this, and four 300 s rings took seconds
+            // to encode and hash. The next save() does that, or the next activation restores the
+            // frames as they are.
+            std::shared_ptr<SampleBuffer> window;
+            const auto done =
+                readWith(*processor, l, windowOf(values, l, 0), 0,
+                         [&](const RingStorage &storage, int64_t from, int64_t to) {
+                             window = media::ringToBuffer(storage.slots(), storage.capacity(), from,
+                                                          to - from, rate_);
+                         });
+            if (done.has_value())
             {
-                slot.pendingEntry = std::move(ring->entry);
-                slot.pendingBytes = std::move(ring->bytes);
+                const auto lapped = static_cast<std::size_t>(done->valid - done->from);
+                for (uint32_t c = 0; c < 2; ++c)
+                {
+                    std::fill_n(window->channel(c), lapped, 0.0f); // none: nothing writes
+                }
+                core::RingEntry entry = windowEntry(*done, l, rate_);
+                std::shared_ptr<const std::string> bytes;
+                if (done->frozen && slot.cached && slot.encoded != nullptr &&
+                    slot.cacheEpoch == done->epoch && slot.cacheHead == done->head &&
+                    slot.cacheOldest == done->from)
+                {
+                    // A save encoded this very window: its bytes are kept with it.
+                    entry.sha256Hex = slot.encoded->sha256Hex;
+                    entry.fileSize = slot.encoded->size;
+                    bytes =
+                        std::shared_ptr<const std::string>(slot.encoded, &slot.encoded->wavBytes);
+                }
+                slot.pendingEntry = std::move(entry);
+                slot.pendingBytes = std::move(bytes);
+                slot.pendingWindow = std::move(window);
             }
         }
         catch (...)
