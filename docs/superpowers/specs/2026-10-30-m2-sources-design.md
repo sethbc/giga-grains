@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | **Approved by the programme manager 2026-10-30** against the programme design and INTENT, with the `AUDI` amendment confirmed (float32 WAV payloads, no libFLAC; INTENT §15 and §18 amended as §13 says) and three notes applied in place: this sub-project's §23 row takes the next free number at merge (sub-project 3 merges first; §13); the mod matrix's target rule for wave 2's layer parameters (refuse the modulators' controls by name, admit every other layer parameter) is sub-project 3's, so after the rebase Loop Length, Overdub and Splice are admitted and this sub-project tests that rather than implementing it (§6.3, §10); sub-project 5 adds `gg/media/ContentPaths.h` under `media/` as a new file only and passes the content roots to `findSample` (§6.7). **The director's decisions D1–D7, 2026-10-30, by forced choice, relayed by the programme manager: every recommended option** (option 1 of each), recorded in §8 and applied in place. **Built in part** 2026-10-30 (PR #19; INTENT §23 #68; the plan is `docs/superpowers/plans/2026-10-30-m2-sources.md`): everything in §6 but the ring pyramids (§6.9, Task 12, after sub-project 3 merges and this branch rebases onto it), with the goldens and listening pack (Task 10) in parallel with the documentation; then the final review and its fix wave. Amended in place, each marked **Amended**, by the build's rulings (INTENT §23 #68 names them SP-…): §6.1 (the splices' numbering and per-sample aging, SP-T1a and SP-T1b; the ring parameters on every kind, SP-T5c), §6.3 (`kPositionMax` and typing 100% on a Sample layer, SP-T2a and SP-T2b), §6.4 (the `AddSplice` anchor and the commands per group, SP-T5d; the ring read's check and order, SP-T5a; a capture's window, SP-T8a), §6.5 (draining sources not counted, SP-T7b; no ring adoption in `params.flush`, SP-T7a; `Engine::ringResized`, SP-T5b), §6.6 (the `<ring>` attributes, SP-T3d; the WAV header, SP-T3c; a missing payload and a newer `MEDI`, SP-T3a and SP-T3b; the saved ring's window, SP-T8a, SP-T8b and SP-T7c; the fingerprint cache, SP-T7d; the restore, SP-T6a, SP-T6b, SP-T7e and SP-T7g), §6.10 (`gg-render`'s state keys, SP-T8c), §6.11 (the `--quick` warm-up cap, SP-T9a), §12 (the count rules retired) and §13 (as made); and by Task 12a, §6.1, §6.2 and §9 (no click at a window change or a Resample switch, SP-T12aa to SP-T12ac) |
+| **Status** | **Approved by the programme manager 2026-10-30** against the programme design and INTENT, with the `AUDI` amendment confirmed (float32 WAV payloads, no libFLAC; INTENT §15 and §18 amended as §13 says) and three notes applied in place: this sub-project's §23 row takes the next free number at merge (sub-project 3 merges first; §13); the mod matrix's target rule for wave 2's layer parameters (refuse the modulators' controls by name, admit every other layer parameter) is sub-project 3's, so after the rebase Loop Length, Overdub and Splice are admitted and this sub-project tests that rather than implementing it (§6.3, §10); sub-project 5 adds `gg/media/ContentPaths.h` under `media/` as a new file only and passes the content roots to `findSample` (§6.7). **The director's decisions D1–D7, 2026-10-30, by forced choice, relayed by the programme manager: every recommended option** (option 1 of each), recorded in §8 and applied in place. **Built in part** 2026-10-30 (PR #19; INTENT §23 #68; the plan is `docs/superpowers/plans/2026-10-30-m2-sources.md`): everything in §6 but the ring pyramids (§6.9, Task 12, after sub-project 3 merges and this branch rebases onto it), with the goldens and listening pack (Task 10) in parallel with the documentation; then the final review and its fix wave. Amended in place, each marked **Amended**, by the build's rulings (INTENT §23 #68 names them SP-…): §6.1 (the splices' numbering and per-sample aging, SP-T1a and SP-T1b; the ring parameters on every kind, SP-T5c), §6.3 (`kPositionMax` and typing 100% on a Sample layer, SP-T2a and SP-T2b), §6.4 (the `AddSplice` anchor and the commands per group, SP-T5d; the ring read's check and order, SP-T5a; a capture's window, SP-T8a), §6.5 (draining sources not counted, SP-T7b; no ring adoption in `params.flush`, SP-T7a; `Engine::ringResized`, SP-T5b), §6.6 (the `<ring>` attributes, SP-T3d; the WAV header, SP-T3c; a missing payload and a newer `MEDI`, SP-T3a and SP-T3b; the saved ring's window, SP-T8a, SP-T8b and SP-T7c; the fingerprint cache, SP-T7d; the restore, SP-T6a, SP-T6b, SP-T7e and SP-T7g), §6.10 (`gg-render`'s state keys, SP-T8c), §6.11 (the `--quick` warm-up cap, SP-T9a), §12 (the count rules retired) and §13 (as made); and by Task 12a, §6.1, §6.2 and §9 (no click at a window change or a Resample switch, SP-T12aa to SP-T12ac); and by Task 12b, §6.5 (a ring shrink waits for its grains, SP-T12ad) |
 | **Milestone** | M2 Giga (INTENT §20, §23 #64), sub-project 2 of 7; wave 2, merged second (after 3, before 4) |
 | **Spec authority** | `INTENT.md`, then `docs/superpowers/specs/2026-10-29-m2-programme-design.md` (its §6.2, §7 and §12 are this sub-project's charter: realized here, not reopened). This document records how this sub-project implements them |
 | **Builds on** | M2 sub-project 1 as merged (`ab9f4e2`, PR #15; INTENT §23 #65): four layers each with a 16 s ring and two sample slots, the Source-kind parameter with `builtKind`, the per-layer `SourceExchange`, the 256-sample pieces and Feedback, the patch at version 2, the reserved index block `0x..40`–`0x..4F`; M1's `gg-media`, the `GGST` container, the loader and the search (§23 #48, #49, #53) |
@@ -409,7 +409,8 @@ Two things a parameter can't carry: adding a splice mark, and capturing the ring
   which converges because the gap is what the main thread took to copy, at most one more round
   on any machine that keeps up with audio; a frozen ring has no gap. Grains sounding read the same
   frames from the new storage (the whole window was copied), so the swap is inaudible; a grain
-  reading older than a shorter new window fades out by the window rule of §6.1. A restore's
+  reading older than a shorter new window fades out by the window rule of §6.1 (**amended**,
+  SP-T12ad: it was cut in one sample, so a shrink now waits for it; see below). A restore's
   storage arrives filled, with the head at its frame count, so no copy is needed. The exchange
   holds at most one storage in flight per layer, so the audio side's hand-back ring is unchanged
   in size.
@@ -422,6 +423,23 @@ Two things a parameter can't carry: adding a splice mark, and capturing the ring
   > adoptRings)`), a frozen restore held from that call's first sample; an offer without a ring
   > applies in a flush as before. After a resize the engine's Position and Spray reach the new
   > ring (`Engine::ringResized`, ruling SP-T5b).
+
+  > **Amended by ruling SP-T12ad (2026-10-30, Task 12b; the program manager's condition):** a
+  > grain sounding at a shrink's swap that read older than the new length was not faded but cut
+  > in one sample (its frames aren't in the new storage, and the fade's tail term drops to 0 at
+  > once: 275 to 2,754 against the click limit of 15 for 16 s to 4 s under dense grains). A shrink
+  > is now two phases. **First,** from the Ring Length's applied boundary the audio thread limits
+  > admission to the newest N′ frames less `kCapSlack` = 64 (the sinc's reach at level 3, so
+  > every tap of a grain admitted then stays M frames inside them; Position and Spray reach N′),
+  > and narrows the reads (the fade's and the taps' N) to N′ at the first sample from which no
+  > sounding grain would step at the change, checked at its own sample so the block split never
+  > moves it (`Engine::setRingLimit`). **Second,** the watcher copies and offers the shorter
+  > storage only once `RingMeta::readFrames` fits it, showing *resizing* meanwhile, and the audio
+  > thread declines a shorter ring than the reads reach (`Engine::liveRingFits`). After the first
+  > phase no grain reads outside the newest N′ frames and they read alike from either storage,
+  > so the swap is inaudible whenever it lands and the render no longer depends on when the main
+  > thread offers it. The limit stays in force after the swap, until the request changes. Growing
+  > is unchanged.
 - **The process-wide sample pool** (`gg::media::SamplePool`, main and loader threads, one mutex):
   prepared sources by key `(sha256, size, rate)`, held weakly; `prepare()` consults it before
   converting and building, and shares a live entry. Ten instances of one project hold one copy of
