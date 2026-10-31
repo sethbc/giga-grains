@@ -160,9 +160,9 @@ WAV, AIFF, FLAC and MP3 samples.
 ## Factory content (both products)
 
 The factory samples and presets that every installer's Content component carries. The samples are
-the zip released as the tag `v1` of https://github.com/sethbc/giga-grains-content, pinned by
-`content/pin.txt` (its SHA-256 is there, and the staged `content-version.txt` names the tag and
-the SHA-256). Every file in it is dedicated to the public domain under **CC0 1.0 Universal**:
+the zip released as the tag that `content/pin.txt` pins, in https://github.com/sethbc/giga-grains-content.
+`content/pin.txt` holds that tag and the zip's SHA-256, and the staged `content-version.txt` names
+both. Every file in it is dedicated to the public domain under **CC0 1.0 Universal**:
 recordings taken from the Versilian Community Sample Library (VCSL, which is CC0), and audio the
 Giga Grains authors generated with `gg-render`. CC0 asks for no notice and no credit; the legal
 code is in `licenses/CC0-1.0.txt` (and in the content's `LICENSE-CC0-1.0.txt`), and the content's

@@ -573,6 +573,14 @@ if (GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
     set_tests_properties(installer_content_staged PROPERTIES LABELS installer
             FIXTURES_REQUIRED gg_products)
 
+    # The Inno script's content component (spec §6.5): installer/windows/giga-grains.iss declares
+    # the Content component and a [Files] line that installs it. It reads the script, so it runs
+    # on every OS, and needs no products.
+    add_test(NAME installer_windows_iss_content
+            COMMAND ${CMAKE_COMMAND} -DISS=${PROJECT_SOURCE_DIR}/installer/windows/giga-grains.iss
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/installer/check-windows-iss.cmake)
+    set_tests_properties(installer_windows_iss_content PROPERTIES LABELS installer)
+
     # The license set (spec §6.3, carry-over row 221): gg-products/licenses/ holds exactly the
     # platform's notices and license texts, none of them a stub.
     add_test(NAME installer_license_set

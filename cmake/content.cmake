@@ -73,7 +73,7 @@ foreach (product IN ITEMS "Giga Grains" "Giga Grains FX")
     list(SORT gg_preset_sources)
     set(gg_product_outputs "")
     foreach (source IN LISTS gg_preset_sources)
-        get_filename_component(stem "${source}" NAME_WE)
+        get_filename_component(stem "${source}" NAME_WLE)
         set(output "${GG_PRESETS_DIR}/${product}/${stem}.ggpreset")
         add_custom_command(OUTPUT "${output}"
                 COMMAND gg-render --pack-preset "${source}" -o "${output}"

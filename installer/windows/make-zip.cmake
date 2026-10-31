@@ -18,8 +18,8 @@
 #                 which goes in as content/. Without it the zip has no content/.
 #
 # Every entry sits under giga-grains-<v>/: the four products, licenses/, readme.txt and, with
-# CONTENT, content/, the same tree as the Linux tarball. No install script: readme.txt says where each product goes, and the
-# Inno Setup installer (giga-grains.iss) puts them there.
+# CONTENT, content/, the same tree as the Linux tarball. No install script: readme.txt says where
+# each product goes, and the Inno Setup installer (giga-grains.iss) puts them there.
 #
 # It fails naming every missing input before it writes anything, and leaves no partial zip when
 # a later step fails. (file(COPY) stops the script itself on an error, before any zip exists,
@@ -105,7 +105,8 @@ file(COPY "${PRODUCTS}/Giga Grains.clap" "${PRODUCTS}/Giga Grains.vst3"
         "${PRODUCTS}/Giga Grains.exe" "${PRODUCTS}/Giga Grains FX.exe" "${PRODUCTS}/licenses"
         DESTINATION "${staging}/${top}")
 if (CONTENT)
-    # The folder's entries go under content/ (file(COPY) of a folder keeps its own name).
+    # The folder's entries go under content/: the trailing slash copies what is inside the folder,
+    # not the folder itself, so its own name is dropped.
     file(COPY "${CONTENT}/" DESTINATION "${staging}/${top}/content")
 endif ()
 file(COPY_FILE "${README}" "${staging}/${top}/readme.txt" RESULT copy_result)

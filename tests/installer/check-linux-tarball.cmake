@@ -14,8 +14,9 @@
 #   a gzip-compressed tar whose every entry sits under giga-grains-<FULL>/, holding the CLAP, the
 #   VST3 bundle's .so, the two standalones (executable), the license set (no ASIO SDK license:
 #   that is the Windows standalone's) and README.md (check-archive.cmake checks these); with
-#   CONTENT (passed as --content), also content/ with its Presets, Samples and PROVENANCE.md; extracted,
-#   its README.md is the one given and its licenses/ the products' license set, file for file.
+#   CONTENT (passed as --content), also content/ with its Presets, Samples and PROVENANCE.md;
+#   extracted, its README.md is the one given and its licenses/ the products' license set, file
+#   for file.
 # - MISSING: run on an empty products directory, the script exits 2 naming Giga Grains.clap and
 #   writes nothing.
 

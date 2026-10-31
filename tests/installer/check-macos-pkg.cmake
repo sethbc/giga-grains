@@ -15,7 +15,8 @@
 # - By default: the script exits 0 and its last line is `signed: no`; the PKG's Distribution
 #   names the five components (six with CONTENT, which is passed to the script as --content: the
 #   Content choice in the outline, its pkg-ref, and a component installing the staged folder's
-#   Presets, Samples and the rest at /Library/Application Support/sethbc/Giga Grains), the version, both architectures, macOS 11.0, the title and the
+#   Presets, Samples and the rest at /Library/Application Support/sethbc/Giga Grains), the
+#   version, both architectures, macOS 11.0, the title and the
 #   two panes; each component installs its one product where spec §6.4's table says, not
 #   relocatable; and the DMG is a UDZO image holding the PKG and Licenses/.
 # - MISSING: run on an empty products directory, the script exits 2 naming Giga Grains.clap and
