@@ -25,6 +25,7 @@
 #include <sst/cpputils/rtsan_support.h>
 
 #include "gg/core/Interpolate.h"
+#include "gg/core/MathDet.h"
 #include "gg/core/Rng.h"
 #include "gg/core/Window.h"
 #include "gg/engine/Engine.h"
@@ -3205,51 +3206,201 @@ int64_t wideSamples(const Pool &pool, const SampleSource &src, int64_t from, int
     return n;
 }
 
-// Over a sample source: the reader's random grains, and the same grains three in four stolen,
-// at each of the reader's decimations, from every source shape into two outputs and one, in one
-// call and in 24 random ones. The AVX2 table's output is the SSE table's and the
-// reference's, bit for bit, and the 8-wide interior renders most of it.
-template <class R> void requireAvx2SampleBits(const Dispatch &sse, const Dispatch &avx2)
+// The AVX2 check's grains cut at the source's end (carry-over row 300). `count` grains as
+// randomGrains makes them (durations 16–9,600, textures, pans, onsets over [−4,000, 8,000)), but
+// with rates 2^[−2, 2] from gg::exp2Det rather than std::exp2, so that, every other value coming
+// from gg::rng and plain IEEE arithmetic, the specs, and so which grains the edge cuts, are the
+// same bits on every platform and CPU. Three in four start where their read reaches the source's
+// last frame `cross` samples into their window, and so are cut there: one in eight of all with
+// fewer than kEdgeFade samples to go (a short span), the rest anywhere up to 4 samples before the
+// window closes. The other quarter start anywhere from 2,000 frames before the source to 2,000 past
+// its end, as randomGrains' do, so some of them are cut and some aren't.
+std::vector<gg::GrainSpec> avx2CutGrains()
+{
+    constexpr uint64_t kSeed = 113;
+    constexpr uint32_t kCount = 300;
+    const auto last = static_cast<double>(kNoiseFrames - 1);
+    std::vector<gg::GrainSpec> specs;
+    for (uint32_t k = 0; k < kCount; ++k)
+    {
+        const double rate = gg::exp2Det(-2.0 + 4.0 * u01(kSeed, 0, k));
+        const double frac = u01(kSeed, 1, k);
+        const double duration = 16.0 + u01(kSeed, 3, k) * (9600.0 - 16.0);
+        const double u = u01(kSeed, 2, k);
+        double start = -2000.0 + u * static_cast<double>(kNoiseFrames + 4000);
+        if (k % 4 != 0)
+        {
+            const double reach =
+                k % 8 == 1 ? std::min(254.0, duration - 5.0) : duration - 5.0; // cross <= reach + 1
+            start = last - rate * ((1.0 + u * reach) - frac);
+        }
+        specs.push_back({
+            .index = k,
+            .onsetSample = -4000 + static_cast<int64_t>(k) * 12000 / kCount,
+            .onsetFrac = frac,
+            .startPos = start,
+            .rate = rate,
+            .durationSamples = duration,
+            .texture = k % 4 == 1 ? 0.0 : u01(kSeed, 6, k),
+            .gain = 0.25f + 0.75f * static_cast<float>(u01(kSeed, 4, k)),
+            .pan = static_cast<float>(2.0 * u01(kSeed, 5, k) - 1.0),
+        });
+    }
+    return specs;
+}
+
+// How many of `edges` cut their grain (aren't kNoEdge), and how many of those within kEdgeFade
+// samples of the grain's onset.
+struct CutCount
+{
+    int64_t cut{0};
+    int64_t shortSpans{0};
+};
+CutCount cutCount(const std::vector<gg::GrainSpec> &specs, const std::vector<int64_t> &edges)
+{
+    CutCount n;
+    for (std::size_t k = 0; k < specs.size(); ++k)
+    {
+        if (edges[k] != gg::kNoEdge)
+        {
+            ++n.cut;
+            n.shortSpans += edges[k] - specs[k].onsetSample < gg::kEdgeFade;
+        }
+    }
+    return n;
+}
+
+// The AVX2 check's cut-grain pool: the counts it sees on every platform (pinned by "the avx2
+// check's preconditions hold on every platform", which runs where the check itself is skipped).
+constexpr int64_t kAvx2Cut = 230;
+constexpr int64_t kAvx2CutShort = 59;
+
+// The 60 grains apart: 200 samples between onsets and at most 178 long, each onset on a sample
+// (onsetFrac 0), so the interior's first lane has phase 0 and w exactly 0, into −0: a lane that
+// added there, where the reference skips, would leave +0 wherever its read is positive, since no
+// other grain has written the sample.
+std::vector<gg::GrainSpec> avx2ApartGrains()
+{
+    std::vector<gg::GrainSpec> sparse = randomGrains(109, 60, kNoiseFrames);
+    for (uint32_t k = 0; k < sparse.size(); ++k)
+    {
+        sparse[k].onsetSample = 200 * static_cast<int64_t>(k);
+        sparse[k].onsetFrac = 0.0;
+        sparse[k].startPos = 2000.0 + 1500.0 * k;
+        sparse[k].durationSamples = 16.0 + 18.0 * (k % 10);
+    }
+    return sparse;
+}
+
+// The AVX2 sample check's pools at decimation d: the reader's random grains, the same three in
+// four stolen, the cut grains (each cut at its edge in level-0 frames of the unscaled specs, the
+// same sample for the scaled ones), and the grains apart.
+struct Avx2SamplePools
+{
+    explicit Avx2SamplePools(uint32_t d)
+        : plain(atDecimation(randomGrains(103, 300, kNoiseFrames), d)),
+          stolen(atDecimation(randomGrains(103, 300, kNoiseFrames), d),
+                 stealsFor(atDecimation(randomGrains(103, 300, kNoiseFrames), d), 105)),
+          edged(atDecimation(avx2CutGrains(), d), edgesOf(avx2CutGrains(), kNoiseFrames), {}),
+          apart(atDecimation(avx2ApartGrains(), d))
+    {
+    }
+    Pool plain;
+    Pool stolen;
+    Pool edged;
+    Pool apart;
+};
+
+struct Avx2Shape
+{
+    const char *name;
+    SampleSource source;
+    int outputs;
+};
+std::vector<Avx2Shape> avx2Shapes(const Noise &src, uint32_t d)
+{
+    return {{"interleaved stereo, two outputs", src.stereo(d), 2},
+            {"planar stereo, two outputs", src.stereoPlanar(d), 2},
+            {"mono, two outputs", src.mono(d), 2},
+            {"stereo, one output", src.stereo(d), 1}};
+}
+
+// The AVX2 sample check's call k of 25: [0, 4096) and then 24 random ones.
+gg::kernels::detail::Run avx2Call(uint64_t k)
+{
+    const int64_t from = k == 0 ? 0 : -4000 + static_cast<int64_t>(u01(107, 0, k) * 22000.0);
+    const int64_t to = k == 0 ? 4096 : from + static_cast<int64_t>(u01(107, 1, k) * 512.0);
+    return {from, to};
+}
+
+// The AVX2 sample check's preconditions, which need no AVX2 table, so they also run where the
+// check is skipped (arm64; "the avx2 check's preconditions hold on every platform"): the cut
+// pool cuts exactly kAvx2Cut grains, kAvx2CutShort of them short spans; the 8-wide interior would
+// take over 1,000,000 of the samples rendered; and each source shape's grains apart render
+// something, over 2,000 samples of it 8-wide.
+template <class R> void requireAvx2SamplePreconditions()
 {
     const Tables &tables = kernelTables();
     const Noise src(kNoiseFrames, 101);
+    const std::vector<gg::GrainSpec> cutSpecs = avx2CutGrains();
+    const CutCount cut = cutCount(cutSpecs, edgesOf(cutSpecs, kNoiseFrames));
+    REQUIRE(cut.cut == kAvx2Cut);
+    REQUIRE(cut.shortSpans == kAvx2CutShort);
     int64_t wide = 0;
     for (const uint32_t d : decimationsOf<R>())
     {
-        const std::vector<gg::GrainSpec> unscaled = randomGrains(103, 300, kNoiseFrames);
-        const std::vector<gg::GrainSpec> specs = atDecimation(unscaled, d);
-        const Pool plain(specs);
-        const Pool stolen(specs, stealsFor(specs, 105));
-        // The same grains cut where they read past the source's end (carry-over row 300): the
-        // edge in level-0 frames of the unscaled specs, the same sample for the scaled ones.
-        const std::vector<int64_t> edges = edgesOf(unscaled, kNoiseFrames);
-        REQUIRE(std::count_if(edges.begin(), edges.end(),
-                              [](int64_t e) { return e != gg::kNoEdge; }) > 20);
-        const Pool edged(specs, edges, {});
-        struct Shape
+        const Avx2SamplePools pools(d);
+        for (const Pool *pool : {&pools.plain, &pools.stolen, &pools.edged})
         {
-            const char *name;
-            SampleSource source;
-            int outputs;
-        };
-        const Shape shapes[] = {{"interleaved stereo, two outputs", src.stereo(d), 2},
-                                {"planar stereo, two outputs", src.stereoPlanar(d), 2},
-                                {"mono, two outputs", src.mono(d), 2},
-                                {"stereo, one output", src.stereo(d), 1}};
-        for (const Pool *pool : {&plain, &stolen, &edged})
-        {
-            for (const Shape &shape : shapes)
+            for (const Avx2Shape &shape : avx2Shapes(src, d))
             {
-                INFO("decimation " << d << ", " << shape.name
-                                   << (pool == &stolen  ? ", stolen"
-                                       : pool == &edged ? ", cut at the edge"
-                                                        : ""));
                 for (uint64_t k = 0; k <= 24; ++k)
                 {
-                    const int64_t from =
-                        k == 0 ? 0 : -4000 + static_cast<int64_t>(u01(107, 0, k) * 22000.0);
-                    const int64_t to =
-                        k == 0 ? 4096 : from + static_cast<int64_t>(u01(107, 1, k) * 512.0);
+                    const gg::kernels::detail::Run call = avx2Call(k);
+                    wide += wideSamples<R>(*pool, shape.source, call.begin, call.end, 8);
+                }
+            }
+        }
+        for (const Avx2Shape &shape : avx2Shapes(src, d))
+        {
+            INFO("decimation " << d << ", " << shape.name << ", onsets on samples");
+            Buffers ref(0, 12000, shape.outputs, -0.0f);
+            renderAll<R>(Kernel::Ref, pools.apart, shape.source, ref, 0, 12000, tables);
+            REQUIRE(anyNonZero(ref.ch[0]));
+            REQUIRE(wideSamples<R>(pools.apart, shape.source, 0, 12000, 8) > 2000);
+        }
+    }
+    INFO("8-wide samples " << wide);
+    REQUIRE(wide > 1000000);
+}
+
+// Over a sample source: the reader's random grains, the same grains three in four stolen, and
+// grains cut at the source's end (avx2CutGrains), at each of the reader's decimations, from every
+// source shape into two outputs and one, in one call and in 24 random ones; and the grains apart,
+// onsets on samples, into −0. The AVX2 table's output is the SSE table's and the reference's, bit
+// for bit, and the 8-wide interior renders most of it (requireAvx2SamplePreconditions, also
+// checked here).
+template <class R> void requireAvx2SampleBits(const Dispatch &sse, const Dispatch &avx2)
+{
+    requireAvx2SamplePreconditions<R>();
+    const Tables &tables = kernelTables();
+    const Noise src(kNoiseFrames, 101);
+    for (const uint32_t d : decimationsOf<R>())
+    {
+        const Avx2SamplePools pools(d);
+        for (const Pool *pool : {&pools.plain, &pools.stolen, &pools.edged})
+        {
+            for (const Avx2Shape &shape : avx2Shapes(src, d))
+            {
+                INFO("decimation " << d << ", " << shape.name
+                                   << (pool == &pools.stolen  ? ", stolen"
+                                       : pool == &pools.edged ? ", cut at the edge"
+                                                              : ""));
+                for (uint64_t k = 0; k <= 24; ++k)
+                {
+                    const gg::kernels::detail::Run call = avx2Call(k);
+                    const int64_t from = call.begin;
+                    const int64_t to = call.end;
                     INFO("call " << k << ", [" << from << ", " << to << ")");
                     Buffers ref(from, to, shape.outputs);
                     Buffers a(from, to, shape.outputs);
@@ -3263,84 +3414,91 @@ template <class R> void requireAvx2SampleBits(const Dispatch &sse, const Dispatc
                         REQUIRE(sameBits(b.ch[c], a.ch[c]));
                         REQUIRE(sameBits(b.ch[c], ref.ch[c]));
                     }
-                    wide += wideSamples<R>(*pool, shape.source, from, to, 8);
                 }
             }
         }
-
-        // 60 grains apart, 200 samples between onsets and at most 178 long, each onset on a
-        // sample (onsetFrac 0), so the interior's first lane has phase 0 and w exactly 0, into −0:
-        // a lane that added there, where the reference skips, would leave +0 wherever its read
-        // is positive, since no other grain has written the sample.
-        std::vector<gg::GrainSpec> sparse = randomGrains(109, 60, kNoiseFrames);
-        for (uint32_t k = 0; k < sparse.size(); ++k)
-        {
-            sparse[k].onsetSample = 200 * static_cast<int64_t>(k);
-            sparse[k].onsetFrac = 0.0;
-            sparse[k].startPos = 2000.0 + 1500.0 * k;
-            sparse[k].durationSamples = 16.0 + 18.0 * (k % 10);
-        }
-        const Pool apart(atDecimation(sparse, d));
-        for (const Shape &shape : shapes)
+        for (const Avx2Shape &shape : avx2Shapes(src, d))
         {
             INFO("decimation " << d << ", " << shape.name << ", onsets on samples");
             Buffers ref(0, 12000, shape.outputs, -0.0f);
             Buffers b(0, 12000, shape.outputs, -0.0f);
-            renderAll<R>(Kernel::Ref, apart, shape.source, ref, 0, 12000, tables);
-            renderAllWith<R>(avx2, apart, shape.source, b, 0, 12000, tables);
-            REQUIRE(anyNonZero(ref.ch[0]));
+            renderAll<R>(Kernel::Ref, pools.apart, shape.source, ref, 0, 12000, tables);
+            renderAllWith<R>(avx2, pools.apart, shape.source, b, 0, 12000, tables);
             for (int c = 0; c < 2; ++c)
             {
                 REQUIRE(sameBits(b.ch[c], ref.ch[c]));
             }
-            REQUIRE(wideSamples<R>(apart, shape.source, 0, 12000, 8) > 2000);
         }
     }
-    REQUIRE(wide > 1000000);
 }
 
-// Over the live ring: grains of every kind (liveGrains), the same three in four stolen, and one in
-// eight apart with their onsets on samples (into −0, as the sample case's grains apart), over a
-// ring frozen and released at 12 samples, in ragged blocks and in blocks of 511, 8 (one 8-wide step
-// at most per part) and 7 (none), into two outputs and one. The AVX2 table's output is the SSE
-// table's and the reference's, bit for bit.
-template <class R> void requireAvx2LiveBits(const Dispatch &sse, const Dispatch &avx2)
+// The AVX2 live check's pools: grains of every kind (liveGrains), the same three in four stolen,
+// and one in eight apart with their onsets on samples (into −0, as the sample check's grains
+// apart), over a ring frozen and released at 12 samples.
+struct Avx2LiveSetup
 {
-    const Tables &tables = kernelTables();
-    const LiveInput input(60000, 111, freezeToggles(113, 12, 3000.0));
-    const std::vector<int64_t> heads = headTrajectory(input);
-    const std::vector<gg::GrainSpec> specs =
-        liveGrains(115, spreadOnsets(input.length - 10000, 200), heads, 24000);
-    const Pool plain(specs);
-    const Pool stolen(specs, stealsFor(specs, 117));
+    static std::vector<gg::GrainSpec> specs(const LiveInput &input,
+                                            const std::vector<int64_t> &heads)
+    {
+        return liveGrains(115, spreadOnsets(input.length - 10000, 200), heads, 24000);
+    }
     // Every eighth grain, 2,000 samples apart, its onset moved onto a sample and its length cut
     // to at most 1,900 samples.
-    std::vector<gg::GrainSpec> sparse;
-    for (std::size_t k = 0; k < specs.size(); k += 8)
+    static std::vector<gg::GrainSpec> sparse(const std::vector<gg::GrainSpec> &all)
     {
-        gg::GrainSpec g = specs[k];
-        g.onsetFrac = 0.0;
-        g.durationSamples = std::min(g.durationSamples, 1900.0);
-        sparse.push_back(g);
+        std::vector<gg::GrainSpec> out;
+        for (std::size_t k = 0; k < all.size(); k += 8)
+        {
+            gg::GrainSpec g = all[k];
+            g.onsetFrac = 0.0;
+            g.durationSamples = std::min(g.durationSamples, 1900.0);
+            out.push_back(g);
+        }
+        return out;
     }
-    const Pool apart(sparse);
-    const std::vector<int64_t> ragged = {61, 64, 1, 128, 3, 250, 2, 37, 511};
-    int64_t wide = 0;
-    for (const Pool *pool : {&plain, &stolen, &apart})
+    Avx2LiveSetup()
+        : input(60000, 111, freezeToggles(113, 12, 3000.0)), heads(headTrajectory(input)),
+          plain(specs(input, heads)),
+          stolen(specs(input, heads), stealsFor(specs(input, heads), 117)),
+          apart(sparse(specs(input, heads)))
     {
-        for (const std::vector<int64_t> &lengths :
-             {ragged, std::vector<int64_t>{511}, std::vector<int64_t>{8}, std::vector<int64_t>{7}})
+    }
+    LiveInput input;
+    std::vector<int64_t> heads;
+    Pool plain;
+    Pool stolen;
+    Pool apart;
+    // In ragged blocks and in blocks of 511, 8 (one 8-wide step at most per part) and 7 (none).
+    const std::vector<std::vector<int64_t>> lengths{
+        {61, 64, 1, 128, 3, 250, 2, 37, 511}, {511}, {8}, {7}};
+};
+
+// The AVX2 live check, through `sse` and `avx2` when given (both or neither), and its
+// preconditions, which need no AVX2 table, so they also run where the check is skipped: every
+// reference render is non-zero, and the 8-wide interior would take over 1,000,000 samples. With
+// both tables, the AVX2 table's output is the SSE table's and the reference's, bit for bit.
+// Without them the reference is rendered in one block pattern only (blocks of 511): its output is
+// the same bits in every pattern (the live kernel cases' block-size invariance), so whether it is
+// non-zero is too, and the 8-wide count still covers all four.
+template <class R> void requireAvx2Live(const Dispatch *sse, const Dispatch *avx2)
+{
+    const Tables &tables = kernelTables();
+    const Avx2LiveSetup setup;
+    int64_t wide = 0;
+    for (const Pool *pool : {&setup.plain, &setup.stolen, &setup.apart})
+    {
+        for (const std::vector<int64_t> &lengths : setup.lengths)
         {
             for (const int outputs : {2, 1})
             {
                 INFO(outputs << " outputs, first block " << lengths[0]
-                             << (pool == &stolen  ? ", stolen"
-                                 : pool == &apart ? ", onsets on samples"
-                                                  : ""));
-                const float fill = pool == &apart ? -0.0f : 0.0f;
-                Buffers ref(0, input.length, outputs, fill);
-                Buffers a(0, input.length, outputs, fill);
-                Buffers b(0, input.length, outputs, fill);
+                             << (pool == &setup.stolen  ? ", stolen"
+                                 : pool == &setup.apart ? ", onsets on samples"
+                                                        : ""));
+                const float fill = pool == &setup.apart ? -0.0f : 0.0f;
+                Buffers ref(0, setup.input.length, outputs, fill);
+                Buffers a(0, setup.input.length, outputs, fill);
+                Buffers b(0, setup.input.length, outputs, fill);
                 const gg::kernels::Output refOut = ref.output();
                 const gg::kernels::Output aOut = a.output();
                 const gg::kernels::Output bOut = b.output();
@@ -3348,11 +3506,19 @@ template <class R> void requireAvx2LiveBits(const Dispatch &sse, const Dispatch 
                 ActiveGrains active(*pool);
                 gg::LiveSource ring;
                 prepareRing(ring);
-                driveRing(ring, input, lengths, [&](int64_t from, int64_t to) {
+                const bool renderRef = sse != nullptr || &lengths == &setup.lengths[1];
+                driveRing(ring, setup.input, lengths, [&](int64_t from, int64_t to) {
                     active.each(from, to, [&](uint32_t i) {
-                        gg::kernels::renderLiveRef<R>(rows, i, ring, 1u, refOut, from, to, tables);
-                        liveKernel<R>(sse)(rows, i, ring, 1u, aOut, from, to, tables);
-                        liveKernel<R>(avx2)(rows, i, ring, 1u, bOut, from, to, tables);
+                        if (renderRef)
+                        {
+                            gg::kernels::renderLiveRef<R>(rows, i, ring, 1u, refOut, from, to,
+                                                          tables);
+                        }
+                        if (sse != nullptr && avx2 != nullptr)
+                        {
+                            liveKernel<R> (*sse)(rows, i, ring, 1u, aOut, from, to, tables);
+                            liveKernel<R> (*avx2)(rows, i, ring, 1u, bOut, from, to, tables);
+                        }
                         if (std::max(from, rows.onsetSample[i]) < std::min(to, rows.endSample[i]))
                         {
                             const gg::kernels::LiveInterior in =
@@ -3362,15 +3528,22 @@ template <class R> void requireAvx2LiveBits(const Dispatch &sse, const Dispatch 
                         }
                     });
                 });
-                REQUIRE(anyNonZero(ref.ch[0]));
-                for (int c = 0; c < 2; ++c)
+                if (renderRef)
                 {
-                    REQUIRE(sameBits(b.ch[c], a.ch[c]));
-                    REQUIRE(sameBits(b.ch[c], ref.ch[c]));
+                    REQUIRE(anyNonZero(ref.ch[0]));
+                }
+                if (sse != nullptr && avx2 != nullptr)
+                {
+                    for (int c = 0; c < 2; ++c)
+                    {
+                        REQUIRE(sameBits(b.ch[c], a.ch[c]));
+                        REQUIRE(sameBits(b.ch[c], ref.ch[c]));
+                    }
                 }
             }
         }
     }
+    INFO("8-wide samples " << wide);
     REQUIRE(wide > 1000000);
 }
 
@@ -3434,9 +3607,9 @@ TEST_CASE("the avx2 kernels match the sse kernels bit for bit", "[kernel]")
     }
     SECTION("the live ring")
     {
-        requireAvx2LiveBits<Hermite>(sse, *avx2);
-        requireAvx2LiveBits<Linear>(sse, *avx2);
-        requireAvx2LiveBits<Sinc>(sse, *avx2);
+        requireAvx2Live<Hermite>(&sse, avx2);
+        requireAvx2Live<Linear>(&sse, avx2);
+        requireAvx2Live<Sinc>(&sse, avx2);
     }
     SECTION("an engine on each table")
     {
@@ -3449,6 +3622,26 @@ TEST_CASE("the avx2 kernels match the sse kernels bit for bit", "[kernel]")
             REQUIRE(anyNonZero(a));
             REQUIRE(sameBits(a, b));
         }
+    }
+}
+
+TEST_CASE("the avx2 check's preconditions hold on every platform", "[kernel]")
+{
+    // "the avx2 kernels match the sse kernels bit for bit" is skipped where there is no AVX2
+    // table (arm64, an SSE-only CPU), so its preconditions, which need none, are checked here as
+    // well, with the same pools, calls and counts: a setup that stopped meeting them would fail
+    // here on every platform, not first on CI's x86 legs. The pools come from fixed seeds through
+    // gg::rng (the cut grains' rates through gg::exp2Det), so the counts don't depend on the CPU.
+    requireAvx2SamplePreconditions<Hermite>();
+    requireAvx2SamplePreconditions<Linear>();
+    requireAvx2SamplePreconditions<Sinc>();
+    requireAvx2Live<Hermite>(nullptr, nullptr);
+    requireAvx2Live<Linear>(nullptr, nullptr);
+    requireAvx2Live<Sinc>(nullptr, nullptr);
+    const std::shared_ptr<gg::SampleBuffer> source = engineNoise();
+    for (const gg::Tier tier : {gg::Tier::Normal, gg::Tier::Eco, gg::Tier::HQ})
+    {
+        REQUIRE(anyNonZero(renderEngineWith(gg::KernelChoice::Sse, tier, source)));
     }
 }
 
