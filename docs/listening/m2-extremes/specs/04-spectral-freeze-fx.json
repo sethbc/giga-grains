@@ -1,0 +1,26 @@
+{
+  "mode": "fx",
+  "sampleRate": 48000,
+  "durationSeconds": 10.0,
+  "blockSize": 128,
+  "seed": 1,
+  "input": {
+    "kind": "file",
+    "path": "loop-48k.wav"
+  },
+  "params": {
+    "Mix": 1.0,
+    "A Source": 3,
+    "Position": 0.28,
+    "Density": 5.0,
+    "Size": -2.321928094887362,
+    "Level": 6.0
+  },
+  "automation": [
+    {
+      "time": 3.0,
+      "param": "Freeze",
+      "value": 1
+    }
+  ]
+}

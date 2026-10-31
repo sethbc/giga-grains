@@ -31,6 +31,7 @@
 #include "gg/core/PatchState.h"
 #include "gg/core/Processor.h"
 #include "core/LayersFixture.h"
+#include "gg/engine/Engine.h"
 #include "gg/grain/Budget.h"
 #include "gg/metrics/Metrics.h"
 #include "gg/source/PreparedSource.h"
@@ -611,12 +612,12 @@ TEST_CASE("grain events come in piece, layer, spawn order", "[core][layers]")
 
 TEST_CASE("the unbuilt kinds fall back to the product's default", "[core][layers]")
 {
-    // Spec §6.4: Resample, Spectral and Oscillator render as Live in the FX and as Sample in the
-    // instrument, the parameter keeping its value.
+    // Spec §6.4: Resample and Oscillator render as Live in the FX and as Sample in the
+    // instrument, the parameter keeping its value (Spectral is built: spectral_processor_tests).
     float l[1];
     float r[1];
     float *out[2] = {l, r};
-    for (const float kind : {2.0f, 3.0f, 4.0f})
+    for (const float kind : {2.0f, 4.0f})
     {
         INFO("Source " << kind);
         Processor fx({kRate, 512, 1, Mode::Fx});
@@ -665,6 +666,9 @@ TEST_CASE("four layers are block-size invariant", "[core][layers][determinism]")
         INFO("layer " << L);
         REQUIRE(ref.log.layer(L).size() > 10);
     }
+    // Not vacuous: grains went to bus 2 (the automation moves Bus Split).
+    REQUIRE(std::count_if(ref.log.events.begin(), ref.log.events.end(),
+                          [](const Log::Event &e) { return e.grain.bus == 1; }) > 10);
     // Not vacuous: some layer went off for longer than its ramp and came back, so its engine was
     // re-enabled with a forced onset on a grid boundary.
     bool forcedOnset = false;
@@ -694,6 +698,62 @@ TEST_CASE("four layers are block-size invariant", "[core][layers][determinism]")
                                << split.blockSizes.front() << " of " << split.blockSizes.size());
         LayersRender r;
         renderLayers(input, events, split.maxBlock, split.blockSizes, r);
+        REQUIRE_FALSE(r.log.overflowed);
+        for (uint32_t L = 0; L < 4; ++L)
+        {
+            INFO("layer " << L);
+            REQUIRE(r.log.layer(L) == ref.log.layer(L));
+            REQUIRE(r.heads[L] == ref.heads[L]);
+        }
+        REQUIRE(sameBits(ref.audio.left, r.audio.left));
+        REQUIRE(sameBits(ref.audio.right, r.audio.right));
+    }
+}
+
+TEST_CASE("four Spectral layers over their rings are block-size invariant",
+          "[core][layers][spectral][determinism]")
+{
+    // The FX's default Spectral case (the extremes spec §10; its final review): four layers with
+    // no sample, each smearing its own live ring, with every other parameter of the fixture
+    // automated, Smear among them. The same bits, the same grains per layer and the same ring
+    // heads at any host block size and maxBlockSize.
+    const Stereo input = noise(kInvarianceFrames, 0.5f, 49);
+    const auto events = layerAutomationKeepingKinds();
+    REQUIRE(std::any_of(events.begin(), events.end(), [](const TimedEvent &e) {
+        return e.slot == slotOf(LayerParam::Smear, 2);
+    }));
+
+    LayersRender ref;
+    renderLayers(input, events, 4096, {4096}, ref, spectralRingSetup());
+    REQUIRE(allFinite(ref.audio.left));
+    REQUIRE(allFinite(ref.audio.right));
+    REQUIRE(peak(ref.audio.left) > 0.05f);
+    REQUIRE_FALSE(ref.log.overflowed);
+    for (uint32_t L = 0; L < 4; ++L)
+    {
+        INFO("layer " << L);
+        REQUIRE(ref.log.layer(L).size() > 10);
+    }
+    // Not vacuous: every grain reads the smear's ring, and some went to bus 2.
+    REQUIRE(std::all_of(ref.log.events.begin(), ref.log.events.end(), [](const Log::Event &e) {
+        return e.grain.sourceSlot == gg::Engine::kSpectralSlot;
+    }));
+    REQUIRE(std::count_if(ref.log.events.begin(), ref.log.events.end(),
+                          [](const Log::Event &e) { return e.grain.bus == 1; }) > 10);
+
+    struct Split
+    {
+        uint32_t maxBlock;
+        std::vector<uint32_t> blockSizes;
+    };
+    std::vector<Split> splits{{4096, {1}}, {4096, {32}}, {4096, {511}}, {64, {4096}}};
+    splits.push_back({4096, randomSplit(403)});
+    for (const Split &split : splits)
+    {
+        INFO("maxBlockSize = " << split.maxBlock << ", first block size = "
+                               << split.blockSizes.front() << " of " << split.blockSizes.size());
+        LayersRender r;
+        renderLayers(input, events, split.maxBlock, split.blockSizes, r, spectralRingSetup());
         REQUIRE_FALSE(r.log.overflowed);
         for (uint32_t L = 0; L < 4; ++L)
         {
@@ -941,7 +1001,7 @@ void requireSetBasesMatchesSetBase(Mode mode, const gg::core::ParamValues &value
 TEST_CASE("setBases is setBase on every slot in slot order", "[core][layers]")
 {
     // Ruling FR-3: a state load (an offer's values, the plugin's activation and loaded state)
-    // recomputes the effective values once. For a load with no Freeze on, its result is the 223
+    // recomputes the effective values once. For a load with no Freeze on, its result is the 263
     // calls' bit for bit: on fresh Processors, after a pre-roll with a ramp running, and back to
     // the defaults again. (A load with Freeze on arms by ruling FR-8: the next test.)
     for (const Mode mode : {Mode::Fx, Mode::Instrument})

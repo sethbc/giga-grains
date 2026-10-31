@@ -46,6 +46,9 @@ struct GrainSpec
     /// (Engine::kLiveSlot), the live ring (kept when the source mode changes;
     /// Engine::setSourceMode).
     uint8_t sourceSlot{0};
+    /// The layer bus the grain renders into, 0 or 1 (extremes spec §6.3; GrainDraw::bus),
+    /// latched at its onset.
+    uint8_t bus{0};
     /// What the grain costs while it sounds, grainWeight(tier, stereo) (Budget.h): latched by
     /// Engine::admit with the tier the ladder chose. The pool's ledger sums it.
     uint8_t weight{4};
@@ -53,8 +56,8 @@ struct GrainSpec
     /// the engine sets it.
     uint8_t level{0};
 
-    /// Every member, sourceSlot included (as the plan asked): two grains that differ only in
-    /// the slot they read compare unequal. Only tests compare GrainSpecs.
+    /// Every member, sourceSlot and bus included (as the plan asked): two grains that differ
+    /// only in the slot they read, or their bus, compare unequal. Only tests compare GrainSpecs.
     friend bool operator==(const GrainSpec &, const GrainSpec &) = default;
 };
 
@@ -165,6 +168,7 @@ struct GrainRows
     const float *pan;
     const Tier *tier;
     const uint8_t *sourceSlot;
+    const uint8_t *bus;        ///< GrainSpec::bus
     const int64_t *endSample;  ///< grainEndSample of each
     const double *invDuration; ///< 1.0 / durationSamples
     const float *gainL;        ///< gain × panGains(pan).left
@@ -359,6 +363,7 @@ class GrainPool
     std::vector<float> pan_;
     std::vector<Tier> tier_;
     std::vector<uint8_t> sourceSlot_;
+    std::vector<uint8_t> bus_;
     std::vector<int64_t> endSample_;
     std::vector<double> invDuration_;
     std::vector<float> gainL_;

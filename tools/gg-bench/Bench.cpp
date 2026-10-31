@@ -4,7 +4,10 @@
 
 // The kernel cases time the prototype grain kernels in Kernels.h. They are the M0 kernel
 // benchmark spike, whose numbers set the CPU target in INTENT §16. The reference case is one of
-// them, renderHermiteSimd, under its own name.
+// them, renderHermiteSimd, under its own name. hermite-simd-grainfilter (GrainFilterKernel.h) is
+// INTENT §22's measurement (M2 extremes spec §6.10): hermite-simd with a CytomicSVF per grain,
+// over the same workload; its configuration also keeps the grains' filters, one per batch slot,
+// and starts a respawned grain's filter from silence.
 //
 // The workload is a 60 s stereo noise source at 48 kHz, read by Options::grains grains (2,000 by
 // default) of 100 ms. Each grain has a random position and a random rate in [0.5, 2]. A timed
@@ -22,7 +25,9 @@
 // engine-layers-full (M2 layers spec §6.12, report-only), then engine-sample-hq,
 // engine-sample-hq-up and engine-overload (M2 engine spec §6.10, report-only; engine-overload
 // sets its engine's quota, EngineSetup::quota, before the warm-up), then engine-sample-sse (the
-// AVX2 spike, spec §6.12, report-only: X on the 4-wide kernels). Each one-layer case owns a
+// AVX2 spike, spec §6.12, report-only: X on the 4-wide kernels), then the extremes'
+// engine-sample-smear, engine-buses and engine-spectral (M2 extremes spec §6.10, report-only).
+// Each one-layer case owns a
 // gg::Engine (48 kHz, maxBlockSize 256, seeded with the bench seed) rendering one Cloud stream of
 // Options::grains overlapping grains of 100 ms (density grains / 0.1 Hz, periodic) at +7
 // semitones, stereo 1, over the same noise: in Sample mode the noise is the source; in Live mode
@@ -71,9 +76,13 @@
 
 #include <nlohmann/json.hpp>
 
+#include "GrainFilterKernel.h"
 #include "Kernels.h"
+#include "fx/BusFilter.h"
+#include "gg/core/Delay.h"
 #include "gg/core/DenormalGuard.h"
 #include "gg/core/Diffuser.h"
+#include "gg/core/Limiter.h"
 #include "gg/core/ParamMap.h"
 #include "gg/core/Rng.h"
 #include "gg/core/SpaceReverb.h"
@@ -125,6 +134,9 @@ constexpr std::array<KernelInfo, 5> kKernels{{
 /// The CPU gate's yardstick: M0's hermite-simd, frozen (see Kernels.h).
 constexpr KernelInfo kReferenceKernel{kReference, renderHermiteSimd};
 
+/// INTENT §22's per-grain filter spike (GrainFilterKernel.h), listed after hermite-simd.
+constexpr const char *kGrainFilter = "hermite-simd-grainfilter";
+
 /// Which quantity a draw is for; each gets its own RNG stream.
 enum Stream : uint32_t
 {
@@ -172,14 +184,42 @@ struct Noise
 
 volatile double gSink = 0.0; // the rendered output feeds this, so it can't be optimised away
 
+/// A kernel of Kernels.h: it keeps no state, so a respawned grain needs nothing.
+struct PlainKernel
+{
+    Kernel fn;
+
+    void operator()(const GrainBatch &b, const float *srcL, const float *srcR, int64_t frames,
+                    float *outL, float *outR, uint32_t n) const noexcept
+    {
+        fn(b, srcL, srcR, frames, outL, outR, n);
+    }
+    void respawned(std::size_t) noexcept {}
+};
+
+/// hermite-simd-grainfilter: renderHermiteSimdGrainFilter over its own filters, one per grain
+/// slot; a respawned grain's filter starts from silence.
+struct GrainFilterKernel
+{
+    GrainFilterBank bank;
+
+    void operator()(const GrainBatch &b, const float *srcL, const float *srcR, int64_t frames,
+                    float *outL, float *outR, uint32_t n) noexcept
+    {
+        renderHermiteSimdGrainFilter(bank, b, srcL, srcR, frames, outL, outR, n);
+    }
+    void respawned(std::size_t g) noexcept { bank.reset(g); }
+};
+
 /// One kernel at one block size, with grains that keep reading the source: whenever a grain's
-/// window ends, the grain respawns at a new random position and rate.
-class KernelConfiguration final : public Configuration
+/// window ends, the grain respawns at a new random position and rate. Render is PlainKernel or
+/// GrainFilterKernel.
+template <typename Render> class KernelConfiguration final : public Configuration
 {
   public:
-    KernelConfiguration(const KernelInfo &kernel, uint32_t blockSize, const Noise &source,
+    KernelConfiguration(const char *name, Render render, uint32_t blockSize, const Noise &source,
                         uint32_t grains, double warmUpSeconds)
-        : Configuration(kernel.name, "kernel", blockSize), fn_(kernel.fn), source_(source),
+        : Configuration(name, "kernel", blockSize), render_(std::move(render)), source_(source),
           warmUpSeconds_(warmUpSeconds), outL_(blockSize), outR_(blockSize)
     {
         // The same starting grains for every configuration, with their windows at staggered
@@ -207,8 +247,8 @@ class KernelConfiguration final : public Configuration
         {
             std::fill_n(outL_.begin(), n, 0.0f);
             std::fill_n(outR_.begin(), n, 0.0f);
-            fn_(grains_, source_.left(), source_.right(), kSourceFrames, outL_.data(), outR_.data(),
-                n);
+            render_(grains_, source_.left(), source_.right(), kSourceFrames, outL_.data(),
+                    outR_.data(), n);
             advance(n);
             for (uint32_t i = 0; i < n; ++i)
             {
@@ -241,6 +281,7 @@ class KernelConfiguration final : public Configuration
         grains_.envPhase[g] = envPhase;
         grains_.envInc[g] = static_cast<float>(1.0 / kGrainSamples);
         grains_.gain[g] = static_cast<float>(0.5 + 0.5 * draw(kGain, s));
+        render_.respawned(g);
     }
 
     /// Moves every grain on by n samples, respawning those whose window has ended.
@@ -261,7 +302,7 @@ class KernelConfiguration final : public Configuration
         }
     }
 
-    Kernel fn_;
+    Render render_;
     const Noise &source_;
     double warmUpSeconds_;
     GrainBatch grains_;
@@ -277,6 +318,9 @@ struct EngineSetup
     gg::CloudParams params;
     gg::SourceMode mode{gg::SourceMode::Sample};
     double warmUpSeconds{0.0};
+    /// true renders through the two-bus Engine::process into two pairs of buffers and sums the
+    /// pairs after (engine-buses).
+    bool twoBuses{false};
     /// The engine's quota in weight units (Engine::setQuota), set before the warm-up.
     uint64_t quota{gg::kUnlimitedQuota};
 };
@@ -328,7 +372,7 @@ uint32_t layerGrains(const EngineCase &engineCase, uint32_t grains, uint32_t lay
 }
 
 /// The engine cases, in report order. Each is engine-sample with its own changes.
-constexpr std::array<EngineCase, 10> kEngineCases{{
+constexpr std::array<EngineCase, 13> kEngineCases{{
     {"engine-sample", engineSample},
     // X at the Eco tier: every grain reads with linear interpolation (ruling 2).
     {"engine-sample-eco",
@@ -403,6 +447,38 @@ constexpr std::array<EngineCase, 10> kEngineCases{{
          s.config.kernels = gg::KernelChoice::Sse;
          return s;
      }},
+    // Smear at 1 (extremes spec §6.10): engine-sample with its amplitudes, a position jitter of
+    // 50 ms and a micro-detune of 0.5 semitones, at Size 100 ms. The density is already far
+    // above the floor, so nothing else changes.
+    {"engine-sample-smear",
+     [](uint32_t grains) {
+         EngineSetup s = engineSample(grains);
+         s.params.smearJitterSec = 0.05;
+         s.params.smearDetuneSemitones = 0.5;
+         return s;
+     }},
+    // Two grain buses: half the grains on bus 1, rendered through the two-bus process into two
+    // pairs of buffers, summed after (the filters are timed by --chain).
+    {"engine-buses",
+     [](uint32_t grains) {
+         EngineSetup s = engineSample(grains);
+         s.params.busSplit = 0.5;
+         s.twoBuses = true;
+         return s;
+     }},
+    // The Spectral Smear: Spectral grains read the smear ring, which the engine fills from the
+    // noise as sample material (Position 0.5 into it), 1 s of spray behind its head. The warm-up
+    // lets the ring hold smear before the timed runs.
+    {"engine-spectral",
+     [](uint32_t grains) {
+         EngineSetup s = engineSample(grains);
+         s.config.spectral = true;
+         s.mode = gg::SourceMode::Spectral;
+         s.params.position = 0.5;
+         s.params.spray = 1.0;
+         s.warmUpSeconds = 2.0;
+         return s;
+     }},
 }};
 
 /// One engine case at one block size: its engines, one per layer, which keep rendering from
@@ -422,7 +498,7 @@ class EngineConfiguration final : public Configuration
             EngineSetup s = engineCase.setup(layerGrains(engineCase, grains, layer));
             s.config.layer = layer;
             auto engine = std::make_unique<gg::Engine>(s.config);
-            if (s.mode == gg::SourceMode::Sample)
+            if (s.mode != gg::SourceMode::Live)
             {
                 engine->setSource(noise.buffer);
             }
@@ -430,6 +506,11 @@ class EngineConfiguration final : public Configuration
             engine->setSourceMode(s.mode);
             engine->setQuota(s.quota);
             engines_.push_back(std::move(engine));
+        }
+        if (setup_.twoBuses)
+        {
+            bus2L_.assign(blockSize, 0.0f);
+            bus2R_.assign(blockSize, 0.0f);
         }
         if (engineCase.layers > 1)
         {
@@ -496,6 +577,13 @@ class EngineConfiguration final : public Configuration
                     ++(g.tier == gg::Tier::Eco      ? c.eco
                        : g.tier == gg::Tier::Normal ? c.normal
                                                     : c.hq);
+                    c.bus2 += g.bus != 0 ? 1 : 0;
+                    c.spectral += g.sourceSlot == gg::Engine::kSpectralSlot ? 1 : 0;
+                    if (c.firstRate == 0.0)
+                    {
+                        c.firstRate = g.rate;
+                    }
+                    c.detuned += g.rate != c.firstRate ? 1 : 0;
                 },
                 &counts);
         }
@@ -550,7 +638,19 @@ class EngineConfiguration final : public Configuration
     {
         const uint32_t n = blockSize();
         float *const out[2] = {outL, outR};
-        if (setup_.mode == gg::SourceMode::Live)
+        if (setup_.twoBuses)
+        {
+            float *const bus2[2] = {bus2L_.data(), bus2R_.data()};
+            engine.process(nullptr, 0, out, 2, bus2, n);
+            // The second bus's sum joins the first after the render, as the Processor's filters
+            // will have it.
+            for (uint32_t i = 0; i < n; ++i)
+            {
+                outL[i] += bus2L_[i];
+                outR[i] += bus2R_[i];
+            }
+        }
+        else if (setup_.mode == gg::SourceMode::Live)
         {
             const float *const in[2] = {noise_.left() + inputAt_, noise_.right() + inputAt_};
             engine.process(in, 2, out, 2, n);
@@ -579,6 +679,7 @@ class EngineConfiguration final : public Configuration
     uint64_t timedBlocks_{0};
     uint64_t timedActive_{0};
     std::vector<float> outL_, outR_;
+    std::vector<float> bus2L_, bus2R_; // engine-buses: the second bus's block
 };
 
 bool selected(const Options &options, const std::string &name)
@@ -668,6 +769,7 @@ std::vector<std::string> caseNames()
     {
         names.emplace_back(k.name);
     }
+    names.emplace_back(kGrainFilter);
     names.emplace_back(kReferenceKernel.name);
     for (const EngineCase &e : kEngineCases)
     {
@@ -722,20 +824,31 @@ Report run(const Options &options, const Progress &progress)
         return *noise;
     };
     std::vector<std::unique_ptr<Configuration>> configurations;
-    std::vector<KernelInfo> kernels(kKernels.begin(), kKernels.end());
-    kernels.push_back(kReferenceKernel);
-    for (const KernelInfo &k : kernels)
-    {
+    const auto addKernel = [&](const KernelInfo &k) {
         if (!selected(options, k.name))
         {
-            continue;
+            return;
         }
         for (const uint32_t n : kBlockSizes)
         {
-            configurations.push_back(std::make_unique<KernelConfiguration>(
-                k, n, source(), options.grains, options.runSeconds / 4.0));
+            configurations.push_back(std::make_unique<KernelConfiguration<PlainKernel>>(
+                k.name, PlainKernel{k.fn}, n, source(), options.grains, options.runSeconds / 4.0));
+        }
+    };
+    for (const KernelInfo &k : kKernels)
+    {
+        addKernel(k);
+    }
+    if (selected(options, kGrainFilter))
+    {
+        for (const uint32_t n : kBlockSizes)
+        {
+            configurations.push_back(std::make_unique<KernelConfiguration<GrainFilterKernel>>(
+                kGrainFilter, GrainFilterKernel{GrainFilterBank(options.grains, n, kSampleRate)}, n,
+                source(), options.grains, options.runSeconds / 4.0));
         }
     }
+    addKernel(kReferenceKernel);
     for (const EngineCase &e : kEngineCases)
     {
         if (!selected(options, e.name))
@@ -1486,6 +1599,225 @@ int spaceMain(const SpaceOptions &options, const std::string &jsonPath, std::str
     out +=
         formatLine("\n%-18s %12s %12s %12s %12s\n", "stage", "median", "min", "IQR", "% core @48k");
     out += formatLine("%-18s %12.3f %12.3f %12.3f %12.3f\n", "space", report.median, report.min,
+                      report.iqr, report.cpuPctOneCoreAt48k);
+    out += "\nmedian, min and IQR: ns per stereo sample over the rounds; % core from the median\n"
+           "report-only: no baseline and no ratio\n";
+
+    if (!jsonPath.empty())
+    {
+        if (!writeText(jsonPath, toJson(report)))
+        {
+            std::fprintf(stderr, "error: couldn't write %s\n", jsonPath.c_str());
+            return 1;
+        }
+        out += "\nwrote " + jsonPath + "\n";
+    }
+    return 0;
+}
+
+namespace
+{
+constexpr uint32_t kChainBlock = 256;       // frames between two reads of the clock
+constexpr uint32_t kChainCell = 32;         // the control grid: BusFilter::setCell's cadence
+constexpr uint32_t kChainRamp = 480;        // 10 ms: the filters' and the limiter's type fades
+constexpr double kChainWarmUpSeconds = 2.0; // of audio: several repeats of the delay
+constexpr double kChainDelaySeconds = 0.375;
+constexpr float kChainFilterHz = 1000.0f;
+constexpr float kChainResonance = 0.5f;
+constexpr float kChainFeedback = 0.5f;
+constexpr float kChainDamping = 0.3f;
+constexpr float kChainAmount = 1.0f;
+constexpr float kChainCeiling = 0.5f;
+constexpr double kChainReleaseSeconds = 0.1;
+
+static_assert(kChainBlock % kChainCell == 0);
+
+/// The two bus filters, the delay and the limiter, chained as the Processor will run them, on
+/// looped noise.
+class ChainStage
+{
+  public:
+    ChainStage()
+        : releaseCoeff_(
+              gg::core::releaseCoefficient(static_cast<float>(kChainReleaseSeconds), kSampleRate)),
+          dampCoeff_(gg::core::dampCoefficient(kChainDamping, kSampleRate)),
+          left_(kSpaceNoiseFrames), right_(kSpaceNoiseFrames)
+    {
+        for (gg::core::fx::BusFilter &f : filter_)
+        {
+            f.prepare(kSampleRate, kChainRamp);
+        }
+        delay_.prepare(kSampleRate);
+        delay_.setTimeSamples(kChainDelaySeconds * kSampleRate);
+        limiter_.prepare(kSampleRate, kChainRamp);
+        for (int64_t i = 0; i < kSpaceNoiseFrames; ++i)
+        {
+            left_[i] = noiseSample(kNoiseL, static_cast<uint64_t>(i));
+            right_[i] = noiseSample(kNoiseR, static_cast<uint64_t>(i));
+        }
+    }
+
+    void warmUp()
+    {
+        const auto frames = static_cast<int64_t>(kChainWarmUpSeconds * kSampleRate);
+        double sink = 0.0;
+        for (int64_t done = 0; done < frames; done += kChainBlock)
+        {
+            sink += processBlock();
+        }
+        gSink = gSink + sink;
+    }
+
+    /// Renders blocks for at least `seconds`; returns ns per stereo sample.
+    double timeRun(double seconds)
+    {
+        using Clock = std::chrono::steady_clock;
+        const auto start = Clock::now();
+        const auto deadline = start + std::chrono::duration_cast<Clock::duration>(
+                                          std::chrono::duration<double>(seconds));
+        double sink = 0.0;
+        uint64_t blocks = 0;
+        auto now = start;
+        do
+        {
+            sink += processBlock();
+            ++blocks;
+            now = Clock::now();
+        } while (now < deadline);
+        gSink = gSink + sink;
+
+        const double ns = std::chrono::duration<double, std::nano>(now - start).count();
+        return ns / (static_cast<double>(blocks) * kChainBlock);
+    }
+
+  private:
+    /// One block of kChainBlock frames; returns the sum of the output.
+    double processBlock()
+    {
+        float sum = 0.0f;
+        for (uint32_t k = 0; k < kChainBlock; ++k)
+        {
+            if (k % kChainCell == 0)
+            {
+                for (gg::core::fx::BusFilter &f : filter_)
+                {
+                    f.setCell(gg::core::BusFilterType::LowPass, kChainFilterHz, kChainResonance);
+                }
+            }
+            float aL = left_[at_], aR = right_[at_];
+            float bL = aL, bR = aR;
+            filter_[0].process(aL, aR);
+            filter_[1].process(bL, bR);
+            float l = aL + bL;
+            float r = aR + bR;
+            delay_.process(l, r, kChainAmount, kChainFeedback, dampCoeff_, 1.0f);
+            limiter_.process(l, r, gg::core::LimiterMode::Peak, kChainCeiling, releaseCoeff_);
+            sum += l + r;
+            at_ = at_ + 1 == kSpaceNoiseFrames ? 0 : at_ + 1;
+        }
+        return static_cast<double>(sum);
+    }
+
+    gg::core::fx::BusFilter filter_[2];
+    gg::core::Delay delay_;
+    gg::core::Limiter limiter_;
+    float releaseCoeff_;
+    float dampCoeff_;
+    std::vector<float> left_, right_;
+    int64_t at_{0}; // the next frame of the noise
+};
+} // namespace
+
+void validate(const ChainOptions &options)
+{
+    if (!(options.runSeconds > 0.0 && options.runSeconds <= kMaxRunSeconds))
+    {
+        throw std::invalid_argument("the run length must be more than 0 and at most 3600 seconds");
+    }
+    if (options.rounds < 1)
+    {
+        throw std::invalid_argument("there must be at least 1 round");
+    }
+}
+
+ChainReport runChain(const ChainOptions &options, const Progress &progress)
+{
+    validate(options);
+    ChainReport report{.options = options, .machine = machine(), .compiler = compiler()};
+
+    const gg::ScopedDenormalsOff noDenormals;
+    ChainStage stage;
+    stage.warmUp();
+    for (int r = 0; r < options.rounds; ++r)
+    {
+        report.nsPerSample.push_back(stage.timeRun(options.runSeconds));
+        if (progress)
+        {
+            progress(r + 1, options.rounds);
+        }
+    }
+
+    const std::vector<double> &runs = report.nsPerSample;
+    report.median = quantile(runs, 0.5);
+    report.min = *std::min_element(runs.begin(), runs.end());
+    report.iqr = quantile(runs, 0.75) - quantile(runs, 0.25);
+    // ns per stereo sample x 48,000 samples / 1e9 ns, as a percentage.
+    report.cpuPctOneCoreAt48k = report.median * kSampleRate / 1e9 * 100.0;
+    return report;
+}
+
+std::string toJson(const ChainReport &report)
+{
+    const nlohmann::ordered_json j{
+        {"benchmark", "chain"},
+        {"machine", report.machine},
+        {"compiler", report.compiler},
+        {"commit", report.options.commit},
+        {"sampleRate", kSampleRate},
+        {"runSeconds", report.options.runSeconds},
+        {"rounds", report.options.rounds},
+        {"settings",
+         {
+             {"busFilters", 2},
+             {"filterType", "lowpass"},
+             {"filterHz", kChainFilterHz},
+             {"filterResonance", kChainResonance},
+             {"delaySeconds", kChainDelaySeconds},
+             {"delayFeedback", kChainFeedback},
+             {"delayDamping", kChainDamping},
+             {"delayPingPong", true},
+             {"delayAmount", kChainAmount},
+             {"limiterMode", "peak"},
+             {"limiterCeiling", kChainCeiling},
+             {"limiterReleaseSeconds", kChainReleaseSeconds},
+         }},
+        {"runs", report.nsPerSample},
+        {"nsPerSample", report.median},
+        {"min", report.min},
+        {"iqr", report.iqr},
+        {"cpuPctOneCoreAt48k", report.cpuPctOneCoreAt48k},
+    };
+    return j.dump(2, ' ', false, nlohmann::ordered_json::error_handler_t::replace) + "\n";
+}
+
+int chainMain(const ChainOptions &options, const std::string &jsonPath, std::string &out,
+              const Progress &progress)
+{
+    const ChainReport report = runChain(options, progress); // validates the options
+
+    out += formatLine("gg-bench --chain: two bus filters, the delay and the limiter on stereo "
+                      "noise at 48 kHz, %d rounds of >= %g s\n",
+                      options.rounds, options.runSeconds);
+    out += formatLine("settings: 2 x Low-pass %g Hz Q %g, Delay %g s feedback %g damping %g "
+                      "ping-pong amount %g, Peak limiter ceiling %g release %g s\n",
+                      double(kChainFilterHz), double(kChainResonance), kChainDelaySeconds,
+                      double(kChainFeedback), double(kChainDamping), double(kChainAmount),
+                      double(kChainCeiling), kChainReleaseSeconds);
+    out += "commit:   " + options.commit + "\nmachine:  " + report.machine +
+           "\ncompiler: " + report.compiler + "\n";
+    out +=
+        formatLine("\n%-18s %12s %12s %12s %12s\n", "stage", "median", "min", "IQR", "% core @48k");
+    out += formatLine("%-18s %12.3f %12.3f %12.3f %12.3f\n", "chain", report.median, report.min,
                       report.iqr, report.cpuPctOneCoreAt48k);
     out += "\nmedian, min and IQR: ns per stereo sample over the rounds; % core from the median\n"
            "report-only: no baseline and no ratio\n";

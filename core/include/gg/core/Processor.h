@@ -15,9 +15,11 @@
 
 #include <sst/cpputils/rtsan_support.h>
 
+#include "gg/core/Delay.h"
 #include "gg/core/Diffuser.h"
 #include "gg/core/GrainQueue.h"
 #include "gg/core/LivePeaks.h"
+#include "gg/core/Limiter.h"
 #include "gg/core/ModMatrix.h"
 #include "gg/core/ModSources.h"
 #include "gg/core/ParamIds.h"
@@ -31,6 +33,11 @@
 
 namespace gg::core
 {
+namespace fx
+{
+class BusFilter;
+}
+
 struct ProcessorConfig
 {
     double sampleRate;     ///< Finite and > 0.
@@ -152,9 +159,10 @@ struct ControlEvent
 /// the caller (a host pool's request_exec, StubPool's barrier).
 ///
 /// **Source kind** (spec §6.4). Each layer reads the kind builtKind(sourceKindOf(...)) gives:
-/// Sample or Live, in either product. Position, Spray and Feedback follow the kind (toCloudParams,
-/// toWetParams). A change applies at its boundary (Engine::setSourceMode): the grains sounding
-/// finish on the source they started on.
+/// Sample, Live or Spectral, in either product (Spectral smears the layer's sample, else its ring:
+/// layerMaterial). Position, Spray and Feedback follow the kind (toCloudParams, toWetParams;
+/// Feedback acts on Live alone). A change applies at its boundary (Engine::setSourceMode): the
+/// grains sounding finish on the source they started on.
 ///
 /// **Grain events** (spec §6.7; M2 engine spec §6.7). Each layer's engine records its spawns and
 /// its steals, in the order it reports them (a steal right before the spawn whose admission
@@ -229,9 +237,9 @@ struct ControlEvent
 ///   note-ons to the MIDI sources;
 /// - the sources step (above), and the effective values become clamp(base + modulation +
 ///   route offset);
-/// - every layer's engine gets setCloudParams(toCloudParams(..., layer)), its source kind (when it
-///   changed), setHeldKeys with the distinct held keys (when the group had notes) and its freeze
-///   setting (below), which apply from b;
+/// - every layer's engine gets setCloudParams(toCloudParams(..., layer, layerMaterial(layer))),
+///   its source kind (when it changed), setHeldKeys with the distinct held keys (when the group
+///   had notes) and its freeze setting (below), which apply from b;
 /// - Mix, Reverb Amount, Dry to Reverb, Morph X and Morph Y, and each layer's Level, Diffusion,
 ///   Feedback and on/off ramp from their current values to their new ones.
 ///
@@ -320,6 +328,20 @@ struct ControlEvent
 /// channel, each engine's mono render is diffused as both sides, the reverb hears that channel's
 /// rIn on both sides, and the channel gets r's left. The instrument's input feeds its layers'
 /// rings alone: it has no dry path.
+///
+/// **The serial tail** (sub-project 4's spec §6.4–§6.6). After the layers' sum and before the
+/// reverb, the global delay (Delay.h) takes the wet sum: `wet' = wet + amount·echo`, its time
+/// moved at each boundary and glided to, its amount, feedback and damper coefficient ramped like
+/// Mix; at Amount 0 the sum passes untouched. After the reverb's return, the global limiter
+/// (Limiter.h) takes the wet side alone, and the FX's dry signal is added after it:
+/// ```
+/// Off:        out = d·(1 − m) + wet'·m  [+ softLimit(a·r)]          (the lines above)
+/// Soft, Peak: side = wet'·m  [+ softLimit(a·r)]   out = d·(1 − m) + limit(side)   (FX)
+///             side = wet'    [+ softLimit(a·r)]   out = limit(side)               (instrument)
+/// ```
+/// With the mode Off and settled, the Off expressions stand as written, so the stages at rest
+/// leave every output bit for bit. The limiter fades its mode changes over 10 ms; a setBase()
+/// of the mode, setBases() and reset() jump it, as they jump the ramps.
 ///
 /// **Feedback** (sub-project 5's spec §5), per layer. Each engine writes its live ring from
 /// ```
@@ -510,6 +532,11 @@ class Processor
     void setSourceNow(uint8_t layer, std::shared_ptr<const PreparedSource> s);
     /// Layer A's: setSourceNow(0, s).
     void setSourceNow(std::shared_ptr<const PreparedSource> s) { setSourceNow(0, std::move(s)); }
+    /// What layer `layer`'s Spectral kind smears and the units its Position takes (the extremes
+    /// spec §6.2): Sample when its engine holds a sample, else Live (its ring). A change, from
+    /// setSourceNow or a source adopted at a process() call's start, re-sends the layer's cloud
+    /// parameters (toCloudParams) before the call renders. `layer` is below kLayers.
+    SourceMode layerMaterial(uint8_t layer) const noexcept;
 
     /// Real-time safe; the start of every process() call, and for the plugin's params.flush: for
     /// each layer in turn, hands its engine's retired sources back to its sources(), takes a new
@@ -648,6 +675,7 @@ class Processor
     struct Layer
     {
         explicit Layer(const EngineConfig &config);
+        ~Layer();
 
         // Before engine, so destroyed after it: it frees the sources the engine may still point
         // to.
@@ -664,6 +692,13 @@ class Processor
         Ramp on;       // r_L: 1 on, 0 off
         // The engine's output, then wet_L in place: pieceMax frames each.
         std::array<std::vector<float>, 2> wet;
+        // Bus 2 of the engine's output (spec §6.3 of sub-project 4): pieceMax frames each, summed
+        // into wet once the engine has put a grain on it.
+        std::array<std::vector<float>, 2> bus2;
+        // The two buses' filters, index 0 for bus 1; busGiven is false until setCell has run since
+        // the construction, a reset or the layer's gate clearing it.
+        std::unique_ptr<fx::BusFilter> filter[2];
+        bool busGiven{false};
         // The ring input while Feedback acts: pieceMax frames each.
         std::array<std::vector<float>, 2> ringIn;
         // The limited wet signal of the last kFeedbackDelay samples: sample t at t % D.
@@ -685,6 +720,8 @@ class Processor
         // The enable gate last given to the engine (Engine::setEnabled), and the kind.
         bool enabledGiven{true};
         SourceMode kind{SourceMode::Sample};
+        // The material last given to toCloudParams (layerMaterial): what a Spectral layer smears.
+        SourceMode material{SourceMode::Live};
         // The cloud parameters last given to the engine, if cloudGiven (updateEffective).
         CloudParams cloud{};
         bool cloudGiven{false};
@@ -757,13 +794,18 @@ class Processor
     void scanInput(const Buffers &b, int64_t to) noexcept SST_CPPUTILS_NONBLOCKING;
     /// Steps every source at the boundary c (stepSources).
     void stepSourcesAt(int64_t c) noexcept SST_CPPUTILS_NONBLOCKING;
-    /// Makes each ramped value whose target the effective values moved jump to it (setBase() of a
-    /// macro, setRoutes()).
+    /// Makes each ramped value whose target the effective values moved jump to it, and the
+    /// limiter snap to a mode they moved (setBase() of a macro, setRoutes()).
     void jumpMovedRamps() noexcept;
+    /// Gives layer L's engine its cloud parameters (from the effective values and its material),
+    /// unless they are what it has.
+    void sendCloudParams(uint8_t L) noexcept;
+    /// Re-sends the cloud parameters of every layer whose material changed since they were sent.
+    void syncMaterial() noexcept;
     /// Recomputes the effective values, gives each engine its cloud parameters and source kind,
     /// and keeps Space's.
     void updateEffective() noexcept;
-    /// Jumps every ramped value to its target.
+    /// Jumps every ramped value to its target, and snaps the limiter to its mode.
     void jumpRamps() noexcept;
     /// Ramps every ramped value from its value at t to its target.
     void retargetRamps(int64_t t) noexcept;
@@ -872,6 +914,25 @@ class Processor
     // reverb (heap: about 14.5 MB, 16-byte aligned).
     SpaceParams space_{};
     std::unique_ptr<SpaceReverb> reverb_;
+
+    // The delay and the limiter (sub-project 4's spec §6.4–§6.6), the serial tail after the
+    // layers' sum. The parameters below are the effective values at the last boundary; the six
+    // ramps move the delay's amount, feedback, damper coefficient and ping-pong weight (0 or 1,
+    // so a switch crosses over 10 ms and never clicks) and the limiter's ceiling and release
+    // coefficient as Mix does. The limiter's mode is stepped: the limiter crossfades its own
+    // mode changes, and snaps where the ramps jump.
+    Delay delay_;
+    Limiter limiter_;
+    DelayParams delayParams_{};
+    LimiterParams limiterParams_{};
+    float delayDampCoeff_{1.0f};      ///< The damper's one-pole coefficient for Delay Damping.
+    float limiterReleaseCoeff_{1.0f}; ///< Peak's per-sample release coefficient.
+    Ramp delayAmount_;
+    Ramp delayFeedback_;
+    Ramp delayDamp_;
+    Ramp delayPingPong_; // the damper's cross weight: 1 with Delay Ping-pong on
+    Ramp limiterCeiling_;
+    Ramp limiterRelease_;
 };
 } // namespace gg::core
 

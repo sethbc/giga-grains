@@ -26,14 +26,16 @@ using gg::test::AllocTripwire;
 
 namespace
 {
-// Counts spawns, the Eco ones, the HQ ones and the ones reading the ring, without allocating: the
-// sink runs inside process().
+// Counts spawns, the Eco ones, the HQ ones, the ones reading the ring and the ones on bus 1, and
+// the steals, without allocating: the sinks run inside process().
 struct SpawnCounter
 {
     uint64_t spawns{0};
     uint64_t eco{0};
     uint64_t hq{0};
     uint64_t live{0};
+    uint64_t bus1{0};
+    uint64_t spectral{0};
     uint64_t steals{0};
 
     static void record(void *ctx, uint32_t, const gg::GrainSpec &g)
@@ -43,6 +45,8 @@ struct SpawnCounter
         counter->eco += g.tier == gg::Tier::Eco ? 1 : 0;
         counter->hq += g.tier == gg::Tier::HQ ? 1 : 0;
         counter->live += g.sourceSlot == gg::Engine::kLiveSlot ? 1 : 0;
+        counter->bus1 += g.bus == 1 ? 1 : 0;
+        counter->spectral += g.sourceSlot == gg::Engine::kSpectralSlot ? 1 : 0;
     }
     static void steal(void *ctx, uint32_t, uint64_t, int64_t)
     {
@@ -738,6 +742,131 @@ TEST_CASE("engine source kind switch does not allocate", "[engine][rt]")
     REQUIRE(alternated);
     REQUIRE(counter.live > liveBefore);                                 // ring grains spawned
     REQUIRE(counter.spawns - counter.live > spawnsBefore - liveBefore); // and sample grains
+    REQUIRE(engine.activeGrains() > 0);
+    if (gg::test::AllocTripwire::available()) // off under ASan; RTSan covers this
+    {
+        REQUIRE(allocations == 0);
+    }
+}
+
+TEST_CASE("engine process with two buses does not allocate", "[engine][rt]")
+{
+    // The extremes spec §6.3: the two-bus process() at a split of 0.5, so the armed calls spawn,
+    // render and retire grains on both buses, in odd block sizes, 0- and 1-frame ones among them.
+    gg::Engine engine(gg::EngineConfig{48000.0, 256, 4096, 7});
+    engine.setSource(stereoSine(330.0));
+    engine.setCloudParams({.densityHz = 200.0,
+                           .distribution = 1.0,
+                           .grainDurationSec = 0.05,
+                           .position = 0.5,
+                           .spray = 0.5,
+                           .pitchSemitones = 7.0,
+                           .stereo = 1.0,
+                           .gain = 0.5f,
+                           .busSplit = 0.5});
+    SpawnCounter counter;
+    engine.setEventSink(&SpawnCounter::record, &counter);
+
+    std::vector<float> left(700), right(700), left2(700), right2(700);
+    float *out[2] = {left.data(), right.data()};
+    float *bus2[2] = {left2.data(), right2.data()};
+    for (int i = 0; i < 50; ++i) // warm up until grains are sounding on both buses
+    {
+        engine.process(nullptr, 0, out, 2, bus2, 64);
+    }
+    REQUIRE(engine.bus2Used());
+    const uint64_t spawnsBefore = counter.spawns;
+    const uint64_t bus1Before = counter.bus1;
+
+    constexpr uint32_t kBlocks[] = {64, 1, 0, 333, 700};
+    AllocTripwire::resetCount();
+    {
+        AllocTripwire::Scope armed;
+        for (int i = 0; i < 100; ++i)
+        {
+            engine.process(nullptr, 0, out, 2, bus2, kBlocks[i % 5]);
+        }
+    }
+    const uint64_t allocations = AllocTripwire::count();
+
+    REQUIRE(counter.bus1 > bus1Before);                                 // bus-1 grains spawned
+    REQUIRE(counter.spawns - counter.bus1 > spawnsBefore - bus1Before); // and bus-0 grains
+    REQUIRE(engine.activeGrains() > 0);
+    if (gg::test::AllocTripwire::available()) // off under ASan; RTSan covers this
+    {
+        REQUIRE(allocations == 0);
+    }
+}
+
+TEST_CASE("engine spectral process does not allocate", "[engine][rt]")
+{
+    // The extremes spec §6.2: the smear's STFT runs inside process() on buffers and a pffft setup
+    // made at construction. Switching in and out of Spectral 20 times with the tripwire armed,
+    // over the sample and then over the ring (no sample), so frames are computed from both
+    // materials, the ring writes silence and smear in turn, and Spectral, sample and ring grains
+    // sound in one pool. maxBlockSize 256 makes the 1000-frame calls oversized.
+    gg::EngineConfig config{48000.0, 256, 4096, 11};
+    config.liveSeconds = 2.0;
+    config.spectral = true;
+    gg::Engine engine(config);
+    engine.setSource(stereoSine(330.0));
+    engine.setCloudParams({.densityHz = 200.0,
+                           .distribution = 1.0,
+                           .grainDurationSec = 0.05,
+                           .position = 0.3,
+                           .spray = 0.02,
+                           .pitchSemitones = 3.0,
+                           .stereo = 1.0,
+                           .gain = 0.5f});
+    SpawnCounter counter;
+    engine.setEventSink(&SpawnCounter::record, &counter);
+
+    std::vector<float> inLeft(1000), inRight(1000);
+    for (std::size_t i = 0; i < inLeft.size(); ++i)
+    {
+        inLeft[i] = static_cast<float>(std::sin(2.0 * std::numbers::pi * 220.0 * i / 48000.0));
+        inRight[i] = -inLeft[i];
+    }
+    const float *in[2] = {inLeft.data(), inRight.data()};
+    std::vector<float> left(1000), right(1000);
+    float *out[2] = {left.data(), right.data()};
+    engine.setSourceMode(gg::SourceMode::Spectral);
+    for (int i = 0; i < 20; ++i) // warm up until Spectral grains are sounding
+    {
+        engine.process(in, 2, out, 2, 1000);
+    }
+    REQUIRE(engine.activeGrains() > 0);
+    const uint64_t spectralBefore = counter.spectral;
+    const uint64_t otherBefore = counter.spawns - counter.spectral;
+
+    // Over the sample (switching with Sample), then, outside the armed scope since a source
+    // change isn't real-time safe, over the ring (switching with Live).
+    bool alternated = true;
+    AllocTripwire::resetCount();
+    for (const gg::SourceMode other : {gg::SourceMode::Sample, gg::SourceMode::Live})
+    {
+        if (other == gg::SourceMode::Live)
+        {
+            engine.replaceSource(nullptr);
+        }
+        AllocTripwire::Scope armed;
+        for (int i = 0; i < 10; ++i)
+        {
+            const gg::SourceMode mode = i % 2 == 0 ? gg::SourceMode::Spectral : other;
+            engine.setSourceMode(mode);
+            engine.process(in, 2, out, 2, 0);
+            engine.process(in, 2, out, 2, 1);
+            alternated = alternated && engine.sourceMode() == mode;
+            engine.process(in, 2, out, 2, 1000);
+            engine.process(in, 1, out, 2, 1000);
+            engine.process(nullptr, 0, out, 2, 333);
+        }
+    }
+    const uint64_t allocations = AllocTripwire::count();
+
+    REQUIRE(alternated);
+    REQUIRE(counter.spectral > spectralBefore);               // Spectral grains
+    REQUIRE(counter.spawns - counter.spectral > otherBefore); // and the others
     REQUIRE(engine.activeGrains() > 0);
     if (gg::test::AllocTripwire::available()) // off under ASan; RTSan covers this
     {

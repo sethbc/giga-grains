@@ -174,3 +174,47 @@ TEST_CASE("logDet bits are pinned over the scheduler's inputs", "[math]")
     }
     REQUIRE(fnv == 0xceb01b787314c9bcull);
 }
+
+TEST_CASE("sineDet is pinned", "[math]")
+{
+    // A regression and cross-platform guard for the LFO's sine (M2 extremes spec §4, §9): every
+    // literal was captured once from sineDet's own output, when it lived in gg-core's
+    // ModSources.cpp, not from an independent reference. The bits are compared, so the sign of
+    // the zero at 0.5 (sineDet(0.5) is -0, the first half's 0 negated) is pinned too. If one
+    // fails, the change moves every LFO-driven render: update the literal only together with the
+    // golden renders.
+    struct Point
+    {
+        float phase;
+        float value;
+        uint32_t bits;
+    };
+    constexpr Point kPoints[] = {
+        {0.0f, 0.0f, 0x00000000u},         {0.125f, 0.707107425f, 0x3f3504feu},
+        {0.25f, 1.0f, 0x3f800000u},        {0.5f, -0.0f, 0x80000000u},
+        {0.75f, -1.0f, 0xbf800000u},       {1.0f, 0.0f, 0x00000000u},
+        {0.1f, 0.587785602f, 0x3f16791eu}, {0.3f, 0.951055825f, 0x3f737865u},
+    };
+    for (const Point &point : kPoints)
+    {
+        INFO("phase = " << point.phase);
+        const float s = gg::sineDet(point.phase);
+        REQUIRE(s == point.value);
+        REQUIRE(std::bit_cast<uint32_t>(s) == point.bits);
+    }
+    // The points above touch only a few of the polynomial's outputs; FMA contraction of its
+    // Horner steps moves the last bits of many others, so the 65536 phases k/65536 go into one
+    // FNV-1a 64-bit hash of their bits, bytes least significant first.
+    uint64_t fnv = 0xcbf29ce484222325ull; // FNV-1a 64-bit offset basis
+    for (uint32_t k = 0; k < 65536; ++k)
+    {
+        const float phase = static_cast<float>(k) / 65536.0f;
+        const uint32_t bits = std::bit_cast<uint32_t>(gg::sineDet(phase));
+        for (int byte = 0; byte < 4; ++byte)
+        {
+            fnv ^= (bits >> (8 * byte)) & 0xffu;
+            fnv *= 0x100000001b3ull; // FNV-1a 64-bit prime
+        }
+    }
+    REQUIRE(fnv == 0x8e6408cfbacd56c5ull);
+}

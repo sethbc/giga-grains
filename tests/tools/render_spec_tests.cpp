@@ -978,10 +978,15 @@ TEST_CASE("instrument specs name the instrument's macros", "[render]")
     // The instrument's name in an FX spec, and the FX's in an instrument spec, as params and as
     // automation; and "Macro Stereo" in either.
     fx["params"] = {{"Macro Level", 1.0}};
-    // The message lists the spec's own product's names, the layers' globals and Budget last.
+    // The message lists the spec's own product's names in slot order: the layers' globals, then
+    // Budget, then the Extremes' last (M2 sub-project 4's spec §6.7).
     CHECK_THAT(rejection(fx), StartsWith("unknown key params.Macro Level: the parameters are "));
     CHECK_THAT(rejection(fx), ContainsSubstring("Macro Feedback, Macro Mix, A Source"));
-    CHECK_THAT(rejection(fx), EndsWith("Level B, Level C, Level D, Budget"));
+    CHECK_THAT(rejection(fx), ContainsSubstring("A Step 16, A Quality, A Smear, A Bus Split"));
+    CHECK_THAT(rejection(fx), EndsWith("Level B, Level C, Level D, Budget, Delay Amount, "
+                                       "Delay Time, Delay Feedback, Delay Damping, "
+                                       "Delay Ping-pong, Limiter Mode, Limiter Ceiling, "
+                                       "Limiter Release"));
     instrument["params"] = {{"Macro Mix", 1.0}};
     CHECK_THAT(rejection(instrument),
                StartsWith("unknown key params.Macro Mix: the parameters are "));
@@ -2314,4 +2319,30 @@ TEST_CASE("layer samples, routes, controls, transport and velocity render as the
     loud["notes"][0].erase("velocity");
     CHECK_FALSE(bitIdentical(gg::render::render(parseJson(loud), nullptr).channels[0],
                              rendered.channels[0]));
+}
+
+TEST_CASE("specs name the extremes' Spectral kind and bus targets", "[render]")
+{
+    using gg::render::RouteSpec;
+
+    // M2 sub-project 4's spec §6.7, §9: "A Source": 3 selects the Spectral kind, with or without
+    // a layer sample; a route reaches a bus's cutoff by its layer-A name.
+    auto inst = instrumentJson();
+    inst["params"] = {{"A Source", 3.0}, {"A Smear", 0.5}, {"A Bus 1 Cutoff", 9.0}};
+    inst["mod"] = {{{"slot", 13},
+                    {"source", "LFO 1"},
+                    {"target", "A Bus 1 Cutoff"},
+                    {"depth", 2.0},
+                    {"curve", "Bipolar"}}};
+    const RenderSpec spec = parseJson(inst);
+    CHECK(spec.instrument.params ==
+          std::vector<std::pair<std::string, double>>{
+              {"A Bus 1 Cutoff", 9.0}, {"A Smear", 0.5}, {"A Source", 3.0}});
+    CHECK(spec.instrument.mod ==
+          std::vector<RouteSpec>{{13, "LFO 1", "same", "A Bus 1 Cutoff", "all", 2.0, "Bipolar"}});
+
+    // An FX layer's Spectral kind with a layer sample: the sample is its material.
+    auto fx = fxLayersJson();
+    fx["params"]["B Source"] = 3.0;
+    CHECK(parseJson(fx).fx.layerSamples.size() == 1);
 }

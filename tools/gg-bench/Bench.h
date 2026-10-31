@@ -23,6 +23,8 @@
 // The cases (spec §5):
 // - the M0 prototype kernels (Kernels.h), each over the M0 workload: Options::grains grains of
 //   100 ms over 60 s of stereo noise;
+// - hermite-simd-grainfilter (GrainFilterKernel.h), INTENT §22's per-grain filter spike (M2
+//   extremes spec §6.10): hermite-simd plus one CytomicSVF per grain, over the same workload;
 // - `reference`: renderHermiteSimd on that workload, frozen as the CPU gate's yardstick;
 // - the engine cases, each a gg::Engine at 48 kHz rendering one Cloud stream through
 //   Engine::process: engine-sample (X, the headline), engine-sample-eco (X at the Eco tier),
@@ -37,7 +39,10 @@
 //   asked for 1 s grains at four times that rate, so the overload ladder drops and steals);
 // - engine-sample-sse (the AVX2 spike, M2 engine spec §6.12), report-only beside X: X on the
 //   4-wide kernels (EngineConfig::kernels), so that where engine-sample dispatches to the 8-wide
-//   AVX2 kernels the two ratios compare the paths in the same rounds.
+//   AVX2 kernels the two ratios compare the paths in the same rounds;
+// - three cases of the extremes sub-project (spec §6.10), each engine-sample with a change:
+//   engine-sample-smear (Smear's jitter and detune), engine-buses (half the grains on the second
+//   bus, through the two-bus process) and engine-spectral (Spectral grains over the smear ring).
 // Every engine case's ratio, ns per grain-sample over reference's in the same round, cancels the
 // machine's speed (ruling 3), though not its microarchitecture: on CI the same code's ratios
 // differ by up to ~20% between the CPU models GitHub assigns a leg. A baseline file therefore
@@ -227,8 +232,10 @@ nlohmann::json makeBaseline(const std::string &leg, const std::vector<nlohmann::
 /// if either fails checkBaseline() or their legs differ.
 nlohmann::json mergeBaseline(const nlohmann::json &old, const nlohmann::json &made);
 
-/// How many grains an engine case admitted at each interpolation tier (ruling 2), and what its
-/// overload ladder did meanwhile (M2 engine spec §6.10).
+/// How many grains an engine case admitted at each interpolation tier (ruling 2), what its
+/// overload ladder did meanwhile (M2 engine spec §6.10), and what the extremes' cases exercise:
+/// how many went to bus 2, read the Spectral ring, or play at a rate other than the first grain's
+/// (Smear's micro-detune, at a fixed pitch).
 struct TierCounts
 {
     uint64_t eco{0};
@@ -239,6 +246,10 @@ struct TierCounts
     uint64_t lowered{0};
     uint64_t stolen{0};
     uint64_t dropped{0};
+    uint64_t bus2{0};
+    uint64_t spectral{0};
+    uint64_t detuned{0};
+    double firstRate{0.0}; ///< The first admitted grain's rate, 0 before one.
     /// Each layer's engine's activeGrains() after the warm-up, in layer order: one entry for a
     /// one-layer case, four for engine-layers and engine-layers-full.
     std::vector<uint32_t> activeGrains{};
@@ -324,6 +335,48 @@ std::string toJson(const SpaceReport &report);
 /// jsonPath isn't empty, writes toJson() there. Returns gg-bench's exit status: 0, or 1 if it
 /// couldn't write the JSON. Throws std::invalid_argument for options validate() rejects.
 int spaceMain(const SpaceOptions &options, const std::string &jsonPath, std::string &out,
+              const Progress &progress = {});
+
+// ---- gg-bench --chain: the new FX units' cost (extremes sub-project 4, report-only) ----
+//
+// It times the units M2 sub-project 4 adds after the grains, per stereo sample on stereo noise at
+// 48 kHz: two BusFilters (Low-pass, 1 kHz, resonance 0.5), each filtering the noise on its own
+// bus, their sum through the Delay (375 ms, feedback 0.5, damping 0.3, ping-pong, amount 1) and
+// the Limiter (Peak, ceiling 0.5, release 100 ms). Like --space it has one configuration, so no
+// round order, ratio or baseline; it takes --space's options and has its own JSON.
+
+struct ChainOptions
+{
+    double runSeconds{2.0};        // --seconds; --quick = 0.2
+    int rounds{5};                 // --rounds
+    std::string commit{"unknown"}; // --commit
+};
+
+struct ChainReport
+{
+    ChainOptions options;
+    std::string machine, compiler;
+    std::vector<double> nsPerSample{};      // one per round, in round order
+    double median{0.0}, min{0.0}, iqr{0.0}; // of nsPerSample
+    double cpuPctOneCoreAt48k{0.0};         // from the median
+};
+
+/// Throws std::invalid_argument for a run length that isn't in (0, 3600] seconds or fewer than
+/// 1 round.
+void validate(const ChainOptions &options);
+
+/// Times the chain as above. Calls validate() first, so it throws before timing anything.
+ChainReport runChain(const ChainOptions &options, const Progress &progress = {});
+
+/// The report as its own JSON document, apart from schema 2: {"benchmark": "chain", machine,
+/// compiler, commit, sampleRate, runSeconds, rounds, the settings, "runs" (nsPerSample),
+/// "nsPerSample" (the median), "min", "iqr", "cpuPctOneCoreAt48k"}.
+std::string toJson(const ChainReport &report);
+
+/// gg-bench --chain: runs runChain(options), puts the text gg-bench prints in `out` and, when
+/// jsonPath isn't empty, writes toJson() there. Returns gg-bench's exit status: 0, or 1 if it
+/// couldn't write the JSON. Throws std::invalid_argument for options validate() rejects.
+int chainMain(const ChainOptions &options, const std::string &jsonPath, std::string &out,
               const Progress &progress = {});
 } // namespace gg::bench
 

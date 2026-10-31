@@ -15,7 +15,9 @@
 #include <stdexcept>
 
 #include "gg/core/DenormalGuard.h"
+#include "gg/core/MathDet.h"
 #include "gg/core/ParamMap.h"
+#include "fx/BusFilter.h"
 #include "sst/basic-blocks/params/ParamMetadata.h"
 
 namespace gg::core
@@ -61,6 +63,7 @@ EngineConfig engineConfig(const ProcessorConfig &c, uint8_t layer)
     e.seed = c.seed;
     e.liveSeconds = Processor::kLiveSeconds;
     e.layer = layer;
+    e.spectral = true; // the Spectral kind (extremes spec §6.2), built in both products
     e.grainCapacity = c.grainCapacity; // M2 engine spec §6.6
     return e;
 }
@@ -131,7 +134,7 @@ bool anyTimeVarying(const ModRoutes &routes) noexcept
 }
 
 // sameCloud compares every field of CloudParams: a field added there must be added there too.
-static_assert(sizeof(CloudParams) == 96, "CloudParams changed: update sameCloud");
+static_assert(sizeof(CloudParams) == 120, "CloudParams changed: update sameCloud");
 
 /// Whether two CloudParams are the same, bit for bit (+0 and −0 differ, so the engine is never
 /// spared a value that would change a bit).
@@ -148,16 +151,13 @@ bool sameCloud(const CloudParams &a, const CloudParams &b) noexcept
            same(a.texture, b.texture) && a.quality == b.quality &&
            a.sprayInSeconds == b.sprayInSeconds &&
            same(a.pitchSpreadSemitones, b.pitchSpreadSemitones) &&
-           same(a.sizeSpreadOctaves, b.sizeSpreadOctaves);
+           same(a.sizeSpreadOctaves, b.sizeSpreadOctaves) &&
+           same(a.smearJitterSec, b.smearJitterSec) &&
+           same(a.smearDetuneSemitones, b.smearDetuneSemitones) && same(a.busSplit, b.busSplit);
 }
 
-/// Whether `s` is a modulator's control (isModulatorControl, in any layer): no route targets one,
-/// so its effective value is clamp(base + modulation).
-bool isModulatorControlSlot(ParamSlot s) noexcept
-{
-    const std::optional<LayerRef> ref = layerOf(s);
-    return ref && isModulatorControl(ref->param);
-}
+/// The delay damper's cross weight for the ping-pong switch: 1 on, 0 off (Delay's law).
+float pingPongWeight(const DelayParams &d) noexcept { return d.pingPong ? 1.0f : 0.0f; }
 } // namespace
 
 float Processor::Ramp::at(int64_t t, int64_t length) const noexcept
@@ -192,6 +192,8 @@ void Processor::Ramp::jump(float target) noexcept
 
 Processor::Layer::Layer(const EngineConfig &config) : engine(config) {}
 
+Processor::Layer::~Layer() = default;
+
 Processor::Processor(const ProcessorConfig &config)
     : config_(validated(config)), rampSamples_(rampLength(config.sampleRate)),
       pieceMax_(std::min(config.maxBlockSize, kFeedbackDelay)), routes_(factoryRoutes(config.mode)),
@@ -199,6 +201,9 @@ Processor::Processor(const ProcessorConfig &config)
       cellSeconds_(static_cast<double>(kControlGrid) / config.sampleRate),
       reverb_(std::make_unique<SpaceReverb>(config.sampleRate))
 {
+    // The delay's line allocates, so it is sized here, off the audio thread.
+    delay_.prepare(config_.sampleRate);
+    limiter_.prepare(config_.sampleRate, static_cast<uint32_t>(rampSamples_));
     // The first paramMeta() call builds its tables, which allocates; make every call here, off
     // the audio thread, so that process() never makes it, and keep the ranges.
     for (size_t s = 0; s < kParamCount; ++s)
@@ -218,7 +223,16 @@ Processor::Processor(const ProcessorConfig &config)
         layers_[L] = std::make_unique<Layer>(engine);
         Layer &l = *layers_[L];
         l.diffuser.prepare(config_.sampleRate);
+        for (auto &filter : l.filter)
+        {
+            filter = std::make_unique<fx::BusFilter>();
+            filter->prepare(config_.sampleRate, static_cast<uint32_t>(rampSamples_));
+        }
         for (auto &channel : l.wet)
+        {
+            channel.assign(pieceMax_, 0.0f);
+        }
+        for (auto &channel : l.bus2)
         {
             channel.assign(pieceMax_, 0.0f);
         }
@@ -266,6 +280,15 @@ void Processor::jumpRamps() noexcept
     mix_.jump(toWetParams(effective_, config_.mode, 0).mix);
     amount_.jump(space_.amount);
     drySend_.jump(space_.drySend);
+    delayAmount_.jump(delayParams_.amount);
+    delayFeedback_.jump(delayParams_.feedback);
+    delayDamp_.jump(delayDampCoeff_);
+    delayPingPong_.jump(pingPongWeight(delayParams_));
+    limiterCeiling_.jump(limiterParams_.ceilingGain);
+    limiterRelease_.jump(limiterReleaseCoeff_);
+    // The limiter's mode snaps too: its own 10 ms fade would let a new Processor's, or a loaded
+    // Peak state's, first 10 ms through unlimited.
+    limiter_.jump(limiterParams_.mode);
     const MorphParams morph = toMorphParams(effective_);
     morphX_.jump(morph.x);
     morphY_.jump(morph.y);
@@ -285,6 +308,12 @@ void Processor::retargetRamps(int64_t t) noexcept
     mix_.retarget(toWetParams(effective_, config_.mode, 0).mix, t, rampSamples_);
     amount_.retarget(space_.amount, t, rampSamples_);
     drySend_.retarget(space_.drySend, t, rampSamples_);
+    delayAmount_.retarget(delayParams_.amount, t, rampSamples_);
+    delayFeedback_.retarget(delayParams_.feedback, t, rampSamples_);
+    delayDamp_.retarget(delayDampCoeff_, t, rampSamples_);
+    delayPingPong_.retarget(pingPongWeight(delayParams_), t, rampSamples_);
+    limiterCeiling_.retarget(limiterParams_.ceilingGain, t, rampSamples_);
+    limiterRelease_.retarget(limiterReleaseCoeff_, t, rampSamples_);
     const MorphParams morph = toMorphParams(effective_);
     morphX_.retarget(morph.x, t, rampSamples_);
     morphY_.retarget(morph.y, t, rampSamples_);
@@ -344,6 +373,28 @@ void Processor::setBase(ParamSlot slot, float value) noexcept
         break;
     case ParamSlot::DryToReverb:
         drySend_.jump(space_.drySend);
+        break;
+    case ParamSlot::DelayAmount:
+        delayAmount_.jump(delayParams_.amount);
+        break;
+    case ParamSlot::DelayFeedback:
+        delayFeedback_.jump(delayParams_.feedback);
+        break;
+    case ParamSlot::DelayDamping:
+        delayDamp_.jump(delayDampCoeff_);
+        break;
+    case ParamSlot::DelayPingPong:
+        delayPingPong_.jump(pingPongWeight(delayParams_));
+        break;
+    case ParamSlot::LimiterMode:
+        // As a ramped value's setBase jumps it: only process()'s events and the matrix fade.
+        limiter_.jump(limiterParams_.mode);
+        break;
+    case ParamSlot::LimiterCeiling:
+        limiterCeiling_.jump(limiterParams_.ceilingGain);
+        break;
+    case ParamSlot::LimiterRelease:
+        limiterRelease_.jump(limiterReleaseCoeff_);
         break;
     case ParamSlot::MorphX:
         morphX_.jump(morph.x);
@@ -448,6 +499,18 @@ void Processor::jumpMovedRamps() noexcept
     jumpIfMoved(mix_, toWetParams(effective_, config_.mode, 0).mix);
     jumpIfMoved(amount_, space_.amount);
     jumpIfMoved(drySend_, space_.drySend);
+    jumpIfMoved(delayAmount_, delayParams_.amount);
+    jumpIfMoved(delayFeedback_, delayParams_.feedback);
+    jumpIfMoved(delayDamp_, delayDampCoeff_);
+    jumpIfMoved(delayPingPong_, pingPongWeight(delayParams_));
+    jumpIfMoved(limiterCeiling_, limiterParams_.ceilingGain);
+    jumpIfMoved(limiterRelease_, limiterReleaseCoeff_);
+    // The limiter's mode snaps as the ramps do: a route or macro that moved it in a loaded state
+    // would otherwise fade from the old mode for 10 ms.
+    if (limiterParams_.mode != limiter_.mode())
+    {
+        limiter_.jump(limiterParams_.mode);
+    }
     jumpIfMoved(morphX_, morph.x);
     jumpIfMoved(morphY_, morph.y);
     for (uint8_t L = 0; L < kLayers; ++L)
@@ -721,15 +784,7 @@ void Processor::updateEffective() noexcept
     for (uint8_t L = 0; L < kLayers; ++L)
     {
         Layer &l = *layers_[L];
-        // The scheduler takes the same values twice as once, so an unchanged layer is spared the
-        // call: the per-cell path of a time-varying route stays cheap.
-        const CloudParams cloud = toCloudParams(effective_, config_.mode, L);
-        if (!l.cloudGiven || !sameCloud(cloud, l.cloud))
-        {
-            l.engine.setCloudParams(cloud);
-            l.cloud = cloud;
-            l.cloudGiven = true;
-        }
+        sendCloudParams(L);
         // Spec §6.4: a kind switch applies from the engine's next call, the grains sounding
         // finishing on their own source.
         const SourceMode kind = builtKind(sourceKindOf(effective_, L), config_.mode);
@@ -742,6 +797,50 @@ void Processor::updateEffective() noexcept
     // M2 engine spec §6.4: the rendering layers' shared budget, split into their quotas per piece.
     budgetUnits_ = budgetUnits(effective_);
     space_ = toSpaceParams(effective_, config_.mode);
+    // The delay and the limiter (spec §6.4–§6.6): the read's target moves at each boundary (the
+    // delay glides to it), the ramps' targets are taken from these at retargetRamps.
+    delayParams_ = delayParams(effective_);
+    delayDampCoeff_ = dampCoefficient(delayParams_.damping, config_.sampleRate);
+    delay_.setTimeSamples(static_cast<double>(delayParams_.timeSeconds) * config_.sampleRate);
+    limiterParams_ = limiterParams(effective_);
+    limiterReleaseCoeff_ = releaseCoefficient(limiterParams_.releaseSeconds, config_.sampleRate);
+}
+
+SourceMode Processor::layerMaterial(uint8_t layer) const noexcept
+{
+    return layerAt(layer).engine.hasSampleSource() ? SourceMode::Sample : SourceMode::Live;
+}
+
+void Processor::sendCloudParams(uint8_t L) noexcept
+{
+    Layer &l = *layers_[L];
+    // The material is the units of a Spectral layer's Position (the extremes spec §6.2); a Sample
+    // or Live layer ignores it.
+    const SourceMode material = layerMaterial(L);
+    // The scheduler takes the same values twice as once, so an unchanged layer is spared the
+    // call: the per-cell path of a time-varying route stays cheap.
+    const CloudParams cloud = toCloudParams(effective_, config_.mode, L, material);
+    l.material = material;
+    if (!l.cloudGiven || !sameCloud(cloud, l.cloud))
+    {
+        l.engine.setCloudParams(cloud);
+        l.cloud = cloud;
+        l.cloudGiven = true;
+    }
+}
+
+void Processor::syncMaterial() noexcept
+{
+    // A source adopted or removed changes what a Spectral layer smears, and so the units of its
+    // Position: its cloud parameters go again, at the call's start or in setSourceNow, which is
+    // where a source changes.
+    for (uint8_t L = 0; L < kLayers; ++L)
+    {
+        if (layers_[L]->cloudGiven && layerMaterial(L) != layers_[L]->material)
+        {
+            sendCloudParams(L);
+        }
+    }
 }
 
 void Processor::syncFreeze() noexcept
@@ -769,6 +868,9 @@ void Processor::reset() noexcept
         l->engine.reset();
     }
     commitPending();
+    // The delay's line is cleared and its read forgets the glide before the effective values
+    // below set its time, which then applies at once; the limiter is reset after them, by jump.
+    delay_.reset();
     // Every note released (spec §6.1), and the engines told: Engine::reset keeps their keys.
     held_.fill(0);
     updateKeys();
@@ -812,6 +914,9 @@ void Processor::reset() noexcept
             channel.fill(0.0f);
         }
         l->diffuser.reset();
+        l->filter[0]->reset();
+        l->filter[1]->reset();
+        l->busGiven = false;
         l->peaks.reset();
         l->events.clear();
         l->droppedEvents = 0;
@@ -835,6 +940,7 @@ void Processor::setSourceNow(uint8_t layer, std::shared_ptr<const PreparedSource
     l.engine.replaceSource(l.sources.hold(std::move(s)));
     handBackRetired(l);
     l.sources.collect();
+    syncMaterial();
 }
 
 void Processor::handBackRetired(Layer &l) noexcept
@@ -855,6 +961,7 @@ bool Processor::takeOffers() noexcept
             applied = true;
         }
     }
+    syncMaterial();
     return applied;
 }
 
@@ -1301,6 +1408,9 @@ void Processor::renderLayerPiece(uint8_t L, int64_t from, uint32_t n, const floa
             // comes back: the diffuser's lines and the limited history start from silence then,
             // as the pool does.
             l.diffuser.reset();
+            l.filter[0]->reset();
+            l.filter[1]->reset();
+            l.busGiven = false;
             for (auto &channel : l.wetHistory)
             {
                 channel.fill(0.0f);
@@ -1336,9 +1446,10 @@ void Processor::renderLayerPiece(uint8_t L, int64_t from, uint32_t n, const floa
     }
     const int64_t headBefore = l.engine.liveWriteHead();
     float *const wet[2] = {l.wet[0].data(), l.wet[1].data()};
+    float *const bus2[2] = {l.bus2[0].data(), l.bus2[1].data()};
     if (renders)
     {
-        l.engine.process(ringIn, ringChannels, wet, rendering, n);
+        l.engine.process(ringIn, ringChannels, wet, rendering, bus2, n);
     }
     else
     {
@@ -1368,6 +1479,37 @@ void Processor::renderLayerPiece(uint8_t L, int64_t from, uint32_t n, const floa
         const float delta = std::clamp(l.diffusion.at(t, rampSamples_), 0.0f, 1.0f);
         // One channel: its mono render is diffused as both sides.
         float w[2] = {wet[0][i], rendering > 1 ? wet[1][i] : wet[0][i]};
+        // The two buses (sub-project 4's spec §6.3): each through its filter, set at every grid
+        // boundary from the effective values in force, then summed once a grain has been on bus 2.
+        if (!l.busGiven || t % kControlGrid == 0)
+        {
+            const BusParams bp = busParams(effective_, L);
+            for (size_t b = 0; b < 2; ++b)
+            {
+                if (!l.busGiven)
+                {
+                    // The first cell after a clear snaps the type, as the ramps jump there: a
+                    // loaded or re-enabled filter is in force from its first sample.
+                    l.filter[b]->jump(bp.type[b]);
+                }
+                l.filter[b]->setCell(bp.type[b], bp.cutoffHz[b], bp.resonance[b]);
+            }
+            l.busGiven = true;
+        }
+        l.filter[0]->process(w[0], w[1]);
+        if (l.engine.bus2Used())
+        {
+            float w2[2] = {bus2[0][i], rendering > 1 ? bus2[1][i] : bus2[0][i]};
+            l.filter[1]->process(w2[0], w2[1]);
+            w[0] += w2[0];
+            w[1] += w2[1];
+        }
+        else
+        {
+            // Nothing on bus 2 yet: its filter hears silence, which leaves it silent.
+            float silent[2] = {0.0f, 0.0f};
+            l.filter[1]->process(silent[0], silent[1]);
+        }
         l.diffuser.process(w[0], w[1], delta);
         for (size_t c = 0; c < 2; ++c)
         {
@@ -1531,6 +1673,15 @@ void Processor::render(const Buffers &b, int64_t from, int64_t to) noexcept
                 }
                 first = false;
             }
+            // The delay (spec §6.4), after the sum and before the reverb: one mono render is
+            // delayed as a pair. At Amount 0 it leaves the frame untouched, bit for bit.
+            if (rendering == 1)
+            {
+                wet[1] = wet[0];
+            }
+            delay_.process(wet[0], wet[1], delayAmount_.at(t, rampSamples_),
+                           delayFeedback_.at(t, rampSamples_), delayDamp_.at(t, rampSamples_),
+                           delayPingPong_.at(t, rampSamples_));
             float o[2];
             float rIn[2];
             for (uint32_t c = 0; c < 2; ++c)
@@ -1541,6 +1692,19 @@ void Processor::render(const Buffers &b, int64_t from, int64_t to) noexcept
             if (rendering == 1)
             {
                 rIn[1] = rIn[0];
+            }
+            // The limiter (spec §6.5) takes the wet side alone, after the reverb's return: with
+            // its mode Off and settled, the M1 expressions below stand as they were (the
+            // association matters to the goldens' bytes); otherwise the wet side is split from
+            // the dry one, limited, and the dry added after it.
+            const bool limiting = !limiter_.isOff() || limiterParams_.mode != LimiterMode::Off;
+            float side[2]{};
+            if (limiting)
+            {
+                for (uint32_t c = 0; c < 2; ++c)
+                {
+                    side[c] = fx ? wet[c] * m : wet[c];
+                }
             }
             // Reverb 2 sums (L + R)·0.5, which overflows to inf (and its loop to NaN, held until
             // the next clear) past about 8.5e37: a huge but finite dry input sent at 100% would.
@@ -1554,8 +1718,19 @@ void Processor::render(const Buffers &b, int64_t from, int64_t to) noexcept
             if (reverb_->chunkActive())
             {
                 // Only here: an idle chunk adds nothing, not even a +0 that would turn a −0 to +0.
-                o[0] += softLimit(a * r[0]);
-                o[1] += softLimit(a * r[1]);
+                float *wetSide = limiting ? side : o;
+                wetSide[0] += softLimit(a * r[0]);
+                wetSide[1] += softLimit(a * r[1]);
+            }
+            if (limiting)
+            {
+                limiter_.process(side[0], side[1], limiterParams_.mode,
+                                 limiterCeiling_.at(t, rampSamples_),
+                                 limiterRelease_.at(t, rampSamples_));
+                for (uint32_t c = 0; c < 2; ++c)
+                {
+                    o[c] = fx ? d[c] * (1.0f - m) + side[c] : side[c];
+                }
             }
             for (uint32_t c = 0; c < channels; ++c)
             {

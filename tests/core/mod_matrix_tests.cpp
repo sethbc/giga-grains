@@ -461,6 +461,23 @@ TEST_CASE("a route reaches the layers it names", "[core][mod]")
     }
 }
 
+TEST_CASE("wave-2 layer parameters are valid targets", "[core][mod]")
+{
+    // M2 sub-project 4's spec §6.3, §6.7: layer A's slots of the Extremes' layer parameters are
+    // layer targets, B to D's are reached through targetLayer, and the modulators' own controls
+    // stay refused; the globals are global targets.
+    CHECK(isValidTarget(layerSlot(LayerParam::Smear, 0)));
+    CHECK(isValidTarget(layerSlot(LayerParam::Bus1Cutoff, 0)));
+    CHECK(isValidTarget(ParamSlot::Bus2Resonance));
+    CHECK(isLayerTarget(ParamSlot::Smear));
+    CHECK_FALSE(isValidTarget(layerSlot(LayerParam::Lfo1Rate, 0)));
+    CHECK_FALSE(isValidTarget(layerSlot(LayerParam::Step16, 0)));
+    CHECK_FALSE(isValidTarget(ParamSlot::B_Smear));
+    CHECK(isValidTarget(ParamSlot::DelayAmount));
+    CHECK(isValidTarget(ParamSlot::LimiterRelease));
+    CHECK_FALSE(isLayerTarget(ParamSlot::DelayAmount));
+}
+
 TEST_CASE("invalid targets are refused", "[core][mod]")
 {
     CHECK_FALSE(isValidTarget(ParamSlot::Macro1));
@@ -501,9 +518,9 @@ TEST_CASE("invalid targets are refused", "[core][mod]")
         CHECK(isValidTarget(slot) == expected);
         valid += isValidTarget(slot) ? 1 : 0;
     }
-    // 14 layer parameters and Quality, Level and Layer A On, Mix, Space's seven but Diffusion,
-    // Morph X and Y, and Budget.
-    CHECK(valid == 14 + 1 + 2 + 1 + 7 + 2 + 1);
+    // 14 layer parameters, Quality and the Extremes' 8, Level and Layer A On, Mix, Space's seven
+    // but Diffusion, Morph X and Y, Budget, and the Extremes' 8 globals.
+    CHECK(valid == 14 + 1 + 8 + 2 + 1 + 7 + 2 + 1 + 8);
 
     CHECK(isLayerTarget(ParamSlot::Position));
     CHECK(isLayerTarget(ParamSlot::SizeSpread));

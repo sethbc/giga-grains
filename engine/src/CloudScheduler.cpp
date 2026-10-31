@@ -4,6 +4,8 @@
 
 #include "gg/grain/CloudScheduler.h"
 
+#include "gg/spectral/SpectralSource.h"
+
 namespace gg
 {
 namespace
@@ -35,13 +37,34 @@ void CloudScheduler::setParams(const CloudParams &in) noexcept
     // Ruling M1-k: a fraction of the source in Sample mode, seconds behind the head in Live mode.
     // With sprayInSeconds, Sample mode's spray is seconds, which the source bounds when it
     // clamps the read position to its frames: here it is only kept non-negative.
-    const double maxPosition = mode_ == SourceMode::Live ? ringSeconds_ : 1.0;
+    //
+    // Spectral mode (the extremes spec §6.2): Position addresses the smear's material as the
+    // layer would read it as Live or Sample, so its bound is liveBound, the Live path's own, with
+    // 1 as a floor for a sample's fraction when the live ring is shorter than 1 s (the smear
+    // clamps a fraction to [0, 1] itself). Spray is seconds behind the spectral ring's head,
+    // bounded by that ring's length.
+    const double liveBound = ringSeconds_; // Live's bound on Position and Spray
+    double maxPosition = 1.0;
+    double maxSpray = 1.0;
+    switch (mode_)
+    {
+    case SourceMode::Sample:
+        break;
+    case SourceMode::Live:
+        maxPosition = liveBound;
+        maxSpray = liveBound;
+        break;
+    case SourceMode::Spectral:
+        maxPosition = std::max(1.0, liveBound);
+        maxSpray = SpectralSource::kRingSeconds;
+        break;
+    }
     const bool sprayInSeconds = mode_ == SourceMode::Sample && in.sprayInSeconds;
     p.position = std::clamp(finiteOr(in.position, d.position), 0.0, maxPosition);
     p.spray = std::max(finiteOr(in.spray, d.spray), 0.0);
     if (!sprayInSeconds)
     {
-        p.spray = std::min(p.spray, maxPosition);
+        p.spray = std::min(p.spray, maxSpray);
     }
     p.pitchSemitones = std::clamp(finiteOr(in.pitchSemitones, d.pitchSemitones),
                                   -kMaxPitchSemitones, kMaxPitchSemitones);
@@ -54,6 +77,11 @@ void CloudScheduler::setParams(const CloudParams &in) noexcept
                                         0.0, kMaxPitchSpreadSemitones);
     p.sizeSpreadOctaves =
         std::clamp(finiteOr(in.sizeSpreadOctaves, d.sizeSpreadOctaves), 0.0, kMaxSizeSpreadOctaves);
+    p.smearJitterSec =
+        std::clamp(finiteOr(in.smearJitterSec, d.smearJitterSec), 0.0, kMaxSmearJitterSec);
+    p.smearDetuneSemitones = std::clamp(finiteOr(in.smearDetuneSemitones, d.smearDetuneSemitones),
+                                        0.0, kMaxSmearDetuneSemitones);
+    p.busSplit = std::clamp(finiteOr(in.busSplit, d.busSplit), 0.0, 1.0);
 
     const double oldPeriod = period_;
     const double oldDistribution = params_.distribution;

@@ -4,7 +4,7 @@
 
 | | |
 |---|---|
-| **Status** | Intent v1 · 2026-10-26 · M0 (Foundations) done 2026-10-26; M1 (Cloud core) closed 2026-10-29 (§23 #60); the installers and release pipeline built 2026-10-29 (`docs/superpowers/specs/2026-10-29-release-pipeline-design.md`, §23 #61; the runbook is `docs/releasing.md`); M2 (Giga) in progress since 2026-10-29, seven sub-projects in four waves (`docs/superpowers/specs/2026-10-29-m2-programme-design.md`, §23 #64; tagged 0.2.0 at its close, an unpublished draft), its sub-project 1 (Layers and structure) built 2026-10-30 (PR #15, in review; §23 #65) and its sub-project 3 (Engine scale and quality) built 2026-10-30 (PR #16, in review; §23 #66); nothing is public and there are no betas before M5 (§23 #62); v1.0 follows M5 (§20) |
+| **Status** | Intent v1 · 2026-10-26 · M0 (Foundations) done 2026-10-26; M1 (Cloud core) closed 2026-10-29 (§23 #60); the installers and release pipeline built 2026-10-29 (`docs/superpowers/specs/2026-10-29-release-pipeline-design.md`, §23 #61; the runbook is `docs/releasing.md`); M2 (Giga) in progress since 2026-10-29, seven sub-projects in four waves (`docs/superpowers/specs/2026-10-29-m2-programme-design.md`, §23 #64; tagged 0.2.0 at its close, an unpublished draft), its sub-project 1 (Layers and structure) built 2026-10-30 (PR #15, in review; §23 #65) and its sub-project 3 (Engine scale and quality) built 2026-10-30 (PR #16, in review; §23 #66) and its sub-project 4 (Extremes and the FX chain) built 2026-10-30 (PR #20, in review; §23 #69); nothing is public and there are no betas before M5 (§23 #62); v1.0 follows M5 (§20) |
 | **Products** | *Giga Grains* (instrument) and *Giga Grains FX* (effect), sharing one engine |
 | **License** | AGPL-3.0-or-later |
 | **Director** | Seth Chandler. Claude writes most of the code; the director steers, listens and reviews. |
@@ -255,13 +255,17 @@ and reviews. Two consequences:
   - Run counts are computed per block, so there are no per-sample branches.
 - **Grain buses / layer FX.** Partikkel-style channel masks route grains to a few buses per
   layer, each with its own FX. True per-grain filters come later, behind a budget weight.
+  - **As built** (M2 sub-project 4; §23 #69): two buses per layer, a filter each (Extremes and
+    the FX chain, below). §22's question, whether buses are enough for v1 or per-grain filters
+    are needed sooner, is answered there with a measurement.
 - **Diffuser.** One per layer, on its output: a short allpass chain that blurs the grains into
   each other, part of the granular sound rather than a room. It is a per-layer unit, so it sits
   in §17's per-layer "Space" panel (since M1 sub-project 4; §23 #50).
 - **Mix and global FX.** Four layers feed a mix with XY morph, then delay, reverb and a limiter.
   - As built (M2 sub-project 1; §23 #65), the layers' weighted sum feeds M1's reverb and mix
-    (Layers and the chain, below). The global delay and limiter (M2 sub-project 4) rest as the
-    identity when they arrive.
+    (Layers and the chain, below). The global delay and limiter (M2 sub-project 4; §23 #69)
+    are built, each the identity at rest, and sit where Extremes and the FX chain (below)
+    draws them.
   - The resample tap reads the instance output 256 samples late, the quantum of the Feedback
     pieces and never the host block, so block-size invariance holds; it costs nothing, and adds
     no latency, while no layer's source is Resample (M2 programme design §7.2; §23 #64).
@@ -278,7 +282,8 @@ four, the morph, the mod matrix, the held set, Space and the mix. Everything is 
 construction, whatever a layer's kind and whether it is on, since a kind switch or an on/off is
 a parameter change on the audio thread. Memory at 48 kHz is about 51 MB per instance: four rings
 about 25 MB, four pools about 5 MB, the reverb 14.5 MB and the event buffers about 6.3 MB (the
-memory cap is sub-project 2's).
+memory cap is sub-project 2's). Sub-project 4 adds about 8.4 MB (the Spectral Smear's rings and
+STFT buffers, four layers' worth, and the delay line's 0.8 MB; Extremes and the FX chain, below).
 
 Both products render in pieces of at most 256 samples (`kFeedbackDelay`; M1's instrument rendered
 whole blocks, and block-size invariance makes the piece size change no bit). Per piece:
@@ -351,11 +356,16 @@ product, as Position's does: Live in the FX, Sample in the instrument.
 - **Sample and Live are built, in both products.** An FX layer set to Sample reads the sample
   `gg-render` gives it, or nothing in the plugin, whose loader feeds layer A alone until
   sub-project 2's per-layer media; an instrument layer set to Live reads its ring.
-- **The unbuilt kinds fall back to the product's default kind:** Resample, Spectral and
-  Oscillator render as Live in the FX and as Sample in the instrument, the parameter keeping its
-  value, so a state saved with Resample plays as Resample once that kind lands. The fallback is
-  one function, `builtKind(kind, mode)` (`gg/core/ParamMap.h`), which sub-projects 2 and 4 edit.
-- **Position, Spray and Feedback follow the layer's built kind, not the product.** A Live layer
+- **Spectral is built, in both products** (M2 sub-project 4; §23 #69): a layer set to Spectral
+  smears its material (Extremes and the FX chain, below).
+- **The unbuilt kinds fall back to the product's default kind:** Resample and Oscillator render
+  as Live in the FX and as Sample in the instrument, the parameter keeping its value, so a state
+  saved with Resample plays as Resample once that kind lands. The fallback is one function,
+  `builtKind(kind, mode)` (`gg/core/ParamMap.h`), which sub-project 2 edits; sub-project 4's edit
+  made it return Spectral.
+- **Position, Spray and Feedback follow the layer's built kind, not the product.** A Spectral
+  layer's Position follows its material (below) and its Feedback is 0, as on a Sample layer. A
+  Live layer
   reads seconds behind the write head, one-sided (ruling M1-k); a Sample layer reads the fraction
   of its sample with Spray bipolar in seconds (Notes, below); Feedback writes a Live layer's ring
   and is 0 on a Sample layer. The plugin asks the host to rescan the parameter text
@@ -948,6 +958,155 @@ address this:
 - a paulstretch-style **Spectral Smear** source (random-phase STFT on pffft) that grains can
   themselves read from.
 
+**Extremes and the FX chain** (M2 sub-project 4, built 2026-10-30; §23 #69; spec
+`docs/superpowers/specs/2026-10-30-m2-extremes-design.md`). Forty parameters in the reserved
+`0x60`–`0x7F` blocks (§18), headless like wave 1's: the host's generic editor, automation, the
+mod matrix, the "FX" and "Filter A" to "Filter D" remote pages and `gg-render` reach them until
+sub-project 6's views draw them. With every one at rest both products render M1's bytes: every
+earlier golden keeps its WAV SHA-256.
+- **Smear** (`0x..60`, per layer, 0–100%, default 0). With s its value, D the layer's Density, S
+  its Size and every draw counter-keyed (`Field::SmearJitter`, `SmearDetune`; their numbers
+  assigned at the rebase):
+  - **Overlap.** The target is `T(s) = 8 + 24s`, and the scheduler runs
+    `D_eff = D + s × (min(400, max(D, T(s) / S)) − D)`: continuous at 0, never below D and never
+    above the plugins' 400 Hz ceiling.
+  - **Position jitter** `s × 0.5 × S × bipolar(u)` seconds, added to the seconds behind the head
+    on Live and Spectral layers and, on Sample layers, in seconds at the source's rate as Spray's
+    are. It scales with Size, not Spray: the comb comes from overlapping grains re-reading the
+    same material at the same offsets, and Spray is usually 0 at extreme stretch.
+  - **Micro-detune** `s × 0.5 × bipolar(u)` semitones, after Pitch Spread's term, inside the ±48
+    clamp.
+  - **Power normalization** stays `1 / √max(1, D_eff × S)`, so the raised overlap doesn't pump
+    the level.
+  - At 0 nothing is drawn and no field changes. At any s > 0 the event line's `pos`, `rate` and
+    `gain` carry Smear, so the cross-platform gate sees it. The director's D8, option 1: full
+    strength at 100% (declined: a mild 16 / ±a quarter / ±20 cents).
+  - **The exit criterion** is a pinned test, `tests/metrics/comb_tests.cpp`: two in-process
+    instrument renders over noise at a static Position and at 1000×, Smear 0 and 1, scored by
+    the cepstral peak at quefrency 1/D over the median cepstrum in 10–500 ms; Smear 1 scores well
+    below Smear 0 (§19).
+- **The Spectral Smear source** (the Source kind's Spectral; `engine/include/gg/spectral/`).
+  At every hop it takes one window of the layer's material around Position, gives every bin a
+  random phase from the counter RNG (`Field::SpectralPhase`, keyed by layer, the channel as the
+  stream, frame and bin), resynthesizes it and overlap-adds it into a stream of its own, which
+  grains read as they read a live ring.
+  - **The STFT** has N the power of two nearest 85 ms at the running rate (4096 at 44.1 and
+    48 kHz), hop N/4 (a multiple of 32, so a hop boundary is a grid boundary), Hann analysis and
+    synthesis, on pffft (now also in the engine, §15). Frame k fires when the output clock
+    reaches kH, from the material at the Position in force then; the stream is complete one
+    window late, a constant. The synthesis divides by 0.75 (`kOverlapGain`): frames with redrawn
+    phases add in power, so a steady material keeps its RMS within 1 dB (measured −0.14 dB). The
+    smear is a function of the sample clock alone, at any block size. The channels' phases are
+    keyed apart, so they decorrelate completely: center content comes out wide.
+  - **The output ring** is a `LiveSource` of 5 s (`SpectralSource::kRingSeconds`), written one
+    sample per sample on every piece, silence while the kind isn't Spectral, so a kind switch
+    allocates nothing. A Spectral grain is a ring grain on its own slot (`kSpectralSlot` = 3), so
+    the live kernels read it at every tier. Switching to Spectral fades the stream in over one window;
+    switching away drains the pending overlap-add, then writes silence (a click otherwise).
+  - **The material** (the director's D1, option 1): the layer's sample when it holds one, else its
+    live ring (the FX's input; the instrument's sidechain). It is decided where the engine adopts
+    a sample, not where one is offered: the `Processor` re-sends the layer's Cloud parameters,
+    with the material's units, when a sample is adopted or removed, as on a kind change.
+    Position follows the material: a fraction of the sample, or seconds behind the ring's head
+    bounded as on a Live layer (with a floor of 1), and its text follows through
+    `CLAP_PARAM_RESCAN_TEXT`. Spray spreads grains one-sided over the smear.
+  - **Freeze** (D2, option 1) holds the material, not the smear: the layer's ring freezes as on a
+    Live layer, Position scans it, and the smear keeps evolving with new phases. The spectral
+    ring is never frozen. **Feedback is 0** on a Spectral layer, as on a Sample layer.
+  - **Cost:** about 50 Mflop/s of FFT per Spectral layer at 48 kHz (§16 has the measured figure).
+- **Buses and filters** (D3, D4). Each grain carries a bus bit, latched at spawn: it takes bus 2
+  when its `Field::Bus` draw is under the layer's `Bus Split` (`0x..61`, 0–100%; the director's
+  D3, option 1, chance per grain; declined: alternating, and by pan side), and at 0 nothing is
+  drawn. The engine renders each bus in spawn order (a second output pair on
+  `Engine::process`). Each bus has a filter (`Bus 1 Filter`, `Cutoff`, `Resonance` at
+  `0x..62`–`0x..64`, bus 2's at `0x..65`–`0x..67`): Off, Low-pass, High-pass, Band-pass or Notch,
+  a 12 dB per octave state-variable filter (D4, option 1: sst-filters' `CytomicSVF`; declined:
+  a 24 dB cascade and a ladder), Cutoff 20 Hz–20 kHz log, Resonance mapped so every setting is
+  stable.
+  - **On the grid, smoothed:** each filter takes its effective cutoff and resonance at every
+    32-sample boundary on the absolute clock and interpolates per sample, so automation and the
+    matrix never zipper. The filtered audio is plain arithmetic, expected bit-exact across
+    platforms.
+  - **Exact bypass, by a sticky flag.** A bus whose type is Off passes bit for bit. Bus 2 is
+    provably empty until a grain has been admitted to it: the engine raises `bus2Used()` at the
+    first bus-2 admission and lowers it only in `reset()` and when the enable gate turns off
+    (where the layer also clears its diffuser and Feedback history). While it is down the layer's
+    sum is bus 1 alone, with no `+ 0`, so Bus Split 0 with both filters Off is M1's grain sum bit
+    for bit, the sign of zero included; bus 2's filter hears silence meanwhile, which leaves it
+    silent. Once up, the sum is `bus1 + bus2`, each after its filter, for the layer's run: a
+    live count would cut bus 2's filter tail the moment its last grain ended.
+  - **Declicked switches.** A type change starts the incoming type on a spare filter instance
+    from rest and crossfades the bus over the 10 ms ramp, so no switch clicks. After a clear (a
+    new instance, a reset, the layer switched back on) the first cell takes its type at once, as
+    the ramps jump there.
+  - They sit in the layer's task before the diffuser, so the diffuser, Level, the soft limiter,
+    Feedback's history and the morph weight see the filtered sum where they saw the plain one.
+    The new layer parameters are mod targets like any layer parameter: since sub-project 3, the
+    matrix refuses a layer parameter only if it is a modulator's control (`isValidTarget`), no
+    longer anything above `LFO 1 Rate`.
+- **The global delay** (`0x000060`–`0x000064`: Amount, Time 1 ms–2 s log with default 375 ms,
+  Feedback, Damping, Ping-pong), in-house and libm-free, after the layers' sum and before the
+  reverb and the mix: `wet' = wet + Amount × y`, the line written every sample and the return
+  added only where Amount's ramp isn't 0, so `wet'` is `wet` bit for bit at rest. The loop runs
+  through M1's `softLimit` and a one-pole damper (20 kHz at Damping 0 to 500 Hz at 100%, log), so
+  it is bounded below 1. Amount, Feedback and Damping ramp over 10 ms, and so does Ping-pong's
+  switch, a weight that crosses the damper's input from the channel's own read to the other's,
+  so a toggle never clicks. **Time glides** (D6,
+  option 1; declined: a crossfade, a jump): the read position moves toward its target at no more
+  than 0.5 samples per sample (Space's Pre-delay rule), so a move bends pitch like tape and
+  never clicks. **Feedback reaches 100%** (D7, option 1; declined: the instrument's tail made
+  infinite, a 95% cap), so the delay can hold a repeat as Decay ∞ does, and the instrument's
+  reported tail stays its constant 122.5 s: a host that suspends an instrument after its tail
+  cuts a held delay 122.5 s after the last note. The FX's tail is infinite already.
+  **The hold darkens** (the director's decision D7a, 2026-10-30, option 2; declined: Damping 0
+  bypassing the damper for an exact hold): at Feedback 100% and Damping 0 the damper is still a
+  20 kHz one-pole in the loop, so bright material slowly darkens. A noise burst loses about 2 dB
+  in the 2–4 kHz band over 20 s, and a sine burst holds within 0.1 dB.
+- **The global limiter** (`0x000065`–`0x000067`: Mode, Ceiling −24…0 dB default −1 dB, Release
+  10 ms–1 s log default 100 ms), after the reverb's return and before the mix, on the wet side
+  alone: the FX's dry path stays unclamped (ruling M1-q). Off is the identity, by default, and
+  M1's per-layer soft limiters stay. **Soft** is M1's `softLimit` scaled to the Ceiling. **Peak**
+  (D5, option 1; declined: a hard clipper, a look-ahead limiter) is a zero-lookahead peak
+  limiter: its gain, computed in double, drops instantly to hold the output at the Ceiling and
+  releases with its time constant, with no latency; a single-sample peak is clamped rather than
+  anticipated. A mode change crossfades over 10 ms, and snaps where the ramps jump (a loaded
+  state, a macro or route, a reset). Peak's own click score on hot material is 15 to 18, from
+  its instant gain steps, which a listener should judge. Off keeps M1's
+  association, `out = (d·(1 − m) + wet'·m) + softLimit(a·r)`; only Soft and Peak form the wet side
+  first and add it to the dry.
+- **The chain,** per piece, extending Layers and the chain (above); new stages marked:
+
+  ```
+  per layer L (A..D), one task:
+     ring_L[t]  = sanitize(in[t]) + fb_L(t) · limited_L[t − 256]
+     spectral_L = Spectral kind ? smear(material_L, Position_L) : 0     (one sample per sample)  new
+     b1_L, b2_L = Σ grains_L by bus, each in spawn order                                         new
+     w_L        = F1_L(b1_L) ⊕ F2_L(b2_L)    (⊕: bus 2 added only once a grain has been on it;   new
+                                              F: the bus's filter, or the identity when Off)
+     w'_L       = δ_L > 0 ? w_L + δ_L·(diffuse_L(w_L) − w_L) : w_L
+     limited_L  = softLimit(w'_L · g_L)
+     wet_L      = limited_L · weight_L(t)
+  instance, after the tasks join:
+     wet   = wet_A ⊕ wet_B ⊕ wet_C ⊕ wet_D
+     wet'  = wet [+ Amount · delayRead]       (added only where Amount's ramp ≠ 0)               new
+     FX: rIn = m·wet' + s·d        instrument: rIn = wet'
+     limiter Off (default): FX out = (d·(1 − m) + wet'·m) [+ softLimit(a·r)]
+                            instrument out = wet' [+ softLimit(a·r)]
+     limiter Soft or Peak:  FX out = d·(1 − m) + limit(wet'·m [+ softLimit(a·r)])               new
+                            instrument out = limit(wet' [+ softLimit(a·r)])
+                                             └─► the resample tap (2) reads out, as above
+  ```
+
+  The buses, filters and STFT run inside the layer's task on its own state, the delay and
+  limiter in the serial tail.
+- **Determinism and real time.** Smear's fields are latched per grain; the hops are absolute grid
+  boundaries; the filters' coefficients change at grid boundaries; the delay's ramps and glide and
+  the limiter's gain are functions of the absolute sample; output is bit-identical at every block
+  size and with any thread pool. Every buffer and pffft's setup are allocated at construction. The
+  Spectral audio differs in its last bits across SIMD flavors (pffft's NEON and SSE), covered by
+  the goldens' metric tolerances as Reverb 2's `powf` is; the grain-event log, which sees no
+  audio, stays exact.
+
 **Oscillator sources.** Two kinds:
 1. *Stream oscillators* rendered into ring buffers. These include band-limited basic waveforms
    and the MIT-licensed Plaits engines, excluding the speech engine's TI-ROM-derived data.
@@ -1091,7 +1250,7 @@ and tuning-library) are planned, for M2 and M3; they are pinned when they are ad
 | libFLAC | BSD-3-Clause | Encoding embedded captures |
 | r8brain-free-src 7.6 (tag `7.6`, `cb2abb9`) | MIT | Sample-rate conversion on load, in `gg-media` (`CDSPResampler24`; header-only, with its bundled Ooura FFT), since M1 sub-project 3 |
 | utf8proc 2.12.0 (tag `v2.12.0`, `79cdd5a`; Unicode 18) | MIT (its Unicode data: the Unicode data license, permissive) | Unicode normalization in `gg-media`'s search for a missing sample, so a name saved in NFC is found under its NFD spelling and back; one C file, a static library linked privately into `gg-media`, since the M1 burn-down (§23 #55) |
-| pffft | BSD-like | FFT: the metrics' spectra and spectrograms since M0 (§23 #21); Spectral Smear's STFT in M2 |
+| pffft | BSD-like | FFT: the metrics' spectra and spectrograms since M0 (§23 #21); since M2 sub-project 4 also the engine's Spectral Smear STFT (`SpectralSource.cpp` alone includes it; §23 #69) |
 | signalsmith-stretch | MIT | Transparent pitch/formant shift in the FX only (not extreme stretch) |
 | MTS-ESP client, tuning-library | 0BSD-style / MIT | Microtuning |
 | fmt, Catch2 | MIT / BSL-1.0 | Formatting, tests |
@@ -1128,6 +1287,13 @@ and tuning-library) are planned, for M2 and M3; they are pinned when they are ad
   - `libs/CMakeLists.txt` adds sst-effects before sst-plugininfra, and fails configuring if it
     finds sst-effects' preset library, which sst-effects builds (with tinyxml) once
     sst-plugininfra's tinyxml target exists. We don't use it.
+- **`CytomicSVF` is in use since M2 sub-project 4** (§23 #69), the first sst-filters unit: the
+  bus filters (`core/src/fx/BusFilter.cpp`, 12 dB per octave, `setCoeffForBlock<32>` and
+  `processBlockStep` doing the grid's coefficients and the per-sample interpolation). It
+  compiles in `gg-core`'s own sources under `-ffp-contract=off`, `PRIVATE` like Reverb 2, and
+  `Processor.h` holds a pointer to the internal unit, never an sst-filters header. Its
+  coefficient path is plain arithmetic (`fasttan`), so the filtered audio is expected bit-exact
+  across platforms.
 - **The patched Reverb 2** (`core/src/space/Reverb2Patched.h`; §23 #50). A copy of sst-effects'
   `include/sst/effects/Reverb2.h` at `987b39d`, in the namespace `gg::core::space::patched`,
   under its GPL-3.0-or-later header plus a note that it was modified for Giga Grains. Every change
@@ -1286,6 +1452,18 @@ and tuning-library) are planned, for M2 and M3; they are pinned when they are ad
     have entries beside the four gated ones on those legs (not on `mac-universal`); the gate
     stays report-only. `gg-bench` prints the table it used (`kernels:`) and its JSON records
     `kernelLanes` (8 or 4). `--grains` is bounded by `kMaxGrainCapacity`.
+  - **Sub-project 4's cases are published beside X, report-only** (§23 #69), in the default case
+    list so CI's legs time them, their ratios "not in the baseline" until three full runs add
+    their entries: `engine-sample-smear` (`engine-sample` at Smear 1: two extra draws a spawn
+    and the jitter's reads), `engine-buses` (half the grains on bus 2) and `engine-spectral`
+    (X's stream over the Spectral kind, the STFT running on the same noise as material).
+    TODO(extremes-final): their figures at the idle-machine run after the merge of main: the three
+    cases' ratios and ns per grain-sample at blocks 32 / 64 / 256, and X itself, which must show
+    no `regressed` ratio.
+  - **`gg-bench --chain`** times the wet chain's new per-sample stages (two bus filters, the
+    delay and the limiter at Peak) on stereo noise at 48 kHz, as `--space` times the diffuser
+    and reverb: report-only, its own JSON. TODO(extremes-final): its figure at the same run, in
+    ns per stereo sample and as a percentage of one M5 Max core.
   - **Space's cost is published beside X too** (`gg-bench --space`, report-only, with no ratio or
     baseline; §23 #50): the diffuser and the reverb on stereo noise at 48 kHz, per stereo sample.
     Sub-project 4's fix wave measured 28.49 ns, 0.137% of one M5 Max core, at its final code
@@ -1454,9 +1632,12 @@ sub-project 6 (§23 #65):
   Macros). Slot 7 shows Macro Feedback in both products since M2 sub-project 1 (§23 #65; M1's
   instrument showed Macro Stereo there): in the instrument it acts on Live layers, and is inert
   on a Sample layer, the default, until the resample source.
-- **Eight remote-controls pages** (§18; three in M1): "Perform" (the eight macros) first, then
+- **Thirteen remote-controls pages** (§18; three in M1): "Perform" (the eight macros) first, then
   "Cloud" and "Space", then, since M2 sub-project 1, "Layers", "Morph" and "Cloud B" to
-  "Cloud D".
+  "Cloud D", then, since M2 sub-project 4 (§23 #69), "FX" (the delay and the limiter) and
+  "Filter A" to "Filter D" (a layer's Smear, Bus Split and two bus filters). The Edit view's
+  Filter panel and the FX view draw these parameters in sub-project 6; until then they are
+  headless.
 - **Audio → UI, as built** (gg-core, JUCE-free, lock-free and allocation-free on the audio
   thread):
   - **The grain queue:** a `GrainVis` per spawned grain (onset, start position in ring time or
@@ -1814,6 +1995,39 @@ they are frozen along with them.
   defaults and plays as it did. Neither joins a remote-controls page before sub-project 6.
   - They joined with the patch's version bump (The patch, below), and a state that doesn't
     mention one loads it at its default.
+- **M2 sub-project 4's forty** (the Extremes; §23 #69), inside the `0x60`–`0x7F` blocks, each
+  `AUTOMATABLE | MODULATABLE` and the stepped ones `STEPPED`, with no metadata that differs
+  between the products: **258 in all** with sub-project 1's 218 (`kParamCount`; sub-projects 3's
+  and 2's after the rebase add theirs). One list, `GG_LAYER_PARAMS_M2_EXTREMES`, gives each
+  layer eight rows after sub-project 3's, so the index column stays ascending; the next-free
+  constants are unchanged. **The (name, ID)s are what is pinned**, in `tests/support/ParamTable.h`,
+  not a total. `0x68`–`0x7F` stay unused. The layer scope:
+
+  | Index | Name | Range | Default |
+  |---|---|---|---|
+  | `60` | Smear | 0–100% | 0% |
+  | `61` | Bus Split | 0–100% (the share of grains on bus 2) | 0% |
+  | `62` | Bus 1 Filter | stepped: Off, Low-pass, High-pass, Band-pass, Notch | Off |
+  | `63` | Bus 1 Cutoff | 20 Hz–20 kHz, log | 1 kHz |
+  | `64` | Bus 1 Resonance | 0–100% | 0% |
+  | `65`–`67` | Bus 2 Filter, Cutoff, Resonance | as bus 1's | Off, 1 kHz, 0% |
+
+  Scope 0:
+
+  | ID | Name | Range | Default |
+  |---|---|---|---|
+  | `0x000060` | Delay Amount | 0–100% | 0% |
+  | `0x000061` | Delay Time | 1 ms–2 s, log | 375 ms |
+  | `0x000062` | Delay Feedback | 0–100% | 40% |
+  | `0x000063` | Delay Damping | 0–100% | 30% |
+  | `0x000064` | Delay Ping-pong | stepped off/on | off |
+  | `0x000065` | Limiter Mode | stepped: Off, Soft, Peak | Off |
+  | `0x000066` | Limiter Ceiling | −24 … 0 dB | −1 dB |
+  | `0x000067` | Limiter Release | 10 ms–1 s, log | 100 ms |
+
+  The patch stays at version 2: a state that doesn't mention them loads them at their defaults,
+  and a literal wave-1 state decodes in a test and renders M1's bytes. The container is
+  unchanged, and the AUv2 order is ascending ID as ever.
 - **The patch** (the state's `PTCH` chunk) is `gg-core`'s versioned XML: patch id
   `org.sethbc.giga-grains.patch`, version 2 since M2 sub-project 1 (1 through M1; below). Each
   value also carries its float bits, so a saved
@@ -1904,7 +2118,7 @@ input, which every validator accepts, so D2's fallback was not needed; §14, §1
 - `latency` (0)
 - `audio-ports` (with an optional sidechain: the instrument's, since M2 sub-project 1)
 - `render`
-- `remote-controls` (eight pages, above)
+- `remote-controls` (thirteen pages, above)
 - `param-indication`
 - `track-info`
 - `gui`
@@ -1994,6 +2208,26 @@ input, which every validator accepts, so D2's fallback was not needed; §14, §1
   grain reads part of the sweep and the ladder carries content near Nyquist to every step). Every
   one of the 36 earlier cases' WAV SHA-256 was unchanged through every task, and their event
   logs were rewritten once, by inserting `"tier"` and `"lvl"` alone.
+  M2 sub-project 4 added nine cases (§23 #69), so there are 45: `inst-smear` (one note over noise
+  at a static Position, Smear stepped 0, 0.25, 0.5, 1), `inst-stretch-smear` (`loop-48k.wav` at
+  1000× through LFO 1 to Position, Smear 0 for 4 s, then 1), `inst-spectral` (layer A Spectral
+  over a sweep sample, Position stepped 0.1, 0.4, 0.7), `fx-spectral-freeze` (layer A Spectral
+  over the loop as the input ring, Freeze from 2 s to 4 s), `fx-bus-filters` (stereo noise, Bus
+  Split 50%, a low-pass and a high-pass, a cutoff and a type automated), `inst-filter-lfo` (a
+  note over noise, LFO 1 to Bus 1 Cutoff ±2 octaves), `fx-delay` (the loop, ping-pong),
+  `fx-delay-automate` (Time's glide, Feedback to 90%, Amount to 0) and `fx-limiter` (four layers
+  at +6 dB, Mode Off, Soft at 2 s, Peak at 4 s, Ceiling −6 dB). Seven hide some injected steps,
+  pinned in the click-injection table with their reasons: `fx-limiter` and `inst-smear` catch
+  none and `fx-bus-filters` 1 (a noise bed throughout), `inst-filter-lfo` 13 (the three crests
+  where the cutoff is at 4 kHz), `fx-delay` 12 (the loop's bursts and their echoes),
+  `inst-stretch-smear` 9 and `fx-spectral-freeze` 9 (the smooth wash hides the steps once the
+  smear is on); `inst-spectral` and `fx-delay-automate` catch all sixteen. Peak did not click in
+  `fx-limiter` (clean score 4.31). **The comb test** (`tests/metrics/comb_tests.cpp`) is the
+  exit criterion: Smear 1's cepstral comb score is 16 to 17 dB below Smear 0's at a static
+  Position and at 1000× (pinned from measurement: static 33.89 against 17.92 dB, 1000× 34.71 against
+  17.52 dB, limits 28 and 22). Every one of the 36 earlier cases kept its WAV SHA-256 through
+  every task, with Smear 0, Bus Split 0, the filters Off, the delay at Amount 0 and the limiter
+  Off.
 
   No golden pins the audio's bits (§23 #52). The bit-exact checks are:
   - every golden's grain-event log (each grain's layer, onset, position, rate, duration,
@@ -2144,7 +2378,9 @@ Why this order before v1.0:
 | ~~How Ableton Live routes MIDI into VST3/AU effects (sets how prominent MIDI-driven FX features are)~~ | **Resolved** in M0 (2026-10-26): a MIDI track's "MIDI To" reaches Giga Grains FX as VST3 and as AU, and MIDI-driven FX features are first-class; see §23 #25 and `docs/spikes/m0-ableton-midi-fx.md` |
 | ~~Whether the CPU canvas holds its frame budget, or a GPU backend is needed~~ | **Resolved** in M0 (2026-10-26): it holds (under 3 ms of UI-thread time at 8,192 grains in both first-class hosts), and the GPU backend spike stays in M2; see §16, §17 and §23 #26 |
 | Which hosts besides Bitwig accept CLAP thread-pool requests under load | M2 sub-project 1 built the tasks and the pool support, with a fake host pool as the machine-checked stand-in (§15, §19, §23 #65); the in-host survey stays sub-project 7's (the close's) checklist (§23 #64) |
-| Whether grain buses with channel masks are enough for v1 sound design, or per-grain filters are needed sooner | M2 sub-project 4 (§23 #64) |
+| ~~Whether grain buses with channel masks are enough for v1 sound design, or per-grain filters are needed sooner~~ | **Resolved** in M2 sub-project 4 (§23 #69) by a bench-only kernel, `hermite-simd-grainfilter` (`hermite-simd` plus one `CytomicSVF` per grain, stepped per output sample, on the M0 workload). Its cost is an upper bound: the whole SVF per grain, two of four lanes used and the scratch clear counted. TODO(extremes-final): the figure, from the idle-machine run after the merge of main, as a multiple of `hermite-simd`'s and of X per grain-sample. Per the spec's rule, above a quarter of X per grain-sample buses with channel masks are v1's answer and per-grain filters wait for M5's budget weights (§14), and below it M5's decision starts from the number |
+| A global DC blocker beside the delay and limiter (§14 lists one with the soft limiter): nothing needs it yet, and the reverb's ∞ has its own | Post-M2, when a source needs it (§23 #69) |
+| Feedback into a Spectral layer's material: the layer's Feedback is 0 (its ring is its material), so feeding the smear back is a later option, not a default surprise | Post-M2 (§23 #69) |
 | Logic Pro's MPE and tail behavior with the wrapped AUv2 | M3 |
 | Default behavior of rhythmic streams when the transport stops: keep running or hold | M4 |
 | An optional "Classic" Clouds-faithful mode using sst-effects' Nimbus | Post-v1 |
@@ -2232,6 +2468,7 @@ director made the call.
 | 65 | M2 sub-project 1 (Layers and structure): four layers and the morph, the Source kind, pitch and size spread, the mod matrix, render tasks on the host's thread pool, the patch at version 2, C++23 | **The director's five decisions** (2026-10-29, by forced choice on the spec, relayed by the programme manager; `docs/superpowers/specs/2026-10-29-m2-layers-design.md` §8): **D1** option 1, the morph law is the sum-normalized vector law with the pad resting at the centre (declined: the nearest corner at full level, and plain bilinear resting at corner A); **D2** option 1, the instrument gets a sidechain input port in this wave, feeding every layer's ring, with a fallback (drop the port if auval or pluginval reject an `aumu` with an input bus) that was not needed: CI's macOS leg (run on `1aa7114`) passed auval on all three identities with the instrument's input bus, and pluginval and Steinberg's validator passed too; **D3** option 3, each layer has two LFOs, two envelopes, two random sources and one 16-step sequencer; **D4** option 1, Pitch Spread is 0–24 semitones, uniform bipolar; **D5** option 2, Size Spread (0–2 octaves, uniform bipolar) joins Pitch Spread in M2, and the rest of §14's spread model goes to §22. **The programme manager's acceptance** (2026-10-29): carry-over rows 118 and 119 move from sub-project 2 to this one, since the Source-kind parameter makes the switch reachable in both products in wave 1. **The design** (the spec and `docs/superpowers/plans/2026-10-29-m2-layers.md`, as built): C++23 for every first-party target with a GCC 13 floor that the configure enforces, the Linux leg `linux-gcc13` on ubuntu-22.04 with gcc-13 from the `ubuntu-toolchain-r/test` PPA, its baseline file renamed (§15; `6a816e9`, `3d15b06`); `gg::Engine` as one layer's engine: `EngineConfig::layer` keying every draw (layer A's are M1's), an enable gate whose re-enable forces an onset, a source-kind switch that lets the sounding grains finish on their source (rows 118 and 119), and the level accessor (`263696d`); Pitch Spread and Size Spread, `rng::Field` 5 and 6 (`db51439`); `TaskRunner`, `SerialRunner` and the tests' `StubPool` (`6038030`); the 218-parameter table, layers B to D at scope 1's indices, the next-free indices `0x31` and `0x22`, the three reserved blocks, Macro 7 "Macro Feedback" in both products (§18; `6d55d10`); the mod matrix's routes, six curves and twelve factory routes, M1's `macroOffsets` bit for bit (`af37670`); the modulation sources, libm-free (`515c1bc`); the patch at version 2, `<mod>` and the migration with the instrument's Macro 7 folded into Stereo (`a660295`); the layer-aware `ParamMap` and `builtKind` (`a9cb6e7`); the four layers in the `Processor`, the per-layer chain, the morph law, on/off, the kinds and both products' 256-sample pieces (`27f4f02`, `1235944`); `"layer"` in the grain-event line, which rewrote the 22 expected `.events.jsonl` files by that insertion alone (`88e7c8f`); one task per rendering layer on the runner, bit-identical with any pool (`fec8410`); the matrix in the `Processor`, every source stepped per grid cell and per-cell application while a time-varying route is active (`f668876`, `5d8263b`, `cd568c0`; that path's cost is unmeasured, since `gg-bench` times the engine, not the `Processor`, and is for sub-project 7's idle run or a later `Processor` benchmark); `gg-render`'s `samples`, `mod`, `controls`, `transport` and velocity keys (`fb586f7`); the plugin's sidechain port, eight remote pages, `clap.thread-pool`, the MIDI controls, the transport and the routes in the state (`f393ecd`, `8824c26`); `engine-layers` and `engine-layers-full`, report-only beside X (§16; `c5e066c`); the fourteen goldens, 36 cases in all, with `fx-layers`, `fx-mod-follower`, `inst-layers-morph` and `inst-size-spread` pinned in the click-injection table at 0, 15, 5 and 3 (§19); and the listening pack, `docs/listening/m2-layers/` (fourteen specs, a README and a host checklist), rendered for the record and heard at M2's close, which puts two questions to the director's sitting: under D1 uncorrelated layers sum quieter than one layer alone (two about 4 dB down, four 6–7 dB: should the pad keep power rather than amplitude?), and Env 1's release is barely audible in the instrument, since no grain spawns after a note-off, so the release reaches only the last grains and the reverb's tail. GCC 13's warnings were fixed in first-party code: `-Warray-bounds` by one bounded `ParamMap` accessor (`d0c0657`), `-Wmaybe-uninitialized` by a plain slot in `parseRoute` (`e0f7fb7`), `-Wrange-loop-construct` by reference bindings (`c288d3b`) and `-Wextra`'s enumerator-and-integer conditional by the test harness's transport flags of one integer type (`1aa7114`). With layers B to D off, the pad at rest, both spreads 0 and only the factory routes, every one of the 22 M1 goldens kept its WAV SHA-256 through every task. **The spec's calls that amend Part II** (its §9): each layer owns its pool of 4,096; a layer switched on speaks at once (the forced onset) and off clears its pool after the 10 ms ramp; off layers keep writing their rings; both products have four 16 s rings, the instrument's fed from the sidechain; unbuilt kinds render as the product's default kind (`builtKind`), keeping their value; Position, Spray and Feedback follow the layer's kind, not the product, so Feedback is shown in the instrument; notes act on every layer; routes may not target a macro or a modulator's control; display names carry the layer letter, with the bare M1 names as layer A's in `gg-render`. **Rulings made during the build** (IDs given here: LS, Layers and structure, then the task): LS-P1 (2026-10-29, the plan's pre-flight), `<route>` writes `target` as the target slot's CLAP ID in decimal, as `<p id>` does, never its name, since a renamed parameter must not break saved routes; `source` and `curve` by their stable identifiers, layers as `A`–`D`, `same` and `all`; LS-T1a, GCC 13 defines `__cplusplus` as 202100L for `-std=c++23`, so the smoke test's bound is `> 202002L`, and the PPA step installs gcc-13 and g++-13 itself, since the pinned `prepare-for-juce` installs no compiler (`3d15b06`); LS-T5a, the M1 listening spec `docs/listening/m1-perform/specs/07b-macro-stereo.json` no longer parses (Macro Stereo is gone), and stays as the gate's frozen record, with a test pinning its failure; LS-T7a, the random glide's time constant is Smooth / rate and the follower is a 5 ms / 200 ms one-pole with a 1e-20 flush, the tests pinning the formulas' values, and the envelope's double level and `sineDet`'s clamp to ±1 are accepted; LS-T9a, a version-1 instrument state with no Macro 7 folds M1's default 0.5, the writer leaves out a route that wouldn't read back as itself, and a later malformed `<route>` naming a valid slot empties it; LS-T10a (Task 10's fix round), the morph law gains the factor `min(1, Σ_K r_K)`, `weight_L = (r_L·b_L / Σ_K r_K·b_K) × min(1, Σ_K r_K)`, because the normalized weight kept a lone layer at 1 until its ramp was exactly 0, so switching off the last layer cut where the spec says it fades over 10 ms; one layer at r = 1 still weighs exactly 1.0 (`1235944`); LS-T10b, the event log's inter-layer interleaving follows the pieces (which end at call ends, at grid boundaries with changes, at 256-sample cuts and where an off-ramp reaches 0), so it differs between block sizes, while each layer's sequence and the audio are invariant and the goldens render at a fixed block size, so the cross-platform gate holds (§19); LS-T10c, the piece is cut where an off-ramp reaches 0, a layer's diffuser and Feedback history are cleared when it turns off, and a `setBase` of a layer's Source jumps its Feedback ramp; LS-T11a, each layer counts its own dropped grain events and `droppedGrainEvents` sums them; LS-T11b, `StubPool`'s own lock and wait are exempt from RTSan as a stand-in for a host's pool, the tasks it runs still checked; LS-T12a, `reset()` forgets the host's transport, so a reset `Processor` renders as a fresh one (`01d03e1`; the review found it kept), and `setRoutes` jumps the ramps it moves; LS-T13a, `gg-render`'s transport key is `tempoBpm` (the spec said `tempo`), the instrument's `sample` stays required and is layer A's, so `samples.A` beside it is the duplicate error, and built-in layer samples share the spec's seed; LS-T14a, the instrument's routes travel with its seed in the loaded-state snapshot and may land a block apart from its values, as PU-T5a accepts for the seed, and auval, not runnable on the build machine, is replaced there by the in-process AU test of every identity's stereo input, CI's auval being the check (`8824c26`; it passed on `1aa7114`). **The spec is amended in place** for §6.1 (LS-T1a and the C++23 library features not yet used), §6.3 (LS-T10a), §6.7 (LS-T10b, LS-T11a, LS-T11b), §6.8 (the per-layer globals as targets), §6.9 (LS-T5a), §6.10 (LS-P1), §6.11 (LS-T13a) and §12 (rows 118 and 119 closed), and the plan's Global Constraints for LS-T10a. **The carry-over:** rows 118 and 119 closed by `263696d`, 13 open rows to 11, none added. Decided 2026-10-29 by the director (D1–D5) and the programme manager (rows 118 and 119), and 2026-10-29 and 2026-10-30 by Claude (the rulings), during M2 sub-project 1; *written by the Claude session that ran sub-project 1*; see §14, §15, §16, §17, §18, §19, §20, §22. **The final review's fix wave** (2026-10-30): the whole-branch review found no Critical issue and five Important ones, fixed with its minors. Ruling FR-1: a layer parameter's index is read from the X-macro's index column (`layerParamIndex`, and `slotForId` through its reverse table), never from its row's position, and scope 0's table spans `0x00`–`0x7F`, so wave 2 appends its rows inside its blocks with no placeholder rows; the next-free constants are the next free index below the blocks; and the 218-row table the plugin and patch tests both spelled out is one header, `tests/support/ParamTable.h` (§18; `2869412`). Ruling FR-2: on Linux with GCC the four products link libstdc++ and libgcc statically, their symbols kept local, and the CLAP and the VST3 export their entry points alone, since the GCC 13 floor's headers reference `GLIBCXX_3.4.32`, which a stock 22.04 lacks; CI's Linux leg checks the ceiling (§15; `4cc8230`). Ruling FR-3: a state load (an offer's values, the plugin's activation and its loaded state) sets every base with `Processor::setBases`, one recomputation of the effective values where 218 `setBase` calls made 218 (106 µs to 3.0 µs in a release build on the M5 Max), with the calls' result bit for bit but for Freeze's arming (FR-8, below) (`9cbded1`). Ruling FR-5: the grain canvas shows layer A alone (§17), and a piece's task count is 0 once its tasks are joined, so a thread-pool call outside a request runs nothing (`88230e8`). Ruling FR-6: Position and Spray's text follows Source's base value, not its effective one (§18). Ruling FR-7: Transport Playing has no golden (§19). `CLAUDE.md` now names GCC 13's four diagnostic families with their fixes and warns that two gates on one machine fail falsely, and the listening checklist says the instrument's layers B to D are silent unless their Source is Live. Every golden WAV kept its SHA-256 (36 cases); the carry-over stays at 11 open rows. Ruling FR-8 (the controller, on the fix report): `setBases` arms Freeze from the loaded values alone, every layer alike, with one `syncFreeze()` after the update (so a Freeze loaded on stays live until toggled if its layer isn't yet armed, and freezes at once if it is), since the calls one slot at a time armed layers B to D at layer A's Freeze, from their old values, and froze their empty rings at a load, #40's bug (§14). *Decided 2026-10-30 by Claude, in the fix wave, and by the controller (FR-8)* |
 | 66 | M2 sub-project 3 (Engine scale and quality): the HQ sinc tier and the Quality parameter, file mipmaps, the deterministic CPU budget (weights, Budget, quotas, the overload ladder), the pool to 16,384, the sweep harness, AVX2 kernels | **The director's five decisions** (2026-10-30, by forced choice on the spec, relayed by the programme manager; `docs/superpowers/specs/2026-10-30-m2-engine-design.md` §8, every recommended option): **D1** option 1, Budget is a global parameter, 256 to 16,384 Normal grains, default 4,096 (declined: a default of 16,384, which leaves the ladder unreachable in M2's ranges, and a fixed constant); **D2** option 1, equal quotas among the layers that are rendering (declined: a fixed quarter each, and the whole budget for each); **D3** option 1, a 16-tap HQ kernel (declined: 12 taps); **D4** option 1, a grain is stolen only once it has sounded half its window (declined: 90% and a quarter); **D5** option 1, only HQ grains read the mip pyramid, so every M1 golden keeps its hash (declined: every tier). **The programme manager's ruling PM-1** (2026-10-30, found reviewing sub-project 4's spec): `isValidTarget` admitted a layer parameter only below `LFO 1 Rate`, which would have refused every wave-2 parameter, Quality included, as a route target; it now refuses the modulators' controls by name (`isModulatorControl`) and admits the rest, and `Processor.cpp`'s own check calls the same function (ES-T4a). **The design** (the spec and `docs/superpowers/plans/2026-10-30-m2-engine.md`, as built; §14, §16, §18, §19, §21): the HQ tier and its 16-tap sinc, bit-identical to its scalar reference (`d409d68`); the weighted ledger, per-engine quota and the overload ladder, closing carry-over row 51 (`dc9bc91`, `613fec6`); the file pyramid behind the level accessor (`2f8d9ac`) and a mip level per HQ grain (`17a8dec`, `1227aa4`); Quality and Budget in the reserved block, 223 parameters (`32151aa`); per-layer quotas, the pool size and steal events in the `Processor` (`e763924`); the steal fade (`ab69e18`, `4a2831b`); `engine-sample-hq`, `engine-sample-hq-up` and `engine-overload`, report-only (`8116629`); `"tier"` and `"lvl"` in the grain-event line and a line per steal, which rewrote the 36 expected `.events.jsonl` files by insertion alone (`9e0963f`); HQ's weight from the measured ratio (`15a1088`); the seven goldens and the listening pack, `docs/listening/m2-engine/` (`315d77c`); the AVX2 kernels (`fa3b73e`, `630d740`, `778ed29`); and the `[sweep]` family of 20 cases (`1c7b393`, `cdc73d5`). **Rulings made during the build** (IDs: ES, Engine scale, then the task and a letter): **ES-T1a**, the stretched sinc's stopband at stretch 0.5 is −37 dB (the 16 taps cover half of the window; −34 to −40 dB for β 6 to 10), so the spec's 70 dB pin there is withdrawn and the test pins at most −35 dB with the cutoff following the stretch; at stretch 1 the kernel is within 0.0007 dB to 0.3 of the sampling rate and −81.7 dB from 0.7; β 8.0 kept; the level stays `floor(log2 r)`, so a residual rate just under 2 gets the weakest anti-aliasing (a question for the director's sitting: the listening pack's `02` has a +19 step, residual 1.5); **ES-T1b**, readers carry `kFadeBefore` and `kFadeAfter`, the reach their fade is for, so the live runs' margins keep the interior where the fade is exactly 1; **ES-T2a**, rung 3's room test excludes the weight of grains already fading, so steals compound at the onset rate as the overshoot bound says; **ES-T2b/c**, the overload ladder's block-size invariance (125 s in `dev`) is `[slow]` with a fast sibling that always runs, the M1 saturation counts changed (a full pool now steals) and `bench_tests`' bound went from 98 to 101; **ES-T3a/b/c**, the half-band is 55 taps, Kaiser β 8.0, 80.2 dB (31 taps reached 51 dB), the 64-frame rule stands (1,000 frames give 4 levels), the array is `kHalfband` and its count `kHalfbandTaps`, and building costs about 1.75 s for a 10-minute stereo file; **ES-T5a/b/c**, `Engine.h` does not include `GrainKernels.h` (source slots hold `PreparedSource::Level` copies and `renderPool` builds the views per block), the swap test uses `replaceSource`, and the live kernels scale position and stretch only, the head and window staying in ring frames; **ES-T6a**, a steal of a grain with at most 256 samples left keeps its natural end and does not fade (the corner alone scored 13.86 on a sparse sine, 0 after), and **ES-T6b**, the fade's first factor is 1 within one ulp; **ES-T7a/b**, "a layer switching on takes its share at the boundary" is checked as equality with a render whose Budget halves there, and the pool test runs the FX for 1 s (29.6 s in `dev`); an instance holds about 51 MB, 6.3 MB of it event buffers (corrected by the final review: 4 layers x 4 x 4,096 x 96 bytes); **ES-T8a**, `engine-overload` keeps its definition, and with every load a multiple of 4 no lower tier fits when Normal does not, so the test pins `lowered == 0` beside `dropped > 0` and `stolen > 0`; **ES-T8b**, HQ's weight comes from the measured HQ/Normal ratio, 6.79 (6.79, 6.60, 7.43; `--quick`, block 256), so HQ is {20 mono, 27 stereo}, the mono column proportional and provisional until M5's calibration; **ES-T10a**, the spec's unit arithmetic is restated with 27, and under sustained overload the ladder mostly steals and re-admits at the draw's tier (layer B of `fx-overload` steals from 0.375 s (onset 18,011) and layer A from 0.386 s at Budget 4,096; lowering stays near 5 per 200 admissions); **ES-T10b**, a sample grain running past its sample's end is cut hard (since M0; `Engine::sampleGrain` clamps only the start), a click of 66 to 83 at Position near 1 on a sparse cloud: not fixed here, **carry-over row 300**, the remedy (clamp the admission span, fade the tail, or wrap) being a sound choice for the director, offered in the final report; **ES-T11a**, the sweep harness found three click sources and exempts two, each named in `SweepDriver.h` to be deleted with its fix: `kSampleEnd` (row 300) and `kReverbOnset` (**row 302**, Space's: raising Reverb Amount from exactly 0 under a sounding input starts the reverb from an empty room, scores 15 to 20); the third, the morph law's hand-over within a few samples when a layer switches on off the pad's center or the pad moves near an edge (1,900 at (0, 0), 37.8 at (0.25, 0.25), 56.4 with a Morph X wrap; 0 at the center), is outside this sub-project, **row 301**, owner the pad (sub-project 6) or the close, a question for the director's sitting beside sub-project 1's D1, and no committed case meets it; **ES-T11c**, §6.11's "and over `gg::Engine`" is met by the engine-level random sweep and the overload sweeps; **ES-T11d**, the driver keeps its own `kLiveGuardFrames` = 15, since `LiveSource::kGuardFrames` is private; **Task 11's fix round**, every sweep case pins a floor under its scored share, the layer-switch exemption is removed, the Reverb Size exemption applies only to a real change, and faults are planted beside the exemptions and in the rings, queue, strips and snapshots; **ES-T12a**, the kernel table is chosen per engine, so `engine-sample-sse` runs beside `engine-sample` in one process; **ES-T12b**, each function of the AVX2 unit carries `target("avx2")` and no file-level flag does, because the flag would compile shared header code with AVX2 and the linker may keep that copy (82 such functions were measured), a SIGILL hazard on an SSE-only CPU; **ES-T12c**, the spec's "spread" is the range of the per-run improvement, mixed CPU models pooled per leg; **ES-T12d**, the baselines were remade from the same three runs. **The AVX2 ruling and outcome:** a kernel path chosen at load by CPU features, whose output is bit-identical to the fallback's, is not CPU-adaptive behavior under §14; what varies is speed alone, as it already does between a NEON and an SSE build (the dispatch is decided once, off the audio thread, and the two tables are tested against each other by `memcmp` on the same grains). **Kept:** across three full-length CI runs (41111335410, 41111344500, 41111354554, at `630d740`) `engine-sample` beat `engine-sample-sse` by 13% to 35% in all 18 leg-run-block cells; the improvement cleared the spread by 8.5, 13.1 and 11.6 times at blocks 32, 64 and 256 on Linux GCC 13 (EPYC 9V45, 7763, 7763) and by 4.3, 5.9 and 2.5 times on Windows ClangCL (Xeon 8370C, EPYC 7763, 9V45); every run had `kernelLanes` 8. The x86 baselines were remade from those runs (`linux-gcc13`: EPYC 9V45 and 7763 replaced; `windows-clangcl`: EPYC 7763 replaced, Xeon 8370C and EPYC 9V45 new, EPYC 9V74 kept from the SSE-era code and stale until a run lands there); the six report-only cases entered those entries, none on `mac-universal`, and the gate stays report-only; the mac leg's `engine-sample` passed in all nine cells, and its `engine-sample-eco` and `engine-full-pool` exceeded their limits in four, the M1 VM's known drift. `GG_FORCE_SSE` is kept, and `engine-sample-sse` stays as the fallback's report-only case. **The spec's calls that amend Part II** (its §9): the plugins keep 4,096 grains a layer while an engine's ceiling is 16,384; the steal's overshoot is bounded and accepted (§14); one pyramid copy per level; the level latched at the onset and the position scaled at render; the pyramid built for every file at load. **Hashes:** every one of the 36 earlier goldens' WAV SHA-256 was unchanged through every task (the Quality default is Normal, the quota unlimited by default in the engine and far above every golden's load in the `Processor`); their event logs were rewritten once, by inserting `"tier"` and `"lvl"`; there are 43 cases. **Two rulings after the final review** (2026-10-30). **ES-F2, the idle run's regression and its fix:** Task 14's idle run at `dd27cd4` measured X (`engine-sample`) at 2.589 / 2.331 / 2.111 ns, **+6.3% / +5.5% / +3.8%** over the M1 headline's 2.436 / 2.210 / 2.034 (blocks 32 / 64 / 256), outside the 3% bar, with `reference` unchanged (the ratio rose 1.154 to 1.232 at block 32). The bisect (interleaved passes of release `gg-bench` at main `8110646`, at each task merge and at `e7952aa`) pinned the step to `17a8dec`: every renderer read a mip level at `(startPos + rate × e) × invDec`, with `invDec = 1.0 / double(decimation)` a run-time value, exactly 1.0 at level 0, so the bits stayed the same while each 4-sample step paid two extra multiplies on the chain from the position to the tap addresses, and each call one more divide. `ab0bbe5` renders level 0 through a compile-time `detail::UnitDecimation`, whose `invDecimation` is an empty `UnitScale` that multiplies to its operand: the hot loop is instruction for instruction `2f8d9ac`'s, and **all 43 goldens' WAV SHA-256s are unchanged**. The confirming in-process A/B (mean of two passes, load 5.4 to 2.5) put X's ratio to `reference` at **1.153 / 1.061 / 1.012** for the fix, against main's 1.158 / 1.109 / 1.026 and `dd27cd4`'s 1.254 / 1.153 / 1.060 (the headline's 1.154 / 1.072 / 1.024); the full idle run at `ab0bbe5` is in §16 (+1.4% / +0.8% / +1.3%, within 3%). Builds without `GG_KERNELS_AVX2` (arm64 and the SSE fallback) now call the 4-wide kernels directly instead of through the table, closing Task 12's deferred minor (an indirect call per grain, about 1% on arm64), and the engine's constructor asserts that table. The fix's review (opus) approved it with three minors, done in a later commit: the kernels' `decimation` is constrained to `uint32_t` or `UnitDecimation` (`DecimationLike`), the kernel tests run the unit decimation's run finders against the integer ones at d = 1, and the `renderPool` comments say what a non-AVX2 build calls. **ES-F3, the cancel flag:** CI on `dd27cd4` failed the mac-universal leg's "deactivate and destruction cancel a load under way at once" (run 41131723144; `tests/plugin/sample_tests.cpp`): deactivate took 452 ms and destruction 402 ms against a bound of a quarter of the load (308 ms), the load having run to its end. The cause, found by the final review's issue 6: the loader's `media::prepare` built the file pyramid (`PreparedSource::make`, 1.75 s for a 10-minute stereo file) without its cancel flag, so a cancel waited for the whole pyramid. `5f1f9b5` passes the existing flag to `make` (one line in sub-project 2's `media/src/Sample.cpp`, by addition; `make` already took the flag, and returns nullptr, which the loader treats as cancelled and not as an error). It did not reproduce locally (deactivate 23 ms of a 1,510 ms load), so the fix is confirmed only by CI's mac-universal leg passing again. **The carry-over** (no count rule since #67): row 51 closed by `dc9bc91` and `613fec6`; rows 300, 301 and 302 added by the build, and 303 to 310 by the close (the deferred minors that still name a defect, and what is blocked outside this sub-project). **Questions for the director's sitting** (the listening pack's three, and F1): whether HQ earns its weight on real material; whether D4's threshold sounds right under sustained overload; whether HQ's weak spot near a residual rate of 2 is acceptable; and the remedy for the sample-end cut (row 300), with the morph hand-over (row 301) beside D1. **Amended (2026-10-30), carry-over row 300: the director's choice, fade the tail** (by forced choice on sub-project 3's final report, relayed by the programme manager), with the programme's rulings **EF-1** (reuse the steal fade's rows), **EF-2** (the fade must not click: its own constant, at most 12 on the click detector), **EF-6** (revising EF-1: the edge fade is a raised cosine, sin², zero slope at both ends, the FX inputs' fade shape, ruling M1-v; new kernel arithmetic accepted because a linear fade can't meet "never clicks") and **EF-8** (the steal fade takes the same shape: its linear end scored up to 50). A sample grain whose read position would pass its sample's last frame while its window is open now ends there: `Engine::admit` latches the first output sample at which `startPos + rate × e`, the reference's position in level-0 frames, exceeds `frames − 1` (`grainEdgeSample`; the last frame itself for every tier and level, so the end doesn't depend on the tier the ladder admits), and `GrainPool::spawn` ends the grain at it, faded out over the `kEdgeFade` = 256 samples before it, or over all it has when that is fewer. No grain reads before frame 0 while its window is open (the start is clamped into the sample and the rate is positive), so the start has no edge; the ring's grains have none. **Both fades read the Hann table's rising half** (built at construction, no libm on the audio thread), at float64 phases from latched integers: the steal fade `H((end − t) / 512)` (`invFade` still 1/256; the steal sample stays at 1, ES-T6b), the edge curve `H((edgeEnd − t) × 0.5 / L)`, in `detail::stealFaded` and the new sample-only `detail::sampleFaded`. Every fading sample goes through the scalar reference, so the 4-wide and AVX2 kernels didn't change and still match by `memcmp`. A cut grain keeps its weight until its cut end, not as fading weight, and may be stolen once; the steal fade multiplies its edge curve, so the gain is continuous. **Scores** (gains 1 and 4, rates 0.5 to 4, every tier, 16 edge or steal phases): the edge curve at most 2.81 at 256 (the uncut cut scored 25 to 3,695; a linear fade's end corner about 50 at any length, which is why EF-6 overturned EF-1); the steal fade at most 2.84 (sample) and 3.07 (live), against the linear fade's 50.35 and 49.68. **Goldens:** 41 of the 43 keep their WAV SHA-256; `fx-overload` and `inst-overload` move (their 3,374 and 364 fading steals; event logs unchanged, click scores unchanged at 0.00 and 3.11, their spectrograms' steal smear much lower); the new `inst-sample-end` (44 cases) cuts all 34 of its grains, 1.94 against 36.03 uncut. The sweep harness's `kSampleEnd` exemption is deleted and the floors it lowered raised; the instrument extremes sweep scores 14.50 (corner 2's own material, not a fade); the instrument's Quality overload sweep plays 1 s grains from the sample's start. A grain that `setSource` or `replaceSource` moves onto another source keeps the edge of the one it started on. Commits: `65292dc` (the fix and its tests) and `0d23734` (the goldens). *Decided 2026-10-30 by the director (D1-D5) and the programme manager (PM-1), and 2026-10-30 by Claude (the rulings), during M2 sub-project 3; written by the Claude session that ran sub-project 3; the row 300 amendment 2026-10-30 by Claude, sub-project 3's follow-up* |
 | 67 | The carry-over count rules are retired | **The director's decision of 2026-10-30,** during M2 wave 2: deferred items are handled as superpowers' subagent-driven development handles them. A reviewer's minor is fixed or deferred at the controller's judgment; deferred minors and items blocked outside our control are listed in the sub-project's final report and logged in `docs/m2-carry-over.md`, with no "no net growth", "touch it, close it" or count rule, and nothing filed upstream. #60's and #64's carry-over targets are history. CLAUDE.md's "Working style", the M2 carry-over file's header and the programme design's §8 say so. *Decided 2026-10-30 by the director; written by the programme manager session.* |
+| 69 | M2 sub-project 4 (Extremes and the FX chain): Smear, the Spectral Smear source, two filtered grain buses per layer, a global delay and a global limiter | **The director's eight decisions** (2026-10-30, relayed by the programme manager; spec `docs/superpowers/specs/2026-10-30-m2-extremes-design.md` §8), each the recommended option 1: **D1** the Spectral source smears the layer's sample when it holds one, else its live ring; **D2** Freeze holds the material, not the smear (a spectral freeze; the smear keeps evolving); **D3** grains split across the buses by chance, Bus Split the share on bus 2; **D4** the bus filter is a 12 dB per octave `CytomicSVF`; **D5** the limiter's stronger mode is Peak, a zero-lookahead peak limiter; **D6** Delay Time glides at no more than half a sample per sample; **D7** Delay Feedback reaches 100%, the loop soft-clipped, and the instrument's tail stays 122.5 s; **D8** Smear at 100% is full strength (overlap toward 32, jitter ±half a grain, detune ±50 cents). **D7a, the director's decision of 2026-10-30, option 2:** Damping 0 keeps the damper (still a 20 kHz one-pole in the loop), so at Feedback 100% the hold slowly darkens bright material: a noise burst loses about 2 dB in the 2–4 kHz band over 20 s, and a sine burst holds within 0.1 dB (declined: Damping 0 bypassing the damper, for an exact hold). **Rulings made during the build:** the Spectral synthesis divides by 0.75 (`kOverlapGain`), not the spec's 1.5, because frames with redrawn phases add in power; the phases are keyed per channel (stream = the channel), so the channels decorrelate fully; switching away from Spectral drains the pending overlap-add, then writes silence (the no-click anti-goal binds); Position on ring material is bounded by the live ring as on a Live layer, with a floor of 1; the STFT keeps running while a Spectral layer is off (CPU only; deferred); the material is decided where the engine adopts a sample, not where one is offered; the sticky bus-2 flag is raised at the first bus-2 admission and lowered by `reset()` and the enable gate; Peak's gain is computed in double and a mode change crossfades all three laws; the per-grain-filter figure (§22) is an upper bound, never a result; `inst-filter-lfo` runs over noise (a sweep at a fixed Position is one tone) and `fx-spectral-freeze` at Position 0.28, and the click table pins seven of the nine new cases; `engine.cloudParams()` is a read-only accessor kept for the tests. **The §9 calls that amend Part II:** the Spectral kind's Position, Spray, Freeze and Feedback rules; the limiter's Off default; the spectral ring's 5 s; the `Field` numbering at the rebase, in merge order. **The design** (as built): Smear, `rng::Field`s `SmearJitter`, `SmearDetune`, `Bus` and `SpectralPhase`; the 40 parameters in the `0x60` blocks (258 in all, the patch still version 2); pffft in the engine; `CytomicSVF` in `gg-core`; the delay and limiter as units beside Space; thirteen remote pages; nine goldens, the comb test, and every earlier WAV hash kept. §22's buses question is resolved with the measurement and two new rows. Benchmarks: `engine-sample-smear`, `engine-buses`, `engine-spectral` and `--chain`, report-only. TODO(extremes-final): the benchmark figures (§16) and the per-grain filter's §22 figure, from the idle run after the merge of main. **The final review's fix wave** (2026-10-30; the whole-branch review found no Critical issue and two Important ones, fixed with its triaged minors): Delay Ping-pong ramps over the 10 ms as a weight crossing the damper's input between the channels' reads, exactly today's law at 0 and 1, since a hard switch stepped every later echo; and every new unit snaps where the ramps jump: the limiter's mode also on a macro's or route's move, and a bus filter's type on its first cell after a clear (a new instance, a reset, the layer switched back on), which moved `inst-filter-lfo`'s first 10 ms by at most 0.0027 (its event log unchanged; the coordinator's ruling, a golden of this branch, never published), every other WAV hash kept. Smear and four Spectral layers over their rings joined the block-size and thread-pool invariance tests (§19). **The reverb click** (the programme manager's, from sub-project 3's sweep harness; carry-over row 311): Reverb 2 set its modulation depth (up to 240 samples of each line's read) once per 32-sample block, and `SpaceReverb` passed Modulation straight through, so a jump scrubbed the lines at up to 8.5 times speed, echoed at full level at Decay ∞ and Damping 0. **Ruling:** Reverb Modulation glides, 0 to 1 in 30 ms (`kModulationGlideSeconds`, as long as the patch's glide into ∞), on the chunk grid, and an empty reverb (constructed, reset or cleared) takes the new value at once, so the idle rule's fresh-instance contract holds; `Reverb2Patched.h` is untouched (the programme manager assigned `core/src/space/` to this sub-project for it). The cost, a listening item: a full Modulation move bends a held tail by about 3 semitones for the 30 ms. The sweep harness's `kReverbModulationDrop` exemption is deleted, and row 311 is closed. **The merge of main** (2026-10-31, Phase C): main's sub-project 3 and its follow-up came in as one merge, not a rebase; sub-project 3 added no `rng::Field`, so this branch's fields keep 9 to 12; the forty parameters follow Quality in each layer and Budget in scope 0, **263 in all**; every one of main's 44 golden WAVs and this branch's nine kept its SHA-256, and the nine event logs gained main's `tier` and `lvl` fields alone. |
 
 **Key sources** (checked 2026-10-26):
 - clap-wrapper releases (v0.17.0, 2026-10-20): https://github.com/free-audio/clap-wrapper/releases

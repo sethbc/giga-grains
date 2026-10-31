@@ -30,9 +30,11 @@ AGPL-3.0-or-later.
   builds on. Sub-project 3, Engine scale and quality, is built (INTENT §23 #66; PR #16): the HQ
   sinc tier and each layer's Quality, file mipmaps, the deterministic CPU budget (Budget, the
   quotas and the overload ladder), the pool to 16,384, the `[sweep]` harness and AVX2 kernels
-  chosen at load (kept). M2, M3 and M4 are tagged 0.2.0, 0.3.0 and 0.4.0 as
-  unpublished draft releases; nothing is public and there are no betas before M5, whose
-  `0.5.0-beta.N` are the first public releases (§23 #62); v1.0.0 follows M5.
+  chosen at load (kept). Sub-project 4, Extremes and the FX chain, is built too (INTENT §23 #69):
+  Smear, the Spectral kind, two filtered grain buses per layer, a global delay and limiter, forty
+  parameters (263 in all) and thirteen remote-controls pages. M2, M3 and M4 are tagged 0.2.0,
+  0.3.0 and 0.4.0 as unpublished draft releases; nothing is public and there are no betas before
+  M5, whose `0.5.0-beta.N` are the first public releases (§23 #62); v1.0.0 follows M5.
 - **The records:** each sub-project's spec in `docs/superpowers/specs/`, the published benchmark
   JSON in `docs/benchmarks/`, the listening packs in `docs/listening/`, the M0 and M1 spikes in
   `docs/spikes/`, the release notes in `docs/releases/`, and the carry-over in
@@ -298,7 +300,7 @@ runs the tests labelled either. The labels are:
   session state container (`GGST`) and the settings' XML, the parameter mapping, and the
   `Processor` with its layers, notes, source hand-off, Feedback and render tasks. `slow` marks
   one of them, Feedback 0.95 for 60 s (over a minute in `dev`);
-  - `sweep` (M2 sub-project 3): the sweep harness, 20 cases in `tests/sweep/` over the
+  - `sweep` (M2 sub-project 3): the sweep harness, 24 cases in `tests/sweep/` over the
     `Processor` in both products (parameter sweeps, extremes, automation bursts and the overload
     sweeps), each checking finiteness, the peak bound, no runaway and the goldens' click score
     outside named exemptions (`SweepDriver.h`; carry-over rows 217 and 302), and pinning a floor
@@ -312,6 +314,14 @@ runs the tests labelled either. The labels are:
   - `threads`: `TaskRunner`, `SerialRunner` and the tests' `StubPool` (`engine`), and the
     `Processor`'s render tasks (`core`): the same bytes with no pool and pools of 1, 2 and 8
     workers, a declining pool, and the tasks' denormal mode and allocations;
+  - `spectral` (M2 sub-project 4): the Spectral Smear source in the engine (the hop on the clock,
+    the keyed phases, the RMS, the kind switches, Freeze) and in the `Processor` (the material,
+    its units, Position, Feedback 0, the switch-away drain);
+  - `buses` (M2 sub-project 4): the two grain buses and their filters in the `Processor` (bus 2
+    empty until a grain takes it, each filter type, the per-sample ramps, the declicked type
+    change, Resonance 100% stable);
+  - `fx` (M2 sub-project 4): the global delay and limiter units and their `Processor` chain (the
+    identity at rest, the echoes, the hold, ping-pong, Time's glide, the limiter's modes);
   - `publish`: the audio-to-UI structures (the grain queue, the UI snapshot, the live peaks) and
     the `Processor`'s publishing;
 - `media`: `gg-media`, the JUCE-free sample-file library (`media/`) that the plugin's loader and
@@ -447,12 +457,19 @@ gg-render --write-media DIR
     `"Reverb Decay"`, `"Reverb Size"`, `"Reverb Damping"`, `"Reverb Pre-delay"`,
     `"Reverb Modulation"` and `"Dry to Reverb"`; the macros are `"Macro Size"`,
     `"Macro Density"`, `"Macro Pitch"`, `"Macro Spray"`, `"Macro Texture"`, `"Macro Freeze"`,
-    `"Macro Feedback"` (Macro 7 in both products) and `"Macro Mix"`; the layers' are
+    `"Macro Feedback"` (Macro 7 in both products) and `"Macro Mix"`; the extremes' (M2
+    sub-project 4) are a layer's `"A Smear"`, `"A Bus Split"`, `"A Bus 1 Filter"` (0 Off, 1
+    Low-pass, 2 High-pass, 3 Band-pass, 4 Notch), `"A Bus 1 Cutoff"` (log2 Hz), `"A Bus 1
+    Resonance"` and bus 2's three (`"D Bus 2 Resonance"` last), and the globals `"Delay Amount"`,
+    `"Delay Time"`, `"Delay Feedback"`, `"Delay Damping"`, `"Delay Ping-pong"`, `"Limiter Mode"`,
+    `"Limiter Ceiling"` and `"Limiter Release"`; `"A Source": 3` selects the Spectral kind, which
+    smears the layer's `samples` entry when it has one and the render's input ring otherwise;
+    the layers' are
     `"Morph X"`, `"Morph Y"`, `"Layer A On"` … `"Layer D On"` and `"Level B"` … `"Level D"`.
     Since M2 sub-project 3 each layer has `"A Quality"` … `"D Quality"` (0 Eco, 1 Normal, 2 HQ;
     bare `"Quality"` means layer A's) and there is a global `"Budget"` (a count of Normal grains,
-    256 to 16,384, default 4,096): 223 parameters in all. Sample mode takes `"quality": "hq"`
-    beside `"eco"` and `"normal"`, and sets no quota.
+    256 to 16,384, default 4,096): 223 parameters in all, 263 with M2 sub-project 4's forty.
+    Sample mode takes `"quality": "hq"` beside `"eco"` and `"normal"`, and sets no quota.
     Optional `automation` is a time-ordered list of `{"time", "param", "value"}` points in
     seconds, and optional `notes` a time-ordered list of `{"time", "key", "duration",
     "channel", "velocity"}` (channel optional; velocity optional, 0–127, default 100, reaching
@@ -496,7 +513,7 @@ gg-render --write-media DIR
   internal error.
 - **The cases:** each case's spec is in `tests/golden/cases/`, and its expected metrics and event
   log are in `tests/golden/expected/`. Every `*.json` there is a case; a new one gets a test the
-  next time CMake runs. There are 44.
+  next time CMake runs. There are 53.
   - **M0's four,** in sample mode: `sparse-sine` (8 grains a second over a 220 Hz sine),
     `sparse-sine-44k1` (the same source converted to 44.1 kHz), `dense-noise` (400 grains a
     second over noise, up a fifth) and `sweep-stretch` (long grains over a sweep, down an
@@ -590,6 +607,27 @@ gg-render --write-media DIR
     - The follow-up made the steal fade a raised cosine too (EF-8), which moved `fx-overload` and
       `inst-overload` (WAVs and metrics; their event logs hold no fade shape). Every other case,
       none of which steals or reaches its sample's end, kept its WAV SHA-256.
+  - **M2 sub-project 4's nine** (the extremes; its spec §10), each 6 to 8 s:
+    - Smear: `inst-smear` (one note over noise at a static Position, Smear stepped 0, 0.25, 0.5,
+      1) and `inst-stretch-smear` (`loop-48k.wav` at a 1000x stretch through LFO 1 to Position,
+      Smear 0 for 4 s, then 1);
+    - the Spectral kind: `inst-spectral` (layer A Spectral over a sweep sample, Position stepped
+      0.1, 0.4, 0.7) and `fx-spectral-freeze` (layer A Spectral over `loop-48k.wav` as the input
+      ring, Freeze on from 2 s to 4 s);
+    - the buses: `fx-bus-filters` (stereo noise, Bus Split 50%, a low-pass and a high-pass, the
+      cutoff and a type automated) and `inst-filter-lfo` (a note over noise, LFO 1 to Bus 1
+      Cutoff, a route to a new target);
+    - the delay and the limiter: `fx-delay` (the loop, ping-pong), `fx-delay-automate` (Time's
+      glide, Feedback to 90%, Amount to 0) and `fx-limiter` (four layers at +6 dB, Mode Off, Soft
+      at 2 s, Peak at 4 s, Ceiling -6 dB).
+    - `fx-limiter`, `inst-smear` and `fx-bus-filters` (a noise bed) hide most injected steps,
+      and four more hide some, pinned in the click-injection table: `inst-filter-lfo` 13,
+      `inst-stretch-smear` 9, `fx-delay` 12 and `fx-spectral-freeze` 9. The other two catch
+      all 16. `tests/metrics/comb_tests.cpp` renders Smear 0 and 1 over noise, static and at
+      1000x, and requires Smear 1's cepstral comb score well below Smear 0's.
+    - Every one of the 44 earlier cases renders bit-identically with Smear 0, Bus Split 0, the
+      filters Off, the delay at Amount 0 and the limiter Off: an extremes change that moves one
+      is a regression.
   - **The event-log comparison never sees the reverb or the diffuser:** the log records grains,
     and Space runs after them. Across platforms, Space's five cases are checked by their metrics
     alone, within tolerances.
@@ -644,6 +682,7 @@ $b --make-baseline <preset> out.json a.json b.json c.json        # write a CI le
 $b --make-baseline <preset> out.json --merge old.json a.json ... # add or remake models in one
 $b --canvas [--quick] [--json out.json]                           # canvas renderer
 $b --space [--quick | --seconds S] [--rounds N] [--commit SHA] [--json out.json]  # Space
+$b --chain [--quick | --seconds S] [--rounds N] [--commit SHA] [--json out.json]  # FX units
 ```
 
 - **The cases** (each at blocks 32, 64 and 256; by default 2,000 grains of 100 ms over a 60 s
@@ -674,13 +713,25 @@ $b --space [--quick | --seconds S] [--rounds N] [--commit SHA] [--json out.json]
       fallback's report-only case. `gg-bench` prints a `kernels:` line (`8-wide (AVX2)` or
       `4-wide`) and its JSON records `kernelLanes` (8 or 4); `GG_FORCE_SSE` makes `engine-sample`
       run 4-wide too. `--grains` is bounded by `kMaxGrainCapacity` − 48 (16,336);
+    - `engine-sample-smear`: `engine-sample` with Smear's position jitter (50 ms) and
+      micro-detune (0.5 semitones); report-only, with no baseline entry yet (M2 extremes spec
+      §6.10);
+    - `engine-buses`: `engine-sample` with half its grains on the layer's second bus, rendered
+      through the two-bus `Engine::process` into two pairs of buffers that are summed after;
+      report-only, with no baseline entry yet;
+    - `engine-spectral`: `engine-sample` with Spectral grains (Position 0.5, 1 s of Spray) over
+      the Spectral Smear's ring, which the engine fills from the same noise as sample material,
+      after a 2 s warm-up so the ring holds smear; report-only, with no baseline entry yet;
   - `reference`: M0's 4-wide Hermite kernel, frozen (`renderHermiteSimd` in
     `tools/gg-bench/Kernels.h`). It is the CPU gate's yardstick. `Kernels.h` includes no engine
     header: it holds its own frozen copies of the Hann table and the readers, so no engine
     change can move it, and the `[bench]` case "the reference kernel's output is pinned" hashes
     its output. Never edit those copies to follow the engine;
   - M0's prototype kernels: `linear-scalar`, `hermite-scalar`, `sinc-scalar`, `linear-simd`
-    and `hermite-simd`.
+    and `hermite-simd`;
+  - `hermite-simd-grainfilter` (M2 sub-project 4; `GrainFilterKernel.h`): `hermite-simd` plus
+    a 1 kHz `CytomicSVF` per grain, INTENT §22's per-grain filter measurement, not an M0
+    kernel.
 - **Timing.** Every configuration warms up once. Then each of 5 rounds (`--rounds`) times every
   configuration once, for at least 2 s (`--seconds`; `--quick` is 0.2 s), in an order rotated by
   the round and reversed in odd rounds. Each result is the median, min and IQR over the rounds.
@@ -691,9 +742,10 @@ $b --space [--quick | --seconds S] [--rounds N] [--commit SHA] [--json out.json]
   `reference` for any ratio to be printed.
 - **Other options:** `--grains N` changes the grain count; `--cases a,b` runs only those cases
   (the default is all; `--help` lists them).
-- **Run length:** the full default run is 48 configurations × 5 rounds × 2 s, about 8 minutes of
-  timing (36 and about 6 minutes before the four cases of M2 sub-project 3 joined); a CI leg's
-  benchmark step took about 6 minutes before the layer cases added one.
+- **Run length:** the full default run is 60 configurations × 5 rounds × 2 s, about 10 minutes
+  of timing (36 and about 6 minutes before the four cases of M2 sub-project 3 joined, 48 before
+  M2 sub-project 4's three); a CI leg's benchmark step took about 6 minutes before the layer cases
+  added one, and hasn't been timed with the later cases yet.
   `--canvas` times 240 frames after a 20-frame warm-up, or 30 with `--quick`.
 - **`--space`** times Space's per-sample stage, the diffuser then the reverb, on stereo noise at
   48 kHz, active, with Diffusion and Amount at 100% (`tools/gg-bench/Bench.h` lists every
@@ -706,8 +758,15 @@ $b --space [--quick | --seconds S] [--rounds N] [--commit SHA] [--json out.json]
   - Sub-project 4's fix wave measured 28.49 ns per stereo sample, 0.137% of one M5 Max core,
     at its final code (`ac81dfb`; INTENT §16), and sub-project 6's idle run 29.44 ns, 0.141%,
     published beside X (19.5% at block 256; `docs/benchmarks/`, INTENT §23 #60).
-- **An option a mode doesn't take is bad usage** (exit 2, with the usage): `--space` takes only
-  the options shown above, `--canvas` only `--quick` and `--json`, and `--make-baseline`
+- **`--chain`** times the units the extremes sub-project adds after the grains, per stereo
+  sample on stereo noise at 48 kHz: two `BusFilter`s (Low-pass, 1 kHz, resonance 0.5), the
+  `Delay` (375 ms, feedback 0.5, damping 0.3, ping-pong, amount 1) and the `Limiter` (Peak,
+  ceiling 0.5, release 100 ms) (`tools/gg-bench/Bench.h` lists every setting). It takes
+  `--space`'s options and prints and writes as it does (its own JSON, `"benchmark": "chain"`).
+  - It is report-only: no ratio, no baseline, no verdict. CI's benchmark step doesn't time it;
+    ctest's `bench_chain_cli` only checks that it runs. Its exit status is as `--space`'s.
+- **An option a mode doesn't take is bad usage** (exit 2, with the usage): `--space` and `--chain`
+  take only the options shown above, `--canvas` only `--quick` and `--json`, and `--make-baseline`
   nothing else (its `--merge` is one of its own values).
 - **When profiling the plugins in a VST3 host,** remember that clap-wrapper's VST3 `process`
   takes a spin lock. Time spent there is the wrapper's, not ours.

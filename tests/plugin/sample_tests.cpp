@@ -67,6 +67,8 @@ class LoaderHost
     /// The request_callback calls made on the thread that built the host (process() in these
     /// tests), not by the loader's worker.
     uint32_t callbacksFromTestThread() const noexcept { return testThreadCallbacks_.load(); }
+    /// The params.rescan calls that asked for the text alone.
+    uint32_t textRescans() const noexcept { return textRescans_; }
 
   private:
     static LoaderHost &self(const clap_host *host)
@@ -78,9 +80,24 @@ class LoaderHost
         static const clap_host_state kState{
             [](const clap_host *host) { ++self(host).dirtyMarks_; }, // mark_dirty
         };
+        static const clap_host_params kParams{
+            [](const clap_host *host, clap_param_rescan_flags flags) {
+                if (flags == CLAP_PARAM_RESCAN_TEXT)
+                {
+                    ++self(host).textRescans_;
+                }
+            },                                                         // rescan
+            [](const clap_host *, clap_id, clap_param_clear_flags) {}, // clear
+            [](const clap_host *) {},                                  // request_flush
+        };
+        if (std::string_view(id) == CLAP_EXT_PARAMS)
+        {
+            return &kParams;
+        }
         return std::string_view(id) == CLAP_EXT_STATE ? &kState : nullptr;
     }
 
+    uint32_t textRescans_{0};
     uint32_t dirtyMarks_{0};
     std::atomic<uint32_t> callbacks_{0};
     std::atomic<uint32_t> testThreadCallbacks_{0};
@@ -1509,4 +1526,62 @@ TEST_CASE("the sample waveform is computed once per sample", "[plugin]")
     CHECK(converted.peaks->size() == static_cast<std::size_t>((converted.frames + 511) / 512));
     CHECK(std::abs(converted.seconds - 4.0) < 1e-4);
     CHECK(loader->waveform().peaks == converted.peaks);
+}
+
+TEST_CASE("a sample loaded into a spectral layer rescans the text", "[plugin]")
+{
+    // Extremes spec §6.8: a Spectral layer's material is its sample, or its ring when it holds
+    // none, and Position's units follow it (seconds behind the head, or a percentage of the
+    // file). A sample loaded into the layer, or cleared from it, asks the host once, on the main
+    // thread, to rescan the text, as a kind change does.
+    setUp("spectral-rescan");
+    const fs::path file = gg::test::sineSampleFile("spectral-rescan");
+    LoaderHost host;
+    PluginUnderTest instrument(kInstrumentId, host.clap());
+    REQUIRE(instrument.valid());
+    REQUIRE(instrument.loadDefaultsWithSeed(0)); // the same seed in every run
+    REQUIRE(instrument.activate(48000.0, 512));
+    const clap_id position = gg::core::paramId(gg::core::ParamSlot::Position);
+    const auto positionText = [&](double value) {
+        char buffer[CLAP_NAME_SIZE] = {};
+        REQUIRE(instrument.params()->value_to_text(instrument.clap(), position, value, buffer,
+                                                   sizeof(buffer)));
+        return std::string(buffer);
+    };
+    Stereo out(512);
+    const auto spectral = gg::test::paramValue(
+        gg::core::paramId(gg::core::layerSlot(gg::core::LayerParam::Source, 0)), 3.0);
+    {
+        gg::test::InputEvents events;
+        events.add(&spectral.header);
+        REQUIRE(instrument.process(512, nullptr, out.data(), events.list()) ==
+                CLAP_PROCESS_CONTINUE);
+    }
+    instrument.onMainThread();
+    // The kind changed Sample to Spectral over the instrument's sample, or None: no sample is
+    // loaded yet, so the material is the ring and Position is seconds.
+    CHECK(positionText(0.25).find('%') == std::string::npos);
+    const uint32_t afterKind = host.textRescans();
+    instrument.onMainThread();
+    CHECK(host.textRescans() == afterKind);
+
+    // A sample loaded in: the material becomes the sample once the audio thread takes it.
+    const std::string empty = instrument.save(); // Spectral, no sample
+    loaderOf(instrument).requestLoad(file);
+    CHECK(settle(instrument).state == SampleState::Loaded);
+    CHECK(host.textRescans() == afterKind); // the audio thread hasn't taken it yet
+    REQUIRE(instrument.process(512, nullptr, out.data()) == CLAP_PROCESS_CONTINUE);
+    instrument.onMainThread();
+    CHECK(host.textRescans() == afterKind + 1);
+    CHECK(positionText(0.25).find('%') != std::string::npos);
+    REQUIRE(instrument.process(512, nullptr, out.data()) == CLAP_PROCESS_CONTINUE);
+    instrument.onMainThread();
+    CHECK(host.textRescans() == afterKind + 1); // once per change
+
+    // A session without a sample clears it, and the material is the ring again.
+    REQUIRE(instrument.load(empty));
+    REQUIRE(instrument.process(512, nullptr, out.data()) == CLAP_PROCESS_CONTINUE);
+    instrument.onMainThread();
+    CHECK(host.textRescans() == afterKind + 2);
+    CHECK(positionText(0.25).find('%') == std::string::npos);
 }

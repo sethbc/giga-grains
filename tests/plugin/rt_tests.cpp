@@ -290,7 +290,7 @@ TEST_CASE("plugin process with the perform parameters automated does not allocat
     float *outputs[2] = {outLeft.data(), outRight.data()};
     const auto clapOn = noteOn(60, 0);
     constexpr std::size_t kSlots = gg::core::kParamCount;
-    static_assert(kSlots == 223);
+    static_assert(kSlots == 263);
     const auto metaOf = [mode](std::size_t s) -> const auto & {
         return gg::core::paramMeta(static_cast<ParamSlot>(s), mode);
     };
@@ -1319,6 +1319,131 @@ TEST_CASE("plugin process with four layers, controls and the pool does not alloc
     CHECK(host.tasks() == 4 * host.requests());
     CHECK(std::all_of(outLeft.begin(), outLeft.end(), [](float x) { return std::isfinite(x); }));
     CHECK(std::any_of(outLeft.begin(), outLeft.end(), [](float x) { return x != 0.0f; }));
+    if (gg::test::AllocTripwire::available()) // off under ASan; RTSan covers this
+    {
+        REQUIRE(allocations == 0);
+    }
+}
+
+TEST_CASE("plugin process and flush with split buses, the delay, the limiter and a spectral layer "
+          "do not allocate",
+          "[plugin][rt]")
+{
+    // M2 sub-project 4's spec §6.7, §6.8: layers A and B on the Spectral kind (A's material the
+    // instrument's sample or the FX's ring, B's the ring), every layer's buses split with their
+    // filter types changed from call to call, the delay's time gliding, ping-pong on and the
+    // limiter in Peak. The tripwire counts the audio thread's allocations from the first call.
+    const char *id = GENERATE(kInstrumentId, kFxId);
+    CAPTURE(id);
+    const bool isFx = std::string_view(id) == kFxId;
+    gg::test::PluginUnderTest plugin(id);
+    REQUIRE(plugin.valid());
+    if (!isFx)
+    {
+        REQUIRE(plugin.loadSampleState(gg::test::sineSampleFile("rt-extremes")));
+    }
+    using gg::core::LayerParam;
+    using gg::core::layerSlot;
+    constexpr double kSpectral = 3.0;
+    constexpr double kPeak = 2.0;
+    std::vector<clap_event_param_value> setup;
+    for (uint8_t layer = 0; layer < gg::core::kLayers; ++layer)
+    {
+        setup.push_back(gg::test::paramValue(paramId(gg::core::layerOnSlot(layer)), 1.0));
+        setup.push_back(gg::test::paramValue(paramId(layerSlot(LayerParam::BusSplit, layer)), 0.5));
+        setup.push_back(gg::test::paramValue(paramId(layerSlot(LayerParam::Smear, layer)), 0.5));
+        if (layer < 2)
+        {
+            setup.push_back(
+                gg::test::paramValue(paramId(layerSlot(LayerParam::Source, layer)), kSpectral));
+        }
+    }
+    setup.push_back(gg::test::paramValue(paramId(ParamSlot::DelayAmount), 0.5));
+    setup.push_back(gg::test::paramValue(paramId(ParamSlot::DelayFeedback), 0.5));
+    setup.push_back(gg::test::paramValue(paramId(ParamSlot::DelayPingPong), 1.0));
+    setup.push_back(gg::test::paramValue(paramId(ParamSlot::LimiterMode), kPeak));
+    {
+        gg::test::InputEvents list;
+        for (const auto &v : setup)
+        {
+            list.add(&v.header);
+        }
+        plugin.flush(list.list());
+    }
+    REQUIRE(plugin.activate(48000.0, 512));
+
+    // Each call's events: both buses' filter types stepped through the five types, the delay's
+    // time moved (it glides), and the limiter's mode and ceiling moved.
+    constexpr std::size_t kCalls = 6;
+    std::vector<std::vector<clap_event_param_value>> perCall(kCalls);
+    for (std::size_t c = 0; c < kCalls; ++c)
+    {
+        const auto type = static_cast<double>(c % 5);
+        for (uint8_t layer = 0; layer < gg::core::kLayers; ++layer)
+        {
+            perCall[c].push_back(
+                gg::test::paramValue(paramId(layerSlot(LayerParam::Bus1Filter, layer)), type));
+            perCall[c].push_back(gg::test::paramValue(
+                paramId(layerSlot(LayerParam::Bus2Filter, layer)), static_cast<double>(4 - c % 5)));
+        }
+        perCall[c].push_back(
+            gg::test::paramValue(paramId(ParamSlot::DelayTime), (c % 2 == 0) ? -3.0 : -1.0, 100));
+        perCall[c].push_back(gg::test::paramValue(paramId(ParamSlot::LimiterMode),
+                                                  static_cast<double>(2 - c % 3), 50));
+        perCall[c].push_back(
+            gg::test::paramValue(paramId(ParamSlot::LimiterCeiling), -6.0 + double(c), 200));
+    }
+
+    std::vector<float> inLeft(512), inRight(512), outLeft(512), outRight(512);
+    for (std::size_t i = 0; i < inLeft.size(); ++i)
+    {
+        inLeft[i] = static_cast<float>(gg::rng::bipolar(gg::rng::splitmix64(2 * i)));
+        inRight[i] = static_cast<float>(gg::rng::bipolar(gg::rng::splitmix64(2 * i + 1)));
+    }
+    float *inputs[2] = {inLeft.data(), inRight.data()};
+    float *outputs[2] = {outLeft.data(), outRight.data()};
+    const auto on = noteOn(60, 0);
+
+    // The event lists are built before the tripwire arms: the harness's lists allocate.
+    std::vector<gg::test::InputEvents> processEvents(kCalls);
+    std::vector<gg::test::InputEvents> flushEvents(kCalls);
+    for (std::size_t c = 0; c < kCalls; ++c)
+    {
+        if (c == 0)
+        {
+            processEvents[c].add(&on.header);
+        }
+        for (const auto &v : perCall[c])
+        {
+            processEvents[c].add(&v.header);
+            flushEvents[c].add(&v.header);
+        }
+    }
+    const auto *params = paramsOf(plugin);
+    REQUIRE(params != nullptr);
+
+    // No warm-up call: a host's first process() must not allocate either.
+    AllocTripwire::resetCount();
+    std::array<clap_process_status, kCalls> status{};
+    {
+        AllocTripwire::Scope armed;
+        for (std::size_t c = 0; c < kCalls; ++c)
+        {
+            // 0- and 1-sample blocks among the 512s.
+            const uint32_t frames = c == 1 ? 0 : (c == 2 ? 1 : 512);
+            status[c] = plugin.process(frames, inputs, outputs, processEvents[c].list());
+        }
+        // A params.flush with the same kinds of change.
+        for (std::size_t c = 0; c < kCalls; ++c)
+        {
+            params->flush(plugin.clap(), flushEvents[c].list(), gg::test::discardingOutputEvents());
+        }
+    }
+    const uint64_t allocations = AllocTripwire::count();
+    for (const auto s : status)
+    {
+        CHECK(s == CLAP_PROCESS_CONTINUE);
+    }
     if (gg::test::AllocTripwire::available()) // off under ASan; RTSan covers this
     {
         REQUIRE(allocations == 0);

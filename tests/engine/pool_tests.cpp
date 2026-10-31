@@ -738,3 +738,42 @@ TEST_CASE("grainEdgeSample finds the first sample read past the source's last fr
     // No source (0 frames): nothing to cut.
     REQUIRE(gg::grainEdgeSample(grain(0, 0, 100.0), 0) == gg::kNoEdge);
 }
+
+TEST_CASE("the pool keeps each grain's bus", "[pool]")
+{
+    // The extremes spec §6.3: each grain's bus is latched at spawn and moves with its row. Bus
+    // 0 is the default, so every grain made without one is on bus 0.
+    REQUIRE(grain(0, 0, 100).bus == 0);
+    constexpr double kDurations[10] = {100, 20, 300, 40, 16, 500, 60, 200, 30, 80};
+    // An irregular pattern, so a row that moved without its bus would show.
+    const auto withBus = [&](uint64_t i) {
+        gg::GrainSpec g = grain(i, static_cast<int64_t>(i) * 5, kDurations[i]);
+        g.bus = (i * 7) % 3 == 1 ? 1 : 0;
+        return g;
+    };
+    gg::GrainPool pool(16);
+    for (uint64_t i = 0; i < 10; ++i)
+    {
+        REQUIRE(pool.canAdmit(static_cast<int64_t>(i) * 5));
+        REQUIRE(pool.spawn(withBus(i)));
+    }
+    for (const int64_t now : {int64_t{0}, int64_t{50}, int64_t{90}, int64_t{260}, int64_t{600}})
+    {
+        pool.retireFinished(now);
+        INFO("now = " << now);
+        const std::vector<uint64_t> kept = indices(pool);
+        for (uint32_t i = 0; i < pool.size(); ++i)
+        {
+            const gg::GrainSpec g = withBus(kept[i]);
+            REQUIRE(pool.rows().bus[i] == g.bus);
+            REQUIRE(pool.spec(i) == g); // operator== compares the bus too
+        }
+    }
+    REQUIRE(pool.size() == 0);
+
+    // Two grains that differ only in their bus compare unequal.
+    gg::GrainSpec a = grain(3, 0, 100);
+    gg::GrainSpec b = a;
+    b.bus = 1;
+    REQUIRE_FALSE(a == b);
+}

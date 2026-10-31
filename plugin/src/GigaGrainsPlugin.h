@@ -96,11 +96,13 @@ const clap_plugin_descriptor *descriptorFor(Product product) noexcept;
 /// **Source kinds and text** (M2 sub-project 1's spec §6.4). A layer's Position (and Spray)
 /// text follows its kind: the Live display (seconds behind the head) on a Live layer, the Sample
 /// display (a percentage of the file) on a Sample layer, in either product, read from the Source
-/// slot's base value in values_ (displayModeOf). When a layer's built kind changes, whoever owns
-/// values_ then (the audio thread while active, the main thread while not) notes it
-/// (checkKinds) and asks for on_main_thread, which asks the host to rescan the text. The text
-/// follows the base value, not the effective one the audio follows, because a host can't rescan
-/// text at the modulation rate, and what is shown is what the user set (ruling FR-6).
+/// slot's base value in values_ (displayModeOf); a Spectral layer's follows its material
+/// (Processor::layerMaterial). When a layer's built kind changes, or a Spectral layer's material
+/// does, whoever owns values_ then (the audio thread while active, the main thread while not)
+/// notes it (checkKinds) and asks for on_main_thread, which asks the host to rescan the text.
+/// The text follows the base value, not the effective one the audio follows, because a host
+/// can't rescan text at the modulation rate, and what is shown is what the user set (ruling
+/// FR-6).
 ///
 /// **The seed** (sub-project 5's spec §7). A new instance draws its own engine seed, on the main
 /// thread at construction, from std::random_device; a state brings its own.
@@ -384,7 +386,8 @@ class GigaGrainsPlugin : public plugHelper_t
     /// (seconds behind the head) for a Live layer's, the instrument's (a percentage of the file)
     /// for a Sample layer's (kindOf), and the product's own for every other parameter.
     gg::core::Mode displayModeOf(gg::core::ParamSlot slot) const noexcept;
-    /// Compares each layer's kindOf with shownKinds_ and, if any changed, records them and asks
+    /// Compares each layer's kindOf with shownKinds_, and a Spectral layer's material with
+    /// shownMaterials_, and if either changed, records them and asks
     /// for on_main_thread (clap_host.request_callback, thread-safe), once until that call comes,
     /// where the host is asked to rescan the text. Whoever owns values_: the audio thread while
     /// active, the main thread while not. Its real-time safety is the host's, as requestCollect's
@@ -428,8 +431,11 @@ class GigaGrainsPlugin : public plugHelper_t
     std::atomic<bool> valuesApplied_{false};
     // Each layer's built kind as last noted by checkKinds, whose caller owns it (see there).
     std::array<gg::SourceMode, gg::core::kLayers> shownKinds_{};
-    // Set by checkKinds when a layer's kind changed, cleared by on_main_thread, which then asks
-    // the host to rescan the parameters' text.
+    // Each layer's material (Processor::layerMaterial) as last noted by checkKinds: a Spectral
+    // layer's Position units follow it (displayModeOf, any thread), so it is atomic.
+    std::array<std::atomic<gg::SourceMode>, gg::core::kLayers> shownMaterials_{};
+    // Set by checkKinds when a layer's kind changed, or a Spectral layer's material did, cleared
+    // by on_main_thread, which then asks the host to rescan the parameters' text.
     std::atomic<bool> kindsChanged_{false};
 
     // The Processor's runner (see the class comment): the host's pool, or a loop on the calling

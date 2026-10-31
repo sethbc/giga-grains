@@ -37,6 +37,7 @@
 #include "gg/grain/SincTable.h"
 #include "gg/source/InterleavedStereo.h"
 #include "gg/source/LiveSource.h"
+#include "gg/spectral/SpectralSource.h"
 #include "gg/source/SampleBuffer.h"
 
 namespace
@@ -2148,6 +2149,105 @@ LiveRenders renderLiveBoth(const Pool &pool, const LiveInput &input,
     }
     return r;
 }
+
+// The Spectral kind's ring (the extremes spec §6.2): a SpectralSource smearing a stereo noise
+// sample of 2 s at its middle, at the live tests' rate and maxBlockSize. Its ring is 5 s long and
+// never frozen, so its head trajectory is R(t) = t + 1.
+struct SpectralInput
+{
+    explicit SpectralInput(int64_t length)
+        : length(length), left(noise(96000, 81, 0)), right(noise(96000, 81, 1))
+    {
+    }
+    gg::SpectralMaterial material() const
+    {
+        gg::SpectralMaterial m;
+        m.sample[0] = left.data();
+        m.sample[1] = right.data();
+        m.sampleFrames = 96000;
+        m.sampleMono = false;
+        m.sampleRate = kLiveRate;
+        return m;
+    }
+    int64_t length;
+    std::vector<float> left;
+    std::vector<float> right;
+};
+
+// The spectral ring's frames and its head trajectory.
+int64_t spectralRingFrames()
+{
+    const gg::SpectralSource probe(kLiveRate, kLiveMaxBlock);
+    return probe.ring().frames();
+}
+
+std::vector<int64_t> spectralHeads(int64_t length)
+{
+    std::vector<int64_t> heads(static_cast<std::size_t>(length));
+    for (int64_t t = 0; t < length; ++t)
+    {
+        heads[static_cast<std::size_t>(t)] = t + 1;
+    }
+    return heads;
+}
+
+// renderLiveBoth over the spectral ring: drives a fresh, active SpectralSource over the input in
+// `lengths`, each piece's smear written whole before the pool's grains render it, at level 0
+// (decimation 1: the ring has no mip levels). Where there is an AVX2 table, its live kernel for R
+// must match the SIMD kernel's, as in renderLiveBoth.
+template <class R>
+LiveRenders renderSpectralBoth(const Pool &pool, const SpectralInput &input,
+                               const std::vector<int64_t> &lengths, int outputs,
+                               const Tables &tables)
+{
+    LiveRenders r{Buffers(0, input.length, outputs), Buffers(0, input.length, outputs), {}, 0};
+    const gg::kernels::Output refOut = r.ref.output();
+    const gg::kernels::Output simdOut = r.simd.output();
+    const Dispatch *avx2 = gg::kernels::avx2Kernels();
+    Buffers wide(0, avx2 != nullptr ? input.length : 0, outputs);
+    const gg::kernels::Output wideOut = wide.output();
+    const gg::GrainRows &rows = pool.rows();
+    ActiveGrains active(pool);
+    gg::SpectralSource smear(kLiveRate, kLiveMaxBlock);
+    smear.setActive(true);
+    const gg::SpectralMaterial material = input.material();
+    const gg::LiveSource &ring = smear.ring();
+    std::size_t block = 0;
+    for (int64_t from = 0; from < input.length;)
+    {
+        const int64_t to = std::min(input.length, from + lengths[block++ % lengths.size()]);
+        smear.process(material, 0.5, 83, 0, from, static_cast<uint32_t>(to - from));
+        REQUIRE(ring.headAt(to - 1) == to);
+        active.each(from, to, [&](uint32_t i) {
+            gg::kernels::renderLiveRef<R>(rows, i, ring, 1u, refOut, from, to, tables);
+            gg::kernels::renderLiveSimd<R>(rows, i, ring, 1u, simdOut, from, to, tables);
+            if (avx2 != nullptr)
+            {
+                liveKernel<R> (*avx2)(rows, i, ring, 1u, wideOut, from, to, tables);
+            }
+            if (std::max(from, rows.onsetSample[i]) >= std::min(to, rows.endSample[i]))
+            {
+                return;
+            }
+            const gg::kernels::LiveInterior in = liveInteriorAtOne<R>(rows, i, ring, from, to);
+            const int64_t moving = (in.end[0] - in.begin[0]) / 4 * 4;
+            const int64_t still = (in.end[1] - in.begin[1]) / 4 * 4;
+            r.stats.simdSamples += moving + still;
+            r.stats.stillSimdCalls += still > 0;
+            r.stats.bothPartsCalls += in.end[0] > in.begin[0] && in.end[1] > in.begin[1];
+            r.stats.emptyCalls += in.end[0] == in.begin[0] && in.end[1] == in.begin[1];
+        });
+        from = to;
+    }
+    r.finalHead = ring.head();
+    if (avx2 != nullptr)
+    {
+        INFO("the AVX2 table");
+        REQUIRE(sameOrBothNaN(wide.ch[0], r.simd.ch[0]));
+        REQUIRE(sameOrBothNaN(wide.ch[1], r.simd.ch[1]));
+    }
+    return r;
+}
 } // namespace
 
 // The interior's conditions at sample t of grain i, each on its own, computed afresh from the
@@ -2416,6 +2516,73 @@ TEMPLATE_TEST_CASE("simd live kernel matches the reference through freeze and wr
         const LiveRenders r = renderLiveBoth<TestType>(pool, input, {64}, 1, tables);
         REQUIRE(sameBits(r.simd.ch[0], r.ref.ch[0]));
         REQUIRE(!anyNonZero(r.simd.ch[1]));
+    }
+}
+
+TEMPLATE_TEST_CASE("simd live kernel matches the reference over a spectral ring", "[kernel]",
+                   Hermite, Linear, Sinc)
+{
+    // The Spectral kind's grains are ring grains (the extremes spec §6.2): 300 grains over a
+    // SpectralSource's ring, in ragged blocks and in blocks of 511, into two outputs and one.
+    const Tables &tables = kernelTables();
+    const int64_t frames = spectralRingFrames();
+    const SpectralInput input(frames + 60000);
+    const std::vector<int64_t> heads = spectralHeads(input.length);
+    const Pool pool(liveGrains(85, spreadOnsets(input.length, 300), heads, frames));
+    const std::vector<int64_t> ragged = {61, 64, 1, 128, 3, 250, 2, 37, 511};
+    for (const std::vector<int64_t> &lengths : {ragged, std::vector<int64_t>{511}})
+    {
+        for (const int outputs : {2, 1})
+        {
+            INFO(outputs << " outputs, first block " << lengths[0]);
+            const LiveRenders r =
+                renderSpectralBoth<TestType>(pool, input, lengths, outputs, tables);
+            REQUIRE(anyNonZero(r.ref.ch[0]));
+            REQUIRE(anyNonZero(r.ref.ch[1]) == (outputs == 2));
+            REQUIRE(r.stats.simdSamples > 200000);
+            REQUIRE(r.stats.emptyCalls > 0);
+            REQUIRE(sameBits(r.simd.ch[0], r.ref.ch[0]));
+            REQUIRE(sameBits(r.simd.ch[1], r.ref.ch[1]));
+        }
+    }
+}
+
+TEMPLATE_TEST_CASE("simd live kernel matches the reference through a spectral ring's wrap",
+                   "[kernel]", Hermite, Linear, Sinc)
+{
+    // The spectral ring never freezes, but it wraps: written until it has wrapped twice, in
+    // blocks of 511, 64 and 1, and every block size must also give the same output.
+    const Tables &tables = kernelTables();
+    gg::SpectralSource probe(kLiveRate, kLiveMaxBlock);
+    const int64_t capacity = probe.ring().view().capacity;
+    const int64_t frames = probe.ring().frames();
+    REQUIRE(capacity == frames + kLiveMaxBlock);
+    const SpectralInput input(2 * capacity + 60000);
+    const std::vector<int64_t> heads = spectralHeads(input.length);
+    const Pool pool(liveGrains(87, spreadOnsets(input.length, 300), heads, frames));
+    std::vector<float> first[2];
+    for (const int64_t block : {511, 64, 1})
+    {
+        INFO("blocks of " << block);
+        const LiveRenders r = renderSpectralBoth<TestType>(pool, input, {block}, 2, tables);
+        REQUIRE(r.finalHead == input.length);
+        REQUIRE(r.finalHead >= 2 * capacity);
+        REQUIRE(anyNonZero(r.ref.ch[0]));
+        REQUIRE(anyNonZero(r.ref.ch[1]));
+        REQUIRE(r.stats.emptyCalls > 0);
+        if (block >= 64)
+        {
+            REQUIRE(r.stats.simdSamples > 500000);
+        }
+        REQUIRE(sameBits(r.simd.ch[0], r.ref.ch[0]));
+        REQUIRE(sameBits(r.simd.ch[1], r.ref.ch[1]));
+        if (block == 511)
+        {
+            first[0] = r.simd.ch[0];
+            first[1] = r.simd.ch[1];
+        }
+        REQUIRE(sameBits(r.simd.ch[0], first[0]));
+        REQUIRE(sameBits(r.simd.ch[1], first[1]));
     }
 }
 

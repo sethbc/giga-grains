@@ -5,9 +5,11 @@
 #include "gg/core/ParamMap.h"
 
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <cmath>
 #include <cstddef>
+#include <optional>
 
 #include "gg/core/MathDet.h"
 
@@ -35,6 +37,35 @@ constexpr double kLog2Of10 = 3.321928094887362;
 
 /// The largest float below 1: where the soft limiter stops (see softLimit).
 constexpr float kBelowOne = 0x1.fffffep-1f;
+
+/// Smear's law (M2 sub-project 4's spec §6.1, option 1): the target overlap T = 8 + 24s, the
+/// position jitter's 0.5 × s × S seconds and the detune's 0.5 × s semitones.
+constexpr double kSmearOverlapBase = 8.0;
+constexpr double kSmearOverlapSpan = 24.0;
+constexpr double kSmearJitter = 0.5;
+constexpr double kSmearDetune = 0.5;
+
+/// The Density parameter's ceiling in Hz (ParamIds.cpp): Smear raises no layer past what the
+/// knob can reach.
+constexpr double kDensityCeilingHz = 400.0;
+
+/// The units a layer of built kind `kind` reads Position in: a Sample or Live layer its own;
+/// a kind that reads its material through a stream of its own, the material's.
+SourceMode positionUnits(SourceMode kind, SourceMode material) noexcept
+{
+    switch (kind)
+    {
+    case SourceMode::Sample:
+    case SourceMode::Live:
+        return kind;
+    case SourceMode::Spectral:
+        // The extremes spec §6.2: its Position addresses its material, a sample's fraction or
+        // the ring's seconds behind the head, while the scheduler's Spectral mode draws its spray
+        // one-sided, as Live's (sprayInSeconds is a Sample-mode flag, which it ignores).
+        return material;
+    }
+    return material;
+}
 } // namespace
 
 SourceKind sourceKindOf(const ParamValues &effective, uint8_t layer) noexcept
@@ -55,25 +86,35 @@ SourceMode builtKind(SourceKind kind, Mode mode) noexcept
         return SourceMode::Sample;
     case SourceKind::Live:
         return SourceMode::Live;
-    case SourceKind::Resample:
     case SourceKind::Spectral:
+        return SourceMode::Spectral;
+    case SourceKind::Resample:
     case SourceKind::Oscillator:
         break;
     }
     return mode == Mode::Fx ? SourceMode::Live : SourceMode::Sample;
 }
 
-CloudParams toCloudParams(const ParamValues &effective, Mode mode, uint8_t layer) noexcept
+CloudParams toCloudParams(const ParamValues &effective, Mode mode, uint8_t layer,
+                          SourceMode material) noexcept
 {
     assert(layer < kLayers);
     const auto param = [&effective, layer](LayerParam p) {
         return value(effective, layerSlot(p, layer));
     };
+    const double density = exp2Det(param(LayerParam::Density));
+    const double size = exp2Det(param(LayerParam::Size));
+    const double smear = static_cast<double>(layerSmear(effective, layer));
+    const double target = kSmearOverlapBase + kSmearOverlapSpan * smear;
     CloudParams p;
-    p.densityHz = exp2Det(param(LayerParam::Density));
+    // D_eff = D + s × (min(400, max(D, T / S)) − D). At s = 0 the product is ±0, so D_eff is D
+    // bit for bit (S is at least 5 ms, so T / S is finite).
+    p.densityHz =
+        density + smear * (std::min(kDensityCeilingHz, std::max(density, target / size)) - density);
     p.distribution = param(LayerParam::Distribution);
-    p.grainDurationSec = exp2Det(param(LayerParam::Size));
-    if (builtKind(sourceKindOf(effective, layer), mode) == SourceMode::Sample)
+    p.grainDurationSec = size;
+    if (positionUnits(builtKind(sourceKindOf(effective, layer), mode), material) ==
+        SourceMode::Sample)
     {
         p.position = param(LayerParam::Position);
         p.sprayInSeconds = true;
@@ -88,6 +129,10 @@ CloudParams toCloudParams(const ParamValues &effective, Mode mode, uint8_t layer
     p.texture = param(LayerParam::Texture);
     p.pitchSpreadSemitones = param(LayerParam::PitchSpread);
     p.sizeSpreadOctaves = param(LayerParam::SizeSpread);
+    // Both 0 at s = 0, so the scheduler skips their draws and terms.
+    p.smearJitterSec = kSmearJitter * smear * size;
+    p.smearDetuneSemitones = kSmearDetune * smear;
+    p.busSplit = static_cast<double>(layerBusSplit(effective, layer));
     // The nearest step (lround: halves away from zero, so halves up here), clamped first so that
     // lround's argument is finite; NaN, which the Processor never holds, is Normal.
     const double quality = param(LayerParam::Quality);
@@ -95,6 +140,15 @@ CloudParams toCloudParams(const ParamValues &effective, Mode mode, uint8_t layer
                                     : static_cast<Tier>(std::lround(std::clamp(quality, 0.0, 2.0)));
     p.gain = static_cast<float>(1.0 / std::sqrt(std::max(1.0, p.densityHz * p.grainDurationSec)));
     return p;
+}
+
+CloudParams toCloudParams(const ParamValues &effective, Mode mode, uint8_t layer) noexcept
+{
+    // The kind's own units: Sample's for a Sample layer, Live's for every other (a Spectral
+    // layer's material is the Processor's to say: layerMaterial).
+    const SourceMode kind = builtKind(sourceKindOf(effective, layer), mode);
+    return toCloudParams(effective, mode, layer,
+                         kind == SourceMode::Sample ? SourceMode::Sample : SourceMode::Live);
 }
 
 CloudParams toCloudParams(const ParamValues &effective, Mode mode) noexcept
@@ -236,6 +290,88 @@ StepParams stepParams(const ParamValues &effective, uint8_t layer) noexcept
         p.steps[i] = read(effective, layerSlot(step, layer));
     }
     return p;
+}
+
+float layerSmear(const ParamValues &effective, uint8_t layer) noexcept
+{
+    assert(layer < kLayers);
+    return read(effective, layerSlot(LayerParam::Smear, layer));
+}
+
+float layerBusSplit(const ParamValues &effective, uint8_t layer) noexcept
+{
+    assert(layer < kLayers);
+    return read(effective, layerSlot(LayerParam::BusSplit, layer));
+}
+
+bool isModulatorControlSlot(ParamSlot s) noexcept
+{
+    const std::optional<LayerRef> ref = layerOf(s);
+    return ref && ref->param >= LayerParam::Lfo1Rate && ref->param <= LayerParam::Step16;
+}
+
+BusParams busParams(const ParamValues &effective, uint8_t layer) noexcept
+{
+    assert(layer < kLayers);
+    static constexpr std::array<std::array<LayerParam, 3>, 2> kBusSlots{{
+        {LayerParam::Bus1Filter, LayerParam::Bus1Cutoff, LayerParam::Bus1Resonance},
+        {LayerParam::Bus2Filter, LayerParam::Bus2Cutoff, LayerParam::Bus2Resonance},
+    }};
+    BusParams p{};
+    for (size_t bus = 0; bus < kBusSlots.size(); ++bus)
+    {
+        const auto &slots = kBusSlots[bus];
+        p.type[bus] = static_cast<BusFilterType>(static_cast<uint8_t>(
+            roundedIn(read(effective, layerSlot(slots[0], layer)), 0.0f, 4.0f)));
+        p.cutoffHz[bus] = exp2Of(effective, layerSlot(slots[1], layer));
+        p.resonance[bus] = read(effective, layerSlot(slots[2], layer));
+    }
+    return p;
+}
+
+DelayParams delayParams(const ParamValues &effective) noexcept
+{
+    const auto at = [&effective](ParamSlot slot) { return read(effective, slot); };
+    return {
+        .amount = at(ParamSlot::DelayAmount),
+        .timeSeconds = exp2Of(effective, ParamSlot::DelayTime),
+        .feedback = at(ParamSlot::DelayFeedback),
+        .damping = at(ParamSlot::DelayDamping),
+        .pingPong = at(ParamSlot::DelayPingPong) > 0.5f,
+    };
+}
+
+LimiterParams limiterParams(const ParamValues &effective) noexcept
+{
+    return {
+        .mode = static_cast<LimiterMode>(
+            static_cast<uint8_t>(roundedIn(read(effective, ParamSlot::LimiterMode), 0.0f, 2.0f))),
+        .ceilingGain = static_cast<float>(
+            exp2Det(value(effective, ParamSlot::LimiterCeiling) * kLog2Of10 / 20.0)),
+        .releaseSeconds = exp2Of(effective, ParamSlot::LimiterRelease),
+    };
+}
+
+/// The delay damper's one-pole coefficient for Delay Damping (spec §6.4): the cutoff runs from
+/// 20 kHz at 0 to 500 Hz at 1, exponentially, f_c = exp2Det(log2(20000) + damping × (log2(500) −
+/// log2(20000))), and coeff = 1 − exp2Det(−f_c × 2π / ln 2 / sampleRate). No libm.
+float dampCoefficient(float damping, double sampleRate) noexcept
+{
+    constexpr double kLog2Of20k = 14.287712379549449;
+    constexpr double kLog2Of500 = 8.965784284662087;
+    constexpr double kTwoPiOverLn2 = 9.064720283654388;
+    const double cutoff =
+        exp2Det(kLog2Of20k + static_cast<double>(damping) * (kLog2Of500 - kLog2Of20k));
+    return static_cast<float>(1.0 - exp2Det(-cutoff * kTwoPiOverLn2 / sampleRate));
+}
+
+/// Peak's per-sample release coefficient for a release time constant in seconds (spec §6.5):
+/// 1 − exp2Det(−(1/ln 2) / (release × sampleRate)). No libm.
+float releaseCoefficient(float releaseSeconds, double sampleRate) noexcept
+{
+    constexpr double kInvLn2 = 1.4426950408889634;
+    return static_cast<float>(
+        1.0 - exp2Det(-kInvLn2 / (static_cast<double>(releaseSeconds) * sampleRate)));
 }
 
 float softLimit(float x) noexcept

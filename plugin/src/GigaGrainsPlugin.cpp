@@ -40,7 +40,8 @@ using gg::core::ParamSlot;
 // The remote-controls pages, in page order, each in slot order: "Perform", the eight macros
 // (sub-project 5's spec §3.3), then "Cloud" (layer A's, spec §4) and "Space" (sub-project 4's
 // spec §6.6), M1's three, unchanged at indices 0 to 2; then "Layers", "Morph" and "Cloud B" to
-// "Cloud D" (M2 sub-project 1's spec §6.9). A page's index is its page_id. ParamSlot::Count is an
+// "Cloud D" (M2 sub-project 1's spec §6.9); then "FX" and "Filter A" to "Filter D" (sub-project 4's
+// spec §6.8), pages 8 to 12. A page's index is its page_id. ParamSlot::Count is an
 // empty slot (paramId gives it CLAP_INVALID_ID).
 struct RemotePage
 {
@@ -62,7 +63,19 @@ constexpr RemotePage cloudPage(const char *name, uint8_t layer) noexcept
 
 constexpr ParamSlot kEmpty = ParamSlot::Count;
 
-constexpr std::array<RemotePage, 8> kRemotePages{{
+// A layer's "Filter" page (the extremes spec §6.8): its Smear, then its two buses' filters.
+constexpr RemotePage filterPage(const char *name, uint8_t layer) noexcept
+{
+    using gg::core::layerSlot;
+    return {name,
+            {layerSlot(LayerParam::Smear, layer), layerSlot(LayerParam::BusSplit, layer),
+             layerSlot(LayerParam::Bus1Filter, layer), layerSlot(LayerParam::Bus1Cutoff, layer),
+             layerSlot(LayerParam::Bus1Resonance, layer), layerSlot(LayerParam::Bus2Filter, layer),
+             layerSlot(LayerParam::Bus2Cutoff, layer),
+             layerSlot(LayerParam::Bus2Resonance, layer)}};
+}
+
+constexpr std::array<RemotePage, 13> kRemotePages{{
     {"Perform",
      {ParamSlot::Macro1, ParamSlot::Macro2, ParamSlot::Macro3, ParamSlot::Macro4, ParamSlot::Macro5,
       ParamSlot::Macro6, ParamSlot::Macro7, ParamSlot::Macro8}},
@@ -81,6 +94,14 @@ constexpr std::array<RemotePage, 8> kRemotePages{{
     cloudPage("Cloud B", 1),
     cloudPage("Cloud C", 2),
     cloudPage("Cloud D", 3),
+    {"FX",
+     {ParamSlot::DelayAmount, ParamSlot::DelayTime, ParamSlot::DelayFeedback,
+      ParamSlot::DelayDamping, ParamSlot::DelayPingPong, ParamSlot::LimiterMode,
+      ParamSlot::LimiterCeiling, ParamSlot::LimiterRelease}},
+    filterPage("Filter A", 0),
+    filterPage("Filter B", 1),
+    filterPage("Filter C", 2),
+    filterPage("Filter D", 3),
 }};
 
 const char *const kInstrumentFeatures[] = {
@@ -192,6 +213,7 @@ GigaGrainsPlugin::GigaGrainsPlugin(const clap_host *host, Product product)
     for (uint8_t layer = 0; layer < gg::core::kLayers; ++layer)
     {
         shownKinds_[layer] = kindOf(layer); // the defaults' kinds: nothing to rescan yet
+        shownMaterials_[layer].store(gg::SourceMode::Live, std::memory_order_relaxed);
     }
     if (product_ == Product::Instrument)
     {
@@ -259,6 +281,12 @@ bool GigaGrainsPlugin::activate(double sampleRate, uint32_t /*minFrameCount*/,
             processor->setSourceNow(loader_->activate(sampleRate));
         }
         processor->setPublishing(publishing_); // an editor opened before this activation
+        for (uint8_t layer = 0; layer < gg::core::kLayers; ++layer)
+        {
+            // The sample given above is a Spectral layer's material from the first block.
+            shownMaterials_[layer].store(processor->layerMaterial(layer),
+                                         std::memory_order_relaxed);
+        }
         processor_ = std::move(processor);
         engineBlockSize_ = config.maxBlockSize;
         noteIds_.fill(NoteIdSlot{}); // a new session holds no notes
@@ -342,8 +370,9 @@ void GigaGrainsPlugin::onMainThread() noexcept
     {
         _host.paramsRescan(CLAP_PARAM_RESCAN_VALUES);
     }
-    // A layer whose kind changed shows Position in the other display (spec §6.4): the host reads
-    // the text again. Cleared first, as above.
+    // A layer whose kind changed, or a Spectral layer whose material changed, shows Position in
+    // the other display (spec §6.4; the extremes spec §6.2): the host reads the text again.
+    // Cleared first, as above.
     if (kindsChanged_.exchange(false, std::memory_order_acq_rel) && _host.canUseParams())
     {
         _host.paramsRescan(CLAP_PARAM_RESCAN_TEXT);
@@ -541,8 +570,14 @@ gg::core::Mode GigaGrainsPlugin::displayModeOf(ParamSlot slot) const noexcept
     {
         return mode();
     }
-    return kindOf(ref->layer) == gg::SourceMode::Live ? gg::core::Mode::Fx
-                                                      : gg::core::Mode::Instrument;
+    const gg::SourceMode kind = kindOf(ref->layer);
+    // A Spectral layer takes the units of its material (spec §6.2): seconds behind the head for
+    // its ring, a percentage of the file for a sample.
+    const bool seconds =
+        kind == gg::SourceMode::Live ||
+        (kind == gg::SourceMode::Spectral &&
+         shownMaterials_[ref->layer].load(std::memory_order_relaxed) == gg::SourceMode::Live);
+    return seconds ? gg::core::Mode::Fx : gg::core::Mode::Instrument;
 }
 
 void GigaGrainsPlugin::checkKinds() noexcept
@@ -556,11 +591,24 @@ void GigaGrainsPlugin::checkKinds() noexcept
             shownKinds_[layer] = kind;
             changed = true;
         }
+        // A Spectral layer's material (a sample loaded into or cleared from it) changes its
+        // Position's units as a kind change does. The Processor's engine reads it at the audio
+        // thread's own call, and the inactive plugin has no Processor to ask.
+        if (processor_ != nullptr)
+        {
+            const gg::SourceMode material = processor_->layerMaterial(layer);
+            if (material != shownMaterials_[layer].load(std::memory_order_relaxed))
+            {
+                shownMaterials_[layer].store(material, std::memory_order_relaxed);
+                changed = changed || kind == gg::SourceMode::Spectral;
+            }
+        }
     }
     // At most one request outstanding: on_main_thread clears the flag before it rescans.
     if (changed && !kindsChanged_.exchange(true, std::memory_order_acq_rel))
     {
-        // clap_host.request_callback, as in requestCollect (see there): once per kind change.
+        // clap_host.request_callback, as in requestCollect (see there): once per kind change, or
+        // per change of a Spectral layer's material.
         _host.requestCallback();
     }
 }

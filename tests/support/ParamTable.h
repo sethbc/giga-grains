@@ -131,8 +131,24 @@ inline constexpr std::array<ParamRow, 38> kLayerANewRows{{
     // M2 sub-project 3 (Engine scale and quality; its spec §6.8): 0 Eco, 1 Normal, 2 HQ.
     {0x010050, "A Quality", 0.0f, 2.0f, 1.0f, true},
 }};
-// The new globals, the last slots: M2 sub-project 1's nine, then sub-project 3's Budget, in its
-// reserved block (its spec §6.4, §6.8), a count of Normal stereo grains.
+// Layer A's eight Extremes parameters (M2 sub-project 4's spec §6.7), in its reserved block at
+// 0x60 to 0x67, after layer A's Quality: the cutoffs in log2 Hz, 20 Hz to 20 kHz, 1 kHz by
+// default.
+inline constexpr float kCutoffMin = 4.321928094887363f, kCutoffMax = 14.287712379549449f;
+inline constexpr float kCutoffDefault = 9.965784284662087f;
+inline constexpr std::array<ParamRow, 8> kLayerAExtremesRows{{
+    {0x010060, "A Smear", 0.0f, 1.0f, 0.0f, false},
+    {0x010061, "A Bus Split", 0.0f, 1.0f, 0.0f, false},
+    {0x010062, "A Bus 1 Filter", 0.0f, 4.0f, 0.0f, true},
+    {0x010063, "A Bus 1 Cutoff", kCutoffMin, kCutoffMax, kCutoffDefault, false},
+    {0x010064, "A Bus 1 Resonance", 0.0f, 1.0f, 0.0f, false},
+    {0x010065, "A Bus 2 Filter", 0.0f, 4.0f, 0.0f, true},
+    {0x010066, "A Bus 2 Cutoff", kCutoffMin, kCutoffMax, kCutoffDefault, false},
+    {0x010067, "A Bus 2 Resonance", 0.0f, 1.0f, 0.0f, false},
+}};
+// The new globals, the last slots but the Extremes' eight: M2 sub-project 1's nine, then
+// sub-project 3's Budget, in its reserved block (its spec §6.4, §6.8), a count of Normal stereo
+// grains.
 inline constexpr std::array<ParamRow, 10> kNewGlobalRows{{
     {0x000019, "Morph X", 0.0f, 1.0f, 0.5f, false},
     {0x00001A, "Morph Y", 0.0f, 1.0f, 0.5f, false},
@@ -145,8 +161,21 @@ inline constexpr std::array<ParamRow, 10> kNewGlobalRows{{
     {0x000021, "Level D", -60.0f, 12.0f, 0.0f, false},
     {0x000050, "Budget", 256.0f, 16384.0f, 4096.0f, true},
 }};
+// The Extremes' eight globals (M2 sub-project 4's spec §6.7), in scope 0's reserved block at 0x60
+// to 0x67, after Level D: Delay Time in log2 seconds, 1 ms to 2 s, 375 ms by default; Limiter
+// Release in log2 seconds, 10 ms to 1 s, 100 ms by default; Limiter Ceiling in dB.
+inline constexpr std::array<ParamRow, 8> kExtremesGlobalRows{{
+    {0x000060, "Delay Amount", 0.0f, 1.0f, 0.0f, false},
+    {0x000061, "Delay Time", -9.965784284662087f, 1.0f, -1.415037499278844f, false},
+    {0x000062, "Delay Feedback", 0.0f, 1.0f, 0.4f, false},
+    {0x000063, "Delay Damping", 0.0f, 1.0f, 0.3f, false},
+    {0x000064, "Delay Ping-pong", 0.0f, 1.0f, 0.0f, true},
+    {0x000065, "Limiter Mode", 0.0f, 2.0f, 0.0f, true},
+    {0x000066, "Limiter Ceiling", -24.0f, 0.0f, -1.0f, false},
+    {0x000067, "Limiter Release", -6.643856189774724f, 0.0f, -3.321928094887362f, false},
+}};
 
-// All 223 in slot order: the rows above, with layers B to D generated from layer A's rows in index
+// All 263 in slot order: the rows above, with layers B to D generated from layer A's rows in index
 // order (the M1 ones found by ID), each with its letter for "A" and its scope for 1. Built on the
 // first call.
 inline const std::array<ExpectedParamRow, gg::core::kParamCount> &paramTable()
@@ -174,6 +203,10 @@ inline const std::array<ExpectedParamRow, gg::core::kParamCount> &paramTable()
         {
             push(r.id, r.name, r);
         }
+        for (const ParamRow &r : kLayerAExtremesRows)
+        {
+            push(r.id, r.name, r);
+        }
         std::vector<ParamRow> layerA;
         for (clap_id index = 0x01; index <= 0x0B; ++index)
         {
@@ -184,6 +217,7 @@ inline const std::array<ExpectedParamRow, gg::core::kParamCount> &paramTable()
             layerA.push_back(*row);
         }
         layerA.insert(layerA.end(), kLayerANewRows.begin(), kLayerANewRows.end());
+        layerA.insert(layerA.end(), kLayerAExtremesRows.begin(), kLayerAExtremesRows.end());
         expect(layerA.size() == gg::core::kLayerParamCount);
         for (const char letter : {'B', 'C', 'D'})
         {
@@ -195,6 +229,10 @@ inline const std::array<ExpectedParamRow, gg::core::kParamCount> &paramTable()
             }
         }
         for (const ParamRow &r : kNewGlobalRows)
+        {
+            push(r.id, r.name, r);
+        }
+        for (const ParamRow &r : kExtremesGlobalRows)
         {
             push(r.id, r.name, r);
         }

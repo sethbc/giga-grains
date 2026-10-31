@@ -31,7 +31,9 @@
 #include "gg/metrics/AudioData.h"
 #include "gg/metrics/Metrics.h"
 #include "gg/source/Mipmap.h"
+#include "gg/source/LiveSource.h"
 #include "gg/source/PreparedSource.h"
+#include "gg/spectral/SpectralSource.h"
 
 namespace
 {
@@ -2583,6 +2585,592 @@ TEST_CASE("a stolen grain fades out without a click", "[engine][budget]")
                     }
                 }
             }
+        }
+    }
+}
+
+namespace
+{
+// A render through the two-bus process(): `out` and `bus2`, both starting as NaN as render()'s
+// outputs do, so a sample the call didn't write (or zero) fails allFinite().
+struct BusRender
+{
+    Render out;
+    Render bus2;
+};
+
+// Renders input[0, frames) through the engine as a mono input, in blocks of the given sizes
+// (cycled), into out and bus2.
+BusRender renderBuses(gg::Engine &engine, const std::vector<float> &input, int64_t frames,
+                      const std::vector<uint32_t> &blockSizes)
+{
+    const auto size = static_cast<std::size_t>(frames);
+    BusRender r{{std::vector<float>(size, kUnwritten), std::vector<float>(size, kUnwritten)},
+                {std::vector<float>(size, kUnwritten), std::vector<float>(size, kUnwritten)}};
+    std::size_t next = 0;
+    for (int64_t done = 0; done < frames;)
+    {
+        const uint32_t want = blockSizes[next++ % blockSizes.size()];
+        const auto n = static_cast<uint32_t>(std::min<int64_t>(want, frames - done));
+        const float *in[1] = {input.data() + done};
+        float *out[2] = {r.out.left.data() + done, r.out.right.data() + done};
+        float *bus2[2] = {r.bus2.left.data() + done, r.bus2.right.data() + done};
+        engine.process(in, 1, out, 2, bus2, n);
+        done += n;
+    }
+    return r;
+}
+
+// The same through the one-bus process(), with the same blocks.
+Render renderOneBus(gg::Engine &engine, const std::vector<float> &input, int64_t frames,
+                    const std::vector<uint32_t> &blockSizes)
+{
+    const auto size = static_cast<std::size_t>(frames);
+    Render r{std::vector<float>(size, kUnwritten), std::vector<float>(size, kUnwritten)};
+    std::size_t next = 0;
+    for (int64_t done = 0; done < frames;)
+    {
+        const uint32_t want = blockSizes[next++ % blockSizes.size()];
+        const auto n = static_cast<uint32_t>(std::min<int64_t>(want, frames - done));
+        const float *in[1] = {input.data() + done};
+        float *out[2] = {r.left.data() + done, r.right.data() + done};
+        engine.process(in, 1, out, 2, n);
+        done += n;
+    }
+    return r;
+}
+
+// Every sample +0, the sign included.
+bool allPositiveZero(const std::vector<float> &v)
+{
+    return std::all_of(v.begin(), v.end(), [](float x) { return x == 0.0f && !std::signbit(x); });
+}
+
+// A stereo cloud over a stereo sine (Sample mode) or the ring (Live mode), Poisson and panned
+// full width, at the given bus split: about ten 50 ms grains overlap.
+gg::CloudParams busParams(gg::SourceMode mode, double busSplit)
+{
+    return {.densityHz = 200.0,
+            .distribution = 1.0,
+            .grainDurationSec = 0.05,
+            .position = mode == gg::SourceMode::Live ? 0.2 : 0.5,
+            .spray = 0.1,
+            .pitchSemitones = 5.0,
+            .stereo = 1.0,
+            .gain = 0.5f,
+            .busSplit = busSplit};
+}
+
+// An engine with a 16 s ring and a stereo sine source, in `mode`, at the given bus split.
+std::unique_ptr<gg::Engine> busEngine(gg::SourceMode mode, double busSplit)
+{
+    auto engine = std::make_unique<gg::Engine>(liveConfig());
+    engine->setSource(makeSine(2, 96000, 48000.0, 330.0));
+    engine->setSourceMode(mode);
+    engine->setCloudParams(busParams(mode, busSplit));
+    return engine;
+}
+
+// Host blocks of every kind: 0- and 1-frame blocks among them.
+const std::vector<uint32_t> kBusBlocks{256, 1, 0, 77, 1024};
+} // namespace
+
+TEST_CASE("two buses with split 0 render the one-bus bytes", "[engine]")
+{
+    // The extremes spec §6.3: at a split of 0 every grain is on bus 0, so out is the one-bus
+    // render bit for bit and bus2 is only zeroed.
+    const auto input = noiseInput(24000, 11);
+    for (const gg::SourceMode mode : {gg::SourceMode::Sample, gg::SourceMode::Live})
+    {
+        INFO("live = " << (mode == gg::SourceMode::Live));
+        auto oneBus = busEngine(mode, 0.0);
+        auto twoBus = busEngine(mode, 0.0);
+        REQUIRE_FALSE(twoBus->bus2Used());
+        const Render expected = renderOneBus(*oneBus, input, 24000, kBusBlocks);
+        const BusRender got = renderBuses(*twoBus, input, 24000, kBusBlocks);
+        REQUIRE(peak(expected.left) > 0.05f);
+        REQUIRE(sameBits(got.out.left, expected.left));
+        REQUIRE(sameBits(got.out.right, expected.right));
+        REQUIRE(allPositiveZero(got.bus2.left));
+        REQUIRE(allPositiveZero(got.bus2.right));
+        REQUIRE_FALSE(twoBus->bus2Used());
+        REQUIRE(twoBus->activeGrains() == oneBus->activeGrains());
+    }
+}
+
+TEST_CASE("two buses share the grains", "[engine]")
+{
+    // Split 0.5: each grain renders into its row's bus, so out + bus2 is the one-bus render to
+    // rounding (only the order of the sum differs). A bus-1 grain reaches bus2 only through its
+    // pool row, so this also proves Engine::sampleGrain's and liveGrain's bus copies.
+    const auto input = noiseInput(24000, 12);
+    for (const gg::SourceMode mode : {gg::SourceMode::Sample, gg::SourceMode::Live})
+    {
+        INFO("live = " << (mode == gg::SourceMode::Live));
+        auto oneBus = busEngine(mode, 0.5);
+        auto twoBus = busEngine(mode, 0.5);
+        SinkLog log;
+        twoBus->setEventSink(&SinkLog::record, &log);
+        const Render expected = renderOneBus(*oneBus, input, 24000, kBusBlocks);
+        const BusRender got = renderBuses(*twoBus, input, 24000, kBusBlocks);
+        REQUIRE_FALSE(log.overflowed);
+        const auto onBus1 = std::count_if(log.grains.begin(), log.grains.end(),
+                                          [](const gg::GrainSpec &g) { return g.bus == 1; });
+        REQUIRE(onBus1 > 0);
+        REQUIRE(static_cast<std::size_t>(onBus1) < log.grains.size());
+        REQUIRE(allFinite(got.out.left));
+        REQUIRE(allFinite(got.out.right));
+        REQUIRE(allFinite(got.bus2.left));
+        REQUIRE(allFinite(got.bus2.right));
+        REQUIRE(peak(got.out.left) > 0.05f);
+        REQUIRE(peak(got.out.right) > 0.05f);
+        REQUIRE(peak(got.bus2.left) > 0.05f);
+        REQUIRE(peak(got.bus2.right) > 0.05f);
+        float worst = 0.0f;
+        for (std::size_t i = 0; i < expected.left.size(); ++i)
+        {
+            worst =
+                std::max(worst, std::abs(got.out.left[i] + got.bus2.left[i] - expected.left[i]));
+            worst =
+                std::max(worst, std::abs(got.out.right[i] + got.bus2.right[i] - expected.right[i]));
+        }
+        REQUIRE(worst <= 1e-5f);
+        REQUIRE(twoBus->bus2Used());
+        REQUIRE(oneBus->bus2Used()); // the flag follows admissions, whichever process() runs
+    }
+}
+
+TEST_CASE("bus2Used is sticky until a reset or the gate", "[engine]")
+{
+    // The extremes spec §6.3: raised at the first bus-1 admission, kept while no grain is on bus
+    // 1 any more, and lowered only where the pool is cleared for good (reset() and the gate).
+    const auto input = noiseInput(48000, 13);
+    auto engine = busEngine(gg::SourceMode::Sample, 0.5);
+    REQUIRE_FALSE(engine->bus2Used());
+    renderBuses(*engine, input, 4800, kBusBlocks);
+    REQUIRE(engine->bus2Used());
+
+    // Split back to 0, and long enough for every bus-1 grain to end: still raised.
+    engine->setCloudParams(busParams(gg::SourceMode::Sample, 0.0));
+    const BusRender after = renderBuses(*engine, input, 24000, kBusBlocks);
+    REQUIRE(engine->bus2Used());
+    REQUIRE(std::all_of(after.bus2.left.end() - 4800, after.bus2.left.end(),
+                        [](float x) { return x == 0.0f; }));
+
+    engine->reset();
+    REQUIRE_FALSE(engine->bus2Used());
+    renderBuses(*engine, input, 4800, kBusBlocks); // split 0: still lowered
+    REQUIRE_FALSE(engine->bus2Used());
+
+    engine->setCloudParams(busParams(gg::SourceMode::Sample, 0.5));
+    renderBuses(*engine, input, 4800, kBusBlocks);
+    REQUIRE(engine->bus2Used());
+    engine->setEnabled(false);
+    REQUIRE(engine->bus2Used()); // the gate applies at the next block
+    renderBuses(*engine, input, 64, kBusBlocks);
+    REQUIRE_FALSE(engine->bus2Used());
+    REQUIRE(engine->activeGrains() == 0);
+
+    // On again, the next bus-1 admission raises it.
+    engine->setEnabled(true);
+    renderBuses(*engine, input, 4800, kBusBlocks);
+    REQUIRE(engine->bus2Used());
+}
+
+namespace
+{
+// The extremes spec §6.2: an engine with a 16 s ring and the spectral slot.
+gg::EngineConfig spectralConfig()
+{
+    gg::EngineConfig config = liveConfig();
+    config.spectral = true;
+    return config;
+}
+
+// `frames` frames of stereo noise at half scale, at 48 kHz (channel c from stream c).
+std::shared_ptr<gg::SampleBuffer> makeNoise(int64_t frames, uint64_t seed)
+{
+    auto buf = std::make_shared<gg::SampleBuffer>(2, frames, 48000.0);
+    for (uint32_t c = 0; c < 2; ++c)
+    {
+        for (int64_t i = 0; i < frames; ++i)
+        {
+            const auto k = static_cast<uint64_t>(i);
+            buf->channel(c)[i] = 0.5f * static_cast<float>(gg::rng::bipolar(gg::rng::hash(
+                                            {seed, 0, c, gg::rng::Field::SignalNoise, k})));
+        }
+    }
+    return buf;
+}
+
+// A Poisson cloud of 50 ms grains, 0.1 s of spray, panned full width. Position is in the
+// material's units: a fraction of the sample, or seconds behind the ring's head.
+gg::CloudParams spectralParams(double position)
+{
+    return {.densityHz = 100.0,
+            .distribution = 1.0,
+            .grainDurationSec = 0.05,
+            .position = position,
+            .spray = 0.1,
+            .stereo = 1.0,
+            .gain = 0.5f};
+}
+
+bool allZero(const std::vector<float> &v, std::size_t from = 0)
+{
+    return std::all_of(v.begin() + static_cast<std::ptrdiff_t>(from), v.end(),
+                       [](float x) { return x == 0.0f; });
+}
+} // namespace
+
+TEST_CASE("without the spectral slot the Spectral kind is ignored", "[engine]")
+{
+    // EngineConfig::spectral defaults to false: no spectral source, and setSourceMode(Spectral)
+    // changes nothing, so the M1 engine and gg-bench's cases are untouched.
+    gg::Engine engine(liveConfig());
+    REQUIRE(engine.spectral() == nullptr);
+    engine.setSource(makeSine(1, 48000, 48000.0));
+    engine.setCloudParams(spectralParams(0.5));
+    engine.setSourceMode(gg::SourceMode::Spectral);
+    SinkLog log;
+    engine.setEventSink(&SinkLog::record, &log);
+    const Render r = render(engine, 4800, 256);
+    REQUIRE(engine.sourceMode() == gg::SourceMode::Sample);
+    REQUIRE(peak(r.left) > 0.05f);
+    REQUIRE(!log.grains.empty());
+    REQUIRE(std::all_of(log.grains.begin(), log.grains.end(), [](const gg::GrainSpec &g) {
+        return g.sourceSlot < gg::Engine::kLiveSlot;
+    }));
+}
+
+TEST_CASE("a spectral engine smears its sample", "[engine]")
+{
+    // The extremes spec §6.2: with a sample in the current slot, the smear reads it at Position
+    // (a fraction), and the Spectral grains read the smear's ring on kSpectralSlot.
+    gg::Engine engine(spectralConfig());
+    REQUIRE(engine.spectral() != nullptr);
+    REQUIRE_FALSE(engine.hasSampleSource());
+    engine.setSource(makeNoise(96000, 5));
+    REQUIRE(engine.hasSampleSource());
+    engine.setSourceMode(gg::SourceMode::Spectral);
+    engine.setCloudParams(spectralParams(0.5));
+    SinkLog log;
+    engine.setEventSink(&SinkLog::record, &log);
+    const Render r = render(engine, 48000, std::vector<uint32_t>{256, 1, 0, 77, 1024});
+    REQUIRE(engine.sourceMode() == gg::SourceMode::Spectral);
+    REQUIRE(engine.spectral()->active());
+    REQUIRE(allFinite(r.left));
+    REQUIRE(allFinite(r.right));
+    const std::vector<float> late(r.left.begin() + 24000, r.left.end());
+    REQUIRE(peak(late) > 0.05f);
+    REQUIRE(peak(std::vector<float>(r.right.begin() + 24000, r.right.end())) > 0.05f);
+    REQUIRE(peak(r.left) < 2.0f);
+    REQUIRE_FALSE(log.overflowed);
+    REQUIRE(log.grains.size() > 20);
+    REQUIRE(std::all_of(log.grains.begin(), log.grains.end(), [](const gg::GrainSpec &g) {
+        return g.sourceSlot == gg::Engine::kSpectralSlot;
+    }));
+    // Nothing reaches the output before the first frame's overlap-add is complete: the stream's
+    // first sample is at N (frame 0, at hop boundary 0), and every grain reads M frames behind.
+    const auto n = static_cast<std::size_t>(engine.spectral()->fftSize());
+    REQUIRE(allZero(
+        std::vector<float>(r.left.begin(), r.left.begin() + static_cast<std::ptrdiff_t>(n))));
+}
+
+TEST_CASE("a spectral engine smears its ring without a sample", "[engine]")
+{
+    // The extremes spec §6.2: with no sample, the smear reads the live ring at Position (seconds
+    // behind the head). Before any input the ring holds silence, and so does the smear.
+    gg::Engine engine(spectralConfig());
+    engine.setSourceMode(gg::SourceMode::Spectral);
+    engine.setCloudParams(spectralParams(0.1));
+    SinkLog log;
+    engine.setEventSink(&SinkLog::record, &log);
+    const Render silent = render(engine, 24000, 512);
+    REQUIRE(engine.sourceMode() == gg::SourceMode::Spectral);
+    REQUIRE_FALSE(engine.hasSampleSource());
+    REQUIRE(allFinite(silent.left));
+    REQUIRE(peak(silent.left) == 0.0f);
+    REQUIRE(peak(silent.right) == 0.0f);
+    REQUIRE(!log.grains.empty()); // grains sound, over silence
+
+    const auto input = noiseInput(48000, 7);
+    const Render r = renderInput(engine, input, 0, 48000, 512);
+    REQUIRE(allFinite(r.left));
+    REQUIRE(allFinite(r.right));
+    // The window lies 0.1 s behind the head, so noise reaches it after about 0.2 s.
+    REQUIRE(peak(std::vector<float>(r.left.begin() + 24000, r.left.end())) > 0.05f);
+    REQUIRE(peak(std::vector<float>(r.right.begin() + 24000, r.right.end())) > 0.05f);
+    REQUIRE_FALSE(log.overflowed);
+    REQUIRE(std::all_of(log.grains.begin(), log.grains.end(), [](const gg::GrainSpec &g) {
+        return g.sourceSlot == gg::Engine::kSpectralSlot;
+    }));
+}
+
+TEST_CASE("a spectral engine writes the ring before the smear reads it", "[engine]")
+{
+    // The order within a block (the extremes spec §6.2, as for the Live kind): the block's input
+    // goes into the live ring, then the smear reads it at the hop's own head. The expectation is
+    // a LiveSource and a SpectralSource driven in that order, with the engine's settings; blocks
+    // of one hop put a hop boundary on every block's first frame, where reading the ring before
+    // the write would see the previous block's head, one frame short.
+    constexpr uint32_t kMaxBlock = 1024;
+    constexpr double kPosition = 0.05;
+    gg::EngineConfig config = spectralConfig();
+    config.maxBlockSize = kMaxBlock;
+    config.seed = 9;
+    config.layer = 2;
+    gg::Engine engine(config);
+    engine.setSourceMode(gg::SourceMode::Spectral);
+    engine.setCloudParams(spectralParams(kPosition));
+    REQUIRE(engine.spectral()->hop() == kMaxBlock);
+
+    gg::LiveSource ring;
+    ring.prepare(48000.0, config.liveSeconds, kMaxBlock);
+    gg::SpectralSource smear(48000.0, kMaxBlock);
+    smear.setActive(true);
+
+    const auto input = noiseInput(48000, 17);
+    for (const uint32_t blockSize : {kMaxBlock, 333u})
+    {
+        INFO("blocks of " << blockSize);
+        engine.reset();
+        ring.reset();
+        smear.reset();
+        std::vector<float> left(blockSize), right(blockSize);
+        for (int64_t done = 0; done < 48000;)
+        {
+            const auto n = static_cast<uint32_t>(std::min<int64_t>(blockSize, 48000 - done));
+            const float *in[1] = {input.data() + done};
+            float *out[2] = {left.data(), right.data()};
+            engine.process(in, 1, out, 2, n);
+            ring.write(in, 1, 0, done, n);
+            gg::SpectralMaterial m;
+            m.ring = &ring;
+            smear.process(m, kPosition, config.seed, config.layer, done, n);
+            done += n;
+        }
+        const gg::LiveSource::RingView got = engine.spectral()->ring().view();
+        const gg::LiveSource::RingView want = smear.ring().view();
+        REQUIRE(got.capacity == want.capacity);
+        REQUIRE(engine.spectral()->ring().head() == 48000);
+        const auto floats = static_cast<std::size_t>(2 * want.capacity);
+        REQUIRE(std::any_of(want.slots, want.slots + floats, [](float x) { return x != 0.0f; }));
+        REQUIRE(std::memcmp(got.slots, want.slots, floats * sizeof(float)) == 0);
+    }
+}
+
+TEST_CASE("a kind switch to and from spectral lets sounding grains finish", "[engine][layers]")
+{
+    // The extremes spec §6.2, wave 1's rule: the grains sounding at a switch finish on the source
+    // they started on.
+    constexpr int64_t kSwitch = 24000;
+    SECTION("to Spectral")
+    {
+        // As "a source kind switch lets sounding grains finish": against an engine that stays on
+        // Sample and turns its stream off at the switch. The smear only starts at the next hop
+        // boundary and needs a window to fill, so for its first N frames the Spectral grains read
+        // silence and add nothing; the old 50 ms grains end inside them.
+        const auto source = makeSine(1, 96000, 48000.0);
+        const gg::CloudParams p = spectralParams(0.5);
+        gg::Engine switched(spectralConfig());
+        gg::Engine reference(spectralConfig());
+        for (gg::Engine *e : {&switched, &reference})
+        {
+            e->setSource(source);
+            e->setCloudParams(p);
+        }
+        SinkLog log;
+        switched.setEventSink(&SinkLog::record, &log);
+        const Render before = render(switched, kSwitch, 256);
+        const Render referenceBefore = render(reference, kSwitch, 256);
+        REQUIRE(sameBits(before.left, referenceBefore.left));
+        REQUIRE(switched.activeGrains() > 0);
+        const std::size_t spawnedBefore = log.grains.size();
+
+        switched.setSourceMode(gg::SourceMode::Spectral);
+        gg::CloudParams off = p;
+        off.densityHz = 0.0;
+        reference.setCloudParams(off);
+        const auto n = static_cast<int64_t>(switched.spectral()->fftSize());
+        const Render after = render(switched, n, 256);
+        const Render expected = render(reference, n, 256);
+        REQUIRE(switched.sourceMode() == gg::SourceMode::Spectral);
+        REQUIRE(peak(expected.left) > 0.05f);
+        REQUIRE(reference.activeGrains() == 0); // the old grains have ended
+        REQUIRE(sameBits(after.left, expected.left));
+        REQUIRE(sameBits(after.right, expected.right));
+        // Then the smear sounds.
+        const Render later = render(switched, 24000, 256);
+        REQUIRE(peak(later.left) > 0.05f);
+
+        REQUIRE_FALSE(log.overflowed);
+        REQUIRE(log.grains.size() > spawnedBefore);
+        bool slots = true;
+        for (std::size_t k = 0; k < log.grains.size(); ++k)
+        {
+            const gg::GrainSpec &g = log.grains[k];
+            slots = slots &&
+                    (k < spawnedBefore
+                         ? g.sourceSlot < gg::Engine::kLiveSlot && g.onsetSample < kSwitch
+                         : g.sourceSlot == gg::Engine::kSpectralSlot && g.onsetSample >= kSwitch);
+        }
+        REQUIRE(slots);
+    }
+    SECTION("from Spectral")
+    {
+        // Spectral to Live, over a silent ring, so the Live grains add nothing. From the switch
+        // on the smear's ring computes no new frame: it drains the frames already overlap-added,
+        // then takes silence (SpectralSource::setActive), and the old grains read it. So the
+        // expectation is an engine making the same switch with its stream off: what it renders
+        // from there is exactly the old Spectral grains finishing on their draining ring.
+        const auto source = makeNoise(96000, 3);
+        const gg::CloudParams p = spectralParams(0.5);
+        gg::Engine switched(spectralConfig());
+        gg::Engine reference(spectralConfig());
+        for (gg::Engine *e : {&switched, &reference})
+        {
+            e->setSource(source);
+            e->setSourceMode(gg::SourceMode::Spectral);
+            e->setCloudParams(p);
+        }
+        SinkLog log;
+        switched.setEventSink(&SinkLog::record, &log);
+        const Render before = render(switched, kSwitch, 256);
+        const Render referenceBefore = render(reference, kSwitch, 256);
+        REQUIRE(sameBits(before.left, referenceBefore.left));
+        REQUIRE(peak(std::vector<float>(before.left.end() - 4800, before.left.end())) > 0.05f);
+        REQUIRE(switched.activeGrains() > 0);
+        const std::size_t spawnedBefore = log.grains.size();
+
+        gg::CloudParams off = p;
+        off.densityHz = 0.0;
+        reference.setCloudParams(off);
+        for (gg::Engine *e : {&switched, &reference})
+        {
+            e->setSourceMode(gg::SourceMode::Live);
+        }
+        const Render after = render(switched, 24000, 256);
+        const Render expected = render(reference, 24000, 256);
+        REQUIRE(switched.sourceMode() == gg::SourceMode::Live);
+        REQUIRE_FALSE(switched.spectral()->active());
+        REQUIRE(peak(expected.left) > 0.01f); // the old grains sound past the switch
+        REQUIRE(reference.activeGrains() == 0);
+        REQUIRE(sameBits(after.left, expected.left));
+        REQUIRE(sameBits(after.right, expected.right));
+
+        REQUIRE_FALSE(log.overflowed);
+        REQUIRE(log.grains.size() > spawnedBefore);
+        bool slots = true;
+        for (std::size_t k = 0; k < log.grains.size(); ++k)
+        {
+            const gg::GrainSpec &g = log.grains[k];
+            slots =
+                slots && (k < spawnedBefore
+                              ? g.sourceSlot == gg::Engine::kSpectralSlot && g.onsetSample < kSwitch
+                              : g.sourceSlot == gg::Engine::kLiveSlot && g.onsetSample >= kSwitch);
+        }
+        REQUIRE(slots);
+    }
+}
+
+TEST_CASE("reset restarts the smear", "[engine]")
+{
+    // Engine::reset() restarts the spectral ring with the clock: the render after it is a fresh
+    // engine's.
+    const auto source = makeNoise(96000, 21);
+    gg::Engine engine(spectralConfig());
+    gg::Engine fresh(spectralConfig());
+    for (gg::Engine *e : {&engine, &fresh})
+    {
+        e->setSource(source);
+        e->setSourceMode(gg::SourceMode::Spectral);
+        e->setCloudParams(spectralParams(0.3));
+    }
+    render(engine, 30000, 512);
+    engine.reset();
+    REQUIRE(engine.spectral()->ring().head() == 0);
+    const Render a = render(engine, 24000, 512);
+    const Render b = render(fresh, 24000, 512);
+    REQUIRE(peak(b.left) > 0.05f);
+    REQUIRE(sameBits(a.left, b.left));
+    REQUIRE(sameBits(a.right, b.right));
+}
+
+namespace
+{
+// The largest |second difference| of v over [from, to).
+float maxSecondDifference(const std::vector<float> &v, std::size_t from, std::size_t to)
+{
+    float m = 0.0f;
+    for (std::size_t i = std::max<std::size_t>(from, 2); i < to; ++i)
+    {
+        m = std::max(m, std::abs(v[i] - 2.0f * v[i - 1] + v[i - 2]));
+    }
+    return m;
+}
+} // namespace
+
+TEST_CASE("a kind switch away from spectral, and back during the drain, doesn't click",
+          "[engine][spectral]")
+{
+    // The extremes spec §3's anti-goal. Spectral grains read the smear only Spray seconds behind
+    // its head (here none: 259 frames), so a smear that stopped dead at a switch away would cut
+    // every one of them within 6 ms. It drains instead (SpectralSource::setActive), and the
+    // grains fade out with it. Over a 220 Hz sine, whose smear's steady second difference is
+    // small, the largest second difference after the switch must stay within twice the largest
+    // in the 100 ms before it: a stopped smear scored over 1000 times it. The new Live grains
+    // read a silent ring. In the second case the layer turns back to Spectral halfway through the
+    // drain, where the new frames add onto what is pending, and that mustn't click either. Two
+    // host block sizes, which must give the same bytes.
+    constexpr int64_t kSwitch = 48000;
+    constexpr int64_t kAfter = 14400;
+    for (const bool back : {false, true})
+    {
+        std::vector<float> first;
+        for (const uint32_t block : {256u, 1u})
+        {
+            INFO((back ? "away and back" : "away") << ", blocks of " << block);
+            gg::Engine engine(spectralConfig());
+            engine.setSource(makeSine(1, 96000, 48000.0, 220.0, 0.5));
+            engine.setSourceMode(gg::SourceMode::Spectral);
+            gg::CloudParams p = spectralParams(0.5);
+            p.stereo = 0.0;
+            p.spray = 0.0;
+            p.grainDurationSec = 0.1;
+            engine.setCloudParams(p);
+            const Render before = render(engine, kSwitch, block);
+            const float steady =
+                maxSecondDifference(before.left, kSwitch - 4800, static_cast<std::size_t>(kSwitch));
+            REQUIRE(steady > 0.0f);
+            REQUIRE(peak(std::vector<float>(before.left.end() - 4800, before.left.end())) > 0.5f);
+
+            engine.setSourceMode(gg::SourceMode::Live);
+            const auto half = static_cast<int64_t>(engine.spectral()->fftSize() / 2);
+            Render after = render(engine, back ? half : kAfter, block);
+            if (back)
+            {
+                engine.setSourceMode(gg::SourceMode::Spectral);
+                const Render rest = render(engine, kAfter - half, block);
+                after.left.insert(after.left.end(), rest.left.begin(), rest.left.end());
+                after.right.insert(after.right.end(), rest.right.begin(), rest.right.end());
+            }
+            REQUIRE(allFinite(after.left));
+            const float worst = maxSecondDifference(after.left, 0, after.left.size());
+            INFO("steady " << steady << ", after the switch " << worst);
+            REQUIRE(worst <= 2.0f * steady);
+            // Not vacuous: the old grains sound on past the point a stopped smear cut them.
+            REQUIRE(peak(std::vector<float>(after.left.begin() + 480, after.left.begin() + 960)) >
+                    0.1f);
+            // Every sample, before and after the switch, joined: across the switch itself too.
+            std::vector<float> all = before.left;
+            all.insert(all.end(), after.left.begin(), after.left.end());
+            REQUIRE(maxSecondDifference(all, kSwitch - 2, kSwitch + 2) <= 2.0f * steady);
+            if (block == 256)
+            {
+                first = all;
+            }
+            REQUIRE(sameBits(all, first));
         }
     }
 }

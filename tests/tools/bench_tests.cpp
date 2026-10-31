@@ -15,6 +15,7 @@
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <numbers>
 #include <numeric>
 #include <set>
 #include <stdexcept>
@@ -28,6 +29,7 @@
 #include <nlohmann/json.hpp>
 
 #include "Bench.h"
+#include "GrainFilterKernel.h"
 #include "Kernels.h"
 #include "gg/grain/Budget.h"
 #include "gg/grain/KernelDispatch.h"
@@ -175,7 +177,8 @@ TEST_CASE("bench lists the engine cases in report order", "[bench]")
     REQUIRE(at != names.end());
     CHECK(std::vector<std::string>(at, names.end()) ==
           std::vector<std::string>{"engine-layers-full", "engine-sample-hq", "engine-sample-hq-up",
-                                   "engine-overload", "engine-sample-sse"});
+                                   "engine-overload", "engine-sample-sse", "engine-sample-smear",
+                                   "engine-buses", "engine-spectral"});
 }
 
 TEST_CASE("bench rejects a run longer than an hour", "[bench]")
@@ -873,6 +876,131 @@ TEST_CASE("the reference kernel's output is pinned", "[bench]")
     CHECK(hash(gg::bench::renderLinearScalar) == 0x300874d5efa10a70ull);
 }
 
+TEST_CASE("hermite-simd-grainfilter runs and costs more than hermite-simd", "[bench][serial]")
+{
+    // INTENT §22's measurement (M2 extremes spec §6.10): hermite-simd plus one CytomicSVF per
+    // grain, stepped per output sample on the grain's contribution. It does strictly more work
+    // than hermite-simd over the same workload, so at every block size its median must be the
+    // greater. --quick's run length at the default rounds; 200 grains, not the default 2,000, so
+    // that a Debug or ASan block is far shorter than a run. [serial], since it compares times.
+    const gg::bench::Report report = gg::bench::run(
+        {.runSeconds = 0.2, .grains = 200, .cases = {"hermite-simd", "hermite-simd-grainfilter"}});
+    REQUIRE(report.results.size() == 6);
+    for (std::size_t b = 0; b < 3; ++b)
+    {
+        const gg::bench::CaseResult &plain = report.results[b];
+        const gg::bench::CaseResult &filtered = report.results[3 + b];
+        INFO("block " << plain.blockSize << ": hermite-simd " << plain.median
+                      << " ns, hermite-simd-grainfilter " << filtered.median << " ns");
+        CHECK(plain.name == "hermite-simd");
+        CHECK(filtered.name == "hermite-simd-grainfilter");
+        CHECK(filtered.kind == "kernel");
+        CHECK(filtered.blockSize == plain.blockSize);
+        CHECK(filtered.grains == 200.0);
+        CHECK(filtered.nsPerGrainSample.size() == 5);
+        CHECK(plain.median > 0.0);
+        CHECK(filtered.median > plain.median);
+    }
+    CHECK(report.ratios.empty()); // kernel cases have no ratio
+}
+
+TEST_CASE("hermite-simd-grainfilter low-passes each grain at 1 kHz", "[bench]")
+{
+    // The spike must do the work it claims: each grain's contribution goes through its own
+    // Low-pass at 1 kHz before it is added, with the filter's state carried from block to block
+    // and cleared by reset(). Two grains at rate 1 over a sine, their window held near its peak,
+    // rendered in blocks of 256 by hermite-simd with and without the filters.
+    constexpr int64_t kFrames = 48000;
+    constexpr uint32_t kBlock = 256;
+    constexpr uint32_t kBlocks = 40;
+    const auto rmsRatio = [&](double hz) {
+        std::vector<float> src(kFrames);
+        for (int64_t i = 0; i < kFrames; ++i)
+        {
+            src[static_cast<std::size_t>(i)] = static_cast<float>(
+                0.5 * std::sin(2.0 * std::numbers::pi * hz * static_cast<double>(i) / 48000.0));
+        }
+        gg::bench::GrainBatch batch;
+        batch.resize(2);
+        for (std::size_t g = 0; g < 2; ++g)
+        {
+            batch.pos[g] = 100.0 + 1000.0 * static_cast<double>(g);
+            batch.rate[g] = 1.0;
+            batch.envPhase[g] = 0.45f;
+            batch.envInc[g] = 1e-8f;
+            batch.gain[g] = 0.5f;
+        }
+        gg::bench::GrainFilterBank bank(2, kBlock, 48000.0);
+        double plain = 0.0;
+        double filtered = 0.0;
+        std::vector<float> pl(kBlock), pr(kBlock), fl(kBlock), fr(kBlock);
+        for (uint32_t b = 0; b < kBlocks; ++b)
+        {
+            std::fill(pl.begin(), pl.end(), 0.0f);
+            std::fill(pr.begin(), pr.end(), 0.0f);
+            std::fill(fl.begin(), fl.end(), 0.0f);
+            std::fill(fr.begin(), fr.end(), 0.0f);
+            gg::bench::renderHermiteSimd(batch, src.data(), src.data(), kFrames, pl.data(),
+                                         pr.data(), kBlock);
+            gg::bench::renderHermiteSimdGrainFilter(bank, batch, src.data(), src.data(), kFrames,
+                                                    fl.data(), fr.data(), kBlock);
+            if (b >= kBlocks / 2) // past the filters' onset
+            {
+                for (uint32_t i = 0; i < kBlock; ++i)
+                {
+                    CHECK(fl[i] == fr[i]); // the same source on both channels
+                    plain += static_cast<double>(pl[i]) * pl[i];
+                    filtered += static_cast<double>(fl[i]) * fl[i];
+                }
+            }
+            for (std::size_t g = 0; g < 2; ++g)
+            {
+                batch.pos[g] += kBlock;
+                batch.envPhase[g] += kBlock * batch.envInc[g];
+            }
+        }
+        REQUIRE(plain > 0.0);
+        return std::sqrt(filtered / plain);
+    };
+    const double low = rmsRatio(100.0);
+    const double high = rmsRatio(8000.0);
+    INFO("100 Hz passes at " << low << ", 8 kHz at " << high);
+    CHECK(low > 0.95);
+    CHECK(low < 1.05);
+    CHECK(high < 0.05); // three octaves above the cutoff, 12 dB an octave
+
+    // reset() clears a slot's state: a grain that reads only silence after a loud block rings on
+    // through its filter, and is exactly silent once its slot is reset.
+    std::vector<float> loud(kFrames, 0.5f);
+    gg::bench::GrainBatch one;
+    one.resize(1);
+    one.pos[0] = 100.0;
+    one.rate[0] = 1.0;
+    one.envPhase[0] = 0.5f;
+    one.envInc[0] = 1e-8f;
+    one.gain[0] = 1.0f;
+    gg::bench::GrainFilterBank bank(1, kBlock, 48000.0);
+    REQUIRE(bank.size() == 1);
+    REQUIRE(bank.maxBlockSize() == kBlock);
+    std::vector<float> l(kBlock, 0.0f), r(kBlock, 0.0f);
+    gg::bench::renderHermiteSimdGrainFilter(bank, one, loud.data(), loud.data(), kFrames, l.data(),
+                                            r.data(), kBlock);
+    CHECK(l[kBlock - 1] > 0.1f);
+    one.pos[0] = 2.0 * kFrames; // past the end: every tap reads zero
+    std::fill(l.begin(), l.end(), 0.0f);
+    std::fill(r.begin(), r.end(), 0.0f);
+    gg::bench::renderHermiteSimdGrainFilter(bank, one, loud.data(), loud.data(), kFrames, l.data(),
+                                            r.data(), kBlock);
+    CHECK(l[0] != 0.0f); // the tail
+    bank.reset(0);
+    std::fill(l.begin(), l.end(), 0.0f);
+    std::fill(r.begin(), r.end(), 0.0f);
+    gg::bench::renderHermiteSimdGrainFilter(bank, one, loud.data(), loud.data(), kFrames, l.data(),
+                                            r.data(), kBlock);
+    CHECK(std::all_of(l.begin(), l.end(), [](float v) { return v == 0.0f; }));
+    CHECK(std::all_of(r.begin(), r.end(), [](float v) { return v == 0.0f; }));
+}
+
 TEST_CASE("engine-sample-eco runs at the Eco tier", "[bench]")
 {
     // Its timing alone (about 26 against 39 ns in Debug) doesn't prove it: every grain the case
@@ -998,4 +1126,86 @@ TEST_CASE("engine-overload drops and steals at a spent quota", "[bench]")
     CHECK(tiers.stolen > 0);
     REQUIRE(tiers.activeGrains.size() == 1);
     CHECK(tiers.activeGrains[0] <= grains * 4 / 3 + 1);
+}
+
+TEST_CASE("engine-sample-smear, engine-buses and engine-spectral run", "[bench]")
+{
+    // The three present with positive medians, then each admits grains (Normal tier) after its
+    // warm-up. Shape only: no timing figure is checked.
+    const gg::bench::Report report =
+        gg::bench::run({.runSeconds = 0.002,
+                        .rounds = 2,
+                        .grains = 50,
+                        .cases = {"engine-sample-smear", "engine-buses", "engine-spectral"}});
+    for (const char *name : {"engine-sample-smear", "engine-buses", "engine-spectral"})
+    {
+        INFO(name);
+        const auto count = std::count_if(
+            report.results.begin(), report.results.end(), [name](const gg::bench::CaseResult &r) {
+                return r.name == name && r.kind == "engine" && r.median > 0.0;
+            });
+        CHECK(count == 3); // blocks 32, 64 and 256
+    }
+    for (const char *name : {"engine-sample-smear", "engine-buses", "engine-spectral"})
+    {
+        INFO(name);
+        const gg::bench::TierCounts tiers = gg::bench::admittedTiers(name, 50, 256);
+        CHECK(tiers.normal >= 50);
+        CHECK(tiers.eco == 0);
+        REQUIRE(tiers.activeGrains.size() == 1);
+        CHECK(tiers.activeGrains[0] > 0);
+        // Each exercises what it is named for, and only that: the smear's detune moves the
+        // rates, half the buses' grains go to bus 2, and every Spectral grain reads its ring.
+        const std::string n = name;
+        const uint64_t admitted = tiers.normal + tiers.eco;
+        CHECK((tiers.detuned > admitted / 2) == (n == "engine-sample-smear"));
+        CHECK((tiers.bus2 > admitted / 4) == (n == "engine-buses"));
+        CHECK(tiers.bus2 < admitted);
+        CHECK(tiers.spectral == (n == "engine-spectral" ? admitted : 0));
+    }
+    // The control: engine-sample's grains share one rate, one bus and the sample slots.
+    const gg::bench::TierCounts plain = gg::bench::admittedTiers("engine-sample", 50, 256);
+    CHECK(plain.detuned == 0);
+    CHECK(plain.bus2 == 0);
+    CHECK(plain.spectral == 0);
+}
+
+TEST_CASE("the chain benchmark runs and writes its json", "[bench]")
+{
+    gg::bench::ChainOptions options;
+    options.runSeconds = 0.01;
+    options.rounds = 2;
+    const std::filesystem::path dir{GG_TEST_OUTPUT_DIR};
+    std::filesystem::create_directories(dir);
+    const std::filesystem::path jsonPath = dir / "bench_chain_quick.json";
+    std::filesystem::remove(jsonPath);
+
+    std::string output;
+    const int status = gg::bench::chainMain(options, gg::test::utf8(jsonPath), output);
+    INFO(output);
+    CHECK(status == 0);
+    CHECK(output.find("\nchain ") != std::string::npos);
+    CHECK(output.find("% core @48k") != std::string::npos);
+
+    std::ifstream in(jsonPath, std::ios::binary);
+    REQUIRE(in);
+    const nlohmann::json j = nlohmann::json::parse(in);
+    CHECK(j.at("benchmark").get<std::string>() == "chain");
+    CHECK(j.at("rounds").get<int>() == 2);
+    const nlohmann::json &runs = j.at("runs");
+    REQUIRE(runs.is_array());
+    REQUIRE(runs.size() == 2);
+    for (const nlohmann::json &run : runs)
+    {
+        CHECK(run.get<double>() > 0.0);
+    }
+    const double median = j.at("nsPerSample").get<double>();
+    CHECK(median > 0.0);
+    CHECK(j.at("min").get<double>() <= median);
+    CHECK(j.at("iqr").get<double>() >= 0.0);
+    CHECK(j.at("cpuPctOneCoreAt48k").get<double>() > 0.0);
+    CHECK_FALSE(j.contains("ratios"));
+
+    CHECK_THROWS_AS(gg::bench::runChain({.runSeconds = 0.0}), std::invalid_argument);
+    CHECK_THROWS_AS(gg::bench::runChain({.rounds = 0}), std::invalid_argument);
 }

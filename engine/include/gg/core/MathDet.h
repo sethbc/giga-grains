@@ -5,6 +5,7 @@
 #ifndef GG_CORE_MATHDET_H
 #define GG_CORE_MATHDET_H
 
+#include <array>
 #include <cmath>
 #include <limits>
 
@@ -59,6 +60,13 @@ inline constexpr double kLn2Lo = 0x1.a39ef35793c76p-33;
 
 /// √½, rounded to nearest: logDet's reduced mantissa lies in [kSqrtHalf, 2·kSqrtHalf).
 inline constexpr double kSqrtHalf = 0x1.6a09e667f3bcdp-1;
+
+/// sineDet's odd polynomial in x = 4p on the folded quarter wave: sin(πx/2) ≈ c0 x + c1 x³ + c2 x⁵
+/// + c3 x⁷ for x in [0, 1]. c0 to c2 are a minimax fit with p(1) = 1 imposed (|error| about 8e-7),
+/// rounded to float; c3 is 1 − c0 − c1 − c2 rounded to float, which makes the Horner evaluation at
+/// x = 1, ((c3 + c2) + c1) + c0, exactly 1.0f (pinned by the tests).
+inline constexpr std::array<float, 4> kSineDetCoeffs{1.5707902908325195f, -0.6458860635757446f,
+                                                     0.0794183537364006f, -0.004322580993175507f};
 } // namespace detail
 
 /// 2^x, bit-identical on every platform whenever the result is in the normal range
@@ -151,6 +159,40 @@ inline double logDet(double x) noexcept
     const double logM = (s + s) * p; // 2·atanh(s)
     const double de = static_cast<double>(e);
     return de * detail::kLn2Hi + (de * detail::kLn2Lo + logM);
+}
+
+/// sin(2π·phase) without libm, for phase in [0, 1) (other values are wrapped into it): the
+/// quarter-wave polynomial detail::kSineDetCoeffs on the folded phase. |error| < 1e-4 (about
+/// 8e-7); exactly 0 at 0 and 0.5, 1 at 0.25 and −1 at 0.75; never outside [−1, 1]; the second half
+/// is the first negated, bit for bit. Only the exact std::floor, IEEE * + − and comparisons are
+/// used, so with GG_FP_CONTRACT_OFF the result is plain IEEE arithmetic on every platform.
+inline float sineDet(float phase) noexcept
+{
+    GG_FP_CONTRACT_OFF
+    float p = phase - std::floor(phase);
+    if (!(p >= 0.0f && p < 1.0f))
+    {
+        p = 0.0f; // a non-finite phase, or the wrap of a tiny negative one rounding to 1
+    }
+    // sin(2πp) = −sin(2π(p − ½)) for p in [½, 1); both subtractions below are exact (Sterbenz).
+    const bool negative = p >= 0.5f;
+    if (negative)
+    {
+        p -= 0.5f;
+    }
+    // sin(2πp) = sin(2π(½ − p)) for p in [¼, ½].
+    if (p > 0.25f)
+    {
+        p = 0.5f - p;
+    }
+    const float x = 4.0f * p; // exact: a power-of-two scaling
+    const float x2 = x * x;
+    const auto &c = detail::kSineDetCoeffs;
+    float s = ((c[3] * x2 + c[2]) * x2 + c[1]) * x2 + c[0];
+    s *= x;
+    // The minimax error's last ripple lifts the polynomial a few ulp above 1 just below x = 1.
+    s = s < 1.0f ? s : 1.0f;
+    return negative ? -s : s;
 }
 } // namespace gg
 

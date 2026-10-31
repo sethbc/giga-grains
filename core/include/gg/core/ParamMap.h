@@ -6,6 +6,7 @@
 #define GG_CORE_PARAMMAP_H
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 
 #include "gg/core/ModSources.h"
@@ -61,16 +62,19 @@ struct SpaceParams
 SourceKind sourceKindOf(const ParamValues &effective, uint8_t layer) noexcept;
 
 /// The source kind a layer of `kind` reads in `mode`'s product (spec §6.4): Sample and Live are
-/// built in wave 1, in both products; the unbuilt kinds (Resample, Spectral, Oscillator) fall back
-/// to the product's default kind, Live in the FX and Sample in the instrument. The one function
-/// sub-projects 2 and 4 edit when their kinds arrive.
+/// built in wave 1 and Spectral in M2 sub-project 4, in both products; the unbuilt kinds (Resample,
+/// Oscillator) fall back to the product's default kind, Live in the FX and Sample in the
+/// instrument. The one function sub-projects 2 and 4 edit when their kinds arrive.
 SourceMode builtKind(SourceKind kind, Mode mode) noexcept;
 
 /// Layer `layer`'s Cloud stream controls (`layer` below kLayers, asserted), from its own slots
-/// (layerSlot):
-/// - densityHz = exp2Det(Density);
+/// (layerSlot), with D = exp2Det(Density) Hz, S = exp2Det(Size) seconds and s = Smear in [0, 1]
+/// (layerSmear; M2 sub-project 4's spec §6.1):
+/// - densityHz = D_eff = D + s × (min(400, max(D, T / S)) − D), T = 8 + 24s the target overlap:
+///   Smear raises the density toward the one that gives the overlap T, never past the Density
+///   parameter's 400 Hz ceiling; at s = 0 it is D, bit for bit;
 /// - distribution = Distribution;
-/// - grainDurationSec = exp2Det(Size);
+/// - grainDurationSec = S;
 /// - spray = (2/255)(exp2Det(8 × Spray) − 1) seconds, whatever the kind;
 /// - position, by the layer's built kind (builtKind(sourceKindOf(...), mode); spec §6.4), not by
 ///   the product:
@@ -81,11 +85,26 @@ SourceMode builtKind(SourceKind kind, Mode mode) noexcept;
 ///     source's rate;
 /// - pitchSemitones = Pitch; stereo = Stereo; texture = Texture (sub-project 5's spec §4);
 /// - pitchSpreadSemitones = Pitch Spread; sizeSpreadOctaves = Size Spread (spec §6.6);
+/// - smearJitterSec = 0.5 × s × S; smearDetuneSemitones = 0.5 × s (both 0 at s = 0, so the
+///   scheduler draws neither);
+/// - busSplit = Bus Split (layerBusSplit; the extremes spec §6.3);
 /// - quality = Quality rounded to the nearest step (lround) and clamped to 0..2: Eco, Normal or HQ
 ///   (M2 sub-project 3's spec §6.1); a NaN is Normal;
 /// - gain = 1/sqrt(max(1, densityHz × grainDurationSec)), the expected overlap's power
-///   normalization (spec §6.4), which each grain latches at its onset.
+///   normalization (spec §6.4), which each grain latches at its onset: it follows D_eff, so
+///   Smear doesn't pump the level.
+///
+/// At Smear 0 every field but busSplit is M1's and wave 1's, bit for bit.
 CloudParams toCloudParams(const ParamValues &effective, Mode mode, uint8_t layer) noexcept;
+
+/// As the three-argument form, with `material` the units of Position for a layer whose built
+/// kind reads its material through a stream of its own: the Spectral kind (the extremes spec
+/// §6.2), whose Position addresses its material, Sample (the fraction, with sprayInSeconds) or
+/// Live (seconds behind the head), while its grains draw their spray one-sided, as Live's (the
+/// scheduler's Spectral mode). A Sample or Live layer ignores `material` and takes its own units.
+/// The three-argument form passes the kind's own units (Sample's for Sample, Live's otherwise).
+CloudParams toCloudParams(const ParamValues &effective, Mode mode, uint8_t layer,
+                          SourceMode material) noexcept;
 
 /// Layer A's: toCloudParams(effective, mode, 0). At the products' default Source (Live in the FX,
 /// Sample in the instrument) it is M1's mapping, bit for bit.
@@ -166,6 +185,69 @@ RandomParams randomParams(const ParamValues &effective, uint8_t layer, int which
 /// Layer `layer`'s step sequencer: the rate exp2Det(Step Rate) Hz, Step Length rounded to the
 /// nearest integer (halves up) and clamped to 1..16, and Step 1 to Step 16 as they are.
 StepParams stepParams(const ParamValues &effective, uint8_t layer) noexcept;
+
+/// Layer `layer`'s Smear (M2 sub-project 4's spec §6.1), as it is, in [0, 1] (`layer` below
+/// kLayers, asserted).
+float layerSmear(const ParamValues &effective, uint8_t layer) noexcept;
+
+/// Layer `layer`'s Bus Split (spec §6.3), the share of its grains on bus 2, as it is, in [0, 1]
+/// (`layer` below kLayers, asserted).
+float layerBusSplit(const ParamValues &effective, uint8_t layer) noexcept;
+
+/// Whether `s` is a modulator's control: LFO 1 Rate to Step 16, in any layer. No route targets
+/// one, so its effective value is clamp(base + modulation). The layer parameters after Step 16
+/// (Smear, the buses) are not.
+bool isModulatorControlSlot(ParamSlot s) noexcept;
+
+/// A layer's two bus filters (spec §6.3), index 0 for bus 1 and 1 for bus 2.
+struct BusParams
+{
+    /// Bus N Filter rounded to the nearest integer (halves up, as sourceKindOf rounds), 0 to 4.
+    std::array<BusFilterType, 2> type;
+    /// Bus N Cutoff in Hz: exp2Det(slot), the slot being log2 Hz, 20 Hz to 20 kHz.
+    std::array<float, 2> cutoffHz;
+    /// Bus N Resonance, as it is, in [0, 1].
+    std::array<float, 2> resonance;
+};
+
+/// Layer `layer`'s bus filters, as BusParams documents (`layer` below kLayers, asserted).
+BusParams busParams(const ParamValues &effective, uint8_t layer) noexcept;
+
+/// What the global delay takes from the parameters (spec §6.4).
+struct DelayParams
+{
+    float amount;      ///< Delay Amount, the return's gain, in [0, 1].
+    float timeSeconds; ///< Delay Time in seconds: exp2Det(slot), the slot being log2 seconds.
+    float feedback;    ///< Delay Feedback, in [0, 1].
+    float damping;     ///< Delay Damping, in [0, 1].
+    bool pingPong;     ///< Delay Ping-pong is on above 0.5.
+};
+
+/// The delay's five parameters, as DelayParams documents.
+DelayParams delayParams(const ParamValues &effective) noexcept;
+
+/// The delay damper's one-pole coefficient for Delay Damping (0–1) at sampleRate (spec §6.4):
+/// the cutoff runs exponentially from 20 kHz at 0 to 500 Hz at 1, so Damping 0 is about 0.927 at
+/// 48 kHz, never 1.
+float dampCoefficient(float damping, double sampleRate) noexcept;
+
+/// What the global limiter takes from the parameters (spec §6.5).
+struct LimiterParams
+{
+    /// Limiter Mode rounded to the nearest integer (halves up), 0 to 2.
+    LimiterMode mode;
+    /// Limiter Ceiling as a linear gain: exp2Det(dB × log2(10) / 20), as Level's gain is made.
+    float ceilingGain;
+    /// Limiter Release in seconds: exp2Det(slot), the slot being log2 seconds.
+    float releaseSeconds;
+};
+
+/// The limiter's three parameters, as LimiterParams documents.
+LimiterParams limiterParams(const ParamValues &effective) noexcept;
+
+/// Peak's per-sample release coefficient for a release time constant in seconds at sampleRate
+/// (spec §6.5).
+float releaseCoefficient(float releaseSeconds, double sampleRate) noexcept;
 } // namespace gg::core
 
 #endif // GG_CORE_PARAMMAP_H

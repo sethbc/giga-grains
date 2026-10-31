@@ -25,6 +25,7 @@
 #include "gg/core/ParamIds.h"
 #include "gg/core/Rng.h"
 #include "gg/core/SpaceReverb.h"
+#include "gg/metrics/Metrics.h"
 #include "space/GgFxConfig.h"
 #include "space/Reverb2Patched.h"
 
@@ -930,6 +931,49 @@ TEST_CASE("SpaceReverb idle returns zeros and resumes empty", "[space]")
     }
 }
 
+TEST_CASE("SpaceReverb resumes after idle at a new Modulation at once", "[space]")
+{
+    // Modulation glides only in a reverb that holds something (the class comment). Idle chunks
+    // empty the reverb (stepwise, or at the reactivation), so a reverb that resumes at another
+    // Modulation takes it at once, with no glide from the old one: after idle it matches a fresh
+    // instance driven at the new Modulation, bit for bit, whichever way the value moved and
+    // whether the idle chunks finished the clear or the reactivation did. (The at-once rule
+    // itself doesn't show in the output here: even at the smallest Size and no Pre-delay, a 30 ms
+    // glide ends before the network's modulated reads reach the resumed input.)
+    const size_t activeChunks = chunkAt(3.0), resumeChunks = chunkAt(1.0);
+    for (const auto &[before, after] : {std::pair{0.f, 1.f}, std::pair{1.f, 0.f}})
+    {
+        auto oldParams = spaceDefaults(0.f);
+        oldParams.roomSize = -1.f;
+        oldParams.modulation = before;
+        auto newParams = oldParams;
+        newParams.modulation = after;
+        for (const size_t idleChunks : {1u, 400u})
+        {
+            INFO("Modulation " << before << " to " << after << ", idle chunks " << idleChunks);
+            const size_t resumeAt = (activeChunks + idleChunks) * SpaceReverb::kChunk;
+            const size_t n = resumeAt + resumeChunks * SpaceReverb::kChunk;
+            const auto in = stereoNoise(n, 23, 0.5f);
+
+            auto reverb = std::make_unique<SpaceReverb>(kRate);
+            const auto out = drive(
+                *reverb, in,
+                [&](int64_t t) { return size_t(t) < resumeAt ? oldParams : newParams; },
+                [&](int64_t t) {
+                    const auto c = size_t(t) / SpaceReverb::kChunk;
+                    return c < activeChunks || c >= activeChunks + idleChunks;
+                });
+            REQUIRE(allFinite(out));
+            CHECK(rms(out.left, 1.0, 3.0) > 0.01);
+
+            auto fresh = std::make_unique<SpaceReverb>(kRate);
+            const auto expected = drive(*fresh, slice(in, resumeAt, n - resumeAt), newParams);
+            CHECK(rms(expected.left, 0.1, 1.0) > 0.01);
+            CHECK(sameBits(slice(out, resumeAt, n - resumeAt), expected));
+        }
+    }
+}
+
 TEST_CASE("SpaceReverb after clear matches a fresh instance", "[space]")
 {
     // 2 s of noise at infinity, Size 100%, then reset() in the middle of the tail it holds.
@@ -1194,6 +1238,60 @@ TEST_CASE("SpaceReverb maps Size, Damping and Modulation", "[space]")
     const auto fromNan = run(nan, 0.5);
     CHECK(allFinite(fromNan));
     CHECK(sameBits(fromNan, run(bottom, 0.5)));
+}
+
+namespace
+{
+/// The goldens' click score (metricsVersion 2) of `s` from `fromSeconds` to its end.
+double clickScoreFrom(const Stereo &s, double fromSeconds)
+{
+    const size_t from = frames(fromSeconds);
+    const auto tail = slice(s, from, s.left.size() - from);
+    return gg::metrics::computeMetrics({kRate, {tail.left, tail.right}}).clickScore;
+}
+} // namespace
+
+TEST_CASE("SpaceReverb modulation jump makes no click", "[core][space]")
+{
+    // Reverb 2 takes its modulation depth (up to 5 ms of each delay line's read) to a new value
+    // within one 32-sample block. Moving Modulation from 0 to 100% at once would sweep each
+    // line's read through up to 240 samples in 32, a scrub at up to 8.5 times speed, which the
+    // next line and the output taps carry back as sharp echoes. At infinite Decay with no
+    // Damping they come back at full level: the sweep harness's instrument extremes scored
+    // 15.66 against 15 there. SpaceReverb glides the depth instead (kModulationGlideSeconds).
+    //
+    // A steady 220 Hz tone (the sweep's material) at Size 100%, Damping 0 and infinite Decay,
+    // with Modulation moved at 1 s, a chunk boundary; scored from 0.9 s to 1.6 s.
+    Stereo in(frames(1.6));
+    for (size_t i = 0; i < in.left.size(); ++i)
+    {
+        in.left[i] = in.right[i] =
+            float(0.5 * std::sin(2.0 * std::numbers::pi * 220.0 * double(i) / kRate));
+    }
+    auto held = spaceDefaults();
+    held.decayLog2 = 6.f;
+    held.infinite = true;
+    held.roomSize = 1.f;
+    held.hfDamping = 0.f;
+    const auto jump = [&](float from, float to) {
+        auto reverb = std::make_unique<SpaceReverb>(kRate);
+        const auto out = drive(
+            *reverb, in,
+            [&](int64_t t) {
+                auto p = held;
+                p.modulation = t < int64_t(frames(1.0)) ? from : to;
+                return p;
+            },
+            [](int64_t) { return true; });
+        REQUIRE(allFinite(out));
+        return clickScoreFrom(out, 0.9);
+    };
+    const double still = jump(1.f, 1.f), up = jump(0.f, 1.f), down = jump(1.f, 0.f);
+    WARN("click score at Modulation 100% held " << still << ", 0 to 100% " << up << ", 100% to 0 "
+                                                << down);
+    CHECK(still <= 15.0);
+    CHECK(up <= 15.0);
+    CHECK(down <= 15.0);
 }
 
 // ---------------------------------------------------------------------------------------------

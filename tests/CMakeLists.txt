@@ -7,9 +7,13 @@
 
 add_executable(gg-tests
         smoke_tests.cpp
+        core/buses_tests.cpp
+        core/delay_tests.cpp
         core/diffuser_tests.cpp
         core/exchange_tests.cpp
+        core/fx_processor_tests.cpp
         core/layers_tests.cpp
+        core/limiter_tests.cpp
         core/mod_matrix_tests.cpp
         core/mod_processor_tests.cpp
         core/mod_sources_tests.cpp
@@ -22,6 +26,7 @@ add_executable(gg-tests
         core/settings_tests.cpp
         core/space_processor_tests.cpp
         core/space_reverb_tests.cpp
+        core/spectral_processor_tests.cpp
         core/threads_tests.cpp
         engine/cloud_tests.cpp
         engine/denormal_tests.cpp
@@ -39,6 +44,7 @@ add_executable(gg-tests
         engine/rng_tests.cpp
         engine/rt_tests.cpp
         engine/sample_buffer_tests.cpp
+        engine/spectral_tests.cpp
         engine/sinc_table_tests.cpp
         engine/task_runner_tests.cpp
         engine/window_tests.cpp
@@ -50,6 +56,7 @@ add_executable(gg-tests
         media/sha256_tests.cpp
         media/utf8_path_tests.cpp
         metrics/click_injection_tests.cpp
+        metrics/comb_tests.cpp
         metrics/metrics_tests.cpp
         metrics/spectrogram_tests.cpp
         sweep/sweep_bursts_tests.cpp
@@ -205,6 +212,10 @@ set_tests_properties(bench_make_baseline PROPERTIES LABELS bench FIXTURES_REQUIR
 add_test(NAME bench_space_cli
         COMMAND gg-bench --space --quick --json ${CMAKE_BINARY_DIR}/bench_space_cli.json)
 set_tests_properties(bench_space_cli PROPERTIES LABELS bench)
+# - bench_chain_cli: gg-bench --chain --quick, the new FX units' report-only cost, likewise.
+add_test(NAME bench_chain_cli
+        COMMAND gg-bench --chain --quick --json ${CMAKE_BINARY_DIR}/bench_chain_cli.json)
+set_tests_properties(bench_chain_cli PROPERTIES LABELS bench)
 # - bench_rejects_*: an option the mode doesn't take is bad usage (carry-over [151]), and so is a
 #   value --space's or the grain cases' validation rejects (bench_rejects_grains_too_many:
 #   engine-full-pool's capacity, grains + 48, must stay at or below kMaxGrainCapacity, 16,384).
@@ -212,6 +223,8 @@ set_tests_properties(bench_space_cli PROPERTIES LABELS bench)
 #   is timed), with exit code 2 (check-exit-code.cmake).
 set(bench_rejects_space_cases_args --space --cases reference)
 set(bench_rejects_space_cases_error "--cases doesn't apply with --space")
+set(bench_rejects_chain_grains_args --chain --grains 10)
+set(bench_rejects_chain_grains_error "--grains doesn't apply with --chain")
 set(bench_rejects_canvas_seconds_args --canvas --seconds 1)
 set(bench_rejects_canvas_seconds_error "--seconds doesn't apply with --canvas")
 set(bench_rejects_make_baseline_quick_args --quick --make-baseline test out.json a.json b.json)
@@ -220,7 +233,8 @@ set(bench_rejects_space_seconds_args --space --seconds 0)
 set(bench_rejects_space_seconds_error "the run length must be more than 0")
 set(bench_rejects_grains_too_many_args --grains 16337)
 set(bench_rejects_grains_too_many_error "there must be at most 16336 grains")
-foreach (test IN ITEMS bench_rejects_space_cases bench_rejects_canvas_seconds
+foreach (test IN ITEMS bench_rejects_space_cases bench_rejects_chain_grains
+        bench_rejects_canvas_seconds
         bench_rejects_make_baseline_quick bench_rejects_space_seconds
         bench_rejects_grains_too_many)
     add_test(NAME ${test}
