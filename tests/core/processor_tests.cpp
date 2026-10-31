@@ -347,8 +347,8 @@ struct TimedEvent
     double value;
 };
 
-// The 28 M1 slots, which automation() covers. The other 190 (M2 sub-project 1's spec §6.9) are
-// covered by everySlotAutomation(), with the layers they act on switched on.
+// The 28 M1 slots, which automation() covers. The other 215 (M2 sub-projects 1 to 3) are covered
+// by everySlotAutomation(), with the layers they act on switched on.
 constexpr size_t kM1Slots = static_cast<size_t>(ParamSlot::Source);
 static_assert(kM1Slots == 28);
 
@@ -677,9 +677,8 @@ std::vector<TimedEvent> performAutomation()
 // the slot's whole range in the FX's paramMeta, none on a grid point, every third a modulation
 // offset of up to a quarter of the range, except on a stepped parameter (Freeze, Source, the LFO
 // shapes, Step Length, Loop, Splice, Quality, the Layer On switches, Budget), whose values are
-// whole. The Layer On
-// switches are on three times in four, so layers go off for longer than the ramp and come back.
-// Times and values come from gg::rng, keyed apart from the others'.
+// whole. The Layer On switches are on three times in four, so layers go off for longer than the
+// ramp and come back. Times and values come from gg::rng, keyed apart from the others'.
 std::vector<TimedEvent> everySlotAutomation()
 {
     constexpr int kPerSlot = 10;

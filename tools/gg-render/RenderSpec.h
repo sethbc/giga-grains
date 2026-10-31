@@ -332,7 +332,9 @@ struct TransportSpec
 };
 
 /// An instrument render: what the plugin's host would feed Giga Grains, with `sample` loaded.
-/// Values are as in FxSpec, but in the instrument's metadata (Position is 0–1 of the sample).
+/// Values are as in FxSpec, but in the instrument's metadata (Position is 0–1 of the sample on a
+/// Sample layer, its default; on a Live or Resample layer, seconds behind the head, up to
+/// kRingMaxSeconds at kPositionMax).
 struct InstrumentSpec
 {
     /// The sample: a file, loaded with gg-media and converted to the render's rate (makeSample in

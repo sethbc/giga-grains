@@ -80,9 +80,9 @@ constexpr uint32_t kStepped = kAutoMod | CLAP_PARAM_IS_STEPPED;
 
 // Global Constraints' parameter table, spelled out literally in tests/support/ParamTable.h (the
 // FX's), with each slot and its CLAP flags (no AUTOMATABLE or MODULATABLE on kFixedIds', every
-// layer's Ring Length). The instrument's differs only in every layer's
-// Position default (kInstrumentPositionDefault) and display and Source default
-// (kInstrumentSourceDefault), and in Macro 8's name (kInstrumentMacros).
+// layer's Ring Length). The instrument's differs only in every layer's Position default
+// (kInstrumentPositionDefault) and display and Source default (kInstrumentSourceDefault), and in
+// Macro 8's name (kInstrumentMacros).
 std::array<Expected, kParamCount> buildExpected()
 {
     const auto &rows = gg::test::paramTable();

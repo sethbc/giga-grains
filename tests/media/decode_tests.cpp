@@ -662,6 +662,25 @@ TEST_CASE("decode bounds what a compressed file decodes to, whatever its header 
                  fixture("sine-1k-48k-mono.flac"), "needs 1 MB, the memory cap allows 0 MB");
 }
 
+TEST_CASE("decodeAudioBytes bounds what a compressed payload decodes to", "[media]")
+{
+    // decodeAudioBytes' overrun path (an embedded payload, spec §6.6): the FLAC fixture with
+    // STREAMINFO giving no length passes the header's check, so the decode itself proves it past
+    // the bound, as decodeAudioFile's does, with the reason alone.
+    auto bytes = gg::test::readFile(fixture("sine-1k-48k-mono.flac"));
+    setFlacTotalSamples(bytes, 0);
+    const std::string_view view(reinterpret_cast<const char *>(bytes.data()), bytes.size());
+    const auto fits = gg::media::decodeAudioBytes(view, 19200);
+    REQUIRE(fits.audio.has_value());
+    CHECK(fits.audio->buffer->frames() == 4800);
+    const auto over = gg::media::decodeAudioBytes(view, 19199);
+    REQUIRE_FALSE(over.audio.has_value());
+    CHECK(over.error == "decodes to more than the memory cap allows (0 MB)");
+    const auto file = dir() / "unbounded-bytes.flac";
+    gg::test::writeFile(file, bytes);
+    CHECK(decodeAudioFile(file, 19199).error == "unbounded-bytes.flac: " + over.error);
+}
+
 TEST_CASE("decode opens a UTF-8 path with non-ASCII characters", "[media]")
 {
     const auto audio = gg::test::makeTestAudio(1, 48000, 64);

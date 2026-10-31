@@ -43,8 +43,9 @@ enum class Mode
 /// Size" ... "D Size"). The enum LayerParam, layers B to D's ParamSlot entries and their IDs are
 /// generated from it, so no name is typed four times. Append-only, as the IDs are. A wave-2
 /// sub-project (M2 programme design §7.1) appends `X(Name, 0x4N, "Name")`, its index inside its
-/// reserved block, at the end of GG_LAYER_PARAMS_M2, or adds a list GG_LAYER_PARAMS_M2_<n> to
-/// GG_LAYER_PARAMS and GG_LAYER_PARAMS_SINCE_M1, as sub-project 3's GG_LAYER_PARAMS_M2_ENGINE is,
+/// reserved block, at the end of GG_LAYER_PARAMS_M2, or adds a list GG_LAYER_PARAMS_M2_<name> to
+/// GG_LAYER_PARAMS and GG_LAYER_PARAMS_SINCE_M1, as sub-project 2's GG_LAYER_PARAMS_M2_SOURCES and
+/// sub-project 3's GG_LAYER_PARAMS_M2_ENGINE are,
 /// and its index to the reserved-block static_assert below. The index column must stay strictly
 /// ascending (validIndexColumn): a list whose block lies below 0x50 goes between
 /// GG_LAYER_PARAMS_M2 and GG_LAYER_PARAMS_M2_ENGINE in both macros, not after the latter. Rows stay

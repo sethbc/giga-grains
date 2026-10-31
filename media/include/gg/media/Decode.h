@@ -20,8 +20,9 @@
 /// session is restored, the main thread.
 namespace gg::media
 {
-/// The bound every caller passes for now: the memory cap's ceiling, 16 GiB (spec §6.5, D2),
-/// `kMemoryCapMaxMiB` MiB. The plugin's loader passes the instance's budget instead (Task 7).
+/// The decoder's absolute bound: the memory cap's ceiling, 16 GiB (spec §6.5, D2),
+/// `kMemoryCapMaxMiB` MiB. The plugin's loaders and restores pass what the instance's memory
+/// budget leaves free, at most this (MediaSession); the tools pass this.
 inline constexpr uint64_t kDefaultDecodeBound = uint64_t{16384} << 20;
 
 /// A decoded file, at its own sample rate.

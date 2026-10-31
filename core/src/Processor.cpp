@@ -1106,6 +1106,11 @@ void Processor::publishRing(Layer &l) noexcept
     const LiveSource &live = l.engine.live();
     // Release: a main thread that reads this head with acquire finds the frames below it written.
     l.ringHead.store(live.head(), std::memory_order_release);
+    // And the frames the next piece writes, over slots a reader may be copying, must not become
+    // visible before this head: RingRead's closing check (R1 − f <= N) rests on that store-store
+    // order. meta.push's acq_rel exchange below gives it too, but only when the meta is pushed
+    // (sameMeta skips an unchanged one); this fence keeps it whatever a later edit does there.
+    std::atomic_thread_fence(std::memory_order_release);
     // As of this piece's write: captures, the loop and the selection apply from the next one.
     RingMeta m;
     m.head = live.head();

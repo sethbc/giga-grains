@@ -108,8 +108,9 @@ enum class CommandKind : uint8_t
 /// splice's end), clamped into the window [max(0, its oldest frame), anchorAt(b)]; a mark on an
 /// existing one, or a 33rd, is ignored (LiveSource::addSplice). ClearSplices empties the layer's
 /// marks. A command on a layer that reads a sample, on a layer past kLayers, of an unknown kind,
-/// an AddSplice whose value isn't finite, and every command after a group's
-/// Processor::kMaxGroupCommands-th are ignored.
+/// or an AddSplice whose value isn't finite is ignored, and takes no place in its group; every
+/// command after a group's Processor::kMaxGroupCommands-th valid one is ignored too (the cap
+/// counts the valid commands alone).
 struct CommandEvent
 {
     uint32_t offset; ///< Frames from the start of the call. A call's commands are sorted by it.
@@ -501,7 +502,8 @@ class Processor
     /// input into its ring, before any grain reads it.
     static constexpr uint32_t kFeedbackDelay = 256;
     /// The most commands one boundary's group applies (CommandEvent): later ones in the group
-    /// are ignored. Twice a ring's marks, so a full set of marks and a clear always fit.
+    /// are ignored. The cap counts valid commands only: an invalid one is left out before it is
+    /// counted. Twice a ring's marks, so a full set of marks and a clear always fit.
     static constexpr uint32_t kMaxGroupCommands = 2 * kMaxSplices;
 
     /// Allocates the four layers (each an engine with a kLiveSeconds live ring, in both products,

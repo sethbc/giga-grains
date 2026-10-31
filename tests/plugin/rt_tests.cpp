@@ -13,10 +13,12 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 #include <catch2/catch_test_macros.hpp>
@@ -1436,4 +1438,94 @@ TEST_CASE("plugin process and flush adopt rings and apply commands without alloc
     }
     REQUIRE_NO_ALLOCATIONS(AllocTripwire::count());
     CHECK(processor->engine(0).live().spliceCount() == (isFx ? 1u : 0u));
+}
+
+TEST_CASE("plugin process and flush take four loaders' offers at once without allocating",
+          "[plugin][rt]")
+{
+    // M2 sub-project 2's spec §7: four loaders, one per layer, each load a file on its own worker
+    // and offer its source on its layer's exchange; all four offers wait at once. A params.flush
+    // and then a process() run armed while they do: neither allocates or frees, and the process()
+    // call has every layer's sample playing.
+    const auto dir = gg::test::useMediaScratch("rt-four-loaders");
+    gg::test::PluginUnderTest plugin(kInstrumentId);
+    REQUIRE(plugin.valid());
+    REQUIRE(plugin.activate(48000.0, 512));
+    const auto *params = paramsOf(plugin);
+    auto *processor = plugin.impl().processor();
+    auto &media = plugin.impl().media();
+
+    // Layers B to D on, and every layer's Level up (the defaults), by a flush.
+    const auto on = [](ParamSlot slot) { return gg::test::paramValue(paramId(slot), 1.0); };
+    const std::array<clap_event_param_value, 3> layersOn{
+        on(ParamSlot::LayerBOn), on(ParamSlot::LayerCOn), on(ParamSlot::LayerDOn)};
+    gg::test::InputEvents layerEvents;
+    for (const auto &e : layersOn)
+    {
+        layerEvents.add(&e.header);
+    }
+    params->flush(plugin.clap(), layerEvents.list(), gg::test::discardingOutputEvents());
+
+    std::array<std::size_t, gg::core::kLayers> heldBefore{};
+    for (uint8_t l = 0; l < gg::core::kLayers; ++l)
+    {
+        heldBefore[l] = processor->sources(l).held();
+        const double hz = 220.0 * (l + 1);
+        media.loader(l).requestLoad(gg::test::writeSineWav(
+            dir / ("layer-" + std::to_string(l) + ".wav"), 48000, 1.0, hz, 0.5));
+    }
+    // The loaders work in parallel; each offers when the main thread applies its result.
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+    const auto loading = [&] {
+        for (uint8_t l = 0; l < gg::core::kLayers; ++l)
+        {
+            if (media.loader(l).status().state == gg::plugin::SampleState::Loading)
+            {
+                return true;
+            }
+        }
+        return false;
+    };
+    while (loading() && std::chrono::steady_clock::now() < deadline)
+    {
+        plugin.onMainThread();
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    for (uint8_t l = 0; l < gg::core::kLayers; ++l)
+    {
+        INFO("layer " << int{l});
+        REQUIRE(media.loader(l).status().state == gg::plugin::SampleState::Loaded);
+        REQUIRE(processor->sources(l).held() == heldBefore[l] + 1); // offered, not yet taken
+    }
+
+    std::vector<float> outLeft(512), outRight(512);
+    float *outputs[2] = {outLeft.data(), outRight.data()};
+    const auto note = noteOn(60, 0);
+    gg::test::InputEvents withNote;
+    withNote.add(&note.header);
+    gg::test::InputEvents none;
+    AllocTripwire::resetCount();
+    {
+        AllocTripwire::Scope armed;
+        params->flush(plugin.clap(), none.list(), gg::test::discardingOutputEvents());
+    }
+    REQUIRE_NO_ALLOCATIONS(AllocTripwire::count());
+    clap_process_status status = CLAP_PROCESS_CONTINUE;
+    AllocTripwire::resetCount();
+    {
+        AllocTripwire::Scope armed;
+        for (int i = 0; i < 8; ++i)
+        {
+            status = plugin.process(512, nullptr, outputs, i == 0 ? withNote.list() : none.list());
+        }
+    }
+    REQUIRE_NO_ALLOCATIONS(AllocTripwire::count());
+    CHECK(status == CLAP_PROCESS_CONTINUE);
+    for (uint8_t l = 0; l < gg::core::kLayers; ++l)
+    {
+        INFO("layer " << int{l});
+        CHECK(processor->engine(l).activeGrains() > 0); // each layer plays its sample
+    }
+    CHECK(*std::max_element(outLeft.begin(), outLeft.end()) > 0.0f);
+    plugin.onMainThread(); // frees what the layers handed back
 }

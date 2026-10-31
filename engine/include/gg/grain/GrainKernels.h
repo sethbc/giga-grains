@@ -1113,6 +1113,9 @@ void renderSampleSimd(const GrainRows &rows, uint32_t i, const SampleSource &src
 /// contributes only when f > 0 and the read succeeds:
 /// dst[c][t] += read_c(posL) × ((w × f) × gain_c), or, with one output, ring channel 0 ×
 /// ((w × f) × gain).
+/// The read and the fade keep the storage's bounds [R(t) − N, R(t) − 1], whatever the ring's
+/// window: a loop's or a splice's window steers admission alone, and a grain it leaves behind
+/// reads on in its old span (ruling SP-T12aa; LiveSource's class comment).
 template <class Reader, detail::DecimationLike Dec>
 void renderLiveRef(const GrainRows &rows, uint32_t i, const LiveSource &live, Dec decimation,
                    const Output &out, int64_t from, int64_t to,
@@ -1376,7 +1379,8 @@ template <class Reader> struct RingTaps : InterleavedTaps
 /// The live interior of grain i over [from, to), which must lie in the ring's last write()
 /// block: [max(from, onset), min(to, endSample)) split at blockKink(), and on each side the
 /// samples detail::liveRun<Reader> admits. On every sample there the grain hasn't been stolen,
-/// the window's phase is in [0, 1], every tap is a frame >= 0 inside the window at R(t),
+/// the window's phase is in [0, 1], every tap is a frame >= 0 inside the window at R(t)
+/// (liveRun's [O, E − 1], within the storage's [R(t) − N, R(t) − 1], which the reference reads),
 /// and the reference's fade is exactly 1, so renderLiveRef's amplitude is (w × 1) × gain_c = w ×
 /// gain_c, the sample kernel's. Empty when there is no ring, or the grain's rate isn't finite and
 /// positive. Reads at `decimation`, as renderLiveRef.
