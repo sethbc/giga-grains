@@ -321,6 +321,8 @@ TEST_CASE("sweep: a click planted beside an exemption is caught", "[sweep]")
             double from = 1.0;                  // Modulation's base before the drop
             double to = 0.0;                    // and after
             double decayLater = -1.0;           // Decay's base set 0.5 s after the drop (< 0: no)
+            double decayAtDrop =
+                -1.0; // Decay's base set in the drop's own call, after it (< 0: no)
         };
         const auto render = [](const Scenario &sc) {
             auto d = std::make_unique<SweepDriver>(Mode::Fx, 1113);
@@ -333,6 +335,10 @@ TEST_CASE("sweep: a click planted beside an exemption is caught", "[sweep]")
             d->set(ParamSlot::ReverbModulation, sc.from);
             d->play(1.0, Material::SineLive);
             d->set(ParamSlot::ReverbModulation, sc.to);
+            if (sc.decayAtDrop >= 0.0)
+            {
+                d->set(ParamSlot::ReverbDecay, sc.decayAtDrop); // no play between the two
+            }
             d->play(0.5, Material::SineLive);
             if (sc.decayLater >= 0.0)
             {
@@ -392,6 +398,10 @@ TEST_CASE("sweep: a click planted beside an exemption is caught", "[sweep]")
             REQUIRE(d->processor().effective(ParamSlot::ReverbDecay) >=
                     SweepDriver::meta(ParamSlot::ReverbDecay, Mode::Fx).maxVal);
             CHECK(lostBy(sc) == 0);
+        }
+        SECTION("a Decay that becomes infinite in the drop's own call exempts nothing")
+        {
+            CHECK(lostBy({.decay = 3.0, .decayAtDrop = gg::core::kDecayMax}) == 0);
         }
         SECTION("a Decay that becomes infinite after the drop exempts nothing")
         {
