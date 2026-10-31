@@ -268,12 +268,12 @@ the material with no transients and no comb; grains read it as they read the liv
 - **The phases.** Bin b of frame k takes the phase `2π × uniform01(hash(seed, layer, 0,
   Field::SpectralPhase, k × (N/2 + 1) + b))`, DC and Nyquist left real; **Amended:** the stream
   in the key is the channel, not 0, so the channels' phases are independent and the smear fully
-  decorrelates them (centre content comes out wide); the magnitude is the
+  decorrelates them (center content comes out wide); the magnitude is the
   analysis frame's. `sineDet`'s quarter-wave polynomial gives cos and sin, libm-free. So the smear
   of a given seed, layer, Position history and material is a function of the sample clock alone,
   at any block size.
-- **The output ring** is a `LiveSource` of `kSpectralSeconds` = 5 s (Spray's 2 s, Size's 2 s, the
-  256-frame margins and a block), written one sample per output sample on every piece, whatever
+- **The output ring** is a `LiveSource` of `SpectralSource::kRingSeconds` = 5 s (Spray's 2 s,
+  Size's 2 s, the 256-frame margins and a block), written one sample per output sample on every piece, whatever
   the layer's kind: silence while the kind isn't Spectral, so a layer that isn't Spectral pays a
   write of zeros and no STFT; the smear while it is. Its head never freezes. A grain of the
   Spectral kind is a ring grain on slot `kSpectralSlot` = 3 (`Engine::kLiveSlot` is 2): the live
@@ -369,6 +369,9 @@ octave, SIMD stereo.
   through the fade, then clears); after the fade the spare is free again. A change inside a fade
   turns the fade from its current value, as the ramps do. A cutoff or resonance move is smoothed by
   the per-sample interpolation alone. Bus Split moves latch per grain, so they can't click.
+  **Amended (the final review's fix wave):** the first cell after a clear (a new instance, a
+  reset, the layer switched back on) takes its type at once, as the ramps jump there, so a loaded
+  or re-enabled filter applies from its first sample rather than fading in from Off.
 - **Where in the chain:** before the diffuser, inside the layer's task (`renderLayerPiece`), so the
   diffuser, Level, the soft limiter, Feedback's history and the morph weight see the filtered sum
   exactly where they saw the plain sum. Nothing after the sum changes.
@@ -393,17 +396,21 @@ D7's), `Delay Damping` (0–100%, default 30%: a one-pole low-pass in the loop, 
   one-pole: `line_c[t] = in_c[t] + f × softLimit(damp_c(y_src[t]))`, where `y_src` is the same
   channel's output, or the other channel's with ping-pong on; the output is
   `wet'_c = in_c + Amount × y_c`. The loop runs through M1's `softLimit`, so with `f` ≤ 1 it is
-  bounded below 1 and, at `f` = 1 and Damping 0, holds a repeat forever like Decay ∞ (D7
-  option 1). **Amended (D7a, the director, 2026-10-30, option 2):** the hold slowly darkens
-  bright material. Damping 0 maps to a 20 kHz one-pole (coefficient 0.927), not to no damper, so
-  at Feedback 100% a noise burst loses about 2 dB in the 2–4 kHz band over 20 s, and a sine burst
-  holds within 0.1 dB. The alternative, Damping 0 bypassing the damper for an exact hold, was
-  declined.
+  bounded below 1 and, at `f` = 1 and Damping 0, holds a repeat's level like Decay ∞ (D7
+  option 1), but not its color. **Amended (D7a, the director, 2026-10-30, option 2):** the hold
+  slowly darkens bright material. Damping 0 maps to a 20 kHz one-pole (coefficient 0.927), not
+  to no damper, so at Feedback 100% a noise burst loses about 2 dB in the 2–4 kHz band over 20 s,
+  and a sine burst holds within 0.1 dB. The alternative, Damping 0 bypassing the damper for an
+  exact hold, was declined.
 - **Exact identity at rest:** the line is written every sample (cheap, and raising Amount reveals
   what was already playing, as the diffuser does), and the return is added only on samples where
   Amount's per-sample ramp isn't exactly 0: no `+ 0`, so `wet' == wet` bit for bit, the sign of
   zero included, with every delay parameter at its default or Amount at 0.
-- **Smoothing.** Amount, Feedback and Damping ramp over 10 ms like Mix. **Time** is D6's: under
+- **Smoothing.** Amount, Feedback and Damping ramp over 10 ms like Mix. **Amended (the final
+  review's fix wave):** so does Ping-pong, as a weight p that moves the damper's input from the
+  channel's own read to the other's, `y_c + p × (y_other − y_c)`, exactly `y_c` at p = 0 and the
+  other read at p = 1, so a toggle never clicks (a hard switch stepped the echoes); like the other
+  ramps it jumps where they jump (a loaded state, a macro or route, a clear). **Time** is D6's: under
   option 1 the read position glides toward its target at no more than 0.5 samples per sample
   (Space's Pre-delay rule, P1), so a move bends the pitch like tape and never clicks; while nothing
   has run since a clear the new value applies at once (R-T2a). The ramps and the glide are
@@ -440,7 +447,9 @@ default 100 ms).
   anticipated.
 - **A mode change crossfades** over the 10 ms ramp between the outgoing and the incoming law's
   outputs (both computed through the fade), so switching never clicks; Ceiling and Release ramp
-  like Mix.
+  like Mix. **Amended (the final review's fix wave):** where the ramps jump (a new instance, a
+  loaded state, a macro or route that moves the mode, a reset) the mode snaps instead, so a loaded
+  Peak state is limited from its first sample.
 - The instrument's and the FX's tails are unchanged (R-T7a): the FX's infinite, the instrument's
   122.5 s, a constant (D7 names the delay's consequence).
 
@@ -673,10 +682,10 @@ recommended options; the alternatives' text in §6.1, §6.2 and §6.3 is now moo
 **Amended by D7a (the director, 2026-10-30, option 2):** the hold slowly darkens, because Damping 0
 keeps a 20 kHz one-pole damper in the loop (a noise burst loses about 2 dB in the 2–4 kHz band
 over 20 s; a sine burst holds within 0.1 dB); the bypass option was declined.
-1. **100%, the loop soft-clipped,** so the delay can hold a repeat forever, as Decay ∞ does; the
-   instrument's reported tail stays its constant 122.5 s (R-T7a). *Cost:* a host that suspends an
-   instrument after its reported tail cuts a held delay 122.5 s after the last note; the FX, whose
-   tail is infinite, is unaffected.
+1. **100%, the loop soft-clipped,** so the delay can hold a repeat, as Decay ∞ does (slowly
+   darkening bright material, per D7a above); the instrument's reported tail stays its constant
+   122.5 s (R-T7a). *Cost:* a host that suspends an instrument after its reported tail cuts a
+   held delay 122.5 s after the last note; the FX, whose tail is infinite, is unaffected.
 2. *100%, and the instrument's tail becomes infinite too* (`CLAP_TAIL_INFINITE` in both products).
    *Cost:* the one R-T7a avoided: hosts that render the reported tail bounce the instrument
    endlessly, and it never sleeps.

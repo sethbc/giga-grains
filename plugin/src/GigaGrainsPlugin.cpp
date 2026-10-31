@@ -370,8 +370,9 @@ void GigaGrainsPlugin::onMainThread() noexcept
     {
         _host.paramsRescan(CLAP_PARAM_RESCAN_VALUES);
     }
-    // A layer whose kind changed shows Position in the other display (spec §6.4): the host reads
-    // the text again. Cleared first, as above.
+    // A layer whose kind changed, or a Spectral layer whose material changed, shows Position in
+    // the other display (spec §6.4; the extremes spec §6.2): the host reads the text again.
+    // Cleared first, as above.
     if (kindsChanged_.exchange(false, std::memory_order_acq_rel) && _host.canUseParams())
     {
         _host.paramsRescan(CLAP_PARAM_RESCAN_TEXT);
@@ -606,7 +607,8 @@ void GigaGrainsPlugin::checkKinds() noexcept
     // At most one request outstanding: on_main_thread clears the flag before it rescans.
     if (changed && !kindsChanged_.exchange(true, std::memory_order_acq_rel))
     {
-        // clap_host.request_callback, as in requestCollect (see there): once per kind change.
+        // clap_host.request_callback, as in requestCollect (see there): once per kind change, or
+        // per change of a Spectral layer's material.
         _host.requestCallback();
     }
 }

@@ -507,6 +507,9 @@ void Engine::admit(const GrainSpec &g, const BlockOutputs &outputs, int64_t bloc
 void Engine::renderPool(const BlockOutputs &outputs, int64_t blockStart, int64_t from,
                         int64_t to) noexcept
 {
+    // Nothing to render into: processBlock gives bus 2 a channel only where out has one, so
+    // today this is the one-bus code's out[0] == nullptr; a half-null case is the loop's
+    // per-grain skip below.
     if (from >= to || (outputs.bus[0][0] == nullptr && outputs.bus[1][0] == nullptr))
     {
         return;

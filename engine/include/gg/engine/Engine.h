@@ -98,13 +98,16 @@ using GrainEventSink = void (*)(void *ctx, uint32_t layer, const GrainSpec &);
 /// 0 nothing is read, so neither stale data nor NaN can reach the output.
 ///
 /// **Spectral mode** (the extremes spec §6.2). Each block, after the live ring's write and
-/// before any grain spawns, the SpectralSource writes the block into its own ring: its drain,
-/// then silence, unless the mode in effect is Spectral, else the smear of the material, the current
-/// sample slot when it holds a source, else the live ring (read at each hop's own head), at the
-/// Position in effect (CloudParams, in the material's units). A Spectral grain is a ring grain
-/// over the smear's ring, on kSpectralSlot: it starts positionDraw seconds behind that ring's
-/// head under the admission clamp above, with N the smear's ring frames, and the live kernels
-/// render it. That ring never freezes: setFreeze reaches the live ring alone.
+/// before any grain spawns, the SpectralSource writes the block into its own ring:
+/// - while the mode in effect is Spectral, the smear of the material at the Position in effect
+///   (CloudParams, in the material's units). The material is the current sample slot when it
+///   holds a source, and the live ring otherwise, read at each hop's own head;
+/// - in any other mode, the drain of the frames already computed, then silence.
+///
+/// A Spectral grain is a ring grain over the smear's ring, on kSpectralSlot: it starts
+/// positionDraw seconds behind that ring's head under the admission clamp above, with N the
+/// smear's ring frames, and the live kernels render it. That ring never freezes: setFreeze
+/// reaches the live ring alone.
 class Engine
 {
   public:

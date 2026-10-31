@@ -160,6 +160,7 @@ inline double logDet(double x) noexcept
     const double de = static_cast<double>(e);
     return de * detail::kLn2Hi + (de * detail::kLn2Lo + logM);
 }
+
 /// sin(2π·phase) without libm, for phase in [0, 1) (other values are wrapped into it): the
 /// quarter-wave polynomial detail::kSineDetCoeffs on the folded phase. |error| < 1e-4 (about
 /// 8e-7); exactly 0 at 0 and 0.5, 1 at 0.25 and −1 at 0.75; never outside [−1, 1]; the second half

@@ -86,7 +86,9 @@ struct GrainDraw
     /// uniform01(u), in seconds behind the write head; the live source's admission clamp then
     /// applies (spec §6.3). Spectral mode: spray × uniform01(u), Live's draw with Position 0, in
     /// seconds behind the spectral ring's head, under the same clamp (the extremes spec §6.2).
-    /// u is keyed by (seed, layer, stream, PositionJitter, k) in every mode.
+    /// u is keyed by (seed, layer, stream, PositionJitter, k) in every mode. With a Smear jitter
+    /// j, Live and Spectral mode add j × bipolar(u') seconds here, before the clamp, u' keyed by
+    /// SmearJitter (Sample mode adds it to sprayOffsetSec instead; extremes spec §6.1).
     double positionDraw;
     /// Sample mode with CloudParams::sprayInSeconds: spray × bipolar(u), in seconds, which the
     /// source adds to positionDraw at its own rate (Engine::sampleGrain). Otherwise +0. With a
