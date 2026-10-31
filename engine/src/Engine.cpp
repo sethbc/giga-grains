@@ -501,14 +501,20 @@ void Engine::admit(const GrainSpec &draw, float *const dst[2], int64_t blockStar
     g.weight = static_cast<uint8_t>(grainWeight(tier, stereo));
     // Only an HQ grain reads above level 0 (spec §6.3, D5): one the ladder lowered reads level 0.
     g.level = tier == Tier::HQ ? draw.level : uint8_t{0};
+    // A sample grain whose read would leave its source before its window closes ends at the
+    // source's edge, faded out before it (carry-over row 300): latched here, from the grain's
+    // start and rate and the slot's level-0 frames. The ring has no end.
+    const int64_t edge = g.sourceSlot == kLiveSlot
+                             ? kNoEdge
+                             : grainEdgeSample(g, slots_[g.sourceSlot].levels[0].frames);
     // Can't fail: storage isn't full (above), and a steal stores nothing.
-    [[maybe_unused]] const bool spawned = pool_.spawn(g);
+    [[maybe_unused]] const bool spawned = pool_.spawn(g, edge);
     assert(spawned);
     if (g.sourceSlot != kLiveSlot)
     {
         // A sample slot's source retires only once its last grain has ended (retirePrevious).
         int64_t &lastEnd = slots_[g.sourceSlot].lastEnd;
-        lastEnd = std::max(lastEnd, grainEndSample(g));
+        lastEnd = std::max(lastEnd, pool_.rows().endSample[pool_.size() - 1]);
     }
     if (sink_ != nullptr)
     {

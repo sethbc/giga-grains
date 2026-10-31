@@ -99,6 +99,15 @@ using GrainStealSink = void (*)(void *ctx, uint32_t layer, uint64_t index, int64
 ///   wrapped. What a sample reads therefore depends neither on where the block ends nor on
 ///   maxBlockSize.
 ///
+/// **The sample's edge** (carry-over row 300; the director, 2026-10-30: fade the tail). A grain
+/// reading a sample whose read position would pass the sample's last frame while its window is
+/// open ends there instead: admit() latches grainEdgeSample(grain, the slot's level-0 frames)
+/// and GrainPool::spawn ends the grain at that sample, faded out with a raised cosine over the
+/// kEdgeFade samples before it (or over all it has, when that is fewer; ruling EF-6). Every
+/// sample before the fade is the uncut grain's, and a grain that ends inside the sample is
+/// unchanged. The edge is latched from the source at the grain's onset: a grain that setSource
+/// or replaceSource moves onto a different source keeps it. Grains reading the ring have none.
+///
 /// **Live mode** (spec §6.3). Ring time: R(t) is the number of frames written through output
 /// sample t (LiveSource). Each grain's GrainSpec::startPos is a ring-time position, and its rate
 /// is the pitch ratio (the ring runs at the output rate). At its onset T = onsetSample +
@@ -134,10 +143,12 @@ using GrainStealSink = void (*)(void *ctx, uint32_t layer, uint64_t index, int64
 ///    0.5 × durationSamples, and (W(o) − W_fading(o)) − w(old) + w(t) <= quota for some
 ///    t <= q, W_fading the weight of the grains already stolen and fading (ruling ES-T2a;
 ///    GrainPool::fadingWeight): with more than kStealFade samples left it ends at o + kStealFade,
-///    fading, and with at most that left it keeps its end and doesn't fade (ruling ES-T6a;
-///    GrainPool::steal), keeping its weight until its end either way; the draw is admitted at the
-///    highest such t and the steal counted in stolenGrains() and reported to the steal sink.
-///    Otherwise the draw is dropped and counted in droppedGrains().
+///    fading with a raised cosine (ruling EF-7), and with at most that left it keeps its end and
+///    doesn't fade (ruling ES-T6a; GrainPool::steal), keeping its weight until its end either way
+///    (a grain cut at the sample's edge counts from its cut end, and a steal of it takes the
+///    earlier end); the draw is admitted at the highest such t and the steal counted in
+///    stolenGrains() and reported to the steal sink. Otherwise the draw is dropped and counted in
+///    droppedGrains().
 /// At most one grain is stolen per draw, and a stolen grain is never stolen again. The grain
 /// latches the tier and weight chosen (GrainSpec::tier, GrainSpec::weight).
 ///

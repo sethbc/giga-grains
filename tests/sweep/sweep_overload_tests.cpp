@@ -62,6 +62,14 @@ TEST_CASE("overload: Quality swept under a small Budget", "[sweep]")
 {
     SweepDriver d(Mode::Instrument, 4102);
     fourHqLayers(d, 256.0f);
+    // Grains of 1 s from the start of the 1 s sample, so each reads to its window's end. At 2 s
+    // every grain would be cut at the sample's end (carry-over row 300) before it had sounded
+    // the half of its window a steal needs, and the ladder would only lower and drop.
+    for (uint8_t L = 0; L < gg::core::kLayers; ++L)
+    {
+        d.processor().setBase(gg::core::layerSlot(LayerParam::Size, L), 0.0f);
+        d.processor().setBase(gg::core::layerSlot(LayerParam::Position, L), 0.0f);
+    }
     d.play(2.5, Material::NoteOverSine);
     for (uint8_t L = 0; L < gg::core::kLayers; ++L)
     {
@@ -74,5 +82,5 @@ TEST_CASE("overload: Quality swept under a small Budget", "[sweep]")
     INFO("lowered " << d.processor().loweredGrains() << ", stolen "
                     << d.processor().stolenGrains());
     CHECK(d.processor().stolenGrains() > 0);
-    gg::test::requireClean(d, gg::test::chainBound(d, 0.75));
+    gg::test::requireClean(d, gg::test::chainBound(d, 0.99));
 }

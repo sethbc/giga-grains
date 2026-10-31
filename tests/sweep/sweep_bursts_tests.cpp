@@ -27,7 +27,7 @@ constexpr int kBursts = 16;
 constexpr int kEvents = 1024;
 
 /// `minScored`: the share of the render the click check scores, pinned a little under what the
-/// case measures (0.469, 0.366 and 0.484): Reverb Size is among the random slots, and each of its
+/// case measures (0.531, 0.451 and 0.488): Reverb Size is among the random slots, and each of its
 /// real moves is exempt (row 217).
 void bursts(Mode mode, uint64_t seed, double minScored, uint32_t fixedBlock = 0)
 {
@@ -50,11 +50,11 @@ void bursts(Mode mode, uint64_t seed, double minScored, uint32_t fixedBlock = 0)
 }
 } // namespace
 
-TEST_CASE("bursts: 16 x 1024 events, fx", "[sweep]") { bursts(Mode::Fx, 3101, 0.45); }
+TEST_CASE("bursts: 16 x 1024 events, fx", "[sweep]") { bursts(Mode::Fx, 3101, 0.52); }
 
 TEST_CASE("bursts: 16 x 1024 events, instrument", "[sweep]")
 {
-    bursts(Mode::Instrument, 3102, 0.35);
+    bursts(Mode::Instrument, 3102, 0.44);
 }
 
-TEST_CASE("bursts at block size 1", "[sweep]") { bursts(Mode::Fx, 3103, 0.47, 1); }
+TEST_CASE("bursts at block size 1", "[sweep]") { bursts(Mode::Fx, 3103, 0.48, 1); }

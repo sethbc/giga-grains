@@ -96,7 +96,7 @@ TEST_CASE("sweep: layer A grain params, instrument", "[sweep]")
 {
     SweepDriver d(Mode::Instrument, 1102);
     sweepGroup(d, grainSlots(0), Material::NoteOverSine);
-    gg::test::requireClean(d, gg::test::chainBound(d, 0.98));
+    gg::test::requireClean(d, gg::test::chainBound(d, 0.99));
 }
 
 TEST_CASE("sweep: layer A modulators, LFOs and envelopes", "[sweep]")

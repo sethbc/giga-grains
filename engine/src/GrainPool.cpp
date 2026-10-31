@@ -19,7 +19,8 @@ GrainPool::GrainPool(uint32_t capacity)
       pan_(slots_), tier_(slots_), sourceSlot_(slots_), endSample_(slots_), invDuration_(slots_),
       gainL_(slots_), gainR_(slots_), texture_(slots_), envAttackEnd_(slots_),
       envReleaseStart_(slots_), envAttackScale_(slots_), envReleaseScale_(slots_), weight_(slots_),
-      level_(slots_), fadeStart_(slots_), invFade_(slots_), heapPos_(slots_, kNotInHeap),
+      level_(slots_), fadeStart_(slots_), invFade_(slots_), edgeEnd_(slots_), edgeScale_(slots_),
+      stolen_(slots_), heapPos_(slots_, kNotInHeap),
       rows_{
           .index = index_.data(),
           .onsetSample = onsetSample_.data(),
@@ -44,6 +45,8 @@ GrainPool::GrainPool(uint32_t capacity)
           .level = level_.data(),
           .fadeStart = fadeStart_.data(),
           .invFade = invFade_.data(),
+          .edgeEnd = edgeEnd_.data(),
+          .edgeScale = edgeScale_.data(),
       },
       heap_(slots_)
 {
@@ -102,8 +105,9 @@ void GrainPool::forgetEnds(int64_t t) noexcept
     while (heapSize_ > 0 && heap_[0].end <= t)
     {
         heapWeight_ -= heap_[0].weight;
-        // Only a steal that faded the grain put its weight in fadingWeight_ (steal()).
-        if (invFade_[heap_[0].row] != 0.0f)
+        // Only a steal that faded the grain put its weight in fadingWeight_ (steal()); a grain
+        // cut at its source's edge fades too, but isn't in it.
+        if (stolen_[heap_[0].row] == kStolenFading)
         {
             fadingWeight_ -= heap_[0].weight;
         }
@@ -138,7 +142,7 @@ bool GrainPool::oldestSounding(int64_t onset, uint32_t &row) noexcept
 {
     // A row passed here has ended by this onset, so by every later one, or been stolen, which
     // it stays: neither is the answer again before retirement restarts the scan.
-    while (cursor_ < size_ && (endSample_[cursor_] <= onset || fadeStart_[cursor_] != kNeverStolen))
+    while (cursor_ < size_ && (endSample_[cursor_] <= onset || stolen_[cursor_] != kUnstolen))
     {
         ++cursor_;
     }
@@ -153,17 +157,28 @@ bool GrainPool::oldestSounding(int64_t onset, uint32_t &row) noexcept
 void GrainPool::steal(uint32_t row, int64_t onset) noexcept
 {
     assert(row < size_ && endSample_[row] > onset);
-    assert(fadeStart_[row] == kNeverStolen);
+    assert(stolen_[row] == kUnstolen);
     // A grain that sounds at the onset still has its heap entry: only ends <= an onset or a
     // retirement time, never later than this onset, have been forgotten.
     assert(heapPos_[row] != kNotInHeap);
-    fadeStart_[row] = onset; // stolen, so never the oldest again
     if (endSample_[row] - onset <= kStealFade)
     {
         // Ruling ES-T6a: it ends no later than a fade would, so it keeps its end and its window
-        // and isn't fading; its weight stays in the ordinary ledger until that end.
+        // and isn't fading; its weight stays in the ordinary ledger until that end. A grain cut
+        // at its source's edge keeps its edge curve too (its own rows); the min keeps the curve's
+        // start, where the SIMD runs end, if it comes first.
+        stolen_[row] = kStolen; // never the oldest again
+        fadeStart_[row] = std::min(fadeStart_[row], onset);
         return;
     }
+    // More than kStealFade left: the steal fade from here (D4; a raised cosine, ruling EF-7), its
+    // rows as for any grain. A grain cut at its source's edge keeps its edge curve, which the steal
+    // fade multiplies: its gain starts from the curve's level at the onset, continuously, and falls
+    // with both to 0 by onset + kStealFade, before the edge. fadeStart is the earlier of the two
+    // fades' starts, so the SIMD runs end at whichever comes first (the steal fade's factor is
+    // exactly 1 before the onset: float(end − t) × (1 / 256) >= 1 there).
+    stolen_[row] = kStolenFading;
+    fadeStart_[row] = std::min(fadeStart_[row], onset);
     const int64_t end = onset + kStealFade;
     endSample_[row] = end;
     invFade_[row] = 1.0f / static_cast<float>(kStealFade);
@@ -175,14 +190,29 @@ void GrainPool::steal(uint32_t row, int64_t onset) noexcept
     earliestEnd_ = end < earliestEnd_ ? end : earliestEnd_;
 }
 
-bool GrainPool::spawn(const GrainSpec &g) noexcept
+bool GrainPool::spawn(const GrainSpec &g, int64_t edge) noexcept
 {
     if (storageFull())
     {
         return false;
     }
     const uint32_t i = size_++;
-    const int64_t end = grainEndSample(g);
+    int64_t end = grainEndSample(g);
+    fadeStart_[i] = kNeverStolen;
+    invFade_[i] = 0.0f;
+    edgeEnd_[i] = kNoEdge;
+    edgeScale_[i] = 0.0;
+    if (edge < end)
+    {
+        // Cut at its source's edge (carry-over row 300, ruling EF-6): it ends there, faded out
+        // with the raised cosine over the kEdgeFade samples before it, or over all it has when
+        // that is fewer. The curve starts where the SIMD runs end.
+        end = std::max(edge, g.onsetSample + 1);
+        const int64_t fade = std::min(kEdgeFade, end - g.onsetSample);
+        fadeStart_[i] = end - fade;
+        edgeEnd_[i] = end;
+        edgeScale_[i] = 0.5 / static_cast<double>(fade);
+    }
     index_[i] = g.index;
     onsetSample_[i] = g.onsetSample;
     onsetFrac_[i] = g.onsetFrac;
@@ -197,8 +227,7 @@ bool GrainPool::spawn(const GrainSpec &g) noexcept
     texture_[i] = g.texture;
     weight_[i] = g.weight;
     level_[i] = g.level;
-    fadeStart_[i] = kNeverStolen;
-    invFade_[i] = 0.0f;
+    stolen_[i] = kUnstolen;
     // The renderers' latched values (spec §3): one division and one channel gain per grain, and
     // the Texture envelope's shape (spec §4).
     const PanGains pan = panGains(g.pan);
@@ -288,6 +317,9 @@ void GrainPool::moveRows(uint32_t from, uint32_t to, uint32_t n) noexcept
     move(level_);
     move(fadeStart_);
     move(invFade_);
+    move(edgeEnd_);
+    move(edgeScale_);
+    move(stolen_);
     move(heapPos_);
     // Each moved row's heap entry, if it has one, now names its new row.
     for (uint32_t r = to; r < to + n; ++r)

@@ -17,13 +17,11 @@
 // - the input's fade-in, the first 10 ms and the score's ±5 ms beyond;
 // - the pre-delay and kReverbSizeExempt after every Reverb Size move: carry-over row 217,
 //   accepted (S8);
-// - and, pending a decision, the click sources this harness found (the task 11 report),
-//   each where the driver sees it happen:
-//   1. kSampleEnd: a grain reading a sample is cut where it runs past the sample's end (its taps
-//      read 0 there), whatever its window's value;
-//   2. kReverbOnset: when the reverb goes from idle to active (Reverb Amount rising from exactly
-//      0) under a sounding input, it starts from an empty room and hears its input cut in at the
-//      first active chunk, and that step comes back through the pre-delay and the network;
+// - and, pending a decision, the click source this harness found (the task 11 report), where
+//   the driver sees it happen: kReverbOnset, when the reverb goes from idle to active (Reverb
+//   Amount rising from exactly 0) under a sounding input, it starts from an empty room and hears
+//   its input cut in at the first active chunk, and that step comes back through the pre-delay
+//   and the network.
 //   The morph law's normalization (r_L·b_L / Σ r_K·b_K) also packs a crossfade into a few samples
 //   of a layer's ramp when the pad is off its centre and the rendering layers' base weights are
 //   nearly 0 (a layer switch with the pad in a corner; a pad move near an edge). Nothing here
@@ -39,7 +37,6 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <limits>
 #include <memory>
 #include <numbers>
 #include <span>
@@ -134,13 +131,11 @@ class SweepDriver
           processor_(gg::core::ProcessorConfig{kRate, kMaxBlock, seed, mode})
     {
         const auto sample = gg::test::layers::sine(kInputHz);
-        sampleFrames_ = sample->level(0).frames; // the fixture's length, not a copy of it
         for (uint8_t L = 0; L < gg::core::kLayers; ++L)
         {
             processor_.setSourceNow(L, sample);
         }
         processor_.setPublishing(true);
-        processor_.setEventSink(&SweepDriver::onGrain, this);
         out_[0].reserve(static_cast<std::size_t>(kRate * 120));
         out_[1].reserve(static_cast<std::size_t>(kRate * 120));
         for (auto &c : in_)
@@ -149,7 +144,6 @@ class SweepDriver
         }
         events_.reserve(1 << 14);
         callEvents_.reserve(1 << 14);
-        sampleEnds_.reserve(kSampleEndCapacity);
         exempt_.push_back({0, kFade + 256}); // the input's fade-in
         sizeBase_ = meta(gg::core::ParamSlot::ReverbSize).defaultVal;
         label("the start");
@@ -415,13 +409,7 @@ class SweepDriver
                 worstTo = b;
             }
         }
-        if (sampleEndsOverflowed_)
-        {
-            // The kSampleEnd stretches are incomplete, so the score can't be trusted.
-            v.clickScore = std::numeric_limits<double>::infinity();
-            where << "more than " << kSampleEndCapacity << " sample-end stretches; ";
-        }
-        else if (!c.clicksExempt && !(v.clickScore <= c.clickLimit))
+        if (!c.clicksExempt && !(v.clickScore <= c.clickLimit))
         {
             const int64_t at = locateClick(worstFrom, worstTo);
             where << "click score " << v.clickScore << " above " << c.clickLimit << " at sample "
@@ -450,7 +438,6 @@ class SweepDriver
         int64_t from;
         int64_t to;
     };
-    static constexpr std::size_t kSampleEndCapacity = 1 << 18;
     /// The shortest stretch the click check scores: four times the score's ±5 ms.
     static constexpr int64_t kMinStretch = 4 * 240;
 
@@ -504,37 +491,6 @@ class SweepDriver
             held = value;
             sizeMoves_.push_back((time + 31) / 32 *
                                  32); // exempt once applied, with its pre-delay (call())
-        }
-    }
-
-    /// The Processor's grain sink (on the audio thread, inside process(): no allocation past
-    /// the reserve): a grain reading a sample that runs past the sample's last frame, less the
-    /// interpolators' reach, is cut there (kSampleEnd).
-    static void onGrain(void *ctx, uint32_t, const gg::GrainSpec &g)
-    {
-        auto *d = static_cast<SweepDriver *>(ctx);
-        const double kLast = static_cast<double>(d->sampleFrames_ - 1) - 16.0;
-        if (g.sourceSlot == gg::Engine::kLiveSlot || !(g.rate > 0.0) ||
-            g.startPos + g.rate * g.durationSamples <= kLast)
-        {
-            return;
-        }
-        const auto end =
-            g.onsetSample + static_cast<int64_t>(std::max(0.0, kLast - g.startPos) / g.rate);
-        const Stretch s{end - 256, end + 512 + static_cast<int64_t>(32.0 / g.rate)};
-        auto &v = d->sampleEnds_;
-        if (!v.empty() && s.from <= v.back().to && s.to >= v.back().from)
-        {
-            v.back().to = std::max(v.back().to, s.to);
-            v.back().from = std::min(v.back().from, s.from);
-        }
-        else if (v.size() < v.capacity())
-        {
-            v.push_back(s);
-        }
-        else
-        {
-            d->sampleEndsOverflowed_ = true;
         }
     }
 
@@ -701,10 +657,6 @@ class SweepDriver
         {
             ex.emplace_back(s.from, s.to);
         }
-        for (const auto &s : sampleEnds_)
-        {
-            ex.emplace_back(s.from, s.to);
-        }
         std::sort(ex.begin(), ex.end());
         std::vector<std::pair<int64_t, int64_t>> out;
         int64_t at = 0;
@@ -791,7 +743,6 @@ class SweepDriver
     uint32_t sinceTiny_{0};
     float inputPeak_{0.0f};
     bool reverbWasActive_{false};
-    int64_t sampleFrames_{0};
     // The Reverb Size in force as queued (base, modulation): a move is exempt only if it changes
     // it.
     double sizeBase_{0.0};
@@ -803,9 +754,7 @@ class SweepDriver
     std::vector<gg::test::layers::TimedNote> notes_;
     std::vector<std::pair<int64_t, std::string>> labels_;
     std::vector<Stretch> exempt_;
-    std::vector<int64_t> sizeMoves_;  // Reverb Size moves' boundaries, until applied
-    std::vector<Stretch> sampleEnds_; // the grain sink's, reserved: kSampleEndCapacity
-    bool sampleEndsOverflowed_{false};
+    std::vector<int64_t> sizeMoves_; // Reverb Size moves' boundaries, until applied
     int64_t firstBadExposed_{-1};
     const char *badExposedWhat_{""};
 };
