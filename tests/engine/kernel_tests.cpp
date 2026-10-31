@@ -2681,8 +2681,8 @@ TEMPLATE_TEST_CASE("simd live kernel matches the reference under a narrowed wind
     // turns from the mark to R − N′ + kCapSlack within a run), then both limits lifted.
     schedules.push_back({"a shrink's limits",
                          LiveInput(100000, 99, {}),
-                         {{30000, [](gg::LiveSource &r) { r.setAdmitLimit(9000); }},
-                          {45000, [](gg::LiveSource &r) { r.setReadLimit(9000); }},
+                         {{30000, [](gg::LiveSource &r) { r.setAdmitLimit(9000, true); }},
+                          {45000, [](gg::LiveSource &r) { r.setReadLimit(9000, 45000); }},
                           {60000,
                            [](gg::LiveSource &r) {
                                for (const int64_t m : {52000, 56000, 59000})
@@ -2693,8 +2693,8 @@ TEMPLATE_TEST_CASE("simd live kernel matches the reference under a narrowed wind
                            }},
                           {75000, [](gg::LiveSource &r) {
                                r.selectSplice(0);
-                               r.setAdmitLimit(0);
-                               r.setReadLimit(0);
+                               r.setAdmitLimit(0, false);
+                               r.setReadLimit(0, 75000);
                            }}}});
     const Tables &tables = kernelTables();
     for (const Schedule &schedule : schedules)
@@ -2850,8 +2850,8 @@ TEMPLATE_TEST_CASE("simd live kernel matches the reference at every ring level u
     // turns from the mark to R − N′ + kCapSlack within a run), then both limits lifted.
     schedules.push_back({"a shrink's limits",
                          LiveInput(100000, 99, {}),
-                         {{30000, [](gg::LiveSource &r) { r.setAdmitLimit(9000); }},
-                          {45000, [](gg::LiveSource &r) { r.setReadLimit(9000); }},
+                         {{30000, [](gg::LiveSource &r) { r.setAdmitLimit(9000, true); }},
+                          {45000, [](gg::LiveSource &r) { r.setReadLimit(9000, 45000); }},
                           {60000,
                            [](gg::LiveSource &r) {
                                for (const int64_t m : {52000, 56000, 59000})
@@ -2862,8 +2862,8 @@ TEMPLATE_TEST_CASE("simd live kernel matches the reference at every ring level u
                            }},
                           {75000, [](gg::LiveSource &r) {
                                r.selectSplice(0);
-                               r.setAdmitLimit(0);
-                               r.setReadLimit(0);
+                               r.setAdmitLimit(0, false);
+                               r.setReadLimit(0, 75000);
                            }}}});
     const Tables &tables = kernelTables();
     for (const Schedule &schedule : schedules)

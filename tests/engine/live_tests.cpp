@@ -2683,9 +2683,10 @@ TEST_CASE("a ring limit narrows admission at once and the reads once the grains 
 {
     // Ruling SP-T12ad on a 4 s ring: grains 2 to 2.5 s behind the head, then a limit of 1 s at
     // 3 s. From that call every grain is admitted at least M frames inside the newest second,
-    // less kCapSlack, and Position and Spray reach a second; the reads keep the 4 s until the
-    // last grain admitted before reaches its end, then narrow to the second, and the engine lets
-    // a 1 s ring be adopted only from there.
+    // less kCapSlack until the read limit lands, and Position and Spray reach a second; the reads
+    // keep the 4 s until the last grain admitted before reaches its end, then narrow to the
+    // second, and the engine lets a 1 s ring be adopted only from there and the overdub period's
+    // crossfade after it.
     constexpr int64_t kLimitAt = 3 * 48000;
     constexpr int64_t kN1 = 48000;
     const Stereo input = noiseInput(4 * 48000, 41);
@@ -2725,24 +2726,29 @@ TEST_CASE("a ring limit narrows admission at once and the reads once the grains 
         engine.process(in, 2, o, 2, count);
         const int64_t now = done + count;
         INFO("after the call ending at " << now);
-        REQUIRE(engine.live().windowFrames() <= kN1 - gg::LiveSource::kCapSlack);
         if (now == lastEnd)
         {
             continue; // checked at the next call's first sample
         }
+        // The slack while the read limit waits, none once it has landed (fix round 1).
+        REQUIRE(engine.live().windowFrames() ==
+                (now < lastEnd ? kN1 - gg::LiveSource::kCapSlack : kN1));
         REQUIRE(engine.live().readFrames() == (now < lastEnd ? n : kN1));
         REQUIRE(engine.liveReadLimitPending() == (now < lastEnd));
-        REQUIRE(engine.liveRingFits(kN1) == (now > lastEnd));
+        // A shorter ring fits once the overdub period's 10 ms crossfade is done too.
+        REQUIRE(engine.live().framesInUse() == (now < lastEnd + 480 ? n : kN1));
+        REQUIRE(engine.liveRingFits(kN1) == (now >= lastEnd + 480));
     }
     REQUIRE(log.grains.size() - before > 40);
     for (std::size_t k = before; k < log.grains.size(); ++k)
     {
         const gg::GrainSpec &g = log.grains[k];
         INFO("grain " << k << " at " << g.startPos);
-        // Not frozen: R = onset + 1 at the onset, and the window's oldest frame moves with it.
+        // Not frozen: R = onset + 1 at the onset, and the window's oldest frame moves with it,
+        // kCapSlack inside the newest N′ while the read limit waits.
         const double rho = static_cast<double>(g.onsetSample) + g.onsetFrac + 1.0;
-        REQUIRE(g.startPos >=
-                rho - static_cast<double>(kN1 - gg::LiveSource::kCapSlack) + 1.0 + kM - 1e-6);
+        const int64_t slack = g.onsetSample < lastEnd ? gg::LiveSource::kCapSlack : 0;
+        REQUIRE(g.startPos >= rho - static_cast<double>(kN1 - slack) + 1.0 + kM - 1e-6);
     }
 }
 
@@ -2822,6 +2828,318 @@ TEST_CASE("a ring shrink waits for its grains and lands inaudibly whenever it is
             }
         }
     }
+}
+
+namespace
+{
+// An engine run with changes made between calls at their samples (WindowChange), the calls cut
+// there, over `input`, with Overdub gain `overdub` throughout (0: none); and, when `offer` is
+// given, the plugin's watcher played as renderShrink plays it: from `offerFrom` on, once the
+// ring's reads fit `offerFrames`, a storage of that length with the stable part and its levels,
+// adopted at the next call's start if the engine lets it (Engine::liveRingFits).
+struct DrivenRun
+{
+    Stereo out;
+    std::vector<gg::GrainSpec> grains;
+    int64_t adoptedAt{-1};
+    int64_t landedAt{-1}; // the first call boundary with the reads at offerFrames
+};
+DrivenRun driveEngine(gg::Engine &engine, const Stereo &input, uint32_t block,
+                      const std::vector<WindowChange> &changes, float overdub = 0.0f,
+                      int64_t offerFrames = 0, int64_t offerFrom = 0)
+{
+    SinkLog log;
+    engine.setEventSink(&SinkLog::record, &log);
+    const auto frames = static_cast<int64_t>(input.left.size());
+    DrivenRun r{
+        {std::vector<float>(input.left.size()), std::vector<float>(input.left.size())}, {}, -1, -1};
+    const std::vector<float> gains(block, overdub);
+    std::unique_ptr<gg::RingStorage> next;
+    int64_t copiedTo = 0;
+    std::size_t change = 0;
+    for (int64_t done = 0; done < frames;)
+    {
+        while (change < changes.size() && changes[change].at == done)
+        {
+            changes[change++].apply(engine);
+        }
+        gg::LiveSource &live = engine.live();
+        if (offerFrames > 0)
+        {
+            if (r.landedAt < 0 && live.readFrames() == offerFrames && done >= offerFrom)
+            {
+                r.landedAt = done;
+            }
+            if (next != nullptr && engine.liveRingFits(offerFrames))
+            {
+                gg::RingStorage *previous = nullptr;
+                REQUIRE(live.adoptStorage(next.get(), copiedTo, previous));
+                engine.ringResized();
+                r.adoptedAt = done;
+                next.release(); // freed with the engine's ring below
+            }
+            else if (next == nullptr && r.adoptedAt < 0 && r.landedAt >= 0)
+            {
+                next = std::make_unique<gg::RingStorage>(offerFrames, 512);
+                copiedTo = live.head();
+                const gg::RingStorage &from = *live.storage();
+                const int64_t first =
+                    std::max<int64_t>(0, copiedTo - std::min(offerFrames, live.frames()));
+                for (int64_t f = first; f < copiedTo; ++f)
+                {
+                    const int64_t sl = f % from.capacity();
+                    const int64_t d = f % next->capacity();
+                    next->slots()[2 * d] = from.slots()[2 * sl];
+                    next->slots()[2 * d + 1] = from.slots()[2 * sl + 1];
+                }
+                gg::copyLevels(from, *next, first, copiedTo);
+            }
+        }
+        int64_t end = std::min<int64_t>(done + block, frames);
+        if (change < changes.size())
+        {
+            end = std::min(end, changes[change].at);
+        }
+        const float *in[2] = {input.left.data() + done, input.right.data() + done};
+        float *o[2] = {r.out.left.data() + done, r.out.right.data() + done};
+        engine.process(in, 2, o, 2, static_cast<uint32_t>(end - done),
+                       overdub != 0.0f ? gains.data() : nullptr);
+        done = end;
+    }
+    REQUIRE_FALSE(log.overflowed);
+    r.grains = log.grains;
+    if (r.adoptedAt >= 0)
+    {
+        std::unique_ptr<gg::RingStorage> adopted(
+            const_cast<gg::RingStorage *>(engine.live().storage()));
+        engine.live().prepare(kSampleRate, 512u); // lets go of it before it is freed
+    }
+    return r;
+}
+
+gg::EngineConfig engineFor(double ringSeconds, uint64_t seed)
+{
+    gg::EngineConfig config = liveConfig(kSampleRate, 512, ringSeconds);
+    config.seed = seed;
+    return config;
+}
+
+gg::CloudParams cloudOf(double density, double seconds, double position, double spray, double pitch,
+                        float gain = 0.5f)
+{
+    return {.densityHz = density,
+            .distribution = 0.1,
+            .grainDurationSec = seconds,
+            .position = position,
+            .spray = spray,
+            .pitchSemitones = pitch,
+            .stereo = 0.0,
+            .gain = gain,
+            .quality = gg::Tier::Normal};
+}
+
+double energyIn(const std::vector<float> &v, int64_t from, int64_t to)
+{
+    double e = 0.0;
+    for (int64_t i = from; i < to; ++i)
+    {
+        e += static_cast<double>(v[static_cast<std::size_t>(i)]) * v[static_cast<std::size_t>(i)];
+    }
+    return e;
+}
+} // namespace
+
+TEST_CASE("a drain under pitch-down grains fades none of them", "[engine][live]")
+{
+    // Fix round 1, Important 1: grains 1 s long at Pitch -12 and -48, 3.0 to 3.6 s behind the
+    // head of a 16 s ring, limited to 4 s at 12 s. They drift toward the tail at (1 - rate)
+    // frames a sample, so one that fits the 4 s when the limit comes may not later: the read
+    // limit waits until none of them can, over its whole remaining life. With no grain sounding
+    // after the limit (gain 0 from there), the output is the unlimited render's, sample for
+    // sample: no grain is window-faded.
+    constexpr int64_t kLimitAt = 12 * 48000;
+    constexpr int64_t kFrames = 14 * 48000;
+    const Stereo input = fadedSine(kFrames);
+    for (const double pitch : {-12.0, -48.0})
+    {
+        INFO("pitch " << pitch);
+        const auto render = [&](bool limited) {
+            gg::Engine engine(engineFor(16.0, 5));
+            engine.setSourceMode(gg::SourceMode::Live);
+            engine.setCloudParams(cloudOf(32.0, 1.0, 3.0, 0.6, pitch));
+            return driveEngine(engine, input, 512,
+                               {{kLimitAt, [&](gg::Engine &e) {
+                                     if (limited)
+                                     {
+                                         e.setRingLimit(4 * 48000);
+                                     }
+                                     e.setCloudParams(cloudOf(32.0, 1.0, 3.0, 0.6, pitch, 0.0f));
+                                 }}});
+        };
+        const DrivenRun free = render(false);
+        const DrivenRun limited = render(true);
+        REQUIRE(energyIn(free.out.left, kLimitAt, kLimitAt + 24000) > 1.0);
+        int64_t differ = 0;
+        for (int64_t i = 0; i < kFrames; ++i)
+        {
+            const auto at = static_cast<std::size_t>(i);
+            differ += free.out.left[at] != limited.out.left[at] ||
+                      free.out.right[at] != limited.out.right[at];
+        }
+        CHECK(differ == 0);
+    }
+}
+
+TEST_CASE("a ring limit raised again lifts the reads under pitch-down grains", "[engine][live]")
+{
+    // Fix round 1, Critical: a 16 s ring limited to 4 s at 12 s, under 1 s grains at Pitch -12
+    // and -48 reading 3.0 to 3.6 s behind; then the limit lifted (16 s) with Position 12 s, before
+    // the read limit has landed (12.33 s) and after (14 s). Admission and Position never reach
+    // past the reads, so the lift lands within a grain's length and the older audio is heard:
+    // from a second after the lift the energy is at least half the unlimited render's.
+    constexpr int64_t kLimitAt = 12 * 48000;
+    constexpr int64_t kFrames = 20 * 48000;
+    const Stereo input = fadedSine(kFrames);
+    for (const double pitch : {-12.0, -48.0})
+    {
+        for (const int64_t liftAt : {kLimitAt + 16000, int64_t{14 * 48000}})
+        {
+            INFO("pitch " << pitch << ", lifted at " << liftAt);
+            const auto render = [&](bool limited, int64_t &readsAtEnd) {
+                gg::Engine engine(engineFor(16.0, 5));
+                engine.setSourceMode(gg::SourceMode::Live);
+                engine.setCloudParams(cloudOf(32.0, 1.0, 3.0, 0.6, pitch));
+                const DrivenRun run =
+                    driveEngine(engine, input, 512,
+                                {{kLimitAt,
+                                  [&](gg::Engine &e) {
+                                      if (limited)
+                                      {
+                                          e.setRingLimit(4 * 48000);
+                                      }
+                                  }},
+                                 {liftAt, [&](gg::Engine &e) {
+                                      if (limited)
+                                      {
+                                          e.setRingLimit(16 * 48000);
+                                      }
+                                      e.setCloudParams(cloudOf(32.0, 1.0, 12.0, 2.0, pitch));
+                                  }}});
+                readsAtEnd = engine.live().readFrames();
+                return run;
+            };
+            int64_t freeReads = 0;
+            int64_t reads = 0;
+            const DrivenRun free = render(false, freeReads);
+            const DrivenRun lifted = render(true, reads);
+            CHECK(reads == 16 * 48000);
+            const double e0 = energyIn(free.out.left, liftAt + 48000, kFrames);
+            const double e1 = energyIn(lifted.out.left, liftAt + 48000, kFrames);
+            INFO("energy unlimited " << e0 << ", lifted " << e1);
+            REQUIRE(e0 > 1000.0);
+            CHECK(e1 > 0.5 * e0);
+        }
+    }
+}
+
+TEST_CASE("an overdub over a shrinking ring renders the same whenever the swap lands",
+          "[engine][live][determinism]")
+{
+    // Fix round 1, Important 2: Overdub 1 with Loop off, so each frame written adds the frame
+    // the overdub period P behind it, P = N; the ring limited from 16 s to 4 s at 12 s. P changes
+    // from N to 4 s at the read limit's landing sample, crossfaded over 10 ms, and the shorter
+    // storage is adopted only once the crossfade is done: offered at once or a second later, the
+    // output is the same bytes, and its click score stays below the limit.
+    constexpr int64_t kLimitAt = 12 * 48000;
+    constexpr int64_t kFrames = 15 * 48000;
+    Stereo input = fadedSine(kFrames);
+    for (int64_t i = 0; i < kFrames; ++i)
+    {
+        const auto at = static_cast<std::size_t>(i);
+        const auto swell = static_cast<float>(
+            0.5 * std::sin(std::numbers::pi * static_cast<double>(i) / (3.3 * kSampleRate)));
+        input.left[at] *= swell;
+        input.right[at] *= swell;
+    }
+    std::vector<DrivenRun> runs;
+    for (const int64_t offerAfter : {int64_t{0}, int64_t{48000}})
+    {
+        INFO("offered from " << offerAfter << " frames after the limit");
+        gg::Engine engine(engineFor(16.0, 5));
+        engine.setSourceMode(gg::SourceMode::Live);
+        engine.setCloudParams(cloudOf(32.0, 0.05, 1.0, 1.0, 0.0));
+        runs.push_back(driveEngine(engine, input, 512,
+                                   {{kLimitAt, [](gg::Engine &e) { e.setRingLimit(4 * 48000); }}},
+                                   1.0f, 4 * 48000, kLimitAt + offerAfter));
+        REQUIRE(runs.back().adoptedAt > kLimitAt + offerAfter);
+        CHECK(clickScoreIn(runs.back().out, kLimitAt - 4800, kFrames) <= kClickLimit);
+    }
+    CHECK(sameBits(runs[0].out.left, runs[1].out.left));
+    CHECK(sameBits(runs[0].out.right, runs[1].out.right));
+}
+
+TEST_CASE("a shrunk ring admits as a fresh ring of its length", "[engine][live]")
+{
+    // Fix round 1, Important 3: a 16 s ring shrunk to 4 s at 9 s, under grains asking 6 to 8 s
+    // behind (so clamped at the oldest edge), beside a ring 4 s from the start with the same
+    // seed and input. From the read limit's landing every grain is admitted as the fresh ring
+    // admits it (no slack left), and once the grains admitted before have ended, the two render
+    // the same bytes, before and after the swap.
+    constexpr int64_t kLimitAt = 9 * 48000;
+    constexpr int64_t kFrames = 11 * 48000;
+    const Stereo input = fadedSine(kFrames);
+    gg::Engine shrunk(engineFor(16.0, 7));
+    shrunk.setSourceMode(gg::SourceMode::Live);
+    shrunk.setCloudParams(cloudOf(32.0, 0.05, 6.0, 2.0, 0.0));
+    const DrivenRun a = driveEngine(shrunk, input, 512,
+                                    {{kLimitAt, [](gg::Engine &e) { e.setRingLimit(4 * 48000); }}},
+                                    0.0f, 4 * 48000, kLimitAt);
+    gg::Engine fresh(engineFor(4.0, 7));
+    fresh.setSourceMode(gg::SourceMode::Live);
+    fresh.setCloudParams(cloudOf(32.0, 0.05, 6.0, 2.0, 0.0));
+    const DrivenRun b = driveEngine(fresh, input, 512, {});
+    REQUIRE(a.landedAt > kLimitAt);
+    REQUIRE(a.adoptedAt >= a.landedAt);
+    REQUIRE(a.grains.size() == b.grains.size());
+    int64_t lastBefore = 0; // the last end of a grain admitted before the landing
+    std::size_t compared = 0;
+    for (std::size_t k = 0; k < a.grains.size(); ++k)
+    {
+        if (a.grains[k].onsetSample < a.landedAt)
+        {
+            lastBefore = std::max(lastBefore, gg::grainEndSample(a.grains[k]));
+            continue;
+        }
+        INFO("grain " << k);
+        CHECK(a.grains[k].startPos == b.grains[k].startPos);
+        ++compared;
+    }
+    REQUIRE(compared > 30);
+    CHECK(sameBits(a.out.left, b.out.left, static_cast<std::size_t>(lastBefore)));
+    CHECK(sameBits(a.out.right, b.out.right, static_cast<std::size_t>(lastBefore)));
+}
+
+TEST_CASE("a shorter ring offered after the limit is raised again is declined", "[engine][live]")
+{
+    // Fix round 1, minor 1: limited to 4 s, landed, then raised back to 16 s before the swap. A 4 s
+    // ring the watcher made before the raise must not land, even with every grain inside 4 s.
+    const Stereo input = fadedSine(6 * 48000);
+    gg::Engine engine(engineFor(16.0, 9));
+    engine.setSourceMode(gg::SourceMode::Live);
+    engine.setCloudParams(cloudOf(32.0, 0.05, 1.0, 0.5, 0.0));
+    bool landed = false;
+    bool declined = false;
+    driveEngine(engine, input, 512,
+                {{3 * 48000, [](gg::Engine &e) { e.setRingLimit(4 * 48000); }},
+                 {4 * 48000,
+                  [&](gg::Engine &e) {
+                      landed = e.live().readFrames() == 4 * 48000;
+                      e.setRingLimit(16 * 48000);
+                  }},
+                 {5 * 48000, [&](gg::Engine &e) { declined = !e.liveRingFits(4 * 48000); }}});
+    CHECK(landed);
+    CHECK(declined);
+    CHECK(engine.live().readFrames() == 16 * 48000);
 }
 
 TEST_CASE("a restore's window holds for every sample until the next write", "[engine][live]")

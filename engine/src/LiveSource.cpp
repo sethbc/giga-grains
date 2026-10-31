@@ -58,7 +58,10 @@ void LiveSource::prepare(double sampleRate, uint32_t maxBlockSize) noexcept
     rampLength_ = freezeRampSamples(sampleRate);
     maxBlock_ = static_cast<int64_t>(std::max<uint32_t>(1, maxBlockSize));
     admitLimit_ = 0; // a fresh ring has neither of a shrink's limits (ruling SP-T12ad)
+    admitSlack_ = 0;
     readLimit_ = 0;
+    periodRamp_ = std::max<int64_t>(
+        1, std::llround(std::min(kPeriodFadeSeconds * sampleRate, kMaxRingFramesD)));
     attach(nullptr);
     owned_.reset();
     retired_.reset();
@@ -128,6 +131,21 @@ int64_t LiveSource::loopWindow() const noexcept
     return loopOn_ && frames_ > 0 ? std::clamp(loopLength_, int64_t{1}, frames_) : frames_;
 }
 
+void LiveSource::setReadLimit(int64_t frames, int64_t at) noexcept
+{
+    const int64_t before = readFrames_;
+    readLimit_ = std::max<int64_t>(0, frames);
+    readFrames_ = readLimit_ > 0 ? std::min(readLimit_, frames_) : frames_;
+    if (readFrames_ != before)
+    {
+        // Overdub's period follows from `at`, crossfaded from the reads' old length (the class
+        // comment): both frames are stored, the old one at most N behind.
+        periodFrom_ = before;
+        periodFadeStart_ = at;
+        periodFadeEnd_ = at + periodRamp_;
+    }
+}
+
 void LiveSource::reset() noexcept
 {
     frozen_ = false;
@@ -141,6 +159,9 @@ void LiveSource::reset() noexcept
     markCount_ = 0; // ring time restarts, so the old marks name nothing
     window_ = loopWindow();
     blockAdmit_ = admitLimit_;
+    blockSlack_ = admitSlack_;
+    periodFadeEnd_ = std::numeric_limits<int64_t>::min(); // no frame of the old time to fade from
+    writtenTo_ = 0;
     blockRequest_ = 0;
     blockMarkCount_ = 0;
 }
@@ -256,6 +277,10 @@ bool LiveSource::adoptStorage(RingStorage *next, int64_t copiedTo, RingStorage *
     attach(next);
     writeSlot_ = head_ % capacity_;
     window_ = loopWindow();
+    if (std::min(window_, periodFrom_) > frames_)
+    {
+        periodFadeEnd_ = std::numeric_limits<int64_t>::min(); // its old period has left storage
+    }
     // The block's captured marks are filtered by the new N as they are read (spliceAt).
     dropMarksBefore(head_ - frames_);
     return true;
@@ -296,6 +321,9 @@ bool LiveSource::restoreStorage(RingStorage *next, int64_t frames, std::span<con
     }
     window_ = loopWindow();
     blockAdmit_ = admitLimit_;
+    blockSlack_ = admitSlack_;
+    periodFadeEnd_ = std::numeric_limits<int64_t>::min(); // ring time restarts
+    writtenTo_ = 0;
     captureWindow(); // until the next write(), the window is the restored ring's
     return true;
 }
@@ -307,12 +335,14 @@ void LiveSource::write(const float *const *in, uint32_t numInChannels, uint32_t 
     blockHead_ = head_;
     blockRamp_ = ramp_;
     blockAdvance_ = 0;
-    window_ = loopWindow(); // this block's W, and overdub's period P
+    window_ = loopWindow(); // this block's W, and with the read limit overdub's period P
     blockAdmit_ = admitLimit_;
+    blockSlack_ = admitSlack_;
     if (frames_ == 0)
     {
         blockRequest_ = 0;
         blockMarkCount_ = 0;
+        writtenTo_ = blockStart + static_cast<int64_t>(numFrames);
         return; // no ring
     }
     // The selection and the marks for this block. Which marks are in storage is decided per
@@ -334,11 +364,21 @@ void LiveSource::write(const float *const *in, uint32_t numInChannels, uint32_t 
     const float *const gains = overdubGain != nullptr ? overdubGain + offset : nullptr;
 
     float *const slots = slots_;
-    // Overdub reads frame R − P from its slot, (R − P) mod C: P <= N < C, so it wraps once.
-    int64_t backSlot = writeSlot_ - window_;
+    // Overdub reads frame R − P from its slot, (R − P) mod C: P <= N < C, so it wraps once. P is
+    // W, or the read limit's if shorter (ruling SP-T12ad); while that changes, the old period's
+    // frame is crossfaded into the new one's.
+    const int64_t period = std::min(window_, readFrames_);
+    int64_t backSlot = writeSlot_ - period;
     if (backSlot < 0)
     {
         backSlot += capacity_;
+    }
+    const int64_t fromPeriod = std::min(window_, periodFrom_);
+    const bool fading = periodFadeEnd_ > blockStart && fromPeriod != period;
+    int64_t fromSlot = writeSlot_ - fromPeriod;
+    if (fromSlot < 0)
+    {
+        fromSlot += capacity_;
     }
     int64_t written = 0;
     for (uint32_t j = 0; j < numFrames; ++j)
@@ -360,7 +400,27 @@ void LiveSource::write(const float *const *in, uint32_t numInChannels, uint32_t 
         float r = src[1] != nullptr ? sanitize(src[1][j]) : 0.0f;
         // A gain of 0, or a frame R − P before frame 0 (silence), writes the input alone, by M1's
         // path: the sum would turn a −0 input into +0. The sum is stored as any input is.
-        if (gains != nullptr && gains[j] != 0.0f && head_ + written >= window_)
+        const int64_t t = blockStart + static_cast<int64_t>(j);
+        if (gains != nullptr && gains[j] != 0.0f && fading && t < periodFadeEnd_)
+        {
+            // The period's crossfade: (1 − c)·frame(R − P_old) + c·frame(R − P), c rising by
+            // 1 / kPeriodFadeSeconds' samples from the read limit's sample; a frame before 0 is
+            // silence, and with both before 0 the input alone is written.
+            const int64_t f = head_ + written;
+            if (f >= period || f >= fromPeriod)
+            {
+                const float c =
+                    static_cast<float>(t - periodFadeStart_) / static_cast<float>(periodRamp_);
+                const float o = gains[j];
+                const float xl = (f >= fromPeriod ? (1.0f - c) * slots[2 * fromSlot] : 0.0f) +
+                                 (f >= period ? c * slots[2 * backSlot] : 0.0f);
+                const float xr = (f >= fromPeriod ? (1.0f - c) * slots[2 * fromSlot + 1] : 0.0f) +
+                                 (f >= period ? c * slots[2 * backSlot + 1] : 0.0f);
+                l = sanitize(l + o * xl);
+                r = sanitize(r + o * xr);
+            }
+        }
+        else if (gains != nullptr && gains[j] != 0.0f && head_ + written >= period)
         {
             const float o = gains[j];
             l = sanitize(l + o * slots[2 * backSlot]);
@@ -389,10 +449,15 @@ void LiveSource::write(const float *const *in, uint32_t numInChannels, uint32_t 
         {
             backSlot = 0;
         }
+        if (++fromSlot == capacity_)
+        {
+            fromSlot = 0;
+        }
         ++written;
     }
     head_ += written;
     blockAdvance_ = written;
+    writtenTo_ = blockStart + static_cast<int64_t>(numFrames);
     // The marks that left storage by the block's end go (spec §6.1). The block's own captured
     // marks stay: they leave sample by sample.
     dropMarksBefore(head_ - frames_);

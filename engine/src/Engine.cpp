@@ -222,7 +222,11 @@ void Engine::setSourceMode(SourceMode mode) noexcept
 
 void Engine::setFreeze(bool freeze) noexcept { freeze_ = freeze; }
 
-void Engine::ringResized() noexcept { updateLiveBound(); }
+void Engine::ringResized() noexcept
+{
+    applyLimits(); // N changed: the limits are recomputed against it
+    updateLiveBound();
+}
 
 void Engine::updateLiveBound() noexcept
 {
@@ -233,15 +237,51 @@ void Engine::updateLiveBound() noexcept
     cloud_.setSourceMode(mode_, config_.liveSeconds);
 }
 
+void Engine::applyLimits() noexcept
+{
+    // Ruling SP-T12ad. The read limit wanted is the request below N; it lands now when it reads
+    // the same frames as the reads in force (or nothing reads), else at a later sample
+    // (checkReadLimit). Admission and Position's bound never reach past the reads: the request's
+    // length or the reads', the shorter, with kCapSlack while a change waits.
+    const int64_t n = live_.frames();
+    targetReadLimit_ = appliedLimit_ > 0 && appliedLimit_ < n ? appliedLimit_ : 0;
+    const int64_t target = targetReadLimit_ > 0 ? targetReadLimit_ : n;
+    const int64_t reads = live_.readFrames();
+    readLimitPending_ = target != reads;
+    if (!readLimitPending_)
+    {
+        live_.setReadLimit(targetReadLimit_, clock_); // the same frames: no period change
+    }
+    readLimitCheckAt_ = clock_;
+    const int64_t admit = std::min(target, reads);
+    const int64_t cap = admit < n ? admit : 0;
+    const bool slack = readLimitPending_ && cap != 0;
+    if (cap != capFrames_ || slack != capSlack_)
+    {
+        capFrames_ = cap;
+        capSlack_ = slack;
+        live_.setAdmitLimit(capFrames_, capSlack_);
+        updateLiveBound();
+    }
+}
+
 bool Engine::liveReadsWithin(int64_t frames, int64_t &latestEnd) const noexcept
 {
     // A read's farthest tap back, in ring frames: the Hermite's (and the line's fade reach) one
     // frame, the sinc's 7, at level n (8 × 2ⁿ − 1) as LiveSource::levelFadeFor takes it. Its fade
-    // against the newest `frames` is 1 when that tap is at least M frames inside them, so a
-    // change of the read limit to `frames` steps nothing there.
+    // against the newest `frames` is 1 while that tap is at least M frames inside them. Over the
+    // grain's remaining life [clock_, end) its position rises at its rate and the head at one
+    // frame a sample until it stops (frozen, after the ramp), so the margin is linear between
+    // those samples: checked at clock_, where the head stops, and at the grain's last sample, it
+    // holds throughout. A freeze change later is what admission can't foresee either.
     constexpr double kM = static_cast<double>(LiveSource::kHeadMargin);
+    constexpr double kTolerance = 0x1.0p-10; // rounding, not a frame
     const GrainRows &rows = pool_.rows();
-    const auto oldest = static_cast<double>(live_.head() + 1 - frames);
+    const int64_t head = live_.head();
+    const int64_t advance = live_.headAdvanceLeft(); // frames the head still writes
+    const auto headAt = [&](int64_t t) noexcept {    // R(t) for a sample t >= clock_
+        return head + std::min(t - clock_ + 1, advance);
+    };
     bool within = true;
     for (uint32_t i = 0; i < pool_.size(); ++i)
     {
@@ -253,9 +293,15 @@ bool Engine::liveReadsWithin(int64_t frames, int64_t &latestEnd) const noexcept
             rows.tier[i] == Tier::HQ
                 ? 8 * static_cast<int64_t>(live_.level(rows.level[i]).decimation) - 1
                 : 1;
-        const double e = static_cast<double>(clock_ - rows.onsetSample[i]) - rows.onsetFrac[i];
-        const double pos = rows.startPos[i] + rows.rate[i] * e;
-        if (!((pos - static_cast<double>(before)) - oldest >= kM))
+        const auto margin = [&](int64_t t) noexcept {
+            const double e = static_cast<double>(t - rows.onsetSample[i]) - rows.onsetFrac[i];
+            const double pos = rows.startPos[i] + rows.rate[i] * e;
+            return (pos - static_cast<double>(before)) - static_cast<double>(headAt(t) - frames);
+        };
+        const int64_t last = rows.endSample[i] - 1;
+        const int64_t stop = advance < last - clock_ ? clock_ + advance - 1 : last;
+        if (!(margin(clock_) >= kM - kTolerance &&
+              margin(std::max(clock_, stop)) >= kM - kTolerance && margin(last) >= kM - kTolerance))
         {
             within = false;
             latestEnd = std::max(latestEnd, rows.endSample[i]);
@@ -266,27 +312,32 @@ bool Engine::liveReadsWithin(int64_t frames, int64_t &latestEnd) const noexcept
 
 void Engine::checkReadLimit() noexcept
 {
-    const int64_t target =
-        pendingReadLimit_ > 0 ? std::min(pendingReadLimit_, live_.frames()) : live_.frames();
+    const int64_t target = targetReadLimit_ > 0 ? targetReadLimit_ : live_.frames();
     int64_t latestEnd = clock_ + 1;
     if (!liveReadsWithin(std::min(live_.readFrames(), target), latestEnd))
     {
         readLimitCheckAt_ = latestEnd; // the latest grain that doesn't fit has ended there
         return;
     }
-    live_.setReadLimit(pendingReadLimit_);
-    readLimitPending_ = false;
+    // The reads, the overdub period (crossfaded from here), admission without its slack and
+    // Position's bound all take the new length at this sample.
+    live_.setReadLimit(targetReadLimit_, clock_);
+    applyLimits();
 }
 
 bool Engine::liveRingFits(int64_t frames) const noexcept
 {
-    if (frames >= live_.readFrames())
+    if (appliedLimit_ > 0 && frames < appliedLimit_)
+    {
+        return false; // shorter than the length asked for: a stale offer
+    }
+    if (frames >= live_.framesInUse())
     {
         return true;
     }
-    if (readLimitPending_)
+    if (readLimitPending_ || live_.framesInUse() != live_.readFrames())
     {
-        return false;
+        return false; // the read limit lands first, and the overdub period's crossfade ends
     }
     int64_t latestEnd = 0;
     return liveReadsWithin(frames, latestEnd);
@@ -356,20 +407,11 @@ void Engine::process(const float *const *in, uint32_t numInChannels, float *cons
     quota_ = requestedQuota_; // spec §6.4: from this call's first frame
     if (requestedLimit_ != appliedLimit_)
     {
-        // Ruling SP-T12ad: a shrink's admission limit from this frame, and its read limit once the
-        // grains allow; a request at or above N lifts both.
+        // Ruling SP-T12ad: from this frame admission and Position's bound shrink to a shorter
+        // request at once, and the reads follow once the grains allow; a longer one lifts the
+        // reads once they allow, and admission and Position's bound with them.
         appliedLimit_ = requestedLimit_;
-        const int64_t cap =
-            requestedLimit_ > 0 && requestedLimit_ < live_.frames() ? requestedLimit_ : 0;
-        if (cap != capFrames_)
-        {
-            capFrames_ = cap;
-            live_.setAdmitLimit(capFrames_);
-            updateLiveBound();
-        }
-        pendingReadLimit_ = capFrames_;
-        readLimitPending_ = pendingReadLimit_ != live_.readLimit();
-        readLimitCheckAt_ = clock_;
+        applyLimits();
     }
     if (in == nullptr)
     {

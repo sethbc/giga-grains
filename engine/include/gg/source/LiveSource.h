@@ -70,16 +70,21 @@ namespace gg
 /// never steps a sounding grain, and a grain never reads a frame the head has overwritten.
 ///
 /// **A shrink's two limits** (ruling SP-T12ad; Engine::setRingLimit drives them). The admission
-/// limit N′ (setAdmitLimit) narrows the window to the newest N′ frames, less kCapSlack: its oldest
-/// frame is never below R(t) − N′ + kCapSlack, so every grain admitted under it keeps its
-/// farthest tap, the sinc's at level 3, at least M frames inside the newest N′. The read limit
-/// (setReadLimit) is what the fade and the reads take for N, readFrames() = min(limit, N): a
-/// shorter storage holding the newest N′ frames then reads the same as this one. With neither set,
-/// the window and the reads are those above, bit for bit.
+/// limit N′ (setAdmitLimit) narrows the window to the newest N′ frames, less kCapSlack while a
+/// change of the read limit waits: its oldest frame is never below R(t) − N′ (+ kCapSlack), so
+/// every grain admitted under it keeps its farthest tap, the sinc's at level 3, at least M frames
+/// inside the newest N′. The read limit (setReadLimit) is what the fade and the reads take for N,
+/// readFrames() = min(limit, N), and overdub's period follows it: P = min(L or N, readFrames()),
+/// crossfaded from the old period to the new over kPeriodFadeSeconds from the sample the read
+/// limit changes at, both frames still stored then. A shorter storage holding the newest N′
+/// frames then reads and overdubs the same as this one once that crossfade is done
+/// (framesInUse()). With neither set, the window, the reads and the period are those above, bit
+/// for bit.
 ///
 /// **Overdub.** write() may take a gain o per frame: the frame written at R is then
 /// sanitize(sanitize(in) + o × frame(R − P)) before the freeze gain, with the period P = min(L, N)
-/// while Loop is on, else N. Frame R − P is still in storage when R is written (the slots hold
+/// while Loop is on, else N, and no longer than readFrames() (A shrink's two limits, above).
+/// Frame R − P is still in storage when R is written (the slots hold
 /// N + B frames), and a frame before 0 is silence. Where o is 0, or no gains are given, the frame
 /// is the input alone, by M1's path, so Overdub 0 keeps every bit (the sign of zero included).
 ///
@@ -119,6 +124,9 @@ class LiveSource
     /// The admission limit's slack (ruling SP-T12ad): the farthest a read reaches back from its
     /// position, the sinc's 7 level frames at level 3 (8 × 2³ − 1 = 63 ring frames), and one.
     static constexpr int64_t kCapSlack = 64;
+    /// Overdub's period crossfade at a change of the read limit (ruling SP-T12ad), in seconds: the
+    /// instance's ramp; rounded to samples, at least 1.
+    static constexpr double kPeriodFadeSeconds = 0.01;
 
     /// L = round(kFreezeRampSeconds × sampleRate) samples, at least 1.
     static int64_t freezeRampSamples(double sampleRate) noexcept;
@@ -217,21 +225,36 @@ class LiveSource
     void clearSplices() noexcept { markCount_ = 0; }
 
     /// The admission limit N′ (ruling SP-T12ad; the class comment): 0 for none, else the window's
-    /// oldest frame is never below R(t) − N′ + kCapSlack (nor past its end). From the next
-    /// write(), as setLoop.
-    void setAdmitLimit(int64_t frames) noexcept { admitLimit_ = std::max<int64_t>(0, frames); }
-    /// The read limit (ruling SP-T12ad): 0 for none, else the fade and the reads take
-    /// min(frames, N) for N, now and after any adoption. Real-time safe; call it between write()
-    /// calls, at the sample from which it applies (no read of an earlier sample follows).
-    void setReadLimit(int64_t frames) noexcept
+    /// oldest frame is never below R(t) − N′, plus kCapSlack with `slack` (nor past its end).
+    /// From the next write(), as setLoop.
+    void setAdmitLimit(int64_t frames, bool slack) noexcept
     {
-        readLimit_ = std::max<int64_t>(0, frames);
-        readFrames_ = readLimit_ > 0 ? std::min(readLimit_, frames_) : frames_;
+        admitLimit_ = std::max<int64_t>(0, frames);
+        admitSlack_ = slack && admitLimit_ != 0 ? kCapSlack : 0;
     }
+    /// The read limit (ruling SP-T12ad): 0 for none, else the fade and the reads take
+    /// min(frames, N) for N, now and after any adoption, and overdub's period follows from output
+    /// sample `at` (the class comment). Real-time safe; call it between write() calls, at the
+    /// sample from which it applies (no read of an earlier sample follows).
+    void setReadLimit(int64_t frames, int64_t at) noexcept SST_CPPUTILS_NONBLOCKING;
     /// The read limit as set (0 for none).
     int64_t readLimit() const noexcept { return readLimit_; }
     /// What the fade and the reads take for N: min(read limit, N), or N with none.
     int64_t readFrames() const noexcept { return readFrames_; }
+    /// The frames the ring still needs for what it reads and writes (ruling SP-T12ad):
+    /// readFrames(), or the old overdub period while its crossfade runs past the last write()
+    /// block, if that is longer. A storage of at least this many frames reads and overdubs alike.
+    int64_t framesInUse() const noexcept
+    {
+        return periodFadeEnd_ > writtenTo_ ? std::max(readFrames_, std::min(window_, periodFrom_))
+                                           : readFrames_;
+    }
+    /// How many more frames the head advances from the next write() on if the freeze setting
+    /// doesn't change: INT64_MAX when not frozen; frozen, the frames left in the ramp.
+    int64_t headAdvanceLeft() const noexcept
+    {
+        return frozen_ ? ramp_ : std::numeric_limits<int64_t>::max();
+    }
 
     /// How many marks there are: those still in storage as of the last write() (and those added
     /// since), for a splice count shown to the user.
@@ -294,7 +317,7 @@ class LiveSource
         {
             return headRunAfter(t);
         }
-        return blockAdmit_ != 0 && head - blockAdmit_ + kCapSlack > start ? headRunAfter(t) : 0.0;
+        return blockAdmit_ != 0 && head - blockAdmit_ + blockSlack_ > start ? headRunAfter(t) : 0.0;
     }
 
     /// The first output sample after t of the last write() block from which the window's ends
@@ -552,8 +575,8 @@ class LiveSource
         int64_t end = 0;
         return spliceAt(head, start, end) ? std::min(head, end) : head;
     }
-    // With the admission limit N′ (ruling SP-T12ad), never below R(t) − N′ + kCapSlack, nor past
-    // the window's end.
+    // With the admission limit N′ (ruling SP-T12ad), never below R(t) − N′ (+ kCapSlack while the
+    // read limit waits), nor past the window's end.
     int64_t windowOldest(int64_t head) const noexcept
     {
         int64_t start = 0;
@@ -564,13 +587,13 @@ class LiveSource
             {
                 return start;
             }
-            return std::min(std::min(head, end), std::max(start, head - blockAdmit_ + kCapSlack));
+            return std::min(std::min(head, end), std::max(start, head - blockAdmit_ + blockSlack_));
         }
         if (blockAdmit_ == 0)
         {
             return head - window_;
         }
-        return std::max(head - window_, head - blockAdmit_ + kCapSlack);
+        return std::max(head - window_, head - blockAdmit_ + blockSlack_);
     }
 
     // Points the source at `storage` (nullptr: none), for prepare(), adoptStorage() and
@@ -612,10 +635,18 @@ class LiveSource
     std::array<int64_t, kMaxSplices> marks_{};
     uint32_t markCount_{0};
 
-    // The shrink's limits (ruling SP-T12ad): 0 for none; readFrames_ = min(readLimit_, N).
+    // The shrink's limits (ruling SP-T12ad): 0 for none; readFrames_ = min(readLimit_, N). The
+    // overdub period's crossfade from min(W, periodFrom_) runs over output samples
+    // [periodFadeStart_, periodFadeEnd_); writtenTo_ is the last write() block's end.
     int64_t admitLimit_{0};
+    int64_t admitSlack_{0};
     int64_t readLimit_{0};
     int64_t readFrames_{0};
+    int64_t periodRamp_{1};
+    int64_t periodFrom_{0};
+    int64_t periodFadeStart_{0};
+    int64_t periodFadeEnd_{std::numeric_limits<int64_t>::min()};
+    int64_t writtenTo_{0};
 
     bool frozen_{false};
     int64_t ramp_{1};      // the write gain is ramp_ / rampLength_, ramp_ in [0, rampLength_]
@@ -629,6 +660,7 @@ class LiveSource
     int64_t blockRamp_{0};     // ramp_ before the block
     int64_t window_{0};        // W with no splice (the loop's or N), and overdub's period P
     int64_t blockAdmit_{0};    // the admission limit for the block, 0 for none
+    int64_t blockSlack_{0};    // its slack, 0 or kCapSlack
     uint32_t blockRequest_{0}; // the splice selected for the block, 0 for none
     std::array<int64_t, kMaxSplices> blockMarks_{}; // the marks as the block began
     uint32_t blockMarkCount_{0};
