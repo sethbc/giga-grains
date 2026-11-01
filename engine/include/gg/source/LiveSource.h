@@ -6,11 +6,15 @@
 #define GG_SOURCE_LIVESOURCE_H
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <limits>
-#include <vector>
+#include <memory>
+#include <span>
 
 #include <sst/cpputils/rtsan_support.h>
+
+#include "gg/source/RingStorage.h"
 
 namespace gg
 {
@@ -45,7 +49,62 @@ namespace gg
 /// ±kMaxInputMagnitude. A mono input fills both channels; a missing input, or a missing channel
 /// of a stereo one, is silence.
 ///
-/// **Reads** never touch a frame outside [R(t) − N, R(t) − 1]; see fade() and read().
+/// **The window** (M2 sub-project 2's spec §6.1). Where a grain may start reading, at its onset,
+/// is the window [E − W, E − 1]:
+/// - with no splice selected, E = R(t) and W = N, or min(L, N) while Loop is on with length L
+///   (setLoop), so a loop is the newest L frames;
+/// - while splice k is selected (selectSplice), the span from the k-th mark still in storage at
+///   R(t), oldest first, to the next (the last mark's to the head): E is the later mark, or R(t)
+///   for the last splice, and E − W the earlier. A k past the marks in storage is the last
+///   splice; with none in storage the window is the first case's.
+/// Which marks are in storage is decided per sample, from R(t) alone, so the window never depends
+/// on where blocks fall. The window's oldest frame is never below R(t) − N. At the defaults (Loop
+/// off, no splice) it is M1's [R(t) − N, R(t) − 1], bit for bit. The settings and the marks apply
+/// from the next write(), which captures them for its block.
+///
+/// The window steers admission alone (Engine's admission clamp: anchorAt(), windowFramesAt(),
+/// anchorRunAfter()). **Reads are bounded by the storage**, [R(t) − N, R(t) − 1], at every
+/// setting (ruling SP-T12aa): fade(), fadeFor(), levelFadeFor() and the reads take M1's bounds,
+/// so a grain admitted under one window finishes in its old span when the window narrows, moves
+/// or widens under it, while the grains after it are admitted into the new one. A window change
+/// never steps a sounding grain, and a grain never reads a frame the head has overwritten.
+///
+/// **A shrink's two limits** (ruling SP-T12ad; Engine::setRingLimit drives them). The admission
+/// limit N′ (setAdmitLimit) narrows the window to the newest N′ frames, less kCapSlack while a
+/// change of the read limit waits: its oldest frame is never below R(t) − N′ (+ kCapSlack), so
+/// every grain admitted under it keeps its farthest tap, the sinc's at level 3, at least M frames
+/// inside the newest N′. The read limit (setReadLimit) is what the fade and the reads take for N,
+/// readFrames() = min(limit, N), and overdub's period follows it: P = min(L or N, readFrames()),
+/// crossfaded from the old period to the new over kPeriodFadeSeconds from the sample the read
+/// limit changes at, both frames still stored then. A shorter storage holding the newest N′
+/// frames then reads and overdubs the same as this one once that crossfade is done
+/// (framesInUse()). With neither set, the window, the reads and the period are those above, bit
+/// for bit.
+///
+/// **Overdub.** write() may take a gain o per frame: the frame written at R is then
+/// sanitize(sanitize(in) + o × frame(R − P)) before the freeze gain, with the period P = min(L, N)
+/// while Loop is on, else N, and no longer than readFrames() (A shrink's two limits, above).
+/// Frame R − P is still in storage when R is written (the slots hold
+/// N + B frames), and a frame before 0 is silence. Where o is 0, or no gains are given, the frame
+/// is the input alone, by M1's path, so Overdub 0 keeps every bit (the sign of zero included).
+///
+/// **Splice marks:** at most kMaxSplices ring-time positions, ascending, in a fixed array. A
+/// mark m has left storage once R − N > m, and from that sample on it no longer counts (D6: the
+/// splices' numbering shifts as marks age out); write() then drops it.
+///
+/// **Storage** lives in a RingStorage: the one prepare() allocates, which the source owns, or one
+/// the caller owns, swapped in by adoptStorage() (a resize, ring time going on) or
+/// restoreStorage() (a restore, ring time restarting).
+///
+/// **The levels** (spec §6.9): the storage's pyramid (RingStorage), which write() advances as each
+/// frame arrives, so level n's frames are complete to RingStorage::levelLag(n) frames behind the
+/// head, at most 189 for level 3, inside M; frozen, they freeze with level 0. A resize's storage
+/// arrives with the levels of its stable part copied (copyLevels) and adoptStorage() copies those
+/// of the frames it copies; a restore's storage arrives with its levels filled (fillLevels).
+/// level(n) gives them to the kernels, which keep the head, the window and the fade in ring frames
+/// and read only their taps from a level (levelFadeFor, gatherLevelTaps).
+///
+/// **Reads** never touch a frame outside the window; see fade() and read().
 class LiveSource
 {
   public:
@@ -58,18 +117,78 @@ class LiveSource
     /// signal, and low enough that no sum of grains can overflow a float.
     static constexpr float kMaxInputMagnitude = 1048576.0f;
 
+    /// The most frames adoptStorage() copies itself (spec §6.5): the newest 64 KB per channel.
+    static constexpr int64_t kAdoptCopyFrames = 8192;
+    /// The most splice marks a ring keeps (spec §6.1).
+    static constexpr uint32_t kMaxSplices = 32;
+    /// The admission limit's slack (ruling SP-T12ad): the farthest a read reaches back from its
+    /// position, the sinc's 7 level frames at level 3 (8 × 2³ − 1 = 63 ring frames), and one.
+    static constexpr int64_t kCapSlack = 64;
+    /// Overdub's period crossfade at a change of the read limit (ruling SP-T12ad), in seconds: the
+    /// instance's ramp; rounded to samples, at least 1.
+    static constexpr double kPeriodFadeSeconds = 0.01;
+
     /// L = round(kFreezeRampSeconds × sampleRate) samples, at least 1.
     static int64_t freezeRampSamples(double sampleRate) noexcept;
 
-    /// Allocates a ring whose window is N = ceil(seconds × sampleRate) frames (no ring when
-    /// seconds is 0), stored in N + maxBlockSize slots (see the class comment), and resets. Not
-    /// real-time safe. sampleRate must be finite and > 0, and maxBlockSize > 0 (0 counts as 1).
-    /// Throws std::invalid_argument when seconds is not finite and >= 0, or when the storage
-    /// would exceed 2^40 frames.
+    /// A ring with no storage yet: the rate (for the freeze ramp) and the largest block write()
+    /// takes, which a storage must leave room for (capacity() − frames() >= maxBlockSize; 0 counts
+    /// as 1). Not enabled() until adoptStorage() or restoreStorage() gives it storage. Lets go of
+    /// any storage it had: one it owned is freed, and one the caller gave stays the caller's,
+    /// without being handed back. Resets (see reset()). Not real-time safe: it may free.
+    void prepare(double sampleRate, uint32_t maxBlockSize) noexcept;
+
+    /// prepare(sampleRate, maxBlockSize), then a RingStorage the source owns, whose window is
+    /// N = ceil(seconds × sampleRate) frames (no ring when seconds is 0), stored in
+    /// N + maxBlockSize slots (see the class comment). For the callers that size the ring once (the
+    /// Engine's constructor, the tests, gg-bench and gg-render's sample mode). Not real-time safe.
+    /// sampleRate must be finite and > 0. Throws std::invalid_argument, changing nothing, when
+    /// seconds is not finite and >= 0, or when the storage would exceed 2^40 frames.
     void prepare(double sampleRate, double seconds, uint32_t maxBlockSize);
+
+    /// The ring exchange's audio-thread half (spec §6.5), for a resize: swaps in `next`, whose
+    /// slots already hold the window's frames below `copiedTo` at their slots (frame f at f mod
+    /// next->capacity()), copied by the main thread from the frames it found stable, and their
+    /// levels (copyLevels; spec §6.9). Copies [copiedTo, head()) itself, the frames written since,
+    /// as far as both windows reach, and their level frames (copyLevels, from the storage it
+    /// replaces), and refreshes next's guard slots, every level's. Ring time continues: the head,
+    /// the freeze state and the write gain stay. `previous` gets the storage replaced, for the main
+    /// thread to free: nullptr when the source owned it (it keeps that one until the next prepare()
+    /// or its destruction, so nothing is freed here) or had none. Marks older than the new window
+    /// are dropped (as write() drops them). The loop's W follows the new N.
+    ///
+    /// Returns false, changing nothing (previous is set to nullptr), when next is null or already
+    /// this ring's, when its capacity leaves less than a block's slack past its frames, when
+    /// copiedTo is past the head, or when the copy would be more than kAdoptCopyFrames frames:
+    /// the main thread then copies again from the current head. Real-time safe, with the
+    /// threading rule of the setters: on the audio thread between write() calls.
+    bool adoptStorage(RingStorage *next, int64_t copiedTo,
+                      RingStorage *&previous) noexcept SST_CPPUTILS_NONBLOCKING;
+
+    /// A restore (spec §6.6): `next` holds frames [0, frames) at their slots, and their levels
+    /// (fillLevels(*next, 0, frames), on the thread that filled them; spec §6.9). Ring time
+    /// restarts with the head at `frames`, and `marks` replace the current ones: those ascending,
+    /// in the new window and below `frames`. Not frozen, the write gain is 1. Frozen, the ring is
+    /// held from the first sample, as the saved session rendered it: the freeze on, the write gain
+    /// 0 and the head stopped, so no ramp moves it (keep the freeze setting on after it).
+    /// `previous` gets the storage replaced, as adoptStorage() hands it back. Refreshes next's
+    /// guard slots; copies no frame. Until the next write(), R(t) is the restored head at every
+    /// output sample t, and the window is the restored ring's (the last write's block is forgotten
+    /// with the old ring time).
+    ///
+    /// Returns false, changing nothing (previous is set to nullptr), when next is null or already
+    /// this ring's, when its capacity leaves less than a block's slack, when frames is below 0 or
+    /// past next->capacity(), or when there are more than kMaxSplices marks. Real-time safe, with
+    /// the threading rule of the setters.
+    bool restoreStorage(RingStorage *next, int64_t frames, std::span<const int64_t> marks,
+                        bool frozen, RingStorage *&previous) noexcept SST_CPPUTILS_NONBLOCKING;
 
     /// N, the ring length in frames; 0 when there is no ring.
     int64_t frames() const noexcept { return frames_; }
+    /// The storage in effect (prepare()'s own, or the one last adopted or restored), or nullptr
+    /// without a ring: for a main thread's copy of the window (spec §6.4), whose slots are laid out
+    /// as RingStorage documents.
+    const RingStorage *storage() const noexcept { return storage_; }
     bool enabled() const noexcept { return frames_ > 0; }
 
     /// Restarts ring time at 0: the head at 0, not frozen, write gain 1. The old frames stay in
@@ -79,13 +198,86 @@ class LiveSource
     /// The freeze setting for the next write() and after.
     void setFrozen(bool frozen) noexcept { frozen_ = frozen; }
 
+    // The window and the marks (spec §6.1). Each setter is real-time safe and takes effect from
+    // the next write(); call them on the audio thread between write() calls.
+
+    /// Loop on: the window is the newest min(lengthFrames, N) frames, and overdub's period the
+    /// same; off, both are N. A length below 1 counts as 1.
+    void setLoop(bool on, int64_t lengthFrames) noexcept
+    {
+        loopOn_ = on;
+        loopLength_ = lengthFrames;
+    }
+
+    /// Selects splice k (D6): 0 none (the whole window, the loop's if Loop is on), k >= 1 the
+    /// span from the k-th mark in storage, oldest first, to the next or, for the last mark, to
+    /// the head. The selection is an index, kept as given: as marks age out the numbering shifts
+    /// under it, a k past the marks in storage selects the last splice, and with no mark in
+    /// storage the window is the whole one.
+    void selectSplice(uint32_t k) noexcept { spliceRequest_ = k; }
+
+    /// Adds a mark at ring time `ringTime`, keeping them ascending. False, changing nothing, when
+    /// kMaxSplices are kept, a mark is there already, or ringTime is outside [head − N, head] or
+    /// below 0.
+    bool addSplice(int64_t ringTime) noexcept SST_CPPUTILS_NONBLOCKING;
+
+    /// Removes every mark; with none, a selection is the whole window from the next write().
+    void clearSplices() noexcept { markCount_ = 0; }
+
+    /// The admission limit N′ (ruling SP-T12ad; the class comment): 0 for none, else the window's
+    /// oldest frame is never below R(t) − N′, plus kCapSlack with `slack` (nor past its end).
+    /// From the next write(), as setLoop.
+    void setAdmitLimit(int64_t frames, bool slack) noexcept
+    {
+        admitLimit_ = std::max<int64_t>(0, frames);
+        admitSlack_ = slack && admitLimit_ != 0 ? kCapSlack : 0;
+    }
+    /// The read limit (ruling SP-T12ad): 0 for none, else the fade and the reads take
+    /// min(frames, N) for N, now and after any adoption, and overdub's period follows from output
+    /// sample `at` (the class comment). Real-time safe; call it between write() calls, at the
+    /// sample from which it applies (no read of an earlier sample follows).
+    void setReadLimit(int64_t frames, int64_t at) noexcept SST_CPPUTILS_NONBLOCKING;
+    /// The read limit as set (0 for none).
+    int64_t readLimit() const noexcept { return readLimit_; }
+    /// What the fade and the reads take for N: min(read limit, N), or N with none.
+    int64_t readFrames() const noexcept { return readFrames_; }
+    /// The frames the ring still needs for what it reads and writes (ruling SP-T12ad):
+    /// readFrames(), or the old overdub period while its crossfade runs past the last write()
+    /// block, if that is longer. A storage of at least this many frames reads and overdubs alike.
+    int64_t framesInUse() const noexcept
+    {
+        return periodFadeEnd_ > writtenTo_ ? std::max(readFrames_, std::min(window_, periodFrom_))
+                                           : readFrames_;
+    }
+    /// The output sample at which the overdub period's crossfade from the last change of the read
+    /// limit ends (INT64_MIN when none has run since reset()): a further change waits for it
+    /// (Engine::setRingLimit), so the frames written never step.
+    int64_t periodFadeEnd() const noexcept { return periodFadeEnd_; }
+    /// How many more frames the head advances from the next write() on if the freeze setting
+    /// doesn't change: INT64_MAX when not frozen; frozen, the frames left in the ramp.
+    int64_t headAdvanceLeft() const noexcept
+    {
+        return frozen_ ? ramp_ : std::numeric_limits<int64_t>::max();
+    }
+
+    /// How many marks there are: those still in storage as of the last write() (and those added
+    /// since), for a splice count shown to the user.
+    uint32_t spliceCount() const noexcept { return markCount_; }
+    /// The marks spliceCount() counts, ascending.
+    std::span<const int64_t> splices() const noexcept { return {marks_.data(), markCount_}; }
+
     /// Writes the input for output samples [blockStart, blockStart + numFrames), where
     /// in[c] + offset is channel c's first sample, and records R(t) for those samples (headAt()
-    /// and headRunAfter()). Blocks must be contiguous from reset(), and numFrames at most the
+    /// and headRunAfter()), the window for the block (anchorAt(), windowFrames()) and the marks
+    /// still in storage. Blocks must be contiguous from reset(), and numFrames at most the
     /// maxBlockSize given to prepare(): a longer block would overwrite frames its own earlier
-    /// samples read. Requires enabled().
+    /// samples read. Does nothing but record without storage.
+    ///
+    /// overdubGain + offset, when not null, is the first frame's overdub gain, one per frame
+    /// (see Overdub in the class comment); nullptr is 0 throughout, M1's write bit for bit.
     void write(const float *const *in, uint32_t numInChannels, uint32_t offset, int64_t blockStart,
-               uint32_t numFrames) noexcept SST_CPPUTILS_NONBLOCKING;
+               uint32_t numFrames,
+               const float *overdubGain = nullptr) noexcept SST_CPPUTILS_NONBLOCKING;
 
     /// R after the last write(): the frames written since reset().
     int64_t head() const noexcept { return head_; }
@@ -97,6 +289,61 @@ class LiveSource
     {
         return blockHead_ + std::min(t - blockStart_ + 1, blockAdvance_);
     }
+
+    /// The window's end E at output sample t of the last write() block: headAt(t), or while a
+    /// splice is in effect its later mark (at most the head), or headAt(t) for the last splice.
+    /// Position and Spray read seconds behind it (Engine's admission clamp).
+    int64_t anchorAt(int64_t t) const noexcept { return windowEnd(headAt(t)); }
+
+    /// The window's oldest frame E − W at output sample t of the last write() block: never below
+    /// R(t) − N, and R(t) − N itself with Loop off and no splice.
+    int64_t windowOldestAt(int64_t t) const noexcept { return windowOldest(headAt(t)); }
+
+    /// headRunAfter(t), or 0 while a splice is in effect at t: a splice's window doesn't move
+    /// with the head (the last splice's end does, which admission then treats as still,
+    /// conservatively).
+    double anchorRunAfter(int64_t t) const noexcept
+    {
+        int64_t start = 0;
+        int64_t end = 0;
+        return spliceAt(headAt(t), start, end) ? 0.0 : headRunAfter(t);
+    }
+
+    /// How far the window's oldest frame moves with the head after t: anchorRunAfter(t), but
+    /// headRunAfter(t) while a splice's start is bound by the admission limit, whose oldest frame
+    /// follows the head (ruling SP-T12ad).
+    double oldestRunAfter(int64_t t) const noexcept
+    {
+        int64_t start = 0;
+        int64_t end = 0;
+        const int64_t head = headAt(t);
+        if (!spliceAt(head, start, end))
+        {
+            return headRunAfter(t);
+        }
+        return blockAdmit_ != 0 && head - blockAdmit_ + blockSlack_ > start ? headRunAfter(t) : 0.0;
+    }
+
+    /// The first output sample after t of the last write() block from which the window's ends
+    /// may follow other lines in t, or INT64_MAX: the sample where a mark leaves storage while a
+    /// splice is selected, shifting the splices' numbering. Before it, from t on, anchorAt() and
+    /// windowOldestAt() each stay constant or move with the head, so the SIMD live kernel's runs
+    /// (kernels::detail::liveRun) end there.
+    int64_t windowSteadyUntil(int64_t t) const noexcept SST_CPPUTILS_NONBLOCKING;
+
+    /// W at output sample t of the last write() block: the window's length, anchorAt(t) less its
+    /// oldest frame. N or the loop's length with no splice selected, a splice's span while one is.
+    /// It varies within a block only for the last splice while the head advances, whose start
+    /// stays at its mark as its end follows the head.
+    int64_t windowFramesAt(int64_t t) const noexcept
+    {
+        const int64_t head = headAt(t);
+        return windowEnd(head) - windowOldest(head);
+    }
+
+    /// W in effect at the end of the last write() block (a splice's span, the loop or N): the
+    /// length of the window as of head(), which a capture reads.
+    int64_t windowFrames() const noexcept { return windowEnd(head_) - windowOldest(head_); }
 
     /// The sample of the last write() block from which on the head stands still for the rest of
     /// the block: blockStart + the frames written in the block, which is the block's end unless
@@ -118,20 +365,49 @@ class LiveSource
     };
     RingView view() const noexcept { return {slots_, capacity_, frames_}; }
 
-    /// One level of the ring's pyramid (spec §6.5): the ring view the kernels read, at
-    /// `decimation` ring frames per level frame. Level 0 is the ring itself, decimation 1.
+    /// One level of the ring's pyramid (spec §6.5, §6.9): the ring view the kernels read, at
+    /// `decimation` ring frames per level frame. Level 0 is the ring itself, decimation 1. Level
+    /// n >= 1 is the storage's level n (RingStorage): its frame m, at ring frame m × 2ⁿ, in slot
+    /// m mod capacity, capacity ceil(C / 2ⁿ) with 15 guard slots after it as level 0's, frames
+    /// ceil(N / 2ⁿ), decimation 2ⁿ.
     struct Level
     {
         RingView view;
         uint32_t decimation;
     };
-    /// The levels there are: 1 in wave 1 (level 0 alone; sub-project 2 builds the ring's levels).
-    uint32_t levelCount() const noexcept { return 1; }
+    /// The levels there are, level 0 included: the storage's levelCount() (1 + 3 for any ring of
+    /// 1 s or more), or 1 without a ring.
+    uint32_t levelCount() const noexcept { return levelCount_; }
     /// Level n, or level 0 when n >= levelCount(). Real-time safe.
     Level level(uint32_t n) const noexcept
     {
-        static_cast<void>(n); // one level: every index reads level 0
-        return {view(), 1};
+        return n < levelCount_ ? Level{levelView(n), 1u << n} : Level{view(), 1};
+    }
+
+    /// The head-proximity fade of a read of level n (spec §6.9) whose taps reach kBefore level
+    /// frames before floor(pos / 2ⁿ) and kAfter after it, at pos in ring frames, while the head
+    /// is at R: fadeFor's expression over the same bounds, with the level's reach in ring frames,
+    ///
+    ///     before = (kBefore + 1) × 2ⁿ − 1,  after = kAfter × 2ⁿ + RingStorage::levelLag(n),
+    ///
+    /// so it is 0 before any of the read's level frames leaves the storage's [R − N, R − 1] or is
+    /// incomplete at R (its last tap's ring frame plus the level's lag past R − 1). Level 0's is
+    /// fadeFor<kBefore, kAfter> itself, bit for bit. A level n >= levelCount() reads nothing: 0.
+    template <int64_t kBefore, int64_t kAfter>
+    double levelFadeFor(uint32_t n, double pos, int64_t head) const noexcept
+    {
+        if (n >= levelCount_)
+        {
+            return 0.0;
+        }
+        const int64_t d = int64_t{1} << n;
+        const auto before = static_cast<double>((kBefore + 1) * d - 1);
+        const auto after = static_cast<double>(kAfter * d + RingStorage::levelLag(n));
+        const auto end = static_cast<double>(head);
+        const double toHead = (end - 1.0 - (pos + after)) / kMargin;
+        const double fromTail =
+            ((pos - before) - static_cast<double>(head - readFrames_)) / kMargin;
+        return unit(toHead) * unit(fromTail);
     }
 
     /// How many more frames the head will advance after output sample t of the last write()
@@ -146,21 +422,36 @@ class LiveSource
         return static_cast<double>(blockRamp_ - std::min(t - blockStart_ + 1, blockRamp_));
     }
 
-    /// The head-proximity fade for a read at pos (ring time) while the head is at R (spec §6.3):
+    /// The head-proximity fade for a read at pos (ring time) while the head is at R (spec §6.3),
+    /// over the storage's [R − N, R − 1], whatever the window (ruling SP-T12aa; see The window in
+    /// the class comment):
     ///
     ///     g = clamp((R − 1 − (pos + 2)) / M, 0, 1) × clamp(((pos − 1) − (R − N)) / M, 0, 1)
     ///
-    /// It is 1 while every tap is at least M frames inside both ends of the window, and falls
-    /// linearly to 0 over M frames as a tap nears either end: the newest frame, or the oldest
-    /// one, R − N, which the next frame written moves out of the window. (The slot it overwrites
-    /// holds frame R − N − B, already outside the window; see Storage.) Frozen, those two ends are
-    /// the seam where the ring's newest and oldest frames meet, so this is the head-crossing
-    /// crossfade.
-    double fade(double pos, int64_t head) const noexcept
+    /// M1's fade, bit for bit. It is 1 while every tap is at least M frames inside both ends, and
+    /// falls linearly to 0 over M frames as a tap nears either end: the newest frame, or the
+    /// oldest one, which the next frame written moves out. (The slot it overwrites holds frame
+    /// R − N − B, already outside; see Storage.) Frozen, those two ends are the seam where the
+    /// ring's newest and oldest frames meet, so this is the head-crossing crossfade. A loop's or a
+    /// splice's ends need none: admission puts every grain at least M frames inside them for as
+    /// long as the window holds, and a grain the window leaves behind keeps reading its frames.
+    double fade(double pos, int64_t head) const noexcept { return fadeFor<1, 2>(pos, head); }
+
+    /// fade() for a read whose taps reach kBefore frames before floor(pos) and kAfter after it:
+    ///
+    ///     g = clamp((R − 1 − (pos + kAfter)) / M, 0, 1)
+    ///       × clamp(((pos − kBefore) − (R − N)) / M, 0, 1)
+    ///
+    /// fade() is fadeFor<1, 2>, the Hermite's reach; the HQ tier's sinc uses fadeFor<7, 8>
+    /// (Sinc::fade in GrainKernels.h), so it too fades out before a tap leaves the window.
+    template <int64_t kBefore, int64_t kAfter>
+    double fadeFor(double pos, int64_t head) const noexcept
     {
-        const auto r = static_cast<double>(head);
-        const double toHead = (r - 1.0 - (pos + 2.0)) / kMargin;
-        const double fromTail = ((pos - 1.0) - (r - static_cast<double>(frames_))) / kMargin;
+        const auto end = static_cast<double>(head);
+        const double toHead = (end - 1.0 - (pos + static_cast<double>(kAfter))) / kMargin;
+        const double fromTail =
+            ((pos - static_cast<double>(kBefore)) - static_cast<double>(head - readFrames_)) /
+            kMargin;
         return unit(toHead) * unit(fromTail);
     }
 
@@ -175,15 +466,15 @@ class LiveSource
 
     /// Reads both channels at pos (ring time) with interp::catmullRom, the 4-point Hermite of
     /// interp::hermite4, over taps floor(pos) − 1 .. floor(pos) + 2. Returns false and reads
-    /// nothing unless every tap is in the window [head − N, head − 1], where head is R(t) of a
-    /// sample t of the last write() block; every frame there is the one written for it (see
-    /// Storage in the class comment). Taps before frame 0 read as 0.
+    /// nothing unless every tap is in [head − N, head − 1], where head is R(t) of a sample t of the
+    /// last write() block (see fade()), whatever the window; every frame there is the one written
+    /// for it (see Storage in the class comment). Taps before frame 0 read as 0.
     bool read(double pos, int64_t head, Cursor &cursor, float &left,
               float &right) const noexcept SST_CPPUTILS_NONBLOCKING;
 
     /// The Eco tier's read: both channels at pos with interp::lerp, the line of interp::linear,
     /// over taps floor(pos) and floor(pos) + 1. Returns false and reads nothing unless both taps
-    /// are in the window [head − N, head − 1], as read() requires of its four. Taps before frame
+    /// are in [head − N, head − 1], as read() requires of its four. Taps before frame
     /// 0 read as 0. The check is for this read's own reach; the renderer's fade() stays the
     /// one for the Hermite's reach, floor(pos) − 1 .. floor(pos) + 2, which is a frame wider at
     /// each end, so for a linear read it is conservative: wherever fade() is above 0, both taps
@@ -200,6 +491,26 @@ class LiveSource
     bool gatherTaps(double pos, int64_t head, Cursor &cursor, float *left,
                     float *right) const noexcept SST_CPPUTILS_NONBLOCKING;
 
+    /// gatherTaps<kTaps> from level n, at pos in level n's frames (the ring frame pos × 2ⁿ):
+    /// level frames floor(pos) − kBefore .. floor(pos) − kBefore + kTaps − 1, kBefore =
+    /// kTaps / 2 − 1. False, writing nothing, unless the first tap's ring frame is at or after
+    /// head − N and the last's plus RingStorage::levelLag(n) at or before head − 1 (so every tap
+    /// is complete and the one written for it), or when n >= levelCount();
+    /// level frames before 0 read as 0. Level 0's is gatherTaps<kTaps>. levelFadeFor > 0 implies
+    /// the bounds hold.
+    template <int kTaps>
+    bool gatherLevelTaps(uint32_t n, double pos, int64_t head, Cursor &cursor, float *left,
+                         float *right) const noexcept SST_CPPUTILS_NONBLOCKING;
+
+    /// read() from level n at pos in level n's frames: interp::catmullRom over
+    /// gatherLevelTaps<4>'s taps. False, reading nothing, where gatherLevelTaps<4> is.
+    bool readLevel(uint32_t n, double pos, int64_t head, Cursor &cursor, float &left,
+                   float &right) const noexcept SST_CPPUTILS_NONBLOCKING;
+    /// readLinear() from level n at pos in level n's frames: interp::lerp over
+    /// gatherLevelTaps<2>'s taps. False, reading nothing, where gatherLevelTaps<2> is.
+    bool readLinearLevel(uint32_t n, double pos, int64_t head, Cursor &cursor, float &left,
+                         float &right) const noexcept SST_CPPUTILS_NONBLOCKING;
+
   private:
     static constexpr double kMargin = static_cast<double>(kHeadMargin);
     // A read's kTaps taps read slots s .. s + kTaps − 1, at most 16 (the sinc's). Slots
@@ -209,6 +520,13 @@ class LiveSource
     // The slot of ring-time frame first >= 0, found from the cursor when reads move forward, and
     // recorded in it.
     int64_t slotOf(int64_t first, Cursor &cursor) const noexcept SST_CPPUTILS_NONBLOCKING;
+    // slotOf for frame first >= 0 of a level of `capacity` slots.
+    static int64_t levelSlotOf(int64_t first, int64_t capacity,
+                               Cursor &cursor) noexcept SST_CPPUTILS_NONBLOCKING;
+    // readLevel() (kTaps 4) and readLinearLevel() (kTaps 2), as readTaps.
+    template <int kTaps>
+    bool readLevelTaps(uint32_t n, double pos, int64_t head, Cursor &cursor, float &left,
+                       float &right) const noexcept SST_CPPUTILS_NONBLOCKING;
 
     // read() (kTaps 4: catmullRom over taps floor(pos) − 1 .. floor(pos) + 2) and readLinear()
     // (kTaps 2: lerp over floor(pos) and floor(pos) + 1), which differ only in their reach and
@@ -220,11 +538,119 @@ class LiveSource
     // clamp(x, 0, 1), with NaN read as 0.
     static double unit(double x) noexcept { return x > 0.0 ? (x < 1.0 ? x : 1.0) : 0.0; }
 
-    std::vector<float> storage_; // C + kGuardFrames slots of 2 floats: slot s's channel c at 2s + c
-    float *slots_{nullptr};
-    int64_t frames_{0};     // N, the window
-    int64_t capacity_{0};   // C = N + maxBlockSize slots (ruling M1-o)
+    // The splice in effect at head R(t) for the last write() block: false when none is (no
+    // selection, or no mark of the block in storage at R(t)), else its first mark and its later
+    // one (INT64_MAX for the last splice, which runs to the head). A mark m is in storage while
+    // m >= R(t) − N, so its first is too; the marks that left are a prefix (they are ascending),
+    // all but the few that leave during the block already dropped at write().
+    bool spliceAt(int64_t head, int64_t &start, int64_t &end) const noexcept
+    {
+        if (blockRequest_ == 0)
+        {
+            return false;
+        }
+        const uint32_t first = firstInStorage(head);
+        const uint32_t kept = blockMarkCount_ - first;
+        if (kept == 0)
+        {
+            return false;
+        }
+        const uint32_t k = std::min(blockRequest_, kept);
+        start = blockMarks_[first + k - 1];
+        end = k < kept ? blockMarks_[first + k] : std::numeric_limits<int64_t>::max();
+        return true;
+    }
+    // The first of the block's marks still in storage at head R(t).
+    uint32_t firstInStorage(int64_t head) const noexcept
+    {
+        uint32_t first = 0;
+        while (first < blockMarkCount_ && blockMarks_[first] < head - frames_)
+        {
+            ++first;
+        }
+        return first;
+    }
+
+    // The last write() block's window at head R(t): its end E, and its oldest frame E − W, never
+    // below R(t) − N.
+    int64_t windowEnd(int64_t head) const noexcept
+    {
+        int64_t start = 0;
+        int64_t end = 0;
+        return spliceAt(head, start, end) ? std::min(head, end) : head;
+    }
+    // With the admission limit N′ (ruling SP-T12ad), never below R(t) − N′ (+ kCapSlack while the
+    // read limit waits), nor past the window's end.
+    int64_t windowOldest(int64_t head) const noexcept
+    {
+        int64_t start = 0;
+        int64_t end = 0;
+        if (spliceAt(head, start, end))
+        {
+            if (blockAdmit_ == 0)
+            {
+                return start;
+            }
+            return std::min(std::min(head, end), std::max(start, head - blockAdmit_ + blockSlack_));
+        }
+        if (blockAdmit_ == 0)
+        {
+            return head - window_;
+        }
+        return std::max(head - window_, head - blockAdmit_ + blockSlack_);
+    }
+
+    // Points the source at `storage` (nullptr: none), for prepare(), adoptStorage() and
+    // restoreStorage(); the head and the write slot are the caller's.
+    void attach(RingStorage *storage) noexcept;
+    // Hands the current storage back through `previous`: nullptr when the source owns it (then
+    // kept in retired_ until prepare() or destruction, so nothing is freed on the audio thread)
+    // or has none.
+    void release(RingStorage *&previous) noexcept;
+    // W without a splice, from the loop setting and N.
+    int64_t loopWindow() const noexcept;
+    // Drops the marks before `oldest`: they have left storage.
+    void dropMarksBefore(int64_t oldest) noexcept SST_CPPUTILS_NONBLOCKING;
+    // Captures the selection and the marks for the block about to be written (or a restore's).
+    void captureWindow() noexcept;
+
+    RingStorage *storage_{nullptr};        // the slots' storage, owned_ or the caller's
+    std::unique_ptr<RingStorage> owned_;   // the storage prepare(rate, seconds, block) allocated
+    std::unique_ptr<RingStorage> retired_; // owned_ once replaced, freed by the next prepare()
+    float *slots_{nullptr};                // C + kGuardFrames slots of 2 floats: s's c at 2s + c
+    int64_t frames_{0};                    // N, the storage's window
+    int64_t capacity_{0};                  // C = N + maxBlockSize slots (ruling M1-o)
+    int64_t maxBlock_{1};                  // B, the largest block write() takes
+    // levels_[n], its index clamped to the array: a caller's check against levelCount_ comes first,
+    // but GCC 13 can't see it and warns (-Warray-bounds) on a constant index past the array.
+    const RingView &levelView(uint32_t n) const noexcept
+    {
+        return levels_[std::min<uint32_t>(n, RingStorage::kMaxLevels - 1)];
+    }
+    // The storage's levels as the kernels read them (level(n)), levels_[0] the ring itself.
+    std::array<RingView, RingStorage::kMaxLevels> levels_{};
+    uint32_t levelCount_{1};
     int64_t rampLength_{1}; // L
+
+    // The window settings (setLoop, selectSplice) and the marks.
+    bool loopOn_{false};
+    int64_t loopLength_{0};
+    uint32_t spliceRequest_{0};
+    std::array<int64_t, kMaxSplices> marks_{};
+    uint32_t markCount_{0};
+
+    // The shrink's limits (ruling SP-T12ad): 0 for none; readFrames_ = min(readLimit_, N). The
+    // overdub period's crossfade from min(W, periodFrom_) runs over output samples
+    // [periodFadeStart_, periodFadeEnd_); writtenTo_ is the last write() block's end.
+    int64_t admitLimit_{0};
+    int64_t admitSlack_{0};
+    int64_t readLimit_{0};
+    int64_t readFrames_{0};
+    int64_t periodRamp_{1};
+    int64_t periodFrom_{0};
+    int64_t periodFadeStart_{0};
+    int64_t periodFadeEnd_{std::numeric_limits<int64_t>::min()};
+    int64_t writtenTo_{0};
 
     bool frozen_{false};
     int64_t ramp_{1};      // the write gain is ramp_ / rampLength_, ramp_ in [0, rampLength_]
@@ -233,9 +659,15 @@ class LiveSource
 
     // The last write() block.
     int64_t blockStart_{0};
-    int64_t blockHead_{0};    // R before the block
-    int64_t blockAdvance_{0}; // frames written in the block, on its first blockAdvance_ samples
-    int64_t blockRamp_{0};    // ramp_ before the block
+    int64_t blockHead_{0};     // R before the block
+    int64_t blockAdvance_{0};  // frames written in the block, on its first blockAdvance_ samples
+    int64_t blockRamp_{0};     // ramp_ before the block
+    int64_t window_{0};        // W with no splice (the loop's or N), and overdub's period P
+    int64_t blockAdmit_{0};    // the admission limit for the block, 0 for none
+    int64_t blockSlack_{0};    // its slack, 0 or kCapSlack
+    uint32_t blockRequest_{0}; // the splice selected for the block, 0 for none
+    std::array<int64_t, kMaxSplices> blockMarks_{}; // the marks as the block began
+    uint32_t blockMarkCount_{0};
 };
 } // namespace gg
 

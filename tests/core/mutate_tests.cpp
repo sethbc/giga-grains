@@ -7,6 +7,7 @@
 // from (seed, counter).
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -278,18 +279,19 @@ TEST_CASE("mutate's default locks are the structure and the off layers", "[core]
 
     // The FX with layer B on: layers C and D (off by default) are locked whole, and A, B and
     // Space's five voiced parameters move. So do sub-project 3's Budget, a global, and each on
-    // layer's Quality, and sub-project 4's eight globals (the delay and the limiter) and each on
-    // layer's eight (Smear, the bus split and the buses' filters): wave 2's parameters stay
-    // unlocked until group 2 extends the default lock list to wave 2's sections (spec §6.9,
-    // §6.12).
+    // layer's Quality and sub-project 2's five ring parameters, and sub-project 4's eight globals
+    // (the delay and the limiter) and each on layer's eight (Smear, the bus split and the buses'
+    // filters): wave 2's parameters stay unlocked until group 2 extends the default lock list to
+    // wave 2's sections (spec §6.9, §6.12). Ring Length is unlocked but never moves: mutate()
+    // skips a slot no host may automate (SP-M8; its own test below).
     ParamValues values = defaults(Mode::Fx);
     values[idx(ParamSlot::LayerBOn)] = 1.0f;
     const LockSet bOn = defaultMutateLocks(values, Mode::Fx);
     CHECK(offLayerLocks(values) == (layerLocks(2) | layerLocks(3)));
     CHECK(bOn == (expectedStructural | layerLocks(2) | layerLocks(3)));
-    CHECK(bOn.count() == 141);
+    CHECK(bOn.count() == 151);
     LockSet unlocked = ~bOn;
-    CHECK(unlocked.count() == 122);
+    CHECK(unlocked.count() == 132);
     for (const ParamSlot s :
          {ParamSlot::ReverbDecay, ParamSlot::ReverbSize, ParamSlot::ReverbDamping,
           ParamSlot::ReverbPredelay, ParamSlot::ReverbModulation, ParamSlot::Budget,
@@ -314,14 +316,14 @@ TEST_CASE("mutate's default locks are the structure and the off layers", "[core]
         }
     }
 
-    // With layer B off (the default), its 57 slots are locked too.
+    // With layer B off (the default), its 62 slots are locked too.
     values[idx(ParamSlot::LayerBOn)] = 0.0f;
     const LockSet bOff = defaultMutateLocks(values, Mode::Fx);
     CHECK(bOff == (bOn | layerLocks(1)));
-    CHECK(bOff.count() == 195);
-    CHECK((bOff & ~bOn).count() == 54);
+    CHECK(bOff.count() == 210);
+    CHECK((bOff & ~bOn).count() == 59);
 
-    // Layer A off locks its 57, the M1 slots among them; Layer On is read as "below 0.5".
+    // Layer A off locks its 62, the M1 slots among them; Layer On is read as "below 0.5".
     values[idx(ParamSlot::LayerAOn)] = 0.49f;
     CHECK(offLayerLocks(values) == (layerLocks(0) | layerLocks(1) | layerLocks(2) | layerLocks(3)));
     values[idx(ParamSlot::LayerAOn)] = 0.5f;
@@ -329,6 +331,36 @@ TEST_CASE("mutate's default locks are the structure and the off layers", "[core]
     for (uint8_t layer = 0; layer < kLayers; ++layer)
     {
         CHECK_FALSE(layerLocks(layer).test(idx(layerOnSlot(layer))));
+    }
+}
+
+TEST_CASE("a mutate never changes any layer's Ring Length", "[core][mutate]")
+{
+    // Ruling SP-M8: Ring Length is the one parameter no host may automate (the main thread
+    // resizes the ring for it), and a press is host gestures, so mutate() never moves it, even
+    // unlocked at the full amount; the other ring parameters still move.
+    for (const Mode mode : {Mode::Fx, Mode::Instrument})
+    {
+        ParamValues in = defaults(mode);
+        for (uint8_t layer = 0; layer < kLayers; ++layer)
+        {
+            in[idx(layerOnSlot(layer))] = 1.0f;
+            in[idx(layerSlot(LayerParam::RingLength, layer))] = 5.0f; // 32 s, not the default
+        }
+        const LockSet none{};
+        bool loopLengthMoved = false;
+        for (uint32_t counter = 0; counter < 200; ++counter)
+        {
+            const ParamValues out = mutated(in, none, 1.0f, kSeed, counter, mode);
+            for (uint8_t layer = 0; layer < kLayers; ++layer)
+            {
+                const auto ring = idx(layerSlot(LayerParam::RingLength, layer));
+                REQUIRE(std::bit_cast<uint32_t>(out[ring]) == std::bit_cast<uint32_t>(in[ring]));
+                const auto loop = idx(layerSlot(LayerParam::LoopLength, layer));
+                loopLengthMoved = loopLengthMoved || out[loop] != in[loop];
+            }
+        }
+        CHECK(loopLengthMoved);
     }
 }
 

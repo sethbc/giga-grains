@@ -1,0 +1,13 @@
+{
+  "mode": "fx",
+  "sampleRate": 48000,
+  "durationSeconds": 8.0,
+  "blockSize": 128,
+  "seed": 1,
+  "input": {"kind": "file", "path": "loop-48k.wav"},
+  "params": {"Mix": 1.0, "A Loop": 1, "A Loop Length": 0.0, "A Overdub": 0.7, "Position": 0.3},
+  "automation": [
+    {"time": 4.0, "param": "Freeze", "value": 1},
+    {"time": 6.0, "param": "A Overdub", "value": 0.0}
+  ]
+}

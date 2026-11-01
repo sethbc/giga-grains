@@ -13,6 +13,7 @@ add_library(gg-engine STATIC
         src/LiveSource.cpp
         src/Mipmap.cpp
         src/PreparedSource.cpp
+        src/RingStorage.cpp
         src/SampleBuffer.cpp
         src/SpectralSource.cpp
         src/SincTable.cpp
@@ -41,3 +42,7 @@ target_compile_definitions(gg-engine PUBLIC
 target_link_libraries(gg-engine PUBLIC gg::compiler-options sst-cpputils sst-basic-blocks simde)
 # pffft is PRIVATE: only SpectralSource.cpp includes it (the header forward-declares its setup).
 target_link_libraries(gg-engine PRIVATE gg::pffft)
+# The ring pyramid's per-frame cascade at -O0 dominates the sanitizer job (60-minute timeout).
+if(NOT MSVC)
+    set_source_files_properties(src/RingStorage.cpp PROPERTIES COMPILE_OPTIONS "$<$<CONFIG:Debug>:-O2>")
+endif()

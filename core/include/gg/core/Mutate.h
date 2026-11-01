@@ -41,7 +41,7 @@ inline constexpr uint32_t kMutatePickStream = 0xFFFFFFFEu;
 /// Reverb never move).
 LockSet structuralLocks(Mode mode) noexcept;
 
-/// Every one of the 48 parameters of each layer whose Layer On value is below 0.5 (or NaN).
+/// Every parameter of each layer whose Layer On value is below 0.5 (or NaN).
 LockSet offLayerLocks(const ParamValues &values) noexcept;
 
 /// The default locks for `values`: structuralLocks(mode) | offLayerLocks(values). Everything else
@@ -58,7 +58,9 @@ LockSet defaultMutateLocks(const ParamValues &values, Mode mode) noexcept;
 /// - a stepped one (INT or BOOL, max − min + 1 steps, a BOOL's 2): if u < amount, the step min +
 ///   floor(u' × steps), u' the second draw, clamped to max (it may be the step it was on); else
 ///   unchanged.
-/// A locked slot is copied. `out` may be `in`: each slot reads only its own value.
+/// A locked slot is copied, and so is a slot whose flags lack CLAP_PARAM_IS_AUTOMATABLE (Ring
+/// Length: a press is host gestures, recorded as automation; ruling SP-M8), with no draw. `out`
+/// may be `in`: each slot reads only its own value.
 void mutate(const ParamValues &in, const LockSet &locks, float amount, uint64_t seed,
             uint32_t counter, Mode mode, ParamValues &out) noexcept;
 } // namespace gg::core

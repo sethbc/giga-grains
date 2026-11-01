@@ -1,0 +1,16 @@
+{
+  "mode": "fx",
+  "sampleRate": 48000,
+  "durationSeconds": 4.0,
+  "blockSize": 128,
+  "seed": 1,
+  "state": "frozen-ring.ggst",
+  "input": {"kind": "sine", "frequencyHz": 220, "seconds": 3.5, "amplitude": 0.0},
+  "channels": 1,
+  "params": {"Mix": 1.0, "Freeze": 1, "Position": 0.5},
+  "automation": [
+    {"time": 1.0, "param": "Position", "value": 0.7},
+    {"time": 2.0, "param": "Position", "value": 0.9},
+    {"time": 3.0, "param": "Position", "value": 1.0}
+  ]
+}

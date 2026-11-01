@@ -570,3 +570,92 @@ TEST_CASE("findSample's scan stops after kMaxScanEntries entries", "[media][slow
     put(atLimit, kContent);
     requireFound(findSample(entryFor(dir / "old" / atLimit.filename()), settings), atLimit, true);
 }
+
+TEST_CASE("findSample tries the content roots between the saved path and the relative path",
+          "[media]")
+{
+    const auto dir = freshDir("search-content-roots");
+    const auto lib = dir / "lib";
+    const auto rootA = dir / "rootA";
+    const auto rootB = dir / "rootB";
+    put(rootA / "packs" / "kick.wav", kContent);
+    put(rootB / "packs" / "kick.wav", kContent);
+    put(lib / "drums" / "renamed.wav", kContent);
+    auto entry = entryFor(dir / "old" / "gone.wav", "drums/renamed.wav");
+    entry.contentPath = "packs/kick.wav";
+    const MachineSettings settings{utf8(lib), ""};
+    const std::vector<fs::path> roots{rootA, rootB};
+
+    // The roots come before the sample folder's relative path, in their order.
+    requireFound(findSample(entry, settings, roots), rootA / "packs" / "kick.wav", true);
+    const std::vector<fs::path> reversed{rootB, rootA};
+    requireFound(findSample(entry, settings, reversed), rootB / "packs" / "kick.wav", true);
+    // A root without the file is passed over.
+    const std::vector<fs::path> emptyFirst{dir / "nothing", rootB};
+    requireFound(findSample(entry, settings, emptyFirst), rootB / "packs" / "kick.wav", true);
+    // Without roots, or an entry without a content path, the relative path finds it as before.
+    requireFound(findSample(entry, settings), lib / "drums" / "renamed.wav", true);
+    auto noContent = entry;
+    noContent.contentPath.clear();
+    requireFound(findSample(noContent, settings, roots), lib / "drums" / "renamed.wav", true);
+    // The saved path still comes first.
+    put(dir / "old" / "gone.wav", kContent);
+    requireFound(findSample(entry, settings, roots), dir / "old" / "gone.wav", false);
+}
+
+TEST_CASE("findSample looks in the captures folder for a path saved in one", "[media]")
+{
+    const auto dir = freshDir("search-captures");
+    const auto captures = dir / "here" / "Captures";
+    put(captures / "take.wav", kContent);
+    MachineSettings settings;
+    settings.capturesFolder = utf8(captures);
+
+    // Saved in a folder named Captures on another machine.
+    requireFound(findSample(entryFor(dir / "other" / "Captures" / "take.wav"), settings),
+                 captures / "take.wav", true);
+    // Saved in the setting's own folder name.
+    settings.capturesFolder = utf8(dir / "here" / "Captures");
+    requireFound(findSample(entryFor(dir / "x" / "Captures" / "take.wav"), settings),
+                 captures / "take.wav", true);
+    // A path saved in some other folder doesn't look there (and the same-name search can't).
+    requireMissing(findSample(entryFor(dir / "other" / "Elsewhere" / "take.wav"), settings));
+    // No captures folder set: the default one is looked in, which is not under the test's folder.
+    requireMissing(
+        findSample(entryFor(dir / "other" / "Captures" / "nope.wav"), MachineSettings{}));
+}
+
+TEST_CASE("findFiledAudio finds a ring or capture at its path, then in the captures folder",
+          "[media]")
+{
+    const auto dir = freshDir("search-filed-audio");
+    const auto captures = dir / "Captures";
+    MachineSettings settings;
+    settings.capturesFolder = utf8(captures);
+    const auto bytes = std::as_bytes(std::span(kContent.data(), kContent.size()));
+    const std::string hash = gg::media::sha256Hex(bytes);
+
+    // At the saved path.
+    put(dir / "saved" / "a.wav", kContent);
+    auto found =
+        gg::media::findFiledAudio(hash, kContent.size(), utf8(dir / "saved" / "a.wav"), settings);
+    requireFound(found, dir / "saved" / "a.wav", false);
+
+    // Moved with its captures folder.
+    put(captures / "b.wav", kContent);
+    found =
+        gg::media::findFiledAudio(hash, kContent.size(), utf8(dir / "gone" / "b.wav"), settings);
+    requireFound(found, captures / "b.wav", true);
+
+    // Other content at the saved path, nothing elsewhere: Changed.
+    put(dir / "saved" / "c.wav", kOther);
+    found =
+        gg::media::findFiledAudio(hash, kContent.size(), utf8(dir / "saved" / "c.wav"), settings);
+    REQUIRE(found.outcome == SearchOutcome::Changed);
+
+    // Nowhere: Missing. No search by name beyond the captures folder.
+    put(dir / "saved" / "d.wav", kContent);
+    found =
+        gg::media::findFiledAudio(hash, kContent.size(), utf8(dir / "gone" / "d.wav"), settings);
+    requireMissing(found);
+}

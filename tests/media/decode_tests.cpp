@@ -17,6 +17,7 @@
 
 #include "gg/media/Decode.h"
 #include "media/AudioFixtures.h"
+#include "support/AllocTripwire.h"
 #include "support/Utf8.h"
 
 #if !defined(_WIN32)
@@ -27,6 +28,9 @@ namespace
 {
 namespace fs = std::filesystem;
 using gg::media::decodeAudioFile;
+/// The bound every decode here passes: the memory cap's ceiling, so nothing is refused for its
+/// size.
+constexpr uint64_t kBound = gg::media::kDefaultDecodeBound;
 using gg::test::SampleFormat;
 
 fs::path dir() { return gg::test::scratchDir("media-decode"); }
@@ -115,7 +119,7 @@ TEST_CASE("decode reads 16-bit, 24-bit and float WAV, mono and stereo", "[media]
         dir() / (std::string("wav-") + name(format) + "-" + std::to_string(channels) + "ch.wav");
     gg::test::writeFile(file, gg::test::wavBytes(audio, format));
 
-    const auto result = decodeAudioFile(file);
+    const auto result = decodeAudioFile(file, kBound);
     INFO(gg::test::utf8(file.filename()) << ": " << result.error);
     REQUIRE(result.audio.has_value());
     REQUIRE(result.error.empty());
@@ -140,7 +144,7 @@ TEST_CASE("decode reads AIFF and AIFC", "[media]")
     const auto file = dir() / (aifc ? "sowt-24-mono.aifc" : "be-16-stereo.aiff");
     gg::test::writeFile(file, gg::test::aiffBytes(audio, format, aifc));
 
-    const auto result = decodeAudioFile(file);
+    const auto result = decodeAudioFile(file, kBound);
     INFO(gg::test::utf8(file.filename()) << ": " << result.error);
     REQUIRE(result.audio.has_value());
     const auto &decoded = *result.audio;
@@ -154,7 +158,7 @@ TEST_CASE("decode reads AIFF and AIFC", "[media]")
 
 TEST_CASE("decode reads the FLAC fixture losslessly", "[media]")
 {
-    const auto result = decodeAudioFile(fixture("sine-1k-48k-mono.flac"));
+    const auto result = decodeAudioFile(fixture("sine-1k-48k-mono.flac"), kBound);
     INFO(result.error);
     REQUIRE(result.audio.has_value());
     const auto &decoded = *result.audio;
@@ -175,7 +179,7 @@ TEST_CASE("decode reads the FLAC fixture losslessly", "[media]")
 
 TEST_CASE("decode reads the MP3 fixture", "[media]")
 {
-    const auto result = decodeAudioFile(fixture("sine-1k-48k-mono.mp3"));
+    const auto result = decodeAudioFile(fixture("sine-1k-48k-mono.mp3"), kBound);
     INFO(result.error);
     REQUIRE(result.audio.has_value());
     const auto &decoded = *result.audio;
@@ -195,7 +199,7 @@ TEST_CASE("decode keeps the first two of four channels", "[media]")
     const auto file = dir() / "four-channels.wav";
     gg::test::writeFile(file, gg::test::wavBytes(audio, SampleFormat::Int16));
 
-    const auto result = decodeAudioFile(file);
+    const auto result = decodeAudioFile(file, kBound);
     INFO(result.error);
     REQUIRE(result.audio.has_value());
     REQUIRE(result.audio->fileChannels == 4);
@@ -212,17 +216,17 @@ TEST_CASE("decode refuses a file that ends before its header says, as truncated"
         const auto file = dir() / "truncated-data.wav";
         // The header claims 1000 frames; the file holds 600.
         gg::test::writeFile(file, gg::test::wavBytes(audio, SampleFormat::Int16, 1000 * 4));
-        requireError(decodeAudioFile(file), file, "truncated");
+        requireError(decodeAudioFile(file, kBound), file, "truncated");
     }
-    SECTION("a WAV never finalized, whose data size is a placeholder longer than 600 s")
+    SECTION("a WAV never finalized, whose data size is a placeholder over the memory cap")
     {
         // A recorder that stopped before rewriting its header: 0x7FFFFFF0 bytes of 44.1 kHz
-        // 16-bit stereo would be 12,173 s, but the file holds 600 frames. It is truncated, not
-        // too long.
+        // 16-bit stereo would be 12,173 s, 4.3 GB decoded, but the file holds 600 frames. It is
+        // truncated, not over a 64 MiB cap.
         const auto audio = gg::test::makeTestAudio(2, 44100, 600);
         const auto file = dir() / "unfinalized.wav";
         gg::test::writeFile(file, gg::test::wavBytes(audio, SampleFormat::Int16, 0x7FFFFFF0));
-        requireError(decodeAudioFile(file), file, "truncated");
+        requireError(decodeAudioFile(file, uint64_t{64} << 20), file, "truncated");
     }
     SECTION("an AIFF whose COMM chunk claims more frames than the file holds")
     {
@@ -231,7 +235,7 @@ TEST_CASE("decode refuses a file that ends before its header says, as truncated"
         b.patch(22, 1000, 4, true); // COMM's frame count
         const auto file = dir() / "truncated-data.aiff";
         gg::test::writeFile(file, b.data);
-        requireError(decodeAudioFile(file), file, "truncated");
+        requireError(decodeAudioFile(file, kBound), file, "truncated");
     }
     SECTION("the FLAC fixture cut in half")
     {
@@ -239,7 +243,7 @@ TEST_CASE("decode refuses a file that ends before its header says, as truncated"
         bytes.resize(bytes.size() / 2);
         const auto file = dir() / "truncated.flac";
         gg::test::writeFile(file, bytes);
-        requireError(decodeAudioFile(file), file, "truncated");
+        requireError(decodeAudioFile(file, kBound), file, "truncated");
     }
     SECTION("the MP3 fixture cut to its first 1000 bytes")
     {
@@ -248,7 +252,7 @@ TEST_CASE("decode refuses a file that ends before its header says, as truncated"
         bytes.resize(1000);
         const auto file = dir() / "truncated.mp3";
         gg::test::writeFile(file, bytes);
-        requireError(decodeAudioFile(file), file, "truncated");
+        requireError(decodeAudioFile(file, kBound), file, "truncated");
     }
 }
 
@@ -260,7 +264,7 @@ TEST_CASE("decode tolerates a data size up to 1 KiB beyond the file (ruling R10)
     {
         const auto file = dir() / "overstated-100.wav";
         gg::test::writeFile(file, gg::test::wavBytes(audio, SampleFormat::Int16, 2400 + 100));
-        const auto result = decodeAudioFile(file);
+        const auto result = decodeAudioFile(file, kBound);
         INFO("error: " << result.error);
         REQUIRE(result.audio.has_value());
         REQUIRE(result.audio->buffer->channels() == 2);
@@ -271,20 +275,20 @@ TEST_CASE("decode tolerates a data size up to 1 KiB beyond the file (ruling R10)
     {
         const auto atLimit = dir() / "overstated-1024.wav";
         gg::test::writeFile(atLimit, gg::test::wavBytes(audio, SampleFormat::Int16, 2400 + 1024));
-        const auto result = decodeAudioFile(atLimit);
+        const auto result = decodeAudioFile(atLimit, kBound);
         INFO("error: " << result.error);
         REQUIRE(result.audio.has_value());
         REQUIRE(result.audio->buffer->frames() == 600);
 
         const auto over = dir() / "overstated-1028.wav";
         gg::test::writeFile(over, gg::test::wavBytes(audio, SampleFormat::Int16, 2400 + 1028));
-        requireError(decodeAudioFile(over), over, "truncated");
+        requireError(decodeAudioFile(over, kBound), over, "truncated");
     }
     SECTION("4096 bytes beyond: truncated")
     {
         const auto file = dir() / "overstated-4096.wav";
         gg::test::writeFile(file, gg::test::wavBytes(audio, SampleFormat::Int16, 2400 + 4096));
-        requireError(decodeAudioFile(file), file, "truncated");
+        requireError(decodeAudioFile(file, kBound), file, "truncated");
     }
 }
 
@@ -333,7 +337,7 @@ TEST_CASE("decode tolerates an AIFF frame count up to 1 KiB beyond the file (rul
         {
             INFO("frames beyond: " << extra);
             const auto file = claiming(600 + extra, "overstated-within");
-            const auto result = decodeAudioFile(file);
+            const auto result = decodeAudioFile(file, kBound);
             INFO("error: " << result.error);
             REQUIRE(result.audio.has_value());
             REQUIRE(result.audio->format == "aiff");
@@ -344,21 +348,22 @@ TEST_CASE("decode tolerates an AIFF frame count up to 1 KiB beyond the file (rul
         }
         // One frame more is past the slack (1028 or 1026 bytes): truncated.
         const auto over = claiming(600 + slackFrames + 1, "overstated-past");
-        requireError(decodeAudioFile(over), over, "truncated");
+        requireError(decodeAudioFile(over, kBound), over, "truncated");
     }
 }
 
 TEST_CASE("decode allocates no more than the file vouches for when a header claims audio it lacks",
           "[media][serial]")
 {
-    // Each file is tiny but claims up to 600 s, within every limit; allocating and zeroing that
-    // much (1.8 GB for the 384 kHz stereo ones) would take far longer than the bound below.
-    // Ruling R7 as amended (INTENT §23 #54): an uncompressed file's buffer never exceeds what its
-    // bytes hold, and a compressed header is trusted only up to 64 bytes of decoded audio per byte
-    // of the file, which these tiny files are far beyond. decode_memory_tests.cpp pins that bound.
+    // Each file is tiny but claims up to 600 s, within the memory cap's ceiling; allocating and
+    // zeroing that much (1.8 GB for the 384 kHz stereo ones) would take far longer than the bound
+    // below. Ruling R7 as amended (INTENT §23 #54): an uncompressed file's buffer never exceeds
+    // what its bytes hold, and a compressed header is trusted only up to 64 bytes of decoded audio
+    // per byte of the file, which these tiny files are far beyond. decode_memory_tests.cpp pins
+    // that bound.
     const auto requireQuickError = [](const fs::path &file, const std::string &reason) {
         const auto start = std::chrono::steady_clock::now();
-        const auto result = decodeAudioFile(file);
+        const auto result = decodeAudioFile(file, kBound);
         const std::chrono::duration<double> took = std::chrono::steady_clock::now() - start;
         requireError(result, file, reason);
         REQUIRE(took.count() < 0.5);
@@ -406,7 +411,7 @@ TEST_CASE("decode fails at once on a chunk size that would seek past the file", 
     // fseek's do: decoding must refuse such a seek and fail within the bound.
     const auto requireQuickError = [](const fs::path &file) {
         const auto start = std::chrono::steady_clock::now();
-        const auto result = decodeAudioFile(file);
+        const auto result = decodeAudioFile(file, kBound);
         const std::chrono::duration<double> took = std::chrono::steady_clock::now() - start;
         requireError(result, file);
         REQUIRE(took.count() < 0.5);
@@ -475,7 +480,7 @@ TEST_CASE("decode reads a FLAC whose STREAMINFO gives no length", "[media]")
     const auto file = dir() / "unknown-length.flac";
     gg::test::writeFile(file, bytes);
 
-    const auto result = decodeAudioFile(file);
+    const auto result = decodeAudioFile(file, kBound);
     INFO(result.error);
     REQUIRE(result.audio.has_value());
     REQUIRE(result.audio->format == "flac");
@@ -487,7 +492,7 @@ TEST_CASE("decode reads an MP3 named .wav as an MP3", "[media]")
     const auto file = dir() / "really-an-mp3.wav";
     fs::copy_file(fixture("sine-1k-48k-mono.mp3"), file, fs::copy_options::overwrite_existing);
 
-    const auto result = decodeAudioFile(file);
+    const auto result = decodeAudioFile(file, kBound);
     INFO(result.error);
     REQUIRE(result.audio.has_value());
     REQUIRE(result.audio->format == "mp3");
@@ -500,13 +505,13 @@ TEST_CASE("decode refuses what it can't read, naming the file", "[media]")
     {
         const auto file = dir() / "no-such-file.wav";
         fs::remove(file);
-        requireError(decodeAudioFile(file), file);
+        requireError(decodeAudioFile(file, kBound), file);
     }
     SECTION("a zero-length file")
     {
         const auto file = dir() / "empty.wav";
         gg::test::writeFile(file, {});
-        requireError(decodeAudioFile(file), file);
+        requireError(decodeAudioFile(file, kBound), file);
     }
     SECTION("a truncated WAV header")
     {
@@ -514,7 +519,7 @@ TEST_CASE("decode refuses what it can't read, naming the file", "[media]")
             gg::test::wavBytes(gg::test::makeTestAudio(1, 48000, 100), SampleFormat::Int16);
         const auto file = dir() / "truncated-header.wav";
         gg::test::writeFile(file, std::span(bytes).first(30)); // ends inside the fmt chunk
-        requireError(decodeAudioFile(file), file);
+        requireError(decodeAudioFile(file, kBound), file);
     }
     SECTION("random bytes named .wav")
     {
@@ -530,14 +535,14 @@ TEST_CASE("decode refuses what it can't read, naming the file", "[media]")
         }
         const auto file = dir() / "random.wav";
         gg::test::writeFile(file, bytes);
-        requireError(decodeAudioFile(file), file);
+        requireError(decodeAudioFile(file, kBound), file);
     }
     SECTION("a WAV with no frames")
     {
         const auto file = dir() / "no-frames.wav";
         gg::test::writeFile(
             file, gg::test::wavBytes(gg::test::makeTestAudio(1, 48000, 0), SampleFormat::Int16));
-        requireError(decodeAudioFile(file), file);
+        requireError(decodeAudioFile(file, kBound), file);
     }
     SECTION("a WAV with no channels")
     {
@@ -545,14 +550,14 @@ TEST_CASE("decode refuses what it can't read, naming the file", "[media]")
         b.data.resize(b.data.size() + 64);
         const auto file = dir() / "no-channels.wav";
         gg::test::writeFile(file, b.data);
-        requireError(decodeAudioFile(file), file);
+        requireError(decodeAudioFile(file, kBound), file);
     }
     SECTION("a WAV above 384 kHz, which dr_wav refuses")
     {
         const auto file = dir() / "800k.wav";
         gg::test::writeFile(
             file, gg::test::wavBytes(gg::test::makeTestAudio(1, 800000, 64), SampleFormat::Int16));
-        requireError(decodeAudioFile(file), file);
+        requireError(decodeAudioFile(file, kBound), file);
     }
     SECTION("a FLAC above 768 kHz")
     {
@@ -564,7 +569,7 @@ TEST_CASE("decode refuses what it can't read, naming the file", "[media]")
         bytes[8 + 12] = static_cast<uint8_t>(((rate & 0xfu) << 4) | (bytes[8 + 12] & 0x0fu));
         const auto file = dir() / "800k.flac";
         gg::test::writeFile(file, bytes);
-        requireError(decodeAudioFile(file), file, "sample rate");
+        requireError(decodeAudioFile(file, kBound), file, "sample rate");
     }
     SECTION("a WAV in an encoding dr_wav can't decode")
     {
@@ -572,7 +577,7 @@ TEST_CASE("decode refuses what it can't read, naming the file", "[media]")
         b.data.resize(b.data.size() + 64);
         const auto file = dir() / "mpeg-in-wav.wav";
         gg::test::writeFile(file, b.data);
-        requireError(decodeAudioFile(file), file, "unsupported WAV encoding");
+        requireError(decodeAudioFile(file, kBound), file, "unsupported WAV encoding");
     }
 #if !defined(_WIN32)
     SECTION("a file in a directory that can't be searched")
@@ -587,39 +592,93 @@ TEST_CASE("decode refuses what it can't read, naming the file", "[media]")
         gg::test::writeFile(
             file, gg::test::wavBytes(gg::test::makeTestAudio(1, 48000, 8), SampleFormat::Int16));
         fs::permissions(locked, fs::perms::owner_all, fs::perm_options::remove);
-        const auto result = decodeAudioFile(file);
+        const auto result = decodeAudioFile(file, kBound);
         fs::permissions(locked, fs::perms::owner_all, fs::perm_options::add);
         requireError(result, file, "can't be read");
     }
 #endif
 }
 
-TEST_CASE("decode accepts 600 s and refuses a file just over", "[media]")
+TEST_CASE("decode refuses, before allocating, a file over its bound in bytes", "[media][serial]")
 {
-    // 8 kHz mono 16-bit, written sparsely: the header, then the file extended with zeros.
-    const auto header =
-        gg::test::wavBytes(gg::test::makeTestAudio(1, 8000, 0), SampleFormat::Int16);
-    const auto write = [&](const fs::path &file, int64_t frames) {
-        auto bytes = header;
-        gg::test::Bytes b{std::move(bytes)};
+    // 20 minutes of 16 kHz mono 16-bit, written sparsely: the header, then the file extended with
+    // zeros (38.4 MB). It decodes to 19,200,000 floats, 76.8 MB (73.24 MiB): within a 2 GiB
+    // bound, over a 64 MiB one. The bound replaces M1's 600 s cap (spec §6.5).
+    const int64_t frames = int64_t{20} * 60 * 16000;
+    const auto file = dir() / "twenty-minutes.wav";
+    {
+        gg::test::Bytes b{
+            gg::test::wavBytes(gg::test::makeTestAudio(1, 16000, 0), SampleFormat::Int16)};
         b.patch(40, uint64_t(frames) * 2, 4, false);             // the data chunk's size
         b.patch(4, 4 + 24 + 8 + uint64_t(frames) * 2, 4, false); // the RIFF size
         gg::test::writeFile(file, b.data);
         fs::resize_file(file, b.data.size() + uint64_t(frames) * 2);
-    };
+    }
 
-    const auto atLimit = dir() / "600s.wav";
-    write(atLimit, 600 * 8000);
-    const auto ok = decodeAudioFile(atLimit);
+    const auto ok = decodeAudioFile(file, uint64_t{2} << 30);
     INFO(ok.error);
     REQUIRE(ok.audio.has_value());
-    REQUIRE(ok.audio->buffer->frames() == 600 * 8000);
+    REQUIRE(ok.audio->buffer->frames() == frames);
 
-    const auto over = dir() / "600.01s.wav";
-    write(over, 600 * 8000 + 80); // 600.01 s
-    const auto refused = decodeAudioFile(over);
-    requireError(refused, over);
-    REQUIRE(refused.error.find("600") != std::string::npos);
+    gg::media::DecodeResult refused;
+    uint64_t peakBytes = 0;
+    bool complete = false;
+    {
+        const gg::test::AllocPeak peak;
+        refused = decodeAudioFile(file, uint64_t{64} << 20);
+        peakBytes = peak.peakBytes();
+        complete = peak.complete();
+    }
+    requireError(refused, file, "needs 74 MB, the memory cap allows 64 MB");
+    REQUIRE(refused.error == "twenty-minutes.wav: needs 74 MB, the memory cap allows 64 MB");
+    // Refused from the header: nothing the size of the audio was allocated, only the message and
+    // small change.
+    if (gg::test::AllocPeak::available())
+    {
+        REQUIRE(complete);
+        REQUIRE(peakBytes < 64 * 1024);
+    }
+
+    // At exactly the decoded size it fits; one byte less and it doesn't.
+    const uint64_t exact = uint64_t(frames) * sizeof(float);
+    REQUIRE(decodeAudioFile(file, exact).audio.has_value());
+    requireError(decodeAudioFile(file, exact - 1), file,
+                 "needs 74 MB, the memory cap allows 73 MB");
+}
+
+TEST_CASE("decode bounds what a compressed file decodes to, whatever its header says", "[media]")
+{
+    // The FLAC fixture (4800 mono frames, 19,200 bytes decoded) with STREAMINFO giving no length:
+    // the decode itself has to prove it within the bound.
+    auto bytes = gg::test::readFile(fixture("sine-1k-48k-mono.flac"));
+    setFlacTotalSamples(bytes, 0);
+    const auto file = dir() / "unbounded.flac";
+    gg::test::writeFile(file, bytes);
+    REQUIRE(decodeAudioFile(file, 19200).audio.has_value());
+    requireError(decodeAudioFile(file, 19199), file, "the memory cap allows");
+
+    // With its length, the header is refused before decoding.
+    requireError(decodeAudioFile(fixture("sine-1k-48k-mono.flac"), 19199),
+                 fixture("sine-1k-48k-mono.flac"), "needs 1 MB, the memory cap allows 0 MB");
+}
+
+TEST_CASE("decodeAudioBytes bounds what a compressed payload decodes to", "[media]")
+{
+    // decodeAudioBytes' overrun path (an embedded payload, spec §6.6): the FLAC fixture with
+    // STREAMINFO giving no length passes the header's check, so the decode itself proves it past
+    // the bound, as decodeAudioFile's does, with the reason alone.
+    auto bytes = gg::test::readFile(fixture("sine-1k-48k-mono.flac"));
+    setFlacTotalSamples(bytes, 0);
+    const std::string_view view(reinterpret_cast<const char *>(bytes.data()), bytes.size());
+    const auto fits = gg::media::decodeAudioBytes(view, 19200);
+    REQUIRE(fits.audio.has_value());
+    CHECK(fits.audio->buffer->frames() == 4800);
+    const auto over = gg::media::decodeAudioBytes(view, 19199);
+    REQUIRE_FALSE(over.audio.has_value());
+    CHECK(over.error == "decodes to more than the memory cap allows (0 MB)");
+    const auto file = dir() / "unbounded-bytes.flac";
+    gg::test::writeFile(file, bytes);
+    CHECK(decodeAudioFile(file, 19199).error == "unbounded-bytes.flac: " + over.error);
 }
 
 TEST_CASE("decode opens a UTF-8 path with non-ASCII characters", "[media]")
@@ -628,7 +687,7 @@ TEST_CASE("decode opens a UTF-8 path with non-ASCII characters", "[media]")
     const auto file = dir() / fs::path(u8"sämple ✓.wav");
     gg::test::writeFile(file, gg::test::wavBytes(audio, SampleFormat::Int16));
 
-    const auto result = decodeAudioFile(file);
+    const auto result = decodeAudioFile(file, kBound);
     INFO(result.error);
     REQUIRE(result.audio.has_value());
     REQUIRE(result.audio->buffer->frames() == 64);
@@ -646,8 +705,8 @@ TEST_CASE("decode stops once its cancel flag is set", "[media]")
         GENERATE_COPY(wav, fixture("sine-1k-48k-mono.flac"), fixture("sine-1k-48k-mono.mp3"));
     INFO(gg::test::utf8(file.filename()));
     std::atomic<bool> cancel{false};
-    const auto plain = decodeAudioFile(file);
-    const auto unset = decodeAudioFile(file, &cancel);
+    const auto plain = decodeAudioFile(file, kBound);
+    const auto unset = decodeAudioFile(file, kBound, &cancel);
     REQUIRE(plain.audio.has_value());
     REQUIRE(unset.audio.has_value());
     const auto &a = *plain.audio->buffer;
@@ -660,7 +719,67 @@ TEST_CASE("decode stops once its cancel flag is set", "[media]")
     }
 
     cancel = true;
-    const auto cancelled = decodeAudioFile(file, &cancel);
+    const auto cancelled = decodeAudioFile(file, kBound, &cancel);
     CHECK_FALSE(cancelled.audio.has_value());
     CHECK(cancelled.error.find("cancelled") != std::string::npos);
+}
+
+TEST_CASE("decodeAudioBytes decodes what decodeAudioFile decodes", "[media]")
+{
+    const auto wav = dir() / "bytes.wav";
+    gg::test::writeFile(
+        wav, gg::test::wavBytes(gg::test::makeTestAudio(2, 44100, 4410), SampleFormat::Float32));
+    const fs::path file =
+        GENERATE_COPY(wav, fixture("sine-1k-48k-mono.flac"), fixture("sine-1k-48k-mono.mp3"));
+    INFO(gg::test::utf8(file.filename()));
+    const auto content = gg::test::readFile(file);
+    const std::string_view view(reinterpret_cast<const char *>(content.data()), content.size());
+
+    const auto fromFile = decodeAudioFile(file, kBound);
+    const auto fromBytes = gg::media::decodeAudioBytes(view, kBound);
+    INFO(fromFile.error << " / " << fromBytes.error);
+    REQUIRE(fromFile.audio.has_value());
+    REQUIRE(fromBytes.audio.has_value());
+    REQUIRE(fromBytes.audio->format == fromFile.audio->format);
+    REQUIRE(fromBytes.audio->fileChannels == fromFile.audio->fileChannels);
+    const auto &a = *fromFile.audio->buffer;
+    const auto &b = *fromBytes.audio->buffer;
+    REQUIRE(a.channels() == b.channels());
+    REQUIRE(a.frames() == b.frames());
+    REQUIRE(a.sampleRate() == b.sampleRate());
+    for (uint32_t c = 0; c < a.channels(); ++c)
+    {
+        CHECK(std::memcmp(a.channel(c), b.channel(c), size_t(a.frames()) * sizeof(float)) == 0);
+    }
+
+    // The same bound, from the header.
+    const auto refused = gg::media::decodeAudioBytes(view, 1024);
+    REQUIRE_FALSE(refused.audio.has_value());
+    REQUIRE(refused.error.find("the memory cap allows 0 MB") != std::string::npos);
+}
+
+TEST_CASE("decodeAudioBytes refuses a truncated file", "[media]")
+{
+    // decodeAudioFile's message without the file's name, which the bytes don't have.
+    const auto audio = gg::test::makeTestAudio(2, 48000, 600);
+    const auto file = dir() / "bytes-truncated.wav";
+    const auto content = gg::test::wavBytes(audio, SampleFormat::Float32, 1000 * 8);
+    gg::test::writeFile(file, content);
+    const auto fromFile = decodeAudioFile(file, kBound);
+    requireError(fromFile, file, "truncated");
+
+    const std::string_view view(reinterpret_cast<const char *>(content.data()), content.size());
+    const auto fromBytes = gg::media::decodeAudioBytes(view, kBound);
+    REQUIRE_FALSE(fromBytes.audio.has_value());
+    REQUIRE(fromFile.error == "bytes-truncated.wav: " + fromBytes.error);
+
+    // Cut short anywhere in its header or audio, the bytes are refused, never read past.
+    for (const size_t keep :
+         {size_t{0}, size_t{4}, size_t{12}, size_t{40}, size_t{44}, content.size() - 1500})
+    {
+        INFO("keep " << keep);
+        const auto cut = gg::media::decodeAudioBytes(view.substr(0, keep), kBound);
+        REQUIRE_FALSE(cut.audio.has_value());
+        REQUIRE_FALSE(cut.error.empty());
+    }
 }

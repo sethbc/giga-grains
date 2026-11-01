@@ -506,7 +506,7 @@ TEST_CASE("the instrument keeps its loaded sample across a sample-less preset an
     CHECK(sounds(instrument));
     CHECK(instrument.impl().processor()->base(ParamSlot::Size) ==
           fixtureState(Mode::Instrument).values[at(ParamSlot::Size)]);
-    CHECK(decoded(instrument.save(), Mode::Instrument).sample == entry);
+    CHECK(decoded(instrument.save(), Mode::Instrument).samples[0] == entry);
 
     REQUIRE(instrument.loadPreset(CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN, nullptr, "init"));
     CHECK(loader->entry() == entry);
@@ -534,15 +534,49 @@ TEST_CASE("an instrument preset that names a sample loads it as a restore does",
     REQUIRE(instrument.activate(48000.0, 512));
 
     SessionState state = fixtureState(Mode::Instrument);
-    state.sample = gg::test::entryOf(second);
-    REQUIRE(state.sample.has_value());
+    state.samples[0] = gg::test::entryOf(second);
+    REQUIRE(state.samples[0].has_value());
     const std::string path =
         utf8(gg::test::writePresetFile("with-sample", infoFor(Mode::Instrument), state));
     REQUIRE(instrument.loadPreset(CLAP_PRESET_DISCOVERY_LOCATION_FILE, path.c_str(), nullptr));
     auto *loader = instrument.impl().sampleLoader();
     // Ready before from_location returned, as a restore is (D8).
     CHECK(loader->status().state == SampleState::Loaded);
-    CHECK(loader->entry() == state.sample);
+    CHECK(loader->entry() == state.samples[0]);
+    CHECK(sounds(instrument));
+}
+
+TEST_CASE("a preset keeps each layer's sample it names none for, and replaces the others",
+          "[plugin][preset]")
+{
+    // D5 per layer, after sub-project 2's merge (MediaSession::restorePreset): layer A keeps its
+    // sample, entry and source, and layer B takes the preset's.
+    const fs::path dir = setUpSamples("preset-layers");
+    const fs::path first = gg::test::sineSampleFile("preset-layers");
+    const fs::path second = gg::test::writeSineWav(dir / "second.wav", 48000, 2.0, 330.0);
+    const fs::path third = gg::test::writeSineWav(dir / "third.wav", 48000, 2.0, 440.0);
+    PluginUnderTest instrument(kInstrumentId);
+    REQUIRE(instrument.valid());
+    SessionState session = gg::core::initState(Mode::Instrument);
+    session.samples[0] = gg::test::entryOf(first);
+    session.samples[1] = gg::test::entryOf(second);
+    session.samples[1]->layer = 1;
+    REQUIRE(instrument.load(gg::core::encodeState(session)));
+    REQUIRE(instrument.activate(48000.0, 512));
+    auto &media = instrument.impl().media();
+    REQUIRE(media.loader(0).entry() == session.samples[0]);
+    REQUIRE(media.loader(1).entry() == session.samples[1]);
+
+    SessionState state = fixtureState(Mode::Instrument);
+    state.samples[1] = gg::test::entryOf(third);
+    state.samples[1]->layer = 1;
+    const std::string path =
+        utf8(gg::test::writePresetFile("layers", infoFor(Mode::Instrument), state));
+    REQUIRE(instrument.loadPreset(CLAP_PRESET_DISCOVERY_LOCATION_FILE, path.c_str(), nullptr));
+    CHECK(media.loader(0).entry() == session.samples[0]);
+    CHECK(media.loader(0).status().state == SampleState::Loaded);
+    CHECK(media.loader(1).entry() == state.samples[1]);
+    CHECK(media.loader(1).status().state == SampleState::Loaded);
     CHECK(sounds(instrument));
 }
 

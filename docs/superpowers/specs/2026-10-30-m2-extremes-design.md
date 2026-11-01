@@ -407,7 +407,7 @@ D7's), `Delay Damping` (0–100%, default 30%: a one-pole low-pass in the loop, 
   what was already playing, as the diffuser does), and the return is added only on samples where
   Amount's per-sample ramp isn't exactly 0: no `+ 0`, so `wet' == wet` bit for bit, the sign of
   zero included, with every delay parameter at its default or Amount at 0.
-- **Amended (D-glide, the director, 2026-10-31, option 1): the glide stays tape-like.** Inside a Feedback 100% loop the glide re-reads every pass at another speed, and over a near-silent tail that crackles (carry-over row 361, an accepted law, not a defect). The sweep harness's `kDelayGlideHold` looks away only while the delay's effective Feedback is 0.95 or more and its read time is still gliding, on the samples where Delay Amount is above 0.
+- **Amended (D-glide, the director, 2026-10-31, option 1): the glide stays tape-like.** Inside a Feedback 100% loop the glide re-reads every pass at another speed, and over a near-silent tail that crackles (carry-over row 379, an accepted law, not a defect). The sweep harness's `kDelayGlideHold` looks away only while the delay's effective Feedback is 0.95 or more and its read time is still gliding, on the samples where Delay Amount is above 0.
 - **Smoothing.** Amount, Feedback and Damping ramp over 10 ms like Mix. **Amended (the final
   review's fix wave):** so does Ping-pong, as a weight p that moves the damper's input from the
   channel's own read to the other's, `y_c + p × (y_other − y_c)`, exactly `y_c` at p = 0 and the
@@ -447,7 +447,7 @@ default 100 ms).
   `exp2Det` at the grid); the output is `g[t] × x[t]`, never above C in magnitude. No latency,
   plain arithmetic, bit-exact across platforms; a single-sample peak is clamped rather than
   anticipated.
-- **Amended (D5b, the director, 2026-10-31, option 1): the laws stand.** Peak's instant attack and Soft's drive at the bottom ceilings score as clicks over hot material (carry-over row 360, an accepted law, not a defect). The sweep harness's `kLimiterDrive` looks away over the calls in which Peak's gain falls below −6 dB or Soft's input passes twice the ceiling, plus 10 ms after, and nothing wider.
+- **Amended (D5b, the director, 2026-10-31, option 1): the laws stand.** Peak's instant attack and Soft's drive at the bottom ceilings score as clicks over hot material (carry-over row 378, an accepted law, not a defect). The sweep harness's `kLimiterDrive` looks away over the calls in which Peak's gain falls below −6 dB or Soft's input passes twice the ceiling, plus 10 ms after, and nothing wider.
 - **A mode change crossfades** over the 10 ms ramp between the outgoing and the incoming law's
   outputs (both computed through the fade), so switching never clicks; Ceiling and Release ramp
   like Mix. **Amended (the final review's fix wave):** where the ramps jump (a new instance, a

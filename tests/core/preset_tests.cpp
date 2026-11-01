@@ -180,7 +180,7 @@ TEST_CASE("a preset round trips through encodePreset and readPreset", "[core][pr
     CHECK(bitsOf(out.values) == bitsOf(state.values));
     CHECK(sameRoutes(out.routes, state.routes));
     CHECK(out.seed == 0u);
-    CHECK_FALSE(out.sample.has_value());
+    CHECK_FALSE(out.samples[0].has_value());
 
     // Saving what was read writes the same bytes again.
     CHECK(encodePreset(readInfo, out) == bytes);
@@ -236,16 +236,20 @@ TEST_CASE("a session state's bytes are pinned", "[core][preset]")
     // is written only for an edited preset, so these unedited bytes are unchanged by it. Retaken
     // at the merge of sub-project 3, whose five parameters (A to D Quality, Budget) add five
     // <p> elements, 258 bytes: without them the bytes are the group 1 fix wave's (11,755,
-    // c3d26f4e...; 11,808, ed5e43d5...). Retaken again at the merge with sub-project 4, whose
-    // forty parameters (eight per layer, the delay's five and the limiter's three) add forty <p>
-    // elements, 2,047 bytes: without them the bytes are sub-project 3's merge's (12,013,
-    // 875d7ac8...; 12,066, 37dd926d...).
+    // c3d26f4e...; 11,808, ed5e43d5...). Retaken again at the merge of sub-project 2, whose twenty
+    // ring parameters (A to D Ring Length, Loop, Loop Length, Overdub and Splice) add twenty <p>
+    // elements to PTCH, 1,035 bytes, and whose container writes MEDI version 2 and an INST chunk,
+    // 56 bytes more: before it the bytes were sub-project 3's merge's (12,013, 875d7ac8...;
+    // 12,066, 37dd926d...). Retaken again at the merge of sub-projects 2 and 4, whose forty
+    // parameters (eight per layer, the delay's five and the limiter's three) add forty <p>
+    // elements, 2,047 bytes, to sub-project 2's merge's (13,048, 6e2115f1...; 13,157,
+    // 5573ae15...).
     const std::string session = encodeState(someState());
     const std::string ptch = *stateChunkPayload(session, "PTCH");
-    CHECK(ptch.size() == 14060);
-    CHECK(sha256Of(ptch) == "24c601013e4e384034559465dc4c205738cbfd09723a20c8600b1051f16e652b");
-    CHECK(session.size() == 14113);
-    CHECK(sha256Of(session) == "c13205a77c1b3330a80c689e64e02f43cf1e164893fac133cdd3050764c412e5");
+    CHECK(ptch.size() == 15095);
+    CHECK(sha256Of(ptch) == "765ee8fb6eb035ef40765a49c28263681096cf51ad335b50759d8e61df06ca97");
+    CHECK(session.size() == 15204);
+    CHECK(sha256Of(session) == "b66606a7bca77fff9ce015ee18bab469eeac26107eee10005f810f5d9b50175e");
 }
 
 TEST_CASE("a name read back is cut at 255 bytes and at a NUL", "[core][preset]")
@@ -502,8 +506,11 @@ TEST_CASE("initState is every default and the factory routes", "[core][preset]")
     // and both products' INIT bytes by size and SHA-256 (taken at the group 1 fix wave, and
     // retaken at the merge of sub-project 3: its five parameters add 258 bytes, without which
     // they are the fix wave's, 13,123 f5bebe3b... and 13,124 4b56d092...; retaken again at the
-    // merge with sub-project 4: its forty parameters add 2,047 bytes, without which they are
-    // sub-project 3's merge's, 13,381 d3fce75c... and 13,382 ffdb8cc2...).
+    // merge of sub-project 2: its twenty ring parameters and its container's MEDI version 2 and
+    // INST add 1,091 bytes, without which they are sub-project 3's merge's, 13,381 d3fce75c...
+    // and 13,382 ffdb8cc2...; and retaken at the merge of sub-projects 2 and 4: sub-project 4's
+    // forty parameters add 2,047 bytes to sub-project 2's merge's, 14,472 5c5c3e20... and 14,473
+    // 58a43b60...).
     const SessionState fx = initState(Mode::Fx);
     CHECK(fx.values[at(ParamSlot::Size)] ==
           gg::core::paramMeta(ParamSlot::Size, Mode::Fx).defaultVal);
@@ -511,15 +518,15 @@ TEST_CASE("initState is every default and the factory routes", "[core][preset]")
     CHECK(fx.values[at(ParamSlot::LayerBOn)] == 0.0f);
     CHECK(fx.routes == factoryRoutes(Mode::Fx));
     const std::string fxBytes = encodeState(fx);
-    CHECK(fxBytes.size() == 15428);
-    CHECK(sha256Of(fxBytes) == "7a4eb482bf49e717309d4e669d83043a978118181671dda27eddd556f3547440");
+    CHECK(fxBytes.size() == 16519);
+    CHECK(sha256Of(fxBytes) == "129442fb0c4896b41ad6c5b42f947de01027e5d6c6569145ba29e4ba51ae4f19");
     const std::string instBytes = encodeState(initState(Mode::Instrument));
-    CHECK(instBytes.size() == 15429);
+    CHECK(instBytes.size() == 16520);
     CHECK(sha256Of(instBytes) ==
-          "f16a352fd08c15a89617831d8aca3b1add0d9242b64684f017d18062aa32ade1");
+          "4e77e2b625f0d0cf825f6401314e866c9c69393f650153209f28017af49e2cbe");
     CHECK(fx.name == "Init");
     CHECK_FALSE(fx.preset.has_value());
-    CHECK_FALSE(fx.sample.has_value());
+    CHECK_FALSE(fx.samples[0].has_value());
     CHECK(fx.seed == 0u);
 
     // The instrument's differs in each layer's Position (0% of the sample, where the FX's is

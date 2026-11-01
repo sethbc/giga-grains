@@ -519,22 +519,17 @@ struct Sinc
     }
 
     /// The HQ head-proximity fade (spec §6.2): LiveSource::fade's expression with the sinc's
-    /// reach,
+    /// reach (LiveSource::fadeFor<7, 8>), over the storage's [R − N, R − 1] whatever the window
+    /// (M2 sub-project 2's ruling SP-T12aa),
     ///
     ///     g = clamp((R − 1 − (pos + 8)) / M, 0, 1) × clamp(((pos − 7) − (R − N)) / M, 0, 1)
     ///
-    /// so g is 0 before any of the 16 taps leaves the window [R − N, R − 1].
+    /// so g is 0 before any of the 16 taps leaves the storage's frames.
     static double fade(const LiveSource &live, double pos,
                        int64_t head) noexcept SST_CPPUTILS_NONBLOCKING
     {
         GG_FP_CONTRACT_OFF
-        constexpr auto kMargin = static_cast<double>(LiveSource::kHeadMargin);
-        const auto r = static_cast<double>(head);
-        const double toHead = (r - 1.0 - (pos + static_cast<double>(kAfter))) / kMargin;
-        const double fromTail =
-            ((pos - static_cast<double>(kBefore)) - (r - static_cast<double>(live.frames()))) /
-            kMargin;
-        return detail::unit(toHead) * detail::unit(fromTail);
+        return live.fadeFor<kBefore, kAfter>(pos, head);
     }
 };
 
@@ -1105,11 +1100,12 @@ void renderSampleSimd(const GrainRows &rows, uint32_t i, const SampleSource &src
 
 /// The scalar reference over the live ring: grain i of rows, over [from, to), read with
 /// Reader::readLive and the grain's ReadParams, at posL for a ring level at `decimation` (a
-/// uint32_t, or detail::UnitDecimation for 1; LiveSource::level; 1, the ring itself, until the ring
-/// has levels, whose head and window a level above 1 must then give in its own frames). [from, to)
-/// must lie in the ring's last write() block, whose R(t) the head-proximity fade and the read use.
-/// Per sample, after w > 0 and the steal fade (the file comment), which multiplies w where the
-/// grain was stolen:
+/// uint32_t, or detail::UnitDecimation for 1). **Level 0 only:** `decimation` must be 1, the ring
+/// itself; a level above 0 renders through renderLiveLevelRef, which keeps the head, the window and
+/// the fade in ring frames (renderLiveSimd sends a decimation above 1 there).
+/// [from, to) must lie in the ring's last write() block, whose R(t) the head-proximity fade and the
+/// read use. Per sample, after w > 0 and the steal fade (the file comment), which multiplies w
+/// where the grain was stolen:
 ///
 ///     f = float(Reader::fade(posL, R(t)))
 ///
@@ -1117,6 +1113,9 @@ void renderSampleSimd(const GrainRows &rows, uint32_t i, const SampleSource &src
 /// contributes only when f > 0 and the read succeeds:
 /// dst[c][t] += read_c(posL) × ((w × f) × gain_c), or, with one output, ring channel 0 ×
 /// ((w × f) × gain).
+/// The read and the fade keep the storage's bounds [R(t) − N, R(t) − 1], whatever the ring's
+/// window: a loop's or a splice's window steers admission alone, and a grain it leaves behind
+/// reads on in its old span (ruling SP-T12aa; LiveSource's class comment).
 template <class Reader, detail::DecimationLike Dec>
 void renderLiveRef(const GrainRows &rows, uint32_t i, const LiveSource &live, Dec decimation,
                    const Output &out, int64_t from, int64_t to,
@@ -1197,19 +1196,23 @@ namespace detail
 /// The part ends at the grain's steal, if it comes before hi: hi becomes min(hi, fadeStart), so
 /// every fading sample goes through the reference (spec §6.5), as does the rest of a grain
 /// stolen without a fade (at most kStealFade samples). On what is left, the
-/// conditions, with e, pos (posL) and the phase as the reference computes them, and b and a the
+/// conditions, with e, pos (posL) and the phase as the reference computes them, b and a the
 /// reach Reader::fade is for (Reader::kFadeBefore and kFadeAfter: 1 and 2 for Hermite and
-/// Linear, 7 and 8 for Sinc):
+/// Linear, 7 and 8 for Sinc), and the ring's window [O, E − 1] at t (E = LiveSource::anchorAt,
+/// O = LiveSource::windowOldestAt: R and R − N with Loop off and no splice; M2 sub-project 2's
+/// spec §6.1):
 /// - the window's phase e × invDuration is in [0, 1];
 /// - pos >= b, so the reach's first tap, floor(pos) − b, is a frame >= 0 (not the silence
 ///   before frame 0, which the reader supplies itself);
-/// - R − 1 − (pos + a) >= M + 1 and (pos − b) − (R − N) >= M + 1: every tap of the reach one
-///   frame beyond the fade's margin M at both ends of the window;
+/// - E − 1 − (pos + a) >= M + 1 and (pos − b) − O >= M + 1: every tap of the reach one frame
+///   beyond the fade's margin M at both ends of the window;
 /// - and, at the run's two ends, Reader::fade(pos, R) == 1.0 exactly and the reach's window
 ///   bounds hold.
 ///
-/// The phase and pos are monotone in t (as in sampleSimdRun), so they hold between two samples
-/// where they hold. On [lo, hi) R and pos are linear in t, so each margin is too, up to rounding
+/// The part stops at LiveSource::windowSteadyUntil(lo), where a selected splice's numbering
+/// shifts; before it E and O each stay constant or move with the head. The phase and pos are
+/// monotone in t (as in sampleSimdRun), so they hold between two samples where they hold. On
+/// [lo, hi) E, O and pos are linear in t, so each margin is too, up to rounding
 /// of order 2^−12 frames at ring times up to 2^40 frames (over 260 days at 48 kHz): where a margin
 /// is >= M + 1 at both ends of a run it is above M + 1 − 2^−11 everywhere between, so the fade's
 /// two factors are both clamped to 1 there and every tap is inside the window. Hence f == 1 and the
@@ -1225,7 +1228,9 @@ Run liveRun(const GrainRows &rows, uint32_t i, const LiveSource &live, Dec decim
             int64_t hi, int64_t r0, int64_t slope) noexcept SST_CPPUTILS_NONBLOCKING
 {
     GG_FP_CONTRACT_OFF
-    hi = std::min(hi, rows.fadeStart[i]);
+    // A selected splice's window changes its lines where a mark leaves storage: the part ends
+    // there, and the reference renders the rest.
+    hi = std::min({hi, rows.fadeStart[i], live.windowSteadyUntil(lo)});
     if (hi <= lo)
     {
         return {lo, lo}; // fading from lo on, or before it
@@ -1244,8 +1249,6 @@ Run liveRun(const GrainRows &rows, uint32_t i, const LiveSource &live, Dec decim
     const double startL = startPos * invDec;
     const double rate = rows.rate[i] * invDec;
     const double invDuration = rows.invDuration[i];
-    const int64_t frames = live.frames();
-    const auto window = static_cast<double>(frames); // N
     // The exact test at t, in the reference's expressions.
     const auto inside = [&](int64_t t) noexcept {
         GG_FP_CONTRACT_OFF
@@ -1257,47 +1260,68 @@ Run liveRun(const GrainRows &rows, uint32_t i, const LiveSource &live, Dec decim
             return false;
         }
         const int64_t head = live.headAt(t);
-        const auto r = static_cast<double>(head);
-        if (!(r - 1.0 - (pos + kA) >= kM + 1.0 && (pos - kB) - (r - window) >= kM + 1.0))
+        const int64_t end = live.anchorAt(t);
+        const int64_t oldest = live.windowOldestAt(t);
+        const auto r = static_cast<double>(end);
+        if (!(r - 1.0 - (pos + kA) >= kM + 1.0 &&
+              (pos - kB) - static_cast<double>(oldest) >= kM + 1.0))
         {
             return false;
         }
         const auto base = static_cast<int64_t>(std::floor(pos));
-        return Reader::fade(live, pos, head) == 1.0 && base - kBefore >= head - frames &&
-               base + kAfter <= head - 1;
+        return Reader::fade(live, pos, head) == 1.0 && base - kBefore >= oldest &&
+               base + kAfter <= end - 1;
     };
 
-    // With R = rho0 + s × n (n = t − onsetSample, rho0 = r0 − s × (lo − onsetSample)) and pos =
-    // startPos + rate × (n − onsetFrac) (startL and the scaled rate), in exact arithmetic (a + 2 is
-    // 4 for the Hermite's reach, b + 1 is 2):
-    // - toward the head:  (s − rate) × n >= M + a + 2 + startPos − rate × onsetFrac − rho0 =: kHead
-    // - from the tail:    (rate − s) × n >= M + b + 1 − N + rho0 − startPos + rate × onsetFrac
-    //                                                                                     =: kTail
+    // With E = rho0 + sE × n and O = W0 + tail0 + sO × n (n = t − onsetSample; sE, sO the ends'
+    // slopes on the part, each the head's s or 0; W0 = O(lo) − E(lo), which is −N, or −W, with no
+    // splice, where sE = sO = s and tail0 = rho0) and pos = startPos + rate × (n − onsetFrac)
+    // (startL and the scaled rate), in exact arithmetic (a + 2 is 4 for the Hermite's reach,
+    // b + 1 is 2):
+    // - toward the end:   (sE − rate) × n >= M + a + 2 + startPos − rate × onsetFrac − rho0
+    //                     =: kHead
+    // - from the oldest:  (rate − sO) × n >= M + b + 1 + W0 + tail0 − startPos + rate × onsetFrac
+    //                     =: kTail
     // - pos >= b:         n >= onsetFrac + (b − startPos) / rate
     // - the phase:        onsetFrac <= n <= onsetFrac + duration
+    static_cast<void>(r0); // E(lo) is LiveSource::anchorAt(lo), the head r0 without a splice
     const auto s = static_cast<double>(slope);
     const double nLo = static_cast<double>(lo - onsetSample);
     const double nHi = static_cast<double>(hi - onsetSample); // exclusive
-    const double rho0 = static_cast<double>(r0) - s * nLo;
-    const double c = s - rate;
+    const int64_t endLo = live.anchorAt(lo);
+    const int64_t oldestLo = live.windowOldestAt(lo);
+    const bool steps = hi - lo > 1; // one sample has no slope to measure
+    const double sE = steps ? static_cast<double>(live.anchorAt(lo + 1) - endLo) : s;
+    const double sO = steps ? static_cast<double>(live.windowOldestAt(lo + 1) - oldestLo) : s;
+    const double rho0 = static_cast<double>(endLo) - sE * nLo;
+    const double tail0 = static_cast<double>(endLo) - sO * nLo;
+    const auto w0 = static_cast<double>(oldestLo - endLo);
+    const double cHead = sE - rate;
+    const double cTail = rate - sO;
     const double kHead = kM + static_cast<double>(kAfter + 2) + startL - rate * onsetFrac - rho0;
     const double kTail =
-        kM + static_cast<double>(kBefore + 1) - window + rho0 - startL + rate * onsetFrac;
+        kM + static_cast<double>(kBefore + 1) + w0 + tail0 - startL + rate * onsetFrac;
     double nFirst = std::max(onsetFrac, onsetFrac + (kB - startL) / rate);
     double nLast = onsetFrac + rows.durationSamples[i];
-    if (c > 0.0)
+    // c × n >= k narrows [nFirst, nLast]; false for a margin that doesn't move and doesn't hold.
+    const auto bound = [&](double c, double k) noexcept {
+        if (c > 0.0)
+        {
+            nFirst = std::max(nFirst, k / c);
+        }
+        else if (c < 0.0)
+        {
+            nLast = std::min(nLast, k / c);
+        }
+        else
+        {
+            return k <= 0.0;
+        }
+        return true;
+    };
+    if (!bound(cHead, kHead) || !bound(cTail, kTail))
     {
-        nFirst = std::max(nFirst, kHead / c);
-        nLast = std::min(nLast, -kTail / c);
-    }
-    else if (c < 0.0)
-    {
-        nFirst = std::max(nFirst, kTail / -c);
-        nLast = std::min(nLast, kHead / c);
-    }
-    else if (!(kHead <= 0.0 && kTail <= 0.0))
-    {
-        return {lo, lo}; // a margin that doesn't move and doesn't hold
+        return {lo, lo};
     }
     if (!(std::isfinite(nFirst) && std::isfinite(nLast)))
     {
@@ -1355,7 +1379,8 @@ template <class Reader> struct RingTaps : InterleavedTaps
 /// The live interior of grain i over [from, to), which must lie in the ring's last write()
 /// block: [max(from, onset), min(to, endSample)) split at blockKink(), and on each side the
 /// samples detail::liveRun<Reader> admits. On every sample there the grain hasn't been stolen,
-/// the window's phase is in [0, 1], every tap is a frame >= 0 inside the window at R(t),
+/// the window's phase is in [0, 1], every tap is a frame >= 0 inside the window at R(t)
+/// (liveRun's [O, E − 1], within the storage's [R(t) − N, R(t) − 1], which the reference reads),
 /// and the reference's fade is exactly 1, so renderLiveRef's amplitude is (w × 1) × gain_c = w ×
 /// gain_c, the sample kernel's. Empty when there is no ring, or the grain's rate isn't finite and
 /// positive. Reads at `decimation`, as renderLiveRef.
@@ -1426,13 +1451,359 @@ void renderLiveSimdAt(const GrainRows &rows, uint32_t i, const LiveSource &live,
 }
 } // namespace detail
 
+// ---------------------------------------------------------------------------------------------
+// The live ring's levels (M2 sub-project 2's spec §6.9): a grain that latched level n >= 1 reads
+// its taps from the ring's level n (LiveSource::level), while the head, the window and the fade
+// stay in ring frames. Beside the level-0 path above, which they leave as it is: renderLiveSimd
+// takes this path for a decimation above 1.
+
+namespace detail
+{
+/// n for a level's decimation 2ⁿ (a power of two >= 1).
+inline uint32_t levelOf(uint32_t decimation) noexcept SST_CPPUTILS_NONBLOCKING
+{
+    uint32_t n = 0;
+    while (n < 31 && (decimation >> n) > 1u)
+    {
+        ++n;
+    }
+    return n;
+}
+
+/// Reader's live read from level n of the ring at pos, in level n's frames: Hermite's
+/// (LiveSource::readLevel) and Linear's (readLinearLevel) curves, and Sinc's normalized sum
+/// (Sinc::readLive's arithmetic, in its order) over LiveSource::gatherLevelTaps<16>. False,
+/// reading nothing, where the gather is. Each is the scalar twin of Reader's 4-lane read over the
+/// level's slots, as Reader::readLive is over level 0's.
+template <class Reader>
+bool readLiveLevel(const LiveSource &live, uint32_t n, double pos, int64_t head,
+                   LiveSource::Cursor &cursor, const ReadParams &params, float &l,
+                   float &r) noexcept SST_CPPUTILS_NONBLOCKING
+{
+    GG_FP_CONTRACT_OFF
+    if constexpr (std::derived_from<Reader, Sinc>)
+    {
+        constexpr int64_t kTaps = Sinc::kTaps;
+        constexpr int64_t kBefore = Sinc::kBefore;
+        float tapsL[kTaps];
+        float tapsR[kTaps];
+        if (!live.gatherLevelTaps<static_cast<int>(kTaps)>(n, pos, head, cursor, tapsL, tapsR))
+        {
+            return false;
+        }
+        const double base = std::floor(pos); // gatherLevelTaps accepted pos: it is finite
+        const auto frac = static_cast<float>(pos - base);
+        float numL = 0.0f;
+        float numR = 0.0f;
+        float den = 0.0f;
+        for (int64_t k = 0; k < kTaps; ++k)
+        {
+            const float c =
+                params.sinc->at((static_cast<float>(k - kBefore) - frac) * params.stretch);
+            numL += c * tapsL[k];
+            numR += c * tapsR[k];
+            den += c;
+        }
+        l = den != 0.0f ? numL / den : 0.0f;
+        r = den != 0.0f ? numR / den : 0.0f;
+        return true;
+    }
+    else if constexpr (std::derived_from<Reader, Linear>)
+    {
+        return live.readLinearLevel(n, pos, head, cursor, l, r);
+    }
+    else
+    {
+        static_assert(std::derived_from<Reader, Hermite>);
+        return live.readLevel(n, pos, head, cursor, l, r);
+    }
+}
+
+/// The level read's head-proximity fade at pos0, in ring frames: LiveSource::levelFadeFor with
+/// Reader's fade reach (kFadeBefore, kFadeAfter), the level's reach in ring frames.
+template <class Reader>
+double fadeLiveLevel(const LiveSource &live, uint32_t n, double pos0,
+                     int64_t head) noexcept SST_CPPUTILS_NONBLOCKING
+{
+    GG_FP_CONTRACT_OFF
+    return live.levelFadeFor<Reader::kFadeBefore, Reader::kFadeAfter>(n, pos0, head);
+}
+} // namespace detail
+
+/// The scalar reference over level n >= 1 of the live ring, decimation = 2ⁿ (LiveSource::level),
+/// grain i of rows over [from, to), which must lie in the ring's last write() block. As
+/// renderLiveRef (the steal fade included), except where the read and the fade are taken: at
+/// output sample t, with pos0 = startPos + rate × e in ring frames and posL = pos0 × invDec,
+///
+///     f = float(LiveSource::levelFadeFor<kFadeBefore, kFadeAfter>(n, pos0, R(t)))
+///
+/// (the level read's reach in ring frames: zero before any of its level frames leaves the window
+/// or is incomplete at R(t)), and the sample contributes only when f > 0 and the level read at
+/// posL (detail::readLiveLevel) succeeds: dst[c][t] += read_c(posL) × ((w × f) × gain_c), or,
+/// with one output, channel 0 × ((w × f) × gain).
+template <class Reader>
+void renderLiveLevelRef(const GrainRows &rows, uint32_t i, const LiveSource &live,
+                        uint32_t decimation, const Output &out, int64_t from, int64_t to,
+                        const Tables &tables) noexcept SST_CPPUTILS_NONBLOCKING
+{
+    GG_FP_CONTRACT_OFF
+    const uint32_t level = detail::levelOf(decimation);
+    const int64_t onsetSample = rows.onsetSample[i];
+    const double onsetFrac = rows.onsetFrac[i];
+    const double startPos = rows.startPos[i];
+    const double rate = rows.rate[i];
+    const double invDuration = rows.invDuration[i];
+    const double invDec = detail::invDecimation(decimation);
+    const int64_t first = std::max(from, onsetSample);
+    const int64_t last = std::min(to, rows.endSample[i]); // exclusive
+    if (first >= last)
+    {
+        return;
+    }
+    const EnvelopeShape envelope = detail::envelopeOf(rows, i);
+    const ReadParams params = detail::paramsOf(rows, i, tables, decimation);
+    const int64_t fadeStart = rows.fadeStart[i];
+    const int64_t end = rows.endSample[i];
+    const float invFade = rows.invFade[i];
+    const HannTable &hann = tables.hann;
+    float *const dst0 = out.dst[0];
+    float *const dst1 = out.dst[1];
+    const bool twoOutputs = dst1 != nullptr;
+    const float gain0 = twoOutputs ? rows.gainL[i] : rows.gain[i];
+    const float gain1 = twoOutputs ? rows.gainR[i] : 0.0f;
+    LiveSource::Cursor cursor;
+    for (int64_t t = first; t < last; ++t)
+    {
+        const double e = static_cast<double>(t - onsetSample) - onsetFrac;
+        float w = hann.at(warpPhase(e * invDuration, envelope));
+        if (!(w > 0.0f))
+        {
+            continue;
+        }
+        w = detail::stealFaded(w, t, fadeStart, end, invFade, hann);
+        // The fade in ring frames; the read in the level's (the SIMD interior's posL).
+        const double pos0 = startPos + rate * e;
+        const double pos = pos0 * invDec;
+        const int64_t head = live.headAt(t);
+        const auto f = static_cast<float>(detail::fadeLiveLevel<Reader>(live, level, pos0, head));
+        float l = 0.0f;
+        float r = 0.0f;
+        if (!(f > 0.0f) ||
+            !detail::readLiveLevel<Reader>(live, level, pos, head, cursor, params, l, r))
+        {
+            continue;
+        }
+        const float wf = w * f;
+        const auto j = static_cast<std::size_t>(t - out.blockStart);
+        dst0[j] += l * (wf * gain0);
+        if (twoOutputs)
+        {
+            dst1[j] += r * (wf * gain1);
+        }
+    }
+}
+
+namespace detail
+{
+/// liveRun for level n >= 1 at decimation 2ⁿ: the samples of [lo, hi) where the SIMD interior,
+/// reading the level's slots, stands in for renderLiveLevelRef. The same conditions as liveRun's,
+/// in ring frames on pos0 = startPos + rate × e, with the level read's reach in ring frames in
+/// place of Reader's (b = (kFadeBefore + 1) × 2ⁿ − 1 before, a = kFadeAfter × 2ⁿ +
+/// RingStorage::levelLag(n) after; LiveSource::levelFadeFor):
+/// - the window's phase is in [0, 1], and pos0 >= b, so the read's first level frame is >= 0;
+/// - E − 1 − (pos0 + a) >= M + 1 and (pos0 − b) − O >= M + 1;
+/// - and, at the run's two ends, the level fade == 1.0 exactly and the level read's bounds
+///   (LiveSource::gatherLevelTaps's, on floor(posL)) hold.
+/// The margins are linear in t on [lo, hi) (E, O and pos0 are), so liveRun's argument holds as it
+/// is: where both are >= M + 1 at the ends they are above M + 1 − 2^−11 between, the fade is 1,
+/// and every tap is inside the window and complete (levelFadeFor > 0 implies the bounds).
+template <class Reader>
+Run liveLevelRun(const GrainRows &rows, uint32_t i, const LiveSource &live, uint32_t decimation,
+                 int64_t lo, int64_t hi, int64_t slope) noexcept SST_CPPUTILS_NONBLOCKING
+{
+    GG_FP_CONTRACT_OFF
+    hi = std::min({hi, rows.fadeStart[i], live.windowSteadyUntil(lo)});
+    if (hi <= lo)
+    {
+        return {lo, lo};
+    }
+    const uint32_t level = levelOf(decimation);
+    const auto d = static_cast<int64_t>(decimation);
+    constexpr double kM = static_cast<double>(LiveSource::kHeadMargin);
+    const int64_t before = (Reader::kFadeBefore + 1) * d - 1;
+    const int64_t after = Reader::kFadeAfter * d + RingStorage::levelLag(level);
+    const auto kB = static_cast<double>(before);
+    const auto kA = static_cast<double>(after);
+    const int64_t onsetSample = rows.onsetSample[i];
+    const double onsetFrac = rows.onsetFrac[i];
+    const double invDec = invDecimation(decimation);
+    const double startPos = rows.startPos[i];
+    const double rate = rows.rate[i];
+    const double invDuration = rows.invDuration[i];
+    const auto inside = [&](int64_t t) noexcept {
+        GG_FP_CONTRACT_OFF
+        const double e = static_cast<double>(t - onsetSample) - onsetFrac;
+        const double phase = e * invDuration;
+        const double pos0 = startPos + rate * e;
+        if (!(phase >= 0.0 && phase <= 1.0 && pos0 >= kB && pos0 < 0x1.0p62))
+        {
+            return false;
+        }
+        const int64_t head = live.headAt(t);
+        const int64_t end = live.anchorAt(t);
+        const int64_t oldest = live.windowOldestAt(t);
+        if (!(static_cast<double>(end) - 1.0 - (pos0 + kA) >= kM + 1.0 &&
+              (pos0 - kB) - static_cast<double>(oldest) >= kM + 1.0))
+        {
+            return false;
+        }
+        const auto base = static_cast<int64_t>(std::floor(pos0 * invDec));
+        return fadeLiveLevel<Reader>(live, level, pos0, head) == 1.0 &&
+               base - Reader::kBefore >= 0 && (base - Reader::kBefore) * d >= oldest &&
+               (base + Reader::kAfter) * d + RingStorage::levelLag(level) <= end - 1;
+    };
+
+    // liveRun's bounds, in ring frames: pos0 = startPos + rate × (n − onsetFrac).
+    const auto s = static_cast<double>(slope);
+    const double nLo = static_cast<double>(lo - onsetSample);
+    const double nHi = static_cast<double>(hi - onsetSample); // exclusive
+    const int64_t endLo = live.anchorAt(lo);
+    const int64_t oldestLo = live.windowOldestAt(lo);
+    const bool steps = hi - lo > 1;
+    const double sE = steps ? static_cast<double>(live.anchorAt(lo + 1) - endLo) : s;
+    const double sO = steps ? static_cast<double>(live.windowOldestAt(lo + 1) - oldestLo) : s;
+    const double rho0 = static_cast<double>(endLo) - sE * nLo;
+    const double tail0 = static_cast<double>(endLo) - sO * nLo;
+    const auto w0 = static_cast<double>(oldestLo - endLo);
+    const double cHead = sE - rate;
+    const double cTail = rate - sO;
+    const double kHead = kM + (kA + 2.0) + startPos - rate * onsetFrac - rho0;
+    const double kTail = kM + (kB + 1.0) + w0 + tail0 - startPos + rate * onsetFrac;
+    double nFirst = std::max(onsetFrac, onsetFrac + (kB - startPos) / rate);
+    double nLast = onsetFrac + rows.durationSamples[i];
+    const auto bound = [&](double c, double k) noexcept {
+        if (c > 0.0)
+        {
+            nFirst = std::max(nFirst, k / c);
+        }
+        else if (c < 0.0)
+        {
+            nLast = std::min(nLast, k / c);
+        }
+        else
+        {
+            return k <= 0.0;
+        }
+        return true;
+    };
+    if (!bound(cHead, kHead) || !bound(cTail, kTail))
+    {
+        return {lo, lo};
+    }
+    if (!(std::isfinite(nFirst) && std::isfinite(nLast)))
+    {
+        return {lo, lo};
+    }
+    double nBegin = std::ceil(nFirst) - 2.0;
+    double nEnd = std::floor(nLast) + 3.0;
+    nBegin = std::clamp(nBegin, nLo, nHi);
+    nEnd = std::clamp(nEnd, nBegin, nHi);
+    int64_t begin = onsetSample + static_cast<int64_t>(nBegin);
+    int64_t end = onsetSample + static_cast<int64_t>(nEnd);
+    while (begin < end && !inside(begin))
+    {
+        ++begin;
+    }
+    while (end > begin && !inside(end - 1))
+    {
+        --end;
+    }
+    return {begin, end};
+}
+} // namespace detail
+
+/// liveInterior for level n >= 1 at decimation 2ⁿ: the parts of [max(from, onset), min(to,
+/// endSample)) on each side of blockKink() that detail::liveLevelRun<Reader> admits, where the
+/// SIMD interior over the level's slots gives renderLiveLevelRef's bits. Empty when there is no
+/// ring, or the grain's rate or invDuration isn't finite and positive.
+template <class Reader>
+LiveInterior liveLevelInterior(const GrainRows &rows, uint32_t i, const LiveSource &live,
+                               uint32_t decimation, int64_t from,
+                               int64_t to) noexcept SST_CPPUTILS_NONBLOCKING
+{
+    const int64_t first = std::max(from, rows.onsetSample[i]);
+    const int64_t last = std::max(first, std::min(to, rows.endSample[i]));
+    const int64_t kink = std::clamp(live.blockKink(), first, last);
+    LiveInterior in{{first, kink}, {first, kink}};
+    const double rate = rows.rate[i];
+    const double invDuration = rows.invDuration[i];
+    if (!live.enabled() || !(rate > 0.0 && rate < 0x1.0p62) ||
+        !(invDuration > 0.0 && invDuration < 0x1.0p62))
+    {
+        return in;
+    }
+    if (first < kink)
+    {
+        const detail::Run run =
+            detail::liveLevelRun<Reader>(rows, i, live, decimation, first, kink, 1);
+        in.begin[0] = run.begin;
+        in.end[0] = run.end;
+    }
+    if (kink < last)
+    {
+        const detail::Run run =
+            detail::liveLevelRun<Reader>(rows, i, live, decimation, kink, last, 0);
+        in.begin[1] = run.begin;
+        in.end[1] = run.end;
+    }
+    return in;
+}
+
+namespace detail
+{
+/// renderLiveSimd for level n >= 1 at decimation 2ⁿ: renderLiveLevelRef's bits, with each part of
+/// liveLevelInterior 4 samples at a time through the SIMD interior over the level's slots
+/// (RingTaps over LiveSource::level(n).view, whose 15 guard slots keep a read's taps contiguous;
+/// the interior's taps of 4 lanes span less than N / 2ⁿ level frames, below the level's
+/// capacity), and every other sample through the reference.
+template <class Reader>
+void renderLiveLevelSimdAt(const GrainRows &rows, uint32_t i, const LiveSource &live,
+                           uint32_t decimation, const Output &out, int64_t from, int64_t to,
+                           const Tables &tables) noexcept SST_CPPUTILS_NONBLOCKING
+{
+    const LiveInterior in = liveLevelInterior<Reader>(rows, i, live, decimation, from, to);
+    const LiveSource::RingView ring = live.level(levelOf(decimation)).view;
+    const RingTaps<Reader> taps{{ring.slots}, ring.capacity};
+    int64_t done = from;
+    for (int part = 0; part < 2; ++part)
+    {
+        const int64_t begin = in.begin[part];
+        const int64_t simdEnd = begin + (in.end[part] - begin) / 4 * 4;
+        renderLiveLevelRef<Reader>(rows, i, live, decimation, out, done, begin, tables);
+        if (out.dst[1] == nullptr)
+        {
+            renderInterior<Reader, false, false>(rows, i, taps, decimation, out, begin, simdEnd,
+                                                 tables);
+        }
+        else
+        {
+            renderInterior<Reader, true, true>(rows, i, taps, decimation, out, begin, simdEnd,
+                                               tables);
+        }
+        done = simdEnd;
+    }
+    renderLiveLevelRef<Reader>(rows, i, live, decimation, out, done, to, tables);
+}
+} // namespace detail
+
 /// The 4-wide grain-major SIMD kernel over the live ring: renderLiveRef<Reader>'s output, bit for
 /// bit, with the same requirements. Each part of liveInterior, 4 samples at a time, goes through
 /// the SIMD interior, reading the ring's interleaved slots from view(); every other sample (the
 /// fades near either end of the window, reads outside it or before frame 0, the window's edges, a
 /// stolen grain's fade, and each part's remainder) goes through renderLiveRef itself. Every sample
 /// depends only on t, so the pieces give the reference's bits. Reads at `decimation`, as
-/// renderLiveRef (through detail::UnitDecimation for 1).
+/// renderLiveRef (through detail::UnitDecimation for 1); a decimation above 1, a ring level's,
+/// renders as renderLiveLevelRef, through detail::renderLiveLevelSimdAt.
 template <class Reader>
 void renderLiveSimd(const GrainRows &rows, uint32_t i, const LiveSource &live, uint32_t decimation,
                     const Output &out, int64_t from, int64_t to,
@@ -1449,7 +1820,8 @@ void renderLiveSimd(const GrainRows &rows, uint32_t i, const LiveSource &live, u
     }
     else
     {
-        detail::renderLiveSimdAt<Reader>(rows, i, live, decimation, out, from, to, tables);
+        // A ring level above 0 (M2 sub-project 2's spec §6.9).
+        detail::renderLiveLevelSimdAt<Reader>(rows, i, live, decimation, out, from, to, tables);
     }
 }
 } // namespace gg::kernels

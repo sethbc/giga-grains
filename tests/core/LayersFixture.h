@@ -308,10 +308,10 @@ constexpr int64_t kInvarianceFrames = 2 * 48000;
 
 // Every layer's built parameters automated (spec §6.2–§6.4), each with 12 events off the grid,
 // every third a modulation offset of up to a quarter of the range: the M1 layer parameters,
-// Source (Sample, Live, the unbuilt Resample and Spectral), the spreads, each layer's Level and
-// Layer On (on 70% of the time, so layers go off for longer than the ramp and come back), Morph X
-// and Y swept, each layer's Bus Split with both buses' filter type, cutoff and resonance, the
-// delay's and the limiter's parameters, and each layer's Smear. Times and values come from
+// Source (Sample, Live, Resample, a Live engine, and Spectral), the spreads, each layer's Level
+// and Layer On (on 70% of the time, so layers go off for longer than the ramp and come back),
+// Morph X and Y swept, each layer's Bus Split with both buses' filter type, cutoff and resonance,
+// the delay's and the limiter's parameters, and each layer's Smear. Times and values come from
 // gg::rng.
 inline std::vector<TimedEvent> layerAutomation()
 {

@@ -545,6 +545,44 @@ GG_AVX2 void renderLiveAvx2At(const GrainRows &rows, uint32_t i, const LiveSourc
     renderLiveRef<Reader>(rows, i, live, decimation, out, done, to, tables);
 }
 
+/// renderLiveAvx2At for a ring level n >= 1 at decimation 2ⁿ (M2 sub-project 2's spec §6.9):
+/// detail::renderLiveLevelSimdAt with the 8-wide interior, over liveLevelInterior's parts and the
+/// level's slots (LiveSource::level(n).view), and renderLiveLevelRef everywhere else.
+template <class Reader>
+GG_AVX2 void renderLiveLevelAvx2At(const GrainRows &rows, uint32_t i, const LiveSource &live,
+                                   uint32_t decimation, const Output &out, int64_t from, int64_t to,
+                                   const Tables &tables) noexcept SST_CPPUTILS_NONBLOCKING
+{
+    const LiveInterior in = liveLevelInterior<Reader>(rows, i, live, decimation, from, to);
+    const LiveSource::RingView ring = live.level(detail::levelOf(decimation)).view;
+    const RingTaps8<Reader> taps8{{ring.slots}, ring.capacity};
+    const detail::RingTaps<Reader> taps4{{ring.slots}, ring.capacity};
+    int64_t done = from;
+    for (int part = 0; part < 2; ++part)
+    {
+        const int64_t begin = in.begin[part];
+        const int64_t end8 = begin + (in.end[part] - begin) / 8 * 8;
+        const int64_t end4 = begin + (in.end[part] - begin) / 4 * 4;
+        renderLiveLevelRef<Reader>(rows, i, live, decimation, out, done, begin, tables);
+        if (out.dst[1] == nullptr)
+        {
+            renderInterior8<Reader, false, false>(rows, i, taps8, decimation, out, begin, end8,
+                                                  tables);
+            detail::renderInterior<Reader, false, false>(rows, i, taps4, decimation, out, end8,
+                                                         end4, tables);
+        }
+        else
+        {
+            renderInterior8<Reader, true, true>(rows, i, taps8, decimation, out, begin, end8,
+                                                tables);
+            detail::renderInterior<Reader, true, true>(rows, i, taps4, decimation, out, end8, end4,
+                                                       tables);
+        }
+        done = end4;
+    }
+    renderLiveLevelRef<Reader>(rows, i, live, decimation, out, done, to, tables);
+}
+
 /// renderLiveSimd<Reader> with the 8-wide interior, through detail::UnitDecimation for 1.
 template <class Reader>
 GG_AVX2 void renderLiveAvx2(const GrainRows &rows, uint32_t i, const LiveSource &live,
@@ -561,7 +599,8 @@ GG_AVX2 void renderLiveAvx2(const GrainRows &rows, uint32_t i, const LiveSource 
     }
     else
     {
-        renderLiveAvx2At<Reader>(rows, i, live, decimation, out, from, to, tables);
+        // A ring level above 0 (M2 sub-project 2's spec §6.9).
+        renderLiveLevelAvx2At<Reader>(rows, i, live, decimation, out, from, to, tables);
     }
 }
 

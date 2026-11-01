@@ -5,17 +5,25 @@
 # gg-media: sample-file I/O, without JUCE or tinyxml: decoding WAV, AIFF/AIFC, FLAC and MP3 with
 # the pinned dr_libs (gg/media/Decode.h), sample-rate conversion with the pinned r8brain-free-src
 # (gg/media/Convert.h), the file fingerprint, an in-house SHA-256 (gg/media/Sha256.h), loading a
-# sample with its manifest entry (gg/media/Sample.h), the search for a missing one
-# (gg/media/Search.h) and the per-machine settings file (gg/media/SettingsFile.h). Shared by the
-# plugins' loader and the tools; never on the audio thread.
+# sample with its manifest entry (gg/media/Sample.h), the memory cap's accounting
+# (gg/media/MemoryBudget.h), the process's pool of shared sources (gg/media/SamplePool.h), the
+# search for a missing one (gg/media/Search.h), the per-machine settings file
+# (gg/media/SettingsFile.h) and the float32 WAV bytes of embedded and filed captures
+# (gg/media/WavBytes.h), a ring as such a file and back (gg/media/RingAudio.h) and collect and
+# save (gg/media/Collect.h). Shared by the plugins' loader and the tools; never on the audio thread.
 
 add_library(gg-media STATIC
+        src/Collect.cpp
         src/Convert.cpp
         src/Decode.cpp
+        src/MemoryBudget.cpp
+        src/RingAudio.cpp
         src/Sample.cpp
+        src/SamplePool.cpp
         src/Search.cpp
         src/SettingsFile.cpp
         src/Sha256.cpp
+        src/WavBytes.cpp
         )
 add_library(gg::media ALIAS gg-media)
 

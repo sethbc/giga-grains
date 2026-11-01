@@ -5,16 +5,16 @@
 // gg-bench is the CPU benchmark and CI's CPU gate (INTENT §16, §19). It times the real engine's
 // render path, the engine cases, through Engine::process: engine-sample is X, the §16
 // headline's case, beside engine-sample-eco, engine-live (the FX's figure), engine-full-pool, and
-// the report-only cases: the four-layer engine-layers and engine-layers-full, then
-// engine-sample-hq and engine-sample-hq-up (X at the HQ tier, at Pitch 0 and +19) and
-// engine-overload (the overload ladder at a spent quota), engine-sample-sse (X on the 4-wide
-// kernels, the AVX2 spike's fallback), and the extremes' engine-sample-smear, engine-buses and
-// engine-spectral. It times them against the reference kernel, M0's hermite-simd frozen in
-// Kernels.h, and reports each engine case's ratio to it, which the CI gate checks. It also still
-// times M0's prototype kernels in Kernels.h. It began as the M0 kernel benchmark spike and was
-// made gate-grade in M1 (carry-over B-I2, [133], [132]; spec §5). With --canvas it times the
-// canvas renderer instead (the M0 canvas stress spike, see below), with --space, Space, and with
-// --chain, the bus filters, the delay and the limiter.
+// the report-only cases: engine-live-long (engine-live over a 300 s ring), the four-layer
+// engine-layers and engine-layers-full, then engine-sample-hq and engine-sample-hq-up (X at the HQ
+// tier, at Pitch 0 and +19) and engine-overload (the overload ladder at a spent quota),
+// engine-sample-sse (X on the 4-wide kernels, the AVX2 spike's fallback), and the extremes'
+// engine-sample-smear, engine-buses and engine-spectral. It times them against the reference
+// kernel, M0's hermite-simd frozen in Kernels.h, and reports each engine case's ratio to it, which
+// the CI gate checks. It also still times M0's prototype kernels in Kernels.h. It began as the M0
+// kernel benchmark spike and was made gate-grade in M1 (carry-over B-I2, [133], [132]; spec §5).
+// With --canvas it times the canvas renderer instead (the M0 canvas stress spike, see below), with
+// --space, Space, and with --chain, the bus filters, the delay and the limiter.
 //
 //   gg-bench [--quick | --seconds S] [--rounds N] [--grains N] [--cases a,b] [--commit SHA]
 //            [--json out.json] [--baseline baseline.json]
@@ -496,6 +496,7 @@ int main(int argc, char **argv)
         if (arg == "--quick")
         {
             quick = true;
+            options.quick = true;
             options.runSeconds = 0.2;
         }
         else if (arg == "--canvas")
@@ -513,6 +514,7 @@ int main(int argc, char **argv)
         else if (arg == "--seconds" && hasValue)
         {
             ok = parseDouble(argv[++i], options.runSeconds);
+            options.quick = false; // the last of --quick and --seconds wins
         }
         else if (arg == "--rounds" && hasValue)
         {

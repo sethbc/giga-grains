@@ -2080,6 +2080,71 @@ TEST_CASE("commit on release sends one value", "[plugin]")
     CHECK(recording.kinds() == "be");
 }
 
+TEST_CASE("each layer's Ring Length commits on release and its neighbors do not", "[plugin]")
+{
+    // SP-M9: a Ring Length change is a ring resize, so a drag sends one value, as it ends.
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    RecordingContext recording(gg::core::Mode::Fx);
+    gg::ui::EditView view(recording.context);
+    view.setSize(640, 360);
+    gg::ui::ParamPanel *source = nullptr;
+    for (gg::ui::ParamPanel *panel : view.panels())
+    {
+        if (panel->panel() == gg::ui::Panel::Source)
+        {
+            source = panel;
+        }
+    }
+    REQUIRE(source != nullptr);
+    for (uint8_t layer = 0; layer < 4; ++layer)
+    {
+        INFO("layer " << int(layer));
+        source->setLayer(layer);
+        gg::ui::ParamControl *ringLength = nullptr;
+        gg::ui::ParamControl *loopLength = nullptr;
+        for (gg::ui::ParamControl *control : source->controls())
+        {
+            const auto ref = gg::core::layerOf(control->slot());
+            if (ref && ref->param == gg::core::LayerParam::RingLength)
+            {
+                ringLength = control;
+            }
+            if (ref && ref->param == gg::core::LayerParam::LoopLength)
+            {
+                loopLength = control;
+            }
+        }
+        REQUIRE(ringLength != nullptr);
+        REQUIRE(loopLength != nullptr);
+        CHECK(ringLength->tooltip().contains("on release"));
+        CHECK_FALSE(loopLength->tooltip().contains("on release"));
+
+        // Ring Length: three values dragged, one sent at the release.
+        recording.calls.clear();
+        auto *knob = childOfType<sst::jucegui::components::Knob>(*ringLength);
+        REQUIRE(knob != nullptr);
+        knob->onBeginEdit();
+        knob->continuous()->setValueFromGUI(0.2f);
+        knob->continuous()->setValueFromGUI(0.4f);
+        knob->continuous()->setValueFromGUI(0.6f);
+        CHECK(recording.kinds() == "b");
+        knob->onEndEdit();
+        REQUIRE(recording.kinds() == "bve");
+        CHECK(recording.calls[1].slot == ringLength->slot());
+        CHECK(recording.calls[1].value == static_cast<double>(0.6f));
+
+        // Loop Length stays continuous: a value at every step.
+        recording.calls.clear();
+        auto *loopKnob = childOfType<sst::jucegui::components::Knob>(*loopLength);
+        REQUIRE(loopKnob != nullptr);
+        loopKnob->onBeginEdit();
+        loopKnob->continuous()->setValueFromGUI(0.2f);
+        loopKnob->continuous()->setValueFromGUI(0.4f);
+        loopKnob->onEndEdit();
+        CHECK(recording.kinds() == "bvve");
+    }
+}
+
 TEST_CASE("a ParamControl in mod mode drags its rings and not its value", "[plugin]")
 {
     const juce::ScopedJuceInitialiser_GUI juceGui;
