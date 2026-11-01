@@ -708,6 +708,12 @@ if (APPLE AND GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
             -P ${CMAKE_CURRENT_SOURCE_DIR}/plugin/check-snap.cmake)
     # About 66 s in Debug: `slow`, so -LE slow leaves it out.
     set_tests_properties(snap_cli PROPERTIES LABELS "plugin;slow" TIMEOUT 300)
+    # Bad usage (an unknown option, no folder, a malformed size) exits 2 with the usage; fast.
+    add_test(NAME snap_cli_usage
+            COMMAND ${CMAKE_COMMAND} -DTOOL=$<TARGET_FILE:gg-snap>
+            -DOUT=${CMAKE_CURRENT_BINARY_DIR}/test-output/snap_cli_usage
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/plugin/check-snap-usage.cmake)
+    set_tests_properties(snap_cli_usage PROPERTIES LABELS "plugin" TIMEOUT 60)
 endif ()
 
 # The installers (spec §6), label `installer`. installer_build_products builds gg-products (not

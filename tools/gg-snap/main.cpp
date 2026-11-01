@@ -16,7 +16,8 @@
 // read when the canvas is made, so it is set before the editor). The per-machine settings point at
 // a scratch file, so the tool never reads or writes the user's.
 //
-// Exit status: 0, or 1 with a message on stderr (2 for bad usage).
+// Exit status: 0, or 1 with a message on stderr (an error, or an exception that reached the top;
+// 2 for bad usage, an unknown option included).
 
 #include <algorithm>
 #include <array>
@@ -26,6 +27,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -34,6 +36,12 @@
 #include <thread>
 #include <utility>
 #include <vector>
+
+#if defined(_WIN32)
+#include <process.h>
+#else
+#include <unistd.h>
+#endif
 
 #include <clap/clap.h>
 #include <juce_gui_basics/juce_gui_basics.h>
@@ -78,6 +86,15 @@ int fail(const std::string &message)
 {
     std::fprintf(stderr, "gg-snap: %s\n", message.c_str());
     return 1;
+}
+
+long processId()
+{
+#if defined(_WIN32)
+    return static_cast<long>(_getpid());
+#else
+    return static_cast<long>(getpid());
+#endif
 }
 
 void setEnv(const char *name, const std::string &value)
@@ -423,7 +440,10 @@ std::string snapProduct(const Product &product, const fs::path &outDir,
             for (const Size &size : sizes)
             {
                 editor->setSize(size.w, size.h);
-                instance.block();
+                if (!instance.block())
+                {
+                    return "process failed";
+                }
                 tick(*editor, 2);
                 const juce::Image image =
                     editor->createComponentSnapshot(editor->getLocalBounds(), true, 1.0f);
@@ -446,7 +466,7 @@ std::string snapProduct(const Product &product, const fs::path &outDir,
 }
 } // namespace
 
-int main(int argc, char **argv)
+int run(int argc, char **argv)
 {
     fs::path outDir;
     std::vector<Size> sizes;
@@ -484,13 +504,22 @@ int main(int argc, char **argv)
     }
     // A scratch folder for the sample and the settings; the settings seam is read when an
     // instance is made, and the canvas's stress seam when a canvas is.
-    const fs::path scratch =
-        fs::temp_directory_path() /
-        ("gg-snap-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
-    fs::create_directories(scratch, ec);
-    if (ec)
+    // Named by the process id and a counter, so two runs never share one; a folder that exists
+    // (a crashed run's leftover with a reused id) is skipped, not reused.
+    fs::path scratch;
+    for (int counter = 0;; ++counter)
     {
-        return fail("can't create " + scratch.string() + ": " + ec.message());
+        scratch = fs::temp_directory_path() /
+                  ("gg-snap-" + std::to_string(processId()) + "-" + std::to_string(counter));
+        if (fs::create_directories(scratch, ec))
+        {
+            break;
+        }
+        if (ec || counter >= 1000)
+        {
+            return fail("can't create " + scratch.string() +
+                        (ec ? ": " + ec.message() : ": every name is taken"));
+        }
     }
     setEnv("GG_SETTINGS_FILE", (scratch / "settings.xml").string());
     setEnv("GG_STRESS_GRAINS", "2048");
@@ -510,4 +539,20 @@ int main(int argc, char **argv)
     }
     fs::remove_all(scratch, ec);
     return status;
+}
+
+int main(int argc, char **argv)
+{
+    try
+    {
+        return run(argc, argv);
+    }
+    catch (const std::exception &e)
+    {
+        return fail(std::string("unexpected error: ") + e.what());
+    }
+    catch (...)
+    {
+        return fail("unexpected error");
+    }
 }
