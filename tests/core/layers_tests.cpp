@@ -1372,6 +1372,11 @@ gg::core::ParamValues movedValues(Mode mode, uint64_t seed, size_t nanEvery = 0)
         set(slotOf(LayerParam::Size, L), -4.0f);
         set(slotOf(LayerParam::Position, L), 0.1f); // a Live layer reads the last 0.05 s or so
         set(gg::core::levelSlot(L), -6.0f);
+        // The bus filters moved from Off, but to types that pass the layers' 110 to 440 Hz sines
+        // at any drawn cutoff (a high-pass or band-pass drawn above them silences a layer, and
+        // the draws are keyed by slot, which every new layer row moves): Low-pass, Notch.
+        set(slotOf(LayerParam::Bus1Filter, L), 1.0f);
+        set(slotOf(LayerParam::Bus2Filter, L), 4.0f);
     }
     // Near the pad's middle once the transport sources' routes have moved it (Bar to Morph Y
     // -0.3 while stopped), so every layer on is heard.
