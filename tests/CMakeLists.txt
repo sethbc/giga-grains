@@ -78,13 +78,13 @@ add_executable(gg-tests
         tools/preset_source_tests.cpp
         tools/render_spec_tests.cpp
         tools/signals_tests.cpp
+        ui/edit_layout_tests.cpp
         ui/lane_model_tests.cpp
+        ui/pad_model_tests.cpp
         ui/rings_tests.cpp
         ui/route_edits_tests.cpp
-        ui/edit_layout_tests.cpp
-        ui/undo_stack_tests.cpp
-        ui/pad_model_tests.cpp
         ui/splat_tests.cpp
+        ui/undo_stack_tests.cpp
         support/AllocTripwire.cpp
         )
 target_include_directories(gg-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
@@ -167,17 +167,19 @@ if (GG_BUILD_PLUGINS)
             plugin/persist_tests.cpp
             plugin/preset_tests.cpp
             plugin/process_tests.cpp
-            plugin/rt_tests.cpp
             plugin/routes_tests.cpp
+            plugin/rt_tests.cpp
             plugin/sample_tests.cpp
             )
     target_include_directories(gg-tests PRIVATE ${CMAKE_SOURCE_DIR}/plugin/src)
 endif ()
 # The editor's tests reach its components' private headers too (ui/src: GrainCanvas, LoaderStrip).
 # notices_tests.cpp checks the texts embedded into gg-ui, which only the editor builds;
-# editor_frame_tests.cpp the editor's frame (its views, header, undo, themes and keys).
+# editor_frame_tests.cpp the editor's frame (its views, header, undo, themes and keys);
+# canvas_tests.cpp, panels_tests.cpp and mod_view_tests.cpp the parts factory_tests.cpp used to hold.
 if (GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
-    target_sources(gg-tests PRIVATE ui/notices_tests.cpp plugin/editor_frame_tests.cpp)
+    target_sources(gg-tests PRIVATE ui/notices_tests.cpp plugin/canvas_tests.cpp
+            plugin/editor_frame_tests.cpp plugin/mod_view_tests.cpp plugin/panels_tests.cpp)
     target_include_directories(gg-tests PRIVATE ${CMAKE_SOURCE_DIR}/ui/src)
     # The preset strip and browser (M2 sub-project 5's spec §6.8), through the editor.
     target_sources(gg-tests PRIVATE plugin/browser_tests.cpp)
