@@ -2914,6 +2914,48 @@ TEST_CASE("Budget in the Output panel in both products", "[plugin]")
     }
 }
 
+TEST_CASE("the FX view scrolls when its panels outgrow it", "[plugin][ui]")
+{
+    // The integration review's Minor 6: since the delay and the limiter joined the Output panel
+    // (ruling VW-T19b, ten controls in the FX), the FX view holds its panels in a vertical
+    // viewport. At a small height the content is taller than the viewport, which scrolls, and
+    // every Output control lies inside the content, so scrolling reaches each one.
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    RecordingContext recording(gg::core::Mode::Fx);
+    gg::ui::FxView view(recording.context);
+    view.setSize(420, 120);
+    auto *viewport = childOfType<juce::Viewport>(view);
+    REQUIRE(viewport != nullptr);
+    CHECK(viewport->getBounds() == view.getLocalBounds());
+    juce::Component *content = viewport->getViewedComponent();
+    REQUIRE(content != nullptr);
+    CHECK(content->getHeight() > viewport->getHeight());
+    CHECK(viewport->canScrollVertically());
+    CHECK(content->getWidth() <= viewport->getWidth()); // no sideways scroll
+    const std::vector<ParamSlot> output = gg::ui::slotsIn(gg::ui::Panel::Output, 0);
+    REQUIRE(output.size() == 10);
+    for (const ParamSlot slot : output)
+    {
+        INFO(gg::core::paramMeta(slot, gg::core::Mode::Fx).name);
+        juce::Component *control = findDeep(*content, controlId(slot).toRawUTF8());
+        REQUIRE(control != nullptr);
+        for (const juce::Component *c = control; c != content; c = c->getParentComponent())
+        {
+            CHECK(c->isVisible()); // the control and its panel (headless: none is on screen)
+        }
+        const juce::Rectangle<int> inContent =
+            content->getLocalArea(control->getParentComponent(), control->getBounds());
+        CHECK(!inContent.isEmpty());
+        CHECK(content->getLocalBounds().contains(inContent));
+    }
+    // Scrolled to the bottom, the last control is in view.
+    viewport->setViewPosition(0, content->getHeight());
+    const juce::Component *last = findDeep(*content, controlId(output.back()).toRawUTF8());
+    const juce::Rectangle<int> lastInView =
+        viewport->getLocalArea(last->getParentComponent(), last->getBounds());
+    CHECK(viewport->getLocalBounds().intersects(lastInView));
+}
+
 TEST_CASE("Reverb Size sets on release", "[plugin]")
 {
     const juce::ScopedJuceInitialiser_GUI juceGui;
