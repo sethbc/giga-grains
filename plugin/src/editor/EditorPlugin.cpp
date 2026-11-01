@@ -25,7 +25,10 @@
 #include <clapwrapper/wrapper_host.h>
 
 #include "gg/core/PresetInfo.h"
+#include "SettingsPath.h"
+#include "gg/core/MachineSettings.h"
 #include "gg/core/Processor.h"
+#include "gg/media/SettingsFile.h"
 #include "gg/media/Utf8Path.h"
 #include "UiSettings.h"
 #include "gg/ui/Editor.h"
@@ -144,6 +147,153 @@ EditorPlugin::EditorPlugin(const clap_host *host, Product product)
 }
 
 EditorPlugin::~EditorPlugin() = default;
+
+void EditorPlugin::fillRingContext(gg::ui::EditorContext &context)
+{
+    context.ringView = [this](uint8_t layer) {
+        gg::ui::RingView view;
+        gg::core::Processor *p = processor();
+        if (p == nullptr || layer >= gg::core::kLayers)
+        {
+            return view;
+        }
+        const gg::core::RingMeta meta = p->ringMeta(layer);
+        view.valid = true;
+        view.head = meta.head;
+        view.windowFrames = meta.windowFrames;
+        view.spliceCount = std::min<uint32_t>(meta.spliceCount, gg::core::kMaxSplices);
+        view.splices = meta.splices;
+        view.frozen = meta.frozen;
+        return view;
+    };
+    context.ringCommand = [this](uint8_t layer, gg::ui::RingCommand command, float seconds) {
+        if (layer >= gg::core::kLayers)
+        {
+            return;
+        }
+        const bool add = command == gg::ui::RingCommand::AddSplice;
+        uiCommand({0, add ? gg::core::CommandKind::AddSplice : gg::core::CommandKind::ClearSplices,
+                   layer, add ? seconds : 0.0f});
+    };
+    // The window or splice of a layer's ring, or the message for the user.
+    const auto capture = [this](uint8_t layer, uint32_t splice,
+                                std::string &message) -> std::shared_ptr<const gg::SampleBuffer> {
+        gg::core::Processor *p = processor();
+        if (p == nullptr)
+        {
+            message = "the plugin isn't running";
+            return nullptr;
+        }
+        if (layer >= gg::core::kLayers)
+        {
+            message = "no ring to capture";
+            return nullptr;
+        }
+        std::shared_ptr<const gg::SampleBuffer> buffer;
+        try
+        {
+            buffer = media().captureRing(layer, splice, *p);
+        }
+        catch (...)
+        {
+        }
+        if (buffer == nullptr)
+        {
+            message = "no ring to capture";
+        }
+        return buffer;
+    };
+    context.captureTo = [this, capture](uint8_t layer, uint32_t splice, uint8_t target) {
+        std::string message;
+        const auto buffer = capture(layer, splice, message);
+        if (buffer == nullptr)
+        {
+            return message;
+        }
+        if (target >= gg::core::kLayers)
+        {
+            return std::string("no such layer");
+        }
+        try
+        {
+            if (!media().loadCapture(target, buffer))
+            {
+                return media().status(target); // "over the memory cap: ..." and the like
+            }
+        }
+        catch (...)
+        {
+            return std::string("can't load the capture: not enough memory");
+        }
+        return std::string();
+    };
+    context.saveCaptureTo = [this, capture](uint8_t layer, uint32_t splice,
+                                            const std::string &path) {
+        std::string message;
+        const auto buffer = capture(layer, splice, message);
+        if (buffer == nullptr)
+        {
+            return message;
+        }
+        try
+        {
+            if (!media().saveCapture(*buffer, pathOf(path)))
+            {
+                return std::string("can't save the capture: the file can't be written");
+            }
+        }
+        catch (...)
+        {
+            return std::string("can't save the capture: not enough memory");
+        }
+        return std::string();
+    };
+    context.capturesFolder = [] {
+        try
+        {
+            // As MediaSession's: the settings', else the default.
+            const auto file = settingsFile();
+            const gg::core::MachineSettings settings =
+                file.empty() ? gg::core::MachineSettings{} : gg::media::loadSettings(file);
+            std::filesystem::path folder = gg::media::defaultCapturesFolder();
+            if (!settings.capturesFolder.empty())
+            {
+                if (auto chosen = gg::media::fromUtf8(settings.capturesFolder))
+                {
+                    folder = *chosen;
+                }
+            }
+            return gg::media::toUtf8(folder).value_or(std::string());
+        }
+        catch (...)
+        {
+            return std::string();
+        }
+    };
+    context.collectSamples = [this](const std::string &folder) {
+        try
+        {
+            const auto result = media().collectAndSave(pathOf(folder));
+            std::string summary = "Collected " + std::to_string(result.copied.size()) + " files";
+            if (!result.missing.empty())
+            {
+                summary += "; " + std::to_string(result.missing.size()) + " missing";
+            }
+            return summary;
+        }
+        catch (...)
+        {
+            return std::string("can't collect: not enough memory or the folder can't be written");
+        }
+    };
+    context.memory = [this] {
+        gg::ui::MemoryView view;
+        view.usedBytes = media().memoryUsedBytes();
+        view.capMiB = media().memoryCapMiB();
+        return view;
+    };
+    context.setMemoryCapMiB = [this](uint32_t mib) { uiSetMemoryCapMiB(mib); };
+}
 
 void EditorPlugin::fillPresetContext(gg::ui::EditorContext &context)
 {
@@ -283,11 +433,15 @@ std::unique_ptr<juce::Component> EditorPlugin::createEditor()
     context.formatName = formatOf(_host.host());
     // The instrument's loader strip (spec §6.5), on the main thread, as the loader requires. The
     // loader is GigaGrainsPlugin's, so it outlives the editor, which the shim holds.
-    if (SampleLoader *loader = sampleLoader(); loader != nullptr)
+    // Both products have four loaders (M2 sub-project 2), so the strip's members are layer A's in
+    // each.
     {
+        SampleLoader *loader = &media().loader(0);
+        // The strip is still the instrument's: PR 1's FX editor has none (its tests say so), and
+        // the per-layer members below serve both products. Task 7 turns it on in the FX.
+        context.showSampleLoader = mode() == gg::core::Mode::Instrument;
         // Nothing may throw into JUCE's callbacks. A request that can't be made (no memory)
         // leaves the status as the loader set it.
-        context.showSampleLoader = true;
         context.loadSample = [loader](const std::string &path) {
             try
             {
@@ -355,38 +509,53 @@ std::unique_ptr<juce::Component> EditorPlugin::createEditor()
             const SampleWaveform w = loader->waveform();
             return gg::ui::SampleWaveform{w.peaks, w.frames, w.seconds};
         };
-        // PR 1 of the Views: only layer A holds a sample, the one the loader loads. A drop on
-        // another lane is refused (the canvas says so).
-        context.sampleWaveformFor = [loader](uint8_t layer) {
-            if (layer != 0)
-            {
-                return gg::ui::SampleWaveform{};
-            }
-            const SampleWaveform w = loader->waveform();
-            return gg::ui::SampleWaveform{w.peaks, w.frames, w.seconds};
-        };
-        context.loadSampleFor = [loader](uint8_t layer, const std::string &path) {
-            if (layer != 0)
-            {
-                return false;
-            }
-            try
-            {
-                loader->requestLoad(pathOf(path));
-            }
-            catch (...)
-            {
-                // As loadSample: the status stays as the loader set it.
-            }
-            return true;
-        };
     }
-    else
-    {
-        context.sampleWaveform = [] { return gg::ui::SampleWaveform{}; };
-        context.sampleWaveformFor = [](uint8_t) { return gg::ui::SampleWaveform{}; };
-        context.loadSampleFor = [](uint8_t, const std::string &) { return false; };
-    }
+    // Per layer, in both products (M2 sub-project 6, PR 2): every layer has a loader.
+    context.sampleWaveformFor = [this](uint8_t layer) {
+        if (layer >= gg::core::kLayers)
+        {
+            return gg::ui::SampleWaveform{};
+        }
+        const SampleWaveform w = media().loader(layer).waveform();
+        return gg::ui::SampleWaveform{w.peaks, w.frames, w.seconds};
+    };
+    context.loadSampleFor = [this](uint8_t layer, const std::string &path) {
+        if (layer >= gg::core::kLayers)
+        {
+            return false;
+        }
+        try
+        {
+            media().loader(layer).requestLoad(pathOf(path));
+        }
+        catch (...)
+        {
+            // As loadSample: the status stays as the loader set it.
+        }
+        return true;
+    };
+    context.relinkSampleFor = [this](uint8_t layer, const std::string &path) {
+        if (layer >= gg::core::kLayers)
+        {
+            return;
+        }
+        try
+        {
+            media().loader(layer).requestRelink(pathOf(path));
+        }
+        catch (...)
+        {
+        }
+    };
+    context.sampleStatusFor = [this](uint8_t layer) {
+        if (layer >= gg::core::kLayers)
+        {
+            return gg::ui::SampleStatusView{};
+        }
+        onMainThread(); // as sampleStatus: apply what a loader's worker finished
+        return viewOf(media().loader(layer).status());
+    };
+    fillRingContext(context);
     // Every layer's live ring peaks, while there is a Processor.
     context.livePeaksFor = [this](uint8_t layer) -> const gg::core::LivePeaks * {
         gg::core::Processor *p = processor();

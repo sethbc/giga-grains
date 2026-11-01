@@ -20,6 +20,7 @@
 #include "gg/core/ParamIds.h"
 #include "gg/core/UiSnapshot.h"
 #include "gg/ui/EditLayout.h" // View
+#include "gg/ui/MediaViews.h" // RingView, MemoryView, RingCommand
 
 // This header stays free of JUCE; gg::ui::Editor itself is defined in Editor.cpp. A caller that
 // may destroy the returned std::unique_ptr<juce::Component> still needs juce::Component to be
@@ -188,6 +189,34 @@ struct EditorContext
     /// Loads a file the user dropped on a layer's lane. True if the layer takes it. PR 1: layer 0
     /// calls loadSample and returns true; the others return false, and the canvas says so.
     std::function<bool(uint8_t layer, const std::string &utf8Path)> loadSampleFor;
+    /// Relinks a layer's missing sample to the file chosen (SampleLoader::requestRelink).
+    std::function<void(uint8_t layer, const std::string &utf8Path)> relinkSampleFor;
+    /// A layer's sample status, polled like sampleStatus (which is layer 0's).
+    std::function<SampleStatusView(uint8_t layer)> sampleStatusFor;
+
+    /// A Live layer's ring as the audio thread last published it; valid is false while
+    /// inactive. Main thread.
+    std::function<RingView(uint8_t layer)> ringView;
+    /// Adds a splice mark `seconds` behind the ring's head, or clears the layer's marks. Dropped
+    /// while inactive; applied at the next process().
+    std::function<void(uint8_t layer, RingCommand, float seconds)> ringCommand;
+    /// Captures layer `layer`'s ring window (`splice` 0), or its splice k >= 1, into layer
+    /// `target` as an in-memory sample. "" on success, else the message for the user:
+    /// "the plugin isn't running", "no ring to capture", or the target's status after the memory
+    /// cap refused it.
+    std::function<std::string(uint8_t layer, uint32_t splice, uint8_t target)> captureTo;
+    /// Saves the same capture as a float32 WAV at `utf8Path`. "" on success, else the message.
+    std::function<std::string(uint8_t layer, uint32_t splice, const std::string &utf8Path)>
+        saveCaptureTo;
+    /// The captures folder (UTF-8), where the save chooser opens.
+    std::function<std::string()> capturesFolder;
+    /// Collect and save into `utf8Folder`: a summary for the user, "Collected N files" with
+    /// "; M missing" appended when any are missing.
+    std::function<std::string(const std::string &utf8Folder)> collectSamples;
+    /// The memory the instance holds and its cap, polled; and the cap's setter (clamped to 64 to
+    /// 16,384 MiB, saved with the state).
+    std::function<MemoryView()> memory;
+    std::function<void(uint32_t mib)> setMemoryCapMiB;
     /// Called with each transient message for the user (a refused drop) as the editor's header
     /// shows it for 4 s. May be empty.
     std::function<void(const std::string &utf8)> notice;

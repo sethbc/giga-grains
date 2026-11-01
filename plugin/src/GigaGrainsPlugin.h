@@ -270,6 +270,11 @@ class GigaGrainsPlugin : public plugHelper_t
     /// next activate() gives them to the processor with routes_.
     void uiSetRoutes(const gg::core::ModRoutes &routes) noexcept;
 
+    /// The memory cap from the editor (M2 sub-project 6, PR 2), main thread: clamped through
+    /// MediaSession::setMemoryCapMiB (evicting nothing), then state.mark_dirty when the cap
+    /// changed, since the cap is saved with the state (INST).
+    void uiSetMemoryCapMiB(uint32_t mib) noexcept;
+
     /// The output events of the editor's changes that the host's list refused (try_push false):
     /// each counted, never retried. Any thread.
     uint64_t uiEventsDropped() const noexcept

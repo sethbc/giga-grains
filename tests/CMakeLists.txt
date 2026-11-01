@@ -183,6 +183,8 @@ if (GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
     target_include_directories(gg-tests PRIVATE ${CMAKE_SOURCE_DIR}/ui/src)
     # The preset strip and browser (M2 sub-project 5's spec §6.8), through the editor.
     target_sources(gg-tests PRIVATE plugin/browser_tests.cpp)
+    # The editor's media and ring API (M2 sub-project 6, PR 2).
+    target_sources(gg-tests PRIVATE plugin/editor_media_tests.cpp)
 endif ()
 
 list(APPEND CMAKE_MODULE_PATH ${CMAKE_SOURCE_DIR}/libs/catch2/extras)

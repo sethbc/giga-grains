@@ -606,15 +606,18 @@ TEST_CASE("the header shows a notice for four seconds", "[plugin]")
     REQUIRE(notice != nullptr);
     CHECK_FALSE(notice->isVisible());
 
-    // A file dropped on lane B is refused (Task 9): the canvas's notice shows in the header.
-    auto *canvas = dynamic_cast<juce::FileDragAndDropTarget *>(findDeep(*editor, "canvas"));
-    REQUIRE(canvas != nullptr);
-    const auto *lanes = findDeep(*editor, "canvas");
-    const int laneB = lanes->getHeight() * 3 / 8;
-    canvas->filesDropped(juce::StringArray("/nowhere/x.wav"), lanes->getWidth() - 20, laneB);
+    // Every layer takes a sample now (Task 4), so no drop is refused; a theme that can't be
+    // saved raises a notice all the same.
+    const auto dir = gg::test::sampleDir("frame-notice-unwritable");
+    const auto blocker = dir / "not-a-folder";
+    std::filesystem::remove_all(blocker);
+    gg::test::writeFile(blocker, std::vector<uint8_t>{'x'});
+    gg::test::useSettingsFile(blocker / "settings.xml");
+    juce::Component *theme = findDeep(*editor, "header.theme");
+    REQUIRE(theme != nullptr);
+    click(*theme);
     CHECK(notice->isVisible());
-    CHECK(labelText(*editor, "header.notice") ==
-          "layer B takes a sample after the session format's next version");
+    CHECK(labelText(*editor, "header.notice").contains("theme"));
     tick(*editor, 119);
     CHECK(notice->isVisible());
     tick(*editor);
