@@ -175,15 +175,19 @@ fs::file_time_type modified(const fs::path &path)
     return time;
 }
 
-/// The number of entries directly in the folder `path` (files and subfolders; names only); 0 for
-/// a path that isn't a readable folder. A change in the count is a change in the folder that a
-/// modification time too coarse to tell two writes apart (NTFS's ticks, ext4's) can miss.
+/// The number of entries directly in the folder `path` (files and subfolders; names only), counted
+/// no further than PresetCatalog::kMaxFilesPerFolder + 1; 0 for a path that isn't a readable
+/// folder. A change in the count is a change in the folder that a modification time too coarse to
+/// tell two writes apart (NTFS's ticks, ext4's) can miss. The bound keeps the browser's 30 Hz poll
+/// as cheap as the listing it guards, whatever the folder holds: past it, only the folder's time
+/// shows a change.
 std::size_t entryCount(const fs::path &path)
 {
+    constexpr std::size_t kBound = PresetCatalog::kMaxFilesPerFolder + 1;
     std::error_code error;
     std::size_t n = 0;
     for (fs::directory_iterator it(path, fs::directory_options::skip_permission_denied, error);
-         !error && it != fs::directory_iterator(); it.increment(error))
+         !error && it != fs::directory_iterator() && n < kBound; it.increment(error))
     {
         ++n;
     }

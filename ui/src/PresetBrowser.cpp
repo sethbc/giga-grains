@@ -761,8 +761,8 @@ void PresetBrowser::refresh()
     {
         return;
     }
-    // The folders' poll (spec §6.8, M4): a stat of each watched folder per tick, a rescan only
-    // when one changed.
+    // The folders' poll (spec §6.8, M4; R3): a stat of each watched folder per tick and a count
+    // of its entries (to kMaxFilesPerFolder + 1), a rescan only when one changed.
     if (context_.presetFoldersChanged && context_.presetFoldersChanged())
     {
         reload(true);

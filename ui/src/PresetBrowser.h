@@ -64,7 +64,8 @@ class PresetBrowser final : public juce::Component,
     ~PresetBrowser() override;
 
     /// The editor's 30 Hz timer, while the browser is open: when the folders changed on disk
-    /// (presetFoldersChanged, a stat per folder), rescans and lists again; else when a load moved
+    /// (presetFoldersChanged: a stat and a bounded entry count per folder), rescans and lists
+    /// again; else when a load moved
     /// presetLoads (the host loaded a preset), lists again without a rescan.
     void refresh();
     /// Loads the neighbour of the loaded preset in the filtered list as it stands (`direction` +1
