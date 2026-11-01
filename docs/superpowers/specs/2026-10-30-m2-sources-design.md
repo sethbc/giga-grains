@@ -757,8 +757,8 @@ that isn't held). **Decided: option 1.**
    > on a layer whose base Source builds to Live (Live or Resample: option 2's "every Live and
    > Resample layer's ring" bounds option 1 too), since no grain of a Sample layer reads its ring.
 
-   > **Amended** (2026-11-01, M2 sub-project 4's integration review, I2; INTENT §23 #69, a ruling
-   > the director may overturn): the Spectral kind's analysis reads its layer's ring when the layer
+   > **Amended** (2026-11-01, M2 sub-project 4's integration review, I2; INTENT §23 #69, decided: the
+   > director's D-specsave, option 1, 2026-11-01): the Spectral kind's analysis reads its layer's ring when the layer
    > has no sample, and Freeze freezes that ring as on a Live layer (the extremes spec's D2), so a
    > held ring is saved for a Spectral layer with no sample too, and restored and armed as a Live
    > layer's is. A Spectral layer with a sample saves none, as a Sample layer doesn't.

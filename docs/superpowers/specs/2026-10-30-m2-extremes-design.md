@@ -302,7 +302,7 @@ the material with no transients and no comb; grains read it as they read the liv
   ring is never frozen.
 
   > **Amended** (2026-11-01, the integration review's I2, after the merge with sub-project 2;
-  > INTENT §23 #69, a ruling the director may overturn): under this D2 and sub-project 2's D1 (a
+  > INTENT §23 #69, the director's D-specsave, option 1, 2026-11-01): under this D2 and sub-project 2's D1 (a
   > session saves a held ring, Freeze or Loop on, when its layer reads it), a held ring is saved
   > for a Spectral layer whose material is its ring (no sample loaded), and restored and armed as
   > a Live layer's is, so a reopened frozen Spectral pad is the saved one. A Spectral layer with a
@@ -714,6 +714,20 @@ over 20 s; a sine burst holds within 0.1 dB); the bypass option was declined.
    density costs CPU where the layer's own overlap was low (never above the 400 Hz ceiling).
 2. *Mild:* toward 16, ±a quarter length, ±20 cents. *Cost:* less decorrelation, so at 1000× some
    comb may remain on the most periodic material; the pack renders both for the close's ears.
+
+**D-specsave. Does a Spectral layer with no sample save its held ring?** (§6.2, the I2 amendment).
+**Decided: option 1 (2026-11-01).**
+1. **Yes:** a frozen or looping Spectral layer with no sample saves and restores its held ring, as
+   a Live layer does. *Cost:* the ring's bytes in the state.
+2. *No, a known gap:* a reopened frozen Spectral pad restarts empty. *Cost:* the pad the
+   musician saved is not the one that returns.
+
+**D-specwindow. Does a Spectral layer's analysis follow the ring's window?** (sub-project 2's
+Loop, Loop Length and Splice). **Decided: option 1 (2026-11-01).**
+1. **Defer, carry-over row 381:** a Spectral smear reads outside the Loop/Splice window until it
+   is built, and the ring commands skip it. *Cost:* the window does not shape a Spectral layer
+   meanwhile.
+2. *Build now.* *Cost:* more engine work before the merge.
 
 ## 9. My calls
 
