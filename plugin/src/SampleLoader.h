@@ -243,6 +243,11 @@ class SampleLoader
     uint64_t heldBytes() const noexcept;
     /// The layer whose sample this is.
     uint8_t layer() const noexcept { return layer_; }
+    /// Whether a sample is in effect, as a source or a decoded buffer waiting for activate(): the
+    /// main thread's view of the layer's material (core::Processor::layerMaterial), which a
+    /// Spectral layer's ring save follows (core::ringSaved). An entry whose file is missing has
+    /// none. Main thread.
+    bool hasSample() const noexcept { return source_ != nullptr || pending_ != nullptr; }
 
     /// The plugin's activate(), before it returns: waits for a job under way, applies what the
     /// worker finished, converts the sample at `sampleRate` here, or looks again for a file that

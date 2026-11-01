@@ -592,7 +592,8 @@ sub-project 1's states unchanged (a `MEDI` version 1 entry is layer A's).
 > **Amended** (2026-10-31, the final review's fix wave; INTENT §23 #68):
 > - **Which rings are saved:** a held ring only on a layer whose base Source builds to Live (Live
 >   or Resample), in the plugin and in `gg-render` alike (`gg::core::ringSaved`), since no grain
->   of a Sample layer reads its ring (D1's amendment). Freeze is on above 0.5 everywhere
+>   of a Sample layer reads its ring (D1's amendment); since M2 sub-project 4's integration
+>   review (2026-11-01, I2), on a Spectral layer with no sample too, whose analysis reads it. Freeze is on above 0.5 everywhere
 >   (`gg::core::freezeOn`); `gg-render`'s restore read it at 0.5 and up.
 > - **A save while a restore is in flight:** a state loaded while active offers each restored
 >   ring to the audio thread, which adopts it at its next `process()`; a save before then writes
@@ -755,6 +756,12 @@ that isn't held). **Decided: option 1.**
    > of WAV, not 3 MB and 11 MB as first written; the decision stands. A held ring is saved only
    > on a layer whose base Source builds to Live (Live or Resample: option 2's "every Live and
    > Resample layer's ring" bounds option 1 too), since no grain of a Sample layer reads its ring.
+
+   > **Amended** (2026-11-01, M2 sub-project 4's integration review, I2; INTENT §23 #69, a ruling
+   > the director may overturn): the Spectral kind's analysis reads its layer's ring when the layer
+   > has no sample, and Freeze freezes that ring as on a Live layer (the extremes spec's D2), so a
+   > held ring is saved for a Spectral layer with no sample too, and restored and armed as a Live
+   > layer's is. A Spectral layer with a sample saves none, as a Sample layer doesn't.
 2. *Every Live and Resample layer's ring is saved.* *Cost:* up to four rings of audio per
    instance in every save, most of it transient; a 16 s stereo ring is 6.1 MB, a minute 23 MB,
    so projects grow and the 32 MB embed cap is reached by rings alone, after which saves write files.

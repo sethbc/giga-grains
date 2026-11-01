@@ -88,7 +88,8 @@ std::optional<RingCopy> readRing(const core::Processor &processor, uint8_t layer
 /// restored ring.
 ///
 /// **Rings saved** (D1): a layer's ring is saved when its base Source builds to Live (Live or
-/// Resample) and its Freeze or Loop base value is on (core::ringSaved), as its window
+/// Resample), or to Spectral with no sample loaded (its analysis smears the ring; the integration
+/// review's I2), and its Freeze or Loop base value is on (core::ringSaved), as its window
 /// (RingSpanRequest: the loop's when Loop is on), read with readRing's protocol (the save retries
 /// rather than waiting for a gap between process() calls, which the main thread can't see; a front
 /// the head lapped on the try kept is saved as silence, so the window keeps its length W and the
@@ -270,6 +271,12 @@ class MediaSession
     /// Whether layer `layer`'s restored ring is offered to `processor` and not yet adopted or
     /// declined (RingSlot::offeredEntry).
     bool restoreInFlight(const core::Processor &processor, uint8_t layer) const noexcept;
+    /// Layer `layer`'s material as the main thread knows it (SampleLoader::hasSample): Sample with
+    /// a sample in effect, else Live, for core::ringSaved's Spectral rule.
+    SourceMode materialOf(uint8_t layer) const noexcept
+    {
+        return loaders_[layer]->hasSample() ? SourceMode::Sample : SourceMode::Live;
+    }
     void refreshBudget() noexcept;
     /// The captures folder: the settings', or gg::media::defaultCapturesFolder().
     std::filesystem::path capturesFolder() const;

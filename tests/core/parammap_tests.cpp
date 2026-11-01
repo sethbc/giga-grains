@@ -735,10 +735,14 @@ TEST_CASE("the instrument's Position is a fraction and its Spray is seconds", "[
     }
 }
 
-TEST_CASE("a ring is saved on a Live or Resample layer whose Freeze or Loop is on", "[core]")
+TEST_CASE("a ring is saved on a held layer that reads it", "[core]")
 {
     // M2 sub-project 2's D1, the one rule the plugin and gg-render share (ringSaved), and the
-    // Freeze switch's threshold (freezeOn): above 0.5, as WetParams::freeze reads it.
+    // Freeze switch's threshold (freezeOn): above 0.5, as WetParams::freeze reads it. The ring is
+    // read by a Live or Resample layer, and by a Spectral layer whose material is its ring, no
+    // sample loaded (the extremes' integration review, I2); a Sample layer, a Spectral layer with
+    // a sample and the Oscillator's fallback in the instrument read none.
+    using gg::SourceMode;
     using gg::core::freezeOn;
     using gg::core::LayerParam;
     using gg::core::layerSlot;
@@ -747,28 +751,41 @@ TEST_CASE("a ring is saved on a Live or Resample layer whose Freeze or Loop is o
     {
         for (uint8_t layer = 0; layer < gg::core::kLayers; ++layer)
         {
-            INFO("layer " << int{layer} << (mode == Mode::Fx ? " fx" : " instrument"));
-            const auto at = [layer](LayerParam p) {
-                return static_cast<size_t>(layerSlot(p, layer));
-            };
-            ParamValues v = defaults(mode);
-            CHECK_FALSE(ringSaved(v, mode, layer)); // neither held
-            v[at(LayerParam::Freeze)] = 0.5f;
-            CHECK_FALSE(freezeOn(v, layer)); // the threshold itself is off
-            v[at(LayerParam::Freeze)] = 1.0f;
-            CHECK(freezeOn(v, layer));
-            for (const float kind : {0.0f, 1.0f, 2.0f, 3.0f, 4.0f})
+            for (const SourceMode material : {SourceMode::Live, SourceMode::Sample})
             {
-                v[at(LayerParam::Source)] = kind;
-                const bool live = gg::core::builtKind(gg::core::sourceKindOf(v, layer), mode) ==
-                                  gg::SourceMode::Live;
-                CHECK(ringSaved(v, mode, layer) == live); // frozen
-                v[at(LayerParam::Freeze)] = 0.0f;
-                v[at(LayerParam::Loop)] = 1.0f;
-                CHECK(ringSaved(v, mode, layer) == live); // looping
-                v[at(LayerParam::Loop)] = 0.0f;
-                CHECK_FALSE(ringSaved(v, mode, layer)); // neither
+                INFO("layer " << int{layer} << (mode == Mode::Fx ? " fx" : " instrument")
+                              << (material == SourceMode::Live ? ", no sample" : ", a sample"));
+                const auto at = [layer](LayerParam p) {
+                    return static_cast<size_t>(layerSlot(p, layer));
+                };
+                ParamValues v = defaults(mode);
+                CHECK_FALSE(ringSaved(v, mode, layer, material)); // neither held
+                v[at(LayerParam::Freeze)] = 0.5f;
+                CHECK_FALSE(freezeOn(v, layer)); // the threshold itself is off
                 v[at(LayerParam::Freeze)] = 1.0f;
+                CHECK(freezeOn(v, layer));
+                for (const float kind : {0.0f, 1.0f, 2.0f, 3.0f, 4.0f})
+                {
+                    INFO("Source " << kind);
+                    v[at(LayerParam::Source)] = kind;
+                    const SourceMode built =
+                        gg::core::builtKind(gg::core::sourceKindOf(v, layer), mode);
+                    const bool reads =
+                        built == SourceMode::Live ||
+                        (built == SourceMode::Spectral && material == SourceMode::Live);
+                    // Pinned by kind, so a change to builtKind can't move the rule unseen.
+                    const bool expected = kind == 1.0f || kind == 2.0f ||
+                                          (kind == 3.0f && material == SourceMode::Live) ||
+                                          (kind == 4.0f && mode == Mode::Fx);
+                    CHECK(reads == expected);
+                    CHECK(ringSaved(v, mode, layer, material) == expected); // frozen
+                    v[at(LayerParam::Freeze)] = 0.0f;
+                    v[at(LayerParam::Loop)] = 1.0f;
+                    CHECK(ringSaved(v, mode, layer, material) == expected); // looping
+                    v[at(LayerParam::Loop)] = 0.0f;
+                    CHECK_FALSE(ringSaved(v, mode, layer, material)); // neither
+                    v[at(LayerParam::Freeze)] = 1.0f;
+                }
             }
         }
     }

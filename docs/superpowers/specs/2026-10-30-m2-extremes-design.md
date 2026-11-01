@@ -300,6 +300,14 @@ the material with no transients and no comb; grains read it as they read the liv
   window holds still and Position scans the frozen ring; sample material is still already. The
   smear itself keeps evolving, frame by frame, with new phases: a spectral freeze. The spectral
   ring is never frozen.
+
+  > **Amended** (2026-11-01, the integration review's I2, after the merge with sub-project 2;
+  > INTENT §23 #69, a ruling the director may overturn): under this D2 and sub-project 2's D1 (a
+  > session saves a held ring, Freeze or Loop on, when its layer reads it), a held ring is saved
+  > for a Spectral layer whose material is its ring (no sample loaded), and restored and armed as
+  > a Live layer's is, so a reopened frozen Spectral pad is the saved one. A Spectral layer with a
+  > sample saves no ring, as a Sample layer doesn't (`gg::core::ringSaved`, given the layer's
+  > material: the plugin's loader on the main thread, `gg-render`'s Processor after the render).
 - **Feedback** on a Spectral layer is 0, as on a Sample layer: Feedback writes a Live layer's ring
   (wave 1's rule, kept); a Spectral layer's ring is its material. `toWetParams` keeps the rule.
 - **Memory** per layer at 48 kHz: the ring 5 s × 2 channels × (240,000 + maxBlockSize) floats,

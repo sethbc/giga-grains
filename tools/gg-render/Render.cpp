@@ -517,8 +517,9 @@ std::shared_ptr<gg::SampleBuffer> ringBuffer(const gg::core::Processor &processo
 }
 
 /// Writes the session at the render's end (RenderOptions::saveStatePath; the spec's D1 rule,
-/// gg::core::ringSaved: a layer's ring is kept when its base Source builds to Live and its Freeze
-/// or Loop base is on).
+/// gg::core::ringSaved: a layer's ring is kept when its base Source builds to Live, or to Spectral
+/// with no sample, and its Freeze or Loop base is on). The render is over, so the Processor's own
+/// material is read on this thread.
 void saveSession(const gg::core::Processor &processor, const RenderSpec &spec, uint32_t capMiB,
                  const std::array<std::optional<gg::core::MediaEntry>, gg::core::kLayers> &entries,
                  const std::array<std::shared_ptr<gg::SampleBuffer>, gg::core::kLayers> &captured,
@@ -574,7 +575,7 @@ void saveSession(const gg::core::Processor &processor, const RenderSpec &spec, u
         spec.mode == RenderMode::Fx ? gg::core::Mode::Fx : gg::core::Mode::Instrument;
     for (uint8_t layer = 0; layer < gg::core::kLayers; ++layer)
     {
-        if (gg::core::ringSaved(state.values, mode, layer))
+        if (gg::core::ringSaved(state.values, mode, layer, processor.layerMaterial(layer)))
         {
             const RingWindow w = ringWindow(processor, layer, 0, spec.sampleRate);
             if (w.frames >= 1)

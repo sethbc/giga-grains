@@ -2845,6 +2845,60 @@ TEST_CASE("a state saves no ring of a layer whose Source is Sample", "[render]")
     CHECK_FALSE(state.rings[3].has_value()); // Sample, looping
 }
 
+TEST_CASE("a state saves a Spectral layer's held ring only without a sample", "[render]")
+{
+    // The extremes' integration review, I2 (INTENT §23 #69): a Spectral layer with no sample
+    // smears its ring, which Freeze holds as on a Live layer (D2), so a held one is saved and a
+    // render restores it, frozen; one with a sample reads none and saves none.
+    const std::string dir = freshDirectory("ring-save-spectral");
+    auto j = ringFxJson(1.0);
+    j["params"] = {{"A Source", 3},         {"A Freeze", 1},   {"Layer B On", 1}, {"B Source", 3},
+                   {"B Freeze", 1},         {"Layer C On", 1}, {"C Source", 3},   {"C Loop", 1},
+                   {"C Loop Length", -1.0}, {"Layer D On", 1}, {"D Source", 3},   {"D Loop", 1}};
+    const nlohmann::json sine = {
+        {"kind", "sine"}, {"frequencyHz", 330}, {"seconds", 1.0}, {"amplitude", 0.5}};
+    j["samples"] = {{"B", sine}, {"D", sine}};
+    gg::render::RenderOptions options;
+    options.saveStatePath = dir + "/s.ggst";
+    options.mediaDir = dir;
+    gg::render::render(parseJson(j), nullptr, options);
+    const auto state = decodeFile(options.saveStatePath, Mode::Fx);
+    CHECK(state.rings[0].has_value());       // Spectral over its ring, frozen
+    CHECK_FALSE(state.rings[1].has_value()); // Spectral over a sample, frozen
+    REQUIRE(state.rings[2].has_value());     // Spectral over its ring, looping
+    CHECK(state.rings[2]->frames == 24000);  // its 0.5 s loop window
+    CHECK_FALSE(state.rings[3].has_value()); // Spectral over a sample, looping
+
+    // Layer A alone restored, frozen, over a silent input: its held ring is smeared from the
+    // start, the same bits twice; without the state the same spec is silent.
+    auto restore = ringFxJson(1.0);
+    restore["input"] = {{"kind", "noise"}, {"seconds", 1.0}, {"amplitude", 0.0}};
+    restore["state"] = options.saveStatePath;
+    restore["params"] = {{"Mix", 1.0}, {"Layer B On", 0}, {"Layer C On", 0}, {"Layer D On", 0}};
+    gg::render::RenderOptions restoreOptions;
+    restoreOptions.mediaDir = dir;
+    const auto out = gg::render::render(parseJson(restore), nullptr, restoreOptions);
+    float peak = 0.0f;
+    for (const float x : out.channels[0])
+    {
+        peak = std::max(peak, std::abs(x));
+    }
+    CHECK(peak > 0.01f);
+    const auto again = gg::render::render(parseJson(restore), nullptr, restoreOptions);
+    CHECK(bitIdentical(out.channels[0], again.channels[0]));
+    auto nothing = restore;
+    nothing.erase("state");
+    nothing["params"]["A Source"] = 3;
+    nothing["params"]["A Freeze"] = 1;
+    const auto silent = gg::render::render(parseJson(nothing), nullptr);
+    float silentPeak = 0.0f;
+    for (const float x : silent.channels[0])
+    {
+        silentPeak = std::max(silentPeak, std::abs(x));
+    }
+    CHECK(silentPeak == 0.0f);
+}
+
 TEST_CASE("a state restored into a smaller ring keeps the newest frames", "[render]")
 {
     const std::string dir = freshDirectory("ring-restore-smaller");
