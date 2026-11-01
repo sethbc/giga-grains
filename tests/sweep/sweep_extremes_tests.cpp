@@ -50,9 +50,13 @@ void setAll(SweepDriver &d, int state, uint64_t seed)
 }
 
 /// `minScored`: the share of the render the click check scores, pinned a little under what the
-/// case measures (0.413 in the FX, 0.300 in the instrument, with the draws keyed by CLAP ID):
+/// case measures (0.402 in the FX, 0.300 in the instrument, with the draws keyed by CLAP ID):
 /// Reverb Size moves are exempt (row 217), and so are kLimiterDrive's and kDelayGlideHold's
 /// stretches (SweepDriver.h; the delay's glide, at 0.5 samples a sample, runs for up to 4 s).
+/// The FX's was 0.413 before M2 sub-project 2's ring parameters were drawn too, and is 0.413 still
+/// with them held at their defaults: at their ends (Overdub 1 among them) the rings are louder, so
+/// Peak is driven under -6 dB longer and kLimiterDrive, unchanged, covers 12.8% of the render
+/// against 11.6%; every other exemption covers what it did.
 void extremes(Mode mode, uint64_t seed, double minScored)
 {
     SweepDriver d(mode, seed);
@@ -78,7 +82,7 @@ void extremes(Mode mode, uint64_t seed, double minScored)
 
 TEST_CASE("extremes: minima, maxima and 32 corners, fx", "[sweep]")
 {
-    extremes(Mode::Fx, 2101, 0.41);
+    extremes(Mode::Fx, 2101, 0.395);
 }
 
 TEST_CASE("extremes: minima, maxima and 32 corners, instrument", "[sweep]")
