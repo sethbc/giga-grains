@@ -1456,7 +1456,12 @@ TEST_CASE("the About box lists the license set", "[plugin]")
     const auto *format = dynamic_cast<const juce::Label *>(findDeep(box, "about.format"));
     REQUIRE(format != nullptr);
     CHECK(format->getText().contains("VST3"));
-    CHECK(findDeep(box, "about.repository") != nullptr);
+    // The corresponding source's link: the repository's URL, as the text and as the target.
+    const auto *repository =
+        dynamic_cast<const juce::HyperlinkButton *>(findDeep(box, "about.repository"));
+    REQUIRE(repository != nullptr);
+    CHECK(repository->getButtonText() == "https://github.com/sethbc/giga-grains");
+    CHECK(repository->getURL().toString(true) == "https://github.com/sethbc/giga-grains");
 
     // The first text shown is the notices' first.
     const std::string_view first = notices[0].text.substr(0, 40);
