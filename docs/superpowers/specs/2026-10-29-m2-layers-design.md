@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | **Approved by the programme manager 2026-10-29** against the programme design and INTENT, with one amendment accepted (rows 118 and 119 move from sub-project 2 to this one, §12). **The director's decisions D1–D5, 2026-10-29,** are recorded in §8 and applied in place: D1 option 1, D2 option 1, D3 option 3, D4 option 1, D5 option 2. **Built** 2026-10-30 (PR #15; INTENT §23 #65), amended in place, each marked **Amended**: §6.1 (the smoke test's bound and the PPA step, ruling LS-T1a; no C++23 library feature used yet), §6.3 (the `min(1, Σ r_K)` factor, ruling LS-T10a), §6.7 (the event order, ruling LS-T10b; the per-layer dropped-event counts and the stub pool's RTSan exemption, rulings LS-T11a and LS-T11b), §6.8 (Level and Layer A On as layer targets), §6.9 (the 07b listening spec, ruling LS-T5a), §6.10 (the `<route>` target as a CLAP ID, ruling LS-P1), §6.11 (`tempoBpm`, ruling LS-T13a), §12 (rows 118 and 119 accepted by the programme manager, and closed) |
+| **Status** | **Approved by the programme manager 2026-10-29** against the programme design and INTENT, with one amendment accepted (rows 118 and 119 move from sub-project 2 to this one, §12). **The director's decisions D1–D5, 2026-10-29,** are recorded in §8 and applied in place: D1 option 1, D2 option 1, D3 option 3, D4 option 1, D5 option 2. **Built** 2026-10-30 (PR #15; INTENT §23 #65), amended in place, each marked **Amended**: §6.1 (the smoke test's bound and the PPA step, ruling LS-T1a; no C++23 library feature used yet), §6.3 (the `min(1, Σ r_K)` factor, ruling LS-T10a; the ramps interpolated between the on-sets and a floor on the steep sets, carry-over row 301, 2026-10-31), §6.7 (the event order, ruling LS-T10b; the per-layer dropped-event counts and the stub pool's RTSan exemption, rulings LS-T11a and LS-T11b), §6.8 (Level and Layer A On as layer targets), §6.9 (the 07b listening spec, ruling LS-T5a), §6.10 (the `<route>` target as a CLAP ID, ruling LS-P1), §6.11 (`tempoBpm`, ruling LS-T13a), §12 (rows 118 and 119 accepted by the programme manager, and closed) |
 | **Milestone** | M2 Giga (INTENT §20, §23 #64), sub-project 1 of 7; wave 1, alone |
 | **Spec authority** | `INTENT.md`, then `docs/superpowers/specs/2026-10-29-m2-programme-design.md` (its §6.1, §7 and §12 are this sub-project's charter: realized here, not reopened). This document records how this sub-project implements them |
 | **Builds on** | M1 as closed (§23 #60): the `Processor` and its wet chain, the Cloud engine, Sources, Space, the Perform UI's macros, Texture and Feedback; the release pipeline (§23 #61) |
@@ -298,6 +298,74 @@ instance, after the tasks join:
   > on it is 1 and the law is D1's; one layer at `r = 1` still weighs exactly 1.0 (`(b/b) × 1`),
   > so layer A alone is M1's bit for bit (`1235944`). It is the stated behaviour, not the
   > formula, that is the intent: an engineering ruling, not a director's choice.
+
+  > **Amended (2026-10-31, carry-over row 301, assigned to M2 sub-project 4 by the director;
+  > decided by the director, 2026-10-31 (D1-rest option 1)):**
+  > the law as built keeps D1's resting weights wherever they are not steep, and moves at the
+  > ramps' and the pad's pace. Two faults of the law above handed over within a sample or a few:
+  > - **A steep dependence on the ramps.** Dividing `r_L·b_L` by `Σ r_K·b_K` let a ramp near 0
+  >   on a dominant corner outweigh the rest: at the pad's (0, 0), A off and D on moved a weight
+  >   by 0.9995 in one sample (a click of 547 over sines); the FX extremes sweep's corner 17 by
+  >   0.675 (52.2 through the delay).
+  > - **A steep dependence on the pad.** On the clamped pad the resting law is continuous, but
+  >   where a diagonal pair's or a triple's corner weights all near 0 (near the corner none of
+  >   them holds) it is steep, up to about 200 per pad unit: A and D on with Y at 0 weigh
+  >   0.50 / 0.50 at x = 0.999, 0.91 / 0.09 at 0.99 and 0.991 / 0.009 at 0.9, so a Morph X ramp
+  >   from 1 to 0.654 moved a weight by 0.094 a sample. An adjacent pair is never steep (A and B:
+  >   `1 − x`, whatever y is), nor are four layers (`b_L`).
+  >
+  > The law as built, with `S` the on layers and `s = Σ_{K∈S} b_K`:
+  > - **At rest** (every ramp at 0 or 1): `W_S,L = b_L / s`, the law above bit for bit, except
+  >   for a diagonal pair or a triple with `s < ε = 0.35`, where each on layer takes an equal share
+  >   of the shortfall, `W_S,L = (b_L + (ε − s) / |S|) / ε`. Both forms sum to 1 and meet at
+  >   `s = ε`. The floor binds on 17.1% of the pad for a diagonal pair, 7.1% for a triple, and
+  >   never for a lone layer, an adjacent pair or four layers: there the resting weights are the
+  >   law above, bit for bit, on the whole pad.
+  > - **While layers ramp**: `weight_L = Σ_S P_S·W_S,L / Σ_S P_S × min(1, Σ_K r_K)` over the
+  >   non-empty sets `S` that hold every layer at 1 and none at 0, with
+  >   `P_S = Π_{K∈S} r_K · Π_{K∉S} (1 − r_K)` over the ramping layers: a multilinear
+  >   interpolation between the on-sets, faded as LS-T10a has it. At rest one `P_S` is 1, so the
+  >   result is `W_S` bit for bit, and one layer at `r = 1` weighs exactly 1.0.
+  >
+  > D1's statements hold: the amplitude sum is 1 with a whole layer's worth of ramps on, every
+  > on layer weighs `1/n` at the center (`s ≥ 0.5` there, so no floor), and a corner's layer, on,
+  > sounds alone at its corner.
+  >
+  > **The ramp's shape at the center is linear in the ramp.** A on and B ramping in weigh
+  > `1 − r/2` and `r/2`, where the law above gave `1/(1 + r)` and `r/(1 + r)` (at most 0.086
+  > apart, at `r = √2 − 1`). Weighting each set by its size (`|S|·P_S`) would restore the
+  > hyperbolic shape exactly at the center, but it doubles the worst handover with the pad still,
+  > from 0.0062 to 0.0124 a sample, past the 0.01 the tests hold it to, so the linear shape stays
+  > (review fix round 2's ruling). The two moved goldens, `fx-layer-switch` and `fx-overload`,
+  > differ from the law above inside their 10 ms ramps alone.
+  >
+  > **The steps and ε.** The largest per-sample weight step, at 48 and 44.1 kHz (ramps of 480
+  > and 441 samples), on the 32-sample control grid where the Processor applies events (the
+  > layers tests pin them; a model of the law over every set, pair of sets, direction and
+  > stagger found them):
+  > - a resting pad crossing in both axes at full speed (staggered Morph ramps reach that
+  >   anywhere): 0.0073 and 0.0079, A, B and C on just outside the floor;
+  > - a handover with the pad still: 0.0062 and 0.0068, whatever ε is (B off while A, C and D come
+  >   on, at (0, 1));
+  > - both at once: 0.0105 and 0.0116 (B and D swapping with A and C held while the pad crosses).
+  >
+  > | ε | pad alone | both at once | floor binds (diagonal pair, triple) |
+  > |---|---|---|---|
+  > | 0.25 | 0.0094, 0.0102 | 0.0125, 0.0136 | 7.8%, 3.5% |
+  > | 0.30 | 0.0082, 0.0089 | 0.0114, 0.0124 | 11.9%, 5.1% |
+  > | **0.35** | **0.0073, 0.0079** | **0.0105, 0.0116** | **17.1%, 7.1%** |
+  > | 0.40 | 0.0066, 0.0070 | 0.0098, 0.0102 | 24.1%, 9.5% |
+  > | 0.45 | 0.0058, 0.0064 | 0.0088, 0.0097 | 33.6%, 12.2% |
+  >
+  > ε = 0.35 (review fix round 2's ruling): 0.25 lets the pad alone pass 0.01 at 44.1 kHz and
+  > every smaller ε makes both motions together steeper; each larger one moves D1's resting
+  > weights on more of the pad, and the combined case stays over 0.01 at 44.1 kHz up to about
+  > 0.45. (Round 1 gave 0.0097 for the pad alone and 0.0137 at 0.25, from finite differences that
+  > straddled the floor's kink, and about 0.0042 for the handover; the figures above replace
+  > them.) Commit `5693fe9`, after review fix round 1: the first fix, `eae7a36`,
+  > shared every off corner's weight equally among the rendering layers, which moved the resting
+  > weights by more than 0.01 on 85% to 98% of the pad for every pair and triple, adjacent pairs
+  > included, and was replaced.
 - Every weight is plain float arithmetic per sample, no libm; a −0 weight can't arise since the
   ramps and bilinears are products of non-negative values.
 

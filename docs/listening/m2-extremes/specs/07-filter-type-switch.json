@@ -1,0 +1,51 @@
+{
+  "mode": "fx",
+  "sampleRate": 48000,
+  "durationSeconds": 12.0,
+  "blockSize": 128,
+  "seed": 1,
+  "input": {
+    "kind": "sine",
+    "frequencyHz": 330,
+    "seconds": 11.5,
+    "amplitude": 0.5
+  },
+  "channels": 2,
+  "params": {
+    "Mix": 1.0,
+    "Density": 5.0,
+    "Size": -3.321928094887362,
+    "Level": -6.0,
+    "A Pitch Spread": 24.0,
+    "A Bus 1 Filter": 0,
+    "A Bus 1 Cutoff": 8.366322214245816,
+    "A Bus 1 Resonance": 0.4
+  },
+  "automation": [
+    {
+      "time": 2.0,
+      "param": "A Bus 1 Filter",
+      "value": 1
+    },
+    {
+      "time": 4.0,
+      "param": "A Bus 1 Filter",
+      "value": 3
+    },
+    {
+      "time": 6.0,
+      "param": "A Bus 1 Filter",
+      "value": 2
+    },
+    {
+      "time": 8.0,
+      "param": "A Bus 1 Filter",
+      "value": 4
+    },
+    {
+      "time": 10.0,
+      "param": "A Bus 1 Filter",
+      "value": 0
+    }
+  ]
+}

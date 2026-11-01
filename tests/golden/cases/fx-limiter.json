@@ -1,0 +1,37 @@
+{
+  "mode": "fx",
+  "sampleRate": 48000,
+  "durationSeconds": 6.0,
+  "blockSize": 128,
+  "seed": 1,
+  "input": {
+    "kind": "noise",
+    "seconds": 5.5,
+    "amplitude": 0.5
+  },
+  "channels": 2,
+  "params": {
+    "Mix": 1.0,
+    "Level": 6.0,
+    "Level B": 6.0,
+    "Level C": 6.0,
+    "Level D": 6.0,
+    "Layer B On": 1,
+    "Layer C On": 1,
+    "Layer D On": 1,
+    "Limiter Ceiling": -6.0,
+    "Limiter Mode": 0
+  },
+  "automation": [
+    {
+      "time": 2.0,
+      "param": "Limiter Mode",
+      "value": 1
+    },
+    {
+      "time": 4.0,
+      "param": "Limiter Mode",
+      "value": 2
+    }
+  ]
+}

@@ -1,0 +1,40 @@
+{
+  "mode": "instrument",
+  "sampleRate": 48000,
+  "durationSeconds": 14.0,
+  "blockSize": 128,
+  "seed": 1,
+  "sample": {
+    "kind": "noise",
+    "seconds": 4.0,
+    "amplitude": 0.5
+  },
+  "params": {
+    "Position": 0.25,
+    "Density": 5.0,
+    "Size": -3.321928094887362,
+    "Level": -6.0,
+    "A Bus 1 Filter": 1,
+    "A Bus 1 Cutoff": 9.965784284662087,
+    "A Bus 1 Resonance": 0.6,
+    "A LFO 1 Rate": -2.0,
+    "A LFO 1 Shape": 0
+  },
+  "mod": [
+    {
+      "slot": 13,
+      "source": "LFO 1",
+      "target": "A Bus 1 Cutoff",
+      "targetLayer": "A",
+      "depth": 2.0,
+      "curve": "Bipolar"
+    }
+  ],
+  "notes": [
+    {
+      "time": 0.0,
+      "key": 60,
+      "duration": 13.5
+    }
+  ]
+}

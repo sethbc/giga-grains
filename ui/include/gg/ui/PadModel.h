@@ -35,11 +35,13 @@ PadPoint padValueAt(float px, float py, float side) noexcept;
 std::array<float, 2> padPixelOf(PadPoint value, float side) noexcept;
 
 /// The layers' morph weights at pad position (x, y) with the Layer On switches `on`, as the
-/// engine computes them once its on/off ramps settle (gg-core's Processor, D1's law; for the
-/// picture only, never the audio): x and y are clamped to [0.001, 0.999] as the engine clamps
-/// them (NaN to 0.5), the corners' bilinear weights are b = {(1−x)(1−y), x(1−y), (1−x)y, xy},
-/// and with r_L = on[L] ? 1 : 0 and s = Σ r_K b_K, weight_L = s > 0 ? (r_L b_L / s) × min(1,
-/// Σ r_K) : 0. So the on layers' weights sum to 1, an off layer's is 0, and none on gives all 0.
+/// engine computes them once its on/off ramps settle (gg-core's Processor, D1's law as amended
+/// for carry-over row 301; for the picture only, never the audio): x and y are clamped to
+/// [0.001, 0.999] as the engine clamps them (NaN to 0.5), the corners' bilinear weights are
+/// b = {(1−x)(1−y), x(1−y), (1−x)y, xy}, and with S the on layers and s = Σ_{K∈S} b_K, an on
+/// layer's weight is b_L / s, or (b_L + (ε − s) / |S|) / ε for a diagonal pair or a triple with
+/// s < ε (Processor::kMorphFloor, 0.35); an off layer's is 0. So the on layers' weights sum to
+/// 1, and none on gives all 0.
 std::array<float, gg::core::kLayers>
 morphWeights(float x, float y, const std::array<bool, gg::core::kLayers> &on) noexcept;
 } // namespace gg::ui

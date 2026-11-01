@@ -16,10 +16,12 @@
 
 #include <sst/cpputils/rtsan_support.h>
 
+#include "gg/core/Delay.h"
 #include "gg/core/Diffuser.h"
 #include "gg/core/GrainQueue.h"
 #include "gg/core/LatestValue.h"
 #include "gg/core/LivePeaks.h"
+#include "gg/core/Limiter.h"
 #include "gg/core/ModMatrix.h"
 #include "gg/core/ModSources.h"
 #include "gg/core/ParamIds.h"
@@ -34,6 +36,11 @@
 
 namespace gg::core
 {
+namespace fx
+{
+class BusFilter;
+}
+
 struct ProcessorConfig
 {
     double sampleRate;     ///< Finite and > 0.
@@ -177,19 +184,34 @@ struct RingMeta
 /// wet_L     = limited_L · weight_L(t)
 /// ```
 /// and wet = wet_A ⊕ wet_B ⊕ wet_C ⊕ wet_D: the first rendering layer in order A to D assigns,
-/// each later one adds, and with none rendering wet is +0. The weight is the morph law (D1):
-/// with x and y the ramped Morph X and Morph Y clamped to [0.001, 0.999], b_A = (1 − x)(1 − y),
-/// b_B = x(1 − y), b_C = (1 − x)y, b_D = xy, r_L the layer's on/off ramp (0 for a layer not
-/// rendering) and s = Σ r_K·b_K,
-/// ```
-/// weight_L = s > 0 ? (r_L·b_L / s) × min(1, Σ_K r_K) : 0
-/// ```
-/// The factor min(1, Σ_K r_K) is 1 whenever at least one whole layer's worth of ramps is on, where
-/// the law is D1's sum-normalized vector law; below that (the last rendering layer switched off,
-/// or the first switched on) it makes the amplitude sum follow the ramps, so the last layer fades
-/// out over its ramp instead of being cut when the ramp reaches 0 (D1 as amended in Task 10's fix
-/// round). One layer rendering with its ramp at 1 weighs exactly 1.0f wherever the pad is
-/// ((b/b) × min(1, 1)), so layer A alone renders M1's chain bit for bit.
+/// each later one adds, and with none rendering wet is +0. The weight is the morph law (D1, as
+/// amended by LS-T10a and for carry-over row 301): with x and y the ramped Morph X and Morph Y
+/// clamped to [0.001, 0.999], b_A = (1 − x)(1 − y), b_B = x(1 − y), b_C = (1 − x)y, b_D = xy,
+/// and r_L the layer's on/off ramp (0 for a layer not rendering):
+/// - **At rest** (every r at 0 or 1), with S the on layers and s = Σ_{K∈S} b_K,
+///   ```
+///   W_S,L = b_L / s                          (D1, the law as first built, bit for bit)
+///   W_S,L = (b_L + (ε − s) / |S|) / ε        (a diagonal pair or a triple with s < ε = 0.35)
+///   ```
+///   The first law is continuous on the clamped pad but steep where a diagonal pair's or a
+///   triple's corner weights all near 0 (near the corner none of them holds: up to about 200
+///   per pad unit); the floor shares the shortfall equally there, which binds on 17.1% of the pad
+///   for a diagonal pair and 7.1% for a triple. A lone layer weighs b / b, exactly 1, and an
+///   adjacent pair never floors (its weights don't depend on the axis its corners share).
+/// - **While layers ramp**, the weights interpolate multilinearly between the on-sets the ramping
+///   layers span, then fade with min(1, R), R = Σ r_K (LS-T10a: the last layer fades out over
+///   its ramp, the first in):
+///   ```
+///   weight_L = Σ_S P_S·W_S,L / Σ_S P_S × min(1, R),   P_S = Π_{K∈S} r_K · Π_{K∉S} (1 − r_K)
+///   ```
+///   over the non-empty S. Dividing r_L·b_L by Σ r_K·b_K, as first built, let a ramp near 0 on
+///   a dominant corner outweigh the rest, and handed over within a few samples (row 301).
+/// The largest per-sample weight step, at 48 and 44.1 kHz: a resting pad crossing in both axes at
+/// full speed (staggered Morph ramps), 0.0073 and 0.0079; a handover with the pad still, 0.0062
+/// and 0.0068 (B off while A, C and D come on at (0, 1)); both at once, 0.0105 and 0.0116. At the
+/// center the ramp's crossfade is linear in the ramp (A on, B ramping in: 1 − r/2 and r/2).
+/// With the layers at rest one P_S is 1, so layer A alone weighs exactly 1.0f wherever the pad
+/// is and renders M1's chain bit for bit.
 ///
 /// A layer's Layer On switch ramps r_L over kRampSeconds. A layer renders while its ramp's
 /// target or value is non-zero (layerRendering). Once the ramp is down at 0 the layer is off: its
@@ -221,9 +243,10 @@ struct RingMeta
 /// the caller (a host pool's request_exec, StubPool's barrier).
 ///
 /// **Source kind** (spec §6.4). Each layer reads the kind builtKind(sourceKindOf(...)) gives:
-/// Sample or Live, in either product. Position, Spray and Feedback follow the kind (toCloudParams,
-/// toWetParams). A change applies at its boundary (Engine::setSourceMode): the grains sounding
-/// finish on the source they started on.
+/// Sample, Live or Spectral, in either product (Spectral smears the layer's sample, else its ring:
+/// layerMaterial). Position, Spray and Feedback follow the kind (toCloudParams, toWetParams;
+/// Feedback acts on Live alone). A change applies at its boundary (Engine::setSourceMode): the
+/// grains sounding finish on the source they started on.
 ///
 /// **Grain events** (spec §6.7; M2 engine spec §6.7). Each layer's engine records its spawns and
 /// its steals, in the order it reports them (a steal right before the spawn whose admission
@@ -298,9 +321,9 @@ struct RingMeta
 ///   note-ons to the MIDI sources;
 /// - the sources step (above), and the effective values become clamp(base + modulation +
 ///   route offset);
-/// - every layer's engine gets setCloudParams(toCloudParams(..., layer)), its source kind (when it
-///   changed), setHeldKeys with the distinct held keys (when the group had notes) and its freeze
-///   setting (below), which apply from b;
+/// - every layer's engine gets setCloudParams(toCloudParams(..., layer, layerMaterial(layer))),
+///   its source kind (when it changed), setHeldKeys with the distinct held keys (when the group
+///   had notes) and its freeze setting (below), which apply from b;
 /// - Mix, Reverb Amount, Dry to Reverb, Morph X and Morph Y, and each layer's Level, Diffusion,
 ///   Feedback and on/off ramp from their current values to their new ones.
 ///
@@ -389,6 +412,20 @@ struct RingMeta
 /// channel, each engine's mono render is diffused as both sides, the reverb hears that channel's
 /// rIn on both sides, and the channel gets r's left. The instrument's input feeds its layers'
 /// rings alone: it has no dry path.
+///
+/// **The serial tail** (sub-project 4's spec §6.4–§6.6). After the layers' sum and before the
+/// reverb, the global delay (Delay.h) takes the wet sum: `wet' = wet + amount·echo`, its time
+/// moved at each boundary and glided to, its amount, feedback and damper coefficient ramped like
+/// Mix; at Amount 0 the sum passes untouched. After the reverb's return, the global limiter
+/// (Limiter.h) takes the wet side alone, and the FX's dry signal is added after it:
+/// ```
+/// Off:        out = d·(1 − m) + wet'·m  [+ softLimit(a·r)]          (the lines above)
+/// Soft, Peak: side = wet'·m  [+ softLimit(a·r)]   out = d·(1 − m) + limit(side)   (FX)
+///             side = wet'    [+ softLimit(a·r)]   out = limit(side)               (instrument)
+/// ```
+/// With the mode Off and settled, the Off expressions stand as written, so the stages at rest
+/// leave every output bit for bit. The limiter fades its mode changes over 10 ms; a setBase()
+/// of the mode, setBases() and reset() jump it, as they jump the ramps.
 ///
 /// **Feedback** (sub-project 5's spec §5), per layer. Each engine writes its live ring from
 /// ```
@@ -497,6 +534,10 @@ class Processor
     /// The ramp time of every ramped value (the class comment), in seconds; rounded to samples, at
     /// least 1 (spec §6.1).
     static constexpr double kRampSeconds = 0.01;
+    /// The morph law's floor ε (the class comment; carry-over row 301): a diagonal pair or a
+    /// triple whose on corners' weights sum to less than this shares the shortfall equally. The
+    /// editor's pad (gg::ui::morphWeights) shades by the same law.
+    static constexpr float kMorphFloor = 0.35f;
     /// D, Feedback's delay in samples (sub-project 5's spec §5): the ring's frame t gets
     /// fb(t) × the limited wet signal of sample t − D. Both products render in pieces of at most
     /// D samples, so each piece's feedback is already rendered when an engine writes the piece's
@@ -635,6 +676,11 @@ class Processor
     void setSourceNow(uint8_t layer, std::shared_ptr<const PreparedSource> s);
     /// Layer A's: setSourceNow(0, s).
     void setSourceNow(std::shared_ptr<const PreparedSource> s) { setSourceNow(0, std::move(s)); }
+    /// What layer `layer`'s Spectral kind smears and the units its Position takes (the extremes
+    /// spec §6.2): Sample when its engine holds a sample, else Live (its ring). A change, from
+    /// setSourceNow or a source adopted at a process() call's start, re-sends the layer's cloud
+    /// parameters (toCloudParams) before the call renders. `layer` is below kLayers.
+    SourceMode layerMaterial(uint8_t layer) const noexcept;
 
     /// Not real-time safe: while process() isn't running, for an inactive plugin and gg-render's
     /// pre-render resize. Layer `layer`'s ring adopts `storage` as `how` says (a resize, whose
@@ -779,6 +825,28 @@ class Processor
     /// sample is active (the class comment). False after construction and reset().
     bool reverbActive() const noexcept { return reverb_->chunkActive(); }
 
+    /// What the limiter did over the last process() call, for the sweep harness's kLimiterDrive
+    /// exemption (tests only, not the plugins' API): Peak's least gain (1 when Peak wasn't in
+    /// use, or the call was empty) and whether Soft's input passed twice the ceiling. Reset at
+    /// the start of every call; a const read of two fields the audio loop keeps.
+    struct LimiterDrive
+    {
+        float leastGain{1.0f};
+        bool softDriven{false};
+    };
+    LimiterDrive limiterDrive() const noexcept { return {tapLeastGain_, tapSoftDriven_}; }
+
+    /// The span of the last process() call, as sample offsets into it, in which the delay's
+    /// Amount was above 0 and its effective Feedback at least 0.95 while its read time was still
+    /// gliding: [first, last], or first = -1 when there was none. For the sweep harness's
+    /// kDelayGlideHold exemption (tests only, not the plugins' API); reset every call.
+    struct DelayGlideSpan
+    {
+        int64_t first{-1};
+        int64_t last{-1};
+    };
+    DelayGlideSpan delayGlideSpan() const noexcept { return {tapGlideFirst_, tapGlideLast_}; }
+
   private:
     /// The per-layer sources, Lfo1 to Step (isPerLayerSource).
     static constexpr size_t kModulatorSources =
@@ -815,6 +883,7 @@ class Processor
     struct Layer
     {
         explicit Layer(const EngineConfig &config);
+        ~Layer();
 
         // Before engine, so destroyed after it: it frees the sources the engine may still point
         // to.
@@ -836,6 +905,13 @@ class Processor
         Ramp overdub;  // the ring's overdub gain o (M2 sub-project 2's spec §6.1)
         // The engine's output, then wet_L in place: pieceMax frames each.
         std::array<std::vector<float>, 2> wet;
+        // Bus 2 of the engine's output (spec §6.3 of sub-project 4): pieceMax frames each, summed
+        // into wet once the engine has put a grain on it.
+        std::array<std::vector<float>, 2> bus2;
+        // The two buses' filters, index 0 for bus 1; busGiven is false until setCell has run since
+        // the construction, a reset or the layer's gate clearing it.
+        std::unique_ptr<fx::BusFilter> filter[2];
+        bool busGiven{false};
         // The ring input while Feedback acts, or while the Resample ramp isn't 0: pieceMax frames
         // each.
         std::array<std::vector<float>, 2> ringIn;
@@ -873,6 +949,8 @@ class Processor
         // The enable gate last given to the engine (Engine::setEnabled), and the kind.
         bool enabledGiven{true};
         SourceMode kind{SourceMode::Sample};
+        // The material last given to toCloudParams (layerMaterial): what a Spectral layer smears.
+        SourceMode material{SourceMode::Live};
         // The cloud parameters last given to the engine, if cloudGiven (updateEffective).
         CloudParams cloud{};
         bool cloudGiven{false};
@@ -948,13 +1026,18 @@ class Processor
     void scanInput(const Buffers &b, int64_t to) noexcept SST_CPPUTILS_NONBLOCKING;
     /// Steps every source at the boundary c (stepSources).
     void stepSourcesAt(int64_t c) noexcept SST_CPPUTILS_NONBLOCKING;
-    /// Makes each ramped value whose target the effective values moved jump to it (setBase() of a
-    /// macro, setRoutes()).
+    /// Makes each ramped value whose target the effective values moved jump to it, and the
+    /// limiter snap to a mode they moved (setBase() of a macro, setRoutes()).
     void jumpMovedRamps() noexcept;
+    /// Gives layer L's engine its cloud parameters (from the effective values and its material),
+    /// unless they are what it has.
+    void sendCloudParams(uint8_t L) noexcept;
+    /// Re-sends the cloud parameters of every layer whose material changed since they were sent.
+    void syncMaterial() noexcept;
     /// Recomputes the effective values, gives each engine its cloud parameters and source kind,
     /// and keeps Space's.
     void updateEffective() noexcept;
-    /// Jumps every ramped value to its target.
+    /// Jumps every ramped value to its target, and snaps the limiter to its mode.
     void jumpRamps() noexcept;
     /// Ramps every ramped value from its value at t to its target.
     void retargetRamps(int64_t t) noexcept;
@@ -1085,6 +1168,31 @@ class Processor
     // reverb (heap: about 14.5 MB, 16-byte aligned).
     SpaceParams space_{};
     std::unique_ptr<SpaceReverb> reverb_;
+
+    // The delay and the limiter (sub-project 4's spec §6.4–§6.6), the serial tail after the
+    // layers' sum. The parameters below are the effective values at the last boundary; the six
+    // ramps move the delay's amount, feedback, damper coefficient and ping-pong weight (0 or 1,
+    // so a switch crosses over 10 ms and never clicks) and the limiter's ceiling and release
+    // coefficient as Mix does. The limiter's mode is stepped: the limiter crossfades its own
+    // mode changes, and snaps where the ramps jump.
+    Delay delay_;
+    Limiter limiter_;
+    // The sweep harness's taps (limiterDrive(), delayGlideSpan()): written by the audio loop,
+    // reset at the start of each process() call.
+    float tapLeastGain_{1.0f};
+    bool tapSoftDriven_{false};
+    int64_t tapGlideFirst_{-1};
+    int64_t tapGlideLast_{-1};
+    DelayParams delayParams_{};
+    LimiterParams limiterParams_{};
+    float delayDampCoeff_{1.0f};      ///< The damper's one-pole coefficient for Delay Damping.
+    float limiterReleaseCoeff_{1.0f}; ///< Peak's per-sample release coefficient.
+    Ramp delayAmount_;
+    Ramp delayFeedback_;
+    Ramp delayDamp_;
+    Ramp delayPingPong_; // the damper's cross weight: 1 with Delay Ping-pong on
+    Ramp limiterCeiling_;
+    Ramp limiterRelease_;
 };
 } // namespace gg::core
 

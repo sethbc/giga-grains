@@ -54,7 +54,8 @@ struct SpaceReverb::Reverb
 };
 
 SpaceReverb::SpaceReverb(double sampleRate)
-    : reverb_(std::make_unique<Reverb>()), sampleRate_(sampleRate)
+    : reverb_(std::make_unique<Reverb>()), sampleRate_(sampleRate),
+      modulationStep_(float(double(kChunk) / (kModulationGlideSeconds * sampleRate)))
 {
     assert(std::isfinite(sampleRate) && sampleRate > 0.0);
     auto &s = reverb_->storage;
@@ -84,6 +85,7 @@ void SpaceReverb::reset() noexcept
     left_.fill(0.0f);
     right_.fill(0.0f);
     params_ = {};
+    modulation_ = 0.0f;
     next_ = 0;
     chunkActive_ = false;
     ran_ = false;
@@ -119,7 +121,15 @@ void SpaceReverb::endChunk() noexcept
     auto &v = reverb_->storage.values;
     v[Rev2Patched::rev2_room_size] = clampOrLow(params_.roomSize, -1.0f, 1.0f);
     v[Rev2Patched::rev2_hf_damping] = clampOrLow(params_.hfDamping, 0.0f, 1.0f);
-    v[Rev2Patched::rev2_modulation] = clampOrLow(params_.modulation, 0.0f, 1.0f);
+    // Modulation glides (the class comment), but takes its value at once in an empty reverb.
+    const float modulation = clampOrLow(params_.modulation, 0.0f, 1.0f);
+    if (!ran_)
+        modulation_ = modulation;
+    else if (modulation > modulation_)
+        modulation_ = std::min(modulation, modulation_ + modulationStep_);
+    else
+        modulation_ = std::max(modulation, modulation_ - modulationStep_);
+    v[Rev2Patched::rev2_modulation] = modulation_;
     v[Rev2Patched::rev2_decay_time] = clampOrLow(params_.decayLog2, -4.0f, 6.0f);
     rev.setInfinite(params_.infinite);
     rev.setPredelaySamples(static_cast<float>(

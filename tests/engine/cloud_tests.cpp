@@ -23,6 +23,7 @@
 #include "gg/grain/CloudScheduler.h"
 #include "gg/grain/Tier.h"
 #include "gg/source/SourceMode.h"
+#include "gg/spectral/SpectralSource.h"
 
 namespace
 {
@@ -1677,5 +1678,455 @@ TEST_CASE("a spread changes no other draw", "[cloud]")
         REQUIRE(same);
         REQUIRE(spreadRates);
         REQUIRE(spreadSizes);
+    }
+}
+
+namespace
+{
+// The extremes spec §6.1, §6.3: grain k's draw for Smear's jitter and detune, and the bus draw.
+double smearDraw(gg::rng::Field field, uint64_t k)
+{
+    return gg::rng::bipolar(gg::rng::hash({kSeed, 0, 0, field, k}));
+}
+
+double busDraw(uint64_t k)
+{
+    return gg::rng::uniform01(gg::rng::hash({kSeed, 0, 0, gg::rng::Field::Bus, k}));
+}
+} // namespace
+
+TEST_CASE("smear and bus at 0 leave every draw bit for bit", "[cloud]")
+{
+    // At 0 nothing is drawn and no field changes (the extremes spec §6.1, §6.3): every grain is
+    // the scheduler's without them, on bus 0.
+    for (const gg::CloudParams &base : {gg::CloudParams{}, busyParams()})
+    {
+        for (const gg::SourceMode mode : {gg::SourceMode::Sample, gg::SourceMode::Live})
+        {
+            for (const bool sprayInSeconds : {false, true})
+            {
+                for (const double zero : {0.0, -0.0})
+                {
+                    INFO("pitch " << base.pitchSemitones << ", live "
+                                  << (mode == gg::SourceMode::Live) << ", seconds "
+                                  << sprayInSeconds << ", zero " << zero);
+                    gg::CloudParams defaults = base;
+                    defaults.sprayInSeconds = sprayInSeconds;
+                    REQUIRE(defaults.smearJitterSec == 0.0);
+                    REQUIRE(defaults.smearDetuneSemitones == 0.0);
+                    REQUIRE(defaults.busSplit == 0.0);
+                    gg::CloudParams explicitZero = defaults;
+                    explicitZero.smearJitterSec = zero;
+                    explicitZero.smearDetuneSemitones = zero;
+                    explicitZero.busSplit = zero;
+
+                    gg::CloudScheduler a;
+                    a.setSourceMode(mode, 4.0);
+                    a.setParams(defaults);
+                    gg::CloudScheduler b;
+                    b.setSourceMode(mode, 4.0);
+                    b.setParams(explicitZero);
+                    const std::array<uint8_t, 2> held{55, 64};
+                    a.setHeldKeys(held);
+                    b.setHeldKeys(held);
+                    const auto grainsA = collectGrains(a, 1000, 97);
+                    const auto grainsB = collectGrains(b, 1000, 97);
+                    REQUIRE(grainsA == grainsB);
+                    bool busZero = true;
+                    bool sprayOffsetZero = true;
+                    for (const gg::GrainDraw &g : grainsB)
+                    {
+                        busZero = busZero && g.bus == 0;
+                        // +0 exactly, the sign included, unless the spray is drawn in seconds.
+                        sprayOffsetZero =
+                            sprayOffsetZero &&
+                            ((mode == gg::SourceMode::Sample && sprayInSeconds) ||
+                             (g.sprayOffsetSec == 0.0 && !std::signbit(g.sprayOffsetSec)));
+                    }
+                    REQUIRE(busZero);
+                    REQUIRE(sprayOffsetZero);
+                }
+            }
+            // And with no key held, both are M1's draws.
+            gg::CloudParams explicitZero = base;
+            explicitZero.smearJitterSec = 0.0;
+            explicitZero.smearDetuneSemitones = 0.0;
+            explicitZero.busSplit = 0.0;
+            gg::CloudScheduler c;
+            c.setSourceMode(mode, 4.0);
+            c.setParams(explicitZero);
+            const auto grains = collectGrains(c, 1000, 97);
+            const auto m1 = drawsWithoutNotes(base, 48000.0, mode, 1000);
+            for (std::size_t i = 0; i < m1.size(); ++i)
+            {
+                gg::GrainDraw expected = m1[i];
+                expected.texture = base.texture; // drawsWithoutNotes leaves it at 0
+                REQUIRE(grains[i] == expected);
+            }
+        }
+    }
+}
+
+TEST_CASE("smear detune stays within its amplitude", "[cloud]")
+{
+    // Each grain's pitch gains detune × bipolar(u) semitones, u keyed by SmearDetune, inside the
+    // ±48 clamp and after Pitch Spread's term (the extremes spec §6.1).
+    gg::CloudParams p = cloudAt(4800.0); // a period of 10 samples
+    p.smearDetuneSemitones = 0.5;
+    gg::CloudScheduler cloud;
+    cloud.setParams(p);
+    const auto grains = collectGrains(cloud, 10000, 256);
+    const double lo = gg::exp2Det(-0.5 / 12.0);
+    const double hi = gg::exp2Det(0.5 / 12.0);
+    bool inRange = true;
+    bool keyed = true;
+    std::size_t below = 0;
+    std::size_t above = 0;
+    for (const gg::GrainDraw &g : grains)
+    {
+        inRange = inRange && g.rate >= lo && g.rate <= hi;
+        keyed = keyed &&
+                g.rate == gg::exp2Det(0.5 * smearDraw(gg::rng::Field::SmearDetune, g.index) / 12.0);
+        below += g.rate < 1.0 ? 1 : 0;
+        above += g.rate > 1.0 ? 1 : 0;
+    }
+    REQUIRE(inRange);
+    REQUIRE(keyed);
+    REQUIRE(below > 4500);
+    REQUIRE(above > 4500);
+
+    SECTION("with a key and a pitch spread, the detune is added after the spread")
+    {
+        gg::CloudParams q = busyParams();
+        q.pitchSpreadSemitones = 3.0;
+        q.smearDetuneSemitones = 0.5;
+        gg::CloudScheduler both;
+        both.setParams(q);
+        const std::array<uint8_t, 1> held{67};
+        both.setHeldKeys(held);
+        bool summed = true;
+        for (const gg::GrainDraw &g : collectGrains(both, 1000, 97))
+        {
+            const double semis = q.pitchSemitones + 7.0 +
+                                 3.0 * smearDraw(gg::rng::Field::PitchSpread, g.index) +
+                                 0.5 * smearDraw(gg::rng::Field::SmearDetune, g.index);
+            summed = summed && g.rate == gg::exp2Det(std::clamp(semis, -48.0, 48.0) / 12.0);
+        }
+        REQUIRE(summed);
+    }
+
+    SECTION("the detune changes no other draw")
+    {
+        gg::CloudScheduler plain;
+        plain.setParams(cloudAt(4800.0));
+        const auto reference = collectGrains(plain, 10000, 256);
+        bool same = true;
+        for (std::size_t i = 0; i < grains.size(); ++i)
+        {
+            gg::GrainDraw g = grains[i];
+            g.rate = reference[i].rate;
+            same = same && g == reference[i];
+        }
+        REQUIRE(same);
+    }
+}
+
+TEST_CASE("smear jitter is added in seconds", "[cloud]")
+{
+    // The extremes spec §6.1: jitter × bipolar(u) seconds, u keyed by SmearJitter. Live mode adds
+    // it to the seconds behind the head; Sample mode carries it in sprayOffsetSec, which the
+    // source converts at its own rate and clamps (Engine::sampleGrain).
+    constexpr double kJitter = 0.3;
+    gg::CloudParams p = busyParams();
+    p.smearJitterSec = kJitter;
+    gg::CloudParams plainParams = p;
+    plainParams.smearJitterSec = 0.0;
+
+    SECTION("live mode")
+    {
+        // Copies, so the sample-mode runs below see the shared parameters unchanged.
+        gg::CloudParams live = p;
+        live.spray = 0.0;
+        live.position = 1.5;
+        gg::CloudParams plainLive = plainParams;
+        plainLive.spray = 0.0;
+        plainLive.position = 1.5;
+        gg::CloudScheduler cloud;
+        cloud.setSourceMode(gg::SourceMode::Live, 4.0);
+        cloud.setParams(live);
+        gg::CloudScheduler plain;
+        plain.setSourceMode(gg::SourceMode::Live, 4.0);
+        plain.setParams(plainLive);
+        const auto grains = collectGrains(cloud, 10000, 97);
+        const auto reference = collectGrains(plain, 10000, 97);
+        bool inRange = true;
+        bool keyed = true;
+        bool same = true;
+        std::size_t below = 0;
+        std::size_t above = 0;
+        for (std::size_t i = 0; i < grains.size(); ++i)
+        {
+            const gg::GrainDraw &g = grains[i];
+            const double offset = g.positionDraw - 1.5;
+            inRange = inRange && offset >= -kJitter && offset <= kJitter;
+            keyed = keyed && g.positionDraw ==
+                                 1.5 + kJitter * smearDraw(gg::rng::Field::SmearJitter, g.index);
+            below += offset < 0.0 ? 1 : 0;
+            above += offset > 0.0 ? 1 : 0;
+            gg::GrainDraw other = g;
+            other.positionDraw = reference[i].positionDraw;
+            same = same && other == reference[i] && g.sprayOffsetSec == 0.0;
+        }
+        REQUIRE(inRange);
+        REQUIRE(keyed);
+        REQUIRE(same);
+        REQUIRE(below > 4500);
+        REQUIRE(above > 4500);
+
+        // With a spray, the jitter is added after it.
+        live.spray = 0.2;
+        cloud.setParams(live);
+        cloud.reset();
+        bool summed = true;
+        for (const gg::GrainDraw &g : collectGrains(cloud, 1000, 97))
+        {
+            const double spray = gg::rng::uniform01(
+                gg::rng::hash({kSeed, 0, 0, gg::rng::Field::PositionJitter, g.index}));
+            summed = summed && g.positionDraw ==
+                                   1.5 + 0.2 * spray +
+                                       kJitter * smearDraw(gg::rng::Field::SmearJitter, g.index);
+        }
+        REQUIRE(summed);
+    }
+
+    for (const bool sprayInSeconds : {false, true})
+    {
+        INFO("sample mode, spray in seconds " << sprayInSeconds);
+        p.sprayInSeconds = sprayInSeconds;
+        plainParams.sprayInSeconds = sprayInSeconds;
+        gg::CloudScheduler cloud;
+        cloud.setParams(p);
+        gg::CloudScheduler plain;
+        plain.setParams(plainParams);
+        const auto grains = collectGrains(cloud, 10000, 97);
+        const auto reference = collectGrains(plain, 10000, 97);
+        // The spray's share of sprayOffsetSec: spray × bipolar(u) in seconds, 0 as a fraction.
+        const double sprayShare = sprayInSeconds ? p.spray : 0.0;
+        bool inRange = true;
+        bool keyed = true;
+        bool same = true;
+        std::size_t below = 0;
+        std::size_t above = 0;
+        for (std::size_t i = 0; i < grains.size(); ++i)
+        {
+            const gg::GrainDraw &g = grains[i];
+            const double jitter = kJitter * smearDraw(gg::rng::Field::SmearJitter, g.index);
+            inRange = inRange && std::abs(g.sprayOffsetSec) <= kJitter + sprayShare;
+            keyed = keyed && g.sprayOffsetSec == reference[i].sprayOffsetSec + jitter;
+            below += jitter < 0.0 ? 1 : 0;
+            above += jitter > 0.0 ? 1 : 0;
+            gg::GrainDraw other = g;
+            other.sprayOffsetSec = reference[i].sprayOffsetSec;
+            same = same && other == reference[i]; // the position as a fraction is unchanged
+        }
+        REQUIRE(inRange);
+        REQUIRE(keyed);
+        REQUIRE(same);
+        REQUIRE(below > 4500);
+        REQUIRE(above > 4500);
+    }
+}
+
+TEST_CASE("bus split draws the share", "[cloud]")
+{
+    // The extremes spec §6.3: a grain is on bus 1 when uniform01(u) < split, u keyed by Bus.
+    gg::CloudParams p = busyParams();
+    p.densityHz = 4800.0;
+    p.busSplit = 0.3;
+    gg::CloudScheduler cloud;
+    cloud.setParams(p);
+    const auto grains = collectGrains(cloud, 10000, 256);
+    gg::CloudParams plainParams = p;
+    plainParams.busSplit = 0.0;
+    gg::CloudScheduler plain;
+    plain.setParams(plainParams);
+    const auto reference = collectGrains(plain, 10000, 256);
+    std::size_t onBus1 = 0;
+    bool keyed = true;
+    bool same = true;
+    for (std::size_t i = 0; i < grains.size(); ++i)
+    {
+        const gg::GrainDraw &g = grains[i];
+        REQUIRE(g.bus <= 1);
+        onBus1 += g.bus;
+        keyed = keyed && g.bus == (busDraw(g.index) < 0.3 ? 1 : 0);
+        gg::GrainDraw other = g;
+        other.bus = 0;
+        same = same && other == reference[i];
+    }
+    REQUIRE(keyed);
+    REQUIRE(same);
+    const double share = static_cast<double>(onBus1) / static_cast<double>(grains.size());
+    REQUIRE(share > 0.28);
+    REQUIRE(share < 0.32);
+
+    p.busSplit = 1.0;
+    gg::CloudScheduler all;
+    all.setParams(p);
+    bool everyGrain = true;
+    for (const gg::GrainDraw &g : collectGrains(all, 10000, 256))
+    {
+        everyGrain = everyGrain && g.bus == 1;
+    }
+    REQUIRE(everyGrain);
+}
+
+TEST_CASE("smear and bus are sanitized", "[cloud]")
+{
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    const double inf = std::numeric_limits<double>::infinity();
+    const gg::CloudParams base = busyParams();
+    gg::CloudScheduler reference;
+    reference.setParams(base);
+    const auto unsmeared = collectGrains(reference, 200, 97);
+
+    SECTION("a non-finite or negative value is 0")
+    {
+        for (const double bad : {nan, inf, -inf, -1.0})
+        {
+            INFO("value " << bad);
+            gg::CloudParams p = base;
+            p.smearJitterSec = bad;
+            p.smearDetuneSemitones = bad;
+            p.busSplit = bad;
+            gg::CloudScheduler cloud;
+            cloud.setParams(p);
+            REQUIRE(collectGrains(cloud, 200, 97) == unsmeared);
+        }
+    }
+
+    SECTION("a value past its range is clamped to it")
+    {
+        // [0, 2] seconds, [0, 1] semitones and [0, 1].
+        gg::CloudParams p = base;
+        p.smearJitterSec = 5.0;
+        p.smearDetuneSemitones = 3.0;
+        p.busSplit = 7.0;
+        p.sprayInSeconds = true;
+        gg::CloudScheduler cloud;
+        cloud.setParams(p);
+        bool clamped = true;
+        for (const gg::GrainDraw &g : collectGrains(cloud, 200, 97))
+        {
+            const double spray = gg::rng::bipolar(
+                gg::rng::hash({kSeed, 0, 0, gg::rng::Field::PositionJitter, g.index}));
+            clamped =
+                clamped && g.bus == 1 &&
+                g.sprayOffsetSec ==
+                    base.spray * spray + 2.0 * smearDraw(gg::rng::Field::SmearJitter, g.index) &&
+                g.rate == gg::exp2Det((base.pitchSemitones +
+                                       1.0 * smearDraw(gg::rng::Field::SmearDetune, g.index)) /
+                                      12.0);
+        }
+        REQUIRE(clamped);
+    }
+}
+
+TEST_CASE("spectral mode draws the spray alone behind the smear's head", "[cloud]")
+{
+    // The extremes spec §6.2: a Spectral grain is Live's draw with Position 0, so positionDraw =
+    // spray × uniform01(u), the same u. Position stays in params() for the smear, bounded by
+    // max(1, ring seconds) (a sample's fraction or the live ring's seconds), and Spray by the
+    // smear's ring, SpectralSource::kRingSeconds. Every other field is the Live draw.
+    gg::CloudParams p;
+    p.densityHz = 200.0;
+    p.distribution = 0.5;
+    p.position = 12.5;
+    p.spray = 0.05;
+    p.stereo = 0.8;
+    const auto jitter = [](uint64_t k) {
+        return gg::rng::uniform01(gg::rng::hash({kSeed, 0, 0, gg::rng::Field::PositionJitter, k}));
+    };
+    gg::CloudScheduler spectral;
+    spectral.prepare(48000.0);
+    spectral.setSourceMode(gg::SourceMode::Spectral, 16.0);
+    spectral.setParams(p);
+    REQUIRE(spectral.params().position == 12.5);
+    REQUIRE(spectral.params().spray == 0.05);
+    const auto drawn = collect(spectral, 0, 48000, 256);
+    REQUIRE(drawn.size() > 100);
+    bool keyed = true;
+    for (const auto &g : drawn)
+    {
+        keyed = keyed && g.positionDraw == 0.05 * jitter(g.index) && g.sprayOffsetSec == 0.0;
+    }
+    REQUIRE(keyed);
+
+    gg::CloudScheduler live;
+    live.prepare(48000.0);
+    live.setSourceMode(gg::SourceMode::Live, 16.0);
+    live.setParams(p);
+    const auto liveDrawn = collect(live, 0, 48000, 256);
+    REQUIRE(liveDrawn.size() == drawn.size());
+    bool sameOtherwise = true;
+    for (std::size_t i = 0; i < drawn.size(); ++i)
+    {
+        auto g = drawn[i];
+        g.positionDraw = liveDrawn[i].positionDraw;
+        sameOtherwise = sameOtherwise && g == liveDrawn[i];
+    }
+    REQUIRE(sameOtherwise);
+
+    SECTION("the bounds")
+    {
+        p.position = 40.0;
+        p.spray = 99.0;
+        spectral.setParams(p);
+        REQUIRE(spectral.params().position == 16.0);
+        REQUIRE(spectral.params().spray == gg::SpectralSource::kRingSeconds);
+        // Position's bound is the Live path's own, at any ring of 1 s or more.
+        for (const double ring : {1.0, 3.5, 16.0, 30.0})
+        {
+            INFO("a ring of " << ring << " s");
+            gg::CloudScheduler liveBound;
+            liveBound.prepare(48000.0);
+            liveBound.setSourceMode(gg::SourceMode::Live, ring);
+            liveBound.setParams(p);
+            spectral.setSourceMode(gg::SourceMode::Spectral, ring);
+            REQUIRE(spectral.params().position == liveBound.params().position);
+            REQUIRE(spectral.params().position == ring);
+        }
+        // Without a live ring the material is a sample: a fraction.
+        spectral.setSourceMode(gg::SourceMode::Spectral, 0.0);
+        REQUIRE(spectral.params().position == 1.0);
+        REQUIRE(spectral.params().spray == gg::SpectralSource::kRingSeconds);
+        p.position = -3.0;
+        p.spray = std::numeric_limits<double>::quiet_NaN();
+        spectral.setParams(p);
+        REQUIRE(spectral.params().position == 0.0);
+        REQUIRE(spectral.params().spray == 0.0); // the default
+    }
+
+    SECTION("smear's jitter adds to the seconds behind the head")
+    {
+        p.smearJitterSec = 0.02;
+        spectral.reset();
+        spectral.setParams(p);
+        live.reset();
+        live.setParams(p);
+        const auto smeared = collect(spectral, 0, 4800, 256);
+        const auto liveSmeared = collect(live, 0, 4800, 256);
+        REQUIRE(smeared.size() == liveSmeared.size());
+        REQUIRE_FALSE(smeared.empty());
+        bool added = true;
+        for (std::size_t i = 0; i < smeared.size(); ++i)
+        {
+            // Live's draw is (12.5 + spray u) + j; Spectral's is spray u + j, the same j.
+            const double j = liveSmeared[i].positionDraw - (12.5 + 0.05 * jitter(smeared[i].index));
+            added =
+                added && smeared[i].sprayOffsetSec == 0.0 &&
+                std::abs(smeared[i].positionDraw - (0.05 * jitter(smeared[i].index) + j)) < 1e-12;
+        }
+        REQUIRE(added);
     }
 }

@@ -57,35 +57,6 @@ constexpr double kSegmentSnap = 1e-9;
 constexpr float kFollowerFloor = 1e-20f;
 } // namespace
 
-float sineDet(float phase) noexcept
-{
-    GG_FP_CONTRACT_OFF
-    float p = phase - std::floor(phase);
-    if (!(p >= 0.0f && p < 1.0f))
-    {
-        p = 0.0f; // a non-finite phase, or the wrap of a tiny negative one rounding to 1
-    }
-    // sin(2πp) = −sin(2π(p − ½)) for p in [½, 1); both subtractions below are exact (Sterbenz).
-    const bool negative = p >= 0.5f;
-    if (negative)
-    {
-        p -= 0.5f;
-    }
-    // sin(2πp) = sin(2π(½ − p)) for p in [¼, ½].
-    if (p > 0.25f)
-    {
-        p = 0.5f - p;
-    }
-    const float x = 4.0f * p; // exact: a power-of-two scaling
-    const float x2 = x * x;
-    const auto &c = detail::kSineDetCoeffs;
-    float s = ((c[3] * x2 + c[2]) * x2 + c[1]) * x2 + c[0];
-    s *= x;
-    // The minimax error's last ripple lifts the polynomial a few ulp above 1 just below x = 1.
-    s = s < 1.0f ? s : 1.0f;
-    return negative ? -s : s;
-}
-
 void Lfo::reset() noexcept { phase_ = 0.0; }
 
 float Lfo::step(const LfoParams &params, double cellSeconds) noexcept

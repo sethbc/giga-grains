@@ -1,0 +1,42 @@
+{
+  "mode": "fx",
+  "sampleRate": 48000,
+  "durationSeconds": 16.0,
+  "blockSize": 128,
+  "seed": 1,
+  "input": {
+    "kind": "sweep",
+    "startHz": 110,
+    "endHz": 1760,
+    "seconds": 15.5,
+    "amplitude": 0.5
+  },
+  "channels": 2,
+  "params": {
+    "Mix": 1.0,
+    "Level": -6.0,
+    "Level B": -6.0,
+    "Layer B On": 1,
+    "A Source": 3,
+    "Position": 0.28,
+    "Density": 5.0,
+    "Size": -2.321928094887362,
+    "A Bus Split": 0.5,
+    "A Bus 1 Filter": 1,
+    "A Bus 1 Cutoff": 9.228818690495881,
+    "A Bus 1 Resonance": 0.3,
+    "A Bus 2 Filter": 2,
+    "A Bus 2 Cutoff": 10.965784284662087,
+    "B Density": 5.0,
+    "B Size": -2.736965594166206,
+    "B Pitch": 7.0,
+    "B Smear": 0.7,
+    "Delay Amount": 0.4,
+    "Delay Time": -1.415037499278844,
+    "Delay Feedback": 0.5,
+    "Delay Damping": 0.5,
+    "Delay Ping-pong": 1,
+    "Limiter Mode": 2,
+    "Limiter Ceiling": -3.0
+  }
+}

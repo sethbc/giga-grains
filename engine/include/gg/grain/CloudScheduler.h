@@ -31,11 +31,14 @@ struct CloudParams
     double distribution{0.0};     ///< 0 = periodic onsets, 1 = Poisson; [0, 1].
     double grainDurationSec{0.1}; ///< At least 16 samples (the minimum window length).
     /// Where grains read. Sample mode: a fraction of the source, [0, 1]. Live mode: seconds
-    /// behind the write head, [0, ring seconds].
+    /// behind the write head, [0, ring seconds]. Spectral mode (the extremes spec §6.2): where the
+    /// smear reads its material, in the material's units, a fraction of the sample or seconds
+    /// behind the live ring's head, [0, max(1, ring seconds)]; its grains never read it.
     double position{0.5};
     /// Random spread of position. Sample mode: bipolar, as a fraction of the source (M0's
     /// positionJitter), [0, 1], or with sprayInSeconds, bipolar in seconds, [0, +inf). Live
-    /// mode: seconds, further behind the head only, [0, ring seconds].
+    /// mode: seconds, further behind the head only, [0, ring seconds]. Spectral mode: seconds
+    /// behind the spectral ring's head only, [0, SpectralSource::kRingSeconds].
     double spray{0.0};
     double pitchSemitones{0.0}; ///< [-48, 48].
     double stereo{0.0};         ///< Random pan spread: 0 = every grain centred; [0, 1].
@@ -58,6 +61,17 @@ struct CloudParams
     /// Each grain's size spread in octaves (M2 spec §6.6): the grain's duration is
     /// grainDurationSec × 2^(spread × bipolar(u)), clamped to [5 ms, 2 s]; [0, 4].
     double sizeSpreadOctaves{0.0};
+    /// Smear's position jitter in seconds (extremes spec §6.1): each grain's position gains
+    /// jitter × bipolar(u) seconds, in Live mode behind the head, in Sample mode carried in
+    /// GrainDraw::sprayOffsetSec for the source to convert; [0, 2].
+    double smearJitterSec{0.0};
+    /// Smear's micro-detune in semitones (extremes spec §6.1): each grain's pitch gains
+    /// detune × bipolar(u) semitones, after the pitch spread's term and before the ±48 clamp;
+    /// [0, 1].
+    double smearDetuneSemitones{0.0};
+    /// The share of grains on the layer's second bus (extremes spec §6.3): a grain takes bus 1
+    /// when uniform01(u) < busSplit; [0, 1].
+    double busSplit{0.0};
 };
 
 /// One grain as the scheduler draws it, before the source turns it into a GrainSpec. Every
@@ -70,15 +84,22 @@ struct GrainDraw
     /// Sample mode: clamp(position + spray × bipolar(u), 0, 1), a fraction of the source, or
     /// with CloudParams::sprayInSeconds, the position alone. Live mode: position + spray ×
     /// uniform01(u), in seconds behind the write head; the live source's admission clamp then
-    /// applies (spec §6.3). u is keyed by (seed, layer, stream, PositionJitter, k) in all three.
+    /// applies (spec §6.3). Spectral mode: spray × uniform01(u), Live's draw with Position 0, in
+    /// seconds behind the spectral ring's head, under the same clamp (the extremes spec §6.2).
+    /// u is keyed by (seed, layer, stream, PositionJitter, k) in every mode. With a Smear jitter
+    /// j, Live and Spectral mode add j × bipolar(u') seconds here, before the clamp, u' keyed by
+    /// SmearJitter (Sample mode adds it to sprayOffsetSec instead; extremes spec §6.1).
     double positionDraw;
     /// Sample mode with CloudParams::sprayInSeconds: spray × bipolar(u), in seconds, which the
-    /// source adds to positionDraw at its own rate (Engine::sampleGrain). Otherwise +0.
+    /// source adds to positionDraw at its own rate (Engine::sampleGrain). Otherwise +0. With a
+    /// Smear jitter j, Sample mode adds j × bipolar(u') seconds here, u' keyed by SmearJitter,
+    /// and Live and Spectral mode add it to positionDraw instead (extremes spec §6.1).
     double sprayOffsetSec;
     /// The pitch ratio: exp2Det(clamp(pitchSemitones + (key − 60), −48, 48) / 12) with a key,
     /// exp2Det(pitchSemitones / 12) without. With a pitch spread s,
     /// exp2Det(clamp(pitchSemitones + (key − 60) + s × bipolar(u), −48, 48) / 12), the key term
-    /// 0 without a key and u keyed by PitchSpread (M2 spec §6.6).
+    /// 0 without a key and u keyed by PitchSpread (M2 spec §6.6). A Smear detune c adds
+    /// c × bipolar(u') after the spread's term, u' keyed by SmearDetune (extremes spec §6.1).
     double rate;
     /// Window length in output samples, at least 16: grainDurationSec × sampleRate, or with a
     /// size spread s, exp2Det(clamp(log2(grainDurationSec) + s × bipolar(u), log2 0.005,
@@ -90,6 +111,9 @@ struct GrainDraw
     Tier tier{Tier::Normal}; ///< CloudParams::quality at the onset.
     /// The held key the grain plays (spec §6.1), or −1 when none is held.
     int16_t key{-1};
+    /// The layer bus the grain renders into, 0 or 1 (extremes spec §6.3): 1 when
+    /// uniform01(u) < CloudParams::busSplit, u keyed by Bus; 0, with no draw, at a split of 0.
+    uint8_t bus{0};
 
     friend bool operator==(const GrainDraw &, const GrainDraw &) = default;
 };
@@ -139,6 +163,14 @@ struct GrainDraw
 /// spread goes to 0). The gain stays the layer's: its normalization uses the layer's Size, not
 /// the grain's.
 ///
+/// **Smear and the bus** (extremes spec §6.1, §6.3). Smear's detune adds
+/// smearDetuneSemitones × bipolar(u) to the grain's semitones after the pitch spread's term,
+/// before the ±48 clamp; its jitter adds smearJitterSec × bipolar(u) seconds to the position, in
+/// Live mode to the seconds behind the head and in Sample mode to sprayOffsetSec. A grain takes
+/// bus 1 when uniform01(u) < busSplit. Each u has its own field (SmearDetune, SmearJitter, Bus),
+/// and each amplitude of 0 skips its draw and its term, so every draw is what it was without
+/// them, bit for bit, on bus 0.
+///
 /// Every random field of a grain has its own rng::Field, keyed by (seed, layer, stream, field,
 /// k), so the draws don't depend on block size, call order or each other.
 ///
@@ -176,9 +208,14 @@ class CloudScheduler
 
     /// Sets how position and spray are drawn (ruling M1-k; see CloudParams and GrainDraw), and
     /// re-sanitizes the controls last given to setParams for the new mode. ringSeconds is the live
-    /// ring's length, which bounds both in Live mode; a non-finite or negative value means 0. The
-    /// default is Sample. Neither the schedule nor any other draw changes.
+    /// ring's length, which bounds both in Live mode; a non-finite or negative value means 0. In
+    /// Spectral mode it bounds Position with 1 (the material's units, a sample's fraction or the
+    /// live ring's seconds), and SpectralSource::kRingSeconds bounds Spray (the extremes spec
+    /// §6.2). The default is Sample. Neither the schedule nor any other draw changes.
     void setSourceMode(SourceMode mode, double ringSeconds) noexcept;
+
+    /// The controls in effect: the last setParams() sanitized for the source mode.
+    const CloudParams &params() const noexcept { return params_; }
 
     /// The held keys (spec §6.1): distinct MIDI keys 0..127, ascending, at most 128. Copied;
     /// no allocation. They apply to every grain emitted after this call. When the set goes from
@@ -266,13 +303,22 @@ class CloudScheduler
                                         keyCount_ - 1);
                 note = keys_[i];
             }
-            if (params_.pitchSpreadSemitones != 0.0)
+            if (params_.pitchSpreadSemitones != 0.0 || params_.smearDetuneSemitones != 0.0)
             {
-                // M2 spec §6.6: the spread is added before the clamp.
+                // M2 spec §6.6: the spread is added before the clamp; the extremes spec §6.1:
+                // Smear's detune after it. A term whose amplitude is 0 is skipped, with no draw.
                 const double keyTerm = note >= 0 ? static_cast<double>(note - 60) : 0.0;
-                const double semis =
-                    params_.pitchSemitones + keyTerm +
-                    params_.pitchSpreadSemitones * rng::bipolar(key(rng::Field::PitchSpread));
+                double semis = params_.pitchSemitones + keyTerm;
+                if (params_.pitchSpreadSemitones != 0.0)
+                {
+                    semis +=
+                        params_.pitchSpreadSemitones * rng::bipolar(key(rng::Field::PitchSpread));
+                }
+                if (params_.smearDetuneSemitones != 0.0)
+                {
+                    semis +=
+                        params_.smearDetuneSemitones * rng::bipolar(key(rng::Field::SmearDetune));
+                }
                 rate = exp2Det(std::clamp(semis, -kMaxPitchSemitones, kMaxPitchSemitones) / 12.0);
             }
             else if (note >= 0)
@@ -292,12 +338,18 @@ class CloudScheduler
                 durationSamples = std::clamp(exp2Det(log2Seconds) * sampleRate_,
                                              kMinDurationSamples, kMaxDurationSamples);
             }
-            // Live mode: seconds behind the head, further back only. Sample mode: a fraction of
-            // the source, with the spray folded in, or with sprayInSeconds the position alone and
-            // the spray carried in seconds for the source to convert.
+            // Live mode: seconds behind the head, further back only. Spectral mode: the same with
+            // Position replaced by 0, since Position addresses the smear's material, not its ring
+            // (the extremes spec §6.2). Sample mode: a fraction of the source, with the spray
+            // folded in, or with sprayInSeconds the position alone and the spray carried in
+            // seconds for the source to convert.
             const bool inSeconds = mode_ == SourceMode::Sample && params_.sprayInSeconds;
             double positionDraw = params_.position;
-            if (mode_ == SourceMode::Live)
+            if (mode_ == SourceMode::Spectral)
+            {
+                positionDraw = params_.spray * rng::uniform01(jitter);
+            }
+            else if (mode_ == SourceMode::Live)
             {
                 positionDraw += params_.spray * rng::uniform01(jitter);
             }
@@ -306,7 +358,29 @@ class CloudScheduler
                 positionDraw =
                     std::clamp(params_.position + params_.spray * rng::bipolar(jitter), 0.0, 1.0);
             }
-            const double sprayOffsetSec = inSeconds ? params_.spray * rng::bipolar(jitter) : 0.0;
+            double sprayOffsetSec = inSeconds ? params_.spray * rng::bipolar(jitter) : 0.0;
+            if (params_.smearJitterSec != 0.0)
+            {
+                // The extremes spec §6.1: seconds behind the head in Live and Spectral mode (the
+                // admission clamp then applies, as to the spray); in Sample mode carried in
+                // seconds, for the source to convert at its own rate and clamp, as the spray in
+                // seconds is.
+                const double smear =
+                    params_.smearJitterSec * rng::bipolar(key(rng::Field::SmearJitter));
+                if (mode_ != SourceMode::Sample)
+                {
+                    positionDraw += smear;
+                }
+                else
+                {
+                    sprayOffsetSec += smear;
+                }
+            }
+            // The extremes spec §6.3: no draw at a split of 0, so every grain is on bus 0.
+            const uint8_t bus =
+                params_.busSplit > 0.0 && rng::uniform01(key(rng::Field::Bus)) < params_.busSplit
+                    ? 1
+                    : 0;
             const double p = params_.stereo * rng::bipolar(key(rng::Field::Pan));
             // A pan below the smallest normal float is 0, so the value doesn't depend on the
             // flush-to-zero mode. It is +0, never the -0 of stereo 0 times a negative draw.
@@ -325,6 +399,7 @@ class CloudScheduler
                 .pan = pan,
                 .tier = params_.quality,
                 .key = note,
+                .bus = bus,
             };
             const double e = -logDet(1.0 - rng::uniform01(key(rng::Field::Onset)));
             lastOnset_ = t;
@@ -340,6 +415,9 @@ class CloudScheduler
     // The bounds on CloudParams::pitchSpreadSemitones and CloudParams::sizeSpreadOctaves.
     static constexpr double kMaxPitchSpreadSemitones = 48.0;
     static constexpr double kMaxSizeSpreadOctaves = 4.0;
+    // The bounds on CloudParams::smearJitterSec and CloudParams::smearDetuneSemitones.
+    static constexpr double kMaxSmearJitterSec = 2.0;
+    static constexpr double kMaxSmearDetuneSemitones = 1.0;
     // The bounds on a spread grain's log2 duration in seconds: log2 0.005 and log2 2, Size's
     // range (M2 spec §6.6).
     static constexpr double kMinSpreadLog2Seconds = -7.643856189774724;

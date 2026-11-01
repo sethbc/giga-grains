@@ -27,15 +27,19 @@
 //   Amount rising from exactly 0) under a sounding input, it starts from an empty room and hears
 //   its input cut in at the first active chunk, and that step comes back through the pre-delay
 //   and the network.
-//   The morph law's normalization (r_L·b_L / Σ r_K·b_K) also packs a crossfade into a few samples
-//   of a layer's ramp when the pad is off its centre and the rendering layers' base weights are
-//   nearly 0 (a layer switch with the pad in a corner; a pad move near an edge). Nothing here
-//   exempts it: no committed case meets it, and the Layer On sweeps are scored.
+//   The morph law's first normalization (r_L·b_L / Σ r_K·b_K) also packed a crossfade into a few
+//   samples of a layer's ramp off the pad's center (carry-over row 301, closed): nothing here
+//   exempted it, and the law now moves at the ramps' pace, so nothing needs to.
 //   Reverb Size moves are exempt only when the Size in effect (its base or its modulation)
 //   changes.
-// - and kReverbModulationDrop, after a Reverb Modulation decrease from 1 while Reverb Decay is
-//   infinite (its base kDecayMax exactly): a reverb click that carry-over row 311 owns (sub-project
-//   4); deleted with its fix.
+// - kLimiterDrive (the director's D5b, option 1, 2026-10-31; carry-over row 378): the limiter's
+//   laws stand (zero lookahead, no attack), so a ceiling far under the material is a law
+//   consequence, not a defect. The check looks away over every call in which Peak's gain fell
+//   below -6 dB, or Soft's input passed twice the ceiling, and 10 ms after it.
+// - kDelayGlideHold (D-glide, option 1, 2026-10-31; row 379): the delay's Time glide is
+//   tape-like by design, and inside a Feedback 100% loop it re-reads each pass a fifth higher.
+//   The check looks away over the samples where Delay Amount is above 0, the delay's Feedback is
+//   at least 0.95 and its read time is still gliding.
 //
 // Each case pins a floor under the share of the render the click check scores
 // (Checks::minScored), so an exemption that widens past what the case needs fails there.
@@ -132,7 +136,8 @@ inline std::vector<uint32_t> slotIds()
 
 struct Checks
 {
-    /// The largest |sample| allowed: the chain's bound, 2 + the input's peak (INTENT §14).
+    /// The largest |sample| allowed: the chain's bound, 2 + the input's peak, or 3 + it with the
+    /// delay engaged (INTENT §14).
     double peakBound;
     /// The goldens' click limit (metricsVersion 2).
     double clickLimit = 15;
@@ -162,6 +167,16 @@ struct Verdict
     std::string where;
 };
 
+/// What brought an exempt stretch (SweepDriver::exemptShare): the header comment's list.
+enum class Exemption
+{
+    FadeIn,         ///< the input's fade-in
+    ReverbSize,     ///< row 217's Reverb Size moves
+    ReverbOnset,    ///< kReverbOnset
+    LimiterDrive,   ///< kLimiterDrive (D5b)
+    DelayGlideHold, ///< kDelayGlideHold (D-glide)
+};
+
 class SweepDriver
 {
   public:
@@ -183,11 +198,11 @@ class SweepDriver
     /// How long after the reverb goes active, beyond its pre-delay, the check looks away
     /// (kReverbOnset): the onset's echoes through the network, as long as a Size move's.
     static constexpr int64_t kReverbOnsetExempt = 28800;
-    /// How long after a Reverb Modulation decrease from 1, at infinite Decay, the check looks away
-    /// (kReverbModulationDrop; carry-over row 311, sub-project 4's: delete it with the reverb fix).
-    /// The click is one sample, 1,488 after the boundary in the FX extremes' corner 24 (29.2);
-    /// exempting 1,489 samples passes and 1,488 fails, so this is that plus 47.
-    static constexpr int64_t kReverbModulationDropExempt = 1536;
+    /// kLimiterDrive: Peak's gain below this (-6 dB) over a call, or Soft's input past twice the
+    /// ceiling (Processor::limiterDrive reads that one), exempts the call...
+    static constexpr float kPeakDriveGain = 0.5011872336f; // 10^(-6/20)
+    /// ...and this many samples after it (10 ms).
+    static constexpr int64_t kLimiterDriveTail = 480;
 
     /// `fixedBlock` > 0 renders every call at that size instead of the drawn ones.
     SweepDriver(gg::core::Mode mode, uint64_t seed, uint32_t fixedBlock = 0)
@@ -208,10 +223,8 @@ class SweepDriver
         }
         events_.reserve(1 << 14);
         callEvents_.reserve(1 << 14);
-        exempt_.push_back({0, kFade + 256}); // the input's fade-in
+        exempt_.push_back({0, kFade + 256, Exemption::FadeIn}); // the input's fade-in
         sizeBase_ = meta(gg::core::ParamSlot::ReverbSize).defaultVal;
-        modBase_ = meta(gg::core::ParamSlot::ReverbModulation).defaultVal;
-        decayBase_ = meta(gg::core::ParamSlot::ReverbDecay).defaultVal;
         label("the start");
     }
 
@@ -221,6 +234,50 @@ class SweepDriver
     int64_t clock() const noexcept { return clock_; }
     /// The input's peak so far: kInputAmp once a SineLive stretch has played.
     float inputPeak() const noexcept { return inputPeak_; }
+    /// Whether the global delay was engaged at any point of the render so far (INTENT §14's
+    /// D-bound). Engaged means Delay Amount above 0 in force, as the effective value at the end
+    /// of a call or as a value an event carried into one, and it stays set: the check bounds the
+    /// whole render's peak, and the delay's return is in the render from the first engaged
+    /// sample, so a whole-render flag is exact for that check where a per-window one would need
+    /// the ramp's and the loop's edges. Amount 0 throughout never sets it.
+    bool delayEngaged() const noexcept { return delayEngaged_; }
+    /// Whether the click check looks away from `sample`: it lies in a stretch an exemption
+    /// brought (the narrowness tests' way to see an exemption's edges).
+    bool exemptAt(int64_t sample) const
+    {
+        return std::any_of(exempt_.begin(), exempt_.end(),
+                           [&](const Stretch &s) { return s.from <= sample && sample < s.to; });
+    }
+    /// The share of the render so far, 0 to 1, that exemption `why` covers on its own: the union
+    /// of its stretches inside the render over the render's length. Shares overlap, so they can
+    /// sum past what the check leaves out (1 − Verdict::scoredFraction, less the short stretches
+    /// it drops between exempt ones). Instrumentation for a case's pinned floor.
+    double exemptShare(Exemption why) const
+    {
+        const auto frames = static_cast<int64_t>(out_[0].size());
+        std::vector<std::pair<int64_t, int64_t>> ex;
+        for (const auto &e : exempt_)
+        {
+            if (e.why == why)
+            {
+                ex.emplace_back(std::clamp<int64_t>(e.from, 0, frames),
+                                std::clamp<int64_t>(e.to, 0, frames));
+            }
+        }
+        std::sort(ex.begin(), ex.end());
+        int64_t covered = 0;
+        int64_t at = 0;
+        for (const auto &[a, b] : ex)
+        {
+            const int64_t from = std::max(a, at);
+            if (b > from)
+            {
+                covered += b - from;
+            }
+            at = std::max(at, b);
+        }
+        return frames > 0 ? static_cast<double>(covered) / static_cast<double>(frames) : 0.0;
+    }
     /// The render so far, channel by channel (a planted fault's way in).
     std::array<std::vector<float>, 2> &output() noexcept { return out_; }
 
@@ -518,6 +575,7 @@ class SweepDriver
     {
         int64_t from;
         int64_t to;
+        Exemption why;
     };
     /// The shortest stretch the click check scores: four times the score's ±5 ms.
     static constexpr int64_t kMinStretch = 4 * 240;
@@ -562,24 +620,6 @@ class SweepDriver
     /// force (events must arrive in the order they apply).
     void noteExempt(int64_t time, gg::core::ParamSlot slot, bool isMod, double value)
     {
-        if (slot == gg::core::ParamSlot::ReverbModulation && !isMod)
-        {
-            // kReverbModulationDrop's trigger: the base falls from its top (1) while the Decay
-            // BASE, as queued before this event, is at its top (kDecayMax) exactly: latched here,
-            // so a Decay that is infinite only through modulation, or becomes so later, doesn't
-            // count. (Modulation drops by isMod are out of scope: nothing tracks them, so one
-            // that clicks fails the harness, it is never hidden.)
-            if (value < modBase_ && modBase_ >= meta(slot).maxVal &&
-                decayBase_ == static_cast<double>(meta(gg::core::ParamSlot::ReverbDecay).maxVal))
-            {
-                modDrops_.push_back((time + 31) / 32 * 32);
-            }
-            modBase_ = value;
-        }
-        if (slot == gg::core::ParamSlot::ReverbDecay && !isMod)
-        {
-            decayBase_ = value;
-        }
         if (slot != gg::core::ParamSlot::ReverbSize)
         {
             return;
@@ -676,11 +716,22 @@ class SweepDriver
         {
             inputPeak_ = kInputAmp;
         }
+        for (const auto &e : events)
+        {
+            if (e.slot == gg::core::ParamSlot::DelayAmount && e.value > 0.0)
+            {
+                delayEngaged_ = true;
+            }
+        }
         const float *in[2] = {in_[0].data(), in_[1].data()};
         float *out[2] = {out_[0].data() + at, out_[1].data() + at};
         processor_.process(live ? in : nullptr, live ? 2 : 0, out, 2, n, events, notes, controls);
         const int64_t callStart = clock_;
         clock_ += n;
+        if (processor_.effective(gg::core::ParamSlot::DelayAmount) > 0.0f)
+        {
+            delayEngaged_ = true;
+        }
 
         // The Reverb Size moves applied in this call (row 217), and kReverbOnset: the reverb went
         // active in it. Each looks away for the pre-delay in effect and the echoes after it.
@@ -691,25 +742,29 @@ class SweepDriver
             {
                 return false; // not applied yet
             }
-            exempt_.push_back({b - 64, b + predelay + kReverbSizeExempt});
-            return true;
-        });
-        // kReverbModulationDrop (row 311): a drop from 1 at Decay's base kDecayMax (latched when
-        // noted), applied in this call.
-        std::erase_if(modDrops_, [&](int64_t b) {
-            if (b >= clock_)
-            {
-                return false; // not applied yet
-            }
-            exempt_.push_back({b - 64, b + kReverbModulationDropExempt});
+            exempt_.push_back({b - 64, b + predelay + kReverbSizeExempt, Exemption::ReverbSize});
             return true;
         });
         const bool active = processor_.reverbActive();
         if (active && !reverbWasActive_)
         {
-            exempt_.push_back({callStart - 64, clock_ + predelay + kReverbOnsetExempt});
+            exempt_.push_back(
+                {callStart - 64, clock_ + predelay + kReverbOnsetExempt, Exemption::ReverbOnset});
         }
         reverbWasActive_ = active;
+        // kLimiterDrive: the call, and 10 ms after it.
+        const auto drive = processor_.limiterDrive();
+        if (drive.leastGain < kPeakDriveGain || drive.softDriven)
+        {
+            exempt_.push_back({callStart, clock_ + kLimiterDriveTail, Exemption::LimiterDrive});
+        }
+        // kDelayGlideHold: the samples of the call between the first and the last that met it.
+        const auto glide = processor_.delayGlideSpan();
+        if (glide.first >= 0)
+        {
+            exempt_.push_back(
+                {callStart + glide.first, callStart + glide.last + 1, Exemption::DelayGlideHold});
+        }
         inspect();
     }
 
@@ -859,6 +914,7 @@ class SweepDriver
     uint32_t sinceTiny_{0};
     float inputPeak_{0.0f};
     bool reverbWasActive_{false};
+    bool delayEngaged_{false};
     // The Reverb Size in force as queued (base, modulation): a move is exempt only if it changes
     // it.
     double sizeBase_{0.0};
@@ -870,10 +926,6 @@ class SweepDriver
     std::vector<gg::test::layers::TimedNote> notes_;
     std::vector<std::pair<int64_t, std::string>> labels_;
     std::vector<Stretch> exempt_;
-    /// Reverb Modulation base drops from 1 at Decay's base kDecayMax: boundaries, until applied.
-    std::vector<int64_t> modDrops_;
-    double decayBase_{0.0};          // the Reverb Decay base as queued
-    double modBase_{0.0};            // the Reverb Modulation base as queued
     std::vector<int64_t> sizeMoves_; // Reverb Size moves' boundaries, until applied
     int64_t firstBadExposed_{-1};
     const char *badExposedWhat_{""};
@@ -897,11 +949,12 @@ inline void requireClean(const SweepDriver &d, const Checks &c)
     }
 }
 
-/// The chain's bound for the driver's render, 2 + the input's peak, and the click check's pinned
-/// floor on the share it scores.
+/// The chain's bound for the driver's render, and the click check's pinned floor on the share it
+/// scores. The bound is 2 + the input's peak, or 3 + it once the delay was engaged (INTENT §14,
+/// the director's D-bound, 2026-10-31): the delay's return, capped near 1, adds to the wet signal.
 inline Checks chainBound(const SweepDriver &d, double minScored)
 {
-    Checks c{2.0 + d.inputPeak()};
+    Checks c{(d.delayEngaged() ? 3.0 : 2.0) + d.inputPeak()};
     c.minScored = minScored;
     return c;
 }

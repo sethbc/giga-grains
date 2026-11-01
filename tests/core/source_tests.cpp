@@ -1004,6 +1004,55 @@ TEST_CASE("a ring shrink under sounding grains waits for them", "[core][source][
     }
 }
 
+TEST_CASE("a ring shrink under a spectral layer is the same bytes whenever it lands",
+          "[core][source][spectral][determinism]")
+{
+    // The integration review's I1 (ruling SP-T12ad with the extremes' Spectral kind): an FX
+    // Spectral layer with no sample smears its live ring, Position at its top, so its analysis
+    // reads as far back as the ring allows. Ring Length 16 s to 4 s at 12 s: no grain reads the
+    // live ring, so the read limit lands at once, and the analysis reads the newest 4 s from
+    // there, through the read bound, whenever the main thread's smaller storage is adopted. The
+    // output from the boundary on is the same bytes for four offer times.
+    constexpr int64_t kT = 12 * 48000;
+    constexpr int64_t kFrames = 14 * 48000;
+    constexpr uint32_t kCall = 512;
+    const Stereo input = fadedSine(kFrames);
+    std::vector<Stereo> outs;
+    for (const int64_t offerAfter :
+         {int64_t{kCall}, int64_t{12 * kCall}, int64_t{24064}, int64_t{72192}})
+    {
+        INFO("offered from " << offerAfter << " samples after the boundary");
+        Processor p({kRate, 512, 7, Mode::Fx});
+        p.setBase(ParamSlot::Mix, 1.0f);
+        p.setBase(slotOf(LayerParam::Source, 0), 3.0f); // Spectral, over the ring
+        p.setBase(slotOf(LayerParam::Position, 0), 1.0f);
+        const std::vector<TimedEvent> events = {
+            {kT, slotOf(LayerParam::RingLength, 0), false, 2.0}};
+        Watcher watcher{kT + offerAfter};
+        Stereo out = silence(kFrames);
+        for (int64_t done = 0; done < kFrames; done += kCall)
+        {
+            watcher.poll(p, 0, done);
+            renderCmd(p, &input, done, std::min<int64_t>(done + kCall, kFrames), {kCall}, events,
+                      {}, out);
+        }
+        p.sources(0).collect();
+        REQUIRE(p.layerMaterial(0) == gg::SourceMode::Live);
+        REQUIRE(p.engine(0).sourceMode() == gg::SourceMode::Spectral);
+        REQUIRE(watcher.offers > 0);
+        CHECK(p.ringRead(0).storage->frames() == 4 * 48000);
+        REQUIRE(allFinite(out.left));
+        REQUIRE(peakIn(out.left, kT, kFrames) > 0.01f);
+        outs.push_back(out);
+    }
+    for (std::size_t k = 1; k < outs.size(); ++k)
+    {
+        INFO("offer time " << k << " against the first");
+        CHECK(sameBits(outs[k].left, outs[0].left));
+        CHECK(sameBits(outs[k].right, outs[0].right));
+    }
+}
+
 TEST_CASE("setRingNow adopts a ring while inactive", "[core][source]")
 {
     // The inactive case (gg-render's pre-render resize, the plugin's activation): the ring is

@@ -47,13 +47,15 @@ constexpr std::array kRows{
     edit(ParamSlot::Density, Panel::Scheduler, 0),
     edit(ParamSlot::Distribution, Panel::Scheduler, 1),
     edit(ParamSlot::Freeze, Panel::Scheduler, 2),
-    // Grain: Size and Size Spread, Position and Spray, Texture, Quality (ruling VW-T19a).
+    // Grain: Size and Size Spread, Position and Spray, Texture, Quality (ruling VW-T19a), then
+    // Smear (M2 sub-project 4; ruling VW-T19b).
     edit(ParamSlot::Size, Panel::Grain, 0, ParamSlot::SizeSpread),
     edit(ParamSlot::SizeSpread, Panel::Grain, 1),
     edit(ParamSlot::Position, Panel::Grain, 2, ParamSlot::Spray),
     edit(ParamSlot::Spray, Panel::Grain, 3),
     edit(ParamSlot::Texture, Panel::Grain, 4),
     edit(ParamSlot::Quality, Panel::Grain, 5),
+    edit(ParamSlot::Smear, Panel::Grain, 6),
     // Pitch and Pitch Spread.
     edit(ParamSlot::Pitch, Panel::Pitch, 0, ParamSlot::PitchSpread),
     edit(ParamSlot::PitchSpread, Panel::Pitch, 1),
@@ -62,6 +64,14 @@ constexpr std::array kRows{
     edit(ParamSlot::Diffusion, Panel::Space, 1),
     edit(ParamSlot::Feedback, Panel::Space, 2),
     edit(ParamSlot::Level, Panel::Space, 3),
+    // Filter: the bus split and the two buses' filters (M2 sub-project 4; ruling VW-T19b).
+    edit(ParamSlot::BusSplit, Panel::Filter, 0),
+    edit(ParamSlot::Bus1Filter, Panel::Filter, 1),
+    edit(ParamSlot::Bus1Cutoff, Panel::Filter, 2),
+    edit(ParamSlot::Bus1Resonance, Panel::Filter, 3),
+    edit(ParamSlot::Bus2Filter, Panel::Filter, 4),
+    edit(ParamSlot::Bus2Cutoff, Panel::Filter, 5),
+    edit(ParamSlot::Bus2Resonance, Panel::Filter, 6),
     // The modulators.
     edit(ParamSlot::Lfo1Rate, Panel::Lfo1, 0),
     edit(ParamSlot::Lfo1Shape, Panel::Lfo1, 1),
@@ -97,7 +107,9 @@ constexpr std::array kRows{
     edit(ParamSlot::Step14, Panel::Step, 15),
     edit(ParamSlot::Step15, Panel::Step, 16),
     edit(ParamSlot::Step16, Panel::Step, 17),
-    // The FX view (spec §6.7): Reverb, then Output, Mix and the engine's Budget (ruling VW-T19a).
+    // The FX view (spec §6.7): Reverb, then Output, Mix and the engine's Budget (ruling VW-T19a),
+    // then the global delay and limiter (M2 sub-project 4; ruling VW-T19b, until PR 2's Delay and
+    // Limiter sections).
     Row{ParamSlot::ReverbAmount, View::Fx, Panel::Reverb, 0, kNone},
     Row{ParamSlot::ReverbDecay, View::Fx, Panel::Reverb, 1, kNone},
     Row{ParamSlot::ReverbSize, View::Fx, Panel::Reverb, 2, kNone},
@@ -107,6 +119,14 @@ constexpr std::array kRows{
     Row{ParamSlot::DryToReverb, View::Fx, Panel::Reverb, 6, kNone},
     Row{ParamSlot::Mix, View::Fx, Panel::Output, 0, kNone},
     Row{ParamSlot::Budget, View::Fx, Panel::Output, 1, kNone},
+    Row{ParamSlot::DelayAmount, View::Fx, Panel::Output, 2, kNone},
+    Row{ParamSlot::DelayTime, View::Fx, Panel::Output, 3, kNone},
+    Row{ParamSlot::DelayFeedback, View::Fx, Panel::Output, 4, kNone},
+    Row{ParamSlot::DelayDamping, View::Fx, Panel::Output, 5, kNone},
+    Row{ParamSlot::DelayPingPong, View::Fx, Panel::Output, 6, kNone},
+    Row{ParamSlot::LimiterMode, View::Fx, Panel::Output, 7, kNone},
+    Row{ParamSlot::LimiterCeiling, View::Fx, Panel::Output, 8, kNone},
+    Row{ParamSlot::LimiterRelease, View::Fx, Panel::Output, 9, kNone},
     // The Perform view: the strip's On switches (Layer B On to D On through A's), the pad, the
     // macros.
     Row{ParamSlot::LayerAOn, View::Perform, Panel::Strip, 0, kNone},
@@ -122,8 +142,8 @@ constexpr std::array kRows{
     Row{ParamSlot::Macro8, View::Perform, Panel::Macros, 7, kNone},
 };
 
-// One row per layer parameter, per-layer global (Level, Layer On) and other global: 54 + 2 + 19.
-static_assert(kRows.size() == gg::core::kLayerParamCount + 2 + 19);
+// One row per layer parameter, per-layer global (Level, Layer On) and other global: 62 + 2 + 27.
+static_assert(kRows.size() == gg::core::kLayerParamCount + 2 + 27);
 
 /// A slot as the table keys it, with its layer: layer A's slot and the layer for a layer
 /// parameter or a per-layer global; the slot itself and layer 0 for any other.

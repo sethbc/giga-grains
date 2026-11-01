@@ -987,10 +987,17 @@ TEST_CASE("instrument specs name the instrument's macros", "[render]")
     // The instrument's name in an FX spec, and the FX's in an instrument spec, as params and as
     // automation; and "Macro Stereo" in either.
     fx["params"] = {{"Macro Level", 1.0}};
-    // The message lists the spec's own product's names, the layers' globals and Budget last.
+    // The message lists the spec's own product's names in slot order: the layers' globals, then
+    // Budget, then the Extremes' last (M2 sub-project 4's spec §6.7).
     CHECK_THAT(rejection(fx), StartsWith("unknown key params.Macro Level: the parameters are "));
     CHECK_THAT(rejection(fx), ContainsSubstring("Macro Feedback, Macro Mix, A Source"));
-    CHECK_THAT(rejection(fx), EndsWith("Level B, Level C, Level D, Budget"));
+    CHECK_THAT(rejection(fx),
+               ContainsSubstring("A Step 16, A Ring Length, A Loop, A Loop Length, A Overdub, "
+                                 "A Splice, A Quality, A Smear, A Bus Split"));
+    CHECK_THAT(rejection(fx), EndsWith("Level B, Level C, Level D, Budget, Delay Amount, "
+                                       "Delay Time, Delay Feedback, Delay Damping, "
+                                       "Delay Ping-pong, Limiter Mode, Limiter Ceiling, "
+                                       "Limiter Release"));
     instrument["params"] = {{"Macro Mix", 1.0}};
     CHECK_THAT(rejection(instrument),
                StartsWith("unknown key params.Macro Mix: the parameters are "));
@@ -2360,6 +2367,32 @@ TEST_CASE("layer samples, routes, controls, transport and velocity render as the
                              rendered.channels[0]));
 }
 
+TEST_CASE("specs name the extremes' Spectral kind and bus targets", "[render]")
+{
+    using gg::render::RouteSpec;
+
+    // M2 sub-project 4's spec §6.7, §9: "A Source": 3 selects the Spectral kind, with or without
+    // a layer sample; a route reaches a bus's cutoff by its layer-A name.
+    auto inst = instrumentJson();
+    inst["params"] = {{"A Source", 3.0}, {"A Smear", 0.5}, {"A Bus 1 Cutoff", 9.0}};
+    inst["mod"] = {{{"slot", 13},
+                    {"source", "LFO 1"},
+                    {"target", "A Bus 1 Cutoff"},
+                    {"depth", 2.0},
+                    {"curve", "Bipolar"}}};
+    const RenderSpec spec = parseJson(inst);
+    CHECK(spec.instrument.params ==
+          std::vector<std::pair<std::string, double>>{
+              {"A Bus 1 Cutoff", 9.0}, {"A Smear", 0.5}, {"A Source", 3.0}});
+    CHECK(spec.instrument.mod ==
+          std::vector<RouteSpec>{{13, "LFO 1", "same", "A Bus 1 Cutoff", "all", 2.0, "Bipolar"}});
+
+    // An FX layer's Spectral kind with a layer sample: the sample is its material.
+    auto fx = fxLayersJson();
+    fx["params"]["B Source"] = 3.0;
+    CHECK(parseJson(fx).fx.layerSamples.size() == 1);
+}
+
 namespace
 {
 /// An FX spec of its own for the ring tests: a mono 220 Hz sine, `seconds` long.
@@ -2810,6 +2843,60 @@ TEST_CASE("a state saves no ring of a layer whose Source is Sample", "[render]")
     CHECK(state.rings[1].has_value());       // Live, frozen
     CHECK(state.rings[2].has_value());       // Resample, looping
     CHECK_FALSE(state.rings[3].has_value()); // Sample, looping
+}
+
+TEST_CASE("a state saves a Spectral layer's held ring only without a sample", "[render]")
+{
+    // The extremes' integration review, I2 (INTENT §23 #69): a Spectral layer with no sample
+    // smears its ring, which Freeze holds as on a Live layer (D2), so a held one is saved and a
+    // render restores it, frozen; one with a sample reads none and saves none.
+    const std::string dir = freshDirectory("ring-save-spectral");
+    auto j = ringFxJson(1.0);
+    j["params"] = {{"A Source", 3},         {"A Freeze", 1},   {"Layer B On", 1}, {"B Source", 3},
+                   {"B Freeze", 1},         {"Layer C On", 1}, {"C Source", 3},   {"C Loop", 1},
+                   {"C Loop Length", -1.0}, {"Layer D On", 1}, {"D Source", 3},   {"D Loop", 1}};
+    const nlohmann::json sine = {
+        {"kind", "sine"}, {"frequencyHz", 330}, {"seconds", 1.0}, {"amplitude", 0.5}};
+    j["samples"] = {{"B", sine}, {"D", sine}};
+    gg::render::RenderOptions options;
+    options.saveStatePath = dir + "/s.ggst";
+    options.mediaDir = dir;
+    gg::render::render(parseJson(j), nullptr, options);
+    const auto state = decodeFile(options.saveStatePath, Mode::Fx);
+    CHECK(state.rings[0].has_value());       // Spectral over its ring, frozen
+    CHECK_FALSE(state.rings[1].has_value()); // Spectral over a sample, frozen
+    REQUIRE(state.rings[2].has_value());     // Spectral over its ring, looping
+    CHECK(state.rings[2]->frames == 24000);  // its 0.5 s loop window
+    CHECK_FALSE(state.rings[3].has_value()); // Spectral over a sample, looping
+
+    // Layer A alone restored, frozen, over a silent input: its held ring is smeared from the
+    // start, the same bits twice; without the state the same spec is silent.
+    auto restore = ringFxJson(1.0);
+    restore["input"] = {{"kind", "noise"}, {"seconds", 1.0}, {"amplitude", 0.0}};
+    restore["state"] = options.saveStatePath;
+    restore["params"] = {{"Mix", 1.0}, {"Layer B On", 0}, {"Layer C On", 0}, {"Layer D On", 0}};
+    gg::render::RenderOptions restoreOptions;
+    restoreOptions.mediaDir = dir;
+    const auto out = gg::render::render(parseJson(restore), nullptr, restoreOptions);
+    float peak = 0.0f;
+    for (const float x : out.channels[0])
+    {
+        peak = std::max(peak, std::abs(x));
+    }
+    CHECK(peak > 0.01f);
+    const auto again = gg::render::render(parseJson(restore), nullptr, restoreOptions);
+    CHECK(bitIdentical(out.channels[0], again.channels[0]));
+    auto nothing = restore;
+    nothing.erase("state");
+    nothing["params"]["A Source"] = 3;
+    nothing["params"]["A Freeze"] = 1;
+    const auto silent = gg::render::render(parseJson(nothing), nullptr);
+    float silentPeak = 0.0f;
+    for (const float x : silent.channels[0])
+    {
+        silentPeak = std::max(silentPeak, std::abs(x));
+    }
+    CHECK(silentPeak == 0.0f);
 }
 
 TEST_CASE("a state restored into a smaller ring keeps the newest frames", "[render]")

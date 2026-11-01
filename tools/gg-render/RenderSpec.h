@@ -82,6 +82,9 @@
 ///   "params", "automation" and "notes" are optional.
 /// - Instrument and FX mode both take "samples", "mod", "controls" and "transport", optional;
 ///   sample mode takes none of them.
+/// - A layer reads its "samples" entry with its Source set to Sample (0) or Spectral (3). A
+///   Spectral layer with a sample smears it (the sample is the material); a Spectral layer
+///   without one smears its own input ring, a Live layer's ring (M2 sub-project 4's spec §6.2).
 /// - Instrument and FX mode both take "preset", optional: a preset file's path, read and applied
 ///   before the spec's own "params", "mod" and "samples", which go on top of it (M2 sub-project
 ///   5's spec §6.10; RenderSpec::preset). Sample mode takes none. A spec with "preset" may not
@@ -113,8 +116,8 @@
 ///   time order; see OperationSpec. Sample mode takes none of these. gg-render's --save-state
 ///   writes the session at the end: a built-in signal sample ("sine", "sweep", "noise") is not in
 ///   it (there is no file to name), a file sample, a capture made into a layer and the rings of
-///   Live or Resample layers whose Freeze or Loop is on (gg::core::ringSaved: their loop window,
-///   with the marks inside it) are.
+///   Live or Resample layers, and of Spectral layers with no sample, whose Freeze or Loop is on
+///   (gg::core::ringSaved: their loop window, with the marks inside it) are.
 /// - Parameters (in "params", "automation" and a route's "target") are named as the product
 ///   displays them, so "B Size" is layer B's; a bare M1 name ("Size"), or "Quality", is layer
 ///   A's.

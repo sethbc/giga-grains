@@ -313,6 +313,135 @@ TEST_CASE("a frozen ring round-trips through the state and renders the same", "[
     CHECK(gg::test::sameBits(outB, outD));
 }
 
+TEST_CASE("a frozen spectral layer's ring round-trips and is held", "[plugin][spectral]")
+{
+    // The extremes' integration review, I2 (INTENT §23 #69): an FX Spectral layer with no
+    // sample smears its live ring, which Freeze holds as on a Live layer (D2), so its held ring
+    // is saved (D1) and a new instance restores it and arms Freeze: the ring is the saved one
+    // frame for frame before and after rendering silence, the smear of it sounds, and every
+    // restore renders the same bits.
+    gg::test::useMediaScratch("ring-roundtrip-spectral");
+    PluginUnderTest a(kFxId);
+    REQUIRE(a.valid());
+    REQUIRE(a.loadDefaultsWithSeed(3));
+    REQUIRE(a.activate(kRate, kBlock));
+    setParam(a, idOf(LayerParam::Source, 0), 3.0); // Spectral
+    render(a, 94, 11);
+    REQUIRE(a.impl().processor()->layerMaterial(0) == gg::SourceMode::Live);
+    setParam(a, paramId(ParamSlot::Freeze), 1.0);
+    render(a, 47, 12);
+    const std::vector<float> saved = gg::test::ringWindow(*a.impl().processor(), 0);
+    REQUIRE(saved.size() > 2 * 94 * kBlock);
+    const std::string state = a.save();
+    const gg::core::SessionState s = decoded(state, gg::core::Mode::Fx);
+    REQUIRE(s.rings[0].has_value());
+    CHECK(s.rings[0]->frames == static_cast<int64_t>(saved.size() / 2));
+    CHECK_FALSE(s.rings[1].has_value());
+
+    const auto restoredRender = [&](bool activeFirst, std::vector<float> &after) {
+        PluginUnderTest b(kFxId);
+        REQUIRE(b.valid());
+        if (activeFirst)
+        {
+            REQUIRE(b.activate(kRate, kBlock));
+            REQUIRE(b.load(state));
+        }
+        else
+        {
+            REQUIRE(b.load(state));
+            REQUIRE(b.activate(kRate, kBlock));
+            CHECK(gg::test::ringWindow(*b.impl().processor(), 0) == saved);
+        }
+        std::vector<float> out;
+        render(b, 188, 0, &out, true);
+        REQUIRE(b.impl().processor()->engine(0).sourceMode() == gg::SourceMode::Spectral);
+        after = gg::test::ringWindow(*b.impl().processor(), 0);
+        return out;
+    };
+    std::vector<float> afterB;
+    const std::vector<float> outB = restoredRender(false, afterB);
+    CHECK(afterB == saved); // held through 2 s of silence: Freeze is armed
+    CHECK(peakOf(std::vector<float>(outB.end() - 2 * 94 * kBlock, outB.end())) > 0.001f);
+    std::vector<float> afterC;
+    const std::vector<float> outC = restoredRender(false, afterC);
+    CHECK(gg::test::sameBits(outB, outC));
+    std::vector<float> afterD;
+    const std::vector<float> outD = restoredRender(true, afterD);
+    CHECK(afterD == saved);
+    CHECK(gg::test::sameBits(outB, outD));
+}
+
+TEST_CASE("a looping spectral layer saves its loop window and restores it", "[plugin][spectral]")
+{
+    // I2 under Loop: a held ring is a frozen or a looping one (D1), saved as its loop window
+    // (ruling SP-T8a) and restored as that window.
+    gg::test::useMediaScratch("ring-loop-spectral");
+    PluginUnderTest fx(kFxId);
+    REQUIRE(fx.valid());
+    REQUIRE(fx.activate(kRate, kBlock));
+    setParam(fx, idOf(LayerParam::Source, 0), 3.0);
+    setParam(fx, idOf(LayerParam::Loop, 0), 1.0);
+    setParam(fx, idOf(LayerParam::LoopLength, 0), -2.0); // 0.25 s: 12,000 frames
+    render(fx, 94, 13);
+    const std::vector<float> window = gg::test::ringWindow(*fx.impl().processor(), 0);
+    const std::string state = fx.save();
+    const gg::core::SessionState s = decoded(state, gg::core::Mode::Fx);
+    REQUIRE(s.rings[0].has_value());
+    CHECK(s.rings[0]->frames == 12000);
+    REQUIRE(s.audio.size() == 1);
+    const gg::media::DecodeResult saved =
+        gg::media::decodeAudioBytes(s.audio[0].bytes, gg::media::kDefaultDecodeBound);
+    REQUIRE(saved.audio.has_value());
+    const std::vector<float> loop = interleaved(*saved.audio->buffer);
+    CHECK(loop == std::vector<float>(window.end() - 2 * 12000, window.end()));
+
+    std::vector<float> restored;
+    renderRestored(state, 0, &restored);
+    CHECK(restored == loop);
+}
+
+TEST_CASE("a held spectral layer with a sample saves no ring", "[plugin][spectral]")
+{
+    // I2: a Spectral layer with a sample smears the sample, and nothing reads its ring, so a
+    // frozen or looping one saves none, as a Sample layer doesn't. A sample whose file is missing
+    // isn't loaded: the layer smears its ring, which is then saved.
+    const fs::path dir = gg::test::useMediaScratch("ring-spectral-sample");
+    const fs::path file = gg::test::writeSineWav(dir / "a.wav", 48000, 1.0);
+    for (const bool looping : {false, true})
+    {
+        INFO((looping ? "looping" : "frozen"));
+        gg::core::SessionState s = fxDefaults();
+        s.values[slotIndex(LayerParam::Source, 0)] = 3.0f; // Spectral
+        s.values[slotIndex(looping ? LayerParam::Loop : LayerParam::Freeze, 0)] = 1.0f;
+        s.samples[0] = gg::test::entryOf(file);
+        s.samples[0]->layer = 0;
+        {
+            PluginUnderTest fx(kFxId);
+            REQUIRE(fx.valid());
+            REQUIRE(fx.load(gg::core::encodeState(s)));
+            REQUIRE(fx.activate(kRate, kBlock));
+            render(fx, 20, 21);
+            REQUIRE(fx.impl().processor()->layerMaterial(0) == gg::SourceMode::Sample);
+            const gg::core::SessionState saved = decoded(fx.save(), gg::core::Mode::Fx);
+            CHECK_FALSE(saved.rings[0].has_value());
+            CHECK(saved.samples[0].has_value());
+            fx.deactivate(); // nothing is kept for the next activation either
+            const gg::core::SessionState inactive = decoded(fx.save(), gg::core::Mode::Fx);
+            CHECK_FALSE(inactive.rings[0].has_value());
+        }
+        gg::core::SessionState missing = s;
+        missing.samples[0]->absolutePath = gg::test::utf8(dir / "gone" / "a.wav");
+        missing.samples[0]->sha256Hex = std::string(64, 'e');
+        PluginUnderTest fx(kFxId);
+        REQUIRE(fx.valid());
+        REQUIRE(fx.load(gg::core::encodeState(missing)));
+        REQUIRE(fx.activate(kRate, kBlock));
+        render(fx, 20, 22);
+        REQUIRE(fx.impl().processor()->layerMaterial(0) == gg::SourceMode::Live);
+        CHECK(decoded(fx.save(), gg::core::Mode::Fx).rings[0].has_value());
+    }
+}
+
 TEST_CASE("a filed ring over the embed cap goes to the captures folder", "[plugin]")
 {
     // Spec §6.6: a 100 s stereo ring at 48 kHz is 38.4 MB of WAV, over the 32 MiB embed cap: it

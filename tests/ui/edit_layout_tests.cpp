@@ -131,10 +131,15 @@ TEST_CASE("the panel order is the spec's", "[ui]")
 {
     CHECK(gg::ui::slotsIn(Panel::Grain, 0) ==
           std::vector<ParamSlot>{ParamSlot::Size, ParamSlot::SizeSpread, ParamSlot::Position,
-                                 ParamSlot::Spray, ParamSlot::Texture, ParamSlot::Quality});
-    // The engine's Budget follows Mix in the Output panel (ruling VW-T19a).
+                                 ParamSlot::Spray, ParamSlot::Texture, ParamSlot::Quality,
+                                 ParamSlot::Smear});
+    // The engine's Budget follows Mix in the Output panel (ruling VW-T19a), then the global delay
+    // and limiter (M2 sub-project 4; ruling VW-T19b, until PR 2's Delay and Limiter sections).
     CHECK(gg::ui::slotsIn(Panel::Output, 0) ==
-          std::vector<ParamSlot>{ParamSlot::Mix, ParamSlot::Budget});
+          std::vector<ParamSlot>{
+              ParamSlot::Mix, ParamSlot::Budget, ParamSlot::DelayAmount, ParamSlot::DelayTime,
+              ParamSlot::DelayFeedback, ParamSlot::DelayDamping, ParamSlot::DelayPingPong,
+              ParamSlot::LimiterMode, ParamSlot::LimiterCeiling, ParamSlot::LimiterRelease});
     CHECK(gg::ui::placementOf(ParamSlot::C_Quality)->panel == Panel::Grain);
     CHECK(gg::ui::placementOf(ParamSlot::Budget)->view == gg::ui::View::Fx);
     std::vector<ParamSlot> step{ParamSlot::StepRate, ParamSlot::StepLength};
@@ -149,7 +154,12 @@ TEST_CASE("the panel order is the spec's", "[ui]")
     CHECK(gg::ui::slotsIn(Panel::Space, 1) ==
           std::vector<ParamSlot>{ParamSlot::B_Stereo, ParamSlot::B_Diffusion, ParamSlot::B_Feedback,
                                  ParamSlot::LevelB});
-    CHECK(gg::ui::slotsIn(Panel::Filter, 0).empty()); // until PR 2
+    // The bus split and the buses' filters (M2 sub-project 4; ruling VW-T19b).
+    CHECK(gg::ui::slotsIn(Panel::Filter, 2) ==
+          std::vector<ParamSlot>{ParamSlot::C_BusSplit, ParamSlot::C_Bus1Filter,
+                                 ParamSlot::C_Bus1Cutoff, ParamSlot::C_Bus1Resonance,
+                                 ParamSlot::C_Bus2Filter, ParamSlot::C_Bus2Cutoff,
+                                 ParamSlot::C_Bus2Resonance});
     CHECK(std::string(gg::ui::panelName(Panel::Lfo1)) == "LFO 1");
     CHECK(std::string(gg::ui::panelName(Panel::Random2)) == "Random 2");
     // Each panel's slots are in their placements' order, and every placed slot's view is the

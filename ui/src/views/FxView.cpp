@@ -29,15 +29,22 @@ struct FxView::Impl
                 control->setTooltip("Sets on release: the room's size changes in one step");
             }
         }
-        owner.addChildComponent(reverb);
-        owner.addChildComponent(output);
+        // In a vertical viewport, as the Edit view's panels are: since M2 sub-project 4's delay
+        // and limiter joined the Output panel (ruling VW-T19b), the two panels can outgrow a
+        // small window.
+        viewport.setViewedComponent(&content, false);
+        viewport.setScrollBarsShown(true, false);
+        owner.addAndMakeVisible(viewport);
+        content.addChildComponent(reverb);
+        content.addChildComponent(output);
     }
 
     /// The panels side by side, wrapping to a second row when the width is short; a panel is
-    /// hidden while it has no controls.
+    /// hidden while it has no controls. The content is sized to hold them, and scrolls.
     void layout()
     {
-        const int width = std::max(1, owner.getWidth());
+        viewport.setBounds(owner.getLocalBounds());
+        const int width = std::max(1, viewport.getMaximumVisibleWidth());
         const auto r = reverb.preferredSize(width - 2 * kPanelMargin);
         reverb.setVisible(r.x != 0);
         const auto o = output.preferredSize(width - 2 * kPanelMargin);
@@ -45,11 +52,13 @@ struct FxView::Impl
         int x = kPanelMargin;
         int y = kPanelMargin;
         int rowHeight = 0;
+        int bottom = 0;
         if (r.x != 0)
         {
             reverb.setBounds(x, y, r.x, r.y);
             x += r.x + kPanelMargin;
             rowHeight = r.y;
+            bottom = reverb.getBottom() + kPanelMargin;
         }
         if (o.x != 0)
         {
@@ -59,10 +68,14 @@ struct FxView::Impl
                 y += rowHeight + kPanelMargin;
             }
             output.setBounds(x, y, o.x, o.y);
+            bottom = std::max(bottom, output.getBottom() + kPanelMargin);
         }
+        content.setSize(width, bottom);
     }
 
     FxView &owner;
+    juce::Viewport viewport;
+    juce::Component content;
     ParamPanel reverb;
     ParamPanel output;
 };

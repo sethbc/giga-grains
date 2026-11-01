@@ -1,0 +1,266 @@
+{
+  "mode": "fx",
+  "sampleRate": 48000,
+  "durationSeconds": 16.0,
+  "blockSize": 128,
+  "seed": 1,
+  "input": {
+    "kind": "noise",
+    "seconds": 15.5,
+    "amplitude": 0.5
+  },
+  "channels": 2,
+  "params": {
+    "Mix": 1.0,
+    "A Bus Split": 0.0,
+    "A Bus 1 Filter": 1,
+    "A Bus 1 Cutoff": 8.228818690495881,
+    "A Bus 1 Resonance": 0.3,
+    "A Bus 2 Filter": 2,
+    "A Bus 2 Cutoff": 11.550746785383243,
+    "A Bus 2 Resonance": 0.3,
+    "Level": -6.0
+  },
+  "automation": [
+    {
+      "time": 3.125,
+      "param": "A Bus Split",
+      "value": 0.03125
+    },
+    {
+      "time": 3.25,
+      "param": "A Bus Split",
+      "value": 0.0625
+    },
+    {
+      "time": 3.375,
+      "param": "A Bus Split",
+      "value": 0.09375
+    },
+    {
+      "time": 3.5,
+      "param": "A Bus Split",
+      "value": 0.125
+    },
+    {
+      "time": 3.625,
+      "param": "A Bus Split",
+      "value": 0.15625
+    },
+    {
+      "time": 3.75,
+      "param": "A Bus Split",
+      "value": 0.1875
+    },
+    {
+      "time": 3.875,
+      "param": "A Bus Split",
+      "value": 0.21875
+    },
+    {
+      "time": 4.0,
+      "param": "A Bus Split",
+      "value": 0.25
+    },
+    {
+      "time": 4.125,
+      "param": "A Bus Split",
+      "value": 0.28125
+    },
+    {
+      "time": 4.25,
+      "param": "A Bus Split",
+      "value": 0.3125
+    },
+    {
+      "time": 4.375,
+      "param": "A Bus Split",
+      "value": 0.34375
+    },
+    {
+      "time": 4.5,
+      "param": "A Bus Split",
+      "value": 0.375
+    },
+    {
+      "time": 4.625,
+      "param": "A Bus Split",
+      "value": 0.40625
+    },
+    {
+      "time": 4.75,
+      "param": "A Bus Split",
+      "value": 0.4375
+    },
+    {
+      "time": 4.875,
+      "param": "A Bus Split",
+      "value": 0.46875
+    },
+    {
+      "time": 5.0,
+      "param": "A Bus Split",
+      "value": 0.5
+    },
+    {
+      "time": 7.125,
+      "param": "A Bus Split",
+      "value": 0.53125
+    },
+    {
+      "time": 7.25,
+      "param": "A Bus Split",
+      "value": 0.5625
+    },
+    {
+      "time": 7.375,
+      "param": "A Bus Split",
+      "value": 0.59375
+    },
+    {
+      "time": 7.5,
+      "param": "A Bus Split",
+      "value": 0.625
+    },
+    {
+      "time": 7.625,
+      "param": "A Bus Split",
+      "value": 0.65625
+    },
+    {
+      "time": 7.75,
+      "param": "A Bus Split",
+      "value": 0.6875
+    },
+    {
+      "time": 7.875,
+      "param": "A Bus Split",
+      "value": 0.71875
+    },
+    {
+      "time": 8.0,
+      "param": "A Bus Split",
+      "value": 0.75
+    },
+    {
+      "time": 8.125,
+      "param": "A Bus Split",
+      "value": 0.78125
+    },
+    {
+      "time": 8.25,
+      "param": "A Bus Split",
+      "value": 0.8125
+    },
+    {
+      "time": 8.375,
+      "param": "A Bus Split",
+      "value": 0.84375
+    },
+    {
+      "time": 8.5,
+      "param": "A Bus Split",
+      "value": 0.875
+    },
+    {
+      "time": 8.625,
+      "param": "A Bus Split",
+      "value": 0.90625
+    },
+    {
+      "time": 8.75,
+      "param": "A Bus Split",
+      "value": 0.9375
+    },
+    {
+      "time": 8.875,
+      "param": "A Bus Split",
+      "value": 0.96875
+    },
+    {
+      "time": 9.0,
+      "param": "A Bus Split",
+      "value": 1.0
+    },
+    {
+      "time": 11.125,
+      "param": "A Bus Split",
+      "value": 0.9375
+    },
+    {
+      "time": 11.25,
+      "param": "A Bus Split",
+      "value": 0.875
+    },
+    {
+      "time": 11.375,
+      "param": "A Bus Split",
+      "value": 0.8125
+    },
+    {
+      "time": 11.5,
+      "param": "A Bus Split",
+      "value": 0.75
+    },
+    {
+      "time": 11.625,
+      "param": "A Bus Split",
+      "value": 0.6875
+    },
+    {
+      "time": 11.75,
+      "param": "A Bus Split",
+      "value": 0.625
+    },
+    {
+      "time": 11.875,
+      "param": "A Bus Split",
+      "value": 0.5625
+    },
+    {
+      "time": 12.0,
+      "param": "A Bus Split",
+      "value": 0.5
+    },
+    {
+      "time": 12.125,
+      "param": "A Bus Split",
+      "value": 0.4375
+    },
+    {
+      "time": 12.25,
+      "param": "A Bus Split",
+      "value": 0.375
+    },
+    {
+      "time": 12.375,
+      "param": "A Bus Split",
+      "value": 0.3125
+    },
+    {
+      "time": 12.5,
+      "param": "A Bus Split",
+      "value": 0.25
+    },
+    {
+      "time": 12.625,
+      "param": "A Bus Split",
+      "value": 0.1875
+    },
+    {
+      "time": 12.75,
+      "param": "A Bus Split",
+      "value": 0.125
+    },
+    {
+      "time": 12.875,
+      "param": "A Bus Split",
+      "value": 0.0625
+    },
+    {
+      "time": 13.0,
+      "param": "A Bus Split",
+      "value": 0.0
+    }
+  ]
+}

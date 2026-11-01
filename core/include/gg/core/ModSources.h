@@ -8,6 +8,7 @@
 #include <array>
 #include <cstdint>
 
+#include "gg/core/MathDet.h"
 #include "gg/core/ParamIds.h"
 #include "gg/core/Rng.h"
 
@@ -20,21 +21,13 @@
 /// std::floor and std::fabs (plain IEEE arithmetic and exp2Det; INTENT §14).
 namespace gg::core
 {
+/// sineDet and its coefficients live in the engine's MathDet.h (gg::sineDet), which gg-engine's
+/// own code can call; these names keep them reachable here, so callers spell them as before.
 namespace detail
 {
-/// sineDet's odd polynomial in x = 4p on the folded quarter wave: sin(πx/2) ≈ c0 x + c1 x³ + c2 x⁵
-/// + c3 x⁷ for x in [0, 1]. c0 to c2 are a minimax fit with p(1) = 1 imposed (|error| about 8e-7),
-/// rounded to float; c3 is 1 − c0 − c1 − c2 rounded to float, which makes the Horner evaluation at
-/// x = 1, ((c3 + c2) + c1) + c0, exactly 1.0f (pinned by the tests).
-inline constexpr std::array<float, 4> kSineDetCoeffs{1.5707902908325195f, -0.6458860635757446f,
-                                                     0.0794183537364006f, -0.004322580993175507f};
+using gg::detail::kSineDetCoeffs;
 } // namespace detail
-
-/// sin(2π·phase) without libm, for phase in [0, 1) (other values are wrapped into it): the
-/// quarter-wave polynomial above on the folded phase. |error| < 1e-4 (about 8e-7); exactly 0 at
-/// 0 and 0.5, 1 at 0.25 and −1 at 0.75; never outside [−1, 1]; the second half is the first
-/// negated, bit for bit.
-float sineDet(float phase) noexcept;
+using gg::sineDet;
 
 /// An LFO's controls (spec §6.9): its rate in Hz and its shape.
 struct LfoParams

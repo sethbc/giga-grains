@@ -240,13 +240,16 @@ TEST_CASE("a session state's bytes are pinned", "[core][preset]")
     // ring parameters (A to D Ring Length, Loop, Loop Length, Overdub and Splice) add twenty <p>
     // elements to PTCH, 1,035 bytes, and whose container writes MEDI version 2 and an INST chunk,
     // 56 bytes more: before it the bytes were sub-project 3's merge's (12,013, 875d7ac8...;
-    // 12,066, 37dd926d...).
+    // 12,066, 37dd926d...). Retaken again at the merge of sub-projects 2 and 4, whose forty
+    // parameters (eight per layer, the delay's five and the limiter's three) add forty <p>
+    // elements, 2,047 bytes, to sub-project 2's merge's (13,048, 6e2115f1...; 13,157,
+    // 5573ae15...).
     const std::string session = encodeState(someState());
     const std::string ptch = *stateChunkPayload(session, "PTCH");
-    CHECK(ptch.size() == 13048);
-    CHECK(sha256Of(ptch) == "6e2115f158c37ba657bc37653727a46881157ede2c749f818fd259eabe32ee0a");
-    CHECK(session.size() == 13157);
-    CHECK(sha256Of(session) == "5573ae15a04b72186f0d63aef7f9a65943c392a6afb46a8964e60f30579b6a6b");
+    CHECK(ptch.size() == 15095);
+    CHECK(sha256Of(ptch) == "765ee8fb6eb035ef40765a49c28263681096cf51ad335b50759d8e61df06ca97");
+    CHECK(session.size() == 15204);
+    CHECK(sha256Of(session) == "b66606a7bca77fff9ce015ee18bab469eeac26107eee10005f810f5d9b50175e");
 }
 
 TEST_CASE("a name read back is cut at 255 bytes and at a NUL", "[core][preset]")
@@ -505,7 +508,9 @@ TEST_CASE("initState is every default and the factory routes", "[core][preset]")
     // they are the fix wave's, 13,123 f5bebe3b... and 13,124 4b56d092...; retaken again at the
     // merge of sub-project 2: its twenty ring parameters and its container's MEDI version 2 and
     // INST add 1,091 bytes, without which they are sub-project 3's merge's, 13,381 d3fce75c...
-    // and 13,382 ffdb8cc2...).
+    // and 13,382 ffdb8cc2...; and retaken at the merge of sub-projects 2 and 4: sub-project 4's
+    // forty parameters add 2,047 bytes to sub-project 2's merge's, 14,472 5c5c3e20... and 14,473
+    // 58a43b60...).
     const SessionState fx = initState(Mode::Fx);
     CHECK(fx.values[at(ParamSlot::Size)] ==
           gg::core::paramMeta(ParamSlot::Size, Mode::Fx).defaultVal);
@@ -513,12 +518,12 @@ TEST_CASE("initState is every default and the factory routes", "[core][preset]")
     CHECK(fx.values[at(ParamSlot::LayerBOn)] == 0.0f);
     CHECK(fx.routes == factoryRoutes(Mode::Fx));
     const std::string fxBytes = encodeState(fx);
-    CHECK(fxBytes.size() == 14472);
-    CHECK(sha256Of(fxBytes) == "5c5c3e204a19c36b7fe64b9190e066af8583bbd8043275c0c0b949cf92418960");
+    CHECK(fxBytes.size() == 16519);
+    CHECK(sha256Of(fxBytes) == "129442fb0c4896b41ad6c5b42f947de01027e5d6c6569145ba29e4ba51ae4f19");
     const std::string instBytes = encodeState(initState(Mode::Instrument));
-    CHECK(instBytes.size() == 14473);
+    CHECK(instBytes.size() == 16520);
     CHECK(sha256Of(instBytes) ==
-          "58a43b60c8d4f7c15a98f092a561f5de2dc957557993f65da3ffc1f65fe453ac");
+          "4e77e2b625f0d0cf825f6401314e866c9c69393f650153209f28017af49e2cbe");
     CHECK(fx.name == "Init");
     CHECK_FALSE(fx.preset.has_value());
     CHECK_FALSE(fx.samples[0].has_value());

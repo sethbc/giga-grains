@@ -280,6 +280,14 @@ Space takes the next free IDs in each scope.
 | `0x000008` | Reverb Modulation | global | 0–100% | 25% | Reverb 2's modulation depth |
 | `0x000009` | Dry to Reverb | global | 0–100% | 0% | FX only; the instrument hides it (`HIDDEN`, no effect) |
 
+- **Amended (M2 sub-project 4, INTENT §23 #69; carry-over row 311):** Reverb Modulation glides.
+  Reverb 2 sets its modulation depth once per 32-sample block, so a jump moved each line's
+  modulated read by up to 240 samples within one block, a scrub that echoed as a click at Decay ∞
+  and Damping 0. `SpaceReverb` now moves the depth it gives Reverb 2 toward Modulation's mapped
+  value by at most one 30 ms glide's share per chunk (`kModulationGlideSeconds`, 0 to 1 in 30 ms,
+  as long as the patch's glide into ∞), and an empty reverb (constructed, reset or cleared) takes
+  the value at once, as the pre-delay and ∞ do. `Reverb2Patched.h` is unchanged. A full move bends
+  a held tail by about 3 semitones for the 30 ms (a listening item).
 - *My calls:* the IDs, names, ranges and the defaults other than Diffusion, Amount and Dry to
   Reverb (S4 fixes those at 0). Decay, Size, Damping, Pre-delay and Modulation affect nothing
   while Amount is 0, so their defaults are what a user hears when first turning Amount up; they

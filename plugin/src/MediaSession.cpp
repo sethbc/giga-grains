@@ -544,7 +544,7 @@ core::SessionState MediaSession::save(const core::ParamValues &values, uint64_t 
         {
             RingSlot &slot = rings_[l];
             // The ring (D1). A layer no longer held has nothing to say about its ring.
-            if (!core::ringSaved(values, mode_, l))
+            if (!core::ringSaved(values, mode_, l, materialOf(l)))
             {
                 slot.persistStatus.clear();
             }
@@ -942,7 +942,7 @@ void MediaSession::deactivate(const core::Processor *processor,
     for (uint8_t l = 0; l < kLayers; ++l)
     {
         RingSlot &slot = rings_[l];
-        if (processor == nullptr || !core::ringSaved(values, mode_, l))
+        if (processor == nullptr || !core::ringSaved(values, mode_, l, materialOf(l)))
         {
             continue;
         }

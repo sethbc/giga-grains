@@ -66,8 +66,8 @@ std::optional<Placement> placementOf(gg::core::ParamSlot slot) noexcept;
 
 /// The slots a panel draws, in order. A layer's panel (Source to Step, and Space's Level, and
 /// the Strip's On switch) draws layer `layer`'s (0 to 3, A to D); a global panel (Reverb, Output,
-/// Pad, Macros) ignores it. Empty for a panel with no rows yet (Filter, until PR 2) and for
-/// Panel::Count.
+/// Pad, Macros) ignores it. Empty for a panel with no rows (none since M2 sub-project 4 filled
+/// Filter) and for Panel::Count.
 std::vector<gg::core::ParamSlot> slotsIn(Panel panel, uint8_t layer);
 
 /// The panel's title as the views show it ("LFO 1", "Random 2"); "" for Panel::Count.

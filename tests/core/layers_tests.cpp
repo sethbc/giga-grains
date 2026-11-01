@@ -31,12 +31,14 @@
 #include "gg/core/PatchState.h"
 #include "gg/core/Processor.h"
 #include "core/LayersFixture.h"
+#include "gg/engine/Engine.h"
 #include "gg/grain/Budget.h"
 #include "gg/metrics/Metrics.h"
 #include "gg/source/PreparedSource.h"
 #include "gg/source/SampleBuffer.h"
 #include "sst/basic-blocks/params/ParamMetadata.h"
 #include "support/AllocTripwire.h"
+#include "sweep/SweepDriver.h"
 
 using gg::core::LayerParam;
 using gg::core::layerSlot;
@@ -310,7 +312,7 @@ TEST_CASE("a layer switched off ramps over 10 ms then spawns nothing", "[core][l
 TEST_CASE("switching off the last layer fades over 10 ms", "[core][layers]")
 {
     // D1 as amended (Task 10's fix round): the weights are times min(1, Σ r_K), so layer A
-    // alone, switched off, fades with its ramp, (b/b) × r, rather than staying at 1 until the
+    // alone, switched off, fades with its ramp, r, rather than staying at 1 until the
     // ramp reaches 0 and being cut there. A Sample layer over a sine, with no input and Mix 1:
     // the output is the layer alone, where a cut is a click.
     constexpr int64_t kOff = 24000; // a grid boundary
@@ -377,6 +379,460 @@ TEST_CASE("a layer toggled within its ramp keeps its grains", "[core][layers]")
     const gg::metrics::Metrics m = gg::metrics::computeMetrics(audio);
     CHECK(m.clickScore < 15.0);
     CHECK(m.peakDb > -30.0);
+}
+
+namespace
+{
+// Carry-over row 301: the morph law must hand over at the ramps' own pace, wherever the pad is.
+// A weight that moves at most five times the on/off ramp's own rate (1/480 per sample) per sample
+// is smooth; the law as first built moved one by up to 0.99 in a sample off the pad's center.
+constexpr float kSmoothStep = 0.01f;
+
+// The four layers' weights at t, read with morphWeightAt (exact for t at or after the last
+// boundary applied).
+std::array<float, 4> weightsAt(const Processor &p, int64_t t)
+{
+    return {p.morphWeightAt(0, t), p.morphWeightAt(1, t), p.morphWeightAt(2, t),
+            p.morphWeightAt(3, t)};
+}
+
+// The largest |w_L(t + 1) − w_L(t)| over the four layers, from `before` (the weights at from − 1,
+// read before the boundary at `from` was applied) through every t in [from, to).
+float largestWeightStep(const Processor &p, const std::array<float, 4> &before, int64_t from,
+                        int64_t to)
+{
+    float largest = 0.0f;
+    std::array<float, 4> prev = before;
+    for (int64_t t = from; t < to; ++t)
+    {
+        const std::array<float, 4> w = weightsAt(p, t);
+        for (size_t L = 0; L < 4; ++L)
+        {
+            largest = std::max(largest, std::abs(w[L] - prev[L]));
+        }
+        prev = w;
+    }
+    return largest;
+}
+
+// Layer L as a Sample layer over a sine of its own, Position 0.5, Density 64 Hz: steady material
+// on which a step in the layer's weight is a click.
+void sineLayer(Processor &p, uint8_t L, double hz)
+{
+    p.setBase(slotOf(LayerParam::Source, L), 0.0f); // Sample
+    p.setBase(slotOf(LayerParam::Position, L), 0.5f);
+    p.setBase(slotOf(LayerParam::Density, L), 6.0f);
+    p.setSourceNow(L, sine(hz));
+}
+
+struct Handover
+{
+    float largestStep; // over the 10 ms ramp after kAt and a sample each side
+    double clickScore; // of the whole render
+};
+
+// The FX with Mix 1 and no input, the layers in `on` switched on as sine layers (A 440 Hz, B 330,
+// C 550, D 277), the pad at (x, y); `changes` at kAt, a grid boundary.
+Handover handover(float x, float y, const std::array<bool, 4> &on,
+                  const std::vector<TimedEvent> &changes)
+{
+    constexpr int64_t kAt = 24000;
+    constexpr int64_t kFrames = 36000;
+    constexpr std::array<double, 4> kHz{440.0, 330.0, 550.0, 277.0};
+    Processor p({kRate, 4096, 61, Mode::Fx});
+    wetOnly(p);
+    p.setBase(ParamSlot::MorphX, x);
+    p.setBase(ParamSlot::MorphY, y);
+    for (uint8_t L = 0; L < 4; ++L)
+    {
+        sineLayer(p, L, kHz[L]);
+        p.setBase(gg::core::layerOnSlot(L), on[L] ? 1.0f : 0.0f);
+    }
+    Stereo out = silence(kFrames);
+    render(p, nullptr, 0, kAt, {4096}, changes, out);
+    const std::array<float, 4> before = weightsAt(p, kAt - 1); // the boundary not yet applied
+    render(p, nullptr, kAt, kAt + 1, {4096}, changes, out);
+    const float step = largestWeightStep(p, before, kAt, kAt + kRamp + 2);
+    render(p, nullptr, kAt + 1, kFrames, {4096}, changes, out);
+    REQUIRE(peak(out.left) > 0.05f);
+    const gg::metrics::AudioData audio{kRate, {out.left, out.right}};
+    return {step, gg::metrics::computeMetrics(audio).clickScore};
+}
+
+// Task 11's finding F2 (row 301): layer A on, then A off and D on at once.
+const std::vector<TimedEvent> kAOffDOn{{24000, ParamSlot::LayerAOn, false, 0.0},
+                                       {24000, ParamSlot::LayerDOn, false, 1.0}};
+} // namespace
+
+namespace
+{
+// The morph law as first built (D1, LS-T10a) at rest, with the layers of `set` (bits 0 to 3, A to
+// D) on: b_L / s in float, summed in order A to D, as Processor::weightsAt computed it.
+std::array<float, 4> firstLawAtRest(uint32_t set, float morphX, float morphY)
+{
+    const float x = std::clamp(morphX, 0.001f, 0.999f);
+    const float y = std::clamp(morphY, 0.001f, 0.999f);
+    const std::array<float, 4> b{(1.0f - x) * (1.0f - y), x * (1.0f - y), (1.0f - x) * y, x * y};
+    std::array<float, 4> rb{};
+    float s = 0.0f;
+    for (size_t L = 0; L < 4; ++L)
+    {
+        rb[L] = (set >> L & 1u) != 0 ? b[L] : 0.0f;
+        s += rb[L];
+    }
+    std::array<float, 4> w{};
+    for (size_t L = 0; L < 4; ++L)
+    {
+        w[L] = rb[L] / s * 1.0f;
+    }
+    return w;
+}
+
+// The on layers' corner weights' sum at rest: the floor (0.35) binds below it for a diagonal pair
+// or a triple.
+float onSum(uint32_t set, float morphX, float morphY)
+{
+    const float x = std::clamp(morphX, 0.001f, 0.999f);
+    const float y = std::clamp(morphY, 0.001f, 0.999f);
+    const std::array<float, 4> b{(1.0f - x) * (1.0f - y), x * (1.0f - y), (1.0f - x) * y, x * y};
+    float s = 0.0f;
+    for (size_t L = 0; L < 4; ++L)
+    {
+        s += (set >> L & 1u) != 0 ? b[L] : 0.0f;
+    }
+    return s;
+}
+
+void switchTo(Processor &p, uint32_t set)
+{
+    for (uint8_t L = 0; L < 4; ++L)
+    {
+        p.setBase(gg::core::layerOnSlot(L), (set >> L & 1u) != 0 ? 1.0f : 0.0f);
+    }
+}
+} // namespace
+
+TEST_CASE("at rest the morph keeps the first law's weights where its floor does not bind",
+          "[core][layers]")
+{
+    // D1 as amended for row 301: at rest the weights are b_L / Σ_{K on} b_K, bit for bit, except
+    // where a diagonal pair's or a triple's corner weights sum to less than 0.35. An adjacent pair
+    // never floors, so its weights are the first law's on the whole pad.
+    Processor p({kRate, 512, 1, Mode::Fx});
+    struct Case
+    {
+        const char *name;
+        uint32_t set;
+        bool floors;
+    };
+    for (const Case &c :
+         {Case{"AB", 0b0011, false}, Case{"AC", 0b0101, false}, Case{"BD", 0b1010, false},
+          Case{"CD", 0b1100, false}, Case{"AD", 0b1001, true}, Case{"BC", 0b0110, true},
+          Case{"ABC", 0b0111, true}, Case{"ABD", 0b1011, true}, Case{"ACD", 0b1101, true},
+          Case{"BCD", 0b1110, true}, Case{"ABCD", 0b1111, false}})
+    {
+        INFO("layers " << c.name);
+        switchTo(p, c.set);
+        int checked = 0;
+        int floored = 0;
+        for (int i = 0; i <= 20; ++i)
+        {
+            for (int j = 0; j <= 20; ++j)
+            {
+                const float x = static_cast<float>(i) / 20.0f;
+                const float y = static_cast<float>(j) / 20.0f;
+                if (c.floors && onSum(c.set, x, y) < 0.35f)
+                {
+                    ++floored;
+                    continue;
+                }
+                p.setBase(ParamSlot::MorphX, x);
+                p.setBase(ParamSlot::MorphY, y);
+                const std::array<float, 4> expected = firstLawAtRest(c.set, x, y);
+                for (uint8_t L = 0; L < 4; ++L)
+                {
+                    INFO("(" << x << ", " << y << ") layer " << int{L});
+                    REQUIRE(bitsOf(p.morphWeightAt(L, 0)) == bitsOf(expected[L]));
+                }
+                ++checked;
+            }
+        }
+        // Every point for the adjacent pairs and four layers; most of the pad for the others.
+        CHECK(checked + floored == 441);
+        CHECK((floored == 0 || c.floors));
+        CHECK(checked > (c.floors ? 300 : 440));
+    }
+}
+
+TEST_CASE("where the floor binds the on layers share its shortfall equally", "[core][layers]")
+{
+    // D1 as amended for row 301: below s = Σ_{K on} b_K < 0.35, a diagonal pair's or a triple's
+    // weights are (b_L + (0.35 − s) / n) / 0.35. Points where the first law gives other weights:
+    // each pins the first law's value there beside the new one, so the director's D1-rest
+    // decision (option 1, 2026-10-31) is pinned as a difference from D1 as first built.
+    Processor p({kRate, 512, 1, Mode::Fx});
+    {
+        // A and D at (0.95, 0.2): b_A = 0.04, b_D = 0.19, s = 0.23; the first law gave
+        // 0.174 and 0.826.
+        switchTo(p, 0b1001);
+        p.setBase(ParamSlot::MorphX, 0.95f);
+        p.setBase(ParamSlot::MorphY, 0.2f);
+        CHECK_THAT(p.morphWeightAt(0, 0), Catch::Matchers::WithinAbs((0.04 + 0.06) / 0.35, 1e-6));
+        CHECK_THAT(p.morphWeightAt(3, 0), Catch::Matchers::WithinAbs((0.19 + 0.06) / 0.35, 1e-6));
+        CHECK(p.morphWeightAt(1, 0) == 0.0f);
+        CHECK(p.morphWeightAt(2, 0) == 0.0f);
+        const std::array<float, 4> first = firstLawAtRest(0b1001, 0.95f, 0.2f);
+        CHECK_THAT(first[0], Catch::Matchers::WithinAbs(0.04 / 0.23, 1e-6));
+        CHECK_THAT(first[3], Catch::Matchers::WithinAbs(0.19 / 0.23, 1e-6));
+        CHECK(std::abs(p.morphWeightAt(0, 0) - first[0]) > 0.1f);
+        CHECK(std::abs(p.morphWeightAt(3, 0) - first[3]) > 0.1f);
+    }
+    {
+        // A, B and C at (0.95, 0.95): b_D = 0.9025, s = 0.0975; the first law gave A 0.026.
+        switchTo(p, 0b0111);
+        p.setBase(ParamSlot::MorphX, 0.95f);
+        p.setBase(ParamSlot::MorphY, 0.95f);
+        const double share = (0.35 - 0.0975) / 3.0;
+        CHECK_THAT(p.morphWeightAt(0, 0),
+                   Catch::Matchers::WithinAbs((0.0025 + share) / 0.35, 1e-6));
+        CHECK_THAT(p.morphWeightAt(1, 0),
+                   Catch::Matchers::WithinAbs((0.0475 + share) / 0.35, 1e-6));
+        CHECK_THAT(p.morphWeightAt(2, 0),
+                   Catch::Matchers::WithinAbs((0.0475 + share) / 0.35, 1e-6));
+        CHECK(p.morphWeightAt(3, 0) == 0.0f);
+        const std::array<float, 4> first = firstLawAtRest(0b0111, 0.95f, 0.95f);
+        CHECK_THAT(first[0], Catch::Matchers::WithinAbs(0.0025 / 0.0975, 1e-6));
+        CHECK(std::abs(p.morphWeightAt(0, 0) - first[0]) > 0.1f);
+    }
+}
+
+TEST_CASE("off the center the ramping weights sum to min(1, sum of ramps)", "[core][layers]")
+{
+    // D1 as amended for row 301, while layers ramp: the weights are a weighted mean of the on-sets'
+    // weights (each summing to 1) times min(1, R), R = Σ r_K, so they sum to 1 once a whole
+    // layer's worth is on and to R below that; a layer whose ramp is at 0 weighs 0; none is
+    // negative. Mixed fractional ramps at off-center pads, two layers rising together from all off
+    // among them.
+    constexpr int64_t kAt = 4096;
+    struct Switch
+    {
+        uint32_t from;
+        uint32_t to;
+    };
+    for (const auto &[x, y] : std::array<std::array<float, 2>, 4>{
+             {{0.0f, 0.0f}, {0.8f, 0.15f}, {0.3f, 0.9f}, {0.97f, 0.97f}}})
+    {
+        for (const Switch sw :
+             {Switch{0b0000, 0b0110}, Switch{0b0001, 0b1110}, Switch{0b1011, 0b0101},
+              Switch{0b1111, 0b0001}, Switch{0b0110, 0b1001}})
+        {
+            INFO("pad (" << x << ", " << y << "), layers " << sw.from << " -> " << sw.to);
+            Processor p({kRate, 512, 1, Mode::Fx});
+            p.setBase(ParamSlot::MorphX, x);
+            p.setBase(ParamSlot::MorphY, y);
+            switchTo(p, sw.from);
+            std::vector<TimedEvent> events;
+            for (uint8_t L = 0; L < 4; ++L)
+            {
+                if (((sw.from ^ sw.to) >> L & 1u) != 0)
+                {
+                    events.push_back(
+                        {kAt, gg::core::layerOnSlot(L), false, (sw.to >> L & 1u) != 0 ? 1.0 : 0.0});
+                }
+            }
+            Stereo out = silence(kAt + 1);
+            render(p, nullptr, 0, kAt + 1, {512}, events, out);
+            for (const int64_t k : {int64_t{1}, int64_t{37}, int64_t{240}, int64_t{401}})
+            {
+                INFO("ramp sample " << k);
+                const double u = static_cast<double>(k) / static_cast<double>(kRamp);
+                double ramps = 0.0;
+                double sum = 0.0;
+                for (uint8_t L = 0; L < 4; ++L)
+                {
+                    const double r0 = (sw.from >> L & 1u) != 0 ? 1.0 : 0.0;
+                    const double r1 = (sw.to >> L & 1u) != 0 ? 1.0 : 0.0;
+                    const double r = r0 + (r1 - r0) * u;
+                    const float w = p.morphWeightAt(L, kAt + k);
+                    CHECK(w >= 0.0f);
+                    if (r == 0.0)
+                    {
+                        CHECK(w == 0.0f);
+                    }
+                    ramps += r;
+                    sum += w;
+                }
+                CHECK_THAT(sum, Catch::Matchers::WithinAbs(std::min(1.0, ramps), 2e-6));
+            }
+        }
+    }
+}
+
+TEST_CASE("a layer switched on at the pad's corner hands over smoothly", "[core][layers]")
+{
+    // At (0, 0) b_A ≈ 0.998 and b_D = 10⁻⁶: D's share stayed near 0 until A's ramp had almost
+    // reached 0, then jumped to 1 (a click score of 1,900 in F2).
+    const Handover h = handover(0.0f, 0.0f, {true, false, false, false}, kAOffDOn);
+    CHECK(h.largestStep < kSmoothStep);
+    CHECK(h.clickScore < 15.0);
+}
+
+TEST_CASE("a layer switched on off the pad's center hands over smoothly", "[core][layers]")
+{
+    // At (0.25, 0.25) b_A = 0.5625 and b_D = 0.0625 (37.8 in F2).
+    const Handover h = handover(0.25f, 0.25f, {true, false, false, false}, kAOffDOn);
+    CHECK(h.largestStep < kSmoothStep);
+    CHECK(h.clickScore < 15.0);
+}
+
+TEST_CASE("a pad move near an edge hands over smoothly", "[core][layers]")
+{
+    // F2's instrument bursts, seed 11: a TransportBeat route wraps Morph X from 1 to 0.654 with Y
+    // at 0 and layers A and D on. Near B's corner b_A and b_D are both about 0.001, so the
+    // weights went from 0.50/0.50 to 0.96/0.04 within 32 samples of the 480-sample ramp (56.4).
+    const Handover h = handover(1.0f, 0.0f, {true, false, false, true},
+                                {{24000, ParamSlot::MorphX, false, 0.654}});
+    CHECK(h.largestStep < kSmoothStep);
+    CHECK(h.clickScore < 15.0);
+}
+
+TEST_CASE("a layer's off ramp ends at its weight's own pace", "[core][layers]")
+{
+    // The FX extremes sweep's corner 17 (row 301): the pad near C's corner (0, 1), layers B, C
+    // and D on, C switched off. On the ramp's last sample C still weighed 0.675 (r_C·b_C ≈ 0.002
+    // against b_D ≈ 0.001), then 0, and D went from 0.324 to 0.999 in that sample.
+    const Handover h =
+        handover(0.0f, 1.0f, {false, true, true, true}, {{24000, ParamSlot::LayerCOn, false, 0.0}});
+    CHECK(h.largestStep < kSmoothStep);
+    CHECK(h.clickScore < 15.0);
+}
+
+namespace
+{
+// A move of the pad across its whole width, X from `x0` to 1 − x0 from `at`, Y from `y0` to
+// 1 − y0 from `at + yDelay` (staggered ramps put the pad at full speed in both axes anywhere),
+// with the layers going from the set `from` to the set `to` (bits 0 to 3, A to D) at `at`. Both
+// boundaries are on the 32-sample control grid, where the Processor applies parameter events.
+struct PadMove
+{
+    uint32_t from;
+    uint32_t to;
+    float x0;
+    float y0;
+    int64_t yDelay;
+};
+
+// The largest per-sample weight step over `m`, rendered from `clock` by p (no input, so only the
+// weights matter); out must hold the whole run. Each window is read once the boundaries before
+// it are applied and the next is not: the sample before `at`, then [at, at + yDelay), then the
+// rest of the ramps.
+float largestPadStep(Processor &p, int64_t ramp, int64_t &clock, Stereo &out, const PadMove &m)
+{
+    switchTo(p, m.from);
+    p.setBase(ParamSlot::MorphX, m.x0);
+    p.setBase(ParamSlot::MorphY, m.y0);
+    const int64_t at = (clock + 16 + 31) / 32 * 32;
+    std::vector<TimedEvent> events{{at, ParamSlot::MorphX, false, 1.0 - m.x0}};
+    for (uint8_t L = 0; L < 4; ++L)
+    {
+        if (((m.from ^ m.to) >> L & 1u) != 0)
+        {
+            events.push_back(
+                {at, gg::core::layerOnSlot(L), false, (m.to >> L & 1u) != 0 ? 1.0 : 0.0});
+        }
+    }
+    events.push_back({at + m.yDelay, ParamSlot::MorphY, false, 1.0 - m.y0});
+    render(p, nullptr, clock, at, {512}, events, out);
+    const std::array<float, 4> before = weightsAt(p, at - 1);
+    render(p, nullptr, at, at + 1, {512}, events, out);
+    float largest = largestWeightStep(p, before, at, at + m.yDelay + 1);
+    render(p, nullptr, at + 1, at + m.yDelay + 1, {512}, events, out);
+    const std::array<float, 4> held = weightsAt(p, at + m.yDelay);
+    largest =
+        std::max(largest, largestWeightStep(p, held, at + m.yDelay + 1, at + m.yDelay + ramp + 2));
+    clock = at + m.yDelay + 1;
+    return largest;
+}
+} // namespace
+
+TEST_CASE("the pad at full speed moves each weight smoothly", "[core][layers]")
+{
+    // D1 as amended for row 301, at 48 and 44.1 kHz (a ramp of 480 and 441 samples): a resting
+    // pad crossing the pad in both axes at once, through the floor's edge, moves no weight by
+    // more than kSmoothStep a sample (0.0073 and 0.0079 at worst, A, B and C on just outside the
+    // floor, Y starting 320 and 288 samples after X); nor does a handover with the pad still
+    // (0.0062 and 0.0068 at worst: B off while A, C and D come on at (0, 1)). Every multi-layer
+    // set, every direction, four Y delays on the control grid.
+    for (const double rate : {48000.0, 44100.0})
+    {
+        INFO("rate " << rate);
+        const auto ramp = static_cast<int64_t>(std::lround(rate * 0.01));
+        Processor p({rate, 512, 3, Mode::Fx, 64});
+        Stereo out = silence(400000);
+        int64_t clock = 0;
+        float padWorst = 0.0f;
+        for (uint32_t set = 1; set < 16; ++set)
+        {
+            if (std::popcount(set) < 2)
+            {
+                continue;
+            }
+            for (const float x0 : {0.0f, 1.0f})
+            {
+                for (const float y0 : {0.0f, 1.0f})
+                {
+                    for (const int64_t delay :
+                         {int64_t{0}, int64_t{224}, int64_t{288}, int64_t{320}})
+                    {
+                        padWorst = std::max(padWorst, largestPadStep(p, ramp, clock, out,
+                                                                     {set, set, x0, y0, delay}));
+                    }
+                }
+            }
+        }
+        CHECK(padWorst < kSmoothStep);
+        // The worst handover with the pad still, of every pair of sets.
+        p.setBase(ParamSlot::MorphX, 0.0f);
+        p.setBase(ParamSlot::MorphY, 1.0f);
+        switchTo(p, 0b0010);
+        const int64_t at = (clock + 16 + 31) / 32 * 32;
+        const std::vector<TimedEvent> handover{{at, ParamSlot::LayerAOn, false, 1.0},
+                                               {at, ParamSlot::LayerBOn, false, 0.0},
+                                               {at, ParamSlot::LayerCOn, false, 1.0},
+                                               {at, ParamSlot::LayerDOn, false, 1.0}};
+        render(p, nullptr, clock, at, {512}, handover, out);
+        const std::array<float, 4> before = weightsAt(p, at - 1);
+        render(p, nullptr, at, at + 1, {512}, handover, out);
+        const float handoverStep = largestWeightStep(p, before, at, at + ramp + 2);
+        CHECK(handoverStep < kSmoothStep);
+        CHECK(handoverStep > 0.006f); // the case is the worst one, 0.0062
+        CHECK(padWorst > 0.007f);     // the sweep reaches the steepest band
+    }
+}
+
+TEST_CASE("a handover during a full-speed pad move stays near the smooth step", "[core][layers]")
+{
+    // The worst combined cases found (a model of the law over every pair of sets, direction and
+    // stagger on the control grid): B and D swapping with A and C held while the pad crosses the
+    // pad in both axes, Y starting 320 or 288 samples after X. The two motions add: 0.0105 a sample
+    // at 48 kHz and 0.0116 at 44.1 kHz, over kSmoothStep, pinned here under 0.0125. No floor up
+    // to 0.45 keeps the combined step within 0.01 at 44.1 kHz (carry-over row 301's report).
+    for (const double rate : {48000.0, 44100.0})
+    {
+        INFO("rate " << rate);
+        const auto ramp = static_cast<int64_t>(std::lround(rate * 0.01));
+        Processor p({rate, 512, 3, Mode::Fx, 64});
+        Stereo out = silence(8192);
+        int64_t clock = 0;
+        float step = 0.0f;
+        for (const PadMove m :
+             {PadMove{0b1101, 0b0111, 0.0f, 1.0f, 320}, PadMove{0b0111, 0b1101, 0.0f, 0.0f, 288}})
+        {
+            step = std::max(step, largestPadStep(p, ramp, clock, out, m));
+        }
+        CHECK(step < 0.0125f);
+        CHECK(step > kSmoothStep);
+    }
 }
 
 TEST_CASE("all layers off renders silence", "[core][layers]")
@@ -611,9 +1067,9 @@ TEST_CASE("grain events come in piece, layer, spawn order", "[core][layers]")
 
 TEST_CASE("the unbuilt kinds fall back to the product's default", "[core][layers]")
 {
-    // Spec §6.4: Spectral and Oscillator render as Live in the FX and as Sample in the
-    // instrument, the parameter keeping its value. Resample is built since M2 sub-project 2, a
-    // Live engine in both products (its spec §6.2).
+    // Spec §6.4: Oscillator renders as Live in the FX and as Sample in the instrument, the
+    // parameter keeping its value. Resample is built since M2 sub-project 2, a Live engine in both
+    // products (its spec §6.2), and Spectral since M2 sub-project 4 (spectral_processor_tests).
     float l[1];
     float r[1];
     float *out[2] = {l, r};
@@ -631,7 +1087,7 @@ TEST_CASE("the unbuilt kinds fall back to the product's default", "[core][layers
         fx.process(nullptr, 0, out, 2, 1, {});
         CHECK(fx.engine(0).sourceMode() == gg::SourceMode::Live);
     }
-    for (const float kind : {3.0f, 4.0f})
+    for (const float kind : {4.0f})
     {
         INFO("Source " << kind);
         Processor fx({kRate, 512, 1, Mode::Fx});
@@ -680,6 +1136,9 @@ TEST_CASE("four layers are block-size invariant", "[core][layers][determinism]")
         INFO("layer " << L);
         REQUIRE(ref.log.layer(L).size() > 10);
     }
+    // Not vacuous: grains went to bus 2 (the automation moves Bus Split).
+    REQUIRE(std::count_if(ref.log.events.begin(), ref.log.events.end(),
+                          [](const Log::Event &e) { return e.grain.bus == 1; }) > 10);
     // Not vacuous: some layer went off for longer than its ramp and came back, so its engine was
     // re-enabled with a forced onset on a grid boundary.
     bool forcedOnset = false;
@@ -709,6 +1168,62 @@ TEST_CASE("four layers are block-size invariant", "[core][layers][determinism]")
                                << split.blockSizes.front() << " of " << split.blockSizes.size());
         LayersRender r;
         renderLayers(input, events, split.maxBlock, split.blockSizes, r);
+        REQUIRE_FALSE(r.log.overflowed);
+        for (uint32_t L = 0; L < 4; ++L)
+        {
+            INFO("layer " << L);
+            REQUIRE(r.log.layer(L) == ref.log.layer(L));
+            REQUIRE(r.heads[L] == ref.heads[L]);
+        }
+        REQUIRE(sameBits(ref.audio.left, r.audio.left));
+        REQUIRE(sameBits(ref.audio.right, r.audio.right));
+    }
+}
+
+TEST_CASE("four Spectral layers over their rings are block-size invariant",
+          "[core][layers][spectral][determinism]")
+{
+    // The FX's default Spectral case (the extremes spec §10; its final review): four layers with
+    // no sample, each smearing its own live ring, with every other parameter of the fixture
+    // automated, Smear among them. The same bits, the same grains per layer and the same ring
+    // heads at any host block size and maxBlockSize.
+    const Stereo input = noise(kInvarianceFrames, 0.5f, 49);
+    const auto events = layerAutomationKeepingKinds();
+    REQUIRE(std::any_of(events.begin(), events.end(), [](const TimedEvent &e) {
+        return e.slot == slotOf(LayerParam::Smear, 2);
+    }));
+
+    LayersRender ref;
+    renderLayers(input, events, 4096, {4096}, ref, spectralRingSetup());
+    REQUIRE(allFinite(ref.audio.left));
+    REQUIRE(allFinite(ref.audio.right));
+    REQUIRE(peak(ref.audio.left) > 0.05f);
+    REQUIRE_FALSE(ref.log.overflowed);
+    for (uint32_t L = 0; L < 4; ++L)
+    {
+        INFO("layer " << L);
+        REQUIRE(ref.log.layer(L).size() > 10);
+    }
+    // Not vacuous: every grain reads the smear's ring, and some went to bus 2.
+    REQUIRE(std::all_of(ref.log.events.begin(), ref.log.events.end(), [](const Log::Event &e) {
+        return e.grain.sourceSlot == gg::Engine::kSpectralSlot;
+    }));
+    REQUIRE(std::count_if(ref.log.events.begin(), ref.log.events.end(),
+                          [](const Log::Event &e) { return e.grain.bus == 1; }) > 10);
+
+    struct Split
+    {
+        uint32_t maxBlock;
+        std::vector<uint32_t> blockSizes;
+    };
+    std::vector<Split> splits{{4096, {1}}, {4096, {32}}, {4096, {511}}, {64, {4096}}};
+    splits.push_back({4096, randomSplit(403)});
+    for (const Split &split : splits)
+    {
+        INFO("maxBlockSize = " << split.maxBlock << ", first block size = "
+                               << split.blockSizes.front() << " of " << split.blockSizes.size());
+        LayersRender r;
+        renderLayers(input, events, split.maxBlock, split.blockSizes, r, spectralRingSetup());
         REQUIRE_FALSE(r.log.overflowed);
         for (uint32_t L = 0; L < 4; ++L)
         {
@@ -811,7 +1326,9 @@ namespace
 // A value for every slot, each moved from its default in `mode` (ruling FR-3's test): layers B
 // and C on, D off, a Source of each built kind (Resample a Live engine since M2 sub-project 2),
 // both spreads up, every macro moved but Macro Freeze, and every other continuous slot at a point
-// of the middle half of its range drawn from gg::rng, away from its default. No Freeze is loaded
+// of the middle half of its range drawn from gg::rng, away from its default. The draws are keyed
+// by CLAP ID (sweepdraw::byId), never by slot index, so a parameter added later moves none of the
+// others' values (the integration review's Minor 5). No Freeze is loaded
 // on, Macro Freeze included: there setBases arms by its own rule (ruling FR-8), not the calls'.
 // With `nanEvery` not 0, every nanEvery-th slot is NaN instead.
 gg::core::ParamValues movedValues(Mode mode, uint64_t seed, size_t nanEvery = 0)
@@ -821,7 +1338,7 @@ gg::core::ParamValues movedValues(Mode mode, uint64_t seed, size_t nanEvery = 0)
     {
         const auto slot = static_cast<ParamSlot>(s);
         const auto &meta = gg::core::paramMeta(slot, mode);
-        const double u = uniform(seed, s);
+        const double u = gg::test::sweepdraw::byId(seed, 0, gg::core::paramId(slot));
         float value =
             meta.minVal + (meta.maxVal - meta.minVal) * static_cast<float>(0.25 + 0.5 * u);
         if (meta.type == sst::basic_blocks::params::ParamMetaData::INT)
@@ -858,6 +1375,11 @@ gg::core::ParamValues movedValues(Mode mode, uint64_t seed, size_t nanEvery = 0)
         set(slotOf(LayerParam::Size, L), -4.0f);
         set(slotOf(LayerParam::Position, L), 0.1f); // a Live layer reads the last 0.05 s or so
         set(gg::core::levelSlot(L), -6.0f);
+        // The bus filters moved from Off, but to types that pass the layers' 110 to 440 Hz sines
+        // at any drawn cutoff (a high-pass or band-pass drawn above them silences a layer):
+        // Low-pass, Notch.
+        set(slotOf(LayerParam::Bus1Filter, L), 1.0f);
+        set(slotOf(LayerParam::Bus2Filter, L), 4.0f);
     }
     // Near the pad's middle once the transport sources' routes have moved it (Bar to Morph Y
     // -0.3 while stopped), so every layer on is heard.
@@ -957,7 +1479,7 @@ void requireSetBasesMatchesSetBase(Mode mode, const gg::core::ParamValues &value
 TEST_CASE("setBases is setBase on every slot in slot order", "[core][layers]")
 {
     // Ruling FR-3: a state load (an offer's values, the plugin's activation and loaded state)
-    // recomputes the effective values once. For a load with no Freeze on, its result is the 243
+    // recomputes the effective values once. For a load with no Freeze on, its result is the 283
     // calls' bit for bit: on fresh Processors, after a pre-roll with a ramp running, and back to
     // the defaults again. (A load with Freeze on arms by ruling FR-8: the next test.)
     for (const Mode mode : {Mode::Fx, Mode::Instrument})

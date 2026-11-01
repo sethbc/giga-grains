@@ -1,0 +1,24 @@
+{
+  "mode": "fx",
+  "sampleRate": 48000,
+  "durationSeconds": 22.0,
+  "blockSize": 128,
+  "seed": 1,
+  "input": {
+    "kind": "sine",
+    "frequencyHz": 330,
+    "seconds": 0.15,
+    "amplitude": 0.5
+  },
+  "channels": 2,
+  "params": {
+    "Mix": 1.0,
+    "Density": 5.0,
+    "Size": -3.321928094887362,
+    "Level": -6.0,
+    "Delay Amount": 1.0,
+    "Delay Time": -2.321928094887362,
+    "Delay Feedback": 1.0,
+    "Delay Damping": 0.0
+  }
+}

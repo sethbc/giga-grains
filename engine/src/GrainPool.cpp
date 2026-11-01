@@ -16,8 +16,8 @@ namespace gg
 GrainPool::GrainPool(uint32_t capacity)
     : capacity_(capacity), slots_(2 * capacity), index_(slots_), onsetSample_(slots_),
       onsetFrac_(slots_), startPos_(slots_), rate_(slots_), durationSamples_(slots_), gain_(slots_),
-      pan_(slots_), tier_(slots_), sourceSlot_(slots_), endSample_(slots_), invDuration_(slots_),
-      gainL_(slots_), gainR_(slots_), texture_(slots_), envAttackEnd_(slots_),
+      pan_(slots_), tier_(slots_), sourceSlot_(slots_), bus_(slots_), endSample_(slots_),
+      invDuration_(slots_), gainL_(slots_), gainR_(slots_), texture_(slots_), envAttackEnd_(slots_),
       envReleaseStart_(slots_), envAttackScale_(slots_), envReleaseScale_(slots_), weight_(slots_),
       level_(slots_), fadeStart_(slots_), invFade_(slots_), edgeEnd_(slots_), edgeScale_(slots_),
       stolen_(slots_), heapPos_(slots_, kNotInHeap),
@@ -32,6 +32,7 @@ GrainPool::GrainPool(uint32_t capacity)
           .pan = pan_.data(),
           .tier = tier_.data(),
           .sourceSlot = sourceSlot_.data(),
+          .bus = bus_.data(),
           .endSample = endSample_.data(),
           .invDuration = invDuration_.data(),
           .gainL = gainL_.data(),
@@ -223,6 +224,7 @@ bool GrainPool::spawn(const GrainSpec &g, int64_t edge) noexcept
     pan_[i] = g.pan;
     tier_[i] = g.tier;
     sourceSlot_[i] = g.sourceSlot;
+    bus_[i] = g.bus;
     endSample_[i] = end;
     texture_[i] = g.texture;
     weight_[i] = g.weight;
@@ -304,6 +306,7 @@ void GrainPool::moveRows(uint32_t from, uint32_t to, uint32_t n) noexcept
     move(pan_);
     move(tier_);
     move(sourceSlot_);
+    move(bus_);
     move(endSample_);
     move(invDuration_);
     move(gainL_);
@@ -363,6 +366,7 @@ GrainSpec GrainPool::spec(uint32_t i) const noexcept
         .pan = pan_[i],
         .tier = tier_[i],
         .sourceSlot = sourceSlot_[i],
+        .bus = bus_[i],
         .weight = weight_[i],
         .level = level_[i],
     };

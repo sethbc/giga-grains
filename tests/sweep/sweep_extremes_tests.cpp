@@ -10,6 +10,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <sstream>
 #include <string>
 
 #include <catch2/catch_test_macros.hpp>
@@ -49,10 +50,41 @@ void setAll(SweepDriver &d, int state, uint64_t seed)
                : "corner " + std::to_string(state - 1) + " of " + std::to_string(kCorners));
 }
 
+/// Each exemption's own share of a driver's render (SweepDriver::exemptShare).
+struct Shares
+{
+    double fadeIn, reverbSize, reverbOnset, limiterDrive, delayGlideHold;
+};
+
+Shares sharesOf(const SweepDriver &d)
+{
+    using gg::test::Exemption;
+    return {d.exemptShare(Exemption::FadeIn), d.exemptShare(Exemption::ReverbSize),
+            d.exemptShare(Exemption::ReverbOnset), d.exemptShare(Exemption::LimiterDrive),
+            d.exemptShare(Exemption::DelayGlideHold)};
+}
+
+std::string describe(const Shares &s)
+{
+    std::ostringstream o;
+    o << "exempt shares: fade-in " << s.fadeIn << ", Reverb Size " << s.reverbSize
+      << ", reverb onset " << s.reverbOnset << ", kLimiterDrive " << s.limiterDrive
+      << ", kDelayGlideHold " << s.delayGlideHold;
+    return o.str();
+}
+
 /// `minScored`: the share of the render the click check scores, pinned a little under what the
-/// case measures (0.525 in the FX, 0.486 in the instrument, with the draws keyed by CLAP ID):
-/// Reverb Size moves are exempt (row 217).
-void extremes(Mode mode, uint64_t seed, double minScored)
+/// case measures (0.402 in the FX, 0.300 in the instrument, with the draws keyed by CLAP ID):
+/// Reverb Size moves are exempt (row 217), and so are kLimiterDrive's and kDelayGlideHold's
+/// stretches (SweepDriver.h; the delay's glide, at 0.5 samples a sample, runs for up to 4 s).
+/// The FX's was 0.413 before M2 sub-project 2's ring parameters were drawn too, and is 0.413 still
+/// with them held at their defaults: at their ends (Overdub 1 among them) the rings are louder, so
+/// Peak is driven under -6 dB longer and kLimiterDrive, unchanged, covers 12.8% of the render
+/// against 11.6%; every other exemption covers what it did. Each exemption's own share of the
+/// FX render (SweepDriver::exemptShare; they overlap): the fade-in 0.04%, Reverb Size moves
+/// 43.0%, the reverb's onset 18.5%, kLimiterDrive 12.8% and kDelayGlideHold 24.3%, leaving 40.17%
+/// scored. The instrument's: 0.04%, 37.3%, 20.7%, 13.0% and 21.5%, leaving 30.04%.
+Shares extremes(Mode mode, uint64_t seed, double minScored)
 {
     SweepDriver d(mode, seed);
     const Material m = mode == Mode::Fx ? Material::SineLive : Material::NoteOverSine;
@@ -72,17 +104,130 @@ void extremes(Mode mode, uint64_t seed, double minScored)
     d.setDefaults();
     d.play(1.0, m);
     gg::test::requireClean(d, gg::test::chainBound(d, minScored));
+    return sharesOf(d);
 }
 } // namespace
 
 TEST_CASE("extremes: minima, maxima and 32 corners, fx", "[sweep]")
 {
-    extremes(Mode::Fx, 2101, 0.51);
+    const Shares shares = extremes(Mode::Fx, 2101, 0.395);
+    // The integration review's Minor 3: sub-project 2's Overdub can make the rings arbitrarily
+    // loud, so kLimiterDrive's coverage grows with the draws rather than with the limiter's law
+    // alone. A coarse cap on it, well above the 12.8% it covers.
+    INFO(describe(shares));
+    CHECK(shares.limiterDrive < 0.15);
 }
 
 TEST_CASE("extremes: minima, maxima and 32 corners, instrument", "[sweep]")
 {
-    extremes(Mode::Instrument, 2102, 0.47);
+    extremes(Mode::Instrument, 2102, 0.295);
+}
+
+namespace
+{
+constexpr int kChainCorners = 16;
+
+/// Resample and Spectral corner `c` (the integration review's Minor 2): every parameter at the
+/// end corner c draws for it, as setAll's corners, then every layer on, its Source Resample (2)
+/// or Spectral (3) by turns, the delay engaged at Amount 100% and the limiter Soft or Peak by
+/// turns, with the pad at its centre and, in the FX, Mix 100%, so every layer is heard through the
+/// chain. The ring parameters (Ring Length, Loop, Loop Length, Overdub, Splice) keep their drawn
+/// ends, so Resample's loop runs back through the delay and the limiter (D4: the tap is after
+/// the limiter) and Spectral reads rings of every length, looping and overdubbing or not.
+void setChainCorner(SweepDriver &d, int c, uint64_t seed)
+{
+    gg::core::ParamValues v{};
+    for (std::size_t s = 0; s < gg::core::kParamCount; ++s)
+    {
+        const auto slot = static_cast<ParamSlot>(s);
+        const auto &m = d.meta(slot);
+        const bool top = gg::test::sweepdraw::byId(seed, static_cast<uint64_t>(c),
+                                                   gg::core::paramId(slot)) < 0.5;
+        v[s] = top ? m.maxVal : m.minVal;
+    }
+    const auto put = [&v](ParamSlot slot, float value) {
+        v[static_cast<std::size_t>(slot)] = value;
+    };
+    for (uint8_t L = 0; L < gg::core::kLayers; ++L)
+    {
+        put(gg::core::layerOnSlot(L), 1.0f);
+        put(gg::core::layerSlot(LayerParam::Source, L), (L + c) % 2 == 0 ? 2.0f : 3.0f);
+    }
+    put(ParamSlot::DelayAmount, 1.0f);
+    put(ParamSlot::LimiterMode, c % 2 == 0 ? 1.0f : 2.0f); // Soft, Peak
+    // At its top ceiling, 0 dB, the limiter still limits the rings' overdubbed material, without
+    // D5b's drive under a low one (which the main extremes cover, and which here would leave half
+    // the render to kLimiterDrive). Every other parameter, the reverb's included, takes its
+    // drawn end, as the main extremes' corners do.
+    put(ParamSlot::LimiterCeiling, d.meta(ParamSlot::LimiterCeiling).maxVal);
+    put(ParamSlot::MorphX, 0.5f);
+    put(ParamSlot::MorphY, 0.5f);
+    if (d.mode() == Mode::Fx)
+    {
+        put(ParamSlot::Mix, 1.0f);
+    }
+    for (std::size_t s = 0; s < gg::core::kParamCount; ++s)
+    {
+        d.set(static_cast<ParamSlot>(s), v[s]);
+    }
+    d.mark("Resample and Spectral corner " + std::to_string(c + 1) + " of " +
+           std::to_string(kChainCorners));
+}
+
+/// kChainCorners Resample and Spectral corners, each held for 1 s with a note in it as the
+/// extremes play theirs, then every parameter at its default for a last second. In the FX,
+/// layers A to C have no sample, so a Spectral layer there smears its live ring; layer D keeps
+/// the sine, so it smears that. In the instrument every layer keeps the sine.
+Shares chainCorners(Mode mode, uint64_t seed, double minScored)
+{
+    SweepDriver d(mode, seed);
+    if (mode == Mode::Fx)
+    {
+        for (uint8_t L = 0; L < 3; ++L)
+        {
+            d.processor().setSourceNow(L, nullptr);
+        }
+    }
+    const Material m = mode == Mode::Fx ? Material::SineLive : Material::NoteOverSine;
+    // The FX's layer A smears its ring when Spectral, the instrument's its sample.
+    REQUIRE(d.processor().layerMaterial(0) ==
+            (mode == Mode::Fx ? gg::SourceMode::Live : gg::SourceMode::Sample));
+    d.play(2.0, m);
+    for (int c = 0; c < kChainCorners; ++c)
+    {
+        setChainCorner(d, c, seed);
+        const auto key = static_cast<int16_t>(40 + c % 40);
+        d.play(0.1, m);
+        d.note(NoteEventType::On, key, 0.3f + 0.03f * static_cast<float>(c % 16));
+        d.play(0.5, m);
+        d.note(NoteEventType::Off, key);
+        d.play(0.4, m);
+    }
+    d.setDefaults();
+    d.play(1.0, m);
+    gg::test::requireClean(d, gg::test::chainBound(d, minScored));
+    return sharesOf(d);
+}
+} // namespace
+
+// The floors, a little under what each case measures (the integration review's Minor 2,
+// 2026-11-01): the FX scores 0.3323 of its render (the largest click score 8.81, the peak 1.082),
+// the instrument 0.2795 (11.08, 1.0). Each exemption's own share in the FX: the fade-in 0.08%,
+// Reverb Size moves 45.3%, the reverb's onset 21.5%, kLimiterDrive 0 and kDelayGlideHold 31.5%;
+// in the instrument 0.08%, 44.8%, 22.4%, 0 and 24.9%. kLimiterDrive is pinned at 0: the ceiling
+// is held at 0 dB, so a share there means the limiter is driven where the case says it isn't.
+TEST_CASE("extremes: Resample and Spectral under the delay and the limiter, fx", "[sweep]")
+{
+    const Shares shares = chainCorners(Mode::Fx, 2104, 0.325);
+    INFO(describe(shares));
+    CHECK(shares.limiterDrive == 0.0);
+}
+
+TEST_CASE("extremes: Resample and Spectral under the delay and the limiter, instrument", "[sweep]")
+{
+    const Shares shares = chainCorners(Mode::Instrument, 2105, 0.27);
+    INFO(describe(shares));
+    CHECK(shares.limiterDrive == 0.0);
 }
 
 namespace
