@@ -1159,3 +1159,40 @@ TEST_CASE("an instrument load taken by params.flush arms Freeze under its own ro
     CAPTURE(flushed, inactive);
     CHECK(flushed == inactive);
 }
+
+TEST_CASE("a preset's reference that leaves its content root leaves the layer missing",
+          "[plugin][preset]")
+{
+    // Task 14's review: the loader takes a reference as gg-render and the packer do
+    // (gg::media::isContentRelativePath). `../outside/tone.wav`, an absolute path or a backslash
+    // is no reference: the layer is missing even though the file is where such a join would
+    // point.
+    const fs::path dir = setUpSamples("content-escape");
+    const fs::path root = contentRootWithTone("content-escape");
+    const fs::path outside =
+        gg::test::writeSineWav(dir / "outside" / "tone.wav", 44100, 1.5, 330.0);
+#if !defined(_WIN32)
+    gg::test::writeSineWav(root / "Samples\\Test\\tone.wav", 44100, 1.5, 330.0); // one name
+#endif
+    useContentRoot(root);
+    const gg::core::MediaEntry fingerprint = gg::test::entryOf(outside);
+    REQUIRE_FALSE(fingerprint.sha256Hex.empty());
+    for (const std::string &reference : {std::string("../outside/tone.wav"), utf8(outside),
+                                         std::string(R"(Samples\Test\tone.wav)")})
+    {
+        INFO(reference);
+        SessionState state = fixtureState(Mode::Instrument);
+        gg::core::MediaEntry entry = fingerprint;
+        entry.absolutePath.clear();
+        entry.relativePath.clear();
+        entry.contentPath = reference;
+        state.samples[0] = entry;
+        const std::string location =
+            utf8(gg::test::writePresetFile("content-escape", infoFor(Mode::Instrument), state));
+        PluginUnderTest instrument(kInstrumentId);
+        REQUIRE(instrument.valid());
+        REQUIRE(
+            instrument.loadPreset(CLAP_PRESET_DISCOVERY_LOCATION_FILE, location.c_str(), nullptr));
+        CHECK(instrument.impl().media().loader(0).status().state == SampleState::Missing);
+    }
+}

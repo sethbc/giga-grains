@@ -397,7 +397,7 @@ TEST_CASE("a preset source's samples need --content-dir and a file under it", "[
     const auto outside = gg::render::parsePresetSource(j.dump(), error);
     REQUIRE(outside.has_value());
     CHECK(gg::render::packPreset(*outside, contentWith("pack-outside"), error).empty());
-    CHECK_THAT(error, ContainsSubstring("not found"));
+    CHECK_THAT(error, ContainsSubstring("isn't a valid content-relative path"));
 }
 
 TEST_CASE("a preset source may not set a ring parameter", "[render]")
@@ -464,6 +464,21 @@ TEST_CASE("a render through a preset loads its samples from --content-dir", "[re
         other / "Samples" / "Test" / "tone.wav",
         gg::test::wavBytes(gg::test::makeTestAudio(1, 44100, 4410), gg::test::SampleFormat::Int16));
     CHECK_THAT(badInputOf(viaPreset, {.contentDir = utf8(other)}), ContainsSubstring("changed"));
+}
+
+TEST_CASE("an instrument spec without a sample needs a preset that names layer A's", "[render]")
+{
+    // The review's Minor 2: "sample" may be left out beside a preset only when the preset gives
+    // layer A one; else the render would be silent, so it is bad input.
+    const auto dir = scratch("render-no-sample");
+    const auto without = dir / "without.ggpreset";
+    writeBytes(without, pack(parseFixture("inst-test.json")));
+    auto j = nlohmann::json::parse(readText(renderFixture("render-inst-preset.json")));
+    j.erase("sample");
+    j["preset"] = utf8(without);
+    const std::string message = badInputOf(j);
+    CHECK_THAT(message, ContainsSubstring("the instrument has no sample"));
+    CHECK_THAT(message, ContainsSubstring("layer A"));
 }
 
 TEST_CASE("a render through a preset keeps the defaults' ring parameters", "[render]")

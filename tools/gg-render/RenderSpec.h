@@ -76,7 +76,8 @@
 ///   SourceSpec), and no key only another kind uses; "source.sampleRate" is optional for a
 ///   built-in kind and an error for a file.
 /// - Instrument mode requires "sample", read as a source but without "sampleRate", except beside
-///   "state" or "preset" (below), whose layer A sample, if any, is then layer A's; "params",
+///   "state" or "preset" (below), whose layer A sample is then layer A's (render() refuses a
+///   preset that names none: the render would be silent); "params",
 ///   "automation" and "notes" are optional. It has no input, so no "channels".
 /// - FX mode requires "input", read as a source but without "sampleRate", and "channels",
 ///   except with a file input, which has the file's own channels and so takes no "channels";
@@ -378,8 +379,8 @@ struct InstrumentSpec
     /// nothing for the state's (kMemoryCapDefaultMiB without a state).
     std::optional<uint32_t> memoryCapMiB;
     /// True when "sample" was left out, which is allowed beside "state" or "preset" alone: layer
-    /// A's sample is then the state's or the preset's (none if it names none), and `sample` is
-    /// unused.
+    /// A's sample is then the state's or the preset's (render() refuses a preset naming none),
+    /// and `sample` is unused.
     bool noSample{false};
 
     friend bool operator==(const InstrumentSpec &, const InstrumentSpec &) = default;

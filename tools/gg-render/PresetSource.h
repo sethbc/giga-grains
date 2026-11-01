@@ -71,8 +71,9 @@ std::optional<PresetSource> parsePresetSource(const std::string &json, std::stri
 /// (gg::media::loadSample) for its entry's fingerprint, format, channels, rate and frames, with
 /// `contentPath` the reference, its layer, and no absolute or sample-folder path. On failure
 /// returns "" and sets `error`: a source naming a sample without `contentDir` ("the samples need
-/// --content-dir"), a reference with no file under it (or one that leaves it: "not found"), or a
-/// file that doesn't decode. A source never sets a ring parameter: parsePresetSource refuses one.
+/// --content-dir"), a reference that isn't gg::media::isContentRelativePath ("isn't a valid
+/// content-relative path"), one with no file under it ("not found"), or a file that doesn't
+/// decode. A source never sets a ring parameter: parsePresetSource refuses one.
 std::string packPreset(const PresetSource &source,
                        const std::optional<std::filesystem::path> &contentDir, std::string &error);
 } // namespace gg::render

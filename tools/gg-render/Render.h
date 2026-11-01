@@ -139,8 +139,9 @@ struct RenderOptions
 ///   path isn't valid UTF-8, a state that isn't one, a state's sample or ring that can't be
 ///   found, a ring or sample past the memory cap, a capture of an empty ring, audio that has to
 ///   be filed with no captures folder, --save-state of a sample-mode spec, and a preset that
-///   can't be read, is longer than kMaxStateBytes, isn't a preset file, names a ring, names a
-///   sample with no content-relative reference, without --content-dir, not found under it or
+///   can't be read, is longer than kMaxStateBytes, isn't a preset file, names a ring, names no
+///   layer A sample in an instrument spec without "sample" ("the instrument has no sample"), names
+///   a sample with no content-relative reference, without --content-dir, not found under it or
 ///   changed there, or is the other product's ("the preset is for Giga Grains, not Giga Grains
 ///   FX"); gg-render exits with status 2;
 /// - std::logic_error if a call reports more grain events than that storage holds, or, in

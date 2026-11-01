@@ -610,8 +610,8 @@ gg-render --pack-preset <source.json> -o <out.ggpreset> [--content-dir DIR]
       parameters (Ring Length, Loop, Loop Length, Overdub, Splice), as a plugin's preset load
       keeps the instance's; the spec's `params` may still set them. Its samples, named by their
       content-relative references, are loaded from `--content-dir` alone (below), before the
-      spec's `samples`; an instrument spec may leave out `sample` beside `preset`, and layer A's
-      is then the preset's.
+      spec's `samples`; an instrument spec may leave out `sample` beside a `preset` that names
+      layer A's, which is then layer A's (one that names none is bad input: no sample).
   - **Sessions and ring operations** (M2 sub-project 2's spec §6.10; INTENT §19), each optional
     in FX and instrument mode, and unknown keys in sample mode:
     - `state` is a `GGST` file (a relative path as a file source's), restored before the render

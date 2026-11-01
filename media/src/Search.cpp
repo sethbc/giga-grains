@@ -18,6 +18,7 @@
 #include <utf8proc.h>
 
 #include "TestHooks.h"
+#include "gg/media/ContentPaths.h"
 #include "gg/media/SettingsFile.h"
 #include "gg/media/Sha256.h"
 #include "gg/media/Utf8Path.h"
@@ -384,8 +385,10 @@ SearchResult findSample(const core::MediaEntry &entry, const core::MachineSettin
     }
     const std::optional<fs::path> &changed = atSaved.changed;
 
-    // 2. Each content root plus the content-relative path, in the roots' order.
-    if (!entry.contentPath.empty())
+    // 2. Each content root plus the content-relative path, in the roots' order: only a valid
+    // reference, which never leaves its root (resolveContentPath's rule, so the plugins agree
+    // with gg-render and the packer).
+    if (isContentRelativePath(entry.contentPath))
     {
         for (const fs::path &root : contentRoots)
         {

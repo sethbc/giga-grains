@@ -443,8 +443,12 @@ TEST_CASE("a preset load during a multi-batch press discards the unsent slots", 
         impl.mutate(1.0f);
         drainAll(plugin);
         CHECK(impl.uiQueueDropped() == 0);
-        // The ring parameters the cut press had sent stay through the load, so they start the
-        // next press elsewhere: compared apart from them.
+        // The ring parameters the cut press had sent stay through the load (a preset load keeps
+        // them, INIT's too: gg::core::keepRingParams), so they start the next press elsewhere.
+        // Zeroing them here is a deliberate narrowing of this test: it no longer checks that the
+        // next press moves the ring parameters (Loop, Loop Length, Overdub, Splice; Ring Length
+        // never moves) the same after a cut press as after none, only every other slot. Their
+        // keep is checked above and in preset_tests.cpp.
         auto compared = bases(impl);
         for (std::size_t s = 0; s < kParamCount; ++s)
         {

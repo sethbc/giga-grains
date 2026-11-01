@@ -192,6 +192,14 @@ std::string packPreset(const PresetSource &source,
                 fmt::format("the samples need --content-dir (layer {}'s is {})", letter, reference);
             return {};
         }
+        if (!gg::media::isContentRelativePath(reference))
+        {
+            error =
+                fmt::format("layer {}'s sample {} isn't a valid content-relative path (relative, "
+                            "with / separators, no .. segment, no backslash)",
+                            letter, reference);
+            return {};
+        }
         const std::filesystem::path roots[] = {*contentDir};
         const auto file = gg::media::resolveContentPath(reference, roots);
         if (!file)

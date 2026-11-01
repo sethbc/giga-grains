@@ -656,6 +656,14 @@ gg::metrics::AudioData renderProcessor(const RenderSpec &spec, std::vector<std::
     if (hasPreset)
     {
         preset = readPresetFile(spec.preset, mode);
+        // An instrument spec may leave out "sample" beside a preset only when the preset gives
+        // layer A one: otherwise it would render silence and say nothing.
+        if (!fx && spec.instrument.noSample && !preset.samples[0])
+        {
+            throw BadInput(fmt::format("the instrument has no sample: the spec gives no \"sample\" "
+                                       "and the preset {} names none for layer A",
+                                       spec.preset));
+        }
     }
 
     // The FX's input, silent after its own length (and cut at the render's end); the instrument
