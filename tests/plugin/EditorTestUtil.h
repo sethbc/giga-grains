@@ -263,14 +263,20 @@ inline juce::String controlId(ParamSlot slot)
     return "param." + juce::String(gg::core::paramId(slot));
 }
 
-/// The Edit view's placed slots for `layer`: slotsIn over its thirteen panels, less what the
-/// product hides.
+/// The Edit view's placed slots for `layer`: slotsIn over its fourteen panels (Source to Step,
+/// and Ring), less what the product hides.
 inline std::vector<ParamSlot> editSlots(uint8_t layer, gg::core::Mode mode)
 {
-    std::vector<ParamSlot> out;
+    std::vector<gg::ui::Panel> panels;
     for (uint8_t p = 0; p <= static_cast<uint8_t>(gg::ui::Panel::Step); ++p)
     {
-        for (const ParamSlot slot : gg::ui::slotsIn(static_cast<gg::ui::Panel>(p), layer))
+        panels.push_back(static_cast<gg::ui::Panel>(p));
+    }
+    panels.push_back(gg::ui::Panel::Ring);
+    std::vector<ParamSlot> out;
+    for (const gg::ui::Panel panel : panels)
+    {
+        for (const ParamSlot slot : gg::ui::slotsIn(panel, layer))
         {
             if (!gg::ui::hiddenIn(slot, mode))
             {

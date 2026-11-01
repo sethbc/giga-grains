@@ -129,6 +129,22 @@ TEST_CASE("commit on release sends one value", "[plugin]")
     knob->onBeginEdit();
     knob->onEndEdit();
     CHECK(recording.kinds() == "be");
+
+    // Row 320: commit on release turned off mid-gesture sends the value held back at once, and
+    // the gesture goes on sending as it moves; its end sends nothing more.
+    recording.calls.clear();
+    knob->onBeginEdit();
+    knob->continuous()->setValueFromGUI(0.3f);
+    CHECK(recording.kinds() == "b");
+    size.setCommitOnRelease(false);
+    REQUIRE(recording.kinds() == "bv");
+    CHECK(recording.calls[1].value == static_cast<double>(0.3f));
+    size.setCommitOnRelease(false); // nothing held now: nothing sent
+    CHECK(recording.kinds() == "bv");
+    knob->continuous()->setValueFromGUI(0.5f);
+    CHECK(recording.kinds() == "bvv");
+    knob->onEndEdit();
+    CHECK(recording.kinds() == "bvve");
 }
 
 TEST_CASE("each layer's Ring Length commits on release and its neighbors do not", "[plugin]")
@@ -138,10 +154,10 @@ TEST_CASE("each layer's Ring Length commits on release and its neighbors do not"
     RecordingContext recording(gg::core::Mode::Fx);
     gg::ui::EditView view(recording.context);
     view.setSize(640, 360);
-    gg::ui::ParamPanel *source = nullptr;
+    gg::ui::ParamPanel *source = nullptr; // the Ring panel since PR 2
     for (gg::ui::ParamPanel *panel : view.panels())
     {
-        if (panel->panel() == gg::ui::Panel::Source)
+        if (panel->panel() == gg::ui::Panel::Ring)
         {
             source = panel;
         }
@@ -256,6 +272,47 @@ TEST_CASE("the light palette's macro colour shows on its ground", "[plugin]")
           light.background.getPerceivedBrightness());
 }
 
+TEST_CASE("the light palette's surfaces", "[plugin][ui]")
+{
+    // Row 320: the editor's own surfaces and text change with the theme (the lanes do not: D9).
+    const gg::ui::Palette &light = gg::ui::Palette::light();
+    const gg::ui::Palette &dark = gg::ui::Palette::dark();
+    CHECK(light.background != dark.background);
+    CHECK(light.header != dark.header);
+    CHECK(light.text != dark.text);
+    CHECK(light.outline != dark.outline);
+    CHECK(light.accent != dark.accent);
+    // Light reads dark on light, dark the reverse.
+    CHECK(light.background.getPerceivedBrightness() > light.text.getPerceivedBrightness());
+    CHECK(dark.background.getPerceivedBrightness() < dark.text.getPerceivedBrightness());
+    CHECK(light.lane == dark.lane);
+}
+
+TEST_CASE("paletteOf walks through an intermediate parent", "[plugin][ui]")
+{
+    // Row 320: a component reads the palette of the nearest PaletteOwner above it, however deep.
+    struct Owner final : juce::Component, gg::ui::PaletteOwner
+    {
+        const gg::ui::Palette &palette() const noexcept override
+        {
+            return gg::ui::Palette::light();
+        }
+        gg::ui::ThemeChoice theme() const noexcept override { return gg::ui::ThemeChoice::Light; }
+    };
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    Owner owner;
+    juce::Component middle, leaf;
+    CHECK(&gg::ui::paletteOf(leaf) == &gg::ui::Palette::dark()); // no owner: dark
+    middle.addChildComponent(leaf);
+    CHECK(&gg::ui::paletteOf(leaf) == &gg::ui::Palette::dark());
+    owner.addChildComponent(middle);
+    CHECK(&gg::ui::paletteOf(leaf) == &gg::ui::Palette::light());
+    CHECK(&gg::ui::paletteOf(middle) == &gg::ui::Palette::light());
+    CHECK(&gg::ui::paletteOf(owner) == &gg::ui::Palette::light());
+    owner.removeChildComponent(&middle);
+    CHECK(&gg::ui::paletteOf(leaf) == &gg::ui::Palette::dark());
+}
+
 TEST_CASE("the macro row is unchanged", "[plugin]")
 {
     const juce::ScopedJuceInitialiser_GUI juceGui;
@@ -282,7 +339,7 @@ TEST_CASE("the Edit view shows every placed parameter of the layer", "[plugin]")
         gg::ui::EditView view(recording.context);
         view.setSize(900, 500);
         CHECK(view.getComponentID() == "view.edit");
-        REQUIRE(view.panels().size() == 13);
+        REQUIRE(view.panels().size() == 14);
         CHECK(view.layer() == 0);
 
         const auto b = editSlots(1, mode);
@@ -382,7 +439,7 @@ TEST_CASE("every Edit panel shows, Filter with the buses, and Step has sixteen s
             CHECK(panel->controls().size() == 18); // and Rate and Length
         }
     }
-    CHECK(visible == 13);
+    CHECK(visible == 14);
     // Wrapped in the view's width: every visible panel lies inside the scrolled content.
     for (gg::ui::ParamPanel *panel : view.panels())
     {
@@ -540,6 +597,17 @@ TEST_CASE("a spread pair's band is its spread either side of the base value", "[
     const auto live = bandOn(ParamSlot::Position);
     REQUIRE(live.has_value());
     CHECK(*live == expected(ParamSlot::Position, 0.5f, 0.75f));
+    // Row 336: the kind is gg::core::builtKind's. Resample builds a Live engine, Spectral sprays
+    // one way as Live does, and the unbuilt Oscillator falls back to the FX's Live: one-sided.
+    for (const auto kind : {gg::core::SourceKind::Resample, gg::core::SourceKind::Spectral,
+                            gg::core::SourceKind::Oscillator})
+    {
+        INFO("kind " << int(kind));
+        set(ParamSlot::Source, static_cast<float>(kind));
+        const auto band = bandOn(ParamSlot::Position);
+        REQUIRE(band.has_value());
+        CHECK(*band == expected(ParamSlot::Position, 0.5f, 0.75f));
+    }
 }
 
 TEST_CASE("mod mode drags the Edit view's rings and nothing else", "[plugin]")
@@ -583,6 +651,103 @@ TEST_CASE("mod mode drags the Edit view's rings and nothing else", "[plugin]")
     handler->getValueInterface()->setValue(0.5);
     CHECK(recording.kinds() == "bve");
 }
+TEST_CASE("the Filter panel puts each bus on its own line", "[plugin]")
+{
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    RecordingContext recording(gg::core::Mode::Fx);
+    gg::ui::EditView view(recording.context);
+    view.setSize(900, 500); // wide enough for the panel's seven cells on one line
+    for (const uint8_t layer : {0, 3})
+    {
+        INFO("layer " << int(layer));
+        view.setLayer(layer);
+        const auto cellY = [&](gg::core::LayerParam p) {
+            const auto *control =
+                findDeep(view, controlId(gg::core::layerSlot(p, layer)).toRawUTF8());
+            REQUIRE(control != nullptr);
+            return control->getParentComponent()->getY(); // its cell's, in the panel
+        };
+        using gg::core::LayerParam;
+        CHECK(cellY(LayerParam::Bus1Filter) > cellY(LayerParam::BusSplit));
+        CHECK(cellY(LayerParam::Bus1Cutoff) == cellY(LayerParam::Bus1Filter));
+        CHECK(cellY(LayerParam::Bus1Resonance) == cellY(LayerParam::Bus1Filter));
+        CHECK(cellY(LayerParam::Bus2Filter) > cellY(LayerParam::Bus1Resonance));
+        CHECK(cellY(LayerParam::Bus2Resonance) == cellY(LayerParam::Bus2Filter));
+    }
+}
+
+TEST_CASE("a hidden Edit view rebuilds when shown", "[plugin]")
+{
+    // Row 335: a layer change rebuilds only the shown view; a hidden one keeps its controls until
+    // it is shown.
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    RecordingContext recording(gg::core::Mode::Fx);
+    juce::Component holder; // as the editor's view stack holds its views
+    gg::ui::EditView view(recording.context);
+    holder.addChildComponent(view);
+    view.setSize(900, 500);
+    CHECK_FALSE(view.isStale());
+
+    view.setLayer(2);
+    CHECK(view.layer() == 2);
+    CHECK(view.isStale());
+    CHECK(findDeep(view, controlId(ParamSlot::Size).toRawUTF8()) != nullptr); // A's still
+    CHECK(findDeep(view, controlId(ParamSlot::C_Size).toRawUTF8()) == nullptr);
+    view.refresh(); // a tick while hidden builds nothing either
+    CHECK(view.isStale());
+
+    view.setVisible(true);
+    CHECK_FALSE(view.isStale());
+    CHECK(findDeep(view, controlId(ParamSlot::Size).toRawUTF8()) == nullptr);
+    CHECK(findDeep(view, controlId(ParamSlot::C_Size).toRawUTF8()) != nullptr);
+    CHECK(findDeep(view, controlId(ParamSlot::C_RingLength).toRawUTF8()) != nullptr);
+
+    // A shown view rebuilds at once.
+    view.setLayer(1);
+    CHECK_FALSE(view.isStale());
+    CHECK(findDeep(view, controlId(ParamSlot::B_Size).toRawUTF8()) != nullptr);
+
+    // The Mod view's Edit panels wait while the Mod view is hidden, and follow when it shows.
+    gg::ui::ModView mod(recording.context);
+    holder.addChildComponent(mod);
+    mod.setSize(900, 500);
+    mod.setLayer(3);
+    std::vector<gg::ui::EditView *> inner;
+    collect(mod, inner);
+    REQUIRE(inner.size() == 1);
+    CHECK(inner[0]->isStale());
+    CHECK(findDeep(mod, controlId(ParamSlot::D_Size).toRawUTF8()) == nullptr);
+    mod.setVisible(true);
+    CHECK_FALSE(inner[0]->isStale());
+    CHECK(findDeep(mod, controlId(ParamSlot::D_Size).toRawUTF8()) != nullptr);
+}
+
+TEST_CASE("the Edit view reads the routes once a tick", "[plugin]")
+{
+    // Row 325: one copy of the routes a refresh, for every panel, not one a panel.
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    RecordingContext recording(gg::core::Mode::Fx);
+    const gg::core::ModRoutes routes = gg::core::factoryRoutes(gg::core::Mode::Fx);
+    int reads = 0;
+    recording.context.routes = [&routes, &reads] {
+        ++reads;
+        return routes;
+    };
+    gg::ui::EditView view(recording.context);
+    view.setSize(900, 500);
+    gg::ui::FxView fx(recording.context);
+    fx.setSize(900, 500);
+    for (int tick = 0; tick < 3; ++tick)
+    {
+        reads = 0;
+        view.refresh();
+        CHECK(reads == 1);
+        reads = 0;
+        fx.refresh();
+        CHECK(reads == 1);
+    }
+}
+
 TEST_CASE("the FX view shows the reverb and the output", "[plugin]")
 {
     const juce::ScopedJuceInitialiser_GUI juceGui;
@@ -640,46 +805,114 @@ TEST_CASE("Budget in the Output panel in both products", "[plugin]")
     }
 }
 
-TEST_CASE("the FX view scrolls when its panels outgrow it", "[plugin][ui]")
+TEST_CASE("the FX view shows its panels in chain order", "[plugin]")
 {
-    // The integration review's Minor 6: since the delay and the limiter joined the Output panel
-    // (ruling VW-T19b, ten controls in the FX), the FX view holds its panels in a vertical
-    // viewport. At a small height the content is taller than the viewport, which scrolls, and
-    // every Output control lies inside the content, so scrolling reaches each one.
+    // The signal chain runs the delay, then the reverb, then the limiter (core/src/Processor.cpp),
+    // then the output's Mix; the view reads the same way, left to right and top to bottom (ruling
+    // VW-P2e).
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    for (const gg::core::Mode mode : {gg::core::Mode::Fx, gg::core::Mode::Instrument})
+    {
+        INFO((mode == gg::core::Mode::Fx ? "fx" : "instrument"));
+        RecordingContext recording(mode);
+        gg::ui::FxView view(recording.context);
+        view.setSize(960, 600);
+        std::vector<gg::ui::ParamPanel *> panels;
+        collect(view, panels);
+        std::erase_if(panels, [](const gg::ui::ParamPanel *p) { return !p->isVisible(); });
+        std::sort(panels.begin(), panels.end(),
+                  [](const gg::ui::ParamPanel *a, const gg::ui::ParamPanel *b) {
+                      return std::pair(a->getY(), a->getX()) < std::pair(b->getY(), b->getX());
+                  });
+        std::vector<std::string> titles;
+        for (const gg::ui::ParamPanel *panel : panels)
+        {
+            titles.emplace_back(gg::ui::panelName(panel->panel()));
+        }
+        CHECK(titles == std::vector<std::string>{"Delay", "Reverb", "Limiter", "Output"});
+        const auto output = std::find_if(panels.begin(), panels.end(), [](auto *p) {
+            return p->panel() == gg::ui::Panel::Output;
+        });
+        REQUIRE(output != panels.end());
+        std::vector<ParamSlot> shown;
+        for (const gg::ui::ParamControl *control : (*output)->controls())
+        {
+            shown.push_back(control->slot());
+        }
+        CHECK(shown == (mode == gg::core::Mode::Fx
+                            ? std::vector<ParamSlot>{ParamSlot::Mix, ParamSlot::Budget}
+                            : std::vector<ParamSlot>{ParamSlot::Budget}));
+    }
+}
+
+TEST_CASE("the FX view lays out any panel list", "[plugin]")
+{
+    // The FX view's panels go through the grid the Edit view uses (row 329): wrapped in the
+    // view's width, apart, and in a vertical viewport that scrolls when they outgrow it, so
+    // every control is reachable.
     const juce::ScopedJuceInitialiser_GUI juceGui;
     RecordingContext recording(gg::core::Mode::Fx);
     gg::ui::FxView view(recording.context);
-    view.setSize(420, 120);
-    auto *viewport = childOfType<juce::Viewport>(view);
-    REQUIRE(viewport != nullptr);
-    CHECK(viewport->getBounds() == view.getLocalBounds());
-    juce::Component *content = viewport->getViewedComponent();
-    REQUIRE(content != nullptr);
+    const auto placed = [&view]() -> std::pair<juce::Viewport *, juce::Component *> {
+        auto *viewport = childOfType<juce::Viewport>(view);
+        REQUIRE(viewport != nullptr);
+        CHECK(viewport->getBounds() == view.getLocalBounds());
+        juce::Component *content = viewport->getViewedComponent();
+        REQUIRE(content != nullptr);
+        CHECK(content->getWidth() <= viewport->getWidth()); // no sideways scroll
+        std::vector<gg::ui::ParamPanel *> panels;
+        collect(*content, panels);
+        int visible = 0;
+        for (const gg::ui::ParamPanel *panel : panels)
+        {
+            if (!panel->isVisible())
+            {
+                continue;
+            }
+            ++visible;
+            INFO(gg::ui::panelName(panel->panel()));
+            CHECK(panel->getParentComponent() == content);
+            CHECK(content->getLocalBounds().contains(panel->getBounds()));
+            for (const gg::ui::ParamPanel *other : panels)
+            {
+                if (other != panel && other->isVisible())
+                {
+                    CHECK_FALSE(panel->getBounds().intersects(other->getBounds()));
+                }
+            }
+        }
+        CHECK(visible == 4);
+        return {viewport, content};
+    };
+
+    view.setSize(960, 600);
+    placed();
+
+    view.setSize(640, 360);
+    const auto [viewport, content] = placed();
     CHECK(content->getHeight() > viewport->getHeight());
     CHECK(viewport->canScrollVertically());
-    CHECK(content->getWidth() <= viewport->getWidth()); // no sideways scroll
-    const std::vector<ParamSlot> output = gg::ui::slotsIn(gg::ui::Panel::Output, 0);
-    REQUIRE(output.size() == 10);
-    for (const ParamSlot slot : output)
+    // Every control the view holds lies inside the content, so scrolling reaches it.
+    std::vector<gg::ui::ParamControl *> controls;
+    collect(*content, controls);
+    CHECK(controls.size() == 17); // the FX's 5 + 7 + 3 + 2
+    for (const gg::ui::ParamControl *control : controls)
     {
-        INFO(gg::core::paramMeta(slot, gg::core::Mode::Fx).name);
-        juce::Component *control = findDeep(*content, controlId(slot).toRawUTF8());
-        REQUIRE(control != nullptr);
-        for (const juce::Component *c = control; c != content; c = c->getParentComponent())
-        {
-            CHECK(c->isVisible()); // the control and its panel (headless: none is on screen)
-        }
+        INFO(control->getComponentID());
         const juce::Rectangle<int> inContent =
             content->getLocalArea(control->getParentComponent(), control->getBounds());
-        CHECK(!inContent.isEmpty());
+        CHECK_FALSE(inContent.isEmpty());
         CHECK(content->getLocalBounds().contains(inContent));
     }
-    // Scrolled to the bottom, the last control is in view.
+    // Scrolled to the bottom, the lowest control is in view.
+    const auto lowest = *std::max_element(
+        controls.begin(), controls.end(), [content](const auto *a, const auto *b) {
+            return content->getLocalArea(a->getParentComponent(), a->getBounds()).getBottom() <
+                   content->getLocalArea(b->getParentComponent(), b->getBounds()).getBottom();
+        });
     viewport->setViewPosition(0, content->getHeight());
-    const juce::Component *last = findDeep(*content, controlId(output.back()).toRawUTF8());
-    const juce::Rectangle<int> lastInView =
-        viewport->getLocalArea(last->getParentComponent(), last->getBounds());
-    CHECK(viewport->getLocalBounds().intersects(lastInView));
+    CHECK(viewport->getLocalBounds().intersects(
+        viewport->getLocalArea(lowest->getParentComponent(), lowest->getBounds())));
 }
 
 TEST_CASE("Reverb Size sets on release", "[plugin]")

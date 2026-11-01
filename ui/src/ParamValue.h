@@ -54,7 +54,17 @@ class ParamValue
     const std::string &label() const noexcept { return label_; }
     float value() const noexcept { return value_; }
 
-    void setCommitOnRelease(bool on) noexcept { commitOnRelease_ = on; }
+    /// Turned off mid-gesture, the value held back for the release is sent now, and the gesture
+    /// goes on sending as it moves.
+    void setCommitOnRelease(bool on)
+    {
+        commitOnRelease_ = on;
+        if (!on && pending_)
+        {
+            send(*pending_);
+            pending_.reset();
+        }
+    }
 
     void begin()
     {

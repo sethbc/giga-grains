@@ -14,6 +14,7 @@
 #include <sst/jucegui/components/NamedPanel.h>
 
 #include "../ParamControl.h"
+#include "gg/core/ModMatrix.h"
 #include "gg/ui/Editor.h"
 #include "gg/ui/EditLayout.h"
 
@@ -23,8 +24,12 @@ namespace gg::ui
 /// ParamControl for each of slotsIn(panel, layer) the product shows, in a cell of its own, a
 /// spread pair (Size with Size Spread, Position with Spray, Pitch with Pitch Spread) in one cell,
 /// side by side. A Step panel's sixteen steps are 20 px wide vertical sliders. The cells wrap,
-/// 72 × 92 for a knob with its label. The panel is hidden while it has no controls (the Filter
-/// panel until PR 2).
+/// 72 × 92 for a knob with its label, and a cell whose placement has breakBefore starts a new
+/// line (the Filter panel's buses, one a line). The panel is hidden while it has no controls (a
+/// panel whose every slot the product hides).
+///
+/// Commit on release: each layer's Ring Length (SP-M9, a ring resize) and Reverb Size (D10, row
+/// 217) send one value as a gesture ends, with a tooltip that says so.
 ///
 /// **Rings** (spec §6.5, §6.6): each knob draws one arc per route targeting it on this layer,
 /// from the context's routes, coloured by the source's family; a toggle or a menu shows a dot of
@@ -47,8 +52,9 @@ class ParamPanel final : public sst::jucegui::components::NamedPanel
     std::function<void(gg::core::ParamSlot, gg::core::ModSource)> onSourceDrop;
     /// A ring was clicked without a drag, with its route's matrix slot (mod mode).
     std::function<void(uint8_t)> onRingClick;
-    /// Follows the base values and the routes.
-    void refresh();
+    /// Follows the base values and `routes`, the context's routes as the caller read them for
+    /// this tick: one copy for every panel of a view (row 325).
+    void refresh(const gg::core::ModRoutes &routes);
     void setModMode(bool on);
     /// The controls now; setLayer deletes them, so pointers taken before it are stale after.
     std::vector<ParamControl *> controls();

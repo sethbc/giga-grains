@@ -52,6 +52,7 @@ if (GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
             src/MutatePanel.cpp
             src/PresetBrowser.cpp
             src/PresetStrip.cpp
+            src/views/PanelGrid.cpp
             )
     add_library(gg::ui ALIAS gg-ui)
 

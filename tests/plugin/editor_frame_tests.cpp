@@ -16,6 +16,7 @@
 #include <memory>
 #include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <catch2/catch_test_macros.hpp>
@@ -23,10 +24,13 @@
 #include <sst/jucegui/accessibility/KeyboardTraverser.h>
 #include <sst/jucegui/components/BaseStyles.h>
 #include <sst/jucegui/components/Knob.h>
+#include <sst/jucegui/components/MenuButton.h>
+#include <sst/jucegui/components/VSlider.h>
 #include <sst/jucegui/style/StyleSheet.h>
 #include <sst/jucegui/data/Continuous.h>
 
 #include "GrainCanvas.h"
+#include "LayerStrip.h"
 #include "MorphPad.h"
 #include "Palette.h"
 #include "ParamControl.h"
@@ -720,9 +724,12 @@ TEST_CASE("the keyboard reaches every control", "[plugin]")
         CHECK(editor->keyPressed(commandKey('1')));
         CHECK(gg::ui::currentView(*editor) == View::Perform);
         CHECK(editor->keyPressed(commandKey('B', true)));
-        const auto *bSize = findDeep(*viewOf(*editor, View::Edit),
-                                     controlId(gg::core::layerSlot(gg::core::LayerParam::Size, 1)));
-        CHECK(bSize != nullptr);
+        // The hidden Edit view builds layer B's panels when it is shown (row 335).
+        const juce::String bSizeId = controlId(gg::core::layerSlot(gg::core::LayerParam::Size, 1));
+        CHECK(findDeep(*viewOf(*editor, View::Edit), bSizeId) == nullptr);
+        CHECK(editor->keyPressed(commandKey('2')));
+        CHECK(findDeep(*viewOf(*editor, View::Edit), bSizeId) != nullptr);
+        CHECK(editor->keyPressed(commandKey('1')));
 
         gg::ui::UndoStack *stack = plugin->editorContext().undo;
         REQUIRE(stack != nullptr);
@@ -928,6 +935,8 @@ TEST_CASE("the selected layer is remembered per plugin instance", "[plugin]")
     {
         const auto editor = plugin->createEditor();
         CHECK(plugin->editorContext().layer() == 2);
+        // The Edit view, hidden behind Perform, builds layer C's panels when shown (row 335).
+        REQUIRE(gg::ui::selectView(*editor, View::Edit));
         const auto *cSize = findDeep(*viewOf(*editor, View::Edit),
                                      controlId(gg::core::layerSlot(gg::core::LayerParam::Size, 2)));
         CHECK(cSize != nullptr);
@@ -1067,8 +1076,68 @@ double contrast(juce::Colour a, juce::Colour b)
 }
 } // namespace
 
-TEST_CASE("no control's label is elided or collides at 960 by 600", "[plugin]")
+namespace
 {
+/// The text the Edit view's ParamPanel cell draws above a menu (its caption, the cell's name),
+/// set in its 12 px font, within the cell's width; true where the parent draws none.
+bool captionFits(const gg::ui::ParamControl &control)
+{
+    const juce::Component *cell = control.getParentComponent();
+    if (cell == nullptr || cell->getName().isEmpty())
+    {
+        return true;
+    }
+    return gg::ui::ParamControl::textWidth(juce::Font(juce::FontOptions(12.0f)), cell->getName()) <=
+           static_cast<float>(cell->getWidth());
+}
+
+/// Whether `c` is one of a compact layer strip's controls.
+bool inLayerStrip(const juce::Component &c)
+{
+    for (const juce::Component *at = c.getParentComponent(); at != nullptr;
+         at = at->getParentComponent())
+    {
+        if (dynamic_cast<const gg::ui::LayerStrip *>(at) != nullptr)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+/// Every choice a menu button can show drawn whole in it, in the button's own font:
+/// sst-jucegui's MenuButtonPainter draws the text in the button less 1 + 4 px at the left and
+/// 1 + 4 + 6 px (the arrow) at the right.
+bool menuTextFits(sst::jucegui::components::MenuButtonDiscreteEditor &menu)
+{
+    REQUIRE(menu.style() != nullptr); // else the font is a placeholder
+    REQUIRE(menu.data != nullptr);
+    const juce::Font font =
+        menu.getFont(sst::jucegui::components::MenuButtonDiscreteEditor::Styles::labelfont);
+    const float room = static_cast<float>(menu.getWidth() - 2 - 4 - (4 + 6));
+    bool fits = true;
+    for (int v = menu.data->getMin(); v <= menu.data->getMax(); ++v)
+    {
+        const juce::String text = menu.data->getValueAsStringFor(v);
+        const float width = gg::ui::ParamControl::textWidth(font, text);
+        if (width > room)
+        {
+            UNSCOPED_INFO("\"" << text << "\" is " << width << " px in " << room);
+            fits = false;
+        }
+    }
+    return fits;
+}
+} // namespace
+
+TEST_CASE("no control's label is elided or collides at 960 by 600 and 640 by 360", "[plugin]")
+{
+    // Row 334: knobs, toggles and horizontal sliders by labelFits; menus by their caption and every
+    // choice's text; vertical sliders by their caption (the Step panel's draw none), at both sizes.
+    // The compact layer strip (the Perform and Mod views' LayerStrip) is checked at 960 x 600
+    // only: at 640 x 360 its cells are too narrow for the Source menu's longer kinds ("Oscillator"
+    // is 51 px in 28 to 41) and, in the Mod view, for the Freeze toggle's label. That is the
+    // strip's own layout, not a caption shortLabel can shorten (M2 views PR 2, Task 2's report).
     const juce::ScopedJuceInitialiser_GUI juceGui;
     for (const char *id : kProducts)
     {
@@ -1076,24 +1145,48 @@ TEST_CASE("no control's label is elided or collides at 960 by 600", "[plugin]")
         gg::test::PluginUnderTest instance(id);
         REQUIRE(instance.valid());
         const auto editor = editorPluginOf(instance)->createEditor();
-        editor->setSize(960, 600);
-        for (const View view : kViews)
+        for (const auto size : {std::pair{960, 600}, std::pair{640, 360}})
         {
-            INFO(viewId(view));
-            REQUIRE(gg::ui::selectView(*editor, view));
-            tick(*editor);
-            std::vector<gg::ui::ParamControl *> controls;
-            collect(*viewOf(*editor, view), controls);
-            for (const gg::ui::ParamControl *control : controls)
+            INFO(size.first << " x " << size.second);
+            editor->setSize(size.first, size.second);
+            int menus = 0, sliders = 0;
+            for (const View view : kViews)
             {
-                if (!visibleIn(*control, *viewOf(*editor, view)))
+                INFO(viewId(view));
+                REQUIRE(gg::ui::selectView(*editor, view));
+                tick(*editor);
+                std::vector<gg::ui::ParamControl *> controls;
+                collect(*viewOf(*editor, view), controls);
+                for (gg::ui::ParamControl *control : controls)
                 {
-                    continue;
+                    if (!visibleIn(*control, *viewOf(*editor, view)) ||
+                        (size.first < 960 && inLayerStrip(*control)))
+                    {
+                        continue;
+                    }
+                    INFO(control->getComponentID() << " (" << control->getTitle() << ") shows \""
+                                                   << control->shownLabel() << "\"");
+                    CHECK(control->labelFits());
+                    std::vector<sst::jucegui::components::MenuButtonDiscreteEditor *> menu;
+                    collect(*control, menu);
+                    std::vector<sst::jucegui::components::VSlider *> slider;
+                    collect(*control, slider);
+                    if (!menu.empty())
+                    {
+                        ++menus;
+                        INFO("caption \"" << control->getParentComponent()->getName() << "\"");
+                        CHECK(captionFits(*control));
+                        CHECK(menuTextFits(*menu[0]));
+                    }
+                    if (!slider.empty())
+                    {
+                        ++sliders;
+                        CHECK(captionFits(*control));
+                    }
                 }
-                INFO(control->getComponentID() << " (" << control->getTitle() << ") shows \""
-                                               << control->shownLabel() << "\"");
-                CHECK(control->labelFits());
             }
+            CHECK(menus > 0);
+            CHECK(sliders > 0);
         }
     }
 }
