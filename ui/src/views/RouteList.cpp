@@ -309,12 +309,10 @@ struct RouteList::Impl
             }
         };
         row.depth.onDragEnd = [this, slot] {
-            if (depthSlot == slot && context.undo != nullptr)
+            if (depthSlot == slot)
             {
-                context.undo->pushRoutes(depthBefore, depthAfter, "route " + std::to_string(slot));
-                context.undo->endGroup();
+                endDepthDrag(slot);
             }
-            depthSlot = 0;
         };
 
         for (juce::Component *c : std::initializer_list<juce::Component *>{
@@ -327,6 +325,7 @@ struct RouteList::Impl
 
     ~Impl()
     {
+        endDepthDrag(depthSlot); // an editor closed mid-drag closes its undo group
         for (auto &row : rows)
         {
             for (juce::ComboBox *box :
@@ -337,6 +336,17 @@ struct RouteList::Impl
             row->depth.setLookAndFeel(nullptr);
             row->clear.setLookAndFeel(nullptr);
         }
+    }
+
+    /// Ends the depth drag of `slot` (0 for none): one undo entry, and the group closed.
+    void endDepthDrag(uint8_t slot)
+    {
+        if (slot != 0 && context.undo != nullptr)
+        {
+            context.undo->pushRoutes(depthBefore, depthAfter, "route " + std::to_string(slot));
+            context.undo->endGroup();
+        }
+        depthSlot = 0;
     }
 
     /// The boxes, the depth sliders and the clear buttons take the theme's colors (the editor's

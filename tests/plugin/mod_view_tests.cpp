@@ -321,6 +321,28 @@ TEST_CASE("a held ring drag or depth drag keeps undo from changing the routes un
     }
 }
 
+TEST_CASE("an editor destroyed mid depth-drag leaves undo usable", "[plugin]")
+{
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    ModHarness h(gg::core::Mode::Fx);
+    const auto start = h.routes;
+    {
+        gg::ui::ModView view(h.recording.context);
+        view.setSize(900, 500);
+        view.refresh();
+        auto *depth = dynamic_cast<juce::Slider *>(findDeep(view, "route.1.depth"));
+        REQUIRE(depth != nullptr);
+        REQUIRE(depth->onDragStart);
+        depth->onDragStart();
+        depth->setValue(0.5, juce::sendNotificationSync);
+        REQUIRE(h.routes != start);
+        REQUIRE(h.undo.busy());
+    } // the view is destroyed with the drag still open
+    REQUIRE_FALSE(h.undo.busy());
+    h.undo.undo();
+    CHECK(h.routes == start); // the depth from before the drag
+}
+
 TEST_CASE("retargeting a route scales its depth to the new target's units", "[plugin]")
 {
     const juce::ScopedJuceInitialiser_GUI juceGui;
