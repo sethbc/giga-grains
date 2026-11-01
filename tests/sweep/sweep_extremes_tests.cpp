@@ -125,6 +125,113 @@ TEST_CASE("extremes: minima, maxima and 32 corners, instrument", "[sweep]")
 
 namespace
 {
+constexpr int kChainCorners = 16;
+
+/// Resample and Spectral corner `c` (the integration review's Minor 2): every parameter at the
+/// end corner c draws for it, as setAll's corners, then every layer on, its Source Resample (2)
+/// or Spectral (3) by turns, the delay engaged at Amount 100% and the limiter Soft or Peak by
+/// turns, with the pad at its centre and, in the FX, Mix 100%, so every layer is heard through the
+/// chain. The ring parameters (Ring Length, Loop, Loop Length, Overdub, Splice) keep their drawn
+/// ends, so Resample's loop runs back through the delay and the limiter (D4: the tap is after
+/// the limiter) and Spectral reads rings of every length, looping and overdubbing or not.
+void setChainCorner(SweepDriver &d, int c, uint64_t seed)
+{
+    gg::core::ParamValues v{};
+    for (std::size_t s = 0; s < gg::core::kParamCount; ++s)
+    {
+        const auto slot = static_cast<ParamSlot>(s);
+        const auto &m = d.meta(slot);
+        const bool top = gg::test::sweepdraw::byId(seed, static_cast<uint64_t>(c),
+                                                   gg::core::paramId(slot)) < 0.5;
+        v[s] = top ? m.maxVal : m.minVal;
+    }
+    const auto put = [&v](ParamSlot slot, float value) {
+        v[static_cast<std::size_t>(slot)] = value;
+    };
+    for (uint8_t L = 0; L < gg::core::kLayers; ++L)
+    {
+        put(gg::core::layerOnSlot(L), 1.0f);
+        put(gg::core::layerSlot(LayerParam::Source, L), (L + c) % 2 == 0 ? 2.0f : 3.0f);
+    }
+    put(ParamSlot::DelayAmount, 1.0f);
+    put(ParamSlot::LimiterMode, c % 2 == 0 ? 1.0f : 2.0f); // Soft, Peak
+    // At its top ceiling, 0 dB, the limiter still limits the rings' overdubbed material, without
+    // D5b's drive under a low one (which the main extremes cover, and which here would leave half
+    // the render to kLimiterDrive). Every other parameter, the reverb's included, takes its
+    // drawn end, as the main extremes' corners do.
+    put(ParamSlot::LimiterCeiling, d.meta(ParamSlot::LimiterCeiling).maxVal);
+    put(ParamSlot::MorphX, 0.5f);
+    put(ParamSlot::MorphY, 0.5f);
+    if (d.mode() == Mode::Fx)
+    {
+        put(ParamSlot::Mix, 1.0f);
+    }
+    for (std::size_t s = 0; s < gg::core::kParamCount; ++s)
+    {
+        d.set(static_cast<ParamSlot>(s), v[s]);
+    }
+    d.mark("Resample and Spectral corner " + std::to_string(c + 1) + " of " +
+           std::to_string(kChainCorners));
+}
+
+/// kChainCorners Resample and Spectral corners, each held for 1 s with a note in it as the
+/// extremes play theirs, then every parameter at its default for a last second. In the FX,
+/// layers A to C have no sample, so a Spectral layer there smears its live ring; layer D keeps
+/// the sine, so it smears that. In the instrument every layer keeps the sine.
+Shares chainCorners(Mode mode, uint64_t seed, double minScored)
+{
+    SweepDriver d(mode, seed);
+    if (mode == Mode::Fx)
+    {
+        for (uint8_t L = 0; L < 3; ++L)
+        {
+            d.processor().setSourceNow(L, nullptr);
+        }
+    }
+    const Material m = mode == Mode::Fx ? Material::SineLive : Material::NoteOverSine;
+    // The FX's layer A smears its ring when Spectral, the instrument's its sample.
+    REQUIRE(d.processor().layerMaterial(0) ==
+            (mode == Mode::Fx ? gg::SourceMode::Live : gg::SourceMode::Sample));
+    d.play(2.0, m);
+    for (int c = 0; c < kChainCorners; ++c)
+    {
+        setChainCorner(d, c, seed);
+        const auto key = static_cast<int16_t>(40 + c % 40);
+        d.play(0.1, m);
+        d.note(NoteEventType::On, key, 0.3f + 0.03f * static_cast<float>(c % 16));
+        d.play(0.5, m);
+        d.note(NoteEventType::Off, key);
+        d.play(0.4, m);
+    }
+    d.setDefaults();
+    d.play(1.0, m);
+    gg::test::requireClean(d, gg::test::chainBound(d, minScored));
+    return sharesOf(d);
+}
+} // namespace
+
+// The floors, a little under what each case measures (the integration review's Minor 2,
+// 2026-11-01): the FX scores 0.3323 of its render (the largest click score 8.81, the peak 1.082),
+// the instrument 0.2795 (11.08, 1.0). Each exemption's own share in the FX: the fade-in 0.08%,
+// Reverb Size moves 45.3%, the reverb's onset 21.5%, kLimiterDrive 0 and kDelayGlideHold 31.5%;
+// in the instrument 0.08%, 44.8%, 22.4%, 0 and 24.9%. kLimiterDrive is pinned at 0: the ceiling
+// is held at 0 dB, so a share there means the limiter is driven where the case says it isn't.
+TEST_CASE("extremes: Resample and Spectral under the delay and the limiter, fx", "[sweep]")
+{
+    const Shares shares = chainCorners(Mode::Fx, 2104, 0.325);
+    INFO(describe(shares));
+    CHECK(shares.limiterDrive == 0.0);
+}
+
+TEST_CASE("extremes: Resample and Spectral under the delay and the limiter, instrument", "[sweep]")
+{
+    const Shares shares = chainCorners(Mode::Instrument, 2105, 0.27);
+    INFO(describe(shares));
+    CHECK(shares.limiterDrive == 0.0);
+}
+
+namespace
+{
 /// Corner 13's layer C, as the instrument extremes drew it under the sources branch's slot layout
 /// (the corner13 report): layer C alone, the pad at X 0, Y 0, Level and Level C at +12 dB, and C's
 /// grain parameters at their corner ends (Size 5 ms, Density 0.25 Hz, Texture 1, the gated
