@@ -1165,8 +1165,8 @@ struct PadFixture
 {
     RecordingContext recording{gg::core::Mode::Fx};
     std::vector<std::pair<ParamSlot, float>> undone;
-    gg::ui::UndoStack undo{{[this](ParamSlot s, float v) { undone.emplace_back(s, v); },
-                            [](const gg::core::ModRoutes &) {}}};
+    gg::ui::UndoStack undo{{.setValue = [this](ParamSlot s, float v) { undone.emplace_back(s, v); },
+                            .setRoutes = [](const gg::core::ModRoutes &) {}}};
     std::unique_ptr<gg::ui::MorphPad> pad;
 
     PadFixture()
@@ -1314,6 +1314,118 @@ TEST_CASE("arrows move the pad", "[plugin]")
     CHECK_THAT(f.value(ParamSlot::MorphY), Catch::Matchers::WithinAbs(0.50, 1e-6));
     CHECK_FALSE(pad.keyPressed(juce::KeyPress('x')));
     CHECK(f.undo.size() == 4);
+}
+
+TEST_CASE("held arrow keys make one undo entry on the pad", "[plugin]")
+{
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    PadFixture f;
+    for (int i = 0; i < 20; ++i)
+    {
+        REQUIRE(f.pad->keyPressed(juce::KeyPress(juce::KeyPress::rightKey)));
+    }
+    CHECK_THAT(f.value(ParamSlot::MorphX), Catch::Matchers::WithinAbs(0.7, 1e-5));
+    CHECK(f.undo.size() == 1);
+    f.undo.undo();
+    REQUIRE(f.undone.size() == 1); // only Morph X moved
+    CHECK(f.undone[0] == std::pair{ParamSlot::MorphX, 0.5f});
+}
+
+TEST_CASE("the pad's ghost handle follows setGhost", "[plugin]")
+{
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    PadFixture f;
+    gg::ui::MorphPad &pad = *f.pad;
+    const auto shot = [&pad] { return pad.createComponentSnapshot(pad.getLocalBounds(), false); };
+    const auto same = [](const juce::Image &a, const juce::Image &b) {
+        if (a.getBounds() != b.getBounds())
+        {
+            return false;
+        }
+        for (int y = 0; y < a.getHeight(); ++y)
+        {
+            for (int x = 0; x < a.getWidth(); ++x)
+            {
+                if (a.getPixelAt(x, y) != b.getPixelAt(x, y))
+                {
+                    return false;
+                }
+            }
+        }
+        return true;
+    };
+    const juce::Image none = shot();
+    pad.setGhost(gg::ui::PadPoint{0.2f, 0.8f});
+    const juce::Image first = shot();
+    CHECK_FALSE(same(none, first)); // the ghost is drawn
+    pad.setGhost(gg::ui::PadPoint{0.8f, 0.2f});
+    const juce::Image moved = shot();
+    CHECK_FALSE(same(first, moved)); // and it follows
+    pad.setGhost(std::nullopt);
+    CHECK(same(shot(), none)); // nothing for none
+    pad.setGhost(gg::ui::PadPoint{std::nanf(""), 0.5f});
+    CHECK(same(shot(), none)); // a non-finite point draws nothing
+}
+
+TEST_CASE("the strip letter's other cells select their layer", "[plugin]")
+{
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    for (const auto layout : {gg::ui::LayerStrip::Layout::Row, gg::ui::LayerStrip::Layout::Column})
+    {
+        RecordingContext recording(gg::core::Mode::Fx);
+        gg::ui::LayerStrip strip(recording.context, layout);
+        strip.setSize(layout == gg::ui::LayerStrip::Layout::Row ? 800 : 160,
+                      layout == gg::ui::LayerStrip::Layout::Row ? 80 : 400);
+        std::vector<int> selected;
+        strip.onSelectLayer = [&selected](uint8_t layer) { selected.push_back(layer); };
+        for (const int layer : {3, 1, 0, 2})
+        {
+            const auto id = "strip." + std::to_string(layer) + ".letter";
+            juce::Component *letter = findDeep(strip, id.c_str());
+            REQUIRE(letter != nullptr);
+            letter->mouseDown(mouseAt(*letter, 4.0f, 4.0f, {4.0f, 4.0f}, false));
+            letter->mouseUp(mouseAt(*letter, 4.0f, 4.0f, {4.0f, 4.0f}, false));
+            CHECK(strip.selectedLayer() == layer);
+        }
+        CHECK(selected == std::vector<int>{3, 1, 0, 2});
+        CHECK(recording.calls.empty());
+    }
+}
+
+TEST_CASE("LayerStrip refresh follows the base values", "[plugin]")
+{
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    RecordingContext recording(gg::core::Mode::Fx);
+    gg::ui::LayerStrip strip(recording.context, gg::ui::LayerStrip::Layout::Row);
+    strip.setSize(800, 80);
+    const auto control = [&strip](ParamSlot slot) {
+        const auto id = "param." + std::to_string(gg::core::paramId(slot));
+        return dynamic_cast<gg::ui::ParamControl *>(findDeep(strip, id.c_str()));
+    };
+    for (uint8_t layer = 0; layer < gg::core::kLayers; ++layer)
+    {
+        const ParamSlot on = gg::core::layerOnSlot(layer);
+        const ParamSlot level = gg::core::levelSlot(layer);
+        const ParamSlot freeze = gg::core::layerSlot(gg::core::LayerParam::Freeze, layer);
+        REQUIRE(control(on) != nullptr);
+        REQUIRE(control(level) != nullptr);
+        REQUIRE(control(freeze) != nullptr);
+        const float level0 = control(level)->shownValue();
+        const float on0 = control(on)->shownValue();
+        // The host (or the audio thread) moves the base values; the strip follows at refresh.
+        const auto &levelMeta = gg::core::paramMeta(level, gg::core::Mode::Fx);
+        const float level1 =
+            levelMeta.defaultVal == levelMeta.minVal ? levelMeta.maxVal : levelMeta.minVal;
+        recording.values[static_cast<std::size_t>(level)] = level1;
+        recording.values[static_cast<std::size_t>(on)] = on0 > 0.5f ? 0.0f : 1.0f;
+        recording.values[static_cast<std::size_t>(freeze)] = 1.0f;
+        CHECK(control(level)->shownValue() == level0); // not before
+        strip.refresh();
+        CHECK(control(level)->shownValue() == level1);
+        CHECK(control(on)->shownValue() == (on0 > 0.5f ? 0.0f : 1.0f));
+        CHECK(control(freeze)->shownValue() == 1.0f);
+    }
+    CHECK(recording.calls.empty()); // following the base values is no gesture
 }
 
 TEST_CASE("the About box lists the license set", "[plugin]")

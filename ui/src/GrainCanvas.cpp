@@ -831,11 +831,12 @@ void GrainCanvas::beginDragGesture(Held which)
     }
 }
 
-void GrainCanvas::recordBegin(ParamSlot slot, float before)
+void GrainCanvas::recordBegin(ParamSlot slot, float before, bool nudge)
 {
     if (context_.undo != nullptr)
     {
-        context_.undo->beginGesture(slot, before, gg::core::paramMeta(slot, context_.mode).name);
+        context_.undo->beginGesture(slot, before, gg::core::paramMeta(slot, context_.mode).name,
+                                    {.nudge = nudge, .timeSeconds = wallSeconds()});
     }
 }
 
@@ -847,11 +848,12 @@ void GrainCanvas::recordEnd(ParamSlot slot, float after)
     }
 }
 
-void GrainCanvas::gestureTo(uint8_t layer, Held which, float before, float value, double now)
+void GrainCanvas::gestureTo(uint8_t layer, Held which, float before, float value, double now,
+                            bool nudge)
 {
     const ParamSlot slot = slotOf(layer, which);
     HeldValue &held = held_[layer][which];
-    recordBegin(slot, before);
+    recordBegin(slot, before, nudge);
     held.begin();
     if (context_.beginGesture)
     {
@@ -990,7 +992,7 @@ bool GrainCanvas::keyPressed(const juce::KeyPress &key)
     const float before = shown(selected_, which, now);
     const float value = std::clamp(before + sign * ((meta.maxVal - meta.minVal) / 100.0f),
                                    meta.minVal, meta.maxVal);
-    gestureTo(selected_, which, before, value, now);
+    gestureTo(selected_, which, before, value, now, true);
     repaint();
     return true;
 }

@@ -5,6 +5,7 @@
 #include "gg/ui/UndoStack.h"
 
 #include <algorithm>
+#include <span>
 #include <utility>
 
 namespace gg::ui
@@ -33,6 +34,12 @@ UndoStack::UndoStack(UndoCallbacks callbacks) : callbacks_(std::move(callbacks))
 
 void UndoStack::beginGesture(gg::core::ParamSlot slot, float before, std::string label)
 {
+    beginGesture(slot, before, std::move(label), GestureOptions{});
+}
+
+void UndoStack::beginGesture(gg::core::ParamSlot slot, float before, std::string label,
+                             GestureOptions options)
+{
     if (applying_)
     {
         return;
@@ -41,7 +48,7 @@ void UndoStack::beginGesture(gg::core::ParamSlot slot, float before, std::string
         std::ranges::any_of(open_, [slot](const OpenGesture &g) { return g.slot == slot; });
     if (!open)
     {
-        open_.push_back({slot, before, std::move(label)});
+        open_.push_back({slot, before, std::move(label), options});
     }
 }
 
@@ -71,9 +78,13 @@ void UndoStack::endGesture(gg::core::ParamSlot slot, float after)
             groupLabel_ = std::move(gesture.label);
         }
         group_.push_back(change);
+        groupNudge_ = groupNudge_ && gesture.options.nudge;
+        groupSeconds_ = std::max(groupSeconds_, gesture.options.timeSeconds);
         return;
     }
-    push({std::move(gesture.label), change});
+    pushOrMerge(
+        {std::move(gesture.label), change, gesture.options.nudge, gesture.options.timeSeconds},
+        gesture.options.timeSeconds);
 }
 
 void UndoStack::beginGroup()
@@ -92,10 +103,13 @@ void UndoStack::endGroup()
     }
     if (!group_.empty())
     {
-        push({std::move(groupLabel_), std::move(group_)});
+        pushOrMerge({std::move(groupLabel_), std::move(group_), groupNudge_, groupSeconds_},
+                    groupSeconds_);
     }
     group_.clear();
     groupLabel_.clear();
+    groupNudge_ = true;
+    groupSeconds_ = 0.0;
 }
 
 void UndoStack::pushRoutes(const gg::core::ModRoutes &before, const gg::core::ModRoutes &after,
@@ -152,20 +166,17 @@ void UndoStack::undo()
     const Applying applying(applying_);
     --cursor_;
     const auto undoValues = [this](const ParamChanges &changes) {
-        for (auto it = changes.rbegin(); it != changes.rend(); ++it)
-        {
-            callbacks_.setValue(it->slot, it->before);
-        }
+        applyValues(changes, true, false);
     };
     std::visit(Overloaded{[this](const ParamChange &c) { callbacks_.setValue(c.slot, c.before); },
                           undoValues,
                           [this](const RoutesChange &c) { callbacks_.setRoutes(c.before); },
-                          [this, &undoValues](const Snapshot &s) {
+                          [this](const Snapshot &s) {
                               if (s.routes)
                               {
                                   callbacks_.setRoutes(s.routes->before);
                               }
-                              undoValues(s.values);
+                              applyValues(s.values, true, true);
                           }},
                entries_[cursor_].change);
 }
@@ -178,16 +189,13 @@ void UndoStack::redo()
     }
     const Applying applying(applying_);
     const auto redoValues = [this](const ParamChanges &changes) {
-        for (const ParamChange &c : changes)
-        {
-            callbacks_.setValue(c.slot, c.after);
-        }
+        applyValues(changes, false, false);
     };
     std::visit(Overloaded{[this](const ParamChange &c) { callbacks_.setValue(c.slot, c.after); },
                           redoValues,
                           [this](const RoutesChange &c) { callbacks_.setRoutes(c.after); },
-                          [this, &redoValues](const Snapshot &s) {
-                              redoValues(s.values);
+                          [this](const Snapshot &s) {
+                              applyValues(s.values, false, true);
                               if (s.routes)
                               {
                                   callbacks_.setRoutes(s.routes->after);
@@ -195,6 +203,87 @@ void UndoStack::redo()
                           }},
                entries_[cursor_].change);
     ++cursor_;
+}
+
+void UndoStack::applyValues(const ParamChanges &changes, bool undoing, bool batch)
+{
+    // A group's gestures go back in reverse order and forward in order. A snapshot's go through
+    // setValues as one call, so the owner can batch them (a snapshot is up to every parameter).
+    if (batch && callbacks_.setValues)
+    {
+        std::vector<std::pair<gg::core::ParamSlot, double>> values;
+        values.reserve(changes.size());
+        const auto add = [&values, undoing](const ParamChange &c) {
+            values.emplace_back(c.slot, static_cast<double>(undoing ? c.before : c.after));
+        };
+        if (undoing)
+        {
+            std::ranges::for_each(changes.rbegin(), changes.rend(), add);
+        }
+        else
+        {
+            std::ranges::for_each(changes, add);
+        }
+        callbacks_.setValues(values);
+        return;
+    }
+    const auto set = [this, undoing](const ParamChange &c) {
+        callbacks_.setValue(c.slot, undoing ? c.before : c.after);
+    };
+    if (undoing)
+    {
+        std::ranges::for_each(changes.rbegin(), changes.rend(), set);
+    }
+    else
+    {
+        std::ranges::for_each(changes, set);
+    }
+}
+
+void UndoStack::pushOrMerge(Entry entry, double beginSeconds)
+{
+    if (entry.nudge && cursor_ == entries_.size() && !entries_.empty())
+    {
+        Entry &top = entries_.back();
+        if (top.nudge && beginSeconds - top.endSeconds <= kNudgeMergeSeconds &&
+            beginSeconds >= top.endSeconds)
+        {
+            // The same parameters, in the same order, on both sides.
+            const auto same = [](const ParamChange &a, const ParamChange &b) {
+                return a.slot == b.slot;
+            };
+            const auto asChanges = [](Entry &e) -> std::span<ParamChange> {
+                if (auto *one = std::get_if<ParamChange>(&e.change))
+                {
+                    return {one, 1};
+                }
+                if (auto *many = std::get_if<ParamChanges>(&e.change))
+                {
+                    return {many->data(), many->size()};
+                }
+                return {};
+            };
+            const std::span<ParamChange> older = asChanges(top);
+            const std::span<ParamChange> newer = asChanges(entry);
+            if (!older.empty() && std::ranges::equal(older, newer, same))
+            {
+                bool changed = false;
+                for (std::size_t i = 0; i < older.size(); ++i)
+                {
+                    older[i].after = newer[i].after;
+                    changed = changed || older[i].after != older[i].before;
+                }
+                top.endSeconds = entry.endSeconds;
+                if (!changed)
+                {
+                    entries_.pop_back();
+                    cursor_ = entries_.size();
+                }
+                return;
+            }
+        }
+    }
+    push(std::move(entry));
 }
 
 void UndoStack::push(Entry entry)

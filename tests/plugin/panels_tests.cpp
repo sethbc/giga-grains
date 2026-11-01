@@ -748,6 +748,84 @@ TEST_CASE("the Edit view reads the routes once a tick", "[plugin]")
     }
 }
 
+TEST_CASE("held arrow keys make one undo entry", "[plugin]")
+{
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    RecordingContext recording(gg::core::Mode::Fx);
+    std::vector<std::pair<ParamSlot, float>> undone;
+    gg::ui::UndoStack undo{
+        {.setValue = [&undone](ParamSlot s, float v) { undone.emplace_back(s, v); },
+         .setRoutes = [](const gg::core::ModRoutes &) {}}};
+    recording.context.undo = &undo;
+    gg::ui::ParamControl size(recording.context, ParamSlot::Size, gg::ui::ParamControl::Kind::Knob);
+    auto *knob = childOfType<sst::jucegui::components::Knob>(size);
+    REQUIRE(knob != nullptr);
+    const float before = size.shownValue();
+    for (int i = 0; i < 20; ++i)
+    {
+        REQUIRE(knob->keyPressed(juce::KeyPress(juce::KeyPress::rightKey)));
+    }
+    CHECK(recording.kinds().size() == 20 * 3); // each press is still a host gesture
+    CHECK(size.shownValue() > before);
+    CHECK(undo.size() == 1);
+    undo.undo();
+    REQUIRE(undone.size() == 1);
+    CHECK(undone[0] == std::pair{ParamSlot::Size, before});
+
+    // A press with a pause is its own entry, and a drag between presses splits them.
+    knob->onBeginEdit();
+    knob->continuous()->setValueFromGUI(0.5f);
+    knob->onEndEdit();
+    CHECK(undo.size() == 1);
+    CHECK(knob->keyPressed(juce::KeyPress(juce::KeyPress::upKey)));
+    CHECK(undo.size() == 2);
+}
+
+TEST_CASE("a control destroyed mid commit-on-release gesture sends its value before the end",
+          "[plugin]")
+{
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    RecordingContext recording(gg::core::Mode::Fx);
+    const ParamSlot ringSlot = gg::core::layerSlot(gg::core::LayerParam::RingLength, 0);
+    {
+        gg::ui::ParamControl ring(recording.context, ringSlot, gg::ui::ParamControl::Kind::Knob);
+        ring.setCommitOnRelease(true);
+        auto *knob = childOfType<sst::jucegui::components::Knob>(ring);
+        REQUIRE(knob != nullptr);
+        knob->onBeginEdit();
+        knob->continuous()->setValueFromGUI(0.2f);
+        knob->continuous()->setValueFromGUI(0.6f);
+        CHECK(recording.kinds() == "b"); // shown, not sent
+    } // the editor closes under the mouse
+    REQUIRE(recording.kinds() == "bve");
+    CHECK(recording.calls[1].slot == ringSlot);
+    CHECK(recording.calls[1].value == static_cast<double>(0.6f));
+}
+
+TEST_CASE("a panel destroyed mid ring drag closes its undo entry", "[plugin]")
+{
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    ModHarness h(gg::core::Mode::Fx);
+    {
+        auto view = std::make_unique<gg::ui::EditView>(h.recording.context);
+        view->setSize(900, 500);
+        view->setModMode(true);
+        view->refresh();
+        auto *size = dynamic_cast<gg::ui::ParamControl *>(
+            findDeep(*view, controlId(ParamSlot::Size).toRawUTF8()));
+        REQUIRE(size != nullptr);
+        size->onRingDrag(1, 0.4f);
+        CHECK(h.undo.busy());
+        CHECK(h.undo.size() == 0);
+    } // the view goes with the mouse still down
+    CHECK_FALSE(h.undo.busy());
+    REQUIRE(h.undo.size() == 1);
+    CHECK(h.undo.undoLabel() == "route 1");
+    const float depth = h.routes[0].depth;
+    h.undo.undo();
+    CHECK(h.routes[0].depth != depth);
+}
+
 TEST_CASE("the FX view shows the reverb and the output", "[plugin]")
 {
     const juce::ScopedJuceInitialiser_GUI juceGui;

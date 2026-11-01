@@ -17,8 +17,23 @@
 #include "gg/core/ParamIds.h"
 #include "gg/ui/Editor.h"
 
+namespace sst::jucegui::components
+{
+struct ContinuousParamEditor;
+}
+
 namespace gg::ui
 {
+class ParamValue;
+
+/// The arrow keys' edit of a continuous control: Up and Right raise it by 1/100 of its range,
+/// Down and Left lower it, by 1/1000 with Shift, each press one gesture of `value` (the control's
+/// own), where sst-jucegui's controls step by 1/40 and know no Left or Right. The gesture is a
+/// nudge: a run of key repeats makes one undo entry. False, changing nothing, for any other key,
+/// with Command held, or with no source: the control's own handling takes those.
+bool stepByArrowKey(sst::jucegui::components::ContinuousParamEditor &editor,
+                    const juce::KeyPress &key, ParamValue &value);
+
 /// One parameter's control (M2 sub-project 6's spec §6.5), which every view builds its controls
 /// from: an sst-jucegui knob, slider, toggle or menu button by Kind, over a data source that is
 /// the parameter's ParamValue (M1's macro adaptor, generalized). Its component ID is

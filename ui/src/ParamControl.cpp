@@ -13,6 +13,7 @@
 
 #include <clap/ext/params.h>
 #include <sst/basic-blocks/params/ParamMetadata.h>
+#include <sst/jucegui/components/ContinuousParamEditor.h>
 #include <sst/jucegui/components/HSlider.h>
 #include <sst/jucegui/components/Knob.h>
 #include <sst/jucegui/components/MenuButton.h>
@@ -127,6 +128,7 @@ struct Inertia : juce::SettableTooltipClient
 /// arrow keys (stepByArrowKey).
 template <typename Editor> struct Control final : Editor, Inertia
 {
+    ParamValue *value{nullptr}; ///< the control's own, set by wire
     bool keyPressed(const juce::KeyPress &key) override
     {
         if (inert)
@@ -135,7 +137,7 @@ template <typename Editor> struct Control final : Editor, Inertia
         }
         if constexpr (std::is_base_of_v<jcmp::ContinuousParamEditor, Editor>)
         {
-            if (stepByArrowKey(*this, key))
+            if (value != nullptr && stepByArrowKey(*this, key, *value))
             {
                 return true;
             }
@@ -271,6 +273,7 @@ std::unique_ptr<juce::Component> wire(std::unique_ptr<Control<Editor>> editor, S
                                       ParamValue &value, Inertia *&inertia, const bool &modMode)
 {
     editor->setSource(source);
+    editor->value = &value;
     // No gesture opens in mod mode, whichever path (the accessibility interface's) asks.
     editor->onBeginEdit = [&value, &modMode] {
         if (!modMode)
@@ -283,6 +286,31 @@ std::unique_ptr<juce::Component> wire(std::unique_ptr<Control<Editor>> editor, S
     return editor;
 }
 } // namespace
+
+bool stepByArrowKey(sst::jucegui::components::ContinuousParamEditor &editor,
+                    const juce::KeyPress &key, ParamValue &value)
+{
+    const int code = key.getKeyCode();
+    const bool up = code == juce::KeyPress::upKey || code == juce::KeyPress::rightKey;
+    const bool down = code == juce::KeyPress::downKey || code == juce::KeyPress::leftKey;
+    sst::jucegui::data::Continuous *source = editor.continuous();
+    if ((!up && !down) || source == nullptr || key.getModifiers().isCommandDown())
+    {
+        return false;
+    }
+    const float range = source->getMax() - source->getMin();
+    const float step = range * (key.getModifiers().isShiftDown() ? 0.001f : 0.01f);
+    const float v =
+        std::clamp(source->getValue() + (up ? step : -step), source->getMin(), source->getMax());
+    value.setNudge(true);
+    editor.onBeginEdit();
+    source->setValueFromGUI(v);
+    editor.onEndEdit();
+    value.setNudge(false);
+    editor.notifyAccessibleChange();
+    editor.repaint();
+    return true;
+}
 
 ParamControl::Kind ParamControl::kindFor(const ParamMetaData &meta) noexcept
 {

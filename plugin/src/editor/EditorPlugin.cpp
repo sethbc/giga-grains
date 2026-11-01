@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -126,7 +127,13 @@ EditorPlugin::EditorPlugin(const clap_host *host, Product product)
                   uiSetValue(slot, static_cast<double>(value));
                   uiEndGesture(slot);
               },
-          .setRoutes = [this](const gg::core::ModRoutes &routes) { uiSetRoutes(routes); }})),
+          .setRoutes = [this](const gg::core::ModRoutes &routes) { uiSetRoutes(routes); },
+          // A whole-state entry (a preset, Mutate) is up to every parameter: through the batched,
+          // drain-witnessed sender, so the queue never overflows (sendValues).
+          .setValues =
+              [this](std::span<const std::pair<gg::core::ParamSlot, double>> values) {
+                  sendValues(values);
+              }})),
       editorContext_(std::make_unique<gg::ui::EditorContext>())
 {
     // As Shortcircuit XT does. Creating the shim needs no window and no message loop: the shim

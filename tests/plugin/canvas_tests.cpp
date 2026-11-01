@@ -832,4 +832,79 @@ TEST_CASE("the lanes' overlay colours are the same in both themes", "[plugin]")
     CHECK(light.layers == dark.layers);
 }
 
+namespace
+{
+/// An instrument canvas over a sample in a context with an undo stack that records what it applies.
+struct UndoCanvas
+{
+    RecordingContext recording{gg::core::Mode::Instrument};
+    std::vector<std::pair<ParamSlot, float>> undone;
+    gg::ui::UndoStack undo{{.setValue = [this](ParamSlot s, float v) { undone.emplace_back(s, v); },
+                            .setRoutes = [](const gg::core::ModRoutes &) {}}};
+    std::unique_ptr<juce::Component> editor;
+    gg::ui::GrainCanvas *canvas{nullptr};
+
+    UndoCanvas()
+    {
+        recording.values[static_cast<std::size_t>(ParamSlot::Position)] = 0.5f;
+        recording.values[static_cast<std::size_t>(ParamSlot::Spray)] = 0.4f;
+        giveLayerASample(recording.context);
+        recording.context.sampleRate = 48000.0;
+        recording.context.undo = &undo;
+        editor = gg::ui::makeEditor(recording.context);
+        canvas = canvasOf(*editor);
+    }
+};
+} // namespace
+
+TEST_CASE("Escape mid canvas drag re-enables undo", "[plugin]")
+{
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    constexpr float kTol = gg::ui::GrainCanvas::kEdgeTolerancePx;
+    UndoCanvas f;
+    REQUIRE(f.canvas != nullptr);
+    const auto lane = laneOf(*f.canvas, 0, false, 48000.0, 48000);
+    const float off = static_cast<float>(f.canvas->laneBounds(0).getX());
+    const auto rect = gg::ui::scanRect({0.5f, 0.4f, 0.0f, 0.0f}, lane);
+    const float centre = 0.5f * (rect.x0 + rect.x1);
+    const float y = rect.y0;
+    REQUIRE(gg::ui::hitTestRect(centre, y, rect, kTol, lane) == gg::ui::DragTarget::Body);
+
+    const juce::Point<float> down{off + centre, y};
+    f.canvas->mouseDown(mouseAt(*f.canvas, off + centre, y, down, false));
+    f.canvas->mouseDrag(mouseAt(*f.canvas, off + centre - 20.0f, y, down, true));
+    // Mid drag the stack waits for the gesture: undo does nothing.
+    CHECK(f.undo.busy());
+    f.undo.undo();
+    CHECK(f.undone.empty());
+
+    CHECK(f.canvas->keyPressed(juce::KeyPress(juce::KeyPress::escapeKey)));
+    CHECK_FALSE(f.undo.busy());
+    REQUIRE(f.undo.size() == 1);
+    f.undo.undo();
+    REQUIRE(f.undone.size() == 1);
+    CHECK(f.undone[0] == std::pair{ParamSlot::Position, 0.5f});
+}
+
+TEST_CASE("held arrow keys make one undo entry on the canvas lane", "[plugin]")
+{
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    UndoCanvas f;
+    REQUIRE(f.canvas != nullptr);
+    for (int i = 0; i < 20; ++i)
+    {
+        REQUIRE(f.canvas->keyPressed(juce::KeyPress(juce::KeyPress::rightKey)));
+    }
+    CHECK(f.undo.size() == 1);
+    CHECK(f.undo.undoLabel() == "A Position");
+    // Another parameter's nudge is its own entry; so is a double-click's freeze.
+    REQUIRE(f.canvas->keyPressed(juce::KeyPress(juce::KeyPress::upKey)));
+    CHECK(f.undo.size() == 2);
+    f.undo.undo();
+    f.undo.undo();
+    REQUIRE(f.undone.size() == 2);
+    CHECK(f.undone[0].first == ParamSlot::Pitch);
+    CHECK(f.undone[1] == std::pair{ParamSlot::Position, 0.5f});
+}
+
 #endif

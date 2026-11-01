@@ -180,9 +180,10 @@ class GrainCanvas final : public juce::Component, public juce::FileDragAndDropTa
     void endDrag();
     /// One whole gesture on layer `layer`'s `which`, from `before` (what the lane showed) to
     /// `value`.
-    void gestureTo(uint8_t layer, Held which, float before, float value, double now);
+    void gestureTo(uint8_t layer, Held which, float before, float value, double now,
+                   bool nudge = false);
     /// The undo stack's side of a gesture, when the context has one.
-    void recordBegin(gg::core::ParamSlot slot, float before);
+    void recordBegin(gg::core::ParamSlot slot, float before, bool nudge = false);
     void recordEnd(gg::core::ParamSlot slot, float after);
 
     const EditorContext &context_;
