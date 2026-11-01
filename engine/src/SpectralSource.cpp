@@ -207,7 +207,11 @@ void SpectralSource::computeFrame(const SpectralMaterial &m, double position, ui
     // Seconds behind the ring's head at the hop itself, R − 256 − N/2 being the newest centre.
     const LiveSource &ring = *m.ring;
     const int64_t head = ring.headAt(hopTime);
-    const int64_t ringFrames = ring.frames();
+    // Through the read bound, as every live grain reads (ruling SP-T12ad): a shrink's read limit
+    // lands at a sample the render decides, the smaller storage when the main thread offers it, so
+    // reading frames() would make the frames analyzed depend on that time. With no limit set the
+    // two are the same.
+    const int64_t ringFrames = ring.readFrames();
     double behind = position * sampleRate_;
     behind = behind == behind ? behind : 0.0; // NaN reads as 0
     const auto oldestStart = static_cast<double>(head - ringFrames);
