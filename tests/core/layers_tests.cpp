@@ -38,6 +38,7 @@
 #include "gg/source/SampleBuffer.h"
 #include "sst/basic-blocks/params/ParamMetadata.h"
 #include "support/AllocTripwire.h"
+#include "sweep/SweepDriver.h"
 
 using gg::core::LayerParam;
 using gg::core::layerSlot;
@@ -1325,7 +1326,9 @@ namespace
 // A value for every slot, each moved from its default in `mode` (ruling FR-3's test): layers B
 // and C on, D off, a Source of each built kind (Resample a Live engine since M2 sub-project 2),
 // both spreads up, every macro moved but Macro Freeze, and every other continuous slot at a point
-// of the middle half of its range drawn from gg::rng, away from its default. No Freeze is loaded
+// of the middle half of its range drawn from gg::rng, away from its default. The draws are keyed
+// by CLAP ID (sweepdraw::byId), never by slot index, so a parameter added later moves none of the
+// others' values (the integration review's Minor 5). No Freeze is loaded
 // on, Macro Freeze included: there setBases arms by its own rule (ruling FR-8), not the calls'.
 // With `nanEvery` not 0, every nanEvery-th slot is NaN instead.
 gg::core::ParamValues movedValues(Mode mode, uint64_t seed, size_t nanEvery = 0)
@@ -1335,7 +1338,7 @@ gg::core::ParamValues movedValues(Mode mode, uint64_t seed, size_t nanEvery = 0)
     {
         const auto slot = static_cast<ParamSlot>(s);
         const auto &meta = gg::core::paramMeta(slot, mode);
-        const double u = uniform(seed, s);
+        const double u = gg::test::sweepdraw::byId(seed, 0, gg::core::paramId(slot));
         float value =
             meta.minVal + (meta.maxVal - meta.minVal) * static_cast<float>(0.25 + 0.5 * u);
         if (meta.type == sst::basic_blocks::params::ParamMetaData::INT)
@@ -1373,8 +1376,8 @@ gg::core::ParamValues movedValues(Mode mode, uint64_t seed, size_t nanEvery = 0)
         set(slotOf(LayerParam::Position, L), 0.1f); // a Live layer reads the last 0.05 s or so
         set(gg::core::levelSlot(L), -6.0f);
         // The bus filters moved from Off, but to types that pass the layers' 110 to 440 Hz sines
-        // at any drawn cutoff (a high-pass or band-pass drawn above them silences a layer, and
-        // the draws are keyed by slot, which every new layer row moves): Low-pass, Notch.
+        // at any drawn cutoff (a high-pass or band-pass drawn above them silences a layer):
+        // Low-pass, Notch.
         set(slotOf(LayerParam::Bus1Filter, L), 1.0f);
         set(slotOf(LayerParam::Bus2Filter, L), 4.0f);
     }
