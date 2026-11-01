@@ -25,6 +25,9 @@ namespace
 {
 namespace fs = std::filesystem;
 using gg::media::decodeAudioFile;
+/// The bound every decode here passes: the memory cap's ceiling, so nothing is refused for its
+/// size.
+constexpr uint64_t kBound = gg::media::kDefaultDecodeBound;
 using gg::test::Bytes;
 
 fs::path dir() { return gg::test::scratchDir("media-decode-memory"); }
@@ -245,7 +248,7 @@ Measured decodeMeasured(const fs::path &file)
     Measured m;
     {
         const gg::test::AllocPeak peak;
-        m.result = decodeAudioFile(file);
+        m.result = decodeAudioFile(file, kBound);
         m.peakBytes = peak.peakBytes();
         m.complete = peak.complete();
     }
@@ -394,7 +397,7 @@ TEST_CASE("decode carries a decode past its header's count from the buffer into 
     const auto file = dir() / "beyond-count.flac";
     gg::test::writeFile(file, bytes);
 
-    const auto result = decodeAudioFile(file);
+    const auto result = decodeAudioFile(file, kBound);
     INFO(result.error);
     REQUIRE(result.audio.has_value());
     REQUIRE(result.audio->buffer->frames() == audio.frames());
@@ -410,7 +413,7 @@ TEST_CASE("decode reads the FLAC and IMA ADPCM files it is tested with", "[media
         const auto audio = gg::test::makeTestAudio(1, 48000, 3 * 4096 + 100);
         const auto file = dir() / "writer-check.flac";
         gg::test::writeFile(file, flacBytes(audio, Subframes::Verbatim));
-        const auto result = decodeAudioFile(file);
+        const auto result = decodeAudioFile(file, kBound);
         INFO(result.error);
         REQUIRE(result.audio.has_value());
         REQUIRE(result.audio->format == "flac");
@@ -427,7 +430,7 @@ TEST_CASE("decode reads the FLAC and IMA ADPCM files it is tested with", "[media
     {
         const auto file = dir() / "writer-check-ima.wav";
         gg::test::writeFile(file, imaAdpcmBytes(2, 3, 256));
-        const auto result = decodeAudioFile(file);
+        const auto result = decodeAudioFile(file, kBound);
         INFO(result.error);
         REQUIRE(result.audio.has_value());
         REQUIRE(result.audio->format == "wav");
@@ -451,7 +454,7 @@ TEST_CASE("decode reads an ADPCM WAV whose last block is short with its channels
     const auto file = dir() / "ima-short-last-block.wav";
     gg::test::writeFile(file, b.data);
 
-    const auto result = decodeAudioFile(file);
+    const auto result = decodeAudioFile(file, kBound);
     INFO(result.error);
     REQUIRE(result.audio.has_value());
     const auto &buffer = *result.audio->buffer;
@@ -471,7 +474,7 @@ TEST_CASE("decode refuses an ADPCM WAV without a fact chunk whose data runs past
           "[media]")
 {
     const auto requireTruncated = [](const fs::path &file) {
-        const auto result = decodeAudioFile(file);
+        const auto result = decodeAudioFile(file, kBound);
         INFO("error: " << result.error);
         REQUIRE_FALSE(result.audio.has_value());
         REQUIRE(result.error.find("truncated") != std::string::npos);
@@ -492,7 +495,7 @@ TEST_CASE("decode refuses an ADPCM WAV without a fact chunk whose data runs past
     {
         const auto file = dir() / "ima-one-block-short.wav";
         gg::test::writeFile(file, imaAdpcmBytes(1, 8, 256, 9 * 256));
-        const auto result = decodeAudioFile(file);
+        const auto result = decodeAudioFile(file, kBound);
         INFO("error: " << result.error);
         REQUIRE(result.audio.has_value());
         REQUIRE(result.audio->buffer->frames() == 8 * imaFramesPerBlock(1, 256));
@@ -506,7 +509,7 @@ TEST_CASE("decode reads a RIFF data size of 0 with audio after it as truncated",
         const auto audio = gg::test::makeTestAudio(2, 48000, 600);
         const auto file = dir() / "data-size-0.wav";
         gg::test::writeFile(file, gg::test::wavBytes(audio, gg::test::SampleFormat::Int16, 0));
-        const auto result = decodeAudioFile(file);
+        const auto result = decodeAudioFile(file, kBound);
         INFO("error: " << result.error);
         REQUIRE_FALSE(result.audio.has_value());
         REQUIRE(result.error.find("truncated") != std::string::npos);
@@ -515,7 +518,7 @@ TEST_CASE("decode reads a RIFF data size of 0 with audio after it as truncated",
     {
         const auto file = dir() / "ima-data-size-0.wav";
         gg::test::writeFile(file, imaAdpcmBytes(2, 8, 256, 0));
-        const auto result = decodeAudioFile(file);
+        const auto result = decodeAudioFile(file, kBound);
         INFO("error: " << result.error);
         REQUIRE_FALSE(result.audio.has_value());
         REQUIRE(result.error.find("truncated") != std::string::npos);
@@ -531,7 +534,7 @@ TEST_CASE("decode reads a RIFF data size of 0 with audio after it as truncated",
         b.patch(4, b.data.size() - 8, 4, false); // the RIFF size
         const auto file = dir() / "data-size-0-then-list.wav";
         gg::test::writeFile(file, b.data);
-        const auto result = decodeAudioFile(file);
+        const auto result = decodeAudioFile(file, kBound);
         INFO("error: " << result.error);
         REQUIRE_FALSE(result.audio.has_value());
         REQUIRE(result.error.find("no audio") != std::string::npos);
@@ -568,13 +571,13 @@ TEST_CASE("decode reads a RIFF data size of 0 with audio after it as truncated",
         };
         const auto fitting = dir() / "rifx-data-size-0-then-list.wav";
         gg::test::writeFile(fitting, rifx(4)); // 4 bytes follow: fits (read little-endian: 2^26)
-        auto result = decodeAudioFile(fitting);
+        auto result = decodeAudioFile(fitting, kBound);
         INFO("error: " << result.error);
         REQUIRE_FALSE(result.audio.has_value());
         REQUIRE(result.error.find("no audio") != std::string::npos);
         const auto garbage = dir() / "rifx-data-size-0-then-garbage.wav";
         gg::test::writeFile(garbage, rifx(0x7ffffff0u)); // runs past the end of the file
-        result = decodeAudioFile(garbage);
+        result = decodeAudioFile(garbage, kBound);
         INFO("error: " << result.error);
         REQUIRE_FALSE(result.audio.has_value());
         REQUIRE(result.error.find("truncated") != std::string::npos);
@@ -584,7 +587,7 @@ TEST_CASE("decode reads a RIFF data size of 0 with audio after it as truncated",
         const auto file = dir() / "data-size-0-empty.wav";
         gg::test::writeFile(file, gg::test::wavBytes(gg::test::makeTestAudio(2, 48000, 0),
                                                      gg::test::SampleFormat::Int16));
-        const auto result = decodeAudioFile(file);
+        const auto result = decodeAudioFile(file, kBound);
         INFO("error: " << result.error);
         REQUIRE_FALSE(result.audio.has_value());
         REQUIRE(result.error.find("no audio") != std::string::npos);

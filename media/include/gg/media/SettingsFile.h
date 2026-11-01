@@ -12,8 +12,8 @@
 /// The per-machine settings file (spec §6.7): gg-core's settings XML
 /// (gg/core/MachineSettings.h), read and written here. loadSettings and saveSettings are main
 /// thread only (ruling R16): the plugin reads and saves the user's file from its main thread,
-/// never from the loader. Every function but defaultSettingsPath takes the file explicitly, so
-/// tests never touch the user's.
+/// never from the loader. Every function but defaultSettingsPath and defaultCapturesFolder takes
+/// the file explicitly, so tests never touch the user's.
 namespace gg::media
 {
 /// The settings file in the user's configuration folder:
@@ -25,7 +25,19 @@ namespace gg::media
 /// empty. Empty when none of these can be found. Reads the environment, nothing else.
 std::filesystem::path defaultSettingsPath();
 
-/// The settings in `file`, or the defaults (both folders empty) if it can't be read, is larger
+/// The captures folder when the settings name none (D7: the user's Music folder, so a project's
+/// captures are where the user looks for audio):
+/// - macOS: ~/Music/Giga Grains/Captures;
+/// - Windows: %USERPROFILE%\Music\Giga Grains\Captures;
+/// - Linux: $XDG_MUSIC_DIR/Giga Grains/Captures, or ~/Music/Giga Grains/Captures when
+///   XDG_MUSIC_DIR is unset, empty or relative. Only the environment is read: user-dirs.dirs,
+///   where xdg-user-dirs records the folder, is not parsed.
+/// `~` is as for defaultSettingsPath; one spelling, "Giga Grains/Captures", on every platform,
+/// since it is a folder the user sees. Empty when no home can be found. It creates nothing: the
+/// folder is made on first use.
+std::filesystem::path defaultCapturesFolder();
+
+/// The settings in `file`, or the defaults (every folder empty) if it can't be read, is larger
 /// than 1 MiB, or isn't settings (fromSettingsXml). On Windows the file is opened sharing delete
 /// access, so another instance's saveSettings can rename over it meanwhile.
 core::MachineSettings loadSettings(const std::filesystem::path &file);

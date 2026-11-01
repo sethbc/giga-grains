@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <mutex>
+#include <span>
 #include <vector>
 
 #include "gg/core/MachineSettings.h"
@@ -22,11 +23,14 @@ namespace gg::plugin
 /// missing would otherwise scan the sample folder, up to kMaxScanEntries entries, once per
 /// instance as it opens.
 ///
-/// A search that finds nothing (Missing or Changed) is remembered by its entry and both folders
-/// of the settings, with what the search's two direct candidates held then: the saved path, and
-/// the sample folder joined with the entry's relative path (whether a file was there, its size,
-/// modification time and permissions; each path as saved, not in its other Unicode spellings).
-/// A search of the same entry with the same folders gets its result again, without searching,
+/// A search that finds nothing (Missing or Changed) is remembered by its entry, the settings'
+/// folders (the sample folder, the last load folder and the captures folder) and the content
+/// roots it was given (M2 sub-project 2's spec §6.7), with what the search's direct candidates
+/// held then: the saved path, each content root joined with the entry's content path, the sample
+/// folder joined with the entry's relative path, and the captures folder joined with the saved
+/// path's name (whether a file was there, its size, modification time and permissions; each path
+/// as saved, not in its other Unicode spellings). A search of the same entry with the same
+/// folders and roots gets its result again, without searching,
 /// for kLifetime after it, as long as both hold what they held: a file put back at either, or
 /// changed there, is searched for again at once. A search that finds the file is never
 /// remembered. clear() forgets every one: SampleLoader calls it after a load or relink applies
@@ -49,11 +53,13 @@ class SearchCache
     /// The process's cache, which every instance shares.
     static SearchCache &process();
 
-    /// gg::media::findSample(entry, settings), or, when a search of `entry` with the same
-    /// folders found nothing less than kLifetime before `now`, and its direct candidates hold
-    /// what they held then, its result. Throws only what findSample throws (std::bad_alloc).
+    /// gg::media::findSample(entry, settings, contentRoots), or, when a search of `entry` with
+    /// the same folders and roots found nothing less than kLifetime before `now`, and its direct
+    /// candidates hold what they held then, its result. Throws only what findSample throws
+    /// (std::bad_alloc).
     media::SearchResult find(const core::MediaEntry &entry, const core::MachineSettings &settings,
-                             Clock::time_point now);
+                             Clock::time_point now,
+                             std::span<const std::filesystem::path> contentRoots = {});
     /// Forgets every search remembered.
     void clear();
     /// The searches made (findSample calls), for tests and diagnostics.
@@ -69,20 +75,25 @@ class SearchCache
         std::filesystem::perms perms{std::filesystem::perms::unknown};
         friend bool operator==(const Stamp &, const Stamp &) = default;
     };
-    /// The search's direct candidates: the saved path, then the sample folder and relative path.
+    /// The search's direct candidates: the saved path, each content root and the content path,
+    /// the sample folder and relative path, and the captures folder and the saved name.
     struct Stamps
     {
         Stamp saved;
+        std::vector<Stamp> inRoots;
         Stamp inFolder;
+        Stamp inCaptures;
         friend bool operator==(const Stamps &, const Stamps &) = default;
     };
     static Stamp stampOf(const std::filesystem::path &path) noexcept;
-    static Stamps stampsOf(const core::MediaEntry &entry, const core::MachineSettings &settings);
+    static Stamps stampsOf(const core::MediaEntry &entry, const core::MachineSettings &settings,
+                           std::span<const std::filesystem::path> contentRoots);
 
     struct Miss
     {
         core::MediaEntry entry;
         core::MachineSettings settings;
+        std::vector<std::filesystem::path> roots;
         Stamps stamps; // when the search was made
         media::SearchResult result;
         Clock::time_point when;

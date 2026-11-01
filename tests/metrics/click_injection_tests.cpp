@@ -69,6 +69,16 @@ std::vector<std::string> goldenCases()
     return names;
 }
 
+/// The options a case renders with: `media` is both the media directory and the content root, as
+/// the golden CTests pass them, so a restored state finds its samples.
+gg::render::RenderOptions optionsFor(const std::string &media)
+{
+    gg::render::RenderOptions options;
+    options.mediaDir = media;
+    options.contentDir = media;
+    return options;
+}
+
 /// The case's spec, parsed, with its file paths resolved against `media`.
 gg::render::RenderSpec loadCase(const std::string &name, const std::string &media)
 {
@@ -120,10 +130,19 @@ const std::map<std::string, int> &partlyHidden()
         // ring, from about 2.8 s to 6.6 s. Accepted by the director 2026-10-29 (decision D4).
         {"fx-feedback", 7},
         {"fx-file", 14}, // loop-48k.wav's noise bursts
+        // loop-48k.wav's bursts looped (1 s window, Overdub 0.7), then frozen: the burst
+        // pattern's own edges hide four of the steps, the gaps between bursts catch the rest.
+        {"fx-loop-overdub", 12},
+        // An 8 s noise burst held in a 60 s ring and read back: a noise bed everywhere but the
+        // silence from 8 s to 12 s, where Position still reads the present, caught there (4).
+        {"fx-long-ring", 4},
         // M2 sub-project 3's spec §6.9: the live ring's sweep read an octave up (50 Hz to 20 kHz,
-        // doubled, then folded back), whose top hides the steps from about 2.1 s to the input's
-        // end at 3.5 s; the steps below about 3 kHz and the one in the ring's last echo are caught.
-        {"fx-hq-live-level0", 9},
+        // doubled), whose top hides the steps from about 2.1 s to the input's end at 3.5 s; the
+        // steps below about 3 kHz and the one in the ring's last echo are caught. 9 when the ring
+        // had one level (fx-hq-live-level0, the octave folded back from Nyquist); 10 since its
+        // pyramid (M2 sub-project 2's spec §6.9): level 1's half-band removes the fold-back, which
+        // hid one more step.
+        {"fx-hq-live", 10},
         // M2 sub-project 3's spec §6.9: every grain reads part of a 20 kHz to 50 Hz sweep, from
         // 165 Hz to 20 kHz, and the ladder transposes it up to 3.9 octaves, so content near
         // Nyquist sounds at every step; caught only at 0.32 s (two grains reading the sweep's
@@ -136,6 +155,11 @@ const std::map<std::string, int> &partlyHidden()
         // loop-48k.wav's burst at 3.5 s, re-grained densely 20 ms behind the head, hides the step
         // at 3.53 s; the bursts' gaps and the silence after 4 s catch the rest.
         {"fx-mod-follower", 15},
+        // A frozen sweep's spans, re-grained densely (32 Hz of 50 ms, so both Splice changes fall
+        // under sounding grains: ruling SP-T12aa), and layer B's pitched capture of one from 4 s:
+        // the sweep's top octaves, up to 2 kHz and +7 semitones, under layer A's dense cloud,
+        // hide the four steps after 4 s (4.24, 4.59, 4.94 and 5.65 s; two at 8 Hz).
+        {"fx-splice-capture", 12},
         {"fx-noise-stereo", 3}, // a noise bed until the input ends at 3 s
         {"fx-note-freeze", 10}, // loop-48k.wav's bursts, live and frozen
         {"fx-space", 6},        // noise and its reverb, until the tail decays
@@ -144,10 +168,16 @@ const std::map<std::string, int> &partlyHidden()
         // Y = 0 or X = 1 edge (1.0 s to 3.0 s) or near the corner X 0, Y 0 (about 5.2 s); the
         // steps there are caught, the rest hidden.
         {"inst-layers-morph", 5},
+        // Four Sample layers, one of them noise (noise-2s.wav): a noise bed under the note, as
+        // in inst-size-spread; only the gaps between grains catch the three.
+        {"inst-four-samples", 3},
         {"inst-release", 5}, // the note's noise bed, from 0.25 s to its release
         // The note's noise bed: caught only in a gap between grains at 1.8 s and after the note's
         // last grains end, at about 5.1 s.
         {"inst-size-spread", 3},
+        // Layer B's Resample at +12 with Feedback 0.6 re-grains the instrument's own output, a
+        // cascade of octaves that fills the spectrum: its top octaves hide ten of the steps.
+        {"inst-resample-feedback", 6},
     };
     return cases;
 }
@@ -169,7 +199,7 @@ void checkInjectedSteps(gg::render::RenderMode mode, const std::string &test)
         }
         ++rendered;
         CAPTURE(name);
-        const AudioData clean = gg::render::render(spec, nullptr);
+        const AudioData clean = gg::render::render(spec, nullptr, optionsFor(media));
         REQUIRE_FALSE(clean.channels.empty());
         const double cleanScore = clickScore(clean);
         CAPTURE(cleanScore);
@@ -233,7 +263,8 @@ TEST_CASE("a 0 dBFS spike in the dense-noise golden renders stays under the limi
     for (const auto &[name, expected] : spikesCaught())
     {
         CAPTURE(name);
-        const AudioData clean = gg::render::render(loadCase(name, media), nullptr);
+        const AudioData clean =
+            gg::render::render(loadCase(name, media), nullptr, optionsFor(media));
         REQUIRE_FALSE(clean.channels.empty());
         const std::size_t frames = clean.channels[0].size();
         int caught = 0;

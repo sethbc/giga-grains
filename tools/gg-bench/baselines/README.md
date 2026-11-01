@@ -30,6 +30,10 @@ The report-only cases are timed and print ratios, and stay report-only (the whol
 full-length runs have them too, 30 ratios an entry (ten cases at three blocks), so those legs
 report a verdict for them; the `mac-universal` entry (the M1 VM) and Windows' older EPYC 9V74 one
 have none, and a ratio a file lacks is only `not in the baseline`. They are:
+- `engine-live-long` (`engine-live`'s stream over a 300 s ring, its reads spanning it; M2
+  sub-project 2), which no entry has yet: it gets entries once three full runs are merged in
+  (`--merge`, below). A `--quick` run caps its 300 s warm-up at 16 s, so its quick ratios read a
+  partly filled ring; only full-length runs make entries;
 - `engine-layers` (four layers of 500 grains, X's count) and `engine-layers-full` (four of
   2,000);
 - `engine-sample-hq`: X at the HQ tier, the HQ figure (M2 engine spec §6.10);

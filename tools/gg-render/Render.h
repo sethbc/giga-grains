@@ -37,6 +37,24 @@ std::string formatEventLine(uint32_t layer, const GrainSpec &g);
 /// once (M2 engine spec §6.7).
 std::string formatStealLine(uint32_t layer, uint64_t index, int64_t onset);
 
+/// gg-render's command-line options that reach the render (M2 sub-project 2's spec §6.10). All
+/// paths are UTF-8; empty means the option wasn't given.
+struct RenderOptions
+{
+    /// --content-dir: a content root, one of the places a restored state's sample is found by
+    /// its content-relative path.
+    std::string contentDir;
+    /// --captures-dir: where a saved ring or capture goes when the embedded audio would pass
+    /// kEmbedCapBytes (as <sha256>.wav), and where a filed ring is found on a restore.
+    std::string capturesDir;
+    /// --save-state: write the session state (gg::core::encodeState) here at the render's end.
+    std::string saveStatePath;
+    /// The directory the spec's relative paths were resolved against (the spec's own, or
+    /// --media-dir): the other place a restored state's samples are found by content path, and
+    /// the root a saved sample's content path is made relative to.
+    std::string mediaDir;
+};
+
 /// Renders the spec in its mode, in process() calls of blockSize frames (a part's last call may
 /// be shorter). The output is stereo, and bit-identical for any blockSize.
 ///
@@ -77,6 +95,33 @@ std::string formatStealLine(uint32_t layer, uint64_t index, int64_t onset);
 ///
 /// The spec must be one parseRenderSpec accepts, with its file paths resolved (resolvePaths).
 ///
+/// **Sessions, ring parameters and operations** (instrument and FX mode; M2 sub-project 2's spec
+/// §6.10). Before the first process() call, in this order:
+/// 1. the spec's "state", if any, is decoded (gg::core::decodeState) and its values and mod routes
+///    set; its samples are then found (gg::media::findSample, through options.contentDir and
+///    options.mediaDir alone: never searched by name), loaded and handed to their layers, an
+///    embedded one decoded from its payload;
+/// 2. the spec's own sample and layer samples, the params, the mod routes and the transport, as
+///    before ("params" override the state);
+/// 3. each layer's ring: a saved ring is restored (gg::media::restoreRing into a ring of the
+///    layer's Ring Length; Processor::setRingNow, frozen when the layer's Freeze is on), and a
+///    layer whose Ring Length isn't the default gets a ring of that length (setRingNow), so every
+///    ring is in place before the first call, as a block-size-invariant render needs.
+/// The memory cap (the spec's memoryCapMiB, else the state's, else the default) is checked as each
+/// sample and ring is added, before it is allocated: one that doesn't fit is BadInput with
+/// gg::media::MemoryBudget's message. The spec's seed is the render's, not the state's.
+///
+/// The call loop is cut at each capture's frame; a capture reads the layer's ring directly (the
+/// thread is the audio thread between calls), and a splice or clearSplices goes to process() as a
+/// CommandEvent. With options.saveStatePath the session is written at the end (gg::core::
+/// encodeState): the values and routes in effect, the file samples that were loaded (by content
+/// path, relative to options.contentDir or options.mediaDir, when they lie in one; built-in
+/// signals are not saved), the captures made into layers, and the rings of the layers whose Freeze
+/// or Loop base is on (D1), each as the whole ring's newest frames with its marks. Audio is
+/// embedded layer by layer (a layer's ring before its capture) while the total stays within
+/// gg::core::kEmbedCapBytes, and the rest filed in options.capturesDir as <sha256>.wav, which is
+/// BadInput when it isn't given.
+///
 /// Each call's grain events are collected in storage sized from CloudScheduler's minimum interval
 /// between onsets, two per spawn (a steal at most before each). If eventLines isn't null it is
 /// cleared and receives formatEventLine of every grain that spawned, in spawn order (in sample
@@ -86,17 +131,21 @@ std::string formatStealLine(uint32_t layer, uint64_t index, int64_t onset);
 /// sample mode, so there only a full pool steals; in the others Budget sets the quotas.
 ///
 /// Throws:
-/// - BadInput for a file (source, sample or input) that can't be read or decoded, or whose path
-///   isn't valid UTF-8, and for a preset that can't be read, is longer than kMaxStateBytes, isn't
-///   a preset file, names a sample (until MEDI version 2), or is the other product's ("the
-///   preset is for Giga Grains, not Giga Grains FX"); gg-render exits with status 2;
+/// - BadInput for a file (source, sample, input or state) that can't be read or decoded, or whose
+///   path isn't valid UTF-8, a state that isn't one, a state's sample or ring that can't be
+///   found, a ring or sample past the memory cap, a capture of an empty ring, audio that has to
+///   be filed with no captures folder, --save-state of a sample-mode spec, and a preset that
+///   can't be read, is longer than kMaxStateBytes, isn't a preset file, names a sample or ring,
+///   or is the other product's ("the preset is for Giga Grains, not Giga Grains FX"); gg-render
+///   exits with status 2;
 /// - std::logic_error if a call reports more grain events than that storage holds, or, in
 ///   sample mode, grains outlast the release tail or the tail would pass its defensive bound;
 /// - std::invalid_argument for an unknown parameter name, and for what makeSignal, makeSample and
 ///   makeInput reject but parseRenderSpec never produces;
 /// - std::bad_alloc if memory runs out.
 /// gg-render exits with status 3, an internal error, for all but BadInput.
-gg::metrics::AudioData render(const RenderSpec &spec, std::vector<std::string> *eventLines);
+gg::metrics::AudioData render(const RenderSpec &spec, std::vector<std::string> *eventLines,
+                              const RenderOptions &options = {});
 
 /// The routes in effect for a render: `routes` (the factory routes, or a preset's) with each of
 /// the spec's routes (`mod`) set in its slot, a "None" route clearing it. Throws

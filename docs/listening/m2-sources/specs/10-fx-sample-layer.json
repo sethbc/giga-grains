@@ -1,0 +1,11 @@
+{
+  "mode": "fx",
+  "sampleRate": 48000,
+  "durationSeconds": 8.0,
+  "blockSize": 128,
+  "seed": 1,
+  "input": {"kind": "sweep", "startHz": 110, "endHz": 1760, "seconds": 7.5, "amplitude": 0.5},
+  "channels": 2,
+  "samples": {"B": {"kind": "file", "path": "loop-48k.wav"}},
+  "params": {"Mix": 1.0, "Layer B On": 1, "B Source": 0, "B Position": 0.25, "B Density": 4.0, "B Size": -3.0, "Morph X": 0.5, "Morph Y": 0.5}
+}

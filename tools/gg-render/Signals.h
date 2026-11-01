@@ -92,9 +92,24 @@ gg::metrics::AudioData makeInput(const SourceSpec &input, uint32_t channels, dou
 ///   exponentially to -60 dB at its end, silent in between, scaled to a -3 dBFS peak.
 inline constexpr const char *kToneMedium = "tone-44k1.wav";
 inline constexpr const char *kLoopMedium = "loop-48k.wav";
+/// M2 sub-project 2's media (spec §6.10):
+/// - kSineMedium: mono, 48 kHz, 2 s; a 330 Hz sine at amplitude 0.5;
+/// - kNoiseMedium: mono, 48 kHz, 2 s; seed 3's white noise at amplitude 0.5;
+/// - kFrozenRingState: a GGST file `gg-render` makes from a built-in FX spec (writeTestMedia): a
+///   sweep over a 20 s ring on layer A, frozen at 18 s, with splices 12 s and 6 s behind the
+///   head at 19 s, saved at 20 s (the ring embedded, its two marks 6 s apart);
+/// - kFourSamplesState: a GGST file from a built-in instrument spec whose four layers, all on,
+///   read kToneMedium, kLoopMedium, kSineMedium and kNoiseMedium, referenced by content path
+///   relative to the media directory (no machine path in it).
+inline constexpr const char *kSineMedium = "sine-330.wav";
+inline constexpr const char *kNoiseMedium = "noise-2s.wav";
+inline constexpr const char *kFrozenRingState = "frozen-ring.ggst";
+inline constexpr const char *kFourSamplesState = "four-samples.ggst";
 
-/// Writes the test media into `dir` (UTF-8), creating it if needed, replacing files of the same
-/// names (gg-render --write-media). Returns false, with `error` naming the path, if the directory
+/// Writes the test media and the two state fixtures into `dir` (UTF-8), creating it if needed,
+/// replacing files of the same names (gg-render --write-media). The states are rendered here, by
+/// render() with --save-state's machinery, from the media just written, so they hold the same
+/// bytes on every run on one machine. Returns false, with `error` naming the path, if the directory
 /// can't be created or a file can't be written.
 bool writeTestMedia(const std::string &dir, std::string &error);
 } // namespace gg::render

@@ -34,8 +34,15 @@ constexpr Row edit(ParamSlot slot, Panel panel, uint8_t order, ParamSlot spread 
 /// LayerParam (by layer A's slot), per per-layer global and per other global, each panel's rows
 /// in order.
 constexpr std::array kRows{
-    // Source: the kind (the sample strip is the Source panel's own, not a parameter's).
+    // Source: the kind (the sample strip is the Source panel's own, not a parameter's), then M2
+    // sub-project 2's ring parameters, placed when it merged as the smallest change that keeps
+    // them reachable (ruling SP-M7, after VW-T19a; the ring's gestures are PR 2's).
     edit(ParamSlot::Source, Panel::Source, 0),
+    edit(ParamSlot::RingLength, Panel::Source, 1),
+    edit(ParamSlot::Loop, Panel::Source, 2),
+    edit(ParamSlot::LoopLength, Panel::Source, 3),
+    edit(ParamSlot::Overdub, Panel::Source, 4),
+    edit(ParamSlot::Splice, Panel::Source, 5),
     // Scheduler.
     edit(ParamSlot::Density, Panel::Scheduler, 0),
     edit(ParamSlot::Distribution, Panel::Scheduler, 1),
@@ -115,7 +122,7 @@ constexpr std::array kRows{
     Row{ParamSlot::Macro8, View::Perform, Panel::Macros, 7, kNone},
 };
 
-// One row per layer parameter, per-layer global (Level, Layer On) and other global: 49 + 2 + 19.
+// One row per layer parameter, per-layer global (Level, Layer On) and other global: 54 + 2 + 19.
 static_assert(kRows.size() == gg::core::kLayerParamCount + 2 + 19);
 
 /// A slot as the table keys it, with its layer: layer A's slot and the layer for a layer

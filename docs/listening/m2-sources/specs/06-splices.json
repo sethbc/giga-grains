@@ -1,0 +1,24 @@
+{
+  "mode": "fx",
+  "sampleRate": 48000,
+  "durationSeconds": 20.0,
+  "blockSize": 128,
+  "seed": 1,
+  "input": {"kind": "sweep", "startHz": 110, "endHz": 1760, "seconds": 8.0, "amplitude": 0.5},
+  "channels": 1,
+  "params": {"Mix": 1.0, "A Ring Length": 3.0, "Position": 0.25826114880722156, "Size": -4.321928094887363, "Density": 3.0},
+  "automation": [
+    {"time": 8.0, "param": "Freeze", "value": 1},
+    {"time": 9.0, "param": "A Splice", "value": 1},
+    {"time": 11.0, "param": "A Splice", "value": 2},
+    {"time": 13.0, "param": "A Splice", "value": 3},
+    {"time": 15.0, "param": "A Splice", "value": 4},
+    {"time": 17.0, "param": "A Splice", "value": 0}
+  ],
+  "operations": [
+    {"time": 8.1, "layer": "A", "op": "splice", "behind": 7.0},
+    {"time": 8.1, "layer": "A", "op": "splice", "behind": 5.0},
+    {"time": 8.1, "layer": "A", "op": "splice", "behind": 3.0},
+    {"time": 8.1, "layer": "A", "op": "splice", "behind": 1.0}
+  ]
+}

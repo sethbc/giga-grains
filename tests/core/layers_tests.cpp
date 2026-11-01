@@ -611,12 +611,27 @@ TEST_CASE("grain events come in piece, layer, spawn order", "[core][layers]")
 
 TEST_CASE("the unbuilt kinds fall back to the product's default", "[core][layers]")
 {
-    // Spec §6.4: Resample, Spectral and Oscillator render as Live in the FX and as Sample in the
-    // instrument, the parameter keeping its value.
+    // Spec §6.4: Spectral and Oscillator render as Live in the FX and as Sample in the
+    // instrument, the parameter keeping its value. Resample is built since M2 sub-project 2, a
+    // Live engine in both products (its spec §6.2).
     float l[1];
     float r[1];
     float *out[2] = {l, r};
-    for (const float kind : {2.0f, 3.0f, 4.0f})
+    {
+        Processor inst({kRate, 512, 1, Mode::Instrument});
+        inst.process(nullptr, 0, out, 2, 1, {});
+        REQUIRE(inst.engine(0).sourceMode() == gg::SourceMode::Sample);
+        inst.setBase(ParamSlot::Source, 2.0f);
+        inst.setBase(ParamSlot::C_Source, 2.0f);
+        inst.process(nullptr, 0, out, 2, 1, {});
+        CHECK(inst.engine(0).sourceMode() == gg::SourceMode::Live);
+        CHECK(inst.engine(2).sourceMode() == gg::SourceMode::Live);
+        Processor fx({kRate, 512, 1, Mode::Fx});
+        fx.setBase(ParamSlot::Source, 2.0f);
+        fx.process(nullptr, 0, out, 2, 1, {});
+        CHECK(fx.engine(0).sourceMode() == gg::SourceMode::Live);
+    }
+    for (const float kind : {3.0f, 4.0f})
     {
         INFO("Source " << kind);
         Processor fx({kRate, 512, 1, Mode::Fx});
@@ -794,11 +809,11 @@ TEST_CASE("four layers do not allocate", "[core][layers][rt]")
 namespace
 {
 // A value for every slot, each moved from its default in `mode` (ruling FR-3's test): layers B
-// and C on, D off, a Source of each built kind and the unbuilt Resample, both spreads up, every
-// macro moved but Macro Freeze, and every other continuous slot at a point of the middle half of
-// its range drawn from gg::rng, away from its default. No Freeze is loaded on, Macro Freeze
-// included: there setBases arms by its own rule (ruling FR-8), not the calls'. With `nanEvery`
-// not 0, every nanEvery-th slot is NaN instead.
+// and C on, D off, a Source of each built kind (Resample a Live engine since M2 sub-project 2),
+// both spreads up, every macro moved but Macro Freeze, and every other continuous slot at a point
+// of the middle half of its range drawn from gg::rng, away from its default. No Freeze is loaded
+// on, Macro Freeze included: there setBases arms by its own rule (ruling FR-8), not the calls'.
+// With `nanEvery` not 0, every nanEvery-th slot is NaN instead.
 gg::core::ParamValues movedValues(Mode mode, uint64_t seed, size_t nanEvery = 0)
 {
     gg::core::ParamValues v{};
@@ -829,7 +844,8 @@ gg::core::ParamValues movedValues(Mode mode, uint64_t seed, size_t nanEvery = 0)
         set(slotOf(LayerParam::Freeze, L), 0.0f);
     }
     set(ParamSlot::Macro6, 0.0f);
-    // A Sample, B Live (the other product's default for one of them), C the unbuilt Resample.
+    // A Sample, B Live (the other product's default for one of them), C Resample (a Live engine
+    // in both products since M2 sub-project 2).
     set(slotOf(LayerParam::Source, 0), 0.0f);
     set(slotOf(LayerParam::Source, 1), 1.0f);
     set(slotOf(LayerParam::Source, 2), 2.0f);
@@ -941,7 +957,7 @@ void requireSetBasesMatchesSetBase(Mode mode, const gg::core::ParamValues &value
 TEST_CASE("setBases is setBase on every slot in slot order", "[core][layers]")
 {
     // Ruling FR-3: a state load (an offer's values, the plugin's activation and loaded state)
-    // recomputes the effective values once. For a load with no Freeze on, its result is the 223
+    // recomputes the effective values once. For a load with no Freeze on, its result is the 243
     // calls' bit for bit: on fresh Processors, after a pre-roll with a ramp running, and back to
     // the defaults again. (A load with Freeze on arms by ruling FR-8: the next test.)
     for (const Mode mode : {Mode::Fx, Mode::Instrument})

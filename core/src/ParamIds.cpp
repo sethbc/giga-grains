@@ -26,6 +26,17 @@ constexpr uint32_t kAutomatableModulatable = CLAP_PARAM_IS_AUTOMATABLE | CLAP_PA
 // SpaceParams::infinite; patch_tests.cpp checks it float by float.
 constexpr float kDecayInfiniteLabelTolerance = 0.02000007f;
 
+// The instrument's Position reads "100%", the file's end, over (1, kPositionMax], where
+// ParamMetaData tests |v - kPositionMax| < tolerance × kPositionMax in float. This tolerance times
+// kPositionMax rounds to exactly kPositionMax - 1, so 1 itself shows "100.00 %" and the float above
+// it "100%"; parammap_tests.cpp checks the boundary.
+constexpr float kPositionEndLabelTolerance = 0.34552154f;
+
+// log2 seconds: 300 s, the longest ring (kRingMaxSeconds), the top of Ring Length and Loop Length;
+// 50 ms (kLoopMinSeconds), the bottom of Loop Length (M2 sub-project 2's spec §6.3).
+constexpr float kLog2RingMaxSeconds = 8.228818690495881f;
+constexpr float kLog2LoopMinSeconds = -4.321928094887363f;
+
 // Every entry starts here. ParamMetaData's quanta-only mode, a thread-local that a
 // default-constructed ParamMetaData copies, would drop the names and display text; this table
 // always carries them, whichever thread builds it.
@@ -101,19 +112,26 @@ md_t layerMeta(LayerParam p, Mode mode)
     switch (p)
     {
     case LayerParam::Position:
-        // The instrument's (sub-project 3's spec §6.8): 0..1, the fraction of the loaded file,
-        // shown as 0–100%; 0% by default.
-        // The FX's: 0..1; seconds behind the write head = (16/255)(2^(8v) - 1), 0 to 16 s; 0.25 s
-        // by default. Global Constraints names withATwoToTheBPlusCFormatting(16/255, 8, -16/255),
+        // 0..kPositionMax in both products, so the state format is shared (M2 sub-project 2's
+        // spec §6.3: the top reaches the longest ring).
+        // The instrument's (sub-project 3's spec §6.8): the fraction of the loaded file, shown as
+        // 0–100% and "100%" above 1, where a Sample layer's fraction stops; 0% by default.
+        // The FX's: seconds behind the write head = (16/255)(2^(8v) - 1), 0 to 300 s; 0.25 s by
+        // default. Global Constraints names withATwoToTheBPlusCFormatting(16/255, 8, -16/255),
         // but at our sst-basic-blocks pin that puts C in the exponent (A 2^(Bv + C)); the
         // A 2^(Bv + C) + D form with C = 0 and D = -A displays the mapping above.
-        return mode == Mode::Instrument ? fresh().asPercent().withDefault(0.0f)
-                                        : fresh()
-                                              .asFloat()
-                                              .withRange(0.f, 1.f)
-                                              .withDefault(0.28967658f)
-                                              .withATwoToTheBPlusCPlusDFormatting(
-                                                  16.f / 255.f, 8.f, 0.f, -16.f / 255.f, "s");
+        return mode == Mode::Instrument
+                   ? fresh()
+                         .asPercent()
+                         .withRange(0.f, kPositionMax)
+                         .withDefault(0.0f)
+                         .withCustomValueDisplay("100%", kPositionMax, kPositionEndLabelTolerance)
+                   : fresh()
+                         .asFloat()
+                         .withRange(0.f, kPositionMax)
+                         .withDefault(0.28967658f)
+                         .withATwoToTheBPlusCPlusDFormatting(16.f / 255.f, 8.f, 0.f, -16.f / 255.f,
+                                                             "s");
 
     case LayerParam::Size:
         // log2 seconds: 5 ms (-7.643856...) to 2 s (1), 150 ms by default.
@@ -233,6 +251,30 @@ md_t layerMeta(LayerParam p, Mode mode)
             .asInt()
             .withRange(1.f, 16.f)
             .withDefault(16.0f)
+            .withDimensionlessFormatting()
+            .withFlags(kAutomatableModulatable | CLAP_PARAM_IS_STEPPED);
+
+    // M2 sub-project 2's spec §6.3.
+    case LayerParam::RingLength:
+        // log2 seconds: 1 s (0) to 300 s, 16 s by default. Neither automatable nor modulatable:
+        // the plugin's main thread resizes the ring (spec §5), so no host may move it per block.
+        return fresh().asLog2SecondsRange(0.f, kLog2RingMaxSeconds, 4.0f).withFlags(0u);
+    case LayerParam::Loop:
+        // off (0) / on (1): the window loops when v > 0.5.
+        return fresh().asOnOffBool().withDefault(0.0f).withFlags(kAutomatableModulatable |
+                                                                 CLAP_PARAM_IS_STEPPED);
+    case LayerParam::LoopLength:
+        // log2 seconds: 50 ms to 300 s, shown in ms below 1 s; 1 s by default.
+        return fresh().asLog2SecondsRange(kLog2LoopMinSeconds, kLog2RingMaxSeconds, 0.0f);
+    case LayerParam::Overdub:
+        // the gain o of what the ring held, 0..1.
+        return fresh().asPercent().withDefault(0.0f);
+    case LayerParam::Splice:
+        // stepped 0..32 (kMaxSplices): 0 is the whole window.
+        return fresh()
+            .asInt()
+            .withRange(0.f, 32.f)
+            .withDefault(0.0f)
             .withDimensionlessFormatting()
             .withFlags(kAutomatableModulatable | CLAP_PARAM_IS_STEPPED);
 

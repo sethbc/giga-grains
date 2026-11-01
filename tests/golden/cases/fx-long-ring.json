@@ -1,0 +1,15 @@
+{
+  "mode": "fx",
+  "sampleRate": 48000,
+  "durationSeconds": 24.0,
+  "blockSize": 128,
+  "seed": 1,
+  "input": {"kind": "noise", "seconds": 8.0, "amplitude": 0.5},
+  "channels": 1,
+  "params": {"Mix": 1.0, "A Ring Length": 5.906890595608519, "Position": 0.0, "Density": 4.0},
+  "automation": [
+    {"time": 12.0, "param": "Position", "value": 0.9156631818862103},
+    {"time": 18.0, "param": "Position", "value": 1.0211623369741056},
+    {"time": 22.0, "param": "Position", "value": 1.0572367296643375}
+  ]
+}

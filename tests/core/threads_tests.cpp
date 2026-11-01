@@ -113,7 +113,7 @@ TEST_CASE("renders are identical with no pool and pools of 1, 2 and 8 workers",
           "[core][threads][determinism]")
 {
     // The four-layer render of "four layers are block-size invariant", every source kind in play
-    // (the automation switches each layer between Sample, Live and the unbuilt Resample) and
+    // (the automation switches each layer between Sample, Live and Resample, a Live engine) and
     // Feedback on layers B and D, in both products: at every block size, the serial runner and
     // stub pools of 1, 2 and 8 workers render the same bytes, the same grains in the same order
     // and the same ring heads; and every block size renders what the first did.
@@ -195,6 +195,58 @@ TEST_CASE("a declining pool renders the same bytes", "[core][threads][determinis
             REQUIRE(sameBits(serial.audio.right, r.audio.right));
             REQUIRE(r.heads == serial.heads);
             REQUIRE(r.log.events.size() == serial.log.events.size());
+        }
+    }
+}
+
+TEST_CASE("a Resample layer, a loop and overdub render the same bytes on any pool",
+          "[core][threads][determinism]")
+{
+    // M2 sub-project 2's spec §6.2, §7: a Resample layer's task reads the instance's tap, written
+    // after the join, and a looping, overdubbing layer writes only its own ring, so the serial
+    // runner and pools of 1, 2 and 8 workers render the same bytes and the same ring heads.
+    // Layer C switches to Resample and back (ruling SP-T12ab: its ring input crossfades), and layer
+    // A's loop narrows under its grains.
+    const Stereo input = noise(kInvarianceFrames, 0.5f, 49);
+    const std::vector<TimedEvent> events = {
+        {kInvarianceFrames / 4, layerSlot(LayerParam::Source, 2), false, 2.0},
+        {kInvarianceFrames / 3, layerSlot(LayerParam::LoopLength, 0), false, -3.0},
+        {kInvarianceFrames / 2, layerSlot(LayerParam::Source, 2), false, 1.0},
+    };
+    for (const Mode mode : {Mode::Fx, Mode::Instrument})
+    {
+        INFO(nameOf(mode));
+        LayersSetup setup = poolSetup(mode, nullptr);
+        setup.configure = [](Processor &p) {
+            p.setBase(layerSlot(LayerParam::Source, 0), 1.0f); // Live
+            p.setBase(layerSlot(LayerParam::Loop, 0), 1.0f);
+            p.setBase(layerSlot(LayerParam::LoopLength, 0), -2.0f);
+            p.setBase(layerSlot(LayerParam::Overdub, 0), 0.6f);
+            p.setBase(layerSlot(LayerParam::Source, 1), 2.0f); // Resample, fed back
+            p.setBase(layerSlot(LayerParam::Feedback, 1), 0.4f);
+            p.setBase(layerSlot(LayerParam::Source, 3), 2.0f); // Resample
+            p.setBase(layerSlot(LayerParam::Overdub, 3), 0.3f);
+        };
+        for (const uint32_t block : {64u, 511u})
+        {
+            INFO("block size " << block);
+            LayersRender serial;
+            renderLayers(input, events, 4096, {block}, serial, setup);
+            REQUIRE(allFinite(serial.audio.left));
+            REQUIRE(peak(serial.audio.left) > 0.05f);
+            for (const unsigned workers : {1u, 2u, 8u})
+            {
+                INFO(workers << " workers");
+                StubPool pool(workers);
+                LayersSetup pooled = setup;
+                pooled.runner = &pool;
+                LayersRender r;
+                renderLayers(input, events, 4096, {block}, r, pooled);
+                REQUIRE(sameBits(serial.audio.left, r.audio.left));
+                REQUIRE(sameBits(serial.audio.right, r.audio.right));
+                REQUIRE(r.heads == serial.heads);
+                REQUIRE(r.log.events.size() == serial.log.events.size());
+            }
         }
     }
 }

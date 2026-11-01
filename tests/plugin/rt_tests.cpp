@@ -13,11 +13,13 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 #include <catch2/catch_test_macros.hpp>
@@ -293,7 +295,7 @@ TEST_CASE("plugin process with the perform parameters automated does not allocat
     float *outputs[2] = {outLeft.data(), outRight.data()};
     const auto clapOn = noteOn(60, 0);
     constexpr std::size_t kSlots = gg::core::kParamCount;
-    static_assert(kSlots == 223);
+    static_assert(kSlots == 243);
     const auto metaOf = [mode](std::size_t s) -> const auto & {
         return gg::core::paramMeta(static_cast<ParamSlot>(s), mode);
     };
@@ -1389,4 +1391,207 @@ TEST_CASE("plugin process with four layers, controls and the pool does not alloc
     {
         REQUIRE(allocations == 0);
     }
+}
+
+TEST_CASE("plugin process and flush adopt rings and apply commands without allocating",
+          "[plugin][rt]")
+{
+    // M2 sub-project 2's spec §7: a ring resize's offer (the bounded copy of the frames written
+    // since the main thread's), a restored ring's offer and a ring command. process() takes them
+    // without allocating or freeing; params.flush, with one pending, adopts no ring (it stays
+    // trivial: the offer waits whole for the next process() call) and doesn't allocate either.
+    const char *id = GENERATE(kInstrumentId, kFxId);
+    CAPTURE(id);
+    const bool isFx = std::string_view(id) == kFxId;
+    gg::test::useMediaScratch("rt-rings");
+    gg::test::PluginUnderTest plugin(id);
+    REQUIRE(plugin.valid());
+    REQUIRE(plugin.activate(48000.0, 512));
+    const auto *params = paramsOf(plugin);
+    const auto *processor = plugin.impl().processor();
+    std::vector<float> inLeft(512, 0.25f), inRight(512, -0.25f), outLeft(512), outRight(512);
+    float *inputs[2] = {inLeft.data(), inRight.data()};
+    float *outputs[2] = {outLeft.data(), outRight.data()};
+    gg::test::InputEvents none;
+    const auto ringLength = [&](double log2Seconds) {
+        const auto e = gg::test::paramValue(
+            paramId(gg::core::layerSlot(gg::core::LayerParam::RingLength, 0)), log2Seconds);
+        gg::test::InputEvents events;
+        events.add(&e.header);
+        REQUIRE(plugin.process(512, inputs, outputs, events.list()) == CLAP_PROCESS_CONTINUE);
+        plugin.onMainThread(); // the watcher offers the new ring
+        REQUIRE(processor->sources(0).ringAdoptionPending());
+    };
+    for (int i = 0; i < 4; ++i)
+    {
+        REQUIRE(plugin.process(512, inputs, outputs, none.list()) == CLAP_PROCESS_CONTINUE);
+    }
+
+    // A resize: a flush with it pending adopts nothing, the next process() adopts it.
+    ringLength(2.0);
+    const gg::RingStorage *before = processor->ringRead(0).storage;
+    AllocTripwire::resetCount();
+    {
+        AllocTripwire::Scope armed;
+        params->flush(plugin.clap(), none.list(), gg::test::discardingOutputEvents());
+    }
+    REQUIRE_NO_ALLOCATIONS(AllocTripwire::count());
+    CHECK(processor->ringRead(0).storage == before);
+    CHECK(processor->sources(0).ringAdoptionPending());
+    AllocTripwire::resetCount();
+    {
+        AllocTripwire::Scope armed;
+        plugin.process(512, inputs, outputs, none.list());
+    }
+    REQUIRE_NO_ALLOCATIONS(AllocTripwire::count());
+    CHECK(processor->ringRead(0).storage->frames() == 4 * 48000);
+    CHECK_FALSE(processor->sources(0).ringAdoptionPending());
+    plugin.onMainThread(); // frees the storage replaced
+
+    // A restored ring (layer A Live and frozen: D1 saves it), taken by process(), then by a flush.
+    const clap_id sourceA = paramId(gg::core::layerSlot(gg::core::LayerParam::Source, 0));
+    const auto freeze = gg::test::paramValue(paramId(ParamSlot::Freeze), 1.0);
+    const auto live = gg::test::paramValue(sourceA, 1.0); // the instrument's is a Sample layer
+    gg::test::InputEvents freezeOn;
+    freezeOn.add(&freeze.header);
+    freezeOn.add(&live.header);
+    params->flush(plugin.clap(), freezeOn.list(), gg::test::discardingOutputEvents());
+    for (int i = 0; i < 4; ++i)
+    {
+        plugin.process(512, inputs, outputs, none.list());
+    }
+    const std::string state = plugin.save();
+    REQUIRE(plugin.load(state));
+    REQUIRE(processor->sources(0).ringAdoptionPending());
+    AllocTripwire::resetCount();
+    {
+        AllocTripwire::Scope armed;
+        plugin.process(512, inputs, outputs, none.list());
+    }
+    REQUIRE_NO_ALLOCATIONS(AllocTripwire::count());
+    CHECK_FALSE(processor->sources(0).ringAdoptionPending());
+    REQUIRE(plugin.load(state));
+    AllocTripwire::resetCount();
+    {
+        AllocTripwire::Scope armed;
+        params->flush(plugin.clap(), none.list(), gg::test::discardingOutputEvents());
+        params->flush(plugin.clap(), none.list(), gg::test::discardingOutputEvents());
+    }
+    REQUIRE_NO_ALLOCATIONS(AllocTripwire::count());
+    CHECK(processor->sources(0).ringAdoptionPending()); // a flush adopts no ring
+    AllocTripwire::resetCount();
+    {
+        AllocTripwire::Scope armed;
+        plugin.process(512, inputs, outputs, none.list());
+    }
+    REQUIRE_NO_ALLOCATIONS(AllocTripwire::count());
+    CHECK_FALSE(processor->sources(0).ringAdoptionPending());
+    plugin.onMainThread();
+
+    // A command (the FX's layer A reads its ring; the instrument's, a Sample layer again, ignores
+    // it), unfrozen first.
+    const auto thaw = gg::test::paramValue(paramId(ParamSlot::Freeze), 0.0);
+    const auto kind = gg::test::paramValue(sourceA, isFx ? 1.0 : 0.0);
+    gg::test::InputEvents freezeOff;
+    freezeOff.add(&thaw.header);
+    freezeOff.add(&kind.header);
+    params->flush(plugin.clap(), freezeOff.list(), gg::test::discardingOutputEvents());
+    plugin.impl().uiCommand({0, gg::core::CommandKind::AddSplice, 0, 0.01f});
+    AllocTripwire::resetCount();
+    {
+        AllocTripwire::Scope armed;
+        plugin.process(512, inputs, outputs, none.list());
+    }
+    REQUIRE_NO_ALLOCATIONS(AllocTripwire::count());
+    CHECK(processor->engine(0).live().spliceCount() == (isFx ? 1u : 0u));
+}
+
+TEST_CASE("plugin process and flush take four loaders' offers at once without allocating",
+          "[plugin][rt]")
+{
+    // M2 sub-project 2's spec §7: four loaders, one per layer, each load a file on its own worker
+    // and offer its source on its layer's exchange; all four offers wait at once. A params.flush
+    // and then a process() run armed while they do: neither allocates or frees, and the process()
+    // call has every layer's sample playing.
+    const auto dir = gg::test::useMediaScratch("rt-four-loaders");
+    gg::test::PluginUnderTest plugin(kInstrumentId);
+    REQUIRE(plugin.valid());
+    REQUIRE(plugin.activate(48000.0, 512));
+    const auto *params = paramsOf(plugin);
+    auto *processor = plugin.impl().processor();
+    auto &media = plugin.impl().media();
+
+    // Layers B to D on, and every layer's Level up (the defaults), by a flush.
+    const auto on = [](ParamSlot slot) { return gg::test::paramValue(paramId(slot), 1.0); };
+    const std::array<clap_event_param_value, 3> layersOn{
+        on(ParamSlot::LayerBOn), on(ParamSlot::LayerCOn), on(ParamSlot::LayerDOn)};
+    gg::test::InputEvents layerEvents;
+    for (const auto &e : layersOn)
+    {
+        layerEvents.add(&e.header);
+    }
+    params->flush(plugin.clap(), layerEvents.list(), gg::test::discardingOutputEvents());
+
+    std::array<std::size_t, gg::core::kLayers> heldBefore{};
+    for (uint8_t l = 0; l < gg::core::kLayers; ++l)
+    {
+        heldBefore[l] = processor->sources(l).held();
+        const double hz = 220.0 * (l + 1);
+        media.loader(l).requestLoad(gg::test::writeSineWav(
+            dir / ("layer-" + std::to_string(l) + ".wav"), 48000, 1.0, hz, 0.5));
+    }
+    // The loaders work in parallel; each offers when the main thread applies its result.
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+    const auto loading = [&] {
+        for (uint8_t l = 0; l < gg::core::kLayers; ++l)
+        {
+            if (media.loader(l).status().state == gg::plugin::SampleState::Loading)
+            {
+                return true;
+            }
+        }
+        return false;
+    };
+    while (loading() && std::chrono::steady_clock::now() < deadline)
+    {
+        plugin.onMainThread();
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    for (uint8_t l = 0; l < gg::core::kLayers; ++l)
+    {
+        INFO("layer " << int{l});
+        REQUIRE(media.loader(l).status().state == gg::plugin::SampleState::Loaded);
+        REQUIRE(processor->sources(l).held() == heldBefore[l] + 1); // offered, not yet taken
+    }
+
+    std::vector<float> outLeft(512), outRight(512);
+    float *outputs[2] = {outLeft.data(), outRight.data()};
+    const auto note = noteOn(60, 0);
+    gg::test::InputEvents withNote;
+    withNote.add(&note.header);
+    gg::test::InputEvents none;
+    AllocTripwire::resetCount();
+    {
+        AllocTripwire::Scope armed;
+        params->flush(plugin.clap(), none.list(), gg::test::discardingOutputEvents());
+    }
+    REQUIRE_NO_ALLOCATIONS(AllocTripwire::count());
+    clap_process_status status = CLAP_PROCESS_CONTINUE;
+    AllocTripwire::resetCount();
+    {
+        AllocTripwire::Scope armed;
+        for (int i = 0; i < 8; ++i)
+        {
+            status = plugin.process(512, nullptr, outputs, i == 0 ? withNote.list() : none.list());
+        }
+    }
+    REQUIRE_NO_ALLOCATIONS(AllocTripwire::count());
+    CHECK(status == CLAP_PROCESS_CONTINUE);
+    for (uint8_t l = 0; l < gg::core::kLayers; ++l)
+    {
+        INFO("layer " << int{l});
+        CHECK(processor->engine(l).activeGrains() > 0); // each layer plays its sample
+    }
+    CHECK(*std::max_element(outLeft.begin(), outLeft.end()) > 0.0f);
+    plugin.onMainThread(); // frees what the layers handed back
 }

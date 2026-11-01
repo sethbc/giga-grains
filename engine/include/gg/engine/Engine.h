@@ -126,6 +126,15 @@ using GrainStealSink = void (*)(void *ctx, uint32_t layer, uint64_t index, int64
 /// oldest frame, unless the freeze setting changes while it sounds. If lo > hi, the grain is
 /// dropped and counted in droppedGrains().
 ///
+/// **The window** (M2 sub-project 2's spec §6.1). Where N appears above, the clamp uses the
+/// ring's window length W at the onset (LiveSource::windowFramesAt: N, a loop's length or a
+/// splice's span), ρ is taken at the window's end (LiveSource::anchorAt: the head, or a selected
+/// splice's later mark), and the head's run is LiveSource::anchorRunAfter (0 while a splice is in
+/// effect, whose window holds still). With Loop off and no splice it is the clamp above, bit for
+/// bit. The window steers admission alone: a grain reads, and fades, against the ring's storage
+/// [R(t) − N, R(t) − 1] (LiveSource::fade), so a grain admitted under one window finishes in its
+/// old span when a loop or a splice change narrows, moves or widens it (ruling SP-T12aa).
+///
 /// What admission can't foresee, a freeze that stops the head under a grain or an unfreeze
 /// that moves the oldest frame onto it, the head-proximity fade (LiveSource::fade) covers: each
 /// output sample multiplies the grain by the fade at its read position, and where the fade is
@@ -320,6 +329,14 @@ class Engine
     void process(const float *const *in, uint32_t numInChannels, float *const *out,
                  uint32_t numChannels, uint32_t numFrames) noexcept SST_CPPUTILS_NONBLOCKING;
 
+    /// process() with the ring's overdub gains (M2 sub-project 2's spec §6.1): overdubGain[i] is
+    /// the gain of the frame written for this call's sample i, numFrames of them, split with the
+    /// input when the call is; nullptr is 0 throughout, the process() above bit for bit. See
+    /// LiveSource::write().
+    void process(const float *const *in, uint32_t numInChannels, float *const *out,
+                 uint32_t numChannels, uint32_t numFrames,
+                 const float *overdubGain) noexcept SST_CPPUTILS_NONBLOCKING;
+
     /// M0's form: process(nullptr, 0, out, numChannels, numFrames), with no input.
     void process(float *const *out, uint32_t numChannels,
                  uint32_t numFrames) noexcept SST_CPPUTILS_NONBLOCKING;
@@ -357,18 +374,71 @@ class Engine
     int64_t liveWriteHead() const noexcept { return live_.head(); }
     /// The live ring itself, read-only: read it with liveWriteHead() as the head.
     const LiveSource &live() const noexcept { return live_; }
+    /// The live ring, for the Processor's window, splice and storage calls (LiveSource::setLoop,
+    /// selectSplice, addSplice, adoptStorage, …), made between process() calls on the audio
+    /// thread, as setCloudParams is: each applies from the next process() call's first frame.
+    LiveSource &live() noexcept { return live_; }
+    /// After live()'s adoptStorage() or restoreStorage() changed the ring's length (M2
+    /// sub-project 2's spec §6.3, §6.5): Live mode's Position and Spray are bounded by the new
+    /// length, N / sampleRate seconds, instead of liveSeconds, for every grain drawn from the next
+    /// process() call on (CloudScheduler::setSourceMode; no onset moves). Real-time safe, with the
+    /// threading rule of live().
+    void ringResized() noexcept;
+
+    /// A ring shrink's first phase (ruling SP-T12ad; LiveSource's class comment): the ring length
+    /// the Processor's Ring Length asks for, in frames (0 for none), applied from the next
+    /// process() call's first frame. The read limit wanted is the request below N, none at or
+    /// above it. It lands at the first sample from which no sounding ring grain, over its whole
+    /// remaining life, reaches farther back than the shorter of the old reads and the new (its
+    /// farthest tap at least M frames inside them), and no overdub period's crossfade from the
+    /// last landing still runs: at once when so, else at the end of the latest grain that does
+    /// reach farther, or of that crossfade, checked again there with the request then in force
+    /// (liveReadLimitPending() until then). There the
+    /// reads take the new length, and overdub's period follows over kPeriodFadeSeconds.
+    /// Admission and Live mode's Position and Spray never reach past the reads: they take the
+    /// shorter of the request's length and the reads', at once for a shorter request (every
+    /// grain admitted from then inside the newest N′ frames, less kCapSlack while the read limit
+    /// waits), and at the read limit's landing for a longer one. Every change applies at a sample
+    /// fixed by the calls' samples and the grains, never by the blocks, so the render stays
+    /// block-size invariant; once the read limit has landed and the period's crossfade is done,
+    /// a shorter ring adopted at any later call renders the same. Real-time safe, with the
+    /// threading rule of live().
+    void setRingLimit(int64_t frames) noexcept { requestedLimit_ = std::max<int64_t>(0, frames); }
+    /// Whether a read limit is waiting for grains (setRingLimit).
+    bool liveReadLimitPending() const noexcept { return readLimitPending_; }
+    /// Whether a ring of `frames` may be adopted now, at the next call's first sample, without
+    /// stepping a sounding grain or the overdub (ruling SP-T12ad): false below the length the
+    /// last setRingLimit asked for (a stale offer); true at or above live().framesInUse(); below
+    /// it, false while a read limit is pending (it lands first, at a sample of its own), else
+    /// true only when every sounding ring grain keeps its farthest tap at least M frames inside
+    /// the newest `frames` for the rest of its life. Real-time safe; at most grainCapacity grains
+    /// checked.
+    bool liveRingFits(int64_t frames) const noexcept SST_CPPUTILS_NONBLOCKING;
     /// The kernel table this engine renders with (EngineConfig::kernels), chosen at
     /// construction.
     const kernels::Dispatch &kernelTable() const noexcept { return *kernels_; }
 
   private:
     void processBlock(const float *const *in, uint32_t numInChannels, float *const *out,
-                      uint32_t numChannels, uint32_t offset,
-                      uint32_t numFrames) noexcept SST_CPPUTILS_NONBLOCKING;
+                      uint32_t numChannels, uint32_t offset, uint32_t numFrames,
+                      const float *overdubGain) noexcept SST_CPPUTILS_NONBLOCKING;
     /// The grain a draw makes from the current sample source.
     GrainSpec sampleGrain(const GrainDraw &d) const noexcept;
     /// The grain a draw makes from the live ring, admission-clamped; false when it can't fit.
     bool liveGrain(const GrainDraw &d, GrainSpec &g) const noexcept;
+    /// Whether every sounding ring grain's farthest tap, at the next sample (clock_, the head at
+    /// most head() + 1), is at least M frames inside the newest `frames`; otherwise false, with
+    /// `latestEnd` the latest end of those that aren't (setRingLimit).
+    bool liveReadsWithin(int64_t frames,
+                         int64_t &latestEnd) const noexcept SST_CPPUTILS_NONBLOCKING;
+    /// Applies a pending read limit at clock_ if liveReadsWithin allows it, else waits for the
+    /// grains that don't fit (setRingLimit).
+    void checkReadLimit() noexcept SST_CPPUTILS_NONBLOCKING;
+    /// Recomputes the read limit wanted, whether it waits, and admission's limit and slack from
+    /// the request, N and the reads (setRingLimit).
+    void applyLimits() noexcept SST_CPPUTILS_NONBLOCKING;
+    /// Live mode's Position and Spray bound: N, or the admission limit below it, in seconds.
+    void updateLiveBound() noexcept;
     void admit(const GrainSpec &g, float *const dst[2], int64_t blockStart,
                int64_t &renderedTo) noexcept SST_CPPUTILS_NONBLOCKING;
     /// Adds every pool grain into dst over [from, to), in spawn order, with each grain's latched
@@ -448,6 +518,17 @@ class Engine
     // frame.
     uint64_t quota_{kUnlimitedQuota};
     uint64_t requestedQuota_{kUnlimitedQuota};
+
+    // The ring shrink (setRingLimit): the request, and as last applied; the admission limit in
+    // force (0 for none) and its slack; the read limit wanted (0 for none), whether it waits for
+    // grains and the sample it is checked at.
+    int64_t requestedLimit_{0};
+    int64_t appliedLimit_{0};
+    int64_t capFrames_{0};
+    bool capSlack_{false};
+    int64_t targetReadLimit_{0};
+    bool readLimitPending_{false};
+    int64_t readLimitCheckAt_{0};
 
     int64_t clock_{0};
     uint64_t dropped_{0};
