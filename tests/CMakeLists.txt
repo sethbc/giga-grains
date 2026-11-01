@@ -861,6 +861,17 @@ foreach (case IN ITEMS allowed other-target-source other-target-include other-ta
     set_tests_properties(asio_guard_${case} PROPERTIES LABELS "build")
 endforeach ()
 
+# The embed script (cmake/embed-text.cmake, carry-over row 319): its escaping over a fixture of a
+# quote, a backslash, control characters, UTF-8, a 40,000-byte line and an empty file, and its
+# refusal of unpaired lists. A mismatch reports the first differing byte offset.
+foreach (case IN ITEMS escapes long-line empty unpaired)
+    add_test(NAME embed_text_${case}
+            COMMAND ${CMAKE_COMMAND} -DGG_CASE=${case} -DGG_REPO=${PROJECT_SOURCE_DIR}
+            -DGG_OUT=${CMAKE_CURRENT_BINARY_DIR}/test-output/embed_text_${case}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed-text/run.cmake)
+    set_tests_properties(embed_text_${case} PROPERTIES LABELS "build;ui")
+endforeach ()
+
 # The version (cmake/version.cmake, spec §6.1): gg_compose_version joins the numeric part and the
 # pre-release suffix, and refuses a suffix that isn't dot-separated [0-9A-Za-z-] identifiers.
 # Each case runs cmake -P on its own and writes nothing.

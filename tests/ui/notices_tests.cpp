@@ -7,6 +7,7 @@
 // (cmake/licenses.cmake) in its order, each byte-equal to the file it was made from. Built only
 // with the editor (gg-ui).
 
+#include <algorithm>
 #include <cstddef>
 #include <fstream>
 #include <iterator>
@@ -26,6 +27,23 @@ std::string readFile(std::string_view path)
     std::ifstream in(std::string(path), std::ios::binary);
     REQUIRE(in.good());
     return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+}
+
+// "" when the two are equal, else the first differing byte offset, the sizes and a few bytes
+// around it: a mismatch of 35 KB texts should say where, not print both.
+std::string firstDifference(std::string_view actual, std::string_view expected)
+{
+    const std::size_t common = std::min(actual.size(), expected.size());
+    std::size_t at = 0;
+    while (at < common && actual[at] == expected[at])
+        ++at;
+    if (at == actual.size() && at == expected.size())
+        return {};
+    const std::size_t from = at > 20 ? at - 20 : 0;
+    return "first difference at byte " + std::to_string(at) + " (sizes " +
+           std::to_string(actual.size()) + " and " + std::to_string(expected.size()) +
+           "): actual [" + std::string(actual.substr(from, 40)) + "], expected [" +
+           std::string(expected.substr(from, 40)) + "]";
 }
 } // namespace
 
@@ -52,13 +70,15 @@ TEST_CASE("the embedded notices are the license set, byte for byte", "[ui]")
         CHECK(!onDisk.empty());
         // The sizes first, so a mismatch reports a number before the texts themselves.
         REQUIRE(notice.text.size() == onDisk.size());
-        CHECK(notice.text == onDisk);
+        const std::string difference = firstDifference(notice.text, onDisk);
+        INFO(difference);
+        CHECK(difference.empty());
     }
 
     // The notices come first, beginning with the file's own first line (read, not hard-coded).
     const std::string notices0 = readFile(notices[0].sourcePath);
     const std::string firstLine = notices0.substr(0, notices0.find('\n'));
-    CHECK(firstLine.starts_with("# "));
+    CHECK(notices[0].text.starts_with("# "));
     CHECK(notices[0].text.starts_with(firstLine));
     CHECK(notices[0].sourcePath.ends_with("/THIRD_PARTY_NOTICES.md"));
 }
