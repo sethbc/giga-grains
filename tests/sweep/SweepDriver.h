@@ -167,6 +167,16 @@ struct Verdict
     std::string where;
 };
 
+/// What brought an exempt stretch (SweepDriver::exemptShare): the header comment's list.
+enum class Exemption
+{
+    FadeIn,         ///< the input's fade-in
+    ReverbSize,     ///< row 217's Reverb Size moves
+    ReverbOnset,    ///< kReverbOnset
+    LimiterDrive,   ///< kLimiterDrive (D5b)
+    DelayGlideHold, ///< kDelayGlideHold (D-glide)
+};
+
 class SweepDriver
 {
   public:
@@ -213,7 +223,7 @@ class SweepDriver
         }
         events_.reserve(1 << 14);
         callEvents_.reserve(1 << 14);
-        exempt_.push_back({0, kFade + 256}); // the input's fade-in
+        exempt_.push_back({0, kFade + 256, Exemption::FadeIn}); // the input's fade-in
         sizeBase_ = meta(gg::core::ParamSlot::ReverbSize).defaultVal;
         label("the start");
     }
@@ -237,6 +247,36 @@ class SweepDriver
     {
         return std::any_of(exempt_.begin(), exempt_.end(),
                            [&](const Stretch &s) { return s.from <= sample && sample < s.to; });
+    }
+    /// The share of the render so far, 0 to 1, that exemption `why` covers on its own: the union
+    /// of its stretches inside the render over the render's length. Shares overlap, so they can
+    /// sum past what the check leaves out (1 − Verdict::scoredFraction, less the short stretches
+    /// it drops between exempt ones). Instrumentation for a case's pinned floor.
+    double exemptShare(Exemption why) const
+    {
+        const auto frames = static_cast<int64_t>(out_[0].size());
+        std::vector<std::pair<int64_t, int64_t>> ex;
+        for (const auto &e : exempt_)
+        {
+            if (e.why == why)
+            {
+                ex.emplace_back(std::clamp<int64_t>(e.from, 0, frames),
+                                std::clamp<int64_t>(e.to, 0, frames));
+            }
+        }
+        std::sort(ex.begin(), ex.end());
+        int64_t covered = 0;
+        int64_t at = 0;
+        for (const auto &[a, b] : ex)
+        {
+            const int64_t from = std::max(a, at);
+            if (b > from)
+            {
+                covered += b - from;
+            }
+            at = std::max(at, b);
+        }
+        return frames > 0 ? static_cast<double>(covered) / static_cast<double>(frames) : 0.0;
     }
     /// The render so far, channel by channel (a planted fault's way in).
     std::array<std::vector<float>, 2> &output() noexcept { return out_; }
@@ -535,6 +575,7 @@ class SweepDriver
     {
         int64_t from;
         int64_t to;
+        Exemption why;
     };
     /// The shortest stretch the click check scores: four times the score's ±5 ms.
     static constexpr int64_t kMinStretch = 4 * 240;
@@ -701,26 +742,28 @@ class SweepDriver
             {
                 return false; // not applied yet
             }
-            exempt_.push_back({b - 64, b + predelay + kReverbSizeExempt});
+            exempt_.push_back({b - 64, b + predelay + kReverbSizeExempt, Exemption::ReverbSize});
             return true;
         });
         const bool active = processor_.reverbActive();
         if (active && !reverbWasActive_)
         {
-            exempt_.push_back({callStart - 64, clock_ + predelay + kReverbOnsetExempt});
+            exempt_.push_back(
+                {callStart - 64, clock_ + predelay + kReverbOnsetExempt, Exemption::ReverbOnset});
         }
         reverbWasActive_ = active;
         // kLimiterDrive: the call, and 10 ms after it.
         const auto drive = processor_.limiterDrive();
         if (drive.leastGain < kPeakDriveGain || drive.softDriven)
         {
-            exempt_.push_back({callStart, clock_ + kLimiterDriveTail});
+            exempt_.push_back({callStart, clock_ + kLimiterDriveTail, Exemption::LimiterDrive});
         }
         // kDelayGlideHold: the samples of the call between the first and the last that met it.
         const auto glide = processor_.delayGlideSpan();
         if (glide.first >= 0)
         {
-            exempt_.push_back({callStart + glide.first, callStart + glide.last + 1});
+            exempt_.push_back(
+                {callStart + glide.first, callStart + glide.last + 1, Exemption::DelayGlideHold});
         }
         inspect();
     }

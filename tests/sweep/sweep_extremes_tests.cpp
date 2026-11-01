@@ -10,6 +10,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <sstream>
 #include <string>
 
 #include <catch2/catch_test_macros.hpp>
@@ -56,8 +57,34 @@ void setAll(SweepDriver &d, int state, uint64_t seed)
 /// The FX's was 0.413 before M2 sub-project 2's ring parameters were drawn too, and is 0.413 still
 /// with them held at their defaults: at their ends (Overdub 1 among them) the rings are louder, so
 /// Peak is driven under -6 dB longer and kLimiterDrive, unchanged, covers 12.8% of the render
-/// against 11.6%; every other exemption covers what it did.
-void extremes(Mode mode, uint64_t seed, double minScored)
+/// against 11.6%; every other exemption covers what it did. Each exemption's own share of the
+/// FX render (SweepDriver::exemptShare; they overlap): the fade-in 0.04%, Reverb Size moves
+/// 43.0%, the reverb's onset 18.5%, kLimiterDrive 12.8% and kDelayGlideHold 24.3%, leaving 40.17%
+/// scored. The instrument's: 0.04%, 37.3%, 20.7%, 13.0% and 21.5%, leaving 30.04%.
+/// Each exemption's own share of a driver's render (SweepDriver::exemptShare).
+struct Shares
+{
+    double fadeIn, reverbSize, reverbOnset, limiterDrive, delayGlideHold;
+};
+
+Shares sharesOf(const SweepDriver &d)
+{
+    using gg::test::Exemption;
+    return {d.exemptShare(Exemption::FadeIn), d.exemptShare(Exemption::ReverbSize),
+            d.exemptShare(Exemption::ReverbOnset), d.exemptShare(Exemption::LimiterDrive),
+            d.exemptShare(Exemption::DelayGlideHold)};
+}
+
+std::string describe(const Shares &s)
+{
+    std::ostringstream o;
+    o << "exempt shares: fade-in " << s.fadeIn << ", Reverb Size " << s.reverbSize
+      << ", reverb onset " << s.reverbOnset << ", kLimiterDrive " << s.limiterDrive
+      << ", kDelayGlideHold " << s.delayGlideHold;
+    return o.str();
+}
+
+Shares extremes(Mode mode, uint64_t seed, double minScored)
 {
     SweepDriver d(mode, seed);
     const Material m = mode == Mode::Fx ? Material::SineLive : Material::NoteOverSine;
@@ -77,12 +104,18 @@ void extremes(Mode mode, uint64_t seed, double minScored)
     d.setDefaults();
     d.play(1.0, m);
     gg::test::requireClean(d, gg::test::chainBound(d, minScored));
+    return sharesOf(d);
 }
 } // namespace
 
 TEST_CASE("extremes: minima, maxima and 32 corners, fx", "[sweep]")
 {
-    extremes(Mode::Fx, 2101, 0.395);
+    const Shares shares = extremes(Mode::Fx, 2101, 0.395);
+    // The integration review's Minor 3: sub-project 2's Overdub can make the rings arbitrarily
+    // loud, so kLimiterDrive's coverage grows with the draws rather than with the limiter's law
+    // alone. A coarse cap on it, well above the 12.8% it covers.
+    INFO(describe(shares));
+    CHECK(shares.limiterDrive < 0.15);
 }
 
 TEST_CASE("extremes: minima, maxima and 32 corners, instrument", "[sweep]")
