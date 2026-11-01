@@ -308,7 +308,7 @@ TEST_CASE("cutoff and resonance move without a zipper", "[core][buses]")
     CHECK(clickScore(glided) < kClickLimit);
     Rig plainRig(sine(440.0));
     Stereo hard = plainRig.run(kFrames);
-    sst::filters::CytomicSVF svf;
+    sst::filters::CytomicSVF svf{};
     svf.init();
     for (int64_t i = 0; i < kFrames; ++i)
     {
