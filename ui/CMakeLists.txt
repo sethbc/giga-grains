@@ -49,10 +49,10 @@ if (GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
             src/views/RouteList.cpp
             src/views/ModView.cpp
             src/views/PerformView.cpp
+            src/views/PanelGrid.cpp
             src/MutatePanel.cpp
             src/PresetBrowser.cpp
             src/PresetStrip.cpp
-            src/views/PanelGrid.cpp
             )
     add_library(gg::ui ALIAS gg-ui)
 

@@ -96,8 +96,18 @@ class ParamControl final : public juce::Component, public juce::DragAndDropTarge
     /// The label as it is drawn, wrapped to the lines it gets.
     juce::StringArray labelLines() const;
     /// Whether the label (and, on a slider that draws them, its value) is drawn whole: each line
-    /// within the width it gets, in the lines it gets, clear of the control's track.
+    /// within the width it gets, in the lines it gets, clear of the control's track. A menu's
+    /// every choice, as its button draws it (menuText), within the button in the button's font
+    /// (once its style sheet is set; before, nothing is measured).
     bool labelFits() const;
+
+    /// A menu's short form of each choice, from its lowest: the button draws a choice's short
+    /// form where its full text doesn't fit the button's width (the compact layer strip's Source,
+    /// "Osc" for "Oscillator"). The popup list, the tooltip and the accessibility value keep the
+    /// full text. An empty entry, or none, keeps the full text. Nothing for another kind.
+    void setCompactMenuTexts(std::vector<juce::String> texts);
+    /// The text a menu's button draws for `step` at its width now; "" for another kind.
+    juce::String menuText(int step) const;
 
     /// A route's ring: its matrix slot (1 to 48), its depth as a fraction of the parameter's
     /// range (negative lowers), whether it swings both ways, and its source family's colour.

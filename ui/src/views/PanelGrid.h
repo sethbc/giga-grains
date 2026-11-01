@@ -17,8 +17,9 @@ namespace gg::ui
 /// order, each at its preferredSize for the viewport's visible width, wrapped left to right and
 /// top to bottom with `margin` around each, in `content`, the viewport's viewed component, whose
 /// size is set to the viewport's visible width and the lowest panel's bottom (its margin
-/// included), so the viewport scrolls to every panel. A panel whose preferredSize is {0, 0} (no
-/// control the product shows) is hidden; every other is shown. Message thread only.
+/// included), so the viewport scrolls to every panel. A panel whose preferredSize has a zero width
+/// or height (ParamPanel gives {0, 0} when the product shows none of its controls) is hidden;
+/// every other is shown. Message thread only.
 void layoutPanelGrid(juce::Viewport &viewport, juce::Component &content,
                      std::span<ParamPanel *const> panels, int margin);
 } // namespace gg::ui

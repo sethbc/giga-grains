@@ -272,7 +272,7 @@ TEST_CASE("the light palette's macro colour shows on its ground", "[plugin]")
           light.background.getPerceivedBrightness());
 }
 
-TEST_CASE("the light palette's surfaces", "[plugin][ui]")
+TEST_CASE("the light palette's surfaces", "[plugin]")
 {
     // Row 320: the editor's own surfaces and text change with the theme (the lanes do not: D9).
     const gg::ui::Palette &light = gg::ui::Palette::light();
@@ -288,7 +288,7 @@ TEST_CASE("the light palette's surfaces", "[plugin][ui]")
     CHECK(light.lane == dark.lane);
 }
 
-TEST_CASE("paletteOf walks through an intermediate parent", "[plugin][ui]")
+TEST_CASE("paletteOf walks through an intermediate parent", "[plugin]")
 {
     // Row 320: a component reads the palette of the nearest PaletteOwner above it, however deep.
     struct Owner final : juce::Component, gg::ui::PaletteOwner

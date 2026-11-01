@@ -1091,53 +1091,14 @@ bool captionFits(const gg::ui::ParamControl &control)
            static_cast<float>(cell->getWidth());
 }
 
-/// Whether `c` is one of a compact layer strip's controls.
-bool inLayerStrip(const juce::Component &c)
-{
-    for (const juce::Component *at = c.getParentComponent(); at != nullptr;
-         at = at->getParentComponent())
-    {
-        if (dynamic_cast<const gg::ui::LayerStrip *>(at) != nullptr)
-        {
-            return true;
-        }
-    }
-    return false;
-}
-
-/// Every choice a menu button can show drawn whole in it, in the button's own font:
-/// sst-jucegui's MenuButtonPainter draws the text in the button less 1 + 4 px at the left and
-/// 1 + 4 + 6 px (the arrow) at the right.
-bool menuTextFits(sst::jucegui::components::MenuButtonDiscreteEditor &menu)
-{
-    REQUIRE(menu.style() != nullptr); // else the font is a placeholder
-    REQUIRE(menu.data != nullptr);
-    const juce::Font font =
-        menu.getFont(sst::jucegui::components::MenuButtonDiscreteEditor::Styles::labelfont);
-    const float room = static_cast<float>(menu.getWidth() - 2 - 4 - (4 + 6));
-    bool fits = true;
-    for (int v = menu.data->getMin(); v <= menu.data->getMax(); ++v)
-    {
-        const juce::String text = menu.data->getValueAsStringFor(v);
-        const float width = gg::ui::ParamControl::textWidth(font, text);
-        if (width > room)
-        {
-            UNSCOPED_INFO("\"" << text << "\" is " << width << " px in " << room);
-            fits = false;
-        }
-    }
-    return fits;
-}
 } // namespace
 
 TEST_CASE("no control's label is elided or collides at 960 by 600 and 640 by 360", "[plugin]")
 {
-    // Row 334: knobs, toggles and horizontal sliders by labelFits; menus by their caption and every
-    // choice's text; vertical sliders by their caption (the Step panel's draw none), at both sizes.
-    // The compact layer strip (the Perform and Mod views' LayerStrip) is checked at 960 x 600
-    // only: at 640 x 360 its cells are too narrow for the Source menu's longer kinds ("Oscillator"
-    // is 51 px in 28 to 41) and, in the Mod view, for the Freeze toggle's label. That is the
-    // strip's own layout, not a caption shortLabel can shorten (M2 views PR 2, Task 2's report).
+    // Row 334, at both sizes: every control by labelFits (a menu's every choice as its button
+    // draws it, in the button's font: the compact layer strip's Source draws a kind's short form
+    // where the name doesn't fit), and a menu's and a vertical slider's caption above it (the
+    // Step panel's sliders draw none).
     const juce::ScopedJuceInitialiser_GUI juceGui;
     for (const char *id : kProducts)
     {
@@ -1159,8 +1120,7 @@ TEST_CASE("no control's label is elided or collides at 960 by 600 and 640 by 360
                 collect(*viewOf(*editor, view), controls);
                 for (gg::ui::ParamControl *control : controls)
                 {
-                    if (!visibleIn(*control, *viewOf(*editor, view)) ||
-                        (size.first < 960 && inLayerStrip(*control)))
+                    if (!visibleIn(*control, *viewOf(*editor, view)))
                     {
                         continue;
                     }
@@ -1175,8 +1135,8 @@ TEST_CASE("no control's label is elided or collides at 960 by 600 and 640 by 360
                     {
                         ++menus;
                         INFO("caption \"" << control->getParentComponent()->getName() << "\"");
+                        REQUIRE(menu[0]->style() != nullptr); // else labelFits measures nothing
                         CHECK(captionFits(*control));
-                        CHECK(menuTextFits(*menu[0]));
                     }
                     if (!slider.empty())
                     {

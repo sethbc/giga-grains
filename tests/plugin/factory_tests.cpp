@@ -1091,6 +1091,53 @@ TEST_CASE("the strip's controls are the layer's parameters", "[plugin]")
     CHECK(findDeep(column, "strip.3.letter")->getY() >= 300);
 }
 
+TEST_CASE("a narrow strip draws the Source kinds' short forms and keeps their names", "[plugin]")
+{
+    // The editor at its smallest (640 x 360) leaves the strip's Source button too narrow for the
+    // longer kinds: the button draws a short form, while the list and the accessibility value keep
+    // the name. Freeze takes from On what its label needs.
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    sst::jucegui::style::StyleSheet::initializeStyleSheets([] {});
+    RecordingContext recording(gg::core::Mode::Fx);
+    for (const int width : {800, 400})
+    {
+        INFO("width " << width);
+        gg::ui::LayerStrip strip(recording.context, gg::ui::LayerStrip::Layout::Row);
+        strip.setSize(width, 64);
+        auto *source = dynamic_cast<gg::ui::ParamControl *>(
+            findDeep(strip, controlId(ParamSlot::B_Source).toRawUTF8()));
+        auto *freeze = dynamic_cast<gg::ui::ParamControl *>(
+            findDeep(strip, controlId(ParamSlot::B_Freeze).toRawUTF8()));
+        REQUIRE(source != nullptr);
+        REQUIRE(freeze != nullptr);
+        CHECK(freeze->labelFits());
+        CHECK(freeze->shownLabel() == "Freeze");
+        auto *menu = childOfType<sst::jucegui::components::MenuButtonDiscreteEditor>(*source);
+        REQUIRE(menu != nullptr);
+        REQUIRE(menu->data != nullptr);
+        menu->setStyle(sst::jucegui::style::StyleSheet::getBuiltInStyleSheet(
+            sst::jucegui::style::StyleSheet::DARK)); // the editor's, for the button's font
+        strip
+            .sendLookAndFeelChange(); // as the editor's theme switch does: the strip lays out again
+        CHECK(source->labelFits());
+        const int oscillator = static_cast<int>(gg::core::SourceKind::Oscillator);
+        CHECK(menu->data->getValueAsStringFor(oscillator) == "Oscillator"); // the list's text
+        CHECK(source->menuText(oscillator) == (width == 800 ? "Oscillator" : "Osc"));
+        CHECK(source->menuText(static_cast<int>(gg::core::SourceKind::Live)) == "Live");
+        // The accessibility value is the kind's name, whatever the button draws.
+        recording.values[static_cast<std::size_t>(ParamSlot::B_Source)] =
+            static_cast<float>(oscillator);
+        strip.refresh();
+        const std::unique_ptr<juce::AccessibilityHandler> handler(
+            menu->createAccessibilityHandler());
+        REQUIRE(handler != nullptr);
+        REQUIRE(handler->getValueInterface() != nullptr);
+        CHECK(handler->getValueInterface()->getCurrentValueAsString() == "Oscillator");
+        recording.values[static_cast<std::size_t>(ParamSlot::B_Source)] =
+            gg::core::paramMeta(ParamSlot::B_Source, gg::core::Mode::Fx).defaultVal;
+    }
+}
+
 TEST_CASE("selecting a layer in the strip", "[plugin]")
 {
     const juce::ScopedJuceInitialiser_GUI juceGui;
