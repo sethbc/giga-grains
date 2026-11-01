@@ -327,7 +327,7 @@ runs the tests labelled either. The labels are:
     Resample tap, ring parameters, commands, ring exchange (resize and restore) and ring read,
     with their determinism and tripwire cases (among them `tests/core/source_tests.cpp` and the
     ring-exchange cases of `tests/core/exchange_tests.cpp`);
-  - `sweep` (M2 sub-project 3): the sweep harness, 24 cases in `tests/sweep/` over the
+  - `sweep` (M2 sub-project 3): the sweep harness, 30 cases in `tests/sweep/` over the
     `Processor` in both products (parameter sweeps, extremes, automation bursts and the overload
     sweeps), each checking finiteness, the peak bound, no runaway and the goldens' click score
     outside named exemptions (`SweepDriver.h`; carry-over rows 217 and 302), and pinning a floor

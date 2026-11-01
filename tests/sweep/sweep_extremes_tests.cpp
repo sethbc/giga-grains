@@ -50,17 +50,6 @@ void setAll(SweepDriver &d, int state, uint64_t seed)
                : "corner " + std::to_string(state - 1) + " of " + std::to_string(kCorners));
 }
 
-/// `minScored`: the share of the render the click check scores, pinned a little under what the
-/// case measures (0.402 in the FX, 0.300 in the instrument, with the draws keyed by CLAP ID):
-/// Reverb Size moves are exempt (row 217), and so are kLimiterDrive's and kDelayGlideHold's
-/// stretches (SweepDriver.h; the delay's glide, at 0.5 samples a sample, runs for up to 4 s).
-/// The FX's was 0.413 before M2 sub-project 2's ring parameters were drawn too, and is 0.413 still
-/// with them held at their defaults: at their ends (Overdub 1 among them) the rings are louder, so
-/// Peak is driven under -6 dB longer and kLimiterDrive, unchanged, covers 12.8% of the render
-/// against 11.6%; every other exemption covers what it did. Each exemption's own share of the
-/// FX render (SweepDriver::exemptShare; they overlap): the fade-in 0.04%, Reverb Size moves
-/// 43.0%, the reverb's onset 18.5%, kLimiterDrive 12.8% and kDelayGlideHold 24.3%, leaving 40.17%
-/// scored. The instrument's: 0.04%, 37.3%, 20.7%, 13.0% and 21.5%, leaving 30.04%.
 /// Each exemption's own share of a driver's render (SweepDriver::exemptShare).
 struct Shares
 {
@@ -84,6 +73,17 @@ std::string describe(const Shares &s)
     return o.str();
 }
 
+/// `minScored`: the share of the render the click check scores, pinned a little under what the
+/// case measures (0.402 in the FX, 0.300 in the instrument, with the draws keyed by CLAP ID):
+/// Reverb Size moves are exempt (row 217), and so are kLimiterDrive's and kDelayGlideHold's
+/// stretches (SweepDriver.h; the delay's glide, at 0.5 samples a sample, runs for up to 4 s).
+/// The FX's was 0.413 before M2 sub-project 2's ring parameters were drawn too, and is 0.413 still
+/// with them held at their defaults: at their ends (Overdub 1 among them) the rings are louder, so
+/// Peak is driven under -6 dB longer and kLimiterDrive, unchanged, covers 12.8% of the render
+/// against 11.6%; every other exemption covers what it did. Each exemption's own share of the
+/// FX render (SweepDriver::exemptShare; they overlap): the fade-in 0.04%, Reverb Size moves
+/// 43.0%, the reverb's onset 18.5%, kLimiterDrive 12.8% and kDelayGlideHold 24.3%, leaving 40.17%
+/// scored. The instrument's: 0.04%, 37.3%, 20.7%, 13.0% and 21.5%, leaving 30.04%.
 Shares extremes(Mode mode, uint64_t seed, double minScored)
 {
     SweepDriver d(mode, seed);
