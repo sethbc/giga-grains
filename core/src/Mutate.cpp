@@ -20,7 +20,7 @@ namespace
 {
 using md_t = sst::basic_blocks::params::ParamMetaData;
 
-/// The structural locks, the same in both products (D3).
+/// The structural locks, the same in both products (D3; wave 2's by section, spec §6.9).
 LockSet buildStructuralLocks() noexcept
 {
     LockSet l;
@@ -30,6 +30,15 @@ LockSet buildStructuralLocks() noexcept
     lock(ParamSlot::DryToReverb);
     lock(ParamSlot::MorphX);
     lock(ParamSlot::MorphY);
+    // The engine's tier and CPU budget, not the sound's character: a mutated Budget could change
+    // how overload degrades (M2 sub-project 3).
+    lock(ParamSlot::Budget);
+    // The Extremes' send, as Reverb Amount is, and the limiter, the output's safety (sub-project
+    // 4). The delay's Time, Feedback, Damping and Ping-pong are its sound, and move.
+    lock(ParamSlot::DelayAmount);
+    lock(ParamSlot::LimiterMode);
+    lock(ParamSlot::LimiterCeiling);
+    lock(ParamSlot::LimiterRelease);
     for (const ParamSlot s : kMacroSlots)
     {
         lock(s);
@@ -41,6 +50,16 @@ LockSet buildStructuralLocks() noexcept
         lock(layerSlot(LayerParam::Source, layer));
         lock(layerSlot(LayerParam::Freeze, layer));
         lock(layerSlot(LayerParam::StepLength, layer));
+        lock(layerSlot(LayerParam::Quality, layer));
+    }
+    // Every layer's five ring parameters: capture and memory (sub-project 2), which a preset load
+    // keeps too (isRingParam). Ring Length would never move anyway (SP-M8, below).
+    for (size_t s = 0; s < kParamCount; ++s)
+    {
+        if (isRingParam(static_cast<ParamSlot>(s)))
+        {
+            lock(static_cast<ParamSlot>(s));
+        }
     }
     return l;
 }

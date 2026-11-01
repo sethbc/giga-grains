@@ -606,7 +606,12 @@ gg-render --pack-preset <source.json> -o <out.ggpreset> [--content-dir DIR]
       file's. It is applied first: an FX preset in an instrument spec, or the reverse, is bad
       input (exit 2: "the preset is for Giga Grains FX, not Giga Grains"); then its values and
       routes replace the defaults and the factory routes, and the spec's `params`, `mod` and
-      `samples` go on top. Its seed is ignored: the spec's is the render's.
+      `samples` go on top. Its seed is ignored: the spec's is the render's. So are its ring
+      parameters (Ring Length, Loop, Loop Length, Overdub, Splice), as a plugin's preset load
+      keeps the instance's; the spec's `params` may still set them. Its samples, named by their
+      content-relative references, are loaded from `--content-dir` alone (below), before the
+      spec's `samples`; an instrument spec may leave out `sample` beside `preset`, and layer A's
+      is then the preset's.
   - **Sessions and ring operations** (M2 sub-project 2's spec §6.10; INTENT §19), each optional
     in FX and instrument mode, and unknown keys in sample mode:
     - `state` is a `GGST` file (a relative path as a file source's), restored before the render
@@ -649,16 +654,21 @@ gg-render --pack-preset <source.json> -o <out.ggpreset> [--content-dir DIR]
     the M0 goldens are untouched.
 - **`--preset FILE`** sets the spec's `preset`, or overrides it, and is resolved as the key is
   (so a relative one from the spec's directory or `--media-dir`). **`--content-dir DIR`** is a
-  content root: a restored `state`'s samples are found under it by content path, and it is the
-  content folder a preset's content-relative samples will be taken from. gg-render reads no
-  preset that names a sample yet (presets' group 2 resolves them), so for a preset it is
-  accepted and unused.
+  content root: a restored `state`'s samples are found under it by content path, and a
+  preset's content-relative samples under it alone (never searched; spec §6.4). A preset that
+  names a sample is bad input (exit 2, naming the reference) without `--content-dir`, when the
+  file isn't under it, or when its size or SHA-256 isn't the preset's.
 - **`--pack-preset`** compiles a preset source (`tools/gg-render/PresetSource.h`: `product`,
   `name`, `tags` from the vocabulary, optional `author` and `description`, and `params`, `mod`
   and `samples` in the spec's vocabulary) into the preset file `-o` names, the product's defaults
   and factory routes under the source's. It takes no other option but `--content-dir`, and a
-  bad source exits 2 with the parser's message. `tests/fixtures/presets/` holds the test sources
-  (`fx-test.json`, `inst-test.json`).
+  bad source exits 2 with the parser's message. Each of its `samples` (content-relative paths)
+  is checked under `--content-dir`, which a source naming any needs, and recorded in `MEDI`
+  version 2 as its reference with the file's fingerprint, format, channels, rate and frames (no
+  absolute path). A source may not set a ring parameter (exit 2, naming it): a preset load keeps
+  the instance's. `tests/fixtures/presets/` holds the test sources (`fx-test.json`,
+  `inst-test.json`, and `fx-sample-test.json`, whose layer A names `loop-48k.wav` under
+  golden_media's folder).
 - Its exit status is 0 for a pass, 1 when a comparison fails, 2 for bad input and 3 for an
   internal error.
 - A relative file path is taken from the spec's directory, or from `--media-dir`. The golden

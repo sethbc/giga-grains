@@ -54,6 +54,22 @@ std::string encodePreset(const PresetInfo &info, const SessionState &state)
     preset.preset = info;
     preset.seed = 0;       // ignored on load: the instance keeps its own (spec §6.1, D6)
     preset.edited = false; // a session's mark alone (D-Q2)
+    // A preset never embeds audio and carries no ring or cap (spec §6.1; D5): its samples are
+    // files, named by their paths and (a factory sample's) content-relative reference.
+    for (auto &sample : preset.samples)
+    {
+        if (sample && sample->embed)
+        {
+            sample.reset();
+        }
+    }
+    preset.rings = {};
+    preset.audio.clear();
+    preset.sampleAudioMissing = {};
+    preset.ringAudioMissing = {};
+    preset.memoryCapMiB = kMemoryCapDefaultMiB;
+    preset.newerMedia.reset();
+    preset.newerAudio.reset();
     return encodeState(preset);
 }
 
@@ -85,6 +101,17 @@ bool presetInfoOf(std::string_view bytes, PresetInfo &info)
     std::string_view media;
     return findStateChunks(bytes, patch, media) && patch.find('\0') == std::string_view::npos &&
            presetInfoOfXml(patch, info);
+}
+
+void keepRingParams(const ParamValues &current, ParamValues &loaded) noexcept
+{
+    for (size_t s = 0; s < kParamCount; ++s)
+    {
+        if (isRingParam(static_cast<ParamSlot>(s)))
+        {
+            loaded[s] = current[s];
+        }
+    }
 }
 
 SessionState initState(Mode mode)

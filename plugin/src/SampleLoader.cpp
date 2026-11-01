@@ -11,6 +11,7 @@
 #include <new>
 #include <utility>
 
+#include "gg/media/ContentPaths.h"
 #include "gg/media/Convert.h"
 #include "gg/media/Decode.h"
 #include "gg/media/MemoryBudget.h"
@@ -373,11 +374,16 @@ void SampleLoader::convertNow(double rate) noexcept
 
 std::shared_ptr<const PreparedSource> SampleLoader::findAndLoad(double rate, uint64_t release)
 {
-    const std::string fileName = nameOf(entry_->absolutePath);
+    // A factory preset's entry has its content-relative reference alone (no absolute path): its
+    // name, for the status, is the reference's.
+    const std::string fileName =
+        nameOf(entry_->absolutePath.empty() ? entry_->contentPath : entry_->absolutePath);
     const fs::path saved = pathOf(entry_->absolutePath);
     const core::MachineSettings settings = readSettings();
-    const media::SearchResult found =
-        SearchCache::process().find(*entry_, settings, SearchCache::Clock::now());
+    // The content roots are a candidate after the saved path (the presets spec §6.4; findSample's
+    // step 2), for an entry with a content-relative reference.
+    const media::SearchResult found = SearchCache::process().find(
+        *entry_, settings, SearchCache::Clock::now(), media::contentRoots(settings));
     if (found.outcome != media::SearchOutcome::Found)
     {
         // Changed: findSample read the file at the saved path. Missing with a file there: it

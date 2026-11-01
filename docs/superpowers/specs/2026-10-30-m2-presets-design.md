@@ -566,6 +566,16 @@ only if sub-project 6 widens the slot.
 >   locks are computed at each press from the values, so a layer switched on later is mutable at
 >   once. In the panel a layer's 16 Step values are one row, locked together; the model's
 >   `LockSet` stays per slot.
+
+> **Amended 2026-11-01 (group 2's Task 14), wave 2's sections:** the structural locks are **62
+> slots**: the 33 above, plus every layer's Quality and five ring parameters (Ring Length, Loop,
+> Loop Length, Overdub, Splice: capture and memory), Budget, Delay Amount (as Reverb Amount is)
+> and the limiter's Mode, Ceiling and Release (output safety). Smear, Bus Split, the buses'
+> filters, cutoffs and resonances, and the delay's Time, Feedback, Damping and Ping-pong move.
+> The panel adds Delay and Limiter sections after Space, and shows each layer's Ring Length,
+> which no press moves (SP-M8), dimmed with no toggle. A preset load (INIT's too) keeps each
+> layer's five ring parameters, as it keeps the seed (the program manager's ruling), and a
+> factory source may set none (`--pack-preset` refuses it).
 > - **The button** (`preset.mutate`) lives in the preset browser beside "Save as…", not beside the
 >   strip: the strip keeps the 90 px `header.preset` slot (sub-project 6 owns the header). The
 >   panel (`preset.mutatePanel`) opens from it.

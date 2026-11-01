@@ -457,6 +457,45 @@ add_test(NAME render_pack_preset_bad_source
         -DABSENT=${CMAKE_CURRENT_BINARY_DIR}/pack-preset-bad-source.ggpreset
         -P ${CMAKE_CURRENT_SOURCE_DIR}/tools/check-exit-code.cmake)
 set_tests_properties(render_pack_preset_bad_source PROPERTIES LABELS render)
+# A preset naming a content sample (presets' group 2; spec §6.6, §6.10): fx-sample-test.json's
+# layer A is loop-48k.wav, content-relative, so golden_media's folder serves as its content root.
+# render_pack_preset_samples packs it with --content-dir (the fixture packed_sample_presets),
+# render_preset_samples renders it with --content-dir, and without --content-dir the pack and the
+# render are both bad input (exit 2) naming what they need.
+add_test(NAME render_pack_preset_samples
+        COMMAND gg-render --pack-preset
+        ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/presets/fx-sample-test.json
+        -o ${GG_PACKED_PRESETS}/fx-sample-test.ggpreset --content-dir ${GG_GOLDEN_MEDIA_DIR})
+set_tests_properties(render_pack_preset_samples PROPERTIES LABELS render
+        FIXTURES_REQUIRED golden_media FIXTURES_SETUP packed_sample_presets)
+set(render_pack_preset_samples_no_content_args
+        --pack-preset ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/presets/fx-sample-test.json
+        -o ${CMAKE_CURRENT_BINARY_DIR}/pack-preset-no-content.ggpreset)
+add_test(NAME render_pack_preset_samples_no_content
+        COMMAND ${CMAKE_COMMAND} -DPROGRAM=$<TARGET_FILE:gg-render>
+        "-DARGS=${render_pack_preset_samples_no_content_args}" -DEXPECTED_CODE=2
+        "-DEXPECTED_STDERR=gg-render: "
+        "-DEXPECTED_STDERR2=--content-dir"
+        -DABSENT=${CMAKE_CURRENT_BINARY_DIR}/pack-preset-no-content.ggpreset
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/tools/check-exit-code.cmake)
+set_tests_properties(render_pack_preset_samples_no_content PROPERTIES LABELS render)
+add_test(NAME render_preset_samples
+        COMMAND gg-render ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/render/render-fx-preset.json
+        --preset ${GG_PACKED_PRESETS}/fx-sample-test.ggpreset --content-dir ${GG_GOLDEN_MEDIA_DIR}
+        -o ${GG_PACKED_PRESETS}/render-fx-sample-preset.wav)
+set_tests_properties(render_preset_samples PROPERTIES LABELS render
+        FIXTURES_REQUIRED "golden_media;packed_sample_presets")
+set(render_preset_samples_no_content_args
+        ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/render/render-fx-preset.json
+        --preset ${GG_PACKED_PRESETS}/fx-sample-test.ggpreset)
+add_test(NAME render_preset_samples_no_content
+        COMMAND ${CMAKE_COMMAND} -DPROGRAM=$<TARGET_FILE:gg-render>
+        "-DARGS=${render_preset_samples_no_content_args}" -DEXPECTED_CODE=2
+        "-DEXPECTED_STDERR=gg-render: "
+        "-DEXPECTED_STDERR2=loop-48k.wav"
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/tools/check-exit-code.cmake)
+set_tests_properties(render_preset_samples_no_content PROPERTIES LABELS render
+        FIXTURES_REQUIRED packed_sample_presets)
 # A non-ASCII --spectrogram path (carry-over [181]): gg-render exits 0 only if the PNG was
 # written, which on Windows needs the wide-path open, not stbi_write_png's narrow one.
 add_test(NAME render_spectrogram_utf8_path

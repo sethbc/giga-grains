@@ -344,8 +344,10 @@ class GigaGrainsPlugin : public plugHelper_t
 
     /// Loads the preset file `file` (gg/core/Preset.h) for this product, all or nothing: reads at
     /// most kMaxStateBytes + 1 bytes of it, checks it with readPreset, then applies it as a state
-    /// load does (applyState, LoadKind::Preset), keeping the seed (D6) and, when it names no
-    /// sample, the sample loaded (D5). False, with `error` saying why and nothing changed, when
+    /// load does (applyState, LoadKind::Preset), keeping the seed (D6), each layer's ring
+    /// parameters (gg::core::keepRingParams) and, when it names no sample, the sample loaded
+    /// (D5); a sample it names by its content-relative reference is found in the content roots
+    /// (gg::media::contentRoots). False, with `error` saying why and nothing changed, when
     /// the file can't be read ("can't read <file name>", and `osError`, if given, the errno of a
     /// file that can't be opened, 0 otherwise), is longer than kMaxStateBytes ("the preset is
     /// larger than 64 MiB"), or isn't a preset of this product ("not a Giga Grains FX preset",
@@ -503,7 +505,8 @@ class GigaGrainsPlugin : public plugHelper_t
 
   private:
     /// What a state applied by applyState is: a session (state.load), whose seed and sample
-    /// replace the instance's, or a preset (a file or INIT), which keeps the seed (D6) and, when
+    /// replace the instance's, or a preset (a file or INIT), which keeps the seed (D6), each
+    /// layer's ring parameters (gg::core::keepRingParams; no preset load resizes a ring) and, when
     /// it names no sample, the sample (D5).
     enum class LoadKind
     {

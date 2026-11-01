@@ -724,6 +724,57 @@ TEST_CASE("a lock toggle flips the plugin's lock and Reset locks restores the st
     CHECK_FALSE(size.getToggleState());
 }
 
+TEST_CASE("the lock list shows wave 2's parameters by section and Ring Length as not mutable",
+          "[plugin][ui][mutate]")
+{
+    // Spec §6.9, group 2: Quality, Budget, the ring parameters, Delay Amount and the limiter
+    // start locked; Smear, the buses and the delay's sound start unlocked. Ring Length, which no
+    // host may automate, is never moved by a press (SP-M8): its row is dimmed and has no toggle.
+    const Machine machine("mutate-wave2");
+    Fixture f;
+    openPanel(f);
+    f.tick();
+    for (const ParamSlot s :
+         {ParamSlot::Quality, ParamSlot::Budget, ParamSlot::Loop, ParamSlot::LoopLength,
+          ParamSlot::Overdub, ParamSlot::Splice, ParamSlot::DelayAmount, ParamSlot::LimiterMode,
+          ParamSlot::LimiterCeiling, ParamSlot::LimiterRelease})
+    {
+        INFO("slot " << static_cast<int>(s));
+        CHECK(f.impl->mutateLocked(s));
+        CHECK(lockRow(f, s).getToggleState());
+        CHECK(lockRow(f, s).isEnabled());
+    }
+    for (const ParamSlot s : {ParamSlot::Smear, ParamSlot::BusSplit, ParamSlot::Bus1Filter,
+                              ParamSlot::Bus2Cutoff, ParamSlot::DelayTime, ParamSlot::DelayFeedback,
+                              ParamSlot::DelayDamping, ParamSlot::DelayPingPong})
+    {
+        INFO("slot " << static_cast<int>(s));
+        CHECK_FALSE(f.impl->mutateLocked(s));
+        CHECK_FALSE(lockRow(f, s).getToggleState());
+    }
+
+    // Ring Length: dimmed, no toggle, and a click changes nothing.
+    auto &ring = lockRow(f, ParamSlot::RingLength);
+    CHECK_FALSE(ring.isEnabled());
+    CHECK_FALSE(ring.getClickingTogglesState());
+    CHECK(ring.getAlpha() < 1.0f);
+    CHECK_FALSE(ring.getToggleState());
+    const bool before = f.impl->mutateLocked(ParamSlot::RingLength);
+    click(ring);
+    CHECK(f.impl->mutateLocked(ParamSlot::RingLength) == before);
+
+    // The delay and the limiter are sections of their own, after Space, before the macros.
+    auto &list = *find(panel(f), "mutate.lockList");
+    const auto top = [&](ParamSlot s) { return lockRow(f, s).getBounds().getY(); };
+    CHECK(need<juce::Label>(list, "mutate.heading.delay").getText() == "Delay");
+    CHECK(need<juce::Label>(list, "mutate.heading.limiter").getText() == "Limiter");
+    CHECK(top(ParamSlot::ReverbDecay) < top(ParamSlot::DelayTime));
+    CHECK(top(ParamSlot::DelayPingPong) < top(ParamSlot::LimiterMode));
+    CHECK(top(ParamSlot::LimiterRelease) < top(ParamSlot::Macro1));
+    CHECK(need<juce::Label>(list, "mutate.heading.delay").getBounds().getY() <
+          top(ParamSlot::DelayAmount));
+}
+
 TEST_CASE("an off layer's rows are dimmed apart from their locks", "[plugin][ui][mutate]")
 {
     const Machine machine("mutate-offlayer");

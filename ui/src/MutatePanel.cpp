@@ -13,6 +13,7 @@
 #include <utility>
 #include <vector>
 
+#include <clap/ext/params.h>
 #include <sst/basic-blocks/params/ParamMetadata.h>
 #include <sst/jucegui/components/Knob.h>
 #include <sst/jucegui/data/Continuous.h>
@@ -88,6 +89,16 @@ bool isSpace(ParamSlot slot) noexcept
     return slot >= ParamSlot::ReverbAmount && slot <= ParamSlot::DryToReverb;
 }
 
+/// The Extremes' delay (Amount to Ping-pong) and limiter (Mode to Release): sections of their own.
+bool isDelay(ParamSlot slot) noexcept
+{
+    return slot >= ParamSlot::DelayAmount && slot <= ParamSlot::DelayPingPong;
+}
+bool isLimiter(ParamSlot slot) noexcept
+{
+    return slot >= ParamSlot::LimiterMode && slot <= ParamSlot::LimiterRelease;
+}
+
 bool isStep(LayerParam p) noexcept { return p >= LayerParam::Step1 && p <= LayerParam::Step16; }
 } // namespace
 
@@ -98,6 +109,7 @@ struct MutatePanel::Impl
     {
         std::vector<ParamSlot> slots;
         juce::TextButton button;
+        bool fixed{false}; // a parameter no press moves (Ring Length): dimmed, no toggle
     };
     struct Section
     {
@@ -149,6 +161,8 @@ struct MutatePanel::Impl
 
     Impl(const EditorContext &c) : context(c), content(*this) {}
 
+    /// `idLetter` names the heading ("mutate.heading.<idLetter>") when not empty: a layer's
+    /// letter, or "delay" and "limiter".
     void addSection(const juce::String &title, const juce::String &idLetter, bool isLayer)
     {
         auto section = std::make_unique<Section>();
@@ -158,9 +172,12 @@ struct MutatePanel::Impl
         section->heading.setFont(juce::FontOptions(14.0f, juce::Font::bold));
         section->heading.setColour(juce::Label::textColourId, theme::kText);
         content.addAndMakeVisible(section->heading);
-        if (isLayer)
+        if (idLetter.isNotEmpty())
         {
             section->heading.setComponentID("mutate.heading." + idLetter);
+        }
+        if (isLayer)
+        {
             Section *raw = section.get();
             styleButton(section->lockAll, "mutate.lockall." + idLetter, "Lock all");
             styleButton(section->unlockAll, "mutate.unlockall." + idLetter, "Unlock all");
@@ -179,6 +196,18 @@ struct MutatePanel::Impl
         row->slots = std::move(slots);
         styleButton(row->button,
                     "mutate.lock." + juce::String(static_cast<int>(row->slots.front())), label);
+        // A parameter no host may automate (Ring Length) is never moved by a press, whatever its
+        // lock (SP-M8): shown as not mutable, with no toggle.
+        const auto flags = gg::core::paramMeta(row->slots.front(), context.mode).flags;
+        if ((flags & CLAP_PARAM_IS_AUTOMATABLE) == 0)
+        {
+            row->fixed = true;
+            row->button.setEnabled(false);
+            row->button.setTooltip("Mutate never moves " + label);
+            content.addAndMakeVisible(row->button);
+            section.rows.push_back(std::move(row));
+            return;
+        }
         row->button.setClickingTogglesState(true);
         row->button.setTooltip("Locked: Mutate leaves " + label + " where it is");
         Row *raw = row.get();
@@ -237,8 +266,8 @@ struct MutatePanel::Impl
                     all = all && context.mutateLocked(slot);
                     allOff = allOff && off.test(static_cast<std::size_t>(slot));
                 }
-                row->button.setToggleState(all, juce::dontSendNotification);
-                row->button.setAlpha(allOff ? kOffAlpha : 1.0f);
+                row->button.setToggleState(all && !row->fixed, juce::dontSendNotification);
+                row->button.setAlpha(allOff || row->fixed ? kOffAlpha : 1.0f);
                 sectionOff = sectionOff && allOff;
             }
             if (section->isLayer)
@@ -260,7 +289,7 @@ struct MutatePanel::Impl
         {
             const auto slot = static_cast<ParamSlot>(s);
             if (gg::core::layerOf(slot) || gg::core::isMacro(slot) || isSpace(slot) ||
-                (slot == ParamSlot::Mix && !hasDry))
+                isDelay(slot) || isLimiter(slot) || (slot == ParamSlot::Mix && !hasDry))
             {
                 continue;
             }
@@ -275,6 +304,20 @@ struct MutatePanel::Impl
             {
                 continue;
             }
+            addRow(fromUtf8(gg::core::paramMeta(slot, mode).name), {slot});
+        }
+        addSection("Delay", "delay", false);
+        for (std::size_t s = static_cast<std::size_t>(ParamSlot::DelayAmount);
+             s <= static_cast<std::size_t>(ParamSlot::DelayPingPong); ++s)
+        {
+            const auto slot = static_cast<ParamSlot>(s);
+            addRow(fromUtf8(gg::core::paramMeta(slot, mode).name), {slot});
+        }
+        addSection("Limiter", "limiter", false);
+        for (std::size_t s = static_cast<std::size_t>(ParamSlot::LimiterMode);
+             s <= static_cast<std::size_t>(ParamSlot::LimiterRelease); ++s)
+        {
+            const auto slot = static_cast<ParamSlot>(s);
             addRow(fromUtf8(gg::core::paramMeta(slot, mode).name), {slot});
         }
         addSection("Macros", "", false);

@@ -1454,6 +1454,18 @@ void GigaGrainsPlugin::applyState(gg::core::SessionState &&state, LoadKind kind)
             processor_->sources(layer).reserve();
         }
     }
+    // A preset load (INIT's too) keeps each layer's ring parameters, as it keeps the seed (the
+    // program manager's ruling): no preset load resizes a ring or changes what it records. They
+    // are then the loaded values, so the edited mark doesn't see them.
+    if (kind == LoadKind::Preset)
+    {
+        gg::core::ParamValues current{};
+        for (std::size_t s = 0; s < kParamCount; ++s)
+        {
+            current[s] = values_[s].load(std::memory_order_relaxed);
+        }
+        gg::core::keepRingParams(current, state.values);
+    }
     // What the state sets beside its media, taken before restore() takes the state.
     const gg::core::ParamValues values = state.values;
     const uint64_t seed = state.seed;

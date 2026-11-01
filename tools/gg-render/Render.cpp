@@ -30,6 +30,7 @@
 #include "gg/core/Processor.h"
 #include "gg/core/SessionState.h"
 #include "gg/engine/Engine.h"
+#include "gg/media/ContentPaths.h"
 #include "gg/media/Decode.h"
 #include "gg/media/MemoryBudget.h"
 #include "gg/media/RingAudio.h"
@@ -374,11 +375,12 @@ gg::core::SessionState readPresetFile(const std::string &path, gg::core::Mode mo
         }
         throw BadInput(fmt::format("the preset {} doesn't load", path));
     }
-    if (std::ranges::any_of(state.samples, [](const auto &e) { return e.has_value(); }) ||
-        std::ranges::any_of(state.rings, [](const auto &e) { return e.has_value(); }))
+    // A preset carries no ring (encodePreset writes none); its samples are read by the render
+    // (renderProcessor), by their content-relative references.
+    if (std::ranges::any_of(state.rings, [](const auto &e) { return e.has_value(); }))
     {
         throw BadInput(
-            fmt::format("the preset {} names a sample, which gg-render can't read yet", path));
+            fmt::format("the preset {} names a ring, which a preset never carries", path));
     }
     return state;
 }
@@ -713,6 +715,14 @@ gg::metrics::AudioData renderProcessor(const RenderSpec &spec, std::vector<std::
     gg::core::Processor processor({spec.sampleRate, spec.blockSize, spec.seed, mode});
     if (hasPreset)
     {
+        // Its ring parameters ignored, as a plugin's preset load ignores them (keepRingParams):
+        // the defaults', unless the spec's own params set them.
+        gg::core::ParamValues defaults{};
+        for (std::size_t s = 0; s < gg::core::kParamCount; ++s)
+        {
+            defaults[s] = processor.base(static_cast<gg::core::ParamSlot>(s));
+        }
+        gg::core::keepRingParams(defaults, preset.values);
         processor.setBases(preset.values);
     }
 
@@ -818,6 +828,61 @@ gg::metrics::AudioData renderProcessor(const RenderSpec &spec, std::vector<std::
             {
                 sampleEntries[layer] = entry;
             }
+        }
+    }
+
+    // 1b. A preset's samples (parseRenderSpec never lets a preset beside a state), each by its
+    // content-relative reference against --content-dir alone: gg-render never searches (spec §6.4,
+    // §6.10). The file must be the one the preset was packed with (its size and SHA-256). Loaded
+    // and converted as the plugins' loader does (gg::media::loadSample, then prepare); the spec's
+    // samples go on top.
+    if (hasPreset)
+    {
+        for (uint8_t layer = 0; layer < gg::core::kLayers; ++layer)
+        {
+            if (!preset.samples[layer])
+            {
+                continue;
+            }
+            const gg::core::MediaEntry &entry = *preset.samples[layer];
+            if (entry.contentPath.empty() || entry.embed)
+            {
+                throw BadInput(
+                    fmt::format("layer {}'s sample in the preset {} has no "
+                                "content-relative reference (gg-render reads only those)",
+                                letterOf(layer), spec.preset));
+            }
+            if (options.contentDir.empty())
+            {
+                throw BadInput(fmt::format("the preset {} names layer {}'s sample {}: give "
+                                           "--content-dir, the content folder that holds it",
+                                           spec.preset, letterOf(layer), entry.contentPath));
+            }
+            const fs::path roots[] = {
+                fs::absolute(pathFromUtf8(options.contentDir)).lexically_normal()};
+            const auto file = gg::media::resolveContentPath(entry.contentPath, roots);
+            if (!file)
+            {
+                throw BadInput(
+                    fmt::format("layer {}'s sample {} was not found under --content-dir {}",
+                                letterOf(layer), entry.contentPath, options.contentDir));
+            }
+            auto loaded = gg::media::loadSample(*file, settings, room());
+            if (!loaded.decoded)
+            {
+                throw BadInput(fmt::format("layer {}'s sample {}: {}", letterOf(layer),
+                                           entry.contentPath, loaded.error));
+            }
+            if (loaded.entry.sha256Hex != entry.sha256Hex ||
+                loaded.entry.fileSize != entry.fileSize)
+            {
+                throw BadInput(fmt::format("layer {}'s sample {} under --content-dir has changed "
+                                           "since the preset was made",
+                                           letterOf(layer), entry.contentPath));
+            }
+            setSource(layer, gg::media::prepare(std::move(loaded.decoded), spec.sampleRate));
+            captured[layer] = nullptr;
+            sampleEntries[layer] = entry;
         }
     }
 

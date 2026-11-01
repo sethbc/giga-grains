@@ -21,6 +21,7 @@
 #endif
 
 #include "gg/core/ParamMap.h"
+#include "gg/media/ContentPaths.h"
 #include "gg/media/Decode.h"
 #include "gg/media/Search.h"
 #include "gg/media/SettingsFile.h"
@@ -1217,9 +1218,9 @@ media::CollectResult MediaSession::collectAndSave(const std::filesystem::path &f
     state.audio.clear(); // embedded audio needs no collecting
     const core::MachineSettings settings =
         settingsFile_.empty() ? core::MachineSettings{} : media::loadSettings(settingsFile_);
-    // No content roots yet: presets' group 2 (its Task 14) passes gg::media::contentRoots
-    // (ContentPaths.h) to the searches.
-    media::CollectResult result = media::collectMedia(state, folder, settings, {});
+    // A sample is found as a restore finds it: the content roots included (ContentPaths.h).
+    media::CollectResult result =
+        media::collectMedia(state, folder, settings, media::contentRoots(settings));
     const auto remember = [this](const std::string &sha256Hex, const std::string &path) {
         if (const auto copy = media::fromUtf8(path))
         {

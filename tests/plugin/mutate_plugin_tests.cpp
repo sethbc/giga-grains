@@ -410,22 +410,26 @@ TEST_CASE("a preset load during a multi-batch press discards the unsent slots", 
         REQUIRE(plugin.loadDefaultsWithSeed(5));
         GigaGrainsPlugin &impl = plugin.impl();
         everythingMoves(plugin);
-        std::vector<float> result;
         if (withLoad)
         {
             impl.mutate(1.0f);
             const auto first = drain(plugin);
             CHECK(first.size() == GigaGrainsPlugin::kMutateBatch);
             // Slots still wait: the load comes before the rest is sent.
+            const auto beforeLoad = bases(impl);
             impl.loadInit();
             // Nothing of the press reaches the host again.
             const auto rest = drainAll(plugin);
             CHECK(rest.empty());
-            // The values are INIT's: its defaults (layers B to D off again).
+            // The values are INIT's: its defaults (layers B to D off again), but for the ring
+            // parameters, which a preset load keeps (gg::core::keepRingParams).
             for (std::size_t s = 0; s < kParamCount; ++s)
             {
-                CHECK(same(impl.uiBaseValue(static_cast<ParamSlot>(s)),
-                           gg::core::paramMeta(static_cast<ParamSlot>(s), impl.mode()).defaultVal));
+                const auto slot = static_cast<ParamSlot>(s);
+                CHECK(same(impl.uiBaseValue(slot),
+                           gg::core::isRingParam(slot)
+                               ? beforeLoad[s]
+                               : gg::core::paramMeta(slot, impl.mode()).defaultVal));
             }
         }
         else
@@ -439,7 +443,17 @@ TEST_CASE("a preset load during a multi-batch press discards the unsent slots", 
         impl.mutate(1.0f);
         drainAll(plugin);
         CHECK(impl.uiQueueDropped() == 0);
-        return bases(impl);
+        // The ring parameters the cut press had sent stay through the load, so they start the
+        // next press elsewhere: compared apart from them.
+        auto compared = bases(impl);
+        for (std::size_t s = 0; s < kParamCount; ++s)
+        {
+            if (gg::core::isRingParam(static_cast<ParamSlot>(s)))
+            {
+                compared[s] = 0.0f;
+            }
+        }
+        return compared;
     };
     // A press that starts from the loaded values gives what it gives from the same values with
     // the same counter, whether or not a press was cut short before.
@@ -766,13 +780,18 @@ TEST_CASE("a preset load while a set is half sent discards the rest", "[plugin][
     impl.sendValues(wholeSet(impl.mode(), 1));
     const auto first = drain(plugin);
     CHECK(first.size() == GigaGrainsPlugin::kMutateBatch);
+    const auto beforeLoad = bases(impl);
     impl.loadInit(); // slots still wait
     const auto rest = drainAll(plugin);
     CHECK(rest.empty());
+    // INIT's defaults, but for the ring parameters, which a preset load keeps.
     for (std::size_t s = 0; s < kParamCount; ++s)
     {
-        CHECK(same(impl.uiBaseValue(static_cast<ParamSlot>(s)),
-                   gg::core::paramMeta(static_cast<ParamSlot>(s), impl.mode()).defaultVal));
+        const auto slot = static_cast<ParamSlot>(s);
+        CHECK(
+            same(impl.uiBaseValue(slot), gg::core::isRingParam(slot)
+                                             ? beforeLoad[s]
+                                             : gg::core::paramMeta(slot, impl.mode()).defaultVal));
     }
     CHECK(impl.uiQueueDropped() == 0);
 }

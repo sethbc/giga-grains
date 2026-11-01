@@ -19,8 +19,12 @@
 namespace gg::core
 {
 /// The preset file of `state` with `info`: encodeState of `state` with its name `info.name`, its
-/// preset `info` and its seed 0 (a preset's seed is ignored on load). The sample is `state.sample`
-/// if any; its manifest, MEDI, is written as encodeState writes it.
+/// preset `info` and its seed 0 (a preset's seed is ignored on load), and none of what a preset
+/// never carries (spec §6.1; D5): no embedded sample, no ring, no AUDI payload, no newer build's
+/// manifest, and the default cap. Each layer's file sample, `state.samples[k]`, is written in
+/// MEDI version 2 as encodeState writes it: a factory sample by its content-relative reference
+/// (MediaEntry::contentPath), with no absolute or sample-folder path (gg-render --pack-preset);
+/// a user's by its paths, and its reference too when it came from the content.
 std::string encodePreset(const PresetInfo &info, const SessionState &state);
 
 /// Loads a preset file for `mode`'s product, all or nothing: false, and `info` and `out`
@@ -38,6 +42,13 @@ bool readPreset(std::string_view bytes, Mode mode, PresetInfo &info, SessionStat
 /// with a known product. The MEDI chunk isn't read: a preset whose MEDI is malformed is listed
 /// all the same, and fails only when it is loaded (readPreset).
 bool presetInfoOf(std::string_view bytes, PresetInfo &info);
+
+/// A preset load keeps each layer's five ring parameters (isRingParam: Ring Length, Loop, Loop
+/// Length, Overdub, Splice; the program manager's ruling): `loaded`'s are set to `current`'s, so
+/// no preset load resizes a ring or changes what it records, and every other slot is left. The
+/// plugins' preset loads (INIT's too) and gg-render's preset path call it; a preset file may still
+/// hold them (an older one does), and they are ignored. Pure, allocation-free.
+void keepRingParams(const ParamValues &current, ParamValues &loaded) noexcept;
 
 /// The INIT state of `mode`'s product: every parameter at its default (paramMeta),
 /// factoryRoutes(mode), seed 0, no sample, the name "Init" and no preset.

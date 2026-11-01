@@ -42,7 +42,7 @@ std::string formatStealLine(uint32_t layer, uint64_t index, int64_t onset);
 struct RenderOptions
 {
     /// --content-dir: a content root, one of the places a restored state's sample is found by
-    /// its content-relative path.
+    /// its content-relative path, and the only place a preset's samples are.
     std::string contentDir;
     /// --captures-dir: where a saved ring or capture goes when the embedded audio would pass
     /// kEmbedCapBytes (as <sha256>.wav), and where a filed ring is found on a restore.
@@ -77,8 +77,12 @@ struct RenderOptions
 /// D = framesFor(durationSeconds, sampleRate) frames, with no release tail:
 /// - the Processor has the sample rate and seed from the spec and maxBlockSize = blockSize;
 /// - with a preset (RenderSpec::preset), the file is read first, at most kMaxStateBytes, with
-///   gg::core::readPreset for the mode's product, and the Processor gets its values with setBases;
-///   its seed is ignored;
+///   gg::core::readPreset for the mode's product, and the Processor gets its values with setBases,
+///   its ring parameters left at the defaults (gg::core::keepRingParams, as a plugin's preset load
+///   keeps the instance's); its seed is ignored. Each sample it names is found by its
+///   content-relative reference under options.contentDir alone (gg::media::resolveContentPath:
+///   never searched), checked against the entry's size and SHA-256, loaded and converted
+///   (gg::media::loadSample, prepare) and set with setSourceNow, before the spec's own samples;
 /// - each of the mode's params is set with setBase(slot, static_cast<float>(value)), on top of the
 ///   preset's values;
 /// - with a preset or a "mod", the routes are routesWith(base, mod), base being the preset's
@@ -135,9 +139,10 @@ struct RenderOptions
 ///   path isn't valid UTF-8, a state that isn't one, a state's sample or ring that can't be
 ///   found, a ring or sample past the memory cap, a capture of an empty ring, audio that has to
 ///   be filed with no captures folder, --save-state of a sample-mode spec, and a preset that
-///   can't be read, is longer than kMaxStateBytes, isn't a preset file, names a sample or ring,
-///   or is the other product's ("the preset is for Giga Grains, not Giga Grains FX"); gg-render
-///   exits with status 2;
+///   can't be read, is longer than kMaxStateBytes, isn't a preset file, names a ring, names a
+///   sample with no content-relative reference, without --content-dir, not found under it or
+///   changed there, or is the other product's ("the preset is for Giga Grains, not Giga Grains
+///   FX"); gg-render exits with status 2;
 /// - std::logic_error if a call reports more grain events than that storage holds, or, in
 ///   sample mode, grains outlast the release tail or the tail would pass its defensive bound;
 /// - std::invalid_argument for an unknown parameter name, and for what makeSignal, makeSample and
