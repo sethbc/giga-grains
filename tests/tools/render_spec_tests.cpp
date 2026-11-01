@@ -991,7 +991,9 @@ TEST_CASE("instrument specs name the instrument's macros", "[render]")
     // Budget, then the Extremes' last (M2 sub-project 4's spec §6.7).
     CHECK_THAT(rejection(fx), StartsWith("unknown key params.Macro Level: the parameters are "));
     CHECK_THAT(rejection(fx), ContainsSubstring("Macro Feedback, Macro Mix, A Source"));
-    CHECK_THAT(rejection(fx), ContainsSubstring("A Step 16, A Ring Length, A Loop, A Loop Length, A Overdub, A Splice, A Quality, A Smear, A Bus Split"));
+    CHECK_THAT(rejection(fx),
+               ContainsSubstring("A Step 16, A Ring Length, A Loop, A Loop Length, A Overdub, "
+                                 "A Splice, A Quality, A Smear, A Bus Split"));
     CHECK_THAT(rejection(fx), EndsWith("Level B, Level C, Level D, Budget, Delay Amount, "
                                        "Delay Time, Delay Feedback, Delay Damping, "
                                        "Delay Ping-pong, Limiter Mode, Limiter Ceiling, "

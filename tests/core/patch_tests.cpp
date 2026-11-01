@@ -407,10 +407,10 @@ TEST_CASE("param ids, names, ranges and defaults are pinned", "[core]")
     // and indices one past the table, the reserved blocks' unused indices (all but 0x40-0x44 in
     // the layer scopes, 0x50 and 0x60 to 0x67), and the "unknown id" of the bad-state test.
     for (clap_id unknown :
-         {0x000000u, 0x00000Au, 0x000010u, 0x000022u, 0x010000u, 0x010031u, 0x020000u, 0x020031u,
-          0x040031u, 0x050001u, 0x000040u, 0x01004Fu, 0x010045u, 0x040045u, 0x000041u, 0x000051u,
-          0x010051u, 0x04005Fu, 0x030068u, 0x04007Fu, 0x000068u, 0x050050u, 0x050060u, 0x777777u,
-          CLAP_INVALID_ID})
+         {0x000000u, 0x00000Au, 0x000010u, 0x000022u,      0x010000u, 0x010031u, 0x020000u,
+          0x020031u, 0x040031u, 0x050001u, 0x000040u,      0x01004Fu, 0x010045u, 0x040045u,
+          0x000041u, 0x000051u, 0x010051u, 0x04005Fu,      0x030068u, 0x04007Fu, 0x000068u,
+          0x050050u, 0x050060u, 0x777777u, CLAP_INVALID_ID})
     {
         INFO("id " << unknown);
         CHECK_FALSE(gg::core::slotForId(unknown).has_value());
@@ -466,11 +466,11 @@ TEST_CASE("the id table has the next free indices and the reserved blocks", "[co
     {
         INFO("scope " << scope);
         CHECK(reservedUsed[scope] ==
-              (scope == 0 ? std::vector<uint32_t>{0x50u, 0x60u, 0x61u, 0x62u, 0x63u, 0x64u, 0x65u,
-                                                  0x66u, 0x67u}
-                          : std::vector<uint32_t>{0x40u, 0x41u, 0x42u, 0x43u, 0x44u, 0x50u, 0x60u,
-                                                  0x61u, 0x62u, 0x63u, 0x64u, 0x65u, 0x66u,
-                                                  0x67u}));
+              (scope == 0
+                   ? std::vector<uint32_t>{0x50u, 0x60u, 0x61u, 0x62u, 0x63u, 0x64u, 0x65u, 0x66u,
+                                           0x67u}
+                   : std::vector<uint32_t>{0x40u, 0x41u, 0x42u, 0x43u, 0x44u, 0x50u, 0x60u, 0x61u,
+                                           0x62u, 0x63u, 0x64u, 0x65u, 0x66u, 0x67u}));
     }
     STATIC_REQUIRE(gg::core::paramId(ParamSlot::Quality) == 0x010050u);
     STATIC_REQUIRE(gg::core::paramId(ParamSlot::B_Quality) == 0x020050u);

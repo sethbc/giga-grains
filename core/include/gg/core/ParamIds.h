@@ -127,12 +127,12 @@ enum class Mode
     X(Bus2Resonance, 0x67, "Bus 2 Resonance")
 #define GG_LAYER_PARAMS(X)                                                                         \
     GG_LAYER_PARAMS_M1(X)                                                                          \
-    GG_LAYER_PARAMS_M2(X) GG_LAYER_PARAMS_M2_SOURCES(X) GG_LAYER_PARAMS_M2_ENGINE(X)               \
-        GG_LAYER_PARAMS_M2_EXTREMES(X)
+    GG_LAYER_PARAMS_M2(X)                                                                          \
+    GG_LAYER_PARAMS_M2_SOURCES(X) GG_LAYER_PARAMS_M2_ENGINE(X) GG_LAYER_PARAMS_M2_EXTREMES(X)
 /// The rows after layer A's eleven M1 ones: layer A's new slots, in order.
 #define GG_LAYER_PARAMS_SINCE_M1(X)                                                                \
-    GG_LAYER_PARAMS_M2(X) GG_LAYER_PARAMS_M2_SOURCES(X) GG_LAYER_PARAMS_M2_ENGINE(X)               \
-        GG_LAYER_PARAMS_M2_EXTREMES(X)
+    GG_LAYER_PARAMS_M2(X)                                                                          \
+    GG_LAYER_PARAMS_M2_SOURCES(X) GG_LAYER_PARAMS_M2_ENGINE(X) GG_LAYER_PARAMS_M2_EXTREMES(X)
 
 /// One layer's parameter, whichever layer: its value is its row's position in GG_LAYER_PARAMS, and
 /// its index in the layer's scope is the row's index column (layerParamIndex).

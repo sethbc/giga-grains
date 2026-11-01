@@ -475,8 +475,8 @@ class Engine
 
   private:
     void processBlock(const float *const *in, uint32_t numInChannels, float *const *out,
-                      uint32_t numChannels, float *const *bus2, uint32_t offset,
-                      uint32_t numFrames, const float *overdubGain) noexcept SST_CPPUTILS_NONBLOCKING;
+                      uint32_t numChannels, float *const *bus2, uint32_t offset, uint32_t numFrames,
+                      const float *overdubGain) noexcept SST_CPPUTILS_NONBLOCKING;
     /// The grain a draw makes from the current sample source.
     GrainSpec sampleGrain(const GrainDraw &d) const noexcept;
     /// The grain a draw makes from `ring` (the live ring, or the smear's), admission-clamped over
