@@ -48,17 +48,17 @@ deterministic, so on one platform the same commit gives the same bytes.
 | `init-fx.wav`, `init-inst.wav` | 8 s | INIT in each product over the same material | The plain defaults (D8) |
 | `mutate-ladder.wav` | 16 s | One texture preset, then Mutate at 10%, 30% and 60% (seed fixed, counter 1 to 3), 4 s each | Variations that stay in the family at 10% and leave it by 60% (D3, D4) |
 
-**Open question for the director:** the content release `v1` has no voice samples (VCSL has none),
-so the FX renders' "voice-and-strings phrase" can't be played as the spec words it. Proposed: a
-strings-and-mallets phrase from `v1`, and the `voice` tag unused (spec §6.5, pending). Group 2
-waits on the answer.
+**The input phrase (answered):** the content release `v2` adds orchestral strings and brass from
+VSCO 2: CE (the director's decision, INTENT §23 #70) to `v1`'s files, but there are still no
+voice samples in it (neither VCSL nor VSCO 2: CE has any). So the FX renders' phrase is a strings
+phrase, not the "voice-and-strings phrase" the spec words, and the `voice` tag stays unused.
 
 ## Host checklist
 
 For the close's sitting in Ableton Live 12 and Bitwig Studio:
 
 - [ ] Install from the PKG and the EXE (and unpack the tarball); the browser's status line says
-      "Factory content v1 in …".
+      "Factory content v2 in …".
 - [ ] The 24 presets per product in the browser, in order, INIT first.
 - [ ] The VST3 program list and its selector follow the browser, in Live and Bitwig.
 - [ ] The AU factory presets list and load, in Live (and Logic, best effort).
