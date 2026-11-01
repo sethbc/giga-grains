@@ -343,6 +343,64 @@ TEST_CASE("an editor destroyed mid depth-drag leaves undo usable", "[plugin]")
     CHECK(h.routes == start); // the depth from before the drag
 }
 
+TEST_CASE("a half-built route row is kept until it has a target", "[plugin]")
+{
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    ModHarness h(gg::core::Mode::Fx);
+    gg::ui::ModView view(h.recording.context);
+    view.setSize(900, 500);
+    view.refresh();
+    const auto before = h.routes;
+    REQUIRE(before[12] == gg::core::ModRoute{}); // slot 13 is empty
+
+    auto *source = dynamic_cast<juce::ComboBox *>(findDeep(view, "route.13.source"));
+    auto *target = dynamic_cast<juce::ComboBox *>(findDeep(view, "route.13.target"));
+    REQUIRE(source != nullptr);
+    REQUIRE(target != nullptr);
+    source->setSelectedId(static_cast<int>(gg::core::ModSource::Lfo1) + 1,
+                          juce::sendNotificationSync);
+    CHECK(h.routes == before); // nothing is sent
+    CHECK(h.undo.size() == 0);
+    CHECK(source->getSelectedId() == static_cast<int>(gg::core::ModSource::Lfo1) + 1);
+    CHECK(target->getText() == "choose a target");
+    view.refresh(); // a refresh keeps the row
+    CHECK(source->getSelectedId() == static_cast<int>(gg::core::ModSource::Lfo1) + 1);
+    CHECK(target->getText() == "choose a target");
+
+    target->setSelectedId(static_cast<int>(ParamSlot::Position) + 1, juce::sendNotificationSync);
+    CHECK(h.routes[12].source == gg::core::ModSource::Lfo1);
+    CHECK(h.routes[12].target == ParamSlot::Position);
+    CHECK(h.undo.size() == 1);
+    for (std::size_t i = 0; i < h.routes.size(); ++i)
+    {
+        if (i != 12)
+        {
+            CHECK(h.routes[i] == before[i]);
+        }
+    }
+}
+
+TEST_CASE("a route to a hidden target shows its name", "[plugin]")
+{
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    ModHarness h(gg::core::Mode::Instrument);
+    h.routes[12] = {.source = gg::core::ModSource::Lfo1,
+                    .target = ParamSlot::Mix,
+                    .depth = 0.25f,
+                    .curve = gg::core::ModCurve::Bipolar};
+    gg::ui::ModView view(h.recording.context);
+    view.setSize(900, 500);
+    view.refresh();
+    auto *target = dynamic_cast<juce::ComboBox *>(findDeep(view, "route.13.target"));
+    REQUIRE(target != nullptr);
+    CHECK(target->getText() == "Mix");
+    // Dimmed: the hidden name reads in the palette's dim text color, not the target boxes'.
+    auto *other = dynamic_cast<juce::ComboBox *>(findDeep(view, "route.14.target"));
+    REQUIRE(other != nullptr);
+    CHECK(target->findColour(juce::ComboBox::textColourId) !=
+          other->findColour(juce::ComboBox::textColourId));
+}
+
 TEST_CASE("retargeting a route scales its depth to the new target's units", "[plugin]")
 {
     const juce::ScopedJuceInitialiser_GUI juceGui;

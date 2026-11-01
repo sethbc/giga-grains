@@ -34,6 +34,7 @@ constexpr float kBoxFontSize = 12.0f; ///< the boxes' text: the 240 px list is n
 constexpr int kArrowW = 16;           ///< a combo box's arrow zone
 constexpr int kNoTarget = static_cast<int>(gg::core::kParamCount) + 1; ///< the "—" target's id
 
+const juce::String kChooseTarget = "choose a target";
 const juce::String kEmpty = juce::String::fromUTF8("\xe2\x80\x94"); // an em dash
 
 /// A target's menu text: its name, less "A " for layer A's slot of a layer parameter.
@@ -129,6 +130,7 @@ struct RouteList::Impl
         juce::ComboBox source, sourceLayer, target, targetLayer, curve;
         juce::Slider depth{juce::Slider::LinearHorizontal, juce::Slider::TextBoxRight};
         juce::TextButton clear{"x"};
+        int extraTarget{0}; ///< the hidden target's item, as fillTargets(): a slot index + 1, or 0
     };
 
     /// The rows' parent: it holds them and draws the selection.
@@ -162,6 +164,30 @@ struct RouteList::Impl
         }
         content.setSize(240, static_cast<int>(rows.size()) * kRowH);
         applyColours();
+    }
+
+    /// Fills `row`'s target box: "—", then every valid target the product shows, by slot index
+    /// + 1, and `extra` (a slot index + 1, or 0) too, when a loaded route names a target the
+    /// product hides: shown disabled, so that its name reads and it can't be chosen.
+    void fillTargets(Row &row, int extra)
+    {
+        row.target.clear(juce::dontSendNotification);
+        row.target.addItem(kEmpty, kNoTarget);
+        for (std::size_t t = 0; t < gg::core::kParamCount; ++t)
+        {
+            const auto target = static_cast<ParamSlot>(t);
+            const int id = static_cast<int>(t) + 1;
+            if (gg::core::isValidTarget(target) && !hiddenIn(target, context.mode))
+            {
+                row.target.addItem(targetName(target, context.mode), id);
+            }
+            else if (id == extra)
+            {
+                row.target.addItem(targetName(target, context.mode), id);
+                row.target.setItemEnabled(id, false);
+            }
+        }
+        row.extraTarget = extra;
     }
 
     void build(uint8_t slot, Row &row)
@@ -199,15 +225,8 @@ struct RouteList::Impl
 
         // Target: "—", then every valid target the product shows, by slot index + 1.
         row.target.setComponentID(id + "target");
-        row.target.addItem(kEmpty, kNoTarget);
-        for (std::size_t t = 0; t < gg::core::kParamCount; ++t)
-        {
-            const auto target = static_cast<ParamSlot>(t);
-            if (gg::core::isValidTarget(target) && !hiddenIn(target, context.mode))
-            {
-                row.target.addItem(targetName(target, context.mode), static_cast<int>(t) + 1);
-            }
-        }
+        row.target.setTextWhenNothingSelected(kChooseTarget); // a half-built row's
+        fillTargets(row, 0);
 
         row.curve.setComponentID(id + "curve");
         for (int c = 0; c < static_cast<int>(gg::core::ModCurve::Count); ++c)
@@ -284,6 +303,10 @@ struct RouteList::Impl
         };
         // A depth drag is one undo entry: the routes at its start, and as it ends.
         row.depth.onDragStart = [this, slot] {
+            if (drafts[slot - 1u])
+            {
+                return; // a half-built row's depth is the list's own: no routes, no undo group
+            }
             depthSlot = slot;
             if (context.undo != nullptr)
             {
@@ -294,7 +317,7 @@ struct RouteList::Impl
         };
         row.depth.onValueChange = [this, slot, &row] {
             const float depth = static_cast<float>(row.depth.getValue());
-            if (depthSlot == slot)
+            if (depthSlot == slot && !drafts[slot - 1u])
             {
                 depthAfter = routes();
                 setDepth(depthAfter, slot, depth);
@@ -372,6 +395,8 @@ struct RouteList::Impl
                 combo->setColour(juce::PopupMenu::highlightedTextColourId, text);
                 combo->repaint();
             }
+            row->target.setColour(juce::ComboBox::textColourId,
+                                  row->extraTarget != 0 ? pal.dimText : text); // a hidden target
             row->number.setColour(juce::Label::textColourId, pal.dimText);
             row->depth.setColour(juce::Slider::textBoxBackgroundColourId, box);
             row->depth.setColour(juce::Slider::textBoxTextColourId, text);
@@ -398,9 +423,31 @@ struct RouteList::Impl
         }
         const ModRoutes before = context.routes();
         ModRoutes after = before;
+        std::optional<ModRoute> &draft = drafts[slot - 1u];
+        const bool wasDraft = draft.has_value();
+        if (wasDraft)
+        {
+            after[slot - 1u] = *draft;
+        }
         change(after);
+        // An empty row that has a source and no target yet is half built: the list keeps it, and
+        // sends nothing until it has a target.
+        const ModRoute &made = after[slot - 1u];
+        if ((wasDraft || before[slot - 1u].source == gg::core::ModSource::None) &&
+            made.source != gg::core::ModSource::None &&
+            static_cast<std::size_t>(made.target) >= gg::core::kParamCount)
+        {
+            draft = made;
+            showAgain();
+            return;
+        }
+        draft.reset();
         if (after == before)
         {
+            if (wasDraft)
+            {
+                showAgain();
+            }
             return;
         }
         context.setRoutes(after);
@@ -410,12 +457,26 @@ struct RouteList::Impl
         }
     }
 
+    /// Shows the rows again though the routes are as they were (a half-built row changed).
+    void showAgain()
+    {
+        shown.reset();
+        refresh();
+    }
+
     void refresh()
     {
         const ModRoutes now = routes();
         if (shown && *shown == now)
         {
             return;
+        }
+        for (std::size_t i = 0; i < drafts.size(); ++i)
+        {
+            if (drafts[i] && now[i].source != gg::core::ModSource::None)
+            {
+                drafts[i].reset(); // the route came by another way: it wins
+            }
         }
         // A route that appeared since the last look (a drop, a redo, the host's patch) comes
         // into view: the newest one, outlined.
@@ -432,19 +493,33 @@ struct RouteList::Impl
             }
         }
         shown = now;
+        const Palette &pal = paletteOf(owner);
         refreshing = true;
         for (std::size_t i = 0; i < rows.size(); ++i)
         {
             Row &row = *rows[i];
-            const ModRoute &r = now[i];
+            const bool half = drafts[i].has_value();
+            const ModRoute &r = half ? *drafts[i] : now[i];
             const bool active = r.source != gg::core::ModSource::None;
             row.source.setSelectedId(static_cast<int>(r.source) + 1, juce::dontSendNotification);
             row.sourceLayer.setSelectedId(r.sourceLayer < gg::core::kLayers ? r.sourceLayer + 2 : 1,
                                           juce::dontSendNotification);
-            row.target.setSelectedId(static_cast<std::size_t>(r.target) < gg::core::kParamCount
-                                         ? static_cast<int>(r.target) + 1
-                                         : kNoTarget,
+            // A target the product hides still reads, dimmed ("Mix" in the instrument).
+            const bool inRange = static_cast<std::size_t>(r.target) < gg::core::kParamCount;
+            const bool hidden = inRange && hiddenIn(r.target, context.mode);
+            const int extra = hidden ? static_cast<int>(r.target) + 1 : 0;
+            if (row.extraTarget != extra)
+            {
+                fillTargets(row, extra);
+            }
+            row.target.setColour(juce::ComboBox::textColourId, hidden ? pal.dimText : pal.text);
+            row.target.setSelectedId(half ? 0
+                                          : (inRange ? static_cast<int>(r.target) + 1 : kNoTarget),
                                      juce::dontSendNotification);
+            if (half)
+            {
+                row.target.setText(kChooseTarget, juce::dontSendNotification);
+            }
             row.targetLayer.setSelectedId(r.targetLayer < gg::core::kLayers ? r.targetLayer + 1
                                                                             : gg::core::kLayers + 1,
                                           juce::dontSendNotification);
@@ -505,7 +580,9 @@ struct RouteList::Impl
     Content content;
     std::array<std::unique_ptr<Row>, gg::core::kModSlots> rows;
     std::optional<ModRoutes> shown; ///< the routes the rows show
-    bool refreshing{false};         ///< refresh() sets the controls: their callbacks edit nothing
+    /// A row with a source and no target yet, by slot - 1: the list's own state, not the routes'.
+    std::array<std::optional<ModRoute>, gg::core::kModSlots> drafts;
+    bool refreshing{false}; ///< refresh() sets the controls: their callbacks edit nothing
     uint8_t selected{0};
     uint8_t depthSlot{0}; ///< the slot whose depth slider is being dragged
     ModRoutes depthBefore{}, depthAfter{};
