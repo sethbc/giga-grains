@@ -56,3 +56,59 @@ $b --commit "$(git rev-parse --short HEAD)" --json headline.json
 $b --space --commit "$(git rev-parse --short HEAD)" --json space.json
 $b --canvas --json canvas.json
 ```
+
+## 2026-11-01: M2 sub-project 4 (Extremes)
+
+One session on the director's Apple M5 Max (arm64), the `release` preset, AppleClang
+21.0.0.21000401, 4-wide kernels, at commit `cc68e3d` (the engine and tools sources are
+`66b58f5`'s; only docs and a test comment changed since). An idle window the programme manager
+granted: nothing else was built or benchmarked. The one-minute load average was 1.60 before the
+published run and 4.04 after, with no process above 12.5% CPU at the start.
+
+| File | Command | What it is |
+|---|---|---|
+| `2026-11-01-m2-extremes.json` | `gg-bench --cases reference,engine-sample,engine-sample-smear,engine-buses,engine-spectral,hermite-simd,hermite-simd-grainfilter --commit cc68e3d --json …` | The published run: the three sub-project 4 engine cases beside X, `reference`, `hermite-simd` and the §22 kernel, at blocks 32, 64 and 256. |
+| `2026-11-01-m2-extremes-chain.json` | `gg-bench --chain --commit cc68e3d --json …` | The wet chain's new stages (two bus filters, the delay, the limiter), same window, just before. |
+| `2026-11-01-m2-extremes-ab-main.json` | `gg-bench --cases reference,engine-sample --json …` with main's binary at `4fed5bb` | The A/B's main run (the second of two). |
+| `2026-11-01-m2-extremes-ab-head.json` | `gg-bench --cases reference,engine-sample --json …` with this head's binary | The A/B's head run (the second of two). |
+
+**The figures** (medians; ns per stereo grain-sample at blocks 32 / 64 / 256, then % of one core
+and the ratio to `reference`):
+
+| Case | ns | % of one core | Ratio |
+|---|---|---|---|
+| `engine-sample` (X) | 2.472 / 2.245 / 2.065 | 23.7 / 21.6 / 19.8 | 1.172 / 1.101 / 1.032 |
+| `engine-sample-smear` | 2.500 / 2.265 / 2.100 | 24.0 / 21.7 / 20.2 | 1.176 / 1.099 / 1.035 |
+| `engine-buses` | 2.505 / 2.255 / 2.073 | 24.1 / 21.7 / 19.9 | 1.171 / 1.091 / 1.031 |
+| `engine-spectral` | 3.403 / 2.721 / 2.212 | 32.7 / 26.1 / 21.2 | 1.604 / 1.328 / 1.108 |
+| `reference` | 2.114 / 2.039 / 1.992 | | |
+| `hermite-simd` | 2.133 / 2.064 / 1.996 | | |
+| `hermite-simd-grainfilter` | 8.919 / 9.043 / 9.400 | | |
+
+- **`--chain`:** 11.781 ns per stereo sample (min 11.773, IQR 0.009), **0.057%** of one core.
+- **X shows no regressed ratio.** Against the M1 headline's 1.154 / 1.072 / 1.024 it is +1.6% /
+  +2.7% / +0.8%, inside ruling R3's 3%.
+- **The A/B** separates the extremes from the drift of three sub-projects. Main (`4fed5bb`) and
+  this head were timed alternately in the same window (`reference,engine-sample`: main, head,
+  main, head). Main's second run gave 1.1770 / 1.0896 / 1.0338; the head's two gave 1.1746 /
+  1.0939 / 1.0327 and 1.1770 / 1.0934 / 1.0322. The extremes move X by at most ±0.4% at any
+  block size. (Main's first run, 1.1787 / 1.1797 / 1.0449, and an earlier full run's X at block
+  32, 1.2019, were the machine settling after a busy browser; neither is published.)
+- **§22:** `hermite-simd-grainfilter` is 4.18× / 4.38× / 4.71× `hermite-simd` and 3.61× / 4.03× /
+  4.55× X; the filter's own added cost (less `hermite-simd`) is 6.79 / 6.98 / 7.40 ns, 2.75× /
+  3.11× / 3.59× X per grain-sample, far above a quarter of X. Buses with channel masks are v1's
+  answer; per-grain filters wait for M5's budget weights.
+
+**Reproduce** (on an otherwise idle machine):
+
+```sh
+cmake --preset release
+cmake --build --preset release --target gg-bench
+b=build/release/tools/gg-bench/gg-bench
+uptime                                   # the load average, for the record
+$b --cases reference,engine-sample,engine-sample-smear,engine-buses,engine-spectral,hermite-simd,hermite-simd-grainfilter \
+   --commit "$(git rev-parse --short HEAD)" --json extremes.json
+$b --chain --commit "$(git rev-parse --short HEAD)" --json chain.json
+# the A/B: build main (4fed5bb) the same way, then alternate main's binary and this one:
+$b --cases reference,engine-sample --json ab-head.json
+```

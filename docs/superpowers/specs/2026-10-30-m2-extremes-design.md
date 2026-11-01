@@ -729,6 +729,13 @@ Loop, Loop Length and Splice). **Decided: option 1 (2026-11-01).**
    meanwhile.
 2. *Build now.* *Cost:* more engine work before the merge.
 
+**D-corners. Should the extremes' sweep corners score their boundaries?** (the integration
+review's Minor 2; carry-over row 382). **Decided: option 1 (2026-11-01).**
+1. **Leave the boundaries to the Reverb Size exemption:** the corners' boundaries stay inside it.
+   *Cost:* nothing now; row 382 keeps the finding on record.
+2. *Score them:* hold Reverb Size in the corners and rule on the ramps' corners, fast envelopes
+   and lone short grains in near silence. *Cost:* more DSP work before the merge.
+
 ## 9. My calls
 
 Engineering choices, each with its reason.
@@ -867,6 +874,14 @@ frozen window fell between the loop's bursts. Peak did not click in `fx-limiter`
 the §22 figure in the report; `engine-sample` shows no `regressed` ratio against
 `tools/gg-bench/baselines/` on any CI model at the sub-project's end (a regression is fixed here,
 programme design §7.6).
+
+*Measured (2026-11-01, idle, M5 Max, `cc68e3d`; `docs/benchmarks/2026-11-01-m2-extremes*.json`):*
+ratios to `reference` at blocks 32 / 64 / 256: X 1.172 / 1.101 / 1.032 (+1.6% / +2.7% / +0.8%
+against the M1 headline, inside R3's 3%; an A/B of main and this head in one window puts the
+extremes' share at ±0.4%), `engine-sample-smear` 1.176 / 1.099 / 1.035, `engine-buses` 1.171 /
+1.091 / 1.031, `engine-spectral` 1.604 / 1.328 / 1.108. `--chain`: 11.781 ns per stereo sample,
+0.057% of one core. **§22:** the per-grain filter's added cost is 2.75× / 3.11× / 3.59× X per
+grain-sample, far above a quarter of X, so buses with channel masks are v1's answer.
 
 **Validators:** clap-validator, pluginval, auval (all three identities) and Steinberg's validator
 on `release`, on every CI leg, with the forty new parameters and the five new pages.
