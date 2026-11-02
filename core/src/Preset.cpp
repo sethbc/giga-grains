@@ -17,13 +17,13 @@ namespace gg::core
 {
 namespace
 {
-// Spec §6.7's vocabulary: the four focus tags (texture to extreme), the twenty character tags
-// (pad to dry), then the four use tags (midi to sidechain).
-constexpr std::array<std::string_view, 28> kTagVocabulary{
-    "texture", "playable", "rhythmic", "extreme", "pad",        "drone",      "freeze",
-    "smear",   "stretch",  "glitch",   "keys",    "pluck",      "percussive", "voice",
-    "strings", "winds",    "metal",    "noise",   "dark",       "bright",     "wide",
-    "mono",    "reverb",   "dry",      "midi",    "live-input", "sample",     "sidechain"};
+// Spec §6.7's vocabulary: the four focus tags (texture to extreme), the twenty-one character tags
+// (pad to dry; brass added 2026-11-01), then the four use tags (midi to sidechain).
+constexpr std::array<std::string_view, 29> kTagVocabulary{
+    "texture", "playable", "rhythmic",   "extreme", "pad",        "drone", "freeze",  "smear",
+    "stretch", "glitch",   "keys",       "pluck",   "percussive", "voice", "strings", "winds",
+    "brass",   "metal",    "noise",      "dark",    "bright",     "wide",  "mono",    "reverb",
+    "dry",     "midi",     "live-input", "sample",  "sidechain"};
 } // namespace
 
 std::span<const std::string_view> presetTagVocabulary() noexcept { return kTagVocabulary; }

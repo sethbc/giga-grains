@@ -2,8 +2,8 @@
   "product": "instrument",
   "name": "Clockwork Brass",
   "author": "Giga Grains",
-  "description": "Muted horn and trumpet cut into sixteenth-note grains that scrub forward with every bar of the host's tempo, accented by a step pattern.",
-  "tags": ["rhythmic", "winds", "glitch", "sample"],
+  "description": "Muted horn and trumpet cut into short, evenly spaced grains, lengthened and shortened by a step pattern; while the host's transport plays, they scrub forward through the phrase with every bar.",
+  "tags": ["rhythmic", "brass", "glitch", "sample"],
   "params": {
     "Level": 1.5,
     "A Position": 0.3,

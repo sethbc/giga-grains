@@ -2,7 +2,7 @@
   "product": "instrument",
   "name": "Ocean Archive",
   "author": "Giga Grains",
-  "description": "An ocean drum's surf washed together with a bowed cymbal, a resonant band sweeping slowly through the cymbal; the keys tint the surf.",
+  "description": "An ocean drum's surf washed together with a bowed cymbal, a resonant band sweeping slowly through the cymbal; play it low for a deeper, darker surf.",
   "tags": ["texture", "noise", "wide", "reverb", "sample"],
   "params": {
     "Level": 0,

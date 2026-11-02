@@ -2,7 +2,7 @@
   "product": "instrument",
   "name": "Pulse Bells",
   "author": "Giga Grains",
-  "description": "Tubular and hand bells struck in eighths that swell and fall with every beat of the host's tempo, the strikes drifting into the ring across each bar.",
+  "description": "Tubular and hand bells struck at a steady rate; while the host's transport plays, their level falls across each beat and snaps back on the next, and the strikes drift into the ring across each bar.",
   "tags": ["rhythmic", "metal", "percussive", "reverb", "sample"],
   "params": {
     "Level": 10.0,

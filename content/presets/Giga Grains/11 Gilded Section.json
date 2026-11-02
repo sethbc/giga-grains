@@ -3,7 +3,7 @@
   "name": "Gilded Section",
   "author": "Giga Grains",
   "description": "A bright brass section, trumpet and horn in tune with a trombone an octave below; play chords, harder for louder, the mod wheel adding edge.",
-  "tags": ["playable", "winds", "bright", "sample"],
+  "tags": ["playable", "brass", "bright", "sample"],
   "params": {
     "Level": -13.0,
     "A Position": 0.4,

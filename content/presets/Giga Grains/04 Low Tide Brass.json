@@ -3,7 +3,7 @@
   "name": "Low Tide Brass",
   "author": "Giga Grains",
   "description": "Horn, trombone and tenor sax smeared into one warm pad whose blend ebbs and flows like a tide; hold chords.",
-  "tags": ["texture", "pad", "smear", "winds", "reverb", "sample"],
+  "tags": ["texture", "pad", "smear", "brass", "winds", "reverb", "sample"],
   "params": {
     "Level": -7.3,
     "A Position": 0.4,

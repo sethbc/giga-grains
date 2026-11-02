@@ -447,13 +447,13 @@ TEST_CASE("a preset past the cap or the nesting limit is refused", "[core][prese
     }
 }
 
-TEST_CASE("the tag vocabulary is the spec's 28 words", "[core][preset]")
+TEST_CASE("the tag vocabulary is the spec's 29 words", "[core][preset]")
 {
-    constexpr std::array<std::string_view, 28> kWords{
-        "texture", "playable", "rhythmic", "extreme", "pad",        "drone",      "freeze",
-        "smear",   "stretch",  "glitch",   "keys",    "pluck",      "percussive", "voice",
-        "strings", "winds",    "metal",    "noise",   "dark",       "bright",     "wide",
-        "mono",    "reverb",   "dry",      "midi",    "live-input", "sample",     "sidechain"};
+    constexpr std::array<std::string_view, 29> kWords{
+        "texture", "playable", "rhythmic",   "extreme", "pad",        "drone", "freeze",  "smear",
+        "stretch", "glitch",   "keys",       "pluck",   "percussive", "voice", "strings", "winds",
+        "brass",   "metal",    "noise",      "dark",    "bright",     "wide",  "mono",    "reverb",
+        "dry",     "midi",     "live-input", "sample",  "sidechain"};
     const auto vocabulary = gg::core::presetTagVocabulary();
     REQUIRE(vocabulary.size() == kWords.size());
     for (std::size_t i = 0; i < kWords.size(); ++i)

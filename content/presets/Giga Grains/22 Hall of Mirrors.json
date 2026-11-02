@@ -2,7 +2,7 @@
   "product": "instrument",
   "name": "Hall of Mirrors",
   "author": "Giga Grains",
-  "description": "A bowed psaltery and a rising sweep, and a third layer that granulates the instrument's own output an octave up, so every note echoes back changed.",
+  "description": "A bowed psaltery, a layer that granulates the instrument's own output an octave up, and a rising sweep, so every note echoes back changed.",
   "tags": ["extreme", "glitch", "wide", "reverb", "sample"],
   "params": {
     "Level": 3.5,

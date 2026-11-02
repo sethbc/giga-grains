@@ -2,7 +2,7 @@
   "product": "instrument",
   "name": "Time Dilation",
   "author": "Giga Grains",
-  "description": "A violin tremolo and a zither glissando stretched about fifty times, crawling through their sound over minutes in long, overlapping grains.",
+  "description": "A violin tremolo and a zither glissando stretched many times over, crawling through their sound over minutes in long, overlapping grains.",
   "tags": ["extreme", "stretch", "strings", "reverb", "sample"],
   "params": {
     "Level": 1.0,
