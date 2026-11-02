@@ -83,6 +83,19 @@ if (GG_CASE STREQUAL "unpaired")
     return()
 endif ()
 
+# CMake's file(WRITE) and file(APPEND) write in text mode on Windows, so a "\n" in a fixture lands
+# in the file as CR LF there. The embedder must carry whatever bytes the file holds, so the expected
+# text spells a newline as the fixture really has it: gg_detect_newline sets gg_nl to "\x0a" or
+# "\x0d\x0a" from the bytes of ${src}.
+macro(gg_detect_newline)
+    file(READ "${src}" gg_fixture_hex HEX)
+    if (gg_fixture_hex MATCHES "0d0a")
+        set(gg_nl "\\x0d\\x0a")
+    else ()
+        set(gg_nl "\\x0a")
+    endif ()
+endmacro()
+
 # The fixture, and the body the generated array must hold (between the "constexpr char kText0[] ="
 # line and the closing ";").
 if (GG_CASE STREQUAL "escapes")
@@ -102,10 +115,11 @@ if (GG_CASE STREQUAL "escapes")
     endif ()
     file(READ "${GG_OUT}/utf8.txt" utf8text)
     file(APPEND "${src}" "${utf8text}" "7\n")
+    gg_detect_newline()
     set(expected
-        "    \"say \\\"hi\\\" \\\\ \\x09\" \"end\\x0a\"\n"
-        "    \"\\x01\" \"1\\x01z\\x0a\"\n"
-        "    \"x\\xc3\\xa9\" \"7\\x0a\"\n")
+        "    \"say \\\"hi\\\" \\\\ \\x09\" \"end${gg_nl}\"\n"
+        "    \"\\x01\" \"1\\x01z${gg_nl}\"\n"
+        "    \"x\\xc3\\xa9\" \"7${gg_nl}\"\n")
     string(REPLACE ";" "" expected "${expected}")
 elseif (GG_CASE STREQUAL "long-line")
     # One 40,000-byte line: three pieces of 16,000, 16,000 and 8,000 bytes (no newline until the
@@ -114,7 +128,8 @@ elseif (GG_CASE STREQUAL "long-line")
     string(REPEAT "b" 16000 piece_b)
     string(REPEAT "c" 7999 piece_c)
     file(WRITE "${src}" "${piece_a}${piece_b}${piece_c}\n")
-    set(expected "    \"${piece_a}\"\n    \"${piece_b}\"\n    \"${piece_c}\\x0a\"\n")
+    gg_detect_newline()
+    set(expected "    \"${piece_a}\"\n    \"${piece_b}\"\n    \"${piece_c}${gg_nl}\"\n")
 elseif (GG_CASE STREQUAL "empty")
     file(WRITE "${src}" "")
     set(expected "    \"\"\n")
