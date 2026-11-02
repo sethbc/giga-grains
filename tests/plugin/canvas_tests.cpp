@@ -834,11 +834,17 @@ TEST_CASE("the canvas paints four lanes, and again after a resize", "[plugin]")
     // (row 327: positions, not only lit pixels). It reads a quarter of the way into the 1 s
     // sample, 100 ms at rate 2, an octave up. Queued after a frame, which clears the queue.
     image = paintInto(900, 403);
-    REQUIRE(queue.push(gg::core::GrainVis{kFrames - 100, 12000.0, 2.0f, 4800.0f, 1.0f, 0.0f, 3}));
+    // The canvas extrapolates its clock by wall time (up to 0.25 s past a change, never backwards)
+    // and the grain lasts 100 ms, so a slow build (ASan) that spent longer than that on the paints
+    // above holds now() up to kFrames + 12,000. Publish a clock past that, and draw the grain
+    // relative to it, so it is never pruned before it is drawn.
+    constexpr int64_t kNow = kFrames + 24000;
+    clock.store(kNow, std::memory_order_release);
+    REQUIRE(queue.push(gg::core::GrainVis{kNow - 100, 12000.0, 2.0f, 4800.0f, 1.0f, 0.0f, 3}));
     image = paintInto(900, 403);
     const auto lane = laneOf(*canvas, 3, false, kRate, 48000);
-    const auto c = gg::ui::grainCapsule({kFrames - 100, 12000.0, 2.0f, 4800.0f, 1.0f, 0.0f},
-                                        kFrames, kFrames, lane);
+    const auto c =
+        gg::ui::grainCapsule({kNow - 100, 12000.0, 2.0f, 4800.0f, 1.0f, 0.0f}, kNow, kNow, lane);
     REQUIRE(c.has_value());
     const juce::Rectangle<int> d = canvas->laneBounds(3);
     int inside = 0;
