@@ -247,6 +247,8 @@ draws its track alone, with no label (its tooltip and accessibility name give th
 full name), so the cell fits at 640 × 360. The header column is chrome, not lane: it follows
 the theme, painted in the theme's background, while the lanes stay dark in both themes (D9).
 
+**Amended** (VW-P2j): the Source menu button shows a short form where its full text doesn't fit ("Sample", "Live", "Resamp", "Spec", "Osc"), and in a narrow cell Freeze takes from On and Source from Level; the popup list, the tooltip and the accessibility value keep the full names, so every strip control reads at 640 × 360.
+
 **The lane's body.** Each lane is M1's lane for its own layer, by that layer's **built kind**
 (`builtKind` of the Source's base value, ruling FR-6's rule):
 - a **Live** layer's lane is the FX lane of M1: the ring with the write head fixed at the right
@@ -445,6 +447,8 @@ own title ("Rate" in LFO 1's panel, "Decay" in Reverb's); the full name stays in
 the accessibility name. Parameter names are unchanged.
 
 ### 6.6 The Mod view and the route path
+
+**Amended** (VW-P2j): the Mod view's layer strip is the strip of §6.3, so its Freeze label shows a short form when the full text doesn't fit at 640 × 360 (the tooltip and accessibility name keep the full one).
 
 **Shape** (D6): the layer strip; a **source strip** of 24 chips in five groups (Macros 1–8 ·
 LFO 1, LFO 2, Env 1, Env 2, Random 1, Random 2, Step · Wheel, Aftertouch, Bend, Velocity, Key ·
