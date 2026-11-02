@@ -435,7 +435,8 @@ TEST_CASE("a render through a preset loads its samples from --content-dir", "[re
     viaSpec["preset"] = utf8(without);
     viaSpec["sample"] = {{"kind", "file"}, {"path", utf8(root / "Samples" / "Test" / "tone.wav")}};
 
-    const gg::render::RenderOptions options{.contentDir = utf8(root)};
+    const gg::render::RenderOptions options{
+        .contentDir = utf8(root), .capturesDir = {}, .saveStatePath = {}, .mediaDir = {}};
     std::vector<std::string> presetEvents, specEvents;
     const auto a = gg::render::render(parseSpec(viaPreset), &presetEvents, options);
     const auto b = gg::render::render(parseSpec(viaSpec), &specEvents, options);
@@ -455,7 +456,9 @@ TEST_CASE("a render through a preset loads its samples from --content-dir", "[re
     CHECK_THAT(badInputOf(viaPreset), ContainsSubstring(kToneRef));
     CHECK_THAT(badInputOf(viaPreset), ContainsSubstring("--content-dir"));
     const auto empty = scratch("render-samples-empty");
-    const auto missing = badInputOf(viaPreset, {.contentDir = utf8(empty)});
+    const auto missing = badInputOf(
+        viaPreset,
+        {.contentDir = utf8(empty), .capturesDir = {}, .saveStatePath = {}, .mediaDir = {}});
     CHECK_THAT(missing, ContainsSubstring(kToneRef));
     CHECK_THAT(missing, ContainsSubstring("not found"));
     // A file of other content under the reference has changed.
@@ -464,7 +467,11 @@ TEST_CASE("a render through a preset loads its samples from --content-dir", "[re
     gg::test::writeFile(
         other / "Samples" / "Test" / "tone.wav",
         gg::test::wavBytes(gg::test::makeTestAudio(1, 44100, 4410), gg::test::SampleFormat::Int16));
-    CHECK_THAT(badInputOf(viaPreset, {.contentDir = utf8(other)}), ContainsSubstring("changed"));
+    CHECK_THAT(
+        badInputOf(
+            viaPreset,
+            {.contentDir = utf8(other), .capturesDir = {}, .saveStatePath = {}, .mediaDir = {}}),
+        ContainsSubstring("changed"));
 }
 
 TEST_CASE("an instrument spec without a sample needs a preset that names layer A's", "[render]")
@@ -501,7 +508,9 @@ TEST_CASE("a render through a preset keeps the defaults' ring parameters", "[ren
     spec["preset"] = utf8(preset);
     spec["params"] = {{"D Splice", 2}};
     const auto saved = dir / "saved.ggst";
-    gg::render::render(parseSpec(spec), nullptr, {.saveStatePath = utf8(saved)});
+    gg::render::render(
+        parseSpec(spec), nullptr,
+        {.contentDir = {}, .capturesDir = {}, .saveStatePath = utf8(saved), .mediaDir = {}});
     gg::core::SessionState out;
     REQUIRE(gg::core::decodeState(readText(saved), Mode::Fx, out));
     const gg::core::SessionState defaults = gg::core::initState(Mode::Fx);

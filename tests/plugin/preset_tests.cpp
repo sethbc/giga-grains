@@ -987,8 +987,9 @@ TEST_CASE("a preset's content sample loads from the content roots and renders as
     const auto spec = gg::render::parseRenderSpec(j.dump(), error);
     INFO(error);
     REQUIRE(spec.has_value());
-    const gg::metrics::AudioData expected =
-        gg::render::render(*spec, nullptr, {.contentDir = utf8(root)});
+    const gg::metrics::AudioData expected = gg::render::render(
+        *spec, nullptr,
+        {.contentDir = utf8(root), .capturesDir = {}, .saveStatePath = {}, .mediaDir = {}});
     REQUIRE(expected.channels.size() == 2);
     REQUIRE(expected.channels[0].size() == kFrames);
     REQUIRE(peak(expected.channels[0]) > 0.01f);
