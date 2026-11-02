@@ -195,6 +195,13 @@ no libstdc++ newer than Ubuntu 22.04's" fails on a `GLIBCXX` above 3.4.30, a `CX
 1.3.13 or an exported `std::` symbol, and lists each product's symbol versions in the step
 summary.
 
+**CI's sanitizer jobs** (INTENT §23 #74). ASan + UBSan runs in six shards side by side, each
+running every sixth test (`ctest -I <shard>,,6`; a fixture's setup test joins any shard that needs
+it), and RTSan in a seventh job. `sanitizers (asan, rtsan)`, the check the `main` ruleset requires
+and the release job needs, passes only when all seven pass. ASan leaves out the `slow` tests
+(`-LE slow`) on a pull request and a push to `main`, and runs them on the nightly, a dispatch and a
+tag; RTSan runs everything. To reproduce a shard locally: `ctest --preset asan -I 3,,6 -LE slow`.
+
 **CI caches** (`.github/workflows/ci.yml`; none changes what is built):
 - **The SDK checkouts** (VST3 SDK, AudioUnitSDK, RtAudio, RtMidi, wil): `scripts/fetch-sdks.sh`
   clones each at the tag clap-wrapper's `cmake/base_sdks.cmake` pins into `.sdk-cache`, and
@@ -202,14 +209,15 @@ summary.
   cache is keyed by leg and by the hash of `base_sdks.cmake` and the script. (CPM's own
   `CPM_SOURCE_CACHE` cached nothing: clap-wrapper gives every package a `SOURCE_DIR`, which makes
   CPM skip it.) The VST3-validator step builds from `VST3_SDK_ROOT`.
-- **ccache**, macOS and Linux legs and the sanitizer job only, passed as
+- **ccache**, macOS and Linux legs and the sanitizer jobs only, passed as
   `CMAKE_<LANG>_COMPILER_LAUNCHER` at CI configure (local presets are unchanged). Windows is
   uncached (the Visual Studio generator has no launcher support), and `mac-universal`'s
   two-architecture compiles are largely uncached. Keyed by OS, preset, runner image and commit
-  (the sanitizer job's by the LLVM version and commit), restored by prefix.
-- **The pinned LLVM archive** (sanitizer job), keyed by version and SHA-256. The SHA-256 is checked
-  on a hit too.
-- **The content** (every build leg and the sanitizer job): `scripts/fetch-content.sh` fetches
+  (the sanitizer jobs' by sanitizer, LLVM version and commit; one ASan shard and the RTSan job
+  save), restored by prefix.
+- **The pinned LLVM archive** (sanitizer jobs), keyed by version and SHA-256. The SHA-256 is
+  checked on a hit too.
+- **The content** (every build leg and the sanitizer jobs): `scripts/fetch-content.sh` fetches
   the zip `content/pin.txt` pins into `.content-cache`, and every configure passes
   `-DGG_CONTENT_DIR=$CONTENT_CACHE_DIR/content`. Keyed by the hash of `content/pin.txt` and
   `scripts/fetch-content.cmake` alone (the content is the same on every leg); a hit downloads
@@ -282,7 +290,7 @@ scripts/check.sh [--presets dev,asan,rtsan] [-L label]... [--no-format] [--allow
 - **Per preset, in order** (`dev,asan,rtsan` by default):
   1. It configures only when the tree has no `CMakeCache.txt`. For `rtsan` on macOS with
      `GG_LLVM` unset, it uses `/opt/homebrew/opt/llvm` if that exists, and says so.
-  2. It builds `gg-all` for `asan` and `rtsan`, as CI's sanitizer job does, and the default
+  2. It builds `gg-all` for `asan` and `rtsan`, as CI's sanitizer jobs do, and the default
      target otherwise.
   3. It runs `ctest --preset <p>`, passing every `-L` through. Repeated `-L` options must all
      match (see Tests below), so `-L core -L rt` narrows; `-L 'core|rt'` runs both areas.
@@ -510,6 +518,13 @@ runs the tests labelled either. The labels are:
 slice under Rosetta. The fp-contract tests (`fp_contract_fast.cpp`'s canary and the kernel cases)
 can fail only on arm64 Clang; Linux, Windows and the x86_64 slice can't catch a fused
 multiply-add. Keep that step whenever the macOS leg changes.
+
+**The x86_64 slice under Rosetta** (CI's macOS leg; INTENT §23 #75) runs `gg-tests` in three
+Catch2 shards at once (`--order decl --shard-count 3`, so they're disjoint), then the `[serial]`
+cases alone, then the golden cases three `gg-render` processes at a time. On a pull request and a
+push to `main` it leaves out `[slow]`; the nightly, a dispatch and a tag run it all. To reproduce a
+shard locally: `arch -x86_64 build/mac-universal/tests/gg-tests '~[serial]~[slow]' --order decl
+--shard-count 3 --shard-index 0`.
 
 **Test case names are ASCII only** (tags too). CTest passes a name to `gg-tests` on its command
 line, and on Windows a non-ASCII character there reaches Catch2's narrow `main` through the ANSI
@@ -1001,8 +1016,9 @@ $b --chain [--quick | --seconds S] [--rounds N] [--commit SHA] [--json out.json]
   minutes of timing (36 and about 6 minutes before the four cases of M2 sub-project 3 joined, 48
   before M2 sub-project 2's `engine-live-long` and M2 sub-project 4's four), plus
   `engine-live-long`'s three 300 s warm-ups, a few minutes more of wall time; a CI leg's benchmark
-  step took about 6 minutes before the layer cases added one, and hasn't been timed with the later
-  cases yet.
+  step took about 6 minutes before the layer cases added one; with the later cases, Linux's EPYC
+  7763 spent 30 minutes on the warm-ups and round 1 alone (the nightly of 2026-11-02), so the step's
+  limit is 60 minutes (INTENT §23 #73).
   `--canvas` times 240 frames after a 20-frame warm-up, or 30 with `--quick`.
 - **`--canvas`** times the canvas's CPU renderer headless: a 3200 × 1200 canvas (1600 × 600 at
   2×) of four lanes, M0's stress workload at 4,096, 8,192 and 16,384 grains, each frame's
@@ -1047,12 +1063,13 @@ $b --chain [--quick | --seconds S] [--rounds N] [--commit SHA] [--json out.json]
   - **A verdict over no ratios is an error** (exit 1): a run without `reference` or any engine
     case, on a model the baseline has, never passes as "0 of 0".
 - **In CI:** the build legs run the full length (with `--commit` and, when
-  `tools/gg-bench/baselines/<preset>.json` exists, `--baseline`) on pushes to `main`, on the
-  nightly schedule (03:17 UTC) and on `workflow_dispatch`. They print the output, and a verdict
-  per ratio, in the step summary and upload `gg-bench-<preset>` (`gg-bench.json` and
-  `gg-bench.txt`). On a pull request each leg runs `--quick` as a smoke check only: it checks no
-  baseline, prints no verdict and uploads nothing, but a crash or exit 1 or 2 still fails the
-  job.
+  `tools/gg-bench/baselines/<preset>.json` exists, `--baseline`) on the nightly schedule
+  (03:17 UTC), on `workflow_dispatch` and on a pushed `v*` tag. They print the output, and a
+  verdict per ratio, in the step summary and upload `gg-bench-<preset>` (`gg-bench.json` and
+  `gg-bench.txt`). On a pull request and a push to `main` each leg runs `--quick --rounds 1` as
+  a smoke check only (INTENT §23 #73, #75): it checks no baseline, prints no verdict and uploads nothing, but
+  a crash or exit 1 or 2 still fails the job. A full run is limited to 60 minutes a leg, the
+  build job to 120: it outgrew 30 once M2's cases joined.
   - **Baselines are per CPU model.** GitHub assigns a leg different CPU models from run to run
     (seen so far: Linux on AMD EPYC 7763, 9V45 and 9V74 and Intel Xeon 8370C; Windows on EPYC
     7763, 9V45 and 9V74). For unchanged code, ratios differ by up to ~20% between models and ~6%
@@ -1073,9 +1090,9 @@ $b --chain [--quick | --seconds S] [--rounds N] [--commit SHA] [--json out.json]
   - The gate turns blocking at 1.0.0, after M5 (INTENT §23 #60, #61), with the published X. The
     0.x releases, public from 0.5.0's first beta, keep it report-only.
 - **Refreshing a baseline** (`tools/gg-bench/baselines/README.md` has the format):
-  1. Make three separate full-length CI runs of the same engine code: runs on `main`, the
-     nightly or `gh workflow run ci.yml --ref <branch>` (a pull request's runs are `--quick` and
-     upload no artifact). One run's IQR says nothing about the next run's
+  1. Make three separate full-length CI runs of the same engine code: the nightly or
+     `gh workflow run ci.yml --ref <branch>` (a pull request's runs and a push to `main` are
+     `--quick` and upload no artifact). One run's IQR says nothing about the next run's
      drift, which reached ~20% on Windows (INTENT §23 #47).
   2. Download each run's artifact: `gh run download <id> --pattern 'gg-bench-<preset>'`.
   3. Run `gg-bench --make-baseline <preset> tools/gg-bench/baselines/<preset>.json a.json b.json
