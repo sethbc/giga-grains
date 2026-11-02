@@ -201,6 +201,12 @@ For the close's sitting in Ableton Live 12 and Bitwig Studio:
       a value moves.
 - [ ] A favorite survives a restart.
 - [ ] Mutate recorded as automation (the lanes show the gestures).
+- [ ] **The Mutate ladder and the bus filter types.** Each bus filter's type (Off, Low-pass,
+      High-pass, Band-pass, Notch) is a stepped slot, so a 15% press flips it with probability
+      0.15, and with four layers on about 73% of 15% presses flip at least one of the eight
+      filter types (an Off to Notch is a big move). Listen for it in the ladder and in a host;
+      if a press leaves the preset's family for this, consider locking the two filter types per
+      layer.
 - [ ] An M1 session reopens unchanged, with its name "Init".
 - [ ] **The content's noise floor under granulation.** The quiet VSCO 2: CE sources were gained
       +29 to +42 dB to a -1 dBFS peak (the content's `PROVENANCE.md`), raising their recorded

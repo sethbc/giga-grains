@@ -46,8 +46,9 @@ bool presetInfoOf(std::string_view bytes, PresetInfo &info);
 /// A preset load keeps each layer's five ring parameters (isRingParam: Ring Length, Loop, Loop
 /// Length, Overdub, Splice; the program manager's ruling): `loaded`'s are set to `current`'s, so
 /// no preset load resizes a ring or changes what it records, and every other slot is left. The
-/// plugins' preset loads (INIT's too) and gg-render's preset path call it; a preset file may still
-/// hold them (an older one does), and they are ignored. Pure, allocation-free.
+/// plugins' preset file loads (INIT keeps Ring Length alone: keepRingLengths) and gg-render's
+/// preset path call it; a preset file may still hold them (an older one does), and they are
+/// ignored. Pure, allocation-free.
 void keepRingParams(const ParamValues &current, ParamValues &loaded) noexcept;
 
 /// INIT keeps each layer's Ring Length alone (INTENT §23 #70, amended 2026-11-02; D8: INIT is a

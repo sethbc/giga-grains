@@ -3,11 +3,11 @@
 | | |
 |---|---|
 | **Milestone** | M2 Giga (INTENT §20), sub-project 5 of 7, wave 3 (merged first in its wave) |
-| **Status** | **Built** (group 1 2026-10-31, PR #17; **group 2 2026-11-01, PR #25, Tasks C2 and 14 to 18: content v2, content-relative preset samples, the 48 factory presets and their goldens, `gg-render --mutate-preset`, the themed panels; INTENT §23 #70**). Earlier: **Approved by the programme manager 2026-10-30** against the programme design and INTENT, with two notes applied in place: this sub-project's INTENT §23 row takes the next free number at merge (sub-project 3 merges first), and under `media/` it adds the new header `gg/media/ContentPaths.h` alone, header-only, editing nothing else there until sub-project 2 merges and this branch rebases (§6.4). **The director's decisions D1–D9, 2026-10-30, by forced choice, relayed by the programme manager: every recommended option** (option 1 of each), recorded in §8 and applied in place. Coordination with sub-project 6 (§6.8): it keeps the header label's component ID `header.preset` and its bounds slot for this sub-project, which replaces that label's contents and moves nothing else in the header. **Group 1 built 2026-10-31** (Tasks 1–13 and 10b; INTENT §23 #70); group 2 (Tasks 14–18 and content v2) goes in a new branch and pull request. (Earlier: group 1 built 2026-10-30, Tasks 1 to 13 plus 10b, on `m2-presets`; PR #17, draft), group 2 was pending then (§6.12: wave 2's merge, then the voicing of the 48 presets). Amended in place, each marked **Amended**: §6.2, §6.3, §6.4, §6.5, §6.7 (`brass`, 2026-11-01), §6.8, §6.9 (the 62 locks and the ring parameters, 2026-11-01), §6.11, §10 and §12; group 2's §6.2 amendment (a load keeps the ring parameters, INIT included) is in the §6.2 bullet on what a load keeps |
+| **Status** | **Built** (group 1 2026-10-31, PR #17; **group 2 2026-11-01, PR #25, Tasks C2 and 14 to 18: content v2, content-relative preset samples, the 48 factory presets and their goldens, `gg-render --mutate-preset`, the themed panels; INTENT §23 #70**). Earlier: **Approved by the programme manager 2026-10-30** against the programme design and INTENT, with two notes applied in place: this sub-project's INTENT §23 row takes the next free number at merge (sub-project 3 merges first), and under `media/` it adds the new header `gg/media/ContentPaths.h` alone, header-only, editing nothing else there until sub-project 2 merges and this branch rebases (§6.4). **The director's decisions D1–D9, 2026-10-30, by forced choice, relayed by the programme manager: every recommended option** (option 1 of each), recorded in §8 and applied in place. Coordination with sub-project 6 (§6.8): it keeps the header label's component ID `header.preset` and its bounds slot for this sub-project, which replaces that label's contents and moves nothing else in the header. **Group 1 built 2026-10-31** (Tasks 1–13 and 10b; INTENT §23 #70). Amended in place, each marked **Amended**: §6.2, §6.3, §6.4, §6.5, §6.7 (`brass`, 2026-11-01), §6.8, §6.9 (the 62 locks and the ring parameters, 2026-11-01), §6.11, §10 and §12; group 2's §6.2 amendment (a load keeps the ring parameters; INIT keeps Ring Length alone, amended 2026-11-02) is in the §6.2 bullet on what a load keeps |
 | **Spec authority** | `INTENT.md`; the programme design (`docs/superpowers/specs/2026-10-29-m2-programme-design.md`), whose §6.5, §7.5 and §7.8 this document realizes and does not reopen |
 | **Builds on** | Sub-project 1 (layers, the mod matrix, the patch at version 2, `gg-render`'s layer keys; INTENT §23 #65); the release pipeline's reserved Content component (release-pipeline spec §6.9); M1's state container (INTENT §18) and Perform view (§17) |
-| **Starts from** | `main` at `ab9f4e2` (PR #15 merged) on branch `m2-presets`; `docs/m2-carry-over.md` with **11 open rows** |
-| **Waits on** | Wave 2, for its second group of tasks only (§6.12): `MEDI` version 2's content-relative reference (sub-project 2) and wave 2's parameters, which the factory presets are voiced with |
+| **Starts from** | `main` at `ab9f4e2` (PR #15 merged) on branch `m2-presets` (group 2: `m2-presets-g2`); `docs/m2-carry-over.md` with **11 open rows** at the start |
+| **Waits on** | Nothing: wave 2 is merged (`MEDI` version 2's content-relative reference, sub-project 2, and wave 2's parameters, which the factory presets are voiced with; §6.12) |
 
 ## 1. Why this sub-project
 
@@ -236,6 +236,11 @@ Both plugins implement `clap.preset-load/2`. `from_location(kind, location, load
   > included** (it is a preset load). A preset file may still hold them (an older one does); they
   > are ignored on load, gg-render's preset path ignores them too (the defaults', unless the
   > spec's `params` set them), and a factory source may set none (`--pack-preset` refuses one).
+  >
+  > > **Amended 2026-11-02 (the final review's fix wave; the controller's ruling, D8):** INIT keeps
+  > > each layer's **Ring Length** alone, which is what sizes a ring, and gives Loop, Loop Length,
+  > > Overdub and Splice their defaults, so it is a fresh instance in everything that is heard.
+  > > A preset file load is as above and keeps all five (`gg::core::keepRingLengths`).
 - On success the plugin calls the host's `preset_load.loaded()` with the same identity, so a
   wrapper or host moves its selector or list to the preset; on failure `on_error()` with an OS
   error where there is one and a message ("not a Giga Grains FX preset", "can't read …"). The
@@ -619,9 +624,10 @@ only if sub-project 6 widens the slot.
 > and the limiter's Mode, Ceiling and Release (output safety). Smear, Bus Split, the buses'
 > filters, cutoffs and resonances, and the delay's Time, Feedback, Damping and Ping-pong move.
 > The panel adds Delay and Limiter sections after Space, and shows each layer's Ring Length,
-> which no press moves (SP-M8), dimmed with no toggle. A preset load (INIT's too) keeps each
-> layer's five ring parameters, as it keeps the seed (the program manager's ruling), and a
-> factory source may set none (`--pack-preset` refuses it).
+> which no press moves (SP-M8), dimmed with no toggle. A preset file load keeps each
+> layer's five ring parameters, as it keeps the seed (the program manager's ruling; INIT keeps
+> Ring Length alone, amended 2026-11-02, §6.2), and a factory source may set none
+> (`--pack-preset` refuses it).
 
 ### 6.10 `gg-render --preset` (INTENT §19; I27)
 
@@ -961,7 +967,8 @@ retains a name after a factory preset load, row 87 is narrowed or closed with th
 `plugin/src/editor/EditorPlugin.cpp` (row 232, which waits on an sst-clap-helpers bump, not a
 touch). No "when touched" row names a file this sub-project edits.
 
-**Expected at the end: 11 open rows,** no new rows. Every minor the final review raises is fixed in
+**Expected at the end: 11 open rows,** no new rows (planned; see the amendment below for what
+group 2 added). Every minor the final review raises is fixed in
 the fix wave unless blocked outside our control or genuinely large (the policy).
 
 > **Amended (2026-10-30):** group 1 closed with **row 87's pins unmoved** (Task 12 re-ran them:
@@ -970,6 +977,10 @@ the fix wave unless blocked outside our control or genuinely large (the policy).
 > blocked outside this sub-project's work: **233** (clap-validator and Windows preset locations,
 > §10) and **234** (a one-off extra grain on an off layer, x86_64 under Rosetta). The final
 > count is for the close.
+
+> **Amended (2026-11-02):** group 2 added rows 383 to 395 (twelve from its tasks and reviews, 383
+> to 394, and row 395 from the final review), closed rows 385 and 393 in its final fix wave and
+> left the rest open, as plain-log rows (INTENT §23 #67). The count rule above is retired.
 
 ## 13. INTENT changes (Part II, with one §23 row in the same change)
 

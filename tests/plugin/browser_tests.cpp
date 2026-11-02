@@ -1095,7 +1095,7 @@ juce::Rectangle<int> loaderStrip(Fixture &f)
 
 void checkOverlayHides(Fixture &f, const std::function<void()> &open, bool strip = false)
 {
-    const juce::Colour background{0xff15171c}; // theme::kBackground
+    const juce::Colour background{0xff15171c}; // the dark palette's background (ui/src/Palette.cpp)
     const juce::Image perform = snapshot(f);
     const auto label = strip ? loaderStrip(f) : lastMacroLabel(f);
     REQUIRE(pixelsNot(perform, label, background) > 0); // the ink, with nothing over it

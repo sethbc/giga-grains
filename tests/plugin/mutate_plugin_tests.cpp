@@ -434,9 +434,8 @@ TEST_CASE("a preset load during a multi-batch press discards the unsent slots", 
             {
                 const auto slot = static_cast<ParamSlot>(s);
                 CHECK(same(impl.uiBaseValue(slot),
-                           keptByInit(slot)
-                               ? beforeLoad[s]
-                               : gg::core::paramMeta(slot, impl.mode()).defaultVal));
+                           keptByInit(slot) ? beforeLoad[s]
+                                            : gg::core::paramMeta(slot, impl.mode()).defaultVal));
             }
         }
         else

@@ -39,9 +39,9 @@ AGPL-3.0-or-later.
   remote-controls pages. Sub-project 5, Presets and content, is built (INTENT §23 #70; PRs #17
   and #25): the `.ggpreset` file, INIT, CLAP preset discovery, the browser and Mutate, content
   v2 (51 CC0 files, VSCO 2: CE strings and brass beside VCSL), content-relative preset samples,
-  the 48 factory presets and their 48 goldens (108 in all). M2, M3 and M4 are tagged 0.2.0, 0.3.0 and 0.4.0 as unpublished draft
-  releases; nothing is public and there are no betas before M5, whose `0.5.0-beta.N` are the first
-  public releases (§23 #62); v1.0.0 follows M5.
+  the 48 factory presets and their 48 goldens (108 in all). M2, M3 and M4 are tagged 0.2.0, 0.3.0
+  and 0.4.0 as unpublished draft releases; nothing is public and there are no betas before M5,
+  whose `0.5.0-beta.N` are the first public releases (§23 #62); v1.0.0 follows M5.
 - **The records:** each sub-project's spec in `docs/superpowers/specs/`, the published benchmark
   JSON in `docs/benchmarks/`, the listening packs in `docs/listening/`, the M0 and M1 spikes in
   `docs/spikes/`, the release notes in `docs/releases/`, and the carry-over in
@@ -357,7 +357,11 @@ runs the tests labelled either. The labels are:
     the `Processor`'s publishing;
   - `preset` (M2 sub-project 5): the preset element in `PTCH` (`encodePreset`, `readPreset`,
     `presetInfoOf`, INIT) in `core`, and in the plugins a preset load (`preset-load`, INIT, what
-    a load keeps, the preset's name and the edited mark);
+    a load keeps (a preset file keeps each layer's five ring parameters; INIT keeps Ring Length
+    alone), the preset's name and the edited mark, which ignores the ring parameters). `-L` is a
+    regex, so `-L preset` also matches `presets` (the 48 preset goldens, `presets_built` and the
+    content fixture, which needs the network on a tree's first run): use `-L '^preset$'` for the
+    preset unit tests alone;
   - `mutate`: Mutate's model (`core/Mutate.h`: the law, the locks, determinism) and the plugin's
     (the press, the batched sender, the drain witness, the panel's lock list), and `gg-render
     --mutate-preset`'s (with `render`);
@@ -365,7 +369,12 @@ runs the tests labelled either. The labels are:
   preset-discovery provider driven through the entry point (its locations, soundpack and
   `get_metadata`); `catalog` is the browser's model (`PresetCatalog`: the list, search and tag
   filters, favorites, save as and delete, the 5,000-file cap); `queue` is the UI queue's batched
-  sender, `sendValues`, which never overflows it;
+  sender, `sendValues`, which never overflows it. The case "a crawl of the 48 packed factory
+  presets takes under 50 ms" (`discovery_tests.cpp`; also `presets`, `serial` and `crawl48`)
+  requires the `presets_built` fixture (so the first run of a tree needs the network, as the
+  content does), crawls the packed factory presets as a host would (a `get_metadata` per file),
+  builds both catalogs, requires 48 seen (24 per product) and the crawl under 50 ms in `dev`
+  (spec §10); under ASan it checks the counts alone, the bound meaning nothing there;
 - `content`: the content roots and paths in `gg-media` (`ContentPaths.h`: the roots in order,
   a reference resolving to the first that holds it, the user presets and favorites files),
   with `media`; the fetched release itself is the `content_fixture` test (below, under
