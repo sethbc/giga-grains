@@ -93,7 +93,14 @@
 ///   also have "state", which holds a patch of its own. The preset's samples are found by their
 ///   content-relative references under --content-dir alone (never searched), and its ring
 ///   parameters are ignored, as a plugin's preset load ignores them (the spec's "params" may
-///   still set them).
+///   still set them). Besides rendering, gg-render has three modes that render nothing (main.cpp
+///   gives their usage): `--write-media DIR` (the golden media), `--pack-preset <source.json> -o
+///   <out.ggpreset> [--content-dir DIR]` (a preset source, PresetSource.h, into a preset file),
+///   and `--mutate-preset <in.ggpreset> -o <out.ggpreset> --amount A --counter N` (a preset file
+///   of either product with its values moved by one Mutate press: seed 0, the default locks,
+///   amount 0 to 1, the press counter; mutatePreset in PresetSource.h; the listening pack's Mutate
+///   ladder, spec §11), whose output a spec's "preset" then renders. A bad amount or counter, or a
+///   file that isn't a preset, exits 2.
 /// - Instrument and FX mode also take M2 sub-project 2's keys (its spec §6.10), each optional: a
 ///   saved session to restore, timed ring operations and the memory cap (see OperationSpec and
 ///   the members of InstrumentSpec and FxSpec):

@@ -15,8 +15,10 @@
 #include "Render.h"
 #include "SpecReaders.h"
 #include "gg/core/ModMatrix.h"
+#include "gg/core/Mutate.h"
 #include "gg/core/ParamIds.h"
 #include "gg/core/Preset.h"
+#include "gg/core/PresetInfo.h"
 #include "gg/core/SessionState.h"
 #include "gg/media/ContentPaths.h"
 #include "gg/media/Sample.h"
@@ -223,5 +225,31 @@ std::string packPreset(const PresetSource &source,
         state.samples[layer] = std::move(entry);
     }
     return gg::core::encodePreset(source.info, state);
+}
+
+std::string mutatePreset(std::string_view bytes, float amount, uint32_t counter, std::string &error)
+{
+    error.clear();
+    if (!(amount >= 0.0f && amount <= 1.0f))
+    {
+        error = fmt::format("the amount must be from 0 to 1, not {}", amount);
+        return {};
+    }
+    gg::core::PresetInfo info;
+    if (!gg::core::presetInfoOf(bytes, info))
+    {
+        error = "it isn't a preset file this version reads";
+        return {};
+    }
+    const gg::core::Mode mode = info.product;
+    gg::core::SessionState state;
+    if (!gg::core::readPreset(bytes, mode, info, state))
+    {
+        error = "the preset doesn't load";
+        return {};
+    }
+    const gg::core::LockSet locks = gg::core::defaultMutateLocks(state.values, mode);
+    gg::core::mutate(state.values, locks, amount, 0, counter, mode, state.values);
+    return gg::core::encodePreset(info, state);
 }
 } // namespace gg::render

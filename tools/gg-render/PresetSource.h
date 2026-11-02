@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -76,6 +77,17 @@ std::optional<PresetSource> parsePresetSource(const std::string &json, std::stri
 /// decode. A source never sets a ring parameter: parsePresetSource refuses one.
 std::string packPreset(const PresetSource &source,
                        const std::optional<std::filesystem::path> &contentDir, std::string &error);
+
+/// `gg-render --mutate-preset` (spec §11, the listening pack's Mutate ladder): the preset file
+/// `bytes`, of either product, with its values moved by one Mutate press of the plugin's,
+/// gg::core::mutate with seed 0, `counter`, `amount` and defaultMutateLocks of its values (so
+/// its structure stays: gg/core/Mutate.h); its name, metadata, routes and samples unchanged,
+/// written again by encodePreset. Deterministic: the same bytes, amount and counter give the same
+/// file, and amount 0 gives `bytes` back. On failure returns "" and sets `error`: an amount
+/// outside [0, 1] (or NaN), or bytes that aren't a preset file this version reads (a session
+/// state among them).
+std::string mutatePreset(std::string_view bytes, float amount, uint32_t counter,
+                         std::string &error);
 } // namespace gg::render
 
 #endif // GG_RENDER_PRESETSOURCE_H

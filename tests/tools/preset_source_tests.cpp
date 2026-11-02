@@ -27,6 +27,7 @@
 #include "Render.h"
 #include "RenderSpec.h"
 #include "gg/core/ModMatrix.h"
+#include "gg/core/Mutate.h"
 #include "gg/core/ParamIds.h"
 #include "gg/core/Preset.h"
 #include "gg/core/PresetInfo.h"
@@ -618,4 +619,76 @@ TEST_CASE("a preset for the other product, or that isn't one, is bad input", "[r
     writeBytes(sampled, gg::core::encodePreset(parseFixture("fx-test.json").info, withSample));
     fx["preset"] = utf8(sampled);
     CHECK_THAT(badInput(fx), ContainsSubstring("no content-relative reference"));
+}
+
+TEST_CASE("mutatePreset is one Mutate press of seed 0 under the default locks", "[render][mutate]")
+{
+    // gg-render --mutate-preset (the listening pack's ladder, spec §11): the preset's values as
+    // the plugin's press would move them, with seed 0 and the default locks; the metadata, the
+    // routes and the samples as they were.
+    const auto content = contentWith("mutate-preset");
+    for (const bool withSample : {false, true})
+    {
+        INFO("withSample " << withSample);
+        const PresetSource source = withSample ? instWithSample() : parseFixture("fx-test.json");
+        const Mode mode = source.info.product;
+        const std::string bytes = withSample ? packWith(source, content) : pack(source);
+        gg::core::PresetInfo inInfo;
+        gg::core::SessionState in;
+        REQUIRE(gg::core::readPreset(bytes, mode, inInfo, in));
+
+        std::string error;
+        const std::string mutated = gg::render::mutatePreset(bytes, 0.3f, 2, error);
+        INFO(error);
+        REQUIRE(error.empty());
+        REQUIRE_FALSE(mutated.empty());
+        CHECK(mutated != bytes);
+        // Deterministic: the same input, amount and counter give the same bytes.
+        CHECK(gg::render::mutatePreset(bytes, 0.3f, 2, error) == mutated);
+        // Another counter is another press.
+        CHECK(gg::render::mutatePreset(bytes, 0.3f, 3, error) != mutated);
+
+        gg::core::PresetInfo info;
+        gg::core::SessionState out;
+        REQUIRE(gg::core::readPreset(mutated, mode, info, out));
+        CHECK(info == inInfo);
+        CHECK(out.routes == in.routes);
+        CHECK(out.samples == in.samples);
+        gg::core::ParamValues expected{};
+        gg::core::mutate(in.values, gg::core::defaultMutateLocks(in.values, mode), 0.3f, 0, 2, mode,
+                         expected);
+        for (std::size_t s = 0; s < gg::core::kParamCount; ++s)
+        {
+            INFO("slot " << s);
+            CHECK(std::bit_cast<uint32_t>(out.values[s]) == std::bit_cast<uint32_t>(expected[s]));
+        }
+    }
+}
+
+TEST_CASE("mutatePreset at amount 0 rewrites the preset byte for byte", "[render][mutate]")
+{
+    const std::string bytes = pack(parseFixture("fx-test.json"));
+    std::string error;
+    CHECK(gg::render::mutatePreset(bytes, 0.0f, 1, error) == bytes);
+    CHECK(error.empty());
+}
+
+TEST_CASE("mutatePreset refuses a bad amount and a file that isn't a preset", "[render][mutate]")
+{
+    const std::string bytes = pack(parseFixture("fx-test.json"));
+    for (const float amount : {-0.01f, 1.01f, std::nanf("")})
+    {
+        INFO("amount " << amount);
+        std::string error;
+        CHECK(gg::render::mutatePreset(bytes, amount, 1, error).empty());
+        CHECK_THAT(error, Catch::Matchers::ContainsSubstring("amount"));
+    }
+    std::string error;
+    CHECK(gg::render::mutatePreset("not a preset", 0.1f, 1, error).empty());
+    CHECK_THAT(error, Catch::Matchers::ContainsSubstring("isn't a preset file"));
+    // A session state is not a preset.
+    CHECK(gg::render::mutatePreset(gg::core::encodeState(gg::core::initState(Mode::Fx)), 0.1f, 1,
+                                   error)
+              .empty());
+    CHECK_THAT(error, Catch::Matchers::ContainsSubstring("isn't a preset file"));
 }

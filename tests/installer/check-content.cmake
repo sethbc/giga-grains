@@ -9,8 +9,8 @@
 #         -P <this file>
 #
 # - Presets/Giga Grains/ and Presets/Giga Grains FX/ each hold at least PRODUCTS_MIN .ggpreset
-#   files (0 in M2-5's first group, which has no factory presets yet; 24 once they exist), and
-#   Presets/Giga Grains FX/ at least MIDI_MIN of them tagged `midi` (0, then 8). A preset's tags
+#   files (the CTest passes 24, the factory presets per product), and Presets/Giga Grains FX/ at
+#   least MIDI_MIN of them tagged `midi` (8). A preset's tags
 #   are readable in the file's text (`tags="texture midi"`).
 # - Samples/ holds at least one file, and every file's SHA-256 appears in PROVENANCE.md.
 # - PROVENANCE.md, LICENSE-CC0-1.0.txt, README.md and content-version.txt are there, and

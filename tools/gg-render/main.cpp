@@ -16,6 +16,7 @@
 //             [--save-state out.ggst]
 //   gg-render --write-media DIR
 //   gg-render --pack-preset <source.json> -o <out.ggpreset> [--content-dir DIR]
+//   gg-render --mutate-preset <in.ggpreset> -o <out.ggpreset> --amount A --counter N
 //
 // --media-dir resolves the spec's relative file paths against DIR instead of the spec's
 // directory. --preset sets the spec's "preset" key, or overrides it, and is resolved like it
@@ -27,13 +28,16 @@
 // --write-media writes the test media the golden cases read and the two state fixtures
 // (writeTestMedia in Signals.h) into DIR, and does nothing else. --pack-preset compiles a preset
 // source (PresetSource.h) into the preset file -o names, and takes no other option but
-// --content-dir.
+// --content-dir. --mutate-preset writes the preset file of either product it reads, its values
+// moved by one Mutate press (gg/core/Mutate.h: seed 0, the default locks, --amount from 0 to 1 and
+// the press --counter; mutatePreset in PresetSource.h) into the file -o names, and takes no other
+// option but those three.
 //
 // Exit status: 0 = pass (every requested comparison matched, the media were written or the preset
-// packed), 1 = a comparison failed, 2 = bad input (arguments, spec, source, sample, input, preset,
-// preset source or golden files) or an output that couldn't be written, 3 = an internal error
-// (anything else thrown, such as std::logic_error or std::bad_alloc). Every path is UTF-8 (on
-// Windows the arguments are converted to it, and files are opened with wide paths).
+// packed or mutated), 1 = a comparison failed, 2 = bad input (arguments, spec, source, sample,
+// input, preset, preset source or golden files) or an output that couldn't be written, 3 = an
+// internal error (anything else thrown, such as std::logic_error or std::bad_alloc). Every path is
+// UTF-8 (on Windows the arguments are converted to it, and files are opened with wide paths).
 
 #include <cstddef>
 #include <cstdint>
@@ -196,8 +200,11 @@ int run(int argc, char **argv)
     std::string saveStatePath;
     std::string writeMediaDir;
     std::string packSourcePath;
-    // Every option but --write-media, which takes none of them, and --pack-preset, which takes
-    // only -o and --content-dir.
+    std::string mutatePresetPath;
+    float mutateAmount = 0.0f;
+    uint32_t mutateCounter = 0;
+    // Every option but --write-media, which takes none of them, --pack-preset, which takes only -o
+    // and --content-dir, and --mutate-preset, which takes only -o, --amount and --counter.
     std::vector<CLI::Option *> renderOptions;
     renderOptions.push_back(app.add_option("spec", specPath, "The render spec (JSON)"));
     auto *const outputOption = app.add_option(
@@ -251,14 +258,30 @@ int run(int argc, char **argv)
         "--pack-preset", packSourcePath,
         "Compile this preset source (JSON) into the preset file -o names, and exit; it takes no "
         "other option but --content-dir");
+    auto *const mutatePresetOption = app.add_option(
+        "--mutate-preset", mutatePresetPath,
+        "Write this preset file with its values moved by one Mutate press (seed 0, the default "
+        "locks) into the file -o names, and exit; it needs --amount and --counter and takes no "
+        "other option");
+    auto *const amountOption = app.add_option(
+        "--amount", mutateAmount, "With --mutate-preset: the press's amount, from 0 to 1");
+    auto *const counterOption =
+        app.add_option("--counter", mutateCounter,
+                       "With --mutate-preset: the press's counter (the plugin's first press is 1)");
     for (CLI::Option *option : renderOptions)
     {
         writeMediaOption->excludes(option);
         packPresetOption->excludes(option);
+        mutatePresetOption->excludes(option);
     }
     writeMediaOption->excludes(outputOption);
     writeMediaOption->excludes(contentDirOption);
     writeMediaOption->excludes(packPresetOption);
+    writeMediaOption->excludes(mutatePresetOption);
+    packPresetOption->excludes(mutatePresetOption);
+    mutatePresetOption->excludes(contentDirOption);
+    amountOption->needs(mutatePresetOption);
+    counterOption->needs(mutatePresetOption);
     try
     {
         app.parse(argc, argv);
@@ -314,6 +337,38 @@ int run(int argc, char **argv)
         }
         fmt::print("packed {} ({}) into {}\n", source->info.name,
                    gg::core::modeName(source->info.product), wavPath);
+        return kExitPass;
+    }
+    if (mutatePresetOption->count() > 0)
+    {
+        if (wavPath.empty() || amountOption->count() == 0 || counterOption->count() == 0)
+        {
+            return fail("--mutate-preset needs -o <out.ggpreset>, --amount and --counter");
+        }
+        // Checked before the file is read (mutatePreset checks it too), so an amount outside
+        // [0, 1], NaN included, is refused naming the option.
+        if (!(mutateAmount >= 0.0f && mutateAmount <= 1.0f))
+        {
+            return fail(fmt::format("--amount must be from 0 to 1, not {}", mutateAmount));
+        }
+        const auto presetText = readFile(mutatePresetPath);
+        if (!presetText)
+        {
+            return fail(fmt::format("can't read {}", mutatePresetPath));
+        }
+        std::string error;
+        const std::string bytes =
+            gg::render::mutatePreset(*presetText, mutateAmount, mutateCounter, error);
+        if (bytes.empty())
+        {
+            return fail(fmt::format("{}: {}", mutatePresetPath, error));
+        }
+        if (!writeFile(wavPath, bytes))
+        {
+            return fail(fmt::format("can't write {}", wavPath));
+        }
+        fmt::print("mutated {} (amount {}, counter {}) into {}\n", mutatePresetPath, mutateAmount,
+                   mutateCounter, wavPath);
         return kExitPass;
     }
     if (specPath.empty())

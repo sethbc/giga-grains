@@ -1,0 +1,9 @@
+{
+  "mode": "fx",
+  "sampleRate": 48000,
+  "durationSeconds": 8.0,
+  "blockSize": 256,
+  "seed": 1,
+  "preset": "presets/Giga Grains FX/02 Haze Bloom.ggpreset",
+  "input": {"kind": "file", "path": "violin-c4-vibrato.flac"}
+}

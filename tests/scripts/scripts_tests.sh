@@ -22,7 +22,9 @@
 #     passes and "fails one" are labelled core and rt) with a test preset like ours: all of it
 #     (fail), -L core -E fails (pass) and -L nosuchlabel (none).
 # update-goldens.sh runs in the same fake tree with a stub gg-render: its per-case WAV SHA-256s,
-# and the cases changed, new or gone since the previous run.
+# and the cases changed, new or gone since the previous run; and the preset goldens' folder
+# (tests/golden/presets/cases/), rendered with --content-dir from the packed presets copied into
+# the media folder, their hashes listed as presets/<case> beside the others.
 # fetch-content.cmake fetches a scratch zip with the content release's layout by a file:// URL:
 # it extracts it and writes .gg-pin, a second run is "already at" the pin, a pin with the wrong
 # hash fails and leaves no zip, a stale .gg-pin is fetched over, and -DCHECK passes a matching
@@ -226,14 +228,14 @@ done
 # --- update-goldens.sh's WAV hashes, in the same fake tree ------------------------------------
 
 # A stub gg-render in build/dev: --write-media makes the folder, a render writes "audio of <case>"
-# as its WAV (" changed" added for a case named in $FAKE_CHANGED) and empty metrics and events,
-# and a comparison passes.
+# as its WAV (" changed" added for a case named in $FAKE_CHANGED; " content <dir>" for one given
+# --content-dir) and empty metrics and events, and a comparison passes.
 mkdir -p "$repo/build/dev/tools/gg-render" "$repo/tests/golden/cases"
 : >"$repo/build/dev/CMakeCache.txt"
 cat >"$repo/build/dev/tools/gg-render/gg-render" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-spec="" wav="" metrics="" events=""
+spec="" wav="" metrics="" events="" content=""
 while (($# > 0)); do
     case "$1" in
         --write-media)
@@ -243,6 +245,7 @@ while (($# > 0)); do
         -o) wav="$2" && shift ;;
         --metrics) metrics="$2" && shift ;;
         --events) events="$2" && shift ;;
+        --content-dir) content="$2" && shift ;;
         --spectrogram | --media-dir | --compare | --compare-events) shift ;;
         *) spec="$1" ;;
     esac
@@ -250,9 +253,11 @@ while (($# > 0)); do
 done
 name="$(basename "$spec" .json)"
 if [[ -n "$wav" ]]; then
+    suffix=""
+    if [[ -n "$content" ]]; then suffix=" content $content"; fi
     case " ${FAKE_CHANGED:-} " in
-        *" $name "*) echo "audio of $name changed" >"$wav" ;;
-        *) echo "audio of $name" >"$wav" ;;
+        *" $name "*) echo "audio of $name changed$suffix" >"$wav" ;;
+        *) echo "audio of $name$suffix" >"$wav" ;;
     esac
 fi
 if [[ -n "$metrics" ]]; then : >"$metrics"; fi
@@ -287,6 +292,24 @@ FAKE_CHANGED=b run_update
 expect_in "update-goldens: the rest unchanged" "$out" "  every case's WAV is unchanged (1 compared)"
 expect_in "update-goldens names a new case" "$out" "  new since then: c"
 expect_in "update-goldens names a gone case" "$out" "  gone since then: a"
+# The preset goldens: a case in tests/golden/presets/cases/, a packed preset in
+# build/dev/content/Presets/ (as gg-presets writes them).
+mkdir -p "$repo/tests/golden/presets/cases" "$repo/build/dev/content/Presets/Giga Grains FX"
+echo '{}' >"$repo/tests/golden/presets/cases/fx-01-p.json"
+echo 'packed' >"$repo/build/dev/content/Presets/Giga Grains FX/01 P.ggpreset"
+echo "audio of fx-01-p content build/dev/content-cache/content" >"$work/expected-p.wav"
+hash_p="$("$real_cmake" -E sha256sum "$work/expected-p.wav")"
+hash_p="${hash_p%% *}"
+run_update
+check "update-goldens, preset goldens: exit 0" "$status"
+expect_in "update-goldens renders a preset golden with --content-dir" "$out" \
+    "  $hash_p presets/fx-01-p"
+expect_in "update-goldens names a new preset golden" "$out" "  new since then: presets/fx-01-p"
+check "update-goldens copies the packed presets into the media folder" \
+    "$([[ -f "$repo/build/dev/golden-media/presets/Giga Grains FX/01 P.ggpreset" ]] && echo 0 ||
+        echo 1)"
+check "update-goldens writes a preset golden's expected files beside its cases" \
+    "$([[ -f "$repo/tests/golden/presets/expected/fx-01-p.metrics.json" ]] && echo 0 || echo 1)"
 
 # --- fetch-content.cmake, against a local zip -----------------------------------------------
 

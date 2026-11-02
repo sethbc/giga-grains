@@ -1,0 +1,15 @@
+{
+  "mode": "instrument",
+  "sampleRate": 48000,
+  "durationSeconds": 8.0,
+  "blockSize": 256,
+  "seed": 1,
+  "preset": "presets/Giga Grains/10 Felt Mallets.ggpreset",
+  "notes": [
+    {"time": 0.25, "key": 72, "duration": 1.0},
+    {"time": 1.5, "key": 79, "duration": 1.25},
+    {"time": 3.0, "key": 72, "duration": 3.0},
+    {"time": 3.0, "key": 76, "duration": 3.0},
+    {"time": 3.0, "key": 79, "duration": 3.0}
+  ]
+}

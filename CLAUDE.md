@@ -356,7 +356,8 @@ runs the tests labelled either. The labels are:
     `presetInfoOf`, INIT) in `core`, and in the plugins a preset load (`preset-load`, INIT, what
     a load keeps, the preset's name and the edited mark);
   - `mutate`: Mutate's model (`core/Mutate.h`: the law, the locks, determinism) and the plugin's
-    (the press, the batched sender, the drain witness, the panel's lock list);
+    (the press, the batched sender, the drain witness, the panel's lock list), and `gg-render
+    --mutate-preset`'s (with `render`);
 - `discovery`, `catalog` and `queue` (with `plugin`; M2 sub-project 5): `discovery` is the CLAP
   preset-discovery provider driven through the entry point (its locations, soundpack and
   `get_metadata`); `catalog` is the browser's model (`PresetCatalog`: the list, search and tag
@@ -407,6 +408,11 @@ runs the tests labelled either. The labels are:
   `bench_baseline_*` and `bench_space_cli` tests; and the in-process cases, `engine-live-long`'s
   at `--quick`'s warm-up among them);
 - `golden`: the golden renders;
+- `presets` (M2 sub-project 5's group 2): the factory presets as built: the 48 preset goldens
+  (`golden_preset_*`, with `golden`) and their fixture `presets_built`, the click-score check
+  (`tests/metrics/preset_goldens_tests.cpp`, with `golden`) and the counts
+  (`tests/tools/factory_presets_tests.cpp`, with `build`: 24 sources per product named
+  `NN Name.json`, NN 01 to 24, 8 FX ones tagged `midi`);
 - `ui`: `gg-ui-core`, the editor's framework-free math, so it runs on every leg and under the
   sanitizers: the splat renderer and its banded resolve (one tint per lane; the one-band case is
   M1's resolve bit for bit), the lane geometry (`LaneModel`: the pitch axis, the scan rectangle,
@@ -541,6 +547,7 @@ gg-render <spec.json> [-o out.wav] [--metrics out.json] [--events out.jsonl]
           [--save-state out.ggst]
 gg-render --write-media DIR
 gg-render --pack-preset <source.json> -o <out.ggpreset> [--content-dir DIR]
+gg-render --mutate-preset <in.ggpreset> -o <out.ggpreset> --amount A --counter N
 ```
 
 - It's built at `build/<preset>/tools/gg-render/gg-render`.
@@ -669,6 +676,13 @@ gg-render --pack-preset <source.json> -o <out.ggpreset> [--content-dir DIR]
   the instance's. `tests/fixtures/presets/` holds the test sources (`fx-test.json`,
   `inst-test.json`, and `fx-sample-test.json`, whose layer A names `loop-48k.wav` under
   golden_media's folder).
+- **`--mutate-preset`** (the listening pack's Mutate ladder, M2 sub-project 5's spec §11) writes
+  the preset file it reads, of either product, with its values moved by one Mutate press: the
+  plugin's `gg::core::mutate` with seed 0, the default locks (`defaultMutateLocks`), `--amount`
+  (0 to 1) and the press `--counter`; its name, tags, routes and samples unchanged
+  (`mutatePreset` in `tools/gg-render/PresetSource.h`). It takes no other option; the same input,
+  amount and counter give the same bytes, amount 0 gives the input back, and a bad amount (NaN
+  included) or counter, or a file that isn't a preset, exits 2 (`render_mutate_preset*`).
 - Its exit status is 0 for a pass, 1 when a comparison fails, 2 for bad input and 3 for an
   internal error.
 - A relative file path is taken from the spec's directory, or from `--media-dir`. The golden
@@ -682,7 +696,7 @@ gg-render --pack-preset <source.json> -o <out.ggpreset> [--content-dir DIR]
   into the build tree (see "Setup"), for the cases and tests that read it.
 - **The cases:** each case's spec is in `tests/golden/cases/`, and its expected metrics and event
   log are in `tests/golden/expected/`. Every `*.json` there is a case; a new one gets a test the
-  next time CMake runs. There are 60.
+  next time CMake runs. There are 60, and 48 preset goldens beside them (below): 108.
   - **M0's four,** in sample mode: `sparse-sine` (8 grains a second over a 220 Hz sine),
     `sparse-sine-44k1` (the same source converted to 44.1 kHz), `dense-noise` (400 grains a
     second over noise, up a fifth) and `sweep-stretch` (long grains over a sweep, down an
@@ -828,6 +842,22 @@ gg-render --pack-preset <source.json> -o <out.ggpreset> [--content-dir DIR]
     - Every one of the 51 earlier cases renders bit-identically with Smear 0, Bus Split 0, the
       filters Off, the delay at Amount 0 and the limiter Off: an extremes change that moves one
       is a regression.
+  - **M2 sub-project 5's 48 preset goldens** (its spec §10; labels `golden` and `presets`), one
+    per factory preset, in their own folder: `tests/golden/presets/cases/<fx|inst>-NN-<slug>.json`,
+    expected files in `tests/golden/presets/expected/`, tests `golden_preset_<case>`, each 6 s
+    at block 256, seed 1. A case's `"preset": "presets/<Product>/NN Name.ggpreset"` resolves
+    through `--media-dir <build>/golden-media`, into whose `presets/` the fixture
+    `presets_built` (`tests/golden/presets/presets-built.cmake`: it builds `gg-presets`, after
+    the `content` fixture) copies the packed presets, and their samples come from
+    `--content-dir`, the fetched content (`GG_CONTENT_ROOT`). The FX's 24 run over the
+    generated sweep (22) or `loop-48k.wav` (18, 21), the eight `midi` ones with notes at 2.0
+    and 3.5 s; the instrument's 24 play a two-note phrase (0.25 and 1.5 s) and a chord at 3.0 s,
+    in each preset's register. They don't join the click-injection table: in its place
+    `tests/metrics/preset_goldens_tests.cpp` requires each expected click score under 15 (and
+    peak under -1 dBFS, nothing non-finite or silent), and the cases and the sources to match
+    one to one. Their click scores run 0 to 8.8 (`inst-23-locust-cloud`). A preset source's
+    change moves its golden; a change to `tools/`, `core/` or `plugin/` that moves one of the 60
+    other cases' WAVs is a regression as before.
   - **The event-log comparison never sees the reverb or the diffuser:** the log records grains,
     and Space runs after them. Across platforms, Space's five cases are checked by their metrics
     alone, within tolerances.
@@ -858,12 +888,15 @@ gg-render --pack-preset <source.json> -o <out.ggpreset> [--content-dir DIR]
     gg-render's failure message.
 - **After a DSP change, run `scripts/update-goldens.sh [build-dir]`** (default `build/dev`; a
   relative path is taken from the repository root).
-  - It rebuilds `gg-render`, writes the media into `<build-dir>/golden-media` and rewrites the
-    expected files.
-  - It leaves WAVs and spectrograms in `<build-dir>/golden/`.
+  - It rebuilds `gg-render` and `gg-presets` (so the first run of a tree fetches the content),
+    writes the media into `<build-dir>/golden-media` and the packed presets into its
+    `presets/`, and rewrites the expected files of both case folders (the preset goldens' with
+    `--content-dir`, `GG_CONTENT_DIR` or `<build-dir>/content-cache/content`).
+  - It leaves WAVs and spectrograms in `<build-dir>/golden/` (the preset goldens' in
+    `<build-dir>/golden/presets/`).
   - It then checks the new goldens.
-  - Last, it prints each case's WAV SHA-256 and lists the cases whose WAV changed, or are new or
-    gone, since its previous run in that build tree (`<build-dir>/golden/wav-sha256.txt`). For a
+  - Last, it prints each case's WAV SHA-256 (a preset golden's as `presets/<case>`) and lists
+    the cases whose WAV changed, or are new or gone, since its previous run in that build tree (`<build-dir>/golden/wav-sha256.txt`). For a
     change meant to leave the output alone (a refactor, a feature at its defaults), run it before
     and after, and say in the commit that every hash matches: the goldens' metrics allow 0.5 dB,
     and the event log holds only the grains, so a small gain error after them passes the goldens
