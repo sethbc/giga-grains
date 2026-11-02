@@ -519,10 +519,10 @@ std::unique_ptr<juce::Component> EditorPlugin::createEditor()
         {
             return gg::ui::SampleStatusView{};
         }
-        onMainThread(); // Apply what a loader's worker finished first, as on_main_thread does, so a
-                        // load shows (and
-        // plays) even where the host doesn't deliver on_main_thread, as a VST3 host may not while
-        // the plugin is inactive.
+        // Apply what a loader's worker finished first, as on_main_thread does, so a load shows
+        // (and plays) even where the host doesn't deliver on_main_thread, as a VST3 host may not
+        // while the plugin is inactive.
+        onMainThread();
         return viewOf(media().loader(layer).status());
     };
     fillRingContext(context);

@@ -1250,6 +1250,84 @@ TEST_CASE("the strip's buttons follow the light theme", "[plugin]")
     check(gg::ui::Palette::dark());
 }
 
+TEST_CASE("the strip keeps room for its name and status at 640 by 360", "[plugin]")
+{
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    using State = gg::ui::SampleStatusView::State;
+    for (const auto mode : {gg::core::Mode::Instrument, gg::core::Mode::Fx})
+    {
+        RecordingContext recording(mode);
+        recording.context.showSampleLoader = true;
+        gg::ui::EditorContext &context = recording.context;
+        context.memory = [] { return gg::ui::MemoryView{1023 * kMiBytes, 1536}; };
+        context.sampleStatusFor = [](uint8_t) {
+            return statusView(State::Loaded, "a-long-sample-name.wav", {}, 12.5, 2, 44100.0);
+        };
+        const auto editor = gg::ui::makeEditor(context);
+        for (const auto size : {std::pair{640, 360}, std::pair{960, 600}})
+        {
+            INFO(size.first << " x " << size.second);
+            editor->setSize(size.first, size.second);
+            tickEditor(*editor, 10);
+            const juce::Component *perform = viewById(*editor, "view.perform");
+            const auto *name = findDeep(*perform, "sampleName");
+            const auto *status =
+                dynamic_cast<const juce::Label *>(findDeep(*perform, "sampleStatus"));
+            const auto *readout =
+                dynamic_cast<const juce::Label *>(findDeep(*perform, "loader.memory"));
+            REQUIRE((name != nullptr && status != nullptr && readout != nullptr));
+            CHECK(name->getWidth() >= 120);
+            CHECK(status->getWidth() >= 120);
+            // The readout's text fits its label, measured in its font.
+            const float text =
+                juce::GlyphArrangement::getStringWidth(readout->getFont(), readout->getText());
+            const int room =
+                readout->getBorderSize().subtractedFrom(readout->getLocalBounds()).getWidth();
+            CHECK(text <= static_cast<float>(room));
+            CHECK(readout->getText() == "1023 MB of 1.5 GB");
+            // Narrow, the folder and Collect sit in the "..." menu; wide, they are buttons.
+            const bool narrow = size.first == 640;
+            CHECK(findDeep(*perform, "loader.more")->isVisible() == narrow);
+            CHECK(findDeep(*perform, "sampleFolder")->isVisible() == !narrow);
+            CHECK(findDeep(*perform, "loader.collect")->isVisible() == !narrow);
+            // Everything stays inside the strip, with no overlaps among the visible parts.
+            const auto *strip = findDeep(*perform, "sampleStrip");
+            std::vector<juce::Rectangle<int>> boxes;
+            for (const juce::Component *child : strip->getChildren())
+            {
+                if (child->isVisible())
+                {
+                    CHECK(strip->getLocalBounds().contains(child->getBounds()));
+                    for (const auto &other : boxes)
+                    {
+                        CHECK_FALSE(other.intersects(child->getBounds()));
+                    }
+                    boxes.push_back(child->getBounds());
+                }
+            }
+        }
+    }
+}
+
+TEST_CASE("a refused drop is told in the header when the strip is hidden", "[plugin]")
+{
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    RecordingContext recording(gg::core::Mode::Fx);
+    recording.context.showSampleLoader = true;
+    const auto editor = gg::ui::makeEditor(recording.context);
+    auto *target = dynamic_cast<juce::FileDragAndDropTarget *>(editor.get());
+    REQUIRE(target != nullptr);
+    target->filesDropped({"/drops/notes.txt"}, 0, 0);
+    CHECK(labelText(*editor, "sampleStatus") ==
+          "can't load notes.txt: not a WAV, AIFF, FLAC or MP3 file");
+    CHECK_FALSE(findDeep(*editor, "header.notice")->isVisible()); // Perform shows it in the strip
+    REQUIRE(gg::ui::selectView(*editor, gg::ui::View::Edit));
+    target->filesDropped({"/drops/notes.txt"}, 0, 0);
+    CHECK(findDeep(*editor, "header.notice")->isVisible());
+    CHECK(labelText(*editor, "header.notice") ==
+          "can't load notes.txt: not a WAV, AIFF, FLAC or MP3 file");
+}
+
 TEST_CASE("publishing follows gui destroy without a parent", "[plugin]")
 {
     // Task 10's minor (a): the shim destroys its editor in guiDestroy only once a parent was

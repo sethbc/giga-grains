@@ -8,6 +8,7 @@
 #include "NoticeSink.h"
 
 #include <algorithm>
+#include <cmath>
 #include <string>
 #include <utility>
 #include <vector>
@@ -100,6 +101,10 @@ LoaderStrip::LoaderStrip(const EditorContext &context, uint8_t layer, Compact co
         setUpButton(collectButton_, "loader.collect", withEllipsis("Collect"),
                     [this] { chooseCollectFolder(); });
         collectButton_.setTooltip("Copy the samples into a folder, to move the session");
+        setUpButton(moreButton_, "loader.more", juce::String::charToString(0x22ef),
+                    [this] { showMore(); });
+        moreButton_.setTooltip("Sample folder, Collect");
+        moreButton_.setVisible(false); // shown only in a narrow strip
         memory_.setComponentID("loader.memory");
         memory_.setTooltip("The memory the samples hold, and its cap");
         memory_.setFont(juce::Font(juce::FontOptions(kFontHeight)));
@@ -157,7 +162,8 @@ void LoaderStrip::applyPalette()
     name_.setColour(juce::Label::textColourId, palette.text);
     status_.setColour(juce::Label::textColourId, palette.dimText);
     letter_.setColour(juce::Label::textColourId, palette.layers[layer_]);
-    for (juce::TextButton *button : {&loadButton_, &relinkButton_, &folderButton_, &collectButton_})
+    for (juce::TextButton *button :
+         {&loadButton_, &relinkButton_, &folderButton_, &collectButton_, &moreButton_})
     {
         button->setColour(juce::TextButton::buttonColourId, palette.header);
         button->setColour(juce::TextButton::buttonOnColourId, palette.accent.withAlpha(0.35f));
@@ -241,6 +247,10 @@ void LoaderStrip::applyMemory()
         memoryView_.usedBytes > static_cast<uint64_t>(memoryView_.capMiB) * 1024ull * 1024ull;
     const Palette &palette = paletteOf(*this);
     memory_.setColour(juce::Label::textColourId, overCap_ ? palette.notice : palette.dimText);
+    if (memoryTextWidth() != memoryWidth_)
+    {
+        resized(); // the readout is as wide as its text
+    }
 }
 
 juce::File LoaderStrip::startFolder() const
@@ -336,10 +346,57 @@ void LoaderStrip::filesDropped(const juce::StringArray &files)
     {
         // The decoder would refuse it: say so here, and leave the sample alone.
         setNotice(notSampleFileNotice(files[0]));
+        if (!shownInEditor())
+        {
+            // Perform's strip while another view shows: tell the user in the header.
+            postNotice(*this, context_, notSampleFileNotice(files[0]).toStdString());
+        }
         refresh();
         return;
     }
     request(false, files[0]);
+}
+
+bool LoaderStrip::shownInEditor() const
+{
+    for (const juce::Component *at = this; at->getParentComponent() != nullptr;
+         at = at->getParentComponent())
+    {
+        if (!at->isVisible())
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+void LoaderStrip::showMore()
+{
+    juce::PopupMenu menu;
+    menu.addItem(1, withEllipsis("Sample folder"));
+    menu.addItem(2, withEllipsis("Collect"));
+    menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(moreButton_),
+                       [this](int choice) {
+                           if (choice == 1)
+                           {
+                               chooseSampleFolder();
+                           }
+                           else if (choice == 2)
+                           {
+                               chooseCollectFolder();
+                           }
+                       });
+}
+
+int LoaderStrip::memoryTextWidth() const
+{
+    const juce::String text = memory_.getText();
+    float width = juce::GlyphArrangement::getStringWidth(memory_.getFont(), text);
+    if (!(width > 0.0f) && text.isNotEmpty())
+    {
+        width = 0.6f * kFontHeight * static_cast<float>(text.length()); // no font: estimate
+    }
+    return static_cast<int>(std::ceil(width)) + 2 * memory_.getBorderSize().getLeft() + 4;
 }
 
 void LoaderStrip::setNotice(const juce::String &text)
@@ -357,7 +414,11 @@ void LoaderStrip::refresh()
     const SampleStatusView status =
         context_.sampleStatusFor ? context_.sampleStatusFor(layer_) : SampleStatusView{};
     name_.setText(fromUtf8(status.fileName), juce::dontSendNotification);
-    relinkButton_.setVisible(status.relinkable);
+    if (relinkButton_.isVisible() != status.relinkable)
+    {
+        relinkButton_.setVisible(status.relinkable);
+        resized(); // Relink takes room only while it shows
+    }
     statusText_ = statusText(status);
     if (notice_.isNotEmpty() && statusText_ != noticeStatus_)
     {
@@ -382,25 +443,42 @@ void LoaderStrip::showStatus(const juce::String &text)
 
 void LoaderStrip::resized()
 {
+    constexpr int kNameMin = 120;
     auto strip = getLocalBounds();
+    const bool narrow = strip.getWidth() < kNarrowWidth;
     letter_.setBounds(strip.removeFromLeft(22));
     strip.removeFromLeft(4);
     loadButton_.setBounds(strip.removeFromLeft(72));
     strip.removeFromLeft(8);
     if (!compact_)
     {
-        folderButton_.setBounds(strip.removeFromRight(124));
+        folderButton_.setVisible(!narrow);
+        collectButton_.setVisible(!narrow);
+        moreButton_.setVisible(narrow);
+        if (narrow)
+        {
+            moreButton_.setBounds(strip.removeFromRight(28));
+            strip.removeFromRight(6);
+        }
+        else
+        {
+            folderButton_.setBounds(strip.removeFromRight(124));
+            strip.removeFromRight(6);
+            collectButton_.setBounds(strip.removeFromRight(84));
+            strip.removeFromRight(6);
+        }
+        capMenu_.setBounds(strip.removeFromRight(narrow ? 72 : 84));
         strip.removeFromRight(6);
-        collectButton_.setBounds(strip.removeFromRight(84));
-        strip.removeFromRight(6);
-        capMenu_.setBounds(strip.removeFromRight(84));
-        strip.removeFromRight(6);
-        memory_.setBounds(strip.removeFromRight(120));
+        memoryWidth_ = memoryTextWidth();
+        memory_.setBounds(strip.removeFromRight(memoryWidth_));
         strip.removeFromRight(6);
     }
-    relinkButton_.setBounds(strip.removeFromRight(72));
-    strip.removeFromRight(6);
-    name_.setBounds(strip.removeFromLeft(std::min(200, strip.getWidth() / 3)));
+    if (relinkButton_.isVisible())
+    {
+        relinkButton_.setBounds(strip.removeFromRight(narrow ? 64 : 72));
+        strip.removeFromRight(6);
+    }
+    name_.setBounds(strip.removeFromLeft(std::max(kNameMin, std::min(200, strip.getWidth() / 3))));
     status_.setBounds(strip);
     showStatus(status_.getText()); // the tooltip follows the room
 }

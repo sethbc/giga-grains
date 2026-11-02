@@ -77,8 +77,8 @@ struct PerformView::Impl
     }
 
     PerformView &owner;
-    std::unique_ptr<LoaderStrip>
-        loader; // following the selected layer; null unless showSampleLoader
+    /// The sample strip, following the selected layer; null unless showSampleLoader.
+    std::unique_ptr<LoaderStrip> loader;
     GrainCanvas canvas;
     LayerStrip strip;
     MorphPad pad;
