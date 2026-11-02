@@ -1299,8 +1299,10 @@ TEST_CASE("capture to layer B loads B", "[plugin]")
     };
     choose(f.canvas->laneMenu(0), ellipsis("Save capture as"));
     CHECK(asked.save);
-    CHECK(asked.initial.getFullPathName() ==
-          juce::String::fromUTF8(f.context().capturesFolder().c_str()));
+    // As files: the folder's string may mix separators on Windows (a "/" from the settings or a
+    // temp path beside the native "\\"), and it names the same folder.
+    CHECK(asked.initial ==
+          juce::File(juce::String::fromUTF8(f.context().capturesFolder().c_str())));
     CHECK(take.withFileExtension("wav").existsAsFile());
 
     // A refusal is posted: four 16 s rings at 192 kHz are past a 64 MiB cap.
