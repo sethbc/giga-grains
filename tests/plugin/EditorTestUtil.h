@@ -170,16 +170,18 @@ inline juce::Component *findDeep(const juce::Component &root, const char *id)
     return nullptr;
 }
 
-/// A mouse event at (x, y) in `c`'s coordinates, the left button (or `button`) down since `down`.
+/// A mouse event at (x, y) in `c`'s coordinates, the left button (or `button`) down since `down`,
+/// the press's `clicks`th click (2 for a double-click's second).
 inline juce::MouseEvent mouseAt(juce::Component &c, float x, float y, juce::Point<float> down,
-                                bool dragged, int button = juce::ModifierKeys::leftButtonModifier)
+                                bool dragged, int button = juce::ModifierKeys::leftButtonModifier,
+                                int clicks = 1)
 {
     const auto now = juce::Time::getCurrentTime();
     return juce::MouseEvent(
         juce::Desktop::getInstance().getMainMouseSource(), {x, y}, juce::ModifierKeys(button),
         juce::MouseInputSource::defaultPressure, juce::MouseInputSource::defaultOrientation,
         juce::MouseInputSource::defaultRotation, juce::MouseInputSource::defaultTiltX,
-        juce::MouseInputSource::defaultTiltY, &c, &c, now, down, now, 1, dragged);
+        juce::MouseInputSource::defaultTiltY, &c, &c, now, down, now, clicks, dragged);
 }
 
 /// Layer `layer`'s lane geometry as the canvas lays it out before its first paint (one physical

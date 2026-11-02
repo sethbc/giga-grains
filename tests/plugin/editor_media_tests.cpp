@@ -156,6 +156,9 @@ TEST_CASE("the ring view follows the ring", "[plugin][media]")
     CHECK(view.head == rig.impl->processor()->ringMeta(0).head);
     CHECK(view.head > 0);
     CHECK(view.spliceCount == 0);
+    // The ring's length: its storage's frames, the 16 s default (what a Live lane spans).
+    CHECK(view.ringFrames == rig.impl->processor()->ringRead(0).storage->frames());
+    CHECK(view.ringFrames == 16 * 48000);
 
     context.ringCommand(0, gg::ui::RingCommand::AddSplice, 0.25f);
     rig.process(kBlock);

@@ -5,9 +5,11 @@
 // The editor's canvas: its lanes, drags, drops and stress seam.
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
 #include "PluginHarness.h"
 #include "EditorTestUtil.h"
+#include "support/AllocTripwire.h"
 
 #if GG_BUILD_EDITOR
 
@@ -169,6 +171,8 @@ TEST_CASE("a canvas drag emits begin, values, end once", "[plugin]")
         const auto editor = gg::ui::makeEditor(recording.context);
         auto *canvas = canvasOf(*editor);
         REQUIRE(canvas != nullptr);
+        int menus = 0;
+        canvas->showMenu = [&menus](juce::PopupMenu) { ++menus; }; // the lane menu (VW-P2a)
         const auto lane = laneOf(*canvas, 0, false, 48000.0, 48000);
         const float off = static_cast<float>(canvas->laneBounds(0).getX());
         const auto rect = gg::ui::scanRect({0.5f, 0.4f, 0.0f, 0.0f}, lane);
@@ -184,6 +188,7 @@ TEST_CASE("a canvas drag emits begin, values, end once", "[plugin]")
             canvas->mouseUp(mouseAt(*canvas, off + x + 20.0f, y, down, true, kRight));
         }
         CHECK(recording.calls.empty());
+        CHECK(menus == 2); // each press opened the lane's menu instead
     }
 }
 
@@ -221,8 +226,9 @@ TEST_CASE("the canvas draws the grains the queue holds", "[plugin]")
                                static_cast<uint32_t>(std::lround(y)));
     };
     // Each grain's capsule spans its 100 ms read, at its rate: from 4 s back to 3.6 s back (rate
-    // 4), and from 8 s back to 7.95 s back (rate 1/2, wide enough that the clock's extrapolation
-    // between frames can't scroll it off x8); x4 and x8 are the reads' middles.
+    // 4), and from 8 s back to 7.95 s back (rate 1/2); x4 and x8 are the reads' middles. The
+    // clock's extrapolation between the two frames scrolls both left: x4 stays inside its
+    // capsule for 200 ms of it, but x8 only for 25 ms, so a frame later than that misses x8.
     const float x4 = width * (1.0f - 3.8f / 16.0f);
     const float x8 = width * (1.0f - 7.975f / 16.0f);
 
@@ -600,12 +606,13 @@ TEST_CASE("double-click freezes one lane", "[plugin]")
     const juce::Point<float> at{off + x, y};
     // JUCE's order for a double-click: down, up, down (click count 2), up, then the double-click
     // (Component::internalMouseUp calls mouseUp first).
+    constexpr int kLeft = juce::ModifierKeys::leftButtonModifier;
     const auto doubleClick = [&] {
         canvas->mouseDown(mouseAt(*canvas, off + x, y, at, false));
         canvas->mouseUp(mouseAt(*canvas, off + x, y, at, false));
-        canvas->mouseDown(mouseAt(*canvas, off + x, y, at, false));
-        canvas->mouseUp(mouseAt(*canvas, off + x, y, at, false));
-        canvas->mouseDoubleClick(mouseAt(*canvas, off + x, y, at, false));
+        canvas->mouseDown(mouseAt(*canvas, off + x, y, at, false, kLeft, 2));
+        canvas->mouseUp(mouseAt(*canvas, off + x, y, at, false, kLeft, 2));
+        canvas->mouseDoubleClick(mouseAt(*canvas, off + x, y, at, false, kLeft, 2));
     };
     // A body press that never moves is no gesture.
     canvas->mouseDown(mouseAt(*canvas, off + x, y, at, false));
@@ -624,12 +631,12 @@ TEST_CASE("double-click freezes one lane", "[plugin]")
     CHECK(recording.calls[4].value == 0.0);
     // Not on an edge, nor outside the rectangle.
     const juce::Point<float> edge{off + r.x0, y};
-    canvas->mouseDoubleClick(mouseAt(*canvas, off + r.x0, y, edge, false));
-    canvas->mouseDoubleClick(mouseAt(*canvas, off + 2.0f, y, {off + 2.0f, y}, false));
+    canvas->mouseDoubleClick(mouseAt(*canvas, off + r.x0, y, edge, false, kLeft, 2));
+    canvas->mouseDoubleClick(mouseAt(*canvas, off + 2.0f, y, {off + 2.0f, y}, false, kLeft, 2));
     CHECK(recording.kinds() == "bvebve");
 }
 
-TEST_CASE("a drop onto lane A loads, onto lane B is refused", "[plugin]")
+TEST_CASE("a drop onto any lane loads its layer", "[plugin]")
 {
     const juce::ScopedJuceInitialiser_GUI juceGui;
     RecordingContext recording(gg::core::Mode::Instrument);
@@ -661,19 +668,19 @@ TEST_CASE("a drop onto lane A loads, onto lane B is refused", "[plugin]")
     REQUIRE(loads.size() == 1);
     CHECK(loads[0] == std::pair<int, std::string>{0, pathOf("a.wav").toStdString()});
     CHECK(notices.empty());
+    // Every lane takes a sample (VW-P2c); the instrument's lane B is a Sample lane, so no notice.
     dropOn(1, pathOf("b.wav"));
     REQUIRE(loads.size() == 2);
     CHECK(loads[1] == std::pair<int, std::string>{1, pathOf("b.wav").toStdString()});
-    REQUIRE(notices.size() == 1);
-    CHECK(notices[0] == "layer B takes a sample after the session format's next version");
+    CHECK(notices.empty());
     // A file the decoder can't read is refused as the loader strip refuses it, on any lane, and
     // never reaches the loader.
     dropOn(0, pathOf("notes.txt"));
     dropOn(1, pathOf("noextension"));
     CHECK(loads.size() == 2);
-    REQUIRE(notices.size() == 3);
-    CHECK(notices[1] == "can't load notes.txt: not a WAV, AIFF, FLAC or MP3 file");
-    CHECK(notices[2] == "can't load noextension: not a WAV, AIFF, FLAC or MP3 file");
+    REQUIRE(notices.size() == 2);
+    CHECK(notices[0] == "can't load notes.txt: not a WAV, AIFF, FLAC or MP3 file");
+    CHECK(notices[1] == "can't load noextension: not a WAV, AIFF, FLAC or MP3 file");
     // A drop left of the lanes is no lane's.
     canvas->filesDropped(juce::StringArray{pathOf("c.wav")}, 10,
                          canvas->laneBounds(1).getCentreY());
@@ -760,7 +767,9 @@ TEST_CASE("the canvas paints four lanes, and again after a resize", "[plugin]")
     recording.context.sampleRate = kRate;
     recording.context.livePeaksFor = [&peaks](uint8_t layer) { return &peaks[layer]; };
     // Lane D is a Sample lane with a sample; lane C (index 2) has none and shows its hint.
-    recording.context.sampleWaveformFor = [](uint8_t layer) {
+    int waveformCalls = 0;
+    recording.context.sampleWaveformFor = [&waveformCalls](uint8_t layer) {
+        ++waveformCalls;
         return layer == 3 ? oneSecondSample() : gg::ui::SampleWaveform{};
     };
     gg::core::UiSnapshot snapshot;
@@ -802,6 +811,10 @@ TEST_CASE("the canvas paints four lanes, and again after a resize", "[plugin]")
         return lit;
     };
     juce::Image image = paintInto(900, 403);
+    // Carry-over row 327: each lane's outline is fetched once a frame, not at each use.
+    waveformCalls = 0;
+    image = paintInto(900, 403);
+    CHECK(waveformCalls <= static_cast<int>(gg::core::kLayers));
     CHECK(litPixels(image, 0) > 0); // peaks, rectangle, tint, marker
     CHECK(litPixels(image, 1) > 0); // off, but drawn
     CHECK(litPixels(image, 2) > 0); // the hint
@@ -816,6 +829,46 @@ TEST_CASE("the canvas paints four lanes, and again after a resize", "[plugin]")
     image = paintInto(700, 500);
     CHECK(litPixels(image, 3) > 0);
     CHECK(canvas->averageFrameMs() > 0.0);
+
+    // A grain on lane D lights the accumulator inside its capsule's rectangle and nowhere else
+    // (row 327: positions, not only lit pixels). It reads a quarter of the way into the 1 s
+    // sample, 100 ms at rate 2, an octave up. Queued after a frame, which clears the queue.
+    image = paintInto(900, 403);
+    REQUIRE(queue.push(gg::core::GrainVis{kFrames - 100, 12000.0, 2.0f, 4800.0f, 1.0f, 0.0f, 3}));
+    image = paintInto(900, 403);
+    const auto lane = laneOf(*canvas, 3, false, kRate, 48000);
+    const auto c = gg::ui::grainCapsule({kFrames - 100, 12000.0, 2.0f, 4800.0f, 1.0f, 0.0f},
+                                        kFrames, kFrames, lane);
+    REQUIRE(c.has_value());
+    const juce::Rectangle<int> d = canvas->laneBounds(3);
+    int inside = 0;
+    int outside = 0;
+    for (int y = d.getY(); y < d.getBottom(); ++y)
+    {
+        for (int x = 0; x < d.getWidth(); ++x)
+        {
+            if (canvas->accumAt(static_cast<uint32_t>(x), static_cast<uint32_t>(y)) <= 0.0f)
+            {
+                continue;
+            }
+            const bool in = static_cast<float>(x) >= c->x0 - c->radius - 1.0f &&
+                            static_cast<float>(x) <= c->x1 + c->radius + 1.0f &&
+                            std::abs(static_cast<float>(y) - c->y) <= c->radius + 1.0f;
+            (in ? inside : outside) += 1;
+        }
+    }
+    CHECK(inside > 0);
+    CHECK(outside == 0);
+    // And the painted image shows it there: lit pixels inside the capsule's rectangle.
+    int litInside = 0;
+    for (int y = static_cast<int>(c->y - c->radius); y <= static_cast<int>(c->y + c->radius); ++y)
+    {
+        for (int x = static_cast<int>(c->x0); x <= static_cast<int>(c->x1); ++x)
+        {
+            litInside += image.getPixelAt(d.getX() + x, y) != gg::ui::Palette::dark().lane ? 1 : 0;
+        }
+    }
+    CHECK(litInside > 0);
 }
 
 TEST_CASE("the lanes' overlay colours are the same in both themes", "[plugin]")
@@ -827,6 +880,8 @@ TEST_CASE("the lanes' overlay colours are the same in both themes", "[plugin]")
     CHECK(light.laneRule == dark.laneRule);
     CHECK(light.laneText == dark.laneText);
     CHECK(light.peaks == dark.peaks);
+    CHECK(light.window == dark.window);
+    CHECK(light.ghost == dark.ghost);
     CHECK(light.freeze == dark.freeze);
     CHECK(light.feedback == dark.feedback);
     CHECK(light.layers == dark.layers);
@@ -906,6 +961,476 @@ TEST_CASE("held arrow keys make one undo entry on the canvas lane", "[plugin]")
     REQUIRE(f.undone.size() == 2);
     CHECK(f.undone[0].first == ParamSlot::Pitch);
     CHECK(f.undone[1] == std::pair{ParamSlot::Position, 0.5f});
+}
+
+// The Live lanes (M2 sub-project 6's spec §6.3, PR 2): the ring's span, marks, loop and menu, and
+// drops on every lane, over the real plugin.
+namespace
+{
+constexpr const char *kFxPlugin = "org.sethbc.giga-grains-fx";
+constexpr const char *kInstrumentPlugin = "org.sethbc.giga-grains";
+constexpr uint32_t kBlock = 512;
+constexpr double kPluginRate = 48000.0;
+
+/// A plugin with its editor, whose canvas never shows a menu or a chooser: the menus it would
+/// show are kept in `shown`.
+struct PluginCanvas
+{
+    explicit PluginCanvas(const char *id) : plugin(id)
+    {
+        REQUIRE(plugin.valid());
+        impl = dynamic_cast<gg::plugin::EditorPlugin *>(&plugin.impl());
+        REQUIRE(impl != nullptr);
+        editor = impl->createEditor();
+        REQUIRE(editor != nullptr);
+        canvas = canvasOf(*editor);
+        REQUIRE(canvas != nullptr);
+        canvas->showMenu = [this](juce::PopupMenu menu) { shown.push_back(std::move(menu)); };
+        canvas->browse = [](const gg::ui::GrainCanvas::Browse &,
+                            std::function<void(const juce::File &)>) {};
+    }
+    const gg::ui::EditorContext &context() const { return impl->editorContext(); }
+    bool fx() const { return impl->mode() == gg::core::Mode::Fx; }
+
+    /// `frames` of noise through process(), kBlock at a time, `events` in the first call.
+    void process(uint32_t frames, const clap_input_events *events = nullptr)
+    {
+        for (uint32_t done = 0; done < frames; done += kBlock)
+        {
+            const uint32_t n = std::min(kBlock, frames - done);
+            gg::test::Stereo in(n);
+            gg::test::Stereo out(n);
+            gg::test::fillNoise(in, 1 + done);
+            REQUIRE(plugin.process(n, fx() ? in.data() : nullptr, out.data(),
+                                   done == 0 ? events : nullptr) == CLAP_PROCESS_CONTINUE);
+        }
+    }
+    /// One call carrying a parameter value.
+    void processWith(ParamSlot slot, double value)
+    {
+        const auto event = gg::test::paramValue(gg::core::paramId(slot), value);
+        gg::test::InputEvents events;
+        events.add(&event.header);
+        process(kBlock, events.list());
+    }
+    /// A parameter value while inactive, as a host's flush.
+    void flush(ParamSlot slot, double value)
+    {
+        const auto event = gg::test::paramValue(gg::core::paramId(slot), value);
+        gg::test::InputEvents events;
+        events.add(&event.header);
+        plugin.flush(events.list());
+    }
+    juce::Image paint()
+    {
+        juce::Image image(juce::Image::ARGB, canvas->getWidth(), canvas->getHeight(), true);
+        juce::Graphics g(image);
+        canvas->paint(g);
+        return image;
+    }
+    /// Polls layer `layer`'s status until it is `state`.
+    bool waitFor(uint8_t layer, gg::ui::SampleStatusView::State state)
+    {
+        for (int i = 0; i < 1000; ++i)
+        {
+            if (context().sampleStatusFor(layer).state == state)
+            {
+                return true;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        return false;
+    }
+    juce::String notice() const { return labelText(*editor, "header.notice"); }
+    bool noticeShown() const { return findDeep(*editor, "header.notice")->isVisible(); }
+    /// A drop of `path` on lane `layer`.
+    void dropOn(uint8_t layer, const std::filesystem::path &path)
+    {
+        const juce::Rectangle<int> b = canvas->laneBounds(layer);
+        canvas->filesDropped(juce::StringArray{utf8String(path)}, b.getX() + 20, b.getCentreY());
+    }
+
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    gg::test::PluginUnderTest plugin;
+    gg::plugin::EditorPlugin *impl{nullptr};
+    std::unique_ptr<juce::Component> editor;
+    gg::ui::GrainCanvas *canvas{nullptr};
+    std::vector<juce::PopupMenu> shown;
+};
+
+juce::String ellipsis(const char *text)
+{
+    return juce::String(text) + juce::String::charToString(0x2026);
+}
+
+/// The item of `menu`, or of a submenu of it, whose text is `text`; fails the test if none is.
+juce::PopupMenu::Item itemOf(const juce::PopupMenu &menu, const juce::String &text)
+{
+    for (juce::PopupMenu::MenuItemIterator it(menu, true); it.next();)
+    {
+        if (it.getItem().text == text)
+        {
+            return it.getItem();
+        }
+    }
+    FAIL("no menu item " << text.toStdString());
+    return {};
+}
+
+/// Invokes `menu`'s item `text`, as choosing it does.
+void choose(const juce::PopupMenu &menu, const juce::String &text)
+{
+    const juce::PopupMenu::Item item = itemOf(menu, text);
+    REQUIRE(item.isEnabled);
+    REQUIRE(item.action);
+    item.action();
+}
+
+ParamSlot slotOf(gg::core::LayerParam p, uint8_t layer) { return gg::core::layerSlot(p, layer); }
+} // namespace
+
+TEST_CASE("a Live lane spans its ring", "[plugin]")
+{
+    gg::test::useMediaScratch("canvas-ring-span");
+    PluginCanvas f(kFxPlugin);
+    // Inactive: no ring, so the 16 s fallback.
+    CHECK(f.canvas->laneGeometry(0).ringSeconds == 16.0);
+    // Ring Length 60 s, sized at activation.
+    f.flush(slotOf(gg::core::LayerParam::RingLength, 0), std::log2(60.0));
+    REQUIRE(f.plugin.activate(kPluginRate, kBlock));
+    f.process(kBlock);
+    f.paint();
+    CHECK_THAT(f.canvas->laneGeometry(0).ringSeconds, Catch::Matchers::WithinAbs(60.0, 0.1));
+    CHECK_THAT(f.canvas->laneGeometry(1).ringSeconds, Catch::Matchers::WithinAbs(16.0, 0.1));
+    // A resize while active: once the plugin has adopted the new ring, the lane follows it.
+    f.processWith(slotOf(gg::core::LayerParam::RingLength, 1), std::log2(30.0));
+    f.plugin.onMainThread(); // the watcher offers the ring
+    f.process(kBlock);       // adopted
+    f.plugin.onMainThread();
+    REQUIRE(f.impl->processor()->ringRead(1).storage->frames() == 30 * 48000);
+    f.paint();
+    CHECK_THAT(f.canvas->laneGeometry(1).ringSeconds, Catch::Matchers::WithinAbs(30.0, 0.1));
+    // Deactivated: 16 s again.
+    f.plugin.deactivate();
+    f.paint();
+    CHECK(f.canvas->laneGeometry(0).ringSeconds == 16.0);
+}
+
+TEST_CASE("the lane draws the ring's marks", "[plugin]")
+{
+    gg::test::useMediaScratch("canvas-ring-marks");
+    PluginCanvas f(kFxPlugin);
+    REQUIRE(f.plugin.activate(kPluginRate, kBlock));
+    f.process(2 * 48000);
+    f.context().ringCommand(0, gg::ui::RingCommand::AddSplice, 1.0f);
+    f.context().ringCommand(0, gg::ui::RingCommand::AddSplice, 0.5f);
+    f.process(kBlock);
+    const gg::ui::RingView ring = f.context().ringView(0);
+    REQUIRE(ring.spliceCount == 2);
+    f.paint();
+    const std::vector<float> marks = f.canvas->marksDrawn(0);
+    REQUIRE(marks.size() == 2);
+    const gg::ui::LaneGeometry lane = f.canvas->laneGeometry(0);
+    for (std::size_t k = 0; k < 2; ++k)
+    {
+        INFO("mark " << k);
+        const auto x = gg::ui::ringFrameX(lane, ring.head, ring.splices[k], kPluginRate);
+        REQUIRE(x.has_value());
+        CHECK_THAT(marks[k], Catch::Matchers::WithinAbs(*x, 1.0));
+    }
+    // Lane B has no marks, nor does a lane once its marks are cleared.
+    CHECK(f.canvas->marksDrawn(1).empty());
+    f.context().ringCommand(0, gg::ui::RingCommand::ClearSplices, 0.0f);
+    f.process(kBlock);
+    f.paint();
+    CHECK(f.canvas->marksDrawn(0).empty());
+}
+
+TEST_CASE("a right-click adds a splice mark where clicked", "[plugin]")
+{
+    gg::test::useMediaScratch("canvas-right-click");
+    PluginCanvas f(kFxPlugin);
+    REQUIRE(f.plugin.activate(kPluginRate, kBlock));
+    f.process(10 * 48000); // the lane's middle, 8 s back, is in the ring
+    f.paint();
+    const gg::ui::LaneGeometry lane = f.canvas->laneGeometry(0);
+    const juce::Rectangle<int> a = f.canvas->laneBounds(0);
+    const float x = 0.5f * lane.width;
+    const float off = static_cast<float>(a.getX());
+    const float y = static_cast<float>(a.getCentreY());
+    const int64_t head = f.context().ringView(0).head;
+    constexpr int kRight = juce::ModifierKeys::rightButtonModifier;
+    f.canvas->mouseDown(mouseAt(*f.canvas, off + x, y, {off + x, y}, false, kRight));
+    f.canvas->mouseUp(mouseAt(*f.canvas, off + x, y, {off + x, y}, false, kRight));
+    CHECK_FALSE(f.canvas->endDragIfAny()); // no drag began
+    REQUIRE(f.shown.size() == 1);
+    choose(f.shown.back(), "Add splice mark here");
+    f.process(kBlock);
+    const gg::ui::RingView ring = f.context().ringView(0);
+    REQUIRE(ring.spliceCount == 1);
+    const double column = lane.ringSeconds * kPluginRate / lane.width;
+    const int64_t expected = gg::ui::ringFrameAt(lane, head, x, kPluginRate);
+    CHECK(std::abs(static_cast<double>(ring.splices[0] - expected)) <= column);
+
+    // A right-click on lane B selects it, and Shift+F10 opens the keyboard lane's menu, whose
+    // mark goes at the anchor (the head as the command applies).
+    const juce::Rectangle<int> b = f.canvas->laneBounds(1);
+    const juce::Point<float> at{off + x, static_cast<float>(b.getCentreY())};
+    f.canvas->mouseDown(mouseAt(*f.canvas, at.x, at.y, at, false, kRight));
+    CHECK(f.canvas->selectedLayer() == 1);
+    REQUIRE(f.shown.size() == 2);
+    CHECK(f.canvas->keyPressed(
+        juce::KeyPress(juce::KeyPress::F10Key, juce::ModifierKeys::shiftModifier, 0)));
+    REQUIRE(f.shown.size() == 3);
+    const int64_t headB = f.context().ringView(1).head;
+    choose(f.shown.back(), "Add splice mark here");
+    f.process(kBlock);
+    const gg::ui::RingView ringB = f.context().ringView(1);
+    REQUIRE(ringB.spliceCount == 1);
+    CHECK(ringB.splices[0] == headB);
+}
+
+TEST_CASE("the lane menu's ring items are disabled while inactive", "[plugin]")
+{
+    // Review Focus 1: no ring item acts on a ring that isn't there.
+    gg::test::useMediaScratch("canvas-menu-inactive");
+    PluginCanvas f(kFxPlugin);
+    const auto enabled = [&f](const char *text) {
+        return itemOf(f.canvas->laneMenu(0), text).isEnabled;
+    };
+    const juce::String save = ellipsis("Save capture as");
+    CHECK_FALSE(enabled("Add splice mark here"));
+    CHECK_FALSE(enabled("Clear splice marks"));
+    CHECK_FALSE(enabled("Capture to layer"));
+    CHECK_FALSE(itemOf(f.canvas->laneMenu(0), save).isEnabled);
+    CHECK(enabled("Loop")); // a parameter, set inactive as any other
+    REQUIRE(f.plugin.activate(kPluginRate, kBlock));
+    f.process(kBlock);
+    CHECK(enabled("Add splice mark here"));
+    CHECK_FALSE(enabled("Clear splice marks")); // no marks yet
+    CHECK(enabled("Capture to layer"));
+    CHECK(itemOf(f.canvas->laneMenu(0), save).isEnabled);
+    f.context().ringCommand(0, gg::ui::RingCommand::AddSplice, 0.0f);
+    f.process(kBlock);
+    CHECK(enabled("Clear splice marks"));
+    f.plugin.deactivate();
+    CHECK_FALSE(enabled("Clear splice marks"));
+
+    // A Sample lane's menu loads a sample, through the chooser, into its own layer.
+    PluginCanvas inst(kInstrumentPlugin);
+    const juce::PopupMenu menu = inst.canvas->laneMenu(2);
+    CHECK(menu.getNumItems() == 1);
+    juce::File chosen;
+    gg::ui::GrainCanvas::Browse asked;
+    const auto file =
+        gg::test::writeSineWav(gg::test::sampleDir("canvas-menu-inactive") / "c.wav", 48000, 0.5);
+    inst.canvas->browse = [&](const gg::ui::GrainCanvas::Browse &b,
+                              std::function<void(const juce::File &)> done) {
+        asked = b;
+        done(juce::File(utf8String(file)));
+    };
+    choose(menu, ellipsis("Load sample"));
+    CHECK_FALSE(asked.save);
+    CHECK(asked.patterns.contains("*.wav"));
+    CHECK(inst.waitFor(2, gg::ui::SampleStatusView::State::Loaded));
+    CHECK(inst.context().sampleStatusFor(2).fileName == "c.wav");
+}
+
+TEST_CASE("the Loop item is one undo entry", "[plugin]")
+{
+    gg::test::useMediaScratch("canvas-loop-undo");
+    PluginCanvas f(kFxPlugin);
+    REQUIRE(f.plugin.activate(kPluginRate, kBlock));
+    f.process(kBlock);
+    gg::ui::UndoStack *undo = f.context().undo;
+    REQUIRE(undo != nullptr);
+    const ParamSlot loop = slotOf(gg::core::LayerParam::Loop, 0);
+    CHECK_FALSE(itemOf(f.canvas->laneMenu(0), "Loop").isTicked);
+    choose(f.canvas->laneMenu(0), "Loop");
+    f.process(kBlock);
+    CHECK(f.context().baseValue(loop) == 1.0f);
+    CHECK(undo->size() == 1);
+    CHECK(undo->undoLabel() == "A Loop");
+    CHECK(itemOf(f.canvas->laneMenu(0), "Loop").isTicked);
+    undo->undo();
+    f.process(kBlock);
+    f.plugin.onMainThread();
+    f.process(kBlock);
+    CHECK(f.context().baseValue(loop) == 0.0f);
+    CHECK_FALSE(itemOf(f.canvas->laneMenu(0), "Loop").isTicked);
+}
+
+TEST_CASE("capture to layer B loads B", "[plugin]")
+{
+    const auto dir = gg::test::useMediaScratch("canvas-capture");
+    PluginCanvas f(kFxPlugin);
+    REQUIRE(f.plugin.activate(kPluginRate, kBlock));
+    f.process(2 * 48000);
+    CHECK(f.context().sampleStatusFor(1).state == gg::ui::SampleStatusView::State::None);
+    choose(f.canvas->laneMenu(0), "B");
+    CHECK(f.waitFor(1, gg::ui::SampleStatusView::State::Loaded));
+    CHECK(f.context().sampleWaveformFor(1).frames > 0);
+    CHECK_FALSE(f.noticeShown());
+
+    // Save capture as…: the chooser opens in the captures folder, and a name without an
+    // extension is saved as a WAV.
+    gg::ui::GrainCanvas::Browse asked;
+    const juce::File take = juce::File(utf8String(dir / "captures")).getChildFile("take");
+    take.withFileExtension("wav").deleteFile();
+    f.canvas->browse = [&](const gg::ui::GrainCanvas::Browse &b,
+                           std::function<void(const juce::File &)> done) {
+        asked = b;
+        done(take);
+    };
+    choose(f.canvas->laneMenu(0), ellipsis("Save capture as"));
+    CHECK(asked.save);
+    CHECK(asked.initial.getFullPathName() ==
+          juce::String::fromUTF8(f.context().capturesFolder().c_str()));
+    CHECK(take.withFileExtension("wav").existsAsFile());
+
+    // A refusal is posted: four 16 s rings at 192 kHz are past a 64 MiB cap.
+    f.plugin.deactivate();
+    REQUIRE(f.plugin.activate(192000.0, kBlock));
+    f.process(kBlock);
+    f.context().setMemoryCapMiB(64);
+    choose(f.canvas->laneMenu(0), "C");
+    CHECK(f.noticeShown());
+    CHECK(f.notice().startsWith("over the memory cap"));
+}
+
+TEST_CASE("a Ring Length change mid-draw draws no stale mark", "[plugin]")
+{
+    // Review Focus 2: marks published for one ring length, drawn over the next, never land off
+    // the lane; process() takes the resizes without allocating.
+    using gg::test::AllocTripwire;
+    gg::test::useMediaScratch("canvas-ring-stale");
+    PluginCanvas f(kFxPlugin);
+    REQUIRE(f.plugin.activate(kPluginRate, kBlock));
+    f.process(14 * 48000);
+    for (const float seconds : {12.0f, 6.0f, 1.0f})
+    {
+        f.context().ringCommand(0, gg::ui::RingCommand::AddSplice, seconds);
+    }
+    f.process(kBlock);
+    REQUIRE(f.context().ringView(0).spliceCount == 3);
+    const auto onLane = [&f] {
+        f.paint();
+        const float width = f.canvas->laneGeometry(0).width;
+        for (const float x : f.canvas->marksDrawn(0))
+        {
+            INFO("mark at " << x << " on a lane " << width << " px wide");
+            CHECK(x >= 0.0f);
+            CHECK(x <= width);
+        }
+        return f.canvas->marksDrawn(0).size();
+    };
+    CHECK(onLane() == 3);
+    const ParamSlot ringLength = slotOf(gg::core::LayerParam::RingLength, 0);
+    std::vector<float> in(kBlock, 0.25f), out0(kBlock), out1(kBlock);
+    float *inputs[2] = {in.data(), in.data()};
+    float *outputs[2] = {out0.data(), out1.data()};
+    // Grow to 60 s, then shrink to 4 s, drawing between every step.
+    for (const double seconds : {60.0, 4.0})
+    {
+        INFO("Ring Length " << seconds << " s");
+        f.processWith(ringLength, std::log2(seconds));
+        onLane();
+        bool adopted = false;
+        for (int i = 0; i < 200 && !adopted; ++i)
+        {
+            f.plugin.onMainThread(); // the watcher offers the ring
+            onLane();
+            AllocTripwire::resetCount();
+            {
+                AllocTripwire::Scope armed;
+                f.plugin.process(kBlock, inputs, outputs);
+            }
+            REQUIRE_NO_ALLOCATIONS(AllocTripwire::count());
+            adopted = f.impl->processor()->ringRead(0).storage->frames() ==
+                      static_cast<int64_t>(seconds * kPluginRate);
+            onLane();
+        }
+        CHECK(adopted);
+        f.plugin.onMainThread();
+    }
+    // The 4 s ring keeps the mark 1 s back; the older ones have left it.
+    CHECK(onLane() == 1);
+
+    // A view caught between the two (marks of the 16 s ring, the 4 s ring's length, and a mark
+    // past a head the lane hasn't caught up with) draws only the mark on the lane.
+    RecordingContext recording(gg::core::Mode::Fx);
+    recording.context.sampleRate = kPluginRate;
+    static constexpr int64_t head = 10 * 48000;
+    recording.context.ringView = [](uint8_t) {
+        gg::ui::RingView ring;
+        ring.valid = true;
+        ring.head = head;
+        ring.ringFrames = 4 * 48000;
+        ring.windowFrames = ring.ringFrames;
+        ring.spliceCount = 4;
+        ring.splices = {head - 12 * 48000, head - 6 * 48000, head - 48000, head + 100};
+        return ring;
+    };
+    const auto editor = gg::ui::makeEditor(recording.context);
+    auto *canvas = canvasOf(*editor);
+    REQUIRE(canvas != nullptr);
+    juce::Image image(juce::Image::ARGB, canvas->getWidth(), canvas->getHeight(), true);
+    juce::Graphics g(image);
+    canvas->paint(g);
+    const std::vector<float> drawn = canvas->marksDrawn(0);
+    REQUIRE(drawn.size() == 1);
+    CHECK_THAT(drawn[0], Catch::Matchers::WithinAbs(0.75 * canvas->laneGeometry(0).width, 1.0));
+}
+
+TEST_CASE("lane B takes a dropped file in both products", "[plugin]")
+{
+    const char *id = GENERATE(kInstrumentPlugin, kFxPlugin);
+    CAPTURE(id);
+    const auto dir = gg::test::useMediaScratch("canvas-drop-b");
+    const auto file = gg::test::writeSineWav(dir / "b.wav", 48000, 0.75);
+    PluginCanvas f(id);
+    f.dropOn(1, file);
+    REQUIRE(f.waitFor(1, gg::ui::SampleStatusView::State::Loaded));
+    CHECK(f.context().sampleStatusFor(1).fileName == "b.wav");
+    CHECK(f.context().sampleWaveformFor(1).frames == 36000);
+    CHECK(f.context().sampleStatusFor(0).state == gg::ui::SampleStatusView::State::None);
+}
+
+TEST_CASE("a non-sample file on lane B is refused", "[plugin]")
+{
+    // The canvas's notice reaches the editor's header.
+    const auto dir = gg::test::useMediaScratch("canvas-drop-refused");
+    PluginCanvas f(kFxPlugin);
+    CHECK_FALSE(f.noticeShown());
+    f.dropOn(1, dir / "notes.txt");
+    CHECK(f.noticeShown());
+    CHECK(f.notice() == "can't load notes.txt: not a WAV, AIFF, FLAC or MP3 file");
+    CHECK(f.context().sampleStatusFor(1).state == gg::ui::SampleStatusView::State::None);
+}
+
+TEST_CASE("a drop on a Live lane says how to hear it", "[plugin]")
+{
+    // Review Focus 4: the drop loads the sample and leaves the layer's Source alone (VW-P2c), and
+    // a second drop during the first load wins.
+    const auto dir = gg::test::useMediaScratch("canvas-drop-live");
+    const auto first = gg::test::writeSineWav(dir / "long.wav", 48000, 3.0);
+    const auto second = gg::test::writeSineWav(dir / "short.wav", 48000, 0.5);
+    PluginCanvas f(kFxPlugin);
+    const ParamSlot source = slotOf(gg::core::LayerParam::Source, 1);
+    const float before = f.context().baseValue(source);
+    f.dropOn(1, first);
+    CHECK(f.noticeShown());
+    CHECK(f.notice() == "B's sample is loaded: set B Source to Sample to play it");
+    f.dropOn(1, second);
+    REQUIRE(f.waitFor(1, gg::ui::SampleStatusView::State::Loaded));
+    CHECK(f.context().sampleStatusFor(1).fileName == "short.wav");
+    CHECK(f.context().sampleWaveformFor(1).frames == 24000); // the second file's outline
+    CHECK(f.context().baseValue(source) == before);          // still Live
+
+    // The instrument's lane B is a Sample lane: its drop needs no word.
+    PluginCanvas inst(kInstrumentPlugin);
+    inst.dropOn(1, second);
+    CHECK_FALSE(inst.noticeShown());
 }
 
 #endif

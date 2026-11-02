@@ -183,11 +183,10 @@ struct EditorContext
     /// lanes. Main thread. May be empty (a bare context: the lanes show no peaks and no sample).
     /// livePeaksFor: the layer's live-ring peak strip; null while the plugin is inactive.
     std::function<const gg::core::LivePeaks *(uint8_t layer)> livePeaksFor;
-    /// The layer's sample outline, as sampleWaveform. PR 1: layer 0's sampleWaveform; empty for
-    /// the others, which can't hold a sample until the session format's next version.
+    /// The layer's sample outline, as sampleWaveform; empty with no sample.
     std::function<SampleWaveform(uint8_t layer)> sampleWaveformFor;
-    /// Loads a file the user dropped on a layer's lane. True if the layer takes it. PR 1: layer 0
-    /// calls loadSample and returns true; the others return false, and the canvas says so.
+    /// Loads a file the user dropped on a layer's lane, or chose from its lane menu. True if the
+    /// layer takes it: every layer does, in both products (ruling VW-P2c).
     std::function<bool(uint8_t layer, const std::string &utf8Path)> loadSampleFor;
     /// Relinks a layer's missing sample to the file chosen (SampleLoader::requestRelink).
     std::function<void(uint8_t layer, const std::string &utf8Path)> relinkSampleFor;

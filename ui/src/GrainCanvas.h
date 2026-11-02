@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <vector>
 
 #include <juce_gui_basics/juce_gui_basics.h>
@@ -17,6 +18,7 @@
 #include "HeldValue.h"
 #include "Palette.h"
 #include "gg/core/ParamIds.h"
+#include "gg/core/ParamMap.h"
 #include "gg/core/UiSnapshot.h"
 #include "gg/ui/Editor.h"
 #include "gg/ui/LaneModel.h"
@@ -36,9 +38,23 @@ namespace gg::ui
 /// while frozen and a regeneration marker at the head while the layer's Feedback is up.
 ///
 /// **A lane's kind** is the one its layer renders as: the snapshot's builtKind once there is one,
-/// and before that (the plugin inactive) the layer's Source base value, a layer whose Source
-/// isn't built drawing as its product's default. A Sample lane with no sample shows what to do and
-/// can't be grabbed. A lane whose layer is off is drawn at 40% alpha.
+/// and before that (the plugin inactive) gg::core::builtKind of the layer's Source base value. A
+/// Sample lane with no sample shows what to do and can't be grabbed. A lane whose layer is off is
+/// drawn at 40% alpha.
+///
+/// **A Live lane spans its layer's ring** (ruling VW-P2d, amended): ringView's ringFrames /
+/// sampleRate seconds, 16 s while there is none (inactive). Its peaks draw over the frames the
+/// peak strip holds, its newest LivePeaks::frames(); older columns have none (the grains still
+/// draw there). Over the peaks it draws, in order, the loop window while the layer's Loop is on
+/// (spliceSpan's window, shaded), the selected splice (Splice's base value, rounded, when it is 1
+/// or more: its span outlined), and each mark: a 1 px rule, numbered from the oldest inside the
+/// window (D6) at its top when the lane is at least 40 px high.
+///
+/// **The lane menu** (ruling VW-P2a) opens on a right-click on any lane, which selects its layer
+/// and begins no drag, or on Shift+F10 on the keyboard's lane (laneMenu). A Live lane's: "Add
+/// splice mark here" (where clicked; from the keyboard, at the anchor), "Clear splice marks",
+/// "Loop" (one gesture), "Capture to layer" A to D and "Save capture as…"; the ring's items are
+/// disabled while the ring view isn't valid (inactive). A Sample lane's: "Load sample…".
 ///
 /// **Each frame** (renderFrame, which paint calls) it drains the context's grain queue into one
 /// list per layer (LiveGrains: a grain goes once it has ended), first clearing a queue it hasn't
@@ -62,14 +78,15 @@ namespace gg::ui
 /// begins its gesture when its axis is decided, so a press that never moves is no gesture. The
 /// rectangle keeps the dragged value until the base value catches up (HeldValue). A double-click
 /// on a rectangle's body toggles that layer's Freeze as one gesture. A press in a lane selects
-/// it (onSelectLayer). A file dropped on a lane goes to the context's loadSampleFor; a refusal
-/// is posted as a notice (postNotice). With the context's undo stack, each gesture is an entry,
-/// labelled with its parameter's name.
+/// it (onSelectLayer). A file dropped on any lane goes to the context's loadSampleFor for its
+/// layer (ruling VW-P2c); a file that isn't a sample is refused with a notice (postNotice), and
+/// one dropped on a Live layer is loaded with a notice that its Source must be Sample to play it.
+/// With the context's undo stack, each gesture is an entry, labelled with its parameter's name.
 ///
 /// **The keyboard** (spec §6.9): the canvas takes focus, and its focused lane is the selected
 /// one, its rectangle outlined: Left and Right move its Position, Up and Down its Pitch, by 1/100
-/// of the range, Shift its Spray and Pitch Spread instead, each press a gesture. Escape ends a
-/// drag under way, as its release would.
+/// of the range, Shift its Spray and Pitch Spread instead, each press a gesture; Shift+F10 opens
+/// its lane menu. Escape ends a drag under way, as its release would.
 ///
 /// With GG_STRESS_GRAINS=N (N > 0) in the environment when the canvas is made, it draws
 /// stressGrains(frame, N, ...) instead of the queue, four lanes (stressMode).
@@ -82,8 +99,8 @@ class GrainCanvas final : public juce::Component, public juce::FileDragAndDropTa
     static constexpr float kEdgeTolerancePx = 6.0f;
     /// How far, in logical pixels, a body drag moves before its axis is decided.
     static constexpr float kAxisLockPx = 4.0f;
-    /// The FX lane's span: the live ring's 16 s, Position's range.
-    static constexpr double kRingSeconds = 16.0;
+    /// A Live lane's span while its layer has no ring (the plugin inactive), in seconds.
+    static constexpr double kFallbackRingSeconds = 16.0;
     /// The canvas's left column, in logical pixels, reserved for the layer strip: the canvas
     /// draws nothing in it (but its ground).
     static constexpr int kLaneHeaderWidth = 120;
@@ -121,6 +138,36 @@ class GrainCanvas final : public juce::Component, public juce::FileDragAndDropTa
     }
     /// Ends a drag under way, as its release would; false if there is none.
     bool endDragIfAny();
+
+    /// Layer `layer`'s lane geometry at one physical pixel per logical one, as a press is placed
+    /// (its x from the lane's left edge). For the tests.
+    LaneGeometry laneGeometry(uint8_t layer) const { return geometry(layer, 1.0f); }
+    /// The x of each splice mark the last paint drew on layer `layer`'s lane, logical pixels from
+    /// the lane's left edge, oldest first; empty for a lane out of range. For the tests.
+    std::vector<float> marksDrawn(uint8_t layer) const;
+
+    /// Layer `layer`'s lane menu (the class comment), for the place last right-clicked on it, or
+    /// for the keyboard (no place) when the menu was opened by Shift+F10 or not at all. Its
+    /// items' actions do what the menu says. The tests take it here and invoke an item by its
+    /// text; nothing shows it but showMenu.
+    juce::PopupMenu laneMenu(uint8_t layer);
+    /// Shows a lane menu. By default juce::PopupMenu::showMenuAsync at the mouse; tests replace
+    /// it (a menu shown is modal to the test).
+    std::function<void(juce::PopupMenu)> showMenu;
+
+    /// What a lane menu's chooser asks for: a sample to load, or a WAV to save a capture as.
+    struct Browse
+    {
+        juce::String title;
+        juce::File initial;    ///< the folder it opens in; none to let the system choose
+        bool save{false};      ///< a file to write, or one to read
+        juce::String patterns; ///< the file patterns
+    };
+    /// Opens a chooser and calls the callback with what was chosen (juce::File() if nothing),
+    /// perhaps later. By default an asynchronous juce::FileChooser, which the canvas owns, so a
+    /// dialog still open when the canvas goes is dismissed and its callback never runs. Tests
+    /// replace it.
+    std::function<void(const Browse &, std::function<void(const juce::File &)>)> browse;
 
     void paint(juce::Graphics &g) override;
     void mouseMove(const juce::MouseEvent &e) override;
@@ -165,7 +212,28 @@ class GrainCanvas final : public juce::Component, public juce::FileDragAndDropTa
     /// sample; usable says whether this one can place anything.
     LaneGeometry geometry(uint8_t layer, float scale) const;
     static bool usable(const LaneGeometry &g) noexcept;
+    /// The layer's sample outline and ring view, each fetched once per frame (renderFrame, or a
+    /// press, starts a new one: forgetFrame) and kept until the next (carry-over row 327).
     SampleWaveform waveformOf(uint8_t layer) const;
+    RingView ringOf(uint8_t layer) const;
+    void forgetFrame() noexcept;
+    /// The seconds a Live lane spans: the ring's frames over the sample rate, or
+    /// kFallbackRingSeconds.
+    double ringSecondsOf(uint8_t layer) const;
+    /// The layer's ring parameters' base values (gg::core::toRingParams over them).
+    gg::core::RingParams ringParamsOf(uint8_t layer) const;
+    /// The Loop Length's frames at the lane's rate, as MediaSession::windowOf rounds them.
+    int64_t loopFramesOf(const gg::core::RingParams &ring, double sampleRate) const noexcept;
+    /// The head the lane draws at: the snapshot's, run on to now, or the ring view's without one.
+    int64_t laneHead(uint8_t layer, const RingView &ring) const noexcept;
+    /// The value of an AddSplice that marks `frame` (the anchor, the head or the selected
+    /// splice's end, when nullopt).
+    float spliceValueFor(uint8_t layer, std::optional<int64_t> frame) const;
+    void drawRing(juce::Graphics &g, uint8_t layer, const LaneGeometry &lane, const Palette &pal);
+    /// Builds layer `layer`'s menu for `frame` (nullopt: the keyboard's) and shows it.
+    void openLaneMenu(uint8_t layer, std::optional<int64_t> frame);
+    void chooseSampleFor(uint8_t layer);
+    void chooseCaptureFileFor(uint8_t layer, uint32_t splice);
     float baseValue(uint8_t layer, Held which) const;
     /// A value as the rectangle shows it: the base value, or a drag's.
     float shown(uint8_t layer, Held which, double now);
@@ -221,12 +289,25 @@ class GrainCanvas final : public juce::Component, public juce::FileDragAndDropTa
         int64_t key{0};
         int top{0}, width{0}, height{0};
         double rate{0.0};
+        double span{0.0}; ///< a Live strip's seconds
         bool valid{false};
     };
     std::array<PeakStrip, kLaneCount> strips_;
 
     uint8_t selected_{0};
     int dropLane_{-1}; // the lane a file is being dragged over, or -1
+
+    // This frame's sample outlines and ring views (waveformOf, ringOf), fetched on first use.
+    mutable std::array<std::optional<SampleWaveform>, kLaneCount> waves_;
+    mutable std::array<std::optional<RingView>, kLaneCount> rings_;
+    // The marks the last paint drew, per lane (marksDrawn).
+    std::array<std::vector<float>, kLaneCount> marks_;
+    // The lane menu's place: the ring frame right-clicked on its layer's lane, or none (the
+    // keyboard's, or a Sample lane's).
+    uint8_t menuLayer_{0};
+    std::optional<int64_t> menuFrame_;
+    juce::Rectangle<int> menuArea_; // where the menu shows, in screen coordinates
+    std::unique_ptr<juce::FileChooser> chooser_;
 
     // The drag under way, if any (lane coordinates: x from the lanes' left edge, y the canvas's).
     DragTarget drag_{DragTarget::None};

@@ -18,6 +18,9 @@ struct RingView
 {
     bool valid{false}; ///< false while the plugin is inactive
     int64_t head{0}, windowFrames{0};
+    /// The ring's length N, its storage's frames (Processor::ringRead): what a Live lane spans
+    /// and what MediaSession::spanOf numbers the splices within. 0 with no storage.
+    int64_t ringFrames{0};
     uint32_t spliceCount{0};
     std::array<int64_t, gg::core::kMaxSplices> splices{}; ///< ascending ring frames
     bool frozen{false};

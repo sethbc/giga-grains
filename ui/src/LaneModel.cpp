@@ -5,6 +5,7 @@
 #include "gg/ui/LaneModel.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 
 // UI-thread display code: it works in double and uses libm freely. Nothing here reaches the
@@ -353,5 +354,94 @@ DragAxis decideAxis(float dx, float dy, float thresholdPx) noexcept
         return DragAxis::Undecided;
     }
     return ax >= ay ? DragAxis::Horizontal : DragAxis::Vertical;
+}
+} // namespace gg::ui
+
+namespace gg::ui
+{
+namespace
+{
+/// Whether a Live lane can place ring frames at `sampleRate`.
+bool ringUsable(const LaneGeometry &g, double sampleRate)
+{
+    return std::isfinite(g.width) && g.width > 0.0f && std::isfinite(g.ringSeconds) &&
+           g.ringSeconds > 0.0 && std::isfinite(sampleRate) && sampleRate > 0.0;
+}
+} // namespace
+
+std::optional<float> ringFrameX(const LaneGeometry &g, int64_t head, int64_t frame,
+                                double sampleRate) noexcept
+{
+    if (!ringUsable(g, sampleRate) || frame > head)
+    {
+        return std::nullopt;
+    }
+    // frame <= head, so the unsigned difference is exact and can't overflow.
+    const auto behind =
+        static_cast<double>(static_cast<uint64_t>(head) - static_cast<uint64_t>(frame));
+    const double span = g.ringSeconds * sampleRate;
+    if (behind > span)
+    {
+        return std::nullopt;
+    }
+    return static_cast<float>(g.width * (1.0 - behind / span));
+}
+
+int64_t ringFrameAt(const LaneGeometry &g, int64_t head, float x, double sampleRate) noexcept
+{
+    if (std::isnan(x) || !ringUsable(g, sampleRate))
+    {
+        return head;
+    }
+    const double span = g.ringSeconds * sampleRate;
+    const double fraction = std::clamp(static_cast<double>(x) / g.width, 0.0, 1.0);
+    const auto behind = std::llround((1.0 - fraction) * span);
+    return head - std::min(behind, std::llround(span));
+}
+
+RingSpan spliceSpan(const RingView &ring, bool loop, int64_t loopFrames, uint32_t k) noexcept
+{
+    // MediaSession::spanOf, with r0 the head and n the ring's frames.
+    const int64_t r0 = ring.head;
+    int64_t lo = std::max<int64_t>(0, r0 - ring.ringFrames);
+    if (loop)
+    {
+        lo = std::max(lo, r0 - std::max<int64_t>(1, loopFrames));
+    }
+    std::array<int64_t, gg::core::kMaxSplices> marks{};
+    uint32_t count = 0;
+    for (uint32_t m = 0; m < std::min<uint32_t>(ring.spliceCount, gg::core::kMaxSplices); ++m)
+    {
+        if (ring.splices[m] >= lo && ring.splices[m] < r0)
+        {
+            marks[count++] = ring.splices[m];
+        }
+    }
+    if (k == 0 || count == 0)
+    {
+        return {lo, r0};
+    }
+    // D6: from the oldest mark inside the window; past the count, the last.
+    const uint32_t i = std::min(k, count) - 1;
+    return {marks[i], i + 1 < count ? marks[i + 1] : r0};
+}
+
+float spliceSeconds(int64_t anchor, int64_t frame, double sampleRate) noexcept
+{
+    if (frame >= anchor || !std::isfinite(sampleRate) || !(sampleRate > 0.0))
+    {
+        return 0.0f;
+    }
+    const auto behind =
+        static_cast<double>(static_cast<uint64_t>(anchor) - static_cast<uint64_t>(frame));
+    return static_cast<float>(behind / sampleRate);
+}
+
+int64_t splicedFrame(int64_t anchor, int64_t oldest, float seconds, double sampleRate) noexcept
+{
+    // Processor::applyCommands.
+    const double room = static_cast<double>(std::max<int64_t>(0, anchor - oldest));
+    const double behind = std::clamp(static_cast<double>(seconds) * sampleRate, 0.0, room);
+    return anchor - std::llround(behind);
 }
 } // namespace gg::ui
