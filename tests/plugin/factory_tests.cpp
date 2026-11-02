@@ -1264,7 +1264,7 @@ TEST_CASE("the strip keeps room for its name and status at 640 by 360", "[plugin
             return statusView(State::Loaded, "a-long-sample-name.wav", {}, 12.5, 2, 44100.0);
         };
         const auto editor = gg::ui::makeEditor(context);
-        for (const auto size : {std::pair{640, 360}, std::pair{960, 600}})
+        for (const auto &size : {std::pair{640, 360}, std::pair{960, 600}})
         {
             INFO(size.first << " x " << size.second);
             editor->setSize(size.first, size.second);
