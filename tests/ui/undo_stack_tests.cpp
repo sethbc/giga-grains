@@ -63,7 +63,8 @@ struct Model
                     [this](const ModRoutes &r) {
                         routes = r;
                         routeCalls.push_back(r);
-                    }};
+                    },
+                .setValues = {}};
     }
     void clearCalls()
     {
@@ -455,7 +456,8 @@ TEST_CASE("a snapshot entry undoes its routes before its values", "[ui]")
                      [&](const ModRoutes &r) {
                          routes = r;
                          order.push_back('r');
-                     }}};
+                     },
+                 .setValues = {}}};
     ParamValues vBefore{};
     ParamValues vAfter = vBefore;
     vAfter[static_cast<std::size_t>(ParamSlot::Texture)] = 0.9f;
